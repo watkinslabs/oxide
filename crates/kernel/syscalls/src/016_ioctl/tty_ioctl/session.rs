@@ -28,6 +28,7 @@ fn enotty() -> i64 { -(Errno::Enotty.as_i32() as i64) }
 /// for, `None` when the fd is a pty endpoint instead.
 /// # C: O(N_tasks) for TIOCNOTTY, else O(1)
 pub(super) fn handle(
+    cur: &sched::Task,
     file: &vfs::File,
     con: Option<console::TtyTarget>,
     pty_pair: &Option<Arc<devpts::LockedPair>>,
@@ -35,11 +36,26 @@ pub(super) fn handle(
     arg: u64,
 ) -> i64 {
     match req {
+        TIOCVHANGUP => vhangup(cur, file),
         TIOCSCTTY => sctty(file, con, pty_pair),
         TIOCGSID => gsid(con, pty_pair, arg),
         TIOCNOTTY => notty(file),
         TIOCMGET => mget(con, pty_pair, arg),
         _ => mset(con, pty_pair, req, arg),
+    }
+}
+
+const TIOCVHANGUP: u64 = tty_req::TIOCVHANGUP as u64;
+
+/// `TIOCVHANGUP` — `CAP_SYS_ADMIN`, then revoke the tty named by this fd.
+/// # C: O(N_tasks)
+fn vhangup(cur: &sched::Task, file: &vfs::File) -> i64 {
+    match tty::hangup::tiocvhangup_decision(cur.has_cap(sched::cap::SYS_ADMIN)) {
+        tty::hangup::TiocvhangupOutcome::Eperm => -(Errno::Eperm.as_i32() as i64),
+        tty::hangup::TiocvhangupOutcome::Hangup => {
+            crate::tty_hangup::vhangup_inode(file.inode());
+            0
+        }
     }
 }
 

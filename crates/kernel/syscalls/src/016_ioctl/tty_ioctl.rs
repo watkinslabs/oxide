@@ -40,6 +40,7 @@ const TIOCSPGRP: u64 = tty_req::TIOCSPGRP as u64;
 const TIOCSCTTY: u64 = tty_req::TIOCSCTTY as u64;
 const TIOCNOTTY: u64 = tty_req::TIOCNOTTY as u64;
 const TIOCGSID: u64 = tty_req::TIOCGSID as u64;
+const TIOCVHANGUP: u64 = tty_req::TIOCVHANGUP as u64;
 // Modem-control bits (DTR/RTS/CD/RI/DSR/CTS). The serial/VT console
 // models a software modem register (TIOCMGET reflects prior
 // TIOCMSET/BIS/BIC; carrier strapped active). A pty has no modem
@@ -433,8 +434,9 @@ pub(super) fn handle_tty_ioctl(
             }
             0
         }
+        TIOCVHANGUP => session::handle(cur, file, con, &pty_pair, req, arg),
         TIOCSCTTY | TIOCGSID | TIOCNOTTY | TIOCMGET | TIOCMSET | TIOCMBIS | TIOCMBIC =>
-            session::handle(file, con, &pty_pair, req, arg),
+            session::handle(cur, file, con, &pty_pair, req, arg),
         _ => {
             #[cfg(feature = "debug-boot")]
             {

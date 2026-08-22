@@ -467,6 +467,8 @@ mod poll_ownership_tests;
 mod fcntl_dup_tests;
 #[cfg(test)]
 mod return_fastpath_tests;
+#[cfg(test)]
+mod tty_ioctl_source_tests;
 
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 #[path = "recvmsg/vsock.rs"]

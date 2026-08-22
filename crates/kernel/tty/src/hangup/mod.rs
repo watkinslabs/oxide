@@ -21,8 +21,8 @@
 // - `tests`:       hosted tests for the decide/vhangup halves.
 
 mod decide;
-pub use decide::{session_member_action, vhangup_decision, HangupKind, SessionMemberAction,
-    VhangupOutcome};
+pub use decide::{session_member_action, tiocvhangup_decision, vhangup_decision, HangupKind,
+    SessionMemberAction, TiocvhangupOutcome, VhangupOutcome};
 
 pub mod revoke;
 pub use revoke::{hung_up_ioctl, revoked, FIRST_GEN, HUNG_UP_POLL, HUNG_UP_READ, NOT_BOUND};

@@ -83,6 +83,18 @@ pub(crate) fn hangup(target: &CttyTarget, kind: HangupKind) {
     }
 }
 
+/// `tty_vhangup(tty)` for a tty inode: clear and signal its session before
+/// revoking the descriptions open across the line. Both `vhangup(2)` and
+/// `TIOCVHANGUP` converge here after their distinct capability/target gates.
+/// # C: O(N_tasks)
+pub(crate) fn vhangup_inode(inode: &vfs::Inode) {
+    let Some(target) = resolve(inode) else { return };
+    let sid = session(&target);
+    let fg = foreground_pgrp(&target);
+    tty::hangup::hangup_session(inode.ino(), sid, fg);
+    hangup(&target, HangupKind::Vhangup);
+}
+
 /// `disassociate_ctty`'s `tty->ctrl.session = NULL; tty->ctrl.pgrp = NULL`
 /// WITHOUT revoking the line — TIOCNOTTY detaches the terminal from the
 /// session, it does not hang it up.
