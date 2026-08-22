@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2548-stale-merged-row-consolidation
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2548 | MIXED | low | Eight open rows were exact duplicates of fixes already merged on `main`: PTRACE regset iovec ordering (B2499), SELinux pre-policy kernel decisions (B2492), atomic serial-log publication (B2477), per-task loginuid/sessionid (B2517), external-source citation ratchet (B2486), test-build diagnostics (B2483), socket SELinux type transitions (B2526), and the PL011 `ttyAMA0` identity (B2506). | Each premise is covered by the cited fixed entry and merged implementation; no production change is warranted. The duplicate rows were removed from `known_issues.md` without altering adjacent residual rows. | B2548-stale-merged-row-consolidation |
+
 ### B2547-stale-merged-exec-state-klog-rows
 
 | Status | Class | Sev | Issue | Evidence | Owner |
