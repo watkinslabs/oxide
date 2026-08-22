@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2537-affinity-ledger-stale-rows
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2537 | INFRA | low | Four duplicate affinity ABI failure rows were stale: the current tests derive the configured CPU-mask width and pass, with production behavior already correct. The aggregate row was narrowed to retain only its unrelated return-fastpath failure. | B2505's fixed entry and the current `cargo test -p syscalls --lib affinity_abi` result close the affinity portion; no production change was needed. | Chris Watkins |
+
 ### B2535-stale-arm-debug-shell-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
