@@ -41,6 +41,12 @@
 |---|---|---|---|---|---|
 | FIXED b7d7328fb | DEFECT | low | **The zero-length AF_UNIX `recv(MSG_OOB)` row was stale: the production urgent receive path already returns the fixed one-byte count.** | B2374. The existing urgent-count owner is now pinned by the focused boundary test; the stale row is retired. | B2374-stale-unix-oob-length-row |
 
+### B2375-kcore-open-hook-coverage
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 685a055fd | COVERAGE | low | **`/proc/kcore`'s real file-operations object and inode constructor are now hosted, and an actual VFS open pins the `CAP_SYS_RAWIO` hook.** | B2375. The focused open-path test proves the production hook rejects an unprivileged open. | B2375-kcore-open-hook-coverage |
+
 ### B2329-freezer-backoff-sleep
 
 | Status | Class | Sev | Issue | Evidence | Owner |
