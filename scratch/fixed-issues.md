@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2468-keyring-global-process-identity
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED c16c35ef7 | DEFECT | low | Process keyrings now use global TGID identity for lookup, exec cleanup, and final-thread release instead of namespace-visible PID numbers. | Keyring/fs/sched tests, target checks, and smoke passed. | Chris Watkins |
+
 ### B2467-ttynull-console
 
 | Status | Class | Sev | Issue | Evidence | Owner |
