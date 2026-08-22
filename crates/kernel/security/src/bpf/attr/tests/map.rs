@@ -21,6 +21,17 @@ fn map_create_bad_map_type_is_einval_even_without_cap_bpf() {
 }
 
 #[test]
+fn struct_ops_map_creation_is_absent_without_a_bpf_jit() {
+    // Linux's `bpf_types.h` publishes `bpf_struct_ops_map_ops` only under
+    // CONFIG_BPF_JIT. This kernel is interpreter-only, so the ABI number is
+    // known but has no map-ops entry and fails before capability admission.
+    let mut a = good_map_create();
+    let off = uapi::off::map_create::MAP_TYPE;
+    a.bytes[off..off + 4].copy_from_slice(&uapi::map_type::STRUCT_OPS.to_ne_bytes());
+    assert_eq!(map_create_check(&a, caps_bpf(), true), Err(Errno::Einval));
+}
+
+#[test]
 fn map_create_without_cap_bpf_is_eperm_when_unpriv_is_disabled() {
     assert_eq!(map_create_check(&good_map_create(), caps_none(), true), Err(Errno::Eperm));
     assert!(map_create_check(&good_map_create(), caps_bpf(), true).is_ok());
@@ -160,4 +171,3 @@ fn noexist_on_a_present_key_is_eexist_and_exist_on_absent_is_enoent() {
     assert_eq!(update_presence_verdict(e::ANY, true), Ok(()));
     assert_eq!(update_presence_verdict(e::ANY, false), Ok(()));
 }
-

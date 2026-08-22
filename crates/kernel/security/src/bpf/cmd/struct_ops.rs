@@ -1,12 +1,12 @@
 // `BPF_PROG_ASSOC_STRUCT_OPS` — associate a loaded program with the
 // struct_ops map whose implementation it participates in.
 //
-// The association itself needs a `BPF_MAP_TYPE_STRUCT_OPS` map. This
-// kernel implements no such map type, so every request that survives the
-// ladder below ends on the reference's own "that map is not a struct_ops
-// map" `-EINVAL` — the last rung, reached in the right order, rather than
-// a substituted refusal earlier on. See the missing-struct_ops row in
-// `scratch/known_issues.md`.
+// The association itself needs a `BPF_MAP_TYPE_STRUCT_OPS` map. Linux puts
+// that map's operations behind `CONFIG_BPF_JIT`; its no-JIT fallback for a
+// forged struct-ops map is `-EOPNOTSUPP`. Oxide is interpreter-only, so map
+// creation rejects the ABI type and no userspace descriptor can reach that
+// fallback. Keep both decisions explicit so adding a JIT cannot silently
+// make only half of the contract reachable.
 
 use syscall::errno::Errno;
 
@@ -24,11 +24,8 @@ fn assoc_prog_type_verdict(prog_type: u32) -> Result<(), Errno> {
 
 /// Only a struct_ops map can be associated with. # C: O(1)
 fn assoc_map_type_verdict(map_type: u32) -> Result<(), Errno> {
-    // `BPF_MAP_TYPE_STRUCT_OPS` has no entry in this kernel's map-type
-    // table, so no created map can carry it and every map reaching here
-    // fails this test.
-    let _ = map_type;
-    Err(Errno::Einval)
+    if map_type != uapi::map_type::STRUCT_OPS { return Err(Errno::Einval); }
+    Err(Errno::Eopnotsupp)
 }
 
 /// `prog_assoc_struct_ops()`. # C: O(1)
@@ -76,13 +73,15 @@ mod tests {
         assert_eq!(assoc_prog_type_verdict(uapi::prog_type::CGROUP_SKB), Ok(()));
     }
 
-    /// No map type this kernel can create is a struct_ops map, so the
-    /// association's last rung refuses every one of them.
+    /// The ABI type has no creatable map ops in an interpreter-only kernel.
+    /// If an internal fixture nevertheless supplies it, Linux's no-JIT
+    /// fallback is EOPNOTSUPP rather than the wrong-map EINVAL.
     #[test]
-    fn no_creatable_map_type_satisfies_the_association() {
+    fn the_no_jit_struct_ops_contract_matches_linux() {
         use uapi::map_type as m;
         for map_type in [m::HASH, m::ARRAY, m::LPM_TRIE] {
             assert_eq!(assoc_map_type_verdict(map_type), Err(Errno::Einval));
         }
+        assert_eq!(assoc_map_type_verdict(m::STRUCT_OPS), Err(Errno::Eopnotsupp));
     }
 }
