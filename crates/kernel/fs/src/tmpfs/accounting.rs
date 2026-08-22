@@ -8,6 +8,8 @@ use vfs::superblock::SuperBlock;
 use super::limits::{FALLBACK_TOTAL_PAGES, PG};
 use super::quota::TmpfsQuota;
 
+const BOGO_INODE_SIZE: u64 = 1024;
+
 /// One mounted instance's superblock state: the ceilings it enforces, the
 /// usage it has against them, and the mount options that change how it
 /// behaves rather than how much it holds.
@@ -21,6 +23,8 @@ pub struct TmpfsSb {
     max_inodes:  u64,
     used_blocks: AtomicU64,
     used_inodes: AtomicU64,
+    /// Remaining inode-space pool shared by inode bodies and simple xattrs.
+    free_ispace: AtomicU64,
     /// `-o noswap`: this mount's pages are never written to swap.
     noswap:      bool,
     /// `-o inode64`: inode numbers may use the full 64-bit space.
@@ -41,6 +45,7 @@ impl TmpfsSb {
     pub(super) fn new(max_blocks: u64, max_inodes: u64) -> Arc<Self> {
         Arc::new(Self { max_blocks, max_inodes,
             used_blocks: AtomicU64::new(0), used_inodes: AtomicU64::new(0),
+            free_ispace: AtomicU64::new(max_inodes.saturating_mul(BOGO_INODE_SIZE)),
             noswap: false, full_inums: false,
             quota: TmpfsQuota::off(), sb: Spinlock::new(Weak::new()) })
     }
@@ -94,6 +99,7 @@ impl TmpfsSb {
             max_blocks: opts.resolve_blocks(half),
             max_inodes: opts.resolve_inodes(half),
             used_blocks: AtomicU64::new(0), used_inodes: AtomicU64::new(0),
+            free_ispace: AtomicU64::new(opts.resolve_inodes(half).saturating_mul(BOGO_INODE_SIZE)),
             noswap: opts.noswap,
             full_inums: opts.full_inums(),
             quota: TmpfsQuota::from_opts(opts),
@@ -118,9 +124,10 @@ impl TmpfsSb {
     pub(super) fn free_blocks(&self, n: u64) { if n != 0 { self.used_blocks.fetch_sub(n, Ordering::Relaxed); } }
     /// Reserve one inode; `false` (caller → `ENOSPC`) at the limit. # C: O(1)
     pub(super) fn charge_inode(&self) -> bool {
+        if !self.reserve_ispace(BOGO_INODE_SIZE) { return false; }
         let mut cur = self.used_inodes.load(Ordering::Relaxed);
         loop {
-            if cur >= self.max_inodes { return false; }
+            if cur >= self.max_inodes { self.release_ispace(BOGO_INODE_SIZE); return false; }
             match self.used_inodes.compare_exchange_weak(cur, cur + 1, Ordering::Relaxed, Ordering::Relaxed) {
                 Ok(_) => return true,
                 Err(c) => cur = c,
@@ -128,7 +135,32 @@ impl TmpfsSb {
         }
     }
     /// Release one inode. # C: O(1)
-    pub(super) fn free_inode(&self) { self.used_inodes.fetch_sub(1, Ordering::Relaxed); }
+    pub(super) fn free_inode(&self) {
+        self.used_inodes.fetch_sub(1, Ordering::Relaxed);
+        self.release_ispace(BOGO_INODE_SIZE);
+    }
+
+    fn reserve_ispace(&self, bytes: u64) -> bool {
+        let mut cur = self.free_ispace.load(Ordering::Relaxed);
+        loop {
+            if cur < bytes { return false; }
+            match self.free_ispace.compare_exchange_weak(cur, cur - bytes, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => return true,
+                Err(c) => cur = c,
+            }
+        }
+    }
+
+    fn release_ispace(&self, bytes: u64) {
+        let mut cur = self.free_ispace.load(Ordering::Relaxed);
+        loop {
+            let next = cur.saturating_add(bytes).min(self.max_inodes.saturating_mul(BOGO_INODE_SIZE));
+            match self.free_ispace.compare_exchange_weak(cur, next, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => return,
+                Err(c) => cur = c,
+            }
+        }
+    }
     /// `statfs(2)` block/inode accounting (Linux `shmem_statfs`). An UNBOUNDED
     /// instance (`max_blocks == u64::MAX`, the memfd/anon/coredump backing)
     /// leaves the counts zero exactly as Linux does when `sbinfo->max_blocks`
@@ -150,8 +182,15 @@ impl TmpfsSb {
         }
         if self.max_inodes != u64::MAX {
             st.f_files = self.max_inodes;
-            st.f_ffree = self.max_inodes.saturating_sub(self.used_inodes.load(Ordering::Relaxed));
+            st.f_ffree = self.free_ispace.load(Ordering::Relaxed) / BOGO_INODE_SIZE;
         }
         st
     }
+}
+
+impl vfs::XattrAccounting for TmpfsSb {
+    fn reserve(&self, bytes: u64) -> Result<(), vfs::VfsError> {
+        if self.reserve_ispace(bytes) { Ok(()) } else { Err(vfs::VfsError::Enospc) }
+    }
+    fn release(&self, bytes: u64) { self.release_ispace(bytes); }
 }

@@ -13,7 +13,7 @@ impl FileOps for TmpfsErrFileOps {
 /// F152: socket-type tmpfs inode. bind(AF_UNIX, path) materialises one of
 /// these at `path` so stat() returns S_IFSOCK + chmod() flows through normal
 /// VFS. All I/O errors — datagram queueing lives in `net`. # C: O(1)
-pub(super) fn make_tmpfs_sock_inode(perm: u16, uid: u32, gid: u32, sb: Weak<SuperBlock>, acct: &super::accounting::TmpfsSb) -> InodeRef {
+pub(super) fn make_tmpfs_sock_inode(perm: u16, uid: u32, gid: u32, sb: Weak<SuperBlock>, acct: alloc::sync::Arc<super::accounting::TmpfsSb>) -> InodeRef {
     let ino = acct.alloc_ino();
     let sb2 = sb.clone();
     iget_or_build(&sb, ino, move || {
@@ -21,7 +21,7 @@ pub(super) fn make_tmpfs_sock_inode(perm: u16, uid: u32, gid: u32, sb: Weak<Supe
             default_inode_ops(), Arc::new(TmpfsErrFileOps))
             .owner(uid, gid)
             .btime(super::birth_time())
-            .xattrs(vfs::SimpleXattrs::new())
+            .xattrs_with_accounting(vfs::SimpleXattrs::new(), acct.clone())
             .fsid(fsid_of(&sb2));
         if let Some(s) = sb2.upgrade() { b = b.sb(Arc::downgrade(&s)); }
         b.build()
@@ -31,7 +31,7 @@ pub(super) fn make_tmpfs_sock_inode(perm: u16, uid: u32, gid: u32, sb: Weak<Supe
 /// Special tmpfs inode created by mknod(2), mainly FIFO nodes under /run. The
 /// mode (`ft` + `perm`) is stamped into the inode; `rdev` is meaningful only
 /// for device nodes. # C: O(1)
-pub(super) fn make_tmpfs_special_inode(ft: FileType, perm: u16, rdev: u32, uid: u32, gid: u32, sb: Weak<SuperBlock>, acct: &super::accounting::TmpfsSb) -> InodeRef {
+pub(super) fn make_tmpfs_special_inode(ft: FileType, perm: u16, rdev: u32, uid: u32, gid: u32, sb: Weak<SuperBlock>, acct: alloc::sync::Arc<super::accounting::TmpfsSb>) -> InodeRef {
     let ino = acct.alloc_ino();
     let sb2 = sb.clone();
     iget_or_build(&sb, ino, move || {
@@ -40,7 +40,7 @@ pub(super) fn make_tmpfs_special_inode(ft: FileType, perm: u16, rdev: u32, uid: 
             .owner(uid, gid)
             .btime(super::birth_time())
             .rdev(rdev)
-            .xattrs(vfs::SimpleXattrs::new())
+            .xattrs_with_accounting(vfs::SimpleXattrs::new(), acct.clone())
             .fsid(fsid_of(&sb2));
         // A named FIFO binds `pipefifo_fops` per-open via `fs::pipe::fifo_open`;
         // give it a poll queue so epoll/poll on the fifo gets readiness edges

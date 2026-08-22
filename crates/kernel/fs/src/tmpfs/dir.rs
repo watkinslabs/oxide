@@ -54,7 +54,7 @@ pub(super) fn make_tmpfs_dir_inode(ino: Ino, perm: u16, uid: u32, gid: u32, sb: 
             .owner(uid, gid)
             .btime(super::birth_time())
             .fsid(fsid_of(&sb2))
-            .xattrs(vfs::SimpleXattrs::new())
+            .xattrs_with_accounting(vfs::SimpleXattrs::new(), acct.clone())
             .private(Arc::new(TmpfsDirData {
                 sb:   Spinlock::new(sb2.clone()),
                 kids: Spinlock::new(BTreeMap::new()),
@@ -227,7 +227,7 @@ impl InodeOps for TmpfsDirOps {
         if casefold::taken(inode, &g, name) { return Err(VfsError::Eexist); }
         let (uid, gid) = vfs::prepare_symlink_owner(ctx.idmap, inode, ctx.cred);
         quota::alloc_inode(&dd.acct, QuotaOwner::new(uid, gid))?;
-        g.insert(name.into(), make_tmpfs_symlink_inode(target, uid, gid, dd.sb_weak(), &dd.acct));
+        g.insert(name.into(), make_tmpfs_symlink_inode(target, uid, gid, dd.sb_weak(), dd.acct.clone()));
         Ok(())
     }
 
@@ -246,8 +246,8 @@ impl InodeOps for TmpfsDirOps {
         quota::alloc_inode(&dd.acct, QuotaOwner::new(uid, gid))?;
         let perm = m & 0o7777;
         let child: InodeRef = match mode & S_IFMT {
-            S_IFIFO  => make_tmpfs_special_inode(FileType::Fifo, perm, 0, uid, gid, sb, &dd.acct),
-            S_IFSOCK => make_tmpfs_sock_inode(perm, uid, gid, sb, &dd.acct),
+            S_IFIFO  => make_tmpfs_special_inode(FileType::Fifo, perm, 0, uid, gid, sb, dd.acct.clone()),
+            S_IFSOCK => make_tmpfs_sock_inode(perm, uid, gid, sb, dd.acct.clone()),
             S_IFCHR  => make_device_node_inode(
                 dd.acct.alloc_ino(), FileType::CharDev,
                 Devt::from_raw(rdev), perm, sb),
@@ -256,6 +256,7 @@ impl InodeOps for TmpfsDirOps {
                 Devt::from_raw(rdev), perm, sb),
             _ => { quota::free_inode(&dd.acct, QuotaOwner::new(uid, gid)); return Err(VfsError::Einval); }
         };
+        child.attach_xattr_accounting(dd.acct.clone());
         g.insert(name.into(), child);
         Ok(())
     }

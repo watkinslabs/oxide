@@ -97,7 +97,7 @@ pub(super) fn make_tmpfs_file_inode(sealable: bool, perm: u16, uid: u32, gid: u3
             self_ref: Spinlock::new(Weak::new()),
             pages: Spinlock::new(BTreeMap::new()),
             len:   AtomicU64::new(0),
-            acct,
+            acct: acct.clone(),
             owner: Spinlock::new(QuotaOwner::new(uid, gid)),
             inode: Spinlock::new(Weak::new()),
             seals: AtomicU32::new(0),
@@ -112,7 +112,7 @@ pub(super) fn make_tmpfs_file_inode(sealable: bool, perm: u16, uid: u32, gid: u3
             .btime(super::birth_time())
             .fsid(fsid_of(&sb2))
             .mapping(mapping)
-            .xattrs(vfs::SimpleXattrs::new())
+            .xattrs_with_accounting(vfs::SimpleXattrs::new(), acct.clone())
             .private(data.clone());
         if let Some(s) = sb2.upgrade() { b = b.sb(Arc::downgrade(&s)); }
         if sealable { b = b.seal_carrier(data); }

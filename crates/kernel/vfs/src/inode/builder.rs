@@ -47,6 +47,7 @@ pub struct InodeBuilder {
     owner_persist:Option<Arc<dyn OwnerPersist>>,
     link:         Option<Box<[u8]>>,
     xattrs:       Option<crate::xattr::SimpleXattrs>,
+    xattr_account: Option<Arc<dyn crate::xattr::XattrAccounting>>,
 }
 
 impl InodeBuilder {
@@ -56,7 +57,7 @@ impl InodeBuilder {
             ino, mode, i_op, i_fop, sb: Weak::new(), size: 0, blocks: 0, nlink: None, uid: 0, gid: 0,
             projid: 0, flags: 0, rdev: 0, generation: None, fsid: 0, atime: Timespec64::ZERO, mtime: Timespec64::ZERO, ctime: Timespec64::ZERO, btime: None,
             version: 0, mapping: None, private: Arc::new(()), poll_subs: None, seal_carrier: None,
-            owner_persist: None, link: None, xattrs: None,
+            owner_persist: None, link: None, xattrs: None, xattr_account: None,
         }
     }
     pub fn sb(mut self, sb: Weak<SuperBlock>) -> Self { self.sb = sb; self }
@@ -85,6 +86,11 @@ impl InodeBuilder {
     pub fn owner_persist(mut self, p: Arc<dyn OwnerPersist>) -> Self { self.owner_persist = Some(p); self }
     pub fn link(mut self, body: Box<[u8]>) -> Self { self.link = Some(body); self }
     pub fn xattrs(mut self, x: crate::xattr::SimpleXattrs) -> Self { self.xattrs = Some(x); self }
+    /// Install a per-mount xattr byte-accounting owner with the store. # C: O(1)
+    pub fn xattrs_with_accounting(mut self, x: crate::xattr::SimpleXattrs,
+                                  a: Arc<dyn crate::xattr::XattrAccounting>) -> Self {
+        self.xattrs = Some(x); self.xattr_account = Some(a); self
+    }
 
     /// Finish the build. # C: O(1)
     pub fn build(self) -> Arc<Inode> {
@@ -138,7 +144,11 @@ impl InodeBuilder {
             seal_carrier: self.seal_carrier,
             owner_persist: self.owner_persist,
             i_link: self.link,
-            i_xattrs: match self.xattrs { Some(x) => crate::xattr::XattrSlot::with_store(x), None => crate::xattr::XattrSlot::absent() },
+            i_xattrs: match (self.xattrs, self.xattr_account) {
+                (Some(x), Some(a)) => crate::xattr::XattrSlot::with_store_accounting(x, a),
+                (Some(x), None) => crate::xattr::XattrSlot::with_store(x),
+                (None, _) => crate::xattr::XattrSlot::absent(),
+            },
             i_acl: super::acl::AclCache::new(),
             i_dquot: InodeDquots::new(),
             i_rwsem: super::rwsem::InodeRwsem::new(),

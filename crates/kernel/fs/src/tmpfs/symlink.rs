@@ -27,7 +27,7 @@ impl InodeOps for TmpfsSymlinkOps {
 }
 
 /// Build a tmpfs symlink inode pointing at `target`, owned by `sb`. # C: O(1)
-pub(super) fn make_tmpfs_symlink_inode(target: &[u8], uid: u32, gid: u32, sb: Weak<SuperBlock>, acct: &super::accounting::TmpfsSb) -> InodeRef {
+pub(super) fn make_tmpfs_symlink_inode(target: &[u8], uid: u32, gid: u32, sb: Weak<SuperBlock>, acct: alloc::sync::Arc<super::accounting::TmpfsSb>) -> InodeRef {
     let ino = acct.alloc_ino();
     let sb2 = sb.clone();
     let target = target.to_vec();
@@ -38,7 +38,7 @@ pub(super) fn make_tmpfs_symlink_inode(target: &[u8], uid: u32, gid: u32, sb: We
             .btime(super::birth_time())
             .size(target.len() as u64)
             .fsid(fsid_of(&sb2))
-            .xattrs(vfs::SimpleXattrs::new())
+            .xattrs_with_accounting(vfs::SimpleXattrs::new(), acct.clone())
             .private(Arc::new(TmpfsSymlinkData { target }));
         if let Some(s) = sb2.upgrade() { b = b.sb(Arc::downgrade(&s)); }
         b.build()

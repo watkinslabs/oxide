@@ -228,6 +228,12 @@ impl Inode {
     /// `i_xattrs` — the inode's own xattr store, or `None` on a filesystem
     /// whose superblock carries no attribute handlers. # C: O(1)
     pub fn simple_xattrs(&self) -> Option<&crate::xattr::SimpleXattrs> { self.i_xattrs.get() }
+    /// The inode-owned xattr slot, including any filesystem accounting owner. # C: O(1)
+    pub(crate) fn xattr_slot(&self) -> &crate::xattr::XattrSlot { &self.i_xattrs }
+    /// Join a node to a filesystem's xattr accounting at publication time. # C: O(1)
+    pub fn attach_xattr_accounting(&self, account: alloc::sync::Arc<dyn crate::xattr::XattrAccounting>) {
+        self.i_xattrs.attach_accounting(account);
+    }
     /// State that this inode's filesystem HOLDS extended attributes (Linux
     /// `sb->s_xattr`), turning an attribute read from "not supported" into
     /// "no such attribute". Called where a node joins its superblock, for a

@@ -22,11 +22,21 @@
 
 extern crate alloc;
 use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use sync::{Inode as InodeLockClass, Spinlock};
+
+/// Mount-owned accounting for bytes retained by an inode's simple xattrs.
+/// # C: O(1) per reservation
+pub trait XattrAccounting: Send + Sync {
+    /// Reserve `bytes`, or reject the xattr mutation without changing state.
+    fn reserve(&self, bytes: u64) -> Result<(), crate::VfsError>;
+    /// Return bytes released by replacement, removal, or inode eviction.
+    fn release(&self, bytes: u64);
+}
 
 /// Xattr backend error — Linux xattr-storage outcomes that are not a plain
 /// success. Distinct from [`crate::VfsError`] because `ENODATA` (61) has no
@@ -70,15 +80,32 @@ impl Default for SimpleXattrs {
 pub struct XattrSlot {
     declared: AtomicBool,
     store:    SimpleXattrs,
+    account:  Spinlock<Option<Arc<dyn XattrAccounting>>, InodeLockClass>,
 }
 
 impl XattrSlot {
     /// A slot on a filesystem with no attribute handlers. # C: O(1)
-    pub const fn absent() -> Self { Self { declared: AtomicBool::new(false), store: SimpleXattrs::empty() } }
+    pub const fn absent() -> Self {
+        Self { declared: AtomicBool::new(false), store: SimpleXattrs::empty(), account: Spinlock::new(None) }
+    }
 
     /// A declared slot holding `s` — the builder's `.xattrs(...)` form, used by
     /// a backend that knows its own superblock at construction. # C: O(1)
-    pub fn with_store(s: SimpleXattrs) -> Self { Self { declared: AtomicBool::new(true), store: s } }
+    pub fn with_store(s: SimpleXattrs) -> Self {
+        Self { declared: AtomicBool::new(true), store: s, account: Spinlock::new(None) }
+    }
+
+    /// A declared slot with mount-owned accounting. # C: O(1)
+    pub fn with_store_accounting(s: SimpleXattrs, account: Arc<dyn XattrAccounting>) -> Self {
+        Self { declared: AtomicBool::new(true), store: s, account: Spinlock::new(Some(account)) }
+    }
+
+    /// Attach accounting when an inode joins a filesystem after construction.
+    /// # C: O(1)
+    pub fn attach_accounting(&self, account: Arc<dyn XattrAccounting>) {
+        *self.account.lock() = Some(account);
+        self.declared.store(true, Ordering::Release);
+    }
 
     /// State that this inode's filesystem holds attributes. Idempotent, and
     /// safe on an inode already published. # C: O(1)
@@ -87,6 +114,49 @@ impl XattrSlot {
     /// The store, or `None` on a filesystem with no attribute handlers. # C: O(1)
     pub fn get(&self) -> Option<&SimpleXattrs> {
         if self.declared.load(Ordering::Acquire) { Some(&self.store) } else { None }
+    }
+
+    /// Set an attribute and reserve its Linux-shaped storage footprint. # C: O(log N)
+    pub fn set(&self, name: &str, value: Vec<u8>, create: bool, replace: bool) -> Result<(), XattrError> {
+        if !self.declared.load(Ordering::Acquire) { return Err(XattrError::NotSup); }
+        let mut g = self.store.map.lock();
+        let exists = g.contains_key(name);
+        if create && exists { return Err(XattrError::Exists); }
+        if replace && !exists { return Err(XattrError::NotFound); }
+        let old = g.get(name).map(|v| xattr_space(name, v.len())).unwrap_or(0);
+        let new = xattr_space(name, value.len());
+        if let Some(a) = self.account.lock().clone() {
+            if new > old { a.reserve(new - old).map_err(XattrError::Fs)?; }
+            g.insert(name.to_string(), value);
+            if old > new { a.release(old - new); }
+        } else {
+            g.insert(name.to_string(), value);
+        }
+        Ok(())
+    }
+
+    /// Remove an attribute and release its retained storage footprint. # C: O(log N)
+    pub fn remove(&self, name: &str) -> Result<(), XattrError> {
+        if !self.declared.load(Ordering::Acquire) { return Err(XattrError::NotSup); }
+        let mut g = self.store.map.lock();
+        let old = g.get(name).map(|v| xattr_space(name, v.len()));
+        if old.is_none() { return Err(XattrError::NotFound); }
+        g.remove(name);
+        if let Some(a) = self.account.lock().clone() { a.release(old.unwrap()); }
+        Ok(())
+    }
+}
+
+/// `simple_xattr_space`: fixed header plus name and value bytes. # C: O(1)
+pub fn xattr_space(name: &str, value_len: usize) -> u64 { 40u64 + name.len() as u64 + value_len as u64 }
+
+impl Drop for XattrSlot {
+    fn drop(&mut self) {
+        let Some(a) = self.account.lock().take() else { return; };
+        let bytes = self.store.map.lock().iter()
+            .map(|(name, value)| xattr_space(name, value.len()))
+            .sum();
+        if bytes != 0 { a.release(bytes); }
     }
 }
 

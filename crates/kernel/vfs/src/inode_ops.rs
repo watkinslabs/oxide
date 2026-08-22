@@ -340,19 +340,13 @@ pub trait InodeOps: Send + Sync {
     /// # C: O(log N_xattr)
     fn setxattr(&self, inode: &Inode, name: &str, value: Vec<u8>, create: bool, replace: bool)
         -> Result<(), XattrError> {
-        match inode.simple_xattrs() {
-            Some(x) => x.set(name, value, create, replace),
-            None => Err(XattrError::NotSup),
-        }
+        inode.xattr_slot().set(name, value, create, replace)
     }
 
     /// `i_op->removexattr` — drop `name`. Default routes to `i_xattrs`.
     /// # C: O(log N_xattr)
     fn removexattr(&self, inode: &Inode, name: &str) -> Result<(), XattrError> {
-        match inode.simple_xattrs() {
-            Some(x) => x.remove(name),
-            None => Err(XattrError::NotSup),
-        }
+        inode.xattr_slot().remove(name)
     }
 
     /// `i_op->listxattr` — the stored attribute names. Default routes to
