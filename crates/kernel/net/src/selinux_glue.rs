@@ -8,6 +8,25 @@
 
 use syscall::errno::Errno;
 
+fn create(class: security::network::SocketClass) -> u32 {
+    let name = socket_class_name(class, selinux_runtime::network::extended_socket_class());
+    selinux_runtime::network::create_sid(name)
+}
+
+fn socket_class_name(class: security::network::SocketClass, extended: bool) -> &'static str {
+    use security::network::SocketClass;
+    match class {
+        SocketClass::Tcp => "tcp_socket",
+        SocketClass::Udp => "udp_socket",
+        SocketClass::RawIp => "rawip_socket",
+        SocketClass::Icmp if extended => "icmp_socket",
+        SocketClass::Icmp => "rawip_socket",
+        SocketClass::Packet => "packet_socket",
+        SocketClass::UnixStream => "unix_stream_socket",
+        SocketClass::UnixDgram => "unix_dgram_socket",
+    }
+}
+
 fn context(label: u32) -> Result<alloc::vec::Vec<u8>, Errno> {
     selinux_runtime::network::context(label).map_err(|error| match error {
         selinux_runtime::network::ContextError::NoMemory => Errno::Enomem,
@@ -27,9 +46,27 @@ fn context(label: u32) -> Result<alloc::vec::Vec<u8>, Errno> {
 /// module and rendered by another.
 pub fn init() -> bool {
     security::network::install_socket_label(security::network::SocketLabelOps {
-        create: selinux_runtime::network::create_sid,
+        create,
         unlabeled: selinux_runtime::network::unlabeled(),
         context,
         server_end: selinux_runtime::network::server_end_sid,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::socket_class_name;
+    use security::network::SocketClass;
+
+    #[test]
+    fn every_constructor_class_maps_to_its_policy_class() {
+        assert_eq!(socket_class_name(SocketClass::Tcp, false), "tcp_socket");
+        assert_eq!(socket_class_name(SocketClass::Udp, false), "udp_socket");
+        assert_eq!(socket_class_name(SocketClass::RawIp, false), "rawip_socket");
+        assert_eq!(socket_class_name(SocketClass::Packet, false), "packet_socket");
+        assert_eq!(socket_class_name(SocketClass::UnixStream, false), "unix_stream_socket");
+        assert_eq!(socket_class_name(SocketClass::UnixDgram, false), "unix_dgram_socket");
+        assert_eq!(socket_class_name(SocketClass::Icmp, false), "rawip_socket");
+        assert_eq!(socket_class_name(SocketClass::Icmp, true), "icmp_socket");
+    }
 }

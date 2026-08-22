@@ -33,11 +33,20 @@ pub fn sockcreate_sid() -> Option<Sid> {
 
 /// Label a socket created now takes. # C: O(1)
 ///
-/// A thread that staged a socket label gets that label; otherwise the socket
-/// takes the creating thread's own. Nothing else is consulted, so a socket is
-/// never labelled from the task that later happens to use it.
-pub fn create_sid() -> Sid {
-    sockcreate_sid().unwrap_or_else(crate::task::current_sid)
+/// A thread that staged a socket label gets that label; otherwise policy
+/// computes a transition from the creating thread's own label for this class.
+/// With no policy/server or no matching rule, the creating label stands.
+pub fn create_sid(class: &'static str) -> Sid {
+    if let Some(sid) = sockcreate_sid() { return sid; }
+    let sid = crate::task::current_sid();
+    let Some(class) = selinux::uapi::classmap::class_by_name(class) else { return sid; };
+    crate::with(|s| s.transition_sid(sid, sid, class, None).unwrap_or(sid)).unwrap_or(sid)
+}
+
+/// Whether ICMP sockets have their distinct extended security class. # C: O(1)
+pub fn extended_socket_class() -> bool {
+    crate::with(|s| s.policycap(selinux::uapi::policycap::POLICYDB_CAP_EXTSOCKCLASS))
+        .unwrap_or(false)
 }
 
 /// Label the server end of a new connection takes. # C: O(categories)

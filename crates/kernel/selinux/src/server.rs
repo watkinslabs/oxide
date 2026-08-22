@@ -308,6 +308,11 @@ impl SecurityServer {
         services::transition_sid(&l.db, &l.map, &mut l.sidtab, ssid, tsid, kernel_class, objname)
     }
 
+    /// Whether the loaded policy publishes one policy capability. # C: O(1)
+    pub fn policycap(&self, bit: u32) -> bool {
+        self.loaded.as_ref().map_or(false, |l| l.db.policycap(bit))
+    }
+
     /// SID an object takes when relabelled. # C: O(rules)
     pub fn change_sid(&mut self, ssid: Sid, tsid: Sid, kernel_class: u16) -> Result<Sid> {
         if let Some(sid) = self.bootstrap_sid(ssid, tsid, kernel_class as u32) { return Ok(sid) }

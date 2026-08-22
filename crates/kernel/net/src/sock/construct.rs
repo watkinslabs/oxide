@@ -6,6 +6,7 @@ use sync::Spinlock;
 use super::{InetSocket, PacketRings, PacketRxQueue, PacketTxGate, SockBhLock, SockKind, SockOpts,
             AF_INET, AF_INET6, AF_PACKET, AF_UNIX};
 use crate::Ipv4Addr;
+use security::network::SocketClass;
 
 impl InetSocket {
     /// Derive the short-lived namespace table key. # C: O(1)
@@ -17,18 +18,18 @@ impl InetSocket {
     /// Build an IPv4 datagram socket retaining an explicit owner. # C: O(1)
     pub fn new_udp_in(net_namespace: NetworkNamespaceRef) -> Self {
         Self::new_in(net_namespace, Arc::new(crate::bpf_filter::SocketFilter::new()),
-            Arc::new(crate::SocketError::new()), SockKind::Udp)
+            Arc::new(crate::SocketError::new()), SockKind::Udp, SocketClass::Udp)
     }
 
-    fn new_in(net_namespace: NetworkNamespaceRef,
+    pub(super) fn new_in(net_namespace: NetworkNamespaceRef,
               bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
-              error: Arc<crate::SocketError>, kind: SockKind) -> Self {
-        Self::new_owned(crate::SocketOwner::current(net_namespace), bpf_filter, error, kind)
+              error: Arc<crate::SocketError>, kind: SockKind, class: SocketClass) -> Self {
+        Self::new_owned(crate::SocketOwner::current(net_namespace), bpf_filter, error, kind, class)
     }
 
     fn new_owned(owner: Arc<crate::SocketOwner>,
                  bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
-                 error: Arc<crate::SocketError>, kind: SockKind) -> Self {
+                 error: Arc<crate::SocketError>, kind: SockKind, class: SocketClass) -> Self {
         // Linux seeds every socket from `wmem_default`/`rmem_default` and lets
         // the protocol replace them when it initialises, which is why a fresh
         // TCP socket reports a much smaller send buffer than a fresh datagram
@@ -72,7 +73,7 @@ impl InetSocket {
             // constructor funnels through, so no family can be created
             // unlabelled and then record a label its peer cannot read back.
             security_sid: core::sync::atomic::AtomicU32::new(
-                security::network::new_socket_label()),
+                security::network::new_socket_label(class)),
         };
         sock.opts.base.sndbuf.store(sndbuf, core::sync::atomic::Ordering::Release);
         sock.opts.base.rcvbuf.store(rcvbuf, core::sync::atomic::Ordering::Release);
@@ -104,7 +105,7 @@ impl InetSocket {
     pub(super) fn new_tcp_with_state_in(error: Arc<crate::SocketError>,
                                         bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
                                         net_namespace: NetworkNamespaceRef) -> Self {
-        Self::new_in(net_namespace, bpf_filter, error, SockKind::TcpInit)
+        Self::new_in(net_namespace, bpf_filter, error, SockKind::TcpInit, SocketClass::Tcp)
     }
 
     /// Build a TCP socket sharing all transport-owned state after accept. # C: O(1)
@@ -114,7 +115,8 @@ impl InetSocket {
                                         ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
                                         ipv6_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
                                         net_namespace: NetworkNamespaceRef) -> Self {
-        let mut sock = Self::new_in(net_namespace, bpf_filter, error, SockKind::TcpInit);
+        let mut sock = Self::new_in(net_namespace, bpf_filter, error, SockKind::TcpInit,
+            SocketClass::Tcp);
         sock.opts.ip_mtu_discover = ip_mtu_discover;
         sock.opts.ipv6_mtu_discover = ipv6_mtu_discover;
         sock
@@ -128,7 +130,7 @@ impl InetSocket {
                                         mark: Arc<core::sync::atomic::AtomicI32>,
                                         bound_ifindex: Arc<core::sync::atomic::AtomicU32>,
                                         owner: Arc<crate::SocketOwner>) -> Self {
-        let mut sock = Self::new_owned(owner, bpf_filter, error, SockKind::TcpInit);
+        let mut sock = Self::new_owned(owner, bpf_filter, error, SockKind::TcpInit, SocketClass::Tcp);
         sock.opts.ip_mtu_discover = ip_mtu_discover;
         sock.opts.ipv6_mtu_discover = ipv6_mtu_discover;
         sock.opts.base.generic.use_max_pacing_rate_cell(max_pacing_rate);
@@ -157,7 +159,7 @@ impl InetSocket {
         let filter = Arc::new(crate::bpf_filter::SocketFilter::new());
         let pair = crate::UnixPair::new();
         let end = crate::UnixEnd::B;
-        let s = Self::new_in(net_namespace, filter, error.clone(), SockKind::UnixUnbound(pair.clone(), end));
+        let s = Self::new_in(net_namespace, filter, error.clone(), SockKind::UnixUnbound(pair.clone(), end), SocketClass::UnixStream);
         s.family.store(AF_UNIX, core::sync::atomic::Ordering::Release);
         pair.register_end_subs(end, &s.poll_subs);
         pair.attach_end_error(end, &error);
@@ -168,7 +170,7 @@ impl InetSocket {
                                         pair: Arc<crate::UnixPair>, end: crate::UnixEnd,
                                         filter: Arc<crate::bpf_filter::SocketFilter>) -> Self {
         let error = pair.end_error(end);
-        let s = Self::new_owned(owner, filter, error.clone(), SockKind::Unix(pair.clone(), end));
+        let s = Self::new_owned(owner, filter, error.clone(), SockKind::Unix(pair.clone(), end), SocketClass::UnixStream);
         s.family.store(AF_UNIX, core::sync::atomic::Ordering::Release);
         pair.register_end_subs(end, &s.poll_subs);
         pair.attach_end_error(end, &error);
@@ -238,7 +240,7 @@ impl InetSocket {
         let error = Arc::new(crate::SocketError::new());
         let filter = Arc::new(crate::bpf_filter::SocketFilter::new());
         let q = crate::UnixDgramQueue::new_with_filter(filter.clone());
-        let s = Self::new_in(net_namespace, filter, error, SockKind::UnixDgram(q.clone()));
+        let s = Self::new_in(net_namespace, filter, error, SockKind::UnixDgram(q.clone()), SocketClass::UnixDgram);
         s.family.store(AF_UNIX, core::sync::atomic::Ordering::Release);
         q.register_subs(&s.poll_subs);
         s
@@ -250,7 +252,9 @@ impl InetSocket {
     }
     /// Build a packet socket retaining an explicit owner. # C: O(1)
     pub fn new_packet_in(proto: u16, sock_type: u8, net_namespace: NetworkNamespaceRef) -> Self {
-        let s = Self::new_tcp_in(net_namespace); s.family.store(AF_PACKET, core::sync::atomic::Ordering::Release);
+        let s = Self::new_in(net_namespace, Arc::new(crate::bpf_filter::SocketFilter::new()),
+            Arc::new(crate::SocketError::new()), SockKind::TcpInit, SocketClass::Packet);
+        s.family.store(AF_PACKET, core::sync::atomic::Ordering::Release);
         // A packet socket is not TCP: it keeps the generic buffer defaults.
         let (sndbuf, rcvbuf) = crate::sysctl::initial_bufs(&s.owner.net_namespace,
             crate::sysctl::BufPersonality::Generic);

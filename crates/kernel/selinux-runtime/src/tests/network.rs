@@ -10,19 +10,19 @@ fn staged() -> Option<Sid> { Some(STAGED) }
 /// removal, so a second test installing it would decide the first test's answer
 /// depending on which ran first. The whole ladder is walked here in order.
 #[test]
-fn a_socket_takes_the_staged_label_if_there_is_one_and_the_threads_own_otherwise() {
+fn staged_socket_label_precedes_transition_and_no_policy_keeps_the_creators_label() {
     // No reader installed: nothing is staged, so a socket takes the creating
     // thread's own label. Hosted there is no task, which is the kernel acting on
     // its own behalf and carries the kernel's label.
     assert_eq!(sockcreate_sid(), None);
-    assert_eq!(create_sid(), InitSid::Kernel.sid());
+    assert_eq!(create_sid("tcp_socket"), InitSid::Kernel.sid());
 
     set_sockcreate_sid_source(staged);
     assert_eq!(sockcreate_sid(), Some(STAGED));
     // The staged label wins over the thread's own — that is the whole point of
     // staging one.
-    assert_eq!(create_sid(), STAGED);
-    assert_ne!(create_sid(), InitSid::Kernel.sid());
+    assert_eq!(create_sid("tcp_socket"), STAGED);
+    assert_ne!(create_sid("tcp_socket"), InitSid::Kernel.sid());
 }
 
 /// The label an unconnected socket reports for its peer is a REAL label, not the
