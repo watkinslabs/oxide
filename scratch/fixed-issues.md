@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2522-stale-tmpfs-quota-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 12a406cd5 | DEFECT | med | Tmpfs inode/block quota charging and ownership transfer already enforce the former open premise. | Tmpfs quota suite, fs tests, and target checks passed. | Chris Watkins |
+
 ### B2521-sysfs-kernfs-file-handles
 
 | Status | Class | Sev | Issue | Evidence | Owner |
