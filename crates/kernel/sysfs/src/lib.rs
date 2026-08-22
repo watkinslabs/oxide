@@ -32,6 +32,7 @@ pub mod char_class;
 pub mod devicetree;
 pub mod dmi;
 pub mod drm;
+mod export;
 pub mod fs_subsys;
 pub mod input;
 pub mod kernel;
@@ -221,42 +222,6 @@ const SYSFS_MAGIC: u64 = 0x6265_6572;
 /// # C: O(1)
 const PAGE_SIZE: u32 = hal::PAGE_SIZE_BYTES as u32;
 
-/// `super_operations` for sysfs. sysfs is a zero-sized kernfs pseudo
-/// filesystem: `statfs(2)` reports the magic + `PAGE_SIZE` block size and zero
-/// block/inode counts (Linux `simple_statfs`, used by kernfs `kernfs_fill_super`).
-struct SysfsSuperOps;
-impl vfs::SuperOps for SysfsSuperOps {
-    /// `simple_statfs`: f_type=SYSFS_MAGIC, f_bsize=PAGE_SIZE, all block/inode
-    /// counts 0 (f_namelen=NAME_MAX is filled by the syscall layer). # C: O(1)
-    fn statfs(&self) -> KResult<vfs::SbStatFs> {
-        Ok(vfs::SbStatFs {
-            f_type:  SYSFS_MAGIC,
-            f_bsize: PAGE_SIZE,
-            ..Default::default()
-        })
-    }
-
-    /// sysfs installs no handle-export backend: its inodes are synthesized on
-    /// demand from the live kernel objects they reflect, so an inode number is
-    /// not an identity that can be resolved back to one. `name_to_handle_at(2)`
-    /// reports `EOPNOTSUPP` rather than minting a handle that could never be
-    /// reopened. # C: O(1)
-    fn export_can_decode_fh(&self) -> bool { false }
-}
-
-#[cfg(test)]
-mod export_tests {
-    use super::SysfsSuperOps;
-    use vfs::SuperOps;
-
-    /// sysfs must decline to encode a handle — the second honest `false`
-    /// implementor keeping `name_to_handle_at`'s `EOPNOTSUPP` arm live.
-    #[test]
-    fn sysfs_cannot_decode_a_file_handle() {
-        assert!(!SysfsSuperOps.export_can_decode_fh());
-    }
-}
-
 impl vfs::fs::FileSystem for SysfsFs {
     /// # C: O(1)
     fn name(&self) -> &str { "sysfs" }
@@ -273,7 +238,7 @@ impl vfs::fs::FileSystem for SysfsFs {
     /// Install zero-sized pseudo-fs statfs (`simple_statfs`) as this SB's `s_op`
     /// so `statfs(2)`/`df` report SYSFS_MAGIC + PAGE_SIZE, not the generic
     /// synthetic figures. # C: O(1)
-    fn super_ops(&self) -> Option<Arc<dyn vfs::SuperOps>> { Some(Arc::new(SysfsSuperOps)) }
+    fn super_ops(&self) -> Option<Arc<dyn vfs::SuperOps>> { Some(Arc::new(export::SysfsSuperOps)) }
     /// Mount root = sysfs's OWN `kernfs::PseudoDir` (`SYS_ROOT`). The walk
     /// crosses into the sysfs mount and resolves `/sys/*` per-component via
     /// `PseudoDir::lookup` + the dynamic `SysClassNetOps::lookup`.
