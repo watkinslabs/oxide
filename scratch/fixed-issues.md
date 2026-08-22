@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2453-stale-tfo-reset-penalty-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2453 | DEFECT | low | The TCP Fast Open reset-penalty row was stale; deadline/occupancy state is the observable Linux contract. | Live expiry test and net/target checks passed. | Chris Watkins |
+
 ### B2458-stale-splice-msg-more-duplicate-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
