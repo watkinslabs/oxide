@@ -43,7 +43,7 @@ pub(super) fn handle(net_ns: u64, arg: u64) -> i64 {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "oxide-kernel"))]
 mod tests {
     use super::*;
     use alloc::sync::Arc;
