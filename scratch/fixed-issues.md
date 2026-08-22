@@ -144,7 +144,6 @@
 |---|---|---|---|---|---|
 | FIXED 2b6a6555a | DEFECT | med | Ext4 journalled quota dquots now persist synchronously when marked dirty. | Ext4 quota/replay tests and target checks passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2512-futex-robust-unlock-list32
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -157,7 +156,6 @@
 |---|---|---|---|---|---|
 | FIXED 91fc49aaa | DEFECT | med | OverlayFS volatile mounts now persist the incompatibility marker and reject unsafe reuse. | OverlayFS tests and target checks passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2510-tcp-save-syn-link-header
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -170,14 +168,12 @@
 |---|---|---|---|---|---|
 | FIXED B2509 | INFRA | low | The serial-input corruption row was stale and covered by existing ownership/transport controls. | Serial/TTY audit completed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2508-kernel-btf-sysfs
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 2e7c97fe3 | MISSING | med | Sysfs now publishes read-only `/sys/kernel/btf/vmlinux` backed by canonical kernel BTF data. | Sysfs/security tests and target checks passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2507-stale-netns-heap-first-state
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -190,7 +186,6 @@
 |---|---|---|---|---|---|
 | FIXED 81a821d7c | DEFECT | med | AArch64 PL011 is consistently exposed as ttyAMA0 across cmdline, devnodes, sysfs, generated services, and bootargs. | Cmdline/console/sysfs/xtask tests and target checks passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2505-affinity-abi-current-cpu-width
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -201,7 +196,6 @@
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-<<<<<<< HEAD
 | FIXED 5fcebe902 | DEFECT | med | Rseq slice extension now has a shared tunable debugfs owner with Linux range/error semantics. | Sched/tracefs/syscall tests and targets passed. | Chris Watkins |
 
 ### B2503-ntfs-hard-link-creation
@@ -210,7 +204,6 @@
 |---|---|---|---|---|---|
 | FIXED 06623d838 | MISSING | med | NTFS hard-link creation now updates indexed names, parent identity, link count, and rollback state. | NTFS tests and target checks passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2502-fault-vma-admission-order
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -229,7 +222,6 @@
 |---|---|---|---|---|---|
 | FIXED d3934dd8b | DEFECT | med | Ext4 now recognizes active visible journalled quota files for reserved-root-block admission. | Ext4 quota tests and target checks passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2499-ptrace-regset-iovec-order
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -242,105 +234,90 @@
 |---|---|---|---|---|---|
 | FIXED f4d594b00 | DEFECT | med | OOM self-free detection now rejects an address space with an active coredump latch before proceeding. | Scheduler tests and target/smoke checks passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2497-f2fs-encrypted-child-context
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 4080cb2c6 | DEFECT | med | New F2FS children now inherit and persist encrypted-parent context before publication. | F2FS encryption tests and target checks passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2496-f2fs-quota-owner-transfer
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 7cc132b95 | DEFECT | med | F2FS chown now transfers accumulated inode/reserved quota usage and rejects EDQUOT before ownership change. | Quota/F2FS tests and target checks passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2495-hda-dma-position-buffer
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 41cb68050 | DEFECT | med | HDA stream position now prefers a programmed DMA position buffer with LPIB fallback. | HDA/sound tests, targets, and dedicated smoke passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2494-aarch64-fdt-reserved-memory
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 9a732871b | DEFECT | med | AArch64 FDT reservation-map and `/reserved-memory` ranges are now admitted before RAM topology publication. | FDT/boot tests and target checks passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2492-selinux-kernel-bootstrap-decisions
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED c42b1bce6 | DEFECT | med | SELinux pre-policy kernel decisions now use the bootstrap owner: source SID for process class, target SID otherwise, allow-all and successful validation. | SELinux/runtime/sched tests and target checks passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2491-serial-sysrq-per-port-state
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED ad892f70c | DEFECT | med | Serial SysRq arming state is now maintained independently per UART. | Driver/scheduler tests and target checks passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2490-fat-unlink-eviction
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 56ec569eb | DEFECT | med | FAT unlink/rmdir now defers chain release to final inode eviction, preserving open-file lifetime. | FAT/VFS/syscall tests and target checks passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2489-shm-noreserve-backing
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 356a9c35b | DEFECT | med | SHM_NORESERVE now propagates through huge SysV shared-memory backing and hugetlb setup. | IPC/fs/PMM suites and target checks passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2488-raw4-local-error-hosted-test
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED a98927eeb | COVERAGE | med | Raw IPv4 local send errors now have a hosted production-boundary regression. | Net suite and target checks passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2487-stale-arm-debug-shell-device
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2487 | INFRA | low | The ARM debug-shell device row was stale and duplicated the existing serial-device identity contract. | Cmdline/console target checks passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2486-external-citation-ratchet
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 4a3942374 | INFRA | med | Spec lint now rejects new external-source citations beyond the ratchet baseline. | Rule-focused and full spec-lint checks passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2485-dynamic-transition-bounds
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 72cbc85cf | DEFECT | med | SELinux dynamic transitions now enforce bounded-transition policy and return EPERM only for unbounded targets. | SELinux/runtime/sched tests and target checks passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2484-selinuxfs-pseudo-inode-owner
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2484 | MISSING | med | SELinuxfs pseudo-inode ownership is already canonical; the recorded row was stale. | SELinuxfs tests and target checks passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2483-test-build-gate-diagnostics
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED c9229a8c4 | INFRA | med | Test-build gate failures now retain the original compiler/temp-dir diagnostic across retry and classification. | Gate self-test and isolated crate builds passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2482-ipv6-pktoptions-source-validation
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -867,163 +844,117 @@
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 6eb76b323 | MISSING | med | **`IPV6_2292PKTOPTIONS` now screens every packet-info control message against the live socket namespace, device binding, and source-address ownership before discarding its per-datagram state.** A conflicting bound interface, a link-local source without an interface, or an unusable source returns `EINVAL`; an absent selected interface returns `ENODEV`. The shared stream parser owns the exact native `in6_pktinfo` decode and requires its caller to supply the socket-context screen, so no packet-info arm can silently bypass it. | B2482. Linux 7.2.0-rc4 routes `IPV6_2292PKTOPTIONS` through `ip6_datagram_send_ctl`; its `IPV6_PKTINFO` arm checks the outgoing interface with `dev_get_by_index_rcu`, rejects link-local sources without a device, and checks non-wildcard source ownership. `packet_info_reaches_the_socket_context_screen` proves the production parser passes address `2001:db8::7` and ifindex 9 to the screen and propagates `ENODEV`. Omitting the callback made that test RED with `Ok(Slots)` instead of `Err(Enodev)`; restored code is GREEN. The focused test and full net suite pass (2575/2575), as do x86_64 and aarch64 kernel target checks. Boot smoke is omitted because this changes only an explicitly requested socket-option error path and is not boot-visible. | B2482-ipv6-pktoptions-source-validation |
-=======
 ### B2483-test-build-gate-diagnostics
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED c9229a8c4 | INFRA | med | **`make test-build-gate` now retains each failed crate's first-pass Cargo output, so a transient failure cannot erase its own cause by succeeding on a diagnostic rerun.** Each parallel worker owns one temporary log; failures render that original log and classify a missing Cargo target directory separately from a compiler or test-target failure. | B2483. Linux 7.2.0-rc4 has no corresponding repository gate; the production path is `Makefile::test-build-gate` → `tools/test-build-check.sh`. The focused control makes the first fake Cargo invocation fail with `couldn't create a temp dir` and the next succeed: before the fix the gate exited 1 with only the crate name and the control reported `original diagnostic was lost`; restored GREEN preserves the error and reports `infrastructure failure: target directory vanished`. The focused self-test passes, all 177 workspace crates build their test targets in isolation, and x86_64 plus aarch64 kernel target checks pass. Boot smoke is not applicable because the change cannot enter a kernel image or boot path. | B2483-test-build-gate-diagnostics |
->>>>>>> 2a665c271 (docs: close test-build diagnostic issue)
-=======
 ### B2484-selinuxfs-pseudo-inode-owner
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED e23216ef4 | INFRA | low | **The shared VFS pseudo-inode registry now owns selinuxfs's entire inode-number band.** `selinuxfs` constructs its allocator from `vfs::pseudo_ino::SELINUXFS`; the private region declaration and its second overlap walk are gone, so the repository has one compile-time source of truth for the band. | B2484. Linux 7.2.0-rc4's selinuxfs creates nodes through its one filesystem inode owner (`sel_make_inode`) and assigns its special identities there. `selinuxfs_is_claimed_by_the_single_shared_registry` was RED at zero owners before the registry entry and GREEN at exactly one after it. Full VFS 392/392 and selinuxfs 81/81 pass; both x86_64 and aarch64 kernel target checks pass. | B2484-selinuxfs-pseudo-inode-owner |
->>>>>>> 2f290c28b (docs: close B2484 selinuxfs inode owner)
-=======
 ### B2485-dynamic-transition-bounds
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 72cbc85cf | DEFECT | low | **A multithreaded process may now change its current SELinux domain when the new type is transitively bounded by the old type; an unrelated domain is refused with `EPERM` instead of the former unconditional `EACCES`.** The loaded security server owns the SID-to-type walk, treats an unchanged type as bounded, and caps malformed cycles before the scheduler applies the ordinary `dyntransition` permission. | B2485. Linux 7.2.0-rc4 `selinux_setprocattr` calls `security_bounded_transition(old_sid, new_sid)` only for a non-single-threaded `current` write, returns `EPERM` when the new type's bounds chain does not reach the old type, then checks `PROCESS__DYNTRANSITION`. The focused tests were RED before the decision owner existed; mutating the live refusal back to `EACCES` made the production-hook test RED and restoring `EPERM` made it GREEN. Four bounds tests cover a child, unrelated and unchanged types plus cycle termination. SELinux 276/276, selinux-runtime 55/55 and sched 1536/1536 pass. Both kernel target gates pass. Paired smoke passed attempt 1 with userspace and serial RX: x86 in 46 s, ARM64 in 56 s. | B2485-dynamic-transition-bounds |
->>>>>>> b04ec292e (docs: close bounded dynamic transition defect)
-=======
 ### B2486-external-citation-ratchet
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 4a3942374 | COVERAGE | med | **The lint ratchet now rejects newly introduced external-source citations while grandfathering the measured historical inventory.** The production `make lint-ratchet` path runs the new text rule through `spec-lint`'s shared per-unit baseline machinery, so a new citation cannot land merely because its source text is documentation or a scratch ledger. | B2486. Linux 7.2.0-rc4 has no analogue because this is repository-policy tooling. Injecting one external source-tree path into a production-scanned document made the real ratchet fail with `text/external-source-citation 1 > 0 (baseline)`; restoring the document leaves that rule at baseline. Both focused detector tests and all 37 `spec-lint` tests pass, as do x86_64 and aarch64 kernel target checks. No boot smoke applies because the changed tooling cannot enter a kernel image or runtime path. | B2486-external-citation-ratchet |
->>>>>>> 3d3a7d095 (docs: close external citation gate issue)
-=======
 ### B2487-stale-arm-debug-shell-device
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2487 | INFRA | low | **The ARM smoke control plane correctly names the serial device node this kernel publishes, while `console=` separately names the PL011 console class.** The old row treated Linux's `ttyAMA0` class name as an Oxide pathname and therefore prescribed a shell path that does not exist. The remaining deliberate `204:64`-as-`ttyS0` naming divergence is tracked once in the canonical tty-device row rather than duplicated as a smoke defect. | B2487. Linux 7.2.0-rc4's PL011 driver publishes `ttyAMA`, while Oxide's canonical sysfs/devnode table publishes its `204:64` line as `ttyS0`; `bootargs::serial_console` therefore supplies `ttyAMA0` only to `console=`, and `SERIAL_DEVNODE` supplies `ttyS0` to path-valued systemd parameters. Temporarily changing that production device-node owner to `ttyAMA0` made `the_serial_control_plane_moves_the_shell_and_masks_the_login` RED; restoring it passes the focused test and all 79 xtask tests. Both kernel target checks pass. | B2487-stale-arm-debug-shell-device |
->>>>>>> 27a90cb36 (docs: close stale arm debug shell row)
-=======
 ### B2488-raw4-local-error-hosted-test
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED a98927eeb | COVERAGE | med | **A raw IPv4 size refusal now has a hosted test at the exact production `sendto_raw4` boundary, proving that `EMSGSIZE` is paired with the requested local-origin extended-error record.** The row's claimed gating obstacle was stale: B2291 had already made `sock::send` and `RemoteAddr` available to hosted builds, so moving the send body again would only have duplicated ownership. | B2488. Linux 7.2.0-rc4's non-header-included IPv4 append path calls `ip_local_error` with `EMSGSIZE`, the destination, port, and payload MTU before returning the refusal. `a_raw_ipv4_size_refusal_reports_the_local_error` enters Oxide's live raw-send owner over a namespace-private 1,280-byte route and checks the errno, local origin, destination, zero raw port, and MTU. Temporarily bypassing only the production report call made it RED at the missing queued record; restoring the call made it GREEN. The focused test and full net suite pass (2,575/2,575), as do x86_64 and aarch64 kernel target checks and the complete both-architecture feature gate. Boot smoke is omitted because the permanent change is hosted test coverage only and cannot enter a kernel image. | B2488-raw4-local-error-hosted-test |
->>>>>>> 046ca1e9b (docs: close B2488 raw IPv4 error coverage)
-=======
 ### B2489-shm-noreserve-backing
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 356a9c35b | MISSING | low | **`SHM_NORESERVE` now defers huge SysV shared-memory reservation until a page fault.** The IPC registry carries the flag's reservation decision in its backing plan, and the syscall passes it to hugetlbfs's single setup owner, whose existing fault path charges unreserved pages on demand. Ordinary shmem was already lazy and remains unchanged. | B2489. Linux 7.2.0-rc4 `ipc/shm.c::newseg` passes `VMA_NORESERVE_BIT` to `hugetlb_file_setup` for `SHM_HUGETLB | SHM_NORESERVE` and creates ordinary shmem with `VM_NORESERVE` outside strict overcommit. The initial focused REDs failed because `SegBacking::Huge` had no reservation field and hugetlbfs had no unreserved setup argument. Forcing the restored production planner to reserve made `shm_noreserve_defers_a_huge_segments_page_reservation` fail with `reserve: true` instead of `false`; restored GREEN. IPC 284/284, fs 1393/1393, and PMM 311/311 pass, as do x86_64 and aarch64 all-feature target checks. Final paired smoke reached userspace with serial RX on attempt 1: x86_64 in 46 s and aarch64 in 56 s. | B2489-shm-noreserve-backing |
->>>>>>> 972c2cc96 (doc: close SHM_NORESERVE backing issue)
-=======
 ### B2490-fat-unlink-eviction
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 56ec569eb | DEFECT | med | **FAT unlink and rmdir now remove the name immediately but defer the victim's cluster-chain release until its final inode reference is evicted.** The syscall resolves the exact victim dentry and threads that inode through the VFS operation; FAT records the removed chain on that inode, sets its link count to zero, and releases the chain from the superblock eviction hook. Pure volume operations retain their immediate-release ownership, and deferred release failure is latched for the next sync instead of creating a second inode registry. | B2490. Linux 7.2.0-rc4 separates directory-entry removal from zero-link inode eviction. The production VFS-backed open/unlink test was RED under an immediate-release positive control with 16,316 free clusters becoming 16,315 while the open file still owned its cluster; restored deferral made both open-file and open-directory lifetime tests GREEN. FAT 332/332 and the full VFS suite pass. The full syscall suite passes 1,988 tests; its seven failures reproduce unchanged on the clean base. Both target checks pass. Final smoke reached userspace with serial RX on attempt 1: x86_64 in 52 s and aarch64 in 56 s. | B2490-fat-unlink-eviction |
->>>>>>> 1b4bf3a5d (docs: close FAT unlink eviction issue)
-=======
 ### B2491-serial-sysrq-per-port-state
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED ad892f70c | DEFECT | low | **Serial SysRq arm state now belongs to the UART that received the break, so a byte from another UART cannot complete that port's command sequence.** The 16550 and PL011 live receive wrappers each own a deadline word and pass it through `drv-serial`'s prefilter boundary; probe resets that word so a reprobed device cannot inherit an arm window. The scheduler retains the canonical five-second state machine and uses the supplied port word atomically, preserving the hard-IRQ delivery boundary. | B2491. Linux 7.2.0-rc4 keeps `sysrq` and `sysrq_ch` in each `struct uart_port`; its break and character handlers touch only the supplied port. Callsite: each UART ISR enters its driver-local `deliver`, which supplies its `SYSRQ_ARMED_UNTIL_NS` to `drv_serial::deliver` and `sched::diag::sysrq_rx`. Authentic RED: after arming UART A, a key on UART B incorrectly returned `Run(ShowTasks)` instead of `Passthrough`; restored production routing makes the cross-UART test GREEN. Focused test, 16550 19/19, PL011 20/20, sched 1536/1536, both target checks, and both all-feature checks pass. Final paired smoke reached userspace and answered typed serial SysRq on attempt 1: x86_64 in 46 s and aarch64 in 56 s. | B2491-serial-sysrq-per-port-state |
->>>>>>> 14d3f7ad1 (docs: close B2491 serial SysRq state issue)
-=======
 ### B2492-selinux-kernel-bootstrap-decisions
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED c42b1bce6 | DEFECT | low | **Kernel-facing SELinux transition, relabel, member, access-vector, and validate-transition decisions now answer during the pre-policy bootstrap window instead of refusing or substituting the unlabeled SID.** A process transition keeps the source label, every other class keeps the target label, access is fully allowed, and no absent constraint list can reject a transition. The existing kernel-class bootstrap owner serves both user-facing and kernel-facing entry points, so loading a policy still switches every path to the canonical policy engine. | B2492. Linux 7.2.0-rc4 applies those defaults before initialization. The production decision test was RED with `Err(UnknownSid)` instead of the creator's SID; restored code makes the complete bootstrap ladder GREEN. SELinux 272/272, SELinux runtime 55/55, and scheduler 1,535/1,535 pass, as do both target checks. Final smoke reached userspace with serial RX on attempt 1: x86_64 in 46 s and aarch64 in 57 s. | B2492-selinux-kernel-bootstrap-decisions |
->>>>>>> cb26c8bc6 (docs: close SELinux bootstrap decisions issue)
-=======
 ### B2494-aarch64-fdt-reserved-memory
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 9a732871b | MISSING | med | **The aarch64 DT boot path now removes every firmware-owned reservation from usable RAM before the PMM sees the topology.** The shared FDT owner decodes both the mandatory reservation map and every `reg` tuple below `/reserved-memory`, using the bus's declared cell widths; the boot owner page-aligns, sorts, and overlays those ranges through the same physical-topology funnel as the kernel image, DTB, and ACPI tables. | B2494. Linux 7.2.0-rc4 reserves the header reservation map before scanning `/reserved-memory`. The focused wire-image tests cover both sources, 32-bit and 64-bit cell widths, and multiple tuples. Forcing the production decoder to return no ranges turns both tests RED (0 vs 2); restored GREEN. Full suites: FDT 85/85, boot-aarch64 34/34. Both x86_64 and aarch64 kernel target and all-feature checks pass. Final paired smoke passed attempt 1 with serial RX: x86_64 46 s, aarch64 56 s. | B2494-aarch64-fdt-reserved-memory |
->>>>>>> 33b5728a2 (docs: close aarch64 DT reservation gap)
-=======
 ### B2495-hda-dma-position-buffer
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 41cb68050 | DEFECT | low | **HD-Audio stream delay now prefers the controller's DMA position buffer while retaining the link-position fallback for controllers that report zero or an invalid sentinel.** Probe owns one page containing the controller's eight-byte stream slots; controller bring-up publishes its DMA address through `DPLBASE`/`DPUBASE`, each stream enables and clears its slot, and quiesce disables the shared position buffer after stopping the streams. PCM progress and writable-space decisions therefore use the less-laggy hardware position without creating a second accounting owner. | B2495. Linux 7.2.0-rc4 allocates one eight-byte slot per stream, programs the shared position-buffer base, prefers a valid nonzero slot and falls back to `SD_LPIB`. The authentic positive control reproduced the former live LPIB-only decision and failed with `left: 2048`, `right: 3072`; restored GREEN. `drv-hda` 89/89 and `sound` 48/48 pass, as do both target checks and the full feature gate. Dedicated HD-Audio smoke enumerated the controller, duplex codec, control node and both PCM nodes on attempt 1: x86 in 179 s and ARM64 in 177 s. | B2495-hda-dma-position-buffer |
->>>>>>> ca7e4f9ec (docs: close B2495 HDA position issue)
-=======
 ### B2496-f2fs-quota-owner-transfer
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 7cc132b95 | DEFECT | med | **An F2FS chown now atomically moves the file's accumulated block and inode usage to each changed quota identity, and refuses with `EDQUOT` before changing the inode when any destination has no room.** The canonical tree walk counts sparse data, metadata nodes, attributes, and claimed reservations once; every destination is checked before source or destination counters change, and the inode owner is stamped only after transfer succeeds. Later allocations remain attached to the new identities. | B2496. Linux 7.2.0-rc4 reaches quota transfer from `f2fs_setattr` before the uid/gid update. Both production `Volume::set_attr` tests were RED: usage stayed on the former owner and an over-limit target returned success; restored code makes them 2/2 GREEN. Quota call-site suite 68/68 and full F2FS suite 3,699/3,699 pass; x86_64 and aarch64 target checks pass. Boot smoke was not run because boot mounts ext4 and never reaches an F2FS chown. | B2496-f2fs-quota-owner-transfer |
->>>>>>> d6c265e0d (doc: close F2FS quota transfer issue)
-=======
 ### B2497-f2fs-encrypted-child-context
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 4080cb2c6 | MISSING | high | **A child created inside an encrypted f2fs directory now inherits the parent's complete encryption policy and persists a fresh per-inode nonce before its dentry is published.** The production create path resolves the parent key before allocation, writes the child inode, stores the indexed fscrypt context and encryption flag, and excludes the encrypted child from inline data so its contents always have a data-unit address. Special files remain plaintext. | B2497. Linux 7.2.0-rc4 uses `f2fs_new_inode` -> `fscrypt_prepare_new_inode`, then `f2fs_init_inode_metadata` -> `fscrypt_set_context` before linking the name. Authentic RED: `creating_in_an_encrypted_directory_persists_a_fresh_child_context` failed because `crypt_context` returned `None`; GREEN asserts the inherited policy, distinct nonce, encrypted flag, non-inline storage, and plaintext readback of data written by the real `Volume::create` path. Full f2fs: 3698/3698; `make x86` and `make arm` pass. Smoke skipped because both boot images mount ext4 and cannot reach this F2FS create path. | B2497-f2fs-encrypted-child-context |
->>>>>>> c73423839 (docs: close f2fs encrypted child context row)
-=======
 ### B2498-oom-coredump-self-free
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED f4d594b00 | DEFECT | med | **OOM no longer treats an exiting process that is actively writing a core as memory that will promptly return by itself.** The ledger premise was partly stale: coredump already latches its canonical address-space state for the complete dump, and the OOM reaper already reads it. The missing consumer was OOM's self-free admission. That path now holds the task's mm once, refuses while its coredump latch is set, then applies the existing group-exit/fatal-signal rule. | B2498. Linux 7.2.0-rc4 rejects `__task_will_free_mem` when the process has a live core state because the dump may sleep. Before the fix, the production-path test reports `will_free_mem == true` after setting the real mm coredump latch; restored code reports false. Scheduler 1,536/1,536 passes; both x86_64 and aarch64 all-feature target checks pass. Final paired smoke passed attempt 1 with serial RX: x86_64 46 s, aarch64 56 s. | B2498-oom-coredump-self-free |
->>>>>>> d2fdc29d1 (docs: close OOM coredump self-free gap)
-=======
 ### B2500-ext4-journalled-quota-root-reserve
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED d3934dd8b | DEFECT | low | **An active visible ext4 quota file named by `usrjquota=` or `grpjquota=` now receives the same root-block reserve claim as a hidden superblock quota inode.** `data_reserve_flags` asks the canonical live VFS quota owner whether the allocating inode is an active quota file, so accounting can record a full filesystem instead of being the first write refused by it. | B2500. Linux 7.2.0-rc4 `ext4_mb_new_blocks` calls `ext4_is_quota_file` and adds `EXT4_MB_USE_ROOT_BLOCKS`. Authentic production control: a mounted `/aquota.user`, unprivileged allocation credentials, and exactly one real block left inside `r_blocks_count`; removing the active-file arm makes `Mount::write_at` fail `NoSpace`, restoring it allocates the block and passes. Journalled quota mount suite 15/15, full ext4 suite PASS, both target builds PASS. Paired smoke PASS on attempt 1 with serial RX: x86 46 s, ARM 57 s. | B2500-ext4-journalled-quota-root-reserve |
->>>>>>> 1cc9122d1 (docs: close ext4 journalled quota reserve row)
-=======
 ### B2503-ntfs-hard-link-creation
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 06623d838 | MISSING | med | **NTFS hard links create and remove the matching on-medium name records.** The mounted inode operation rejects directories, cross-filesystem targets, an existing name and the 4000-link ceiling; otherwise it adds a parent index key and an indexed `$FILE_NAME`, increments the MFT and cached inode counts, and stamps change time. A full parent index restores the target record before returning `ENOSPC`. Unlink removes the exact parent-and-name attribute while decrementing a multiply named record, so the medium never carries more name attributes than its count. | B2503. Linux 7.2.0-rc4 uses `ntfs_link` → `ntfs_link_inode` → `ni_add_name`, with the directory and `NTFS_LINK_MAX` gates ahead of publication. Production reaches `Volume::link` through `syscalls::086_link` → `Inode::link_child` → `NtfsOps::link`. Baseline and explicit positive-control runs with the backend slot restored to `EPERM` failed the mounted block-device test; restored GREEN covers shared identity/data, both cached and remounted counts, surviving unlink, exact attribute removal and full-index rollback. NTFS passed 196/196 tests; x86_64 and aarch64 kernel checks and both all-feature target gates passed. Boot smoke was skipped because the ext4 boot path neither mounts nor probes NTFS. | B2503-ntfs-hard-link-creation |
->>>>>>> d5adc1e79 (doc: close NTFS hard-link issue)
-=======
 | FIXED 54a363f57 | DEFECT | med | **The affinity ABI tests now derive their buffer boundaries from the configured logical-CPU limit instead of pinning the retired 64-CPU width.** Production was already correct: the syscall mask is 32 bytes for this kernel's 256 CPU identifiers, and both affinity entries use that single owner. Five duplicate ledger observations are consolidated here; the aggregate syscall-failure row retains only its two independent source-contract failures. | B2505. Linux 7.2.0-rc4 derives the syscall mask size from `nr_cpu_ids`. The original focused run reproduced five failures; the corrected 14-test affinity suite passes. Halving the production size formula makes the retained bitmap-size contract fail with 16 versus 32, then exact restoration returns GREEN. Full syscalls reports 1,993 pass and only the two independently tracked source-contract failures; both kernel target checks pass. No smoke: the permanent delta is hosted-test and ledger only. | B2505-affinity-abi-current-cpu-width |
->>>>>>> 94f093ad6 (docs(issues): consolidate affinity failure rows)
-=======
 ### B2506-pl011-ttyama-device-identity
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2506 | DEFECT | low | **The aarch64 PL011 line now has Linux's `ttyAMA0` identity at every live surface.** One target-selected kernel identity feeds devtmpfs, sysfs enumeration, and `console/active`; the image composer has one matching architecture-to-device owner used by `console=`, the serial debug shell/getty mask, and every injected probe service. x86_64 remains `ttyS0`. | B2506. Linux 7.2.0-rc4's `amba_reg` sets `driver_name` and `dev_name` to `ttyAMA`, with `SERIAL_AMBA_MAJOR`/`SERIAL_AMBA_MINOR` 204:64. Before the fix, the production ARM boot composer emitted `console=ttyAMA0` but `systemd.debug_shell=ttyS0`; changing the focused expectation made `the_serial_control_plane_moves_the_shell_and_masks_the_login` fail on that exact mismatch, and the shared-owner implementation restored it GREEN. Full cmdline 79/79, console 10/10, sysfs 178/178, and xtask 79/79 suites pass; the complete x86_64 and aarch64 feature gates pass. Final paired smoke reached userspace with serial RX on attempt 1: x86_64 in 52 s and aarch64 through the renamed line in 56 s. | B2506-pl011-ttyama-device-identity |
->>>>>>> d8b17f7d3 (docs: close PL011 ttyAMA identity issue)
-=======
 ### B2508-kernel-btf-sysfs
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 2e7c97fe3 | MISSING | high | **The canonical kernel BTF object is now published as the read-only binary sysfs file `/sys/kernel/btf/vmlinux`.** Sysfs registers the directory only when the security BTF owner reports a non-zero object length, gives the inode that exact size, and delegates offset reads directly to `security::bpf::kernel_btf_read`, so userspace observes the same object that program-load attach-target resolution parses. | B2508. Linux 7.2.0-rc4 registers a read-only binary `vmlinux` attribute under `/sys/kernel/btf` and omits it for an empty object. The production-tree test was RED because `kernel/btf/vmlinux` did not exist; after registration it resolves the live inode and matches canonical BTF bytes at a non-zero offset. Stubbing the production read owner to return zero was independently RED with 0 bytes instead of 23; restored GREEN. Sysfs 181/181 and security 492/492 pass, as do both kernel target checks, both feature gates, formatting and diff checks. Final paired smoke reached userspace with serial RX on attempt 1: x86_64 in 48 s and aarch64 in 56 s. | B2508-kernel-btf-sysfs |
->>>>>>> 96338ed2f (docs: close kernel BTF sysfs issue)
-=======
 ### B2509-stale-serial-input-corruption-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2509 | DEFECT | med | **The old F858 whole-line serial corruption observation is stale: both UART backends now own bounded drain-until-deasserted receive paths.** The 8250 shared-IRQ service repeats until IIR deasserts (bounded by Linux's `PASS_LIMIT` shape), while PL011 drains the FIFO empty and rechecks RX/timeout status without explicitly clearing a mid-drain indication. | B2509 revalidated Linux 7.2.0-rc4 first: 8250 shared IRQs loop until the line deasserts under a pass bound, and PL011 drains/rechecks status rather than clearing RX before the FIFO is empty. Oxide's canonical fixes are `23d1dd2be` (8250) and `1ac526b01` (PL011). Authentic positive controls made the production 8250 owner service only once (RED: 1 call vs 4) and made PL011 return after its first pass (RED: 16 bytes vs the complete 24-byte mid-drain line); both were restored. Full drv-uart-16550 19/19 and drv-uart-pl011 20/20 pass, as do both kernel target checks. | B2509-stale-serial-input-corruption-row |
->>>>>>> b2c3d4e91 (ledger: close stale serial input corruption row)
-=======
 ### B2511-overlay-volatile-incompat-marker
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 91fc49aaa | MISSING | low | **A volatile OverlayFS mount now persists `work/incompat/volatile/dirty`, and any later mount refuses that work directory while the incompatibility remains.** The marker is created through the real upper filesystem inode operations before the layer stack becomes visible; workdir admission checks the incompatibility directory before either the ordinary work directory or index directory is returned. | B2511. Linux 7.2.0-rc4 creates the same four-component marker under the work base and rejects workdir cleanup when the incompatibility directory contains a feature. Before the fix, both production `OverlayFs::open` tests were RED: the volatile mount left no marker, and a premarked workdir mounted successfully instead of returning `EINVAL`; restored implementation makes both GREEN. OverlayFS 250/250, both kernel target checks, both feature gates, and diff checks pass. Final smoke was not run: the normal boot does not mount an OverlayFS or exercise the `volatile` mount admission path, while the hosted mount tests drive that exact production path. | B2511-overlay-volatile-incompat-marker |
->>>>>>> 531cd5f2a (docs: close overlay volatile marker issue)
-=======
 ### B2514-ext4-journalled-quota-mark-dirty
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 2b6a6555a | DEFECT | med | **ext4 now commits a dquot from `mark_dirty` when the filesystem uses hidden QUOTA-feature inodes or a named journalled quota file.** Plain quota files retain generic deferred writeback, while journalled records are written through the existing ext4 transaction and cleared from the dirty set only after success. This matches Linux 7.2.0-rc4 `ext4_mark_dquot_dirty` and `ext4_is_quota_journalled`. | B2514. Production reachability is `vfs::quota_setquota` and inode quota mutation → `DquotOperations::mark_dirty` → `Ext4QuotaOps::mark_dirty` → journalled `write_dquot`. Before the fix, `quota_feature_mark_dirty_commits_without_q_sync` mounted a second reader while the writer remained live and read an all-zero record; restored code makes it GREEN without `Q_SYNC`. The crash harness observes one atomic publish containing the complete qtree insertion. Qtree write faults now surface immediately from the live setquota call and retain remount rollback/retry proofs. A hosted inode-number-targeted fault keeps the combined chown/truncate rollback test precise despite intervening quota-inode writes. The full hosted ext4 suite, x86_64 and aarch64 feature gates, and diff checks pass. Final paired smoke passed attempt 1 with serial RX: x86_64 46 s, aarch64 56 s. | B2514-ext4-journalled-quota-mark-dirty |
->>>>>>> 2bb7b510d (docs: close ext4 journalled quota dirty issue)
 
 ### B2329-freezer-backoff-sleep
 
@@ -4138,19 +4069,16 @@ against the row's own evidence.
 |---|---|---|---|---|---|
 | FIXED e29627b4c | MISSING | med | **`BPF_MAP_TYPE_STRUCT_OPS` correctly remains unavailable while the kernel is interpreter-only.** The prior row treated its absence as an unconditional gap, but Linux publishes `bpf_struct_ops_map_ops` only under `CONFIG_BPF_JIT`; without a JIT, map creation rejects the ABI type and the association fallback is `EOPNOTSUPP`. Oxide has no BPF JIT or trampoline generator, so manufacturing a map object would create an unusable surface rather than parity. | B2335 revalidated Linux 7.2-rc4 `include/linux/bpf_types.h` and `include/linux/bpf.h`. The ABI number is now named, map creation is pinned to `EINVAL`, ordinary maps are pinned to association `EINVAL`, and a forged struct-ops fixture is pinned to the reference's no-JIT `EOPNOTSUPP`. Removing either no-JIT decision turns its positive control RED. Full security suite: 492/492 passed. | e29627b4c |
 
-<<<<<<< HEAD
 ### B2356-stale-l2cap-ertm-pdu-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 3b31c51e4 | DEFECT | med | **An ERTM start segment carrying two bytes beyond the negotiated payload bound is Linux parity, not an Oxide defect.** Both kernels bound each segment's SDU payload before adding the start segment's two-byte total-length field; continuation and end segments carry no such field. | B2356 revalidated the complete Linux 7.2-rc4 segmentation and frame-construction decisions. `a_start_segment_adds_its_length_field_beyond_the_payload_bound` pins 48 payload bytes plus the two-byte length only on START. Subtracting those two bytes from the first payload turns the test RED at 46 versus 48; restored code is GREEN. Bluetooth 859/859, both kernel target checks, and spec-lint 35/35 pass. | 3b31c51e4 |
-=======
 ### B2512-futex-robust-unlock-list32
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 44128f98e | MISSING | med | **Classic futex now serves the native and compat robust-unlock composites instead of returning `ENOSYS`.** The command mask strips `FUTEX_ROBUST_UNLOCK` and `FUTEX_ROBUST_LIST32`; only WAKE, WAKE_BITSET, and UNLOCK_PI admit the unlock modifier. Ordinary wakes atomically release the futex word, clear the `uaddr2` pending slot at its native or 32-bit width, then wake; PI unlock clears the slot only after ownership handoff succeeds. A pending-slot fault returns `EFAULT` after release but before wake, preserving the reference ordering. | B2512. Linux 7.2.0-rc4 `do_futex`, `futex_robust_unlock`, `futex_robust_list_clear_pending`, and `futex_unlock_pi` established admission, width, and ordering. Production callsite: `syscalls/src/202_futex.rs::sys_futex` retains `a4` through `ipc::live::futex::dispatch_timed_pending`. Initial RED: robust wake returned success but left the word at `0x12345678`; GREEN covers native/compat wake, PI, invalid-command `ENOSYS`, and pending-fault ordering. Positive control bypassed the pending-aware syscall dispatch and the integration test failed (`CLASSIC_OP 0` vs `1537`), restored GREEN. IPC passed 283 lib + 55 live-core + 60 PI + 2 restart tests. Syscalls passed 1,988 tests with seven standing failures (five affinity, return-fastpath, net-common source scan); the two non-affinity failures were reproduced unchanged in the clean `origin/main` worktree, and the focused 38-test futex syscall harness passed. Both target checks and both all-feature checks passed. No smoke: these new numeric composites are reached only when userspace explicitly requests them and do not alter the default boot path. | B2512-futex-robust-unlock-list32 |
->>>>>>> fa371cbe8 (doc(ipc): close robust futex unlock gap)
 
 ### B2332-s3-resume-acceptance
 
@@ -4158,11 +4086,6 @@ against the row's own evidence.
 |---|---|---|---|---|---|
 | FIXED e41310ec3 | COVERAGE | high | **The linked x86_64 S3 waking trampoline now executes in both a deterministic firmware-entry harness and a real Q35/SeaBIOS suspend-resume cycle.** The permanent micro-gate extracts the exact 4 KiB linked blob, enters it at the physical waking vector in 16-bit mode, and requires its own 16→32→64 transition to establish the patched page tables, control registers, EFER bits, and selectors before reaching the oracle. The end-to-end gate boots the distribution image, selects `deep`, observes QEMU enter S3, posts the wake, and requires the same shell to report one successful suspend. | B2332. The micro-gate's positive control replaces the firmware entry byte with `hlt`: RED timeout, restored GREEN with `S3-TRAMPOLINE-PASS`. `make accept-s3-resume-x86` observed QMP `suspended`, returned through processor-state restore, and read `S3-SUCCESS=1`. That runtime exposed a global sysfs inode collision that made `/sys/power/mem_sleep` alias `/sys/class/power_supply`; the power leaves moved to unique blocks, and restoring the old block makes `power_inode_blocks_do_not_alias_device_classes` fail. ARM is deliberately not claimed as executed: QEMU virt declines PSCI `SYSTEM_SUSPEND`, matching Linux 7.2-rc4's rule that deep suspend is installed only after `PSCI_FEATURES` admits it. The unavailable runtime path remains pinned by 10 PSCI probe tests, 11 admission/table tests, and 12 exact save/restore-order tests; ARM boot smoke passed with serial RX in 56 s. | e41310ec3 |
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
 ### B2336-bpf-program-streams
 
 | Status | Type | Severity | Issue | Evidence | Fixed by |
@@ -4364,38 +4287,28 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 077ebee52 | DEFECT | med | **Every extended-attribute operation now takes the SELinux inode permission Linux assigns it.** Reads and listings require the object's `getattr`; non-label writes and removals require `setattr`; `security.selinux` retains its stricter relabel and no-remove ladders. POSIX ACL names pass through the same hooks instead of returning before the LSM boundary. | B2472 verified Linux 7.2-rc4's `selinux_inode_getxattr`, `selinux_inode_listxattr`, `selinux_inode_setxattr`, and `selinux_inode_removexattr` hooks. `every_attribute_operation_takes_the_linux_inode_permission` covers security, user, trusted, and ACL names plus list; changing the production mutation mapping back to `getattr` makes it fail, restored GREEN. SELinux runtime 55/55 and the complete fs suite passed (1,392 library tests plus integration binaries). Both release target checks passed. Paired smoke passed first attempt with serial RX: x86_64 52 s, aarch64 58 s. | B2472-selinux-all-xattr-permissions |
-=======
 ### B2499-ptrace-regset-iovec-order
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 12ab2186d | DEFECT | low | **`PTRACE_GETREGSET` and `PTRACE_SETREGSET` now accept a readable `struct iovec` in a read-only VMA, perform the register transfer, and report `EFAULT` only when the final `iov_len` write-back faults.** The iovec preflight is the same range-only admission as Linux `access_ok`; fault-recovering reads, transfer, and write-back execute in reference order through one hosted decision boundary. | B2499. Linux 7.2.0-rc4 `kernel/ptrace.c::ptrace_request` was verified first. The positive control restored the writable-VMA preflight: the focused test went RED because transfer remained false; range-only preflight restored GREEN and observed the transfer before write-back `EFAULT`. The complete ptrace suite passed 114/114; x86_64 and aarch64 kernel target checks and `make feature-gate` passed. Final paired smoke passed on attempt 1 with serial RX: x86_64 46 s, aarch64 56 s. | B2499 |
->>>>>>> 98e2f5100 (chore(ledger): close ptrace regset iovec ordering)
-=======
 ### B2501-tiocsti-gate-audit-input
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED d6f2eede6 | MISSING | med | **`TIOCSTI` now pushes one byte through every terminal endpoint's canonical input path.** One tty-owned ladder enforces the live `dev.tty.legacy_tiocsti` switch and initial-namespace `CAP_SYS_ADMIN` override, requires the caller's controlling terminal for an unprivileged request, performs usercopy only after those gates, flushes typed terminal audit data, emits a distinct `ioctl=TIOCSTI` record, then injects. Serial and VT terminals enter `TtyStruct`; PTY slaves enter N_TTY, while a privileged PTY-master request enters the master's own raw input queue. | B2501. Linux 7.2.0-rc4 gate and effect ordering verified before design. Positive control initially omitted both policy gates: `disabled_legacy_mode_refuses_a_non_admin_before_usercopy` and its controlling-terminal sibling were RED; restored ladder GREEN 5/5. Full `tty` 214/214, `audit` 120/120, `devpts` 29/29, `procfs` 243/243, `console` 10/10; both kernel targets built. | d6f2eede6 |
->>>>>>> ca8fabbe8 (docs(issues): close TIOCSTI injection gap)
-=======
 ### B2502-fault-vma-admission-order
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 6e6d878d9 | DEFECT | med | **Page faults outside every VMA now fail admission before migration, swap, userfaultfd, or fill work can touch the page tables.** One VMA lookup admits an existing mapping; a not-present fault gets one stack-growth attempt and is admitted only if that creates coverage. A private proof token makes the expensive resolver unreachable before this gate. This matches Linux 7.2.0-rc4, where x86 `lock_mm_and_find_vma` and arm64 `lock_mm_and_find_vma` route an uncovered address directly to their bad-area paths. | B2502. The hosted harness compiles the exact production admission owner. Before the fix, `a_missing_vma_never_enters_the_expensive_resolver` failed RED because an absent VMA returned success; restored GREEN passes all 3 admission cases. Full PMM library suite: 311/311. Both kernel target checks and the both-architecture feature gate pass, compiling the live proof-token callsite. Final paired smoke passed attempt 1 with serial RX: x86_64 46 s and aarch64 56 s. | B2502 |
->>>>>>> 017ef016c (docs(ledger): close fault VMA admission order)
-=======
 ### B2504-rseq-slice-extension-tunable
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 5fcebe902 | MISSING | low | **Rseq slice grants now take their duration from the writable `/sys/kernel/debug/rseq/slice_ext_nsec` control instead of a fixed 5 us constant.** The scheduler owns one atomic value with the 5–50 us bounds, the debugfs file reports and changes that owner, and every new grant derives its expiry from it. | Linux 7.2-rc4 reference verified first. Missing-file RED became GREEN after boot-time registration. Positive control restored the fixed 5 us grant and failed `5007 != 50007`, then passed after restoration. Scheduler 1,535/1,535, tracefs 39/39, and syscall 153/153 passed; both target checks and paired smoke passed (x86 46 s, ARM 56 s, attempt 1, serial RX). | B2504 |
->>>>>>> 5e617a83f (docs(issues): close rseq slice tunable gap)
-=======
 ### B2510-tcp-save-syn-link-header
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2510 | MISSING | low | **`TCP_SAVE_SYN=2` now records from the admitted link-layer header, while mode 1 and transport-only adapters start at the network header.** Ethernet ingress carries its already-parsed header prefix through the canonical IPv4/IPv6 TCP demux; the listener's single saved-header owner prepends it only for mode 2 and retains exactly the link, network and TCP headers. | B2510. `stack::tcp_save_syn_tests::mode_two_records_the_link_header_from_real_ethernet_ingress` drives the production Ethernet ingress and compares the request's record byte-for-byte with the Ethernet+IPv4+TCP SYN. Before the fix it was RED because the record began at IPv4; restored implementation is GREEN. Focused SAVE_SYN 4/4 and full net 2,575/2,575 pass; both target checks pass. | B2510 |
->>>>>>> ecfe175fa (docs(ledger): close TCP_SAVE_SYN link header gap)
