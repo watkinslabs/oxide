@@ -3208,6 +3208,12 @@ against the row's own evidence.
 |---|---|---|---|---|---|
 | FIXED cb2283ebb | DEFECT | high | **Futex PI and robust-list compare-exchange now recover disappearing user mappings instead of faulting the kernel.** One canonical `uaccess::cmpxchg_user_u32` validates the range and dispatches to architecture-owned atomics: locked cmpxchg with one fixup on x86_64, and bounded load/store-exclusive with both fault sites fixed up on aarch64. Every caller consumes its `EFAULT`/retry result; the racy page-table writability probe and raw `AtomicU32` construction are gone. | B2323. `uaccess` 19/19 and `ipc` 395/395 pass. Both linked kernels pass `uaccess-extable-gate` with exactly 1 x86 and 2 aarch64 entries resolving inside `oxide_raw_cmpxchg_user_u32`. Positive control removes `.ex_table` from a copied x86 kernel and the gate turns RED (`missing .ex_table`); the unmodified ELF is GREEN. Both target checks, feature checks, debug-all links, 176 hosted checks, 176 isolated test builds, and paired frame/task-stack/exception-stack/IRQ-stack gates pass. Final paired smoke passed with serial RX: x86_64 46 s on attempt 2 after an existing `spin_lock_bh` preemption-accounting fault on attempt 1, and aarch64 56 s on attempt 1. | cb2283ebb |
 
+### B2415-stale-tty0-open-binding-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 22eedc422 | DEFECT | low | **`/dev/tty0` and VT-backed `/dev/console` descriptions bind the foreground VT once at open, rather than following later `VT_ACTIVATE` changes.** The old OPEN row described this as an unresolved behavior change even though B2022 had already installed the reference-shaped open-time binding. One shared decision now makes that ownership explicit for both aliases; data operations continue to consume the concrete VT stored on the file description. | B2415. Linux 7.2-rc4 resolves the foreground-console index in the tty-driver lookup performed during open. `foreground_alias_is_bound_once_at_open` pins the same decision through the production helper: removing alias resolution is RED (`0 != 2`), restored code is GREEN. Console 11/11 and both architecture target checks passed. | B2415-stale-tty0-open-binding-row |
+
 ### B2322-address-space-teardown-owner
 
 | Status | Class | Sev | Issue | Evidence | Owner |

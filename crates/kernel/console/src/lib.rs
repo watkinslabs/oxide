@@ -24,6 +24,7 @@ extern crate alloc;
 // - `nodes`:     the ONE console tty inode constructor.
 // - `devnum`:    Linux major/minor device numbers.
 // - `routing`:   live `binding → tty` resolution + open-time ctty acquisition.
+// - `open_binding`: foreground aliases resolved exactly once for each open.
 // - `serial`/`static_console`: the UART line.
 // - `vt_console`/`vt_tty`/`vt_input`: the video VTs.
 // - `vcs`:       `/dev/vcs*` screen dumps.
@@ -37,6 +38,7 @@ extern crate alloc;
 
 mod devnum;
 mod framebuffer;
+mod open_binding;
 mod tty_audit;
 pub mod boot_progress;
 pub mod identity;
