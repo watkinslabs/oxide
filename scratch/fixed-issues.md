@@ -4945,6 +4945,12 @@ against the row's own evidence.
 |---|---|---|---|---|---|
 | FIXED B2588 | MISSING | med | The historical row claiming that cgroup2 mounts ignore the caller's cgroup namespace is stale ledger residue. The mount now resolves the caller namespace root before constructing the filesystem view. | `cgroup::fs::realize_tree` reads `state::caller_ns_root`, resolves that path in the canonical cgroup tree, and the linked `cgroup::tests::mount_ns` cases cover hierarchy-root, namespaced-root, and removed-root fallback behavior. This is the B2013 implementation already present on current main; no source change was needed. | B2588 |
 
+### B2589-fcntl-delegation-row-stale
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2589 | MISSING | med | The open `F_GETDELEG`/`F_SETDELEG` row duplicated an existing fixed entry and is stale ledger residue. Both commands are present and use the shared flavored lease/delegation state. | `syscalls/src/072_fcntl.rs` dispatches both commands through `fcntl_deleg`; `vfs/src/file.rs` and `file/lease_policy.rs` retain the flavor and filter queries, with `vfs/tests/file_lease_deleg.rs` covering the distinction. The prior implementation is recorded as fixed by 09765a7f6; no source change was needed. | B2589 |
+
 ### B2584-stale-membarrier-rows
 
 | Status | Class | Sev | Issue | Evidence | Owner |
