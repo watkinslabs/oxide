@@ -187,15 +187,28 @@ pub const P_BUFFER_SIZE: usize = 17;
 pub const P_BUFFER_BYTES: usize = 18;
 pub const P_TICK_TIME: usize = 19;
 
-// sw_params offsets (LP64): avail_min@16, start_threshold@32, boundary@64
-// (silence_threshold@48, silence_size@56 sit between).
+pub const TSTAMP_NONE: u32 = 0;
+pub const TSTAMP_ENABLE: u32 = 1;
+pub const TSTAMP_TYPE_REALTIME: u32 = 0;
+pub const TSTAMP_TYPE_MONOTONIC: u32 = 1;
+pub const TSTAMP_TYPE_MONOTONIC_RAW: u32 = 2;
+
+// sw_params offsets (LP64): avail_min@16, start_threshold@32, boundary@64.
 pub const SWP_AVAIL_MIN: usize = 16;
 pub const SWP_START_THRESHOLD: usize = 32;
 pub const SWP_BOUNDARY: usize = 64;
+pub const SWP_TSTAMP_MODE: usize = 0;
+pub const SWP_PROTO: usize = 72;
+pub const SWP_TSTAMP_TYPE: usize = 76;
 pub const SW_PARAMS_SIZE: usize = 136;
+pub const PCM_PROTO_TSTAMP_TYPE: u32 = 0x0002_000c;
 
 // snd_pcm_status offsets (LP64).
 pub const ST_STATE: usize = 0;
+pub const ST_TRIGGER_SEC: usize = 8;
+pub const ST_TRIGGER_NSEC: usize = 16;
+pub const ST_TSTAMP_SEC: usize = 24;
+pub const ST_TSTAMP_NSEC: usize = 32;
 pub const ST_APPL_PTR: usize = 40;
 pub const ST_HW_PTR: usize = 48;
 pub const ST_AVAIL: usize = 64;
@@ -206,6 +219,8 @@ pub const STATUS_SIZE: usize = 152;
 pub const SP_FLAGS: usize = 0;
 pub const SP_STATUS_STATE: usize = 8;
 pub const SP_STATUS_HW_PTR: usize = 16;
+pub const SP_STATUS_TSTAMP_SEC: usize = 24;
+pub const SP_STATUS_TSTAMP_NSEC: usize = 32;
 pub const SP_CONTROL_APPL_PTR: usize = 72;
 pub const SP_CONTROL_AVAIL_MIN: usize = 80;
 pub const SYNC_PTR_SIZE: usize = 136;
