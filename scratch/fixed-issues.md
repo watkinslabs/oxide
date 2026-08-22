@@ -4651,6 +4651,11 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED R116 | INFRA | low | **The recorded BIOS-only boot invariant is stale and already corrected.** Current `docs/36§2` states the x86 handoff works through GRUB from BIOS or x86_64 UEFI, and `docs/39` documents the UEFI selector and gate. The existing B1984 fixed entry already records the hybrid ISO evidence, UEFI boot, and BIOS-only positive control; this row added no remaining implementation requirement. | Current docs audit plus `fixed-issues.md` B1984 entry; no source behavior changed. | R116 |
+### R117-stale-tty-hangup-revocation-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED R117 | MISSING | med | **The recorded per-open TTY hangup gap is stale and duplicates existing closures.** Real TTY/console descriptions use the monotonic `hup_gen` sampled into `vfs::File::revoke_gen`; PTY slave descriptions use the same generation contract through the devpts pair. Reads, writes, polls, and ioctls compare the sampled generation, so reopening a line does not resurrect an old descriptor. | Fixed entries B2022 (TTY/console) and B2376 (PTY slave), plus current `tty::hangup::revoke`, `vfs::File::revoke_gen`, console file operations, and devpts file operations. No source behavior changed. | R117 |
 ### R112-stale-dhcp-smoke-script-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
