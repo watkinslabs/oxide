@@ -25,33 +25,20 @@ sys_io_uring_register(fd:RawFd, opcode:u32, arg:UVA<&u8>, nr_args:u32) -> KR<u32
 
 `IoUringParams`,`io_uring_sqe`,`io_uring_cqe`: layout matches the Linux io_uring UAPI byte-for-byte.
 
-## 4 Opcodes (full phase 22 target)
+## 4 Opcodes
 
-| Op | Notes |
+| Family | Operations |
 |---|---|
-| NOP | testing |
-| READV/WRITEV | iovec read/write |
-| READ_FIXED/WRITE_FIXED | use registered buffers |
-| FSYNC | sync inode |
-| READ/WRITE | simple offset+len |
-| POLL_ADD/REMOVE | epoll-equivalent |
-| ACCEPT | tcp accept4 |
-| CONNECT | tcp connect |
-| SEND/RECV | socket I/O |
-| SENDMSG/RECVMSG | with cmsg |
-| OPENAT/OPENAT2 | path open |
-| CLOSE | close fd |
-| STATX | statx |
-| FALLOCATE | fallocate |
-| TIMEOUT/TIMEOUT_REMOVE | HrTimer-backed |
-| LINK_TIMEOUT | bound on linked op |
-| ASYNC_CANCEL | cancel inflight op |
-| EPOLL_CTL | epoll mod |
-| SPLICE/TEE | pipe ops |
-| MKDIRAT/SYMLINKAT/LINKAT/UNLINKAT/RENAMEAT | fs ops |
-| SHUTDOWN | socket shutdown |
+| Ring | NOP, NOP128, FILES_UPDATE, MSG_RING, PROVIDE_BUFFERS, REMOVE_BUFFERS, FIXED_FD_INSTALL |
+| Read/write | READ, WRITE, READV, WRITEV, READ_FIXED, WRITE_FIXED, READV_FIXED, WRITEV_FIXED, FSYNC, SYNC_FILE_RANGE, FALLOCATE, FTRUNCATE, FADVISE, MADVISE |
+| Filesystem | OPENAT, OPENAT2, CLOSE, STATX, RENAMEAT, UNLINKAT, MKDIRAT, SYMLINKAT, LINKAT, SETXATTR, FSETXATTR, GETXATTR, FGETXATTR, SPLICE, TEE, PIPE, EPOLL_CTL, EPOLL_WAIT |
+| Network | SEND, RECV, SENDMSG, RECVMSG, SEND_ZC, SENDMSG_ZC, RECV_ZC, ACCEPT, CONNECT, BIND, LISTEN, SHUTDOWN, SOCKET |
+| Async | ASYNC_CANCEL, TIMEOUT_REMOVE, POLL_REMOVE |
+| Armed | TIMEOUT, LINK_TIMEOUT, POLL_ADD |
+| Driver | URING_CMD, URING_CMD128 |
+| Process | WAITID, FUTEX_WAIT, FUTEX_WAKE, FUTEX_WAITV |
 
-Deferred within phase 22: BIND, LISTEN, PROVIDE_BUFFERS, REMOVE_BUFFERS, multishot variants, MSG_RING, SOCKET, FUTEX_WAIT/WAKE.
+`IORING_REGISTER_PROBE` reports exactly this executable set. Every defined opcode through `URING_CMD128` is supported except `READ_MULTISHOT`; the probe/dispatch bidirectional test prevents either side from drifting.
 
 ## 5 Architecture
 
