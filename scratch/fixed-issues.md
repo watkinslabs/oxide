@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2465-cross-worktree-log-verification
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2465 | INFRA | med | Duplicate cross-worktree log rows are covered by the existing CLAUDE worktree/path verification rule. | Policy assertions passed after a removal positive control failed. | Chris Watkins |
+
 ### B2464-keyring-real-uid-identity
 
 | Status | Class | Sev | Issue | Evidence | Owner |
