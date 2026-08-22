@@ -1,5 +1,5 @@
 // PCI probe: match the HD-Audio class, map BAR0, allocate the command ring,
-// the two BDLs and the two stream buffers, bring the controller up, and
+// the position buffer, two BDLs and two stream buffers, bring the controller up, and
 // publish the ALSA card.
 
 #![cfg(target_os = "oxide-kernel")]
@@ -23,6 +23,7 @@ const DMA32_LIMIT: u64 = 1 << 32;
 /// Frames one controller owns, so a probe failure frees exactly what it took.
 struct Frames {
     ring: u64,
+    posbuf: u64,
     playback_bdl: u64,
     capture_bdl: u64,
     playback_buffer: u64,
@@ -40,7 +41,7 @@ fn alloc_buffer(addr64: bool) -> Option<u64> {
 }
 
 fn frame_list(frames: &Frames) -> alloc::vec::Vec<(u64, u8)> {
-    [(frames.ring, 0u8), (frames.playback_bdl, 0), (frames.capture_bdl, 0),
+    [(frames.ring, 0u8), (frames.posbuf, 0), (frames.playback_bdl, 0), (frames.capture_bdl, 0),
      (frames.playback_buffer, BUFFER_ORDER as u8), (frames.capture_buffer, BUFFER_ORDER as u8)]
         .into_iter().filter(|(pa, _)| *pa != 0).collect()
 }
@@ -54,12 +55,13 @@ fn free_frames(frames: &Frames) {
 }
 
 fn alloc_frames(addr64: bool) -> Option<Frames> {
-    let mut frames = Frames { ring: 0, playback_bdl: 0, capture_bdl: 0,
+    let mut frames = Frames { ring: 0, posbuf: 0, playback_bdl: 0, capture_bdl: 0,
                               playback_buffer: 0, capture_buffer: 0 };
     let take = |slot: &mut u64, page: Option<u64>| -> bool {
         match page { Some(pa) => { *slot = pa; true } None => false }
     };
     let ok = take(&mut frames.ring, alloc_page(addr64))
+        && take(&mut frames.posbuf, alloc_page(addr64))
         && take(&mut frames.playback_bdl, alloc_page(addr64))
         && take(&mut frames.capture_bdl, alloc_page(addr64))
         && take(&mut frames.playback_buffer, alloc_buffer(addr64))
@@ -90,15 +92,18 @@ fn bring_up(bdf: pci::Bdf, mmio_base: u64, mapping: mmio_map::Mapping) -> bool {
 
     let mut hda = Hda {
         regs,
+        posbuf_pa: frames.posbuf,
         rings: Arc::new(crate::ownership::RegLock::new(
             Rings::new(frames.ring, hhdm + frames.ring))),
         playback: Stream::new(playback_index, playback_index + 1, frames.playback_bdl,
                               hhdm + frames.playback_bdl, frames.playback_buffer,
-                              hhdm + frames.playback_buffer),
+                              hhdm + frames.playback_buffer,
+                              crate::position::slot_va(hhdm + frames.posbuf, playback_index)),
         // Stream tags are one-based and live in a four-bit field; the two
         // streams have distinct descriptor indices, so index+1 is distinct too.
         capture: Stream::new(0, 1, frames.capture_bdl, hhdm + frames.capture_bdl,
-                             frames.capture_buffer, hhdm + frames.capture_buffer),
+                             frames.capture_buffer, hhdm + frames.capture_buffer,
+                             crate::position::slot_va(hhdm + frames.posbuf, 0)),
         codec: None,
         plan: None,
         jack_tags: [(0, 0); crate::controller::MAX_JACKS],

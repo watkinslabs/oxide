@@ -14,6 +14,7 @@
 // - `stream_fmt`: stream-format encoding and PCM capability decode.
 // - `bdl`: buffer descriptor list construction and ring arithmetic.
 // - `ring`: CORB/RIRB pointer arithmetic.
+// - `position`: DMA-position-buffer slot and LPIB fallback decisions.
 // - `regs`,`transport`,`controller`,`stream`,`card`,`probe`: the kernel-only
 //   MMIO, DMA, interrupt, ALSA-card and PCI-probe layers.
 
@@ -38,6 +39,7 @@ pub mod ctlname;
 pub mod stream_fmt;
 pub mod bdl;
 pub mod ring;
+pub mod position;
 pub mod elemkey;
 mod ownership;
 

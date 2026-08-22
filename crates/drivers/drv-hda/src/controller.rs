@@ -41,6 +41,8 @@ impl CodecBus for CodecPort<'_> {
 /// Everything one controller owns.
 pub struct Hda {
     pub regs: Regs,
+    /// Controller-global DMA position-buffer address.
+    pub posbuf_pa: u64,
     pub rings: Arc<RegLock<Rings>>,
     pub playback: Stream,
     pub capture: Stream,
@@ -107,6 +109,9 @@ impl Hda {
         let present = transport::reset_link(&self.regs)?;
         transport::clear_interrupts(&self.regs, self.streams);
         transport::init_cmd_io(&self.regs, &mut transport::lock_regs(&self.rings), self.interrupts);
+        let (lo, hi) = crate::position::base_words(self.posbuf_pa);
+        self.regs.w32(REG_DPLBASE, lo);
+        self.regs.w32(REG_DPUBASE, hi);
         if self.interrupts { self.regs.set32(REG_INTCTL, INT_CTRL_EN | INT_GLOBAL_EN); }
         Some(present)
     }
@@ -378,6 +383,8 @@ impl Hda {
         self.playback.stop(&regs);
         self.capture.stop(&regs);
         regs.w32(REG_INTCTL, 0);
+        regs.w32(REG_DPLBASE, 0);
+        regs.w32(REG_DPUBASE, 0);
         transport::stop_cmd_io(&regs);
     }
 }
