@@ -3262,3 +3262,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 8b5f24658 | COVERAGE | med | **`decode_madt` has hosted coverage for every entry that publishes platform state.** A conformant table drives local APIC, x2APIC, GICC, I/O APIC, interrupt-source override, GIC MSI-frame, and GIC ITS decoding through the real decoder and published owners. | B2359's regression shifts the local-APIC ID field to the adjacent UID and fails; restored decoder passes. | B2359-madt-hosted-coverage |
+
+### B2360-stale-overlay-lowerdir-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 7b63d4f51 | COVERAGE | low | **OverlayFS intentionally renders the verbatim `lowerdir=` list with another escape layer, matching the mount ABI.** Parsed layers are not re-rendered into a normalized form. | B2360's mounted VFS regression drives `show_options` through the production filesystem interface and pins the escaped-comma behavior. | B2360-stale-overlay-lowerdir-row |
