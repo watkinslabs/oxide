@@ -12,6 +12,7 @@
 //                     own device I/O and this cache from disagreeing, and the
 //                     pure request-range → page-index arithmetic.
 //   `sync.rs`       — `sync_bdevs(wait)`, the device half of `sync(2)`.
+//   `sync_tests.rs` — the device pass writes back without issuing a barrier.
 //
 // Why it exists: without it, a write to a block-device fd went straight to the
 // driver and `sync(2)`'s device pass had nothing to submit, so its submit half
@@ -23,6 +24,8 @@ mod sync;
 mod writeback;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod sync_tests;
 
 pub use coherence::{page_span, CoherentDev};
 pub use mapping::BdevMapping;
