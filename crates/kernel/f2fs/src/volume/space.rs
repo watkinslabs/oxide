@@ -1,9 +1,9 @@
 //! What `statfs` reports.
 //!
-//! The counts come from the checkpoint rather than from a scan of the segment
-//! table: the checkpoint is what a mount already read and is the same number
-//! the volume's own writer maintains. Recomputing from the table would be a
-//! second source of truth that can disagree with the first.
+//! The counts come from the mount's live accounting rather than from a scan of
+//! the segment table. That accounting starts from the checkpoint and moves at
+//! each claim or release, including a reservation that has no table bit yet.
+//! Recomputing from the table would be a second source of truth.
 //!
 //! Two counts are reported, not one. Blocks are what data occupies; NODES are
 //! what an inode occupies, and a volume can exhaust either — a filesystem full
@@ -37,7 +37,7 @@ impl<S: SectorSource> Volume<S> {
         let start = u64::from(self.sb.segment0_blkaddr);
         let total = self.sb.block_count.saturating_sub(start);
         let user = self.cp.user_block_count;
-        let free = user.saturating_sub(self.cp.valid_block_count);
+        let free = user.saturating_sub(self.valid_block_count);
         let reserved = u64::from(self.opts.reserve_root);
         let avail = free.saturating_sub(reserved);
         let nodes = u64::from(self.max_nid()).saturating_sub(u64::from(RESERVED_NODE_NUM));

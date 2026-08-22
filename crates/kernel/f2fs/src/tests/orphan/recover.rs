@@ -249,9 +249,9 @@ fn recovery_walks_every_block_of_the_region_not_only_the_first() {
 #[test]
 fn a_reclaimed_inodes_blocks_come_back_to_the_volume() {
     let park = parked(&[b"held"], &Patch::sane());
-    // Read-only first, because a mount that recovers on the way in has already
-    // given the blocks back by the time it hands the volume over.
-    let before = mount(park.bytes.clone(), false).space().free;
+    // A read-only mount request still repairs a writable medium. Make the
+    // medium itself read-only so this snapshot is genuinely pre-recovery.
+    let before = mount_ro_medium(park.bytes.clone()).space().free;
     let mut v = mount(park.bytes, true);
     v.recover_orphans().unwrap();
     v.commit().unwrap();

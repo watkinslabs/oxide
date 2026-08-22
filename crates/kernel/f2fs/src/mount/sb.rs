@@ -19,9 +19,9 @@ pub struct F2fsSuperOps {
 impl SuperOps for F2fsSuperOps {
     fn power_freeze_capable(&self) -> bool { true }
 
-    /// The counts come from the checkpoint the mount already read, which is
-    /// the same number this filesystem's own writer maintains. Two counts are
-    /// reported because a volume can exhaust either: blocks, or node slots.
+    /// The counts come from the mount's live accounting, seeded by the
+    /// checkpoint. Two counts are reported because a volume can exhaust
+    /// either blocks or node slots.
     fn statfs(&self) -> KResult<SbStatFs> {
         let v = self.fs.volume.lock();
         let s = v.space();
