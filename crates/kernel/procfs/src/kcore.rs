@@ -17,9 +17,11 @@
 // - `live`:   kernel-only — this machine's real regions and the memory read.
 
 extern crate alloc;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use vfs::{FileCred, KResult, VfsError};
+use vfs::{default_inode_ops, mk_mode, File, FileCred, FileOps, FileType, Inode, InodeBuilder,
+    InodeRef, KResult, VfsError};
 
 pub mod layout;
 pub mod notes;
@@ -68,10 +70,57 @@ pub fn open_permitted(cred: &FileCred) -> KResult<()> {
     if cred.has_cap(sched::cap::SYS_RAWIO) { Ok(()) } else { Err(VfsError::Eperm) }
 }
 
+struct KcoreOps {
+    map: fn() -> Map,
+    fetch: fn(u64, &mut [u8]),
+}
+
+impl FileOps for KcoreOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &File) -> bool { true }
+
+    /// Raw hardware authority is checked at open, so a descriptor handed to a
+    /// process that has since dropped it keeps working. # C: O(1)
+    fn on_open_file(&self, file: &File) -> KResult<()> {
+        open_permitted(file.file_cred())
+    }
+
+    fn read(&self, _inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        Ok(read::read_at(&(self.map)(), off, buf, self.fetch))
+    }
+
+    fn write(&self, _inode: &Inode, _off: u64, _buf: &[u8]) -> KResult<usize> {
+        Err(VfsError::Eperm)
+    }
+}
+
+/// Build `/proc/kcore` around the live machine providers. Keeping the file
+/// operations here makes its open gate exercisable on the hosted target.
+/// # C: O(N regions)
+fn make_inode(map: fn() -> Map, fetch: fn(u64, &mut [u8])) -> InodeRef {
+    let size = layout::file_size(&map());
+    InodeBuilder::new(crate::ids::KCORE as vfs::Ino,
+        mk_mode(FileType::Regular, KCORE_MODE), default_inode_ops(),
+        Arc::new(KcoreOps { map, fetch }))
+        .size(size)
+        .build()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use namespace_identity::{initial, NamespaceKind};
+
+    fn test_map() -> Map {
+        Map {
+            page_offset: 0x1000,
+            machine: layout::EM_X86_64,
+            regions: alloc::vec![Region { vaddr: 0x1000, size: 0x1000, paddr: Some(0) }],
+            notes: Vec::new(),
+        }
+    }
+
+    fn test_fetch(_vaddr: u64, dst: &mut [u8]) { dst.fill(0x5a); }
 
     #[test]
     fn opening_kcore_takes_raw_hardware_authority() {
@@ -90,5 +139,21 @@ mod tests {
     #[test]
     fn kcore_is_readable_by_its_owner_only() {
         assert_eq!(KCORE_MODE, 0o400);
+    }
+
+    #[test]
+    fn kcore_inode_open_runs_the_rawio_gate() {
+        let inode = make_inode(test_map, test_fetch);
+        let dentry = vfs::Dentry::new_root(Arc::clone(&inode));
+        let user = initial(NamespaceKind::User);
+        let denied = vfs::file::open_file_at(inode, dentry, vfs::OpenFlags::O_RDONLY, 0,
+            FileCred::new(vfs::Cred::root(), user.clone(), 0), None);
+        assert!(matches!(denied, Err(VfsError::Eperm)));
+
+        let inode = make_inode(test_map, test_fetch);
+        let dentry = vfs::Dentry::new_root(Arc::clone(&inode));
+        let opened = vfs::file::open_file_at(inode, dentry, vfs::OpenFlags::O_RDONLY, 0,
+            FileCred::new(vfs::Cred::root(), user, 1u64 << sched::cap::SYS_RAWIO), None);
+        assert!(opened.is_ok());
     }
 }

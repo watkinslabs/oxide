@@ -6,12 +6,10 @@
 // layout they feed can be, and is.
 
 extern crate alloc;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use hal::MmuOps;
-use vfs::{default_inode_ops, mk_mode, File, FileOps, FileType, Inode, InodeBuilder, InodeRef,
-    KResult, VfsError};
+use vfs::InodeRef;
 
 use super::{layout, notes, Map, Region};
 
@@ -117,33 +115,8 @@ fn fetch(va: u64, dst: &mut [u8]) {
     }
 }
 
-struct KcoreOps;
-
-impl FileOps for KcoreOps {
-    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
-    fn can_poll(&self, _file: &vfs::File) -> bool { true }
-
-    /// Raw hardware authority is checked at OPEN, so a descriptor handed to a
-    /// process that has since dropped it keeps working and one obtained
-    /// without it never starts. # C: O(1)
-    fn on_open_file(&self, file: &File) -> KResult<()> {
-        super::open_permitted(file.file_cred())
-    }
-
-    fn read(&self, _inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        Ok(super::read::read_at(&map(), off, buf, fetch))
-    }
-
-    fn write(&self, _inode: &Inode, _off: u64, _buf: &[u8]) -> KResult<usize> {
-        Err(VfsError::Eperm)
-    }
-}
-
 /// `/proc/kcore` inode. The reported size is the whole described span, because
 /// a consumer sizes its seeks from it. # C: O(N regions)
 pub fn make_proc_kcore() -> InodeRef {
-    InodeBuilder::new(crate::ids::KCORE as vfs::Ino,
-        mk_mode(FileType::Regular, super::KCORE_MODE), default_inode_ops(), Arc::new(KcoreOps))
-        .size(layout::file_size(&map()))
-        .build()
+    super::make_inode(map, fetch)
 }
