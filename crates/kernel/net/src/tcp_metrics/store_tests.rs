@@ -99,6 +99,14 @@ fn an_entry_past_the_staleness_horizon_reads_as_a_miss() {
 }
 
 #[test]
+fn a_stamp_from_a_future_clock_domain_fails_closed_as_a_miss() {
+    let cache = MetricsCache::new();
+    cache.set(src(), dst(), NOW + 1, 1400, Some(cookie(1)), false, TRY_EXP_NONE);
+    assert_eq!(cache.get(src(), dst(), NOW), Cached::default(),
+        "a mismatched clock must not make a cookie look freshly learned");
+}
+
+#[test]
 fn a_stale_entry_is_refreshed_empty_rather_than_amended() {
     let cache = MetricsCache::new();
     cache.set(src(), dst(), NOW, 1400, Some(cookie(1)), true, TRY_EXP_NONE);
