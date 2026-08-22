@@ -8,6 +8,7 @@
 // and the socket one the smoke scripts use.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Directory holding per-boot serial logs, relative to the repo root.
 const LOG_DIR: &str = "target/boot-logs";
@@ -20,6 +21,39 @@ const KEEP_PER_ARCH: usize = 20;
 /// reader that wants "the boot that just happened" needs a name it can know in
 /// advance, not one containing a timestamp it has to discover.
 const LATEST: &str = "latest";
+
+static LINK_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// Stage a relative symlink beside `latest`, let a test observe the staging
+/// boundary, then publish it with one same-directory rename. # C: O(1)
+fn republish_latest_with(
+    latest: &std::path::Path,
+    target: &std::path::Path,
+    staged: impl FnOnce(),
+) -> std::io::Result<()> {
+    let seq = LINK_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let Some(link_name) = latest.file_name() else {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "latest has no name"));
+    };
+    let link_name = link_name.to_string_lossy();
+    let temporary = latest.with_file_name(format!(
+        ".{link_name}.{}.{}",
+        std::process::id(),
+        seq,
+    ));
+    std::os::unix::fs::symlink(target, &temporary)?;
+    staged();
+    if let Err(error) = std::fs::rename(&temporary, latest) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// Atomically point `latest` at the new relative target. # C: O(1)
+fn republish_latest(latest: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
+    republish_latest_with(latest, target, || {})
+}
 
 /// UTC `YYYYmmdd-HHMMSS`, via `date` — the same source `xtask` already uses
 /// for build stamps, so log names sort the way build namespaces do.
@@ -72,11 +106,10 @@ pub(super) fn logfile_for(arch: &str) -> Option<PathBuf> {
     if std::fs::create_dir_all(&dir).is_err() { return None; }
     let path = dir.join(format!("{arch}-{}.log", stamp()));
     let latest = dir.join(format!("{arch}-{LATEST}.log"));
-    let _ = std::fs::remove_file(&latest);
     // A relative target keeps the link valid if the tree is moved or mounted
     // at a different path inside a container.
     if let Some(name) = path.file_name() {
-        let _ = std::os::unix::fs::symlink(name, &latest);
+        let _ = republish_latest(&latest, std::path::Path::new(name));
     }
     trim(&dir, arch);
     Some(path)
@@ -161,6 +194,28 @@ mod tests {
             let target = std::fs::read_link(&latest).expect("latest is a symlink");
             assert_eq!(target, PathBuf::from(p.file_name().unwrap()));
         });
+    }
+
+    #[test]
+    fn republishing_never_removes_the_previous_latest_link() {
+        let seq = LINK_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "oxide-serial-link-{}-{seq}",
+            std::process::id(),
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let latest = dir.join("x86_64-latest.log");
+        std::os::unix::fs::symlink("old.log", &latest).unwrap();
+
+        let mut observed = false;
+        republish_latest_with(&latest, std::path::Path::new("new.log"), || {
+            observed = std::fs::read_link(&latest).ok().as_deref()
+                == Some(std::path::Path::new("old.log"));
+        }).unwrap();
+        assert!(observed, "the old stable name remains readable until publication");
+        assert_eq!(std::fs::read_link(&latest).unwrap(), std::path::Path::new("new.log"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// The composer reads process environment; these tests mutate it.
