@@ -6,6 +6,7 @@
 //! the REQUESTS, so the fixture records `(sector, blocks)` for each one and
 //! the tests assert over that list.
 
+use alloc::vec;
 use alloc::vec::Vec;
 
 use core::cell::RefCell;
@@ -14,6 +15,9 @@ use sectors::{MemImage, SectorSource};
 use syscall::errno::Errno;
 
 use crate::uapi::BLKSIZE;
+use crate::opts::Options;
+use crate::test_image;
+use crate::volume::Volume;
 
 /// A medium that answers from an image and remembers what it was asked.
 pub struct Counting {
@@ -56,4 +60,33 @@ impl SectorSource for Counting {
     }
 
     fn writable(&self) -> bool { self.inner.writable() }
+}
+
+/// A segment table wider than one block makes removing its production
+/// prefetch call observable: the loader must issue one two-block transfer
+/// before it walks the entries. # C: O(1)
+#[test]
+fn a_wide_segment_table_is_prefetched_as_one_run() {
+    let mut v = Volume::mount_with(Counting::new(test_image::with_root().image()),
+                                   Options::defaults(), false).unwrap();
+    v.sb.segment_count_main = 56;
+    v.source_ref().clear();
+    v.load_segments().unwrap();
+    let sit = u64::from(v.sb.sit_blkaddr);
+    assert_eq!(v.source_ref().reqs_in(sit as u32, 2), vec![(sit, 2)]);
+}
+
+/// A section spanning two segments must ask for both summary blocks through
+/// the live GC entry point; a one-block fixture cannot falsify that wiring.
+/// # C: O(1)
+#[test]
+fn a_multi_segment_section_prefetches_each_summary_block() {
+    let mut v = Volume::mount_with(Counting::new(test_image::with_root().image()),
+                                   Options::defaults(), false).unwrap();
+    v.sb.segs_per_sec = 2;
+    let first = crate::uapi::sum_block_addr(v.sb.ssa_blkaddr, 0);
+    v.source_ref().clear();
+    v.gc_section(0).unwrap();
+    assert_eq!(v.source_ref().reqs_in(first, 2),
+               vec![(u64::from(first), 2)]);
 }

@@ -1,5 +1,11 @@
 # Fixed issues
 
+### D588-f2fs-readahead-geometry
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED D588 | COVERAGE | low | The f2fs segment-table and section-summary readahead hooks now have falsifiable hosted coverage at multi-block geometry. | `a_wide_segment_table_is_prefetched_as_one_run` widens the live segment count to 56 and requires one two-block transfer; `a_multi_segment_section_prefetches_each_summary_block` widens a live GC section to two segments and requires one two-block summary transfer. Removing each production hook independently produced two one-block requests / no summary request (RED); restored code passes both. | D588-f2fs-readahead-geometry |
+
 ### D587-siocgif-hosted-boundary
 
 | Status | Class | Sev | Issue | Evidence | Owner |
