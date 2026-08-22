@@ -4957,6 +4957,12 @@ against the row's own evidence.
 |---|---|---|---|---|---|
 | FIXED B2590 | INFRA | med | The open serial-SysRq boot-parameter row duplicated the existing B2244 fix and is stale ledger residue. | `cmdline::sysrq` parses `sysrq_always_enabled`, `sched::diag::sysrq` applies it independently of the distribution's `kernel.sysrq` value, and both arch boot-argument tests require the token. The existing B2244 fixed entry records the guest diagnosis and positive controls; no source change was needed. | B2590 |
 
+### B2591-stale-reap-exit-interleave-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2591 | COVERAGE | med | The open reap-vs-exit interleaving row duplicated C303 and is stale ledger residue. A deterministic turn-based scheduler harness already pins both orders instead of relying on probabilistic thread scheduling. | `sched/src/tests/interleave.rs` and `interleave_wait.rs` implement the linked test harness; its four wait/reap order cases and positive controls are recorded by C303. No source change was needed. | B2591 |
+
 ### B2584-stale-membarrier-rows
 
 | Status | Class | Sev | Issue | Evidence | Owner |
