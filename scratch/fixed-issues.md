@@ -3256,3 +3256,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED eac6b7e8d | DEFECT | low | **The absence of device and inode numbers from `NT_FILE` is required ABI, not a defect.** The descriptor contains count, page size, start/end/page-offset triples, and paths; adding identity fields would misparse later entries. | B2358's production-length regression turned RED when the entry shape was widened and GREEN when restored. | B2358-stale-nt-file-device-row |
+
+### B2359-madt-hosted-coverage
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 8b5f24658 | COVERAGE | med | **`decode_madt` has hosted coverage for every entry that publishes platform state.** A conformant table drives local APIC, x2APIC, GICC, I/O APIC, interrupt-source override, GIC MSI-frame, and GIC ITS decoding through the real decoder and published owners. | B2359's regression shifts the local-APIC ID field to the adjacent UID and fails; restored decoder passes. | B2359-madt-hosted-coverage |
