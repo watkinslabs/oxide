@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2445-seccomp-listener-random-notif-id
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2445 | MISSING | med | **Each seccomp user-notification listener now starts IDs from an independent CSPRNG seed.** | B2445 removes the boot-global counter and seeds listener-local allocation through the canonical random owner. | B2445-seccomp-listener-random-notif-id |
+
 ### B2443-stale-backlog-retirement-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
