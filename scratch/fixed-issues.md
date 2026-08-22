@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2513-oom-production-console-report
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 66b089ae9 | DEFECT | low | **A production OOM kill now leaves one bounded console record naming the victim and its `oom_score_adj`.** The report follows the real group `SIGKILL`, matching Linux 7.2.0-rc4's unconditional `pr_err` after victim selection, and formats into a fixed 80-byte stack buffer so the memory-exhaustion path neither allocates nor depends on `debug-sched`. The rare destructive-decision announcement is an explicit narrow exception to the ordinary cfg-elidable diagnostic rule. | B2513. `sched::oom::kill_process` calls the production `report` after `sigkill_group`; the focused test observes exactly `[OOM] killed process pid=4051 oom_score_adj=321`. Test-first RED lacked the observer owner; a production positive control that bypassed `report` yielded no line, then restored GREEN. Scheduler 1536/1536, klog 72/72, spec-lint tests 35/35, both release target checks, and both feature gates pass. Final paired smoke passed attempt 1 with serial RX: x86_64 46 s, aarch64 56 s. The final ratchet result is the byte-identical standing origin/main result (56 keys, 1978 findings versus baseline 1702), with no B2513 delta. | B2513-oom-production-console-report |
+
 ### B2329-freezer-backoff-sleep
 
 | Status | Class | Sev | Issue | Evidence | Owner |
