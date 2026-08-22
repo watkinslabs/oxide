@@ -72,13 +72,47 @@ fn the_wrong_shape_is_refused() {
     assert_eq!(parse(Options::vfat(), "check=nonsense").err(), Some(Errno::Einval));
 }
 
-/// A key this filesystem does not know is skipped. The generic per-mount words
-/// travel in the same string, and failing on one would make every ordinary
-/// `mount -o ro` of a FAT volume fail.
+/// A key outside the filesystem's parameter table must fail rather than turn a
+/// typo into a mount with different semantics than the caller requested.
 #[test]
-fn an_unknown_key_is_skipped() {
-    let o = vfat("ro,relatime,codepage=437");
-    assert_eq!(o.codepage.number, 437);
+fn an_unknown_key_is_refused() {
+    assert_eq!(parse(Options::vfat(), "nosuchoption=1").err(), Some(Errno::Einval));
+}
+
+/// The VFS-facing tables separate the two type-specific option sets before
+/// the shared parser receives the admitted string.
+#[test]
+fn parameter_tables_admit_only_the_named_fat_type_surface() {
+    use vfs::fs::{admit_fs_param, FsParamVerdict, FsParameter};
+
+    assert!(matches!(admit_fs_param(VFAT_PARAMS,
+        &FsParameter::string("shortname", "winnt")), FsParamVerdict::Accept(_)));
+    assert_eq!(admit_fs_param(MSDOS_PARAMS,
+        &FsParameter::string("shortname", "winnt")), FsParamVerdict::Unknown);
+    assert!(matches!(admit_fs_param(MSDOS_PARAMS,
+        &FsParameter::flag("nodots")), FsParamVerdict::Accept(_)));
+    assert_eq!(admit_fs_param(VFAT_PARAMS,
+        &FsParameter::flag("nodots")), FsParamVerdict::Unknown);
+    assert_eq!(admit_fs_param(VFAT_PARAMS,
+        &FsParameter::string("nosuchoption", "1")), FsParamVerdict::Unknown);
+}
+
+/// Generic mount flags are consumed before the FAT table, while a typo reaches
+/// the same unknown-parameter refusal used by the real mount path.
+#[test]
+fn vfs_admission_consumes_ro_and_rejects_an_unknown_fat_key() {
+    use alloc::boxed::Box;
+    use alloc::sync::Arc;
+    use vfs::FileSystemType;
+    use vfs::fs::{vfs_parse_fs_param, FsContext, FsFlags, FsParameter, FsType};
+
+    let ty: Arc<dyn FileSystemType> = FsType::with_parameters("vfat-test", 0,
+        FsFlags::FS_REQUIRES_DEV, Box::new(|_, _, _, _, _, _| Err(vfs::VfsError::Einval)),
+        Some(VFAT_PARAMS));
+    let mut fc = FsContext::for_mount(ty, 0);
+    assert_eq!(vfs_parse_fs_param(&mut fc, &FsParameter::flag("ro")), Ok(()));
+    assert_eq!(vfs_parse_fs_param(&mut fc,
+        &FsParameter::string("nosuchoption", "1")), Err(vfs::VfsError::Einval));
 }
 
 /// `allow_utime` defaults from `dmask` rather than from a constant: a mount

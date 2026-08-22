@@ -9,14 +9,17 @@
 //!
 //! Module manifest:
 //! - `values`: the option set, and the two defaults each type starts from.
+//! - `params`: the option shapes published to the VFS admission boundary.
 //! - `parse`:  one `-o` string into that set.
 //! - `show`:   that set back into the tail `/proc/mounts` carries.
 
 pub mod values;
+pub mod params;
 pub mod parse;
 pub mod show;
 
 pub use values::{Errors, Nfs, Options, MSDOS_NAME_MAX, VFAT_NAME_MAX};
+pub use params::{MSDOS_PARAMS, VFAT_PARAMS};
 pub use parse::parse;
 pub use show::show;
 
