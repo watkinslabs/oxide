@@ -13,6 +13,25 @@ fn round_trip() {
 }
 
 #[test]
+fn stream_usercopy_runs_without_receive_spinlock() {
+    let _serial = test_guard();
+    let p = UnixPair::new();
+    p.write(UnixEnd::A, b"faultable").unwrap();
+    let mut callback_ran = false;
+    let got = p.read_stream_with_offset(UnixEnd::B, 64, false, 0, false, None, false,
+        |data, _, _| {
+            callback_ran = true;
+            // A real usercopy may fault and sleep. The incoming ring must be
+            // available here; holding its Spinlock is the scheduling-while-
+            // atomic bug seen under Firefox.
+            assert!(p.a_to_b.try_lock().is_some(), "usercopy still holds receive Spinlock");
+            Ok::<_, core::convert::Infallible>((data.to_vec(), data.len()))
+        }).unwrap().expect("queued stream data");
+    assert!(callback_ran);
+    assert_eq!(got.0, b"faultable");
+}
+
+#[test]
 fn close_writer_then_eof() {
     let _serial = test_guard();
     let p = UnixPair::new();
@@ -337,4 +356,3 @@ fn dgram_message_preserves_sender_creds() {
     assert_eq!(got.creds, (40, 0, 0));
     assert!(q.pop().is_none());
 }
-

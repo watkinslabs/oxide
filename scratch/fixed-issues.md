@@ -6,6 +6,12 @@
 |---|---|---|---|---|---|
 | FIXED F1248 | MISSING | med | **F2FS encryption policy boundaries now cover open, link, and rename.** The shared admission owner reads parent/child fscrypt contexts and rejects a plaintext or differently-protected child beneath an encrypted parent before the operation proceeds. `on_open_file`, `link`, and `rename` all call that owner; exchange renames check both moved entries. | Linux 7.2.0-rc4 policy hooks require the parent-policy check at file open and before link/rename. Authentic RED: bypassing the production admission owner made the live encrypted-parent/plain-child test return `Ok(())` instead of `EPERM`; restored GREEN. Focused encrypted-volume suite 10/10; full F2FS lib suite 3712/3712. | F1248-fscrypt-policy-boundaries |
 
+### B2568-unix-recv-usercopy-under-lock
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2568 | DEFECT | critical | AF_UNIX stream receive copied into user memory while holding the receive-ring Spinlock, so a demand fault could sleep in `inode_wait` and repeatedly report scheduling while atomic. | `UnixPair::read_stream_with_offset` now serializes receive transactions with a sleepable gate, snapshots/commits under the ring lock, and invokes the copy callback after dropping that Spinlock; OOB receives use the same gate. The hosted regression `stream_usercopy_runs_without_receive_spinlock` acquires the incoming ring in the callback. Focused stream tests: 23/23; full net library: 2592/2592. Linux 7.2.0-rc4 likewise releases queue locking before the receive actor while retaining the per-socket receive mutex. | B2568-unix-recv-usercopy-under-lock |
+
 ### D592-scratchpad-lane-prefix
 
 | Status | Class | Sev | Issue | Evidence | Owner |
