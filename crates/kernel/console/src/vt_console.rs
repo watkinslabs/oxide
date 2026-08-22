@@ -7,6 +7,7 @@ use vfs::{Dentry, FdTable, File, FileOps, Ino, Inode, InodeRef, KResult, OpenFla
 use crate::devnum;
 use crate::ids;
 use crate::identity::ConsoleData;
+use crate::open_binding;
 use crate::routing::foreground_vt;
 use crate::serial;
 use crate::vt_tty;
@@ -99,7 +100,7 @@ impl FileOps for ConsoleFileOps {
 
     fn on_open_file(&self, file: &File) -> KResult<()> {
         let vt = console_vt(file.inode())?;
-        let v = if vt == 0 { foreground_vt() } else { vt };
+        let v = open_binding::resolve(vt, foreground_vt());
         let cap = sched::current().map(|t| t.has_cap(sched::cap::SYS_ADMIN)).unwrap_or(false);
         let gen = vt_tty::vt_tty(v).open_revocable(cap)?;
         file.set_private_data(v as u64);
@@ -191,7 +192,7 @@ impl FileOps for SystemConsoleFileOps {
                 Ok(())
             }
             cmdline::ConsoleKind::Vt(_) => {
-                let vt = foreground_vt();
+                let vt = open_binding::resolve(0, foreground_vt());
                 let cap = sched::current().map(|t| t.has_cap(sched::cap::SYS_ADMIN)).unwrap_or(false);
                 let gen = vt_tty::vt_tty(vt).open_revocable(cap)?;
                 file.set_private_data(vt as u64);
