@@ -357,3 +357,24 @@ fn slave_hangup_makes_master_read_eof() {
     // Slave close does NOT owe the slave a SIGHUP / EIO-on-write.
     assert!(!p.slave_hung_up());
 }
+
+#[test]
+fn vhangup_retires_old_slave_open_without_poisoning_reopen() {
+    let mut p = cooked(0);
+    let stale = p.hup_gen();
+    p.master_hangup();
+    p.clear_hangup();
+    let fresh = p.hup_gen();
+
+    assert!(p.hung_up_open(stale), "description open across hangup stays dead");
+    assert!(!p.hung_up_open(fresh), "description opened afterward is live");
+
+    p.master_write(b"new session\n");
+    let mut buf = [0u8; 16];
+    assert_eq!(p.slave_read_open(stale, &mut buf), 0, "stale read is EOF");
+    assert_eq!(p.slave_read_open(fresh, &mut buf), 12);
+    assert_eq!(&buf[..12], b"new session\n");
+    assert_eq!(p.slave_write_open(stale, b"stale"), Err(vfs::VfsError::Eio));
+    assert_eq!(p.slave_write_open(fresh, b"fresh"), Ok(5));
+    assert_eq!(p.slave_poll_open(stale), crate::hangup::HUNG_UP_POLL);
+}

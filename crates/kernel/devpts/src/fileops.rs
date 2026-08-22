@@ -172,25 +172,35 @@ impl FileOps for PtySlaveFileOps {
     /// Linux `pts_unix98_lookup`: a `TIOCSPTLCK`-locked slave can't be
     /// opened (`-EIO`) — the master must `unlockpt` first.
     /// # C: O(1)
-    fn on_open(&self, inode: &Inode) -> KResult<()> {
+    fn on_open_file(&self, file: &vfs::File) -> KResult<()> {
+        let inode = file.inode();
         let pair = pair_of(inode)?;
         if pair.is_locked() { return Err(VfsError::Eio); }
         pair.open_endpoint(false, current_has_sys_admin())?;
         // Linux clears the hangup flag on open, so a `vhangup(2)` revokes the
         // OPEN descriptors and a fresh open revives the line. A hangup that came
         // from the master's last close stays: that pty is gone for good.
-        if pair.master_is_open() { pair.with_pair(|p| p.clear_hangup()); }
+        let master_open = pair.master_is_open();
+        let gen = pair.with_pair(|p| {
+            if master_open { p.clear_hangup(); }
+            p.hup_gen()
+        });
+        file.set_revoke_gen(gen);
         Ok(())
     }
 
-    fn on_release(&self, inode: &Inode) {
+    fn on_release_file(&self, file: &vfs::File) {
+        let inode = file.inode();
         if let Ok(pair) = pair_of(inode) {
             pair.close_endpoint(false);
             pair.release_if_unused();
         }
     }
-    fn read(&self, inode: &Inode, _o: u64, buf: &mut [u8]) -> KResult<usize> {
+    fn read_file(&self, file: &vfs::File, _o: u64, buf: &mut [u8]) -> KResult<usize> {
+        let inode = file.inode();
         let pair = pair_of(inode)?;
+        let gen = file.revoke_gen();
+        if pair.with_pair(|p| p.hung_up_open(gen)) { return Ok(tty::hangup::HUNG_UP_READ); }
         slave_jobctl(pair, inode.ino(), tty::jobctl::Access::Read)?;
         #[cfg(target_os = "oxide-kernel")]
         {
@@ -201,10 +211,13 @@ impl FileOps for PtySlaveFileOps {
         // lives in the `pair` this open file keeps alive.
         let outcome = unsafe {
             sched::live::wait_event_interruptible(&pair.slave_read_wait,
-                || pair.inner.lock().slave_readable())
+                || {
+                    let p = pair.inner.lock();
+                    p.hung_up_open(gen) || p.slave_readable()
+                })
         };
         if outcome == sched::WaitOutcome::Interrupted { return Err(VfsError::Erestartsys); }
-        let n = pair.inner.lock().slave_read(buf);
+        let n = pair.inner.lock().slave_read_open(gen, buf);
         if n > 0 { slave_read_freed_master_space(pair); }
         Ok(n)
         }
@@ -215,39 +228,56 @@ impl FileOps for PtySlaveFileOps {
         }
     }
     /// F201: O_NONBLOCK read — EAGAIN when master→slave queue empty.
-    fn read_nonblock(&self, inode: &Inode, _o: u64, buf: &mut [u8]) -> KResult<usize> {
+    fn read_nonblock_file(&self, file: &vfs::File, _o: u64, buf: &mut [u8]) -> KResult<usize> {
+        let inode = file.inode();
         let pair = pair_of(inode)?;
+        let gen = file.revoke_gen();
+        if pair.with_pair(|p| p.hung_up_open(gen)) { return Ok(tty::hangup::HUNG_UP_READ); }
         // `n_tty_read` runs `job_control` at `:2200`, BEFORE the O_NONBLOCK
         // trylock at `:2207` — a background job gets SIGTTIN, not EAGAIN.
         slave_jobctl(pair, inode.ino(), tty::jobctl::Access::Read)?;
         let n = {
             let mut g = pair.inner.lock();
-            if g.slave_readable() { g.slave_read(buf) } else { return Err(VfsError::Eagain) }
+            if g.slave_readable() { g.slave_read_open(gen, buf) } else { return Err(VfsError::Eagain) }
         };
         slave_read_freed_master_space(pair);
         Ok(n)
     }
-    fn write(&self, inode: &Inode, _o: u64, buf: &[u8]) -> KResult<usize> {
+    fn write_file(&self, file: &vfs::File, _o: u64, buf: &[u8]) -> KResult<usize> {
+        let inode = file.inode();
         let pair = pair_of(inode)?;
+        let gen = file.revoke_gen();
+        if pair.with_pair(|p| p.hung_up_open(gen)) { return Err(VfsError::Eio); }
         slave_jobctl(pair, inode.ino(), tty::jobctl::Access::Write)?;
         let n = {
             let mut g = pair.inner.lock();
-            // Master hung up → slave writes fail with EIO (Linux pty semantics).
-            if g.slave_hung_up() { return Err(VfsError::Eio); }
-            g.slave_write(buf)
+            g.slave_write_open(gen, buf)?
         };
         // Program output landed in `s_to_m`: the MASTER is now readable.
         if n != 0 { pair.wake_subs(true, vfs::POLL_IN); pair.wake_readers(true); }
         Ok(n)
     }
+    fn write_nonblock_file(&self, file: &vfs::File, off: u64, buf: &[u8]) -> KResult<usize> {
+        self.write_file(file, off, buf)
+    }
     /// `n_tty_poll` for the slave half; the mask itself is
     /// `tty::Pair::slave_poll_mask` (unit-tested in the `tty` crate).
     /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
-    fn poll(&self, inode: &Inode) -> u32 {
+    fn poll_open_file(&self, file: &vfs::File) -> u32 {
+        let inode = file.inode();
         let pair = match pair_of(inode) { Ok(p) => p, Err(_) => return vfs::POLL_ERR };
-        pair.inner.lock().slave_poll_mask()
+        pair.inner.lock().slave_poll_open(file.revoke_gen())
     }
+}
+
+/// Hung-up ioctl result for a retired slave description. # C: O(1)
+pub fn hung_up_ioctl(file: &vfs::File, cmd: u32) -> Option<VfsError> {
+    if crate::is_master_inode(file.inode()) { return None; }
+    let pair = pair_of(file.inode()).ok()?;
+    if pair.with_pair(|p| p.hung_up_open(file.revoke_gen())) {
+        Some(tty::hangup::hung_up_ioctl(cmd))
+    } else { None }
 }
 
 /// A master-side read drained `s_to_m`, so the SLAVE regained write room —

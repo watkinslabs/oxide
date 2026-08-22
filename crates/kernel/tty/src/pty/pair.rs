@@ -78,6 +78,7 @@ pub struct Pair {
     /// True after either side calls `hangup` (slave close on the
     /// final fd). Subsequent reads on the opposite side return EOF.
     pub hung_up: bool,
+    pub(super) hup_gen: u64,
     /// Foreground process group id per `28§4` / TIOCSPGRP.
     pub foreground_pgrp: Option<Arc<sched::pid::PidIdentity>>,
     /// Controlling-session id per `28§4` / TIOCSCTTY. TIOCGSID reads
@@ -164,7 +165,8 @@ impl Pair {
         Self {
             pts_num,
             m_to_s: Ring::new(), s_to_m: Ring::new(),
-            hung_up: false, foreground_pgrp: None, session: None,
+            hung_up: false, hup_gen: crate::hangup::FIRST_GEN,
+            foreground_pgrp: None, session: None,
             termios: [0u8; TERMIOS_BYTES],
             winsize: Winsize::default_pty(),
             pending_sigint: false,
@@ -508,7 +510,7 @@ impl Pair {
     /// foreground pgrp. Sets `pending_sighup` so the adapter posts SIGHUP.
     /// # C: O(1)
     pub fn master_hangup(&mut self) {
-        self.hung_up = true;
+        self.retire_opens();
         self.pending_sighup = true;
     }
 
@@ -517,7 +519,7 @@ impl Pair {
     /// either-side flag; `master_hangup` is the master-close specialization
     /// that also owes the slave a SIGHUP.
     /// # C: O(1)
-    pub fn hangup(&mut self) { self.hung_up = true; }
+    pub fn hangup(&mut self) { self.retire_opens(); }
 
     /// Linux `clear_bit(TTY_HUPPED, &tty->flags)` at the tail of a successful
     /// `tty_open`. Only meaningful while the

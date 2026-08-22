@@ -47,6 +47,12 @@
 |---|---|---|---|---|---|
 | FIXED 685a055fd | COVERAGE | low | **`/proc/kcore`'s real file-operations object and inode constructor are now hosted, and an actual VFS open pins the `CAP_SYS_RAWIO` hook.** | B2375. The focused open-path test proves the production hook rejects an unprivileged open. | B2375-kcore-open-hook-coverage |
 
+### B2376-pty-slave-open-revocation
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED b799e643d | DEFECT | med | **A pty slave description opened across hangup remains revoked after a later reopen revives the line.** | B2376. The generation-aware devpts file operations distinguish stale and fresh opens through the production path. | B2376-pty-slave-open-revocation |
+
 ### B2329-freezer-backoff-sleep
 
 | Status | Class | Sev | Issue | Evidence | Owner |
