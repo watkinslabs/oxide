@@ -50,6 +50,18 @@ fn every_segment_stays_within_the_payload_bound() {
 }
 
 #[test]
+fn a_start_segment_adds_its_length_field_beyond_the_payload_bound() {
+    let sdu: alloc::vec::Vec<u8> = (0..100u32).map(|i| i as u8).collect();
+    let segs = segment_sdu(&sdu, 48).unwrap();
+    assert_eq!(segs[0].sar, u::SAR_START);
+    assert_eq!(segs[0].payload.len(), 48);
+    assert_eq!(segs[0].wire().len(), 48 + u::SDULEN_SIZE);
+    assert_eq!(segs[1].sar, u::SAR_CONTINUE);
+    assert_eq!(segs[1].wire().len(), 48);
+    assert_eq!(segs[2].sar, u::SAR_END);
+}
+
+#[test]
 fn a_continuation_with_no_start_is_refused() {
     let mut chan = chan_with_imtu(1000);
     assert_eq!(reassemble(&mut chan, u::SAR_CONTINUE, &[1, 2]), Reassembly::Error);
