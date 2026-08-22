@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2483-test-build-gate-diagnostics
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED c9229a8c4 | INFRA | med | Test-build gate failures now retain the original compiler/temp-dir diagnostic across retry and classification. | Gate self-test and isolated crate builds passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2482-ipv6-pktoptions-source-validation
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -526,6 +533,13 @@
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 6eb76b323 | MISSING | med | **`IPV6_2292PKTOPTIONS` now screens every packet-info control message against the live socket namespace, device binding, and source-address ownership before discarding its per-datagram state.** A conflicting bound interface, a link-local source without an interface, or an unusable source returns `EINVAL`; an absent selected interface returns `ENODEV`. The shared stream parser owns the exact native `in6_pktinfo` decode and requires its caller to supply the socket-context screen, so no packet-info arm can silently bypass it. | B2482. Linux 7.2.0-rc4 routes `IPV6_2292PKTOPTIONS` through `ip6_datagram_send_ctl`; its `IPV6_PKTINFO` arm checks the outgoing interface with `dev_get_by_index_rcu`, rejects link-local sources without a device, and checks non-wildcard source ownership. `packet_info_reaches_the_socket_context_screen` proves the production parser passes address `2001:db8::7` and ifindex 9 to the screen and propagates `ENODEV`. Omitting the callback made that test RED with `Ok(Slots)` instead of `Err(Enodev)`; restored code is GREEN. The focused test and full net suite pass (2575/2575), as do x86_64 and aarch64 kernel target checks. Boot smoke is omitted because this changes only an explicitly requested socket-option error path and is not boot-visible. | B2482-ipv6-pktoptions-source-validation |
+=======
+### B2483-test-build-gate-diagnostics
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED c9229a8c4 | INFRA | med | **`make test-build-gate` now retains each failed crate's first-pass Cargo output, so a transient failure cannot erase its own cause by succeeding on a diagnostic rerun.** Each parallel worker owns one temporary log; failures render that original log and classify a missing Cargo target directory separately from a compiler or test-target failure. | B2483. Linux 7.2.0-rc4 has no corresponding repository gate; the production path is `Makefile::test-build-gate` → `tools/test-build-check.sh`. The focused control makes the first fake Cargo invocation fail with `couldn't create a temp dir` and the next succeed: before the fix the gate exited 1 with only the crate name and the control reported `original diagnostic was lost`; restored GREEN preserves the error and reports `infrastructure failure: target directory vanished`. The focused self-test passes, all 177 workspace crates build their test targets in isolation, and x86_64 plus aarch64 kernel target checks pass. Boot smoke is not applicable because the change cannot enter a kernel image or boot path. | B2483-test-build-gate-diagnostics |
+>>>>>>> 2a665c271 (docs: close test-build diagnostic issue)
 
 ### B2329-freezer-backoff-sleep
 

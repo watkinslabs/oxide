@@ -35,14 +35,33 @@ if [ -z "$crates" ]; then
 fi
 
 count="$(echo "$crates" | grep -c .)"
+log_dir="$(mktemp -d)" || {
+    echo "test-build-check: cannot create diagnostic-log directory" >&2
+    exit 1
+}
+trap 'rm -rf "$log_dir"' EXIT
 failed="$(echo "$crates" | xargs -P "$jobs" -I '{}' \
-    sh -c 'cargo test --no-run --quiet -p "$1" >/dev/null 2>&1 || echo "$1"' _ '{}')"
+    sh -c '
+        log="$2/$1.log"
+        if cargo test --no-run --quiet -p "$1" >"$log" 2>&1; then
+            rm -f "$log"
+        else
+            printf "%s\n" "$1"
+        fi
+    ' _ '{}' "$log_dir")"
 
 if [ -n "$failed" ]; then
     echo "test-build-check: FAIL — these crates' test targets do not build on their own:" >&2
     for name in $failed; do
         echo "  --- cargo test --no-run -p $name ---" >&2
-        cargo test --no-run --quiet -p "$name" 2>&1 | sed 's/^/  /' >&2
+        log="$log_dir/$name.log"
+        if grep -q "couldn't create a temp dir" "$log" \
+            && grep -Eq 'No such file or directory|os error 2' "$log"; then
+            echo "  classification: infrastructure failure: target directory vanished" >&2
+        else
+            echo "  classification: compiler or test-target failure" >&2
+        fi
+        sed 's/^/  /' "$log" >&2
     done
     exit 1
 fi
