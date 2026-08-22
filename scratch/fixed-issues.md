@@ -1,5 +1,11 @@
 # Fixed issues
 
+### D591-worktree-declaration-atomic
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED D591 | INFRA | low | Parallel lanes no longer share a worktree while a Rust module declaration and its named file arrive separately. | `CLAUDE.md` now requires each lane to use its own worktree and explicitly requires `mod foo;` plus `foo.rs` to land in the same write; the current main tree has one attached worktree, no active lanes, and no in-progress ledger rows. | D591-worktree-declaration-atomic |
+
 ### D590-f2fs-formatted-sections
 
 | Status | Class | Sev | Issue | Evidence | Owner |
