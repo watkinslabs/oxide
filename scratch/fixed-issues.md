@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2514-ext4-journalled-quota-mark-dirty
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 2b6a6555a | DEFECT | med | Ext4 journalled quota dquots now persist synchronously when marked dirty. | Ext4 quota/replay tests and target checks passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2512-futex-robust-unlock-list32
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -872,6 +879,13 @@
 |---|---|---|---|---|---|
 | FIXED 91fc49aaa | MISSING | low | **A volatile OverlayFS mount now persists `work/incompat/volatile/dirty`, and any later mount refuses that work directory while the incompatibility remains.** The marker is created through the real upper filesystem inode operations before the layer stack becomes visible; workdir admission checks the incompatibility directory before either the ordinary work directory or index directory is returned. | B2511. Linux 7.2.0-rc4 creates the same four-component marker under the work base and rejects workdir cleanup when the incompatibility directory contains a feature. Before the fix, both production `OverlayFs::open` tests were RED: the volatile mount left no marker, and a premarked workdir mounted successfully instead of returning `EINVAL`; restored implementation makes both GREEN. OverlayFS 250/250, both kernel target checks, both feature gates, and diff checks pass. Final smoke was not run: the normal boot does not mount an OverlayFS or exercise the `volatile` mount admission path, while the hosted mount tests drive that exact production path. | B2511-overlay-volatile-incompat-marker |
 >>>>>>> 531cd5f2a (docs: close overlay volatile marker issue)
+=======
+### B2514-ext4-journalled-quota-mark-dirty
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 2b6a6555a | DEFECT | med | **ext4 now commits a dquot from `mark_dirty` when the filesystem uses hidden QUOTA-feature inodes or a named journalled quota file.** Plain quota files retain generic deferred writeback, while journalled records are written through the existing ext4 transaction and cleared from the dirty set only after success. This matches Linux 7.2.0-rc4 `ext4_mark_dquot_dirty` and `ext4_is_quota_journalled`. | B2514. Production reachability is `vfs::quota_setquota` and inode quota mutation → `DquotOperations::mark_dirty` → `Ext4QuotaOps::mark_dirty` → journalled `write_dquot`. Before the fix, `quota_feature_mark_dirty_commits_without_q_sync` mounted a second reader while the writer remained live and read an all-zero record; restored code makes it GREEN without `Q_SYNC`. The crash harness observes one atomic publish containing the complete qtree insertion. Qtree write faults now surface immediately from the live setquota call and retain remount rollback/retry proofs. A hosted inode-number-targeted fault keeps the combined chown/truncate rollback test precise despite intervening quota-inode writes. The full hosted ext4 suite, x86_64 and aarch64 feature gates, and diff checks pass. Final paired smoke passed attempt 1 with serial RX: x86_64 46 s, aarch64 56 s. | B2514-ext4-journalled-quota-mark-dirty |
+>>>>>>> 2bb7b510d (docs: close ext4 journalled quota dirty issue)
 
 ### B2329-freezer-backoff-sleep
 

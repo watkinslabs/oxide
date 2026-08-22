@@ -9,6 +9,8 @@ pub(crate) struct HostedFaults {
     pub(crate) free_block_after: AtomicU32,
     pub(crate) next_inode_write: AtomicBool,
     pub(crate) inode_write_after: AtomicU32,
+    pub(crate) inode_write_ino: AtomicU32,
+    pub(crate) inode_write_ino_after: AtomicU32,
     pub(crate) next_metadata_write: AtomicBool,
     pub(crate) metadata_write_after: AtomicU32,
     pub(crate) next_inode_read: AtomicBool,
@@ -35,6 +37,8 @@ impl HostedFaults {
             free_block_after: AtomicU32::new(0),
             next_inode_write: AtomicBool::new(false),
             inode_write_after: AtomicU32::new(0),
+            inode_write_ino: AtomicU32::new(0),
+            inode_write_ino_after: AtomicU32::new(0),
             next_metadata_write: AtomicBool::new(false),
             metadata_write_after: AtomicU32::new(0),
             next_inode_read: AtomicBool::new(false),
@@ -83,6 +87,14 @@ impl Mount {
     /// Hosted-test hook: fail after `ok_count` inode metadata writes. # C: O(1)
     pub fn fail_inode_write_after_for_tests(&self, ok_count: u32) {
         self.faults.inode_write_after.store(ok_count + 1, Ordering::Release);
+    }
+
+    /// Hosted-test hook: fail after `ok_count` metadata writes for `ino`,
+    /// without consuming the fault on quota-file or other inode writes.
+    /// # C: O(1)
+    pub fn fail_inode_write_for_tests(&self, ino: u32, ok_count: u32) {
+        self.faults.inode_write_ino.store(ino, Ordering::Release);
+        self.faults.inode_write_ino_after.store(ok_count + 1, Ordering::Release);
     }
 
     /// Hosted-test hook: fail the next generic metadata write. # C: O(1)

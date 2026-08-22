@@ -424,7 +424,7 @@ fn combined_size_chown_truncate_inode_failure_keeps_owner_transfer_without_size_
     let before = m.state().mount.read_inode(ino).expect("raw before combined setattr failure");
     let before_space = before.i_blocks as u64 * 512;
 
-    m.state().mount.fail_inode_write_after_for_tests(1);
+    m.state().mount.fail_inode_write_for_tests(ino, 1);
     let mut ia = vfs::Iattr {
         valid: vfs::ATTR_SIZE | vfs::ATTR_UID | vfs::ATTR_GID,
         size: bs,
