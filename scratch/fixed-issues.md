@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2491-serial-sysrq-per-port-state
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED ad892f70c | DEFECT | med | Serial SysRq arming state is now maintained independently per UART. | Driver/scheduler tests and target checks passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2490-fat-unlink-eviction
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -638,6 +645,13 @@
 |---|---|---|---|---|---|
 | FIXED 56ec569eb | DEFECT | med | **FAT unlink and rmdir now remove the name immediately but defer the victim's cluster-chain release until its final inode reference is evicted.** The syscall resolves the exact victim dentry and threads that inode through the VFS operation; FAT records the removed chain on that inode, sets its link count to zero, and releases the chain from the superblock eviction hook. Pure volume operations retain their immediate-release ownership, and deferred release failure is latched for the next sync instead of creating a second inode registry. | B2490. Linux 7.2.0-rc4 separates directory-entry removal from zero-link inode eviction. The production VFS-backed open/unlink test was RED under an immediate-release positive control with 16,316 free clusters becoming 16,315 while the open file still owned its cluster; restored deferral made both open-file and open-directory lifetime tests GREEN. FAT 332/332 and the full VFS suite pass. The full syscall suite passes 1,988 tests; its seven failures reproduce unchanged on the clean base. Both target checks pass. Final smoke reached userspace with serial RX on attempt 1: x86_64 in 52 s and aarch64 in 56 s. | B2490-fat-unlink-eviction |
 >>>>>>> 1b4bf3a5d (docs: close FAT unlink eviction issue)
+=======
+### B2491-serial-sysrq-per-port-state
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED ad892f70c | DEFECT | low | **Serial SysRq arm state now belongs to the UART that received the break, so a byte from another UART cannot complete that port's command sequence.** The 16550 and PL011 live receive wrappers each own a deadline word and pass it through `drv-serial`'s prefilter boundary; probe resets that word so a reprobed device cannot inherit an arm window. The scheduler retains the canonical five-second state machine and uses the supplied port word atomically, preserving the hard-IRQ delivery boundary. | B2491. Linux 7.2.0-rc4 keeps `sysrq` and `sysrq_ch` in each `struct uart_port`; its break and character handlers touch only the supplied port. Callsite: each UART ISR enters its driver-local `deliver`, which supplies its `SYSRQ_ARMED_UNTIL_NS` to `drv_serial::deliver` and `sched::diag::sysrq_rx`. Authentic RED: after arming UART A, a key on UART B incorrectly returned `Run(ShowTasks)` instead of `Passthrough`; restored production routing makes the cross-UART test GREEN. Focused test, 16550 19/19, PL011 20/20, sched 1536/1536, both target checks, and both all-feature checks pass. Final paired smoke reached userspace and answered typed serial SysRq on attempt 1: x86_64 in 46 s and aarch64 in 56 s. | B2491-serial-sysrq-per-port-state |
+>>>>>>> 14d3f7ad1 (docs: close B2491 serial SysRq state issue)
 
 ### B2329-freezer-backoff-sleep
 
