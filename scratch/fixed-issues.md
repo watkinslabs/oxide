@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2497-f2fs-encrypted-child-context
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 4080cb2c6 | DEFECT | med | New F2FS children now inherit and persist encrypted-parent context before publication. | F2FS encryption tests and target checks passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2496-f2fs-quota-owner-transfer
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -708,6 +715,13 @@
 |---|---|---|---|---|---|
 | FIXED 7cc132b95 | DEFECT | med | **An F2FS chown now atomically moves the file's accumulated block and inode usage to each changed quota identity, and refuses with `EDQUOT` before changing the inode when any destination has no room.** The canonical tree walk counts sparse data, metadata nodes, attributes, and claimed reservations once; every destination is checked before source or destination counters change, and the inode owner is stamped only after transfer succeeds. Later allocations remain attached to the new identities. | B2496. Linux 7.2.0-rc4 reaches quota transfer from `f2fs_setattr` before the uid/gid update. Both production `Volume::set_attr` tests were RED: usage stayed on the former owner and an over-limit target returned success; restored code makes them 2/2 GREEN. Quota call-site suite 68/68 and full F2FS suite 3,699/3,699 pass; x86_64 and aarch64 target checks pass. Boot smoke was not run because boot mounts ext4 and never reaches an F2FS chown. | B2496-f2fs-quota-owner-transfer |
 >>>>>>> d6c265e0d (doc: close F2FS quota transfer issue)
+=======
+### B2497-f2fs-encrypted-child-context
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 4080cb2c6 | MISSING | high | **A child created inside an encrypted f2fs directory now inherits the parent's complete encryption policy and persists a fresh per-inode nonce before its dentry is published.** The production create path resolves the parent key before allocation, writes the child inode, stores the indexed fscrypt context and encryption flag, and excludes the encrypted child from inline data so its contents always have a data-unit address. Special files remain plaintext. | B2497. Linux 7.2.0-rc4 uses `f2fs_new_inode` -> `fscrypt_prepare_new_inode`, then `f2fs_init_inode_metadata` -> `fscrypt_set_context` before linking the name. Authentic RED: `creating_in_an_encrypted_directory_persists_a_fresh_child_context` failed because `crypt_context` returned `None`; GREEN asserts the inherited policy, distinct nonce, encrypted flag, non-inline storage, and plaintext readback of data written by the real `Volume::create` path. Full f2fs: 3698/3698; `make x86` and `make arm` pass. Smoke skipped because both boot images mount ext4 and cannot reach this F2FS create path. | B2497-f2fs-encrypted-child-context |
+>>>>>>> c73423839 (docs: close f2fs encrypted child context row)
 
 ### B2329-freezer-backoff-sleep
 
