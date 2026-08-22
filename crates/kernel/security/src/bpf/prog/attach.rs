@@ -10,7 +10,7 @@ use vfs::InodeRef;
 use super::super::attr::{self, Attr, Caps};
 use super::super::uapi;
 use super::super::user;
-use super::super::link::cgroup_link_by_id;
+use super::super::link::link_by_id;
 use super::inode::prog_by_id;
 use super::super::{
     BpfCgroupLinkInode, BpfLsmLinkInode, BpfProgInode, 
@@ -160,7 +160,7 @@ fn resolve_prog_anchor(id: bool, value: u32) -> Result<InodeRef, Errno> {
 
 fn resolve_link_anchor(id: bool, value: u32) -> Result<(u64, InodeRef), Errno> {
     let inode = if id {
-        cgroup_link_by_id(value)?
+        link_by_id(value)?
     } else if value == 0 {
         return Err(Errno::Einval);
     } else {
