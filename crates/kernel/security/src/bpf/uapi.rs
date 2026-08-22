@@ -132,6 +132,9 @@ pub mod map_type {
     pub const LPM_TRIE: u32 = 11;
     /// Socket array a reuseport selection program names a member through.
     pub const REUSEPORT_SOCKARRAY: u32 = 24;
+    /// Present in the ABI, but unavailable without an eBPF JIT just as in
+    /// Linux's `bpf_types.h` map-ops table.
+    pub const STRUCT_OPS: u32 = 27;
     /// `__MAX_BPF_MAP_TYPE` in v7.2.0-rc4.
     pub const MAX:    u32 = 46;
 }
