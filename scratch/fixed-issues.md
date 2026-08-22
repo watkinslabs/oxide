@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2457-acpi-table-checksums
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2457 | DEFECT | med | **ACPI firmware bytes are checksum-validated before they can drive kernel state.** | B2457 validates both RSDP checksum regions, root-table checksum, and every bounded child SDT before decoder dispatch. | B2457-acpi-table-checksums |
+
 ### B2455-stale-bpf-test-run-nonlinear-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
