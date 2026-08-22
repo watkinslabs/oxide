@@ -15,6 +15,7 @@
 //! - `acquire`:  that every entry point acquires before it allocates, driven
 //!               on a FRESH MOUNT — the only state in which a missing
 //!               acquisition is visible.
+//! - `transfer`: usage moved between identities when ownership changes.
 //!
 //! Every child is declared with an explicit path: a bare `mod x;` in a module
 //! loaded by path binds against the parent directory and would silently
@@ -43,3 +44,4 @@ use sectors::MemImage;
 #[path = "quotawire/compress.rs"] mod compress;
 #[path = "quotawire/acquire.rs"] mod acquire;
 #[path = "quotawire/flushblocks.rs"] mod flushblocks;
+#[path = "quotawire/transfer.rs"] mod transfer;

@@ -22,12 +22,14 @@
 //! - `acquire`: bringing records in at an operation's entry, and the files they
 //!              come from. The only quota-file READ on an allocation path.
 //! - `charge`:  the limit decision and the counts, over records already held.
+//! - `transfer`: moving one inode's usage when its identity changes.
 //! - `records`: reading and setting limits, for a caller that is not allocating.
 //! - `flush`:   writing changed records back, at checkpoint.
 
 #[path = "quotas/kinds.rs"] mod kinds;
 #[path = "quotas/acquire.rs"] mod acquire;
 #[path = "quotas/charge.rs"] mod charge;
+#[path = "quotas/transfer.rs"] mod transfer;
 #[path = "quotas/records.rs"] mod records;
 #[path = "quotas/flush.rs"] mod flush;
 

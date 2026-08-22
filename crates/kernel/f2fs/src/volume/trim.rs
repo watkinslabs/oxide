@@ -225,6 +225,14 @@ impl<S: SectorSource> Volume<S> {
     /// millions of holes to find three blocks.
     /// # C: O(blocks the file has)
     pub(crate) fn count_blocks(&self, ino: u32) -> Result<u64, Errno> {
+        Ok(1 + self.quota_blocks(ino)?)
+    }
+
+    /// Blocks charged as space to an inode. A tree reservation is claimed in
+    /// the same operation that creates it, while the inode block is accounted
+    /// on the inode axis instead.
+    /// # C: O(blocks the file has)
+    pub(crate) fn quota_blocks(&self, ino: u32) -> Result<u64, Errno> {
         let inode = self.read_inode(ino)?;
         // A file whose saved blocks were handed back is no longer charged for
         // the sentinel of each compressed cluster: the slot stays, because it
@@ -232,7 +240,7 @@ impl<S: SectorSource> Volume<S> {
         // charge back with the reservations beside it.
         let released = inode.has(crate::flags::COMPRESS_RELEASED);
         let counts = |addr: u32| addr != NULL_ADDR && !(released && addr == COMPRESS_ADDR);
-        let mut n = 1u64;
+        let mut n = 0u64;
         // The attribute block is the inode's whether or not its data is
         // inline; counting it only on the non-inline path under-reports every
         // small file that carries attributes.
