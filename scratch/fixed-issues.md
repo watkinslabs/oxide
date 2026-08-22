@@ -3190,3 +3190,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2347 | DEFECT | low | **Every device node published into devtmpfs now carries the filesystem's shared identity.** Driver-`dev_t`, driver-factory, and boot nodes therefore share nonzero `st_dev` while preserving distinct `st_rdev`. | B2347's publication-funnel regression compared a synthesized block node with `/dev/null` and separately pinned major/minor identity. | B2347-devtmpfs-st-dev |
+
+### B2348-issue-summary-generator
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED d41569bb4 | INFRA | low | **The open-work summary is generated from canonical issue rows and is no longer stored as merge-conflict-prone derived state.** `tools/issues.sh --summary` validates every live class/severity and renders the matrix. | B2348's self-test covers every class and severity, both live statuses, and exclusion of fixed rows. | d41569bb4 |
