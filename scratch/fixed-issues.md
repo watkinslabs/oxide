@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2431-f2fs-ssr-pressure-accounting
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED e93bbb9ac | COVERAGE | low | **F2FS SSR pressure’s zero dentry and inode-metadata terms are now pinned to the volume architecture.** | B2431 adds the production-path directory-change pressure test and pins the node-only accounting. | B2431-f2fs-ssr-pressure-accounting |
+
 ### B2430-stale-overlay-single-lower-xwhiteout-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
