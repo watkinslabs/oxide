@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2486-external-citation-ratchet
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 4a3942374 | INFRA | med | Spec lint now rejects new external-source citations beyond the ratchet baseline. | Rule-focused and full spec-lint checks passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2485-dynamic-transition-bounds
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -568,6 +575,13 @@
 |---|---|---|---|---|---|
 | FIXED 72cbc85cf | DEFECT | low | **A multithreaded process may now change its current SELinux domain when the new type is transitively bounded by the old type; an unrelated domain is refused with `EPERM` instead of the former unconditional `EACCES`.** The loaded security server owns the SID-to-type walk, treats an unchanged type as bounded, and caps malformed cycles before the scheduler applies the ordinary `dyntransition` permission. | B2485. Linux 7.2.0-rc4 `selinux_setprocattr` calls `security_bounded_transition(old_sid, new_sid)` only for a non-single-threaded `current` write, returns `EPERM` when the new type's bounds chain does not reach the old type, then checks `PROCESS__DYNTRANSITION`. The focused tests were RED before the decision owner existed; mutating the live refusal back to `EACCES` made the production-hook test RED and restoring `EPERM` made it GREEN. Four bounds tests cover a child, unrelated and unchanged types plus cycle termination. SELinux 276/276, selinux-runtime 55/55 and sched 1536/1536 pass. Both kernel target gates pass. Paired smoke passed attempt 1 with userspace and serial RX: x86 in 46 s, ARM64 in 56 s. | B2485-dynamic-transition-bounds |
 >>>>>>> b04ec292e (docs: close bounded dynamic transition defect)
+=======
+### B2486-external-citation-ratchet
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 4a3942374 | COVERAGE | med | **The lint ratchet now rejects newly introduced external-source citations while grandfathering the measured historical inventory.** The production `make lint-ratchet` path runs the new text rule through `spec-lint`'s shared per-unit baseline machinery, so a new citation cannot land merely because its source text is documentation or a scratch ledger. | B2486. Linux 7.2.0-rc4 has no analogue because this is repository-policy tooling. Injecting one external source-tree path into a production-scanned document made the real ratchet fail with `text/external-source-citation 1 > 0 (baseline)`; restoring the document leaves that rule at baseline. Both focused detector tests and all 37 `spec-lint` tests pass, as do x86_64 and aarch64 kernel target checks. No boot smoke applies because the changed tooling cannot enter a kernel image or runtime path. | B2486-external-citation-ratchet |
+>>>>>>> 3d3a7d095 (docs: close external citation gate issue)
 
 ### B2329-freezer-backoff-sleep
 

@@ -26,6 +26,7 @@ crates/drivers/fbcon	code/pub-fn-complexity	42
 crates/drivers/fbdev	code/pub-fn-complexity	30
 crates/drivers/virtio	code/pub-fn-complexity	48
 crates/drivers/vt	code/pub-fn-complexity	20
+crates/drivers/vt	text/external-source-citation	1
 crates/kernel/arch-irq	code/klog-ungated	11
 crates/kernel/block	code/pub-fn-complexity	4
 crates/kernel/cgroup	code/pub-fn-complexity	13
@@ -48,6 +49,7 @@ crates/kernel/modules	code/pub-fn-complexity	33
 crates/kernel/namespace-identity	code/pub-fn-complexity	24
 crates/kernel/net	code/klog-ungated	14
 crates/kernel/net	code/pub-fn-complexity	184
+crates/kernel/net	text/external-source-citation	2
 crates/kernel/netfilter	code/pub-fn-complexity	12
 crates/kernel/netlink	code/pub-fn-complexity	9
 crates/kernel/network-namespace	code/pub-fn-complexity	2
@@ -79,3 +81,4 @@ crates/shared/kalloc	code/klog-ungated	15
 crates/shared/kalloc	code/pub-fn-complexity	7
 crates/shared/slab	code/pub-fn-complexity	2
 crates/shared/zstd	code/pub-fn-complexity	2
+scratch	text/external-source-citation	47
