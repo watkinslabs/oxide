@@ -389,12 +389,6 @@ here now.
 |---|---|---|---|---|---|
 | OPEN | COVERAGE | med | **Nothing in `procfs` can be tested through an actual mount.** `fs_impl`, `static_files` and `live` are all `#[cfg(target_os = "oxide-kernel")]`, so `ProcfsFs::new` / `build_root` / the lookup and readdir enforcement have no hosted reach — a test written against them is a phantom, which is why this lane's mount test was deleted rather than shipped. Every DECISION is ungated and tested (`fs_info`, 16 tests); the WIRING is proven only by the guest probe recorded above. Closing it needs the root-building split so an inode tree can be built hosted, the way `tmpfs` already can be. | `cargo test -p procfs` builds none of `fs_impl`; the deleted `tests/mount_identity.rs` failed to compile with `unresolved import procfs::fs_impl`. | unowned |
 
-### B1720-fsmount-real-vfsmount
-
-| Status | Class | Sev | Issue | Evidence | Owner |
-|---|---|---|---|---|---|
-| OPEN | INFRA | med | **A `make feature-gate` can report GREEN for the wrong tree.** `cd <worktree> && (gate) & (smoke) & wait` parses as `{ cd && gate } &` then `{ smoke } &` — `&` binds looser than `&&` — so the second job runs in the shell's original directory, normally the MAIN tree. Observed here: the gate type-checked `main` and passed while this branch's kernel build was broken by a missing re-export (`E0425`), which only `make x86` caught. Not a defect in the gate itself (a correctly-targeted run catches it: exit=2 with the error) but a foot-gun that the newly-mandated parallel-checks rule makes MORE likely. `CLAUDE.md` now carries the shape and says to confirm the gate log names your worktree. A `make` guard that refuses to run when `$(CURDIR)` is not the git worktree root of the checked source would remove it entirely. | This lane, twice: gate-exit=0 with `Checking vfs (/home/nd/oxide/kernel/...)` in the log while the worktree was `/home/nd/oxide/kernel-B1720`; after the fix, gate-exit=0 with the worktree's own paths. | unowned |
-
 ### B1722-cgroup2-mount-options
 
 | Status | Class | Sev | Issue | Evidence | Owner |

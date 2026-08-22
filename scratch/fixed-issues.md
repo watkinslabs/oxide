@@ -4887,3 +4887,8 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2572 | COVERAGE | med | The empty historical B1735 heading in `known_issues.md` was stale ledger residue, not an open defect. B1735 already corrected administrative link state at registration and updated the dependent AF_PACKET fixtures. | Existing fixed entries `B1735` and `B1740`; current `netdev::register_netdev` leaves ordinary devices down and hosted registration/transmit tests cover the lifecycle. No source behavior changed. | B2572 |
+### B2573-stale-feature-gate-worktree-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2573 | INFRA | med | The old B1720 wrong-worktree feature-gate row is already covered by the merged cross-worktree verification rule; it is ledger residue, not an unimplemented gate change. | B2465/R119 require each lane to verify `Checking <crate> (<path>)` names its own worktree before trusting green output. The current `CLAUDE.md` contains that rule; no source behavior changed. | B2573 |
