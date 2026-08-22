@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2500-ext4-journalled-quota-root-reserve
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED d3934dd8b | DEFECT | med | Ext4 now recognizes active visible journalled quota files for reserved-root-block admission. | Ext4 quota tests and target checks passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2499-ptrace-regset-iovec-order
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -742,6 +749,13 @@
 |---|---|---|---|---|---|
 | FIXED f4d594b00 | DEFECT | med | **OOM no longer treats an exiting process that is actively writing a core as memory that will promptly return by itself.** The ledger premise was partly stale: coredump already latches its canonical address-space state for the complete dump, and the OOM reaper already reads it. The missing consumer was OOM's self-free admission. That path now holds the task's mm once, refuses while its coredump latch is set, then applies the existing group-exit/fatal-signal rule. | B2498. Linux 7.2.0-rc4 rejects `__task_will_free_mem` when the process has a live core state because the dump may sleep. Before the fix, the production-path test reports `will_free_mem == true` after setting the real mm coredump latch; restored code reports false. Scheduler 1,536/1,536 passes; both x86_64 and aarch64 all-feature target checks pass. Final paired smoke passed attempt 1 with serial RX: x86_64 46 s, aarch64 56 s. | B2498-oom-coredump-self-free |
 >>>>>>> d2fdc29d1 (docs: close OOM coredump self-free gap)
+=======
+### B2500-ext4-journalled-quota-root-reserve
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED d3934dd8b | DEFECT | low | **An active visible ext4 quota file named by `usrjquota=` or `grpjquota=` now receives the same root-block reserve claim as a hidden superblock quota inode.** `data_reserve_flags` asks the canonical live VFS quota owner whether the allocating inode is an active quota file, so accounting can record a full filesystem instead of being the first write refused by it. | B2500. Linux 7.2.0-rc4 `ext4_mb_new_blocks` calls `ext4_is_quota_file` and adds `EXT4_MB_USE_ROOT_BLOCKS`. Authentic production control: a mounted `/aquota.user`, unprivileged allocation credentials, and exactly one real block left inside `r_blocks_count`; removing the active-file arm makes `Mount::write_at` fail `NoSpace`, restoring it allocates the block and passes. Journalled quota mount suite 15/15, full ext4 suite PASS, both target builds PASS. Paired smoke PASS on attempt 1 with serial RX: x86 46 s, ARM 57 s. | B2500-ext4-journalled-quota-root-reserve |
+>>>>>>> 1cc9122d1 (docs: close ext4 journalled quota reserve row)
 
 ### B2329-freezer-backoff-sleep
 
