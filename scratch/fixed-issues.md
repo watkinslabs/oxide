@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2439-return-fastpath-source-contract
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2439 | DEFECT | med | **The return-fastpath source contract now anchors the routed syscall wrapper and verifies IRQ closure before return work.** | B2439 updates the hosted contract after production dispatch moved behind `dispatch_routed_syscall`; the live ordering remains pinned. | B2439 |
+
 ### B2438-kdfontop-get-dimensions
 
 | Status | Class | Sev | Issue | Evidence | Owner |
