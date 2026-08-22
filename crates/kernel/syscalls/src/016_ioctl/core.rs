@@ -479,12 +479,6 @@ fn ioctl_fitrim(cur: &sched::Task, file: &vfs::File, arg: u64) -> i64 {
     rv
 }
 
-#[cfg(not(test))]
 fn current_cred() -> vfs::Cred {
     crate::pathresolve::current_cred()
-}
-
-#[cfg(test)]
-fn current_cred() -> vfs::Cred {
-    vfs::Cred::root()
 }
