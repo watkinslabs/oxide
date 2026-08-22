@@ -3113,6 +3113,12 @@ against the row's own evidence.
 |---|---|---|---|---|---|
 | FIXED e29627b4c | MISSING | med | **`BPF_MAP_TYPE_STRUCT_OPS` correctly remains unavailable while the kernel is interpreter-only.** The prior row treated its absence as an unconditional gap, but Linux publishes `bpf_struct_ops_map_ops` only under `CONFIG_BPF_JIT`; without a JIT, map creation rejects the ABI type and the association fallback is `EOPNOTSUPP`. Oxide has no BPF JIT or trampoline generator, so manufacturing a map object would create an unusable surface rather than parity. | B2335 revalidated Linux 7.2-rc4 `include/linux/bpf_types.h` and `include/linux/bpf.h`. The ABI number is now named, map creation is pinned to `EINVAL`, ordinary maps are pinned to association `EINVAL`, and a forged struct-ops fixture is pinned to the reference's no-JIT `EOPNOTSUPP`. Removing either no-JIT decision turns its positive control RED. Full security suite: 492/492 passed. | e29627b4c |
 
+### B2356-stale-l2cap-ertm-pdu-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 3b31c51e4 | DEFECT | med | **An ERTM start segment carrying two bytes beyond the negotiated payload bound is Linux parity, not an Oxide defect.** Both kernels bound each segment's SDU payload before adding the start segment's two-byte total-length field; continuation and end segments carry no such field. | B2356 revalidated the complete Linux 7.2-rc4 segmentation and frame-construction decisions. `a_start_segment_adds_its_length_field_beyond_the_payload_bound` pins 48 payload bytes plus the two-byte length only on START. Subtracting those two bytes from the first payload turns the test RED at 46 versus 48; restored code is GREEN. Bluetooth 859/859, both kernel target checks, and spec-lint 35/35 pass. | 3b31c51e4 |
+
 ### B2332-s3-resume-acceptance
 
 | Status | Class | Sev | Issue | Evidence | Owner |
