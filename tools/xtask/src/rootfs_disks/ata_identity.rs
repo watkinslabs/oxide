@@ -10,7 +10,7 @@ const WANTS_DESTINATION: &str = "/etc/systemd/system/basic.target.wants/ata-iden
 /// Inject one live AHCI `HDIO_GET_IDENTITY` probe into a boot root. # C: O(CC+debugfs)
 pub(super) fn inject(root_img: &Path, arch: &str) -> Result<(), u8> {
     let bin = super::probe_cargo(arch, PROBE_NAME)?;
-    let service = write_service()?;
+    let service = write_service(arch)?;
     super::dbg(root_img, "mkdir /etc/systemd/system")?;
     super::dbg(root_img, &format!("mkdir {WANTS_DIRECTORY}"))?;
     super::dbg_ignore(root_img, &format!("rm {PROBE_DESTINATION}"));
@@ -24,14 +24,15 @@ pub(super) fn inject(root_img: &Path, arch: &str) -> Result<(), u8> {
     Ok(())
 }
 
-fn write_service() -> Result<PathBuf, u8> {
+fn write_service(arch: &str) -> Result<PathBuf, u8> {
     let dir = PathBuf::from("target").join("smoke");
     std::fs::create_dir_all(&dir).map_err(|error| {
         eprintln!("xtask rootfs: mkdir smoke dir failed: {error}");
         1u8
     })?;
     let path = dir.join(SERVICE_NAME);
-    let body = "[Unit]\n\
+    let serial = crate::image_qemu::serial_device_name(arch);
+    let body = format!("[Unit]\n\
 Description=Oxide ATA identity smoke\n\
 DefaultDependencies=no\n\
 After=local-fs.target\n\
@@ -42,11 +43,11 @@ Type=oneshot\n\
 User=root\n\
 StandardOutput=tty\n\
 StandardError=tty\n\
-TTYPath=/dev/ttyS0\n\
+TTYPath=/dev/{serial}\n\
 ExecStart=/usr/local/bin/ata_identity_probe\n\
 \n\
 [Install]\n\
-WantedBy=basic.target\n";
+WantedBy=basic.target\n");
     std::fs::write(&path, body).map_err(|error| {
         eprintln!("xtask rootfs: write service failed: {error}");
         1u8

@@ -29,7 +29,7 @@ const SOURCES: [&str; 22] = [
 
 pub(super) fn inject(root_img: &Path, arch: &str) -> Result<(), u8> {
     let bin = build_probe(arch)?;
-    let service = write_service()?;
+    let service = write_service(arch)?;
     super::dbg(root_img, "mkdir /etc/systemd/system")?;
     super::dbg(root_img, "mkdir /etc/systemd/system/basic.target.wants")?;
     super::dbg_ignore(root_img, "rm /usr/local/bin/wait_diff");
@@ -60,7 +60,7 @@ fn build_probe(arch: &str) -> Result<PathBuf, u8> {
     Ok(out)
 }
 
-fn write_service() -> Result<PathBuf, u8> {
+fn write_service(arch: &str) -> Result<PathBuf, u8> {
     let dir = PathBuf::from("target").join("smoke");
     std::fs::create_dir_all(&dir).map_err(|e| { eprintln!("xtask rootfs: mkdir smoke dir failed: {e}"); 1u8 })?;
     let path = dir.join("wait-diff-smoke.service");
@@ -70,6 +70,7 @@ fn write_service() -> Result<PathBuf, u8> {
     // The probe stops and continues its own children, so it needs its own
     // control group left alone: KillMode=control-group with the default
     // TimeoutStartSec would reap a deliberately-stopped grandchild.
+    let serial = crate::image_qemu::serial_device_name(arch);
     let body = format!("[Unit]\n\
 Description=Oxide interruptible-wait Linux differential smoke\n\
 DefaultDependencies=no\n\
@@ -81,7 +82,7 @@ Type=oneshot\n\
 User=root\n\
 StandardOutput=tty\n\
 StandardError=tty\n\
-TTYPath=/dev/ttyS0\n\
+TTYPath=/dev/{serial}\n\
 TimeoutStartSec=300\n\
 {syslog}\
 ExecStart=/usr/local/bin/wait_diff\n\

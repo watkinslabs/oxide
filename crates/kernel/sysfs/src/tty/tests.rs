@@ -44,7 +44,8 @@ fn console_active_reports_every_registered_console() {
     let active = dir.lookup("active").expect("console/active attr");
     let mut buf = [0u8; 32];
     let n = active.read(0, &mut buf).expect("read active");
-    assert_eq!(&buf[..n], b"ttyS0 tty0\n");
+    let expected = alloc::format!("{} tty0\n", cmdline::serial_line_name());
+    assert_eq!(&buf[..n], expected.as_bytes());
 }
 
 /// Every reported name is a tty this kernel publishes a device node for: a
@@ -70,7 +71,7 @@ fn every_reported_console_names_a_published_tty() {
 #[test]
 fn console_line_names_match_the_published_nodes() {
     assert_eq!(console_line_name(cmdline::ConsoleKind::Null), "ttynull");
-    assert_eq!(console_line_name(cmdline::ConsoleKind::Serial), "ttyS0");
+    assert_eq!(console_line_name(cmdline::ConsoleKind::Serial), cmdline::serial_line_name());
     assert_eq!(console_line_name(cmdline::ConsoleKind::Vt(0)), "tty0");
     assert_eq!(console_line_name(cmdline::ConsoleKind::Vt(3)), "tty3");
 }
@@ -79,11 +80,12 @@ fn console_line_names_match_the_published_nodes() {
 /// where only `tty0`/`console` register `dev_attr_active`.
 #[test]
 fn serial_tty_has_no_active_attr() {
-    assert!(!tty_has_active("ttyS0"));
+    let serial = cmdline::serial_line_name();
+    assert!(!tty_has_active(serial));
     let root = make_sys_devices_virtual_tty_inode();
-    let dir = root.lookup("ttyS0").expect("ttyS0 device dir");
+    let dir = root.lookup(serial).expect("serial device dir");
     assert!(dir.lookup("active").is_err());
-    assert_eq!(tty_dev_attrs("ttyS0"), &["dev", "uevent"]);
+    assert_eq!(tty_dev_attrs(serial), &["dev", "uevent"]);
 }
 
 /// `tty0`/`console` list `active` alongside `dev`/`uevent` in the dir. # C: n/a
@@ -98,7 +100,7 @@ fn active_devices_advertise_active_attr() {
 #[test]
 fn tty_devices_expose_subsystem_symlink() {
     let root = make_sys_devices_virtual_tty_inode();
-    let dir = root.lookup("ttyS0").expect("ttyS0 device dir");
+    let dir = root.lookup(cmdline::serial_line_name()).expect("serial device dir");
     let link = dir.lookup("subsystem").expect("subsystem symlink");
     assert_eq!(link.readlink().expect("readlink"), b"../../../../class/tty".to_vec());
 }

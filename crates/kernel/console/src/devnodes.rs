@@ -16,7 +16,7 @@ pub fn try_register_devnodes() -> drv::KResult<()> {
     push_tty_node(&mut published, "tty", crate::devnum::tty_alias_rdev(), Arc::new(move || Arc::clone(&tty)))?;
     push_tty_node(&mut published, "tty0", console_rdev(0), Arc::new(move || Arc::clone(&tty0)))?;
 
-    push_tty_node(&mut published, "ttyS0", crate::serial::serial_rdev(), Arc::new(make_serial_inode))?;
+    push_tty_node(&mut published, cmdline::serial_line_name(), crate::serial::serial_rdev(), Arc::new(make_serial_inode))?;
     push_tty_node(&mut published, "ttynull", crate::devnum::ttynull_rdev(), Arc::new(make_ttynull_inode))?;
 
     for vt in 1..=tty::N_VT as u8 {

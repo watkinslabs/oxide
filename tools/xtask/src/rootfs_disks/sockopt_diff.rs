@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 pub(super) fn inject(root_img: &Path, arch: &str) -> Result<(), u8> {
     let bin = super::probe_cargo(arch, "sockopt_diff")?;
-    let service = write_service()?;
+    let service = write_service(arch)?;
     super::dbg(root_img, "mkdir /etc/systemd/system")?;
     super::dbg(root_img, "mkdir /etc/systemd/system/basic.target.wants")?;
     super::dbg_ignore(root_img, "rm /usr/local/bin/sockopt_diff");
@@ -22,7 +22,7 @@ pub(super) fn inject(root_img: &Path, arch: &str) -> Result<(), u8> {
     Ok(())
 }
 
-fn write_service() -> Result<PathBuf, u8> {
+fn write_service(arch: &str) -> Result<PathBuf, u8> {
     let dir = PathBuf::from("target").join("smoke");
     std::fs::create_dir_all(&dir).map_err(|e| { eprintln!("xtask rootfs: mkdir smoke dir failed: {e}"); 1u8 })?;
     let path = dir.join("sockopt-diff-smoke.service");
@@ -30,7 +30,8 @@ fn write_service() -> Result<PathBuf, u8> {
     // (`sock::priv_pair`); KillMode=control-group with the default
     // TimeoutStartSec is fine here since the child always exits promptly,
     // but User=root is required for the root half of every privileged case.
-    let body = "[Unit]\n\
+    let serial = crate::image_qemu::serial_device_name(arch);
+    let body = format!("[Unit]\n\
 Description=Oxide SOL_NETLINK/SOL_SOCKET Linux differential smoke\n\
 DefaultDependencies=no\n\
 After=local-fs.target\n\
@@ -41,11 +42,11 @@ Type=oneshot\n\
 User=root\n\
 StandardOutput=tty\n\
 StandardError=tty\n\
-TTYPath=/dev/ttyS0\n\
+TTYPath=/dev/{serial}\n\
 ExecStart=/usr/local/bin/sockopt_diff\n\
 \n\
 [Install]\n\
-WantedBy=basic.target\n";
+WantedBy=basic.target\n");
     std::fs::write(&path, body).map_err(|e| { eprintln!("xtask rootfs: write service failed: {e}"); 1u8 })?;
     Ok(path)
 }

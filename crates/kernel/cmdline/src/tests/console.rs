@@ -50,6 +50,14 @@ fn pl011_counts_as_serial() {
 }
 
 #[test]
+fn platform_serial_line_uses_the_uart_drivers_linux_name() {
+    #[cfg(target_arch = "aarch64")]
+    assert_eq!(serial_line_name(), "ttyAMA0");
+    #[cfg(not(target_arch = "aarch64"))]
+    assert_eq!(serial_line_name(), "ttyS0");
+}
+
+#[test]
 fn options_decode_baud_parity_bits_and_flow() {
     let o = parse_options(b"115200n8r");
     assert_eq!(o.baud, 115_200);
