@@ -704,7 +704,6 @@ here now.
 | OPEN | MISSING | med | `log_buf_len=` cannot be honoured: the record ring is a fixed 64 KiB `static` in BSS with no allocation involved, so it cannot be resized at boot. Needs the ring moved behind a boot-time allocation. | `klog::RING_BYTES` is `const`; `RING.buf` is `UnsafeCell<[u8; RING_BYTES]>`. | |
 | OPEN | MISSING | med | `slub_debug=`, `page_poison=`, `debug_pagealloc=` cannot be honoured: every allocator and page debug facility here is a compile-time Cargo feature, absent from the binary when off, while the reference makes them runtime boot parameters. A boot cannot be made to poison pages without a rebuild. | `debug-heappoison`, `debug-efence`, `debug-cow`, `debug-dealloc-diag` etc. are all `#[cfg(feature = ...)]`; no runtime switch exists for any of them. | |
 | OPEN | MISSING | low | `boot_delay=` cannot be honoured: no calibrated delay loop exists (`loops_per_jiffy` has no analogue here). | No delay-calibration code in `crates/`; the only spins are bounded iteration counts. | |
-| OPEN | MISSING | low | `console=ttynull` names a console this kernel has no device for, so it falls through to "no parseable entry" and both classes stay registered — the opposite of what the parameter asks. Needs a null tty device before the name can mean anything. | `cmdline::console::classify` returns `None` for `ttynull`, pinned by `a_device_name_this_kernel_drives_no_console_for_is_not_classified`; `console_classes_in` then reports `(true, true)`. | |
 
 ### B1989-membarrier-sync-core-and-rseq
 
