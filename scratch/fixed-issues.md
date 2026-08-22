@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2474-bpf-verifier-access-errno
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 123db9946 | DEFECT | med | BPF verifier access failures now preserve Linux EACCES instead of collapsing to EINVAL. | Security tests and target checks passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2473-push-pipeline-status-contract
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -436,6 +443,13 @@
 |---|---|---|---|---|---|
 | FIXED ad19ce90d | INFRA | med | **State-changing commands may no longer be piped while a downstream command's status is treated as proof.** The repository workflow now names the exact `git push ... \| tail` failure mode, requires either a direct invocation or explicit producer-status capture, and requires fetching and comparing the remote ref to the intended SHA before publication is reported. | The pre-change policy assertion found neither safeguard (`rg` exit 1); the new exact assertions pass. `cargo test -p spec-lint` passes 35/35, and both x86_64 and aarch64 release kernel target checks pass from the B2473 worktree. The final diff is workflow documentation and ledgers only, so no boot is required. | B2473-push-pipeline-status-contract |
 >>>>>>> b1b93c35e (docs: close push pipeline status issue)
+=======
+### B2474-bpf-verifier-access-errno
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 123db9946 | DEFECT | med | **BPF program loading now preserves Linux's access-denied verifier result for unreadable registers, out-of-range stack accesses, and uninitialised stack reads.** Structural bytecode failures remain `EINVAL`, while the production `BPF_PROG_LOAD` verifier funnel maps all four access-error variants, including the already-correct context-access case, to `EACCES`. | B2474. Linux 7.2.0-rc4 returns `-EACCES` from its register-read and stack-access verification paths. The loader-level regression exercises an unreadable R0, a read below the 512-byte stack, and an unwritten in-range stack slot; unchanged production was RED with `EINVAL`, restored code is GREEN with `EACCES`. Security 493/493 and both kernel target checks pass. Smoke omitted because this changes only rejected `BPF_PROG_LOAD` errno reporting and is not boot-visible. | B2474-bpf-verifier-access-errno |
+>>>>>>> 17fbf09ee (docs: close B2474 BPF verifier errno)
 
 ### B2329-freezer-backoff-sleep
 
