@@ -86,6 +86,29 @@ fn ipv6_anycast_is_device_local_and_refcounted() {
 }
 
 #[test]
+fn ipv6_anycast_reaches_udp_only_on_its_owning_interface() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let stack = NetStack::new();
+    let (iface, _) = stack.register_loopback();
+    let other = stack.ifaces.register(alloc::sync::Arc::new(crate::LoopbackDev::new()));
+    let endpoint = stack.bind_udp6(Ipv6Addr::ANY, 42_324).unwrap();
+    let anycast = Ipv6Addr::from_segments([0x2001, 0xdb8, 7, 0, 0, 0, 0, 10]);
+    let rtnl = stack.rtnl_lock();
+    stack.v6_anycast_acquire(&rtnl, 0, iface, anycast).unwrap();
+    drop(rtnl);
+
+    stack.deliver_rx_ipv6(
+        other, &udp_packet(Ipv6Addr::LOOPBACK, anycast, 9_002, 42_324),
+    ).unwrap();
+    assert!(endpoint.recv(false).is_none());
+
+    stack.deliver_rx_ipv6(
+        iface, &udp_packet(Ipv6Addr::LOOPBACK, anycast, 9_002, 42_324),
+    ).unwrap();
+    assert_eq!(endpoint.recv(false).unwrap().payload, alloc::vec![1]);
+}
+
+#[test]
 fn ipv6_foreign_unicast_reaches_a_socket_bound_to_it_when_a_local_route_covers_it() {
     // The transparent-proxy delivery shape, IPv6 half: no interface is
     // configured with the destination, a local-table route selects local input
