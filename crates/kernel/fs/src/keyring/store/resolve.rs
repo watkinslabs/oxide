@@ -52,19 +52,20 @@ impl Store {
                        self.session.insert(t.tid, v); v }
             }
             // `look_up_user_keyrings` names these `_uid.<uid>` / `_uid_ses.<uid>`
-            // inside the CALLER'S user namespace's `.user_reg` register, so two
-            // namespaces holding the same uid hold two different keyrings.
+            // from `cred->user->uid` inside the caller's user namespace's
+            // `.user_reg` register. The real uid identifies AND owns the rings;
+            // changing only fsuid must not select a different pair.
             KEY_SPEC_USER_KEYRING => {
-                if let Some(&v) = self.user.get(&(t.user_ns, t.fsuid)) { v }
-                else { let name = alloc::format!("{USER_KEYRING_PREFIX}{}", t.fsuid);
-                       let v = self.new_keyring(&name, t.fsuid, GID_INVALID, USER_KEYRING_PERM, Quota::InQuota, ns)?;
-                       self.user.insert((t.user_ns, t.fsuid), v); v }
+                if let Some(&v) = self.user.get(&(t.user_ns, t.ruid)) { v }
+                else { let name = alloc::format!("{USER_KEYRING_PREFIX}{}", t.ruid);
+                       let v = self.new_keyring(&name, t.ruid, GID_INVALID, USER_KEYRING_PERM, Quota::InQuota, ns)?;
+                       self.user.insert((t.user_ns, t.ruid), v); v }
             }
             KEY_SPEC_USER_SESSION_KEYRING => {
-                if let Some(&v) = self.usersess.get(&(t.user_ns, t.fsuid)) { v }
-                else { let name = alloc::format!("{USER_SESSION_KEYRING_PREFIX}{}", t.fsuid);
-                       let v = self.new_keyring(&name, t.fsuid, GID_INVALID, USER_KEYRING_PERM, Quota::InQuota, ns)?;
-                       self.usersess.insert((t.user_ns, t.fsuid), v); v }
+                if let Some(&v) = self.usersess.get(&(t.user_ns, t.ruid)) { v }
+                else { let name = alloc::format!("{USER_SESSION_KEYRING_PREFIX}{}", t.ruid);
+                       let v = self.new_keyring(&name, t.ruid, GID_INVALID, USER_KEYRING_PERM, Quota::InQuota, ns)?;
+                       self.usersess.insert((t.user_ns, t.ruid), v); v }
             }
             // `@a` is the authorisation token the caller has assumed; `@` is
             // the destination keyring recorded IN that token, so a helper
@@ -168,7 +169,7 @@ impl Store {
         if let Some(&v) = self.process.get(&t.tgid) { roots.push(v); }
         match self.session.get(&t.tid) {
             Some(&v) => roots.push(v),
-            None => if let Some(&v) = self.usersess.get(&(t.user_ns, t.fsuid)) { roots.push(v); },
+            None => if let Some(&v) = self.usersess.get(&(t.user_ns, t.ruid)) { roots.push(v); },
         }
         roots
     }
@@ -178,8 +179,8 @@ impl Store {
     /// plus the user keyring reached by linkage. # C: O(log N)
     pub fn possession_roots(&self, t: &TaskIds) -> Vec<i32> {
         let mut roots = self.cred_roots(t);
-        if let Some(&v) = self.user.get(&(t.user_ns, t.fsuid)) { if !roots.contains(&v) { roots.push(v); } }
-        if let Some(&v) = self.usersess.get(&(t.user_ns, t.fsuid)) { if !roots.contains(&v) { roots.push(v); } }
+        if let Some(&v) = self.user.get(&(t.user_ns, t.ruid)) { if !roots.contains(&v) { roots.push(v); } }
+        if let Some(&v) = self.usersess.get(&(t.user_ns, t.ruid)) { if !roots.contains(&v) { roots.push(v); } }
         roots
     }
 }

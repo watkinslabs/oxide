@@ -217,6 +217,7 @@ fn cur_ctx() -> Ctx {
             let t = TaskIds {
                 tid: c.tid,
                 tgid: c.vtgid.load(Acquire),
+                ruid: c.creds.ruid.load(Acquire),
                 fsuid: c.creds.fsuid.load(Acquire),
                 fsgid: c.creds.fsgid.load(Acquire),
                 groups: c.creds.group_list().map(|g| g.to_vec()).unwrap_or_default(),

@@ -38,7 +38,7 @@ mod watch;
 
 /// A caller with fsuid == fsgid == `uid` and no supplementary groups.
 fn ctx(tid: u32, uid: u32) -> Ctx {
-    Ctx::with_caps(TaskIds { tid, tgid: tid, fsuid: uid, fsgid: uid, groups: Vec::new(), ..TaskIds::default() }, 0, false, false)
+    Ctx::with_caps(TaskIds { tid, tgid: tid, ruid: uid, fsuid: uid, fsgid: uid, groups: Vec::new(), ..TaskIds::default() }, 0, false, false)
 }
 
 /// The same caller in a non-initial user namespace whose uid map is `map`.

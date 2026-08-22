@@ -102,8 +102,8 @@ pub fn get_keyring_id(c: &Ctx, id: i32, create: bool) -> i64 {
             KEY_SPEC_THREAD_KEYRING       => Some(g.thread.contains_key(&t.tid)),
             KEY_SPEC_PROCESS_KEYRING      => Some(g.process.contains_key(&t.tgid)),
             KEY_SPEC_SESSION_KEYRING      => Some(g.session.contains_key(&t.tid)),
-            KEY_SPEC_USER_KEYRING         => Some(g.user.contains_key(&(t.user_ns, t.fsuid))),
-            KEY_SPEC_USER_SESSION_KEYRING => Some(g.usersess.contains_key(&(t.user_ns, t.fsuid))),
+            KEY_SPEC_USER_KEYRING         => Some(g.user.contains_key(&(t.user_ns, t.ruid))),
+            KEY_SPEC_USER_SESSION_KEYRING => Some(g.usersess.contains_key(&(t.user_ns, t.ruid))),
             _ => None,
         };
         if present == Some(false) { return e(Errno::Enokey); }
