@@ -3208,3 +3208,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2350 | MISSING | low | **A `CAP_MAC_ADMIN` caller can read a retained raw label after the loaded policy drops its type; other callers see the policy's unlabeled context.** The canonical SID table supplies ordinary and force renderers, and the inode-label hook selects via current-task capability. | B2350's service and live xattr tests pinned both renderer selection and capability gating. | B2350 |
+
+### B2351-fat-readdir-byte-cookies
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 381449099 | MISSING | low | **FAT `readdir` cursors use the canonical byte offset after each name's short on-medium record, so deleting an earlier sibling cannot shift a saved cookie.** Long-name groups resume from their first record while emitted next positions remain the short record's end. | B2351's mounted VFS regression saved a cursor, deleted an earlier sibling, and resumed at the correct entry. | 381449099 |
