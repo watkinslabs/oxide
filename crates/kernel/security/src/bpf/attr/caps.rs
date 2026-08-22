@@ -47,6 +47,6 @@ pub fn prog_type_supported(t: u32) -> bool {
     matches!(t, uapi::prog_type::SOCKET_FILTER | uapi::prog_type::CGROUP_DEVICE
         | uapi::prog_type::CGROUP_SKB | uapi::prog_type::CGROUP_SOCK_ADDR
         | uapi::prog_type::LSM | uapi::prog_type::TRACING
-        | uapi::prog_type::PERF_EVENT)
-        | uapi::prog_type::RAW_TRACEPOINT | uapi::prog_type::RAW_TRACEPOINT_WRITABLE)
+        | uapi::prog_type::PERF_EVENT | uapi::prog_type::RAW_TRACEPOINT
+        | uapi::prog_type::RAW_TRACEPOINT_WRITABLE)
 }
