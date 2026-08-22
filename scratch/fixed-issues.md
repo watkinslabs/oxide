@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2432-stale-ninep-rename-flags-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2432 | MISSING | low | 9P correctly rejects unsupported flagged rename operations with `EINVAL`; the stale row requested unsupported emulation. | Production admission tests and fs/target checks passed. | Chris Watkins |
+
 ### B2469-stale-hugetlb-rss-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
