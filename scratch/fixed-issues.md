@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2528-posix-acl-chmod-stores
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 8d848723b | DEFECT | med | chmod now persists the POSIX ACL mask through the canonical inode ACL backend across tmpfs, ext4, and OverlayFS upper files. | VFS/fs/ext4/overlay tests and target checks passed. | Chris Watkins |
+
 ### B2527-stale-tmpfs-casefold-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |

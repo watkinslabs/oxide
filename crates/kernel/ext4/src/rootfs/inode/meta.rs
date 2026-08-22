@@ -226,12 +226,19 @@ pub(crate) fn ext4_setattr(inode: &Inode, idmap: &Idmap, ia: &Iattr) -> KResult<
             return Err(VfsError::Eio);
         }
     }
+    if ia.valid & vfs::ATTR_MODE != 0 {
+        inode.store_posix_acl_chmod(inode.perm().unwrap_or(0))?;
+    }
     Ok(())
 }
 
 fn ext4_setattr_size(inode: &Inode, idmap: &Idmap, ia: &Iattr) -> KResult<()> {
     let Some((st, ino)) = ext4_state_of(inode) else {
-        return vfs::simple_setattr(inode, idmap, ia);
+        vfs::simple_setattr(inode, idmap, ia)?;
+        if ia.valid & vfs::ATTR_MODE != 0 {
+            inode.store_posix_acl_chmod(inode.perm().unwrap_or(0))?;
+        }
+        return Ok(());
     };
     let old_uid = inode.uid().unwrap_or(0);
     let old_gid = inode.gid().unwrap_or(0);
@@ -284,6 +291,9 @@ fn ext4_setattr_size(inode: &Inode, idmap: &Idmap, ia: &Iattr) -> KResult<()> {
     if vfs::simple_setattr(inode, idmap, &rest).is_err() {
         rollback_setattr_inode(inode, old_uid, old_gid, old_mode, old_atime, old_mtime, old_ctime)?;
         return Err(VfsError::Eio);
+    }
+    if rest.valid & vfs::ATTR_MODE != 0 {
+        inode.store_posix_acl_chmod(inode.perm().unwrap_or(0))?;
     }
     Ok(())
 }

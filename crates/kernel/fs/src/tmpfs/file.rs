@@ -369,6 +369,9 @@ impl InodeOps for TmpfsFileInodeOps {
     fn setattr(&self, inode: &Inode, idmap: &vfs::Idmap, ia: &vfs::Iattr) -> KResult<()> {
         vfs::simple_setattr(inode, idmap, ia)?;
         if let Some(d) = inode.private::<TmpfsFileData>() { d.set_charged_owner(QuotaOwner::of(inode)); }
+        if ia.valid & vfs::ATTR_MODE != 0 {
+            inode.store_posix_acl_chmod(inode.perm().unwrap_or(0))?;
+        }
         Ok(())
     }
 }

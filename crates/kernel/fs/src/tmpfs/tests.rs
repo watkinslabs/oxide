@@ -404,9 +404,47 @@ mod nlink_mode_tests {
 #[cfg(test)]
 mod xattr_tests {
     use super::*;
+    use alloc::vec::Vec;
+    use vfs::posix_acl::{from_xattr, to_xattr, AclEntry, ACL_GROUP_OBJ, ACL_MASK, ACL_OTHER,
+                         ACL_UNDEFINED_ID, ACL_USER, ACL_USER_OBJ};
     use vfs::xattr::XattrError;
+    use vfs::{Cred, GroupList, Iattr, ATTR_MODE, MAY_READ, MAY_WRITE};
 
     fn file() -> InodeRef { make_tmpfs_file_inode(false, 0o644, 0, 0, Weak::new(), TmpfsSb::unlimited()) }
+
+    fn entry(tag: u16, perm: u16, id: u32) -> AclEntry { AclEntry { tag, perm, id } }
+
+    fn named_user_acl() -> Vec<u8> {
+        to_xattr(&[
+            entry(ACL_USER_OBJ, 0o6, ACL_UNDEFINED_ID),
+            entry(ACL_USER, 0o6, 1000),
+            entry(ACL_GROUP_OBJ, 0o4, ACL_UNDEFINED_ID),
+            entry(ACL_MASK, 0o6, ACL_UNDEFINED_ID),
+            entry(ACL_OTHER, 0o4, ACL_UNDEFINED_ID),
+        ])
+    }
+
+    fn user() -> Cred {
+        Cred { uid: 1000, gid: 9, cap_dac_override: false, cap_dac_read_search: false,
+               cap_fowner: false, cap_chown: false, cap_fsetid: false,
+               groups: GroupList::empty() }
+    }
+
+    #[test]
+    fn chmod_narrows_the_stored_acl_not_only_the_mode() {
+        let i = make_tmpfs_file_inode(false, 0o664, 0, 0, Weak::new(), TmpfsSb::unlimited());
+        i.setxattr("system.posix_acl_access", named_user_acl(), false, false).expect("set acl");
+        assert_eq!(i.permission(MAY_READ | MAY_WRITE, &user()), Ok(()));
+
+        i.setattr(&vfs::IDENTITY,
+                  &Iattr { valid: ATTR_MODE, mode: 0o600, ..Iattr::default() })
+            .expect("chmod");
+
+        assert_eq!(i.permission(MAY_READ, &user()), Err(VfsError::Eacces));
+        let stored = i.getxattr("system.posix_acl_access").expect("acl remains named");
+        let acl = from_xattr(&stored).expect("decode acl");
+        assert_eq!(acl.iter().find(|e| e.tag == ACL_MASK).unwrap().perm, 0);
+    }
 
     // set → get → list → remove round-trip on ONE tmpfs inode.
     #[test]

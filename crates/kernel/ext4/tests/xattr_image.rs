@@ -185,3 +185,42 @@ fn a_posix_acl_is_stored_as_the_on_disk_record_and_not_the_interchange_blob() {
     assert_eq!(got.len(), 5);
     assert_eq!(got[1], AclEntry { tag: ACL_USER, perm: 0o6, id: 1000 });
 }
+
+#[test]
+fn chmod_narrows_the_acl_and_the_narrowing_survives_remount() {
+    use vfs::posix_acl::{from_xattr, to_xattr, AclEntry, ACL_GROUP_OBJ, ACL_MASK, ACL_OTHER,
+                         ACL_UNDEFINED_ID, ACL_USER, ACL_USER_OBJ};
+    use vfs::{Cred, GroupList, Iattr, VfsError, ATTR_MODE, MAY_READ, MAY_WRITE};
+
+    let entry = |tag, perm, id| AclEntry { tag, perm, id };
+    let acl = to_xattr(&[
+        entry(ACL_USER_OBJ, 0o6, ACL_UNDEFINED_ID),
+        entry(ACL_USER, 0o6, 1000),
+        entry(ACL_GROUP_OBJ, 0o4, ACL_UNDEFINED_ID),
+        entry(ACL_MASK, 0o6, ACL_UNDEFINED_ID),
+        entry(ACL_OTHER, 0o4, ACL_UNDEFINED_ID),
+    ]);
+    let user = Cred { uid: 1000, gid: 9, cap_dac_override: false, cap_dac_read_search: false,
+                      cap_fowner: false, cap_chown: false, cap_fsetid: false,
+                      groups: GroupList::empty() };
+    let disk = build_disk();
+    let path = b"/acl-chmod.bin";
+
+    {
+        let m = ext4::rootfs::Ext4Mount::open(disk.clone()).unwrap();
+        let inode = m.state().create_at(path, 0o664).expect("create");
+        inode.setxattr("system.posix_acl_access", acl, false, false).expect("set acl");
+        assert_eq!(inode.permission(MAY_READ | MAY_WRITE, &user), Ok(()));
+        inode.setattr(&vfs::IDENTITY,
+                      &Iattr { valid: ATTR_MODE, mode: 0o600, ..Iattr::default() })
+            .expect("chmod");
+        assert_eq!(inode.permission(MAY_READ, &user), Err(VfsError::Eacces));
+    }
+
+    let m = ext4::rootfs::Ext4Mount::open(disk).unwrap();
+    let inode = m.state().lookup_inode_any(path).expect("remount lookup");
+    assert_eq!(inode.permission(MAY_READ, &user), Err(VfsError::Eacces));
+    let stored = inode.getxattr("system.posix_acl_access").expect("stored acl");
+    let entries = from_xattr(&stored).expect("decode acl");
+    assert_eq!(entries.iter().find(|e| e.tag == ACL_MASK).unwrap().perm, 0);
+}
