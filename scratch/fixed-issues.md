@@ -3286,3 +3286,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 1f8ecb9e6 | INFRA | low | **The syscall-compliance matrix no longer advertises AF_UNIX urgent receive as unfinished.** The matrix note is marked superseded, and the linter rejects stale AF_UNIX OOB gap text outside the main table. | B2364's negative matrix-lint regression fails on the stale phrase and passes after the narrative correction. | B2364-stale-syscall-matrix-oob-row |
+
+### B2365-tcp-metrics-clock-domain-test
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 32c44aea8 | COVERAGE | low | **A TCP metrics stamp from an earlier clock domain fails closed as a cache miss.** The wrapping-age rule remains the single cache decision; future stamps cannot appear freshly learned. | B2365's future-stamp regression turns RED when wrapping subtraction is replaced by saturating subtraction, and GREEN when restored. | B2365-tcp-metrics-clock-domain-test |
