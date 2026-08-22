@@ -17,7 +17,9 @@ use syscall::errno::Errno;
 use vfs::file_ops::{DirContext, DirEmit};
 use vfs::inode_ops::CreateCtx;
 use vfs::types::{FileType, S_IFREG};
-use vfs::InodeRef;
+use vfs::posix_acl::{to_xattr, AclEntry, ACL_GROUP_OBJ, ACL_MASK, ACL_OTHER,
+                     ACL_UNDEFINED_ID, ACL_USER, ACL_USER_OBJ};
+use vfs::{Cred, GroupList, Iattr, InodeRef, VfsError, ATTR_MODE, MAY_READ, MAY_WRITE};
 
 use crate::config::Config;
 use crate::testfs::{layer, lookup as find_path, mkfile, mkpath, slurp};
@@ -164,6 +166,40 @@ fn the_overlays_own_markers_are_invisible_to_a_caller() {
     assert!(listed.contains(&"user.mine".to_string()));
     assert!(!listed.iter().any(|n| n.starts_with("trusted.overlay.")), "{listed:?}");
     assert!(f.setxattr("trusted.overlay.opaque", b"y".to_vec(), false, false).is_err());
+}
+
+#[test]
+fn chmod_forwards_the_acl_rewrite_to_the_copied_up_inode() {
+    let (l, up, lo) = image();
+    let lower = mkfile(&lo, "acl", b"image");
+    let entry = |tag, perm, id| AclEntry { tag, perm, id };
+    lower.setxattr("system.posix_acl_access", to_xattr(&[
+        entry(ACL_USER_OBJ, 0o6, ACL_UNDEFINED_ID),
+        entry(ACL_USER, 0o6, 1000),
+        entry(ACL_GROUP_OBJ, 0o4, ACL_UNDEFINED_ID),
+        entry(ACL_MASK, 0o6, ACL_UNDEFINED_ID),
+        entry(ACL_OTHER, 0o4, ACL_UNDEFINED_ID),
+    ]), false, false).expect("set lower acl");
+    let user = Cred { uid: 1000, gid: 9, cap_dac_override: false, cap_dac_read_search: false,
+                      cap_fowner: false, cap_chown: false, cap_fsetid: false,
+                      groups: GroupList::empty() };
+    assert_eq!(lower.permission(MAY_READ | MAY_WRITE, &user), Ok(()));
+
+    let fs = OverlayFs::open(OPTS, &l.resolve(), true).unwrap();
+    let over = fs.root_inode().lookup("acl").unwrap();
+    over.setattr(&vfs::IDENTITY,
+                 &Iattr { valid: ATTR_MODE, mode: 0o600, ..Iattr::default() })
+        .expect("overlay chmod");
+
+    assert_eq!(over.permission(MAY_READ, &user), Err(VfsError::Eacces));
+    let upper = find_path(&up, "acl").expect("copied-up inode");
+    assert_eq!(upper.permission(MAY_READ, &user), Err(VfsError::Eacces));
+    let upper_acl = upper.getxattr("system.posix_acl_access").expect("upper keeps ACL");
+    let upper_acl = vfs::posix_acl::from_xattr(&upper_acl).expect("decode upper ACL");
+    assert_eq!(upper_acl.iter().find(|e| e.tag == ACL_MASK).unwrap().perm, 0,
+               "the forwarded chmod must rewrite the copied-up ACL");
+    assert_eq!(lower.permission(MAY_READ | MAY_WRITE, &user), Ok(()),
+               "copy-up must not mutate the image layer's ACL");
 }
 
 #[test]

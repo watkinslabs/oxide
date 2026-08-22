@@ -28,6 +28,7 @@ use sync::{Inode as InodeClass, Spinlock};
 
 use crate::posix_acl::{AclEntry, AclType};
 use crate::types::{KResult, VfsError};
+use crate::xattr::XattrError;
 
 use super::model::Inode;
 
@@ -169,5 +170,34 @@ impl Inode {
         let mut entries = acl.to_vec();
         crate::posix_acl::chmod_masq(&mut entries, mode).map_err(|_| VfsError::Eio)?;
         Ok(Some(entries))
+    }
+
+    /// `posix_acl_chmod` through the filesystem's actual ACL store. The mode
+    /// has already been applied by `->setattr`; this rewrites the access ACL to
+    /// match it, removes a now-redundant ACL, and publishes the exact cached
+    /// answer only after the backend write succeeds. # C: O(N_entries) + one
+    /// attribute write
+    pub fn store_posix_acl_chmod(&self, mode: u16) -> KResult<()> {
+        let Some(entries) = self.posix_acl_chmod(mode)? else { return Ok(()); };
+        let mut folded = mode;
+        let keep = crate::posix_acl::equiv_mode(&entries, &mut folded)
+            .map_err(|_| VfsError::Eio)?;
+        let stored = if keep {
+            self.setxattr(AclType::Access.xattr_name(), crate::posix_acl::to_xattr(&entries),
+                          false, false)
+        } else {
+            self.removexattr(AclType::Access.xattr_name())
+        };
+        match stored {
+            Ok(()) => {}
+            Err(XattrError::NotFound) if !keep => {}
+            Err(XattrError::NotFound) => return Err(VfsError::Enoent),
+            Err(XattrError::Exists) => return Err(VfsError::Eexist),
+            Err(XattrError::NotSup) => return Err(VfsError::Eopnotsupp),
+            Err(XattrError::Fs(e)) => return Err(e),
+        }
+        let cached = if keep { Some(Arc::from(entries.into_boxed_slice())) } else { None };
+        self.set_cached_acl(AclType::Access, cached);
+        Ok(())
     }
 }
