@@ -21,6 +21,7 @@ const FORBIDDEN: &[&str] = &[
     " essentially ",
     " basically ",
     " fundamentally ",
+    "Deferred within phase",
 ];
 
 pub fn run(root: &Path, f: &mut Findings) {
@@ -219,7 +220,6 @@ fn check_forbidden(path: &Path, text: &str, f: &mut Findings) {
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::{declared_feature_line, retired_debug_features};
