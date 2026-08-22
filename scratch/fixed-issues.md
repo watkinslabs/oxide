@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2516-stale-rlimit-sigpending-cap-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED ae0f29b26 | DEFECT | med | RLIMIT_SIGPENDING accounting already enforces the live per-user cap; the former open premise was stale. | Scheduler documentation and accounting tests passed. | Chris Watkins |
+
 ### B2515-runtime-serial-console-options
 
 | Status | Class | Sev | Issue | Evidence | Owner |
