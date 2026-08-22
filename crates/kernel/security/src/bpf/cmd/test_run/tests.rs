@@ -85,6 +85,34 @@ fn an_skb_run_accepts_only_the_checksum_flag_and_no_cpu_or_batch() {
 }
 
 #[test]
+fn checksum_complete_rejects_a_frame_changed_after_the_snapshot() {
+    let mut frame = [0u8; 19];
+    frame[14..].copy_from_slice(&[0x45, 0, 0, 5, 0x7f]);
+    assert_eq!(
+        run_checksum_complete(uapi::test_flags::SKB_CHECKSUM_COMPLETE, &mut frame, |_| Ok(7)),
+        Ok(7),
+    );
+    assert_eq!(
+        run_checksum_complete(uapi::test_flags::SKB_CHECKSUM_COMPLETE, &mut frame, |packet| {
+            packet[0] ^= 1;
+            Ok(7)
+        }),
+        Ok(7),
+    );
+    assert_eq!(
+        run_checksum_complete(uapi::test_flags::SKB_CHECKSUM_COMPLETE, &mut frame, |packet| {
+            packet[18] ^= 1;
+            Ok(7)
+        }),
+        Err(Errno::Ebadmsg),
+    );
+    assert_eq!(run_checksum_complete(0, &mut frame, |packet| {
+        packet[18] ^= 1;
+        Ok(7)
+    }), Ok(7));
+}
+
+#[test]
 fn an_skb_run_needs_at_least_a_link_layer_header() {
     assert_eq!(uapi::ETH_HLEN, 14);
     for short in [0u32, 1, uapi::ETH_HLEN - 1] {
