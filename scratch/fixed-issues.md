@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2447-stale-arm64-el1-poe-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED ec09e66ce | DEFECT | low | **The aarch64 EL1 permission-overlay row was stale: enabling only the EL0 overlay is required kernel behavior.** | B2447 revalidated the POE capability setup and preserved EL1 registers untouched. | B2447-stale-arm64-el1-poe-row |
+
 ### B2446-bpf-batch-loop-coverage
 
 | Status | Class | Sev | Issue | Evidence | Owner |
