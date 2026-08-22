@@ -46,7 +46,11 @@ pub(crate) fn do_rmdir_at(dirfd: i32, raw: &str) -> i64 {
     if let Some(rv) = crate::deleg_break::break_deleg_for_mutation(&parent.inode) { return rv; }
     // D29: parent dir `i_rwsem` EXCLUSIVE across the backend rmdir (Linux
     // `do_rmdir` locks the parent); dropped before the dcache invalidate below.
-    let r = { let _g = parent.inode.inode_lock(); parent.inode.rmdir(&name) };
+    let victim_inode = victim.as_ref().and_then(|d| d.inode());
+    let r = { let _g = parent.inode.inode_lock(); match victim_inode.as_ref() {
+        Some(inode) => parent.inode.rmdir_with_victim(&name, inode),
+        None => parent.inode.rmdir(&name),
+    }};
     match r {
         // D25+D30: backend rmdir ran first. With the victim dir dentry in hand,
         // `d_invalidate` FIRST tears down its whole cached subtree (the dentry +

@@ -7,6 +7,7 @@
 //! whichever record matched second.
 
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use vfs::{mk_mode, FileOps, FileType, InodeBuilder, InodeOps, InodeRef};
 
@@ -37,6 +38,9 @@ pub struct FatNode {
     /// without them every read walks from the first cluster and reading a
     /// large file costs a walk per request.
     pub(crate) cache: sync::Spinlock<ChainCache, sync::TaskList>,
+    /// Cluster chain whose last name is gone but whose open inode still owns
+    /// it. Zero means no deferred release; FAT data chains start at two.
+    release_cluster: AtomicU32,
 }
 
 impl FatNode {
@@ -57,6 +61,16 @@ impl FatNode {
 
     /// The directory this entry LIVES in. # C: O(1)
     pub(crate) fn container(&self) -> Option<u32> { self.parent }
+
+    /// Attach the removed name's chain to this inode until eviction. # C: O(1)
+    pub(crate) fn defer_release(&self, cluster: u32) {
+        self.release_cluster.store(cluster, Ordering::Release);
+    }
+
+    /// Take the chain exactly once at the final eviction edge. # C: O(1)
+    pub(crate) fn take_release(&self) -> u32 {
+        self.release_cluster.swap(0, Ordering::AcqRel)
+    }
 }
 
 /// Build the inode for one entry.
@@ -69,6 +83,13 @@ pub(crate) fn node_inode(fs: Arc<FatFs>, entry: Option<ShortEntry>, location: Di
                          parent: Option<u32>, slot: u64, nr_slots: usize) -> InodeRef {
     let opts = fs.options();
     let ino = ident::inode_number(&location, entry.as_ref());
+    build_inode(fs, entry, location, parent, slot, nr_slots, opts, ino)
+}
+
+/// Build one uncached inode after the cache miss has been decided. # C: O(1)
+fn build_inode(fs: Arc<FatFs>, entry: Option<ShortEntry>, location: DirLocation,
+               parent: Option<u32>, slot: u64, nr_slots: usize, opts: crate::opts::Options,
+               ino: u64) -> InodeRef {
     let (ftype, perms) = match &entry {
         // The root has no record and therefore no attribute byte; it presents
         // as a directory with the mount's directory mask applied.
@@ -81,8 +102,11 @@ pub(crate) fn node_inode(fs: Arc<FatFs>, entry: Option<ShortEntry>, location: Di
     let file_ops: Arc<dyn FileOps> = Arc::new(FatOps);
     let times = stamps(&fs, parent, slot, entry.is_some());
     let node = FatNode { fs, entry, location, parent, slot, nr_slots,
-                         cache: sync::Spinlock::new(ChainCache::new()) };
+                         cache: sync::Spinlock::new(ChainCache::new()),
+                         release_cluster: AtomicU32::new(0) };
+    let weak_sb = node.fs.superblock().as_ref().map(Arc::downgrade).unwrap_or_default();
     let mut builder = InodeBuilder::new(ino, mk_mode(ftype, perms), inode_ops, file_ops)
+        .sb(weak_sb)
         .size(size)
         .owner(opts.uid, opts.gid)
         .private(Arc::new(node));

@@ -1,4 +1,5 @@
 use super::*;
+use alloc::string::String;
 use alloc::vec;
 use vfs::FileType;
 use crate::dirent::{ATTR_ARCH, ATTR_DIR, ATTR_RO};
@@ -250,6 +251,22 @@ fn writable_mount(type_name: &'static str, opts: crate::opts::Options) -> Arc<Fa
         .expect("mount")
 }
 
+/// A writable FAT instance realized through the same superblock boundary a
+/// production mount uses. # C: O(image bytes)
+fn writable_vfs_mount() -> (Arc<FatFs>, Arc<vfs::SuperBlock>) {
+    let fs = writable_mount("vfat", crate::opts::Options::vfat());
+    let any: Arc<dyn vfs::fs::FileSystem> = fs.clone();
+    let root = Some(fs.root_inode());
+    let s_op = any.super_ops().expect("FAT super operations");
+    let ty: Arc<dyn vfs::FileSystemType> = vfs::fs::FsType::new(
+        any.name(), any.magic(), any.fs_flags(),
+        alloc::boxed::Box::new(|_, _, _, _, _, _| unreachable!("fixture is already mounted")));
+    let sb = vfs::SuperBlock::from_ops(ty, s_op, root, any.magic(), 0xFA70_0001,
+        any.block_size(), String::from("fatfs"), Arc::new(()));
+    any.set_sb(Arc::downgrade(&sb)).expect("set superblock");
+    (fs, sb)
+}
+
 fn ctx() -> vfs::CreateCtx<'static> { vfs::CreateCtx::root() }
 
 /// Every namei operation reaches the volume through the VFS vector a real
@@ -290,6 +307,51 @@ fn the_vfs_operations_create_remove_and_rename_on_the_medium() {
 
     root.unlink_child("renamed.txt").expect("unlink");
     assert_eq!(root.lookup("renamed.txt").err(), Some(VfsError::Enoent));
+}
+
+/// The last name and the last open reference are different lifetime edges.
+/// Unlink removes the first; only eviction after close may release the chain.
+#[test]
+fn an_open_file_keeps_its_cluster_until_the_last_reference_goes() {
+    let (fs, sb) = writable_vfs_mount();
+    let root = sb.s_root_inode().expect("root");
+    let inode = root.lookup("HELLO.TXT").expect("existing file");
+    let dentry = vfs::Dentry::new_root(inode.clone());
+    let file = vfs::File::new(inode.clone(), dentry.clone(), vfs::OpenFlags::O_RDONLY);
+    let before = fs.volume.lock().free_clusters();
+
+    root.unlink_child_with_victim("HELLO.TXT", &inode).expect("unlink");
+    assert_eq!(fs.volume.lock().free_clusters(), before,
+        "unlink released a cluster still owned by the open file");
+    let mut bytes = [0u8; 5];
+    assert_eq!(file.pread(&mut bytes, 0).expect("read after unlink"), bytes.len());
+    assert_eq!(&bytes, b"hello");
+
+    drop(file);
+    drop(dentry);
+    vfs::file::iput(inode);
+    assert_eq!(fs.volume.lock().free_clusters(), before + 1,
+        "the final eviction did not release the unlinked file's cluster");
+}
+
+#[test]
+fn an_open_directory_keeps_its_cluster_until_the_last_reference_goes() {
+    let (fs, sb) = writable_vfs_mount();
+    let root = sb.s_root_inode().expect("root");
+    let inode = root.mkdir("EMPTY", 0o755, &ctx()).expect("mkdir");
+    let dentry = vfs::Dentry::new_root(inode.clone());
+    let file = vfs::File::new(inode.clone(), dentry.clone(), vfs::OpenFlags::O_RDONLY);
+    let before = fs.volume.lock().free_clusters();
+
+    root.rmdir_with_victim("EMPTY", &inode).expect("rmdir");
+    assert_eq!(fs.volume.lock().free_clusters(), before,
+        "rmdir released a cluster still owned by the open directory");
+
+    drop(file);
+    drop(dentry);
+    vfs::file::iput(inode);
+    assert_eq!(fs.volume.lock().free_clusters(), before + 1,
+        "the final eviction did not release the unlinked directory's cluster");
 }
 
 /// FAT has no link count and no way to name one file twice, so the slot is

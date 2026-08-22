@@ -16,6 +16,7 @@
 
 use alloc::string::{String, ToString};
 use alloc::sync::{Arc, Weak};
+use core::sync::atomic::AtomicBool;
 
 use syscall::errno::Errno;
 
@@ -51,6 +52,12 @@ pub struct FatFs {
     /// Which of the two type names this mount was made under. The medium is
     /// the same either way; the naming rules are not.
     type_name: &'static str,
+    /// The realized superblock owns inode identity and the final eviction
+    /// edge. Without it an open-but-unlinked file has no lifetime owner.
+    sb: sync::Spinlock<Weak<vfs::SuperBlock>, sync::TaskList>,
+    /// An eviction has no return channel; retain a failed chain release for
+    /// the next filesystem sync instead of silently losing the medium error.
+    evict_error: AtomicBool,
     /// Held so the superblock operations can reach the filesystem they belong
     /// to, which the `&self` those operations are asked for cannot.
     me: Weak<FatFs>,
@@ -95,6 +102,8 @@ impl FatFs {
             volume: sync::Spinlock::new(volume),
             source,
             type_name,
+            sb: sync::Spinlock::new(Weak::new()),
+            evict_error: AtomicBool::new(false),
             me: me.clone(),
         }))
     }
@@ -130,6 +139,9 @@ impl FatFs {
 
     /// This mount's option set. # C: O(1)
     pub fn options(&self) -> Options { *self.volume.lock().options() }
+
+    /// The superblock this instance was realized into. # C: O(1)
+    pub(crate) fn superblock(&self) -> Option<Arc<vfs::SuperBlock>> { self.sb.lock().upgrade() }
 }
 
 /// The current wall clock as the fields a record stores, under this mount's
@@ -173,6 +185,10 @@ impl vfs::fs::FileSystem for FatFs {
     fn show_options(&self) -> String { crate::opts::show(self.volume.lock().options()) }
     fn super_ops(&self) -> Option<Arc<dyn vfs::superblock::SuperOps>> {
         self.me.upgrade().map(|fs| Arc::new(sb::FatSuperOps { fs }) as Arc<dyn vfs::superblock::SuperOps>)
+    }
+    fn set_sb(&self, sb: Weak<vfs::SuperBlock>) -> KResult<()> {
+        *self.sb.lock() = sb;
+        Ok(())
     }
 }
 

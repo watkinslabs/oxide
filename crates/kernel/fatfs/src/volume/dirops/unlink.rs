@@ -27,24 +27,40 @@ impl<S: SectorSource> Volume<S> {
     /// unreachable and still marked in use.
     /// # C: O(directory bytes + chain length)
     pub fn unlink(&mut self, dir: &DirHandle, name: &str, now: FatTime) -> Result<(), Errno> {
+        let cluster = self.unlink_name(dir, name, now)?;
+        self.release_chain(cluster)
+    }
+
+    /// Remove a file's name but leave its chain for the inode lifetime owner.
+    /// # C: O(directory bytes)
+    pub(crate) fn unlink_name(&mut self, dir: &DirHandle, name: &str, now: FatTime)
+        -> Result<u32, Errno> {
         if !self.writable() { return Err(Errno::Erofs); }
         let hit = self.find_entry(dir, name)?;
         if hit.is_dir() { return Err(Errno::Eisdir); }
         self.remove_group(dir, hit.group_start(), hit.nr_slots)?;
-        self.release_chain(hit.entry.cluster)?;
-        self.touch_dir(dir, now)
+        self.touch_dir(dir, now)?;
+        Ok(hit.entry.cluster)
     }
 
     /// Remove the directory `name` names, which must hold nothing.
     /// # C: O(directory bytes + chain length)
     pub fn rmdir(&mut self, dir: &DirHandle, name: &str, now: FatTime) -> Result<(), Errno> {
+        let cluster = self.rmdir_name(dir, name, now)?;
+        self.release_chain(cluster)
+    }
+
+    /// Remove an empty directory's name but defer its chain to eviction.
+    /// # C: O(directory bytes)
+    pub(crate) fn rmdir_name(&mut self, dir: &DirHandle, name: &str, now: FatTime)
+        -> Result<u32, Errno> {
         if !self.writable() { return Err(Errno::Erofs); }
         let hit = self.find_entry(dir, name)?;
         if !hit.is_dir() { return Err(Errno::Enotdir); }
         self.require_empty(&hit)?;
         self.remove_group(dir, hit.group_start(), hit.nr_slots)?;
-        self.release_chain(hit.entry.cluster)?;
-        self.touch_dir(dir, now)
+        self.touch_dir(dir, now)?;
+        Ok(hit.entry.cluster)
     }
 
     /// `ENOTEMPTY` unless the directory `hit` names holds only `.` and `..`.

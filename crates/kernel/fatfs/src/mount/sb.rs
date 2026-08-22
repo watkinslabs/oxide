@@ -10,9 +10,10 @@
 
 use alloc::string::String;
 use alloc::sync::Arc;
+use core::sync::atomic::Ordering;
 
 use vfs::superblock::{SbStatFs, SuperOps};
-use vfs::KResult;
+use vfs::{Inode, KResult};
 
 use super::{errno_to_vfs, FatFs, MSDOS_SUPER_MAGIC};
 
@@ -55,9 +56,24 @@ impl SuperOps for FatSuperOps {
     /// a count written ahead of the table it counts describes a state that was
     /// never on the medium.
     fn sync_fs(&self, _wait: bool) -> KResult<()> {
+        if self.fs.evict_error.swap(false, Ordering::AcqRel) { return Err(vfs::VfsError::Eio); }
         let mut v = self.fs.volume.lock();
         if !v.writable() { return Ok(()); }
         v.flush_table().map_err(errno_to_vfs)?;
         v.flush_fsinfo().map_err(errno_to_vfs)
+    }
+
+    /// Release a linkless inode's cluster chain only after its final open
+    /// reference has gone. # C: O(chain length)
+    fn evict_inode(&self, inode: &Inode) {
+        if let Some(node) = inode.private::<super::node::FatNode>() {
+            let cluster = node.take_release();
+            if cluster != 0 {
+                if self.fs.volume.lock().release_chain(cluster).is_err() {
+                    self.fs.evict_error.store(true, Ordering::Release);
+                }
+            }
+        }
+        inode.set_state(vfs::inode::I_FREEING | vfs::inode::I_CLEAR, vfs::inode::I_DIRTY);
     }
 }

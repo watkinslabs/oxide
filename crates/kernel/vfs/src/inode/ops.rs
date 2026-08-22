@@ -22,8 +22,16 @@ impl Inode {
     pub fn mkdir(&self, name: &str, mode: u32, ctx: &CreateCtx) -> KResult<InodeRef> { self.i_op.mkdir(self, name, mode, ctx) }
     /// `i_op->rmdir`. # C: backend-dependent
     pub fn rmdir(&self, name: &str) -> KResult<()> { self.i_op.rmdir(self, name) }
+    /// `i_op->rmdir` with the resolved victim. # C: backend-dependent
+    pub fn rmdir_with_victim(&self, name: &str, victim: &InodeRef) -> KResult<()> {
+        self.i_op.rmdir_with_victim(self, name, victim)
+    }
     /// `i_op->unlink`. # C: backend-dependent
     pub fn unlink_child(&self, name: &str) -> KResult<()> { self.i_op.unlink(self, name) }
+    /// `i_op->unlink` with the resolved victim. # C: backend-dependent
+    pub fn unlink_child_with_victim(&self, name: &str, victim: &InodeRef) -> KResult<()> {
+        self.i_op.unlink_with_victim(self, name, victim)
+    }
     /// `i_op->symlink`. # C: backend-dependent
     pub fn symlink_child(&self, name: &str, target: &[u8], ctx: &CreateCtx) -> KResult<()> { self.i_op.symlink(self, name, target, ctx) }
     /// `i_op->mknod`. # C: backend-dependent

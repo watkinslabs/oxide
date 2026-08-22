@@ -116,6 +116,12 @@ pub trait InodeOps: Send + Sync {
     /// `i_op->rmdir` — remove the empty child directory `name`. Default `Eperm`
     /// (see `create`). # C: backend-dependent
     fn rmdir(&self, _inode: &Inode, _name: &str) -> KResult<()> { Err(VfsError::Eperm) }
+    /// `i_op->rmdir` with the already-resolved victim inode. Backends whose
+    /// object lifetime depends on the victim override this; others retain the
+    /// existing name-only operation. # C: backend-dependent
+    fn rmdir_with_victim(&self, inode: &Inode, name: &str, _victim: &InodeRef) -> KResult<()> {
+        self.rmdir(inode, name)
+    }
 
     /// `i_op->mknod` — create a device/FIFO/socket child. `mode` carries the
     /// `S_IF*` + perm bits, `rdev` the packed `dev_t`. `ctx` carries the mount
@@ -142,6 +148,10 @@ pub trait InodeOps: Send + Sync {
     /// `i_op->unlink` — remove the child file `name`. Default `Eperm`
     /// (see `create`). # C: backend-dependent
     fn unlink(&self, _inode: &Inode, _name: &str) -> KResult<()> { Err(VfsError::Eperm) }
+    /// `i_op->unlink` with the already-resolved victim inode. # C: backend-dependent
+    fn unlink_with_victim(&self, inode: &Inode, name: &str, _victim: &InodeRef) -> KResult<()> {
+        self.unlink(inode, name)
+    }
 
     /// `i_op->rename` — rename/exchange/whiteout `old_name` (in this dir) with
     /// `new_name` in `new_dir`. `flags` is Linux `RENAME_*`; `ctx` carries the
