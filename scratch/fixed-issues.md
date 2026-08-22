@@ -23,6 +23,12 @@
 |---|---|---|---|---|---|
 | FIXED 37a074ac6 | DEFECT | low | **An inode flagged encrypted whose context attribute is absent now reports `ENODATA` across the F2FS crypto entry points, matching fscrypt.** | B2371. The production context lookup preserves the missing-attribute errno and the focused write/policy controls pass. | B2371-f2fs-missing-crypt-context |
 
+### B2372-retired-debug-feature-catalog
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 999ebd9cd | COVERAGE | low | **The retired `debug-panic` feature is absent and now protected by a spec-lint catalog rule against reintroduction.** | B2372. A temporary manifest declaration produced the expected retired-feature lint finding; restored manifests pass. | B2372-retired-debug-feature-catalog |
+
 ### B2329-freezer-backoff-sleep
 
 | Status | Class | Sev | Issue | Evidence | Owner |
