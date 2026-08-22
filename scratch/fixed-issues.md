@@ -1,5 +1,11 @@
 # Fixed issues
 
+### D586-overlay-index-mount-validation
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED D586 | MISSING | med | OverlayFS now validates its persistent index before publishing the mount root and removes entries with malformed names, undecodable origins, missing upper objects, or mismatched origin markers. | Linux 7.2.0-rc4 performs index cleanup during mount setup. The production mount test creates a malformed persisted entry; removing the validation call leaves it visible (RED), while the mounted filesystem removes it before publication (GREEN). Full overlayfs hosted suite: 254/254. | D586-overlay-index-mount-validation |
+
 ### D584-selinuxfs-region-duplicate-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
