@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2527-stale-tmpfs-casefold-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 8d4241df6 | DEFECT | med | Tmpfs casefold and strict-encoding mount options are admitted, validated, and consumed by folded lookup; the former open premise was stale. | Tmpfs/fs tests and target checks passed. | Chris Watkins |
+
 ### B2526-socket-selinux-type-transition
 
 | Status | Class | Sev | Issue | Evidence | Owner |
