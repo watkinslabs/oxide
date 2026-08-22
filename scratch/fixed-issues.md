@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2523-tcp-urgent-arrival-callsite
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 0892dc011 | DEFECT | med | TCP urgent-data arrival now has production-ingress coverage proving SIGURG delivery to the owning task. | Net suite and target checks passed. | Chris Watkins |
+
 ### B2522-stale-tmpfs-quota-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
