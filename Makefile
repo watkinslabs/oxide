@@ -55,7 +55,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         smoke-af-packet-diff-x86 smoke-af-packet-diff-arm smoke-af-packet-diff \
         smoke-wait-diff-x86 smoke-wait-diff-arm smoke-wait-diff wait-diff-selftest \
         smoke-sockopt-diff-x86 smoke-sockopt-diff-arm smoke-sockopt-diff \
-        frame-gate frame-gate-x86 frame-gate-arm \
+        frame-gate frame-gate-x86 frame-gate-arm s3-resume-gate-x86 accept-s3-resume-x86 \
         uaccess-extable-gate uaccess-extable-gate-x86 uaccess-extable-gate-arm \
         stack-gate stack-gate-x86 stack-gate-arm \
         irq-gate irq-gate-x86 irq-gate-arm \
@@ -164,7 +164,7 @@ counters:
 # the same canonical ELF paths, and the size/depth gates contractually inspect
 # the default binary. Build debug-all first, then overwrite it with default.
 .NOTPARALLEL: ci
-ci: warnings-control lint-ratchet audit-counts matrix-gate hosted-gate test-build-gate test build-debug build uaccess-extable-gate frame-gate stack-gate irq-gate
+ci: warnings-control lint-ratchet audit-counts matrix-gate hosted-gate test-build-gate test build-debug build uaccess-extable-gate s3-resume-gate-x86 frame-gate stack-gate irq-gate
 
 # Structural gate on the syscall compliance ledger: one row per syscall number,
 # the declared column count on every row (escape-aware, so `\|` inside a cell is
@@ -487,6 +487,17 @@ uaccess-extable-gate-x86: x86
 uaccess-extable-gate-arm: arm
 	python3 tools/uaccess-extable-gate.py $(KERNEL_ELF_aarch64) --expected 2
 uaccess-extable-gate: uaccess-extable-gate-x86 uaccess-extable-gate-arm
+
+# Execute the linked S3 real-mode blob at the physical waking vector under a
+# minimal firmware-shaped guest. The payload asserts the CR0/CR3/CR4/EFER and
+# selector state after the blob's 16 -> 32 -> 64-bit transition.
+s3-resume-gate-x86: x86
+	python3 tools/s3-resume-gate.py --self-test $(KERNEL_ELF_x86_64)
+
+# Hardware-shaped acceptance: Q35/SeaBIOS enters ACPI S3, QMP posts the wake,
+# and the guest must return through the saved processor context to its shell.
+accept-s3-resume-x86:
+	python3 tools/s3-resume-accept.py
 
 # Stack-frame size gate (Linux CONFIG_FRAME_WARN; `skizm.md` Step 6). Reads
 # prologue reservations out of an already-built kernel ELF, so it needs no

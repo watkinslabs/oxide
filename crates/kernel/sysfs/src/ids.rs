@@ -114,7 +114,7 @@ pub(crate) const KEXEC_LOADED: u64 = 0x510A_0001;
 pub(crate) const KEXEC_CRASH_LOADED: u64 = 0x510A_0002;
 pub(crate) const KEXEC_CRASH_SIZE: u64 = 0x510A_0003;
 /// `/sys/power/*` — one ino per index of `power::suspend::sysfs_api::ATTRS`.
-pub(crate) const POWER_ATTR_BASE: u64 = 0x510B_0000;
+pub(crate) const POWER_ATTR_BASE: u64 = 0x5110_0000;
 /// `/sys/power/suspend_stats/*` — one ino per index of `STATS_ATTRS`, in its
 /// own block so growing either list can never collide with the other.
-pub(crate) const POWER_STATS_ATTR_BASE: u64 = 0x510C_0000;
+pub(crate) const POWER_STATS_ATTR_BASE: u64 = 0x5111_0000;
