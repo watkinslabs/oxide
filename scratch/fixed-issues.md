@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2448-stale-sockaddr-shape-coverage-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2448 | COVERAGE | med | Sockaddr shape decisions are ungated and tested; the recorded coverage row was stale. | Sockaddr/net suites and target checks passed. | Chris Watkins |
+
 ### B2444-stale-bind-security-order-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -3508,6 +3514,7 @@ against the row's own evidence.
 |---|---|---|---|---|---|
 | FIXED e41310ec3 | COVERAGE | high | **The linked x86_64 S3 waking trampoline now executes in both a deterministic firmware-entry harness and a real Q35/SeaBIOS suspend-resume cycle.** The permanent micro-gate extracts the exact 4 KiB linked blob, enters it at the physical waking vector in 16-bit mode, and requires its own 16→32→64 transition to establish the patched page tables, control registers, EFER bits, and selectors before reaching the oracle. The end-to-end gate boots the distribution image, selects `deep`, observes QEMU enter S3, posts the wake, and requires the same shell to report one successful suspend. | B2332. The micro-gate's positive control replaces the firmware entry byte with `hlt`: RED timeout, restored GREEN with `S3-TRAMPOLINE-PASS`. `make accept-s3-resume-x86` observed QMP `suspended`, returned through processor-state restore, and read `S3-SUCCESS=1`. That runtime exposed a global sysfs inode collision that made `/sys/power/mem_sleep` alias `/sys/class/power_supply`; the power leaves moved to unique blocks, and restoring the old block makes `power_inode_blocks_do_not_alias_device_classes` fail. ARM is deliberately not claimed as executed: QEMU virt declines PSCI `SYSTEM_SUSPEND`, matching Linux 7.2-rc4's rule that deep suspend is installed only after `PSCI_FEATURES` admits it. The unavailable runtime path remains pinned by 10 PSCI probe tests, 11 admission/table tests, and 12 exact save/restore-order tests; ARM boot smoke passed with serial RX in 56 s. | e41310ec3 |
 
+<<<<<<< HEAD
 ### B2336-bpf-program-streams
 
 | Status | Type | Severity | Issue | Evidence | Fixed by |
@@ -3699,3 +3706,10 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 3756fe251 | COVERAGE | low | **The `/proc` root's registry-backed static directories now come from a hosted-tested helper, so dropping `/proc/fs` from the root child map turns a test red.** | B2369. The production root builder uses the same helper for `fs`, `net`, and `sys`; the positive control omitted `fs` and failed the root listing assertion. | B2369-procfs-root-child-coverage |
+=======
+### B2448-stale-sockaddr-shape-coverage-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2448 | COVERAGE | med | **The OPEN claim that bind/connect address-shape decisions remained target-gated and untested was stale.** Commit `7e3b578fb` moved the generic storage bound plus AF_UNIX, IPv4, IPv6, and VSOCK shape rules into ungated `net::sockaddr`; `syscalls::net_sockaddr` now owns only the fault-recovering user-memory copy and delegates every pure decision. The production bind/connect call sites consume those delegated helpers. | Linux 7.2-rc4 `move_addr_to_kernel` enforces the `sockaddr_storage` bound before family dispatch; `inet_bind`, `inet6_bind` and `vsock_addr_cast` supply the family floors. `net::sockaddr` focused suite passes 8/8. Positive control accepts a VSOCK address one byte below `sizeof(sockaddr_vm)` and `vsock_addresses_require_the_full_sockaddr_vm` turns RED (`Ok(())` vs `Err(Einval)`); restored GREEN. Full `net` 2574/2574 and both kernel target checks pass. No boot: B2448 changes ledgers only. | B2448 (`7e3b578fb`) |
+>>>>>>> 634be4c8b (docs: close stale sockaddr shape coverage row)
