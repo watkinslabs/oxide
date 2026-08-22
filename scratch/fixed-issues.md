@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2551-stale-merged-queue-rows
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2551 | MIXED | low | Four open rows duplicated merged work: tmpfs quota enforcement (B2522), F2FS quota-owner transfer on chown (B2496), TCP urgent-arrival production coverage (B2523), and coredump-aware OOM self-free detection (B2498). | The cited merged implementations and fixed entries cover each exact premise and regression; no production change is warranted. Residual OOM, F2FS, and network rows remain untouched. | B2551-stale-merged-queue-rows |
+
 ### B2550-stale-sysfs-export-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
