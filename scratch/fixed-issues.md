@@ -1,5 +1,11 @@
 # Fixed issues
 
+### R111-stale-c246-net-test-observation
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED | INFRA | low | The single C246 network-test failure was a non-reproducing observation, not a new defect; the existing parallel-execution instability record remains the authoritative issue. | The original lane recorded three immediate 1538/1538 reruns after the one-off failure and identified the existing concurrency instability as the cause class. | R111 |
+
 ### R110-duplicate-feature-gate-lane-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
