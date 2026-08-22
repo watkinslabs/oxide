@@ -7,6 +7,7 @@
 use syscall::errno::Errno;
 use net::socket_args::{parse_socket_args, SocketArgs, AF_UNIX, SOCK_CLOEXEC, SOCK_DGRAM,
     SOCK_NONBLOCK, SOCK_RAW, SOCK_TYPE_MASK};
+use security::network::SocketClass;
 
 /// The admitted pair: the parsed creation args plus the socket type both ends
 /// actually take (which is NOT `args.typ` for AF_UNIX SOCK_RAW).
@@ -21,6 +22,11 @@ pub(crate) fn check_type_flags(raw_type: u32) -> Result<(), Errno> {
     let extra = raw_type & !SOCK_TYPE_MASK;
     if extra & !(SOCK_CLOEXEC | SOCK_NONBLOCK) != 0 { return Err(Errno::Einval); }
     Ok(())
+}
+
+/// Security class of one admitted AF_UNIX pair personality. # C: O(1)
+pub(crate) fn security_class(socket_type: u32) -> SocketClass {
+    if socket_type == SOCK_DGRAM { SocketClass::UnixDgram } else { SocketClass::UnixStream }
 }
 
 /// Linux creates both sockets before asking the protocol for a pair, so the

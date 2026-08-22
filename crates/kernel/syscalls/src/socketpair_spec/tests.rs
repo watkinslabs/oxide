@@ -36,6 +36,16 @@ fn unix_raw_socketpair_takes_the_datagram_personality() {
 }
 
 #[test]
+fn admitted_pair_personality_selects_the_exact_socket_security_class() {
+    use security::network::SocketClass;
+    assert_eq!(security_class(SOCK_STREAM), SocketClass::UnixStream);
+    assert_eq!(security_class(SOCK_SEQPACKET), SocketClass::UnixStream);
+    assert_eq!(security_class(SOCK_DGRAM), SocketClass::UnixDgram);
+    let raw = admit(AF_UNIX, SOCK_RAW, 0, false).expect("raw pair");
+    assert_eq!(security_class(raw.socket_type), SocketClass::UnixDgram);
+}
+
+#[test]
 fn a_raw_socketpair_request_needs_the_same_capability_as_socket() {
     // The per-family creation gate outranks the missing pair operation, so an
     // unprivileged raw request fails its capability screen rather than
