@@ -164,8 +164,9 @@ fn read_license(ptr: u64) -> Result<Vec<u8>, Errno> {
     Ok(out)
 }
 
-/// Structural bytecode verification. Each advertised type has a matching
-/// runner and verifier.
+/// Structural bytecode verification. Each advertised type has a verifier
+/// profile and a consumer or attachment path; runtime delivery is owned by
+/// that path rather than by this load funnel.
 ///
 /// The structural rejects map onto verifier failures returning `-EINVAL`:
 /// an out-of-range jump target, a final instruction that is neither an exit
@@ -201,6 +202,9 @@ fn verify(
             crate::bpf_verify::verify_program(
                 p.prog_type, p.expected_attach_type, insns, maps,
             ),
+        uapi::prog_type::PERF_EVENT => crate::bpf_verify::verify_program(
+            p.prog_type, p.expected_attach_type, insns, maps,
+        ),
         _ => return Err(Errno::Einval),
     };
     verdict.map_err(|error| match error {

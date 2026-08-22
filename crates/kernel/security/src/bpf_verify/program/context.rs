@@ -90,6 +90,24 @@ pub mod sk_reuseport_md {
     pub const WIDE:         usize = 8;
 }
 
+/// `struct bpf_perf_event_data`: the architecture's userspace register
+/// view followed by the sample period and sampled address. Both supported
+/// architectures expose 64-bit registers, but the register counts differ.
+pub mod perf_event_data {
+    pub const WORD: usize = 8;
+    pub const X86_64_REGS_BYTES: usize = 21 * WORD;
+    pub const AARCH64_REGS_BYTES: usize = 34 * WORD;
+
+    #[cfg(target_arch = "x86_64")]
+    pub const REGS_BYTES: usize = X86_64_REGS_BYTES;
+    #[cfg(target_arch = "aarch64")]
+    pub const REGS_BYTES: usize = AARCH64_REGS_BYTES;
+
+    pub const SAMPLE_PERIOD: usize = REGS_BYTES;
+    pub const ADDR: usize = SAMPLE_PERIOD + WORD;
+    pub const SIZE: usize = ADDR + WORD;
+}
+
 /// Bytes of context this kernel publishes for a reuseport selection program.
 pub const SK_REUSEPORT_CONTEXT_BYTES: usize = sk_reuseport_md::SIZE;
 
@@ -119,6 +137,7 @@ pub(super) fn context_size(profile: &Profile) -> usize {
         (uapi::prog_type::TRACING, _) => iter_context_bytes(),
         (uapi::prog_type::RAW_TRACEPOINT | uapi::prog_type::RAW_TRACEPOINT_WRITABLE, _) =>
             RAW_TRACEPOINT_CONTEXT_BYTES,
+        (uapi::prog_type::PERF_EVENT, _) => perf_event_data::SIZE,
         _ => CGROUP_CONTEXT_BYTES,
     }
 }
@@ -144,8 +163,23 @@ pub(super) fn valid_context(
         uapi::prog_type::TRACING => iter_access(offset, size, write),
         uapi::prog_type::RAW_TRACEPOINT | uapi::prog_type::RAW_TRACEPOINT_WRITABLE =>
             !write && size != 0 && offset % size == 0,
+        uapi::prog_type::PERF_EVENT => perf_event_access(offset, size, write),
         _ => false,
     }
+}
+
+/// Perf-event programs see a read-only native register word array followed
+/// by two u64 fields. Linux permits narrow aligned reads only in the two u64
+/// fields; register slots are read one native word at a time.
+fn perf_event_access(offset: usize, size: usize, write: bool) -> bool {
+    use perf_event_data as pe;
+    if write || size == 0 || offset % size != 0 { return false; }
+    if offset < pe::REGS_BYTES {
+        return size == pe::WORD && within(offset, size, 0, pe::REGS_BYTES);
+    }
+    matches!(size, 1 | 2 | 4 | 8)
+        && (within(offset, size, pe::SAMPLE_PERIOD, pe::ADDR)
+            || within(offset, size, pe::ADDR, pe::SIZE))
 }
 
 /// LSM hook context: one register-wide slot per declared hook argument,
