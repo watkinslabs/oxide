@@ -6,14 +6,11 @@
 // dequeued or flushed, and the admission test compares the account's
 // post-charge value against the TARGET task's limit.
 //
-// STATUS: this is the decision half only. The charge itself needs a
-// `ucounts::Counter::Sigpending` and a charge/release pair at every mutation
-// of the two record queues (`sigqueue::queues_{push,pop,clear}` and their
-// `ThreadGroup::shared_sigqueue` callers), plus a hand-off in
-// `sched::ucounts::recharge_after_setuid` so a `set*uid` moves a task's queued
-// records to its new account. Until that lands, the record queues are bounded
-// by the fixed per-signal `RT_QUEUE_CAP` instead, which bounds memory but is
-// not the Linux limit.
+// `sigqueue::queues_push` takes this charge from `Counter::Sigpending`, and
+// the queued record retains the account key so pop, flush, exit, and a later
+// credential change all release the account that actually paid. The fixed
+// real-time queue capacity is only an IRQ-context preallocation floor; it is
+// not the process-context admission limit.
 
 use super::INFINITY;
 
