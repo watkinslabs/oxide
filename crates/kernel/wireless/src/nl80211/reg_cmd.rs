@@ -73,7 +73,6 @@ fn put_domain(out: &mut Vec<u8>, wiphy: Option<&Arc<Wiphy>>) {
     if regdom.dfs_region != dfs_region::UNSET {
         msg::put_u8(out, a::DFS_REGION, regdom.dfs_region);
     }
-    attr::put_u32(out, a::REG_TYPE, regdom.reg_type());
     let rules = attr::nest_start(out, a::REG_RULES);
     for (i, r) in regdom.rules.iter().enumerate() {
         let one = attr::nest_start(out, i as u16);

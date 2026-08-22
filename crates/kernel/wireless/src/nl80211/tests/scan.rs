@@ -254,7 +254,7 @@ fn a_reported_network_carries_the_attributes_a_supplicant_reads() {
     let age = u32_of(nest, bss::SEEN_MS_AGO).expect("age");
     assert_eq!(age, 2_000, "age came from the dump's single clock snapshot");
     assert!(find(nest, bss::LAST_SEEN_BOOTTIME).is_some());
-    assert!(u32_of(nest, bss::CHAN_WIDTH).is_some());
+    assert!(u32_of(nest, bss::CHAN_WIDTH).is_none());
     // Nothing heard this network by probe response, so the flag is absent.
     assert!(!has(nest, bss::PRESP_DATA));
     assert!(!has(nest, bss::STATUS));

@@ -9,7 +9,7 @@ use crate::nl80211::reg_cmd;
 use crate::nl80211::tests_support::{children, find, lock, radio, u32_of, u8_of, Call, Req};
 use crate::uapi::attr as a;
 use crate::uapi::cmd;
-use crate::uapi::enums::{dfs_region, reg_type};
+use crate::uapi::enums::dfs_region;
 use crate::uapi::nested::reg_rule_attr as rra;
 
 /// A rule table naming one 2.4 GHz range. # C: O(1)
@@ -33,7 +33,7 @@ fn a_query_reports_the_world_domain_and_its_rules() {
     assert_eq!(reply.cmd(), Some(cmd::GET_REG));
     let b = reply.body();
     assert_eq!(find(b, a::REG_ALPHA2).map(|p| p[..2].to_vec()), Some(b"00".to_vec()));
-    assert_eq!(u32_of(b, a::REG_TYPE), Some(reg_type::WORLD));
+    assert!(u32_of(b, a::REG_TYPE).is_none());
     let rules = find(b, a::REG_RULES).expect("rules");
     let listed = children(rules);
     assert_eq!(listed.len(), w.regdom().rules.len());
@@ -187,7 +187,7 @@ fn a_change_is_visible_to_the_next_query() {
     let reply = Req::wiphy(&w).call(reg_cmd::get);
     let b = reply.body();
     assert_eq!(find(b, a::REG_ALPHA2).map(|p| p[..2].to_vec()), Some(b"FR".to_vec()));
-    assert_eq!(u32_of(b, a::REG_TYPE), Some(reg_type::COUNTRY));
+    assert!(u32_of(b, a::REG_TYPE).is_none());
     assert!(u8_of(b, a::DFS_REGION).is_none(),
             "an unset radar region is absent, not reported as zero");
 }

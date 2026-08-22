@@ -53,7 +53,6 @@ pub fn put(out: &mut Vec<u8>, wiphy: &Arc<Wiphy>, wdev: &Arc<Wdev>, entry: &Bss,
     if entry.last_seen_ns != 0 {
         msg::put_u64(out, bss::LAST_SEEN_BOOTTIME, entry.last_seen_ns, bss::PAD);
     }
-    attr::put_u32(out, bss::CHAN_WIDTH, entry.chan_width.as_u32());
     if wiphy.caps.signal_dbm { msg::put_i32(out, bss::SIGNAL_MBM, entry.signal_mbm); }
     if let Some(status) = entry.status { attr::put_u32(out, bss::STATUS, status); }
     attr::nest_end(out, at);

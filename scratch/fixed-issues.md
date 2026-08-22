@@ -3148,3 +3148,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED c72308bee | DEFECT | med | **Logical topology, architecture transport, generic `PerCpu`, RCU quiescent state, allocator contexts, scheduler masks, and driver-local per-CPU storage now derive from one compile-time CPU ceiling.** `hal::MAX_CPUS` is the sole value definition; `cpu::MAX_CPUS` and `sync::MAX_CPUS` are direct re-exports. | B2340. Linux uses one `NR_CPUS` build bound for cpumasks and per-CPU storage, with `nr_cpu_ids` as the runtime subset. The original branch's cross-owner compile check pinned the unified value. | B2340-max-cpus-single-truth |
+
+### B2341-nl80211-reference-attributes
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2341 | COVERAGE | low | **`GET_SCAN` and `GET_REG` now emit exactly the reference query attributes: no BSS channel-width attribute and no regulatory-type attribute.** `REG_TYPE` remains present on the regulatory-change event. | The original production query tests require both attributes absent; restoring either emission made its corresponding control fail. | B2341 |
