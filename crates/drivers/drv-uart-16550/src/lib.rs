@@ -46,11 +46,13 @@ static PRESENT: AtomicBool = AtomicBool::new(false);
 static RX_ENABLED: AtomicBool = AtomicBool::new(false);
 static BSP_APIC: AtomicU64 = AtomicU64::new(0);
 static DEV_WINDOW_BASE: AtomicU64 = AtomicU64::new(0);
+/// SysRq arm deadline for this hardware port.
+static SYSRQ_ARMED_UNTIL_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_arch = "x86_64")]
 static IRQ_VEC: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_arch = "x86_64")]
 static IRQ_PIN: AtomicU64 = AtomicU64::new(u64::MAX);
-/// tty-delivery callback (`fn(u8)`), stored from `init`'s parameter so
+/// tty-delivery callback, stored from `init`'s parameter so
 /// the bare-`fn()` MSI handler trampoline can reach it without args.
 static DELIVER: AtomicU64 = AtomicU64::new(0);
 
@@ -67,7 +69,9 @@ pub fn rx_enabled() -> bool { RX_ENABLED.load(Ordering::Acquire) }
 /// Install boot-probe parameters used when the drv core calls
 /// `Uart16550Drv::probe`.
 /// # C: O(1)
-pub fn configure_probe(bsp_apic: u8, dev_window_base: u64, dlv: fn(u8)) {
+pub fn configure_probe(bsp_apic: u8, dev_window_base: u64,
+    dlv: fn(&'static AtomicU64, u8)) {
+    SYSRQ_ARMED_UNTIL_NS.store(0, Ordering::Relaxed);
     BSP_APIC.store(bsp_apic as u64, Ordering::Release);
     DEV_WINDOW_BASE.store(dev_window_base, Ordering::Release);
     DELIVER.store(dlv as usize as u64, Ordering::Release);
@@ -80,9 +84,9 @@ pub fn configure_probe(bsp_apic: u8, dev_window_base: u64, dlv: fn(u8)) {
 fn deliver(b: u8) {
     let p = DELIVER.load(Ordering::Acquire);
     if p == 0 { return; }
-    // SAFETY: p was stored from a `fn(u8)` by init's deliver param; transmute back to that exact type.
-    let f: fn(u8) = unsafe { core::mem::transmute(p as usize) };
-    f(b);
+    // SAFETY: p was stored from this exact function-pointer type.
+    let f: fn(&'static AtomicU64, u8) = unsafe { core::mem::transmute(p as usize) };
+    f(&SYSRQ_ARMED_UNTIL_NS, b);
 }
 
 // ---------------------------------------------------------------- x86_64
@@ -206,8 +210,8 @@ mod imp {
     /// dropping the aliased-register lock. As Linux serial8250 does for an ISA
     /// IRQ chain, passes continue until the edge-triggered line deasserts.
     /// # C: O(IRQ_PASS_LIMIT * (RX bytes + one 16-byte TX FIFO load))
-    pub fn rx_isr(dlv: fn(u8)) {
-        let _ = service_irq_chain(dlv);
+    pub fn rx_isr() {
+        let _ = service_irq_chain(super::deliver);
     }
 
     fn rx_isr_claimed(dlv: fn(u8)) -> bool {
@@ -270,7 +274,8 @@ mod imp {
     /// # SAFETY: post-ACPI + post-LAPIC-enable + MmuOps live; single-CPU,
     /// IRQs masked. Maps the I/O APIC, programs IRQ4, port I/O to the UART.
     /// # C: O(1)
-    pub(super) unsafe fn init(bsp_apic: u8, dev_window_base: u64, dlv: fn(u8)) -> bool {
+    pub(super) unsafe fn init(bsp_apic: u8, dev_window_base: u64,
+        dlv: fn(&'static AtomicU64, u8)) -> bool {
         // SAFETY: detection does only harmless scratch round-trips.
         let port = match unsafe { detect() } { Some(p) => p, None => return false };
         BASE.store(port as u64, Ordering::Release);
@@ -419,11 +424,12 @@ mod imp {
     pub fn set_baud(_baud: u32) {}
     /// No 16550 on non-x86 arches.
     /// # C: O(1)
-    pub fn rx_isr(_dlv: fn(u8)) {}
+    pub fn rx_isr() {}
     /// No 16550 on non-x86 arches; detect fails.
     /// # SAFETY: shell; no side effects.
     /// # C: O(1)
-    pub(super) unsafe fn init(_bsp_apic: u8, _dev_window_base: u64, _dlv: fn(u8)) -> bool { false }
+    pub(super) unsafe fn init(_bsp_apic: u8, _dev_window_base: u64,
+        _dlv: fn(&'static core::sync::atomic::AtomicU64, u8)) -> bool { false }
     /// No 16550 on non-x86 arches.
     /// # SAFETY: shell; no side effects.
     /// # C: O(1)
@@ -456,8 +462,8 @@ impl drv::Driver for Uart16550Drv {
         if p == 0 {
             return Err(drv::Error::ProbeFailed);
         }
-        // SAFETY: p was stored from a `fn(u8)` by configure_probe.
-        let dlv: fn(u8) = unsafe { core::mem::transmute(p as usize) };
+        // SAFETY: p was stored from this exact function-pointer type.
+        let dlv: fn(&'static AtomicU64, u8) = unsafe { core::mem::transmute(p as usize) };
         let bsp_apic = BSP_APIC.load(Ordering::Acquire) as u8;
         let dev_window_base = DEV_WINDOW_BASE.load(Ordering::Acquire);
         // SAFETY: driver-core bind runs on the same boot path that previously

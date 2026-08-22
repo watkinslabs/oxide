@@ -27,7 +27,8 @@ use drv_uart_16550 as uart;
 /// RX byte sink — the tty line discipline (`push_and_wake_fg`). Wired by
 /// the kernel; keeps this crate free of any tty dependency.
 static RX_SINK: AtomicU64 = AtomicU64::new(0);
-/// Optional RX pre-filter (sysrq). Returns true if it consumed the byte
+/// Optional RX pre-filter (sysrq). The state cell belongs to the UART that
+/// received the byte. Returns true if it consumed the byte
 /// (don't forward to the tty sink). Lets the kernel snoop a magic
 /// sequence on the console for an on-demand diagnostic dump (`27`
 /// `kernel.sysrq`) without the tty/sched layers reaching into drv-serial.
@@ -37,20 +38,22 @@ static RX_PREFILTER: AtomicU64 = AtomicU64::new(0);
 /// # C: O(1)
 pub fn set_rx_sink(f: fn(u8)) { RX_SINK.store(f as usize as u64, Ordering::Release); }
 
-/// Install the RX pre-filter (sysrq snoop). Checked before the sink on
-/// every received byte; a `true` return drops the byte from the tty.
+/// Install the RX pre-filter (sysrq snoop). Each UART supplies its own state
+/// cell with the byte; a `true` return drops the byte from the tty.
 /// # C: O(1)
-pub fn set_rx_prefilter(f: fn(u8) -> bool) { RX_PREFILTER.store(f as usize as u64, Ordering::Release); }
+pub fn set_rx_prefilter(f: fn(&AtomicU64, u8) -> bool) {
+    RX_PREFILTER.store(f as usize as u64, Ordering::Release);
+}
 
 /// RX delivery: run the sysrq prefilter, then forward to the tty sink.
 /// Passed to the UART crate as its RX callback (the cycle-break).
 #[inline]
-fn deliver(b: u8) {
+fn deliver(armed_until_ns: &'static AtomicU64, b: u8) {
     let pf = RX_PREFILTER.load(Ordering::Acquire);
     if pf != 0 {
-        // SAFETY: pf was stored from a `fn(u8) -> bool` by set_rx_prefilter; transmute back to that type.
-        let f: fn(u8) -> bool = unsafe { core::mem::transmute(pf as usize) };
-        if f(b) { return; }
+        // SAFETY: pf was stored from this exact function-pointer type.
+        let f: fn(&AtomicU64, u8) -> bool = unsafe { core::mem::transmute(pf as usize) };
+        if f(armed_until_ns, b) { return; }
     }
     let p = RX_SINK.load(Ordering::Acquire);
     if p == 0 { return; }
@@ -84,10 +87,10 @@ pub fn console_to_polled() {
 /// arch UART (16550 divisor latch on x86; firmware-fixed on PL011). # C: O(1)
 pub fn set_baud(baud: u32) { uart::set_baud(baud); }
 
-/// RX interrupt drain — delegates to the active UART crate, passing this
-/// crate's `deliver` as the byte callback.
+/// RX interrupt drain — delegates to the active UART crate, whose port-local
+/// callback enters this crate's `deliver` boundary.
 /// # C: O(bytes pending)
-pub fn rx_isr() { uart::rx_isr(deliver); }
+pub fn rx_isr() { uart::rx_isr(); }
 
 /// The active UART's driver-model handle (per-arch: "8250-serial" on x86,
 /// "pl011-serial" on arm). The kernel registers this in the drv model +

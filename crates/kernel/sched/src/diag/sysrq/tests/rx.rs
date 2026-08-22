@@ -1,4 +1,6 @@
-use crate::diag::sysrq::rx::{decide, RxStep, ARM_WINDOW_NS, DISARMED, SYSRQ_ARM};
+use core::sync::atomic::AtomicU64;
+
+use crate::diag::sysrq::rx::{advance, decide, RxStep, ARM_WINDOW_NS, DISARMED, SYSRQ_ARM};
 use crate::diag::sysrq::table::Cmd;
 
 /// A notional clock. `decide` takes the time as an argument precisely so the
@@ -111,4 +113,15 @@ fn exactly_one_byte_arms_the_line() {
                     "byte {b:#x} was not taken as a command on an armed line");
         }
     }
+}
+
+#[test]
+fn a_break_arms_only_the_uart_that_received_it() {
+    let a = AtomicU64::new(DISARMED);
+    let b = AtomicU64::new(DISARMED);
+
+    assert!(matches!(advance(&a, T0, SYSRQ_ARM), RxStep::Armed(_)));
+    assert_eq!(advance(&b, T0, b't'), RxStep::Passthrough,
+        "a key on another UART completed the first UART's SysRq sequence");
+    assert_eq!(advance(&a, T0, b't'), RxStep::Run(Cmd::ShowTasks));
 }

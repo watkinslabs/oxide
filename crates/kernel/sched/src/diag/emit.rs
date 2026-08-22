@@ -215,4 +215,6 @@ pub fn note_init_exit(code: i32) {
 /// `/proc/sysrq-trigger` write path shares — a second private key table here
 /// is how `c` came to print a table on a machine an operator meant to crash.
 /// # C: see `sysrq::perform`
-pub fn sysrq_rx(b: u8) -> bool { super::sysrq::rx(b) }
+pub fn sysrq_rx(armed_until_ns: &core::sync::atomic::AtomicU64, b: u8) -> bool {
+    super::sysrq::rx(armed_until_ns, b)
+}
