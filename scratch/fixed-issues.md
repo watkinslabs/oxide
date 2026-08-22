@@ -1275,6 +1275,12 @@
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 91fc49aaa | MISSING | low | **A volatile OverlayFS mount now persists `work/incompat/volatile/dirty`, and any later mount refuses that work directory while the incompatibility remains.** The marker is created through the real upper filesystem inode operations before the layer stack becomes visible; workdir admission checks the incompatibility directory before either the ordinary work directory or index directory is returned. | B2511. Linux 7.2.0-rc4 creates the same four-component marker under the work base and rejects workdir cleanup when the incompatibility directory contains a feature. Before the fix, both production `OverlayFs::open` tests were RED: the volatile mount left no marker, and a premarked workdir mounted successfully instead of returning `EINVAL`; restored implementation makes both GREEN. OverlayFS 250/250, both kernel target checks, both feature gates, and diff checks pass. Final smoke was not run: the normal boot does not mount an OverlayFS or exercise the `volatile` mount admission path, while the hosted mount tests drive that exact production path. | B2511-overlay-volatile-incompat-marker |
+
+### R120-overlayfs-volatile-stale-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED R120 | MISSING | low | **This older OverlayFS `volatile` marker row was stale after B2511 implemented the behavior.** The current mount path creates `work/incompat/volatile/dirty` and rejects later incompatible reuse; the old row's claim that `VOLATILE_DIRTY_NAME` had no caller no longer describes `origin/main`. | Current `overlayfs/src/mount.rs` calls `create_volatile_marker` and checks the incompatibility directory; fixed entry B2511 records the Linux-shaped behavior and production tests. No source behavior changed. | R120 |
 ### B2514-ext4-journalled-quota-mark-dirty
 
 | Status | Class | Sev | Issue | Evidence | Owner |
