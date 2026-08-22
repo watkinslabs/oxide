@@ -97,7 +97,10 @@ pub fn attach(ev: &Arc<PerfEvent>, c: &MmapCtx, wakeup_watermark: u32)
     let p = plan(ev.attr.bit(attr_bit::INHERIT), ev.cpu, existing.is_some(),
                  existing.as_ref().map_or(0, |b| b.nr_data_pages()), own_mapped,
                  ev.attr.bit(attr_bit::WATERMARK), wakeup_watermark, c)?;
-    if let Some(rb) = existing { return Ok(rb); }
+    if let Some(rb) = existing {
+        rb.acct().record(c.uid, p.charge.user_extra, p.charge.extra);
+        return Ok(rb);
+    }
     let ds = sizing::data_size(p.nr_data_pages);
     let wm = sizing::watermark(ds, wakeup_watermark, ev.attr.bit(attr_bit::WATERMARK));
     let rb = PerfBuffer::alloc(p.nr_data_pages, wm, p.overwrite).ok_or(Errno::Enomem)?;
@@ -271,6 +274,28 @@ mod tests {
         let c = ctx(5);
         let p = plan(false, 0, true, 4, true, false, 0, &c).unwrap();
         assert_eq!(p.charge, sizing::MlockCharge { user_extra: 5, extra: 0 });
+    }
+
+    #[test]
+    fn attaching_an_alias_records_the_charge_the_vma_open_applies() {
+        use super::super::attr::PerfAttr;
+        use super::super::counter::SwSource;
+
+        let ev = PerfEvent::new(PerfAttr::default(), SwSource::Zero, None, 0, None);
+        let mut c = ctx(5);
+        c.uid = 0x7200_0002;
+        let rb = PerfBuffer::hosted(4, 0, false);
+        rb.acct().record(c.uid, 5, 0);
+        assert_eq!(rb.acct().opened(), 0);
+        { let mut st = ev.state.lock(); st.buffer = Some(Arc::clone(&rb)); st.mmap_count = 1; }
+        assert_eq!(locked_vm::charged(c.uid), 5);
+        let alias = attach(&ev, &c, 0).unwrap();
+        assert!(Arc::ptr_eq(&rb, &alias));
+        assert_eq!(vma_opened(&ev, &alias), 0);
+        assert_eq!(locked_vm::charged(c.uid), 10, "the production alias records its charge");
+        assert_eq!(vma_closed(&ev, &alias), 0);
+        assert_eq!(vma_closed(&ev, &rb), 0);
+        assert_eq!(locked_vm::charged(c.uid), 0);
     }
 
     #[test]
