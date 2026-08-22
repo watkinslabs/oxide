@@ -15,9 +15,7 @@
 
 use core::sync::atomic::{AtomicPtr, AtomicU8, Ordering};
 
-/// Number of distinct numbered-VT slots (1..=N_VT). VT 0 is the
-/// "foreground alias" (`/dev/console`/`/dev/tty`/`/dev/tty0`).
-pub const N_VT: usize = 63;
+use crate::N_VT;
 
 /// Foreground VT (1..=N_VT) — the keyboard-input target a VT switch sets.
 static FOREGROUND_VT: AtomicU8 = AtomicU8::new(1);

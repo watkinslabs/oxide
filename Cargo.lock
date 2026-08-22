@@ -2769,6 +2769,7 @@ dependencies = [
  "sync",
  "thermal",
  "timekeeper",
+ "tty",
  "vfs",
 ]
 

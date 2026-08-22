@@ -86,9 +86,32 @@ const TTY_DEVICES: &[(&str, u32, u32)] = &[
 ];
 
 fn tty_dev(name: &str) -> Option<(u32, u32)> {
-    TTY_DEVICES.iter()
+    if let Some(dev) = TTY_DEVICES.iter()
         .find(|(n, _, _)| *n == name)
-        .map(|(_, maj, min)| (*maj, *min))
+        .map(|(_, maj, min)| (*maj, *min)) {
+        return Some(dev);
+    }
+
+    let number = name.strip_prefix("tty")?;
+    if number.is_empty() || (number.len() > 1 && number.starts_with('0')) {
+        return None;
+    }
+    let minor = number.parse::<u32>().ok()?;
+    (minor >= 1 && minor <= tty::N_VT as u32).then_some((4, minor))
+}
+
+/// Emit the fixed tty aliases/serial line and every numbered VT registered in
+/// `/dev`, using the directory's production lookup to resolve each inode.
+/// # C: O(N_VT log N_VT)
+fn emit_tty_devices(inode: &Inode, ctx: &mut DirContext,
+                    file_type: FileType) -> KResult<()> {
+    let mut entries = crate::readdir::DirEntries::new(inode);
+    for (name, _, _) in TTY_DEVICES { entries.push(name, file_type); }
+    for vt in 1..=tty::N_VT {
+        let name = alloc::format!("tty{vt}");
+        entries.push(&name, file_type);
+    }
+    entries.emit(ctx)
 }
 
 fn emit_tty_uevent(action: &str, name: &str, major: u32, minor: u32) {
@@ -112,8 +135,7 @@ impl FileOps for SysClassTtyOps {
     /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        crate::readdir::emit_names(inode, ctx, TTY_DEVICES.iter().map(|d| d.0),
-            FileType::Symlink)
+        emit_tty_devices(inode, ctx, FileType::Symlink)
     }
 }
 
@@ -133,8 +155,7 @@ impl FileOps for SysDevicesVirtualTtyOps {
     /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        crate::readdir::emit_names(inode, ctx, TTY_DEVICES.iter().map(|d| d.0),
-            FileType::Directory)
+        emit_tty_devices(inode, ctx, FileType::Directory)
     }
 }
 

@@ -18,7 +18,7 @@ pub fn try_register_devnodes() -> drv::KResult<()> {
 
     push_tty_node(&mut published, "ttyS0", crate::serial::serial_rdev(), Arc::new(make_serial_inode))?;
 
-    for vt in 1..=tty::live::N_VT as u8 {
+    for vt in 1..=tty::N_VT as u8 {
         let mut name = String::with_capacity(6);
         name.push_str("tty");
         if vt >= 10 {
