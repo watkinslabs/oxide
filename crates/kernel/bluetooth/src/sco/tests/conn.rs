@@ -106,6 +106,16 @@ fn a_wideband_link_walks_the_wideband_table() {
 }
 
 #[test]
+fn a_fully_capable_wideband_link_uses_enhanced_setup() {
+    const HCI_OP_ENHANCED_SETUP_SYNC_CONN: u16 = 0x043d;
+    let mut l = SyncLink::new(BdAddr([1; 6]), BT_VOICE_TRANSPARENT, FULL);
+    let mut tx = CmdLog::new();
+    l.setup(7, &mut tx).unwrap();
+    assert_eq!(tx.last_cmd().unwrap().0, HCI_OP_ENHANCED_SETUP_SYNC_CONN);
+    assert_eq!(tx.last_cmd().unwrap().1.len(), 59);
+}
+
+#[test]
 fn the_default_codec_follows_the_air_coding() {
     assert_eq!(conn::default_codec(BT_VOICE_CVSD_16BIT).id, BT_CODEC_CVSD);
     assert_eq!(conn::default_codec(BT_VOICE_TRANSPARENT).id, BT_CODEC_TRANSPARENT);
