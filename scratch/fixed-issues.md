@@ -5042,3 +5042,7 @@ against the row's own evidence.
 ### B2611-stale-pstore-parameter-row
 
 | FIXED B2611 | MISSING | low | This pstore parameter row was stale: the pstore backend and its `kmsg_bytes` mount parameter are already implemented and registered. The parameter bounds captured crash-record log data, so it is consumed state rather than an unowned table. | `pstore::PSTORE_PARAMS` declares `kmsg_bytes`; `pstore::mount` applies it; the registry publishes the table; focused pstore tests cover valid, invalid, duplicate, and persisted option behavior. The implementation landed in 11d090a9d. | B2611 |
+
+### B2612-lint-ratchet-historical-snapshot
+
+| FIXED B2612 | INFRA | high | This older lint-ratchet snapshot duplicated the same tree-wide baseline failure retained by the newer OPEN ratchet row. The historical 2379/66 measurement is folded; the current ratchet remains OPEN and is not being bypassed conceptually by this ledger correction. | The later OPEN ratchet row records the current measurement and the byte-identical main/branch comparison. No lint run or source change is required. | B2612 |
