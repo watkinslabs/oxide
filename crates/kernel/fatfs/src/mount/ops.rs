@@ -17,9 +17,13 @@ use alloc::vec::Vec;
 
 use vfs::{CreateCtx, DirContext, FileOps, FileType, Inode, InodeOps, InodeRef, KResult,
           VfsError};
+use vfs::setattr::{Iattr, ATTR_GID, ATTR_UID};
 
 use crate::ident::{self, DirLocation};
 use crate::namei::dir_is_empty;
+use crate::dirent::Record;
+use crate::attrs::make_attrs;
+use crate::time::{from_unix, truncate_atime, truncate_mtime};
 use crate::volume::{DirEntry, DirHandle};
 
 use super::node::{node_inode, FatNode};
@@ -158,6 +162,39 @@ impl InodeOps for FatOps {
         drop(v);
         inode.set_size(len);
         Ok(())
+    }
+
+    /// Persist the attributes FAT can represent in the exact short record
+    /// this inode was resolved from.  FAT has no stored owner, so chown is
+    /// valid only when it keeps the mount's synthesized uid/gid; the VFS
+    /// preparation layer has already performed the caller authorization.
+    /// # C: O(cluster bytes)
+    fn setattr(&self, inode: &Inode, idmap: &vfs::Idmap, ia: &Iattr) -> KResult<()> {
+        let node = Self::node(inode)?;
+        let entry = node.entry.ok_or(VfsError::Eisdir)?;
+        let v = node.fs.volume.lock();
+        if !v.writable() { return Err(VfsError::Erofs); }
+        let opts = *v.options();
+        let uid = if ia.valid & ATTR_UID != 0 { idmap.map_in_uid(ia.uid) } else { opts.uid };
+        let gid = if ia.valid & ATTR_GID != 0 { idmap.map_in_gid(ia.gid) } else { opts.gid };
+        if uid != opts.uid || gid != opts.gid { return Err(VfsError::Eperm); }
+
+        // Size and in-core metadata changes use the normal VFS owner.  FAT's
+        // on-disk update below is deliberately after this call so a combined
+        // truncate+chmod follows the same ordering as other filesystems.
+        vfs::simple_setattr(inode, idmap, ia)?;
+
+        let raw = v.read_dir_record(node.container(), node.slot).map_err(errno_to_vfs)?;
+        let mut record = Record::parse(&raw).ok_or(VfsError::Eio)?;
+        let mode = inode.perm().unwrap_or(0);
+        record.short.attr = make_attrs(entry.is_dir(), mode, record.short.attr);
+        let atime = inode.atime().unwrap_or_default();
+        let mtime = inode.mtime().unwrap_or_default();
+        let atime = truncate_atime(&opts.time, atime);
+        let mtime = truncate_mtime(mtime);
+        record.times.access_date = from_unix(&opts.time, atime).date;
+        record.times.modify = from_unix(&opts.time, mtime);
+        v.write_dir_record(node.container(), node.slot, &record.encode()).map_err(errno_to_vfs)
     }
 }
 
