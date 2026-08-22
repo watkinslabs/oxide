@@ -30,6 +30,55 @@ pub fn run(root: &Path, f: &mut Findings) {
     for p in files {
         lint_file(&p, f);
     }
+    check_retired_debug_features(root, &docs.join("41-debug-flags-catalog.md"), f);
+}
+
+/// The debug catalog is authoritative. A feature it calls "gone" must not
+/// silently return in a Cargo feature table while retaining that description.
+fn check_retired_debug_features(root: &Path, catalog_path: &Path, f: &mut Findings) {
+    if !catalog_path.is_file() { return; }
+    let retired = retired_debug_features(&read(catalog_path));
+    if retired.is_empty() { return; }
+    for path in walk::files_with_ext(root, "toml", &[".git", "target", "vendor"]) {
+        let manifest = read(&path);
+        for feature in &retired {
+            if let Some(line) = declared_feature_line(&manifest, feature) {
+                f.push(&path, line, "doc/retired-feature",
+                    format!("feature `{feature}` is declared gone by docs/41 but is declared here"));
+            }
+        }
+    }
+}
+
+fn retired_debug_features(catalog: &str) -> Vec<String> {
+    let parts: Vec<&str> = catalog.split('`').collect();
+    let mut out = Vec::new();
+    for i in (1..parts.len()).step_by(2) {
+        let feature = parts[i];
+        if !feature.starts_with("debug-") { continue; }
+        let before = parts[i - 1].to_ascii_lowercase();
+        let after = parts.get(i + 1).copied().unwrap_or("").to_ascii_lowercase();
+        if before.contains("former") && after.contains("feature") && after.contains("is gone")
+            && !out.iter().any(|known| known == feature)
+        {
+            out.push(feature.to_string());
+        }
+    }
+    out
+}
+
+fn declared_feature_line(manifest: &str, feature: &str) -> Option<usize> {
+    let mut in_features = false;
+    for (i, line) in manifest.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed == "[features]" { in_features = true; continue; }
+        if trimmed.starts_with('[') { in_features = false; }
+        if !in_features || trimmed.starts_with('#') { continue; }
+        if trimmed.split_once('=').map(|(name, _)| name.trim()) == Some(feature) {
+            return Some(i + 1);
+        }
+    }
+    None
 }
 
 fn lint_file(path: &PathBuf, f: &mut Findings) {
@@ -171,3 +220,23 @@ fn check_forbidden(path: &Path, text: &str, f: &mut Findings) {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{declared_feature_line, retired_debug_features};
+
+    #[test]
+    fn the_catalogs_gone_sentence_names_the_retired_feature() {
+        let text = "The former `debug-panic` feature gated only text\nand is gone.";
+        assert_eq!(retired_debug_features(text), vec!["debug-panic"]);
+        assert!(retired_debug_features("`debug-panic` is useful").is_empty());
+    }
+
+    #[test]
+    fn only_a_real_feature_table_entry_reintroduces_the_name() {
+        let manifest = "[dependencies]\ndebug-panic = { path = \"x\" }\n\
+                        [features]\ndefault = []\ndebug-panic = []\n\
+                        [package.metadata]\ndebug-panic = true\n";
+        assert_eq!(declared_feature_line(manifest, "debug-panic"), Some(5));
+        assert_eq!(declared_feature_line(manifest, "debug-other"), None);
+    }
+}
