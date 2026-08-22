@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2504-rseq-slice-extension-tunable
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 5fcebe902 | DEFECT | med | Rseq slice extension now has a shared tunable debugfs owner with Linux range/error semantics. | Sched/tracefs/syscall tests and targets passed. | Chris Watkins |
+
 ### B2503-ntfs-hard-link-creation
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -3911,6 +3917,7 @@ against the row's own evidence.
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 ### B2336-bpf-program-streams
 
 | Status | Type | Severity | Issue | Evidence | Fixed by |
@@ -4133,3 +4140,10 @@ against the row's own evidence.
 |---|---|---|---|---|---|
 | FIXED 6e6d878d9 | DEFECT | med | **Page faults outside every VMA now fail admission before migration, swap, userfaultfd, or fill work can touch the page tables.** One VMA lookup admits an existing mapping; a not-present fault gets one stack-growth attempt and is admitted only if that creates coverage. A private proof token makes the expensive resolver unreachable before this gate. This matches Linux 7.2.0-rc4, where x86 `lock_mm_and_find_vma` and arm64 `lock_mm_and_find_vma` route an uncovered address directly to their bad-area paths. | B2502. The hosted harness compiles the exact production admission owner. Before the fix, `a_missing_vma_never_enters_the_expensive_resolver` failed RED because an absent VMA returned success; restored GREEN passes all 3 admission cases. Full PMM library suite: 311/311. Both kernel target checks and the both-architecture feature gate pass, compiling the live proof-token callsite. Final paired smoke passed attempt 1 with serial RX: x86_64 46 s and aarch64 56 s. | B2502 |
 >>>>>>> 017ef016c (docs(ledger): close fault VMA admission order)
+=======
+### B2504-rseq-slice-extension-tunable
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 5fcebe902 | MISSING | low | **Rseq slice grants now take their duration from the writable `/sys/kernel/debug/rseq/slice_ext_nsec` control instead of a fixed 5 us constant.** The scheduler owns one atomic value with the 5–50 us bounds, the debugfs file reports and changes that owner, and every new grant derives its expiry from it. | Linux 7.2-rc4 reference verified first. Missing-file RED became GREEN after boot-time registration. Positive control restored the fixed 5 us grant and failed `5007 != 50007`, then passed after restoration. Scheduler 1,535/1,535, tracefs 39/39, and syscall 153/153 passed; both target checks and paired smoke passed (x86 46 s, ARM 56 s, attempt 1, serial RX). | B2504 |
+>>>>>>> 5e617a83f (docs(issues): close rseq slice tunable gap)

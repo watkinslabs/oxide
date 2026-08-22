@@ -241,6 +241,7 @@ pub mod prctl;
 pub mod membarrier;
 #[cfg(target_os = "oxide-kernel")] pub mod proclink;
 #[cfg(target_os = "oxide-kernel")] pub mod rseq;
+pub mod rseq_slice;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))] pub mod timers;
 #[cfg(target_os = "oxide-kernel")] pub mod trace;
 pub mod xfer;

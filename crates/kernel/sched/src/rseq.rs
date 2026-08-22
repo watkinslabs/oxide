@@ -19,9 +19,6 @@ use syscall::rseq as abi;
 use core::sync::atomic::Ordering;
 
 const ENOTSUPP: i64 = 524;
-/// Linux's initial `rseq_slice_ext_nsecs`: short enough that a grant is only
-/// an interrupt-return fast path, not an alternate scheduling policy.
-const SLICE_EXTENSION_NS: u64 = 5_000;
 
 fn clear_slice_grant(cur: &crate::Task) {
     cur.rseq_slice_granted.store(false, Ordering::Release);
@@ -127,7 +124,7 @@ pub fn try_grant_slice(from_irq: bool, blocked: bool) -> bool {
     }
     cur.rseq_slice_granted.store(true, Ordering::Release);
     cur.rseq_slice_expires_ns.store(
-        timekeeper::monotonic_ns().saturating_add(SLICE_EXTENSION_NS), Ordering::Release);
+        crate::rseq_slice::grant_deadline(timekeeper::monotonic_ns()), Ordering::Release);
     crate::timers::reprogram_local();
     true
 }
