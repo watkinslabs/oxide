@@ -582,6 +582,12 @@
 |---|---|---|---|---|---|
 | FIXED B2567 | MISSING | med | The two older `shmget(SHM_HUGETLB)` rows, including the claimed-concurrent duplicate, were stale duplicates of B2469's canonical hugetlb/SHM_HUGETLB closure. | B2469 records the merged hugetlb SHM implementation and verification; no separate refusal remains in the current production path. | Chris Watkins |
 
+### B2568-stale-hugetlb-residual-rows
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2568 | MIXED | med | The older hugetlb MAP_PRIVATE COW and duplicate hugetlb-cgroup rows were stale residuals of the B2469/B1981 hugetlb closure. | The fixed ledger already records private huge-page COW, hugetlb accounting, cgroup, meminfo/sysfs, and SHM_HUGETLB implementation and verification; current production paths contain those owners. | Chris Watkins |
+
 ### B2468-keyring-global-process-identity
 
 | Status | Class | Sev | Issue | Evidence | Owner |
