@@ -378,6 +378,13 @@ impl SecurityServer {
         services::string_to_sid(&l.db, &mut l.sidtab, s)
     }
 
+    /// Whether a dynamic transition stays within the old domain's type bound.
+    /// # C: O(types)
+    pub fn bounded_transition(&self, old_sid: Sid, new_sid: Sid) -> Result<bool> {
+        let Some(l) = self.loaded.as_ref() else { return Ok(true) };
+        services::bounded_transition(&l.db, &l.sidtab, old_sid, new_sid)
+    }
+
     /// SID of one initial SID number. # C: O(1)
     pub fn initial_sid(&self, sid: InitSid) -> Sid { sid.sid() }
 

@@ -17,6 +17,7 @@ pub mod render;
 pub mod parse;
 pub mod objects;
 pub mod validtrans;
+pub mod bounds;
 
 #[cfg(test)]
 #[path = "tests/fixture_policy.rs"]
@@ -33,3 +34,8 @@ pub use render::{context_to_string, sid_to_context, sid_to_context_force};
 pub use parse::{context_from_string, string_to_sid};
 pub use objects::{genfs_sid, initial_sid_context, load_initial_sids};
 pub use validtrans::{validate_transition, validate_transition_user};
+pub use bounds::bounded_transition;
+
+#[cfg(test)]
+#[path = "tests/bounds.rs"]
+mod bounds_tests;

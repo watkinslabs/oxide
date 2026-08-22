@@ -338,6 +338,13 @@ fn reading_and_writing_without_a_policy_answers_rather_than_panicking() {
 }
 
 #[test]
+fn a_multithreaded_current_write_consults_the_domain_bound() {
+    let source = include_str!("../selinux_label/attr.rs");
+    assert!(source.contains("s.bounded_transition(old, new)"));
+    assert!(source.contains("Some(Ok(false)) => return Err(Errno::Eperm)"));
+}
+
+#[test]
 fn a_staging_slot_round_trips_through_the_label() {
     let mut l = TaskLabel::with_sid(SID_OLD);
     for slot in [AttrSlot::Exec, AttrSlot::FsCreate, AttrSlot::KeyCreate, AttrSlot::SockCreate] {
