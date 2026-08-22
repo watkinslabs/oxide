@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2529-rtnetlink-link-dispatch
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED d35f7b84b | MISSING | high | RTM_NEWLINK and RTM_DELLINK now dispatch through the registered rtnl-link kind registry; bare NEWLINK and SETLINK retain administrative flag handling, and VLAN/bond kinds register during kernel initialization. | `netlink::rtnetlink::handle_link_in`; production dispatch tests cover create and delete; netlink 384, rtnl-link 25, VLAN 95, bonding 157; x86_64/aarch64 target checks pass. | Chris Watkins |
+
 ### B2529-stale-wifi-subsystem-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
