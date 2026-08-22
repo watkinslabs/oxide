@@ -6,8 +6,8 @@ use std::vec::Vec;
 use super::{TtyDriver, TtyStruct};
 use crate::ldisc::Sig;
 use crate::pty::{
-    cc, default_termios, lflag, oflag, read_lflag, read_oflag, Winsize, TERMIOS_BYTES,
-    TERMIOS_OFF_CC, TERMIOS_OFF_LFLAG,
+    cc, default_termios, iflag, lflag, oflag, read_iflag, read_lflag, read_oflag, Winsize,
+    TERMIOS_BYTES, TERMIOS_OFF_CC, TERMIOS_OFF_IFLAG, TERMIOS_OFF_LFLAG,
 };
 use crate::wait::host::HostWait;
 use crate::wait::TtyWait;
@@ -47,6 +47,8 @@ impl TtyDriver for RecordingDriver {
 
 fn raw_termios() -> [u8; TERMIOS_BYTES] {
     let mut t = default_termios();
+    let ifl = read_iflag(&t) & !iflag::IXON;
+    t[TERMIOS_OFF_IFLAG..TERMIOS_OFF_IFLAG + 4].copy_from_slice(&ifl.to_le_bytes());
     // Clear ICANON + ECHO + ISIG → raw passthrough.
     let lf = read_lflag(&t) & !(lflag::ICANON | lflag::ECHO | lflag::ISIG);
     t[TERMIOS_OFF_LFLAG..TERMIOS_OFF_LFLAG + 4].copy_from_slice(&lf.to_le_bytes());

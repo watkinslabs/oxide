@@ -89,7 +89,8 @@ fn packet_mode_reports_flow_and_termios_events() {
     termios[TERMIOS_OFF_CC + cc::VSTOP] = 0;
     p.set_termios(termios);
     assert_eq!(p.master_read(&mut event), 1);
-    assert_eq!(event[0] & (TIOCPKT_NOSTOP | TIOCPKT_IOCTL), TIOCPKT_NOSTOP | TIOCPKT_IOCTL);
+    assert_eq!(event[0] & (TIOCPKT_DOSTOP | TIOCPKT_IOCTL),
+               TIOCPKT_DOSTOP | TIOCPKT_IOCTL);
 }
 
 #[test]
