@@ -181,6 +181,40 @@ fn set_applies_a_valid_configuration_and_calls_the_driver() {
 }
 
 #[test]
+fn set_renames_the_radio_through_the_live_command_path() {
+    let _g = crate::nl80211::tests_support::lock();
+    let (w, _ops) = radio();
+    let before = w.generation();
+    let mut req = Req::wiphy(&w);
+    req.text(a::WIPHY_NAME, "lab-radio");
+    assert!(req.call(wiphy_cmd::set).is_ack());
+    assert_eq!(w.name(), "lab-radio");
+    assert!(w.generation() > before);
+    let reply = Req::wiphy(&w).call(wiphy_cmd::get);
+    assert_eq!(find(reply.body(), a::WIPHY_NAME), Some(&b"lab-radio\0"[..]));
+}
+
+#[test]
+fn set_refuses_duplicate_reserved_and_overlong_radio_names() {
+    let _g = crate::nl80211::tests_support::lock();
+    let (first, _ops1) = radio();
+    let (second, _ops2) = radio();
+
+    let mut duplicate = Req::wiphy(&second);
+    duplicate.text(a::WIPHY_NAME, &first.name());
+    assert!(duplicate.call(wiphy_cmd::set).is_err(Errno::Einval));
+
+    let mut reserved = Req::wiphy(&first);
+    reserved.text(a::WIPHY_NAME, "phy7");
+    assert!(reserved.call(wiphy_cmd::set).is_err(Errno::Einval));
+
+    let mut overlong = Req::wiphy(&first);
+    overlong.text(a::WIPHY_NAME, "radio-name-is-too-long");
+    assert!(overlong.call(wiphy_cmd::set).is_err(Errno::Einval));
+    assert_eq!(first.name(), "phy0");
+}
+
+#[test]
 fn set_rejects_a_whole_request_when_one_field_is_out_of_range() {
     let _g = crate::nl80211::tests_support::lock();
     let (w, ops) = radio();

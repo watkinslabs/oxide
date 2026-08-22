@@ -19,7 +19,7 @@ use crate::uapi::{cmd, enums};
 use crate::wiphy::config::{self, ConfigRequest};
 use crate::wiphy::{registry, Wiphy};
 
-use super::{chandef, msg, resolve};
+use super::{chandef, event, msg, policy, resolve};
 
 #[path = "wiphy_cmd/body.rs"]
 pub mod body;
@@ -89,11 +89,25 @@ fn set_inner(attrs: &[u8], ctx: GenlCtx) -> Result<(), Errno> {
 /// producing two radios userspace cannot tell apart. # C: O(N radios)
 fn rename(wiphy: &Arc<Wiphy>, attrs: &[u8]) -> Result<(), Errno> {
     let Some(name) = msg::get_str(attrs, a::WIPHY_NAME) else { return Ok(()); };
-    if name.is_empty() { return Err(Errno::Einval); }
+    if name.is_empty() || name.len() > policy::WIPHY_NAME_MAX_LEN {
+        return Err(Errno::Einval);
+    }
     if wiphy.is_named(name) { return Ok(()); }
+    if canonical_phy_index(name).is_some_and(|idx| idx != wiphy.index) {
+        return Err(Errno::Einval);
+    }
     if registry::lookup_by_name(name).is_some() { return Err(Errno::Einval); }
     wiphy.set_name(name);
+    event::new_wiphy(wiphy);
     Ok(())
+}
+
+/// Parse the reserved canonical `phy<N>` spelling. A leading-zero spelling is
+/// an ordinary custom name, not a claim on another radio's generated name.
+fn canonical_phy_index(name: &str) -> Option<u32> {
+    let n = name.strip_prefix("phy")?;
+    if n.is_empty() || (n.len() > 1 && n.starts_with('0')) { return None; }
+    n.parse().ok()
 }
 
 /// Read the configuration fields a request asks to change. # C: O(N attrs)
