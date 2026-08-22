@@ -37,6 +37,13 @@ use crate::Error;
 /// SIGBUS, matching the classifier's own private signo table in `hal`.
 const SIGBUS: u8 = 7;
 
+/// Signal payload for an access to one poisoned base page.
+/// # C: O(1)
+pub fn poisoned_page_fault(addr: u64) -> (i32, hal::SigFault) {
+    let addr_lsb = hal::PAGE_SIZE_BYTES.trailing_zeros() as i16;
+    (code::BUS_MCEERR_AR, hal::SigFault { addr, addr_lsb, pkey: 0 })
+}
+
 /// Why the resolver refused a user fault, in the terms the reference reports
 /// back from its fault handler to the architecture entry.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -136,6 +143,15 @@ mod tests {
             let s = signal_of(Error::Io, arch).expect("a failed fill must raise a signal");
             assert_eq!((s.signo, s.code), (SIGBUS, code::BUS_ADRERR));
         }
+    }
+
+    #[test]
+    fn poisoned_base_page_reports_its_recoverable_address_granularity() {
+        let (code, fault) = poisoned_page_fault(0x7fff_1234_5000);
+        assert_eq!(code, code::BUS_MCEERR_AR);
+        assert_eq!(fault.addr, 0x7fff_1234_5000);
+        assert_eq!(fault.addr_lsb, hal::PAGE_SIZE_BYTES.trailing_zeros() as i16);
+        assert_eq!(fault.pkey, 0);
     }
 
     #[test]

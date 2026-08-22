@@ -3214,3 +3214,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 381449099 | MISSING | low | **FAT `readdir` cursors use the canonical byte offset after each name's short on-medium record, so deleting an earlier sibling cannot shift a saved cookie.** Long-name groups resume from their first record while emitted next positions remain the short record's end. | B2351's mounted VFS regression saved a cursor, deleted an earlier sibling, and resumed at the correct entry. | 381449099 |
+
+### B2352-poison-signal-lsb
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 666b71990 | COVERAGE | med | **A poisoned base-page fault builds its complete hosted memory-error record, including `BUS_MCEERR_AR`, the fault address, and `si_addr_lsb = PAGE_SHIFT`; the target path consumes that record.** Ordinary backing-store bus errors remain byte-granular. | B2352's production decision test pinned the page-granularity field and poison code. | 666b71990 |

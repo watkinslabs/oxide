@@ -14,10 +14,6 @@
 use vmm::{AddressSpace, UffdFaultKind, VmaFlags};
 use hal::UserVirtAddr;
 
-/// Page shift reported as `si_addr_lsb` on a memory-error signal: the fault is
-/// precise to one 4 KiB page, not to the byte.
-const PAGE_SHIFT: i16 = 12;
-
 #[cfg(target_arch = "x86_64")]
 type Walker = hal_x86_64::vmm::PtWalkerX86;
 #[cfg(target_arch = "aarch64")]
@@ -61,8 +57,8 @@ pub(super) fn poisoned(as_: &AddressSpace, va_page: u64, user_mode: bool, hhdm: 
         return None;
     }
     if !user_mode { return Some(Intercept::Fail); }
-    sched::live::force_sig_fault(sched::signum::Signum::Sigbus,
-                                 hal::siginfo::code::BUS_MCEERR_AR, va_page, PAGE_SHIFT);
+    let (code, fault) = vmm::fault_signal::poisoned_page_fault(va_page);
+    sched::live::force_sig_fault(sched::signum::Signum::Sigbus, code, fault.addr, fault.addr_lsb);
     Some(Intercept::Retry)
 }
 
