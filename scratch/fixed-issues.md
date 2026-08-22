@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2407-sendmsg-msg-more
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 81c3a4b7f | MISSING | med | **`sendmsg(2)` and `sendmmsg(2)` now honor `MSG_MORE` on TCP with the same transient cork machinery used by splice.** The Linux UAPI value is named, generic message-flag settlement carries the one-send hint into the transport, and the TCP sender combines it with sticky `TCP_CORK` through the existing `plan_write_more` policy. A send without `MSG_MORE` releases bytes retained by preceding sends; no second cork state exists. | B2407. Linux 7.2-rc4 defines `MSG_MORE` as `0x8000`; the production-path hosted test pins flagged sends buffering until an unflagged send releases them. | B2407-sendmsg-msg-more |
+
 ### B2513-oom-production-console-report
 
 | Status | Class | Sev | Issue | Evidence | Owner |
