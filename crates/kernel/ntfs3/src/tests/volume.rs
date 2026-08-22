@@ -118,6 +118,70 @@ fn a_path_resolves_through_directories() {
     assert!(v.lookup("/sub/missing").is_err());
 }
 
+fn utf16_bytes(value: &str) -> alloc::vec::Vec<u8> {
+    value.encode_utf16().flat_map(u16::to_le_bytes).collect()
+}
+
+fn microsoft_reparse(tag: u32, base: usize, target: &str) -> alloc::vec::Vec<u8> {
+    let target = utf16_bytes(target);
+    let mut raw = alloc::vec![0u8; base + target.len()];
+    let data_len = u16::try_from(raw.len() - 8).unwrap();
+    raw[REPARSE_OFF_TAG..REPARSE_OFF_TAG + 4].copy_from_slice(&tag.to_le_bytes());
+    raw[REPARSE_OFF_DATA_LEN..REPARSE_OFF_DATA_LEN + 2]
+        .copy_from_slice(&data_len.to_le_bytes());
+    let (off_at, len_at) = if tag == IO_REPARSE_TAG_SYMLINK {
+        (REPARSE_OFF_SYMLINK_PRINT_OFF, REPARSE_OFF_SYMLINK_PRINT_LEN)
+    } else {
+        (REPARSE_OFF_SYMLINK_SUB_OFF, REPARSE_OFF_SYMLINK_SUB_LEN)
+    };
+    raw[off_at..off_at + 2].copy_from_slice(&0u16.to_le_bytes());
+    raw[len_at..len_at + 2]
+        .copy_from_slice(&(u16::try_from(target.len()).unwrap()).to_le_bytes());
+    raw[base..].copy_from_slice(&target);
+    raw
+}
+
+fn third_party_reparse(tag: u32, target: &str) -> alloc::vec::Vec<u8> {
+    let target = utf16_bytes(target);
+    let mut raw = alloc::vec![0u8; 0x18 + target.len()];
+    let data_len = u16::try_from(raw.len()).unwrap();
+    raw[REPARSE_OFF_TAG..REPARSE_OFF_TAG + 4].copy_from_slice(&tag.to_le_bytes());
+    raw[REPARSE_OFF_DATA_LEN..REPARSE_OFF_DATA_LEN + 2]
+        .copy_from_slice(&data_len.to_le_bytes());
+    raw[8..0x18].copy_from_slice(&[0x5a; 0x10]);
+    raw[0x18..].copy_from_slice(&target);
+    raw
+}
+
+#[test]
+fn every_supported_name_surrogate_reads_through_the_live_volume_path() {
+    const THIRD_PARTY_NAME_SURROGATE: u32 = IO_REPARSE_TAG_NAME_SURROGATE | 0x1234;
+    let mut b = Builder::new();
+    let symlink = b.push_reparse("symlink", false,
+        &microsoft_reparse(IO_REPARSE_TAG_SYMLINK, REPARSE_OFF_SYMLINK_BUFFER, "../file"));
+    let junction = b.push_reparse("junction", true,
+        &microsoft_reparse(IO_REPARSE_TAG_MOUNT_POINT, REPARSE_OFF_MOUNT_BUFFER,
+                           r"\??\C:\tree"));
+    let surrogate = b.push_reparse("vendor", false,
+        &third_party_reparse(THIRD_PARTY_NAME_SURROGATE, "vendor/target"));
+    let v = test_image::mount(b);
+
+    assert_eq!(v.read_link(symlink).unwrap(), "../file");
+    assert_eq!(v.read_link(junction).unwrap(), "/??/C:/tree");
+    assert_eq!(v.read_link(surrogate).unwrap(), "vendor/target");
+}
+
+#[test]
+fn an_unknown_non_surrogate_remains_ordinary_data() {
+    const THIRD_PARTY_DATA_TAG: u32 = 0x0000_1234;
+    let mut b = Builder::new();
+    let number = b.push_reparse("vendor-data", false,
+        &third_party_reparse(THIRD_PARTY_DATA_TAG, "not/a/link"));
+    let v = test_image::mount(b);
+    assert_eq!(v.stat(number).unwrap().reparse_tag, Some(THIRD_PARTY_DATA_TAG));
+    assert_eq!(v.read_link(number), Err(syscall::errno::Errno::Einval));
+}
+
 #[test]
 fn statfs_reports_real_inode_counts() {
     let v = test_image::empty();

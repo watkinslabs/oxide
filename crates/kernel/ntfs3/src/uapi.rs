@@ -250,6 +250,10 @@ pub const IO_REPARSE_TAG_SYMLINK: u32 = 0xA000_000C;
 pub const IO_REPARSE_TAG_WOF: u32 = 0x8000_0017;
 /// A tag with this bit set names a Microsoft-defined reparse point.
 pub const IO_REPARSE_TAG_MICROSOFT: u32 = 0x8000_0000;
+/// A tag with this bit set stands in for another named object.
+pub const IO_REPARSE_TAG_NAME_SURROGATE: u32 = 0x2000_0000;
+/// Bytes before a third-party reparse point's generic target payload.
+pub const REPARSE_OFF_GENERIC_BUFFER: usize = 0x18;
 /// Offsets within a reparse point's data.
 pub const REPARSE_OFF_TAG: usize = 0x00;
 pub const REPARSE_OFF_DATA_LEN: usize = 0x04;

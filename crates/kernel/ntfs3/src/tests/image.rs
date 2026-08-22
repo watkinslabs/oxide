@@ -225,6 +225,28 @@ impl Builder {
         number
     }
 
+    /// Add a reparse point whose resident payload is already wire-shaped.
+    /// # C: O(name + payload bytes)
+    pub fn push_reparse(&mut self, name: &str, is_dir: bool, raw: &[u8]) -> u64 {
+        let number = self.alloc_record();
+        let attributes = FILE_ATTRIBUTE_REPARSE_POINT
+            | if is_dir { FILE_ATTRIBUTE_DIRECTORY } else { FILE_ATTRIBUTE_ARCHIVE };
+        let mut attrs = alloc::vec![
+            Self::std_info(attributes),
+            Self::file_name(MFT_REC_ROOT, name, attributes, 0),
+            crate::volume::edit::resident(ATTR_REPARSE, &[], 2, false, raw),
+        ];
+        if is_dir {
+            let root = crate::volume::dirops::insert::empty_index_root(INDEX_SIZE,
+                                                                       CLUSTER as u32);
+            attrs.push(crate::volume::edit::resident(ATTR_ROOT, &I30_NAME, 3, false, &root));
+        }
+        self.put_record(number, if is_dir { RECORD_FLAG_DIR } else { 0 },
+                        &Reference::default(), &attrs);
+        self.push_root_entry(number, name, attributes, 0);
+        number
+    }
+
     /// Put an entry into the root's index, keeping it in key order.
     /// # C: O(entries)
     pub fn push_root_entry(&mut self, number: u64, name: &str, attributes: u32, size: u64) {
