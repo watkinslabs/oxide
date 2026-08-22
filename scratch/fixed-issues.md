@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2485-dynamic-transition-bounds
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 72cbc85cf | DEFECT | med | SELinux dynamic transitions now enforce bounded-transition policy and return EPERM only for unbounded targets. | SELinux/runtime/sched tests and target checks passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2484-selinuxfs-pseudo-inode-owner
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -554,6 +561,13 @@
 |---|---|---|---|---|---|
 | FIXED e23216ef4 | INFRA | low | **The shared VFS pseudo-inode registry now owns selinuxfs's entire inode-number band.** `selinuxfs` constructs its allocator from `vfs::pseudo_ino::SELINUXFS`; the private region declaration and its second overlap walk are gone, so the repository has one compile-time source of truth for the band. | B2484. Linux 7.2.0-rc4's selinuxfs creates nodes through its one filesystem inode owner (`sel_make_inode`) and assigns its special identities there. `selinuxfs_is_claimed_by_the_single_shared_registry` was RED at zero owners before the registry entry and GREEN at exactly one after it. Full VFS 392/392 and selinuxfs 81/81 pass; both x86_64 and aarch64 kernel target checks pass. | B2484-selinuxfs-pseudo-inode-owner |
 >>>>>>> 2f290c28b (docs: close B2484 selinuxfs inode owner)
+=======
+### B2485-dynamic-transition-bounds
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 72cbc85cf | DEFECT | low | **A multithreaded process may now change its current SELinux domain when the new type is transitively bounded by the old type; an unrelated domain is refused with `EPERM` instead of the former unconditional `EACCES`.** The loaded security server owns the SID-to-type walk, treats an unchanged type as bounded, and caps malformed cycles before the scheduler applies the ordinary `dyntransition` permission. | B2485. Linux 7.2.0-rc4 `selinux_setprocattr` calls `security_bounded_transition(old_sid, new_sid)` only for a non-single-threaded `current` write, returns `EPERM` when the new type's bounds chain does not reach the old type, then checks `PROCESS__DYNTRANSITION`. The focused tests were RED before the decision owner existed; mutating the live refusal back to `EACCES` made the production-hook test RED and restoring `EPERM` made it GREEN. Four bounds tests cover a child, unrelated and unchanged types plus cycle termination. SELinux 276/276, selinux-runtime 55/55 and sched 1536/1536 pass. Both kernel target gates pass. Paired smoke passed attempt 1 with userspace and serial RX: x86 in 46 s, ARM64 in 56 s. | B2485-dynamic-transition-bounds |
+>>>>>>> b04ec292e (docs: close bounded dynamic transition defect)
 
 ### B2329-freezer-backoff-sleep
 
