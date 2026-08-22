@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2421-f2fs-cp-disabled-ssr-last-resort
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 79e2c121e | MISSING | low | **Checkpoint-disabled f2fs SSR now claims an empty dirty segment as its last resort after typed searches fail.** | B2421 adds the production fallback and pins checkpoint-disabled versus enabled behavior. | B2421-f2fs-cp-disabled-ssr-last-resort |
+
 ### B2419-delete-dead-netlink-send-shims
 
 | Status | Class | Sev | Issue | Evidence | Owner |
