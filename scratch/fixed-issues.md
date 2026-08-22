@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2476-tiocvhangup-ioctl-entry
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 438bf78bd | MISSING | med | TIOCVHANGUP now follows the canonical CAP_SYS_ADMIN tty revocation path. | TTY/syscall tests and target checks passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2475-shm-info-residency
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -464,6 +471,13 @@
 |---|---|---|---|---|---|
 | FIXED 3f0601b67 | MISSING | low | **`SHM_INFO` now reports populated resident and swapped shared-memory pages instead of leaving both fields zero.** The backing address space is the single accounting owner: tmpfs folds resident and in-flight-migration entries into RSS and evicted entries into swap, while hugetlbfs reports its allocated huge pages. The ABI encoder converts each backing-granule count to base pages, preserves sparse holes as uncounted, and keeps the existing requested-size `shm_tot` meaning. | B2475. Linux 7.2.0-rc4 totals resident and swapped pages across the IPC namespace and reports allocated huge pages in base-page units. `shm_info_counts_resident_swapped_and_huge_pages` drives the production encoder with one resident base page, one swapped base page, one hole, and one allocated 2 MiB page. **RED:** before the production implementation it failed with RSS 0 versus 513. **GREEN:** the focused case and full IPC 284/284, filesystem 1392/1392, VMM 466/466, and VFS 391/391 suites pass, as do both kernel target checks. No boot was required because this is a query-only syscall result with no boot-path effect. | B2475-shm-info-residency |
 >>>>>>> 8bf4789d2 (docs: close SHM_INFO residency row)
+=======
+### B2476-tiocvhangup-ioctl-entry
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 438bf78bd | MISSING | med | **`TIOCVHANGUP` now revokes the tty named by the open file description.** The ioctl uses its distinct `CAP_SYS_ADMIN` gate, then converges with `vhangup(2)` on one session-walk and per-open revocation owner. | B2476. Linux 7.2.0-rc4 gates this ioctl on `CAP_SYS_ADMIN` and calls the same tty-vhangup mechanism on the fd target. The hosted admission and source-callsite tests were RED before implementation; deleting the production dispatch arm makes the callsite test RED, restored GREEN. Tty 209/209 passes. Syscalls 1,989 pass with the same seven unrelated failures reproduced on clean main. Both feature target gates pass. Final paired smoke passed attempt 1 with serial RX: x86_64 48 s, aarch64 99 s. | B2476 |
+>>>>>>> 278c22dcb (doc: close TIOCVHANGUP ioctl gap)
 
 ### B2329-freezer-backoff-sleep
 
