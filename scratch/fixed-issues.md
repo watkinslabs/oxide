@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2532-landlock-send-path-test
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED cc1da66f2 | COVERAGE | low | Landlock send admission now has a behavioral pathname-recipient test through the production `socket::send::prepare` path, using a retained `SendContext` domain and a real filesystem-backed Unix datagram socket. | `socket/src/tests/security_hooks.rs::a_pathname_send_reaches_the_landlock_resolve_hook`; focused security-hook suite 7/7 and full socket suite 93/93. Removing `address::resolve_unix`'s production `check_resolved_unix` call made the test return no error instead of EACCES. | Chris Watkins |
+
 ### B2531-stale-tmpfs-mpol-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |

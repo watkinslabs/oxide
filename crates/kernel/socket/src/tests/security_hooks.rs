@@ -10,7 +10,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use landlock::abi::RulesetAttr;
-use landlock::uapi::{ACCESS_NET_BIND_UDP, ACCESS_NET_CONNECT_SEND_UDP};
+use landlock::uapi::{ACCESS_FS_RESOLVE_UNIX, ACCESS_NET_BIND_UDP, ACCESS_NET_CONNECT_SEND_UDP};
 use landlock::{Domain, Ruleset};
 use security::network::{self, Context, Operation, Verdict};
 
@@ -59,6 +59,29 @@ fn addr4(port: u16) -> Vec<u8> {
 
 fn message(name: Option<Vec<u8>>, len: usize) -> Message {
     Message { requested_len: len, payload: alloc::vec![0u8; len], name, ..Message::default() }
+}
+
+fn pathname(name: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(name.len() + 2);
+    out.extend_from_slice(&1u16.to_ne_bytes());
+    out.extend_from_slice(name);
+    out
+}
+
+fn pathname_target(name: &[u8]) -> (SendFile, vfs::InodeRef) {
+    let socket = Arc::new(net::sock::InetSocket::new_unix_dgram());
+    let namespace = socket.net_namespace.clone();
+    let queue = match &*socket.kind.lock() {
+        net::sock::SockKind::UnixDgram(queue) => queue.clone(),
+        _ => unreachable!(),
+    };
+    let inode = net::sock::make_inet_socket_inode(socket);
+    let addr = net::UnixAddr::from_inode_bytes(name.to_vec(), &inode);
+    queue.set_bound(addr.clone());
+    net::net_ns::unix_registry_for_addr_in(&namespace, &addr)
+        .dgram_bind_addr(addr, queue).expect("unique pathname socket");
+    let dentry = vfs::Dentry::new(None, String::from("sender"), inode.clone());
+    (SendFile::new(vfs::File::new(inode.clone(), dentry, vfs::OpenFlags::O_RDWR)), inode)
 }
 
 #[test]
@@ -150,4 +173,26 @@ fn a_sandboxed_send_is_judged_against_the_snapshot_the_context_retained() {
         Some(Error::Eacces));
     // No named recipient, no port settled, nothing refused.
     assert!(crate::send::prepare(&confined, &target, &message(None, 4), 0).is_ok());
+}
+
+#[test]
+fn a_pathname_send_reaches_the_landlock_resolve_hook() {
+    let (_guard, _owner, _namespace) = fixture();
+    let rules = Ruleset::new(&RulesetAttr { handled_fs: ACCESS_FS_RESOLVE_UNIX,
+        ..Default::default() });
+    let domain = Domain::merge(None, &rules).unwrap();
+    let task = task(707);
+    let root_inode = vfs::InodeBuilder::new(8700, vfs::mk_mode(vfs::FileType::Directory, 0o755),
+        vfs::default_inode_ops(), vfs::default_file_ops()).build();
+    let root = vfs::Dentry::new_root(root_inode.clone());
+    let path = b"/landlock-send-path-2532";
+    let (target, socket_inode) = pathname_target(path);
+    vfs::d_add(&root, "landlock-send-path-2532", socket_inode);
+    let root_path = vfs::VfsPath { mnt_id: vfs::mount::MNT_ID_NONE, dentry: root,
+        inode: root_inode, last_component: None };
+    task.set_fs_root(String::from("/"), root_path.clone());
+    task.set_fs_cwd(String::from("/"), root_path);
+    let ctx = SendContext::with_sandbox(&task, Some(domain));
+    assert_eq!(crate::send::prepare(&ctx, &target, &message(Some(pathname(path)), 4), 0).err(),
+        Some(Error::Eacces));
 }
