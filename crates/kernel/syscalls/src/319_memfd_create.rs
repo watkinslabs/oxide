@@ -79,7 +79,7 @@ pub fn sys_memfd_create(args: &SyscallArgs) -> i64 {
     // selector the flag word carries. It starts empty, exactly as the shmem
     // one does, and grows when something maps it.
     let inode = if st.hugetlb {
-        match ::fs::hugetlbfs::hugetlb_file_setup(0, st.huge_shift, st.perm, 0, 0) {
+        match ::fs::hugetlbfs::hugetlb_file_setup(0, st.huge_shift, st.perm, 0, 0, true) {
             Ok(i) => i,
             Err(e) => return err(huge_setup_errno(e)),
         }

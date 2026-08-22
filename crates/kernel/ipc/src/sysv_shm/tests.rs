@@ -150,7 +150,7 @@ fn hugetlb_create_builds_a_huge_backing_and_rounds_the_segment_up() {
     let asked = AtomicUsize::new(0);
     let c = cred_ipc_lock(10, 20);
     let id = shmget_with_backing_cred(66, 4096, IPC_CREAT | huge::SHM_HUGETLB | 0o600, 77, c.clone(), |want| {
-        assert_eq!(want, SegBacking::Huge { log: 0, bytes: HUGE_2M },
+        assert_eq!(want, SegBacking::Huge { log: 0, bytes: HUGE_2M, reserve: true },
                    "the default selector asks for one whole default-granule page");
         asked.fetch_add(1, AtomicOrdering::AcqRel);
         shim(want)
@@ -169,7 +169,24 @@ fn the_size_selector_chooses_the_granule_the_backing_is_built_at() {
     let c = cred_ipc_lock(10, 20);
     let id = shmget_with_backing_cred(
         67, 1, IPC_CREAT | huge::SHM_HUGETLB | SHM_HUGE_1GB | 0o600, 77, c, |want| {
-            assert_eq!(want, SegBacking::Huge { log: 30, bytes: 1024 * 1024 * 1024 });
+            assert_eq!(want, SegBacking::Huge {
+                log: 30, bytes: 1024 * 1024 * 1024, reserve: true,
+            });
+            shim(want)
+        });
+    assert!(id > 0);
+}
+
+#[test]
+fn shm_noreserve_defers_a_huge_segments_page_reservation() {
+    let _shm = crate::sysv_shm::test_claim::claim_shm();
+    let c = cred_ipc_lock(10, 20);
+    let id = shmget_with_backing_cred(
+        74, 4096, IPC_CREAT | huge::SHM_HUGETLB | super::SHM_NORESERVE | 0o600,
+        77, c, |want| {
+            assert_eq!(want, SegBacking::Huge {
+                log: 0, bytes: HUGE_2M, reserve: false,
+            });
             shim(want)
         });
     assert!(id > 0);

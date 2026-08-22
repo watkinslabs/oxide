@@ -35,6 +35,7 @@ const IPC_CREAT: u64 = 0o1000;
 const IPC_EXCL: u64 = 0o2000;
 const IPC_MODE_MASK: u64 = 0o777;
 const SHM_RDONLY: u64 = 0o10000;
+const SHM_NORESERVE: u64 = 0o10000;
 const SHM_RND: u64 = 0o20000;
 const SHM_REMAP: u64 = 0o40000;
 const SHM_EXEC: u64 = 0o100000;
@@ -121,7 +122,7 @@ pub(crate) fn reap_namespace(ns: NamespaceId) {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum SegBacking {
     Shmem,
-    Huge { log: u32, bytes: u64 },
+    Huge { log: u32, bytes: u64, reserve: bool },
 }
 
 /// `shmget` registry entry. The syscalls shim passes a lazy `make_backing`
@@ -176,7 +177,11 @@ where F: FnOnce(SegBacking) -> Result<Arc<dyn vmm::FileBacking>, syscall::errno:
             if !self::huge::can_do_hugetlb_shm(&cred) {
                 return -(Errno::Eperm.as_i32() as i64);
             }
-            SegBacking::Huge { log: h.log, bytes: h.bytes }
+            SegBacking::Huge {
+                log: h.log,
+                bytes: h.bytes,
+                reserve: (flg & SHM_NORESERVE) == 0,
+            }
         }
         Ok(None) => SegBacking::Shmem,
         Err(e) => return -(e.as_i32() as i64),

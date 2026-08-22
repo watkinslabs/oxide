@@ -34,11 +34,13 @@ fn make_backing(want: ipc::sysv_shm::SegBacking)
 {
     let inode = match want {
         ipc::sysv_shm::SegBacking::Shmem => ::fs::tmpfs::tmpfs_anon_file(),
-        // The pages are promised HERE, so a segment larger than the pool can
-        // hold fails at `shmget` rather than at a fault the program that
-        // attached it cannot handle.
-        ipc::sysv_shm::SegBacking::Huge { log, bytes } => {
-            match ::fs::hugetlbfs::hugetlb_file_setup(bytes, log, SHM_FILE_PERM, 0, 0) {
+        // Ordinary huge segments promise their pages here, so exhaustion is
+        // reported by `shmget`.  SHM_NORESERVE deliberately defers that charge
+        // to the fault path.
+        ipc::sysv_shm::SegBacking::Huge { log, bytes, reserve } => {
+            match ::fs::hugetlbfs::hugetlb_file_setup(
+                bytes, log, SHM_FILE_PERM, 0, 0, reserve,
+            ) {
                 Ok(i) => i,
                 Err(e) => return Err(huge_setup_errno(e)),
             }
