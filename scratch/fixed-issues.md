@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2538-tmpfs-casefold-residual-ledger
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2538 | MISSING | med | Two residual tmpfs casefold rows were stale after B2527: casefold/strict mounts are admitted, and strict-name validation is called from the real tmpfs create/lookup path. The separate `&str` limitation remains open. | `tmpfs::casefold::name_ok` calls `generic_ci_validate_strict_name`; B2527's production tests cover mount admission and folded lookup. | Chris Watkins |
+
 ### B2537-affinity-ledger-stale-rows
 
 | Status | Class | Sev | Issue | Evidence | Owner |
