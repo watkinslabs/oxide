@@ -40,6 +40,8 @@ const SHMINFO_SHMSEG_OFF: usize = 24;
 const SHMINFO_SHMALL_OFF: usize = 32;
 const SHM_INFO_USED_IDS_OFF: usize = 0;
 const SHM_INFO_TOT_OFF: usize = 8;
+const SHM_INFO_RSS_OFF: usize = 16;
+const SHM_INFO_SWP_OFF: usize = 24;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 struct ShmctlSet {
@@ -140,13 +142,24 @@ fn encode_shminfo64() -> [u8; SHMINFO64_BYTES] {
 
 fn encode_shm_info(segs: &[alloc::sync::Arc<ShmSegment>], ns: namespace_identity::NamespaceId) -> [u8; SHM_INFO_BYTES] {
     let mut b = [0u8; SHM_INFO_BYTES];
-    let used = segs.iter().filter(|s| s.ns == ns && (s.mode.load(Ordering::Acquire) & SHM_DEST) == 0).count() as i32;
-    let pages = segs.iter()
-        .filter(|s| s.ns == ns && (s.mode.load(Ordering::Acquire) & SHM_DEST) == 0)
-        .map(|s| ((s.size as u64) + PAGE_SIZE - 1) / PAGE_SIZE)
-        .sum::<u64>();
+    let live = segs.iter().filter(|s| s.ns == ns && (s.mode.load(Ordering::Acquire) & SHM_DEST) == 0);
+    let mut used = 0i32;
+    let mut pages = 0u64;
+    let mut resident = 0u64;
+    let mut swapped = 0u64;
+    for seg in live {
+        used += 1;
+        pages += ((seg.size as u64) + PAGE_SIZE - 1) / PAGE_SIZE;
+        let (backing_resident, backing_swapped) = seg.backing.page_counts();
+        let granule = super::huge::seg_page_size(&seg.backing);
+        let base_pages = granule / PAGE_SIZE;
+        resident = resident.saturating_add(backing_resident.saturating_mul(base_pages));
+        swapped = swapped.saturating_add(backing_swapped.saturating_mul(base_pages));
+    }
     put_i32(&mut b, SHM_INFO_USED_IDS_OFF, used);
     put_u64(&mut b, SHM_INFO_TOT_OFF, pages);
+    put_u64(&mut b, SHM_INFO_RSS_OFF, resident);
+    put_u64(&mut b, SHM_INFO_SWP_OFF, swapped);
     b
 }
 

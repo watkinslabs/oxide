@@ -40,6 +40,16 @@ impl AddressSpaceOps for TmpfsFileData {
         self.pages.lock().contains_key(&(off / PG as u64))
     }
 
+    /// # C: O(populated pages)
+    fn page_counts(&self) -> (u64, u64) {
+        self.pages.lock().values().fold((0u64, 0u64), |(resident, swapped), page| {
+            match page {
+                ShmemPage::Resident { .. } | ShmemPage::Migrating { .. } => (resident + 1, swapped),
+                ShmemPage::Swapped { .. } => (resident, swapped + 1),
+            }
+        })
+    }
+
     /// Read-fault / MAP_PRIVATE cache copy. # C: O(dst.len)
     fn read_at(&self, off: u64, dst: &mut [u8]) -> KResult<usize> { self.read_bytes(off, dst) }
 

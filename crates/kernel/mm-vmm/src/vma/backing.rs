@@ -224,6 +224,12 @@ pub trait FileBacking: Send + Sync {
     /// # C: O(log N_pages)
     fn backing_holds_page(&self, _off: u64) -> bool { false }
 
+    /// Populated backing pages as `(resident, swapped)`, counted in this
+    /// object's own page granule. Sparse holes are absent from both totals.
+    /// The caller converts a huge-page count to base pages when its ABI asks
+    /// for that unit. # C: O(populated pages)
+    fn page_counts(&self) -> (u64, u64) { (0, 0) }
+
     /// Linux `can_do_mincore`: reveal exact file page-cache state only when the
     /// caller owns/can-write the mapped file; otherwise mincore reports resident.
     /// # C: O(1) or inode permission check

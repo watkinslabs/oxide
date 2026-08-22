@@ -229,6 +229,11 @@ impl FileBacking for InodeFileBacking {
         self.inode.i_mapping().is_some_and(|m| m.backing_holds_page(off))
     }
 
+    /// # C: O(populated pages)
+    fn page_counts(&self) -> (u64, u64) {
+        self.inode.i_mapping().map_or((0, 0), |m| m.page_counts())
+    }
+
     /// `msync(MS_SYNC)`/range fsync writeback over the inode address_space.
     /// Inodes without an address_space have no mapped dirty frame store here.
     /// # C: O(N_dirty in range)
