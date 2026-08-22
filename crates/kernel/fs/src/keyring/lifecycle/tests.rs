@@ -8,12 +8,12 @@ use super::super::uapi::*;
 
 fn ctx(tid: u32, uid: u32) -> super::super::ops::Ctx {
     super::super::ops::Ctx::with_caps(
-        TaskIds { tid, tgid: tid, fsuid: uid, fsgid: uid, groups: alloc::vec::Vec::new(), ..TaskIds::default() }, 0, false, false)
+        TaskIds { tid, tgid: tid, ruid: uid, fsuid: uid, fsgid: uid, groups: alloc::vec::Vec::new(), ..TaskIds::default() }, 0, false, false)
 }
 
 fn thread_ctx(tid: u32, tgid: u32, uid: u32) -> super::super::ops::Ctx {
     super::super::ops::Ctx::with_caps(
-        TaskIds { tid, tgid, fsuid: uid, fsgid: uid, groups: alloc::vec::Vec::new(), ..TaskIds::default() }, 0, false, false)
+        TaskIds { tid, tgid, ruid: uid, fsuid: uid, fsgid: uid, groups: alloc::vec::Vec::new(), ..TaskIds::default() }, 0, false, false)
 }
 
 // A forked child shares the parent's session keyring — the reason a login

@@ -72,6 +72,27 @@ fn special_keyrings_are_distinct() {
     assert!(all.iter().all(|&x| x >= FIRST_SERIAL as i64));
 }
 
+// Linux `look_up_user_keyrings` identifies and owns both per-user rings with
+// `cred->user->uid`, not `cred->fsuid`.  Changing only the filesystem uid must
+// therefore keep the same `@u`/`@us` objects while ordinary key ownership can
+// still follow fsuid.
+#[test]
+fn per_user_keyrings_follow_real_uid_not_fsuid() {
+    let mut first = ctx(1064, 4100);
+    first.t.ruid = 3100;
+    let user = get_keyring_id(&first, KEY_SPEC_USER_KEYRING, true) as i32;
+    let usersess = get_keyring_id(&first, KEY_SPEC_USER_SESSION_KEYRING, true) as i32;
+
+    let mut changed_fsuid = ctx(1065, 4200);
+    changed_fsuid.t.ruid = 3100;
+    assert_eq!(get_keyring_id(&changed_fsuid, KEY_SPEC_USER_KEYRING, true), user as i64);
+    assert_eq!(get_keyring_id(&changed_fsuid, KEY_SPEC_USER_SESSION_KEYRING, true), usersess as i64);
+
+    let store = STORE.lock();
+    assert_eq!(store.keys[&user].uid, 3100);
+    assert_eq!(store.keys[&usersess].uid, 3100);
+}
+
 // `KEY_SPEC_USER_SESSION_KEYRING` and `KEY_SPEC_GROUP_KEYRING` are NOT the
 // same ring: Linux never implemented group keyrings, so `-6` resolves to
 // nothing at all — group keyrings were never implemented, so the id resolver

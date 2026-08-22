@@ -9,14 +9,18 @@ use super::super::types::KeyType;
 use super::super::uapi::*;
 
 /// Caller identity every op resolves special keyrings against and that
-/// `perm::key_task_permission` checks ownership against. Linux keys are
-/// owned by and checked against the FILESYSTEM ids (`cred->fsuid` /
-/// `cred->fsgid` in `key_alloc` and `key_task_permission`), not the effective
-/// ids — a process under `setfsuid()` sees a different key world.
+/// `perm::key_task_permission` checks ownership against. Ordinary Linux keys
+/// are owned by and checked against the FILESYSTEM ids (`cred->fsuid` /
+/// `cred->fsgid` in `key_alloc` and `key_task_permission`). The implicit
+/// per-user keyrings are the deliberate exception: `look_up_user_keyrings`
+/// identifies and allocates them with `cred->user->uid`.
 #[derive(Clone, Debug, Default)]
 pub struct TaskIds {
     pub tid: u32,
     pub tgid: u32,
+    /// `cred->user->uid`, the real uid that identifies and owns implicit
+    /// per-user keyrings. This is deliberately distinct from the fsuid.
+    pub ruid: u32,
     pub fsuid: u32,
     pub fsgid: u32,
     /// `cred->group_info`, walked by `groups_search` when the key's gid is
