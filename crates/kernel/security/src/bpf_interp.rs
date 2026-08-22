@@ -50,6 +50,7 @@ const BPF_CALL: u8 = 0x85;
 #[derive(Default)]
 pub struct HelperState {
     pub retval: i32,
+    pub attach_cookie: u64,
 }
 
 /// The group a selection program runs for, and the member it named.
@@ -383,6 +384,7 @@ fn run_inner(
                     memory.sk_select_reuseport(regs[2], regs[3], regs[4], &stack)
                 }
                 crate::bpf::uapi::func_id::KTIME_GET_COARSE_NS => coarse_monotonic_ns(),
+                crate::bpf::uapi::func_id::GET_ATTACH_COOKIE => helper_state.attach_cookie as i64,
                 _ => {
                     let h = helpers.iter().find(|h| h.id == id)?;
                     (h.f)(helper_state, regs[1], regs[2], regs[3], regs[4], regs[5])

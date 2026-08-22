@@ -102,6 +102,7 @@ pub const SK_FILTER_CONTEXT_BYTES: usize = sk_buff::SIZE;
 
 /// Context window a cgroup program's pointer arithmetic may address.
 const CGROUP_CONTEXT_BYTES: usize = 64;
+const RAW_TRACEPOINT_CONTEXT_BYTES: usize = 12 * core::mem::size_of::<u64>();
 
 /// Bytes of context an iterator program addresses: the iteration meta
 /// record and the object of the current step. Every published target
@@ -116,6 +117,8 @@ pub(super) fn context_size(profile: &Profile) -> usize {
         (uapi::prog_type::SK_REUSEPORT, _) => SK_REUSEPORT_CONTEXT_BYTES,
         (uapi::prog_type::LSM, Some(hook)) => bpf_lsm::context_bytes(hook),
         (uapi::prog_type::TRACING, _) => iter_context_bytes(),
+        (uapi::prog_type::RAW_TRACEPOINT | uapi::prog_type::RAW_TRACEPOINT_WRITABLE, _) =>
+            RAW_TRACEPOINT_CONTEXT_BYTES,
         _ => CGROUP_CONTEXT_BYTES,
     }
 }
@@ -139,6 +142,8 @@ pub(super) fn valid_context(
         uapi::prog_type::LSM =>
             profile.hook.is_some_and(|hook| lsm_access(hook, offset, size, write)),
         uapi::prog_type::TRACING => iter_access(offset, size, write),
+        uapi::prog_type::RAW_TRACEPOINT | uapi::prog_type::RAW_TRACEPOINT_WRITABLE =>
+            !write && size != 0 && offset % size == 0,
         _ => false,
     }
 }

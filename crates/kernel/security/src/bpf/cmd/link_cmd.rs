@@ -37,7 +37,7 @@ pub(in super::super) fn get_next_id(a: &Attr, attr_ptr: u64, caps: Caps) -> Resu
 fn detach_verdict(kind: LinkKind) -> Result<(), Errno> {
     match kind {
         LinkKind::Cgroup => Ok(()),
-        LinkKind::Lsm | LinkKind::Iter => Err(Errno::Eopnotsupp),
+        LinkKind::Lsm | LinkKind::Iter | LinkKind::RawTracepoint => Err(Errno::Eopnotsupp),
     }
 }
 
@@ -47,7 +47,7 @@ fn detach_verdict(kind: LinkKind) -> Result<(), Errno> {
 fn update_verdict(kind: LinkKind) -> Result<(), Errno> {
     match kind {
         LinkKind::Cgroup => Ok(()),
-        LinkKind::Lsm | LinkKind::Iter => Err(Errno::Einval),
+        LinkKind::Lsm | LinkKind::Iter | LinkKind::RawTracepoint => Err(Errno::Einval),
     }
 }
 
@@ -55,7 +55,7 @@ fn update_verdict(kind: LinkKind) -> Result<(), Errno> {
 fn iter_verdict(kind: LinkKind) -> Result<(), Errno> {
     match kind {
         LinkKind::Iter => Ok(()),
-        LinkKind::Cgroup | LinkKind::Lsm => Err(Errno::Einval),
+        LinkKind::Cgroup | LinkKind::Lsm | LinkKind::RawTracepoint => Err(Errno::Einval),
     }
 }
 

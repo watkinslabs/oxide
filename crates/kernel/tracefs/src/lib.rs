@@ -8,6 +8,7 @@ pub mod fs_impl;
 pub mod mount_opts;
 pub mod percpu_ring;
 pub mod predicate;
+pub mod raw_bpf;
 pub mod ring;
 pub mod root;
 #[cfg(target_arch = "x86_64")]
@@ -16,6 +17,7 @@ mod pkru;
 pub mod zram;
 
 pub use eventfs::{register_dynamic_event, EventDesc};
+pub use raw_bpf::{RawRunner, attach as attach_raw_bpf, detach as detach_raw_bpf};
 
 pub use debug_file::{register_debug_show, show_inode};
 pub use root::{config_root, debug_root, register, register_config, register_debug, trace_root};

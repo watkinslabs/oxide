@@ -12,7 +12,10 @@ use alloc::sync::Arc;
 use syscall::errno::Errno;
 use vfs::InodeRef;
 
-use super::super::{BpfCgroupLinkInode, BpfIterLinkInode, BpfLsmLinkInode, BpfProgInode};
+use super::super::{
+    BpfCgroupLinkInode, BpfIterLinkInode, BpfLsmLinkInode,
+    BpfRawTracepointLinkInode, BpfProgInode,
+};
 
 /// The inode behind one open descriptor of the calling task. # C: O(1)
 pub(crate) fn inode_from_fd(fd: i32) -> Result<InodeRef, Errno> {
@@ -34,7 +37,7 @@ pub(crate) fn prog_from_fd(fd: u32) -> Result<InodeRef, Errno> {
 /// kernel mints appears here, so a command that dispatches on link type
 /// cannot silently treat a new kind as "no such operation".
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub(crate) enum LinkKind { Cgroup, Lsm, Iter }
+pub(crate) enum LinkKind { Cgroup, Lsm, Iter, RawTracepoint }
 
 /// `bpf_link_get_from_fd()`. # C: O(1)
 pub(crate) fn link_from_fd(fd: u32) -> Result<(InodeRef, LinkKind), Errno> {
@@ -48,5 +51,6 @@ pub(crate) fn link_kind(inode: &InodeRef) -> Option<LinkKind> {
     if inode.private::<BpfCgroupLinkInode>().is_some() { return Some(LinkKind::Cgroup); }
     if inode.private::<BpfLsmLinkInode>().is_some() { return Some(LinkKind::Lsm); }
     if inode.private::<BpfIterLinkInode>().is_some() { return Some(LinkKind::Iter); }
+    if inode.private::<BpfRawTracepointLinkInode>().is_some() { return Some(LinkKind::RawTracepoint); }
     None
 }

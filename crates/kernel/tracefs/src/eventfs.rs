@@ -40,6 +40,7 @@ pub struct EventDesc {
     pub get:    fn() -> bool,
     pub set:    fn(bool),
     pub filter: &'static FilterSlot,
+    pub raw:    Option<&'static crate::raw_bpf::RawEvent>,
 }
 
 /// Built-in tracepoint events. Each row's `filter` is the static slot the
@@ -47,13 +48,13 @@ pub struct EventDesc {
 const BUILTIN: &[EventDesc] = &[
     EventDesc { subsys: "sched", name: "sched_switch", id: b"1\n",
                 format: SCHED_SWITCH_FORMAT, get: ring::sched_switch_on, set: ring::set_sched_switch,
-                filter: &ring::FILTER_SCHED_SWITCH },
+                filter: &ring::FILTER_SCHED_SWITCH, raw: None },
     EventDesc { subsys: "syscalls", name: "sys_enter", id: b"2\n",
                 format: SYS_ENTER_FORMAT, get: ring::sys_enter_on, set: ring::set_sys_enter,
-                filter: &ring::FILTER_SYS_ENTER },
+                filter: &ring::FILTER_SYS_ENTER, raw: Some(&ring::RAW_SYS_ENTER) },
     EventDesc { subsys: "syscalls", name: "sys_exit", id: b"3\n",
                 format: SYS_EXIT_FORMAT, get: ring::sys_exit_on, set: ring::set_sys_exit,
-                filter: &ring::FILTER_SYS_EXIT },
+                filter: &ring::FILTER_SYS_EXIT, raw: Some(&ring::RAW_SYS_EXIT) },
 ];
 
 /// The live event registry (built-ins + runtime registrations). # C: O(1)
@@ -62,6 +63,22 @@ static REGISTRY: Spinlock<Vec<EventDesc>, TraceClass> = Spinlock::new(Vec::new()
 /// Snapshot the registry (entries are `Copy`) so callers iterate without
 /// holding the lock across `get`/`set`/insert. # C: O(events)
 fn snapshot() -> Vec<EventDesc> { REGISTRY.lock().clone() }
+
+/// Resolve a BPF-capable tracepoint from the canonical event definitions.
+/// Built-ins exist before tracefs is mounted; runtime entries join the same
+/// registry and become visible once their definition carries a raw site.
+/// # C: O(events)
+pub(crate) fn raw_event_by_name(name: &[u8])
+    -> Option<(&'static str, &'static crate::raw_bpf::RawEvent)>
+{
+    if let Some(event) = BUILTIN.iter()
+        .find(|event| event.name.as_bytes() == name && event.raw.is_some()) {
+        return Some((event.name, event.raw.unwrap()));
+    }
+    let event = REGISTRY.lock().iter()
+        .find(|event| event.name.as_bytes() == name && event.raw.is_some()).copied()?;
+    Some((event.name, event.raw.unwrap()))
+}
 
 /// The distinct subsystems in the registry, in first-seen order. # C: O(events)
 fn subsystems(snap: &[EventDesc]) -> Vec<&'static str> {
@@ -266,7 +283,7 @@ pub fn register_event(e: EventDesc) {
 pub fn register_dynamic_event(subsys: &'static str, name: &'static str, id: &'static [u8],
                               format: &'static [u8], get: fn() -> bool, set: fn(bool)) {
     let slot: &'static FilterSlot = alloc::boxed::Box::leak(alloc::boxed::Box::new(FilterSlot::new(format)));
-    register_event(EventDesc { subsys, name, id, format, get, set, filter: slot });
+    register_event(EventDesc { subsys, name, id, format, get, set, filter: slot, raw: None });
 }
 
 /// Register the eventfs tree under `/sys/kernel/tracing/events`. Seeds the

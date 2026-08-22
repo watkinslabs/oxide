@@ -27,6 +27,110 @@ pub struct BpfLsmLinkInode {
     pub(super) _prog: InodeRef,
 }
 
+/// Cross-owner operations for raw tracepoints. The canonical event registry
+/// sits in tracefs; security owns the fd-backed link and passes its globally
+/// unique link id as the exact attachment identity.
+#[derive(Clone, Copy)]
+pub struct RawTracepointHooks {
+    pub attach: fn(&[u8], u64, InodeRef, u64) -> Result<&'static str, Errno>,
+    pub detach: fn(&str, u64),
+}
+
+/// fd-backed raw-tracepoint link. The link pins its program; final close
+/// removes the exact probe from the canonical tracepoint definition.
+pub struct BpfRawTracepointLinkInode {
+    pub(super) id: u32,
+    prog: InodeRef,
+    name: Spinlock<Option<&'static str>, TaskListClass>,
+    cookie: u64,
+    hooks: RawTracepointHooks,
+}
+
+impl Drop for BpfRawTracepointLinkInode {
+    fn drop(&mut self) {
+        if let Some(name) = *self.name.lock() { (self.hooks.detach)(name, self.id as u64); }
+        registry::forget_link_id(self.id);
+    }
+}
+
+/// Stable description consumed by `BPF_TASK_FD_QUERY`. The program reference
+/// is pinned by the returned value while its canonical facts are read.
+pub struct RawTracepointLinkInfo {
+    pub prog: InodeRef,
+    pub name: &'static str,
+    pub cookie: u64,
+}
+
+/// Describe one raw-tracepoint link inode. # C: O(1)
+pub fn raw_tracepoint_link_info(inode: &InodeRef) -> Option<RawTracepointLinkInfo> {
+    let link = inode.private::<BpfRawTracepointLinkInode>()?;
+    let name = (*link.name.lock())?;
+    Some(RawTracepointLinkInfo {
+        prog: Arc::clone(&link.prog), name, cookie: link.cookie,
+    })
+}
+
+/// Reserved fd + link id. Publication follows successful tracepoint
+/// registration, matching the link-primer ordering used by every BPF link.
+pub(crate) struct BpfRawTracepointPrimer {
+    id: u32,
+    fd: i32,
+    fdt: Arc<vfs::FdTable>,
+    file: Arc<vfs::File>,
+    inode: InodeRef,
+    settled: bool,
+}
+
+impl BpfRawTracepointPrimer {
+    pub(crate) fn id(&self) -> u64 { self.id as u64 }
+
+    /// Publish the registered link and its reserved descriptor. # C: O(log links)
+    pub(crate) fn settle(mut self, name: &'static str) -> i64 {
+        let link = self.inode.private::<BpfRawTracepointLinkInode>()
+            .expect("BPF raw-tracepoint primer inode");
+        *link.name.lock() = Some(name);
+        settle_link_id(self.id, &self.inode);
+        self.fdt.fd_install(self.fd, Arc::clone(&self.file));
+        self.settled = true;
+        self.fd as i64
+    }
+}
+
+impl Drop for BpfRawTracepointPrimer {
+    fn drop(&mut self) {
+        if !self.settled {
+            cancel_link_id(self.id);
+            self.fdt.put_unused_fd(self.fd);
+        }
+    }
+}
+
+/// Prime a raw link before its tracepoint probe becomes visible. # C: O(fd words)
+pub(crate) fn prime_bpf_raw_tracepoint_link(
+    prog: InodeRef,
+    cookie: u64,
+    hooks: RawTracepointHooks,
+) -> Result<BpfRawTracepointPrimer, Errno> {
+    use vfs::{File, OpenFlags};
+    let cur = sched::current().ok_or(Errno::Ebadf)?;
+    // SAFETY: running task on this CPU; preempt-off on syscall path; table is pinned.
+    let fdt = unsafe { cur.fd_table_ref() }.ok_or(Errno::Ebadf)?.clone();
+    let fd = fdt.get_unused_fd_flags(OpenFlags::O_CLOEXEC, cur.nofile_soft())
+        .map_err(|_| Errno::Emfile)?;
+    let id = reserve_link_id();
+    let inode = InodeBuilder::new(ids::INO_LINK, mk_mode(FileType::CharDev, BPF_FD_MODE),
+        default_inode_ops(), default_file_ops())
+        .private(Arc::new(BpfRawTracepointLinkInode {
+            id, prog, name: Spinlock::new(None), cookie, hooks,
+        }))
+        .build();
+    let dentry = vfs::dcache::d_alloc_pseudo(
+        "bpf-link", Arc::clone(&inode), &crate::anon_dname::ANON_INODE_OPS,
+    );
+    let file = File::new(Arc::clone(&inode), dentry, OpenFlags::O_RDWR);
+    Ok(BpfRawTracepointPrimer { id, fd, fdt, file, inode, settled: false })
+}
+
 impl Drop for BpfLsmLinkInode {
     fn drop(&mut self) { crate::bpf_lsm::unregister(self.id); }
 }

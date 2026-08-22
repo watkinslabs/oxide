@@ -30,6 +30,8 @@ fn in_proto(prog_type: u32, func: u32) -> bool {
             prog_type == p::CGROUP_SOCK_ADDR,
         // Naming a member of a reuseport group is meaningful to nothing else.
         uapi::func_id::SK_SELECT_REUSEPORT => prog_type == p::SK_REUSEPORT,
+        uapi::func_id::GET_ATTACH_COOKIE =>
+            matches!(prog_type, p::RAW_TRACEPOINT | p::RAW_TRACEPOINT_WRITABLE),
         _ => false,
     }
 }
@@ -60,6 +62,7 @@ pub(super) fn verify_helper(
             }
             Kind::Scalar(Scalar::exact(0))
         }
+        uapi::func_id::GET_ATTACH_COOKIE => Kind::Scalar(Scalar::unknown()),
         _ => return Err(VerifyError::UnsupportedOpcode),
     };
     state.regs[1..=5].fill(Kind::Uninit);

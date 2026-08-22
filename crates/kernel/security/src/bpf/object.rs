@@ -6,7 +6,8 @@ use syscall::errno::Errno;
 use vfs::{InodeRef, VfsPath};
 
 use super::attr::Caps;
-use super::{BPF_FS_MAGIC, BpfCgroupLinkInode, BpfMapInode, BpfProgInode, attr, btf, install_fd_access, uapi};
+use super::{BPF_FS_MAGIC, BpfCgroupLinkInode, BpfMapInode, BpfProgInode,
+    BpfRawTracepointLinkInode, attr, btf, install_fd_access, uapi};
 
 fn object_from_fd(fd: u32) -> Result<InodeRef, Errno> {
     let current = sched::current().ok_or(Errno::Ebadf)?;
@@ -16,6 +17,7 @@ fn object_from_fd(fd: u32) -> Result<InodeRef, Errno> {
     let inode = Arc::clone(file.inode());
     if inode.private::<BpfMapInode>().is_none()
         && inode.private::<BpfProgInode>().is_none()
+        && inode.private::<BpfRawTracepointLinkInode>().is_none()
         && inode.private::<BpfCgroupLinkInode>().is_none()
         && !btf::is_object_inode(&inode) {
         return Err(Errno::Einval);
@@ -62,6 +64,7 @@ pub(crate) fn get(a: &attr::Attr, object: &VfsPath, caps: Caps) -> Result<i64, E
 fn object_from_inode(inode: &InodeRef) -> Result<(), Errno> {
     if inode.private::<BpfMapInode>().is_some()
         || inode.private::<BpfProgInode>().is_some()
+        || inode.private::<BpfRawTracepointLinkInode>().is_some()
         || inode.private::<BpfCgroupLinkInode>().is_some()
         || btf::is_object_inode(inode) { Ok(()) }
     else { Err(Errno::Einval) }
