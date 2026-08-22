@@ -1,5 +1,11 @@
 # Fixed issues
 
+### R127-stale-hda-position-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED R127 | DEFECT | low | **The HDA position-buffer row was stale: the DMA position buffer is already allocated, programmed, preferred, and invalid-value-fallback tested.** | B2495 merged the live controller/stream position-buffer path; `drv-hda` position tests cover slot layout and LPIB fallback. | R127 |
+
 ### R126-stale-exit-notify-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
