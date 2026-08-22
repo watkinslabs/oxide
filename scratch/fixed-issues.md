@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2426-f2fs-rename-replace-in-place
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 7f7ff1e09 | DEFECT | low | **F2FS rename replacement now rewrites the existing destination dentry in place.** | B2426 follows the Linux `f2fs_set_link` replacement shape and pins the moved inode’s parent metadata. | B2426-f2fs-rename-replace-in-place |
+
 ### B2421-f2fs-cp-disabled-ssr-last-resort
 
 | Status | Class | Sev | Issue | Evidence | Owner |
