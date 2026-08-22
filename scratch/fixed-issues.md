@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2482-ipv6-pktoptions-source-validation
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 6eb76b323 | DEFECT | med | IPV6_2292PKTOPTIONS now validates interface, source ownership, and link-local context with Linux errno semantics. | Net tests and target checks passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2481-ktimers-earliest-deadline
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -548,6 +555,13 @@
 |---|---|---|---|---|---|
 | FIXED 06e8d0e61 | DEFECT | med | **The process-context timer driver now parks until the earliest registered software-timer deadline instead of imposing a 100 ms floor on every periodic callback.** It retains the 100 ms bound only as its idle fallback, clamps overdue work to immediate dispatch, and publishes that computed deadline to the existing hard-tick waker. Vivid's 16.6 ms producer tick can therefore service its negotiated 30 fps frame deadline instead of delivering only at 10 Hz. | B2481. Linux 7.2.0-rc4 vivid computes and waits for each negotiated frame deadline; its generic timer delivery is likewise deadline-driven. Oxide's live call chain is `timer_driver::driver` → `timer::next_deadline_ns` → `timer_driver_policy::park_deadline` → `DEADLINE` → `tick_poll_ktimers`. The focused tests were RED before `park_deadline` existed; replacing the live registry lookup with the former fallback made the production-hook test RED, and restoring it made all four policy tests GREEN. Sched 1539/1539 (after one unrelated inode-wait race passed isolated and on full rerun), timer 7/7, and drv-vivid 16/16 pass. Both kernel target gates pass. Paired smoke passed attempt 1 with userspace and serial RX: x86 in 46 s, ARM64 in 56 s. | B2481-ktimers-earliest-deadline |
 >>>>>>> 912448514 (docs: close ktimers cadence defect)
+=======
+### B2482-ipv6-pktoptions-source-validation
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 6eb76b323 | MISSING | med | **`IPV6_2292PKTOPTIONS` now screens every packet-info control message against the live socket namespace, device binding, and source-address ownership before discarding its per-datagram state.** A conflicting bound interface, a link-local source without an interface, or an unusable source returns `EINVAL`; an absent selected interface returns `ENODEV`. The shared stream parser owns the exact native `in6_pktinfo` decode and requires its caller to supply the socket-context screen, so no packet-info arm can silently bypass it. | B2482. Linux 7.2.0-rc4 routes `IPV6_2292PKTOPTIONS` through `ip6_datagram_send_ctl`; its `IPV6_PKTINFO` arm checks the outgoing interface with `dev_get_by_index_rcu`, rejects link-local sources without a device, and checks non-wildcard source ownership. `packet_info_reaches_the_socket_context_screen` proves the production parser passes address `2001:db8::7` and ifindex 9 to the screen and propagates `ENODEV`. Omitting the callback made that test RED with `Ok(Slots)` instead of `Err(Enodev)`; restored code is GREEN. The focused test and full net suite pass (2575/2575), as do x86_64 and aarch64 kernel target checks. Boot smoke is omitted because this changes only an explicitly requested socket-option error path and is not boot-visible. | B2482-ipv6-pktoptions-source-validation |
+>>>>>>> b4da8025e (docs: close B2482 IPv6 pktoptions validation)
 
 ### B2329-freezer-backoff-sleep
 
