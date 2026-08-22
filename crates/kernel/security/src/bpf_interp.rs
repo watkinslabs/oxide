@@ -328,10 +328,12 @@ pub fn run_program_with_state(
     helpers: &[Helper],
     helper_state: &mut HelperState,
 ) -> Option<i64> {
-    let maps = prog.maps.lock();
-    let mut memory = RunMemory::new(Context::ReadOnly(context), packet, &maps);
-    memory.attach_prog(prog);
-    run_inner(&prog.insns, helpers, helper_state, memory)
+    prog.stats.run(|| {
+        let maps = prog.maps.lock();
+        let mut memory = RunMemory::new(Context::ReadOnly(context), packet, &maps);
+        memory.attach_prog(prog);
+        run_inner(&prog.insns, helpers, helper_state, memory)
+    })
 }
 
 /// Mutable-context variant for `BPF_PROG_TYPE_CGROUP_SOCK_ADDR`.
@@ -342,10 +344,12 @@ pub fn run_program_mut_with_state(
     helpers: &[Helper],
     helper_state: &mut HelperState,
 ) -> Option<i64> {
-    let maps = prog.maps.lock();
-    let mut memory = RunMemory::new(Context::ReadWrite(context), &[], &maps);
-    memory.attach_prog(prog);
-    run_inner(&prog.insns, helpers, helper_state, memory)
+    prog.stats.run(|| {
+        let maps = prog.maps.lock();
+        let mut memory = RunMemory::new(Context::ReadWrite(context), &[], &maps);
+        memory.attach_prog(prog);
+        run_inner(&prog.insns, helpers, helper_state, memory)
+    })
 }
 
 fn run_inner(

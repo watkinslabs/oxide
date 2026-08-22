@@ -105,7 +105,8 @@ fn prog_info(prog: &BpfProgInode, requested_len: u32, info_ptr: u64) -> Result<u
     let copied = core::cmp::min(requested, PROG_INFO_SIZE);
     let mut _supplied = [0u8; PROG_INFO_SIZE];
     if copied != 0 { user::read_bytes(info_ptr, &mut _supplied[..copied])?; }
-    let info = program_record(prog, 0, 0);
+    let stats = prog.stats.snapshot();
+    let info = program_record(prog, stats.run_time_ns, stats.run_cnt);
     if copied != 0 { user::write_bytes(info_ptr, &info[..copied])?; }
     Ok(copied)
 }
@@ -146,5 +147,35 @@ mod tests {
         assert_eq!(get_u64(&info, PROG_RUN_TIME_NS_OFF), 0x1122_3344_5566_7788);
         assert_eq!(get_u64(&info, PROG_RUN_CNT_OFF), 0x8877_6655_4433_2211);
         assert_eq!(get_u32(&info, PROG_VERIFIED_INSNS_OFF), 2);
+    }
+
+    #[test]
+    fn program_info_copy_reads_the_program_owned_run_count() {
+        let inode = make_bpf_prog_inode(
+            uapi::prog_type::SOCKET_FILTER,
+            vec![0x95, 0, 0, 0, 0, 0, 0, 0],
+        );
+        let prog = inode.private::<BpfProgInode>().unwrap();
+        crate::bpf::prog::stats::hold();
+        let answer = crate::bpf_interp::run_program_with_state(
+            prog, &[], &[], &[], &mut crate::bpf_interp::HelperState::default(),
+        );
+        crate::bpf::prog::stats::release();
+        assert_eq!(answer, Some(0));
+
+        let mut info = [0u8; PROG_INFO_SIZE];
+        assert_eq!(prog_info(prog, PROG_INFO_SIZE as u32, info.as_mut_ptr() as u64),
+            Ok(PROG_INFO_SIZE));
+        assert_eq!(get_u64(&info, PROG_RUN_CNT_OFF), 1);
+    }
+
+    #[test]
+    fn program_info_rejects_nonzero_bytes_after_the_visible_record() {
+        let inode = make_bpf_prog_inode(uapi::prog_type::SOCKET_FILTER, vec![0; 8]);
+        let prog = inode.private::<BpfProgInode>().unwrap();
+        let mut info = [0u8; PROG_INFO_SIZE + 1];
+        info[PROG_INFO_VISIBLE_END] = 1;
+        assert_eq!(prog_info(prog, info.len() as u32, info.as_mut_ptr() as u64),
+            Err(Errno::E2big));
     }
 }
