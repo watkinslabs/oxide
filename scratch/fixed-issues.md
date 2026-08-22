@@ -1,5 +1,11 @@
 # Fixed issues
 
+### R110-duplicate-feature-gate-lane-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED | INFRA | med | The duplicate C246 feature-gate lane record is closed as bookkeeping: B1671's fixes and full debug-feature gate were already merged, so no C246 implementation remains to land. | Git history contains merged B1671 feature-gate commits and the current `make feature-gate` implementation; the C246 duplicate was dropped at rebase as the row states. | R110 |
+
 ### R109-stale-io-uring-r01-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
