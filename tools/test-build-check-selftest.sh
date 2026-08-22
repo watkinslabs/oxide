@@ -53,4 +53,9 @@ case "$output" in
         ;;
 esac
 
+grep -Fq 'source tree unavailable' "$root/tools/test-build-check.sh" || {
+    echo "test-build-check-selftest: missing deleted-worktree diagnostic" >&2
+    exit 1
+}
+
 echo "test-build-check-selftest: PASS"
