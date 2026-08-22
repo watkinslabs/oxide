@@ -230,7 +230,7 @@ mod tests {
         ];
         let mut waits = 0usize;
         for (name, text) in sources {
-            for (at, _) in text.match_indices("deliverable_signals_self") {
+            for (at, _) in text.match_indices("interruptible_work_pending_self") {
                 waits += 1;
                 let arm = &text[at..core::cmp::min(at + 240, text.len())];
                 assert!(arm.contains("sock_intr_errno") || arm.contains("recv_interrupted")
