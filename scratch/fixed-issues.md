@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2578-stale-mount-linked-hosted-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2578 | COVERAGE | high | **The recorded hosted-mount verification gap is stale.** `mount_dispatch` is now an ungated crate-root module and the kernel-facing `fsmount_common` adapter delegates to it; the hosted integration tests import `syscalls::mount_dispatch` and therefore compile and exercise the same linked module rather than a `#[path]` copy under the target-gated tree. | `crates/kernel/syscalls/src/lib.rs` declares `pub mod mount_dispatch`; `crates/kernel/syscalls/src/mount_dispatch.rs` is ungated and documents the linked-owner boundary. `cargo test -p syscalls --test mount_too_revealing_dispatch` = 5 passed, `mount_param_admission_hosted` = 8 passed, and `mount_cgroup_v1_honest_hosted` = 8 passed. No source behavior changed. | B2578 |
+
 ### B2206-pid-namespace-ref
 
 | Status | Class | Sev | Issue | Evidence | Owner |
