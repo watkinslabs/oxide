@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2481-ktimers-earliest-deadline
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 06e8d0e61 | DEFECT | med | Timer-driver parking now uses the earliest ktimer deadline instead of a fixed 100 ms delay. | Scheduler/timer tests and target checks passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2480-ext4-itable-highres-pacing
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -534,6 +541,13 @@
 |---|---|---|---|---|---|
 | FIXED 05b590aff | DEFECT | low | **Lazy ext4 inode-table initialisation now prices each pause from the exact group-zeroing duration instead of the periodic worker's one-second cadence.** The worker samples the shared monotonic clock immediately around `init_next_inode_table`, records completion as the pause origin, and multiplies only that measured interval by `init_itable=`. | B2480. Linux 7.2.0-rc4 samples `ktime_get_ns()` around `ext4_init_inode_table()` and converts the elapsed duration times `s_li_wait_mult` into its next timeout. `a_mount_waits_out_the_pause_its_option_earned` drives the real table write with a deterministic 1,000 ns measurement and requires a 10,000 ns pause beginning at completion. Replacing the measured duration with the periodic tick makes the test RED at `0` versus `10000`; restored GREEN. Full ext4 suite passes, including 319 unit tests and every image integration; both x86_64 and aarch64 kernel target checks pass. Paired smoke reached userspace and passed serial RX on attempt 1: x86_64 in 46 s and aarch64 in 56 s. | B2480-ext4-itable-highres-pacing |
 >>>>>>> 6b66df94a (docs: close B2480 ext4 itable pacing)
+=======
+### B2481-ktimers-earliest-deadline
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 06e8d0e61 | DEFECT | med | **The process-context timer driver now parks until the earliest registered software-timer deadline instead of imposing a 100 ms floor on every periodic callback.** It retains the 100 ms bound only as its idle fallback, clamps overdue work to immediate dispatch, and publishes that computed deadline to the existing hard-tick waker. Vivid's 16.6 ms producer tick can therefore service its negotiated 30 fps frame deadline instead of delivering only at 10 Hz. | B2481. Linux 7.2.0-rc4 vivid computes and waits for each negotiated frame deadline; its generic timer delivery is likewise deadline-driven. Oxide's live call chain is `timer_driver::driver` → `timer::next_deadline_ns` → `timer_driver_policy::park_deadline` → `DEADLINE` → `tick_poll_ktimers`. The focused tests were RED before `park_deadline` existed; replacing the live registry lookup with the former fallback made the production-hook test RED, and restoring it made all four policy tests GREEN. Sched 1539/1539 (after one unrelated inode-wait race passed isolated and on full rerun), timer 7/7, and drv-vivid 16/16 pass. Both kernel target gates pass. Paired smoke passed attempt 1 with userspace and serial RX: x86 in 46 s, ARM64 in 56 s. | B2481-ktimers-earliest-deadline |
+>>>>>>> 912448514 (docs: close ktimers cadence defect)
 
 ### B2329-freezer-backoff-sleep
 
