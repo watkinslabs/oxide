@@ -25,9 +25,8 @@ pub const IORING_POLL_ADD_LEVEL:        u32 = 1 << 3;
 pub const POLL_UPDATE_VALID_FLAGS: u32 =
     IORING_POLL_UPDATE_EVENTS | IORING_POLL_UPDATE_USER_DATA | IORING_POLL_ADD_MULTI;
 
-/// `POLLNVAL` — the description the poll names is not one. The rest of the
-/// poll ABI bits come from `vfs`, which does not carry this one.
-pub const POLL_NVAL: u32 = 0x0020;
+/// `POLLNVAL` — the description the poll names is not one.
+pub use vfs::POLL_NVAL;
 
 /// The conditions an armed poll always reports, whether or not the caller
 /// asked for them: an error, a hangup, a peer hangup and an invalid
