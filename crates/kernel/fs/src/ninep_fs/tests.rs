@@ -10,6 +10,7 @@ use vfs::setattr as vattr;
 use vfs::{FileType, Iattr, Timespec64};
 
 use super::attr::*;
+use super::inode::admit_rename_flags;
 use super::mount::attach_uid;
 
 fn policy() -> AttrPolicy { AttrPolicy { nodev: false, dfltuid: 65534, dfltgid: 65534 } }
@@ -167,4 +168,12 @@ fn the_attach_identity_follows_the_access_mode() {
     // An explicit identity is used whoever the caller is.
     let single = opts::parse("tag", "access=500").unwrap();
     assert_eq!(attach_uid(&single, 1000), 500);
+}
+
+#[test]
+fn rename_admits_only_the_unflagged_protocol_operation() {
+    assert!(admit_rename_flags(0).is_ok());
+    for flags in [vfs::namei::RENAME_NOREPLACE, vfs::namei::RENAME_EXCHANGE] {
+        assert_eq!(admit_rename_flags(flags).err(), Some(vfs::VfsError::Einval));
+    }
 }
