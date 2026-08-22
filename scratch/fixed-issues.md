@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2534-stale-ninep-rename-flags-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED current | MISSING | low | The remaining OPEN 9P flagged-rename row duplicated B2432: the protocol has no `RENAME_EXCHANGE` or `RENAME_NOREPLACE` operation, and returning `EINVAL` is the Linux-shaped safe result rather than silently performing a plain rename. | Existing fixed entry `B2432-stale-ninep-rename-flags-row`; `ninep_fs::inode::rename` and its production admission tests. | Chris Watkins |
+
 ### B2533-stale-selinux-xattr-permission-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
