@@ -43,6 +43,8 @@ pub struct FakeOps {
     pub threshold: u32,
     /// Name the last create request carried.
     pub last_name: Option<String>,
+    /// Explicit context answer, when a size-boundary test needs one.
+    pub new_context_answer: Option<String>,
 }
 
 impl Default for FakeOps {
@@ -50,7 +52,7 @@ impl Default for FakeOps {
         Self { denied: Vec::new(), checked: Vec::new(), enforcing: false,
                bools: BTreeMap::new(), commits: 0, avd: AvDecision::init(0),
                facts: PolicyFacts::default(), caps: 0, image: None, threshold: 0,
-               last_name: None }
+               last_name: None, new_context_answer: None }
     }
 }
 
@@ -116,6 +118,7 @@ impl PolicyOps for FakeOps {
                    name: Option<&str>) -> KResult<String> {
         if scon == BAD_CONTEXT || tcon == BAD_CONTEXT { return Err(VfsError::Einval); }
         self.last_name = name.map(ToString::to_string);
+        if let Some(answer) = &self.new_context_answer { return Ok(answer.clone()); }
         let which = match kind {
             NewContext::Create => "create", NewContext::Relabel => "relabel",
             NewContext::Member => "member",

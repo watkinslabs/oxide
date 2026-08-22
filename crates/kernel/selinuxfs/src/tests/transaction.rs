@@ -3,7 +3,8 @@
 use vfs::VfsError;
 
 use crate::fake::{FakeOps, BAD_CONTEXT};
-use crate::nodes::transaction::{required_permission, transact, TxKind, PERM_CHECK_CONTEXT,
+use crate::nodes::transaction::{required_permission, transact, TxKind, TRANSACTION_LIMIT,
+                                PERM_CHECK_CONTEXT,
                                 PERM_COMPUTE_AV, PERM_COMPUTE_CREATE, PERM_COMPUTE_MEMBER,
                                 PERM_COMPUTE_RELABEL};
 
@@ -31,6 +32,17 @@ fn a_create_query_carries_the_decoded_name() {
     assert_eq!(answer, "create:scon:tcon:6");
     assert_eq!(ops.last_name.as_deref(), Some("two words"));
     assert!(ops.was_checked(PERM_COMPUTE_CREATE));
+}
+
+#[test]
+fn an_answer_larger_than_the_transaction_page_is_refused_whole() {
+    let mut ops = FakeOps::allow_all();
+    ops.new_context_answer = Some("x".repeat(TRANSACTION_LIMIT + 1));
+    assert_eq!(transact(&mut ops, TxKind::Create, b"scon tcon 6 name").err(),
+               Some(VfsError::Erange));
+    ops.new_context_answer = Some("x".repeat(TRANSACTION_LIMIT));
+    assert_eq!(transact(&mut ops, TxKind::Create, b"scon tcon 6 name").unwrap().len(),
+               TRANSACTION_LIMIT);
 }
 
 #[test]

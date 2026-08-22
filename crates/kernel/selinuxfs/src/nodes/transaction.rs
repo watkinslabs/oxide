@@ -41,6 +41,9 @@ pub const PERM_COMPUTE_MEMBER: &str = "compute_member";
 /// Mode of a transaction node.
 const TRANSACTION_MODE: u16 = 0o666;
 
+/// Largest answer retained in the transaction page.
+pub(crate) const TRANSACTION_LIMIT: usize = 4096 - core::mem::size_of::<isize>();
+
 /// Answer of the compatibility user node.
 ///
 /// The node is retained so a caller that opens it still finds it; the reply
@@ -73,7 +76,7 @@ pub enum TxKind {
 pub fn transact(ops: &mut dyn PolicyOps, kind: TxKind, body: &[u8]) -> KResult<String> {
     if let Some(permission) = required_permission(kind) { ops.check(permission)?; }
     let text = request_text(body)?;
-    match kind {
+    let answer = match kind {
         TxKind::User => Ok(USER_RESPONSE.to_string()),
         TxKind::Context => {
             let context = parse_context_request(text)?;
@@ -94,7 +97,9 @@ pub fn transact(ops: &mut dyn PolicyOps, kind: TxKind, body: &[u8]) -> KResult<S
             let which = if kind == TxKind::Relabel { NewContext::Relabel } else { NewContext::Member };
             ops.new_context(which, &r.scontext, &r.tcontext, r.class, None)
         }
-    }
+    }?;
+    if answer.len() > TRANSACTION_LIMIT { return Err(VfsError::Erange); }
+    Ok(answer)
 }
 
 /// Permission one transaction is gated on, if any. # C: O(1)
