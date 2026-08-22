@@ -47,6 +47,19 @@ fn batch_imports_and_publishes_one_message_at_a_time() {
     assert_eq!(task.sigpending.load(Ordering::Acquire), 0);
 }
 
+#[test]
+fn compat_layout_marker_reaches_the_batch_selected_by_the_syscall_entry() {
+    let _policy = unpoliced();
+    let task = sched::Task::new(8, "send", sched::SchedClass::Normal { weight: 1024 });
+    let ctx = SendContext::new(&task);
+    let mut batch = Batch { imported: Vec::new(), published: Vec::new() };
+    assert_eq!(send_batch(&ctx, BatchSpec {
+        len: 1, flags: net::uapi::MSG_CMSG_COMPAT as u32,
+    }, &mut batch), Ok(1));
+    assert_eq!(batch.imported, [0]);
+    assert_eq!(batch.published, [(0, 16)]);
+}
+
 struct PartialBatch { imported: Vec<u32>, published: Vec<(u32, u32)> }
 
 impl BatchIo for PartialBatch {
