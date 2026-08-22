@@ -119,6 +119,55 @@ impl<S: SectorSource> Volume<S> {
         self.create_named(parent, name, true, now)
     }
 
+    /// Give an existing file another name. # C: O(record + index bytes)
+    pub fn link(&mut self, parent: u64, name: &str, number: u64, now: i64)
+        -> Result<(), Errno> {
+        if !self.writable { return Err(Errno::Erofs); }
+        let units = crate::name::encode(name).ok_or(Errno::Enametoolong)?;
+        if self.find_entry(parent, name).is_ok() { return Err(Errno::Eexist); }
+        let parent_seq = self.read_record_raw(parent)?.1.sequence;
+        let (original, header) = self.read_record_raw(number)?;
+        if header.flags & RECORD_FLAG_DIR != 0 { return Err(Errno::Eperm); }
+        if header.hard_links >= NTFS_LINK_MAX { return Err(Errno::Emlink); }
+
+        let attrs = attrib::parse_all(&original, &header);
+        let mut fname = attrs.iter().find_map(|attr| {
+            if attr.ty != ATTR_NAME { return None; }
+            let (start, end) = attr.resident_span()?;
+            crate::name::parse_filename(original.get(start..end)?)
+        }).ok_or(Errno::Eio)?;
+        fname.parent = Reference { number: parent, sequence: parent_seq };
+        fname.units = units;
+        fname.namespace = FILE_NAME_POSIX;
+        fname.change_time = now;
+
+        // Prepare the complete target record before publishing either half.
+        // If the parent index cannot accept the name, restoring `original`
+        // leaves neither an inflated count nor an unreachable name record.
+        let mut changed = original.clone();
+        if let Some(std) = attrib::find(&attrs, ATTR_STD, &[]) {
+            if let Some((start, end)) = std.resident_span() {
+                if end <= changed.len() && end - start >= SIZEOF_STD_INFO {
+                    let at = start + STD_OFF_C_TIME;
+                    changed[at..at + 8].copy_from_slice(&(now as u64).to_le_bytes());
+                }
+            }
+        }
+        let id = edit::take_attr_id(&mut changed);
+        let attr = edit::resident(ATTR_NAME, &[], id, true, &crate::name::write_filename(&fname));
+        edit::insert(&mut changed, &header, &attr)?;
+        crate::record::set_hard_links(&mut changed, header.hard_links + 1);
+        self.write_record(number, &mut changed)?;
+
+        let reference = Reference { number, sequence: header.sequence };
+        if let Err(err) = self.index_insert(parent, &reference, &fname) {
+            let mut original = original;
+            self.write_record(number, &mut original)?;
+            return Err(err);
+        }
+        self.touch_directory(parent, now)
+    }
+
     /// Remove a name and the record it names. # C: O(record + index bytes)
     pub fn unlink(&mut self, parent: u64, name: &str, now: i64) -> Result<(), Errno> {
         if !self.writable { return Err(Errno::Erofs); }
@@ -148,6 +197,18 @@ impl<S: SectorSource> Volume<S> {
         let (bytes, header) = self.read_record_raw(hit.reference.number)?;
         if header.hard_links > 1 {
             let mut bytes = bytes;
+            let attrs = attrib::parse_all(&bytes, &header);
+            let name_at = attrs.iter().find_map(|attr| {
+                if attr.ty != ATTR_NAME { return None; }
+                let (start, end) = attr.resident_span()?;
+                let fname = crate::name::parse_filename(bytes.get(start..end)?)?;
+                if fname.parent == hit.fname.parent && fname.units == hit.fname.units {
+                    Some(attr.offset)
+                } else {
+                    None
+                }
+            }).ok_or(Errno::Eio)?;
+            edit::remove_at(&mut bytes, &header, name_at)?;
             crate::record::set_hard_links(&mut bytes, header.hard_links - 1);
             self.write_record(hit.reference.number, &mut bytes)?;
             return self.touch_directory(parent, now);
