@@ -335,6 +335,10 @@ impl<S: SectorSource> Volume<S> {
         // BOTH the one losing it and the one gaining it have to be in hand.
         self.dquot_initialize(ino)?;
         if let Some((uid, gid)) = owner { self.dquot_initialize_new(uid, gid)?; }
+        if let Some((uid, gid)) = owner {
+            let projid = self.read_inode(ino)?.projid;
+            self.dquot_transfer(ino, crate::volume::quotas::Owners::new(uid, gid, projid))?;
+        }
         let cur = self.read_inode(ino)?.mode;
         self.stamp_inode(ino, |b| {
             if let Some(m) = mode_bits {

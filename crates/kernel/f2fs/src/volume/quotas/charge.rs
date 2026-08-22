@@ -16,7 +16,7 @@ use crate::volume::Volume;
 impl<S: SectorSource> Volume<S> {
 
     /// What the decision is made against, for one kind. # C: O(1)
-    fn ask_for(&self, kind: usize, info: &Info, space: bool, reserve: bool) -> Ask {
+    pub(super) fn ask_for(&self, kind: usize, info: &Info, space: bool, reserve: bool) -> Ask {
         Ask {
             now: self.clock,
             grace: if space { u64::from(info.bgrace) } else { u64::from(info.igrace) },
