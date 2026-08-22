@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2508-kernel-btf-sysfs
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 2e7c97fe3 | MISSING | med | Sysfs now publishes read-only `/sys/kernel/btf/vmlinux` backed by canonical kernel BTF data. | Sysfs/security tests and target checks passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2507-stale-netns-heap-first-state
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -818,6 +825,13 @@
 |---|---|---|---|---|---|
 | FIXED B2506 | DEFECT | low | **The aarch64 PL011 line now has Linux's `ttyAMA0` identity at every live surface.** One target-selected kernel identity feeds devtmpfs, sysfs enumeration, and `console/active`; the image composer has one matching architecture-to-device owner used by `console=`, the serial debug shell/getty mask, and every injected probe service. x86_64 remains `ttyS0`. | B2506. Linux 7.2.0-rc4's `amba_reg` sets `driver_name` and `dev_name` to `ttyAMA`, with `SERIAL_AMBA_MAJOR`/`SERIAL_AMBA_MINOR` 204:64. Before the fix, the production ARM boot composer emitted `console=ttyAMA0` but `systemd.debug_shell=ttyS0`; changing the focused expectation made `the_serial_control_plane_moves_the_shell_and_masks_the_login` fail on that exact mismatch, and the shared-owner implementation restored it GREEN. Full cmdline 79/79, console 10/10, sysfs 178/178, and xtask 79/79 suites pass; the complete x86_64 and aarch64 feature gates pass. Final paired smoke reached userspace with serial RX on attempt 1: x86_64 in 52 s and aarch64 through the renamed line in 56 s. | B2506-pl011-ttyama-device-identity |
 >>>>>>> d8b17f7d3 (docs: close PL011 ttyAMA identity issue)
+=======
+### B2508-kernel-btf-sysfs
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 2e7c97fe3 | MISSING | high | **The canonical kernel BTF object is now published as the read-only binary sysfs file `/sys/kernel/btf/vmlinux`.** Sysfs registers the directory only when the security BTF owner reports a non-zero object length, gives the inode that exact size, and delegates offset reads directly to `security::bpf::kernel_btf_read`, so userspace observes the same object that program-load attach-target resolution parses. | B2508. Linux 7.2.0-rc4 registers a read-only binary `vmlinux` attribute under `/sys/kernel/btf` and omits it for an empty object. The production-tree test was RED because `kernel/btf/vmlinux` did not exist; after registration it resolves the live inode and matches canonical BTF bytes at a non-zero offset. Stubbing the production read owner to return zero was independently RED with 0 bytes instead of 23; restored GREEN. Sysfs 181/181 and security 492/492 pass, as do both kernel target checks, both feature gates, formatting and diff checks. Final paired smoke reached userspace with serial RX on attempt 1: x86_64 in 48 s and aarch64 in 56 s. | B2508-kernel-btf-sysfs |
+>>>>>>> 96338ed2f (docs: close kernel BTF sysfs issue)
 
 ### B2329-freezer-backoff-sleep
 
