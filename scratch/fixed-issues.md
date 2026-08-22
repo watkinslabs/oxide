@@ -59,6 +59,12 @@
 |---|---|---|---|---|---|
 | FIXED ee40a85b5 | MISSING | low | **VFS now owns the `POLL_NVAL` ABI bit, and io_uring re-exports that canonical symbol.** | B2377. The ABI-position regression pins the shared `0x0020` value. | B2377-vfs-poll-nval |
 
+### B2378-clock-nanosleep-citation-debt
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 060373b4b | INFRA | low | **The nanosleep syscall comments contain no prohibited external path/line citations or fenced non-Rust doctest bodies; the ledger row was stale.** | B2378. Focused source scans confirm both nanosleep files are clean. | B2378-clock-nanosleep-citation-debt |
+
 ### B2329-freezer-backoff-sleep
 
 | Status | Class | Sev | Issue | Evidence | Owner |
