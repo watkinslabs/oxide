@@ -1,6 +1,7 @@
 extern crate alloc;
 use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec;
 
 use net::addr::{MacAddr, NetIfaceId};
 use net::netdev::{NetDev, NetError};
@@ -101,6 +102,18 @@ fn a_complete_frame_handed_over_is_tagged_too() {
     let (_, tci, back) = strip(&sent[0]).unwrap();
     assert_eq!(vlan_id(tci), 7);
     assert_eq!(back, frame);
+}
+
+#[test]
+fn hardware_vlan_feature_sends_the_tag_out_of_band() {
+    let mut real = FakeDev::new("eth0", REAL_MAC, 1500);
+    Arc::get_mut(&mut real).unwrap().features = net::netdev::NetDevFeatures(
+        net::netdev::NetDevFeatures::HW_VLAN_CTAG_TX);
+    let dev = vlan_on(&real, 7, ETH_P_8021Q);
+    let frame = eth_frame(DST, REAL_MAC, IPV4, 16);
+    dev.xmit_raw(&frame).unwrap();
+    assert_eq!(real.tags(), vec![(ETH_P_8021Q, encode(7, 0))]);
+    assert_eq!(real.frames(), vec![frame], "hardware owns tag insertion");
 }
 
 #[test]

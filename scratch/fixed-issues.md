@@ -1,5 +1,11 @@
 # Fixed issues
 
+### R123-netdev-vlan-features
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED R123 | MISSING | med | **`NetDev` lacked the driver contract needed for VLAN feature discovery and hardware tag insertion.** | `net::netdev::NetDevFeatures` now carries VLAN challenge, MTU, CTAG-TX and STAG-TX bits; `NetDev::features` and `NetDev::xmit_vlan` are consumed by `vlan::RealDevCaps` and `VlanDev`'s real transmit path. Hosted VLAN coverage proves live feature discovery, protocol-specific selection, out-of-band TCI delivery, and inline fallback; `cargo test -p vlan` 97/97 and `cargo test -p net` 2591/2591 pass. | R123 |
+
 ### R111-stale-c246-net-test-observation
 
 | Status | Class | Sev | Issue | Evidence | Owner |

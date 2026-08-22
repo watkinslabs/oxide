@@ -107,7 +107,8 @@ impl VlanDev {
         -> Result<EgressFrame, tci::TagError>
     {
         let mode = egress_tag_mode(self.flags(), outer_ethertype, self.vlan_proto);
-        apply(mode, frame, self.vlan_proto, self.egress_tci(priority), self.caps.hw_tag_insert)
+        apply(mode, frame, self.vlan_proto, self.egress_tci(priority),
+              self.caps.hw_tag_insert_for(self.vlan_proto))
     }
 
     /// Accept one tagged frame the lower interface received for this
@@ -128,7 +129,10 @@ impl VlanDev {
         let outer = (frame.len() >= ETH_HLEN)
             .then(|| u16::from_be_bytes([frame[ETH_HLEN - 2], frame[ETH_HLEN - 1]]));
         let out = self.egress(frame, outer, priority).map_err(|_| NetError::Einval)?;
-        let result = self.real.xmit_raw(&out.frame);
+        let result = match out.hw_tag {
+            Some((proto, tci)) => self.real.xmit_vlan(&out.frame, proto, tci),
+            None => self.real.xmit_raw(&out.frame),
+        };
         let mut stats = self.stats.lock();
         if result.is_ok() { stats.tx_packets += 1; stats.tx_bytes += out.frame.len() as u64; }
         else { stats.tx_dropped += 1; }
@@ -173,7 +177,10 @@ impl NetDev for VlanDev {
         frame[ETH_HLEN..].copy_from_slice(body);
         let out = self.egress(&frame, None, pkt.tx.priority).map_err(|_| NetError::Einval)?;
         observe(&out.frame, pkt.proto, out.frame.len() - body.len());
-        let result = self.real.xmit_raw(&out.frame);
+        let result = match out.hw_tag {
+            Some((proto, tci)) => self.real.xmit_vlan(&out.frame, proto, tci),
+            None => self.real.xmit_raw(&out.frame),
+        };
         let mut stats = self.stats.lock();
         if result.is_ok() { stats.tx_packets += 1; stats.tx_bytes += out.frame.len() as u64; }
         else { stats.tx_dropped += 1; }

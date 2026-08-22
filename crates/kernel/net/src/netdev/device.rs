@@ -16,6 +16,27 @@ pub struct WanSettings {
     pub data: u64,
 }
 
+/// Driver feature bits consumed by link-layer stacking. The values are a
+/// private feature word rather than a second per-subsystem capability table.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct NetDevFeatures(pub u64);
+
+impl NetDevFeatures {
+    pub const NONE: Self = Self(0);
+    pub const VLAN_CTAG_PROTO: u16 = 0x8100;
+    pub const VLAN_STAG_PROTO: u16 = 0x88a8;
+    pub const VLAN_CHALLENGED: u64 = 1 << 0;
+    pub const VLAN_MTU_REDUCED: u64 = 1 << 1;
+    pub const HW_VLAN_CTAG_TX: u64 = 1 << 2;
+    pub const HW_VLAN_STAG_TX: u64 = 1 << 3;
+
+    pub const fn has(self, bit: u64) -> bool { self.0 & bit != 0 }
+    pub const fn hw_vlan_tx(self, proto: u16) -> bool {
+        (proto == Self::VLAN_CTAG_PROTO && self.has(Self::HW_VLAN_CTAG_TX))
+            || (proto == Self::VLAN_STAG_PROTO && self.has(Self::HW_VLAN_STAG_TX))
+    }
+}
+
 /// `25§3` driver trait.
 pub trait NetDev: Send + Sync {
     /// Stable interface name (`lo`, `eth0`, …).
@@ -55,6 +76,8 @@ pub trait NetDev: Send + Sync {
     fn address_len(&self) -> u8 { 6 }
     /// Linux ARPHRD type exposed by link-layer socket metadata. # C: O(1)
     fn hardware_type(&self) -> u16 { crate::uapi::ARPHRD_ETHER }
+    /// Driver feature word used by stacked link devices. # C: O(1)
+    fn features(&self) -> NetDevFeatures { NetDevFeatures::NONE }
     /// Linux `SIOCGIFMAP` resource coordinates, owned by the device. # C: O(1)
     fn ifmap(&self) -> IfaceMap { IfaceMap::default() }
     /// Apply Linux `ndo_set_config` through the canonical device owner. # C: O(1)
@@ -90,6 +113,11 @@ pub trait NetDev: Send + Sync {
         let mut pkt = Pkt::new_with_headroom(DEFAULT_HEADROOM, frame.len());
         pkt.data_mut().copy_from_slice(frame);
         self.xmit(pkt)
+    }
+    /// Transmit a complete frame while asking hardware to insert one VLAN tag.
+    /// The feature word and this method are one driver-owned contract. # C: O(len)
+    fn xmit_vlan(&self, _frame: &[u8], _proto: u16, _tci: u16) -> NetResult<()> {
+        Err(NetError::Eopnotsupp)
     }
     /// Bypass packet scheduling for one already-built link frame. # C: O(len)
     fn xmit_raw_direct(&self, frame: &[u8]) -> NetResult<()> { self.xmit_raw(frame) }

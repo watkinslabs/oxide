@@ -53,7 +53,7 @@ pub use packet_filter::{PACKET_LINK_ADDRESS_MAX, PacketLinkAddress, PacketRxMode
 pub use packet_metadata::{PacketChecksum, PacketRxMetadata, PacketVirtioMetadata, PacketVlan};
 pub(crate) use packet_filter::PacketDeviceFilter;
 pub use error::{NetError, NetResult};
-pub use device::{NetDev, WanSettings};
+pub use device::{NetDev, NetDevFeatures, WanSettings};
 pub use rx_queue::{HdsConfig, QueueCaps, RxQueue, RxQueues};
 pub use ipv6_conf::{Ipv6ConfKey, Ipv6DevConf};
 pub(crate) use mcast_report::McastReportState;
