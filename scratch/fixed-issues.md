@@ -4757,3 +4757,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED D573 | INFRA | med | **A stale pathspec can leave a partial index, allowing an incomplete commit even though the worktree still contains the intended change.** The tracked/untracked staging guard in `.githooks/commit-msg` now rejects both remaining tracked edits and untracked files before commit-message validation. | The guard is exercised by `tools/test-commit-staging-guard.sh`: complete staging passes; a staged edit plus an unstaged edit fails; a clean index plus an untracked file fails. | D573 |
+
+### D574-quotactl-usercopy-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED D574 | DEFECT | med | **The quotactl user-buffer safety row is stale.** Both classic and XFS quota ABI paths now validate the range and use the canonical `user_mem::{get_pod,put_pod,get_u32}` accessors, whose exception-table-backed implementation returns `EFAULT`; neither owned file contains raw volatile, unaligned, or copy operations. | Current `179_quotactl/abi.rs` routes all structures through `um::get_pod`/`um::put_pod`; `179_quotactl_xfs/core.rs` routes output through `write_raw`. The implementation is present in `471a12258`, and the raw-user-operation sweep over both files is empty. | D574 |
