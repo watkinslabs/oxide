@@ -22,6 +22,8 @@ pub const INCOMPAT_64BIT:    u32 = 0x0080;
 pub const INCOMPAT_FLEX_BG:  u32 = 0x0200;
 /// `s_feature_incompat` CSUM_SEED — `s_checksum_seed` overrides the UUID seed.
 pub const INCOMPAT_CSUM_SEED: u32 = 0x2000;
+/// Filename casefolding; the superblock also carries the Unicode encoding.
+pub const INCOMPAT_CASEFOLD: u32 = 0x20000;
 /// `s_feature_compat` HAS_JOURNAL bit.
 pub const COMPAT_HAS_JOURNAL: u32 = 0x0004;
 /// `s_feature_ro_compat` METADATA_CSUM bit.
@@ -41,7 +43,7 @@ pub const RO_COMPAT_PROJECT:       u32 = 0x2000;
 /// misread → refuse the mount (Linux `EXT4_FEATURE_INCOMPAT_SUPP`).
 pub const SUPPORTED_INCOMPAT: u32 =
     INCOMPAT_FILETYPE | INCOMPAT_RECOVER | INCOMPAT_EXTENTS | INCOMPAT_64BIT
-    | INCOMPAT_FLEX_BG | INCOMPAT_CSUM_SEED;
+    | INCOMPAT_FLEX_BG | INCOMPAT_CSUM_SEED | INCOMPAT_CASEFOLD;
 
 /// RO_COMPAT features this driver can safely WRITE. A bit outside this set
 /// (notably BIGALLOC=0x200, whose cluster bitmap we'd misread as per-block, or
@@ -79,6 +81,9 @@ pub const SB_OFF_GRP_QUOTA_INUM: usize = 0x244;
 pub const SB_OFF_PRJ_QUOTA_INUM: usize = 0x26C;
 /// `s_checksum_seed` byte offset (when METADATA_CSUM_SEED feature on).
 pub const SB_OFF_CHECKSUM_SEED:  usize = 0x270;
+/// `s_encoding` / `s_encoding_flags` used when INCOMPAT_CASEFOLD is set.
+pub const SB_OFF_ENCODING:       usize = 0x274;
+pub const SB_OFF_ENCODING_FLAGS: usize = 0x276;
 /// `s_kbytes_written` byte offset — lifetime kilobytes written to the volume.
 pub const SB_OFF_KBYTES_WRITTEN: usize = 0x178;
 /// `s_reserved_gdt_blocks` byte offset.
@@ -140,6 +145,10 @@ pub struct Superblock {
     /// Stored-seed override (when RO_COMPAT_METADATA_CSUM_SEED on).
     /// Otherwise zero; caller derives from `uuid` instead.
     pub stored_csum_seed: u32,
+    /// ext4 casefold Unicode encoding selector (`s_encoding`).
+    pub encoding: u16,
+    /// ext4 casefold encoding flags (`s_encoding_flags`).
+    pub encoding_flags: u16,
     /// `s_hash_seed[4]` (htree directory hash seed). Read as 4 le32
     /// words from offset 0xEC. All-zero ⇒ use the built-in default.
     pub hash_seed: [u32; 4],
@@ -280,6 +289,8 @@ impl Superblock {
             grp_quota_inum:    rd_u32(buf, SB_OFF_GRP_QUOTA_INUM),
             prj_quota_inum:    rd_u32(buf, SB_OFF_PRJ_QUOTA_INUM),
             stored_csum_seed:  rd_u32(buf, SB_OFF_CHECKSUM_SEED),
+            encoding:          rd_u16(buf, SB_OFF_ENCODING),
+            encoding_flags:    rd_u16(buf, SB_OFF_ENCODING_FLAGS),
             hash_seed: [
                 rd_u32(buf, 0xEC), rd_u32(buf, 0xF0),
                 rd_u32(buf, 0xF4), rd_u32(buf, 0xF8),

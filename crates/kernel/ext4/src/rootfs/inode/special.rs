@@ -400,6 +400,7 @@ impl FileOps for Ext4StatFileOps {
 pub(crate) fn build_stat_inode(
     st: Arc<RootfsState>, ino: u32, ft: FileType, perm: u16, size: u64, nlink: u32, rdev: u32,
     uid: u32, gid: u32, projid: u32, times: crate::timestamp::InodeTimes, generation: u32,
+    raw_flags: u32,
 ) -> InodeRef {
     let data = Arc::new(Ext4StatData { st, ino, ft, size });
     let weak_sb = data.st.sb.lock().clone();
@@ -415,6 +416,9 @@ pub(crate) fn build_stat_inode(
     // poll/epoll waiter on the FIFO subscribes to nothing.
     let mut b = InodeBuilder::new(ext4_wrap_ino(ino), mk_mode(ft, perm),
                       Arc::new(Ext4StatInodeOps), Arc::new(Ext4StatFileOps));
+    if ft == FileType::Directory
+        && raw_flags & crate::inode::flags::EXT4_CASEFOLD_FL != 0
+    { b = b.i_flags(vfs::inode::S_CASEFOLD); }
     if vfs::special_inode_needs_poll_subs(ft) { b = b.poll_subs(vfs::PollSubscribers::new()); }
     b = b
         .sb(weak_sb)

@@ -42,6 +42,10 @@ pub trait FileSystem: Send + Sync {
     fn block_size(&self) -> u32 { 4096 }
     fn super_ops(&self) -> Option<Arc<dyn SuperOps>> { None }
     fn root(&self) -> Option<InodeRef> { None }
+    /// Superblock-wide dentry operations selected before the root is built.
+    /// Casefolded filesystems use this to install generic hash/compare hooks
+    /// on the root so every child inherits the same cache semantics. # C: O(1)
+    fn dentry_ops(&self) -> Option<&'static crate::dentry::DentryOps> { None }
     fn set_sb(&self, _sb: Weak<SuperBlock>) -> KResult<()> { Ok(()) }
     fn sysfs_name(&self) -> Option<String> { None }
     fn show_options(&self) -> String { String::new() }
@@ -79,7 +83,8 @@ pub fn superblock_from_filesystem(s_type: Arc<dyn FileSystemType>, fs: Arc<dyn F
         Some(dev) => {
             let fs_for_stamp = fs.clone();
             let (sb, reused) = sget_reused(dev, move || {
-                let sb = SuperBlock::from_ops(s_type, s_op, root, s_magic, dev, s_blocksize, s_id, Arc::new(()));
+                let sb = SuperBlock::from_ops_with_dentry_ops(s_type, s_op, root, s_magic, dev,
+                    s_blocksize, s_id, Arc::new(()), fs_for_stamp.dentry_ops());
                 sb.set_s_iflags(s_iflags);
                 apply_sb_flags(&sb, sb_flags, SB_FLAGS_USER_MASK);
                 fs_for_stamp.set_sb(Arc::downgrade(&sb))?;
@@ -99,7 +104,8 @@ pub fn superblock_from_filesystem(s_type: Arc<dyn FileSystemType>, fs: Arc<dyn F
             Ok(sb)
         }
         None => {
-            let sb = SuperBlock::from_ops(s_type, s_op, root, s_magic, next_anon_dev(), s_blocksize, s_id, Arc::new(()));
+            let sb = SuperBlock::from_ops_with_dentry_ops(s_type, s_op, root, s_magic,
+                next_anon_dev(), s_blocksize, s_id, Arc::new(()), fs.dentry_ops());
             sb.set_s_iflags(s_iflags);
             apply_sb_flags(&sb, sb_flags, SB_FLAGS_USER_MASK);
             fs.set_sb(Arc::downgrade(&sb))?;

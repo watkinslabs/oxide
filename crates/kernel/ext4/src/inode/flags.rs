@@ -27,6 +27,8 @@ pub const EXT4_DIRSYNC_FL:   u32 = 0x0001_0000;
 pub const EXT4_TOPDIR_FL:    u32 = 0x0002_0000;
 /// `EXT4_PROJINHERIT_FL` — children inherit the project id.
 pub const EXT4_PROJINHERIT_FL: u32 = 0x2000_0000;
+/// `EXT4_CASEFOLD_FL` — directory names use the superblock encoding.
+pub const EXT4_CASEFOLD_FL:   u32 = 0x4000_0000;
 /// `EXT4_ENCRYPT_FL` — file contents are encrypted.
 pub const EXT4_ENCRYPT_FL:   u32 = 0x0000_0800;
 /// `EXT4_VERITY_FL` — file has fs-verity enabled.

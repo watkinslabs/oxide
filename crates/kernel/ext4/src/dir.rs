@@ -184,6 +184,15 @@ pub fn insert(buf: &mut [u8], inode: u32, file_type: u8, name: &[u8])
 /// well-formed.
 /// # C: O(N entries)
 pub fn remove(buf: &mut [u8], name: &[u8]) -> Result<u32, DirError> {
+    remove_matching(buf, |entry| entry == name)
+}
+
+/// Remove the first active entry accepted by `matches`. Native filesystems
+/// use this shared record-rewrite owner for both byte-exact and casefolded
+/// names, so deletion cannot disagree with lookup.
+/// # C: O(N entries)
+pub fn remove_matching<F>(buf: &mut [u8], mut matches: F) -> Result<u32, DirError>
+where F: FnMut(&[u8]) -> bool {
     let mut off = 0usize;
     let mut prev_off: Option<usize> = None;
     while off < buf.len() {
@@ -194,7 +203,7 @@ pub fn remove(buf: &mut [u8], name: &[u8]) -> Result<u32, DirError> {
             return Err(DirError::BadRecLen);
         }
         let entry_name = &buf[off+8 .. off+8+name_len as usize];
-        if inode_e != 0 && entry_name == name {
+        if inode_e != 0 && matches(entry_name) {
             match prev_off {
                 Some(po) => {
                     let prev_rec = u16::from_le_bytes([buf[po+4], buf[po+5]]) as usize;
@@ -228,9 +237,16 @@ fn write_entry(slot: &mut [u8], inode: u32, rec_len: u16, file_type: u8, name: &
 /// `DirEntry` or `None`. Skips deleted entries.
 /// # C: O(N)
 pub fn lookup<'a>(buf: &'a [u8], name: &[u8]) -> Result<Option<DirEntry<'a>>, DirError> {
+    lookup_matching(buf, |entry| entry == name)
+}
+
+/// Look up an entry using a filesystem-owned name equivalence predicate.
+/// # C: O(N entries)
+pub fn lookup_matching<'a, F>(buf: &'a [u8], mut matches: F) -> Result<Option<DirEntry<'a>>, DirError>
+where F: FnMut(&[u8]) -> bool {
     let mut hit = None;
     iter_active(buf, |e| {
-        if e.name == name {
+        if matches(e.name) {
             hit = Some(*e);
             false
         } else {

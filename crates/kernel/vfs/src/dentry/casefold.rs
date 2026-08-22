@@ -105,6 +105,24 @@ pub fn names_eq(dir: &Inode, a: &str, b: &str) -> bool {
     utf8::casefold_eq(&enc, a.as_bytes(), b.as_bytes()).unwrap_or(false)
 }
 
+/// Compare raw directory-entry bytes under the owning superblock encoding.
+/// Native filesystems keep names as bytes, so routing their lookup through the
+/// same owner must not force an intermediate lossy `&str` conversion.
+/// # C: O(a.len() + b.len())
+pub fn names_eq_bytes(sb: &SuperBlock, casefolded: bool, a: &[u8], b: &[u8]) -> bool {
+    if a == b { return true; }
+    if !casefolded { return false; }
+    let Some(enc) = sb.s_encoding() else { return false; };
+    utf8::casefold_eq(&enc, a, b).unwrap_or(false)
+}
+
+/// Validate raw bytes for a filesystem-owned casefolded directory.
+/// # C: O(name.len())
+pub fn strict_name_ok_bytes(sb: &SuperBlock, casefolded: bool, name: &[u8]) -> bool {
+    if !casefolded || !sb.has_strict_encoding() { return true; }
+    sb.s_encoding().is_none_or(|enc| utf8::validate(&enc, name))
+}
+
 /// Declare `charset` as this instance's name encoding and return the dentry
 /// operations its dentries must carry — THE entry point a filesystem uses to
 /// support `casefold` / `strict_encoding`.
