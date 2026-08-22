@@ -20,6 +20,9 @@ pub const CRC32_POLY: u32 = 0xEDB88320;
 /// Linux's `crc32_be()` and the original JBD2 transaction checksum format.
 pub const CRC32_BE_POLY: u32 = 0x04C11DB7;
 
+/// Reflected CRC-16 polynomial used by Linux's `crc16()` helper.
+pub const CRC16_POLY: u16 = 0xA001;
+
 const fn build_table(poly: u32) -> [u32; 256] {
     let mut t = [0u32; 256];
     let mut i: u32 = 0;
@@ -102,6 +105,23 @@ pub fn crc32(bytes: &[u8]) -> u32 {
     crc32_update(0xFFFF_FFFF, bytes) ^ 0xFFFF_FFFF
 }
 
+/// CRC-16 update with the reflected 0x8005 polynomial. The seed is carried
+/// unchanged and there is no final complement, matching the wire protocols
+/// that use Linux's `crc16()` helper. # C: O(N)
+pub fn crc16_update(seed: u16, bytes: &[u8]) -> u16 {
+    let mut c = seed;
+    for &b in bytes {
+        c ^= b as u16;
+        for _ in 0..8 {
+            c = if c & 1 != 0 { (c >> 1) ^ CRC16_POLY } else { c >> 1 };
+        }
+    }
+    c
+}
+
+/// CRC-16 with a zero seed and no final complement. # C: O(N)
+pub fn crc16(bytes: &[u8]) -> u16 { crc16_update(0, bytes) }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,5 +158,10 @@ mod tests {
     fn empty_returns_zero() {
         assert_eq!(crc32c(b""), 0);
         assert_eq!(crc32(b""),  0);
+    }
+
+    #[test]
+    fn crc16_known_vector() {
+        assert_eq!(crc16(b"123456789"), 0xBB3D);
     }
 }
