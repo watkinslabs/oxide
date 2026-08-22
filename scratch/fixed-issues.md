@@ -4636,6 +4636,11 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED R113 | MISSING | low | **The recorded IPv6 route-type gap is stale and its reference premise was wrong.** Oxide's local-input owner intentionally treats a matching `RT_TABLE_LOCAL` route as local, while separately consulting the interface-owned anycast map; the reference also treats `RTN_ANYCAST` as a local-input route. There is no current blackhole/prohibit route insertion path in the IPv6 local table, so adding a route-type field would create unused parallel state rather than close a reachable defect. | Current `route6::Route6Entry` has no type; `stack_ipv6::rx::v6_local_route_in` only admits matching local-table entries and `v6_dst_is_local_in` separately checks `v6_anycast_owned_by`. Reference `net/ipv6/route.c` maps both `RTN_LOCAL` and `RTN_ANYCAST` to `ip6_input`; no source behavior changed. | R113 |
+### R114-stale-return-fastpath-failure-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED R114 | INFRA | low | **The recorded return-fastpath failure is stale.** The exact test now executes successfully on current `main`; it is not a standing failure and no source change is required. | `cargo test -p syscalls --lib return_fastpath_tests::syscall_process_irqs_close_before_return_work -- --exact --nocapture`: 1 passed, 0 failed, 2,006 filtered out. | R114 |
 ### R112-stale-dhcp-smoke-script-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
