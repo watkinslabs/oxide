@@ -1,5 +1,11 @@
 # Fixed issues
 
+### D580-stale-f2fs-registration-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED D580 | DEFECT | med | **The ledger row claiming F2FS was not registered was stale.** | `fsmount_common::registry` already registers `f2fs` as a `FileSystemType` and routes its constructor through `f2fs_fill` to `F2fs::open_line`, publishes its surfaces, realizes the root, and installs quota hooks. | D580 |
+
 ### D579-stale-systemd-selinux-errno
 
 | Status | Class | Sev | Issue | Evidence | Owner |
