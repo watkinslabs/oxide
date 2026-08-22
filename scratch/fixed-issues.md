@@ -5019,3 +5019,6 @@ against the row's own evidence.
 ### B2602-rlimit-sigpending-queue-cap-stale
 
 | FIXED B2602 | MISSING | med | The fixed `RT_QUEUE_CAP` premise is stale. Process-context real-time signal records are admitted by the charged post-increment `RLIMIT_SIGPENDING` value; `RT_QUEUE_CAP` remains only the preallocation floor for IRQ producers. | `crates/kernel/sched/src/sigqueue.rs::queues_push` admits `Charge::Account` records without a fixed-depth check; `Charge::Prealloc` alone uses `prealloc_depth`; `sched::tests::signals::realtime_queue_is_bounded_by_rlimit_sigpending_not_a_constant` passes. | B2602 |
+### B2604-wireless-regulatory-row-duplicate
+
+| FIXED B2604 | DEFECT | med | This OPEN regulatory-channel-flags row was a stale duplicate. B2471 is already merged and fixed the exact production gap: accepted regulatory domains update the effective channel snapshot consumed by `GET_WIPHY`, while driver capabilities remain the immutable baseline. | Existing fixed entry `B2471-wireless-regulatory-channel-flags` and its production regression cover the exact row; no new source change is required. | B2604 |
