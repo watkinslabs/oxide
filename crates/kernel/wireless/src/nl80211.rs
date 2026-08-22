@@ -74,3 +74,5 @@ pub use family::{family_id, init, mcast_group};
 #[path = "nl80211/tests/ap.rs"] mod tests_ap;
 #[cfg(test)]
 #[path = "nl80211/tests/mgmt.rs"] mod tests_mgmt;
+#[cfg(test)]
+#[path = "nl80211/tests/capability_gates.rs"] mod tests_capability_gates;

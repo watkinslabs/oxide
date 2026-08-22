@@ -314,20 +314,35 @@ pub mod ext_feature {
     pub const RRM: u32 = 1;
     pub const SCAN_START_TIME: u32 = 3;
     pub const SET_SCAN_DWELL: u32 = 5;
+    pub const FILS_STA: u32 = 9;
     pub const CQM_RSSI_LIST: u32 = 13;
+    pub const FILS_SK_OFFLOAD: u32 = 14;
     pub const FOUR_WAY_HANDSHAKE_STA_PSK: u32 = 15;
     pub const FOUR_WAY_HANDSHAKE_STA_1X: u32 = 16;
+    pub const FILS_MAX_CHANNEL_TIME: u32 = 17;
+    pub const ACCEPT_BCAST_PROBE_RESP: u32 = 18;
+    pub const OCE_PROBE_REQ_HIGH_TX_RATE: u32 = 19;
+    pub const OCE_PROBE_REQ_DEFERRAL_SUPPRESSION: u32 = 20;
     pub const MFP_OPTIONAL: u32 = 21;
+    pub const LOW_SPAN_SCAN: u32 = 22;
+    pub const LOW_POWER_SCAN: u32 = 23;
+    pub const HIGH_ACCURACY_SCAN: u32 = 24;
     pub const CONTROL_PORT_OVER_NL80211: u32 = 26;
     pub const ACK_SIGNAL_SUPPORT: u32 = 27;
     pub const TXQS: u32 = 28;
+    pub const SCAN_RANDOM_SN: u32 = 29;
+    pub const SCAN_MIN_PREQ_CONTENT: u32 = 30;
     pub const CAN_REPLACE_PTK0: u32 = 31;
-    pub const EXT_KEY_ID: u32 = 37;
-    pub const BEACON_PROTECTION: u32 = 42;
-    pub const CONTROL_PORT_NO_PREAUTH: u32 = 43;
-    pub const BEACON_PROTECTION_CLIENT: u32 = 47;
-    pub const SCAN_FREQ_KHZ: u32 = 48;
-    pub const CONTROL_PORT_OVER_NL80211_TX_STATUS: u32 = 49;
+    pub const EXT_KEY_ID: u32 = 36;
+    pub const SAE_OFFLOAD: u32 = 38;
+    pub const BEACON_PROTECTION: u32 = 41;
+    pub const CONTROL_PORT_NO_PREAUTH: u32 = 42;
+    pub const BEACON_PROTECTION_CLIENT: u32 = 46;
+    pub const SCAN_FREQ_KHZ: u32 = 47;
+    pub const CONTROL_PORT_OVER_NL80211_TX_STATUS: u32 = 48;
+    pub const SAE_OFFLOAD_AP: u32 = 51;
+    pub const EPPKE: u32 = 70;
+    pub const IEEE8021X_AUTH: u32 = 72;
 }
 
 /// `NL80211_AC_*` — the four EDCA access categories, in nl80211's order.

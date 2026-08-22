@@ -110,6 +110,7 @@ pub fn caps() -> WiphyCaps {
         available_antennas_rx: 3,
         features: feature_flags::SCAN_FLUSH | feature_flags::LOW_PRIORITY_SCAN
             | feature_flags::SCAN_RANDOM_MAC_ADDR | feature_flags::SAE,
+        flags: crate::wiphy::flags::OFFCHAN_TX,
         mgmt_stypes: alloc::vec![
             MgmtStypes { iftype: IfType::Station.as_u32(), tx: 0xffff, rx: 0xffff },
             MgmtStypes { iftype: IfType::Ap.as_u32(), tx: 0xffff, rx: 0xffff },
@@ -127,8 +128,13 @@ pub fn caps() -> WiphyCaps {
 
 /// A registered radio and the driver behind it. # C: O(N radios)
 pub fn radio() -> (Arc<Wiphy>, Arc<FakeOps>) {
+    radio_from_caps(caps())
+}
+
+/// A registered radio with a caller-selected immutable advertisement. # C: O(N radios)
+pub fn radio_from_caps(caps: WiphyCaps) -> (Arc<Wiphy>, Arc<FakeOps>) {
     let ops = Arc::new(FakeOps::default());
-    let wiphy = Wiphy::new(MacAddr([0x02, 0x11, 0x22, 0x33, 0x44, 0x55]), caps(),
+    let wiphy = Wiphy::new(MacAddr([0x02, 0x11, 0x22, 0x33, 0x44, 0x55]), caps,
                            ops.clone());
     (registry::register(wiphy).expect("register"), ops)
 }
@@ -136,7 +142,14 @@ pub fn radio() -> (Arc<Wiphy>, Arc<FakeOps>) {
 /// A radio with one interface of a given type already on it.
 /// # C: O(N radios)
 pub fn radio_with(iftype: IfType) -> (Arc<Wiphy>, Arc<FakeOps>, Arc<Wdev>) {
-    let (wiphy, ops) = radio();
+    radio_with_caps(caps(), iftype)
+}
+
+/// A caller-selected radio with one interface already on it. # C: O(N radios)
+pub fn radio_with_caps(caps: WiphyCaps, iftype: IfType)
+    -> (Arc<Wiphy>, Arc<FakeOps>, Arc<Wdev>)
+{
+    let (wiphy, ops) = radio_from_caps(caps);
     let params = NewIfaceParams {
         name: "wlan0".to_string(), iftype, addr: None, use_4addr: None, mntr_flags: 0,
     };

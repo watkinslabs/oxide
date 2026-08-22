@@ -17,7 +17,7 @@ use crate::ieee80211::MAX_SSID_LEN;
 use crate::scan::{ScanRequest, ScanSsid, ScanState};
 use crate::uapi::attr as a;
 use crate::uapi::cmd;
-use crate::uapi::enums::{feature_flags, scan_flags, IfType};
+use crate::uapi::enums::{ext_feature, feature_flags, scan_flags, IfType};
 use crate::wdev::Wdev;
 use crate::wiphy::Wiphy;
 
@@ -26,14 +26,19 @@ use super::{event, msg, resolve};
 #[path = "scan_cmd/bss.rs"]
 pub mod bss;
 
-/// Scan options that each need their own extended-feature advertisement.
-const NEEDS_EXT_FEATURE: u32 = scan_flags::LOW_SPAN | scan_flags::LOW_POWER
-    | scan_flags::HIGH_ACCURACY | scan_flags::FILS_MAX_CHANNEL_TIME
-    | scan_flags::ACCEPT_BCAST_PROBE_RESP
-    | scan_flags::OCE_PROBE_REQ_DEFERRAL_SUPPRESSION
-    | scan_flags::OCE_PROBE_REQ_HIGH_TX_RATE | scan_flags::RANDOM_SN
-    | scan_flags::MIN_PREQ_CONTENT | scan_flags::FREQ_KHZ
-    | scan_flags::COLOCATED_6GHZ;
+/// Scan flag to extended-feature mappings.
+const SCAN_EXT_FEATURES: [(u32, u32); 9] = [
+    (scan_flags::LOW_SPAN, ext_feature::LOW_SPAN_SCAN),
+    (scan_flags::LOW_POWER, ext_feature::LOW_POWER_SCAN),
+    (scan_flags::HIGH_ACCURACY, ext_feature::HIGH_ACCURACY_SCAN),
+    (scan_flags::FILS_MAX_CHANNEL_TIME, ext_feature::FILS_MAX_CHANNEL_TIME),
+    (scan_flags::ACCEPT_BCAST_PROBE_RESP, ext_feature::ACCEPT_BCAST_PROBE_RESP),
+    (scan_flags::OCE_PROBE_REQ_HIGH_TX_RATE, ext_feature::OCE_PROBE_REQ_HIGH_TX_RATE),
+    (scan_flags::OCE_PROBE_REQ_DEFERRAL_SUPPRESSION,
+     ext_feature::OCE_PROBE_REQ_DEFERRAL_SUPPRESSION),
+    (scan_flags::RANDOM_SN, ext_feature::SCAN_RANDOM_SN),
+    (scan_flags::MIN_PREQ_CONTENT, ext_feature::SCAN_MIN_PREQ_CONTENT),
+];
 
 /// Start a scan. # C: O(N channels + N attrs)
 pub fn trigger(hdr: &Nlmsghdr, attrs: &[u8], ctx: GenlCtx) -> Vec<u8> {
@@ -87,11 +92,20 @@ fn trigger_inner(attrs: &[u8], ctx: GenlCtx) -> Result<(Arc<Wiphy>, Arc<Wdev>), 
 /// silently dropped, because a caller that asked for one channel and got a
 /// scan of another would report the wrong network. # C: O(N channels)
 fn parse_freqs(wiphy: &Arc<Wiphy>, attrs: &[u8]) -> Result<Vec<u32>, Errno> {
-    let Some(nest) = msg::get_bytes(attrs, a::SCAN_FREQUENCIES) else { return Ok(Vec::new()); };
+    let (nest, khz) = if let Some(v) = msg::get_bytes(attrs, a::SCAN_FREQ_KHZ) {
+        if !wiphy.caps.has_ext_feature(ext_feature::SCAN_FREQ_KHZ) {
+            return Err(Errno::Eopnotsupp);
+        }
+        (v, true)
+    } else if let Some(v) = msg::get_bytes(attrs, a::SCAN_FREQUENCIES) {
+        (v, false)
+    } else { return Ok(Vec::new()); };
     let mut out: Vec<u32> = Vec::new();
     for at in attr::parse(nest) {
         let Some(b) = at.payload.get(..4) else { return Err(Errno::Einval); };
-        let freq = u32::from_ne_bytes([b[0], b[1], b[2], b[3]]);
+        let raw = u32::from_ne_bytes([b[0], b[1], b[2], b[3]]);
+        if khz && raw % 1_000 != 0 { return Err(Errno::Einval); }
+        let freq = if khz { raw / 1_000 } else { raw };
         let chan = wiphy.channel(freq).ok_or(Errno::Einval)?;
         // A channel the domain disabled is dropped, not refused: a caller
         // sweeping a band should still scan the rest of it.
@@ -125,10 +139,11 @@ fn parse_flags(wiphy: &Arc<Wiphy>, wdev: &Arc<Wdev>, attrs: &[u8]) -> Result<u32
         && caps.features & feature_flags::LOW_PRIORITY_SCAN == 0 {
         return Err(Errno::Eopnotsupp);
     }
-    // Every flag below needs an extended-feature advertisement that no radio
-    // in this build makes, so asking for one promises behaviour nothing
-    // implements and is refused rather than silently ignored.
-    if flags & NEEDS_EXT_FEATURE != 0 { return Err(Errno::Eopnotsupp); }
+    for &(flag, feature) in &SCAN_EXT_FEATURES {
+        if flags & flag != 0 && !caps.has_ext_feature(feature) {
+            return Err(Errno::Eopnotsupp);
+        }
+    }
     if flags & scan_flags::RANDOM_ADDR != 0 {
         if caps.features & feature_flags::SCAN_RANDOM_MAC_ADDR == 0 {
             return Err(Errno::Eopnotsupp);

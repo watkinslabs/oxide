@@ -3160,3 +3160,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2342 | MISSING | low | **`SET_BSS` publishes accepted configuration through the canonical interface and softmac owners.** Driver refusal propagates its exact error without committing state; success updates named fields, resolves basic rates against the operating band, updates AP isolation, and reports the change mask. | B2342 production and softmac tests on the original branch pinned refusal ordering, rate-mask translation, AP isolation, and driver notification. | B2342-nl80211-set-bss |
+
+### B2343-nl80211-capability-gates
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2343 | MISSING | low | **nl80211 capability gates now read the radio's immutable advertisement.** Wiphy flags own IBSS RSN, AP/station four-address mode and off-channel TX; extended-feature bits gate authentication and scan modes; `GET_WIPHY` publishes the flag-backed attributes. | B2343 production tests on the original branch pinned the wiphy-flag and extended-feature predicates across seven capability cases. | B2343 |

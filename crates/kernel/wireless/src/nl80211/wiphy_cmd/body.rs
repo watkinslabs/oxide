@@ -17,6 +17,7 @@ use netlink::genetlink::attr;
 use crate::uapi::attr as a;
 use crate::wiphy::caps::MgmtStypes;
 use crate::wiphy::Wiphy;
+use crate::wiphy::flags as wiphy_flags;
 
 use super::super::msg;
 use super::bands;
@@ -52,6 +53,7 @@ pub fn put(out: &mut Vec<u8>, wiphy: &Arc<Wiphy>) {
     attr::put_u16(out, a::MAX_SCAN_IE_LEN, caps.max_scan_ie_len);
     attr::put_u16(out, a::MAX_SCHED_SCAN_IE_LEN, caps.max_sched_scan_ie_len);
     msg::put_u8(out, a::MAX_MATCH_SETS, caps.max_match_sets);
+    if caps.has_flag(wiphy_flags::IBSS_RSN) { msg::put_flag(out, a::SUPPORT_IBSS_RSN); }
 
     msg::put_u32_array(out, a::CIPHER_SUITES, &caps.cipher_suites);
     msg::put_u8(out, a::MAX_NUM_PMKIDS, caps.max_num_pmkids);
@@ -67,6 +69,7 @@ pub fn put(out: &mut Vec<u8>, wiphy: &Arc<Wiphy>) {
     put_commands(out);
     attr::put_u32(out, a::MAX_REMAIN_ON_CHANNEL_DURATION,
                   caps.max_remain_on_channel_duration);
+    if caps.has_flag(wiphy_flags::OFFCHAN_TX) { msg::put_flag(out, a::OFFCHANNEL_TX_OK); }
     put_iftypes(out, a::SOFTWARE_IFTYPES, caps.software_iftypes);
     if caps.ap_sme { attr::put_u32(out, a::DEVICE_AP_SME, 1); }
     attr::put_u32(out, a::FEATURE_FLAGS, caps.features);
@@ -125,5 +128,4 @@ fn put_stype_direction(out: &mut Vec<u8>, ty: u16, stypes: &[MgmtStypes], tx: bo
     }
     attr::nest_end(out, outer);
 }
-
 

@@ -66,8 +66,8 @@ failure mode this reconcile was supposed to catch, not commit.
 | COVERAGE | 0 | 0 | 10 | 68 | 64 | 142 |
 | DEFECT | 1 | 4 | 17 | 62 | 63 | 147 |
 | INFRA | 0 | 0 | 11 | 40 | 39 | 90 |
-| MISSING | 1 | 0 | 49 | 140 | 112 | 302 |
-| **Total** | **2** | **4** | **87** | **310** | **278** | **681** |
+| MISSING | 1 | 0 | 49 | 140 | 111 | 301 |
+| **Total** | **2** | **4** | **87** | **310** | **277** | **680** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -948,7 +948,6 @@ here now.
 | FIXED B2269 | DEFECT | med | **A corrupted hidden project-quota file fails a RO→RW remount.** Direct writes evict any overlapping clean metadata buffer so quota resume revalidates the current file header. | B2269: focused 6/6 and full ext4 suite green; removing invalidation restores `Ok(())` where `Err(Einval)` is required. | B2269 |
 | OPEN | MISSING | med | **`SET_WIPHY` cannot rename a radio.** `nl80211::wiphy_cmd::set` answers `EOPNOTSUPP` to a `WIPHY_NAME` that differs from the current one, because `Wiphy::name` is a plain `String` field on an `Arc<Wiphy>` with no interior mutability and the registry owns the name. The reference renames the device and raises `NEW_WIPHY` on the configuration group. Fix needs `crates/kernel/wireless/src/wiphy.rs` + `wiphy/registry.rs` (not in the nl80211 lane's file scope). | `crates/kernel/wireless/src/nl80211/wiphy_cmd.rs::rename`. | unowned |
 | OPEN | DEFECT | med | **A regulatory change never reaches the advertised channel flags.** `nl80211::reg_cmd` stores the resolved `RegDomain` in `WiphyState` and every decision path (`chandef::usable`, `ap_cmd::can_beacon`) reads it, so behaviour is correct — but `reg::apply::apply_to_bands` is never called on a live radio, because `Wiphy::caps.bands` is immutable after registration. `GET_WIPHY` therefore reports the channel flags the driver registered, not the ones the domain in force implies, so `iw list` shows a channel as usable after a domain that bars it. Fix needs the channel list moved under `WiphyState` in `crates/kernel/wireless/src/wiphy.rs`. | `nl80211::tests_ap::a_channel_the_domain_forbids_initiating_on_is_refused` passes only because `ap_cmd::can_beacon` consults the domain directly; `bands::put_channel` still reads `Channel::flags`. | unowned |
-| OPEN | MISSING | low | **Several nl80211 capability gates cannot be expressed.** `WiphyCaps` has no equivalent of the reference's `WIPHY_FLAG_IBSS_RSN`, `WIPHY_FLAG_4ADDR_AP`/`_STATION` or `WIPHY_FLAG_OFFCHAN_TX`, and `uapi::enums::ext_feature` omits the bits the FILS / 802.1X / SAE-offload authentication types and the low-span, low-power, high-accuracy, random-sequence-number and kHz scan flags are gated on. Every one of those is therefore refused unconditionally (`EOPNOTSUPP`, or `EINVAL` for the authentication types), which is the correct answer for a radio that advertises none of them but leaves no way for one that does. Fix needs `crates/kernel/wireless/src/wiphy/caps.rs` + `uapi/enums.rs`. | `nl80211/connect_cmd/parse.rs::valid_auth_type`, `nl80211/scan_cmd.rs::NEEDS_EXT_FEATURE`, `nl80211/key_cmd.rs::key_caps`, `nl80211/iface_cmd.rs::four_addr`. | unowned |
 
 ### F1220-acl-enforcement-disk
 
