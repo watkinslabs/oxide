@@ -734,7 +734,7 @@ named owner module and its hosted tests:
 | per-message `SO_MARK`/`SO_PRIORITY`/`SCM_TXTIME`/`SO_TIMESTAMPING` consumers | 3cc091dcd | `net::sock::txmeta::tx_meta` -> `TxMeta`, read by the raw/UDP route lookups and the transmit band |
 | netlink has no home for generic SOL_SOCKET state | c313443d2 | `net::SockBase`, embedded by `NetlinkSocket` |
 | retraction: netlink's stored-and-unread generic options | c313443d2 | same base as the reference keeps; the discarded set was the real defect and is fixed |
-| `IPV6_RECVPATHMTU` has no consumer | 1a1611ab2 | `net::socket_error::pathmtu` + `sock_opts::sol_ipv6::pathmtu`; drained by `recvmsg::inet::recv_pathmtu` |
+| `IPV6_RECVPATHMTU` has no consumer | 1a1611ab2 | `net::socket_error::pathmtu` owns a replace-in-place slot separate from the extended-error queue; `recvmsg::inet::recv_pathmtu` drains it on ordinary receive. B2413 re-verified Linux 7.2.0-rc4 first. Disconnecting the live `report_send_failure_pmtu` publisher made `the_path_mtu_announcement_is_stashed_only_when_the_socket_asked_for_it` RED at `pathmtu.pending()`; restored GREEN, with the test also proving the extended-error record remains independently readable. Net 2574/2574 and both target checks pass; no boot for the ledger-only commit. |
 | `IPV6_PATHMTU` getsockopt | 67f075d7e | `sock_opts::sol_ipv6::get`, `ENOTCONN` when no route MTU |
 | `SO_SNDBUFFORCE`/`SO_RCVBUFFORCE` reads answer `ENOPROTOOPT` | 67f075d7e | informational pin; the reference has no read arm either, and neither do we |
 | `sockaddr_in6.sin6_flowinfo` never read back | 7a1431293 | `net::sockaddr::SockaddrStorage::inet6_flowinfo`, consumed by `042_connect` |
