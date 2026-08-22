@@ -113,6 +113,9 @@ pub(crate) const ZRAM_CONTROL_HOT_REMOVE: u64 = 0x5108_2002;
 pub(crate) const KEXEC_LOADED: u64 = 0x510A_0001;
 pub(crate) const KEXEC_CRASH_LOADED: u64 = 0x510A_0002;
 pub(crate) const KEXEC_CRASH_SIZE: u64 = 0x510A_0003;
+/// `/sys/kernel/btf/vmlinux` — the canonical kernel BTF object exposed as one
+/// read-only binary sysfs attribute.
+pub(crate) const BTF_VMLINUX: u64 = 0x510A_0100;
 /// `/sys/power/*` — one ino per index of `power::suspend::sysfs_api::ATTRS`.
 pub(crate) const POWER_ATTR_BASE: u64 = 0x5110_0000;
 /// `/sys/power/suspend_stats/*` — one ino per index of `STATS_ATTRS`, in its

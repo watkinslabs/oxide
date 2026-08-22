@@ -8,6 +8,7 @@ use crate::{read_window, register, RO_PERM};
 
 // The kexec control attributes live in their own child module; this file is
 // the `/sys/kernel` manifest plus the uevent sequence leaf.
+pub mod btf;
 pub mod kexec;
 
 const INO_UEVENT_SEQNUM: Ino = crate::ids::UEVENT_SEQNUM;
@@ -32,12 +33,27 @@ fn make_uevent_seqnum_inode() -> vfs::InodeRef {
 /// Register dynamic `/sys/kernel` sysfs leaves. # C: O(1)
 pub fn init() {
     register("/sys/kernel/uevent_seqnum", make_uevent_seqnum_inode());
+    btf::init();
     kexec::init();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kernel_btf_is_published_at_the_linux_sysfs_path() {
+        init();
+        let inode = crate::sys_root().lookup_path("kernel/btf/vmlinux")
+            .expect("/sys/kernel/btf/vmlinux");
+        assert_eq!(inode.size(), security::bpf::kernel_btf_len());
+        let mut got = [0u8; 19];
+        let mut expected = [0u8; 19];
+        let n = inode.read(11, &mut got).expect("read registered BTF inode");
+        let expected_n = security::bpf::kernel_btf_read(11, &mut expected);
+        assert_eq!(n, expected_n);
+        assert_eq!(&got[..n], &expected[..expected_n]);
+    }
 
     #[test]
     fn uevent_seqnum_reads_live_netlink_counter() {
