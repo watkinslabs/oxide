@@ -61,7 +61,7 @@ fn transit_ipv6(src: Ipv6Addr, dst: Ipv6Addr, hop_limit: u8) -> alloc::vec::Vec<
     frame
 }
 
-fn mark_transparent_packet(_namespace: u64, _hook: u32, _packet: &[u8], _family: u8)
+fn mark_transparent_packet(_ctx: &crate::netfilter_hook::NfHookCtx<'_>)
     -> crate::netfilter_hook::NfHookResult
 {
     crate::netfilter_hook::NfHookResult { verdict: 1, mark: 0x20 }

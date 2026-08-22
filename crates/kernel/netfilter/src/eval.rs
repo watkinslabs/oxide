@@ -60,7 +60,23 @@ pub fn eval_in(namespace: u64, hook_id: u32, pkt: &[u8], family: u8) -> Verdict 
 
 /// Evaluate one hook while retaining nft's mutable packet mark. # C: O(N rules)
 pub fn eval_in_with_mark(namespace: u64, hook_id: u32, pkt: &[u8], family: u8,
-                         mut mark: u32) -> EvalResult {
+                         mark: u32) -> EvalResult {
+    let input = crate::eval_context::Input::bare(namespace, hook_id, pkt, family, mark);
+    eval_context(&input)
+}
+
+/// Evaluate one hook from the live packet-buffer and hook ownership. # C: O(N rules)
+pub fn eval_hook(input: &net::stack::NfHookCtx<'_>) -> EvalResult {
+    let input = crate::eval_context::Input::from_hook(input);
+    eval_context(&input)
+}
+
+fn eval_context(input: &crate::eval_context::Input<'_>) -> EvalResult {
+    let namespace = input.namespace;
+    let hook_id = input.hook_id;
+    let pkt = input.pkt;
+    let family = input.family;
+    let mut mark = input.mark;
     let Some(generation) = active_generation(hook_id) else {
         return EvalResult { verdict: Verdict::Accept, mark };
     };
@@ -77,8 +93,7 @@ pub fn eval_in_with_mark(namespace: u64, hook_id: u32, pkt: &[u8], family: u8,
                 state.set_contains(set_id.expect("compiled lookup has a set id"), register)
             };
             let mut ctx = EvalCtx::new(pkt, family, &rule.states);
-            ctx.hook = hook_id as u8;
-            ctx.mark = mark;
+            input.populate(&mut ctx, mark);
             ctx.set_lookup = Some(&lookup);
             let verdict = nft_expr::run_rule_ctx(&rule.exprs, &mut ctx);
             mark = ctx.mark;

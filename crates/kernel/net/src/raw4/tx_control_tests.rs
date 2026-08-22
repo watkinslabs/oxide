@@ -22,13 +22,13 @@ static LOCAL_OUT_CALLS: AtomicUsize = AtomicUsize::new(0);
 static LOCAL_OUT_LEN: AtomicUsize = AtomicUsize::new(0);
 static LOCAL_OUT_FLAGS: AtomicUsize = AtomicUsize::new(usize::MAX);
 
-fn observe_local_out(_namespace: u64, hook: u32, packet: &[u8], _family: u8)
+fn observe_local_out(ctx: &crate::netfilter_hook::NfHookCtx<'_>)
     -> crate::netfilter_hook::NfHookResult
 {
-    if hook == crate::netfilter_hook::NF_INET_LOCAL_OUT {
+    if ctx.hook_id == crate::netfilter_hook::NF_INET_LOCAL_OUT {
         LOCAL_OUT_CALLS.fetch_add(1, Ordering::AcqRel);
-        LOCAL_OUT_LEN.store(packet.len(), Ordering::Release);
-        LOCAL_OUT_FLAGS.store(u16::from_be_bytes([packet[6], packet[7]]) as usize,
+        LOCAL_OUT_LEN.store(ctx.pkt.len(), Ordering::Release);
+        LOCAL_OUT_FLAGS.store(u16::from_be_bytes([ctx.pkt[6], ctx.pkt[7]]) as usize,
             Ordering::Release);
     }
     crate::netfilter_hook::NfHookResult::ACCEPT

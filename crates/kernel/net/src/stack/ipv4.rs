@@ -190,8 +190,9 @@ impl NetStack {
         // PRE_ROUTING fires on every received packet before the routing
         // decision. Non-local destinations are forwarded only when
         // `net.ipv4.ip_forward` enables router mode.
-        let pre_routing = crate::netfilter_hook::nf_hook_eval_in(
-            net_ns, NF_INET_PRE_ROUTING, l3, NFPROTO_IPV4);
+        let pre_routing = crate::netfilter_hook::nf_hook_eval_ctx(
+            &crate::netfilter_hook::NfHookCtx::ingress(
+                net_ns, NF_INET_PRE_ROUTING, l3, NFPROTO_IPV4, iface, 0));
         if pre_routing.verdict == 0 { return Ok(()); }
         crate::mib::bump(net_ns, crate::mib::Mib::IpInReceives);
         let hdr = Ipv4Hdr::parse(l3).map_err(|e| {
@@ -205,7 +206,8 @@ impl NetStack {
             crate::mib::bump(net_ns, crate::mib::Mib::IpForwDatagrams);
             return self.forward_ipv4_mark_in(net_ns, iface, l3, pre_routing.mark);
         }
-        if crate::netfilter_hook::nf_hook_eval_in(net_ns, NF_INET_LOCAL_IN, l3, NFPROTO_IPV4).verdict == 0 { return Ok(()); }
+        if crate::netfilter_hook::nf_hook_eval_ctx(&crate::netfilter_hook::NfHookCtx::ingress(
+            net_ns, NF_INET_LOCAL_IN, l3, NFPROTO_IPV4, iface, pre_routing.mark)).verdict == 0 { return Ok(()); }
         let total = hdr.total_len as usize;
         if total > l3.len() { return Err(NetError::Einval); }
         // A delivered header's option area is compiled and PAID before
