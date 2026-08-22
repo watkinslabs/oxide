@@ -341,6 +341,12 @@ Hosted runners are not used for this — TCG boots are ~10-15 min/arch and burn 
 
 **Trust the run's exit status, NEVER a `/tmp` log you found by timestamp (HARD RULE).** `tools/boot-smoke.sh` reuses its `/tmp/oxide-boot-smoke-<arch>-XXXXXX.log` names across concurrent runs, so with several lanes active one file can hold another worktree's cargo build output *and* your boot, interleaved. Reading such a log and seeing no panic means "that worktree hadn't booted yet", not "fixed". Use the `boot-smoke: PASS/FAIL … (attempt N)` line and the exit code from **your own** invocation. If you must read a log, first confirm it contains kernel output (`grep -c '^\[[0-9]*\.'`) and that its build lines name *your* worktree. This produced a retracted before/after claim on the B1442 boot regression.
 
+**Scratch artifacts are lane-prefixed (HARD RULE).** Any durable scratchpad,
+temporary evidence file, or retained command log must include the owning lane's
+branch slug in its filename (for example, `D592-...-serial.log`). Never use a
+generic filename shared by concurrent lanes; the worktree and the filename
+must identify the owner before another lane reads or replaces the artifact.
+
 **Run `make smoke-*` with the sandbox DISABLED (HARD RULE).** Inside the Bash sandbox `boot-smoke.sh` cannot reap its own QEMU, so the QEMU outlives the `make` invocation and holds a lock on `target/builds/<ns>/root-<arch>.img`. Every later attempt then dies with `Is another process using the image [...]` and `make: *** [smoke-x86] Error 1`, producing an attempt log with **zero kernel output** — which reads exactly like a boot failure and is not one. Pass `dangerouslyDisableSandbox: true` for the smoke, and before believing any red result confirm the log has kernel lines (`grep -c '^\[[0-9]'`) and check `lsof <build>/root-<arch>.img` for a live QEMU holding it. Three consecutive "failures" on the B1581 lane were this, not the kernel.
 
 **Corollaries for a shared box** (several agent lanes at once):

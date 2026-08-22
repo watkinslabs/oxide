@@ -1,5 +1,11 @@
 # Fixed issues
 
+### D592-scratchpad-lane-prefix
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED D592 | INFRA | low | Session scratch artifacts are now attributable to one lane instead of being silently shared by filename. | `CLAUDE.md` now requires every durable scratchpad, evidence file, and retained log to include its owning branch slug; the existing shared `scratch/issues.d/` mechanism is abolished, and the current tree has no generic lane scratchpad files. | D592-scratchpad-lane-prefix |
+
 ### D591-worktree-declaration-atomic
 
 | Status | Class | Sev | Issue | Evidence | Owner |
