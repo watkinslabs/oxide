@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2546-tcp-zerocopy-vma-copy-coverage
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2546 | COVERAGE | low | TCP zero-copy receive now routes its target-only VMA address admission and copy-to-user segment accounting through the same target-neutral helpers used by the syscall. Hosted tests cover VMA boundary rejection, successful prefix copying, and `EFAULT` before a fragment is reported consumed. | `tcp_zerocopy::coverage` 3/3; `receive::window_at` and `receive::copy_out` remain the sole live MM/uaccess callers. | Chris Watkins |
+
 ### B2545-stale-udev-networkmanager-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |

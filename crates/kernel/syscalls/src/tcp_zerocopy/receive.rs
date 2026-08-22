@@ -15,6 +15,7 @@ use net::sock_opts::sol_tcp::zerocopy as zc;
 use net::stack::TcpEntry;
 
 use super::window::window_of;
+use super::coverage;
 
 fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
@@ -195,7 +196,10 @@ fn window_at(address: u64) -> Option<Window> {
         _ => return None,
     };
     window_of(&backing)?;
-    Some(Window { backing, start: vma.start.as_u64(), end: vma.end.as_u64() })
+    let span = coverage::WindowSpan { start: vma.start.as_u64(), end: vma.end.as_u64() };
+    coverage::window_at(address, span).map(|span| Window {
+        backing, start: span.start, end: span.end,
+    })
 }
 
 /// Publish complete page segments from the canonical receive queue at
@@ -212,11 +216,15 @@ fn remap(entry: &Arc<TcpEntry>, w: &Window, address: u64, bytes: u32, inline: bo
 /// # C: O(bytes)
 fn copy_out(entry: &Arc<TcpEntry>, addr: u64, bytes: u32, inline: bool) -> Result<u32, Errno> {
     if bytes == 0 { return Ok(0); }
+    let mut copied = 0u32;
     let r = net::sock::stack().tcp_recv_with_offset_oob::<usize, Errno>(
         entry, bytes as usize, false, 0, inline,
         |src| {
-            if uaccess::copy_to_user(addr, src).is_err() { return Err(Errno::Efault); }
-            Ok((src.len(), src.len()))
+            let (used, consumed) = coverage::copy_chunk(src, bytes - copied, |part| {
+                uaccess::copy_to_user(addr + copied as u64, part).map_err(|_| Errno::Efault)
+            })?;
+            copied += used as u32;
+            Ok((used, consumed))
         });
     Ok(r?.unwrap_or(0) as u32)
 }
