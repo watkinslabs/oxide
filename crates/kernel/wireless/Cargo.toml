@@ -12,6 +12,7 @@ path = "src/lib.rs"
 sync    = { path = "../../shared/sync" }
 syscall = { path = "../syscall" }
 netlink = { path = "../netlink" }
+timekeeper = { path = "../timekeeper" }
 klog    = { path = "../../shared/klog", optional = true }
 
 [features]

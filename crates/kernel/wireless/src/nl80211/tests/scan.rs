@@ -27,6 +27,17 @@ fn beacon(bssid: MacAddr, ssid: &[u8]) -> Vec<u8> {
     crate::nl80211::tests_support::mgmt_frame(fctl::mgmt_stype::BEACON, bssid, bssid, &body)
 }
 
+struct TestNow;
+
+impl Drop for TestNow {
+    fn drop(&mut self) { scan_cmd::set_reference_now_for_test(0); }
+}
+
+fn test_now(now_ns: u64) -> TestNow {
+    scan_cmd::set_reference_now_for_test(now_ns);
+    TestNow
+}
+
 #[test]
 fn a_bare_trigger_scans_every_channel() {
     let _g = lock();
@@ -203,6 +214,7 @@ fn abort_with_no_scan_running_succeeds_without_reaching_the_driver() {
 #[test]
 fn a_results_dump_reports_one_message_per_network_and_terminates() {
     let _g = lock();
+    let _now = test_now(1_000_000_000);
     let (w, _ops, d) = radio_with(IfType::Station);
     for (i, name) in [&b"one"[..], &b"two"[..], &b"three"[..]].iter().enumerate() {
         let bssid = MacAddr([0x02, 0, 0, 0, 0, i as u8]);
@@ -219,10 +231,12 @@ fn a_results_dump_reports_one_message_per_network_and_terminates() {
 #[test]
 fn a_reported_network_carries_the_attributes_a_supplicant_reads() {
     let _g = lock();
+    let _now = test_now(7_000_000_000);
     let (w, _ops, d) = radio_with(IfType::Station);
     let bssid = MacAddr([0x02, 0xaa, 0xbb, 0xcc, 0xdd, 0xee]);
+    let heard = 5_000_000_000;
     inform_bss_frame(&w, &RxBeacon {
-        freq: 2412, signal_mbm: -4200, now_ns: 5_000_000_000,
+        freq: 2412, signal_mbm: -4200, now_ns: heard,
         frame: &beacon(bssid, b"oxide"),
     }).expect("cached");
     let reply = Req::wdev(&d).dump().call(scan_cmd::dump);
@@ -237,7 +251,8 @@ fn a_reported_network_carries_the_attributes_a_supplicant_reads() {
     assert!(find(nest, bss::TSF).is_some());
     assert!(find(nest, bss::INFORMATION_ELEMENTS).is_some());
     assert!(find(nest, bss::SIGNAL_MBM).is_some());
-    assert_eq!(u32_of(nest, bss::SEEN_MS_AGO), Some(0));
+    let age = u32_of(nest, bss::SEEN_MS_AGO).expect("age");
+    assert_eq!(age, 2_000, "age came from the dump's single clock snapshot");
     assert!(find(nest, bss::LAST_SEEN_BOOTTIME).is_some());
     assert!(u32_of(nest, bss::CHAN_WIDTH).is_some());
     // Nothing heard this network by probe response, so the flag is absent.
@@ -259,9 +274,24 @@ fn the_results_command_number_is_the_new_results_one() {
     let _g = lock();
     let (w, _ops, d) = radio_with(IfType::Station);
     inform_bss_frame(&w, &RxBeacon {
-        freq: 2412, signal_mbm: -4000, now_ns: 1,
+        freq: 2412, signal_mbm: -4000, now_ns: timekeeper::monotonic_ns(),
         frame: &beacon(MacAddr([0x02, 0, 0, 0, 0, 1]), b"x"),
     }).expect("cached");
     let reply = Req::wdev(&d).dump().call(scan_cmd::dump);
     assert_eq!(reply.part_cmds(), alloc::vec![cmd::NEW_SCAN_RESULTS]);
+}
+
+#[test]
+fn a_dump_expires_a_result_older_than_the_live_monotonic_deadline() {
+    let _g = lock();
+    let _now = test_now(crate::scan::SCAN_RESULT_EXPIRE_NS + 2);
+    let (w, _ops, d) = radio_with(IfType::Station);
+    let heard = 1;
+    inform_bss_frame(&w, &RxBeacon {
+        freq: 2412, signal_mbm: -4000, now_ns: heard,
+        frame: &beacon(MacAddr([0x02, 0, 0, 0, 0, 2]), b"old"),
+    }).expect("cached");
+    let reply = Req::wdev(&d).dump().call(scan_cmd::dump);
+    assert!(reply.parts().is_empty());
+    assert!(reply.is_done());
 }

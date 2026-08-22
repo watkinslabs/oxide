@@ -68,7 +68,7 @@ fn trigger_inner(attrs: &[u8], ctx: GenlCtx) -> Result<(Arc<Wiphy>, Arc<Wdev>), 
         ssids, freqs, ie, flags, portid: ctx.portid, mac_addr, mac_addr_mask,
         duration_ms: msg::get_u16(attrs, a::MEASUREMENT_DURATION).unwrap_or(0),
         duration_mandatory: msg::get_flag(attrs, a::MEASUREMENT_DURATION_MANDATORY),
-        start_ns: wiphy.with_state(|s| bss::reference_now(&s.bss)),
+        start_ns: bss::reference_now(),
     };
     // The state is published before the driver is called so a scan the driver
     // completes synchronously still finds it; a driver that refuses takes it
@@ -173,14 +173,14 @@ pub fn abort(hdr: &Nlmsghdr, attrs: &[u8], ctx: GenlCtx) -> Vec<u8> {
 
 /// Every network the radio has heard, one message each. # C: O(N entries)
 pub fn dump(hdr: &Nlmsghdr, attrs: &[u8], ctx: GenlCtx) -> Vec<u8> {
+    let now = bss::reference_now();
     let (wiphy, wdev) = match resolve::wdev(attrs, ctx.net_ns) {
         Ok(v) => v,
         Err(e) => return msg::error(hdr, e),
     };
-    let (entries, generation, now) = wiphy.with_state(|s| {
-        let now = bss::reference_now(&s.bss);
+    let (entries, generation) = wiphy.with_state(|s| {
         s.bss.expire_now(now);
-        (s.bss.snapshot(), s.bss.generation, now)
+        (s.bss.snapshot(), s.bss.generation)
     });
     let mut reply: Vec<u8> = Vec::new();
     for entry in entries.iter() {
@@ -191,4 +191,9 @@ pub fn dump(hdr: &Nlmsghdr, attrs: &[u8], ctx: GenlCtx) -> Vec<u8> {
     }
     msg::push_done(&mut reply, hdr);
     reply
+}
+
+#[cfg(test)]
+pub(super) fn set_reference_now_for_test(now_ns: u64) {
+    bss::set_reference_now_for_test(now_ns);
 }
