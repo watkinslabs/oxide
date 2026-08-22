@@ -16,6 +16,7 @@ use alloc::sync::Arc;
 use vfs::{CreateCtx, DirContext, FileOps, FileType, Inode, InodeOps, InodeRef, KResult,
           VfsError};
 use vfs::setattr::{Iattr, ATTR_GID, ATTR_UID};
+use vfs::uapi::FALLOC_FL_KEEP_SIZE;
 
 use crate::ident::{self, Position};
 use crate::volume::{DirEntry, DirHandle};
@@ -105,9 +106,28 @@ impl InodeOps for ExfatOps {
 
     fn truncate(&self, inode: &Inode, len: u64) -> KResult<()> {
         let node = Self::node(inode)?;
-        let mut entry = node.entry.clone().ok_or(VfsError::Eisdir)?;
+        let mut entry = node.entry().ok_or(VfsError::Eisdir)?;
         node.fs.volume.lock().truncate_file(&mut entry, len, now()).map_err(errno_to_vfs)?;
+        node.set_entry(entry);
         inode.set_size(len);
+        Ok(())
+    }
+
+    fn fallocate(&self, inode: &Inode, mode: u32, offset: u64, len: u64) -> KResult<()> {
+        if mode & !FALLOC_FL_KEEP_SIZE != 0 { return Err(VfsError::Eopnotsupp); }
+        let node = Self::node(inode)?;
+        let mut entry = node.entry().ok_or(VfsError::Eisdir)?;
+        let end = offset.checked_add(len).ok_or(VfsError::Einval)?;
+        if mode & FALLOC_FL_KEEP_SIZE != 0 {
+            node.fs.volume.lock().preallocate_file(&mut entry, offset, len, now())
+                .map_err(errno_to_vfs)?;
+            node.set_entry(entry);
+        } else if end > inode.size() {
+            node.fs.volume.lock().truncate_file(&mut entry, end, now())
+                .map_err(errno_to_vfs)?;
+            node.set_entry(entry);
+            inode.set_size(end);
+        }
         Ok(())
     }
 
@@ -116,7 +136,7 @@ impl InodeOps for ExfatOps {
     /// exFAT stores no uid/gid fields. # C: O(set bytes)
     fn setattr(&self, inode: &Inode, idmap: &vfs::Idmap, ia: &Iattr) -> KResult<()> {
         let node = Self::node(inode)?;
-        let mut entry = node.entry.clone().ok_or(VfsError::Eisdir)?;
+        let mut entry = node.entry().ok_or(VfsError::Eisdir)?;
         let v = node.fs.volume.lock();
         if !v.writable() { return Err(VfsError::Erofs); }
         let opts = *v.options();
@@ -136,17 +156,18 @@ impl InodeOps for ExfatOps {
 impl FileOps for ExfatOps {
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let node = ExfatOps::node(inode)?;
-        let entry = node.entry.as_ref().ok_or(VfsError::Eisdir)?;
-        node.fs.volume.lock().read_file(entry, off, buf).map_err(errno_to_vfs)
+        let entry = node.entry().ok_or(VfsError::Eisdir)?;
+        node.fs.volume.lock().read_file(&entry, off, buf).map_err(errno_to_vfs)
     }
 
     fn write(&self, inode: &Inode, off: u64, buf: &[u8]) -> KResult<usize> {
         let node = ExfatOps::node(inode)?;
         // The set's own offset came with the inode, so the write lands on the
         // set this inode IS rather than on whichever set a fresh search finds.
-        let mut entry = node.entry.clone().ok_or(VfsError::Eisdir)?;
+        let mut entry = node.entry().ok_or(VfsError::Eisdir)?;
         let size = node.fs.volume.lock().write_file(&mut entry, off, buf, now())
             .map_err(errno_to_vfs)?;
+        node.set_entry(entry);
         inode.set_size(size);
         Ok(buf.len())
     }

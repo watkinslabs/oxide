@@ -22,7 +22,7 @@ use super::{ops::ExfatOps, ExfatFs};
 pub struct ExfatNode {
     pub(crate) fs: Arc<ExfatFs>,
     /// The entry set this inode IS, or `None` for the root, which has none.
-    pub(crate) entry: Option<DirEntry>,
+    pub(crate) entry: sync::Spinlock<Option<DirEntry>, sync::Inode>,
     /// This inode AS a directory to operate in, when it is one.
     pub(crate) dir: Option<DirHandle>,
 }
@@ -30,6 +30,10 @@ pub struct ExfatNode {
 impl ExfatNode {
     /// This inode as a directory, or `None` when it is a file. # C: O(1)
     pub(crate) fn as_dir(&self) -> Option<DirHandle> { self.dir.clone() }
+
+    pub(crate) fn entry(&self) -> Option<DirEntry> { self.entry.lock().clone() }
+
+    pub(crate) fn set_entry(&self, entry: DirEntry) { *self.entry.lock() = Some(entry); }
 }
 
 /// Build the inode for one entry set.
@@ -66,7 +70,7 @@ pub(crate) fn node_inode(fs: Arc<ExfatFs>, entry: Option<DirEntry>, home: DirHan
         (Some(e), FileType::Directory) => Some(DirHandle::child(&home, e.set.offset)),
         _ => None,
     };
-    let node = ExfatNode { fs, entry, dir };
+    let node = ExfatNode { fs, entry: sync::Spinlock::new(entry), dir };
     let mut builder = InodeBuilder::new(ino, mk_mode(ftype, make_mode(attr, &opts)),
                                         inode_ops, file_ops)
         .size(size)
