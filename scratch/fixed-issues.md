@@ -1,5 +1,11 @@
 # Fixed issues
 
+### F1246-tmpfs-xattr-accounting
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 4091c2b8c | MISSING | low | Tmpfs simple-xattr stores now reserve and release their Linux-shaped name/value footprint from the owning inode-space pool, so xattr-only writes cannot bypass the mount ceiling; devtmpfs device nodes retain the same xattr surface but, as an internal unlimited tmpfs instance, have no finite inode ceiling to exhaust. | `tmpfs::tests::xattr_tests::xattrs_consume_and_release_tmpfs_inode_space` drives the real inode-op path: the unaccounted hook is RED (`Ok(())` instead of `ENOSPC`), same-size replacement remains possible, and removal makes the space reusable. | F1246 |
+
 ### B2571-relocate-fixed-known-rows
 
 | Status | Class | Sev | Issue | Evidence | Owner |
