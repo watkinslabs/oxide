@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2467-ttynull-console
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED bf8c9a36b | MISSING | low | `console=ttynull` now selects a consuming sink-only console, publishes `/dev/ttynull`, and suppresses serial/VT output. | Cmdline, console, sysfs, target, and smoke checks passed. | Chris Watkins |
+
 ### B2466-uninterruptible-task-state-reporting
 
 | Status | Class | Sev | Issue | Evidence | Owner |
