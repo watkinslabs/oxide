@@ -18,6 +18,19 @@ pub enum ConsoleKind {
     Vt(u8),
 }
 
+/// Linux tty line name for the platform UART this kernel drives.
+///
+/// The name is a device identity, not just `console=` syntax: devtmpfs,
+/// sysfs, and `console/active` must all publish the same line. PL011 uses the
+/// AMBA serial driver's `ttyAMA` namespace; 8250-compatible lines use
+/// `ttyS`. # C: O(1)
+pub const fn serial_line_name() -> &'static str {
+    #[cfg(target_arch = "aarch64")]
+    { "ttyAMA0" }
+    #[cfg(not(target_arch = "aarch64"))]
+    { "ttyS0" }
+}
+
 /// Parity requested by a serial console's options field.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Parity { None, Odd, Even }

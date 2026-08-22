@@ -216,7 +216,7 @@ fn require_dir(img: &Path, path: &str) -> Result<(), u8> {
 
 fn inject_drm_render_smoke(root_img: &Path, arch: &str) -> Result<(), u8> {
     let bin = build_drm_probe(arch)?;
-    let service = write_drm_render_service()?;
+    let service = write_drm_render_service(arch)?;
     dbg(root_img, "mkdir /etc/systemd/system")?;
     dbg(root_img, "mkdir /etc/systemd/system/multi-user.target.wants")?;
     dbg_ignore(root_img, "rm /usr/local/bin/drm_render_probe");
@@ -232,15 +232,16 @@ fn inject_drm_render_smoke(root_img: &Path, arch: &str) -> Result<(), u8> {
 
 fn build_drm_probe(arch: &str) -> Result<PathBuf, u8> { probe_cargo(arch, "drm_probe") }
 
-fn write_drm_render_service() -> Result<PathBuf, u8> {
+fn write_drm_render_service(arch: &str) -> Result<PathBuf, u8> {
     let dir = PathBuf::from("target").join("smoke");
     std::fs::create_dir_all(&dir).map_err(|e| { eprintln!("xtask rootfs: mkdir smoke dir failed: {e}"); 1u8 })?;
     let path = dir.join("drm-render-smoke.service");
-    // StandardOutput=tty on /dev/ttyS0, NOT `>/dev/console`: the smoke scrapes the
-    // UART, and a console redirect does not land there — so the probe's verdict
-    // was invisible and every failure looked identical from outside. Matches what
-    // the swapfile unit already does.
-    let body = "[Unit]\n\
+    // StandardOutput=tty on the platform serial node, NOT `>/dev/console`: the
+    // smoke scrapes the UART, and a console redirect does not land there — so
+    // the probe's verdict was invisible and every failure looked identical
+    // from outside. Matches what the swapfile unit already does.
+    let serial = crate::image_qemu::serial_device_name(arch);
+    let body = format!("[Unit]\n\
 Description=Oxide DRM render node smoke\n\
 After=basic.target systemd-udev-settle.service\n\
 \n\
@@ -248,11 +249,11 @@ After=basic.target systemd-udev-settle.service\n\
 Type=oneshot\n\
 StandardOutput=tty\n\
 StandardError=tty\n\
-TTYPath=/dev/ttyS0\n\
+TTYPath=/dev/{serial}\n\
 ExecStart=/usr/local/bin/drm_render_probe\n\
 \n\
 [Install]\n\
-WantedBy=multi-user.target\n";
+WantedBy=multi-user.target\n");
     std::fs::write(&path, body).map_err(|e| { eprintln!("xtask rootfs: write service failed: {e}"); 1u8 })?;
     Ok(path)
 }

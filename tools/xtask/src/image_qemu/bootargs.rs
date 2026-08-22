@@ -7,11 +7,7 @@
 // neither `root=`, `rw`, nor any `systemd.*` parameter); the builder below is
 // the single source of truth both callers format.
 
-/// Serial console device name per arch, per Linux tty naming: 16550 lines are
-/// `ttyS*`, PL011 lines are `ttyAMA*`. This is the name `console=` takes.
-pub(super) fn serial_console(arch: &str) -> &'static str {
-    if arch == "aarch64" { "ttyAMA0" } else { "ttyS0" }
-}
+use super::serial_device_name;
 
 /// VT the early root shell runs on by default.
 ///
@@ -21,14 +17,6 @@ pub(super) fn serial_console(arch: &str) -> &'static str {
 /// screen, and the serial line carries the kernel log plus a normal login —
 /// which is what a serial-console machine looks like.
 const DEBUG_SHELL_TTY: &str = "tty9";
-
-/// Device node the serial line publishes as, on both arches.
-const SERIAL_DEVNODE: &str = "ttyS0";
-
-/// The `serial-getty` instance the kernel's console list makes systemd
-/// generate. A run that wants the serial line for something else has to say
-/// so, because that generator will otherwise start a login on it.
-const SERIAL_GETTY_UNIT: &str = "serial-getty@ttyS0.service";
 
 /// Does this run want the root shell on the SERIAL line instead of a VT?
 ///
@@ -43,9 +31,10 @@ fn serial_shell_requested() -> bool {
 
 /// The debug-shell parameters this run carries: which tty, and whether the
 /// login that would otherwise own it is masked. # C: O(1)
-fn debug_shell_params() -> String {
+fn debug_shell_params(arch: &str) -> String {
     if serial_shell_requested() {
-        format!("systemd.debug_shell={SERIAL_DEVNODE} systemd.mask={SERIAL_GETTY_UNIT}")
+        let serial = serial_device_name(arch);
+        format!("systemd.debug_shell={serial} systemd.mask=serial-getty@{serial}.service")
     } else {
         format!("systemd.debug_shell={DEBUG_SHELL_TTY}")
     }
@@ -187,8 +176,8 @@ pub(super) fn kernel_cmdline(arch: &str, image_path: &str) -> String {
 /// Compose the boot line for an explicit, already-modelled root device.
 /// # C: O(command-line length)
 pub(super) fn kernel_cmdline_for_root(arch: &str, image_path: &str, root: &str) -> String {
-    let ser = serial_console(arch);
-    let shell = debug_shell_params();
+    let ser = serial_device_name(arch);
+    let shell = debug_shell_params(arch);
     let boot_image = if bootloader_supplies_boot_image(arch) {
         String::new()
     } else {
@@ -212,7 +201,7 @@ pub(super) fn kernel_cmdline_for_root(arch: &str, image_path: &str, root: &str) 
 
 #[cfg(test)]
 mod tests {
-    use super::{kernel_cmdline, serial_console, KERNEL_CONSOLE_PARAMS, KERNEL_DEBUG_PARAMS,
+    use super::{kernel_cmdline, serial_device_name, KERNEL_CONSOLE_PARAMS, KERNEL_DEBUG_PARAMS,
                 USERSPACE_CONSOLE_PARAMS, USERSPACE_DEBUG_PARAMS};
     use std::sync::Mutex;
 
@@ -250,10 +239,9 @@ mod tests {
         assert_eq!(x_rest.replace("console=ttyS0", "console=ttyAMA0"), a);
     }
 
-    /// A parameter naming a device PATH must use a node the kernel actually
-    /// publishes, not a console class name — the arm debug shell died with
-    /// `No such file or directory` on `ttyAMA0`. `/dev/tty1..63` exist on both
-    /// arches, so the VT the shell runs on needs no arch spelling at all.
+    /// A parameter naming a device PATH must use the platform serial node the
+    /// kernel actually publishes. `/dev/tty1..63` exist on both arches, so the
+    /// VT the shell runs on needs no arch spelling at all.
     #[test]
     fn path_valued_parameters_use_the_published_devnode() {
         with_env(&[("OXIDE_SERIAL_SHELL", None), ("OXIDE_CMDLINE_DEBUG", None), ("OXIDE_CMDLINE_EXTRA", None)], || {
@@ -274,10 +262,11 @@ mod tests {
     #[test]
     fn the_serial_control_plane_moves_the_shell_and_masks_the_login() {
         with_env(&[("OXIDE_SERIAL_SHELL", Some("1")), ("OXIDE_CMDLINE_DEBUG", None), ("OXIDE_CMDLINE_EXTRA", None)], || {
-            for arch in ["x86_64", "aarch64"] {
+            for (arch, serial) in [("x86_64", "ttyS0"), ("aarch64", "ttyAMA0")] {
                 let line = kernel_cmdline(arch, "/img");
-                assert!(line.split(' ').any(|t| t == "systemd.debug_shell=ttyS0"), "{arch}: {line}");
-                assert!(line.split(' ').any(|t| t == "systemd.mask=serial-getty@ttyS0.service"),
+                assert!(line.split(' ').any(|t| t == format!("systemd.debug_shell={serial}")),
+                    "{arch}: {line}");
+                assert!(line.split(' ').any(|t| t == format!("systemd.mask=serial-getty@{serial}.service")),
                     "{arch}: the login must be masked or it takes the line: {line}");
                 // The console configuration is unchanged: this moves a shell,
                 // not the console.
@@ -328,8 +317,8 @@ mod tests {
     #[test]
     fn serial_console_names_match_the_uart_each_arch_programs() {
         let _env = env_held();
-        assert_eq!(serial_console("x86_64"), "ttyS0");
-        assert_eq!(serial_console("aarch64"), "ttyAMA0");
+        assert_eq!(serial_device_name("x86_64"), "ttyS0");
+        assert_eq!(serial_device_name("aarch64"), "ttyAMA0");
     }
 
     /// `console=` order decides `/dev/console`: the VT token must come last on

@@ -14,3 +14,10 @@ mod x86_64;
 pub(crate) use aarch64::build_arm_image;
 pub(crate) use commands::{cmd_grub, cmd_image};
 pub(crate) use common::repo_root;
+
+/// Linux device name for the UART QEMU wires on `arch`. Every path-valued
+/// image parameter and injected service must follow the same identity as the
+/// kernel's serial devnode. # C: O(1)
+pub(crate) fn serial_device_name(arch: &str) -> &'static str {
+    if arch == "aarch64" { "ttyAMA0" } else { "ttyS0" }
+}

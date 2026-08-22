@@ -82,7 +82,7 @@ const TTY_DEVICES: &[(&str, u32, u32)] = &[
     ("console", 5, 1),
     ("tty",     5, 0),
     ("tty0",    4, 0),
-    ("ttyS0",   SERIAL_TTY_MAJOR, 64),
+    (cmdline::serial_line_name(), SERIAL_TTY_MAJOR, 64),
     ("ttynull", 240, 0),
 ];
 
@@ -225,7 +225,7 @@ struct TtyActiveData { is_vt: bool }
 fn console_line_name(k: cmdline::ConsoleKind) -> String {
     match k {
         cmdline::ConsoleKind::Null => String::from("ttynull"),
-        cmdline::ConsoleKind::Serial => String::from("ttyS0"),
+        cmdline::ConsoleKind::Serial => String::from(cmdline::serial_line_name()),
         cmdline::ConsoleKind::Vt(0) => String::from("tty0"),
         cmdline::ConsoleKind::Vt(n) => alloc::format!("tty{}", n),
     }
