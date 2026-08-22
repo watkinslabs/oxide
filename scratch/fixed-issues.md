@@ -1064,6 +1064,12 @@
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 4080cb2c6 | MISSING | high | **A child created inside an encrypted f2fs directory now inherits the parent's complete encryption policy and persists a fresh per-inode nonce before its dentry is published.** The production create path resolves the parent key before allocation, writes the child inode, stores the indexed fscrypt context and encryption flag, and excludes the encrypted child from inline data so its contents always have a data-unit address. Special files remain plaintext. | B2497. Linux 7.2.0-rc4 uses `f2fs_new_inode` -> `fscrypt_prepare_new_inode`, then `f2fs_init_inode_metadata` -> `fscrypt_set_context` before linking the name. Authentic RED: `creating_in_an_encrypted_directory_persists_a_fresh_child_context` failed because `crypt_context` returned `None`; GREEN asserts the inherited policy, distinct nonce, encrypted flag, non-inline storage, and plaintext readback of data written by the real `Volume::create` path. Full f2fs: 3698/3698; `make x86` and `make arm` pass. Smoke skipped because both boot images mount ext4 and cannot reach this F2FS create path. | B2497-f2fs-encrypted-child-context |
+
+### B2564-stale-f2fs-encryption-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2564 | MISSING | high | The older F2FS encrypted-child context row was a stale duplicate of B2497. | Current `Volume::create` persists the inherited policy and fresh nonce before publication; B2497 already records the production regression and full F2FS verification. | B2564-stale-f2fs-encryption-row |
 ### B2498-oom-coredump-self-free
 
 | Status | Class | Sev | Issue | Evidence | Owner |
