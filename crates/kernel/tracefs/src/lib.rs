@@ -30,9 +30,10 @@ pub use root::{config_root, debug_root, register, register_config, register_debu
 // -e probe, trace-cmd start) get sensible read-only data instead
 // of ENOENT.
 //
-// Real per-CPU ring buffers + dynamic tracepoint registration are
-// a follow-up once the kernel grows static tracepoint anchors at
-// sched_switch / sys_enter / sys_exit per `37§6`.
+// The same canonical event descriptors own the tracefs enable state and
+// any raw-BPF probes. Syscall entry/exit have production anchors; an event
+// advertises a raw site only when its call path can supply the real raw
+// arguments.
 
 
 use vfs::InodeRef;

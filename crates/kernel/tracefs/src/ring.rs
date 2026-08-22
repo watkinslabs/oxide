@@ -4,8 +4,8 @@
 // format and (write) clears it; `tracing_on` (read/write) gates recording.
 // Mirrors the kernel's `trace_marker`/`trace`/`tracing_on` debugfs files —
 // the standard userspace event-injection + readback path (trace-cmd, manual
-// `echo foo > trace_marker`). Per-CPU ring buffers + static tracepoints
-// (sched_switch / sys_enter) ride a follow-up; this is the buffer they fill.
+// `echo foo > trace_marker`). The static syscall tracepoints record into this
+// buffer and dispatch raw-BPF probes from the same production call sites.
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
