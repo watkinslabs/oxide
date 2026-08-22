@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2542-stale-synq-reuseport-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2542 | MISSING | low | SYN-queue overflow timestamps are already shared by the reuseport group, not just one listener; standalone listeners retain their own cell. | `TcpListener::{note_synq_overflow,no_recent_synq_overflow}` delegates through `reuseport::slot::group`, and the reuseport tests prove sibling sharing plus unrelated-group isolation. | Chris Watkins |
+
 ### B2541-mmsg-waitforone-blocking-fixture
 
 | Status | Class | Sev | Issue | Evidence | Owner |
