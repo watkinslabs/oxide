@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2459-compat-batch-single-owner-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 87aa98141 | DEFECT | med | **The compat marker decision has one syscall-entry owner; the socket batch core no longer rejects or redeclares it.** | B2459 pins the compat marker crossing the syscall-selected batch boundary. | B2459-compat-batch-single-owner-row |
+
 ### B2457-acpi-table-checksums
 
 | Status | Class | Sev | Issue | Evidence | Owner |
