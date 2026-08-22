@@ -1,10 +1,8 @@
-//! Linux load average — EWMA of the runnable task count over 1/5/15 min,
+//! Linux load average — EWMA of runnable plus uninterruptible tasks over 1/5/15 min,
 //! resampled every ~5s (Linux `CALC_LOAD`). Fixed-point
 //! FSHIFT=11. `/proc/loadavg` reads `snapshot()`.
-//!
-//! `active` is the runnable task count (Linux also counts TASK_UNINTERRUPTIBLE;
-//! oxide reports runnable for now). The 5s cadence is gated on the monotonic
-//! clock, so it needs no knowledge of the timer-tick rate.
+//! The 5s cadence is gated on the monotonic clock, so it needs no knowledge of
+//! the timer-tick rate.
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -31,6 +29,11 @@ fn calc_load(load: u64, exp: u64, active: u64) -> u64 {
         >> FSHIFT
 }
 
+#[inline]
+fn fold_active(total: i64, running: u32, uninterruptible: i32) -> i64 {
+    total + running as i64 + uninterruptible as i64
+}
+
 /// Called from the timer tick with the monotonic clock. Resamples at most
 /// once per ~5s; the first call only seeds the clock.
 /// # C: O(1) typical; O(N_tasks) on the 0.2 Hz resample.
@@ -49,9 +52,8 @@ pub fn tick(now_ns: u64) {
     }
 }
 
-/// Runnable-task count, summed from the per-CPU runqueues (Linux
-/// `calc_load_account_active`, which reads `rq->nr_running` — never the task
-/// list).
+/// Active-task count, summed from each runqueue's runnable and
+/// uninterruptible counters — never the task list.
 ///
 /// This runs in the timer ISR. The previous implementation called
 /// `registry::live_counts()`, which takes the `REG` spinlock, walks every
@@ -72,7 +74,7 @@ pub fn tick(now_ns: u64) {
 fn active_count() -> u64 {
     #[cfg(target_os = "oxide-kernel")]
     {
-        let mut active = 0u64;
+        let mut active = 0i64;
         for cpu in 0..cpu::MAX_CPUS as u32 {
             // SAFETY: `global_for` returns a shared &'static Runqueue for an
             // installed CPU; only lock-free atomic fields are read here, which
@@ -82,9 +84,10 @@ fn active_count() -> u64 {
             // nothing in when that task is the per-CPU idle task), exactly as
             // Linux's `calc_load_fold_active` reads it — so there is nothing
             // for this loop to add on top.
-            active += rq.nr_running.load(Ordering::Relaxed) as u64;
+            active = fold_active(active, rq.nr_running.load(Ordering::Relaxed),
+                                 rq.nr_uninterruptible.load(Ordering::Relaxed));
         }
-        active
+        active.max(0) as u64
     }
     #[cfg(not(target_os = "oxide-kernel"))]
     { 0 }
@@ -119,5 +122,55 @@ mod tests {
         for _ in 0..200 { l = calc_load(l, EXP_1, 2); }
         let (i, _) = fmt_parts(l);
         assert!(i >= 1, "1m avg should approach 2 under sustained load, got int={i}");
+    }
+
+    #[test]
+    fn active_fold_includes_cross_cpu_uninterruptible_sum() {
+        let active = fold_active(fold_active(0, 2, 2), 3, -1);
+        assert_eq!(active, 6, "blocked increments and migrated-wake decrements fold globally");
+        assert!(calc_load(0, EXP_1, active as u64) > calc_load(0, EXP_1, 5));
+    }
+
+    #[test]
+    fn uninterruptible_transition_contributes_until_wake() {
+        use alloc::sync::Arc;
+        use crate::{SchedClass, Task, TaskState, WaitState};
+        use crate::live::runqueue::Runqueue;
+
+        let idle = Arc::new(Task::new(1, "idle", SchedClass::Idle));
+        let rq = Runqueue::new(0, idle);
+        let task = Task::new(2, "blocked", SchedClass::Normal { weight: 1024 });
+        task.set_sleep_state(WaitState::Uninterruptible);
+        assert!(rq.account_blocked(&task));
+        assert!(!rq.account_blocked(&task), "one block contributes exactly once");
+        assert_eq!(rq.nr_uninterruptible.load(Ordering::Relaxed), 1);
+        assert!(task.claim_wake());
+        assert_eq!(task.state(), TaskState::Waking);
+        assert!(rq.account_wake(&task));
+        assert!(!rq.account_wake(&task), "one wake retires exactly one block");
+        task.complete_wake();
+        assert_eq!(rq.nr_uninterruptible.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn interruptible_and_frozen_sleeps_do_not_contribute() {
+        use alloc::sync::Arc;
+        use crate::{SchedClass, Task, WaitState};
+        use crate::live::runqueue::Runqueue;
+
+        let rq = Runqueue::new(0, Arc::new(Task::new(3, "idle", SchedClass::Idle)));
+        let interruptible = Task::new(4, "signal", SchedClass::Normal { weight: 1024 });
+        interruptible.set_sleep_state(WaitState::Interruptible);
+        assert!(!rq.account_blocked(&interruptible));
+        let frozen = Task::new(5, "frozen", SchedClass::Normal { weight: 1024 });
+        frozen.set_sleep_state(WaitState::Uninterruptible);
+        frozen.frozen.store(true, Ordering::Release);
+        assert!(!rq.account_blocked(&frozen));
+        let killable = Task::new(6, "fatal-only", SchedClass::Normal { weight: 1024 });
+        killable.set_sleep_state(WaitState::Killable);
+        assert!(rq.account_blocked(&killable), "killable includes uninterruptible");
+        assert_eq!(rq.nr_uninterruptible.load(Ordering::Relaxed), 1);
+        assert!(killable.claim_wake());
+        assert!(rq.account_wake(&killable));
     }
 }

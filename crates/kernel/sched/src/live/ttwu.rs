@@ -95,6 +95,7 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
             continue;
         }
         if core::ptr::eq(Arc::as_ptr(&task), current as *const Task) {
+            rq.account_wake(&task);
             task.complete_wake();
             node = next;
             continue;
@@ -129,6 +130,7 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
                 task.wake_diag_mark(WakeDiagPhase::Activating, wake_diag_now_ns());
                 task.lift_vruntime(inner.cfs.min_vruntime());
                 preempt |= curr.is_none_or(|c| wakeup_preempt(cand_of(&task), c));
+                rq.account_wake(&task);
                 inner.enqueue(Arc::clone(&task));
                 placed = true;
             }
@@ -445,6 +447,7 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
             preempt = curr.is_none_or(|c| wakeup_preempt(cand_of(&task), c));
             #[cfg(feature = "debug-watchdog")]
             task.wake_diag_mark(WakeDiagPhase::Activating, wake_diag_now_ns());
+            rq.account_wake(&task);
             inner.enqueue(task);
             rq.publish_nr_running(inner.nr_running());
         }

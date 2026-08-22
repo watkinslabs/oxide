@@ -525,3 +525,47 @@ fn a_wakee_stays_on_a_prev_cpu_that_is_genuinely_idle() {
     let wakee = settled_sleeper(5004, A);
     assert_eq!(select_task_rq_with(&|c| cpus.get(c), B, &wakee), A);
 }
+
+/// Wake activation retires the exact blocked-load contribution before the
+/// task becomes runnable again.
+#[test]
+fn local_uninterruptible_wake_retires_load_contribution() {
+    const CPU: u32 = 55;
+    let cpus = Cpus::new(&[CPU]);
+    let rq = cpus.get(CPU).expect("just installed");
+    let task = settled_sleeper(5005, CPU);
+    assert!(rq.account_blocked(&task));
+    assert_eq!(rq.nr_uninterruptible.load(Ordering::Acquire), 1);
+
+    assert!(task.claim_wake());
+    place_runnable_with(&|c| cpus.get(c), CPU, Arc::clone(&task), false);
+
+    assert_eq!(rq.nr_uninterruptible.load(Ordering::Acquire), 0);
+    assert_eq!(task.state(), TaskState::Runnable);
+    assert!(task.on_rq.load(Ordering::Acquire));
+}
+
+/// A task may block on one CPU and wake on another. Per-CPU values may then
+/// be signed, but their sum remains the one exact system count.
+#[test]
+fn migrated_uninterruptible_wake_preserves_system_sum() {
+    const SOURCE: u32 = 56;
+    const DEST: u32 = 57;
+    let cpus = Cpus::new(&[SOURCE, DEST]);
+    let source = cpus.get(SOURCE).expect("source installed");
+    let dest = cpus.get(DEST).expect("destination installed");
+    let task = settled_sleeper(5006, SOURCE);
+    assert!(source.account_blocked(&task));
+    task.cpus_allowed.store(cpu::CpuMask::of(DEST as usize), Ordering::Release);
+
+    assert!(task.claim_wake());
+    place_runnable_with(&|c| cpus.get(c), SOURCE, Arc::clone(&task), false);
+    assert!(sched_ttwu_pending(DEST, core::ptr::null_mut(), dest));
+
+    let total = source.nr_uninterruptible.load(Ordering::Acquire)
+        + dest.nr_uninterruptible.load(Ordering::Acquire);
+    assert_eq!(total, 0);
+    assert_eq!(source.nr_uninterruptible.load(Ordering::Acquire), 1);
+    assert_eq!(dest.nr_uninterruptible.load(Ordering::Acquire), -1);
+    assert_eq!(task.state(), TaskState::Runnable);
+}
