@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2410-stale-udp-encap-values
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 364b56be0 | COVERAGE | low | **The `UDP_ENCAP` accepted-value row was stale: the live UDP socket-option owner already admits exactly none, ESP-in-UDP, and L2TP-in-UDP, and rejects every other identity with `ENOPROTOOPT`.** | B2410 re-verified the production table and its focused accepted-value test; unsupported identities remain rejected. | B2410-stale-udp-encap-values |
+
 ### B2409-f2fs-inode-cache-identity
 
 | Status | Class | Sev | Issue | Evidence | Owner |
