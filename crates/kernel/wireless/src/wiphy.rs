@@ -35,10 +35,9 @@ pub use registry::{
     for_each, lookup, lookup_by_name, next_index, register, snapshot, unregister,
 };
 
-/// State a wiphy owns that changes after registration. Capabilities do not
-/// live here: a radio's channel list and cipher set are decided once, at
-/// registration, and a caller that could rewrite them could make the
-/// advertisement disagree with what the driver will accept.
+/// State a wiphy owns that changes after registration. Driver capabilities
+/// remain immutable, while `bands` is the effective channel advertisement
+/// after applying the current regulatory domain.
 pub struct WiphyState {
     /// `phy<n>` at registration, and whatever a rename made it since. The
     /// registry allocates the first one; userspace owns it afterwards.
@@ -48,6 +47,8 @@ pub struct WiphyState {
     pub wdevs: Vec<alloc::sync::Arc<Wdev>>,
     /// Regulatory domain in force on this radio.
     pub regdom: RegDomain,
+    /// Effective bands and channel flags after regulatory filtering.
+    pub bands: Vec<WiphyBand>,
     /// Networks this radio has heard.
     pub bss: BssCache,
     /// Scan in progress, if any. One radio runs at most one scan: a second
@@ -82,6 +83,7 @@ impl Wiphy {
     /// # C: O(1)
     pub fn new(perm_addr: MacAddr, caps: WiphyCaps,
                ops: alloc::sync::Arc<dyn Cfg80211Ops>) -> Self {
+        let bands = caps.bands.clone();
         Self {
             index: 0, perm_addr, addr_mask: MacAddr::ZERO,
             caps, ops,
@@ -91,6 +93,7 @@ impl Wiphy {
                 config: WiphyConfig::default(),
                 wdevs: Vec::new(),
                 regdom: RegDomain::world(),
+                bands,
                 bss: BssCache::default(),
                 scan: None,
                 next_wdev_seq: 0,
@@ -126,6 +129,9 @@ impl Wiphy {
     /// Snapshot the regulatory domain in force. # C: O(rules)
     pub fn regdom(&self) -> RegDomain { self.state.lock().regdom.clone() }
 
+    /// Snapshot effective bands and regulatory channel flags. # C: O(N channels)
+    pub fn bands(&self) -> Vec<WiphyBand> { self.state.lock().bands.clone() }
+
     /// Current generation counter. # C: O(1)
     pub fn generation(&self) -> u32 { self.state.lock().generation }
 
@@ -146,7 +152,7 @@ impl Wiphy {
     /// Channel at this centre frequency in MHz, in whichever band holds it.
     /// # C: O(N channels)
     pub fn channel(&self, freq_mhz: u32) -> Option<crate::chan::Channel> {
-        self.caps.bands.iter().flat_map(|b| b.channels.iter())
+        self.state.lock().bands.iter().flat_map(|b| b.channels.iter())
             .find(|c| c.center_freq == freq_mhz).copied()
     }
 

@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2471-wireless-regulatory-channel-flags
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 149a38780 | DEFECT | med | Regulatory-domain changes now update the effective channel flags used by lookup and GET_WIPHY serialization. | Wireless regression and target checks passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2470-retained-smoke-log-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -402,6 +409,13 @@
 |---|---|---|---|---|---|
 | FIXED bc15e9fc6 | INFRA | med | **Passing smoke runs already have a supported retained-log path, so the OPEN row's premise was stale.** `SMOKE_KEEP_LOG` preserves the last attempt and `SMOKE_KEEP_LOG_DIR` preserves every attempt under a status-labelled name; the stable `smoke-debug-x86`, `smoke-debug-arm`, and `smoke-debug` targets set both. The harness copies the captured serial stream before cleanup for `pass` as well as failure statuses. | B2470. Linux 7.2.0-rc4 is not the owner of this repository-local harness contract. The new successful-run regression drives the real `tools/boot-smoke.sh` entry point with a mock QEMU marker and requires the exact retained `x86-attempt-1-pass.log`. **Positive control:** temporarily making `keep_log_copy` skip the pass-directory copy turned the full runtime test RED on that missing file; restoring the production owner returned it GREEN. The complete boot-smoke runtime suite and both kernel target checks pass. No boot was required because the permanent change is hosted test coverage plus this ledger correction, and the already-supported production behavior is unchanged. | B2470-retained-smoke-log-row |
 >>>>>>> f6fe0fcac (docs: close retained smoke log row)
+=======
+### B2471-wireless-regulatory-channel-flags
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 149a38780 | DEFECT | med | **Accepted regulatory domains now update the live channel flags advertised by `GET_WIPHY`.** Each radio keeps an effective band snapshot beside its current domain; an accepted request projects the resolved rules onto that snapshot under the same state lock, and both channel lookup and nl80211 serialization consume it while immutable driver capabilities remain the baseline. | B2471. Linux 7.2.0-rc4 `handle_band`/`handle_channel` mutates live `ieee80211_channel.flags`, which `nl80211.c` serializes. The production-path regression failed before the fix because a 5-GHz channel remained enabled after accepting a 2.4-GHz-only domain, then passed GREEN. Wireless 308/308 and both kernel target checks pass. Final smoke reached userspace with serial RX on attempt 1: x86_64 in 48 s and aarch64 in 56 s. | B2471-wireless-regulatory-channel-flags |
+>>>>>>> b1e1fa5f5 (docs: close B2471 wireless regulatory flags)
 
 ### B2329-freezer-backoff-sleep
 

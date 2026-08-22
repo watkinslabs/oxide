@@ -204,6 +204,7 @@ fn apply_request(alpha2: [u8; 2], initiator: u32, requested: &RegDomain, net_ns:
         if w.caps.self_managed_reg { continue; }
         w.with_state(|s| {
             s.regdom = resolved.clone();
+            crate::reg::apply::apply_to_bands(&resolved, &mut s.bands);
             s.generation = s.generation.wrapping_add(1);
         });
         let _ = w.ops.set_regdom(w);
