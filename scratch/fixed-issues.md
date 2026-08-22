@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2490-fat-unlink-eviction
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 56ec569eb | DEFECT | med | FAT unlink/rmdir now defers chain release to final inode eviction, preserving open-file lifetime. | FAT/VFS/syscall tests and target checks passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2489-shm-noreserve-backing
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -624,6 +631,13 @@
 |---|---|---|---|---|---|
 | FIXED 356a9c35b | MISSING | low | **`SHM_NORESERVE` now defers huge SysV shared-memory reservation until a page fault.** The IPC registry carries the flag's reservation decision in its backing plan, and the syscall passes it to hugetlbfs's single setup owner, whose existing fault path charges unreserved pages on demand. Ordinary shmem was already lazy and remains unchanged. | B2489. Linux 7.2.0-rc4 `ipc/shm.c::newseg` passes `VMA_NORESERVE_BIT` to `hugetlb_file_setup` for `SHM_HUGETLB | SHM_NORESERVE` and creates ordinary shmem with `VM_NORESERVE` outside strict overcommit. The initial focused REDs failed because `SegBacking::Huge` had no reservation field and hugetlbfs had no unreserved setup argument. Forcing the restored production planner to reserve made `shm_noreserve_defers_a_huge_segments_page_reservation` fail with `reserve: true` instead of `false`; restored GREEN. IPC 284/284, fs 1393/1393, and PMM 311/311 pass, as do x86_64 and aarch64 all-feature target checks. Final paired smoke reached userspace with serial RX on attempt 1: x86_64 in 46 s and aarch64 in 56 s. | B2489-shm-noreserve-backing |
 >>>>>>> 972c2cc96 (doc: close SHM_NORESERVE backing issue)
+=======
+### B2490-fat-unlink-eviction
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 56ec569eb | DEFECT | med | **FAT unlink and rmdir now remove the name immediately but defer the victim's cluster-chain release until its final inode reference is evicted.** The syscall resolves the exact victim dentry and threads that inode through the VFS operation; FAT records the removed chain on that inode, sets its link count to zero, and releases the chain from the superblock eviction hook. Pure volume operations retain their immediate-release ownership, and deferred release failure is latched for the next sync instead of creating a second inode registry. | B2490. Linux 7.2.0-rc4 separates directory-entry removal from zero-link inode eviction. The production VFS-backed open/unlink test was RED under an immediate-release positive control with 16,316 free clusters becoming 16,315 while the open file still owned its cluster; restored deferral made both open-file and open-directory lifetime tests GREEN. FAT 332/332 and the full VFS suite pass. The full syscall suite passes 1,988 tests; its seven failures reproduce unchanged on the clean base. Both target checks pass. Final smoke reached userspace with serial RX on attempt 1: x86_64 in 52 s and aarch64 in 56 s. | B2490-fat-unlink-eviction |
+>>>>>>> 1b4bf3a5d (docs: close FAT unlink eviction issue)
 
 ### B2329-freezer-backoff-sleep
 
