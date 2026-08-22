@@ -1,5 +1,11 @@
 # Fixed issues
 
+### D579-stale-systemd-selinux-errno
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED D579 | INFRA | med | **The PID 1 “Operation not permitted” SELinux-context line was incorrectly actionable as a kernel EPERM defect.** | The recorded call path passes `fgetfilecon_raw()`’s `-1` return directly into systemd’s logger, which normalizes it to errno 1; the underlying xattr path reports the real failure through `errno` and does not return kernel EPERM. | D579 |
+
 ### D578-boot-smoke-progress
 
 | Status | Class | Sev | Issue | Evidence | Owner |
