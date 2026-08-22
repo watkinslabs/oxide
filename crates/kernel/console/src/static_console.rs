@@ -300,24 +300,14 @@ pub fn exclusive() -> bool {
 // carrier). Mirrors a UART driver whose tiocmset writes the MCR and
 // tiocmget OR's MCR|MSR. Defaults DTR|RTS asserted (line ready).
 
-const TIOCM_LE:   u32 = 0x001;
-const TIOCM_DTR:  u32 = 0x002;
-const TIOCM_RTS:  u32 = 0x004;
-const TIOCM_ST:   u32 = 0x008;
-const TIOCM_SR:   u32 = 0x010;
-const TIOCM_CTS:  u32 = 0x020;
-const TIOCM_CAR:  u32 = 0x040;
-const TIOCM_DSR:  u32 = 0x100;
-const TIOCM_OUT1: u32 = 0x2000;
-const TIOCM_OUT2: u32 = 0x4000;
-const TIOCM_LOOP: u32 = 0x8000;
+use tty::ioctl::modem as tiocm;
 /// Caller-controllable output lines (MCR-side).
-const MODEM_CTRL: u32 = TIOCM_DTR | TIOCM_RTS | TIOCM_ST | TIOCM_SR
-    | TIOCM_OUT1 | TIOCM_OUT2 | TIOCM_LOOP;
+const MODEM_CTRL: u32 = tiocm::TIOCM_DTR | tiocm::TIOCM_RTS | tiocm::TIOCM_ST | tiocm::TIOCM_SR
+    | tiocm::TIOCM_OUT1 | tiocm::TIOCM_OUT2 | tiocm::TIOCM_LOOP;
 /// Strapped input lines (console carrier always present).
-const MODEM_STRAP: u32 = TIOCM_LE | TIOCM_CTS | TIOCM_CAR | TIOCM_DSR;
+const MODEM_STRAP: u32 = tiocm::TIOCM_LE | tiocm::TIOCM_CTS | tiocm::TIOCM_CAR | tiocm::TIOCM_DSR;
 /// Software MCR shadow (controllable bits only). Strap is OR'd in on GET.
-static MODEM: AtomicU32 = AtomicU32::new(TIOCM_DTR | TIOCM_RTS);
+static MODEM: AtomicU32 = AtomicU32::new(tiocm::TIOCM_DTR | tiocm::TIOCM_RTS);
 
 /// TIOCMGET: controllable shadow | strapped input lines.
 /// # C: O(1)

@@ -8,17 +8,8 @@
 
 use crate::uapi::rfcomm as u;
 
-/// Terminal modem-status bits, as a `TIOCMGET` reports them.
-pub const TIOCM_LE:  u32 = 0x001;
-pub const TIOCM_DTR: u32 = 0x002;
-pub const TIOCM_RTS: u32 = 0x004;
-pub const TIOCM_CTS: u32 = 0x020;
-pub const TIOCM_CAR: u32 = 0x040;
-pub const TIOCM_RNG: u32 = 0x080;
-pub const TIOCM_DSR: u32 = 0x100;
-/// Carrier detect and ring indicator, under the names a driver uses.
-pub const TIOCM_CD: u32 = TIOCM_CAR;
-pub const TIOCM_RI: u32 = TIOCM_RNG;
+pub use tty::ioctl::modem::{TIOCM_CAR, TIOCM_CD, TIOCM_CTS, TIOCM_DSR, TIOCM_DTR,
+                            TIOCM_LE, TIOCM_RI, TIOCM_RNG, TIOCM_RTS};
 
 /// Translate the peer's signals into the modem bits a reader of the terminal
 /// sees. # C: O(1)

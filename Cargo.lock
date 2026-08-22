@@ -185,6 +185,7 @@ dependencies = [
  "p256",
  "sync",
  "syscall",
+ "tty",
  "vfs",
 ]
 

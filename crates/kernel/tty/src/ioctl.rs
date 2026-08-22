@@ -12,6 +12,24 @@ use crate::core::{TtyDriver, TtyStruct};
 use crate::pty::{Winsize, TERMIOS_BYTES};
 use crate::wait::TtyWait;
 
+/// Terminal modem-line bits shared by every TTY driver and ioctl consumer.
+pub mod modem {
+    pub const TIOCM_LE: u32 = 0x001;
+    pub const TIOCM_DTR: u32 = 0x002;
+    pub const TIOCM_RTS: u32 = 0x004;
+    pub const TIOCM_ST: u32 = 0x008;
+    pub const TIOCM_SR: u32 = 0x010;
+    pub const TIOCM_CTS: u32 = 0x020;
+    pub const TIOCM_CAR: u32 = 0x040;
+    pub const TIOCM_RNG: u32 = 0x080;
+    pub const TIOCM_DSR: u32 = 0x100;
+    pub const TIOCM_OUT1: u32 = 0x2000;
+    pub const TIOCM_OUT2: u32 = 0x4000;
+    pub const TIOCM_LOOP: u32 = 0x8000;
+    pub const TIOCM_CD: u32 = TIOCM_CAR;
+    pub const TIOCM_RI: u32 = TIOCM_RNG;
+}
+
 /// Linux tty ioctl request numbers, per the generic ioctls UAPI.
 pub mod req {
     /// Get termios (`struct termios`).
