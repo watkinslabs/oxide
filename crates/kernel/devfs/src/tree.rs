@@ -74,6 +74,10 @@ fn all_roots_ensure0() -> Vec<Arc<PseudoDir>> {
 /// single-devtmpfs-inode identity. An explicit non-zero `ns` targets that ns
 /// only (private-`/dev` construction). # C: O(ns·depth)
 pub fn register(ns: u64, full_path: &str, inode: InodeRef) {
+    // Every leaf is created on devtmpfs's one shared superblock. Driver
+    // factories cannot know that identity, and the generic device-node builder
+    // also serves mknod on other filesystems, so stamp it at this join.
+    inode.set_fsid(crate::DEVFS_FSID);
     // devtmpfs holds extended attributes: its superblock is the shared-memory
     // one, which carries handlers for the security, trusted and user
     // namespaces. So an attribute a caller has not set reads as ABSENT on a

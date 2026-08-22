@@ -3184,3 +3184,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 700ed16a6 | DEFECT | low | **AF_UNIX broken-pipe signaling now follows socket kind: stream queues `SIGPIPE` unless suppressed, while datagram and seqpacket return `EPIPE` alone.** Revalidation showed the original datagram premise was inverted; seqpacket was the actual divergence. | B2346's socket-kind regression pinned stream, datagram, seqpacket, and urgent-tail behavior through one canonical policy decision. | B2346-unix-dgram-sigpipe |
+
+### B2347-devtmpfs-st-dev
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2347 | DEFECT | low | **Every device node published into devtmpfs now carries the filesystem's shared identity.** Driver-`dev_t`, driver-factory, and boot nodes therefore share nonzero `st_dev` while preserving distinct `st_rdev`. | B2347's publication-funnel regression compared a synthesized block node with `/dev/null` and separately pinned major/minor identity. | B2347-devtmpfs-st-dev |

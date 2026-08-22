@@ -269,6 +269,27 @@ mod fs_tests {
     }
 
     #[test]
+    fn every_published_device_node_uses_the_devtmpfs_identity() {
+        let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        const NAME: &str = "b2347-device";
+        const PATH: &str = "/dev/b2347-device";
+        const MAJOR: u32 = 254;
+        const MINOR: u32 = 91;
+
+        drv::set_devtmpfs_hook(add_device_node);
+        crate::boot::populate_defaults();
+        add_device_node("block", NAME, Some((MAJOR, MINOR)), None);
+        let dynamic = lookup(PATH).expect("driver dev_t publishes a devtmpfs node");
+        let boot = lookup("/dev/null").expect("boot node is present");
+
+        assert_eq!(boot.fsid(), DEVFS_FSID, "boot node carries the devtmpfs identity");
+        assert_eq!(dynamic.fsid(), boot.fsid(), "one devtmpfs superblock gives every node one st_dev");
+        assert_ne!(vfs::fsid_to_dev(dynamic.fsid()), 0, "device nodes are not SB-less anonymous inodes");
+        assert_eq!(dynamic.rdev(), vfs::Devt::new(MAJOR, MINOR).raw(), "st_rdev remains the driver dev_t");
+        del_device_node(NAME);
+    }
+
+    #[test]
     fn try_populate_defaults_is_idempotent_for_existing_pseudo_devices() {
         let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         drv::set_devtmpfs_hook(add_device_node);
