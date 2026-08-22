@@ -3280,3 +3280,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 1192e3e34 | INFRA | low | **The ext4 commit-timer test is deterministic under the shared harness.** Tests use the exclusion claim and forward-only synthetic clock instead of wall time. | B2362's freeze-clock positive control made the test RED at zero wait; restoring the synthetic step made it GREEN. | B2362-stale-ext4-commit-timer-flake |
+
+### B2364-stale-syscall-matrix-oob-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 1f8ecb9e6 | INFRA | low | **The syscall-compliance matrix no longer advertises AF_UNIX urgent receive as unfinished.** The matrix note is marked superseded, and the linter rejects stale AF_UNIX OOB gap text outside the main table. | B2364's negative matrix-lint regression fails on the stale phrase and passes after the narrative correction. | B2364-stale-syscall-matrix-oob-row |

@@ -839,11 +839,12 @@ keeping:
 - `470:listns` exists in upstream Linux source; current Oxide route status is `NEEDS-AUDIT` with route `crates/kernel/syscalls/src/dispatch/route_c.rs:134`.
 - `471:rseq_slice_yield` exists in upstream Linux source; current Oxide route status is `NEEDS-AUDIT` with route `crates/kernel/syscalls/src/dispatch/route_c.rs:135`.
 
-N10 `recvmsg` update: `B1067-network-recvmsg` propagates ancillary-control
+N10 `recvmsg` update: `B1067-network-recvmsg` propagated ancillary-control
 usercopy `EFAULT` through inet, AF_UNIX, and netlink receive callers instead of
-silently treating a failed cmsg copy as truncation. Row 47 remains `PARTIAL`
-pending protocol-specific errors and ancillary data, true OOB, VSOCK parity,
-security hooks, compat ABI, and syscall-context differential coverage.
+silently treating a failed cmsg copy as truncation. That historical partial
+snapshot is superseded: row 47 is `IMPL`, and its canonical evidence records
+the later closure of protocol and ancillary behavior, AF_UNIX urgent receive,
+VSOCK parity, security hooks, compat ABI, and syscall-context differentials.
 
 N11 `recvmmsg` update: `B1068-network-recvmmsg` resolves the pinned socket
 before importing the relative timeout, preserving Linux `EBADF` precedence over
