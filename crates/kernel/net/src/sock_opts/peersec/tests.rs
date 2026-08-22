@@ -21,8 +21,12 @@ const UNLABELED: u32 = 3;
 /// a test cannot tell an end reading its peer's label from an end reading its
 /// own.
 static NEXT_LABEL: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(CREATED);
+static CLASS_LABEL: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
-fn create() -> u32 { NEXT_LABEL.load(core::sync::atomic::Ordering::Acquire) }
+fn create(class: security::network::SocketClass) -> u32 {
+    if CLASS_LABEL.load(core::sync::atomic::Ordering::Acquire) { return class as u32 + 1; }
+    NEXT_LABEL.load(core::sync::atomic::Ordering::Acquire)
+}
 
 fn creating_with<T>(label: u32, f: impl FnOnce() -> T) -> T {
     NEXT_LABEL.store(label, core::sync::atomic::Ordering::Release);
@@ -60,7 +64,30 @@ impl Installed {
 }
 
 impl Drop for Installed {
-    fn drop(&mut self) { let _ = security::network::remove_socket_label(); }
+    fn drop(&mut self) {
+        CLASS_LABEL.store(false, core::sync::atomic::Ordering::Release);
+        let _ = security::network::remove_socket_label();
+    }
+}
+
+#[test]
+fn every_production_constructor_supplies_its_exact_socket_class() {
+    use security::network::SocketClass;
+    let _installed = Installed::new();
+    let _domain = crate::hosted_fixture::init_net_domain();
+    CLASS_LABEL.store(true, core::sync::atomic::Ordering::Release);
+    let label = |class: SocketClass| class as u32 + 1;
+
+    assert_eq!(InetSocket::new_tcp().security_label(), label(SocketClass::Tcp));
+    assert_eq!(InetSocket::new_udp().security_label(), label(SocketClass::Udp));
+    assert_eq!(InetSocket::new_raw4(crate::addr::IpProto::Udp as u8).security_label(),
+        label(SocketClass::RawIp));
+    assert_eq!(InetSocket::new_ping4_in(network_namespace::initial()).security_label(),
+        label(SocketClass::Icmp));
+    assert_eq!(InetSocket::new_packet(crate::eth_p::ALL, crate::socket_args::SOCK_RAW as u8)
+        .security_label(), label(SocketClass::Packet));
+    assert_eq!(InetSocket::new_unix().security_label(), label(SocketClass::UnixStream));
+    assert_eq!(InetSocket::new_unix_dgram().security_label(), label(SocketClass::UnixDgram));
 }
 
 /// The whole chain, through the SAME work functions the syscall shims call:

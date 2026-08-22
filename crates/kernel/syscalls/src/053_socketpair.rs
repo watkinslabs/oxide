@@ -59,7 +59,8 @@ fn create_files(domain: u32, raw_type: u32, protocol: u32, has_net_raw: bool, cu
     // the same label and each reads the other's back as its peer's. Read once
     // here rather than per end: two reads could not disagree, and one value
     // makes it evident that they cannot.
-    let pair_sid = security::network::new_socket_label();
+    let pair_sid = security::network::new_socket_label(
+        crate::socketpair_spec::security_class(socket_type));
     if let Some(p) = &stream {
         let cred = net::PeerCred::of_current().unwrap_or_default();
         p.set_end_cred(net::UnixEnd::A, cred.clone());

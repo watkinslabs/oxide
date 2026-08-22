@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2526-socket-selinux-type-transition
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 5ed5d6744 | DEFECT | med | Socket construction now applies class-specific SELinux type transitions, including socketpair stream/datagram variants. | Net/security/SELinux tests and target checks passed. | Chris Watkins |
+
 ### B2525-execve-waits-sibling-retirement
 
 | Status | Class | Sev | Issue | Evidence | Owner |

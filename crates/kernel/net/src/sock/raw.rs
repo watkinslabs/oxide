@@ -1,6 +1,7 @@
 use alloc::sync::Arc;
 
 use super::{stack, InetSocket, SockKind, AF_INET6};
+use security::network::SocketClass;
 
 impl InetSocket {
     /// Create and publish one socket-owned raw IPv4 endpoint. # C: O(N)
@@ -10,7 +11,8 @@ impl InetSocket {
 
     /// Build a raw IPv4 socket retaining an explicit owner. # C: O(N)
     pub fn new_raw4_in(protocol: u8, net_namespace: network_namespace::NetworkNamespaceRef) -> Self {
-        let sock = Self::new_udp_in(net_namespace);
+        let sock = Self::new_in(net_namespace, Arc::new(crate::bpf_filter::SocketFilter::new()),
+            Arc::new(crate::SocketError::new()), SockKind::Udp, SocketClass::RawIp);
         let endpoint = crate::raw4::Raw4Endpoint::new_owned_with_pmtudisc(
             protocol, sock.owner.clone(),
             sock.bpf_filter.clone(), sock.mcast.clone(), sock.error.clone(),
@@ -30,7 +32,8 @@ impl InetSocket {
 
     /// Build a raw IPv6 socket retaining an explicit owner. # C: O(N)
     pub fn new_raw6_in(protocol: u8, net_namespace: network_namespace::NetworkNamespaceRef) -> Self {
-        let sock = Self::new_udp_in(net_namespace);
+        let sock = Self::new_in(net_namespace, Arc::new(crate::bpf_filter::SocketFilter::new()),
+            Arc::new(crate::SocketError::new()), SockKind::Udp, SocketClass::RawIp);
         sock.family.store(AF_INET6, core::sync::atomic::Ordering::Release);
         let endpoint = Arc::new(crate::raw6::Raw6Endpoint::new_owned(
             sock.owner.clone(), protocol,
@@ -51,7 +54,8 @@ impl InetSocket {
     /// protocol table: replies reach it through its kernel-owned echo
     /// identifier, never through protocol fanout. # C: O(1)
     pub fn new_ping4_in(net_namespace: network_namespace::NetworkNamespaceRef) -> Self {
-        let sock = Self::new_udp_in(net_namespace);
+        let sock = Self::new_in(net_namespace, Arc::new(crate::bpf_filter::SocketFilter::new()),
+            Arc::new(crate::SocketError::new()), SockKind::Udp, SocketClass::Icmp);
         let endpoint = crate::raw4::Raw4Endpoint::new_ping(
             sock.owner.clone(), sock.bpf_filter.clone(), sock.mcast.clone(),
             sock.error.clone(), sock.opts.base.reuseaddr.clone(),
@@ -67,7 +71,8 @@ impl InetSocket {
     /// Build an IPv6 ICMP datagram socket. The address family is single-stack
     /// by construction, matching the endpoint class. # C: O(1)
     pub fn new_ping6_in(net_namespace: network_namespace::NetworkNamespaceRef) -> Self {
-        let sock = Self::new_udp_in(net_namespace);
+        let sock = Self::new_in(net_namespace, Arc::new(crate::bpf_filter::SocketFilter::new()),
+            Arc::new(crate::SocketError::new()), SockKind::Udp, SocketClass::Icmp);
         sock.family.store(AF_INET6, core::sync::atomic::Ordering::Release);
         sock.opts.ipv6_v6only.store(1, core::sync::atomic::Ordering::Release);
         let endpoint = Arc::new(crate::raw6::Raw6Endpoint::new_ping(

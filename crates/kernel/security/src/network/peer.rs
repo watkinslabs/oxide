@@ -28,7 +28,7 @@ pub const NO_LABEL: u32 = 0;
 #[derive(Copy, Clone)]
 pub struct SocketLabelOps {
     /// Label a socket created right now takes, read from the creating task.
-    pub create: fn() -> u32,
+    pub create: fn(SocketClass) -> u32,
     /// Label reported for a peer that no label was ever recorded for.
     ///
     /// Not `NO_LABEL`: a socket of a class that reports peer labels has one from
@@ -50,6 +50,11 @@ pub struct SocketLabelOps {
     pub server_end: fn(listener: u32, client: u32) -> u32,
 }
 
+/// Security class fixed by a socket's completed family/type/protocol admission.
+#[repr(u8)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SocketClass { Tcp, Udp, RawIp, Icmp, Packet, UnixStream, UnixDgram }
+
 static SOCKET_LABEL: Spinlock<Option<SocketLabelOps>, Namespace> = Spinlock::new(None);
 
 /// Install the one module that labels sockets. # C: O(1)
@@ -70,12 +75,12 @@ pub fn remove_socket_label() -> bool { SOCKET_LABEL.lock().take().is_some() }
 ///
 /// `NO_LABEL` when nothing labels sockets, so an unlabelled build records the
 /// same "no label" every reader already handles.
-pub fn new_socket_label() -> u32 {
+pub fn new_socket_label(class: SocketClass) -> u32 {
     // The hook is copied out and the guard dropped before it runs: it reads
     // task state under the task owner's own lock, and holding this one across
     // that would order two locks that have no order between them.
     let ops = *SOCKET_LABEL.lock();
-    match ops { Some(ops) => (ops.create)(), None => NO_LABEL }
+    match ops { Some(ops) => (ops.create)(class), None => NO_LABEL }
 }
 
 /// Label reported for a peer no label was recorded for. # C: O(1)
@@ -119,7 +124,7 @@ mod tests {
     const CREATED: u32 = 41;
     const UNLABELED: u32 = 3;
 
-    fn create() -> u32 { CREATED }
+    fn create(_: SocketClass) -> u32 { CREATED }
     fn context(label: u32) -> Result<Vec<u8>, Errno> {
         match label {
             CREATED => Ok(Vec::from(&b"system_u:system_r:peer_t:s0"[..])),
@@ -157,14 +162,14 @@ mod tests {
     #[test]
     fn nothing_is_labelled_until_a_module_installs() {
         let _exclusive = exclusive();
-        assert_eq!(new_socket_label(), NO_LABEL);
+        assert_eq!(new_socket_label(SocketClass::Tcp), NO_LABEL);
         assert_eq!(unlabeled_socket_label(), NO_LABEL);
         assert_eq!(socket_label_context(CREATED), Ok(None));
         assert!(install_socket_label(ops()));
-        assert_eq!(new_socket_label(), CREATED);
+        assert_eq!(new_socket_label(SocketClass::Tcp), CREATED);
         assert_eq!(unlabeled_socket_label(), UNLABELED);
         assert!(remove_socket_label());
-        assert_eq!(new_socket_label(), NO_LABEL);
+        assert_eq!(new_socket_label(SocketClass::Tcp), NO_LABEL);
     }
 
     /// A second module would label at creation through one policy and render
@@ -200,7 +205,7 @@ mod tests {
         let _exclusive = exclusive();
         assert!(install_socket_label(ops()));
         assert_eq!(super::super::remove_namespace(31), 0);
-        assert_eq!(new_socket_label(), CREATED);
+        assert_eq!(new_socket_label(SocketClass::Tcp), CREATED);
         assert_eq!(unlabeled_socket_label(), UNLABELED);
         assert!(remove_socket_label());
     }

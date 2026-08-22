@@ -132,7 +132,7 @@ pub fn remove_namespace(namespace: u64) -> usize {
 #[path = "network/peer.rs"]
 mod peer;
 pub use peer::{install_socket_label, new_socket_label, remove_socket_label, server_end_label,
-               socket_label_context, unlabeled_socket_label, SocketLabelOps, NO_LABEL};
+               socket_label_context, unlabeled_socket_label, SocketClass, SocketLabelOps, NO_LABEL};
 
 /// The sender label carried by one received message.  This is deliberately a
 /// message-time hook: querying a peer again at receive time would let a later
