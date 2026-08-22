@@ -142,7 +142,12 @@ pub unsafe fn init(info: &BootInfo) {
     pmm::kassert!(net::selinux_glue::init(), "socket labelling installed exactly once");
     console::register_devnodes(); ::devfs::boot::populate_defaults(); procfs::init();
     syscalls::init_wall_clock_from_rtc();
-    fs::tmpfs::init(); fs::fuse::register(); tracefs::init(); drv_virtio_input::devfs::init();
+    fs::tmpfs::init(); fs::fuse::register(); tracefs::init();
+    // Publish link-kind handlers before userspace can issue RTM_NEWLINK. The
+    // netlink registry is the single dispatch owner for VLAN and bond kinds.
+    pmm::kassert!(vlan::link_kind::init(), "vlan link kind registered once");
+    pmm::kassert!(bonding::link_kind::init(), "bond link kind registered once");
+    drv_virtio_input::devfs::init();
     drv_virtio_input::procfs::init();
     fbdev::devfs::init(); devpts::init();
     // Publishes /dev/vhci, through which a process presents a Bluetooth

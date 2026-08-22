@@ -30,6 +30,8 @@ ipc       = { path = "../ipc" }
 iommu     = { path = "../iommu" }
 elf     = { path = "../../shared/elf" }
 net     = { path = "../net" }
+vlan    = { path = "../vlan" }
+bonding = { path = "../bonding" }
 modules = { path = "../modules" }
 pci     = { path = "../../drivers/pci" }
 virtio  = { path = "../../drivers/virtio" }
