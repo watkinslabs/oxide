@@ -188,7 +188,13 @@ fn sendto_inner(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, cre
         let cap = sock.opts.base.sndbuf.load(core::sync::atomic::Ordering::Acquire)
             .max(0) as usize;
         let nodelay = sock.opts.tcp_nodelay.load(core::sync::atomic::Ordering::Acquire) != 0;
-        let cork = sock.opts.tcp_cork.load(core::sync::atomic::Ordering::Acquire) != 0;
+        let sockopt_cork = sock.opts.tcp_cork.load(core::sync::atomic::Ordering::Acquire) != 0;
+        let cork = match super::write_more_policy::plan_write_more(true, sockopt_cork,
+            control.more)
+        {
+            super::write_more_policy::WriteMorePlan::Tcp { cork } => cork,
+            super::write_more_policy::WriteMorePlan::PlainWrite => sockopt_cork,
+        };
         let n = stack().tcp_send(&entry, payload, cap, nodelay, cork)?;
         drain_loopback();
         return Ok(n);
