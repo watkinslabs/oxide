@@ -29,6 +29,12 @@
 |---|---|---|---|---|---|
 | FIXED 999ebd9cd | COVERAGE | low | **The retired `debug-panic` feature is absent and now protected by a spec-lint catalog rule against reintroduction.** | B2372. A temporary manifest declaration produced the expected retired-feature lint finding; restored manifests pass. | B2372-retired-debug-feature-catalog |
 
+### B2373-sysfs-pseudo-inode-band
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 2310b12e4 | INFRA | low | **Fixed sysfs inode identities and eventfd allocations now have separate declared pseudo-inode regions.** | B2373. The compile-time region assertion and real eventfd allocation tests protect the disjoint bands. | B2373-sysfs-pseudo-inode-band |
+
 ### B2329-freezer-backoff-sleep
 
 | Status | Class | Sev | Issue | Evidence | Owner |

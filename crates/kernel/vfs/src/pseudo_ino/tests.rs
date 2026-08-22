@@ -9,6 +9,7 @@ use super::*;
 const OLD_SHARED_EPOLL_EVDEV_BASE: Ino = 0x7400_0000;
 const OLD_SHARED_TIMERFD_BPF_BASE: Ino = 0x7300_0000;
 const OLD_SHARED_CGROUP_DEVPTS_BASE: Ino = 0x6000_0000;
+const OLD_SHARED_SYSFS_EVENTFD_BASE: Ino = 0x5100_0000;
 
 #[test]
 fn no_two_regions_overlap() {
@@ -54,7 +55,7 @@ fn an_overlapping_pair_is_rejected() {
 #[test]
 fn exactly_one_region_claims_each_historically_shared_base() {
     for base in [OLD_SHARED_EPOLL_EVDEV_BASE, OLD_SHARED_TIMERFD_BPF_BASE,
-                 OLD_SHARED_CGROUP_DEVPTS_BASE] {
+                 OLD_SHARED_CGROUP_DEVPTS_BASE, OLD_SHARED_SYSFS_EVENTFD_BASE] {
         let owners: alloc::vec::Vec<&'static str> =
             REGIONS.iter().filter(|r| r.contains(base)).map(|r| r.name()).collect();
         assert_eq!(owners.len(), 1, "{base:#x} claimed by {owners:?}");
@@ -69,6 +70,8 @@ fn the_moved_owners_left_the_base_they_shared() {
     assert!(TIMERFD.contains(OLD_SHARED_TIMERFD_BPF_BASE));
     assert!(!DEVPTS.contains(OLD_SHARED_CGROUP_DEVPTS_BASE));
     assert!(CGROUP_DIR.contains(OLD_SHARED_CGROUP_DEVPTS_BASE));
+    assert!(!EVENTFD.contains(OLD_SHARED_SYSFS_EVENTFD_BASE));
+    assert!(SYSFS_STATIC.contains(OLD_SHARED_SYSFS_EVENTFD_BASE));
 }
 
 #[test]
