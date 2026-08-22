@@ -4926,3 +4926,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2575 | COVERAGE | high | Boot smoke previously accepted a debug-shell echo even when PID 1 could be wedged. Its default liveness command now queries PID 1 through systemd's private manager and emits the success nonce only after that query succeeds. | `tools/boot-smoke.sh::probe_userspace_alive`; `tools/test-boot-smoke-runtime.sh` passes, including the init-fatal case and the default PID 1 command contract. | B2575 |
+
+### B2582-bpf-raw-tracepoint-registry-stale
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2582 | MISSING | high | The historical “no raw tracepoint registry” row was stale on current main. `BPF_RAW_TRACEPOINT_OPEN` already resolves the requested name through the tracefs event registry, which contains built-in syscall events and runtime registrations, and the canonical raw-event descriptor owns the attached probe list. | `security/src/bpf/cmd/trace.rs::raw_tracepoint_open` -> `syscalls/src/321_bpf.rs::attach_raw_tracepoint` -> `tracefs/src/raw_bpf.rs::attach` -> `tracefs/src/eventfs.rs::raw_event_by_name`; the registry and raw-link tests cover lookup, attach, detach, and unknown-name `ENOENT`. No source change was needed; the known row was ledger residue. | B2582 |
