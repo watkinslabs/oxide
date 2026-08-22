@@ -49,32 +49,37 @@ pub fn setregs(target: &Task, data: u64) -> Result<(), Errno> {
 /// `addr`; `data` points at the tracer's `struct iovec`.
 /// # C: O(iov_len)
 pub fn regset(target: &Task, nt: u64, data: u64, write: bool) -> Result<(), Errno> {
-    if crate::userbuf::validate_user_buf_writable(data, IOVEC_BYTES, 1).is_err() {
-        return Err(Errno::Efault);
-    }
-    let mut iov = [0u8; user::IOVEC_BYTES];
-    uaccess::copy_from_user(&mut iov, data)?;
-    let (iov_base, iov_len) = user::parse_iovec(&iov);
-    let n = decide::regset_len(nt, frame::ARCH, iov_len as usize)?;
-    match nt {
-        uapi::NT_PRSTATUS => prstatus(target, iov_base, n, write)?,
-        uapi::NT_PRFPREG => {
-            if write { mem::fpregs_in(target, iov_base, n)? }
-            else     { mem::fpregs_out(target, iov_base, n)? }
-        }
-        #[cfg(target_arch = "aarch64")]
-        uapi::NT_ARM_HW_BREAK => hwdebug(target, iov_base, n, write,
-            hal_aarch64::hw_breakpoint::RegFile::Break)?,
-        #[cfg(target_arch = "aarch64")]
-        uapi::NT_ARM_HW_WATCH => hwdebug(target, iov_base, n, write,
-            hal_aarch64::hw_breakpoint::RegFile::Watch)?,
-        // `decide::regset_len` already rejected every other note type.
-        _ => return Err(Errno::Einval),
-    }
-    // The clamped length goes back to `uiov->iov_len`, and ONLY when the
-    // transfer itself succeeded — the reference guards the write-back with
-    // `if (!ret)`, so a failed regset must not rewrite the tracer's iovec.
-    uaccess::copy_to_user(data + 8, &(n as u64).to_ne_bytes())
+    user::regset_iovec(
+        // Linux's access_ok proves only the user range here. A read-only iovec
+        // is readable, so the regset transfer must run before iov_len write-back
+        // reports EFAULT.
+        || crate::userbuf::validate_user_buf(data, IOVEC_BYTES, 1)
+            .map_err(|_| Errno::Efault),
+        |iov| uaccess::copy_from_user(iov, data),
+        |iov_base, iov_len| {
+            let n = decide::regset_len(nt, frame::ARCH, iov_len as usize)?;
+            match nt {
+                uapi::NT_PRSTATUS => prstatus(target, iov_base, n, write)?,
+                uapi::NT_PRFPREG => {
+                    if write { mem::fpregs_in(target, iov_base, n)? }
+                    else     { mem::fpregs_out(target, iov_base, n)? }
+                }
+                #[cfg(target_arch = "aarch64")]
+                uapi::NT_ARM_HW_BREAK => hwdebug(target, iov_base, n, write,
+                    hal_aarch64::hw_breakpoint::RegFile::Break)?,
+                #[cfg(target_arch = "aarch64")]
+                uapi::NT_ARM_HW_WATCH => hwdebug(target, iov_base, n, write,
+                    hal_aarch64::hw_breakpoint::RegFile::Watch)?,
+                // `decide::regset_len` already rejected every other note type.
+                _ => return Err(Errno::Einval),
+            }
+            Ok(n)
+        },
+        |n| {
+            // Linux writes the achieved length only after a successful transfer.
+            uaccess::copy_to_user(data + 8, &(n as u64).to_ne_bytes())
+        },
+    )
 }
 
 /// NT_PRSTATUS transfer of the first `n` bytes of the ABI register struct.

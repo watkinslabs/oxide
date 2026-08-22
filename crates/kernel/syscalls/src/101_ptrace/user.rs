@@ -25,6 +25,30 @@ pub fn parse_iovec(rec: &[u8; IOVEC_BYTES]) -> (u64, u64) {
     (u64_at(rec, 0), u64_at(rec, 8))
 }
 
+/// Run a regset operation through the tracer's iovec in ABI order. `preflight`
+/// is Linux's range-only `access_ok`: it must not require the record to live in
+/// a writable VMA, because the transfer happens before the length write-back.
+/// # C: O(transfer)
+pub fn regset_iovec<P, R, T, W>(
+    mut preflight: P,
+    mut read: R,
+    mut transfer: T,
+    mut write_len: W,
+) -> Result<(), Errno>
+where
+    P: FnMut() -> Result<(), Errno>,
+    R: FnMut(&mut [u8; IOVEC_BYTES]) -> Result<(), Errno>,
+    T: FnMut(u64, u64) -> Result<usize, Errno>,
+    W: FnMut(usize) -> Result<(), Errno>,
+{
+    preflight()?;
+    let mut rec = [0u8; IOVEC_BYTES];
+    read(&mut rec)?;
+    let (base, len) = parse_iovec(&rec);
+    let done = transfer(base, len)?;
+    write_len(done)
+}
+
 /// How many bytes a copy-out may write: the record's own size, clamped to the
 /// buffer the tracer offered. The RETURN value stays the full size — that is
 /// how a tracer learns it must grow its buffer.
