@@ -1,13 +1,9 @@
 // The request lines the write and transaction nodes parse.
 //
-// Fields are separated by whitespace and the count is exact. A parser that
-// accepted a missing or extra field would answer a question the caller did
-// not ask: the same three words with a fourth appended is a different query,
-// and a request one field short would silently shift the class into the
-// target's place.
+// Fields are separated by whitespace. Each transaction consumes its defined
+// prefix and leaves later fields unread; a missing required field is invalid.
 
 use alloc::string::{String, ToString};
-use alloc::vec::Vec;
 
 use vfs::{KResult, VfsError};
 
@@ -54,15 +50,18 @@ pub struct TransRequest {
     pub task: String,
 }
 
-/// Split a request into its whitespace-separated fields. # C: O(len)
-fn fields(s: &str) -> Vec<&str> { s.split_ascii_whitespace().collect() }
+/// Take one required whitespace-separated field. # C: O(field)
+fn required_field<'a>(fields: &mut core::str::SplitAsciiWhitespace<'a>) -> KResult<&'a str> {
+    fields.next().ok_or(VfsError::Einval)
+}
 
 /// Parse a `scontext tcontext class` request. # C: O(len)
 pub fn parse_access_request(s: &str) -> KResult<AvRequest> {
-    let f = fields(s);
-    if f.len() != 3 { return Err(VfsError::Einval); }
-    Ok(AvRequest { scontext: f[0].to_string(), tcontext: f[1].to_string(),
-                   class: parse_class(f[2])? })
+    let mut f = s.split_ascii_whitespace();
+    let scontext = required_field(&mut f)?.to_string();
+    let tcontext = required_field(&mut f)?.to_string();
+    let class = parse_class(required_field(&mut f)?)?;
+    Ok(AvRequest { scontext, tcontext, class })
 }
 
 /// Parse a `scontext tcontext class [name]` request. # C: O(len)
@@ -71,24 +70,27 @@ pub fn parse_access_request(s: &str) -> KResult<AvRequest> {
 /// separator this format uses; decoding it here is what keeps a name with a
 /// space in it from being read as a fifth field.
 pub fn parse_create_request(s: &str) -> KResult<CreateRequest> {
-    let f = fields(s);
-    if f.len() != 3 && f.len() != 4 { return Err(VfsError::Einval); }
-    let name = match f.get(3) { Some(n) => Some(percent_decode(n)?), None => None };
-    Ok(CreateRequest { scontext: f[0].to_string(), tcontext: f[1].to_string(),
-                       class: parse_class(f[2])?, name })
+    let mut f = s.split_ascii_whitespace();
+    let scontext = required_field(&mut f)?.to_string();
+    let tcontext = required_field(&mut f)?.to_string();
+    let class = parse_class(required_field(&mut f)?)?;
+    let name = match f.next() { Some(n) => Some(percent_decode(n)?), None => None };
+    Ok(CreateRequest { scontext, tcontext, class, name })
 }
 
 /// Parse an `old new class task` request. # C: O(len)
 pub fn parse_validatetrans_request(s: &str) -> KResult<TransRequest> {
-    let f = fields(s);
-    if f.len() != 4 { return Err(VfsError::Einval); }
-    Ok(TransRequest { old: f[0].to_string(), new: f[1].to_string(),
-                      class: parse_class(f[2])?, task: f[3].to_string() })
+    let mut f = s.split_ascii_whitespace();
+    let old = required_field(&mut f)?.to_string();
+    let new = required_field(&mut f)?.to_string();
+    let class = parse_class(required_field(&mut f)?)?;
+    let task = required_field(&mut f)?.to_string();
+    Ok(TransRequest { old, new, class, task })
 }
 
 /// Parse a request that is one context and nothing else. # C: O(len)
 pub fn parse_context_request(s: &str) -> KResult<String> {
-    let f = fields(s);
+    let f: alloc::vec::Vec<&str> = s.split_ascii_whitespace().collect();
     if f.len() != 1 { return Err(VfsError::Einval); }
     Ok(f[0].to_string())
 }
