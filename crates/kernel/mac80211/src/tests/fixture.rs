@@ -14,7 +14,7 @@ use crate::hw::{alloc_hw, Ieee80211Hw, Local};
 use crate::iface::Sdata;
 use crate::netdev::convert::EthFrame;
 use crate::netdev::RxDeliver;
-use crate::ops::{Ieee80211Ops, TxInfo, Vif};
+use crate::ops::{BssConf, Ieee80211Ops, TxInfo, Vif};
 
 /// Addresses used throughout, chosen so no two share a byte pattern that
 /// could make a mixed-up address map look correct.
@@ -57,11 +57,14 @@ pub fn with_seq(mut hdr: Vec<u8>, sn: u16, frag: u16) -> Vec<u8> {
 /// A driver that records every frame it was handed.
 pub struct Recorder {
     pub frames: Spinlock<Vec<Vec<u8>>, WiphyLock>,
+    pub bss: Spinlock<Vec<(BssConf, u32)>, WiphyLock>,
 }
 
 impl Recorder {
     /// # C: O(1)
-    pub fn new() -> Arc<Self> { Arc::new(Self { frames: Spinlock::new(Vec::new()) }) }
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self { frames: Spinlock::new(Vec::new()), bss: Spinlock::new(Vec::new()) })
+    }
     /// Frames transmitted so far. # C: O(N frames)
     pub fn taken(&self) -> Vec<Vec<u8>> { core::mem::take(&mut self.frames.lock()) }
     /// How many frames went out. # C: O(1)
@@ -72,6 +75,9 @@ impl Ieee80211Ops for Recorder {
     /// # C: O(len)
     fn tx(&self, _hw: &Ieee80211Hw, _vif: Option<&Vif>, _info: &TxInfo, frame: &[u8]) {
         self.frames.lock().push(frame.to_vec());
+    }
+    fn bss_info_changed(&self, _hw: &Ieee80211Hw, _vif: &Vif, conf: &BssConf, changed: u32) {
+        self.bss.lock().push((conf.clone(), changed));
     }
 }
 

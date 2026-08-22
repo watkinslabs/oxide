@@ -104,3 +104,5 @@ pub fn init() {}
 #[path = "tests/beacon_tim.rs"] mod tests_beacon_tim;
 #[cfg(test)]
 #[path = "tests/rx_chain.rs"] mod tests_rx_chain;
+#[cfg(test)]
+#[path = "tests/cfg_bss.rs"] mod tests_cfg_bss;

@@ -3154,3 +3154,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2341 | COVERAGE | low | **`GET_SCAN` and `GET_REG` now emit exactly the reference query attributes: no BSS channel-width attribute and no regulatory-type attribute.** `REG_TYPE` remains present on the regulatory-change event. | The original production query tests require both attributes absent; restoring either emission made its corresponding control fail. | B2341 |
+
+### B2342-nl80211-set-bss
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2342 | MISSING | low | **`SET_BSS` publishes accepted configuration through the canonical interface and softmac owners.** Driver refusal propagates its exact error without committing state; success updates named fields, resolves basic rates against the operating band, updates AP isolation, and reports the change mask. | B2342 production and softmac tests on the original branch pinned refusal ordering, rate-mask translation, AP isolation, and driver notification. | B2342-nl80211-set-bss |

@@ -24,6 +24,7 @@ use wireless::scan::ScanRequest;
 use wireless::sme::ConnectParams;
 use wireless::sta::{StationInfo, StationParams};
 use wireless::uapi::enums::IfType;
+use wireless::wdev::BssParams;
 use wireless::{Wdev, Wiphy};
 
 use crate::hw::Local;
@@ -46,6 +47,22 @@ impl Bridge {
         let local = self.local()?;
         let sdata = local.iface_by_wdev(wdev.identifier).ok_or(Errno::Enodev)?;
         Ok((local, sdata))
+    }
+
+    fn basic_rates(local: &Local, sdata: &Sdata, rates: &[u8]) -> Result<Option<u32>, Errno> {
+        if rates.is_empty() { return Ok(None); }
+        let band = sdata.chandef().map(|d| d.chan.band).ok_or(Errno::Einval)?;
+        let table = local.hw.bands.iter().find(|b| b.band == band).ok_or(Errno::Einval)?;
+        let mut mask = 0u32;
+        for &rate in rates {
+            let value = rate & !crate::uapi::RATE_BASIC;
+            if let Some(i) = table.bitrates.iter()
+                .position(|b| crate::uapi::rate_to_elem(b.bitrate) == value)
+            {
+                mask |= 1u32 << i;
+            }
+        }
+        if mask == 0 { Err(Errno::Einval) } else { Ok(Some(mask)) }
     }
 }
 
@@ -81,6 +98,23 @@ impl Cfg80211Ops for Bridge {
     {
         let (local, sdata) = self.iface(wdev)?;
         crate::iface::change_type(&local, &sdata, ty)
+    }
+
+    /// # C: O(N rates)
+    fn change_bss(&self, _wiphy: &Arc<Wiphy>, wdev: &Arc<Wdev>, params: &BssParams)
+        -> Result<(), Errno>
+    {
+        let (local, sdata) = self.iface(wdev)?;
+        if !sdata.with(|s| s.bss.enable_beacon) { return Err(Errno::Enoent); }
+        let basic_rates = Self::basic_rates(&local, &sdata, &params.basic_rates)?;
+        let mut conf = sdata.bss_conf();
+        if let Some(mask) = basic_rates { conf.basic_rates = mask; }
+        conf.use_cts_prot = params.cts_protection;
+        conf.use_short_preamble = params.short_preamble;
+        conf.use_short_slot = params.short_slot_time;
+        crate::iface::set_bss(&local, &sdata, conf);
+        sdata.with(|s| s.ap_isolate = params.ap_isolate);
+        Ok(())
     }
 
     /// # C: O(N peers)

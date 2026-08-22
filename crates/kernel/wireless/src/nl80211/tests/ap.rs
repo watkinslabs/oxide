@@ -8,7 +8,7 @@ use crate::nl80211::ap_cmd;
 use crate::nl80211::tests_support::{lock, radio_with, Call, Req};
 use crate::uapi::attr as a;
 use crate::uapi::enums::{auth_type, IfType};
-use crate::wdev::Wdev;
+use crate::wdev::{BssParams, Wdev};
 
 /// A well-formed start request on channel 6. # C: O(1)
 fn start_req(d: &alloc::sync::Arc<Wdev>) -> Req {
@@ -174,4 +174,37 @@ fn a_network_parameter_that_is_neither_on_nor_off_is_refused() {
     let mut req = Req::wdev(&d);
     req.u8(a::BSS_CTS_PROT, 7);
     assert!(req.call(ap_cmd::set_bss).is_err(Errno::Einval));
+}
+
+#[test]
+fn network_parameters_reach_the_driver_and_commit_only_named_fields() {
+    let _g = lock();
+    let (_w, ops, d) = radio_with(IfType::Ap);
+    d.with(|w| {
+        w.bss.short_preamble = true;
+        w.bss.basic_rates = alloc::vec![0x82];
+    });
+    let mut req = Req::wdev(&d);
+    req.u8(a::BSS_CTS_PROT, 1);
+    req.u8(a::BSS_SHORT_SLOT_TIME, 1);
+    req.bytes(a::BSS_BASIC_RATES, &[0x82, 0x84]);
+    assert!(req.call(ap_cmd::set_bss).is_ack());
+    let want = BssParams {
+        cts_protection: true, short_preamble: true, short_slot_time: true,
+        basic_rates: alloc::vec![0x82, 0x84], ..Default::default()
+    };
+    assert_eq!(ops.calls.lock().unwrap().last(), Some(&Call::ChangeBss(want.clone())));
+    assert_eq!(d.with(|w| w.bss.clone()), want);
+}
+
+#[test]
+fn a_driver_refusal_is_reported_and_leaves_network_parameters_unchanged() {
+    let _g = lock();
+    let (_w, ops, d) = radio_with(IfType::Ap);
+    let before = d.with(|w| w.bss.clone());
+    ops.program.lock().unwrap().change_bss_fails = Some(Errno::Eio);
+    let mut req = Req::wdev(&d);
+    req.u8(a::BSS_CTS_PROT, 1);
+    assert!(req.call(ap_cmd::set_bss).is_err(Errno::Eio));
+    assert_eq!(d.with(|w| w.bss.clone()), before);
 }
