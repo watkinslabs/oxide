@@ -9,6 +9,7 @@ fn poll_flag_values_are_the_uapi_bit_positions() {
     assert_eq!(IORING_POLL_UPDATE_USER_DATA, 0x4);
     assert_eq!(IORING_POLL_ADD_LEVEL, 0x8);
     assert_eq!(POLL_NVAL, 0x20);
+    assert_eq!(POLL_NVAL, vfs::POLL_NVAL);
 }
 
 #[test]

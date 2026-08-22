@@ -53,6 +53,12 @@
 |---|---|---|---|---|---|
 | FIXED b799e643d | DEFECT | med | **A pty slave description opened across hangup remains revoked after a later reopen revives the line.** | B2376. The generation-aware devpts file operations distinguish stale and fresh opens through the production path. | B2376-pty-slave-open-revocation |
 
+### B2377-vfs-poll-nval
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED ee40a85b5 | MISSING | low | **VFS now owns the `POLL_NVAL` ABI bit, and io_uring re-exports that canonical symbol.** | B2377. The ABI-position regression pins the shared `0x0020` value. | B2377-vfs-poll-nval |
+
 ### B2329-freezer-backoff-sleep
 
 | Status | Class | Sev | Issue | Evidence | Owner |

@@ -127,6 +127,8 @@ pub const S_NODUMP:    u32 = 1 << 17;
 pub const POLL_IN:    u32 = 0x0001;
 pub const POLL_OUT:   u32 = 0x0004;
 pub const POLL_HUP:   u32 = 0x0010;
+/// `POLLNVAL` / `EPOLLNVAL` — the description named by a poll is invalid.
+pub const POLL_NVAL:  u32 = 0x0020;
 pub const POLL_RDNORM: u32 = 0x0040;
 /// `EPOLLWRNORM` — the companion of
 /// `EPOLLOUT` that every writability wake carries (`sk_stream_write_space`
