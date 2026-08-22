@@ -65,7 +65,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         smoke-ata-identity smoke-ata-identity-x86 smoke-ata-identity-arm \
         smoke-ata-sat smoke-ata-sat-x86 smoke-ata-sat-arm \
         smoke-usb-scsi smoke-usb-scsi-x86 smoke-usb-scsi-arm \
-        hosted-gate test-build-gate \
+        hosted-gate test-build-gate test-build-check-selftest \
         smoke-hostshare smoke-hostshare-x86 smoke-hostshare-arm \
         smoke-ping smoke-ping-x86 smoke-ping-arm smoke-network-native-pci-x86 \
         stack-gate-baseline-x86 stack-gate-baseline-arm stack-report \
@@ -654,6 +654,9 @@ hosted-gate:
 # ~2 s when nothing changed, ~2.5 min from a fully cold target directory.
 test-build-gate:
 	$(WARNING_RUN) ./tools/test-build-check.sh
+
+test-build-check-selftest:
+	./tools/test-build-check-selftest.sh
 
 # Regenerate the allowlists. Reasons must be edited in by hand afterwards —
 # the gate refuses an entry that is not under a `#` reason block.
