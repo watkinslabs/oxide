@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2553-stale-keyring-coverage-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2553 | COVERAGE | med | The keyring row claiming zero user-copy-fault and namespace coverage was stale. | `crates/kernel/fs/src/keyring/iov/tests.rs` already exercises EFAULT-before-copy ordering, descriptor-array faults, segment faults, zero-length segments, and overflow; `keyring/tests/namespace.rs` covers user- and network-namespace isolation plus capability dimensions. No production change is warranted. | B2553-stale-keyring-coverage-row |
+
 ### B2551-stale-merged-queue-rows
 
 | Status | Class | Sev | Issue | Evidence | Owner |
