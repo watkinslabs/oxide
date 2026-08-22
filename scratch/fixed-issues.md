@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2502-fault-vma-admission-order
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 6e6d878d9 | DEFECT | med | User faults now admit a VMA before migration, swap, userfaultfd, or page resolution work. | MM tests and target checks passed. | Chris Watkins |
+
 ### B2501-tiocsti-gate-audit-input
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -3890,6 +3896,7 @@ against the row's own evidence.
 
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 ### B2336-bpf-program-streams
 
 | Status | Type | Severity | Issue | Evidence | Fixed by |
@@ -4105,3 +4112,10 @@ against the row's own evidence.
 |---|---|---|---|---|---|
 | FIXED d6f2eede6 | MISSING | med | **`TIOCSTI` now pushes one byte through every terminal endpoint's canonical input path.** One tty-owned ladder enforces the live `dev.tty.legacy_tiocsti` switch and initial-namespace `CAP_SYS_ADMIN` override, requires the caller's controlling terminal for an unprivileged request, performs usercopy only after those gates, flushes typed terminal audit data, emits a distinct `ioctl=TIOCSTI` record, then injects. Serial and VT terminals enter `TtyStruct`; PTY slaves enter N_TTY, while a privileged PTY-master request enters the master's own raw input queue. | B2501. Linux 7.2.0-rc4 gate and effect ordering verified before design. Positive control initially omitted both policy gates: `disabled_legacy_mode_refuses_a_non_admin_before_usercopy` and its controlling-terminal sibling were RED; restored ladder GREEN 5/5. Full `tty` 214/214, `audit` 120/120, `devpts` 29/29, `procfs` 243/243, `console` 10/10; both kernel targets built. | d6f2eede6 |
 >>>>>>> ca8fabbe8 (docs(issues): close TIOCSTI injection gap)
+=======
+### B2502-fault-vma-admission-order
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 6e6d878d9 | DEFECT | med | **Page faults outside every VMA now fail admission before migration, swap, userfaultfd, or fill work can touch the page tables.** One VMA lookup admits an existing mapping; a not-present fault gets one stack-growth attempt and is admitted only if that creates coverage. A private proof token makes the expensive resolver unreachable before this gate. This matches Linux 7.2.0-rc4, where x86 `lock_mm_and_find_vma` and arm64 `lock_mm_and_find_vma` route an uncovered address directly to their bad-area paths. | B2502. The hosted harness compiles the exact production admission owner. Before the fix, `a_missing_vma_never_enters_the_expensive_resolver` failed RED because an absent VMA returned success; restored GREEN passes all 3 admission cases. Full PMM library suite: 311/311. Both kernel target checks and the both-architecture feature gate pass, compiling the live proof-token callsite. Final paired smoke passed attempt 1 with serial RX: x86_64 46 s and aarch64 56 s. | B2502 |
+>>>>>>> 017ef016c (docs(ledger): close fault VMA admission order)
