@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2409-f2fs-inode-cache-identity
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED ac948ec9f | COVERAGE | med | **Repeated f2fs lookups now directly prove that one inode number names one in-core inode and one cached shape.** | B2409. The regression realizes a live filesystem, looks up the same file twice, asserts identity, writes through one handle, and observes the cached size through the other. | B2409-f2fs-inode-cache-identity |
+
 ### B2407-sendmsg-msg-more
 
 | Status | Class | Sev | Issue | Evidence | Owner |
