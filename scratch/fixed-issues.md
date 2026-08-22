@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2473-push-pipeline-status-contract
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED ad19ce90d | INFRA | low | Push pipelines now require and report producer status explicitly. | Pipeline contract regression passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2472-selinux-all-xattr-permissions
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -422,6 +429,13 @@
 |---|---|---|---|---|---|
 | FIXED 149a38780 | DEFECT | med | **Accepted regulatory domains now update the live channel flags advertised by `GET_WIPHY`.** Each radio keeps an effective band snapshot beside its current domain; an accepted request projects the resolved rules onto that snapshot under the same state lock, and both channel lookup and nl80211 serialization consume it while immutable driver capabilities remain the baseline. | B2471. Linux 7.2.0-rc4 `handle_band`/`handle_channel` mutates live `ieee80211_channel.flags`, which `nl80211.c` serializes. The production-path regression failed before the fix because a 5-GHz channel remained enabled after accepting a 2.4-GHz-only domain, then passed GREEN. Wireless 308/308 and both kernel target checks pass. Final smoke reached userspace with serial RX on attempt 1: x86_64 in 48 s and aarch64 in 56 s. | B2471-wireless-regulatory-channel-flags |
 >>>>>>> b1e1fa5f5 (docs: close B2471 wireless regulatory flags)
+=======
+### B2473-push-pipeline-status-contract
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED ad19ce90d | INFRA | med | **State-changing commands may no longer be piped while a downstream command's status is treated as proof.** The repository workflow now names the exact `git push ... \| tail` failure mode, requires either a direct invocation or explicit producer-status capture, and requires fetching and comparing the remote ref to the intended SHA before publication is reported. | The pre-change policy assertion found neither safeguard (`rg` exit 1); the new exact assertions pass. `cargo test -p spec-lint` passes 35/35, and both x86_64 and aarch64 release kernel target checks pass from the B2473 worktree. The final diff is workflow documentation and ledgers only, so no boot is required. | B2473-push-pipeline-status-contract |
+>>>>>>> b1b93c35e (docs: close push pipeline status issue)
 
 ### B2329-freezer-backoff-sleep
 
