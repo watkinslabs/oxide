@@ -1,5 +1,11 @@
 # Fixed issues
 
+### R133-obsolete-test-thread-workaround
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED R133 | COVERAGE | low | **The global `--test-threads=1` workaround note was stale.** Test isolation now uses resource-specific claims, allowing unrelated tests to run in parallel without masking shared-state races. | The fixed ledger records the nine resource owners/claims, including driver-model, zram, fs/inotify, keyring, and other process-global registries; current fs and drv-zram suites run at default parallelism. | R133 |
+
 ### R132-duplicate-fs-zram-flake-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
