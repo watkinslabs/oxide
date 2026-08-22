@@ -588,6 +588,12 @@
 |---|---|---|---|---|---|
 | FIXED bf8c9a36b | MISSING | low | `console=ttynull` now selects a consuming sink-only console, publishes `/dev/ttynull`, and suppresses serial/VT output. | Cmdline, console, sysfs, target, and smoke checks passed. | Chris Watkins |
 
+### B2566-stale-ttynull-console-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2566 | MISSING | low | The older `console=ttynull` row was a stale duplicate of B2467. | B2467 already records the live ttynull classification, sink, `/dev/ttynull` publication, and verification. | Chris Watkins |
+
 ### B2466-uninterruptible-task-state-reporting
 
 | Status | Class | Sev | Issue | Evidence | Owner |
