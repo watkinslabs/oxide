@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2455-stale-bpf-test-run-nonlinear-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 6a55588d5 | DEFECT | med | **The recorded nonlinear-skb wrong answer is unreachable for current BPF test-run contexts; direct packet-pointer access is refused.** | B2455 pins socket-filter and cgroup-skb pointer refusal through the real verifier. | B2455 |
+
 ### B2454-arch-leaf-pageflags-coverage
 
 | Status | Class | Sev | Issue | Evidence | Owner |
