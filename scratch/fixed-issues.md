@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2487-stale-arm-debug-shell-device
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2487 | INFRA | low | The ARM debug-shell device row was stale and duplicated the existing serial-device identity contract. | Cmdline/console target checks passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2486-external-citation-ratchet
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -582,6 +589,13 @@
 |---|---|---|---|---|---|
 | FIXED 4a3942374 | COVERAGE | med | **The lint ratchet now rejects newly introduced external-source citations while grandfathering the measured historical inventory.** The production `make lint-ratchet` path runs the new text rule through `spec-lint`'s shared per-unit baseline machinery, so a new citation cannot land merely because its source text is documentation or a scratch ledger. | B2486. Linux 7.2.0-rc4 has no analogue because this is repository-policy tooling. Injecting one external source-tree path into a production-scanned document made the real ratchet fail with `text/external-source-citation 1 > 0 (baseline)`; restoring the document leaves that rule at baseline. Both focused detector tests and all 37 `spec-lint` tests pass, as do x86_64 and aarch64 kernel target checks. No boot smoke applies because the changed tooling cannot enter a kernel image or runtime path. | B2486-external-citation-ratchet |
 >>>>>>> 3d3a7d095 (docs: close external citation gate issue)
+=======
+### B2487-stale-arm-debug-shell-device
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2487 | INFRA | low | **The ARM smoke control plane correctly names the serial device node this kernel publishes, while `console=` separately names the PL011 console class.** The old row treated Linux's `ttyAMA0` class name as an Oxide pathname and therefore prescribed a shell path that does not exist. The remaining deliberate `204:64`-as-`ttyS0` naming divergence is tracked once in the canonical tty-device row rather than duplicated as a smoke defect. | B2487. Linux 7.2.0-rc4's PL011 driver publishes `ttyAMA`, while Oxide's canonical sysfs/devnode table publishes its `204:64` line as `ttyS0`; `bootargs::serial_console` therefore supplies `ttyAMA0` only to `console=`, and `SERIAL_DEVNODE` supplies `ttyS0` to path-valued systemd parameters. Temporarily changing that production device-node owner to `ttyAMA0` made `the_serial_control_plane_moves_the_shell_and_masks_the_login` RED; restoring it passes the focused test and all 79 xtask tests. Both kernel target checks pass. | B2487-stale-arm-debug-shell-device |
+>>>>>>> 27a90cb36 (docs: close stale arm debug shell row)
 
 ### B2329-freezer-backoff-sleep
 
