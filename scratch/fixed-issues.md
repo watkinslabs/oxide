@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2547-stale-merged-exec-state-klog-rows
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2547 | INFRA | med | Three open rows duplicated merged work: B2525 now drains exec siblings before replacing the address space, B2466 renders uninterruptible sleepers as `D`, and B2462 replaced the klog sink mutex pattern with crate-wide emitter ownership. | Existing fixed entries B2525, B2466, and B2462 plus their recorded production tests and target checks; no new source change is needed. | Chris Watkins |
+
 ### B2546-tcp-zerocopy-vma-copy-coverage
 
 | Status | Class | Sev | Issue | Evidence | Owner |
