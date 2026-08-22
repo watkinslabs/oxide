@@ -182,6 +182,7 @@ mod tests {
 
     #[test]
     fn atomic_acquisition_exports_all_object_state_entry_points() {
+        let _modules = crate::test_serial::claim();
         export_symbols();
         for name in ["drm_atomic_get_plane_state", "drm_atomic_get_crtc_state", "drm_atomic_get_connector_state"] { assert!(crate::symtab::is_exported(name)); }
     }

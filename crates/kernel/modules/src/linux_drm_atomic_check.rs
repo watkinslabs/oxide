@@ -129,6 +129,7 @@ mod tests {
 
     #[test]
     fn check_planes_export_is_present() {
+        let _modules = crate::test_serial::claim();
         export_symbols();
         assert!(crate::symtab::is_exported("drm_atomic_helper_check_planes"));
     }

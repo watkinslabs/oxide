@@ -189,6 +189,7 @@ mod tests {
     unsafe extern "C" fn clear_callback(_state: *mut c_void) { CLEAR_CALLS.fetch_add(1, Ordering::SeqCst); }
     #[test]
     fn atomic_state_exports_are_present() {
+        let _modules = crate::test_serial::claim();
         export_symbols();
         for name in ["drm_atomic_commit_alloc", "drm_atomic_commit_clear", "drm_atomic_commit_put", "drm_atomic_commit_default_release"] { assert!(crate::symtab::is_exported(name)); }
         assert_eq!(DRM_ATOMIC_STATE_SIZE, 128); assert_eq!(DRM_ATOMIC_PLANE_ENTRY_SIZE, 32); assert_eq!(DRM_ATOMIC_CRTC_ENTRY_SIZE, 56); assert_eq!(DRM_ATOMIC_CONNECTOR_ENTRY_SIZE, 40);

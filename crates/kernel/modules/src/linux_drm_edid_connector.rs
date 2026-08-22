@@ -152,5 +152,5 @@ mod tests {
     }
 
     #[test]
-    fn connector_edid_entry_points_are_module_exports() { export_symbols(); assert!(crate::symtab::is_exported("drm_edid_connector_update")); assert!(crate::symtab::is_exported("drm_edid_connector_add_modes")); }
+    fn connector_edid_entry_points_are_module_exports() { let _modules = crate::test_serial::claim(); export_symbols(); assert!(crate::symtab::is_exported("drm_edid_connector_update")); assert!(crate::symtab::is_exported("drm_edid_connector_add_modes")); }
 }

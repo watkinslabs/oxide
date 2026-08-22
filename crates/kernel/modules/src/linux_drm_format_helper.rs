@@ -70,7 +70,7 @@ mod tests {
     }
 
     #[test]
-    fn format_helpers_are_module_exports() { export_symbols(); assert!(crate::symtab::is_exported("drm_fb_memcpy")); assert!(crate::symtab::is_exported("drm_fb_clip_offset")); }
+    fn format_helpers_are_module_exports() { let _modules = crate::test_serial::claim(); export_symbols(); assert!(crate::symtab::is_exported("drm_fb_memcpy")); assert!(crate::symtab::is_exported("drm_fb_clip_offset")); }
 
     #[test]
     fn clip_offset_uses_first_plane_pitch_and_pixel_size() {

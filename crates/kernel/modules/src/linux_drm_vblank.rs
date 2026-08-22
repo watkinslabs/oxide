@@ -164,6 +164,7 @@ mod tests {
 
     #[test]
     fn vblank_transition_entry_points_are_module_exports() {
+        let _modules = crate::test_serial::claim();
         export_symbols();
         assert!(crate::symtab::is_exported("drm_crtc_vblank_off"));
         assert!(crate::symtab::is_exported("drm_crtc_vblank_on"));

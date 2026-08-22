@@ -154,6 +154,6 @@ mod tests {
         let owner = drm_edid_read_custom(core::ptr::null_mut(), Some(read), (&mut source as *mut Source).cast()); assert!(!owner.is_null());
         // SAFETY: drm_edid_raw(owner) is non-null only when it points at a full
         // validated base block, so byte offset 126 (extension count) is in bounds.
-        assert_eq!(unsafe { *(edid_owner::drm_edid_raw(owner)).add(126) }, 1); assert_eq!(source.calls[2], 1); edid_owner::drm_edid_free(owner); export_symbols(); assert!(crate::symtab::is_exported("drm_edid_read_custom"));
+        assert_eq!(unsafe { *(edid_owner::drm_edid_raw(owner)).add(126) }, 1); assert_eq!(source.calls[2], 1); edid_owner::drm_edid_free(owner); let _modules = crate::test_serial::claim(); export_symbols(); assert!(crate::symtab::is_exported("drm_edid_read_custom"));
     }
 }

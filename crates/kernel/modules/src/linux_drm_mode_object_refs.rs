@@ -52,5 +52,5 @@ mod tests {
         get(object.as_mut_ptr().cast()); put(object.as_mut_ptr().cast()); assert_eq!(RELEASES.load(Ordering::SeqCst), 0); put(object.as_mut_ptr().cast()); assert_eq!(RELEASES.load(Ordering::SeqCst), 1);
     }
     #[test]
-    fn reference_entry_points_are_module_exports() { export_symbols(); assert!(crate::symtab::is_exported("drm_mode_object_get")); assert!(crate::symtab::is_exported("drm_mode_object_put")); }
+    fn reference_entry_points_are_module_exports() { let _modules = crate::test_serial::claim(); export_symbols(); assert!(crate::symtab::is_exported("drm_mode_object_get")); assert!(crate::symtab::is_exported("drm_mode_object_put")); }
 }

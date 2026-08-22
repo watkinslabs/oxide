@@ -92,5 +92,5 @@ mod tests {
         raw[126] = 1; let bad = drm_edid_alloc(raw.as_ptr().cast(), raw.len()); assert!(drm_edid_raw(bad).is_null()); drm_edid_free(bad);
     }
     #[test]
-    fn owner_entry_points_are_module_exports() { export_symbols(); for name in ["drm_edid_alloc", "drm_edid_dup", "drm_edid_free", "drm_edid_raw"] { assert!(crate::symtab::is_exported(name)); } }
+    fn owner_entry_points_are_module_exports() { let _modules = crate::test_serial::claim(); export_symbols(); for name in ["drm_edid_alloc", "drm_edid_dup", "drm_edid_free", "drm_edid_raw"] { assert!(crate::symtab::is_exported(name)); } }
 }

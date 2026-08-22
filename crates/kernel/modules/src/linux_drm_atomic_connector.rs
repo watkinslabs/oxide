@@ -95,5 +95,5 @@ mod tests {
         unsafe { write(state.add(DRM_CONNECTOR_STATE_CRTC_OFF).cast::<*mut c_void>(), core::ptr::null_mut()); } drm_atomic_helper_connector_destroy_state(connector.as_mut_ptr().cast(), state.cast());
     }
     #[test]
-    fn standard_connector_state_entry_points_are_module_exports() { export_symbols(); for name in ["drm_atomic_helper_connector_reset", "drm_atomic_helper_connector_duplicate_state", "drm_atomic_helper_connector_destroy_state"] { assert!(crate::symtab::is_exported(name)); } }
+    fn standard_connector_state_entry_points_are_module_exports() { let _modules = crate::test_serial::claim(); export_symbols(); for name in ["drm_atomic_helper_connector_reset", "drm_atomic_helper_connector_duplicate_state", "drm_atomic_helper_connector_destroy_state"] { assert!(crate::symtab::is_exported(name)); } }
 }

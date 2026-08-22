@@ -5010,3 +5010,6 @@ against the row's own evidence.
 ### B2600-delegation-ignore-bits-unreachable
 
 | FIXED B2600 | MISSING | low | Delegation ignore-bits are correctly not exposed through the current fcntl ABI: the wire decoder requires `d_flags == 0`, so no in-kernel caller can supply event-selection bits. The event-selection machinery remains coupled to a future delegation-manager UAPI rather than being added as unconsumed state. | `crates/kernel/syscalls/src/fcntl_deleg.rs::decode_delegation` rejects both ordinary and high-bit nonzero flags with `EINVAL`; focused ABI tests cover the rejection and accepted type/padding cases. | B2600 |
+### B2601-fixture-lock-pure-test-residuals
+
+| FIXED B2601 | COVERAGE | med | The fixture-lock residuals are closed. Stateful module export tests now take the shared module claim; the remaining unclaimed tests in the listed driver, framebuffer, input, and ucounts files are ABI/pure decision checks and do not access the process-global registries. | `cargo test -p modules --lib` 442/442, `drv` 68/68, `fbdev` 31/31, `input` 24/24, and `ucounts` 12/12 passed. The previously unguarded module export test reproduced a registry race before the claim and passes after it. | B2601 |

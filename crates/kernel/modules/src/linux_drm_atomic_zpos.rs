@@ -147,6 +147,7 @@ mod tests {
 
     #[test]
     fn zpos_normalization_export_and_null_contract() {
+        let _modules = crate::test_serial::claim();
         export_symbols(); assert!(crate::symtab::is_exported("drm_atomic_normalize_zpos"));
         assert_eq!(drm_atomic_normalize_zpos(core::ptr::null_mut(), core::ptr::null_mut()), -LINUX_EINVAL);
     }

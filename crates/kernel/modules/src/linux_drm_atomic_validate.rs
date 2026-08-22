@@ -152,7 +152,7 @@ mod tests {
     static CALLS: AtomicUsize = AtomicUsize::new(0);
     unsafe extern "C" fn check_callback(_dev: *mut c_void, _state: *mut c_void) -> i32 { CALLS.fetch_add(1, Ordering::SeqCst); 0 }
     #[test]
-    fn atomic_core_exports_are_present() { export_symbols(); for symbol in ["drm_atomic_check_only", "drm_atomic_commit", "drm_atomic_nonblocking_commit"] { assert!(crate::symtab::is_exported(symbol)); } }
+    fn atomic_core_exports_are_present() { let _modules = crate::test_serial::claim(); export_symbols(); for symbol in ["drm_atomic_check_only", "drm_atomic_commit", "drm_atomic_nonblocking_commit"] { assert!(crate::symtab::is_exported(symbol)); } }
     #[test]
     fn check_rejects_unpaired_plane_and_runs_driver_after_core_validation() {
         let _modules = crate::test_serial::claim();

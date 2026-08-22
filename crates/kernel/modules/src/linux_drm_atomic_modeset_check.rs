@@ -152,6 +152,7 @@ mod tests {
     use super::*;
     #[test]
     fn modeset_check_exports_and_rejects_missing_state() {
+        let _modules = crate::test_serial::claim();
         export_symbols();
         assert!(crate::symtab::is_exported("drm_atomic_helper_check_modeset"));
         assert_eq!(drm_atomic_helper_check_modeset(core::ptr::null_mut(), core::ptr::null_mut()), -LINUX_EINVAL);
