@@ -594,6 +594,12 @@
 |---|---|---|---|---|---|
 | FIXED B2569 | MIXED | med | The older missing HugePages meminfo/sysfs and linear pool-release rows were stale duplicates of the existing hugetlb publication and pool-ownership fixes. | The B1981 fixed records document the live HugePages interfaces and ordered pool ownership/release implementation with verification. | Chris Watkins |
 
+### B2570-stale-exec-stack-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2570 | DEFECT | blocker | The older execve initial-stack fault row was a stale duplicate of merged B2208. | PR #5430 (`b8fe02909`) merged the prefault repair; current x86_64 and aarch64 exec paths call `prefault_user_range` for the planned stack range before stack usercopy. | Chris Watkins |
+
 ### B2468-keyring-global-process-identity
 
 | Status | Class | Sev | Issue | Evidence | Owner |
