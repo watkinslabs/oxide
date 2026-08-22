@@ -10,7 +10,7 @@
 // - `addr6_ops`: the AF_INET6 half of RTM_NEWADDR / RTM_DELADDR.
 // - `route_state`: persistent route table storage and boot seeding.
 // - `route_ops`: route dump/mutation path and stack synchronization.
-// - `iface`: live iface snapshot + RTM_SETLINK mutation path.
+// - `iface`: live iface snapshot + RTM_SETLINK and link-kind mutation paths.
 // - `rtnetlink_addr` / `rtnetlink_link` / `rtnetlink_route`: focused helpers.
 //
 // NETLINK_ROUTE per `25§7`. Implements the
@@ -59,7 +59,7 @@ pub use nsid_req::{dump as parse_dumpnsid, get as parse_getnsid, new as parse_ne
     ParseError as ParseNsidError};
 pub use nsid::{dump as handle_dumpnsid, get as handle_getnsid, new as handle_newnsid};
 pub(crate) use rtnetlink_link::LinkStats64;
-pub use iface::{handle_setlink, handle_setlink_in};
+pub use iface::{handle_link_in, handle_setlink, handle_setlink_in};
 pub(crate) use route_ops::{build_newroute6_reply, build_newroute_group_reply,
     build_newroute_row_reply, route_oif_for_abi};
 pub use route_ops::{

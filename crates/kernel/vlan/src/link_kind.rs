@@ -89,6 +89,8 @@ impl LinkKindOps for VlanLinkKind {
         table().remove(id).ok_or(Errno::Enodev)?;
         Ok(())
     }
+
+    fn owns(&self, ifindex: u32) -> bool { lookup_vlan(ifindex).is_some() }
 }
 
 fn link_attrs<'a>(msg: &LinkMsg<'a>) -> LinkAttrs<'a> {

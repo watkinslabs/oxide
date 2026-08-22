@@ -6,7 +6,7 @@ use crate::Nlmsghdr;
 
 use super::ack::build_ack;
 use super::rtnetlink_link::LinkStats64;
-use super::uapi::Ifinfomsg;
+use super::uapi::{Ifinfomsg, RTM_DELLINK, RTM_NEWLINK, RTM_SETLINK};
 
 /// Iface snapshot used by RTM_GETLINK.
 /// # C: O(N_ifaces)
@@ -41,6 +41,30 @@ pub(crate) fn ifaces_snapshot_in(ns: u64) -> Vec<(u32, alloc::string::String, [u
 /// # C: O(N)
 pub fn handle_setlink(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     handle_setlink_in(net::netdev::current_net_ns(), req, full_msg)
+}
+
+/// Dispatch RTM_NEWLINK/RTM_DELLINK through the registered link-kind table;
+/// retain the existing flag path for RTM_SETLINK and bare RTM_NEWLINK changes.
+/// # C: O(N_kinds + N_ifaces)
+pub fn handle_link_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
+    if req.nlmsg_type == RTM_SETLINK { return handle_setlink_in(ns, req, full_msg); }
+    let body = full_msg.get(Nlmsghdr::SIZE..).unwrap_or(&[]);
+    let msg = match rtnl_link::parse(body) {
+        Ok(msg) => msg,
+        Err(e) => return build_ack(req, -(e as i32)),
+    };
+    // A NEWLINK carrying no kind is the legacy administrative flag path.
+    if req.nlmsg_type == RTM_NEWLINK && msg.kind.is_none() {
+        return handle_setlink_in(ns, req, full_msg);
+    }
+    let result = match req.nlmsg_type {
+        RTM_NEWLINK => rtnl_link::newlink(&msg, |ifindex|
+            net::global_stack().ifaces.lookup_ifindex_in_ns(ifindex, ns).is_some())
+            .map(|_| ()),
+        RTM_DELLINK => rtnl_link::dellink(&msg, rtnl_link::kind_of),
+        _ => Err(syscall::errno::Errno::Eopnotsupp),
+    };
+    match result { Ok(()) => build_ack(req, 0), Err(e) => build_ack(req, -(e as i32)) }
 }
 
 /// Handle RTM_NEWLINK / RTM_SETLINK in the socket's captured namespace.

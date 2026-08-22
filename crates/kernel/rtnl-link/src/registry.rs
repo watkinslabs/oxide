@@ -42,6 +42,9 @@ pub trait LinkKindOps: Sync {
     /// Encode this device's kind-private attributes for a dump.
     /// # C: kind-defined
     fn fill_info(&self, _ifindex: u32) -> Option<Vec<u8>> { None }
+
+    /// Whether this kind owns a live interface index. # C: O(N_kind-state)
+    fn owns(&self, _ifindex: u32) -> bool { false }
 }
 
 static KINDS: Spinlock<Vec<&'static dyn LinkKindOps>, SocketLockClass> =
@@ -126,6 +129,11 @@ pub fn dellink(msg: &LinkMsg<'_>, kind_of: impl Fn(u32) -> Option<&'static str>)
     let Some(kind) = kind_of(ifindex) else { return Err(Errno::Eopnotsupp) };
     let ops = lookup(kind).ok_or(Errno::Eopnotsupp)?;
     ops.dellink(ifindex)
+}
+
+/// Resolve a live interface index to its registered kind. # C: O(N_kinds · kind-state)
+pub fn kind_of(ifindex: u32) -> Option<&'static str> {
+    KINDS.lock().iter().find(|k| k.owns(ifindex)).map(|k| k.kind())
 }
 
 /// Clear the registry. Hosted tests build and tear down kinds repeatedly, and

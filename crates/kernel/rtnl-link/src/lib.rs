@@ -16,7 +16,7 @@ pub mod msg;
 pub mod registry;
 
 pub use msg::{IfInfo, LinkMsg, parse, put_linkinfo};
-pub use registry::{LinkKindOps, RegisterError, dellink, kinds, lookup, newlink,
+pub use registry::{LinkKindOps, RegisterError, dellink, kind_of, kinds, lookup, newlink,
                    register, unregister};
 
 #[cfg(test)]

@@ -115,6 +115,10 @@ impl LinkKindOps for BondLinkKind {
         for name in bond.slave_names() { let _ = bond.release(&name); }
         Ok(())
     }
+
+    fn owns(&self, ifindex: u32) -> bool {
+        resolve(ifindex).and_then(|(id, _)| bond_for(id)).is_some()
+    }
 }
 
 /// Enslaving is not a link kind: userspace names the master on an existing

@@ -41,6 +41,8 @@
     mod link_operstate;
     #[path = "rtnetlink_tests/dump_only.rs"]
     mod dump_only;
+    #[path = "rtnetlink_tests/link_kind_dispatch.rs"]
+    mod link_kind_dispatch;
 
     fn visible_ifindex(iface: net::NetIfaceId, ns: u64) -> u32 {
         net::global_stack().ifaces.ifindex_in_ns(iface, ns).unwrap()
