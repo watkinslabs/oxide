@@ -83,6 +83,12 @@
 |---|---|---|---|---|---|
 | FIXED 221227a93 | MISSING | low | **Userspace netlink group sends now broadcast to subscribed peers while preserving the independent unicast/protocol-input path.** | B2384. Generic and SELinux multicast production tests cover fanout, exclusions, credentials, accounting, wakeups, and protocol input. | B2384-userspace-netlink-multicast |
 
+### B2385-smaps-huge-page-size
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED fd087af18 | DEFECT | med | **`smaps` reports the actual backing page granule for huge mappings and retains the base-page fallback.** | B2385. The production renderer's 2 MiB hugetlb path and base-page case are pinned by focused tests. | B2385-smaps-huge-page-size |
+
 ### B2329-freezer-backoff-sleep
 
 | Status | Class | Sev | Issue | Evidence | Owner |
