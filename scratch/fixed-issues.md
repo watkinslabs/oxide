@@ -1,5 +1,11 @@
 # Fixed issues
 
+### R107-stale-ntfs-label-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED | MISSING | low | The NTFS `$Volume` label/version row was stale: current origin already exposes writable `label` and read-only `volinfo` surfaces backed by the persistent volume record. | B2520's merged implementation and `ntfs3` procfs/remount tests cover label persistence, read-only refusal, size validation, and version rendering; no production delta is required here. | R107 |
+
 ### F1246-tmpfs-xattr-accounting
 
 | Status | Class | Sev | Issue | Evidence | Owner |
