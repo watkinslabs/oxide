@@ -139,11 +139,19 @@ fn wake_control(device: &WakeDevice, enable: bool, state: u8) -> bool {
 /// GPE devices remain invalid until their own GPE-block driver exists.
 pub(crate) fn activate_fixed_gpes(mut contains: impl FnMut(u8) -> bool) {
     let Some(registry) = registry() else { return; };
+    activate_fixed(registry, &mut contains, &mut |device| wake_control(device, false, 0));
+    reconcile_unused_resources(registry);
+}
+
+fn activate_fixed(
+    registry: &Registry,
+    contains: &mut impl FnMut(u8) -> bool,
+    control: &mut impl FnMut(&WakeDevice) -> bool,
+) {
     for device in &registry.devices {
         if device.gpe_device.is_some() || !contains(device.gpe) { continue; }
-        if wake_control(device, false, 0) { device.valid.store(true, Ordering::Release); }
+        if control(device) { device.valid.store(true, Ordering::Release); }
     }
-    reconcile_unused_resources(registry);
 }
 
 fn reconcile_unused_resources(registry: &Registry) {
