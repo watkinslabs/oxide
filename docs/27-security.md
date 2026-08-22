@@ -23,7 +23,7 @@ pub fn cap_check(cap:u8) -> KR<()>;                // EPERM if missing
 pub fn cap_check_in_userns(cap:u8, userns:&UserNs) -> KR<()>;
 
 pub fn seccomp_set_strict() -> KR<()>;             // only read,write,exit,sigreturn allowed
-pub fn seccomp_set_filter(prog:&BpfProg) -> KR<()>;// per phase 23 once BPF lands
+pub fn seccomp_set_filter(prog:&[SockFilter]) -> KR<()>;
 
 pub fn landlock_create_ruleset(attr:&LandlockRulesetAttr) -> KR<RawFd>;
 pub fn landlock_add_rule(ruleset:RawFd, kind:u32, attr:&LandlockAttr, flags:u32) -> KR<()>;
@@ -236,7 +236,7 @@ All cmp/key-ops on secret material via `subtle::ConstantTimeEq`. Memcmp-on-secre
 | `cap_check` (hit, in current ns) | ≤ 30 |
 | `cap_check_in_userns` (1-deep) | ≤ 80 |
 | Seccomp strict path-check (per syscall) | ≤ 20 |
-| Seccomp filter eval (BPF, phase 23) | ≤ 200 |
+| Seccomp classic-BPF filter eval | ≤ 200 |
 | Landlock check on `openat` | ≤ 300 |
 
 ## 16 Test contract (frozen)
