@@ -3220,3 +3220,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 666b71990 | COVERAGE | med | **A poisoned base-page fault builds its complete hosted memory-error record, including `BUS_MCEERR_AR`, the fault address, and `si_addr_lsb = PAGE_SHIFT`; the target path consumes that record.** Ordinary backing-store bus errors remain byte-granular. | B2352's production decision test pinned the page-granularity field and poison code. | 666b71990 |
+
+### B2353-stale-fadvise-noreuse-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 5cd7d365a | DEFECT | med | **The claim that `POSIX_FADV_NOREUSE` is a no-op was stale: the file mode, mapping propagation, and resident-file fault recency gate are already wired.** The narrower open coverage row remains separate. | B2353's production recency regression drove an ordinary resident-file fault and a NOREUSE fault; removing the production guard changed the expected promotion count and made the control RED. | B2353-stale-fadvise-noreuse-row |
