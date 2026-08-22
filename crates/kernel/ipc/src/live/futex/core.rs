@@ -31,11 +31,17 @@ pub const FUTEX_PRIVATE_FLAG: u32 = 0x80;
 /// `FUTEX_LOCK_PI2` and returns `-ENOSYS` for any other cmd (`kernel/futex/
 /// syscalls.c` `FLAGS_CLOCKRT` check) — callers must replicate that gate.
 pub const FUTEX_CLOCK_REALTIME: u32 = 0x100;
-/// Linux `FUTEX_CMD_MASK`: `~(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME)`.
+/// `FUTEX_ROBUST_UNLOCK`: atomically release the futex word and clear the
+/// robust-list `list_op_pending` slot supplied as `uaddr2`.
+pub const FUTEX_ROBUST_UNLOCK: u32 = 0x200;
+/// `FUTEX_ROBUST_LIST32`: the pending slot is a compat (32-bit) pointer.
+pub const FUTEX_ROBUST_LIST32: u32 = 0x400;
+/// Linux `FUTEX_CMD_MASK`: all four UAPI modifiers are outside the command.
 /// Extracts the command from `op`, leaving any other stray high bits intact
 /// so an out-of-range op number falls through to the real "unknown cmd"
 /// path instead of being silently truncated into a valid low command.
-pub const FUTEX_CMD_MASK: u32 = !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
+pub const FUTEX_CMD_MASK: u32 =
+    !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME | FUTEX_ROBUST_UNLOCK | FUTEX_ROBUST_LIST32);
 /// Linux `FUTEX_BITSET_MATCH_ANY`: the implicit bitset for plain
 /// `FUTEX_WAIT`/`FUTEX_WAKE` (and any wake path — requeue, wake_op — that
 /// does not carry a caller bitset), matching every waiter regardless of its

@@ -5,9 +5,9 @@ use syscall::errno::Errno;
 
 use super::core::{
     FUTEX_BITSET_MATCH_ANY, FUTEX_CMD_MASK, FUTEX_CMP_REQUEUE_PI, FUTEX_FD, FUTEX_LOCK_PI, FUTEX_LOCK_PI2,
-    FUTEX_PRIVATE_FLAG, FUTEX_TRYLOCK_PI, FUTEX_UNLOCK_PI, FUTEX_WAIT, FUTEX_WAIT_BITSET, FUTEX_WAIT_REQUEUE_PI,
-    FUTEX_WAKE, FUTEX_WAKE_BITSET, WAITERS, Waiter, current_key, load_user_u32, now_monotonic_ns, remove_waiter,
-    wake_key,
+    FUTEX_PRIVATE_FLAG, FUTEX_ROBUST_LIST32, FUTEX_ROBUST_UNLOCK, FUTEX_TRYLOCK_PI, FUTEX_UNLOCK_PI, FUTEX_WAIT,
+    FUTEX_WAIT_BITSET, FUTEX_WAIT_REQUEUE_PI, FUTEX_WAKE, FUTEX_WAKE_BITSET, WAITERS, Waiter, cmpxchg_user_u32,
+    current_key, load_user_u32, now_monotonic_ns, remove_waiter, wake_key,
 };
 
 /// debug-futextrace: true iff the current task's process is gdm-session-worker
@@ -40,6 +40,25 @@ pub fn dispatch(uaddr: u64, op_full: u32, val: u32) -> i64 {
 /// wakes on expiry and returns ETIMEDOUT instead of hanging forever.
 /// # C: O(W) waiters per WAKE; O(1) WAIT
 pub fn dispatch_timed(uaddr: u64, op_full: u32, val: u32, bitset: u32, deadline_ns: u64) -> i64 {
+    dispatch_timed_pending(uaddr, op_full, val, bitset, deadline_ns, 0)
+}
+
+/// Classic futex dispatch with the `uaddr2` robust-list pending slot retained.
+/// Only the robust-unlock composites consume `pending`; other commands ignore
+/// it exactly as Linux `do_futex` does. # C: O(W + user-word contention)
+pub fn dispatch_timed_pending(
+    uaddr: u64,
+    op_full: u32,
+    val: u32,
+    bitset: u32,
+    deadline_ns: u64,
+    pending: u64,
+) -> i64 {
+    let cmd = op_full & FUTEX_CMD_MASK;
+    let robust_unlock = (op_full & FUTEX_ROBUST_UNLOCK) != 0;
+    if robust_unlock && !matches!(cmd, FUTEX_WAKE | FUTEX_WAKE_BITSET | FUTEX_UNLOCK_PI) {
+        return -(Errno::Enosys.as_i32() as i64);
+    }
     // `get_futex_key` refuses an unaligned futex word BEFORE it checks the
     // address is reachable at all, so an unaligned kernel-range address is
     // EINVAL rather than EFAULT. The reverse order reported the second-order
@@ -51,7 +70,7 @@ pub fn dispatch_timed(uaddr: u64, op_full: u32, val: u32, bitset: u32, deadline_
         return -(Errno::Efault.as_i32() as i64);
     }
     let private = (op_full & FUTEX_PRIVATE_FLAG) != 0;
-    match op_full & FUTEX_CMD_MASK {
+    match cmd {
         FUTEX_WAIT | FUTEX_WAIT_BITSET => {
             // Linux `__futex_wait`: a zero bitset can never match any WAKE_BITSET
             // -> -EINVAL up front, for both the classic BITSET op and the
@@ -65,6 +84,11 @@ pub fn dispatch_timed(uaddr: u64, op_full: u32, val: u32, bitset: u32, deadline_
             let key = match current_key(uaddr, private) {
                 Some(k) => k, None => return -(Errno::Einval.as_i32() as i64),
             };
+            if robust_unlock {
+                if robust_release_and_clear(uaddr, pending, (op_full & FUTEX_ROBUST_LIST32) != 0).is_err() {
+                    return -(Errno::Efault.as_i32() as i64);
+                }
+            }
             // A `FUTEX_WAIT_REQUEUE_PI` waiter may only be released by a
             // `FUTEX_CMP_REQUEUE_PI`, which hands it the PI mutex it is waiting
             // for. Releasing it through a plain wake would return it to
@@ -101,7 +125,14 @@ pub fn dispatch_timed(uaddr: u64, op_full: u32, val: u32, bitset: u32, deadline_
         // blocks and ignores any timeout.
         FUTEX_LOCK_PI | FUTEX_LOCK_PI2 => super::pi::lock_pi(uaddr, private, deadline_ns, false),
         FUTEX_TRYLOCK_PI => super::pi::lock_pi(uaddr, private, 0, true),
-        FUTEX_UNLOCK_PI => super::pi::unlock_pi(uaddr, private),
+        FUTEX_UNLOCK_PI => {
+            let rv = super::pi::unlock_pi(uaddr, private);
+            if rv != 0 || !robust_unlock { return rv; }
+            if clear_robust_pending(pending, (op_full & FUTEX_ROBUST_LIST32) != 0).is_err() {
+                return -(Errno::Efault.as_i32() as i64);
+            }
+            0
+        }
         // `FUTEX_WAIT_REQUEUE_PI` / `FUTEX_CMP_REQUEUE_PI` take a SECOND futex
         // address, so they never reach this single-address dispatch — the shim
         // routes them straight to `pi::{wait_requeue_pi, cmp_requeue_pi}`.
@@ -114,6 +145,29 @@ pub fn dispatch_timed(uaddr: u64, op_full: u32, val: u32, bitset: u32, deadline_
         // Unknown cmd: Linux `do_futex` falls off the end of its switch to
         // `return -ENOSYS;`.
         _ => -(Errno::Enosys.as_i32() as i64),
+    }
+}
+
+/// Linux `futex_robust_unlock`: release the ordinary futex word before
+/// clearing `list_op_pending`. A failed clear therefore returns EFAULT with
+/// the word already unlocked and no waiter woken. # C: O(user-word contention)
+fn robust_release_and_clear(uaddr: u64, pending: u64, list32: bool) -> Result<(), Errno> {
+    let mut seen = load_user_u32(uaddr)?;
+    while seen != 0 {
+        let observed = cmpxchg_user_u32(uaddr, seen, 0)?;
+        if observed == seen { break; }
+        seen = observed;
+    }
+    clear_robust_pending(pending, list32)
+}
+
+/// Clear a native or compat robust-list pending pointer through fault-safe
+/// user access. Oxide's two kernel targets are 64-bit. # C: O(1)
+fn clear_robust_pending(pending: u64, list32: bool) -> Result<(), Errno> {
+    if list32 {
+        crate::useraccess::write_bytes(pending, &0u32.to_ne_bytes())
+    } else {
+        crate::useraccess::write_bytes(pending, &0u64.to_ne_bytes())
     }
 }
 

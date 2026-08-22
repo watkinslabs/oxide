@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2512-futex-robust-unlock-list32
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 44128f98e | DEFECT | med | FUTEX robust unlock/list32 composites now clear pending words through the canonical futex dispatch and preserve Linux errno ordering. | IPC/futex/syscall tests and target checks passed. | Chris Watkins |
+
 ### B2511-overlay-volatile-incompat-marker
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -3980,11 +3986,19 @@ against the row's own evidence.
 |---|---|---|---|---|---|
 | FIXED e29627b4c | MISSING | med | **`BPF_MAP_TYPE_STRUCT_OPS` correctly remains unavailable while the kernel is interpreter-only.** The prior row treated its absence as an unconditional gap, but Linux publishes `bpf_struct_ops_map_ops` only under `CONFIG_BPF_JIT`; without a JIT, map creation rejects the ABI type and the association fallback is `EOPNOTSUPP`. Oxide has no BPF JIT or trampoline generator, so manufacturing a map object would create an unusable surface rather than parity. | B2335 revalidated Linux 7.2-rc4 `include/linux/bpf_types.h` and `include/linux/bpf.h`. The ABI number is now named, map creation is pinned to `EINVAL`, ordinary maps are pinned to association `EINVAL`, and a forged struct-ops fixture is pinned to the reference's no-JIT `EOPNOTSUPP`. Removing either no-JIT decision turns its positive control RED. Full security suite: 492/492 passed. | e29627b4c |
 
+<<<<<<< HEAD
 ### B2356-stale-l2cap-ertm-pdu-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 3b31c51e4 | DEFECT | med | **An ERTM start segment carrying two bytes beyond the negotiated payload bound is Linux parity, not an Oxide defect.** Both kernels bound each segment's SDU payload before adding the start segment's two-byte total-length field; continuation and end segments carry no such field. | B2356 revalidated the complete Linux 7.2-rc4 segmentation and frame-construction decisions. `a_start_segment_adds_its_length_field_beyond_the_payload_bound` pins 48 payload bytes plus the two-byte length only on START. Subtracting those two bytes from the first payload turns the test RED at 46 versus 48; restored code is GREEN. Bluetooth 859/859, both kernel target checks, and spec-lint 35/35 pass. | 3b31c51e4 |
+=======
+### B2512-futex-robust-unlock-list32
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 44128f98e | MISSING | med | **Classic futex now serves the native and compat robust-unlock composites instead of returning `ENOSYS`.** The command mask strips `FUTEX_ROBUST_UNLOCK` and `FUTEX_ROBUST_LIST32`; only WAKE, WAKE_BITSET, and UNLOCK_PI admit the unlock modifier. Ordinary wakes atomically release the futex word, clear the `uaddr2` pending slot at its native or 32-bit width, then wake; PI unlock clears the slot only after ownership handoff succeeds. A pending-slot fault returns `EFAULT` after release but before wake, preserving the reference ordering. | B2512. Linux 7.2.0-rc4 `do_futex`, `futex_robust_unlock`, `futex_robust_list_clear_pending`, and `futex_unlock_pi` established admission, width, and ordering. Production callsite: `syscalls/src/202_futex.rs::sys_futex` retains `a4` through `ipc::live::futex::dispatch_timed_pending`. Initial RED: robust wake returned success but left the word at `0x12345678`; GREEN covers native/compat wake, PI, invalid-command `ENOSYS`, and pending-fault ordering. Positive control bypassed the pending-aware syscall dispatch and the integration test failed (`CLASSIC_OP 0` vs `1537`), restored GREEN. IPC passed 283 lib + 55 live-core + 60 PI + 2 restart tests. Syscalls passed 1,988 tests with seven standing failures (five affinity, return-fastpath, net-common source scan); the two non-affinity failures were reproduced unchanged in the clean `origin/main` worktree, and the focused 38-test futex syscall harness passed. Both target checks and both all-feature checks passed. No smoke: these new numeric composites are reached only when userspace explicitly requests them and do not alter the default boot path. | B2512-futex-robust-unlock-list32 |
+>>>>>>> fa371cbe8 (doc(ipc): close robust futex unlock gap)
 
 ### B2332-s3-resume-acceptance
 

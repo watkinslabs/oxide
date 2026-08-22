@@ -11,7 +11,8 @@ use syscall::SyscallArgs;
 /// waits (pthread_cond_timedwait, sem_timedwait) wake on expiry with
 /// ETIMEDOUT instead of hanging forever — the bug that wedged early systemd
 /// services. `FUTEX_PRIVATE_FLAG`/`FUTEX_CLOCK_REALTIME` masks are accepted
-/// (v1 process-private + monotonic clock).
+/// (v1 process-private + monotonic clock). Robust-unlock composites retain
+/// `uaddr2` as the robust-list pending slot through the live dispatch.
 /// # C: O(W) waiters per WAKE, O(1) WAIT
 pub fn sys_futex(args: &SyscallArgs) -> i64 {
     use hal::TimerOps;
@@ -20,8 +21,12 @@ pub fn sys_futex(args: &SyscallArgs) -> i64 {
     const FUTEX_WAIT_BITSET: u32 = 9;
     const FUTEX_WAKE_BITSET: u32 = 10;
     const FUTEX_WAIT_REQUEUE_PI: u32 = 11;
+    const FUTEX_WAKE: u32 = 1;
+    const FUTEX_UNLOCK_PI: u32 = 7;
     const FUTEX_LOCK_PI2: u32 = 13;
-    use ::ipc::live::futex::{FUTEX_CLOCK_REALTIME, FUTEX_CMD_MASK, FUTEX_BITSET_MATCH_ANY};
+    use ::ipc::live::futex::{
+        FUTEX_BITSET_MATCH_ANY, FUTEX_CLOCK_REALTIME, FUTEX_CMD_MASK, FUTEX_ROBUST_UNLOCK,
+    };
     let op = args.a1 as u32;
     let op_base = op & FUTEX_CMD_MASK;
 
@@ -32,6 +37,11 @@ pub fn sys_futex(args: &SyscallArgs) -> i64 {
     // as a monotonic-relative wait instead of being rejected.
     if (op & FUTEX_CLOCK_REALTIME) != 0
         && op_base != FUTEX_WAIT_BITSET && op_base != FUTEX_WAIT_REQUEUE_PI && op_base != FUTEX_LOCK_PI2 {
+        return -(Errno::Enosys.as_i32() as i64);
+    }
+    if (op & FUTEX_ROBUST_UNLOCK) != 0
+        && !matches!(op_base, FUTEX_WAKE | FUTEX_WAKE_BITSET | FUTEX_UNLOCK_PI)
+    {
         return -(Errno::Enosys.as_i32() as i64);
     }
 
@@ -214,5 +224,6 @@ pub fn sys_futex(args: &SyscallArgs) -> i64 {
         return ::ipc::live::futex::wait_requeue_pi(
             args.a0, args.a2 as u32, FUTEX_BITSET_MATCH_ANY, args.a4, private, deadline_ns);
     }
-    ::ipc::live::futex::dispatch_timed(args.a0, op, args.a2 as u32, bitset, deadline_ns)
+    ::ipc::live::futex::dispatch_timed_pending(
+        args.a0, op, args.a2 as u32, bitset, deadline_ns, args.a4)
 }

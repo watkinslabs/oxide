@@ -48,13 +48,17 @@ impl TimerOps for X86TimerOps {
 // whatever branch happens to be running.
 static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static DEADLINE: AtomicU64 = AtomicU64::new(0);
+static PENDING: AtomicU64 = AtomicU64::new(0);
+static CLASSIC_OP: AtomicU64 = AtomicU64::new(0);
 static CONVERSIONS: AtomicUsize = AtomicUsize::new(0);
 
 pub mod live {
     pub mod futex {
         pub const FUTEX_PRIVATE_FLAG: u32 = 0x80;
         pub const FUTEX_CLOCK_REALTIME: u32 = 0x100;
-        pub const FUTEX_CMD_MASK: u32 = !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
+        pub const FUTEX_ROBUST_UNLOCK: u32 = 0x200;
+        pub const FUTEX_CMD_MASK: u32 =
+            !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME | FUTEX_ROBUST_UNLOCK | 0x400);
         pub const FUTEX_BITSET_MATCH_ANY: u32 = 0xffff_ffff;
 
         /// `struct futex_waitv` after per-entry flag validation — mirrors the
@@ -103,6 +107,14 @@ pub mod live {
         }
         pub fn dispatch_timed(_uaddr: u64, _op: u32, _val: u32, _bitset: u32, deadline: u64) -> i64 {
             super::super::DEADLINE.store(deadline, core::sync::atomic::Ordering::SeqCst);
+            0
+        }
+        pub fn dispatch_timed_pending(
+            _uaddr: u64, op: u32, _val: u32, _bitset: u32, deadline: u64, pending: u64,
+        ) -> i64 {
+            super::super::DEADLINE.store(deadline, core::sync::atomic::Ordering::SeqCst);
+            super::super::CLASSIC_OP.store(op as u64, core::sync::atomic::Ordering::SeqCst);
+            super::super::PENDING.store(pending, core::sync::atomic::Ordering::SeqCst);
             0
         }
         pub fn dispatch_waitv_timed(_entries: &[WaitvEntry], deadline: u64) -> i64
@@ -174,9 +186,32 @@ fn timespec(sec: i64) -> [i64; 2] { [sec, 0] }
 
 fn reset() {
     DEADLINE.store(0, Ordering::SeqCst);
+    PENDING.store(0, Ordering::SeqCst);
+    CLASSIC_OP.store(0, Ordering::SeqCst);
     CONVERSIONS.store(0, Ordering::SeqCst);
     NODE_WORD.store(futex_numa::FUTEX_NO_NODE as u32 as u64, Ordering::SeqCst);
     NODE_WRITTEN.store(NO_WRITE, Ordering::SeqCst);
+}
+
+#[test]
+fn classic_futex_routes_robust_unlock_and_pending_slot_to_live_dispatch() {
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset();
+    const FUTEX_WAKE: u64 = 1;
+    const FUTEX_REQUEUE: u64 = 3;
+    const FUTEX_ROBUST_UNLOCK: u64 = 0x200;
+    const FUTEX_ROBUST_LIST32: u64 = 0x400;
+    let op = FUTEX_WAKE | FUTEX_ROBUST_UNLOCK | FUTEX_ROBUST_LIST32;
+
+    assert_eq!(s202_futex::sys_futex(&args(0x1000, op, 1, 0, 0x5678, 0)), 0);
+    assert_eq!(CLASSIC_OP.load(Ordering::SeqCst), op);
+    assert_eq!(PENDING.load(Ordering::SeqCst), 0x5678);
+
+    assert_eq!(
+        s202_futex::sys_futex(&args(0x1000, FUTEX_REQUEUE | FUTEX_ROBUST_UNLOCK, 0, 0, 0, 0)),
+        -(syscall::errno::Errno::Enosys.as_i32() as i64),
+        "invalid robust composites are rejected before two-address routing",
+    );
 }
 
 #[test]
