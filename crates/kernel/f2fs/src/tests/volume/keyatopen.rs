@@ -306,6 +306,26 @@ fn an_atomic_span_of_an_encrypted_file_reads_and_writes_its_plaintext() {
     assert_eq!(after, buf);
 }
 
+/// A pinned encrypted write reaches the in-place block writer with the key
+/// record its entry point resolved, rather than resolving below the loop.
+#[test]
+fn a_pinned_encrypted_file_is_rewritten_through_the_held_record() {
+    let (mut v, ino) = encrypted_file(true);
+    // Pin while the file is empty, then allocate through the pinned allocator:
+    // once a normal block exists the pin ioctl correctly refuses the file.
+    v.set_pin_file(ino, 1).unwrap();
+    v.expand_pinned(ino, 0, BLKSIZE as u64).unwrap();
+    v.crypt_forget(ino);
+
+    let body: Vec<u8> = (0..BLKSIZE).map(|i| (i as u8) ^ 0xA7).collect();
+    assert_eq!(v.write_file(ino, 0, &body).unwrap(), body.len());
+    assert!(v.crypt_is_held(ino), "the write entry did not resolve the key");
+    let live = v.read_inode(ino).unwrap();
+    let mut back = vec![0u8; body.len()];
+    assert_eq!(v.read_file(&live, ino, 0, &mut back).unwrap(), body.len());
+    assert_eq!(back, body, "the pinned writer did not consume the held key");
+}
+
 /// A file that is both compressed and encrypted is refused rather than written
 /// in the clear — WITH the key in hand, so the refusal is the combination and
 /// not a missing key.
