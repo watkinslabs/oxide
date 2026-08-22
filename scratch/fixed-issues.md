@@ -37,6 +37,12 @@
 | FIXED B2269 | DEFECT | med | **`ext4::rootfs` preserves suspended quota state when RO→RW validation fails.** | B2269: `quota_remount_image` 6/6 and full ext4 suite green; negative control RED then restored. | B2269 |
 | FIXED B2268 | DEFECT | high | **ext4 has default-ACL inheritance.** The F1220 on-disk codec now receives the generic new-inode result at every allocating create path. Owner/mode preparation runs before the ACL decision, the ACL owns the umask decision, default is stored before access, and both writes join the open metadata transaction before `dir_link` or orphan enrollment. | B2268: `ext4/tests/acl_inherit_image.rs` has four image-level tests for regular, directory, tmpfile, FIFO, whiteout, symlink, path-helper, recursive, and failed-store behavior. `cargo test -p ext4 --no-fail-fast` has this suite green; its only failure is the already-open quota-remount row above. | B2268 |
 
+### B2572-stale-early-console-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2572 | DEFECT | med | The older B1988 early-console row was stale after the default boot line began requesting `earlycon` and B1991 added record-ring replay at console handover. | `KERNEL_CONSOLE_PARAMS` includes `earlycon`; `klog::replay` and `bootcon::handover_to_primary` cover the pre-driver output window and replay contract. | Chris Watkins |
+
 ### B2561-exfat-setattr-persistence
 
 | Status | Class | Sev | Issue | Evidence | Owner |
