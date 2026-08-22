@@ -63,11 +63,11 @@ failure mode this reconcile was supposed to catch, not commit.
 
 | Class | blocker | critical | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|---:|
-| COVERAGE | 0 | 0 | 10 | 68 | 65 | 143 |
+| COVERAGE | 0 | 0 | 10 | 68 | 64 | 142 |
 | DEFECT | 1 | 4 | 17 | 62 | 63 | 147 |
 | INFRA | 0 | 0 | 11 | 40 | 39 | 90 |
 | MISSING | 1 | 0 | 49 | 140 | 113 | 303 |
-| **Total** | **2** | **4** | **87** | **310** | **280** | **683** |
+| **Total** | **2** | **4** | **87** | **310** | **279** | **682** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -950,7 +950,6 @@ here now.
 | OPEN | DEFECT | med | **A regulatory change never reaches the advertised channel flags.** `nl80211::reg_cmd` stores the resolved `RegDomain` in `WiphyState` and every decision path (`chandef::usable`, `ap_cmd::can_beacon`) reads it, so behaviour is correct — but `reg::apply::apply_to_bands` is never called on a live radio, because `Wiphy::caps.bands` is immutable after registration. `GET_WIPHY` therefore reports the channel flags the driver registered, not the ones the domain in force implies, so `iw list` shows a channel as usable after a domain that bars it. Fix needs the channel list moved under `WiphyState` in `crates/kernel/wireless/src/wiphy.rs`. | `nl80211::tests_ap::a_channel_the_domain_forbids_initiating_on_is_refused` passes only because `ap_cmd::can_beacon` consults the domain directly; `bands::put_channel` still reads `Channel::flags`. | unowned |
 | OPEN | MISSING | low | **`SET_BSS` validates and stores nothing.** `nl80211::ap_cmd::set_bss` checks the tri-state parameters and the basic-rate list and then returns success without effect: `Cfg80211Ops` has no `change_bss` operation and `WdevInner` has no fields for CTS protection, short preamble, short slot time, access-point isolation, basic rates or the high-throughput operation mode. Fix needs `crates/kernel/wireless/src/ops.rs` + `wdev.rs`. | `crates/kernel/wireless/src/nl80211/ap_cmd.rs::set_bss_inner`. | unowned |
 | OPEN | MISSING | low | **Several nl80211 capability gates cannot be expressed.** `WiphyCaps` has no equivalent of the reference's `WIPHY_FLAG_IBSS_RSN`, `WIPHY_FLAG_4ADDR_AP`/`_STATION` or `WIPHY_FLAG_OFFCHAN_TX`, and `uapi::enums::ext_feature` omits the bits the FILS / 802.1X / SAE-offload authentication types and the low-span, low-power, high-accuracy, random-sequence-number and kHz scan flags are gated on. Every one of those is therefore refused unconditionally (`EOPNOTSUPP`, or `EINVAL` for the authentication types), which is the correct answer for a radio that advertises none of them but leaves no way for one that does. Fix needs `crates/kernel/wireless/src/wiphy/caps.rs` + `uapi/enums.rs`. | `nl80211/connect_cmd/parse.rs::valid_auth_type`, `nl80211/scan_cmd.rs::NEEDS_EXT_FEATURE`, `nl80211/key_cmd.rs::key_caps`, `nl80211/iface_cmd.rs::four_addr`. | unowned |
-| OPEN | COVERAGE | low | **`GET_SCAN` emits `NL80211_BSS_CHAN_WIDTH` and `GET_REG` emits `NL80211_ATTR_REG_TYPE`, which the reference does not.** Both attributes exist in the ABI and older userspace read them; the current reference emits neither (the regulatory type appears only in the `REG_CHANGE` event). Harmless as a superset, but recorded so it is a decision and not an accident. | `nl80211/scan_cmd/bss.rs::put`, `nl80211/reg_cmd.rs::put_domain`. | unowned |
 
 ### F1220-acl-enforcement-disk
 
