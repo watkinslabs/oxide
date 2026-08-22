@@ -588,6 +588,12 @@
 |---|---|---|---|---|---|
 | FIXED B2568 | MIXED | med | The older hugetlb MAP_PRIVATE COW and duplicate hugetlb-cgroup rows were stale residuals of the B2469/B1981 hugetlb closure. | The fixed ledger already records private huge-page COW, hugetlb accounting, cgroup, meminfo/sysfs, and SHM_HUGETLB implementation and verification; current production paths contain those owners. | Chris Watkins |
 
+### B2569-stale-hugetlb-publication-rows
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2569 | MIXED | med | The older missing HugePages meminfo/sysfs and linear pool-release rows were stale duplicates of the existing hugetlb publication and pool-ownership fixes. | The B1981 fixed records document the live HugePages interfaces and ordered pool ownership/release implementation with verification. | Chris Watkins |
+
 ### B2468-keyring-global-process-identity
 
 | Status | Class | Sev | Issue | Evidence | Owner |
