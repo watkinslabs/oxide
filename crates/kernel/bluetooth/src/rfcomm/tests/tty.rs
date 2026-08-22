@@ -169,6 +169,15 @@ fn the_peers_signals_become_the_terminals_input_lines() {
 }
 
 #[test]
+fn tiocmget_keeps_the_linux_raw_local_output_mask() {
+    let remote = modem::TIOCM_CTS | modem::TIOCM_CD;
+    assert_eq!(modem::tiocmget(u::RFCOMM_V24_RTC, remote), modem::TIOCM_RTS | remote,
+               "Linux masks the local V.24 byte; it does not translate RTC to DSR here");
+    assert_eq!(modem::tiocmget(u::RFCOMM_V24_FC, remote), modem::TIOCM_DTR | remote,
+               "the raw flow bit aliases DTR in the reference ABI");
+}
+
+#[test]
 fn the_terminals_output_lines_become_the_peers_signals() {
     let v = modem::apply_tiocm(0, modem::TIOCM_DTR, 0);
     assert_eq!(v, u::RFCOMM_V24_RTC);
