@@ -5,7 +5,6 @@
 use alloc::sync::Arc;
 use hal::USER_VA_END;
 use syscall::errno::Errno;
-use crate::user_mem as um;
 
 // SOL_SOCKET is answered before family dispatch, never by the family table.
 pub mod sol_socket;
@@ -44,39 +43,12 @@ pub fn is_netlink_file(file: &Arc<vfs::File>) -> bool {
 
 // DIAG (debug-uevent): trace the udev-monitor delivery chain.
 #[cfg(feature = "debug-uevent")]
-fn uev_kv<'a>(payload: &'a [u8], key: &[u8]) -> &'a [u8] {
-    let mut i = 0;
-    while i < payload.len() {
-        let start = i;
-        while i < payload.len() && payload[i] != 0 { i += 1; }
-        let field = &payload[start..i];
-        if field.len() > key.len() && &field[..key.len()] == key { return &field[key.len()..]; }
-        i += 1; // skip NUL
-    }
-    b""
-}
-
-#[cfg(feature = "debug-uevent")]
 fn uev_comm() {
     if let Some(c) = sched::live::current() {
         klog::write_dec_u64(c.tid as u64);
         klog::write_raw(b"/");
         { let comm = c.comm_bytes(); klog::write_raw(sched::Task::comm_trim(&comm).as_bytes()); }
     } else { klog::write_raw(b"?"); }
-}
-
-#[cfg(feature = "debug-uevent")]
-fn trace_uev_send(cooked: bool, dest_pid: u32, groups: u32, payload: &[u8], path_tag: &[u8], reached: usize) {
-    klog::write_raw(b"[UEV-SEND ");
-    uev_comm();
-    klog::write_raw(b" cooked="); klog::write_dec_u64(cooked as u64);
-    klog::write_raw(b" dst_pid="); klog::write_dec_u64(dest_pid as u64);
-    klog::write_raw(b" grp="); klog::write_dec_u64(groups as u64);
-    klog::write_raw(b" act="); klog::write_raw(uev_kv(payload, b"ACTION="));
-    klog::write_raw(b" dp="); klog::write_raw(uev_kv(payload, b"DEVPATH="));
-    klog::write_raw(b" -> "); klog::write_raw(path_tag);
-    klog::write_raw(b"="); klog::write_dec_u64(reached as u64);
-    klog::write_raw(b"\n");
 }
 
 #[cfg(feature = "debug-uevent")]
@@ -343,89 +315,4 @@ pub fn getpeername(target: &NetlinkFileRef, addr_p: u64, addrlen_p: u64) -> i64 
     let dest = target.socket().destination();
     let sa = encoded_sockaddr_nl(dest.port_id, dest.group);
     copy_sockaddr_to_user(addr_p, addrlen_p, &sa)
-}
-
-/// Copy an optional user `sockaddr_nl` into kernel memory. `None` means no
-/// destination was supplied, which is not an error — the socket's connected
-/// destination is used instead. # C: O(1)
-fn user_sockaddr_nl(dest_p: u64, dest_len: u64) -> Option<[u8; ::netlink::SOCKADDR_NL_SIZE]> {
-    let address_bytes = ::netlink::SOCKADDR_NL_SIZE as u64;
-    let end = dest_p.checked_add(address_bytes)?;
-    if dest_p == 0 || dest_len < address_bytes || end > USER_VA_END { return None; }
-    let mut name = [0u8; ::netlink::SOCKADDR_NL_SIZE];
-    if um::get_into(dest_p, &mut name).is_err() { return None; }
-    Some(name)
-}
-
-/// Send one coalesced message through an already-resolved netlink file. # C: O(len)
-pub fn send_coalesced_file(file: &Arc<vfs::File>, buf: &[u8], name: u64, namelen: u64) -> i64 {
-    let socket = match file.inode().private::<::netlink::NetlinkSocket>() {
-        Some(socket) => socket,
-        None => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&socket.net_ns),
-        net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Send)
-    { return crate::net_errno::errno_from_neterr(error); }
-    let dest = match user_sockaddr_nl(name, namelen) {
-        Some(name) => match ::netlink::parse_supplied_dest(&name, socket.protocol,
-            socket.net_admin())
-        {
-            Ok(dest) => dest,
-            Err(error) => return -(error as i64),
-        },
-        None => socket.destination(),
-    };
-    let result = socket.send_to(buf, dest, file.flags().contains(vfs::OpenFlags::O_NONBLOCK));
-    // Keep the diagnostic path available after coalesced sends moved to the
-    // canonical destination owner. It is intentionally feature-gated, like
-    // the imported-send trace, rather than being removed or made unconditional.
-    #[cfg(feature = "debug-uevent")]
-    {
-        let cooked = buf.len() >= 8 && &buf[..8] == b"libudev\0";
-        let delivered = usize::from(result.is_ok());
-        trace_uev_send(cooked, dest.port_id, dest.group, buf, b"owner", delivered);
-    }
-    match result {
-        Ok(n) => n as i64,
-        Err(::netlink::SendError::Emsgsize) => -(Errno::Emsgsize.as_i32() as i64),
-        Err(::netlink::SendError::Again) => -(Errno::Eagain.as_i32() as i64),
-        Err(::netlink::SendError::Interrupted) => -syscall::restart::ERESTARTSYS,
-        Err(::netlink::SendError::Backend(error)) => -(error as i64),
-    }
-}
-
-/// Kernel-snapshot `sendmsg` for netlink. Unlike the generic fallback,
-/// this preserves datagram boundaries across iovecs and passes
-/// sockaddr_nl.nl_groups into the netlink layer so userspace-originated
-/// multicast, especially systemd-udevd's cooked kobject uevents, reaches
-/// monitor subscribers.
-/// # C: O(iov + payload bytes)
-pub fn sendmsg_imported(file: &Arc<vfs::File>, name: &[u8], payload: &[u8]) -> i64 {
-    let sock = match file.inode().private::<::netlink::NetlinkSocket>() {
-        Some(s) => s,
-        None => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&sock.net_ns),
-        net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Send)
-    { return crate::net_errno::errno_from_neterr(error); }
-    let dest = if name.is_empty() { sock.destination() } else {
-        match ::netlink::parse_supplied_dest(name, sock.protocol, sock.net_admin()) {
-            Ok(dest) => dest,
-            Err(error) => return -(error as i64),
-        }
-    };
-    let result = sock.send_to(payload, dest, file.flags().contains(vfs::OpenFlags::O_NONBLOCK));
-    #[cfg(feature = "debug-uevent")]
-    {
-        let cooked = payload.len() >= 8 && &payload[..8] == b"libudev\0";
-        let delivered = usize::from(result.is_ok());
-        trace_uev_send(cooked, dest.port_id, dest.group, payload, b"owner", delivered);
-    }
-    match result {
-        Ok(n) => n as i64,
-        Err(::netlink::SendError::Emsgsize) => -(Errno::Emsgsize.as_i32() as i64),
-        Err(::netlink::SendError::Again) => -(Errno::Eagain.as_i32() as i64),
-        Err(::netlink::SendError::Interrupted) => -syscall::restart::ERESTARTSYS,
-        Err(::netlink::SendError::Backend(error)) => -(error as i64),
-    }
 }

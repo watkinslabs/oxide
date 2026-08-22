@@ -363,3 +363,15 @@ fn a_netlink_bind_that_subscribes_a_group_carries_its_capability_gate() {
     assert!(!bind_groups_allowed(proto::NETLINK_NETFILTER, 1, false));
     assert!(bind_groups_allowed(proto::NETLINK_NETFILTER, 0, false));
 }
+
+#[test]
+fn netlink_send_has_one_reachable_family_funnel() {
+    let legacy = include_str!("netlink_fd.rs");
+    assert!(!legacy.contains("pub fn send_coalesced_file"),
+        "an uncalled target-gated copy must not shadow the live socket send owner");
+    assert!(!legacy.contains("pub fn sendmsg_imported"),
+        "an uncalled target-gated copy must not shadow the live socket send owner");
+    let live = include_str!("../../socket/src/send.rs");
+    assert!(live.contains("pub(crate) fn send_prepared"),
+        "the family-neutral send path remains the one reachable owner");
+}
