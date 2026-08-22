@@ -70,11 +70,10 @@ MARKER="${SMOKE_MARKER:-Reached target basic.target}"
 # So the gate ALSO asks the guest a question and waits for its answer. The
 # serial line already has a writable FIFO ($SYSRQ_WFD, used for the sysrq RX
 # probe below). The boot line puts `systemd.debug_shell=` on that same UART.
-# Once the shell prints its prompt, one typed command and its output prove —
-# with no dependence on log routing — that init ran, that a
-# service started, that fork/exec works, and that the tty carries bytes in BOTH
-# directions. A boot that reaches a desktop always answers it; a boot whose
-# userspace is broken cannot.
+# Once the shell prints its prompt, one typed command asks PID 1's private
+# systemd manager for its version before emitting the marker. This prevents a
+# debug shell from falsely proving a boot whose init is wedged; it also proves
+# fork/exec and that the tty carries bytes in BOTH directions.
 #
 # Either proof passes the attempt. Set SMOKE_ALIVE_PROBE='' to require the
 # passive marker alone (a profile with no debug shell), or override the
@@ -90,7 +89,7 @@ ALIVE_PROBE="${SMOKE_ALIVE_PROBE-1}"
 # The serial echo path is known to duplicate a character occasionally; a
 # corrupted typing simply fails to match and the next cycle retypes it.
 ALIVE_NONCE="OXIDE-ALIVE-OK"
-ALIVE_CMD="${SMOKE_ALIVE_CMD:-echo OXIDE-AL\"IVE\"-OK}"
+ALIVE_CMD="${SMOKE_ALIVE_CMD:-systemctl --no-pager show --property=Version --value >/dev/null && echo OXIDE-AL\"IVE\"-OK}"
 ALIVE_MARKER="${SMOKE_ALIVE_MARKER:-$ALIVE_NONCE}"
 # The image's journal does not forward unit-completion messages after it takes
 # over the serial log. The prompt is emitted only after the configured shell

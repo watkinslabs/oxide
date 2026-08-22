@@ -99,4 +99,8 @@ run_smoke init-fatal MOCK_QEMU_LOG='systemd[1]: segfault at deadbeef' MOCK_QEMU_
 grep -q 'KERNEL FAULT' "$RUN_OUT"
 grep -q 'systemd\[1\]: segfault' "$RUN_LOG"
 
+# The default command must ask PID 1's manager, not merely echo from the
+# debug shell. An override remains available for profiles without systemd.
+grep -Fq 'systemctl --no-pager show --property=Version --value >/dev/null && echo OXIDE-AL"IVE"-OK' "$ROOT/tools/boot-smoke.sh"
+
 echo 'test-boot-smoke-runtime: PASS'
