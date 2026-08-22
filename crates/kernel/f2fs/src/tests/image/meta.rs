@@ -43,11 +43,11 @@ pub fn super_bytes(b: &Builder) -> Vec<u8> {
     put32(&mut s, SB_LOG_SECTORS_PER_BLOCK, 0);
     put32(&mut s, SB_LOG_BLOCKSIZE, BLKSIZE_BITS);
     put32(&mut s, SB_LOG_BLOCKS_PER_SEG, LOG_BLKS_PER_SEG);
-    put32(&mut s, SB_SEGS_PER_SEC, 1);
+    put32(&mut s, SB_SEGS_PER_SEC, b.segs_per_sec);
     put32(&mut s, SB_SECS_PER_ZONE, 1);
     put32(&mut s, SB_CHECKSUM_OFFSET, SB_CRC as u32);
     put64(&mut s, SB_BLOCK_COUNT, BLOCK_COUNT);
-    put32(&mut s, SB_SECTION_COUNT, SEG_MAIN);
+    put32(&mut s, SB_SECTION_COUNT, SEG_MAIN / b.segs_per_sec);
     put32(&mut s, SB_SEGMENT_COUNT, SEGMENT_COUNT);
     put32(&mut s, SB_SEGMENT_COUNT_CKPT, SEG_CKPT);
     put32(&mut s, SB_SEGMENT_COUNT_SIT, SEG_SIT);

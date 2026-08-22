@@ -88,6 +88,8 @@ pub struct Builder {
     /// The inodes holding each quota kind's file.
     pub qf_ino: [u32; MAX_QUOTAS],
     pub cp_payload: u32,
+    /// Segments in one formatted section.
+    pub segs_per_sec: u32,
     /// Where the next main-area block comes from.
     pub next_main: u32,
     /// Where the next node id comes from.
@@ -138,6 +140,7 @@ impl Builder {
             s_encoding: 0,
             qf_ino: [0; MAX_QUOTAS],
             cp_payload: 0,
+            segs_per_sec: 1,
             next_main: MAIN_BLKADDR,
             next_nid: FIRST_NID,
             nat: Vec::new(),
@@ -162,6 +165,13 @@ impl Builder {
 
     /// Set the checkpoint flag word. # C: O(1)
     pub fn cp_flags(mut self, f: u32) -> Self { self.cp_flags = f; self }
+
+    /// Format sections spanning `n` segments. # C: O(1)
+    pub fn segs_per_sec(mut self, n: u32) -> Self {
+        assert!(n != 0 && SEG_MAIN % n == 0, "section width must divide main segments");
+        self.segs_per_sec = n;
+        self
+    }
 
     /// Take the next free main-area block.
     ///
