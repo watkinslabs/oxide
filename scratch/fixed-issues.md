@@ -757,6 +757,12 @@
 |---|---|---|---|---|---|
 | FIXED B2465 | INFRA | med | Duplicate cross-worktree log rows are covered by the existing CLAUDE worktree/path verification rule. | Policy assertions passed after a removal positive control failed. | Chris Watkins |
 
+### R119-feature-gate-log-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED R119 | INFRA | low | **The feature-gate log row is covered by the same worktree-path verification rule as the earlier cross-worktree rows.** A freshly redirected log can still contain interleaved output when concurrent lanes share the host, but the required `Checking <crate> (<path>)` verification identifies whether the run names the invoking worktree; the row adds no separate mechanism or remediation beyond that rule. | Current `CLAUDE.md` requires checking the crate paths in the log before trusting a green gate, and B2465 fixed the corresponding cross-worktree-log class. No source behavior changed. | R119 |
+
 ### B2464-keyring-real-uid-identity
 
 | Status | Class | Sev | Issue | Evidence | Owner |
