@@ -576,6 +576,12 @@
 |---|---|---|---|---|---|
 | FIXED ac2049dee | DEFECT/MISSING | med | Stale hugetlb RSS, meminfo/sysfs, cgroup, and SHM_HUGETLB rows are covered by the canonical hugetlb implementation and were folded into one record. | VMM/procfs/cgroup/IPC/sysfs checks and target builds passed. | Chris Watkins |
 
+### B2567-stale-shm-hugetlb-rows
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2567 | MISSING | med | The two older `shmget(SHM_HUGETLB)` rows, including the claimed-concurrent duplicate, were stale duplicates of B2469's canonical hugetlb/SHM_HUGETLB closure. | B2469 records the merged hugetlb SHM implementation and verification; no separate refusal remains in the current production path. | Chris Watkins |
+
 ### B2468-keyring-global-process-identity
 
 | Status | Class | Sev | Issue | Evidence | Owner |
