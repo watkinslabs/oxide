@@ -180,6 +180,33 @@ fn accepted_socket_clones_listener_namespace_owner() {
 }
 
 #[test]
+fn connected_stream_read_consumes_a_real_transport_frame() {
+    let _guard = vsock::tests::test_domain();
+    let transport = owner(0x0a00_0010);
+    let _ = vsock::driver_uninstall(transport);
+    assert!(vsock::driver_install(transport, 3, tx_ok, rx_noop));
+    let (key, conn) = connection(transport.raw(), 61_013);
+    let sock = Arc::new(VsockSocket::new());
+    sock.attach_conn(conn.clone()).expect("attach connected transport");
+
+    let payload = b"hosted-vsock";
+    let frame = vsock::VsockHdr {
+        src_cid: key.peer_cid, dst_cid: key.local_cid,
+        src_port: key.peer_port, dst_port: key.local_port,
+        len: payload.len() as u32, typ: vsock::VIRTIO_VSOCK_TYPE_STREAM,
+        op: vsock::VIRTIO_VSOCK_OP_RW, flags: 0, buf_alloc: 8192, fwd_cnt: 0,
+    };
+    vsock::deliver_rx_from(transport, &frame, payload);
+    let mut received = [0u8; 32];
+    assert_eq!(sock.read_nonblock(0, &mut received), Ok(payload.len()));
+    assert_eq!(&received[..payload.len()], payload);
+
+    sock.release_file();
+    vsock::TABLE.remove(key);
+    assert!(vsock::driver_uninstall(transport));
+}
+
+#[test]
 fn receive_admission_uses_socket_namespace_and_operation() {
     let namespace = namespace();
     let id = crate::net_ns::namespace_id(&namespace);

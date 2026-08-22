@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2540-vsock-connected-read-hosted-coverage
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2540 | COVERAGE | low | A hosted production-boundary test now drives an inbound virtio-vsock stream frame through the live connected transport table and `VsockSocket::read_nonblock`, proving payload delivery at the socket boundary. | Net lib suite 2591/2591; the focused test failed when the production read owner was bypassed and passed after restoration. | Chris Watkins |
+
 ### B2538-tmpfs-casefold-residual-ledger
 
 | Status | Class | Sev | Issue | Evidence | Owner |
