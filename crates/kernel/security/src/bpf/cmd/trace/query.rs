@@ -6,14 +6,16 @@
 // Anything else — a map fd, a program fd, a link of any other kind, a
 // plain file — is `-ENOTSUPP` (524), which is not `-EOPNOTSUPP` (95).
 //
+// A raw-tracepoint link is described from the program and event name retained
+// by that link; there is no query-side registry or copied attachment state.
 // A perf-event fd is described from the program attached to the event.
 // An event with no attached program is `-ENOENT` and nothing is written
 // back. A program of the perf-event type is deliberately not described:
 // the reference reports `-EOPNOTSUPP` (95) for one, because the description
 // it would produce names a trace attach point and a perf-event program has
-// none. Every other attached program implies a tracing event, whose
-// description is read off the trace-event record — blocked on the
-// tracepoint-registry row in `scratch/known_issues.md`.
+// none. The only perf PMU this kernel currently exposes is non-tracing and
+// admits only that program type; tracing perf events remain a separate PMU
+// surface rather than a synthetic description here.
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -25,13 +27,15 @@ use super::super::super::attr::Attr;
 use super::super::super::uapi;
 use super::super::super::user;
 use super::super::objfd;
-use super::super::super::{PerfHooks, ProgFacts, BPF_PROG_TYPE_PERF_EVENT};
+use super::super::super::{
+    raw_tracepoint_link_info, PerfHooks, ProgFacts, RawTracepointLinkInfo,
+    BPF_PROG_TYPE_PERF_EVENT,
+};
 
-/// The three descriptor classes the query distinguishes. The
-/// raw-tracepoint link is absent because no link of that kind can exist
-/// yet: the tree has no tracepoint registry to attach one to.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+/// Descriptor classes in the reference's decision order.
 pub(crate) enum QueriedFd {
+    /// A raw-tracepoint link and its canonical retained attachment.
+    RawTracepoint(RawTracepointLinkInfo),
     /// A bpf link that is not a raw-tracepoint link — the reference's
     /// `goto out_not_supp` inside the link arm.
     OtherLink,
@@ -44,6 +48,9 @@ pub(crate) enum QueriedFd {
 /// `file->f_op == &bpf_link_fops` first, `perf_get_event()` second.
 /// # C: O(1)
 pub(crate) fn classify(inode: &InodeRef, perf: PerfHooks) -> QueriedFd {
+    if let Some(info) = raw_tracepoint_link_info(inode) {
+        return QueriedFd::RawTracepoint(info);
+    }
     if objfd::link_kind(inode).is_some() { return QueriedFd::OtherLink; }
     if (perf.is_perf)(inode) { return QueriedFd::PerfEvent; }
     QueriedFd::Other
@@ -53,11 +60,10 @@ pub(crate) fn classify(inode: &InodeRef, perf: PerfHooks) -> QueriedFd {
 /// attached to the event; without one there is nothing to describe and the
 /// query stops before writing any field.
 ///
-/// A perf-event program is refused outright. Anything else attached to a
-/// perf fd is a tracing event's program, whose attach-point name, type and
-/// probe address come from the trace-event record this kernel has no
-/// registry for — the same `-EOPNOTSUPP` the reference gives for a probe
-/// kind its configuration left out. # C: O(1)
+/// A perf-event program is refused outright. Anything else would require a
+/// tracing perf event and its trace-event record; the current perf owner
+/// exposes neither, so it is the same `-EOPNOTSUPP` the reference gives for
+/// an unsupported probe kind. # C: O(1)
 fn perf_event_info(prog: Option<ProgFacts>) -> Result<(u32, u32, Vec<u8>, u64, u64), Errno> {
     let prog = prog.ok_or(Errno::Enoent)?;
     if prog.prog_type == BPF_PROG_TYPE_PERF_EVENT { return Err(Errno::Eopnotsupp); }
@@ -132,6 +138,11 @@ pub(crate) fn describe(a: &Attr, uattr: u64, fd: QueriedFd, prog: Option<ProgFac
     -> Result<i64, Errno>
 {
     match fd {
+        QueriedFd::RawTracepoint(info) => {
+            let prog = super::super::super::prog_facts(&info.prog).ok_or(Errno::Enotsupp)?;
+            copy_out(a, uattr, prog.id, uapi::fd_type::RAW_TRACEPOINT,
+                     info.name.as_bytes(), 0, 0)
+        }
         QueriedFd::PerfEvent => {
             let (prog_id, fd_type, name, probe_offset, probe_addr) = perf_event_info(prog)?;
             copy_out(a, uattr, prog_id, fd_type, &name, probe_offset, probe_addr)

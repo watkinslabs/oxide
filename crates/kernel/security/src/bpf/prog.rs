@@ -193,6 +193,10 @@ fn verify(
                 p.prog_type, p.expected_attach_type, insns, maps,
             )
         }
+        uapi::prog_type::RAW_TRACEPOINT | uapi::prog_type::RAW_TRACEPOINT_WRITABLE =>
+            crate::bpf_verify::verify_program(
+                p.prog_type, p.expected_attach_type, insns, maps,
+            ),
         _ => return Err(Errno::Einval),
     };
     verdict.map_err(|error| match error {
