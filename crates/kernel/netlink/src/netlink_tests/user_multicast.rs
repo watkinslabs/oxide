@@ -72,3 +72,20 @@ fn group_only_send_broadcasts_and_still_reaches_protocol_input() {
     };
     assert_eq!(Nlmsghdr::parse(&reply.bytes).unwrap().nlmsg_type, msg::NLMSG_DONE);
 }
+
+#[test]
+fn selinux_group_send_reaches_its_subscriber() {
+    const GROUP: u32 = selinux_nl::uapi::SELNLGRP_AVC;
+    const GROUP_MASK: u32 = 1 << (GROUP - 1);
+    let ns = test_namespace();
+    let sender = socket(proto::NETLINK_SELINUX, &ns);
+    let subscriber = socket(proto::NETLINK_SELINUX, &ns);
+    subscriber.add_membership(GROUP).unwrap();
+
+    assert_eq!(sender.send_to(b"selinux", NlDest { port_id: 0, group: GROUP_MASK }, true), Ok(7));
+    let ReceiveState::Datagram(multicast) = subscriber.receive(false) else {
+        panic!("SELinux subscriber receives the userspace group copy");
+    };
+    assert_eq!(multicast.bytes, b"selinux");
+    assert_eq!(multicast.multicast_group, GROUP);
+}
