@@ -2,10 +2,11 @@
 //
 // Both commands reach for a tracepoint: the first attaches a program to
 // one by name, the second reports which tracepoint or perf event a
-// descriptor in another task stands for. This kernel has no tracepoint
-// registry, so the attach's name lookup finds nothing (`-ENOENT`). The
-// query's descriptor classification and write-back live in `query.rs`.
-// See the missing-tracepoint-registry row in `scratch/known_issues.md`.
+// descriptor in another task stands for. Raw attachment resolves the
+// canonical tracefs event descriptor, whose raw site owns the attached
+// probes and whose production call site supplies their Linux-shaped
+// argument vector. The query's descriptor classification and write-back
+// live in `query.rs`.
 
 extern crate alloc;
 use alloc::vec::Vec;
