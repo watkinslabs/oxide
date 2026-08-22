@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2535-stale-arm-debug-shell-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED current | INFRA | low | The remaining ARM debug-shell device row duplicated B2487/B2506: the boot composer now derives path-valued shell/getty devices from the architecture-selected serial identity, so ARM uses `ttyAMA0` consistently. | B2506 implementation `81a821d7c`; existing fixed entries `B2487-stale-arm-debug-shell-device` and `B2506-pl011-ttyama-device-identity`; cmdline/console/sysfs/xtask tests and paired smoke passed. | Chris Watkins |
+
 ### B2534-stale-ninep-rename-flags-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
