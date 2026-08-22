@@ -42,6 +42,8 @@ const U64: u32 = t::NL_ATTR_TYPE_U64;
 
 /// Longest interface name the kernel accepts, including the terminator.
 pub const IFNAMSIZ: u32 = 16;
+/// Longest physical-radio name accepted by `SET_WIPHY`, excluding the terminator.
+pub const WIPHY_NAME_MAX_LEN: usize = 19;
 /// Longest element blob a request may attach.
 pub const MAX_IE_LEN: u32 = 4096;
 
@@ -60,7 +62,7 @@ pub const EMPTY: &[PolicyEntry] = &ADDRESSING;
 /// `GET_WIPHY` and `SET_WIPHY`.
 pub const WIPHY: &[PolicyEntry] = &[
     ADDRESSING[0], ADDRESSING[1], ADDRESSING[2], ADDRESSING[3],
-    text(a::WIPHY_NAME, IFNAMSIZ),
+    text(a::WIPHY_NAME, WIPHY_NAME_MAX_LEN as u32),
     int(a::WIPHY_TXQ_PARAMS, U32, 4),
     int(a::WIPHY_FREQ, U32, 4),
     int(a::WIPHY_FREQ_OFFSET, U32, 4),
