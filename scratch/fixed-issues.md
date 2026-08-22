@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2506-pl011-ttyama-device-identity
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 81a821d7c | DEFECT | med | AArch64 PL011 is consistently exposed as ttyAMA0 across cmdline, devnodes, sysfs, generated services, and bootargs. | Cmdline/console/sysfs/xtask tests and target checks passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2505-affinity-abi-current-cpu-width
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -798,6 +805,13 @@
 =======
 | FIXED 54a363f57 | DEFECT | med | **The affinity ABI tests now derive their buffer boundaries from the configured logical-CPU limit instead of pinning the retired 64-CPU width.** Production was already correct: the syscall mask is 32 bytes for this kernel's 256 CPU identifiers, and both affinity entries use that single owner. Five duplicate ledger observations are consolidated here; the aggregate syscall-failure row retains only its two independent source-contract failures. | B2505. Linux 7.2.0-rc4 derives the syscall mask size from `nr_cpu_ids`. The original focused run reproduced five failures; the corrected 14-test affinity suite passes. Halving the production size formula makes the retained bitmap-size contract fail with 16 versus 32, then exact restoration returns GREEN. Full syscalls reports 1,993 pass and only the two independently tracked source-contract failures; both kernel target checks pass. No smoke: the permanent delta is hosted-test and ledger only. | B2505-affinity-abi-current-cpu-width |
 >>>>>>> 94f093ad6 (docs(issues): consolidate affinity failure rows)
+=======
+### B2506-pl011-ttyama-device-identity
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2506 | DEFECT | low | **The aarch64 PL011 line now has Linux's `ttyAMA0` identity at every live surface.** One target-selected kernel identity feeds devtmpfs, sysfs enumeration, and `console/active`; the image composer has one matching architecture-to-device owner used by `console=`, the serial debug shell/getty mask, and every injected probe service. x86_64 remains `ttyS0`. | B2506. Linux 7.2.0-rc4's `amba_reg` sets `driver_name` and `dev_name` to `ttyAMA`, with `SERIAL_AMBA_MAJOR`/`SERIAL_AMBA_MINOR` 204:64. Before the fix, the production ARM boot composer emitted `console=ttyAMA0` but `systemd.debug_shell=ttyS0`; changing the focused expectation made `the_serial_control_plane_moves_the_shell_and_masks_the_login` fail on that exact mismatch, and the shared-owner implementation restored it GREEN. Full cmdline 79/79, console 10/10, sysfs 178/178, and xtask 79/79 suites pass; the complete x86_64 and aarch64 feature gates pass. Final paired smoke reached userspace with serial RX on attempt 1: x86_64 in 52 s and aarch64 through the renamed line in 56 s. | B2506-pl011-ttyama-device-identity |
+>>>>>>> d8b17f7d3 (docs: close PL011 ttyAMA identity issue)
 
 ### B2329-freezer-backoff-sleep
 
