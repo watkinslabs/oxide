@@ -3250,3 +3250,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 0ddbcf105 | COVERAGE | low | **ARP test convenience insertion no longer discards transmit jobs released by neighbour resolution.** Production uses the canonical `learn_at` result; test helpers return those jobs instead of dropping them. | B2357's queued-egress regression pinned one returned job and its resumed data frame. | 0ddbcf105 |
+
+### B2358-stale-nt-file-device-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED eac6b7e8d | DEFECT | low | **The absence of device and inode numbers from `NT_FILE` is required ABI, not a defect.** The descriptor contains count, page size, start/end/page-offset triples, and paths; adding identity fields would misparse later entries. | B2358's production-length regression turned RED when the entry shape was widened and GREEN when restored. | B2358-stale-nt-file-device-row |
