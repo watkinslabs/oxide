@@ -16,7 +16,7 @@
 
 use alloc::sync::Arc;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
 use crate::{RunqueueInner, Task};
 use sync::{Runqueue as RunqueueClass, Spinlock};
@@ -46,6 +46,10 @@ pub struct Runqueue {
     /// `nr_running` mirror per `13§6` — sum of RT + CFS class
     /// counts. Updated under `inner` lock; readable lock-free.
     pub nr_running: AtomicU32,
+
+    /// Blocked tasks that contribute to system load. Only the sum across all
+    /// CPUs is meaningful because a wake may retire another CPU's increment.
+    pub nr_uninterruptible: AtomicI32,
 
     /// Per-CPU preempt count per `13§9`. `>0` ⇒ no switch. v1
     /// kthreads + boot run with preempt_count=0 by default; the
@@ -104,6 +108,7 @@ impl Runqueue {
             cpu,
             current: AtomicPtr::new(idle_raw),
             nr_running: AtomicU32::new(0),
+            nr_uninterruptible: AtomicI32::new(0),
             preempt_count: AtomicU32::new(0),
             idle: AtomicPtr::new(idle_raw),
             nr_queued: AtomicU32::new(0),
@@ -140,6 +145,23 @@ impl Runqueue {
     pub fn publish_nr_running(&self, queued: u32) {
         self.nr_queued.store(queued, Ordering::Release);
         self.refresh_nr_running();
+    }
+
+    /// Account a task that completed a contributing sleep transition on this
+    /// CPU. Caller holds this runqueue's lock. # C: O(1)
+    pub(crate) fn account_blocked(&self, task: &Task) -> bool {
+        if !task.mark_load_blocked() { return false; }
+        self.nr_uninterruptible.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
+    /// Retire a contributing sleep at wake activation. The destination may
+    /// differ from the blocking CPU; only the cross-CPU sum is stable.
+    /// Caller holds this runqueue's lock. # C: O(1)
+    pub(crate) fn account_wake(&self, task: &Task) -> bool {
+        if !task.take_load_blocked() { return false; }
+        self.nr_uninterruptible.fetch_sub(1, Ordering::Relaxed);
+        true
     }
 
     /// Recompute `nr_running` from the last-published tree count plus whether

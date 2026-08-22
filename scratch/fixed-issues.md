@@ -3136,3 +3136,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2338 | DEFECT | low | **`GET_SCAN` now ages and expires BSS entries against the canonical monotonic clock, not against the newest cached entry.** One clock snapshot drives expiry and every `SEEN_MS_AGO` value in the multipart reply, and scan-start timestamps use the same owner. | Linux 7.2-rc4 uses `jiffies` for both `NL80211_BSS_SEEN_MS_AGO` and `cfg80211_bss_expire`. `a_reported_network_carries_the_attributes_a_supplicant_reads` drives the public dump handler with a two-second-old newest entry and requires `SEEN_MS_AGO=2000`; disconnecting the clock owner makes it RED at zero. `a_dump_expires_a_result_older_than_the_live_monotonic_deadline` proves the public handler removes an otherwise newest cache entry after the 30-second deadline. Wireless 308/308 passed. | B2338 |
+
+### B2339-loadavg-uninterruptible
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED `43b5c4c93` | DEFECT | med | **Load average now folds runnable plus uninterruptible and killable sleepers from scheduler-owned per-CPU counters.** Interruptible and freezer sleeps do not contribute, and task-owned block/wake ownership keeps the global sum exact across CPU migration. | B2339. `active_fold_includes_cross_cpu_uninterruptible_sum`, `uninterruptible_transition_contributes_until_wake`, `local_uninterruptible_wake_retires_load_contribution`, and `migrated_uninterruptible_wake_preserves_system_sum` passed on the original branch. | `43b5c4c93` |

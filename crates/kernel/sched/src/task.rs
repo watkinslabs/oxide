@@ -7,7 +7,7 @@
 //   the Arc, never onto the creator's kernel stack.
 // - signals: sigaction storage plus mm/rlimit accessors.
 // - arch: opaque arch context/FPU buffers and POSIX timer slot type.
-// - methods: constructors, fd-table, stack, context, state, and pid helpers.
+// - methods: constructors/fd-table/stack/context/state/pid; load: blocked-load handoff.
 // - exe_path: pin-locked /proc/<pid>/exe path accessors (clone/with/set).
 // - comm: spinlock-guarded TASK_COMM_LEN `comm` buffer accessors (`prctl`
 //   PR_SET_NAME/PR_GET_NAME, procfs, diagnostics).
@@ -47,7 +47,7 @@ mod mm_slot;
 mod fs_context;
 mod io_context;
 pub mod io_uring;
-mod lifetime;
+mod lifetime; mod load;
 mod mempolicy;
 mod methods;
 mod net_namespace;

@@ -64,10 +64,10 @@ failure mode this reconcile was supposed to catch, not commit.
 | Class | blocker | critical | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|---:|
 | COVERAGE | 0 | 0 | 10 | 68 | 65 | 143 |
-| DEFECT | 1 | 4 | 17 | 64 | 63 | 149 |
+| DEFECT | 1 | 4 | 17 | 63 | 63 | 148 |
 | INFRA | 0 | 0 | 11 | 40 | 39 | 90 |
 | MISSING | 1 | 0 | 49 | 140 | 113 | 303 |
-| **Total** | **2** | **4** | **87** | **312** | **280** | **685** |
+| **Total** | **2** | **4** | **87** | **311** | **280** | **684** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -800,7 +800,6 @@ here now.
 | OPEN | COVERAGE | med | `modules/src/test_serial.rs::MODULES` (217/231), `drv/src/model/test_claim.rs::MODEL` (38/40), `fbdev/src/test_claim.rs::FBDEV` (27/30), `input/src/tests.rs::TEST_MUTEX` (18/22), `ucounts/src/tests.rs::LOCK` (11/12): near-total conventions, which is the state `socket` was in before the 18 non-claiming tests were noticed. A convention at 94 % is one added test away from the flake. | Same file; claim ratios above. | unassigned |
 | OPEN | COVERAGE | med | 65 `singleton-pin` rows: hosted fixtures pinning a process-global singleton through a parameterless accessor (`vfs::initial`, `drv::devices`, `network-namespace::initial`, `devfs::clear_hwrng_source`, …). `B1957` names de-pinning as the only lever that removes the class rather than guarding it — these rows are the inventory for that work. | `tools/hosted-global-state-backlog.tsv`, rule `singleton-pin`. | unassigned |
 | OPEN | COVERAGE | med | No gate prevents a new external-source citation from landing. This rule has now cost four lanes time (B1949, B1955, B1956, C295). | See "Recurrence" below. | unowned |
-| OPEN | DEFECT | med | Load average counts only runnable tasks; the reference also counts uninterruptible-sleep tasks, so loadavg reads low under I/O-wait-heavy load. | `crates/kernel/sched/src/loadavg.rs:5-6` | unowned |
 | OPEN | MISSING | med | `RLIMIT_SIGPENDING` charging is only the decision half; queues are bounded by a fixed `RT_QUEUE_CAP` in the interim. The comment frames this as deferred, which Discipline rule 3 forbids. | `crates/kernel/sched/src/rlimit/pending.rs:9-16` | unowned |
 
 ### B2281-boot-compat-failures

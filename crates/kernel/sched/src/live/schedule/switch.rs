@@ -320,6 +320,7 @@ pub(super) unsafe fn schedule_once(keep_irqs_disabled: bool) {
         let prev_ref = unsafe { rq.current_ref() };
         prev_ref.debug_check_canary("schedule_prev_update");
         update_curr(prev_ref, &inner, now);
+        rq.account_blocked(prev_ref);
         if !matches!(prev_ref.sched_class(), SchedClass::Idle)
             && matches!(prev_ref.state(), TaskState::Runnable | TaskState::Waking)
         {

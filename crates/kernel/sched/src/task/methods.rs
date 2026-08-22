@@ -648,13 +648,6 @@ impl Task {
         }
     }
 
-    /// Claim exclusive ownership of a sleeping task's wake placement. A
-    /// failed claim is always a stale or racing wake; only the winner may add
-    /// the task to a runqueue or deferred wake list. # C: O(1)
-    pub fn claim_wake(&self) -> bool {
-        self.cas_state(TaskState::Sleeping, TaskState::Waking).is_ok()
-    }
-
     /// Complete a wake claim after its destination activation has been
     /// committed.  The waker owns the interim Waking state, so schedule never
     /// independently requeues the switching-out task.
