@@ -3274,3 +3274,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED f039e13ae | DEFECT | low | **A combined readiness wake delivers one fasync notification for every distinct `POLL_*` reason instead of collapsing the mask to one reason.** It preserves the full mask for poll/epoll subscribers and orders priority before ordinary-data notification. | B2361's urgent-plus-data readiness regression was RED with one notification and GREEN with two in Linux order. | B2361-fasync-combined-readiness |
+
+### B2362-stale-ext4-commit-timer-flake
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 1192e3e34 | INFRA | low | **The ext4 commit-timer test is deterministic under the shared harness.** Tests use the exclusion claim and forward-only synthetic clock instead of wall time. | B2362's freeze-clock positive control made the test RED at zero wait; restoring the synthetic step made it GREEN. | B2362-stale-ext4-commit-timer-flake |
