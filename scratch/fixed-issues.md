@@ -1,5 +1,11 @@
 # Fixed issues
 
+### D590-f2fs-formatted-sections
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED D590 | COVERAGE | low | f2fs now has a real formatted-image regression for sections wider than one segment. | The fixture builder writes `SB_SEGS_PER_SEC` and `SB_SECTION_COUNT` from a validated section-width option; `a_formatted_multi_segment_section_reaches_the_mount` formats two-segment sections and observes the mounted superblock. Temporarily writing the old hard-coded width made mount fail with `EINVAL` (RED); restored format metadata passes. | D590-f2fs-formatted-sections |
+
 ### D589-stale-exfat-texfat-bitmap
 
 | Status | Class | Sev | Issue | Evidence | Owner |

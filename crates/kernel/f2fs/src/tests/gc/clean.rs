@@ -281,6 +281,15 @@ fn a_volume_with_nothing_worth_cleaning_reports_so_and_stops() {
     assert_eq!(v.collect(u32::MAX).unwrap(), 0, "an impossible target still terminates");
 }
 
+/// The formatted superblock, not a post-mount test mutation, carries a
+/// multi-segment section into the mounted victim owner. # C: O(1)
+#[test]
+fn a_formatted_multi_segment_section_reaches_the_mount() {
+    let v = test_image::with_root().segs_per_sec(2).mount_rw().unwrap();
+    assert_eq!(v.super_block().segs_per_sec, 2);
+    assert_eq!(v.section_count(), (SEG_MAIN / 2));
+}
+
 #[test]
 fn one_pass_cleans_the_best_victim_and_leaves_the_rest() {
     let (mut v, ino, victim, _) = victim_volume();
