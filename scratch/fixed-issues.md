@@ -1,5 +1,11 @@
 # Fixed issues
 
+### R98-security-spec-current-seccomp
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 99597f975 | DOC | low | The seccomp specification now records the live filter contract and has focused production coverage. | Seccomp tests and specification checks passed. | Chris Watkins |
+
 ### R97-io-uring-spec-current-opcodes
 
 | Status | Class | Sev | Issue | Evidence | Owner |
