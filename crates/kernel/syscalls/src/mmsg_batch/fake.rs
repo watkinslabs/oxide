@@ -10,6 +10,8 @@
 // `super`'s real code, which is the whole point.
 
 use alloc::vec::Vec;
+use alloc::sync::Arc;
+use std::sync::{Condvar, Mutex};
 
 use syscall::errno::Errno;
 
@@ -33,6 +35,40 @@ pub enum Entry {
     Got { oob: bool },
     /// The receive failed with this negative errno.
     Failed(i64),
+    /// The first receive blocks until the test releases the gate, then
+    /// delivers one message. This is a host-only transport stand-in for a
+    /// real socket whose queue is empty at the first call.
+    WaitThenGot(Arc<WaitGate>),
+}
+
+/// A deterministic blocking point for hosted batch-composition tests.
+pub struct WaitGate {
+    entered: Mutex<bool>,
+    released: Mutex<bool>,
+    cv: Condvar,
+}
+
+impl WaitGate {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self { entered: Mutex::new(false), released: Mutex::new(false), cv: Condvar::new() })
+    }
+
+    pub fn wait_until_entered(&self) {
+        let mut entered = self.entered.lock().unwrap_or_else(|e| e.into_inner());
+        while !*entered { entered = self.cv.wait(entered).unwrap_or_else(|e| e.into_inner()); }
+    }
+
+    pub fn release(&self) {
+        *self.released.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        self.cv.notify_all();
+    }
+
+    fn wait(&self) {
+        *self.entered.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        self.cv.notify_all();
+        let mut released = self.released.lock().unwrap_or_else(|e| e.into_inner());
+        while !*released { released = self.cv.wait(released).unwrap_or_else(|e| e.into_inner()); }
+    }
 }
 
 /// A scripted socket. Build it, hand it to [`super::run`], read the record.
@@ -109,7 +145,11 @@ impl BatchOps for Fake {
             None => WOULD_BLOCK,
             Some(entry) => {
                 self.unreached -= 1;
-                match entry { Entry::Failed(errno) => *errno, Entry::Got { .. } => 1 }
+                match entry {
+                    Entry::Failed(errno) => *errno,
+                    Entry::Got { .. } => 1,
+                    Entry::WaitThenGot(gate) => { gate.wait(); 1 }
+                }
             }
         }
     }
