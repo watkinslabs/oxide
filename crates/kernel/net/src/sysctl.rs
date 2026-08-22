@@ -27,6 +27,10 @@ pub const DEFAULT_RMEM_DEFAULT: u32 = 212_992;
 /// than a fresh datagram or AF_UNIX socket.
 pub const DEFAULT_TCP_WMEM: [i64; 3] = [4_096, 16_384, 4 << 20];
 pub const DEFAULT_TCP_RMEM: [i64; 3] = [4_096, 131_072, 6 << 20];
+/// `net.ipv4.tcp_reordering`: default and the current reference's upper
+/// admission bound (`tcp_max_reordering`).
+pub const DEFAULT_TCP_REORDERING: i64 = 3;
+pub const MAX_TCP_REORDERING: i64 = 300;
 
 /// The two send/receive ceilings are ONE global pair, not per-namespace state:
 /// only the initial network namespace may write them and every namespace reads
@@ -292,6 +296,12 @@ pub fn tcp_nometrics_save_in(ns: u64) -> bool {
 /// `net.ipv4.tcp_no_ssthresh_metrics_save` in a live namespace. # C: O(log N)
 pub fn tcp_no_ssthresh_metrics_save_in(ns: u64) -> bool {
     value_in(ns, NetSysctlKey::TcpNoSsthreshMetricsSave).unwrap_or(0) != 0
+}
+
+/// `net.ipv4.tcp_reordering` in a live namespace. A connection carrying this
+/// value has not observed path reordering of its own. # C: O(log N)
+pub fn tcp_reordering_in(ns: u64) -> u32 {
+    value_in(ns, NetSysctlKey::TcpReordering).unwrap_or(DEFAULT_TCP_REORDERING) as u32
 }
 
 /// Linux unsigned backlog clamp performed by `__sys_listen_socket`.

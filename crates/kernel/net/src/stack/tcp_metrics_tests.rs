@@ -103,3 +103,29 @@ fn a_namespace_that_refuses_to_remember_learns_nothing_from_a_close() {
     crate::sysctl::set_value_in(0, crate::net_ns::NetSysctlKey::TcpNoMetricsSave, 0)
         .expect("the namespace carries the knob");
 }
+
+#[test]
+fn the_namespace_reordering_default_is_not_recorded_as_an_observation() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let stack = NetStack::new();
+    let (iface, lo) = stack.register_loopback();
+    let _listener = stack.tcp_listen(SERVER, 7_604, true).expect("listen");
+    crate::tcp_metrics::forget_all_in(0);
+    crate::sysctl::set_value_in(0, crate::net_ns::NetSysctlKey::TcpReordering, 9)
+        .expect("the namespace carries the knob");
+
+    let child = handshake(&stack, iface, 7_604, 40_104, &lo).expect("the handshake completed");
+    {
+        let mut conn = child.conn.lock();
+        assert_eq!(conn.reordering, 9, "a fresh connection takes its namespace's baseline");
+        conn.srtt_ns = 20_000_000;
+        conn.rttvar_ns = 2_000_000;
+        conn.rto_ns = conn.rto_min_ns;
+    }
+    stack.tcp_close(&child).expect("close");
+
+    assert_eq!(crate::tcp_metrics::cached_in(0, IpAddr::V4(SERVER), CLIENT)
+        .get(ids::REORDERING), 0, "the namespace baseline is not an observation");
+    crate::sysctl::set_value_in(0, crate::net_ns::NetSysctlKey::TcpReordering,
+        crate::sysctl::DEFAULT_TCP_REORDERING).expect("restore the namespace default");
+}

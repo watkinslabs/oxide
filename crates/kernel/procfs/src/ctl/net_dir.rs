@@ -43,6 +43,8 @@ pub const NET_SYSCTLS: &[Node] = &[
             // The cache neither stores nor believes a slow-start threshold.
             File("tcp_no_ssthresh_metrics_save",
                 NetInt(net::net_ns::NetSysctlKey::TcpNoSsthreshMetricsSave, Some((0, 1)))),
+            File("tcp_reordering", NetInt(net::net_ns::NetSysctlKey::TcpReordering,
+                Some((1, net::sysctl::MAX_TCP_REORDERING)))),
             File("tcp_fin_timeout",    NetInt(net::net_ns::NetSysctlKey::TcpFinTimeout, Some((0, INT_MAX)))),
             File("tcp_keepalive_time", NetInt(net::net_ns::NetSysctlKey::TcpKeepaliveTime, Some((0, INT_MAX)))),
             File("tcp_wmem",           PerNetBufWindowHook(tcp_wmem, set_tcp_wmem,

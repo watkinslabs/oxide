@@ -14,10 +14,11 @@ use super::*;
 pub(crate) fn seed_from_cache(entry: &TcpEntry) {
     let net_ns = entry.net_ns();
     let no_ssthresh_save = crate::sysctl::tcp_no_ssthresh_metrics_save_in(net_ns);
+    let default_reordering = crate::sysctl::tcp_reordering_in(net_ns);
     let (src, dst, fresh) = {
         let conn = entry.conn.lock();
         (conn.local.ip, conn.remote.ip,
-         conn.metrics_fresh(crate::tcp_conn::metrics::DEFAULT_REORDERING, no_ssthresh_save))
+         conn.metrics_fresh(default_reordering, no_ssthresh_save))
     };
     let cached = crate::tcp_metrics::cached_in(net_ns, src, dst);
     let seed = crate::tcp_metrics::seed(cached, fresh);
@@ -30,11 +31,12 @@ pub(crate) fn record_to_cache(entry: &TcpEntry, now_ns: u64) {
     let net_ns = entry.net_ns();
     if crate::sysctl::tcp_nometrics_save_in(net_ns) { return; }
     let no_ssthresh_save = crate::sysctl::tcp_no_ssthresh_metrics_save_in(net_ns);
+    let default_reordering = crate::sysctl::tcp_reordering_in(net_ns);
     let (src, dst, closing) = {
         let conn = entry.conn.lock();
         if !conn.metrics_worth_recording() { return; }
         (conn.local.ip, conn.remote.ip,
-         conn.metrics_closing(crate::tcp_conn::metrics::DEFAULT_REORDERING, no_ssthresh_save))
+         conn.metrics_closing(default_reordering, no_ssthresh_save))
     };
     crate::tcp_metrics::record_in(net_ns, src, dst, now_ns, closing);
 }
