@@ -4,7 +4,7 @@ use crate::icmp::{self, time_exceeded_code, unreach_code};
 use crate::ipv4::{ip_checksum, push_ipv4_header, IPV4_HDR_LEN};
 use crate::netdev::{NetError, NetResult};
 use crate::netfilter_hook::{
-        nf_hook_eval_in, nf_output, NFPROTO_IPV4, NFPROTO_IPV6, NF_INET_FORWARD, NF_INET_POST_ROUTING,
+        nf_output, NFPROTO_IPV4, NFPROTO_IPV6, NF_INET_FORWARD, NF_INET_POST_ROUTING,
 };
 use crate::pkt::Pkt;
 use crate::stack::NetStack;
@@ -179,10 +179,13 @@ impl NetStack {
             b[10..12].copy_from_slice(&csum.to_be_bytes());
         }
         p.proto = crate::addr::eth_p::IPV4;
+        p.tx.mark = mark;
         p.iface = Some(route.iface);
         p.next_hop = Some(crate::pkt::TxNextHop::V4(crate::route::RouteRecord::next_hop_for(route.gateway, dst)));
-        if nf_hook_eval_in(net_ns, NF_INET_FORWARD, p.data(), NFPROTO_IPV4).verdict == 0 { return Ok(()); }
-        if nf_hook_eval_in(net_ns, NF_INET_POST_ROUTING, p.data(), NFPROTO_IPV4).verdict == 0 { return Ok(()); }
+        if crate::netfilter_hook::nf_hook_eval_ctx(&crate::netfilter_hook::NfHookCtx::packet(
+            net_ns, NF_INET_FORWARD, &p, NFPROTO_IPV4, Some(ingress))).verdict == 0 { return Ok(()); }
+        if crate::netfilter_hook::nf_hook_eval_ctx(&crate::netfilter_hook::NfHookCtx::packet(
+            net_ns, NF_INET_POST_ROUTING, &p, NFPROTO_IPV4, Some(ingress))).verdict == 0 { return Ok(()); }
         dev.xmit(p)
     }
 }
@@ -208,8 +211,10 @@ impl NetStack {
         p.next_hop = Some(crate::pkt::TxNextHop::V6 {
             addr: crate::route6::next_hop6_for(route.gateway, header.dst), src: Ipv6Addr::ANY,
         });
-        if nf_hook_eval_in(net_ns, NF_INET_FORWARD, p.data(), NFPROTO_IPV6).verdict == 0 { return Ok(()); }
-        if nf_hook_eval_in(net_ns, NF_INET_POST_ROUTING, p.data(), NFPROTO_IPV6).verdict == 0 { return Ok(()); }
+        if crate::netfilter_hook::nf_hook_eval_ctx(&crate::netfilter_hook::NfHookCtx::packet(
+            net_ns, NF_INET_FORWARD, &p, NFPROTO_IPV6, Some(ingress))).verdict == 0 { return Ok(()); }
+        if crate::netfilter_hook::nf_hook_eval_ctx(&crate::netfilter_hook::NfHookCtx::packet(
+            net_ns, NF_INET_POST_ROUTING, &p, NFPROTO_IPV6, Some(ingress))).verdict == 0 { return Ok(()); }
         let _ = ingress;
         dev.xmit(p)?;
         crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::OutForwDatagrams);

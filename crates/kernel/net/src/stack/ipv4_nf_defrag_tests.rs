@@ -11,14 +11,14 @@ static PRE_ROUTING_CALLS: AtomicUsize = AtomicUsize::new(0);
 static PRE_ROUTING_LEN: AtomicUsize = AtomicUsize::new(0);
 static PRE_ROUTING_FLAGS: AtomicUsize = AtomicUsize::new(usize::MAX);
 
-fn observe_pre_routing(_namespace: u64, hook: u32, packet: &[u8], _family: u8)
+fn observe_pre_routing(ctx: &crate::netfilter_hook::NfHookCtx<'_>)
     -> crate::netfilter_hook::NfHookResult
 {
-    let own = packet.len() >= 8 && u16::from_be_bytes([packet[4], packet[5]]) == FRAG_ID;
-    if hook == NF_INET_PRE_ROUTING && own {
+    let own = ctx.pkt.len() >= 8 && u16::from_be_bytes([ctx.pkt[4], ctx.pkt[5]]) == FRAG_ID;
+    if ctx.hook_id == NF_INET_PRE_ROUTING && own {
         PRE_ROUTING_CALLS.fetch_add(1, Ordering::AcqRel);
-        PRE_ROUTING_LEN.store(packet.len(), Ordering::Release);
-        PRE_ROUTING_FLAGS.store(u16::from_be_bytes([packet[6], packet[7]]) as usize,
+        PRE_ROUTING_LEN.store(ctx.pkt.len(), Ordering::Release);
+        PRE_ROUTING_FLAGS.store(u16::from_be_bytes([ctx.pkt[6], ctx.pkt[7]]) as usize,
             Ordering::Release);
     }
     crate::netfilter_hook::NfHookResult::ACCEPT

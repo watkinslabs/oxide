@@ -8,8 +8,10 @@ extern crate std;
 // - `protocol`: nfnetlink/nftables wire structs, subsystem ids, and UAPI attrs.
 // - `state`: in-memory tables/chains/rules/sets/objects plus mutation helpers.
 // - `eval`: hook evaluation over the stored ruleset.
+// - `eval_context`: live packet/hook ownership translated into expression inputs.
 // - `nl`: shared netlink attr encoding/decoding and top-level NFNL dispatch.
 mod eval;
+mod eval_context;
 mod nl;
 mod nft_dispatch;
 mod nft_dispatch_helpers;
@@ -17,7 +19,7 @@ pub mod nft_expr;
 mod protocol;
 mod state;
 
-pub use eval::{EvalResult, Verdict, eval, eval_in, eval_in_with_mark};
+pub use eval::{EvalResult, Verdict, eval, eval_hook, eval_in, eval_in_with_mark};
 pub use nl::handle;
 pub use protocol::{
     Nfgenmsg, NFT_CHAIN_POLICY_ACCEPT, NFT_CHAIN_POLICY_DROP, hook, nft_msg, nfta_chain,
