@@ -3172,3 +3172,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 1e435c091 | DEFECT | low | **f2fs `statfs` now counts an outstanding block reservation before writeback places the block.** `Volume::space` reads the live block count, seeded from the checkpoint and updated by placed blocks and unplaced reservations. | B2344's production mapped-write test drove the real reservation and superblock operation; the original branch reported the expected free-space decrement. | 1e435c091 |
+
+### B2345-hugetlbfs-no-xattrs
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2345 | DEFECT | low | **hugetlbfs exposes no extended-attribute store.** Directory and regular-file inodes leave the canonical VFS attribute slot absent, so get, set, and list report `EOPNOTSUPP`. | B2345's inode-type regression covered both directories and huge-page files; restoring the file store made the control fail. | B2345-hugetlbfs-no-xattrs |
