@@ -256,3 +256,24 @@ fn the_recycling_search_honours_the_segments_type() {
                    "the class walk did not reach the candidate");
     }
 }
+
+#[test]
+fn a_checkpoint_disabled_search_claims_an_empty_dirty_segment_as_a_last_resort() {
+    let mut opts = crate::opts::Options::defaults();
+    opts.checkpoint_disabled = true;
+    let mut v = test_image::with_root().mount_opts(opts).unwrap();
+    v.load_segments().unwrap();
+    let victim = test_image::SEG_MAIN - 1;
+    let addr = test_image::MAIN_BLKADDR + victim * BLKS_PER_SEG + 2;
+    v.update_seg(addr, true).unwrap();
+    v.update_seg(addr, false).unwrap();
+    assert!(v.is_prefree(victim), "the fixture did not make a zero-live dirty segment");
+
+    assert_eq!(v.find_victim_seg(0, CURSEG_HOT_DATA), Some((victim, 0)));
+    assert!(!v.is_prefree(victim), "the selected segment was not claimed from the dirty set");
+
+    v.segstate.prefree.insert(victim);
+    v.opts.checkpoint_disabled = false;
+    assert_eq!(v.find_victim_seg(0, CURSEG_HOT_DATA), None,
+               "an enabled checkpoint must remain the only prefree-to-free boundary");
+}
