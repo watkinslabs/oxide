@@ -1,5 +1,11 @@
 # Fixed issues
 
+### D575-hosted-global-payload-claims
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED D575 | INFRA | med | **The hosted-global audit treated payload statics as unowned when a test reached them through a claimed helper.** The klog emitter already asserts its per-thread claim at both production choke points, and every test that reaches the five payload statics enters through `lock_sink()` or `worker()`. | `tools/hosted-global-audit.py` now resolves enforced claim functions and same-crate wrappers, then marks a payload guarded only when every test that reaches that payload enters one of those claims. The isolated self-test covers a claimed payload and retains the forgetful-payload failure; klog's five rows are removed from the live TSV. | D575 |
+
 ### R133-obsolete-test-thread-workaround
 
 | Status | Class | Sev | Issue | Evidence | Owner |

@@ -222,6 +222,64 @@ def claim_modules(srcs):
     return {p: ns for p, ns in claims.items() if p in enforced}
 
 
+def claim_entry_names(srcs, guarded_files):
+    """Return enforced claim functions and test-side wrappers for each crate.
+
+    A payload static may be reached through a test helper rather than by the
+    claim module itself (`klog::tests::lock_sink` wraps `claim_console`).
+    Resolve those tiny wrappers so the ownership proof follows the same call
+    edge the test uses instead of requiring an assertion beside every static.
+    """
+    entries = {}
+    for s in srcs:
+        if s.path not in guarded_files:
+            continue
+        names = {m.group(1) for m in re.finditer(r"\bfn\s+(claim|claim_[a-z_0-9]+|worker)\s*\(", s.text)}
+        if names:
+            entries.setdefault(s.crate, set()).update(names)
+    changed = True
+    while changed:
+        changed = False
+        for s in srcs:
+            if s.crate not in entries:
+                continue
+            known = entries[s.crate]
+            for m in FN_DECL.finditer(s.text):
+                body = s.text[m.end():brace_region(s.text, m.end()) + 1]
+                if any(re.search(r"\b" + re.escape(n) + r"\s*\(", body) for n in known):
+                    name = m.group(1)
+                    if name not in known:
+                        known.add(name)
+                        changed = True
+    return entries
+
+
+def test_reaches_claim(body, entries):
+    return any(re.search(r"\b" + re.escape(n) + r"\s*\(", body) for n in entries)
+
+
+def payload_is_guarded(c, srcs, entries):
+    """Prove a payload's reaching tests all enter an enforced claim.
+
+    The ordinary exposure accounting intentionally remains conservative for
+    the backlog inventory. This narrower proof is only used when a crate has
+    an enforced claim module: it prevents a stale per-static row when every
+    test that can touch that payload enters the claim through a wrapper.
+    """
+    names = entries.get(c.src.crate)
+    if not names or c.rule != "fixture-state":
+        return False
+    owners = {c.name} | accessors_of(c.src, c.name)
+    reaching = []
+    for f in srcs:
+        if f.crate != c.src.crate or f.binary != c.src.binary:
+            continue
+        for fn, body in f.test_fns():
+            if any(re.search(r"\b" + re.escape(n) + r"\b", code_only(body)) for n in owners):
+                reaching.append((fn, body))
+    return bool(reaching) and all(test_reaches_claim(body, names) for _, body in reaching)
+
+
 class Cand:
     def __init__(self, rule, src, name, line, detail):
         self.rule, self.src, self.name, self.line, self.detail = rule, src, name, line, detail
@@ -415,9 +473,13 @@ def read_backlog(base):
 def audit(base):
     srcs = collect(base)
     guarded_files = set(claim_modules(srcs))
+    claim_entries = claim_entry_names(srcs, guarded_files)
     cands = find_statics(srcs, guarded_files) + find_singletons(srcs, guarded_files) \
         + find_hosted_selection(srcs)
     measure_exposure(cands, srcs)
+    for c in cands:
+        if not c.guarded and payload_is_guarded(c, srcs, claim_entries):
+            c.guarded = True
     cands.sort(key=lambda c: (c.rule, c.key()))
     return cands
 
@@ -536,6 +598,17 @@ def selftest():
     base = {"src/test_support.rs": CLEAN_SRC, "src/work.rs": CHOKE_SRC}
     fail += case("green-enforced-choke-point", base, 0,
                  ["hosted-global-audit: ok (1 candidates: 1 guarded, 0 claimed by every test in their binary, 0 in backlog)"])
+
+    # A payload static may be reached through a test helper that wraps the
+    # enforced claim. It needs no duplicate assertion beside the payload.
+    payload = dict(base)
+    payload["src/tests.rs"] = (
+        "static PAYLOAD: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());\n"
+        "fn lock() { let _ = crate::test_support::claim(); }\n"
+        "fn read_payload() { let _ = &PAYLOAD; }\n"
+        "#[test] fn payload_is_claimed() { lock(); read_payload(); }\n")
+    fail += case("green-claimed-payload", payload, 0,
+                 ["hosted-global-audit: ok (2 candidates: 2 guarded, 0 claimed by every test in their binary, 0 in backlog)"])
 
     # Green control: hosted-ness chosen by TARGET is the correct shape and must
     # not be confused with the feature-selected one below.
