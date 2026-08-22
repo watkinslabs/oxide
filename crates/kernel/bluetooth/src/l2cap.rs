@@ -3,6 +3,7 @@
 //!
 //! Module manifest:
 //! - `codec`: little-endian primitives, the basic header, the command header.
+//! - `fcs`: wire framing and CRC-16 admission for sequence-numbered PDUs.
 //! - `sig_bredr`: connect, disconnect, echo, information, command reject.
 //! - `sig_conf`: configuration framing and the option list.
 //! - `sig_le`: parameter update, credit-based connect, credits, the enhanced
@@ -19,6 +20,7 @@
 //! - `sock`: the address, the multiplexer screen, the option decisions.
 
 pub mod codec;
+pub mod fcs;
 pub mod sig_bredr;
 pub mod sig_conf;
 pub mod sig_le;
