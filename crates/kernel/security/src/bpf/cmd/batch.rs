@@ -71,6 +71,11 @@ pub(in super::super) fn batch(a: &Attr, attr_ptr: u64, op: BatchOp) -> Result<i6
     attr::check_attr(a, o::LAST_END)?;
     let inode = map::map_from_fd(a.u32_at(o::MAP_FD))?;
     let m = inode.private::<BpfMapInode>().ok_or(Errno::Einval)?;
+    batch_map(a, attr_ptr, op, m)
+}
+
+fn batch_map(a: &Attr, attr_ptr: u64, op: BatchOp, m: &BpfMapInode) -> Result<i64, Errno> {
+    use uapi::off::batch as o;
     let _writer = if op.accesses().contains(&Access::Write) {
         Some(m.storage.begin_write()?)
     } else {
@@ -151,6 +156,17 @@ fn lookup_batch(
     max_count: u32,
     done: &mut u32,
 ) -> Result<i64, Errno> {
+    lookup_batch_with(a, m, op, max_count, done, |_| {})
+}
+
+fn lookup_batch_with(
+    a: &Attr,
+    m: &BpfMapInode,
+    op: BatchOp,
+    max_count: u32,
+    done: &mut u32,
+    mut after_key: impl FnMut(&[u8]),
+) -> Result<i64, Errno> {
     use uapi::off::batch as o;
     let keys = a.u64_at(o::KEYS);
     let values = a.u64_at(o::VALUES);
@@ -167,6 +183,7 @@ fn lookup_batch(
             outcome = Err(Errno::Enoent);
             break;
         };
+        after_key(&key);
         let value = if op == BatchOp::LookupAndDelete {
             m.storage.remove(m.map_type, &key, true)?
         } else {
@@ -183,6 +200,10 @@ fn lookup_batch(
     }
     outcome
 }
+
+#[cfg(test)]
+#[path = "batch/tests.rs"]
+mod loop_tests;
 
 #[cfg(test)]
 mod tests {
