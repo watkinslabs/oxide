@@ -111,11 +111,21 @@ pub(crate) fn prime_bpf_raw_tracepoint_link(
     cookie: u64,
     hooks: RawTracepointHooks,
 ) -> Result<BpfRawTracepointPrimer, Errno> {
-    use vfs::{File, OpenFlags};
     let cur = sched::current().ok_or(Errno::Ebadf)?;
     // SAFETY: running task on this CPU; preempt-off on syscall path; table is pinned.
     let fdt = unsafe { cur.fd_table_ref() }.ok_or(Errno::Ebadf)?.clone();
-    let fd = fdt.get_unused_fd_flags(OpenFlags::O_CLOEXEC, cur.nofile_soft())
+    prime_bpf_raw_tracepoint_link_with(fdt, cur.nofile_soft(), prog, cookie, hooks)
+}
+
+pub(crate) fn prime_bpf_raw_tracepoint_link_with(
+    fdt: Arc<vfs::FdTable>,
+    limit: usize,
+    prog: InodeRef,
+    cookie: u64,
+    hooks: RawTracepointHooks,
+) -> Result<BpfRawTracepointPrimer, Errno> {
+    use vfs::{File, OpenFlags};
+    let fd = fdt.get_unused_fd_flags(OpenFlags::O_CLOEXEC, limit)
         .map_err(|_| Errno::Emfile)?;
     let id = reserve_link_id();
     let inode = InodeBuilder::new(ids::INO_LINK, mk_mode(FileType::CharDev, BPF_FD_MODE),
@@ -130,6 +140,10 @@ pub(crate) fn prime_bpf_raw_tracepoint_link(
     let file = File::new(Arc::clone(&inode), dentry, OpenFlags::O_RDWR);
     Ok(BpfRawTracepointPrimer { id, fd, fdt, file, inode, settled: false })
 }
+
+#[cfg(test)]
+#[path = "link/raw_tracepoint_tests.rs"]
+mod raw_tracepoint_tests;
 
 impl Drop for BpfLsmLinkInode {
     fn drop(&mut self) { crate::bpf_lsm::unregister(self.id); }

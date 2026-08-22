@@ -96,3 +96,39 @@ pub(crate) fn fire(event: &RawEvent, args: &[u64]) {
     let _ = event.writable_size;
     event.fire(args);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    static SEEN_NR: AtomicU64 = AtomicU64::new(0);
+    static SEEN_COOKIE: AtomicU64 = AtomicU64::new(0);
+
+    fn observe(_: &InodeRef, args: &[u64], cookie: u64) {
+        SEEN_NR.store(args[1], Ordering::Release);
+        SEEN_COOKIE.store(cookie, Ordering::Release);
+    }
+
+    #[test]
+    fn canonical_sys_enter_hook_runs_and_detaches_the_raw_program() {
+        const ID: u64 = 0xb2334;
+        const COOKIE: u64 = 0xc001_cafe;
+        let prog = vfs::StaticFileInode::new(b"raw-program");
+        let name = attach(b"sys_enter", ID, prog, COOKIE, observe).unwrap();
+        assert_eq!(name, "sys_enter");
+
+        SEEN_NR.store(0, Ordering::Release);
+        SEEN_COOKIE.store(0, Ordering::Release);
+        let args = syscall::SyscallArgs { a0: 1, a1: 2, a2: 3, a3: 4, a4: 5, a5: 6 };
+        syscall::tracepoint::fire_sys_enter(321, &args);
+        assert_eq!(SEEN_NR.load(Ordering::Acquire), 321);
+        assert_eq!(SEEN_COOKIE.load(Ordering::Acquire), COOKIE);
+
+        detach(name, ID);
+        SEEN_NR.store(0, Ordering::Release);
+        syscall::tracepoint::fire_sys_enter(322, &args);
+        assert_eq!(SEEN_NR.load(Ordering::Acquire), 0,
+                   "final link close removes the production-hook probe");
+    }
+}
