@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2517-loginuid-sessionid-task-identity
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 52ac645c7 | DEFECT | med | Audit loginuid/sessionid are now task-owned, inherited, validated, and rendered through procfs and tty audit paths. | Audit/scheduler/procfs/fs tests, target checks, and smoke passed. | Chris Watkins |
+
 ### B2516-stale-rlimit-sigpending-cap-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |

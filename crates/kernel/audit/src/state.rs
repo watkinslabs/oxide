@@ -14,6 +14,7 @@ use crate::consumer::Consumer;
 use crate::queue::Backlog;
 use crate::ratelimit::RateState;
 use crate::tty::TtyAudit;
+use crate::login::SessionIds;
 
 /// Everything the audit system owns.
 pub struct AuditState {
@@ -25,6 +26,8 @@ pub struct AuditState {
     pub last_lost_msg_ms: u64,
     /// Per-thread-group terminal-input auditing.
     pub tty: TtyAudit,
+    /// Global source for per-login audit session identifiers.
+    pub sessions: SessionIds,
 }
 
 impl AuditState {
@@ -37,6 +40,7 @@ impl AuditState {
             rate: RateState { messages: 0, last_check_ms: 0 },
             last_lost_msg_ms: 0,
             tty: TtyAudit::new(),
+            sessions: SessionIds::new(),
         }
     }
 }
