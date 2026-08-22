@@ -244,7 +244,7 @@ fn f176_listen_without_reuseaddr_blocks_on_time_wait() {
 #[test]
 fn f177_arp_entry_within_window_returns() {
     let c = ArpCache::new();
-    c.insert_at(Ipv4Addr::new(10, 0, 0, 1), MacAddr([1,2,3,4,5,6]), 1000);
+    assert!(c.insert_at(Ipv4Addr::new(10, 0, 0, 1), MacAddr([1,2,3,4,5,6]), 1000).is_empty());
     let got = c.lookup_at(Ipv4Addr::new(10, 0, 0, 1), 1000 + ARP_STALE_NS / 2);
     assert_eq!(got, Some(MacAddr([1,2,3,4,5,6])));
 }
@@ -252,7 +252,7 @@ fn f177_arp_entry_within_window_returns() {
 #[test]
 fn f177_arp_entry_past_stale_is_dropped() {
     let c = ArpCache::new();
-    c.insert_at(Ipv4Addr::new(10, 0, 0, 1), MacAddr([1,2,3,4,5,6]), 1000);
+    assert!(c.insert_at(Ipv4Addr::new(10, 0, 0, 1), MacAddr([1,2,3,4,5,6]), 1000).is_empty());
     let got = c.lookup_at(Ipv4Addr::new(10, 0, 0, 1), 1000 + ARP_STALE_NS + 1);
     assert_eq!(got, None);
     // GC at the same future time removes the entry permanently;
@@ -264,7 +264,7 @@ fn f177_arp_entry_past_stale_is_dropped() {
 #[test]
 fn f177_arp_zero_time_disables_stale_check() {
     let c = ArpCache::new();
-    c.insert_at(Ipv4Addr::new(10, 0, 0, 1), MacAddr([7,7,7,7,7,7]), 0);
+    assert!(c.insert_at(Ipv4Addr::new(10, 0, 0, 1), MacAddr([7,7,7,7,7,7]), 0).is_empty());
     // now_ns=0 means "no clock available" — entry never stales.
     assert!(c.lookup_at(Ipv4Addr::new(10, 0, 0, 1), 999_999_999_999).is_some(),
         "inserted_ns=0 must be exempt from the stale check");

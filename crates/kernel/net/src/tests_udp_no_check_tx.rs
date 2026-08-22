@@ -43,7 +43,7 @@ fn emit(no_check: bool) -> Vec<u8> {
         cacheinfo: Ipv4AddrCacheInfo::PERMANENT });
     stack.routes.add(RouteEntry::main(DST, 32, iface, None, Some(SRC)));
     if let Some(cache) = stack.ifaces.arp_cache_in_ns(iface, 0) {
-        cache.insert(DST, MacAddr([2, 0, 0, 0, 0, 2]));
+        assert!(cache.insert(DST, MacAddr([2, 0, 0, 0, 0, 2])).is_empty());
     }
     let owner = crate::SocketOwner::root(network_namespace::initial(), 0);
     stack.send_udp_pmtu_to_bound_opts_owned(&owner, SRC, SPORT, DST, DPORT, BODY,

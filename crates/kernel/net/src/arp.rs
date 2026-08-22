@@ -158,7 +158,7 @@ mod tests {
     #[test]
     fn cache_round_trip() {
         let c = ArpCache::new();
-        c.insert(Ipv4Addr::new(192, 168, 1, 5), MacAddr([5,6,7,8,9,10]));
+        assert!(c.insert(Ipv4Addr::new(192, 168, 1, 5), MacAddr([5,6,7,8,9,10])).is_empty());
         assert_eq!(c.lookup(Ipv4Addr::new(192, 168, 1, 5)),
                    Some(MacAddr([5,6,7,8,9,10])));
         assert_eq!(c.lookup(Ipv4Addr::new(1,2,3,4)), None);

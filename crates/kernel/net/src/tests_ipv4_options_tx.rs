@@ -67,9 +67,9 @@ fn ipv4_fragment_counters_follow_output_outcomes() {
     let stack = NetStack::new();
     let dev = Arc::new(OutcomeCapture { fail: AtomicBool::new(false) });
     let iface = stack.ifaces.register_in_ns(dev.clone() as Arc<dyn NetDev>, net_ns);
-    stack.ifaces.arp_cache_in_ns(iface, net_ns).unwrap().insert(
+    assert!(stack.ifaces.arp_cache_in_ns(iface, net_ns).unwrap().insert(
         DST, MacAddr([2, 0, 0, 0, 0, 2]),
-    );
+    ).is_empty());
     let lease = stack.ifaces.acquire_egress_in_ns(iface, net_ns).unwrap();
     let owner = crate::SocketOwner::root(ns_owner, 0);
     let before_created = crate::mib::get(net_ns, crate::mib::Mib::IpFragCreates);
@@ -95,7 +95,7 @@ fn ipv4_fragment_counters_follow_output_outcomes() {
 
 fn resolve(stack: &NetStack, iface: NetIfaceId, hop: Ipv4Addr) {
     if let Some(cache) = stack.ifaces.arp_cache_in_ns(iface, 0) {
-        cache.insert(hop, MacAddr([2, 0, 0, 0, 0, 2]));
+        assert!(cache.insert(hop, MacAddr([2, 0, 0, 0, 0, 2])).is_empty());
     }
 }
 

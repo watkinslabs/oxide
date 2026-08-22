@@ -200,6 +200,24 @@ fn unresolved_arp_queues_packet_then_retries_and_drops_on_failure() {
 }
 
 #[test]
+fn convenience_learn_returns_the_packet_resolution_unblocked() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
+    let stack = Arc::new(crate::NetStack::new());
+    let dev = Arc::new(DispatchDev::new(false));
+    let iface = stack.ifaces.register(dev.clone());
+    let lease = stack.ifaces.acquire_egress_in_ns(iface, 0).unwrap();
+    let cache = stack.ifaces.arp_cache_in_ns(iface, 0).unwrap();
+    let target = crate::Ipv4Addr::new(192, 0, 2, 2);
+    let mac = MacAddr([2, 0, 0, 0, 0, 2]);
+
+    assert_eq!(lease.xmit(unresolved_packet()), Ok(()));
+    let resolved = cache.insert(target, mac);
+    assert_eq!(resolved.len(), 1);
+    for job in resolved { job.resume(mac); }
+    assert_eq!(*dev.calls.lock().unwrap(), vec![0, 0x45]);
+}
+
+#[test]
 fn stale_arp_sends_data_then_unicast_probes_after_delay() {
     let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = Arc::new(crate::NetStack::new());
