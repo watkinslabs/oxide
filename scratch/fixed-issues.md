@@ -5028,3 +5028,6 @@ against the row's own evidence.
 ### B2606-mapped-write-negative-controls-row
 
 | FIXED B2606 | COVERAGE | low | The F1223 mapped-write row was non-actionable evidence, not an open defect: its three proposed mutations were intentionally unobservable or semantically neutral in this single-threaded fixture, and the production behaviors were already correct. Keeping it OPEN only invited a repeat of experiments that the row itself records as non-reddening. | F1223 recorded both-direction measurements (3,590/3,590) and removed the green-by-construction test rather than asserting a false invariant; no source change is required. | B2606 |
+### B2607-receive-backlog-lease-stale-row
+
+| FIXED B2607 | DEFECT | low | This receive-backlog row was stale and self-contradictory: it described the current drop-on-teardown behavior as an OPEN defect while explicitly stating that it matches the reference and was deliberate. | `net` regression `frames_queued_for_a_down_interface_are_dropped_at_delivery` pins the reference-aligned drop; no source change is required. | B2607 |
