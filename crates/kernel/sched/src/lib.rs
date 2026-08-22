@@ -50,6 +50,7 @@ pub mod seccomp_filter;
 pub mod loadavg;
 pub mod psi;
 pub mod wait_policy;
+pub mod timer_driver_policy;
 pub mod diag;
 // Interrupt contract for the idle park. Ungated: the loop that uses it is
 // kernel-target only, so a test written beside it would never build.

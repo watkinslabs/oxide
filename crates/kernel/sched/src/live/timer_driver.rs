@@ -5,8 +5,9 @@
 //! kthread spawn + park + monotonic clock the scheduler owns.
 //!
 //! ktimers is the sole caller of `timer::run_due` (which fires the periodic
-//! `tick_wake_expired` deadline walker + reaper). It parks 100 ms between runs
-//! and MUST be woken independently: the walker it runs is the only thing that
+//! `tick_wake_expired` deadline walker + reaper). It parks until the earliest
+//! registered timer, bounded to 100 ms when idle, and MUST be woken independently:
+//! the walker it runs is the only thing that
 //! wakes deadline-parked tasks, so if ktimers relied on that walker to wake
 //! ITSELF the system would be circular and wedge once incidental early wakers
 //! stop (the B1344 regression — moving the walker off the hard tick into
@@ -18,10 +19,10 @@
 use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use alloc::sync::Arc;
 use crate::Task;
+use crate::timer_driver_policy;
 use super::{WaitList, wait_event_uninterruptible_until};
 
 static WAIT: WaitList = WaitList::new();
-const TICK_NS: u64 = 100_000_000;
 /// Bound one process-context dispatch pass. Expired socket timers can arrive in
 /// large cohorts; yielding between cohorts keeps timer work preemptible.
 const CALLBACK_BUDGET: usize = 16;
@@ -57,10 +58,11 @@ extern "C" fn driver(_arg: usize) -> ! {
             // expired timers monopolising a voluntary-preemption CPU.
             unsafe { super::sched_yield(); }
         }
+        let now = now_ns();
+        let deadline = timer_driver_policy::park_deadline(now, timer::next_deadline_ns(now));
         // Arm the tick-waker BEFORE parking so a tick between this store and the
         // park still observes the (future) deadline; a spurious early wake is
         // harmless (run_due is idempotent and re-arms).
-        let deadline = now + TICK_NS;
         DEADLINE.store(deadline, Ordering::Release);
         // Shared `wait_event` owns publish → predicate recheck → schedule →
         // finish.  In particular, a tick may clear DEADLINE immediately after
@@ -78,7 +80,7 @@ extern "C" fn driver(_arg: usize) -> ! {
 }
 
 /// Independent waker for ktimers, called from the HARD timer tick (BSP). When
-/// ktimers' 100 ms park deadline passes, enqueue a wake on the local CPU's
+/// ktimers' published park deadline passes, enqueue a wake on the local CPU's
 /// deferred wake list (IRQ-safe, unlike the registry/rq locks) and disarm so
 /// exactly one wake fires per park. The tick already set `need_resched`, so the
 /// IRQ-return `schedule()` drains the wake list and runs ktimers. Without this,
