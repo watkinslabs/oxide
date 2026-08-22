@@ -186,11 +186,16 @@ fn boolean_operations_without_a_policy_are_refused_rather_than_ignored() {
 }
 
 #[test]
-fn transition_and_render_are_refused_before_a_policy_is_loaded() {
+fn kernel_decisions_answer_during_the_bootstrap_window() {
     let mut s = server();
-    assert!(s.transition_sid(1, 2, 7, None).is_err());
-    assert!(s.change_sid(1, 2, 7).is_err());
-    assert!(s.member_sid(1, 2, 7).is_err());
+    let process = crate::uapi::classmap::class_by_name("process").expect("process");
+    let file = crate::uapi::classmap::class_by_name("file").expect("file");
+    assert_eq!(s.transition_sid(1, 2, process, None), Ok(1));
+    assert_eq!(s.transition_sid(1, 2, file, None), Ok(2));
+    assert_eq!(s.change_sid(1, 2, file), Ok(2));
+    assert_eq!(s.member_sid(1, 2, file), Ok(2));
+    assert_eq!(s.compute(1, 2, file).allowed, u32::MAX);
+    assert_eq!(s.validate_transition("old", "new", file, "task"), Ok(()));
     assert!(s.context_to_sid("system_u:object_r:etc_t:s0").is_err());
 }
 
