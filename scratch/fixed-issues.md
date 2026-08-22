@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2446-bpf-batch-loop-coverage
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 6d0dce247 | COVERAGE | med | **Every BPF map batch loop now runs hosted against a real map object.** | B2446 drives update, lookup, delete, cursor, partial-result, end-of-map, and racing-delete behavior through the production loops. | B2446 |
+
 ### B2445-seccomp-listener-random-notif-id
 
 | Status | Class | Sev | Issue | Evidence | Owner |
