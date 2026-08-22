@@ -239,6 +239,22 @@ fn the_mount_line_names_the_layers_back() {
 }
 
 #[test]
+fn the_mount_line_escapes_the_verbatim_lowerdir_list_again() {
+    let up = layer(0);
+    let lo = layer(1);
+    let work = layer(2);
+    let mut m = BTreeMap::new();
+    m.insert("/upper".to_string(), up);
+    m.insert("/a,b".to_string(), lo);
+    m.insert("/work".to_string(), work);
+    let l = Layers(m);
+    let fs = OverlayFs::open("lowerdir=/a\\,b,upperdir=/upper,workdir=/work",
+        &l.resolve(), true).unwrap();
+    let line = vfs::fs::FileSystem::show_options(&*fs);
+    assert!(line.contains("lowerdir=/a\\\\\\,b"), "{line}");
+}
+
+#[test]
 fn the_reported_filesystem_type_is_the_overlays() {
     let (l, _up, _lo) = image();
     let fs = OverlayFs::open(OPTS, &l.resolve(), true).unwrap();
