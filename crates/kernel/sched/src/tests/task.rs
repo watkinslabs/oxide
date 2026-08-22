@@ -357,6 +357,22 @@ fn task_state_linux_status_label() {
 }
 
 #[test]
+fn task_reporting_distinguishes_interruptible_and_uninterruptible_sleep() {
+    let t = Task::new(1, "t", SchedClass::Normal { weight: 1024 });
+    t.set_sleep_state(WaitState::Interruptible);
+    assert_eq!(t.linux_state_char(), b'S');
+    assert_eq!(t.linux_status_label(), "S (sleeping)");
+
+    t.set_sleep_state(WaitState::Uninterruptible);
+    assert_eq!(t.linux_state_char(), b'D');
+    assert_eq!(t.linux_status_label(), "D (disk sleep)");
+
+    t.set_sleep_state(WaitState::Killable);
+    assert_eq!(t.linux_state_char(), b'D');
+    assert_eq!(t.linux_status_label(), "D (disk sleep)");
+}
+
+#[test]
 fn visible_pid_prefers_vtgid_then_falls_back_to_tgid() {
     let t = Task::new(4120, "svc", SchedClass::Normal { weight: 1024 });
     t.tgid.store(4120, Ordering::Release);

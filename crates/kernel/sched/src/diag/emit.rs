@@ -137,7 +137,7 @@ fn dump_tasks_emit() {
         let comm = t.comm_irq_safe();
         col_str(&comm, 16);
         klog::write_raw(b" ");
-        klog::write_raw(&[t.state().linux_char()]);
+        klog::write_raw(&[t.linux_state_char()]);
         // Mark reaped-but-pidfd-pinned tasks (release_task done; gone from /proc)
         // so the dump distinguishes them from genuinely-unreaped zombies.
         if t.reaped.load(Ordering::Relaxed) { klog::write_raw(b"* "); } else { klog::write_raw(b"  "); }
