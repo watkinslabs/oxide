@@ -9,8 +9,6 @@
 extern crate alloc;
 use alloc::sync::Arc;
 
-use core::sync::atomic::{AtomicI32, Ordering};
-
 use syscall::errno::Errno;
 use vfs::{FileType, InodeBuilder, InodeRef, default_file_ops, default_inode_ops, mk_mode};
 
@@ -18,24 +16,18 @@ use super::super::attr::{self, Attr, Caps};
 use super::super::uapi;
 use super::super::{BPF_FD_MODE, ids, install_fd};
 
-/// Number of descriptors currently holding run-time statistics enabled.
-static ENABLED: AtomicI32 = AtomicI32::new(0);
-
 /// Nesting ceiling. Half of `INT_MAX` leaves the count unable to overflow
 /// however the remaining descriptors are ordered.
 const MAX_NESTING: i32 = i32::MAX / 2;
 
-/// Descriptors currently holding the switch on. Nothing accumulates
-/// per-run statistics yet, so the count has no reader outside this
-/// module — see the run-time-statistics row in `scratch/known_issues.md`.
-fn held() -> i32 { ENABLED.load(Ordering::Acquire) }
+fn held() -> i32 { super::super::prog::stats::holds() }
 
 /// One descriptor's hold on the switch. The count falls when the last
 /// reference to the object behind the fd goes away.
 struct BpfStatsInode;
 
 impl Drop for BpfStatsInode {
-    fn drop(&mut self) { ENABLED.fetch_sub(1, Ordering::AcqRel); }
+    fn drop(&mut self) { super::super::prog::stats::release(); }
 }
 
 /// Verdict for one nesting attempt, given the count already held.
@@ -57,7 +49,7 @@ fn inode() -> InodeRef {
 fn enable_run_time() -> Result<i64, Errno> {
     nesting_verdict(held())?;
     let object = inode();
-    ENABLED.fetch_add(1, Ordering::AcqRel);
+    super::super::prog::stats::hold();
     match install_fd(object, "bpf-stats") {
         Ok(fd) => Ok(fd),
         // The object never reached a descriptor; its Drop already
@@ -134,15 +126,15 @@ mod tests {
     /// leaves it on.
     #[test]
     fn the_last_dropped_hold_turns_collection_off() {
-        assert_eq!(held(), 0);
+        let before = held();
         let first = BpfStatsInode;
-        ENABLED.fetch_add(1, Ordering::AcqRel);
-        assert!(held() > 0);
+        crate::bpf::prog::stats::hold();
+        assert_eq!(held(), before + 1);
         let second = BpfStatsInode;
-        ENABLED.fetch_add(1, Ordering::AcqRel);
+        crate::bpf::prog::stats::hold();
         drop(first);
-        assert!(held() > 0);
+        assert_eq!(held(), before + 1);
         drop(second);
-        assert_eq!(held(), 0);
+        assert_eq!(held(), before);
     }
 }

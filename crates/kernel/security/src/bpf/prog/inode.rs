@@ -11,6 +11,7 @@ use vfs::{FileType, InodeRef, InodeBuilder, default_inode_ops, default_file_ops,
 
 use super::super::{BPF_FD_MODE, ids};
 use super::stream::ProgStreams;
+use super::stats::ProgStats;
 
 /// eBPF program loaded by `bpf(BPF_PROG_LOAD)`. Instruction bytes and
 /// Linux program type stay coupled in the fd-backed inode's `i_private`.
@@ -30,6 +31,8 @@ pub struct BpfProgInode {
     pub maps: Spinlock<Vec<InodeRef>, TaskListClass>,
     /// Program-owned diagnostic output, one FIFO for stdout and stderr.
     pub streams: ProgStreams,
+    /// Program-owned run count and elapsed-time total.
+    pub stats: ProgStats,
 }
 
 /// What an attach site decides on, read off a loaded program. Every field
@@ -172,7 +175,8 @@ pub fn make_bpf_prog_inode_with_attach_target(
         .size(size)
         .private(Arc::new(BpfProgInode {
             id, prog_type, expected_attach_type, enforce_expected_attach_type,
-            attach_btf_id, insns, maps: Spinlock::new(maps), streams: ProgStreams::new(),
+            attach_btf_id, insns, maps: Spinlock::new(maps),
+            streams: ProgStreams::new(), stats: ProgStats::new(),
         }))
         .build();
     PROGRAMS_BY_ID.lock().insert(id, Arc::downgrade(&inode));
