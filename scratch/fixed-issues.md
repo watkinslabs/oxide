@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2464-keyring-real-uid-identity
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED e237967ec | DEFECT | med | Per-user and user-session keyrings now use real UID identity while filesystem credentials remain separate. | Focused real-UID/setfsuid regression and fs/target checks passed. | Chris Watkins |
+
 ### B2463-stale-perf-ring-inherit-rows
 
 | Status | Class | Sev | Issue | Evidence | Owner |
