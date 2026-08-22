@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2417-f2fs-pinned-encrypted-held-key
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 5eeaaaceb | COVERAGE | low | **The pinned encrypted write path is covered through its held-record block writer.** | B2417 adds the production-path fixture and pins plaintext preservation after key eviction. | B2417-f2fs-pinned-encrypted-held-key |
+
 ### B2414-f2fs-parked-inode-nlink
 
 | Status | Class | Sev | Issue | Evidence | Owner |
