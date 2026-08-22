@@ -123,17 +123,13 @@ mod tests {
     //            routed here; `listns` first appears in the 6.19 series (it is
     //            absent from 6.17 and present in 6.19), so a claim below 6.19
     //            under-reports what a prober can already call.
-    //   ceiling — `rseq_slice_yield` (slot 471) is absent from the 6.19 series
-    //            and present after it, and its time-slice-extension GRANT side
-    //            is NOT implemented here, so 7.0 is the first release this
-    //            kernel may not claim.
+    // `rseq_slice_yield` (slot 471) and its complete grant/revoke machinery
+    // are present too, so they no longer impose the old pre-7.0 ceiling.
     #[test]
-    fn claimed_release_sits_between_the_surface_we_have_and_the_first_we_lack() {
+    fn claimed_release_does_not_underreport_the_surface_we_have() {
         assert!(crate::nrs::NR_LISTNS == 470 && crate::nrs::NR_RSEQ_SLICE_YIELD == 471);
         assert!(LINUX_VERSION_CODE >= kernel_version(6, 19, 0),
             "claims less than the syscall surface routed here");
-        assert!(LINUX_VERSION_CODE < kernel_version(7, 0, 0),
-            "claims a release whose rseq slice-extension grant is not implemented");
     }
 
     #[test]

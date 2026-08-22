@@ -11,6 +11,7 @@ pub mod predicate;
 pub mod raw_bpf;
 pub mod ring;
 pub mod root;
+mod rseq;
 #[cfg(target_arch = "x86_64")]
 mod pkru;
 #[cfg(feature = "zram-memory-tracking")]
@@ -54,6 +55,7 @@ pub fn init() {
     // live inodes (record + render + drain + gate); the rest stay nop-tracer
     // static defaults.
     ring::register();
+    rseq::register();
     #[cfg(target_arch = "x86_64")]
     pkru::register();
     #[cfg(feature = "zram-memory-tracking")]
@@ -69,4 +71,28 @@ pub fn init() {
     // eventfs: per-event dir hierarchy (enable/id/format/filter + subsystem and
     // root aggregate enables + available_events), table-driven from `eventfs`.
     eventfs::register();
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn init_publishes_the_rseq_slice_extension_control() {
+        super::init();
+        let inode = super::debug_root().lookup_path("rseq/slice_ext_nsec")
+            .expect("rseq slice extension debugfs control");
+        let mut body = [0u8; 16];
+        let n = inode.read(0, &mut body).expect("read slice extension");
+        assert_eq!(&body[..n], b"5000\n");
+        assert_eq!(inode.write(0, b"50000\n"), Ok(6));
+        let n = inode.read(0, &mut body).expect("read changed extension");
+        assert_eq!(&body[..n], b"50000\n");
+        assert_eq!(sched::rseq_slice::grant_deadline(7), 50_007,
+            "the production grant deadline must consume the control");
+        assert_eq!(inode.write(0, b"4999\n"), Err(vfs::VfsError::Erange));
+        assert_eq!(inode.write(0, b"50001\n"), Err(vfs::VfsError::Erange));
+        assert_eq!(inode.write(0, b"broken\n"), Err(vfs::VfsError::Einval));
+        assert_eq!(sched::rseq_slice::extension_ns(), 50_000,
+            "a rejected write must leave the current extension intact");
+        assert_eq!(inode.write(0, b"5000\n"), Ok(5));
+    }
 }
