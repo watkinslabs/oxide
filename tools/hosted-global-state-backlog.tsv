@@ -150,11 +150,6 @@ ipc/tests/futex_core_hosted.rs	WORD1	fixture-state	unclaimed; 2/15 tests claimed
 ipc/tests/futex_core_hosted.rs	WORD2	fixture-state	unclaimed; 2/15 tests claimed it at the C294 baseline
 kalloc/src/tests.rs	GROW_MEMCG	fixture-state	unclaimed; 1/24 tests claimed it at the C294 baseline
 kalloc/src/tests.rs	GROW_REGIONS	fixture-state	unclaimed; 2/24 tests claimed it at the C294 baseline
-klog/src/tests.rs	DEPTH	fixture-state	B2041: reachable only under klog::test_claim::claim_console, whose assert_claimed sits at both emit entry points; the payload statics themselves still carry no per-static assertion
-klog/src/tests.rs	N	fixture-state	B2041: reachable only under klog::test_claim::claim_console, whose assert_claimed sits at both emit entry points; the payload statics themselves still carry no per-static assertion
-klog/src/tests.rs	NEXT	fixture-state	B2041: reachable only under klog::test_claim::claim_console, whose assert_claimed sits at both emit entry points; the payload statics themselves still carry no per-static assertion
-klog/src/tests.rs	SINK_BYTES	fixture-state	B2041: reachable only under klog::test_claim::claim_console, whose assert_claimed sits at both emit entry points; the payload statics themselves still carry no per-static assertion
-klog/src/tests.rs	WHO	fixture-state	B2041: reachable only under klog::test_claim::claim_console, whose assert_claimed sits at both emit entry points; the payload statics themselves still carry no per-static assertion
 modules/src/linux_alloc_tests.rs	CTOR_CALLS	fixture-state	unclaimed; 1/231 tests claimed it at the C294 baseline
 modules/src/linux_block/core/tests.rs	BACKING	fixture-state	unclaimed; 1/231 tests claimed it at the C294 baseline
 modules/src/linux_block/mq/tests.rs	ASYNC_DONE	fixture-state	unclaimed; 8/231 tests claimed it at the C294 baseline
