@@ -11,6 +11,7 @@ path = "src/lib.rs"
 [dependencies]
 sync    = { path = "../../shared/sync" }
 syscall = { path = "../syscall" }
+tty     = { path = "../tty" }
 vfs     = { path = "../vfs" }
 crc     = { path = "../../shared/crc" }
 aes     = { path = "../../shared/aes" }
