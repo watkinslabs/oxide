@@ -26,6 +26,8 @@ pub const TTY_ALIAS_INO_LB: u8 = 0xFC;
 /// (inotify marks, `tty_hangup`'s per-inode session clear) could tell them
 /// apart.
 pub const SYSTEM_CONSOLE_INO_LB: u8 = 0xFB;
+/// Low-byte selector for the sink-only `/dev/ttynull` device.
+pub const TTYNULL_INO_LB: u8 = 0xFA;
 
 /// Highest numbered VT device (`/dev/tty1`..`/dev/tty63`). Above it the low
 /// byte is a named selector, not a VT.
@@ -51,12 +53,15 @@ pub(crate) const fn is_tty_band(ino: Ino) -> bool { CONSOLE_TTY.contains(ino) }
 
 const _: () = assert!(is_tty_band(tty_ino(SERIAL_INO_LB)), "serial ino escapes CONSOLE_TTY");
 const _: () = assert!(is_tty_band(vt_ino(MAX_VT_INO_LB)), "top VT ino escapes CONSOLE_TTY");
-// The four named selectors must not collide with each other or with a VT.
+// The named selectors must not collide with each other or with a VT.
+const _: () = assert!(TTYNULL_INO_LB > MAX_VT_INO_LB, "/dev/ttynull aliases a VT");
 const _: () = assert!(SYSTEM_CONSOLE_INO_LB > MAX_VT_INO_LB, "/dev/console aliases a VT");
 const _: () = assert!(TTY_ALIAS_INO_LB > MAX_VT_INO_LB, "/dev/tty aliases a VT");
 const _: () = assert!(FG_VT_INO_LB > MAX_VT_INO_LB, "/dev/tty0 aliases a VT");
 const _: () = assert!(SERIAL_INO_LB > MAX_VT_INO_LB, "/dev/ttyS0 aliases a VT");
-const _: () = assert!(SYSTEM_CONSOLE_INO_LB != TTY_ALIAS_INO_LB
+const _: () = assert!(TTYNULL_INO_LB != SYSTEM_CONSOLE_INO_LB
+    && TTYNULL_INO_LB != TTY_ALIAS_INO_LB && TTYNULL_INO_LB != FG_VT_INO_LB
+    && TTYNULL_INO_LB != SERIAL_INO_LB && SYSTEM_CONSOLE_INO_LB != TTY_ALIAS_INO_LB
     && SYSTEM_CONSOLE_INO_LB != FG_VT_INO_LB && SYSTEM_CONSOLE_INO_LB != SERIAL_INO_LB
     && TTY_ALIAS_INO_LB != FG_VT_INO_LB && TTY_ALIAS_INO_LB != SERIAL_INO_LB
     && FG_VT_INO_LB != SERIAL_INO_LB, "two console devices share one selector");

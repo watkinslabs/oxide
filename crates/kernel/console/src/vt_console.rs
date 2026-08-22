@@ -171,6 +171,7 @@ impl FileOps for SystemConsoleFileOps {
     /// so the facts come from the tty it is actually bound to.
     fn tty_audit_facts(&self, file: &File) -> Option<vfs::TtyAuditFacts> {
         match cmdline::preferred_console() {
+            cmdline::ConsoleKind::Null => None,
             cmdline::ConsoleKind::Serial =>
                 Some(crate::tty_audit::facts(crate::devnum::serial_rdev(),
                                              &crate::static_console::termios_get())),
@@ -185,6 +186,7 @@ impl FileOps for SystemConsoleFileOps {
 
     fn on_open_file(&self, file: &File) -> KResult<()> {
         match cmdline::preferred_console() {
+            cmdline::ConsoleKind::Null => Ok(()),
             cmdline::ConsoleKind::Serial => {
                 let gen = crate::static_console::open_revocable()?;
                 file.set_private_data(0);
@@ -205,14 +207,20 @@ impl FileOps for SystemConsoleFileOps {
     }
 
     fn on_release_file(&self, file: &File) {
-        let v = file.private_data() as u8;
-        if v == 0 { crate::static_console::close(); }
-        else { vt_tty::vt_tty(v).close(); }
+        match cmdline::preferred_console() {
+            cmdline::ConsoleKind::Null => {}
+            cmdline::ConsoleKind::Serial => crate::static_console::close(),
+            cmdline::ConsoleKind::Vt(_) => {
+                let v = file.private_data() as u8;
+                if v != 0 { vt_tty::vt_tty(v).close(); }
+            }
+        }
     }
 
     fn read_file(&self, file: &File, _off: u64, buf: &mut [u8]) -> KResult<usize> {
         let gen = file.revoke_gen();
         match cmdline::preferred_console() {
+            cmdline::ConsoleKind::Null => crate::null::read(buf),
             cmdline::ConsoleKind::Serial => serial::serial_read(gen, buf),
             cmdline::ConsoleKind::Vt(_) => vt_read(sys_console_vt(file), console_ino(0), gen, buf),
         }
@@ -221,6 +229,7 @@ impl FileOps for SystemConsoleFileOps {
     fn read_nonblock_file(&self, file: &File, _off: u64, buf: &mut [u8]) -> KResult<usize> {
         let gen = file.revoke_gen();
         match cmdline::preferred_console() {
+            cmdline::ConsoleKind::Null => crate::null::read(buf),
             cmdline::ConsoleKind::Serial => serial::serial_read_nonblock(gen, buf),
             cmdline::ConsoleKind::Vt(_) => vt_read_nonblock(sys_console_vt(file), console_ino(0), gen, buf),
         }
@@ -229,6 +238,7 @@ impl FileOps for SystemConsoleFileOps {
     fn write_file(&self, file: &File, _off: u64, buf: &[u8]) -> KResult<usize> {
         let gen = file.revoke_gen();
         match cmdline::preferred_console() {
+            cmdline::ConsoleKind::Null => Ok(crate::null::write(buf)),
             cmdline::ConsoleKind::Serial => serial::serial_write(gen, buf),
             cmdline::ConsoleKind::Vt(_) => vt_write(sys_console_vt(file), console_ino(0), gen, buf),
         }
@@ -243,6 +253,7 @@ impl FileOps for SystemConsoleFileOps {
     fn poll_open_file(&self, file: &File) -> u32 {
         let gen = file.revoke_gen();
         match cmdline::preferred_console() {
+            cmdline::ConsoleKind::Null => crate::null::poll(),
             cmdline::ConsoleKind::Serial => serial::poll(gen),
             cmdline::ConsoleKind::Vt(_) => vt_poll(sys_console_vt(file), gen),
         }
@@ -254,6 +265,7 @@ impl FileOps for SystemConsoleFileOps {
     /// does not exist until `static_console::install`. # C: O(1)
     fn poll_subscribers(&self, _file: &File) -> Option<Arc<vfs::PollSubscribers>> {
         match cmdline::preferred_console() {
+            cmdline::ConsoleKind::Null => None,
             cmdline::ConsoleKind::Serial => crate::static_console::poll_subscribers(),
             cmdline::ConsoleKind::Vt(_) => Some(vt_tty::vt_tty(foreground_vt()).poll_subs_arc()),
         }

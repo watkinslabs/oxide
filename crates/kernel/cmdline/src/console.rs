@@ -10,6 +10,8 @@ use crate::token::{split_comma, split_token, tokens};
 /// Kind of console device named by a `console=` token.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ConsoleKind {
+    /// The sink-only null TTY (`ttynull`).
+    Null,
     /// A serial UART line (`ttyS<n>` 8250, `ttyAMA<n>` PL011).
     Serial,
     /// Video VT `n` — `tty0` = current foreground VT, `tty<n>` = VT n.
@@ -64,6 +66,9 @@ pub fn parse_options(opts: &[u8]) -> ConsoleOptions {
 /// kernel drives no console for yields `None` rather than a guess.
 /// # C: O(len)
 pub fn classify(name: &[u8]) -> Option<ConsoleKind> {
+    if name == b"ttynull" || name == b"null" || name.is_empty() {
+        return Some(ConsoleKind::Null);
+    }
     if name.starts_with(b"ttyS") || name.starts_with(b"ttyAMA") || name.starts_with(b"ttyUSB") {
         return Some(ConsoleKind::Serial);
     }
@@ -182,6 +187,7 @@ pub fn console_classes_in(line: &[u8]) -> (bool, bool) {
     let mut any = false;
     for (kind, _) in entries(line) {
         match kind {
+            ConsoleKind::Null => { any = true; }
             ConsoleKind::Serial => { serial = true; any = true; }
             ConsoleKind::Vt(_) => { vt = true; any = true; }
         }

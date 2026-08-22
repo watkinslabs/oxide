@@ -3,7 +3,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::vcs::make_vcs_inode;
-use crate::nodes::{make_console_inode, make_serial_inode, make_tty_alias_inode};
+use crate::nodes::{make_console_inode, make_serial_inode, make_tty_alias_inode, make_ttynull_inode};
 use crate::vt_console::console_rdev;
 
 pub fn try_register_devnodes() -> drv::KResult<()> {
@@ -17,6 +17,7 @@ pub fn try_register_devnodes() -> drv::KResult<()> {
     push_tty_node(&mut published, "tty0", console_rdev(0), Arc::new(move || Arc::clone(&tty0)))?;
 
     push_tty_node(&mut published, "ttyS0", crate::serial::serial_rdev(), Arc::new(make_serial_inode))?;
+    push_tty_node(&mut published, "ttynull", crate::devnum::ttynull_rdev(), Arc::new(make_ttynull_inode))?;
 
     for vt in 1..=tty::N_VT as u8 {
         let mut name = String::with_capacity(6);

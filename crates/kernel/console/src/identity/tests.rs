@@ -15,7 +15,7 @@ use vfs::{default_file_ops, default_inode_ops, mk_mode, FileType, InodeBuilder, 
 use crate::identity::{binding_of, is_console_tty, TtyBinding};
 use crate::ids;
 use crate::nodes::{make_console_inode, make_serial_inode, make_system_console_inode,
-                   make_tty_alias_inode};
+                   make_tty_alias_inode, make_ttynull_inode};
 
 /// A CharDev inode with no console backend state — the shape every anon-inode
 /// family (signalfd, timerfd, inotify, epoll, bpf) presents to the ioctl
@@ -100,6 +100,14 @@ fn every_minted_number_stays_inside_the_console_region() {
     let len = inos.len();
     inos.dedup();
     assert_eq!(inos.len(), len, "two console devices share one st_ino");
+}
+
+#[test]
+fn ttynull_is_a_distinct_sink_device_not_a_tty_ioctl_backend() {
+    let null = make_ttynull_inode();
+    assert!(CONSOLE_TTY.contains(null.ino()));
+    assert_eq!(binding_of(&null), None, "sink-only ttynull exposes no fabricated VT identity");
+    assert_ne!(null.ino(), make_system_console_inode().ino());
 }
 
 #[test]
