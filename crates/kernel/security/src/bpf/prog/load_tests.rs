@@ -74,6 +74,19 @@ fn returns(value: i32) -> Vec<u8> {
     insns
 }
 
+fn raw(opcode: u8, dst: u8, src: u8, off: i16, imm: i32) -> [u8; 8] {
+    let mut out = [0; 8];
+    out[0] = opcode;
+    out[1] = dst | src << 4;
+    out[2..4].copy_from_slice(&off.to_le_bytes());
+    out[4..8].copy_from_slice(&imm.to_le_bytes());
+    out
+}
+
+fn program(insns: &[[u8; 8]]) -> Vec<u8> {
+    insns.iter().flatten().copied().collect()
+}
+
 /// Type id of the `file_open` hook stub in the kernel's own type
 /// information, which is what an LSM program names as its attach target.
 const FILE_OPEN_BTF_ID: u32 = 5;
@@ -151,6 +164,23 @@ fn an_access_the_context_does_not_admit_is_a_refusal_not_a_malformed_program() {
     let mut bad = alloc::vec![0x20, 0, 0, 0, 0, 0, 0, 0];
     bad.extend_from_slice(&returns(0));
     assert_eq!(verify(&p, GPL, &bad, &[]), Err(Errno::Einval));
+}
+
+#[test]
+fn unreadable_register_and_stack_access_failures_are_access_denied() {
+    let p = request(uapi::prog_type::SOCKET_FILTER, 0, 0);
+    let exit = raw(0x95, 0, 0, 0, 0);
+    let cases = [
+        // R0 has not been initialised when EXIT reads it.
+        program(&[exit]),
+        // `r0 = *(u64 *)(r10 - 520)` reaches below the 512-byte stack.
+        program(&[raw(0x79, 0, 10, -520, 0), exit]),
+        // `r0 = *(u64 *)(r10 - 8)` reads a valid but unwritten stack slot.
+        program(&[raw(0x79, 0, 10, -8, 0), exit]),
+    ];
+    for insns in cases {
+        assert_eq!(verify(&p, GPL, &insns, &[]), Err(Errno::Eacces));
+    }
 }
 
 /// Type id of `bpf_iter_bpf_prog` in the published object: the hook stubs

@@ -169,10 +169,10 @@ fn read_license(ptr: u64) -> Result<Vec<u8>, Errno> {
 ///
 /// The structural rejects map onto verifier failures returning `-EINVAL`:
 /// an out-of-range jump target, a final instruction that is neither an exit
-/// nor a jump, an invalid register number, or an unknown opcode. An access
-/// the program's context does not admit is `-EACCES` instead — the program
-/// is well formed and the access is refused, which is a different answer
-/// from "this is not a program". # C: O(insn_cnt)
+/// nor a jump, an invalid register number, or an unknown opcode. An unreadable
+/// register or an access the program's context or stack does not admit is
+/// `-EACCES` instead — the program is well formed and the access is refused,
+/// which is a different answer from "this is not a program". # C: O(insn_cnt)
 fn verify(
     p: &attr::ProgLoad,
     gpl: bool,
@@ -206,7 +206,10 @@ fn verify(
     verdict.map_err(|error| match error {
         crate::bpf_verify::VerifyError::TooManyInsns => Errno::E2big,
         crate::bpf_verify::VerifyError::NoMemory => Errno::Enomem,
-        crate::bpf_verify::VerifyError::UnsafeContextAccess => Errno::Eacces,
+        crate::bpf_verify::VerifyError::UninitializedReg
+        | crate::bpf_verify::VerifyError::UnsafeContextAccess
+        | crate::bpf_verify::VerifyError::UnsafeStackAccess
+        | crate::bpf_verify::VerifyError::UninitializedStack => Errno::Eacces,
         _ => Errno::Einval,
     })
 }
