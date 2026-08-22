@@ -4646,6 +4646,11 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED R115 | COVERAGE | med | **The recorded sockaddr shape-coverage gap is stale.** The target-gated syscall marshalling layer delegates every length decision to the ungated `net::sockaddr` owner, whose hosted tests cover signed length/storage bounds and the minimum AF_INET, AF_INET6, and AF_VSOCK structures. No second decision implementation is needed. | `syscalls/src/net_sockaddr.rs` delegates to `net::sockaddr::{validate_sockaddr_len,require_sockaddr_in,require_sockaddr_in6,require_sockaddr_vm}`; `net/src/sockaddr.rs` tests exercise the complete ladder, including EINVAL below each family minimum. | R115 |
+### R116-stale-boot-invariant-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED R116 | INFRA | low | **The recorded BIOS-only boot invariant is stale and already corrected.** Current `docs/36§2` states the x86 handoff works through GRUB from BIOS or x86_64 UEFI, and `docs/39` documents the UEFI selector and gate. The existing B1984 fixed entry already records the hybrid ISO evidence, UEFI boot, and BIOS-only positive control; this row added no remaining implementation requirement. | Current docs audit plus `fixed-issues.md` B1984 entry; no source behavior changed. | R116 |
 ### R112-stale-dhcp-smoke-script-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
