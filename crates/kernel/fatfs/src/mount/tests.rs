@@ -139,6 +139,24 @@ fn a_read_only_entry_presents_without_write_bits() {
     assert_ne!(plain.perm().unwrap_or(0) & 0o200, 0, "an ordinary file keeps its owner write bit");
 }
 
+/// chmod reaches FAT's record writer rather than only changing the in-memory
+/// inode: a fresh lookup sees the DOS read-only attribute that was persisted.
+#[test]
+fn chmod_persists_the_fat_read_only_attribute() {
+    let fs = writable_mount("vfat", crate::opts::Options::vfat());
+    let root = fs.root_inode();
+    let file = root.lookup("HELLO.TXT").expect("lookup");
+    file.setattr(&vfs::IDENTITY, &vfs::Iattr {
+        valid: vfs::ATTR_MODE,
+        mode: 0o444,
+        ..vfs::Iattr::default()
+    }).expect("chmod read-only");
+    assert_eq!(file.perm().unwrap_or(0) & 0o222, 0);
+    let reread = root.lookup("HELLO.TXT").expect("fresh lookup");
+    assert_eq!(reread.perm().unwrap_or(0) & 0o222, 0,
+               "chmod must survive inode recreation");
+}
+
 /// A missing name is `ENOENT`, and a file is not a directory.
 #[test]
 fn the_refusals_reach_the_caller_unchanged() {

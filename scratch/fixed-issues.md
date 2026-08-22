@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2554-fat-setattr-persistence
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2554 | MISSING | med | FAT `setattr` now persists the representable mode and FAT-granular timestamps in the exact directory record, while retaining mount-synthesized ownership semantics. | `FatOps::setattr` rewrites the resolved short record without losing long-name case bits or creation metadata; the VFS mount test proves a fresh lookup sees `chmod`'s read-only attribute. Full FAT library suite: 336/336. | Chris Watkins |
+
 ### B2553-stale-keyring-coverage-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
