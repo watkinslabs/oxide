@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2463-stale-perf-ring-inherit-rows
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2463 | MISSING | med | Duplicate perf ring and fork-inheritance rows were stale; B2029/B2021 already own both mechanisms. | Sampling and inheritance positive controls plus full fs/target checks passed. | Chris Watkins |
+
 ### B2462-stale-klog-sink-flake-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
