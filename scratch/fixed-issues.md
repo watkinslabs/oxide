@@ -6,70 +6,60 @@
 |---|---|---|---|---|---|
 | FIXED 6eb76b323 | DEFECT | med | IPV6_2292PKTOPTIONS now validates interface, source ownership, and link-local context with Linux errno semantics. | Net tests and target checks passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2481-ktimers-earliest-deadline
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 06e8d0e61 | DEFECT | med | Timer-driver parking now uses the earliest ktimer deadline instead of a fixed 100 ms delay. | Scheduler/timer tests and target checks passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2480-ext4-itable-highres-pacing
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 05b590aff | DEFECT | med | Ext4 inode-table initialization now measures actual work and paces high-resolution progress correctly. | Ext4 tests and target checks passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2479-f2fs-verity-specific-errnos
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 6963f4922 | DEFECT | med | F2FS fs-verity/signature errors now preserve ENOKEY, EKEYREJECTED, EBADMSG, and ENOPKG instead of collapsing to EIO. | F2FS/VFS/net/syscall tests and targets passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2478-stale-socket-connect-phantom-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2478 | COVERAGE | low | The socket-connect coverage row was stale; the production path is already covered by existing tests. | Net/socket checks passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2477-atomic-serial-latest-link
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED bd56813ef | INFRA | low | Serial-log `latest` publication is now staged and atomically renamed, avoiding an absent-link race. | Xtask tests and target checks passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2476-tiocvhangup-ioctl-entry
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 438bf78bd | MISSING | med | TIOCVHANGUP now follows the canonical CAP_SYS_ADMIN tty revocation path. | TTY/syscall tests and target checks passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2475-shm-info-residency
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 3f0601b67 | DEFECT | med | SHM_INFO now reports resident/swapped backing pages and huge-page units in base pages. | IPC/fs/vmm/vfs tests and target checks passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2474-bpf-verifier-access-errno
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 123db9946 | DEFECT | med | BPF verifier access failures now preserve Linux EACCES instead of collapsing to EINVAL. | Security tests and target checks passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2473-push-pipeline-status-contract
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED ad19ce90d | INFRA | low | Push pipelines now require and report producer status explicitly. | Pipeline contract regression passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2472-selinux-all-xattr-permissions
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -82,14 +72,12 @@
 |---|---|---|---|---|---|
 | FIXED 149a38780 | DEFECT | med | Regulatory-domain changes now update the effective channel flags used by lookup and GET_WIPHY serialization. | Wireless regression and target checks passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2470-retained-smoke-log-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED bc15e9fc6 | INFRA | low | Successful boot-smoke serial logs are retained through the existing keep-log path and stable debug targets. | Runtime retention regression passed. | Chris Watkins |
 
-<<<<<<< HEAD
 ### B2448-stale-sockaddr-shape-coverage-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -478,90 +466,66 @@
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED fd087af18 | DEFECT | med | **`smaps` reports the actual backing page granule for huge mappings and retains the base-page fallback.** | B2385. The production renderer's 2 MiB hugetlb path and base-page case are pinned by focused tests. | B2385-smaps-huge-page-size |
-=======
 ### B2470-retained-smoke-log-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED bc15e9fc6 | INFRA | med | **Passing smoke runs already have a supported retained-log path, so the OPEN row's premise was stale.** `SMOKE_KEEP_LOG` preserves the last attempt and `SMOKE_KEEP_LOG_DIR` preserves every attempt under a status-labelled name; the stable `smoke-debug-x86`, `smoke-debug-arm`, and `smoke-debug` targets set both. The harness copies the captured serial stream before cleanup for `pass` as well as failure statuses. | B2470. Linux 7.2.0-rc4 is not the owner of this repository-local harness contract. The new successful-run regression drives the real `tools/boot-smoke.sh` entry point with a mock QEMU marker and requires the exact retained `x86-attempt-1-pass.log`. **Positive control:** temporarily making `keep_log_copy` skip the pass-directory copy turned the full runtime test RED on that missing file; restoring the production owner returned it GREEN. The complete boot-smoke runtime suite and both kernel target checks pass. No boot was required because the permanent change is hosted test coverage plus this ledger correction, and the already-supported production behavior is unchanged. | B2470-retained-smoke-log-row |
->>>>>>> f6fe0fcac (docs: close retained smoke log row)
-=======
 ### B2471-wireless-regulatory-channel-flags
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 149a38780 | DEFECT | med | **Accepted regulatory domains now update the live channel flags advertised by `GET_WIPHY`.** Each radio keeps an effective band snapshot beside its current domain; an accepted request projects the resolved rules onto that snapshot under the same state lock, and both channel lookup and nl80211 serialization consume it while immutable driver capabilities remain the baseline. | B2471. Linux 7.2.0-rc4 `handle_band`/`handle_channel` mutates live `ieee80211_channel.flags`, which `nl80211.c` serializes. The production-path regression failed before the fix because a 5-GHz channel remained enabled after accepting a 2.4-GHz-only domain, then passed GREEN. Wireless 308/308 and both kernel target checks pass. Final smoke reached userspace with serial RX on attempt 1: x86_64 in 48 s and aarch64 in 56 s. | B2471-wireless-regulatory-channel-flags |
->>>>>>> b1e1fa5f5 (docs: close B2471 wireless regulatory flags)
-=======
 ### B2473-push-pipeline-status-contract
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED ad19ce90d | INFRA | med | **State-changing commands may no longer be piped while a downstream command's status is treated as proof.** The repository workflow now names the exact `git push ... \| tail` failure mode, requires either a direct invocation or explicit producer-status capture, and requires fetching and comparing the remote ref to the intended SHA before publication is reported. | The pre-change policy assertion found neither safeguard (`rg` exit 1); the new exact assertions pass. `cargo test -p spec-lint` passes 35/35, and both x86_64 and aarch64 release kernel target checks pass from the B2473 worktree. The final diff is workflow documentation and ledgers only, so no boot is required. | B2473-push-pipeline-status-contract |
->>>>>>> b1b93c35e (docs: close push pipeline status issue)
-=======
 ### B2474-bpf-verifier-access-errno
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 123db9946 | DEFECT | med | **BPF program loading now preserves Linux's access-denied verifier result for unreadable registers, out-of-range stack accesses, and uninitialised stack reads.** Structural bytecode failures remain `EINVAL`, while the production `BPF_PROG_LOAD` verifier funnel maps all four access-error variants, including the already-correct context-access case, to `EACCES`. | B2474. Linux 7.2.0-rc4 returns `-EACCES` from its register-read and stack-access verification paths. The loader-level regression exercises an unreadable R0, a read below the 512-byte stack, and an unwritten in-range stack slot; unchanged production was RED with `EINVAL`, restored code is GREEN with `EACCES`. Security 493/493 and both kernel target checks pass. Smoke omitted because this changes only rejected `BPF_PROG_LOAD` errno reporting and is not boot-visible. | B2474-bpf-verifier-access-errno |
->>>>>>> 17fbf09ee (docs: close B2474 BPF verifier errno)
-=======
 ### B2475-shm-info-residency
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 3f0601b67 | MISSING | low | **`SHM_INFO` now reports populated resident and swapped shared-memory pages instead of leaving both fields zero.** The backing address space is the single accounting owner: tmpfs folds resident and in-flight-migration entries into RSS and evicted entries into swap, while hugetlbfs reports its allocated huge pages. The ABI encoder converts each backing-granule count to base pages, preserves sparse holes as uncounted, and keeps the existing requested-size `shm_tot` meaning. | B2475. Linux 7.2.0-rc4 totals resident and swapped pages across the IPC namespace and reports allocated huge pages in base-page units. `shm_info_counts_resident_swapped_and_huge_pages` drives the production encoder with one resident base page, one swapped base page, one hole, and one allocated 2 MiB page. **RED:** before the production implementation it failed with RSS 0 versus 513. **GREEN:** the focused case and full IPC 284/284, filesystem 1392/1392, VMM 466/466, and VFS 391/391 suites pass, as do both kernel target checks. No boot was required because this is a query-only syscall result with no boot-path effect. | B2475-shm-info-residency |
->>>>>>> 8bf4789d2 (docs: close SHM_INFO residency row)
-=======
 ### B2476-tiocvhangup-ioctl-entry
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 438bf78bd | MISSING | med | **`TIOCVHANGUP` now revokes the tty named by the open file description.** The ioctl uses its distinct `CAP_SYS_ADMIN` gate, then converges with `vhangup(2)` on one session-walk and per-open revocation owner. | B2476. Linux 7.2.0-rc4 gates this ioctl on `CAP_SYS_ADMIN` and calls the same tty-vhangup mechanism on the fd target. The hosted admission and source-callsite tests were RED before implementation; deleting the production dispatch arm makes the callsite test RED, restored GREEN. Tty 209/209 passes. Syscalls 1,989 pass with the same seven unrelated failures reproduced on clean main. Both feature target gates pass. Final paired smoke passed attempt 1 with serial RX: x86_64 48 s, aarch64 99 s. | B2476 |
->>>>>>> 278c22dcb (doc: close TIOCVHANGUP ioctl gap)
-=======
 ### B2477-atomic-serial-latest-link
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED bd56813ef | DEFECT | low | **The stable per-architecture `latest` serial-log link is now replaced atomically.** The live xtask log-path funnel creates a uniquely named relative symlink in the same directory, renames it over the published link in one operation, and removes the staged link if publication fails. Readers therefore see either the previous boot or the newly published boot, never the remove-and-recreate hole. | B2477. Linux 7.2.0-rc4's VFS rename path performs destination replacement under its rename locks. The deterministic staging-boundary regression observed the old implementation's missing `latest` link (RED); the atomic implementation keeps the old target readable until publication and then exposes the new target (GREEN). Xtask 80/80 and both kernel target checks pass. Smoke omitted because this changes only host-side evidence-link publication, not the boot image or guest-visible behaviour. | B2477-atomic-serial-latest-link |
->>>>>>> 2010198b5 (docs: close B2477 atomic serial latest link)
-=======
 ### B2478-stale-socket-connect-phantom-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2478 | COVERAGE | med | **The socket connect tests named by the row are no longer phantom.** Both `sock::ops` and `sock::tcp_lifecycle` are hosted/test-visible, including the blocking-wait realization the old cascade lacked; the four real socket-side-effect tests now execute in the ordinary net suite. | Linux 7.2.0-rc4 `__inet_stream_connect` handles AF_UNSPEC before its state switch, returns EISCONN for an established stream, and `tcp_disconnect` accepts TCP_CLOSE. On current Oxide, `cargo test -p net --lib -- --list` names all four tests. Positive control changing the live fresh-TCP AF_UNSPEC arm to EINVAL made its exact test RED; restored GREEN: focused 4/4 and full net 2574/2574. Both x86_64 and aarch64 release target checks pass. Final diff is ledger-only, so no boot was required. | B2478-stale-socket-connect-phantom-row |
->>>>>>> 1fb93202a (docs: close stale socket connect coverage row)
-=======
 ### B2479-f2fs-verity-specific-errnos
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 6963f4922 | MISSING | low | **F2fs now preserves `ENOKEY`, `EKEYREJECTED`, `EBADMSG`, and `ENOPKG` through its live VFS and syscall boundaries.** `VfsError` owns all four Linux numbers, positive-POSIX reconstruction retains them, the f2fs adapter maps its native errors without collapsing them to `EIO`, and the socket/syscall conversion funnels retain the same values. A signed verity file's open can therefore distinguish an absent key, a rejected signature, a malformed signature, and missing algorithm support from a failing disk. | B2479. Linux 7.2.0-rc4 `fs/verity/signature.c::fsverity_verify_signature` returns `ENOKEY`, `EKEYREJECTED`, and `EBADMSG` distinctly. The live Oxide call chain is `F2fsNodeOps::on_open_file` -> `Volume::verity_file_open` -> `errno_to_vfs` -> syscall errno encoding. With the new VFS variants present but the production f2fs mapping unchanged, `errno_translation_keeps_each_meaning` was RED (`Eio` versus `Enokey`); restored production mapping is GREEN for all four. Full f2fs (3697), VFS, and socket (91) suites pass, as does the focused syscall mirror (5), formatting, and both kernel target checks. Final paired smoke reached userspace with serial RX on attempt 1: x86_64 in 46 s and aarch64 in 56 s. | B2479-f2fs-verity-specific-errnos |
->>>>>>> 7e348a58a (docs: close f2fs verity errno issue)
-=======
 ### B2480-ext4-itable-highres-pacing
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 05b590aff | DEFECT | low | **Lazy ext4 inode-table initialisation now prices each pause from the exact group-zeroing duration instead of the periodic worker's one-second cadence.** The worker samples the shared monotonic clock immediately around `init_next_inode_table`, records completion as the pause origin, and multiplies only that measured interval by `init_itable=`. | B2480. Linux 7.2.0-rc4 samples `ktime_get_ns()` around `ext4_init_inode_table()` and converts the elapsed duration times `s_li_wait_mult` into its next timeout. `a_mount_waits_out_the_pause_its_option_earned` drives the real table write with a deterministic 1,000 ns measurement and requires a 10,000 ns pause beginning at completion. Replacing the measured duration with the periodic tick makes the test RED at `0` versus `10000`; restored GREEN. Full ext4 suite passes, including 319 unit tests and every image integration; both x86_64 and aarch64 kernel target checks pass. Paired smoke reached userspace and passed serial RX on attempt 1: x86_64 in 46 s and aarch64 in 56 s. | B2480-ext4-itable-highres-pacing |
->>>>>>> 6b66df94a (docs: close B2480 ext4 itable pacing)
-=======
 ### B2481-ktimers-earliest-deadline
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 06e8d0e61 | DEFECT | med | **The process-context timer driver now parks until the earliest registered software-timer deadline instead of imposing a 100 ms floor on every periodic callback.** It retains the 100 ms bound only as its idle fallback, clamps overdue work to immediate dispatch, and publishes that computed deadline to the existing hard-tick waker. Vivid's 16.6 ms producer tick can therefore service its negotiated 30 fps frame deadline instead of delivering only at 10 Hz. | B2481. Linux 7.2.0-rc4 vivid computes and waits for each negotiated frame deadline; its generic timer delivery is likewise deadline-driven. Oxide's live call chain is `timer_driver::driver` → `timer::next_deadline_ns` → `timer_driver_policy::park_deadline` → `DEADLINE` → `tick_poll_ktimers`. The focused tests were RED before `park_deadline` existed; replacing the live registry lookup with the former fallback made the production-hook test RED, and restoring it made all four policy tests GREEN. Sched 1539/1539 (after one unrelated inode-wait race passed isolated and on full rerun), timer 7/7, and drv-vivid 16/16 pass. Both kernel target gates pass. Paired smoke passed attempt 1 with userspace and serial RX: x86 in 46 s, ARM64 in 56 s. | B2481-ktimers-earliest-deadline |
->>>>>>> 912448514 (docs: close ktimers cadence defect)
-=======
 ### B2482-ipv6-pktoptions-source-validation
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 6eb76b323 | MISSING | med | **`IPV6_2292PKTOPTIONS` now screens every packet-info control message against the live socket namespace, device binding, and source-address ownership before discarding its per-datagram state.** A conflicting bound interface, a link-local source without an interface, or an unusable source returns `EINVAL`; an absent selected interface returns `ENODEV`. The shared stream parser owns the exact native `in6_pktinfo` decode and requires its caller to supply the socket-context screen, so no packet-info arm can silently bypass it. | B2482. Linux 7.2.0-rc4 routes `IPV6_2292PKTOPTIONS` through `ip6_datagram_send_ctl`; its `IPV6_PKTINFO` arm checks the outgoing interface with `dev_get_by_index_rcu`, rejects link-local sources without a device, and checks non-wildcard source ownership. `packet_info_reaches_the_socket_context_screen` proves the production parser passes address `2001:db8::7` and ifindex 9 to the screen and propagates `ENODEV`. Omitting the callback made that test RED with `Ok(Slots)` instead of `Err(Enodev)`; restored code is GREEN. The focused test and full net suite pass (2575/2575), as do x86_64 and aarch64 kernel target checks. Boot smoke is omitted because this changes only an explicitly requested socket-option error path and is not boot-visible. | B2482-ipv6-pktoptions-source-validation |
->>>>>>> b4da8025e (docs: close B2482 IPv6 pktoptions validation)
 
 ### B2329-freezer-backoff-sleep
 
@@ -3688,8 +3652,6 @@ against the row's own evidence.
 |---|---|---|---|---|---|
 | FIXED e41310ec3 | COVERAGE | high | **The linked x86_64 S3 waking trampoline now executes in both a deterministic firmware-entry harness and a real Q35/SeaBIOS suspend-resume cycle.** The permanent micro-gate extracts the exact 4 KiB linked blob, enters it at the physical waking vector in 16-bit mode, and requires its own 16→32→64 transition to establish the patched page tables, control registers, EFER bits, and selectors before reaching the oracle. The end-to-end gate boots the distribution image, selects `deep`, observes QEMU enter S3, posts the wake, and requires the same shell to report one successful suspend. | B2332. The micro-gate's positive control replaces the firmware entry byte with `hlt`: RED timeout, restored GREEN with `S3-TRAMPOLINE-PASS`. `make accept-s3-resume-x86` observed QMP `suspended`, returned through processor-state restore, and read `S3-SUCCESS=1`. That runtime exposed a global sysfs inode collision that made `/sys/power/mem_sleep` alias `/sys/class/power_supply`; the power leaves moved to unique blocks, and restoring the old block makes `power_inode_blocks_do_not_alias_device_classes` fail. ARM is deliberately not claimed as executed: QEMU virt declines PSCI `SYSTEM_SUSPEND`, matching Linux 7.2-rc4's rule that deep suspend is installed only after `PSCI_FEATURES` admits it. The unavailable runtime path remains pinned by 10 PSCI probe tests, 11 admission/table tests, and 12 exact save/restore-order tests; ARM boot smoke passed with serial RX in 56 s. | e41310ec3 |
 
-<<<<<<< HEAD
-<<<<<<< HEAD
 ### B2336-bpf-program-streams
 
 | Status | Type | Severity | Issue | Evidence | Fixed by |
@@ -3881,17 +3843,13 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 3756fe251 | COVERAGE | low | **The `/proc` root's registry-backed static directories now come from a hosted-tested helper, so dropping `/proc/fs` from the root child map turns a test red.** | B2369. The production root builder uses the same helper for `fs`, `net`, and `sys`; the positive control omitted `fs` and failed the root listing assertion. | B2369-procfs-root-child-coverage |
-=======
 ### B2448-stale-sockaddr-shape-coverage-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2448 | COVERAGE | med | **The OPEN claim that bind/connect address-shape decisions remained target-gated and untested was stale.** Commit `7e3b578fb` moved the generic storage bound plus AF_UNIX, IPv4, IPv6, and VSOCK shape rules into ungated `net::sockaddr`; `syscalls::net_sockaddr` now owns only the fault-recovering user-memory copy and delegates every pure decision. The production bind/connect call sites consume those delegated helpers. | Linux 7.2-rc4 `move_addr_to_kernel` enforces the `sockaddr_storage` bound before family dispatch; `inet_bind`, `inet6_bind` and `vsock_addr_cast` supply the family floors. `net::sockaddr` focused suite passes 8/8. Positive control accepts a VSOCK address one byte below `sizeof(sockaddr_vm)` and `vsock_addresses_require_the_full_sockaddr_vm` turns RED (`Ok(())` vs `Err(Einval)`); restored GREEN. Full `net` 2574/2574 and both kernel target checks pass. No boot: B2448 changes ledgers only. | B2448 (`7e3b578fb`) |
->>>>>>> 634be4c8b (docs: close stale sockaddr shape coverage row)
-=======
 ### B2472-selinux-all-xattr-permissions
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 077ebee52 | DEFECT | med | **Every extended-attribute operation now takes the SELinux inode permission Linux assigns it.** Reads and listings require the object's `getattr`; non-label writes and removals require `setattr`; `security.selinux` retains its stricter relabel and no-remove ladders. POSIX ACL names pass through the same hooks instead of returning before the LSM boundary. | B2472 verified Linux 7.2-rc4's `selinux_inode_getxattr`, `selinux_inode_listxattr`, `selinux_inode_setxattr`, and `selinux_inode_removexattr` hooks. `every_attribute_operation_takes_the_linux_inode_permission` covers security, user, trusted, and ACL names plus list; changing the production mutation mapping back to `getattr` makes it fail, restored GREEN. SELinux runtime 55/55 and the complete fs suite passed (1,392 library tests plus integration binaries). Both release target checks passed. Paired smoke passed first attempt with serial RX: x86_64 52 s, aarch64 58 s. | B2472-selinux-all-xattr-permissions |
->>>>>>> 865d7090a (docs(issues): close SELinux xattr gate row)
