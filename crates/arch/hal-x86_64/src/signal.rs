@@ -14,10 +14,25 @@
 //   `xstate` — `uc_mcontext.fpstate` area: layout, epilog, restore checks.
 //   `tests`  — host unit tests, including an end-to-end frame round trip.
 
+use alloc::vec;
 use crate::gdt::USER_CS_SELECTOR;
 use crate::pt_regs::PtRegs;
 
 pub(crate) mod xstate;
+
+/// HAL-local exception-table usercopy. The kernel `uaccess` crate depends on
+/// this HAL, so signal code uses the primitive directly at this layer.
+fn copy_to_user(dst: u64, src: &[u8]) -> bool {
+    unsafe { crate::raw_copy_to_user(dst as *mut u8, src.as_ptr(), src.len()) == 0 }
+}
+
+fn copy_from_user(dst: &mut [u8], src: u64) -> bool {
+    unsafe { crate::raw_copy_from_user(dst.as_mut_ptr(), src as *const u8, dst.len()) == 0 }
+}
+
+fn object_bytes<T>(value: &T) -> &[u8] {
+    unsafe { core::slice::from_raw_parts((value as *const T).cast::<u8>(), core::mem::size_of::<T>()) }
+}
 
 /// Linux x86_64 `struct sigcontext` (== `ucontext.uc_mcontext`).
 #[repr(C)]
@@ -285,16 +300,17 @@ pub unsafe fn build_signal_frame(regs: *mut PtRegs, handler: u64, restorer: u64,
     // SS_AUTODISARM stack the handler ran on.
     sf.uc.uc_stack = StackT { ss_sp: alt.sp, ss_flags: alt.flags, _pad: 0, ss_size: alt.size };
     hal::write_siginfo(&mut sf.info, sig, payload);
-    // SAFETY: new_rsp < saved_rsp < USER_VA_END; CPL=0 write via active CR3; repr(C) matches restore.
-    unsafe { core::ptr::write_volatile(new_rsp as *mut RtSigframe, sf); }
+    // The range check is admission only; exception-table usercopy turns a
+    // concurrent unmap into a failed delivery instead of a kernel fault.
+    if !copy_to_user(new_rsp, object_bytes(&sf)) { return false; }
     if have_fpu {
         // Linux `copy_fpstate_to_sigframe` + `save_xstate_epilog`. The image
         // is copied rather than `xsave`d straight to the user address so the
         // SW-footer / MAGIC2 stamping stays one host-testable transform.
-        // SAFETY: `frame_span` above proved `l.fpstate + math <= USER_VA_END`; CPL=0 writes go through the caller's active CR3, so this writes the calling process's own stack; the region is plain bytes aliasing no kernel object.
-        let dst = unsafe { core::slice::from_raw_parts_mut(l.fpstate as *mut u8, math) };
-        dst[..user_size].copy_from_slice(&fpu[..user_size]);
-        let _ = xstate::write_epilog(dst, area, crate::xsave_xcr0());
+        let mut image = vec![0u8; math];
+        image[..user_size].copy_from_slice(&fpu[..user_size]);
+        let _ = xstate::write_epilog(&mut image, area, crate::xsave_xcr0());
+        if !copy_to_user(l.fpstate, &image) { return false; }
     }
 
     // Linux `x64_setup_rt_frame`'s "Set up registers for signal handler":
@@ -374,15 +390,18 @@ pub unsafe fn restore_signal_frame(regs: *mut PtRegs, fpu: &mut [u8])
     if frame_base.checked_add(core::mem::size_of::<RtSigframe>() as u64)
         .filter(|end| *end <= hal::USER_VA_END).is_none() { return None; }
     let uc_base = frame_base + core::mem::offset_of!(RtSigframe, uc) as u64;
-    let mc_ptr = (uc_base + core::mem::offset_of!(Ucontext, uc_mcontext) as u64) as *const Sigctx;
-    let sm_ptr = (uc_base + core::mem::offset_of!(Ucontext, uc_sigmask) as u64) as *const u64;
-    let st_ptr = (uc_base + core::mem::offset_of!(Ucontext, uc_stack) as u64) as *const StackT;
-    // SAFETY: frame_base < USER_VA_END; CPL=0 read via caller's AS; repr(C) matches build.
-    let mc = unsafe { core::ptr::read_volatile(mc_ptr) };
-    // SAFETY: sm_ptr is uc_sigmask inside the same validated frame_base region; CPL=0 read via the caller's user AS, identical validity to the mc_ptr read above.
-    let sigmask = unsafe { core::ptr::read_volatile(sm_ptr) };
-    // SAFETY: st_ptr is uc_stack inside the same validated frame_base region; CPL=0 read via the caller's user AS, identical validity to the mc_ptr read above.
-    let st = unsafe { core::ptr::read_volatile(st_ptr) };
+    let mc_ptr = uc_base + core::mem::offset_of!(Ucontext, uc_mcontext) as u64;
+    let sm_ptr = uc_base + core::mem::offset_of!(Ucontext, uc_sigmask) as u64;
+    let st_ptr = uc_base + core::mem::offset_of!(Ucontext, uc_stack) as u64;
+    let mut mc_bytes = [0u8; core::mem::size_of::<Sigctx>()];
+    let mut mask_bytes = [0u8; core::mem::size_of::<u64>()];
+    let mut stack_bytes = [0u8; core::mem::size_of::<StackT>()];
+    if !copy_from_user(&mut mc_bytes, mc_ptr)
+        || !copy_from_user(&mut mask_bytes, sm_ptr)
+        || !copy_from_user(&mut stack_bytes, st_ptr) { return None; }
+    let mc = unsafe { core::ptr::read_unaligned(mc_bytes.as_ptr().cast::<Sigctx>()) };
+    let sigmask = u64::from_ne_bytes(mask_bytes);
+    let st = unsafe { core::ptr::read_unaligned(stack_bytes.as_ptr().cast::<StackT>()) };
     if mc.rip >= hal::USER_VA_END || mc.rsp >= hal::USER_VA_END { return None; }
     // SAFETY: `mc.fpstate` is user-supplied; `restore_fpstate` proves the whole area lies below USER_VA_END and is alignment-legal before it reads a byte.
     let fpu_dirty = unsafe { restore_fpstate(mc.fpstate, fpu) }?;
@@ -445,16 +464,16 @@ unsafe fn restore_fpstate(ptr: u64, fpu: &mut [u8]) -> Option<bool> {
     // enforced here to keep the same accept/reject set.
     let align = if area != 0 { xstate::XSTATE_ALIGN } else { FXSAVE_ALIGN };
     if ptr & (align - 1) != 0 { return None; }
-    // SAFETY: `[ptr, ptr+math)` was just proved to end at or below USER_VA_END and CPL=0 reads run through the caller's active CR3, so this reads the calling process's own stack bytes.
-    let user = unsafe { core::slice::from_raw_parts(ptr as *const u8, math) };
+    let mut image = vec![0u8; math];
+    if !copy_from_user(&mut image, ptr) { return None; }
     let check = if area != 0 {
-        let sw = xstate::read_sw_bytes(user)?;
-        let magic2 = xstate::read_trailer(user, sw.xstate_size as usize);
+        let sw = xstate::read_sw_bytes(&image)?;
+        let magic2 = xstate::read_trailer(&image, sw.xstate_size as usize);
         xstate::check_xstate_in_sigframe(&sw, magic2, user_size)
     } else {
         xstate::SwCheck::FxOnly
     };
-    if !xstate::build_restore_image(user, &mut fpu[..user_size], check, crate::xsave_xcr0(),
+    if !xstate::build_restore_image(&image, &mut fpu[..user_size], check, crate::xsave_xcr0(),
                                     crate::mxcsr_feature_mask(), area != 0) {
         return None;
     }
