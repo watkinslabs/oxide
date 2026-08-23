@@ -65,7 +65,8 @@ fn file_ioctl_xperm(inode: &InodeRef, cmd: u32) -> KResult<()> {
     let Some(class) = super::label::inode_security_class(inode) else { return Ok(()) };
     let Some(ioctl) = selinux::uapi::classmap::perm_bit(class, "ioctl") else { return Ok(()) };
     selinux_runtime::check::has_xperm(selinux_runtime::task::current_sid(), isid, class,
-        ioctl, (cmd >> 8) as u8, cmd as u8).map_err(|_| VfsError::Eacces)
+        ioctl, selinux::avtab::AVTAB_XPERMS_IOCTLFUNCTION,
+        (cmd >> 8) as u8, cmd as u8).map_err(|_| VfsError::Eacces)
 }
 
 pub fn file_ioctl(inode: &InodeRef, cmd: u32) -> KResult<()> {

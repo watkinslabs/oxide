@@ -46,8 +46,18 @@ fn socket_hook(context: security::network::Context) -> security::network::Verdic
     let Some(permission) = selinux::uapi::classmap::perm_bit(class, permission_name) else {
         return security::network::Verdict::Allow;
     };
-    match selinux_runtime::check::has_perm(selinux_runtime::task::current_sid(),
-                                            context.target_sid, class, permission) {
+    let result = if matches!(context.operation, security::network::Operation::NetlinkSend)
+        && selinux_runtime::network::netlink_xperm()
+    {
+        selinux_runtime::check::has_xperm(selinux_runtime::task::current_sid(),
+            context.target_sid, class, permission,
+            selinux::avtab::AVTAB_XPERMS_NLMSG,
+            (context.message_type >> 8) as u8, context.message_type as u8)
+    } else {
+        selinux_runtime::check::has_perm(selinux_runtime::task::current_sid(),
+            context.target_sid, class, permission)
+    };
+    match result {
         Ok(()) => security::network::Verdict::Allow,
         Err(_) => security::network::Verdict::Deny,
     }

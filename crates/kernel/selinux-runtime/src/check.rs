@@ -31,8 +31,9 @@ pub fn has_perm(ssid: Sid, tsid: Sid, class: u16, requested: u32) -> Result<(), 
 
 /// Check one ioctl/netlink extended permission after its base permission.
 pub fn has_xperm(ssid: Sid, tsid: Sid, class: u16, base_perm: u32,
-                 driver: u8, xperm: u8) -> Result<(), i64> {
-    let Some(verdict) = crate::with(|s| s.has_xperm(ssid, tsid, class, base_perm, driver, xperm))
+                 kind: u8, driver: u8, xperm: u8) -> Result<(), i64> {
+    let Some(verdict) = crate::with(|s| s.has_xperm(ssid, tsid, class, base_perm,
+        kind, driver, xperm))
         else { return Ok(()); };
     if verdict.audit { report(ssid, tsid, class, &verdict); }
     if verdict.allowed { Ok(()) } else { Err(EACCES) }

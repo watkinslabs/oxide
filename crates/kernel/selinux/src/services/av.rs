@@ -12,7 +12,8 @@ use crate::avc::{AvDecision, AVD_FLAGS_NEVERAUDIT, AVD_FLAGS_PERMISSIVE};
 use crate::avtab::{Avtab, Key, AVTAB_ALLOWED, AVTAB_AUDITALLOW, AVTAB_AUDITDENY, AVTAB_AV,
                    AVTAB_ENABLED, AVTAB_XPERMS, AVTAB_XPERMS_ALLOWED,
                    AVTAB_XPERMS_AUDITALLOW, AVTAB_XPERMS_DONTAUDIT,
-                   AVTAB_XPERMS_IOCTLFUNCTION};
+                   AVTAB_XPERMS_IOCTLFUNCTION, AVTAB_XPERMS_IOCTLDRIVER,
+                   AVTAB_XPERMS_NLMSG};
 use crate::context::{Context, ValidContext};
 use crate::mapping::Mapping;
 use crate::policydb::Policydb;
@@ -97,7 +98,7 @@ pub fn compute_av_user(db: &Policydb, sidtab: &Sidtab,
 /// the normal AVC path; xperms refine that grant, exactly as in Linux.
 pub fn compute_xperm(db: &Policydb, map: &Mapping, sidtab: &Sidtab,
                      ssid: Sid, tsid: Sid, kernel_class: u16,
-                     driver: u8, xperm: u8, seqno: u32) -> Option<XpermDecision> {
+                     kind: u8, driver: u8, xperm: u8, seqno: u32) -> Option<XpermDecision> {
     let (scontext, tcontext) = {
         let mut ignored = AvDecision::init(seqno);
         admit(db, sidtab, ssid, tsid, &mut ignored)?
@@ -115,8 +116,8 @@ pub fn compute_xperm(db: &Policydb, map: &Mapping, sidtab: &Sidtab,
                 target_class: policy_class as u16,
                 specified: AVTAB_XPERMS,
             };
-            accumulate_xperm(&db.te_avtab, &key, false, driver, xperm, &mut result);
-            accumulate_xperm(&db.te_cond_avtab, &key, true, driver, xperm, &mut result);
+            accumulate_xperm(&db.te_avtab, &key, false, kind, driver, xperm, &mut result);
+            accumulate_xperm(&db.te_cond_avtab, &key, true, kind, driver, xperm, &mut result);
         }
     }
     result.selected.then_some(result)
@@ -208,22 +209,24 @@ fn accumulate(table: &Avtab, key: &Key, conditional: bool, v: &mut Vector) {
 }
 
 fn accumulate_xperm(table: &Avtab, key: &Key, conditional: bool,
-                    driver: u8, xperm: u8, result: &mut XpermDecision) {
+                    kind: u8, driver: u8, xperm: u8, result: &mut XpermDecision) {
     for rule in table.search(key) {
         if conditional && rule.key.specified & AVTAB_ENABLED == 0 { continue; }
         let Some(xperms) = rule.datum.xperms() else { continue };
         let applies = match xperms.specified {
-            AVTAB_XPERMS_IOCTLFUNCTION => xperms.driver == driver,
+            AVTAB_XPERMS_IOCTLFUNCTION | AVTAB_XPERMS_NLMSG =>
+                kind == xperms.specified && xperms.driver == driver,
             // A driver rule grants the complete 256-function range when its
             // driver bit is selected.
-            crate::avtab::AVTAB_XPERMS_IOCTLDRIVER => xperms.get(driver),
+            AVTAB_XPERMS_IOCTLDRIVER => kind == AVTAB_XPERMS_IOCTLFUNCTION
+                && xperms.get(driver),
             _ => false,
         };
         if !applies { continue; }
         result.selected = true;
         match rule.key.kind() {
             AVTAB_XPERMS_ALLOWED => {
-                result.allowed |= xperms.specified == crate::avtab::AVTAB_XPERMS_IOCTLDRIVER
+                result.allowed |= xperms.specified == AVTAB_XPERMS_IOCTLDRIVER
                     || xperms.get(xperm);
             }
             AVTAB_XPERMS_AUDITALLOW => result.auditallow = true,

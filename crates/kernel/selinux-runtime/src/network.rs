@@ -49,6 +49,13 @@ pub fn extended_socket_class() -> bool {
         .unwrap_or(false)
 }
 
+/// Whether the loaded policy asks SELinux to refine netlink message access
+/// with `nlmsg` xperms rather than only the class's read/write bit.
+pub fn netlink_xperm() -> bool {
+    crate::with(|s| s.policycap(selinux::uapi::policycap::POLICYDB_CAP_NETLINK_XPERM))
+        .unwrap_or(false)
+}
+
 /// Label the server end of a new connection takes. # C: O(categories)
 ///
 /// The listening socket's identity carrying the connecting socket's

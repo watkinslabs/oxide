@@ -217,12 +217,12 @@ impl SecurityServer {
 
     /// Refine an ordinary permission with one policy xperm bit. # C: O(attrs²)
     pub fn has_xperm(&mut self, ssid: Sid, tsid: Sid, kernel_class: u16,
-                     base_perm: u32, driver: u8, xperm: u8) -> Verdict {
+                     base_perm: u32, kind: u8, driver: u8, xperm: u8) -> Verdict {
         let base = self.has_perm(ssid, tsid, kernel_class, base_perm);
         if !base.allowed { return base; }
         let Some(loaded) = self.loaded.as_ref() else { return base; };
         let Some(x) = services::compute_xperm(&loaded.db, &loaded.map, &loaded.sidtab,
-            ssid, tsid, kernel_class, driver, xperm, self.state.seqno) else { return base; };
+            ssid, tsid, kernel_class, kind, driver, xperm, self.state.seqno) else { return base; };
         if x.allowed {
             return Verdict { allowed: true, denied: 0, permissive: false, audit: x.auditallow };
         }
