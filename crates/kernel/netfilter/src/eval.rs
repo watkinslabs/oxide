@@ -2,7 +2,8 @@ use crate::{NFT_CHAIN_POLICY_DROP, active_generation, nft_expr};
 use alloc::vec::Vec;
 
 use crate::nft_expr::{Action, EvalCtx, uapi};
-use crate::nft_expr::access::{CtAccess, FibEntry, FibKey, RouteAccess, SocketAccess};
+use crate::nft_expr::access::{CtAccess, FibEntry, FibKey, RouteAccess, SocketAccess,
+                              SynproxyAccess};
 use conntrack::tuple::Tuple;
 
 /// Netfilter verdict.
@@ -301,6 +302,7 @@ fn eval_context(input: &crate::eval_context::Input<'_>) -> EvalResult {
         }),
         present: input.socket.is_some(),
     });
+    let live_synproxy = input.live.then(|| LiveSynproxy { pkt, family });
     let Some(generation) = active_generation(hook_id) else {
         return EvalResult { verdict: Verdict::Accept, mark, actions: Vec::new(), notrack: false };
     };
@@ -326,6 +328,7 @@ fn eval_context(input: &crate::eval_context::Input<'_>) -> EvalResult {
             if input.ct_available { ctx.ct = Some(&live_ct); }
             if input.live { ctx.route = Some(&live_route); }
             if let Some(socket) = live_socket.as_ref() { ctx.socket = Some(socket); }
+            if let Some(synproxy) = live_synproxy.as_ref() { ctx.synproxy = Some(synproxy); }
             ctx.set_lookup = Some(&lookup);
             let verdict = nft_expr::run_rule_ctx(&rule.exprs, &mut ctx);
             mark = ctx.mark;
@@ -344,4 +347,33 @@ fn eval_context(input: &crate::eval_context::Input<'_>) -> EvalResult {
         if verdict != Verdict::Accept { return EvalResult { verdict, mark, actions, notrack }; }
     }
     EvalResult { verdict: Verdict::Accept, mark, actions, notrack }
+}
+
+struct LiveSynproxy<'a> {
+    pkt: &'a [u8],
+    family: u8,
+}
+
+impl SynproxyAccess for LiveSynproxy<'_> {
+    fn cookie_valid(&self, seq: u32, ack: u32) -> Option<u16> {
+        let (src, dst, off) = match self.family {
+            uapi::NFPROTO_IPV4 => {
+                let ihl = (*self.pkt.first()? & 0x0f) as usize * 4;
+                if ihl < 20 || self.pkt.len() < ihl + 20 { return None; }
+                (net::addr::IpAddr::V4(net::addr::Ipv4Addr::new(
+                    self.pkt[12], self.pkt[13], self.pkt[14], self.pkt[15])),
+                 net::addr::IpAddr::V4(net::addr::Ipv4Addr::new(
+                    self.pkt[16], self.pkt[17], self.pkt[18], self.pkt[19])), ihl)
+            }
+            uapi::NFPROTO_IPV6 if self.pkt.len() >= 60 => (
+                net::addr::IpAddr::V6(net::addr::Ipv6Addr(self.pkt[8..24].try_into().ok()?)),
+                net::addr::IpAddr::V6(net::addr::Ipv6Addr(self.pkt[24..40].try_into().ok()?)),
+                40),
+            _ => return None,
+        };
+        let src_port = u16::from_be_bytes([self.pkt[off], self.pkt[off + 1]]);
+        let dst_port = u16::from_be_bytes([self.pkt[off + 2], self.pkt[off + 3]]);
+        net::syncookies::validate(src, dst, src_port, dst_port, seq, ack,
+            net::tcp_conn::ka_now_ns(), self.family == uapi::NFPROTO_IPV6)
+    }
 }
