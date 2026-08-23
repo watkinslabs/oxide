@@ -95,4 +95,12 @@ impl Options {
 
     /// The write bits a non-owner may set times through. # C: O(1)
     pub fn utime_bits(&self) -> u16 { self.allow_utime.unwrap_or(!self.dmask & UTIME_BITS) }
+
+    /// Linux `exfat_allow_set_time`: permit a non-owner's timestamp update
+    /// when the mount mask grants the relevant group/other write bit. # C: O(1)
+    pub fn allows_non_owner_utime(&self, caller_is_owner: bool, caller_in_group: bool) -> bool {
+        if caller_is_owner { return false; }
+        let bits = if caller_in_group { self.utime_bits() >> 3 } else { self.utime_bits() };
+        bits & 0o2 != 0
+    }
 }

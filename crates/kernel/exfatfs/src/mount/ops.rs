@@ -177,6 +177,17 @@ impl InodeOps for ExfatOps {
         entry.set.file.modify = without_centiseconds(from_unix(modify));
         v.write_entry_set(&entry).map_err(errno_to_vfs)
     }
+
+    /// exFAT's `allow_utime=` is the same non-owner exception as Linux FAT:
+    /// it is checked before generic VFS `setattr_prepare`, while owner and
+    /// CAP_FOWNER callers retain the ordinary VFS path.
+    fn allow_set_time(&self, inode: &Inode, idmap: &vfs::Idmap, cred: &vfs::Cred) -> bool {
+        let node = match Self::node(inode) { Ok(node) => node, Err(_) => return false };
+        let v = node.fs.volume.lock();
+        let owner = vfs::inode::inode_owner_or_capable(idmap, inode, cred);
+        let group = cred.in_group(idmap.map_out_gid(inode.gid().unwrap_or(0)));
+        v.options().allows_non_owner_utime(owner, group)
+    }
 }
 
 impl FileOps for ExfatOps {

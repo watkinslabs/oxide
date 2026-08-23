@@ -210,6 +210,11 @@ pub trait InodeOps: Send + Sync {
         crate::getattr::generic_fillattr(inode, idmap)
     }
 
+    /// Filesystem-specific relaxation for non-owner timestamp updates, the
+    /// Linux `->setattr` option hook used by exFAT/FAT `allow_utime=`. The
+    /// default keeps the VFS owner/CAP_FOWNER rule unchanged. # C: O(1)
+    fn allow_set_time(&self, _inode: &Inode, _idmap: &Idmap, _cred: &Cred) -> bool { false }
+
     /// `i_op->setattr` — apply a prepared `Iattr`. Default `simple_setattr`
     /// (writes the inode's own metadata fields), then keep an existing access
     /// ACL consistent with a changed mode. # C: O(1) without an ACL

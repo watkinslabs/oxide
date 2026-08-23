@@ -115,6 +115,11 @@ impl Inode {
     pub fn getattr(&self, idmap: &Idmap) -> Kstat {
         self.getattr_mask(idmap, crate::getattr::STATX_BASIC_STATS, 0)
     }
+    /// Whether this inode's filesystem permits its caller-specific timestamp
+    /// exception. # C: O(1)
+    pub fn allow_set_time(&self, idmap: &Idmap, cred: &namei::Cred) -> bool {
+        self.i_op.allow_set_time(self, idmap, cred)
+    }
     /// `i_op->setattr`. # C: O(1)
     pub fn setattr(&self, idmap: &Idmap, ia: &Iattr) -> KResult<()> { self.i_op.setattr(self, idmap, ia) }
 
