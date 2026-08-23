@@ -5250,6 +5250,11 @@ against the row's own evidence.
 - Source commit: `fab0dca9f`
 - Fix: f2fs now caches clean NAT table entries with an LRU, invalidates them on NAT mutation/checkpoint adoption, and includes them in memory accounting and filesystem reclaim.
 - Verification: `cargo test -p f2fs` (3719 passed).
+### B2635-raw-block-shared-mmap
+
+- Source commit: `700b35942`
+- Fix: raw block-device shared mappings now use the canonical per-disk `BdevMapping`. Cached pages lazily move into PMM frames for user PTEs, shared write faults dirty those same pages, and existing block writeback persists the mapped stores.
+- Verification: `cargo test -p block --lib bdev::tests` (23 passed), `cargo test -p vfs --lib` (393 passed).
 | FIXED | MISSING | med | **SELinux mount contexts are now one stored superblock decision.** The installed mount security owner consumes `context=`, `fscontext=`, `defcontext=`, and `rootcontext=`, resolves them through the live policy, stores the result in `SuperBlock::s_security`, and inode labeling reads that owner; rootcontext is applied only to the mount root. | Linux `selinux_add_opt`/`selinux_set_mnt_opts`; `vfs::FsContextSecurity`, `SuperBlock::s_security`, and `fs::selinux::mount`; selinux-runtime 56/56, VFS security 6/6, SELinux label 4/4. | B2621-selinux-mount-context |
 | FIXED | MISSING | med | **SELinux genfs labels now use the instantiated dentry path.** The VFS publication hook supplies the path relative to the mount root, so `/proc` and `/sys` descendants receive the policy's longest matching genfs context; the inode alias path is reused when lazy resolution runs after a policy reload. | Linux dentry-aware SELinux inode initialization; `vfs::inode_instantiated`, `fs::selinux::label::label_at`; distro-policy genfs regression 5/5. | B2621-selinux-genfs |
 | FIXED a438a1823 | MISSING | low | **NTFS now honors `sparse` regular-file creation and sparse growth.** New sparse files use non-resident `$DATA` with `ATTR_FLAG_SPARSED`; truncation extends hole runs without claiming clusters, and writes allocate only the touched clusters while preserving zero-filled holes and `total_size`. | Linux `ntfs_create_inode`, `attr_set_size`, and sparse run handling; `ntfs3::volume::tests::sparse_files_extend_with_holes_and_allocate_only_written_clusters`; NTFS 208/208. | a438a1823 |
