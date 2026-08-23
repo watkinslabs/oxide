@@ -5220,3 +5220,8 @@ against the row's own evidence.
 - Linux reference: `fs/ext4/fsync.c` (`i_sync_tid`/`i_datasync_tid`, conditional barrier)
 - Fix: ext4 now tracks per-mount commit generations and per-inode sync/data-sync watermarks, honors `fdatasync`, avoids a redundant journal barrier, and suppresses barriers under `nobarrier`.
 - Verification: `cargo test -p ext4 --lib` (320 passed)
+### B2633-f2fs-compressed-cluster-writeback
+
+- Source commit: `1f0f50a55`
+- Fix: the page-cache owner can complete all resident dirty pages covered by a successfully materialized compressed cluster, so bounded writeback cannot place that cluster again.
+- Verification: `cargo test -p f2fs` (3718 passed), including the bounded-writeback regression.
