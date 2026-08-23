@@ -45,11 +45,14 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
         // SOL_SOCKET is answered generically for every family and never
         // reaches the family's own table.
         if level == SOL_SOCKET {
-            if let Err(error) = net::socket_security::option::setsockopt(
+            let socket = target.socket();
+            if let Err(error) = net::socket_security::option::check_target(
                 net::socket_security::option::OptSock::plain(
-                    net::net_ns::namespace_id(&target.socket().net_ns),
+                    net::net_ns::namespace_id(&socket.net_ns),
                     net::socket_args::AF_NETLINK_WIRE),
-                level as i32, optname as i32)
+                net::socket_security::option::Access::Set, level as i32, optname as i32,
+                socket.security_sid.load(core::sync::atomic::Ordering::Acquire),
+                socket.security_class())
             { return errno_from_neterr(error); }
             return crate::netlink_fd::sol_socket::set(&target, optname, optval, optlen as u64);
         }
@@ -70,8 +73,8 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
         }
     };
     if signed_optlen < 0 { return -(Errno::Einval.as_i32() as i64); }
-    if let Err(error) = net::socket_security::option::setsockopt(
-        net::socket_security::option::inet(&sock), level as i32, optname as i32)
+    if let Err(error) = net::socket_security::option::check_inet(
+        &sock, net::socket_security::option::Access::Set, level as i32, optname as i32)
     {
         return errno_from_neterr(error);
     }

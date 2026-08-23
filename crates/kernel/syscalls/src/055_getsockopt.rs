@@ -147,8 +147,8 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
         Some(sock) => sock,
         None => return -(Errno::Enotsock.as_i32() as i64),
     };
-    if let Err(error) = net::socket_security::option::getsockopt(
-        net::socket_security::option::inet(&sock), level as i32, optname as i32)
+    if let Err(error) = net::socket_security::option::check_inet(
+        &sock, net::socket_security::option::Access::Get, level as i32, optname as i32)
     {
         return errno_from_neterr(error);
     }
