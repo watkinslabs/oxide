@@ -63,6 +63,17 @@ pub fn inet(sock: &crate::sock::InetSocket) -> MsgSock {
     }
 }
 
+/// Describe an AF_VSOCK socket to the common send/receive message hooks. # C: O(1)
+pub fn vsock(sock: &crate::vsock_socket::VsockSocket) -> MsgSock {
+    MsgSock {
+        namespace: sock.net_ns(),
+        family: crate::socket_args::AF_VSOCK as u16,
+        proto: Proto::Other,
+        target_sid: sock.security_label(),
+        target_class: sock.security_class(),
+    }
+}
+
 /// Describe one socket that carries no port rules — every family outside the
 /// internet transports the sandbox writes rules for. # C: O(1)
 pub fn other(namespace: u64, family: u16) -> MsgSock {
