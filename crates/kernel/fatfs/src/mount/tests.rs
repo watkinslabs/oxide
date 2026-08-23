@@ -152,6 +152,20 @@ fn sys_immutable_maps_the_dos_system_attribute_to_the_vfs_flag() {
     assert_eq!(ordinary.i_flags() & vfs::inode::S_IMMUTABLE, 0);
 }
 
+#[test]
+fn quiet_makes_an_unrepresentable_owner_change_a_successful_noop() {
+    let mut opts = crate::opts::Options::vfat();
+    opts.quiet = true;
+    let fs = writable_mount("vfat", opts);
+    let file = fs.root_inode().lookup("HELLO.TXT").expect("lookup");
+    file.setattr(&vfs::IDENTITY, &vfs::Iattr {
+        valid: vfs::ATTR_UID,
+        uid: 1234,
+        ..vfs::Iattr::default()
+    }).expect("quiet chown is a successful no-op");
+    assert_eq!(file.uid(), Some(0));
+}
+
 /// chmod reaches FAT's record writer rather than only changing the in-memory
 /// inode: a fresh lookup sees the DOS read-only attribute that was persisted.
 #[test]

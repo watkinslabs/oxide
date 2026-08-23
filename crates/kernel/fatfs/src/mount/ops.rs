@@ -199,7 +199,13 @@ impl InodeOps for FatOps {
         let opts = *v.options();
         let uid = if ia.valid & ATTR_UID != 0 { idmap.map_in_uid(ia.uid) } else { opts.uid };
         let gid = if ia.valid & ATTR_GID != 0 { idmap.map_in_gid(ia.gid) } else { opts.gid };
-        if uid != opts.uid || gid != opts.gid { return Err(VfsError::Eperm); }
+        if uid != opts.uid || gid != opts.gid {
+            // Linux's quiet option preserves the historical FAT ABI: an
+            // ownership change the medium cannot represent succeeds without
+            // changing the synthesized owner.
+            if opts.quiet { return Ok(()); }
+            return Err(VfsError::Eperm);
+        }
 
         // Size and in-core metadata changes use the normal VFS owner.  FAT's
         // on-disk update below is deliberately after this call so a combined
