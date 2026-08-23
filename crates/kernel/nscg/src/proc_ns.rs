@@ -249,15 +249,14 @@ pub fn has_cap_for(cur: &sched::Task, target_user_ns: &NamespacePin, cap: u32) -
     let mut ns = target_user_ns.clone();
     loop {
         if NamespacePin::ptr_eq(&cred_ns, &ns) {
-            return cur.has_cap(cap) && selinux_runtime::check::capability(
-                selinux_runtime::task::current_sid(), cap, false).is_ok();
+            return cur.has_cap(cap);
         }
         let Some(parent) = ns.parent() else { return false };
         if NamespacePin::ptr_eq(&cred_ns, &parent)
             && user_namespace::owner_euid(&ns) == Ok(Some(euid))
         {
             return selinux_runtime::check::capability(
-                selinux_runtime::task::current_sid(), cap, false).is_ok();
+                cur.selinux_label.lock().sid, cap, false).is_ok();
         }
         ns = parent;
     }
