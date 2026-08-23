@@ -20,10 +20,9 @@
 //     asks whether reclaiming every reclaimable page could meet the watermark
 //     and short-circuits to the killer when it could not; that is an
 //     optimisation of when the killer runs, not of whether it runs.
-//   * The number of killer invocations per allocation is bounded.  The
-//     reference loops until the allocation succeeds or nothing is killable,
-//     which is safe there because a reaper frees a victim's memory
-//     asynchronously.  Recorded in `scratch/known_issues.md`.
+//   * The killer is retried until allocation succeeds or the selector reports
+//     that nothing is killable. The reaper makes a selected victim's progress
+//     observable asynchronously, matching the reference's termination rule.
 
 #[cfg(test)]
 mod tests;
@@ -35,10 +34,6 @@ pub const PAGE_ALLOC_COSTLY_ORDER: u8 = 3;
 /// Reclaim passes without progress after which the allocation stops retrying
 /// and asks for a victim.
 pub const MAX_RECLAIM_RETRIES: u32 = 16;
-
-/// Killer invocations one allocation may make before it gives up and reports
-/// failure to its caller.
-pub const MAX_OOM_ATTEMPTS: u32 = 16;
 
 /// What the slowpath does next after one pass.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -111,7 +106,6 @@ pub fn after_oom(state: &mut RetryState, outcome: OomOutcome) -> Step {
     if outcome == OomOutcome::NoKillable { return Step::Fail; }
     state.oom_attempts = state.oom_attempts.saturating_add(1);
     state.no_progress_loops = 0;
-    if state.oom_attempts > MAX_OOM_ATTEMPTS { return Step::Fail; }
     Step::Retry
 }
 
@@ -119,9 +113,10 @@ pub fn after_oom(state: &mut RetryState, outcome: OomOutcome) -> Step {
 /// select a victim and re-attempt again.  `alloc` answers `Some` the moment
 /// the allocation succeeds; `None` here is the allocation's final failure.
 ///
-/// TERMINATION. Every pass either advances `no_progress_loops` or consumes one
-/// of the bounded killer invocations, and both bounds answer `Fail`.
-/// # C: O(MAX_RECLAIM_RETRIES * MAX_OOM_ATTEMPTS) passes
+/// TERMINATION. Reclaim still has its bounded retry ladder; once the selector
+/// is entered, termination is owned by allocation success or `NoKillable`, as
+/// in the reference. A selected victim is queued for asynchronous reaping.
+/// # C: O(MAX_RECLAIM_RETRIES + selector/reaper progress) passes
 pub fn run_slowpath<T, A, R, O>(order: u8, allowed: bool, mut alloc: A, mut reclaim: R, mut oom: O) -> Option<T>
 where A: FnMut() -> Option<T>, R: FnMut() -> bool, O: FnMut() -> OomOutcome {
     if !allowed { return None; }
