@@ -154,7 +154,8 @@ impl ObjectAccess for LiveObjects<'_> {
         })?;
         match &*object.state {
             crate::nft_expr::ObjectState::Synproxy { .. }
-            | crate::nft_expr::ObjectState::CtTimeout { .. } =>
+            | crate::nft_expr::ObjectState::CtTimeout { .. }
+            | crate::nft_expr::ObjectState::CtExpect { .. } =>
                 object.state.eval_packet(pkt, family, ct, now_ns, synproxy, actions),
             _ => object.state.eval_for(pkt_len, now_ns, ct),
         }
@@ -176,7 +177,8 @@ impl ObjectAccess for LiveObjects<'_> {
         let state = self.generation.object_state(set_id?, key)?;
         match &**state {
             crate::nft_expr::ObjectState::Synproxy { .. }
-            | crate::nft_expr::ObjectState::CtTimeout { .. } =>
+            | crate::nft_expr::ObjectState::CtTimeout { .. }
+            | crate::nft_expr::ObjectState::CtExpect { .. } =>
                 state.eval_packet(pkt, family, ct, now_ns, synproxy, actions),
             _ => state.eval_for(pkt_len, now_ns, ct),
         }
@@ -384,6 +386,14 @@ impl CtAccess for LiveCt<'_> {
             if installed { c.refresh(now / 1_000_000_000, values[0]); }
             installed
         })
+    }
+    fn set_expectation(&self, l3num: u16, l4proto: u8, dport: u16,
+                       timeout_ms: u32, size: u8, now: u64) -> bool {
+        match (self.net_owner.as_ref(), self.conn) {
+            (Some(net), Some(_conn)) => self.owner.as_ref().is_some_and(|master| net.install_expectation(
+                master, self.dir, l3num, l4proto, dport, timeout_ms, size, now)),
+            _ => false,
+        }
     }
 }
 

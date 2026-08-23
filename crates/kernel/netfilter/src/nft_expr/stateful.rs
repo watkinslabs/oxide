@@ -162,6 +162,7 @@ pub enum ObjectState {
                 invert: bool },
     CtHelper { name: String, l4proto: u8, l3proto: Option<u16> },
     CtTimeout { l3proto: Option<u16>, l4proto: u8, values: [u32; 14] },
+    CtExpect { l3proto: Option<u16>, l4proto: u8, dport: u16, timeout_ms: u32, size: u8 },
     Synproxy { mss: u16, wscale: u8, flags: u32 },
     Unsupported,
 }
@@ -181,6 +182,7 @@ impl core::fmt::Debug for ObjectState {
             Self::Connlimit { .. } => "Connlimit",
             Self::CtHelper { .. } => "CtHelper",
             Self::CtTimeout { .. } => "CtTimeout",
+            Self::CtExpect { .. } => "CtExpect",
             Self::Synproxy { .. } => "Synproxy",
             Self::Unsupported => "Unsupported",
         })
@@ -292,6 +294,21 @@ impl ObjectState {
                 Self::CtTimeout { l3proto: find_u16_be(
                     data, crate::nft_expr::uapi::NFTA_CT_TIMEOUT_L3PROTO), l4proto, values }
             }
+            crate::nft_expr::uapi::NFT_OBJECT_CT_EXPECT => {
+                let Some(l4proto) = find_u8(data, crate::nft_expr::uapi::NFTA_CT_EXPECT_L4PROTO)
+                    .filter(|proto| matches!(*proto, crate::nft_expr::limits::IPPROTO_TCP
+                        | crate::nft_expr::limits::IPPROTO_UDP
+                        | 33 | 132)) else { return Self::Unsupported; };
+                let Some(dport) = find_u16_be(data, crate::nft_expr::uapi::NFTA_CT_EXPECT_DPORT)
+                    .filter(|port| *port != 0) else { return Self::Unsupported; };
+                let Some(timeout_ms) = find_u32_be(data,
+                    crate::nft_expr::uapi::NFTA_CT_EXPECT_TIMEOUT) else { return Self::Unsupported; };
+                let Some(size) = find_u8(data, crate::nft_expr::uapi::NFTA_CT_EXPECT_SIZE)
+                    .filter(|size| *size != 0) else { return Self::Unsupported; };
+                Self::CtExpect { l3proto: find_u16_be(
+                    data, crate::nft_expr::uapi::NFTA_CT_EXPECT_L3PROTO),
+                    l4proto, dport, timeout_ms, size }
+            }
             _ => Self::Unsupported,
         }
     }
@@ -355,6 +372,7 @@ impl ObjectState {
                 None
             }
             Self::CtTimeout { .. } => Some(NFT_BREAK),
+            Self::CtExpect { .. } => Some(NFT_BREAK),
             Self::Synproxy { .. } => Some(NFT_BREAK),
             Self::Unsupported => Some(NFT_BREAK),
         }
@@ -377,6 +395,18 @@ impl ObjectState {
                                                values, now_ns);
                 None
             }
+            Self::CtExpect { l3proto, l4proto, dport, timeout_ms, size } => {
+                let Some(ct) = ct else { return Some(crate::nft_expr::uapi::NFT_BREAK); };
+                let Some(tuple) = ct.tuple(0) else { return Some(crate::nft_expr::uapi::NFT_BREAK); };
+                if l3proto.is_some_and(|family| family != tuple.l3num as u16) {
+                    return Some(crate::nft_expr::uapi::NFT_BREAK);
+                }
+                if !ct.set_expectation(l3proto.unwrap_or(tuple.l3num as u16), *l4proto,
+                                       *dport, *timeout_ms, *size, now_ns) {
+                    return Some(crate::nft_expr::uapi::NF_DROP);
+                }
+                None
+            }
             Self::Synproxy { mss, wscale, flags } =>
                 crate::nft_expr::run::action::synproxy_packet(
                     pkt, family, synproxy, *mss, *wscale, *flags, actions),
@@ -395,7 +425,10 @@ mod tests {
                                 NFT_OBJECT_QUOTA, NFT_OBJECT_SYNPROXY, NFTA_SYNPROXY_MSS,
                                 NFTA_SYNPROXY_WSCALE, NFTA_SYNPROXY_FLAGS, NF_STOLEN, NFT_BREAK,
                                 NFT_OBJECT_CT_TIMEOUT, NFTA_CT_TIMEOUT_L4PROTO,
-                                NFTA_CT_TIMEOUT_DATA, CTA_TIMEOUT_TCP_ESTABLISHED};
+                                NFTA_CT_TIMEOUT_DATA, CTA_TIMEOUT_TCP_ESTABLISHED,
+                                NFT_OBJECT_CT_EXPECT, NFTA_CT_EXPECT_L4PROTO,
+                                NFTA_CT_EXPECT_DPORT, NFTA_CT_EXPECT_TIMEOUT,
+                                NFTA_CT_EXPECT_SIZE};
     use alloc::sync::Arc;
     use core::cell::Cell;
     use conntrack::tuple::Tuple;
@@ -450,6 +483,32 @@ mod tests {
         assert_eq!(values[1], 120);
         assert_eq!(values[3], 77);
         assert_eq!(values[0], values[1], "Linux UNSPEC aliases SYN_SENT");
+    }
+
+    struct ExpectPacket { tuple: Tuple, called: Cell<bool> }
+    impl CtAccess for ExpectPacket {
+        fn ctinfo(&self) -> u8 { 0 }
+        fn tuple(&self, _dir: u8) -> Option<Tuple> { Some(self.tuple) }
+        fn set_expectation(&self, _l3num: u16, _l4proto: u8, _dport: u16,
+                           _timeout_ms: u32, _size: u8, _now: u64) -> bool {
+            self.called.set(true);
+            true
+        }
+    }
+
+    #[test]
+    fn ct_expect_object_uses_the_canonical_expectation_owner() {
+        let mut data = attr(NFTA_CT_EXPECT_L4PROTO, &[17]);
+        data.extend(attr(NFTA_CT_EXPECT_DPORT, &2123u16.to_be_bytes()));
+        data.extend(attr(NFTA_CT_EXPECT_TIMEOUT, &5000u32.to_be_bytes()));
+        data.extend(attr(NFTA_CT_EXPECT_SIZE, &[4]));
+        let state = ObjectState::from_wire(NFT_OBJECT_CT_EXPECT, &data);
+        let packet = ExpectPacket { tuple: Tuple { l3num: 2, protonum: 6, ..Tuple::default() },
+                                     called: Cell::new(false) };
+        let mut actions = alloc::vec::Vec::new();
+        assert_eq!(state.eval_packet(&[], crate::nft_expr::uapi::NFPROTO_IPV4,
+                                     Some(&packet), 0, None, &mut actions), None);
+        assert!(packet.called.get());
     }
 
     struct LiveFlow(Arc<conntrack::Conn>);

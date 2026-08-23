@@ -13,7 +13,7 @@ use crate::proto::{icmp, tcp, udp};
 use crate::proto::tcp_window::TcpSeg;
 use crate::sysctl::CtSysctl;
 use crate::table::CtTable;
-use crate::tuple::Tuple;
+use crate::tuple::{ProtoPart, Tuple, TupleEnd};
 use crate::uapi::*;
 
 /// L4 detail one packet carries, in the shape each tracker wants.
@@ -262,6 +262,37 @@ impl CtNet {
         if status & IPS_HELPER != 0 { return true; }
         conn.attach_helper(String::from(name), true);
         true
+    }
+
+    /// Install an nft CT expectation through the canonical expectation table.
+    pub fn install_expectation(&self, master: &Arc<Conn>, dir: u8, l3num: u16,
+                               l4proto: u8, dport: u16, timeout_ms: u32,
+                               size: u8, now_ns: u64) -> bool {
+        if master.confirmed() || master.status() & IPS_TEMPLATE != 0 { return false; }
+        let base = master.tuple(dir ^ 1);
+        if base.l3num as u16 != l3num { return false; }
+        let tuple = Tuple {
+            l3num: base.l3num, protonum: l4proto,
+            src: TupleEnd { addr: base.src.addr, proto: ProtoPart::default() },
+            dst: TupleEnd { addr: base.dst.addr, proto: ProtoPart::port(dport) },
+            zone: base.zone,
+        };
+        let mask = crate::expect::TupleMask {
+            src_addr: crate::tuple::InetAddr([0xff; 16]),
+            dst_addr: crate::tuple::InetAddr([0xff; 16]),
+            src_port: 0, dst_port: 0xffff,
+        };
+        let now = now_ns / 1_000_000_000;
+        let master_count = self.expect.snapshot().into_iter().filter(|exp| {
+            Arc::ptr_eq(&exp.master, master) && exp.class == crate::limits::EXPECT_CLASS_DEFAULT
+                && exp.timeout > now
+        }).count() as u32;
+        let exp = crate::expect::Expectation {
+            tuple, mask, master: master.clone(), class: crate::limits::EXPECT_CLASS_DEFAULT,
+            flags: 0, timeout: now.saturating_add((timeout_ms as u64 + 999) / 1000),
+            helper: None, dir, saved_proto: ProtoPart::default(), saved_addr: base.dst.addr,
+        };
+        self.expect.insert(exp, size as u32, master_count, now).is_ok()
     }
 
     /// Apply the ctnetlink fields supported by the live entry owner. Linux

@@ -67,6 +67,9 @@ pub trait CtAccess {
     fn set_helper(&self, _name: &str, _l4proto: u8) -> bool { false }
     /// Install a protocol timeout extension on the unconfirmed flow.
     fn set_timeout_policy(&self, _l3num: u16, _l4proto: u8, _values: &[u32; 14], _now: u64) -> bool { false }
+    /// Announce a related flow through the owning expectation table.
+    fn set_expectation(&self, _l3num: u16, _l4proto: u8, _dport: u16,
+                       _timeout_ms: u32, _size: u8, _now: u64) -> bool { false }
 }
 
 /// One route lookup's answer.
