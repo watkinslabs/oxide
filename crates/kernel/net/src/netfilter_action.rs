@@ -56,10 +56,22 @@ impl Action {
     /// Apply an action at its owning netfilter hook. Stateful actions are
     /// committed to the packet's namespace-owned conntrack entry before the
     /// packet bytes are manipulated, matching Linux's nft NAT path.
-    pub fn apply_at(&self, p: &mut crate::pkt::Pkt, family: u8, _hook: u32)
+    pub fn apply_at(&self, p: &mut crate::pkt::Pkt, family: u8, hook: u32)
         -> Result<(), ApplyError> {
         match self {
             Self::Nat { manip, range } => apply_nat_setup(p, *manip, range),
+            Self::Masquerade { range } => {
+                let source = masquerade_source(p, family)?;
+                let range = nat::policy::masquerade_range(hook as u8, source, range)
+                    .map_err(|_| ApplyError::Invalid)?;
+                apply_nat_setup(p, nat::uapi::NF_NAT_MANIP_SRC, &range)
+            }
+            Self::Redirect { range } => {
+                let address = redirect_address(p, family, hook as u8);
+                let range = nat::policy::redirect_range(hook as u8, family, address, range)
+                    .map_err(|_| ApplyError::Invalid)?;
+                apply_nat_setup(p, nat::uapi::NF_NAT_MANIP_DST, &range)
+            }
             Self::PayloadSet { base, offset, data, csum_type, csum_offset, csum_flags } => {
                 if *csum_type != PAYLOAD_CSUM_NONE || *csum_offset != 0 || *csum_flags != 0 {
                     return Err(ApplyError::Unsupported);
@@ -78,6 +90,43 @@ impl Action {
             _ => Err(ApplyError::Unsupported),
         }
     }
+}
+
+fn masquerade_source(p: &crate::pkt::Pkt, family: u8) -> Result<Option<InetAddr>, ApplyError> {
+    let Some((_, Some(conn), _, _)) = p.conntrack_state_owned() else {
+        return Err(ApplyError::Invalid);
+    };
+    let ns = conn.net_ns;
+    let iface = p.iface.ok_or(ApplyError::Invalid)?;
+    if family == conntrack::uapi::NFPROTO_IPV6 {
+        let dst = p.data().get(24..40).ok_or(ApplyError::Invalid)?;
+        let dst = crate::addr::Ipv6Addr(dst.try_into().map_err(|_| ApplyError::Invalid)?);
+        let source = crate::global_stack().routes6.lookup_policy_mark_in(
+            ns, dst, crate::global_stack().policy_rules(), p.tx.mark)
+            .and_then(|route| route.src_hint)
+            .or_else(|| crate::global_stack().v6_src_on_iface(iface))
+            .map(|addr| InetAddr::v6(addr.0));
+        return Ok(source);
+    }
+    let bytes = p.data().get(16..20).ok_or(ApplyError::Invalid)?;
+    let dst = crate::addr::Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3]);
+    let source = crate::global_stack().routes.lookup_result_mark_in(ns, dst, p.tx.mark)
+        .ok().and_then(|route| route.src_hint)
+        .or_else(|| crate::iface_addr::primary(ns, iface).map(|(addr, _)| addr))
+        .map(|addr| InetAddr::v4(addr.octets()));
+    Ok(source)
+}
+
+fn redirect_address(p: &crate::pkt::Pkt, family: u8, hook: u8) -> Option<InetAddr> {
+    if hook == nat::uapi::NF_INET_PRE_ROUTING {
+        let iface = p.iface?;
+        if family == conntrack::uapi::NFPROTO_IPV6 {
+            return crate::global_stack().v6_src_on_iface(iface).map(|addr| InetAddr::v6(addr.0));
+        }
+        return crate::iface_addr::primary(crate::global_stack().ifaces.namespace(iface)?, iface)
+            .map(|(addr, _)| InetAddr::v4(addr.octets()));
+    }
+    None
 }
 
 fn apply_nat_setup(p: &mut crate::pkt::Pkt, manip: u8, range: &NatRange)
