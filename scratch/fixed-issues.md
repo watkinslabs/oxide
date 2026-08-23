@@ -5225,3 +5225,8 @@ against the row's own evidence.
 - Source commit: `1f0f50a55`
 - Fix: the page-cache owner can complete all resident dirty pages covered by a successfully materialized compressed cluster, so bounded writeback cannot place that cluster again.
 - Verification: `cargo test -p f2fs` (3718 passed), including the bounded-writeback regression.
+### B2634-f2fs-clean-nat-cache
+
+- Source commit: `fab0dca9f`
+- Fix: f2fs now caches clean NAT table entries with an LRU, invalidates them on NAT mutation/checkpoint adoption, and includes them in memory accounting and filesystem reclaim.
+- Verification: `cargo test -p f2fs` (3719 passed).
