@@ -87,7 +87,7 @@ fn split_reaches_bottom_level_preserving_address_and_attributes() {
     let mut tables = core::mem::take(&mut tree.tables);
     // SAFETY: hosted synthetic tree owned by this test; HHDM offset 0 makes
     // physical and virtual addresses identical on the host heap.
-    let r = unsafe { split_kernel_leaf_at_root::<SplitWalker, _>(root_pa, va, 0, allocator(&mut tables)) };
+    let r = unsafe { split_leaf_at_root::<SplitWalker, _>(root_pa, va, 0, allocator(&mut tables)) };
     assert_eq!(r, Ok(()));
     // SAFETY: same owned tree.
     assert!(unsafe { leaf_present_at_root::<SplitWalker>(root_pa, va, 0) });

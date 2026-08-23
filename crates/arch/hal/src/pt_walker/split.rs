@@ -79,7 +79,7 @@ pub const fn child_output_pa(block_pa: u64, level: u8, slot: usize) -> u64 {
 /// granularity to change, which is not an error.
 ///
 /// `Err(HitHugeOrBlock)` means this architecture refuses to re-granularise a
-/// live kernel mapping at all; `Err(AllocFailed)` means a child table could not
+/// live mapping at all; `Err(AllocFailed)` means a child table could not
 /// be allocated and the tree is left exactly as it was found.
 ///
 /// Idempotent, and safe to lose a race against a peer performing the same
@@ -90,11 +90,10 @@ pub const fn child_output_pa(block_pa: u64, level: u8, slot: usize) -> u64 {
 /// frames, and (d) the linear-map serialization lock is held, so no peer is
 /// mutating the same entries.
 /// # C: O(walk depth * entries per table)
-/// # Ctx: under the kernel page-attribute lock
-pub unsafe fn split_kernel_leaf_at_root<W: PtWalker, F: FnMut() -> Option<u64>>(
+/// # Ctx: under the address-space page-table lock
+unsafe fn split_leaf_at_root_impl<W: PtWalker, F: FnMut() -> Option<u64>>(
     root_pa: u64, va: u64, hhdm_offset: u64, mut alloc_pa: F,
 ) -> Result<(), WalkErr> {
-    if !W::can_split_kernel_leaf() { return Err(WalkErr::HitHugeOrBlock); }
     let mut current_pa = root_pa;
     let mut level = 0u8;
     while level < LEAF_LEVEL_4K {
@@ -137,6 +136,24 @@ pub unsafe fn split_kernel_leaf_at_root<W: PtWalker, F: FnMut() -> Option<u64>>(
         }
     }
     Ok(())
+}
+
+pub unsafe fn split_leaf_at_root<W: PtWalker, F: FnMut() -> Option<u64>>(
+    root_pa: u64, va: u64, hhdm_offset: u64, alloc_pa: F,
+) -> Result<(), WalkErr> {
+    if !W::can_split_user_leaf() { return Err(WalkErr::HitHugeOrBlock); }
+    // SAFETY: caller supplies the live root, lock, HHDM, and allocator.
+    unsafe { split_leaf_at_root_impl::<W, _>(root_pa, va, hhdm_offset, alloc_pa) }
+}
+
+/// Compatibility name for direct-map callers. User page-table movement uses
+/// the same architecture-owned split operation.
+pub unsafe fn split_kernel_leaf_at_root<W: PtWalker, F: FnMut() -> Option<u64>>(
+    root_pa: u64, va: u64, hhdm_offset: u64, alloc_pa: F,
+) -> Result<(), WalkErr> {
+    if !W::can_split_kernel_leaf() { return Err(WalkErr::HitHugeOrBlock); }
+    // SAFETY: identical root, table, and allocation contract.
+    unsafe { split_leaf_at_root_impl::<W, _>(root_pa, va, hhdm_offset, alloc_pa) }
 }
 
 /// Rewrite the bottom-level leaf mapping `va` so it does or does not translate,

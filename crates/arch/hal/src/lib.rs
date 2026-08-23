@@ -310,6 +310,17 @@ pub trait MmuOps {
         Err(pt_walker::WalkErr::AllocFailed)
     }
 
+    /// Split the present native leaf covering `va` into the next smaller
+    /// page-table level. The PMM owner retries a move after this when the
+    /// destination is not aligned to the source huge leaf.
+    /// # SAFETY: caller owns the root, holds its PT lock, and invalidates the
+    /// affected range after the enclosing move transaction.
+    unsafe fn split_leaf_at(
+        _root_pa: u64, _va: Va,
+    ) -> Result<(), pt_walker::WalkErr> {
+        Err(pt_walker::WalkErr::AllocFailed)
+    }
+
     /// Read the architecture-encoded non-present swap leaf at `va` in an
     /// explicit user root.  Default is appropriate only for hosted MMU mocks
     /// that do not model swap leaves.

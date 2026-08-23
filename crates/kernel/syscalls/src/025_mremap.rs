@@ -101,10 +101,9 @@ pub fn sys_mremap(args: &SyscallArgs) -> i64 {
         if mm.range_sealed(new_fixed, new_size) { return -(Errno::Eperm.as_i32() as i64); }
         // Linux mremap is atomic: a source error (unaligned/hole/multi-VMA/
         // zero size) must leave the caller's destination mapping intact.
-        // Validate the source FIRST — glue_munmap frees the destination's
-        // frames, so tearing it down before mremap_full's checks would
-        // silently destroy live data on an error return (bug_006). Mirror
-        // mremap_full's own move-path guards. Shrink (new_size < old_size)
+        // Validate the source FIRST — the locked mremap path tears down the
+        // destination's frames only after these source guards succeed. Mirror
+        // mremap_full's own move-path checks. Shrink (new_size < old_size)
         // never touches new_addr in mremap_full, so it is skipped here.
         if (old & page_mask) != 0 || new_size == 0 {
             return einval;
@@ -117,7 +116,6 @@ pub fn sys_mremap(args: &SyscallArgs) -> i64 {
             Some(v) if covered_end <= v.end.as_u64() => {}
             _ => return efault,
         }
-        let _ = pmm::user_as::glue_munmap(new_addr, new_size as u64);
     }
     // Linux `resize_is_valid` -> `may_expand_vm(mm, …, vrm->delta)`: only the
     // GROWTH is charged against RLIMIT_AS. `MREMAP_DONTUNMAP` is the exception
@@ -130,12 +128,17 @@ pub fn sys_mremap(args: &SyscallArgs) -> i64 {
     let mut move_pages = |src: u64, dst: u64, len: usize| {
         pmm::user_as::move_pages(src, dst, len as u64)
     };
+    let mut unmap_destination = |addr: u64, len: u64| {
+        let _ = pmm::user_as::evict_pages_in_range(addr, len);
+        Ok(())
+    };
     match mm.mremap_full_with_move(old_ua, old_size, new_size,
                     (flags & MREMAP_MAYMOVE) != 0,
                     (flags & MREMAP_FIXED) != 0,
                     dontunmap,
                     new_ua,
-                    &mut move_pages)
+                    &mut move_pages,
+                    &mut unmap_destination)
     {
         Ok(va) => {
             if dontunmap {

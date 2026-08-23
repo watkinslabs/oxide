@@ -133,8 +133,9 @@ impl AddressSpace {
         new_addr: Option<UserVirtAddr>,
     ) -> KResult<UserVirtAddr> {
         let mut copy = |src: u64, dst: u64, len: usize| relocate_user(src, dst, len);
+        let mut unmap_destination = |_addr: u64, _len: u64| Ok(());
         self.mremap_full_with_move(old, old_size, new_size, maymove, fixed,
-                                   dontunmap, new_addr, &mut copy)
+                                   dontunmap, new_addr, &mut copy, &mut unmap_destination)
     }
 
     /// `mremap` with MREMAP_DONTUNMAP support. Linux semantics
@@ -161,6 +162,7 @@ impl AddressSpace {
         dontunmap: bool,
         new_addr: Option<UserVirtAddr>,
         move_pages: &mut dyn FnMut(u64, u64, usize) -> KResult<()>,
+        unmap_destination: &mut dyn FnMut(u64, u64) -> KResult<()>,
     ) -> KResult<UserVirtAddr> {
         if old.as_u64() & (hal::PAGE_SIZE_BYTES - 1) != 0 || new_size == 0 {
             return Err(Error::Inval);
@@ -184,6 +186,14 @@ impl AddressSpace {
             let delta = old.as_u64() - src_vma.start.as_u64();
             let moved_backing = rebase_backing(&src_vma.backing, delta);
             let hint = new_addr;
+            if fixed {
+                if let Some(destination) = hint {
+                    if let Err(e) = unmap_destination(destination.as_u64(), new_size as u64) {
+                        remap_failed(watch);
+                        return Err(e);
+                    }
+                }
+            }
             let new_va = match self.mmap_preserving_prot_locked(
                 &mut vmas,
                 hint,
@@ -255,6 +265,14 @@ impl AddressSpace {
         let delta = old.as_u64() - src_vma.start.as_u64();
         let moved_backing = rebase_backing(&src_vma.backing, delta);
         let hint = if fixed { new_addr.or(Some(old)) } else { None };
+        if fixed {
+            if let Some(destination) = hint {
+                if let Err(e) = unmap_destination(destination.as_u64(), new_size as u64) {
+                    remap_failed(watch);
+                    return Err(e);
+                }
+            }
+        }
         let new_va = match self.mmap_preserving_prot_locked(
             &mut vmas,
             hint,

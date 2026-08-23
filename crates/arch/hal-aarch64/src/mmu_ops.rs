@@ -318,6 +318,16 @@ impl MmuOps for ArmMmu {
         }
     }
 
+    unsafe fn split_leaf_at(root_pa: u64, va: Va) -> Result<(), hal::pt_walker::WalkErr> {
+        let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
+        if hhdm == 0 { return Err(hal::pt_walker::WalkErr::AllocFailed); }
+        unsafe {
+            hal::pt_walker::split_leaf_at_root::<PtWalkerArm, _>(
+                root_pa, va.0, hhdm, || alloc_frame(root_pa),
+            )
+        }
+    }
+
     fn swap_entry_at(root_pa: u64, va: Va) -> Option<hal::pt_walker::SwapEntry> {
         let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
         if hhdm == 0 { return None; }

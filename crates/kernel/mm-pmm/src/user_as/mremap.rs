@@ -58,6 +58,13 @@ pub fn move_pages(old: u64, new: u64, len: u64) -> Result<(), vmm::Error> {
             }
             Ok(None) => off += page,
             Err(hal::pt_walker::WalkErr::HitHugeOrBlock) => {
+                let split = {
+                    #[cfg(target_arch = "x86_64")]
+                    { unsafe { hal_x86_64::mmu_ops::X86Mmu::split_leaf_at(mm.root_pa(), Va(old + off)) } }
+                    #[cfg(target_arch = "aarch64")]
+                    { unsafe { hal_aarch64::mmu_ops::ArmMmu::split_leaf_at(mm.root_pa(), Va(old + off)) } }
+                };
+                if split.is_ok() { continue; }
                 for (prior, _) in moved.into_iter().rev() {
                     #[cfg(target_arch = "x86_64")]
                     { let _ = unsafe { hal_x86_64::mmu_ops::X86Mmu::move_leaf_at(mm.root_pa(), Va(new + prior), Va(old + prior)) }; }
