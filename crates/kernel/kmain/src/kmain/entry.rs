@@ -148,6 +148,8 @@ fn spawn_kthreads() {
         }
         sched::hung_task::set_panic_on_hung(cmdline::hung_task::panic_on_hung(line));
         sched::diag::watchdog::set_panic_on_lockup(cmdline::faults::softlockup_panic(line));
+        sched::diag::percpu::set_hardlockup_enabled(cmdline::faults::nmi_watchdog_enabled(line));
+        sched::diag::percpu::set_hardlockup_panic(cmdline::faults::nmi_watchdog_panic(line));
     }
     let reclaim_failed = step("spawn_kswapd", || pmm::spawn_kswapd()).is_err()
         || step("block::pagecache::spawn_daemons", block::pagecache::spawn_daemons).is_err()

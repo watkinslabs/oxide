@@ -32,6 +32,23 @@ pub fn softlockup_panic(line: &[u8]) -> bool {
     }
 }
 
+/// `nmi_watchdog=` controls the Linux buddy/heartbeat hard-lockup fallback.
+/// `0` disables it; `1`, `panic`, and `nopanic` enable it. An absent
+/// parameter preserves the detector's built-in enabled default.
+/// # C: O(line length)
+pub fn nmi_watchdog_enabled(line: &[u8]) -> bool {
+    match value(line, b"nmi_watchdog") {
+        Some(b"0") | Some(b"n") | Some(b"N") | Some(b"off") | Some(b"false") => false,
+        Some(_) | None => true,
+    }
+}
+
+/// `nmi_watchdog=panic` requests a panic after the hard-lockup report.
+/// # C: O(line length)
+pub fn nmi_watchdog_panic(line: &[u8]) -> bool {
+    value(line, b"nmi_watchdog") == Some(b"panic")
+}
+
 /// `oops=panic`: promote an unhandled kernel fault from "halt this CPU" to a
 /// full panic, so the panic path's reporting and `panic=` restart apply.
 /// # C: O(line length)
@@ -81,6 +98,18 @@ mod tests {
         assert!(softlockup_panic(b"softlockup_panic=1"));
         assert!(!softlockup_panic(b"softlockup_panic=0"));
         assert!(!softlockup_panic(b"softlockup_panicky=1"));
+    }
+
+    #[test]
+    fn nmi_watchdog_controls_the_buddy_detector() {
+        assert!(nmi_watchdog_enabled(b"quiet"));
+        assert!(nmi_watchdog_enabled(b"nmi_watchdog=1"));
+        assert!(nmi_watchdog_enabled(b"nmi_watchdog=panic"));
+        assert!(!nmi_watchdog_enabled(b"nmi_watchdog=0"));
+        assert!(!nmi_watchdog_enabled(b"nmi_watchdog=off"));
+        assert!(nmi_watchdog_panic(b"nmi_watchdog=panic"));
+        assert!(!nmi_watchdog_panic(b"nmi_watchdog=nopanic"));
+        assert!(!nmi_watchdog_panic(b"nmi_watchdog=1"));
     }
 
     #[test]

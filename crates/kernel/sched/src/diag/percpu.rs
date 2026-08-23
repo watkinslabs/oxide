@@ -47,6 +47,27 @@ static HB_IDLE: [AtomicBool; MAX] = [const { AtomicBool::new(false) }; MAX];
 /// One-shot latch so each distinct stall is reported once.
 static HB_STUCK: [AtomicBool; MAX] = [const { AtomicBool::new(false) }; MAX];
 
+/// Runtime hard-lockup policy installed from `nmi_watchdog=`. The detector is
+/// the Linux buddy/heartbeat fallback on platforms without a usable NMI perf
+/// source; keeping the policy here gives that detector one owner.
+static HARDLOCKUP_ENABLED: AtomicBool = AtomicBool::new(true);
+static HARDLOCKUP_PANIC: AtomicBool = AtomicBool::new(false);
+
+/// # C: O(1)
+pub fn set_hardlockup_enabled(enabled: bool) {
+    HARDLOCKUP_ENABLED.store(enabled, Ordering::Release);
+}
+
+/// # C: O(1)
+pub fn set_hardlockup_panic(panic: bool) {
+    HARDLOCKUP_PANIC.store(panic, Ordering::Release);
+}
+
+/// # C: O(1)
+pub fn hardlockup_enabled() -> bool {
+    HARDLOCKUP_ENABLED.load(Ordering::Acquire)
+}
+
 /// Last cross-CPU scan time (throttles the O(MAX) scan to ~1/s).
 static LAST_SCAN_NS: AtomicU64 = AtomicU64::new(0);
 
@@ -190,13 +211,16 @@ fn scan(me: u32, now: u64) {
         let latched = HB_STUCK[x].load(Ordering::Relaxed);
         // Parked in the idle loop ⇒ not wedged (see `idle_enter`).
         let parked = HB_IDLE[x].load(Ordering::Acquire);
-        if should_report_stall(age, latched, parked) {
+        if hardlockup_enabled() && should_report_stall(age, latched, parked) {
             HB_STUCK[x].store(true, Ordering::Relaxed);
             report_stall(x as u32, age, me);
             // Try to make the wedged CPU dump its own RIP (x86 NMI / arm
             // FIQ). No-op where unavailable; the report above already
             // names the CPU + last-known task regardless.
             super::nmi::poke_cpu(x as u32);
+            if HARDLOCKUP_PANIC.load(Ordering::Acquire) {
+                panic!("hard lockup: CPU heartbeat stalled");
+            }
         }
     }
 }
