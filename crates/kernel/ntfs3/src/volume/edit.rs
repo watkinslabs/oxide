@@ -71,8 +71,18 @@ pub fn resident(ty: u32, name: &[u16], id: u16, indexed: bool, data: &[u8]) -> V
 #[allow(clippy::too_many_arguments)]
 pub fn non_resident(ty: u32, name: &[u16], id: u16, runs: &crate::run::Runs, alloc_size: u64,
                     data_size: u64, valid_size: u64, cluster_bits: u32) -> Vec<u8> {
+    non_resident_flags(ty, name, id, runs, alloc_size, data_size, valid_size, cluster_bits, 0)
+}
+
+/// Build a non-resident attribute with extended sparse/compressed flags.
+/// # C: O(runs)
+#[allow(clippy::too_many_arguments)]
+pub fn non_resident_flags(ty: u32, name: &[u16], id: u16, runs: &crate::run::Runs,
+                          alloc_size: u64, data_size: u64, valid_size: u64,
+                          cluster_bits: u32, flags: u16) -> Vec<u8> {
     let packed = crate::run::pack(runs);
-    let name_off = SIZEOF_NONRESIDENT;
+    let extended = flags & (ATTR_FLAG_COMPRESSED | ATTR_FLAG_SPARSED) != 0;
+    let name_off = if extended { SIZEOF_NONRESIDENT_EX } else { SIZEOF_NONRESIDENT };
     let run_off = (name_off + name.len() * 2).next_multiple_of(8);
     let size = (run_off + packed.len()).next_multiple_of(8);
     let mut out = alloc::vec![0u8; size];
@@ -83,14 +93,20 @@ pub fn non_resident(ty: u32, name: &[u16], id: u16, runs: &crate::run::Runs, all
     out[ATTR_OFF_NAME_OFF..ATTR_OFF_NAME_OFF + 2]
         .copy_from_slice(&(name_off as u16).to_le_bytes());
     out[ATTR_OFF_ID..ATTR_OFF_ID + 2].copy_from_slice(&id.to_le_bytes());
+    out[ATTR_OFF_FLAGS..ATTR_OFF_FLAGS + 2].copy_from_slice(&flags.to_le_bytes());
     let clusters = runs.clusters();
-    let evcn = if clusters == 0 { 0 } else { clusters - 1 };
+    let evcn = if clusters == 0 { u64::MAX } else { clusters - 1 };
     out[NRES_OFF_EVCN..NRES_OFF_EVCN + 8].copy_from_slice(&evcn.to_le_bytes());
     out[NRES_OFF_RUN_OFF..NRES_OFF_RUN_OFF + 2].copy_from_slice(&(run_off as u16).to_le_bytes());
     let alloc = if alloc_size != 0 { alloc_size } else { clusters << cluster_bits };
     out[NRES_OFF_ALLOC_SIZE..NRES_OFF_ALLOC_SIZE + 8].copy_from_slice(&alloc.to_le_bytes());
     out[NRES_OFF_DATA_SIZE..NRES_OFF_DATA_SIZE + 8].copy_from_slice(&data_size.to_le_bytes());
     out[NRES_OFF_VALID_SIZE..NRES_OFF_VALID_SIZE + 8].copy_from_slice(&valid_size.to_le_bytes());
+    if extended {
+        let total_size = runs.allocated() << cluster_bits;
+        out[NRES_OFF_TOTAL_SIZE..NRES_OFF_TOTAL_SIZE + 8]
+            .copy_from_slice(&total_size.to_le_bytes());
+    }
     for (i, unit) in name.iter().enumerate() {
         let at = name_off + i * 2;
         out[at..at + 2].copy_from_slice(&unit.to_le_bytes());

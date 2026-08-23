@@ -18,6 +18,7 @@ use sectors::SectorSource;
 use crate::attrib;
 use crate::name::FileName;
 use crate::record::Reference;
+use crate::run::Runs;
 use crate::uapi::*;
 
 use super::dir::DirEntry;
@@ -36,7 +37,9 @@ impl<S: SectorSource> Volume<S> {
         let parent_seq = self.read_record_raw(parent)?.1.sequence;
         let (number, sequence) = self.alloc_record()?;
 
-        let attributes = if is_dir { FILE_ATTRIBUTE_DIRECTORY } else { FILE_ATTRIBUTE_ARCHIVE };
+        let attributes = if is_dir { FILE_ATTRIBUTE_DIRECTORY }
+                         else { FILE_ATTRIBUTE_ARCHIVE
+                                | if self.opts.sparse { FILE_ATTRIBUTE_SPARSE_FILE } else { 0 } };
         let fname = FileName {
             parent: Reference { number: parent, sequence: parent_seq },
             create_time: now,
@@ -97,6 +100,11 @@ impl<S: SectorSource> Volume<S> {
             let root = insert::empty_index_root(self.geo.index_size, self.geo.cluster_size);
             let attr = edit::resident(ATTR_ROOT, &I30_NAME, id, false, &root);
             let header = crate::record::parse(&bytes).map_err(|e| e.errno())?;
+            edit::insert(&mut bytes, &header, &attr)?;
+        } else if self.opts.sparse {
+            let id = edit::take_attr_id(&mut bytes);
+            let attr = edit::non_resident_flags(ATTR_DATA, &[], id, &Runs::new(), 0, 0, 0,
+                                                self.geo.cluster_bits, ATTR_FLAG_SPARSED);
             edit::insert(&mut bytes, &header, &attr)?;
         } else {
             // An empty file's data is resident and zero-length, which is what

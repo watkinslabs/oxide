@@ -46,6 +46,8 @@ pub struct Options {
     pub streams: StreamInterface,
     /// Whether a compressed file may be created.
     pub compress: bool,
+    /// Whether regular files are created with sparse `$DATA` attributes.
+    pub sparse: bool,
     /// Whether every metadata write reaches the medium immediately.
     pub sync: bool,
 }
@@ -66,6 +68,7 @@ impl Options {
             force: false,
             streams: StreamInterface::Xattr,
             compress: false,
+            sparse: false,
             sync: false,
         }
     }
@@ -124,7 +127,9 @@ fn one(o: &mut Options, key: &str, val: Option<&str>) -> Result<(), Errno> {
         "streams_interface" => o.streams = streams(need(val)?)?,
         "compress" => { flag(val)?; o.compress = true; }
         "nocompress" => { flag(val)?; o.compress = false; }
-        "sparse" | "nosparse" | "prealloc" | "noprealloc" | "hide_dot_files" => flag(val)?,
+        "sparse" => { flag(val)?; o.sparse = true; }
+        "nosparse" => { flag(val)?; o.sparse = false; }
+        "prealloc" | "noprealloc" | "hide_dot_files" => flag(val)?,
         _ => {}
     }
     Ok(())
@@ -189,6 +194,7 @@ pub fn show(o: &Options) -> String {
         StreamInterface::Windows => ",streams_interface=windows",
     });
     if o.compress { s.push_str(",compress"); }
+    if o.sparse { s.push_str(",sparse"); }
     s
 }
 
