@@ -128,6 +128,7 @@ pub const CTA_TUPLE_REPLY:  u16 = 2;
 pub const CTA_STATUS:       u16 = 3;
 pub const CTA_PROTOINFO:    u16 = 4;
 pub const CTA_HELP:         u16 = 5;
+pub const CTA_HELP_NAME:    u16 = 1;
 pub const CTA_NAT_SRC:      u16 = 6;
 pub const CTA_TIMEOUT:      u16 = 7;
 pub const CTA_MARK:         u16 = 8;

@@ -134,7 +134,10 @@ pub fn encode_entry(c: &Arc<Conn>, now: u64, acct: bool) -> Vec<u8> {
     }
     if let Some(h) = c.helper.lock().as_ref() {
         let n = nest_start(&mut out, CTA_HELP);
-        put_attr(&mut out, 1, h.as_bytes());
+        let mut name = Vec::with_capacity(h.len() + 1);
+        name.extend_from_slice(h.as_bytes());
+        name.push(0);
+        put_attr(&mut out, CTA_HELP_NAME, &name);
         nest_end(&mut out, n);
     }
     if acct {

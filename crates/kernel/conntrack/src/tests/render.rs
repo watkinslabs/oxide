@@ -2,6 +2,7 @@
 // userspace, so a field in the wrong place is an ABI break, not cosmetics.
 
 extern crate alloc;
+use alloc::string::String;
 use alloc::sync::Arc;
 
 use crate::ctnetlink;
@@ -119,6 +120,30 @@ fn ctnetlink_dumps_both_sequence_adjustment_records() {
     assert!(buf.windows(2).any(|w| w == orig));
     assert!(buf.windows(2).any(|w| w == reply));
     assert!(buf.windows(4).any(|w| w == &(-4i32 as u32).to_be_bytes()));
+}
+
+#[test]
+fn ctnetlink_helper_dump_is_a_nul_terminated_nested_name() {
+    let c = entry(v4_tcp([10, 0, 0, 1], 1234, [10, 0, 0, 2], 80));
+    *c.helper.lock() = Some(String::from("ftp"));
+    let buf = ctnetlink::encode_entry(&c, 0, false);
+    let mut off = 0;
+    let mut found = false;
+    while off + 4 <= buf.len() {
+        let len = u16::from_ne_bytes([buf[off], buf[off + 1]]) as usize;
+        let kind = u16::from_ne_bytes([buf[off + 2], buf[off + 3]]);
+        assert!(len >= 4 && off + len <= buf.len());
+        if kind == (CTA_HELP | ctnetlink::NLA_F_NESTED) {
+            let nested = &buf[off + 4..off + len];
+            let name_len = u16::from_ne_bytes([nested[0], nested[1]]) as usize;
+            let name_kind = u16::from_ne_bytes([nested[2], nested[3]]);
+            assert_eq!(name_kind, CTA_HELP_NAME);
+            assert_eq!(&nested[4..name_len], b"ftp\0");
+            found = true;
+        }
+        off += (len + 3) & !3;
+    }
+    assert!(found, "helper dump must carry CTA_HELP");
 }
 
 #[test]
