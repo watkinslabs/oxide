@@ -43,5 +43,15 @@ pub const fn wanted_features() -> u64 { WANTED_FEATURES }
 /// queue is REQUIRED, not optional: without it a FORGET queues behind ordinary
 /// requests and a backlog of them starves the mount. # C: O(1)
 pub const fn transport_profile() -> virtio::VirtioTransportProfile {
-    virtio::VirtioTransportProfile::vsock(wanted_features(), None)
+    #[cfg(target_os = "oxide-kernel")]
+    let completion_irq = Some(crate::registry::wake_completions as fn());
+    #[cfg(not(target_os = "oxide-kernel"))]
+    let completion_irq = None;
+    virtio::VirtioTransportProfile::new(
+        wanted_features(), completion_irq,
+        [None, Some(virtio::VirtioQueuePlan::new(REQUEST_QUEUE, completion_irq, true)),
+         None, None, None, None, None, None],
+        virtio::resources::VirtioEarlyPayloadPolicy::None,
+        virtio::VirtioChildRequirements::q0_q1_device_cfg(),
+    )
 }

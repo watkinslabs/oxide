@@ -177,6 +177,12 @@ impl VirtioSplitQueue {
         Ok(Some(SplitUsed { head: id as u16, len }))
     }
 
+    /// Whether the device has published at least one unreaped used entry.
+    /// This is the predicate a process-context waiter rechecks after the
+    /// queue interrupt wakes it; it does not retire or consume the entry.
+    /// # C: O(1)
+    pub fn has_used(&self) -> bool { self.read_used_idx() != self.used_seen }
+
     /// Return the queue resource for protocol-level queue identification.
     /// # C: O(1)
     pub const fn resource(&self) -> VirtQueueResource { self.resource }

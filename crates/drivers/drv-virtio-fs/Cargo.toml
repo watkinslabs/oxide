@@ -15,6 +15,7 @@ virtio  = { path = "../../drivers/virtio" }
 sync    = { path = "../../shared/sync" }
 pmm     = { path = "../../kernel/mm-pmm" }
 fuse-transport = { path = "../../shared/fuse-transport" }
+sched   = { path = "../../kernel/sched" }
 
 [features]
 default = []

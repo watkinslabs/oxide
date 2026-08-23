@@ -100,10 +100,18 @@ impl VirtioFsTransport {
             key
         };
 
+        #[cfg(target_os = "oxide-kernel")]
+        let deadline = registry::now_ns().saturating_add(5_000_000_000);
         for _ in 0..COMPLETION_POLL_BUDGET {
             match self.poll_one(key) {
                 Polled::Complete(frame) => return frame,
-                Polled::Other | Polled::None => core::hint::spin_loop(),
+                Polled::Other => core::hint::spin_loop(),
+                Polled::None => {
+                    #[cfg(target_os = "oxide-kernel")]
+                    if !self.wait_for_used(key.lane, deadline) { return None; }
+                    #[cfg(not(target_os = "oxide-kernel"))]
+                    core::hint::spin_loop();
+                }
                 Polled::Failed => return None,
             }
         }
@@ -148,6 +156,32 @@ impl VirtioFsTransport {
             Ok(frame) => Polled::Complete(frame),
             Err(_) => Polled::Failed,
         }
+    }
+
+    #[cfg(target_os = "oxide-kernel")]
+    fn any_used(&self, lane: Lane) -> bool {
+        let s = self.dev.lock();
+        match lane {
+            Lane::Request => s.requestq.as_ref().map_or(true, |q| q.has_used()),
+            Lane::HiPrio => s.hiprioq.as_ref().map_or(true, |q| q.has_used()),
+        }
+    }
+
+    #[cfg(target_os = "oxide-kernel")]
+    fn wait_for_used(&self, lane: Lane, deadline: u64) -> bool {
+        if sched::live::global().is_none() || sched::live::current().is_none() {
+            core::hint::spin_loop();
+            return true;
+        }
+        // SAFETY: process context, no queue/device lock held; the IRQ handler
+        // only wakes this list and never takes either transport lock.
+        let outcome = unsafe {
+            sched::live::wait_event_uninterruptible_until(
+                registry::completion_waiters(), deadline, registry::now_ns,
+                || self.any_used(lane),
+            )
+        };
+        !matches!(outcome, sched::WaitOutcome::TimedOut)
     }
 
     fn read_reply(hhdm: u64, staging: &registry::RequestStaging, written: usize) -> Option<Vec<u8>> {

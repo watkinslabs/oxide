@@ -720,6 +720,7 @@ dependencies = [
  "ninep",
  "pci",
  "pmm",
+ "sched",
  "sync",
  "virtio",
 ]
@@ -752,6 +753,7 @@ dependencies = [
  "iommu",
  "pci",
  "pmm",
+ "sched",
  "sync",
  "virtio",
 ]

@@ -7,6 +7,26 @@ use alloc::vec::Vec;
 
 use sync::{Spinlock, TaskList as DriverLockClass};
 
+#[cfg(target_os = "oxide-kernel")]
+static COMPLETION_WAITERS: sched::live::WaitList = sched::live::WaitList::new();
+
+/// Wait list shared by session transports; the IRQ handler only wakes it.
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn completion_waiters() -> &'static sched::live::WaitList { &COMPLETION_WAITERS }
+
+/// Queue completion IRQ entry. Used-ring retirement stays in process context.
+#[cfg(target_os = "oxide-kernel")]
+pub fn wake_completions() { COMPLETION_WAITERS.wake_all(); }
+
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn now_ns() -> u64 {
+    use hal::TimerOps;
+    #[cfg(target_arch = "x86_64")]
+    { hal_x86_64::X86TimerOps::monotonic_ns().0 }
+    #[cfg(target_arch = "aarch64")]
+    { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
+}
+
 use crate::consts::{BUFFER_BYTES, BUFFER_ORDER};
 
 /// One bound virtio-9p device.

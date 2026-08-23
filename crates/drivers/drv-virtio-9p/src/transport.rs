@@ -90,10 +90,18 @@ impl Virtio9pTransport {
             head
         };
 
+        #[cfg(target_os = "oxide-kernel")]
+        let deadline = registry::now_ns().saturating_add(5_000_000_000);
         for _ in 0..COMPLETION_POLL_BUDGET {
             match self.poll_one(head) {
                 Polled::Complete(result) => return result,
-                Polled::Other | Polled::None => core::hint::spin_loop(),
+                Polled::Other => core::hint::spin_loop(),
+                Polled::None => {
+                    #[cfg(target_os = "oxide-kernel")]
+                    if !self.wait_for_used(deadline) { return Err(NpError::Disconnected); }
+                    #[cfg(not(target_os = "oxide-kernel"))]
+                    core::hint::spin_loop();
+                }
             }
         }
         // The pending request remains owned until a later used entry retires
@@ -129,6 +137,29 @@ impl Virtio9pTransport {
             Ok(frame) => Polled::Complete(Ok(frame)),
             Err(e) => Polled::Complete(Err(e)),
         }
+    }
+
+    #[cfg(target_os = "oxide-kernel")]
+    fn any_used(&self) -> bool {
+        let s = self.dev.lock();
+        s.requestq.as_ref().map_or(true, |q| q.has_used())
+    }
+
+    #[cfg(target_os = "oxide-kernel")]
+    fn wait_for_used(&self, deadline: u64) -> bool {
+        if sched::live::global().is_none() || sched::live::current().is_none() {
+            core::hint::spin_loop();
+            return true;
+        }
+        // SAFETY: process context, no queue/device lock held; the IRQ handler
+        // only wakes this list and never takes either transport lock.
+        let outcome = unsafe {
+            sched::live::wait_event_uninterruptible_until(
+                registry::completion_waiters(), deadline, registry::now_ns,
+                || self.any_used(),
+            )
+        };
+        !matches!(outcome, sched::WaitOutcome::TimedOut)
     }
 
     fn read_reply(hhdm: u64, staging: &registry::RequestStaging, written: usize) -> NpResult<Vec<u8>> {

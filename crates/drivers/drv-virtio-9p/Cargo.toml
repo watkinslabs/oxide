@@ -15,6 +15,7 @@ virtio  = { path = "../../drivers/virtio" }
 sync    = { path = "../../shared/sync" }
 pmm     = { path = "../../kernel/mm-pmm" }
 ninep   = { path = "../../kernel/ninep" }
+sched   = { path = "../../kernel/sched" }
 
 [features]
 default = []
