@@ -61,6 +61,14 @@ fn create_files(domain: u32, raw_type: u32, protocol: u32, has_net_raw: bool, cu
     // makes it evident that they cannot.
     let pair_sid = security::network::new_socket_label(
         crate::socketpair_spec::security_class(socket_type));
+    let pair_class = if socket_type == SOCK_DGRAM {
+        "unix_dgram_socket"
+    } else {
+        "unix_stream_socket"
+    };
+    net::security_admission::check_socket(net_namespace.id().as_u64(), spec.family as u16,
+        security::network::Operation::SocketPair, pair_sid, pair_class)
+        .map_err(|e| -(crate::net_errno::errno_from_neterr(e) as i64))?;
     if let Some(p) = &stream {
         let cred = net::PeerCred::of_current().unwrap_or_default();
         p.set_end_cred(net::UnixEnd::A, cred.clone());

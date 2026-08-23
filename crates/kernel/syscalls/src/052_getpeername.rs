@@ -19,7 +19,7 @@ pub fn sys_getpeername(args: &SyscallArgs) -> i64 {
     match target {
         Routed::Netlink(target) => crate::netlink_fd::getpeername(&target, addr_p, len_p),
         Routed::Vsock(vsock) => {
-            if let Err(e) = net::sock_opts::check_name_query(vsock.net_ns(), net::sock::AF_VSOCK) {
+            if let Err(e) = net::sock_opts::check_vsock_name_query(&vsock) {
                 return crate::net_errno::errno_from_neterr(e);
             }
             let (port, cid) = match vsock.peer_addr() {

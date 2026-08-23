@@ -11,18 +11,18 @@ pub struct AcceptAdmission(());
 /// an installed hook sees the same value Linux's `security_socket_listen`
 /// does. # C: O(1)
 pub fn admit_listen(sock: &InetSocket, backlog: u32) -> Result<ListenAdmission, NetError> {
-    crate::security_admission::check_socket_listen(sock.net_ns(),
-        sock.family.load(core::sync::atomic::Ordering::Acquire), backlog,
-        sock.security_label(), "tcp_socket")?;
+    let object = crate::socket_security::inet(sock);
+    crate::security_admission::check_socket_listen(object.namespace, object.family, backlog,
+        object.target_sid, object.target_class)?;
     Ok(ListenAdmission(()))
 }
 
 /// Apply generic accept security before queue inspection or family dispatch.
 /// # C: O(1)
 pub fn admit_accept(sock: &InetSocket) -> Result<AcceptAdmission, NetError> {
-    crate::security_admission::check_socket(sock.net_ns(),
-        sock.family.load(core::sync::atomic::Ordering::Acquire),
-        security::network::Operation::Accept, sock.security_label(), "tcp_socket")?;
+    let object = crate::socket_security::inet(sock);
+    crate::security_admission::check_socket(object.namespace, object.family,
+        security::network::Operation::Accept, object.target_sid, object.target_class)?;
     Ok(AcceptAdmission(()))
 }
 

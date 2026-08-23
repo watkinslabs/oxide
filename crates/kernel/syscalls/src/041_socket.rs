@@ -10,6 +10,34 @@ use net::socket_args::{
     AF_VSOCK, SOCK_DGRAM, SOCK_RAW, SOCK_SEQPACKET, SOCK_STREAM,
 };
 
+/// Linux's `security_socket_post_create` has assigned the concrete socket SID
+/// before the descriptor becomes visible. Apply the corresponding create
+/// permission to that actual object, rather than leaving the preflight's
+/// metadata-only decision as the only hook. # C: O(1)
+fn admit_created_socket(inode: &vfs::InodeRef) -> Result<(), i64> {
+    if let Some(sock) = crate::net_common::inode_as_inet_socket(inode) {
+        let object = net::socket_security::inet(&sock);
+        return net::security_admission::check_socket(object.namespace, object.family,
+            security::network::Operation::Create, object.target_sid, object.target_class)
+            .map_err(|e| -(crate::net_errno::errno_from_neterr(e) as i64));
+    }
+    if let Ok(sock) = inode.i_private().clone().downcast::<::netlink::NetlinkSocket>() {
+        return net::security_admission::check_socket(
+            net::net_ns::namespace_id(&sock.net_ns), net::socket_args::AF_NETLINK_WIRE,
+            security::network::Operation::Create,
+            sock.security_sid.load(core::sync::atomic::Ordering::Acquire),
+            sock.security_class())
+            .map_err(|e| -(crate::net_errno::errno_from_neterr(e) as i64));
+    }
+    if let Some(sock) = crate::net_common::inode_as_vsock(inode) {
+        return net::security_admission::check_socket(sock.net_ns(),
+            net::socket_args::AF_VSOCK as u16, security::network::Operation::Create,
+            sock.security_label(), sock.security_class())
+            .map_err(|e| -(crate::net_errno::errno_from_neterr(e) as i64));
+    }
+    Ok(())
+}
+
 /// `socket(domain, type, protocol)` slot 41. # C: O(1)
 pub fn sys_socket(args: &SyscallArgs) -> i64 {
     let domain = args.a0 as u32;
@@ -135,6 +163,7 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
         if spec.family == AF_PACKET { net::sock::register_packet(&inet); }
         net::sock::make_inet_socket_inode(inet)
     };
+    if let Err(error) = admit_created_socket(&inode) { return error; }
     // SAFETY: running task on this CPU; sole reader of fd_table slot.
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),

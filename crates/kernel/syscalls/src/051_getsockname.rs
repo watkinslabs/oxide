@@ -20,7 +20,7 @@ pub fn sys_getsockname(args: &SyscallArgs) -> i64 {
         return crate::netlink_fd::getsockname(&target, addr_p, len_p);
     }
     if let Some(vsock) = vsock_from_file(file.clone()) {
-        if let Err(e) = net::sock_opts::check_name_query(vsock.net_ns(), net::sock::AF_VSOCK) {
+        if let Err(e) = net::sock_opts::check_vsock_name_query(&vsock) {
             return crate::net_errno::errno_from_neterr(e);
         }
         let (port, cid) = match vsock.local_addr() {
