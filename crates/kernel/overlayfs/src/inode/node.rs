@@ -34,6 +34,8 @@ pub struct OvlInode {
     pub parent: Option<Arc<OvlInode>>,
     /// A handle on this state, so a child can be given the shared one.
     me: Weak<OvlInode>,
+    /// Reverse link used by exportfs's parent walk.
+    self_inode: Spinlock<Option<Weak<vfs::Inode>>, TaskList>,
     /// This object's name inside that directory.
     pub name: String,
 }
@@ -41,6 +43,8 @@ pub struct OvlInode {
 impl OvlInode {
     /// The shared handle on this state. # C: O(1)
     pub fn shared(&self) -> Option<Arc<OvlInode>> { self.me.upgrade() }
+    /// Recover the VFS inode owning this state. # C: O(1)
+    pub fn inode(&self) -> Option<InodeRef> { self.self_inode.lock().as_ref()?.upgrade() }
     /// A snapshot of the object list. # C: O(layers)
     pub fn entry(&self) -> OvlEntry { self.entry.lock().clone() }
     /// Replace it after a copy-up. # C: O(1)
@@ -139,18 +143,21 @@ fn build_inode(stack: &Arc<LayerStack>, entry: OvlEntry, parent: Option<Arc<OvlI
         entry: Spinlock::new(entry),
         parent,
         me: me.clone(),
+        self_inode: Spinlock::new(None),
         name: name.to_string(),
     });
     let ops: Arc<dyn InodeOps> = Arc::new(super::ops::OvlOps);
     let fops: Arc<dyn FileOps> = Arc::new(super::ops::OvlOps);
-    let mut b = InodeBuilder::new(ino, mode, ops, fops).private(ovl).size(size);
+    let mut b = InodeBuilder::new(ino, mode, ops, fops).private(ovl.clone()).size(size);
     if let Some(s) = &st {
         b = b.owner(s.uid, s.gid).times(s.atime, s.mtime, s.ctime).nlink(s.nlink).rdev(s.rdev);
     }
     if let Some(r) = &real {
         if let Some(l) = r.i_link() { b = b.link(l.to_vec().into_boxed_slice()); }
     }
-    b.build()
+    let inode = b.build();
+    *ovl.self_inode.lock() = Some(Arc::downgrade(&inode));
+    inode
 }
 
 /// Refresh an overlay inode's metadata from the real object, after something

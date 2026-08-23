@@ -108,8 +108,8 @@ pub fn encode_fh(sb: &crate::SuperBlock, inode: &InodeRef, parent: Option<(Ino, 
 /// covers both a payload this filesystem cannot parse and an identity that no
 /// longer names anything. # C: O(log N_ino)
 pub fn decode_fh(sb: &crate::SuperBlock, bytes: &[u8], handle_type: i32) -> Option<InodeRef> {
-    let fid = sb.s_op.export_decode_fh(bytes, handle_type).ok()?;
-    sb.s_op.fh_to_dentry(sb, fid.ino, fid.generation)
+    let fid = sb.s_op.export_decode_fh_raw(bytes, handle_type).ok()?;
+    sb.s_op.fh_to_dentry_raw(sb, &fid)
 }
 
 /// The superblock whose export ops govern a resolved path: the one the path

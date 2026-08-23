@@ -84,6 +84,11 @@ pub const FH_FLAG_ALL: u8 = FH_FLAG_BIG_ENDIAN | FH_FLAG_ANY_ENDIAN | FH_FLAG_PA
 /// Flag value matching this build's byte order.
 pub const FH_FLAG_CPU_ENDIAN: u8 = if cfg!(target_endian = "big") { FH_FLAG_BIG_ENDIAN } else { 0 };
 
+/// File-handle type used by the aligned overlay export payload.
+pub const OVERLAY_FILEID_V1: i32 = 0xf8;
+/// Legacy unaligned overlay file-handle type accepted by the decoder.
+pub const OVERLAY_FILEID_V0: i32 = 0xfb;
+
 /// Bytes of header before the identifier in an origin record: version, magic,
 /// length, flags, type, then the sixteen-byte layer UUID.
 pub const FB_HEADER_LEN: usize = 5 + 16;

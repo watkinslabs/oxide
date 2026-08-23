@@ -129,12 +129,18 @@ pub fn sys_name_to_handle_at(args: &SyscallArgs) -> i64 {
         }
     } else { None };
 
-    let mut fid_buf = [0u8; FID_LEN_PARENT as usize];
+    let mut fid_buf = vec![0u8; needed as usize];
     let (fid_len, fid_type) = match sb.as_ref() {
-        Some(sb) => sb.s_op.export_encode_fh(&inode, parent, &mut fid_buf),
-        None     => encode_fid(&Fid {
-            ino: inode.ino(), generation: inode.i_generation(), parent }, &mut fid_buf),
+        Some(sb) => sb.s_op.export_encode_fh_raw(&inode, parent, &mut fid_buf),
+        None     => {
+            let mut fixed = [0u8; FID_LEN_PARENT as usize];
+            let (n, t) = encode_fid(&Fid {
+                ino: inode.ino(), generation: inode.i_generation(), parent }, &mut fixed);
+            fid_buf[..n as usize].copy_from_slice(&fixed[..n as usize]);
+            (n, t)
+        }
     };
+    if fid_len == 0 || fid_type < 0 { return err(Errno::Eopnotsupp); }
     // The user flags ride in `handle_type` so 304 knows how to decode without
     // out-of-band state: CONNECTABLE says "reconnect me", IS_DIR says which of
     // the two reconnect shapes applies.

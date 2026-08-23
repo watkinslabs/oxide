@@ -24,7 +24,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use vfs::{File, OpenFlags};
 
-use crate::handle_policy::{DecodeCtx, FILEID_IS_CONNECTABLE, FILEID_IS_DIR, Fid, HANDLE_HDR,
+use crate::handle_policy::{DecodeCtx, FILEID_IS_CONNECTABLE, FILEID_IS_DIR, HANDLE_HDR,
     MayDecodeFh, decode::O_DIRECTORY, handle_header_check, may_decode_fh, strip_user_flags};
 use crate::userbuf::validate_user_buf;
 
@@ -170,19 +170,20 @@ pub fn sys_open_by_handle_at(args: &SyscallArgs) -> i64 {
     let sb = match vfs::export::export_sb(
         vfs::mount::mount_by_id(anchor.mnt_id).map(|m| m.sb().clone()), anchor.inode.i_sb())
     { Some(s) => s, None => return err(Errno::Estale) };
-    if sb.s_op.export_fid_len_for_type(strip_user_flags(raw_htype)) != Some(bytes) {
-        return err(Errno::Estale);
-    }
     if let Err(rv) = validate_user_buf(handle_ptr + HANDLE_HDR, bytes as u64, 1) { return rv; }
     let mut fid_bytes = vec![0u8; bytes as usize];
     if crate::user_mem::get_into(handle_ptr + HANDLE_HDR, &mut fid_bytes).is_err() {
         return crate::user_mem::EFAULT;
     }
-    let fid = match sb.s_op.export_decode_fh(&fid_bytes, strip_user_flags(raw_htype)) {
+    let raw_type = strip_user_flags(raw_htype);
+    if !sb.s_op.export_fid_len_for_type_raw(&fid_bytes, raw_type) {
+        return err(Errno::Estale);
+    }
+    let fid = match sb.s_op.export_decode_fh_raw(&fid_bytes, raw_type) {
         Ok(f) => f, Err(e) => return err(e),
     };
 
-    let inode = match sb.s_op.fh_to_dentry(&sb, fid.ino, fid.generation) {
+    let inode = match sb.s_op.fh_to_dentry_raw(&sb, &fid) {
         Some(i) => i, None => return err(Errno::Estale),
     };
     if ctx.dir_only && inode.file_type() != vfs::FileType::Directory {
@@ -237,7 +238,8 @@ pub fn sys_open_by_handle_at(args: &SyscallArgs) -> i64 {
 /// its handle. EACCES is the caller's reach failing, never a silent downgrade to
 /// a pathless alias.
 /// # C: O(depth * N_entries)
-fn reconnect<F>(sb: &Arc<vfs::SuperBlock>, fid: &Fid, inode: &vfs::InodeRef, acceptable: F)
+fn reconnect<F>(sb: &Arc<vfs::SuperBlock>, fid: &vfs::export::fid::ExportFid,
+                inode: &vfs::InodeRef, acceptable: F)
     -> Result<Arc<vfs::dentry::Dentry>, Errno>
 where F: Fn(&Arc<vfs::dentry::Dentry>) -> bool
 {
@@ -248,7 +250,7 @@ where F: Fn(&Arc<vfs::dentry::Dentry>) -> bool
     }
     let result = vfs::export::fh_alias(inode.clone());
     if let Some(a) = vfs::export::find_acceptable_alias(sb, &result, &acceptable) { return Ok(a); }
-    let (pino, pgen) = fid.parent.ok_or(Errno::Estale)?;
+    let (pino, pgen) = fid.fid.parent.ok_or(Errno::Estale)?;
     let parent = sb.s_op.fh_to_parent(sb, pino, pgen).ok_or(Errno::Estale)?;
     let parent_dentry = vfs::export::reconnect_path(sb, &parent).ok_or(Errno::Estale)?;
     let name = vfs::export::get_name(&parent, inode.ino()).ok_or(Errno::Estale)?;

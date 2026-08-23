@@ -103,12 +103,21 @@ pub trait SuperOps: Send + Sync {
             &crate::export::fid::Fid {
                 ino: inode.ino(), generation: inode.i_generation(), parent }, buf)
     }
+    /// Raw variant for non-generic filesystem identifiers. # C: O(1)
+    fn export_encode_fh_raw(&self, inode: &InodeRef, parent: Option<(Ino, u32)>, buf: &mut [u8])
+        -> (u32, i32)
+    { self.export_encode_fh(inode, parent, buf) }
     /// Payload length a `handle_type` claims on this filesystem, or `None` for
     /// a type it did not encode (`ESTALE` at the caller, never `EINVAL` — a
     /// well-formed foreign handle may simply name an object that is gone).
     /// # C: O(1)
     fn export_fid_len_for_type(&self, handle_type: i32) -> Option<u32> {
         crate::export::fid::fid_len_for_type(handle_type)
+    }
+    /// Validate a raw payload whose length may be carried inside the payload.
+    /// # C: O(1)
+    fn export_fid_len_for_type_raw(&self, bytes: &[u8], handle_type: i32) -> bool {
+        self.export_fid_len_for_type(handle_type).is_some_and(|n| n as usize == bytes.len())
     }
     /// `s_export_op` decode half: parse a handle payload back into the identity
     /// [`Self::fh_to_dentry`] resolves. Mirrors [`Self::export_encode_fh`], so
@@ -118,6 +127,15 @@ pub trait SuperOps: Send + Sync {
         -> Result<crate::export::fid::Fid, syscall::errno::Errno>
     {
         crate::export::fid::decode_fid(bytes, handle_type)
+    }
+    /// Decode the filesystem-owned payload while retaining it for resolution.
+    /// # C: O(1)
+    fn export_decode_fh_raw(&self, bytes: &[u8], handle_type: i32)
+        -> Result<crate::export::fid::ExportFid, syscall::errno::Errno>
+    {
+        Ok(crate::export::fid::ExportFid {
+            fid: self.export_decode_fh(bytes, handle_type)?, raw: bytes.to_vec(),
+        })
     }
     /// `s_export_op->fh_to_dentry` — turn an `open_by_handle_at(2)` file
     /// identity back into an inode WITHOUT a path walk.
@@ -137,6 +155,11 @@ pub trait SuperOps: Send + Sync {
     fn fh_to_dentry(&self, sb: &SuperBlock, ino: Ino, generation: u32) -> Option<InodeRef> {
         crate::export::ilookup_generation(sb, ino, generation)
     }
+    /// Resolve a filesystem-owned handle. The default uses the generic tuple.
+    /// # C: FS-dependent
+    fn fh_to_dentry_raw(&self, sb: &SuperBlock, fid: &crate::export::fid::ExportFid)
+        -> Option<InodeRef>
+    { self.fh_to_dentry(sb, fid.fid.ino, fid.fid.generation) }
     /// `s_export_op->fh_to_parent` — the same decode applied to the PARENT
     /// identity a connectable handle carries. Split from
     /// [`Self::fh_to_dentry`] because Linux hands each a different slice of the

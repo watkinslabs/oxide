@@ -12,6 +12,7 @@ extern crate alloc;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use alloc::vec;
 use core::sync::atomic::AtomicBool;
 use syscall::errno::Errno;
 use vfs::file_ops::{DirContext, DirEmit};
@@ -22,11 +23,12 @@ use vfs::{InodeRef, KResult, SbStatFs, SuperOps};
 
 use crate::config::{Config, XinoMode};
 use crate::err::{to_errno, to_vfs};
-use crate::inode::make_inode;
+use crate::inode::{make_inode, node::ovl_of};
 use crate::layers::{dirs_disjoint, Layer, LayerStack, OvlEntry, OvlPath};
 use crate::limits::NAME_MAX;
 use crate::params;
-use crate::uapi::{INDEXDIR_NAME, VOLATILE_DIRTY_NAME, WORKDIR_NAME};
+use crate::uapi::{FB_HEADER_LEN, INDEXDIR_NAME, OVERLAY_FILEID_V0, OVERLAY_FILEID_V1, VOLATILE_DIRTY_NAME,
+                  WORKDIR_NAME};
 use crate::{fh, marker, origin};
 use crate::xino;
 
@@ -290,6 +292,93 @@ impl FileSystem for OverlayFs {
 struct OverlaySuper { stack: Arc<LayerStack> }
 
 impl SuperOps for OverlaySuper {
+    /// Linux's overlay export payload is the on-disk origin record: its
+    /// length is carried in the record header, so the capacity probe reserves
+    /// the largest valid record and the encoder returns its actual length.
+    /// # C: O(1)
+    fn export_fid_len(&self, _connectable: bool, _is_dir: bool) -> u32 {
+        if self.stack.config.nfs_export { (FB_HEADER_LEN + fh::MAX_FID_LEN) as u32 } else { 0 }
+    }
+
+    /// Encode the real upper or lower identity selected by overlay's export
+    /// rules. Connectable handles are intentionally unsupported by Linux.
+    /// # C: O(layers)
+    fn export_encode_fh_raw(&self, inode: &InodeRef, parent: Option<(u64, u32)>, buf: &mut [u8])
+        -> (u32, i32)
+    {
+        if parent.is_some() || !self.stack.config.nfs_export { return (0, -1); }
+        let Some(ovl) = ovl_of(inode) else { return (0, -1) };
+        let entry = ovl.entry();
+        let (real, is_upper) = match (&entry.upper, entry.lower.first(), entry.indexed) {
+            (Some(_upper), Some(lower), true) => (lower.inode.clone(), false),
+            (Some(upper), _, _) => (upper.clone(), true),
+            (None, Some(lower), _) => (lower.inode.clone(), false),
+            _ => return (0, -1),
+        };
+        let Some(record) = origin::encode(&self.stack.config, &real, is_upper) else { return (0, -1) };
+        if record.len() > buf.len() { return (0, -1); }
+        buf[..record.len()].copy_from_slice(&record);
+        (record.len() as u32, OVERLAY_FILEID_V1)
+    }
+
+    /// Overlay records are self-sized and accept only the two Linux overlay
+    /// file-id types; the inner backing fid type is validated during decode.
+    /// # C: O(1)
+    fn export_fid_len_for_type(&self, handle_type: i32) -> Option<u32> {
+        (handle_type == OVERLAY_FILEID_V0 || handle_type == OVERLAY_FILEID_V1)
+            .then_some((FB_HEADER_LEN + fh::MAX_FID_LEN) as u32)
+    }
+
+    /// Validate the record framing before the filesystem decoder sees it.
+    /// # C: O(1)
+    fn export_fid_len_for_type_raw(&self, bytes: &[u8], handle_type: i32) -> bool {
+        (handle_type == OVERLAY_FILEID_V0 || handle_type == OVERLAY_FILEID_V1)
+            && fh::check(bytes).is_ok()
+            && bytes.len() == bytes[2] as usize
+    }
+
+    /// Parse the overlay record and retain it for upper/lower resolution.
+    /// # C: O(1)
+    fn export_decode_fh_raw(&self, bytes: &[u8], handle_type: i32)
+        -> Result<vfs::export::fid::ExportFid, syscall::errno::Errno>
+    {
+        if !self.export_fid_len_for_type_raw(bytes, handle_type) { return Err(Errno::Estale); }
+        let record = fh::decode(bytes).map_err(|e| e.errno())?;
+        Ok(vfs::export::fid::ExportFid {
+            fid: vfs::export::fid::Fid { ino: 0, generation: 0, parent: None },
+            raw: bytes[..record.fid.len() + FB_HEADER_LEN].to_vec(),
+        })
+    }
+
+    /// Rebuild the merged inode from its persistent upper/lower origin.
+    /// # C: O(layers + index lookup)
+    fn fh_to_dentry_raw(&self, _sb: &vfs::SuperBlock,
+                        fid: &vfs::export::fid::ExportFid) -> Option<InodeRef>
+    {
+        let record = fh::decode(&fid.raw).ok()?;
+        let (layer, real) = if record.is_upper {
+            let l = self.stack.upper.as_ref()?;
+            (l.clone(), origin::decode_in(&self.stack.config, l, &fid.raw)?.inode)
+        } else {
+            let p = origin::decode(&self.stack, &fid.raw)?;
+            (p.layer, p.inode)
+        };
+        if real.file_type() == FileType::Directory {
+            return decode_path(self, &layer, &real, record.is_upper, 0);
+        }
+        Some(make_inode(&self.stack, entry_for(self, &layer, &real, record.is_upper, &fid.raw), None, ""))
+    }
+
+    /// Return the shared overlay parent kept by a decoded directory inode.
+    /// # C: O(1)
+    fn get_parent(&self, _sb: &vfs::SuperBlock, dir: &InodeRef) -> Option<InodeRef> {
+        crate::inode::node::ovl_of(dir)?.parent.as_ref()?.inode()
+    }
+
+    /// Overlay's own handles are decodable only when NFS export is enabled.
+    /// # C: O(1)
+    fn export_can_decode_fh(&self) -> bool { self.stack.config.nfs_export }
+
     /// Report the WRITABLE layer's numbers, since that is where anything
     /// written actually goes; a read-only overlay reports the topmost lower
     /// layer's. Reporting the merge's own would tell `df` a number no
@@ -310,6 +399,46 @@ impl SuperOps for OverlaySuper {
     fn show_options(&self) -> String {
         params::show(&self.stack.config, self.stack.xino.same_fs())
     }
+}
+
+/// Assemble one decoded real object, including the persistent index link.
+/// # C: O(1) expected
+fn entry_for(this: &OverlaySuper, layer: &Arc<Layer>, real: &InodeRef, is_upper: bool,
+             record: &[u8]) -> OvlEntry {
+    if is_upper {
+        let lower = origin::get(&this.stack.config, real, crate::uapi::Marker::Origin)
+            .and_then(|r| origin::decode(&this.stack, &r));
+        return OvlEntry { upper: Some(real.clone()), lower: lower.into_iter().collect(), upper_alias: true,
+                          ..OvlEntry::default() };
+    }
+    let mut entry = OvlEntry { lower: vec![OvlPath { layer: layer.clone(), inode: real.clone() }],
+                               ..OvlEntry::default() };
+    if let Some(index) = &this.stack.indexdir {
+        if let Ok(name) = fh::index_name(record) {
+            if let Ok(upper) = index.lookup(&name) {
+                if !crate::whiteout::is_device(&upper) {
+                    entry.upper = Some(upper); entry.indexed = true;
+                }
+            }
+        }
+    }
+    entry
+}
+
+/// Rebuild the connected overlay parent chain required by directory export.
+/// # C: O(depth · entries)
+fn decode_path(this: &OverlaySuper, layer: &Arc<Layer>, real: &InodeRef, is_upper: bool,
+               depth: usize) -> Option<InodeRef> {
+    if depth >= vfs::export::MAX_RECONNECT_DEPTH { return None; }
+    if real.ino() == layer.root.ino() { return Some(make_inode(&this.stack, this.stack.root.clone(), None, "")); }
+    let sb = real.i_sb()?;
+    let parent_real = sb.s_op.get_parent(&sb, real)?;
+    let parent = decode_path(this, layer, &parent_real, is_upper, depth + 1)?;
+    let name = vfs::export::get_name(&parent_real, real.ino())?;
+    let parent_state = crate::inode::node::ovl_of(&parent)?.shared()?;
+    let record = origin::encode(&this.stack.config, real, is_upper)?;
+    Some(make_inode(&this.stack, entry_for(this, layer, real, is_upper, &record),
+                    Some(parent_state), &name))
 }
 
 /// Build a mount, reporting the failure as the VFS spells it. # C: O(layers)
