@@ -394,6 +394,7 @@ fn publish_acpi_devices() {
     }
     #[cfg(target_arch = "x86_64")]
     {
+        super::acpi_sci::install_fixed_events();
         firmware::acpi::events::set_sci_installer(super::acpi_sci::install);
         let gpes = firmware::acpi::events::init();
         if gpes != 0 {

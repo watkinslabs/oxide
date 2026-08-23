@@ -1,5 +1,41 @@
 //! x86 FADT SCI interrupt bridge.
 
+use core::sync::atomic::{AtomicU32, Ordering};
+
+static FIXED_EVDEV: AtomicU32 = AtomicU32::new(u32::MAX);
+
+/// Install the platform input owner for ACPI power and sleep buttons before
+/// the SCI enables any PM1 fixed source.
+pub(crate) fn install_fixed_events() {
+    let mut dev = input::VirtioInputDev::empty_platform_boxed(0xAC01_0001);
+    dev.name[..10].copy_from_slice(b"ACPI fixed");
+    dev.name_len = 10;
+    dev.ev_bits[input::EV_KEY as usize / 8] |= 1 << (input::EV_KEY % 8);
+    for key in [input::KEY_POWER, input::KEY_SLEEP] {
+        dev.key_bits.bits[key as usize / 8] |= 1 << (key % 8);
+    }
+    let Some((_, evdev)) = input::install_and_publish(dev) else { return; };
+    FIXED_EVDEV.store(evdev, Ordering::Release);
+    let _ = firmware::acpi::events::register_fixed_event(8, power_button);
+    let _ = firmware::acpi::events::register_fixed_event(9, sleep_button);
+}
+
+fn power_button() { queue_button(input::KEY_POWER); }
+fn sleep_button() { queue_button(input::KEY_SLEEP); }
+
+fn queue_button(key: u16) {
+    let evdev = FIXED_EVDEV.load(Ordering::Acquire);
+    if evdev == u32::MAX { return; }
+    let _ = sched::live::workqueue::queue_work(emit_button, (evdev as usize) | ((key as usize) << 32));
+}
+
+fn emit_button(argument: usize) {
+    let evdev = argument as u32;
+    let key = (argument >> 32) as u16;
+    let _ = input::push_evdev_event(evdev, input::EV_KEY, key, 1);
+    let _ = input::push_evdev_event(evdev, input::EV_KEY, key, 0);
+}
+
 /// Route the FADT SCI through its MADT override and the owning I/O APIC.
 /// # C: O(1)
 pub fn install(interrupt: u16) -> bool {
