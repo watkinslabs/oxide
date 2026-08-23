@@ -107,6 +107,7 @@ pub(crate) fn sendto_raw6(sock: &InetSocket, endpoint: &crate::raw6::Raw6Endpoin
     payload: &[u8], control: &crate::send_control::Raw6Control, tx: crate::TxMeta)
     -> Result<usize, NetError>
 {
+    validate_raw6_destination_protocol(endpoint.protocol(), dst_protocol)?;
     let protocol_override = if endpoint.protocol() == crate::addr::IpProto::Raw as u8
         && !endpoint.header_included()
     {
@@ -122,6 +123,27 @@ pub(crate) fn sendto_raw6(sock: &InetSocket, endpoint: &crate::raw6::Raw6Endpoin
     // plus the transmit argument block the whole way down.
     drain_loopback();
     Ok(payload.len())
+}
+
+/// Validate the protocol selector carried in `sockaddr_in6.sin6_port` for a
+/// raw IPv6 send.
+///
+/// Linux `rawv6_sendmsg` uses that port as the next-header selector: zero
+/// means the socket's protocol, a fixed-protocol socket accepts only its own
+/// protocol, and `IPPROTO_RAW` is the one socket allowed to select any
+/// protocol byte.  The selector is checked before route lookup, so a bad
+/// destination cannot hide an `EINVAL` behind a later routing error.
+/// # C: O(1)
+fn validate_raw6_destination_protocol(socket_protocol: u8,
+                                      destination_protocol: Option<u16>) -> Result<(), NetError>
+{
+    let Some(destination_protocol) = destination_protocol else { return Ok(()); };
+    if destination_protocol > u8::MAX as u16 { return Err(NetError::Einval); }
+    if destination_protocol == 0 || socket_protocol == crate::addr::IpProto::Raw as u8 {
+        return Ok(());
+    }
+    if destination_protocol as u8 == socket_protocol { Ok(()) }
+    else { Err(NetError::Einval) }
 }
 
 /// Apply the socket's sticky IPv6 options to one message's control block.
@@ -420,6 +442,20 @@ mod tests {
             Some(crate::NetIfaceId::from_raw(3)));
         assert_eq!(source, sticky);
         assert_eq!(iface, Some(crate::NetIfaceId::from_raw(3)));
+    }
+
+    #[test]
+    fn raw6_sockaddr_protocol_follows_linux_port_selector() {
+        let icmpv6 = crate::addr::IpProto::Icmpv6 as u8;
+        assert_eq!(validate_raw6_destination_protocol(icmpv6, None), Ok(()));
+        assert_eq!(validate_raw6_destination_protocol(icmpv6, Some(0)), Ok(()));
+        assert_eq!(validate_raw6_destination_protocol(icmpv6, Some(58)), Ok(()));
+        assert_eq!(validate_raw6_destination_protocol(icmpv6, Some(17)), Err(NetError::Einval));
+        assert_eq!(validate_raw6_destination_protocol(icmpv6, Some(256)), Err(NetError::Einval));
+        // IPPROTO_RAW is the sole raw IPv6 socket protocol that may select a
+        // different next header in sin6_port.
+        assert_eq!(validate_raw6_destination_protocol(crate::addr::IpProto::Raw as u8,
+            Some(17)), Ok(()));
     }
 
     const RAW_MTU: u32 = 1280;
