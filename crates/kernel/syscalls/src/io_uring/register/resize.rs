@@ -9,7 +9,7 @@
 //
 // Userspace must re-`mmap(2)` after a successful resize. The old regions' pages
 // stay alive for as long as the mappings that hold them do: each mapped page
-// carries its own reference (`VmaBacking::KernelFrame`), so dropping the ring's
+// carries its own reference (`VmaBacking::KernelPages`), so dropping the ring's
 // object reference here frees nothing that is still mapped.
 
 use alloc::sync::Arc;
