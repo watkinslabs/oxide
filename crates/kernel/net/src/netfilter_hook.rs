@@ -4,6 +4,8 @@
 // (TX) chokepoints so base chains actually enforce. Split out of stack.rs
 // to keep that file under the 1000-line cap (08§7).
 
+extern crate alloc;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicPtr, Ordering};
 #[cfg(any(test, feature = "hosted"))]
 use core::sync::atomic::{AtomicBool, AtomicUsize};
@@ -18,10 +20,11 @@ pub const NFPROTO_IPV6: u8 = 10;
 /// Netfilter result carried across an ingress hook.  Packet marks are routing
 /// metadata: nft may update them at PRE_ROUTING, and policy routing consumes
 /// the resulting value before deciding local input versus forwarding.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NfHookResult {
     pub verdict: u32,
     pub mark: u32,
+    pub actions: Vec<crate::netfilter_action::Action>,
 }
 
 /// Live packet and hook ownership presented to one netfilter walk. The shape
@@ -58,7 +61,7 @@ impl<'a> NfHookCtx<'a> {
 }
 
 impl NfHookResult {
-    pub const ACCEPT: Self = Self { verdict: 1, mark: 0 };
+    pub const ACCEPT: Self = Self { verdict: 1, mark: 0, actions: Vec::new() };
 }
 
 /// Netfilter callback. Verdict u32: NF_DROP=0, NF_ACCEPT=1.
@@ -132,7 +135,7 @@ pub(crate) fn nf_hook_eval_ctx(ctx: &NfHookCtx<'_>) -> NfHookResult {
     let context = security::network::Context::op(ctx.namespace, ctx.family as u16, 0, 0,
         security::network::Operation::Packet);
     if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
-        return NfHookResult { verdict: 0, mark: 0 };
+        return NfHookResult { verdict: 0, mark: 0, actions: Vec::new() };
     }
     #[cfg(any(test, feature = "hosted"))]
     let _lease = loop {

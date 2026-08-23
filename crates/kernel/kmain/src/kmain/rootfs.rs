@@ -225,7 +225,8 @@ fn install_network_hooks() {
     // netdev registration, so eth0's boot RTM_NEWLINK is not dropped.
     net::stack::install_nf_hook(|ctx| {
         let result = netfilter::eval_hook(ctx);
-        net::stack::NfHookResult { verdict: result.verdict.as_u32(), mark: result.mark }
+        net::stack::NfHookResult { verdict: result.verdict.as_u32(), mark: result.mark,
+            actions: result.actions }
     });
     use security::bpf::sk_filter::{self, SkFilterContext};
     net::stack::install_bpf_filter_runner(|kind, insns, packet| match kind {

@@ -31,6 +31,8 @@ cgroup   = { path = "../cgroup" }
 crng     = { path = "../crng" }
 siphash  = { path = "../../shared/siphash" }
 nscg = { path = "../nscg" }
+conntrack = { path = "../conntrack" }
+nat = { path = "../nat" }
 drv = { path = "../../drivers/drv" }
 
 [dev-dependencies]

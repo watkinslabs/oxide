@@ -92,6 +92,7 @@ pub use unix_sock::{
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub use unix_sock::bind_file;
 pub mod net_ns;
+pub mod netfilter_action;
 pub mod security_admission;
 pub mod control_event;
 #[cfg(any(test, feature = "hosted"))]
