@@ -20,8 +20,8 @@ relocated.
 > TCP-option, and NFLOG effects. Software flowtable ownership and the
 > synproxy cookie/handshake packet path, conntrack sequence adjustment, and
 > negotiated TCP option translation are now live, but their remaining Linux
-> differences are flowtable dump/device lifecycle and synproxy state-machine
-> retransmission parity. The B2621 rows below retain
+> differences are flowtable device-hook lifecycle/use accounting and synproxy
+> state-machine retransmission parity. The B2621 rows below retain
 > their original discovery wording; production xfrm/tunnel/osf/object context
 > is still absent. They are not closure claims.
 

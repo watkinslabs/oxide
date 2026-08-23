@@ -31,7 +31,7 @@ impl NetStack {
         let iface = lease.iface();
         crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::InReceives);
         crate::mib6::add_ip(net_ns, crate::mib6::Ip6Mib::InOctets, l3.len() as u64);
-        if let Some(result) = self.flow_offload_ingress(net_ns, l3, NFPROTO_IPV6) {
+        if let Some(result) = self.flow_offload_ingress(net_ns, iface, l3, NFPROTO_IPV6) {
             return result;
         }
         let mut ingress_pkt = crate::pkt::Pkt::from_owned(l3.to_vec());

@@ -517,7 +517,9 @@ pub struct NetStack {
     pub(crate) flow_offload: Spinlock<BTreeMap<(u64, String, ::conntrack::tuple::Tuple),
         Arc<super::flow_offload::FlowEntry>>, StackLockClass>,
     /// Configured nftables flowtable names, scoped by network namespace and family.
-    pub(crate) flowtables: Spinlock<BTreeMap<(u64, u8, String), ()>, StackLockClass>,
+    pub(crate) flowtables: Spinlock<BTreeMap<(u64, u8, String), super::flow_offload::FlowtableConfig>, StackLockClass>,
+    /// Unique nftables flowtable object handle source.
+    pub(crate) next_flowtable_handle: crate::fib_lock::FibLock<u64, StackLockClass>,
     /// Monotonic id for IP packets we emit.
     pub(crate) next_ip_id: crate::fib_lock::FibLock<u16, StackLockClass>,
     /// Monotonic ISN base for TCP active opens.

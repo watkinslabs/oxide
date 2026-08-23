@@ -85,6 +85,7 @@ mod types;
 mod inet_tables;
 mod conntrack;
 mod flow_offload;
+pub use flow_offload::FlowtableConfig;
 mod pmtu_cache;
 pub(crate) use pmtu_cache::IPV4_MIN_PMTU;
 mod core;
