@@ -150,6 +150,9 @@ pub struct OvlEntry {
     /// Where the data of a metadata-only object lives, when it is in a
     /// data-only layer and named by an absolute redirect.
     pub lowerdata_redirect: Option<String>,
+    /// The resolved data-only object. This is separate from `lower`: data-only
+    /// layers are never part of the name-based merge.
+    pub lowerdata: Option<OvlPath>,
 }
 
 impl OvlEntry {
@@ -181,7 +184,9 @@ impl OvlEntry {
     /// the bottom of the lower list rather than the top. # C: O(1)
     pub fn realdata(&self) -> Option<InodeRef> {
         if self.upper.is_some() && !self.metacopy { return self.upper.clone(); }
-        self.lower.last().map(|p| p.inode.clone()).or_else(|| self.upper.clone())
+        self.lowerdata.as_ref().map(|p| p.inode.clone())
+            .or_else(|| self.lower.last().map(|p| p.inode.clone()))
+            .or_else(|| self.lowerdata_redirect.is_none().then(|| self.upper.clone()).flatten())
     }
     /// Topmost lower object, which is the copy-up source and the origin. # C: O(1)
     pub fn lower_top(&self) -> Option<&OvlPath> { self.lower.first() }

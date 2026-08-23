@@ -215,6 +215,26 @@ fn a_metadata_only_record_is_not_followed_when_the_mount_refuses_to() {
 }
 
 #[test]
+fn metadata_only_data_is_resolved_from_a_data_only_layer() {
+    let c = Config { metacopy: true, redirect_mode: RedirectMode::On, ..Config::default() };
+    let up = layer(0);
+    let lower = layer(1);
+    let data = layer(2);
+    mkfile(&data, "payload", b"data-only contents");
+    let upper_file = mkfile(&up, "f", b"");
+    let lower_file = mkfile(&lower, "f", b"");
+    let record = Metacopy::empty().encode();
+    marker::set(&c, &upper_file, Marker::Metacopy, &record, Errno::Eio).unwrap();
+    marker::set(&c, &lower_file, Marker::Metacopy, &record, Errno::Eio).unwrap();
+    marker::set(&c, &lower_file, Marker::Redirect, b"/payload", Errno::Eio).unwrap();
+    let (s, root) = stack(c, Some(up), &[lower, data], &[1]);
+    let e = find(&s, &root, "f").unwrap().unwrap();
+    assert!(e.lowerdata_redirect.is_some());
+    assert_eq!(slurp(&e.realdata().unwrap()), b"data-only contents".to_vec());
+    assert_eq!(e.lower.len(), 1, "data-only paths are not ordinary lower layers");
+}
+
+#[test]
 fn a_directory_below_a_file_is_not_merged_with_it() {
     let (s, root, up, lo) = mount(Config::default());
     mkpath(&lo, "n");
