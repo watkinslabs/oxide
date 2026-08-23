@@ -54,7 +54,7 @@ use crate::tcp_conn::{TcpConn, Endpoint};
 // the public API so `net::stack::install_nf_hook` / `NF_INET_*` paths stay
 // stable; pull the crate-internal helpers into scope for the packet path.
 pub use crate::netfilter_hook::{NfHookCtx, NfHookFn, NfHookResult, install_nf_hook,
-    install_nf_hook_with_stages, NFPROTO_IPV4,
+    install_nf_hook_with_stages, install_nf_logger, NFPROTO_IPV4,
     NF_INET_PRE_ROUTING, NF_INET_LOCAL_IN, NF_INET_LOCAL_OUT, NF_INET_POST_ROUTING};
 
 /// Socket ownership selected by the live receive path for nftables socket

@@ -264,6 +264,7 @@ fn syn_options(mss: u16, wscale: u8, flags: u32, tsval: u32, tsecr: u32)
     options
 }
 
+#[cfg(test)]
 fn swap_timestamp_options(options: &[u8]) -> alloc::vec::Vec<u8> {
     let mut out = options.to_vec();
     let mut i = 0usize;

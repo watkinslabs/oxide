@@ -169,6 +169,7 @@ pub(crate) fn nf_hook_eval(hook_id: u32, pkt: &[u8], family: u8) -> u32 {
 
 /// Evaluate namespace-owned security policy before the legacy netfilter
 /// callback. The ingress lease supplies the concrete namespace key.
+#[cfg(any(test, feature = "hosted"))]
 pub(crate) fn nf_hook_eval_in(namespace: u64, hook_id: u32, pkt: &[u8], family: u8) -> NfHookResult {
     let ctx = NfHookCtx { namespace, hook_id, pkt, ll: &[], family, link_protocol: None, mark: 0, priority: 0,
         ingress: None, egress: None, timestamp_ns: 0,

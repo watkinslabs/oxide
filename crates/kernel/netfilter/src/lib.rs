@@ -20,7 +20,8 @@ pub mod nft_expr;
 mod protocol;
 mod state;
 
-pub use eval::{EvalResult, Verdict, eval, eval_hook, eval_in, eval_in_with_mark};
+pub use eval::{EvalResult, Verdict, eval, eval_hook, eval_in, eval_in_with_mark,
+               has_chain_in_priority_range};
 pub use nl::handle;
 pub use nflog::log_packet;
 pub use protocol::{
