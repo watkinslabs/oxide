@@ -13,7 +13,7 @@ use sync::{Namespace, Spinlock};
 #[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Operation { Create, Bind, Connect, Listen, Accept, Send, Receive, Shutdown,
     NameQuery, SocketPair, SetOption, GetOption, Ioctl, Packet, NetlinkSend,
-    PeerConnect, PeerSend }
+    PeerConnect, PeerSend, NameBind, NameConnect, NodeBind }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Verdict { Allow, Deny }

@@ -56,6 +56,24 @@ pub fn netlink_xperm() -> bool {
         .unwrap_or(false)
 }
 
+/// Resolve one transport port through the loaded policy's `portcon` table.
+/// Unmatched ports retain SELinux's initial `port` SID, exactly as the kernel
+/// object-context lookup does. # C: O(portcon entries)
+pub fn port_sid(protocol: u8, port: u16) -> Sid {
+    crate::with(|s| s.network_port_sid(protocol, port))
+        .unwrap_or(selinux::uapi::initsid::InitSid::Port.sid())
+}
+
+pub fn node_sid_v4(addr: u32) -> Sid {
+    crate::with(|s| s.network_node_sid_v4(addr))
+        .unwrap_or(selinux::uapi::initsid::InitSid::Node.sid())
+}
+
+pub fn node_sid_v6(addr: [u32; 4]) -> Sid {
+    crate::with(|s| s.network_node_sid_v6(addr))
+        .unwrap_or(selinux::uapi::initsid::InitSid::Node.sid())
+}
+
 /// Label the server end of a new connection takes. # C: O(categories)
 ///
 /// The listening socket's identity carrying the connecting socket's

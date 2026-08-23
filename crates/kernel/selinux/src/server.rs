@@ -419,6 +419,37 @@ impl SecurityServer {
     /// SID of one initial SID number. # C: O(1)
     pub fn initial_sid(&self, sid: InitSid) -> Sid { sid.sid() }
 
+    /// Resolve a policy `portcon` object context to the SID used by the
+    /// socket `name_bind`/`name_connect` checks. # C: O(portcon entries)
+    pub fn network_port_sid(&mut self, protocol: u8, port: u16) -> Sid {
+        let fallback = InitSid::Port.sid();
+        let Some(l) = self.loaded.as_mut() else { return fallback };
+        let Some(context) = l.db.ocontexts.port(protocol, port).cloned() else {
+            return fallback;
+        };
+        l.sidtab.context_to_sid(Context::Valid(context)).unwrap_or(fallback)
+    }
+
+    /// Resolve an IPv4 network-node object context. # C: O(nodecon entries)
+    pub fn network_node_sid_v4(&mut self, addr: u32) -> Sid {
+        let fallback = InitSid::Node.sid();
+        let Some(l) = self.loaded.as_mut() else { return fallback };
+        let Some(context) = l.db.ocontexts.nodes.iter()
+            .find(|n| (addr & n.mask) == (n.addr & n.mask))
+            .map(|n| n.context.clone()) else { return fallback };
+        l.sidtab.context_to_sid(Context::Valid(context)).unwrap_or(fallback)
+    }
+
+    /// Resolve an IPv6 network-node object context. # C: O(nodecon entries)
+    pub fn network_node_sid_v6(&mut self, addr: [u32; 4]) -> Sid {
+        let fallback = InitSid::Node.sid();
+        let Some(l) = self.loaded.as_mut() else { return fallback };
+        let Some(context) = l.db.ocontexts.nodes6.iter()
+            .find(|n| (0..4).all(|i| (addr[i] & n.mask[i]) == (n.addr[i] & n.mask[i])))
+            .map(|n| n.context.clone()) else { return fallback };
+        l.sidtab.context_to_sid(Context::Valid(context)).unwrap_or(fallback)
+    }
+
     /// Committed and pending value of one boolean. # C: O(1)
     pub fn get_bool(&self, index: usize) -> Option<(bool, bool)> {
         let l = self.loaded.as_ref()?;

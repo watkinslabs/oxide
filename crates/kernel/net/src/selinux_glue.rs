@@ -27,6 +27,9 @@ fn operation_permission(operation: security::network::Operation) -> &'static str
         NetlinkSend => "sendto",
         PeerConnect => "connectto",
         PeerSend => "sendto",
+        NameBind => "name_bind",
+        NameConnect => "name_connect",
+        NodeBind => "node_bind",
     }
 }
 
@@ -242,7 +245,8 @@ pub fn init() -> bool {
         Operation::Listen, Operation::Accept, Operation::Send, Operation::Receive,
         Operation::Shutdown, Operation::NameQuery, Operation::SocketPair,
         Operation::SetOption, Operation::GetOption, Operation::Ioctl, Operation::Packet,
-        Operation::NetlinkSend, Operation::PeerConnect, Operation::PeerSend] {
+        Operation::NetlinkSend, Operation::PeerConnect, Operation::PeerSend,
+        Operation::NameBind, Operation::NameConnect, Operation::NodeBind] {
         let _ = security::network::install_global(operation, socket_hook);
     }
     true
@@ -252,6 +256,19 @@ pub fn init() -> bool {
 /// one installed SELinux server. # C: O(categories)
 pub fn secmark_sid(context: &str) -> Option<u32> {
     selinux_runtime::network::sid_from_context(context)
+}
+
+/// Resolve a transport port's policy object context at the SELinux boundary.
+pub fn port_sid(protocol: u8, port: u16) -> u32 {
+    selinux_runtime::network::port_sid(protocol, port)
+}
+
+pub fn node_sid_v4(addr: u32) -> u32 {
+    selinux_runtime::network::node_sid_v4(addr)
+}
+
+pub fn node_sid_v6(addr: [u32; 4]) -> u32 {
+    selinux_runtime::network::node_sid_v6(addr)
 }
 
 #[cfg(test)]

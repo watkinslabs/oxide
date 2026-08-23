@@ -57,6 +57,13 @@ pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
             // path: a socket that names an address the namespace does not own
             // reports that, whatever the port would have done.
             super::nonlocal::screen_v4(sock, ip, bound_iface(sock)?)?;
+            if port != 0 {
+                let protocol = if is_udp { 17 } else { 6 };
+                crate::sock_admit::admit_port(sock, protocol, port,
+                    security::network::Operation::NameBind)?;
+            }
+            crate::sock_admit::admit_node(sock,
+                crate::selinux_glue::node_sid_v4(ip.as_u32()))?;
             if is_udp {
                 let mut local_port = sock.local_port.lock();
                 if sock.released.load(core::sync::atomic::Ordering::Acquire) { return Err(NetError::Einval); }
@@ -100,6 +107,17 @@ pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
             let is_udp = matches!(*sock.kind.lock(), SockKind::Udp);
             if !is_udp && !matches!(*sock.kind.lock(), SockKind::TcpInit) { return Err(NetError::Einval); }
             super::nonlocal::screen_v6(sock, ip, crate::sock_v6::scoped_iface(sock, ip, scope_id)?)?;
+            let octets = ip.0;
+            let node = [u32::from_be_bytes([octets[0], octets[1], octets[2], octets[3]]),
+                u32::from_be_bytes([octets[4], octets[5], octets[6], octets[7]]),
+                u32::from_be_bytes([octets[8], octets[9], octets[10], octets[11]]),
+                u32::from_be_bytes([octets[12], octets[13], octets[14], octets[15]])];
+            if port != 0 {
+                let protocol = if is_udp { 17 } else { 6 };
+                crate::sock_admit::admit_port(sock, protocol, port,
+                    security::network::Operation::NameBind)?;
+            }
+            crate::sock_admit::admit_node(sock, crate::selinux_glue::node_sid_v6(node))?;
             if is_udp {
                 let mut local_port = sock.local_port.lock();
                 if sock.released.load(core::sync::atomic::Ordering::Acquire) { return Err(NetError::Einval); }
@@ -244,8 +262,22 @@ pub fn connect_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, n
             }
         }
         RemoteAddr::Unix(addr) => super::unix::connect(sock, addr, nonblock),
-        addr @ (RemoteAddr::Inet { .. } | RemoteAddr::Inet6 { .. }) =>
-            super::preflight_connect_admitted(sock, admission)?.commit(addr, nonblock),
+        RemoteAddr::Inet { ip, port } => {
+            if matches!(*sock.kind.lock(), SockKind::TcpInit) {
+                crate::sock_admit::admit_port(sock, 6, port,
+                    security::network::Operation::NameConnect)?;
+            }
+            super::preflight_connect_admitted(sock, admission)?.commit(
+                RemoteAddr::Inet { ip, port }, nonblock)
+        }
+        RemoteAddr::Inet6 { ip, port, scope_id } => {
+            if matches!(*sock.kind.lock(), SockKind::TcpInit) {
+                crate::sock_admit::admit_port(sock, 6, port,
+                    security::network::Operation::NameConnect)?;
+            }
+            super::preflight_connect_admitted(sock, admission)?.commit(
+                RemoteAddr::Inet6 { ip, port, scope_id }, nonblock)
+        }
     }
 }
 
