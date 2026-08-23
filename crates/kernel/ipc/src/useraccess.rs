@@ -16,14 +16,12 @@ use syscall::errno::Errno;
 
 /// # C: O(1)
 pub fn read_u32(uptr: u64) -> Result<u32, Errno> {
-    let mut raw = [0u8; 4];
-    uaccess::copy_from_user(&mut raw, uptr)?;
-    Ok(u32::from_ne_bytes(raw))
+    uaccess::get_user_u32(uptr)
 }
 
 /// # C: O(1)
 pub fn write_u32(uptr: u64, v: u32) -> Result<(), Errno> {
-    uaccess::copy_to_user(uptr, &v.to_ne_bytes())
+    uaccess::put_user_u32(uptr, v)
 }
 
 /// Atomically replace a user word if it equals `old`, returning the word seen.
@@ -39,9 +37,7 @@ pub fn read_i32(uptr: u64) -> Result<i32, Errno> {
 
 /// # C: O(1)
 pub fn read_u64(uptr: u64) -> Result<u64, Errno> {
-    let mut raw = [0u8; 8];
-    uaccess::copy_from_user(&mut raw, uptr)?;
-    Ok(u64::from_ne_bytes(raw))
+    uaccess::get_user_u64(uptr)
 }
 
 /// # C: O(1)

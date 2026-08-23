@@ -48,6 +48,68 @@ oxide_raw_cmpxchg_user_u32:
     .long 6b - .
     .popsection
     .size oxide_raw_cmpxchg_user_u32, . - oxide_raw_cmpxchg_user_u32
+
+    .global oxide_raw_get_user_u32
+    .type oxide_raw_get_user_u32, @function
+oxide_raw_get_user_u32:
+1:  mov eax, dword ptr [rdi]
+    mov dword ptr [rsi], eax
+    xor eax, eax
+    ret
+2:  mov eax, 1
+    ret
+    .pushsection __ex_table,"a"
+    .balign 8
+    .long 1b - .
+    .long 2b - .
+    .popsection
+    .size oxide_raw_get_user_u32, . - oxide_raw_get_user_u32
+
+    .global oxide_raw_get_user_u64
+    .type oxide_raw_get_user_u64, @function
+oxide_raw_get_user_u64:
+3:  mov rax, qword ptr [rdi]
+    mov qword ptr [rsi], rax
+    xor eax, eax
+    ret
+4:  mov eax, 1
+    ret
+    .pushsection __ex_table,"a"
+    .balign 8
+    .long 3b - .
+    .long 4b - .
+    .popsection
+    .size oxide_raw_get_user_u64, . - oxide_raw_get_user_u64
+
+    .global oxide_raw_put_user_u32
+    .type oxide_raw_put_user_u32, @function
+oxide_raw_put_user_u32:
+5:  mov dword ptr [rdi], esi
+    xor eax, eax
+    ret
+6:  mov eax, 1
+    ret
+    .pushsection __ex_table,"a"
+    .balign 8
+    .long 5b - .
+    .long 6b - .
+    .popsection
+    .size oxide_raw_put_user_u32, . - oxide_raw_put_user_u32
+
+    .global oxide_raw_put_user_u64
+    .type oxide_raw_put_user_u64, @function
+oxide_raw_put_user_u64:
+7:  mov qword ptr [rdi], rsi
+    xor eax, eax
+    ret
+8:  mov eax, 1
+    ret
+    .pushsection __ex_table,"a"
+    .balign 8
+    .long 7b - .
+    .long 8b - .
+    .popsection
+    .size oxide_raw_put_user_u64, . - oxide_raw_put_user_u64
 "#);
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
@@ -55,6 +117,10 @@ extern "C" {
     fn oxide_raw_copy_from_user(dst: *mut u8, src: *const u8, len: usize) -> usize;
     fn oxide_raw_copy_to_user(dst: *mut u8, src: *const u8, len: usize) -> usize;
     fn oxide_raw_cmpxchg_user_u32(uaddr: *mut u32, old: u32, new: u32, seen: *mut u32) -> u32;
+    fn oxide_raw_get_user_u32(src: *const u32, out: *mut u32) -> u32;
+    fn oxide_raw_get_user_u64(src: *const u64, out: *mut u64) -> u32;
+    fn oxide_raw_put_user_u32(dst: *mut u32, value: u32) -> u32;
+    fn oxide_raw_put_user_u64(dst: *mut u64, value: u64) -> u32;
 }
 
 /// Copy from user and return bytes not copied. # C: O(len + page faults)
@@ -106,4 +172,36 @@ pub unsafe fn raw_cmpxchg_user_u32(uaddr: *mut u32, old: u32, new: u32, seen: *m
         unsafe { seen.write(value); }
         0
     }
+}
+
+/// Read one user u32; zero succeeds and one reports a fault. # C: O(1)
+pub unsafe fn raw_get_user_u32(src: *const u32, out: *mut u32) -> u32 {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    { unsafe { oxide_raw_get_user_u32(src, out) } }
+    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+    { unsafe { out.write(src.read()); } 0 }
+}
+
+/// Read one user u64; zero succeeds and one reports a fault. # C: O(1)
+pub unsafe fn raw_get_user_u64(src: *const u64, out: *mut u64) -> u32 {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    { unsafe { oxide_raw_get_user_u64(src, out) } }
+    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+    { unsafe { out.write(src.read()); } 0 }
+}
+
+/// Write one user u32; zero succeeds and one reports a fault. # C: O(1)
+pub unsafe fn raw_put_user_u32(dst: *mut u32, value: u32) -> u32 {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    { unsafe { oxide_raw_put_user_u32(dst, value) } }
+    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+    { unsafe { dst.write(value); } 0 }
+}
+
+/// Write one user u64; zero succeeds and one reports a fault. # C: O(1)
+pub unsafe fn raw_put_user_u64(dst: *mut u64, value: u64) -> u32 {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    { unsafe { oxide_raw_put_user_u64(dst, value) } }
+    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+    { unsafe { dst.write(value); } 0 }
 }
