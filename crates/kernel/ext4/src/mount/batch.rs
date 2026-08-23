@@ -20,11 +20,25 @@ impl Mount {
     /// mutators from the shadow-drain through the final target-device write.
     /// # C: O(N shadow blocks) + one journal commit
     pub fn commit_batch(&self) -> Result<(), MountError> {
+        self.commit_batch_for(None).map(|_| ())
+    }
+
+    pub(crate) fn commit_batch_for(&self, inode: Option<(u32, bool)>) -> Result<bool, MountError> {
         self.order_data_before_commit();
         self.txn_acquire();
-        let result = self.commit_batch_inner();
+        let needed = inode.map_or(true, |(ino, datasync)| self.inode_sync_needed(ino, datasync));
+        let result = if needed { self.commit_batch_inner() } else { Ok(false) };
         self.txn_release();
-        result
+        let direct = result?;
+        let generation = self.state.lock().committed_generation;
+        let barrier_needed = direct && self.behaviour().barrier && {
+            let s = self.state.lock();
+            generation > s.barrier_generation
+        };
+        if !needed || !barrier_needed { return Ok(false); }
+        self.dev.flush().map_err(|_| MountError::BlockIo)?;
+        self.mark_generation_barriered(generation);
+        Ok(true)
     }
 
     /// `data=ordered`: put this mount's dirty file data on the device BEFORE
@@ -48,24 +62,28 @@ impl Mount {
         let _ = crate::rootfs::framecache::writeback_dirty(Some(self));
     }
 
-    fn commit_batch_inner(&self) -> Result<(), MountError> {
+    fn commit_batch_inner(&self) -> Result<bool, MountError> {
         let staged: Vec<StagedBlock> = {
             let s = self.state.lock();
-            if !s.batch { return Ok(()); }
+            if !s.batch { return Ok(false); }
             s.shadow.as_ref().into_iter().flatten()
                 .map(|(&target_lba, data)| StagedBlock { target_lba, data: data.clone() })
                 .collect()
         };
         if !staged.is_empty() {
-            self.commit_metadata(staged.clone())?;
+            let seq = self.commit_metadata(staged.clone())?;
             self.cache_committed(&staged);
+            let mut s = self.state.lock();
+            s.committed_generation = s.running_generation;
+            s.running_generation = 0;
+            return Ok(seq == 0);
         }
         // Dirty metadata remains shadow-visible until every journal/home write
         // succeeds. Readers therefore see one coherent version throughout
         // writeback; the transaction gate excludes mutators from adding a newer
         // version before this committed generation is retired.
         self.state.lock().shadow = Some(alloc::collections::BTreeMap::new());
-        Ok(())
+        Ok(false)
     }
 
     /// Keep the running transaction bounded at top-level operation boundaries.

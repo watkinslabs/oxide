@@ -78,7 +78,7 @@ impl Mount {
         bytes[0x04..0x08].copy_from_slice(&((size & 0xFFFF_FFFF) as u32).to_le_bytes());
         bytes[0x6C..0x70].copy_from_slice(&((size >> 32) as u32).to_le_bytes());
         if let Some(meta) = meta { self.stamp_inode_meta_fields(&mut bytes, meta); }
-        self.write_inode_bytes(ino, &bytes)
+        self.write_inode_bytes_data(ino, &bytes)
     }
 
     /// Random-access write: `data` lands at byte offset `off` in

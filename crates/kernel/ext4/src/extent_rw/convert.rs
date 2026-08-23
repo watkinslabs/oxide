@@ -86,7 +86,7 @@ impl Mount {
         out.sort_unstable_by_key(|e| e.block);
 
         let (old_sectors, sectors) = self.write_extent_tree(ino, &mut ibytes, &out)?;
-        if let Err(e) = self.write_inode_bytes(ino, &ibytes) {
+        if let Err(e) = self.write_inode_bytes_data(ino, &ibytes) {
             return Err(self.rollback_i_blocks_delta(ino, sectors, old_sectors, e));
         }
         Ok(())

@@ -143,6 +143,11 @@ impl Mount {
             metadata_cache: alloc::collections::BTreeMap::new(),
             batch: false,
             undo: Vec::new(),
+            next_generation: 0,
+            running_generation: 0,
+            committed_generation: 0,
+            barrier_generation: 0,
+            inode_generations: alloc::collections::BTreeMap::new(),
         };
         let err = sync::Spinlock::new(crate::errstat::ErrRecord::parse(&sb_bytes));
         let m = Self { dev, sb, state: sync::Spinlock::new(state), quota_sb: sync::Spinlock::new(alloc::sync::Weak::new()), err,
@@ -196,6 +201,13 @@ impl Mount {
         #[cfg(not(target_os = "oxide-kernel"))]
         if self.should_fail_metadata_write_for_tests() { return Err(MountError::BlockIo); }
         let bs = self.sb.block_size as u64;
+        {
+            let mut s = self.state.lock();
+            if s.running_generation == 0 {
+                s.next_generation = s.next_generation.wrapping_add(1).max(1);
+                s.running_generation = s.next_generation;
+            }
+        }
         let first_blk = byte_off / bs;
         let last_byte = byte_off + data.len() as u64;
         let last_blk_excl = (last_byte + bs - 1) / bs;
@@ -392,6 +404,9 @@ impl Mount {
                             .collect();
                         self.commit_metadata(staged.clone())?;
                         self.cache_committed(&staged);
+                        let mut s = self.state.lock();
+                        s.committed_generation = s.running_generation;
+                        s.running_generation = 0;
                     }
                     Ok(v)
                 }
@@ -465,6 +480,26 @@ impl Mount {
     /// populating state.shadow which subsequent reads consult.
     /// # C: O(1)
     pub fn flush_pending_tx(&self) -> Result<(), MountError> { Ok(()) }
+
+    pub(crate) fn mark_inode_dirty(&self, ino: u32, datasync: bool) {
+        let mut s = self.state.lock();
+        let tid = s.running_generation;
+        if tid == 0 { return; }
+        let e = s.inode_generations.entry(ino).or_insert((0, 0));
+        e.0 = tid;
+        if datasync { e.1 = tid; }
+    }
+
+    pub(crate) fn inode_sync_needed(&self, ino: u32, datasync: bool) -> bool {
+        let s = self.state.lock();
+        let tid = s.inode_generations.get(&ino).map_or(0, |p| if datasync { p.1 } else { p.0 });
+        tid != 0 && tid > s.committed_generation
+    }
+
+    pub(crate) fn mark_generation_barriered(&self, generation: u64) {
+        let mut s = self.state.lock();
+        if generation > s.barrier_generation { s.barrier_generation = generation; }
+    }
 
     /// Read `len` bytes starting at `byte_off`, splicing in
     /// shadow-buffered fs-block bytes where present. Use this

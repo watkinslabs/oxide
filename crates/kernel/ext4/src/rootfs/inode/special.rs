@@ -290,8 +290,8 @@ impl FileOps for Ext4StatFileOps {
     /// `ext4_sync_file` — Linux installs the same `fsync` slot on
     /// `ext4_dir_operations`, so `fsync(dirfd)` commits the directory's
     /// metadata rather than silently succeeding. # C: O(journal tx)
-    fn fsync(&self, file: &vfs::File, _datasync: bool) -> KResult<()> {
-        super::regular::ext4_sync_file(file.inode())
+    fn fsync(&self, file: &vfs::File, datasync: bool) -> KResult<()> {
+        super::regular::ext4_sync_file(file.inode(), datasync)
     }
 
     fn unlocked_ioctl(

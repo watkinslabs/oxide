@@ -24,12 +24,11 @@ use super::super::state::RootfsState;
 /// from the inode's own `i_private` (rather than the rootfs-only helper) is
 /// also what makes a file on a NON-root ext4 mount genuinely durable.
 /// # C: O(journal tx)
-pub(crate) fn ext4_sync_file(inode: &Inode) -> KResult<()> {
+pub(crate) fn ext4_sync_file(inode: &Inode, datasync: bool) -> KResult<()> {
     let Some((st, _ino)) = super::data::ext4_state_of(inode) else {
         return Ok(()); // not an ext4-backed inode: nothing of ours to commit
     };
-    st.mount.commit_batch().map_err(|e| fs_err(&st, e))?;
-    st.mount.dev.flush().map_err(|_| VfsError::Eio)?;
+    let _ = st.mount.commit_batch_for(Some((_ino, datasync))).map_err(|e| fs_err(&st, e))?;
     Ok(())
 }
 
@@ -239,8 +238,8 @@ impl FileOps for Ext4RegFileOps {
     /// Resolving the mount from the inode's own `i_private` (not the rootfs
     /// helper) keeps a file on a NON-root ext4 mount genuinely durable.
     /// # C: O(journal tx)
-    fn fsync(&self, file: &vfs::File, _datasync: bool) -> KResult<()> {
-        ext4_sync_file(file.inode())
+    fn fsync(&self, file: &vfs::File, datasync: bool) -> KResult<()> {
+        ext4_sync_file(file.inode(), datasync)
     }
 
     fn unlocked_ioctl(
@@ -381,8 +380,8 @@ impl AddressSpaceOps for Ext4FileMapping {
     /// `ext4_sync_file` performs for `f_op->fsync`, so the two routes to
     /// durability cannot diverge. # C: O(journal tx)
     fn sync_backing(&self) -> Result<(), ()> {
-        self.data.st.mount.commit_batch().map_err(|_| ())?;
-        self.data.st.mount.dev.flush().map_err(|_| ())
+        self.data.st.mount.commit_batch_for(Some((self.data.ino, true)))
+            .map(|_| ()).map_err(|_| ())
     }
 
     fn mincore_page(&self, off: u64) -> bool { self.data.frames.mincore_page(off) }

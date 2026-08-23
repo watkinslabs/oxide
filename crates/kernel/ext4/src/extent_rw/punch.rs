@@ -173,7 +173,7 @@ impl Mount {
             }
             ibytes[0x1C..0x20].copy_from_slice(&sectors.to_le_bytes());
             ibytes[0x28..0x28 + I_BLOCK_LEN].copy_from_slice(&i_block);
-            if let Err(e) = self.write_inode_bytes(ino, ibytes) {
+            if let Err(e) = self.write_inode_bytes_data(ino, ibytes) {
                 self.free_allocated_blocks(&new_meta);
                 return Err(self.rollback_i_blocks_delta(ino, sectors, old_sectors, e));
             }
@@ -187,7 +187,7 @@ impl Mount {
         self.account_i_blocks_delta(ino, old_sectors, sectors)?;
         ibytes[0x1C..0x20].copy_from_slice(&sectors.to_le_bytes());
         ibytes[0x28..0x28 + I_BLOCK_LEN].copy_from_slice(&i_block);
-        if let Err(e) = self.write_inode_bytes(ino, ibytes) {
+            if let Err(e) = self.write_inode_bytes_data(ino, ibytes) {
             return Err(self.rollback_i_blocks_delta(ino, sectors, old_sectors, e));
         }
         Ok((old_sectors, sectors))
