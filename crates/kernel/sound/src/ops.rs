@@ -232,6 +232,9 @@ pub struct PcmDeviceOps {
     /// Status/control pages remain sound-core-owned; this callback is only
     /// for the driver-owned data region.
     pub pcm_mmap_frame: fn(crate::SoundOwnerKey, PcmDevice, bool, u64) -> Option<u64>,
+    /// Commit userspace's mmap pointer movement to a message/DMA transport.
+    /// Native DMA drivers return the existing hardware pointer unchanged.
+    pub pcm_mmap_commit: fn(crate::SoundOwnerKey, PcmDevice, bool, u64, u64, u32, u32) -> Option<u64>,
 }
 
 #[derive(Copy, Clone)]
@@ -350,4 +353,10 @@ pub fn pcm_mmap_available(owner: crate::SoundOwnerKey, _device: PcmDevice) -> bo
 /// # C: O(1)
 pub fn pcm_mmap_frame_for(owner: crate::SoundOwnerKey, device: PcmDevice, capture: bool, offset: u64) -> Option<u64> {
     device_ops(owner).and_then(|ops| (ops.pcm_mmap_frame)(owner, device, capture, offset))
+}
+
+/// # C: O(transport)
+pub fn pcm_mmap_commit_for(owner: crate::SoundOwnerKey, device: PcmDevice, capture: bool,
+                           appl: u64, hw: u64, frame_bytes: u32, buffer_frames: u32) -> Option<u64> {
+    device_ops(owner).and_then(|ops| (ops.pcm_mmap_commit)(owner, device, capture, appl, hw, frame_bytes, buffer_frames))
 }

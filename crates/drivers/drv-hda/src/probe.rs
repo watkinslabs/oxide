@@ -34,25 +34,29 @@ fn alloc_page(addr64: bool) -> Option<u64> {
 }
 
 fn alloc_buffer(addr64: bool) -> Option<u64> {
-    if addr64 { pmm::setup::alloc_contig(pmm::Order(BUFFER_ORDER as u8)) }
-    else { pmm::setup::alloc_contig_below(pmm::Order(BUFFER_ORDER as u8), DMA32_LIMIT) }
+    if addr64 { pmm::setup::alloc_contig_object(pmm::Order(BUFFER_ORDER as u8)) }
+    else { pmm::setup::alloc_contig_object_below(pmm::Order(BUFFER_ORDER as u8), DMA32_LIMIT) }
 }
 
-fn frame_list(frames: &Frames) -> alloc::vec::Vec<(u64, u8)> {
+fn frame_list(frames: &Frames) -> alloc::vec::Vec<(u64, u8, bool)> {
     let mut out = Vec::new();
-    out.extend([(frames.ring, 0u8), (frames.posbuf, 0)].into_iter());
+    out.extend([(frames.ring, 0u8, false), (frames.posbuf, 0, false)].into_iter());
     for (bdl, buffer) in frames.playback.iter().chain(frames.capture.iter()) {
-        out.push((*bdl, 0));
-        out.push((*buffer, BUFFER_ORDER as u8));
+        out.push((*bdl, 0, false));
+        out.push((*buffer, BUFFER_ORDER as u8, true));
     }
-    out.into_iter().filter(|(pa, _)| *pa != 0).collect()
+    out.into_iter().filter(|(pa, _, _)| *pa != 0).collect()
 }
 
 fn free_frames(frames: &Frames) {
-    for (pa, order) in frame_list(frames) {
-        // SAFETY: every address here came from this probe's own
-        // `alloc_contig` at the same order and is unmapped from any device.
-        unsafe { pmm::setup::free_contig(pa, pmm::Order(order)); }
+    for (pa, order, object) in frame_list(frames) {
+        if object {
+            pmm::setup::free_contig_object(pa, pmm::Order(order));
+        } else {
+            // SAFETY: every address here came from this probe's own
+            // `alloc_contig` at the same order and is unmapped from any device.
+            unsafe { pmm::setup::free_contig(pa, pmm::Order(order)); }
+        }
     }
 }
 

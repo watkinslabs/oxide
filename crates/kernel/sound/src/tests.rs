@@ -92,6 +92,7 @@ fn multi_hw_free(owner: crate::SoundOwnerKey, _device: ops::PcmDevice) -> bool {
 fn multi_submit(owner: crate::SoundOwnerKey, _device: ops::PcmDevice, bytes: &[u8]) -> usize { submit(owner, bytes) }
 fn multi_recv(owner: crate::SoundOwnerKey, _device: ops::PcmDevice, bytes: &mut [u8]) -> usize { recv(owner, bytes) }
 fn multi_mmap(_owner: crate::SoundOwnerKey, _device: ops::PcmDevice, _capture: bool, _offset: u64) -> Option<u64> { None }
+fn multi_mmap_commit(_owner: crate::SoundOwnerKey, _device: ops::PcmDevice, _capture: bool, _appl: u64, hw: u64, _frame_bytes: u32, _buffer_frames: u32) -> Option<u64> { Some(hw) }
 
 static MULTI_DEVICE_OPS: ops::PcmDeviceOps = ops::PcmDeviceOps {
     pcm_devices: multi_devices,
@@ -115,6 +116,7 @@ static MULTI_DEVICE_OPS: ops::PcmDeviceOps = ops::PcmDeviceOps {
     cap_hw_free: multi_hw_free,
     pcm_recv: multi_recv,
     pcm_mmap_frame: multi_mmap,
+    pcm_mmap_commit: multi_mmap_commit,
 };
 
 static PLAYBACK_ONLY_OPS: ops::SoundOps = ops::SoundOps {

@@ -396,6 +396,9 @@ fn pcm_mmap_frame(owner: sound::SoundOwnerKey, device: sound::ops::PcmDevice, ca
     })?
 }
 
+fn pcm_mmap_commit(_owner: sound::SoundOwnerKey, _device: sound::ops::PcmDevice, _capture: bool,
+                   _appl: u64, hw: u64, _frame_bytes: u32, _buffer_frames: u32) -> Option<u64> { Some(hw) }
+
 /// The sound core's view of this card. # C: O(1)
 pub static SOUND_OPS: sound::ops::SoundOps = sound::ops::SoundOps {
     identity,
@@ -446,6 +449,7 @@ pub static PCM_DEVICE_OPS: sound::ops::PcmDeviceOps = sound::ops::PcmDeviceOps {
     cap_hw_free: cap_hw_free_for,
     pcm_recv: pcm_recv_for,
     pcm_mmap_frame,
+    pcm_mmap_commit,
 };
 
 /// Drain any queued jack events and publish a control notification for each

@@ -104,11 +104,11 @@ impl SndProbeFrames {
         frames.scratch_pa = pmm::setup::alloc_raw_frame()?;
         frames.event_buf_pa = pmm::setup::alloc_raw_frame()?;
         if need_tx {
-            frames.tx_buf_pa = pmm::setup::alloc_raw_frame()?;
+            frames.tx_buf_pa = pmm::setup::alloc_object_frame()?;
             frames.tx_scratch_pa = pmm::setup::alloc_raw_frame()?;
         }
         if need_rx {
-            frames.rx_buf_pa = pmm::setup::alloc_raw_frame()?;
+            frames.rx_buf_pa = pmm::setup::alloc_object_frame()?;
             frames.rx_scratch_pa = pmm::setup::alloc_raw_frame()?;
         }
         Some(frames)
@@ -146,9 +146,12 @@ impl SndProbeFrames {
 impl Drop for SndProbeFrames {
     fn drop(&mut self) {
         if self.owned {
-            for pa in self.all() {
-                free_frame(pa);
-            }
+            free_frame(self.scratch_pa);
+            free_frame(self.event_buf_pa);
+            free_object_frame(self.tx_buf_pa);
+            free_frame(self.tx_scratch_pa);
+            free_object_frame(self.rx_buf_pa);
+            free_frame(self.rx_scratch_pa);
         }
     }
 }
@@ -246,4 +249,14 @@ pub(super) fn free_frame(pa: u64) {
         // cleanup for frames no descriptor was ever built over.
         unsafe { pmm::setup::free_one_frame(pa); }
     }
+}
+
+pub(super) fn free_object_frame(pa: u64) {
+    if pa == 0 { return; }
+    #[cfg(test)]
+    if is_test_frame(pa) {
+        free_frame(pa);
+        return;
+    }
+    pmm::setup::release_object_frame(pa);
 }

@@ -89,7 +89,7 @@ pub const fn transport_profile() -> virtio::VirtioTransportProfile {
 
 mod state;
 use state::{
-    active_ctx, active_ctx_for, active_ctx_mut, active_ctx_mut_for, free_frame, Ctx,
+    active_ctx, active_ctx_for, active_ctx_mut, active_ctx_mut_for, free_frame, free_object_frame, Ctx,
     PcmState, SndDeviceConfig, SndProbe, SndProbeFrames, SoundCardReservation, CTX,
     DRAINED_EVENTS, LAST_EVENT,
 };
@@ -125,11 +125,69 @@ fn identity(_owner: sound::SoundOwnerKey) -> sound::CardIdentity {
 /// The TXQ/RXQ path stages one frame-sized period at a time and double
 /// buffers it. # C: O(1)
 fn hw_limits(_owner: sound::SoundOwnerKey) -> sound::ops::HwLimits {
-    (SND_FRAME_BYTES as u32, SND_FRAME_BYTES as u32 * 2)
+    // The persistent TX/RX DMA area is one PMM frame.  Linux's virtio-snd
+    // runtime area may span many pages; this driver deliberately advertises
+    // the exact area it can retain and map until the transport grows a
+    // multi-page message pool.
+    (SND_FRAME_BYTES as u32, SND_FRAME_BYTES as u32)
 }
 
 /// Blocking submit/receive only: no pause, no mmap. # C: O(1)
 fn info_flags(_owner: sound::SoundOwnerKey) -> u32 { 0 }
+
+fn pcm_devices(_owner: sound::SoundOwnerKey) -> u32 { 1 }
+fn pcm_caps_for(owner: sound::SoundOwnerKey, _device: sound::ops::PcmDevice) -> sound::ops::Caps { pcm_caps(owner) }
+fn cap_caps_for(owner: sound::SoundOwnerKey, _device: sound::ops::PcmDevice) -> sound::ops::Caps { cap_caps(owner) }
+fn hw_limits_for(owner: sound::SoundOwnerKey, _device: sound::ops::PcmDevice) -> sound::ops::HwLimits { hw_limits(owner) }
+fn info_flags_for(_owner: sound::SoundOwnerKey, _device: sound::ops::PcmDevice) -> u32 {
+    sound::uapi::PCM_INFO_MMAP | sound::uapi::PCM_INFO_MMAP_VALID
+}
+fn period_bytes_for(owner: sound::SoundOwnerKey, _device: sound::ops::PcmDevice) -> usize { period_bytes(owner) }
+fn pcm_hw_params_for(owner: sound::SoundOwnerKey, _device: sound::ops::PcmDevice, f: u32, r: u32, c: u8, p: u32, b: u32) -> bool { pcm_hw_params(owner, f, r, c, p, b) }
+fn pcm_prepare_for(owner: sound::SoundOwnerKey, _device: sound::ops::PcmDevice) -> bool { pcm_prepare(owner) }
+fn pcm_trigger_for(owner: sound::SoundOwnerKey, _device: sound::ops::PcmDevice, start: bool) -> bool { pcm_trigger(owner, start) }
+fn pcm_pause_for(_owner: sound::SoundOwnerKey, _device: sound::ops::PcmDevice, _pause: bool) -> bool { false }
+fn pcm_drain_for(_owner: sound::SoundOwnerKey, _device: sound::ops::PcmDevice) -> bool { true }
+fn pcm_pointer_for(_owner: sound::SoundOwnerKey, _device: sound::ops::PcmDevice) -> Option<u64> { None }
+fn pcm_hw_free_for(owner: sound::SoundOwnerKey, _device: sound::ops::PcmDevice) -> bool { pcm_hw_free(owner) }
+fn pcm_submit_for(owner: sound::SoundOwnerKey, _device: sound::ops::PcmDevice, bytes: &[u8]) -> usize { pcm_submit(owner, bytes) }
+fn cap_hw_params_for(owner: sound::SoundOwnerKey, _device: sound::ops::PcmDevice, f: u32, r: u32, c: u8, p: u32, b: u32) -> bool { cap_hw_params(owner, f, r, c, p, b) }
+fn cap_prepare_for(owner: sound::SoundOwnerKey, _device: sound::ops::PcmDevice) -> bool { cap_prepare(owner) }
+fn cap_trigger_for(owner: sound::SoundOwnerKey, _device: sound::ops::PcmDevice, start: bool) -> bool { cap_trigger(owner, start) }
+fn cap_pointer_for(_owner: sound::SoundOwnerKey, _device: sound::ops::PcmDevice) -> Option<u64> { None }
+fn cap_hw_free_for(owner: sound::SoundOwnerKey, _device: sound::ops::PcmDevice) -> bool { cap_hw_free(owner) }
+fn pcm_recv_for(owner: sound::SoundOwnerKey, _device: sound::ops::PcmDevice, out: &mut [u8]) -> usize { pcm_recv(owner, out) }
+
+fn pcm_mmap_frame(owner: sound::SoundOwnerKey, device: sound::ops::PcmDevice, capture: bool, offset: u64) -> Option<u64> {
+    if device != 0 || offset & (hal::PAGE_SIZE_BYTES - 1) != 0 || offset >= SND_FRAME_BYTES as u64 { return None; }
+    let g = CTX.lock_bh::<crate::state::SndBh>();
+    let ctx = active_ctx_for(&g, owner)?;
+    let state = if capture { ctx.cap_state } else { ctx.pcm_state };
+    if state == PcmState::Idle { return None; }
+    let pa = if capture { ctx.rx_buf_pa } else { ctx.tx_buf_pa };
+    (pa != 0).then_some(pa)
+}
+
+fn pcm_mmap_commit(owner: sound::SoundOwnerKey, device: sound::ops::PcmDevice, capture: bool,
+                   appl: u64, hw: u64, frame_bytes: u32, buffer_frames: u32) -> Option<u64> {
+    if device != 0 || frame_bytes == 0 || buffer_frames == 0
+        || (frame_bytes as u64).checked_mul(buffer_frames as u64)? > SND_FRAME_BYTES as u64 {
+        return None;
+    }
+    if capture { pcm::mmap_capture_commit(owner, appl, hw, frame_bytes, buffer_frames) }
+    else { pcm::mmap_playback_commit(owner, appl, hw, frame_bytes, buffer_frames) }
+}
+
+static PCM_DEVICE_OPS: sound::ops::PcmDeviceOps = sound::ops::PcmDeviceOps {
+    pcm_devices, pcm_caps: pcm_caps_for, cap_caps: cap_caps_for, hw_limits: hw_limits_for,
+    info_flags: info_flags_for, period_bytes: period_bytes_for,
+    pcm_hw_params: pcm_hw_params_for, pcm_prepare: pcm_prepare_for, pcm_trigger: pcm_trigger_for,
+    pcm_pause: pcm_pause_for, pcm_drain: pcm_drain_for, pcm_pointer: pcm_pointer_for,
+    pcm_hw_free: pcm_hw_free_for, pcm_submit: pcm_submit_for,
+    cap_hw_params: cap_hw_params_for, cap_prepare: cap_prepare_for, cap_trigger: cap_trigger_for,
+    cap_pointer: cap_pointer_for, cap_hw_free: cap_hw_free_for, pcm_recv: pcm_recv_for,
+    pcm_mmap_frame, pcm_mmap_commit,
+};
 
 fn pcm_pause(_owner: sound::SoundOwnerKey, _pause: bool) -> bool { false }
 

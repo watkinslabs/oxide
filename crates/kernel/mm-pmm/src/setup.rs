@@ -65,7 +65,7 @@ pub use metadata::fwm_peer_maps;
 #[cfg(feature = "debug-atexit")]
 pub use metadata::set_dec_ctx;
 pub(crate) use metadata::page_meta;
-pub use contig::{alloc_contig, alloc_contig_below, alloc_contig_object, free_contig, free_one_frame};
+pub use contig::{alloc_contig, alloc_contig_below, alloc_contig_object, alloc_contig_object_below, free_contig, free_contig_object, free_one_frame};
 pub(crate) use contig::alloc_contig_nowait;
 pub use direct_map::{can_set_direct_map, flush_kernel_page, flush_kernel_range, kernel_page_present, kernel_range_is_executable, set_direct_map_default_noflush, set_direct_map_invalid_noflush, set_memory_rox, set_memory_rw_nx};
 pub use page_tables::{alloc_page_table_frame, page_table_snapshot, PageTableSnapshot};

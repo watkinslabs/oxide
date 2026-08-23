@@ -106,6 +106,22 @@ pub fn alloc_contig_object(order: crate::Order) -> Option<u64> {
     Some(pa)
 }
 
+/// Allocate an object-owned contiguous run under a legacy DMA mask.
+pub fn alloc_contig_object_below(order: crate::Order, max_pa: u64) -> Option<u64> {
+    let p = pmm_static()?;
+    let pa = p.alloc_below(order, hal::Pfn(max_pa / PAGE_BYTES)).ok().map(|pfn| pfn.0 * PAGE_BYTES)?;
+    if let Some(meta) = page_meta() {
+        for i in 0..(1u64 << order.0) {
+            let pfn = hal::Pfn((pa / PAGE_BYTES) + i);
+            if let Some(m) = meta.get(pfn) {
+                m.refcount.store(1, Ordering::Release);
+                m.mapcount.store(0, Ordering::Release);
+            }
+        }
+    }
+    Some(pa)
+}
+
 /// Free a contiguous physical region previously returned by `alloc_contig`
 /// with the same `order`.
 ///
@@ -129,6 +145,14 @@ pub unsafe fn free_contig(pa: u64, order: crate::Order) {
     // by CPU or device — exactly `Pmm::free`'s precondition. The KHEAP scan
     // just above additionally rejects a frame owned by the kernel heap.
     unsafe { p.free(pfn, order); }
+}
+
+/// Release a contiguous run previously returned by `alloc_contig_object` or
+/// `alloc_contig_object_below`. User PTE references keep mapped pages alive.
+pub fn free_contig_object(pa: u64, order: crate::Order) {
+    for offset in 0..(1u64 << order.0) {
+        super::release_object_frame(pa + offset * PAGE_BYTES);
+    }
 }
 
 /// Free a single 4 KiB frame back to the kernel-owned PMM. Pair of

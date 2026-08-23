@@ -234,6 +234,12 @@ fn sync_ptr(owner: crate::SoundOwnerKey, device: crate::ops::PcmDevice, arg: u64
     if flags & SYNC_PTR_APPL == 0 {
         c.appl_ptr = crate::mmap::control_appl(&c.mmap).unwrap_or_else(|| b.r64(SP_CONTROL_APPL_PTR));
     }
+    if c.access == ACCESS_MMAP_INTERLEAVED {
+        if let Some(hw) = crate::ops::pcm_mmap_commit_for(owner, device, true, c.appl_ptr, c.hw_ptr,
+                                                          c.frame_bytes, c.buffer_frames) {
+            c.hw_ptr = hw % BOUNDARY;
+        }
+    }
     b.w32(SP_STATUS_STATE, c.state);
     b.w64(SP_STATUS_HW_PTR, c.hw_ptr);
     b.w64(SP_CONTROL_APPL_PTR, c.appl_ptr);
