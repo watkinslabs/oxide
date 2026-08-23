@@ -168,6 +168,7 @@ pub enum VfsError {
     Enoent  = 2,
     Esrch   = 3,
     Eintr   = 4,
+    Echild  = 10,
     Eio     = 5,
     /// ENXIO — `open(2)` of a device node whose `(major,minor)` has no
     /// registered driver (Linux `chrdev_open`/`blkdev_open` miss).
@@ -297,7 +298,7 @@ impl VfsError {
         use VfsError::*;
         match e {
             1 => Eperm, 2 => Enoent, 3 => Esrch, 4 => Eintr, 5 => Eio, 6 => Enxio,
-            9 => Ebadf, 11 => Eagain, 12 => Enomem, 13 => Eacces, 14 => Efault,
+            9 => Ebadf, 10 => Echild, 11 => Eagain, 12 => Enomem, 13 => Eacces, 14 => Efault,
             15 => Enotblk, 16 => Ebusy, 17 => Eexist, 18 => Exdev, 19 => Enodev,
             20 => Enotdir, 21 => Eisdir, 22 => Einval, 24 => Emfile, 25 => Enotty,
             26 => Etxtbsy, 27 => Efbig, 28 => Enospc, 29 => Espipe, 30 => Erofs,

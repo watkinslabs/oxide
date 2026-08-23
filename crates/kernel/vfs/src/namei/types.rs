@@ -20,6 +20,10 @@ pub const MAX_NESTED_LINKS: u32 = 8;
 pub const MAY_EXEC:  u32 = 0x01;
 pub const MAY_WRITE: u32 = 0x02;
 pub const MAY_READ:  u32 = 0x04;
+/// The permission check must not sleep or call into the filesystem
+/// (`include/linux/fs.h` `MAY_NOT_BLOCK`). An RCU walk drops to a ref walk
+/// when a cached answer cannot be used immediately.
+pub const MAY_NOT_BLOCK: u32 = 0x80;
 
 /// Mode bits that carry privilege.
 /// `S_ISUID`/`S_ISGID` are killed on chown of a regular file; `S_ISGID`

@@ -73,6 +73,20 @@ impl AclSlot {
         }
     }
 
+    /// Nonblocking cache state for an RCU permission check. The present ACL
+    /// cannot be cloned safely without taking `inner`, so the caller must
+    /// leave RCU mode and retry through `cached()`. This provides the same
+    /// retry-safe contract as `get_cached_acl_rcu`: it never enters the
+    /// filesystem or waits for the cache lock.
+    pub fn cached_rcu(&self) -> Option<bool> {
+        match self.state.load(Ordering::Acquire) {
+            NOT_CACHED => None,
+            CACHED_ABSENT => Some(false),
+            CACHED_PRESENT => Some(true),
+            _ => None,
+        }
+    }
+
     /// The generation a fetch is about to run under. # C: O(1)
     fn generation(&self) -> u32 { self.inner.lock().generation }
 
@@ -127,6 +141,13 @@ impl Default for AclCache {
 }
 
 impl Inode {
+    /// Return the access-ACL cache state without taking its lock. `None` means
+    /// not fetched, `Some(false)` means cached absent, and `Some(true)` means
+    /// cached present but not safely clonable in this RCU read-side path.
+    pub fn cached_inode_acl_rcu(&self, ty: AclType) -> Option<bool> {
+        self.i_acl.slot(ty).cached_rcu()
+    }
+
     /// `get_inode_acl` — this inode's POSIX ACL of `ty`, from the cache when it
     /// is there and from `i_op->get_inode_acl` when it is not. `None` is Linux's
     /// `NULL` ACL: the object carries none, and the mode bits decide.

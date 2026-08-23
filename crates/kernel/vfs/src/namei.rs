@@ -43,7 +43,7 @@ pub use may_link::{may_link, may_link_source, may_linkat};
 pub use may_rename::{may_rename, rename_flags_check, RENAME_EXCHANGE, RENAME_NOREPLACE, RENAME_WHITEOUT};
 pub use root::{resolve_abs, resolve_path_dentry, root_dentry, set_root_dentry_provider, walk_to_mount};
 pub use group_list::GroupList;
-pub use types::{Cred, LastType, LinkTarget, LookupFlags, MountTarget, VfsPath, MAX_NESTED_LINKS, MAX_SYMLINK_DEPTH, MAY_EXEC, MAY_READ, MAY_WRITE, S_IALLUGO, S_ISGID, S_ISUID, S_IXGRP};
+pub use types::{Cred, LastType, LinkTarget, LookupFlags, MountTarget, VfsPath, MAX_NESTED_LINKS, MAX_SYMLINK_DEPTH, MAY_EXEC, MAY_NOT_BLOCK, MAY_READ, MAY_WRITE, S_IALLUGO, S_ISGID, S_ISUID, S_IXGRP};
 pub use state::Nameidata;
 
 pub(super) use permission::may_lookup;
