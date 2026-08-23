@@ -203,6 +203,40 @@ fn chmod_forwards_the_acl_rewrite_to_the_copied_up_inode() {
 }
 
 #[test]
+fn override_creds_uses_the_mount_owner_for_the_real_layer_check() {
+    let (l, _up, lo) = image();
+    let lower = mkfile(&lo, "private", b"image");
+    lower.set_perm(0).unwrap();
+    let mounter = Cred { uid: 1000, gid: 1000, cap_dac_override: false,
+        cap_dac_read_search: false, cap_fowner: false, cap_chown: false,
+        cap_fsetid: false, groups: GroupList::empty() };
+    let caller = Cred { uid: 2000, gid: 2000, cap_dac_override: false,
+        cap_dac_read_search: true, cap_fowner: false, cap_chown: false,
+        cap_fsetid: false, groups: GroupList::empty() };
+    let fs = OverlayFs::open_with_cred(OPTS, &l.resolve(), true, &mounter).unwrap();
+    let f = fs.root_inode().lookup("private").unwrap();
+    assert_eq!(f.permission(MAY_READ, &caller), Err(VfsError::Eacces));
+}
+
+#[test]
+fn nooverride_creds_uses_the_requesting_task_for_the_real_layer_check() {
+    let (l, _up, lo) = image();
+    let lower = mkfile(&lo, "private", b"image");
+    lower.set_perm(0).unwrap();
+    let mounter = Cred { uid: 1000, gid: 1000, cap_dac_override: false,
+        cap_dac_read_search: false, cap_fowner: false, cap_chown: false,
+        cap_fsetid: false, groups: GroupList::empty() };
+    let caller = Cred { uid: 2000, gid: 2000, cap_dac_override: false,
+        cap_dac_read_search: true, cap_fowner: false, cap_chown: false,
+        cap_fsetid: false, groups: GroupList::empty() };
+    let fs = OverlayFs::open_with_cred(
+        "lowerdir=/lower,upperdir=/upper,workdir=/work,nooverride_creds",
+        &l.resolve(), true, &mounter).unwrap();
+    let f = fs.root_inode().lookup("private").unwrap();
+    assert_eq!(f.permission(MAY_READ, &caller), Ok(()));
+}
+
+#[test]
 fn a_read_only_overlay_of_two_image_layers_merges_them() {
     let up = layer(0);
     let l1 = layer(1);

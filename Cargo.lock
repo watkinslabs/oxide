@@ -1897,6 +1897,7 @@ name = "overlayfs"
 version = "0.1.0"
 dependencies = [
  "klog",
+ "sched",
  "sync",
  "syscall",
  "vfs",

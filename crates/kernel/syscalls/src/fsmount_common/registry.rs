@@ -252,11 +252,12 @@ fn register_filesystems() {
     // namespace — and that is exactly the caller whose private markers have to
     // go in the unprivileged attribute namespace, which is why the constructor
     // has to know which namespace it is being mounted from.
-    fn overlay_ctor(ty: Arc<dyn vfs::FileSystemType>, d: &str, sb_flags: u64) -> R {
+    fn overlay_ctor(ty: Arc<dyn vfs::FileSystemType>, d: &str, sb_flags: u64,
+        creator_cred: &vfs::Cred) -> R {
         let resolve = |p: &str| -> Result<vfs::InodeRef, syscall::errno::Errno> {
             vfs::resolve_abs(p).map_err(overlayfs::err::to_errno)
         };
-        let fs = overlayfs::OverlayFs::open(d, &resolve, in_initial_user_ns())
+        let fs = overlayfs::OverlayFs::open_with_cred(d, &resolve, in_initial_user_ns(), creator_cred)
             .map_err(overlayfs::err::to_vfs)?;
         let root = fs.root_inode();
         // A mount with no writable layer reports itself read-only, so a write
@@ -266,10 +267,12 @@ fn register_filesystems() {
         mounted(ty, f, Some(root), overlayfs::FS_NAME, sb_flags)
     }
     for name in [overlayfs::FS_NAME, overlayfs::FS_NAME_LEGACY] {
-        let _ = register_fs(FsType::new(name, overlayfs::OVERLAYFS_SUPER_MAGIC,
+        let _ = register_fs(FsType::with_credentialed_constructor(name, overlayfs::OVERLAYFS_SUPER_MAGIC,
             FsFlags::FS_USERNS_MOUNT,
             Box::new(|ty, _s: Option<&str>, _t: &str, d: &str, f: u64,
-                      _p: &[vfs::fs::FsParameter]| -> R { overlay_ctor(ty, d, f) })));
+                      _p: &[vfs::fs::FsParameter], c: &vfs::Cred| -> R {
+                overlay_ctor(ty, d, f, c)
+            }), None));
     }
     // exFAT is what large removable media carry: FAT cannot hold a file over
     // four gigabytes, so every camera card and external drive sold for use

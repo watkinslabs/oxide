@@ -48,6 +48,10 @@ pub struct FsContext {
     pub(super) security:      Option<Arc<dyn FsContextSecurity>>,
     /// `FSCONFIG_CMD_CREATE_EXCL`: reject reuse of a matching shared super.
     pub(super) create_exclusive: bool,
+    /// Credentials captured when the mount context was opened. Linux's
+    /// overlayfs `override_creds` records this opener, not the task that later
+    /// happens to issue `FSCONFIG_CMD_CREATE` or `fsmount`.
+    pub(super) creator_cred: crate::namei::Cred,
 }
 
 pub const FC_LOG_MAX: usize = 8;
@@ -61,29 +65,36 @@ pub fn apply_sb_flags(sb: &SuperBlock, sb_flags: u64, mask: u64) {
 
 impl FsContext {
     pub fn for_mount(fs_type: Arc<dyn FileSystemType>, sb_flags: u64) -> Self {
-        let mut fc = Self::alloc(fs_type, FsContextPurpose::Mount, FsContextPhase::CreateParams, sb_flags, SB_FLAGS_USER_MASK);
+        Self::for_mount_with_cred(fs_type, sb_flags, crate::namei::Cred::root())
+    }
+    /// Allocate a mount context with the caller credential Linux stores in
+    /// `fs_context` for filesystems whose superblock retains it. # C: O(1)
+    pub fn for_mount_with_cred(fs_type: Arc<dyn FileSystemType>, sb_flags: u64,
+        creator_cred: crate::namei::Cred) -> Self {
+        let mut fc = Self::alloc(fs_type, FsContextPurpose::Mount, FsContextPhase::CreateParams, sb_flags, SB_FLAGS_USER_MASK, creator_cred);
         if let Some(ops) = fc.fs_type.init_fs_context() { fc.ops = ops; }
         fc
     }
     pub fn for_submount(fs_type: Arc<dyn FileSystemType>, sb_flags: u64) -> Self {
-        let mut fc = Self::alloc(fs_type, FsContextPurpose::Submount, FsContextPhase::CreateParams, sb_flags, SB_FLAGS_USER_MASK);
+        let mut fc = Self::alloc(fs_type, FsContextPurpose::Submount, FsContextPhase::CreateParams, sb_flags, SB_FLAGS_USER_MASK, crate::namei::Cred::root());
         if let Some(ops) = fc.fs_type.init_fs_context() { fc.ops = ops; }
         fc
     }
     pub fn for_reconfigure(sb: Arc<SuperBlock>, root: Arc<Dentry>, sb_flags: u64, sb_flags_mask: u64) -> Self {
         let fs_type = sb.s_type.clone();
-        let mut fc = Self::alloc(fs_type, FsContextPurpose::Reconfigure, FsContextPhase::AwaitingReconf, sb_flags, sb_flags_mask & SB_FLAGS_USER_MASK);
+        let mut fc = Self::alloc(fs_type, FsContextPurpose::Reconfigure, FsContextPhase::AwaitingReconf, sb_flags, sb_flags_mask & SB_FLAGS_USER_MASK, crate::namei::Cred::root());
         fc.root = Some(root);
         fc.sb = Some(sb);
         fc
     }
 
-    fn alloc(fs_type: Arc<dyn FileSystemType>, purpose: FsContextPurpose, phase: FsContextPhase, sb_flags: u64, sb_flags_mask: u64) -> Self {
+    fn alloc(fs_type: Arc<dyn FileSystemType>, purpose: FsContextPurpose, phase: FsContextPhase, sb_flags: u64, sb_flags_mask: u64, creator_cred: crate::namei::Cred) -> Self {
         Self {
             ops: Arc::new(ClassicMountFsContextOps),
             fs_type, purpose, phase, sb_flags, sb_flags_mask,
             source: None, params: Vec::new(), monolithic: None, mount_target: None,
-            root: None, sb: None, fs_private: Arc::new(()), log: Vec::new(), security: None, create_exclusive: false,
+            root: None, sb: None, fs_private: Arc::new(()), log: Vec::new(), security: None,
+            create_exclusive: false, creator_cred,
         }
     }
 
@@ -115,6 +126,9 @@ impl FsContext {
     pub fn set_create_exclusive(&mut self, exclusive: bool) { self.create_exclusive = exclusive; }
     /// Whether the pending create must not reuse an existing superblock. # C: O(1)
     pub fn create_exclusive(&self) -> bool { self.create_exclusive }
+    /// Credential captured at context creation, for credential-aware
+    /// filesystem constructors. # C: O(1)
+    pub fn creator_cred(&self) -> &crate::namei::Cred { &self.creator_cred }
     pub fn fail(&mut self) { self.phase = FsContextPhase::Failed; }
 
     /// The option string the backend's `fill_super` receives.

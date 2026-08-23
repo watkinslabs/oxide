@@ -10,6 +10,7 @@ sync    = { path = "../../shared/sync" }
 syscall = { path = "../syscall" }
 klog    = { path = "../../shared/klog" }
 vfs     = { path = "../vfs" }
+sched   = { path = "../sched", features = ["hosted"] }
 
 [features]
 default = []

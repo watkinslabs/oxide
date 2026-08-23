@@ -12,7 +12,7 @@ mod get_tree;
 mod registry;
 
 pub use api::{
-    superblock_from_filesystem, FileSystem, FsConstructor, FsType, KResult,
+    superblock_from_filesystem, FileSystem, FsConstructor, FsCredentialedConstructor, FsType, KResult,
 };
 pub use flags::FsFlags;
 pub use fs_context::{

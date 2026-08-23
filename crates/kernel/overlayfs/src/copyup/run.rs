@@ -14,7 +14,6 @@ use alloc::sync::Arc;
 use alloc::vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use syscall::errno::Errno;
-use vfs::inode_ops::CreateCtx;
 use vfs::types::{FileType, S_IFMT};
 use vfs::InodeRef;
 
@@ -58,7 +57,7 @@ pub fn copy_up(stack: &Arc<LayerStack>, parent: &OvlEntry, entry: &mut OvlEntry,
     let plan = steps(kind, record_origin, config.should_sync_metadata());
 
     let tmp = tempname();
-    let temp = create_temp(&workdir, &lower, &tmp)?;
+    let temp = create_temp(stack, &workdir, &lower, &tmp)?;
     let truncate = open_flags & super::plan::O_TRUNC != 0;
 
     for step in plan {
@@ -66,7 +65,7 @@ pub fn copy_up(stack: &Arc<LayerStack>, parent: &OvlEntry, entry: &mut OvlEntry,
                             meta_only, truncate) {
             // Nothing was moved into place, so removing the half-built copy
             // returns the layer to exactly where it started.
-            cleanup(&workdir, &tmp, &temp);
+            cleanup(stack, &workdir, &tmp, &temp);
             return Err(e);
         }
     }
@@ -113,8 +112,8 @@ fn one(stack: &Arc<LayerStack>, step: Step, lower: &InodeRef, temp: &InodeRef,
         Step::SetSize => if truncate { Ok(()) } else { copy_size(lower, temp) },
         Step::SetAttrs => copy_attrs(lower, temp),
         Step::Fsync => Ok(()),
-        Step::MoveIntoPlace => workdir
-            .rename_child(tmp, destdir, name, 0, &CreateCtx::root())
+        Step::MoveIntoPlace => stack.with_access_ctx(|ctx| workdir
+            .rename_child(tmp, destdir, name, 0, ctx))
             .map_err(to_errno),
         Step::RestoreParentTimes => Ok(()),
     }
@@ -122,32 +121,31 @@ fn one(stack: &Arc<LayerStack>, step: Step, lower: &InodeRef, temp: &InodeRef,
 
 /// Build the empty object the copy will be assembled in. Its type and device
 /// number are fixed here because neither can be changed afterwards. # C: O(1)
-fn create_temp(workdir: &InodeRef, lower: &InodeRef, name: &str) -> Result<InodeRef, Errno> {
-    let ctx = CreateCtx::root();
+fn create_temp(stack: &Arc<LayerStack>, workdir: &InodeRef, lower: &InodeRef, name: &str) -> Result<InodeRef, Errno> {
     let mode = lower.i_mode() as u32;
-    match lower.file_type() {
-        FileType::Regular => workdir.create_child(name, mode, &ctx).map_err(to_errno),
-        FileType::Directory => workdir.mkdir(name, mode, &ctx).map_err(to_errno),
+    stack.with_access_ctx(|ctx| match lower.file_type() {
+        FileType::Regular => workdir.create_child(name, mode, ctx).map_err(to_errno),
+        FileType::Directory => workdir.mkdir(name, mode, ctx).map_err(to_errno),
         FileType::Symlink => {
             let target = lower.get_link().map_err(to_errno)?;
-            workdir.symlink_child(name, &target, &ctx).map_err(to_errno)?;
+            workdir.symlink_child(name, &target, ctx).map_err(to_errno)?;
             workdir.lookup(name).map_err(to_errno)
         }
         _ => {
-            workdir.mknod_child(name, (mode & S_IFMT as u32) as u16, lower.rdev(), &ctx)
+            workdir.mknod_child(name, (mode & S_IFMT as u32) as u16, lower.rdev(), ctx)
                 .map_err(to_errno)?;
             workdir.lookup(name).map_err(to_errno)
         }
-    }
+    })
 }
 
 /// Remove a copy that will never be moved into place. # C: O(1)
-fn cleanup(workdir: &InodeRef, name: &str, temp: &InodeRef) {
-    let _ = if temp.file_type() == FileType::Directory {
-        workdir.rmdir(name)
+fn cleanup(stack: &Arc<LayerStack>, workdir: &InodeRef, name: &str, temp: &InodeRef) {
+    let _ = stack.with_access_ctx(|ctx| if temp.file_type() == FileType::Directory {
+        workdir.rmdir_with_ctx(name, ctx)
     } else {
-        workdir.unlink_child(name)
-    };
+        workdir.unlink_child_with_ctx(name, ctx)
+    });
 }
 
 /// Copy a regular file's contents. # C: O(size)
@@ -195,7 +193,7 @@ fn add_index(stack: &Arc<LayerStack>, lower: &InodeRef, upper: &InodeRef) -> Res
     let Some(rec) = origin::encode(&stack.config, lower, false) else { return Ok(()) };
     let name = crate::fh::index_name(&rec)?;
     if idx.lookup(&name).is_ok() { return Ok(()); }
-    idx.link_child(upper, &name, &CreateCtx::root()).map_err(to_errno)
+    stack.with_access_ctx(|ctx| idx.link_child(upper, &name, ctx)).map_err(to_errno)
 }
 
 /// Copy the contents of an object that was copied up metadata-only.

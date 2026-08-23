@@ -341,7 +341,7 @@ pub fn stack(config: crate::config::Config, upper: Option<InodeRef>, lowers: &[I
     }
     let workdir = upper.as_ref().map(|u| mkpath(u, "..work"));
     let stack = Arc::new(LayerStack {
-        config, upper: upper_layer, lower, workdir, indexdir: None,
+        config, creator_cred: vfs::Cred::root(), upper: upper_layer, lower, workdir, indexdir: None,
         xino: crate::xino::Mode::Off, namelen: crate::limits::NAME_MAX,
         noxattr: core::sync::atomic::AtomicBool::new(false), root: root.clone(),
     });

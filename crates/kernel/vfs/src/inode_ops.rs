@@ -116,6 +116,13 @@ pub trait InodeOps: Send + Sync {
     /// `i_op->rmdir` — remove the empty child directory `name`. Default `Eperm`
     /// (see `create`). # C: backend-dependent
     fn rmdir(&self, _inode: &Inode, _name: &str) -> KResult<()> { Err(VfsError::Eperm) }
+    /// `rmdir` while an internal filesystem operation has selected a Linux
+    /// credential override. Backends that enforce access in the operation
+    /// itself override this hook; the default preserves legacy backends whose
+    /// caller checks are performed by VFS before dispatch.
+    fn rmdir_with_ctx(&self, inode: &Inode, name: &str, _ctx: &CreateCtx) -> KResult<()> {
+        self.rmdir(inode, name)
+    }
     /// `i_op->rmdir` with the already-resolved victim inode. Backends whose
     /// object lifetime depends on the victim override this; others retain the
     /// existing name-only operation. # C: backend-dependent
@@ -148,6 +155,10 @@ pub trait InodeOps: Send + Sync {
     /// `i_op->unlink` — remove the child file `name`. Default `Eperm`
     /// (see `create`). # C: backend-dependent
     fn unlink(&self, _inode: &Inode, _name: &str) -> KResult<()> { Err(VfsError::Eperm) }
+    /// `unlink` with the credential selected for an internal operation.
+    fn unlink_with_ctx(&self, inode: &Inode, name: &str, _ctx: &CreateCtx) -> KResult<()> {
+        self.unlink(inode, name)
+    }
     /// `i_op->unlink` with the already-resolved victim inode. # C: backend-dependent
     fn unlink_with_victim(&self, inode: &Inode, name: &str, _victim: &InodeRef) -> KResult<()> {
         self.unlink(inode, name)
@@ -311,6 +322,9 @@ pub trait InodeOps: Send + Sync {
             None => Err(XattrError::NotSup),
         }
     }
+    /// Read an xattr under an internal operation credential.
+    fn getxattr_with_ctx(&self, inode: &Inode, name: &str, _ctx: &CreateCtx)
+        -> Result<Vec<u8>, XattrError> { self.getxattr(inode, name) }
 
     /// `i_op->get_inode_acl` — the POSIX ACL of `ty` as entries, or `None` when
     /// this object carries none.
@@ -347,12 +361,20 @@ pub trait InodeOps: Send + Sync {
         -> Result<(), XattrError> {
         inode.xattr_slot().set(name, value, create, replace)
     }
+    /// Set an xattr under an internal operation credential.
+    fn setxattr_with_ctx(&self, inode: &Inode, name: &str, value: Vec<u8>, create: bool,
+                         replace: bool, _ctx: &CreateCtx) -> Result<(), XattrError> {
+        self.setxattr(inode, name, value, create, replace)
+    }
 
     /// `i_op->removexattr` — drop `name`. Default routes to `i_xattrs`.
     /// # C: O(log N_xattr)
     fn removexattr(&self, inode: &Inode, name: &str) -> Result<(), XattrError> {
         inode.xattr_slot().remove(name)
     }
+    /// Remove an xattr under an internal operation credential.
+    fn removexattr_with_ctx(&self, inode: &Inode, name: &str, _ctx: &CreateCtx)
+        -> Result<(), XattrError> { self.removexattr(inode, name) }
 
     /// `i_op->listxattr` — the stored attribute names. Default routes to
     /// `i_xattrs`; a backend with no store reports [`XattrError::NotSup`].
@@ -363,6 +385,9 @@ pub trait InodeOps: Send + Sync {
             None => Err(XattrError::NotSup),
         }
     }
+    /// List xattrs under an internal operation credential.
+    fn listxattr_with_ctx(&self, inode: &Inode, _ctx: &CreateCtx)
+        -> Result<Vec<String>, XattrError> { self.listxattr(inode) }
 }
 
 /// The "generic" default `i_op`: every method takes its trait default

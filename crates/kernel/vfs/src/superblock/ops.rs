@@ -437,6 +437,20 @@ pub trait FileSystemType: Send + Sync {
     ) -> KResult<Arc<SuperBlock>> {
         self.mount_with_flags(src, opts, sb_flags)
     }
+    /// Credential-aware mount construction. Filesystems that retain the
+    /// `fsopen(2)` opener credential override this boundary; ordinary legacy
+    /// filesystems keep the historical `mount_at` path. # C: FS-dependent
+    fn mount_at_with_cred(
+        &self,
+        src: Option<&str>,
+        target: &str,
+        opts: &str,
+        sb_flags: u64,
+        pinned: &[crate::fs::FsParameter],
+        _creator_cred: &crate::namei::Cred,
+    ) -> KResult<Arc<SuperBlock>> {
+        self.mount_at(src, target, opts, sb_flags, pinned)
+    }
     /// `file_system_type::fs_flags` — the
     /// type-level classification the new-mount-API tree-getter consults for
     /// the `FS_REQUIRES_DEV` source check (D23). Default `empty()` = a pseudo /

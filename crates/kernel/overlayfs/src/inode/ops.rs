@@ -13,9 +13,9 @@ use alloc::vec::Vec;
 use syscall::errno::Errno;
 use vfs::inode_ops::{CreateCtx, InodeOps};
 use vfs::setattr::Iattr;
-use vfs::types::S_IFMT;
+use vfs::types::{FileType, S_IFMT};
 use vfs::xattr::XattrError;
-use vfs::{Idmap, Inode, InodeRef, KResult, VfsError};
+use vfs::{Idmap, Inode, InodeRef, KResult, VfsError, MAY_READ, MAY_WRITE};
 
 use crate::copyup;
 use crate::dirops::create::{create, creating_whiteout_refused, New};
@@ -109,6 +109,27 @@ impl InodeOps for OvlOps {
         self.child(name, ovl(inode)?)
     }
 
+    /// Linux checks the overlay inode with the requesting task, then the real
+    /// inode with the mount owner retained by `override_creds`. A lower file
+    /// opened for write also has to be readable by that owner because copy-up
+    /// may need to read its contents first. # C: O(ngroups)
+    fn permission(&self, inode: &Inode, mask: u32, cred: &vfs::Cred) -> KResult<()> {
+        let this = ovl(inode)?;
+        vfs::generic_permission(inode, mask, cred)?;
+        let real = this.real().ok_or(VfsError::Eio)?;
+        let mut real_mask = mask;
+        if this.entry().upper.is_none()
+            && !matches!(real.file_type(), FileType::CharDev | FileType::BlockDev | FileType::Fifo | FileType::Socket)
+            && mask & MAY_WRITE != 0
+        {
+            real_mask &= !MAY_WRITE;
+            real_mask |= MAY_READ;
+        }
+        let owner = if this.stack.config.override_creds { this.stack.creator_cred.clone() }
+            else { cred.clone() };
+        vfs::inode_permission(&real, real_mask, &owner)
+    }
+
     fn create(&self, inode: &Inode, name: &str, mode: u32, _c: &CreateCtx) -> KResult<InodeRef> {
         self.make(inode, name, New::File(mode))
     }
@@ -144,6 +165,10 @@ impl InodeOps for OvlOps {
         r
     }
 
+    fn unlink_with_ctx(&self, inode: &Inode, name: &str, _ctx: &vfs::CreateCtx) -> KResult<()> {
+        self.unlink(inode, name)
+    }
+
     fn rmdir(&self, inode: &Inode, name: &str) -> KResult<()> {
         copy_up_chain(inode).map_err(to_vfs)?;
         let this = ovl(inode)?;
@@ -151,6 +176,10 @@ impl InodeOps for OvlOps {
             .map_err(to_vfs);
         refresh(inode);
         r
+    }
+
+    fn rmdir_with_ctx(&self, inode: &Inode, name: &str, _ctx: &vfs::CreateCtx) -> KResult<()> {
+        self.rmdir(inode, name)
     }
 
     fn rename(&self, inode: &Inode, old: &str, new_dir: &Inode, new: &str, flags: u32,
@@ -217,6 +246,13 @@ impl InodeOps for OvlOps {
         this.real().ok_or(XattrError::NotSup)?.getxattr(name)
     }
 
+    fn getxattr_with_ctx(&self, inode: &Inode, name: &str, ctx: &vfs::CreateCtx)
+        -> Result<Vec<u8>, XattrError> {
+        let this = ovl_of(inode).ok_or(XattrError::NotSup)?;
+        if xattr::is_private(&this.stack.config, name) { return Err(XattrError::NotFound); }
+        this.real().ok_or(XattrError::NotSup)?.getxattr_with_ctx(name, ctx)
+    }
+
     fn setxattr(&self, inode: &Inode, name: &str, value: Vec<u8>, create: bool, replace: bool)
         -> Result<(), XattrError> {
         let this = ovl_of(inode).ok_or(XattrError::NotSup)?;
@@ -228,11 +264,30 @@ impl InodeOps for OvlOps {
         r
     }
 
+    fn setxattr_with_ctx(&self, inode: &Inode, name: &str, value: Vec<u8>, create: bool,
+                         replace: bool, ctx: &vfs::CreateCtx) -> Result<(), XattrError> {
+        let this = ovl_of(inode).ok_or(XattrError::NotSup)?;
+        if xattr::is_private(&this.stack.config, name) { return Err(XattrError::NotSup); }
+        copy_up_chain(inode).map_err(|_| XattrError::NotSup)?;
+        let real = this.entry().upper.ok_or(XattrError::NotSup)?;
+        let r = real.setxattr_with_ctx(name, value, create, replace, ctx);
+        refresh(inode);
+        r
+    }
+
     fn removexattr(&self, inode: &Inode, name: &str) -> Result<(), XattrError> {
         let this = ovl_of(inode).ok_or(XattrError::NotSup)?;
         if xattr::is_private(&this.stack.config, name) { return Err(XattrError::NotFound); }
         copy_up_chain(inode).map_err(|_| XattrError::NotSup)?;
         this.entry().upper.ok_or(XattrError::NotSup)?.removexattr(name)
+    }
+
+    fn removexattr_with_ctx(&self, inode: &Inode, name: &str, ctx: &vfs::CreateCtx)
+        -> Result<(), XattrError> {
+        let this = ovl_of(inode).ok_or(XattrError::NotSup)?;
+        if xattr::is_private(&this.stack.config, name) { return Err(XattrError::NotFound); }
+        copy_up_chain(inode).map_err(|_| XattrError::NotSup)?;
+        this.entry().upper.ok_or(XattrError::NotSup)?.removexattr_with_ctx(name, ctx)
     }
 
     fn listxattr(&self, inode: &Inode) -> Result<Vec<String>, XattrError> {
@@ -241,6 +296,14 @@ impl InodeOps for OvlOps {
         let names = real.listxattr()?;
         // Listing a marker would make a `tar` of the overlay carry it into the
         // archive, and restoring that produces a file nothing can see.
+        Ok(names.into_iter().filter(|n| !xattr::is_private(&this.stack.config, n)).collect())
+    }
+
+    fn listxattr_with_ctx(&self, inode: &Inode, ctx: &vfs::CreateCtx)
+        -> Result<Vec<String>, XattrError> {
+        let this = ovl_of(inode).ok_or(XattrError::NotSup)?;
+        let real = this.real().ok_or(XattrError::NotSup)?;
+        let names = real.listxattr_with_ctx(ctx)?;
         Ok(names.into_iter().filter(|n| !xattr::is_private(&this.stack.config, n)).collect())
     }
 

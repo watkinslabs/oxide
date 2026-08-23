@@ -15,6 +15,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 use vfs::InodeRef;
+use vfs::inode_ops::CreateCtx;
 
 use crate::config::Config;
 use crate::redirect::Redirect;
@@ -62,6 +63,10 @@ pub struct OvlPath {
 /// The whole stack of one mount.
 pub struct LayerStack {
     pub config: Config,
+    /// Credential captured when the mount context was opened. Linux stores
+    /// this as `creator_cred` and uses it for real-layer access when
+    /// `override_creds` is enabled.
+    pub creator_cred: vfs::Cred,
     /// Writable layer, absent on a read-only overlay.
     pub upper: Option<Arc<Layer>>,
     /// Lower layers in order, merged ones first and data-only ones last.
@@ -107,6 +112,15 @@ impl LayerStack {
     pub fn has_index(&self) -> bool { self.indexdir.is_some() }
     /// Is every object indexed, rather than only lower hardlinks? # C: O(1)
     pub fn index_all(&self) -> bool { self.config.nfs_export && self.has_index() }
+    /// Run one lower/upper mutation with Linux overlayfs's real-layer owner.
+    /// `nooverride_creds` snapshots the task at the operation, while the
+    /// default retains the mount opener's credential. # C: O(1)
+    pub fn with_access_ctx<T>(&self, f: impl FnOnce(&CreateCtx<'_>) -> T) -> T {
+        let cred = if self.config.override_creds { self.creator_cred.clone() }
+            else { sched::cred::current_vfs_cred() };
+        let ctx = CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: 0 };
+        f(&ctx)
+    }
 }
 
 /// What an overlay object is made of.

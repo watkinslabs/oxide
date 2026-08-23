@@ -52,6 +52,11 @@ impl OverlayFs {
     /// need them are available or refused.
     /// # C: O(layers)
     pub fn open(data: &str, resolve: Resolve, trusted_xattr: bool) -> Result<Arc<OverlayFs>, Errno> {
+        Self::open_with_cred(data, resolve, trusted_xattr, &vfs::Cred::root())
+    }
+    /// Build a mount while retaining the fs_context opener credential. # C: O(layers)
+    pub fn open_with_cred(data: &str, resolve: Resolve, trusted_xattr: bool,
+        creator_cred: &vfs::Cred) -> Result<Arc<OverlayFs>, Errno> {
         let parsed = params::parse(data)?;
         let mut config = parsed.config;
         params::verify(&mut config, parsed.set, trusted_xattr)?;
@@ -69,10 +74,10 @@ impl OverlayFs {
         }
 
         let (workdir, indexdir) = match (&upper, &config.workdir) {
-            (Some(_), Some(w)) => work_dirs(resolve, w, config.index, config.is_volatile())?,
+            (Some(_), Some(w)) => work_dirs(resolve, w, config.index, config.is_volatile(), creator_cred)?,
             _ => (None, None),
         };
-        let stack = build(config, upper, workdir, indexdir, resolve)?;
+        let stack = build(config, upper, workdir, indexdir, resolve, creator_cred.clone())?;
         verify_index(&stack)?;
         let root = make_inode(&stack, stack.root.clone(), None, "");
         Ok(Arc::new(OverlayFs { stack, root }))
@@ -124,14 +129,14 @@ fn dir(resolve: Resolve, path: &str) -> Result<InodeRef, Errno> {
 /// puts it in place, and the two cannot be on different directories for that
 /// to be one operation.
 /// # C: O(work incompat entries)
-fn work_dirs(resolve: Resolve, base: &str, index: bool, volatile: bool)
+fn work_dirs(resolve: Resolve, base: &str, index: bool, volatile: bool, creator_cred: &vfs::Cred)
     -> Result<(Option<InodeRef>, Option<InodeRef>), Errno> {
     let b = dir(resolve, base)?;
-    let work = subdir(&b, WORKDIR_NAME)?;
+    let work = subdir(&b, WORKDIR_NAME, creator_cred)?;
     refuse_incompatible(&work)?;
-    if volatile { create_volatile_marker(&work)?; }
+    if volatile { create_volatile_marker(&work, creator_cred)?; }
     if !index { return Ok((Some(work), None)); }
-    let idx = subdir(&b, INDEXDIR_NAME)?;
+    let idx = subdir(&b, INDEXDIR_NAME, creator_cred)?;
     Ok((Some(idx.clone()), Some(idx)))
 }
 
@@ -157,7 +162,9 @@ fn verify_index(stack: &Arc<LayerStack>) -> Result<(), Errno> {
             .and_then(|(record, upper)| marker::get(&stack.config, &upper, crate::uapi::Marker::Origin)
                 .filter(|stored| fh::same(stored, &record)).map(|_| ()))
             .is_some();
-        if !valid { index.unlink_child(&name).map_err(to_errno)?; }
+        if !valid {
+            stack.with_access_ctx(|ctx| index.unlink_child_with_ctx(&name, ctx)).map_err(to_errno)?;
+        }
     }
     Ok(())
 }
@@ -177,19 +184,21 @@ fn refuse_incompatible(work: &InodeRef) -> Result<(), Errno> {
 
 /// Publish the marker which makes an unflushed upper incompatible with reuse.
 /// # C: O(path components)
-fn create_volatile_marker(work: &InodeRef) -> Result<(), Errno> {
+fn create_volatile_marker(work: &InodeRef, creator_cred: &vfs::Cred) -> Result<(), Errno> {
     let mut dir = work.clone();
     let mut parts = VOLATILE_DIRTY_NAME.split('/').peekable();
     while let Some(name) = parts.next() {
         if parts.peek().is_some() {
-            dir = subdir(&dir, name)?;
+            dir = subdir(&dir, name, creator_cred)?;
             continue;
         }
         return match dir.lookup(name) {
             Ok(_) => Ok(()),
-            Err(vfs::VfsError::Enoent) => dir
-                .create_child(name, S_IFREG as u32, &CreateCtx::root())
-                .map(|_| ()).map_err(crate::err::to_errno),
+            Err(vfs::VfsError::Enoent) => {
+                let ctx = CreateCtx { idmap: &vfs::IDENTITY, cred: creator_cred, umask: 0 };
+                dir.create_child(name, S_IFREG as u32, &ctx)
+                    .map(|_| ()).map_err(crate::err::to_errno)
+            }
             Err(e) => Err(crate::err::to_errno(e)),
         };
     }
@@ -197,11 +206,14 @@ fn create_volatile_marker(work: &InodeRef) -> Result<(), Errno> {
 }
 
 /// Get or create a subdirectory of the work base. # C: O(1)
-fn subdir(base: &InodeRef, name: &str) -> Result<InodeRef, Errno> {
+fn subdir(base: &InodeRef, name: &str, creator_cred: &vfs::Cred) -> Result<InodeRef, Errno> {
     match base.lookup(name) {
         Ok(i) if i.file_type() == FileType::Directory => Ok(i),
         Ok(_) => Err(Errno::Enotdir),
-        Err(_) => base.mkdir(name, WORKDIR_MODE, &CreateCtx::root()).map_err(crate::err::to_errno),
+        Err(_) => {
+            let ctx = CreateCtx { idmap: &vfs::IDENTITY, cred: creator_cred, umask: 0 };
+            base.mkdir(name, WORKDIR_MODE, &ctx).map_err(crate::err::to_errno)
+        }
     }
 }
 
@@ -212,7 +224,7 @@ const WORKDIR_MODE: u32 = vfs::types::S_IFDIR as u32;
 
 /// Assemble the stack from the resolved layers. # C: O(layers)
 fn build(config: Config, upper: Option<InodeRef>, workdir: Option<InodeRef>,
-         indexdir: Option<InodeRef>, resolve: Resolve) -> Result<Arc<LayerStack>, Errno> {
+         indexdir: Option<InodeRef>, resolve: Resolve, creator_cred: vfs::Cred) -> Result<Arc<LayerStack>, Errno> {
     let upper_layer = upper.as_ref().map(|u| Layer::new(u.clone(), 0, 0, false));
     let mut lower = Vec::new();
     let mut root = OvlEntry { upper: upper.clone(), upper_alias: upper.is_some(),
@@ -226,7 +238,7 @@ fn build(config: Config, upper: Option<InodeRef>, workdir: Option<InodeRef>,
     let one_fs = same_filesystem(&upper, &root);
     Ok(Arc::new(LayerStack {
         xino: xino_mode(&config, one_fs),
-        config, upper: upper_layer, lower, workdir, indexdir,
+        config, creator_cred, upper: upper_layer, lower, workdir, indexdir,
         namelen: NAME_MAX,
         noxattr: AtomicBool::new(false),
         root,

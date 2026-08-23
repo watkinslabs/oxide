@@ -19,6 +19,12 @@ impl FsContextInode {
         Self::build(fstype, Some(vfs::fs::FsContext::for_mount(ty, 0)))
     }
 
+    /// Allocate a context with the fsopen caller's credential snapshot. # C: O(1)
+    pub fn new_with_cred(fstype: String, ty: Arc<dyn vfs::FileSystemType>,
+        creator_cred: vfs::Cred) -> InodeRef {
+        Self::build(fstype, Some(vfs::fs::FsContext::for_mount_with_cred(ty, 0, creator_cred)))
+    }
+
     /// Allocate a reconfiguration filesystem context inode. # C: O(1)
     pub fn new_reconfigure(fstype: String, fc: vfs::fs::FsContext) -> InodeRef {
         Self::build(fstype, Some(fc))

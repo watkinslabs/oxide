@@ -11,7 +11,6 @@ extern crate alloc;
 
 use alloc::sync::Arc;
 use syscall::errno::Errno;
-use vfs::inode_ops::CreateCtx;
 use vfs::namei::RENAME_EXCHANGE;
 use vfs::types::{FileType, S_IFCHR};
 use vfs::InodeRef;
@@ -64,8 +63,8 @@ pub fn remove(stack: &Arc<LayerStack>, parent: &OvlEntry, entry: &OvlEntry, name
     if !cover {
         return match (entry.upper.is_some(), is_dir) {
             (false, _) => Ok(()),
-            (true, true) => dir.rmdir(name).map_err(to_errno),
-            (true, false) => dir.unlink_child(name).map_err(to_errno),
+            (true, true) => stack.with_access_ctx(|ctx| dir.rmdir_with_ctx(name, ctx)).map_err(to_errno),
+            (true, false) => stack.with_access_ctx(|ctx| dir.unlink_child_with_ctx(name, ctx)).map_err(to_errno),
         };
     }
     cover_with_whiteout(stack, &dir, name, entry.upper.is_some() && is_dir)
@@ -76,7 +75,7 @@ fn clear_whiteouts(stack: &Arc<LayerStack>, upper: &InodeRef) -> Result<(), Errn
     let list = readdir::merged(stack, &OvlEntry { upper: Some(upper.clone()),
                                                   ..OvlEntry::default() })?;
     for e in readdir::whiteouts(&list) {
-        upper.unlink_child(&e.name).map_err(to_errno)?;
+        stack.with_access_ctx(|ctx| upper.unlink_child_with_ctx(&e.name, ctx)).map_err(to_errno)?;
     }
     Ok(())
 }
@@ -90,20 +89,21 @@ fn cover_with_whiteout(stack: &Arc<LayerStack>, dir: &InodeRef, name: &str, was_
     -> Result<(), Errno> {
     let Some(workdir) = stack.workdir.clone() else { return Err(Errno::Erofs) };
     let tmp = super::create::tempname();
-    workdir.mknod_child(&tmp, S_IFCHR, WHITEOUT_RDEV, &CreateCtx::root()).map_err(to_errno)?;
+    stack.with_access_ctx(|ctx| workdir.mknod_child(&tmp, S_IFCHR, WHITEOUT_RDEV, ctx)).map_err(to_errno)?;
 
     if dir.lookup(name).is_err() {
         // Nothing of ours is there: the name exists only below, so the cover
         // simply moves in.
-        let r = workdir.rename_child(&tmp, dir, name, 0, &CreateCtx::root()).map_err(to_errno);
-        if r.is_err() { let _ = workdir.unlink_child(&tmp); }
+        let r = stack.with_access_ctx(|ctx| workdir.rename_child(&tmp, dir, name, 0, ctx)).map_err(to_errno);
+        if r.is_err() { let _ = stack.with_access_ctx(|ctx| workdir.unlink_child_with_ctx(&tmp, ctx)); }
         return r;
     }
 
-    workdir.rename_child(&tmp, dir, name, RENAME_EXCHANGE, &CreateCtx::root())
-        .map_err(|e| { let _ = workdir.unlink_child(&tmp); to_errno(e) })?;
+    stack.with_access_ctx(|ctx| workdir.rename_child(&tmp, dir, name, RENAME_EXCHANGE, ctx))
+        .map_err(|e| { let _ = stack.with_access_ctx(|ctx| workdir.unlink_child_with_ctx(&tmp, ctx)); to_errno(e) })?;
     // The exchange left the removed object in the work directory.
-    let _ = if was_dir { workdir.rmdir(&tmp) } else { workdir.unlink_child(&tmp) };
+    let _ = stack.with_access_ctx(|ctx| if was_dir { workdir.rmdir_with_ctx(&tmp, ctx) }
+                                        else { workdir.unlink_child_with_ctx(&tmp, ctx) });
     Ok(())
 }
 

@@ -22,12 +22,18 @@ impl Inode {
     pub fn mkdir(&self, name: &str, mode: u32, ctx: &CreateCtx) -> KResult<InodeRef> { self.i_op.mkdir(self, name, mode, ctx) }
     /// `i_op->rmdir`. # C: backend-dependent
     pub fn rmdir(&self, name: &str) -> KResult<()> { self.i_op.rmdir(self, name) }
+    pub fn rmdir_with_ctx(&self, name: &str, ctx: &CreateCtx) -> KResult<()> {
+        self.i_op.rmdir_with_ctx(self, name, ctx)
+    }
     /// `i_op->rmdir` with the resolved victim. # C: backend-dependent
     pub fn rmdir_with_victim(&self, name: &str, victim: &InodeRef) -> KResult<()> {
         self.i_op.rmdir_with_victim(self, name, victim)
     }
     /// `i_op->unlink`. # C: backend-dependent
     pub fn unlink_child(&self, name: &str) -> KResult<()> { self.i_op.unlink(self, name) }
+    pub fn unlink_child_with_ctx(&self, name: &str, ctx: &CreateCtx) -> KResult<()> {
+        self.i_op.unlink_with_ctx(self, name, ctx)
+    }
     /// `i_op->unlink` with the resolved victim. # C: backend-dependent
     pub fn unlink_child_with_victim(&self, name: &str, victim: &InodeRef) -> KResult<()> {
         self.i_op.unlink_with_victim(self, name, victim)
@@ -74,6 +80,8 @@ impl Inode {
     pub fn bmap(&self, block: u64) -> KResult<u64> { self.i_op.bmap(self, block) }
     /// `i_op->getxattr`. # C: O(log N)
     pub fn getxattr(&self, name: &str) -> Result<Vec<u8>, crate::xattr::XattrError> { self.i_op.getxattr(self, name) }
+    pub fn getxattr_with_ctx(&self, name: &str, ctx: &CreateCtx)
+        -> Result<Vec<u8>, crate::xattr::XattrError> { self.i_op.getxattr_with_ctx(self, name, ctx) }
     /// `i_op->setxattr`. Writing either ACL attribute drops what is cached for
     /// it (`forget_cached_acl`), so the next permission check re-reads what was
     /// just stored instead of deciding from the ACL this call replaced.
@@ -83,10 +91,22 @@ impl Inode {
         if r.is_ok() { self.forget_acl_named(name); }
         r
     }
+    pub fn setxattr_with_ctx(&self, name: &str, value: Vec<u8>, create: bool, replace: bool,
+                             ctx: &CreateCtx) -> Result<(), crate::xattr::XattrError> {
+        let r = self.i_op.setxattr_with_ctx(self, name, value, create, replace, ctx);
+        if r.is_ok() { self.forget_acl_named(name); }
+        r
+    }
     /// `i_op->removexattr`. Drops the cached ACL for the same reason as
     /// [`Self::setxattr`]. # C: O(log N)
     pub fn removexattr(&self, name: &str) -> Result<(), crate::xattr::XattrError> {
         let r = self.i_op.removexattr(self, name);
+        if r.is_ok() { self.forget_acl_named(name); }
+        r
+    }
+    pub fn removexattr_with_ctx(&self, name: &str, ctx: &CreateCtx)
+        -> Result<(), crate::xattr::XattrError> {
+        let r = self.i_op.removexattr_with_ctx(self, name, ctx);
         if r.is_ok() { self.forget_acl_named(name); }
         r
     }
@@ -99,6 +119,8 @@ impl Inode {
     }
     /// `i_op->listxattr`. # C: O(N)
     pub fn listxattr(&self) -> Result<Vec<String>, crate::xattr::XattrError> { self.i_op.listxattr(self) }
+    pub fn listxattr_with_ctx(&self, ctx: &CreateCtx)
+        -> Result<Vec<String>, crate::xattr::XattrError> { self.i_op.listxattr_with_ctx(self, ctx) }
     /// `i_op->fileattr_get`. # C: O(1)
     pub fn fileattr_get(&self) -> KResult<FileAttr> { self.i_op.fileattr_get(self) }
     /// `i_op->fileattr_set`. # C: O(1)
