@@ -120,20 +120,20 @@ pub fn set_nr_hugepages(size: HugePageSize, count: u64) -> u64 {
 /// `Err(())` when the pool cannot promise them — the caller reports `ENOMEM`,
 /// which is what a mapping too large for the pool gets.
 /// # C: O(delta * 2^order)
-pub fn reserve(size: HugePageSize, delta: u64) -> Result<(), ()> {
-    if delta == 0 { return Ok(()); }
+pub fn reserve(size: HugePageSize, delta: u64) -> Result<crate::hugetlb::ReservationToken, ()> {
+    if delta == 0 { return Ok(crate::hugetlb::ReservationToken { cgid: 0 }); }
     // The controller is charged at RESERVATION time, before the pool promises
     // anything: a cgroup over its reservation limit must fail the mapping,
     // not discover at fault time that the promise cannot be kept.
-    charge::charge_reserve(size, delta)?;
+    let owner = charge::charge_reserve(size, delta)?;
     let need = match pool(size).lock().counts.plan_reserve(delta) {
         Ok(n) => n,
-        Err(()) => { charge::uncharge_reserve(size, delta); return Err(()); }
+        Err(()) => { charge::uncharge_reserve(size, owner, delta); return Err(()); }
     };
     let mut fresh: Vec<u64> = Vec::new();
     if need > 0 && acquire_runs(size, need, &mut fresh) < need {
         release_runs(size, &fresh);
-        charge::uncharge_reserve(size, delta);
+        charge::uncharge_reserve(size, owner, delta);
         return Err(());
     }
     let mut g = pool(size).lock();
@@ -146,12 +146,12 @@ pub fn reserve(size: HugePageSize, delta: u64) -> Result<(), ()> {
             let added = fresh.len() as u64;
             for &pa in fresh.iter() { g.free.push(pa); g.owned.insert(pa); }
             g.counts.commit_reserve(delta, added);
-            Ok(())
+            Ok(owner)
         }
         Err(()) => {
             drop(g);
             release_runs(size, &fresh);
-            charge::uncharge_reserve(size, delta);
+            charge::uncharge_reserve(size, owner, delta);
             Err(())
         }
     }
@@ -159,20 +159,21 @@ pub fn reserve(size: HugePageSize, delta: u64) -> Result<(), ()> {
 
 /// Drop a reservation of `delta` pages that will never be faulted.
 /// # C: O(1)
-pub fn unreserve(size: HugePageSize, delta: u64) {
+pub fn unreserve(size: HugePageSize, owner: crate::hugetlb::ReservationToken, delta: u64) {
     if delta == 0 { return; }
     pool(size).lock().counts.unreserve(delta);
-    charge::uncharge_reserve(size, delta);
+    charge::uncharge_reserve(size, owner, delta);
 }
 
 /// Take one huge page out of the pool. `reserved` says the caller holds a
 /// reservation covering it; without one the page may only come from the
 /// unpromised remainder.
 /// # C: O(1)
-pub fn alloc_huge_frame(size: HugePageSize, reserved: bool) -> Option<u64> {
+pub fn alloc_huge_frame(size: HugePageSize, reserved: bool,
+                        reservation: Option<crate::hugetlb::ReservationToken>) -> Option<u64> {
     // Charged before the page is taken, with the pool lock not yet held: a
     // cgroup at its limit must not consume a page it cannot be charged for.
-    let charged = charge::charge_alloc(size, reserved).ok()?;
+    let charged = charge::charge_alloc(size, reserved, reservation).ok()?;
     let mut g = pool(size).lock();
     if !g.counts.dequeue(reserved) { drop(g); charge::cancel_alloc(size, charged); return None; }
     let Some(pa) = g.free.pop() else {

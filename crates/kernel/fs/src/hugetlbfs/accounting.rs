@@ -21,6 +21,7 @@ pub struct HugetlbfsSb {
     /// `size=`/`min_size=` accounting. Absent when the mount named neither, in
     /// which case it charges straight through to the global pool.
     spool:       Option<Spinlock<Subpool, InodeClass>>,
+    min_owner:   Option<pmm::hugetlb::ReservationToken>,
     /// `nr_inodes=`, or [`NO_LIMIT`].
     max_inodes:  i64,
     free_inodes: AtomicI64,
@@ -42,14 +43,16 @@ impl HugetlbfsSb {
         let size = opts.size();
         let sizes = opts.resolve(pool_max)?;
         let max_inodes = opts.max_inodes();
+        let mut min_owner = None;
         let spool = if Subpool::is_limited(sizes.max_hpages, sizes.min_hpages) {
             if sizes.min_hpages != NO_LIMIT && sizes.min_hpages > 0 {
-                hugetlb::reserve(size, sizes.min_hpages as u64).map_err(|()| VfsError::Enomem)?;
+                min_owner = Some(hugetlb::reserve(size, sizes.min_hpages as u64)
+                    .map_err(|()| VfsError::Enomem)?);
             }
             Some(Spinlock::new(Subpool::new(sizes.max_hpages, sizes.min_hpages)))
         } else { None };
         Ok(Arc::new(Self {
-            size, spool, max_inodes,
+            size, spool, min_owner, max_inodes,
             free_inodes: AtomicI64::new(max_inodes),
             uid:  opts.uid.unwrap_or(DEFAULT_ROOT_UID),
             gid:  opts.gid.unwrap_or(DEFAULT_ROOT_GID),
@@ -63,13 +66,15 @@ impl HugetlbfsSb {
     /// # C: O(1)
     pub(super) fn unlimited(size: HugePageSize) -> Arc<Self> {
         Arc::new(Self {
-            size, spool: None, max_inodes: NO_LIMIT, free_inodes: AtomicI64::new(NO_LIMIT),
+            size, spool: None, min_owner: None, max_inodes: NO_LIMIT, free_inodes: AtomicI64::new(NO_LIMIT),
             uid: DEFAULT_ROOT_UID, gid: DEFAULT_ROOT_GID, mode: DEFAULT_ROOT_MODE,
         })
     }
 
     /// This mount's granule. # C: O(1)
     pub(super) fn huge_size(&self) -> HugePageSize { self.size }
+    /// Owner of the mount-level minimum reservation. # C: O(1)
+    pub(super) fn min_owner(&self) -> Option<pmm::hugetlb::ReservationToken> { self.min_owner }
     /// Root-inode permission bits. # C: O(1)
     pub(super) fn mode(&self) -> u16 { self.mode }
     /// Root-inode owner. # C: O(1)
@@ -102,15 +107,17 @@ impl HugetlbfsSb {
     /// the mount can hold learns it from `mmap` rather than from a fault it
     /// cannot handle — which is why the errno here is `ENOMEM`.
     /// # C: O(n)
-    pub(super) fn reserve_pages(&self, n: u64) -> KResult<()> {
-        if n == 0 { return Ok(()); }
+    pub(super) fn reserve_pages(&self, n: u64) -> KResult<ReservationPlan> {
+        if n == 0 { return Ok(ReservationPlan { min_pages: 0, global_owner: None }); }
         let global = match &self.spool {
             Some(sp) => sp.lock().get_pages(n as i64).map_err(|()| VfsError::Enomem)?.global_delta,
             None     => n as i64,
         };
-        if global <= 0 { return Ok(()); }
+        if global <= 0 {
+            return Ok(ReservationPlan { min_pages: n, global_owner: None });
+        }
         match hugetlb::reserve(self.size, global as u64) {
-            Ok(())  => Ok(()),
+            Ok(owner)  => Ok(ReservationPlan { min_pages: n - global as u64, global_owner: Some(owner) }),
             Err(()) => {
                 // The mount's charge must not survive a global refusal, or the
                 // mount would count pages nothing ever promised.
@@ -122,10 +129,17 @@ impl HugetlbfsSb {
 
     /// Give `n` reserved-but-unfaulted pages back.
     /// # C: O(1)
-    pub(super) fn unreserve_pages(&self, n: u64) {
+    pub(super) fn unreserve_pages(&self, n: u64, global_owners: &[pmm::hugetlb::ReservationToken]) {
         if n == 0 { return; }
-        let global = match &self.spool { Some(sp) => sp.lock().put_pages(n as i64), None => n as i64 };
-        if global > 0 { hugetlb::unreserve(self.size, global as u64); }
+        if let Some(sp) = &self.spool { let _ = sp.lock().put_pages(n as i64); }
+        // `put_pages` returns the subpool's aggregate transition back to the
+        // global pool. That is not the identity of the reservations being
+        // removed: a global reservation may be released while the minimum
+        // has room, and a minimum-backed one may be released while global
+        // promises remain. The file records carry the exact owner for each.
+        for owner in global_owners {
+            hugetlb::unreserve(self.size, *owner, 1);
+        }
     }
 
     /// Charge one page a mapping is faulting WITHOUT a reservation covering it
@@ -196,5 +210,20 @@ impl HugetlbfsSb {
             }
         }
         s
+    }
+}
+
+/// Ownership returned for the unmaterialised pages of one reservation batch.
+pub(super) struct ReservationPlan {
+    pub min_pages: u64,
+    pub global_owner: Option<pmm::hugetlb::ReservationToken>,
+}
+
+impl Drop for HugetlbfsSb {
+    fn drop(&mut self) {
+        let Some(owner) = self.min_owner else { return };
+        let Some(sp) = &self.spool else { return };
+        let remaining = sp.lock().rsv_hpages.max(0) as u64;
+        if remaining != 0 { hugetlb::unreserve(self.size, owner, remaining); }
     }
 }

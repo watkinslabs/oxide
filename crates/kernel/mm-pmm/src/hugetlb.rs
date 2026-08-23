@@ -28,7 +28,7 @@ mod tests;
 pub use sizes::{HugePageSize, size_from_log, DEFAULT_HUGE_SHIFT, HUGE_FLAG_ENCODE_MASK, HUGE_FLAG_ENCODE_SHIFT};
 pub use hstate::{HstateCounts, ResizePlan};
 pub use subpool::{Subpool, SubpoolCharge, NO_LIMIT};
-pub use charge::{PageCharge, granule_of, reparent_charges};
+pub use charge::{PageCharge, ReservationToken, granule_of, reparent_charges};
 pub use pool::{
     alloc_huge_frame, free_huge_frame, huge_frame_dec_and_maybe_release, huge_frame_inc_ref,
     nr_hugepages, free_hugepages, resv_hugepages, surplus_hugepages,

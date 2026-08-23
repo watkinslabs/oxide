@@ -36,6 +36,14 @@ pub struct PageCharge {
     pub deferred_rsvd: bool,
 }
 
+/// The cgroup charged for a reservation. It is carried by the reservation
+/// until the promise is consumed or released; the releasing task is not an
+/// accounting authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReservationToken {
+    pub cgid: u64,
+}
+
 /// Owner records for one granule.
 #[derive(Default)]
 pub struct Ledger {
@@ -59,31 +67,14 @@ impl Ledger {
         *e = e.saturating_add(huge_pages);
     }
 
-    /// Choose who a release of `huge_pages` reservations comes off.
-    ///
-    /// The releasing task's own cgroup is drawn from first, which is the
-    /// ordinary case — the same mount reserves and releases. Whatever it
-    /// cannot cover comes off the other outstanding records, so a release can
-    /// never uncharge more than was charged and can never strand a charge on
-    /// a cgroup nothing will release. Returns `(cgid, huge_pages)` pairs.
-    /// # C: O(records)
-    pub fn take_resv(&mut self, cgid: u64, huge_pages: u64) -> alloc::vec::Vec<(u64, u64)> {
-        let mut out = alloc::vec::Vec::new();
-        let mut left = huge_pages;
-        let mut order: alloc::vec::Vec<u64> = alloc::vec::Vec::new();
-        if self.resv.contains_key(&cgid) { order.push(cgid); }
-        order.extend(self.resv.keys().copied().filter(|c| *c != cgid));
-        for owner in order {
-            if left == 0 { break; }
-            let Some(have) = self.resv.get_mut(&owner) else { continue };
-            let take = core::cmp::min(*have, left);
-            if take == 0 { continue; }
-            *have -= take;
-            left -= take;
-            if *have == 0 { self.resv.remove(&owner); }
-            out.push((owner, take));
-        }
-        out
+    /// Take back reservations from the cgroup that created them.
+    /// # C: O(1)
+    pub fn take_resv(&mut self, cgid: u64, huge_pages: u64) -> u64 {
+        let Some(have) = self.resv.get_mut(&cgid) else { return 0 };
+        let take = core::cmp::min(*have, huge_pages);
+        *have -= take;
+        if *have == 0 { self.resv.remove(&cgid); }
+        take
     }
 
     /// Retarget every record naming `from` at `to`, so a charge the controller
@@ -128,23 +119,22 @@ fn current_cgid() -> u64 { cgroup::cgroup_of(0) }
 /// `Err(())` when a limit refuses it — the caller reports ENOMEM, which is
 /// what a mapping the cgroup may not have gets.
 /// # C: O(depth · subtree)
-pub(super) fn charge_reserve(size: HugePageSize, delta: u64) -> Result<(), ()> {
-    if delta == 0 { return Ok(()); }
+pub(super) fn charge_reserve(size: HugePageSize, delta: u64) -> Result<ReservationToken, ()> {
+    if delta == 0 { return Ok(ReservationToken { cgid: current_cgid() }); }
     ensure_reparent_hook();
     let cgid = current_cgid();
     cgroup::try_charge_hugetlb(cgid, granule_of(size), HugeCounterKind::Reservation, delta)
         .map_err(|_| ())?;
     ledger(size).lock().add_resv(cgid, delta);
-    Ok(())
+    Ok(ReservationToken { cgid })
 }
 
 /// Release `delta` promised pages of `size`. # C: O(records)
-pub(super) fn uncharge_reserve(size: HugePageSize, delta: u64) {
+pub(super) fn uncharge_reserve(size: HugePageSize, owner: ReservationToken, delta: u64) {
     if delta == 0 { return; }
-    let cgid = current_cgid();
-    let released = ledger(size).lock().take_resv(cgid, delta);
-    for (owner, pages) in released {
-        cgroup::uncharge_hugetlb(owner, granule_of(size), HugeCounterKind::Reservation, pages);
+    let released = ledger(size).lock().take_resv(owner.cgid, delta);
+    if released != 0 {
+        cgroup::uncharge_hugetlb(owner.cgid, granule_of(size), HugeCounterKind::Reservation, released);
     }
 }
 
@@ -157,7 +147,8 @@ pub(super) fn uncharge_reserve(size: HugePageSize, delta: u64) {
 /// what keeps a fault that bypassed mapping-time reservation inside the same
 /// reservation limit rather than outside every limit there is.
 /// # C: O(depth · subtree)
-pub(super) fn charge_alloc(size: HugePageSize, reserved: bool) -> Result<PageCharge, ()> {
+pub(super) fn charge_alloc(size: HugePageSize, reserved: bool,
+                           reservation: Option<ReservationToken>) -> Result<PageCharge, ()> {
     ensure_reparent_hook();
     let cgid = current_cgid();
     let g = granule_of(size);
@@ -169,7 +160,13 @@ pub(super) fn charge_alloc(size: HugePageSize, reserved: bool) -> Result<PageCha
         if deferred_rsvd { cgroup::uncharge_hugetlb(cgid, g, HugeCounterKind::Reservation, 1); }
         return Err(());
     }
-    if reserved { uncharge_reserve(size, 1); }
+    if reserved {
+        let Some(owner) = reservation else {
+            cgroup::uncharge_hugetlb(cgid, g, HugeCounterKind::Usage, 1);
+            return Err(());
+        };
+        uncharge_reserve(size, owner, 1);
+    }
     Ok(PageCharge { cgid, deferred_rsvd })
 }
 
@@ -231,24 +228,22 @@ mod tests {
     }
 
     #[test]
-    fn a_reservation_release_draws_on_the_releasing_cgroup_first() {
+    fn a_reservation_release_uses_the_recorded_cgroup() {
         let mut l = Ledger::new();
         l.add_resv(3, 4);
         l.add_resv(9, 6);
-        assert_eq!(l.take_resv(9, 2), alloc::vec![(9, 2)]);
+        assert_eq!(l.take_resv(9, 2), 2);
         assert_eq!(l.resv_of(9), 4);
         assert_eq!(l.resv_of(3), 4);
     }
 
     #[test]
-    fn a_release_larger_than_one_record_spills_over_but_never_past_the_total() {
+    fn a_release_from_one_record_never_spills_into_another() {
         let mut l = Ledger::new();
         l.add_resv(3, 4);
         l.add_resv(9, 6);
-        let taken = l.take_resv(9, 100);
-        let total: u64 = taken.iter().map(|(_, n)| *n).sum();
-        assert_eq!(total, 10, "a release can never uncharge more than was charged");
-        assert_eq!(l.resv_of(3), 0);
+        assert_eq!(l.take_resv(9, 100), 6);
+        assert_eq!(l.resv_of(3), 4, "a release never steals another cgroup's reservation");
         assert_eq!(l.resv_of(9), 0);
     }
 

@@ -1,7 +1,7 @@
 // A hugetlbfs regular file: its huge-page store, its reservations, and the
 // inode/file operations over them.
 
-use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::collections::BTreeMap;
 use alloc::sync::{Arc, Weak};
 
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -12,7 +12,7 @@ use vfs::superblock::SuperBlock;
 use vfs::{AddressSpaceOps, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult,
           VfsError, mk_mode};
 
-use super::accounting::HugetlbfsSb;
+use super::accounting::{HugetlbfsSb, ReservationPlan};
 use super::inode::{fsid_of, iget_or_build, next_ino};
 
 /// The file's page state, under one lock so a reservation and the page it
@@ -25,7 +25,13 @@ pub(super) struct Body {
     /// is the file's `resv_map`: a shared mapping's promise lives on the
     /// INODE, so every mapper of one file shares one set of promises and two
     /// mappings of the same range are promised the same pages once.
-    pub(super) resv: BTreeSet<u64>,
+    pub(super) resv: BTreeMap<u64, ReservationOwner>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct ReservationOwner {
+    pub token: pmm::hugetlb::ReservationToken,
+    pub global: bool,
 }
 
 pub struct HugetlbfsFileData {
@@ -52,10 +58,11 @@ impl HugetlbfsFileData {
         let size = self.sb.huge_size();
         let mut g = self.body.lock();
         if let Some(&pa) = g.pages.get(&idx) { return Ok(pa); }
-        let reserved = g.resv.remove(&idx);
+        let reservation = g.resv.remove(&idx);
+        let reserved = reservation.is_some();
         if !reserved { self.sb.charge_unreserved_page()?; }
-        let Some(pa) = hugetlb::alloc_huge_frame(size, reserved) else {
-            if reserved { g.resv.insert(idx); } else { self.sb.uncharge_page(); }
+        let Some(pa) = hugetlb::alloc_huge_frame(size, reserved, reservation.map(|r| r.token)) else {
+            if let Some(owner) = reservation { g.resv.insert(idx, owner); } else { self.sb.uncharge_page(); }
             return Err(VfsError::Enomem);
         };
         if let Some(dst) = pmm::setup::frame_ptr(pa) {
@@ -107,7 +114,7 @@ impl HugetlbfsFileData {
         let size = self.sb.huge_size();
         let src = self.ensure_page(idx)?;
         self.sb.charge_unreserved_page()?;
-        let Some(dst) = hugetlb::alloc_huge_frame(size, false) else {
+        let Some(dst) = hugetlb::alloc_huge_frame(size, false, None) else {
             self.sb.uncharge_page();
             return Err(VfsError::Enomem);
         };
@@ -136,7 +143,7 @@ impl HugetlbfsFileData {
         let size = self.sb.huge_size();
         let mut g = self.body.lock();
         let pages: alloc::vec::Vec<u64> = g.pages.values().copied().collect();
-        let n_resv = g.resv.len() as u64;
+        let reservations: alloc::vec::Vec<ReservationOwner> = g.resv.values().copied().collect();
         g.pages.clear();
         g.resv.clear();
         drop(g);
@@ -144,7 +151,8 @@ impl HugetlbfsFileData {
             hugetlb::huge_frame_dec_and_maybe_release(size, pa);
             self.sb.uncharge_page();
         }
-        self.sb.unreserve_pages(n_resv);
+        let global: alloc::vec::Vec<_> = reservations.iter().filter(|r| r.global).map(|r| r.token).collect();
+        self.sb.unreserve_pages(reservations.len() as u64, &global);
     }
 
     /// Reserve every huge index in `[off, off+len)` that is not already
@@ -160,13 +168,20 @@ impl HugetlbfsFileData {
         {
             let g = self.body.lock();
             for idx in first..=last {
-                if !g.pages.contains_key(&idx) && !g.resv.contains(&idx) { want.push(idx); }
+                if !g.pages.contains_key(&idx) && !g.resv.contains_key(&idx) { want.push(idx); }
             }
         }
         if want.is_empty() { return Ok(()); }
-        self.sb.reserve_pages(want.len() as u64)?;
+        let ReservationPlan { min_pages, global_owner } = self.sb.reserve_pages(want.len() as u64)?;
+        let min_owner = self.sb.min_owner();
         let mut g = self.body.lock();
-        for idx in want { g.resv.insert(idx); }
+        for (i, idx) in want.into_iter().enumerate() {
+            let global = i as u64 >= min_pages;
+            let token = if global { global_owner.expect("global reservation owner") } else {
+                min_owner.expect("minimum reservation owner")
+            };
+            g.resv.insert(idx, ReservationOwner { token, global });
+        }
         Ok(())
     }
 
@@ -183,14 +198,17 @@ impl HugetlbfsFileData {
         let dropped: alloc::vec::Vec<u64> = g.pages.range(first_gone..).map(|(_, &pa)| pa).collect();
         let keys: alloc::vec::Vec<u64> = g.pages.range(first_gone..).map(|(&k, _)| k).collect();
         for k in keys { g.pages.remove(&k); }
-        let resv_gone: alloc::vec::Vec<u64> = g.resv.range(first_gone..).copied().collect();
-        for k in &resv_gone { g.resv.remove(k); }
+        let resv_gone: alloc::vec::Vec<ReservationOwner> = g.resv.range(first_gone..).map(|(_, o)| *o).collect();
+        for k in g.resv.range(first_gone..).map(|(k, _)| *k).collect::<alloc::vec::Vec<_>>() {
+            g.resv.remove(&k);
+        }
         drop(g);
         for pa in dropped {
             hugetlb::huge_frame_dec_and_maybe_release(size, pa);
             self.sb.uncharge_page();
         }
-        self.sb.unreserve_pages(resv_gone.len() as u64);
+        let global: alloc::vec::Vec<_> = resv_gone.iter().filter(|r| r.global).map(|r| r.token).collect();
+        self.sb.unreserve_pages(resv_gone.len() as u64, &global);
         self.len.store(new_len, Ordering::Release);
         Ok(())
     }
@@ -236,7 +254,7 @@ pub(super) fn make_file_inode(perm: u16, uid: u32, gid: u32, sb: Weak<SuperBlock
     let sb2 = sb.clone();
     Some(iget_or_build(&sb, ino, move || {
         let data = Arc::new(HugetlbfsFileData {
-            body: Spinlock::new(Body { pages: BTreeMap::new(), resv: BTreeSet::new() }),
+            body: Spinlock::new(Body { pages: BTreeMap::new(), resv: BTreeMap::new() }),
             len:  AtomicU64::new(0),
             sb:   acct,
         });
