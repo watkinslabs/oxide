@@ -5057,3 +5057,6 @@ against the row's own evidence.
 ### B2615-lint-ratchet-historical-batch
 
 | FIXED B2615 | INFRA | high | Four older lint-ratchet rows were historical measurements of the same standing tree-wide baseline failure. They are folded together; the current ratchet row remains OPEN. | The retained current OPEN row records the live main measurement; no lint run or source change is required. | B2615 |
+### B2617-pstore-ftrace-pmsg-producer-stale
+
+| FIXED B2617 | MISSING | low | The pstore ftrace/pmsg-zone row was stale: this tree has no ftrace producer or `/dev/pmsg0` producer, so carving empty zones would expose unsupported interfaces. | `pstore::geometry` intentionally carves only dmesg and console zones; the existing producer audit found no ftrace or pmsg writer. | B2617 |
