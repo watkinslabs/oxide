@@ -54,6 +54,24 @@ pub struct InputRoute {
     pub input: InputPin,
 }
 
+/// A line-in/microphone jack that Linux can retask as an additional stereo
+/// output. The route is kept beside the capture route: channel-mode selection
+/// changes only the pin direction and never invents a second graph.
+#[derive(Clone, Debug)]
+pub struct MultiIoRoute {
+    pub pin: u8,
+    pub path: NidPath,
+    pub dac: u8,
+}
+
+pub fn output_route_for_multi_io(codec: &Codec, route: &MultiIoRoute) -> OutputRoute {
+    OutputRoute {
+        pin: route.pin, path: route.path.clone(), dac: route.dac,
+        volume: paths::volume_nid(codec, &route.path),
+        mute: paths::mute_nid(codec, &route.path), shared: false,
+    }
+}
+
 /// Everything the card driver needs to program and to publish controls.
 #[derive(Clone, Debug, Default)]
 pub struct Plan {
@@ -63,6 +81,7 @@ pub struct Plan {
     pub speaker: Vec<OutputRoute>,
     pub digital: Vec<OutputRoute>,
     pub captures: Vec<InputRoute>,
+    pub multi_io: Vec<MultiIoRoute>,
     pub badness: u32,
 }
 
@@ -246,11 +265,45 @@ fn assign_captures(codec: &Codec, cfg: &AutoCfg) -> Vec<InputRoute> {
     routes
 }
 
+/// Find up to two input pins that Linux's generic HDA parser may retask. The
+/// reference requires a complex-connected pin with output capability, in the
+/// same physical location as the primary output, and a reachable DAC. It
+/// prefers line-in over microphone pins and only accepts a route when two
+/// pins can be assigned, so a failed partial probe never changes the card's
+/// normal capture topology.
+fn assign_multi_ios(codec: &Codec, cfg: &AutoCfg, output_groups: &[&[OutputRoute]]) -> Vec<MultiIoRoute> {
+    if output_groups.first().is_some_and(|group| group.len() >= 3) {
+        return Vec::new();
+    }
+    let Some(primary) = output_groups.iter().find_map(|group| group.first()) else {
+        return Vec::new();
+    };
+    let Some(primary_widget) = codec.widget(primary.pin) else { return Vec::new(); };
+    let location = crate::defcfg::location(primary_widget.defcfg);
+    let mut used: Vec<u8> = output_groups.iter().flat_map(|group| group.iter().map(|route| route.dac)).collect();
+    let mut routes = Vec::new();
+    for input in cfg.inputs.iter().rev() {
+        if routes.len() == 2 { break; }
+        let Some(pin) = codec.widget(input.nid) else { continue; };
+        if crate::defcfg::port_conn(pin.defcfg) != crate::defcfg::PORT_COMPLEX
+            || crate::defcfg::location(pin.defcfg) != location
+            || pin.pincap & crate::widget::PINCAP_OUT == 0 { continue; }
+        let Some(path) = paths::find(codec, Source::UnusedDac, input.nid, &used) else { continue; };
+        let Some(dac) = path.source() else { continue; };
+        used.push(dac);
+        routes.push(MultiIoRoute { pin: input.nid, path, dac });
+    }
+    if routes.len() == 2 { routes } else { Vec::new() }
+}
+
 /// Build the routing plan for `codec`. # C: O(pins × widgets × fan-in)
 pub fn build(codec: &Codec) -> Plan {
     let cfg = autocfg::parse_pin_defcfg(codec);
     let (outputs, hp, speaker, digital, badness) = assign_outputs(codec, &cfg);
-    let mut plan = Plan { captures: assign_captures(codec, &cfg), cfg, outputs, hp, speaker, digital, badness };
+    let mut plan = Plan {
+        multi_io: assign_multi_ios(codec, &cfg, &[&outputs, &hp, &speaker, &digital]),
+        captures: assign_captures(codec, &cfg), cfg, outputs, hp, speaker, digital, badness,
+    };
     if plan.badness != 0 {
         if let Some(alternative) = swapped(&plan.cfg) {
             let (outputs, hp, speaker, digital, badness) = assign_outputs(codec, &alternative);
@@ -262,6 +315,8 @@ pub fn build(codec: &Codec) -> Plan {
                 plan.speaker = speaker;
                 plan.digital = digital;
                 plan.badness = badness;
+                plan.multi_io = assign_multi_ios(codec, &plan.cfg,
+                                                 &[&plan.outputs, &plan.hp, &plan.speaker, &plan.digital]);
             }
         }
     }

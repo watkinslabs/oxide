@@ -97,6 +97,9 @@ pub fn capture_volume() -> Vec<u8> { compose(b"Capture", b"", b"Volume") }
 pub fn capture_switch() -> Vec<u8> { compose(b"Capture", b"", b"Switch") }
 /// The enumerated control selecting which pin is captured. # C: O(NAME_CAP)
 pub fn capture_source() -> Vec<u8> { compose(b"Capture", b"", b"Source") }
+
+/// Linux generic HDA's selectable number of retasked stereo pairs.
+pub fn channel_mode() -> Vec<u8> { compose(b"Channel", b"", b"Mode") }
 /// `"<prefix> Jack"`, the boolean a desktop watches for headphone insertion.
 /// # C: O(NAME_CAP)
 pub fn jack_name(prefix: &[u8]) -> Vec<u8> { compose(prefix, b"", b"Jack") }

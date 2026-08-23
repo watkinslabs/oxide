@@ -129,3 +129,24 @@ fn control_ownership_is_claimed_once_per_widget() {
     assert_eq!(plan.hp[0].volume, None);
     assert_eq!(plan.hp[0].mute, None);
 }
+
+#[test]
+fn two_same_location_input_pins_become_linux_multi_io_routes() {
+    let mut builder = fixture::Builder::new(0x1af4_0011, 1, 2);
+    builder.dac(2);
+    builder.dac(3);
+    builder.dac(8);
+    builder.adc(4, &[5, 6]);
+    builder.pin(7, cfg(DEV_LINE_OUT, PORT_COMPLEX, LOC_REAR, 1, 0),
+                widget::PINCAP_OUT, &[2]);
+    builder.pin(5, cfg(crate::defcfg::DEV_LINE_IN, PORT_COMPLEX, LOC_REAR, 2, 0),
+                widget::PINCAP_IN | widget::PINCAP_OUT, &[3]);
+    builder.pin(6, cfg(crate::defcfg::DEV_MIC_IN, PORT_COMPLEX, LOC_REAR, 3, 0),
+                widget::PINCAP_IN | widget::PINCAP_OUT, &[8]);
+    let plan = plan_of(&builder.build());
+    assert_eq!(plan.multi_io.len(), 2);
+    assert_eq!(plan.multi_io[0].pin, 5, "line-in candidates are preferred");
+    assert_eq!(plan.multi_io[1].pin, 6);
+    assert_eq!(plan.multi_io[0].dac, 3);
+    assert_eq!(plan.multi_io[1].dac, 8);
+}

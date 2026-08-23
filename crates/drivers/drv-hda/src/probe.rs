@@ -130,6 +130,7 @@ fn bring_up(bdf: pci::Bdf, mmio_base: u64, mapping: mmio_map::Mapping) -> bool {
         jack_tags: [(0, 0); crate::controller::MAX_JACKS],
         jack_count: 0,
         jack_present: [false; crate::controller::MAX_JACKS],
+        multi_io_active: 0,
         streams,
         interrupts: false,
     };

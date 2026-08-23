@@ -172,7 +172,10 @@ fn caps(owner: sound::SoundOwnerKey, playback: bool, device_number: u32) -> soun
         let formats = crate::stream_fmt::pcm_format_mask(par_pcm);
         let rates = crate::stream_fmt::pcm_rate_mask(par_pcm);
         if formats == 0 || rates == 0 { return None; }
-        let channels = codec.widget(nid).map(|w| widget::widget_channels(w.wcaps)).unwrap_or(2);
+        let base = codec.widget(nid).map(|w| widget::widget_channels(w.wcaps)).unwrap_or(2);
+        let channels = base + if playback {
+            device.hda.plan.as_ref().map(|plan| plan.multi_io.len() as u32 * 2).unwrap_or(0)
+        } else { 0 };
         Some((formats, rates, 1, channels.min(u8::MAX as u32) as u8))
     })?
 }
@@ -554,6 +557,10 @@ fn elem_get(owner: sound::SoundOwnerKey, private: u32, out: &mut sound::elem::El
             out[0] = i64::from(device.hda.capture_source);
             true
         }
+        ElemKind::ChannelMode => {
+            out[0] = i64::from(device.hda.multi_io_active);
+            true
+        }
         ElemKind::MasterVolume => {
             out[0] = i64::from(device.master_volume);
             true
@@ -597,6 +604,7 @@ fn elem_put(owner: sound::SoundOwnerKey, private: u32, values: &sound::elem::Ele
     with_device(owner, |device| match kind {
         ElemKind::Jack => false,
         ElemKind::CaptureSource => device.hda.set_capture_source(values[0] as u32),
+        ElemKind::ChannelMode => device.hda.set_multi_io(values[0] as u8),
         ElemKind::MasterVolume => {
             let volume = values[0] as u8;
             let followers = device.master_followers.clone();
@@ -678,6 +686,27 @@ fn elem_put(owner: sound::SoundOwnerKey, private: u32, values: &sound::elem::Ele
 fn elem_enum(owner: sound::SoundOwnerKey, private: u32, item: u32,
              out: &mut [u8; sound::elem::ENUM_NAME_WIDTH]) -> bool {
     let (_, _, kind) = elemkey::unpack(private);
+    if kind == ElemKind::ChannelMode {
+        let Some(Some((base, count))) = with_device(owner, |device| {
+            let plan = device.hda.plan.as_ref()?;
+            let route = plan.primary()?;
+            let codec = device.hda.codec.as_ref()?;
+            let base = codec.widget(route.dac).map(|w| widget::widget_channels(w.wcaps)).unwrap_or(2);
+            Some((base, plan.multi_io.len()))
+        }) else { return false; };
+        if item as usize > count { return false; }
+        let channels = base + item * 2;
+        out.fill(0);
+        if channels >= 10 {
+            out[0] = b'0' + (channels / 10) as u8;
+            out[1] = b'0' + (channels % 10) as u8;
+            out[2] = b'c'; out[3] = b'h';
+        } else {
+            out[0] = b'0' + channels as u8;
+            out[1] = b'c'; out[2] = b'h';
+        }
+        return true;
+    }
     if kind != ElemKind::CaptureSource { return false; }
     let Some(Some(label)) = with_device(owner, |device| {
         let plan = device.hda.plan.as_ref()?;
@@ -779,6 +808,21 @@ pub fn register_controls(owner: sound::SoundOwnerKey) {
             count: 1, min: 0, max: (controls.capture_sources.len() - 1) as i64,
             step: 0, items: controls.capture_sources.len() as u32, tlv: None,
             private: elemkey::pack(0, false, ElemKind::CaptureSource), ops: &ELEM_OPS,
+        });
+    }
+    let has_multi_io = with_device(owner, |device| {
+        device.hda.plan.as_ref().is_some_and(|plan| !plan.multi_io.is_empty())
+    }).unwrap_or(false);
+    if has_multi_io {
+        let items = with_device(owner, |device| {
+            device.hda.plan.as_ref().map(|plan| plan.multi_io.len() as u32 + 1)
+        }).flatten().unwrap_or(1);
+        sound::elem::register(owner, sound::elem::ElemDesc {
+            id: sound::elem::ElemId::mixer(&ctlname::channel_mode(), 0),
+            etype: sound::uapi::CTL_ELEM_TYPE_ENUMERATED,
+            access: sound::uapi::CTL_ELEM_ACCESS_READWRITE,
+            count: 1, min: 0, max: i64::from(items - 1), step: 0, items, tlv: None,
+            private: elemkey::pack(0, false, ElemKind::ChannelMode), ops: &ELEM_OPS,
         });
     }
     for jack in controls.jacks.iter() {

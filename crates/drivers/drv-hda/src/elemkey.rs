@@ -11,7 +11,7 @@ use crate::widget::{self, AmpCaps};
 
 /// What an element does.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum ElemKind { Volume, Switch, Jack, CaptureSource, MasterVolume, MasterSwitch }
+pub enum ElemKind { Volume, Switch, Jack, CaptureSource, MasterVolume, MasterSwitch, ChannelMode }
 
 const KIND_SHIFT: u32 = 9;
 const OUTPUT_BIT: u32 = 1 << 8;
@@ -22,6 +22,7 @@ pub fn pack(nid: u8, output: bool, kind: ElemKind) -> u32 {
     let kind_bits = match kind {
         ElemKind::Volume => 0u32, ElemKind::Switch => 1, ElemKind::Jack => 2,
         ElemKind::CaptureSource => 3, ElemKind::MasterVolume => 4, ElemKind::MasterSwitch => 5,
+        ElemKind::ChannelMode => 6,
     };
     u32::from(nid) | if output { OUTPUT_BIT } else { 0 } | (kind_bits << KIND_SHIFT)
 }
@@ -34,6 +35,8 @@ pub fn unpack(private: u32) -> (u8, bool, ElemKind) {
         2 => ElemKind::Jack,
         3 => ElemKind::CaptureSource,
         4 => ElemKind::MasterVolume,
+        5 => ElemKind::MasterSwitch,
+        6 => ElemKind::ChannelMode,
         _ => ElemKind::MasterSwitch,
     };
     ((private & NID_MASK) as u8, private & OUTPUT_BIT != 0, kind)
