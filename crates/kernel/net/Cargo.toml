@@ -26,6 +26,7 @@ softirq  = { path = "../softirq" }
 cpu      = { path = "../cpu" }
 pmm      = { path = "../mm-pmm" }
 security = { path = "../security" }
+selinux = { path = "../selinux" }
 selinux-runtime = { path = "../selinux-runtime" }
 cgroup   = { path = "../cgroup" }
 crng     = { path = "../crng" }

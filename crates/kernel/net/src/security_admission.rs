@@ -11,12 +11,32 @@ pub fn check(namespace: u64, family: u16, operation: security::network::Operatio
     Ok(())
 }
 
+pub fn check_socket(namespace: u64, family: u16, operation: security::network::Operation,
+                    target_sid: u32, target_class: &'static str) -> Result<(), crate::NetError> {
+    let context = security::network::Context::op(namespace, family, 0, 0, operation);
+    if matches!(security::network::evaluate_socket(context, target_sid, target_class),
+        security::network::Verdict::Deny) {
+        return Err(crate::NetError::Eacces);
+    }
+    Ok(())
+}
+
 /// Evaluate a `listen(2)` decision, carrying the post-clamp backlog so an
 /// installed hook can see it — Linux passes `security_socket_listen(sock,
 /// backlog)` the same clamped value. # C: O(1)
 pub fn check_listen(namespace: u64, family: u16, backlog: u32) -> Result<(), crate::NetError> {
     let context = security::network::Context::listen(namespace, family, 0, 0, backlog);
     if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
+        return Err(crate::NetError::Eacces);
+    }
+    Ok(())
+}
+
+pub fn check_socket_listen(namespace: u64, family: u16, backlog: u32, target_sid: u32,
+                           target_class: &'static str) -> Result<(), crate::NetError> {
+    let context = security::network::Context::listen(namespace, family, 0, 0, backlog);
+    if matches!(security::network::evaluate_socket(context, target_sid, target_class),
+        security::network::Verdict::Deny) {
         return Err(crate::NetError::Eacces);
     }
     Ok(())

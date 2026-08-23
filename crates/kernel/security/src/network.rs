@@ -33,7 +33,13 @@ pub struct Context { pub namespace: u64, pub family: u16, pub socket_type: u32,
     /// `listen(2)`'s backlog, post-`somaxconn` clamp, matching what the Linux
     /// LSM hook receives via `security_socket_listen(sock, backlog)`. `None`
     /// for every operation other than `Listen`.
-    pub backlog: Option<u32> }
+    pub backlog: Option<u32>,
+    /// The retained security label of the socket, when the caller has one.
+    /// `NO_LABEL` means that the operation is metadata-only and has no socket
+    /// object available at this generic boundary.
+    pub target_sid: u32,
+    /// SELinux's policy class for the retained socket object.
+    pub target_class: &'static str }
 
 impl Context {
     /// One operation on a socket that names no option. # C: O(1)
@@ -41,7 +47,7 @@ impl Context {
                     operation: Operation) -> Self
     {
         Self { namespace, family, socket_type, protocol, operation, option: OptionId::NONE,
-               backlog: None }
+               backlog: None, target_sid: NO_LABEL, target_class: "socket" }
     }
 
     /// One option access, carrying the level and option number the decision is
@@ -50,7 +56,8 @@ impl Context {
                         operation: Operation, level: i32, optname: i32) -> Self
     {
         Self { namespace, family, socket_type, protocol, operation,
-               option: OptionId { level, optname }, backlog: None }
+               option: OptionId { level, optname }, backlog: None,
+               target_sid: NO_LABEL, target_class: "socket" }
     }
 
     /// A `listen(2)` decision, carrying the backlog the caller passed after
@@ -59,7 +66,14 @@ impl Context {
                         backlog: u32) -> Self
     {
         Self { namespace, family, socket_type, protocol, operation: Operation::Listen,
-               option: OptionId::NONE, backlog: Some(backlog) }
+               option: OptionId::NONE, backlog: Some(backlog),
+               target_sid: NO_LABEL, target_class: "socket" }
+    }
+
+    pub const fn on_socket(mut self, target_sid: u32, target_class: &'static str) -> Self {
+        self.target_sid = target_sid;
+        self.target_class = target_class;
+        self
     }
 }
 
@@ -83,6 +97,11 @@ impl<T> NetworkBhLock<T> {
 static HOOKS: NetworkBhLock<BTreeMap<u64, BTreeMap<Operation, Arc<Entry>>>> =
     NetworkBhLock::new(BTreeMap::new());
 
+/// Global LSM providers are evaluated for every network namespace. Linux's
+/// SELinux hook list is global; namespace-local providers remain in `HOOKS`.
+static GLOBAL_HOOKS: NetworkBhLock<BTreeMap<Operation, Arc<Entry>>> =
+    NetworkBhLock::new(BTreeMap::new());
+
 /// Linux's LSM hook static keys: when no hook exists for an operation, the
 /// datapath does one acquire load and never touches the mutable registry.
 static ACTIVE_OPERATIONS: AtomicU32 = AtomicU32::new(0);
@@ -91,9 +110,12 @@ impl Operation {
     const fn bit(self) -> u32 { 1 << self as u32 }
 }
 
-fn publish_active_operations(all: &BTreeMap<u64, BTreeMap<Operation, Arc<Entry>>>) {
-    let mask = all.values().flat_map(|ops| ops.keys())
-        .fold(0u32, |mask, operation| mask | operation.bit());
+fn publish_active() {
+    let all = HOOKS.lock();
+    let global = GLOBAL_HOOKS.lock();
+    let mut mask = global.keys().fold(0, |m, op| m | op.bit());
+    mask = all.values().flat_map(|ops| ops.keys())
+        .fold(mask, |m, op| m | op.bit());
     ACTIVE_OPERATIONS.store(mask, Ordering::Release);
 }
 
@@ -102,15 +124,42 @@ pub fn install(namespace: u64, operation: Operation, hook: Hook) -> Option<Hook>
     let old = all.entry(namespace).or_default().insert(operation, Arc::new(Entry {
         hook, allowed: AtomicU64::new(0), denied: AtomicU64::new(0),
     }));
-    publish_active_operations(&all);
+    drop(all);
+    publish_active();
     old.map(|entry| entry.hook)
+}
+
+pub fn install_global(operation: Operation, hook: Hook) -> Option<Hook> {
+    let mut all = GLOBAL_HOOKS.lock();
+    let old = all.insert(operation, Arc::new(Entry {
+        hook, allowed: AtomicU64::new(0), denied: AtomicU64::new(0),
+    }));
+    drop(all);
+    publish_active();
+    old.map(|entry| entry.hook)
+}
+
+/// Evaluate a namespace-scoped operation against a retained socket object. # C: O(1)
+pub fn evaluate_socket(mut context: Context, target_sid: u32, target_class: &'static str)
+    -> Verdict
+{
+    context.target_sid = target_sid;
+    context.target_class = target_class;
+    evaluate(context)
 }
 
 pub fn remove(namespace: u64, operation: Operation) -> Option<Hook> {
     let mut all = HOOKS.lock();
     let old = all.get_mut(&namespace)?.remove(&operation);
     if all.get(&namespace).is_some_and(BTreeMap::is_empty) { all.remove(&namespace); }
-    publish_active_operations(&all);
+    drop(all);
+    publish_active();
+    old.map(|entry| entry.hook)
+}
+
+pub fn remove_global(operation: Operation) -> Option<Hook> {
+    let old = GLOBAL_HOOKS.lock().remove(&operation);
+    publish_active();
     old.map(|entry| entry.hook)
 }
 
@@ -122,7 +171,8 @@ pub fn remove(namespace: u64, operation: Operation) -> Option<Hook> {
 pub fn remove_namespace(namespace: u64) -> usize {
     let mut all = HOOKS.lock();
     let removed = all.remove(&namespace).map_or(0, |ops| ops.len());
-    publish_active_operations(&all);
+    drop(all);
+    publish_active();
     removed
 }
 
@@ -164,6 +214,16 @@ pub fn evaluate(context: Context) -> Verdict {
     if ACTIVE_OPERATIONS.load(Ordering::Acquire) & context.operation.bit() == 0 {
         return Verdict::Allow;
     }
+    let global = {
+        let all = GLOBAL_HOOKS.lock();
+        all.get(&context.operation).cloned()
+    };
+    if let Some(entry) = global {
+        let verdict = (entry.hook)(context);
+        match verdict { Verdict::Allow => { entry.allowed.fetch_add(1, Ordering::Relaxed); }
+            Verdict::Deny => { entry.denied.fetch_add(1, Ordering::Relaxed); } }
+        if matches!(verdict, Verdict::Deny) { return verdict; }
+    }
     let entry = {
         let all = HOOKS.lock();
         all.get(&context.namespace).and_then(|ops| ops.get(&context.operation)).cloned()
@@ -189,6 +249,7 @@ mod tests {
     fn deny(ctx: Context) -> Verdict { assert_eq!(ctx.namespace, 7); Verdict::Deny }
     fn deny_any(_ctx: Context) -> Verdict { Verdict::Deny }
     fn allow(_ctx: Context) -> Verdict { Verdict::Allow }
+    fn global_deny(_ctx: Context) -> Verdict { Verdict::Deny }
     fn message_label(ctx: MessageContext<'_>) -> Option<alloc::vec::Vec<u8>> {
         assert!(ctx.sender.is_none());
         Some(alloc::vec::Vec::from(&b"system_u:system_r:sender_t"[..]))
@@ -278,6 +339,18 @@ mod tests {
         assert_eq!(evaluate(Context::op(23, 2, 1, 6, Operation::Create)), Verdict::Allow);
         assert_eq!(remove_namespace(21), operations.len());
         assert_eq!(remove_namespace(22), operations.len());
+    }
+
+    #[test]
+    fn global_provider_runs_before_namespace_provider() {
+        let _ = remove_global(Operation::Packet);
+        let _ = remove_namespace(24);
+        assert_eq!(install_global(Operation::Packet, global_deny), None);
+        assert_eq!(install(24, Operation::Packet, allow), None);
+        assert_eq!(evaluate(Context::op(24, 2, 1, 17, Operation::Packet)), Verdict::Deny);
+        assert_eq!(remove_global(Operation::Packet), Some(global_deny as Hook));
+        assert_eq!(evaluate(Context::op(24, 2, 1, 17, Operation::Packet)), Verdict::Allow);
+        assert_eq!(remove_namespace(24), 1);
     }
 
     #[test]

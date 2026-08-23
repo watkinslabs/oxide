@@ -34,21 +34,32 @@ pub struct MsgSock {
     pub namespace: u64,
     pub family: u16,
     pub proto: Proto,
+    pub target_sid: u32,
+    pub target_class: &'static str,
 }
 
 /// Describe one internet-family socket to the message hooks. # C: O(1)
 pub fn inet(sock: &crate::sock::InetSocket) -> MsgSock {
+    let socket_type = sock.opts.so_type.load(core::sync::atomic::Ordering::Acquire);
+    let target_class = match socket_type {
+        1 => "tcp_socket",
+        3 => "rawip_socket",
+        _ => "udp_socket",
+    };
     MsgSock {
         namespace: sock.net_ns(),
         family: sock.family.load(core::sync::atomic::Ordering::Acquire),
         proto: crate::landlock_addr::sock_proto(sock),
+        target_sid: sock.security_label(),
+        target_class,
     }
 }
 
 /// Describe one socket that carries no port rules — every family outside the
 /// internet transports the sandbox writes rules for. # C: O(1)
 pub fn other(namespace: u64, family: u16) -> MsgSock {
-    MsgSock { namespace, family, proto: Proto::Other }
+    MsgSock { namespace, family, proto: Proto::Other,
+              target_sid: security::network::NO_LABEL, target_class: "socket" }
 }
 
 /// The sandbox module's send hook.
@@ -89,8 +100,8 @@ pub fn sendmsg(domain: Option<&Arc<Domain>>, sock: MsgSock, name: Option<&[u8]>,
     -> Result<(), NetError>
 {
     sandbox_send(domain, sock, name, flags)?;
-    crate::security_admission::check(sock.namespace, sock.family,
-                                     security::network::Operation::Send)
+    crate::security_admission::check_socket(sock.namespace, sock.family,
+        security::network::Operation::Send, sock.target_sid, sock.target_class)
 }
 
 /// Whether this task may consume one message from this socket.
@@ -101,8 +112,8 @@ pub fn sendmsg(domain: Option<&Arc<Domain>>, sock: MsgSock, name: Option<&[u8]>,
 /// once per queue poll.
 /// # C: O(1)
 pub fn recvmsg(sock: MsgSock, _flags: u64) -> Result<(), NetError> {
-    crate::security_admission::check(sock.namespace, sock.family,
-                                     security::network::Operation::Receive)
+    crate::security_admission::check_socket(sock.namespace, sock.family,
+        security::network::Operation::Receive, sock.target_sid, sock.target_class)
 }
 
 #[cfg(test)]

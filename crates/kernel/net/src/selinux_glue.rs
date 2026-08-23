@@ -8,6 +8,45 @@
 
 use syscall::errno::Errno;
 
+fn operation_permission(operation: security::network::Operation) -> &'static str {
+    use security::network::Operation::*;
+    match operation {
+        Create | SocketPair => "create",
+        Bind => "bind",
+        Connect => "connect",
+        Listen => "listen",
+        Accept => "accept",
+        Send | Packet => "sendto",
+        Receive => "recvfrom",
+        Shutdown => "shutdown",
+        NameQuery => "getattr",
+        SetOption => "setopt",
+        GetOption => "getopt",
+        Ioctl => "ioctl",
+    }
+}
+
+/// The SELinux socket hook consumes the socket SID retained by the network
+/// object. Metadata-only admissions deliberately carry `NO_LABEL`; those
+/// callers are completed by the socket-aware path before they reach policy.
+fn socket_hook(context: security::network::Context) -> security::network::Verdict {
+    if context.target_sid == security::network::NO_LABEL {
+        return security::network::Verdict::Allow;
+    }
+    let Some(class) = selinux::uapi::classmap::class_by_name(context.target_class) else {
+        return security::network::Verdict::Allow;
+    };
+    let Some(permission) = selinux::uapi::classmap::perm_bit(class,
+        operation_permission(context.operation)) else {
+        return security::network::Verdict::Allow;
+    };
+    match selinux_runtime::check::has_perm(selinux_runtime::task::current_sid(),
+                                            context.target_sid, class, permission) {
+        Ok(()) => security::network::Verdict::Allow,
+        Err(_) => security::network::Verdict::Deny,
+    }
+}
+
 fn create(class: security::network::SocketClass) -> u32 {
     let name = socket_class_name(class, selinux_runtime::network::extended_socket_class());
     selinux_runtime::network::create_sid(name)
@@ -45,12 +84,21 @@ fn context(label: u32) -> Result<alloc::vec::Vec<u8>, Errno> {
 /// replacing the first, so two callers cannot leave sockets labelled from one
 /// module and rendered by another.
 pub fn init() -> bool {
-    security::network::install_socket_label(security::network::SocketLabelOps {
+    let labels = security::network::install_socket_label(security::network::SocketLabelOps {
         create,
         unlabeled: selinux_runtime::network::unlabeled(),
         context,
         server_end: selinux_runtime::network::server_end_sid,
-    })
+    });
+    if !labels { return false; }
+    use security::network::Operation;
+    for operation in [Operation::Create, Operation::Bind, Operation::Connect,
+        Operation::Listen, Operation::Accept, Operation::Send, Operation::Receive,
+        Operation::Shutdown, Operation::NameQuery, Operation::SocketPair,
+        Operation::SetOption, Operation::GetOption, Operation::Ioctl, Operation::Packet] {
+        let _ = security::network::install_global(operation, socket_hook);
+    }
+    true
 }
 
 /// Resolve the security context used by an nft SECMARK object through the
