@@ -214,6 +214,17 @@ pub fn step(res: i64, passes: u32, nonempty: bool) -> Step {
     Step::More
 }
 
+/// Decide one pass of an intrinsically multishot file read. Unlike a socket,
+/// a file has no queue-length flag to consult: every positive read is another
+/// delivery, `EAGAIN` hands the request to poll, and EOF or another error is
+/// the terminal completion. # C: O(1)
+pub fn read_step(res: i64, passes: u32) -> Step {
+    if res == eagain() { return Step::Wait; }
+    if res <= 0 { return Step::Done(res); }
+    if passes + 1 >= MULTISHOT_MAX_RETRY { return Step::Yield; }
+    Step::More
+}
+
 /// The message flags one pass of a multishot receive runs with. # C: O(1)
 pub fn pass_msg_flags(msg_flags: u32) -> u32 { msg_flags | MSG_DONTWAIT }
 

@@ -57,7 +57,7 @@
 //                 that can carry it.
 //   rw_vec      — the vectored-fixed transfers: the segment vector, the
 //                 registration its segments address, and the wire form of one
-//                 segment. NOT the multishot read, which has no handler.
+//                 segment, including the provided-buffer multishot read.
 //   splice      — `IORING_OP_SPLICE`/`TEE`: the flag word, the registered-file
 //                 input descriptor, and the offsets a tee may not carry.
 //   epoll_op    — `IORING_OP_EPOLL_CTL`/`EPOLL_WAIT`: the field ladder, and

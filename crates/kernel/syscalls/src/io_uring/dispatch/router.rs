@@ -93,7 +93,7 @@ fn run(op: &Op) -> i64 {
         // Handled by `dispatch_op`, which is the only caller that can report
         // the 32-byte completion a nop may ask for.
         IORING_OP_NOP | IORING_OP_NOP128 => 0,
-        IORING_OP_READ            => rw::read(op),
+        IORING_OP_READ | IORING_OP_READ_MULTISHOT => rw::read(op),
         IORING_OP_WRITE           => rw::write(op),
         IORING_OP_READV           => rw::readv(op),
         IORING_OP_WRITEV          => rw::writev(op),

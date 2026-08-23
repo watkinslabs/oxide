@@ -146,7 +146,8 @@ pub fn issue(req: &Arc<IoReq>) {
     if crate::io_uring::poll::arm_first(req) { return; }
     // A multishot receive is not one transfer: it stays armed and reports
     // each delivery, so it owns its own completions from here.
-    if crate::io_uring_abi::recvsend::multishot(req.opcode(), req.sqe.flags, req.sqe.ioprio) {
+    if crate::io_uring_abi::ops::read_multishot(req.opcode())
+        || crate::io_uring_abi::recvsend::multishot(req.opcode(), req.sqe.flags, req.sqe.ioprio) {
         return crate::io_uring::mshot::run_multishot(req);
     }
     if matches!(req.opcode(), crate::io_uring_abi::ops::IORING_OP_URING_CMD | crate::io_uring_abi::ops::IORING_OP_URING_CMD128) {

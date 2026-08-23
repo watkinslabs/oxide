@@ -5060,3 +5060,9 @@ against the row's own evidence.
 ### B2617-pstore-ftrace-pmsg-producer-stale
 
 | FIXED B2617 | MISSING | low | The pstore ftrace/pmsg-zone row was stale: this tree has no ftrace producer or `/dev/pmsg0` producer, so carving empty zones would expose unsupported interfaces. | `pstore::geometry` intentionally carves only dmesg and console zones; the existing producer audit found no ftrace or pmsg writer. | B2617 |
+
+### B2618-io-uring-read-multishot
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2618 | MISSING | low | `IORING_OP_READ_MULTISHOT` is now advertised and dispatched as a persistent provided-buffer read. | The opcode is admitted only with `IOSQE_BUFFER_SELECT`, uses the existing io_uring multishot request/re-arm path, posts one completion per positive read with the selected buffer, waits on `EAGAIN`, and terminates on EOF/error. ABI and re-arm tests cover family membership, buffer selection, repeated delivery, yield, wait, and terminal results. | B2618 |

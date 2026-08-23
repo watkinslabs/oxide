@@ -179,7 +179,7 @@ pub fn op_family(op: u8) -> Option<OpFamily> {
     Some(match op {
         IORING_OP_NOP | IORING_OP_NOP128 => Ring,
 
-        IORING_OP_READ | IORING_OP_WRITE | IORING_OP_READV | IORING_OP_WRITEV
+        IORING_OP_READ | IORING_OP_READ_MULTISHOT | IORING_OP_WRITE | IORING_OP_READV | IORING_OP_WRITEV
         | IORING_OP_READ_FIXED | IORING_OP_WRITE_FIXED
         | IORING_OP_READV_FIXED | IORING_OP_WRITEV_FIXED
         | IORING_OP_FSYNC | IORING_OP_SYNC_FILE_RANGE | IORING_OP_FALLOCATE
@@ -228,8 +228,18 @@ pub fn op_supported(op: u8) -> bool { op_family(op).is_some() }
 /// group is the caller's outbound queue there, and the completion hands the
 /// buffer back the same way a receive does. # C: O(1)
 pub fn op_buffer_select(op: u8) -> bool {
-    matches!(op, IORING_OP_READ | IORING_OP_READV | IORING_OP_RECV | IORING_OP_RECVMSG
+    matches!(op, IORING_OP_READ | IORING_OP_READ_MULTISHOT | IORING_OP_READV | IORING_OP_RECV | IORING_OP_RECVMSG
                  | IORING_OP_SEND)
+}
+
+/// `IORING_OP_READ_MULTISHOT` is intrinsically persistent; unlike the
+/// receive family it has no per-SQE multishot bit. # C: O(1)
+pub fn read_multishot(op: u8) -> bool { op == IORING_OP_READ_MULTISHOT }
+
+/// Admission rule for the persistent read: every completion needs a fresh
+/// destination, so a caller-supplied SQE address cannot be reused. # C: O(1)
+pub fn read_multishot_has_group(op: u8, sqe_flags: u8) -> bool {
+    !read_multishot(op) || sqe_flags & IOSQE_BUFFER_SELECT != 0
 }
 
 #[cfg(test)]

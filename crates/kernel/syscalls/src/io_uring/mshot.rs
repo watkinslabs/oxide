@@ -39,6 +39,7 @@ pub fn run_multishot(req: &Arc<IoReq>) {
     // the description instead of holding this worker on it.
     sqe.op_flags = pass_msg_flags(sqe.op_flags);
     let mut passes: u32 = 0;
+    let read_multi = crate::io_uring_abi::ops::read_multishot(req.opcode());
     loop {
         // The whole per-pass transfer — drawing the buffer from the group,
         // receiving into it, and retiring the part it filled — is the same
@@ -46,7 +47,8 @@ pub fn run_multishot(req: &Arc<IoReq>) {
         // called rather than repeated here.
         let out = super::dispatch::dispatch_op(&req.ring, &sqe);
         let nonempty = out.cqe_flags & IORING_CQE_F_SOCK_NONEMPTY != 0;
-        match step(out.res, passes, nonempty) {
+        match if read_multi { crate::io_uring_abi::recvsend::read_step(out.res, passes) }
+              else { step(out.res, passes, nonempty) } {
             Step::Wait => {
                 // Nothing to deliver. The poll layer owns the request from
                 // here; if the description cannot be polled there is no
