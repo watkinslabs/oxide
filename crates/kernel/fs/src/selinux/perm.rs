@@ -50,13 +50,39 @@ pub fn mprotect_file(inode: &InodeRef, shared_write: bool, executable: bool, exe
         read | write | execute | execmod).map_err(|_| VfsError::Eacces)
 }
 
-pub fn file_ioctl(inode: &InodeRef, _cmd: u32) -> KResult<()> {
+fn file_permission(inode: &InodeRef, permission: &'static str) -> KResult<()> {
     if !selinux_runtime::active() { return Ok(()) }
     let Some(isid) = super::label::inode_sid(inode) else { return Ok(()) };
     let Some(class) = super::label::inode_security_class(inode) else { return Ok(()) };
-    let ioctl = selinux::uapi::classmap::perm_bit(class, "ioctl").unwrap_or(0);
-    selinux_runtime::check::has_perm(selinux_runtime::task::current_sid(), isid, class, ioctl)
+    let Some(bit) = selinux::uapi::classmap::perm_bit(class, permission) else { return Ok(()) };
+    selinux_runtime::check::has_perm(selinux_runtime::task::current_sid(), isid, class, bit)
         .map_err(|_| VfsError::Eacces)
+}
+
+pub fn file_ioctl(inode: &InodeRef, cmd: u32) -> KResult<()> {
+    // These command values are the stable UAPI values used by Linux's
+    // selinux_file_ioctl() dispatch. They intentionally select the object
+    // permission that the command actually exercises before the generic
+    // ioctl permission is considered.
+    const FIONREAD: u32 = 0x541B;
+    const FIBMAP: u32 = 0x0001;
+    const FIGETBSZ: u32 = 0x0002;
+    const FIONBIO: u32 = 0x5421;
+    const FIOASYNC: u32 = 0x5452;
+    const FS_IOC_GETFLAGS: u32 = 0x8008_6601;
+    const FS_IOC_SETFLAGS: u32 = 0x4008_6602;
+    const FS_IOC_GETVERSION: u32 = 0x8008_7601;
+    const FS_IOC_SETVERSION: u32 = 0x4008_7602;
+
+    match cmd {
+        FIONREAD | FIBMAP | FIGETBSZ | FS_IOC_GETFLAGS | FS_IOC_GETVERSION =>
+            file_permission(inode, "getattr"),
+        FS_IOC_SETFLAGS | FS_IOC_SETVERSION => file_permission(inode, "setattr"),
+        // Linux's hook passes zero here: sys_ioctl() owns the actual
+        // FIONBIO/FIOASYNC state transition.
+        FIONBIO | FIOASYNC => Ok(()),
+        _ => file_permission(inode, "ioctl"),
+    }
 }
 
 /// Linux `selinux_mount`: mounting requires `file:mounton` on the target
