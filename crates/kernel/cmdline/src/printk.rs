@@ -77,6 +77,38 @@ pub fn boot_delay_ms(line: &[u8]) -> Option<u32> {
     (ms <= 10_000).then_some(ms as u32)
 }
 
+/// `log_buf_len=` requests the byte capacity of the printk ring. Linux's
+/// early `memparse()` accepts binary K/M/G/T/P/E suffixes and rounds the
+/// requested capacity up to a power of two before allocating it.
+/// # C: O(line length)
+pub fn log_buf_len(line: &[u8]) -> Option<usize> {
+    let raw = value(line, b"log_buf_len")?;
+    let bytes = memsize(raw)?;
+    if bytes == 0 || bytes > usize::MAX as u64 { return None; }
+    let mut size = bytes as usize;
+    if !size.is_power_of_two() {
+        size = size.checked_next_power_of_two()?;
+    }
+    Some(size)
+}
+
+fn memsize(raw: &[u8]) -> Option<u64> {
+    let (number, consumed) = crate::token::parse_uint(raw);
+    if consumed == 0 { return None; }
+    let shift: u32 = match raw.get(consumed).copied() {
+        None => 0,
+        Some(b'K' | b'k') => 10,
+        Some(b'M' | b'm') => 20,
+        Some(b'G' | b'g') => 30,
+        Some(b'T' | b't') => 40,
+        Some(b'P' | b'p') => 50,
+        Some(b'E' | b'e') => 60,
+        Some(_) => return None,
+    };
+    if consumed + if shift == 0 { 0 } else { 1 } != raw.len() { return None; }
+    number.checked_shl(shift)
+}
+
 /// `initcall_debug`: trace each boot init step's entry, return value and
 /// elapsed time. A boot that never completes then names the step it entered
 /// last, which a silent boot cannot.
@@ -105,7 +137,6 @@ fn parse_bool(v: &[u8]) -> Option<bool> {
 /// # C: O(1)
 pub fn unsupported_parameter(name: &[u8]) -> Option<&'static str> {
     match name {
-        b"log_buf_len" => Some("log_buf_len: record ring is a fixed-size static"),
         b"slub_debug" => Some("slub_debug: allocator debug is build-time only"),
         b"page_poison" => Some("page_poison: page poisoning is build-time only"),
         b"debug_pagealloc" => Some("debug_pagealloc: page-alloc debug is build-time only"),

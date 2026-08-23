@@ -85,12 +85,12 @@ fn no_console_suspend_is_a_bare_disable() {
 fn a_recognised_but_unhonoured_parameter_is_named() {
     // The defect this guards is a knob that parses and does nothing. Each of
     // these must produce a boot-time line saying which subsystem it needs.
-    for p in [&b"log_buf_len"[..], b"slub_debug", b"page_poison",
+    for p in [&b"slub_debug"[..], b"page_poison",
               b"debug_pagealloc"] {
         assert!(unsupported_parameter(p).is_some(), "parameter must announce that it is inert");
     }
     for p in [&b"earlycon"[..], b"loglevel", b"panic_on_warn", b"softlockup_panic", b"panic", b"oops", b"initcall_debug",
-              b"hung_task_panic", b"hung_task_timeout_secs", b"nmi_watchdog", b"no_console_suspend"] {
+              b"hung_task_panic", b"hung_task_timeout_secs", b"nmi_watchdog", b"log_buf_len", b"no_console_suspend"] {
         assert_eq!(unsupported_parameter(p), None, "an implemented parameter must not be announced as inert");
     }
 }
@@ -101,4 +101,14 @@ fn unsupported_scan_finds_them_on_a_real_line() {
     let mut n = 0;
     for _ in unsupported_in(line) { n += 1; }
     assert_eq!(n, 1, "only the inert allocator knob is named — both lockup controls are honoured");
+}
+
+#[test]
+fn log_buf_len_accepts_linux_binary_suffixes_and_rounds_up() {
+    assert_eq!(log_buf_len(b"log_buf_len=65536"), Some(65_536));
+    assert_eq!(log_buf_len(b"log_buf_len=96K"), Some(131_072));
+    assert_eq!(log_buf_len(b"log_buf_len=1M"), Some(1_048_576));
+    assert_eq!(log_buf_len(b"log_buf_len=0"), None);
+    assert_eq!(log_buf_len(b"log_buf_len=12MB"), None);
+    assert_eq!(log_buf_len(b"log_buf_len_extra=1M"), None);
 }

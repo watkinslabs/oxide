@@ -121,6 +121,19 @@ pub unsafe fn init(info: &BootInfo) {
     drv::set_devtmpfs_del_hook(devfs::del_device_node);
     // SAFETY: boot-only single-writer, pre-userspace; install_arch_default is idempotent (no-op if the slot is set) and cannot race a procfs reader here.
     unsafe { crate::boot_cmdline::install_arch_default(); }
+    // Linux sizes printk after its early allocator is available, preserving
+    // bootstrap records while moving them into the requested boot-time ring.
+    // The leaked slice is kernel-lifetime storage owned by klog.
+    if let Some(bytes) = cmdline::printk::log_buf_len(crate::boot_cmdline::get()) {
+        let mut storage = alloc::vec::Vec::new();
+        if storage.try_reserve_exact(bytes).is_ok() {
+            storage.resize(bytes, 0);
+            let storage = alloc::boxed::Box::leak(storage.into_boxed_slice());
+            let _ = klog::install_ring_storage(storage);
+        } else {
+            klog::write_raw(b"log_buf_len: requested storage unavailable; keeping default\n");
+        }
+    }
     boot_diag::log_cmdline();
     // The security server, once the command line it reads is installed and
     // before the first user process needs a label (`62§10`). Installed even
