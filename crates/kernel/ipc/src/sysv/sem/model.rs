@@ -165,7 +165,7 @@ pub fn newary(ns: NamespaceId, key: i32, nsems: usize, semflg: i32, cred: &IpcCr
     let (idx, seq, id) = g.ids.alloc_idx(ns, SEMMNI).ok_or(Errno::Enospc)?;
     let now = block::real_seconds();
     let set = Arc::new(SemSet {
-        perm: IpcPerm::new(key, id, seq, semflg, cred),
+        perm: IpcPerm::new(key, id, seq, semflg, cred, "sem"),
         nsems, ns,
         state: Spinlock::new(SemState { sems, otime: 0, ctime: now, removed: false }),
         wait: WaitList::new(),

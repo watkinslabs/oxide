@@ -32,7 +32,7 @@ pub fn msgget(ns: NamespaceId, key: i32, msgflg: i32, cred: &IpcCred) -> Result<
             }
             Some(q) => {
                 if (msgflg & IPC_CREAT) != 0 && (msgflg & IPC_EXCL) != 0 { return Err(Errno::Eexist); }
-                if !q.perm.permitted(cred, msgflg) { return Err(Errno::Eacces); }
+                if !q.perm.permitted_selinux(cred, msgflg, "msgq") { return Err(Errno::Eacces); }
                 Ok(q.perm.id)
             }
         }

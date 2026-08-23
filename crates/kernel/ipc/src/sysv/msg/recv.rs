@@ -35,7 +35,7 @@ pub fn msgrcv(ns: NamespaceId, msqid: i32, uptr: u64, bufsz: u64, msgtyp: i64, m
     let msg = loop {
         // Linux tests `ipcperms` outside `ipc_lock_object`, ahead of the
         // removal check, so a stricter mode installed by IPC_SET is EACCES.
-        if !q.perm.permitted(cred, S_IRUGO) { return Err(Errno::Eacces); }
+        if !q.perm.permitted_selinux(cred, S_IRUGO, "msgq") { return Err(Errno::Eacces); }
         let mut st = q.state.lock();
         // B1427: read under the same lock the park below registers under.
         if q.is_removed() { return Err(Errno::Eidrm); }

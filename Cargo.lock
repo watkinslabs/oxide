@@ -1381,6 +1381,7 @@ dependencies = [
  "netlink",
  "pmm",
  "sched",
+ "selinux-runtime",
  "sync",
  "syscall",
  "timekeeper",

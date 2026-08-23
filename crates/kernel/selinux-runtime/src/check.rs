@@ -62,6 +62,30 @@ pub fn capability(ssid: Sid, cap: u32, init_namespace: bool) -> Result<(), i64> 
     has_perm(ssid, ssid, class, bit)
 }
 
+/// Label a newly-created kernel IPC object using the policy transition for its
+/// concrete object class. # C: O(1)
+pub fn create_sid(class_name: &'static str) -> Sid {
+    let sid = crate::task::current_sid();
+    let Some(class) = selinux::uapi::classmap::class_by_name(class_name) else { return sid };
+    crate::with(|s| s.transition_sid(sid, sid, class, None).unwrap_or(sid)).unwrap_or(sid)
+}
+
+/// Check SysV IPC read/write access against the object label. # C: O(1) cached
+pub fn ipc_permission(ssid: Sid, tsid: Sid, class_name: &'static str, requested: i32)
+    -> Result<(), i64>
+{
+    let class = selinux::uapi::classmap::class_by_name(class_name).ok_or(EACCES)?;
+    let mut av = 0;
+    if requested & 0o444 != 0 {
+        av |= selinux::uapi::classmap::perm_bit(class, "unix_read").unwrap_or(0);
+    }
+    if requested & 0o222 != 0 {
+        av |= selinux::uapi::classmap::perm_bit(class, "unix_write").unwrap_or(0);
+    }
+    if av == 0 { return Ok(()) }
+    has_perm(ssid, tsid, class, av)
+}
+
 /// Emit the record describing one denial or audited grant.
 ///
 /// The record names the permissions, the class and both contexts. Naming the

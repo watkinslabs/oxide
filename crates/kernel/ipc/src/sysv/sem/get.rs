@@ -31,7 +31,7 @@ pub fn semget_in(ns: NamespaceId, cred: &IpcCred, key: i32, nsems: i32, semflg: 
     // `sem_more_checks`: an existing set must be at least as wide as asked for.
     if nsems > set.nsems { return Err(Errno::Einval); }
     // `ipc_check_perms`: the requested mode bits must be granted.
-    if !set.perm.permitted(cred, semflg) { return Err(Errno::Eacces); }
+    if !set.perm.permitted_selinux(cred, semflg, "sem") { return Err(Errno::Eacces); }
     Ok(set.perm.id)
 }
 

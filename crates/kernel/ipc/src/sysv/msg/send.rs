@@ -55,7 +55,7 @@ pub fn msgsnd(ns: NamespaceId, msqid: i32, uptr: u64, msgsz: u64, msgflg: i32, c
     let q = model::lookup_checked(ns, msqid)?;
     loop {
         let mut st = q.state.lock();
-        if !q.perm.permitted(cred, S_IWUGO) { return Err(Errno::Eacces); }
+        if !q.perm.permitted_selinux(cred, S_IWUGO, "msgq") { return Err(Errno::Eacces); }
         // B1427: `removed` is read under the same lock the park below registers
         // under, so a racing IPC_RMID is EIDRM rather than a lost wakeup.
         if q.is_removed() { return Err(Errno::Eidrm); }

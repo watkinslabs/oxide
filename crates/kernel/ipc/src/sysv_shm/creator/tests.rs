@@ -201,6 +201,7 @@ fn forced_rmid_reclaims_a_never_rmided_segment_at_its_last_detach() {
         id: 60_100, key: core::sync::atomic::AtomicI32::new(0x5800), ns: crate::ipc_namespace::current().unwrap().key(),
         size: SEG_SIZE, mode: core::sync::atomic::AtomicU32::new(SEG_MODE as u32),
         uid: core::sync::atomic::AtomicU32::new(0), gid: core::sync::atomic::AtomicU32::new(0), cuid: 0, cgid: 0, cpid: 1,
+        security_sid: core::sync::atomic::AtomicU32::new(selinux_runtime::label::kernel_sid()),
         nattch: core::sync::atomic::AtomicI64::new(2),
         creator: sync::Spinlock::new(None),
         backing: backing(),

@@ -88,13 +88,16 @@ pub struct IpcPerm {
     pub cgid: u32,
     /// Low 9 bits are `S_IRWXUGO`; upper bits carry class-private flags.
     pub mode: AtomicU32,
+    /// SELinux's retained `kern_ipc_perm` SID.
+    pub security_sid: AtomicU32,
 }
 
 impl IpcPerm {
     /// Build the perm block for a freshly created object. `mode` is masked to
     /// `S_IRWXUGO` exactly as `newary`/`newque` do.
     /// # C: O(1)
-    pub fn new(key: i32, id: i32, seq: u16, flg: i32, cred: &IpcCred) -> Self {
+    pub fn new(key: i32, id: i32, seq: u16, flg: i32, cred: &IpcCred,
+               class_name: &'static str) -> Self {
         Self {
             key, id, seq,
             uid: AtomicU32::new(cred.euid),
@@ -102,6 +105,7 @@ impl IpcPerm {
             cuid: cred.euid,
             cgid: cred.egid,
             mode: AtomicU32::new((flg as u32) & S_IRWXUGO),
+            security_sid: AtomicU32::new(selinux_runtime::check::create_sid(class_name)),
         }
     }
 
@@ -130,5 +134,12 @@ impl IpcPerm {
         self.gid.store(gid, Ordering::Release);
         let cur = self.mode.load(Ordering::Acquire);
         self.mode.store((cur & !S_IRWXUGO) | (mode & S_IRWXUGO), Ordering::Release);
+    }
+
+    pub fn permitted_selinux(&self, cred: &IpcCred, flg: i32, class_name: &'static str) -> bool {
+        self.permitted(cred, flg)
+            && selinux_runtime::check::ipc_permission(
+                selinux_runtime::task::current_sid(),
+                self.security_sid.load(Ordering::Acquire), class_name, flg).is_ok()
     }
 }

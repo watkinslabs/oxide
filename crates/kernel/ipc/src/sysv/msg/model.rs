@@ -107,7 +107,7 @@ pub fn with_ids<R>(f: impl FnOnce(&mut IpcIds<MsgQueue>) -> R) -> R {
 /// a caller that already reserved `(idx, seq, id)`. # C: O(1)
 pub fn new_queue(ns: NamespaceId, key: i32, id: i32, seq: u16, msgflg: i32, cred: &IpcCred) -> Arc<MsgQueue> {
     Arc::new(MsgQueue {
-        perm: IpcPerm::new(key, id, seq, msgflg, cred),
+            perm: IpcPerm::new(key, id, seq, msgflg, cred, "msgq"),
         ns,
         state: Spinlock::new(QueueState {
             msgs: VecDeque::new(),
