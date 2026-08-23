@@ -2412,8 +2412,10 @@ name = "selinuxfs"
 version = "0.1.0"
 dependencies = [
  "audit",
+ "hal",
  "kernfs",
  "netlink",
+ "pmm",
  "selinux",
  "selinux-runtime",
  "sync",

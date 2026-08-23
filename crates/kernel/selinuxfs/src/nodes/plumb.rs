@@ -14,7 +14,7 @@ use alloc::vec::Vec;
 use vfs::file_ops::FileOps;
 use vfs::inode::{Inode, InodeBuilder};
 use vfs::inode_ops::{mk_mode, InodeOps};
-use vfs::{FileType, InodeRef, KResult, VfsError};
+use vfs::{AddressSpaceOps, FileType, InodeRef, KResult, VfsError};
 
 /// Handler a read reaches, given the file offset and the caller's buffer.
 ///
@@ -115,6 +115,18 @@ pub fn dyn_file(perm: u16, read: Option<ReadFn>, write: Option<WriteFn>) -> Inod
 
 /// Build a read-only node rendering `read`. # C: O(1)
 pub fn ro_file(perm: u16, read: ReadFn) -> InodeRef { dyn_file(perm, Some(read), None) }
+
+/// Build a read-only file whose regular reads use `read` while shared mmap
+/// faults use the same inode-owned address space. # C: O(1)
+pub fn mapped_ro_file(perm: u16, size: u64, mapping: Arc<dyn AddressSpaceOps>, read: ReadFn) -> InodeRef {
+    InodeBuilder::new(crate::root::alloc_ino(), mk_mode(FileType::Regular, perm),
+                      ctl_inode_ops(), Arc::new(DynFileOps))
+        .size(size)
+        .mapping(mapping)
+        .private(Arc::new(DynFile { read: Some(read), write: None }))
+        .fsid(crate::root::SELINUXFS_FSID)
+        .build()
+}
 
 /// Build a write-only node accepting `write`. # C: O(1)
 pub fn wo_file(perm: u16, write: WriteFn) -> InodeRef { dyn_file(perm, None, Some(write)) }

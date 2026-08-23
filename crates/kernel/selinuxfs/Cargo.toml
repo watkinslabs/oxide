@@ -9,8 +9,10 @@ path = "src/lib.rs"
 
 [dependencies]
 audit           = { path = "../audit" }
+hal             = { path = "../../arch/hal" }
 kernfs          = { path = "../kernfs" }
 netlink         = { path = "../netlink" }
+pmm             = { path = "../mm-pmm" }
 selinux         = { path = "../selinux" }
 selinux-runtime = { path = "../selinux-runtime" }
 sync            = { path = "../../shared/sync" }
