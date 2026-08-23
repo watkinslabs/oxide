@@ -70,7 +70,7 @@ pub fn class_of(backing: &VmaBacking) -> RssClass {
         // `KernelBytes` VMA is the same shape (a copy of kernel-owned bytes
         // faulted in per page), so it shares the class.
         VmaBacking::File { .. } | VmaBacking::KernelBytes { .. } => RssClass::File,
-        VmaBacking::KernelFrame { .. } => RssClass::Shmem,
+        VmaBacking::KernelFrame { .. } | VmaBacking::KernelPages { .. } => RssClass::Shmem,
         VmaBacking::PhysRange { .. } => RssClass::Device,
         VmaBacking::Special => RssClass::Untracked,
     }

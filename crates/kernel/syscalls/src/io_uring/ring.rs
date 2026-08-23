@@ -22,6 +22,11 @@ use crate::io_uring_abi::sqe_slot::sqe_offset;
 
 use super::ctx::IoUringInode;
 
+pub enum MmapBacking {
+    Pages { pages: Arc<[u64]>, len: u64 },
+}
+impl MmapBacking { pub fn len(&self) -> u64 { match self { Self::Pages { len, .. } => *len } } }
+
 /// io_uring's reserved inode-number range, owned by `vfs::pseudo_ino`. A ring's
 /// number comes out of here; what makes a file a ring is the `IoUringInode` it
 /// owns, not the number.
@@ -119,7 +124,7 @@ impl IoUring {
 
     /// Physical page + usable bytes for an `mmap(2)` offset on the ring fd, or
     /// `None` for an offset that selects no region. # C: O(1)
-    pub fn region(&self, offset: u64) -> Option<(u64, u64)> {
+    pub fn region(&self, offset: u64) -> Option<MmapBacking> {
         match mmap_region(offset) {
             // A caller-supplied region reports nothing: those pages are
             // already in the caller's address space.
@@ -142,7 +147,7 @@ impl IoUring {
 ///
 /// An offset that selects no region reports a zero-length region, so
 /// `009_mmap`'s `len > region` test turns it into `EINVAL`. # C: O(1)
-pub fn mmap_backing(inode: &vfs::InodeRef, offset: u64) -> Option<(u64, u64)> {
+pub fn mmap_backing(inode: &vfs::InodeRef, offset: u64) -> Option<MmapBacking> {
     let iu = inode.private::<IoUringInode>()?;
     // A registered memory region lives on the inode, not in `IoUring`. Only
     // the kernel-allocated arm is mappable; a caller-provided region reports a
@@ -150,16 +155,21 @@ pub fn mmap_backing(inode: &vfs::InodeRef, offset: u64) -> Option<(u64, u64)> {
     match mmap_region(offset) {
         MmapRegion::Param => {
             let g = iu.param_region.lock();
-            return Some(g.as_ref().and_then(|r| r.mmap_backing()).unwrap_or((0, 0)));
+            return Some(match g.as_ref().and_then(|r| r.mmap_backing()) {
+                Some(pages) => MmapBacking::Pages { pages, len: g.as_ref().unwrap().size() },
+                None => MmapBacking::Pages { pages: Arc::from([]), len: 0 },
+            });
         }
         // A refill queue lives on the instance the offset names; an offset
         // naming no instance reports a zero-length region, which `009_mmap`
         // turns into EINVAL.
-        MmapRegion::Zcrx(id) => return Some(iu.zcrx_mmap_backing(id).unwrap_or((0, 0))),
+        MmapRegion::Zcrx(id) => return Some(iu.zcrx_mmap_backing(id).unwrap_or(
+            MmapBacking::Pages { pages: Arc::from([]), len: 0 },
+        )),
         _ => {}
     }
     let g = iu.ring.lock();
-    Some(g.region(offset).unwrap_or((0, 0)))
+    Some(g.region(offset).unwrap_or(MmapBacking::Pages { pages: Arc::from([]), len: 0 }))
 }
 
 /// `file_operations` for an io_uring fd: the ring is consumed via

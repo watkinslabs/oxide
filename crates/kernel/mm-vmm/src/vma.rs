@@ -219,6 +219,9 @@ pub enum VmaBacking {
     /// task frame allocation. Used for the vvar page so a single
     /// kernel write (via HHDM) propagates to every user mapping.
     KernelFrame { pa: u64 },
+    /// Refcounted, non-contiguous kernel pages mapped in VMA order.
+    /// `off` is a byte offset into the page vector, rebased when a VMA is split.
+    KernelPages { pages: alloc::sync::Arc<[u64]>, off: usize },
     /// Contiguous device physical range (Linux `remap_pfn_range` / VM_PFNMAP).
     /// The page-fault handler maps page at VMA offset `O` to `base_pa + O`
     /// directly — no PMM frame alloc, no refcount, no copy. Used for
@@ -236,6 +239,9 @@ impl core::fmt::Debug for VmaBacking {
                 write!(f, "KernelBytes {{ len: {}, off: {} }}", data.len(), off)
             }
             VmaBacking::KernelFrame { pa } => write!(f, "KernelFrame {{ pa: {:#x} }}", pa),
+            VmaBacking::KernelPages { pages, off } => {
+                write!(f, "KernelPages {{ len: {}, off: {} }}", pages.len(), off)
+            }
             VmaBacking::PhysRange { base_pa, cache } => {
                 write!(f, "PhysRange {{ base_pa: {:#x}, cache: {:?} }}", base_pa, cache)
             }
@@ -258,6 +264,9 @@ impl PartialEq for VmaBacking {
                 alloc::sync::Arc::ptr_eq(a, b) && ao == bo
             }
             (VmaBacking::KernelFrame { pa: a }, VmaBacking::KernelFrame { pa: b }) => a == b,
+            (VmaBacking::KernelPages { pages: a, off: ao },
+             VmaBacking::KernelPages { pages: b, off: bo }) =>
+                Arc::ptr_eq(a, b) && ao == bo,
             (VmaBacking::PhysRange { base_pa: a, cache: ac },
              VmaBacking::PhysRange { base_pa: b, cache: bc }) => a == b && ac == bc,
             _ => false,
@@ -427,6 +436,7 @@ impl Vma {
             (VmaBacking::KernelBytes { .. }, VmaBacking::KernelBytes { .. }) => false,
             (VmaBacking::KernelBytes { .. }, _) | (_, VmaBacking::KernelBytes { .. }) => false,
             (VmaBacking::KernelFrame { .. }, _) | (_, VmaBacking::KernelFrame { .. }) => false,
+            (VmaBacking::KernelPages { .. }, _) | (_, VmaBacking::KernelPages { .. }) => false,
             (VmaBacking::Special, _) | (_, VmaBacking::Special) => false,
             _ => false,
         }

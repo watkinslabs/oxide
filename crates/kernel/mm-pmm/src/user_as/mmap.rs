@@ -38,6 +38,7 @@ pub fn glue_mmap(
     // WHILE userspace still maps it (free-while-mapped UAF → heap corruption;
     // the root cause the corruption hunt traced, state.md).
     kframe: Option<u64>,
+    kpages: Option<alloc::sync::Arc<[u64]>>,
     may_prot: VmaProt,
     // Flags the FILE being mapped imposes on the VMA, independent of the
     // syscall's own flags — the mapping-time half of a file whose pages carry
@@ -52,7 +53,7 @@ pub fn glue_mmap(
     };
     // A kframe is admission-equivalent to a phys mapping (explicit PA backing,
     // page-aligned offset, not anon).
-    let admission = validate_glue_admission(flags, len, file_off, backing.is_some(), phys_range.is_some() || kframe.is_some())?;
+    let admission = validate_glue_admission(flags, len, file_off, backing.is_some(), phys_range.is_some() || kframe.is_some() || kpages.is_some())?;
     let is_anon = admission.is_anon;
     let is_shared = admission.is_shared;
     let len_aligned = admission.len_aligned;
@@ -131,14 +132,15 @@ pub fn glue_mmap(
     // is the NET growth (`map->pglen - vms->nr_pages`) and re-mapping a range
     // over itself is free.
     admit_current_as_growth(len_aligned as u64)?;
-    let vma_backing = match (kframe, phys_range, backing) {
+    let vma_backing = match (kframe, kpages, phys_range, backing) {
         // Refcounted shared kernel RAM frame (single page, io_uring ring):
         // map_kernel_frame inc_ref's on fault, AS-teardown dec's — so the
         // page cannot be freed while a user mapping survives.
-        (Some(pa), _, _)       => VmaBacking::KernelFrame { pa },
-        (None, Some((pa, cache)), _) => VmaBacking::PhysRange { base_pa: pa + file_off, cache },
-        (None, None, Some(b))  => VmaBacking::File { backing: b, off: file_off },
-        (None, None, None)     => VmaBacking::Anonymous,
+        (Some(pa), None, _, _)       => VmaBacking::KernelFrame { pa },
+        (None, Some(pages), _, _) => VmaBacking::KernelPages { pages, off: 0 },
+        (None, None, Some((pa, cache)), _) => VmaBacking::PhysRange { base_pa: pa + file_off, cache },
+        (None, None, None, Some(b))  => VmaBacking::File { backing: b, off: file_off },
+        (None, None, None, None)     => VmaBacking::Anonymous,
     };
     // mmap into the current task's AS, not the boot global —
     // post-execve the running CR3 targets `cur.mm`, not the global.

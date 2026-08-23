@@ -56,6 +56,9 @@ impl Vma {
                     off: off + off_delta as usize,
                 }
             }
+            VmaBacking::KernelPages { pages, off } => VmaBacking::KernelPages {
+                pages: pages.clone(), off: off + off_delta as usize,
+            },
             other => other.clone(),
         };
         Vma {

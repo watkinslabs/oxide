@@ -58,7 +58,8 @@ pub const REAP_RETRY_NS: u64 = 100_000_000;
 pub fn reapable(flags: VmaFlags, backing: &VmaBacking) -> bool {
     if flags.contains(VmaFlags::SHARED) { return false; }
     match backing {
-        VmaBacking::PhysRange { .. } | VmaBacking::KernelFrame { .. } | VmaBacking::Special => false,
+        VmaBacking::PhysRange { .. } | VmaBacking::KernelFrame { .. }
+            | VmaBacking::KernelPages { .. } | VmaBacking::Special => false,
         VmaBacking::File { backing, .. } => backing.huge_page_size() == 0,
         VmaBacking::Anonymous | VmaBacking::KernelBytes { .. } => true,
     }

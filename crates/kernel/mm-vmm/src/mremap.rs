@@ -73,6 +73,8 @@ fn rebase_backing(backing: &VmaBacking, delta: u64) -> VmaBacking {
             VmaBacking::File { backing: backing.clone(), off: off + delta },
         VmaBacking::KernelBytes { data, off } =>
             VmaBacking::KernelBytes { data: data.clone(), off: off + delta as usize },
+        VmaBacking::KernelPages { pages, off } =>
+            VmaBacking::KernelPages { pages: pages.clone(), off: off + delta as usize },
         b => b.clone(),
     }
 }

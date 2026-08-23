@@ -60,9 +60,11 @@ impl IoUringInode {
 
     /// Physical backing for the refill-queue region an mmap offset selects.
     /// # C: O(1)
-    pub fn zcrx_mmap_backing(&self, id: u32) -> Option<(u64, u64)> {
+    pub fn zcrx_mmap_backing(&self, id: u32) -> Option<super::ring::MmapBacking> {
         let ifq = self.zcrx_lookup(id)?;
-        Some((ifq.rq.region.base_pa, ifq.rq.region.map_bytes))
+        ifq.rq.region.mmap_backing().map(|pages| super::ring::MmapBacking::Pages {
+            pages, len: ifq.rq.region.map_bytes,
+        })
     }
 
     /// Let go of every instance this ring registered or adopted.

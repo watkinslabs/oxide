@@ -62,9 +62,9 @@ impl MemRegion {
 
     /// Physical base and mappable length for `mmap(2)` on the ring fd, or
     /// `None` when this region is not mappable. # C: O(1)
-    pub fn mmap_backing(&self) -> Option<(u64, u64)> {
+    pub fn mmap_backing(&self) -> Option<alloc::sync::Arc<[u64]>> {
         match self {
-            MemRegion::Kernel(r) => Some((r.base_pa, r.map_bytes)),
+            MemRegion::Kernel(r) => r.mmap_backing(),
             MemRegion::User(_) => None,
         }
     }
