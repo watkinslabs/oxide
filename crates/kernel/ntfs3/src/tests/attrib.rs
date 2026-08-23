@@ -141,3 +141,29 @@ fn the_flags_say_what_kind_of_attribute_it_is() {
         if check == 0 { assert!(a.sparse()); } else { assert!(a.encrypted()); }
     }
 }
+
+#[test]
+fn an_attribute_list_entry_decodes_its_full_identity() {
+    let mut raw = alloc::vec![0u8; 0x28];
+    raw[0..4].copy_from_slice(&ATTR_DATA.to_le_bytes());
+    raw[4..6].copy_from_slice(&40u16.to_le_bytes());
+    raw[6] = 1;
+    raw[7] = 0x1a;
+    raw[8..16].copy_from_slice(&7u64.to_le_bytes());
+    raw[0x10..0x14].copy_from_slice(&42u32.to_le_bytes());
+    raw[0x14..0x16].copy_from_slice(&0u16.to_le_bytes());
+    raw[0x16..0x18].copy_from_slice(&9u16.to_le_bytes());
+    raw[0x18..0x1a].copy_from_slice(&11u16.to_le_bytes());
+    raw[0x1a..0x1c].copy_from_slice(&u16::from(b'x').to_le_bytes());
+    let entry = list_entries(&raw).unwrap().remove(0);
+    assert_eq!(entry.ty, ATTR_DATA);
+    assert_eq!(entry.name, alloc::vec![u16::from(b'x')]);
+    assert_eq!((entry.vcn, entry.record, entry.sequence, entry.id), (7, 42, 9, 11));
+}
+
+#[test]
+fn a_truncated_attribute_list_entry_is_refused() {
+    let mut raw = alloc::vec![0u8; 0x20];
+    raw[4..6].copy_from_slice(&0x28u16.to_le_bytes());
+    assert_eq!(list_entries(&raw).unwrap_err(), syscall::errno::Errno::Eio);
+}

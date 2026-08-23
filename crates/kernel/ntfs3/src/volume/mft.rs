@@ -41,8 +41,34 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(record bytes)
     pub fn read_record(&self, number: u64) -> Result<(Vec<u8>, Vec<Attribute>), Errno> {
         let (bytes, header) = self.read_record_raw(number)?;
-        let attrs = attrib::parse_all(&bytes, &header);
+        let attrs = self.expand_attribute_list(number, &bytes,
+                                               attrib::parse_all(&bytes, &header))?;
         Ok((bytes, attrs))
+    }
+
+    /// Add attributes named by the base record's `$ATTRIBUTE_LIST`.
+    /// # C: O(list entries * record bytes)
+    fn expand_attribute_list(&self, number: u64, bytes: &[u8], mut attrs: Vec<Attribute>)
+        -> Result<Vec<Attribute>, Errno> {
+        let Some(list) = attrs.iter().find(|a| a.ty == ATTR_LIST && a.is_first_segment())
+            .cloned() else { return Ok(attrs) };
+        let raw = self.attribute_bytes(bytes, &attrs, &list)?;
+        for entry in attrib::list_entries(&raw)? {
+            if entry.record == number { continue; }
+            let (ext_bytes, ext_header) = self.read_record_raw(entry.record)?;
+            if !ext_header.in_use() || ext_header.sequence != entry.sequence {
+                return Err(Errno::Eio);
+            }
+            let ext_attrs = attrib::parse_all(&ext_bytes, &ext_header);
+            let found = ext_attrs.into_iter().find(|a| a.ty == entry.ty
+                && a.name == entry.name && a.id == entry.id
+                && match a.body {
+                    crate::attrib::Body::NonResident { svcn, .. } => svcn == entry.vcn,
+                    crate::attrib::Body::Resident { .. } => entry.vcn == 0,
+                }).ok_or(Errno::Eio)?;
+            attrs.push(found);
+        }
+        Ok(attrs)
     }
 
     /// Read one record and its header, without decoding attributes.
@@ -66,7 +92,8 @@ impl<S: SectorSource> Volume<S> {
     pub fn read_live_record(&self, number: u64) -> Result<(Vec<u8>, Vec<Attribute>), Errno> {
         let (bytes, header) = self.read_record_raw(number)?;
         if !header.in_use() { return Err(Errno::Enoent); }
-        let attrs = attrib::parse_all(&bytes, &header);
+        let attrs = self.expand_attribute_list(number, &bytes,
+                                               attrib::parse_all(&bytes, &header))?;
         Ok((bytes, attrs))
     }
 

@@ -37,9 +37,18 @@ impl<S: SectorSource> Volume<S> {
         let mut runs = Runs::new();
         for seg in crate::attrib::segments(attrs, attr.ty, &attr.name) {
             let Body::NonResident { svcn, evcn, .. } = seg.body else { continue };
+            let record = u64::from(u32::from_le_bytes([
+                bytes[MFT_OFF_RECORD_NUM], bytes[MFT_OFF_RECORD_NUM + 1],
+                bytes[MFT_OFF_RECORD_NUM + 2], bytes[MFT_OFF_RECORD_NUM + 3],
+            ]));
+            let owned;
+            let source = if record == seg.record { bytes } else {
+                owned = self.read_record_raw(seg.record)?.0;
+                &owned
+            };
             let (start, end) = seg.run_span().ok_or(Errno::Eio)?;
-            if end > bytes.len() { return Err(Errno::Eio); }
-            let part = run::unpack(&bytes[start..end], svcn, evcn, self.geo.clusters)
+            if end > source.len() { return Err(Errno::Eio); }
+            let part = run::unpack(&source[start..end], svcn, evcn, self.geo.clusters)
                 .map_err(|e| e.errno())?;
             for r in part.runs { runs.push(r); }
         }
@@ -68,11 +77,20 @@ impl<S: SectorSource> Volume<S> {
         let want = core::cmp::min(buf.len() as u64, size - offset) as usize;
         if want == 0 { return Ok(0); }
 
+        let record = u64::from(u32::from_le_bytes([
+            bytes[MFT_OFF_RECORD_NUM], bytes[MFT_OFF_RECORD_NUM + 1],
+            bytes[MFT_OFF_RECORD_NUM + 2], bytes[MFT_OFF_RECORD_NUM + 3],
+        ]));
+        let owned;
+        let source = if record == attr.record { bytes } else {
+            owned = self.read_record_raw(attr.record)?.0;
+            &owned
+        };
         if let Some((start, end)) = attr.resident_span() {
-            if end > bytes.len() { return Err(Errno::Eio); }
+            if end > source.len() { return Err(Errno::Eio); }
             let from = start + offset as usize;
             let take = core::cmp::min(want, end.saturating_sub(from));
-            buf[..take].copy_from_slice(&bytes[from..from + take]);
+            buf[..take].copy_from_slice(&source[from..from + take]);
             // Past the resident data but within the declared size is zeros:
             // the record cannot hold more than it holds.
             for b in buf[take..want].iter_mut() { *b = 0; }
