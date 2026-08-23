@@ -23,8 +23,8 @@ relocated.
 > synproxy cookie/handshake packet path, conntrack sequence adjustment,
 > negotiated TCP option translation, and cookie retransmission state path are
 > live. The remaining open B2621 context row records the still-absent
-> production xfrm/tunnel/osf/object sources; the
-> the context audit and fixed action/conntrack/NAT claims are reconciled in
+> production xfrm/tunnel/osf/object sources; the context audit and fixed
+> action/conntrack/NAT claims are reconciled in
 > `scratch/fixed-issues.md`.
 
 Per-lane drop files under `scratch/issues.d/` are abolished and the directory is
@@ -81,8 +81,6 @@ row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 | OPEN | MISSING | low | **VLAN `GVRP`, `MVRP` and `BRIDGE_BINDING` are parsed, validated and stored but nothing acts on them.** There is no GARP/MRP subsystem and no carrier-propagation hook from a lower interface. | F1183. `crates/kernel/vlan/src/flags.rs`; the flags have no reader outside the flag arithmetic. | unowned |
 | OPEN | MISSING | low | **No `/proc/net/bonding/*` and no per-slave bonding sysfs surface.** `bonding` exposes `state_view`/`slave_states` but nothing renders them. | F1183. `grep -rn 'bonding' crates/kernel/procfs crates/kernel/sysfs` → 0 hits. | unowned |
 | OPEN | COVERAGE | med | **`/proc/net/nf_conntrack`, the conntrack sysctls and the ctnetlink surface have renderers but no mount point.** `conntrack::procfs` and `conntrack::ctnetlink` produce the exact bytes userspace parses and are tested against them, but `procfs` registers no `net/nf_conntrack` file, `sysfs`/`procfs` register none of the 27 `conntrack::sysctl::KNOBS`, and no nfnetlink subsystem dispatches `IPCTNL_MSG_CT_*`. `conntrack -L` and `sysctl net.netfilter.*` therefore see nothing. | F1183. `grep -rn 'nf_conntrack' crates/kernel/procfs crates/kernel/netlink` → 0 hits. | unowned |
-| OPEN | MISSING | low | **A cookie handshake's ECN bit is not re-checked against the route.** The reference intersects the ECN the timestamp echo recovered with `cookie_ecn_ok`, which consults `net.ipv4.tcp_ecn` and the destination's own ECN feature bit; here the echoed bit is installed as-is. Neither input exists in this tree yet, so there is nothing to intersect with. | `stack/tcp_syncookies.rs check_syn_cookie` -> `open_from_cookie` sets `ecn_enabled` from `opts.ecn_ok`. | unowned |
-
 | OPEN | DEFECT | low | **A zero-copy receive charges the caller's buffer reference BEFORE posting the completion, where the reference charges it after.** Deliberate and forced by a different publication model: this ring publishes a completion's tail inside `post_cqe`, so a caller can observe the completion and hand the buffer back through the refill queue before the kernel has recorded that it owns it, and the return would be dropped as a buffer it never held. The reference batches its tail publication past the point it takes the reference, so the two orders are equivalent there and not here. Recorded so it is visible rather than living only in a code comment; it closes for real if completion publication ever becomes batched. | F855. `io_uring/zcrx/recv.rs queue_cqe`; `io_uring/cqe.rs post_cqe` stores the tail before returning. | io_uring lane |
 
 ## Filesystem / mount
