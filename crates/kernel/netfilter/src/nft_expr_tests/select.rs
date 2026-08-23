@@ -271,7 +271,8 @@ fn the_link_header_base_breaks_where_no_link_header_survives() {
 fn an_object_reference_runs_the_object_it_names() {
     struct Objects;
     impl crate::nft_expr::access::ObjectAccess for Objects {
-        fn eval(&self, _t: u32, name: &str) -> Option<i32> {
+        fn eval(&self, _family: u8, _table: &str, _t: u32, name: &str,
+                _pkt_len: u64, _now_ns: u64) -> Option<i32> {
             if name == "spent" { Some(NFT_BREAK) } else { None }
         }
     }

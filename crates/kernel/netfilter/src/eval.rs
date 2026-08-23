@@ -2,8 +2,8 @@ use crate::{NFT_CHAIN_POLICY_DROP, active_generation, nft_expr};
 use alloc::vec::Vec;
 
 use crate::nft_expr::{Action, EvalCtx, uapi};
-use crate::nft_expr::access::{CtAccess, FibEntry, FibKey, RouteAccess, SocketAccess,
-                              SynproxyAccess};
+use crate::nft_expr::access::{CtAccess, FibEntry, FibKey, ObjectAccess, RouteAccess,
+                              SocketAccess, SynproxyAccess};
 use conntrack::tuple::Tuple;
 
 /// Netfilter verdict.
@@ -109,6 +109,24 @@ struct LiveSocket<'a> {
     input: &'a crate::eval_context::Input<'a>,
     info: net::SocketLookup,
     present: bool,
+}
+
+struct LiveObjects<'a> {
+    namespace: u64,
+    family: u8,
+    table: &'a str,
+}
+
+impl ObjectAccess for LiveObjects<'_> {
+    fn eval(&self, family: u8, table: &str, obj_type: u32, name: &str,
+            pkt_len: u64, now_ns: u64) -> Option<i32> {
+        if family != self.family || table != self.table { return None; }
+        let object = crate::objects_snapshot_in(self.namespace).into_iter().find(|o| {
+            o.table_family == family && o.table_name == table
+                && o.ty == obj_type && o.name == name
+        })?;
+        object.state.eval(pkt_len, now_ns)
+    }
 }
 
 impl SocketAccess for LiveSocket<'_> {
@@ -331,6 +349,8 @@ fn eval_context(input: &crate::eval_context::Input<'_>) -> EvalResult {
             if input.live { ctx.route = Some(&live_route); }
             if let Some(socket) = live_socket.as_ref() { ctx.socket = Some(socket); }
             if let Some(synproxy) = live_synproxy.as_ref() { ctx.synproxy = Some(synproxy); }
+            let objects = LiveObjects { namespace, family, table: &chain.table_name };
+            ctx.objects = Some(&objects);
             ctx.set_lookup = Some(&lookup);
             let verdict = nft_expr::run_rule_ctx(&rule.exprs, &mut ctx);
             mark = ctx.mark;

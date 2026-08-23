@@ -50,7 +50,8 @@ pub use parse::{parse_exprs, parse_exprs_checked, parse_exprs_in};
 pub use regs::{reg_off, register_load_valid, Regs};
 pub use run::{run_rule, run_rule_ctx, run_rule_full, run_rule_full_with_mark,
               run_rule_regs, run_rule_with_lookup};
-pub use stateful::{ExprStates, LastState, LimitState, NumgenState, QuotaCharge, QuotaState};
+pub use stateful::{ExprStates, LastState, LimitState, NumgenState, ObjectState,
+                   QuotaCharge, QuotaState};
 pub use uapi::*;
 pub use validate::{validate_expr, validate_exprs};
 pub use verdict::RuleVerdict;

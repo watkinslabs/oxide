@@ -410,12 +410,8 @@ pub(super) fn handle_nft(
             let ty = find_u32_attr(attrs, nfta_obj::NFTA_OBJ_TYPE).unwrap_or(0);
             let data = find_bytes_attr(attrs, nfta_obj::NFTA_OBJ_DATA)
                 .map(|b| b.to_vec()).unwrap_or_default();
-            object_insert_in(namespace, NftObject {
-                table_family: nfg.nfgen_family,
-                table_name:   String::from(table_name),
-                name:         String::from(obj_name),
-                ty, data,
-            });
+            object_insert_in(namespace, NftObject::new(
+                nfg.nfgen_family, String::from(table_name), String::from(obj_name), ty, data));
             nlmsg_ack(req, 0)
         }
         nft_msg::NFT_MSG_DELOBJ => {

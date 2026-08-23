@@ -169,10 +169,12 @@ pub trait SynproxyAccess {
 pub trait ObjectAccess {
     /// Run the named object's own evaluation, returning the verdict it set,
     /// or `None` when no such object exists. # C: O(cost of the object)
-    fn eval(&self, _obj_type: u32, _name: &str) -> Option<i32> { None }
+    fn eval(&self, _family: u8, _table: &str, _obj_type: u32, _name: &str,
+            _pkt_len: u64, _now_ns: u64) -> Option<i32> { None }
     /// Object an element of `set` points at, keyed by the register bytes.
     /// # C: O(cost of the set lookup)
-    fn eval_from_set(&self, _set_id: Option<usize>, _set: &str, _key: &[u8]) -> Option<i32> {
+    fn eval_from_set(&self, _family: u8, _table: &str, _set_id: Option<usize>,
+                     _set: &str, _key: &[u8], _pkt_len: u64, _now_ns: u64) -> Option<i32> {
         None
     }
 }

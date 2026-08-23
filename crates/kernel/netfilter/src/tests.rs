@@ -46,6 +46,7 @@ use super::*;
             table_name:   String::from("oxide-test-t"),
             name:         String::from("conn_counter"),
             ty: 1, data: vec![],
+            state: alloc::sync::Arc::new(crate::nft_expr::ObjectState::Unsupported),
         };
         let before = objects_snapshot().len();
         object_insert(o.clone());
