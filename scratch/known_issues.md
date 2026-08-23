@@ -13,12 +13,13 @@ lane that fixes one flips it to `FIXED <sha>` and MOVES it to
 relocated.
 
 > B2621 implementation audit (2026-08-22): live packet evaluation now supplies
-> conntrack and route context, preserves Linux chain-priority boundaries, and
-> consumes NAT, reject, forwarding, duplicate, syslog-log, payload-checksum,
-> IPv4-option, TCP-option, and NFLOG effects. The B2621 rows below retain their original
-> discovery wording; their remaining gaps are socket ownership,
-> flow offload, synproxy, and the still-unwired production xfrm/tunnel/osf/object
-> context. They are not closure claims.
+> conntrack and route context, partial IPv4-UDP socket/TProxy ownership,
+> preserves Linux chain-priority boundaries, and consumes NAT, reject,
+> forwarding, duplicate, syslog-log, payload-checksum, IPv4-option,
+> TCP-option, and NFLOG effects. The B2621 rows below retain their original
+> discovery wording; their remaining gaps are the uncompleted TCP/IPv6 socket
+> ownership, flow offload, synproxy, and the still-unwired production
+> xfrm/tunnel/osf/object context. They are not closure claims.
 
 Per-lane drop files under `scratch/issues.d/` are abolished and the directory is
 gone (C300 folded the last 77 rows back in). A row parked in a side file is a row
