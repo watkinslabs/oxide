@@ -514,10 +514,10 @@ pub struct NetStack {
     pub(crate) conntrack: Spinlock<BTreeMap<u64, Arc<::conntrack::CtNet>>, StackLockClass>,
     /// Namespace-owned software flowtables. Entries are installed only after
     /// conntrack confirmation and are consulted before the ordinary hook path.
-    pub(crate) flow_offload: Spinlock<BTreeMap<(u64, String, ::conntrack::tuple::Tuple),
+    pub(crate) flow_offload: Spinlock<BTreeMap<(u64, String, String, ::conntrack::tuple::Tuple),
         Arc<super::flow_offload::FlowEntry>>, StackLockClass>,
     /// Configured nftables flowtable names, scoped by network namespace and family.
-    pub(crate) flowtables: Spinlock<BTreeMap<(u64, u8, String), super::flow_offload::FlowtableConfig>, StackLockClass>,
+    pub(crate) flowtables: Spinlock<BTreeMap<(u64, u8, String, String), super::flow_offload::FlowtableConfig>, StackLockClass>,
     /// Unique nftables flowtable object handle source.
     pub(crate) next_flowtable_handle: crate::fib_lock::FibLock<u64, StackLockClass>,
     /// Monotonic id for IP packets we emit.

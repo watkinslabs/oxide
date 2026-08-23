@@ -325,6 +325,7 @@ fn eval_context(input: &crate::eval_context::Input<'_>) -> EvalResult {
                 state.set_contains(set_id.expect("compiled lookup has a set id"), register)
             };
             let mut ctx = EvalCtx::new(pkt, family, &rule.states);
+            ctx.table = Some(&chain.table_name);
             input.populate(&mut ctx, mark);
             if input.ct_available { ctx.ct = Some(&live_ct); }
             if input.live { ctx.route = Some(&live_route); }

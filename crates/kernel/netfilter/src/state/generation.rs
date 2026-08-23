@@ -17,6 +17,7 @@ pub(crate) struct CompiledRule {
 
 pub(crate) struct CompiledChain {
     pub(crate) table_family: u8,
+    pub(crate) table_name: String,
     pub(crate) priority: i32,
     pub(crate) policy: u32,
     pub(crate) rules: Vec<CompiledRule>,
@@ -142,7 +143,8 @@ fn compile_namespace(control: &mut NamespaceState) -> CompiledNamespace {
                     .expect("counter inserted before ruleset compilation")),
             }).collect();
             compiled_chains.push(CompiledChain {
-                table_family: chain.table_family, priority: chain.priority,
+                table_family: chain.table_family, table_name: chain.table_name.clone(),
+                priority: chain.priority,
                 policy: chain.policy, rules,
             });
         }

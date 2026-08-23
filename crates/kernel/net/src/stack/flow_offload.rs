@@ -59,7 +59,7 @@ impl NetStack {
     pub fn register_flowtable_in(&self, net_ns: u64, family: u8, table: &str, name: &str,
                                  hook_num: u32, priority: i32, devices: Vec<FlowtableDevice>, flags: u32)
                                  -> Option<u64> {
-        let key = (net_ns, family, String::from(name));
+        let key = (net_ns, family, String::from(table), String::from(name));
         let mut flowtables = self.flowtables.lock();
         if flowtables.contains_key(&key) { return None; }
         let mut handle = self.next_flowtable_handle.lock();
@@ -73,38 +73,46 @@ impl NetStack {
     }
 
     /// Remove a flowtable and all entries it owns. # C: O(N_flows)
-    pub fn unregister_flowtable_in(&self, net_ns: u64, family: u8, name: &str) -> bool {
-        let removed_config = self.flowtables.lock()
-            .remove(&(net_ns, family, String::from(name))).is_some();
+    pub fn unregister_flowtable_in(&self, net_ns: u64, family: u8,
+                                   nft_table: &str, name: &str) -> bool {
+        let key = (net_ns, family, String::from(nft_table), String::from(name));
+        let removed_config = {
+            let mut flowtables = self.flowtables.lock();
+            if flowtables.get(&key).is_some_and(|config| config.table == nft_table) {
+                flowtables.remove(&key).is_some()
+            } else { false }
+        };
         let mut flows = self.flow_offload.lock();
         let mut removed = alloc::vec::Vec::new();
-        for ((ns, table, _), entry) in flows.iter() {
-            if *ns == net_ns && table == name
+        for ((ns, table_name, flowtable_name, _), entry) in flows.iter() {
+            if *ns == net_ns && table_name == nft_table && flowtable_name == name
                 && !removed.iter().any(|old: &Arc<FlowEntry>| Arc::ptr_eq(old, entry)) {
                 removed.push(Arc::clone(entry));
             }
         }
-        flows.retain(|(ns, table, _), _| *ns != net_ns || table != name);
+        flows.retain(|(ns, table_name, flowtable_name, _), _| *ns != net_ns
+            || table_name != nft_table || flowtable_name != name);
         drop(flows);
         for entry in removed { entry.conn.clear_status_bits(IPS_OFFLOAD); }
         removed_config
     }
 
-    fn flowtable_config(&self, net_ns: u64, family: u8, name: &str)
+    fn flowtable_config(&self, net_ns: u64, family: u8, nft_table: &str, name: &str)
         -> Option<FlowtableConfig> {
         let flowtables = self.flowtables.lock();
-        flowtables.get(&(net_ns, family, String::from(name))).cloned()
+        flowtables.get(&(net_ns, family, String::from(nft_table), String::from(name))).cloned()
             .or_else(|| (matches!(family, NF_V4 | NF_V6)).then(||
-                flowtables.get(&(net_ns, NFPROTO_INET, String::from(name))).cloned()).flatten())
+                flowtables.get(&(net_ns, NFPROTO_INET, String::from(nft_table), String::from(name)))
+                    .cloned()).flatten())
     }
 
-    fn flowtable_exists(&self, net_ns: u64, family: u8, name: &str) -> bool {
-        self.flowtable_config(net_ns, family, name).is_some()
+    fn flowtable_exists(&self, net_ns: u64, family: u8, nft_table: &str, name: &str) -> bool {
+        self.flowtable_config(net_ns, family, nft_table, name).is_some()
     }
 
-    fn flowtable_applies(&self, net_ns: u64, family: u8, name: &str,
+    fn flowtable_applies(&self, net_ns: u64, family: u8, nft_table: &str, name: &str,
                          iface: NetIfaceId) -> bool {
-        let Some(config) = self.flowtable_config(net_ns, family, name) else { return false; };
+        let Some(config) = self.flowtable_config(net_ns, family, nft_table, name) else { return false; };
         !config.devices.is_empty() && config.devices.iter().any(|device| match device {
             FlowtableDevice::Name(name) => self.ifaces.lookup_name_in_ns(name, net_ns)
                 .is_some_and(|(id, _)| id == iface),
@@ -117,20 +125,22 @@ impl NetStack {
     /// # C: O(N_flowtables)
     pub fn flowtables_snapshot_in(&self, net_ns: u64, family: u8) -> Vec<FlowtableConfig> {
         self.flowtables.lock().iter()
-            .filter(|((ns, fam, _), _)| *ns == net_ns && *fam == family)
+            .filter(|((ns, fam, _, _), _)| *ns == net_ns && *fam == family)
             .map(|(_, config)| config.clone()).collect()
     }
 
     /// Install a bidirectional software flow after the FORWARD expression has
     /// observed a confirmed, assured conntrack entry. # C: O(routes + 1)
-    pub(crate) fn offload_flow(&self, table: &str, p: &Pkt, family: u8, hook: u32)
+    pub(crate) fn offload_flow(&self, nft_table: &str, table: &str, p: &Pkt, family: u8, hook: u32)
         -> Result<(), ApplyError>
     {
-        if hook != NF_INET_FORWARD || table.is_empty() { return Err(ApplyError::Unsupported); }
+        if hook != NF_INET_FORWARD || nft_table.is_empty() || table.is_empty() {
+            return Err(ApplyError::Unsupported);
+        }
         let Some((_ct_table, Some(conn), _info, dir)) = p.conntrack_state_owned() else {
             return Err(ApplyError::Invalid);
         };
-        if !self.flowtable_exists(conn.net_ns, family, table) {
+        if !self.flowtable_exists(conn.net_ns, family, nft_table, table) {
             return Err(ApplyError::Unsupported);
         }
         let status = conn.status();
@@ -174,8 +184,8 @@ impl NetStack {
         }
         let entry = Arc::new(FlowEntry { conn: conn.clone(), routes });
         let mut flows = self.flow_offload.lock();
-        flows.insert((conn.net_ns, String::from(table), conn.orig), entry.clone());
-        flows.insert((conn.net_ns, String::from(table), conn.reply_tuple()), entry);
+        flows.insert((conn.net_ns, String::from(nft_table), String::from(table), conn.orig), entry.clone());
+        flows.insert((conn.net_ns, String::from(nft_table), String::from(table), conn.reply_tuple()), entry);
         drop(flows);
         Ok(())
     }
@@ -189,8 +199,8 @@ impl NetStack {
         let tuple = flow_tuple(l3, family)?;
         let mut flows = self.flow_offload.lock();
         let found = flows.iter()
-            .find(|((ns, table, key), _)| *ns == net_ns && *key == tuple
-                && self.flowtable_applies(net_ns, family, table, iface))
+            .find(|((ns, nft_table, table, key), _)| *ns == net_ns && *key == tuple
+                && self.flowtable_applies(net_ns, family, nft_table, table, iface))
             .map(|(_, entry)| Arc::clone(entry));
         let entry = found?;
         let now = crate::stack::net_now_ns() / 1_000_000_000;
@@ -381,12 +391,15 @@ mod tests {
             alloc::vec![FlowtableDevice::Name(String::from("eth0"))], 0).expect("first registration");
         assert!(stack.register_flowtable_in(7, 2, "filter", "ft", 0, -256,
             alloc::vec![FlowtableDevice::Name(String::from("eth0"))], 0).is_none());
+        assert!(stack.register_flowtable_in(7, 2, "nat", "ft", 0, -256,
+            alloc::vec![FlowtableDevice::Name(String::from("eth0"))], 0).is_some());
         let snapshot = stack.flowtables_snapshot_in(7, 2);
-        assert_eq!(snapshot.len(), 1);
-        assert_eq!((snapshot[0].table.as_str(), snapshot[0].name.as_str(),
-            snapshot[0].hook_num, snapshot[0].priority, snapshot[0].handle),
+        assert_eq!(snapshot.len(), 2);
+        let filter = snapshot.iter().find(|config| config.table == "filter").unwrap();
+        assert_eq!((filter.table.as_str(), filter.name.as_str(),
+            filter.hook_num, filter.priority, filter.handle),
             ("filter", "ft", 0, -256, handle));
-        assert!(stack.unregister_flowtable_in(7, 2, "ft"));
-        assert!(stack.flowtables_snapshot_in(7, 2).is_empty());
+        assert!(stack.unregister_flowtable_in(7, 2, "filter", "ft"));
+        assert_eq!(stack.flowtables_snapshot_in(7, 2).len(), 1);
     }
 }

@@ -76,6 +76,8 @@ pub struct EvalCtx<'a> {
     /// Decapsulated inner packet, for the inner-header payload base.
     pub inner: &'a [u8],
     pub family: u8,
+    /// nft table owning the currently evaluated rule.
+    pub table: Option<&'a str>,
     pub hook: u8,
     pub mark: u32,
     pub meta: PktMeta,
@@ -108,7 +110,7 @@ impl<'a> EvalCtx<'a> {
     /// reading one breaks, and nothing is fabricated. # C: O(1)
     pub fn new(pkt: &'a [u8], family: u8, states: &'a ExprStates) -> Self {
         Self {
-            pkt, ll: &[], inner: &[], family, hook: 0, mark: 0, meta: PktMeta::default(),
+            pkt, ll: &[], inner: &[], family, table: None, hook: 0, mark: 0, meta: PktMeta::default(),
             ct: None, route: None, socket: None, xfrm: None, tunnel: None, osf: None,
             synproxy: None, objects: None,
             set_lookup: None, now_ns: 0, random: 0, cpu: 0, states,

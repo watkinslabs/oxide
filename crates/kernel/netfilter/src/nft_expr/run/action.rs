@@ -291,6 +291,8 @@ pub fn synproxy(ctx: &mut EvalCtx, mss: u16, wscale: u8, flags: u32) -> Option<i
 pub fn flow_offload(ctx: &mut EvalCtx, table: &str) -> Option<i32> {
     let Some(ct) = ctx.ct else { return BREAK };
     if !ct.offloadable() { return BREAK; }
-    ctx.actions.push(Action::FlowOffload { table: String::from(table) });
+    ctx.actions.push(Action::FlowOffload {
+        table: String::from(ctx.table.unwrap_or("")), flowtable: String::from(table),
+    });
     None
 }

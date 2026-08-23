@@ -117,25 +117,47 @@ pub(super) fn handle_nft(
             nlmsg_ack(req, 0)
         }
         nft_msg::NFT_MSG_DELFLOWTABLE | nft_msg::NFT_MSG_DESTROYFLOWTABLE => {
+            let table = match find_str_attr(attrs, nfta_flowtable::NFTA_FLOWTABLE_TABLE) {
+                Some(s) if !s.is_empty() => s, _ => return nlmsg_ack(req, -22),
+            };
             let name = match find_str_attr(attrs, nfta_flowtable::NFTA_FLOWTABLE_NAME) {
                 Some(s) if !s.is_empty() => s, _ => return nlmsg_ack(req, -22),
             };
-            ::net::global_stack().unregister_flowtable_in(namespace, nfg.nfgen_family, name);
+            let found = ::net::global_stack().flowtables_snapshot_in(namespace, nfg.nfgen_family)
+                .into_iter().find(|flowtable| flowtable.table == table && flowtable.name == name);
+            if found.is_none() {
+                return nlmsg_ack(req, if req.nlmsg_type == nft_msg::NFT_MSG_DESTROYFLOWTABLE as u16 { 0 } else { -2 });
+            }
+            if flowtable_use_in(namespace, nfg.nfgen_family, table, name) != 0 {
+                return nlmsg_ack(req, -16);
+            }
+            ::net::global_stack().unregister_flowtable_in(namespace, nfg.nfgen_family, table, name);
             nlmsg_ack(req, 0)
         }
         nft_msg::NFT_MSG_GETFLOWTABLE => {
             let found = ::net::global_stack().flowtables_snapshot_in(namespace, nfg.nfgen_family);
-            if let Some(name) = find_str_attr(attrs, nfta_flowtable::NFTA_FLOWTABLE_NAME) {
-                match found.into_iter().find(|flowtable| flowtable.name == name) {
+            let table = find_str_attr(attrs, nfta_flowtable::NFTA_FLOWTABLE_TABLE);
+            let name = find_str_attr(attrs, nfta_flowtable::NFTA_FLOWTABLE_NAME);
+            if req.nlmsg_flags & flags::NLM_F_DUMP == 0 && name.is_none() {
+                return nlmsg_ack(req, -22);
+            }
+            if let Some(name) = name {
+                let Some(table) = table else { return nlmsg_ack(req, -22); };
+                match found.into_iter().find(|flowtable| flowtable.table == table
+                    && flowtable.name == name) {
                     Some(flowtable) => build_newflowtable_reply(req.nlmsg_seq, req.nlmsg_pid,
-                        &flowtable, false),
+                        &flowtable, flowtable_use_in(namespace, flowtable.family,
+                            &flowtable.table, &flowtable.name), false),
                     None => nlmsg_ack(req, -2),
                 }
             } else {
                 let mut reply = Vec::new();
-                for flowtable in &found {
+                for flowtable in found.iter().filter(|flowtable|
+                    table.is_none_or(|table| flowtable.table == table)) {
                     reply.extend_from_slice(&build_newflowtable_reply(req.nlmsg_seq,
-                        req.nlmsg_pid, flowtable, true));
+                        req.nlmsg_pid, flowtable,
+                        flowtable_use_in(namespace, flowtable.family, &flowtable.table,
+                            &flowtable.name), true));
                 }
                 let mut done = [0u8; Nlmsghdr::SIZE];
                 let mut header = Nlmsghdr::done(req.nlmsg_seq, req.nlmsg_pid);

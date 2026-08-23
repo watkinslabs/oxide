@@ -22,6 +22,19 @@ fn lookup(set: &str) -> Vec<u8> {
     list
 }
 
+fn flow_offload(table: &str) -> Vec<u8> {
+    let mut data = Vec::new();
+    let mut name = table.as_bytes().to_vec();
+    name.push(0);
+    nla(&mut data, nft_expr::NFTA_FLOW_TABLE_NAME, &name);
+    let mut expr = Vec::new();
+    nla(&mut expr, nft_expr::NFTA_EXPR_NAME, b"flow_offload\0");
+    nla(&mut expr, nft_expr::NFTA_EXPR_DATA | 0x8000, &data);
+    let mut list = Vec::new();
+    nla(&mut list, nft_expr::NFTA_LIST_ELEM | 0x8000, &expr);
+    list
+}
+
 fn set(table: &str, name: &str) -> NftSet {
     NftSet {
         table_family: 2, table_name: table.into(), name: name.into(),
@@ -57,4 +70,21 @@ fn missing_lookup_set_rejects_whole_rule_without_publication() {
     assert_eq!(result, Err(nft_expr::ParseError::MissingSet));
     assert_eq!(gen_current_in(NAMESPACE), before);
     assert!(!rules_snapshot_in(NAMESPACE).iter().any(|rule| rule.table_name == table));
+}
+
+#[test]
+fn flowtable_use_counts_active_expression_references() {
+    const NAMESPACE: u64 = 0x1873_0002;
+    let table = "oxide-flowtable-use";
+    let flowtable = "fast";
+    let handle = next_rule_handle();
+    rule_insert_in(NAMESPACE, NftRule {
+        table_family: 2, table_name: table.into(), chain_name: "forward".into(),
+        handle, raw_expr: flow_offload(flowtable),
+    }).unwrap();
+
+    assert_eq!(flowtable_use_in(NAMESPACE, 2, table, flowtable), 1);
+    assert_eq!(flowtable_use_in(NAMESPACE, 2, table, "other"), 0);
+    assert_eq!(rule_remove_in(NAMESPACE, 2, table, "forward", handle), 1);
+    assert_eq!(flowtable_use_in(NAMESPACE, 2, table, flowtable), 0);
 }

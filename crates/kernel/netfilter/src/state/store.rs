@@ -278,6 +278,17 @@ pub fn rules_snapshot_in(namespace: u64) -> Vec<NftRule> {
 /// Initial-network-namespace rule snapshot. # C: O(N)
 pub fn rules_snapshot() -> Vec<NftRule> { rules_snapshot_in(0) }
 
+/// Count active `flow_offload` references to one flowtable from canonical rules.
+/// # C: O(N_rules × N_exprs)
+pub fn flowtable_use_in(namespace: u64, family: u8, table: &str, name: &str) -> u32 {
+    CONTROL.lock().namespace(namespace).map_or(0, |state| {
+        state.rules.iter().filter(|rule| rule.wire.table_family == family
+            && rule.wire.table_name == table).flat_map(|rule| rule.exprs.iter())
+            .filter(|expr| matches!(expr, Expr::FlowOffload { table: flowtable } if flowtable == name))
+            .count() as u32
+    })
+}
+
 /// # C: O(N)
 pub fn set_insert_in(namespace: u64, set: NftSet) {
     let mut control = CONTROL.lock();

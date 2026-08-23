@@ -185,7 +185,8 @@ pub(crate) fn build_newtable_reply(seq: u32, pid: u32, t: &NftTable, multi: bool
 }
 
 pub(crate) fn build_newflowtable_reply(seq: u32, pid: u32,
-                                       flowtable: &::net::FlowtableConfig, multi: bool) -> Vec<u8> {
+                                       flowtable: &::net::FlowtableConfig, use_count: u32,
+                                       multi: bool) -> Vec<u8> {
     let mut body = Vec::with_capacity(128);
     let mut nfg_buf = [0u8; Nfgenmsg::SIZE];
     Nfgenmsg { nfgen_family: flowtable.family, version: 0, res_id: 0 }.write_to(&mut nfg_buf);
@@ -194,7 +195,7 @@ pub(crate) fn build_newflowtable_reply(seq: u32, pid: u32,
     put_nlattr_str(&mut body, nfta_flowtable::NFTA_FLOWTABLE_NAME, &flowtable.name);
     put_nlattr(&mut body, nfta_flowtable::NFTA_FLOWTABLE_HANDLE,
         &flowtable.handle.to_be_bytes());
-    put_nlattr_u32(&mut body, nfta_flowtable::NFTA_FLOWTABLE_USE, 0);
+    put_nlattr_u32(&mut body, nfta_flowtable::NFTA_FLOWTABLE_USE, use_count);
     put_nlattr_u32(&mut body, nfta_flowtable::NFTA_FLOWTABLE_FLAGS, flowtable.flags);
     let mut hook = Vec::with_capacity(64);
     put_nlattr_u32(&mut hook, nfta_flowtable::NFTA_FLOWTABLE_HOOK_NUM, flowtable.hook_num);

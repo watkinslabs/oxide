@@ -40,7 +40,7 @@ pub enum Action {
     Reject { reject_type: u32, icmp_code: u8, family: u8 },
     TproxyAssign { addr: InetAddr, port: u16 },
     Synproxy { mss: u16, wscale: u8, flags: u32 },
-    FlowOffload { table: String },
+    FlowOffload { table: String, flowtable: String },
     PayloadSet { base: u32, offset: u32, data: Vec<u8>, csum_type: u32,
                  csum_offset: u32, csum_flags: u32 },
     ExthdrSet { op: u32, htype: u8, offset: u32, data: Vec<u8> },
@@ -86,7 +86,8 @@ impl Action {
                 }
                 crate::global_stack().apply_synproxy(p, family, *mss, *wscale, *flags, hook)
             }
-            Self::FlowOffload { table } => crate::global_stack().offload_flow(table, p, family, hook),
+            Self::FlowOffload { table, flowtable } =>
+                crate::global_stack().offload_flow(table, flowtable, p, family, hook),
             Self::Fwd { oif, gateway, nfproto } => apply_fwd(p, *oif, *gateway, *nfproto, family),
             Self::Dup { gateway, oif } => apply_dup(p, *gateway, *oif, family),
             Self::Log { group, level, prefix, snaplen, qthreshold, flags } =>
@@ -811,9 +812,9 @@ mod tests {
     #[test]
     fn stateful_actions_are_not_silently_discarded() {
         let mut pkt = Pkt::from_owned(vec![0; 20]);
-        let action = Action::FlowOffload { table: String::new() };
+        let action = Action::FlowOffload { table: String::new(), flowtable: String::new() };
         assert_eq!(action.apply(&mut pkt, 2), Err(ApplyError::Unsupported));
-        let action = Action::FlowOffload { table: String::from("ft") };
+        let action = Action::FlowOffload { table: String::from("filter"), flowtable: String::from("ft") };
         assert_eq!(action.apply_at(&mut pkt, 2, crate::netfilter_hook::NF_INET_FORWARD),
             Err(ApplyError::Invalid));
     }
