@@ -121,6 +121,17 @@ pub fn encode_entry(c: &Arc<Conn>, now: u64, acct: bool) -> Vec<u8> {
         nest_end(&mut out, tcp);
         nest_end(&mut out, pi);
     }
+    if let ProtoState::Sctp(track) = *c.proto.lock() {
+        let pi = nest_start(&mut out, CTA_PROTOINFO);
+        let sctp = nest_start(&mut out, CTA_PROTOINFO_SCTP);
+        put_u8(&mut out, CTA_PROTOINFO_SCTP_STATE, track.state);
+        put_be32(&mut out, CTA_PROTOINFO_SCTP_VTAG_ORIGINAL,
+                 track.vtag[IP_CT_DIR_ORIGINAL as usize]);
+        put_be32(&mut out, CTA_PROTOINFO_SCTP_VTAG_REPLY,
+                 track.vtag[IP_CT_DIR_REPLY as usize]);
+        nest_end(&mut out, sctp);
+        nest_end(&mut out, pi);
+    }
     if c.status() & IPS_SEQ_ADJUST != 0 {
         for (dir, kind) in [(IP_CT_DIR_ORIGINAL, CTA_SEQ_ADJ_ORIG),
                              (IP_CT_DIR_REPLY, CTA_SEQ_ADJ_REPLY)] {

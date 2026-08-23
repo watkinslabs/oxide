@@ -6,7 +6,8 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::sync::Arc;
 
-use crate::entry::{Conn, LabelUpdate, ProtoState, SeqAdjust, SynproxyState, TcpProtoInfoUpdate};
+use crate::entry::{Conn, LabelUpdate, ProtoState, SctpProtoInfoUpdate, SeqAdjust,
+                   SynproxyState, TcpProtoInfoUpdate};
 use crate::event::EventCache;
 use crate::proto::{icmp, tcp, udp};
 use crate::proto::tcp_window::TcpSeg;
@@ -160,7 +161,8 @@ impl CtNet {
                         None => { drop(p); return Track::Invalid; }
                     }
                 }
-                (ProtoState::Generic, _) => Some(icmp::generic_packet(&sysctl.generic)),
+                (ProtoState::Generic, _) | (ProtoState::Sctp(_), _)
+                    => Some(icmp::generic_packet(&sysctl.generic)),
                 // The entry's tracker and the packet's protocol disagree, which
                 // means the tuple matched a flow it does not belong to.
                 _ => { drop(p); return Track::Invalid; }
@@ -231,6 +233,7 @@ impl CtNet {
                      status: Option<u32>, mark: Option<(u32, Option<u32>)>,
                      seqadj: [Option<SeqAdjust>; IP_CT_DIR_MAX],
                      protoinfo: Option<TcpProtoInfoUpdate>,
+                     sctp_protoinfo: Option<SctpProtoInfoUpdate>,
                      labels: Option<LabelUpdate>,
                      synproxy: Option<SynproxyState>) -> bool {
         let Some(conn) = self.table.find_id(id, now) else { return false; };
@@ -262,6 +265,9 @@ impl CtNet {
         if let Some(update) = protoinfo {
             if conn.tcp_protoinfo_update(update) { self.events.post(&conn, IPCT_PROTOINFO); }
         }
+        if let Some(update) = sctp_protoinfo {
+            if conn.sctp_protoinfo_update(update) { self.events.post(&conn, IPCT_PROTOINFO); }
+        }
         if let Some(update) = labels {
             if conn.labels_replace(&update) { self.events.post(&conn, IPCT_LABEL); }
         }
@@ -278,7 +284,7 @@ impl CtNet {
                         timeout: u32, status: u32, mark: Option<u32>,
                         protoinfo: Option<TcpProtoInfoUpdate>,
                         helper: Option<String>) -> Option<u64> {
-        self.create_tuple_with(tuple, reply, now, timeout, status, mark, protoinfo, helper,
+        self.create_tuple_with(tuple, reply, now, timeout, status, mark, protoinfo, None, helper,
                                None, None, |_| true)
     }
 
@@ -288,6 +294,7 @@ impl CtNet {
     pub fn create_tuple_with<F>(&self, tuple: Tuple, reply: Option<Tuple>, now: u64,
                                 timeout: u32, status: u32, mark: Option<u32>,
                                 protoinfo: Option<TcpProtoInfoUpdate>,
+                                sctp_protoinfo: Option<SctpProtoInfoUpdate>,
                                 helper: Option<String>, labels: Option<LabelUpdate>,
                                 synproxy: Option<SynproxyState>, setup: F)
                                 -> Option<u64>
@@ -307,6 +314,7 @@ impl CtNet {
             // accepts the protocol-info container and leaves them unchanged.
             let _ = conn.tcp_protoinfo_update(update);
         }
+        if let Some(update) = sctp_protoinfo { let _ = conn.sctp_protoinfo_update(update); }
         if let Some(name) = helper {
             self.helpers.find_named_for(&name, &tuple)?;
             conn.attach_helper(name, true);

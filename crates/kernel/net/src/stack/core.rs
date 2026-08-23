@@ -145,13 +145,14 @@ impl NetStack {
                                      reply: Option<::conntrack::Tuple>, timeout: u32,
                                      status: u32, mark: Option<u32>,
                                      protoinfo: Option<::conntrack::entry::TcpProtoInfoUpdate>,
+                                     sctp_protoinfo: Option<::conntrack::entry::SctpProtoInfoUpdate>,
                                      helper: Option<alloc::string::String>,
                                      labels: Option<::conntrack::entry::LabelUpdate>,
                                      synproxy: Option<::conntrack::entry::SynproxyState>)
                                      -> Option<u64> {
         let ct = self.conntrack_in(net_ns);
         ct.create_tuple_with(tuple, reply, crate::stack::net_now_ns() / 1_000_000_000,
-                             timeout, status, mark, protoinfo, helper, labels, synproxy,
+                             timeout, status, mark, protoinfo, sctp_protoinfo, helper, labels, synproxy,
                              |_| true)
     }
 
@@ -162,6 +163,7 @@ impl NetStack {
                                          reply: Option<::conntrack::Tuple>, timeout: u32,
                                          status: u32, mark: Option<u32>,
                                          protoinfo: Option<::conntrack::entry::TcpProtoInfoUpdate>,
+                                         sctp_protoinfo: Option<::conntrack::entry::SctpProtoInfoUpdate>,
                                          helper: Option<alloc::string::String>,
                                          src: Option<::nat::NatRange>,
                                          dst: Option<::nat::NatRange>,
@@ -170,7 +172,7 @@ impl NetStack {
                                          -> Option<u64> {
         let ct = self.conntrack_in(net_ns);
         let now = crate::stack::net_now_ns() / 1_000_000_000;
-        ct.create_tuple_with(tuple, reply, now, timeout, status, mark, protoinfo, helper, labels,
+        ct.create_tuple_with(tuple, reply, now, timeout, status, mark, protoinfo, sctp_protoinfo, helper, labels,
             synproxy,
             |conn| {
                 struct Env<'a> {
@@ -209,13 +211,14 @@ impl NetStack {
     pub fn conntrack_update_in(&self, net_ns: u64, id: u64, timeout: Option<u32>,
                                status: Option<u32>, mark: Option<(u32, Option<u32>)>,
                                seqadj: [Option<::conntrack::entry::SeqAdjust>;
-                                        ::conntrack::uapi::IP_CT_DIR_MAX],
+                               ::conntrack::uapi::IP_CT_DIR_MAX],
                                protoinfo: Option<::conntrack::entry::TcpProtoInfoUpdate>,
+                               sctp_protoinfo: Option<::conntrack::entry::SctpProtoInfoUpdate>,
                                labels: Option<::conntrack::entry::LabelUpdate>,
                                synproxy: Option<::conntrack::entry::SynproxyState>) -> bool {
         let Some(ct) = self.conntrack_existing_in(net_ns) else { return false; };
         ct.update_id(id, crate::stack::net_now_ns() / 1_000_000_000,
-                     timeout, status, mark, seqadj, protoinfo, labels, synproxy)
+                     timeout, status, mark, seqadj, protoinfo, sctp_protoinfo, labels, synproxy)
     }
 
     /// Apply ctnetlink's existing-flow helper selection through CtNet. # C: O(N)

@@ -190,6 +190,12 @@ pub const CTA_PROTOINFO_TCP_WSCALE_ORIGINAL: u16 = 2;
 pub const CTA_PROTOINFO_TCP_WSCALE_REPLY:    u16 = 3;
 pub const CTA_PROTOINFO_TCP_FLAGS_ORIGINAL:  u16 = 4;
 pub const CTA_PROTOINFO_TCP_FLAGS_REPLY:     u16 = 5;
+pub const CTA_PROTOINFO_SCTP:                  u16 = 3;
+pub const CTA_PROTOINFO_SCTP_STATE:            u16 = 1;
+pub const CTA_PROTOINFO_SCTP_VTAG_ORIGINAL:    u16 = 2;
+pub const CTA_PROTOINFO_SCTP_VTAG_REPLY:       u16 = 3;
+
+pub const SCTP_CONNTRACK_HEARTBEAT_SENT: u8 = 8;
 
 pub const CTA_SEQADJ_CORRECTION_POS: u16 = 1;
 pub const CTA_SEQADJ_OFFSET_BEFORE:   u16 = 2;

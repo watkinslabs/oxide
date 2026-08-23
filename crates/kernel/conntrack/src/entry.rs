@@ -14,7 +14,14 @@ use crate::uapi::*;
 
 /// Per-protocol tracking state.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum ProtoState { Tcp(TcpTrack), Udp(UdpTrack), Icmp, Generic }
+pub enum ProtoState { Tcp(TcpTrack), Udp(UdpTrack), Sctp(SctpTrack), Icmp, Generic }
+
+/// SCTP protocol state carried by ctnetlink and the SCTP tracker. # C: O(1)
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct SctpTrack {
+    pub state: u8,
+    pub vtag: [u32; IP_CT_DIR_MAX],
+}
 
 /// ctnetlink's mutable TCP protocol-info fields. Flag updates carry the
 /// Linux `(flags, mask)` pair, so callers can change only selected bits.
@@ -22,6 +29,13 @@ pub enum ProtoState { Tcp(TcpTrack), Udp(UdpTrack), Icmp, Generic }
 pub struct TcpProtoInfoUpdate {
     pub state: Option<u8>,
     pub flags: [Option<(u8, u8)>; IP_CT_DIR_MAX],
+}
+
+/// ctnetlink's complete SCTP protocol-info replacement. # C: O(1)
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct SctpProtoInfoUpdate {
+    pub state: u8,
+    pub vtag: [u32; IP_CT_DIR_MAX],
 }
 
 /// One ctnetlink label replacement. `mask` names bits to replace; absent
@@ -39,6 +53,7 @@ impl ProtoState {
         match protonum {
             IPPROTO_TCP => ProtoState::Tcp(TcpTrack::default()),
             IPPROTO_UDP | IPPROTO_UDPLITE => ProtoState::Udp(UdpTrack::default()),
+            IPPROTO_SCTP => ProtoState::Sctp(SctpTrack::default()),
             IPPROTO_ICMP | IPPROTO_ICMPV6 => ProtoState::Icmp,
             _ => ProtoState::Generic,
         }
@@ -189,6 +204,16 @@ impl Conn {
             changed |= labels[i] != value;
             labels[i] = value;
         }
+        changed
+    }
+
+    /// Apply ctnetlink's complete SCTP protocol-info replacement. # C: O(1)
+    pub fn sctp_protoinfo_update(&self, update: SctpProtoInfoUpdate) -> bool {
+        let mut proto = self.proto.lock();
+        let ProtoState::Sctp(track) = &mut *proto else { return false; };
+        let next = SctpTrack { state: update.state, vtag: update.vtag };
+        let changed = *track != next;
+        *track = next;
         changed
     }
 
