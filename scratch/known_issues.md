@@ -383,7 +383,6 @@ here now.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| OPEN | DEFECT | med | **`systemctl` intermittently cannot reach the service manager: `Failed to list units: Transport endpoint is not connected`.** Seen once ~75 s into a live-gnome boot, from a shell that had worked moments earlier; a later run at ~40 s queried cleanly. ENOTCONN on the manager's AF_UNIX socket means the peer went away or the connection was reset, which on a healthy system does not happen. Recorded because it silently turns a verification query into an empty result — an empty `systemctl --failed` was briefly mistaken for "nothing fails". Any probe that reads unit state must check for this line before believing the answer. | `verify2.log`: `Failed to list units: Transport endpoint is not connected`, with the same command succeeding in `verify3.log`. | unowned |
 
 ### B1732-mount-setattr-detached
 
