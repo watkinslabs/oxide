@@ -1,5 +1,6 @@
 // 017 pread64 — one syscall, one file (docs/53 §0). Moved verbatim from fs.rs.
 
+use alloc::vec;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
@@ -47,15 +48,17 @@ pub fn sys_pread64(args: &SyscallArgs) -> i64 {
     }
     if let Err(rv) = crate::userbuf::validate_user_buf_writable(buf, cnt as u64, 1) { return rv; }
     cnt = crate::userbuf::clamp_rw_count(cnt);
-    // SAFETY: range [buf, buf+cnt) validated < USER_VA_END; user pages mapped via active CR3 (caller's AS); CPL=0 writes through user mapping.
-    let user_buf: &mut [u8] = unsafe {
-        core::slice::from_raw_parts_mut(buf as *mut u8, cnt)
-    };
+    // The range check is admission only. Keep the VFS call on kernel-owned
+    // storage, then publish through exception-table-backed usercopy.
+    let mut bounce = vec![0u8; cnt];
     // Route through File::pread so the full Linux gate chain applies (negative
     // off → EINVAL, non-seekable !FMODE_PREAD → ESPIPE, !FMODE_READ → EBADF),
     // instead of calling inode().read directly and bypassing it.
-    let ret = match file.pread(user_buf, off) {
-        Ok(n) => n as i64,
+    let ret = match file.pread(&mut bounce, off) {
+        Ok(n) => match uaccess::copy_to_user(buf, &bounce[..n]) {
+            Ok(()) => n as i64,
+            Err(_) => -(Errno::Efault.as_i32() as i64),
+        },
         Err(e) => crate::namei_common::errno_from_vfs(e),
     };
     cur.account_read_result(ret);

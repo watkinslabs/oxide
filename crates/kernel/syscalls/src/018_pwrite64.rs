@@ -1,5 +1,6 @@
 // 018 pwrite64 — one syscall, one file (docs/53 §0). Moved verbatim from fs.rs.
 
+use alloc::vec;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
@@ -45,17 +46,16 @@ pub fn sys_pwrite64(args: &SyscallArgs) -> i64 {
         Ok(n)  => n,
         Err(e) => return e,
     };
-    let empty: [u8; 0] = [];
-    let bytes: &[u8] = if cnt == 0 {
-        &empty
-    } else {
-        // SAFETY: range [buf, buf+cnt) validated readable in the caller's AS before CPL=0 dereference.
-        unsafe { core::slice::from_raw_parts(buf as *const u8, cnt) }
-    };
+    // Read the faultable source before entering VFS. A range check alone does
+    // not recover a concurrent unmap; `copy_from_user` does.
+    let mut bounce = vec![0u8; cnt];
+    if cnt != 0 && uaccess::copy_from_user(&mut bounce, buf).is_err() {
+        return -(Errno::Efault.as_i32() as i64);
+    }
     // Route through File::pwrite for the full Linux gate chain (negative off →
     // EINVAL, !FMODE_PWRITE → ESPIPE, !FMODE_WRITE → EBADF, mnt_readonly →
     // EROFS, O_APPEND forces i_size), instead of inode().write directly.
-    let ret = match file.pwrite(bytes, off as i64) {
+    let ret = match file.pwrite(&bounce, off as i64) {
         Ok(n) => n as i64,
         Err(e) => crate::namei_common::errno_from_vfs(e),
     };
