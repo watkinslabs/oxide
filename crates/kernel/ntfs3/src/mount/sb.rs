@@ -43,8 +43,7 @@ impl SuperOps for NtfsSuperOps {
     fn sync_fs(&self, _wait: bool) -> KResult<()> {
         let v = self.fs.volume.lock();
         if !v.writable() { return Ok(()); }
-        let _ = &v;
-        Ok(())
+        v.update_mft_mirror().map_err(super::errno_to_vfs)
     }
 
     /// The reports this mount published describe a volume that is about to be

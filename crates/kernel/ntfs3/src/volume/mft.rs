@@ -119,6 +119,29 @@ impl<S: SectorSource> Volume<S> {
         result
     }
 
+    /// Refresh the records `$MFTMirr` covers from the primary MFT.
+    ///
+    /// Linux performs this at filesystem sync/teardown. The mirror receives
+    /// the same fixed-up bytes and update-sequence value as the primary copy;
+    /// it is not a second logical record with an independently advanced
+    /// sequence. # C: O(mirrored records * record bytes)
+    pub(crate) fn update_mft_mirror(&self) -> Result<(), Errno> {
+        if !self.writable { return Ok(()); }
+        for number in 0..MFT_REC_USER.min(self.mft_records) {
+            if self.read_mirror_record(number)?.is_none() { break; }
+            let (mut bytes, _) = self.read_record_raw(number)?;
+            let fix = usize::from(u16::from_le_bytes([
+                bytes[REC_OFF_FIX_OFF], bytes[REC_OFF_FIX_OFF + 1],
+            ]));
+            let sample = u16::from_le_bytes([bytes[fix], bytes[fix + 1]]);
+            crate::fixup::pre_write(&mut bytes, sample).map_err(|e| e.errno())?;
+            let offset = self.geo.mft_mirror_offset + (number << self.geo.record_bits);
+            if offset >= self.geo.sectors_per_volume * u64::from(self.geo.sector_size) { break; }
+            self.write_bytes(offset, &bytes)?;
+        }
+        Ok(())
+    }
+
     /// The mirror's copy of a record, when the mirror covers it.
     ///
     /// `$MFTMirr` holds only the first few records — the ones without which

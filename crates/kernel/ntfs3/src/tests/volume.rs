@@ -200,6 +200,17 @@ fn the_mirror_agrees_with_the_table_it_mirrors() {
 }
 
 #[test]
+fn syncing_refreshes_a_mirror_after_the_primary_record_changes() {
+    let mut v = test_image::empty();
+    let (mut record, _) = v.read_record_raw(MFT_REC_MFT).unwrap();
+    record[MFT_OFF_FLAGS] ^= 1;
+    v.write_record(MFT_REC_MFT, &mut record).unwrap();
+    assert!(!v.mirror_agrees().unwrap(), "the primary changed before mirror sync");
+    v.update_mft_mirror().unwrap();
+    assert!(v.mirror_agrees().unwrap(), "sync copies the changed record to MFTMirr");
+}
+
+#[test]
 fn a_record_the_bitmap_calls_free_is_not_read_as_a_file() {
     let v = test_image::empty();
     // A record past everything the fixture wrote was never formatted, so

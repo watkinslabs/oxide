@@ -84,7 +84,8 @@ impl NtfsFs {
     pub fn mark_clean(&self) -> KResult<()> {
         let mut v = self.volume.lock();
         if !v.writable() { return Ok(()); }
-        v.set_dirty(false).map_err(errno_to_vfs)
+        v.set_dirty(false).map_err(errno_to_vfs)?;
+        v.update_mft_mirror().map_err(errno_to_vfs)
     }
 
     /// The root inode. # C: O(record bytes)
