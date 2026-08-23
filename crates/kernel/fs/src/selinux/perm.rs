@@ -4,6 +4,11 @@ use selinux_runtime::inode::inode_permission_av;
 
 use vfs::{InodeRef, KResult, VfsError};
 
+// Linux's CONFIG_LSM_MMAP_MIN_ADDR default for the x86/64 configuration used
+// by this kernel. This is the LSM floor, distinct from the writable
+// `vm.mmap_min_addr` DAC floor.
+const LSM_MMAP_MIN_ADDR: u64 = 65_536;
+
 /// Label-based permission over one inode. # C: O(1) cached
 ///
 /// Allows when the module has no policy, when the request asks for no
@@ -74,8 +79,18 @@ pub fn superblock_permission(sb: &vfs::SuperBlock, permission: &'static str) -> 
         .map_err(|_| VfsError::Eacces)
 }
 
+pub fn mmap_addr(addr: u64) -> bool {
+    if !selinux_runtime::active() { return true; }
+    let Some(class) = selinux::uapi::classmap::class_by_name("memprotect") else { return true; };
+    let Some(bit) = selinux::uapi::classmap::perm_bit(class, "mmap_zero") else { return true; };
+    if addr >= LSM_MMAP_MIN_ADDR { return true; }
+    selinux_runtime::check::has_perm(selinux_runtime::task::current_sid(),
+        selinux_runtime::task::current_sid(), class, bit).is_ok()
+}
+
 /// Install the check into the VFS permission path. # C: O(1)
 pub fn install() {
+    vmm::set_mmap_addr_hook(mmap_addr);
     security::lsm::register_inode_permission(inode_permission);
     security::lsm::register_file_ioctl(file_ioctl);
     security::lsm::register_inode_create(label_created);

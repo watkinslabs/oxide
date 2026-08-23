@@ -234,6 +234,9 @@ impl AddressSpace {
         };
 
         let end_va = end_of(start_va, len_u64)?;
+        if !crate::mmap_hook::admit_mmap_addr(start_va.as_u64()) {
+            return Err(Error::Access.into());
+        }
         if let VmaBacking::File { backing, off } = &backing {
             let mut setup = FileMmapSetup::new(start_va, end_va, off / hal::PAGE_SIZE_BYTES);
             if let Err(error) = backing.mmap_setup(&mut setup) {

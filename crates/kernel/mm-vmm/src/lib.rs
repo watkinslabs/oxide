@@ -23,6 +23,7 @@ pub mod fault_signal;
 pub mod tailwatch;
 mod mremap;
 mod mmap;
+mod mmap_hook;
 mod phys_cache;
 pub mod anon_vma;
 pub mod file_rmap;
@@ -46,6 +47,7 @@ pub use address_space::{
     set_mmap_rwsem_wait_hooks,
 };
 pub use mmap::{MmapError, MmapPlacement};
+pub use mmap_hook::set_mmap_addr_hook;
 pub use phys_cache::PhysCacheMode;
 pub use address_space::{
     prctl_mm_map_size, validate_mm_map, PrctlMmMap,
