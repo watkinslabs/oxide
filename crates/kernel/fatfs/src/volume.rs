@@ -14,11 +14,12 @@
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use syscall::errno::Errno;
 
 use crate::bpb;
-use crate::chain::{self, ChainError};
+use crate::chain;
 use crate::dirent::{self, Entry, LongName, ShortEntry, ENTRY_BYTES};
 use crate::fatcache::{get_cluster, ChainCache, Seek};
 use crate::fsinfo::{self, FreeState};
@@ -84,6 +85,9 @@ pub struct Volume<S: SectorSource> {
     free: FreeState,
     /// Where the information sector lives, on a volume that has one.
     fsinfo_sector: Option<u32>,
+    /// Linux's `errors=remount-ro` transition. The source itself remains
+    /// writable, while this mount gates further mutation after corruption.
+    forced_ro: AtomicBool,
 }
 
 impl<S: SectorSource> Volume<S> {
@@ -129,7 +133,8 @@ impl<S: SectorSource> Volume<S> {
             None
         };
         let mut vol = Self { source, geo, table, fats: parsed.fats, dirty, opts,
-                             free: FreeState::new(), fsinfo_sector };
+                             free: FreeState::new(), fsinfo_sector,
+                             forced_ro: AtomicBool::new(false) };
         vol.adopt_fsinfo();
         Ok(vol)
     }
@@ -156,6 +161,21 @@ impl<S: SectorSource> Volume<S> {
     /// What this mount was asked for. # C: O(1)
     pub fn options(&self) -> &Options { &self.opts }
 
+    /// Report metadata corruption using the mount's Linux error policy.
+    /// `continue` preserves write access, `remount-ro` gates future mutation,
+    /// and `panic` stops immediately. Callers still return the original EIO.
+    pub(crate) fn fs_error(&self) -> Errno {
+        match self.opts.errors {
+            crate::opts::Errors::Continue => klog::kwarn!("fat: filesystem metadata error; continuing"),
+            crate::opts::Errors::RemountRo => {
+                self.forced_ro.store(true, Ordering::Release);
+                klog::kwarn!("fat: filesystem metadata error; remounting read-only");
+            }
+            crate::opts::Errors::Panic => panic!("FAT filesystem metadata error"),
+        }
+        Errno::Eio
+    }
+
     /// Read one cluster's bytes. # C: O(cluster bytes)
     fn read_cluster(&self, cluster: u32, buf: &mut [u8]) -> Result<(), Errno> {
         let sector = self.geo.cluster_sector(cluster).ok_or(Errno::Eio)?;
@@ -179,7 +199,8 @@ impl<S: SectorSource> Volume<S> {
                 Ok(out)
             }
             Some(first) => {
-                let clusters = chain::walk(&self.geo, &self.table, first).map_err(chain_errno)?;
+                let clusters = chain::walk(&self.geo, &self.table, first)
+                    .map_err(|error| { let _ = error; self.fs_error() })?;
                 let per = usize::try_from(self.geo.cluster_bytes()).map_err(|_| Errno::Einval)?;
                 let mut out = vec![0u8; clusters.len() * per];
                 for (i, cluster) in clusters.iter().enumerate() {
@@ -300,7 +321,8 @@ impl<S: SectorSource> Volume<S> {
             // The chain is shorter than the size claims: the entry and the
             // table disagree, and the table is the one that owns the data.
             let Seek::At { dclus, .. } = get_cluster(&self.geo, &self.table, cache,
-                                                     entry.cluster, index)?
+                                                     entry.cluster, index)
+                .map_err(|_| self.fs_error())?
                 else { return Err(Errno::Eio) };
             self.read_cluster(dclus, &mut scratch)?;
             let take = core::cmp::min(per - within, want - done);
@@ -325,13 +347,6 @@ impl<S: SectorSource> Volume<S> {
         out.truncate(got);
         Ok(out)
     }
-}
-
-/// A chain failure, as an errno. Every one of them means the volume's own
-/// metadata is inconsistent, which is `EIO` rather than a bad request.
-/// # C: O(1)
-pub(crate) fn chain_errno(err: ChainError) -> Errno {
-    match err { ChainError::OutOfRange | ChainError::Cycle | ChainError::TableTooShort => Errno::Eio }
 }
 
 /// Whether `cluster` could begin a chain on this volume. # C: O(1)

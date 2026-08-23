@@ -53,7 +53,8 @@ impl<S: SectorSource> Volume<S> {
         let Some(first) = dir else { return Err(Errno::Enospc) };
         if count == 0 { return Ok(()); }
         let mut cache = ChainCache::new();
-        let tail = match get_cluster(&self.geo, &self.table, &mut cache, first, TO_EOF)? {
+        let tail = match get_cluster(&self.geo, &self.table, &mut cache, first, TO_EOF)
+            .map_err(|_| self.fs_error())? {
             Seek::Eof { dclus, .. } | Seek::At { dclus, .. } => dclus,
         };
         let got = alloc_clusters(&self.geo, &mut self.table, &mut self.free, count)?;

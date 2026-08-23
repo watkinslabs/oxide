@@ -28,6 +28,24 @@ fn dos1xfloppy_mounts_a_bootstrap_only_floppy() {
     assert_eq!(v.geometry().total_clusters, 313);
 }
 
+/// Linux reports the same corrupt-chain EIO under every policy, but
+/// `errors=remount-ro` also gates later mutation while `continue` leaves the
+/// mount writable.
+#[test]
+fn errors_policy_controls_whether_corruption_remounts_read_only() {
+    for (policy, writable) in [(crate::opts::Errors::Continue, true),
+                               (crate::opts::Errors::RemountRo, false)] {
+        let (mut img, _) = populated();
+        img.put_fat(2, 0); // DATA.BIN's chain is now free at its first cluster.
+        let mut opts = crate::opts::Options::vfat();
+        opts.errors = policy;
+        let v = Volume::mount_with(img.image(true), opts).expect("mount");
+        let hit = v.lookup("DATA.BIN").expect("directory still readable");
+        assert_eq!(v.read_whole(&hit.entry).err(), Some(Errno::Eio));
+        assert_eq!(v.writable(), writable, "policy {policy:?}");
+    }
+}
+
 /// The root lists its files, hides the volume label, and carries long names
 /// where the image wrote them.
 #[test]

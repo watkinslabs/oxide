@@ -23,7 +23,7 @@ use crate::fatcache::{get_cluster, ChainCache, Seek, TO_EOF};
 use crate::fsinfo;
 use crate::time::FatTime;
 
-use super::{chain_errno, DirEntry, SectorSource, Volume};
+use super::{DirEntry, SectorSource, Volume};
 
 impl<S: SectorSource> Volume<S> {
     /// Whether this volume may be written — a question about the MEDIUM only.
@@ -34,7 +34,9 @@ impl<S: SectorSource> Volume<S> {
     /// would leave a user unable to save anything to a stick that was pulled
     /// once. The warning is the caller's to emit; [`Self::was_dirty`] is how
     /// it knows. # C: O(1)
-    pub fn writable(&self) -> bool { self.source.writable() }
+    pub fn writable(&self) -> bool {
+        self.source.writable() && !self.forced_ro.load(core::sync::atomic::Ordering::Acquire)
+    }
 
     /// Was this volume left dirty by whoever had it last? # C: O(1)
     pub fn was_dirty(&self) -> bool { self.dirty }
@@ -159,7 +161,8 @@ impl<S: SectorSource> Volume<S> {
                 self.source.write_sectors(sector, &buf)
             }
             Some(first) => {
-                let clusters = crate::chain::walk(&self.geo, &self.table, first).map_err(chain_errno)?;
+                let clusters = crate::chain::walk(&self.geo, &self.table, first)
+                    .map_err(|_| self.fs_error())?;
                 let index = usize::try_from(slot / per).map_err(|_| Errno::Eio)?;
                 let within = usize::try_from(slot % per).map_err(|_| Errno::Eio)?;
                 let cluster = *clusters.get(index).ok_or(Errno::Eio)?;
@@ -211,7 +214,8 @@ impl<S: SectorSource> Volume<S> {
             let pos = offset + done as u64;
             let index = u32::try_from(pos / per).map_err(|_| Errno::Eio)?;
             let within = usize::try_from(pos % per).map_err(|_| Errno::Eio)?;
-            let Seek::At { dclus, .. } = get_cluster(&self.geo, &self.table, cache, first, index)?
+            let Seek::At { dclus, .. } = get_cluster(&self.geo, &self.table, cache, first, index)
+                .map_err(|_| self.fs_error())?
                 else { return Err(Errno::Eio) };
             let take = core::cmp::min(usize::try_from(per).map_err(|_| Errno::Eio)? - within,
                                       data.len() - done);
@@ -266,7 +270,8 @@ impl<S: SectorSource> Volume<S> {
         let (have, tail) = if first == 0 {
             (0usize, None)
         } else {
-            match get_cluster(&self.geo, &self.table, cache, first, TO_EOF)? {
+            match get_cluster(&self.geo, &self.table, cache, first, TO_EOF)
+                .map_err(|_| self.fs_error())? {
                 Seek::Eof { fclus, dclus } => (fclus as usize + 1, Some(dclus)),
                 Seek::At { fclus, dclus } => (fclus as usize + 1, Some(dclus)),
             }
@@ -361,7 +366,8 @@ impl<S: SectorSource> Volume<S> {
             let index = u32::try_from(pos / per).map_err(|_| Errno::Eio)?;
             let within = usize::try_from(pos % per).map_err(|_| Errno::Eio)?;
             let take = core::cmp::min(width - within, usize::try_from(to - pos).unwrap_or(width));
-            let Seek::At { dclus, .. } = get_cluster(&self.geo, &self.table, cache, first, index)?
+            let Seek::At { dclus, .. } = get_cluster(&self.geo, &self.table, cache, first, index)
+                .map_err(|_| self.fs_error())?
                 else { return Err(Errno::Eio) };
             if take < width {
                 self.read_cluster(dclus, &mut scratch)?;
