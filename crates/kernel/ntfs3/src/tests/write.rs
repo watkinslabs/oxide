@@ -404,29 +404,22 @@ fn a_name_past_the_length_ceiling_is_refused_before_anything_is_written() {
 
 #[test]
 fn a_directory_fills_when_its_index_root_is_full() {
-    // The tree does not yet grow into `$INDEX_ALLOCATION`, so a directory
-    // holds what its resident root holds and then refuses. The refusal is
-    // ENOSPC and nothing is left half-created: the record the failed create
-    // claimed is released.
+    // Once the resident root fills, Linux moves its ordered entries into the
+    // first `$INDEX_ALLOCATION` buffer and keeps creating names there.
     let mut v = test_image::empty();
-    let mut made = 0usize;
-    loop {
-        let name = alloc::format!("f{made:03}");
-        match v.create_file(MFT_REC_ROOT, &name, now()) {
-            Ok(_) => made += 1,
-            Err(Errno::Enospc) => break,
-            Err(other) => panic!("unexpected {other:?}"),
-        }
-        assert!(made < 1000, "the root never filled");
+    let made = 32usize;
+    for i in 0..made {
+        v.create_file(MFT_REC_ROOT, &alloc::format!("f{i:03}"), now()).unwrap();
     }
-    assert!(made > 0, "the root took no names at all");
     assert_eq!(names(&v).len(), made);
-    // Every name that WAS taken is still findable, and the volume is
-    // consistent: nothing was left behind by the refusal.
     for i in 0..made {
         assert!(v.find_entry(MFT_REC_ROOT, &alloc::format!("f{i:03}")).is_ok());
     }
-    let free_before = v.space().records_free;
-    assert_eq!(v.create_file(MFT_REC_ROOT, "one-more", now()).unwrap_err(), Errno::Enospc);
-    assert_eq!(v.space().records_free, free_before, "the failed create leaked a record");
+    let (_, attrs) = v.read_live_record(MFT_REC_ROOT).unwrap();
+    assert!(crate::attrib::find(&attrs, ATTR_ALLOC, &I30_NAME).is_some());
+    let image = v.into_source();
+    let mut opts = crate::opts::Options::defaults();
+    opts.settle();
+    let v = Volume::mount_with(image, opts).unwrap();
+    assert_eq!(v.read_dir(MFT_REC_ROOT).unwrap().len(), made);
 }

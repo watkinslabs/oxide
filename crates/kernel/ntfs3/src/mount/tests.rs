@@ -108,7 +108,7 @@ fn hard_link_refuses_a_directory_and_an_existing_name() {
 }
 
 #[test]
-fn a_full_directory_does_not_leave_an_unreachable_name_on_the_target() {
+fn a_grown_directory_keeps_a_link_reachable_on_the_target() {
     let disk = disk();
     let fs = mounted(&disk);
     let root = fs.root_inode().expect("root");
@@ -117,9 +117,9 @@ fn a_full_directory_does_not_leave_an_unreachable_name_on_the_target() {
         let name = alloc::format!("fill-{i}");
         if root.create_child(&name, 0o644, &CreateCtx::root()).is_err() { break; }
     }
-    assert_eq!(root.link_child(&original, "cannot-fit", &CreateCtx::root()), Err(VfsError::Enospc));
-    assert_eq!(original.nlink(), 1);
-    assert!(root.lookup("cannot-fit").is_err());
+    root.link_child(&original, "cannot-fit", &CreateCtx::root()).expect("allocation-backed link");
+    assert_eq!(original.nlink(), 2);
+    assert!(root.lookup("cannot-fit").is_ok());
 
     let node = original.private::<super::node::NtfsNode>().expect("NTFS node");
     let (record, attrs) = fs.volume.lock().read_record(node.info.number).expect("record");
@@ -127,5 +127,5 @@ fn a_full_directory_does_not_leave_an_unreachable_name_on_the_target() {
         .filter(|attr| attr.resident_span().is_some_and(|(start, end)| {
             crate::name::parse_filename(&record[start..end]).is_some()
         })).count();
-    assert_eq!(names, 1, "failed index insertion rolls the target record back");
+    assert_eq!(names, 2, "the new hard link adds one target name");
 }
