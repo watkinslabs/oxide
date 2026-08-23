@@ -92,6 +92,16 @@ pub fn log_buf_len(line: &[u8]) -> Option<usize> {
     Some(size)
 }
 
+/// `page_poison=` enables PMM's Linux-shaped free-page poison and check.
+/// # C: O(line length)
+pub fn page_poison(line: &[u8]) -> bool {
+    match value(line, b"page_poison") {
+        Some(b"0") | Some(b"n") | Some(b"N") | Some(b"off") | Some(b"false") => false,
+        Some(_) => true,
+        None => bare_flag(line, b"page_poison"),
+    }
+}
+
 fn memsize(raw: &[u8]) -> Option<u64> {
     let (number, consumed) = crate::token::parse_uint(raw);
     if consumed == 0 { return None; }
@@ -138,7 +148,6 @@ fn parse_bool(v: &[u8]) -> Option<bool> {
 pub fn unsupported_parameter(name: &[u8]) -> Option<&'static str> {
     match name {
         b"slub_debug" => Some("slub_debug: allocator debug is build-time only"),
-        b"page_poison" => Some("page_poison: page poisoning is build-time only"),
         b"debug_pagealloc" => Some("debug_pagealloc: page-alloc debug is build-time only"),
         _ => None,
     }

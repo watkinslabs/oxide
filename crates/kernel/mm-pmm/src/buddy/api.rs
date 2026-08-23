@@ -253,14 +253,15 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {    /// Allocate one buddy block of 
             // its intrusive header. Inspect the preserved body now: the zero
             // below is the first allocator write that would erase evidence of
             // a stale write while the page was free.
-            #[cfg(feature = "debug-watchdog")]
-            // SAFETY: p names the just-allocated, still-unzeroed page.
-            unsafe {
-                super::poison::report_watchdog_mismatch(
-                    p,
-                    (pfn + k) * PAGE_SIZE_BYTES,
-                )
-            };
+            if crate::page_poison_enabled() {
+                // SAFETY: p names the just-allocated, still-unzeroed page.
+                unsafe {
+                    super::poison::report_watchdog_mismatch(
+                        p,
+                        (pfn + k) * PAGE_SIZE_BYTES,
+                    )
+                };
+            }
             #[cfg(feature = "debug-cow")]
             // SAFETY: same ownership and bounds as the watchdog scan above.
             unsafe {

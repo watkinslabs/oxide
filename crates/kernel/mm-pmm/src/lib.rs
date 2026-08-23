@@ -94,6 +94,20 @@ pub const BITMAP_SLOTS: usize = ORDERS + 3;
 /// freed page; mismatch on alloc ⇒ kassert (corruption or double-free).
 const POISON_MAGIC: u64 = 0xDEAD_BEEF_CAFE_BABE;
 
+static PAGE_POISON: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Install the runtime `page_poison=` policy before PMM starts handing out
+/// ordinary frames. # C: O(1)
+pub fn set_page_poison(enabled: bool) {
+    PAGE_POISON.store(enabled, Ordering::Release);
+}
+
+/// # C: O(1)
+pub(crate) fn page_poison_enabled() -> bool {
+    PAGE_POISON.load(Ordering::Acquire)
+}
+
 /// Sentinel for "no PFN" in free-list head/next/prev. A real PFN is
 /// bounded by RAM-size in pages, always far below `u64::MAX`.
 const PFN_NULL: u64 = u64::MAX;

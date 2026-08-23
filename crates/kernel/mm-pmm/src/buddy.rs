@@ -31,7 +31,6 @@ mod pageblock;
 mod pcp;
 #[path = "hibernate.rs"]
 mod hibernate;
-#[cfg(any(test, feature = "debug-watchdog", feature = "debug-cow"))]
 mod poison;
 
 pub use api::Pmm;

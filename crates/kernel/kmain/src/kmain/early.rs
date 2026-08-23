@@ -48,6 +48,11 @@ fn klog_caller_id() -> u32 {
 pub unsafe fn init(info: &BootInfo) {
     boot_cpu::init();
 
+    // `page_poison=` is an early PMM policy: it must be installed before the
+    // allocator seeds or recycles its first free frame, just as Linux parses
+    // PAGE_POISONING before the buddy allocator becomes available.
+    pmm::set_page_poison(cmdline::printk::page_poison(crate::boot_cmdline::get()));
+
     fs::init();
     // SAFETY: kernel_main is called once per boot from a single CPU
     // with IRQs off; `STATIC_HEAP` is BSS-resident, exclusively owned

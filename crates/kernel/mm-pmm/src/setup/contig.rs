@@ -1,8 +1,7 @@
 use super::*;
 const PAGE_BYTES: u64 = hal::PAGE_SIZE_BYTES;
-// Only the poison-fill probes read this: the 0xCC `debug-cow` fill and the 0xAA
-// `debug-watchdog` fill (kernel-only — needs the HHDM mirror).
-#[cfg(any(feature = "debug-cow", all(feature = "debug-watchdog", target_os = "oxide-kernel")))]
+// Poison fills need the HHDM mirror and therefore are used only on the kernel
+// target; the 0xAA page-poison policy itself is runtime-controlled.
 const PAGE_BYTES_USIZE: usize = hal::PAGE_SIZE_BYTES as usize;
 #[cfg(feature = "debug-cow")]
 use super::metadata::{cow_dbg_rmap_report, cow_dbg_who};
@@ -232,13 +231,13 @@ pub unsafe fn free_one_frame(pa: u64) {
                     | crate::PageFlags::UPTODATE | crate::PageFlags::PAGETABLE);
         }
     }
-    // PAGE POISONING (debug-watchdog): fill the freed frame with 0xAA so a
+    // PAGE POISONING (`page_poison=`): fill the freed frame with 0xAA so a
     // later alloc can detect a write-while-free (use-after-free / stale-TLB
     // write that the PT-walk-based FWM detector can't see). Linux PAGE_POISONING.
     // `user_as`/`sched::live` are kernel-target-only, so the gate carries
     // `target_os` too — without it the feature does not build hosted.
-    #[cfg(all(feature = "debug-watchdog", target_os = "oxide-kernel"))]
-    {
+    #[cfg(target_os = "oxide-kernel")]
+    if crate::page_poison_enabled() {
         let hhdm = crate::user_as::hhdm_offset();
         if hhdm != 0 {
             // SAFETY: pa is a just-freed PMM frame; HHDM mirror is kernel-writable; 4 KiB granule.
