@@ -55,8 +55,8 @@ impl InodeFileBacking {
 const PAGE: usize = 4096;
 
 impl FileBacking for InodeFileBacking {
-    fn mprotect(&self, shared_write: bool, executable: bool) -> Result<(), FileBackingError> {
-        ::fs::selinux::perm::mprotect_file(&self.inode, shared_write, executable)
+    fn mprotect(&self, shared_write: bool, executable: bool, execmod: bool) -> Result<(), FileBackingError> {
+        ::fs::selinux::perm::mprotect_file(&self.inode, shared_write, executable, execmod)
             .map_err(vfs_error)
     }
     fn dev(&self) -> u64 { vfs::fsid_to_dev(self.inode.fsid()) }

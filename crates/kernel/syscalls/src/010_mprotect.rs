@@ -69,9 +69,15 @@ pub fn do_mprotect_pkey(args: &SyscallArgs, pkey: i32) -> i64 {
         ua, len, requested, sched::personality::read_implies_exec(cur),
         &mut |vma, prot| match &vma.backing {
             vmm::VmaBacking::File { backing, .. } => backing.mprotect(
-                vma.flags.contains(vmm::VmaFlags::SHARED), prot.contains(vmm::VmaProt::EXEC))
+                vma.flags.contains(vmm::VmaFlags::SHARED), prot.contains(vmm::VmaProt::EXEC),
+                vma.anon_vma.is_some() && prot.contains(vmm::VmaProt::EXEC)
+                    && !vma.prot.contains(vmm::VmaProt::EXEC))
                 .map_err(|_| vmm::Error::Access),
-            _ if prot.contains(vmm::VmaProt::EXEC) && prot.contains(vmm::VmaProt::WRITE) =>
+            vma if prot.contains(vmm::VmaProt::EXEC) && !vma.prot.contains(vmm::VmaProt::EXEC)
+                && vma.flags.contains(vmm::VmaFlags::GROWSDOWN) =>
+                selinux_runtime::check::process_permission("execstack")
+                    .map_err(|_| vmm::Error::Access),
+            vma if prot.contains(vmm::VmaProt::EXEC) && !vma.prot.contains(vmm::VmaProt::EXEC) =>
                 selinux_runtime::check::process_permission("execmem")
                     .map_err(|_| vmm::Error::Access),
             _ => Ok(()),

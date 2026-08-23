@@ -33,15 +33,16 @@ pub fn mmap_file(inode: &InodeRef, shared_write: bool, executable: bool) -> KRes
         map | read | write | execute).map_err(|_| VfsError::Eacces)
 }
 
-pub fn mprotect_file(inode: &InodeRef, shared_write: bool, executable: bool) -> KResult<()> {
+pub fn mprotect_file(inode: &InodeRef, shared_write: bool, executable: bool, execmod: bool) -> KResult<()> {
     if !selinux_runtime::active() { return Ok(()) }
     let Some(isid) = super::label::inode_sid(inode) else { return Ok(()) };
     let Some(class) = super::label::inode_security_class(inode) else { return Ok(()) };
     let read = selinux::uapi::classmap::perm_bit(class, "read").unwrap_or(0);
     let write = if shared_write { selinux::uapi::classmap::perm_bit(class, "write").unwrap_or(0) } else { 0 };
     let execute = if executable { selinux::uapi::classmap::perm_bit(class, "execute").unwrap_or(0) } else { 0 };
+    let execmod = if execmod { selinux::uapi::classmap::perm_bit(class, "execmod").unwrap_or(0) } else { 0 };
     selinux_runtime::check::has_perm(selinux_runtime::task::current_sid(), isid, class,
-        read | write | execute).map_err(|_| VfsError::Eacces)
+        read | write | execute | execmod).map_err(|_| VfsError::Eacces)
 }
 
 pub fn file_ioctl(inode: &InodeRef, _cmd: u32) -> KResult<()> {

@@ -25,7 +25,7 @@ use crate::vma::FileMmapSetup;
 /// wrapper) and pull `vfs::Inode::read` through the page cache.
 pub trait FileBacking: Send + Sync {
     /// SELinux `file_mprotect` owner for a file-backed VMA. # C: O(1) cached
-    fn mprotect(&self, _shared_write: bool, _executable: bool) -> Result<(), FileBackingError> { Ok(()) }
+    fn mprotect(&self, _shared_write: bool, _executable: bool, _execmod: bool) -> Result<(), FileBackingError> { Ok(()) }
     /// Establish file-specific VMA state after placement selected its exact
     /// range and before the VMA becomes visible to faults or other threads.
     /// # C: driver-dependent
