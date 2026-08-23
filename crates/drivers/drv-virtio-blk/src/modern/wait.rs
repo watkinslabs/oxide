@@ -25,6 +25,7 @@ impl BlkState {
                 // run with IRQs enabled, so the local virtio completion can wake
                 // this task without a driver-owned delivery bridge.
                 // SAFETY: virtio owns the used-ring index at this DMA address.
+                virtio::dma::invalidate_from_device(used as u64, core::mem::size_of::<u16>() * 2);
                 if unsafe { core::ptr::read_volatile(used.add(1)) } == target {
                     self.requestq.lock().used_seen = target;
                     return Ok(());
@@ -39,6 +40,7 @@ impl BlkState {
                 // the deadline wakes us even if the device interrupt is lost.
                 park_blk_checked(&BLK_COMPL, deadline, || {
                     // SAFETY: virtio owns the used-ring index at this DMA address.
+                    virtio::dma::invalidate_from_device(used as u64, core::mem::size_of::<u16>() * 2);
                     unsafe { core::ptr::read_volatile(used.add(1)) == target }
                 });
             }

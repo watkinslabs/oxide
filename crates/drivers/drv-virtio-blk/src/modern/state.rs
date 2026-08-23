@@ -76,6 +76,13 @@ pub(super) fn wake_all_blk_waiters() {
 #[cfg(target_os = "oxide-kernel")]
 pub fn wake_completions() {
     note_completion_interrupt();
+    // The interrupt is the completion notification for both wait conditions:
+    // it may finish the synchronous owner, or retire an asynchronous request
+    // that frees the engine turn. Wake both classes in hard-IRQ context; each
+    // waiter rechecks its predicate, while the block softirq still owns
+    // used-ring retirement and completion callbacks.
+    BLK_COMPL.wake_all();
+    BLK_TURN.wake_one();
     block::completion::raise();
 }
 
