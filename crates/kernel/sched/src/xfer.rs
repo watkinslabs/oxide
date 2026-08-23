@@ -122,6 +122,28 @@ pub fn sys_sendfile(args: &SyscallArgs) -> i64 {
     if explicit_off { store_off(offp, pos, ret) } else { ret }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{load_off, store_off};
+    use syscall::errno::Errno;
+
+    #[test]
+    fn explicit_offset_helpers_read_and_write_through_uaccess() {
+        let mut offset = 41i64;
+        let ptr = (&mut offset as *mut i64) as u64;
+
+        assert_eq!(load_off(ptr).unwrap(), 41);
+        assert_eq!(store_off(ptr, 42, 7), 7);
+        assert_eq!(offset, 42);
+    }
+
+    #[test]
+    fn explicit_offset_helpers_report_efault_in_the_linux_order() {
+        assert_eq!(load_off(0), Err(Errno::Efault));
+        assert_eq!(store_off(0, 42, 7), -(Errno::Efault.as_i32() as i64));
+    }
+}
+
 // `splice`/`tee`/`vmsplice`/`copy_file_range` used to live here as a bare
 // kernel read+write loop with no pipe involvement at all. They moved to
 // `fs::splice` (F754): the transfer rules are defined over the PIPE RING —
