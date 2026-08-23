@@ -9,6 +9,7 @@ use alloc::vec;
 const REGION: usize = 64 * 1024;
 const RECORD: usize = 8 * 1024;
 const CONSOLE: usize = 4096;
+const ECC: crate::zone::EccConfig = crate::zone::EccConfig { block_size: 128, ecc_size: 16 };
 
 /// A region that outlives the backends attached to it, like real reserved
 /// memory outlives the kernel that reserved it.
@@ -26,6 +27,14 @@ impl Ram {
         // holder until it is dropped.
         let region = unsafe { RamRegion::new(base, len) };
         RamBackend::attach(region, record, console)
+    }
+
+    fn attach_ecc(&mut self, record: usize, console: usize) -> (Arc<RamBackend>, Vec<Record>) {
+        let base = self.0.as_mut_ptr() as usize;
+        let len = self.0.len();
+        // SAFETY: same exclusive backing-region contract as `attach`.
+        let region = unsafe { RamRegion::new(base, len) };
+        RamBackend::attach_with_ecc(region, record, console, Some(ECC))
     }
 }
 
@@ -217,6 +226,20 @@ fn a_region_with_no_dump_zone_records_nothing_and_does_not_fault() {
     assert_eq!(b.dump_room(), 0);
     b.write_dmesg(1, 0, b"nowhere to put this");
     assert!(b.records().is_empty());
+}
+
+#[test]
+fn an_ecc_backend_repairs_a_corrupted_crash_across_reboot() {
+    let mut ram = Ram::new();
+    {
+        let (b, _) = ram.attach_ecc(RECORD, CONSOLE);
+        b.write_dmesg(7, 0, b"ECC protected crash");
+    }
+    // The first dump zone's data is protected by the configured parity.
+    ram.0[crate::limits::ZONE_HDR_LEN + 5] ^= 0x20;
+    let (_b, found) = ram.attach_ecc(RECORD, CONSOLE);
+    let d = found.iter().find(|r| r.id.ty == RecordType::Dmesg).expect("repaired crash");
+    assert_eq!(d.body, b"ECC protected crash".to_vec());
 }
 
 #[test]

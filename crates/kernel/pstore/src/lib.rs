@@ -5,6 +5,7 @@
 //! Module manifest:
 //! - `uapi`: filesystem magic, record-class names, crash reasons.
 //! - `limits`: sizes, counts and bounds, each one the reference states.
+//! - `ecc`: the optional Reed-Solomon RS8 codec used by protected zones.
 //! - `zone`: one persistent-RAM zone — header, validation, circular writes.
 //! - `geometry`: which physical range to reserve, and how it divides.
 //! - `hdr`: the timestamp line a record carries and the parse that strips it.
@@ -28,6 +29,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod fs;
+mod ecc;
 pub mod geometry;
 pub mod hdr;
 pub mod kmsg;
