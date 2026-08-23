@@ -35,7 +35,8 @@ pub fn msgrcv(ns: NamespaceId, msqid: i32, uptr: u64, bufsz: u64, msgtyp: i64, m
     let msg = loop {
         // Linux tests `ipcperms` outside `ipc_lock_object`, ahead of the
         // removal check, so a stricter mode installed by IPC_SET is EACCES.
-        if !q.perm.permitted_selinux(cred, S_IRUGO, "msgq") { return Err(Errno::Eacces); }
+        if !q.perm.permitted_selinux(cred, S_IRUGO, "msgq")
+            || !q.perm.security_permissions("msgq", &["read"]) { return Err(Errno::Eacces); }
         let mut st = q.state.lock();
         // B1427: read under the same lock the park below registers under.
         if q.is_removed() { return Err(Errno::Eidrm); }
@@ -52,13 +53,20 @@ pub fn msgrcv(ns: NamespaceId, msqid: i32, uptr: u64, bufsz: u64, msgtyp: i64, m
                     let mut data: Vec<u8> = Vec::new();
                     data.try_reserve_exact(src.data.len()).map_err(|_| Errno::Enomem)?;
                     data.extend_from_slice(&src.data);
-                    break Msg { mtype: src.mtype, data };
+                    let copy = Msg::new(src.mtype, data, src.security_sid);
+                    if selinux_runtime::check::class_permissions(
+                        selinux_runtime::task::current_sid(), copy.security_sid,
+                        "msg", &["receive"]).is_err() { return Err(Errno::Eacces); }
+                    break copy;
                 }
                 let taken = match st.msgs.remove(i) {
                     Some(m) => m,
                     // Unreachable: `find_msg` only ever reports a live index.
                     None => return Err(Errno::Enomsg),
                 };
+                if selinux_runtime::check::class_permissions(
+                    selinux_runtime::task::current_sid(), taken.security_sid,
+                    "msg", &["receive"]).is_err() { return Err(Errno::Eacces); }
                 st.qnum -= 1;
                 st.rtime = block::real_seconds();
                 st.lrpid = block::current_tgid();

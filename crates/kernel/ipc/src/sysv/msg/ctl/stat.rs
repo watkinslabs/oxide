@@ -25,7 +25,8 @@ const IPC_STAT_OK: i64 = 0;
 /// # Lk: msg registry, then MsgQueue.state
 pub fn msgctl_stat(ns: NamespaceId, msqid: i32, cmd: i32, buf: u64, cred: &IpcCred) -> Result<i64, Errno> {
     let q = if cmd == IPC_STAT { model::lookup_checked(ns, msqid)? } else { model::lookup_idx(ns, msqid)? };
-    if cmd != MSG_STAT_ANY && !q.perm.permitted_selinux(cred, S_IRUGO, "msgq") { return Err(Errno::Eacces); }
+    if cmd != MSG_STAT_ANY && (!q.perm.permitted_selinux(cred, S_IRUGO, "msgq")
+        || !q.perm.security_permissions("msgq", &["getattr", "associate"])) { return Err(Errno::Eacces); }
     let mut out = [0u8; MSQID64_DS_BYTES];
     encode_ipc64_perm(&mut out, &q.perm);
     {

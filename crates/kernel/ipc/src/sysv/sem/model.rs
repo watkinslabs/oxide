@@ -170,6 +170,7 @@ pub fn newary(ns: NamespaceId, key: i32, nsems: usize, semflg: i32, cred: &IpcCr
         state: Spinlock::new(SemState { sems, otime: 0, ctime: now, removed: false }),
         wait: WaitList::new(),
     });
+    if !set.perm.security_permissions("sem", &["create"]) { return Err(Errno::Eacces); }
     g.ids.install(ns, idx, set);
     g.used_add(ns, nsems);
     Ok(id)

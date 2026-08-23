@@ -16,6 +16,7 @@ pub fn semctl_set(ns: NamespaceId, cred: &IpcCred, semid: i32, new: Ipc64PermIn)
 {
     let set = model::lookup_checked(ns, semid).ok_or(Errno::Einval)?;
     if !set.perm.admin_allowed(cred) { return Err(Errno::Eperm); }
+    if !set.perm.security_permissions("sem", &["setattr"]) { return Err(Errno::Eacces); }
     let mut st = set.state.lock();
     if st.removed { return Err(Errno::Eidrm); }
     set.perm.update(new.uid, new.gid, new.mode);
@@ -27,6 +28,7 @@ pub fn semctl_set(ns: NamespaceId, cred: &IpcCred, semid: i32, new: Ipc64PermIn)
 pub fn semctl_rmid(ns: NamespaceId, cred: &IpcCred, semid: i32) -> Result<i64, Errno> {
     let set = model::lookup_checked(ns, semid).ok_or(Errno::Einval)?;
     if !set.perm.admin_allowed(cred) { return Err(Errno::Eperm); }
+    if !set.perm.security_permissions("sem", &["destroy"]) { return Err(Errno::Eacces); }
     model::freeary(&set);
     Ok(0)
 }

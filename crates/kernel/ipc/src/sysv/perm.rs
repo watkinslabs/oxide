@@ -142,4 +142,11 @@ impl IpcPerm {
                 selinux_runtime::task::current_sid(),
                 self.security_sid.load(Ordering::Acquire), class_name, flg).is_ok()
     }
+
+    pub fn security_permissions(&self, class_name: &'static str,
+                                 permissions: &[&'static str]) -> bool {
+        selinux_runtime::check::class_permissions(
+            selinux_runtime::task::current_sid(),
+            self.security_sid.load(Ordering::Acquire), class_name, permissions).is_ok()
+    }
 }

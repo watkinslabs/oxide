@@ -13,7 +13,9 @@ use crate::sysv::user;
 /// # C: O(MSGMNI) worst case
 fn newque(ids: &mut IpcIds<MsgQueue>, ns: NamespaceId, key: i32, msgflg: i32, cred: &IpcCred) -> Result<i32, Errno> {
     let (idx, seq, id) = ids.alloc_idx(ns, MSGMNI).ok_or(Errno::Enospc)?;
-    ids.install(ns, idx, model::new_queue(ns, key, id, seq, msgflg, cred));
+    let queue = model::new_queue(ns, key, id, seq, msgflg, cred);
+    if !queue.perm.security_permissions("msgq", &["create"]) { return Err(Errno::Eacces); }
+    ids.install(ns, idx, queue);
     Ok(id)
 }
 
@@ -32,7 +34,8 @@ pub fn msgget(ns: NamespaceId, key: i32, msgflg: i32, cred: &IpcCred) -> Result<
             }
             Some(q) => {
                 if (msgflg & IPC_CREAT) != 0 && (msgflg & IPC_EXCL) != 0 { return Err(Errno::Eexist); }
-                if !q.perm.permitted_selinux(cred, msgflg, "msgq") { return Err(Errno::Eacces); }
+                if !q.perm.permitted_selinux(cred, msgflg, "msgq")
+                    || !q.perm.security_permissions("msgq", &["associate"]) { return Err(Errno::Eacces); }
                 Ok(q.perm.id)
             }
         }

@@ -10,7 +10,7 @@ use crate::sysv::msg::select::{convert_mode, find_msg, Search};
 const NO_FLAGS: i32 = 0;
 
 fn queue(types: &[i64]) -> VecDeque<Msg> {
-    types.iter().map(|t| Msg { mtype: *t, data: Vec::new() }).collect()
+    types.iter().map(|t| Msg::new(*t, Vec::new(), 0)).collect()
 }
 
 #[test]

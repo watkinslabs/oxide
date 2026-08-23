@@ -55,7 +55,8 @@ pub fn msgsnd(ns: NamespaceId, msqid: i32, uptr: u64, msgsz: u64, msgflg: i32, c
     let q = model::lookup_checked(ns, msqid)?;
     loop {
         let mut st = q.state.lock();
-        if !q.perm.permitted_selinux(cred, S_IWUGO, "msgq") { return Err(Errno::Eacces); }
+        if !q.perm.permitted_selinux(cred, S_IWUGO, "msgq")
+            || !q.perm.security_permissions("msgq", &["write"]) { return Err(Errno::Eacces); }
         // B1427: `removed` is read under the same lock the park below registers
         // under, so a racing IPC_RMID is EIDRM rather than a lost wakeup.
         if q.is_removed() { return Err(Errno::Eidrm); }
@@ -64,7 +65,15 @@ pub fn msgsnd(ns: NamespaceId, msqid: i32, uptr: u64, msgsz: u64, msgflg: i32, c
             st.stime = block::real_seconds();
             // `take` hands the payload over without moving `data` out of a
             // loop body the borrow checker can re-enter.
-            st.msgs.push_back(Msg { mtype, data: core::mem::take(&mut data) });
+            let msg_sid = selinux_runtime::check::transition_sid(
+                selinux_runtime::task::current_sid(),
+                q.perm.security_sid.load(core::sync::atomic::Ordering::Acquire), "msg");
+            if selinux_runtime::check::class_permissions(
+                selinux_runtime::task::current_sid(), msg_sid, "msg", &["send"]).is_err()
+                || selinux_runtime::check::class_permissions(
+                    msg_sid, q.perm.security_sid.load(core::sync::atomic::Ordering::Acquire),
+                    "msgq", &["enqueue"]).is_err() { return Err(Errno::Eacces); }
+            st.msgs.push_back(Msg::new(mtype, core::mem::take(&mut data), msg_sid));
             st.cbytes += msgsz;
             st.qnum += 1;
             q.receivers.wake_all();

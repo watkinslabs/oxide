@@ -79,6 +79,26 @@ pub fn create_sid(class_name: &'static str) -> Sid {
     crate::with(|s| s.transition_sid(sid, sid, class, None).unwrap_or(sid)).unwrap_or(sid)
 }
 
+pub fn transition_sid(ssid: Sid, tsid: Sid, class_name: &'static str) -> Sid {
+    let Some(class) = selinux::uapi::classmap::class_by_name(class_name) else { return ssid };
+    crate::with(|s| s.transition_sid(ssid, tsid, class, None).unwrap_or(ssid)).unwrap_or(ssid)
+}
+
+pub fn class_permissions(ssid: Sid, tsid: Sid, class_name: &'static str,
+                         permissions: &[&'static str]) -> Result<(), i64> {
+    let class = selinux::uapi::classmap::class_by_name(class_name).ok_or(EACCES)?;
+    let requested = permissions.iter().fold(0, |mask, permission|
+        mask | selinux::uapi::classmap::perm_bit(class, permission).unwrap_or(0));
+    if requested == 0 { return Ok(()) }
+    has_perm(ssid, tsid, class, requested)
+}
+
+pub fn system_permission(permission: &'static str) -> Result<(), i64> {
+    let class = selinux::uapi::classmap::class_by_name("system").ok_or(EACCES)?;
+    let bit = selinux::uapi::classmap::perm_bit(class, permission).ok_or(EACCES)?;
+    has_perm(crate::task::current_sid(), crate::label::kernel_sid(), class, bit)
+}
+
 /// Check SysV IPC read/write access against the object label. # C: O(1) cached
 pub fn ipc_permission(ssid: Sid, tsid: Sid, class_name: &'static str, requested: i32)
     -> Result<(), i64>

@@ -31,7 +31,8 @@ pub fn semctl_stat(ns: NamespaceId, cred: &IpcCred, semid: i32, cmd: i32, buf: u
         _ => model::lookup_checked(ns, semid),
     }.ok_or(Errno::Einval)?;
 
-    if cmd != SEM_STAT_ANY && !set.perm.permitted_selinux(cred, S_IRUGO, "sem") { return Err(Errno::Eacces); }
+    if cmd != SEM_STAT_ANY && (!set.perm.permitted_selinux(cred, S_IRUGO, "sem")
+        || !set.perm.security_permissions("sem", &["getattr", "associate"])) { return Err(Errno::Eacces); }
 
     let mut out = [0u8; SEMID64_DS_BYTES];
     {

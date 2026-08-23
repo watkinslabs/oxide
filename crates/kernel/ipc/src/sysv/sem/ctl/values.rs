@@ -28,7 +28,8 @@ pub fn semctl_main(ns: NamespaceId, cred: &IpcCred, semid: i32, semnum: i32, cmd
     let set = model::lookup_checked(ns, semid).ok_or(Errno::Einval)?;
     let nsems = set.nsems;
     let want = if cmd == SETALL { S_IWUGO } else { S_IRUGO };
-    if !set.perm.permitted_selinux(cred, want, "sem") { return Err(Errno::Eacces); }
+    if !set.perm.permitted_selinux(cred, want, "sem")
+        || !set.perm.security_permissions("sem", if cmd == SETALL { &["write"] } else { &["read", "getattr"] }) { return Err(Errno::Eacces); }
 
     if cmd == GETALL {
         let mut out: Vec<u8> = Vec::new();
@@ -93,7 +94,8 @@ pub fn semctl_setval(ns: NamespaceId, cred: &IpcCred, semid: i32, semnum: i32, v
     if val > SEMVMX || val < 0 { return Err(Errno::Erange); }
     let set = model::lookup_checked(ns, semid).ok_or(Errno::Einval)?;
     if semnum < 0 || semnum as usize >= set.nsems { return Err(Errno::Einval); }
-    if !set.perm.permitted_selinux(cred, S_IWUGO, "sem") { return Err(Errno::Eacces); }
+    if !set.perm.permitted_selinux(cred, S_IWUGO, "sem")
+        || !set.perm.security_permissions("sem", &["write"]) { return Err(Errno::Eacces); }
 
     let idx = semnum as usize;
     let mut st = set.state.lock();

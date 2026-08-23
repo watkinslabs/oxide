@@ -196,7 +196,8 @@ pub fn semop_in(ns: NamespaceId, cred: &IpcCred, semid: i32, sops: &[Sembuf],
     } else { undo::NO_UNDO_LIST };
     if scan.max as usize >= set.nsems { return Err(Errno::Efbig); }
     let want = if scan.alter { S_IWUGO } else { S_IRUGO };
-    if !set.perm.permitted_selinux(cred, want, "sem") { return Err(Errno::Eacces); }
+    if !set.perm.permitted_selinux(cred, want, "sem")
+        || !set.perm.security_permissions("sem", if scan.alter { &["read", "write"] } else { &["read"] }) { return Err(Errno::Eacces); }
 
     loop {
         let mut st = set.state.lock();

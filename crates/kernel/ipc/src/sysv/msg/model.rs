@@ -32,11 +32,16 @@ pub const MTYPE_BYTES: usize = 8;
 pub struct Msg {
     pub mtype: i64,
     pub data: Vec<u8>,
+    pub security_sid: u32,
 }
 
 impl Msg {
     /// Linux `m_ts` — payload length in bytes. # C: O(1)
     pub fn ts(&self) -> u64 { self.data.len() as u64 }
+
+    pub fn new(mtype: i64, data: Vec<u8>, security_sid: u32) -> Self {
+        Self { mtype, data, security_sid }
+    }
 }
 
 /// The lock-protected half of `struct msg_queue`: the FIFO plus every

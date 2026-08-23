@@ -183,7 +183,8 @@ fn stat_segment(shmid: i32, cmd: u64, cred: &IpcCred) -> Result<(alloc::sync::Ar
         ns_segments(ns).get(shmid as usize).cloned().ok_or(err(Errno::Einval))?
     };
     if (seg.mode.load(Ordering::Acquire) & SHM_DEST) != 0 { return Err(err(Errno::Eidrm)); }
-    if cmd != SHM_STAT_ANY && !ipc_permitted(&seg, cred, S_IRUGO) { return Err(err(Errno::Eacces)); }
+    if cmd != SHM_STAT_ANY && (!ipc_permitted(&seg, cred, S_IRUGO)
+        || !super::security_permissions(&seg, &["getattr", "associate"])) { return Err(err(Errno::Eacces)); }
     let ret = if cmd == IPC_STAT { 0 } else { seg.id as i64 };
     Ok((seg, ret))
 }
@@ -197,6 +198,7 @@ fn set_segment(shmid: i32, cred: &IpcCred, set: ShmctlSet) -> i64 {
     let Some(s) = g.iter().find(|s| s.id == shmid && s.ns == ns) else { return err(Errno::Einval); };
     if (s.mode.load(Ordering::Acquire) & SHM_DEST) != 0 { return err(Errno::Eidrm); }
     if !can_admin(s, cred) { return err(Errno::Eperm); }
+    if !super::security_permissions(s, &["setattr"]) { return err(Errno::Eacces); }
     s.uid.store(set.uid, Ordering::Release);
     s.gid.store(set.gid, Ordering::Release);
     s.mode.fetch_update(Ordering::AcqRel, Ordering::Acquire, |mode| Some((mode & !S_IRWXUGO) | (set.mode & S_IRWXUGO))).ok();
@@ -212,6 +214,7 @@ fn rmid_segment(shmid: i32, cred: &IpcCred) -> i64 {
     let Some(pos) = g.iter().position(|s| s.id == shmid && s.ns == ns) else { return err(Errno::Einval); };
     if (g[pos].mode.load(Ordering::Acquire) & SHM_DEST) != 0 { return err(Errno::Eidrm); }
     if !can_admin(&g[pos], cred) { return err(Errno::Eperm); }
+    if !super::security_permissions(&g[pos], &["destroy"]) { return err(Errno::Eacces); }
     if g[pos].nattch.load(Ordering::Acquire) > 0 {
         {
             let m = &g[pos];
@@ -238,6 +241,7 @@ fn lock_segment(shmid: i32, cmd: u64, cred: &IpcCred) -> i64 {
     let Some(s) = g.iter().find(|s| s.id == shmid && s.ns == ns) else { return err(Errno::Einval); };
     if (s.mode.load(Ordering::Acquire) & SHM_DEST) != 0 { return err(Errno::Eidrm); }
     if !can_lock(s, cred) { return err(Errno::Eperm); }
+    if !super::security_permissions(s, &["lock"]) { return err(Errno::Eacces); }
     // Huge pages are already unevictable — there is no swap path to lock them
     // out of — so the command succeeds and changes nothing, including the
     // `SHM_LOCKED` bit `IPC_STAT` reports. The permission checks above still
@@ -258,6 +262,7 @@ pub fn sys_shmctl(args: &syscall::SyscallArgs) -> i64 {
     let cred = current_ipc_cred();
     match cmd {
         IPC_INFO => {
+            if selinux_runtime::check::system_permission("ipc_info").is_err() { return err(Errno::Eacces); }
             let owner = match crate::ipc_namespace::current() {
                 Ok(owner) => owner, Err(_) => return err(Errno::Einval),
             };
@@ -267,6 +272,7 @@ pub fn sys_shmctl(args: &syscall::SyscallArgs) -> i64 {
             max_stat_index(&segs)
         }
         SHM_INFO => {
+            if selinux_runtime::check::system_permission("ipc_info").is_err() { return err(Errno::Eacces); }
             let owner = match crate::ipc_namespace::current() {
                 Ok(owner) => owner, Err(_) => return err(Errno::Einval),
             };
