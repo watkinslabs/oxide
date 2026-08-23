@@ -424,6 +424,9 @@ fn a_directory_fills_when_its_index_root_is_full() {
     let image = v.into_source();
     let mut opts = crate::opts::Options::defaults();
     opts.settle();
-    let v = Volume::mount_with(image, opts).unwrap();
+    let mut v = Volume::mount_with(image, opts).unwrap();
     assert_eq!(v.read_dir(MFT_REC_ROOT).unwrap().len(), made);
+    v.unlink(MFT_REC_ROOT, "long-directory-entry-010", now()).unwrap();
+    assert!(v.find_entry(MFT_REC_ROOT, "long-directory-entry-010").is_err());
+    assert_eq!(v.read_dir(MFT_REC_ROOT).unwrap().len(), made - 1);
 }

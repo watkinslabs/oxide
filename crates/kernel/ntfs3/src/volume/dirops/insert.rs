@@ -158,7 +158,12 @@ impl<S: SectorSource> Volume<S> {
         }
         ordered.push(new_entry.to_vec());
         self.sort_index_entries(&mut ordered, root.indexed_type);
+        self.rebuild_index_entries(parent, &idx.root_data, root, ordered)
+    }
 
+    pub(crate) fn rebuild_index_entries(&mut self, parent: u64, root_data: &[u8],
+                                        root: &index::Root, ordered: Vec<Vec<u8>>)
+        -> Result<(), Errno> {
         let mut blocks = Vec::new();
         let mut separators = Vec::new();
         let mut at = 0usize;
@@ -191,7 +196,7 @@ impl<S: SectorSource> Volume<S> {
                 parent_entries.push(entry::build(&parsed.reference, &key, Some(i as u64)));
             }
             let last = entry::build_last(Some((blocks.len() - 1) as u64));
-            let head = &idx.root_data[..IROOT_OFF_IHDR];
+            let head = &root_data[..IROOT_OFF_IHDR];
             let root_node = rebuild_node(&parent_entries, &last, root.header_at,
                                          (SIZEOF_IHDR + parent_entries.iter().map(Vec::len)
                                              .sum::<usize>() + last.len()) as u32,
@@ -202,7 +207,17 @@ impl<S: SectorSource> Volume<S> {
             root_data.extend_from_slice(&root_node);
             self.rewrite_index_allocation(parent, &root_data, root.block_size, &blocks)
         } else {
-            self.rewrite_index_allocation(parent, &idx.root_data, root.block_size, &blocks)
+            // A delete can make a two-child root fit back into one leaf. Keep
+            // the allocation-backed form here; reclaiming the now-unused
+            // tail VCN belongs to the bitmap/runlist shrink path.
+            let child = entry::build_last(Some(0));
+            let root_node = rebuild_node(&[], &child, root.header_at,
+                                         (SIZEOF_IHDR + child.len()) as u32,
+                                         INDEX_HDR_HAS_SUBNODES).ok_or(Errno::Eio)?;
+            let mut compact_root = Vec::with_capacity(IROOT_OFF_IHDR + root_node.len());
+            compact_root.extend_from_slice(&root_data[..IROOT_OFF_IHDR]);
+            compact_root.extend_from_slice(&root_node);
+            self.rewrite_index_allocation(parent, &compact_root, root.block_size, &blocks)
         }
     }
 
@@ -281,10 +296,25 @@ impl<S: SectorSource> Volume<S> {
         let old_runs = self.attribute_runs(&bytes, &attrs, alloc_attr)?;
         let need = self.geo.clusters_for(u64::from(block_size) * blocks.len() as u64);
         let mut runs = old_runs.clone();
+        let mut dropped = Runs::new();
         if need > runs.clusters() {
             let extra = self.alloc_clusters(need - runs.clusters())?;
             let base = runs.clusters();
             for mut run in extra.runs { run.vcn += base; runs.push(run); }
+        } else if need < runs.clusters() {
+            let mut kept = Runs::new();
+            for run in &runs.runs {
+                if run.vcn >= need { dropped.push(*run); continue; }
+                if run.vcn + run.len <= need { kept.push(*run); continue; }
+                let split = need - run.vcn;
+                kept.push(crate::run::Run { vcn: run.vcn, lcn: run.lcn, len: split });
+                dropped.push(crate::run::Run {
+                    vcn: run.vcn + split,
+                    lcn: run.lcn + split,
+                    len: run.len - split,
+                });
+            }
+            runs = kept;
         }
         let alloc = edit::non_resident(ATTR_ALLOC, &I30_NAME, alloc_attr.id, &runs,
                                         runs.clusters() << self.geo.cluster_bits,
@@ -308,6 +338,7 @@ impl<S: SectorSource> Volume<S> {
             for (i, block) in blocks.iter().enumerate() {
                 self.write_runs(&runs, u64::from(block_size) * i as u64, block)?;
             }
+            if !dropped.runs.is_empty() { self.free_runs(&dropped)?; }
             Ok(())
         })();
         if result.is_err() && need > old_runs.clusters() {
