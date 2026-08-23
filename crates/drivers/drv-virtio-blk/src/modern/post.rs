@@ -138,6 +138,7 @@ impl BlkState {
             }
             core::ptr::write_volatile(bounce.add(STATUS_OFF), u8::MAX);
         }
+        clean_bounce_for_device(h, bounce_pa);
         let (descs, descriptor_count) = blk::build_chain(
             is_in,
             bounce_dma + HDR_OFF as u64,
@@ -173,6 +174,7 @@ impl BlkState {
             ring.avail_idx = ring.avail_idx.wrapping_add(1);
             core::ptr::write_volatile(avail.add(1), ring.avail_idx);
         }
+        clean_queue_submission(h, q);
         ring.pending.push(PendingRequest { head, bounce_pa, bounce_dma, request, completion, is_in, data_len });
         drop(ring);
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);

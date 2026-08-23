@@ -53,6 +53,7 @@ impl BlkState {
             }
             for i in 0..in_len { core::ptr::write_volatile(bounce.add(STATUS_OFF + i), 0xFFu8); }
         }
+        clean_bounce_for_device(h, self.bounce_pa);
 
         let hdr_dma = self.bounce_dma + HDR_OFF as u64;
         let data_dma = self.bounce_dma + DATA_OFF as u64;
@@ -94,6 +95,7 @@ impl BlkState {
             }
             g.avail_idx
         };
+        clean_queue_submission(h, &self.requestq);
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
 
         if self.requestq.res.notify_va != 0 {
@@ -131,6 +133,10 @@ impl BlkState {
         }
         result?;
         core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
+        // The used entry proves the device has finished writing this DMA
+        // allocation. Invalidate its cache lines before consuming the status
+        // byte or read payload on a non-coherent architecture.
+        virtio::dma::invalidate_from_device(h.wrapping_add(self.bounce_pa), BOUNCE_BYTES);
 
         let mut in_header: InHeader = [0u8; VIRTIO_BLK_MAX_IN_HEADER_BYTES];
         // SAFETY: same owned bounce block; the in-header occupies

@@ -70,6 +70,9 @@ impl BlkState {
                 // non-zero per the guard above. Virtio 1.2 §2.7.8 puts `idx` at
                 // byte 2 as an aligned u16; the volatile load re-reads the
                 // device's publish rather than caching it.
+                virtio::dma::invalidate_from_device(
+                    used as u64, hal::PAGE_SIZE_BYTES as usize,
+                );
                 let used_index = unsafe { core::ptr::read_volatile(used.add(USED_IDX_OFF) as *const u16) };
                 let Some(slot) = claim_next_used(&mut ring.used_seen, used_index, q.res.size) else {
                     return found;
@@ -93,6 +96,9 @@ impl BlkState {
             // owned by this `PendingRequest` (removed from `pending` above, not
             // yet freed). Its descriptor head came back in the used ring, so the
             // device has finished with it. STATUS_OFF is in bounds.
+            virtio::dma::invalidate_from_device(
+                bounce as u64, BOUNCE_BYTES,
+            );
             let status = unsafe { core::ptr::read_volatile(bounce.add(STATUS_OFF)) };
             let result = match blk::decode_status(status) {
                 Ok(()) if pending.is_in => {
