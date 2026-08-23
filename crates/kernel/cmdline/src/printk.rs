@@ -67,6 +67,16 @@ pub fn devkmsg_mode(line: &[u8]) -> Option<DevkmsgMode> {
     }
 }
 
+/// `boot_delay=<msec>`: delay each console-visible printk during boot.
+/// Values above ten seconds are rejected like Linux; malformed values are
+/// absent rather than silently becoming a long delay.
+/// # C: O(line length)
+pub fn boot_delay_ms(line: &[u8]) -> Option<u32> {
+    let value = value(line, b"boot_delay")?;
+    let ms = crate::token::full_uint(value)?;
+    (ms <= 10_000).then_some(ms as u32)
+}
+
 /// `initcall_debug`: trace each boot init step's entry, return value and
 /// elapsed time. A boot that never completes then names the step it entered
 /// last, which a silent boot cannot.
@@ -101,7 +111,6 @@ pub fn unsupported_parameter(name: &[u8]) -> Option<&'static str> {
         b"slub_debug" => Some("slub_debug: allocator debug is build-time only"),
         b"page_poison" => Some("page_poison: page poisoning is build-time only"),
         b"debug_pagealloc" => Some("debug_pagealloc: page-alloc debug is build-time only"),
-        b"boot_delay" => Some("boot_delay: no calibrated delay loop"),
         _ => None,
     }
 }

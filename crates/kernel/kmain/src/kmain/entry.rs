@@ -46,6 +46,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // kthreads that `rootfs::init` mounts and execs through all exist by now.
     unsafe { super::rootfs::init(info); }
     klog::initcall::finish("rootfs::init", t, 0);
+    klog::mark_system_running();
     sched::halt_forever()
 }
 

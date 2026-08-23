@@ -155,6 +155,13 @@ static CLOCK_FN: core::sync::atomic::AtomicPtr<()>
     = core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
 static LINE_START: core::sync::atomic::AtomicBool
     = core::sync::atomic::AtomicBool::new(true);
+/// Milliseconds to delay each visible printk during boot, Linux's
+/// `boot_delay` owner. Zero disables the delay.
+static BOOT_DELAY_MS: core::sync::atomic::AtomicU32
+    = core::sync::atomic::AtomicU32::new(0);
+/// Cleared once boot initialization has handed control to the ordinary system.
+static BOOT_PHASE: core::sync::atomic::AtomicBool
+    = core::sync::atomic::AtomicBool::new(true);
 
 /// Put the console back at the start of a line. Test-fixture use only: the
 /// flag is otherwise driven entirely by the bytes that pass through
@@ -178,6 +185,17 @@ pub fn clear_clock_fn() {
     CLOCK_FN.store(core::ptr::null_mut(), core::sync::atomic::Ordering::Release);
 }
 
+/// Install the validated `boot_delay=` value from the sole boot-parameter
+/// policy owner. # C: O(1)
+pub fn set_boot_delay_ms(ms: u32) {
+    BOOT_DELAY_MS.store(ms.min(10_000), core::sync::atomic::Ordering::Release);
+}
+
+/// Stop applying `boot_delay` after boot initialization. # C: O(1)
+pub fn mark_system_running() {
+    BOOT_PHASE.store(false, core::sync::atomic::Ordering::Release);
+}
+
 #[inline]
 fn now_ns() -> Option<u64> {
     let raw = CLOCK_FN.load(core::sync::atomic::Ordering::Acquire);
@@ -193,6 +211,15 @@ fn now_ns() -> Option<u64> {
 /// Nanoseconds since boot, or `None` before a clock is installed.
 /// # C: O(1)
 pub fn monotonic_ns() -> Option<u64> { now_ns() }
+
+fn boot_delay(lvl: u32, route: u32) {
+    let ms = BOOT_DELAY_MS.load(core::sync::atomic::Ordering::Acquire);
+    if ms == 0 || !BOOT_PHASE.load(core::sync::atomic::Ordering::Acquire) { return; }
+    if route != cont::ROUTE_PRIMARY && syslog::suppress_console(lvl) { return; }
+    let Some(start) = now_ns() else { return; };
+    let end = start.saturating_add(u64::from(ms) * 1_000_000);
+    while now_ns().is_some_and(|now| now < end) { core::hint::spin_loop(); }
+}
 
 /// Emit `v` as a decimal natural-width integer tagged with loglevel `lvl`.
 /// # C: O(log10(v))
@@ -278,6 +305,7 @@ pub(crate) fn flush_line(bytes: &[u8], lvl: u32, route: u32) {
     sink_route(bytes, lvl, route);
     if bytes[bytes.len() - 1] == b'\n' {
         LINE_START.store(true, core::sync::atomic::Ordering::Release);
+        boot_delay(lvl, route);
     }
 }
 

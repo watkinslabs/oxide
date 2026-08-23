@@ -58,6 +58,15 @@ fn devkmsg_mode_decodes_all_three_values() {
 }
 
 #[test]
+fn boot_delay_accepts_linux_range_and_rejects_bad_values() {
+    assert_eq!(boot_delay_ms(b"boot_delay=1"), Some(1));
+    assert_eq!(boot_delay_ms(b"quiet boot_delay=10000"), Some(10_000));
+    assert_eq!(boot_delay_ms(b"boot_delay=10001"), None);
+    assert_eq!(boot_delay_ms(b"boot_delay=ten"), None);
+    assert_eq!(boot_delay_ms(b"boot_delay"), None);
+}
+
+#[test]
 fn initcall_debug_accepts_flag_and_boolean_forms() {
     assert!(initcall_debug(b"quiet initcall_debug"));
     assert!(initcall_debug(b"initcall_debug=1"));
@@ -78,7 +87,7 @@ fn a_recognised_but_unhonoured_parameter_is_named() {
     // these must produce a boot-time line saying which subsystem it needs.
     for p in [&b"softlockup_panic"[..], b"nmi_watchdog",
               b"log_buf_len", b"slub_debug", b"page_poison",
-              b"debug_pagealloc", b"boot_delay"] {
+              b"debug_pagealloc"] {
         assert!(unsupported_parameter(p).is_some(), "parameter must announce that it is inert");
     }
     for p in [&b"earlycon"[..], b"loglevel", b"panic_on_warn", b"panic", b"oops", b"initcall_debug",

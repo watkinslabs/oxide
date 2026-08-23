@@ -19,6 +19,7 @@ pub struct Applied {
     pub ignore_loglevel: bool,
     pub printk_time: Option<bool>,
     pub devkmsg: Option<DevkmsgMode>,
+    pub boot_delay_ms: Option<u32>,
     pub initcall_debug: bool,
     pub keep_bootcon: bool,
     pub panic_timeout: Option<i64>,
@@ -31,7 +32,7 @@ impl Default for Applied {
     fn default() -> Self {
         Self {
             console_loglevel: None, ignore_loglevel: false, printk_time: None,
-            devkmsg: None, initcall_debug: false, keep_bootcon: false,
+            devkmsg: None, boot_delay_ms: None, initcall_debug: false, keep_bootcon: false,
             panic_timeout: None, panic_on_oops: false, panic_on_warn: false,
             console_suspend_enabled: true,
         }
@@ -45,6 +46,7 @@ pub fn decide(line: &[u8]) -> Applied {
         ignore_loglevel: printk::ignore_loglevel(line),
         printk_time: printk::printk_time(line),
         devkmsg: printk::devkmsg_mode(line),
+        boot_delay_ms: printk::boot_delay_ms(line),
         initcall_debug: printk::initcall_debug(line),
         keep_bootcon: cmdline::keep_bootcon(line),
         panic_timeout: faults::panic_timeout_secs(line),
@@ -68,6 +70,7 @@ pub fn install(a: Applied) {
             DevkmsgMode::Ratelimit => klog::DEVKMSG_RATELIMIT,
         });
     }
+    klog::set_boot_delay_ms(a.boot_delay_ms.unwrap_or(0));
     klog::initcall::set_enabled(a.initcall_debug);
     klog::set_keep_bootcon(a.keep_bootcon);
     // A timeout larger than an i32 is a typo, not a request; clamp rather
@@ -110,12 +113,13 @@ mod tests {
 
     #[test]
     fn a_debug_boot_line_asks_for_everything() {
-        let a = decide(b"root=/dev/oxide0 earlycon initcall_debug ignore_loglevel keep_bootcon printk.time=1");
+        let a = decide(b"root=/dev/oxide0 earlycon initcall_debug ignore_loglevel keep_bootcon printk.time=1 boot_delay=25");
         assert!(a.ignore_loglevel);
         assert!(a.initcall_debug);
         assert!(a.keep_bootcon);
         assert_eq!(a.printk_time, Some(true));
         assert_eq!(a.console_loglevel, None, "ignore_loglevel does not itself move the level");
+        assert_eq!(a.boot_delay_ms, Some(25));
     }
 
     #[test]
