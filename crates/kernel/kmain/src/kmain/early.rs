@@ -52,6 +52,8 @@ pub unsafe fn init(info: &BootInfo) {
     // allocator seeds or recycles its first free frame, just as Linux parses
     // PAGE_POISONING before the buddy allocator becomes available.
     pmm::set_page_poison(cmdline::printk::page_poison(crate::boot_cmdline::get()));
+    GLOBAL_ALLOC.set_slub_debug_poison(
+        cmdline::printk::slub_debug_poison(crate::boot_cmdline::get()));
 
     fs::init();
     // SAFETY: kernel_main is called once per boot from a single CPU

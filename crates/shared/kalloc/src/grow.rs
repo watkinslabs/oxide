@@ -191,7 +191,7 @@ impl KAlloc {
     /// # SAFETY: caller holds the IRQ guard and no heap lock; only
     /// allocator-owned memory is threaded onto the class.
     /// # C: O(N) once, amortised over `SLAB_BYTES / obj` allocations
-    pub(crate) unsafe fn refill_class(&self, i: usize) -> Option<ptr::NonNull<u8>> {
+    pub(crate) unsafe fn refill_class(&self, i: usize, poison: bool) -> Option<ptr::NonNull<u8>> {
         let obj = sizeclass::CLASS_SIZES[i];
         for &want in sizeclass::SLAB_FALLBACK_BYTES.iter() {
             let bytes = want.max(obj) / obj * obj;
@@ -212,8 +212,8 @@ impl KAlloc {
             // SAFETY: `base` is a live, exclusively owned, `SLAB_ALIGN`-aligned
             // carve of exactly `bytes` usable bytes, which is `bytes/obj` whole
             // objects of class `i`.
-            unsafe { g.classes.push_slab(i, base, bytes / obj) };
-            return g.classes.pop(i);
+            unsafe { g.classes.push_slab(i, base, bytes / obj, poison) };
+            return g.classes.pop(i, poison);
         }
         None
     }

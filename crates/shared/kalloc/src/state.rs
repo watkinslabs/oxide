@@ -65,6 +65,8 @@ pub struct KAlloc {
     context_cpu: AtomicU64,
     pub(crate) contexts: [AtomicU64; MAX_CPUS],
     pub(crate) context_required: AtomicBool,
+    /// Runtime `slub_debug=P` policy, installed before the first heap use.
+    slub_debug_poison: AtomicBool,
     /// Diagnostic (`debug-heappoison`) op counter: every `VALIDATE_INTERVAL`th
     /// alloc/dealloc runs a full free-list `validate()`. Per-execve checkpoints
     /// alone leave a wide window between "corruption happened" and "a syscall
@@ -119,6 +121,7 @@ impl KAlloc {
             context_cpu: AtomicU64::new(0),
             contexts: [const { AtomicU64::new(NO_MEMCG_CONTEXT) }; MAX_CPUS],
             context_required: AtomicBool::new(false),
+            slub_debug_poison: AtomicBool::new(false),
             #[cfg(feature = "debug-heappoison")]
             validate_countdown: AtomicU64::new(VALIDATE_INTERVAL),
             #[cfg(feature = "debug-dealloc-diag")]
@@ -148,6 +151,19 @@ impl KAlloc {
     /// Reject post-init heap growth with no explicit allocation context.
     /// # C: O(1)
     pub fn require_context_for_growth(&self) { self.context_required.store(true, Ordering::Release); }
+
+    /// Install Linux's global SLUB free-object poison/check policy.
+    /// # C: O(1)
+    pub fn set_slub_debug_poison(&self, enabled: bool) {
+        assert!(!self.is_initialized(), "slub debug policy must be installed before heap init");
+        self.slub_debug_poison.store(enabled, Ordering::Release);
+    }
+
+    /// Read the policy at an allocation boundary.
+    /// # C: O(1)
+    pub(crate) fn slub_debug_poison_enabled(&self) -> bool {
+        self.slub_debug_poison.load(Ordering::Acquire)
+    }
 
     /// Disable IRQs for the caller's scope (RAII); no-op until `set_irq_gate`.
     /// # C: O(1)

@@ -85,8 +85,7 @@ fn no_console_suspend_is_a_bare_disable() {
 fn a_recognised_but_unhonoured_parameter_is_named() {
     // The defect this guards is a knob that parses and does nothing. Each of
     // these must produce a boot-time line saying which subsystem it needs.
-    for p in [&b"slub_debug"[..],
-              b"debug_pagealloc"] {
+    for p in [&b"debug_pagealloc"[..]] {
         assert!(unsupported_parameter(p).is_some(), "parameter must announce that it is inert");
     }
     for p in [&b"earlycon"[..], b"loglevel", b"panic_on_warn", b"softlockup_panic", b"panic", b"oops", b"initcall_debug",
@@ -100,7 +99,18 @@ fn unsupported_scan_finds_them_on_a_real_line() {
     let line = b"root=/dev/oxide0 earlycon initcall_debug panic_on_warn=1 softlockup_panic=1 nmi_watchdog=panic slub_debug=P";
     let mut n = 0;
     for _ in unsupported_in(line) { n += 1; }
-    assert_eq!(n, 1, "only the inert allocator knob is named — both lockup controls are honoured");
+    assert_eq!(n, 0, "global slub poison is honoured — both lockup controls are honoured");
+}
+
+#[test]
+fn slub_debug_only_honours_global_poison() {
+    assert!(slub_debug_poison(b"slub_debug=P"));
+    assert!(slub_debug_poison(b"slab_debug=p"));
+    assert!(!slub_debug_poison(b"slub_debug=FP"));
+    assert!(!slub_debug_poison(b"slub_debug=P,kmalloc-64"));
+    assert!(unsupported_in(b"slub_debug=Z").next().is_some());
+    assert!(unsupported_in(b"slub_debug=P").next().is_none());
+    assert_eq!(unsupported_in(b"slub_debug=Z slub_debug=P").count(), 1);
 }
 
 #[test]

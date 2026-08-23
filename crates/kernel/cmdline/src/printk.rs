@@ -102,6 +102,21 @@ pub fn page_poison(line: &[u8]) -> bool {
     }
 }
 
+/// `slub_debug=P` enables Linux's free-object poison/check path for the
+/// allocator's size-class caches. Cache-list forms are not silently widened
+/// to every cache and remain reported as unsupported.
+/// # C: O(line length)
+pub fn slub_debug_poison(line: &[u8]) -> bool {
+    let Some(raw) = value(line, b"slub_debug").or_else(|| value(line, b"slab_debug")) else {
+        return false;
+    };
+    raw.len() == 1 && (raw[0] == b'P' || raw[0] == b'p')
+}
+
+fn slub_debug_value_supported(value: Option<&[u8]>) -> bool {
+    value.is_some_and(|raw| raw.len() == 1 && (raw[0] == b'P' || raw[0] == b'p'))
+}
+
 fn memsize(raw: &[u8]) -> Option<u64> {
     let (number, consumed) = crate::token::parse_uint(raw);
     if consumed == 0 { return None; }
@@ -147,7 +162,6 @@ fn parse_bool(v: &[u8]) -> Option<bool> {
 /// # C: O(1)
 pub fn unsupported_parameter(name: &[u8]) -> Option<&'static str> {
     match name {
-        b"slub_debug" => Some("slub_debug: allocator debug is build-time only"),
         b"debug_pagealloc" => Some("debug_pagealloc: page-alloc debug is build-time only"),
         _ => None,
     }
@@ -158,7 +172,14 @@ pub fn unsupported_parameter(name: &[u8]) -> Option<&'static str> {
 /// from missing output.
 /// # C: O(line length)
 pub fn unsupported_in(line: &[u8]) -> impl Iterator<Item = &'static str> + '_ {
-    crate::token::tokens(line).filter_map(|t| unsupported_parameter(crate::token::split_token(t).0))
+    crate::token::tokens(line).filter_map(move |t| {
+        let (key, value) = crate::token::split_token(t);
+        if key == b"slub_debug" || key == b"slab_debug" {
+            return (!slub_debug_value_supported(value))
+                .then_some("slub_debug: only global P poison is currently honoured");
+        }
+        unsupported_parameter(key)
+    })
 }
 
 /// Does the line carry `<name>` at all? Re-exported for callers that only
