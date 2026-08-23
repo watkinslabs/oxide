@@ -186,7 +186,8 @@ pub(crate) fn nf_hook_packet_in(namespace: u64, hook_id: u32, p: &mut Pkt,
     if tracking_hook {
         let raw = nf_hook_packet_stage(namespace, hook_id, p, family, iface, mark,
                                        None, Some(-200));
-        if raw.verdict == 0 || apply_actions(p, family, hook_id, &raw.actions).is_err() {
+        let raw_actions = apply_actions(p, family, hook_id, &raw.actions);
+        if raw.verdict == 0 || raw_actions.is_err() {
             return NfHookResult { verdict: 0, mark: raw.mark, actions: Vec::new(), notrack: raw.notrack };
         }
         mark = raw.mark;
@@ -202,7 +203,8 @@ pub(crate) fn nf_hook_packet_in(namespace: u64, hook_id: u32, p: &mut Pkt,
     p.tx.mark = mark;
     let result = nf_hook_packet_stage(namespace, hook_id, p, family, iface, mark,
                                       tracking_hook.then_some(-200), None);
-    if result.verdict == 0 || apply_actions(p, family, hook_id, &result.actions).is_err() {
+    let actions = apply_actions(p, family, hook_id, &result.actions);
+    if result.verdict == 0 || actions.is_err() {
         return NfHookResult { verdict: 0, mark: result.mark, actions: Vec::new(), notrack: notrack || result.notrack };
     }
     p.tx.mark = result.mark;

@@ -86,7 +86,7 @@ impl NetStack {
         !matches!(l3[IPV4_HDR_LEN], icmp::ICMP_TYPE_DEST_UNREACH | icmp::ICMP_TYPE_TIME_EXC)
     }
 
-    pub(super) fn send_ipv4_error(
+    pub(crate) fn send_ipv4_error(
         &self,
         ingress: NetIfaceId,
         src: Ipv4Addr,

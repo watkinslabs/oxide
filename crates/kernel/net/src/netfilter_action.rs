@@ -72,6 +72,9 @@ impl Action {
                     .map_err(|_| ApplyError::Invalid)?;
                 apply_nat_setup(p, nat::uapi::NF_NAT_MANIP_DST, &range)
             }
+            Self::Reject { reject_type, icmp_code, family } => {
+                apply_reject(p, *reject_type, *icmp_code, *family, hook)
+            }
             Self::PayloadSet { base, offset, data, csum_type, csum_offset, csum_flags } => {
                 if *csum_type != PAYLOAD_CSUM_NONE || *csum_offset != 0 || *csum_flags != 0 {
                     return Err(ApplyError::Unsupported);
@@ -127,6 +130,28 @@ fn redirect_address(p: &crate::pkt::Pkt, family: u8, hook: u8) -> Option<InetAdd
             .map(|(addr, _)| InetAddr::v4(addr.octets()));
     }
     None
+}
+
+fn apply_reject(p: &crate::pkt::Pkt, reject_type: u32, icmp_code: u8,
+                family: u8, hook: u32) -> Result<(), ApplyError> {
+    // Linux's ICMP/ICMPX reject sends an error and then retains the DROP
+    // verdict. TCP-reset rejects need a transport-aware response builder and
+    // must not be mistaken for an ICMP response.
+    if reject_type == 1 || family != conntrack::uapi::NFPROTO_IPV4 {
+        return Err(ApplyError::Unsupported);
+    }
+    if hook != crate::netfilter_hook::NF_INET_PRE_ROUTING
+        && hook != crate::netfilter_hook::NF_INET_LOCAL_IN {
+        return Err(ApplyError::Unsupported);
+    }
+    let iface = p.iface.ok_or(ApplyError::Invalid)?;
+    let bytes = p.data();
+    if bytes.len() < 20 || bytes[0] >> 4 != 4 { return Err(ApplyError::Invalid); }
+    let src = crate::Ipv4Addr::new(bytes[12], bytes[13], bytes[14], bytes[15]);
+    let dst = crate::Ipv4Addr::new(bytes[16], bytes[17], bytes[18], bytes[19]);
+    crate::global_stack().send_ipv4_error(iface, dst, src,
+        crate::icmp::ICMP_TYPE_DEST_UNREACH, icmp_code, bytes)
+        .map_err(|_| ApplyError::Invalid)
 }
 
 fn apply_nat_setup(p: &mut crate::pkt::Pkt, manip: u8, range: &NatRange)
