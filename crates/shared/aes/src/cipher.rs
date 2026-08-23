@@ -3,7 +3,7 @@
 // bytes 4 apart and MixColumns works on contiguous 4-byte runs.
 
 use crate::params::RCON;
-use crate::sbox::{gmul as mul, INV_SBOX, SBOX};
+use crate::sbox::{gmul as mul, inv_sub_byte, sub_byte};
 
 /// Bytes per AES block.
 pub(crate) const BLOCK: usize = 16;
@@ -15,8 +15,8 @@ fn xtime(a: u8) -> u8 { (a << 1) ^ (((a >> 7) & 1) * 0x1b) }
 
 fn add_round_key(b: &mut [u8; BLOCK], rk: &[u8]) { for i in 0..BLOCK { b[i] ^= rk[i]; } }
 
-fn sub_bytes(b: &mut [u8; BLOCK]) { for i in 0..BLOCK { b[i] = SBOX[b[i] as usize]; } }
-fn inv_sub_bytes(b: &mut [u8; BLOCK]) { for i in 0..BLOCK { b[i] = INV_SBOX[b[i] as usize]; } }
+fn sub_bytes(b: &mut [u8; BLOCK]) { for i in 0..BLOCK { b[i] = sub_byte(b[i]); } }
+fn inv_sub_bytes(b: &mut [u8; BLOCK]) { for i in 0..BLOCK { b[i] = inv_sub_byte(b[i]); } }
 
 fn shift_rows(b: &mut [u8; BLOCK]) {
     let s = *b;
@@ -59,10 +59,10 @@ pub(crate) fn expand(key: &[u8], out: &mut [u8], rounds: usize) {
     for i in nk..words {
         let mut t = [out[4 * i - 4], out[4 * i - 3], out[4 * i - 2], out[4 * i - 1]];
         if i % nk == 0 {
-            t = [SBOX[t[1] as usize], SBOX[t[2] as usize], SBOX[t[3] as usize], SBOX[t[0] as usize]];
+            t = [sub_byte(t[1]), sub_byte(t[2]), sub_byte(t[3]), sub_byte(t[0])];
             t[0] ^= RCON[i / nk - 1];
         } else if nk > 6 && i % nk == 4 {
-            for j in 0..4 { t[j] = SBOX[t[j] as usize]; }
+            for j in 0..4 { t[j] = sub_byte(t[j]); }
         }
         for j in 0..4 { out[4 * i + j] = out[4 * (i - nk) + j] ^ t[j]; }
     }

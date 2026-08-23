@@ -6,8 +6,8 @@
 //! Module manifest:
 //! - `params`: block/key widths, round counts, the round constants and the
 //!   CMAC subkey-derivation constant.
-//! - `sbox`: the substitution tables, derived at compile time from the field
-//!   inverse and the affine transform rather than transcribed.
+//! - `sbox`: constant-time arithmetic substitution, derived from the field
+//!   inverse and affine transforms without secret-indexed tables.
 //! - `cipher`: the round functions and key expansion, over raw bytes.
 //! - `block`: the two key widths and the either-width handle.
 //! - `ct`: constant-time comparison, which every tag check goes through.
@@ -27,9 +27,8 @@
 //! - `hctr2`: the length-preserving wide-block mode built on those two, which
 //!   filesystem-level encryption uses.
 //!
-//! Side channel: `sbox` is a 256-entry table indexed by key-dependent bytes,
-//! the standard software construction. It is not resistant to a cache-timing
-//! observer sharing the core.
+//! Side channel: the generic software path uses fixed-round field arithmetic;
+//! it does not load a table at a key- or data-dependent index.
 
 #[cfg(test)]
 extern crate alloc;
