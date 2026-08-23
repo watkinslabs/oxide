@@ -149,6 +149,7 @@ impl NetStack {
                              properties: &crate::control_event::LinkProperties)
         -> Option<u64> {
         let net_ns = teardown.net_ns();
+        self.flowtable_device_down_in(net_ns, iface);
         self.arp_proxy.remove_iface(net_ns, iface);
         self.bridges.remove_iface(rtnl, net_ns, iface);
         self.bridge_pending_remove_iface(iface);
