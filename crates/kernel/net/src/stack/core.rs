@@ -12,6 +12,7 @@ impl NetStack {
             bridges: crate::stack::bridge::BridgeTable::new(),
             bridge_pending: Spinlock::new(BTreeMap::new()),
             inet: super::inet_tables::InetTableLock::new(BTreeMap::new()),
+            conntrack: Spinlock::new(BTreeMap::new()),
             next_ip_id: crate::fib_lock::FibLock::new(1),
             ipv4_reasm: crate::ipv4_reasm::ReasmTable::new(),
             ipv6_reasm: crate::ipv6_reasm::ReasmTable::new(),
@@ -36,6 +37,15 @@ impl NetStack {
 
     /// Linux `rtnl_trylock`. # C: O(1)
     pub fn rtnl_trylock(&self) -> Option<crate::RtnlGuard<'_>> { self.rtnl.try_lock(self) }
+
+    /// Resolve the conntrack owner for one network namespace. # C: O(log N)
+    pub fn conntrack_in(&self, net_ns: u64) -> Arc<::conntrack::CtNet> {
+        let mut tables = self.conntrack.lock();
+        tables.entry(net_ns).or_insert_with(|| {
+            Arc::new(::conntrack::CtNet::new(net_ns,
+                (net_ns as u32).wrapping_mul(0x9e37_79b9) ^ 0xa5a5_5a5a))
+        }).clone()
+    }
 
     /// Canonical policy-rule table owned by this network stack. # C: O(1)
     pub fn policy_rules(&self) -> &crate::policy_rule::PolicyRuleTable { self.routes.policy_rules() }

@@ -110,7 +110,7 @@ fn ipv4_ingress_mib_names_unforwardable_and_unknown_packets() {
 
     let transit = transit_ipv4(Ipv4Addr::new(192, 0, 2, 10), Ipv4Addr::new(198, 51, 100, 20), 9);
     let addr_before = crate::mib::get(0, crate::mib::Mib::IpInAddrErrors);
-    stack.forward_ipv4_mark_in(0, in_id, &transit, 0).unwrap();
+    stack.forward_ipv4_mark_in(0, in_id, &transit, 0, None).unwrap();
     assert_eq!(crate::mib::get(0, crate::mib::Mib::IpInAddrErrors), addr_before + 1);
 
     let mut unknown = transit_ipv4(Ipv4Addr::new(192, 0, 2, 10), Ipv4Addr::LOOPBACK, 9);

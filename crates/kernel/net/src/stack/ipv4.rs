@@ -193,8 +193,6 @@ impl NetStack {
         let pre_routing = crate::netfilter_hook::nf_hook_packet_in(
             net_ns, NF_INET_PRE_ROUTING, &mut ingress_pkt, NFPROTO_IPV4, Some(iface), 0);
         if pre_routing.verdict == 0 { return Ok(()); }
-        if crate::netfilter_hook::nf_hook_packet_in(
-            net_ns, NF_INET_LOCAL_IN, &mut ingress_pkt, NFPROTO_IPV4, Some(iface), pre_routing.mark).verdict == 0 { return Ok(()); }
         let l3 = ingress_pkt.data();
         crate::mib::bump(net_ns, crate::mib::Mib::IpInReceives);
         let hdr = Ipv4Hdr::parse(l3).map_err(|e| {
@@ -206,8 +204,11 @@ impl NetStack {
         { return Ok(()); }
         if !self.ipv4_dst_is_local_mark_in(net_ns, hdr.dst, pre_routing.mark) {
             crate::mib::bump(net_ns, crate::mib::Mib::IpForwDatagrams);
-            return self.forward_ipv4_mark_in(net_ns, iface, l3, pre_routing.mark);
+            return self.forward_ipv4_mark_in(net_ns, iface, l3, pre_routing.mark, Some(&ingress_pkt));
         }
+        if crate::netfilter_hook::nf_hook_packet_in(
+            net_ns, NF_INET_LOCAL_IN, &mut ingress_pkt, NFPROTO_IPV4, Some(iface), pre_routing.mark).verdict == 0 { return Ok(()); }
+        let l3 = ingress_pkt.data();
         let total = hdr.total_len as usize;
         if total > l3.len() { return Err(NetError::Einval); }
         // A delivered header's option area is compiled and PAID before

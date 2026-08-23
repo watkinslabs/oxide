@@ -495,6 +495,9 @@ pub struct NetStack {
     pub(crate) inet: super::inet_tables::InetTableLock<
         BTreeMap<u64, super::inet_tables::InetNamespaceTables>,
     >,
+    /// One conntrack table per network namespace; packets carry the entry
+    /// reference after the priority-ordered tracking hook attaches it.
+    pub(crate) conntrack: Spinlock<BTreeMap<u64, Arc<::conntrack::CtNet>>, StackLockClass>,
     /// Monotonic id for IP packets we emit.
     pub(crate) next_ip_id: crate::fib_lock::FibLock<u16, StackLockClass>,
     /// Monotonic ISN base for TCP active opens.

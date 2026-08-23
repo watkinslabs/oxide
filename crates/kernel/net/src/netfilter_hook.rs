@@ -41,6 +41,10 @@ pub struct NfHookCtx<'a> {
     pub ingress: Option<NetIfaceId>,
     pub egress: Option<NetIfaceId>,
     pub timestamp_ns: u64,
+    pub ct: Option<&'a conntrack::Conn>,
+    pub ct_available: bool,
+    pub ctinfo: u8,
+    pub ct_dir: u8,
 }
 
 impl<'a> NfHookCtx<'a> {
@@ -48,15 +52,19 @@ impl<'a> NfHookCtx<'a> {
     pub const fn ingress(namespace: u64, hook_id: u32, pkt: &'a [u8], family: u8,
                          ingress: NetIfaceId, mark: u32) -> Self {
         Self { namespace, hook_id, pkt, ll: &[], family, mark, priority: 0,
-            ingress: Some(ingress), egress: None, timestamp_ns: 0 }
+            ingress: Some(ingress), egress: None, timestamp_ns: 0,
+            ct: None, ct_available: false, ctinfo: conntrack::uapi::IP_CT_UNTRACKED, ct_dir: 0 }
     }
 
     /// Context retaining one canonical packet buffer's metadata. # C: O(1)
     pub fn packet(namespace: u64, hook_id: u32, p: &'a Pkt, family: u8,
                   ingress: Option<NetIfaceId>) -> Self {
+        let (ct, ct_available, ctinfo, ct_dir) = p.conntrack_state()
+            .map(|(_, ct, info, dir)| (ct, true, info, dir))
+            .unwrap_or((None, false, conntrack::uapi::IP_CT_UNTRACKED, 0));
         Self { namespace, hook_id, pkt: p.data(), ll: p.mac_frame().unwrap_or(&[]), family,
             mark: p.tx.mark, priority: p.tx.priority, ingress, egress: p.iface,
-            timestamp_ns: p.timestamp_ns }
+            timestamp_ns: p.timestamp_ns, ct, ct_available, ctinfo, ct_dir }
     }
 }
 
@@ -126,7 +134,8 @@ pub(crate) fn nf_hook_eval(hook_id: u32, pkt: &[u8], family: u8) -> u32 {
 /// callback. The ingress lease supplies the concrete namespace key.
 pub(crate) fn nf_hook_eval_in(namespace: u64, hook_id: u32, pkt: &[u8], family: u8) -> NfHookResult {
     let ctx = NfHookCtx { namespace, hook_id, pkt, ll: &[], family, mark: 0, priority: 0,
-        ingress: None, egress: None, timestamp_ns: 0 };
+        ingress: None, egress: None, timestamp_ns: 0,
+        ct: None, ct_available: false, ctinfo: conntrack::uapi::IP_CT_UNTRACKED, ct_dir: 0 };
     nf_hook_eval_ctx(&ctx)
 }
 
@@ -157,12 +166,18 @@ pub(crate) fn nf_hook_eval_ctx(ctx: &NfHookCtx<'_>) -> NfHookResult {
 pub(crate) fn nf_hook_packet_in(namespace: u64, hook_id: u32, p: &mut Pkt,
                                  family: u8, iface: Option<NetIfaceId>, mark: u32)
                                  -> NfHookResult {
+    if (hook_id == NF_INET_PRE_ROUTING || hook_id == NF_INET_LOCAL_OUT)
+        && !crate::global_stack().track_conntrack(namespace, p, family) {
+        return NfHookResult { verdict: 0, mark, actions: Vec::new() };
+    }
     p.tx.mark = mark;
     let result = nf_hook_eval_ctx(&NfHookCtx::packet(namespace, hook_id, p, family, iface));
     if result.verdict == 0 || apply_actions(p, family, &result.actions).is_err() {
         return NfHookResult { verdict: 0, mark: result.mark, actions: Vec::new() };
     }
     p.tx.mark = result.mark;
+    if (hook_id == NF_INET_LOCAL_IN || hook_id == NF_INET_POST_ROUTING)
+        && !p.confirm_conntrack() { return NfHookResult { verdict: 0, mark: result.mark, actions: Vec::new() }; }
     result
 }
 
@@ -193,10 +208,12 @@ pub(crate) fn nf_output_in(namespace: u64, p: &mut Pkt, family: u8) -> bool {
     if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
         return false;
     }
-    let local = nf_hook_eval_ctx(&NfHookCtx::packet(namespace, NF_INET_LOCAL_OUT, p, family, None));
-    if local.verdict == 0 || apply_actions(p, family, &local.actions).is_err() { return false; }
-    let post = nf_hook_eval_ctx(&NfHookCtx::packet(namespace, NF_INET_POST_ROUTING, p, family, None));
-    post.verdict != 0 && apply_actions(p, family, &post.actions).is_ok()
+    let mark = p.tx.mark;
+    let local = nf_hook_packet_in(namespace, NF_INET_LOCAL_OUT, p, family, None, mark);
+    if local.verdict == 0 { return false; }
+    let mark = p.tx.mark;
+    let post = nf_hook_packet_in(namespace, NF_INET_POST_ROUTING, p, family, None, mark);
+    post.verdict != 0
 }
 
 fn apply_actions(p: &mut Pkt, family: u8,

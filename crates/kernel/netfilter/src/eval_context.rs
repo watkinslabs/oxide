@@ -13,19 +13,28 @@ pub(crate) struct Input<'a> {
     pub ingress: Option<net::NetIfaceId>,
     pub egress: Option<net::NetIfaceId>,
     pub timestamp_ns: u64,
+    pub ct: Option<&'a conntrack::Conn>,
+    pub ct_available: bool,
+    pub ctinfo: u8,
+    pub ct_dir: u8,
+    pub live: bool,
 }
 
 impl<'a> Input<'a> {
     pub(crate) const fn bare(namespace: u64, hook_id: u32, pkt: &'a [u8], family: u8,
                              mark: u32) -> Self {
         Self { namespace, hook_id, pkt, ll: &[], family, mark, priority: 0,
-            ingress: None, egress: None, timestamp_ns: 0 }
+            ingress: None, egress: None, timestamp_ns: 0,
+            ct: None, ct_available: false, ctinfo: conntrack::uapi::IP_CT_UNTRACKED, ct_dir: 0,
+            live: false }
     }
 
     pub(crate) fn from_hook(hook: &'a net::stack::NfHookCtx<'a>) -> Self {
         Self { namespace: hook.namespace, hook_id: hook.hook_id, pkt: hook.pkt, ll: hook.ll,
             family: hook.family, mark: hook.mark, priority: hook.priority,
-            ingress: hook.ingress, egress: hook.egress, timestamp_ns: hook.timestamp_ns }
+            ingress: hook.ingress, egress: hook.egress, timestamp_ns: hook.timestamp_ns,
+            ct: hook.ct, ct_available: hook.ct_available,
+            ctinfo: hook.ctinfo, ct_dir: hook.ct_dir, live: true }
     }
 
     pub(crate) fn populate(&self, ctx: &mut EvalCtx<'a>, mark: u32) {

@@ -53,6 +53,10 @@ pub struct Pkt {
     /// Transmit metadata the SENDER settled: the packet mark, the transmit
     /// band, and the departure time. Absent on a received packet.
     pub tx: TxMeta,
+    conntrack: Option<alloc::sync::Arc<conntrack::Conn>>,
+    conntrack_table: Option<alloc::sync::Arc<conntrack::CtNet>>,
+    conntrack_info: u8,
+    conntrack_dir: u8,
 }
 
 /// The per-transmission metadata a socket settles from its own options and the
@@ -92,7 +96,8 @@ impl Pkt {
             data: headroom as u32,
             tail: (headroom + payload_len) as u32,
             mac_header: None, iface: None, next_hop: None, proto: 0, timestamp_ns: 0,
-            tx: TxMeta::NONE,
+            tx: TxMeta::NONE, conntrack: None, conntrack_table: None,
+            conntrack_info: conntrack::uapi::IP_CT_UNTRACKED, conntrack_dir: 0,
         }
     }
 
@@ -110,7 +115,8 @@ impl Pkt {
             data: headroom as u32,
             tail: headroom as u32,
             mac_header: None, iface: None, next_hop: None, proto: 0, timestamp_ns: 0,
-            tx: TxMeta::NONE,
+            tx: TxMeta::NONE, conntrack: None, conntrack_table: None,
+            conntrack_info: conntrack::uapi::IP_CT_UNTRACKED, conntrack_dir: 0,
         }
     }
 
@@ -121,7 +127,9 @@ impl Pkt {
     pub fn from_owned(buf: Vec<u8>) -> Self {
         let len = buf.len() as u32;
         Self { buf, data: 0, tail: len, mac_header: None,
-            iface: None, next_hop: None, proto: 0, timestamp_ns: 0, tx: TxMeta::NONE }
+            iface: None, next_hop: None, proto: 0, timestamp_ns: 0, tx: TxMeta::NONE,
+            conntrack: None, conntrack_table: None,
+            conntrack_info: conntrack::uapi::IP_CT_UNTRACKED, conntrack_dir: 0 }
     }
 
     /// # C: O(1)
@@ -147,6 +155,38 @@ impl Pkt {
     /// # C: O(1)
     pub fn data_mut(&mut self) -> &mut [u8] {
         &mut self.buf[self.data as usize..self.tail as usize]
+    }
+
+    /// Conntrack state carried across the packet's hook traversal.
+    pub fn conntrack_state(&self) -> Option<(&conntrack::CtNet, Option<&conntrack::Conn>, u8, u8)> {
+        let table = self.conntrack_table.as_deref()?;
+        Some((table, self.conntrack.as_deref(), self.conntrack_info, self.conntrack_dir))
+    }
+
+    /// Attach the result of the namespace-owned conntrack hook.
+    pub fn set_conntrack_state(&mut self, table: alloc::sync::Arc<conntrack::CtNet>,
+                               conn: Option<alloc::sync::Arc<conntrack::Conn>>,
+                               info: u8, dir: u8) {
+        self.conntrack_table = Some(table);
+        self.conntrack = conn;
+        self.conntrack_info = info;
+        self.conntrack_dir = dir;
+    }
+
+    /// Confirm a pending entry after the hook sequence accepts the packet.
+    pub fn confirm_conntrack(&self) -> bool {
+        match (&self.conntrack_table, &self.conntrack) {
+            (Some(table), Some(conn)) => table.confirm(conn, self.timestamp_ns / 1_000_000_000),
+            _ => true,
+        }
+    }
+
+    /// Preserve conntrack state while forwarding rebuilds the packet buffer.
+    pub fn copy_conntrack_from(&mut self, other: &Self) {
+        self.conntrack = other.conntrack.clone();
+        self.conntrack_table = other.conntrack_table.clone();
+        self.conntrack_info = other.conntrack_info;
+        self.conntrack_dir = other.conntrack_dir;
     }
 
     /// Retain the current link frame while advancing data to its network header. # C: O(1)
