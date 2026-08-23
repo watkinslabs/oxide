@@ -548,7 +548,6 @@ here now.
 | OPEN | MISSING | med | `hung_task_panic` / `hung_task_timeout_secs` cannot be honoured: there is no hung-task detector. The existing watchdog detects a CPU that stops making progress, not a task parked in uninterruptible sleep, which is the state the parameter is about. | No scan of uninterruptible-state tasks exists in `sched::diag`; nothing periodic walks the task list looking for a stuck sleeper. | |
 | OPEN | MISSING | med | `log_buf_len=` cannot be honoured: the record ring is a fixed 64 KiB `static` in BSS with no allocation involved, so it cannot be resized at boot. Needs the ring moved behind a boot-time allocation. | `klog::RING_BYTES` is `const`; `RING.buf` is `UnsafeCell<[u8; RING_BYTES]>`. | |
 | OPEN | MISSING | med | `slub_debug=`, `page_poison=`, `debug_pagealloc=` cannot be honoured: every allocator and page debug facility here is a compile-time Cargo feature, absent from the binary when off, while the reference makes them runtime boot parameters. A boot cannot be made to poison pages without a rebuild. | `debug-heappoison`, `debug-efence`, `debug-cow`, `debug-dealloc-diag` etc. are all `#[cfg(feature = ...)]`; no runtime switch exists for any of them. | |
-| OPEN | MISSING | low | `boot_delay=` cannot be honoured: no calibrated delay loop exists (`loops_per_jiffy` has no analogue here). | No delay-calibration code in `crates/`; the only spins are bounded iteration counts. | |
 
 ### B1989-membarrier-sync-core-and-rseq
 
