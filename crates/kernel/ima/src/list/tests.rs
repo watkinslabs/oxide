@@ -22,7 +22,9 @@ impl PcrExtend for FakeTpm {
 
 struct DeadTpm;
 impl PcrExtend for DeadTpm {
-    fn extend(&mut self, _p: u32, _a: HashAlgo, _d: &[u8]) -> Result<(), ExtendError> { Err(ExtendError) }
+    fn extend(&mut self, _p: u32, _a: HashAlgo, _d: &[u8]) -> Result<(), ExtendError> {
+        Err(ExtendError { code: -1 })
+    }
 }
 
 fn entry(name: &str, digest: &[u8], pcr: u32) -> TemplateEntry {

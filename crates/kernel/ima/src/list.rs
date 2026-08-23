@@ -16,7 +16,10 @@ use crate::template::TemplateEntry;
 /// The register could not be extended: no device, a wrong-width digest, or a
 /// bank of another algorithm.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub struct ExtendError;
+pub struct ExtendError {
+    /// The TPM return code, retained for the Linux-shaped audit cause.
+    pub code: i32,
+}
 
 /// The PCR-extend operation, owned by the TPM subsystem. IMA computes what to
 /// extend and where; it does not implement the extend itself.
@@ -125,7 +128,14 @@ impl MeasurementList {
         // The record is kept even when the chip refuses, as the reference
         // does — an unanchored log still records what ran. The failure is
         // counted rather than dropped, so it cannot pass for an anchored one.
-        if tpm.extend(pcr, self.algo, &extended).is_err() { self.tpm_failures += 1; }
+        if let Err(error) = tpm.extend(pcr, self.algo, &extended) {
+            self.tpm_failures += 1;
+            // Linux's ima_add_template_entry keeps the record but reports the
+            // failed PCR operation through AUDIT_INTEGRITY_PCR. The counter is
+            // still useful for statistics; it is not the auditor-facing
+            // replacement for the record.
+            let _ = audit::log_integrity_pcr(b"measure", error.code, error.code);
+        }
         Ok(())
     }
 }
@@ -170,8 +180,9 @@ impl<T: tpm::Transport> PcrExtend for tpm::Chip<T> {
     /// with the one that actually gates the command.
     /// # C: O(banks + digest bytes)
     fn extend(&mut self, pcr: u32, algo: HashAlgo, digest: &[u8]) -> Result<(), ExtendError> {
-        let alg = bank_alg(algo).ok_or(ExtendError)?;
-        tpm::Chip::pcr_extend(self, pcr as usize, &[(alg.id(), digest)]).map_err(|_| ExtendError)
+        let alg = bank_alg(algo).ok_or(ExtendError { code: -1 })?;
+        tpm::Chip::pcr_extend(self, pcr as usize, &[(alg.id(), digest)])
+            .map_err(|_| ExtendError { code: -1 })
     }
 }
 

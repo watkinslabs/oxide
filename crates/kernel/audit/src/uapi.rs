@@ -43,6 +43,8 @@ pub const AUDIT_SECCOMP:         u16 = 1326;
 pub const AUDIT_FEATURE_CHANGE:  u16 = 1328;
 pub const AUDIT_FANOTIFY:        u16 = 1331;
 pub const AUDIT_EVENT_LISTENER:  u16 = 1335;
+/// PCR invalidation and extend failures from integrity measurement.
+pub const AUDIT_INTEGRITY_PCR:   u16 = 1804;
 /// Access-vector decision reported by the mandatory-access-control module.
 pub const AUDIT_AVC:             u16 = 1400;
 /// Internal error raised by the mandatory-access-control module.

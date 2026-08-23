@@ -9,7 +9,36 @@ use alloc::vec::Vec;
 use crate::emit::{self, Admitted, Refusal};
 use crate::fmt;
 use crate::tty;
-use crate::uapi::{AUDIT_FANOTIFY, AUDIT_SECCOMP, AUDIT_TTY};
+use crate::uapi::{AUDIT_FANOTIFY, AUDIT_INTEGRITY_PCR, AUDIT_SECCOMP, AUDIT_TTY};
+
+/// `integrity_audit_msg(AUDIT_INTEGRITY_PCR, ...)` — the PCR operation
+/// failed, so the measurement may be present in the list without being
+/// anchored in hardware. The IMA owner supplies the operation and cause; this
+/// module owns the audit record type and field spelling.
+pub fn integrity_pcr_body(operation: &[u8], cause: &[u8], result: i32, info: bool) -> Vec<u8> {
+    let mut b = Vec::new();
+    b.extend_from_slice(b"op=");
+    b.extend_from_slice(operation);
+    b.extend_from_slice(b" cause=");
+    b.extend_from_slice(cause);
+    b.extend_from_slice(b" res=");
+    fmt::dec_signed(&mut b, result as i64);
+    b.extend_from_slice(b" audit_info=");
+    fmt::dec(&mut b, info as u64);
+    b
+}
+
+/// Log a PCR extend failure while audit is enabled.
+pub fn log_integrity_pcr(operation: &[u8], tpm_error: i32, result: i32)
+    -> Result<Admitted, Refusal>
+{
+    let mut cause = Vec::new();
+    cause.extend_from_slice(b"TPM_error(");
+    fmt::dec_signed(&mut cause, tpm_error as i64);
+    cause.push(b')');
+    emit::log_if_enabled(AUDIT_INTEGRITY_PCR,
+        &integrity_pcr_body(operation, &cause, result, false))
+}
 
 /// The justification a permission daemon attached to its verdict: which of its
 /// rules decided, and how far it trusts each side.

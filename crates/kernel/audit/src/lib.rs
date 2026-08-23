@@ -52,6 +52,6 @@ pub mod login;
 pub use admission::Caller;
 pub use control::{handle, Reply, Request};
 pub use emit::{log, log_if_enabled, Admitted, Refusal};
-pub use producers::{log_fanotify, log_seccomp, log_tty, FanotifyInfo, SeccompEvent,
-    TtyActor};
+pub use producers::{log_fanotify, log_integrity_pcr, log_seccomp, log_tty,
+    FanotifyInfo, SeccompEvent, TtyActor};
 pub use record::Record;

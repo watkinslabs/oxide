@@ -10,6 +10,7 @@ path = "src/lib.rs"
 [dependencies]
 crypt = { path = "../../shared/crypt" }
 tpm   = { path = "../tpm" }
+audit = { path = "../audit" }
 
 [lints]
 workspace = true
