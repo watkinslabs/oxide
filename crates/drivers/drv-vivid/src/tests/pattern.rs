@@ -90,6 +90,17 @@ fn rgb_and_bgr_are_the_same_pixels_in_the_opposite_order() {
 }
 
 #[test]
+fn xrgb_and_argb_use_the_reference_little_endian_byte_order() {
+    let width = 8u32;
+    let mut xrgb = alloc::vec![0u8; width as usize * 4];
+    let mut argb = alloc::vec![0u8; width as usize * 4];
+    tpg::render_line(fourcc::XRGB32, width, 0, &mut xrgb);
+    tpg::render_line(fourcc::ARGB32, width, 0, &mut argb);
+    assert_eq!(&xrgb[..4], &[0, 255, 255, 255]);
+    assert_eq!(&argb[..4], &[255, 255, 255, 255]);
+}
+
+#[test]
 fn packed_chroma_comes_from_the_left_pixel_of_each_pair() {
     let width = 16u32;
     let mut yuyv = alloc::vec![0u8; width as usize * 2];

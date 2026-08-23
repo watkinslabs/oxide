@@ -110,10 +110,29 @@ pub fn render_line_at(pixelformat: u32, width: u32, height: u32, y: u32, shift: 
             }
             need
         }
+        fourcc::XRGB32 => render_quads(width, height, y, shift, frame, motion, dst, false),
+        fourcc::ARGB32 => render_quads(width, height, y, shift, frame, motion, dst, true),
         fourcc::YUYV => render_yuv(width, height, y, shift, frame, motion, dst, true),
         fourcc::UYVY => render_yuv(width, height, y, shift, frame, motion, dst, false),
         _ => 0,
     }
+}
+
+fn render_quads(width: u32, height: u32, y: u32, shift: u32, frame: u32, motion: Motion,
+                dst: &mut [u8], alpha: bool) -> usize {
+    let need = width as usize * 4;
+    if dst.len() < need { return 0; }
+    for x in 0..width as usize {
+        let c = pixel(x as u32, y, width, height, shift, frame, motion);
+        let at = x * 4;
+        // Linux's little-endian TPG stores X/alpha first for XRGB/ARGB and
+        // BGR components after it.
+        dst[at] = if alpha { 255 } else { 0 };
+        dst[at + 1] = c.b;
+        dst[at + 2] = c.g;
+        dst[at + 3] = c.r;
+    }
+    need
 }
 
 fn render_triples(width: u32, height: u32, y: u32, shift: u32, frame: u32, motion: Motion,

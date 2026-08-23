@@ -40,6 +40,10 @@ pub const FORMATS: &[FormatDesc] = &[
                  sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
     FormatDesc { pixelformat: fourcc::RGB565, description: "16-bit RGB 5-6-5", flags: 0,
                  sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::XRGB32, description: "32-bit XRGB 8-8-8-8", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::ARGB32, description: "32-bit ARGB 8-8-8-8", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
     FormatDesc { pixelformat: fourcc::GREY, description: "8-bit Greyscale", flags: 0,
                  sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
 ];
