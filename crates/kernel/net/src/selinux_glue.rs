@@ -25,6 +25,8 @@ fn operation_permission(operation: security::network::Operation) -> &'static str
         GetOption => "getopt",
         Ioctl => "ioctl",
         NetlinkSend => "sendto",
+        PeerConnect => "connectto",
+        PeerSend => "sendto",
     }
 }
 
@@ -230,7 +232,7 @@ pub fn init() -> bool {
         Operation::Listen, Operation::Accept, Operation::Send, Operation::Receive,
         Operation::Shutdown, Operation::NameQuery, Operation::SocketPair,
         Operation::SetOption, Operation::GetOption, Operation::Ioctl, Operation::Packet,
-        Operation::NetlinkSend] {
+        Operation::NetlinkSend, Operation::PeerConnect, Operation::PeerSend] {
         let _ = security::network::install_global(operation, socket_hook);
     }
     true

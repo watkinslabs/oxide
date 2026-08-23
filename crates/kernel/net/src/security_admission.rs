@@ -21,6 +21,21 @@ pub fn check_socket(namespace: u64, family: u16, operation: security::network::O
     Ok(())
 }
 
+/// Evaluate a peer-targeted socket permission such as Unix
+/// `unix_stream_socket:connectto` or `socket:sendto`. The target is the
+/// retained label of the peer object, not the caller's own socket label.
+pub fn check_socket_peer(namespace: u64, family: u16,
+                         operation: security::network::Operation,
+                         target_sid: u32, target_class: &'static str)
+                         -> Result<(), crate::NetError> {
+    let context = security::network::Context::op(namespace, family, 0, 0, operation)
+        .on_socket(target_sid, target_class);
+    if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
+        return Err(crate::NetError::Eacces);
+    }
+    Ok(())
+}
+
 /// Evaluate a `listen(2)` decision, carrying the post-clamp backlog so an
 /// installed hook can see it — Linux passes `security_socket_listen(sock,
 /// backlog)` the same clamped value. # C: O(1)

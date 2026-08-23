@@ -12,7 +12,8 @@ use sync::{Namespace, Spinlock};
 /// `GetOption` are separate registrations rather than one "option access".
 #[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Operation { Create, Bind, Connect, Listen, Accept, Send, Receive, Shutdown,
-    NameQuery, SocketPair, SetOption, GetOption, Ioctl, Packet, NetlinkSend }
+    NameQuery, SocketPair, SetOption, GetOption, Ioctl, Packet, NetlinkSend,
+    PeerConnect, PeerSend }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Verdict { Allow, Deny }

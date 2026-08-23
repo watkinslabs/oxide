@@ -225,6 +225,14 @@ impl UnixListener {
     /// Atomically queue `pair` and commit the connecting socket state.
     /// # C: O(1)
     pub(crate) fn connect_socket(&self, pair: Arc<UnixPair>, sock: &Arc<crate::sock::InetSocket>) -> Result<(), crate::NetError> {
+        // Linux's unix_stream_connect hook targets the listener's retained
+        // socket label and asks for `connectto`, before the connection is
+        // committed or its child label is derived.
+        let peer_sid = self.state.lock().owner_sid;
+        crate::security_admission::check_socket_peer(sock.net_ns(),
+            sock.family.load(core::sync::atomic::Ordering::Acquire),
+            security::network::Operation::PeerConnect, peer_sid,
+            "unix_stream_socket")?;
         let server_sid = self.pending_server_sid(&pair);
         let link = self.gc.link(&pair.gc_node(UnixEnd::A));
         let mut st = self.state.lock();
