@@ -5188,6 +5188,11 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 2334a71db | MISSING | med | **f2fs recovery-chain readahead now uses the single metadata cache's temporary POR view.** The recovery walk applies Linux's adaptive consecutive/jump window, batches main-area node reads, and probes cached blocks before issuing I/O; writes and failed replay invalidate the POR view. | Linux recovery adaptive rule; `2334a71db`; f2fs 3715/3715, recovery-chain 54/54, metadata-cache 13/13, and readahead 25/25 passed. | 2334a71db |
+### B2631-f2fs-raw-compressed-ipu
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED e361da3fc | MISSING | med | **f2fs raw clusters in compressed files now use the ordinary writeback/IPU owner.** Image candidates remain cluster-atomic; raw clusters use per-page writeback, and a full raw cluster first attempts compression then falls back to per-page writes when the codec refuses the image. The existing IPU ladder receives the stored cluster shape rather than the inode-wide compression flag. | Linux compressed writeback shape and in-place eligibility; `e361da3fc`; f2fs 3717/3717, compression 271/271, placement 19/19, including partial and full raw-cluster IPU regressions. | e361da3fc |
 ### B2624-overlay-override-creds
 
 | Status | Class | Sev | Issue | Evidence | Owner |
