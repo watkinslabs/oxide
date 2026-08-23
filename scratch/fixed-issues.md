@@ -5066,3 +5066,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2618 | MISSING | low | `IORING_OP_READ_MULTISHOT` is now advertised and dispatched as a persistent provided-buffer read. | The opcode is admitted only with `IOSQE_BUFFER_SELECT`, uses the existing io_uring multishot request/re-arm path, posts one completion per positive read with the selected buffer, waits on `EAGAIN`, and terminates on EOF/error. ABI and re-arm tests cover family membership, buffer selection, repeated delivery, yield, wait, and terminal results. | B2618 |
+
+### B2619-stale-io-uring-feature-bits
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2619 | MISSING | low | The older row claiming io_uring had not implemented the bundled send/receive and read/write attribute-vector feature bits was stale. Both are implemented and advertised on current main. | `0e049e5c0` added `IORING_FEAT_RECVSEND_BUNDLE` and `IORING_FEAT_RW_ATTR`; `bundle_io`, `rw::attr_admission`, and their ABI tests exercise the live behavior. Removing both bits makes `features_claim_only_what_the_ring_actually_does` fail, confirming the ledger premise is obsolete. | B2619 |
