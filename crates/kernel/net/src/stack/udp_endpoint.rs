@@ -37,6 +37,7 @@ impl UdpRxQueue {
             state: crate::fib_lock::FibLock::new(UdpRxState { accepting: true, datagrams: VecDeque::new() }),
             waiters: crate::sock_wait::SockWaitQueue::new(),
             error, peer, reuseaddr, reuseport, ip_mtu_discover, mark, gro, encap_type,
+            transparent: ::core::sync::atomic::AtomicBool::new(false),
             bound_ifindex: ::core::sync::atomic::AtomicU32::new(0),
             poll_subs: Spinlock::new(None), bpf_filter, mcast,
             reuseport_group: crate::reuseport::new_slot(),

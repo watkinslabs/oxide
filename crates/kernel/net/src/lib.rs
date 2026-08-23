@@ -128,7 +128,8 @@ pub mod stack_forward;
 pub mod stack_diag;
 mod global;
 pub use global::global_stack;
-pub use stack::{BridgeTiming, NetStack, UdpRxQueue, stp_softirq_init, stp_raise_from_tick};
+pub use stack::{BridgeTiming, NetStack, SocketLookup, UdpRxQueue, stp_softirq_init,
+                stp_raise_from_tick};
 pub use route::{ResolvedRoute, RouteEntry, RouteRecord, RouteTable};
 pub use route_metrics::RouteMetrics;
 pub use route6::{Route6Entry, Route6Origin, Route6Table};

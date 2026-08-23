@@ -85,6 +85,8 @@ pub struct UdpRxQueue {
     /// `UDP_ENCAP`, shared with the owning socket: the encapsulation identity
     /// whose receive handler screens arriving datagrams before they queue.
     pub encap_type: Arc<::core::sync::atomic::AtomicI32>,
+    /// Snapshot of the owning socket's IP_TRANSPARENT permission.
+    pub transparent: ::core::sync::atomic::AtomicBool,
     pub bound_ifindex: ::core::sync::atomic::AtomicU32,
     /// F181a: per-fd epoll subscribers.
     pub poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
@@ -97,6 +99,15 @@ pub struct UdpRxQueue {
 }
 
 impl UdpRxQueue {
+    /// Publish the per-socket transparent-proxy permission after bind.
+    pub fn set_transparent(&self, enabled: bool) {
+        self.transparent.store(enabled, ::core::sync::atomic::Ordering::Release);
+    }
+
+    pub(crate) fn transparent(&self) -> bool {
+        self.transparent.load(::core::sync::atomic::Ordering::Acquire)
+    }
+
     /// SO_REUSEPORT membership captured when this endpoint was bound. # C: O(1)
     pub(crate) fn reuseport_member(&self) -> bool {
         self.reuseport.load(::core::sync::atomic::Ordering::Acquire) != 0

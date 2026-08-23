@@ -84,6 +84,8 @@ pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
                         sock.peer.clone(), sock.bpf_filter.clone(), sock.mcast.clone(),
                     )?)
                 };
+                endpoint.set_transparent(sock.opts.base.generic.flag(
+                    crate::sock_opts::sol_ip::flag::TRANSPARENT));
                 endpoint.register_poll_subs(&sock.poll_subs);
                 stack().join_udp4_reuseport(&endpoint, &sock.reuseport_group);
                 *sock.udp4.lock() = Some(endpoint);

@@ -209,6 +209,13 @@ impl NetStack {
         if !crate::netfilter_hook::nf_hook_packet_in(
             net_ns, NF_INET_LOCAL_IN, &mut ingress_pkt, NFPROTO_IPV4, Some(iface), pre_routing.mark).accepted() { return Ok(()); }
         let l3 = ingress_pkt.data();
+        let tproxy = ingress_pkt.tproxy_target().and_then(|target| {
+            (target.addr.0[4..] == [0; 12]).then(|| (
+                if target.addr.0[..4] == [0; 4] { hdr.dst } else {
+                    Ipv4Addr::new(target.addr.0[0], target.addr.0[1],
+                        target.addr.0[2], target.addr.0[3])
+                }, target.port))
+        });
         let total = hdr.total_len as usize;
         if total > l3.len() { return Err(NetError::Einval); }
         // A delivered header's option area is compiled and PAID before
@@ -296,8 +303,11 @@ impl NetStack {
                 // transport header, so resolve it once before the demux
                 // rather than per selected endpoint.
                 let datagram = payload.get(..udp.length as usize).unwrap_or(payload);
-                let endpoints = self.udp_demux_in(net_ns, hdr.src, udp.src_port, hdr.dst,
-                    udp.dst_port, iface, datagram);
+                let (demux_dst, demux_port) = tproxy
+                    .map(|(dst, port)| (dst, if port == 0 { udp.dst_port } else { port }))
+                    .unwrap_or((hdr.dst, udp.dst_port));
+                let endpoints = self.udp_demux_in(net_ns, hdr.src, udp.src_port, demux_dst,
+                    demux_port, iface, datagram);
                 let hatype = self.ifaces.lookup_in_ns(iface, net_ns)
                     .map_or(0, |dev| dev.hardware_type());
                 let gro_offered = crate::udp_gro::device_offers_gro(hatype);

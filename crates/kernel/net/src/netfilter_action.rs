@@ -78,6 +78,7 @@ impl Action {
             Self::Reject { reject_type, icmp_code, family } => {
                 apply_reject(p, *reject_type, *icmp_code, *family, hook)
             }
+            Self::TproxyAssign { addr, port } => apply_tproxy(p, *addr, *port, family, hook),
             Self::Fwd { oif, gateway, nfproto } => apply_fwd(p, *oif, *gateway, *nfproto, family),
             Self::Dup { gateway, oif } => apply_dup(p, *gateway, *oif, family),
             Self::Log { group, level, prefix, snaplen, qthreshold, flags } =>
@@ -111,6 +112,18 @@ impl Action {
             _ => Err(ApplyError::Unsupported),
         }
     }
+}
+
+fn apply_tproxy(p: &mut crate::pkt::Pkt, addr: InetAddr, port: u16,
+                family: u8, hook: u32) -> Result<(), ApplyError> {
+    if family != crate::netfilter_hook::NFPROTO_IPV4
+        || hook != crate::netfilter_hook::NF_INET_PRE_ROUTING
+        || p.data().get(9).copied() != Some(crate::addr::IpProto::Udp as u8)
+        || addr.0[4..] != [0; 12] {
+        return Err(ApplyError::Unsupported);
+    }
+    p.tproxy = Some(crate::pkt::TproxyTarget { addr, port });
+    Ok(())
 }
 
 fn apply_dup(p: &crate::pkt::Pkt, gateway: Option<InetAddr>, oif: Option<u32>, family: u8)

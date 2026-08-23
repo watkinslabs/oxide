@@ -56,6 +56,17 @@ use crate::tcp_conn::{TcpConn, Endpoint};
 pub use crate::netfilter_hook::{NfHookCtx, NfHookFn, NfHookResult, install_nf_hook,
     install_nf_hook_with_stages, NFPROTO_IPV4,
     NF_INET_PRE_ROUTING, NF_INET_LOCAL_IN, NF_INET_LOCAL_OUT, NF_INET_POST_ROUTING};
+
+/// Socket ownership selected by the live receive path for nftables socket
+/// expressions. This is a snapshot so rule evaluation never retains an
+/// endpoint lock.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct SocketLookup {
+    pub full: bool,
+    pub transparent: bool,
+    pub mark: u32,
+    pub wildcard: bool,
+}
 use crate::netfilter_hook::nf_output;
 
 pub use crate::bpf_filter::{
@@ -140,3 +151,42 @@ pub use types::*;
 pub use neigh_rtnl::{NeighAdminError, NeighV4};
 pub use bridge_config::BridgeTiming;
 pub use stp_softirq::{init as stp_softirq_init, raise_from_tick as stp_raise_from_tick};
+
+impl NetStack {
+    /// Look up the socket owning an IPv4 UDP packet in the ingress namespace.
+    /// TCP, IPv6, and output-side ownership remain absent until their native
+    /// demux tables provide the same packet-owner contract.
+    pub fn socket_lookup_in(&self, net_ns: u64, family: u8, pkt: &[u8],
+                            iface: Option<NetIfaceId>) -> Option<SocketLookup> {
+        if family != NFPROTO_IPV4 || pkt.len() < 28 || pkt[0] >> 4 != 4
+            || pkt[9] != IpProto::Udp as u8 { return None; }
+        let ihl = (pkt[0] & 0x0f) as usize * 4;
+        if ihl < 20 || ihl + 8 > pkt.len() { return None; }
+        let src = Ipv4Addr::new(pkt[12], pkt[13], pkt[14], pkt[15]);
+        let dst = Ipv4Addr::new(pkt[16], pkt[17], pkt[18], pkt[19]);
+        let sport = u16::from_be_bytes([pkt[ihl], pkt[ihl + 1]]);
+        let dport = u16::from_be_bytes([pkt[ihl + 2], pkt[ihl + 3]]);
+        let iface = iface?;
+        self.udp_demux_in(net_ns, src, sport, dst, dport, iface, &[])
+            .into_iter().next().map(|q| SocketLookup {
+                full: true,
+                transparent: q.transparent(),
+                mark: q.mark(),
+                wildcard: q.bound_ip.is_unspecified(),
+            })
+    }
+
+    /// Test the transparent UDP target lookup used by nft_tproxy.
+    pub fn transparent_udp4_in(&self, net_ns: u64, dst: Ipv4Addr, port: u16,
+                               iface: Option<NetIfaceId>) -> bool {
+        let tables = self.inet_tables(net_ns);
+        let Some(group) = tables.udp.lock().get(&port).cloned() else { return false; };
+        let ifindex = iface.map_or(0, NetIfaceId::raw);
+        group.into_iter().any(|q| {
+            let bound = q.bound_ifindex.load(::core::sync::atomic::Ordering::Acquire);
+            (bound == 0 || bound == ifindex)
+                && (q.bound_ip.is_unspecified() || q.bound_ip == dst)
+                && q.transparent()
+        })
+    }
+}

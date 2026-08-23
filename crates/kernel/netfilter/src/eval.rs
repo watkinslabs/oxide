@@ -2,7 +2,7 @@ use crate::{NFT_CHAIN_POLICY_DROP, active_generation, nft_expr};
 use alloc::vec::Vec;
 
 use crate::nft_expr::{Action, EvalCtx, uapi};
-use crate::nft_expr::access::{CtAccess, FibEntry, FibKey, RouteAccess};
+use crate::nft_expr::access::{CtAccess, FibEntry, FibKey, RouteAccess, SocketAccess};
 use conntrack::tuple::Tuple;
 
 /// Netfilter verdict.
@@ -102,6 +102,27 @@ struct LiveCt<'a> {
 
 struct LiveRoute<'a> {
     input: &'a crate::eval_context::Input<'a>,
+}
+
+struct LiveSocket<'a> {
+    input: &'a crate::eval_context::Input<'a>,
+    info: net::SocketLookup,
+}
+
+impl SocketAccess for LiveSocket<'_> {
+    fn present(&self) -> bool { true }
+    fn full(&self) -> bool { self.info.full }
+    fn transparent(&self) -> bool { self.info.transparent }
+    fn mark(&self) -> u32 { self.info.mark }
+    fn wildcard(&self) -> bool { self.info.wildcard }
+    fn tproxy_transparent(&self, addr: &conntrack::tuple::InetAddr, port: u16) -> bool {
+        if self.input.family != crate::nft_expr::uapi::NFPROTO_IPV4 { return false; }
+        net::global_stack().transparent_udp4_in(
+            self.input.namespace,
+            net::addr::Ipv4Addr::new(addr.0[0], addr.0[1], addr.0[2], addr.0[3]),
+            port,
+            self.input.ingress)
+    }
 }
 
 impl RouteAccess for LiveRoute<'_> {
@@ -240,6 +261,7 @@ fn eval_context(input: &crate::eval_context::Input<'_>) -> EvalResult {
     let live_ct = LiveCt { conn: input.ct, info: input.ctinfo, dir: input.ct_dir,
                            now: input.timestamp_ns / 1_000_000_000 };
     let live_route = LiveRoute { input };
+    let live_socket = input.socket.map(|info| LiveSocket { input, info });
     let Some(generation) = active_generation(hook_id) else {
         return EvalResult { verdict: Verdict::Accept, mark, actions: Vec::new(), notrack: false };
     };
@@ -264,6 +286,7 @@ fn eval_context(input: &crate::eval_context::Input<'_>) -> EvalResult {
             input.populate(&mut ctx, mark);
             if input.ct_available { ctx.ct = Some(&live_ct); }
             if input.live { ctx.route = Some(&live_route); }
+            if let Some(socket) = live_socket.as_ref() { ctx.socket = Some(socket); }
             ctx.set_lookup = Some(&lookup);
             let verdict = nft_expr::run_rule_ctx(&rule.exprs, &mut ctx);
             mark = ctx.mark;

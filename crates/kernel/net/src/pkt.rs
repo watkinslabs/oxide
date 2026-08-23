@@ -12,12 +12,22 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use crate::addr::{Ipv4Addr, Ipv6Addr, NetIfaceId};
+use conntrack::tuple::InetAddr;
 
 /// Route result captured when an outbound packet selects its egress path.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum TxNextHop {
     V4(Ipv4Addr),
     V6 { addr: Ipv6Addr, src: Ipv6Addr },
+}
+
+/// Target socket identity selected by nft_tproxy. The IP header remains
+/// unchanged; receive demux consumes this metadata and ancillary data keeps
+/// the original wire destination.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct TproxyTarget {
+    pub addr: InetAddr,
+    pub port: u16,
 }
 
 /// Packet buffer error type. Numeric reps Linux-aligned.
@@ -49,6 +59,7 @@ pub struct Pkt {
     mac_header: Option<u32>,
     pub iface:    Option<NetIfaceId>,
     pub next_hop: Option<TxNextHop>,
+    pub tproxy: Option<TproxyTarget>,
     pub proto:    u16,
     pub timestamp_ns: u64,
     /// Transmit metadata the SENDER settled: the packet mark, the transmit
@@ -96,7 +107,7 @@ impl Pkt {
             buf,
             data: headroom as u32,
             tail: (headroom + payload_len) as u32,
-            mac_header: None, iface: None, next_hop: None, proto: 0, timestamp_ns: 0,
+            mac_header: None, iface: None, next_hop: None, tproxy: None, proto: 0, timestamp_ns: 0,
             tx: TxMeta::NONE, conntrack: None, conntrack_table: None,
             conntrack_info: conntrack::uapi::IP_CT_UNTRACKED, conntrack_dir: 0,
         }
@@ -115,7 +126,7 @@ impl Pkt {
             buf,
             data: headroom as u32,
             tail: headroom as u32,
-            mac_header: None, iface: None, next_hop: None, proto: 0, timestamp_ns: 0,
+            mac_header: None, iface: None, next_hop: None, tproxy: None, proto: 0, timestamp_ns: 0,
             tx: TxMeta::NONE, conntrack: None, conntrack_table: None,
             conntrack_info: conntrack::uapi::IP_CT_UNTRACKED, conntrack_dir: 0,
         }
@@ -128,7 +139,7 @@ impl Pkt {
     pub fn from_owned(buf: Vec<u8>) -> Self {
         let len = buf.len() as u32;
         Self { buf, data: 0, tail: len, mac_header: None,
-            iface: None, next_hop: None, proto: 0, timestamp_ns: 0, tx: TxMeta::NONE,
+            iface: None, next_hop: None, tproxy: None, proto: 0, timestamp_ns: 0, tx: TxMeta::NONE,
             conntrack: None, conntrack_table: None,
             conntrack_info: conntrack::uapi::IP_CT_UNTRACKED, conntrack_dir: 0 }
     }
@@ -157,6 +168,9 @@ impl Pkt {
     pub fn data_mut(&mut self) -> &mut [u8] {
         &mut self.buf[self.data as usize..self.tail as usize]
     }
+
+    /// Return the packet-owner target selected by nft_tproxy. # C: O(1)
+    pub fn tproxy_target(&self) -> Option<TproxyTarget> { self.tproxy }
 
     /// Conntrack state carried across the packet's hook traversal.
     pub fn conntrack_state(&self) -> Option<(&conntrack::CtNet, Option<&conntrack::Conn>, u8, u8)> {
