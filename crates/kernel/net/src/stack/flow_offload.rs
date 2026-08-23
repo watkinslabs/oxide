@@ -97,6 +97,23 @@ impl NetStack {
         removed_config
     }
 
+    /// Remove software flows whose ingress or egress route belongs to a device
+    /// that just went administratively down. # C: O(N_flows)
+    pub fn flowtable_device_down_in(&self, net_ns: u64, iface: NetIfaceId) {
+        let mut flows = self.flow_offload.lock();
+        let mut removed = alloc::vec::Vec::new();
+        for ((ns, _, _, _), entry) in flows.iter() {
+            if *ns == net_ns && entry.routes.iter().any(|route| route_iface(*route) == iface)
+                && !removed.iter().any(|old: &Arc<FlowEntry>| Arc::ptr_eq(old, entry)) {
+                removed.push(Arc::clone(entry));
+            }
+        }
+        flows.retain(|(ns, _, _, _), entry| *ns != net_ns
+            || !entry.routes.iter().any(|route| route_iface(*route) == iface));
+        drop(flows);
+        for entry in removed { entry.conn.clear_status_bits(IPS_OFFLOAD); }
+    }
+
     fn flowtable_config(&self, net_ns: u64, family: u8, nft_table: &str, name: &str)
         -> Option<FlowtableConfig> {
         let flowtables = self.flowtables.lock();
@@ -401,5 +418,32 @@ mod tests {
             ("filter", "ft", 0, -256, handle));
         assert!(stack.unregister_flowtable_in(7, 2, "filter", "ft"));
         assert_eq!(stack.flowtables_snapshot_in(7, 2).len(), 1);
+    }
+
+    #[test]
+    fn device_down_cleans_both_flow_directions_and_status() {
+        let stack = NetStack::new();
+        let iface = NetIfaceId::from_raw(41);
+        let other = NetIfaceId::from_raw(42);
+        let tuple = Tuple {
+            src: TupleEnd { addr: InetAddr::v4([10, 0, 0, 1]), proto: ProtoPart::port(1234) },
+            dst: TupleEnd { addr: InetAddr::v4([10, 0, 0, 2]), proto: ProtoPart::port(5353) },
+            l3num: NFPROTO_IPV4, protonum: IPPROTO_UDP, zone: 0,
+        };
+        let conn = Arc::new(conntrack::Conn::new(1, tuple, tuple.invert().unwrap(), 9));
+        conn.status.fetch_or(IPS_OFFLOAD, core::sync::atomic::Ordering::AcqRel);
+        let entry = Arc::new(FlowEntry { conn: conn.clone(), routes: [
+            FlowRoute::V4 { iface, next_hop: Ipv4Addr::ANY },
+            FlowRoute::V4 { iface: other, next_hop: Ipv4Addr::ANY },
+        ]});
+        let mut flows = stack.flow_offload.lock();
+        flows.insert((9, String::from("filter"), String::from("ft"), tuple), entry.clone());
+        flows.insert((9, String::from("filter"), String::from("ft"), tuple.invert().unwrap()), entry);
+        drop(flows);
+
+        stack.flowtable_device_down_in(9, iface);
+
+        assert!(stack.flow_offload.lock().is_empty());
+        assert_eq!(conn.status() & IPS_OFFLOAD, 0);
     }
 }

@@ -260,9 +260,13 @@ fn siocsifflags(net_ns: u64, arg: u64) -> i64 {
         if !net::netdev::iff::siocsifflags_supported(current, requested) {
             return -(Errno::Eopnotsupp.as_i32() as i64);
         }
-        if stack.ifaces.set_iface_flags_in_ns(
-            &rtnl, id, net_ns, requested, net::netdev::iff::IFF_UP).is_none() {
+        let Some(after) = stack.ifaces.set_iface_flags_in_ns(
+            &rtnl, id, net_ns, requested, net::netdev::iff::IFF_UP) else {
             return siocsifflags_enodev(b"mutate");
+        };
+        if current & net::netdev::iff::IFF_UP != 0
+            && after & net::netdev::iff::IFF_UP == 0 {
+            stack.flowtable_device_down_in(net_ns, id);
         }
         let Some(event) = stack.live_link_event(
             &rtnl, net::control_event::NamespaceOwner::Live(lease.namespace()), id,

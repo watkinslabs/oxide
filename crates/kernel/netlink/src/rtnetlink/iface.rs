@@ -108,8 +108,13 @@ pub fn handle_setlink_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
         if stack.ifaces.control_generation_in_ns(&rtnl, id, ns) != Some(lease.generation()) {
             return build_ack(req, -19);
         }
-        let Some(_) = stack.ifaces.set_iface_flags_in_ns(
+        let before = stack.ifaces.iface_flags(id).unwrap_or(0);
+        let Some(after) = stack.ifaces.set_iface_flags_in_ns(
             &rtnl, id, ns, ifi_flags, ifi_change) else { return build_ack(req, -19) };
+        if before & net::netdev::iff::IFF_UP != 0
+            && after & net::netdev::iff::IFF_UP == 0 {
+            stack.flowtable_device_down_in(ns, id);
+        }
         let Some(event) = stack.live_link_event(
             &rtnl, net::control_event::NamespaceOwner::Live(lease.namespace()), id,
             properties, net::control_event::EventKind::New) else {
