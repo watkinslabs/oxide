@@ -4,6 +4,57 @@ use crate::mcast_filter::{FilterMode, SourceFilter6};
 use crate::mcast_state::{V6Change, V6IfaceGroup, V6ReportWork};
 use crate::netdev::{NetError, NetResult};
 use crate::stack::NetStack;
+#[cfg(target_os = "oxide-kernel")]
+use alloc::vec::Vec;
+#[cfg(target_os = "oxide-kernel")]
+use sync::{Spinlock, Socket as StackLockClass};
+
+#[cfg(target_os = "oxide-kernel")]
+static PENDING_MLD_WORK: Spinlock<Vec<V6ReportWork>, StackLockClass> = Spinlock::new(Vec::new());
+
+#[cfg(target_os = "oxide-kernel")]
+fn run_deferred_mld_report(arg: usize) {
+    // SAFETY: the work item is allocated immediately before queueing and is
+    // consumed exactly once by this callback.
+    let work = unsafe { alloc::boxed::Box::from_raw(arg as *mut V6ReportWork) };
+    crate::global_stack().finish_v6_multicast(Some(*work));
+}
+
+impl NetStack {
+    /// Run report emission away from NET_RX. Linux's `igmp6_event_query`
+    /// records the query and schedules multicast work; it does not transmit a
+    /// reply while the receive stack is still active.
+    fn finish_v6_multicast_from_rx(&self, work: V6ReportWork) {
+        #[cfg(target_os = "oxide-kernel")]
+        {
+            let raw = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(work)) as usize;
+            if sched::live::workqueue::queue_work(run_deferred_mld_report, raw) { return; }
+            // A full workqueue is a transient resource failure. Retain the
+            // report and retry from NET_RX rather than re-entering transmit.
+            let work = unsafe { alloc::boxed::Box::from_raw(raw as *mut V6ReportWork) };
+            PENDING_MLD_WORK.lock().push(*work);
+            softirq::raise(softirq::Slot::NetRx);
+        }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        self.finish_v6_multicast(Some(work));
+    }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn drain_deferred_mld_reports() -> bool {
+    loop {
+        let Some(work) = PENDING_MLD_WORK.lock().pop() else { return false };
+        let raw = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(work)) as usize;
+        if sched::live::workqueue::queue_work(run_deferred_mld_report, raw) { continue; }
+        let work = unsafe { alloc::boxed::Box::from_raw(raw as *mut V6ReportWork) };
+        PENDING_MLD_WORK.lock().push(*work);
+        return true;
+    }
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+pub(crate) fn drain_deferred_mld_reports() -> bool { false }
+
 fn report_owner(net_ns: u64) -> Option<network_namespace::NetworkNamespaceRef> {
     if net_ns == 0 { Some(network_namespace::initial()) }
     else { network_namespace::lookup_u64(net_ns) }
@@ -320,6 +371,11 @@ impl NetStack {
         let body = crate::icmpv6::build_mldv2_records(src, records);
         self.emit_mld_body(net_ns, iface, src, crate::icmpv6::IPV6_MLDV2_ROUTERS, &body)
     }
+    /// Keep the output construction at the packet-output boundary. Linux's
+    /// `NF_HOOK` path is `noinline_for_stack`: the receive-side protocol
+    /// locals must not remain live while the output hook, conntrack, and
+    /// transmit queue build their own packet state.
+    #[inline(never)]
     fn emit_mld_body(&self, net_ns: u64, iface: NetIfaceId, src: Ipv6Addr, dst: Ipv6Addr,
                      body: &[u8]) -> NetResult<()> {
         let dev = self.ifaces.acquire_egress_in_ns(iface, net_ns).ok_or(NetError::Enetunreach)?;
@@ -490,9 +546,9 @@ impl NetStack {
             }
             queued_due
         };
-        if queued_due { self.finish_v6_multicast(Some(V6ReportWork {
+        if queued_due { self.finish_v6_multicast_from_rx(V6ReportWork {
             owner, iface, iface_generation, driver, now_ns,
-        })); }
+        }); }
         Ok(())
     }
 }
