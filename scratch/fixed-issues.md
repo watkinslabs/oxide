@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B252901-stale-squashfs-uncompilable-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B252901 | COVERAGE | high | The recorded SquashFS compilation and missing-test claim is stale. | Current main `cargo test -p squashfs --no-run --quiet` succeeds, and `cargo test -p squashfs --lib --quiet` runs 70 tests with 0 failures. No source change was required. | B252901 |
+
 ### B2580-stale-f2fs-fsync-remount-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
