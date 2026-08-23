@@ -3,6 +3,7 @@
 // wrong is a control userspace cannot find.
 
 use super::*;
+use alloc::vec;
 use crate::fixture;
 use crate::generic;
 use crate::graph;
@@ -25,7 +26,7 @@ fn names(controls: &Controls) -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
 
 #[test]
 fn the_private_key_round_trips_node_direction_and_kind() {
-    for kind in [ElemKind::Volume, ElemKind::Switch, ElemKind::Jack] {
+    for kind in [ElemKind::Volume, ElemKind::Switch, ElemKind::Jack, ElemKind::CaptureSource] {
         for output in [true, false] {
             assert_eq!(unpack(pack(0x14, output, kind)), (0x14, output, kind));
         }
@@ -54,6 +55,7 @@ fn a_laptop_codec_publishes_speaker_headphone_and_a_headphone_jack() {
     assert!(published.contains(&b"Headphone Jack".to_vec()));
     // The internal speaker has no presence detect, so it gets no jack.
     assert!(!published.contains(&b"Speaker Jack".to_vec()));
+    assert_eq!(controls.capture_sources, vec![b"Internal Mic".to_vec(), b"Front Mic".to_vec()]);
 }
 
 #[test]

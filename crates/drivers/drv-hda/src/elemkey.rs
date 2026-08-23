@@ -11,7 +11,7 @@ use crate::widget::{self, AmpCaps};
 
 /// What an element does.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum ElemKind { Volume, Switch, Jack }
+pub enum ElemKind { Volume, Switch, Jack, CaptureSource }
 
 const KIND_SHIFT: u32 = 9;
 const OUTPUT_BIT: u32 = 1 << 8;
@@ -19,7 +19,10 @@ const NID_MASK: u32 = 0xff;
 
 /// Pack an element's amplifier target into the private word. # C: O(1)
 pub fn pack(nid: u8, output: bool, kind: ElemKind) -> u32 {
-    let kind_bits = match kind { ElemKind::Volume => 0u32, ElemKind::Switch => 1, ElemKind::Jack => 2 };
+    let kind_bits = match kind {
+        ElemKind::Volume => 0u32, ElemKind::Switch => 1, ElemKind::Jack => 2,
+        ElemKind::CaptureSource => 3,
+    };
     u32::from(nid) | if output { OUTPUT_BIT } else { 0 } | (kind_bits << KIND_SHIFT)
 }
 
@@ -28,7 +31,8 @@ pub fn unpack(private: u32) -> (u8, bool, ElemKind) {
     let kind = match private >> KIND_SHIFT {
         0 => ElemKind::Volume,
         1 => ElemKind::Switch,
-        _ => ElemKind::Jack,
+        2 => ElemKind::Jack,
+        _ => ElemKind::CaptureSource,
     };
     ((private & NID_MASK) as u8, private & OUTPUT_BIT != 0, kind)
 }
@@ -54,6 +58,7 @@ pub struct JackControl {
 pub struct Controls {
     pub amps: Vec<AmpControl>,
     pub jacks: Vec<JackControl>,
+    pub capture_sources: Vec<Vec<u8>>,
 }
 
 fn amp_of(codec: &Codec, nid: u8, output: bool) -> Option<AmpCaps> {
@@ -104,6 +109,13 @@ pub fn describe(codec: &Codec, plan: &Plan) -> Controls {
                 nid: capture.adc, output: false, caps,
             });
         }
+    }
+    if plan.captures.len() > 1 {
+        let inputs: Vec<_> = plan.captures.iter().map(|route| route.input).collect();
+        let needs_location = ctlname::inputs_need_location(&inputs);
+        controls.capture_sources = plan.captures.iter()
+            .map(|route| ctlname::tidy(ctlname::input_label(&route.input, needs_location).to_vec()))
+            .collect();
     }
     for (index, route) in plan.hp.iter().enumerate() {
         if !codec.widget(route.pin).is_some_and(graph::jack_detectable) { continue; }

@@ -476,6 +476,10 @@ fn elem_get(owner: sound::SoundOwnerKey, private: u32, out: &mut sound::elem::El
             out[0] = i64::from(device.hda.jack_sense(nid));
             true
         }
+        ElemKind::CaptureSource => {
+            out[0] = i64::from(device.hda.capture_source);
+            true
+        }
         ElemKind::Volume => {
             let Some((_, left)) = device.hda.amp_read(nid, output, 0, true) else { return false; };
             let right = device.hda.amp_read(nid, output, 0, false).map(|(_, gain)| gain).unwrap_or(left);
@@ -498,6 +502,7 @@ fn elem_put(owner: sound::SoundOwnerKey, private: u32, values: &sound::elem::Ele
     let (nid, output, kind) = elemkey::unpack(private);
     with_device(owner, |device| match kind {
         ElemKind::Jack => false,
+        ElemKind::CaptureSource => device.hda.set_capture_source(values[0] as u32),
         ElemKind::Volume => {
             let muted = device.hda.amp_read(nid, output, 0, true).map(|(muted, _)| muted).unwrap_or(false);
             device.hda.amp_write(nid, output, 0, true, false, muted, values[0] as u8)
@@ -511,8 +516,22 @@ fn elem_put(owner: sound::SoundOwnerKey, private: u32, values: &sound::elem::Ele
     }).unwrap_or(false)
 }
 
-fn elem_enum(_owner: sound::SoundOwnerKey, _private: u32, _item: u32,
-             _out: &mut [u8; sound::elem::ENUM_NAME_WIDTH]) -> bool { false }
+fn elem_enum(owner: sound::SoundOwnerKey, private: u32, item: u32,
+             out: &mut [u8; sound::elem::ENUM_NAME_WIDTH]) -> bool {
+    let (_, _, kind) = elemkey::unpack(private);
+    if kind != ElemKind::CaptureSource { return false; }
+    let Some(Some(label)) = with_device(owner, |device| {
+        let plan = device.hda.plan.as_ref()?;
+        let route = plan.captures.get(item)?;
+        let inputs: Vec<_> = plan.captures.iter().map(|candidate| candidate.input).collect();
+        let needs_location = ctlname::inputs_need_location(&inputs);
+        Some(ctlname::input_label(&route.input, needs_location))
+    }) else { return false; };
+    out.fill(0);
+    let len = label.len().min(out.len());
+    out[..len].copy_from_slice(&label[..len]);
+    true
+}
 
 static ELEM_OPS: sound::elem::ElemOps =
     sound::elem::ElemOps { get: elem_get, put: elem_put, enum_name: elem_enum };
@@ -557,6 +576,16 @@ pub fn register_controls(owner: sound::SoundOwnerKey) {
     });
     let Some(Some(controls)) = described else { return; };
     for control in controls.amps.iter() { register_amp(owner, control); }
+    if controls.capture_sources.len() > 1 {
+        sound::elem::register(owner, sound::elem::ElemDesc {
+            id: sound::elem::ElemId::mixer(&ctlname::capture_source(), 0),
+            etype: sound::uapi::CTL_ELEM_TYPE_ENUMERATED,
+            access: sound::uapi::CTL_ELEM_ACCESS_READWRITE,
+            count: 1, min: 0, max: (controls.capture_sources.len() - 1) as i64,
+            step: 0, items: controls.capture_sources.len() as u32, tlv: None,
+            private: elemkey::pack(0, false, ElemKind::CaptureSource), ops: &ELEM_OPS,
+        });
+    }
     for jack in controls.jacks.iter() {
         let id = sound::elem::ElemId::mixer(&jack.name, 0);
         let numid = sound::elem::register(owner, sound::elem::ElemDesc {

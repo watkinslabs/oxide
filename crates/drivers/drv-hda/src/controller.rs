@@ -48,6 +48,8 @@ pub struct Hda {
     pub capture: Vec<Stream>,
     pub codec: Option<Codec>,
     pub plan: Option<Plan>,
+    /// Capture route selected by the card's Capture Source mux.
+    pub capture_source: u32,
     /// Unsolicited-response tag assigned to each jack-detectable output pin.
     pub jack_tags: [(u8, u8); MAX_JACKS],
     pub jack_count: usize,
@@ -281,7 +283,8 @@ impl Hda {
     pub fn prepare_capture(&mut self, device: u32, alsa_format: u32, rate: u32, channels: u8,
                            period_bytes: u32) -> bool {
         let Some(codec) = self.codec.clone() else { return false; };
-        let Some(route) = self.plan.as_ref().and_then(|plan| plan.capture_for(device).cloned()) else { return false; };
+        let route_device = if device == 0 { self.capture_source } else { device };
+        let Some(route) = self.plan.as_ref().and_then(|plan| plan.capture_for(route_device).cloned()) else { return false; };
         let par_pcm = codec.pcm_caps_of(route.adc);
         let Some(format) = crate::stream_fmt::format_for(alsa_format, rate, u32::from(channels), par_pcm)
             else { return false; };
@@ -303,11 +306,24 @@ impl Hda {
     /// stream for another user. # C: O(one command)
     pub fn release(&mut self, device: u32, playback: bool) {
         let Some(plan) = self.plan.clone() else { return; };
+        let route_device = if device == 0 { self.capture_source } else { device };
         let nid = if playback { plan.output_for(device).map(|route| route.dac) }
-                  else { plan.capture_for(device).map(|route| route.adc) };
+                  else { plan.capture_for(route_device).map(|route| route.adc) };
         let Some(nid) = nid else { return; };
         let Some(port) = self.port() else { return; };
         port.command(nid, verb::SET_CHANNEL_STREAMID, 0);
+    }
+
+    /// Select the capture route used by PCM capture device zero.
+    /// # C: O(one command)
+    pub fn set_capture_source(&mut self, source: u32) -> bool {
+        let Some(plan) = self.plan.as_ref() else { return false; };
+        if plan.capture_for(source).is_none() { return false; }
+        if self.capture_source == source { return true; }
+        if self.capture.first().is_some_and(|stream| stream.running) { return false; }
+        self.release(0, false);
+        self.capture_source = source;
+        true
     }
 
     /// Read one amplifier's gain, in steps. # C: O(one command)

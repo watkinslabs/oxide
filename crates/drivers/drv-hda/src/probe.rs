@@ -124,6 +124,7 @@ fn bring_up(bdf: pci::Bdf, mmio_base: u64, mapping: mmio_map::Mapping) -> bool {
         }).collect(),
         codec: None,
         plan: None,
+        capture_source: 0,
         jack_tags: [(0, 0); crate::controller::MAX_JACKS],
         jack_count: 0,
         jack_present: [false; crate::controller::MAX_JACKS],
