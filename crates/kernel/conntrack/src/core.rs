@@ -5,7 +5,7 @@
 extern crate alloc;
 use alloc::sync::Arc;
 
-use crate::entry::{Conn, ProtoState, SeqAdjust};
+use crate::entry::{Conn, ProtoState, SeqAdjust, TcpProtoInfoUpdate};
 use crate::event::EventCache;
 use crate::proto::{icmp, tcp, udp};
 use crate::proto::tcp_window::TcpSeg;
@@ -203,7 +203,8 @@ impl CtNet {
     /// shared mask. # C: O(N)
     pub fn update_id(&self, id: u64, now: u64, timeout: Option<u32>,
                      status: Option<u32>, mark: Option<(u32, Option<u32>)>,
-                     seqadj: [Option<SeqAdjust>; IP_CT_DIR_MAX]) -> bool {
+                     seqadj: [Option<SeqAdjust>; IP_CT_DIR_MAX],
+                     protoinfo: Option<TcpProtoInfoUpdate>) -> bool {
         let Some(conn) = self.table.find_id(id, now) else { return false; };
         if let Some(secs) = timeout {
             conn.set_status_bits(IPS_FIXED_TIMEOUT);
@@ -230,6 +231,9 @@ impl CtNet {
                 }
             }
         }
+        if let Some(update) = protoinfo {
+            if conn.tcp_protoinfo_update(update) { self.events.post(&conn, IPCT_PROTOINFO); }
+        }
         true
     }
 
@@ -237,7 +241,8 @@ impl CtNet {
     /// ctnetlink creator owns a confirmed entry, unlike packet tracking which
     /// keeps a new entry pending until the packet hooks accept it. # C: O(bucket length)
     pub fn create_tuple(&self, tuple: Tuple, reply: Option<Tuple>, now: u64,
-                        timeout: u32, status: u32, mark: Option<u32>) -> Option<u64> {
+                        timeout: u32, status: u32, mark: Option<u32>,
+                        protoinfo: Option<TcpProtoInfoUpdate>) -> Option<u64> {
         let reply = reply.or_else(|| tuple.invert())?;
         let conn = Arc::new(Conn::new(self.table.alloc_id(), tuple, reply, self.net_ns));
         conn.set_status_bits(crate::ctnetlink::writable_status(status));
@@ -247,6 +252,11 @@ impl CtNet {
             conn.refresh(now, timeout);
         }
         if let Some(mark) = mark { conn.mark.store(mark, core::sync::atomic::Ordering::Release); }
+        if let Some(update) = protoinfo {
+            // Non-TCP protocol owners have no TCP from_nlattr hook; Linux
+            // accepts the protocol-info container and leaves them unchanged.
+            let _ = conn.tcp_protoinfo_update(update);
+        }
         self.table.add_pending(conn.clone());
         if !self.table.confirm(&conn, now) {
             let _ = self.table.kill(&conn);

@@ -114,6 +114,10 @@ pub fn encode_entry(c: &Arc<Conn>, now: u64, acct: bool) -> Vec<u8> {
         put_u8(&mut out, CTA_PROTOINFO_TCP_STATE, track.state);
         put_u8(&mut out, CTA_PROTOINFO_TCP_WSCALE_ORIGINAL, track.seen[0].td_scale);
         put_u8(&mut out, CTA_PROTOINFO_TCP_WSCALE_REPLY, track.seen[1].td_scale);
+        put_attr(&mut out, CTA_PROTOINFO_TCP_FLAGS_ORIGINAL,
+                 &[track.seen[0].flags, 0]);
+        put_attr(&mut out, CTA_PROTOINFO_TCP_FLAGS_REPLY,
+                 &[track.seen[1].flags, 0]);
         nest_end(&mut out, tcp);
         nest_end(&mut out, pi);
     }

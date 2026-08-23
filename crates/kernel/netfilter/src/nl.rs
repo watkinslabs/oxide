@@ -138,6 +138,37 @@ fn parse_seqadjs(attrs: &[u8])
     Ok([orig, reply])
 }
 
+fn parse_tcp_protoinfo(attrs: &[u8])
+    -> Result<Option<::conntrack::entry::TcpProtoInfoUpdate>, ()>
+{
+    let Some(protoinfo) = find_bytes_attr(attrs, ::conntrack::uapi::CTA_PROTOINFO)
+        else { return Ok(None); };
+    let Some(tcp) = find_bytes_attr(protoinfo, ::conntrack::uapi::CTA_PROTOINFO_TCP)
+        else { return Ok(Some(Default::default())); };
+    let state = find_u8_attr(tcp, ::conntrack::uapi::CTA_PROTOINFO_TCP_STATE);
+    if state.is_some_and(|state| state > ::conntrack::proto::tcp_state::TCP_CONNTRACK_SYN_SENT2) {
+        return Err(());
+    }
+    for kind in [::conntrack::uapi::CTA_PROTOINFO_TCP_WSCALE_ORIGINAL,
+                 ::conntrack::uapi::CTA_PROTOINFO_TCP_WSCALE_REPLY] {
+        if find_u8_attr(tcp, kind).is_some_and(|scale| scale > ::conntrack::proto::tcp_state::TCP_MAX_WSCALE) {
+            return Err(());
+        }
+    }
+    let parse_flags = |kind| {
+        let Some(raw) = find_bytes_attr(tcp, kind) else { return Ok(None); };
+        if raw.len() != 2 { return Err(()); }
+        Ok(Some((raw[0], raw[1])))
+    };
+    Ok(Some(::conntrack::entry::TcpProtoInfoUpdate {
+        state,
+        flags: [
+            parse_flags(::conntrack::uapi::CTA_PROTOINFO_TCP_FLAGS_ORIGINAL)?,
+            parse_flags(::conntrack::uapi::CTA_PROTOINFO_TCP_FLAGS_REPLY)?,
+        ],
+    }))
+}
+
 /// Flush the canonical conntrack event queue through NETLINK_NETFILTER.
 /// # C: O(N events × listeners)
 pub(crate) fn flush_conntrack_events(namespace: u64) {
@@ -247,9 +278,10 @@ fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Ve
                     (value, find_u32_attr(attrs, ::conntrack::uapi::CTA_MARK_MASK))
                 });
                 let Ok(seqadj) = parse_seqadjs(attrs) else { return nlmsg_ack(req, -22); };
+                let Ok(protoinfo) = parse_tcp_protoinfo(attrs) else { return nlmsg_ack(req, -22); };
                 let ok = ::net::global_stack().conntrack_update_in(
                     namespace, id, find_u32_attr(attrs, ::conntrack::uapi::CTA_TIMEOUT),
-                    find_u32_attr(attrs, ::conntrack::uapi::CTA_STATUS), mark, seqadj);
+                    find_u32_attr(attrs, ::conntrack::uapi::CTA_STATUS), mark, seqadj, protoinfo);
                 return nlmsg_ack(req, if ok { 0 } else { -2 });
             }
             if req.nlmsg_flags & flags::NLM_F_CREATE == 0 {
@@ -264,10 +296,11 @@ fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Ve
                 && reply.is_none() {
                 return nlmsg_ack(req, -22);
             }
+            let Ok(protoinfo) = parse_tcp_protoinfo(attrs) else { return nlmsg_ack(req, -22); };
             let id = ::net::global_stack().conntrack_create_tuple_in(
                 namespace, tuple, reply, timeout,
                 find_u32_attr(attrs, ::conntrack::uapi::CTA_STATUS).unwrap_or(0),
-                find_u32_attr(attrs, ::conntrack::uapi::CTA_MARK));
+                find_u32_attr(attrs, ::conntrack::uapi::CTA_MARK), protoinfo);
             return nlmsg_ack(req, if id.is_some() { 0 } else { -28 });
         }
     }
@@ -284,8 +317,9 @@ fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Ve
                 (value, find_u32_attr(attrs, conntrack::uapi::CTA_MARK_MASK))
             });
             let Ok(seqadj) = parse_seqadjs(attrs) else { return nlmsg_ack(req, -22); };
+            let Ok(protoinfo) = parse_tcp_protoinfo(attrs) else { return nlmsg_ack(req, -22); };
             ::net::global_stack().conntrack_update_in(namespace, id as u64,
-                                                       timeout, status, mark, seqadj)
+                                                       timeout, status, mark, seqadj, protoinfo)
         }
         _ => return nlmsg_ack(req, -95 /* EOPNOTSUPP */),
     };
@@ -363,7 +397,7 @@ fn handle_ct_get(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -
 mod tests {
     use alloc::vec::Vec;
     use alloc::sync::Arc;
-    use super::{parse_ct_tuple, parse_seqadjs};
+    use super::{parse_ct_tuple, parse_seqadjs, parse_tcp_protoinfo};
     use ::conntrack::{ProtoPart, Tuple, TupleEnd, InetAddr};
     use netlink::{NetlinkSocket, proto, register_netfilter_listener};
 
@@ -407,6 +441,36 @@ mod tests {
     }
 
     #[test]
+    fn ctnetlink_tcp_protoinfo_applies_linux_state_and_masked_flags_shape() {
+        let mut raw = Vec::new();
+        let outer = ::conntrack::ctnetlink::nest_start(
+            &mut raw, ::conntrack::uapi::CTA_PROTOINFO);
+        let tcp = ::conntrack::ctnetlink::nest_start(
+            &mut raw, ::conntrack::uapi::CTA_PROTOINFO_TCP);
+        ::conntrack::ctnetlink::put_u8(
+            &mut raw, ::conntrack::uapi::CTA_PROTOINFO_TCP_STATE, 4);
+        ::conntrack::ctnetlink::put_attr(
+            &mut raw, ::conntrack::uapi::CTA_PROTOINFO_TCP_FLAGS_ORIGINAL, &[0x80, 0xff]);
+        ::conntrack::ctnetlink::nest_end(&mut raw, tcp);
+        ::conntrack::ctnetlink::nest_end(&mut raw, outer);
+        let parsed = parse_tcp_protoinfo(&raw).unwrap().unwrap();
+        assert_eq!(parsed.state, Some(4));
+        assert_eq!(parsed.flags[0], Some((0x80, 0xff)));
+        assert_eq!(parsed.flags[1], None);
+
+        let mut bad = Vec::new();
+        let outer = ::conntrack::ctnetlink::nest_start(
+            &mut bad, ::conntrack::uapi::CTA_PROTOINFO);
+        let tcp = ::conntrack::ctnetlink::nest_start(
+            &mut bad, ::conntrack::uapi::CTA_PROTOINFO_TCP);
+        ::conntrack::ctnetlink::put_u8(
+            &mut bad, ::conntrack::uapi::CTA_PROTOINFO_TCP_STATE, 10);
+        ::conntrack::ctnetlink::nest_end(&mut bad, tcp);
+        ::conntrack::ctnetlink::nest_end(&mut bad, outer);
+        assert!(parse_tcp_protoinfo(&bad).is_err());
+    }
+
+    #[test]
     fn ctnetlink_event_flush_multicasts_the_canonical_new_message() {
         let ns = net::net_ns::initial_namespace();
         let socket = Arc::new(NetlinkSocket::new(proto::NETLINK_NETFILTER, &ns));
@@ -421,7 +485,7 @@ mod tests {
             zone: 0,
         };
         let ct = stack.conntrack_in(0);
-        let id = ct.create_tuple(tuple, None, 0, 30, 0, None).expect("create event");
+        let id = ct.create_tuple(tuple, None, 0, 30, 0, None, None).expect("create event");
         super::flush_conntrack_events(0);
         let mut bytes = [0u8; 512];
         let n = socket.read(&mut bytes).expect("conntrack event datagram");

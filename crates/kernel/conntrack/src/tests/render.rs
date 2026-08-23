@@ -6,7 +6,7 @@ use alloc::sync::Arc;
 
 use crate::ctnetlink;
 use crate::core::CtNet;
-use crate::entry::{Conn, SeqAdjust};
+use crate::entry::{Conn, ProtoState, SeqAdjust, TcpProtoInfoUpdate};
 use crate::procfs;
 use crate::tuple::{InetAddr, ProtoPart, Tuple, TupleEnd};
 use crate::uapi::*;
@@ -171,11 +171,16 @@ fn ctnetlink_owner_updates_and_deletes_the_live_entry() {
     assert!(ct.update_id(c.id, 0, Some(7), Some(IPS_ASSURED), Some((0x55, None)), [
         Some(SeqAdjust { correction_pos: 30, offset_before: 1, offset_after: 2, active: true }),
         None,
-    ]));
+    ], Some(TcpProtoInfoUpdate {
+        state: Some(4), flags: [Some((0x80, 0xff)), None],
+    })));
     assert_eq!(c.expires_in(0), 7);
     assert_eq!(c.mark.load(core::sync::atomic::Ordering::Relaxed), 0x55);
     assert_ne!(c.status() & IPS_ASSURED, 0);
     assert_eq!(c.seqadj_record(IP_CT_DIR_ORIGINAL).offset_after, 2);
+    let ProtoState::Tcp(track) = *c.proto.lock() else { panic!("TCP test flow lost its tracker"); };
+    assert_eq!(track.state, 4);
+    assert_eq!(track.seen[IP_CT_DIR_ORIGINAL as usize].flags, 0x80);
     assert!(ct.delete_id(c.id, 0));
     assert!(ct.table.snapshot(0).is_empty());
     assert!(!ct.delete_id(c.id, 0));
@@ -185,7 +190,7 @@ fn ctnetlink_owner_updates_and_deletes_the_live_entry() {
 fn ctnetlink_creator_confirms_a_tuple_with_timeout_status_and_mark() {
     let ct = CtNet::new(0, 7);
     let tuple = v4_udp([192, 0, 2, 1], 40000, [198, 51, 100, 2], 53);
-    let id = ct.create_tuple(tuple, None, 0, 30, IPS_ASSURED, Some(0x44))
+    let id = ct.create_tuple(tuple, None, 0, 30, IPS_ASSURED, Some(0x44), None)
         .expect("userspace tuple is publishable");
     let found = ct.table.find_id(id, 0).expect("created flow is live");
     assert_eq!(found.orig, tuple);

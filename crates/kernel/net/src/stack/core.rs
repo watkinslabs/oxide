@@ -143,20 +143,23 @@ impl NetStack {
     /// Create one confirmed userspace conntrack entry from its tuple. # C: O(bucket length)
     pub fn conntrack_create_tuple_in(&self, net_ns: u64, tuple: ::conntrack::Tuple,
                                      reply: Option<::conntrack::Tuple>, timeout: u32,
-                                     status: u32, mark: Option<u32>) -> Option<u64> {
+                                     status: u32, mark: Option<u32>,
+                                     protoinfo: Option<::conntrack::entry::TcpProtoInfoUpdate>)
+                                     -> Option<u64> {
         let ct = self.conntrack_in(net_ns);
         ct.create_tuple(tuple, reply, crate::stack::net_now_ns() / 1_000_000_000,
-                        timeout, status, mark)
+                        timeout, status, mark, protoinfo)
     }
 
     /// Update one live conntrack entry through its owning namespace. # C: O(N)
     pub fn conntrack_update_in(&self, net_ns: u64, id: u64, timeout: Option<u32>,
                                status: Option<u32>, mark: Option<(u32, Option<u32>)>,
                                seqadj: [Option<::conntrack::entry::SeqAdjust>;
-                                        ::conntrack::uapi::IP_CT_DIR_MAX]) -> bool {
+                                        ::conntrack::uapi::IP_CT_DIR_MAX],
+                               protoinfo: Option<::conntrack::entry::TcpProtoInfoUpdate>) -> bool {
         let Some(ct) = self.conntrack_existing_in(net_ns) else { return false; };
         ct.update_id(id, crate::stack::net_now_ns() / 1_000_000_000,
-                     timeout, status, mark, seqadj)
+                     timeout, status, mark, seqadj, protoinfo)
     }
 
     /// Canonical policy-rule table owned by this network stack. # C: O(1)

@@ -16,6 +16,14 @@ use crate::uapi::*;
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ProtoState { Tcp(TcpTrack), Udp(UdpTrack), Icmp, Generic }
 
+/// ctnetlink's mutable TCP protocol-info fields. Flag updates carry the
+/// Linux `(flags, mask)` pair, so callers can change only selected bits.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct TcpProtoInfoUpdate {
+    pub state: Option<u8>,
+    pub flags: [Option<(u8, u8)>; IP_CT_DIR_MAX],
+}
+
 impl ProtoState {
     /// State appropriate to one L4 protocol. # C: O(1)
     pub fn for_proto(protonum: u8) -> Self {
@@ -208,6 +216,25 @@ impl Conn {
         *slot = record;
         if record.active { self.set_status_bits(IPS_SEQ_ADJUST); }
         true
+    }
+
+    /// Apply ctnetlink's TCP state and masked flag updates. # C: O(1)
+    pub fn tcp_protoinfo_update(&self, update: TcpProtoInfoUpdate) -> bool {
+        let mut proto = self.proto.lock();
+        let ProtoState::Tcp(track) = &mut *proto else { return false; };
+        let mut changed = false;
+        if let Some(state) = update.state {
+            changed |= track.state != state;
+            track.state = state;
+        }
+        for (dir, flags) in update.flags.into_iter().enumerate() {
+            let Some((value, mask)) = flags else { continue; };
+            let old = track.seen[dir].flags;
+            let new = (old & !mask) | (value & mask);
+            changed |= old != new;
+            track.seen[dir].flags = new;
+        }
+        changed
     }
 
     /// Arm the expiry. A fixed-timeout entry keeps whatever ctnetlink set.
