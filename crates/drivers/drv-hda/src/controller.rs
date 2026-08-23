@@ -342,6 +342,17 @@ impl Hda {
                      widget::amp_set_payload(output, index, left, right, mute, gain)).is_some()
     }
 
+    /// Program the codec's standard digital beep generator.
+    /// # C: O(one command)
+    pub fn beep(&mut self, hz: u32) -> bool {
+        let Some(codec) = self.codec.as_ref() else { return false; };
+        let Some(beep) = codec.widgets.iter()
+            .find(|widget| widget::widget_type(widget.wcaps) == widget::WidgetType::Beep) else { return false; };
+        let tone = if hz == 0 { 0 } else { (12_000 / hz).clamp(1, 0xff) as u16 };
+        let Some(port) = self.port() else { return false; };
+        port.command(beep.nid, verb::SET_BEEP_CONTROL, tone).is_some()
+    }
+
     /// Drain the queued unsolicited responses, re-sense every jack they
     /// name, and report the ones whose presence changed. Sensing needs a
     /// codec round trip, so this runs in process context rather than in the

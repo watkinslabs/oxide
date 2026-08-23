@@ -37,6 +37,7 @@ pub struct DeviceState {
     /// Software attenuation and mute state of the virtual master.
     pub master_volume: u8,
     pub master_mute: bool,
+    pub beep_generation: u32,
     /// `(physical address, order)` of every DMA frame this controller owns,
     /// so removal frees exactly what the probe took.
     pub frames: Vec<(u64, u8, bool)>,
@@ -65,7 +66,7 @@ impl Device {
             key, owner, online: AtomicBool::new(true), irq,
             locks: ControllerLocks::from_reg(DeviceState {
                 hda, vendor_id, jack_elems: Vec::new(), master_followers: Vec::new(),
-                master_volume: 0, master_mute: false, frames, mapping: Some(mapping),
+                master_volume: 0, master_mute: false, beep_generation: 0, frames, mapping: Some(mapping),
             }, reg),
         }
     }
@@ -495,6 +496,41 @@ pub fn drain_jack_events() {
         .map(|device| device.owner)
         .collect();
     for owner in owners { service_jacks(owner); }
+}
+
+fn stop_beep(arg: usize) {
+    let owner_raw = arg as u32;
+    let generation = (arg >> 32) as u32;
+    let Some(owner) = sound::SoundOwnerKey::from_raw(owner_raw) else { return; };
+    let _ = with_device(owner, |device| {
+        if device.beep_generation == generation { device.hda.beep(0); }
+    });
+}
+
+/// Route VT's PC-beep request to each HDA codec that owns a beep widget.
+/// # C: O(cards) plus one delayed work item per active tone
+pub fn beep(hz: u32, milliseconds: u32) -> bool {
+    let devices: Vec<_> = lock_devices().iter()
+        .filter(|device| device.online.load(Ordering::Acquire))
+        .cloned().collect();
+    let mut handled = false;
+    for device in devices {
+        let owner = device.owner;
+        let (ok, generation) = unsafe {
+            let mut state = device.locks.process.lock();
+            state.beep_generation = state.beep_generation.wrapping_add(1);
+            (state.hda.beep(hz), state.beep_generation)
+        };
+        if !ok { continue; }
+        handled = true;
+        if milliseconds != 0 && hz != 0 {
+            let arg = ((generation as usize) << 32) | owner.raw() as usize;
+            let _ = sched::live::queue_delayed_work_on(
+                0, stop_beep, arg, sched::deadline::clock::now_ns(),
+                u64::from(milliseconds) * 1_000_000);
+        }
+    }
+    handled
 }
 
 fn follower_index(device: &DeviceState, nid: u8, output: bool) -> Option<usize> {

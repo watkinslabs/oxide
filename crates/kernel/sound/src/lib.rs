@@ -21,6 +21,7 @@ mod pcm_time;
 mod mmap;
 pub mod uapi;
 pub mod format;
+pub mod beep;
 pub mod identity;
 pub mod elem;
 pub mod ops;

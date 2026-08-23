@@ -96,6 +96,7 @@ fn bring_up(bdf: pci::Bdf, mmio_base: u64, mapping: mmio_map::Mapping) -> bool {
     let hhdm = crate::platform::hhdm();
     let Some(owner) = card::owner_key(bdf) else { return false; };
     softirq::set_handler(softirq::Slot::HdaJack, card::drain_jack_events);
+    sound::beep::set_hook(card::beep);
 
     // Output stream descriptors follow the input and bidirectional blocks.
     let inputs = regs.input_streams();
