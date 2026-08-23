@@ -152,6 +152,52 @@ impl NetStack {
                         timeout, status, mark, protoinfo, helper)
     }
 
+    /// Create a ctnetlink entry with the canonical NAT allocator running
+    /// before the tuple is confirmed. Missing one-sided NAT attributes still
+    /// receive Linux's null binding, so both directions are initialized.
+    pub fn conntrack_create_tuple_nat_in(&self, net_ns: u64, tuple: ::conntrack::Tuple,
+                                         reply: Option<::conntrack::Tuple>, timeout: u32,
+                                         status: u32, mark: Option<u32>,
+                                         protoinfo: Option<::conntrack::entry::TcpProtoInfoUpdate>,
+                                         helper: Option<alloc::string::String>,
+                                         src: Option<::nat::NatRange>,
+                                         dst: Option<::nat::NatRange>) -> Option<u64> {
+        let ct = self.conntrack_in(net_ns);
+        let now = crate::stack::net_now_ns() / 1_000_000_000;
+        ct.create_tuple_with(tuple, reply, now, timeout, status, mark, protoinfo, helper,
+            |conn| {
+                struct Env<'a> {
+                    table: &'a ::conntrack::CtTable,
+                    conn: &'a alloc::sync::Arc<::conntrack::Conn>,
+                    now: u64,
+                }
+                impl ::nat::NatEnv for Env<'_> {
+                    fn tuple_taken(&self, tuple: &::conntrack::Tuple) -> bool {
+                        self.table.tuple_taken(tuple, Some(self.conn), self.now)
+                    }
+                    fn random_u16(&self) -> u16 { self.table.random_u16() }
+                    fn try_evict(&self, _tuple: &::conntrack::Tuple) -> bool {
+                        self.table.early_drop(self.now)
+                    }
+                }
+                let env = Env { table: &ct.table, conn, now };
+                let dst_ok = match dst {
+                    Some(range) => ::nat::setup_info(conn, &range,
+                        ::nat::uapi::NF_NAT_MANIP_DST, &env),
+                    None => ::nat::alloc_null_binding(conn,
+                        ::nat::uapi::NF_NAT_MANIP_DST, &env),
+                };
+                if dst_ok == ::nat::SetupResult::Drop { return false; }
+                let src_ok = match src {
+                    Some(range) => ::nat::setup_info(conn, &range,
+                        ::nat::uapi::NF_NAT_MANIP_SRC, &env),
+                    None => ::nat::alloc_null_binding(conn,
+                        ::nat::uapi::NF_NAT_MANIP_SRC, &env),
+                };
+                src_ok == ::nat::SetupResult::Accept
+            })
+    }
+
     /// Update one live conntrack entry through its owning namespace. # C: O(N)
     pub fn conntrack_update_in(&self, net_ns: u64, id: u64, timeout: Option<u32>,
                                status: Option<u32>, mark: Option<(u32, Option<u32>)>,

@@ -143,6 +143,14 @@ pub const CTA_ZONE:         u16 = 18;
 pub const CTA_MARK_MASK:    u16 = 21;
 pub const CTA_STATUS_MASK:  u16 = 26;
 
+pub const CTA_NAT_V4_MINIP: u16 = 1;
+pub const CTA_NAT_V4_MAXIP: u16 = 2;
+pub const CTA_NAT_PROTO:    u16 = 3;
+pub const CTA_NAT_V6_MINIP: u16 = 4;
+pub const CTA_NAT_V6_MAXIP: u16 = 5;
+pub const CTA_PROTONAT_PORT_MIN: u16 = 1;
+pub const CTA_PROTONAT_PORT_MAX: u16 = 2;
+
 pub const CTA_TUPLE_IP:     u16 = 1;
 pub const CTA_TUPLE_PROTO:  u16 = 2;
 

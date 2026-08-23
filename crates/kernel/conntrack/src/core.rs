@@ -270,6 +270,19 @@ impl CtNet {
                         timeout: u32, status: u32, mark: Option<u32>,
                         protoinfo: Option<TcpProtoInfoUpdate>,
                         helper: Option<String>) -> Option<u64> {
+        self.create_tuple_with(tuple, reply, now, timeout, status, mark, protoinfo, helper,
+                               |_| true)
+    }
+
+    /// Create a userspace entry and run one final pre-confirmation setup.
+    /// NAT uses this seam because its reply tuple must be allocated before the
+    /// entry is published; the callback is never run on a confirmed entry.
+    pub fn create_tuple_with<F>(&self, tuple: Tuple, reply: Option<Tuple>, now: u64,
+                                timeout: u32, status: u32, mark: Option<u32>,
+                                protoinfo: Option<TcpProtoInfoUpdate>,
+                                helper: Option<String>, setup: F) -> Option<u64>
+        where F: FnOnce(&Arc<Conn>) -> bool
+    {
         let reply = reply.or_else(|| tuple.invert())?;
         let conn = Arc::new(Conn::new(self.table.alloc_id(), tuple, reply, self.net_ns));
         conn.set_status_bits(crate::ctnetlink::writable_status(status));
@@ -288,6 +301,7 @@ impl CtNet {
             self.helpers.find_named_for(&name, &tuple)?;
             conn.attach_helper(name, true);
         }
+        if !setup(&conn) { return None; }
         self.table.add_pending(conn.clone());
         if !self.table.confirm(&conn, now) {
             let _ = self.table.kill(&conn);

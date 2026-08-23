@@ -169,6 +169,51 @@ fn parse_tcp_protoinfo(attrs: &[u8])
     }))
 }
 
+fn parse_nat_range(attrs: &[u8], family: u8, target: u16)
+    -> Result<Option<nat::NatRange>, ()>
+{
+    let Some(raw) = find_bytes_attr(attrs, target) else { return Ok(None); };
+    let mut range = nat::NatRange::default();
+    let (min_ip, max_ip) = if family == ::conntrack::uapi::NFPROTO_IPV6 {
+        (::conntrack::uapi::CTA_NAT_V6_MINIP, ::conntrack::uapi::CTA_NAT_V6_MAXIP)
+    } else if family == ::conntrack::uapi::NFPROTO_IPV4 {
+        (::conntrack::uapi::CTA_NAT_V4_MINIP, ::conntrack::uapi::CTA_NAT_V4_MAXIP)
+    } else {
+        return Err(());
+    };
+    if let Some(ip) = find_bytes_attr(raw, min_ip) {
+        range.min_addr = if family == ::conntrack::uapi::NFPROTO_IPV6 {
+            ::conntrack::InetAddr::v6(ip.try_into().map_err(|_| ())?)
+        } else {
+            ::conntrack::InetAddr::v4(ip.try_into().map_err(|_| ())?)
+        };
+        range.flags |= nat::uapi::NF_NAT_RANGE_MAP_IPS;
+    }
+    if let Some(ip) = find_bytes_attr(raw, max_ip) {
+        range.max_addr = if family == ::conntrack::uapi::NFPROTO_IPV6 {
+            ::conntrack::InetAddr::v6(ip.try_into().map_err(|_| ())?)
+        } else {
+            ::conntrack::InetAddr::v4(ip.try_into().map_err(|_| ())?)
+        };
+    } else {
+        range.max_addr = range.min_addr;
+    }
+    if let Some(proto) = find_bytes_attr(raw, ::conntrack::uapi::CTA_NAT_PROTO) {
+        if let Some(min) = find_bytes_attr(proto, ::conntrack::uapi::CTA_PROTONAT_PORT_MIN) {
+            if min.len() != 2 { return Err(()); }
+            range.min_proto = u16::from_be_bytes([min[0], min[1]]);
+            range.max_proto = range.min_proto;
+            range.flags |= nat::uapi::NF_NAT_RANGE_PROTO_SPECIFIED;
+        }
+        if let Some(max) = find_bytes_attr(proto, ::conntrack::uapi::CTA_PROTONAT_PORT_MAX) {
+            if max.len() != 2 { return Err(()); }
+            range.max_proto = u16::from_be_bytes([max[0], max[1]]);
+            range.flags |= nat::uapi::NF_NAT_RANGE_PROTO_SPECIFIED;
+        }
+    }
+    Ok(Some(range))
+}
+
 fn parse_helper_name(attrs: &[u8]) -> Result<Option<String>, ()> {
     let Some(help) = find_bytes_attr(attrs, ::conntrack::uapi::CTA_HELP) else {
         return Ok(None);
@@ -295,6 +340,10 @@ fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Ve
                 if req.nlmsg_flags & flags::NLM_F_EXCL != 0 {
                     return nlmsg_ack(req, -17);
                 }
+                if find_bytes_attr(attrs, ::conntrack::uapi::CTA_NAT_SRC).is_some()
+                    || find_bytes_attr(attrs, ::conntrack::uapi::CTA_NAT_DST).is_some() {
+                    return nlmsg_ack(req, -95);
+                }
                 let Ok(helper) = parse_helper_name(attrs) else { return nlmsg_ack(req, -22); };
                 if let Some(name) = helper {
                     if let Err(error) = ::net::global_stack().conntrack_update_helper_in(
@@ -326,10 +375,22 @@ fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Ve
             }
             let Ok(protoinfo) = parse_tcp_protoinfo(attrs) else { return nlmsg_ack(req, -22); };
             let Ok(helper) = parse_helper_name(attrs) else { return nlmsg_ack(req, -22); };
-            let id = ::net::global_stack().conntrack_create_tuple_in(
+            let Ok(src_nat) = parse_nat_range(attrs, nfg.nfgen_family,
+                ::conntrack::uapi::CTA_NAT_SRC) else { return nlmsg_ack(req, -22); };
+            let Ok(dst_nat) = parse_nat_range(attrs, nfg.nfgen_family,
+                ::conntrack::uapi::CTA_NAT_DST) else { return nlmsg_ack(req, -22); };
+            let id = if src_nat.is_some() || dst_nat.is_some() {
+                ::net::global_stack().conntrack_create_tuple_nat_in(
+                    namespace, tuple, reply, timeout,
+                    find_u32_attr(attrs, ::conntrack::uapi::CTA_STATUS).unwrap_or(0),
+                    find_u32_attr(attrs, ::conntrack::uapi::CTA_MARK), protoinfo, helper,
+                    src_nat, dst_nat)
+            } else {
+                ::net::global_stack().conntrack_create_tuple_in(
                 namespace, tuple, reply, timeout,
                 find_u32_attr(attrs, ::conntrack::uapi::CTA_STATUS).unwrap_or(0),
-                find_u32_attr(attrs, ::conntrack::uapi::CTA_MARK), protoinfo, helper);
+                find_u32_attr(attrs, ::conntrack::uapi::CTA_MARK), protoinfo, helper)
+            };
             return nlmsg_ack(req, if id.is_some() { 0 } else { -28 });
         }
     }
@@ -433,7 +494,8 @@ fn handle_ct_get(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -
 mod tests {
     use alloc::vec::Vec;
     use alloc::sync::Arc;
-    use super::{parse_ct_tuple, parse_helper_name, parse_seqadjs, parse_tcp_protoinfo};
+    use super::{parse_ct_tuple, parse_helper_name, parse_nat_range, parse_seqadjs,
+                parse_tcp_protoinfo};
     use ::conntrack::{ProtoPart, Tuple, TupleEnd, InetAddr};
     use netlink::{NetlinkSocket, proto, register_netfilter_listener};
 
@@ -523,6 +585,42 @@ mod tests {
             &mut bad, ::conntrack::uapi::CTA_HELP_NAME, b"dns");
         ::conntrack::ctnetlink::nest_end(&mut bad, outer);
         assert!(parse_helper_name(&bad).is_err());
+    }
+
+    #[test]
+    fn ctnetlink_nat_parser_matches_linux_range_defaults() {
+        let mut raw = Vec::new();
+        let outer = ::conntrack::ctnetlink::nest_start(
+            &mut raw, ::conntrack::uapi::CTA_NAT_SRC);
+        ::conntrack::ctnetlink::put_attr(
+            &mut raw, ::conntrack::uapi::CTA_NAT_V4_MINIP, &[203, 0, 113, 9]);
+        let proto = ::conntrack::ctnetlink::nest_start(
+            &mut raw, ::conntrack::uapi::CTA_NAT_PROTO);
+        ::conntrack::ctnetlink::put_be16(
+            &mut raw, ::conntrack::uapi::CTA_PROTONAT_PORT_MIN, 40000);
+        ::conntrack::ctnetlink::put_be16(
+            &mut raw, ::conntrack::uapi::CTA_PROTONAT_PORT_MAX, 40010);
+        ::conntrack::ctnetlink::nest_end(&mut raw, proto);
+        ::conntrack::ctnetlink::nest_end(&mut raw, outer);
+        let parsed = parse_nat_range(&raw, ::conntrack::uapi::NFPROTO_IPV4,
+            ::conntrack::uapi::CTA_NAT_SRC).unwrap().unwrap();
+        assert_eq!(parsed.min_addr, ::conntrack::InetAddr::v4([203, 0, 113, 9]));
+        assert_eq!(parsed.max_addr, parsed.min_addr);
+        assert_eq!(parsed.ordered_ports(), (40000, 40010));
+        assert!(parsed.maps_addr() && parsed.proto_specified());
+
+        let mut max_only = Vec::new();
+        let outer = ::conntrack::ctnetlink::nest_start(
+            &mut max_only, ::conntrack::uapi::CTA_NAT_SRC);
+        let proto = ::conntrack::ctnetlink::nest_start(
+            &mut max_only, ::conntrack::uapi::CTA_NAT_PROTO);
+        ::conntrack::ctnetlink::put_be16(
+            &mut max_only, ::conntrack::uapi::CTA_PROTONAT_PORT_MAX, 99);
+        ::conntrack::ctnetlink::nest_end(&mut max_only, proto);
+        ::conntrack::ctnetlink::nest_end(&mut max_only, outer);
+        let parsed = parse_nat_range(&max_only, ::conntrack::uapi::NFPROTO_IPV4,
+            ::conntrack::uapi::CTA_NAT_SRC).unwrap().unwrap();
+        assert_eq!(parsed.ordered_ports(), (0, 99));
     }
 
     #[test]
