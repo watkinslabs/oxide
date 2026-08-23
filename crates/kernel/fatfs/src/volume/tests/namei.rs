@@ -7,6 +7,8 @@
 
 use super::*;
 
+use alloc::string::ToString;
+
 use crate::dirent::{ATTR_DIR, DELETED_FLAG, ENTRY_BYTES};
 use crate::namei::{dir_is_empty, DOT, DOTDOT};
 
@@ -46,6 +48,38 @@ fn a_long_name_round_trips_through_the_medium() {
     assert_eq!(again.name, "A Rather Long File Name.txt");
     assert_eq!(again.nr_slots, made.nr_slots);
     assert_eq!(again.group_start(), again.slot - ((again.nr_slots - 1) * ENTRY_BYTES) as u64);
+}
+
+/// `uni_xlate` is the legacy Linux spelling: escaped UTF-16 units are stored
+/// as their real units and are escaped again when the directory is read.
+#[test]
+fn unicode_xlate_names_round_trip_through_creation_and_readdir() {
+    let (img, _) = populated();
+    let mut opts = crate::opts::Options::vfat();
+    opts.utf8 = true;
+    opts.uni_xlate = true;
+    let mut v = Volume::mount_with(img.image(true), opts).expect("mount");
+    assert!(!v.options().utf8, "uni_xlate overrides utf8 at mount");
+    let root = root_of(&v);
+    let name = "Aé:03A9-long-name.txt";
+    let made = v.create_file(&root, name, when()).expect("create");
+    assert!(made.nr_slots > 1, "the escaped name needs long-name slots");
+    assert_eq!(v.find_entry(&root, name).expect("lookup").slot, made.slot);
+    assert!(names(&v, root.cluster).contains(&name.to_string()));
+}
+
+/// With the UTF-8 exchange flag, long-name units are presented as Unicode
+/// rather than through the legacy single-byte conversion path.
+#[test]
+fn utf8_names_are_returned_as_unicode() {
+    let (img, _) = populated();
+    let mut opts = crate::opts::Options::vfat();
+    opts.utf8 = true;
+    let mut v = Volume::mount_with(img.image(true), opts).expect("mount");
+    let root = root_of(&v);
+    let name = "AéΩ-long-name.txt";
+    v.create_file(&root, name, when()).expect("create");
+    assert!(names(&v, root.cluster).contains(&name.to_string()));
 }
 
 /// A name already there is `EEXIST`, and the directory is left as it was.

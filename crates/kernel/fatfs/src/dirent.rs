@@ -261,9 +261,18 @@ impl LongName {
     /// name this entry — in both cases the caller uses the short name.
     /// # C: O(name length)
     pub fn take(&mut self, entry: &ShortEntry) -> Option<String> {
+        self.take_with(entry, true, false)
+    }
+
+    /// Take the assembled name using the mount's userspace conversion mode.
+    /// Linux's `utf8` path emits Unicode directly; the legacy path emits
+    /// single-byte characters and uses `:XXXX` for `uni_xlate` values.
+    /// # C: O(chars)
+    pub fn take_with(&mut self, entry: &ShortEntry, utf8: bool, uni_xlate: bool)
+        -> Option<String> {
         let complete = self.active && self.expected == 0;
         let matches = complete && self.checksum == checksum(&entry.raw_name);
-        let out = if matches { decode(&self.chars) } else { None };
+        let out = if matches { decode_with(&self.chars, utf8, uni_xlate) } else { None };
         self.reset();
         out
     }
@@ -273,12 +282,30 @@ impl LongName {
 /// terminator. Unpaired surrogates and unconvertible values become the
 /// replacement character rather than failing the whole directory.
 /// # C: O(chars)
-fn decode(chars: &[u16]) -> Option<String> {
+fn decode_with(chars: &[u16], utf8: bool, uni_xlate: bool) -> Option<String> {
     let end = chars.iter().position(|c| *c == 0 || *c == 0xFFFF).unwrap_or(chars.len());
     if end == 0 { return None; }
-    Some(char::decode_utf16(chars[..end].iter().copied())
-        .map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER))
-        .collect())
+    if utf8 {
+        return Some(char::decode_utf16(chars[..end].iter().copied())
+            .map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER))
+            .collect());
+    }
+    let mut out = String::new();
+    for &unit in &chars[..end] {
+        if unit <= 0xff {
+            out.push(char::from_u32(u32::from(unit)).unwrap_or('?'));
+        } else if uni_xlate {
+            out.push(':');
+            const HEX: &[u8; 16] = b"0123456789ABCDEF";
+            out.push(HEX[usize::from(unit >> 12)] as char);
+            out.push(HEX[usize::from((unit >> 8) & 0x0f)] as char);
+            out.push(HEX[usize::from((unit >> 4) & 0x0f)] as char);
+            out.push(HEX[usize::from(unit & 0x0f)] as char);
+        } else {
+            out.push('?');
+        }
+    }
+    Some(out)
 }
 
 /// Module manifest:

@@ -99,7 +99,8 @@ impl<S: SectorSource> Volume<S> {
     pub fn mount(source: S) -> Result<Self, Errno> { Self::mount_with(source, Options::vfat()) }
 
     /// Mount under a named option set. # C: O(table bytes)
-    pub fn mount_with(source: S, opts: Options) -> Result<Self, Errno> {
+    pub fn mount_with(source: S, mut opts: Options) -> Result<Self, Errno> {
+        opts.settle();
         let mut boot = vec![0u8; 512];
         source.read_sectors(0, &mut boot)?;
         let parsed = match bpb::parse(&boot) {
@@ -245,7 +246,10 @@ impl<S: SectorSource> Volume<S> {
                     // Taken BEFORE the run is consumed: the count is what says
                     // how many records a deletion of this name must free.
                     let pending = long.pending_slots();
-                    let long_name = long.take(&entry);
+                    let long_name = long.take_with(&entry,
+                        !self.opts.uni_xlate &&
+                            (self.opts.utf8 || self.opts.iocharset == crate::name::compare::IoCharset::Utf8),
+                        self.opts.uni_xlate);
                     let nr_slots = if long_name.is_some() { pending + 1 } else { 1 };
                     let name = long_name.unwrap_or_else(|| self.short_name(record, &entry));
                     let slot = (index * ENTRY_BYTES) as u64;

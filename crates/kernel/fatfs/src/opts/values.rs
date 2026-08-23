@@ -170,5 +170,8 @@ impl Options {
     /// # C: O(1)
     pub fn settle(&mut self) {
         if self.allow_utime.is_none() { self.allow_utime = Some(!self.dmask & UTIME_BITS); }
+        // Linux's unicode_xlate path is the legacy NLS conversion path even
+        // when both flags were supplied; the escape syntax owns conversion.
+        if self.uni_xlate { self.utf8 = false; }
     }
 }

@@ -4,11 +4,12 @@
 //! padding and the checksum are all pinned against the reader.
 
 use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::dirent::{checksum, parse, Entry, LongName, ShortEntry, CHARS_PER_SLOT,
                     LAST_LONG_ENTRY, MAX_LONG_SLOTS};
-use crate::name::lfn::{build_slots, encode};
+use crate::name::lfn::{self, build_slots, encode};
 
 use syscall::errno::Errno;
 
@@ -37,6 +38,34 @@ fn a_name_survives_the_round_trip() {
                  "exactly-thirteen", "0123456789012"] {
         assert_eq!(round_trip(name).as_deref(), Some(name), "{name}");
     }
+}
+
+#[test]
+fn legacy_output_uses_question_marks_or_linux_unicode_escapes() {
+    let encoded = encode("AéΩ").expect("encodable");
+    let sum = checksum(&ALIAS);
+    let mut assembler = LongName::new();
+    for record in build_slots(&encoded, sum) {
+        let Some(Entry::LongSlot { ordinal, last, checksum: c, chars }) = parse(&record)
+            else { panic!("built record is not a long slot") };
+        assembler.push(ordinal, last, c, &chars);
+    }
+    assert_eq!(assembler.take_with(&short_entry(), false, false).as_deref(), Some("Aé?"));
+
+    let mut assembler = LongName::new();
+    for record in build_slots(&encoded, sum) {
+        let Some(Entry::LongSlot { ordinal, last, checksum: c, chars }) = parse(&record)
+            else { panic!("built record is not a long slot") };
+        assembler.push(ordinal, last, c, &chars);
+    }
+    assert_eq!(assembler.take_with(&short_entry(), false, true).as_deref(), Some("Aé:03A9"));
+}
+
+#[test]
+fn unicode_xlate_input_decodes_linux_escapes() {
+    assert_eq!(lfn::input_units("Aé:03A9"), Ok(vec![0x0041, 0x00e9, 0x03a9]));
+    assert_eq!(lfn::input_units("bad:03G9"), Err(Errno::Einval));
+    assert_eq!(lfn::input_units("bad:03A"), Err(Errno::Einval));
 }
 
 /// Characters outside the basic plane are two code units, and the slots store
