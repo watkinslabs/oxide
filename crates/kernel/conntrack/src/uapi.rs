@@ -136,6 +136,8 @@ pub const CTA_COUNTERS_REPLY: u16 = 10;
 pub const CTA_USE:          u16 = 11;
 pub const CTA_ID:           u16 = 12;
 pub const CTA_NAT_DST:      u16 = 13;
+pub const CTA_SEQ_ADJ_ORIG: u16 = 15;
+pub const CTA_SEQ_ADJ_REPLY: u16 = 16;
 pub const CTA_ZONE:         u16 = 18;
 pub const CTA_MARK_MASK:    u16 = 21;
 pub const CTA_STATUS_MASK:  u16 = 26;
@@ -164,6 +166,10 @@ pub const CTA_PROTOINFO_TCP_WSCALE_ORIGINAL: u16 = 2;
 pub const CTA_PROTOINFO_TCP_WSCALE_REPLY:    u16 = 3;
 pub const CTA_PROTOINFO_TCP_FLAGS_ORIGINAL:  u16 = 4;
 pub const CTA_PROTOINFO_TCP_FLAGS_REPLY:     u16 = 5;
+
+pub const CTA_SEQADJ_CORRECTION_POS: u16 = 1;
+pub const CTA_SEQADJ_OFFSET_BEFORE:   u16 = 2;
+pub const CTA_SEQADJ_OFFSET_AFTER:    u16 = 3;
 
 pub const CTA_COUNTERS_PACKETS: u16 = 1;
 pub const CTA_COUNTERS_BYTES:   u16 = 2;

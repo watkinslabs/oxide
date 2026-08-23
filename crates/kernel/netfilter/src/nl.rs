@@ -119,6 +119,25 @@ fn parse_ct_tuple(raw: &[u8], family: u8, zone: u16) -> Option<::conntrack::Tupl
     })
 }
 
+fn parse_seqadj(raw: &[u8]) -> Option<::conntrack::entry::SeqAdjust> {
+    Some(::conntrack::entry::SeqAdjust {
+        correction_pos: find_u32_attr(raw, ::conntrack::uapi::CTA_SEQADJ_CORRECTION_POS)?,
+        offset_before: find_u32_attr(raw, ::conntrack::uapi::CTA_SEQADJ_OFFSET_BEFORE)? as i32,
+        offset_after: find_u32_attr(raw, ::conntrack::uapi::CTA_SEQADJ_OFFSET_AFTER)? as i32,
+        active: true,
+    })
+}
+
+fn parse_seqadjs(attrs: &[u8])
+    -> Result<[Option<::conntrack::entry::SeqAdjust>; ::conntrack::uapi::IP_CT_DIR_MAX], ()>
+{
+    let orig = find_bytes_attr(attrs, ::conntrack::uapi::CTA_SEQ_ADJ_ORIG)
+        .map(|raw| parse_seqadj(raw).ok_or(())).transpose()?;
+    let reply = find_bytes_attr(attrs, ::conntrack::uapi::CTA_SEQ_ADJ_REPLY)
+        .map(|raw| parse_seqadj(raw).ok_or(())).transpose()?;
+    Ok([orig, reply])
+}
+
 /// Flush the canonical conntrack event queue through NETLINK_NETFILTER.
 /// # C: O(N events × listeners)
 pub(crate) fn flush_conntrack_events(namespace: u64) {
@@ -227,9 +246,10 @@ fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Ve
                 let mark = find_u32_attr(attrs, ::conntrack::uapi::CTA_MARK).map(|value| {
                     (value, find_u32_attr(attrs, ::conntrack::uapi::CTA_MARK_MASK))
                 });
+                let Ok(seqadj) = parse_seqadjs(attrs) else { return nlmsg_ack(req, -22); };
                 let ok = ::net::global_stack().conntrack_update_in(
                     namespace, id, find_u32_attr(attrs, ::conntrack::uapi::CTA_TIMEOUT),
-                    find_u32_attr(attrs, ::conntrack::uapi::CTA_STATUS), mark);
+                    find_u32_attr(attrs, ::conntrack::uapi::CTA_STATUS), mark, seqadj);
                 return nlmsg_ack(req, if ok { 0 } else { -2 });
             }
             if req.nlmsg_flags & flags::NLM_F_CREATE == 0 {
@@ -263,8 +283,9 @@ fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Ve
             let mark = find_u32_attr(attrs, conntrack::uapi::CTA_MARK).map(|value| {
                 (value, find_u32_attr(attrs, conntrack::uapi::CTA_MARK_MASK))
             });
+            let Ok(seqadj) = parse_seqadjs(attrs) else { return nlmsg_ack(req, -22); };
             ::net::global_stack().conntrack_update_in(namespace, id as u64,
-                                                       timeout, status, mark)
+                                                       timeout, status, mark, seqadj)
         }
         _ => return nlmsg_ack(req, -95 /* EOPNOTSUPP */),
     };
@@ -342,7 +363,7 @@ fn handle_ct_get(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -
 mod tests {
     use alloc::vec::Vec;
     use alloc::sync::Arc;
-    use super::parse_ct_tuple;
+    use super::{parse_ct_tuple, parse_seqadjs};
     use ::conntrack::{ProtoPart, Tuple, TupleEnd, InetAddr};
     use netlink::{NetlinkSocket, proto, register_netfilter_listener};
 
@@ -359,6 +380,30 @@ mod tests {
         ::conntrack::ctnetlink::put_tuple(
             &mut raw, ::conntrack::uapi::CTA_TUPLE_ORIG, &expected);
         assert_eq!(parse_ct_tuple(&raw[4..], expected.l3num, expected.zone), Some(expected));
+    }
+
+    #[test]
+    fn ctnetlink_seqadj_parser_requires_the_linux_nested_fields() {
+        let mut raw = Vec::new();
+        let n = ::conntrack::ctnetlink::nest_start(
+            &mut raw, ::conntrack::uapi::CTA_SEQ_ADJ_ORIG);
+        ::conntrack::ctnetlink::put_be32(
+            &mut raw, ::conntrack::uapi::CTA_SEQADJ_CORRECTION_POS, 100);
+        ::conntrack::ctnetlink::put_be32(
+            &mut raw, ::conntrack::uapi::CTA_SEQADJ_OFFSET_BEFORE, (-4i32) as u32);
+        ::conntrack::ctnetlink::put_be32(
+            &mut raw, ::conntrack::uapi::CTA_SEQADJ_OFFSET_AFTER, 8);
+        ::conntrack::ctnetlink::nest_end(&mut raw, n);
+        let parsed = parse_seqadjs(&raw).unwrap();
+        assert_eq!(parsed[0].unwrap().offset_before, -4);
+        assert_eq!(parsed[0].unwrap().offset_after, 8);
+        let mut incomplete = Vec::new();
+        let n = ::conntrack::ctnetlink::nest_start(
+            &mut incomplete, ::conntrack::uapi::CTA_SEQ_ADJ_REPLY);
+        ::conntrack::ctnetlink::put_be32(
+            &mut incomplete, ::conntrack::uapi::CTA_SEQADJ_CORRECTION_POS, 1);
+        ::conntrack::ctnetlink::nest_end(&mut incomplete, n);
+        assert!(parse_seqadjs(&incomplete).is_err());
     }
 
     #[test]

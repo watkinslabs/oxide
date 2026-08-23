@@ -201,6 +201,15 @@ impl Conn {
         self.seqadj.lock().get(dir as usize).copied().unwrap_or_default()
     }
 
+    /// Replace one direction's userspace-visible sequence-adjust record. # C: O(1)
+    pub fn seqadj_replace(&self, dir: u8, record: SeqAdjust) -> bool {
+        let mut state = self.seqadj.lock();
+        let Some(slot) = state.get_mut(dir as usize) else { return false; };
+        *slot = record;
+        if record.active { self.set_status_bits(IPS_SEQ_ADJUST); }
+        true
+    }
+
     /// Arm the expiry. A fixed-timeout entry keeps whatever ctnetlink set.
     /// # C: O(1)
     pub fn refresh(&self, now: u64, secs: u32) {

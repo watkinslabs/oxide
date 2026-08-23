@@ -151,10 +151,12 @@ impl NetStack {
 
     /// Update one live conntrack entry through its owning namespace. # C: O(N)
     pub fn conntrack_update_in(&self, net_ns: u64, id: u64, timeout: Option<u32>,
-                               status: Option<u32>, mark: Option<(u32, Option<u32>)>) -> bool {
+                               status: Option<u32>, mark: Option<(u32, Option<u32>)>,
+                               seqadj: [Option<::conntrack::entry::SeqAdjust>;
+                                        ::conntrack::uapi::IP_CT_DIR_MAX]) -> bool {
         let Some(ct) = self.conntrack_existing_in(net_ns) else { return false; };
         ct.update_id(id, crate::stack::net_now_ns() / 1_000_000_000,
-                     timeout, status, mark)
+                     timeout, status, mark, seqadj)
     }
 
     /// Canonical policy-rule table owned by this network stack. # C: O(1)

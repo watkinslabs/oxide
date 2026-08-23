@@ -6,7 +6,7 @@ use alloc::sync::Arc;
 
 use crate::ctnetlink;
 use crate::core::CtNet;
-use crate::entry::Conn;
+use crate::entry::{Conn, SeqAdjust};
 use crate::procfs;
 use crate::tuple::{InetAddr, ProtoPart, Tuple, TupleEnd};
 use crate::uapi::*;
@@ -104,6 +104,24 @@ fn ctnetlink_nests_both_tuples_with_the_nested_bit() {
 }
 
 #[test]
+fn ctnetlink_dumps_both_sequence_adjustment_records() {
+    let c = entry(v4_tcp([10, 0, 0, 1], 1234, [10, 0, 0, 2], 80));
+    assert!(c.seqadj_replace(IP_CT_DIR_ORIGINAL, SeqAdjust {
+        correction_pos: 100, offset_before: -4, offset_after: 8, active: true,
+    }));
+    assert!(c.seqadj_replace(IP_CT_DIR_REPLY, SeqAdjust {
+        correction_pos: 200, offset_before: 8, offset_after: -4, active: true,
+    }));
+    let buf = ctnetlink::encode_entry(&c, 0, false);
+    let orig = (CTA_SEQ_ADJ_ORIG | ctnetlink::NLA_F_NESTED).to_ne_bytes();
+    let reply = (CTA_SEQ_ADJ_REPLY | ctnetlink::NLA_F_NESTED).to_ne_bytes();
+    assert!(buf.windows(2).any(|w| w == &100u32.to_be_bytes()[2..]));
+    assert!(buf.windows(2).any(|w| w == orig));
+    assert!(buf.windows(2).any(|w| w == reply));
+    assert!(buf.windows(4).any(|w| w == &(-4i32 as u32).to_be_bytes()));
+}
+
+#[test]
 fn ports_are_encoded_in_network_order() {
     let c = entry(v4_tcp([10, 0, 0, 1], 0x1234, [10, 0, 0, 2], 0x0050));
     let buf = ctnetlink::encode_entry(&c, 0, false);
@@ -150,10 +168,14 @@ fn ctnetlink_owner_updates_and_deletes_the_live_entry() {
     let c = entry(v4_tcp([10, 0, 0, 1], 1234, [10, 0, 0, 2], 80));
     ct.table.add_pending(c.clone());
     assert!(ct.confirm(&c, 0));
-    assert!(ct.update_id(c.id, 0, Some(7), Some(IPS_ASSURED), Some((0x55, None))));
+    assert!(ct.update_id(c.id, 0, Some(7), Some(IPS_ASSURED), Some((0x55, None)), [
+        Some(SeqAdjust { correction_pos: 30, offset_before: 1, offset_after: 2, active: true }),
+        None,
+    ]));
     assert_eq!(c.expires_in(0), 7);
     assert_eq!(c.mark.load(core::sync::atomic::Ordering::Relaxed), 0x55);
     assert_ne!(c.status() & IPS_ASSURED, 0);
+    assert_eq!(c.seqadj_record(IP_CT_DIR_ORIGINAL).offset_after, 2);
     assert!(ct.delete_id(c.id, 0));
     assert!(ct.table.snapshot(0).is_empty());
     assert!(!ct.delete_id(c.id, 0));

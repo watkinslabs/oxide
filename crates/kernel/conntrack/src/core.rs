@@ -5,7 +5,7 @@
 extern crate alloc;
 use alloc::sync::Arc;
 
-use crate::entry::{Conn, ProtoState};
+use crate::entry::{Conn, ProtoState, SeqAdjust};
 use crate::event::EventCache;
 use crate::proto::{icmp, tcp, udp};
 use crate::proto::tcp_window::TcpSeg;
@@ -198,10 +198,12 @@ impl CtNet {
     }
 
     /// Apply the ctnetlink fields supported by the live entry owner. Linux
-    /// changes timeout, status, and mark on an existing flow; immutable status
-    /// bits are screened by the ctnetlink encoder's shared mask. # C: O(N)
+    /// changes timeout, status, mark, and sequence adjustment on an existing
+    /// flow; immutable status bits are screened by the ctnetlink encoder's
+    /// shared mask. # C: O(N)
     pub fn update_id(&self, id: u64, now: u64, timeout: Option<u32>,
-                     status: Option<u32>, mark: Option<(u32, Option<u32>)>) -> bool {
+                     status: Option<u32>, mark: Option<(u32, Option<u32>)>,
+                     seqadj: [Option<SeqAdjust>; IP_CT_DIR_MAX]) -> bool {
         let Some(conn) = self.table.find_id(id, now) else { return false; };
         if let Some(secs) = timeout {
             conn.set_status_bits(IPS_FIXED_TIMEOUT);
@@ -220,6 +222,13 @@ impl CtNet {
             let new = (old & mask) ^ value;
             conn.mark.store(new, core::sync::atomic::Ordering::Release);
             if old != new { self.events.post(&conn, IPCT_MARK); }
+        }
+        for (dir, record) in seqadj.into_iter().enumerate() {
+            if let Some(record) = record {
+                if conn.seqadj_replace(dir as u8, record) {
+                    self.events.post(&conn, IPCT_SEQADJ);
+                }
+            }
         }
         true
     }

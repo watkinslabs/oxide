@@ -117,6 +117,17 @@ pub fn encode_entry(c: &Arc<Conn>, now: u64, acct: bool) -> Vec<u8> {
         nest_end(&mut out, tcp);
         nest_end(&mut out, pi);
     }
+    if c.status() & IPS_SEQ_ADJUST != 0 {
+        for (dir, kind) in [(IP_CT_DIR_ORIGINAL, CTA_SEQ_ADJ_ORIG),
+                             (IP_CT_DIR_REPLY, CTA_SEQ_ADJ_REPLY)] {
+            let record = c.seqadj_record(dir);
+            let n = nest_start(&mut out, kind);
+            put_be32(&mut out, CTA_SEQADJ_CORRECTION_POS, record.correction_pos);
+            put_be32(&mut out, CTA_SEQADJ_OFFSET_BEFORE, record.offset_before as u32);
+            put_be32(&mut out, CTA_SEQADJ_OFFSET_AFTER, record.offset_after as u32);
+            nest_end(&mut out, n);
+        }
+    }
     if let Some(h) = c.helper.lock().as_ref() {
         let n = nest_start(&mut out, CTA_HELP);
         put_attr(&mut out, 1, h.as_bytes());
