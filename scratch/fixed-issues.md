@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B253201-stale-boot-probe-process-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B253201 | INFRA | med | The historical boot-probe process incident is superseded by the current harness-first policy. | `CLAUDE.md` requires hosted tests as the development loop, says boot is the final gate, and explicitly requires stopping after more than two boots chasing one bug to build a harness instead. It also documents pager, marker, and pipeline-status hazards. | B253201 |
+
 ### B253101-serial-echo-duplicate-stale-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
