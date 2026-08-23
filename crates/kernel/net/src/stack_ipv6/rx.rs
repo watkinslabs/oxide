@@ -34,7 +34,7 @@ impl NetStack {
         let mut ingress_pkt = crate::pkt::Pkt::from_owned(l3.to_vec());
         let pre_routing = crate::netfilter_hook::nf_hook_packet_in(
             net_ns, NF_INET_PRE_ROUTING, &mut ingress_pkt, NFPROTO_IPV6, Some(iface), 0);
-        if pre_routing.verdict == 0 {
+        if !pre_routing.accepted() {
             return Ok(());
         }
         let l3 = ingress_pkt.data();
@@ -58,8 +58,8 @@ impl NetStack {
         if !self.v6_dst_is_local_in(net_ns, iface, hdr.dst) {
             return self.forward_ipv6_in(net_ns, iface, l3, Some(&ingress_pkt));
         }
-        if crate::netfilter_hook::nf_hook_packet_in(
-            net_ns, NF_INET_LOCAL_IN, &mut ingress_pkt, NFPROTO_IPV6, Some(iface), pre_routing.mark).verdict == 0 { return Ok(()); }
+        if !crate::netfilter_hook::nf_hook_packet_in(
+            net_ns, NF_INET_LOCAL_IN, &mut ingress_pkt, NFPROTO_IPV6, Some(iface), pre_routing.mark).accepted() { return Ok(()); }
         let l3 = ingress_pkt.data();
         let payload_end = crate::ipv6::IPV6_HDR_LEN + hdr.payload_length as usize;
         if payload_end > l3.len() {

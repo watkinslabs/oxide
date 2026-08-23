@@ -184,11 +184,11 @@ impl NetStack {
         if let Some(source) = ct_source { p.copy_conntrack_from(source); }
         p.iface = Some(route.iface);
         p.next_hop = Some(crate::pkt::TxNextHop::V4(crate::route::RouteRecord::next_hop_for(route.gateway, dst)));
-        if crate::netfilter_hook::nf_hook_packet_in(
-            net_ns, NF_INET_FORWARD, &mut p, NFPROTO_IPV4, Some(ingress), mark).verdict == 0 { return Ok(()); }
+        if !crate::netfilter_hook::nf_hook_packet_in(
+            net_ns, NF_INET_FORWARD, &mut p, NFPROTO_IPV4, Some(ingress), mark).accepted() { return Ok(()); }
         let mark = p.tx.mark;
-        if crate::netfilter_hook::nf_hook_packet_in(
-            net_ns, NF_INET_POST_ROUTING, &mut p, NFPROTO_IPV4, Some(ingress), mark).verdict == 0 { return Ok(()); }
+        if !crate::netfilter_hook::nf_hook_packet_in(
+            net_ns, NF_INET_POST_ROUTING, &mut p, NFPROTO_IPV4, Some(ingress), mark).accepted() { return Ok(()); }
         dev.xmit(p)
     }
 }
@@ -216,11 +216,11 @@ impl NetStack {
         p.next_hop = Some(crate::pkt::TxNextHop::V6 {
             addr: crate::route6::next_hop6_for(route.gateway, header.dst), src: Ipv6Addr::ANY,
         });
-        if crate::netfilter_hook::nf_hook_packet_in(
-            net_ns, NF_INET_FORWARD, &mut p, NFPROTO_IPV6, Some(ingress), 0).verdict == 0 { return Ok(()); }
+        if !crate::netfilter_hook::nf_hook_packet_in(
+            net_ns, NF_INET_FORWARD, &mut p, NFPROTO_IPV6, Some(ingress), 0).accepted() { return Ok(()); }
         let mark = p.tx.mark;
-        if crate::netfilter_hook::nf_hook_packet_in(
-            net_ns, NF_INET_POST_ROUTING, &mut p, NFPROTO_IPV6, Some(ingress), mark).verdict == 0 { return Ok(()); }
+        if !crate::netfilter_hook::nf_hook_packet_in(
+            net_ns, NF_INET_POST_ROUTING, &mut p, NFPROTO_IPV6, Some(ingress), mark).accepted() { return Ok(()); }
         let _ = ingress;
         dev.xmit(p)?;
         crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::OutForwDatagrams);

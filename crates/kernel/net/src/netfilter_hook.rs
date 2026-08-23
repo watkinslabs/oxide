@@ -75,6 +75,11 @@ impl<'a> NfHookCtx<'a> {
 
 impl NfHookResult {
     pub const ACCEPT: Self = Self { verdict: 1, mark: 0, actions: Vec::new(), notrack: false };
+
+    /// Only NF_ACCEPT lets the owning stack continue its normal path. Linux
+    /// reserves other non-zero verdicts for queue, repeat, and stolen packet
+    /// ownership; they are not generic success.
+    pub fn accepted(&self) -> bool { self.verdict == 1 }
 }
 
 /// Netfilter callback. Verdict u32: NF_DROP=0, NF_ACCEPT=1.
@@ -187,8 +192,11 @@ pub(crate) fn nf_hook_packet_in(namespace: u64, hook_id: u32, p: &mut Pkt,
         let raw = nf_hook_packet_stage(namespace, hook_id, p, family, iface, mark,
                                        None, Some(-200));
         let raw_actions = apply_actions(p, family, hook_id, &raw.actions);
-        if raw.verdict == 0 || raw_actions.is_err() {
+        if raw_actions.is_err() {
             return NfHookResult { verdict: 0, mark: raw.mark, actions: Vec::new(), notrack: raw.notrack };
+        }
+        if !raw.accepted() {
+            return NfHookResult { verdict: raw.verdict, mark: raw.mark, actions: Vec::new(), notrack: raw.notrack };
         }
         mark = raw.mark;
         notrack = raw.notrack;
@@ -204,8 +212,11 @@ pub(crate) fn nf_hook_packet_in(namespace: u64, hook_id: u32, p: &mut Pkt,
     let result = nf_hook_packet_stage(namespace, hook_id, p, family, iface, mark,
                                       tracking_hook.then_some(-200), None);
     let actions = apply_actions(p, family, hook_id, &result.actions);
-    if result.verdict == 0 || actions.is_err() {
+    if actions.is_err() {
         return NfHookResult { verdict: 0, mark: result.mark, actions: Vec::new(), notrack: notrack || result.notrack };
+    }
+    if !result.accepted() {
+        return NfHookResult { verdict: result.verdict, mark: result.mark, actions: Vec::new(), notrack: notrack || result.notrack };
     }
     p.tx.mark = result.mark;
     if (hook_id == NF_INET_LOCAL_IN || hook_id == NF_INET_POST_ROUTING)
@@ -266,10 +277,10 @@ pub(crate) fn nf_output_in(namespace: u64, p: &mut Pkt, family: u8) -> bool {
     }
     let mark = p.tx.mark;
     let local = nf_hook_packet_in(namespace, NF_INET_LOCAL_OUT, p, family, None, mark);
-    if local.verdict == 0 { return false; }
+    if !local.accepted() { return false; }
     let mark = p.tx.mark;
     let post = nf_hook_packet_in(namespace, NF_INET_POST_ROUTING, p, family, None, mark);
-    post.verdict != 0
+    post.accepted()
 }
 
 fn apply_actions(p: &mut Pkt, family: u8, hook: u32,
