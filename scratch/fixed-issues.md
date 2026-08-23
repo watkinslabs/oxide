@@ -5168,6 +5168,11 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED baa1d9b84 | DEFECT | med | **OverlayFS now has one canonical inode per real object.** The per-mount weak index selects the Linux real-inode identity, preserves lower identity across indexed copy-up, caches pure-upper objects, and leaves intentionally broken unindexed hardlinks uncached. | Linux overlayfs's per-superblock inode cache and real-inode key; `baa1d9b84`; repeated lookup, pure-upper lookup, indexed-hardlink identity, and the full OverlayFS suite pass (260/260). | baa1d9b84 |
+### B2627-f2fs-mapped-write-times
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED f95b99a85 | MISSING | med | **f2fs shared-mapping writes now stamp one canonical inode time owner.** The address space binds back to the canonical VFS inode without a lifetime cycle; mapped and buffered writes use the same persistent mtime/ctime path. | Linux `page_mkwrite` → `file_update_time` ordering; `f95b99a85`; f2fs 3713/3713 and the timestamp-persistence regression pass. | f95b99a85 |
 ### B2624-overlay-override-creds
 
 | Status | Class | Sev | Issue | Evidence | Owner |
