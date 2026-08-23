@@ -30,8 +30,7 @@ pub fn sys_getpeername(args: &SyscallArgs) -> i64 {
             copy_sockaddr_to_user(addr_p, len_p, &sa)
         }
         Routed::Inet(_, sock) => {
-            if let Err(e) = net::sock_opts::check_name_query(sock.net_ns(),
-                sock.family.load(core::sync::atomic::Ordering::Acquire)) {
+            if let Err(e) = net::sock_opts::check_socket_name_query(&sock) {
                 return crate::net_errno::errno_from_neterr(e);
             }
             match crate::sock_name::peer_sockaddr(&sock) {
