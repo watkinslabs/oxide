@@ -16,8 +16,11 @@
 use crate::dir::DirError;
 use crate::mount_opts::ErrorsPolicy;
 use crate::{InodeError, MountError};
+use core::sync::atomic::AtomicBool;
 
 use super::state::RootfsState;
+
+static WARNED_ON_ERROR: AtomicBool = AtomicBool::new(false);
 
 /// Is `e` the filesystem reporting that its own state is wrong, rather than
 /// answering a question about a healthy one? # C: O(1)
@@ -98,8 +101,12 @@ pub(crate) fn action_for(policy: ErrorsPolicy) -> ErrorAction {
 /// # C: O(1)
 fn act_on_error(st: &RootfsState) {
     let opts = st.opts();
-    #[cfg(feature = "debug-boot")]
-    if opts.behaviour.warn_on_error { klog::write_raw(WARN_ON_ERROR_LINE); }
+    if opts.behaviour.warn_on_error {
+        // Linux's WARN_ON_ONCE is a production warning, not a debug trace:
+        // it also honours panic_on_warn, so use the shared warning owner.
+        klog::warn::warn_on_once(true, &WARNED_ON_ERROR,
+                                 "ext4: filesystem error on warn_on_error mount");
+    }
     match action_for(opts.behaviour.errors) {
         ErrorAction::KeepGoing => {}
         ErrorAction::StopWriting => { if let Some(sb) = st.i_sb() { sb.set_readonly(true); } }
@@ -112,9 +119,6 @@ fn act_on_error(st: &RootfsState) {
 /// `cfg`-elidable is a build failure here, so the option's announcement is a
 /// debug-build one. The option is still parsed, validated and recorded, and it
 /// is the only one whose entire observable effect is a message.
-#[cfg(feature = "debug-boot")]
-const WARN_ON_ERROR_LINE: &[u8] = b"[EXT4] filesystem error on a warn_on_error mount\n";
-
 /// Stable error-only diagnostic kind; no pathname or transient allocation.
 /// # C: O(1)
 #[cfg(any(feature = "debug-boot", test))]
