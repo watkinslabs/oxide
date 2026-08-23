@@ -21,6 +21,11 @@ mod registry;
 pub use hooks::{HOOKS, Hook, Ret, SLOT_BYTES, Spec, context_bytes, hook_by_stub_name, spec};
 pub use registry::{register, run, unregister};
 
+/// Common LSM dispatcher provider for BPF's `file_open` hook.
+pub(crate) fn open_hook(ctx: &crate::lsm::OpenContext<'_>) -> Result<u64, i64> {
+    file_open(ctx.inode).map(|()| ctx.access)
+}
+
 /// Callable BPF LSM `file_open` hook. Runs the attached chain and hands
 /// the first non-zero answer back as the open's verdict.
 /// # C: O(attached programs × instructions run)

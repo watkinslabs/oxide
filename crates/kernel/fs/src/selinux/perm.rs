@@ -21,10 +21,14 @@ pub fn inode_permission(inode: &InodeRef, mask: u32) -> KResult<()> {
 
 /// Install the check into the VFS permission path. # C: O(1)
 pub fn install() {
-    vfs::set_inode_mac_hook(inode_permission);
-    vfs::set_inode_create_hook(label_created);
-    vfs::set_inode_instantiated_hook(super::label::label_instantiated);
-    vfs::set_inode_init_security_anon_hook(super::label::inode_init_security_anon);
+    security::lsm::register_inode_permission(inode_permission);
+    security::lsm::register_inode_create(label_created);
+    security::lsm::register_inode_instantiate(super::label::label_instantiated);
+    security::lsm::register_inode_init_security_anon(super::label::inode_init_security_anon);
+    vfs::set_inode_mac_hook(security::lsm::inode_permission);
+    vfs::set_inode_create_hook(security::lsm::inode_created);
+    vfs::set_inode_instantiated_hook(security::lsm::inode_instantiated);
+    vfs::set_inode_init_security_anon_hook(security::lsm::inode_init_security_anon);
 }
 
 fn label_created(dir: &InodeRef, inode: &InodeRef, name: &str) {

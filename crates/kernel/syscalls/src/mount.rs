@@ -37,6 +37,16 @@ fn current_fscreate_sid() -> Option<selinux::sidtab::Sid> {
     sched::live::current().and_then(|c| c.selinux_label.lock().fscreate)
 }
 
+/// Landlock's filesystem admission provider in the common LSM open chain.
+/// # C: O(path hierarchy)
+fn landlock_open_hook(ctx: &security::lsm::OpenContext<'_>) -> Result<u64, i64> {
+    if (ctx.flags & crate::open_flags::O_TRUNC as u64) != 0
+        && (ctx.flags & crate::open_flags::O_PATH as u64) == 0 {
+        crate::landlock::check(ctx.path, ::landlock::uapi::ACCESS_FS_TRUNCATE)?;
+    }
+    crate::landlock::open_decide(ctx.path, ctx.access, ctx.is_device)
+}
+
 /// Linux `capable(CAP_SYS_RESOURCE)` for the quota limit ladder: the holder
 /// charges past hard limits and expired grace periods. # C: O(1)
 fn quota_has_sys_resource() -> bool {
@@ -131,6 +141,7 @@ pub fn install_vfs_hooks() {
     selinux_runtime::task::set_fscreate_sid_source(current_fscreate_sid);
     fs::selinux::install();
     fs::selinux::mount::install();
+    security::lsm::register_open(landlock_open_hook);
     vfs::set_quota_sys_resource_hook(quota_has_sys_resource);
     vfs::set_reserved_caller_hook(current_reserved_caller);
     vfs::set_fs_halt_hook(fs_halt);

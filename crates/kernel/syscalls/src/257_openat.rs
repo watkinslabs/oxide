@@ -488,10 +488,6 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
     let ll_final = vfs::VfsPath { mnt_id, dentry: dentry.clone(), inode: inode.clone(),
                                   last_component: None };
     let ll_ftype = inode.file_type();
-    if (flags & O_TRUNC) != 0 && (flags & O_PATH) == 0 {
-        if let Err(rv) = crate::landlock::check(&ll_final,
-            ::landlock::uapi::ACCESS_FS_TRUNCATE) { return rv; }
-    }
     let ll_acc = flags & 0o3;
     let ll_path_only = (flags & O_PATH) != 0;
     let ll_req = ::landlock::access::open_access(
@@ -499,7 +495,7 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
         !ll_path_only && (ll_acc == 1 || ll_acc == 2),
         false,
         ll_ftype == vfs::FileType::Directory);
-    let ll_access = match crate::landlock::open_decide(&ll_final, ll_req,
+    let ll_access = match ::security::lsm::open(&ll_final, &inode, ll_req, flags,
         ::landlock::access::is_device(ll_ftype)) { Ok(a) => a, Err(rv) => return rv };
     // Lease-break (Linux `break_lease` in `do_open`): conflicting open signals
     // the lease holder + waits before proceeding. Zero-cost without a lease;
@@ -508,7 +504,6 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
     // fanotify FAN_OPEN_PERM (fast no-op without perm marks). A denial reports
     // the errno the verdict named — EPERM unless a pre-content daemon chose one.
     if let Err(e) = ::fs::inotify::check_open_perm(&inode) { return -(e.as_i32() as i64); }
-    if let Err(rv) = ::security::bpf_lsm::file_open(&inode) { return rv; }
     // D23: controlling-terminal acquisition on open (Linux `tty_open`). A
     // session leader opening a console/serial/VT tty WITHOUT O_NOCTTY, when
     // the tty is unclaimed, makes it the session's controlling terminal.
