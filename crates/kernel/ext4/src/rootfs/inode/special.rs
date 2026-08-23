@@ -330,6 +330,7 @@ impl FileOps for Ext4StatFileOps {
                 super::meta::ext4_fitrim(start, len, minlen)?;
                 Ok(FileIoctlReply::Done)
             }
+            _ => Err(VfsError::Enotty),
         }
     }
 

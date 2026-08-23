@@ -251,7 +251,7 @@ impl<S: SectorSource> Volume<S> {
                             (self.opts.utf8 || self.opts.iocharset == crate::name::compare::IoCharset::Utf8),
                         self.opts.uni_xlate);
                     let nr_slots = if long_name.is_some() { pending + 1 } else { 1 };
-                    let name = long_name.unwrap_or_else(|| self.short_name(record, &entry));
+                    let name = long_name.unwrap_or_else(|| self.short_name_for(record, &entry));
                     let slot = (index * ENTRY_BYTES) as u64;
                     if !entry.is_volume_label() {
                         out.push(DirEntry { name, entry, slot, nr_slots });
@@ -265,7 +265,7 @@ impl<S: SectorSource> Volume<S> {
     /// The 8.3 name a record spells under THIS mount's code page and display
     /// rule, case bits included — which the short entry alone cannot carry.
     /// # C: O(SHORT_NAME_LEN)
-    fn short_name(&self, record: &[u8], entry: &ShortEntry) -> String {
+    pub(crate) fn short_name_for(&self, record: &[u8], entry: &ShortEntry) -> String {
         let lcase = dirent::Record::parse(record).map_or(0, |r| r.lcase);
         dirent::short_name_with(entry, lcase, self.opts.codepage, self.opts.shortname)
     }

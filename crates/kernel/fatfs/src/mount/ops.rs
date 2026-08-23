@@ -15,8 +15,10 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use vfs::{CreateCtx, DirContext, FileOps, FileType, Inode, InodeOps, InodeRef, KResult,
-          VfsError};
+use vfs::{CreateCtx, DirContext, FileIoctlCmd, FileIoctlReply, FileOps, FileType, Inode,
+          InodeOps, InodeRef, KResult, VfsError};
+use vfs::inode::{inode_owner_or_capable, FileAttr, FS_CASEFOLD_FL, FS_IMMUTABLE_FL,
+                 FS_XFLAG_CASEFOLD, FS_XFLAG_IMMUTABLE, S_IMMUTABLE};
 use vfs::setattr::{Iattr, ATTR_GID, ATTR_UID};
 use vfs::uapi::FALLOC_FL_KEEP_SIZE;
 
@@ -72,6 +74,45 @@ impl FatOps {
 }
 
 impl InodeOps for FatOps {
+    fn fileattr_get(&self, inode: &Inode) -> KResult<FileAttr> {
+        let node = Self::node(inode)?;
+        let v = node.fs.volume.lock();
+        let mut fa = vfs::fileattr::fileattr_fill_flags(0);
+        if !v.options().case_sensitive() {
+            fa.flags |= FS_CASEFOLD_FL;
+            fa.fsx_xflags |= FS_XFLAG_CASEFOLD;
+        }
+        if v.options().sys_immutable && node.entry.as_ref().is_some_and(|e| e.attr & crate::dirent::ATTR_SYS != 0) {
+            fa.flags |= FS_IMMUTABLE_FL;
+            fa.fsx_xflags |= FS_XFLAG_IMMUTABLE;
+        }
+        Ok(fa)
+    }
+
+    fn fileattr_set(&self, inode: &Inode, fa: &FileAttr) -> KResult<()> {
+        let node = Self::node(inode)?;
+        if fa.flags & !(FS_CASEFOLD_FL | FS_IMMUTABLE_FL) != 0
+            || fa.fsx_xflags & !(FS_XFLAG_CASEFOLD | FS_XFLAG_IMMUTABLE) != 0
+        { return Err(VfsError::Eopnotsupp); }
+        let v = node.fs.volume.lock();
+        if (fa.flags & FS_CASEFOLD_FL != 0) != !v.options().case_sensitive() {
+            return Err(VfsError::Eopnotsupp);
+        }
+        let Some(mut entry) = node.current_entry() else { return Err(VfsError::Einval); };
+        if !v.writable() { return Err(VfsError::Erofs); }
+        if v.options().sys_immutable {
+            if fa.flags & FS_IMMUTABLE_FL != 0 { entry.attr |= crate::dirent::ATTR_SYS; }
+            else { entry.attr &= !crate::dirent::ATTR_SYS; }
+        } else if fa.flags & FS_IMMUTABLE_FL != 0 { return Err(VfsError::Eperm); }
+        let raw = v.read_dir_record(node.container(), node.slot).map_err(errno_to_vfs)?;
+        let mut record = Record::parse(&raw).ok_or(VfsError::Eio)?;
+        record.short.attr = entry.attr;
+        v.write_dir_record(node.container(), node.slot, &record.encode()).map_err(errno_to_vfs)?;
+        if entry.attr & crate::dirent::ATTR_SYS != 0 { inode.set_i_flags(inode.i_flags() | S_IMMUTABLE); }
+        else { inode.set_i_flags(inode.i_flags() & !S_IMMUTABLE); }
+        Ok(())
+    }
+
     fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
         let (node, dir) = Self::dir_of(inode)?;
         let hit = node.fs.volume.lock().find_entry(&dir, name).map_err(errno_to_vfs)?;
@@ -227,6 +268,80 @@ impl InodeOps for FatOps {
 }
 
 impl FileOps for FatOps {
+    fn unlocked_ioctl(&self, file: &vfs::File, idmap: &vfs::Idmap, cred: &vfs::Cred,
+                      cmd: FileIoctlCmd) -> KResult<FileIoctlReply> {
+        let inode = file.inode();
+        let node = Self::node(inode)?;
+        match cmd {
+            FileIoctlCmd::FatGetAttributes => {
+                let attr = node.entry.as_ref().map_or(crate::dirent::ATTR_DIR, |e| e.attr);
+                Ok(FileIoctlReply::U32(u32::from(attr)))
+            }
+            FileIoctlCmd::FatSetAttributes { attr, cap_linux_immutable } => {
+                if !inode_owner_or_capable(idmap, inode, cred) { return Err(VfsError::Eperm); }
+                let is_dir = inode.file_type() == FileType::Directory;
+                let mut attr = (attr as u8) & !(crate::dirent::ATTR_VOLUME | crate::dirent::ATTR_DIR);
+                if is_dir { attr |= crate::dirent::ATTR_DIR; }
+                let old = node.entry.as_ref().map_or(crate::dirent::ATTR_DIR, |e| e.attr);
+                if old & crate::dirent::ATTR_VOLUME != 0 { attr |= crate::dirent::ATTR_VOLUME; }
+                if (attr | old) & crate::dirent::ATTR_SYS != 0 && !cap_linux_immutable
+                    && node.fs.options().sys_immutable { return Err(VfsError::Eperm); }
+                let Some(mut entry) = node.current_entry() else {
+                    return if attr == crate::dirent::ATTR_DIR { Ok(FileIoctlReply::Done) }
+                    else { Err(VfsError::Einval) };
+                };
+                let v = node.fs.volume.lock();
+                if !v.writable() { return Err(VfsError::Erofs); }
+                let raw = v.read_dir_record(node.container(), node.slot).map_err(errno_to_vfs)?;
+                let mut record = Record::parse(&raw).ok_or(VfsError::Eio)?;
+                record.short.attr = attr;
+                entry.attr = attr;
+                v.write_dir_record(node.container(), node.slot, &record.encode()).map_err(errno_to_vfs)?;
+                inode.set_perm(crate::attrs::make_mode(attr, &entry.raw_name, v.options()))?;
+                if node.fs.options().sys_immutable {
+                    if attr & crate::dirent::ATTR_SYS != 0 { inode.set_i_flags(inode.i_flags() | S_IMMUTABLE); }
+                    else { inode.set_i_flags(inode.i_flags() & !S_IMMUTABLE); }
+                }
+                Ok(FileIoctlReply::Done)
+            }
+            FileIoctlCmd::FatReadDir { short_only } => {
+                if inode.file_type() != FileType::Directory { return Err(VfsError::Enotdir); }
+                let entries = Self::entries(node)?;
+                let mut out = [0u8; 560];
+                let pos = file.pos();
+                let v = node.fs.volume.lock();
+                if pos == 0 {
+                    fill_fat_dirent(&mut out[..280], b".", 1, inode.ino());
+                    file.set_pos(1);
+                    return Ok(FileIoctlReply::Bytes(out, 560));
+                }
+                if pos == 1 {
+                    fill_fat_dirent(&mut out[..280], b"..", 2, inode.ino());
+                    file.set_pos(2);
+                    return Ok(FileIoctlReply::Bytes(out, 560));
+                }
+                let scan_pos = if pos <= 2 { 0 } else { pos };
+                for entry in entries {
+                    if entry.group_start() < scan_pos { continue; }
+                    let cluster = node.as_dir().and_then(|d| d.cluster);
+                    let raw = v.read_dir_record(cluster, entry.slot).map_err(errno_to_vfs)?;
+                    let short = v.short_name_for(&raw, &entry.entry);
+                    let long = entry.name.as_str();
+                    let ino = crate::ident::inode_number(
+                        &crate::ident::location_of(&entry.entry, &node.location), Some(&entry.entry));
+                    fill_fat_dirent(&mut out[..280], short.as_bytes(), entry.next_pos(), ino);
+                    if !short_only && long != short {
+                        fill_fat_dirent(&mut out[280..], long.as_bytes(), entry.next_pos(), ino);
+                    }
+                    file.set_pos(entry.next_pos());
+                    return Ok(FileIoctlReply::Bytes(out, 560));
+                }
+                Err(VfsError::Enoent)
+            }
+            _ => Err(VfsError::Enotty),
+        }
+    }
+
     fn on_flush(&self, inode: &Inode) -> KResult<()> {
         let node = FatOps::node(inode)?;
         let v = node.fs.volume.lock();
@@ -286,8 +401,33 @@ impl FileOps for FatOps {
     }
 }
 
+fn fill_fat_dirent(out: &mut [u8], name: &[u8], off: u64, ino: u64) {
+    out.fill(0);
+    out[..8].copy_from_slice(&ino.to_ne_bytes());
+    out[8..16].copy_from_slice(&off.to_ne_bytes());
+    let len = core::cmp::min(name.len(), 255);
+    out[16..18].copy_from_slice(&(len as u16).to_ne_bytes());
+    out[18..18 + len].copy_from_slice(&name[..len]);
+}
+
 /// Whether an inode names a directory this filesystem can read. Kept as a
 /// function so the location rule has one owner. # C: O(1)
 pub fn is_directory(location: &DirLocation) -> bool {
     !matches!(location, DirLocation::Entry { .. })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fill_fat_dirent;
+
+    #[test]
+    fn fat_ioctl_dirent_uses_linux_native_offsets() {
+        let mut bytes = [0u8; 280];
+        fill_fat_dirent(&mut bytes, b"SHORT.TXT", 0x1122_3344, 0x5566_7788);
+        assert_eq!(u64::from_ne_bytes(bytes[..8].try_into().unwrap()), 0x5566_7788);
+        assert_eq!(u64::from_ne_bytes(bytes[8..16].try_into().unwrap()), 0x1122_3344);
+        assert_eq!(u16::from_ne_bytes(bytes[16..18].try_into().unwrap()), 9);
+        assert_eq!(&bytes[18..27], b"SHORT.TXT");
+        assert!(bytes[27..].iter().all(|b| *b == 0));
+    }
 }
