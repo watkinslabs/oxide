@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::io_uring_abi::ops::{IORING_OP_READ, IORING_OP_RECV, IORING_OP_RECVMSG,
+use crate::io_uring_abi::ops::{IORING_OP_READ, IORING_OP_READ_MULTISHOT, IORING_OP_RECV, IORING_OP_RECVMSG,
                                IORING_OP_SEND, IORING_OP_SENDMSG, IOSQE_BUFFER_SELECT};
 
 /// Every bit the send/receive flag word defines, in exactly one of two
@@ -124,6 +124,19 @@ fn an_opcode_outside_the_family_does_not_read_the_word() {
     assert_eq!(admit(IORING_OP_READ, 0, 0xFFFF, 0), Ok(()));
     assert!(!poll_first(IORING_OP_READ, POLL_FIRST));
     assert!(!multishot(IORING_OP_READ, IOSQE_BUFFER_SELECT, MULTISHOT));
+}
+
+#[test]
+fn a_multishot_read_requires_a_group_and_rearms_on_each_positive_read() {
+    assert_eq!(crate::io_uring_abi::ops::read_multishot(IORING_OP_READ_MULTISHOT), true);
+    assert_eq!(crate::io_uring_abi::ops::read_multishot(IORING_OP_READ), false);
+    assert!(!crate::io_uring_abi::ops::read_multishot_has_group(IORING_OP_READ_MULTISHOT, 0));
+    assert!(crate::io_uring_abi::ops::read_multishot_has_group(
+        IORING_OP_READ_MULTISHOT, IOSQE_BUFFER_SELECT));
+    assert_eq!(read_step(64, 0), Step::More);
+    assert_eq!(read_step(1, MULTISHOT_MAX_RETRY - 1), Step::Yield);
+    assert_eq!(read_step(0, 0), Step::Done(0));
+    assert_eq!(read_step(-(Errno::Eagain.as_i32() as i64), 0), Step::Wait);
 }
 
 #[test]

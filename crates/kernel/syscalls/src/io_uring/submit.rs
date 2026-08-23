@@ -114,6 +114,9 @@ fn admit(inode: &Arc<IoUringInode>, sqe: &Sqe) -> Result<(), Errno> {
     if sqe.flags & IOSQE_BUFFER_SELECT != 0 && !op_buffer_select(sqe.opcode) {
         return Err(Errno::Eopnotsupp);
     }
+    if !crate::io_uring_abi::ops::read_multishot_has_group(sqe.opcode, sqe.flags) {
+        return Err(Errno::Einval);
+    }
     // The send/receive family reads `ioprio` as its own flag word — the
     // bundle rule included. A bit it does not perform is refused here rather
     // than dropped, so no caller is downgraded without being told.

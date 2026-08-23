@@ -12,7 +12,7 @@ use super::*;
 const DISPATCHED: &[u8] = &[
     IORING_OP_NOP, IORING_OP_NOP128,
 
-    IORING_OP_READ, IORING_OP_WRITE, IORING_OP_READV, IORING_OP_WRITEV,
+    IORING_OP_READ, IORING_OP_READ_MULTISHOT, IORING_OP_WRITE, IORING_OP_READV, IORING_OP_WRITEV,
     IORING_OP_READ_FIXED, IORING_OP_WRITE_FIXED,
     IORING_OP_READV_FIXED, IORING_OP_WRITEV_FIXED,
     IORING_OP_FSYNC, IORING_OP_SYNC_FILE_RANGE, IORING_OP_FALLOCATE,
@@ -71,14 +71,11 @@ fn nothing_at_or_past_the_last_opcode_is_claimed() {
     for op in OP_LAST..=255 { assert!(!op_supported(op), "op {op}"); }
 }
 
-/// Every defined opcode but the one recorded as unimplemented below.
+/// Every defined opcode has a family.
 #[test]
 fn every_defined_opcode_has_a_family() {
-    for op in 0..OP_LAST {
-        if op == IORING_OP_READ_MULTISHOT { continue; }
-        assert!(op_family(op).is_some(), "op {op} has no handler family");
-    }
-    assert_eq!(DISPATCHED.len(), OP_LAST as usize - 1);
+    for op in 0..OP_LAST { assert!(op_family(op).is_some(), "op {op} has no handler family"); }
+    assert_eq!(DISPATCHED.len(), OP_LAST as usize);
 }
 
 /// A duplicate in the table would make the count above agree with the opcode
@@ -87,9 +84,8 @@ fn every_defined_opcode_has_a_family() {
 #[test]
 fn the_dispatched_table_names_each_opcode_once() {
     for op in 0..OP_LAST {
-        let want = if op == IORING_OP_READ_MULTISHOT { 0 } else { 1 };
         let n = DISPATCHED.iter().filter(|&&o| o == op).count();
-        assert_eq!(n, want, "op {op} appears {n} times");
+        assert_eq!(n, 1, "op {op} appears {n} times");
     }
 }
 
@@ -174,13 +170,12 @@ fn opcode_numbers_match_the_uapi_enum() {
     assert!(!op_supported(OP_LAST));
 }
 
-/// The multishot read is the one defined opcode this engine does not run, and
-/// the probe must keep saying so. Advertising it would let a caller build a
-/// subscription that never delivers.
+/// The multishot read is a persistent provided-buffer transfer.
 #[test]
-fn the_one_unimplemented_opcode_is_not_claimed() {
-    assert!(!op_supported(IORING_OP_READ_MULTISHOT));
-    assert!(!DISPATCHED.contains(&IORING_OP_READ_MULTISHOT));
+fn the_multishot_read_is_claimed_and_takes_a_group() {
+    assert!(op_supported(IORING_OP_READ_MULTISHOT));
+    assert!(DISPATCHED.contains(&IORING_OP_READ_MULTISHOT));
+    assert!(op_buffer_select(IORING_OP_READ_MULTISHOT));
 }
 
 #[test]
@@ -195,7 +190,7 @@ fn buffer_select_is_offered_only_by_the_transfer_opcodes_that_take_a_group() {
     // A receive fills a buffer drawn from the group; a send DRAINS one the
     // caller already filled and published there, and hands it back through the
     // completion the same way. Both are the group's purpose.
-    for op in [IORING_OP_READ, IORING_OP_READV, IORING_OP_RECV, IORING_OP_RECVMSG,
+    for op in [IORING_OP_READ, IORING_OP_READ_MULTISHOT, IORING_OP_READV, IORING_OP_RECV, IORING_OP_RECVMSG,
                IORING_OP_SEND] {
         assert!(op_buffer_select(op), "op {op}");
     }
