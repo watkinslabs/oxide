@@ -30,6 +30,7 @@ pub mod faults;
 pub mod hung_task;
 pub mod init_path;
 pub mod memory;
+pub mod hugepages;
 pub mod hibernate;
 pub mod sysrq;
 
