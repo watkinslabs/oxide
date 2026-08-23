@@ -96,11 +96,12 @@ impl IrqEndpoint {
             let _ = sd_status;
         }
         let rirb = self.regs.r8(REG_RIRBSTS);
+        let mut unsolicited = false;
         if rirb & RIRBSTS_INT_MASK != 0 {
             self.regs.w8(REG_RIRBSTS, RIRBSTS_INT_MASK);
-            if rirb & RIRBSTS_IRQ != 0 { transport::update_rirb(&self.regs, &mut rings); }
+            if rirb & RIRBSTS_IRQ != 0 { unsolicited = transport::update_rirb(&self.regs, &mut rings); }
         }
-        true
+        unsolicited
     }
 }
 

@@ -551,6 +551,7 @@ dependencies = [
  "pci-irq",
  "pmm",
  "sched",
+ "softirq",
  "sound",
  "sync",
  "syscall",

@@ -19,6 +19,7 @@ mmio-map = { path = "../../kernel/mmio-map" }
 sync     = { path = "../../shared/sync" }
 pmm      = { path = "../../kernel/mm-pmm" }
 sched    = { path = "../../kernel/sched" }
+softirq = { path = "../../kernel/softirq" }
 syscall  = { path = "../../kernel/syscall" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]

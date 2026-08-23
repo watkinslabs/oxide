@@ -87,7 +87,7 @@ fn allocate_stream_frames(addr64: bool, count: u8, out: &mut Vec<(u64, u64)>) ->
 fn hard_handler(raw: usize) {
     let Ok(raw) = u32::try_from(raw) else { return; };
     let Some(owner) = sound::SoundOwnerKey::from_raw(raw) else { return; };
-    card::handle_interrupt(owner);
+    if card::handle_interrupt(owner) { softirq::raise_process(softirq::Slot::HdaJack); }
 }
 
 fn bring_up(bdf: pci::Bdf, mmio_base: u64, mapping: mmio_map::Mapping) -> bool {
@@ -95,6 +95,7 @@ fn bring_up(bdf: pci::Bdf, mmio_base: u64, mapping: mmio_map::Mapping) -> bool {
     let addr64 = regs.addr64();
     let hhdm = crate::platform::hhdm();
     let Some(owner) = card::owner_key(bdf) else { return false; };
+    softirq::set_handler(softirq::Slot::HdaJack, card::drain_jack_events);
 
     // Output stream descriptors follow the input and bidirectional blocks.
     let inputs = regs.input_streams();

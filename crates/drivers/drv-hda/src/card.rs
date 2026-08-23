@@ -486,6 +486,17 @@ pub fn service_jacks(owner: sound::SoundOwnerKey) {
     }
 }
 
+/// Drain unsolicited codec events for every live HDA card. This is installed
+/// as the process-only softirq handler because jack sensing issues codec
+/// commands and publishes sound-control notifications.
+pub fn drain_jack_events() {
+    let owners: Vec<_> = lock_devices().iter()
+        .filter(|device| device.online.load(Ordering::Acquire))
+        .map(|device| device.owner)
+        .collect();
+    for owner in owners { service_jacks(owner); }
+}
+
 fn follower_index(device: &DeviceState, nid: u8, output: bool) -> Option<usize> {
     device.master_followers.iter().position(|follower| follower.nid == nid && follower.output == output)
 }
