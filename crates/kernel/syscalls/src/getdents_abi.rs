@@ -125,6 +125,7 @@ pub fn write_record(buf: &mut [u8], layout: DirentLayout, ino: u64, off: u64,
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Fill {
     /// Record written; `usize` bytes consumed. Iteration continues.
+    #[cfg(test)]
     Wrote(usize),
     /// Record refused — buffer full, or the name failed verification.
     /// Iteration stops; [`DirentFill::error`] names why.
@@ -146,12 +147,15 @@ pub struct DirentFill {
     /// test and never clears it on success, so it only ever surfaces when
     /// nothing was written at all.
     error: Option<Errno>,
+    /// The syscall-tail `put_user(lastdirent->d_off)` is different from a
+    /// fill fault: Linux lets this final copyout error override prior bytes.
+    tail_error: Option<Errno>,
 }
 
 impl DirentFill {
     /// # C: O(1)
     pub fn new(layout: DirentLayout, capacity: usize) -> Self {
-        Self { layout, capacity, written: 0, last_rec: None, error: None }
+        Self { layout, capacity, written: 0, last_rec: None, error: None, tail_error: None }
     }
 
     /// Bytes packed so far — Linux's `count - ctx->count`. # C: O(1)
@@ -159,7 +163,40 @@ impl DirentFill {
 
     /// The `count` argument: the exact byte span the caller's buffer spans.
     /// # C: O(1)
+    #[cfg(test)]
     pub fn capacity(&self) -> usize { self.capacity }
+
+    /// Admit one entry without committing it. The caller can publish the
+    /// packed record through a fault-safe boundary before advancing the
+    /// directory accounting. # C: O(name.len())
+    pub fn prepare(&mut self, name: &[u8]) -> Result<usize, Fill> {
+        if let Err(e) = verify_dirent_name(name) { self.error = Some(e); return Err(Fill::Stop); }
+        let reclen = self.layout.reclen(name.len());
+        self.error = Some(Errno::Einval);
+        if reclen > self.capacity - self.written { return Err(Fill::Stop); }
+        Ok(reclen)
+    }
+
+    /// Pack a prepared record into a kernel-owned buffer. # C: O(reclen)
+    pub fn write_pending(&self, out: &mut [u8], ino: u64, off: u64, d_type: u8,
+                         name: &[u8]) -> Option<usize> {
+        write_record(out, self.layout, ino, off, d_type, name)
+    }
+
+    /// Commit a record after its publication succeeded. # C: O(1)
+    pub fn commit(&mut self, reclen: usize) {
+        self.last_rec = Some(self.written);
+        self.written += reclen;
+    }
+
+    /// Record a fault while publishing a prepared record. # C: O(1)
+    pub fn fail(&mut self, e: Errno) { self.error = Some(e); }
+
+    /// Record a fault in the syscall-tail final `d_off` publication. # C: O(1)
+    pub fn fail_tail(&mut self, e: Errno) { self.tail_error = Some(e); }
+
+    /// Byte offset of the last committed record. # C: O(1)
+    pub fn last_record_offset(&self) -> Option<usize> { self.last_rec }
 
     /// Sticky `buf->error`. Read by `getdents_abi/tests.rs`; the slot files
     /// consume the error through `Fill::Stop` instead. # C: O(1)
@@ -169,16 +206,11 @@ impl DirentFill {
     /// Offer one entry, writing it into `out` (the user buffer, already
     /// positioned at its base) at [`Self::written`]. Linux order: verify the
     /// name (EIO), park `-EINVAL`, then test the capacity. # C: O(reclen)
+    #[cfg(test)]
     pub fn offer(&mut self, out: &mut [u8], ino: u64, off: u64, d_type: u8, name: &[u8]) -> Fill {
-        if let Err(e) = verify_dirent_name(name) { self.error = Some(e); return Fill::Stop; }
-        let reclen = self.layout.reclen(name.len());
-        // Linux parks -EINVAL before the capacity test ("only used if we fail")
-        // and leaves it there on success — harmless, since a non-zero byte
-        // count always wins in `ret`.
-        self.error = Some(Errno::Einval);
-        if reclen > self.capacity - self.written { return Fill::Stop; }
+        let _ = match self.prepare(name) { Ok(n) => n, Err(stop) => return stop };
         match write_record(&mut out[self.written..], self.layout, ino, off, d_type, name) {
-            Some(n) => { self.last_rec = Some(self.written); self.written += n; Fill::Wrote(n) }
+            Some(n) => { self.commit(n); Fill::Wrote(n) }
             None    => { self.error = Some(Errno::Efault); Fill::Stop }
         }
     }
@@ -195,6 +227,7 @@ impl DirentFill {
     /// end-of-directory position rather than a cookie just past the last
     /// record. Returns `false` if the write could not happen (EFAULT).
     /// # C: O(1)
+    #[cfg(test)]
     pub fn seal_last_d_off(&self, out: &mut [u8], final_pos: u64) -> bool {
         let Some(at) = self.last_rec else { return true; };
         if at + 16 > out.len() { return false; }
@@ -219,6 +252,7 @@ impl DirentFill {
     /// `iter_errno` is the backend's error as a POSITIVE Linux errno.
     /// # C: O(1)
     pub fn ret(&self, iter_errno: Option<i32>) -> i64 {
+        if let Some(e) = self.tail_error { return -(e.as_i32() as i64); }
         if self.written > 0 { return self.written as i64; }
         if let Some(e) = iter_errno { return -(e as i64); }
         if let Some(e) = self.error { return -(e.as_i32() as i64); }

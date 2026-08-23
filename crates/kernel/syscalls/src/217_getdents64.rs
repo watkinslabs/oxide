@@ -4,10 +4,12 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
+use alloc::vec;
+use alloc::vec::Vec;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-use crate::getdents_abi::{self, DirentFill, DirentLayout, Fill};
+use crate::getdents_abi::{self, DirentFill, DirentLayout};
 use crate::userbuf::validate_user_buf_writable;
 
 #[cfg(feature = "debug-getdents-detail")]
@@ -72,6 +74,7 @@ pub fn sys_getdents(args: &SyscallArgs) -> i64 {
 struct GetdentsActor {
     dirp: u64,
     fill: DirentFill,
+    scratch: Vec<u8>,
     #[cfg(feature = "debug-getdents")]
     task: &'static sched::Task,
 }
@@ -84,13 +87,22 @@ impl GetdentsActor {
         // Linux abandons the walk once a signal is pending and at least one
         // record is packed, so a huge directory cannot delay delivery.
         if getdents_abi::interrupt_stops_fill(self.fill.written(), signal_pending()) { return false; }
-        let cap = self.fill.capacity();
-        // SAFETY: getdents_common admitted [dirp, dirp+count) through
-        // validate_user_buf_writable (WRITE-mapped user VA below USER_VA_END)
-        // before building this actor; CPL=0 with the caller's AS active, and
-        // DirentFill bounds every write to `cap`.
-        let out: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(self.dirp as *mut u8, cap) };
-        matches!(self.fill.offer(out, ino, next_pos, dt, name.as_bytes()), Fill::Wrote(_))
+        let before = self.fill.written();
+        let reclen = match self.fill.prepare(name.as_bytes()) {
+            Ok(n) => n,
+            Err(_) => return false,
+        };
+        let Some(n) = self.fill.write_pending(&mut self.scratch[..reclen], ino, next_pos, dt,
+                                              name.as_bytes()) else {
+            self.fill.fail(Errno::Efault);
+            return false;
+        };
+        if uaccess::copy_to_user(self.dirp + before as u64, &self.scratch[..n]).is_err() {
+            self.fill.fail(Errno::Efault);
+            return false;
+        }
+        self.fill.commit(n);
+        true
     }
 }
 
@@ -178,7 +190,9 @@ fn getdents_common(args: &SyscallArgs, layout: DirentLayout) -> i64 {
         file.set_f_version(vfs::inode::inode_query_iversion(&inode));
     }
 
+    let scratch_len = DirentLayout::Modern.reclen(getdents_abi::PATH_MAX - 1);
     let mut actor = GetdentsActor { dirp, fill: DirentFill::new(layout, count),
+                                    scratch: vec![0u8; scratch_len],
                                     #[cfg(feature = "debug-getdents")] task: cur };
     #[cfg(feature = "debug-getdents")]
     sched::diag::getdents_stage(cur, sched::diag::getdents::GETDENTS_STAGE_READDIR_ENTER, start, 0);
@@ -207,12 +221,12 @@ fn getdents_common(args: &SyscallArgs, layout: DirentLayout) -> i64 {
     // a directory advances its atime exactly as reading a file does.
     vfs::file_accessed(&file);
     if actor.fill.written() > 0 {
-        let cap = actor.fill.capacity();
-        // SAFETY: same admitted [dirp, dirp+count) range as the packing path;
-        // CPL=0 with the caller's AS active, and the rewrite stays inside a
-        // record this call already wrote.
-        let out: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(dirp as *mut u8, cap) };
-        actor.fill.seal_last_d_off(out, new_off);
+        if let Some(at) = actor.fill.last_record_offset() {
+            let d_off = new_off.to_le_bytes();
+            if uaccess::copy_to_user(dirp + at as u64 + 8, &d_off).is_err() {
+                actor.fill.fail_tail(Errno::Efault);
+            }
+        }
     }
     let rv = actor.fill.ret(iter_err);
     #[cfg(feature = "debug-getdents")]
