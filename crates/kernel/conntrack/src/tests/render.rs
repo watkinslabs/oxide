@@ -4,10 +4,12 @@
 extern crate alloc;
 use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use crate::ctnetlink;
 use crate::core::CtNet;
 use crate::entry::{Conn, ProtoState, SeqAdjust, TcpProtoInfoUpdate};
+use crate::helper::Helper;
 use crate::procfs;
 use crate::tuple::{InetAddr, ProtoPart, Tuple, TupleEnd};
 use crate::uapi::*;
@@ -215,11 +217,29 @@ fn ctnetlink_owner_updates_and_deletes_the_live_entry() {
 fn ctnetlink_creator_confirms_a_tuple_with_timeout_status_and_mark() {
     let ct = CtNet::new(0, 7);
     let tuple = v4_udp([192, 0, 2, 1], 40000, [198, 51, 100, 2], 53);
-    let id = ct.create_tuple(tuple, None, 0, 30, IPS_ASSURED, Some(0x44), None)
+    let id = ct.create_tuple(tuple, None, 0, 30, IPS_ASSURED, Some(0x44), None, None)
         .expect("userspace tuple is publishable");
     let found = ct.table.find_id(id, 0).expect("created flow is live");
     assert_eq!(found.orig, tuple);
     assert_eq!(found.expires_in(0), 30);
     assert_eq!(found.mark.load(core::sync::atomic::Ordering::Relaxed), 0x44);
     assert_ne!(found.status() & IPS_CONFIRMED, 0);
+}
+
+#[test]
+fn ctnetlink_creator_attaches_only_a_registered_tuple_helper() {
+    let ct = CtNet::new(0, 7);
+    ct.helpers.register(Helper {
+        name: String::from("dns"), l3num: NFPROTO_IPV4, protonum: IPPROTO_UDP,
+        port: 53, policies: Vec::new(),
+    }).unwrap();
+    let tuple = v4_udp([192, 0, 2, 1], 40000, [198, 51, 100, 2], 53);
+    let id = ct.create_tuple(tuple, None, 0, 30, 0, None, None,
+                             Some(String::from("dns"))).expect("registered helper");
+    let found = ct.table.find_id(id, 0).expect("created flow is live");
+    assert_eq!(found.helper.lock().as_deref(), Some("dns"));
+    assert_ne!(found.status() & IPS_HELPER, 0);
+    assert!(ct.create_tuple(v4_udp([192, 0, 2, 2], 40001, [198, 51, 100, 2], 53),
+                            None, 0, 30, 0, None, None,
+                            Some(String::from("ftp"))).is_none());
 }

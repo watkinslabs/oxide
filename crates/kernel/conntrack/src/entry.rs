@@ -237,6 +237,14 @@ impl Conn {
         changed
     }
 
+    /// Attach a helper name to this flow. Explicit ctnetlink attachment also
+    /// records Linux's `IPS_HELPER` selection bit; automatic assignment does
+    /// not, so a later explicit choice still follows the helper policy. # C: O(1)
+    pub fn attach_helper(&self, name: String, explicit: bool) {
+        *self.helper.lock() = Some(name);
+        if explicit { self.set_status_bits(IPS_HELPER); }
+    }
+
     /// Arm the expiry. A fixed-timeout entry keeps whatever ctnetlink set.
     /// # C: O(1)
     pub fn refresh(&self, now: u64, secs: u32) {

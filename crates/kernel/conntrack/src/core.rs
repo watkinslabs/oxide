@@ -3,6 +3,7 @@
 //! the rest of the stack keys on.
 
 extern crate alloc;
+use alloc::string::String;
 use alloc::sync::Arc;
 
 use crate::entry::{Conn, ProtoState, SeqAdjust, TcpProtoInfoUpdate};
@@ -49,6 +50,7 @@ pub enum Track {
 pub struct CtNet {
     pub table: CtTable,
     pub expect: crate::expect::ExpectTable,
+    pub helpers: crate::helper::HelperRegistry,
     pub sysctl: sync::Spinlock<CtSysctl, sync::Socket>,
     pub events: crate::event::EventQueue,
     pub net_ns: u64,
@@ -60,6 +62,7 @@ impl CtNet {
         Self {
             table: CtTable::new(seed),
             expect: crate::expect::ExpectTable::new(seed),
+            helpers: crate::helper::HelperRegistry::new(),
             sysctl: sync::Spinlock::new(CtSysctl::default()),
             events: crate::event::EventQueue::new(),
             net_ns,
@@ -85,6 +88,11 @@ impl CtNet {
         }
         let id = self.table.alloc_id();
         let conn = Arc::new(Conn::new(id, pkt.tuple, reply, self.net_ns));
+        if sysctl.helper {
+            if let Some(helper) = self.helpers.find_for(&pkt.tuple) {
+                conn.attach_helper(helper.name, false);
+            }
+        }
         self.table.add_pending(conn.clone());
         let r = self.run(conn.clone(), IP_CT_DIR_ORIGINAL, pkt, now, &sysctl, false);
         if matches!(r, Track::Invalid) { self.table.kill(&conn); }
@@ -242,7 +250,8 @@ impl CtNet {
     /// keeps a new entry pending until the packet hooks accept it. # C: O(bucket length)
     pub fn create_tuple(&self, tuple: Tuple, reply: Option<Tuple>, now: u64,
                         timeout: u32, status: u32, mark: Option<u32>,
-                        protoinfo: Option<TcpProtoInfoUpdate>) -> Option<u64> {
+                        protoinfo: Option<TcpProtoInfoUpdate>,
+                        helper: Option<String>) -> Option<u64> {
         let reply = reply.or_else(|| tuple.invert())?;
         let conn = Arc::new(Conn::new(self.table.alloc_id(), tuple, reply, self.net_ns));
         conn.set_status_bits(crate::ctnetlink::writable_status(status));
@@ -256,6 +265,10 @@ impl CtNet {
             // Non-TCP protocol owners have no TCP from_nlattr hook; Linux
             // accepts the protocol-info container and leaves them unchanged.
             let _ = conn.tcp_protoinfo_update(update);
+        }
+        if let Some(name) = helper {
+            self.helpers.find_named_for(&name, &tuple)?;
+            conn.attach_helper(name, true);
         }
         self.table.add_pending(conn.clone());
         if !self.table.confirm(&conn, now) {

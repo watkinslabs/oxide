@@ -89,6 +89,13 @@ impl HelperRegistry {
         self.helpers.lock().iter().find(|e| e.name == name).cloned()
     }
 
+    /// Find a named helper that serves one tuple's family and protocol. # C: O(N)
+    pub fn find_named_for(&self, name: &str, tuple: &Tuple) -> Option<Helper> {
+        self.helpers.lock().iter().find(|h| {
+            h.name == name && h.l3num == tuple.l3num && h.protonum == tuple.protonum
+        }).cloned()
+    }
+
     /// The helper that claims a tuple by its destination port. Matching on the
     /// destination is deliberate: a helper watches a service, and the client's
     /// source port is arbitrary. # C: O(N)

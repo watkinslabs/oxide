@@ -144,11 +144,12 @@ impl NetStack {
     pub fn conntrack_create_tuple_in(&self, net_ns: u64, tuple: ::conntrack::Tuple,
                                      reply: Option<::conntrack::Tuple>, timeout: u32,
                                      status: u32, mark: Option<u32>,
-                                     protoinfo: Option<::conntrack::entry::TcpProtoInfoUpdate>)
+                                     protoinfo: Option<::conntrack::entry::TcpProtoInfoUpdate>,
+                                     helper: Option<alloc::string::String>)
                                      -> Option<u64> {
         let ct = self.conntrack_in(net_ns);
         ct.create_tuple(tuple, reply, crate::stack::net_now_ns() / 1_000_000_000,
-                        timeout, status, mark, protoinfo)
+                        timeout, status, mark, protoinfo, helper)
     }
 
     /// Update one live conntrack entry through its owning namespace. # C: O(N)

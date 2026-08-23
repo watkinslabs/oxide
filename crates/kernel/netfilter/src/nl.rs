@@ -1,4 +1,4 @@
-use alloc::vec::Vec;
+use alloc::{string::String, vec::Vec};
 
 use ::netlink::{flags, msg, nlmsg_align, Nlmsghdr};
 
@@ -169,6 +169,19 @@ fn parse_tcp_protoinfo(attrs: &[u8])
     }))
 }
 
+fn parse_helper_name(attrs: &[u8]) -> Result<Option<String>, ()> {
+    let Some(help) = find_bytes_attr(attrs, ::conntrack::uapi::CTA_HELP) else {
+        return Ok(None);
+    };
+    let Some(raw) = find_bytes_attr(help, ::conntrack::uapi::CTA_HELP_NAME) else {
+        return Err(());
+    };
+    if raw.len() < 1 || raw.len() > 16 || *raw.last().unwrap() != 0 {
+        return Err(());
+    }
+    String::from_utf8(raw[..raw.len() - 1].to_vec()).map(Some).map_err(|_| ())
+}
+
 /// Flush the canonical conntrack event queue through NETLINK_NETFILTER.
 /// # C: O(N events × listeners)
 pub(crate) fn flush_conntrack_events(namespace: u64) {
@@ -274,6 +287,12 @@ fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Ve
                 if req.nlmsg_flags & flags::NLM_F_EXCL != 0 {
                     return nlmsg_ack(req, -17);
                 }
+                if find_bytes_attr(attrs, ::conntrack::uapi::CTA_HELP).is_some() {
+                    // Linux cannot attach a helper to an existing flow that
+                    // has no helper extension; changing a sibling helper is
+                    // also not permitted by ctnetlink.
+                    return nlmsg_ack(req, -95);
+                }
                 let mark = find_u32_attr(attrs, ::conntrack::uapi::CTA_MARK).map(|value| {
                     (value, find_u32_attr(attrs, ::conntrack::uapi::CTA_MARK_MASK))
                 });
@@ -297,10 +316,11 @@ fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Ve
                 return nlmsg_ack(req, -22);
             }
             let Ok(protoinfo) = parse_tcp_protoinfo(attrs) else { return nlmsg_ack(req, -22); };
+            let Ok(helper) = parse_helper_name(attrs) else { return nlmsg_ack(req, -22); };
             let id = ::net::global_stack().conntrack_create_tuple_in(
                 namespace, tuple, reply, timeout,
                 find_u32_attr(attrs, ::conntrack::uapi::CTA_STATUS).unwrap_or(0),
-                find_u32_attr(attrs, ::conntrack::uapi::CTA_MARK), protoinfo);
+                find_u32_attr(attrs, ::conntrack::uapi::CTA_MARK), protoinfo, helper);
             return nlmsg_ack(req, if id.is_some() { 0 } else { -28 });
         }
     }
@@ -318,6 +338,9 @@ fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Ve
             });
             let Ok(seqadj) = parse_seqadjs(attrs) else { return nlmsg_ack(req, -22); };
             let Ok(protoinfo) = parse_tcp_protoinfo(attrs) else { return nlmsg_ack(req, -22); };
+            if find_bytes_attr(attrs, conntrack::uapi::CTA_HELP).is_some() {
+                return nlmsg_ack(req, -95);
+            }
             ::net::global_stack().conntrack_update_in(namespace, id as u64,
                                                        timeout, status, mark, seqadj, protoinfo)
         }
@@ -397,7 +420,7 @@ fn handle_ct_get(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -
 mod tests {
     use alloc::vec::Vec;
     use alloc::sync::Arc;
-    use super::{parse_ct_tuple, parse_seqadjs, parse_tcp_protoinfo};
+    use super::{parse_ct_tuple, parse_helper_name, parse_seqadjs, parse_tcp_protoinfo};
     use ::conntrack::{ProtoPart, Tuple, TupleEnd, InetAddr};
     use netlink::{NetlinkSocket, proto, register_netfilter_listener};
 
@@ -471,6 +494,25 @@ mod tests {
     }
 
     #[test]
+    fn ctnetlink_helper_parser_requires_a_nul_terminated_name() {
+        let mut raw = Vec::new();
+        let outer = ::conntrack::ctnetlink::nest_start(
+            &mut raw, ::conntrack::uapi::CTA_HELP);
+        ::conntrack::ctnetlink::put_attr(
+            &mut raw, ::conntrack::uapi::CTA_HELP_NAME, b"dns\0");
+        ::conntrack::ctnetlink::nest_end(&mut raw, outer);
+        assert_eq!(parse_helper_name(&raw).unwrap().as_deref(), Some("dns"));
+
+        let mut bad = Vec::new();
+        let outer = ::conntrack::ctnetlink::nest_start(
+            &mut bad, ::conntrack::uapi::CTA_HELP);
+        ::conntrack::ctnetlink::put_attr(
+            &mut bad, ::conntrack::uapi::CTA_HELP_NAME, b"dns");
+        ::conntrack::ctnetlink::nest_end(&mut bad, outer);
+        assert!(parse_helper_name(&bad).is_err());
+    }
+
+    #[test]
     fn ctnetlink_event_flush_multicasts_the_canonical_new_message() {
         let ns = net::net_ns::initial_namespace();
         let socket = Arc::new(NetlinkSocket::new(proto::NETLINK_NETFILTER, &ns));
@@ -485,7 +527,7 @@ mod tests {
             zone: 0,
         };
         let ct = stack.conntrack_in(0);
-        let id = ct.create_tuple(tuple, None, 0, 30, 0, None, None).expect("create event");
+        let id = ct.create_tuple(tuple, None, 0, 30, 0, None, None, None).expect("create event");
         super::flush_conntrack_events(0);
         let mut bytes = [0u8; 512];
         let n = socket.read(&mut bytes).expect("conntrack event datagram");
