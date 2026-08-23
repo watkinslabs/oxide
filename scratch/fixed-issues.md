@@ -5153,6 +5153,11 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2620 | INFRA | low | The C275 observation that `/dev/console` following the last `console=tty0` made serial userspace logging unavailable was stale after the later boot-witness fix. Linux console selection still correctly follows the last entry, while userspace logging is routed through kmsg and fans out to registered consoles. | B2233 fixed the actual capture gap by routing userspace logging through kmsg; current `cmdline` console tests retain the expected last-entry preferred-console rule, including `last_entry_backs_dev_console`. | B2620 |
+### B2623-overlay-default-permissions-stale
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2623 | MISSING | low | **OverlayFS `default_permissions` was incorrectly recorded as an unconsumed behavior.** Linux retains and shows the option, but its permission operation always checks the overlay inode and then the real layer under the stashed credentials; there is no runtime branch on this option in the reference. The remaining `override_creds` gap stays open separately. | Linux 7.2.0-rc4 overlay permission implementation and mount-option renderer; the repository's `Config::default_permissions` is likewise parse/show state with no behavior branch. | B2623 |
 ### B2621-exfat-errors-policy
 
 | Status | Class | Sev | Issue | Evidence | Owner |
