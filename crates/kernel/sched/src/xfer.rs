@@ -38,26 +38,12 @@ fn account_sendfile(cur: &crate::Task, ret: i64) {
     cur.account_write_result(ret);
 }
 
-/// `sys_sendfile(out_fd, in_fd, offset, count)` — slot 40. Copies
-/// up to `count` bytes from `in_fd` into `out_fd` via a small kernel staging
-/// buffer. A non-NULL offset is Linux `sendfile64`: read the caller's `loff_t`,
-/// require input `FMODE_PREAD`, copy from that position without changing
-/// `in_fd->f_pos`, then write back the advanced offset.
-/// # C: O(count)
-pub fn sys_sendfile(args: &SyscallArgs) -> i64 {
-    let out_fd = args.a0 as i32;
-    let in_fd  = args.a1 as i32;
-    let offp   = args.a2;
-    let count  = core::cmp::min(args.a3 as usize, MAX_RW_COUNT);
-    let cur = match current_task() {
-        Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
-    let fdt = match unsafe { cur.fd_table_ref() } {
-        Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    let in_file  = match fdt.get(in_fd)  { Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64) };
-    let out_file = match fdt.get(out_fd) { Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64) };
+/// The descriptor-independent sendfile owner. Descriptor lookup belongs to
+/// the syscall shim; the Linux transfer ordering belongs here so it can be
+/// exercised with two already-resolved files without manufacturing an fd
+/// table in a hosted test. # C: O(count)
+fn sendfile_files(cur: &crate::Task, in_file: &vfs::File, out_file: &vfs::File,
+                  offp: u64, count: usize) -> i64 {
     if !in_file.f_mode().contains(vfs::Fmode::READ) {
         return -(Errno::Ebadf.as_i32() as i64);
     }
@@ -70,7 +56,7 @@ pub fn sys_sendfile(args: &SyscallArgs) -> i64 {
     let mut pos = if seekable_in { in_file.pos() as i64 } else { 0 };
     if explicit_off {
         pos = match load_off(offp) { Ok(v) => v, Err(e) => return -(e.as_i32() as i64) };
-        if !in_file.f_mode().contains(vfs::Fmode::PREAD) {
+        if !seekable_in {
             // Linux's put_user runs after do_sendfile even on its errors.
             return store_off(offp, pos, -(Errno::Espipe.as_i32() as i64));
         }
@@ -120,6 +106,29 @@ pub fn sys_sendfile(args: &SyscallArgs) -> i64 {
     if !explicit_off && positional_in { in_file.set_pos(pos as u64); }
     account_sendfile(cur, ret);
     if explicit_off { store_off(offp, pos, ret) } else { ret }
+}
+
+/// `sys_sendfile(out_fd, in_fd, offset, count)` — slot 40. Copies
+/// up to `count` bytes from `in_fd` into `out_fd` via a small kernel staging
+/// buffer. A non-NULL offset is Linux `sendfile64`: read the caller's `loff_t`,
+/// require input `FMODE_PREAD`, copy from that position without changing
+/// `in_fd->f_pos`, then write back the advanced offset.
+/// # C: O(count)
+pub fn sys_sendfile(args: &SyscallArgs) -> i64 {
+    let out_fd = args.a0 as i32;
+    let in_fd  = args.a1 as i32;
+    let offp   = args.a2;
+    let count  = core::cmp::min(args.a3 as usize, MAX_RW_COUNT);
+    let cur = match current_task() {
+        Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+    let fdt = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let in_file  = match fdt.get(in_fd)  { Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64) };
+    let out_file = match fdt.get(out_fd) { Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64) };
+    sendfile_files(cur, &in_file, &out_file, offp, count)
 }
 
 #[cfg(test)]
