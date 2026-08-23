@@ -12,20 +12,42 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
     /// # C: O(len_pfn × MAX_ORDER)
     /// # Ctx: pre-init, single-CPU
     pub fn reserve_early(&self, start: Pfn, len_pfn: u64) -> KResult<()> {
-        self.reserve_early_inner(start, len_pfn, false)
+        self.reserve_early_inner(start, len_pfn, false, false)
     }
 
     /// Permanently reserve a boot range whose contents must not enter a hibernation image.
     /// # C: O(len_pfn × MAX_ORDER)
     /// # Ctx: pre-init, single-CPU
     pub fn reserve_early_nosave(&self, start: Pfn, len_pfn: u64) -> KResult<()> {
-        self.reserve_early_inner(start, len_pfn, true)
+        self.reserve_early_inner(start, len_pfn, true, false)
     }
 
-    fn reserve_early_inner(&self, start: Pfn, len_pfn: u64, nosave: bool) -> KResult<()> {
+    /// Reserve a boot range only if every page is still free.
+    ///
+    /// Unlike the compatibility reservation above, this operation is
+    /// transactional with respect to the requested range: a caller that is
+    /// publishing a physical region must not receive success after the
+    /// allocator skipped pages already claimed by the kernel image, firmware,
+    /// or an earlier reservation.  The preflight and the removal run under
+    /// the same allocator lock, so no intervening allocator operation can
+    /// invalidate the answer.
+    pub fn reserve_early_exact(&self, start: Pfn, len_pfn: u64) -> KResult<()> {
+        self.reserve_early_inner(start, len_pfn, true, true)
+    }
+
+    fn reserve_early_inner(&self, start: Pfn, len_pfn: u64, nosave: bool, exact: bool) -> KResult<()> {
         let mut g = self.inner.lock_irqsave::<I>();
         let end = start.0.checked_add(len_pfn).ok_or(Error::OutOfRange)?;
         if end > g.pfn_max { return Err(Error::OutOfRange); }
+        if exact {
+            let mut p = start.0;
+            while p < end {
+                if !(0..=MAX_ORDER).any(|o| g.bitmap_get(o, p >> o)) {
+                    return Err(Error::Overlap);
+                }
+                p += 1;
+            }
+        }
         let mut p = start.0;
         while p < end {
             // Find smallest containing block currently on a free-list.
