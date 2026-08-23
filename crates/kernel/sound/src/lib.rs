@@ -9,6 +9,7 @@ extern crate alloc;
 // - `elem`: driver-registered control (mixer/jack) element registry.
 // - `pcm_info`: the one writer for `struct snd_pcm_info`.
 // - `pcm_time`: PCM timestamp selection and ABI publication.
+// - `mmap`: PCM status/control pages and shared DMA-frame mapping.
 // - `pcm`,`capture`,`control`,`oss`,`ops`,`uapi`: ALSA/OSS functional groups.
 // - `tests`: sound-crate integration tests for publication and routing.
 
@@ -17,6 +18,7 @@ mod device;
 mod ids;
 mod pcm_info;
 mod pcm_time;
+mod mmap;
 pub mod uapi;
 pub mod format;
 pub mod identity;

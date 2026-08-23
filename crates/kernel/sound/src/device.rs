@@ -51,6 +51,16 @@ fn pcm_kind(minor: u64) -> Option<(crate::ops::PcmDevice, bool)> {
 /// `file_operations` for every `/dev/snd/*` + OSS node.
 struct SndFileOps;
 impl FileOps for SndFileOps {
+    fn mmap_shared_frame(&self, inode: &Inode, off: u64) -> KResult<Option<vfs::SharedFrame>> {
+        let data = inode.private::<SndData>().ok_or(VfsError::Einval)?;
+        let pa = match pcm_kind(data.minor) {
+            Some((_, true)) => crate::capture::mmap_frame(data.owner, data.device, off),
+            Some((_, false)) => crate::pcm::mmap_frame(data.owner, data.device, off),
+            None => None,
+        };
+        Ok(pa.map(|pa| vfs::SharedFrame { pa, map_ref_held: false }))
+    }
+
     /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, inode: &Inode, _o: u64, b: &mut [u8]) -> KResult<usize> {

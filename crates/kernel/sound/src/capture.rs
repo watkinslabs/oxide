@@ -21,17 +21,19 @@ struct Cap {
     owner: crate::SoundOwnerKey,
     device: crate::ops::PcmDevice,
     state: u32,
+    access: u32,
     frame_bytes: u32,
     buffer_frames: u32,
     appl_ptr: u64,
     hw_ptr: u64,
     time: crate::pcm_time::PcmTime,
+    mmap: crate::mmap::Pages,
 }
 static CAP: Spinlock<Vec<Cap>, L> = Spinlock::new(Vec::new());
 
 fn initial(owner: crate::SoundOwnerKey, device: crate::ops::PcmDevice) -> Cap {
-    Cap { owner, device, state: STATE_OPEN, frame_bytes: 4, buffer_frames: 1024, appl_ptr: 0, hw_ptr: 0,
-          time: crate::pcm_time::PcmTime::new() }
+    Cap { owner, device, state: STATE_OPEN, access: ACCESS_RW_INTERLEAVED, frame_bytes: 4, buffer_frames: 1024, appl_ptr: 0, hw_ptr: 0,
+          time: crate::pcm_time::PcmTime::new(), mmap: crate::mmap::Pages::default() }
 }
 
 /// # C: O(cards)
@@ -50,6 +52,7 @@ pub(crate) fn register_card(owner: crate::SoundOwnerKey) {
 /// # C: O(cards)
 pub(crate) fn unregister_card(owner: crate::SoundOwnerKey) {
     let mut guard = CAP.lock();
+    for c in guard.iter_mut().filter(|c| c.owner == owner) { c.mmap.release(); }
     guard.retain(|c| c.owner != owner);
 }
 
@@ -61,6 +64,17 @@ pub(crate) fn registered_count() -> usize {
 
 fn is_registered(owner: crate::SoundOwnerKey) -> bool {
     CAP.lock().iter().any(|c| c.owner == owner)
+}
+
+/// Resolve one capture PCM mmap offset to the sound-core status/control page
+/// or the driver-owned DMA page. # C: O(1)
+pub(crate) fn mmap_frame(owner: crate::SoundOwnerKey, device: crate::ops::PcmDevice, offset: u64) -> Option<u64> {
+    let mut guard = CAP.lock();
+    let c = guard.iter_mut().find(|c| c.owner == owner && c.device == device)?;
+    if let Some(pa) = c.mmap.frame(offset) { return Some(pa); }
+    if c.state == STATE_OPEN || c.access != ACCESS_MMAP_INTERLEAVED { return None; }
+    drop(guard);
+    crate::ops::pcm_mmap_frame_for(owner, device, true, offset)
 }
 
 #[cfg(test)]
@@ -78,7 +92,8 @@ fn refine(owner: crate::SoundOwnerKey, device: crate::ops::PcmDevice, b: &UserBu
     let Some((vf, vr, ch_min, ch_max)) = caps(owner, device) else {
         return err(Errno::Enodev);
     };
-    let r = match refine_params(b, vf, vr, ch_min, ch_max, &limits_for(owner, device), crate::ops::info_flags_for(owner, device)) { Ok(r) => r, Err(e) => return e };
+    let mmap = if crate::ops::pcm_mmap_available(owner, device) { PCM_INFO_MMAP | PCM_INFO_MMAP_VALID } else { 0 };
+    let r = match refine_params(b, vf, vr, ch_min, ch_max, &limits_for(owner, device), crate::ops::info_flags_for(owner, device) | mmap) { Ok(r) => r, Err(e) => return e };
     if commit {
         if !crate::ops::cap_hw_params_for(owner, device, r.format, r.rate,
                                       r.channels as u8, r.period_bytes, r.buffer_bytes) {
@@ -88,7 +103,7 @@ fn refine(owner: crate::SoundOwnerKey, device: crate::ops::PcmDevice, b: &UserBu
         let Some(c) = guard.iter_mut().find(|c| c.owner == owner && c.device == device) else {
             return err(Errno::Enodev);
         };
-        c.frame_bytes = r.frame_bytes; c.buffer_frames = r.buffer_frames;
+        c.access = r.access; c.frame_bytes = r.frame_bytes; c.buffer_frames = r.buffer_frames;
         c.state = STATE_SETUP; c.appl_ptr = 0; c.hw_ptr = 0;
     }
     0
@@ -187,6 +202,7 @@ fn sync_hw_ptr(owner: crate::SoundOwnerKey, device: crate::ops::PcmDevice) {
     let mut guard = CAP.lock();
     let Some(c) = guard.iter_mut().find(|c| c.owner == owner && c.device == device) else { return; };
     c.hw_ptr = frames % BOUNDARY;
+    crate::mmap::publish_status(&c.mmap, c.state, c.appl_ptr, c.hw_ptr, c.buffer_frames as u64);
 }
 
 fn status(owner: crate::SoundOwnerKey, device: crate::ops::PcmDevice, arg: u64) -> i64 {
@@ -203,6 +219,7 @@ fn status(owner: crate::SoundOwnerKey, device: crate::ops::PcmDevice, arg: u64) 
     b.w64(ST_AVAIL, c.buffer_frames as u64);
     b.w64(ST_AVAIL_MAX, c.buffer_frames as u64);
     c.time.write_status(&b, c.state);
+    crate::mmap::publish_status(&c.mmap, c.state, c.appl_ptr, c.hw_ptr, c.buffer_frames as u64);
     0
 }
 
@@ -214,11 +231,14 @@ fn sync_ptr(owner: crate::SoundOwnerKey, device: crate::ops::PcmDevice, arg: u64
     let Some(c) = guard.iter_mut().find(|c| c.owner == owner && c.device == device) else {
         return err(Errno::Enodev);
     };
-    if flags & SYNC_PTR_APPL == 0 { c.appl_ptr = b.r64(SP_CONTROL_APPL_PTR); }
+    if flags & SYNC_PTR_APPL == 0 {
+        c.appl_ptr = crate::mmap::control_appl(&c.mmap).unwrap_or_else(|| b.r64(SP_CONTROL_APPL_PTR));
+    }
     b.w32(SP_STATUS_STATE, c.state);
     b.w64(SP_STATUS_HW_PTR, c.hw_ptr);
     b.w64(SP_CONTROL_APPL_PTR, c.appl_ptr);
     c.time.write_sync(&b, c.state);
+    crate::mmap::publish_status(&c.mmap, c.state, c.appl_ptr, c.hw_ptr, c.buffer_frames as u64);
     0
 }
 

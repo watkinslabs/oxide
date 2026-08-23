@@ -386,6 +386,16 @@ fn pcm_recv_for(owner: sound::SoundOwnerKey, device: sound::ops::PcmDevice, out:
     }).unwrap_or(0)
 }
 
+fn pcm_mmap_frame(owner: sound::SoundOwnerKey, device: sound::ops::PcmDevice, capture: bool, offset: u64) -> Option<u64> {
+    with_device(owner, |device_state| {
+        let stream = if capture { device_state.hda.capture.get(device as usize) }
+                     else { device_state.hda.playback.get(device as usize) }?;
+        let size = u64::from(stream.geometry.buffer_bytes());
+        if offset & (hal::PAGE_SIZE_BYTES - 1) != 0 || offset >= size || size - offset < hal::PAGE_SIZE_BYTES { return None; }
+        Some(stream.buffer_pa + offset)
+    })?
+}
+
 /// The sound core's view of this card. # C: O(1)
 pub static SOUND_OPS: sound::ops::SoundOps = sound::ops::SoundOps {
     identity,
@@ -435,6 +445,7 @@ pub static PCM_DEVICE_OPS: sound::ops::PcmDeviceOps = sound::ops::PcmDeviceOps {
     cap_pointer: cap_pointer_for,
     cap_hw_free: cap_hw_free_for,
     pcm_recv: pcm_recv_for,
+    pcm_mmap_frame,
 };
 
 /// Drain any queued jack events and publish a control notification for each

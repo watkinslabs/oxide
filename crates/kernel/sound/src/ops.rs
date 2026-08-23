@@ -228,6 +228,10 @@ pub struct PcmDeviceOps {
     pub cap_pointer: fn(crate::SoundOwnerKey, PcmDevice) -> Option<u64>,
     pub cap_hw_free: fn(crate::SoundOwnerKey, PcmDevice) -> bool,
     pub pcm_recv: fn(crate::SoundOwnerKey, PcmDevice, &mut [u8]) -> usize,
+    /// Return the physical page containing one byte offset of the DMA ring.
+    /// Status/control pages remain sound-core-owned; this callback is only
+    /// for the driver-owned data region.
+    pub pcm_mmap_frame: fn(crate::SoundOwnerKey, PcmDevice, bool, u64) -> Option<u64>,
 }
 
 #[derive(Copy, Clone)]
@@ -336,4 +340,14 @@ pub fn cap_hw_free_for(owner: crate::SoundOwnerKey, device: PcmDevice) -> bool {
 
 pub fn pcm_recv_for(owner: crate::SoundOwnerKey, device: PcmDevice, out: &mut [u8]) -> usize {
     device_ops(owner).map(|ops| (ops.pcm_recv)(owner, device, out)).unwrap_or_else(|| if device == 0 { pcm_recv(owner, out) } else { 0 })
+}
+
+/// # C: O(1)
+pub fn pcm_mmap_available(owner: crate::SoundOwnerKey, _device: PcmDevice) -> bool {
+    device_ops(owner).is_some()
+}
+
+/// # C: O(1)
+pub fn pcm_mmap_frame_for(owner: crate::SoundOwnerKey, device: PcmDevice, capture: bool, offset: u64) -> Option<u64> {
+    device_ops(owner).and_then(|ops| (ops.pcm_mmap_frame)(owner, device, capture, offset))
 }

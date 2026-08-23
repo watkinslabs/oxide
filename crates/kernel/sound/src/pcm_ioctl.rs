@@ -12,13 +12,15 @@ fn caps(owner: crate::SoundOwnerKey, device: crate::ops::PcmDevice) -> Option<(u
 
 fn refine(owner: crate::SoundOwnerKey, device: crate::ops::PcmDevice, b: &UserBuf, commit: bool) -> i64 {
     let Some((vf, vr, ch_min, ch_max)) = caps(owner, device) else { return err(Errno::Enodev); };
-    let r = match refine_params(b, vf, vr, ch_min, ch_max, &limits_for(owner, device), crate::ops::info_flags_for(owner, device)) { Ok(r) => r, Err(e) => return e };
+    let mmap = if crate::ops::pcm_mmap_available(owner, device) { PCM_INFO_MMAP | PCM_INFO_MMAP_VALID } else { 0 };
+    let r = match refine_params(b, vf, vr, ch_min, ch_max, &limits_for(owner, device), crate::ops::info_flags_for(owner, device) | mmap) { Ok(r) => r, Err(e) => return e };
     if commit {
         if !crate::ops::pcm_hw_params_for(owner, device, r.format, r.rate, r.channels as u8, r.period_bytes, r.buffer_bytes) {
             return err(Errno::Eio);
         }
         let mut guard = PCM.lock();
         let Some(p) = guard.iter_mut().find(|p| p.owner == owner && p.device == device) else { return err(Errno::Enodev); };
+        p.access = r.access;
         p.format = r.format;
         p.rate = r.rate;
         p.channels = r.channels;
@@ -30,6 +32,17 @@ fn refine(owner: crate::SoundOwnerKey, device: crate::ops::PcmDevice, b: &UserBu
         p.hw_ptr = 0;
     }
     0
+}
+
+/// Resolve one PCM mmap offset to the sound-core status/control page or the
+/// driver-owned DMA page. # C: O(1)
+pub(crate) fn mmap_frame(owner: crate::SoundOwnerKey, device: crate::ops::PcmDevice, offset: u64) -> Option<u64> {
+    let mut guard = PCM.lock();
+    let p = guard.iter_mut().find(|p| p.owner == owner && p.device == device)?;
+    if let Some(pa) = p.mmap.frame(offset) { return Some(pa); }
+    if p.state == STATE_OPEN || p.access != ACCESS_MMAP_INTERLEAVED { return None; }
+    drop(guard);
+    crate::ops::pcm_mmap_frame_for(owner, device, false, offset)
 }
 
 /// Handle one `SNDRV_PCM_IOCTL_*` on the playback substream.
@@ -83,6 +96,7 @@ pub fn write_bytes(owner: crate::SoundOwnerKey, device: crate::ops::PcmDevice, b
         let Some(p) = guard.iter_mut().find(|p| p.owner == owner && p.device == device) else { return n; };
         p.appl_ptr = p.appl_ptr.wrapping_add(frames) % BOUNDARY;
         p.hw_ptr = reported.map(|f| f % BOUNDARY).unwrap_or(p.appl_ptr);
+        crate::mmap::publish_status(&p.mmap, p.state, p.appl_ptr, p.hw_ptr, p.buffer_frames as u64);
     }
     n
 }
@@ -96,6 +110,7 @@ fn sync_hw_ptr(owner: crate::SoundOwnerKey, device: crate::ops::PcmDevice) {
     let mut guard = PCM.lock();
     let Some(p) = guard.iter_mut().find(|p| p.owner == owner && p.device == device) else { return; };
     p.hw_ptr = frames % BOUNDARY;
+    crate::mmap::publish_status(&p.mmap, p.state, p.appl_ptr, p.hw_ptr, p.buffer_frames as u64);
 }
 
 /// SNDRV_PCM_IOCTL_DELAY: frames queued ahead of the hardware.
@@ -231,6 +246,7 @@ fn pcm_status(owner: crate::SoundOwnerKey, device: crate::ops::PcmDevice, arg: u
     b.w64(ST_AVAIL, avail);
     b.w64(ST_AVAIL_MAX, avail);
     p.time.write_status(&b, p.state);
+    crate::mmap::publish_status(&p.mmap, p.state, p.appl_ptr, p.hw_ptr, avail);
     0
 }
 
@@ -241,12 +257,13 @@ fn sync_ptr(owner: crate::SoundOwnerKey, device: crate::ops::PcmDevice, arg: u64
     let mut guard = PCM.lock();
     let Some(p) = guard.iter_mut().find(|p| p.owner == owner && p.device == device) else { return err(Errno::Enodev); };
     if flags & SYNC_PTR_APPL == 0 {
-        p.appl_ptr = b.r64(SP_CONTROL_APPL_PTR);
+        p.appl_ptr = crate::mmap::control_appl(&p.mmap).unwrap_or_else(|| b.r64(SP_CONTROL_APPL_PTR));
     }
     b.w32(SP_STATUS_STATE, p.state);
     b.w64(SP_STATUS_HW_PTR, p.hw_ptr);
     b.w64(SP_CONTROL_APPL_PTR, p.appl_ptr);
     p.time.write_sync(&b, p.state);
+    crate::mmap::publish_status(&p.mmap, p.state, p.appl_ptr, p.hw_ptr, p.buffer_frames as u64);
     0
 }
 

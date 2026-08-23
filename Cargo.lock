@@ -2594,6 +2594,7 @@ dependencies = [
  "drv",
  "hal",
  "klog",
+ "pmm",
  "sched",
  "sync",
  "syscall",

@@ -144,6 +144,8 @@ pub const PCM_INFO_RESUME: u32 = 0x0004_0000;
 
 // SNDRV_PCM_ACCESS_*.
 pub const ACCESS_RW_INTERLEAVED: u32 = 3;
+pub const ACCESS_MMAP_NONINTERLEAVED: u32 = 1;
+pub const ACCESS_MMAP_INTERLEAVED: u32 = 2;
 
 // SNDRV_PCM_FORMAT_* (ALSA enum) — the ones our device supports.
 pub const FMT_S8: u32 = 0;
@@ -239,6 +241,14 @@ pub const PI_SUBNAME: usize = 160; // [32]
 pub const PI_SUBDEVICES_COUNT: usize = 200;
 pub const PI_SUBDEVICES_AVAIL: usize = 204;
 pub const PCM_INFO_SIZE: usize = 288;
+
+// PCM mmap file offsets. The status/control records occupy one page each;
+// data starts at offset zero and is the configured DMA buffer.
+pub const PCM_MMAP_OFFSET_DATA: u64 = 0x0000_0000;
+pub const PCM_MMAP_OFFSET_STATUS_OLD: u64 = 0x8000_0000;
+pub const PCM_MMAP_OFFSET_CONTROL_OLD: u64 = 0x8100_0000;
+pub const PCM_MMAP_OFFSET_STATUS: u64 = 0x8200_0000;
+pub const PCM_MMAP_OFFSET_CONTROL: u64 = 0x8300_0000;
 
 // snd_ctl_card_info offsets.
 pub const CI_CARD: usize = 0;

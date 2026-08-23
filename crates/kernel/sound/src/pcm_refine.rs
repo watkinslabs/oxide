@@ -39,6 +39,7 @@ pub(crate) struct Resolved {
     pub rate: u32,
     pub channels: u32,
     pub frame_bytes: u32,
+    pub access: u32,
     pub period_frames: u32,
     pub buffer_frames: u32,
     pub period_bytes: u32,
@@ -56,8 +57,12 @@ pub(crate) struct Limits {
 /// # C: O(1)
 pub(crate) fn refine_params(b: &UserBuf, formats: u64, rates: u64, ch_min: u8, ch_max: u8,
                             limits: &Limits, info_flags: u32) -> Result<Resolved, i64> {
-    if !mask_test(b, P_ACCESS, ACCESS_RW_INTERLEAVED) { return Err(err(Errno::Einval)); }
-    mask_set_single(b, P_ACCESS, ACCESS_RW_INTERLEAVED);
+    let access = if mask_test(b, P_ACCESS, ACCESS_MMAP_INTERLEAVED) {
+        ACCESS_MMAP_INTERLEAVED
+    } else if mask_test(b, P_ACCESS, ACCESS_RW_INTERLEAVED) {
+        ACCESS_RW_INTERLEAVED
+    } else { return Err(err(Errno::Einval)); };
+    mask_set_single(b, P_ACCESS, access);
 
     let Some(fmt) = FMT_PREF.iter().copied()
         .find(|&f| format::mask_has(formats, f) && mask_test(b, P_FORMAT, f)) else {
@@ -119,6 +124,7 @@ pub(crate) fn refine_params(b: &UserBuf, formats: u64, rates: u64, ch_min: u8, c
 
     Ok(Resolved {
         format: fmt, rate, channels, frame_bytes,
+        access,
         period_frames, buffer_frames, period_bytes, buffer_bytes,
     })
 }
@@ -132,5 +138,37 @@ pub(crate) fn limits_for(owner: crate::SoundOwnerKey, device: crate::ops::PcmDev
             max_period_bytes: hal::PAGE_SIZE_BYTES as u32,
             max_buffer_bytes: hal::PAGE_SIZE_BYTES as u32 * DEF_PERIODS,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mask(b: &UserBuf, param: usize, value: u32) {
+        b.w32(HWP_MASKS + param * HWP_MASK_STRIDE + (value as usize / 32) * 4, 1 << (value % 32));
+    }
+
+    fn interval(b: &UserBuf, param: usize, value: u32) {
+        let off = HWP_INTERVALS + (param - P_SAMPLE_BITS) * HWP_INTERVAL_STRIDE;
+        b.w32(off, value); b.w32(off + 4, value); b.w32(off + 8, 0);
+    }
+
+    #[test]
+    fn mmap_interleaved_access_is_preserved_and_advertised() {
+        let mut raw = [0u8; HW_PARAMS_SIZE];
+        let b = UserBuf::new(raw.as_mut_ptr() as u64, raw.len()).unwrap();
+        mask(&b, P_ACCESS, ACCESS_MMAP_INTERLEAVED);
+        mask(&b, P_FORMAT, FMT_S16_LE);
+        mask(&b, P_SUBFORMAT, 0);
+        interval(&b, P_CHANNELS, 2);
+        interval(&b, P_RATE, 44_100);
+        interval(&b, P_PERIOD_BYTES, 2048);
+        interval(&b, P_PERIODS, 2);
+        let r = refine_params(&b, 1 << FMT_S16_LE, 1 << 6, 1, 2,
+                              &Limits { max_period_bytes: 4096, max_buffer_bytes: 16384 },
+                              PCM_INFO_MMAP | PCM_INFO_MMAP_VALID).unwrap();
+        assert_eq!(r.access, ACCESS_MMAP_INTERLEAVED);
+        assert_eq!(b.r32(HWP_INFO) & (PCM_INFO_MMAP | PCM_INFO_MMAP_VALID), PCM_INFO_MMAP | PCM_INFO_MMAP_VALID);
     }
 }
