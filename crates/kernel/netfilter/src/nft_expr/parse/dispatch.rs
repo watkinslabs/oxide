@@ -13,6 +13,7 @@ pub fn parse_one_expr(body: &[u8], family: u8, alloc: &mut StateAlloc)
     -> Result<Expr, ParseError>
 {
     let name = find_str(body, NFTA_EXPR_NAME).ok_or(ParseError::Malformed)?;
+    if name == "notrack" { return Ok(Expr::Notrack); }
     let d = find_bytes(body, NFTA_EXPR_DATA).ok_or(ParseError::Malformed)?;
     match name {
         "payload"      => basic::payload(d),

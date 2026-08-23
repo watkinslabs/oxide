@@ -18,6 +18,8 @@ pub(crate) struct Input<'a> {
     pub ctinfo: u8,
     pub ct_dir: u8,
     pub live: bool,
+    pub chain_min_priority: Option<i32>,
+    pub chain_max_priority: Option<i32>,
 }
 
 impl<'a> Input<'a> {
@@ -26,7 +28,7 @@ impl<'a> Input<'a> {
         Self { namespace, hook_id, pkt, ll: &[], family, mark, priority: 0,
             ingress: None, egress: None, timestamp_ns: 0,
             ct: None, ct_available: false, ctinfo: conntrack::uapi::IP_CT_UNTRACKED, ct_dir: 0,
-            live: false }
+            live: false, chain_min_priority: None, chain_max_priority: None }
     }
 
     pub(crate) fn from_hook(hook: &'a net::stack::NfHookCtx<'a>) -> Self {
@@ -34,7 +36,8 @@ impl<'a> Input<'a> {
             family: hook.family, mark: hook.mark, priority: hook.priority,
             ingress: hook.ingress, egress: hook.egress, timestamp_ns: hook.timestamp_ns,
             ct: hook.ct, ct_available: hook.ct_available,
-            ctinfo: hook.ctinfo, ct_dir: hook.ct_dir, live: true }
+            ctinfo: hook.ctinfo, ct_dir: hook.ct_dir, live: true,
+            chain_min_priority: hook.chain_min_priority, chain_max_priority: hook.chain_max_priority }
     }
 
     pub(crate) fn populate(&self, ctx: &mut EvalCtx<'a>, mark: u32) {

@@ -25,6 +25,7 @@ pub struct NfHookResult {
     pub verdict: u32,
     pub mark: u32,
     pub actions: Vec<crate::netfilter_action::Action>,
+    pub notrack: bool,
 }
 
 /// Live packet and hook ownership presented to one netfilter walk. The shape
@@ -45,6 +46,8 @@ pub struct NfHookCtx<'a> {
     pub ct_available: bool,
     pub ctinfo: u8,
     pub ct_dir: u8,
+    pub chain_min_priority: Option<i32>,
+    pub chain_max_priority: Option<i32>,
 }
 
 impl<'a> NfHookCtx<'a> {
@@ -53,7 +56,8 @@ impl<'a> NfHookCtx<'a> {
                          ingress: NetIfaceId, mark: u32) -> Self {
         Self { namespace, hook_id, pkt, ll: &[], family, mark, priority: 0,
             ingress: Some(ingress), egress: None, timestamp_ns: 0,
-            ct: None, ct_available: false, ctinfo: conntrack::uapi::IP_CT_UNTRACKED, ct_dir: 0 }
+            ct: None, ct_available: false, ctinfo: conntrack::uapi::IP_CT_UNTRACKED, ct_dir: 0,
+            chain_min_priority: None, chain_max_priority: None }
     }
 
     /// Context retaining one canonical packet buffer's metadata. # C: O(1)
@@ -64,18 +68,21 @@ impl<'a> NfHookCtx<'a> {
             .unwrap_or((None, false, conntrack::uapi::IP_CT_UNTRACKED, 0));
         Self { namespace, hook_id, pkt: p.data(), ll: p.mac_frame().unwrap_or(&[]), family,
             mark: p.tx.mark, priority: p.tx.priority, ingress, egress: p.iface,
-            timestamp_ns: p.timestamp_ns, ct, ct_available, ctinfo, ct_dir }
+            timestamp_ns: p.timestamp_ns, ct, ct_available, ctinfo, ct_dir,
+            chain_min_priority: None, chain_max_priority: None }
     }
 }
 
 impl NfHookResult {
-    pub const ACCEPT: Self = Self { verdict: 1, mark: 0, actions: Vec::new() };
+    pub const ACCEPT: Self = Self { verdict: 1, mark: 0, actions: Vec::new(), notrack: false };
 }
 
 /// Netfilter callback. Verdict u32: NF_DROP=0, NF_ACCEPT=1.
 pub type NfHookFn = fn(ctx: &NfHookCtx<'_>) -> NfHookResult;
+pub type NfHookStageFn = fn(u64, u32, u8, Option<i32>, Option<i32>) -> bool;
 
 static NF_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+static NF_STAGE: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 #[cfg(any(test, feature = "hosted"))]
 static NF_REPLACING: AtomicBool = AtomicBool::new(false);
 #[cfg(any(test, feature = "hosted"))]
@@ -103,6 +110,12 @@ pub fn install_nf_hook(f: NfHookFn) {
     NF_HOOK.store(f as *mut (), Ordering::Release);
     #[cfg(any(test, feature = "hosted"))]
     let _ = swap_nf_hook(Some(f));
+}
+
+/// Install the netfilter bridge and its compiled-chain stage predicate.
+pub fn install_nf_hook_with_stages(f: NfHookFn, stage: NfHookStageFn) {
+    install_nf_hook(f);
+    NF_STAGE.store(stage as *mut (), Ordering::Release);
 }
 
 #[cfg(any(test, feature = "hosted"))]
@@ -135,7 +148,8 @@ pub(crate) fn nf_hook_eval(hook_id: u32, pkt: &[u8], family: u8) -> u32 {
 pub(crate) fn nf_hook_eval_in(namespace: u64, hook_id: u32, pkt: &[u8], family: u8) -> NfHookResult {
     let ctx = NfHookCtx { namespace, hook_id, pkt, ll: &[], family, mark: 0, priority: 0,
         ingress: None, egress: None, timestamp_ns: 0,
-        ct: None, ct_available: false, ctinfo: conntrack::uapi::IP_CT_UNTRACKED, ct_dir: 0 };
+        ct: None, ct_available: false, ctinfo: conntrack::uapi::IP_CT_UNTRACKED, ct_dir: 0,
+        chain_min_priority: None, chain_max_priority: None };
     nf_hook_eval_ctx(&ctx)
 }
 
@@ -144,7 +158,7 @@ pub(crate) fn nf_hook_eval_ctx(ctx: &NfHookCtx<'_>) -> NfHookResult {
     let context = security::network::Context::op(ctx.namespace, ctx.family as u16, 0, 0,
         security::network::Operation::Packet);
     if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
-        return NfHookResult { verdict: 0, mark: 0, actions: Vec::new() };
+        return NfHookResult { verdict: 0, mark: 0, actions: Vec::new(), notrack: false };
     }
     #[cfg(any(test, feature = "hosted"))]
     let _lease = loop {
@@ -166,19 +180,59 @@ pub(crate) fn nf_hook_eval_ctx(ctx: &NfHookCtx<'_>) -> NfHookResult {
 pub(crate) fn nf_hook_packet_in(namespace: u64, hook_id: u32, p: &mut Pkt,
                                  family: u8, iface: Option<NetIfaceId>, mark: u32)
                                  -> NfHookResult {
-    if (hook_id == NF_INET_PRE_ROUTING || hook_id == NF_INET_LOCAL_OUT)
-        && !crate::global_stack().track_conntrack(namespace, p, family) {
-        return NfHookResult { verdict: 0, mark, actions: Vec::new() };
+    let tracking_hook = hook_id == NF_INET_PRE_ROUTING || hook_id == NF_INET_LOCAL_OUT;
+    let mut mark = mark;
+    let mut notrack = false;
+    if tracking_hook {
+        let raw = nf_hook_packet_stage(namespace, hook_id, p, family, iface, mark,
+                                       None, Some(-200));
+        if raw.verdict == 0 || apply_actions(p, family, &raw.actions).is_err() {
+            return NfHookResult { verdict: 0, mark: raw.mark, actions: Vec::new(), notrack: raw.notrack };
+        }
+        mark = raw.mark;
+        notrack = raw.notrack;
+        p.tx.mark = mark;
+        if notrack {
+            let table = crate::global_stack().conntrack_in(namespace);
+            p.set_conntrack_state(table, None, conntrack::uapi::IP_CT_UNTRACKED, 0);
+        } else if !crate::global_stack().track_conntrack(namespace, p, family) {
+            return NfHookResult { verdict: 0, mark, actions: Vec::new(), notrack };
+        }
     }
     p.tx.mark = mark;
-    let result = nf_hook_eval_ctx(&NfHookCtx::packet(namespace, hook_id, p, family, iface));
+    let result = nf_hook_packet_stage(namespace, hook_id, p, family, iface, mark,
+                                      tracking_hook.then_some(-200), None);
     if result.verdict == 0 || apply_actions(p, family, &result.actions).is_err() {
-        return NfHookResult { verdict: 0, mark: result.mark, actions: Vec::new() };
+        return NfHookResult { verdict: 0, mark: result.mark, actions: Vec::new(), notrack: notrack || result.notrack };
     }
     p.tx.mark = result.mark;
     if (hook_id == NF_INET_LOCAL_IN || hook_id == NF_INET_POST_ROUTING)
-        && !p.confirm_conntrack() { return NfHookResult { verdict: 0, mark: result.mark, actions: Vec::new() }; }
-    result
+        && !p.confirm_conntrack() { return NfHookResult { verdict: 0, mark: result.mark, actions: Vec::new(), notrack: notrack || result.notrack }; }
+    NfHookResult { notrack: notrack || result.notrack, ..result }
+}
+
+fn nf_hook_packet_stage(namespace: u64, hook_id: u32, p: &Pkt, family: u8,
+                        iface: Option<NetIfaceId>, mark: u32,
+                        min_priority: Option<i32>, max_priority: Option<i32>) -> NfHookResult {
+    let stage = NF_STAGE.load(Ordering::Acquire);
+    if stage.is_null() {
+        // The legacy bridge has no way to advertise compiled chain ranges;
+        // retain its single callback observation and reserve raw splitting
+        // for install_nf_hook_with_stages.
+        if max_priority.is_some() { return NfHookResult::ACCEPT; }
+    } else {
+        // SAFETY: NF_STAGE is written only by install_nf_hook_with_stages with
+        // the documented stage predicate signature.
+        let has_stage: NfHookStageFn = unsafe { core::mem::transmute(stage) };
+        if !has_stage(namespace, hook_id, family, min_priority, max_priority) {
+            return NfHookResult::ACCEPT;
+        }
+    }
+    let mut ctx = NfHookCtx::packet(namespace, hook_id, p, family, iface);
+    ctx.mark = mark;
+    ctx.chain_min_priority = min_priority;
+    ctx.chain_max_priority = max_priority;
+    nf_hook_eval_ctx(&ctx)
 }
 
 // Netfilter hook ids (Linux `NF_INET_*`, uapi netfilter.h). Mirror

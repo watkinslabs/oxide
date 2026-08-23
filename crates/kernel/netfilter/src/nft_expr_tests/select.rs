@@ -59,6 +59,15 @@ fn port_range(op: u32, from: u16, to: u16, port: u16) -> i32 {
 }
 
 #[test]
+fn notrack_marks_the_raw_stage_without_changing_the_verdict() {
+    let exprs = vec![Expr::Notrack];
+    let states = ExprStates::empty();
+    let mut ctx = EvalCtx::ipv4(&[], &states);
+    assert_eq!(run_rule_ctx(&exprs, &mut ctx).code, NFT_CONTINUE);
+    assert!(ctx.notrack);
+}
+
+#[test]
 fn a_range_is_inclusive_at_both_ends() {
     // Ports 1000 to 2000. The bounds themselves are inside the range; a
     // strict comparison at either end silently exempts a port the rule names.

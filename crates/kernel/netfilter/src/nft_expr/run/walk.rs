@@ -36,6 +36,7 @@ fn step(expr: &Expr, ctx: &mut EvalCtx, regs: &mut Regs) -> Option<i32> {
             ctx.bytes = ctx.bytes.wrapping_add(ctx.pkt.len() as u64);
             None
         }
+        Expr::Notrack => { ctx.notrack = true; None }
 
         Expr::Meta { dreg, sreg, key } => match (dreg, sreg) {
             (Some(dreg), _) => meta::get(ctx, regs, *dreg, *key),

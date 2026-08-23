@@ -97,6 +97,8 @@ pub struct EvalCtx<'a> {
     /// Per-rule state for the expressions that count between packets.
     pub states: &'a ExprStates,
     pub actions: Vec<Action>,
+    /// Raw-priority `notrack` state, consumed before the conntrack hook.
+    pub notrack: bool,
     pub packets: u64,
     pub bytes: u64,
 }
@@ -111,6 +113,7 @@ impl<'a> EvalCtx<'a> {
             synproxy: None, objects: None,
             set_lookup: None, now_ns: 0, random: 0, cpu: 0, states,
             actions: Vec::new(), packets: 0, bytes: 0,
+            notrack: false,
         }
     }
 

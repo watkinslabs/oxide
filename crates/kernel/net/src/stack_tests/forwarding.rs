@@ -65,7 +65,7 @@ fn mark_transparent_packet(_ctx: &crate::netfilter_hook::NfHookCtx<'_>)
     -> crate::netfilter_hook::NfHookResult
 {
     crate::netfilter_hook::NfHookResult { verdict: 1, mark: 0x20,
-        actions: alloc::vec::Vec::new() }
+        actions: alloc::vec::Vec::new(), notrack: false }
 }
 
 #[test]

@@ -24,6 +24,7 @@ pub struct EvalResult {
     /// Effects in rule-evaluation order. The packet owner applies these after
     /// the walk; the interpreter does not own packet, route, or device state.
     pub actions: Vec<Action>,
+    pub notrack: bool,
 }
 
 impl Verdict {
@@ -76,6 +77,20 @@ pub fn eval_in_with_mark(namespace: u64, hook_id: u32, pkt: &[u8], family: u8,
 pub fn eval_hook(input: &net::stack::NfHookCtx<'_>) -> EvalResult {
     let input = crate::eval_context::Input::from_hook(input);
     eval_context(&input)
+}
+
+/// Whether a live hook has any chains in the requested Linux priority range.
+/// The packet path uses this to avoid invoking the hook callback once for an
+/// empty stage while still preserving the conntrack boundary between stages.
+#[allow(dead_code)]
+pub fn has_chain_in_priority_range(namespace: u64, hook_id: u32, family: u8,
+                                   min_priority: Option<i32>, max_priority: Option<i32>) -> bool {
+    let Some(generation) = active_generation(hook_id) else { return false; };
+    let Some(state) = generation.namespace(namespace) else { return false; };
+    let Some(hook) = state.hooks.iter().find(|hook| hook.id == hook_id) else { return false; };
+    hook.chains.iter().any(|chain| chain.table_family == family
+        && min_priority.is_none_or(|min| chain.priority >= min)
+        && max_priority.is_none_or(|max| chain.priority < max))
 }
 
 struct LiveCt<'a> {
@@ -212,17 +227,20 @@ fn eval_context(input: &crate::eval_context::Input<'_>) -> EvalResult {
                            now: input.timestamp_ns / 1_000_000_000 };
     let live_route = LiveRoute { input };
     let Some(generation) = active_generation(hook_id) else {
-        return EvalResult { verdict: Verdict::Accept, mark, actions: Vec::new() };
+        return EvalResult { verdict: Verdict::Accept, mark, actions: Vec::new(), notrack: false };
     };
     let Some(state) = generation.namespace(namespace) else {
-        return EvalResult { verdict: Verdict::Accept, mark, actions: Vec::new() };
+        return EvalResult { verdict: Verdict::Accept, mark, actions: Vec::new(), notrack: false };
     };
     let Some(hook) = state.hooks.iter().find(|hook| hook.id == hook_id) else {
-        return EvalResult { verdict: Verdict::Accept, mark, actions: Vec::new() };
+        return EvalResult { verdict: Verdict::Accept, mark, actions: Vec::new(), notrack: false };
     };
     let mut actions = Vec::new();
+    let mut notrack = false;
     debug_assert!(hook.chains.windows(2).all(|chains| chains[0].priority <= chains[1].priority));
-    for chain in hook.chains.iter().filter(|chain| chain.table_family == family) {
+    for chain in hook.chains.iter().filter(|chain| chain.table_family == family
+        && input.chain_min_priority.is_none_or(|min| chain.priority >= min)
+        && input.chain_max_priority.is_none_or(|max| chain.priority < max)) {
         let mut chain_verdict = None;
         for rule in &chain.rules {
             let lookup = |set_id: Option<usize>, _set_name: &str, register: &[u8]| {
@@ -235,6 +253,7 @@ fn eval_context(input: &crate::eval_context::Input<'_>) -> EvalResult {
             ctx.set_lookup = Some(&lookup);
             let verdict = nft_expr::run_rule_ctx(&rule.exprs, &mut ctx);
             mark = ctx.mark;
+            notrack |= ctx.notrack;
             actions.extend(ctx.actions);
             if ctx.packets != 0 { rule.counter.bump(ctx.packets, ctx.bytes); }
             if let Some(decided) = Verdict::from_code(verdict.code) {
@@ -246,7 +265,7 @@ fn eval_context(input: &crate::eval_context::Input<'_>) -> EvalResult {
             NFT_CHAIN_POLICY_DROP => Verdict::Drop,
             _ => Verdict::Accept,
         });
-        if verdict != Verdict::Accept { return EvalResult { verdict, mark, actions }; }
+        if verdict != Verdict::Accept { return EvalResult { verdict, mark, actions, notrack }; }
     }
-    EvalResult { verdict: Verdict::Accept, mark, actions }
+    EvalResult { verdict: Verdict::Accept, mark, actions, notrack }
 }
