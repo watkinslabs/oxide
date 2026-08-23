@@ -4,6 +4,7 @@
 // takes, which receive bit gates it, and in what order.
 
 use super::*;
+use crate::sock_opts::sol_ipv6::{flag, set};
 use crate::cmsg::{IPV6_2292HOPLIMIT, IPV6_2292PKTINFO, IPV6_FLOWINFO, IPV6_HOPLIMIT,
     IPV6_PKTINFO, IPV6_TCLASS};
 
@@ -271,4 +272,27 @@ fn the_hop_limit_and_traffic_class_come_from_the_sockets_own_state() {
 fn the_flow_label_is_published_in_network_order() {
     let s = Published { rxflow: true, ..state() };
     assert_eq!(published(&s)[0].bytes, Vec::from(0x0a1_2345u32.to_be_bytes()));
+}
+
+#[test]
+fn an_in_order_snapshot_replays_received_headers_and_scalars() {
+    let ext = alloc::vec![(crate::ipv6_ext::NH_HOP_BY_HOP, opts(0))];
+    let meta = received(set::RECVPKTINFO | set::RECVHOPLIMIT | set::RECVTCLASS
+        | flag::RXFLOW | flag::RXHOPOPTS, PEER, 9, 42, 0x28, 0x12345, ext).unwrap();
+    let want = super::want(set::RECVPKTINFO | set::RECVHOPLIMIT | set::RECVTCLASS
+        | flag::RXFLOW | flag::RXHOPOPTS);
+    let msgs = crate::cmsg::plan(&want, &meta);
+    assert_eq!(kinds(&msgs), alloc::vec![IPV6_PKTINFO, IPV6_HOPLIMIT, IPV6_TCLASS,
+        IPV6_FLOWINFO, crate::cmsg::IPV6_HOPOPTS]);
+    assert_eq!(&msgs[0].bytes[..16], &PEER);
+    assert_eq!(&msgs[0].bytes[16..20], &9i32.to_ne_bytes());
+    assert_eq!(msgs[1].bytes, Vec::from(42i32.to_ne_bytes()));
+    assert_eq!(msgs[2].bytes, Vec::from(0x28i32.to_ne_bytes()));
+    assert_eq!(msgs[3].bytes, Vec::from(0x281_2345u32.to_be_bytes()));
+    assert_eq!(msgs[4].bytes, opts(0));
+}
+
+#[test]
+fn a_snapshot_without_receive_bits_is_not_retained() {
+    assert!(received(0, PEER, 9, 42, 0, 0, alloc::vec![]).is_none());
 }

@@ -302,6 +302,25 @@ impl NetStack {
                 }
                 let input = c.input_prevalidated_with_options(src_ip, dst_ip, seg,
                     crate::sysctl::tcp_option_permissions_in(net_ns));
+                let payload_len = seg.len().saturating_sub(hdr.payload_offset()) as u32;
+                let mut end_seq = hdr.seq.wrapping_add(payload_len);
+                if hdr.flags & crate::tcp_hdr::flags::SYN != 0 { end_seq = end_seq.wrapping_add(1); }
+                if hdr.flags & crate::tcp_hdr::flags::FIN != 0 { end_seq = end_seq.wrapping_add(1); }
+                if ipv6 && c.rcv_nxt == end_seq
+                    && !matches!(c.state, crate::tcp_state::TcpState::Listen
+                        | crate::tcp_state::TcpState::Closed)
+                {
+                    if let Ok(ip) = crate::ipv6::Ipv6Hdr::parse(packet) {
+                        if let Some(ext) = packet.get(crate::ipv6::IPV6_HDR_LEN..)
+                            .map(|bytes| crate::ipv6_ext::collect(ip.next_header, bytes))
+                        {
+                            if let Some(snapshot) = crate::sock_opts::sol_ipv6::pktoptions::received(
+                                entry.ipv6_opts.flags(), ip.dst.0, iface.raw(), ip.hop_limit,
+                                ip.traffic_class, ip.flow_label, ext)
+                            { c.telemetry.ipv6_pktoptions = Some(alloc::boxed::Box::new(snapshot)); }
+                        }
+                    }
+                }
                 let urgent = crate::sock::oob_notify::urgent_arrived(pre_urg, c.peek_urgent());
                 let acked = c.snd_una != pre_una;
                 (pre_len, pre_state, input, c.recv_buf.len, c.state, fastopen_child, urgent, acked)
