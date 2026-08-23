@@ -53,6 +53,17 @@ fn with_compressed() -> (Volume<MemImage>, u32) {
 /// Bytes that compress into a single block. # C: O(n)
 fn patterned(n: usize) -> Vec<u8> { (0..n).map(|i| ((i / 64) % 11) as u8).collect() }
 
+/// Bytes with no useful repeated structure. # C: O(n)
+fn noisy(n: usize, seed: u32) -> Vec<u8> {
+    let mut x = seed | 1;
+    (0..n).map(|_| {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        (x >> 11) as u8
+    }).collect()
+}
+
 /// One cluster's stored addresses. # C: O(cluster blocks)
 fn addrs(v: &Volume<MemImage>, ino: u32, first: u64) -> Vec<u32> {
     let inode = v.read_inode(ino).unwrap();
@@ -200,6 +211,45 @@ fn a_cluster_is_placed_once_however_many_of_its_pages_ask() {
     // The file's own blocks, the inode's block, and nothing else: a cluster
     // placed more than once leaves the extra runs live in the segment table.
     assert!(live <= image as u64 + 2, "the segment table holds {live} blocks for {a:?}");
+}
+
+#[test]
+fn a_raw_cluster_uses_the_ordinary_in_place_policy() {
+    // An incompressible cluster remains ordinary data even though its inode
+    // is compressed. A rewrite must therefore use the existing page IPU
+    // owner, keep the address, and consume no new block.
+    let (mut v, ino) = with_compressed();
+    v.set_ipu_policy(crate::place::bits::bit(crate::place::bits::FORCE)).unwrap();
+    v.write_file(ino, 0, &noisy(CS * BLKSIZE, 31)).unwrap();
+    v.sync_data().unwrap();
+    let before = addrs(&v, ino, 0);
+    assert_eq!(plan::compressed_extent(&before), None, "the fixture made an image");
+    let inode = v.read_inode(ino).unwrap();
+    assert!(v.writes_in_place_kind(ino, &inode, before[0], true, false).unwrap(),
+            "the raw page did not reach the IPU decision: {:?}", v.ipu_policy());
+    let valid = v.valid_block_count;
+    let inplace = v.counters().inplace_count;
+    v.write_file(ino, 0, &noisy(BLKSIZE, 47)).unwrap();
+    v.sync_data().unwrap();
+    assert_eq!(addrs(&v, ino, 0), before, "the raw cluster moved out of place");
+    assert_eq!(v.valid_block_count, valid, "the rewrite allocated a block");
+    assert_eq!(v.counters().inplace_count, inplace + 1, "the IPU owner was bypassed");
+}
+
+#[test]
+fn a_full_raw_cluster_falls_back_to_page_ipu_when_codec_refuses_it() {
+    let (mut v, ino) = with_compressed();
+    v.set_ipu_policy(crate::place::bits::bit(crate::place::bits::FORCE)).unwrap();
+    v.write_file(ino, 0, &noisy(CS * BLKSIZE, 61)).unwrap();
+    v.sync_data().unwrap();
+    let before = addrs(&v, ino, 0);
+    assert_eq!(plan::compressed_extent(&before), None);
+    let inplace = v.counters().inplace_count;
+    v.write_file(ino, 0, &noisy(CS * BLKSIZE, 73)).unwrap();
+    v.sync_data().unwrap();
+    assert_eq!(addrs(&v, ino, 0), before, "raw fallback moved its blocks");
+    assert_eq!(v.counters().inplace_count, inplace + CS as u32,
+               "raw fallback did not use the page IPU owner");
 }
 
 // -------------------------------------------------------- room and the owner

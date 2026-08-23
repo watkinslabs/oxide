@@ -46,9 +46,9 @@ impl<S: SectorSource> Volume<S> {
     /// # Ctx: process # Sleeps: y # C: O(pages) blocks
     pub(crate) fn writeback_data_pages(&mut self, ino: u32, pages: &[PageOut<'_>],
                                        results: &mut [KResult<()>], first: &mut Option<Errno>) {
-        // A compressed file's pages are not placed one at a time and cannot be:
-        // the cluster they belong to is one image, so its bytes, its shape and
-        // its addresses are all decided together, once, for the whole cluster.
+        // Compressed-image clusters are placed as one object. A raw cluster is
+        // ordinary data, so the compressed owner may hand its pages to the
+        // normal writer after it has established that shape.
         if self.read_inode(ino).map(|i| i.compressed()).unwrap_or(false) {
             return self.writeback_compressed_pages(ino, pages, results, first);
         }
@@ -64,6 +64,13 @@ impl<S: SectorSource> Volume<S> {
     /// One page: where it goes, the bytes that land, and the slot that names
     /// it afterwards. # C: O(indirection depth) blocks
     fn writeback_one(&mut self, ino: u32, index: u64, data: &[u8]) -> Result<(), Errno> {
+        self.writeback_one_kind(ino, index, data, false)
+    }
+
+    /// Write one page with its stored cluster shape. Raw clusters of
+    /// compressed files use this ordinary data path. # C: O(indirection depth) blocks
+    pub(crate) fn writeback_one_kind(&mut self, ino: u32, index: u64, data: &[u8],
+                                     compressed: bool) -> Result<(), Errno> {
         self.writable_or_err()?;
         if data.len() != BLKSIZE { return Err(Errno::Einval); }
         let inode = self.read_inode(ino)?;
@@ -98,7 +105,7 @@ impl<S: SectorSource> Volume<S> {
         // slot already holds this address — so the node above the page is not
         // rewritten, which is the whole saving. Before the allocation, because
         // an allocation is the thing being avoided.
-        if self.writes_in_place(ino, &inode, old, self.sync_writeback)? {
+        if self.writes_in_place_kind(ino, &inode, old, self.sync_writeback, compressed)? {
             self.write_data_in_place(old, &page, flags, ctx.as_ref())?;
             // The rewrite landed on the member `old` lies on, and it is this
             // file's `fsync` that will have to fence it.

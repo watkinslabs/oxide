@@ -2,9 +2,9 @@
 //!
 //! Everything a compressed file defers happens here — the codec, the choice
 //! between an image and plain blocks, and the addresses. A batch of pages is
-//! grouped by the cluster each belongs to and each cluster is placed once,
-//! whichever of its pages brought it here, because a cluster is one object and
-//! placing it twice would write the same image to two different runs of blocks.
+//! grouped by the cluster each belongs to. An image candidate is placed once,
+//! because a cluster is one object; a stored raw cluster uses the ordinary
+//! page writer when the cluster cannot enter the image path.
 //!
 //! Three conditions decide whether the cluster comes out as an image, and all
 //! three are checked against state that already exists rather than against
@@ -41,10 +41,9 @@ use super::plan;
 impl<S: SectorSource> Volume<S> {
     /// Put a batch of one compressed file's pages on the medium.
     ///
-    /// One slot of `results` per page, arriving prefilled with a failure, and
-    /// every page of a cluster gets that cluster's own answer: a page whose
-    /// cluster could not be placed is re-dirtied with the rest of it, because
-    /// the image they share is all-or-nothing.
+    /// One slot of `results` per page, arriving prefilled with a failure. Image
+    /// candidates get one cluster answer; raw clusters use one ordinary page
+    /// answer per page because their stored blocks have no shared image.
     /// # Ctx: process # Sleeps: y # C: O(pages + clusters * cluster bytes)
     pub(crate) fn writeback_compressed_pages(&mut self, ino: u32, pages: &[PageOut<'_>],
                                              results: &mut [KResult<()>],
@@ -57,7 +56,33 @@ impl<S: SectorSource> Volume<S> {
         for (i, &head) in heads.iter().enumerate() {
             if placed.contains(&head) { continue; }
             placed.push(head);
-            let outcome = self.place_cluster(ino, &g, head);
+            let dirty = heads.iter().skip(i).filter(|&&other| other == head).count();
+            let raw = self.cluster_addrs(&inode, ino, &g, head).map(|addrs| {
+                let stored = addrs.iter().filter(|&&addr| super::cluster::is_data_addr(addr)).count();
+                let fills_missing = stored < g.blocks() && stored + dirty >= g.blocks();
+                let full_raw = stored == g.blocks() && dirty == g.blocks()
+                    && self.opts.compress.mode == crate::opts::CompressMode::Fs
+                    && plan::may_compress(head, g.blocks(), inode.size, BLKSIZE)
+                    && self.cluster_now(ino, &g, head).ok()
+                        .and_then(|plain| super::compress_cluster(&g, &plain).ok())
+                        .is_some_and(|stored| matches!(stored, super::Stored::Compressed(_)));
+                plan::compressed_extent(&addrs).is_none() && stored > 0
+                    && !fills_missing && !full_raw
+            });
+            if raw == Ok(true) {
+                for (j, &other) in heads.iter().enumerate().skip(i) {
+                    if other != head { continue; }
+                    let outcome = self.writeback_one_kind(ino, Cache::index_of(&pages[j]),
+                                                          pages[j].data, false);
+                    results[j] = match outcome {
+                        Ok(()) => Ok(()),
+                        Err(e) => { if first_err.is_none() { *first_err = Some(e); }
+                                    Err(BlockError::Eio) }
+                    };
+                }
+                continue;
+            }
+            let outcome = raw.and_then(|_| self.place_cluster(ino, &g, head));
             if let Err(e) = outcome {
                 if first_err.is_none() { *first_err = Some(e); }
             }

@@ -174,9 +174,19 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(1), plus O(main segments) when a pressure arm is armed
     pub(crate) fn writes_in_place(&self, ino: u32, inode: &Inode, old: u32, sync: bool)
         -> Result<bool, Errno> {
+        self.writes_in_place_kind(ino, inode, old, sync, inode.compressed())
+    }
+
+    /// Whether a page's stored cluster shape permits the ordinary in-place
+    /// policy. A compressed inode may carry raw clusters; those pages are
+    /// ordinary data and must not inherit the inode-wide image refusal.
+    /// # C: O(1), plus O(main segments) when a pressure arm is armed
+    pub(crate) fn writes_in_place_kind(&self, ino: u32, inode: &Inode, old: u32, sync: bool,
+                                       compressed: bool) -> Result<bool, Errno> {
         if crate::node::is_hole(old) || crate::node::is_compressed(old) { return Ok(false); }
         if !self.sb_main_contains(old) { return Ok(false); }
-        let f = self.ipu_facts(ino, inode, old, sync)?;
+        let mut f = self.ipu_facts(ino, inode, old, sync)?;
+        f.compressed = compressed;
         Ok(ipu::need_inplace_update(&f, || self.need_ssr()))
     }
 
