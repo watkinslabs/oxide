@@ -345,6 +345,11 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
     // `perf_event_mmap(vma)` runs on the vma the reference has just installed,
     // so the record's name and identity are captured here, before the backing
     // is moved into the mapping.
+    if (flags & MAP_ANON) != 0 && (prot & PROT_EXEC) != 0 && (prot & PROT_WRITE) != 0 {
+        if selinux_runtime::check::process_permission("execmem").is_err() {
+            return -(Errno::Eacces.as_i32() as i64);
+        }
+    }
     let result = pmm::user_as::glue_mmap(
         args.a0, len, prot, eff_flags, fd as i64, offset, backing, phys_range,
         None, may_prot, file_vma_flags,

@@ -71,6 +71,9 @@ pub fn do_mprotect_pkey(args: &SyscallArgs, pkey: i32) -> i64 {
             vmm::VmaBacking::File { backing, .. } => backing.mprotect(
                 vma.flags.contains(vmm::VmaFlags::SHARED), prot.contains(vmm::VmaProt::EXEC))
                 .map_err(|_| vmm::Error::Access),
+            _ if prot.contains(vmm::VmaProt::EXEC) && prot.contains(vmm::VmaProt::WRITE) =>
+                selinux_runtime::check::process_permission("execmem")
+                    .map_err(|_| vmm::Error::Access),
             _ => Ok(()),
         }, &mut key_for,
     ) {

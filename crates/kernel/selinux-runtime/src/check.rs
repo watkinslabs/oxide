@@ -46,6 +46,15 @@ pub fn security_perm(ssid: Sid, permission: &str) -> Result<(), i64> {
     has_perm(ssid, crate::label::security_sid(), class, bit)
 }
 
+/// Check a process memory-protection permission such as `execmem`, `execstack`
+/// or `execheap` against the running task's process SID.
+pub fn process_permission(permission: &str) -> Result<(), i64> {
+    let class = selinux::uapi::classmap::class_by_name("process").ok_or(EACCES)?;
+    let bit = selinux::uapi::classmap::perm_bit(class, permission).ok_or(EACCES)?;
+    let sid = crate::task::current_sid();
+    has_perm(sid, sid, class, bit)
+}
+
 /// SELinux's `cred_has_capability` check for the LSM `capable` hook. The
 /// kernel capability set has two 32-bit access-vector classes: capability for
 /// CAP_0..CAP_31 and capability2 for CAP_32 onward. User-namespace checks use
