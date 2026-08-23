@@ -5054,3 +5054,6 @@ against the row's own evidence.
 ### B2614-ext4-init-itable-row-stale
 
 | FIXED B2614 | MISSING | low | The ext4 `init_itable=` row was stale: lazy inode-table initialization and its pacing multiplier are already implemented and registered in the ext4 commit-timer walk. | `commit_timer::register` records each mount; the periodic walk calls the inode-table initializer; `itable_init` tests cover `init_itable`, `noinit_itable`, group progress, and wait-multiplier timing. The implementation landed in 11d090a9d. | B2614 |
+### B2615-lint-ratchet-historical-batch
+
+| FIXED B2615 | INFRA | high | Four older lint-ratchet rows were historical measurements of the same standing tree-wide baseline failure. They are folded together; the current ratchet row remains OPEN. | The retained current OPEN row records the live main measurement; no lint run or source change is required. | B2615 |
