@@ -106,6 +106,7 @@ pub mod nfta_table {
 }
 
 pub mod nfta_set {
+    pub const NFT_SET_OBJECT:       u32 = 0x40;
     pub const NFTA_SET_TABLE:     u16 = 1;
     pub const NFTA_SET_NAME:      u16 = 2;
     pub const NFTA_SET_FLAGS:     u16 = 3;

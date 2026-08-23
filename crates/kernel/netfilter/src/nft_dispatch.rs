@@ -352,6 +352,9 @@ pub(super) fn handle_nft(
             let data_type = find_u32_attr(attrs, nfta_set::NFTA_SET_DATA_TYPE).unwrap_or(0);
             let data_len  = find_u32_attr(attrs, nfta_set::NFTA_SET_DATA_LEN).unwrap_or(0);
             let obj_type  = find_u32_attr(attrs, nfta_set::NFTA_SET_OBJ_TYPE).unwrap_or(0);
+            if (flags & nfta_set::NFT_SET_OBJECT != 0) != (obj_type != 0) {
+                return nlmsg_ack(req, -22);
+            }
             set_insert_in(namespace, NftSet {
                 table_family: nfg.nfgen_family,
                 table_name:   String::from(table_name),
@@ -445,6 +448,25 @@ pub(super) fn handle_nft(
                     objref: objref.map(String::from),
                 });
             });
+            let Some(meta) = sets_snapshot_in(namespace).into_iter().find(|candidate| {
+                candidate.table_family == nfg.nfgen_family
+                    && candidate.table_name == table && candidate.name == set
+            }) else { return nlmsg_ack(req, -2); };
+            let objects = objects_snapshot_in(namespace);
+            if elems.iter().any(|elem| {
+                let has_ref = elem.objref.is_some();
+                let object_set = meta.flags & nfta_set::NFT_SET_OBJECT != 0;
+                (object_set && (!has_ref || !elem.data.is_empty()))
+                    || (!object_set && has_ref)
+                    || (has_ref && !objects.iter().any(|object| {
+                        object.table_family == meta.table_family
+                            && object.table_name == meta.table_name
+                            && object.ty == meta.obj_type
+                            && elem.objref.as_deref() == Some(object.name.as_str())
+                    }))
+            }) {
+                return nlmsg_ack(req, -22);
+            }
             set_elems_insert_in(namespace, elems);
             nlmsg_ack(req, 0)
         }
