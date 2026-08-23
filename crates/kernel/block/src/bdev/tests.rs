@@ -68,6 +68,34 @@ fn raw_write_is_cached_and_dirty_until_writeback() {
 }
 
 #[test]
+fn shared_mapping_write_fault_dirties_the_same_device_cache_page() {
+    let disk = medium(64);
+    let m = mapping_over(disk.clone());
+    m.write_at(0, &[0x2A; 64]).unwrap();
+    m.fdatawrite();
+    assert_eq!(m.fdatawait_keep_errors(), 0);
+    assert_eq!(m.dirty_pages(), 0);
+
+    // Hosted tests have no PMM frame provider, so the frame probe is honestly
+    // unavailable here; the fault's write-side hook still owns dirtying.
+    assert_eq!(m.shared_frame(0).unwrap(), None);
+    m.page_mkwrite(0).unwrap();
+    assert_eq!(m.dirty_pages(), 1);
+    m.fdatawrite();
+    assert_eq!(m.fdatawait_keep_errors(), 0);
+    assert_eq!(on_medium(disk.as_ref(), 0, 64), vec![0x2A; 64]);
+}
+
+#[test]
+fn shared_mapping_write_fault_respects_write_seal_and_bounds() {
+    let disk = medium(64);
+    let m = mapping_over(disk);
+    assert_eq!(m.page_mkwrite(8 * PG), Err(BlockError::Einval));
+    m.seal_writes();
+    assert_eq!(m.page_mkwrite(0), Err(BlockError::Erofs));
+}
+
+#[test]
 fn write_seal_rejects_later_raw_writes_but_drains_existing_dirty_pages() {
     let disk = medium(64);
     let mapping = mapping_over(disk.clone());

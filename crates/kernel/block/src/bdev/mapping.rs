@@ -36,7 +36,7 @@ pub(super) const PG: u64 = PAGE_BYTES as u64;
 /// (`06§3.6`).
 pub(super) struct MappingState {
     /// Resident pages, keyed by page index (Linux `mapping->i_pages`).
-    pub(super) pages: BTreeMap<u64, Vec<u8>>,
+    pub(super) pages: BTreeMap<u64, crate::pagecache::PageBuf>,
     /// Dirty tags + the sticky `AS_EIO`/`AS_ENOSPC` writeback-error latch.
     pub(super) dirty: DirtyPages,
     /// Indices handed to the driver and not yet completed (Linux
@@ -164,7 +164,11 @@ impl BdevMapping {
     /// under `block_write_begin` for a full-folio write). # C: O(page fill)
     fn resident(&self, idx: u64, whole_page_write: bool) -> KResult<()> {
         if self.st.lock_bh::<crate::bh_gate::BlockBh>().pages.contains_key(&idx) { return Ok(()); }
-        let page = if whole_page_write { vec![0u8; PAGE_BYTES] } else { self.fill_page(idx)? };
+        let page = if whole_page_write {
+            crate::pagecache::PageBuf::zeroed()
+        } else {
+            crate::pagecache::PageBuf::from_vec(self.fill_page(idx)?)
+        };
         let mut g = self.st.lock_bh::<crate::bh_gate::BlockBh>();
         if self.dead.load(Ordering::Acquire) { return Ok(()); }
         // Never overwrite: a concurrent writer may have inserted and DIRTIED
@@ -215,6 +219,35 @@ impl BdevMapping {
         let page = g.pages.get_mut(&idx).ok_or(BlockError::Eio)?;
         page[inner..inner + src.len()].copy_from_slice(src);
         g.dirty.set_dirty(idx);
+        Ok(())
+    }
+
+    /// `vm_ops->fault` for a raw block inode: the PTE must point at the same
+    /// page-cache storage as `read(2)` and buffered `write(2)`.  Conversion to
+    /// a PMM frame is lazy, but once it happens `PageBuf` keeps that frame as
+    /// the page's sole storage, so writeback observes user stores directly.
+    /// # C: O(page fill) on a cache miss, O(1) after
+    pub fn shared_frame(&self, off: u64) -> KResult<Option<u64>> {
+        self.check_live()?;
+        if off % PG != 0 || off >= self.size() { return Ok(None); }
+        self.resident(off / PG, false)?;
+        let mut g = self.st.lock_bh::<crate::bh_gate::BlockBh>();
+        if self.dead.load(Ordering::Acquire) { return Err(BlockError::Eio); }
+        Ok(g.pages.get_mut(&(off / PG)).and_then(|page| page.to_frame()))
+    }
+
+    /// `vm_ops->page_mkwrite` for a shared writable raw-device mapping.  The
+    /// cache page is dirtied before the PTE becomes writable, exactly like
+    /// Linux `block_page_mkwrite`; subsequent writeback submits this page.
+    /// # C: O(page fill) on a cache miss, O(1) after
+    pub fn page_mkwrite(&self, off: u64) -> KResult<()> {
+        self.check_live()?;
+        self.check_writable()?;
+        if off % PG != 0 || off >= self.size() { return Err(BlockError::Einval); }
+        self.resident(off / PG, false)?;
+        let mut g = self.st.lock_bh::<crate::bh_gate::BlockBh>();
+        if self.dead.load(Ordering::Acquire) { return Err(BlockError::Eio); }
+        g.dirty.set_dirty(off / PG);
         Ok(())
     }
 

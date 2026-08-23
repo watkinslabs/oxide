@@ -211,6 +211,16 @@ pub trait BlockDevOps: Send + Sync {
     fn write(&self, devt: Devt, off: u64, buf: &[u8]) -> KResult<usize> {
         let _ = (devt, off, buf); Err(VfsError::Eio)
     }
+    /// `block_device_operations->mmap`: return the page-cache frame for a
+    /// page-aligned file offset, or `None` when this driver has no mappable
+    /// address space.
+    fn mmap_shared_frame(&self, devt: Devt, off: u64) -> KResult<Option<u64>> {
+        let _ = (devt, off); Ok(None)
+    }
+    /// `vm_operations_struct.page_mkwrite` for a shared writable mapping.
+    fn mmap_page_mkwrite(&self, devt: Devt, off: u64) -> KResult<()> {
+        let _ = (devt, off); Ok(())
+    }
     /// # C: driver-dependent
     fn ioctl(&self, devt: Devt, cmd: u32, arg: usize) -> KResult<usize> {
         let _ = (devt, cmd, arg); Err(VfsError::Enotty)
