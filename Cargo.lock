@@ -2628,6 +2628,7 @@ dependencies = [
  "sync",
  "syscall",
  "vfs",
+ "zlib-rs",
  "zstd",
 ]
 

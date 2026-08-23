@@ -123,6 +123,11 @@ impl Decoder {
     /// that placement; this is the entry point for a caller managing its own
     /// buffer.
     /// # C: O(decompressed size)
+    /// Keep the frame decoder out of callers that may already be deep in a
+    /// filesystem mount. Linux uses the same `noinline_for_stack` discipline
+    /// around large working sets: the decoder owns the format tables and must
+    /// not merge its working set with namei.
+    #[inline(never)]
     pub fn decompress_frame_with(&mut self, src: &[u8], out: &mut Vec<u8>,
         dict: Option<&Dictionary>) -> Result<usize>
     {
@@ -220,6 +225,7 @@ impl Decoder {
         Ok(at)
     }
 
+    #[inline(never)]
     fn decode_compressed(&mut self, src: &[u8], out: &mut Vec<u8>, rep: &mut [u32; 3],
         window_start: usize, window_size: u64) -> Result<()>
     {
