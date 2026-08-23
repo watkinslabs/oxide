@@ -67,6 +67,58 @@ pub(crate) fn find_bytes_attr<'a>(attrs: &'a [u8], target: u16) -> Option<&'a [u
     None
 }
 
+fn find_be16_attr(attrs: &[u8], target: u16) -> Option<u16> {
+    let raw = find_bytes_attr(attrs, target)?;
+    (raw.len() == 2).then(|| u16::from_be_bytes([raw[0], raw[1]]))
+}
+
+fn find_u8_attr(attrs: &[u8], target: u16) -> Option<u8> {
+    let raw = find_bytes_attr(attrs, target)?;
+    (raw.len() == 1).then(|| raw[0])
+}
+
+fn parse_ct_tuple(raw: &[u8], family: u8, zone: u16) -> Option<::conntrack::Tuple> {
+    use ::conntrack::{InetAddr, ProtoPart, Tuple, TupleEnd};
+    let ip = find_bytes_attr(raw, ::conntrack::uapi::CTA_TUPLE_IP)?;
+    let (src, dst) = if family == ::conntrack::uapi::NFPROTO_IPV6 {
+        let src = find_bytes_attr(ip, ::conntrack::uapi::CTA_IP_V6_SRC)?;
+        let dst = find_bytes_attr(ip, ::conntrack::uapi::CTA_IP_V6_DST)?;
+        (InetAddr::v6(src.try_into().ok()?), InetAddr::v6(dst.try_into().ok()?))
+    } else {
+        let src = find_bytes_attr(ip, ::conntrack::uapi::CTA_IP_V4_SRC)?;
+        let dst = find_bytes_attr(ip, ::conntrack::uapi::CTA_IP_V4_DST)?;
+        (InetAddr::v4(src.try_into().ok()?), InetAddr::v4(dst.try_into().ok()?))
+    };
+    let proto = find_bytes_attr(raw, ::conntrack::uapi::CTA_TUPLE_PROTO)?;
+    let protonum = find_u8_attr(proto, ::conntrack::uapi::CTA_PROTO_NUM)?;
+    let icmp = (family == ::conntrack::uapi::NFPROTO_IPV4
+        && protonum == ::conntrack::uapi::IPPROTO_ICMP)
+        || (family == ::conntrack::uapi::NFPROTO_IPV6
+            && protonum == ::conntrack::uapi::IPPROTO_ICMPV6);
+    let (src_proto, dst_proto) = if icmp {
+        let id_attr = if family == ::conntrack::uapi::NFPROTO_IPV6 {
+            ::conntrack::uapi::CTA_PROTO_ICMPV6_ID
+        } else { ::conntrack::uapi::CTA_PROTO_ICMP_ID };
+        let type_attr = if family == ::conntrack::uapi::NFPROTO_IPV6 {
+            ::conntrack::uapi::CTA_PROTO_ICMPV6_TYPE
+        } else { ::conntrack::uapi::CTA_PROTO_ICMP_TYPE };
+        let code_attr = if family == ::conntrack::uapi::NFPROTO_IPV6 {
+            ::conntrack::uapi::CTA_PROTO_ICMPV6_CODE
+        } else { ::conntrack::uapi::CTA_PROTO_ICMP_CODE };
+        (ProtoPart::icmp(find_be16_attr(proto, id_attr)?,
+                         find_u8_attr(proto, type_attr)?, find_u8_attr(proto, code_attr)?),
+         ProtoPart::default())
+    } else {
+        (ProtoPart::port(find_be16_attr(proto, ::conntrack::uapi::CTA_PROTO_SRC_PORT)?),
+         ProtoPart::port(find_be16_attr(proto, ::conntrack::uapi::CTA_PROTO_DST_PORT)?))
+    };
+    Some(Tuple {
+        src: TupleEnd { addr: src, proto: src_proto },
+        dst: TupleEnd { addr: dst, proto: dst_proto },
+        l3num: family, protonum, zone,
+    })
+}
+
 pub(crate) fn nlmsg_ack(req: &Nlmsghdr, err: i32) -> Vec<u8> {
     let total = Nlmsghdr::SIZE + 4 + Nlmsghdr::SIZE;
     let hdr = Nlmsghdr {
@@ -112,7 +164,19 @@ fn handle_one(full_msg: &[u8], namespace: u64) -> Vec<u8> {
 fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Vec<u8> {
     let cmd = (req.nlmsg_type & 0xff) as u8;
     if cmd == conntrack::uapi::IPCTNL_MSG_CT_GET {
-        return handle_ct_get(req, nfg, namespace);
+        return handle_ct_get(req, nfg, attrs, namespace);
+    }
+    if cmd == conntrack::uapi::IPCTNL_MSG_CT_DELETE {
+        let tuple_attr = find_bytes_attr(attrs, ::conntrack::uapi::CTA_TUPLE_ORIG)
+            .or_else(|| find_bytes_attr(attrs, ::conntrack::uapi::CTA_TUPLE_REPLY));
+        if let Some(raw) = tuple_attr {
+            let Some(tuple) = parse_ct_tuple(raw, nfg.nfgen_family,
+                find_be16_attr(attrs, ::conntrack::uapi::CTA_ZONE).unwrap_or(0)) else {
+                return nlmsg_ack(req, -22);
+            };
+            let ok = ::net::global_stack().conntrack_delete_tuple_in(namespace, tuple);
+            return nlmsg_ack(req, if ok { 0 } else { -2 });
+        }
     }
     let Some(id) = find_u32_attr(attrs, conntrack::uapi::CTA_ID) else {
         return nlmsg_ack(req, -22 /* EINVAL */);
@@ -134,7 +198,38 @@ fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Ve
     nlmsg_ack(req, if ok { 0 } else { -2 /* ENOENT */ })
 }
 
-fn handle_ct_get(req: &Nlmsghdr, nfg: &Nfgenmsg, namespace: u64) -> Vec<u8> {
+fn handle_ct_get(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Vec<u8> {
+    if let Some(raw) = find_bytes_attr(attrs, ::conntrack::uapi::CTA_TUPLE_ORIG)
+        .or_else(|| find_bytes_attr(attrs, ::conntrack::uapi::CTA_TUPLE_REPLY)) {
+        let Some(tuple) = parse_ct_tuple(raw, nfg.nfgen_family,
+            find_be16_attr(attrs, ::conntrack::uapi::CTA_ZONE).unwrap_or(0)) else {
+            return nlmsg_ack(req, -22);
+        };
+        let Some(entry) = ::net::global_stack().conntrack_lookup_tuple_in(namespace, tuple) else {
+            return nlmsg_ack(req, -2);
+        };
+        let mut body = Vec::with_capacity(Nfgenmsg::SIZE + entry.len());
+        let mut nfg_buf = [0u8; Nfgenmsg::SIZE];
+        nfg.write_to(&mut nfg_buf);
+        body.extend_from_slice(&nfg_buf);
+        body.extend_from_slice(&entry);
+        let total = Nlmsghdr::SIZE + body.len();
+        let hdr = Nlmsghdr {
+            nlmsg_len: total as u32,
+            nlmsg_type: ((subsys::NFNL_SUBSYS_CTNETLINK as u16) << 8)
+                | conntrack::uapi::IPCTNL_MSG_CT_GET as u16,
+            nlmsg_flags: 0,
+            nlmsg_seq: req.nlmsg_seq,
+            nlmsg_pid: req.nlmsg_pid,
+        };
+        let mut out = Vec::with_capacity(total);
+        let mut hb = [0u8; Nlmsghdr::SIZE];
+        hdr.write_to(&mut hb);
+        out.extend_from_slice(&hb);
+        out.extend_from_slice(&body);
+        while out.len() % 4 != 0 { out.push(0); }
+        return out;
+    }
     let mut out = Vec::new();
     for attrs in ::net::global_stack().conntrack_dump_in(namespace) {
         let mut body = Vec::with_capacity(Nfgenmsg::SIZE + attrs.len());
@@ -168,6 +263,28 @@ fn handle_ct_get(req: &Nlmsghdr, nfg: &Nfgenmsg, namespace: u64) -> Vec<u8> {
     done.write_to(&mut db);
     out.extend_from_slice(&db);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+    use super::parse_ct_tuple;
+    use ::conntrack::{ProtoPart, Tuple, TupleEnd, InetAddr};
+
+    #[test]
+    fn ctnetlink_tuple_parser_preserves_family_ports_and_zone() {
+        let expected = Tuple {
+            src: TupleEnd { addr: InetAddr::v4([192, 0, 2, 1]), proto: ProtoPart::port(12345) },
+            dst: TupleEnd { addr: InetAddr::v4([198, 51, 100, 2]), proto: ProtoPart::port(443) },
+            l3num: ::conntrack::uapi::NFPROTO_IPV4,
+            protonum: ::conntrack::uapi::IPPROTO_TCP,
+            zone: 7,
+        };
+        let mut raw = Vec::new();
+        ::conntrack::ctnetlink::put_tuple(
+            &mut raw, ::conntrack::uapi::CTA_TUPLE_ORIG, &expected);
+        assert_eq!(parse_ct_tuple(&raw[4..], expected.l3num, expected.zone), Some(expected));
+    }
 }
 
 fn reply_errno(reply: &[u8]) -> Option<i32> {

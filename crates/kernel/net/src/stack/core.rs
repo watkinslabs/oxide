@@ -74,6 +74,16 @@ impl NetStack {
             .collect()
     }
 
+    /// Encode the live entry selected by one ctnetlink tuple. # C: O(bucket length)
+    pub fn conntrack_lookup_tuple_in(&self, net_ns: u64, tuple: ::conntrack::Tuple)
+        -> Option<alloc::vec::Vec<u8>> {
+        let ct = self.conntrack_existing_in(net_ns)?;
+        let now = crate::stack::net_now_ns() / 1_000_000_000;
+        let acct = ct.sysctl.lock().acct;
+        let found = ct.table.lookup(&tuple, now)?;
+        Some(::conntrack::ctnetlink::encode_entry(&found.conn, now, acct))
+    }
+
     /// Read one live conntrack sysctl. The table is a per-net subsystem and
     /// is initialized when its sysctl namespace is first accessed. # C: O(log N)
     pub fn conntrack_sysctl_get(&self, net_ns: u64, knob: ::conntrack::sysctl::Knob) -> u64 {
@@ -90,6 +100,17 @@ impl NetStack {
     pub fn conntrack_delete_in(&self, net_ns: u64, id: u64) -> bool {
         let Some(ct) = self.conntrack_existing_in(net_ns) else { return false; };
         ct.delete_id(id, crate::stack::net_now_ns() / 1_000_000_000)
+    }
+
+    /// Delete the live entry selected by either conntrack tuple. # C: O(bucket length)
+    pub fn conntrack_delete_tuple_in(&self, net_ns: u64, tuple: ::conntrack::Tuple) -> bool {
+        let Some(ct) = self.conntrack_existing_in(net_ns) else { return false; };
+        let now = crate::stack::net_now_ns() / 1_000_000_000;
+        let Some(found) = ct.table.lookup(&tuple, now) else { return false; };
+        if !ct.table.kill(&found.conn) { return false; }
+        ct.expect.purge_master(&found.conn);
+        ct.events.post(found.conn.id, ::conntrack::uapi::IPCT_DESTROY);
+        true
     }
 
     /// Update one live conntrack entry through its owning namespace. # C: O(N)
