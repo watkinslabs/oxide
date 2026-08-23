@@ -5163,6 +5163,11 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 0909bb936 | DEFECT | med | **ext4's duplicate regular-file data stores were removed.** The inode frame store is now the sole owner for reads, writes, mappings, invalidation and writeback; path helpers use the same live store through the mount's weak index. | Linux ext4's one inode `address_space`; source commit `0909bb936`; ext4 and image regression suites pass, including the no-default-feature build. | 0909bb936 |
+### B2626-overlay-inode-cache
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED baa1d9b84 | DEFECT | med | **OverlayFS now has one canonical inode per real object.** The per-mount weak index selects the Linux real-inode identity, preserves lower identity across indexed copy-up, caches pure-upper objects, and leaves intentionally broken unindexed hardlinks uncached. | Linux overlayfs's per-superblock inode cache and real-inode key; `baa1d9b84`; repeated lookup, pure-upper lookup, indexed-hardlink identity, and the full OverlayFS suite pass (260/260). | baa1d9b84 |
 ### B2624-overlay-override-creds
 
 | Status | Class | Sev | Issue | Evidence | Owner |
