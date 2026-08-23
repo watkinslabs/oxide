@@ -14,7 +14,7 @@ use alloc::vec::Vec;
 use fuse_transport::{FuseReplySink, FuseTransportOps};
 use sync::{Spinlock, TaskList as DriverLockClass};
 
-use crate::consts::{BUFFER_BYTES, COMPLETION_POLL_BUDGET};
+use crate::consts::{BUFFER_BYTES, COMPLETION_POLL_BUDGET, REQUEST_QUEUE};
 use crate::registry::{self, DeviceHandle};
 
 /// Bytes of a `fuse_out_header`: `len[4] error[4] unique[8]`. A reply shorter
@@ -43,7 +43,7 @@ pub struct VirtioFsTransport {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-struct RequestKey { lane: Lane, head: u16 }
+struct RequestKey { queue: u16, lane: Lane, head: u16 }
 
 struct InFlight {
     pending: BTreeMap<RequestKey, registry::RequestStaging>,
@@ -74,6 +74,7 @@ impl VirtioFsTransport {
     fn exchange(&self, out: &[u8], lane: Lane) -> Option<Vec<u8>> {
         if out.len() > BUFFER_BYTES { return None; }
         let staging = registry::alloc_request_staging(self.device_key)?;
+        let queue_index = if lane == Lane::HiPrio { 0 } else { self.select_request_queue() };
         let key = {
             let _queue = self.queue.lock();
             let mut s = self.dev.lock();
@@ -86,7 +87,10 @@ impl VirtioFsTransport {
             unsafe { for (i, b) in out.iter().enumerate() { core::ptr::write_volatile(tx.add(i), *b); } }
             virtio::dma::clean_to_device(hhdm.wrapping_add(staging.tx_pa), out.len());
 
-            let q = match lane { Lane::Request => s.requestq.as_mut(), Lane::HiPrio => s.hiprioq.as_mut() };
+            let q = match lane {
+                Lane::Request => s.requestq.iter_mut().find(|(index, _)| *index == queue_index).map(|(_, q)| q),
+                Lane::HiPrio => s.hiprioq.as_mut(),
+            };
             let Some(q) = q else { registry::free_request_staging(staging); return None; };
             let readable = virtio::SplitQueueSeg { dma: staging.tx_dma, len: out.len() as u32, device_writes: false };
             let writable = virtio::SplitQueueSeg { dma: staging.rx_dma, len: BUFFER_BYTES as u32, device_writes: true };
@@ -95,7 +99,7 @@ impl VirtioFsTransport {
                 Lane::HiPrio => q.submit(&[readable]),
             };
             let Ok(head) = head else { registry::free_request_staging(staging); return None; };
-            let key = RequestKey { lane, head };
+            let key = RequestKey { queue: queue_index, lane, head };
             self.inflight.lock().pending.insert(key, staging);
             key
         };
@@ -108,7 +112,7 @@ impl VirtioFsTransport {
                 Polled::Other => core::hint::spin_loop(),
                 Polled::None => {
                     #[cfg(target_os = "oxide-kernel")]
-                    if !self.wait_for_used(key.lane, deadline) { return None; }
+                    if !self.wait_for_used(key.lane, key.queue, deadline) { return None; }
                     #[cfg(not(target_os = "oxide-kernel"))]
                     core::hint::spin_loop();
                 }
@@ -127,7 +131,10 @@ impl VirtioFsTransport {
         let (hhdm, used) = {
             let mut s = self.dev.lock();
             let hhdm = s.hhdm;
-            let q = match wanted.lane { Lane::Request => s.requestq.as_mut(), Lane::HiPrio => s.hiprioq.as_mut() };
+            let q = match wanted.lane {
+                Lane::Request => s.requestq.iter_mut().find(|(index, _)| *index == wanted.queue).map(|(_, q)| q),
+                Lane::HiPrio => s.hiprioq.as_mut(),
+            };
             let Some(q) = q else { return Polled::Failed; };
             match q.pop_used() {
                 Ok(Some(used)) => (hhdm, used),
@@ -135,7 +142,7 @@ impl VirtioFsTransport {
                 Err(_) => return Polled::Failed,
             }
         };
-        let key = RequestKey { lane: wanted.lane, head: used.head };
+        let key = RequestKey { queue: wanted.queue, lane: wanted.lane, head: used.head };
         let staging = self.inflight.lock().pending.remove(&key);
         let Some(staging) = staging else { return Polled::Failed; };
         let frame = if key.lane == Lane::HiPrio {
@@ -158,17 +165,35 @@ impl VirtioFsTransport {
         }
     }
 
+    fn select_request_queue(&self) -> u16 {
+        let s = self.dev.lock();
+        let count = s.requestq.len();
+        if count == 0 { return REQUEST_QUEUE; }
+        #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+        {
+            use hal::CpuOps;
+            return s.requestq[hal_x86_64::X86CpuOps::current_cpu() as usize % count].0;
+        }
+        #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+        {
+            use hal::CpuOps;
+            return s.requestq[hal_aarch64::ArmCpuOps::current_cpu() as usize % count].0;
+        }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        { s.requestq[0].0 }
+    }
+
     #[cfg(target_os = "oxide-kernel")]
-    fn any_used(&self, lane: Lane) -> bool {
+    fn any_used(&self, lane: Lane, queue: u16) -> bool {
         let s = self.dev.lock();
         match lane {
-            Lane::Request => s.requestq.as_ref().map_or(true, |q| q.has_used()),
+            Lane::Request => s.requestq.iter().find(|(index, _)| *index == queue).map_or(true, |(_, q)| q.has_used()),
             Lane::HiPrio => s.hiprioq.as_ref().map_or(true, |q| q.has_used()),
         }
     }
 
     #[cfg(target_os = "oxide-kernel")]
-    fn wait_for_used(&self, lane: Lane, deadline: u64) -> bool {
+    fn wait_for_used(&self, lane: Lane, queue: u16, deadline: u64) -> bool {
         if sched::live::global().is_none() || sched::live::current().is_none() {
             core::hint::spin_loop();
             return true;
@@ -178,7 +203,7 @@ impl VirtioFsTransport {
         let outcome = unsafe {
             sched::live::wait_event_uninterruptible_until(
                 registry::completion_waiters(), deadline, registry::now_ns,
-                || self.any_used(lane),
+                || self.any_used(lane, queue),
             )
         };
         !matches!(outcome, sched::WaitOutcome::TimedOut)
@@ -260,11 +285,14 @@ mod tests {
     #[test]
     fn completion_storage_separates_lanes_and_heads() {
         let mut state = InFlight { pending: BTreeMap::new(), completed: BTreeMap::new() };
-        let request = RequestKey { lane: Lane::Request, head: 3 };
-        let hiprio = RequestKey { lane: Lane::HiPrio, head: 3 };
+        let request = RequestKey { queue: 1, lane: Lane::Request, head: 3 };
+        let other_request = RequestKey { queue: 2, lane: Lane::Request, head: 3 };
+        let hiprio = RequestKey { queue: 0, lane: Lane::HiPrio, head: 3 };
         state.completed.insert(request, alloc::vec![0x33]);
+        state.completed.insert(other_request, alloc::vec![0x55]);
         state.completed.insert(hiprio, alloc::vec![0x44]);
         assert_eq!(state.completed.remove(&request), Some(alloc::vec![0x33]));
+        assert_eq!(state.completed.remove(&other_request), Some(alloc::vec![0x55]));
         assert_eq!(state.completed.remove(&hiprio), Some(alloc::vec![0x44]));
     }
 }

@@ -7,9 +7,8 @@ pub const VIRTIO_ID_FS: u16 = 26;
 /// Virtqueue carrying FORGET and INTERRUPT messages, which must not queue
 /// behind ordinary requests.
 pub const HIPRIO_QUEUE: u16 = 0;
-/// First ordinary request virtqueue. The device may offer more; one is enough
-/// to serve a mount, and a second would need its own staging buffers to be
-/// worth having.
+/// First ordinary request virtqueue. Additional request queues are handed over
+/// when the device offers them, matching Linux's per-virtqueue state.
 pub const REQUEST_QUEUE: u16 = 1;
 
 /// Byte offset of the mount tag in the device configuration.
@@ -39,9 +38,10 @@ const WANTED_FEATURES: u64 = virtio::VIRTIO_F_VERSION_1;
 /// # C: O(1)
 pub const fn wanted_features() -> u64 { WANTED_FEATURES }
 
-/// Both queues plus the device configuration the tag lives in. The hiprio
-/// queue is REQUIRED, not optional: without it a FORGET queues behind ordinary
-/// requests and a backlog of them starves the mount. # C: O(1)
+/// The hiprio queue plus all possible request queues and the device
+/// configuration the tag lives in. The hiprio queue is REQUIRED, not
+/// optional: without it a FORGET queues behind ordinary requests and a
+/// backlog of them starves the mount. # C: O(1)
 pub const fn transport_profile() -> virtio::VirtioTransportProfile {
     #[cfg(target_os = "oxide-kernel")]
     let completion_irq = Some(crate::registry::wake_completions as fn());
@@ -49,9 +49,21 @@ pub const fn transport_profile() -> virtio::VirtioTransportProfile {
     let completion_irq = None;
     virtio::VirtioTransportProfile::new(
         wanted_features(), completion_irq,
-        [None, Some(virtio::VirtioQueuePlan::new(REQUEST_QUEUE, completion_irq, true)),
-         None, None, None, None, None, None],
+        [None,
+         Some(virtio::VirtioQueuePlan::new(1, completion_irq, true)),
+         Some(virtio::VirtioQueuePlan::new(2, completion_irq, true)),
+         Some(virtio::VirtioQueuePlan::new(3, completion_irq, true)),
+         Some(virtio::VirtioQueuePlan::new(4, completion_irq, true)),
+         Some(virtio::VirtioQueuePlan::new(5, completion_irq, true)),
+         Some(virtio::VirtioQueuePlan::new(6, completion_irq, true)),
+         Some(virtio::VirtioQueuePlan::new(7, completion_irq, true))],
         virtio::resources::VirtioEarlyPayloadPolicy::None,
-        virtio::VirtioChildRequirements::q0_q1_device_cfg(),
+        virtio::VirtioChildRequirements::q0_q1_device_cfg()
+            .with_optional_queue(2)
+            .with_optional_queue(3)
+            .with_optional_queue(4)
+            .with_optional_queue(5)
+            .with_optional_queue(6)
+            .with_optional_queue(7),
     )
 }
