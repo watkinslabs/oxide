@@ -109,4 +109,5 @@ pub fn controls() -> alloc::vec::Vec<ControlDesc> {
 /// device delivers frames through the buffer queue only, and an application
 /// that sees the read bit will try `read(2)` and get nothing.
 pub const DEVICE_CAPS: u32 =
-    flags::CAP_VIDEO_CAPTURE | flags::CAP_STREAMING | flags::CAP_EXT_PIX_FORMAT;
+    flags::CAP_VIDEO_CAPTURE | flags::CAP_READWRITE | flags::CAP_STREAMING
+    | flags::CAP_EXT_PIX_FORMAT;

@@ -64,6 +64,26 @@ pub fn write_plane(frames: &[u64], off: usize, src: &[u8]) -> usize {
     written
 }
 
+/// Read bytes from a plane's pages into kernel-owned storage. # C: O(dst.len)
+pub fn read_plane(frames: &[u64], off: usize, dst: &mut [u8]) -> usize {
+    let page = PAGE_BYTES as usize;
+    let mut read = 0usize;
+    while read < dst.len() {
+        let at = off + read;
+        let index = at / page;
+        let Some(pa) = frames.get(index) else { break };
+        let Some(base) = pmm::setup::frame_ptr(*pa) else { break };
+        let within = at % page;
+        let take = core::cmp::min(page - within, dst.len() - read);
+        // SAFETY: `pa` is a frame this allocator owns for the lifetime of the
+        // plane and `within + take` is bounded by the page size, so the read
+        // stays inside the one frame `frame_ptr` resolved.
+        unsafe { core::ptr::copy_nonoverlapping(base.add(within), dst.as_mut_ptr().add(read), take); }
+        read += take;
+    }
+    read
+}
+
 /// Fill the whole plane with one byte value. # C: O(pages)
 pub fn fill_plane(frames: &[u64], value: u8) {
     for pa in frames {
