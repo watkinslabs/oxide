@@ -155,7 +155,7 @@ fn a_folded_directory_still_reports_the_spelling_it_was_created_with() {
     set_casefold(&d, true).expect("attribute");
     create(&d, "MixedCase").expect("create");
     let dd = d.private::<super::super::dir::TmpfsDirData>().expect("dir data");
-    let names: alloc::vec::Vec<String> = dd.kids.lock().keys().cloned().collect();
+    let names: alloc::vec::Vec<String> = dd.kids.lock().names.keys().cloned().collect();
     assert_eq!(names, alloc::vec![String::from("MixedCase")],
         "folding decides what MATCHES, never what readdir shows");
     assert_eq!(lookup(&d, "mixedcase").map(|i| i.file_type()).ok(), Some(FileType::Regular));

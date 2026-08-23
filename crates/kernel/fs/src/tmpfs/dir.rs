@@ -26,10 +26,40 @@ pub(super) fn as_dir(i: &InodeRef) -> Option<&TmpfsDirData> {
 /// weak, so `fsid` derives from the mount's `s_dev`.
 pub struct TmpfsDirData {
     sb:   Spinlock<Weak<SuperBlock>, InodeClass>,
-    pub(super) kids: Spinlock<BTreeMap<String, InodeRef>, InodeClass>,
+    pub(super) kids: Spinlock<TmpfsChildren, InodeClass>,
     /// Owning mount's space accounting (inode charge/uncharge + block
     /// propagation to children). Shared `Arc` across the whole instance. # D33
     pub(super) acct: Arc<TmpfsSb>,
+}
+
+/// One authoritative display-name map plus its folded hash index. The index
+/// stores names, never inodes, so readdir and inode identity remain owned by
+/// `names`; collisions are resolved through the VFS comparison rule. # C: O(1)
+pub(super) struct TmpfsChildren {
+    pub(super) names: BTreeMap<String, InodeRef>,
+    pub(super) folded: BTreeMap<u32, Vec<String>>,
+}
+
+impl TmpfsChildren {
+    fn new() -> Self { Self { names: BTreeMap::new(), folded: BTreeMap::new() } }
+    fn insert(&mut self, dir: &Inode, name: &str, inode: InodeRef) {
+        if vfs::dentry::casefold::is_casefolded(dir) {
+            let hash = vfs::dentry::casefold::name_hash(dir, name);
+            self.folded.entry(hash).or_default().push(name.into());
+        }
+        self.names.insert(name.into(), inode);
+    }
+    fn remove(&mut self, dir: &Inode, name: &str) -> Option<InodeRef> {
+        let inode = self.names.remove(name)?;
+        if vfs::dentry::casefold::is_casefolded(dir) {
+            let hash = vfs::dentry::casefold::name_hash(dir, name);
+            if let Some(names) = self.folded.get_mut(&hash) {
+                names.retain(|n| n != name);
+                if names.is_empty() { self.folded.remove(&hash); }
+            }
+        }
+        Some(inode)
+    }
 }
 
 impl TmpfsDirData {
@@ -38,9 +68,9 @@ impl TmpfsDirData {
     /// Stamp the owning SB (`TmpfsFs::set_sb` at `fill_super`). # C: O(1)
     pub(super) fn set_sb(&self, sb: Weak<SuperBlock>) { *self.sb.lock() = sb; }
     /// Raw insert of an existing inode (rename / hardlink). # C: O(log N)
-    pub(super) fn insert(&self, name: &str, inode: InodeRef) { self.kids.lock().insert(name.into(), inode); }
+    pub(super) fn insert(&self, dir: &Inode, name: &str, inode: InodeRef) { self.kids.lock().insert(dir, name, inode); }
     /// Raw remove (rename). # C: O(log N)
-    pub(super) fn remove(&self, name: &str) -> Option<InodeRef> { self.kids.lock().remove(name) }
+    pub(super) fn remove(&self, dir: &Inode, name: &str) -> Option<InodeRef> { self.kids.lock().remove(dir, name) }
 }
 
 /// Build a fresh tmpfs directory inode (`ino`, `perm` permission bits, owned by
@@ -57,7 +87,7 @@ pub(super) fn make_tmpfs_dir_inode(ino: Ino, perm: u16, uid: u32, gid: u32, sb: 
             .xattrs_with_accounting(vfs::SimpleXattrs::new(), acct.clone())
             .private(Arc::new(TmpfsDirData {
                 sb:   Spinlock::new(sb2.clone()),
-                kids: Spinlock::new(BTreeMap::new()),
+                kids: Spinlock::new(TmpfsChildren::new()),
                 acct,
             }));
         if let Some(s) = sb2.upgrade() { b = b.sb(Arc::downgrade(&s)); }
@@ -77,7 +107,7 @@ impl FileOps for TmpfsDirFileOps {
         let d = inode.private::<TmpfsDirData>().ok_or(VfsError::Enotdir)?;
         // Children are held by the map, so their ino is already known: no
         // second lookup, and no entry can carry `d_ino == 0`.
-        let mut es: Vec<CookieEntry> = d.kids.lock().iter()
+        let mut es: Vec<CookieEntry> = d.kids.lock().names.iter()
             .map(|(name, c)| CookieEntry::new(name.clone(), c.ino(), c.file_type()))
             .collect();
         vfs::emit_by_cookie(&mut es, ctx)
@@ -103,12 +133,12 @@ impl InodeOps for TmpfsDirOps {
         casefold::name_ok(inode, name)?;
         let g = d.kids.lock();
         let key = casefold::stored_key(inode, &g, name).ok_or(VfsError::Enoent)?;
-        g.get(&key).cloned().ok_or(VfsError::Enoent)
+        g.names.get(&key).cloned().ok_or(VfsError::Enoent)
     }
 
     /// `simple_empty`: this instance's child index IS the directory. # C: O(1)
     fn dir_is_empty(&self, inode: &Inode) -> bool {
-        inode.private::<TmpfsDirData>().is_none_or(|d| d.kids.lock().is_empty())
+        inode.private::<TmpfsDirData>().is_none_or(|d| d.kids.lock().names.is_empty())
     }
 
     /// Children of a casefolded directory carry the case-insensitive hash and
@@ -136,7 +166,7 @@ impl InodeOps for TmpfsDirOps {
         // attribute is inherited, so a subtree cannot silently revert to
         // byte-exact lookups halfway down.
         casefold::inherit(inode, &d);
-        g.insert(name.into(), d.clone());
+        g.insert(inode, name, d.clone());
         inode.inc_nlink(); // child's ".." adds a link to this parent dir
         Ok(d)
     }
@@ -148,16 +178,16 @@ impl InodeOps for TmpfsDirOps {
         let dd = inode.private::<TmpfsDirData>().ok_or(VfsError::Enotdir)?;
         let mut g = dd.kids.lock();
         let name = &casefold::stored_key(inode, &g, name).ok_or(VfsError::Enoent)?;
-        match g.get(name.as_str()) {
+        match g.names.get(name.as_str()) {
             None => return Err(VfsError::Enoent),
             Some(i) if i.file_type() != FileType::Directory => return Err(VfsError::Enotdir),
             Some(i) => {
                 if let Some(d) = as_dir(i) {
-                    if !d.kids.lock().is_empty() { return Err(VfsError::Enotempty); }
+                    if !d.kids.lock().names.is_empty() { return Err(VfsError::Enotempty); }
                 }
             }
         }
-        if let Some(victim) = g.remove(name) {
+        if let Some(victim) = g.remove(inode, name) {
             victim.set_nlink(0);   // emptied dir: drop "." + parent's link down
             inode.drop_nlink();    // the child's ".." no longer points at us
             // reclaim the dir inode (f_ffree) from the mount and its owner
@@ -177,7 +207,7 @@ impl InodeOps for TmpfsDirOps {
             0o7777, vfs::types::S_IFREG, ctx.cred, ctx.umask);
         quota::alloc_inode(&dd.acct, QuotaOwner::new(uid, gid))?;
         let child = make_tmpfs_file_inode(false, m & 0o7777, uid, gid, dd.sb_weak(), dd.acct.clone());
-        g.insert(name.into(), child.clone());
+        g.insert(inode, name, child.clone());
         Ok(child)
     }
 
@@ -205,11 +235,11 @@ impl InodeOps for TmpfsDirOps {
         let dd = inode.private::<TmpfsDirData>().ok_or(VfsError::Enotdir)?;
         let mut g = dd.kids.lock();
         let name = &casefold::stored_key(inode, &g, name).ok_or(VfsError::Enoent)?;
-        match g.get(name.as_str()) {
+        match g.names.get(name.as_str()) {
             None => Err(VfsError::Enoent),
             Some(i) if i.file_type() == FileType::Directory => Err(VfsError::Eisdir),
             Some(_) => {
-                let victim = g.remove(name).expect("present");
+                let victim = g.remove(inode, name).expect("present");
                 victim.drop_nlink();
                 // Reclaim the inode only when the last name is gone (a hardlink
                 // target with nlink>0 keeps its single charged inode). # D33
@@ -227,7 +257,7 @@ impl InodeOps for TmpfsDirOps {
         if casefold::taken(inode, &g, name) { return Err(VfsError::Eexist); }
         let (uid, gid) = vfs::prepare_symlink_owner(ctx.idmap, inode, ctx.cred);
         quota::alloc_inode(&dd.acct, QuotaOwner::new(uid, gid))?;
-        g.insert(name.into(), make_tmpfs_symlink_inode(target, uid, gid, dd.sb_weak(), dd.acct.clone()));
+        g.insert(inode, name, make_tmpfs_symlink_inode(target, uid, gid, dd.sb_weak(), dd.acct.clone()));
         Ok(())
     }
 
@@ -257,7 +287,7 @@ impl InodeOps for TmpfsDirOps {
             _ => { quota::free_inode(&dd.acct, QuotaOwner::new(uid, gid)); return Err(VfsError::Einval); }
         };
         child.attach_xattr_accounting(dd.acct.clone());
-        g.insert(name.into(), child);
+        g.insert(inode, name, child);
         Ok(())
     }
 
@@ -282,20 +312,24 @@ impl InodeOps for TmpfsDirOps {
         if flags & RENAME_EXCHANGE != 0 {
             if same_parent {
                 let mut g = sdir.kids.lock();
-                if old_name == new_name { return if g.contains_key(old_name) { Ok(()) } else { Err(VfsError::Enoent) }; }
-                let a = g.get(old_name).cloned().ok_or(VfsError::Enoent)?;
-                let b = g.get(new_name).cloned().ok_or(VfsError::Enoent)?;
-                g.insert(old_name.into(), b);
-                g.insert(new_name.into(), a);
+                if old_name == new_name { return if g.names.contains_key(old_name) { Ok(()) } else { Err(VfsError::Enoent) }; }
+                let a = g.names.get(old_name).cloned().ok_or(VfsError::Enoent)?;
+                let b = g.names.get(new_name).cloned().ok_or(VfsError::Enoent)?;
+                g.remove(inode, old_name);
+                g.remove(inode, new_name);
+                g.insert(inode, old_name, b);
+                g.insert(inode, new_name, a);
                 return Ok(());
             }
             let (a, b) = {
                 let mut sg = sdir.kids.lock();
                 let mut dg = ddir.kids.lock();
-                let a = sg.get(old_name).cloned().ok_or(VfsError::Enoent)?;
-                let b = dg.get(new_name).cloned().ok_or(VfsError::Enoent)?;
-                sg.insert(old_name.into(), b.clone());
-                dg.insert(new_name.into(), a.clone());
+                let a = sg.names.get(old_name).cloned().ok_or(VfsError::Enoent)?;
+                let b = dg.names.get(new_name).cloned().ok_or(VfsError::Enoent)?;
+                sg.remove(inode, old_name);
+                dg.remove(new_dir, new_name);
+                sg.insert(inode, old_name, b.clone());
+                dg.insert(new_dir, new_name, a.clone());
                 (a, b)
             };
             // `simple_rename_exchange`: only a MIXED pair shifts a `..` between
@@ -307,14 +341,14 @@ impl InodeOps for TmpfsDirOps {
         }
         // `shmem_rename2`: `!simple_empty(new_dentry)` → ENOTEMPTY. A negative
         // or non-directory destination is "empty" by that definition.
-        if let Some(victim) = ddir.kids.lock().get(new_name) {
+        if let Some(victim) = ddir.kids.lock().names.get(new_name) {
             if let Some(vd) = as_dir(victim) {
-                if !vd.kids.lock().is_empty() { return Err(VfsError::Enotempty); }
+                if !vd.kids.lock().names.is_empty() { return Err(VfsError::Enotempty); }
             }
         }
-        let moved = sdir.remove(old_name).ok_or(VfsError::Enoent)?;
+        let moved = sdir.remove(inode, old_name).ok_or(VfsError::Enoent)?;
         let moved_is_dir = moved.file_type() == FileType::Directory;
-        let replaced = ddir.remove(new_name);
+        let replaced = ddir.remove(new_dir, new_name);
         if let Some(victim) = replaced.as_ref() {
             if victim.file_type() == FileType::Directory { victim.set_nlink(0); }
             else { victim.drop_nlink(); }
@@ -323,9 +357,9 @@ impl InodeOps for TmpfsDirOps {
         if flags & RENAME_WHITEOUT != 0 {
             let sb = sdir.sb_weak();
             let wo = make_device_node_inode(sdir.acct.alloc_ino(), FileType::CharDev, Devt::from_raw(0), 0, sb);
-            sdir.insert(old_name, wo);
+            sdir.insert(inode, old_name, wo);
         }
-        ddir.insert(new_name, moved);
+        ddir.insert(new_dir, new_name, moved);
         // A moved directory takes its `..` with it: the replaced-victim case
         // already surrendered the destination's incoming link (`set_nlink(0)`
         // above), so only the source parent drops one; otherwise the
@@ -350,7 +384,7 @@ impl InodeOps for TmpfsDirOps {
         let mut g = dd.kids.lock();
         if casefold::taken(inode, &g, name) { return Err(VfsError::Eexist); }
         target.inc_nlink(); // a new name for the same inode (Linux inc_nlink)
-        g.insert(name.into(), target.clone());
+        g.insert(inode, name, target.clone());
         Ok(())
     }
 }

@@ -105,6 +105,15 @@ pub fn names_eq(dir: &Inode, a: &str, b: &str) -> bool {
     utf8::casefold_eq(&enc, a.as_bytes(), b.as_bytes()).unwrap_or(false)
 }
 
+/// Hash a name with the directory's casefolding rule. # C: O(name.len())
+pub fn name_hash(dir: &Inode, name: &str) -> u32 {
+    if !is_casefolded(dir) { return crate::dentry::constructors::default_name_hash(name); }
+    let Some(sb) = dir.i_sb() else { return crate::dentry::constructors::default_name_hash(name); };
+    let Some(enc) = sb.s_encoding() else { return crate::dentry::constructors::default_name_hash(name); };
+    utf8::casefold_hash(&enc, name.as_bytes())
+        .unwrap_or_else(|_| crate::dentry::constructors::default_name_hash(name))
+}
+
 /// Compare raw directory-entry bytes under the owning superblock encoding.
 /// Native filesystems keep names as bytes, so routing their lookup through the
 /// same owner must not force an intermediate lossy `&str` conversion.

@@ -8,12 +8,12 @@
 // this module only applies it to the child map.
 
 use alloc::string::String;
-use alloc::collections::BTreeMap;
+use super::dir::TmpfsChildren;
 
 use vfs::dentry::casefold::{generic_ci_validate_strict_name, is_casefolded, names_eq,
     GENERIC_CI_DENTRY_OPS};
 use vfs::dentry::DentryOps;
-use vfs::{Inode, InodeRef, KResult, VfsError};
+use vfs::{Inode, KResult, VfsError};
 
 /// The key `kids` actually stores for `name`, or `None` when no child of this
 /// directory answers to it.
@@ -23,16 +23,17 @@ use vfs::{Inode, InodeRef, KResult, VfsError};
 /// `readdir` must report — and a second map keyed by the folded name would be a
 /// second source of truth about which children exist.
 /// # C: O(1) exact, O(N_children) folded
-pub(super) fn stored_key(dir: &Inode, kids: &BTreeMap<String, InodeRef>, name: &str)
+pub(super) fn stored_key(dir: &Inode, kids: &TmpfsChildren, name: &str)
     -> Option<String>
 {
-    if kids.contains_key(name) { return Some(String::from(name)); }
+    if kids.names.contains_key(name) { return Some(String::from(name)); }
     if !is_casefolded(dir) { return None; }
-    kids.keys().find(|k| names_eq(dir, k, name)).cloned()
+    let hash = vfs::dentry::casefold::name_hash(dir, name);
+    kids.folded.get(&hash)?.iter().find(|k| names_eq(dir, k, name)).cloned()
 }
 
 /// Is there already a child answering to `name`? # C: O(1) or O(N_children)
-pub(super) fn taken(dir: &Inode, kids: &BTreeMap<String, InodeRef>, name: &str) -> bool {
+pub(super) fn taken(dir: &Inode, kids: &TmpfsChildren, name: &str) -> bool {
     stored_key(dir, kids, name).is_some()
 }
 
