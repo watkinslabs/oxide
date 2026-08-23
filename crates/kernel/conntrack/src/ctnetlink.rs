@@ -151,6 +151,13 @@ pub fn encode_entry(c: &Arc<Conn>, now: u64, acct: bool) -> Vec<u8> {
     if labels.iter().any(|&byte| byte != 0) {
         put_attr(&mut out, CTA_LABELS, &labels);
     }
+    if let Some(state) = *c.synproxy.lock() {
+        let n = nest_start(&mut out, CTA_SYNPROXY);
+        put_be32(&mut out, CTA_SYNPROXY_ISN, state.isn);
+        put_be32(&mut out, CTA_SYNPROXY_ITS, state.its);
+        put_be32(&mut out, CTA_SYNPROXY_TSOFF, state.tsoff as u32);
+        nest_end(&mut out, n);
+    }
     out
 }
 

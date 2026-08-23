@@ -6,7 +6,7 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::sync::Arc;
 
-use crate::entry::{Conn, LabelUpdate, ProtoState, SeqAdjust, TcpProtoInfoUpdate};
+use crate::entry::{Conn, LabelUpdate, ProtoState, SeqAdjust, SynproxyState, TcpProtoInfoUpdate};
 use crate::event::EventCache;
 use crate::proto::{icmp, tcp, udp};
 use crate::proto::tcp_window::TcpSeg;
@@ -231,7 +231,8 @@ impl CtNet {
                      status: Option<u32>, mark: Option<(u32, Option<u32>)>,
                      seqadj: [Option<SeqAdjust>; IP_CT_DIR_MAX],
                      protoinfo: Option<TcpProtoInfoUpdate>,
-                     labels: Option<LabelUpdate>) -> bool {
+                     labels: Option<LabelUpdate>,
+                     synproxy: Option<SynproxyState>) -> bool {
         let Some(conn) = self.table.find_id(id, now) else { return false; };
         if let Some(secs) = timeout {
             conn.set_status_bits(IPS_FIXED_TIMEOUT);
@@ -264,6 +265,9 @@ impl CtNet {
         if let Some(update) = labels {
             if conn.labels_replace(&update) { self.events.post(&conn, IPCT_LABEL); }
         }
+        if let Some(state) = synproxy {
+            if conn.synproxy_replace(state) { self.events.post(&conn, IPCT_SYNPROXY); }
+        }
         true
     }
 
@@ -275,7 +279,7 @@ impl CtNet {
                         protoinfo: Option<TcpProtoInfoUpdate>,
                         helper: Option<String>) -> Option<u64> {
         self.create_tuple_with(tuple, reply, now, timeout, status, mark, protoinfo, helper,
-                               None, |_| true)
+                               None, None, |_| true)
     }
 
     /// Create a userspace entry and run one final pre-confirmation setup.
@@ -284,7 +288,8 @@ impl CtNet {
     pub fn create_tuple_with<F>(&self, tuple: Tuple, reply: Option<Tuple>, now: u64,
                                 timeout: u32, status: u32, mark: Option<u32>,
                                 protoinfo: Option<TcpProtoInfoUpdate>,
-                                helper: Option<String>, labels: Option<LabelUpdate>, setup: F)
+                                helper: Option<String>, labels: Option<LabelUpdate>,
+                                synproxy: Option<SynproxyState>, setup: F)
                                 -> Option<u64>
         where F: FnOnce(&Arc<Conn>) -> bool
     {
@@ -308,13 +313,17 @@ impl CtNet {
         }
         let label_event = labels.is_some();
         if let Some(update) = labels { conn.labels_replace(&update); }
+        let synproxy_event = synproxy.is_some();
+        if let Some(state) = synproxy { conn.synproxy_replace(state); }
         if !setup(&conn) { return None; }
         self.table.add_pending(conn.clone());
         if !self.table.confirm(&conn, now) {
             let _ = self.table.kill(&conn);
             return None;
         }
-        self.events.post(&conn, IPCT_NEW | if label_event { IPCT_LABEL } else { 0 });
+        self.events.post(&conn, IPCT_NEW
+            | if label_event { IPCT_LABEL } else { 0 }
+            | if synproxy_event { IPCT_SYNPROXY } else { 0 });
         Some(conn.id)
     }
 

@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 
 use crate::ctnetlink;
 use crate::core::CtNet;
-use crate::entry::{Conn, LabelUpdate, ProtoState, SeqAdjust, TcpProtoInfoUpdate};
+use crate::entry::{Conn, LabelUpdate, ProtoState, SeqAdjust, SynproxyState, TcpProtoInfoUpdate};
 use crate::helper::Helper;
 use crate::procfs;
 use crate::tuple::{InetAddr, ProtoPart, Tuple, TupleEnd};
@@ -200,7 +200,7 @@ fn ctnetlink_owner_updates_and_deletes_the_live_entry() {
         None,
     ], Some(TcpProtoInfoUpdate {
         state: Some(4), flags: [Some((0x80, 0xff)), None],
-    }), None));
+    }), None, None));
     assert_eq!(c.expires_in(0), 7);
     assert_eq!(c.mark.load(core::sync::atomic::Ordering::Relaxed), 0x55);
     assert_ne!(c.status() & IPS_ASSURED, 0);
@@ -224,16 +224,34 @@ fn ctnetlink_labels_use_one_canonical_masked_store_and_dump() {
     let mut mask = [0u8; NF_CT_LABELS_MAX_SIZE];
     mask[0] = 0x0f;
     assert!(ct.update_id(c.id, 0, None, None, None, [None, None], None,
-        Some(LabelUpdate { data, mask: Some(mask), len: 4 })));
+        Some(LabelUpdate { data, mask: Some(mask), len: 4 }), None));
     data[0] = 0x80;
     mask[0] = 0x80;
     assert!(ct.update_id(c.id, 0, None, None, None, [None, None], None,
-        Some(LabelUpdate { data, mask: Some(mask), len: 4 })));
+        Some(LabelUpdate { data, mask: Some(mask), len: 4 }), None));
     let mut got = [0u8; NF_CT_LABELS_MAX_SIZE];
     c.labels_copy(&mut got);
     assert_eq!(got[0], 0x85);
     let wire = ctnetlink::encode_entry(&c, 0, false);
     assert!(wire.windows(NF_CT_LABELS_MAX_SIZE).any(|window| window == &got));
+}
+
+#[test]
+fn ctnetlink_synproxy_state_is_canonical_and_nested_on_dump() {
+    let ct = CtNet::new(0, 7);
+    let c = entry(v4_tcp([192, 0, 2, 1], 40000, [198, 51, 100, 2], 443));
+    ct.table.add_pending(c.clone());
+    assert!(ct.confirm(&c, 0));
+    let state = SynproxyState { isn: 0x1122_3344, its: 0x5566_7788, tsoff: -12 };
+    assert!(ct.update_id(c.id, 0, None, None, None, [None, None], None, None,
+        Some(state)));
+    assert_eq!(*c.synproxy.lock(), Some(state));
+    let wire = ctnetlink::encode_entry(&c, 0, false);
+    let raw = wire.windows(4).position(|window| {
+        window[2..4] == (CTA_SYNPROXY | ctnetlink::NLA_F_NESTED).to_ne_bytes()
+    });
+    assert!(raw.is_some());
+    assert!(wire.windows(4).any(|window| window == 0x1122_3344u32.to_be_bytes()));
 }
 
 #[test]

@@ -235,6 +235,20 @@ fn parse_labels(attrs: &[u8]) -> Result<Option<::conntrack::entry::LabelUpdate>,
     Ok(Some(::conntrack::entry::LabelUpdate { data, mask, len: raw.len() }))
 }
 
+fn parse_synproxy(attrs: &[u8])
+    -> Result<Option<::conntrack::entry::SynproxyState>, ()>
+{
+    let Some(raw) = find_bytes_attr(attrs, ::conntrack::uapi::CTA_SYNPROXY) else {
+        return Ok(None);
+    };
+    Ok(Some(::conntrack::entry::SynproxyState {
+        isn: find_u32_attr(raw, ::conntrack::uapi::CTA_SYNPROXY_ISN).ok_or(())?,
+        its: find_u32_attr(raw, ::conntrack::uapi::CTA_SYNPROXY_ITS).ok_or(())?,
+        tsoff: find_u32_attr(raw, ::conntrack::uapi::CTA_SYNPROXY_TSOFF)
+            .ok_or(())? as i32,
+    }))
+}
+
 fn parse_helper_name(attrs: &[u8]) -> Result<Option<String>, ()> {
     let Some(help) = find_bytes_attr(attrs, ::conntrack::uapi::CTA_HELP) else {
         return Ok(None);
@@ -367,6 +381,7 @@ fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Ve
                     return nlmsg_ack(req, -95);
                 }
                 let Ok(labels) = parse_labels(attrs) else { return nlmsg_ack(req, -22); };
+                let Ok(synproxy) = parse_synproxy(attrs) else { return nlmsg_ack(req, -22); };
                 let Ok(helper) = parse_helper_name(attrs) else { return nlmsg_ack(req, -22); };
                 if let Some(name) = helper {
                     if let Err(error) = ::net::global_stack().conntrack_update_helper_in(
@@ -382,7 +397,7 @@ fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Ve
                 let ok = ::net::global_stack().conntrack_update_in(
                     namespace, id, find_u32_attr(attrs, ::conntrack::uapi::CTA_TIMEOUT),
                     find_u32_attr(attrs, ::conntrack::uapi::CTA_STATUS), mark, seqadj,
-                    protoinfo, labels);
+                    protoinfo, labels, synproxy);
                 return nlmsg_ack(req, if ok { 0 } else { -2 });
             }
             if req.nlmsg_flags & flags::NLM_F_CREATE == 0 {
@@ -408,6 +423,7 @@ fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Ve
             let Ok(protoinfo) = parse_tcp_protoinfo(attrs) else { return nlmsg_ack(req, -22); };
             let Ok(helper) = parse_helper_name(attrs) else { return nlmsg_ack(req, -22); };
             let Ok(labels) = parse_labels(attrs) else { return nlmsg_ack(req, -22); };
+            let Ok(synproxy) = parse_synproxy(attrs) else { return nlmsg_ack(req, -22); };
             let Ok(src_nat) = parse_nat_range(attrs, nfg.nfgen_family,
                 ::conntrack::uapi::CTA_NAT_SRC) else { return nlmsg_ack(req, -22); };
             let Ok(dst_nat) = parse_nat_range(attrs, nfg.nfgen_family,
@@ -417,12 +433,13 @@ fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Ve
                     namespace, orig, Some(reply), timeout,
                     find_u32_attr(attrs, ::conntrack::uapi::CTA_STATUS).unwrap_or(0),
                     find_u32_attr(attrs, ::conntrack::uapi::CTA_MARK), protoinfo, helper,
-                    src_nat, dst_nat, labels)
+                    src_nat, dst_nat, labels, synproxy)
             } else {
                 ::net::global_stack().conntrack_create_tuple_in(
                 namespace, orig, Some(reply), timeout,
                 find_u32_attr(attrs, ::conntrack::uapi::CTA_STATUS).unwrap_or(0),
-                find_u32_attr(attrs, ::conntrack::uapi::CTA_MARK), protoinfo, helper, labels)
+                find_u32_attr(attrs, ::conntrack::uapi::CTA_MARK), protoinfo, helper, labels,
+                synproxy)
             };
             return nlmsg_ack(req, if id.is_some() { 0 } else { -28 });
         }
@@ -442,6 +459,7 @@ fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Ve
             let Ok(seqadj) = parse_seqadjs(attrs) else { return nlmsg_ack(req, -22); };
             let Ok(protoinfo) = parse_tcp_protoinfo(attrs) else { return nlmsg_ack(req, -22); };
             let Ok(labels) = parse_labels(attrs) else { return nlmsg_ack(req, -22); };
+            let Ok(synproxy) = parse_synproxy(attrs) else { return nlmsg_ack(req, -22); };
             let Ok(helper) = parse_helper_name(attrs) else { return nlmsg_ack(req, -22); };
             if let Some(name) = helper {
                 if let Err(error) = ::net::global_stack().conntrack_update_helper_in(
@@ -451,7 +469,7 @@ fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Ve
             }
             ::net::global_stack().conntrack_update_in(namespace, id as u64,
                                                        timeout, status, mark, seqadj, protoinfo,
-                                                       labels)
+                                                       labels, synproxy)
         }
         _ => return nlmsg_ack(req, -95 /* EOPNOTSUPP */),
     };
@@ -531,7 +549,7 @@ mod tests {
     use alloc::sync::Arc;
     use crate::{subsys, Nfgenmsg};
     use super::{handle_one, parse_ct_tuple, parse_helper_name, parse_labels, parse_nat_range,
-                parse_seqadjs, parse_tcp_protoinfo, reply_errno};
+                parse_seqadjs, parse_synproxy, parse_tcp_protoinfo, reply_errno};
     use ::conntrack::{ProtoPart, Tuple, TupleEnd, InetAddr};
     use netlink::{flags, NetlinkSocket, Nlmsghdr, proto, register_netfilter_listener};
 
@@ -725,6 +743,32 @@ mod tests {
         let reply = Tuple { protonum: ::conntrack::uapi::IPPROTO_TCP,
                             ..orig };
         assert_eq!(reply_errno(&handle_one(&make_request(Some(&reply)), 0)), Some(-22));
+    }
+
+    #[test]
+    fn ctnetlink_synproxy_parser_requires_all_nested_words() {
+        let mut raw = Vec::new();
+        let outer = ::conntrack::ctnetlink::nest_start(
+            &mut raw, ::conntrack::uapi::CTA_SYNPROXY);
+        ::conntrack::ctnetlink::put_be32(
+            &mut raw, ::conntrack::uapi::CTA_SYNPROXY_ISN, 0x1122_3344);
+        ::conntrack::ctnetlink::put_be32(
+            &mut raw, ::conntrack::uapi::CTA_SYNPROXY_ITS, 0x5566_7788);
+        ::conntrack::ctnetlink::put_be32(
+            &mut raw, ::conntrack::uapi::CTA_SYNPROXY_TSOFF, (-12i32) as u32);
+        ::conntrack::ctnetlink::nest_end(&mut raw, outer);
+        let state = parse_synproxy(&raw).unwrap().unwrap();
+        assert_eq!(state.isn, 0x1122_3344);
+        assert_eq!(state.its, 0x5566_7788);
+        assert_eq!(state.tsoff, -12);
+
+        let mut incomplete = Vec::new();
+        let outer = ::conntrack::ctnetlink::nest_start(
+            &mut incomplete, ::conntrack::uapi::CTA_SYNPROXY);
+        ::conntrack::ctnetlink::put_be32(
+            &mut incomplete, ::conntrack::uapi::CTA_SYNPROXY_ISN, 1);
+        ::conntrack::ctnetlink::nest_end(&mut incomplete, outer);
+        assert!(parse_synproxy(&incomplete).is_err());
     }
 
     #[test]

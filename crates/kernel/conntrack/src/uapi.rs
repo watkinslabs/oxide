@@ -151,6 +151,10 @@ pub const CTA_SYNPROXY:     u16 = 24;
 pub const CTA_FILTER:       u16 = 25;
 pub const CTA_STATUS_MASK:  u16 = 26;
 
+pub const CTA_SYNPROXY_ISN:   u16 = 1;
+pub const CTA_SYNPROXY_ITS:   u16 = 2;
+pub const CTA_SYNPROXY_TSOFF: u16 = 3;
+
 /// Conntrack label extension width, matching Linux's 128 label bits.
 pub const NF_CT_LABELS_MAX_SIZE: usize = 16;
 

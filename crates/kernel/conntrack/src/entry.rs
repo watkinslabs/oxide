@@ -192,6 +192,15 @@ impl Conn {
         changed
     }
 
+    /// Replace the canonical synproxy extension state.
+    /// # C: O(1)
+    pub fn synproxy_replace(&self, state: SynproxyState) -> bool {
+        let mut current = self.synproxy.lock();
+        let changed = *current != Some(state);
+        *current = Some(state);
+        changed
+    }
+
     /// Initialize or clear one direction's sequence correction. # C: O(1)
     pub fn seqadj_init(&self, dir: u8, offset: i32) {
         let index = dir as usize;
