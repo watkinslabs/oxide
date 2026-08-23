@@ -201,7 +201,13 @@ pub(crate) fn build_newflowtable_reply(seq: u32, pid: u32,
     put_nlattr_u32(&mut hook, nfta_flowtable::NFTA_FLOWTABLE_HOOK_PRIORITY,
         flowtable.priority as u32);
     let mut devices = Vec::new();
-    for name in &flowtable.devices { put_nlattr_str(&mut devices, 1, name); }
+    for device in &flowtable.devices {
+        let (ty, name) = match device {
+            ::net::FlowtableDevice::Name(name) => (1, name),
+            ::net::FlowtableDevice::Prefix(name) => (2, name),
+        };
+        put_nlattr_str(&mut devices, ty, name);
+    }
     put_nlattr(&mut hook, nfta_flowtable::NFTA_FLOWTABLE_HOOK_DEVS, &devices);
     put_nlattr(&mut body, nfta_flowtable::NFTA_FLOWTABLE_HOOK, &hook);
     build_reply(seq, pid, nft_msg::NFT_MSG_NEWFLOWTABLE, multi, body)

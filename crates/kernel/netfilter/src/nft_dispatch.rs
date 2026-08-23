@@ -9,7 +9,7 @@ use crate::nft_dispatch_helpers::{
     walk_setelem_list,
 };
 
-fn parse_flowtable_devices(blob: &[u8]) -> Option<Vec<String>> {
+fn parse_flowtable_devices(blob: &[u8]) -> Option<Vec<::net::FlowtableDevice>> {
     let mut devices = Vec::new();
     let mut off = 0usize;
     while off + 4 <= blob.len() {
@@ -18,7 +18,12 @@ fn parse_flowtable_devices(blob: &[u8]) -> Option<Vec<String>> {
         if len < 4 || off + len > blob.len() || !matches!(ty, 1 | 2) { return None; }
         let raw = &blob[off + 4..off + len];
         let end = raw.iter().position(|byte| *byte == 0).unwrap_or(raw.len());
-        devices.push(String::from(core::str::from_utf8(&raw[..end]).ok()?));
+        let name = String::from(core::str::from_utf8(&raw[..end]).ok()?);
+        devices.push(match ty {
+            1 => ::net::FlowtableDevice::Name(name),
+            2 => ::net::FlowtableDevice::Prefix(name),
+            _ => return None,
+        });
         off += netlink::nlmsg_align(len);
     }
     (off == blob.len()).then_some(devices)
@@ -100,8 +105,8 @@ pub(super) fn handle_nft(
                 },
                 None => Vec::new(),
             };
-            if devices.iter().any(|dev| ::net::global_stack().ifaces
-                .lookup_name_in_ns(dev, namespace).is_none()) {
+            if devices.iter().any(|dev| matches!(dev, ::net::FlowtableDevice::Name(name)
+                if ::net::global_stack().ifaces.lookup_name_in_ns(name, namespace).is_none())) {
                 return nlmsg_ack(req, -19);
             }
             let flags = find_u32_attr(attrs, nfta_flowtable::NFTA_FLOWTABLE_FLAGS).unwrap_or(0);

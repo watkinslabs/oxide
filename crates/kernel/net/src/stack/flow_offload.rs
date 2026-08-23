@@ -33,6 +33,13 @@ pub(crate) struct FlowEntry {
     pub(crate) routes: [FlowRoute; 2],
 }
 
+/// A device selector on a flowtable's netdev ingress hook.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FlowtableDevice {
+    Name(String),
+    Prefix(String),
+}
+
 /// Namespace-owned nftables flowtable object and its netdev ingress hook.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FlowtableConfig {
@@ -41,7 +48,7 @@ pub struct FlowtableConfig {
     pub name: String,
     pub hook_num: u32,
     pub priority: i32,
-    pub devices: Vec<String>,
+    pub devices: Vec<FlowtableDevice>,
     pub flags: u32,
     pub handle: u64,
 }
@@ -50,7 +57,7 @@ impl NetStack {
     /// Publish one nftables flowtable configuration before rules may refer to it.
     /// # C: O(log N_flowtables)
     pub fn register_flowtable_in(&self, net_ns: u64, family: u8, table: &str, name: &str,
-                                 hook_num: u32, priority: i32, devices: Vec<String>, flags: u32)
+                                 hook_num: u32, priority: i32, devices: Vec<FlowtableDevice>, flags: u32)
                                  -> Option<u64> {
         let key = (net_ns, family, String::from(name));
         let mut flowtables = self.flowtables.lock();
@@ -98,8 +105,12 @@ impl NetStack {
     fn flowtable_applies(&self, net_ns: u64, family: u8, name: &str,
                          iface: NetIfaceId) -> bool {
         let Some(config) = self.flowtable_config(net_ns, family, name) else { return false; };
-        !config.devices.is_empty() && config.devices.iter().any(|device|
-            self.ifaces.lookup_name_in_ns(device, net_ns).is_some_and(|(id, _)| id == iface))
+        !config.devices.is_empty() && config.devices.iter().any(|device| match device {
+            FlowtableDevice::Name(name) => self.ifaces.lookup_name_in_ns(name, net_ns)
+                .is_some_and(|(id, _)| id == iface),
+            FlowtableDevice::Prefix(prefix) => self.ifaces.lookup_in_ns(iface, net_ns)
+                .is_some_and(|dev| dev.name().starts_with(prefix)),
+        })
     }
 
     /// Snapshot flowtable objects for nf_tables GET/dump serialization.
@@ -367,9 +378,9 @@ mod tests {
     fn flowtable_registration_is_namespace_scoped_and_dumpable() {
         let stack = NetStack::new();
         let handle = stack.register_flowtable_in(7, 2, "filter", "ft", 0, -256,
-            alloc::vec![String::from("eth0")], 0).expect("first registration");
+            alloc::vec![FlowtableDevice::Name(String::from("eth0"))], 0).expect("first registration");
         assert!(stack.register_flowtable_in(7, 2, "filter", "ft", 0, -256,
-            alloc::vec![String::from("eth0")], 0).is_none());
+            alloc::vec![FlowtableDevice::Name(String::from("eth0"))], 0).is_none());
         let snapshot = stack.flowtables_snapshot_in(7, 2);
         assert_eq!(snapshot.len(), 1);
         assert_eq!((snapshot[0].table.as_str(), snapshot[0].name.as_str(),
