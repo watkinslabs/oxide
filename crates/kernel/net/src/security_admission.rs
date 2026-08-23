@@ -42,6 +42,16 @@ pub fn check_socket_listen(namespace: u64, family: u16, backlog: u32, target_sid
     Ok(())
 }
 
+pub fn check_netlink(namespace: u64, protocol: u16, message_type: u16,
+                     target_sid: u32, target_class: &'static str) -> Result<(), crate::NetError> {
+    let context = security::network::Context::netlink_send(
+        namespace, protocol as u32, message_type, target_sid, target_class);
+    if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
+        return Err(crate::NetError::Eacces);
+    }
+    Ok(())
+}
+
 #[allow(unpredictable_function_pointer_comparisons, reason = "the assertion is `the hook I just installed came back`; both sides are the same non-generic fn item in the same codegen unit, so the lint's address-uniqueness caveat cannot apply")]
 #[cfg(test)]
 mod tests {

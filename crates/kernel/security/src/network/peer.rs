@@ -29,6 +29,7 @@ pub const NO_LABEL: u32 = 0;
 pub struct SocketLabelOps {
     /// Label a socket created right now takes, read from the creating task.
     pub create: fn(SocketClass) -> u32,
+    pub create_netlink: fn(u16) -> u32,
     /// Label reported for a peer that no label was ever recorded for.
     ///
     /// Not `NO_LABEL`: a socket of a class that reports peer labels has one from
@@ -53,7 +54,7 @@ pub struct SocketLabelOps {
 /// Security class fixed by a socket's completed family/type/protocol admission.
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum SocketClass { Tcp, Udp, RawIp, Icmp, Packet, UnixStream, UnixDgram }
+pub enum SocketClass { Tcp, Udp, RawIp, Icmp, Packet, UnixStream, UnixDgram, Netlink }
 
 static SOCKET_LABEL: Spinlock<Option<SocketLabelOps>, Namespace> = Spinlock::new(None);
 
@@ -81,6 +82,11 @@ pub fn new_socket_label(class: SocketClass) -> u32 {
     // that would order two locks that have no order between them.
     let ops = *SOCKET_LABEL.lock();
     match ops { Some(ops) => (ops.create)(class), None => NO_LABEL }
+}
+
+pub fn new_netlink_socket_label(protocol: u16) -> u32 {
+    let ops = *SOCKET_LABEL.lock();
+    match ops { Some(ops) => (ops.create_netlink)(protocol), None => NO_LABEL }
 }
 
 /// Label reported for a peer no label was recorded for. # C: O(1)
@@ -141,7 +147,7 @@ mod tests {
     fn server_end(listener: u32, client: u32) -> u32 { (listener << 8) | (client & 0xff) }
 
     fn ops() -> SocketLabelOps {
-        SocketLabelOps { create, unlabeled: UNLABELED, context, server_end }
+        SocketLabelOps { create, create_netlink: |_| CREATED, unlabeled: UNLABELED, context, server_end }
     }
 
     /// There is ONE installed module for the whole kernel, so these tests all

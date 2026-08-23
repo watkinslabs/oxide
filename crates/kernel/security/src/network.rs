@@ -12,7 +12,7 @@ use sync::{Namespace, Spinlock};
 /// `GetOption` are separate registrations rather than one "option access".
 #[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Operation { Create, Bind, Connect, Listen, Accept, Send, Receive, Shutdown,
-    NameQuery, SocketPair, SetOption, GetOption, Ioctl, Packet }
+    NameQuery, SocketPair, SetOption, GetOption, Ioctl, Packet, NetlinkSend }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Verdict { Allow, Deny }
@@ -34,6 +34,8 @@ pub struct Context { pub namespace: u64, pub family: u16, pub socket_type: u32,
     /// LSM hook receives via `security_socket_listen(sock, backlog)`. `None`
     /// for every operation other than `Listen`.
     pub backlog: Option<u32>,
+    /// Netlink message type for `NetlinkSend`; zero for all other operations.
+    pub message_type: u16,
     /// The retained security label of the socket, when the caller has one.
     /// `NO_LABEL` means that the operation is metadata-only and has no socket
     /// object available at this generic boundary.
@@ -47,7 +49,7 @@ impl Context {
                     operation: Operation) -> Self
     {
         Self { namespace, family, socket_type, protocol, operation, option: OptionId::NONE,
-               backlog: None, target_sid: NO_LABEL, target_class: "socket" }
+               backlog: None, message_type: 0, target_sid: NO_LABEL, target_class: "socket" }
     }
 
     /// One option access, carrying the level and option number the decision is
@@ -57,6 +59,7 @@ impl Context {
     {
         Self { namespace, family, socket_type, protocol, operation,
                option: OptionId { level, optname }, backlog: None,
+               message_type: 0,
                target_sid: NO_LABEL, target_class: "socket" }
     }
 
@@ -67,6 +70,7 @@ impl Context {
     {
         Self { namespace, family, socket_type, protocol, operation: Operation::Listen,
                option: OptionId::NONE, backlog: Some(backlog),
+               message_type: 0,
                target_sid: NO_LABEL, target_class: "socket" }
     }
 
@@ -74,6 +78,13 @@ impl Context {
         self.target_sid = target_sid;
         self.target_class = target_class;
         self
+    }
+
+    pub const fn netlink_send(namespace: u64, protocol: u32, message_type: u16,
+                              target_sid: u32, target_class: &'static str) -> Self {
+        Self { namespace, family: 16, socket_type: 2, protocol,
+               operation: Operation::NetlinkSend, option: OptionId::NONE,
+               backlog: None, message_type, target_sid, target_class }
     }
 }
 
@@ -181,7 +192,7 @@ pub fn remove_namespace(namespace: u64) -> usize {
 /// here.
 #[path = "network/peer.rs"]
 mod peer;
-pub use peer::{install_socket_label, new_socket_label, remove_socket_label, server_end_label,
+pub use peer::{install_socket_label, new_socket_label, new_netlink_socket_label, remove_socket_label, server_end_label,
                socket_label_context, unlabeled_socket_label, SocketClass, SocketLabelOps, NO_LABEL};
 
 /// The sender label carried by one received message.  This is deliberately a

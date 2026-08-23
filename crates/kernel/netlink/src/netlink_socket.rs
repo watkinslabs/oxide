@@ -57,6 +57,7 @@ pub struct NetlinkSocket {
     /// internet and virtual-socket families use.
     pub base: net::SockBase,
     pub protocol: u16,
+    pub security_sid: AtomicU32,
     pub net_ns: NetworkNamespaceRef,
     /// Socket-file opener credentials retained by the socket owner. Cross-netns
     /// multicast checks this immutable snapshot, never the broadcaster task.
@@ -153,6 +154,7 @@ impl NetlinkSocket {
             base: net::SockBase::with_buffers(NETLINK_SNDBUF_DEFAULT as i32,
                 NETLINK_RCVBUF_DEFAULT as i32),
             protocol,
+            security_sid: AtomicU32::new(security::network::new_netlink_socket_label(protocol)),
             net_ns: Arc::clone(net_ns),
             opener_user_ns,
             opener_caps,
@@ -431,10 +433,30 @@ impl NetlinkSocket {
         // message work.
         let mut off = 0usize;
         while let Some(frame) = crate::rcv_skb::frame_at(&datagram, off) {
+            if net::security_admission::check_netlink(
+                self.net_ns.id().as_u64(), self.protocol, frame.hdr.nlmsg_type,
+                self.security_sid.load(Ordering::Acquire), self.security_class()).is_err() {
+                return Err(vfs::VfsError::Eacces);
+            }
             self.handle_one(&frame.hdr, &datagram[off..off + frame.msg_len]);
             off += frame.advance;
         }
         Ok(consumed)
+    }
+
+    fn security_class(&self) -> &'static str {
+        match self.protocol {
+            proto::NETLINK_ROUTE => "netlink_route_socket",
+            proto::NETLINK_SOCK_DIAG => "netlink_tcpdiag_socket",
+            proto::NETLINK_NFLOG => "netlink_nflog_socket",
+            proto::NETLINK_XFRM => "netlink_xfrm_socket",
+            proto::NETLINK_SELINUX => "netlink_selinux_socket",
+            proto::NETLINK_AUDIT => "netlink_audit_socket",
+            proto::NETLINK_NETFILTER => "netlink_netfilter_socket",
+            proto::NETLINK_KOBJECT_UEVENT => "netlink_kobject_uevent_socket",
+            proto::NETLINK_GENERIC => "netlink_generic_socket",
+            _ => "netlink_socket",
+        }
     }
 
     /// `f_op->poll` readiness: always writable, readable when the rx queue is
