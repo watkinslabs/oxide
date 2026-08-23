@@ -13,7 +13,8 @@ mod types;
 mod uffd;
 
 pub use free::{clear_swap_4k_at_root, free_user_tree, free_user_tree_leafmap, replace_present_4k_with_swap_at_root, replace_present_4k_with_swap_if_pa_at_root, replace_present_4k_flags_if_pa_at_root, replace_swap_4k_with_present_at_root, unmap_4k, unmap_4k_at_root, unmap_at_va, walk_user_swap_entries_at_root};
-pub use map::{install_swap_4k_at_root, map_4k, map_at_level, map_at_level_with_root, map_device_4k};
+pub use map::{install_swap_4k_at_root, map_4k, map_at_level, map_at_level_with_root,
+              map_device_4k, move_leaf_4k_at_root, move_leaf_at_root};
 pub use marker::PteMarker;
 pub use migration::{clear_migration_4k_at_root, replace_migration_4k_with_present_at_root, replace_migration_4k_with_swap_at_root, replace_present_4k_with_migration_if_pa_at_root};
 pub use split::{block_output_pa, child_output_pa, leaf_present_at_root, level_span_bytes, set_leaf_present_at_root, split_kernel_leaf_at_root, split_step, SplitStep};

@@ -226,6 +226,14 @@ impl AddressSpace {
         validate_aligned(addr)?;
         let end = end_of_raw(addr, len as u64)?;
         let mut tree = self.vmas.write();
+        self.munmap_locked(&mut tree, addr, end)
+    }
+
+    /// VMA-only unmap with the caller's write transaction still held.
+    /// Page-table teardown remains the PMM owner's responsibility.
+    pub(crate) fn munmap_locked(
+        &self, tree: &mut VmaTree, addr: UserVirtAddr, end: u64,
+    ) -> KResult<()> {
         // mseal(2): a sealed VMA anywhere in the range refuses the whole
         // unmap, before any split.
         if tree.any_sealed_raw_end(addr, end) { return Err(Error::Perm); }
@@ -242,7 +250,7 @@ impl AddressSpace {
         // stale wide edges (still PTE-checked by the walker, so this is
         // hygiene, not a soundness fix — but it keeps the chain bounded).
         let mut removed = Vec::new();
-        self.rmap_resplit(&mut tree, addr.as_u64(), end, |t, s, e| {
+        self.rmap_resplit(tree, addr.as_u64(), end, |t, s, e| {
             removed = t.remove_range_raw_end(UserVirtAddr::new(s).expect("uva"), e); Ok(())
         })?;
         for vma in &removed { self.accounting.remove_vma(vma); }

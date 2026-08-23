@@ -23,7 +23,7 @@ const LEAF_LEVEL_4K: u8 = 3;
 /// is a live root it owns, and the returned slot is used only while the
 /// page-table lock is held.
 /// # C: O(walk depth)
-unsafe fn leaf_slot<W: PtWalker>(root_pa: u64, va: u64, hhdm: u64) -> Option<*mut u64> {
+pub(crate) unsafe fn leaf_slot<W: PtWalker>(root_pa: u64, va: u64, hhdm: u64) -> Option<*mut u64> {
     let idx = [
         ((va >> L0_SHIFT) & TABLE_IDX_MASK) as usize,
         ((va >> L1_SHIFT) & TABLE_IDX_MASK) as usize,

@@ -127,31 +127,26 @@ pub fn sys_mremap(args: &SyscallArgs) -> i64 {
         (new_size as u64).saturating_sub(old_size as u64)
     };
     if let Err(rv) = pmm::user_as::admit_as_growth(&mm, as_delta) { return rv; }
-    match mm.mremap_full(old_ua, old_size, new_size,
+    let mut move_pages = |src: u64, dst: u64, len: usize| {
+        pmm::user_as::move_pages(src, dst, len as u64)
+    };
+    match mm.mremap_full_with_move(old_ua, old_size, new_size,
                     (flags & MREMAP_MAYMOVE) != 0,
                     (flags & MREMAP_FIXED) != 0,
                     dontunmap,
-                    new_ua)
+                    new_ua,
+                    &mut move_pages)
     {
         Ok(va) => {
             if dontunmap {
-                // mremap_full installed the new VMA + copied bytes.
-                // Drop the source range's PTEs so subsequent reads
-                // on the still-mapped source VMA refault as fresh
-                // zero pages — completes the DONTUNMAP contract.
+                // The raw PTE move left the source VMA in place. Its source
+                // leaves are already empty; the canonical zap is retained to
+                // clear any sparse-range markers or entries not moved.
                 let _ = pmm::user_as::evict_pages_in_range(old, old_size as u64);
             } else if va.as_u64() != old {
-                // B53: MOVE (grow, or FIXED to a new addr). mremap_full
-                // copied old→new and removed the *VMA* for the source via
-                // AddressSpace::munmap — but that is VMA-bookkeeping only:
-                // the source range's PTEs stay mapped and its frames stay
-                // allocated (refcount>0, off the buddy free-list). The now
-                // VMA-less source VA becomes an allocatable hole; a later
-                // mmap reusing it hits the stale PTE (no demand-fault) and
-                // silently aliases the *old* frame's contents — musl
-                // mallocng then reads non-zero where a fresh group must be
-                // zero and trips a_crash() (the python `import` SIGSEGV).
-                // Tear the source PTEs + frames down to match Linux mremap.
+                // The raw move already removed the source leaves. This is a
+                // no-op for moved pages and still clears any tail not in the
+                // transferred range before the old VMA is reused.
                 let _ = pmm::user_as::evict_pages_in_range(old, old_size as u64);
             } else if new_size < old_size {
                 // SHRINK in place: mremap_full dropped the tail VMA only;

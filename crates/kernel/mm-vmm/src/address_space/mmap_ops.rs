@@ -5,6 +5,7 @@ use hal::UserVirtAddr;
 use crate::hole::hole_clear;
 use crate::vma::{FileBackingError, FileMmapSetup, Vma, VmaBacking, VmaFlags, VmaProt};
 use crate::{Error, KResult, MdweAdmission, MmapError, MmapPlacement};
+use crate::tree::VmaTree;
 
 use super::layout::{end_of, is_aligned, validate_aligned, validate_len};
 use super::limits::MMAP_TOP;
@@ -141,11 +142,11 @@ impl AddressSpace {
         )
     }
 
-    /// Move an existing VMA without treating its unchanged permissions as a
-    /// new executable gain. Linux mremap preserves both VM_* and VM_MAY*.
-    /// # C: O(log N)
-    pub(crate) fn mmap_preserving_prot(
+    /// Locked counterpart used by `mremap`'s single mm transaction.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn mmap_preserving_prot_locked(
         &self,
+        tree: &mut VmaTree,
         hint: Option<UserVirtAddr>,
         len: usize,
         prot: VmaProt,
@@ -159,8 +160,8 @@ impl AddressSpace {
             (true, None) => return Err(Error::Inval),
             (false, hint) => MmapPlacement::Advisory(hint),
         };
-        self.mmap_with_may_at_inner(
-            placement, len, prot, may_prot, flags, backing, MdweMode::Preserve,
+        self.mmap_with_may_at_inner_locked(
+            tree, placement, len, prot, may_prot, flags, backing, MdweMode::Preserve,
         ).map_err(|error| match error {
             MmapError::Vmm(error) => error,
             MmapError::Exists => Error::Inval,
@@ -170,6 +171,25 @@ impl AddressSpace {
     #[allow(clippy::too_many_arguments)]
     fn mmap_with_may_at_inner(
         &self,
+        placement: MmapPlacement,
+        len: usize,
+        prot: VmaProt,
+        may_prot: VmaProt,
+        flags: VmaFlags,
+        backing: VmaBacking,
+        mdwe: MdweMode,
+    ) -> Result<UserVirtAddr, MmapError> {
+        let mut tree = self.vmas.write();
+        self.mmap_with_may_at_inner_locked(&mut tree, placement, len, prot, may_prot, flags, backing, mdwe)
+    }
+
+    /// The same insertion transaction with the VMA write guard supplied by a
+    /// compound operation such as `mremap`. No nested lock acquisition is
+    /// permitted while that operation owns the mm transaction.
+    #[allow(clippy::too_many_arguments)]
+    fn mmap_with_may_at_inner_locked(
+        &self,
+        tree: &mut VmaTree,
         placement: MmapPlacement,
         len: usize,
         prot: VmaProt,
@@ -201,7 +221,6 @@ impl AddressSpace {
         };
         let aligned_for_backing = |h: UserVirtAddr| h.as_u64() & (align - 1) == 0;
 
-        let mut tree = self.vmas.write();
         let (start_va, replace_end) = match placement {
             MmapPlacement::Fixed(h) => {
                 validate_aligned(h)?;

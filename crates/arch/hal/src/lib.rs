@@ -286,6 +286,30 @@ pub trait MmuOps {
     /// # Ctx: under PT lock per `06§3.6`
     unsafe fn map_at(root_pa: u64, va: Va, pa: Pa, flags: PageFlags, size: PageSize) -> Option<Pa>;
 
+    /// Move one raw 4 KiB leaf within an explicit user root. The leaf is not
+    /// decoded: present, swap, migration, and marker state all move exactly
+    /// as encoded. `false` means the source is a sparse hole; the destination
+    /// remains empty. Huge/block leaves are reported as `HitHugeOrBlock` so
+    /// the PMM owner cannot silently turn a large mapping into base pages.
+    /// # SAFETY: caller owns both ranges, holds the address-space PT lock,
+    /// proves they do not overlap, and performs the required TLB invalidation.
+    /// # C: O(walk depth)
+    unsafe fn move_leaf_4k_at(
+        _root_pa: u64, _old: Va, _new: Va,
+    ) -> Result<bool, pt_walker::WalkErr> {
+        Err(pt_walker::WalkErr::AllocFailed)
+    }
+
+    /// Move the native leaf covering `old` and return its granule. Sparse
+    /// holes return `Ok(None)`; present, swap, migration, marker, and huge
+    /// leaves retain their architecture-encoded raw entry.
+    /// # SAFETY: same ownership and TLB contract as `move_leaf_4k_at`.
+    unsafe fn move_leaf_at(
+        _root_pa: u64, _old: Va, _new: Va,
+    ) -> Result<Option<PageSize>, pt_walker::WalkErr> {
+        Err(pt_walker::WalkErr::AllocFailed)
+    }
+
     /// Read the architecture-encoded non-present swap leaf at `va` in an
     /// explicit user root.  Default is appropriate only for hosted MMU mocks
     /// that do not model swap leaves.

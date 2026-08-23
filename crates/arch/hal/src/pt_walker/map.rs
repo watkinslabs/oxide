@@ -1,11 +1,112 @@
 use core::ptr;
 
 use super::{PtWalker, SwapEntry, WalkErr, ENTRIES_PER_TABLE, L0_SHIFT, L1_SHIFT, L2_SHIFT, L3_SHIFT, TABLE_IDX_MASK};
+use crate::PageSize;
 
 /// Zero is the sole architecturally absent page-table leaf on both walkers.
 const EMPTY_PTE: u64 = 0;
 /// L3 is the 4 KiB leaf level in the shared four-level walker.
 const SWAP_LEAF_LEVEL: usize = 3;
+
+/// Move one raw 4 KiB leaf between two addresses in one page-table root.
+///
+/// Present permissions, swap entries, migration tokens, and userfaultfd
+/// markers all belong to the PTE itself and therefore cross the move without
+/// being decoded and re-packed. The caller owns the address-space PTE lock,
+/// has proved the ranges do not overlap, and invalidates old and new
+/// translations after the move. Huge/block leaves are intentionally rejected;
+/// their native-granule move belongs in the same PMM owner rather than being
+/// silently split here.
+///
+/// # SAFETY
+/// `root_pa` is live, `hhdm_offset` covers all table pages, both VAs are
+/// 4 KiB-aligned, and the destination leaf is empty.
+/// # C: O(walk depth)
+pub unsafe fn move_leaf_4k_at_root<W: PtWalker, F: FnMut() -> Option<u64>>(
+    root_pa: u64, old_va: u64, new_va: u64, hhdm_offset: u64, mut alloc_pa: F,
+) -> Result<bool, WalkErr> {
+    if old_va == new_va { return Ok(false); }
+    let old_slot = unsafe { super::uffd::leaf_slot::<W>(root_pa, old_va, hhdm_offset) }
+        .ok_or(WalkErr::HitHugeOrBlock)?;
+    let raw = unsafe { ptr::read_volatile(old_slot) };
+    if raw == EMPTY_PTE { return Ok(false); }
+
+    // Materialise only the destination's intermediate tables. The source is
+    // untouched until allocation and the destination occupancy check succeed.
+    let shifts = [L0_SHIFT, L1_SHIFT, L2_SHIFT, L3_SHIFT];
+    let mut current_pa = root_pa;
+    for level in 0..3 {
+        let idx = ((new_va >> shifts[level]) & TABLE_IDX_MASK) as usize;
+        current_pa = unsafe { walk_or_alloc::<W, _>(current_pa, idx, hhdm_offset, &mut alloc_pa)? };
+    }
+    let dst_idx = ((new_va >> L3_SHIFT) & TABLE_IDX_MASK) as usize;
+    let dst_table = (hhdm_offset.wrapping_add(current_pa)) as *mut u64;
+    let dst_slot = unsafe { dst_table.add(dst_idx) };
+    if unsafe { ptr::read_volatile(dst_slot) } != EMPTY_PTE {
+        return Err(WalkErr::AlreadyMapped);
+    }
+    unsafe {
+        ptr::write_volatile(dst_slot, raw);
+        ptr::write_volatile(old_slot, EMPTY_PTE);
+    }
+    Ok(true)
+}
+
+/// Move the native leaf covering `old_va`, preserving its raw encoding and
+/// returning its granule. A zero 4 KiB source leaf returns `Ok(None)`; a huge
+/// leaf is moved only when the destination has the same alignment and empty
+/// native-granule slot.
+///
+/// # SAFETY
+/// Same ownership and invalidation contract as [`move_leaf_4k_at_root`].
+/// # C: O(walk depth)
+pub unsafe fn move_leaf_at_root<W: PtWalker, F: FnMut() -> Option<u64>>(
+    root_pa: u64, old_va: u64, new_va: u64, hhdm_offset: u64, mut alloc_pa: F,
+) -> Result<Option<PageSize>, WalkErr> {
+    let shifts = [L0_SHIFT, L1_SHIFT, L2_SHIFT, L3_SHIFT];
+    let spans = [0u64, 1u64 << L1_SHIFT, 1u64 << L2_SHIFT, 1u64 << L3_SHIFT];
+    let mut current_pa = root_pa;
+    let mut old_slot = None;
+    let mut level = 0usize;
+    for l in 0..4 {
+        let idx = ((old_va >> shifts[l]) & TABLE_IDX_MASK) as usize;
+        let table = (hhdm_offset.wrapping_add(current_pa)) as *mut u64;
+        let slot = unsafe { table.add(idx) };
+        let raw = unsafe { ptr::read_volatile(slot) };
+        if raw == EMPTY_PTE { return Ok(None); }
+        if l == 0 && W::is_huge_or_block(raw) {
+            return Err(WalkErr::HitHugeOrBlock);
+        }
+        if l == 3 || W::is_huge_or_block(raw) {
+            old_slot = Some(slot);
+            level = l;
+            break;
+        }
+        if W::is_huge_or_block(raw) { return Err(WalkErr::HitHugeOrBlock); }
+        current_pa = raw & W::PHYS_MASK;
+    }
+    let old_slot = old_slot.ok_or(WalkErr::HitHugeOrBlock)?;
+    let span = spans[level];
+    if old_va % span != 0 || new_va % span != 0 { return Err(WalkErr::HitHugeOrBlock); }
+    let raw = unsafe { ptr::read_volatile(old_slot) };
+
+    current_pa = root_pa;
+    for l in 0..level {
+        let idx = ((new_va >> shifts[l]) & TABLE_IDX_MASK) as usize;
+        current_pa = unsafe { walk_or_alloc::<W, _>(current_pa, idx, hhdm_offset, &mut alloc_pa)? };
+    }
+    let dst_idx = ((new_va >> shifts[level]) & TABLE_IDX_MASK) as usize;
+    let dst_table = (hhdm_offset.wrapping_add(current_pa)) as *mut u64;
+    let dst_slot = unsafe { dst_table.add(dst_idx) };
+    if unsafe { ptr::read_volatile(dst_slot) } != EMPTY_PTE {
+        return Err(WalkErr::AlreadyMapped);
+    }
+    unsafe {
+        ptr::write_volatile(dst_slot, raw);
+        ptr::write_volatile(old_slot, EMPTY_PTE);
+    }
+    Ok(Some(match level { 1 => PageSize::P1G, 2 => PageSize::P2M, _ => PageSize::P4K }))
+}
 
 /// Install one non-present swap leaf into `root_pa` without replacing any
 /// existing leaf.  Fork uses this to give the child its own PTE reference to

@@ -296,6 +296,28 @@ impl MmuOps for ArmMmu {
         None
     }
 
+    unsafe fn move_leaf_4k_at(root_pa: u64, old: Va, new: Va)
+        -> Result<bool, hal::pt_walker::WalkErr> {
+        let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
+        if hhdm == 0 { return Err(hal::pt_walker::WalkErr::AllocFailed); }
+        unsafe {
+            hal::pt_walker::move_leaf_4k_at_root::<PtWalkerArm, _>(
+                root_pa, old.0, new.0, hhdm, || alloc_frame(root_pa),
+            )
+        }
+    }
+
+    unsafe fn move_leaf_at(root_pa: u64, old: Va, new: Va)
+        -> Result<Option<PageSize>, hal::pt_walker::WalkErr> {
+        let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
+        if hhdm == 0 { return Err(hal::pt_walker::WalkErr::AllocFailed); }
+        unsafe {
+            hal::pt_walker::move_leaf_at_root::<PtWalkerArm, _>(
+                root_pa, old.0, new.0, hhdm, || alloc_frame(root_pa),
+            )
+        }
+    }
+
     fn swap_entry_at(root_pa: u64, va: Va) -> Option<hal::pt_walker::SwapEntry> {
         let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
         if hhdm == 0 { return None; }

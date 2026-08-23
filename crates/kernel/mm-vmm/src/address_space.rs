@@ -147,7 +147,7 @@ pub use mmfields::{
 /// (PML4 on x86_64; L0 on aarch64). `MmuOps::activate(root_pa)`
 /// installs it as the active CR3 / TTBR0_EL1 per `13§8`.
 pub struct AddressSpace {
-    vmas:    rwsem::MmapRwsem<VmaTree>,
+    pub(crate) vmas:    rwsem::MmapRwsem<VmaTree>,
     /// Serializes page-table leaf inspection and rewrite for this address
     /// space. It is deliberately distinct from `vmas`: page faults drop the
     /// VMA lock before backing I/O, then take this lock only for PTE commit and
