@@ -19,11 +19,11 @@ impl NetStack {
     pub(crate) fn apply_synproxy(&self, p: &mut Pkt, family: u8, configured_mss: u16,
         wscale: u8, flags: u32, _hook: u32)
         -> Result<(), crate::netfilter_action::ApplyError> {
-        if !matches!(p.conntrack_state_owned(), Some((_, Some(_), _, _))) {
+        let Some((_, Some(_conn), _, dir)) = p.conntrack_state_owned() else {
             // Linux's synproxy hook is a conntrack extension; without an
             // owner it has nothing to proxy and must leave the packet alone.
             return Ok(());
-        }
+        };
         let packet = p.data();
         let (src, dst, off) = match family {
             crate::netfilter_hook::NFPROTO_IPV4 => {
@@ -58,6 +58,20 @@ impl NetStack {
         let mss = if configured_mss == 0 { peer_mss } else { configured_mss.min(peer_mss) };
         let option_flags = flags;
         let now = crate::tcp_conn::ka_now_ns();
+        if dir == ::conntrack::uapi::IP_CT_DIR_REPLY
+            && hdr.flags & (tcp_hdr::flags::SYN | tcp_hdr::flags::ACK)
+                == (tcp_hdr::flags::SYN | tcp_hdr::flags::ACK) {
+            // The protected peer completed its half of the handshake.  Linux
+            // acknowledges it toward the peer and separately completes the
+            // client's half before consuming this SYN-ACK.
+            self.send_synproxy_segment(net_ns, dst, src, hdr.dst_port, hdr.src_port,
+                hdr.ack, hdr.seq.wrapping_add(1), tcp_hdr::flags::ACK,
+                hdr.window, &[], p.tx.mark).map_err(|_| crate::netfilter_action::ApplyError::Invalid)?;
+            self.send_synproxy_segment(net_ns, src, dst, hdr.src_port, hdr.dst_port,
+                hdr.seq.wrapping_add(1), hdr.ack, tcp_hdr::flags::ACK,
+                hdr.window, &[], p.tx.mark).map_err(|_| crate::netfilter_action::ApplyError::Invalid)?;
+            return Err(crate::netfilter_action::ApplyError::Stolen);
+        }
         if hdr.flags & tcp_hdr::flags::SYN != 0 && hdr.flags & tcp_hdr::flags::ACK == 0 {
             let (cookie, encoded_mss) = crate::syncookies::init_sequence(
                 src, dst, hdr.src_port, hdr.dst_port, hdr.seq, now,
@@ -117,4 +131,24 @@ fn syn_options(mss: u16, wscale: u8, flags: u32) -> alloc::vec::Vec<u8> {
     }
     while options.len() % 4 != 0 { options.push(tcp_hdr::opt::NOP); }
     options
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+    use super::syn_options;
+
+    #[test]
+    fn encodes_enabled_syn_options_and_alignment() {
+        assert_eq!(syn_options(1460, 7, 0x03), vec![
+            2, 4, 0x05, 0xb4,
+            1, 3, 3, 7,
+        ]);
+    }
+
+    #[test]
+    fn omits_disabled_syn_options() {
+        assert!(syn_options(1460, 7, 0).is_empty());
+        assert_eq!(syn_options(1460, 0, 0x03), vec![2, 4, 0x05, 0xb4]);
+    }
 }
