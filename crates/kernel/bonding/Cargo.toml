@@ -14,6 +14,7 @@ rtnl-link = { path = "../rtnl-link" }
 net     = { path = "../net" }
 sync    = { path = "../../shared/sync" }
 syscall = { path = "../syscall" }
+timer  = { path = "../timer" }
 
 [lints]
 workspace = true

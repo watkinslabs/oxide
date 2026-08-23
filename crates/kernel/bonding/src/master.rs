@@ -8,7 +8,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use net::addr::MacAddr;
+use net::addr::{Ipv4Addr, MacAddr, NetIfaceId};
 use net::netdev::{NamespaceDropAction, NetDev, NetError, NetResult};
 use net::pkt::Pkt;
 use sync::{LockClass, RwLock};
@@ -34,6 +34,11 @@ use crate::uapi::{
     BOND_MODE_ROUNDROBIN, BOND_MODE_TLB, BOND_PRI_RESELECT_ALWAYS,
     BOND_XMIT_POLICY_LAYER2, DUPLEX_FULL,
 };
+use crate::flags::{LACP_STATE_AGGREGATION, LACP_STATE_LACP_ACTIVITY, LACP_STATE_LACP_TIMEOUT};
+use crate::lacp::{Lacpdu, PortInfo, PeriodicState, TxState};
+use crate::lacp::sm::PortSm;
+use crate::limits::{AD_ACTOR_PORT_PRIO_DEFAULT, AD_FAST_PERIODIC_TIME, AD_MAX_TX_IN_SECOND,
+    AD_SLOW_PERIODIC_TIME};
 
 /// Default master MTU before any slave joins.
 const BOND_DEFAULT_MTU: u32 = 1500;
@@ -111,6 +116,11 @@ pub struct BondSlave {
     pub perm_mac: MacAddr,
     /// The port's own MTU, recorded before the master imposed its own.
     pub perm_mtu: u32,
+    /// Linux's `struct port` protocol owner: state and peer identity belong
+    /// to this slave, not to a global bond.
+    pub lacp: PortSm,
+    pub actor: PortInfo,
+    pub partner: PortInfo,
 }
 
 struct MasterInner {
@@ -123,6 +133,11 @@ struct MasterInner {
     active_agg: u16,
     /// The master itself is administratively up.
     if_up: bool,
+    identity: Option<(u64, NetIfaceId)>,
+    arp_targets: Vec<Ipv4Addr>,
+    arp_target_cursor: usize,
+    peer_notif_left: u32,
+    peer_notif_wait: u32,
 }
 
 /// A bonding master interface.
@@ -141,6 +156,8 @@ impl BondMaster {
                 slaves: Vec::new(), params: BondParams::default(),
                 mac: MacAddr::ZERO, mtu: BOND_DEFAULT_MTU,
                 curr_active: None, primary: None, active_agg: 0, if_up: false,
+                identity: None, arp_targets: Vec::new(), arp_target_cursor: 0,
+                peer_notif_left: 0, peer_notif_wait: 0,
             }),
             rr_counter: AtomicU32::new(0),
         }
@@ -193,6 +210,7 @@ impl BondMaster {
     /// # C: O(1)
     pub fn set_curr_active(&self, idx: Option<usize>) {
         let mut g = self.inner.write();
+        if g.curr_active != idx { g.peer_notif_left = g.params.num_peer_notif; g.peer_notif_wait = 0; }
         g.curr_active = idx;
         if g.params.fail_over_mac == BOND_FOM_ACTIVE {
             g.mac = match idx { Some(i) => g.slaves[i].perm_mac, None => MacAddr::ZERO };
@@ -201,6 +219,15 @@ impl BondMaster {
 
     /// # C: O(1)
     pub fn set_active_aggregator(&self, agg: u16) { self.inner.write().active_agg = agg; }
+
+    pub fn set_identity(&self, ns: u64, iface: NetIfaceId) { self.inner.write().identity = Some((ns, iface)); }
+
+    /// Store Linux's raw `arp_ip_target` attribute in the bond owner.
+    pub fn set_arp_targets(&self, raw: &[u8]) {
+        let mut targets = Vec::new();
+        for bytes in raw.chunks_exact(4) { targets.push(Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3])); }
+        let mut g = self.inner.write(); g.arp_targets = targets; g.arp_target_cursor = 0;
+    }
 
     /// Update one port's monitored state.
     /// # C: O(1)
@@ -248,7 +275,17 @@ impl BondMaster {
             speed_mbps: dev.link_speed_mbps().unwrap_or(0), duplex: DUPLEX_FULL,
             prio: 0, queue_id: 0, agg_id: 0, tlb_load: 0, link_failure_count: 0,
         };
-        g.slaves.push(BondSlave { dev, state, perm_mac, perm_mtu });
+        let actor = PortInfo {
+            system_priority: g.params.ad_actor_sys_prio as u16,
+            system: g.mac.0,
+            key: if g.params.ad_user_port_key == 0 { 1 } else { g.params.ad_user_port_key as u16 },
+            port_priority: AD_ACTOR_PORT_PRIO_DEFAULT as u16,
+            port: (g.slaves.len() + 1) as u16,
+            state: LACP_STATE_LACP_ACTIVITY | LACP_STATE_AGGREGATION |
+                if g.params.lacp_rate == crate::uapi::AD_LACP_FAST { LACP_STATE_LACP_TIMEOUT } else { 0 },
+        };
+        g.slaves.push(BondSlave { dev, state, perm_mac, perm_mtu,
+            lacp: PortSm::default(), actor, partner: PortInfo::default() });
         let idx = g.slaves.len() - 1;
         if g.curr_active.is_none() { g.curr_active = Some(idx); }
         Ok(idx)
@@ -310,6 +347,76 @@ impl BondMaster {
     /// Whether the mode negotiates aggregation with the link partner.
     /// # C: O(1)
     pub fn uses_lacp(&self) -> bool { self.inner.read().params.mode == BOND_MODE_8023AD }
+
+    /// Run one Linux-style 802.3ad periodic-work pass. Device transmission is
+    /// performed after releasing the bond lock, so a driver cannot re-enter
+    /// the bond while the protocol state is borrowed.
+    /// # C: O(slaves)
+    pub fn lacp_tick(&self) {
+        let pending = {
+            let mut g = self.inner.write();
+            if !g.if_up || g.params.mode != BOND_MODE_8023AD { return; }
+            let mut out = Vec::new();
+            for slave in &mut g.slaves {
+                slave.lacp.enabled = slave.state.can_tx();
+                slave.lacp.actor_state = slave.actor.state;
+                slave.lacp.partner_state = slave.partner.state;
+                let _ = crate::lacp::sm::periodic_machine(&mut slave.lacp);
+                if slave.lacp.periodic_timer == 0 {
+                    slave.lacp.periodic_timer = match slave.lacp.periodic {
+                        PeriodicState::FastPeriodic => AD_FAST_PERIODIC_TIME as u16,
+                        PeriodicState::SlowPeriodic => AD_SLOW_PERIODIC_TIME as u16,
+                        _ => 0,
+                    };
+                }
+                if crate::lacp::sm::tx_machine(&mut slave.lacp, AD_MAX_TX_IN_SECOND) == TxState::Transmit {
+                    let body = Lacpdu::from_ports(slave.actor, slave.partner).encode();
+                    let mut frame = alloc::vec![0u8; 14 + body.len()];
+                    frame[..6].copy_from_slice(&[0x01, 0x80, 0xc2, 0x00, 0x00, 0x02]);
+                    frame[6..12].copy_from_slice(&slave.perm_mac.0);
+                    frame[12..14].copy_from_slice(&0x8809u16.to_be_bytes());
+                    frame[14..].copy_from_slice(&body);
+                    out.push((Arc::clone(&slave.dev), frame));
+                }
+            }
+            if g.params.arp_interval != 0 && !g.arp_targets.is_empty() {
+                if let Some((ns, iface)) = g.identity {
+                    if let Some((source, _)) = net::iface_addr::primary(ns, iface) {
+                        let target = g.arp_targets[g.arp_target_cursor % g.arp_targets.len()];
+                        g.arp_target_cursor = g.arp_target_cursor.wrapping_add(1);
+                        let body = net::arp::build_request(g.mac, source, target);
+                        let mut frame = alloc::vec![0u8; net::ethernet::ETH_HDR_LEN + body.len()];
+                        net::ethernet::EthHdr::write_to(MacAddr::BROADCAST, g.mac, net::eth_p::ARP, &mut frame);
+                        frame[net::ethernet::ETH_HDR_LEN..].copy_from_slice(&body);
+                        if let Some(slave) = g.curr_active.and_then(|i| g.slaves.get(i)) {
+                            out.push((Arc::clone(&slave.dev), frame));
+                        }
+                    }
+                }
+            }
+            if g.peer_notif_left > 0 {
+                if g.peer_notif_wait > 0 { g.peer_notif_wait -= 1; }
+                else if let (Some((ns, iface)), Some(slave_idx)) = (g.identity, g.curr_active) {
+                    if let Some((source, _)) = net::iface_addr::primary(ns, iface) {
+                        if let Some(slave) = g.slaves.get(slave_idx) {
+                            let body = net::arp::ArpPkt { opcode: net::arp::ARP_OP_REPLY,
+                                sender_mac: g.mac, sender_ip: source,
+                                target_mac: MacAddr::BROADCAST, target_ip: source };
+                            let mut payload = alloc::vec![0u8; net::arp::ARP_LEN]; body.write_to(&mut payload);
+                            let mut frame = alloc::vec![0u8; net::ethernet::ETH_HDR_LEN + payload.len()];
+                            net::ethernet::EthHdr::write_to(MacAddr::BROADCAST, g.mac, net::eth_p::ARP, &mut frame);
+                            frame[net::ethernet::ETH_HDR_LEN..].copy_from_slice(&payload);
+                            out.push((Arc::clone(&slave.dev), frame));
+                            g.peer_notif_left -= 1;
+                            g.peer_notif_wait = g.params.peer_notif_delay;
+                        }
+                    }
+                }
+            }
+            out
+        };
+        for (dev, frame) in pending { let _ = dev.xmit_raw(&frame); }
+    }
 
     /// Name of the configured primary port, when one is set.
     /// # C: O(1)

@@ -11,6 +11,14 @@ use net::addr::NetIfaceId;
 use rtnl_link::{LinkKindOps, LinkMsg};
 use sync::{Socket as SocketLockClass, Spinlock};
 use syscall::errno::Errno;
+use core::sync::atomic::{AtomicBool, Ordering};
+
+static LACP_TIMER_STARTED: AtomicBool = AtomicBool::new(false);
+
+fn lacp_timer(now_ns: u64) {
+    let _ = now_ns;
+    for (_, bond) in bonds() { bond.lacp_tick(); }
+}
 
 use crate::master::BondMaster;
 use crate::netlink::{self, OptionWrite};
@@ -91,6 +99,7 @@ impl LinkKindOps for BondLinkKind {
         let reg = stack.prepare_iface(bond.clone(), &owner).ok_or(Errno::Enodev)?;
         let id = reg.id();
         if !stack.publish_iface(reg) { return Err(Errno::Enodev); }
+        bond.set_identity(ns, id);
         insert(id, bond);
         stack.ifaces.ifindex_in_ns(id, ns).ok_or(Errno::Enodev)
     }
@@ -150,9 +159,18 @@ fn apply(bond: &Arc<BondMaster>, writes: &[OptionWrite]) -> Result<(), Errno> {
     let mut params = bond.params();
     for w in writes { crate::options::apply_write(&mut params, w)?; }
     bond.set_params(params);
+    for w in writes {
+        if w.opt_id == crate::options::BOND_OPT_ARP_TARGETS { bond.set_arp_targets(&w.raw); }
+    }
     Ok(())
 }
 
 /// Publish the kind. A second call is refused by the registry rather than
 /// shadowing the first. # C: O(N_kinds)
-pub fn init() -> bool { rtnl_link::register(&BOND_LINK_KIND_OPS).is_ok() }
+pub fn init() -> bool {
+    if !rtnl_link::register(&BOND_LINK_KIND_OPS).is_ok() { return false; }
+    if !LACP_TIMER_STARTED.swap(true, Ordering::AcqRel) {
+        timer::register_periodic(1_000_000_000, lacp_timer);
+    }
+    true
+}
