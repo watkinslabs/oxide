@@ -18,9 +18,10 @@ relocated.
 > preserves Linux chain-priority boundaries, and consumes NAT, reject,
 > forwarding, duplicate, syslog-log, payload-checksum, IPv4-option,
 > TCP-option, and NFLOG effects. Software flowtable ownership and the
-> synproxy cookie/SYN/SYN-ACK packet path are now live, but their remaining
-> Linux differences are flowtable dump/device lifecycle and synproxy sequence
-> adjustment plus full option-state handling. The B2621 rows below retain
+> synproxy cookie/handshake packet path, conntrack sequence adjustment, and
+> negotiated TCP option translation are now live, but their remaining Linux
+> differences are flowtable dump/device lifecycle and synproxy state-machine
+> retransmission parity. The B2621 rows below retain
 > their original discovery wording; production xfrm/tunnel/osf/object context
 > is still absent. They are not closure claims.
 

@@ -12,6 +12,11 @@ use crate::pkt::Pkt;
 use crate::tcp_hdr::{self, TcpHdr};
 
 const DEFAULT_MSS: u16 = 536;
+const OPT_MSS: u32 = 0x01;
+const OPT_WSCALE: u32 = 0x02;
+const OPT_SACK: u32 = 0x04;
+const OPT_TIMESTAMP: u32 = 0x08;
+const OPT_ECN: u32 = 0x10;
 
 impl NetStack {
     /// Consume one nftables synproxy packet after emitting its handshake peer.
@@ -19,7 +24,7 @@ impl NetStack {
     pub(crate) fn apply_synproxy(&self, p: &mut Pkt, family: u8, configured_mss: u16,
         wscale: u8, flags: u32, _hook: u32)
         -> Result<(), crate::netfilter_action::ApplyError> {
-        let Some((_, Some(_conn), _, dir)) = p.conntrack_state_owned() else {
+        let Some((_, Some(conn), _, dir)) = p.conntrack_state_owned() else {
             // Linux's synproxy hook is a conntrack extension; without an
             // owner it has nothing to proxy and must leave the packet alone.
             return Ok(());
@@ -56,29 +61,67 @@ impl NetStack {
         let net_ns = p.iface.and_then(|iface| self.ifaces.namespace(iface)).unwrap_or(0);
         let peer_mss = tcp_hdr::parse_mss_option(tcp).unwrap_or(DEFAULT_MSS);
         let mss = if configured_mss == 0 { peer_mss } else { configured_mss.min(peer_mss) };
-        let option_flags = flags;
+        let option_flags = syn_option_flags(tcp, flags)
+            | if hdr.flags & (tcp_hdr::flags::ECE | tcp_hdr::flags::CWR)
+                == (tcp_hdr::flags::ECE | tcp_hdr::flags::CWR) { OPT_ECN } else { 0 };
         let now = crate::tcp_conn::ka_now_ns();
         if dir == ::conntrack::uapi::IP_CT_DIR_REPLY
             && hdr.flags & (tcp_hdr::flags::SYN | tcp_hdr::flags::ACK)
                 == (tcp_hdr::flags::SYN | tcp_hdr::flags::ACK) {
+            let Some(mut synproxy) = *conn.synproxy.lock() else {
+                return Err(crate::netfilter_action::ApplyError::Invalid);
+            };
+            let server_ts = crate::tcp_hdr::parse_ts_option(tcp);
+            if let Some((tsval, _)) = server_ts {
+                synproxy.tsoff = tsval.wrapping_sub(synproxy.its) as i32;
+            }
+            // The protected peer used a different ISN from the cookie sent
+            // to the client. Conntrack translates that reply direction and
+            // the opposite ACK field for every later segment.
+            conn.seqadj_init(dir, synproxy.isn.wrapping_sub(hdr.seq) as i32);
+            *conn.synproxy.lock() = Some(synproxy);
             // The protected peer completed its half of the handshake.  Linux
             // acknowledges it toward the peer and separately completes the
             // client's half before consuming this SYN-ACK.
+            let ack_options = server_ts.map(|(tsval, tsecr)|
+                syn_options(0, 0, option_flags & (OPT_TIMESTAMP | OPT_ECN), tsecr, tsval))
+                .unwrap_or_default();
+            let client_options = server_ts.map(|(tsval, tsecr)|
+                syn_options(0, 0, option_flags & (OPT_TIMESTAMP | OPT_ECN), tsval, tsecr))
+                .unwrap_or_default();
+            let ecn = if option_flags & OPT_ECN != 0 {
+                tcp_hdr::flags::ECE | tcp_hdr::flags::CWR
+            } else { 0 };
             self.send_synproxy_segment(net_ns, dst, src, hdr.dst_port, hdr.src_port,
-                hdr.ack, hdr.seq.wrapping_add(1), tcp_hdr::flags::ACK,
-                hdr.window, &[], p.tx.mark).map_err(|_| crate::netfilter_action::ApplyError::Invalid)?;
+                hdr.ack, hdr.seq.wrapping_add(1), tcp_hdr::flags::ACK | ecn,
+                hdr.window, &ack_options, p.tx.mark).map_err(|_| crate::netfilter_action::ApplyError::Invalid)?;
             self.send_synproxy_segment(net_ns, src, dst, hdr.src_port, hdr.dst_port,
-                hdr.seq.wrapping_add(1), hdr.ack, tcp_hdr::flags::ACK,
-                hdr.window, &[], p.tx.mark).map_err(|_| crate::netfilter_action::ApplyError::Invalid)?;
+                hdr.seq.wrapping_add(1), hdr.ack, tcp_hdr::flags::ACK | ecn,
+                hdr.window, &client_options, p.tx.mark).map_err(|_| crate::netfilter_action::ApplyError::Invalid)?;
             return Err(crate::netfilter_action::ApplyError::Stolen);
         }
         if hdr.flags & tcp_hdr::flags::SYN != 0 && hdr.flags & tcp_hdr::flags::ACK == 0 {
+            // A reopened tracked flow starts a fresh proxy exchange; discard
+            // both old direction corrections before minting the new cookie.
+            conn.seqadj_init(::conntrack::uapi::IP_CT_DIR_ORIGINAL, 0);
+            conn.seqadj_init(::conntrack::uapi::IP_CT_DIR_REPLY, 0);
+            *conn.synproxy.lock() = None;
             let (cookie, encoded_mss) = crate::syncookies::init_sequence(
                 src, dst, hdr.src_port, hdr.dst_port, hdr.seq, now,
                 matches!(src, IpAddr::V6(_)), mss);
-            let options = syn_options(encoded_mss, wscale, option_flags);
+            let tsval = if option_flags & OPT_TIMESTAMP != 0 {
+                ((now / 1_000_000) as u32 & !0x3f)
+                    | if option_flags & OPT_WSCALE != 0 { (wscale & 0x0f) as u32 } else { 0 }
+                    | if option_flags & OPT_SACK != 0 { 1 << 4 } else { 0 }
+                    | if option_flags & OPT_ECN != 0 { 1 << 5 } else { 0 }
+            } else { 0 };
+            let client_tsval = tcp_hdr::parse_ts_option(tcp).map(|(tsval, _)| tsval).unwrap_or(0);
+            let options = syn_options(encoded_mss, wscale, option_flags, tsval, client_tsval);
+            let ecn = if option_flags & OPT_ECN != 0 {
+                tcp_hdr::flags::ECE | tcp_hdr::flags::CWR
+            } else { 0 };
             self.send_synproxy_segment(net_ns, dst, src, hdr.dst_port, hdr.src_port,
-                cookie, hdr.seq.wrapping_add(1), tcp_hdr::flags::SYN | tcp_hdr::flags::ACK,
+                cookie, hdr.seq.wrapping_add(1), tcp_hdr::flags::SYN | tcp_hdr::flags::ACK | ecn,
                 0, &options, p.tx.mark).map_err(|_| crate::netfilter_action::ApplyError::Invalid)?;
             return Err(crate::netfilter_action::ApplyError::Stolen);
         }
@@ -87,9 +130,27 @@ impl NetStack {
                 hdr.dst_port, hdr.seq, hdr.ack, now, matches!(src, IpAddr::V6(_))) else {
                 return Err(crate::netfilter_action::ApplyError::Invalid);
             };
-            let options = syn_options(encoded_mss, wscale, option_flags);
+            let ack_ts = crate::tcp_hdr::parse_ts_option(tcp);
+            let mut ack_options = flags & OPT_MSS;
+            let ack_wscale = ack_ts.map(|(_, tsecr)| (tsecr & 0x0f) as u8).unwrap_or(wscale);
+            if let Some((_, tsecr)) = ack_ts {
+                if tsecr & 0x0f != 0x0f { ack_options |= OPT_WSCALE; }
+                if tsecr & (1 << 4) != 0 { ack_options |= OPT_SACK; }
+                if tsecr & (1 << 5) != 0 { ack_options |= OPT_ECN; }
+                ack_options |= OPT_TIMESTAMP;
+            }
+            let options = syn_options(encoded_mss, ack_wscale, ack_options,
+                ack_ts.map(|(tsval, _)| tsval).unwrap_or(0),
+                ack_ts.map(|(_, tsecr)| tsecr).unwrap_or(0));
+            let its = ack_ts.map(|(_, tsecr)| tsecr).unwrap_or(0);
+            *conn.synproxy.lock() = Some(::conntrack::entry::SynproxyState {
+                isn: hdr.ack, its, tsoff: 0,
+            });
+            let ecn = if ack_options & OPT_ECN != 0 {
+                tcp_hdr::flags::ECE | tcp_hdr::flags::CWR
+            } else { 0 };
             self.send_synproxy_segment(net_ns, src, dst, hdr.src_port, hdr.dst_port,
-                hdr.seq.wrapping_sub(1), hdr.ack.wrapping_sub(1), tcp_hdr::flags::SYN,
+                hdr.seq.wrapping_sub(1), hdr.ack.wrapping_sub(1), tcp_hdr::flags::SYN | ecn,
                 hdr.window, &options, p.tx.mark).map_err(|_| crate::netfilter_action::ApplyError::Invalid)?;
             return Err(crate::netfilter_action::ApplyError::Stolen);
         }
@@ -120,27 +181,73 @@ impl NetStack {
     }
 }
 
-fn syn_options(mss: u16, wscale: u8, flags: u32) -> alloc::vec::Vec<u8> {
+fn syn_option_flags(tcp: &[u8], allowed: u32) -> u32 {
+    let mut flags = 0;
+    if allowed & OPT_MSS != 0 && tcp_hdr::parse_mss_option(tcp).is_some() { flags |= OPT_MSS; }
+    if allowed & OPT_WSCALE != 0 && tcp_hdr::parse_wscale_option(tcp).is_some() { flags |= OPT_WSCALE; }
+    if allowed & OPT_SACK != 0 && tcp_hdr::parse_sack_permitted(tcp) { flags |= OPT_SACK; }
+    if allowed & OPT_TIMESTAMP != 0 && tcp_hdr::parse_ts_option(tcp).is_some() { flags |= OPT_TIMESTAMP; }
+    flags
+}
+
+fn syn_options(mss: u16, wscale: u8, flags: u32, tsval: u32, tsecr: u32)
+    -> alloc::vec::Vec<u8> {
     let mut options = alloc::vec::Vec::new();
-    if flags & 0x01 != 0 {
+    if flags & OPT_MSS != 0 {
         options.extend_from_slice(&[tcp_hdr::opt::MSS, 4]);
         options.extend_from_slice(&mss.to_be_bytes());
     }
-    if flags & 0x02 != 0 && wscale != 0 {
+    if flags & OPT_TIMESTAMP != 0 {
+        if flags & OPT_SACK != 0 {
+            options.extend_from_slice(&[tcp_hdr::opt::SACK_PERMIT, 2,
+                tcp_hdr::opt::TIMESTAMP, 10]);
+        } else {
+            options.extend_from_slice(&[tcp_hdr::opt::NOP, tcp_hdr::opt::NOP,
+                tcp_hdr::opt::TIMESTAMP, 10]);
+        }
+        options.extend_from_slice(&tsval.to_be_bytes());
+        options.extend_from_slice(&tsecr.to_be_bytes());
+    } else if flags & OPT_SACK != 0 {
+        options.extend_from_slice(&[tcp_hdr::opt::NOP, tcp_hdr::opt::NOP,
+            tcp_hdr::opt::SACK_PERMIT, 2]);
+    }
+    if flags & OPT_WSCALE != 0 {
         options.extend_from_slice(&[tcp_hdr::opt::NOP, tcp_hdr::opt::WSCALE, 3, wscale]);
     }
     while options.len() % 4 != 0 { options.push(tcp_hdr::opt::NOP); }
     options
 }
 
+fn swap_timestamp_options(options: &[u8]) -> alloc::vec::Vec<u8> {
+    let mut out = options.to_vec();
+    let mut i = 0usize;
+    while i < out.len() {
+        let kind = out[i];
+        if kind == tcp_hdr::opt::END { break; }
+        if kind == tcp_hdr::opt::NOP { i += 1; continue; }
+        if i + 1 >= out.len() { break; }
+        let len = out[i + 1] as usize;
+        if len < 2 || i + len > out.len() { break; }
+        if kind == tcp_hdr::opt::TIMESTAMP && len == 10 {
+            let first = [out[i + 2], out[i + 3], out[i + 4], out[i + 5]];
+            let second = [out[i + 6], out[i + 7], out[i + 8], out[i + 9]];
+            out[i + 2..i + 6].copy_from_slice(&second);
+            out[i + 6..i + 10].copy_from_slice(&first);
+            break;
+        }
+        i += len;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec;
-    use super::syn_options;
+    use super::{syn_options, swap_timestamp_options, OPT_SACK, OPT_TIMESTAMP};
 
     #[test]
     fn encodes_enabled_syn_options_and_alignment() {
-        assert_eq!(syn_options(1460, 7, 0x03), vec![
+        assert_eq!(syn_options(1460, 7, 0x03, 0, 0), vec![
             2, 4, 0x05, 0xb4,
             1, 3, 3, 7,
         ]);
@@ -148,7 +255,19 @@ mod tests {
 
     #[test]
     fn omits_disabled_syn_options() {
-        assert!(syn_options(1460, 7, 0).is_empty());
-        assert_eq!(syn_options(1460, 0, 0x03), vec![2, 4, 0x05, 0xb4]);
+        assert!(syn_options(1460, 7, 0, 0, 0).is_empty());
+        assert_eq!(syn_options(1460, 0, 0x03, 0, 0), vec![2, 4, 0x05, 0xb4,
+            1, 3, 3, 0]);
+    }
+
+    #[test]
+    fn builds_and_swaps_timestamp_cookie_options() {
+        let options = syn_options(0, 7, OPT_TIMESTAMP | OPT_SACK,
+            0x1122_3344, 0x5566_7788);
+        assert_eq!(&options[..], &[4, 2, 8, 10, 0x11, 0x22, 0x33, 0x44,
+            0x55, 0x66, 0x77, 0x88]);
+        let swapped = swap_timestamp_options(&options);
+        assert_eq!(&swapped[..], &[4, 2, 8, 10, 0x55, 0x66, 0x77, 0x88,
+            0x11, 0x22, 0x33, 0x44]);
     }
 }

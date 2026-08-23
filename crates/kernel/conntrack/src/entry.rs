@@ -55,6 +55,25 @@ pub struct NatBinding {
     pub masq_index: u32,
 }
 
+/// TCP sequence translation carried by conntrack's sequence-adjust
+/// extension, with one wire-space record per direction.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct SeqAdjust {
+    pub correction_pos: u32,
+    pub offset_before: i32,
+    pub offset_after: i32,
+    pub active: bool,
+}
+
+/// Synproxy state carried by the conntrack extension between the cookie ACK
+/// and the protected peer's SYN-ACK.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct SynproxyState {
+    pub isn: u32,
+    pub its: u32,
+    pub tsoff: i32,
+}
+
 /// A tracked connection.
 pub struct Conn {
     /// Unique, stable id — the value ctnetlink reports as `CTA_ID`.
@@ -76,6 +95,10 @@ pub struct Conn {
     /// Helper attached to this flow, by name.
     pub helper: sync::Spinlock<Option<String>, sync::Socket>,
     pub nat: sync::Spinlock<NatBinding, sync::Socket>,
+    /// Sequence-adjust extension, one record for each TCP direction.
+    pub seqadj: sync::Spinlock<[SeqAdjust; IP_CT_DIR_MAX], sync::Socket>,
+    /// ISN relayed by synproxy until the protected peer's SYN-ACK arrives.
+    pub synproxy: sync::Spinlock<Option<SynproxyState>, sync::Socket>,
     /// Network namespace that owns the entry.
     pub net_ns: u64,
 }
@@ -102,6 +125,8 @@ impl Conn {
             master: None,
             helper: sync::Spinlock::new(None),
             nat: sync::Spinlock::new(NatBinding::default()),
+            seqadj: sync::Spinlock::new([SeqAdjust::default(); IP_CT_DIR_MAX]),
+            synproxy: sync::Spinlock::new(None),
             net_ns,
         }
     }
@@ -118,6 +143,63 @@ impl Conn {
     pub fn confirmed(&self) -> bool { self.status() & IPS_CONFIRMED != 0 }
     /// # C: O(1)
     pub fn dying(&self) -> bool { self.status() & IPS_DYING != 0 }
+
+    /// Initialize or clear one direction's sequence correction. # C: O(1)
+    pub fn seqadj_init(&self, dir: u8, offset: i32) {
+        let index = dir as usize;
+        if index >= IP_CT_DIR_MAX { return; }
+        let all_clear = {
+            let mut state = self.seqadj.lock();
+            state[index] = SeqAdjust {
+                correction_pos: 0,
+                offset_before: offset,
+                offset_after: offset,
+                active: offset != 0,
+            };
+            state.iter().all(|item| !item.active)
+        };
+        if all_clear { self.clear_status_bits(IPS_SEQ_ADJUST); }
+        else { self.set_status_bits(IPS_SEQ_ADJUST); }
+    }
+
+    /// Return the sequence-space correction valid at one wire sequence. # C: O(1)
+    pub fn seqadj_offset(&self, dir: u8, seq: u32) -> i32 {
+        let Some(slot) = self.seqadj.lock().get(dir as usize).copied() else { return 0; };
+        if !slot.active { return 0; }
+        if serial_after(seq, slot.correction_pos) { slot.offset_after } else { slot.offset_before }
+    }
+
+    /// Return the offset for an acknowledgement or SACK value. Linux first
+    /// removes the pre-correction offset before testing the correction point.
+    /// # C: O(1)
+    pub fn seqadj_ack_offset(&self, dir: u8, ack: u32) -> i32 {
+        let Some(slot) = self.seqadj.lock().get(dir as usize).copied() else { return 0; };
+        if !slot.active { return 0; }
+        let probe = ack.wrapping_sub(slot.offset_before as u32);
+        if serial_after(probe, slot.correction_pos) { slot.offset_after } else { slot.offset_before }
+    }
+
+    /// Add a later stream correction at a TCP sequence boundary. # C: O(1)
+    pub fn seqadj_set(&self, dir: u8, correction_pos: u32, delta: i32) {
+        let index = dir as usize;
+        if index >= IP_CT_DIR_MAX || delta == 0 { return; }
+        let mut state = self.seqadj.lock();
+        let slot = &mut state[index];
+        if !slot.active || slot.offset_before == slot.offset_after
+            || serial_after(correction_pos, slot.correction_pos) {
+            slot.correction_pos = correction_pos;
+            slot.offset_before = slot.offset_after;
+            slot.offset_after = slot.offset_after.saturating_add(delta);
+            slot.active = true;
+            drop(state);
+            self.set_status_bits(IPS_SEQ_ADJUST);
+        }
+    }
+
+    /// Return one direction's raw sequence-adjust record. # C: O(1)
+    pub fn seqadj_record(&self, dir: u8) -> SeqAdjust {
+        self.seqadj.lock().get(dir as usize).copied().unwrap_or_default()
+    }
 
     /// Arm the expiry. A fixed-timeout entry keeps whatever ctnetlink set.
     /// # C: O(1)
@@ -165,5 +247,48 @@ impl Conn {
                 if self.status() & IPS_SEEN_REPLY != 0 { IP_CT_ESTABLISHED } else { IP_CT_NEW }
             }
         }
+    }
+}
+
+/// RFC 1982 serial-number ordering used by conntrack's `after()` predicate.
+fn serial_after(a: u32, b: u32) -> bool { (a.wrapping_sub(b) as i32) > 0 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tuple::{InetAddr, ProtoPart, TupleEnd};
+
+    fn conn() -> Conn {
+        let orig = Tuple {
+            l3num: NFPROTO_IPV4, protonum: IPPROTO_TCP,
+            src: TupleEnd { addr: InetAddr::v4([10, 0, 0, 1]), proto: ProtoPart::port(4000) },
+            dst: TupleEnd { addr: InetAddr::v4([10, 0, 0, 2]), proto: ProtoPart::port(80) },
+            zone: 0,
+        };
+        Conn::new(1, orig, orig.invert().unwrap(), 0)
+    }
+
+    #[test]
+    fn sequence_adjust_uses_before_and_after_offsets() {
+        let c = conn();
+        c.seqadj_init(IP_CT_DIR_REPLY, 100);
+        assert_eq!(c.seqadj_offset(IP_CT_DIR_REPLY, 10), 100);
+        c.seqadj.lock()[IP_CT_DIR_REPLY as usize].correction_pos = 50;
+        c.seqadj.lock()[IP_CT_DIR_REPLY as usize].offset_after = 120;
+        assert_eq!(c.seqadj_offset(IP_CT_DIR_REPLY, 50), 100);
+        assert_eq!(c.seqadj_offset(IP_CT_DIR_REPLY, 51), 120);
+        assert_eq!(c.status() & IPS_SEQ_ADJUST, IPS_SEQ_ADJUST);
+        c.seqadj_set(IP_CT_DIR_REPLY, 100, 5);
+        assert_eq!(c.seqadj_offset(IP_CT_DIR_REPLY, 99), 120);
+        assert_eq!(c.seqadj_offset(IP_CT_DIR_REPLY, 101), 125);
+    }
+
+    #[test]
+    fn sequence_adjust_can_be_reset_without_leaking_status() {
+        let c = conn();
+        c.seqadj_init(IP_CT_DIR_REPLY, 100);
+        c.seqadj_init(IP_CT_DIR_REPLY, 0);
+        assert_eq!(c.status() & IPS_SEQ_ADJUST, 0);
+        assert_eq!(c.seqadj_offset(IP_CT_DIR_REPLY, 10), 0);
     }
 }
