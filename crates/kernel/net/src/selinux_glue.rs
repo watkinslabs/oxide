@@ -53,6 +53,12 @@ pub fn init() -> bool {
     })
 }
 
+/// Resolve the security context used by an nft SECMARK object through the
+/// one installed SELinux server. # C: O(categories)
+pub fn secmark_sid(context: &str) -> Option<u32> {
+    selinux_runtime::network::sid_from_context(context)
+}
+
 #[cfg(test)]
 mod tests {
     use super::socket_class_name;

@@ -163,6 +163,7 @@ pub enum ObjectState {
     CtHelper { name: String, l4proto: u8, l3proto: Option<u16> },
     CtTimeout { l3proto: Option<u16>, l4proto: u8, values: [u32; 14] },
     CtExpect { l3proto: Option<u16>, l4proto: u8, dport: u16, timeout_ms: u32, size: u8 },
+    Secmark { context: String, secid: u32 },
     Synproxy { mss: u16, wscale: u8, flags: u32 },
     Unsupported,
 }
@@ -183,6 +184,7 @@ impl core::fmt::Debug for ObjectState {
             Self::CtHelper { .. } => "CtHelper",
             Self::CtTimeout { .. } => "CtTimeout",
             Self::CtExpect { .. } => "CtExpect",
+            Self::Secmark { .. } => "Secmark",
             Self::Synproxy { .. } => "Synproxy",
             Self::Unsupported => "Unsupported",
         })
@@ -309,6 +311,14 @@ impl ObjectState {
                     data, crate::nft_expr::uapi::NFTA_CT_EXPECT_L3PROTO),
                     l4proto, dport, timeout_ms, size }
             }
+            crate::nft_expr::uapi::NFT_OBJECT_SECMARK => {
+                let Some(context) = find_str(data, crate::nft_expr::uapi::NFTA_SECMARK_CTX)
+                    .filter(|context| !context.is_empty()) else { return Self::Unsupported; };
+                let Some(secid) = net::selinux_glue::secmark_sid(context) else {
+                    return Self::Unsupported;
+                };
+                Self::Secmark { context: String::from(context), secid }
+            }
             _ => Self::Unsupported,
         }
     }
@@ -373,6 +383,7 @@ impl ObjectState {
             }
             Self::CtTimeout { .. } => Some(NFT_BREAK),
             Self::CtExpect { .. } => Some(NFT_BREAK),
+            Self::Secmark { .. } => Some(NFT_BREAK),
             Self::Synproxy { .. } => Some(NFT_BREAK),
             Self::Unsupported => Some(NFT_BREAK),
         }
@@ -382,7 +393,8 @@ impl ObjectState {
     pub fn eval_packet(&self, pkt: &[u8], family: u8,
                        ct: Option<&dyn crate::nft_expr::access::CtAccess>, now_ns: u64,
                        synproxy: Option<&dyn crate::nft_expr::access::SynproxyAccess>,
-                       actions: &mut Vec<crate::nft_expr::action::Action>) -> Option<i32> {
+                       actions: &mut Vec<crate::nft_expr::action::Action>,
+                       packet_secmark: &mut u32) -> Option<i32> {
         match self {
             Self::CtTimeout { l3proto, l4proto, values } => {
                 let Some(ct) = ct else { return None; };
@@ -405,6 +417,10 @@ impl ObjectState {
                                        *dport, *timeout_ms, *size, now_ns) {
                     return Some(crate::nft_expr::uapi::NF_DROP);
                 }
+                None
+            }
+            Self::Secmark { secid, .. } => {
+                *packet_secmark = *secid;
                 None
             }
             Self::Synproxy { mss, wscale, flags } =>
@@ -430,6 +446,7 @@ mod tests {
                                 NFTA_CT_EXPECT_DPORT, NFTA_CT_EXPECT_TIMEOUT,
                                 NFTA_CT_EXPECT_SIZE};
     use alloc::sync::Arc;
+    use alloc::string::String;
     use core::cell::Cell;
     use conntrack::tuple::Tuple;
 
@@ -463,8 +480,9 @@ mod tests {
         packet[20 + 12] = 0x50;
         packet[20 + 13] = 0x02;
         let mut actions = alloc::vec::Vec::new();
+        let mut secmark = 0;
         assert_eq!(state.eval_packet(&packet, crate::nft_expr::uapi::NFPROTO_IPV4,
-                                     None, 0, None, &mut actions), Some(NF_STOLEN));
+                                     None, 0, None, &mut actions, &mut secmark), Some(NF_STOLEN));
         assert!(matches!(&actions[..], [crate::nft_expr::action::Action::Synproxy {
             mss: 1460, wscale: 7, flags: 1
         }]));
@@ -506,9 +524,21 @@ mod tests {
         let packet = ExpectPacket { tuple: Tuple { l3num: 2, protonum: 6, ..Tuple::default() },
                                      called: Cell::new(false) };
         let mut actions = alloc::vec::Vec::new();
+        let mut secmark = 0;
         assert_eq!(state.eval_packet(&[], crate::nft_expr::uapi::NFPROTO_IPV4,
-                                     Some(&packet), 0, None, &mut actions), None);
+                                     Some(&packet), 0, None, &mut actions, &mut secmark), None);
         assert!(packet.called.get());
+    }
+
+    #[test]
+    fn secmark_object_writes_the_resolved_sid_to_packet_metadata() {
+        let state = ObjectState::Secmark { context: String::from("system_u:object_r:packet_t:s0"),
+                                           secid: 42 };
+        let mut secmark = 0;
+        let mut actions = alloc::vec::Vec::new();
+        assert_eq!(state.eval_packet(&[], crate::nft_expr::uapi::NFPROTO_IPV4,
+                                     None, 0, None, &mut actions, &mut secmark), None);
+        assert_eq!(secmark, 42);
     }
 
     struct LiveFlow(Arc<conntrack::Conn>);

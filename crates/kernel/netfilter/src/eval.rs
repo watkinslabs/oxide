@@ -146,7 +146,8 @@ impl ObjectAccess for LiveObjects<'_> {
                  pkt: &[u8], pkt_len: u64, now_ns: u64,
                  ct: Option<&dyn crate::nft_expr::access::CtAccess>,
                  synproxy: Option<&dyn crate::nft_expr::access::SynproxyAccess>,
-                 actions: &mut alloc::vec::Vec<crate::nft_expr::action::Action>) -> Option<i32> {
+                 actions: &mut alloc::vec::Vec<crate::nft_expr::action::Action>,
+                 packet_secmark: &mut u32) -> Option<i32> {
         if family != self.family || table != self.table { return None; }
         let object = crate::objects_snapshot_in(self.namespace).into_iter().find(|o| {
             o.table_family == family && o.table_name == table
@@ -155,8 +156,9 @@ impl ObjectAccess for LiveObjects<'_> {
         match &*object.state {
             crate::nft_expr::ObjectState::Synproxy { .. }
             | crate::nft_expr::ObjectState::CtTimeout { .. }
-            | crate::nft_expr::ObjectState::CtExpect { .. } =>
-                object.state.eval_packet(pkt, family, ct, now_ns, synproxy, actions),
+            | crate::nft_expr::ObjectState::CtExpect { .. }
+            | crate::nft_expr::ObjectState::Secmark { .. } =>
+                object.state.eval_packet(pkt, family, ct, now_ns, synproxy, actions, packet_secmark),
             _ => object.state.eval_for(pkt_len, now_ns, ct),
         }
     }
@@ -172,14 +174,16 @@ impl ObjectAccess for LiveObjects<'_> {
                           _set: &str, key: &[u8], pkt: &[u8], pkt_len: u64, now_ns: u64,
                           ct: Option<&dyn crate::nft_expr::access::CtAccess>,
                           synproxy: Option<&dyn crate::nft_expr::access::SynproxyAccess>,
-                          actions: &mut alloc::vec::Vec<crate::nft_expr::action::Action>) -> Option<i32> {
+                          actions: &mut alloc::vec::Vec<crate::nft_expr::action::Action>,
+                          packet_secmark: &mut u32) -> Option<i32> {
         if family != self.family || table != self.table { return None; }
         let state = self.generation.object_state(set_id?, key)?;
         match &**state {
             crate::nft_expr::ObjectState::Synproxy { .. }
             | crate::nft_expr::ObjectState::CtTimeout { .. }
-            | crate::nft_expr::ObjectState::CtExpect { .. } =>
-                state.eval_packet(pkt, family, ct, now_ns, synproxy, actions),
+            | crate::nft_expr::ObjectState::CtExpect { .. }
+            | crate::nft_expr::ObjectState::Secmark { .. } =>
+                state.eval_packet(pkt, family, ct, now_ns, synproxy, actions, packet_secmark),
             _ => state.eval_for(pkt_len, now_ns, ct),
         }
     }

@@ -86,6 +86,7 @@ pub const NFTA_CT_EXPECT_L4PROTO:  u16 = 2;
 pub const NFTA_CT_EXPECT_DPORT:    u16 = 3;
 pub const NFTA_CT_EXPECT_TIMEOUT:  u16 = 4;
 pub const NFTA_CT_EXPECT_SIZE:     u16 = 5;
+pub const NFTA_SECMARK_CTX:        u16 = 1;
 
 // --- nat / masq / redir ---
 

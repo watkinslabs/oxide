@@ -187,7 +187,8 @@ pub trait ObjectAccess {
     fn eval_with(&self, family: u8, table: &str, obj_type: u32, name: &str,
                  _pkt: &[u8], pkt_len: u64, now_ns: u64,
                  ct: Option<&dyn CtAccess>, _synproxy: Option<&dyn SynproxyAccess>,
-                 _actions: &mut alloc::vec::Vec<crate::nft_expr::action::Action>) -> Option<i32> {
+                 _actions: &mut alloc::vec::Vec<crate::nft_expr::action::Action>,
+                 _packet_secmark: &mut u32) -> Option<i32> {
         self.eval(family, table, obj_type, name, pkt_len, now_ns, ct)
     }
     /// Object an element of `set` points at, keyed by the register bytes.
@@ -201,7 +202,8 @@ pub trait ObjectAccess {
     fn eval_from_set_with(&self, family: u8, table: &str, set_id: Option<usize>,
                           set: &str, key: &[u8], _pkt: &[u8], pkt_len: u64, now_ns: u64,
                           ct: Option<&dyn CtAccess>, _synproxy: Option<&dyn SynproxyAccess>,
-                          _actions: &mut alloc::vec::Vec<crate::nft_expr::action::Action>) -> Option<i32> {
+                          _actions: &mut alloc::vec::Vec<crate::nft_expr::action::Action>,
+                          _packet_secmark: &mut u32) -> Option<i32> {
         self.eval_from_set(family, table, set_id, set, key, pkt_len, now_ns, ct)
     }
 }

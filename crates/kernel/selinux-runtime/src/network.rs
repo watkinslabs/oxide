@@ -83,6 +83,18 @@ pub fn context(label: Sid) -> Result<Vec<u8>, ContextError> {
     })
 }
 
+/// Resolve a written security context for a kernel object. Unlike the inode
+/// label path, a failed secmark context is an object-creation error: Linux
+/// does not silently turn an nft security context into the unlabeled SID.
+pub fn sid_from_context(written: &str) -> Option<Sid> {
+    let sid = crate::with(|s| s.context_to_sid(written).ok()).flatten()
+        .filter(|sid| *sid != 0)?;
+    let class = selinux::uapi::classmap::class_by_name("packet")?;
+    let permission = selinux::uapi::classmap::perm_bit(class, "relabelto")?;
+    crate::check::has_perm(crate::task::current_sid(), sid, class, permission).ok()?;
+    Some(sid)
+}
+
 /// Label reported for a peer no label was ever recorded for. # C: O(1)
 ///
 /// A socket of a reporting class has a label from the moment it exists; before
