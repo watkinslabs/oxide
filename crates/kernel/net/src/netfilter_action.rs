@@ -113,7 +113,11 @@ fn apply_fwd(p: &mut crate::pkt::Pkt, oif: u32, gateway: Option<InetAddr>,
     if nfproto.is_none() && gateway.is_none() {
         // The no-address form is the netdev redirect: it owns the complete
         // link frame and sends it through the selected device unchanged.
-        lease.xmit_raw(p.data()).map_err(|_| ApplyError::Invalid)?;
+        // Linux's netdev forwarding path transmits under its device
+        // recursion guard; direct dispatch prevents the redirected frame
+        // from re-entering a second netdev egress walk.
+        lease.xmit_raw_policy_from(p.data(), None, true)
+            .map_err(|_| ApplyError::Invalid)?;
         return Err(ApplyError::Stolen);
     }
     let proto = nfproto.ok_or(ApplyError::Invalid)?;
