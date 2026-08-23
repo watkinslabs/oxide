@@ -1,19 +1,16 @@
 // One shared io_uring region: the physical memory behind a rings or SQEs
 // mapping, and its lifetime.
 //
-// A region is a CONTIGUOUS refcounted run of `2^order` pages, each carrying
-// one object reference for the region's whole life. Userspace maps it as a
-// `VmaBacking::KernelFrame`, whose fault path resolves the page at VMA offset
-// `O` to `base_pa + O` and takes one reference per installed PTE; munmap and
-// address-space teardown drop those. A page therefore dies only once BOTH the
-// ring released its object reference AND every user mapping is gone.
+// A region is a refcounted vector of pages, each carrying one object reference
+// for the region's whole life. Userspace maps it as a
+// `VmaBacking::KernelPages`, whose fault path selects the page at VMA offset
+// `O` and takes one reference per installed PTE; munmap and address-space
+// teardown drop those. A page therefore dies only once BOTH the ring released
+// its object reference AND every user mapping is gone.
 //
 // It is never a `PhysRange`: that arm installs the PTE with no refcount and no
 // mapcount, so closing the ring fd would free a page userspace still maps —
 // the free-while-mapped UAF this file's shape exists to prevent.
-//
-// One buddy run rather than a page vector: `KernelFrame` has no page-vector
-// form, so the order rounding is dead space (`scratch/known_issues.md`).
 //
 // A ring built `IORING_SETUP_NO_MMAP` does not own its memory at all — the
 // CALLER supplied it, and it is whatever physical pages backed the caller's
@@ -26,7 +23,7 @@ use alloc::sync::Arc;
 use syscall::errno::Errno;
 
 use crate::io_uring_abi::acct::{Charge, Ledgers, RingAcct};
-use crate::io_uring_abi::layout::region_plan;
+use crate::io_uring_abi::layout::{region_plan, region_plan_limited, MAX_REGION_PAGES};
 
 use super::pin::PinnedRange;
 
@@ -58,8 +55,15 @@ impl Region {
     /// (`scratch/known_issues.md`), and charging a user for it would make the
     /// ceiling depend on an allocator detail. # C: O(2^order)
     pub fn alloc(bytes: u32, acct: RingAcct) -> Option<Self> {
+        Self::alloc_limited(bytes as u64, acct, MAX_REGION_PAGES)
+    }
+
+    /// Allocate a page-vector region using the limit belonging to its ABI
+    /// owner. The MEM_REGION descriptor has Linux's INT_MAX-page ceiling,
+    /// unlike the bounded setup geometry.
+    pub fn alloc_limited(bytes: u64, acct: RingAcct, max_pages: u64) -> Option<Self> {
         let page = hal::PAGE_SIZE_BYTES;
-        let plan = region_plan(bytes, page).ok()?;
+        let plan = region_plan_limited(bytes, page, max_pages).ok()?;
         let charge = super::acct::charge_bytes(acct, plan.map_bytes).ok()?;
         let mut pages = alloc::vec::Vec::new();
         pages.try_reserve_exact(plan.pages as usize).ok()?;

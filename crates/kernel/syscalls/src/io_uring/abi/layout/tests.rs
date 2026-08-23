@@ -201,6 +201,16 @@ fn region_plan_is_page_size_generic_and_bounded() {
     assert_eq!(region_plan(8192, 3000), Err(Errno::Einval));
 }
 
+#[test]
+fn mem_region_plan_uses_the_linux_page_ceiling_not_setup_ceiling() {
+    let pages = MAX_REGION_PAGES + 1;
+    let plan = super::region_plan_limited(pages * 4096, 4096, i32::MAX as u64)
+        .expect("registered memory regions use the Linux INT_MAX-page ceiling");
+    assert_eq!(plan.pages, pages);
+    assert_eq!(super::region_plan_limited(pages * 4096, 4096, MAX_REGION_PAGES),
+               Err(Errno::Eoverflow));
+}
+
 /// Every admitted geometry must fit a region this kernel can actually
 /// allocate — the entries ladder, not a page, is what bounds it.
 #[test]
