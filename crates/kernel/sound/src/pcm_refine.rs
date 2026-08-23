@@ -125,8 +125,8 @@ pub(crate) fn refine_params(b: &UserBuf, formats: u64, rates: u64, ch_min: u8, c
 
 /// Limits from the card's ops, falling back to a one-page period.
 /// # C: O(1)
-pub(crate) fn limits_for(owner: crate::SoundOwnerKey) -> Limits {
-    match crate::ops::hw_limits(owner) {
+pub(crate) fn limits_for(owner: crate::SoundOwnerKey, device: crate::ops::PcmDevice) -> Limits {
+    match crate::ops::hw_limits_for(owner, device) {
         Some((period, buffer)) => Limits { max_period_bytes: period, max_buffer_bytes: buffer },
         None => Limits {
             max_period_bytes: hal::PAGE_SIZE_BYTES as u32,

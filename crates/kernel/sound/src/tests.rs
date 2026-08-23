@@ -73,6 +73,48 @@ static TEST_OPS: ops::SoundOps = ops::SoundOps {
     cap_hw_params: hw_params, cap_prepare: yes, cap_trigger: trigger, cap_hw_free: yes, pcm_recv: recv,
 };
 
+fn multi_devices(_owner: crate::SoundOwnerKey) -> u32 { 2 }
+fn multi_caps(owner: crate::SoundOwnerKey, device: ops::PcmDevice) -> ops::Caps {
+    if device < 2 { caps(owner) } else { None }
+}
+fn multi_hw_limits(owner: crate::SoundOwnerKey, _device: ops::PcmDevice) -> ops::HwLimits { limits(owner) }
+fn multi_info_flags(owner: crate::SoundOwnerKey, _device: ops::PcmDevice) -> u32 { info_flags(owner) }
+fn multi_period(owner: crate::SoundOwnerKey, _device: ops::PcmDevice) -> usize { period(owner) }
+fn multi_hw_params(owner: crate::SoundOwnerKey, _device: ops::PcmDevice, format: u32, rate: u32, channels: u8, period_bytes: u32, buffer_bytes: u32) -> bool {
+    hw_params(owner, format, rate, channels, period_bytes, buffer_bytes)
+}
+fn multi_prepare(owner: crate::SoundOwnerKey, _device: ops::PcmDevice) -> bool { yes(owner) }
+fn multi_trigger(owner: crate::SoundOwnerKey, _device: ops::PcmDevice, start: bool) -> bool { trigger(owner, start) }
+fn multi_pause(owner: crate::SoundOwnerKey, _device: ops::PcmDevice, paused: bool) -> bool { pause(owner, paused) }
+fn multi_drain(owner: crate::SoundOwnerKey, _device: ops::PcmDevice) -> bool { yes(owner) }
+fn multi_pointer(owner: crate::SoundOwnerKey, _device: ops::PcmDevice) -> Option<u64> { no_pointer(owner) }
+fn multi_hw_free(owner: crate::SoundOwnerKey, _device: ops::PcmDevice) -> bool { yes(owner) }
+fn multi_submit(owner: crate::SoundOwnerKey, _device: ops::PcmDevice, bytes: &[u8]) -> usize { submit(owner, bytes) }
+fn multi_recv(owner: crate::SoundOwnerKey, _device: ops::PcmDevice, bytes: &mut [u8]) -> usize { recv(owner, bytes) }
+
+static MULTI_DEVICE_OPS: ops::PcmDeviceOps = ops::PcmDeviceOps {
+    pcm_devices: multi_devices,
+    pcm_caps: multi_caps,
+    cap_caps: multi_caps,
+    hw_limits: multi_hw_limits,
+    info_flags: multi_info_flags,
+    period_bytes: multi_period,
+    pcm_hw_params: multi_hw_params,
+    pcm_prepare: multi_prepare,
+    pcm_trigger: multi_trigger,
+    pcm_pause: multi_pause,
+    pcm_drain: multi_drain,
+    pcm_pointer: multi_pointer,
+    pcm_hw_free: multi_hw_free,
+    pcm_submit: multi_submit,
+    cap_hw_params: multi_hw_params,
+    cap_prepare: multi_prepare,
+    cap_trigger: multi_trigger,
+    cap_pointer: multi_pointer,
+    cap_hw_free: multi_hw_free,
+    pcm_recv: multi_recv,
+};
+
 static PLAYBACK_ONLY_OPS: ops::SoundOps = ops::SoundOps {
     identity: ident, hw_limits: limits, info_flags: info_flags, pcm_pause: pause, pcm_drain: yes, pcm_pointer: no_pointer, cap_pointer: no_pointer,
     config: cfg, pcm_caps: caps, cap_caps: no_caps, period_bytes: period,
@@ -203,6 +245,47 @@ fn card_nodes_are_model_owned_and_removed() {
 }
 
 #[test]
+fn pcm_devices_are_enumerated_and_published_independently() {
+    let _guard = test_guard();
+    let owner_id = key(0x7200);
+    drv::set_devtmpfs_hook(add_hook);
+    drv::set_devtmpfs_del_hook(del_hook);
+    ADDED.lock().clear();
+    REMOVED.lock().clear();
+    let _ = unregister_card(owner_id);
+    let _ = ops::clear(owner_id);
+
+    assert!(reserve_card(owner_id));
+    assert!(ops::register(owner_id, &TEST_OPS));
+    assert!(ops::register_pcm_devices(owner_id, &MULTI_DEVICE_OPS));
+    assert!(register_card(owner_id));
+
+    let mut next = u32::MAX;
+    assert_eq!(crate::control::handle(owner_id, 0, uapi::CTL_PCM_NEXT_DEVICE, &mut next as *mut u32 as u64), 0);
+    assert_eq!(next, 0);
+    next = 0;
+    assert_eq!(crate::control::handle(owner_id, 0, uapi::CTL_PCM_NEXT_DEVICE, &mut next as *mut u32 as u64), 0);
+    assert_eq!(next, 1);
+    next = 1;
+    assert_eq!(crate::control::handle(owner_id, 0, uapi::CTL_PCM_NEXT_DEVICE, &mut next as *mut u32 as u64), 0);
+    assert_eq!(next, u32::MAX);
+
+    let mut info = [0u8; uapi::PCM_INFO_SIZE];
+    put_u32(&mut info, uapi::PI_DEVICE, 1);
+    put_u32(&mut info, uapi::PI_STREAM, uapi::STREAM_PLAYBACK as u32);
+    assert_eq!(crate::control::handle(owner_id, 0, uapi::CTL_PCM_INFO, info.as_mut_ptr() as u64), 0);
+    assert_eq!(u32::from_le_bytes(info[uapi::PI_DEVICE..uapi::PI_DEVICE + 4].try_into().unwrap()), 1);
+
+    let added = ADDED.lock().clone();
+    assert!(has_name(&added, "snd/pcmC0D1p"));
+    assert!(has_name(&added, "snd/pcmC0D1c"));
+
+    assert!(unregister_card(owner_id));
+    let _ = ops::clear(owner_id);
+    let _ = cancel_card_reservation(owner_id);
+}
+
+#[test]
 fn card_nodes_follow_reported_stream_directions() {
     let _guard = test_guard();
     drv::set_devtmpfs_hook(add_hook);
@@ -252,10 +335,10 @@ fn pcm_control_ops_propagate_backend_failures() {
     pcm::register_card(owner_id);
     capture::register_card(owner_id);
 
-    assert_eq!(pcm::handle(owner_id, 0, uapi::PCM_HW_FREE, 0), test_err(syscall::errno::Errno::Eio));
-    assert_eq!(pcm::handle(owner_id, 0, uapi::PCM_DROP, 0), test_err(syscall::errno::Errno::Eio));
-    assert_eq!(capture::handle(owner_id, 0, uapi::PCM_HW_FREE, 0), test_err(syscall::errno::Errno::Eio));
-    assert_eq!(capture::handle(owner_id, 0, uapi::PCM_DROP, 0), test_err(syscall::errno::Errno::Eio));
+    assert_eq!(pcm::handle(owner_id, 0, 0, uapi::PCM_HW_FREE, 0), test_err(syscall::errno::Errno::Eio));
+    assert_eq!(pcm::handle(owner_id, 0, 0, uapi::PCM_DROP, 0), test_err(syscall::errno::Errno::Eio));
+    assert_eq!(capture::handle(owner_id, 0, 0, uapi::PCM_HW_FREE, 0), test_err(syscall::errno::Errno::Eio));
+    assert_eq!(capture::handle(owner_id, 0, 0, uapi::PCM_DROP, 0), test_err(syscall::errno::Errno::Eio));
 
     let _ = pcm::unregister_card(owner_id);
     let _ = capture::unregister_card(owner_id);
@@ -280,20 +363,20 @@ fn pcm_sync_ptr_does_not_fabricate_hardware_progress() {
     let mut sync = [0u8; uapi::SYNC_PTR_SIZE];
     put_u32(&mut sync, uapi::SP_FLAGS, 0);
     put_u64(&mut sync, uapi::SP_CONTROL_APPL_PTR, 77);
-    assert_eq!(pcm::handle(owner_id, 0, uapi::PCM_SYNC_PTR, sync.as_mut_ptr() as u64), 0);
+    assert_eq!(pcm::handle(owner_id, 0, 0, uapi::PCM_SYNC_PTR, sync.as_mut_ptr() as u64), 0);
     assert_eq!(get_u64(&sync, uapi::SP_CONTROL_APPL_PTR), 77);
     assert_eq!(get_u64(&sync, uapi::SP_STATUS_HW_PTR), 0);
 
     sync.fill(0);
     put_u32(&mut sync, uapi::SP_FLAGS, 0);
     put_u64(&mut sync, uapi::SP_CONTROL_APPL_PTR, 33);
-    assert_eq!(capture::handle(owner_id, 0, uapi::PCM_SYNC_PTR, sync.as_mut_ptr() as u64), 0);
+    assert_eq!(capture::handle(owner_id, 0, 0, uapi::PCM_SYNC_PTR, sync.as_mut_ptr() as u64), 0);
     assert_eq!(get_u64(&sync, uapi::SP_CONTROL_APPL_PTR), 33);
     assert_eq!(get_u64(&sync, uapi::SP_STATUS_HW_PTR), 0);
 
     // A card that does not advertise SNDRV_PCM_INFO_PAUSE refuses PAUSE
     // before any state check, the way ALSA's pre-action does.
-    assert_eq!(pcm::handle(owner_id, 0, uapi::PCM_PAUSE, 0), test_err(syscall::errno::Errno::Enosys));
+    assert_eq!(pcm::handle(owner_id, 0, 0, uapi::PCM_PAUSE, 0), test_err(syscall::errno::Errno::Enosys));
     let _ = pcm::unregister_card(owner_id);
     let _ = capture::unregister_card(owner_id);
     let _ = ops::clear(owner_id);
@@ -364,11 +447,11 @@ fn sound_data_paths_route_ops_by_explicit_owner() {
     }
     ROUTED.lock().clear();
 
-    assert_eq!(pcm::handle(owner1, 1, uapi::PCM_PREPARE, 0), 0);
-    assert_eq!(pcm::write_bytes(owner1, &[1, 2, 3, 4]), 4);
-    assert_eq!(capture::handle(owner1, 1, uapi::PCM_PREPARE, 0), 0);
+    assert_eq!(pcm::handle(owner1, 1, 0, uapi::PCM_PREPARE, 0), 0);
+    assert_eq!(pcm::write_bytes(owner1, 0, &[1, 2, 3, 4]), 4);
+    assert_eq!(capture::handle(owner1, 1, 0, uapi::PCM_PREPARE, 0), 0);
     let mut input = [0u8; 4];
-    assert_eq!(capture::read_bytes(owner1, &mut input), 4);
+    assert_eq!(capture::read_bytes(owner1, 0, &mut input), 4);
     assert_eq!(oss::write(owner1, &[5, 6, 7, 8]), 4);
     let mut next = [0u8; 4];
     assert_eq!(crate::control::handle(owner1, 1, uapi::CTL_PCM_NEXT_DEVICE, next.as_mut_ptr() as u64), 0);

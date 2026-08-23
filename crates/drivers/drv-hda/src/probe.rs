@@ -4,7 +4,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 
 use crate::card::{self, Device};
 use crate::controller::Hda;
@@ -24,10 +24,8 @@ const DMA32_LIMIT: u64 = 1 << 32;
 struct Frames {
     ring: u64,
     posbuf: u64,
-    playback_bdl: u64,
-    capture_bdl: u64,
-    playback_buffer: u64,
-    capture_buffer: u64,
+    playback: Vec<(u64, u64)>,
+    capture: Vec<(u64, u64)>,
 }
 
 fn alloc_page(addr64: bool) -> Option<u64> {
@@ -41,9 +39,13 @@ fn alloc_buffer(addr64: bool) -> Option<u64> {
 }
 
 fn frame_list(frames: &Frames) -> alloc::vec::Vec<(u64, u8)> {
-    [(frames.ring, 0u8), (frames.posbuf, 0), (frames.playback_bdl, 0), (frames.capture_bdl, 0),
-     (frames.playback_buffer, BUFFER_ORDER as u8), (frames.capture_buffer, BUFFER_ORDER as u8)]
-        .into_iter().filter(|(pa, _)| *pa != 0).collect()
+    let mut out = Vec::new();
+    out.extend([(frames.ring, 0u8), (frames.posbuf, 0)].into_iter());
+    for (bdl, buffer) in frames.playback.iter().chain(frames.capture.iter()) {
+        out.push((*bdl, 0));
+        out.push((*buffer, BUFFER_ORDER as u8));
+    }
+    out.into_iter().filter(|(pa, _)| *pa != 0).collect()
 }
 
 fn free_frames(frames: &Frames) {
@@ -54,19 +56,28 @@ fn free_frames(frames: &Frames) {
     }
 }
 
-fn alloc_frames(addr64: bool) -> Option<Frames> {
-    let mut frames = Frames { ring: 0, posbuf: 0, playback_bdl: 0, capture_bdl: 0,
-                              playback_buffer: 0, capture_buffer: 0 };
+fn alloc_frames(addr64: bool, playback_count: u8, capture_count: u8) -> Option<Frames> {
+    let mut frames = Frames { ring: 0, posbuf: 0, playback: Vec::new(), capture: Vec::new() };
     let take = |slot: &mut u64, page: Option<u64>| -> bool {
         match page { Some(pa) => { *slot = pa; true } None => false }
     };
     let ok = take(&mut frames.ring, alloc_page(addr64))
         && take(&mut frames.posbuf, alloc_page(addr64))
-        && take(&mut frames.playback_bdl, alloc_page(addr64))
-        && take(&mut frames.capture_bdl, alloc_page(addr64))
-        && take(&mut frames.playback_buffer, alloc_buffer(addr64))
-        && take(&mut frames.capture_buffer, alloc_buffer(addr64));
+        && allocate_stream_frames(addr64, playback_count, &mut frames.playback)
+        && allocate_stream_frames(addr64, capture_count, &mut frames.capture);
     if ok { Some(frames) } else { free_frames(&frames); None }
+}
+
+fn allocate_stream_frames(addr64: bool, count: u8, out: &mut Vec<(u64, u64)>) -> bool {
+    for _ in 0..count {
+        let Some(bdl) = alloc_page(addr64) else { return false; };
+        let Some(buffer) = alloc_buffer(addr64) else {
+            unsafe { pmm::setup::free_contig(bdl, pmm::Order(0)); }
+            return false;
+        };
+        out.push((bdl, buffer));
+    }
+    true
 }
 
 fn hard_handler(raw: usize) {
@@ -78,15 +89,15 @@ fn hard_handler(raw: usize) {
 fn bring_up(bdf: pci::Bdf, mmio_base: u64, mapping: mmio_map::Mapping) -> bool {
     let regs = Regs::new(mmio_base);
     let addr64 = regs.addr64();
-    let Some(frames) = alloc_frames(addr64) else { return false; };
     let hhdm = crate::platform::hhdm();
-    let Some(owner) = card::owner_key(bdf) else { free_frames(&frames); return false; };
+    let Some(owner) = card::owner_key(bdf) else { return false; };
 
     // Output stream descriptors follow the input and bidirectional blocks.
     let inputs = regs.input_streams();
     let bidir = regs.bidir_streams();
     let outputs = regs.output_streams();
-    if inputs == 0 || outputs == 0 { free_frames(&frames); return false; }
+    if inputs == 0 || outputs == 0 || u16::from(inputs) + u16::from(outputs) > 15 { return false; }
+    let Some(frames) = alloc_frames(addr64, outputs, inputs) else { return false; };
     let playback_index = inputs + bidir;
     let streams = inputs + bidir + outputs;
 
@@ -95,15 +106,18 @@ fn bring_up(bdf: pci::Bdf, mmio_base: u64, mapping: mmio_map::Mapping) -> bool {
         posbuf_pa: frames.posbuf,
         rings: Arc::new(crate::ownership::RegLock::new(
             Rings::new(frames.ring, hhdm + frames.ring))),
-        playback: Stream::new(playback_index, playback_index + 1, frames.playback_bdl,
-                              hhdm + frames.playback_bdl, frames.playback_buffer,
-                              hhdm + frames.playback_buffer,
-                              crate::position::slot_va(hhdm + frames.posbuf, playback_index)),
-        // Stream tags are one-based and live in a four-bit field; the two
-        // streams have distinct descriptor indices, so index+1 is distinct too.
-        capture: Stream::new(0, 1, frames.capture_bdl, hhdm + frames.capture_bdl,
-                             frames.capture_buffer, hhdm + frames.capture_buffer,
-                             crate::position::slot_va(hhdm + frames.posbuf, 0)),
+        playback: frames.playback.iter().enumerate().map(|(n, (bdl, buffer))| {
+            let index = playback_index + n as u8;
+            let tag = inputs + n as u8 + 1;
+            Stream::new(index, tag, *bdl, hhdm + *bdl, *buffer, hhdm + *buffer,
+                        crate::position::slot_va(hhdm + frames.posbuf, index))
+        }).collect(),
+        capture: frames.capture.iter().enumerate().map(|(n, (bdl, buffer))| {
+            let index = n as u8;
+            let tag = index + 1;
+            Stream::new(index, tag, *bdl, hhdm + *bdl, *buffer, hhdm + *buffer,
+                        crate::position::slot_va(hhdm + frames.posbuf, index))
+        }).collect(),
         codec: None,
         plan: None,
         jack_tags: [(0, 0); crate::controller::MAX_JACKS],
@@ -139,6 +153,10 @@ fn bring_up(bdf: pci::Bdf, mmio_base: u64, mapping: mmio_map::Mapping) -> bool {
     card::insert(Device::new(bdf, owner, hda, vendor_id, frame_list(&frames), mapping));
     if irq.is_some() { card::with_device(owner, |device| device.hda.enable_interrupts()); }
     if !sound::ops::register(owner, &card::SOUND_OPS) {
+        teardown(bdf, &frames, irq);
+        return false;
+    }
+    if !sound::ops::register_pcm_devices(owner, &card::PCM_DEVICE_OPS) {
         teardown(bdf, &frames, irq);
         return false;
     }

@@ -8,9 +8,9 @@ use crate::uapi::*;
 const SUBDEVICES: u32 = 1;
 
 /// Fill `snd_pcm_info` for device 0, subdevice 0 of `card`. # C: O(struct size)
-pub(crate) fn write(b: &UserBuf, card: u32, stream: i32, id: &[u8], name: &[u8]) {
+pub(crate) fn write(b: &UserBuf, card: u32, device: u32, stream: i32, id: &[u8], name: &[u8]) {
     b.zero(0, PCM_INFO_SIZE);
-    b.w32(PI_DEVICE, 0);
+    b.w32(PI_DEVICE, device);
     b.w32(PI_SUBDEVICE, 0);
     b.w32(PI_STREAM, stream as u32);
     b.w32(PI_CARD, card);

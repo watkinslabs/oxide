@@ -139,8 +139,12 @@ fn card_info(owner: crate::SoundOwnerKey, card: u32, arg: u64) -> i64 {
 fn pcm_next_device(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
     let b = match UserBuf::new(arg, 4) { Some(b) => b, None => return err(Errno::Efault) };
     let from = b.r32(0) as i32;
-    let has_device = crate::ops::pcm_caps(owner).is_some() || crate::ops::cap_caps(owner).is_some();
-    let next: i32 = if has_device && from <= 0 { 0 } else { -1 };
+    let next = (0..crate::ops::pcm_devices(owner))
+        .find(|device| i32::try_from(*device).is_ok_and(|device| device > from)
+            && (crate::ops::pcm_caps_for(owner, *device).is_some()
+                || crate::ops::cap_caps_for(owner, *device).is_some()))
+        .and_then(|device| i32::try_from(device).ok())
+        .unwrap_or(-1);
     b.w32(0, next as u32);
     0
 }
@@ -153,13 +157,13 @@ fn pcm_info(owner: crate::SoundOwnerKey, card: u32, arg: u64) -> i64 {
     let device = b.r32(PI_DEVICE);
     let stream = b.r32(PI_STREAM) as i32;
     let available = match stream {
-        STREAM_PLAYBACK => crate::ops::pcm_caps(owner).is_some(),
-        STREAM_CAPTURE => crate::ops::cap_caps(owner).is_some(),
+        STREAM_PLAYBACK => crate::ops::pcm_caps_for(owner, device).is_some(),
+        STREAM_CAPTURE => crate::ops::cap_caps_for(owner, device).is_some(),
         _ => false,
     };
-    if device != 0 || !available { return err(Errno::Enoent); }
+    if !available { return err(Errno::Enoent); }
     let Some(ident) = crate::ops::identity(owner) else { return err(Errno::Enodev); };
-    crate::pcm_info::write(&b, card, stream, &ident.id, &pcm_stream_name(&ident, stream == STREAM_CAPTURE));
+    crate::pcm_info::write(&b, card, device, stream, &ident.id, &pcm_stream_name(&ident, stream == STREAM_CAPTURE));
     0
 }
 

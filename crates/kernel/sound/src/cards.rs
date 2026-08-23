@@ -42,13 +42,14 @@ pub fn register_card(owner: SoundOwnerKey) -> bool {
         PublishClaim::AlreadyDone => return true,
         PublishClaim::Busy | PublishClaim::Missing => return false,
     };
-    let has_playback = crate::ops::pcm_caps(owner).is_some();
-    let has_capture = crate::ops::cap_caps(owner).is_some();
+    let pcm_devices = crate::ops::pcm_devices(owner);
+    let has_playback = (0..pcm_devices).any(|device| crate::ops::pcm_caps_for(owner, device).is_some());
+    let has_capture = (0..pcm_devices).any(|device| crate::ops::cap_caps_for(owner, device).is_some());
     if has_playback { crate::pcm::register_card(owner); }
     if has_capture { crate::capture::register_card(owner); }
     if has_playback || has_capture { crate::oss::register_card(owner); }
     devfs::register_dir("/dev/snd");
-    let Some(published) = crate::device::publish_card_nodes(owner, card, has_playback, has_capture) else {
+    let Some(published) = crate::device::publish_card_nodes(owner, card, pcm_devices) else {
         rollback_card_registration(owner);
         return false;
     };

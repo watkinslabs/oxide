@@ -15,6 +15,8 @@ type ControlWait = sched::live::WaitList;
 pub(crate) const MINOR_CONTROL: u64 = 0x00;
 pub(crate) const MINOR_PCM_P: u64 = 0x10;
 pub(crate) const MINOR_PCM_C: u64 = 0x11;
+const PCM_MINOR_STRIDE: u64 = 8;
+const PCM_DEVICE_LIMIT: u64 = 4;
 pub(crate) const MINOR_DSP: u64 = 0x20;
 pub(crate) const MINOR_AUDIO: u64 = 0x21;
 pub(crate) const MINOR_MIXER: u64 = 0x22;
@@ -28,8 +30,22 @@ pub(crate) struct SndData {
     pub(crate) owner: crate::SoundOwnerKey,
     pub(crate) card: u32,
     pub(crate) minor: u64,
+    pub(crate) device: crate::ops::PcmDevice,
     #[cfg(target_os = "oxide-kernel")]
     control_wait: ControlWait,
+}
+
+fn pcm_minor(device: crate::ops::PcmDevice, capture: bool) -> u64 {
+    let base = if capture { MINOR_PCM_C } else { MINOR_PCM_P };
+    base + u64::from(device) * PCM_MINOR_STRIDE
+}
+
+fn pcm_kind(minor: u64) -> Option<(crate::ops::PcmDevice, bool)> {
+    for device in 0..PCM_DEVICE_LIMIT {
+        if minor == pcm_minor(device as u32, false) { return Some((device as u32, false)); }
+        if minor == pcm_minor(device as u32, true) { return Some((device as u32, true)); }
+    }
+    None
 }
 
 /// `file_operations` for every `/dev/snd/*` + OSS node.
@@ -42,7 +58,7 @@ impl FileOps for SndFileOps {
         if b.is_empty() { return Ok(0); }
         match data.minor {
             MINOR_DSP | MINOR_AUDIO => Ok(crate::oss::read(data.owner, b)),
-            MINOR_PCM_C => Ok(crate::capture::read_bytes(data.owner, b)),
+            _ if pcm_kind(data.minor).is_some_and(|(_, capture)| capture) => Ok(crate::capture::read_bytes(data.owner, data.device, b)),
             _ => Ok(0),
         }
     }
@@ -71,9 +87,9 @@ impl FileOps for SndFileOps {
     fn write(&self, inode: &Inode, _o: u64, b: &[u8]) -> KResult<usize> {
         let data = match inode.private::<SndData>() { Some(d) => d, None => return Err(VfsError::Einval) };
         match data.minor {
-            MINOR_PCM_P => {
+            _ if pcm_kind(data.minor).is_some_and(|(_, capture)| !capture) => {
                 if b.is_empty() { return Ok(0); }
-                let n = crate::pcm::write_bytes(data.owner, b);
+                let n = crate::pcm::write_bytes(data.owner, data.device, b);
                 if n == 0 { Err(VfsError::Eio) } else { Ok(n) }
             }
             MINOR_DSP | MINOR_AUDIO => {
@@ -150,7 +166,7 @@ pub(crate) fn make_snd_inode(owner: crate::SoundOwnerKey, card: u32, minor: u64)
     let inode = InodeBuilder::new(crate::ids::INO_TAG | ((card as Ino) << INO_CARD_SHIFT) | minor, mk_mode(FileType::CharDev, 0o666),
                       default_inode_ops(), Arc::new(SndFileOps))
         .private(Arc::new(SndData {
-            owner, card, minor,
+            owner, card, minor, device: pcm_kind(minor).map_or(0, |(device, _)| device),
             #[cfg(target_os = "oxide-kernel")]
             control_wait: ControlWait::new(),
         }))
@@ -178,8 +194,8 @@ const OSS_NODES: &[SoundNodeTemplate] = &[
 fn alsa_node_name(card: u32, minor: u64) -> String {
     match minor {
         MINOR_CONTROL => alloc::format!("snd/controlC{}", card),
-        MINOR_PCM_P => alloc::format!("snd/pcmC{}D0p", card),
-        MINOR_PCM_C => alloc::format!("snd/pcmC{}D0c", card),
+        _ if pcm_kind(minor).is_some_and(|(_, capture)| !capture) => alloc::format!("snd/pcmC{}D{}p", card, pcm_kind(minor).unwrap().0),
+        _ if pcm_kind(minor).is_some_and(|(_, capture)| capture) => alloc::format!("snd/pcmC{}D{}c", card, pcm_kind(minor).unwrap().0),
         _ => alloc::format!("snd/unknownC{}M{}", card, minor),
     }
 }
@@ -188,8 +204,8 @@ fn alsa_dev_t(card: u32, minor: u64) -> (u32, u32) {
     let base = card.checked_mul(32).expect("sound card minor overflow");
     match minor {
         MINOR_CONTROL => (116, base),
-        MINOR_PCM_P => (116, base + 16),
-        MINOR_PCM_C => (116, base + 24),
+        _ if pcm_kind(minor).is_some_and(|(_, capture)| !capture) => (116, base + 16 + ((minor - MINOR_PCM_P) / PCM_MINOR_STRIDE) as u32 * 8),
+        _ if pcm_kind(minor).is_some_and(|(_, capture)| capture) => (116, base + 24 + ((minor - MINOR_PCM_C) / PCM_MINOR_STRIDE) as u32 * 8),
         _ => (116, base + minor as u32),
     }
 }
@@ -256,25 +272,35 @@ pub(crate) fn rollback_published_nodes(published: &[Arc<drv::Device>]) {
 }
 
 /// # C: O(1)
-pub(crate) fn publish_card_nodes(owner: crate::SoundOwnerKey, card: u32, has_playback: bool, has_capture: bool) -> Option<Vec<Arc<drv::Device>>> {
+pub(crate) fn publish_card_nodes(owner: crate::SoundOwnerKey, card: u32, pcm_devices: u32) -> Option<Vec<Arc<drv::Device>>> {
     let mut published = Vec::new();
     let control_name = alsa_node_name(card, MINOR_CONTROL);
     if !push_sound_node(&mut published, owner, card, "sound", control_name, alsa_dev_t(card, MINOR_CONTROL), MINOR_CONTROL) {
         rollback_published_nodes(&published);
         return None;
     }
-    if has_playback {
-        let dev_name = alsa_node_name(card, MINOR_PCM_P);
-        if !push_sound_node(&mut published, owner, card, "sound", dev_name, alsa_dev_t(card, MINOR_PCM_P), MINOR_PCM_P) {
-            rollback_published_nodes(&published);
-            return None;
+    let mut has_playback = false;
+    let mut has_capture = false;
+    for device in 0..pcm_devices.min(PCM_DEVICE_LIMIT as u32) {
+        let playback = crate::ops::pcm_caps_for(owner, device).is_some();
+        let capture = crate::ops::cap_caps_for(owner, device).is_some();
+        if playback {
+            has_playback = true;
+            let minor = pcm_minor(device, false);
+            let dev_name = alsa_node_name(card, minor);
+            if !push_sound_node(&mut published, owner, card, "sound", dev_name, alsa_dev_t(card, minor), minor) {
+                rollback_published_nodes(&published);
+                return None;
+            }
         }
-    }
-    if has_capture {
-        let dev_name = alsa_node_name(card, MINOR_PCM_C);
-        if !push_sound_node(&mut published, owner, card, "sound", dev_name, alsa_dev_t(card, MINOR_PCM_C), MINOR_PCM_C) {
-            rollback_published_nodes(&published);
-            return None;
+        if capture {
+            has_capture = true;
+            let minor = pcm_minor(device, true);
+            let dev_name = alsa_node_name(card, minor);
+            if !push_sound_node(&mut published, owner, card, "sound", dev_name, alsa_dev_t(card, minor), minor) {
+                rollback_published_nodes(&published);
+                return None;
+            }
         }
     }
     for node in OSS_NODES {
@@ -319,8 +345,8 @@ pub fn handle_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
     let group = (req >> 8) & 0xFF;
     let nr = req & 0xFF;
     Some(match data.minor {
-        MINOR_PCM_P if group == PCM_MAGIC => crate::pcm::handle(data.owner, data.card, nr, arg),
-        MINOR_PCM_C if group == PCM_MAGIC => crate::capture::handle(data.owner, data.card, nr, arg),
+        _ if pcm_kind(data.minor).is_some_and(|(_, capture)| !capture) && group == PCM_MAGIC => crate::pcm::handle(data.owner, data.card, data.device, nr, arg),
+        _ if pcm_kind(data.minor).is_some_and(|(_, capture)| capture) && group == PCM_MAGIC => crate::capture::handle(data.owner, data.card, data.device, nr, arg),
         MINOR_CONTROL if group == CTL_MAGIC => crate::control::handle_open(data.owner, data.card, Some(file), nr, arg),
         MINOR_DSP | MINOR_AUDIO => crate::oss::handle(data.owner, false, req, arg),
         MINOR_MIXER => crate::oss::handle(data.owner, true, req, arg),

@@ -3,7 +3,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 
 use crate::bdl::Geometry;
 use crate::generic::{self, OutputRoute, Plan};
@@ -44,8 +44,8 @@ pub struct Hda {
     /// Controller-global DMA position-buffer address.
     pub posbuf_pa: u64,
     pub rings: Arc<RegLock<Rings>>,
-    pub playback: Stream,
-    pub capture: Stream,
+    pub playback: Vec<Stream>,
+    pub capture: Vec<Stream>,
     pub codec: Option<Codec>,
     pub plan: Option<Plan>,
     /// Unsolicited-response tag assigned to each jack-detectable output pin.
@@ -67,8 +67,8 @@ pub const MAX_JACKS: usize = 4;
 /// bounded register/ring state with process-side codec commands.
 pub struct IrqEndpoint {
     regs: Regs,
-    playback_index: u8,
-    capture_index: u8,
+    playback_indices: Vec<u8>,
+    capture_indices: Vec<u8>,
 }
 
 impl IrqEndpoint {
@@ -76,8 +76,8 @@ impl IrqEndpoint {
     pub fn new(hda: &Hda) -> Self {
         Self {
             regs: hda.regs,
-            playback_index: hda.playback.index,
-            capture_index: hda.capture.index,
+            playback_indices: hda.playback.iter().map(|stream| stream.index).collect(),
+            capture_indices: hda.capture.iter().map(|stream| stream.index).collect(),
         }
     }
 
@@ -87,7 +87,7 @@ impl IrqEndpoint {
         let mut rings = transport::lock_regs(ring_lock);
         let status = self.regs.r32(REG_INTSTS);
         if status == 0 || status == u32::MAX { return false; }
-        for index in [self.playback_index, self.capture_index] {
+        for index in self.playback_indices.iter().chain(self.capture_indices.iter()).copied() {
             if status & (1u32 << index) == 0 { continue; }
             let sd_status = self.regs.r8(self.regs.sd(index) + SD_STS);
             self.regs.w8(self.regs.sd(index) + SD_STS, SD_INT_MASK as u8);
@@ -195,6 +195,7 @@ impl Hda {
         for route in plan.outputs.iter() { self.activate(route, widget::PIN_OUT); }
         for route in plan.hp.iter() { self.activate(route, widget::PIN_HP); }
         for route in plan.speaker.iter() { self.activate(route, widget::PIN_OUT); }
+        for route in plan.digital.iter() { self.activate(route, widget::PIN_OUT); }
         self.apply_capture(&plan);
         self.arm_jacks(&plan);
     }
@@ -254,10 +255,10 @@ impl Hda {
     /// Bind the playback converter to the output stream and program both
     /// sides for `alsa_format`/`rate`/`channels`.
     /// # C: O(periods + one command pair)
-    pub fn prepare_playback(&mut self, alsa_format: u32, rate: u32, channels: u8,
+    pub fn prepare_playback(&mut self, device: u32, alsa_format: u32, rate: u32, channels: u8,
                             period_bytes: u32) -> bool {
         let Some(codec) = self.codec.clone() else { return false; };
-        let Some(route) = self.plan.as_ref().and_then(|plan| plan.primary().cloned()) else { return false; };
+        let Some(route) = self.plan.as_ref().and_then(|plan| plan.output_for(device).cloned()) else { return false; };
         let par_pcm = codec.pcm_caps_of(route.dac);
         let Some(format) = crate::stream_fmt::format_for(alsa_format, rate, u32::from(channels), par_pcm)
             else { return false; };
@@ -265,9 +266,10 @@ impl Hda {
         let period = crate::bdl::align_period(period_bytes.min(crate::stream::MAX_PERIOD_BYTES));
         let geometry = Geometry { period_bytes: period, periods: crate::stream::PERIODS };
         let regs = self.regs;
-        if !self.playback.setup(&regs, format, geometry, frame_bytes) { return false; }
-        self.playback.silence();
-        let tag = self.playback.tag;
+        let Some(stream) = self.playback.get_mut(device as usize) else { return false; };
+        if !stream.setup(&regs, format, geometry, frame_bytes) { return false; }
+        stream.silence();
+        let tag = stream.tag;
         let Some(port) = self.port() else { return false; };
         port.command(route.dac, verb::SET_STREAM_FORMAT, format);
         port.command(route.dac, verb::SET_CHANNEL_STREAMID, verb::channel_streamid_payload(tag, 0));
@@ -276,10 +278,10 @@ impl Hda {
 
     /// As [`Self::prepare_playback`], for the capture converter.
     /// # C: O(periods + one command pair)
-    pub fn prepare_capture(&mut self, alsa_format: u32, rate: u32, channels: u8,
+    pub fn prepare_capture(&mut self, device: u32, alsa_format: u32, rate: u32, channels: u8,
                            period_bytes: u32) -> bool {
         let Some(codec) = self.codec.clone() else { return false; };
-        let Some(route) = self.plan.as_ref().and_then(|plan| plan.primary_capture().cloned()) else { return false; };
+        let Some(route) = self.plan.as_ref().and_then(|plan| plan.capture_for(device).cloned()) else { return false; };
         let par_pcm = codec.pcm_caps_of(route.adc);
         let Some(format) = crate::stream_fmt::format_for(alsa_format, rate, u32::from(channels), par_pcm)
             else { return false; };
@@ -287,9 +289,10 @@ impl Hda {
         let period = crate::bdl::align_period(period_bytes.min(crate::stream::MAX_PERIOD_BYTES));
         let geometry = Geometry { period_bytes: period, periods: crate::stream::PERIODS };
         let regs = self.regs;
-        if !self.capture.setup(&regs, format, geometry, frame_bytes) { return false; }
-        self.capture.silence();
-        let tag = self.capture.tag;
+        let Some(stream) = self.capture.get_mut(device as usize) else { return false; };
+        if !stream.setup(&regs, format, geometry, frame_bytes) { return false; }
+        stream.silence();
+        let tag = stream.tag;
         let Some(port) = self.port() else { return false; };
         port.command(route.adc, verb::SET_STREAM_FORMAT, format);
         port.command(route.adc, verb::SET_CHANNEL_STREAMID, verb::channel_streamid_payload(tag, 0));
@@ -298,10 +301,10 @@ impl Hda {
 
     /// Detach a converter from its stream tag, which is what frees the
     /// stream for another user. # C: O(one command)
-    pub fn release(&mut self, playback: bool) {
+    pub fn release(&mut self, device: u32, playback: bool) {
         let Some(plan) = self.plan.clone() else { return; };
-        let nid = if playback { plan.primary().map(|route| route.dac) }
-                  else { plan.primary_capture().map(|route| route.adc) };
+        let nid = if playback { plan.output_for(device).map(|route| route.dac) }
+                  else { plan.capture_for(device).map(|route| route.adc) };
         let Some(nid) = nid else { return; };
         let Some(port) = self.port() else { return; };
         port.command(nid, verb::SET_CHANNEL_STREAMID, 0);
@@ -380,8 +383,8 @@ impl Hda {
     /// Quiesce for removal or shutdown. # C: O(1)
     pub fn quiesce(&mut self) {
         let regs = self.regs;
-        self.playback.stop(&regs);
-        self.capture.stop(&regs);
+        for stream in &mut self.playback { stream.stop(&regs); }
+        for stream in &mut self.capture { stream.stop(&regs); }
         regs.w32(REG_INTCTL, 0);
         regs.w32(REG_DPLBASE, 0);
         regs.w32(REG_DPUBASE, 0);

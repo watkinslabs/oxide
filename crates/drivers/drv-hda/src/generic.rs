@@ -61,6 +61,7 @@ pub struct Plan {
     pub outputs: Vec<OutputRoute>,
     pub hp: Vec<OutputRoute>,
     pub speaker: Vec<OutputRoute>,
+    pub digital: Vec<OutputRoute>,
     pub captures: Vec<InputRoute>,
     pub badness: u32,
 }
@@ -68,12 +69,20 @@ pub struct Plan {
 impl Plan {
     /// Every output route, primary group first. # C: O(routes)
     pub fn all_outputs(&self) -> impl Iterator<Item = &OutputRoute> {
-        self.outputs.iter().chain(self.hp.iter()).chain(self.speaker.iter())
+        self.outputs.iter().chain(self.hp.iter()).chain(self.speaker.iter()).chain(self.digital.iter())
     }
     /// The route a PCM playback stream drives. # C: O(1)
     pub fn primary(&self) -> Option<&OutputRoute> { self.outputs.first() }
     /// The route a PCM capture stream drives. # C: O(1)
     pub fn primary_capture(&self) -> Option<&InputRoute> { self.captures.first() }
+    /// Route selected by the Linux PCM device number. The primary analog
+    /// route is device zero; additional routed converters follow in plan order.
+    pub fn output_for(&self, device: u32) -> Option<&OutputRoute> {
+        self.all_outputs().nth(device as usize)
+    }
+    pub fn capture_for(&self, device: u32) -> Option<&InputRoute> {
+        self.captures.get(device as usize)
+    }
 }
 
 struct Assign {
@@ -181,7 +190,7 @@ fn assign_group(codec: &Codec, pins: &[u8], table: &Badness, primary_dac: Option
     routes
 }
 
-fn assign_outputs(codec: &Codec, cfg: &AutoCfg) -> (Vec<OutputRoute>, Vec<OutputRoute>, Vec<OutputRoute>, u32) {
+fn assign_outputs(codec: &Codec, cfg: &AutoCfg) -> (Vec<OutputRoute>, Vec<OutputRoute>, Vec<OutputRoute>, Vec<OutputRoute>, u32) {
     let mut state = Assign::new();
     let outputs = assign_group(codec, &cfg.line_out, &MAIN_OUT_BADNESS, None, &mut state);
     let primary = outputs.first().map(|route| route.dac);
@@ -190,7 +199,8 @@ fn assign_outputs(codec: &Codec, cfg: &AutoCfg) -> (Vec<OutputRoute>, Vec<Output
     // primary's kind would drop a real jack for free.
     let hp = assign_group(codec, &cfg.hp, &EXTRA_OUT_BADNESS, primary, &mut state);
     let speaker = assign_group(codec, &cfg.speaker, &EXTRA_OUT_BADNESS, primary, &mut state);
-    (outputs, hp, speaker, state.badness)
+    let digital = assign_group(codec, &cfg.dig_out, &EXTRA_OUT_BADNESS, primary, &mut state);
+    (outputs, hp, speaker, digital, state.badness)
 }
 
 /// Swap the primary output group with the headphone or speaker group. When a
@@ -228,17 +238,18 @@ fn assign_captures(codec: &Codec, cfg: &AutoCfg) -> Vec<InputRoute> {
 /// Build the routing plan for `codec`. # C: O(pins × widgets × fan-in)
 pub fn build(codec: &Codec) -> Plan {
     let cfg = autocfg::parse_pin_defcfg(codec);
-    let (outputs, hp, speaker, badness) = assign_outputs(codec, &cfg);
-    let mut plan = Plan { captures: assign_captures(codec, &cfg), cfg, outputs, hp, speaker, badness };
+    let (outputs, hp, speaker, digital, badness) = assign_outputs(codec, &cfg);
+    let mut plan = Plan { captures: assign_captures(codec, &cfg), cfg, outputs, hp, speaker, digital, badness };
     if plan.badness != 0 {
         if let Some(alternative) = swapped(&plan.cfg) {
-            let (outputs, hp, speaker, badness) = assign_outputs(codec, &alternative);
+            let (outputs, hp, speaker, digital, badness) = assign_outputs(codec, &alternative);
             if badness < plan.badness {
                 plan.captures = assign_captures(codec, &alternative);
                 plan.cfg = alternative;
                 plan.outputs = outputs;
                 plan.hp = hp;
                 plan.speaker = speaker;
+                plan.digital = digital;
                 plan.badness = badness;
             }
         }
