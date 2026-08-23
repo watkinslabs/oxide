@@ -66,8 +66,24 @@ fn realize(fs: &Arc<F2fs>) -> Arc<SuperBlock> {
         Box::new(|_, _, _, _, _, _| unreachable!("fixture is already mounted")));
     let sb = SuperBlock::from_ops(ty, s_op, root, any.magic(), 0xF2F5_0002, any.block_size(),
                                  String::from("f2fs"), Arc::new(()));
+    sb.set_s_flags(any.sb_flags(), 0);
     any.set_sb(Arc::downgrade(&sb)).expect("set superblock");
     sb
+}
+
+#[test]
+fn the_acl_mount_option_stamps_the_posixacl_superblock_flag() {
+    let dev = disk(&test_image::with_root().finish());
+    let acl = crate::opts::parse(&Options::defaults(), "acl").unwrap();
+    let fs = F2fs::open_with(dev, "/dev/fake", true, acl).unwrap();
+    let sb = realize(&fs);
+    assert!(sb.is_posixacl());
+
+    let dev = disk(&test_image::with_root().finish());
+    let noacl = crate::opts::parse(&Options::defaults(), "noacl").unwrap();
+    let fs = F2fs::open_with(dev, "/dev/fake", true, noacl).unwrap();
+    let sb = realize(&fs);
+    assert!(!sb.is_posixacl());
 }
 
 #[test]

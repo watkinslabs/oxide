@@ -134,6 +134,9 @@ impl Inode {
     /// An error from the fetch is NOT cached: a transient read failure must not
     /// pin an object's permissions for the life of the inode. # C: O(1) cached
     pub fn get_inode_acl(&self, ty: AclType) -> KResult<Option<Arc<[AclEntry]>>> {
+        if self.i_sb().is_some_and(|sb| !sb.is_posixacl()) {
+            return Err(VfsError::Eopnotsupp);
+        }
         let slot = self.i_acl.slot(ty);
         if let Some(hit) = slot.cached() { return Ok(hit); }
         let generation = slot.generation();

@@ -80,6 +80,7 @@ pub fn generic_permission(inode: &crate::inode::Inode, mask: u32, cred: &Cred) -
 /// # C: O(N_acl_entries), one medium read per inode
 fn check_acl(inode: &crate::inode::Inode, cred: &Cred, i_uid: u32, i_gid: u32,
              want: u32, mode: u32) -> Option<KResult<()>> {
+    if inode.i_sb().is_some_and(|sb| !sb.is_posixacl()) { return None; }
     if mode & u32::from(S_IRWXG) == 0 { return None; }
     let acl = match inode.get_inode_acl(AclType::Access) {
         Ok(acl) => acl?,

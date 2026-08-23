@@ -279,6 +279,7 @@ const XINO_BITS: u32 = 8;
 impl FileSystem for OverlayFs {
     fn name(&self) -> &str { "overlay" }
     fn magic(&self) -> u64 { OVERLAYFS_SUPER_MAGIC }
+    fn sb_flags(&self) -> u64 { vfs::superblock::SB_POSIXACL }
     fn root(&self) -> Option<InodeRef> { Some(self.root.clone()) }
     fn show_options(&self) -> String {
         params::show(&self.stack.config, self.stack.xino.same_fs())

@@ -95,6 +95,7 @@ pub fn layer(fsid: u64) -> InodeRef {
                                                                 options: String::new() }),
                                   Some(root.clone()), 0, next_anon_dev(), 4096,
                                   String::from("overlay-test-layer"), Arc::new(()));
+    sb.set_s_flags(vfs::superblock::SB_POSIXACL, 0);
     *alloc.sb.lock() = Some(Arc::downgrade(&sb));
     // The superblock outlives the test only through the root inode, which is
     // what the caller keeps; leaking it here is what makes that true.

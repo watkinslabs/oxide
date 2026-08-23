@@ -431,6 +431,9 @@ impl vfs::fs::FileSystem for F2fs {
     fn name(&self) -> &str { F2FS_NAME }
     fn magic(&self) -> u64 { crate::uapi::F2FS_SUPER_MAGIC }
     fn fs_flags(&self) -> vfs::fs::FsFlags { vfs::fs::FsFlags::FS_REQUIRES_DEV }
+    fn sb_flags(&self) -> u64 {
+        if self.volume.lock().options().acl { vfs::superblock::SB_POSIXACL } else { 0 }
+    }
     fn block_size(&self) -> u32 { BLKSIZE as u32 }
     fn show_options(&self) -> String { { let v = self.volume.lock(); crate::opts::show(v.options(), v.super_block().feature) } }
     fn super_ops(&self) -> Option<Arc<dyn vfs::superblock::SuperOps>> {

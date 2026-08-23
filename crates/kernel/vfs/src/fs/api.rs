@@ -28,6 +28,9 @@ pub trait FileSystem: Send + Sync {
     /// [`crate::superblock::SB_I_USERNS_REQUIRED`] or `mount_too_revealing`
     /// refuses every user-namespace mount of it. # C: O(1)
     fn s_iflags(&self) -> u64 { 0 }
+    /// `sb->s_flags` bits the backend owns at fill-super, distinct from the
+    /// caller's per-mount flags. # C: O(1)
+    fn sb_flags(&self) -> u64 { 0 }
     fn requires_dev(&self) -> bool { self.fs_flags().contains(FsFlags::FS_REQUIRES_DEV) }
     fn dev_id(&self) -> Option<u64> { None }
     fn rename_does_d_move(&self) -> bool { self.fs_flags().contains(FsFlags::FS_RENAME_DOES_D_MOVE) }
@@ -82,6 +85,7 @@ pub fn superblock_from_filesystem(s_type: Arc<dyn FileSystemType>, fs: Arc<dyn F
     });
     let s_magic = fs.magic();
     let s_blocksize = fs.block_size();
+    let fs_sb_flags = fs.sb_flags();
     // Linux stamps `s_iflags` inside `fill_super`, before the instance is
     // published — so it is set on every path that can reach `mount_too_revealing`.
     let s_iflags = fs.s_iflags();
@@ -92,6 +96,7 @@ pub fn superblock_from_filesystem(s_type: Arc<dyn FileSystemType>, fs: Arc<dyn F
                 let sb = SuperBlock::from_ops_with_dentry_ops(s_type, s_op, root, s_magic, dev,
                     s_blocksize, s_id, Arc::new(()), fs_for_stamp.dentry_ops());
                 sb.set_s_iflags(s_iflags);
+                sb.set_s_flags(fs_sb_flags, 0);
                 apply_sb_flags(&sb, sb_flags, SB_FLAGS_USER_MASK);
                 fs_for_stamp.set_sb(Arc::downgrade(&sb))?;
                 if let Some(name) = fs_for_stamp.sysfs_name() { sb.set_sysfs_name(&name); }
@@ -113,6 +118,7 @@ pub fn superblock_from_filesystem(s_type: Arc<dyn FileSystemType>, fs: Arc<dyn F
             let sb = SuperBlock::from_ops_with_dentry_ops(s_type, s_op, root, s_magic,
                 next_anon_dev(), s_blocksize, s_id, Arc::new(()), fs.dentry_ops());
             sb.set_s_iflags(s_iflags);
+            sb.set_s_flags(fs_sb_flags, 0);
             apply_sb_flags(&sb, sb_flags, SB_FLAGS_USER_MASK);
             fs.set_sb(Arc::downgrade(&sb))?;
             if let Some(name) = fs.sysfs_name() { sb.set_sysfs_name(&name); }
