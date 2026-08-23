@@ -105,6 +105,20 @@ struct LiveRoute<'a> {
 }
 
 impl RouteAccess for LiveRoute<'_> {
+    fn iface_addr(&self) -> Option<conntrack::tuple::InetAddr> {
+        let id = if self.input.hook_id == net::stack::NF_INET_PRE_ROUTING {
+            self.input.ingress
+        } else {
+            self.input.egress
+        }?;
+        if self.input.family == crate::nft_expr::uapi::NFPROTO_IPV6 {
+            return net::global_stack().v6_src_on_iface(id)
+                .map(|addr| conntrack::tuple::InetAddr::v6(addr.0));
+        }
+        net::iface_addr::primary(self.input.namespace, id)
+            .map(|(addr, _)| conntrack::tuple::InetAddr::v4(addr.octets()))
+    }
+
     fn nexthop4(&self) -> Option<[u8; 4]> {
         if self.input.family != crate::nft_expr::uapi::NFPROTO_IPV4 { return None; }
         let b = self.input.pkt.get(16..20)?;

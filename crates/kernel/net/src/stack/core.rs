@@ -119,7 +119,7 @@ impl NetStack {
         })
     }
     /// Pick an IPv6 source address bound to `iface`, if one exists. # C: O(N addrs)
-    pub(crate) fn v6_src_on_iface(&self, iface: NetIfaceId) -> Option<crate::addr::Ipv6Addr> {
+    pub fn v6_src_on_iface(&self, iface: NetIfaceId) -> Option<crate::addr::Ipv6Addr> {
         self.v6_select_source(iface, crate::Ipv6Addr::ANY, None)
     }
 
