@@ -28,7 +28,6 @@ pub(super) fn fallocate(inode: &Inode, mode: u32, off: u64, len: u64) -> KResult
     {
         let mut v = node.fs.volume.lock();
         v.fallocate(node.ino, mode, off, len).map_err(errno_to_vfs)?;
-        v.stamp_modified(node.ino, stamp).map_err(errno_to_vfs)?;
     }
     node.restat(inode)?;
     let ts = vfs::timespec::Timespec64 { sec: stamp.0 as i64, nsec: stamp.1 };

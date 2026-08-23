@@ -69,6 +69,20 @@ fn a_regular_files_inode_carries_an_address_space() {
     assert!(f.i_mapping().is_some(), "a regular file's faults have nowhere to resolve");
 }
 
+#[test]
+fn the_inode_time_owner_persists_a_write_stamp() {
+    let fs = mounted();
+    let f = inode_of(&fs, FILE_INO);
+    let stamp = vfs::Timespec64::new(1_700_000_123, 456);
+    f.update_time(stamp, vfs::S_MTIME | vfs::S_CTIME | vfs::S_VERSION)
+        .expect("writable f2fs inode owns write timestamps");
+    assert_eq!(f.mtime(), Some(stamp));
+    assert_eq!(f.ctime(), Some(stamp));
+    let stored = fs.volume.lock().read_inode(FILE_INO).expect("stored inode");
+    assert_eq!(stored.mtime, (stamp.sec as u64, stamp.nsec));
+    assert_eq!(stored.ctime, (stamp.sec as u64, stamp.nsec));
+}
+
 /// A directory does not get one. Its blocks are read through the listing path,
 /// so offering the memory manager something to fault would offer it something
 /// the object does not have.

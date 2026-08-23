@@ -101,6 +101,21 @@ impl F2fsOps {
 }
 
 impl InodeOps for F2fsOps {
+    /// `file_update_time` for buffered and shared-mapping writes. The inode
+    /// stamp is persisted by the same volume owner that serves setattr and
+    /// fallocate, so mapped writes cannot create a second timestamp truth.
+    /// # C: O(1 block)
+    fn update_time(&self, inode: &Inode, now: vfs::Timespec64, flags: u32) -> KResult<()> {
+        let node = Self::node(inode)?;
+        if !node.fs.is_writable() { return Err(VfsError::Erofs); }
+        vfs::generic_update_time(inode, now, flags)?;
+        if flags & (vfs::S_MTIME | vfs::S_CTIME) != 0 {
+            let stamp = (now.sec.max(0) as u64, now.nsec);
+            node.fs.volume_now().stamp_modified(node.ino, stamp).map_err(errno_to_vfs)?;
+        }
+        Ok(())
+    }
+
     /// The generic ioctl stage's file-attribute pair, which is where the flag
     /// commands land for every filesystem. # C: O(1 block)
     fn fileattr_get(&self, inode: &Inode) -> KResult<vfs::FileAttr> {

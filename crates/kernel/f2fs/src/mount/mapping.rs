@@ -32,10 +32,11 @@
 //! it. The mount's mapping is the one place a file's pages live and the one
 //! place they are asked for.
 
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
+use sync::{Spinlock, TaskList};
 
 use vfs::mapping::AddressSpaceOps;
-use vfs::{CachestatCounts, CachestatRange, KResult, SharedFrame};
+use vfs::{CachestatCounts, CachestatRange, Inode, InodeRef, KResult, SharedFrame};
 
 use crate::uapi::BLKSIZE;
 
@@ -45,11 +46,19 @@ use super::{errno_to_vfs, F2fs};
 pub(crate) struct F2fsMapping {
     pub(crate) fs: Arc<F2fs>,
     pub(crate) ino: u32,
+    /// The file whose `page_mkwrite` timestamp contract this mapping serves.
+    /// Weak avoids an inode↔address-space lifetime cycle; production inode
+    /// construction binds it immediately after the inode is built.
+    inode: Spinlock<Weak<Inode>, TaskList>,
 }
 
 impl F2fsMapping {
     /// The page a byte offset belongs to. # C: O(1)
     fn index(off: u64) -> u64 { off / BLKSIZE as u64 }
+
+    /// Bind the address space to its owning VFS inode once construction has
+    /// produced the canonical inode object. # C: O(1)
+    pub(crate) fn bind(&self, inode: &InodeRef) { *self.inode.lock() = Arc::downgrade(inode); }
 }
 
 impl AddressSpaceOps for F2fsMapping {
@@ -93,6 +102,13 @@ impl AddressSpaceOps for F2fsMapping {
     /// mount, so a caller still holding the guard would wait on itself.
     /// # Ctx: process # Sleeps: y # C: O(indirection depth) blocks
     fn page_mkwrite(&self, off: u64) -> KResult<()> {
+        if let Some(inode) = self.inode.lock().upgrade() {
+            let raw = vfs::inode_times::realtime_now_ns();
+            if raw != 0 {
+                let now = vfs::inode_times::current_time(&inode, raw);
+                inode.update_time(now, vfs::S_MTIME | vfs::S_CTIME | vfs::S_VERSION)?;
+            }
+        }
         self.fs.volume_now().mkwrite_page(self.ino, Self::index(off)).map_err(errno_to_vfs)?;
         self.fs.balance_data(self.ino);
         Ok(())
@@ -228,10 +244,10 @@ impl AddressSpaceOps for F2fsMapping {
 /// the memory manager something to fault that the object does not have.
 /// # C: O(1)
 pub(crate) fn address_space(fs: &Arc<F2fs>, ino: u32, ftype: vfs::FileType)
-    -> Option<Arc<dyn AddressSpaceOps>>
+    -> Option<Arc<F2fsMapping>>
 {
     if ftype != vfs::FileType::Regular { return None; }
-    Some(Arc::new(F2fsMapping { fs: Arc::clone(fs), ino }))
+    Some(Arc::new(F2fsMapping { fs: Arc::clone(fs), ino, inode: Spinlock::new(Weak::new()) }))
 }
 
 #[cfg(test)]
