@@ -136,6 +136,43 @@ fn writing_a_lower_file_copies_it_up_and_leaves_the_image_alone() {
 }
 
 #[test]
+fn fallocate_on_a_lower_file_copies_data_up_before_forwarding() {
+    let (l, up, lo) = image();
+    mkfile(&lo, "f", b"image");
+    let fs = OverlayFs::open(OPTS, &l.resolve(), true).unwrap();
+    let f = fs.root_inode().lookup("f").unwrap();
+    f.fallocate(0, 4096, 4096).unwrap();
+    assert_eq!(f.size(), 8192);
+    assert_eq!(slurp(&find_path(&lo, "f").unwrap()), b"image".to_vec());
+    assert_eq!(find_path(&up, "f").unwrap().size(), 8192);
+}
+
+#[test]
+fn fiemap_on_a_metadata_only_file_reads_the_data_owner() {
+    let (l, up, lo) = image();
+    mkfile(&lo, "f", b"image");
+    let fs = OverlayFs::open("lowerdir=/lower,upperdir=/upper,workdir=/work,metacopy=on",
+                             &l.resolve(), true).unwrap();
+    let f = fs.root_inode().lookup("f").unwrap();
+    let mut extents = Vec::new();
+    f.fiemap(0, 4096, &mut |e| { extents.push(e); true }).unwrap();
+    assert_eq!(extents.len(), 1);
+    assert!(find_path(&up, "f").is_none(), "fiemap is read-only");
+    assert_eq!(slurp(&find_path(&lo, "f").unwrap()), b"image".to_vec());
+}
+
+#[test]
+fn overlay_tmpfile_is_unlinked_until_linked_into_the_upper_layer() {
+    let (l, up, _lo) = image();
+    let fs = OverlayFs::open(OPTS, &l.resolve(), true).unwrap();
+    let tmp = fs.root_inode().tmpfile(S_IFREG as u32 | 0o600, &CreateCtx::root()).unwrap();
+    assert_eq!(tmp.nlink(), 0);
+    tmp.write(0, b"anonymous").unwrap();
+    fs.root_inode().link_child(&tmp, "published", &CreateCtx::root()).unwrap();
+    assert_eq!(slurp(&find_path(&up, "published").unwrap()), b"anonymous".to_vec());
+}
+
+#[test]
 fn creating_a_file_lands_in_the_writable_layer_only() {
     let (l, up, lo) = image();
     let fs = OverlayFs::open(OPTS, &l.resolve(), true).unwrap();

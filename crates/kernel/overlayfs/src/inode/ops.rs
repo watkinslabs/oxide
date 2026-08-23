@@ -27,6 +27,7 @@ use crate::marker;
 use crate::xattr;
 
 use super::node::{make_inode, ovl_of, refresh, OvlInode};
+use crate::layers::OvlEntry;
 
 /// Both vtables of an overlay inode.
 pub struct OvlOps;
@@ -74,7 +75,7 @@ pub fn copy_up_chain(inode: &Inode) -> Result<(), Errno> {
 
 /// Copy up so the object's DATA is in the writable layer, not only its
 /// metadata. # C: O(size)
-fn copy_up_with_data(inode: &Inode) -> Result<(), Errno> {
+pub(crate) fn copy_up_with_data(inode: &Inode) -> Result<(), Errno> {
     copy_up_chain(inode)?;
     let this = ovl(inode).map_err(to_errno)?;
     let mut e = this.entry();
@@ -132,6 +133,29 @@ impl InodeOps for OvlOps {
 
     fn create(&self, inode: &Inode, name: &str, mode: u32, _c: &CreateCtx) -> KResult<InodeRef> {
         self.make(inode, name, New::File(mode))
+    }
+
+    fn tmpfile(&self, inode: &Inode, mode: u32, _ctx: &CreateCtx) -> KResult<InodeRef> {
+        copy_up_chain(inode).map_err(to_vfs)?;
+        let this = ovl(inode)?;
+        let upper_dir = this.entry().upper.ok_or(VfsError::Erofs)?;
+        let upper = this.stack.with_access_ctx(|ctx| upper_dir.tmpfile(mode, ctx))?;
+        let entry = OvlEntry { upper: Some(upper), upper_alias: true, ..OvlEntry::default() };
+        Ok(make_inode(&this.stack, entry, this.shared(), ""))
+    }
+
+    fn fallocate(&self, inode: &Inode, mode: u32, offset: u64, len: u64) -> KResult<()> {
+        copy_up_with_data(inode).map_err(to_vfs)?;
+        let real = ovl(inode)?.entry().upper.ok_or(VfsError::Erofs)?;
+        real.fallocate(mode, offset, len)?;
+        refresh(inode);
+        Ok(())
+    }
+
+    fn fiemap(&self, inode: &Inode, start: u64, len: u64,
+              emit: &mut dyn FnMut(vfs::FiemapExtent) -> bool) -> KResult<()> {
+        let real = real_of(inode, true).ok_or(VfsError::Eio)?;
+        real.fiemap(start, len, emit)
     }
 
     fn mkdir(&self, inode: &Inode, name: &str, mode: u32, _c: &CreateCtx) -> KResult<InodeRef> {

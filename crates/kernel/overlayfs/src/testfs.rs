@@ -184,6 +184,37 @@ impl InodeOps for Ops {
         inode.set_size(len);
         Ok(())
     }
+
+    fn tmpfile(&self, _inode: &Inode, mode: u32, _ctx: &CreateCtx) -> KResult<InodeRef> {
+        let child = self.child((mode & !S_IFMT as u32) | S_IFREG as u32, 0, None);
+        child.drop_nlink();
+        Ok(child)
+    }
+
+    fn fallocate(&self, inode: &Inode, mode: u32, off: u64, len: u64) -> KResult<()> {
+        if mode & !vfs::uapi::FALLOC_FL_KEEP_SIZE != 0 { return Err(VfsError::Eopnotsupp); }
+        let end = off.checked_add(len).ok_or(VfsError::Einval)?;
+        let n = node_of(inode);
+        let mut data = n.data.lock();
+        if end > data.len() as u64 { data.resize(end as usize, 0); }
+        if mode & vfs::uapi::FALLOC_FL_KEEP_SIZE == 0 { inode.set_size(end); }
+        Ok(())
+    }
+
+    fn fiemap(&self, inode: &Inode, start: u64, len: u64,
+              emit: &mut dyn FnMut(vfs::FiemapExtent) -> bool) -> KResult<()> {
+        let size = inode.size();
+        let end = start.saturating_add(len);
+        if start < size && end != 0 {
+            let logical = start;
+            let length = size.saturating_sub(start).min(end.saturating_sub(start));
+            if length != 0 {
+                emit(vfs::FiemapExtent { logical, physical: inode.ino() * 4096,
+                                         length, flags: vfs::inode::FIEMAP_EXTENT_LAST });
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Rename within or across two directories of the same layer, honouring the
