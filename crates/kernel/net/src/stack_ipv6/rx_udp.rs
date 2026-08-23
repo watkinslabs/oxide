@@ -16,7 +16,7 @@ impl NetStack {
     #[inline(never)]
     pub(super) fn deliver_rx_udp6(&self, net_ns: u64, iface: NetIfaceId, src: Ipv6Addr, dst: Ipv6Addr,
         hop_limit: u8, traffic_class: u8, ancillary: &RxAncillary, payload: &[u8],
-        packet: &[u8])
+        packet: &[u8], tproxy: Option<crate::pkt::TproxyTarget>)
     {
         let udp = match crate::udp::parse_v6(payload, src, dst) {
             Ok(h) => h,
@@ -29,7 +29,12 @@ impl NetStack {
         // before the demux rather than per selected endpoint.
         let datagram_body = payload
             .get(crate::udp::UDP_HDR_LEN..udp.length as usize).unwrap_or(&[]);
-        let endpoints = self.udp6_demux_in(net_ns, src, udp.src_port, dst, udp.dst_port, iface,
+        let (demux_dst, demux_port) = tproxy.map(|target| {
+            let target_dst = Ipv6Addr(target.addr.0);
+            (if target_dst == Ipv6Addr::ANY { dst } else { target_dst },
+                if target.port == 0 { udp.dst_port } else { target.port })
+        }).unwrap_or((dst, udp.dst_port));
+        let endpoints = self.udp6_demux_in(net_ns, src, udp.src_port, demux_dst, demux_port, iface,
             datagram_body);
         if endpoints.is_empty() && !dst.is_multicast() {
             crate::mib6::bump_udp(net_ns, crate::mib6::Udp6Mib::NoPorts);

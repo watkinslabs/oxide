@@ -133,7 +133,7 @@ impl NetStack {
         self.deliver_rx_ipv6_payload(
             lease, hdr.src, hdr.dst, hdr.hop_limit, hdr.traffic_class,
             &ancillary, mld_router_alert, next_header, payload,
-            full_packet,
+            full_packet, ingress_pkt.tproxy_target(),
         )
     }
 
@@ -172,6 +172,7 @@ impl NetStack {
         next_header: u8,
         payload: &[u8],
         packet: &[u8],
+        tproxy: Option<crate::pkt::TproxyTarget>,
     ) -> NetResult<()> {
         let (net_ns, iface) = (lease.net_ns(), lease.iface());
         let flow_label = ancillary.flow_label;
@@ -198,7 +199,8 @@ impl NetStack {
             }
             n if n == IpProto::Udp as u8 => {
                 crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::InDelivers);
-                self.deliver_rx_udp6(net_ns, iface, src, dst, hop_limit, traffic_class, ancillary, payload, packet)
+                self.deliver_rx_udp6(net_ns, iface, src, dst, hop_limit, traffic_class, ancillary,
+                    payload, packet, tproxy)
             }
             n if n == IpProto::Tcp as u8 => {
                 crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::InDelivers);

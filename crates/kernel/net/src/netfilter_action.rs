@@ -116,10 +116,18 @@ impl Action {
 
 fn apply_tproxy(p: &mut crate::pkt::Pkt, addr: InetAddr, port: u16,
                 family: u8, hook: u32) -> Result<(), ApplyError> {
-    if family != crate::netfilter_hook::NFPROTO_IPV4
-        || hook != crate::netfilter_hook::NF_INET_PRE_ROUTING
-        || p.data().get(9).copied() != Some(crate::addr::IpProto::Udp as u8)
-        || addr.0[4..] != [0; 12] {
+    let udp = match family {
+        crate::netfilter_hook::NFPROTO_IPV4 => p.data().get(9).copied()
+            == Some(crate::addr::IpProto::Udp as u8),
+        crate::netfilter_hook::NFPROTO_IPV6 => p.data().get(6).copied()
+            .and_then(|next| crate::ipv6_ext::walk(next, p.data().get(40..)?).ok())
+            .map(|walk| matches!(walk, crate::ipv6_ext::ExtWalk::Done { next_header: 17, .. }
+                | crate::ipv6_ext::ExtWalk::Fragment { next_header: 17, offset: 0, .. }))
+            .unwrap_or(false),
+        _ => false,
+    };
+    if hook != crate::netfilter_hook::NF_INET_PRE_ROUTING || !udp
+        || (family == crate::netfilter_hook::NFPROTO_IPV4 && addr.0[4..] != [0; 12]) {
         return Err(ApplyError::Unsupported);
     }
     p.tproxy = Some(crate::pkt::TproxyTarget { addr, port });
@@ -620,6 +628,22 @@ mod tests {
             data: vec![0x2e], csum_type: 0, csum_offset: 0, csum_flags: 0 };
         action.apply(&mut pkt, 2).unwrap();
         assert_eq!(pkt.data()[1], 0x2e);
+    }
+
+    #[test]
+    fn ipv6_udp_tproxy_records_target() {
+        let src = crate::Ipv6Addr([0x20, 1, 0xdb, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        let dst = crate::Ipv6Addr([0x20, 1, 0xdb, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+        let mut bytes = vec![0u8; 48];
+        crate::ipv6::Ipv6Hdr::build(src, dst, crate::IpProto::Udp, 8)
+            .write_to(&mut bytes);
+        bytes[40..48].copy_from_slice(&[0x03, 0xe8, 0x07, 0xd0, 0, 8, 0, 0]);
+        let target = InetAddr::v6([0x20, 1, 0xdb, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9]);
+        let mut pkt = Pkt::from_owned(bytes);
+        Action::TproxyAssign { addr: target, port: 5353 }
+            .apply_at(&mut pkt, crate::netfilter_hook::NFPROTO_IPV6,
+                crate::netfilter_hook::NF_INET_PRE_ROUTING).unwrap();
+        assert_eq!(pkt.tproxy_target(), Some(crate::pkt::TproxyTarget { addr: target, port: 5353 }));
     }
 
     #[test]

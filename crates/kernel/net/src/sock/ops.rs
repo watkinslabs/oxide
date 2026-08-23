@@ -130,6 +130,8 @@ pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
                     )?)
                 };
                 endpoint.register_poll_subs(&sock.poll_subs);
+                endpoint.set_transparent(sock.opts.base.generic.flag(
+                    crate::sock_opts::sol_ip::flag::TRANSPARENT));
                 stack().join_udp6_reuseport(&endpoint, &sock.reuseport_group);
                 *sock.udp6.lock() = Some(endpoint);
                 *local_port = Some(port);

@@ -198,7 +198,7 @@ impl NetStack {
                         mark: q.mark(), wildcard: q.bound_ip.is_unspecified() }),
                 (IpAddr::V6(src), IpAddr::V6(dst)) => self.udp6_demux_in(
                     net_ns, src, sport, dst, dport, iface, &[]).into_iter().next()
-                    .map(|q| SocketLookup { full: true, transparent: false,
+                    .map(|q| SocketLookup { full: true, transparent: q.transparent(),
                         mark: q.mark(), wildcard: q.bound_ip == Ipv6Addr::ANY }),
                 _ => None,
             };
@@ -240,6 +240,19 @@ impl NetStack {
             let bound = q.bound_ifindex.load(::core::sync::atomic::Ordering::Acquire);
             (bound == 0 || bound == ifindex)
                 && (q.bound_ip.is_unspecified() || q.bound_ip == dst)
+                && q.transparent()
+        })
+    }
+
+    pub fn transparent_udp6_in(&self, net_ns: u64, dst: Ipv6Addr, port: u16,
+                               iface: Option<NetIfaceId>) -> bool {
+        let tables = self.inet_tables(net_ns);
+        let Some(group) = tables.udp6.lock().get(&port).cloned() else { return false; };
+        let ifindex = iface.map_or(0, NetIfaceId::raw);
+        group.into_iter().any(|q| {
+            let bound = q.bound_ifindex.load(::core::sync::atomic::Ordering::Acquire);
+            (bound == 0 || bound == ifindex)
+                && (q.bound_ip == Ipv6Addr::ANY || q.bound_ip == dst)
                 && q.transparent()
         })
     }

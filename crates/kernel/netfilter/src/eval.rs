@@ -117,16 +117,34 @@ impl SocketAccess for LiveSocket<'_> {
     fn mark(&self) -> u32 { self.info.mark }
     fn wildcard(&self) -> bool { self.info.wildcard }
     fn tproxy_transparent(&self, addr: &conntrack::tuple::InetAddr, port: u16) -> bool {
-        if self.input.family != crate::nft_expr::uapi::NFPROTO_IPV4 { return false; }
-        let proto = self.input.pkt.get(9).copied().unwrap_or(0);
-        let dst = net::addr::Ipv4Addr::new(addr.0[0], addr.0[1], addr.0[2], addr.0[3]);
-        if proto == conntrack::uapi::IPPROTO_TCP {
-            return net::global_stack().transparent_tcp4_in(
-                self.input.namespace, dst, port, self.input.ingress);
+        match self.input.family {
+            crate::nft_expr::uapi::NFPROTO_IPV4 => {
+                let proto = self.input.pkt.get(9).copied().unwrap_or(0);
+                let dst = net::addr::Ipv4Addr::new(addr.0[0], addr.0[1], addr.0[2], addr.0[3]);
+                if proto == conntrack::uapi::IPPROTO_TCP {
+                    return net::global_stack().transparent_tcp4_in(
+                        self.input.namespace, dst, port, self.input.ingress);
+                }
+                proto == conntrack::uapi::IPPROTO_UDP
+                    && net::global_stack().transparent_udp4_in(
+                        self.input.namespace, dst, port, self.input.ingress)
+            }
+            crate::nft_expr::uapi::NFPROTO_IPV6 => {
+                if self.input.pkt.len() < 40 { return false; }
+                let Ok(dst) = <[u8; 16]>::try_from(&addr.0[..]) else { return false; };
+                let Ok(walk) = net::ipv6_ext::walk(self.input.pkt[6], &self.input.pkt[40..])
+                    else { return false; };
+                let proto = match walk {
+                    net::ipv6_ext::ExtWalk::Done { next_header, .. } => next_header,
+                    net::ipv6_ext::ExtWalk::Fragment { next_header, offset: 0, .. } => next_header,
+                    net::ipv6_ext::ExtWalk::Fragment { .. } => return false,
+                };
+                proto == conntrack::uapi::IPPROTO_UDP
+                    && net::global_stack().transparent_udp6_in(
+                        self.input.namespace, net::addr::Ipv6Addr(dst), port, self.input.ingress)
+            }
+            _ => false,
         }
-        if proto != conntrack::uapi::IPPROTO_UDP { return false; }
-        net::global_stack().transparent_udp4_in(
-            self.input.namespace, dst, port, self.input.ingress)
     }
 }
 
