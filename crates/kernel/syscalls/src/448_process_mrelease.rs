@@ -107,14 +107,22 @@ pub fn sys_process_mrelease(args: &SyscallArgs) -> i64 {
     // Which mappings may be torn down is the OOM reaper's rule, and there is
     // one copy of it: the reference reaches the same reaping function from
     // this syscall and from the kthread.
-    let guard = mm.vmas_for_test();
+    let guard = match mm.vmas_killable(sched::live::interruptible_work_pending_self) {
+        Ok(guard) => guard,
+        Err(()) => return errno(Errno::Eintr),
+    };
+    let mut reap_failed = false;
     for vma in guard.iter() {
         if !sched::oom::reapable_vma(vma) { continue; }
         let start = vma.start.as_u64();
         let len = vma.end.as_u64().saturating_sub(start);
-        if len != 0 { pmm::user_as::evict_foreign_pages_in_range(&mm, start, len); }
+        if len != 0 && pmm::user_as::evict_foreign_pages_in_range(&mm, start, len) != 0 {
+            reap_failed = true;
+            break;
+        }
     }
     drop(guard);
+    if reap_failed { return errno(Errno::Eagain); }
     mm.set_oom_skip();
     0
 }

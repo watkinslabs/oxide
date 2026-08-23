@@ -436,6 +436,16 @@ impl AddressSpace {
         self.vmas.read()
     }
 
+    /// Acquire the VMA tree for a killable operation such as
+    /// `process_mrelease`. The syscall supplies the current task's pending
+    /// signal predicate; VMM remains independent of the scheduler.
+    /// # C: O(contention)
+    pub fn vmas_killable(&self, interrupted: fn() -> bool)
+        -> Result<rwsem::MmapReadGuard<'_, VmaTree>, ()>
+    {
+        self.vmas.read_killable(interrupted)
+    }
+
     /// Set the per-mm exe path captured at `execve`. Linux's
     /// `mm_struct::exe_file` analogue: stores the dentry-of-record
     /// path (e.g. `/bin/echo`), NOT the inode-canonical path.

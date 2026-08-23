@@ -14,6 +14,9 @@ pub(crate) fn errno_from_vfs(error: vfs::VfsError) -> i64 {
     // restart happens (`syscall::restart::normalize_user_return`).
     -(match error {
         vfs::VfsError::Erestartsys => return syscall::restart::restart_sys(),
+        // ECHILD is an internal path-walk retry signal; it must not escape
+        // the VFS retry boundary as a userspace errno.
+        vfs::VfsError::Echild => Errno::Eio,
         vfs::VfsError::Eperm => Errno::Eperm, vfs::VfsError::Enoent => Errno::Enoent, vfs::VfsError::Esrch => Errno::Esrch, vfs::VfsError::Eintr => Errno::Eintr,
         vfs::VfsError::Etoomanyrefs => Errno::Etoomanyrefs, vfs::VfsError::Eio => Errno::Eio, vfs::VfsError::Enxio => Errno::Enxio, vfs::VfsError::Ebadf => Errno::Ebadf, vfs::VfsError::Enomem => Errno::Enomem,
         vfs::VfsError::Eacces => Errno::Eacces, vfs::VfsError::Efault => Errno::Efault, vfs::VfsError::Enotblk => Errno::Enotblk, vfs::VfsError::Eexist => Errno::Eexist,

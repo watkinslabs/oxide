@@ -36,6 +36,9 @@ impl From<vfs::VfsError> for Error {
         match e {
             vfs::VfsError::Eperm => Self::Eperm, vfs::VfsError::Enoent => Self::Enoent,
             vfs::VfsError::Esrch => Self::Esrch, vfs::VfsError::Eintr => Self::Eintr,
+            // ECHILD is an internal ref-walk retry signal and must never
+            // escape as a socket operation error.
+            vfs::VfsError::Echild => Self::Eio,
             vfs::VfsError::Erestartsys => Self::Erestartsys,
             vfs::VfsError::Eio => Self::Eio, vfs::VfsError::Enxio => Self::Enxio,
             vfs::VfsError::Ebadf => Self::Ebadf, vfs::VfsError::Eagain => Self::Eagain,
