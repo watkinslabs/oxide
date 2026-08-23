@@ -57,7 +57,6 @@ impl NetStack {
             (IpAddr::V6(s), IpAddr::V6(d)) => TcpHdr::parse_v6(tcp, s, d),
             _ => unreachable!(),
         }.map_err(|_| crate::netfilter_action::ApplyError::Invalid)?;
-        if hdr.flags & tcp_hdr::flags::RST != 0 { return Ok(()); }
         let net_ns = p.iface.and_then(|iface| self.ifaces.namespace(iface)).unwrap_or(0);
         let peer_mss = tcp_hdr::parse_mss_option(tcp).unwrap_or(DEFAULT_MSS);
         let mss = if configured_mss == 0 { peer_mss } else { configured_mss.min(peer_mss) };
@@ -68,6 +67,17 @@ impl NetStack {
             ::conntrack::ProtoState::Tcp(track) => track.state,
             _ => return Ok(()),
         };
+        if hdr.flags & tcp_hdr::flags::RST != 0 {
+            if dir == ::conntrack::uapi::IP_CT_DIR_REPLY
+                && tcp_state == ::conntrack::proto::tcp_state::TCP_CONNTRACK_CLOSE
+            {
+                if let Some(synproxy) = *conn.synproxy.lock() {
+                    conn.seqadj_init(dir, synproxy.isn.wrapping_sub(hdr.seq)
+                        .wrapping_add(1) as i32);
+                }
+            }
+            return Ok(());
+        }
         let now = crate::tcp_conn::ka_now_ns();
         if dir == ::conntrack::uapi::IP_CT_DIR_REPLY
             && tcp_state == ::conntrack::proto::tcp_state::TCP_CONNTRACK_SYN_RECV
@@ -77,6 +87,12 @@ impl NetStack {
                 return Err(crate::netfilter_action::ApplyError::Invalid);
             };
             let server_ts = crate::tcp_hdr::parse_ts_option(tcp);
+            let server_wscale = crate::tcp_hdr::parse_wscale_option(tcp).unwrap_or(0);
+            let client_window = match &*conn.proto.lock() {
+                ::conntrack::ProtoState::Tcp(track) => track.seen[
+                    ::conntrack::uapi::IP_CT_DIR_ORIGINAL as usize].td_maxwin as u16,
+                _ => 0,
+            };
             if let Some((tsval, _)) = server_ts {
                 synproxy.tsoff = tsval.wrapping_sub(synproxy.its) as i32;
             }
@@ -99,10 +115,10 @@ impl NetStack {
             } else { 0 };
             self.send_synproxy_segment(net_ns, dst, src, hdr.dst_port, hdr.src_port,
                 hdr.ack, hdr.seq.wrapping_add(1), tcp_hdr::flags::ACK | ecn,
-                hdr.window, &ack_options, p.tx.mark).map_err(|_| crate::netfilter_action::ApplyError::Invalid)?;
+                client_window, &ack_options, p.tx.mark).map_err(|_| crate::netfilter_action::ApplyError::Invalid)?;
             self.send_synproxy_segment(net_ns, src, dst, hdr.src_port, hdr.dst_port,
                 hdr.seq.wrapping_add(1), hdr.ack, tcp_hdr::flags::ACK | ecn,
-                hdr.window, &client_options, p.tx.mark).map_err(|_| crate::netfilter_action::ApplyError::Invalid)?;
+                hdr.window >> server_wscale, &client_options, p.tx.mark).map_err(|_| crate::netfilter_action::ApplyError::Invalid)?;
             return Err(crate::netfilter_action::ApplyError::Stolen);
         }
         if dir == ::conntrack::uapi::IP_CT_DIR_ORIGINAL
@@ -113,7 +129,6 @@ impl NetStack {
             // A SYN retransmission in SYN_SENT must retain the pending exchange.
             if tcp_state == ::conntrack::proto::tcp_state::TCP_CONNTRACK_CLOSE {
                 conn.seqadj_init(::conntrack::uapi::IP_CT_DIR_ORIGINAL, 0);
-                conn.seqadj_init(::conntrack::uapi::IP_CT_DIR_REPLY, 0);
                 *conn.synproxy.lock() = None;
             }
             let (cookie, encoded_mss) = crate::syncookies::init_sequence(
@@ -143,8 +158,13 @@ impl NetStack {
                 return Err(crate::netfilter_action::ApplyError::Invalid);
             };
             let ack_ts = crate::tcp_hdr::parse_ts_option(tcp);
-            let mut ack_options = flags & OPT_MSS;
-            let ack_wscale = ack_ts.map(|(_, tsecr)| (tsecr & 0x0f) as u8).unwrap_or(wscale);
+            let mut ack_options = syn_option_flags(tcp, flags) | OPT_MSS;
+            if hdr.flags & (tcp_hdr::flags::ECE | tcp_hdr::flags::CWR)
+                == (tcp_hdr::flags::ECE | tcp_hdr::flags::CWR) {
+                ack_options |= OPT_ECN;
+            }
+            let ack_wscale = ack_ts.map(|(_, tsecr)| (tsecr & 0x0f) as u8)
+                .or_else(|| tcp_hdr::parse_wscale_option(tcp)).unwrap_or(wscale);
             if let Some((_, tsecr)) = ack_ts {
                 if tsecr & 0x0f != 0x0f { ack_options |= OPT_WSCALE; }
                 if tsecr & (1 << 4) != 0 { ack_options |= OPT_SACK; }
