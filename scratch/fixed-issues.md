@@ -5158,6 +5158,11 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2623 | MISSING | low | **OverlayFS `default_permissions` was incorrectly recorded as an unconsumed behavior.** Linux retains and shows the option, but its permission operation always checks the overlay inode and then the real layer under the stashed credentials; there is no runtime branch on this option in the reference. The remaining `override_creds` gap stays open separately. | Linux 7.2.0-rc4 overlay permission implementation and mount-option renderer; the repository's `Config::default_permissions` is likewise parse/show state with no behavior branch. | B2623 |
+### B2624-overlay-override-creds
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 9d6a30f8d | MISSING | low | **OverlayFS `override_creds` now retains the mount creator credential and uses it for real-layer permission and internal access.** The new mount API and classic mount path capture one creator credential, `LayerStack` owns it, and `nooverride_creds` deliberately selects the requesting task instead. | Linux 7.2.0-rc4 overlay permission model and `ovl_override_creds`; OverlayFS 257/257 and VFS 392/392, including mount-owner denial and nooverride caller-credential regressions. | 9d6a30f8d |
 ### B2621-exfat-errors-policy
 
 | Status | Class | Sev | Issue | Evidence | Owner |
