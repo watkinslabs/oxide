@@ -5178,6 +5178,11 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED fbe20ea2d | MISSING | low | **f2fs now owns address-space readahead through its canonical data cache.** Generic per-open windows and direct hints reach the same run-coalescing filesystem owner; holes and compressed clusters remain with their owning paths. | `fbe20ea2d`; f2fs readahead tests cover contiguous-run request shape, contents, holes, and address-space hint population. | fbe20ea2d |
+### B2629-f2fs-compressed-readahead
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED c4be42cee | MISSING | med | **f2fs compressed clusters now use Linux-shaped cluster readahead and the canonical data cache.** Readahead widens to cluster boundaries, coalesces uncached image runs, decompresses once, and files plain pages; the compressed-block cache remains subordinate medium state. | `c4be42cee`; f2fs 3714/3714, compressed-cache 9/9, and allocator-fault 1/1 passed. | c4be42cee |
 ### B2624-overlay-override-creds
 
 | Status | Class | Sev | Issue | Evidence | Owner |
