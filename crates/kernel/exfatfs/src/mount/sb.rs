@@ -2,9 +2,10 @@
 
 use alloc::string::String;
 use alloc::sync::Arc;
+use core::sync::atomic::Ordering;
 
 use vfs::superblock::{SbStatFs, SuperOps};
-use vfs::KResult;
+use vfs::{Inode, KResult};
 
 use super::{errno_to_vfs, ExfatFs};
 
@@ -51,8 +52,24 @@ impl SuperOps for ExfatSuperOps {
     /// because a volume whose bitmap lags its directories hands out clusters a
     /// file is using.
     fn sync_fs(&self, _wait: bool) -> KResult<()> {
+        if self.fs.evict_error.swap(false, Ordering::AcqRel) { return Err(vfs::VfsError::Eio); }
         let mut v = self.fs.volume.lock();
         if !v.writable() { return Ok(()); }
         v.flush_percent_in_use().map_err(errno_to_vfs)
+    }
+
+    /// Release a linkless inode's allocations after its final open reference.
+    /// # C: O(total detached clusters)
+    fn evict_inode(&self, inode: &Inode) {
+        if let Some(node) = inode.private::<super::node::ExfatNode>() {
+            let chains = node.take_release();
+            let mut v = self.fs.volume.lock();
+            for chain in &chains {
+                if v.free_chain(chain).is_err() {
+                    self.fs.evict_error.store(true, Ordering::Release);
+                }
+            }
+        }
+        inode.set_state(vfs::inode::I_FREEING | vfs::inode::I_CLEAR, vfs::inode::I_DIRTY);
     }
 }

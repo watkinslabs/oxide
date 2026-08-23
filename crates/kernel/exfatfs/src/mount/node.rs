@@ -7,6 +7,7 @@
 //! whichever set matched second.
 
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use vfs::{mk_mode, FileOps, FileType, InodeBuilder, InodeOps, InodeRef};
 
@@ -14,6 +15,7 @@ use crate::attrs::make_mode;
 use crate::ident::{self, Position};
 use crate::time::to_unix;
 use crate::uapi::{ATTR_SUBDIR, ROOT_INO};
+use crate::chain::Chain;
 use crate::volume::{DirEntry, DirHandle};
 
 use super::{ops::ExfatOps, ExfatFs};
@@ -23,6 +25,8 @@ pub struct ExfatNode {
     pub(crate) fs: Arc<ExfatFs>,
     /// The entry set this inode IS, or `None` for the root, which has none.
     pub(crate) entry: sync::Spinlock<Option<DirEntry>, sync::Inode>,
+    /// Allocations detached from the name and owned until final inode eviction.
+    pub(crate) release: sync::Spinlock<Vec<Chain>, sync::Inode>,
     /// This inode AS a directory to operate in, when it is one.
     pub(crate) dir: Option<DirHandle>,
 }
@@ -34,6 +38,12 @@ impl ExfatNode {
     pub(crate) fn entry(&self) -> Option<DirEntry> { self.entry.lock().clone() }
 
     pub(crate) fn set_entry(&self, entry: DirEntry) { *self.entry.lock() = Some(entry); }
+
+    /// Attach allocations to this inode's final lifetime owner. # C: O(1)
+    pub(crate) fn defer_release(&self, chains: Vec<Chain>) { *self.release.lock() = chains; }
+
+    /// Take deferred allocations exactly once at final eviction. # C: O(1)
+    pub(crate) fn take_release(&self) -> Vec<Chain> { core::mem::take(&mut *self.release.lock()) }
 }
 
 /// Build the inode for one entry set.
@@ -70,9 +80,12 @@ pub(crate) fn node_inode(fs: Arc<ExfatFs>, entry: Option<DirEntry>, home: DirHan
         (Some(e), FileType::Directory) => Some(DirHandle::child(&home, e.set.offset)),
         _ => None,
     };
-    let node = ExfatNode { fs, entry: sync::Spinlock::new(entry), dir };
+    let weak_sb = fs.superblock().as_ref().map(Arc::downgrade).unwrap_or_default();
+    let node = ExfatNode { fs, entry: sync::Spinlock::new(entry),
+                           release: sync::Spinlock::new(Vec::new()), dir };
     let mut builder = InodeBuilder::new(ino, mk_mode(ftype, make_mode(attr, &opts)),
                                         inode_ops, file_ops)
+        .sb(weak_sb)
         .size(size)
         .owner(opts.uid, opts.gid)
         .private(Arc::new(node));

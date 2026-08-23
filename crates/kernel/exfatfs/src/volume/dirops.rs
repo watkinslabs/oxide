@@ -177,7 +177,20 @@ impl<S: SectorSource> Volume<S> {
         let chain = self.dir_chain(dir)?;
         let hit = self.find_entry(&chain, name)?;
         if hit.is_dir() { return Err(Errno::Eisdir); }
-        self.remove_set(dir, &hit, now)
+        let chains = self.remove_set_deferred(dir, &hit, now)?;
+        for chain in &chains { self.free_chain(chain)?; }
+        Ok(())
+    }
+
+    /// Remove a file's name but leave every allocation for the inode owner.
+    /// # C: O(directory bytes)
+    pub(crate) fn unlink_name(&mut self, dir: &DirHandle, name: &str, now: Stamp)
+        -> Result<Vec<Chain>, Errno> {
+        if !self.writable { return Err(Errno::Erofs); }
+        let chain = self.dir_chain(dir)?;
+        let hit = self.find_entry(&chain, name)?;
+        if hit.is_dir() { return Err(Errno::Eisdir); }
+        self.remove_set_deferred(dir, &hit, now)
     }
 
     /// Remove an empty directory. # C: O(directory bytes)
@@ -188,17 +201,33 @@ impl<S: SectorSource> Volume<S> {
         if !hit.is_dir() { return Err(Errno::Enotdir); }
         let inner = self.chain_of(&hit.set);
         if !inner.is_empty() && !self.dir_is_empty(&inner)? { return Err(Errno::Enotempty); }
-        self.remove_set(dir, &hit, now)
+        let chains = self.remove_set_deferred(dir, &hit, now)?;
+        for chain in &chains { self.free_chain(chain)?; }
+        Ok(())
     }
 
-    /// Mark a set deleted and release everything it held.
+    /// Remove an empty directory's name but leave its allocation for the inode
+    /// owner. # C: O(directory bytes)
+    pub(crate) fn rmdir_name(&mut self, dir: &DirHandle, name: &str, now: Stamp)
+        -> Result<Vec<Chain>, Errno> {
+        if !self.writable { return Err(Errno::Erofs); }
+        let chain = self.dir_chain(dir)?;
+        let hit = self.find_entry(&chain, name)?;
+        if !hit.is_dir() { return Err(Errno::Enotdir); }
+        let inner = self.chain_of(&hit.set);
+        if !inner.is_empty() && !self.dir_is_empty(&inner)? { return Err(Errno::Enotempty); }
+        self.remove_set_deferred(dir, &hit, now)
+    }
+
+    /// Mark a set deleted and return every allocation it held.
     ///
-    /// The clusters of any BENIGN secondary entry go too: a vendor entry can
-    /// carry an allocation of its own, and leaving it behind loses those
-    /// clusters until a repair.
+    /// The allocations of any BENIGN secondary entry go too: a vendor entry
+    /// can carry an allocation of its own, and leaving it behind loses those
+    /// clusters until a repair. The caller chooses whether the volume or the
+    /// victim inode owns the returned chains.
     /// # C: O(set entries + run length)
-    pub(crate) fn remove_set(&mut self, dir: &DirHandle, hit: &DirEntry, now: Stamp)
-        -> Result<(), Errno> {
+    pub(crate) fn remove_set_deferred(&mut self, dir: &DirHandle, hit: &DirEntry, now: Stamp)
+        -> Result<Vec<Chain>, Errno> {
         let span = hit.set.entries * DENTRY_BYTES;
         let mut bytes = alloc::vec![0u8; span];
         self.read_at(&hit.dir, hit.set.offset, &mut bytes)?;
@@ -207,13 +236,15 @@ impl<S: SectorSource> Volume<S> {
             .collect();
         set::mark_deleted(&mut bytes);
         self.write_at(&hit.dir, hit.set.offset, &bytes)?;
+        let mut chains = Vec::new();
         let chain = self.chain_of(&hit.set);
-        if !chain.is_empty() { self.free_chain(&chain)?; }
+        if !chain.is_empty() { chains.push(chain); }
         for (start, size) in extras {
             let extra = self.chain_for(start, size, ALLOC_FAT_CHAIN);
-            if !extra.is_empty() { self.free_chain(&extra)?; }
+            if !extra.is_empty() { chains.push(extra); }
         }
-        self.touch_directory(dir, now)
+        self.touch_directory(dir, now)?;
+        Ok(chains)
     }
 
     /// Stamp a directory's own entry set with the time it changed.

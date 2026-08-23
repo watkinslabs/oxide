@@ -15,6 +15,7 @@
 
 use alloc::string::{String, ToString};
 use alloc::sync::{Arc, Weak};
+use core::sync::atomic::AtomicBool;
 
 use syscall::errno::Errno;
 
@@ -38,6 +39,8 @@ pub struct ExfatFs {
     /// consults.
     pub(crate) volume: sync::Spinlock<Volume<BlockSource>, sync::TaskList>,
     source: String,
+    sb: sync::Spinlock<Weak<vfs::SuperBlock>, sync::TaskList>,
+    pub(crate) evict_error: AtomicBool,
     /// Held so the superblock operations can reach the filesystem they belong
     /// to, which the `&self` those operations are asked for cannot.
     me: Weak<ExfatFs>,
@@ -73,6 +76,8 @@ impl ExfatFs {
         Ok(Arc::new_cyclic(|me| Self {
             volume: sync::Spinlock::new(volume),
             source,
+            sb: sync::Spinlock::new(Weak::new()),
+            evict_error: AtomicBool::new(false),
             me: me.clone(),
         }))
     }
@@ -105,6 +110,9 @@ impl ExfatFs {
 
     /// The device this filesystem was mounted from. # C: O(1)
     pub fn source(&self) -> &str { &self.source }
+
+    /// The realized superblock owns inode identity and final eviction. # C: O(1)
+    pub(crate) fn superblock(&self) -> Option<Arc<vfs::SuperBlock>> { self.sb.lock().upgrade() }
 }
 
 /// The current wall clock as a stored timestamp.
@@ -146,6 +154,10 @@ impl vfs::fs::FileSystem for ExfatFs {
         self.me.upgrade()
             .map(|fs| Arc::new(sb::ExfatSuperOps { fs }) as Arc<dyn vfs::superblock::SuperOps>)
     }
+    fn set_sb(&self, sb: Weak<vfs::SuperBlock>) -> KResult<()> {
+        *self.sb.lock() = sb;
+        Ok(())
+    }
 }
 
 /// Read the whole of `path` from a mounted volume. Exists for a boot-time
@@ -156,3 +168,7 @@ pub fn read_path(fs: &ExfatFs, path: &str) -> KResult<alloc::vec::Vec<u8>> {
     if hit.is_dir() { return Err(VfsError::Eisdir); }
     v.read_whole(&hit).map_err(errno_to_vfs)
 }
+
+#[cfg(test)]
+#[path = "mount/tests.rs"]
+mod tests;

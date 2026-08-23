@@ -280,6 +280,22 @@ fn the_two_removals_refuse_each_others_kind() {
 }
 
 #[test]
+fn a_deferred_unlink_keeps_clusters_until_the_owner_releases_them() {
+    let mut v = test_image::empty();
+    let dir = root(&v);
+    let mut made = v.create_file(&dir, "open.bin", stamp()).unwrap();
+    v.write_file(&mut made, 0, &[0x5a; CLUSTER], stamp()).unwrap();
+    let before = v.free_clusters();
+    let chains = v.unlink_name(&dir, "open.bin", stamp()).unwrap();
+    assert_eq!(v.free_clusters(), before,
+        "unlink released clusters before the inode lifetime ended");
+    assert_eq!(v.read_whole(&made).unwrap(), alloc::vec![0x5a; CLUSTER]);
+    for chain in &chains { v.free_chain(chain).unwrap(); }
+    assert_eq!(v.free_clusters(), before + 1,
+        "final owner release did not return the detached cluster");
+}
+
+#[test]
 fn a_rename_keeps_the_files_bytes() {
     let mut v = test_image::empty();
     let dir = root(&v);
