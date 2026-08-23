@@ -38,6 +38,9 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     let file = match fdt.get(fd) {
         Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
+    if let Err(_) = security::lsm::file_ioctl(&file.inode(), req as u32) {
+        return -(Errno::Eacces.as_i32() as i64);
+    }
     // Device control is decided by the rights recorded at open. A fixed set of
     // commands stays available regardless: they act on the filesystem rather
     // than the device, or duplicate something reachable through descriptor

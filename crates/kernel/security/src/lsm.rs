@@ -30,6 +30,7 @@ pub type InodeCreateHook = fn(&InodeRef, &InodeRef, &str);
 pub type InodeInstantiateHook = fn(&Dentry, &InodeRef);
 pub type InodeInitSecurityAnonHook = fn(&InodeRef, &str, Option<&InodeRef>) -> KResult<()>;
 pub type DevicePermissionHook = fn(FileType, u32, u32) -> KResult<()>;
+pub type FileIoctlHook = fn(&InodeRef, u32) -> KResult<()>;
 
 static OPEN_HOOKS: Spinlock<Vec<OpenHook>, LockClass> = Spinlock::new(Vec::new());
 static INODE_PERMISSION_HOOKS: Spinlock<Vec<InodePermissionHook>, LockClass> =
@@ -41,6 +42,7 @@ static INODE_INIT_SECURITY_ANON_HOOKS: Spinlock<Vec<InodeInitSecurityAnonHook>, 
     Spinlock::new(Vec::new());
 static DEVICE_PERMISSION_HOOKS: Spinlock<Vec<DevicePermissionHook>, LockClass> =
     Spinlock::new(Vec::new());
+static FILE_IOCTL_HOOKS: Spinlock<Vec<FileIoctlHook>, LockClass> = Spinlock::new(Vec::new());
 
 /// Register one open provider. Registration is idempotent by function address,
 /// matching the one-time LSM init window and preventing duplicate decisions.
@@ -83,6 +85,11 @@ pub fn register_inode_init_security_anon(hook: InodeInitSecurityAnonHook) {
 /// Register a device-permission provider. # C: O(providers)
 pub fn register_device_permission(hook: DevicePermissionHook) {
     register_once(&mut DEVICE_PERMISSION_HOOKS.lock(), hook,
+                  |a, b| *a as usize == *b as usize);
+}
+
+pub fn register_file_ioctl(hook: FileIoctlHook) {
+    register_once(&mut FILE_IOCTL_HOOKS.lock(), hook,
                   |a, b| *a as usize == *b as usize);
 }
 
@@ -132,5 +139,11 @@ pub fn device_permission(file_type: FileType, rdev: u32, mask: u32) -> KResult<(
     }
     let hooks = DEVICE_PERMISSION_HOOKS.lock().clone();
     for hook in hooks { hook(file_type, rdev, mask)?; }
+    Ok(())
+}
+
+pub fn file_ioctl(inode: &InodeRef, cmd: u32) -> KResult<()> {
+    let hooks = FILE_IOCTL_HOOKS.lock().clone();
+    for hook in hooks { hook(inode, cmd)?; }
     Ok(())
 }

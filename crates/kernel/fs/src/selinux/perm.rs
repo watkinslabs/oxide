@@ -44,9 +44,19 @@ pub fn mprotect_file(inode: &InodeRef, shared_write: bool, executable: bool) -> 
         read | write | execute).map_err(|_| VfsError::Eacces)
 }
 
+pub fn file_ioctl(inode: &InodeRef, _cmd: u32) -> KResult<()> {
+    if !selinux_runtime::active() { return Ok(()) }
+    let Some(isid) = super::label::inode_sid(inode) else { return Ok(()) };
+    let Some(class) = super::label::inode_security_class(inode) else { return Ok(()) };
+    let ioctl = selinux::uapi::classmap::perm_bit(class, "ioctl").unwrap_or(0);
+    selinux_runtime::check::has_perm(selinux_runtime::task::current_sid(), isid, class, ioctl)
+        .map_err(|_| VfsError::Eacces)
+}
+
 /// Install the check into the VFS permission path. # C: O(1)
 pub fn install() {
     security::lsm::register_inode_permission(inode_permission);
+    security::lsm::register_file_ioctl(file_ioctl);
     security::lsm::register_inode_create(label_created);
     security::lsm::register_inode_instantiate(super::label::label_instantiated);
     security::lsm::register_inode_init_security_anon(super::label::inode_init_security_anon);
