@@ -44,6 +44,11 @@ pub trait FileBacking: Send + Sync {
     /// file-backed VMA maps). Default 0 for non-inode backings.
     fn ino(&self) -> u64 { 0 }
 
+    /// Device number of the mapped object, in the same encoded form as
+    /// `stat(2)`/`perf_event_mmap`'s `st_dev`. Default 0 for non-inode
+    /// backings and device mappings whose owner has no filesystem identity.
+    fn dev(&self) -> u64 { 0 }
+
     /// Directory-entry count of the mapped object. Zero marks an object with
     /// no name in any directory — an unlinked file, or the anonymous shared
     /// memory a `MAP_SHARED|MAP_ANONYMOUS` mapping is built on — which is what

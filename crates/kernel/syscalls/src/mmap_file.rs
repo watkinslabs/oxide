@@ -55,6 +55,8 @@ impl InodeFileBacking {
 const PAGE: usize = 4096;
 
 impl FileBacking for InodeFileBacking {
+    fn dev(&self) -> u64 { vfs::fsid_to_dev(self.inode.fsid()) }
+
     /// `hstate_file` — the huge-page granule this file's pages ARE, or 0 for a
     /// file of ordinary base pages. Read from the inode's own filesystem, so a
     /// mapping cannot disagree with the file it maps about how big its pages

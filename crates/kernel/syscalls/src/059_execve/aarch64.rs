@@ -176,22 +176,11 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
         // so a consumer can match it against the object it opens.
         dev: exec_vp.as_ref().map_or(0, |vp| vp.inode.fsid()),
     };
-    // `perf_event_mmap(vma)` fires from the VMA layer in the reference, which
-    // is why an `execve`'s own PT_LOADs are reported there without the loader
-    // knowing. Here the loader reports what it mapped and the records are
-    // emitted below, once the new image is committed.
-    let mut exec_maps = alloc::vec::Vec::new();
-    let img = match elf_load::load_image_reporting(
-        exec_image, Some(&crate::execve_common::open_interp), &new_as, &rnd,
-        &mut exec_maps) {
+    let img = match elf_load::load_image(
+        exec_image, Some(&crate::execve_common::open_interp), &new_as, &rnd) {
         Ok(i) => i,
         Err(_) => return -(Errno::Enoexec.as_i32() as i64),
     };
-    // The stack is mapped by this shim, not the loader, so it is reported here.
-    exec_maps.push(elf_load::ImageMapping {
-        addr: exec_user_stack_va, len: exec_user_stack_len as u64, pgoff: 0,
-        prot: VmaProt::READ | VmaProt::WRITE, file: None, dev: 0,
-    });
     // Linux `exec_mmap()` takes `signal_struct::exec_update_lock` for writing,
     // the same lock Landlock TSYNC holds. Contention restarts before the point
     // of no return so this thread can run any queued pseudo-signal task work.
@@ -291,7 +280,6 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
     // order, because `begin_new_exec` renames the task before `load_elf_binary`
     // maps a single segment. A consumer therefore learns the new name before
     // the objects that name resolves against.
-    crate::perf_sideband::note_exec_mappings(&exec_maps);
     // Past the point of no return: install the credentials decided above
     // (Linux `commit_creds(bprm->cred)` inside `begin_new_exec`).
     crate::exec_transition::commit(cur, &creds);

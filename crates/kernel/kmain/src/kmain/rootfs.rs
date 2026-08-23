@@ -99,6 +99,7 @@ unsafe fn mount_root() {
             fs::keyring::native::key_revoke, fs::keyring::native::nvme_tls_psk_refresh);
         modules::registry::init_exports();
         crate::syscalls::mount::install_vfs_hooks();
+        vmm::set_mmap_event_hook(crate::syscalls::perf_sideband::note_vma_mmap);
         crate::syscalls::ensure_mount_filesystems_registered();
     }
 }

@@ -275,6 +275,17 @@ impl AddressSpace {
         let added = Vma::new_with_may(start_va, end_va, prot, may_prot, flags, backing);
         tree.insert(added.clone()).map_err(|_| Error::Inval)?;
         self.accounting.add_vma(&added);
+        let (name, dev, ino, pgoff) = match &added.backing {
+            VmaBacking::File { backing, off } => (
+                backing.map_path().unwrap_or(&[]), backing.dev(), backing.ino(),
+                *off / hal::PAGE_SIZE_BYTES,
+            ),
+            _ => (&[][..], 0, 0, 0),
+        };
+        crate::mmap_event::notify(
+            start_va.as_u64(), len_u64, pgoff, added.prot, added.flags,
+            name, dev, ino,
+        );
         // Attach the originating anon/file rmap edge. A merge may have
         // absorbed the new range, so bind through its containing VMA.
         if let Some(vma) = tree.find_containing(start_va) {
