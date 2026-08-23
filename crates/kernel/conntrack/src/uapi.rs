@@ -137,6 +137,8 @@ pub const CTA_USE:          u16 = 11;
 pub const CTA_ID:           u16 = 12;
 pub const CTA_NAT_DST:      u16 = 13;
 pub const CTA_ZONE:         u16 = 18;
+pub const CTA_MARK_MASK:    u16 = 21;
+pub const CTA_STATUS_MASK:  u16 = 26;
 
 pub const CTA_TUPLE_IP:     u16 = 1;
 pub const CTA_TUPLE_PROTO:  u16 = 2;

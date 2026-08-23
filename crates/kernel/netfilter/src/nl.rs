@@ -99,7 +99,7 @@ fn handle_one(full_msg: &[u8], namespace: u64) -> Vec<u8> {
     };
     let attrs = &full_msg[nfg_off + Nfgenmsg::SIZE..];
     match (hdr.nlmsg_type >> 8) as u8 {
-        subsys::NFNL_SUBSYS_CTNETLINK => handle_ct_get(&hdr, &nfg, namespace),
+        subsys::NFNL_SUBSYS_CTNETLINK => handle_ct(&hdr, &nfg, attrs, namespace),
         subsys::NFNL_SUBSYS_NFTABLES => nft_dispatch::handle_nft(
             namespace, &hdr, &nfg, (hdr.nlmsg_type & 0xFF) as u8, attrs),
         _ => nlmsg_ack(&hdr, 0),
@@ -109,11 +109,32 @@ fn handle_one(full_msg: &[u8], namespace: u64) -> Vec<u8> {
 /// ctnetlink's GET dump is the read path used by `conntrack -L`. Each entry
 /// is encoded by conntrack itself; this layer only supplies the nfgenmsg and
 /// multipart netlink framing.
-fn handle_ct_get(req: &Nlmsghdr, nfg: &Nfgenmsg, namespace: u64) -> Vec<u8> {
-    const IPCTNL_MSG_CT_GET: u8 = 1;
-    if (req.nlmsg_type & 0xff) as u8 != IPCTNL_MSG_CT_GET {
-        return nlmsg_ack(req, -95 /* EOPNOTSUPP */);
+fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Vec<u8> {
+    let cmd = (req.nlmsg_type & 0xff) as u8;
+    if cmd == conntrack::uapi::IPCTNL_MSG_CT_GET {
+        return handle_ct_get(req, nfg, namespace);
     }
+    let Some(id) = find_u32_attr(attrs, conntrack::uapi::CTA_ID) else {
+        return nlmsg_ack(req, -22 /* EINVAL */);
+    };
+    let ok = match cmd {
+        conntrack::uapi::IPCTNL_MSG_CT_DELETE =>
+            ::net::global_stack().conntrack_delete_in(namespace, id as u64),
+        conntrack::uapi::IPCTNL_MSG_CT_NEW => {
+            let timeout = find_u32_attr(attrs, conntrack::uapi::CTA_TIMEOUT);
+            let status = find_u32_attr(attrs, conntrack::uapi::CTA_STATUS);
+            let mark = find_u32_attr(attrs, conntrack::uapi::CTA_MARK).map(|value| {
+                (value, find_u32_attr(attrs, conntrack::uapi::CTA_MARK_MASK))
+            });
+            ::net::global_stack().conntrack_update_in(namespace, id as u64,
+                                                       timeout, status, mark)
+        }
+        _ => return nlmsg_ack(req, -95 /* EOPNOTSUPP */),
+    };
+    nlmsg_ack(req, if ok { 0 } else { -2 /* ENOENT */ })
+}
+
+fn handle_ct_get(req: &Nlmsghdr, nfg: &Nfgenmsg, namespace: u64) -> Vec<u8> {
     let mut out = Vec::new();
     for attrs in ::net::global_stack().conntrack_dump_in(namespace) {
         let mut body = Vec::with_capacity(Nfgenmsg::SIZE + attrs.len());
@@ -125,7 +146,7 @@ fn handle_ct_get(req: &Nlmsghdr, nfg: &Nfgenmsg, namespace: u64) -> Vec<u8> {
         let hdr = Nlmsghdr {
             nlmsg_len: total as u32,
             nlmsg_type: ((subsys::NFNL_SUBSYS_CTNETLINK as u16) << 8)
-                | IPCTNL_MSG_CT_GET as u16,
+                | conntrack::uapi::IPCTNL_MSG_CT_GET as u16,
             nlmsg_flags: flags::NLM_F_MULTI,
             nlmsg_seq: req.nlmsg_seq,
             nlmsg_pid: req.nlmsg_pid,

@@ -86,6 +86,20 @@ impl NetStack {
         self.conntrack_in(net_ns).sysctl.lock().set(knob, value)
     }
 
+    /// Delete one live conntrack entry through its owning namespace. # C: O(N)
+    pub fn conntrack_delete_in(&self, net_ns: u64, id: u64) -> bool {
+        let Some(ct) = self.conntrack_existing_in(net_ns) else { return false; };
+        ct.delete_id(id, crate::stack::net_now_ns() / 1_000_000_000)
+    }
+
+    /// Update one live conntrack entry through its owning namespace. # C: O(N)
+    pub fn conntrack_update_in(&self, net_ns: u64, id: u64, timeout: Option<u32>,
+                               status: Option<u32>, mark: Option<(u32, Option<u32>)>) -> bool {
+        let Some(ct) = self.conntrack_existing_in(net_ns) else { return false; };
+        ct.update_id(id, crate::stack::net_now_ns() / 1_000_000_000,
+                     timeout, status, mark)
+    }
+
     /// Canonical policy-rule table owned by this network stack. # C: O(1)
     pub fn policy_rules(&self) -> &crate::policy_rule::PolicyRuleTable { self.routes.policy_rules() }
 

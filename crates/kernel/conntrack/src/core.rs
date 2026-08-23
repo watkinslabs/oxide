@@ -187,6 +187,43 @@ impl CtNet {
         true
     }
 
+    /// Delete one live entry selected by ctnetlink id and queue its destroy
+    /// notification through the canonical event queue. # C: O(N)
+    pub fn delete_id(&self, id: u64, now: u64) -> bool {
+        let Some(conn) = self.table.find_id(id, now) else { return false; };
+        if !self.table.kill(&conn) { return false; }
+        self.expect.purge_master(&conn);
+        self.events.post(conn.id, IPCT_DESTROY);
+        true
+    }
+
+    /// Apply the ctnetlink fields supported by the live entry owner. Linux
+    /// changes timeout, status, and mark on an existing flow; immutable status
+    /// bits are screened by the ctnetlink encoder's shared mask. # C: O(N)
+    pub fn update_id(&self, id: u64, now: u64, timeout: Option<u32>,
+                     status: Option<u32>, mark: Option<(u32, Option<u32>)>) -> bool {
+        let Some(conn) = self.table.find_id(id, now) else { return false; };
+        if let Some(secs) = timeout {
+            conn.set_status_bits(IPS_FIXED_TIMEOUT);
+            conn.timeout.store(now + secs as u64, core::sync::atomic::Ordering::Release);
+        }
+        if let Some(requested) = status {
+            let writable = crate::ctnetlink::writable_status(requested);
+            let old = conn.status();
+            conn.status.store((old & IPS_UNCHANGEABLE_MASK) | writable,
+                              core::sync::atomic::Ordering::Release);
+            if old != conn.status() { self.events.post(conn.id, IPCT_PROTOINFO); }
+        }
+        if let Some((value, mask)) = mark {
+            let old = conn.mark.load(core::sync::atomic::Ordering::Relaxed);
+            let mask = mask.unwrap_or(0);
+            let new = (old & mask) ^ value;
+            conn.mark.store(new, core::sync::atomic::Ordering::Release);
+            if old != new { self.events.post(conn.id, IPCT_MARK); }
+        }
+        true
+    }
+
     /// Retire expired entries and expectations. # C: O(N)
     pub fn gc(&self, now: u64) -> usize { self.table.gc(now) }
 

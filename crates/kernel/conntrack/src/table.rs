@@ -230,6 +230,11 @@ impl CtTable {
         out
     }
 
+    /// Find one live entry by its ctnetlink id. # C: O(N)
+    pub fn find_id(&self, id: u64, now: u64) -> Option<Arc<Conn>> {
+        self.snapshot(now).into_iter().find(|c| c.id == id)
+    }
+
     /// Entries still awaiting confirmation. # C: O(N)
     pub fn unconfirmed(&self) -> Vec<Arc<Conn>> { self.pending.lock().clone() }
 

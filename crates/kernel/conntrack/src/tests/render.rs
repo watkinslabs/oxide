@@ -5,6 +5,7 @@ extern crate alloc;
 use alloc::sync::Arc;
 
 use crate::ctnetlink;
+use crate::core::CtNet;
 use crate::entry::Conn;
 use crate::procfs;
 use crate::tuple::{InetAddr, ProtoPart, Tuple, TupleEnd};
@@ -141,4 +142,19 @@ fn ctinfo_reflects_direction_and_relatedness() {
     assert_eq!(c.ctinfo(IP_CT_DIR_REPLY), IP_CT_RELATED_REPLY);
     assert_eq!(ctinfo2dir(IP_CT_NEW), IP_CT_DIR_ORIGINAL);
     assert_eq!(ctinfo2dir(IP_CT_ESTABLISHED_REPLY), IP_CT_DIR_REPLY);
+}
+
+#[test]
+fn ctnetlink_owner_updates_and_deletes_the_live_entry() {
+    let ct = CtNet::new(0, 7);
+    let c = entry(v4_tcp([10, 0, 0, 1], 1234, [10, 0, 0, 2], 80));
+    ct.table.add_pending(c.clone());
+    assert!(ct.confirm(&c, 0));
+    assert!(ct.update_id(c.id, 0, Some(7), Some(IPS_ASSURED), Some((0x55, None))));
+    assert_eq!(c.expires_in(0), 7);
+    assert_eq!(c.mark.load(core::sync::atomic::Ordering::Relaxed), 0x55);
+    assert_ne!(c.status() & IPS_ASSURED, 0);
+    assert!(ct.delete_id(c.id, 0));
+    assert!(ct.table.snapshot(0).is_empty());
+    assert!(!ct.delete_id(c.id, 0));
 }
