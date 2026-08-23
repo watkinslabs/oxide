@@ -59,6 +59,15 @@ static WD_SWITCHES: AtomicU64 = AtomicU64::new(0);
 static WD_START_NS: AtomicU64 = AtomicU64::new(0);
 static WD_FIRED: AtomicBool = AtomicBool::new(false);
 static WD_ARMED: AtomicBool = AtomicBool::new(false);
+static PANIC_ON_LOCKUP: AtomicBool = AtomicBool::new(false);
+
+/// Install the runtime `softlockup_panic` policy. The lockup report is emitted
+/// first; escalation preserves the evidence before stopping the machine.
+/// # C: O(1)
+pub fn set_panic_on_lockup(on: bool) { PANIC_ON_LOCKUP.store(on, Ordering::Release); }
+
+/// # C: O(1)
+pub fn panic_on_lockup() -> bool { PANIC_ON_LOCKUP.load(Ordering::Acquire) }
 
 // The outer IRQ-exit path records the interrupted kernel PC before it asks
 // the scheduler to preempt.  A soft-lockup interrupt then reports the last
@@ -121,6 +130,7 @@ pub fn watchdog_tick(now_ns: u64) {
     if let Some(_secs) = fired {
         #[cfg(feature = "debug-watchdog")]
         report_lockup(_secs, beat.tid, cur);
+        if panic_on_lockup() { panic!("softlockup: hung task"); }
     }
 
     // debug-taskdump: periodic all-task snapshot (state/last-syscall/futex/exe)

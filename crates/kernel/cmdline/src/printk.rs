@@ -105,7 +105,6 @@ fn parse_bool(v: &[u8]) -> Option<bool> {
 /// # C: O(1)
 pub fn unsupported_parameter(name: &[u8]) -> Option<&'static str> {
     match name {
-        b"softlockup_panic" => Some("softlockup_panic: lockup detector is report-only"),
         b"nmi_watchdog" => Some("nmi_watchdog: no periodic NMI lockup detector"),
         b"log_buf_len" => Some("log_buf_len: record ring is a fixed-size static"),
         b"slub_debug" => Some("slub_debug: allocator debug is build-time only"),

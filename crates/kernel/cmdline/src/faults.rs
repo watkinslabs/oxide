@@ -22,6 +22,16 @@ pub fn panic_on_warn(line: &[u8]) -> bool {
     }
 }
 
+/// `softlockup_panic`: stop the machine after the first soft-lockup report.
+/// # C: O(line length)
+pub fn softlockup_panic(line: &[u8]) -> bool {
+    match value(line, b"softlockup_panic") {
+        Some(b"0") | Some(b"n") | Some(b"N") | Some(b"off") | Some(b"false") => false,
+        Some(_) => true,
+        None => bare_flag(line, b"softlockup_panic"),
+    }
+}
+
 /// `oops=panic`: promote an unhandled kernel fault from "halt this CPU" to a
 /// full panic, so the panic path's reporting and `panic=` restart apply.
 /// # C: O(line length)
@@ -63,6 +73,14 @@ mod tests {
     fn panic_on_warn_is_not_matched_by_panic() {
         assert_eq!(panic_timeout_secs(b"panic_on_warn=1"), None);
         assert!(!panic_on_warn(b"panic=30"));
+    }
+
+    #[test]
+    fn softlockup_panic_takes_the_boolean_spellings() {
+        assert!(softlockup_panic(b"softlockup_panic"));
+        assert!(softlockup_panic(b"softlockup_panic=1"));
+        assert!(!softlockup_panic(b"softlockup_panic=0"));
+        assert!(!softlockup_panic(b"softlockup_panicky=1"));
     }
 
     #[test]

@@ -85,12 +85,12 @@ fn no_console_suspend_is_a_bare_disable() {
 fn a_recognised_but_unhonoured_parameter_is_named() {
     // The defect this guards is a knob that parses and does nothing. Each of
     // these must produce a boot-time line saying which subsystem it needs.
-    for p in [&b"softlockup_panic"[..], b"nmi_watchdog",
+    for p in [&b"nmi_watchdog"[..],
               b"log_buf_len", b"slub_debug", b"page_poison",
               b"debug_pagealloc"] {
         assert!(unsupported_parameter(p).is_some(), "parameter must announce that it is inert");
     }
-    for p in [&b"earlycon"[..], b"loglevel", b"panic_on_warn", b"panic", b"oops", b"initcall_debug",
+    for p in [&b"earlycon"[..], b"loglevel", b"panic_on_warn", b"softlockup_panic", b"panic", b"oops", b"initcall_debug",
               b"hung_task_panic", b"hung_task_timeout_secs", b"no_console_suspend"] {
         assert_eq!(unsupported_parameter(p), None, "an implemented parameter must not be announced as inert");
     }
@@ -98,7 +98,7 @@ fn a_recognised_but_unhonoured_parameter_is_named() {
 
 #[test]
 fn unsupported_scan_finds_them_on_a_real_line() {
-    let line = b"root=/dev/oxide0 earlycon initcall_debug panic_on_warn=1 nmi_watchdog=1 slub_debug=P";
+    let line = b"root=/dev/oxide0 earlycon initcall_debug panic_on_warn=1 softlockup_panic=1 nmi_watchdog=1 slub_debug=P";
     let mut n = 0;
     for _ in unsupported_in(line) { n += 1; }
     assert_eq!(n, 2, "both inert knobs on the line get named, and only those — panic_on_warn is honoured");
