@@ -73,8 +73,8 @@ pub fn do_mprotect_pkey(args: &SyscallArgs, pkey: i32) -> i64 {
                 vma.anon_vma.is_some() && prot.contains(vmm::VmaProt::EXEC)
                     && !vma.prot.contains(vmm::VmaProt::EXEC))
                 .map_err(|_| vmm::Error::Access),
-            vma if matches!(&vma.backing, vmm::VmaBacking::Anonymous)
-                && prot.contains(vmm::VmaProt::EXEC) && !vma.prot.contains(vmm::VmaProt::EXEC) => {
+            vmm::VmaBacking::Anonymous
+                if prot.contains(vmm::VmaProt::EXEC) && !vma.prot.contains(vmm::VmaProt::EXEC) => {
                 let is_heap = vma.start.as_u64() >= mm.start_brk()
                     && vma.end.as_u64() <= mm.brk();
                 let permission = if is_heap {

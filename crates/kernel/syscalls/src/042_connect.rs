@@ -88,7 +88,7 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
         Target::Vsock(vs) => (vs.net_ns(), net::socket_args::AF_VSOCK as u16),
         Target::Inet(sock) => (sock.net_ns(), sock.family.load(Ordering::Acquire)),
     };
-    let admission = match &target {
+    let admission = match match &target {
         Target::Netlink(target) => {
             let socket = target.socket();
             net::sock_admit::admit_connect_socket(namespace, sock_family,
@@ -102,7 +102,6 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
             net::sock_admit::admit_connect_socket(namespace, sock_family,
                 object.target_sid, object.target_class)
         }
-        _ => net::sock_admit::admit_connect_in(namespace, sock_family),
     } {
         Ok(admission) => admission,
         Err(error) => return errno_from_neterr(error),

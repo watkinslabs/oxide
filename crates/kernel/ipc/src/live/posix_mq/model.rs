@@ -126,9 +126,7 @@ impl vfs::fs::FileSystem for MqueueFs {
     fn name(&self) -> &str { "mqueue" }
     fn magic(&self) -> u64 { 0x1980_0202 }
     fn root(&self) -> Option<InodeRef> { Some(self.root.clone()) }
-    fn set_sb(&self, sb: alloc::sync::Weak<SuperBlock>) -> vfs::KResult<()> {
-        self.root.set_sb(sb)
-    }
+    fn set_sb(&self, _sb: alloc::sync::Weak<SuperBlock>) -> vfs::KResult<()> { Ok(()) }
 }
 
 struct MqueueType;
@@ -231,19 +229,23 @@ pub fn create_linked(
         poll_subs: Arc::new(vfs::PollSubscribers::new()),
     });
     let poll_subs = queue.poll_subs.clone();
+    let root = {
+        let mut g = REG.lock();
+        let i = dir_index(&mut g, ns);
+        g[i].root.clone()
+    };
+    let sb = root.i_sb().expect("mqueue root has a superblock");
     let inode = InodeBuilder::new(vfs::get_next_ino() as vfs::Ino,
                                   mk_mode(FileType::Regular, mode),
                                   default_inode_ops(), mq_file_ops())
         .owner(uid, gid)
+        .sb(alloc::sync::Arc::downgrade(&sb))
         .poll_subs_arc(poll_subs)
         .private(Arc::new(MqInodePrivate { queue }))
         .build();
     let name = String::from(name);
     let mut g = REG.lock();
     let i = dir_index(&mut g, ns);
-    let root = g[i].root.clone();
-    inode.set_sb(alloc::sync::Arc::downgrade(&root.i_sb()
-        .expect("mqueue root has a superblock")))?;
     vfs::inode_created(&root, &inode, &name);
     if g[i].entries.iter().any(|e| e.name == name) { return Err(syscall::errno::Errno::Eexist); }
     admit_new_queue(g[i].count, g[i].sysctls.queues_max, cap_sys_resource)?;

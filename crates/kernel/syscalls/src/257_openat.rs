@@ -495,7 +495,7 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
         !ll_path_only && (ll_acc == 1 || ll_acc == 2),
         false,
         ll_ftype == vfs::FileType::Directory);
-    let ll_access = match ::security::lsm::open(&ll_final, &inode, ll_req, flags,
+    let ll_access = match ::security::lsm::open(&ll_final, &inode, ll_req, flags as u64,
         ::landlock::access::is_device(ll_ftype)) { Ok(a) => a, Err(rv) => return rv };
     // Lease-break (Linux `break_lease` in `do_open`): conflicting open signals
     // the lease holder + waits before proceeding. Zero-cost without a lease;

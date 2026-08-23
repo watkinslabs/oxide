@@ -10,11 +10,14 @@ sync    = { path = "../../shared/sync" }
 syscall = { path = "../syscall" }
 klog    = { path = "../../shared/klog" }
 vfs     = { path = "../vfs" }
-sched   = { path = "../sched", features = ["hosted"] }
+sched   = { path = "../sched" }
 
 [features]
 default = []
 hosted = []
+
+[target.'cfg(not(target_os = "oxide-kernel"))'.dependencies]
+sched = { path = "../sched", features = ["hosted"] }
 
 [lints]
 workspace = true

@@ -310,13 +310,11 @@ impl FileOps for BondingDirOps {
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let ns = net::netdev::current_net_ns();
-        let mut es = crate::readdir::DirEntries::new(inode);
-        for (id, bond) in bonding::link_kind::bonds() {
-            if net::sock::stack().ifaces.lookup_in_ns(id, ns).is_some() {
-                es.push(&bond.view().name, FileType::Regular);
-            }
-        }
-        es.emit(ctx)
+        let names = bonding::link_kind::bonds().into_iter().filter_map(|(id, bond)| {
+            net::sock::stack().ifaces.lookup_in_ns(id, ns).is_some()
+                .then(|| (bond.view().name, FileType::Regular))
+        });
+        crate::readdir::emit_resolved(names, |name| inode.lookup(name).ok().map(|i| i.ino()), ctx)
     }
 }
 

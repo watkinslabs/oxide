@@ -16,6 +16,7 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
+use alloc::vec;
 
 use crate::handle_policy::{FID_LEN_PARENT, FILEID_IS_CONNECTABLE, FILEID_IS_DIR, Fid, HANDLE_HDR,
     encode_fid, encoded_fid_len, handle_capacity_check, name_to_handle_flags_check};

@@ -716,6 +716,8 @@ name = "drv-virtio-9p"
 version = "0.1.0"
 dependencies = [
  "hal",
+ "hal-aarch64",
+ "hal-x86_64",
  "iommu",
  "ninep",
  "pci",
@@ -750,6 +752,8 @@ version = "0.1.0"
 dependencies = [
  "fuse-transport",
  "hal",
+ "hal-aarch64",
+ "hal-x86_64",
  "iommu",
  "pci",
  "pmm",
