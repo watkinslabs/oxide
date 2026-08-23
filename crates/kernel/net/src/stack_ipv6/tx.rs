@@ -57,7 +57,7 @@ impl NetStack {
             .filter(|dev| dev.generation() == lease.generation())
             .ok_or(NetError::Enetunreach)?;
         crate::mib6::bump_ip(lease.net_ns(), crate::mib6::Ip6Mib::OutRequests);
-        if !nf_output(&packet, NFPROTO_IPV6) { return Ok(false); }
+        if !nf_output(&mut packet, NFPROTO_IPV6) { return Ok(false); }
         dev.xmit(packet)?;
         crate::mib6::account_output(lease.net_ns(), dst, total);
         crate::mib6::bump_icmp(lease.net_ns(), crate::mib6::Icmp6Mib::OutMsgs);
@@ -351,7 +351,7 @@ impl NetStack {
         let net_ns = self.ifaces.namespace(iface).ok_or(NetError::Enetunreach)?;
         let dev = self.ifaces.acquire_egress_in_ns(iface, net_ns).ok_or(NetError::Enetunreach)?;
         crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::OutRequests);
-        if !nf_output(&p, NFPROTO_IPV6) {
+        if !nf_output(&mut p, NFPROTO_IPV6) {
             return Ok(());
         }
         dev.xmit(p)?;
@@ -378,7 +378,7 @@ pub(super) fn push_ipv6_raw_header(p: &mut crate::pkt::Pkt, src: Ipv6Addr, dst: 
 pub(super) fn admit_ipv6_owned(owner: &crate::SocketOwner, iface_id: NetIfaceId,
              next_hop: Ipv6Addr, src: Ipv6Addr, mut p: crate::pkt::Pkt) -> NetResult<bool> {
     prepare_ipv6(iface_id, next_hop, src, &mut p);
-    if !crate::netfilter_hook::nf_output_in(owner.net_ns(), &p, NFPROTO_IPV6) {
+    if !crate::netfilter_hook::nf_output_in(owner.net_ns(), &mut p, NFPROTO_IPV6) {
         return Ok(false);
     }
     let _ = crate::cgroup_bpf::egress(

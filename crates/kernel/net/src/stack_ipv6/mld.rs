@@ -339,7 +339,7 @@ impl NetStack {
         ipv6.write_to(header);
         packet.proto = crate::addr::eth_p::IPV6;
         packet.iface = Some(iface);
-        if !crate::netfilter_hook::nf_output(&packet, crate::netfilter_hook::NFPROTO_IPV6) { return Ok(()); }
+        if !crate::netfilter_hook::nf_output(&mut packet, crate::netfilter_hook::NFPROTO_IPV6) { return Ok(()); }
         dev.xmit(packet)
     }
     pub fn join_ipv6_multicast(&self, iface: NetIfaceId, group: Ipv6Addr, src: Ipv6Addr) -> NetResult<()> {

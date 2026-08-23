@@ -31,12 +31,15 @@ impl NetStack {
         let iface = lease.iface();
         crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::InReceives);
         crate::mib6::add_ip(net_ns, crate::mib6::Ip6Mib::InOctets, l3.len() as u64);
-        let pre_routing = crate::netfilter_hook::nf_hook_eval_ctx(
-            &crate::netfilter_hook::NfHookCtx::ingress(
-                net_ns, NF_INET_PRE_ROUTING, l3, NFPROTO_IPV6, iface, 0));
+        let mut ingress_pkt = crate::pkt::Pkt::from_owned(l3.to_vec());
+        let pre_routing = crate::netfilter_hook::nf_hook_packet_in(
+            net_ns, NF_INET_PRE_ROUTING, &mut ingress_pkt, NFPROTO_IPV6, Some(iface), 0);
         if pre_routing.verdict == 0 {
             return Ok(());
         }
+        if crate::netfilter_hook::nf_hook_packet_in(
+            net_ns, NF_INET_LOCAL_IN, &mut ingress_pkt, NFPROTO_IPV6, Some(iface), pre_routing.mark).verdict == 0 { return Ok(()); }
+        let l3 = ingress_pkt.data();
         let hdr = match Ipv6Hdr::parse(l3) {
             Ok(hdr) => hdr,
             Err(_) => {
@@ -57,8 +60,6 @@ impl NetStack {
         if !self.v6_dst_is_local_in(net_ns, iface, hdr.dst) {
             return self.forward_ipv6_in(net_ns, iface, l3);
         }
-        if crate::netfilter_hook::nf_hook_eval_ctx(&crate::netfilter_hook::NfHookCtx::ingress(
-            net_ns, NF_INET_LOCAL_IN, l3, NFPROTO_IPV6, iface, pre_routing.mark)).verdict == 0 { return Ok(()); }
         let payload_end = crate::ipv6::IPV6_HDR_LEN + hdr.payload_length as usize;
         if payload_end > l3.len() {
             crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::InTruncatedPkts);

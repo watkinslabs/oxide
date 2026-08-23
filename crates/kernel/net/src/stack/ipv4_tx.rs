@@ -30,7 +30,7 @@ impl NetStack {
         full.next_hop = Some(crate::pkt::TxNextHop::V4(next_hop));
         let net_ns = owner.map_or_else(crate::netdev::current_net_ns, crate::SocketOwner::net_ns);
         crate::mib::bump(net_ns, crate::mib::Mib::IpOutRequests);
-        if !crate::netfilter_hook::nf_output_in(net_ns, &full, NFPROTO_IPV4) {
+        if !crate::netfilter_hook::nf_output_in(net_ns, &mut full, NFPROTO_IPV4) {
             return Ok(crate::cgroup_bpf::EgressVerdict::Allow);
         }
         let verdict = if let Some(owner) = owner {

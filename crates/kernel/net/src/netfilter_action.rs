@@ -6,6 +6,21 @@ use alloc::{string::String, vec::Vec};
 use conntrack::tuple::InetAddr;
 use nat::NatRange;
 
+pub const PAYLOAD_LL_HEADER: u32 = 0;
+pub const PAYLOAD_NETWORK_HEADER: u32 = 1;
+pub const PAYLOAD_TRANSPORT_HEADER: u32 = 2;
+pub const PAYLOAD_INNER_HEADER: u32 = 3;
+pub const PAYLOAD_CSUM_NONE: u32 = 0;
+pub const PAYLOAD_CSUM_INET: u32 = 1;
+pub const PAYLOAD_CSUM_SCTP: u32 = 2;
+pub const PAYLOAD_L4CSUM_PSEUDOHDR: u32 = 1 << 0;
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ApplyError {
+    Unsupported,
+    Invalid,
+}
+
 /// One effect recorded by a netfilter rule and applied by the packet owner.
 /// The action list is ordered: Linux evaluates expressions and consumes each
 /// effect at the hook that owns the relevant packet state.
@@ -26,4 +41,82 @@ pub enum Action {
                  csum_offset: u32, csum_flags: u32 },
     ExthdrSet { op: u32, htype: u8, offset: u32, data: Vec<u8> },
     ExthdrStrip { op: u32, htype: u8 },
+}
+
+impl Action {
+    /// Apply an action to the packet buffer which owns the hook walk.
+    /// Actions that require route, conntrack, or device ownership stay
+    /// explicit failures until that owner supplies the corresponding state;
+    /// silently accepting and dropping them would split nftables' truth.
+    pub fn apply(&self, p: &mut crate::pkt::Pkt, family: u8) -> Result<(), ApplyError> {
+        match self {
+            Self::PayloadSet { base, offset, data, csum_type, csum_offset, csum_flags } => {
+                if *csum_type != PAYLOAD_CSUM_NONE || *csum_offset != 0 || *csum_flags != 0 {
+                    return Err(ApplyError::Unsupported);
+                }
+                let start = match *base {
+                    PAYLOAD_NETWORK_HEADER => *offset as usize,
+                    PAYLOAD_TRANSPORT_HEADER => transport_offset(p.data(), family)
+                        .ok_or(ApplyError::Invalid)? + *offset as usize,
+                    _ => return Err(ApplyError::Unsupported),
+                };
+                let end = start.checked_add(data.len()).ok_or(ApplyError::Invalid)?;
+                let dst = p.data_mut().get_mut(start..end).ok_or(ApplyError::Invalid)?;
+                dst.copy_from_slice(data);
+                Ok(())
+            }
+            _ => Err(ApplyError::Unsupported),
+        }
+    }
+}
+
+fn transport_offset(pkt: &[u8], family: u8) -> Option<usize> {
+    if family == 10 {
+        if pkt.len() < 40 { return None; }
+        return Some(40);
+    }
+    if family != 2 || pkt.len() < 20 || pkt[0] >> 4 != 4 { return None; }
+    let ihl = (pkt[0] & 0x0f) as usize * 4;
+    if ihl < 20 || ihl > pkt.len() { return None; }
+    let frag = u16::from_be_bytes([pkt[6], pkt[7]]) & 0x1fff;
+    if frag != 0 { return None; }
+    Some(ihl)
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{string::String, vec};
+    use super::{Action, ApplyError, PAYLOAD_NETWORK_HEADER, PAYLOAD_TRANSPORT_HEADER};
+    use crate::pkt::Pkt;
+
+    #[test]
+    fn payload_set_mutates_packet_owner_buffer() {
+        let mut pkt = Pkt::from_owned(vec![0x45, 0, 0, 20, 0, 0, 0, 0, 64, 17,
+                                            0, 0, 10, 0, 0, 1, 10, 0, 0, 2]);
+        let action = Action::PayloadSet { base: PAYLOAD_NETWORK_HEADER, offset: 1,
+            data: vec![0x2e], csum_type: 0, csum_offset: 0, csum_flags: 0 };
+        action.apply(&mut pkt, 2).unwrap();
+        assert_eq!(pkt.data()[1], 0x2e);
+    }
+
+    #[test]
+    fn payload_set_resolves_transport_header_and_rejects_bounds() {
+        let mut pkt = Pkt::from_owned(vec![0x45, 0, 0, 24, 0, 0, 0, 0, 64, 17,
+                                            0, 0, 10, 0, 0, 1, 10, 0, 0, 2,
+                                            0, 53, 0, 54]);
+        let action = Action::PayloadSet { base: PAYLOAD_TRANSPORT_HEADER, offset: 1,
+            data: vec![0xab], csum_type: 0, csum_offset: 0, csum_flags: 0 };
+        action.apply(&mut pkt, 2).unwrap();
+        assert_eq!(pkt.data()[21], 0xab);
+        let invalid = Action::PayloadSet { base: PAYLOAD_NETWORK_HEADER, offset: 24,
+            data: vec![1], csum_type: 0, csum_offset: 0, csum_flags: 0 };
+        assert_eq!(invalid.apply(&mut pkt, 2), Err(ApplyError::Invalid));
+    }
+
+    #[test]
+    fn stateful_actions_are_not_silently_discarded() {
+        let mut pkt = Pkt::from_owned(vec![0; 20]);
+        let action = Action::FlowOffload { table: String::new() };
+        assert_eq!(action.apply(&mut pkt, 2), Err(ApplyError::Unsupported));
+    }
 }

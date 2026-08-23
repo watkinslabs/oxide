@@ -370,7 +370,7 @@ impl NetStack {
             .map_err(|_| NetError::Enobufs)?;
         p.proto = crate::addr::eth_p::IPV6;
         p.iface = Some(iface_id);
-        if !nf_output(&p, NFPROTO_IPV6) {
+        if !nf_output(&mut p, NFPROTO_IPV6) {
             return Ok(());
         }
         iface.xmit(p)

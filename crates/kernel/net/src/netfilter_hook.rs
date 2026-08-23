@@ -152,6 +152,20 @@ pub(crate) fn nf_hook_eval_ctx(ctx: &NfHookCtx<'_>) -> NfHookResult {
     f(ctx)
 }
 
+/// Evaluate an ingress/forward hook and consume its actions on the packet
+/// owner before the next layer observes it. # C: O(eval + actions)
+pub(crate) fn nf_hook_packet_in(namespace: u64, hook_id: u32, p: &mut Pkt,
+                                 family: u8, iface: Option<NetIfaceId>, mark: u32)
+                                 -> NfHookResult {
+    p.tx.mark = mark;
+    let result = nf_hook_eval_ctx(&NfHookCtx::packet(namespace, hook_id, p, family, iface));
+    if result.verdict == 0 || apply_actions(p, family, &result.actions).is_err() {
+        return NfHookResult { verdict: 0, mark: result.mark, actions: Vec::new() };
+    }
+    p.tx.mark = result.mark;
+    result
+}
+
 // Netfilter hook ids (Linux `NF_INET_*`, uapi netfilter.h). Mirror
 // `netfilter::hook`. PRE_ROUTING gates RX before route selection; LOCAL_IN
 // gates local delivery; FORWARD + POST_ROUTING gate router-mode transit;
@@ -168,17 +182,27 @@ pub const NF_INET_POST_ROUTING: u32 = 4;
 /// a base chain DROPs — the caller then returns `Ok(())`, a silent drop
 /// matching Linux NF_DROP.
 /// # C: O(eval) ×2
-pub(crate) fn nf_output(p: &Pkt, family: u8) -> bool {
+pub(crate) fn nf_output(p: &mut Pkt, family: u8) -> bool {
     nf_output_in(crate::netdev::current_net_ns(), p, family)
 }
 
 /// Netfilter output under the retained socket namespace. # C: O(eval) ×2
-pub(crate) fn nf_output_in(namespace: u64, p: &Pkt, family: u8) -> bool {
+pub(crate) fn nf_output_in(namespace: u64, p: &mut Pkt, family: u8) -> bool {
     let context = security::network::Context::op(namespace, family as u16, 0, 0,
         security::network::Operation::Send);
     if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
         return false;
     }
-    nf_hook_eval_ctx(&NfHookCtx::packet(namespace, NF_INET_LOCAL_OUT, p, family, None)).verdict != 0
-        && nf_hook_eval_ctx(&NfHookCtx::packet(namespace, NF_INET_POST_ROUTING, p, family, None)).verdict != 0
+    let local = nf_hook_eval_ctx(&NfHookCtx::packet(namespace, NF_INET_LOCAL_OUT, p, family, None));
+    if local.verdict == 0 || apply_actions(p, family, &local.actions).is_err() { return false; }
+    let post = nf_hook_eval_ctx(&NfHookCtx::packet(namespace, NF_INET_POST_ROUTING, p, family, None));
+    post.verdict != 0 && apply_actions(p, family, &post.actions).is_ok()
+}
+
+fn apply_actions(p: &mut Pkt, family: u8,
+                 actions: &[crate::netfilter_action::Action]) -> Result<(), ()> {
+    for action in actions {
+        action.apply(p, family).map_err(|_| ())?;
+    }
+    Ok(())
 }

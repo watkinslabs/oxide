@@ -161,7 +161,7 @@ impl NetStack {
         packet.proto = eth_p::IPV4;
         packet.iface = Some(iface_id);
         packet.next_hop = Some(TxNextHop::V4(next_hop));
-        if !nf_output_in(endpoint.net_ns(), &packet, NFPROTO_IPV4) { return Ok(false); }
+        if !nf_output_in(endpoint.net_ns(), &mut packet, NFPROTO_IPV4) { return Ok(false); }
         let _ = crate::cgroup_bpf::egress(
             &endpoint.owner, packet.data(), eth_p::IPV4, iface_id,
         )?;
