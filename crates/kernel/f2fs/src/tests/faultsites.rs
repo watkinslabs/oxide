@@ -334,8 +334,10 @@ fn every_site_is_either_wired_or_named_as_having_no_counterpart() {
         Fault::AllocNid, Fault::Orphan, Fault::Block, Fault::DirDepth, Fault::EvictInode,
         Fault::Truncate, Fault::ReadIo, Fault::Checkpoint, Fault::WriteIo, Fault::DquotInit,
         Fault::BlkaddrValidity, Fault::BlkaddrConsistence, Fault::NoSegment,
-        Fault::InconsistentFooter, Fault::SkipWrite, Fault::Kmalloc, Fault::Kvmalloc,
+        Fault::InconsistentFooter, Fault::AtomicTimeout, Fault::SkipWrite,
+        Fault::Kmalloc, Fault::Kvmalloc,
         Fault::PageAlloc, Fault::PageGet, Fault::SlabAlloc, Fault::Vmalloc,
+        Fault::LockTimeout,
     ];
     // Two are reserved by the ABI for requests that can no longer fail, and
     // one names a filesystem-operation lock this design has no equivalent of.
