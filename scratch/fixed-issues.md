@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B253101-serial-echo-duplicate-stale-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B253101 | INFRA | med | The historical serial debug-shell duplication observation is stale on current main. | `crates/kernel/tty/src/core/tests/echo_stream.rs` now drives the production TTY RX/flush/echo path through 4,000-byte streams, flush boundaries, interleaved staging, and concurrent writers; `cargo test -p tty --lib echo_stream --quiet` runs 6 tests with 0 failures. | B253101 |
+
 ### B253001-worktree-removal-policy-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
