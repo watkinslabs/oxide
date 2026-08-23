@@ -214,6 +214,27 @@ fn parse_nat_range(attrs: &[u8], family: u8, target: u16)
     Ok(Some(range))
 }
 
+fn parse_labels(attrs: &[u8]) -> Result<Option<::conntrack::entry::LabelUpdate>, ()> {
+    let Some(raw) = find_bytes_attr(attrs, ::conntrack::uapi::CTA_LABELS) else {
+        return Ok(None);
+    };
+    if raw.len() > ::conntrack::uapi::NF_CT_LABELS_MAX_SIZE || raw.len() % 4 != 0 {
+        return Err(());
+    }
+    let mask = find_bytes_attr(attrs, ::conntrack::uapi::CTA_LABELS_MASK);
+    if mask.is_some_and(|value| value.is_empty() || value.len() != raw.len()) {
+        return Err(());
+    }
+    let mut data = [0u8; ::conntrack::uapi::NF_CT_LABELS_MAX_SIZE];
+    data[..raw.len()].copy_from_slice(raw);
+    let mask = mask.map(|value| {
+        let mut out = [0u8; ::conntrack::uapi::NF_CT_LABELS_MAX_SIZE];
+        out[..value.len()].copy_from_slice(value);
+        out
+    });
+    Ok(Some(::conntrack::entry::LabelUpdate { data, mask, len: raw.len() }))
+}
+
 fn parse_helper_name(attrs: &[u8]) -> Result<Option<String>, ()> {
     let Some(help) = find_bytes_attr(attrs, ::conntrack::uapi::CTA_HELP) else {
         return Ok(None);
@@ -344,6 +365,7 @@ fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Ve
                     || find_bytes_attr(attrs, ::conntrack::uapi::CTA_NAT_DST).is_some() {
                     return nlmsg_ack(req, -95);
                 }
+                let Ok(labels) = parse_labels(attrs) else { return nlmsg_ack(req, -22); };
                 let Ok(helper) = parse_helper_name(attrs) else { return nlmsg_ack(req, -22); };
                 if let Some(name) = helper {
                     if let Err(error) = ::net::global_stack().conntrack_update_helper_in(
@@ -358,7 +380,8 @@ fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Ve
                 let Ok(protoinfo) = parse_tcp_protoinfo(attrs) else { return nlmsg_ack(req, -22); };
                 let ok = ::net::global_stack().conntrack_update_in(
                     namespace, id, find_u32_attr(attrs, ::conntrack::uapi::CTA_TIMEOUT),
-                    find_u32_attr(attrs, ::conntrack::uapi::CTA_STATUS), mark, seqadj, protoinfo);
+                    find_u32_attr(attrs, ::conntrack::uapi::CTA_STATUS), mark, seqadj,
+                    protoinfo, labels);
                 return nlmsg_ack(req, if ok { 0 } else { -2 });
             }
             if req.nlmsg_flags & flags::NLM_F_CREATE == 0 {
@@ -375,6 +398,7 @@ fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Ve
             }
             let Ok(protoinfo) = parse_tcp_protoinfo(attrs) else { return nlmsg_ack(req, -22); };
             let Ok(helper) = parse_helper_name(attrs) else { return nlmsg_ack(req, -22); };
+            let Ok(labels) = parse_labels(attrs) else { return nlmsg_ack(req, -22); };
             let Ok(src_nat) = parse_nat_range(attrs, nfg.nfgen_family,
                 ::conntrack::uapi::CTA_NAT_SRC) else { return nlmsg_ack(req, -22); };
             let Ok(dst_nat) = parse_nat_range(attrs, nfg.nfgen_family,
@@ -384,12 +408,12 @@ fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Ve
                     namespace, tuple, reply, timeout,
                     find_u32_attr(attrs, ::conntrack::uapi::CTA_STATUS).unwrap_or(0),
                     find_u32_attr(attrs, ::conntrack::uapi::CTA_MARK), protoinfo, helper,
-                    src_nat, dst_nat)
+                    src_nat, dst_nat, labels)
             } else {
                 ::net::global_stack().conntrack_create_tuple_in(
                 namespace, tuple, reply, timeout,
                 find_u32_attr(attrs, ::conntrack::uapi::CTA_STATUS).unwrap_or(0),
-                find_u32_attr(attrs, ::conntrack::uapi::CTA_MARK), protoinfo, helper)
+                find_u32_attr(attrs, ::conntrack::uapi::CTA_MARK), protoinfo, helper, labels)
             };
             return nlmsg_ack(req, if id.is_some() { 0 } else { -28 });
         }
@@ -408,6 +432,7 @@ fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Ve
             });
             let Ok(seqadj) = parse_seqadjs(attrs) else { return nlmsg_ack(req, -22); };
             let Ok(protoinfo) = parse_tcp_protoinfo(attrs) else { return nlmsg_ack(req, -22); };
+            let Ok(labels) = parse_labels(attrs) else { return nlmsg_ack(req, -22); };
             let Ok(helper) = parse_helper_name(attrs) else { return nlmsg_ack(req, -22); };
             if let Some(name) = helper {
                 if let Err(error) = ::net::global_stack().conntrack_update_helper_in(
@@ -416,7 +441,8 @@ fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Ve
                 }
             }
             ::net::global_stack().conntrack_update_in(namespace, id as u64,
-                                                       timeout, status, mark, seqadj, protoinfo)
+                                                       timeout, status, mark, seqadj, protoinfo,
+                                                       labels)
         }
         _ => return nlmsg_ack(req, -95 /* EOPNOTSUPP */),
     };
@@ -494,8 +520,8 @@ fn handle_ct_get(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -
 mod tests {
     use alloc::vec::Vec;
     use alloc::sync::Arc;
-    use super::{parse_ct_tuple, parse_helper_name, parse_nat_range, parse_seqadjs,
-                parse_tcp_protoinfo};
+    use super::{parse_ct_tuple, parse_helper_name, parse_labels, parse_nat_range,
+                parse_seqadjs, parse_tcp_protoinfo};
     use ::conntrack::{ProtoPart, Tuple, TupleEnd, InetAddr};
     use netlink::{NetlinkSocket, proto, register_netfilter_listener};
 
@@ -621,6 +647,30 @@ mod tests {
         let parsed = parse_nat_range(&max_only, ::conntrack::uapi::NFPROTO_IPV4,
             ::conntrack::uapi::CTA_NAT_SRC).unwrap().unwrap();
         assert_eq!(parsed.ordered_ports(), (0, 99));
+    }
+
+    #[test]
+    fn ctnetlink_labels_parser_requires_aligned_matching_mask() {
+        let mut raw = Vec::new();
+        ::conntrack::ctnetlink::put_attr(
+            &mut raw, ::conntrack::uapi::CTA_LABELS, &[0x05, 0, 0, 0]);
+        ::conntrack::ctnetlink::put_attr(
+            &mut raw, ::conntrack::uapi::CTA_LABELS_MASK, &[0x0f, 0, 0, 0]);
+        let parsed = parse_labels(&raw).unwrap().unwrap();
+        assert_eq!(parsed.data[0], 0x05);
+        assert_eq!(parsed.mask.unwrap()[0], 0x0f);
+        assert_eq!(parsed.len, 4);
+
+        let mut bad = Vec::new();
+        ::conntrack::ctnetlink::put_attr(
+            &mut bad, ::conntrack::uapi::CTA_LABELS, &[1, 2, 3]);
+        assert!(parse_labels(&bad).is_err());
+        let mut bad_mask = Vec::new();
+        ::conntrack::ctnetlink::put_attr(
+            &mut bad_mask, ::conntrack::uapi::CTA_LABELS, &[0, 0, 0, 0]);
+        ::conntrack::ctnetlink::put_attr(
+            &mut bad_mask, ::conntrack::uapi::CTA_LABELS_MASK, &[0, 0, 0, 0, 0, 0, 0, 0]);
+        assert!(parse_labels(&bad_mask).is_err());
     }
 
     #[test]

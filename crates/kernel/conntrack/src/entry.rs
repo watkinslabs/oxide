@@ -24,6 +24,15 @@ pub struct TcpProtoInfoUpdate {
     pub flags: [Option<(u8, u8)>; IP_CT_DIR_MAX],
 }
 
+/// One ctnetlink label replacement. `mask` names bits to replace; absent
+/// means the supplied words replace the whole label area prefix.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LabelUpdate {
+    pub data: [u8; NF_CT_LABELS_MAX_SIZE],
+    pub mask: Option<[u8; NF_CT_LABELS_MAX_SIZE]>,
+    pub len: usize,
+}
+
 impl ProtoState {
     /// State appropriate to one L4 protocol. # C: O(1)
     pub fn for_proto(protonum: u8) -> Self {
@@ -96,6 +105,8 @@ pub struct Conn {
     pub timeout: AtomicU64,
     pub mark: AtomicU32,
     pub secmark: AtomicU32,
+    /// Conntrack label bits, shared by ctnetlink and nft `ct labels`.
+    pub labels: sync::Spinlock<[u8; NF_CT_LABELS_MAX_SIZE], sync::Socket>,
     pub proto: sync::Spinlock<ProtoState, sync::Socket>,
     pub counters: [DirCounters; IP_CT_DIR_MAX],
     /// Master connection when this entry was created from an expectation.
@@ -128,6 +139,7 @@ impl Conn {
             timeout: AtomicU64::new(0),
             mark: AtomicU32::new(0),
             secmark: AtomicU32::new(0),
+            labels: sync::Spinlock::new([0; NF_CT_LABELS_MAX_SIZE]),
             proto: sync::Spinlock::new(ProtoState::for_proto(orig.protonum)),
             counters: [DirCounters::default(), DirCounters::default()],
             master: None,
@@ -151,6 +163,34 @@ impl Conn {
     pub fn confirmed(&self) -> bool { self.status() & IPS_CONFIRMED != 0 }
     /// # C: O(1)
     pub fn dying(&self) -> bool { self.status() & IPS_DYING != 0 }
+
+    /// Copy the canonical label area into an nft/ctnetlink-sized buffer.
+    /// # C: O(NF_CT_LABELS_MAX_SIZE)
+    pub fn labels_copy(&self, out: &mut [u8]) {
+        out.fill(0);
+        let n = out.len().min(NF_CT_LABELS_MAX_SIZE);
+        out[..n].copy_from_slice(&self.labels.lock()[..n]);
+    }
+
+    /// Apply one Linux-style masked replacement and clear words beyond the
+    /// supplied prefix. Returns whether the canonical label area changed.
+    /// # C: O(NF_CT_LABELS_MAX_SIZE)
+    pub fn labels_replace(&self, update: &LabelUpdate) -> bool {
+        let len = update.len.min(NF_CT_LABELS_MAX_SIZE);
+        let mut labels = self.labels.lock();
+        let mut changed = false;
+        for i in 0..NF_CT_LABELS_MAX_SIZE {
+            let data = if i < len { update.data[i] } else { 0 };
+            let value = match update.mask {
+                Some(mask) if i < len => (labels[i] & !mask[i]) | data,
+                Some(_) => 0,
+                None => data,
+            };
+            changed |= labels[i] != value;
+            labels[i] = value;
+        }
+        changed
+    }
 
     /// Initialize or clear one direction's sequence correction. # C: O(1)
     pub fn seqadj_init(&self, dir: u8, offset: i32) {

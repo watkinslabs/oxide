@@ -137,11 +137,22 @@ pub const CTA_COUNTERS_REPLY: u16 = 10;
 pub const CTA_USE:          u16 = 11;
 pub const CTA_ID:           u16 = 12;
 pub const CTA_NAT_DST:      u16 = 13;
+pub const CTA_TUPLE_MASTER: u16 = 14;
 pub const CTA_SEQ_ADJ_ORIG: u16 = 15;
 pub const CTA_SEQ_ADJ_REPLY: u16 = 16;
+pub const CTA_SECMARK:      u16 = 17;
 pub const CTA_ZONE:         u16 = 18;
+pub const CTA_SECCTX:       u16 = 19;
+pub const CTA_TIMESTAMP:    u16 = 20;
 pub const CTA_MARK_MASK:    u16 = 21;
+pub const CTA_LABELS:       u16 = 22;
+pub const CTA_LABELS_MASK:  u16 = 23;
+pub const CTA_SYNPROXY:     u16 = 24;
+pub const CTA_FILTER:       u16 = 25;
 pub const CTA_STATUS_MASK:  u16 = 26;
+
+/// Conntrack label extension width, matching Linux's 128 label bits.
+pub const NF_CT_LABELS_MAX_SIZE: usize = 16;
 
 pub const CTA_NAT_V4_MINIP: u16 = 1;
 pub const CTA_NAT_V4_MAXIP: u16 = 2;

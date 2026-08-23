@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 
 use crate::ctnetlink;
 use crate::core::CtNet;
-use crate::entry::{Conn, ProtoState, SeqAdjust, TcpProtoInfoUpdate};
+use crate::entry::{Conn, LabelUpdate, ProtoState, SeqAdjust, TcpProtoInfoUpdate};
 use crate::helper::Helper;
 use crate::procfs;
 use crate::tuple::{InetAddr, ProtoPart, Tuple, TupleEnd};
@@ -200,7 +200,7 @@ fn ctnetlink_owner_updates_and_deletes_the_live_entry() {
         None,
     ], Some(TcpProtoInfoUpdate {
         state: Some(4), flags: [Some((0x80, 0xff)), None],
-    })));
+    }), None));
     assert_eq!(c.expires_in(0), 7);
     assert_eq!(c.mark.load(core::sync::atomic::Ordering::Relaxed), 0x55);
     assert_ne!(c.status() & IPS_ASSURED, 0);
@@ -211,6 +211,29 @@ fn ctnetlink_owner_updates_and_deletes_the_live_entry() {
     assert!(ct.delete_id(c.id, 0));
     assert!(ct.table.snapshot(0).is_empty());
     assert!(!ct.delete_id(c.id, 0));
+}
+
+#[test]
+fn ctnetlink_labels_use_one_canonical_masked_store_and_dump() {
+    let ct = CtNet::new(0, 7);
+    let c = entry(v4_udp([192, 0, 2, 1], 40000, [198, 51, 100, 2], 53));
+    ct.table.add_pending(c.clone());
+    assert!(ct.confirm(&c, 0));
+    let mut data = [0u8; NF_CT_LABELS_MAX_SIZE];
+    data[0] = 0x05;
+    let mut mask = [0u8; NF_CT_LABELS_MAX_SIZE];
+    mask[0] = 0x0f;
+    assert!(ct.update_id(c.id, 0, None, None, None, [None, None], None,
+        Some(LabelUpdate { data, mask: Some(mask), len: 4 })));
+    data[0] = 0x80;
+    mask[0] = 0x80;
+    assert!(ct.update_id(c.id, 0, None, None, None, [None, None], None,
+        Some(LabelUpdate { data, mask: Some(mask), len: 4 })));
+    let mut got = [0u8; NF_CT_LABELS_MAX_SIZE];
+    c.labels_copy(&mut got);
+    assert_eq!(got[0], 0x85);
+    let wire = ctnetlink::encode_entry(&c, 0, false);
+    assert!(wire.windows(NF_CT_LABELS_MAX_SIZE).any(|window| window == &got));
 }
 
 #[test]

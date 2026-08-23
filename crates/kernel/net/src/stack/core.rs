@@ -145,11 +145,12 @@ impl NetStack {
                                      reply: Option<::conntrack::Tuple>, timeout: u32,
                                      status: u32, mark: Option<u32>,
                                      protoinfo: Option<::conntrack::entry::TcpProtoInfoUpdate>,
-                                     helper: Option<alloc::string::String>)
+                                     helper: Option<alloc::string::String>,
+                                     labels: Option<::conntrack::entry::LabelUpdate>)
                                      -> Option<u64> {
         let ct = self.conntrack_in(net_ns);
-        ct.create_tuple(tuple, reply, crate::stack::net_now_ns() / 1_000_000_000,
-                        timeout, status, mark, protoinfo, helper)
+        ct.create_tuple_with(tuple, reply, crate::stack::net_now_ns() / 1_000_000_000,
+                             timeout, status, mark, protoinfo, helper, labels, |_| true)
     }
 
     /// Create a ctnetlink entry with the canonical NAT allocator running
@@ -161,10 +162,12 @@ impl NetStack {
                                          protoinfo: Option<::conntrack::entry::TcpProtoInfoUpdate>,
                                          helper: Option<alloc::string::String>,
                                          src: Option<::nat::NatRange>,
-                                         dst: Option<::nat::NatRange>) -> Option<u64> {
+                                         dst: Option<::nat::NatRange>,
+                                         labels: Option<::conntrack::entry::LabelUpdate>)
+                                         -> Option<u64> {
         let ct = self.conntrack_in(net_ns);
         let now = crate::stack::net_now_ns() / 1_000_000_000;
-        ct.create_tuple_with(tuple, reply, now, timeout, status, mark, protoinfo, helper,
+        ct.create_tuple_with(tuple, reply, now, timeout, status, mark, protoinfo, helper, labels,
             |conn| {
                 struct Env<'a> {
                     table: &'a ::conntrack::CtTable,
@@ -203,10 +206,11 @@ impl NetStack {
                                status: Option<u32>, mark: Option<(u32, Option<u32>)>,
                                seqadj: [Option<::conntrack::entry::SeqAdjust>;
                                         ::conntrack::uapi::IP_CT_DIR_MAX],
-                               protoinfo: Option<::conntrack::entry::TcpProtoInfoUpdate>) -> bool {
+                               protoinfo: Option<::conntrack::entry::TcpProtoInfoUpdate>,
+                               labels: Option<::conntrack::entry::LabelUpdate>) -> bool {
         let Some(ct) = self.conntrack_existing_in(net_ns) else { return false; };
         ct.update_id(id, crate::stack::net_now_ns() / 1_000_000_000,
-                     timeout, status, mark, seqadj, protoinfo)
+                     timeout, status, mark, seqadj, protoinfo, labels)
     }
 
     /// Apply ctnetlink's existing-flow helper selection through CtNet. # C: O(N)

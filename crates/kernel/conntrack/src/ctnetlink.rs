@@ -146,6 +146,11 @@ pub fn encode_entry(c: &Arc<Conn>, now: u64, acct: bool) -> Vec<u8> {
         let (p, b) = c.counters[IP_CT_DIR_REPLY as usize].read();
         put_counters(&mut out, CTA_COUNTERS_REPLY, p, b);
     }
+    let mut labels = [0u8; NF_CT_LABELS_MAX_SIZE];
+    c.labels_copy(&mut labels);
+    if labels.iter().any(|&byte| byte != 0) {
+        put_attr(&mut out, CTA_LABELS, &labels);
+    }
     out
 }
 

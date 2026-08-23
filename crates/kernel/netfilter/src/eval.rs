@@ -292,6 +292,18 @@ impl CtAccess for LiveCt<'_> {
         out[..n].copy_from_slice(&name.as_bytes()[..n]);
         true
     }
+    fn labels(&self, out: &mut [u8]) -> bool {
+        if let Some(c) = self.conn { c.labels_copy(out); }
+        true
+    }
+    fn set_labels(&self, value: &[u8]) {
+        let Some(c) = self.conn else { return; };
+        let mut data = [0u8; conntrack::uapi::NF_CT_LABELS_MAX_SIZE];
+        let len = value.len().min(data.len());
+        data[..len].copy_from_slice(&value[..len]);
+        let update = conntrack::entry::LabelUpdate { data, mask: None, len };
+        c.labels_replace(&update);
+    }
     fn counters(&self, dir: u8) -> (u64, u64) {
         self.conn.and_then(|c| c.counters.get(dir as usize)).map_or((0, 0), |x| x.read())
     }

@@ -6,7 +6,7 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::sync::Arc;
 
-use crate::entry::{Conn, ProtoState, SeqAdjust, TcpProtoInfoUpdate};
+use crate::entry::{Conn, LabelUpdate, ProtoState, SeqAdjust, TcpProtoInfoUpdate};
 use crate::event::EventCache;
 use crate::proto::{icmp, tcp, udp};
 use crate::proto::tcp_window::TcpSeg;
@@ -230,7 +230,8 @@ impl CtNet {
     pub fn update_id(&self, id: u64, now: u64, timeout: Option<u32>,
                      status: Option<u32>, mark: Option<(u32, Option<u32>)>,
                      seqadj: [Option<SeqAdjust>; IP_CT_DIR_MAX],
-                     protoinfo: Option<TcpProtoInfoUpdate>) -> bool {
+                     protoinfo: Option<TcpProtoInfoUpdate>,
+                     labels: Option<LabelUpdate>) -> bool {
         let Some(conn) = self.table.find_id(id, now) else { return false; };
         if let Some(secs) = timeout {
             conn.set_status_bits(IPS_FIXED_TIMEOUT);
@@ -260,6 +261,9 @@ impl CtNet {
         if let Some(update) = protoinfo {
             if conn.tcp_protoinfo_update(update) { self.events.post(&conn, IPCT_PROTOINFO); }
         }
+        if let Some(update) = labels {
+            if conn.labels_replace(&update) { self.events.post(&conn, IPCT_LABEL); }
+        }
         true
     }
 
@@ -271,7 +275,7 @@ impl CtNet {
                         protoinfo: Option<TcpProtoInfoUpdate>,
                         helper: Option<String>) -> Option<u64> {
         self.create_tuple_with(tuple, reply, now, timeout, status, mark, protoinfo, helper,
-                               |_| true)
+                               None, |_| true)
     }
 
     /// Create a userspace entry and run one final pre-confirmation setup.
@@ -280,7 +284,8 @@ impl CtNet {
     pub fn create_tuple_with<F>(&self, tuple: Tuple, reply: Option<Tuple>, now: u64,
                                 timeout: u32, status: u32, mark: Option<u32>,
                                 protoinfo: Option<TcpProtoInfoUpdate>,
-                                helper: Option<String>, setup: F) -> Option<u64>
+                                helper: Option<String>, labels: Option<LabelUpdate>, setup: F)
+                                -> Option<u64>
         where F: FnOnce(&Arc<Conn>) -> bool
     {
         let reply = reply.or_else(|| tuple.invert())?;
@@ -301,13 +306,15 @@ impl CtNet {
             self.helpers.find_named_for(&name, &tuple)?;
             conn.attach_helper(name, true);
         }
+        let label_event = labels.is_some();
+        if let Some(update) = labels { conn.labels_replace(&update); }
         if !setup(&conn) { return None; }
         self.table.add_pending(conn.clone());
         if !self.table.confirm(&conn, now) {
             let _ = self.table.kill(&conn);
             return None;
         }
-        self.events.post(&conn, IPCT_NEW);
+        self.events.post(&conn, IPCT_NEW | if label_event { IPCT_LABEL } else { 0 });
         Some(conn.id)
     }
 
