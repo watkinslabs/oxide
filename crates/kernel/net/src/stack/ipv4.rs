@@ -183,9 +183,6 @@ impl NetStack {
     pub fn deliver_rx_in(&self, lease: &crate::IngressLease, l3: &[u8]) -> NetResult<()> {
         let net_ns = lease.net_ns();
         let iface = lease.iface();
-        if let Some(result) = self.flow_offload_ingress(net_ns, iface, l3, NFPROTO_IPV4) {
-            return result;
-        }
         let Some((reassembled, frag_max)) = account_ingress_copy(net_ns,
             self.ipv4_nf_defrag_ingress(net_ns, iface, l3))?
             else { return Ok(()); };

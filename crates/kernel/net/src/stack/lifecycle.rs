@@ -80,9 +80,11 @@ impl NetStack {
     pub fn publish_iface(&self, reg: crate::netdev::IfaceRegistration<'_>) -> bool {
         let namespace = crate::control_event::NamespaceOwner::Live(reg.namespace());
         let iface = reg.id();
+        let net_ns = reg.namespace().id().as_u64();
         let Some(properties) = reg.link_properties() else { return false };
         let rtnl = self.rtnl_lock();
         if !self.ifaces.publish(&rtnl, reg) { return false; }
+        self.flowtable_device_event_in(net_ns, iface, true);
         let Some(event) = self.live_link_event(
             &rtnl, namespace, iface, properties,
             crate::control_event::EventKind::New) else { return false };
@@ -149,6 +151,7 @@ impl NetStack {
                              properties: &crate::control_event::LinkProperties)
         -> Option<u64> {
         let net_ns = teardown.net_ns();
+        self.flowtable_device_event_in(net_ns, iface, false);
         self.flowtable_device_down_in(net_ns, iface);
         self.arp_proxy.remove_iface(net_ns, iface);
         self.bridges.remove_iface(rtnl, net_ns, iface);

@@ -249,9 +249,9 @@ pub(crate) fn nf_hook_packet_in(namespace: u64, hook_id: u32, p: &mut Pkt,
     NfHookResult { notrack: notrack || result.notrack, ..result }
 }
 
-fn nf_hook_packet_stage(namespace: u64, hook_id: u32, p: &Pkt, family: u8,
-                        iface: Option<NetIfaceId>, mark: u32,
-                        min_priority: Option<i32>, max_priority: Option<i32>) -> NfHookResult {
+pub(crate) fn nf_hook_packet_stage(namespace: u64, hook_id: u32, p: &Pkt, family: u8,
+                                   iface: Option<NetIfaceId>, mark: u32,
+                                   min_priority: Option<i32>, max_priority: Option<i32>) -> NfHookResult {
     let stage = NF_STAGE.load(Ordering::Acquire);
     if stage.is_null() {
         // The legacy bridge has no way to advertise compiled chain ranges;
@@ -271,6 +271,27 @@ fn nf_hook_packet_stage(namespace: u64, hook_id: u32, p: &Pkt, family: u8,
     ctx.chain_min_priority = min_priority;
     ctx.chain_max_priority = max_priority;
     nf_hook_eval_ctx(&ctx)
+}
+
+/// Evaluate one ordered netfilter stage and consume its actions. This is used
+/// by netdev ingress, where nft chains and flowtable hooks share one priority
+/// ordered hook list. # C: O(eval + actions)
+pub(crate) fn nf_hook_packet_stage_in(namespace: u64, hook_id: u32, p: &mut Pkt,
+                                      family: u8, iface: Option<NetIfaceId>, mark: u32,
+                                      min_priority: Option<i32>, max_priority: Option<i32>)
+                                      -> NfHookResult {
+    p.tx.mark = mark;
+    let result = nf_hook_packet_stage(namespace, hook_id, p, family, iface, mark,
+                                      min_priority, max_priority);
+    let actions = apply_actions(p, family, hook_id, &result.actions);
+    if let Err(error) = actions {
+        return NfHookResult {
+            verdict: if error == crate::netfilter_action::ApplyError::Stolen { 2 } else { 0 },
+            mark: result.mark, actions: Vec::new(), notrack: result.notrack,
+        };
+    }
+    p.tx.mark = result.mark;
+    NfHookResult { actions: Vec::new(), ..result }
 }
 
 // Netfilter hook ids (Linux `NF_INET_*`, uapi netfilter.h). Mirror

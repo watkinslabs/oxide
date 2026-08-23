@@ -15,7 +15,7 @@ use conntrack::uapi::{IPPROTO_TCP, IPPROTO_UDP, IPS_ASSURED, IPS_CONFIRMED,
 use crate::addr::{Ipv4Addr, Ipv6Addr, NetIfaceId};
 use crate::netfilter_action::ApplyError;
 use crate::netfilter_hook::{NF_INET_FORWARD, NF_INET_POST_ROUTING,
-    NF_INET_PRE_ROUTING, NFPROTO_IPV4 as NF_V4, NFPROTO_IPV6 as NF_V6};
+    NF_INET_PRE_ROUTING, NF_NETDEV_INGRESS, NFPROTO_IPV4 as NF_V4, NFPROTO_IPV6 as NF_V6};
 use crate::netdev::{NetError, NetResult};
 use crate::pkt::{Pkt, TxNextHop};
 use crate::stack::NetStack;
@@ -63,6 +63,7 @@ impl NetStack {
     pub fn register_flowtable_in(&self, net_ns: u64, family: u8, table: &str, name: &str,
                                  hook_num: u32, priority: i32, devices: Vec<FlowtableDevice>, flags: u32)
                                  -> Option<u64> {
+        if hook_num != NF_NETDEV_INGRESS { return None; }
         let key = (net_ns, family, String::from(table), String::from(name));
         let mut flowtables = self.flowtables.lock();
         if flowtables.contains_key(&key) { return None; }
@@ -143,9 +144,49 @@ impl NetStack {
             FlowtableDevice::Name(name) => config.exact_devices.get(index).copied().flatten()
                 .map_or_else(|| self.ifaces.lookup_name_in_ns(name, net_ns)
                     .is_some_and(|(id, _)| id == iface), |id| id == iface),
-            FlowtableDevice::Prefix(prefix) => self.ifaces.lookup_in_ns(iface, net_ns)
-                .is_some_and(|dev| dev.name().starts_with(prefix)),
+            FlowtableDevice::Prefix(prefix) => self.ifaces.name_in_ns(iface, net_ns)
+                .is_some_and(|name| name.starts_with(prefix)),
         })
+    }
+
+    /// Priorities of flowtable netdev hooks attached to one ingress device.
+    /// The list is the software equivalent of the kernel's per-device
+    /// `nf_hook_ops` list and is consumed by the Ethernet ingress walk.
+    pub(crate) fn flowtable_priorities_in(&self, net_ns: u64, family: u8,
+                                          iface: NetIfaceId) -> Vec<i32> {
+        let configs: Vec<FlowtableConfig> = self.flowtables.lock().iter()
+            .filter(|((ns, flow_family, _, _), _)| *ns == net_ns
+                && (*flow_family == family || *flow_family == NFPROTO_INET))
+            .map(|(_, config)| config.clone()).collect();
+        let mut priorities = configs.into_iter().filter(|config| {
+            self.flowtable_applies(net_ns, family, &config.table, &config.name, iface)
+        }).map(|config| config.priority).collect::<Vec<_>>();
+        priorities.sort_unstable();
+        priorities.dedup();
+        priorities
+    }
+
+    /// Reconcile exact-name netdev hook bindings with one device lifecycle
+    /// event. Linux unregisters an exact hook when a device is renamed away
+    /// from its selector and registers it again when a device takes that name.
+    pub fn flowtable_device_event_in(&self, net_ns: u64, iface: NetIfaceId,
+                                     present: bool) {
+        let name = present.then(|| self.ifaces.name_in_ns(iface, net_ns))
+            .flatten();
+        let mut flowtables = self.flowtables.lock();
+        for ((ns, _, _, _), config) in flowtables.iter_mut() {
+            if *ns != net_ns { continue; }
+            for (index, device) in config.devices.iter().enumerate() {
+                let FlowtableDevice::Name(selector) = device else { continue; };
+                let binding = config.exact_devices.get_mut(index)
+                    .expect("flowtable selector binding");
+                if *binding == Some(iface) {
+                    *binding = (present && name.as_ref() == Some(selector)).then_some(iface);
+                } else if present && binding.is_none() && name.as_ref() == Some(selector) {
+                    *binding = Some(iface);
+                }
+            }
+        }
     }
 
     /// Snapshot flowtable objects for nf_tables GET/dump serialization.
@@ -220,13 +261,15 @@ impl NetStack {
     /// Lookup and forward one packet before PRE_ROUTING. `None` means that no
     /// flow owns it and the ordinary route/filter path must continue. # C: O(N flowtables)
     pub(crate) fn flow_offload_ingress(&self, net_ns: u64, iface: NetIfaceId,
-                                       l3: &[u8], family: u8)
+                                       l3: &[u8], family: u8, priority: i32)
         -> Option<NetResult<()>>
     {
         let tuple = flow_tuple(l3, family)?;
         let mut flows = self.flow_offload.lock();
         let found = flows.iter()
             .find(|((ns, nft_table, table, key), _)| *ns == net_ns && *key == tuple
+                && self.flowtable_config(net_ns, family, nft_table, table)
+                    .is_some_and(|config| config.priority == priority)
                 && self.flowtable_applies(net_ns, family, nft_table, table, iface))
             .map(|(_, entry)| Arc::clone(entry));
         let entry = found?;
@@ -442,7 +485,26 @@ mod tests {
         let rtnl = stack.rtnl_lock();
         assert_eq!(stack.ifaces.rename_in_ns(&rtnl, iface, 0, "renamed0"),
             Ok(String::from("lo")));
+        stack.flowtable_device_event_in(0, iface, true);
+        assert!(!stack.flowtable_applies(0, NFPROTO_IPV4, "filter", "ft", iface));
+        assert_eq!(stack.ifaces.rename_in_ns(&rtnl, iface, 0, "lo"),
+            Ok(String::from("renamed0")));
+        stack.flowtable_device_event_in(0, iface, true);
         assert!(stack.flowtable_applies(0, NFPROTO_IPV4, "filter", "ft", iface));
+    }
+
+    #[test]
+    fn flowtable_hook_priorities_are_sorted_for_one_device() {
+        let _domain = crate::hosted_fixture::init_net_domain();
+        let stack = NetStack::new();
+        let (iface, _) = stack.register_loopback();
+        for (name, priority) in [("early", -300), ("late", 100), ("middle", -100)] {
+            stack.register_flowtable_in(0, NFPROTO_IPV4, "filter", name, 0, priority,
+                alloc::vec![FlowtableDevice::Name(String::from("lo"))], 0)
+                .expect("flowtable registration");
+        }
+        assert_eq!(stack.flowtable_priorities_in(0, NFPROTO_IPV4, iface),
+            alloc::vec![-300, -100, 100]);
     }
 
     #[test]

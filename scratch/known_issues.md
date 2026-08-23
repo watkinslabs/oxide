@@ -17,12 +17,12 @@ relocated.
 > socket UID/GID/cgroup identity, IPv4/IPv6 UDP/TCP TProxy target handoff,
 > preserves Linux chain-priority boundaries, and consumes NAT, reject,
 > forwarding, duplicate, syslog-log, payload-checksum, IPv4-option,
-> TCP-option, and NFLOG effects. Software flowtable ownership and the
+> TCP-option, and NFLOG effects. Software flowtable ownership now runs from
+> the canonical NFPROTO_NETDEV ingress walk with per-device selector lifecycle,
+> priority interleaving, use accounting, and device-down/removal cleanup. The
 > synproxy cookie/handshake packet path, conntrack sequence adjustment, and
-> negotiated TCP option translation are now live, but their remaining Linux
-> differences are flowtable per-device hook registration/priority parity and
-> synproxy state-machine retransmission parity. Flowtable use accounting and
-> device-down/removal cleanup are live. The B2621 rows below retain
+> negotiated TCP option translation are live, but synproxy still differs in
+> state-machine retransmission parity. The B2621 rows below retain
 > their original discovery wording; production xfrm/tunnel/osf/object context
 > is still absent. They are not closure claims.
 

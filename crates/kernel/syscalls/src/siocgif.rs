@@ -749,7 +749,7 @@ fn siocsifname(net_ns: u64, arg: u64) -> i64 {
         return -(Errno::Enodev.as_i32() as i64);
     }
     match stack.ifaces.rename_in_ns(&rtnl, id, net_ns, name) {
-        Ok(_) => 0,
+        Ok(_) => { stack.flowtable_device_event_in(net_ns, id, true); 0 },
         Err(e) => -(e.as_i32() as i64),
     }
 }

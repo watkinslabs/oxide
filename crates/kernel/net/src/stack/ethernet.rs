@@ -33,11 +33,37 @@ impl NetStack {
         let mut netdev_packet = crate::Pkt::from_owned(frame.to_vec());
         netdev_packet.proto = header.ethertype;
         netdev_packet.iface = Some(lease.iface());
-        let netdev = crate::netfilter_hook::nf_hook_packet_in(
+        let flow_family = match header.ethertype {
+            crate::eth_p::IPV4 => Some(crate::netfilter_hook::NFPROTO_IPV4),
+            crate::eth_p::IPV6 => Some(crate::netfilter_hook::NFPROTO_IPV6),
+            _ => None,
+        };
+        let priorities = flow_family.map_or_else(Vec::new, |family| {
+            self.flowtable_priorities_in(lease.net_ns(), family, lease.iface())
+        });
+        let mut min_priority = None;
+        let mut mark = 0;
+        for priority in priorities {
+            let netdev = crate::netfilter_hook::nf_hook_packet_stage_in(
+                lease.net_ns(), crate::netfilter_hook::NF_NETDEV_INGRESS,
+                &mut netdev_packet, crate::netfilter_hook::NFPROTO_NETDEV,
+                Some(lease.iface()), mark, min_priority, Some(priority));
+            if !netdev.accepted() { return Ok(()); }
+            mark = netdev.mark;
+            let l3 = netdev_packet.data().get(header.hdr_len..).unwrap_or(&[]);
+            if let Some(result) = self.flow_offload_ingress(
+                lease.net_ns(), lease.iface(), l3, flow_family.expect("flow priority family"),
+                priority) {
+                return result;
+            }
+            min_priority = Some(priority);
+        }
+        let netdev = crate::netfilter_hook::nf_hook_packet_stage_in(
             lease.net_ns(), crate::netfilter_hook::NF_NETDEV_INGRESS,
             &mut netdev_packet, crate::netfilter_hook::NFPROTO_NETDEV,
-            Some(lease.iface()), 0);
+            Some(lease.iface()), mark, min_priority, None);
         if !netdev.accepted() { return Ok(()); }
+        let frame = netdev_packet.data();
         #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
         crate::sock::deliver_packet_ingress_meta_in(lease, frame, metadata);
         #[cfg(not(any(target_os = "oxide-kernel", test, feature = "hosted")))]
