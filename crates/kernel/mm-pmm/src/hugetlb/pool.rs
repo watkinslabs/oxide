@@ -50,8 +50,9 @@ fn pool(size: HugePageSize) -> &'static Spinlock<PoolState, HugetlbPool> {
 /// unreferenced as the buddy expects — a run left holding stale references is
 /// one `alloc_contig`'s in-use check refuses to hand out ever again.
 /// # C: O(2^order)
-fn buddy_take(size: HugePageSize) -> Option<u64> {
-    crate::setup::alloc_contig(size.order())
+fn buddy_take(size: HugePageSize, nowait: bool) -> Option<u64> {
+    if nowait { crate::setup::alloc_contig_nowait(size.order()) }
+    else { crate::setup::alloc_contig(size.order()) }
 }
 
 /// Give one run back to the buddy allocator.
@@ -67,10 +68,10 @@ unsafe fn buddy_give_back(pa: u64, size: HugePageSize) {
 
 /// Grow the pool by up to `n` pages, returning how many were obtained.
 /// # C: O(n * 2^order)
-fn acquire_runs(size: HugePageSize, n: u64, out: &mut Vec<u64>) -> u64 {
+fn acquire_runs(size: HugePageSize, n: u64, out: &mut Vec<u64>, nowait: bool) -> u64 {
     let mut got = 0;
     for _ in 0..n {
-        match buddy_take(size) { Some(pa) => { out.push(pa); got += 1; } None => break }
+        match buddy_take(size, nowait) { Some(pa) => { out.push(pa); got += 1; } None => break }
     }
     got
 }
@@ -90,9 +91,21 @@ fn release_runs(size: HugePageSize, runs: &[u64]) {
 /// reservations forbid releasing it.
 /// # C: O(|count - current| * 2^order)
 pub fn set_nr_hugepages(size: HugePageSize, count: u64) -> u64 {
+    resize_pool(size, count, false)
+}
+
+/// Apply a boot-line HugeTLB reservation without reclaim or OOM selection.
+/// There is no process context during early PMM setup to kill when a request
+/// cannot be satisfied; Linux's boot allocator likewise reports a short pool
+/// rather than routing the reservation through a task OOM victim.
+pub(crate) fn set_nr_hugepages_early(size: HugePageSize, count: u64) -> u64 {
+    resize_pool(size, count, true)
+}
+
+fn resize_pool(size: HugePageSize, count: u64, nowait: bool) -> u64 {
     let plan = { pool(size).lock().counts.plan_resize(count) };
     let mut fresh: Vec<u64> = Vec::new();
-    if plan.alloc > 0 { acquire_runs(size, plan.alloc, &mut fresh); }
+    if plan.alloc > 0 { acquire_runs(size, plan.alloc, &mut fresh, nowait); }
     let mut to_release: Vec<u64> = Vec::new();
     {
         let mut g = pool(size).lock();
@@ -131,7 +144,7 @@ pub fn reserve(size: HugePageSize, delta: u64) -> Result<crate::hugetlb::Reserva
         Err(()) => { charge::uncharge_reserve(size, owner, delta); return Err(()); }
     };
     let mut fresh: Vec<u64> = Vec::new();
-    if need > 0 && acquire_runs(size, need, &mut fresh) < need {
+    if need > 0 && acquire_runs(size, need, &mut fresh, false) < need {
         release_runs(size, &fresh);
         charge::uncharge_reserve(size, owner, delta);
         return Err(());

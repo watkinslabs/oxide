@@ -23,9 +23,23 @@ const CONTIG_INTEGRITY_RETRY_COUNT: usize = 64;
 /// never returned to a caller) and the allocator retries.
 /// # C: O(retries * 2^order)
 pub fn alloc_contig(order: crate::Order) -> Option<u64> {
+    alloc_contig_with(order, false)
+}
+
+/// Allocate a contiguous physical run without entering reclaim or the OOM
+/// selector. Early boot reservations have no reclaimable task context and
+/// must fail short rather than walk the process-killing slow path.
+/// # C: O(retries * 2^order)
+pub(crate) fn alloc_contig_nowait(order: crate::Order) -> Option<u64> {
+    alloc_contig_with(order, true)
+}
+
+fn alloc_contig_with(order: crate::Order, nowait: bool) -> Option<u64> {
     let p = pmm_static()?;
     for _ in 0..CONTIG_INTEGRITY_RETRY_COUNT {
-        let pa = p.alloc(order).ok().map(|pfn| pfn.0 * PAGE_BYTES)?;
+        let pfn = if nowait { p.alloc_gfp_nowait(order, 0).ok()? }
+                  else { p.alloc(order).ok()? };
+        let pa = pfn.0 * PAGE_BYTES;
         if let Some(meta) = page_meta() {
             let frames = 1u64 << order.0;
             let mut in_use = false;

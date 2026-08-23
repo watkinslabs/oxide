@@ -42,9 +42,9 @@ pub use sizes::{size_from_flags, size_log_from_flags, GIGANTIC_HUGE_SHIFT};
 pub fn initialize_from_cmdline(line: &[u8]) {
     let request = cmdline::hugepages::hugepage_request(line);
     if let Some(n) = request.huge_2m {
-        let _ = set_nr_hugepages(HugePageSize::Huge2M, n);
+        let _ = pool::set_nr_hugepages_early(HugePageSize::Huge2M, n);
     }
     if let Some(n) = request.huge_1g {
-        let _ = set_nr_hugepages(HugePageSize::Huge1G, n);
+        let _ = pool::set_nr_hugepages_early(HugePageSize::Huge1G, n);
     }
 }

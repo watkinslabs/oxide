@@ -83,6 +83,7 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {    /// Allocate one buddy block of 
     /// # C: O(NR_ZONES × MAX_ORDER) bounded
     /// # Ctx: any; brief IRQ-off; does not sleep
     /// # Lk: pageset for a local order-0 hit; Buddy for refill or larger blocks
+    #[inline(never)]
     pub(crate) fn alloc_gfp_nowait(&self, order: Order, gfp: u32) -> KResult<Pfn> {
         let (hi, mt) = self.alloc_gfp_args(gfp)?;
         match self.alloc_inner_zoned(order, hi, AllocWmark::Low, mt) {
