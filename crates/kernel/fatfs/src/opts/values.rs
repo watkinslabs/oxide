@@ -10,6 +10,7 @@
 use crate::name::codepage::{CodePage, CP437};
 use crate::name::flags::{SFN_DEFAULT, SFN_MSDOS};
 use crate::name::msdos::{NameCheck, Options as ShortOptions};
+use crate::name::compare::IoCharset;
 use crate::time::TimeConfig;
 
 /// Longest component each type reports to `statfs`. A long name reaches 255
@@ -51,6 +52,8 @@ pub struct Options {
     pub long_names: bool,
     /// Code page the eleven name bytes are written in.
     pub codepage: &'static CodePage,
+    /// Charset Linux's `nls_io` uses for long-name comparison.
+    pub iocharset: IoCharset,
     /// `shortname=` display and creation rules, as the bits of one word.
     pub shortname: u16,
     /// Whether a name that needs an alias gets a `~N` tail.
@@ -103,6 +106,7 @@ impl Options {
         Self {
             long_names: true,
             codepage: &CP437,
+            iocharset: IoCharset::DEFAULT,
             shortname: SFN_DEFAULT,
             numtail: true,
             check: NameCheck::Normal,

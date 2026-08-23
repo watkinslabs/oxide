@@ -34,6 +34,16 @@ fn the_code_page_must_be_one_this_build_has() {
     assert_eq!(parse(Options::vfat(), "codepage=850").err(), Some(Errno::Einval));
 }
 
+#[test]
+fn iocharset_is_stored_separately_from_the_disk_code_page() {
+    let o = vfat("codepage=437,iocharset=utf8");
+    assert_eq!(o.codepage.number, 437);
+    assert_eq!(o.iocharset, crate::name::compare::IoCharset::Utf8);
+    assert_eq!(vfat("iocharset=iso8859-1").iocharset,
+               crate::name::compare::IoCharset::Iso88591);
+    assert_eq!(parse(Options::vfat(), "iocharset=cp1252").err(), Some(Errno::Einval));
+}
+
 /// The four `shortname=` words each name a display and a creation rule.
 #[test]
 fn shortname_names_a_display_and_a_creation_rule() {

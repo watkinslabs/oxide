@@ -245,7 +245,8 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(name length)
     pub fn name_matches(&self, entry: &DirEntry, name: &str) -> bool {
         if self.opts.long_names {
-            return crate::name::compare::eq(&entry.name, name, self.opts.case_sensitive());
+            return crate::name::compare::eq_with(&entry.name, name, self.opts.case_sensitive(),
+                                                 self.opts.iocharset);
         }
         crate::name::msdos::eq(entry.name.as_bytes(), name.as_bytes(), &self.opts.short_rules())
     }

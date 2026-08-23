@@ -17,9 +17,6 @@ use crate::name::msdos::NameCheck;
 
 use super::values::{Errors, Nfs, Options};
 
-/// The charset long names are exchanged in on this build.
-const IOCHARSET: &str = "utf8";
-
 /// Render `o`. # C: O(number of options)
 pub fn show(o: &Options) -> String {
     let mut s = String::new();
@@ -34,7 +31,7 @@ pub fn show(o: &Options) -> String {
     }
     s.push_str(&format!(",codepage={}", o.codepage.number));
     if o.long_names {
-        s.push_str(&format!(",iocharset={IOCHARSET}"));
+        s.push_str(&format!(",iocharset={}", o.iocharset.name()));
         s.push_str(shortname(o.shortname));
     }
     if o.check != NameCheck::Normal { s.push_str(check(o.check)); }
