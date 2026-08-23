@@ -25,7 +25,7 @@ pub mod fixture;
 
 pub use crate::avc::{AvDecision, AVD_FLAGS_NEVERAUDIT, AVD_FLAGS_PERMISSIVE};
 
-pub use av::{compute_av, compute_av_user, MAX_BOUNDS_DEPTH};
+pub use av::{compute_av, compute_av_user, compute_xperm, MAX_BOUNDS_DEPTH};
 pub use constraint::constraint_eval;
 pub use transition::{change_sid, change_sid_user, compute_sid, is_socket_class, member_sid,
                      member_sid_user, transition_sid, transition_sid_user, ClassValue,

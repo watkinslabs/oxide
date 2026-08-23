@@ -29,6 +29,15 @@ pub fn has_perm(ssid: Sid, tsid: Sid, class: u16, requested: u32) -> Result<(), 
     if verdict.allowed { Ok(()) } else { Err(EACCES) }
 }
 
+/// Check one ioctl/netlink extended permission after its base permission.
+pub fn has_xperm(ssid: Sid, tsid: Sid, class: u16, base_perm: u32,
+                 driver: u8, xperm: u8) -> Result<(), i64> {
+    let Some(verdict) = crate::with(|s| s.has_xperm(ssid, tsid, class, base_perm, driver, xperm))
+        else { return Ok(()); };
+    if verdict.audit { report(ssid, tsid, class, &verdict); }
+    if verdict.allowed { Ok(()) } else { Err(EACCES) }
+}
+
 /// Ask without reporting, for a caller that will report the denial itself
 /// with more context than this layer has. # C: O(1) cached
 pub fn has_perm_noaudit(ssid: Sid, tsid: Sid, class: u16, requested: u32) -> Verdict {

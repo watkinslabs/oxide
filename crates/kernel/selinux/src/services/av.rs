@@ -10,7 +10,9 @@
 
 use crate::avc::{AvDecision, AVD_FLAGS_NEVERAUDIT, AVD_FLAGS_PERMISSIVE};
 use crate::avtab::{Avtab, Key, AVTAB_ALLOWED, AVTAB_AUDITALLOW, AVTAB_AUDITDENY, AVTAB_AV,
-                   AVTAB_ENABLED, AVTAB_XPERMS};
+                   AVTAB_ENABLED, AVTAB_XPERMS, AVTAB_XPERMS_ALLOWED,
+                   AVTAB_XPERMS_AUDITALLOW, AVTAB_XPERMS_DONTAUDIT,
+                   AVTAB_XPERMS_IOCTLFUNCTION};
 use crate::context::{Context, ValidContext};
 use crate::mapping::Mapping;
 use crate::policydb::Policydb;
@@ -26,6 +28,16 @@ pub const MAX_BOUNDS_DEPTH: u32 = 4;
 
 /// Every permission granted; the value a permissive domain answers with.
 const ALL_PERMS: u32 = u32::MAX;
+
+/// One extended-permission result. `None` means this policy has no xperm rule
+/// for the requested driver, so the caller must use the ordinary permission.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct XpermDecision {
+    pub selected: bool,
+    pub allowed: bool,
+    pub auditallow: bool,
+    pub auditdeny: bool,
+}
 
 /// Accumulated verdict in POLICY bit numbering.
 struct Vector {
@@ -78,6 +90,36 @@ pub fn compute_av_user(db: &Policydb, sidtab: &Sidtab,
     avd.auditallow = v.auditallow;
     avd.auditdeny = v.auditdeny;
     finish_audit(avd)
+}
+
+/// Resolve one ioctl/netlink extended permission from the policy's xperm
+/// bitmaps. The base permission is deliberately checked by the caller through
+/// the normal AVC path; xperms refine that grant, exactly as in Linux.
+pub fn compute_xperm(db: &Policydb, map: &Mapping, sidtab: &Sidtab,
+                     ssid: Sid, tsid: Sid, kernel_class: u16,
+                     driver: u8, xperm: u8, seqno: u32) -> Option<XpermDecision> {
+    let (scontext, tcontext) = {
+        let mut ignored = AvDecision::init(seqno);
+        admit(db, sidtab, ssid, tsid, &mut ignored)?
+    };
+    let policy_class = map.policy_class(kernel_class)?;
+    let (sattrs, tattrs) = (db.type_attrs(scontext.ty)?, db.type_attrs(tcontext.ty)?);
+    let mut result = XpermDecision {
+        selected: false, allowed: false, auditallow: false, auditdeny: true,
+    };
+    for source in sattrs.iter() {
+        for target in tattrs.iter() {
+            let key = Key {
+                source_type: (source + 1) as u16,
+                target_type: (target + 1) as u16,
+                target_class: policy_class as u16,
+                specified: AVTAB_XPERMS,
+            };
+            accumulate_xperm(&db.te_avtab, &key, false, driver, xperm, &mut result);
+            accumulate_xperm(&db.te_cond_avtab, &key, true, driver, xperm, &mut result);
+        }
+    }
+    result.selected.then_some(result)
 }
 
 /// Resolve both operands and settle the source domain's blanket flags.
@@ -160,6 +202,32 @@ fn accumulate(table: &Avtab, key: &Key, conditional: bool, v: &mut Vector) {
             AVTAB_ALLOWED => v.allowed |= word,
             AVTAB_AUDITALLOW => v.auditallow |= word,
             AVTAB_AUDITDENY => v.auditdeny &= word,
+            _ => {}
+        }
+    }
+}
+
+fn accumulate_xperm(table: &Avtab, key: &Key, conditional: bool,
+                    driver: u8, xperm: u8, result: &mut XpermDecision) {
+    for rule in table.search(key) {
+        if conditional && rule.key.specified & AVTAB_ENABLED == 0 { continue; }
+        let Some(xperms) = rule.datum.xperms() else { continue };
+        let applies = match xperms.specified {
+            AVTAB_XPERMS_IOCTLFUNCTION => xperms.driver == driver,
+            // A driver rule grants the complete 256-function range when its
+            // driver bit is selected.
+            crate::avtab::AVTAB_XPERMS_IOCTLDRIVER => xperms.get(driver),
+            _ => false,
+        };
+        if !applies { continue; }
+        result.selected = true;
+        match rule.key.kind() {
+            AVTAB_XPERMS_ALLOWED => {
+                result.allowed |= xperms.specified == crate::avtab::AVTAB_XPERMS_IOCTLDRIVER
+                    || xperms.get(xperm);
+            }
+            AVTAB_XPERMS_AUDITALLOW => result.auditallow = true,
+            AVTAB_XPERMS_DONTAUDIT => result.auditdeny = false,
             _ => {}
         }
     }

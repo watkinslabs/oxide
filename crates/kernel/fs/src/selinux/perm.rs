@@ -59,6 +59,15 @@ fn file_permission(inode: &InodeRef, permission: &'static str) -> KResult<()> {
         .map_err(|_| VfsError::Eacces)
 }
 
+fn file_ioctl_xperm(inode: &InodeRef, cmd: u32) -> KResult<()> {
+    if !selinux_runtime::active() { return Ok(()) }
+    let Some(isid) = super::label::inode_sid(inode) else { return Ok(()) };
+    let Some(class) = super::label::inode_security_class(inode) else { return Ok(()) };
+    let Some(ioctl) = selinux::uapi::classmap::perm_bit(class, "ioctl") else { return Ok(()) };
+    selinux_runtime::check::has_xperm(selinux_runtime::task::current_sid(), isid, class,
+        ioctl, (cmd >> 8) as u8, cmd as u8).map_err(|_| VfsError::Eacces)
+}
+
 pub fn file_ioctl(inode: &InodeRef, cmd: u32) -> KResult<()> {
     // These command values are the stable UAPI values used by Linux's
     // selinux_file_ioctl() dispatch. They intentionally select the object
@@ -81,7 +90,7 @@ pub fn file_ioctl(inode: &InodeRef, cmd: u32) -> KResult<()> {
         // Linux's hook passes zero here: sys_ioctl() owns the actual
         // FIONBIO/FIOASYNC state transition.
         FIONBIO | FIOASYNC => Ok(()),
-        _ => file_permission(inode, "ioctl"),
+        _ => file_ioctl_xperm(inode, cmd),
     }
 }
 
