@@ -173,6 +173,7 @@ fn socket_class_name(class: security::network::SocketClass, extended: bool) -> &
         SocketClass::UnixStream => "unix_stream_socket",
         SocketClass::UnixDgram => "unix_dgram_socket",
         SocketClass::Netlink => "netlink_socket",
+        SocketClass::Vsock => "vsock_socket",
     }
 }
 

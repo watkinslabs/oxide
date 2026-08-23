@@ -23,13 +23,9 @@ pub fn shutdown_raw(sock: &InetSocket, how: u32) -> Result<(), NetError> {
 }
 
 fn check_shutdown_admission(sock: &InetSocket) -> Result<(), NetError> {
-    let context = security::network::Context::op(sock.net_ns(),
-        sock.family.load(core::sync::atomic::Ordering::Acquire), 0, 0,
-        security::network::Operation::Shutdown);
-    if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
-        return Err(NetError::Eacces);
-    }
-    Ok(())
+    let object = crate::socket_security::inet(sock);
+    crate::security_admission::check_socket(object.namespace, object.family,
+        security::network::Operation::Shutdown, object.target_sid, object.target_class)
 }
 
 fn shutdown_admitted(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError> {

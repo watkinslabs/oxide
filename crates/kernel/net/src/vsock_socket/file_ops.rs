@@ -48,8 +48,9 @@ impl vfs::FileOps for VsockFileOps {
     }
     fn ioctl_int(&self, file: &vfs::File, cmd: vfs::IoctlIntCmd) -> vfs::KResult<u32> {
         let socket = file.inode().private::<VsockSocket>().ok_or(vfs::VfsError::Einval)?;
-        crate::security_admission::check(socket.net_ns(), crate::socket_args::AF_VSOCK as u16,
-            security::network::Operation::Ioctl).map_err(|_| vfs::VfsError::Eacces)?;
+        crate::security_admission::check_socket(socket.net_ns(), crate::socket_args::AF_VSOCK as u16,
+            security::network::Operation::Ioctl, socket.security_label(), socket.security_class())
+            .map_err(|_| vfs::VfsError::Eacces)?;
         Ok(match cmd {
             vfs::IoctlIntCmd::Fionread => socket.conn().map(|conn| {
                 if socket.socket_type() == super::VsockSocketType::Seqpacket {

@@ -54,7 +54,7 @@ pub struct SocketLabelOps {
 /// Security class fixed by a socket's completed family/type/protocol admission.
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum SocketClass { Tcp, Udp, RawIp, Icmp, Packet, UnixStream, UnixDgram, Netlink }
+pub enum SocketClass { Tcp, Udp, RawIp, Icmp, Packet, UnixStream, UnixDgram, Netlink, Vsock }
 
 static SOCKET_LABEL: Spinlock<Option<SocketLabelOps>, Namespace> = Spinlock::new(None);
 

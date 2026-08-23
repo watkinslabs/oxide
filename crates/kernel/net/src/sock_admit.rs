@@ -34,9 +34,29 @@ pub fn admit_bind_in(namespace: u64, family: u16) -> Result<AddrAdmission, NetEr
     admit(namespace, family, security::network::Operation::Bind)
 }
 
+/// Apply bind admission while retaining the concrete socket object for the
+/// SELinux `socket:bind` hook. # C: O(1)
+pub fn admit_bind_socket(namespace: u64, family: u16, sid: u32, class: &'static str)
+    -> Result<AddrAdmission, NetError>
+{
+    crate::security_admission::check_socket(namespace, family,
+        security::network::Operation::Bind, sid, class)?;
+    Ok(AddrAdmission(()))
+}
+
 /// Apply the generic connect security decision. # C: O(1)
 pub fn admit_connect_in(namespace: u64, family: u16) -> Result<AddrAdmission, NetError> {
     admit(namespace, family, security::network::Operation::Connect)
+}
+
+/// Apply connect admission while retaining the concrete socket object for the
+/// SELinux `socket:connect` hook. # C: O(1)
+pub fn admit_connect_socket(namespace: u64, family: u16, sid: u32, class: &'static str)
+    -> Result<AddrAdmission, NetError>
+{
+    crate::security_admission::check_socket(namespace, family,
+        security::network::Operation::Connect, sid, class)?;
+    Ok(AddrAdmission(()))
 }
 
 /// Apply SELinux's address-object permission after the generic socket check.

@@ -23,8 +23,8 @@ impl VsockSocket {
     }
 
     fn check_shutdown_admission(&self) -> Result<(), crate::NetError> {
-        crate::security_admission::check(self.net_ns(), crate::socket_args::AF_VSOCK as u16,
-            security::network::Operation::Shutdown)
+        crate::security_admission::check_socket(self.net_ns(), crate::socket_args::AF_VSOCK as u16,
+            security::network::Operation::Shutdown, self.security_label(), self.security_class())
     }
 
     fn shutdown_admitted(&self, how: crate::uapi::ShutdownHow) -> Result<(), crate::NetError> {
