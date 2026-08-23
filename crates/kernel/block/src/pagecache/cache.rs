@@ -341,6 +341,17 @@ impl PageCache {
         out
     }
 
+    /// Mark resident dirty pages in `[lo, hi]` clean after their bytes were
+    /// included in one larger filesystem writeback object.
+    /// # C: O(N selected dirty pages)
+    pub fn clean_range(&self, inode: InodeId, lo: u64, hi: u64) -> usize {
+        let Some(map) = self.mapping(inode) else { return 0; };
+        let n = map.clean_range(lo, hi);
+        if n != 0 { global::account_dirty(-(n as isize)); }
+        if map.nr_dirty() == 0 { map.dirtied_when.store(0, Ordering::Release); }
+        n
+    }
+
     /// Write back ONE named page through a sink the caller supplies, leaving
     /// it resident and CLEAN.
     ///

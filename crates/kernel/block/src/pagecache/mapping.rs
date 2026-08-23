@@ -254,6 +254,22 @@ impl Mapping {
         requeued
     }
 
+    /// Complete resident dirty pages whose bytes were included in a larger
+    /// writeback object. The caller holds the inode's filesystem ownership and
+    /// has already written the object containing every selected page; no page
+    /// is under writeback here, so removing it from the dirty set is the same
+    /// atomic state transition as a successful ordinary completion.
+    /// # C: O(N selected dirty pages)
+    pub(super) fn clean_range(&self, lo: u64, hi: u64) -> usize {
+        let mut g = self.st.lock();
+        let indexes: Vec<u64> = g.dirty.range(lo..=hi).copied().collect();
+        for &index in &indexes {
+            g.dirty.remove(&index);
+            if let Some(page) = g.tree.get(index) { page.clear_flags(PageFlags::DIRTY); }
+        }
+        indexes.len()
+    }
+
     /// Indexes of every resident page in `[lo, hi)`. # C: O(pages in range)
     pub(super) fn keys_in_range(&self, lo: u64, hi: u64) -> Vec<u64> {
         self.st.lock().tree.keys_in_range(lo, hi)

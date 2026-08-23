@@ -14,6 +14,7 @@
 
 use alloc::vec;
 use alloc::vec::Vec;
+use alloc::sync::Arc;
 
 use sectors::MemImage;
 use syscall::errno::Errno;
@@ -211,6 +212,32 @@ fn a_cluster_is_placed_once_however_many_of_its_pages_ask() {
     // The file's own blocks, the inode's block, and nothing else: a cluster
     // placed more than once leaves the extra runs live in the segment table.
     assert!(live <= image as u64 + 2, "the segment table holds {live} blocks for {a:?}");
+}
+
+#[test]
+fn a_bounded_writeback_completes_the_whole_cluster_once() {
+    // The generic cache may hand the compressed owner one page at a time. The
+    // owner writes the whole cluster, so the pages it did not receive must be
+    // completed by that same object rather than remaining dirty for a second
+    // placement.
+    let (mut v, ino) = with_compressed();
+    v.write_file(ino, 0, &patterned(CS * BLKSIZE)).unwrap();
+    let cache = Arc::clone(&v.data_cache);
+    let mut first = None;
+    let (_, result) = cache.flush(ino, 1, &mut |_ino, pages, results| {
+        v.writeback_data_pages(ino, pages, results, &mut first);
+    });
+    assert!(result.is_ok(), "bounded placement failed: {result:?}");
+    assert!(first.is_none(), "bounded placement reported {first:?}");
+    assert_eq!(v.dirty_data_pages(ino), 0, "the materialized cluster stayed dirty");
+    let before = addrs(&v, ino, 0);
+    let valid = v.valid_block_count;
+    let (_, second) = cache.flush(ino, 1, &mut |_ino, pages, results| {
+        v.writeback_data_pages(ino, pages, results, &mut None);
+    });
+    assert!(second.is_ok());
+    assert_eq!(addrs(&v, ino, 0), before, "the second bounded pass placed the cluster again");
+    assert_eq!(v.valid_block_count, valid, "the second pass allocated blocks");
 }
 
 #[test]

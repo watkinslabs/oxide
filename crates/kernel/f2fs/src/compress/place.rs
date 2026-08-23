@@ -83,6 +83,10 @@ impl<S: SectorSource> Volume<S> {
                 continue;
             }
             let outcome = raw.and_then(|_| self.place_cluster(ino, &g, head));
+            if outcome.is_ok() {
+                let last = head.saturating_add(g.blocks().saturating_sub(1) as u64);
+                self.data_cache.clean_range(ino, head, last);
+            }
             if let Err(e) = outcome {
                 if first_err.is_none() { *first_err = Some(e); }
             }
