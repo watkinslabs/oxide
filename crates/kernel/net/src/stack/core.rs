@@ -113,6 +113,23 @@ impl NetStack {
         true
     }
 
+    /// Return the id of the live entry selected by a tuple. # C: O(bucket length)
+    pub fn conntrack_id_tuple_in(&self, net_ns: u64, tuple: ::conntrack::Tuple)
+        -> Option<u64> {
+        let ct = self.conntrack_existing_in(net_ns)?;
+        let now = crate::stack::net_now_ns() / 1_000_000_000;
+        Some(ct.table.lookup(&tuple, now)?.conn.id)
+    }
+
+    /// Create one confirmed userspace conntrack entry from its tuple. # C: O(bucket length)
+    pub fn conntrack_create_tuple_in(&self, net_ns: u64, tuple: ::conntrack::Tuple,
+                                     reply: Option<::conntrack::Tuple>, timeout: u32,
+                                     status: u32, mark: Option<u32>) -> Option<u64> {
+        let ct = self.conntrack_in(net_ns);
+        ct.create_tuple(tuple, reply, crate::stack::net_now_ns() / 1_000_000_000,
+                        timeout, status, mark)
+    }
+
     /// Update one live conntrack entry through its owning namespace. # C: O(N)
     pub fn conntrack_update_in(&self, net_ns: u64, id: u64, timeout: Option<u32>,
                                status: Option<u32>, mark: Option<(u32, Option<u32>)>) -> bool {

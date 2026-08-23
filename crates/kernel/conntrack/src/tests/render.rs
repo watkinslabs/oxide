@@ -158,3 +158,16 @@ fn ctnetlink_owner_updates_and_deletes_the_live_entry() {
     assert!(ct.table.snapshot(0).is_empty());
     assert!(!ct.delete_id(c.id, 0));
 }
+
+#[test]
+fn ctnetlink_creator_confirms_a_tuple_with_timeout_status_and_mark() {
+    let ct = CtNet::new(0, 7);
+    let tuple = v4_udp([192, 0, 2, 1], 40000, [198, 51, 100, 2], 53);
+    let id = ct.create_tuple(tuple, None, 0, 30, IPS_ASSURED, Some(0x44))
+        .expect("userspace tuple is publishable");
+    let found = ct.table.find_id(id, 0).expect("created flow is live");
+    assert_eq!(found.orig, tuple);
+    assert_eq!(found.expires_in(0), 30);
+    assert_eq!(found.mark.load(core::sync::atomic::Ordering::Relaxed), 0x44);
+    assert_ne!(found.status() & IPS_CONFIRMED, 0);
+}

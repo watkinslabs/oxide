@@ -178,6 +178,44 @@ fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Ve
             return nlmsg_ack(req, if ok { 0 } else { -2 });
         }
     }
+    if cmd == conntrack::uapi::IPCTNL_MSG_CT_NEW {
+        if let Some(raw) = find_bytes_attr(attrs, ::conntrack::uapi::CTA_TUPLE_ORIG) {
+            let Some(tuple) = parse_ct_tuple(raw, nfg.nfgen_family,
+                find_be16_attr(attrs, ::conntrack::uapi::CTA_ZONE).unwrap_or(0)) else {
+                return nlmsg_ack(req, -22);
+            };
+            let existing = ::net::global_stack().conntrack_id_tuple_in(namespace, tuple);
+            if let Some(id) = existing {
+                if req.nlmsg_flags & flags::NLM_F_EXCL != 0 {
+                    return nlmsg_ack(req, -17);
+                }
+                let mark = find_u32_attr(attrs, ::conntrack::uapi::CTA_MARK).map(|value| {
+                    (value, find_u32_attr(attrs, ::conntrack::uapi::CTA_MARK_MASK))
+                });
+                let ok = ::net::global_stack().conntrack_update_in(
+                    namespace, id, find_u32_attr(attrs, ::conntrack::uapi::CTA_TIMEOUT),
+                    find_u32_attr(attrs, ::conntrack::uapi::CTA_STATUS), mark);
+                return nlmsg_ack(req, if ok { 0 } else { -2 });
+            }
+            if req.nlmsg_flags & flags::NLM_F_CREATE == 0 {
+                return nlmsg_ack(req, -2);
+            }
+            let Some(timeout) = find_u32_attr(attrs, ::conntrack::uapi::CTA_TIMEOUT) else {
+                return nlmsg_ack(req, -22);
+            };
+            let reply = find_bytes_attr(attrs, ::conntrack::uapi::CTA_TUPLE_REPLY)
+                .and_then(|raw| parse_ct_tuple(raw, nfg.nfgen_family, tuple.zone));
+            if find_bytes_attr(attrs, ::conntrack::uapi::CTA_TUPLE_REPLY).is_some()
+                && reply.is_none() {
+                return nlmsg_ack(req, -22);
+            }
+            let id = ::net::global_stack().conntrack_create_tuple_in(
+                namespace, tuple, reply, timeout,
+                find_u32_attr(attrs, ::conntrack::uapi::CTA_STATUS).unwrap_or(0),
+                find_u32_attr(attrs, ::conntrack::uapi::CTA_MARK));
+            return nlmsg_ack(req, if id.is_some() { 0 } else { -28 });
+        }
+    }
     let Some(id) = find_u32_attr(attrs, conntrack::uapi::CTA_ID) else {
         return nlmsg_ack(req, -22 /* EINVAL */);
     };

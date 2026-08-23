@@ -224,6 +224,29 @@ impl CtNet {
         true
     }
 
+    /// Create and immediately confirm one userspace-supplied tuple. The
+    /// ctnetlink creator owns a confirmed entry, unlike packet tracking which
+    /// keeps a new entry pending until the packet hooks accept it. # C: O(bucket length)
+    pub fn create_tuple(&self, tuple: Tuple, reply: Option<Tuple>, now: u64,
+                        timeout: u32, status: u32, mark: Option<u32>) -> Option<u64> {
+        let reply = reply.or_else(|| tuple.invert())?;
+        let conn = Arc::new(Conn::new(self.table.alloc_id(), tuple, reply, self.net_ns));
+        conn.set_status_bits(crate::ctnetlink::writable_status(status));
+        if conn.status() & IPS_FIXED_TIMEOUT != 0 {
+            conn.timeout.store(now + timeout as u64, core::sync::atomic::Ordering::Release);
+        } else {
+            conn.refresh(now, timeout);
+        }
+        if let Some(mark) = mark { conn.mark.store(mark, core::sync::atomic::Ordering::Release); }
+        self.table.add_pending(conn.clone());
+        if !self.table.confirm(&conn, now) {
+            let _ = self.table.kill(&conn);
+            return None;
+        }
+        self.events.post(conn.id, IPCT_NEW);
+        Some(conn.id)
+    }
+
     /// Retire expired entries and expectations. # C: O(N)
     pub fn gc(&self, now: u64) -> usize { self.table.gc(now) }
 
