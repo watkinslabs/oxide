@@ -51,6 +51,10 @@ pub struct FlowtableConfig {
     pub devices: Vec<FlowtableDevice>,
     pub flags: u32,
     pub handle: u64,
+    /// Exact-name selectors are netdevice hooks, so they follow the device
+    /// identity across a rename. `None` is retained for callers that build a
+    /// configuration before the named device is published.
+    exact_devices: Vec<Option<NetIfaceId>>,
 }
 
 impl NetStack {
@@ -65,9 +69,14 @@ impl NetStack {
         let mut handle = self.next_flowtable_handle.lock();
         let assigned = *handle;
         *handle = handle.wrapping_add(1).max(1);
+        let exact_devices = devices.iter().map(|device| match device {
+            FlowtableDevice::Name(name) => self.ifaces.lookup_name_in_ns(name, net_ns)
+                .map(|(iface, _)| iface),
+            FlowtableDevice::Prefix(_) => None,
+        }).collect();
         flowtables.insert(key, FlowtableConfig {
             family, table: String::from(table), name: String::from(name), hook_num, priority,
-            devices, flags, handle: assigned,
+            devices, flags, handle: assigned, exact_devices,
         });
         Some(assigned)
     }
@@ -130,9 +139,10 @@ impl NetStack {
     fn flowtable_applies(&self, net_ns: u64, family: u8, nft_table: &str, name: &str,
                          iface: NetIfaceId) -> bool {
         let Some(config) = self.flowtable_config(net_ns, family, nft_table, name) else { return false; };
-        !config.devices.is_empty() && config.devices.iter().any(|device| match device {
-            FlowtableDevice::Name(name) => self.ifaces.lookup_name_in_ns(name, net_ns)
-                .is_some_and(|(id, _)| id == iface),
+        !config.devices.is_empty() && config.devices.iter().enumerate().any(|(index, device)| match device {
+            FlowtableDevice::Name(name) => config.exact_devices.get(index).copied().flatten()
+                .map_or_else(|| self.ifaces.lookup_name_in_ns(name, net_ns)
+                    .is_some_and(|(id, _)| id == iface), |id| id == iface),
             FlowtableDevice::Prefix(prefix) => self.ifaces.lookup_in_ns(iface, net_ns)
                 .is_some_and(|dev| dev.name().starts_with(prefix)),
         })
@@ -418,6 +428,21 @@ mod tests {
             ("filter", "ft", 0, -256, handle));
         assert!(stack.unregister_flowtable_in(7, 2, "filter", "ft"));
         assert_eq!(stack.flowtables_snapshot_in(7, 2).len(), 1);
+    }
+
+    #[test]
+    fn exact_flowtable_device_follows_interface_rename() {
+        let _domain = crate::hosted_fixture::init_net_domain();
+        let stack = NetStack::new();
+        let (iface, _) = stack.register_loopback();
+        stack.register_flowtable_in(0, NFPROTO_IPV4, "filter", "ft", 0, -256,
+            alloc::vec![FlowtableDevice::Name(String::from("lo"))], 0)
+            .expect("flowtable registration");
+        assert!(stack.flowtable_applies(0, NFPROTO_IPV4, "filter", "ft", iface));
+        let rtnl = stack.rtnl_lock();
+        assert_eq!(stack.ifaces.rename_in_ns(&rtnl, iface, 0, "renamed0"),
+            Ok(String::from("lo")));
+        assert!(stack.flowtable_applies(0, NFPROTO_IPV4, "filter", "ft", iface));
     }
 
     #[test]
