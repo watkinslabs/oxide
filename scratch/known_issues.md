@@ -20,10 +20,10 @@ relocated.
 > TCP-option, and NFLOG effects. Software flowtable ownership now runs from
 > the canonical NFPROTO_NETDEV ingress walk with per-device selector lifecycle,
 > priority interleaving, use accounting, and device-down/removal cleanup. The
-> synproxy cookie/handshake packet path, conntrack sequence adjustment, and
-> negotiated TCP option translation are live, but synproxy still differs in
-> state-machine retransmission parity. The remaining open B2621 context row
-> records the still-absent production xfrm/tunnel/osf/object sources; the
+> synproxy cookie/handshake packet path, conntrack sequence adjustment,
+> negotiated TCP option translation, and cookie retransmission state path are
+> live. The remaining open B2621 context row records the still-absent
+> production xfrm/tunnel/osf/object sources; the
 > the context audit and fixed action/conntrack/NAT claims are reconciled in
 > `scratch/fixed-issues.md`.
 
