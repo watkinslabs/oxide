@@ -23,9 +23,14 @@ use alloc::vec::Vec;
 use vfs::fs::FileSystem;
 use vfs::FileType;
 
+use crate::compress::algo::COMPRESS_LZ4;
 use crate::mount::F2fs;
+use crate::mode::S_IFREG;
 use crate::opts::Options;
-use crate::uapi::BLKSIZE;
+use crate::test_image::ROOT_INO;
+use crate::uapi::{le32, BLKSIZE, I_COMPRESS_ALGORITHM, I_FLAGS, I_LOG_CLUSTER_SIZE};
+use crate::volume::dnode::put32;
+use crate::volume::NewInode;
 
 const FILE_INO: u32 = 11;
 const HOLE_INO: u32 = 12;
@@ -98,6 +103,7 @@ fn drain(dev: &Disk) -> Vec<u8> {
 fn mounted() -> (Arc<F2fs>, Disk) {
     boot_hosted_frames();
     let mut b = crate::test_image::with_root();
+    b.feature |= crate::flags::FEATURE_COMPRESSION;
     let data: Vec<(u64, Vec<u8>)> = (0..2u64).map(|i| (i, filled(0xA0 + i as u8))).collect();
     crate::test_image::nodes::add_sparse_file(&mut b, FILE_INO, 2 * BLKSIZE as u64, &data);
     crate::test_image::nodes::add_sparse_file(&mut b, HOLE_INO, 2 * BLKSIZE as u64, &[]);
@@ -105,6 +111,24 @@ fn mounted() -> (Arc<F2fs>, Disk) {
     let fs = F2fs::open_with(dev.clone(), "/dev/fake", true, Options::defaults()).expect("mount");
     fs.volume.lock().set_iostat_enabled(true);
     (fs, dev)
+}
+
+/// Add and fill one compressed cluster after the mount, so the mapping test
+/// exercises the same address-space adapter a mounted compressed inode uses.
+fn compressed_file(fs: &Arc<F2fs>) -> u32 {
+    let mut v = fs.volume.lock();
+    let spec = NewInode { mode: S_IFREG | 0o644, uid: 0, gid: 0, rdev: 0,
+                          now: (1_800_000_000, 13) };
+    let ino = v.create(ROOT_INO, b"compressed", &spec, None).expect("create compressed file");
+    v.stamp_inode(ino, |block| {
+        let flags = le32(block, I_FLAGS).unwrap_or(0) | crate::flags::F2FS_COMPR_FL;
+        put32(block, I_FLAGS, flags);
+        block[I_COMPRESS_ALGORITHM] = COMPRESS_LZ4;
+        block[I_LOG_CLUSTER_SIZE] = 2;
+    }).expect("stamp compression");
+    v.write_compressed(ino, 0, &vec![0x6B; 4 * BLKSIZE]).expect("write compressed cluster");
+    v.sync_data().expect("place compressed cluster");
+    ino
 }
 
 fn remount(dev: &Disk) -> Arc<F2fs> {
@@ -190,6 +214,28 @@ fn a_store_through_the_mapping_survives_a_flush_and_a_remount() {
     let fresh = remount(&dev);
     let whole = fresh.read_all(FILE_INO).expect("read after remount");
     assert_eq!(&whole[..pattern.len()], &pattern[..], "the mapped store reached the medium");
+}
+
+/// A compressed cluster is the ordinary page-cache mapping, so a shared
+/// writable fault can dirty one of its unpacked pages and the cluster writer
+/// must preserve the other pages when it replaces the image.
+#[test]
+fn a_shared_writable_mapping_can_modify_a_compressed_cluster() {
+    let (fs, dev) = mounted();
+    let ino = compressed_file(&fs);
+    let patch = *b"COMPRESSED-MAPPED";
+    {
+        let m = mapping_of(&fs, ino);
+        let pa = fault_write(&m, 0);
+        store_through_frame(pa, 0, &patch);
+        m.writeback().expect("compressed mapped writeback");
+        m.sync_backing().expect("compressed mapped durability");
+    }
+    let fresh = remount(&dev);
+    let whole = fresh.read_all(ino).expect("read compressed mapped file after remount");
+    assert_eq!(&whole[..patch.len()], &patch[..]);
+    assert!(whole[patch.len()..].iter().all(|&b| b == 0x6B),
+            "rewriting one unpacked page preserved the rest of its cluster");
 }
 
 /// The same for a page the file had no block for. A shared-writable fault is

@@ -78,10 +78,9 @@ impl AddressSpaceOps for F2fsMapping {
     /// is what keeps the frame alive for exactly as long as either this mapping
     /// or a mapper still wants it.
     ///
-    /// `None` where this file's pages cannot be mapped — a compressed file,
-    /// whose unpacked cluster is not held here at all. That is the honest
-    /// answer; the write fault refuses rather than accepting a store it cannot
-    /// keep.
+    /// `None` only when the mapping could not obtain a frame. Compressed
+    /// clusters are unpacked into this same canonical mapping, and their
+    /// cluster writer replaces the materialized range atomically on writeback.
     /// # Ctx: process # Sleeps: y # C: O(1 block read) on a miss
     fn shared_frame(&self, off: u64) -> KResult<Option<SharedFrame>> {
         let pa = self.fs.volume.lock().mapped_frame(self.ino, Self::index(off));
