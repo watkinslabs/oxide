@@ -5236,3 +5236,4 @@ against the row's own evidence.
 - Source commit: `fab0dca9f`
 - Fix: f2fs now caches clean NAT table entries with an LRU, invalidates them on NAT mutation/checkpoint adoption, and includes them in memory accounting and filesystem reclaim.
 - Verification: `cargo test -p f2fs` (3719 passed).
+| FIXED | MISSING | med | **SELinux mount contexts are now one stored superblock decision.** The installed mount security owner consumes `context=`, `fscontext=`, `defcontext=`, and `rootcontext=`, resolves them through the live policy, stores the result in `SuperBlock::s_security`, and inode labeling reads that owner; rootcontext is applied only to the mount root. | Linux `selinux_add_opt`/`selinux_set_mnt_opts`; `vfs::FsContextSecurity`, `SuperBlock::s_security`, and `fs::selinux::mount`; selinux-runtime 56/56, VFS security 6/6, SELinux label 4/4. | B2621-selinux-mount-context |
