@@ -7,7 +7,7 @@ use alloc::string::{String, ToString};
 use selinux_runtime::inode::{existing_inode_sid, new_inode_sid, MountOptions, SuperblockSecurity};
 use selinux_runtime::label::{inode_class, XATTR_NAME_SELINUX};
 
-use vfs::InodeRef;
+use vfs::{Dentry, InodeRef};
 
 /// Filesystem type name of the inode's mount. # C: O(1)
 fn fstype(inode: &InodeRef) -> Option<String> {
@@ -49,15 +49,33 @@ pub fn inode_sid(inode: &InodeRef) -> Option<u32> {
     let superblock = inode.i_sb()?;
     let fstype = fstype(inode)?;
     let class = inode_class(inode.i_mode() as u32)?;
+    let dentry = superblock.i_aliases(inode.ino()).into_iter().next();
+    label_at(inode, dentry.as_deref(), seq, &fstype, &superblock, class)
+}
+
+/// Resolve an inode with the dentry that supplied its genfs path. # C: O(paths + categories)
+pub fn label_instantiated(dentry: &Dentry, inode: &InodeRef) {
+    if !selinux_runtime::active() { return; }
+    let Some(superblock) = inode.i_sb() else { return };
+    let Some(fstype) = fstype(inode) else { return };
+    let Some(class) = inode_class(inode.i_mode() as u32) else { return };
+    let _ = label_at(inode, Some(dentry), selinux_runtime::policy_seq(), &fstype,
+        &superblock, class);
+}
+
+fn label_at(inode: &InodeRef, dentry: Option<&Dentry>, seq: u32, fstype: &str,
+    superblock: &alloc::sync::Arc<vfs::SuperBlock>, class: u16) -> Option<u32> {
+    if inode.security_sid_at(seq).is_some() { return inode.security_sid_at(seq); }
     let written = written_label(inode);
     let task = selinux_runtime::task::current_sid();
+    let path = dentry.map(|d| d.dentry_path(superblock.s_root().as_ref()));
     let sid = selinux_runtime::with(|s| {
         let sb = superblock.security_as::<SuperblockSecurity>()
-            .unwrap_or_else(|| alloc::sync::Arc::new(superblock_security(s, &fstype)));
+            .unwrap_or_else(|| alloc::sync::Arc::new(superblock_security(s, fstype)));
         if superblock.s_root_inode().is_some_and(|root| alloc::sync::Arc::ptr_eq(&root, inode)) {
             if let Some(root_sid) = sb.root_sid { return root_sid; }
         }
-        existing_inode_sid(s, &sb, task, class, written.as_deref(), None)
+        existing_inode_sid(s, &sb, task, class, written.as_deref(), path.as_deref())
     })?;
     inode.set_security_sid_at(sid, seq);
     Some(sid)

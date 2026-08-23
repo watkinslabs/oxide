@@ -51,6 +51,7 @@ pub fn d_make_root_ops(inode: InodeRef, sb: &Arc<SuperBlock>, d_op: Option<&'sta
     sb.set_s_root(root.clone());
     if let Some(s) = inode.i_sb() { s.i_add_alias(&inode, &root); }
     root.grab_inode_hold(); // D3/D37: root dentry counts its inode hold
+    crate::namei::inode_instantiated(&root, &inode);
     root
 }
 
@@ -164,6 +165,7 @@ pub fn d_instantiate(dentry: &Arc<Dentry>, inode: InodeRef) {
     if let Some(sb) = inode.i_sb() { sb.i_add_alias(&inode, dentry); }
     dentry.set_inode(Some(inode));
     dentry.grab_inode_hold(); // D3/D37: positive dentry counts its inode hold
+    if let Some(inode) = dentry.inode() { crate::namei::inode_instantiated(dentry, &inode); }
 }
 
 /// `d_alloc` + `d_instantiate` + hash-insert, race-safe: an existing

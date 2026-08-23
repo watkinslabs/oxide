@@ -22,6 +22,7 @@ pub fn inode_permission(inode: &InodeRef, mask: u32) -> KResult<()> {
 pub fn install() {
     vfs::set_inode_mac_hook(inode_permission);
     vfs::set_inode_create_hook(label_created);
+    vfs::set_inode_instantiated_hook(super::label::label_instantiated);
 }
 
 fn label_created(dir: &InodeRef, inode: &InodeRef, name: &str) {

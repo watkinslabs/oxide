@@ -24,7 +24,8 @@ use alloc::sync::Arc;
 use fs::xattr::{vfs_getxattr, XattrCred};
 use selinux::status::{BootConfig, Enforcing};
 use syscall::errno::Errno;
-use vfs::{default_file_ops, default_inode_ops, mk_mode, FileType, InodeBuilder, InodeRef};
+use vfs::{default_file_ops, default_inode_ops, d_add, d_make_root, mk_mode, FileType,
+          InodeBuilder, InodeRef, SuperBlock};
 
 /// The policy the composed image ships. Asserting against the real thing keeps
 /// this a statement about a system people boot, not about a fixture.
@@ -138,6 +139,45 @@ fn a_policy_generation_rejects_an_older_inode_sid() {
     selinux_runtime::with(|s| s.load_policy(&image).expect("policy reload"));
     let sid = fs::selinux::inode_sid(&inode).expect("the current policy resolves the inode");
     assert_ne!(sid, 0xdead_beef, "a prior policy generation must not survive");
+}
+
+#[test]
+fn a_genfs_inode_is_labelled_from_its_instantiated_dentry_path() {
+    if !policy_loaded() { return }
+    let Some(nested) = selinux_runtime::with(|s| {
+        let db = s.policy()?;
+        let entry = db.genfs.iter().find(|g| g.fstype == "proc")?;
+        entry.paths.iter().find(|p| entry.paths.iter().any(|q| {
+            q.path != p.path && p.path.starts_with(&q.path)
+        })).map(|p| p.path.clone())
+    }).flatten() else { return };
+    fs::selinux::install();
+    let sb = SuperBlock::new(Arc::new(NamedType("proc")), Arc::new(NoSuperOps),
+        TEST_MAGIC, TEST_DEV + 1, TEST_BLOCKSIZE, String::from("proc"), Arc::new(()));
+    let root = InodeBuilder::new(1, mk_mode(FileType::Directory, 0o555),
+        default_inode_ops(), default_file_ops()).build();
+    let root_d = d_make_root(root, &sb);
+    let mut parent = root_d;
+    let mut ino = 2;
+    for component in nested.split('/').filter(|part| !part.is_empty()) {
+        let mode = if component == nested.rsplit('/').next().unwrap() {
+            mk_mode(FileType::Regular, 0o444)
+        } else {
+            mk_mode(FileType::Directory, 0o555)
+        };
+        let child = InodeBuilder::new(ino, mode, default_inode_ops(), default_file_ops()).build();
+        parent = d_add(&parent, component, child);
+        ino += 1;
+    }
+    let inode = parent.inode().expect("the nested genfs dentry is positive");
+    let got = inode.security_sid().expect("instantiation resolves the genfs label");
+    let want = selinux_runtime::with(|s| {
+        let db = s.policy()?;
+        let class = selinux::uapi::classmap::class_by_name("file")?;
+        let text = selinux_runtime::inode::genfs_context(db, "proc", &nested, class)?;
+        s.context_to_sid(&text).ok()
+    }).flatten().expect("the nested policy context resolves");
+    assert_eq!(got, want, "genfs labeling must use the instantiated dentry path");
 }
 
 /// The `nolsm` fallback: a `security.*` name no module owns is the filesystem's

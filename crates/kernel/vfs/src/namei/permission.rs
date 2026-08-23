@@ -136,12 +136,17 @@ pub fn set_inode_mac_hook(hook: InodeMacHook) { *INODE_MAC_HOOK.lock() = Some(ho
 
 /// Label hook for a freshly materialised inode. # C: O(1)
 pub type InodeCreateHook = fn(&InodeRef, &InodeRef, &str);
+pub type InodeInstantiateHook = fn(&crate::dentry::Dentry, &InodeRef);
 
 static INODE_CREATE_HOOK: sync::Spinlock<Option<InodeCreateHook>, sync::Inode> =
+    sync::Spinlock::new(None);
+static INODE_INSTANTIATE_HOOK: sync::Spinlock<Option<InodeInstantiateHook>, sync::Inode> =
     sync::Spinlock::new(None);
 
 /// Install the create-time inode label hook. # C: O(1)
 pub fn set_inode_create_hook(hook: InodeCreateHook) { *INODE_CREATE_HOOK.lock() = Some(hook); }
+/// Install the hook that labels an inode with the dentry that publishes it. # C: O(1)
+pub fn set_inode_instantiated_hook(hook: InodeInstantiateHook) { *INODE_INSTANTIATE_HOOK.lock() = Some(hook); }
 
 /// Apply the installed create-time label decision, if any. # C: O(1)
 pub fn inode_created(dir: &InodeRef, inode: &InodeRef, name: &str) {
@@ -152,6 +157,11 @@ pub fn inode_created(dir: &InodeRef, inode: &InodeRef, name: &str) {
 /// Apply the installed hook after an operation that does not return its inode. # C: O(lookup)
 pub fn notify_inode_created(dir: &InodeRef, name: &str) {
     if let Ok(inode) = dir.lookup(name) { inode_created(dir, &inode, name); }
+}
+
+/// Notify the installed LSM after a positive dentry binds an inode. # C: O(1) + hook
+pub fn inode_instantiated(dentry: &crate::dentry::Dentry, inode: &InodeRef) {
+    if let Some(hook) = *INODE_INSTANTIATE_HOOK.lock() { hook(dentry, inode); }
 }
 
 /// Ask the installed module, or allow when none is installed. # C: O(1)
