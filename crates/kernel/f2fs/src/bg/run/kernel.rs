@@ -206,6 +206,12 @@ extern "C" fn ckpt_thread(arg: usize) -> ! {
         let Some(fs) = weak.upgrade() else { break };
         park_ckpt(&fs);
         if fs.bg().stopping() { break; }
+        // Linux applies ckpt_thread_ioprio to the merge task. The block layer
+        // stamps every request submitted by that task from this value, so the
+        // priority reaches the queue without a second f2fs-only flag path.
+        if let Some(task) = sched::live::current() {
+            task.set_ioprio(fs.bg().checkpoint_ioprio().packed());
+        }
         round::ckpt_pass(&fs);
     }
     // Anybody still enrolled is released rather than left parked: the mount is

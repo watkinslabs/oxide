@@ -13,7 +13,7 @@ use super::dir::TmpfsChildren;
 use vfs::dentry::casefold::{generic_ci_validate_strict_name, is_casefolded, names_eq,
     GENERIC_CI_DENTRY_OPS};
 use vfs::dentry::DentryOps;
-use vfs::{Inode, KResult, VfsError};
+use vfs::{Inode, InodeRef, KResult, VfsError};
 
 /// The key `kids` actually stores for `name`, or `None` when no child of this
 /// directory answers to it.

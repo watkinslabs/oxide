@@ -17,6 +17,7 @@ use sync::{Spinlock, TaskList};
 use crate::opts::{BackgroundGc, DiscardUnit};
 
 use super::ckpt::CkptControl;
+use super::ckpt::IoPrio;
 use super::discard::DiscardControl;
 use super::gc::{GcKthread, GcMode};
 use super::waits::Waits;
@@ -127,6 +128,17 @@ impl Bg {
     /// The result of the batch that has just been served. # C: O(1)
     pub fn checkpoint_result(&self) -> Result<(), vfs::VfsError> {
         self.cprc.lock().last()
+    }
+
+    /// The checkpoint merge thread's scheduling control.
+    /// # C: O(1)
+    pub fn checkpoint_ioprio(&self) -> IoPrio { self.cprc.lock().ioprio }
+
+    /// Change the scheduling control used by the next merge-thread pass.
+    /// # C: O(1)
+    pub fn set_checkpoint_ioprio(&self, ioprio: IoPrio) {
+        self.cprc.lock().ioprio = ioprio;
+        self.waits.wake_ckpt();
     }
 
     /// Put the cleaner into an urgent mode and start it immediately.

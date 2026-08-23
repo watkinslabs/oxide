@@ -128,7 +128,7 @@ fn an_attribute_is_writable_exactly_when_something_reads_it() {
     controls.extend(crate::atgc::knobs::ALL.iter().map(|&k| crate::atgc::knobs::name(k)));
     controls.extend(["ram_thresh", "max_read_extent_count", "last_age_weight",
                      "hot_data_age_threshold", "warm_data_age_threshold", "iostat_enable",
-                     "readdir_ra", "dirty_nats_ratio"]);
+                     "readdir_ra", "dirty_nats_ratio", "ckpt_thread_ioprio"]);
     // The fourth owner is the placement pair: the armed in-place-update set and
     // the three thresholds its arms compare against.
     controls.extend(["ipu_policy", "min_ipu_util", "min_fsync_blocks", "min_ssr_sections"]);
@@ -170,6 +170,18 @@ fn the_urgency_control_asks_the_cleaner_for_a_pass() {
     a.store.as_ref().unwrap()(b"1").expect("accepted");
     assert_eq!(fs.bg().gc_mode(), crate::bg::GcMode::UrgentHigh);
     assert!(fs.bg().gc.lock().gc_wake);
+}
+
+#[test]
+fn checkpoint_thread_priority_is_live_and_linux_shaped() {
+    let fs = mounted("/dev/vda");
+    let attrs = mount_attrs(&fs);
+    let a = attrs.iter().find(|a| a.name == "ckpt_thread_ioprio").expect("published");
+    assert_eq!((a.show)().unwrap(), b"rt,3\n");
+    a.store.as_ref().unwrap()(b"be,6\n").expect("accepted");
+    assert_eq!((a.show)().unwrap(), b"be,6\n");
+    assert!(a.store.as_ref().unwrap()(b"rt,8").is_err());
+    assert_eq!((a.show)().unwrap(), b"be,6\n");
 }
 
 /// The layout attributes must report the volume's real geometry, not a
