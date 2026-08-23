@@ -5,6 +5,7 @@
 //! entries after it sort before it, and a lookup that reaches one of them
 //! stops.
 
+use alloc::vec;
 use alloc::vec::Vec;
 
 use syscall::errno::Errno;
@@ -20,6 +21,78 @@ use crate::run::Runs;
 use crate::uapi::*;
 
 use super::{edit, Volume};
+use crate::volume::dir::DirIndex;
+
+struct BuildNode {
+    entries: Vec<Vec<u8>>,
+    children: Vec<BuildNode>,
+}
+
+impl BuildNode {
+    fn leaf(entries: Vec<Vec<u8>>) -> Self { Self { entries, children: Vec::new() } }
+
+    fn peek_min(&self) -> Option<Vec<u8>> {
+        if self.children.is_empty() { self.entries.first().cloned() }
+        else { self.children[0].peek_min().or_else(|| self.entries.first().cloned()) }
+    }
+
+    fn pop_min(&mut self) -> Option<Vec<u8>> {
+        if self.children.is_empty() { return if self.entries.is_empty() { None } else { Some(self.entries.remove(0)) }; }
+        if let Some(key) = self.children[0].pop_min() { return Some(key); }
+        self.children.remove(0);
+        if self.entries.is_empty() { None } else { Some(self.entries.remove(0)) }
+    }
+}
+
+fn build_node_fits(entries: &[Vec<u8>], size: u32) -> bool {
+    let block = index::format_block(size, 0);
+    let at = IB_OFF_IHDR;
+    let de_off = u32::from_le_bytes(block[at + IHDR_OFF_DE_OFF..at + IHDR_OFF_DE_OFF + 4]
+                                     .try_into().unwrap_or([0; 4]));
+    rebuild_node_at(entries, &entry::build_last(None), de_off, size - at as u32, 0, at).is_some()
+}
+
+fn build_internal_fits(entries: &[Vec<u8>], size: u32) -> bool {
+    let block = index::format_block(size, 0);
+    let at = IB_OFF_IHDR;
+    let de_off = u32::from_le_bytes(block[at + IHDR_OFF_DE_OFF..at + IHDR_OFF_DE_OFF + 4]
+                                     .try_into().unwrap_or([0; 4]));
+    rebuild_node_at(entries, &entry::build_last(Some(0)), de_off, size - at as u32,
+                    INDEX_HDR_HAS_SUBNODES, at).is_some()
+}
+
+fn encode_build_node(node: &BuildNode, size: u32, next: &mut u64,
+                     blocks: &mut Vec<Vec<u8>>) -> Result<u64, Errno> {
+    let mut child_vbns = Vec::new();
+    for child in &node.children {
+        child_vbns.push(encode_build_node(child, size, next, blocks)?);
+    }
+    let entries = if node.children.is_empty() {
+        node.entries.clone()
+    } else {
+        let mut out = Vec::new();
+        for (raw, vbn) in node.entries.iter().zip(child_vbns.iter().copied()) {
+            let parsed = entry::parse(raw, 0, ATTR_NAME).ok_or(Errno::Eio)?;
+            let key = raw[SIZEOF_DE..SIZEOF_DE + usize::from(parsed.key_size)].to_vec();
+            out.push(entry::build(&parsed.reference, &key, Some(vbn)));
+        }
+        out
+    };
+    let last = entry::build_last(child_vbns.last().copied());
+    let mut block = index::format_block(size, *next);
+    let at = IB_OFF_IHDR;
+    let de_off = u32::from_le_bytes(block[at + IHDR_OFF_DE_OFF..at + IHDR_OFF_DE_OFF + 4]
+                                     .try_into().map_err(|_| Errno::Eio)?);
+    let node_bytes = rebuild_node_at(&entries, &last, de_off, size - at as u32,
+                                     if node.children.is_empty() { 0 } else { INDEX_HDR_HAS_SUBNODES }, at)
+        .ok_or(Errno::Enospc)?;
+    block[at..at + node_bytes.len()].copy_from_slice(&node_bytes);
+    crate::fixup::pre_write(&mut block, 1).map_err(|e| e.errno())?;
+    let vbn = *next;
+    *next += 1;
+    blocks.push(block);
+    Ok(vbn)
+}
 
 /// The `$INDEX_ROOT` a new directory starts with: a tree of one empty node.
 /// # C: O(1)
@@ -141,84 +214,133 @@ impl<S: SectorSource> Volume<S> {
                                root: &index::Root) -> Result<(), Errno> {
         let idx = self.open_index(parent)?;
         let mut ordered = Vec::new();
-        for root_entry in entry::entries(&idx.root_data, root.header_at, &root.header,
-                                         root.indexed_type) {
-            if !root_entry.is_last() {
-                let span = &idx.root_data[root_entry.offset
-                    ..root_entry.offset + usize::from(root_entry.size)];
-                ordered.push(self.without_child(span, root.indexed_type)?);
-            }
-            if let Some(vbn) = root_entry.child {
-                let (block, at, header) = idx.block(vbn)?;
-                for child in entry::entries(&block, at, &header, root.indexed_type) {
-                    if child.is_last() { continue; }
-                    ordered.push(block[child.offset..child.offset + usize::from(child.size)].to_vec());
-                }
-            }
-        }
+        self.collect_index_node(&idx, &idx.root_data, root.header_at, &root.header,
+                                root.indexed_type, &mut ordered)?;
         ordered.push(new_entry.to_vec());
         self.sort_index_entries(&mut ordered, root.indexed_type);
         self.rebuild_index_entries(parent, &idx.root_data, root, ordered)
     }
 
+    pub(crate) fn collect_index_node(&self, idx: &DirIndex<'_, S>, bytes: &[u8], at: usize,
+                          header: &index::NodeHeader, indexed_type: u32,
+                          out: &mut Vec<Vec<u8>>) -> Result<(), Errno> {
+        for item in entry::entries(bytes, at, header, indexed_type) {
+            if let Some(vbn) = item.child {
+                let (child, child_at, child_header) = idx.block(vbn)?;
+                self.collect_index_node(idx, &child, child_at, &child_header, indexed_type, out)?;
+            }
+            if item.is_last() { continue; }
+            let raw = &bytes[item.offset..item.offset + usize::from(item.size)];
+            out.push(if item.has_child() {
+                self.without_child(raw, indexed_type)?
+            } else {
+                raw.to_vec()
+            });
+        }
+        Ok(())
+    }
+
     pub(crate) fn rebuild_index_entries(&mut self, parent: u64, root_data: &[u8],
                                         root: &index::Root, ordered: Vec<Vec<u8>>)
         -> Result<(), Errno> {
-        let mut blocks = Vec::new();
-        let mut separators = Vec::new();
+        let mut leaves = Vec::new();
         let mut at = 0usize;
         while at < ordered.len() {
             let mut end = at + 1;
-            while end <= ordered.len()
-                && self.index_block_from_entries(&ordered[at..end], &entry::build_last(None),
-                                                 root.block_size, blocks.len() as u64).is_ok() {
+            while end <= ordered.len() && build_node_fits(&ordered[at..end], root.block_size) {
                 end += 1;
             }
             let take_end = end.saturating_sub(1);
             if take_end <= at { return Err(Errno::Enospc); }
-            let mut leaf = ordered[at..take_end].to_vec();
-            if at != 0 {
-                let promoted = leaf.remove(0);
-                separators.push(promoted);
-            }
-            blocks.push(self.index_block_from_entries(&leaf, &entry::build_last(None),
-                                                      root.block_size, blocks.len() as u64)?);
+            leaves.push(BuildNode::leaf(ordered[at..take_end].to_vec()));
             at = take_end;
         }
-        if blocks.len() > 1 {
-            // A separator belongs to the parent, while the child keeps only
-            // keys strictly below it. Rebuild those parent entries with the
-            // child VCN in their terminal eight bytes.
-            let mut parent_entries = Vec::new();
-            for (i, raw) in separators.iter().enumerate() {
-                let parsed = entry::parse(raw, 0, root.indexed_type).ok_or(Errno::Eio)?;
+        if leaves.is_empty() { leaves.push(BuildNode::leaf(Vec::new())); }
+
+        let (bytes, header) = self.read_record_raw(parent)?;
+        let attrs = attrib::parse_all(&bytes, &header);
+        let root_attr = attrib::find(&attrs, ATTR_ROOT, &I30_NAME)
+            .ok_or(Errno::Enotdir)?;
+        let root_capacity = edit::free_space(&bytes, &header) + root_attr.size as usize;
+        let mut level = leaves;
+        loop {
+            let mut root_entries = Vec::new();
+            for child in level.iter().skip(1) {
+                let raw = child.peek_min().ok_or(Errno::Eio)?;
+                let parsed = entry::parse(&raw, 0, root.indexed_type).ok_or(Errno::Eio)?;
                 let key = raw[SIZEOF_DE..SIZEOF_DE + usize::from(parsed.key_size)].to_vec();
-                parent_entries.push(entry::build(&parsed.reference, &key, Some(i as u64)));
+                root_entries.push(entry::build(&parsed.reference, &key, Some(0)));
             }
-            let last = entry::build_last(Some((blocks.len() - 1) as u64));
-            let head = &root_data[..IROOT_OFF_IHDR];
-            let root_node = rebuild_node(&parent_entries, &last, root.header_at,
-                                         (SIZEOF_IHDR + parent_entries.iter().map(Vec::len)
-                                             .sum::<usize>() + last.len()) as u32,
-                                         INDEX_HDR_HAS_SUBNODES)
-                .ok_or(Errno::Enospc)?;
-            let mut root_data = Vec::with_capacity(head.len() + root_node.len());
-            root_data.extend_from_slice(head);
-            root_data.extend_from_slice(&root_node);
-            self.rewrite_index_allocation(parent, &root_data, root.block_size, &blocks)
-        } else {
-            // A delete can make a two-child root fit back into one leaf. Keep
-            // the allocation-backed form here; reclaiming the now-unused
-            // tail VCN belongs to the bitmap/runlist shrink path.
-            let child = entry::build_last(Some(0));
-            let root_node = rebuild_node(&[], &child, root.header_at,
-                                         (SIZEOF_IHDR + child.len()) as u32,
-                                         INDEX_HDR_HAS_SUBNODES).ok_or(Errno::Eio)?;
-            let mut compact_root = Vec::with_capacity(IROOT_OFF_IHDR + root_node.len());
-            compact_root.extend_from_slice(&root_data[..IROOT_OFF_IHDR]);
-            compact_root.extend_from_slice(&root_node);
-            self.rewrite_index_allocation(parent, &compact_root, root.block_size, &blocks)
+            let root_last = entry::build_last(Some((level.len() - 1) as u64));
+            let root_node = rebuild_node(&root_entries, &root_last, root.header_at,
+                                         (SIZEOF_IHDR + root_entries.iter().map(Vec::len)
+                                             .sum::<usize>() + root_last.len()) as u32,
+                                         INDEX_HDR_HAS_SUBNODES).ok_or(Errno::Enospc)?;
+            let root_candidate = edit::resident(ATTR_ROOT, &I30_NAME, root_attr.id, false,
+                                                 &[&root_data[..IROOT_OFF_IHDR], &root_node].concat());
+            if root_candidate.len() <= root_capacity {
+                let mut separators = Vec::new();
+                for child in level.iter().skip(1) {
+                    separators.push(child.peek_min().ok_or(Errno::Eio)?);
+                }
+                for child in level.iter_mut().skip(1) {
+                    let _ = child.pop_min().ok_or(Errno::Eio)?;
+                }
+                let mut blocks = Vec::new();
+                let mut next = 0;
+                let mut child_vbns = Vec::new();
+                for child in &level {
+                    child_vbns.push(encode_build_node(child, root.block_size, &mut next,
+                                                       &mut blocks)?);
+                }
+                let mut root_entries = Vec::new();
+                for (i, sep) in separators.iter().enumerate() {
+                    let parsed = entry::parse(&sep, 0, root.indexed_type).ok_or(Errno::Eio)?;
+                    let key = sep[SIZEOF_DE..SIZEOF_DE + usize::from(parsed.key_size)].to_vec();
+                    root_entries.push(entry::build(&parsed.reference, &key, Some(child_vbns[i])));
+                }
+                let root_last = entry::build_last(child_vbns.last().copied());
+                let root_node = rebuild_node(&root_entries, &root_last, root.header_at,
+                                             (SIZEOF_IHDR + root_entries.iter().map(Vec::len)
+                                                 .sum::<usize>() + root_last.len()) as u32,
+                                             INDEX_HDR_HAS_SUBNODES).ok_or(Errno::Enospc)?;
+                let mut new_root = Vec::with_capacity(IROOT_OFF_IHDR + root_node.len());
+                new_root.extend_from_slice(&root_data[..IROOT_OFF_IHDR]);
+                new_root.extend_from_slice(&root_node);
+                return self.rewrite_index_allocation(parent, &new_root, root.block_size, &blocks);
+            }
+            level = self.group_build_nodes(level, root.block_size)?;
         }
+    }
+
+    fn group_build_nodes(&self, mut children: Vec<BuildNode>, block_size: u32)
+        -> Result<Vec<BuildNode>, Errno> {
+        let mut parents = Vec::new();
+        while !children.is_empty() {
+            let first = children.remove(0);
+            let mut group = vec![first];
+            let mut entries = Vec::new();
+            while !children.is_empty() {
+                let separator = children[0].peek_min().ok_or(Errno::Eio)?;
+                let parsed = entry::parse(&separator, 0, ATTR_NAME).ok_or(Errno::Eio)?;
+                let key = separator[SIZEOF_DE..SIZEOF_DE + usize::from(parsed.key_size)].to_vec();
+                let candidate = entry::build(&parsed.reference, &key, Some(0));
+                let mut test = entries.clone();
+                test.push(candidate);
+                if !build_internal_fits(&test, block_size) { break; }
+                entries.push(test.pop().ok_or(Errno::Eio)?);
+                group.push(children.remove(0));
+            }
+            // Store separators without child pointers; encode_build_node adds
+            // the finalized VCNs after all descendants have been assigned.
+            for entry in &mut entries {
+                let parsed = entry::parse(entry, 0, ATTR_NAME).ok_or(Errno::Eio)?;
+                let key = entry[SIZEOF_DE..SIZEOF_DE + usize::from(parsed.key_size)].to_vec();
+                *entry = entry::build(&parsed.reference, &key, None);
+            }
+            parents.push(BuildNode { entries, children: group });
+        }
+        Ok(parents)
     }
 
     fn without_child(&self, raw: &[u8], indexed_type: u32) -> Result<Vec<u8>, Errno> {

@@ -430,3 +430,31 @@ fn a_directory_fills_when_its_index_root_is_full() {
     assert!(v.find_entry(MFT_REC_ROOT, "long-directory-entry-010").is_err());
     assert_eq!(v.read_dir(MFT_REC_ROOT).unwrap().len(), made - 1);
 }
+
+#[test]
+fn a_directory_promotes_allocation_parents_when_the_root_fills() {
+    let mut v = test_image::empty();
+    let mut targets = alloc::vec::Vec::new();
+    for i in 0..24 {
+        let name = alloc::format!("p{i:02}");
+        targets.push(v.create_file(MFT_REC_ROOT, &name, now()).unwrap().reference.number);
+    }
+    let mut made = targets.len();
+    for (i, target) in targets.iter().enumerate() {
+        for j in 0..6 {
+            let name = alloc::format!("alias-{i:02}-{j}");
+            v.link(MFT_REC_ROOT, &name, *target, now()).unwrap();
+            made += 1;
+        }
+    }
+    assert_eq!(v.read_dir(MFT_REC_ROOT).unwrap().len(), made);
+    assert!(v.find_entry(MFT_REC_ROOT, "alias-23-5").is_ok());
+    let image = v.into_source();
+    let mut opts = crate::opts::Options::defaults();
+    opts.settle();
+    let mut v = Volume::mount_with(image, opts).unwrap();
+    assert_eq!(v.read_dir(MFT_REC_ROOT).unwrap().len(), made);
+    assert!(v.find_entry(MFT_REC_ROOT, "alias-23-5").is_ok());
+    v.unlink(MFT_REC_ROOT, "alias-23-5", now()).unwrap();
+    assert_eq!(v.read_dir(MFT_REC_ROOT).unwrap().len(), made - 1);
+}

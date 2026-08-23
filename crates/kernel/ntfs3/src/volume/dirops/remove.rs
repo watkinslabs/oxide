@@ -13,7 +13,6 @@ use sectors::SectorSource;
 
 use crate::attrib;
 use crate::index::{self, entry};
-use crate::index::walk::NodeSource;
 use crate::uapi::*;
 
 use super::insert::rebuild_node;
@@ -28,38 +27,22 @@ impl<S: SectorSource> Volume<S> {
         let root = index::parse_root(&root_data).ok_or(Errno::Eio)?;
         if root.header.has_subnodes() {
             let idx = self.open_index(parent)?;
-            let mut ordered = Vec::new();
+            let mut ordered: Vec<Vec<u8>> = Vec::new();
+            self.collect_index_node(&idx, &idx.root_data, root.header_at, &root.header,
+                                    root.indexed_type, &mut ordered)?;
             let mut removed = false;
-            for root_entry in entry::entries(&idx.root_data, root.header_at, &root.header,
-                                             root.indexed_type) {
-                if !root_entry.is_last() {
-                    let span = &idx.root_data[root_entry.offset
-                        ..root_entry.offset + usize::from(root_entry.size)];
-                    let raw = self.without_child_for_remove(span, root.indexed_type)?;
-                    if !removed && entry::parse(&raw, 0, root.indexed_type)
-                        .and_then(|e| e.name().map(|n| n.units == units)).unwrap_or(false) {
-                        removed = true;
-                    } else {
-                        ordered.push(raw);
-                    }
-                }
-                if let Some(vbn) = root_entry.child {
-                    let (block, at, header) = idx.block(vbn)?;
-                    for child in entry::entries(&block, at, &header, root.indexed_type) {
-                        if child.is_last() { continue; }
-                        let raw = block[child.offset..child.offset + usize::from(child.size)].to_vec();
-                        if !removed && entry::parse(&raw, 0, root.indexed_type)
-                            .and_then(|e| e.name().map(|n| n.units == units)).unwrap_or(false) {
-                            removed = true;
-                        } else {
-                            ordered.push(raw);
-                        }
-                    }
+            let mut kept: Vec<Vec<u8>> = Vec::new();
+            for raw in ordered {
+                if !removed && entry::parse(&raw, 0, root.indexed_type)
+                    .and_then(|e| e.name().map(|n| n.units == units)).unwrap_or(false) {
+                    removed = true;
+                } else {
+                    kept.push(raw);
                 }
             }
             if !removed { return Err(Errno::Enoent); }
-            self.sort_index_entries_for_remove(&mut ordered, root.indexed_type);
-            return self.rebuild_index_entries(parent, &idx.root_data, &root, ordered);
+            self.sort_index_entries_for_remove(&mut kept, root.indexed_type);
+            return self.rebuild_index_entries(parent, &idx.root_data, &root, kept);
         }
 
         let existing = entry::entries(&root_data, root.header_at, &root.header, root.indexed_type);
@@ -94,13 +77,6 @@ impl<S: SectorSource> Volume<S> {
         data.extend_from_slice(head);
         data.extend_from_slice(&node);
         self.replace_index_root(parent, &data)
-    }
-
-    fn without_child_for_remove(&self, raw: &[u8], indexed_type: u32)
-        -> Result<Vec<u8>, Errno> {
-        let parsed = entry::parse(raw, 0, indexed_type).ok_or(Errno::Eio)?;
-        let key = raw[SIZEOF_DE..SIZEOF_DE + usize::from(parsed.key_size)].to_vec();
-        Ok(entry::build(&parsed.reference, &key, None))
     }
 
     fn sort_index_entries_for_remove(&self, entries: &mut [Vec<u8>], indexed_type: u32) {
