@@ -107,21 +107,26 @@ struct LiveRoute<'a> {
 struct LiveSocket<'a> {
     input: &'a crate::eval_context::Input<'a>,
     info: net::SocketLookup,
+    present: bool,
 }
 
 impl SocketAccess for LiveSocket<'_> {
-    fn present(&self) -> bool { true }
+    fn present(&self) -> bool { self.present }
     fn full(&self) -> bool { self.info.full }
     fn transparent(&self) -> bool { self.info.transparent }
     fn mark(&self) -> u32 { self.info.mark }
     fn wildcard(&self) -> bool { self.info.wildcard }
     fn tproxy_transparent(&self, addr: &conntrack::tuple::InetAddr, port: u16) -> bool {
         if self.input.family != crate::nft_expr::uapi::NFPROTO_IPV4 { return false; }
+        let proto = self.input.pkt.get(9).copied().unwrap_or(0);
+        let dst = net::addr::Ipv4Addr::new(addr.0[0], addr.0[1], addr.0[2], addr.0[3]);
+        if proto == conntrack::uapi::IPPROTO_TCP {
+            return net::global_stack().transparent_tcp4_in(
+                self.input.namespace, dst, port, self.input.ingress);
+        }
+        if proto != conntrack::uapi::IPPROTO_UDP { return false; }
         net::global_stack().transparent_udp4_in(
-            self.input.namespace,
-            net::addr::Ipv4Addr::new(addr.0[0], addr.0[1], addr.0[2], addr.0[3]),
-            port,
-            self.input.ingress)
+            self.input.namespace, dst, port, self.input.ingress)
     }
 }
 
@@ -261,7 +266,13 @@ fn eval_context(input: &crate::eval_context::Input<'_>) -> EvalResult {
     let live_ct = LiveCt { conn: input.ct, info: input.ctinfo, dir: input.ct_dir,
                            now: input.timestamp_ns / 1_000_000_000 };
     let live_route = LiveRoute { input };
-    let live_socket = input.socket.map(|info| LiveSocket { input, info });
+    let live_socket = input.live.then(|| LiveSocket {
+        input,
+        info: input.socket.unwrap_or(net::SocketLookup {
+            full: false, transparent: false, mark: 0, wildcard: false,
+        }),
+        present: input.socket.is_some(),
+    });
     let Some(generation) = active_generation(hook_id) else {
         return EvalResult { verdict: Verdict::Accept, mark, actions: Vec::new(), notrack: false };
     };

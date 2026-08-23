@@ -114,6 +114,10 @@ mod tcp_metrics_tests;
 #[cfg(test)]
 #[path = "stack/tcp_save_syn_tests.rs"]
 mod tcp_save_syn_tests;
+
+#[cfg(test)]
+#[path = "stack/socket_lookup_tests.rs"]
+mod socket_lookup_tests;
 mod tcp_reqsk;
 #[cfg(test)]
 #[path = "stack/tcp_req_tests.rs"]
@@ -158,22 +162,72 @@ impl NetStack {
     /// demux tables provide the same packet-owner contract.
     pub fn socket_lookup_in(&self, net_ns: u64, family: u8, pkt: &[u8],
                             iface: Option<NetIfaceId>) -> Option<SocketLookup> {
-        if family != NFPROTO_IPV4 || pkt.len() < 28 || pkt[0] >> 4 != 4
-            || pkt[9] != IpProto::Udp as u8 { return None; }
-        let ihl = (pkt[0] & 0x0f) as usize * 4;
-        if ihl < 20 || ihl + 8 > pkt.len() { return None; }
-        let src = Ipv4Addr::new(pkt[12], pkt[13], pkt[14], pkt[15]);
-        let dst = Ipv4Addr::new(pkt[16], pkt[17], pkt[18], pkt[19]);
-        let sport = u16::from_be_bytes([pkt[ihl], pkt[ihl + 1]]);
-        let dport = u16::from_be_bytes([pkt[ihl + 2], pkt[ihl + 3]]);
         let iface = iface?;
-        self.udp_demux_in(net_ns, src, sport, dst, dport, iface, &[])
-            .into_iter().next().map(|q| SocketLookup {
-                full: true,
-                transparent: q.transparent(),
-                mark: q.mark(),
-                wildcard: q.bound_ip.is_unspecified(),
-            })
+        match family {
+            NFPROTO_IPV4 => {
+                if pkt.len() < 28 || pkt[0] >> 4 != 4 { return None; }
+                let ihl = (pkt[0] & 0x0f) as usize * 4;
+                if ihl < 20 || ihl + 8 > pkt.len() { return None; }
+                let src = Ipv4Addr::new(pkt[12], pkt[13], pkt[14], pkt[15]);
+                let dst = Ipv4Addr::new(pkt[16], pkt[17], pkt[18], pkt[19]);
+                self.socket_lookup_transport(net_ns, IpAddr::V4(src), IpAddr::V4(dst),
+                    pkt[9], &pkt[ihl..], iface)
+            }
+            crate::netfilter_hook::NFPROTO_IPV6 => {
+                let (proto, off) = ipv6_socket_transport(pkt)?;
+                let src = Ipv6Addr(pkt.get(8..24)?.try_into().ok()?);
+                let dst = Ipv6Addr(pkt.get(24..40)?.try_into().ok()?);
+                self.socket_lookup_transport(net_ns, IpAddr::V6(src), IpAddr::V6(dst),
+                    proto, pkt.get(off.. )?, iface)
+            }
+            _ => None,
+        }
+    }
+
+    fn socket_lookup_transport(&self, net_ns: u64, src: IpAddr, dst: IpAddr,
+                               proto: u8, l4: &[u8], iface: NetIfaceId) -> Option<SocketLookup> {
+        if l4.len() < 4 { return None; }
+        let sport = u16::from_be_bytes([l4[0], l4[1]]);
+        let dport = u16::from_be_bytes([l4[2], l4[3]]);
+        let tables = self.inet_tables(net_ns);
+        if proto == IpProto::Udp as u8 {
+            return match (src, dst) {
+                (IpAddr::V4(src), IpAddr::V4(dst)) => self.udp_demux_in(
+                    net_ns, src, sport, dst, dport, iface, &[]).into_iter().next()
+                    .map(|q| SocketLookup { full: true, transparent: q.transparent(),
+                        mark: q.mark(), wildcard: q.bound_ip.is_unspecified() }),
+                (IpAddr::V6(src), IpAddr::V6(dst)) => self.udp6_demux_in(
+                    net_ns, src, sport, dst, dport, iface, &[]).into_iter().next()
+                    .map(|q| SocketLookup { full: true, transparent: false,
+                        mark: q.mark(), wildcard: q.bound_ip == Ipv6Addr::ANY }),
+                _ => None,
+            };
+        }
+        if proto != IpProto::Tcp as u8 { return None; }
+        let key = TcpKey { local_ip: dst, local_port: dport,
+            remote_ip: src, remote_port: sport };
+        if let Some(slot) = tables.tcp_conns.lock().get(&key).cloned() {
+            return Some(match slot {
+                TcpSlot::Sock(entry) => SocketLookup { full: true, transparent: false,
+                    mark: entry.mark(), wildcard: entry.bind.as_ref()
+                        .is_some_and(|bind| bind.local.ip.is_unspecified()) },
+                TcpSlot::Req(req) => req.listener().map_or(SocketLookup {
+                    full: false, transparent: false, mark: 0, wildcard: false,
+                }, |listener| SocketLookup { full: false, transparent: false,
+                    mark: listener.mark.load(::core::sync::atomic::Ordering::Acquire) as u32,
+                    wildcard: listener.local.ip.is_unspecified() }),
+            });
+        }
+        let bucket = {
+            let listens = tables.tcp_listens.lock();
+            crate::stack::tcp_listener::lookup_listen_bucket(&listens, dst, dport)
+        }?;
+        let index = crate::stack::tcp_listener::select_listener_index(
+            &bucket, src, sport, dport, l4, l4.len());
+        let listener = bucket.get(index?).or_else(|| bucket.first())?;
+        Some(SocketLookup { full: true, transparent: false,
+            mark: listener.mark.load(::core::sync::atomic::Ordering::Acquire) as u32,
+            wildcard: listener.local.ip.is_unspecified() })
     }
 
     /// Test the transparent UDP target lookup used by nft_tproxy.
@@ -188,5 +242,35 @@ impl NetStack {
                 && (q.bound_ip.is_unspecified() || q.bound_ip == dst)
                 && q.transparent()
         })
+    }
+
+    /// Test the transparent TCP listener lookup used by nft_tproxy. # C: O(N)
+    pub fn transparent_tcp4_in(&self, net_ns: u64, dst: Ipv4Addr, port: u16,
+                               iface: Option<NetIfaceId>) -> bool {
+        let tables = self.inet_tables(net_ns);
+        let listens = tables.tcp_listens.lock();
+        let keys = [TcpListenKey { local_ip: IpAddr::V4(dst), local_port: port },
+            TcpListenKey { local_ip: IpAddr::V4(Ipv4Addr::ANY), local_port: port }];
+        keys.iter().filter_map(|key| listens.get(key)).flatten().any(|listener| {
+            listener.bind.transparent()
+                && listener.bound_iface().is_none_or(|bound| Some(bound) == iface)
+        })
+    }
+}
+
+fn ipv6_socket_transport(pkt: &[u8]) -> Option<(u8, usize)> {
+    if pkt.len() < 40 || pkt[0] >> 4 != 6 { return None; }
+    let mut proto = pkt[6];
+    let mut off = 40usize;
+    loop {
+        let len = match proto {
+            0 | 43 | 60 => ((*pkt.get(off + 1)? as usize) + 1) * 8,
+            44 => 8,
+            51 => ((*pkt.get(off + 1)? as usize) + 2) * 4,
+            _ => return Some((proto, off)),
+        };
+        proto = *pkt.get(off)?;
+        off = off.checked_add(len)?;
+        if off > pkt.len() { return None; }
     }
 }

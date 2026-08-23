@@ -58,6 +58,9 @@ pub enum TcpConnectWait {
 pub struct TcpBindReservation {
     pub owner: Arc<crate::SocketOwner>,
     pub local: Endpoint,
+    /// `IP_TRANSPARENT` captured from the owning socket and inherited by
+    /// listeners/children through this canonical bind reservation.
+    pub(crate) transparent: ::core::sync::atomic::AtomicBool,
     pub(crate) bound_ifindex: Arc<::core::sync::atomic::AtomicU32>,
     pub(crate) reuseaddr: bool,
     pub(crate) reuseport: bool,
@@ -82,7 +85,7 @@ impl TcpBindReservation {
                       reuseaddr: bool, reuseport: bool, v6only: bool,
                       bound_ifindex: Arc<::core::sync::atomic::AtomicU32>) -> Self {
         Self {
-            owner,
+            owner, transparent: ::core::sync::atomic::AtomicBool::new(false),
             local,
             bound_ifindex,
             reuseaddr, reuseport, v6only,
@@ -99,6 +102,16 @@ impl TcpBindReservation {
             0 => None,
             raw => Some(NetIfaceId::from_raw(raw)),
         }
+    }
+
+    /// Publish the owning socket's transparent-proxy permission. # C: O(1)
+    pub fn set_transparent(&self, enabled: bool) {
+        self.transparent.store(enabled, ::core::sync::atomic::Ordering::Release);
+    }
+
+    /// Current transparent-proxy permission. # C: O(1)
+    pub(crate) fn transparent(&self) -> bool {
+        self.transparent.load(::core::sync::atomic::Ordering::Acquire)
     }
 }
 

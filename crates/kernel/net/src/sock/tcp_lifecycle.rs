@@ -27,6 +27,8 @@ pub(super) fn bind_tcp(sock: &alloc::sync::Arc<InetSocket>, ip: crate::IpAddr,
         let bind = stack().tcp_reserve_owned(sock.owner.clone(), ip, requested_port, iface,
             reuseaddr, reuseport, tcp_v6only(sock, ip), policy.range,
             sock.opts.base.bound_ifindex_cell())?;
+        bind.set_transparent(sock.opts.base.generic.flag(
+            crate::sock_opts::sol_ip::flag::TRANSPARENT));
         *local_port = Some(bind.local.port);
         *sock.tcp_bind.lock() = Some(bind);
     }
@@ -59,6 +61,8 @@ fn ensure_tcp_bind(sock: &InetSocket, local_ip: crate::IpAddr,
             reuseaddr, reuseport, v6only, policy.range,
             sock.opts.base.bound_ifindex_cell())?,
     };
+    bind.set_transparent(sock.opts.base.generic.flag(
+        crate::sock_opts::sol_ip::flag::TRANSPARENT));
     *local_port = Some(bind.local.port);
     *sock.tcp_bind.lock() = Some(bind.clone());
     Ok(bind)
