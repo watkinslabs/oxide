@@ -61,21 +61,66 @@ pub(crate) fn check_resolved_unix(ctx: &SendContext<'_>, found: &vfs::VfsPath,
 /// Decode one kernel-owned INET sockaddr without protocol side effects. # C: O(1)
 pub(crate) fn inet(name: Option<&[u8]>) -> KResult<InetAddress> {
     let Some(name) = name else { return Ok(InetAddress::None); };
-    match family(name)? {
+    inet_family(name, family(name)?)
+}
+
+/// Decode an INET destination using the socket's family for Linux's
+/// unspecified-family sockaddr form. `rawv6_sendmsg` (and the corresponding
+/// IPv4 path) accepts `sin_family == 0`; the address is still interpreted as
+/// the socket's family, not rejected as EAFNOSUPPORT. # C: O(1)
+pub(crate) fn inet_for_socket(name: Option<&[u8]>, socket_family: u16) -> KResult<InetAddress> {
+    let Some(name) = name else { return Ok(InetAddress::None); };
+    let supplied = family(name)?;
+    inet_family(name, if supplied == 0 { socket_family } else { supplied })
+}
+
+fn inet_family(name: &[u8], family: u16) -> KResult<InetAddress> {
+    match family {
         2 => {
             if name.len() < 16 { return Err(Error::Einval); }
             Ok(InetAddress::V4 { ip: net::Ipv4Addr::new(name[4], name[5], name[6], name[7]),
                 port: u16::from_be_bytes(name[2..4].try_into().unwrap()) })
         }
         10 => {
-            if name.len() < 28 { return Err(Error::Einval); }
+            // Linux's SIN6_LEN_RFC2133 is 24; scope_id is an optional tail
+            // for sendmsg/sendto and defaults to zero when omitted.
+            if name.len() < 24 { return Err(Error::Einval); }
             let mut ip = [0u8; 16]; ip.copy_from_slice(&name[8..24]);
             Ok(InetAddress::V6 { ip: net::Ipv6Addr(ip),
                 port: u16::from_be_bytes(name[2..4].try_into().unwrap()),
-                scope_id: u32::from_ne_bytes(name[24..28].try_into().unwrap()),
+                scope_id: if name.len() >= 28 {
+                    u32::from_ne_bytes(name[24..28].try_into().unwrap())
+                } else { 0 },
                 flowinfo: u32::from_be_bytes(name[4..8].try_into().unwrap()) })
         }
         _ => Err(Error::Eafnosupport),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{inet, inet_for_socket, InetAddress};
+
+    fn v6(family: u16, len: usize) -> alloc::vec::Vec<u8> {
+        let mut out = alloc::vec![0; len];
+        out[..2].copy_from_slice(&family.to_ne_bytes());
+        out[8] = 0x20; out[9] = 0x01; out[10] = 0x0d; out[11] = 0xb8; out[23] = 1;
+        out
+    }
+
+    #[test]
+    fn raw6_accepts_linux_unspecified_family_and_short_rfc2133_name() {
+        assert!(matches!(inet_for_socket(Some(&v6(0, 24)), 10),
+            Ok(InetAddress::V6 { scope_id: 0, .. })));
+        assert!(matches!(inet(Some(&v6(10, 24))),
+            Ok(InetAddress::V6 { scope_id: 0, .. })));
+    }
+
+    #[test]
+    fn unspecified_family_still_needs_the_socket_to_supply_an_inet_family() {
+        assert_eq!(inet_for_socket(Some(&v6(0, 24)), 1).err(),
+                   Some(crate::Error::Eafnosupport));
+        assert_eq!(inet(Some(v6(0, 24).as_slice())).err(), Some(crate::Error::Eafnosupport));
     }
 }
 
