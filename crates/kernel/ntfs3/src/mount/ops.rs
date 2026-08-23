@@ -5,13 +5,16 @@
 //! and count under the filesystem's one lock.
 
 use alloc::sync::Arc;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 use vfs::{CreateCtx, DirContext, FileOps, FileType, Inode, InodeOps, InodeRef, KResult,
-          VfsError};
+          VfsError, XattrError};
 
 use crate::attrs;
 
-use super::node::{node_inode, NtfsNode};
+use super::node::{node_inode, stream_inode, NtfsNode};
+use crate::opts::StreamInterface;
 use super::{errno_to_vfs, now};
 
 /// The operations, for every inode of this filesystem.
@@ -35,14 +38,28 @@ impl NtfsOps {
         let info = node.fs.volume.lock().stat(number).map_err(errno_to_vfs)?;
         Ok(node_inode(Arc::clone(&node.fs), info))
     }
+
+    fn stream_name(name: &str) -> Option<Vec<u16>> { crate::name::encode(name) }
 }
 
 impl InodeOps for NtfsOps {
     fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
         let node = Self::dir_of(inode)?;
-        let hit = node.fs.volume.lock().find_entry(node.info.number, name)
+        let (base, stream) = match node.fs.options().streams {
+            StreamInterface::Windows => name.split_once(':')
+                .map_or((name, None), |(base, stream)| (base, Self::stream_name(stream))),
+            _ => (name, None),
+        };
+        if stream.is_some() && base.is_empty() { return Err(VfsError::Enoent); }
+        let hit = node.fs.volume.lock().find_entry(node.info.number, base)
             .map_err(errno_to_vfs)?;
-        Self::child(node, hit.reference.number)
+        let info = node.fs.volume.lock().stat(hit.reference.number).map_err(errno_to_vfs)?;
+        match stream {
+            Some(stream) if info.streams.iter().any(|n| Self::stream_name(n).as_deref() == Some(&stream)) =>
+                Ok(stream_inode(Arc::clone(&node.fs), info, stream)),
+            Some(_) => Err(VfsError::Enoent),
+            None => Ok(node_inode(Arc::clone(&node.fs), info)),
+        }
     }
 
     fn dir_is_empty(&self, inode: &Inode) -> bool {
@@ -101,6 +118,7 @@ impl InodeOps for NtfsOps {
 
     fn truncate(&self, inode: &Inode, len: u64) -> KResult<()> {
         let node = Self::node(inode)?;
+        if node.stream.is_some() { return Err(VfsError::Eopnotsupp); }
         node.fs.volume.lock().truncate_file(node.info.number, len, now())
             .map_err(errno_to_vfs)?;
         inode.set_size(len);
@@ -112,19 +130,47 @@ impl InodeOps for NtfsOps {
         let target = node.fs.volume.lock().read_link(node.info.number).map_err(errno_to_vfs)?;
         Ok(target.into_bytes())
     }
+
+    fn getxattr(&self, inode: &Inode, name: &str) -> Result<Vec<u8>, XattrError> {
+        let node = Self::node(inode).map_err(XattrError::Fs)?;
+        if node.fs.options().streams != StreamInterface::Xattr {
+            return Err(XattrError::NotSup);
+        }
+        let stream = name.strip_prefix("user.").and_then(Self::stream_name)
+            .ok_or(XattrError::NotFound)?;
+        node.fs.volume.lock().read_stream_whole(node.info.number, &stream)
+            .map_err(|e| match e { syscall::errno::Errno::Enoent => XattrError::NotFound,
+                                    e => XattrError::Fs(errno_to_vfs(e)) })
+    }
+
+    fn setxattr(&self, _inode: &Inode, _name: &str, _value: Vec<u8>, _create: bool,
+                _replace: bool) -> Result<(), XattrError> { Err(XattrError::NotSup) }
+
+    fn removexattr(&self, _inode: &Inode, _name: &str) -> Result<(), XattrError> {
+        Err(XattrError::NotSup)
+    }
+
+    fn listxattr(&self, inode: &Inode) -> Result<Vec<String>, XattrError> {
+        let node = Self::node(inode).map_err(XattrError::Fs)?;
+        if node.fs.options().streams != StreamInterface::Xattr { return Err(XattrError::NotSup); }
+        Ok(node.info.streams.iter().map(|s| alloc::format!("user.{s}")).collect())
+    }
 }
 
 impl FileOps for NtfsOps {
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let node = NtfsOps::node(inode)?;
         if node.info.is_dir { return Err(VfsError::Eisdir); }
-        node.fs.volume.lock().read_file(node.info.number, off, buf).map_err(errno_to_vfs)
+        let name = node.stream.as_deref().unwrap_or(&[]);
+        node.fs.volume.lock().read_stream(node.info.number, name, off, buf)
+            .map_err(errno_to_vfs)
     }
 
     fn write(&self, inode: &Inode, off: u64, buf: &[u8]) -> KResult<usize> {
         let node = NtfsOps::node(inode)?;
         if node.info.is_dir { return Err(VfsError::Eisdir); }
-        let size = node.fs.volume.lock().write_file(node.info.number, off, buf, now())
+        let name = node.stream.as_deref().unwrap_or(&[]);
+        let size = node.fs.volume.lock().write_stream(node.info.number, name, off, buf, now())
             .map_err(errno_to_vfs)?;
         inode.set_size(size);
         Ok(buf.len())

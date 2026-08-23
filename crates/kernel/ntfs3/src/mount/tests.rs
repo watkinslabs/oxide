@@ -50,10 +50,41 @@ fn disk() -> Arc<Disk> {
 }
 
 fn mounted(disk: &Arc<Disk>) -> Arc<NtfsFs> {
-    let mut opts = Options::defaults();
+    mounted_with(disk, Options::defaults())
+}
+
+fn mounted_with(disk: &Arc<Disk>, mut opts: Options) -> Arc<NtfsFs> {
     opts.settle();
     NtfsFs::open_with(Arc::clone(disk) as Arc<dyn BlockDevice>, "/dev/loop0", true, opts)
         .expect("mount")
+}
+
+fn stream_disk() -> Arc<Disk> {
+    let mut b = crate::test_image::Builder::new();
+    b.push_file_with_stream("report.txt", b"body", "secret", b"hidden");
+    Arc::new(Disk { bytes: sync::Spinlock::new(b.finish().snapshot()) })
+}
+
+#[test]
+fn alternate_streams_are_real_user_xattrs() {
+    let fs = mounted_with(&stream_disk(), Options::defaults());
+    let file = fs.root_inode().unwrap().lookup("report.txt").unwrap();
+    assert_eq!(file.listxattr().unwrap(), alloc::vec!["user.secret"]);
+    assert_eq!(file.getxattr("user.secret").unwrap(), b"hidden");
+    assert_eq!(file.getxattr("user.missing"), Err(vfs::XattrError::NotFound));
+    assert_eq!(file.setxattr("user.secret", b"new".to_vec(), false, true),
+               Err(vfs::XattrError::NotSup));
+}
+
+#[test]
+fn windows_streams_are_files_named_after_their_base_file() {
+    let mut opts = Options::defaults();
+    opts.streams = crate::opts::StreamInterface::Windows;
+    let fs = mounted_with(&stream_disk(), opts);
+    let file = fs.root_inode().unwrap().lookup("report.txt:secret").unwrap();
+    let mut data = [0u8; 6];
+    assert_eq!(file.read(0, &mut data).unwrap(), 6);
+    assert_eq!(&data, b"hidden");
 }
 
 #[test]

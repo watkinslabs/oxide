@@ -192,6 +192,22 @@ impl Builder {
         number
     }
 
+    /// Add a file with one resident alternate data stream.
+    pub fn push_file_with_stream(&mut self, name: &str, data: &[u8], stream: &str,
+                                 stream_data: &[u8]) -> u64 {
+        let number = self.alloc_record();
+        let attrs = alloc::vec![
+            Self::std_info(FILE_ATTRIBUTE_ARCHIVE),
+            Self::file_name(MFT_REC_ROOT, name, FILE_ATTRIBUTE_ARCHIVE, data.len() as u64),
+            crate::volume::edit::resident(ATTR_DATA, &[], 2, false, data),
+            crate::volume::edit::resident(ATTR_DATA, &stream.encode_utf16().collect::<Vec<_>>(),
+                                          3, false, stream_data),
+        ];
+        self.put_record(number, 0, &Reference::default(), &attrs);
+        self.push_root_entry(number, name, FILE_ATTRIBUTE_ARCHIVE, data.len() as u64);
+        number
+    }
+
     /// Add a file whose data is a runlist the caller supplies, so a test can
     /// build a sparse or fragmented one. # C: O(runs)
     pub fn push_file_runs(&mut self, name: &str, runs: &run::Runs, size: u64, flags: u16,

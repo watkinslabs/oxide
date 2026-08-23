@@ -8,7 +8,7 @@ fn a_mount_that_named_nothing_gets_the_defaults() {
     let o = parse(base(), "").unwrap();
     assert_eq!(o.uid, 0);
     assert!(!o.acl);
-    assert!(o.streams);
+    assert_eq!(o.streams, StreamInterface::Xattr);
     assert!(!o.case_sensitive);
 }
 
@@ -43,9 +43,9 @@ fn the_negatable_flags_can_be_turned_off_again() {
 
 #[test]
 fn the_stream_interface_has_three_spellings() {
-    assert!(!parse(base(), "streams_interface=none").unwrap().streams);
-    assert!(parse(base(), "streams_interface=xattr").unwrap().streams);
-    assert!(parse(base(), "streams_interface=windows").unwrap().streams);
+    assert_eq!(parse(base(), "streams_interface=none").unwrap().streams, StreamInterface::None);
+    assert_eq!(parse(base(), "streams_interface=xattr").unwrap().streams, StreamInterface::Xattr);
+    assert_eq!(parse(base(), "streams_interface=windows").unwrap().streams, StreamInterface::Windows);
     assert_eq!(parse(base(), "streams_interface=other").unwrap_err(), Errno::Einval);
 }
 
