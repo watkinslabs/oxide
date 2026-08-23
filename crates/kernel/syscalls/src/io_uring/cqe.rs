@@ -78,7 +78,7 @@ fn write_slot(r: &IoUring, slot: u32, c: Cqe) {
 /// it did not fit. The filler a mixed ring needs to reach the wrap is written
 /// here, before the completion itself, and is counted in the same tail move.
 /// # C: O(1)
-fn write_cqe(r: &IoUring, c: Cqe) -> bool {
+fn write_cqe(r: &IoUring, c: Cqe, before_publish: &mut dyn FnMut()) -> bool {
     let tail = r.hdr_load(RING_CQ_TAIL);
     let head = r.hdr_load(RING_CQ_HEAD);
     let Some(p) = place(r.flags, tail, head, r.cq_entries, c.cqe32) else { return false };
@@ -87,6 +87,7 @@ fn write_cqe(r: &IoUring, c: Cqe) -> bool {
     // A mixed ring's reader has no other way to tell the two shapes apart.
     if c.cqe32 && marks_32(r.flags) { c.flags |= IORING_CQE_F_32; }
     write_slot(r, p.at, c);
+    before_publish();
     r.hdr_store(RING_CQ_TAIL, tail.wrapping_add(p.advance));
     true
 }
@@ -98,8 +99,9 @@ impl IoUringInode {
     pub fn flush_overflow(&self) -> bool {
         let r = self.ring.lock();
         let mut ovf = self.overflow.lock();
+        let mut noop = || {};
         while let Some(&c) = ovf.front() {
-            if !write_cqe(&r, c) { break; }
+            if !write_cqe(&r, c, &mut noop) { break; }
             ovf.pop_front();
         }
         let empty = ovf.is_empty();
@@ -113,6 +115,15 @@ impl IoUringInode {
     /// completion is lost, and it is counted in the ring's `cq_overflow`
     /// so the caller can see that it happened. # C: O(N_flushed)
     pub fn post_cqe(&self, c: Cqe) {
+        self.post_cqe_with(c, || {});
+    }
+
+    /// Post a completion with a callback that runs after its CQE is written
+    /// but before the CQ tail (or overflow publication) makes it visible.
+    /// This is the cached-tail transaction Linux uses for ZCRX references.
+    pub fn post_cqe_with<F>(&self, c: Cqe, before_publish: F)
+    where F: FnOnce()
+    {
         self.posted.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
         // A completion is what a count-gated timeout is waiting for, and the
         // only thing that can notice one became due is a worker.
@@ -120,9 +131,13 @@ impl IoUringInode {
             for a in crate::io_uring::iowq::WQ.acct.iter() { a.wait.wake_all(); }
         }
         let drained = self.flush_overflow();
+        let mut before_publish = Some(before_publish);
         {
             let r = self.ring.lock();
-            if drained && write_cqe(&r, c) {
+            let mut publish = || {
+                if let Some(callback) = before_publish.take() { callback(); }
+            };
+            if drained && write_cqe(&r, c, &mut publish) {
                 drop(r);
                 self.wake_cq_waiters();
                 return;
@@ -130,7 +145,11 @@ impl IoUringInode {
         }
         let queued = {
             let mut ovf = self.overflow.lock();
-            if ovf.try_reserve(1).is_ok() { ovf.push_back(c); true } else { false }
+            if ovf.try_reserve(1).is_ok() {
+                if let Some(callback) = before_publish.take() { callback(); }
+                ovf.push_back(c);
+                true
+            } else { false }
         };
         let r = self.ring.lock();
         if queued {
