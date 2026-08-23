@@ -119,6 +119,99 @@ fn parse_ct_tuple(raw: &[u8], family: u8, zone: u16) -> Option<::conntrack::Tupl
     })
 }
 
+fn parse_ct_tuple_filter(raw: &[u8], family: u8, flags: u32)
+    -> Result<::conntrack::ctnetlink::TupleFilter, i32>
+{
+    use ::conntrack::{InetAddr, ProtoPart, Tuple};
+    if !matches!(family, ::conntrack::uapi::NFPROTO_IPV4 | ::conntrack::uapi::NFPROTO_IPV6) {
+        return Err(-95);
+    }
+    let mut tuple = Tuple { l3num: family, ..Tuple::default() };
+    if flags & (::conntrack::ctnetlink::FILTER_IP_SRC
+        | ::conntrack::ctnetlink::FILTER_IP_DST) != 0 {
+        let Some(ip) = find_bytes_attr(raw, ::conntrack::uapi::CTA_TUPLE_IP) else {
+            return Err(-22);
+        };
+        if flags & ::conntrack::ctnetlink::FILTER_IP_SRC != 0 {
+            let kind = if family == ::conntrack::uapi::NFPROTO_IPV6 {
+                ::conntrack::uapi::CTA_IP_V6_SRC
+            } else { ::conntrack::uapi::CTA_IP_V4_SRC };
+            let Some(addr) = find_bytes_attr(ip, kind) else { return Err(-22); };
+            tuple.src.addr = if family == ::conntrack::uapi::NFPROTO_IPV6 {
+                InetAddr::v6(addr.try_into().map_err(|_| -22)?)
+            } else { InetAddr::v4(addr.try_into().map_err(|_| -22)?) };
+        }
+        if flags & ::conntrack::ctnetlink::FILTER_IP_DST != 0 {
+            let kind = if family == ::conntrack::uapi::NFPROTO_IPV6 {
+                ::conntrack::uapi::CTA_IP_V6_DST
+            } else { ::conntrack::uapi::CTA_IP_V4_DST };
+            let Some(addr) = find_bytes_attr(ip, kind) else { return Err(-22); };
+            tuple.dst.addr = if family == ::conntrack::uapi::NFPROTO_IPV6 {
+                InetAddr::v6(addr.try_into().map_err(|_| -22)?)
+            } else { InetAddr::v4(addr.try_into().map_err(|_| -22)?) };
+        }
+    }
+    let proto_flags = flags & (::conntrack::ctnetlink::FILTER_PROTO_SRC_PORT
+        | ::conntrack::ctnetlink::FILTER_PROTO_DST_PORT
+        | ::conntrack::ctnetlink::FILTER_PROTO_ICMP_TYPE
+        | ::conntrack::ctnetlink::FILTER_PROTO_ICMP_CODE
+        | ::conntrack::ctnetlink::FILTER_PROTO_ICMP_ID
+        | ::conntrack::ctnetlink::FILTER_PROTO_ICMPV6_TYPE
+        | ::conntrack::ctnetlink::FILTER_PROTO_ICMPV6_CODE
+        | ::conntrack::ctnetlink::FILTER_PROTO_ICMPV6_ID);
+    if proto_flags != 0 && flags & ::conntrack::ctnetlink::FILTER_PROTO_NUM == 0 {
+        return Err(-22);
+    }
+    if flags & ::conntrack::ctnetlink::FILTER_PROTO_NUM != 0 {
+        let Some(proto) = find_bytes_attr(raw, ::conntrack::uapi::CTA_TUPLE_PROTO) else {
+            return Err(-22);
+        };
+        tuple.protonum = find_u8_attr(proto, ::conntrack::uapi::CTA_PROTO_NUM)
+            .ok_or(-22)?;
+        let port_flags = flags & (::conntrack::ctnetlink::FILTER_PROTO_SRC_PORT
+            | ::conntrack::ctnetlink::FILTER_PROTO_DST_PORT);
+        if matches!(tuple.protonum, ::conntrack::uapi::IPPROTO_TCP | ::conntrack::uapi::IPPROTO_UDP) {
+            if port_flags & ::conntrack::ctnetlink::FILTER_PROTO_SRC_PORT != 0 {
+                tuple.src.proto = ProtoPart::port(
+                    find_be16_attr(proto, ::conntrack::uapi::CTA_PROTO_SRC_PORT).ok_or(-22)?);
+            }
+            if port_flags & ::conntrack::ctnetlink::FILTER_PROTO_DST_PORT != 0 {
+                tuple.dst.proto = ProtoPart::port(
+                    find_be16_attr(proto, ::conntrack::uapi::CTA_PROTO_DST_PORT).ok_or(-22)?);
+            }
+        } else if tuple.protonum == ::conntrack::uapi::IPPROTO_ICMP {
+            tuple.src.proto.port = if flags & ::conntrack::ctnetlink::FILTER_PROTO_ICMP_ID != 0 {
+                find_be16_attr(proto, ::conntrack::uapi::CTA_PROTO_ICMP_ID).ok_or(-22)?
+            } else { 0 };
+            tuple.dst.proto.icmp_type = if flags & ::conntrack::ctnetlink::FILTER_PROTO_ICMP_TYPE != 0 {
+                find_u8_attr(proto, ::conntrack::uapi::CTA_PROTO_ICMP_TYPE).ok_or(-22)?
+            } else { 0 };
+            if flags & ::conntrack::ctnetlink::FILTER_PROTO_ICMP_TYPE != 0
+                && ::conntrack::tuple::icmp_invert_type(family, tuple.dst.proto.icmp_type).is_none() {
+                return Err(-22);
+            }
+            tuple.dst.proto.icmp_code = if flags & ::conntrack::ctnetlink::FILTER_PROTO_ICMP_CODE != 0 {
+                find_u8_attr(proto, ::conntrack::uapi::CTA_PROTO_ICMP_CODE).ok_or(-22)?
+            } else { 0 };
+        } else if tuple.protonum == ::conntrack::uapi::IPPROTO_ICMPV6 {
+            tuple.src.proto.port = if flags & ::conntrack::ctnetlink::FILTER_PROTO_ICMPV6_ID != 0 {
+                find_be16_attr(proto, ::conntrack::uapi::CTA_PROTO_ICMPV6_ID).ok_or(-22)?
+            } else { 0 };
+            tuple.dst.proto.icmp_type = if flags & ::conntrack::ctnetlink::FILTER_PROTO_ICMPV6_TYPE != 0 {
+                find_u8_attr(proto, ::conntrack::uapi::CTA_PROTO_ICMPV6_TYPE).ok_or(-22)?
+            } else { 0 };
+            if flags & ::conntrack::ctnetlink::FILTER_PROTO_ICMPV6_TYPE != 0
+                && ::conntrack::tuple::icmp_invert_type(family, tuple.dst.proto.icmp_type).is_none() {
+                return Err(-22);
+            }
+            tuple.dst.proto.icmp_code = if flags & ::conntrack::ctnetlink::FILTER_PROTO_ICMPV6_CODE != 0 {
+                find_u8_attr(proto, ::conntrack::uapi::CTA_PROTO_ICMPV6_CODE).ok_or(-22)?
+            } else { 0 };
+        }
+    }
+    Ok(::conntrack::ctnetlink::TupleFilter { flags, tuple })
+}
+
 fn parse_seqadj(raw: &[u8]) -> Option<::conntrack::entry::SeqAdjust> {
     Some(::conntrack::entry::SeqAdjust {
         correction_pos: find_u32_attr(raw, ::conntrack::uapi::CTA_SEQADJ_CORRECTION_POS)?,
@@ -273,9 +366,6 @@ fn parse_synproxy(attrs: &[u8])
 fn parse_dump_filter(attrs: &[u8], family: u8)
     -> Result<(bool, ::conntrack::ctnetlink::DumpFilter), i32>
 {
-    if find_bytes_attr(attrs, ::conntrack::uapi::CTA_FILTER).is_some() {
-        return Err(-95);
-    }
     let mark = find_u32_attr(attrs, ::conntrack::uapi::CTA_MARK);
     if mark.is_none() && find_u32_attr(attrs, ::conntrack::uapi::CTA_MARK_MASK).is_some() {
         return Err(-22);
@@ -290,11 +380,35 @@ fn parse_dump_filter(attrs: &[u8], family: u8)
         find_u32_attr(attrs, ::conntrack::uapi::CTA_STATUS_MASK).unwrap_or(value)));
     if status.is_some_and(|(_, mask)| mask == 0) { return Err(-22); }
     let zone = find_be16_attr(attrs, ::conntrack::uapi::CTA_ZONE);
-    let selected = mark.is_some() || status.is_some() || zone.is_some();
+    let filter_raw = find_bytes_attr(attrs, ::conntrack::uapi::CTA_FILTER);
+    let parse_flags = |raw: &[u8], kind: u16| -> Result<u32, i32> {
+        if find_bytes_attr(raw, kind).is_some() {
+            let flags = find_u32_attr(raw, kind).ok_or(-22)?;
+            if flags & !::conntrack::ctnetlink::FILTER_ALL != 0 { return Err(-22); }
+            Ok(flags)
+        } else { Ok(0) }
+    };
+    let (orig, reply) = if let Some(raw) = filter_raw {
+        let orig_flags = parse_flags(raw, ::conntrack::uapi::CTA_FILTER_ORIG_FLAGS)?;
+        let reply_flags = parse_flags(raw, ::conntrack::uapi::CTA_FILTER_REPLY_FLAGS)?;
+        let orig = if orig_flags != 0 {
+            let tuple = find_bytes_attr(attrs, ::conntrack::uapi::CTA_TUPLE_ORIG)
+                .ok_or(-22)?;
+            Some(parse_ct_tuple_filter(tuple, family, orig_flags)?)
+        } else { None };
+        let reply = if reply_flags != 0 {
+            let tuple = find_bytes_attr(attrs, ::conntrack::uapi::CTA_TUPLE_REPLY)
+                .ok_or(-22)?;
+            Some(parse_ct_tuple_filter(tuple, family, reply_flags)?)
+        } else { None };
+        (orig, reply)
+    } else { (None, None) };
+    let selected = mark.is_some() || status.is_some() || zone.is_some()
+        || filter_raw.is_some();
     Ok((selected, ::conntrack::ctnetlink::DumpFilter {
         family: matches!(family, ::conntrack::uapi::NFPROTO_IPV4
             | ::conntrack::uapi::NFPROTO_IPV6).then_some(family),
-        zone, mark, status,
+        zone, mark, status, orig, reply,
     }))
 }
 
@@ -753,7 +867,7 @@ mod tests {
     }
 
     #[test]
-    fn ctnetlink_direct_dump_filters_use_linux_masks_and_reject_partial_filter_nests() {
+    fn ctnetlink_dump_filters_use_linux_masks_and_parse_partial_tuples() {
         let mut raw = Vec::new();
         ::conntrack::ctnetlink::put_be32(
             &mut raw, ::conntrack::uapi::CTA_MARK, 0x55);
@@ -776,7 +890,48 @@ mod tests {
         let n = ::conntrack::ctnetlink::nest_start(
             &mut nested, ::conntrack::uapi::CTA_FILTER);
         ::conntrack::ctnetlink::nest_end(&mut nested, n);
-        assert_eq!(parse_dump_filter(&nested, 0), Err(-95));
+        let (selected, empty) = parse_dump_filter(&nested, 0).unwrap();
+        assert!(selected);
+        assert_eq!(empty.orig, None);
+
+        let tuple = Tuple {
+            src: ::conntrack::TupleEnd {
+                addr: InetAddr::v4([192, 0, 2, 1]), proto: ProtoPart::port(40000),
+            },
+            dst: ::conntrack::TupleEnd {
+                addr: InetAddr::v4([198, 51, 100, 2]), proto: ProtoPart::port(53),
+            },
+            l3num: ::conntrack::uapi::NFPROTO_IPV4,
+            protonum: ::conntrack::uapi::IPPROTO_UDP,
+            zone: 0,
+        };
+        let mut partial = Vec::new();
+        ::conntrack::ctnetlink::put_tuple(
+            &mut partial, ::conntrack::uapi::CTA_TUPLE_ORIG, &tuple);
+        let n = ::conntrack::ctnetlink::nest_start(
+            &mut partial, ::conntrack::uapi::CTA_FILTER);
+        ::conntrack::ctnetlink::put_be32(
+            &mut partial, ::conntrack::uapi::CTA_FILTER_ORIG_FLAGS,
+            ::conntrack::ctnetlink::FILTER_IP_SRC
+                | ::conntrack::ctnetlink::FILTER_PROTO_NUM);
+        ::conntrack::ctnetlink::nest_end(&mut partial, n);
+        let (_, parsed) = parse_dump_filter(
+            &partial, ::conntrack::uapi::NFPROTO_IPV4).unwrap();
+        let orig = parsed.orig.unwrap();
+        assert_eq!(orig.flags, ::conntrack::ctnetlink::FILTER_IP_SRC
+            | ::conntrack::ctnetlink::FILTER_PROTO_NUM);
+        assert_eq!(orig.tuple.src.addr, tuple.src.addr);
+        assert_eq!(orig.tuple.protonum, tuple.protonum);
+
+        let mut incomplete = Vec::new();
+        let n = ::conntrack::ctnetlink::nest_start(
+            &mut incomplete, ::conntrack::uapi::CTA_FILTER);
+        ::conntrack::ctnetlink::put_be32(
+            &mut incomplete, ::conntrack::uapi::CTA_FILTER_ORIG_FLAGS,
+            ::conntrack::ctnetlink::FILTER_PROTO_SRC_PORT);
+        ::conntrack::ctnetlink::nest_end(&mut incomplete, n);
+        assert_eq!(parse_dump_filter(&incomplete,
+            ::conntrack::uapi::NFPROTO_IPV4), Err(-22));
     }
 
     #[test]

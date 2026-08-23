@@ -9,6 +9,28 @@ use crate::entry::{Conn, ProtoState};
 use crate::tuple::Tuple;
 use crate::uapi::*;
 
+/// Linux `CTA_FILTER` field masks for directional tuple selection.
+pub const FILTER_IP_SRC: u32 = 1 << 0;
+pub const FILTER_IP_DST: u32 = 1 << 1;
+pub const FILTER_TUPLE_ZONE: u32 = 1 << 2;
+pub const FILTER_PROTO_NUM: u32 = 1 << 3;
+pub const FILTER_PROTO_SRC_PORT: u32 = 1 << 4;
+pub const FILTER_PROTO_DST_PORT: u32 = 1 << 5;
+pub const FILTER_PROTO_ICMP_TYPE: u32 = 1 << 6;
+pub const FILTER_PROTO_ICMP_CODE: u32 = 1 << 7;
+pub const FILTER_PROTO_ICMP_ID: u32 = 1 << 8;
+pub const FILTER_PROTO_ICMPV6_TYPE: u32 = 1 << 9;
+pub const FILTER_PROTO_ICMPV6_CODE: u32 = 1 << 10;
+pub const FILTER_PROTO_ICMPV6_ID: u32 = 1 << 11;
+pub const FILTER_ALL: u32 = (1 << 12) - 1;
+
+/// One direction's selected tuple fields. # C: O(1)
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct TupleFilter {
+    pub flags: u32,
+    pub tuple: Tuple,
+}
+
 /// Direct ctnetlink dump selectors owned by the conntrack table. # C: O(1)
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct DumpFilter {
@@ -16,12 +38,54 @@ pub struct DumpFilter {
     pub zone: Option<u16>,
     pub mark: Option<(u32, u32)>,
     pub status: Option<(u32, u32)>,
+    pub orig: Option<TupleFilter>,
+    pub reply: Option<TupleFilter>,
+}
+
+fn matches_tuple(filter: TupleFilter, tuple: Tuple) -> bool {
+    if filter.flags & FILTER_IP_SRC != 0 && filter.tuple.src.addr != tuple.src.addr {
+        return false;
+    }
+    if filter.flags & FILTER_IP_DST != 0 && filter.tuple.dst.addr != tuple.dst.addr {
+        return false;
+    }
+    if filter.flags & FILTER_PROTO_NUM != 0 && filter.tuple.protonum != tuple.protonum {
+        return false;
+    }
+    match tuple.protonum {
+        IPPROTO_TCP | IPPROTO_UDP => {
+            if filter.flags & FILTER_PROTO_SRC_PORT != 0
+                && filter.tuple.src.proto.port != tuple.src.proto.port { return false; }
+            if filter.flags & FILTER_PROTO_DST_PORT != 0
+                && filter.tuple.dst.proto.port != tuple.dst.proto.port { return false; }
+        }
+        IPPROTO_ICMP => {
+            if filter.flags & FILTER_PROTO_ICMP_TYPE != 0
+                && filter.tuple.dst.proto.icmp_type != tuple.dst.proto.icmp_type { return false; }
+            if filter.flags & FILTER_PROTO_ICMP_CODE != 0
+                && filter.tuple.dst.proto.icmp_code != tuple.dst.proto.icmp_code { return false; }
+            if filter.flags & FILTER_PROTO_ICMP_ID != 0
+                && filter.tuple.src.proto.port != tuple.src.proto.port { return false; }
+        }
+        IPPROTO_ICMPV6 => {
+            if filter.flags & FILTER_PROTO_ICMPV6_TYPE != 0
+                && filter.tuple.dst.proto.icmp_type != tuple.dst.proto.icmp_type { return false; }
+            if filter.flags & FILTER_PROTO_ICMPV6_CODE != 0
+                && filter.tuple.dst.proto.icmp_code != tuple.dst.proto.icmp_code { return false; }
+            if filter.flags & FILTER_PROTO_ICMPV6_ID != 0
+                && filter.tuple.src.proto.port != tuple.src.proto.port { return false; }
+        }
+        _ => {}
+    }
+    true
 }
 
 /// Match one live entry against the direct ctnetlink selectors. # C: O(1)
 pub fn matches_filter(c: &Conn, filter: &DumpFilter) -> bool {
     if filter.family.is_some_and(|family| c.orig.l3num != family) { return false; }
     if filter.zone.is_some_and(|zone| c.orig.zone != zone) { return false; }
+    if filter.orig.is_some_and(|tuple| !matches_tuple(tuple, c.orig)) { return false; }
+    if filter.reply.is_some_and(|tuple| !matches_tuple(tuple, c.reply_tuple())) { return false; }
     if filter.mark.is_some_and(|(value, mask)|
         (c.mark.load(::core::sync::atomic::Ordering::Acquire) & mask) != value) {
         return false;

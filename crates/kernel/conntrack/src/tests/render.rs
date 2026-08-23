@@ -330,10 +330,28 @@ fn ctnetlink_dump_filter_matches_the_canonical_mark_and_status() {
         zone: Some(0),
         mark: Some((0x50, 0xf0)),
         status: Some((IPS_ASSURED, IPS_ASSURED)),
+        orig: None,
+        reply: None,
     };
     assert!(ctnetlink::matches_filter(&c, &filter));
     assert!(!ctnetlink::matches_filter(&c, &ctnetlink::DumpFilter {
         mark: Some((0x40, 0xf0)), ..filter
+    }));
+    let tuple_filter = ctnetlink::TupleFilter {
+        flags: ctnetlink::FILTER_IP_SRC | ctnetlink::FILTER_PROTO_NUM,
+        tuple: Tuple { l3num: NFPROTO_IPV4, protonum: IPPROTO_UDP,
+                        src: TupleEnd { addr: c.orig.src.addr, ..c.orig.src },
+                        ..Tuple::default() },
+    };
+    assert!(ctnetlink::matches_filter(&c, &ctnetlink::DumpFilter {
+        orig: Some(tuple_filter), ..filter
+    }));
+    assert!(!ctnetlink::matches_filter(&c, &ctnetlink::DumpFilter {
+        orig: Some(ctnetlink::TupleFilter {
+            tuple: Tuple { src: TupleEnd { addr: InetAddr::v4([192, 0, 2, 99]),
+                                             ..c.orig.src }, ..tuple_filter.tuple },
+            ..tuple_filter
+        }), ..filter
     }));
 }
 
