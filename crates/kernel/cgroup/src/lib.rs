@@ -36,7 +36,7 @@ use vfs::{KResult, VfsError};
 pub use fs::{mount_at, realize_tree, CgroupFs};
 pub use policy::{CpuAction, cpu_bandwidth_decision, cpulist_to_mask, cpu_weight_to_cfs};
 pub use state::{
-    set_cpuset_hook, set_freeze_hook, set_hugetlb_reparent_hook, set_notify_hook,
+    set_cpuset_hook, set_freeze_hook, set_notify_hook,
     set_pid_display_hook, set_pid_resolve_hook,
     set_memory_pressure_hook, set_migrate_hook, set_signal_hook, set_tid_display_hook,
     set_weight_hook,

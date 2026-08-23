@@ -1,5 +1,4 @@
-// hugetlb-controller entry points for the huge-page pool, and the removal path
-// that has to reparent a departing cgroup's charges.
+// hugetlb-controller entry points for the huge-page pool and charge lifetime.
 //
 // The pool charges here; the hierarchy state lives in `tree::hugetlb`. Keeping
 // these out of the crate root is what stops the root from growing a fourth
@@ -7,7 +6,7 @@
 
 use vfs::{KResult, VfsError};
 
-use crate::state::{self, TREE};
+use crate::state::TREE;
 use crate::tree::{HugeChargeRefused, HugeCounterKind, HugeGranule};
 
 /// Charge `huge_pages` pages of `granule` to `cgid`'s hugetlb ledger of
@@ -29,27 +28,15 @@ pub fn uncharge_hugetlb(cgid: u64, granule: HugeGranule, kind: HugeCounterKind, 
     if t.is_mounted() { t.uncharge_hugetlb(cgid, granule, kind, huge_pages); }
 }
 
-/// Remove child `name` of `parent_cgid`.
-///
-/// Outstanding huge-page charges do not block the removal: they move to the
-/// parent, which is what keeps a container teardown from wedging on pages its
-/// processes still hold. The owner records the pool keeps have to be
-/// retargeted to match, and that happens with the hierarchy lock released.
-/// # C: O(log n) + O(pool records) when charges moved
+/// Remove child `name` of `parent_cgid`. A charged child becomes an offline
+/// CSS: its directory is gone, but its hugetlb counters remain reachable until
+/// the page/reservation owner releases them.
+/// # C: O(log n)
 pub fn remove_child(parent_cgid: u64, name: &str) -> KResult<()> {
     let id = {
         let t = TREE.lock();
         *t.node(parent_cgid).ok_or(VfsError::Enoent)?
             .children.get(name).ok_or(VfsError::Enoent)?
     };
-    let reparented = {
-        let mut t = TREE.lock();
-        let to = t.reparent_hugetlb(id);
-        t.remove(id)?;
-        to
-    };
-    if let Some(to) = reparented {
-        if let Some(hook) = state::hugetlb_reparent_hook() { hook(id, to); }
-    }
-    Ok(())
+    TREE.lock().remove(id)
 }

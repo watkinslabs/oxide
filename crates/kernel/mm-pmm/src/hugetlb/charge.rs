@@ -77,16 +77,6 @@ impl Ledger {
         take
     }
 
-    /// Retarget every record naming `from` at `to`, so a charge the controller
-    /// has already moved to the parent is released against the cgroup that now
-    /// holds it. # C: O(records)
-    pub fn reparent(&mut self, from: u64, to: u64) {
-        for c in self.pages.values_mut() {
-            if c.cgid == from { c.cgid = to; }
-        }
-        if let Some(pages) = self.resv.remove(&from) { self.add_resv(to, pages); }
-    }
-
     /// Outstanding reservation pages charged to `cgid`. The ledger's own
     /// observers: what a cgroup's files report comes from the controller's
     /// counters, so these exist to hold the ledger to its stated behaviour
@@ -121,7 +111,6 @@ fn current_cgid() -> u64 { cgroup::cgroup_of(0) }
 /// # C: O(depth · subtree)
 pub(super) fn charge_reserve(size: HugePageSize, delta: u64) -> Result<ReservationToken, ()> {
     if delta == 0 { return Ok(ReservationToken { cgid: current_cgid() }); }
-    ensure_reparent_hook();
     let cgid = current_cgid();
     cgroup::try_charge_hugetlb(cgid, granule_of(size), HugeCounterKind::Reservation, delta)
         .map_err(|_| ())?;
@@ -149,7 +138,6 @@ pub(super) fn uncharge_reserve(size: HugePageSize, owner: ReservationToken, delt
 /// # C: O(depth · subtree)
 pub(super) fn charge_alloc(size: HugePageSize, reserved: bool,
                            reservation: Option<ReservationToken>) -> Result<PageCharge, ()> {
-    ensure_reparent_hook();
     let cgid = current_cgid();
     let g = granule_of(size);
     let deferred_rsvd = !reserved;
@@ -191,29 +179,6 @@ pub(super) fn uncharge_page(size: HugePageSize, pa: u64) {
     cancel_alloc(size, charge);
 }
 
-/// Retarget every owner record naming `from` at `to`. Installed as the
-/// controller's reparent hook: a removed cgroup's charges move to its parent,
-/// and the records the release path reads have to move with them.
-/// # C: O(records)
-pub fn reparent_charges(from: u64, to: u64) {
-    LEDGER_2M.lock().reparent(from, to);
-    LEDGER_1G.lock().reparent(from, to);
-}
-
-/// Ensure the controller can retarget this module's owner records.
-///
-/// Installed on the first charge rather than from a bring-up call: the pool is
-/// the only thing that creates records, so there is no window in which a
-/// record exists and the hook does not, and no separate boot step that can be
-/// forgotten.
-/// # C: O(1)
-fn ensure_reparent_hook() {
-    use core::sync::atomic::{AtomicBool, Ordering};
-    static INSTALLED: AtomicBool = AtomicBool::new(false);
-    if INSTALLED.swap(true, Ordering::AcqRel) { return; }
-    cgroup::set_hugetlb_reparent_hook(reparent_charges);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,20 +210,6 @@ mod tests {
         assert_eq!(l.take_resv(9, 100), 6);
         assert_eq!(l.resv_of(3), 4, "a release never steals another cgroup's reservation");
         assert_eq!(l.resv_of(9), 0);
-    }
-
-    #[test]
-    fn reparenting_retargets_both_page_and_reservation_records() {
-        let mut l = Ledger::new();
-        l.insert_page(0x1000, PageCharge { cgid: 5, deferred_rsvd: false });
-        l.insert_page(0x2000, PageCharge { cgid: 6, deferred_rsvd: false });
-        l.add_resv(5, 3);
-        l.add_resv(6, 1);
-        l.reparent(5, 6);
-        assert_eq!(l.page_of(0x1000).unwrap().cgid, 6);
-        assert_eq!(l.page_of(0x2000).unwrap().cgid, 6, "an unrelated record is untouched");
-        assert_eq!(l.resv_of(5), 0);
-        assert_eq!(l.resv_of(6), 4, "the moved reservation adds to what the parent held");
     }
 
     #[test]

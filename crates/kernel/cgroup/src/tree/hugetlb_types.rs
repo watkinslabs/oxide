@@ -155,6 +155,14 @@ impl HugetlbState {
     pub fn has_usage(&self) -> bool {
         HugeGranule::ALL.iter().any(|g| self.counter(*g, HugeCounterKind::Usage).usage != 0)
     }
+
+    /// True while either a handed-out page or an outstanding reservation is
+    /// charged to this cgroup. A removed cgroup stays in the dying store until
+    /// this reaches zero, matching the reference CSS lifetime.
+    pub fn has_charges(&self) -> bool {
+        HugeGranule::ALL.iter().any(|g| HugeCounterKind::ALL.iter().any(|k|
+            self.counter(*g, *k).usage != 0))
+    }
 }
 
 /// The attribute a hugetlb control file exposes.

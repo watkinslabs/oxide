@@ -115,15 +115,20 @@ fn a_limit_below_the_current_charge_is_refused_and_the_root_has_no_limit() {
 }
 
 #[test]
-fn removing_a_cgroup_reparents_its_charges_instead_of_refusing() {
+fn removing_a_cgroup_keeps_its_charges_in_a_dying_css() {
     let (mut t, child, grand) = tree3();
     t.try_charge_hugetlb(grand, K2M, USE, 2).expect("charge usage");
     t.try_charge_hugetlb(grand, K2M, RSV, 3).expect("charge a reservation");
-    assert_eq!(t.reparent_hugetlb(grand), Some(child));
     t.remove(grand).expect("a cgroup with hugetlb charges is still removable");
+    assert_eq!(t.dying_descendants(child), 1);
     assert_eq!(t.subtree_hugetlb(child, K2M, USE), 2 * K2M.base_pages());
     assert_eq!(t.subtree_hugetlb(child, K2M, RSV), 3 * K2M.base_pages());
-    assert!(!t.hugetlb_has_usage(child) == false);
+    assert!(t.hugetlb_has_usage(grand));
+    t.uncharge_hugetlb(grand, K2M, USE, 2);
+    t.uncharge_hugetlb(grand, K2M, RSV, 3);
+    assert_eq!(t.subtree_hugetlb(child, K2M, USE), 0);
+    assert_eq!(t.subtree_hugetlb(child, K2M, RSV), 0);
+    assert_eq!(t.dying_descendants(child), 0);
 }
 
 #[test]
