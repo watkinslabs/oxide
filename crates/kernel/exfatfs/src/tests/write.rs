@@ -329,6 +329,29 @@ fn a_rename_keeps_the_files_bytes() {
 }
 
 #[test]
+fn a_rename_preserves_benign_secondary_entries() {
+    let mut v = test_image::empty();
+    let dir = root(&v);
+    let made = v.create_file(&dir, "before.txt", stamp()).unwrap();
+    let root_chain = v.root_chain();
+    let mut set_bytes = v.directory_bytes(&root_chain).unwrap();
+    let mut extra = alloc::vec![0u8; crate::uapi::DENTRY_BYTES];
+    extra[0] = crate::uapi::TYPE_VENDOR_EXT;
+    set_bytes[made.set.offset as usize + crate::uapi::FILE_OFF_NUM_EXT] += 1;
+    let extra_at = made.set.offset as usize + made.set.entries * crate::uapi::DENTRY_BYTES;
+    set_bytes[extra_at..extra_at + extra.len()].copy_from_slice(&extra);
+    crate::dirent::set::reseal(&mut set_bytes[made.set.offset as usize..extra_at + extra.len()]);
+    v.write_at(&root_chain, 0, &set_bytes).unwrap();
+
+    v.rename(&dir, "before.txt", &dir, "after.txt", 0, stamp()).unwrap();
+    let hit = v.find_entry(&v.root_chain(), "after.txt").unwrap();
+    assert_eq!(hit.set.entries, 4);
+    let bytes = v.directory_bytes(&hit.dir).unwrap();
+    let at = hit.set.offset as usize + 3 * crate::uapi::DENTRY_BYTES;
+    assert_eq!(&bytes[at..at + crate::uapi::DENTRY_BYTES], &extra);
+}
+
+#[test]
 fn a_rename_does_not_release_the_renamed_files_clusters() {
     let mut v = test_image::empty();
     let dir = root(&v);

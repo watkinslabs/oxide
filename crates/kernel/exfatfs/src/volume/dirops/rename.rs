@@ -17,7 +17,7 @@ use sectors::SectorSource;
 use crate::dirent::set;
 use crate::name;
 use crate::time::Stamp;
-use crate::uapi::DENTRY_BYTES;
+use crate::uapi::{DENTRY_BYTES, FILE_OFF_NUM_EXT};
 
 use super::{DirEntry, DirHandle, Volume};
 
@@ -84,13 +84,25 @@ impl<S: SectorSource> Volume<S> {
         -> Result<DirEntry, Errno> {
         let uni = name::resolve(&self.upcase, new_name, self.opts.keep_last_dots,
                                 name::Usage::Create)?;
-        let count = name::entry_count(uni.len())?;
+        let critical = name::entry_count(uni.len())?;
+        // A move is a new set, but the benign secondary tail belongs to the
+        // file's directory entry set rather than to its old location. Linux
+        // counts that tail before finding space and copies it into the new
+        // set; dropping it here loses another implementation's metadata.
+        let old_span = source.set.entries * DENTRY_BYTES;
+        let mut old = alloc::vec![0u8; old_span];
+        self.read_at(&source.dir, source.set.offset, &mut old)?;
+        let extra = set::extra_entries(&old, source.set.units.len());
+        let count = critical + extra.len() / DENTRY_BYTES;
         let stream = source.set.stream;
-        let bytes = set::build(source.set.file.attr, &uni.units, uni.hash, stream.start_cluster,
-                               stream.size, stream.valid_size, stream.flags,
-                               source.set.file.create, now,
-                               crate::time::without_centiseconds(now))
+        let mut bytes = set::build(source.set.file.attr, &uni.units, uni.hash,
+                                   stream.start_cluster, stream.size, stream.valid_size,
+                                   stream.flags, source.set.file.create, now,
+                                   crate::time::without_centiseconds(now))
             .map_err(|_| Errno::Einval)?;
+        bytes.extend_from_slice(&extra);
+        bytes[FILE_OFF_NUM_EXT] = (count - 1) as u8;
+        set::reseal(&mut bytes);
         let (offset, grown) = self.place_set(to, count)?;
         self.write_at(&grown, offset, &bytes)?;
         let parsed = set::parse(&bytes, offset).map_err(|_| Errno::Eio)?;
