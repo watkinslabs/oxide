@@ -344,6 +344,7 @@ pub fn stack(config: crate::config::Config, upper: Option<InodeRef>, lowers: &[I
         config, creator_cred: vfs::Cred::root(), upper: upper_layer, lower, workdir, indexdir: None,
         xino: crate::xino::Mode::Off, namelen: crate::limits::NAME_MAX,
         noxattr: core::sync::atomic::AtomicBool::new(false), root: root.clone(),
+        inode_cache: sync::Spinlock::new(BTreeMap::new()),
     });
     (stack, root)
 }

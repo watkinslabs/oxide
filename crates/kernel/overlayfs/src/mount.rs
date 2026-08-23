@@ -242,6 +242,7 @@ fn build(config: Config, upper: Option<InodeRef>, workdir: Option<InodeRef>,
         namelen: NAME_MAX,
         noxattr: AtomicBool::new(false),
         root,
+        inode_cache: sync::Spinlock::new(alloc::collections::BTreeMap::new()),
     }))
 }
 

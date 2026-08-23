@@ -90,6 +90,38 @@ fn a_lower_file_reads_through() {
 }
 
 #[test]
+fn repeated_lookup_returns_the_cached_overlay_inode() {
+    let (l, _up, lo) = image();
+    mkfile(&lo, "f", b"image contents");
+    let fs = OverlayFs::open(OPTS, &l.resolve(), true).unwrap();
+    let first = fs.root_inode().lookup("f").unwrap();
+    let second = fs.root_inode().lookup("f").unwrap();
+    assert!(Arc::ptr_eq(&first, &second), "one real object has one overlay inode");
+}
+
+#[test]
+fn pure_upper_lookup_returns_the_cached_overlay_inode() {
+    let (l, up, _lo) = image();
+    mkfile(&up, "f", b"upper");
+    let fs = OverlayFs::open(OPTS, &l.resolve(), true).unwrap();
+    let first = fs.root_inode().lookup("f").unwrap();
+    let second = fs.root_inode().lookup("f").unwrap();
+    assert!(Arc::ptr_eq(&first, &second), "a pure upper object has one inode");
+}
+
+#[test]
+fn indexed_lower_hardlinks_share_one_overlay_inode() {
+    let (l, _up, lo) = image();
+    let first = mkfile(&lo, "a", b"image");
+    lo.link_child(&first, "b", &CreateCtx::root()).unwrap();
+    let fs = OverlayFs::open("lowerdir=/lower,upperdir=/upper,workdir=/work,index=on",
+                             &l.resolve(), true).unwrap();
+    let a = fs.root_inode().lookup("a").unwrap();
+    let b = fs.root_inode().lookup("b").unwrap();
+    assert!(Arc::ptr_eq(&a, &b), "indexed hardlinks use one real inode key");
+}
+
+#[test]
 fn writing_a_lower_file_copies_it_up_and_leaves_the_image_alone() {
     let (l, up, lo) = image();
     mkfile(&lo, "f", b"image");

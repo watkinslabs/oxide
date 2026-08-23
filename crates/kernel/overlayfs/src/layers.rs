@@ -11,9 +11,11 @@
 extern crate alloc;
 
 use alloc::string::String;
-use alloc::sync::Arc;
+use alloc::collections::BTreeMap;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
+use sync::{Inode as InodeClass, Spinlock};
 use vfs::InodeRef;
 use vfs::inode_ops::CreateCtx;
 
@@ -87,6 +89,10 @@ pub struct LayerStack {
     /// The mount root's own object list. An absolute redirect restarts its
     /// walk here, so it is kept once rather than rebuilt per lookup.
     pub root: OvlEntry,
+    /// Linux's overlay superblock inode cache: one live overlay inode for one
+    /// real object identity. Weak values let the ordinary inode lifetime own
+    /// reclamation; this map is only the per-mount lookup index.
+    pub(crate) inode_cache: Spinlock<BTreeMap<usize, Weak<vfs::Inode>>, InodeClass>,
 }
 
 impl LayerStack {

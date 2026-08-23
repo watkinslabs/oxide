@@ -84,6 +84,25 @@ pub fn report_ino(stack: &LayerStack, entry: &OvlEntry) -> u64 {
     }
 }
 
+/// Select the real inode key Linux uses for overlay inode hashing. A lower
+/// inode remains the key when copy-up must preserve its identity; an
+/// unindexed lower hardlink that will be broken on copy-up is intentionally
+/// left uncached. A pure upper object uses its upper inode directly.
+/// # C: O(1)
+fn cache_key(stack: &LayerStack, entry: &OvlEntry) -> Option<usize> {
+    let real = entry.real()?;
+    let Some(lower) = entry.lower.first() else {
+        return entry.upper.as_ref().map(|i| Arc::as_ptr(i) as usize);
+    };
+    let is_dir = real.file_type() == FileType::Directory;
+    let by_lower = if stack.upper.is_none() { true }
+        else if stack.indexdir.is_some() { true }
+        else if !is_dir && real.nlink() > 1 { false }
+        else { true };
+    if by_lower { Some(Arc::as_ptr(&lower.inode) as usize) }
+    else { entry.upper.as_ref().map(|i| Arc::as_ptr(i) as usize) }
+}
+
 /// Build the overlay inode for `entry`.
 ///
 /// Its mode, size, owner and timestamps are the real object's, so the merge is
@@ -92,6 +111,22 @@ pub fn report_ino(stack: &LayerStack, entry: &OvlEntry) -> u64 {
 /// # C: O(1)
 pub fn make_inode(stack: &Arc<LayerStack>, entry: OvlEntry, parent: Option<Arc<OvlInode>>,
                   name: &str) -> InodeRef {
+    let key = cache_key(stack, &entry);
+    if let Some(key) = key {
+        let mut cache = stack.inode_cache.lock();
+        if let Some(existing) = cache.get(&key).and_then(|w| w.upgrade()) { return existing; }
+        cache.remove(&key);
+        let inode = build_inode(stack, entry, parent, name);
+        cache.insert(key, Arc::downgrade(&inode));
+        return inode;
+    }
+    build_inode(stack, entry, parent, name)
+}
+
+/// Build one uncached overlay inode after the cache owner has selected its
+/// canonical identity. # C: O(1)
+fn build_inode(stack: &Arc<LayerStack>, entry: OvlEntry, parent: Option<Arc<OvlInode>>,
+               name: &str) -> InodeRef {
     let real = entry.real();
     let st = real.as_ref().map(|r| r.getattr(&Idmap::identity()));
     let mode = st.as_ref().map(|s| s.mode).unwrap_or(S_IFDIR as u32 | 0o755);
