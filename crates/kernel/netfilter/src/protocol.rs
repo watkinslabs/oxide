@@ -66,6 +66,22 @@ pub mod nft_msg {
     pub const NFT_MSG_NEWOBJ:     u8 = 18;
     pub const NFT_MSG_GETOBJ:     u8 = 19;
     pub const NFT_MSG_DELOBJ:     u8 = 20;
+    pub const NFT_MSG_NEWFLOWTABLE: u8 = 21;
+    pub const NFT_MSG_GETFLOWTABLE: u8 = 22;
+    pub const NFT_MSG_DELFLOWTABLE: u8 = 23;
+    pub const NFT_MSG_DESTROYFLOWTABLE: u8 = 29;
+}
+
+pub mod nfta_flowtable {
+    pub const NFTA_FLOWTABLE_TABLE: u16 = 1;
+    pub const NFTA_FLOWTABLE_NAME: u16 = 2;
+    pub const NFTA_FLOWTABLE_HOOK: u16 = 3;
+    pub const NFTA_FLOWTABLE_USE: u16 = 4;
+    pub const NFTA_FLOWTABLE_HANDLE: u16 = 5;
+    pub const NFTA_FLOWTABLE_FLAGS: u16 = 7;
+    pub const NFTA_FLOWTABLE_HOOK_NUM: u16 = 1;
+    pub const NFTA_FLOWTABLE_HOOK_PRIORITY: u16 = 2;
+    pub const NFTA_FLOWTABLE_HOOK_DEVS: u16 = 3;
 }
 
 pub mod nfta_obj {

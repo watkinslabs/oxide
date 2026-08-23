@@ -13,6 +13,8 @@ impl NetStack {
             bridge_pending: Spinlock::new(BTreeMap::new()),
             inet: super::inet_tables::InetTableLock::new(BTreeMap::new()),
             conntrack: Spinlock::new(BTreeMap::new()),
+            flow_offload: Spinlock::new(BTreeMap::new()),
+            flowtables: Spinlock::new(BTreeMap::new()),
             next_ip_id: crate::fib_lock::FibLock::new(1),
             ipv4_reasm: crate::ipv4_reasm::ReasmTable::new(),
             ipv6_reasm: crate::ipv6_reasm::ReasmTable::new(),

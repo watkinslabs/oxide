@@ -50,6 +50,30 @@ pub(super) fn handle_nft(
             });
             nlmsg_ack(req, 0)
         }
+        nft_msg::NFT_MSG_NEWFLOWTABLE => {
+            let name = match find_str_attr(attrs, nfta_flowtable::NFTA_FLOWTABLE_NAME) {
+                Some(s) if !s.is_empty() => s, _ => return nlmsg_ack(req, -22),
+            };
+            let hook = find_bytes_attr(attrs, nfta_flowtable::NFTA_FLOWTABLE_HOOK)
+                .and_then(|h| find_u32_attr(h, nfta_flowtable::NFTA_FLOWTABLE_HOOK_NUM));
+            if hook != Some(::net::netfilter_hook::NF_INET_FORWARD) {
+                return nlmsg_ack(req, -22);
+            }
+            ::net::global_stack().register_flowtable_in(namespace, nfg.nfgen_family, name);
+            nlmsg_ack(req, 0)
+        }
+        nft_msg::NFT_MSG_DELFLOWTABLE | nft_msg::NFT_MSG_DESTROYFLOWTABLE => {
+            let name = match find_str_attr(attrs, nfta_flowtable::NFTA_FLOWTABLE_NAME) {
+                Some(s) if !s.is_empty() => s, _ => return nlmsg_ack(req, -22),
+            };
+            ::net::global_stack().unregister_flowtable_in(namespace, nfg.nfgen_family, name);
+            nlmsg_ack(req, 0)
+        }
+        nft_msg::NFT_MSG_GETFLOWTABLE => {
+            // The packet-path owner has no dump serializer yet; fail the
+            // request explicitly instead of reporting a false empty success.
+            nlmsg_ack(req, -EOPNOTSUPP)
+        }
         nft_msg::NFT_MSG_DELTABLE => {
             let name = match find_str_attr(attrs, nfta_table::NFTA_TABLE_NAME) {
                 Some(s) => s, None => return nlmsg_ack(req, -22),

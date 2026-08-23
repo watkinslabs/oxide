@@ -79,6 +79,7 @@ impl Action {
                 apply_reject(p, *reject_type, *icmp_code, *family, hook)
             }
             Self::TproxyAssign { addr, port } => apply_tproxy(p, *addr, *port, family, hook),
+            Self::FlowOffload { table } => crate::global_stack().offload_flow(table, p, family, hook),
             Self::Fwd { oif, gateway, nfproto } => apply_fwd(p, *oif, *gateway, *nfproto, family),
             Self::Dup { gateway, oif } => apply_dup(p, *gateway, *oif, family),
             Self::Log { group, level, prefix, snaplen, qthreshold, flags } =>
@@ -667,6 +668,9 @@ mod tests {
         let mut pkt = Pkt::from_owned(vec![0; 20]);
         let action = Action::FlowOffload { table: String::new() };
         assert_eq!(action.apply(&mut pkt, 2), Err(ApplyError::Unsupported));
+        let action = Action::FlowOffload { table: String::from("ft") };
+        assert_eq!(action.apply_at(&mut pkt, 2, crate::netfilter_hook::NF_INET_FORWARD),
+            Err(ApplyError::Invalid));
     }
 
     #[test]

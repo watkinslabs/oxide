@@ -1,4 +1,5 @@
 use super::*;
+use alloc::string::String;
 
 mod tcp_entry_wait;
 // The listening-socket record, split out at the per-file size cutoff.
@@ -511,6 +512,12 @@ pub struct NetStack {
     /// One conntrack table per network namespace; packets carry the entry
     /// reference after the priority-ordered tracking hook attaches it.
     pub(crate) conntrack: Spinlock<BTreeMap<u64, Arc<::conntrack::CtNet>>, StackLockClass>,
+    /// Namespace-owned software flowtables. Entries are installed only after
+    /// conntrack confirmation and are consulted before the ordinary hook path.
+    pub(crate) flow_offload: Spinlock<BTreeMap<(u64, String, ::conntrack::tuple::Tuple),
+        Arc<super::flow_offload::FlowEntry>>, StackLockClass>,
+    /// Configured nftables flowtable names, scoped by network namespace and family.
+    pub(crate) flowtables: Spinlock<BTreeMap<(u64, u8, String), ()>, StackLockClass>,
     /// Monotonic id for IP packets we emit.
     pub(crate) next_ip_id: crate::fib_lock::FibLock<u16, StackLockClass>,
     /// Monotonic ISN base for TCP active opens.

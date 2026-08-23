@@ -25,7 +25,7 @@ pub use nl::handle;
 pub use nflog::log_packet;
 pub use protocol::{
     Nfgenmsg, NFT_CHAIN_POLICY_ACCEPT, NFT_CHAIN_POLICY_DROP, hook, nft_msg, nfta_chain,
-    nfta_gen, nfta_obj, nfta_rule, nfta_set, nfta_set_elem, nfta_table, subsys,
+    nfta_flowtable, nfta_gen, nfta_obj, nfta_rule, nfta_set, nfta_set_elem, nfta_table, subsys,
 };
 pub use state::{
     NftChain, NftObject, NftRule, NftSet, NftSetElem, NftTable, chain_insert, chain_insert_in,

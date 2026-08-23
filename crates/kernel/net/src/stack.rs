@@ -81,6 +81,7 @@ pub const SAVED_SYN_MAX: usize = 60 + 60;
 mod types;
 mod inet_tables;
 mod conntrack;
+mod flow_offload;
 mod pmtu_cache;
 pub(crate) use pmtu_cache::IPV4_MIN_PMTU;
 mod core;
