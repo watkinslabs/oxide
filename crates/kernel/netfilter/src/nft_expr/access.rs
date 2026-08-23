@@ -5,6 +5,7 @@
 //! when the same lookup fails — it never substitutes a fabricated value.
 
 extern crate alloc;
+use alloc::sync::Arc;
 
 use conntrack::tuple::{InetAddr, Tuple};
 
@@ -60,6 +61,8 @@ pub trait CtAccess {
     /// the current packet. `None` when the count cannot be maintained.
     /// # C: O(N conns on the list)
     fn connlimit_count(&self, _index: usize) -> Option<u32> { None }
+    /// The canonical connection object, when the packet is tracked. # C: O(1)
+    fn flow(&self) -> Option<Arc<conntrack::Conn>> { None }
 }
 
 /// One route lookup's answer.
@@ -170,11 +173,12 @@ pub trait ObjectAccess {
     /// Run the named object's own evaluation, returning the verdict it set,
     /// or `None` when no such object exists. # C: O(cost of the object)
     fn eval(&self, _family: u8, _table: &str, _obj_type: u32, _name: &str,
-            _pkt_len: u64, _now_ns: u64) -> Option<i32> { None }
+            _pkt_len: u64, _now_ns: u64, _ct: Option<&dyn CtAccess>) -> Option<i32> { None }
     /// Object an element of `set` points at, keyed by the register bytes.
     /// # C: O(cost of the set lookup)
     fn eval_from_set(&self, _family: u8, _table: &str, _set_id: Option<usize>,
-                     _set: &str, _key: &[u8], _pkt_len: u64, _now_ns: u64) -> Option<i32> {
+                     _set: &str, _key: &[u8], _pkt_len: u64, _now_ns: u64,
+                     _ct: Option<&dyn CtAccess>) -> Option<i32> {
         None
     }
 }

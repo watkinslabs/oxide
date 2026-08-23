@@ -98,6 +98,7 @@ pub fn has_chain_in_priority_range(namespace: u64, hook_id: u32, family: u8,
 
 struct LiveCt<'a> {
     conn: Option<&'a conntrack::Conn>,
+    owner: Option<alloc::sync::Arc<conntrack::Conn>>,
     info: u8,
     dir: u8,
     now: u64,
@@ -122,19 +123,20 @@ struct LiveObjects<'a> {
 
 impl ObjectAccess for LiveObjects<'_> {
     fn eval(&self, family: u8, table: &str, obj_type: u32, name: &str,
-            pkt_len: u64, now_ns: u64) -> Option<i32> {
+            pkt_len: u64, now_ns: u64, ct: Option<&dyn crate::nft_expr::access::CtAccess>) -> Option<i32> {
         if family != self.family || table != self.table { return None; }
         let object = crate::objects_snapshot_in(self.namespace).into_iter().find(|o| {
             o.table_family == family && o.table_name == table
                 && o.ty == obj_type && o.name == name
         })?;
-        object.state.eval(pkt_len, now_ns)
+        object.state.eval_for(pkt_len, now_ns, ct)
     }
 
     fn eval_from_set(&self, family: u8, table: &str, set_id: Option<usize>,
-                     _set: &str, key: &[u8], pkt_len: u64, now_ns: u64) -> Option<i32> {
+                     _set: &str, key: &[u8], pkt_len: u64, now_ns: u64,
+                     ct: Option<&dyn crate::nft_expr::access::CtAccess>) -> Option<i32> {
         if family != self.family || table != self.table { return None; }
-        self.generation.object_state(set_id?, key)?.eval(pkt_len, now_ns)
+        self.generation.object_state(set_id?, key)?.eval_for(pkt_len, now_ns, ct)
     }
 }
 
@@ -324,6 +326,7 @@ impl CtAccess for LiveCt<'_> {
                 && c.helper.lock().is_none()
         })
     }
+    fn flow(&self) -> Option<alloc::sync::Arc<conntrack::Conn>> { self.owner.clone() }
 }
 
 fn eval_context(input: &crate::eval_context::Input<'_>) -> EvalResult {
@@ -332,7 +335,7 @@ fn eval_context(input: &crate::eval_context::Input<'_>) -> EvalResult {
     let pkt = input.pkt;
     let family = input.family;
     let mut mark = input.mark;
-    let live_ct = LiveCt { conn: input.ct, info: input.ctinfo, dir: input.ct_dir,
+    let live_ct = LiveCt { conn: input.ct, owner: input.ct_owner.clone(), info: input.ctinfo, dir: input.ct_dir,
                            now: input.timestamp_ns / 1_000_000_000 };
     let live_route = LiveRoute { input };
     let live_socket = input.live.then(|| LiveSocket {

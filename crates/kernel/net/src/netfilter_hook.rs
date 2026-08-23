@@ -5,6 +5,7 @@
 // to keep that file under the 1000-line cap (08§7).
 
 extern crate alloc;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicPtr, Ordering};
 #[cfg(any(test, feature = "hosted"))]
@@ -46,7 +47,7 @@ pub struct NfHookCtx<'a> {
     pub ingress: Option<NetIfaceId>,
     pub egress: Option<NetIfaceId>,
     pub timestamp_ns: u64,
-    pub ct: Option<&'a conntrack::Conn>,
+    pub ct: Option<Arc<conntrack::Conn>>,
     pub ct_available: bool,
     pub ctinfo: u8,
     pub ct_dir: u8,
@@ -67,7 +68,7 @@ impl<'a> NfHookCtx<'a> {
     /// Context retaining one canonical packet buffer's metadata. # C: O(1)
     pub fn packet(namespace: u64, hook_id: u32, p: &'a Pkt, family: u8,
                   ingress: Option<NetIfaceId>) -> Self {
-        let (ct, ct_available, ctinfo, ct_dir) = p.conntrack_state()
+        let (ct, ct_available, ctinfo, ct_dir) = p.conntrack_state_owned()
             .map(|(_, ct, info, dir)| (ct, true, info, dir))
             .unwrap_or((None, false, conntrack::uapi::IP_CT_UNTRACKED, 0));
         Self { namespace, hook_id, pkt: p.data(), ll: p.mac_frame().unwrap_or(&[]), family,

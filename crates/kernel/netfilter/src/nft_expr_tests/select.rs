@@ -272,7 +272,8 @@ fn an_object_reference_runs_the_object_it_names() {
     struct Objects;
     impl crate::nft_expr::access::ObjectAccess for Objects {
         fn eval(&self, _family: u8, _table: &str, _t: u32, name: &str,
-                _pkt_len: u64, _now_ns: u64) -> Option<i32> {
+                _pkt_len: u64, _now_ns: u64,
+                _ct: Option<&dyn crate::nft_expr::access::CtAccess>) -> Option<i32> {
             if name == "spent" { Some(NFT_BREAK) } else { None }
         }
     }

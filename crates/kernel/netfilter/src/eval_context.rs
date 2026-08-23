@@ -15,6 +15,7 @@ pub(crate) struct Input<'a> {
     pub egress: Option<net::NetIfaceId>,
     pub timestamp_ns: u64,
     pub ct: Option<&'a conntrack::Conn>,
+    pub ct_owner: Option<alloc::sync::Arc<conntrack::Conn>>,
     pub ct_available: bool,
     pub ctinfo: u8,
     pub ct_dir: u8,
@@ -29,7 +30,8 @@ impl<'a> Input<'a> {
                              mark: u32) -> Self {
         Self { namespace, hook_id, pkt, ll: &[], family, link_protocol: None, mark, priority: 0,
             ingress: None, egress: None, timestamp_ns: 0,
-            ct: None, ct_available: false, ctinfo: conntrack::uapi::IP_CT_UNTRACKED, ct_dir: 0,
+            ct: None, ct_owner: None, ct_available: false,
+            ctinfo: conntrack::uapi::IP_CT_UNTRACKED, ct_dir: 0,
             socket: None,
             live: false, chain_min_priority: None, chain_max_priority: None }
     }
@@ -40,7 +42,7 @@ impl<'a> Input<'a> {
         Self { namespace: hook.namespace, hook_id: hook.hook_id, pkt: hook.pkt, ll: hook.ll,
             family: hook.family, link_protocol: hook.link_protocol, mark: hook.mark, priority: hook.priority,
             ingress: hook.ingress, egress: hook.egress, timestamp_ns: hook.timestamp_ns,
-            ct: hook.ct, ct_available: hook.ct_available,
+            ct: hook.ct.as_deref(), ct_owner: hook.ct.clone(), ct_available: hook.ct_available,
             ctinfo: hook.ctinfo, ct_dir: hook.ct_dir, socket, live: true,
             chain_min_priority: hook.chain_min_priority, chain_max_priority: hook.chain_max_priority }
     }

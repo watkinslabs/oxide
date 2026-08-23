@@ -5,6 +5,7 @@
 //! must behave identically whichever way a ruleset reaches them.
 
 extern crate alloc;
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
@@ -156,7 +157,15 @@ pub enum ObjectState {
     Quota { state: QuotaState, quota: u64, invert: bool },
     Limit { state: LimitState, limit_type: u32, rate: u64, nsecs: u64,
             tokens_max: u64, invert: bool },
+    Connlimit { flows: Lock<BTreeMap<ConnlimitKey, Option<alloc::sync::Arc<conntrack::Conn>>>>, limit: u32,
+                invert: bool },
     Unsupported,
+}
+
+#[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum ConnlimitKey {
+    Tracked(u64),
+    Untracked(conntrack::tuple::Tuple),
 }
 
 impl core::fmt::Debug for ObjectState {
@@ -165,6 +174,7 @@ impl core::fmt::Debug for ObjectState {
             Self::Counter { .. } => "Counter",
             Self::Quota { .. } => "Quota",
             Self::Limit { .. } => "Limit",
+            Self::Connlimit { .. } => "Connlimit",
             Self::Unsupported => "Unsupported",
         })
     }
@@ -208,12 +218,25 @@ impl ObjectState {
                     invert: find_u32_be(data, NFTA_LIMIT_FLAGS)
                         .is_some_and(|f| f & NFT_LIMIT_F_INV != 0) }
             }
+            crate::nft_expr::uapi::NFT_OBJECT_CONNLIMIT => {
+                let limit = find_u32_be(data, crate::nft_expr::uapi::NFTA_CONNLIMIT_COUNT)
+                    .unwrap_or(0);
+                let invert = find_u32_be(data, crate::nft_expr::uapi::NFTA_CONNLIMIT_FLAGS)
+                    .is_some_and(|f| f & crate::nft_expr::flags::NFT_CONNLIMIT_F_INV != 0);
+                Self::Connlimit { flows: Lock::new(BTreeMap::new()), limit, invert }
+            }
             _ => Self::Unsupported,
         }
     }
 
     /// Evaluate one packet against the persistent object state. # C: O(1)
     pub fn eval(&self, pkt_len: u64, now_ns: u64) -> Option<i32> {
+        self.eval_for(pkt_len, now_ns, None)
+    }
+
+    /// Evaluate one object with the live packet's connection identity. # C: O(N flows)
+    pub fn eval_for(&self, pkt_len: u64, now_ns: u64,
+                    ct: Option<&dyn crate::nft_expr::access::CtAccess>) -> Option<i32> {
         use crate::nft_expr::uapi::NFT_BREAK;
         match self {
             Self::Counter { packets, bytes } => {
@@ -231,6 +254,24 @@ impl ObjectState {
                 let over = state.charge(cost, *tokens_max, now_ns);
                 (over ^ *invert).then_some(NFT_BREAK)
             }
+            Self::Connlimit { flows, limit, invert } => {
+                let Some(ct) = ct else { return Some(crate::nft_expr::uapi::NF_DROP) };
+                let mut flows = flows.lock();
+                let now = now_ns / crate::nft_expr::limits::NSEC_PER_SEC;
+                flows.retain(|_, flow| flow.as_ref().is_none_or(|flow| {
+                    !flow.dying() && !flow.expired(now)
+                }));
+                let (key, value) = if let Some(flow) = ct.flow() {
+                    (ConnlimitKey::Tracked(flow.id), Some(flow))
+                } else if let Some(tuple) = ct.tuple(0) {
+                    (ConnlimitKey::Untracked(tuple), None)
+                } else {
+                    return Some(crate::nft_expr::uapi::NF_DROP);
+                };
+                flows.entry(key).or_insert(value);
+                let over = flows.len() as u32 > *limit;
+                (over ^ *invert).then_some(NFT_BREAK)
+            }
             Self::Unsupported => Some(NFT_BREAK),
         }
     }
@@ -239,7 +280,11 @@ impl ObjectState {
 #[cfg(test)]
 mod tests {
     use super::ObjectState;
-    use crate::nft_expr::uapi::{NFTA_QUOTA_BYTES, NFT_OBJECT_QUOTA, NFT_BREAK};
+    use crate::nft_expr::access::CtAccess;
+    use crate::nft_expr::uapi::{NFTA_CONNLIMIT_COUNT, NFTA_QUOTA_BYTES,
+                                NFT_OBJECT_CONNLIMIT, NFT_OBJECT_QUOTA, NFT_BREAK};
+    use alloc::sync::Arc;
+    use conntrack::tuple::Tuple;
 
     fn attr(kind: u16, bytes: &[u8]) -> alloc::vec::Vec<u8> {
         let len = 4 + bytes.len();
@@ -256,6 +301,47 @@ mod tests {
         let state = ObjectState::from_wire(NFT_OBJECT_QUOTA, &data);
         assert_eq!(state.eval(6, 0), None);
         assert_eq!(state.eval(5, 0), Some(NFT_BREAK));
+    }
+
+    struct LiveFlow(Arc<conntrack::Conn>);
+    impl CtAccess for LiveFlow {
+        fn ctinfo(&self) -> u8 { 0 }
+        fn flow(&self) -> Option<Arc<conntrack::Conn>> { Some(self.0.clone()) }
+    }
+
+    #[test]
+    fn connlimit_object_counts_each_flow_once_and_has_its_own_list() {
+        let data = attr(NFTA_CONNLIMIT_COUNT, &1u32.to_be_bytes());
+        let state = ObjectState::from_wire(NFT_OBJECT_CONNLIMIT, &data);
+        let first = LiveFlow(Arc::new(conntrack::Conn::new(1, Tuple::default(), Tuple::default(), 0)));
+        let second = LiveFlow(Arc::new(conntrack::Conn::new(2, Tuple::default(), Tuple::default(), 0)));
+        first.0.refresh(0, 60);
+        second.0.refresh(0, 60);
+        assert_eq!(state.eval_for(60, 0, Some(&first)), None);
+        assert_eq!(state.eval_for(60, 0, Some(&first)), None,
+                   "revisiting one conntrack flow must not grow the object list");
+        assert_eq!(state.eval_for(60, 0, Some(&second)), Some(NFT_BREAK));
+        second.0.set_status_bits(conntrack::uapi::IPS_DYING);
+        assert_eq!(state.eval_for(60, 0, Some(&first)), None,
+                   "a dying flow is reaped from the object's conncount list");
+    }
+
+    struct Untracked(Tuple);
+    impl CtAccess for Untracked {
+        fn ctinfo(&self) -> u8 { 0 }
+        fn tuple(&self, _dir: u8) -> Option<Tuple> { Some(self.0) }
+    }
+
+    #[test]
+    fn connlimit_object_counts_untracked_tuples_by_identity() {
+        let data = attr(NFTA_CONNLIMIT_COUNT, &1u32.to_be_bytes());
+        let state = ObjectState::from_wire(NFT_OBJECT_CONNLIMIT, &data);
+        let first = Untracked(Tuple::default());
+        let second = Untracked(Tuple { src: Default::default(), dst: Default::default(),
+                                       l3num: 2, protonum: 6, zone: 0 });
+        assert_eq!(state.eval_for(60, 0, Some(&first)), None);
+        assert_eq!(state.eval_for(60, 0, Some(&first)), None);
+        assert_eq!(state.eval_for(60, 0, Some(&second)), Some(NFT_BREAK));
     }
 }
 
