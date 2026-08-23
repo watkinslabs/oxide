@@ -5158,6 +5158,11 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2623 | MISSING | low | **OverlayFS `default_permissions` was incorrectly recorded as an unconsumed behavior.** Linux retains and shows the option, but its permission operation always checks the overlay inode and then the real layer under the stashed credentials; there is no runtime branch on this option in the reference. The remaining `override_creds` gap stays open separately. | Linux 7.2.0-rc4 overlay permission implementation and mount-option renderer; the repository's `Config::default_permissions` is likewise parse/show state with no behavior branch. | B2623 |
+### B2625-ext4-single-data-cache
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 0909bb936 | DEFECT | med | **ext4's duplicate regular-file data stores were removed.** The inode frame store is now the sole owner for reads, writes, mappings, invalidation and writeback; path helpers use the same live store through the mount's weak index. | Linux ext4's one inode `address_space`; source commit `0909bb936`; ext4 and image regression suites pass, including the no-default-feature build. | 0909bb936 |
 ### B2624-overlay-override-creds
 
 | Status | Class | Sev | Issue | Evidence | Owner |
