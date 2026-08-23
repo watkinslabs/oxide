@@ -72,7 +72,7 @@ impl<S: SectorSource> Volume<S> {
             if raw.len() != expected { return Err(Errno::Eio); }
             return Ok(raw);
         }
-        self.sb.codec.decompress_exact(&raw, expected)
+        self.read_result(self.sb.codec.decompress_exact(&raw, expected))
     }
 
     /// The decompressed contents of a fragment block, whole.
@@ -82,12 +82,12 @@ impl<S: SectorSource> Volume<S> {
     /// way in.
     /// # C: O(block bytes)
     pub fn read_fragment_block(&self, frag: &Fragment) -> Result<Vec<u8>, Errno> {
-        let len = data_length(frag.size_word)?;
+        let len = self.read_result(data_length(frag.size_word))?;
         if len.is_sparse() { return Err(Errno::Eio); }
         let mut raw = alloc::vec![0u8; len.on_disk];
         self.read_at(frag.block, &mut raw)?;
         if !len.compressed { return Ok(raw); }
-        self.sb.codec.decompress_bounded(&raw, self.sb.block_size as usize)
+        self.read_result(self.sb.codec.decompress_bounded(&raw, self.sb.block_size as usize))
     }
 
     /// Read `buf.len()` bytes of a file starting at `off`, returning how many

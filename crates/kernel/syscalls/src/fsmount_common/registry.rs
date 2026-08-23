@@ -57,6 +57,7 @@ const TRACEFS_MAGIC: u64 = 0x7472_6163;
 const CONFIGFS_MAGIC: u64 = 0x6265_6570;
 const AUTOFS_SUPER_MAGIC: u64 = 0x0187;
 const BINFMTFS_MAGIC: u64 = 0x4249_4e4d;
+const SQUASHFS_MAGIC: u64 = squashfs::SQUASHFS_SUPER_MAGIC;
 
 static FS_TYPES_REGISTERED: Spinlock<bool, LockClass> = Spinlock::new(false);
 
@@ -364,6 +365,24 @@ fn register_filesystems() {
                   _p: &[vfs::fs::FsParameter]| -> R {
         f2fs_fill(ty, source, d, sb_flags)
     })));
+    // SquashFS is an immutable block filesystem. Linux registers it with both
+    // the device requirement and idmapped-mount capability, then forces
+    // SB_RDONLY in get_tree before the superblock is published. Resolve only
+    // read access here: asking for a writable mount must not make a read-only
+    // format fail merely because the block node is not writable.
+    let _ = register_fs(FsType::with_parameters(
+        "squashfs", SQUASHFS_MAGIC, FsFlags::FS_REQUIRES_DEV | FsFlags::FS_ALLOW_IDMAP,
+        Box::new(|ty, source: Option<&str>, _t: &str, d: &str, _sb_flags: u64,
+                  _p: &[vfs::fs::FsParameter]| -> R {
+            let source = source.ok_or(vfs::VfsError::Enoent)?;
+            let (dev, _dev_t) = resolve_block_source(source, vfs::MAY_READ)?;
+            let opts = squashfs::opts::parse(squashfs::Options::defaults(), d)
+                .map_err(squashfs::mount::errno_to_vfs)?;
+            let fs = squashfs::SquashFs::open_with(dev, source, false, opts)?;
+            let root = fs.root_inode()?;
+            let fs: Arc<dyn vfs::fs::FileSystem> = fs;
+            mounted(ty, fs, Some(root), source, vfs::superblock::SB_RDONLY)
+        }), Some(squashfs::SQUASHFS_PARAMS)));
     // procfs declares the three options it ENFORCES (`gid=`, `hidepid=`,
     // `subset=`) and builds a per-mount root that carries them. The table was an
     // empty list while the root inode was a process-global singleton — there was

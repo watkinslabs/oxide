@@ -48,7 +48,7 @@ impl<S: SectorSource> Volume<S> {
     pub(crate) fn read_at(&self, off: u64, buf: &mut [u8]) -> Result<(), Errno> {
         let end = off.checked_add(buf.len() as u64).ok_or(Errno::Eio)?;
         if end > self.sb.bytes_used { return Err(Errno::Eio); }
-        self.src.read_sectors(off, buf)
+        self.read_result(self.src.read_sectors(off, buf))
     }
 
     /// A whole uncompressed TABLE, read straight off the medium.
@@ -76,7 +76,7 @@ impl<S: SectorSource> Volume<S> {
         self.read_at(body, &mut raw)?;
         let next = body.checked_add(len.on_disk as u64).ok_or(Errno::Eio)?;
         let data = if len.compressed {
-            self.sb.codec.decompress_bounded(&raw, METADATA_SIZE)?
+            self.read_result(self.sb.codec.decompress_bounded(&raw, METADATA_SIZE))?
         } else {
             raw
         };

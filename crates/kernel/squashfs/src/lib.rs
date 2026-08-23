@@ -34,6 +34,8 @@
 //! - `mount`:      the VFS-facing filesystem, its inodes and their operations.
 
 extern crate alloc;
+#[cfg(any(test, feature = "hosted"))]
+extern crate std;
 
 pub mod uapi;
 pub mod limits;
@@ -46,7 +48,7 @@ pub mod mount;
 
 pub use compress::{Codec, CodecError};
 pub use mount::{SquashFs, SQUASHFS_NAME};
-pub use opts::{Errors, Options};
+pub use opts::{Errors, Options, SQUASHFS_PARAMS};
 pub use superblock::{Super, SuperError};
 pub use uapi::{SQUASHFS_MAGIC, SQUASHFS_SUPER_MAGIC};
 pub use volume::{DirEntry, Inode, Kind, MountError, Volume};

@@ -6,6 +6,7 @@
 use alloc::string::{String, ToString};
 
 use syscall::errno::Errno;
+use vfs::fs::{FsParamSpec, FsParamType};
 
 /// What a failed read does.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -72,6 +73,13 @@ pub fn show(opts: Options) -> String {
         Errors::Panic => ",errors=panic".to_string(),
     }
 }
+
+/// Parameters the registered filesystem can consume. `threads` remains
+/// intentionally absent: this build has no decompressor worker owner, and a
+/// parameter table must not claim a concurrency mode that no read path uses.
+pub const SQUASHFS_PARAMS: &[FsParamSpec] = &[
+    FsParamSpec::value("errors", FsParamType::String),
+];
 
 #[cfg(test)]
 #[path = "tests/opts.rs"]

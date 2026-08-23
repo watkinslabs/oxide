@@ -2731,6 +2731,7 @@ dependencies = [
  "socket",
  "softirq",
  "sound",
+ "squashfs",
  "sync",
  "syscall",
  "sysfs",

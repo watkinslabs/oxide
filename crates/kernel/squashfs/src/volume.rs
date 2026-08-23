@@ -84,6 +84,18 @@ impl From<Errno> for MountError {
 }
 
 impl<S: SectorSource> Volume<S> {
+    /// Apply the reference's `errors=panic` policy to a failed medium or
+    /// decompression operation. Structural lookup refusals remain ordinary
+    /// `EIO` results; this hook is used only by the byte-reading layers below.
+    /// # C: O(1)
+    pub(crate) fn read_result<T>(&self, result: Result<T, Errno>) -> Result<T, Errno> {
+        match result {
+            Ok(value) => Ok(value),
+            Err(_) if self.opts.errors == crate::opts::Errors::Panic => panic!("squashfs read failed"),
+            Err(err) => Err(err),
+        }
+    }
+
     /// Mount a volume, reading and bounding every index table.
     ///
     /// The tables are read here and not lazily because each one's validity is

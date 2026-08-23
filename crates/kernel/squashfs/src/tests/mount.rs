@@ -2,7 +2,7 @@
 //! image-length refusal that only a live source (not a bare byte slice) can
 //! prove.
 
-use crate::opts::Options;
+use crate::opts::{Errors, Options};
 use crate::superblock::SuperError;
 use crate::test_image::Builder;
 use crate::volume::{MountError, Volume};
@@ -51,4 +51,20 @@ fn empty_root_mounts_and_lists_nothing() {
     let vol = Volume::mount_with(img, Options::defaults()).unwrap();
     let root = vol.read_inode(vol.root_reference()).unwrap();
     assert!(vol.read_dir(&root).unwrap().is_empty());
+}
+
+#[test]
+fn errors_panic_turns_a_corrupt_metadata_read_into_a_kernel_panic() {
+    let mut bytes = Builder::new().file("a", b"hello").build_bytes();
+    // The fixture's file body starts immediately after the superblock, so the
+    // next word is the inode-table metadata length. Clearing its uncompressed
+    // bit makes the valid raw payload pass through the zlib decoder and fail.
+    let inode_meta = 96 + b"hello".len();
+    bytes[inode_meta + 1] &= 0x7f;
+    let img = MemImage::from_bytes(1, bytes);
+    let vol = Volume::mount_with(img, Options { errors: Errors::Panic }).unwrap();
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = vol.read_inode(vol.root_reference());
+    }));
+    assert!(panic.is_err(), "errors=panic must not continue after a read failure");
 }
