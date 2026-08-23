@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B253001-worktree-removal-policy-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B253001 | INFRA | high | The historical worktree-removal incident is covered by the current lane-ownership policy. | `CLAUDE.md` §8 now prohibits removing, pruning, resetting, or repurposing another lane's worktree; the integration owner may remove it only after handoff/finish, clean status, and merge. §Branch retention separately requires remote deletion after merge, worktree removal first, then local-branch deletion. | B253001 |
+
 ### B252901-stale-squashfs-uncompilable-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
