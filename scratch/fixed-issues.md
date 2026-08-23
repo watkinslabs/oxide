@@ -5173,6 +5173,11 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED f95b99a85 | MISSING | med | **f2fs shared-mapping writes now stamp one canonical inode time owner.** The address space binds back to the canonical VFS inode without a lifetime cycle; mapped and buffered writes use the same persistent mtime/ctime path. | Linux `page_mkwrite` → `file_update_time` ordering; `f95b99a85`; f2fs 3713/3713 and the timestamp-persistence regression pass. | f95b99a85 |
+### B2628-f2fs-address-space-readahead
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED fbe20ea2d | MISSING | low | **f2fs now owns address-space readahead through its canonical data cache.** Generic per-open windows and direct hints reach the same run-coalescing filesystem owner; holes and compressed clusters remain with their owning paths. | `fbe20ea2d`; f2fs readahead tests cover contiguous-run request shape, contents, holes, and address-space hint population. | fbe20ea2d |
 ### B2624-overlay-override-creds
 
 | Status | Class | Sev | Issue | Evidence | Owner |
