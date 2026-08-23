@@ -1,7 +1,7 @@
 use crate::{
     misc::debug_obj,
     name_object::{name_string, simple_name, super_name, target},
-    opcode::{self, opcode},
+    opcode::{self, ext_opcode, opcode},
     parser::{choice, comment_scope, n_of, take, take_to_end_of_pkglength, try_with_context, Parser, Propagate},
     pkg_length::pkg_length,
     term_object::{data_ref_object, term_arg, def_cond_ref_of},
@@ -36,6 +36,7 @@ where
         DebugVerbosity::AllScopes,
         "ExpressionOpcode",
         choice!(
+            def_acquire(),
             def_add(),
             def_and(),
             def_buffer(),
@@ -62,6 +63,20 @@ where
             method_invocation() // XXX: this must always appear last. See how we have to parse it to see why.
         ),
     )
+}
+
+fn def_acquire<'a, 'c>() -> impl Parser<'a, 'c, AmlValue>
+where
+    'c: 'a,
+{
+    // Acquire(MutexObject, Timeout) returns TRUE when the timeout expires.
+    ext_opcode(opcode::DEF_ACQUIRE_OP)
+        .then(comment_scope(DebugVerbosity::Scopes, "Acquire",
+            super_name().then(crate::parser::take_u16()).map_with_context(|(target, timeout), context| {
+                let acquired = try_with_context!(context, context.acquire_mutex(target, timeout));
+                (Ok(AmlValue::Integer(u64::from(!acquired))), context)
+            })))
+        .map(|((), result)| Ok(result))
 }
 
 pub fn def_add<'a, 'c>() -> impl Parser<'a, 'c, AmlValue>
@@ -804,4 +819,32 @@ where
                 })
             }),
     )
+}
+
+#[cfg(test)]
+mod mutex_tests {
+    use super::*;
+    use crate::{AmlContext, AmlName, Handler, RegionAccess, Target};
+    use alloc::boxed::Box;
+
+    struct NoIo;
+    impl Handler for NoIo {
+        fn access(&self, _: RegionAccess, _: u64) -> Result<u64, AmlError> {
+            Err(AmlError::RegionAccessUnavailable)
+        }
+    }
+
+    #[test]
+    fn acquire_returns_success_and_release_removes_the_owner() {
+        let mut context = AmlContext::new(Box::new(NoIo), DebugVerbosity::None);
+        let mutex = AmlName::from_str("\\MTX0").unwrap();
+        context.namespace.add_value(mutex, AmlValue::Mutex { sync_level: 0 }).unwrap();
+        let bytes = [0x5b, opcode::DEF_ACQUIRE_OP, b'\\', b'M', b'T', b'X', b'0', 0, 0];
+        let (_, _, result) = match expression_opcode().parse(&bytes, &mut context) {
+            Ok(value) => value,
+            Err(_) => panic!("Acquire did not parse"),
+        };
+        assert!(matches!(result, AmlValue::Integer(0)));
+        assert!(context.release_mutex(Target::Name(AmlName::from_str("\\MTX0").unwrap())).is_ok());
+    }
 }

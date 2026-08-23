@@ -39,12 +39,27 @@ where
             def_continue(),
             def_fatal(),
             def_if_else(),
+            def_release(),
             def_noop(),
             def_notify(),
             def_return(),
             def_while()
         ),
     )
+}
+
+fn def_release<'a, 'c>() -> impl Parser<'a, 'c, ()>
+where
+    'c: 'a,
+{
+    // Release(MutexObject) has no result and must be owned by this method.
+    ext_opcode(opcode::DEF_RELEASE_OP)
+        .then(comment_scope(DebugVerbosity::Scopes, "Release",
+            super_name().map_with_context(|target, context| {
+                try_with_context!(context, context.release_mutex(target));
+                (Ok(()), context)
+            })))
+        .discard_result()
 }
 
 fn def_notify<'a, 'c>() -> impl Parser<'a, 'c, ()>
