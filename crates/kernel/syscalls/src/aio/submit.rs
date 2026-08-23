@@ -7,6 +7,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
+use alloc::vec;
 use alloc::sync::Arc;
 use syscall::errno::Errno;
 use syscall::SyscallArgs;
@@ -208,10 +209,14 @@ fn nowait_read(io: &Iocb, file: &Arc<File>) -> i64 {
     let cnt = crate::userbuf::clamp_rw_count(io.nbytes as usize);
     if cnt == 0 { return 0; }
     if let Err(rv) = validate_user_buf_writable(io.buf, cnt as u64, 1) { return rv; }
-    // SAFETY: [buf, buf+cnt) validated writable below USER_VA_END in the caller's active address space; CPL=0 fills it through that mapping.
-    let dst: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(io.buf as *mut u8, cnt) };
-    match file.pread_nowait(dst, io.offset) {
-        Ok(n) => n as i64,
+    // The range check is admission only. Keep the NOWAIT filesystem call on
+    // kernel-owned storage and publish through exception-table usercopy.
+    let mut bounce = vec![0u8; cnt];
+    match file.pread_nowait(&mut bounce, io.offset) {
+        Ok(n) => match uaccess::copy_to_user(io.buf, &bounce[..n]) {
+            Ok(()) => n as i64,
+            Err(_) => err(Errno::Efault),
+        },
         Err(e) => crate::namei_common::errno_from_vfs(e),
     }
 }
@@ -260,4 +265,3 @@ pub(crate) fn finish(c: &AioContext, uiocb: u64, io: &Iocb, res: i64, resfd: Opt
     c.complete(IoEvent { data: io.data, obj: uiocb, res, res2: 0 });
     if let Some(f) = resfd { signal_resfd(f); }
 }
-
