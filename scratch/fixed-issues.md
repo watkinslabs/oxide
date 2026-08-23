@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B253501-stale-conditional-marker-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B253501 | COVERAGE | med | The historical pre-branch marker observation is stale and has no current source artifact. | The named `einval 1`, `msa6`, `msa7`, and `msa8` markers are absent from the current tracked source; current policy requires harness/targeted-trace evidence rather than retaining ad-hoc instrumentation. | B253501 |
+
 ### B253401-stale-systemctl-enotconn-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |

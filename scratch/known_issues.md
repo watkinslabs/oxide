@@ -388,7 +388,6 @@ here now.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| OPEN | COVERAGE | med | **A marker placed before a conditional branch reads as if the branch was taken.** A probe line emitted immediately above `if !mounted { return EINVAL; }` printed on every call, so `einval 1` appeared in the log while the check was in fact passing — and the two dentry pointers logged beside it were identical, which is what exposed the contradiction. Cost one build-and-boot round. A branch probe belongs INSIDE the branch. | This lane's `msa6`/`msa7` traces versus `msa8`. | unowned |
 
 ### B1736-getlink-single-device
 
