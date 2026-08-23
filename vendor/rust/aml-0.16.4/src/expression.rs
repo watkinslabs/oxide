@@ -638,7 +638,7 @@ pub fn package_element<'a, 'c>() -> impl Parser<'a, 'c, AmlValue>
 where
     'c: 'a,
 {
-    choice!(data_ref_object(), name_string().map(|string| Ok(AmlValue::String(string.as_string()))))
+    choice!(data_ref_object(), name_string().map(|name| Ok(AmlValue::Reference(name))))
 }
 
 fn def_shift_left<'a, 'c>() -> impl Parser<'a, 'c, AmlValue>

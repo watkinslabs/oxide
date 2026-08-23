@@ -279,9 +279,12 @@ fn decode_prw(context: &AmlContext, scope: &AmlName, value: AmlValue,
     let (gpe_device, gpe_number) = match entries.first()? {
         AmlValue::Integer(number) => (None, u8::try_from(*number).ok()?),
         AmlValue::Package(gpe) if gpe.len() >= 2 => {
-            let AmlValue::String(name) = gpe.first()? else { return None; };
             let AmlValue::Integer(number) = gpe.get(1)? else { return None; };
-            let relative = AmlName::from_str(name).ok()?;
+            let relative = match gpe.first()? {
+                AmlValue::Reference(path) => path.clone(),
+                AmlValue::String(name) => AmlName::from_str(name).ok()?,
+                _ => return None,
+            };
             let resolved = context.namespace.search_for_level(&relative, scope).ok()?;
             (Some(resolved.as_string()), u8::try_from(*number).ok()?)
         }
@@ -293,8 +296,11 @@ fn decode_prw(context: &AmlContext, scope: &AmlName, value: AmlValue,
     if button && sleep_state == S5 { sleep_state = S4; }
     let mut power_resources = Vec::new();
     for value in entries.iter().skip(2) {
-        let AmlValue::String(name) = value else { return None; };
-        let relative = AmlName::from_str(name).ok()?;
+        let relative = match value {
+            AmlValue::Reference(path) => path.clone(),
+            AmlValue::String(name) => AmlName::from_str(name).ok()?,
+            _ => return None,
+        };
         let resolved = context.namespace.search_for_level(&relative, scope).ok()?;
         power_resources.push(resolved.as_string());
     }
@@ -368,8 +374,13 @@ pub fn eval_reference_paths(scope: &str, name: &str) -> Vec<String> {
         let base = AmlName::from_str(scope).ok()?;
         let mut paths = Vec::new();
         for entry in entries.iter() {
-            let AmlValue::String(text) = entry else { continue; };
-            let Ok(relative) = AmlName::from_str(text) else { continue; };
+            let relative = match entry {
+                AmlValue::Reference(path) => path.clone(),
+                // Keep accepting the old representation for namespace values
+                // created by native AML methods and already-published tables.
+                AmlValue::String(text) => match AmlName::from_str(text) { Ok(path) => path, Err(_) => continue },
+                _ => continue,
+            };
             if let Ok(resolved) = context.namespace.search_for_level(&relative, &base) {
                 paths.push(resolved.as_string());
             }

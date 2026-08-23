@@ -177,6 +177,8 @@ pub enum AmlValue {
     Boolean(bool),
     Integer(u64),
     String(String),
+    /// A namespace object reference preserved from an AML NameString.
+    Reference(AmlName),
     /// Describes an operation region. Some regions require other objects to be declared under their parent device
     /// (e.g. an `_ADR` object for a `PciConfig` region), in which case an absolute path to the object is stored in
     /// `parent_device`.
@@ -249,6 +251,7 @@ impl AmlValue {
             AmlValue::Boolean(_) => AmlType::Integer,
             AmlValue::Integer(_) => AmlType::Integer,
             AmlValue::String(_) => AmlType::String,
+            AmlValue::Reference(_) => AmlType::ObjReference,
             AmlValue::OpRegion { .. } => AmlType::OpRegion,
             AmlValue::Field { .. } => AmlType::FieldUnit,
             AmlValue::Device => AmlType::Device,
