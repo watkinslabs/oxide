@@ -26,7 +26,8 @@ fn names(controls: &Controls) -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
 
 #[test]
 fn the_private_key_round_trips_node_direction_and_kind() {
-    for kind in [ElemKind::Volume, ElemKind::Switch, ElemKind::Jack, ElemKind::CaptureSource] {
+    for kind in [ElemKind::Volume, ElemKind::Switch, ElemKind::Jack, ElemKind::CaptureSource,
+                 ElemKind::MasterVolume, ElemKind::MasterSwitch] {
         for output in [true, false] {
             assert_eq!(unpack(pack(0x14, output, kind)), (0x14, output, kind));
         }
@@ -56,6 +57,7 @@ fn a_laptop_codec_publishes_speaker_headphone_and_a_headphone_jack() {
     // The internal speaker has no presence detect, so it gets no jack.
     assert!(!published.contains(&b"Speaker Jack".to_vec()));
     assert_eq!(controls.capture_sources, vec![b"Internal Mic".to_vec(), b"Front Mic".to_vec()]);
+    assert!(controls.master.is_some());
 }
 
 #[test]

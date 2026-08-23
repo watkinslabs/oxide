@@ -9,6 +9,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use sync::{Devices as HdaRegistryClass, Spinlock};
 
 use crate::controller::{Hda, IrqEndpoint};
+use crate::ctlname;
 use crate::elemkey::{self, ElemKind};
 use crate::ownership::ControllerLocks;
 use crate::stream;
@@ -31,23 +32,40 @@ pub struct DeviceState {
     pub vendor_id: u32,
     /// Jack elements, so a presence change can name the control that moved.
     pub jack_elems: Vec<(u8, u32, sound::elem::ElemId)>,
+    /// Physical output followers controlled by the Linux virtual master.
+    pub master_followers: Vec<MasterFollower>,
+    /// Software attenuation and mute state of the virtual master.
+    pub master_volume: u8,
+    pub master_mute: bool,
     /// `(physical address, order)` of every DMA frame this controller owns,
     /// so removal frees exactly what the probe took.
-    pub frames: Vec<(u64, u8)>,
+    pub frames: Vec<(u64, u8, bool)>,
     /// The BAR0 mapping, released with the device.
     pub mapping: Option<mmio_map::Mapping>,
+}
+
+#[derive(Clone, Debug)]
+pub struct MasterFollower {
+    pub nid: u8,
+    pub output: bool,
+    pub caps: widget::AmpCaps,
+    pub left: u8,
+    pub right: u8,
+    pub left_muted: bool,
+    pub right_muted: bool,
 }
 
 impl Device {
     /// # C: O(1)
     pub fn new(key: pci::Bdf, owner: sound::SoundOwnerKey, hda: Hda, vendor_id: u32,
-               frames: Vec<(u64, u8)>, mapping: mmio_map::Mapping) -> Self {
+               frames: Vec<(u64, u8, bool)>, mapping: mmio_map::Mapping) -> Self {
         let irq = IrqEndpoint::new(&hda);
         let reg = Arc::clone(&hda.rings);
         Self {
             key, owner, online: AtomicBool::new(true), irq,
             locks: ControllerLocks::from_reg(DeviceState {
-                hda, vendor_id, jack_elems: Vec::new(), frames, mapping: Some(mapping),
+                hda, vendor_id, jack_elems: Vec::new(), master_followers: Vec::new(),
+                master_volume: 0, master_mute: false, frames, mapping: Some(mapping),
             }, reg),
         }
     }
@@ -468,6 +486,15 @@ pub fn service_jacks(owner: sound::SoundOwnerKey) {
     }
 }
 
+fn follower_index(device: &DeviceState, nid: u8, output: bool) -> Option<usize> {
+    device.master_followers.iter().position(|follower| follower.nid == nid && follower.output == output)
+}
+
+fn follower_gain(base: u8, caps: widget::AmpCaps, master: u8) -> u8 {
+    let gain = i32::from(base) + i32::from(master) - i32::try_from(caps.num_steps).unwrap_or(i32::MAX);
+    gain.clamp(0, i32::from(u8::MAX)) as u8
+}
+
 fn elem_get(owner: sound::SoundOwnerKey, private: u32, out: &mut sound::elem::ElemValues) -> bool {
     let (nid, output, kind) = elemkey::unpack(private);
     if kind == ElemKind::Jack { service_jacks(owner); }
@@ -480,7 +507,21 @@ fn elem_get(owner: sound::SoundOwnerKey, private: u32, out: &mut sound::elem::El
             out[0] = i64::from(device.hda.capture_source);
             true
         }
+        ElemKind::MasterVolume => {
+            out[0] = i64::from(device.master_volume);
+            true
+        }
+        ElemKind::MasterSwitch => {
+            out[0] = i64::from(!device.master_mute);
+            true
+        }
         ElemKind::Volume => {
+            if let Some(index) = follower_index(device, nid, output) {
+                let follower = &device.master_followers[index];
+                out[0] = i64::from(follower.left);
+                out[1] = i64::from(follower.right);
+                return true;
+            }
             let Some((_, left)) = device.hda.amp_read(nid, output, 0, true) else { return false; };
             let right = device.hda.amp_read(nid, output, 0, false).map(|(_, gain)| gain).unwrap_or(left);
             out[0] = i64::from(left);
@@ -488,6 +529,12 @@ fn elem_get(owner: sound::SoundOwnerKey, private: u32, out: &mut sound::elem::El
             true
         }
         ElemKind::Switch => {
+            if let Some(index) = follower_index(device, nid, output) {
+                let follower = &device.master_followers[index];
+                out[0] = i64::from(!follower.left_muted);
+                out[1] = i64::from(!follower.right_muted);
+                return true;
+            }
             let Some((left_muted, _)) = device.hda.amp_read(nid, output, 0, true) else { return false; };
             let right_muted = device.hda.amp_read(nid, output, 0, false).map(|(muted, _)| muted).unwrap_or(left_muted);
             // ALSA switches are "on means audible", the inverse of the mute bit.
@@ -503,12 +550,77 @@ fn elem_put(owner: sound::SoundOwnerKey, private: u32, values: &sound::elem::Ele
     with_device(owner, |device| match kind {
         ElemKind::Jack => false,
         ElemKind::CaptureSource => device.hda.set_capture_source(values[0] as u32),
+        ElemKind::MasterVolume => {
+            let volume = values[0] as u8;
+            let followers = device.master_followers.clone();
+            for follower in followers.iter() {
+                let left = follower_gain(follower.left, follower.caps, volume);
+                let right = follower_gain(follower.right, follower.caps, volume);
+                if !device.hda.amp_write(follower.nid, follower.output, 0, true, false,
+                                         follower.left_muted || device.master_mute, left)
+                    || !device.hda.amp_write(follower.nid, follower.output, 0, false, true,
+                                             follower.right_muted || device.master_mute, right) {
+                    return false;
+                }
+            }
+            device.master_volume = volume;
+            true
+        }
+        ElemKind::MasterSwitch => {
+            let master_mute = values[0] == 0;
+            let followers = device.master_followers.clone();
+            for follower in followers.iter() {
+                let left = follower_gain(follower.left, follower.caps, device.master_volume);
+                let right = follower_gain(follower.right, follower.caps, device.master_volume);
+                if !device.hda.amp_write(follower.nid, follower.output, 0, true, false,
+                                         follower.left_muted || master_mute, left)
+                    || !device.hda.amp_write(follower.nid, follower.output, 0, false, true,
+                                             follower.right_muted || master_mute, right) {
+                    return false;
+                }
+            }
+            device.master_mute = master_mute;
+            true
+        }
         ElemKind::Volume => {
+            if let Some(index) = follower_index(device, nid, output) {
+                let (caps, master, left_muted, right_muted) = {
+                    let follower = &device.master_followers[index];
+                    (follower.caps, device.master_volume, follower.left_muted, follower.right_muted)
+                };
+                let left = values[0] as u8;
+                let right = values[1] as u8;
+                if !device.hda.amp_write(nid, output, 0, true, false, left_muted || device.master_mute,
+                                         follower_gain(left, caps, master))
+                    || !device.hda.amp_write(nid, output, 0, false, true, right_muted || device.master_mute,
+                                              follower_gain(right, caps, master)) {
+                    return false;
+                }
+                let follower = &mut device.master_followers[index];
+                follower.left = left;
+                follower.right = right;
+                return true;
+            }
             let muted = device.hda.amp_read(nid, output, 0, true).map(|(muted, _)| muted).unwrap_or(false);
             device.hda.amp_write(nid, output, 0, true, false, muted, values[0] as u8)
                 && device.hda.amp_write(nid, output, 0, false, true, muted, values[1] as u8)
         }
         ElemKind::Switch => {
+            if let Some(index) = follower_index(device, nid, output) {
+                let left = values[0] == 0;
+                let right = values[1] == 0;
+                let follower = &device.master_followers[index];
+                if !device.hda.amp_write(nid, output, 0, true, false, left || device.master_mute,
+                                         follower_gain(follower.left, follower.caps, device.master_volume))
+                    || !device.hda.amp_write(nid, output, 0, false, true, right || device.master_mute,
+                                              follower_gain(follower.right, follower.caps, device.master_volume)) {
+                    return false;
+                }
+                let follower = &mut device.master_followers[index];
+                follower.left_muted = left;
+                follower.right_muted = right;
+                return true;
+            }
             let gain = device.hda.amp_read(nid, output, 0, true).map(|(_, gain)| gain).unwrap_or(0);
             device.hda.amp_write(nid, output, 0, true, false, values[0] == 0, gain)
                 && device.hda.amp_write(nid, output, 0, false, true, values[1] == 0, gain)
@@ -522,7 +634,7 @@ fn elem_enum(owner: sound::SoundOwnerKey, private: u32, item: u32,
     if kind != ElemKind::CaptureSource { return false; }
     let Some(Some(label)) = with_device(owner, |device| {
         let plan = device.hda.plan.as_ref()?;
-        let route = plan.captures.get(item)?;
+        let route = plan.captures.get(item as usize)?;
         let inputs: Vec<_> = plan.captures.iter().map(|candidate| candidate.input).collect();
         let needs_location = ctlname::inputs_need_location(&inputs);
         Some(ctlname::input_label(&route.input, needs_location))
@@ -575,7 +687,43 @@ pub fn register_controls(owner: sound::SoundOwnerKey) {
         }
     });
     let Some(Some(controls)) = described else { return; };
+    if let Some(master) = controls.master.as_ref() {
+        with_device(owner, |device| {
+            device.master_volume = master.caps.num_steps.min(u32::from(u8::MAX)) as u8;
+            device.master_followers = controls.amps.iter()
+                .filter(|control| control.output && !control.volume_name.is_empty())
+                .filter_map(|control| {
+                    let (left_muted, left) = device.hda.amp_read(control.nid, control.output, 0, true)?;
+                    let (right_muted, right) = device.hda.amp_read(control.nid, control.output, 0, false)
+                        .unwrap_or((left_muted, left));
+                    Some(MasterFollower { nid: control.nid, output: control.output, caps: control.caps,
+                                          left, right, left_muted, right_muted })
+                }).collect();
+        });
+    }
     for control in controls.amps.iter() { register_amp(owner, control); }
+    if let Some(master) = controls.master.as_ref() {
+        sound::elem::register(owner, sound::elem::ElemDesc {
+            id: sound::elem::ElemId::mixer(b"Master Playback Volume", 0),
+            etype: sound::uapi::CTL_ELEM_TYPE_INTEGER,
+            access: sound::uapi::CTL_ELEM_ACCESS_READWRITE | sound::uapi::CTL_ELEM_ACCESS_TLV_READ,
+            count: 1, min: 0, max: i64::from(master.caps.num_steps), step: 0, items: 0,
+            tlv: Some(sound::elem::DbScale {
+                min_centibel: widget::amp_min_centibel(&master.caps),
+                step_centibel: master.caps.step_centibel, mute: master.caps.mute,
+            }),
+            private: elemkey::pack(master.nid, master.output, ElemKind::MasterVolume), ops: &ELEM_OPS,
+        });
+        if master.caps.mute {
+            sound::elem::register(owner, sound::elem::ElemDesc {
+                id: sound::elem::ElemId::mixer(b"Master Playback Switch", 0),
+                etype: sound::uapi::CTL_ELEM_TYPE_BOOLEAN,
+                access: sound::uapi::CTL_ELEM_ACCESS_READWRITE,
+                count: 1, min: 0, max: 1, step: 0, items: 0, tlv: None,
+                private: elemkey::pack(master.nid, master.output, ElemKind::MasterSwitch), ops: &ELEM_OPS,
+            });
+        }
+    }
     if controls.capture_sources.len() > 1 {
         sound::elem::register(owner, sound::elem::ElemDesc {
             id: sound::elem::ElemId::mixer(&ctlname::capture_source(), 0),

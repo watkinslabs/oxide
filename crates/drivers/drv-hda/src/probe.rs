@@ -237,11 +237,15 @@ impl drv::Driver for HdaDriver {
         if let Some(device) = card::remove(bdf) {
             device.with_offline(|state| {
             state.hda.quiesce();
-            for (pa, order) in state.frames.iter() {
-                // SAFETY: each address came from this driver's own probe-time
-                // `alloc_contig` at the same order, and the controller was
-                // quiesced above so no engine still reads them.
-                unsafe { pmm::setup::free_contig(*pa, pmm::Order(*order)); }
+            for (pa, order, object) in state.frames.iter() {
+                if *object {
+                    pmm::setup::free_contig_object(*pa, pmm::Order(*order));
+                } else {
+                    // SAFETY: each address came from this driver's own
+                    // probe-time allocation at the same order, and the
+                    // controller was quiesced above.
+                    unsafe { pmm::setup::free_contig(*pa, pmm::Order(*order)); }
+                }
             }
             if let Some(mut mapping) = state.mapping.take() { mapping.unmap(); }
             });
