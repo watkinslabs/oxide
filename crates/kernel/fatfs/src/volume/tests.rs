@@ -3,6 +3,10 @@ use crate::dirent::{ATTR_ARCH, ATTR_DIR, ATTR_VOLUME, CHARS_PER_SLOT, DELETED_FL
                     LAST_LONG_ENTRY};
 use alloc::vec;
 
+impl Volume<sectors::MemImage> {
+    fn source_commands(&self) -> Vec<sectors::source::Cmd> { self.source.commands() }
+}
+
 const SECTOR: usize = 512;
 const SEC_PER_CLUS: usize = 2;
 const RESERVED: usize = 1;

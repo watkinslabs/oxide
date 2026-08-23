@@ -32,6 +32,19 @@ fn discard_clears_clusters_released_by_unlink() {
     assert_eq!(v.source_bytes(sector as usize * SECTOR + 1), 0, "discarded data");
 }
 
+/// The FAT `flush` owner reaches the medium barrier rather than merely
+/// rewriting the in-memory table.
+#[test]
+fn flush_option_reaches_the_medium_barrier() {
+    let (builder, _) = populated();
+    let image = sectors::MemImage::from_bytes(SECTOR as u32, builder.bytes);
+    let mut opts = crate::opts::Options::vfat();
+    opts.flush = true;
+    let v = Volume::mount_with(image, opts).expect("mount");
+    v.flush_device().expect("flush");
+    assert!(v.source_commands().iter().any(|cmd| matches!(cmd, sectors::source::Cmd::Flush)));
+}
+
 /// The maintained count is the scanned one, and stays that way across
 /// allocation and release. A count that drifts makes `df` wrong and makes the
 /// fast out-of-space refusal refuse a volume that has room.

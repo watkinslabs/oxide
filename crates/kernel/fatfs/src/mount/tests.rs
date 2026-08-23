@@ -5,6 +5,7 @@ use vfs::FileType;
 use vfs::uapi::FALLOC_FL_KEEP_SIZE;
 use crate::dirent::{ATTR_ARCH, ATTR_DIR, ATTR_RO};
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use block::{BlockDevice, BlockError, BlockOp, BlockRequest};
 
 const VOL_SECTOR: usize = 512;
@@ -278,7 +279,11 @@ fn a_device_without_a_volume_is_refused() {
 
 /// The same image on a device that accepts writes, so the VFS operations can
 /// be driven end to end rather than only their refusals.
-struct RwDisk { bytes: sync::Spinlock<Vec<u8>, sync::TaskList>, block_size: u32 }
+struct RwDisk {
+    bytes: sync::Spinlock<Vec<u8>, sync::TaskList>,
+    block_size: u32,
+    flushes: AtomicUsize,
+}
 
 impl BlockDevice for RwDisk {
     fn block_size(&self) -> u32 { self.block_size }
@@ -301,14 +306,24 @@ impl BlockDevice for RwDisk {
             _ => Err(BlockError::Eopnotsupp),
         }
     }
-    fn flush(&self) -> block::KResult<()> { Ok(()) }
+    fn flush(&self) -> block::KResult<()> {
+        self.flushes.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
 }
 
 fn writable_mount(type_name: &'static str, opts: crate::opts::Options) -> Arc<FatFs> {
+    writable_mount_with_disk(type_name, opts).0
+}
+
+fn writable_mount_with_disk(type_name: &'static str, opts: crate::opts::Options)
+    -> (Arc<FatFs>, Arc<RwDisk>) {
     let disk = image(512);
-    let rw = Arc::new(RwDisk { bytes: sync::Spinlock::new(disk.bytes.clone()), block_size: 512 });
-    FatFs::open_typed(rw as Arc<dyn BlockDevice>, "/dev/loop0", true, type_name, opts)
-        .expect("mount")
+    let rw = Arc::new(RwDisk { bytes: sync::Spinlock::new(disk.bytes.clone()), block_size: 512,
+                               flushes: AtomicUsize::new(0) });
+    let fs = FatFs::open_typed(rw.clone() as Arc<dyn BlockDevice>, "/dev/loop0", true, type_name, opts)
+        .expect("mount");
+    (fs, rw)
 }
 
 /// A writable FAT instance realized through the same superblock boundary a
@@ -327,7 +342,37 @@ fn writable_vfs_mount() -> (Arc<FatFs>, Arc<vfs::SuperBlock>) {
     (fs, sb)
 }
 
+fn writable_vfs_mount_with_options(opts: crate::opts::Options)
+    -> (Arc<FatFs>, Arc<vfs::SuperBlock>, Arc<RwDisk>) {
+    let (fs, disk) = writable_mount_with_disk("vfat", opts);
+    let any: Arc<dyn vfs::fs::FileSystem> = fs.clone();
+    let root = Some(fs.root_inode());
+    let s_op = any.super_ops().expect("FAT super operations");
+    let ty: Arc<dyn vfs::FileSystemType> = vfs::fs::FsType::new(
+        any.name(), any.magic(), any.fs_flags(),
+        alloc::boxed::Box::new(|_, _, _, _, _, _| unreachable!("fixture is already mounted")));
+    let sb = vfs::SuperBlock::from_ops(ty, s_op, root, any.magic(), 0xFA70_0002,
+        any.block_size(), String::from("fatfs"), Arc::new(()));
+    any.set_sb(Arc::downgrade(&sb)).expect("set superblock");
+    (fs, sb, disk)
+}
+
 fn ctx() -> vfs::CreateCtx<'static> { vfs::CreateCtx::root() }
+
+/// The Linux `flush` mount option is consumed by the per-close file hook and
+/// reaches the block-device barrier.
+#[test]
+fn flush_option_barriers_a_writable_file_close() {
+    let mut opts = crate::opts::Options::vfat();
+    opts.flush = true;
+    let (_fs, sb, disk) = writable_vfs_mount_with_options(opts);
+    let root = sb.s_root_inode().expect("root");
+    let inode = root.lookup("HELLO.TXT").expect("file");
+    let dentry = vfs::Dentry::new_root(inode.clone());
+    let file = vfs::File::new(inode, dentry, vfs::OpenFlags::O_WRONLY);
+    file.flush(vfs::RecordOwner::Ofd(1)).expect("flush");
+    assert_eq!(disk.flushes.load(Ordering::Relaxed), 1);
+}
 
 /// Every namei operation reaches the volume through the VFS vector a real
 /// `mount -t vfat` uses. Anything short of this is machinery with no caller.

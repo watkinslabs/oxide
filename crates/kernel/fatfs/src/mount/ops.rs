@@ -227,6 +227,15 @@ impl InodeOps for FatOps {
 }
 
 impl FileOps for FatOps {
+    fn on_flush(&self, inode: &Inode) -> KResult<()> {
+        let node = FatOps::node(inode)?;
+        let v = node.fs.volume.lock();
+        if v.options().flush && v.writable() {
+            v.flush_device().map_err(errno_to_vfs)?;
+        }
+        Ok(())
+    }
+
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let node = FatOps::node(inode)?;
         let entry = node.current_entry().ok_or(VfsError::Eisdir)?;

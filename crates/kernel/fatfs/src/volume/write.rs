@@ -103,6 +103,12 @@ impl<S: SectorSource> Volume<S> {
         Ok(())
     }
 
+    /// Flush the medium's volatile write cache. FAT's ordinary write owner
+    /// already places data and metadata synchronously; this is the remaining
+    /// part of the Linux `flush` mount option's release contract.
+    /// # C: O(1 device barrier)
+    pub fn flush_device(&self) -> Result<(), Errno> { self.source.flush() }
+
     /// Set or clear the volume's dirty flag on the medium.
     ///
     /// Marked before the first write and cleared at unmount, so a medium
