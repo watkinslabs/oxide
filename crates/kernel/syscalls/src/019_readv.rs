@@ -1,5 +1,6 @@
 // 019 readv — one syscall, one file (docs/53 §0). Moved verbatim from fs.rs.
 
+use alloc::vec;
 use alloc::vec::Vec;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
@@ -105,16 +106,24 @@ pub fn sys_readv(args: &SyscallArgs) -> i64 {
             ranges.push((base, capped));
         }
     }
-    let mut bufs: Vec<&mut [u8]> = Vec::new();
-    for (base, len) in ranges {
-        // SAFETY: range validated < USER_VA_END; CPL=0 writes through caller's AS.
-        let buf: &mut [u8] = unsafe {
-            core::slice::from_raw_parts_mut(base as *mut u8, len)
-        };
-        bufs.push(buf);
-    }
+    let mut bounce: Vec<Vec<u8>> = ranges.iter().map(|&(_, len)| vec![0u8; len]).collect();
+    let mut bufs: Vec<&mut [u8]> = bounce.iter_mut().map(Vec::as_mut_slice).collect();
     let ret = match file.read_iter(&mut bufs) {
-        Ok(n)  => n as i64,
+        Ok(n) => {
+            // VFS filled kernel-owned storage. Publish only the prefix the
+            // operation reports, preserving iovec order without faultable
+            // references living across the filesystem call.
+            let mut left = n;
+            for ((base, _), bytes) in ranges.iter().zip(bounce.iter()) {
+                if left == 0 { break; }
+                let take = core::cmp::min(left, bytes.len());
+                if uaccess::copy_to_user(*base, &bytes[..take]).is_err() {
+                    return -(Errno::Efault.as_i32() as i64);
+                }
+                left -= take;
+            }
+            n as i64
+        }
         Err(e) => -(e as i64),
     };
     cur.account_read_result(ret);
