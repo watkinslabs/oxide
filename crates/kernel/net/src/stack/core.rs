@@ -462,6 +462,48 @@ impl NetStack {
         ).map(|_| ())
     }
 
+    /// Send the RFC 9293 reset response for an IPv4 segment rejected by
+    /// nftables. An incoming ACK produces an unacknowledged RST; every other
+    /// segment produces RST|ACK acknowledging its sequence space. # C: O(N)
+    pub(crate) fn send_tcp_reset_ipv4(&self, net_ns: u64, packet: &[u8], mark: u32) -> NetResult<()> {
+        if packet.len() < crate::ipv4::IPV4_HDR_LEN || packet[0] >> 4 != 4 { return Ok(()); }
+        let ihl = (packet[0] & 0x0f) as usize * 4;
+        if ihl < crate::ipv4::IPV4_HDR_LEN || packet.len() < ihl + crate::tcp_hdr::TCP_HDR_MIN_LEN {
+            return Ok(());
+        }
+        let tcp = &packet[ihl..];
+        let data_offset = (tcp[12] >> 4) as usize * 4;
+        if data_offset < crate::tcp_hdr::TCP_HDR_MIN_LEN || tcp.len() < data_offset { return Ok(()); }
+        let total = u16::from_be_bytes([packet[2], packet[3]]) as usize;
+        let payload_len = total.saturating_sub(ihl).saturating_sub(data_offset).min(
+            tcp.len().saturating_sub(data_offset));
+        let seq = u32::from_be_bytes(tcp[4..8].try_into().unwrap());
+        let ack = u32::from_be_bytes(tcp[8..12].try_into().unwrap());
+        let flags = tcp[13];
+        let (reply_seq, reply_ack, reply_flags) = if flags & crate::tcp_hdr::flags::ACK != 0 {
+            (ack, 0, crate::tcp_hdr::flags::RST)
+        } else {
+            let advance = payload_len as u32
+                + u32::from((flags & crate::tcp_hdr::flags::SYN) != 0)
+                + u32::from((flags & crate::tcp_hdr::flags::FIN) != 0);
+            (0, seq.wrapping_add(advance),
+             crate::tcp_hdr::flags::RST | crate::tcp_hdr::flags::ACK)
+        };
+        let src = Ipv4Addr::new(packet[12], packet[13], packet[14], packet[15]);
+        let dst = Ipv4Addr::new(packet[16], packet[17], packet[18], packet[19]);
+        let mut out = alloc::vec![0u8; crate::tcp_hdr::TCP_HDR_MIN_LEN];
+        let mut header = crate::tcp_hdr::TcpHdr {
+            src_port: u16::from_be_bytes([tcp[2], tcp[3]]),
+            dst_port: u16::from_be_bytes([tcp[0], tcp[1]]),
+            seq: reply_seq, ack: reply_ack, data_offset: 5, flags: reply_flags,
+            window: 0, checksum: 0, urg_ptr: 0,
+        };
+        header.build_into(dst, src, &mut out);
+        self.send_tcp_ipv4_segment_in(
+            net_ns, dst, src, &out, 0, None, crate::uapi::IP_PMTUDISC_WANT,
+            None, None, mark).map(|_| ())
+    }
+
     /// Build + xmit UDP datagram. # C: O(payload + route lookup)
     pub fn send_udp_to(&self, src_ip: Ipv4Addr, src_port: u16,
                         dst_ip: Ipv4Addr, dst_port: u16, payload: &[u8])

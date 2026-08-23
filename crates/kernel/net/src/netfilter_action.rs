@@ -133,20 +133,22 @@ fn redirect_address(p: &crate::pkt::Pkt, family: u8, hook: u8) -> Option<InetAdd
 }
 
 fn apply_reject(p: &crate::pkt::Pkt, reject_type: u32, icmp_code: u8,
-                family: u8, hook: u32) -> Result<(), ApplyError> {
+                family: u8, _hook: u32) -> Result<(), ApplyError> {
     // Linux's ICMP/ICMPX reject sends an error and then retains the DROP
     // verdict. TCP-reset rejects need a transport-aware response builder and
     // must not be mistaken for an ICMP response.
-    if reject_type == 1 || family != conntrack::uapi::NFPROTO_IPV4 {
-        return Err(ApplyError::Unsupported);
-    }
-    if hook != crate::netfilter_hook::NF_INET_PRE_ROUTING
-        && hook != crate::netfilter_hook::NF_INET_LOCAL_IN {
+    if family != conntrack::uapi::NFPROTO_IPV4 {
         return Err(ApplyError::Unsupported);
     }
     let iface = p.iface.ok_or(ApplyError::Invalid)?;
     let bytes = p.data();
     if bytes.len() < 20 || bytes[0] >> 4 != 4 { return Err(ApplyError::Invalid); }
+    if reject_type == 1 {
+        let ns = crate::global_stack().ifaces.namespace(iface).ok_or(ApplyError::Invalid)?;
+        crate::global_stack().send_tcp_reset_ipv4(ns, bytes, p.tx.mark)
+            .map_err(|_| ApplyError::Invalid)?;
+        return Ok(());
+    }
     let src = crate::Ipv4Addr::new(bytes[12], bytes[13], bytes[14], bytes[15]);
     let dst = crate::Ipv4Addr::new(bytes[16], bytes[17], bytes[18], bytes[19]);
     crate::global_stack().send_ipv4_error(iface, dst, src,
