@@ -52,10 +52,15 @@ pub fn sys_read(args: &SyscallArgs) -> i64 {
     }
     if let Err(rv) = crate::userbuf::validate_user_buf_writable(buf, cnt as u64, 1) { return rv; }
     cnt = crate::userbuf::clamp_rw_count(cnt);
-    // SAFETY: range [buf, buf+cnt) validated < USER_VA_END by validate_user_buf_writable; user pages mapped via active CR3; demand-paging resolves not-present pages on first kernel-side write.
-    let slice: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(buf as *mut u8, cnt) };
-    let ret = match file.read(slice) {
-        Ok(n)  => n as i64,
+    // The range check is only admission. Read into kernel-owned storage so a
+    // concurrent unmap cannot turn a VFS read into an unrecoverable CPL0
+    // store; publish the result through the exception-table usercopy.
+    let mut bounce = alloc::vec![0u8; cnt];
+    let ret = match file.read(&mut bounce) {
+        Ok(n) => match uaccess::copy_to_user(buf, &bounce[..n]) {
+            Ok(()) => n as i64,
+            Err(_) => -(Errno::Efault.as_i32() as i64),
+        },
         Err(e) => -(e as i64),
     };
     cur.account_read_result(ret);

@@ -247,7 +247,7 @@ mod tests {
         assert!(read.contains("recvmsg::from_file(file.clone())"));
         assert!(!read.contains("socket_from_fd"));
         assert!(!read.contains("sys_recvfrom"));
-        assert!(read.contains("file.read(slice)"));
+        assert!(read.contains("file.read(&mut bounce)"));
 
         let recvfrom = include_str!("045_recvfrom.rs");
         assert!(recvfrom.contains("crate::recvmsg::lookup(args.a0)"));
