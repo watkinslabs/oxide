@@ -20,6 +20,9 @@ pub const PAYLOAD_L4CSUM_PSEUDOHDR: u32 = 1 << 0;
 pub enum ApplyError {
     Unsupported,
     Invalid,
+    /// The packet was handed to a device owner and must not re-enter the
+    /// ordinary stack path (Linux NF_STOLEN).
+    Stolen,
 }
 
 /// One effect recorded by a netfilter rule and applied by the packet owner.
@@ -31,7 +34,7 @@ pub enum Action {
     Masquerade { range: NatRange },
     Redirect { range: NatRange },
     Dup { gateway: Option<InetAddr>, oif: Option<u32> },
-    Fwd { oif: u32, nfproto: Option<u8> },
+    Fwd { oif: u32, gateway: Option<InetAddr>, nfproto: Option<u8> },
     Log { group: Option<u16>, level: u32, prefix: String, snaplen: u32,
           qthreshold: u16, flags: u32 },
     Reject { reject_type: u32, icmp_code: u8, family: u8 },
@@ -75,6 +78,7 @@ impl Action {
             Self::Reject { reject_type, icmp_code, family } => {
                 apply_reject(p, *reject_type, *icmp_code, *family, hook)
             }
+            Self::Fwd { oif, gateway, nfproto } => apply_fwd(p, *oif, *gateway, *nfproto, family),
             Self::PayloadSet { base, offset, data, csum_type, csum_offset, csum_flags } => {
                 if *csum_type != PAYLOAD_CSUM_NONE || *csum_offset != 0 || *csum_flags != 0 {
                     return Err(ApplyError::Unsupported);
@@ -93,6 +97,61 @@ impl Action {
             _ => Err(ApplyError::Unsupported),
         }
     }
+}
+
+fn apply_fwd(p: &mut crate::pkt::Pkt, oif: u32, gateway: Option<InetAddr>,
+             nfproto: Option<u8>, family: u8) -> Result<(), ApplyError> {
+    if family != crate::netfilter_hook::NFPROTO_NETDEV {
+        return Err(ApplyError::Unsupported);
+    }
+    let ingress = p.iface.ok_or(ApplyError::Invalid)?;
+    let ns = crate::global_stack().ifaces.namespace(ingress).ok_or(ApplyError::Invalid)?;
+    let (target, _) = crate::global_stack().ifaces.lookup_ifindex_in_ns(oif, ns)
+        .ok_or(ApplyError::Invalid)?;
+    let lease = crate::global_stack().ifaces.acquire_egress_in_ns(target, ns)
+        .ok_or(ApplyError::Invalid)?;
+    if nfproto.is_none() && gateway.is_none() {
+        // The no-address form is the netdev redirect: it owns the complete
+        // link frame and sends it through the selected device unchanged.
+        lease.xmit_raw(p.data()).map_err(|_| ApplyError::Invalid)?;
+        return Err(ApplyError::Stolen);
+    }
+    let proto = nfproto.ok_or(ApplyError::Invalid)?;
+    let gateway = gateway.ok_or(ApplyError::Invalid)?;
+    let frame = p.data();
+    let eth = crate::ethernet::EthHdr::parse(frame).map_err(|_| ApplyError::Invalid)?;
+    let l3 = frame.get(eth.hdr_len..).ok_or(ApplyError::Invalid)?;
+    let mut out = crate::Pkt::from_owned(l3.to_vec());
+    out.proto = eth.ethertype;
+    out.iface = Some(target);
+    out.tx = p.tx;
+    match proto {
+        crate::netfilter_hook::NFPROTO_IPV4 => {
+            if eth.ethertype != crate::eth_p::IPV4 || l3.len() < 20 || l3[0] >> 4 != 4
+                || gateway.0[4..] != [0; 12] { return Err(ApplyError::Invalid); }
+            if l3[8] <= 1 { return Err(ApplyError::Invalid); }
+            let b = out.data_mut();
+            b[8] -= 1;
+            b[10] = 0; b[11] = 0;
+            let checksum = crate::ipv4::ip_checksum(&b[..20]);
+            b[10..12].copy_from_slice(&checksum.to_be_bytes());
+            out.next_hop = Some(crate::pkt::TxNextHop::V4(crate::Ipv4Addr::new(
+                gateway.0[0], gateway.0[1], gateway.0[2], gateway.0[3])));
+        }
+        crate::netfilter_hook::NFPROTO_IPV6 => {
+            if eth.ethertype != crate::eth_p::IPV6 || l3.len() < 40 || l3[0] >> 4 != 6
+                || gateway.0[..4] == [0; 4] && gateway.0[4..] == [0; 12] { return Err(ApplyError::Invalid); }
+            if l3[7] <= 1 { return Err(ApplyError::Invalid); }
+            let b = out.data_mut();
+            b[7] -= 1;
+            out.next_hop = Some(crate::pkt::TxNextHop::V6 {
+                addr: crate::Ipv6Addr(gateway.0), src: crate::Ipv6Addr::ANY,
+            });
+        }
+        _ => return Err(ApplyError::Unsupported),
+    }
+    lease.xmit(out).map_err(|_| ApplyError::Invalid)?;
+    Err(ApplyError::Stolen)
 }
 
 fn masquerade_source(p: &crate::pkt::Pkt, family: u8) -> Result<Option<InetAddr>, ApplyError> {
@@ -267,5 +326,30 @@ mod tests {
         assert_eq!(&pkt.data()[12..16], &[203, 0, 113, 9]);
         assert_eq!(conn.reply_tuple().dst.addr, InetAddr::v4([203, 0, 113, 9]));
         assert!(action.apply_at(&mut pkt, NFPROTO_IPV4, 4).is_ok());
+    }
+
+    #[test]
+    fn netdev_fwd_neighbour_form_decrements_ttl_and_uses_the_target_device() {
+        let _domain = crate::hosted_fixture::init_net_domain();
+        let stack = crate::global_stack();
+        let (source, _) = stack.register_loopback();
+        let (target, target_dev) = stack.register_loopback();
+        let ifindex = stack.ifaces.ifindex_in_ns(target, 0).unwrap();
+        let mut l3 = vec![0u8; 20];
+        crate::ipv4::Ipv4Hdr::build(crate::Ipv4Addr::LOOPBACK, crate::Ipv4Addr::LOOPBACK,
+            crate::IpProto::Udp, 0, 1).write_to(&mut l3);
+        let mut frame = vec![0u8; crate::ethernet::ETH_HDR_LEN + l3.len()];
+        crate::ethernet::EthHdr::write_to(crate::MacAddr::BROADCAST,
+            crate::MacAddr([2, 0, 0, 0, 0, 1]), crate::eth_p::IPV4, &mut frame);
+        frame[crate::ethernet::ETH_HDR_LEN..].copy_from_slice(&l3);
+        let mut pkt = Pkt::from_owned(frame);
+        pkt.proto = crate::eth_p::IPV4;
+        pkt.iface = Some(source);
+        let action = Action::Fwd { oif: ifindex,
+            gateway: Some(InetAddr::v4([127, 0, 0, 1])), nfproto: Some(NFPROTO_IPV4) };
+        assert_eq!(action.apply_at(&mut pkt, crate::netfilter_hook::NFPROTO_NETDEV, 0),
+            Err(ApplyError::Stolen));
+        assert_eq!(target_dev.rx_len(), 1);
+        assert_eq!(target_dev.rx_pop().unwrap().data()[8], 63);
     }
 }

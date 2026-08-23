@@ -140,7 +140,7 @@ pub fn fwd(ctx: &mut EvalCtx, regs: &Regs, sreg_dev: u32, sreg_addr: Option<u32>
 {
     let Some(oif) = regs.load_u32(sreg_dev) else { return BREAK };
     let Some(proto) = nfproto else {
-        ctx.actions.push(Action::Fwd { oif, nfproto: None });
+        ctx.actions.push(Action::Fwd { oif, gateway: None, nfproto: None });
         return Some(NF_STOLEN);
     };
     // The neighbour form rewrites the next hop, so it must be reading the
@@ -154,8 +154,11 @@ pub fn fwd(ctx: &mut EvalCtx, regs: &Regs, sreg_dev: u32, sreg_addr: Option<u32>
     let ttl_at = if proto == NFPROTO_IPV6 { 7 } else { 8 };
     let Some(&ttl) = ctx.pkt.get(ttl_at) else { return BREAK };
     if ttl <= HOPLIMIT_EXHAUSTED { return Some(NF_DROP); }
-    let _ = sreg_addr;
-    ctx.actions.push(Action::Fwd { oif, nfproto: Some(proto) });
+    let gateway = match sreg_addr {
+        Some(addr_reg) => Some(reg_addr(regs, addr_reg, proto)?),
+        None => None,
+    };
+    ctx.actions.push(Action::Fwd { oif, gateway, nfproto: Some(proto) });
     Some(NF_STOLEN)
 }
 

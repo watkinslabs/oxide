@@ -278,7 +278,7 @@ fn forwarding_steals_the_packet_and_refuses_an_exhausted_hop_limit() {
     ];
     let r = run_on(&exprs, &tcp_pkt(), |_| {});
     assert_eq!(r.code, NF_STOLEN, "the packet has left; nothing else may act on it");
-    assert!(matches!(&r.actions[..], [Action::Fwd { oif: 3, nfproto: None }]));
+    assert!(matches!(&r.actions[..], [Action::Fwd { oif: 3, nfproto: None, gateway: None }]));
 
     // The neighbour form forwards, so a packet that may not be forwarded again
     // has to be refused rather than looped.

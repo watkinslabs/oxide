@@ -8,6 +8,7 @@ pub(crate) struct Input<'a> {
     pub pkt: &'a [u8],
     pub ll: &'a [u8],
     pub family: u8,
+    pub link_protocol: Option<u16>,
     pub mark: u32,
     pub priority: u32,
     pub ingress: Option<net::NetIfaceId>,
@@ -25,7 +26,7 @@ pub(crate) struct Input<'a> {
 impl<'a> Input<'a> {
     pub(crate) const fn bare(namespace: u64, hook_id: u32, pkt: &'a [u8], family: u8,
                              mark: u32) -> Self {
-        Self { namespace, hook_id, pkt, ll: &[], family, mark, priority: 0,
+        Self { namespace, hook_id, pkt, ll: &[], family, link_protocol: None, mark, priority: 0,
             ingress: None, egress: None, timestamp_ns: 0,
             ct: None, ct_available: false, ctinfo: conntrack::uapi::IP_CT_UNTRACKED, ct_dir: 0,
             live: false, chain_min_priority: None, chain_max_priority: None }
@@ -33,7 +34,7 @@ impl<'a> Input<'a> {
 
     pub(crate) fn from_hook(hook: &'a net::stack::NfHookCtx<'a>) -> Self {
         Self { namespace: hook.namespace, hook_id: hook.hook_id, pkt: hook.pkt, ll: hook.ll,
-            family: hook.family, mark: hook.mark, priority: hook.priority,
+            family: hook.family, link_protocol: hook.link_protocol, mark: hook.mark, priority: hook.priority,
             ingress: hook.ingress, egress: hook.egress, timestamp_ns: hook.timestamp_ns,
             ct: hook.ct, ct_available: hook.ct_available,
             ctinfo: hook.ctinfo, ct_dir: hook.ct_dir, live: true,
@@ -44,11 +45,11 @@ impl<'a> Input<'a> {
         ctx.hook = self.hook_id as u8;
         ctx.mark = mark;
         ctx.ll = self.ll;
-        ctx.meta.protocol = match self.family {
+        ctx.meta.protocol = self.link_protocol.or_else(|| match self.family {
             crate::nft_expr::uapi::NFPROTO_IPV4 => Some(net::addr::eth_p::IPV4),
             crate::nft_expr::uapi::NFPROTO_IPV6 => Some(net::addr::eth_p::IPV6),
             _ => None,
-        };
+        });
         ctx.meta.priority = self.priority;
         ctx.meta.iif = self.ingress.and_then(|id| iface(self.namespace, id));
         ctx.meta.oif = self.egress.and_then(|id| iface(self.namespace, id));

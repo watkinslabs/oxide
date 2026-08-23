@@ -16,6 +16,9 @@ use crate::NetIfaceId;
 /// engine compute transport offsets + `meta nfproto`/`l4proto` per-family.
 pub const NFPROTO_IPV4: u8 = 2;
 pub const NFPROTO_IPV6: u8 = 10;
+pub const NFPROTO_NETDEV: u8 = 5;
+pub const NF_NETDEV_INGRESS: u32 = 0;
+pub const NF_NETDEV_EGRESS: u32 = 1;
 
 /// Netfilter result carried across an ingress hook.  Packet marks are routing
 /// metadata: nft may update them at PRE_ROUTING, and policy routing consumes
@@ -37,6 +40,7 @@ pub struct NfHookCtx<'a> {
     pub pkt: &'a [u8],
     pub ll: &'a [u8],
     pub family: u8,
+    pub link_protocol: Option<u16>,
     pub mark: u32,
     pub priority: u32,
     pub ingress: Option<NetIfaceId>,
@@ -54,7 +58,7 @@ impl<'a> NfHookCtx<'a> {
     /// Context for a received L3 packet at one hook. # C: O(1)
     pub const fn ingress(namespace: u64, hook_id: u32, pkt: &'a [u8], family: u8,
                          ingress: NetIfaceId, mark: u32) -> Self {
-        Self { namespace, hook_id, pkt, ll: &[], family, mark, priority: 0,
+        Self { namespace, hook_id, pkt, ll: &[], family, link_protocol: None, mark, priority: 0,
             ingress: Some(ingress), egress: None, timestamp_ns: 0,
             ct: None, ct_available: false, ctinfo: conntrack::uapi::IP_CT_UNTRACKED, ct_dir: 0,
             chain_min_priority: None, chain_max_priority: None }
@@ -67,6 +71,7 @@ impl<'a> NfHookCtx<'a> {
             .map(|(_, ct, info, dir)| (ct, true, info, dir))
             .unwrap_or((None, false, conntrack::uapi::IP_CT_UNTRACKED, 0));
         Self { namespace, hook_id, pkt: p.data(), ll: p.mac_frame().unwrap_or(&[]), family,
+            link_protocol: (p.proto != 0).then_some(p.proto),
             mark: p.tx.mark, priority: p.tx.priority, ingress, egress: p.iface,
             timestamp_ns: p.timestamp_ns, ct, ct_available, ctinfo, ct_dir,
             chain_min_priority: None, chain_max_priority: None }
@@ -151,7 +156,7 @@ pub(crate) fn nf_hook_eval(hook_id: u32, pkt: &[u8], family: u8) -> u32 {
 /// Evaluate namespace-owned security policy before the legacy netfilter
 /// callback. The ingress lease supplies the concrete namespace key.
 pub(crate) fn nf_hook_eval_in(namespace: u64, hook_id: u32, pkt: &[u8], family: u8) -> NfHookResult {
-    let ctx = NfHookCtx { namespace, hook_id, pkt, ll: &[], family, mark: 0, priority: 0,
+    let ctx = NfHookCtx { namespace, hook_id, pkt, ll: &[], family, link_protocol: None, mark: 0, priority: 0,
         ingress: None, egress: None, timestamp_ns: 0,
         ct: None, ct_available: false, ctinfo: conntrack::uapi::IP_CT_UNTRACKED, ct_dir: 0,
         chain_min_priority: None, chain_max_priority: None };
@@ -192,7 +197,10 @@ pub(crate) fn nf_hook_packet_in(namespace: u64, hook_id: u32, p: &mut Pkt,
         let raw = nf_hook_packet_stage(namespace, hook_id, p, family, iface, mark,
                                        None, Some(-200));
         let raw_actions = apply_actions(p, family, hook_id, &raw.actions);
-        if raw_actions.is_err() {
+        if let Err(error) = raw_actions {
+            if error == crate::netfilter_action::ApplyError::Stolen {
+                return NfHookResult { verdict: 2, mark: raw.mark, actions: Vec::new(), notrack: raw.notrack };
+            }
             return NfHookResult { verdict: 0, mark: raw.mark, actions: Vec::new(), notrack: raw.notrack };
         }
         if !raw.accepted() {
@@ -212,7 +220,10 @@ pub(crate) fn nf_hook_packet_in(namespace: u64, hook_id: u32, p: &mut Pkt,
     let result = nf_hook_packet_stage(namespace, hook_id, p, family, iface, mark,
                                       tracking_hook.then_some(-200), None);
     let actions = apply_actions(p, family, hook_id, &result.actions);
-    if actions.is_err() {
+    if let Err(error) = actions {
+        if error == crate::netfilter_action::ApplyError::Stolen {
+            return NfHookResult { verdict: 2, mark: result.mark, actions: Vec::new(), notrack: notrack || result.notrack };
+        }
         return NfHookResult { verdict: 0, mark: result.mark, actions: Vec::new(), notrack: notrack || result.notrack };
     }
     if !result.accepted() {
@@ -284,13 +295,14 @@ pub(crate) fn nf_output_in(namespace: u64, p: &mut Pkt, family: u8) -> bool {
 }
 
 fn apply_actions(p: &mut Pkt, family: u8, hook: u32,
-                 actions: &[crate::netfilter_action::Action]) -> Result<(), ()> {
+                 actions: &[crate::netfilter_action::Action])
+                 -> Result<(), crate::netfilter_action::ApplyError> {
     for action in actions {
-        action.apply_at(p, family, hook).map_err(|_| ())?;
+        action.apply_at(p, family, hook)?;
     }
     if let Some((_, Some(conn), _, dir)) = p.conntrack_state_owned() {
         crate::netfilter_action::apply_conntrack_packet(p, conn, dir, family, hook)
-            .map_err(|_| ())?;
+            ?;
     }
     Ok(())
 }
