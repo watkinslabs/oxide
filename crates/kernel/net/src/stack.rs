@@ -66,6 +66,9 @@ pub struct SocketLookup {
     pub transparent: bool,
     pub mark: u32,
     pub wildcard: bool,
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
+    pub cgroup: Option<u64>,
 }
 use crate::netfilter_hook::nf_output;
 
@@ -197,11 +200,15 @@ impl NetStack {
                 (IpAddr::V4(src), IpAddr::V4(dst)) => self.udp_demux_in(
                     net_ns, src, sport, dst, dport, iface, &[]).into_iter().next()
                     .map(|q| SocketLookup { full: true, transparent: q.transparent(),
-                        mark: q.mark(), wildcard: q.bound_ip.is_unspecified() }),
+                        mark: q.mark(), wildcard: q.bound_ip.is_unspecified(),
+                        uid: Some(q.owner.owner_uid), gid: Some(q.owner.owner_gid),
+                        cgroup: Some(q.owner.cgroup.cgid()) }),
                 (IpAddr::V6(src), IpAddr::V6(dst)) => self.udp6_demux_in(
                     net_ns, src, sport, dst, dport, iface, &[]).into_iter().next()
                     .map(|q| SocketLookup { full: true, transparent: q.transparent(),
-                        mark: q.mark(), wildcard: q.bound_ip == Ipv6Addr::ANY }),
+                        mark: q.mark(), wildcard: q.bound_ip == Ipv6Addr::ANY,
+                        uid: Some(q.owner.owner_uid), gid: Some(q.owner.owner_gid),
+                        cgroup: Some(q.owner.cgroup.cgid()) }),
                 _ => None,
             };
         }
@@ -213,12 +220,17 @@ impl NetStack {
                 TcpSlot::Sock(entry) => SocketLookup { full: true,
                     transparent: entry.bind.as_ref().is_some_and(|bind| bind.transparent()),
                     mark: entry.mark(), wildcard: entry.bind.as_ref()
-                        .is_some_and(|bind| bind.local.ip.is_unspecified()) },
+                        .is_some_and(|bind| bind.local.ip.is_unspecified()),
+                    uid: Some(entry.owner.owner_uid), gid: Some(entry.owner.owner_gid),
+                    cgroup: Some(entry.owner.cgroup.cgid()) },
                 TcpSlot::Req(req) => req.listener().map_or(SocketLookup {
                     full: false, transparent: false, mark: 0, wildcard: false,
+                    uid: None, gid: None, cgroup: None,
                 }, |listener| SocketLookup { full: false, transparent: listener.bind.transparent(),
                     mark: listener.mark.load(::core::sync::atomic::Ordering::Acquire) as u32,
-                    wildcard: listener.local.ip.is_unspecified() }),
+                    wildcard: listener.local.ip.is_unspecified(), uid: Some(listener.owner.owner_uid),
+                    gid: Some(listener.owner.owner_gid),
+                    cgroup: Some(listener.owner.cgroup.cgid()) }),
             });
         }
         let bucket = {
@@ -230,7 +242,9 @@ impl NetStack {
         let listener = bucket.get(index?).or_else(|| bucket.first())?;
         Some(SocketLookup { full: true, transparent: listener.bind.transparent(),
             mark: listener.mark.load(::core::sync::atomic::Ordering::Acquire) as u32,
-            wildcard: listener.local.ip.is_unspecified() })
+            wildcard: listener.local.ip.is_unspecified(), uid: Some(listener.owner.owner_uid),
+            gid: Some(listener.owner.owner_gid),
+            cgroup: Some(listener.owner.cgroup.cgid()) })
     }
 
     /// Test the transparent UDP target lookup used by nft_tproxy.

@@ -60,6 +60,10 @@ impl<'a> Input<'a> {
         if self.timestamp_ns != 0 { ctx.meta.time_ns = Some(self.timestamp_ns); }
         ctx.meta.l4proto = l4proto(self.family, self.pkt);
         ctx.meta.fragoff = fragoff(self.family, self.pkt);
+        if let Some(socket) = self.socket {
+            ctx.meta.skuid = socket.uid;
+            ctx.meta.skgid = socket.gid;
+        }
     }
 }
 

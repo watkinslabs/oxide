@@ -27,7 +27,8 @@ fn live_socket_lookup_reads_udp_owner_and_transparent_target() {
         Ipv4Addr::new(198, 51, 100, 20), 40_000, 5_300);
     let info = stack.socket_lookup_in(0, NFPROTO_IPV4, &pkt, Some(iface))
         .expect("socket lookup");
-    assert_eq!(info, SocketLookup { full: true, transparent: true, mark: 0, wildcard: true });
+    assert_eq!(info, SocketLookup { full: true, transparent: true, mark: 0, wildcard: true,
+        uid: Some(0), gid: Some(0), cgroup: Some(cgroup::ROOT_CGROUP) });
     assert!(stack.transparent_udp4_in(0, Ipv4Addr::new(203, 0, 113, 7), 5_300,
         Some(iface)));
 }

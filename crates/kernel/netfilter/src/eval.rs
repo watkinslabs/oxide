@@ -117,6 +117,7 @@ impl SocketAccess for LiveSocket<'_> {
     fn transparent(&self) -> bool { self.info.transparent }
     fn mark(&self) -> u32 { self.info.mark }
     fn wildcard(&self) -> bool { self.info.wildcard }
+    fn cgroup_id(&self, _level: u32) -> Option<u64> { self.info.cgroup }
     fn tproxy_transparent(&self, addr: &conntrack::tuple::InetAddr, port: u16) -> bool {
         match self.input.family {
             crate::nft_expr::uapi::NFPROTO_IPV4 => {
@@ -298,7 +299,7 @@ fn eval_context(input: &crate::eval_context::Input<'_>) -> EvalResult {
     let live_socket = input.live.then(|| LiveSocket {
         input,
         info: input.socket.unwrap_or(net::SocketLookup {
-            full: false, transparent: false, mark: 0, wildcard: false,
+            full: false, transparent: false, mark: 0, wildcard: false, uid: None, gid: None, cgroup: None,
         }),
         present: input.socket.is_some(),
     });

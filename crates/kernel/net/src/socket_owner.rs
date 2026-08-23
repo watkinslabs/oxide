@@ -9,6 +9,7 @@ use network_namespace::NetworkNamespaceRef;
 pub struct SocketOwner {
     pub net_namespace: NetworkNamespaceRef,
     pub owner_uid: u32,
+    pub owner_gid: u32,
     pub cgroup: Arc<CgroupBpfRuntime>,
 }
 
@@ -20,9 +21,10 @@ impl SocketOwner {
             return Self::root(net_namespace, 0);
         };
         let owner_uid = task.creds.euid.load(core::sync::atomic::Ordering::Acquire);
+        let owner_gid = task.creds.egid.load(core::sync::atomic::Ordering::Acquire);
         Arc::new(Self {
             net_namespace,
-            owner_uid,
+            owner_uid, owner_gid,
             cgroup: cgroup::bpf::runtime_for_task(task.tid as u64),
         })
     }
@@ -31,7 +33,7 @@ impl SocketOwner {
     pub fn root(net_namespace: NetworkNamespaceRef, owner_uid: u32) -> Arc<Self> {
         Arc::new(Self {
             net_namespace,
-            owner_uid,
+            owner_uid, owner_gid: 0,
             cgroup: cgroup::bpf::root_runtime(),
         })
     }
