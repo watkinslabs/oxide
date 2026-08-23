@@ -6,6 +6,7 @@
 
 extern crate alloc;
 use alloc::sync::{Arc, Weak};
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 use ninep::client::req::Request;
@@ -21,10 +22,24 @@ pub struct Virtio9pTransport {
     device_key: virtio::VirtioChildDeviceKey,
     dev: DeviceHandle,
     sink: Spinlock<Option<Weak<dyn ReplySink>>, DriverLockClass>,
-    /// Serialises the shared staging buffers. One request is in flight at a
-    /// time: both directions use ONE pair of buffers, so a second concurrent
-    /// request would overwrite the first one's bytes mid-transfer.
-    io: Spinlock<(), DriverLockClass>,
+    /// Serialises only queue publication and used-ring retirement. Request
+    /// buffers are private, so the expensive device wait happens outside it.
+    queue: Spinlock<(), DriverLockClass>,
+    /// Descriptor-head ownership: Linux's virtqueue request object carries
+    /// the buffers until the matching used entry retires. A caller may reap a
+    /// different head and leave its reply here for that caller.
+    inflight: Spinlock<InFlight, DriverLockClass>,
+}
+
+struct InFlight {
+    pending: BTreeMap<u16, registry::RequestStaging>,
+    completed: BTreeMap<u16, Vec<u8>>,
+}
+
+enum Polled {
+    None,
+    Other,
+    Complete(NpResult<Vec<u8>>),
 }
 
 impl Virtio9pTransport {
@@ -36,7 +51,8 @@ impl Virtio9pTransport {
         Some(Arc::new(Self {
             device_key, dev,
             sink: Spinlock::new(None),
-            io: Spinlock::new(()),
+            queue: Spinlock::new(()),
+            inflight: Spinlock::new(InFlight { pending: BTreeMap::new(), completed: BTreeMap::new() }),
         }))
     }
 
@@ -44,56 +60,87 @@ impl Virtio9pTransport {
     pub fn device_key(&self) -> virtio::VirtioChildDeviceKey { self.device_key }
 
     /// Run one request to completion against the device, returning the reply
-    /// frame. The whole exchange happens under the I/O lock so the staging
-    /// buffers belong to exactly one request at a time.
+    /// frame. Publication and completion retirement are serialized, but each
+    /// request owns its DMA buffers while the device is working.
     fn exchange(&self, out: &[u8]) -> NpResult<Vec<u8>> {
         if out.len() > BUFFER_BYTES { return Err(NpError::MsgTooLarge); }
-        let _io = self.io.lock();
-        let mut s = self.dev.lock();
-        if s.shutdown || s.tx_pa == 0 || s.rx_pa == 0 { return Err(NpError::Disconnected); }
-        let (hhdm, tx_pa, tx_dma, rx_pa, rx_dma) = (s.hhdm, s.tx_pa, s.tx_dma, s.rx_pa, s.rx_dma);
+        let staging = registry::alloc_request_staging(self.device_key).ok_or(NpError::NoMemory)?;
+        let head = {
+            let _queue = self.queue.lock();
+            let mut s = self.dev.lock();
+            if s.shutdown { registry::free_request_staging(staging); return Err(NpError::Disconnected); }
+            let hhdm = s.hhdm;
 
-        let tx = hhdm.wrapping_add(tx_pa) as *mut u8;
-        // SAFETY: HHDM view of this device's outgoing staging buffer, which the
-        // driver owns exclusively under the I/O lock held above; `out.len()` was
-        // checked against the buffer size, so every write stays inside it.
-        unsafe {
-            for (i, b) in out.iter().enumerate() { core::ptr::write_volatile(tx.add(i), *b); }
-        }
-        virtio::dma::clean_to_device(hhdm.wrapping_add(tx_pa), out.len());
+            let tx = hhdm.wrapping_add(staging.tx_pa) as *mut u8;
+            // SAFETY: this request owns the private staging frame until its
+            // matching used entry is retired; `out` was size-checked above.
+            unsafe { for (i, b) in out.iter().enumerate() { core::ptr::write_volatile(tx.add(i), *b); } }
+            virtio::dma::clean_to_device(hhdm.wrapping_add(staging.tx_pa), out.len());
 
-        let Some(q) = s.requestq.as_mut() else { return Err(NpError::Disconnected) };
-        let segs = [
-            virtio::SplitQueueSeg { dma: tx_dma, len: out.len() as u32, device_writes: false },
-            virtio::SplitQueueSeg { dma: rx_dma, len: BUFFER_BYTES as u32, device_writes: true },
-        ];
-        if q.submit(&segs).is_err() { return Err(NpError::Disconnected); }
-
-        // A bounded poll: a wedged device must fail the operation with a
-        // diagnosis rather than park the caller forever.
-        let written = (0..COMPLETION_POLL_BUDGET).find_map(|_| match q.pop_used() {
-            Ok(Some(used)) => Some(Ok(used.len as usize)),
-            Ok(None) => { core::hint::spin_loop(); None }
-            Err(_) => Some(Err(NpError::Disconnected)),
-        });
-        let written = match written {
-            Some(Ok(n)) => n,
-            Some(Err(e)) => return Err(e),
-            None => return Err(NpError::Disconnected),
+            let Some(q) = s.requestq.as_mut() else { registry::free_request_staging(staging); return Err(NpError::Disconnected) };
+            let segs = [
+                virtio::SplitQueueSeg { dma: staging.tx_dma, len: out.len() as u32, device_writes: false },
+                virtio::SplitQueueSeg { dma: staging.rx_dma, len: BUFFER_BYTES as u32, device_writes: true },
+            ];
+            let head = match q.submit(&segs) {
+                Ok(head) => head,
+                Err(_) => { registry::free_request_staging(staging); return Err(NpError::Disconnected); }
+            };
+            self.inflight.lock().pending.insert(head, staging);
+            head
         };
-        virtio::dma::invalidate_from_device(hhdm.wrapping_add(rx_pa), BUFFER_BYTES);
 
-        // The device-reported length is clamped to the buffer before it bounds
-        // any access, and the frame's own size field is then checked against
-        // it: a device over-reporting either one must not make the client read
-        // bytes the device never wrote.
+        for _ in 0..COMPLETION_POLL_BUDGET {
+            match self.poll_one(head) {
+                Polled::Complete(result) => return result,
+                Polled::Other | Polled::None => core::hint::spin_loop(),
+            }
+        }
+        // The pending request remains owned until a later used entry retires
+        // it; freeing DMA memory while the device may still write is unsafe.
+        Err(NpError::Disconnected)
+    }
+
+    fn poll_one(&self, wanted: u16) -> Polled {
+        let _queue = self.queue.lock();
+        if let Some(frame) = self.inflight.lock().completed.remove(&wanted) {
+            return Polled::Complete(Ok(frame));
+        }
+        let (hhdm, used) = {
+            let mut s = self.dev.lock();
+            let hhdm = s.hhdm;
+            let Some(q) = s.requestq.as_mut() else { return Polled::Complete(Err(NpError::Disconnected)); };
+            match q.pop_used() {
+                Ok(Some(used)) => (hhdm, used),
+                Ok(None) => return Polled::None,
+                Err(_) => return Polled::Complete(Err(NpError::Disconnected)),
+            }
+        };
+        let staging = self.inflight.lock().pending.remove(&used.head);
+        let Some(staging) = staging else { return Polled::Complete(Err(NpError::Disconnected)); };
+        virtio::dma::invalidate_from_device(hhdm.wrapping_add(staging.rx_pa), BUFFER_BYTES);
+        let result = Self::read_reply(hhdm, &staging, used.len as usize);
+        registry::free_request_staging(staging);
+        match result {
+            Ok(frame) if used.head != wanted => {
+                self.inflight.lock().completed.insert(used.head, frame);
+                Polled::Other
+            }
+            Ok(frame) => Polled::Complete(Ok(frame)),
+            Err(e) => Polled::Complete(Err(e)),
+        }
+    }
+
+    fn read_reply(hhdm: u64, staging: &registry::RequestStaging, written: usize) -> NpResult<Vec<u8>> {
+        // The device-reported length is clamped before it bounds any access,
+        // and the frame's own size field is checked against it.
         let avail = written.min(BUFFER_BYTES);
         if avail < ninep::uapi::limits::HDRSZ { return Err(NpError::BadMessage); }
-        let rx = hhdm.wrapping_add(rx_pa) as *const u8;
+        let rx = hhdm.wrapping_add(staging.rx_pa) as *const u8;
         let mut head = [0u8; 4];
         for (i, slot) in head.iter_mut().enumerate() {
-            // SAFETY: HHDM view of this device's reply buffer, held under the
-            // I/O lock; `i < 4 <= HDRSZ <= avail <= BUFFER_BYTES`.
+            // SAFETY: the caller holds this request's staging ownership;
+            // `i < 4 <= HDRSZ <= avail <= BUFFER_BYTES`.
             *slot = unsafe { core::ptr::read_volatile(rx.add(i)) };
         }
         let declared = u32::from_le_bytes(head) as usize;
@@ -103,9 +150,7 @@ impl Virtio9pTransport {
         let mut frame = Vec::new();
         frame.try_reserve_exact(declared).map_err(|_| NpError::NoMemory)?;
         for i in 0..declared {
-            // SAFETY: same buffer under the same lock; `i < declared <= avail
-            // <= BUFFER_BYTES`, so the read stays inside the staging buffer the
-            // device just wrote.
+            // SAFETY: `i < declared <= avail <= BUFFER_BYTES`.
             frame.push(unsafe { core::ptr::read_volatile(rx.add(i)) });
         }
         Ok(frame)
@@ -144,5 +189,26 @@ impl Transport for Virtio9pTransport {
 }
 
 impl Drop for Virtio9pTransport {
-    fn drop(&mut self) { registry::unclaim(self.device_key); }
+    fn drop(&mut self) {
+        let has_pending = !self.inflight.lock().pending.is_empty();
+        if has_pending { let _ = registry::shutdown(self.device_key); }
+        let pending = core::mem::take(&mut self.inflight.lock().pending);
+        for (_, staging) in pending { registry::free_request_staging(staging); }
+        registry::unclaim(self.device_key);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::InFlight;
+    use alloc::collections::BTreeMap;
+
+    #[test]
+    fn completion_storage_keeps_heads_independent() {
+        let mut state = InFlight { pending: BTreeMap::new(), completed: BTreeMap::new() };
+        state.completed.insert(7, alloc::vec![0x71]);
+        state.completed.insert(9, alloc::vec![0x91]);
+        assert_eq!(state.completed.remove(&9), Some(alloc::vec![0x91]));
+        assert_eq!(state.completed.remove(&7), Some(alloc::vec![0x71]));
+    }
 }

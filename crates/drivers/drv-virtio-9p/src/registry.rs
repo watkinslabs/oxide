@@ -19,12 +19,6 @@ pub(crate) struct DeviceState {
     pub cfg_va: u64,
     pub hhdm: u64,
     pub requestq: Option<virtio::VirtioSplitQueue>,
-    /// Physical address of the outgoing staging buffer.
-    pub tx_pa: u64,
-    /// Address the device sees for the outgoing buffer.
-    pub tx_dma: u64,
-    pub rx_pa: u64,
-    pub rx_dma: u64,
     /// Set once the device is gone or being torn down; every later submit
     /// fails rather than naming a freed frame in a descriptor.
     pub shutdown: bool,
@@ -79,24 +73,16 @@ pub fn install(
         Err(_) => return false,
     };
 
-    let Some((tx_pa, tx_dma)) = alloc_staging(bdf) else { return false };
-    let Some((rx_pa, rx_dma)) = alloc_staging(bdf) else {
-        free_staging(bdf, tx_pa, tx_dma);
-        return false;
-    };
-
     let mut list = DEVICES.lock();
     if list.iter().any(|e| e.handle.lock().device_key == device_key || e.tag == tag) {
         drop(list);
-        free_staging(bdf, tx_pa, tx_dma);
-        free_staging(bdf, rx_pa, rx_dma);
         return false;
     }
     list.push(Entry {
         tag,
         handle: Arc::new(Spinlock::new(DeviceState {
             device_key, bdf, cfg_va: resources.cfg_va, hhdm: resources.hhdm,
-            requestq: Some(requestq), tx_pa, tx_dma, rx_pa, rx_dma, shutdown: false,
+            requestq: Some(requestq), shutdown: false,
         })),
         in_use: false,
     });
@@ -155,16 +141,40 @@ pub(crate) fn unclaim(device_key: virtio::VirtioChildDeviceKey) {
 /// addresses under the record lock first makes such a submit fail instead of
 /// naming a freed frame to the device. # C: O(1)
 pub(crate) fn disarm_and_free(h: &DeviceHandle) {
-    let (bdf, tx_pa, tx_dma, rx_pa, rx_dma) = {
+    {
         let mut s = h.lock();
         s.shutdown = true;
         s.requestq = None;
-        (s.bdf,
-         core::mem::replace(&mut s.tx_pa, 0), core::mem::replace(&mut s.tx_dma, 0),
-         core::mem::replace(&mut s.rx_pa, 0), core::mem::replace(&mut s.rx_dma, 0))
+    }
+}
+
+/// One request's private device-readable and device-writable buffers.
+pub(crate) struct RequestStaging {
+    pub bdf: pci::Bdf,
+    pub tx_pa: u64,
+    pub tx_dma: u64,
+    pub rx_pa: u64,
+    pub rx_dma: u64,
+}
+
+/// Allocate the buffers owned by one submitted request. # C: O(1)
+pub(crate) fn alloc_request_staging(device_key: virtio::VirtioChildDeviceKey)
+    -> Option<RequestStaging>
+{
+    let h = find(device_key)?;
+    let bdf = h.lock().bdf;
+    let (tx_pa, tx_dma) = alloc_staging(bdf)?;
+    let Some((rx_pa, rx_dma)) = alloc_staging(bdf) else {
+        free_staging(bdf, tx_pa, tx_dma);
+        return None;
     };
-    free_staging(bdf, tx_pa, tx_dma);
-    free_staging(bdf, rx_pa, rx_dma);
+    Some(RequestStaging { bdf, tx_pa, tx_dma, rx_pa, rx_dma })
+}
+
+/// Return a request's buffers after its descriptor has been retired. # C: O(1)
+pub(crate) fn free_request_staging(staging: RequestStaging) {
+    free_staging(staging.bdf, staging.tx_pa, staging.tx_dma);
+    free_staging(staging.bdf, staging.rx_pa, staging.rx_dma);
 }
 
 fn alloc_staging(bdf: pci::Bdf) -> Option<(u64, u64)> {
