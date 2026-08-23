@@ -23,6 +23,8 @@ pub enum Received {
     Event(Effect),
     /// A data frame arrived on a link, for the protocol above to reassemble.
     Data { pkt_type: u8, handle: u16, flags: u16, body: Vec<u8> },
+    /// An ACL fragment was consumed by the owning L2CAP connection.
+    L2cap { handle: u16, inbound: crate::l2cap::Inbound },
 }
 
 /// Take one whole H:4 frame from a transport and apply it.
@@ -61,6 +63,22 @@ pub fn receive(dev: &Arc<HciDev>, frame: &[u8], now_ms: u64) -> Received {
                     _ => {}
                 }
                 st.stats.byte_rx = st.stats.byte_rx.saturating_add(frame.len() as u32);
+            }
+            if parsed.pkt_type == HCI_ACLDATA_PKT {
+                let inbound = {
+                    let mut st = dev.state.lock();
+                    let Some(conn) = st.conns.by_handle(handle).cloned() else {
+                        return Received::Data { pkt_type: parsed.pkt_type, handle, flags, body: parsed.body };
+                    };
+                    if !crate::hci::conn::carries_l2cap(conn.link_type) { None }
+                    else {
+                        if st.l2cap.by_handle(handle).is_none() {
+                            st.l2cap.insert(crate::l2cap::L2capConn::new(handle, conn.peer, conn.link_type));
+                        }
+                        st.l2cap.by_handle_mut(handle).and_then(|c| c.receive_acl(flags, &parsed.body))
+                    }
+                };
+                if let Some(inbound) = inbound { return Received::L2cap { handle, inbound }; }
             }
             Received::Data { pkt_type: parsed.pkt_type, handle, flags, body: parsed.body }
         }

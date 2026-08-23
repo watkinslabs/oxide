@@ -155,6 +155,7 @@ pub fn apply(state: &mut HciDevState, ev: &Event, now_ms: u64) -> Effect {
             let mut conn = Conn::new(*handle, peer, *link_type, false);
             conn.encrypted = *encrypted;
             conn.state = crate::uapi::bt::BT_CONNECTED;
+            state.l2cap.remove(*handle);
             state.conns.insert(conn);
             Effect::LinkUp { handle: *handle }
         }
@@ -162,6 +163,7 @@ pub fn apply(state: &mut HciDevState, ev: &Event, now_ms: u64) -> Effect {
             if *status != HCI_SUCCESS { return Effect::None; }
             let mut conn = Conn::new(*handle, PeerId::new(*addr, *addr_type), LE_LINK, false);
             conn.state = crate::uapi::bt::BT_CONNECTED;
+            state.l2cap.remove(*handle);
             state.conns.insert(conn);
             Effect::LinkUp { handle: *handle }
         }
@@ -170,6 +172,7 @@ pub fn apply(state: &mut HciDevState, ev: &Event, now_ms: u64) -> Effect {
             // saying it did NOT tear the link down, and dropping the entry
             // would lose a live link from the table.
             if *status != HCI_SUCCESS { return Effect::None; }
+            state.l2cap.remove(*handle);
             state.conns.remove(*handle);
             Effect::LinkDown { handle: *handle, reason: *reason }
         }

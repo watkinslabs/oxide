@@ -33,9 +33,11 @@ pub mod ertm_rx;
 pub mod credit;
 pub mod security;
 pub mod sock;
+pub mod conn;
 
 pub use chan::Channel;
 pub use codec::{CmdHdr, Hdr};
 pub use ctrl::Ctrl;
 pub use security::{admissible, LinkSecurity, Verdict};
 pub use sock::SockAddrL2;
+pub use conn::{Inbound, L2capConn, L2capRegistry, SignallingCommand};
