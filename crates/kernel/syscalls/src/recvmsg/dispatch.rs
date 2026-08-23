@@ -71,10 +71,14 @@ impl RecvTarget {
     pub(crate) fn security_sock(&self) -> net::socket_security::MsgSock {
         match &self.kind {
             RecvKind::Inet(sock) => net::socket_security::inet(sock),
-            RecvKind::Netlink(sock) => net::socket_security::other(
-                net::net_ns::namespace_id(&sock.net_ns), net::socket_args::AF_NETLINK_WIRE),
-            RecvKind::Vsock(sock) => net::socket_security::other(
-                sock.net_ns(), net::socket_args::AF_VSOCK as u16),
+            RecvKind::Netlink(sock) => net::socket_security::MsgSock {
+                namespace: net::net_ns::namespace_id(&sock.net_ns),
+                family: net::socket_args::AF_NETLINK_WIRE,
+                proto: ::landlock::netcheck::Proto::Other,
+                target_sid: sock.security_sid.load(core::sync::atomic::Ordering::Acquire),
+                target_class: sock.security_class(),
+            },
+            RecvKind::Vsock(sock) => net::socket_security::vsock(sock),
         }
     }
 
