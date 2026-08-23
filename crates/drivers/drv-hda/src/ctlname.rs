@@ -31,6 +31,7 @@ pub fn input_label(input: &InputPin, needs_location: bool) -> &'static [u8] {
         InputType::LineIn => b"Line",
         InputType::Cd => b"CD",
         InputType::Aux => b"Aux",
+        InputType::Digital => b"Digital",
     }
 }
 

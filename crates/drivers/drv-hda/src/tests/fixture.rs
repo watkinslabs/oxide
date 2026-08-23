@@ -84,6 +84,12 @@ impl Builder {
         self.widget(nid, caps, conns)
     }
 
+    pub fn digital_adc(&mut self, nid: u8, conns: &[u8]) -> &mut Self {
+        let caps = widget::WCAP_STEREO | widget::WCAP_IN_AMP | widget::WCAP_CONN_LIST
+                   | widget::WCAP_DIGITAL | (0x1 << widget::WCAP_TYPE_SHIFT);
+        self.widget(nid, caps, conns)
+    }
+
     /// A mixer summing `conns`. # C: O(conns)
     pub fn mixer(&mut self, nid: u8, conns: &[u8]) -> &mut Self {
         let caps = widget::WCAP_STEREO | widget::WCAP_IN_AMP | widget::WCAP_CONN_LIST

@@ -232,6 +232,17 @@ fn assign_captures(codec: &Codec, cfg: &AutoCfg) -> Vec<InputRoute> {
             break;
         }
     }
+    if let Some(pin) = cfg.dig_in {
+        let defcfg = codec.widget(pin).map(|w| w.defcfg).unwrap_or(0);
+        let input = InputPin { nid: pin, itype: autocfg::InputType::Digital,
+                               attr: crate::defcfg::pin_attr(defcfg), boost: false,
+                               order: cfg.inputs.len() };
+        for &adc in codec.digital_adcs().iter() {
+            let Some(path) = paths::find(codec, Source::Nid(pin), adc, &[]) else { continue; };
+            routes.push(InputRoute { pin, path, adc, input });
+            break;
+        }
+    }
     routes
 }
 

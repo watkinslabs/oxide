@@ -165,14 +165,14 @@ fn pcm_devices(owner: sound::SoundOwnerKey) -> u32 {
     with_device(owner, |device| {
         let Some(plan) = device.hda.plan.as_ref() else { return 0; };
         let outputs = plan.all_outputs().count();
-        let capture = usize::from(!plan.captures.is_empty());
+        let capture = plan.captures.len();
         outputs.max(capture) as u32
     }).unwrap_or(0)
 }
 
 fn pcm_caps_for(owner: sound::SoundOwnerKey, device: sound::ops::PcmDevice) -> sound::ops::Caps { caps(owner, true, device) }
 fn cap_caps_for(owner: sound::SoundOwnerKey, device: sound::ops::PcmDevice) -> sound::ops::Caps {
-    if device == 0 { caps(owner, false, 0) } else { None }
+    caps(owner, false, device)
 }
 
 fn hw_limits(_owner: sound::SoundOwnerKey) -> sound::ops::HwLimits {
