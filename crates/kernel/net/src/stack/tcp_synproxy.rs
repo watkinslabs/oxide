@@ -174,15 +174,29 @@ impl NetStack {
             let options = syn_options(encoded_mss, ack_wscale, ack_options,
                 ack_ts.map(|(tsval, _)| tsval).unwrap_or(0),
                 ack_ts.map(|(_, tsecr)| tsecr).unwrap_or(0));
+            let ecn = if ack_options & OPT_ECN != 0 {
+                tcp_hdr::flags::ECE | tcp_hdr::flags::CWR
+            } else { 0 };
+            let seq = if hdr.flags & tcp_hdr::flags::SYN != 0 {
+                hdr.seq.wrapping_sub(1)
+            } else {
+                // Linux's keep-alive/cookie-retransmission path passes
+                // SEG.SEQ + 1 to synproxy_send_server_syn, which emits
+                // that value minus one.  It does not reopen the extension.
+                hdr.seq
+            };
+            if hdr.flags & tcp_hdr::flags::SYN == 0 {
+                self.send_synproxy_segment(net_ns, src, dst, hdr.src_port, hdr.dst_port,
+                    seq, hdr.ack.wrapping_sub(1), tcp_hdr::flags::SYN | ecn,
+                    hdr.window, &options, p.tx.mark).map_err(|_| crate::netfilter_action::ApplyError::Invalid)?;
+                return Err(crate::netfilter_action::ApplyError::Stolen);
+            }
             let its = ack_ts.map(|(_, tsecr)| tsecr).unwrap_or(0);
             *conn.synproxy.lock() = Some(::conntrack::entry::SynproxyState {
                 isn: hdr.ack, its, tsoff: 0,
             });
-            let ecn = if ack_options & OPT_ECN != 0 {
-                tcp_hdr::flags::ECE | tcp_hdr::flags::CWR
-            } else { 0 };
             self.send_synproxy_segment(net_ns, src, dst, hdr.src_port, hdr.dst_port,
-                hdr.seq.wrapping_sub(1), hdr.ack.wrapping_sub(1), tcp_hdr::flags::SYN | ecn,
+                seq, hdr.ack.wrapping_sub(1), tcp_hdr::flags::SYN | ecn,
                 hdr.window, &options, p.tx.mark).map_err(|_| crate::netfilter_action::ApplyError::Invalid)?;
             return Err(crate::netfilter_action::ApplyError::Stolen);
         }
