@@ -4,6 +4,7 @@ use crate::test_image::{self, Builder, CLUSTER};
 use crate::time::Stamp;
 use crate::uapi::*;
 use crate::volume::dirops::rename::{RENAME_EXCHANGE, RENAME_NOREPLACE};
+use crate::chain::Chain;
 use crate::volume::{DirHandle, Volume};
 use sectors::MemImage;
 use syscall::errno::Errno;
@@ -293,6 +294,26 @@ fn a_deferred_unlink_keeps_clusters_until_the_owner_releases_them() {
     for chain in &chains { v.free_chain(chain).unwrap(); }
     assert_eq!(v.free_clusters(), before + 1,
         "final owner release did not return the detached cluster");
+}
+
+#[test]
+fn freeing_clusters_discards_each_contiguous_run() {
+    let mut opts = crate::opts::Options::defaults();
+    opts.discard = true;
+    opts.settle();
+    let image = test_image::Builder::new().finish();
+    let mut v = Volume::mount_with(image, opts).unwrap();
+    let dir = root(&v);
+    let mut made = v.create_file(&dir, "discard.bin", stamp()).unwrap();
+    v.write_file(&mut made, 0, &[0x5a; CLUSTER * 2], stamp()).unwrap();
+    let chain = Chain::new(made.set.stream.start_cluster,
+                           (made.set.stream.size / v.geometry().cluster_bytes()) as u32,
+                           made.set.stream.flags);
+    let first_sector = v.geometry().cluster_sector(chain.dir).unwrap();
+    let sectors = u64::from(v.geometry().sectors_per_cluster) * 2;
+    v.free_chain(&chain).unwrap();
+    let image = v.into_source();
+    assert_eq!(image.erased(), alloc::vec![(first_sector, sectors)]);
 }
 
 #[test]

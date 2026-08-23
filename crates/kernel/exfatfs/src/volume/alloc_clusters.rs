@@ -14,6 +14,7 @@
 use syscall::errno::Errno;
 
 use sectors::SectorSource;
+use alloc::vec::Vec;
 
 use crate::chain::Chain;
 use crate::fat;
@@ -71,6 +72,40 @@ impl<S: SectorSource> Volume<S> {
         self.bitmap.clear(cluster)?;
         self.used_clusters = self.used_clusters.saturating_sub(1);
         self.flush_bitmap_bit(cluster)
+    }
+
+    /// Discard adjacent freed clusters as one device request, as the Linux
+    /// exFAT allocator does. Discard is an optimization and a device may
+    /// reject it after mount, so only EOPNOTSUPP changes the mount option;
+    /// freeing the clusters remains successful for every other result too.
+    /// # C: O(number of contiguous runs)
+    fn discard_clusters(&mut self, clusters: &[u32]) {
+        if !self.opts.discard || clusters.is_empty() { return; }
+        let mut start = clusters[0];
+        let mut count = 1u32;
+        for &cluster in &clusters[1..] {
+            if cluster == start.saturating_add(count) {
+                count = count.saturating_add(1);
+            } else {
+                self.discard_run(start, count);
+                if !self.opts.discard { return; }
+                start = cluster;
+                count = 1;
+            }
+        }
+        self.discard_run(start, count);
+    }
+
+    /// Tell the medium to forget one contiguous cluster run.
+    /// # C: O(1)
+    fn discard_run(&mut self, start: u32, count: u32) {
+        let Some(sector) = self.geo.cluster_sector(start) else { return; };
+        let sectors = u64::from(count).saturating_mul(u64::from(self.geo.sectors_per_cluster));
+        match self.source.discard_sectors(sector, sectors) {
+            Ok(()) => {},
+            Err(Errno::Eopnotsupp) => self.opts.discard = false,
+            Err(_) => {},
+        }
     }
 
     /// Write out the table entries a contiguous run never had, and flip it to
@@ -162,9 +197,11 @@ impl<S: SectorSource> Volume<S> {
         if claimed == 0 { return Ok(()); }
         let clusters = crate::chain::walk(&self.geo, &self.fat_reader(), chain)?;
         let start = clusters.len().saturating_sub(claimed as usize);
-        for cluster in &clusters[start..] {
+        let released = clusters[start..].to_vec();
+        for cluster in &released {
             self.release(*cluster)?;
         }
+        self.discard_clusters(&released);
         chain.size -= claimed;
         if chain.size == 0 { *chain = Chain::empty(); }
         Ok(())
@@ -174,13 +211,15 @@ impl<S: SectorSource> Volume<S> {
     pub fn free_chain(&mut self, chain: &Chain) -> Result<(), Errno> {
         if !self.writable { return Err(Errno::Erofs); }
         if chain.is_empty() { return Ok(()); }
-        for cluster in crate::chain::walk(&self.geo, &self.fat_reader(), chain)? {
+        let clusters: Vec<u32> = crate::chain::walk(&self.geo, &self.fat_reader(), chain)?;
+        for cluster in &clusters {
             // The table entry is cleared as well as the bit. A freed cluster
             // whose entry still points somewhere is what a repair tool reads
             // as a cross-link.
-            if !chain.contiguous() { self.set_fat(cluster, 0)?; }
-            self.release(cluster)?;
+            if !chain.contiguous() { self.set_fat(*cluster, 0)?; }
+            self.release(*cluster)?;
         }
+        self.discard_clusters(&clusters);
         Ok(())
     }
 
@@ -189,10 +228,12 @@ impl<S: SectorSource> Volume<S> {
         if !self.writable { return Err(Errno::Erofs); }
         if keep >= chain.size { return Ok(()); }
         let clusters = crate::chain::walk(&self.geo, &self.fat_reader(), chain)?;
-        for cluster in &clusters[keep as usize..] {
+        let released = clusters[keep as usize..].to_vec();
+        for cluster in &released {
             if !chain.contiguous() { self.set_fat(*cluster, 0)?; }
             self.release(*cluster)?;
         }
+        self.discard_clusters(&released);
         if keep == 0 {
             *chain = Chain::empty();
             return Ok(());

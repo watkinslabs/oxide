@@ -19,7 +19,7 @@ use core::sync::atomic::AtomicBool;
 
 use syscall::errno::Errno;
 
-use sectors::BlockSource;
+use sectors::{BlockSource, SectorSource};
 use vfs::{InodeRef, KResult, VfsError};
 
 use crate::opts::Options;
@@ -63,7 +63,13 @@ impl ExfatFs {
     /// # C: O(table + bitmap bytes)
     pub fn open_with(dev: Arc<dyn block::BlockDevice>, source: &str, write: bool, opts: Options)
         -> KResult<Arc<Self>> {
-        let mut volume = Volume::mount_with(BlockSource::new(dev).writable(write), opts)
+        let device = BlockSource::new(dev).writable(write);
+        let mut opts = opts;
+        if opts.discard && !device.supports_discard() {
+            klog::warn::warn_on(true, "exfat: discard not supported by device, disabling");
+            opts.discard = false;
+        }
+        let mut volume = Volume::mount_with(device, opts)
             .map_err(errno_to_vfs)?;
         if volume.was_dirty() {
             klog::warn::warn_on(true,
