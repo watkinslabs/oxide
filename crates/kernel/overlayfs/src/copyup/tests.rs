@@ -19,7 +19,7 @@ use crate::config::{Config, FsyncMode};
 use crate::layers::{LayerStack, OvlEntry};
 use crate::lookup::lookup;
 use crate::marker;
-use crate::testfs::{layer, lookup as find_path, mkfile, mkpath, names, slurp, stack};
+use crate::testfs::{layer, lookup as find_path, mkfile, mkpath, names, set_verity, slurp, stack};
 use crate::uapi::{Marker, WHITEOUT_RDEV};
 use crate::xattr::NAME_CAPS;
 
@@ -191,6 +191,21 @@ fn a_metadata_only_copy_leaves_the_contents_below() {
     assert_eq!(arrived.size(), 12);
     assert_eq!(slurp(&e.realdata().unwrap()), b"big contents".to_vec());
     assert!(alloc::sync::Arc::ptr_eq(&e.realdata().unwrap(), &e.lower[0].inode));
+}
+
+#[test]
+fn a_verity_digest_is_recorded_with_metadata_only_copy_up() {
+    let c = Config { metacopy: true, redirect_mode: crate::config::RedirectMode::On,
+                     verity_mode: crate::config::VerityMode::On, ..Config::default() };
+    let (s, root, up, lo) = mount(c.clone());
+    let lower = mkfile(&lo, "f", b"verified contents");
+    set_verity(&lower, 8, b"digest");
+    up_one(&s, &root, "f", 0).unwrap();
+    let upper = find_path(&up, "f").unwrap();
+    let record = crate::metacopy::decode(&marker::get(&c, &upper, Marker::Metacopy).unwrap())
+        .unwrap();
+    assert_eq!(record.digest_algo, 8);
+    assert_eq!(record.digest, b"digest".to_vec());
 }
 
 #[test]

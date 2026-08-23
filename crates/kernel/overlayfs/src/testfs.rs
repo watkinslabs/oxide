@@ -36,11 +36,13 @@ use crate::uapi::WHITEOUT_RDEV;
 pub struct Node {
     kids: Spinlock<BTreeMap<String, InodeRef>, TaskList>,
     data: Spinlock<Vec<u8>, TaskList>,
+    verity: Spinlock<Option<(u8, Vec<u8>)>, TaskList>,
 }
 
 impl Node {
     fn new() -> Arc<Node> {
-        Arc::new(Node { kids: Spinlock::new(BTreeMap::new()), data: Spinlock::new(Vec::new()) })
+        Arc::new(Node { kids: Spinlock::new(BTreeMap::new()), data: Spinlock::new(Vec::new()),
+                        verity: Spinlock::new(None) })
     }
 }
 
@@ -123,6 +125,10 @@ impl Ops {
 }
 
 impl InodeOps for Ops {
+    fn verity_digest(&self, inode: &Inode) -> KResult<Option<(u8, Vec<u8>)>> {
+        Ok(node_of(inode).verity.lock().clone())
+    }
+
     fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
         node_of(inode).kids.lock().get(name).cloned().ok_or(VfsError::Enoent)
     }
@@ -301,6 +307,11 @@ pub fn mkfile(dir: &InodeRef, path: &str, body: &[u8]) -> InodeRef {
     let f = parent.create_child(name, S_IFREG as u32 | 0o644, &CreateCtx::root()).unwrap();
     if !body.is_empty() { f.write(0, body).unwrap(); }
     f
+}
+
+/// Give a test-layer file the digest a real fs-verity filesystem would own.
+pub fn set_verity(file: &InodeRef, algorithm: u8, digest: &[u8]) {
+    node_of(file).verity.lock().replace((algorithm, digest.to_vec()));
 }
 
 /// Read a whole file back. # C: O(size)

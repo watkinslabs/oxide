@@ -306,6 +306,10 @@ pub trait InodeOps: Send + Sync {
     /// `Enotty` for absent ioctl support. # C: O(1)
     fn fileattr_get(&self, _inode: &Inode) -> KResult<FileAttr> { Err(VfsError::Enotty) }
 
+    /// Return the fs-verity algorithm and file digest, or `None` when this
+    /// inode is not fs-verity protected. # C: backend-dependent
+    fn verity_digest(&self, _inode: &Inode) -> KResult<Option<(u8, Vec<u8>)>> { Ok(None) }
+
     /// `i_op->fileattr_set` — apply a `chattr` flag change. Default `Enotty`
     /// for absent ioctl support.
     /// # C: O(1)

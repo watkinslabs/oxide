@@ -101,6 +101,16 @@ impl F2fsOps {
 }
 
 impl InodeOps for F2fsOps {
+    /// Expose the volume's validated fs-verity descriptor to union filesystems
+    /// without creating a second digest implementation. # C: O(descriptor + chain)
+    fn verity_digest(&self, inode: &Inode) -> KResult<Option<(u8, Vec<u8>)>> {
+        let node = Self::node(inode)?;
+        let live = node.live()?;
+        if !live.verity() { return Ok(None); }
+        let info = node.fs.volume.lock().verity_info(&live, node.ino).map_err(errno_to_vfs)?;
+        Ok(Some((info.params.hash_alg, info.file_digest)))
+    }
+
     /// `file_update_time` for buffered and shared-mapping writes. The inode
     /// stamp is persisted by the same volume owner that serves setattr and
     /// fallocate, so mapped writes cannot create a second timestamp truth.

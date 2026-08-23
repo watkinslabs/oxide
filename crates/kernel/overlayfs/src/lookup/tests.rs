@@ -12,7 +12,7 @@ use crate::config::{Config, RedirectMode};
 use crate::layers::{LayerStack, OvlEntry};
 use crate::marker;
 use crate::metacopy::Metacopy;
-use crate::testfs::{layer, mkfile, mkpath, mkwhiteout, slurp, stack};
+use crate::testfs::{layer, mkfile, mkpath, mkwhiteout, set_verity, slurp, stack};
 use crate::uapi::{Marker, MARKER_YES};
 
 use super::merge::lookup;
@@ -192,6 +192,21 @@ fn a_metadata_only_upper_file_keeps_looking_for_its_data() {
     assert!(e.metacopy);
     assert_eq!(e.lower.len(), 1);
     assert_eq!(slurp(&e.realdata().unwrap()), b"the real contents".to_vec());
+}
+
+#[test]
+fn a_verity_mismatch_rejects_metadata_only_data() {
+    let c = Config { metacopy: true, redirect_mode: RedirectMode::On,
+                     verity_mode: crate::config::VerityMode::On, ..Config::default() };
+    let (s, root, up, lo) = mount(c.clone());
+    let lower = mkfile(&lo, "f", b"contents");
+    set_verity(&lower, 8, b"original");
+    let upper = mkfile(&up, "f", b"");
+    let record = Metacopy { version: 0, flags: 0, digest_algo: 8,
+                             digest: b"original".to_vec() };
+    marker::set(&c, &upper, Marker::Metacopy, &record.encode(), Errno::Eio).unwrap();
+    set_verity(&lower, 8, b"changed");
+    assert_eq!(find(&s, &root, "f").err(), Some(Errno::Eio));
 }
 
 #[test]

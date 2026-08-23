@@ -18,6 +18,7 @@ use syscall::errno::Errno;
 use vfs::InodeRef;
 
 use crate::layers::{LayerStack, OvlEntry, OvlPath};
+use crate::metacopy;
 use crate::marker;
 use crate::origin;
 use crate::redirect;
@@ -215,11 +216,34 @@ fn finish(stack: &Arc<LayerStack>, d: &mut Data, w: &mut Walk) -> Result<(), Err
             w.lower.push(op);
         }
     }
+    if w.upper_metacopy && stack.config.verity_mode != crate::config::VerityMode::Off {
+        validate_verity(stack, w.upper.as_ref(), w.lowerdata.as_ref()
+                        .or_else(|| w.lower.last()))?;
+    }
     if w.upper.is_none() && !w.lower.is_empty() { w.origin = Some(w.lower[0].inode.clone()); }
 
     if w.origin.is_some() && stack.has_index() && (!d.is_dir || stack.index_all()) {
         index(stack, d, w)?;
     }
+    Ok(())
+}
+
+/// Compare a metacopy record with the digest owned by its lower filesystem.
+/// # C: O(descriptor + chain)
+fn validate_verity(stack: &LayerStack, upper: Option<&InodeRef>, lower: Option<&OvlPath>)
+    -> Result<(), Errno> {
+    let Some(upper) = upper else { return Err(Errno::Eio) };
+    let marker = marker::get(&stack.config, upper, Marker::Metacopy).ok_or(Errno::Eio)?;
+    let record = metacopy::decode(&marker)?;
+    if !record.has_digest() {
+        return if stack.config.verity_mode == crate::config::VerityMode::Require {
+            Err(Errno::Eio)
+        } else { Ok(()) };
+    }
+    let lower = lower.ok_or(Errno::Eio)?;
+    let got = lower.inode.i_op().verity_digest(&lower.inode)
+        .map_err(crate::err::to_errno)?.ok_or(Errno::Eio)?;
+    if got.0 != record.digest_algo || got.1 != record.digest { return Err(Errno::Eio); }
     Ok(())
 }
 

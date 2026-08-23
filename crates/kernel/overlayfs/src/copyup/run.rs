@@ -51,7 +51,13 @@ pub fn copy_up(stack: &Arc<LayerStack>, parent: &OvlEntry, entry: &mut OvlEntry,
     let Some(workdir) = stack.workdir.clone() else { return Err(Errno::Erofs) };
     let config = &stack.config;
 
-    let meta_only = need_meta_copy_up(config, lower.file_type(), open_flags, false);
+    let digest = if config.verity_mode != crate::config::VerityMode::Off {
+        lower.i_op().verity_digest(&lower).map_err(to_errno)?
+    } else { None };
+    let meta_only = need_meta_copy_up(config, lower.file_type(), open_flags, digest.is_some());
+    let metacopy = digest.map(|(algo, digest)| Metacopy { version: 0, flags: 0,
+                                                         digest_algo: algo, digest })
+        .unwrap_or_else(Metacopy::empty);
     let kind = Kind::of(lower.file_type(), meta_only);
     let record_origin = kind == Kind::Dir || lower.nlink() == 1 || indexed(stack, &lower);
     let plan = steps(kind, record_origin, config.should_sync_metadata());
@@ -62,7 +68,7 @@ pub fn copy_up(stack: &Arc<LayerStack>, parent: &OvlEntry, entry: &mut OvlEntry,
 
     for step in plan {
         if let Err(e) = one(stack, step, &lower, &temp, &destdir, &workdir, &tmp, name,
-                            meta_only, truncate) {
+                            meta_only, truncate, &metacopy) {
             // Nothing was moved into place, so removing the half-built copy
             // returns the layer to exactly where it started.
             cleanup(stack, &workdir, &tmp, &temp);
@@ -93,7 +99,7 @@ fn indexed(stack: &LayerStack, lower: &InodeRef) -> bool {
 #[allow(clippy::too_many_arguments)]
 fn one(stack: &Arc<LayerStack>, step: Step, lower: &InodeRef, temp: &InodeRef,
        destdir: &InodeRef, workdir: &InodeRef, tmp: &str, name: &str, meta_only: bool,
-       truncate: bool) -> Result<(), Errno> {
+       truncate: bool, metacopy: &Metacopy) -> Result<(), Errno> {
     let config = &stack.config;
     match step {
         Step::CreateTemp => Ok(()),
@@ -106,7 +112,7 @@ fn one(stack: &Arc<LayerStack>, step: Step, lower: &InodeRef, temp: &InodeRef,
         },
         Step::SetMetacopy => {
             let _ = meta_only;
-            marker::set(config, temp, Marker::Metacopy, &Metacopy::empty().encode(),
+            marker::set(config, temp, Marker::Metacopy, &metacopy.encode(),
                         Errno::Eopnotsupp)
         }
         Step::SetSize => if truncate { Ok(()) } else { copy_size(lower, temp) },
