@@ -137,6 +137,8 @@ use super::*;
         // 4242 is well outside any real hook value to avoid colliding
         // with other tests' inserts.
         assert_eq!(eval(4242, &[], nft_expr::NFPROTO_IPV4), Verdict::Accept);
+        assert!(eval_in_with_mark(0, 4242, &[], nft_expr::NFPROTO_IPV4, 0)
+            .actions.is_empty());
     }
 
     #[test]

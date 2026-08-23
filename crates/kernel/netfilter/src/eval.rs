@@ -1,5 +1,7 @@
 use crate::{NFT_CHAIN_POLICY_DROP, active_generation, nft_expr};
-use crate::nft_expr::{EvalCtx, uapi};
+use alloc::vec::Vec;
+
+use crate::nft_expr::{Action, EvalCtx, uapi};
 
 /// Netfilter verdict.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -13,10 +15,13 @@ pub enum Verdict {
 }
 
 /// A hook verdict and the packet mark left by its ruleset.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EvalResult {
     pub verdict: Verdict,
     pub mark: u32,
+    /// Effects in rule-evaluation order. The packet owner applies these after
+    /// the walk; the interpreter does not own packet, route, or device state.
+    pub actions: Vec<Action>,
 }
 
 impl Verdict {
@@ -78,14 +83,15 @@ fn eval_context(input: &crate::eval_context::Input<'_>) -> EvalResult {
     let family = input.family;
     let mut mark = input.mark;
     let Some(generation) = active_generation(hook_id) else {
-        return EvalResult { verdict: Verdict::Accept, mark };
+        return EvalResult { verdict: Verdict::Accept, mark, actions: Vec::new() };
     };
     let Some(state) = generation.namespace(namespace) else {
-        return EvalResult { verdict: Verdict::Accept, mark };
+        return EvalResult { verdict: Verdict::Accept, mark, actions: Vec::new() };
     };
     let Some(hook) = state.hooks.iter().find(|hook| hook.id == hook_id) else {
-        return EvalResult { verdict: Verdict::Accept, mark };
+        return EvalResult { verdict: Verdict::Accept, mark, actions: Vec::new() };
     };
+    let mut actions = Vec::new();
     for chain in hook.chains.iter().filter(|chain| chain.table_family == family) {
         let mut chain_verdict = None;
         for rule in &chain.rules {
@@ -97,6 +103,7 @@ fn eval_context(input: &crate::eval_context::Input<'_>) -> EvalResult {
             ctx.set_lookup = Some(&lookup);
             let verdict = nft_expr::run_rule_ctx(&rule.exprs, &mut ctx);
             mark = ctx.mark;
+            actions.extend(ctx.actions);
             if ctx.packets != 0 { rule.counter.bump(ctx.packets, ctx.bytes); }
             if let Some(decided) = Verdict::from_code(verdict.code) {
                 chain_verdict = Some(decided);
@@ -107,7 +114,7 @@ fn eval_context(input: &crate::eval_context::Input<'_>) -> EvalResult {
             NFT_CHAIN_POLICY_DROP => Verdict::Drop,
             _ => Verdict::Accept,
         });
-        if verdict != Verdict::Accept { return EvalResult { verdict, mark }; }
+        if verdict != Verdict::Accept { return EvalResult { verdict, mark, actions }; }
     }
-    EvalResult { verdict: Verdict::Accept, mark }
+    EvalResult { verdict: Verdict::Accept, mark, actions }
 }
