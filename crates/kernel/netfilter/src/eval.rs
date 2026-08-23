@@ -121,6 +121,9 @@ impl SocketAccess for LiveSocket<'_> {
             crate::nft_expr::uapi::NFPROTO_IPV4 => {
                 let proto = self.input.pkt.get(9).copied().unwrap_or(0);
                 let dst = net::addr::Ipv4Addr::new(addr.0[0], addr.0[1], addr.0[2], addr.0[3]);
+                if net::global_stack().socket_lookup_in(self.input.namespace,
+                    self.input.family, self.input.pkt, self.input.ingress)
+                    .is_some_and(|info| info.transparent) { return true; }
                 if proto == conntrack::uapi::IPPROTO_TCP {
                     return net::global_stack().transparent_tcp4_in(
                         self.input.namespace, dst, port, self.input.ingress);
@@ -139,6 +142,13 @@ impl SocketAccess for LiveSocket<'_> {
                     net::ipv6_ext::ExtWalk::Fragment { next_header, offset: 0, .. } => next_header,
                     net::ipv6_ext::ExtWalk::Fragment { .. } => return false,
                 };
+                if net::global_stack().socket_lookup_in(self.input.namespace,
+                    self.input.family, self.input.pkt, self.input.ingress)
+                    .is_some_and(|info| info.transparent) { return true; }
+                if proto == conntrack::uapi::IPPROTO_TCP {
+                    return net::global_stack().transparent_tcp6_in(
+                        self.input.namespace, net::addr::Ipv6Addr(dst), port, self.input.ingress);
+                }
                 proto == conntrack::uapi::IPPROTO_UDP
                     && net::global_stack().transparent_udp6_in(
                         self.input.namespace, net::addr::Ipv6Addr(dst), port, self.input.ingress)

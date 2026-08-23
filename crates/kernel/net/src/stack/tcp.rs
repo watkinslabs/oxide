@@ -194,7 +194,7 @@ impl NetStack {
     {
         // A hop limit of the maximum admits every socket, which is what an
         // adapter with no header in hand must supply.
-        self.deliver_tcp_packet_hop(net_ns, iface, src_ip, dst_ip, seg, packet, u8::MAX)
+        self.deliver_tcp_packet_hop(net_ns, iface, src_ip, dst_ip, seg, packet, u8::MAX, None)
     }
 
     /// Demultiplex one TCP segment, carrying the hop limit its IP header
@@ -202,14 +202,29 @@ impl NetStack {
     /// # C: O(log N + payload)
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn deliver_tcp_packet_hop(&self, net_ns: u64, iface: NetIfaceId,
-                    src_ip: IpAddr, dst_ip: IpAddr, seg: &[u8], packet: &[u8], hop: u8)
+                    src_ip: IpAddr, dst_ip: IpAddr, seg: &[u8], packet: &[u8], hop: u8,
+                    tproxy: Option<crate::pkt::TproxyTarget>)
         -> NetResult<()>
     {
-        let ipv6 = matches!(dst_ip, IpAddr::V6(_));
+        let wire_dst_ip = dst_ip;
         if seg.len() < TCP_HDR_MIN_LEN { return Err(NetError::Einval); }
-        let hdr = match crate::tcp_hdr::parse_ip(seg, src_ip, dst_ip) {
+        let mut hdr = match crate::tcp_hdr::parse_ip(seg, src_ip, wire_dst_ip) {
             Ok(h) => h, Err(_) => return Ok(()),
         };
+        let dst_ip = tproxy.and_then(|target| match wire_dst_ip {
+            IpAddr::V4(wire) if target.addr.0[4..] == [0; 12] => Some(IpAddr::V4(
+                if target.addr.0[..4] == [0; 4] { wire } else {
+                    Ipv4Addr::new(target.addr.0[0], target.addr.0[1],
+                        target.addr.0[2], target.addr.0[3])
+                })),
+            IpAddr::V6(wire) => Some(IpAddr::V6(
+                if target.addr.0 == [0; 16] { wire } else { Ipv6Addr(target.addr.0) })),
+            _ => None,
+        }).unwrap_or(wire_dst_ip);
+        if let Some(target) = tproxy {
+            if target.port != 0 { hdr.dst_port = target.port; }
+        }
+        let ipv6 = matches!(dst_ip, IpAddr::V6(_));
         let key = TcpKey {
             local_ip: dst_ip, local_port: hdr.dst_port,
             remote_ip: src_ip, remote_port: hdr.src_port,

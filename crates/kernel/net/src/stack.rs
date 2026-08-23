@@ -208,12 +208,13 @@ impl NetStack {
             remote_ip: src, remote_port: sport };
         if let Some(slot) = tables.tcp_conns.lock().get(&key).cloned() {
             return Some(match slot {
-                TcpSlot::Sock(entry) => SocketLookup { full: true, transparent: false,
+                TcpSlot::Sock(entry) => SocketLookup { full: true,
+                    transparent: entry.bind.as_ref().is_some_and(|bind| bind.transparent()),
                     mark: entry.mark(), wildcard: entry.bind.as_ref()
                         .is_some_and(|bind| bind.local.ip.is_unspecified()) },
                 TcpSlot::Req(req) => req.listener().map_or(SocketLookup {
                     full: false, transparent: false, mark: 0, wildcard: false,
-                }, |listener| SocketLookup { full: false, transparent: false,
+                }, |listener| SocketLookup { full: false, transparent: listener.bind.transparent(),
                     mark: listener.mark.load(::core::sync::atomic::Ordering::Acquire) as u32,
                     wildcard: listener.local.ip.is_unspecified() }),
             });
@@ -225,7 +226,7 @@ impl NetStack {
         let index = crate::stack::tcp_listener::select_listener_index(
             &bucket, src, sport, dport, l4, l4.len());
         let listener = bucket.get(index?).or_else(|| bucket.first())?;
-        Some(SocketLookup { full: true, transparent: false,
+        Some(SocketLookup { full: true, transparent: listener.bind.transparent(),
             mark: listener.mark.load(::core::sync::atomic::Ordering::Acquire) as u32,
             wildcard: listener.local.ip.is_unspecified() })
     }
@@ -264,6 +265,18 @@ impl NetStack {
         let listens = tables.tcp_listens.lock();
         let keys = [TcpListenKey { local_ip: IpAddr::V4(dst), local_port: port },
             TcpListenKey { local_ip: IpAddr::V4(Ipv4Addr::ANY), local_port: port }];
+        keys.iter().filter_map(|key| listens.get(key)).flatten().any(|listener| {
+            listener.bind.transparent()
+                && listener.bound_iface().is_none_or(|bound| Some(bound) == iface)
+        })
+    }
+
+    pub fn transparent_tcp6_in(&self, net_ns: u64, dst: Ipv6Addr, port: u16,
+                               iface: Option<NetIfaceId>) -> bool {
+        let tables = self.inet_tables(net_ns);
+        let listens = tables.tcp_listens.lock();
+        let keys = [TcpListenKey { local_ip: IpAddr::V6(dst), local_port: port },
+            TcpListenKey { local_ip: IpAddr::V6(Ipv6Addr::ANY), local_port: port }];
         keys.iter().filter_map(|key| listens.get(key)).flatten().any(|listener| {
             listener.bind.transparent()
                 && listener.bound_iface().is_none_or(|bound| Some(bound) == iface)

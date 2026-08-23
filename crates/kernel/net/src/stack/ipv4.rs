@@ -406,7 +406,7 @@ impl NetStack {
                 crate::mib::bump(net_ns, crate::mib::Mib::IpInDelivers);
                 crate::mib::bump(net_ns, crate::mib::Mib::TcpInSegs);
                 self.deliver_tcp_packet_hop(net_ns, iface, IpAddr::V4(hdr.src), IpAddr::V4(hdr.dst),
-                    payload, full_packet, hdr.ttl)?
+                    payload, full_packet, hdr.ttl, ingress_pkt.tproxy_target())?
             }
             p if p == IpProto::Igmp as u8 => {
                 crate::mib::bump(net_ns, crate::mib::Mib::IpInDelivers);

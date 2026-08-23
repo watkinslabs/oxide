@@ -207,7 +207,7 @@ impl NetStack {
                 let src = IpAddr::V6(src);
                 let dst = IpAddr::V6(dst);
                 let _ = self.deliver_tcp_packet_hop(net_ns, iface, src, dst, payload, packet,
-                    hop_limit);
+                    hop_limit, tproxy);
             }
             _ => crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::InUnknownProtos),
         }

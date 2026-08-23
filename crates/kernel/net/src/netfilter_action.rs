@@ -116,17 +116,19 @@ impl Action {
 
 fn apply_tproxy(p: &mut crate::pkt::Pkt, addr: InetAddr, port: u16,
                 family: u8, hook: u32) -> Result<(), ApplyError> {
-    let udp = match family {
-        crate::netfilter_hook::NFPROTO_IPV4 => p.data().get(9).copied()
-            == Some(crate::addr::IpProto::Udp as u8),
+    let transport = match family {
+        crate::netfilter_hook::NFPROTO_IPV4 => p.data().get(9).copied(),
         crate::netfilter_hook::NFPROTO_IPV6 => p.data().get(6).copied()
             .and_then(|next| crate::ipv6_ext::walk(next, p.data().get(40..)?).ok())
-            .map(|walk| matches!(walk, crate::ipv6_ext::ExtWalk::Done { next_header: 17, .. }
-                | crate::ipv6_ext::ExtWalk::Fragment { next_header: 17, offset: 0, .. }))
-            .unwrap_or(false),
-        _ => false,
+            .and_then(|walk| match walk {
+                crate::ipv6_ext::ExtWalk::Done { next_header, .. }
+                | crate::ipv6_ext::ExtWalk::Fragment { next_header, offset: 0, .. } => Some(next_header),
+                crate::ipv6_ext::ExtWalk::Fragment { .. } => None,
+            }),
+        _ => None,
     };
-    if hook != crate::netfilter_hook::NF_INET_PRE_ROUTING || !udp
+    if hook != crate::netfilter_hook::NF_INET_PRE_ROUTING
+        || !matches!(transport, Some(6 | 17))
         || (family == crate::netfilter_hook::NFPROTO_IPV4 && addr.0[4..] != [0; 12]) {
         return Err(ApplyError::Unsupported);
     }
