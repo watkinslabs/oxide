@@ -16,6 +16,7 @@ use namespace_identity::NamespaceId;
 use sync::{Spinlock, TaskList as MqLockClass};
 use vfs::inode::InodeBuilder;
 use vfs::inode_ops::{default_inode_ops, mk_mode};
+use vfs::superblock::{FileSystemType, SuperBlock};
 use vfs::{FileType, InodeRef};
 
 use crate::mqueue_policy::attr::MqSysctls;
@@ -115,16 +116,46 @@ static REG: Spinlock<Vec<MqDir>, MqLockClass> = Spinlock::new(Vec::new());
 /// round) so admission and charging are one critical section.
 static CHARGED: Spinlock<Vec<(u32, u64)>, MqLockClass> = Spinlock::new(Vec::new());
 
+/// The mqueue namespace owns a real VFS pseudo-filesystem. This is private to
+/// the IPC namespace rather than mountable by userspace, but it must still
+/// have the `mqueue` filesystem type so the normal inode LSM path can resolve
+/// `genfscon mqueue` and filename transitions.
+struct MqueueFs { root: InodeRef }
+
+impl vfs::fs::FileSystem for MqueueFs {
+    fn name(&self) -> &str { "mqueue" }
+    fn magic(&self) -> u64 { 0x1980_0202 }
+    fn root(&self) -> Option<InodeRef> { Some(self.root.clone()) }
+    fn set_sb(&self, sb: alloc::sync::Weak<SuperBlock>) -> vfs::KResult<()> {
+        self.root.set_sb(sb)
+    }
+}
+
+struct MqueueType;
+
+impl FileSystemType for MqueueType {
+    fn name(&self) -> &str { "mqueue" }
+    fn mount(&self, _src: Option<&str>, _opts: &str)
+        -> vfs::KResult<alloc::sync::Arc<SuperBlock>>
+    { Err(vfs::VfsError::Eopnotsupp) }
+}
+
 /// `i_ino` shared by every mqueue root directory.
 const MQ_ROOT_INO: vfs::Ino = super::super::ids::POSIX_MQ_ROOT_INO;
 
 fn build_root() -> InodeRef {
     // `mqueue_fill_super`: root is `S_IFDIR | S_ISVTX | S_IRWXUGO`, owned by
     // root, so any user may create a queue and only its owner may unlink it.
-    InodeBuilder::new(MQ_ROOT_INO, mk_mode(FileType::Directory, MQ_ROOT_PERM),
+    let root = InodeBuilder::new(MQ_ROOT_INO, mk_mode(FileType::Directory, MQ_ROOT_PERM),
                       default_inode_ops(), vfs::file_ops::default_file_ops())
         .owner(0, 0)
-        .build()
+        .build();
+    let fs = alloc::sync::Arc::new(MqueueFs { root: root.clone() });
+    vfs::fs::superblock_from_filesystem(
+        alloc::sync::Arc::new(MqueueType), fs, Some(root.clone()),
+        String::from("mqueue"), 0)
+        .expect("mqueue pseudo-filesystem superblock");
+    root
 }
 
 fn dir_index(reg: &mut Vec<MqDir>, ns: NamespaceId) -> usize {
@@ -210,6 +241,10 @@ pub fn create_linked(
     let name = String::from(name);
     let mut g = REG.lock();
     let i = dir_index(&mut g, ns);
+    let root = g[i].root.clone();
+    inode.set_sb(alloc::sync::Arc::downgrade(&root.i_sb()
+        .expect("mqueue root has a superblock")))?;
+    vfs::inode_created(&root, &inode, &name);
     if g[i].entries.iter().any(|e| e.name == name) { return Err(syscall::errno::Errno::Eexist); }
     admit_new_queue(g[i].count, g[i].sysctls.queues_max, cap_sys_resource)?;
     {
