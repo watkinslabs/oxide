@@ -101,6 +101,7 @@ mod tcp_timer;
 mod tcp_fastopen;
 mod tcp_listener_deliver;
 mod tcp_syncookies;
+mod tcp_synproxy;
 #[cfg(test)]
 #[path = "stack/tcp_syncookies_tests.rs"]
 mod tcp_syncookies_tests;
