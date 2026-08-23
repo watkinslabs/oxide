@@ -4,6 +4,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
+use alloc::vec;
 use alloc::vec::Vec;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
@@ -94,21 +95,29 @@ pub fn sys_vmsplice(args: &SyscallArgs) -> i64 {
     };
     match dir {
         ::fs::splice::VmspliceDir::ToPipe => {
-            let bufs: Vec<&[u8]> = ranges.iter().map(|&(b, l)| {
-                // SAFETY: `import_iov` proved [b, b+l) readable in the caller's
-                // address space below USER_VA_END.
-                unsafe { core::slice::from_raw_parts(b as *const u8, l) }
-            }).collect();
+            // Snapshot all user sources before entering the pipe owner. A
+            // range check is only admission; the copy-in is the recoverable
+            // access if a caller unmaps a page concurrently.
+            let mut bounce: Vec<Vec<u8>> = ranges.iter().map(|&(_, l)| vec![0u8; l]).collect();
+            for ((base, _), bytes) in ranges.iter().zip(bounce.iter_mut()) {
+                if uaccess::copy_from_user(bytes, *base).is_err() { return um::EFAULT; }
+            }
+            let bufs: Vec<&[u8]> = bounce.iter().map(Vec::as_slice).collect();
             ::fs::splice::do_vmsplice_to_pipe(&file, &bufs, flags)
         }
         ::fs::splice::VmspliceDir::ToUser => {
-            let mut bufs: Vec<&mut [u8]> = ranges.iter().map(|&(b, l)| {
-                // SAFETY: `import_iov` proved [b, b+l) writable in the caller's
-                // address space below USER_VA_END; the ranges are distinct
-                // iovec segments so the mutable borrows do not alias.
-                unsafe { core::slice::from_raw_parts_mut(b as *mut u8, l) }
-            }).collect();
-            ::fs::splice::do_vmsplice_to_user(&file, &mut bufs, flags)
+            let mut bounce: Vec<Vec<u8>> = ranges.iter().map(|&(_, l)| vec![0u8; l]).collect();
+            let mut bufs: Vec<&mut [u8]> = bounce.iter_mut().map(Vec::as_mut_slice).collect();
+            let ret = ::fs::splice::do_vmsplice_to_user(&file, &mut bufs, flags);
+            if ret < 0 { return ret; }
+            let mut left = ret as usize;
+            for ((base, _), bytes) in ranges.iter().zip(bounce.iter()) {
+                if left == 0 { break; }
+                let take = core::cmp::min(left, bytes.len());
+                if uaccess::copy_to_user(*base, &bytes[..take]).is_err() { return um::EFAULT; }
+                left -= take;
+            }
+            ret
         }
     }
 }
