@@ -198,6 +198,7 @@ dependencies = [
  "rtnl-link",
  "sync",
  "syscall",
+ "timer",
 ]
 
 [[package]]
