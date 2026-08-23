@@ -64,8 +64,13 @@ impl NetStack {
         let option_flags = syn_option_flags(tcp, flags)
             | if hdr.flags & (tcp_hdr::flags::ECE | tcp_hdr::flags::CWR)
                 == (tcp_hdr::flags::ECE | tcp_hdr::flags::CWR) { OPT_ECN } else { 0 };
+        let tcp_state = match &*conn.proto.lock() {
+            ::conntrack::ProtoState::Tcp(track) => track.state,
+            _ => return Ok(()),
+        };
         let now = crate::tcp_conn::ka_now_ns();
         if dir == ::conntrack::uapi::IP_CT_DIR_REPLY
+            && tcp_state == ::conntrack::proto::tcp_state::TCP_CONNTRACK_SYN_RECV
             && hdr.flags & (tcp_hdr::flags::SYN | tcp_hdr::flags::ACK)
                 == (tcp_hdr::flags::SYN | tcp_hdr::flags::ACK) {
             let Some(mut synproxy) = *conn.synproxy.lock() else {
@@ -100,12 +105,17 @@ impl NetStack {
                 hdr.window, &client_options, p.tx.mark).map_err(|_| crate::netfilter_action::ApplyError::Invalid)?;
             return Err(crate::netfilter_action::ApplyError::Stolen);
         }
-        if hdr.flags & tcp_hdr::flags::SYN != 0 && hdr.flags & tcp_hdr::flags::ACK == 0 {
-            // A reopened tracked flow starts a fresh proxy exchange; discard
-            // both old direction corrections before minting the new cookie.
-            conn.seqadj_init(::conntrack::uapi::IP_CT_DIR_ORIGINAL, 0);
-            conn.seqadj_init(::conntrack::uapi::IP_CT_DIR_REPLY, 0);
-            *conn.synproxy.lock() = None;
+        if dir == ::conntrack::uapi::IP_CT_DIR_ORIGINAL
+            && matches!(tcp_state, ::conntrack::proto::tcp_state::TCP_CONNTRACK_CLOSE
+                | ::conntrack::proto::tcp_state::TCP_CONNTRACK_SYN_SENT)
+            && hdr.flags & tcp_hdr::flags::SYN != 0 && hdr.flags & tcp_hdr::flags::ACK == 0 {
+            // Linux resets the extension only when a closed entry is reopened.
+            // A SYN retransmission in SYN_SENT must retain the pending exchange.
+            if tcp_state == ::conntrack::proto::tcp_state::TCP_CONNTRACK_CLOSE {
+                conn.seqadj_init(::conntrack::uapi::IP_CT_DIR_ORIGINAL, 0);
+                conn.seqadj_init(::conntrack::uapi::IP_CT_DIR_REPLY, 0);
+                *conn.synproxy.lock() = None;
+            }
             let (cookie, encoded_mss) = crate::syncookies::init_sequence(
                 src, dst, hdr.src_port, hdr.dst_port, hdr.seq, now,
                 matches!(src, IpAddr::V6(_)), mss);
@@ -125,7 +135,9 @@ impl NetStack {
                 0, &options, p.tx.mark).map_err(|_| crate::netfilter_action::ApplyError::Invalid)?;
             return Err(crate::netfilter_action::ApplyError::Stolen);
         }
-        if hdr.flags & tcp_hdr::flags::ACK != 0 && hdr.flags & tcp_hdr::flags::SYN == 0 {
+        if dir == ::conntrack::uapi::IP_CT_DIR_ORIGINAL
+            && tcp_state == ::conntrack::proto::tcp_state::TCP_CONNTRACK_SYN_SENT
+            && hdr.flags & tcp_hdr::flags::ACK != 0 && hdr.flags & tcp_hdr::flags::SYN == 0 {
             let Some(encoded_mss) = crate::syncookies::validate(src, dst, hdr.src_port,
                 hdr.dst_port, hdr.seq, hdr.ack, now, matches!(src, IpAddr::V6(_))) else {
                 return Err(crate::netfilter_action::ApplyError::Invalid);
