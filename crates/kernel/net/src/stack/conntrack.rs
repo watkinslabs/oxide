@@ -28,7 +28,13 @@ impl super::NetStack {
                 p.set_conntrack_state(table, None, conntrack::uapi::IP_CT_UNTRACKED, 0);
                 true
             }
-            Track::Invalid | Track::Repeat => false,
+            // Conntrack reports INVALID to the hook; it does not itself
+            // impose the nftables verdict. A later ct-state rule may drop it,
+            // while an unrelated rule is allowed to accept it.
+            Track::Invalid | Track::Repeat => {
+                p.set_conntrack_state(table, None, 0, 0);
+                true
+            }
         }
     }
 }
