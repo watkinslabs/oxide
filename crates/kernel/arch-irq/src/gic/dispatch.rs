@@ -280,9 +280,9 @@ unsafe extern "C" fn oxide_arm_softirq_drain() {
 /// dispatcher returns, with the whole 288 B entry frame.
 ///
 /// `user_mode(regs)` picks the arm: an EL0 return runs the return-to-user work
-/// loop; an EL1 return services a pending preemption through the shared
-/// IRQ-return scheduler loop. Both arms preserve the masked-IRQ return
-/// contract expected by the exception epilogue.
+/// loop; an EL1 return leaves a pending tick for the next voluntary
+/// preemption point. Both arms preserve the masked-IRQ return contract
+/// expected by the exception epilogue.
 ///
 /// # SAFETY: invoked only from the exception-exit asm with IRQs masked, the
 /// hardirq accounting already dropped, and SP back on the interrupted task's
@@ -301,9 +301,15 @@ unsafe extern "C" fn oxide_irq_exit_to_user(regs: *mut hal_aarch64::SvcFrame) {
         // SAFETY: same checked, live interrupted frame; ELR_EL1 is the
         // kernel PC the exception-return path is about to resume.
         sched::diag::note_interrupted_kernel_pc(unsafe { (*regs).elr_el1 });
-        // SAFETY: this is the outer exception return on the interrupted task
-        // stack; hardirq/softirq accounting was released by the dispatcher.
-        unsafe { sched::live::preempt_schedule_irq::<hal_aarch64::ArmIrqGate>(); }
+        // This build uses VOLUNTARY preemption. Linux's
+        // irqentry_exit_to_kernel_mode_preempt() only calls
+        // irqentry_exit_cond_resched() when full kernel preemption is enabled;
+        // a pending tick is therefore consumed at the next explicit
+        // preempt_enable/cond_resched point, not by entering schedule() from
+        // the task's exception-return stack. Doing the latter here lets a
+        // timer interrupt nest another IRQ-return scheduler frame every time
+        // an IRQ-save guard briefly reopens DAIF, which can exhaust a 16 KiB
+        // task stack before any voluntary point is reached.
         return;
     }
     // Snapshot BEFORE the loop: the loop consumes `need_resched` when it
