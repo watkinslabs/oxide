@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B253301-stale-debug-all-boot-process-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B253301 | INFRA | med | The historical debug-all boot-thrash row is superseded by the current harness-first workflow. | `CLAUDE.md` requires hosted tests as the development loop, makes boot the final gate, and says repeated boots are not the debugging loop; it explicitly directs a harness or targeted trace instead. | B253301 |
+
 ### B253201-stale-boot-probe-process-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
