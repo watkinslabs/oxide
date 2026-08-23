@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B253401-stale-systemctl-enotconn-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B253401 | DEFECT | med | The historical systemctl ENOTCONN observation is stale after the mount-setattr correction. | Existing B1732 evidence records `systemctl --failed` printing an empty failure list on a live GNOME boot, with `Transport endpoint is not connected` absent, proving the query completed successfully. | B253401 |
+
 ### B253301-stale-debug-all-boot-process-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
