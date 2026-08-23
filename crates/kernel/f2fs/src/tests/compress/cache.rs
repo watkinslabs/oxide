@@ -140,6 +140,20 @@ fn a_second_read_of_a_cluster_never_reaches_the_medium() {
 }
 
 #[test]
+fn readahead_files_decompressed_cluster_pages_in_the_canonical_mapping() {
+    let (mut v, ino) = volume(false);
+    let data = patterned(4 * BLKSIZE, 0x4A);
+    wrote(&mut v, ino, 0, &data);
+    let inode = v.read_inode(ino).unwrap();
+    v.readahead_data(&inode, ino, 1, 1);
+    assert!((0..4).all(|i| v.data_cache().held(ino, i)), "cluster pages were not filed");
+    let a = image_addr(&v, ino);
+    poison(&v, a);
+    assert_eq!(whole(&v, ino).unwrap(), data,
+               "the read fell back to the compressed image after readahead");
+}
+
+#[test]
 fn a_mount_that_did_not_ask_reads_the_medium_every_time() {
     // The control for the case above: the same poisoning, on a mount without
     // the option, must be visible.
@@ -148,6 +162,7 @@ fn a_mount_that_did_not_ask_reads_the_medium_every_time() {
     wrote(&mut v, ino, 0, &data);
     let a = image_addr(&v, ino);
     assert_eq!(whole(&v, ino).unwrap(), data);
+    v.data_cache().forget_inode(ino);
     poison(&v, a);
     assert!(whole(&v, ino).is_err(), "a mount with no cache cannot have served this");
 }

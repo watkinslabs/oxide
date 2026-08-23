@@ -304,28 +304,38 @@ impl<S: SectorSource> Volume<S> {
         }
         let live = crate::compress::data_blocks(&addrs).map_err(compress_errno)?;
         let mut image = alloc::vec::Vec::with_capacity(live.len() * BLKSIZE);
-        for &a in live {
-            if !self.sb.valid_main_blkaddr(a) { return Err(Errno::Eio); }
-            // A block this mount already holds is not read again, and — the
-            // point of holding it — is not charged as traffic either: nothing
-            // went to the device, so a figure that counted it would report I/O
-            // the cache exists to avoid.
-            if let Some(cached) = self.compress_cache.load(a) {
-                image.extend_from_slice(&cached);
-                continue;
+        let mut blocks: Vec<Option<Vec<u8>>> = live.iter()
+            .map(|&a| self.compress_cache.load(a))
+            .collect();
+        let missing: Vec<Option<u32>> = live.iter().enumerate()
+            .map(|(i, &a)| if blocks[i].is_some() { None } else { Some(a) })
+            .collect();
+        for run in super::readahead::window::runs(&missing) {
+            let last = u64::from(run.addr) + run.len as u64 - 1;
+            if !self.sb_main_contains(run.addr) || last >= self.sb.max_blkaddr()
+                || !self.sb.valid_main_blkaddr(last as u32) {
+                self.note_error(crate::errrec::Error::InvalidBlkaddr);
+                return Err(Errno::Eio);
             }
-            let block = self.read_main_block(a)?;
-            // Offered AFTER the read rather than instead of it: the cache is
-            // filled by what the medium actually returned, so a block that
-            // could not be read leaves nothing behind to be served later.
-            self.compress_cache.store(a, ino, &block);
-            image.extend_from_slice(&block);
-            // A compressed cluster's stored blocks are file data and are also
-            // compressed data, so they are charged to both — the compressed
-            // figure answers what share of the traffic was compressed, which a
-            // partition of the total could not.
-            self.io_account(crate::stats::iostat::Io::FsDataRead, BLKSIZE as u64, true);
-            self.io_read_folio(0);
+            if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::ReadIo) {
+                return Err(Errno::Eio);
+            }
+            let mut fetched = vec![0u8; run.len * BLKSIZE];
+            self.source.read_sectors(u64::from(run.addr), &mut fetched)?;
+            for j in 0..run.len {
+                let addr = run.addr + j as u32;
+                let page = Vec::from(&fetched[j * BLKSIZE..(j + 1) * BLKSIZE]);
+                self.compress_cache.store(addr, ino, &page);
+                blocks[run.at + j] = Some(page);
+                // A compressed cluster's stored blocks are file data and are
+                // also compressed data, so both counters describe the same
+                // transfer without inventing a second traffic source.
+                self.io_account(crate::stats::iostat::Io::FsDataRead, BLKSIZE as u64, true);
+                self.io_read_folio(0);
+            }
+        }
+        for block in blocks {
+            image.extend_from_slice(&block.ok_or(Errno::Eio)?);
         }
         // A cluster that will not decompress, or whose checksum disagrees with
         // its bytes, is recorded: it is one file's problem rather than a
@@ -339,7 +349,25 @@ impl<S: SectorSource> Volume<S> {
             self.note_error(crate::errrec::Error::FailDecompression);
             return Err(Errno::Eio);
         }
+        self.cache_plain_cluster(ino, first, &cluster.data);
         Ok(Plain { first, data: cluster.data })
+    }
+
+    /// File the decompressed cluster in the one page cache all readers use.
+    /// Existing dirty pages win, so a speculative read cannot overwrite a
+    /// buffered write that has not reached the medium yet. # C: O(cluster)
+    fn cache_plain_cluster(&self, ino: u32, first: u64, data: &[u8]) {
+        for (i, page) in data.chunks(BLKSIZE).enumerate() {
+            if page.len() != BLKSIZE { break; }
+            let _ = self.data_cache.read(ino, first + i as u64, || Ok(Vec::from(page)));
+        }
+    }
+
+    /// Cluster read used by the address-space readahead owner. # C: O(cluster)
+    pub(super) fn read_cluster_for_readahead(&self, inode: &Inode, ino: u32, index: u64)
+        -> Result<(), Errno> {
+        let _ = self.read_cluster(inode, ino, index)?;
+        Ok(())
     }
 
     /// Read a file whose data lives in its own inode block.

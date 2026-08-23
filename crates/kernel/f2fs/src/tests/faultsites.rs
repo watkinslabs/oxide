@@ -320,6 +320,7 @@ fn unpacking_a_compressed_cluster_can_be_made_to_fail() {
     let inode = v.read_inode(ino).unwrap();
     let mut buf = vec![0u8; 64];
     assert!(v.read_file(&inode, ino, 7, &mut buf).is_ok(), "the fixture's cluster does not read");
+    v.data_cache().forget_inode(ino);
     arm(&v, Fault::Vmalloc);
     assert_eq!(v.read_file(&inode, ino, BLKSIZE as u64 + 7, &mut buf), Err(Errno::Enomem));
 }

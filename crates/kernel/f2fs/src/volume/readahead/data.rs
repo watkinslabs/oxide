@@ -38,6 +38,48 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(nr) blocks, O(runs) transfers
     pub fn readahead_data(&self, inode: &Inode, ino: u32, start: u64, nr: usize) {
         if nr == 0 || inode.inline_data() { return; }
+        if inode.compressed() {
+            self.readahead_compressed(inode, ino, start, nr);
+            return;
+        }
+        self.readahead_plain(inode, ino, start, nr);
+    }
+
+    /// Fill compressed clusters through the ordinary file-page cache.
+    ///
+    /// Linux widens a compressed readahead window to the cluster boundaries,
+    /// gathers the cluster's pages, reads its stored image, and completes
+    /// those pages after decompression. The compressed-block cache remains an
+    /// optimization underneath that owner; it is not the file's answer.
+    /// # C: O(nr) blocks, O(clusters) decompressions
+    fn readahead_compressed(&self, inode: &Inode, ino: u32, start: u64, nr: usize) {
+        // Readahead is advisory. Do not consume an armed demand-side
+        // allocation fault while speculating; the subsequent fault must still
+        // reach the reader that actually asks for the cluster.
+        if self.fault_info().armed(crate::fault::Fault::Vmalloc) { return; }
+        let Ok(g) = crate::compress::Geometry::new(inode.compress_algorithm,
+                                                    inode.log_cluster_size,
+                                                    inode.compress_flag) else { return };
+        let blocks = inode.size.div_ceil(BLKSIZE as u64);
+        if start >= blocks { return; }
+        let end = start.saturating_add(nr as u64).min(blocks);
+        let mut first = g.first_block(start);
+        while first < end {
+            match self.map_block(inode, ino, first) {
+                Ok(Mapped::Compressed) => {
+                    if self.read_cluster_for_readahead(inode, ino, first).is_err() { return; }
+                }
+                Ok(_) => self.readahead_plain(inode, ino, first,
+                                               g.blocks().min((blocks - first) as usize)),
+                Err(_) => return,
+            }
+            first = first.saturating_add(g.blocks() as u64);
+        }
+    }
+
+    /// Plain-file readahead owner, also used for uncompressed clusters in a
+    /// compressed file. # C: O(nr) blocks, O(runs) transfers
+    fn readahead_plain(&self, inode: &Inode, ino: u32, start: u64, nr: usize) {
         // The last block of a file is whole on the medium; what stops
         // readahead is the file's SIZE, so a window past the end fetches
         // nothing rather than reading padding into the mapping.
@@ -47,11 +89,6 @@ impl<S: SectorSource> Volume<S> {
         // a window whose record is absent is fetched as nothing rather than
         // resolved from underneath the fetch.
         let crypt = match self.crypt_info_held(inode, ino) { Ok(c) => c, Err(_) => return };
-        // A compressed file's blocks are not its bytes: a cluster is the unit
-        // that unpacks, and the blocks it stores are read by the cluster
-        // reader. Fetching them here would fill the image cache from outside
-        // the path that owns it.
-        if inode.compressed() { return; }
         let want = nr.min(MAX_RA_BLOCKS).min((blocks - start) as usize);
         let addrs = self.ra_window(inode, ino, start, want);
         for run in runs(&addrs) {
