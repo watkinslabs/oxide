@@ -24,6 +24,19 @@ pub const SB_FLAGS_USER_MASK: u64 = SB_RDONLY
     | SB_NOATIME
     | SB_NODIRATIME;
 
+pub type FsContextSecurityFactory = fn() -> Arc<dyn FsContextSecurity>;
+
+static SECURITY_FACTORY: sync::Spinlock<Option<FsContextSecurityFactory>, sync::Inode> =
+    sync::Spinlock::new(None);
+
+pub fn set_security_factory(factory: FsContextSecurityFactory) {
+    *SECURITY_FACTORY.lock() = Some(factory);
+}
+
+fn new_security() -> Option<Arc<dyn FsContextSecurity>> {
+    SECURITY_FACTORY.lock().map(|factory| factory())
+}
+
 pub struct FsContext {
     pub(super) ops:           Arc<dyn FsContextOps>,
     pub(super) fs_type:       Arc<dyn FileSystemType>,
@@ -93,7 +106,7 @@ impl FsContext {
             ops: Arc::new(ClassicMountFsContextOps),
             fs_type, purpose, phase, sb_flags, sb_flags_mask,
             source: None, params: Vec::new(), monolithic: None, mount_target: None,
-            root: None, sb: None, fs_private: Arc::new(()), log: Vec::new(), security: None,
+            root: None, sb: None, fs_private: Arc::new(()), log: Vec::new(), security: new_security(),
             create_exclusive: false, creator_cred,
         }
     }

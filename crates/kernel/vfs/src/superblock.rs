@@ -192,6 +192,9 @@ pub struct SuperBlock {
     /// because Linux sets it AFTER `alloc_super` (post-construction), so the slot
     /// is replaceable without rebuilding the SB. # consumers: per-fs state.
     s_fs_info: Spinlock<Arc<dyn Any + Send + Sync>, SbClass>,
+    /// `s_security` — the composite LSM superblock blob. VFS owns the slot;
+    /// the installed LSM owns the concrete value behind it.
+    s_security: Spinlock<Arc<dyn Any + Send + Sync>, SbClass>,
     /// Per-instance inode cache (`iget`/`ilookup`/`iput`) keyed by `ino`. Each
     /// [`IcacheEntry`] is a `Weak<Inode>` + the inode's `i_dentry` ALIAS list;
     /// the lifecycle state (`i_state`/`i_count`/`__i_nlink`) lives on the

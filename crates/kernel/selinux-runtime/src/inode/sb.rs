@@ -34,6 +34,8 @@ pub struct MountOptions<'a> {
     pub fscontext: Option<&'a str>,
     /// `defcontext=` — label an inode with no written one falls back to.
     pub defcontext: Option<&'a str>,
+    /// `rootcontext=` — label of the root inode of this mount only.
+    pub rootcontext: Option<&'a str>,
 }
 
 /// The mount decision, before any context has been resolved to a SID.
@@ -50,6 +52,8 @@ pub struct SbPlan {
     pub sb_context: Option<String>,
     /// Written context an inode falls back to when it carries none.
     pub default_context: Option<String>,
+    /// Context explicitly requested for the mount root inode.
+    pub root_context: Option<String>,
 }
 
 /// The mount decision with its contexts resolved.
@@ -63,6 +67,8 @@ pub struct SuperblockSecurity {
     pub sb_sid: Sid,
     /// SID an inode falls back to when it carries no label of its own.
     pub default_sid: Sid,
+    /// SID explicitly requested for the mount root inode, if any.
+    pub root_sid: Option<Sid>,
 }
 
 /// Decide how one mount labels its inodes. # C: O(fs_use entries + genfs paths)
@@ -79,6 +85,7 @@ pub fn sb_plan(db: &Policydb, fstype: &str, opts: &MountOptions) -> SbPlan {
             fstype: fstype.to_string(),
             sb_context: Some(ctx.to_string()),
             default_context: Some(ctx.to_string()),
+            root_context: Some(ctx.to_string()),
         };
     }
     let (behavior, stated) = match db.ocontexts.fs_use_of(fstype) {
@@ -90,6 +97,7 @@ pub fn sb_plan(db: &Policydb, fstype: &str, opts: &MountOptions) -> SbPlan {
         fstype: fstype.to_string(),
         sb_context: opts.fscontext.map(ToString::to_string).or_else(|| stated.clone()),
         default_context: opts.defcontext.map(ToString::to_string).or(stated),
+        root_context: opts.rootcontext.map(ToString::to_string),
     }
 }
 
@@ -121,6 +129,7 @@ pub fn superblock_security(srv: &mut SecurityServer, fstype: &str, opts: &MountO
             fstype: fstype.to_string(),
             sb_sid: unlabeled_sid(),
             default_sid: unlabeled_sid(),
+            root_sid: None,
         };
     };
     let plan = sb_plan(db, fstype, opts);
@@ -128,6 +137,7 @@ pub fn superblock_security(srv: &mut SecurityServer, fstype: &str, opts: &MountO
         behavior: plan.behavior,
         sb_sid: context_sid(srv, plan.sb_context.as_deref()),
         default_sid: context_sid(srv, plan.default_context.as_deref()),
+        root_sid: plan.root_context.as_deref().map(|c| context_sid(srv, Some(c))),
         fstype: plan.fstype,
     }
 }

@@ -46,12 +46,17 @@ pub fn inode_sid(inode: &InodeRef) -> Option<u32> {
     let seq = selinux_runtime::policy_seq();
     if let Some(sid) = inode.security_sid_at(seq) { return Some(sid); }
     if !selinux_runtime::active() { return None; }
+    let superblock = inode.i_sb()?;
     let fstype = fstype(inode)?;
     let class = inode_class(inode.i_mode() as u32)?;
     let written = written_label(inode);
     let task = selinux_runtime::task::current_sid();
     let sid = selinux_runtime::with(|s| {
-        let sb = superblock_security(s, &fstype);
+        let sb = superblock.security_as::<SuperblockSecurity>()
+            .unwrap_or_else(|| alloc::sync::Arc::new(superblock_security(s, &fstype)));
+        if superblock.s_root_inode().is_some_and(|root| alloc::sync::Arc::ptr_eq(&root, inode)) {
+            if let Some(root_sid) = sb.root_sid { return root_sid; }
+        }
         existing_inode_sid(s, &sb, task, class, written.as_deref(), None)
     })?;
     inode.set_security_sid_at(sid, seq);
@@ -73,7 +78,8 @@ pub fn label_new_inode(dir: &InodeRef, inode: &InodeRef, name: &str) -> Option<u
     let task = selinux_runtime::task::current_sid();
     let staged = selinux_runtime::task::fscreate_sid();
     let sid = selinux_runtime::with(|s| {
-        let sb = superblock_security(s, &fstype);
+        let sb = inode.i_sb().and_then(|sb| sb.security_as::<SuperblockSecurity>())
+            .unwrap_or_else(|| alloc::sync::Arc::new(superblock_security(s, &fstype)));
         new_inode_sid(s, &sb, staged, task, dir_sid, class, Some(name))
     })?;
     inode.set_security_sid_at(sid, seq);
