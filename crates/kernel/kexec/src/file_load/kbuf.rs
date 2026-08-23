@@ -147,10 +147,12 @@ pub fn system_ranges(
     let (start, end) = reserved.ok_or(Error::AddrNotAvail)?;
     if end < start { return Err(Error::AddrNotAvail); }
     let mut out: Vec<(u64, u64)> = Vec::with_capacity(2);
-    // Clipped to memory that exists: a machine whose map does not reach the
-    // low window must not be told it has one.
-    if let Some(low) = low_window(ram) { out.push(low); }
     out.push((start, end + 1));
+    // Clipped to memory that exists: a machine whose map does not reach the
+    // low window must not be told it has one. Linux puts this second range
+    // last because the arm64 early DT parser caps the first range, then adds
+    // this low range back.
+    if let Some(low) = low_window(ram) { out.push(low); }
     Ok(out)
 }
 
@@ -395,7 +397,7 @@ mod tests {
         // map says what is there rather than what the ceiling allows.
         assert!(0x9_f000 < LOW_MEMORY_END);
         assert_eq!(system_ranges(true, &ram, reserved).expect("a map"),
-                   alloc::vec![(0, 0x9_f000), (0x6000_0000, 0x8000_0000)]);
+                   alloc::vec![(0x6000_0000, 0x8000_0000), (0, 0x9_f000)]);
     }
 
     /// The low window is what the machine actually has below the ceiling, not
@@ -405,7 +407,7 @@ mod tests {
     fn the_low_window_is_clipped_to_memory_that_exists() {
         let reserved = Some((0x6000_0000u64, 0x7fff_ffffu64));
         assert_eq!(system_ranges(true, &[(0, 0x8000), (0x10_0000, 0x8000_0000)], reserved).expect("a map"),
-                   alloc::vec![(0, 0x8000), (0x6000_0000, 0x8000_0000)]);
+                   alloc::vec![(0x6000_0000, 0x8000_0000), (0, 0x8000)]);
         // A machine with nothing below the ceiling is told about nothing.
         assert_eq!(system_ranges(true, &[(0x10_0000, 0x8000_0000)], reserved).expect("a map"),
                    alloc::vec![(0x6000_0000, 0x8000_0000)]);

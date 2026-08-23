@@ -35,6 +35,7 @@ pub fn load(ctx: &LoadCtx) -> KResult<Loaded> {
 
     let initrd_len = ctx.img.initrd.len() as u64;
     let seeds = handover::collect_seeds();
+    let usable_memory_range = ctx.crash.then_some(ctx.system);
     let ho = |initrd_mem: u64| handover::Handover {
         initrd_mem,
         initrd_len,
@@ -43,6 +44,7 @@ pub fn load(ctx: &LoadCtx) -> KResult<Loaded> {
         old_fdt_len: ctx.fdt.len() as u64,
         seeds: seeds.clone(),
         reserve: ctx.reserve,
+        usable_memory_range,
     };
 
     let sizing_addr = if initrd_len > 0 { SIZING_INITRD_ADDR } else { 0 };

@@ -53,6 +53,20 @@ impl Node {
         self.set_prop(name, &v.to_be_bytes());
     }
 
+    /// Set an address/size property made of 64-bit values encoded as
+    /// four-cell device-tree integers.
+    /// # C: O(N_props)
+    pub fn set_prop_u64_ranges(&mut self, name: &[u8], ranges: &[(u64, u64)]) {
+        let mut value = Vec::with_capacity(ranges.len() * 16);
+        for &(first, second) in ranges {
+            value.extend_from_slice(&((first >> 32) as u32).to_be_bytes());
+            value.extend_from_slice(&(first as u32).to_be_bytes());
+            value.extend_from_slice(&((second >> 32) as u32).to_be_bytes());
+            value.extend_from_slice(&(second as u32).to_be_bytes());
+        }
+        self.set_prop(name, &value);
+    }
+
     /// Set a property whose value is a NUL-terminated string.
     ///
     /// The NUL is part of the value: a `bootargs` without one is a string the

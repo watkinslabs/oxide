@@ -71,6 +71,9 @@ pub struct Handover<'a> {
     /// stops, already normalized. Each becomes a reservation the new kernel
     /// honours before it allocates anything.
     pub reserve: &'a [(u64, u64)],
+    /// Physical windows a crash kernel may use. Normal kexec leaves this
+    /// absent; the crash loader derives the ordered ranges from `system`.
+    pub usable_memory_range: Option<&'a [(u64, u64)]>,
 }
 
 /// Derive the new kernel's tree from `base`.
@@ -90,6 +93,9 @@ pub fn setup_fdt(base: &[u8], h: &Handover) -> KResult<Vec<u8>> {
     // reservation and it boots with almost no memory.
     chosen.del_prop(P_ELFCOREHDR);
     chosen.del_prop(P_USABLE_MEMORY_RANGE);
+    if let Some(ranges) = h.usable_memory_range {
+        chosen.set_prop_u64_ranges(P_USABLE_MEMORY_RANGE, ranges);
+    }
 
     // Drop the reservation belonging to the initramfs THIS boot used, read
     // from the properties before they are overwritten.

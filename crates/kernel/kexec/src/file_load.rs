@@ -84,6 +84,9 @@ pub struct LoadCtx<'a> {
     /// carry a reservation for each, or its allocator hands the memory out
     /// from under the device still writing it.
     pub reserve: &'a [(u64, u64)],
+    /// Whether this is the crash slot. ARM uses this to publish the
+    /// crash-kernel-only `/chosen/linux,usable-memory-range` binding.
+    pub crash: bool,
 }
 
 /// A laid-out image, ready for `stage_image`.
@@ -171,7 +174,7 @@ where R: FnOnce() -> KResult<FileImage> {
         let fdt = machine_fdt();
         let (fdt_pa, _) = machine_fdt_phys();
         let ctx = LoadCtx { img: &img, place: &place, system: &system, fdt: &fdt, fdt_pa,
-                            reserve: &keep_clear };
+                            reserve: &keep_clear, crash };
         let loaded = loader.load(&ctx)?;
         // The file-mode flag word spells the crash bit differently; translate
         // it into the shared one so ONE store decides which slot is written.
