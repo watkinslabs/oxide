@@ -30,6 +30,7 @@ pub struct CtTable {
     /// is still being decided.
     pending: Spinlock<Vec<Arc<Conn>>, SocketLockClass>,
     next_id: AtomicU64,
+    random: AtomicU64,
     count: AtomicU64,
     /// Hard ceiling. New flows are refused above it rather than evicting a
     /// live one at random.
@@ -58,6 +59,7 @@ impl CtTable {
             buckets,
             pending: Spinlock::new(Vec::new()),
             next_id: AtomicU64::new(1),
+            random: AtomicU64::new(seed as u64 | 1),
             count: AtomicU64::new(0),
             max: AtomicU64::new(CT_MAX_DEFAULT),
             seed,
@@ -73,6 +75,12 @@ impl CtTable {
 
     /// # C: O(1)
     pub fn alloc_id(&self) -> u64 { self.next_id.fetch_add(1, Ordering::Relaxed) }
+    /// Namespace-owned pseudo-random stream used by bounded NAT allocation.
+    /// # C: O(1)
+    pub fn random_u16(&self) -> u16 {
+        let old = self.random.fetch_add(0x9e37_79b9_7f4a_7c15, Ordering::Relaxed);
+        (old ^ (old >> 17) ^ (old >> 31)) as u16
+    }
     /// # C: O(1)
     pub fn count(&self) -> u64 { self.count.load(Ordering::Relaxed) }
 
@@ -85,7 +93,7 @@ impl CtTable {
         for c in g.entries.iter() {
             if c.dying() || c.expired(now) { continue; }
             if c.orig == *t { return Some(Found { conn: c.clone(), dir: IP_CT_DIR_ORIGINAL }); }
-            if c.reply == *t { return Some(Found { conn: c.clone(), dir: IP_CT_DIR_REPLY }); }
+            if c.reply_tuple() == *t { return Some(Found { conn: c.clone(), dir: IP_CT_DIR_REPLY }); }
         }
         None
     }
@@ -98,7 +106,7 @@ impl CtTable {
         let g = self.bucket_of(t).lock();
         g.entries.iter().any(|c| {
             if let Some(skip) = ignore { if Arc::ptr_eq(c, skip) { return false; } }
-            !c.dying() && !c.expired(now) && (c.orig == *t || c.reply == *t)
+            !c.dying() && !c.expired(now) && (c.orig == *t || c.reply_tuple() == *t)
         })
     }
 
@@ -141,10 +149,11 @@ impl CtTable {
 
     fn insert_both(&self, conn: &Arc<Conn>, now: u64) -> bool {
         let hi = (conn.orig.hash(self.seed) as usize) % self.buckets.len();
-        let hj = (conn.reply.hash(self.seed) as usize) % self.buckets.len();
+        let reply = conn.reply_tuple();
+        let hj = (reply.hash(self.seed) as usize) % self.buckets.len();
         if hi == hj {
             let mut g = self.buckets[hi].lock();
-            if bucket_taken(&g, &conn.orig, now) || bucket_taken(&g, &conn.reply, now) {
+            if bucket_taken(&g, &conn.orig, now) || bucket_taken(&g, &reply, now) {
                 return false;
             }
             g.entries.push(conn.clone());
@@ -158,7 +167,7 @@ impl CtTable {
         let mut g1 = self.buckets[first].lock();
         let mut g2 = self.buckets[second].lock();
         let (orig_g, reply_g) = if hi < hj { (&g1, &g2) } else { (&g2, &g1) };
-        if bucket_taken(orig_g, &conn.orig, now) || bucket_taken(reply_g, &conn.reply, now) {
+        if bucket_taken(orig_g, &conn.orig, now) || bucket_taken(reply_g, &reply, now) {
             return false;
         }
         g1.entries.push(conn.clone());
@@ -182,7 +191,8 @@ impl CtTable {
     }
 
     fn unlink(&self, conn: &Arc<Conn>) {
-        for t in [&conn.orig, &conn.reply] {
+        let reply = conn.reply_tuple();
+        for t in [&conn.orig, &reply] {
             let mut g = self.bucket_of(t).lock();
             if let Some(i) = g.entries.iter().position(|c| Arc::ptr_eq(c, conn)) {
                 g.entries.remove(i);
@@ -253,5 +263,6 @@ impl CtTable {
 }
 
 fn bucket_taken(b: &Bucket, t: &Tuple, now: u64) -> bool {
-    b.entries.iter().any(|c| !c.dying() && !c.expired(now) && (c.orig == *t || c.reply == *t))
+    b.entries.iter().any(|c| !c.dying() && !c.expired(now)
+        && (c.orig == *t || c.reply_tuple() == *t))
 }

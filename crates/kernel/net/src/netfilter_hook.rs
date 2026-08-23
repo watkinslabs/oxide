@@ -186,7 +186,7 @@ pub(crate) fn nf_hook_packet_in(namespace: u64, hook_id: u32, p: &mut Pkt,
     if tracking_hook {
         let raw = nf_hook_packet_stage(namespace, hook_id, p, family, iface, mark,
                                        None, Some(-200));
-        if raw.verdict == 0 || apply_actions(p, family, &raw.actions).is_err() {
+        if raw.verdict == 0 || apply_actions(p, family, hook_id, &raw.actions).is_err() {
             return NfHookResult { verdict: 0, mark: raw.mark, actions: Vec::new(), notrack: raw.notrack };
         }
         mark = raw.mark;
@@ -202,7 +202,7 @@ pub(crate) fn nf_hook_packet_in(namespace: u64, hook_id: u32, p: &mut Pkt,
     p.tx.mark = mark;
     let result = nf_hook_packet_stage(namespace, hook_id, p, family, iface, mark,
                                       tracking_hook.then_some(-200), None);
-    if result.verdict == 0 || apply_actions(p, family, &result.actions).is_err() {
+    if result.verdict == 0 || apply_actions(p, family, hook_id, &result.actions).is_err() {
         return NfHookResult { verdict: 0, mark: result.mark, actions: Vec::new(), notrack: notrack || result.notrack };
     }
     p.tx.mark = result.mark;
@@ -270,10 +270,14 @@ pub(crate) fn nf_output_in(namespace: u64, p: &mut Pkt, family: u8) -> bool {
     post.verdict != 0
 }
 
-fn apply_actions(p: &mut Pkt, family: u8,
+fn apply_actions(p: &mut Pkt, family: u8, hook: u32,
                  actions: &[crate::netfilter_action::Action]) -> Result<(), ()> {
     for action in actions {
-        action.apply(p, family).map_err(|_| ())?;
+        action.apply_at(p, family, hook).map_err(|_| ())?;
+    }
+    if let Some((_, Some(conn), _, dir)) = p.conntrack_state_owned() {
+        crate::netfilter_action::apply_conntrack_packet(p, conn, dir, family, hook)
+            .map_err(|_| ())?;
     }
     Ok(())
 }

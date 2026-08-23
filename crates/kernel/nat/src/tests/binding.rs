@@ -32,15 +32,16 @@ fn fresh(orig: Tuple) -> Conn { Conn::new(1, orig, orig.invert().unwrap(), 0) }
 fn a_source_binding_rewrites_the_reply_destination() {
     let env = Env::new();
     let orig = tcp([10, 0, 0, 1], 1234, [93, 184, 216, 34], 80);
-    let mut c = fresh(orig);
+    let c = fresh(orig);
     let r = NatRange::single_addr(InetAddr::v4([203, 0, 113, 5]), 0);
-    assert_eq!(setup_info(&mut c, &r, NF_NAT_MANIP_SRC, &env), SetupResult::Accept);
+    assert_eq!(setup_info(&c, &r, NF_NAT_MANIP_SRC, &env), SetupResult::Accept);
 
     // The original half is untouched: the client still sees its own address.
     assert_eq!(c.orig, orig);
     // The reply half is what the far side will send back to.
-    assert_eq!(&c.reply.src.addr.0[..4], &[93, 184, 216, 34]);
-    assert_eq!(&c.reply.dst.addr.0[..4], &[203, 0, 113, 5]);
+    let reply = c.reply_tuple();
+    assert_eq!(&reply.src.addr.0[..4], &[93, 184, 216, 34]);
+    assert_eq!(&reply.dst.addr.0[..4], &[203, 0, 113, 5]);
     assert_eq!(c.status() & IPS_SRC_NAT, IPS_SRC_NAT);
     assert_eq!(c.status() & IPS_SRC_NAT_DONE, IPS_SRC_NAT_DONE);
     assert_eq!(c.status() & IPS_DST_NAT, 0);
@@ -50,10 +51,10 @@ fn a_source_binding_rewrites_the_reply_destination() {
 fn a_destination_binding_rewrites_the_reply_source() {
     let env = Env::new();
     let orig = tcp([10, 0, 0, 1], 1234, [203, 0, 113, 5], 80);
-    let mut c = fresh(orig);
+    let c = fresh(orig);
     let r = NatRange::single_addr(InetAddr::v4([10, 0, 0, 50]), 0);
-    assert_eq!(setup_info(&mut c, &r, NF_NAT_MANIP_DST, &env), SetupResult::Accept);
-    assert_eq!(&c.reply.src.addr.0[..4], &[10, 0, 0, 50],
+    assert_eq!(setup_info(&c, &r, NF_NAT_MANIP_DST, &env), SetupResult::Accept);
+    assert_eq!(&c.reply_tuple().src.addr.0[..4], &[10, 0, 0, 50],
         "the real server answers, but the client must see the address it dialled");
     assert_eq!(c.status() & IPS_DST_NAT, IPS_DST_NAT);
 }
@@ -64,23 +65,23 @@ fn a_binding_that_changes_nothing_records_done_but_not_the_manip_bit() {
     // as translated and every packet needlessly rewritten.
     let env = Env::new();
     let orig = tcp([203, 0, 113, 5], 40000, [93, 184, 216, 34], 80);
-    let mut c = fresh(orig);
+    let c = fresh(orig);
     let r = NatRange::single_addr(InetAddr::v4([203, 0, 113, 5]), 0);
-    assert_eq!(setup_info(&mut c, &r, NF_NAT_MANIP_SRC, &env), SetupResult::Accept);
+    assert_eq!(setup_info(&c, &r, NF_NAT_MANIP_SRC, &env), SetupResult::Accept);
     assert_eq!(c.status() & IPS_SRC_NAT, 0);
     assert_eq!(c.status() & IPS_SRC_NAT_DONE, IPS_SRC_NAT_DONE);
-    assert_eq!(c.reply, orig.invert().unwrap());
+    assert_eq!(c.reply_tuple(), orig.invert().unwrap());
 }
 
 #[test]
 fn a_second_binding_of_the_same_manip_is_refused() {
     let env = Env::new();
     let orig = tcp([10, 0, 0, 1], 1234, [93, 184, 216, 34], 80);
-    let mut c = fresh(orig);
+    let c = fresh(orig);
     let r = NatRange::single_addr(InetAddr::v4([203, 0, 113, 5]), 0);
-    assert_eq!(setup_info(&mut c, &r, NF_NAT_MANIP_SRC, &env), SetupResult::Accept);
+    assert_eq!(setup_info(&c, &r, NF_NAT_MANIP_SRC, &env), SetupResult::Accept);
     let r2 = NatRange::single_addr(InetAddr::v4([203, 0, 113, 9]), 0);
-    assert_eq!(setup_info(&mut c, &r2, NF_NAT_MANIP_SRC, &env), SetupResult::Drop,
+    assert_eq!(setup_info(&c, &r2, NF_NAT_MANIP_SRC, &env), SetupResult::Drop,
         "re-deciding mid-flow splits one conversation across two translations");
 }
 
@@ -88,13 +89,14 @@ fn a_second_binding_of_the_same_manip_is_refused() {
 fn both_manips_may_be_bound_on_one_flow() {
     let env = Env::new();
     let orig = tcp([10, 0, 0, 1], 1234, [203, 0, 113, 5], 80);
-    let mut c = fresh(orig);
-    assert_eq!(setup_info(&mut c, &NatRange::single_addr(InetAddr::v4([10, 0, 0, 50]), 0),
+    let c = fresh(orig);
+    assert_eq!(setup_info(&c, &NatRange::single_addr(InetAddr::v4([10, 0, 0, 50]), 0),
                           NF_NAT_MANIP_DST, &env), SetupResult::Accept);
-    assert_eq!(setup_info(&mut c, &NatRange::single_addr(InetAddr::v4([172, 16, 0, 1]), 0),
+    assert_eq!(setup_info(&c, &NatRange::single_addr(InetAddr::v4([172, 16, 0, 1]), 0),
                           NF_NAT_MANIP_SRC, &env), SetupResult::Accept);
-    assert_eq!(&c.reply.src.addr.0[..4], &[10, 0, 0, 50]);
-    assert_eq!(&c.reply.dst.addr.0[..4], &[172, 16, 0, 1]);
+    let reply = c.reply_tuple();
+    assert_eq!(&reply.src.addr.0[..4], &[10, 0, 0, 50]);
+    assert_eq!(&reply.dst.addr.0[..4], &[172, 16, 0, 1]);
     assert_eq!(c.status() & (IPS_SRC_NAT | IPS_DST_NAT), IPS_SRC_NAT | IPS_DST_NAT);
 }
 
@@ -102,22 +104,22 @@ fn both_manips_may_be_bound_on_one_flow() {
 fn a_binding_is_refused_once_the_entry_is_published() {
     let env = Env::new();
     let orig = tcp([10, 0, 0, 1], 1234, [93, 184, 216, 34], 80);
-    let mut c = fresh(orig);
+    let c = fresh(orig);
     c.set_status_bits(IPS_CONFIRMED);
     // Accepting the request but silently not applying it would be worse than
     // refusing: the table is keyed on the reply tuple.
-    assert_eq!(setup_info(&mut c, &NatRange::single_addr(InetAddr::v4([203, 0, 113, 5]), 0),
+    assert_eq!(setup_info(&c, &NatRange::single_addr(InetAddr::v4([203, 0, 113, 5]), 0),
                           NF_NAT_MANIP_SRC, &env), SetupResult::Accept);
-    assert_eq!(c.reply, orig.invert().unwrap(), "nothing may change after publication");
+    assert_eq!(c.reply_tuple(), orig.invert().unwrap(), "nothing may change after publication");
 }
 
 #[test]
 fn the_null_binding_pins_the_addresses_and_resolves_only_ports() {
     let env = Env::new();
     let orig = tcp([10, 0, 0, 1], 1234, [93, 184, 216, 34], 80);
-    let mut c = fresh(orig);
-    assert_eq!(alloc_null_binding(&mut c, NF_NAT_MANIP_SRC, &env), SetupResult::Accept);
-    assert_eq!(&c.reply.dst.addr.0[..4], &[10, 0, 0, 1],
+    let c = fresh(orig);
+    assert_eq!(alloc_null_binding(&c, NF_NAT_MANIP_SRC, &env), SetupResult::Accept);
+    assert_eq!(&c.reply_tuple().dst.addr.0[..4], &[10, 0, 0, 1],
         "no rule decided anything, so the address must not move");
     assert_eq!(c.status() & IPS_SRC_NAT_DONE, IPS_SRC_NAT_DONE);
 }

@@ -163,6 +163,15 @@ impl Pkt {
         Some((table, self.conntrack.as_deref(), self.conntrack_info, self.conntrack_dir))
     }
 
+    /// Owned conntrack handles for packet-owner operations that may rewrite
+    /// the packet while retaining the flow binding. # C: O(1)
+    pub fn conntrack_state_owned(&self) -> Option<(
+        alloc::sync::Arc<conntrack::CtNet>, Option<alloc::sync::Arc<conntrack::Conn>>, u8, u8
+    )> {
+        let table = self.conntrack_table.clone()?;
+        Some((table, self.conntrack.clone(), self.conntrack_info, self.conntrack_dir))
+    }
+
     /// Attach the result of the namespace-owned conntrack hook.
     pub fn set_conntrack_state(&mut self, table: alloc::sync::Arc<conntrack::CtNet>,
                                conn: Option<alloc::sync::Arc<conntrack::Conn>>,

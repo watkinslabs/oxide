@@ -199,7 +199,7 @@ impl CtAccess for LiveCt<'_> {
         self.conn.and_then(|c| c.counters.get(dir as usize)).map_or((0, 0), |x| x.read())
     }
     fn tuple(&self, dir: u8) -> Option<Tuple> {
-        self.conn.map(|c| *c.tuple(if dir == conntrack::uapi::IP_CT_DIR_MAX as u8 {
+        self.conn.map(|c| c.tuple(if dir == conntrack::uapi::IP_CT_DIR_MAX as u8 {
             self.dir
         } else { dir }))
     }

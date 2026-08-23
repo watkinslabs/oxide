@@ -62,7 +62,7 @@ pub struct Conn {
     /// Tuple in the direction the connection was opened.
     pub orig: Tuple,
     /// Tuple a reply carries. Under NAT this is not the inverse of `orig`.
-    pub reply: Tuple,
+    pub reply: sync::Spinlock<Tuple, sync::Socket>,
     /// `IPS_*` bits.
     pub status: AtomicU32,
     /// Absolute expiry, seconds.
@@ -83,7 +83,7 @@ pub struct Conn {
 impl core::fmt::Debug for Conn {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Conn").field("id", &self.id).field("orig", &self.orig)
-            .field("reply", &self.reply).field("status", &self.status()).finish()
+            .field("reply", &*self.reply.lock()).field("status", &self.status()).finish()
     }
 }
 
@@ -92,7 +92,7 @@ impl Conn {
     /// inverse of its original. # C: O(1)
     pub fn new(id: u64, orig: Tuple, reply: Tuple, net_ns: u64) -> Self {
         Self {
-            id, orig, reply,
+            id, orig, reply: sync::Spinlock::new(reply),
             status: AtomicU32::new(0),
             timeout: AtomicU64::new(0),
             mark: AtomicU32::new(0),
@@ -140,16 +140,19 @@ impl Conn {
     /// before the entry is confirmed: the table is keyed on both tuples, so
     /// changing one after insertion strands the old key.
     /// # C: O(1)
-    pub fn alter_reply(&mut self, reply: Tuple) -> bool {
+    pub fn alter_reply(&self, reply: Tuple) -> bool {
         if self.confirmed() { return false; }
-        self.reply = reply;
+        *self.reply.lock() = reply;
         true
     }
 
     /// The tuple this entry presents in `dir`. # C: O(1)
-    pub fn tuple(&self, dir: u8) -> &Tuple {
-        if dir == IP_CT_DIR_REPLY { &self.reply } else { &self.orig }
+    pub fn tuple(&self, dir: u8) -> Tuple {
+        if dir == IP_CT_DIR_REPLY { *self.reply.lock() } else { self.orig }
     }
+
+    /// Snapshot the currently committed reply key. # C: O(1)
+    pub fn reply_tuple(&self) -> Tuple { *self.reply.lock() }
 
     /// Conntrack-info value for a packet arriving in `dir`. # C: O(1)
     pub fn ctinfo(&self, dir: u8) -> u8 {

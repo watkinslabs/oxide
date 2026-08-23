@@ -42,7 +42,7 @@ pub fn manip_bit(manip: u8) -> u32 {
 /// keyed on both tuples, so the reply half can only be rewritten before it is
 /// published.
 /// # C: O(NAT_MAX_ATTEMPTS · bucket length)
-pub fn setup_info<E: NatEnv>(conn: &mut Conn, r: &NatRange, manip: u8, env: &E)
+pub fn setup_info<E: NatEnv>(conn: &Conn, r: &NatRange, manip: u8, env: &E)
     -> SetupResult
 {
     if conn.confirmed() { return SetupResult::Accept; }
@@ -51,7 +51,7 @@ pub fn setup_info<E: NatEnv>(conn: &mut Conn, r: &NatRange, manip: u8, env: &E)
     // What the flow currently looks like in the manipulated direction is the
     // inverse of its reply half, not its stored original — a previous
     // manipulation may already have moved it.
-    let Some(current) = conn.reply.invert() else { return SetupResult::Drop; };
+    let Some(current) = conn.reply_tuple().invert() else { return SetupResult::Drop; };
     let Some(chosen) = get_unique_tuple(&current, r, manip, env) else {
         return SetupResult::Drop;
     };
@@ -71,8 +71,9 @@ pub fn setup_info<E: NatEnv>(conn: &mut Conn, r: &NatRange, manip: u8, env: &E)
 /// not simply "do nothing": two clients behind one address can pick the same
 /// source port, and without a binding the second flow is unroutable.
 /// # C: O(NAT_MAX_ATTEMPTS · bucket length)
-pub fn alloc_null_binding<E: NatEnv>(conn: &mut Conn, manip: u8, env: &E) -> SetupResult {
-    let addr = if manip == NF_NAT_MANIP_SRC { conn.reply.dst.addr } else { conn.reply.src.addr };
+pub fn alloc_null_binding<E: NatEnv>(conn: &Conn, manip: u8, env: &E) -> SetupResult {
+    let reply = conn.reply_tuple();
+    let addr = if manip == NF_NAT_MANIP_SRC { reply.dst.addr } else { reply.src.addr };
     let r = NatRange::single_addr(addr, 0);
     setup_info(conn, &r, manip, env)
 }
@@ -104,7 +105,7 @@ pub fn packet_needs_manip(status: u32, hook: u8, dir: u8) -> bool {
 /// instead is a no-op that quietly disables translation.
 /// # C: O(1)
 pub fn target_tuple(conn: &Conn, dir: u8) -> Option<Tuple> {
-    let other = if dir == IP_CT_DIR_REPLY { &conn.orig } else { &conn.reply };
+    let other = if dir == IP_CT_DIR_REPLY { conn.orig } else { conn.reply_tuple() };
     other.invert()
 }
 

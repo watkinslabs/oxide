@@ -101,7 +101,8 @@ fn put_counters(out: &mut Vec<u8>, kind: u16, packets: u64, bytes: u64) {
 pub fn encode_entry(c: &Arc<Conn>, now: u64, acct: bool) -> Vec<u8> {
     let mut out = Vec::new();
     put_tuple(&mut out, CTA_TUPLE_ORIG, &c.orig);
-    put_tuple(&mut out, CTA_TUPLE_REPLY, &c.reply);
+    let reply = c.reply_tuple();
+    put_tuple(&mut out, CTA_TUPLE_REPLY, &reply);
     put_be32(&mut out, CTA_STATUS, c.status());
     put_be32(&mut out, CTA_TIMEOUT, c.expires_in(now) as u32);
     put_be32(&mut out, CTA_MARK, c.mark.load(::core::sync::atomic::Ordering::Relaxed));

@@ -79,7 +79,8 @@ pub fn render_entry(c: &Arc<Conn>, now: u64, acct: bool) -> String {
     // on this token to distinguish a half-open attempt from a conversation.
     if status & IPS_SEEN_REPLY == 0 { s.push_str(" [UNREPLIED]"); }
     s.push(' ');
-    s.push_str(&render_tuple(&c.reply));
+    let reply = c.reply_tuple();
+    s.push_str(&render_tuple(&reply));
     if acct {
         let (p, b) = c.counters[IP_CT_DIR_REPLY as usize].read();
         s.push_str(&format!(" packets={p} bytes={b}"));
