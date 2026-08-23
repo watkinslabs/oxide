@@ -5,6 +5,14 @@ use v4l2::ops::InputDesc;
 use v4l2::uapi::{ctrl_ids as cid, flags, fourcc};
 use v4l2::ctrl::{standard, ControlDesc};
 
+pub const CID_HOR_MOVEMENT: u32 = 0x0098_20a0;
+pub const CID_VERT_MOVEMENT: u32 = 0x0098_20a1;
+
+pub const MOVEMENT_MENU: &[&str] = &[
+    "Move Left Fast", "Move Left", "Move Left Slow", "No Movement",
+    "Move Right Slow", "Move Right", "Move Right Fast",
+];
+
 pub const SIZES: &[FrameSize] = &[
     FrameSize { width: 320, height: 240 },
     FrameSize { width: 640, height: 480 },
@@ -77,6 +85,18 @@ pub fn controls() -> alloc::vec::Vec<ControlDesc> {
                          "Focus, Absolute", 0, 255, 5, 0),
         standard::simple(cid::CID_ZOOM_ABSOLUTE, cid::CTRL_TYPE_INTEGER,
                          "Zoom, Absolute", 100, 500, 1, 100),
+        ControlDesc {
+            id: CID_HOR_MOVEMENT, ctrl_type: cid::CTRL_TYPE_MENU,
+            name: "Horizontal Movement", minimum: 0, maximum: 6, step: 0,
+            default_value: 3, flags: 0, menu: MOVEMENT_MENU,
+            menu_values: &[], cluster: &[],
+        },
+        ControlDesc {
+            id: CID_VERT_MOVEMENT, ctrl_type: cid::CTRL_TYPE_MENU,
+            name: "Vertical Movement", minimum: 0, maximum: 6, step: 0,
+            default_value: 3, flags: 0, menu: MOVEMENT_MENU,
+            menu_values: &[], cluster: &[],
+        },
     ]
 }
 

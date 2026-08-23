@@ -1,6 +1,6 @@
 //! The test-pattern generator.
 
-use crate::tpg::{self, Rgb, BARS};
+use crate::tpg::{self, Motion, Rgb, BARS};
 use v4l2::uapi::fourcc;
 
 #[test]
@@ -143,4 +143,18 @@ fn every_declared_format_can_actually_be_rendered() {
         assert_eq!(tpg::render_line(desc.pixelformat, width, 0, &mut line), stride,
                    "{} is advertised but cannot be rendered", desc.description);
     }
+}
+
+#[test]
+fn moving_object_changes_position_with_the_frame_sequence() {
+    let (width, height) = (96u32, 64u32);
+    let stride = fourcc::bytesperline(fourcc::RGB24, width) as usize;
+    let mut first = alloc::vec![0u8; stride];
+    let mut next = alloc::vec![0u8; stride];
+    let motion = Motion { horizontal: 3, vertical: 0 };
+    tpg::render_line_at(fourcc::RGB24, width, height, height / 2, 0, 0, motion, &mut first);
+    tpg::render_line_at(fourcc::RGB24, width, height, height / 2, 0, 1, motion, &mut next);
+    assert_ne!(first, next, "a moving-object control must affect successive frames");
+    assert!(first.chunks_exact(3).any(|p| p == [128, 128, 128]),
+            "the test object must be visible in the frame");
 }

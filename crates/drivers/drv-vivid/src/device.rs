@@ -31,6 +31,8 @@ struct VividState {
     /// Monotonic nanoseconds the previous frame was produced at, zero before
     /// the first.
     last_frame_ns: u64,
+    horizontal_motion: i8,
+    vertical_motion: i8,
 }
 
 impl Vivid {
@@ -42,6 +44,7 @@ impl Vivid {
                 format: PixFormat::empty(),
                 interval: crate::tables::INTERVALS[0],
                 sequence: 0, last_frame_ns: 0,
+                horizontal_motion: 0, vertical_motion: 0,
             }),
         })
     }
@@ -153,4 +156,22 @@ impl VideoOps for Vivid {
 
     /// # C: O(1)
     fn controls(&self) -> alloc::vec::Vec<v4l2::ctrl::ControlDesc> { crate::tables::controls() }
+
+    fn control_changed(&self, id: u32, value: i64) {
+        let velocity = value as i8 - 3;
+        let mut state = self.state.lock();
+        match id {
+            crate::tables::CID_HOR_MOVEMENT => state.horizontal_motion = velocity,
+            crate::tables::CID_VERT_MOVEMENT => state.vertical_motion = velocity,
+            _ => {}
+        }
+    }
+
+}
+
+impl Vivid {
+    pub fn motion(&self) -> crate::tpg::Motion {
+        let state = self.state.lock();
+        crate::tpg::Motion { horizontal: state.horizontal_motion, vertical: state.vertical_motion }
+    }
 }
