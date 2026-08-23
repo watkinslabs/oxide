@@ -263,6 +263,11 @@ impl F2fs {
     /// need.
     /// # C: O(a checkpoint)
     pub fn checkpoint_now(&self) -> KResult<()> {
+        let timeout = {
+            let volume = self.volume.lock();
+            volume.fault_timeout_mode(crate::fault::Fault::LockTimeout)
+        };
+        if let Some(timeout) = timeout { vfs::fs_timeout(timeout); }
         let runs = {
             let mut v = self.volume.lock();
             v.commit().map_err(errno_to_vfs)?;

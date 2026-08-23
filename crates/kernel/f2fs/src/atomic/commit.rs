@@ -36,6 +36,7 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(blocks in the span), plus a sync of the file
     pub fn commit_atomic_write(&mut self, ino: u32) -> Result<(), Errno> {
         self.writable_or_err()?;
+        self.fault_timeout(crate::fault::Fault::AtomicTimeout);
         // Moving the span's blocks charges the file and gives the shadow's
         // charge back, both against the same owners.
         self.dquot_initialize(ino)?;

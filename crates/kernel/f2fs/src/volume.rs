@@ -599,6 +599,28 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(1)
     pub fn fault_info(&self) -> &crate::fault::Info { &self.fault }
 
+    /// Consume one timeout fault and return the mode without sleeping while a
+    /// filesystem lock is held. # C: O(1)
+    pub(crate) fn fault_timeout_mode(&self, f: crate::fault::Fault) -> Option<vfs::FsTimeout> {
+        if crate::fault::time_to_inject(&self.fault, f) {
+            let timeout = self.fault.timeout();
+            return Some(match timeout {
+                crate::fault::Timeout::Running => vfs::FsTimeout::Running,
+                crate::fault::Timeout::IoSleep => vfs::FsTimeout::IoSleep,
+                crate::fault::Timeout::NonIoSleep => vfs::FsTimeout::NonIoSleep,
+                crate::fault::Timeout::Runnable => vfs::FsTimeout::Runnable,
+                crate::fault::Timeout::None => return None,
+            });
+        }
+        None
+    }
+
+    /// Consume one timeout fault at the operation that owns the wait.
+    /// # C: O(1), plus the installed kernel timeout owner
+    pub(crate) fn fault_timeout(&self, f: crate::fault::Fault) {
+        if let Some(mode) = self.fault_timeout_mode(f) { vfs::fs_timeout(mode); }
+    }
+
     /// Change what this mount injects, one field at a time. # C: O(1)
     pub fn set_fault(&self, rate: u32, ty: u32, which: crate::fault::Which)
         -> Result<(), Errno> {

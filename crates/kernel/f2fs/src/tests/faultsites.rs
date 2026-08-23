@@ -337,12 +337,10 @@ fn every_site_is_either_wired_or_named_as_having_no_counterpart() {
         Fault::InconsistentFooter, Fault::SkipWrite, Fault::Kmalloc, Fault::Kvmalloc,
         Fault::PageAlloc, Fault::PageGet, Fault::SlabAlloc, Fault::Vmalloc,
     ];
-    // Two are reserved by the ABI for requests that can no longer fail, one
-    // names a filesystem-operation lock this design has no equivalent of, and
-    // two name timeouts on waits that never happen here.
+    // Two are reserved by the ABI for requests that can no longer fail, and
+    // one names a filesystem-operation lock this design has no equivalent of.
     let unwired = [
-        Fault::AllocBio, Fault::Discard, Fault::LockOp, Fault::AtomicTimeout,
-        Fault::LockTimeout,
+        Fault::AllocBio, Fault::Discard, Fault::LockOp,
     ];
     assert_eq!(wired.len() + unwired.len(), crate::fault::FAULT_MAX as usize,
                "a site was added to the ABI and neither wired nor accounted for");
