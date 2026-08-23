@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2621-nftables-packet-path
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2621-nftables-packet-path | MISSING | high | **Every nftables action was previously discarded.** The packet owner now consumes the ordered action list at its owning hook: NAT/masquerade/redirect setup and packet rewriting, duplicate/forward, log/NFLOG, reject responses, TProxy, synproxy, flowtable ownership, payload checksum repair, and extension-header mutation all have live consumers with explicit failure on unavailable state. | B2621. `crates/kernel/net/src/netfilter_hook.rs::nf_hook_packet_in` and `nf_hook_packet_stage_in` apply actions; `crates/kernel/net/src/netfilter_action.rs::Action::apply_at` is covered by the action and packet-path tests. | — |
+| FIXED B2621-nftables-packet-path | MISSING | high | **Conntrack and NAT previously had no packet-path caller.** The receive/output hook path now tracks packets at the Linux raw-to-conntrack boundary, honors `notrack`, confirms entries at the owning hooks, exposes live conntrack context to nft expressions, and applies NAT bindings and rewrites through the packet owner. | B2621. `crates/kernel/net/src/netfilter_hook.rs::nf_hook_packet_in`, `crates/kernel/net/src/stack/conntrack.rs`, and `crates/kernel/net/src/netfilter_action.rs`; the serial `net` suite passes 2,619 tests. | — |
+
 ### B253501-stale-conditional-marker-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
