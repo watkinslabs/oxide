@@ -43,7 +43,7 @@ impl<S: SectorSource> Volume<S> {
     /// next reader the medium is sound when nobody has checked.
     /// # C: O(1 sector)
     pub fn set_dirty(&mut self, dirty: bool) -> Result<(), Errno> {
-        if !self.writable { return Err(Errno::Erofs); }
+        if !self.writable() { return Err(Errno::Erofs); }
         let flags = boot::flags_with_dirty(self.boot.vol_flags, dirty);
         if flags == self.boot.vol_flags { return Ok(()); }
         self.boot.vol_flags = flags;
@@ -58,7 +58,7 @@ impl<S: SectorSource> Volume<S> {
     /// cost more than the hint is worth.
     /// # C: O(1 sector)
     pub fn flush_percent_in_use(&mut self) -> Result<(), Errno> {
-        if !self.writable { return Ok(()); }
+        if !self.writable() { return Ok(()); }
         let percent = boot::percent_in_use(u64::from(self.used_clusters),
                                            u64::from(self.geo.data_clusters()));
         if percent == self.boot.percent_in_use { return Ok(()); }
@@ -96,7 +96,7 @@ impl<S: SectorSource> Volume<S> {
     /// nothing in normal operation does — the two mutable bytes are excluded.
     /// # C: O(boot region bytes)
     pub fn rewrite_boot_checksum(&mut self) -> Result<(), Errno> {
-        if !self.writable { return Err(Errno::Erofs); }
+        if !self.writable() { return Err(Errno::Erofs); }
         let per = self.geo.sector_size as usize;
         let mut sum = 0u32;
         let mut buf = alloc::vec![0u8; per];
@@ -120,7 +120,7 @@ impl<S: SectorSource> Volume<S> {
     /// setting it either rewrites the entry that is there or places a new one.
     /// # C: O(root bytes)
     pub fn set_label(&mut self, label: &str) -> Result<(), Errno> {
-        if !self.writable { return Err(Errno::Erofs); }
+        if !self.writable() { return Err(Errno::Erofs); }
         let units: alloc::vec::Vec<u16> = label.encode_utf16().collect();
         if units.len() > VOLUME_LABEL_LEN { return Err(Errno::Einval); }
         let mut bytes = alloc::vec![0u8; DENTRY_BYTES];

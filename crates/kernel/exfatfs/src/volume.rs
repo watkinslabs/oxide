@@ -15,6 +15,7 @@
 
 use alloc::vec;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use syscall::errno::Errno;
 
@@ -63,6 +64,10 @@ pub struct Volume<S: SectorSource> {
     pub(crate) hint: u32,
     pub(crate) label: Option<VolumeLabel>,
     pub(crate) writable: bool,
+    /// Set when `errors=remount-ro` observes filesystem structure damage.
+    /// Separate from the device's write capability so `&self` read paths can
+    /// enforce the transition too.
+    forced_read_only: AtomicBool,
 }
 
 impl<S: SectorSource> Volume<S> {
@@ -121,6 +126,7 @@ impl<S: SectorSource> Volume<S> {
             hint: FIRST_CLUSTER,
             label: None,
             writable: false,
+            forced_read_only: AtomicBool::new(false),
         };
         vol.load_volume_structures()?;
         vol.writable = vol.source.writable();
@@ -212,7 +218,27 @@ impl<S: SectorSource> Volume<S> {
     pub fn upcase(&self) -> &UpCase { &self.upcase }
 
     /// # C: O(1)
-    pub fn writable(&self) -> bool { self.writable }
+    pub fn writable(&self) -> bool {
+        self.writable && !self.forced_read_only.load(Ordering::Acquire)
+    }
+
+    /// Apply Linux exFAT's `exfat_fs_error` policy to a detected structural
+    /// inconsistency. Device I/O errors do not come here: a failed read is a
+    /// medium error, not evidence that the filesystem's metadata is corrupt.
+    /// # C: O(1), plus the machine halt hook for `errors=panic`
+    pub(crate) fn fs_error(&self, reason: &'static str) -> Errno {
+        klog::kwarn!("exfat: filesystem inconsistency");
+        match self.opts.errors {
+            crate::opts::Errors::Continue => {}
+            crate::opts::Errors::RemountRo => {
+                self.forced_read_only.store(true, Ordering::Release);
+            }
+            crate::opts::Errors::Panic => {
+                let _ = vfs::fs_halt(crate::mount::EXFAT_NAME, reason);
+            }
+        }
+        Errno::Eio
+    }
 
     /// Whether the volume's last owner left it dirty. # C: O(1)
     pub fn was_dirty(&self) -> bool { self.was_dirty }
@@ -231,14 +257,15 @@ impl<S: SectorSource> Volume<S> {
 
     /// Write one cluster. # C: O(cluster bytes)
     pub(crate) fn write_cluster(&self, cluster: u32, buf: &[u8]) -> Result<(), Errno> {
-        if !self.writable { return Err(Errno::Erofs); }
+        if !self.writable() { return Err(Errno::Erofs); }
         let sector = self.geo.cluster_sector(cluster).ok_or(Errno::Eio)?;
         self.source.write_sectors(sector, buf)
     }
 
     /// Every byte of a run, in order. # C: O(run bytes)
     pub(crate) fn chain_bytes(&self, chain: &Chain) -> Result<Vec<u8>, Errno> {
-        let clusters = chain::walk(&self.geo, &self.fat_reader(), chain)?;
+        let clusters = chain::walk(&self.geo, &self.fat_reader(), chain)
+            .map_err(|_| self.fs_error("corrupt exFAT cluster chain"))?;
         let per = usize::try_from(self.geo.cluster_bytes()).map_err(|_| Errno::Einval)?;
         let mut out = vec![0u8; clusters.len() * per];
         for (i, cluster) in clusters.iter().enumerate() {
@@ -257,7 +284,8 @@ impl<S: SectorSource> Volume<S> {
             let pos = offset + done as u64;
             let index = u32::try_from(pos / per).map_err(|_| Errno::Eio)?;
             let within = usize::try_from(pos % per).map_err(|_| Errno::Eio)?;
-            let cluster = chain::cluster_at(&self.geo, &self.fat_reader(), chain, index)?;
+            let cluster = chain::cluster_at(&self.geo, &self.fat_reader(), chain, index)
+                .map_err(|_| self.fs_error("corrupt exFAT cluster chain"))?;
             self.read_cluster(cluster, &mut scratch)?;
             let take = core::cmp::min(scratch.len() - within, buf.len() - done);
             buf[done..done + take].copy_from_slice(&scratch[within..within + take]);
@@ -269,7 +297,7 @@ impl<S: SectorSource> Volume<S> {
     /// Write a span of a run's bytes, reading back whatever a partial cluster
     /// would otherwise lose. # C: O(len)
     pub(crate) fn write_at(&self, chain: &Chain, offset: u64, buf: &[u8]) -> Result<(), Errno> {
-        if !self.writable { return Err(Errno::Erofs); }
+        if !self.writable() { return Err(Errno::Erofs); }
         let per = self.geo.cluster_bytes();
         let mut done = 0usize;
         let mut scratch = vec![0u8; usize::try_from(per).map_err(|_| Errno::Einval)?];
@@ -277,7 +305,8 @@ impl<S: SectorSource> Volume<S> {
             let pos = offset + done as u64;
             let index = u32::try_from(pos / per).map_err(|_| Errno::Eio)?;
             let within = usize::try_from(pos % per).map_err(|_| Errno::Eio)?;
-            let cluster = chain::cluster_at(&self.geo, &self.fat_reader(), chain, index)?;
+            let cluster = chain::cluster_at(&self.geo, &self.fat_reader(), chain, index)
+                .map_err(|_| self.fs_error("corrupt exFAT cluster chain"))?;
             let take = core::cmp::min(scratch.len() - within, buf.len() - done);
             // A write covering the whole cluster does not need what was there;
             // anything narrower does, or the bytes either side are lost.

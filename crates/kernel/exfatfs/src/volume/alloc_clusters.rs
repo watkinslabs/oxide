@@ -45,7 +45,7 @@ impl<S: SectorSource> Volume<S> {
     /// a repair tool has to choose, and choosing wrongly loses a file.
     /// # C: O(sector bytes)
     fn flush_fat_entry(&self, cluster: u32) -> Result<(), Errno> {
-        if !self.writable { return Err(Errno::Erofs); }
+        if !self.writable() { return Err(Errno::Erofs); }
         let bytes = self.fat.sector_bytes(&self.geo, cluster).ok_or(Errno::Eio)?;
         let (primary, mirror) = self.geo.fat_sector_of(cluster);
         self.source.write_sectors(primary, bytes)?;
@@ -136,7 +136,7 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(count * volume clusters) worst case
     pub fn alloc_clusters(&mut self, chain: &mut Chain, count: u32, contiguous_only: bool)
         -> Result<(), Errno> {
-        if !self.writable { return Err(Errno::Erofs); }
+        if !self.writable() { return Err(Errno::Erofs); }
         if count == 0 { return Ok(()); }
         if count > self.free_clusters() { return Err(Errno::Enospc); }
 
@@ -195,7 +195,8 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(claimed)
     fn unwind(&mut self, chain: &mut Chain, claimed: u32) -> Result<(), Errno> {
         if claimed == 0 { return Ok(()); }
-        let clusters = crate::chain::walk(&self.geo, &self.fat_reader(), chain)?;
+        let clusters = crate::chain::walk(&self.geo, &self.fat_reader(), chain)
+            .map_err(|_| self.fs_error("corrupt exFAT cluster chain"))?;
         let start = clusters.len().saturating_sub(claimed as usize);
         let released = clusters[start..].to_vec();
         for cluster in &released {
@@ -209,9 +210,10 @@ impl<S: SectorSource> Volume<S> {
 
     /// Release every cluster of a run. # C: O(run length)
     pub fn free_chain(&mut self, chain: &Chain) -> Result<(), Errno> {
-        if !self.writable { return Err(Errno::Erofs); }
+        if !self.writable() { return Err(Errno::Erofs); }
         if chain.is_empty() { return Ok(()); }
-        let clusters: Vec<u32> = crate::chain::walk(&self.geo, &self.fat_reader(), chain)?;
+        let clusters: Vec<u32> = crate::chain::walk(&self.geo, &self.fat_reader(), chain)
+            .map_err(|_| self.fs_error("corrupt exFAT cluster chain"))?;
         for cluster in &clusters {
             // The table entry is cleared as well as the bit. A freed cluster
             // whose entry still points somewhere is what a repair tool reads
@@ -225,9 +227,10 @@ impl<S: SectorSource> Volume<S> {
 
     /// Shorten a run to `keep` clusters, releasing the rest. # C: O(run length)
     pub fn truncate_chain(&mut self, chain: &mut Chain, keep: u32) -> Result<(), Errno> {
-        if !self.writable { return Err(Errno::Erofs); }
+        if !self.writable() { return Err(Errno::Erofs); }
         if keep >= chain.size { return Ok(()); }
-        let clusters = crate::chain::walk(&self.geo, &self.fat_reader(), chain)?;
+        let clusters = crate::chain::walk(&self.geo, &self.fat_reader(), chain)
+            .map_err(|_| self.fs_error("corrupt exFAT cluster chain"))?;
         let released = clusters[keep as usize..].to_vec();
         for cluster in &released {
             if !chain.contiguous() { self.set_fat(*cluster, 0)?; }
@@ -260,5 +263,6 @@ mod chain {
     /// # C: O(run length)
     pub fn last_of<S: SectorSource>(vol: &Volume<S>, chain: &Chain) -> Result<u32, Errno> {
         crate::chain::last_cluster(&vol.geo, &vol.fat_reader(), chain)
+            .map_err(|_| vol.fs_error("corrupt exFAT cluster chain"))
     }
 }

@@ -31,7 +31,7 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(directory bytes)
     pub fn rename(&mut self, from: &DirHandle, old_name: &str, to: &DirHandle, new_name: &str,
                   flags: u32, now: Stamp) -> Result<(), Errno> {
-        if !self.writable { return Err(Errno::Erofs); }
+        if !self.writable() { return Err(Errno::Erofs); }
         // A whiteout has no representation here: this filesystem stores no
         // character-device entry to leave behind.
         if flags & RENAME_WHITEOUT != 0 { return Err(Errno::Einval); }

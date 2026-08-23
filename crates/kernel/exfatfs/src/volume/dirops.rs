@@ -98,7 +98,7 @@ impl<S: SectorSource> Volume<S> {
     /// to do with. Rewriting the run wholesale silently discards them.
     /// # C: O(set bytes)
     pub fn write_entry_set(&self, entry: &DirEntry) -> Result<(), Errno> {
-        if !self.writable { return Err(Errno::Erofs); }
+        if !self.writable() { return Err(Errno::Erofs); }
         let span = entry.set.entries * DENTRY_BYTES;
         let mut bytes = alloc::vec![0u8; span];
         self.read_at(&entry.dir, entry.set.offset, &mut bytes)?;
@@ -118,7 +118,7 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(directory bytes)
     fn create_named(&mut self, dir: &DirHandle, name: &str, attrs: u16, chain: Chain,
                     size: u64, now: Stamp) -> Result<DirEntry, Errno> {
-        if !self.writable { return Err(Errno::Erofs); }
+        if !self.writable() { return Err(Errno::Erofs); }
         let uni = name::resolve(&self.upcase, name, self.opts.keep_last_dots,
                                 name::Usage::Create)?;
         let dir_run = self.dir_chain(dir)?;
@@ -173,7 +173,7 @@ impl<S: SectorSource> Volume<S> {
 
     /// Remove a name and release what it held. # C: O(directory bytes)
     pub fn unlink(&mut self, dir: &DirHandle, name: &str, now: Stamp) -> Result<(), Errno> {
-        if !self.writable { return Err(Errno::Erofs); }
+        if !self.writable() { return Err(Errno::Erofs); }
         let chain = self.dir_chain(dir)?;
         let hit = self.find_entry(&chain, name)?;
         if hit.is_dir() { return Err(Errno::Eisdir); }
@@ -186,7 +186,7 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(directory bytes)
     pub(crate) fn unlink_name(&mut self, dir: &DirHandle, name: &str, now: Stamp)
         -> Result<Vec<Chain>, Errno> {
-        if !self.writable { return Err(Errno::Erofs); }
+        if !self.writable() { return Err(Errno::Erofs); }
         let chain = self.dir_chain(dir)?;
         let hit = self.find_entry(&chain, name)?;
         if hit.is_dir() { return Err(Errno::Eisdir); }
@@ -195,7 +195,7 @@ impl<S: SectorSource> Volume<S> {
 
     /// Remove an empty directory. # C: O(directory bytes)
     pub fn rmdir(&mut self, dir: &DirHandle, name: &str, now: Stamp) -> Result<(), Errno> {
-        if !self.writable { return Err(Errno::Erofs); }
+        if !self.writable() { return Err(Errno::Erofs); }
         let chain = self.dir_chain(dir)?;
         let hit = self.find_entry(&chain, name)?;
         if !hit.is_dir() { return Err(Errno::Enotdir); }
@@ -210,7 +210,7 @@ impl<S: SectorSource> Volume<S> {
     /// owner. # C: O(directory bytes)
     pub(crate) fn rmdir_name(&mut self, dir: &DirHandle, name: &str, now: Stamp)
         -> Result<Vec<Chain>, Errno> {
-        if !self.writable { return Err(Errno::Erofs); }
+        if !self.writable() { return Err(Errno::Erofs); }
         let chain = self.dir_chain(dir)?;
         let hit = self.find_entry(&chain, name)?;
         if !hit.is_dir() { return Err(Errno::Enotdir); }
