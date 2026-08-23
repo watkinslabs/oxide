@@ -50,8 +50,25 @@ fn packet_parts<'a>(pkt: &'a [u8], family: u8) -> Option<(Tuple, L4<'a>)> {
         }
         NFPROTO_IPV6 => {
             if pkt.len() < 40 || pkt[0] >> 4 != 6 { return None; }
-            (InetAddr::v6(pkt[8..24].try_into().ok()?),
-             InetAddr::v6(pkt[24..40].try_into().ok()?), pkt[6], 40)
+            let src = InetAddr::v6(pkt[8..24].try_into().ok()?);
+            let dst = InetAddr::v6(pkt[24..40].try_into().ok()?);
+            // The IPv6 fixed header's next-header byte names the first
+            // extension, not necessarily the transport protocol. Conntrack
+            // must use the same extension walk as delivery; otherwise an
+            // nft ct rule sees every HBH/routing packet as a generic flow.
+            let payload = &pkt[40..];
+            let (proto, transport) = match crate::ipv6_ext::walk(pkt[6], payload).ok()? {
+                crate::ipv6_ext::ExtWalk::Done { next_header, payload } =>
+                    (next_header, pkt.len() - payload.len()),
+                crate::ipv6_ext::ExtWalk::Fragment { next_header, offset, payload, .. } => {
+                    // Non-initial fragments carry no usable L4 tuple. Keep
+                    // them as generic fragment flows; the first fragment is
+                    // still parsed at the transport offset.
+                    if offset != 0 { (next_header, pkt.len()) }
+                    else { (next_header, pkt.len() - payload.len()) }
+                }
+            };
+            (src, dst, proto, transport)
         }
         _ => return None,
     };
@@ -106,5 +123,25 @@ mod tests {
         let (_, conn, info, dir) = pkt.conntrack_state().expect("conntrack attached");
         assert!(conn.is_some());
         assert_eq!((info, dir), (conntrack::uapi::IP_CT_NEW, 0));
+    }
+
+    #[test]
+    fn ipv6_conntrack_skips_extension_headers_before_udp() {
+        let mut packet = vec![0u8; 40 + 8 + 8];
+        packet[0] = 0x60;
+        packet[6] = crate::ipv6_ext::NH_HOP_BY_HOP;
+        packet[7] = 64;
+        packet[8..24].copy_from_slice(&[0x20, 1, 0xdb, 8, 0, 0, 0, 0,
+                                         0, 0, 0, 0, 0, 0, 0, 1]);
+        packet[24..40].copy_from_slice(&[0x20, 1, 0xdb, 8, 0, 0, 0, 0,
+                                          0, 0, 0, 0, 0, 0, 0, 2]);
+        packet[40] = IPPROTO_UDP;
+        packet[41] = 0; // one eight-byte hop-by-hop header
+        packet[48..50].copy_from_slice(&1234u16.to_be_bytes());
+        packet[50..52].copy_from_slice(&5353u16.to_be_bytes());
+        let (tuple, _) = packet_parts(&packet, NFPROTO_IPV6).expect("IPv6 tuple");
+        assert_eq!(tuple.protonum, IPPROTO_UDP);
+        assert_eq!(tuple.src.proto, ProtoPart::port(1234));
+        assert_eq!(tuple.dst.proto, ProtoPart::port(5353));
     }
 }
