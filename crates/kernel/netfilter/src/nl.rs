@@ -440,6 +440,14 @@ fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Ve
             if orig.protonum != reply.protonum {
                 return nlmsg_ack(req, -22);
             }
+            let master = match find_bytes_attr(attrs, ::conntrack::uapi::CTA_TUPLE_MASTER) {
+                Some(raw) => parse_ct_tuple(raw, nfg.nfgen_family, orig.zone),
+                None => None,
+            };
+            if find_bytes_attr(attrs, ::conntrack::uapi::CTA_TUPLE_MASTER).is_some()
+                && master.is_none() {
+                return nlmsg_ack(req, -22);
+            }
             let Some(timeout) = find_u32_attr(attrs, ::conntrack::uapi::CTA_TIMEOUT) else {
                 return nlmsg_ack(req, -22);
             };
@@ -452,22 +460,26 @@ fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Ve
                 ::conntrack::uapi::CTA_NAT_SRC) else { return nlmsg_ack(req, -22); };
             let Ok(dst_nat) = parse_nat_range(attrs, nfg.nfgen_family,
                 ::conntrack::uapi::CTA_NAT_DST) else { return nlmsg_ack(req, -22); };
-            let id = if src_nat.is_some() || dst_nat.is_some() {
+            let created = if src_nat.is_some() || dst_nat.is_some() {
                 ::net::global_stack().conntrack_create_tuple_nat_in(
                     namespace, orig, Some(reply), timeout,
                     find_u32_attr(attrs, ::conntrack::uapi::CTA_STATUS).unwrap_or(0),
                     find_u32_attr(attrs, ::conntrack::uapi::CTA_MARK), protoinfo, sctp_protoinfo,
-                    helper,
+                    master, helper,
                     src_nat, dst_nat, labels, synproxy)
             } else {
                 ::net::global_stack().conntrack_create_tuple_in(
                 namespace, orig, Some(reply), timeout,
                 find_u32_attr(attrs, ::conntrack::uapi::CTA_STATUS).unwrap_or(0),
                 find_u32_attr(attrs, ::conntrack::uapi::CTA_MARK), protoinfo, sctp_protoinfo,
-                helper, labels,
+                master, helper, labels,
                 synproxy)
             };
-            return nlmsg_ack(req, if id.is_some() { 0 } else { -28 });
+            return nlmsg_ack(req, match created {
+                Ok(Some(_)) => 0,
+                Ok(None) => -28,
+                Err(errno) => errno,
+            });
         }
     }
     let Some(id) = find_u32_attr(attrs, conntrack::uapi::CTA_ID) else {

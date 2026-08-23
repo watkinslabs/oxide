@@ -115,6 +115,9 @@ pub fn encode_entry_with_counters(c: &Arc<Conn>, now: u64, acct: bool,
     put_be32(&mut out, CTA_MARK, c.mark.load(::core::sync::atomic::Ordering::Relaxed));
     put_be32(&mut out, CTA_ID, c.id as u32);
     put_be16(&mut out, CTA_ZONE, c.orig.zone);
+    if let Some(master) = c.master.as_ref() {
+        put_tuple(&mut out, CTA_TUPLE_MASTER, &master.orig);
+    }
     if let ProtoState::Tcp(track) = *c.proto.lock() {
         let pi = nest_start(&mut out, CTA_PROTOINFO);
         let tcp = nest_start(&mut out, CTA_PROTOINFO_TCP);

@@ -186,14 +186,21 @@ impl NetStack {
                                      status: u32, mark: Option<u32>,
                                      protoinfo: Option<::conntrack::entry::TcpProtoInfoUpdate>,
                                      sctp_protoinfo: Option<::conntrack::entry::SctpProtoInfoUpdate>,
+                                     master: Option<::conntrack::Tuple>,
                                      helper: Option<alloc::string::String>,
                                      labels: Option<::conntrack::entry::LabelUpdate>,
                                      synproxy: Option<::conntrack::entry::SynproxyState>)
-                                     -> Option<u64> {
+                                     -> Result<Option<u64>, i32> {
         let ct = self.conntrack_in(net_ns);
-        ct.create_tuple_with(tuple, reply, crate::stack::net_now_ns() / 1_000_000_000,
+        let now = crate::stack::net_now_ns() / 1_000_000_000;
+        let master = match master {
+            Some(tuple) => Some(ct.table.lookup(&tuple, now).ok_or(-2)?.conn),
+            None => None,
+        };
+        Ok(ct.create_tuple_with(tuple, reply, crate::stack::net_now_ns() / 1_000_000_000,
                              timeout, status, mark, protoinfo, sctp_protoinfo, helper, labels, synproxy,
-                             |_| true)
+                             master,
+                             |_| true))
     }
 
     /// Create a ctnetlink entry with the canonical NAT allocator running
@@ -204,16 +211,21 @@ impl NetStack {
                                          status: u32, mark: Option<u32>,
                                          protoinfo: Option<::conntrack::entry::TcpProtoInfoUpdate>,
                                          sctp_protoinfo: Option<::conntrack::entry::SctpProtoInfoUpdate>,
+                                         master: Option<::conntrack::Tuple>,
                                          helper: Option<alloc::string::String>,
                                          src: Option<::nat::NatRange>,
                                          dst: Option<::nat::NatRange>,
                                          labels: Option<::conntrack::entry::LabelUpdate>,
                                          synproxy: Option<::conntrack::entry::SynproxyState>)
-                                         -> Option<u64> {
+                                         -> Result<Option<u64>, i32> {
         let ct = self.conntrack_in(net_ns);
         let now = crate::stack::net_now_ns() / 1_000_000_000;
-        ct.create_tuple_with(tuple, reply, now, timeout, status, mark, protoinfo, sctp_protoinfo, helper, labels,
-            synproxy,
+        let master = match master {
+            Some(tuple) => Some(ct.table.lookup(&tuple, now).ok_or(-2)?.conn),
+            None => None,
+        };
+        Ok(ct.create_tuple_with(tuple, reply, now, timeout, status, mark, protoinfo, sctp_protoinfo, helper, labels,
+            synproxy, master,
             |conn| {
                 struct Env<'a> {
                     table: &'a ::conntrack::CtTable,
@@ -244,7 +256,7 @@ impl NetStack {
                         ::nat::uapi::NF_NAT_MANIP_SRC, &env),
                 };
                 src_ok == ::nat::SetupResult::Accept
-            })
+            }))
     }
 
     /// Update one live conntrack entry through its owning namespace. # C: O(N)

@@ -77,6 +77,25 @@ fn ctnetlink_ctrzero_returns_and_resets_both_accounting_directions() {
 }
 
 #[test]
+fn ctnetlink_related_creation_keeps_and_dumps_the_canonical_master() {
+    let ct = CtNet::new(0, 7);
+    let master = entry(v4_tcp([10, 0, 0, 1], 1234, [10, 0, 0, 2], 21));
+    ct.table.add_pending(master.clone());
+    assert!(ct.confirm(&master, 0));
+    let child_tuple = v4_udp([10, 0, 0, 1], 40000, [10, 0, 0, 2], 50000);
+    let id = ct.create_tuple_with(child_tuple, None, 0, 30, 0, None, None, None,
+        None, None, None, Some(master.clone()), |_| true).expect("child");
+    let child = ct.table.find_id(id, 0).expect("child is live");
+    let attached = child.master.as_ref().expect("master is canonical");
+    assert!(Arc::ptr_eq(attached, &master));
+    assert_ne!(child.status() & IPS_EXPECTED, 0);
+    let wire = ctnetlink::encode_entry(&child, 0, false);
+    assert!(wire.windows(4).any(|window| {
+        window[2..4] == (CTA_TUPLE_MASTER | ctnetlink::NLA_F_NESTED).to_ne_bytes()
+    }));
+}
+
+#[test]
 fn an_ipv6_address_renders_in_its_own_family_form() {
     let mut a = [0u8; 16]; a[0] = 0x20; a[1] = 0x01; a[15] = 1;
     let mut b = [0u8; 16]; b[0] = 0x20; b[1] = 0x01; b[15] = 2;

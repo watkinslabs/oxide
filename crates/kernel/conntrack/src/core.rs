@@ -285,7 +285,7 @@ impl CtNet {
                         protoinfo: Option<TcpProtoInfoUpdate>,
                         helper: Option<String>) -> Option<u64> {
         self.create_tuple_with(tuple, reply, now, timeout, status, mark, protoinfo, None, helper,
-                               None, None, |_| true)
+                               None, None, None, |_| true)
     }
 
     /// Create a userspace entry and run one final pre-confirmation setup.
@@ -296,12 +296,16 @@ impl CtNet {
                                 protoinfo: Option<TcpProtoInfoUpdate>,
                                 sctp_protoinfo: Option<SctpProtoInfoUpdate>,
                                 helper: Option<String>, labels: Option<LabelUpdate>,
-                                synproxy: Option<SynproxyState>, setup: F)
+                                synproxy: Option<SynproxyState>, master: Option<Arc<Conn>>,
+                                setup: F)
                                 -> Option<u64>
         where F: FnOnce(&Arc<Conn>) -> bool
     {
         let reply = reply.or_else(|| tuple.invert())?;
-        let conn = Arc::new(Conn::new(self.table.alloc_id(), tuple, reply, self.net_ns));
+        let mut entry = Conn::new(self.table.alloc_id(), tuple, reply, self.net_ns);
+        entry.master = master;
+        let conn = Arc::new(entry);
+        if conn.master.is_some() { conn.set_status_bits(IPS_EXPECTED); }
         conn.set_status_bits(crate::ctnetlink::writable_status(status));
         if conn.status() & IPS_FIXED_TIMEOUT != 0 {
             conn.timeout.store(now + timeout as u64, core::sync::atomic::Ordering::Release);
