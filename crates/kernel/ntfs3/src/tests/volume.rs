@@ -235,6 +235,28 @@ fn sparse_files_extend_with_holes_and_allocate_only_written_clusters() {
 }
 
 #[test]
+fn the_mft_grows_when_its_record_bitmap_is_full() {
+    let image = Builder::new().finish();
+    let mut v = crate::volume::Volume::mount_with(image, crate::opts::Options::defaults()).unwrap();
+    let mut last = None;
+    for number in 0..41 {
+        let name = alloc::format!("file-{number}");
+        last = Some(v.create_file(MFT_REC_ROOT, &name, 1_800_000_000).unwrap());
+    }
+    assert!(v.mft_records() > test_image::MFT_RECORDS);
+    let last = last.unwrap();
+    assert_eq!(v.read_whole(last.reference.number).unwrap(), alloc::vec![]);
+    assert!(v.space().records_free > 1000);
+    let snapshot = v.source.snapshot();
+    drop(v);
+    let remount = crate::volume::Volume::mount_with(
+        sectors::MemImage::from_bytes(test_image::SECTOR as u32, snapshot),
+        crate::opts::Options::defaults()).unwrap();
+    assert!(remount.mft_records() > test_image::MFT_RECORDS);
+    assert!(remount.stat(last.reference.number).is_ok());
+}
+
+#[test]
 fn a_record_the_bitmap_calls_free_is_not_read_as_a_file() {
     let v = test_image::empty();
     // A record past everything the fixture wrote was never formatted, so
