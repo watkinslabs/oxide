@@ -19,6 +19,20 @@ pub fn inode_permission(inode: &InodeRef, mask: u32) -> KResult<()> {
     selinux_runtime::check::has_perm(ssid, isid, class, av).map_err(|_| VfsError::Eacces)
 }
 
+/// Linux `security_mmap_file`: mapping is a distinct file permission, not a
+/// read/write pathname check. Executable mappings additionally need execute.
+pub fn mmap_file(inode: &InodeRef, executable: bool) -> KResult<()> {
+    if !selinux_runtime::active() { return Ok(()) }
+    let Some(isid) = super::label::inode_sid(inode) else { return Ok(()) };
+    let Some(class) = super::label::inode_security_class(inode) else { return Ok(()) };
+    let map = selinux::uapi::classmap::perm_bit(class, "map").unwrap_or(0);
+    let execute = if executable {
+        selinux::uapi::classmap::perm_bit(class, "execute").unwrap_or(0)
+    } else { 0 };
+    selinux_runtime::check::has_perm(selinux_runtime::task::current_sid(), isid, class,
+        map | execute).map_err(|_| VfsError::Eacces)
+}
+
 /// Install the check into the VFS permission path. # C: O(1)
 pub fn install() {
     security::lsm::register_inode_permission(inode_permission);

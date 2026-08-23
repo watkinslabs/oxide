@@ -154,6 +154,10 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
             may_prot.remove(vmm::VmaProt::EXEC);
         }
         let inode = file.inode();
+        if let Err(e) = ::fs::selinux::perm::mmap_file(&inode,
+            prot & PROT_EXEC != 0) {
+            return -(e.as_i32() as i64);
+        }
         if let Some(seals) = inode.fcntl_seals() {
             let keep_may_write = match crate::fcntl_seal::plan_write_sealed_mmap(
                 seals.load(core::sync::atomic::Ordering::Acquire),
