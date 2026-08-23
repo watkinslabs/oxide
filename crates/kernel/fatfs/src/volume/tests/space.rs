@@ -12,6 +12,26 @@ fn writable() -> Volume<Image> {
     Volume::mount(img.image(true)).expect("mount")
 }
 
+/// `discard` follows the FAT-free owner and clears every contiguous data run
+/// released by unlink. Unsupported media simply skip the request, as Linux
+/// does, but the in-memory discard-capable medium proves the request reached
+/// the sector layer.
+#[test]
+fn discard_clears_clusters_released_by_unlink() {
+    let (builder, _) = populated();
+    let image = sectors::MemImage::from_bytes(SECTOR as u32, builder.bytes);
+    let mut opts = crate::opts::Options::vfat();
+    opts.discard = true;
+    let mut v = Volume::mount_with(image, opts).expect("mount");
+    let root = root_of(&v);
+    let hit = v.find_entry(&root, "DATA.BIN").expect("file");
+    let first = hit.entry.cluster;
+    let sector = v.geometry().cluster_sector(first).expect("cluster");
+    assert_ne!(v.source_bytes(sector as usize * SECTOR + 1), 0);
+    v.unlink(&root, "DATA.BIN", when()).expect("unlink");
+    assert_eq!(v.source_bytes(sector as usize * SECTOR + 1), 0, "discarded data");
+}
+
 /// The maintained count is the scanned one, and stays that way across
 /// allocation and release. A count that drifts makes `df` wrong and makes the
 /// fast out-of-space refusal refuse a volume that has room.

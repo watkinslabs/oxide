@@ -17,7 +17,7 @@ use alloc::vec;
 use syscall::errno::Errno;
 
 use crate::cluster_alloc::{alloc_clusters, chain_add, count_free, count_free_clusters,
-                           free_chain_state, truncate_chain_state};
+                           truncate_chain_state_with};
 use crate::dirent::{Record, ENTRY_BYTES};
 use crate::fatcache::{get_cluster, ChainCache, Seek, TO_EOF};
 use crate::fsinfo;
@@ -303,12 +303,30 @@ impl<S: SectorSource> Volume<S> {
             first = self.extend_chain(first, cache, keep)?;
             self.fill_zeros(first, cache, old, len)?;
         } else if first != 0 {
-            if keep == 0 {
-                free_chain_state(&self.geo, &mut self.table, &mut self.free, first)?;
-                first = 0;
-            } else {
-                truncate_chain_state(&self.geo, &mut self.table, &mut self.free, first, keep)?;
-            }
+            let discard = self.opts.discard && self.source.supports_discard();
+            let source = &self.source;
+            let geo = self.geo;
+            let mut run_start: Option<u32> = None;
+            let mut run_last: Option<u32> = None;
+            let submit = |start: Option<u32>, last: Option<u32>| {
+                if !discard { return; }
+                if let (Some(start), Some(last)) = (start, last) {
+                    if let (Some(sector), Some(end)) = (geo.cluster_sector(start), geo.cluster_sector(last)) {
+                        let count = u64::from(end - sector) + u64::from(geo.sec_per_clus);
+                        let _ = source.discard_sectors(u64::from(sector), count);
+                    }
+                }
+            };
+            truncate_chain_state_with(&self.geo, &mut self.table, &mut self.free, first, keep,
+                |cluster| {
+                    if run_last.map_or(false, |last| cluster != last.saturating_add(1)) {
+                        submit(run_start.take(), run_last.take());
+                    }
+                    if run_start.is_none() { run_start = Some(cluster); }
+                    run_last = Some(cluster);
+                })?;
+            submit(run_start, run_last);
+            if keep == 0 { first = 0; }
             cache.invalidate();
             self.flush_table()?;
             self.flush_fsinfo()?;

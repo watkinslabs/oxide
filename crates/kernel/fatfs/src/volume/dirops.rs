@@ -181,7 +181,29 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(chain length)
     pub(crate) fn release_chain(&mut self, first: u32) -> Result<(), Errno> {
         if first == 0 { return Ok(()); }
-        crate::cluster_alloc::free_chain_state(&self.geo, &mut self.table, &mut self.free, first)?;
+        let geo = self.geo;
+        let discard = self.opts.discard && self.source.supports_discard();
+        let source = &self.source;
+        let mut run_start: Option<u32> = None;
+        let mut run_last: Option<u32> = None;
+        let submit = |start: Option<u32>, last: Option<u32>| {
+            if !discard { return; }
+            if let (Some(start), Some(last)) = (start, last) {
+                if let (Some(sector), Some(end)) = (geo.cluster_sector(start), geo.cluster_sector(last)) {
+                    let count = u64::from(end - sector) + u64::from(geo.sec_per_clus);
+                    let _ = source.discard_sectors(u64::from(sector), count);
+                }
+            }
+        };
+        crate::cluster_alloc::free_chain_state_with(
+            &self.geo, &mut self.table, &mut self.free, first, |cluster| {
+                if run_last.map_or(false, |last| cluster != last.saturating_add(1)) {
+                    submit(run_start.take(), run_last.take());
+                }
+                if run_start.is_none() { run_start = Some(cluster); }
+                run_last = Some(cluster);
+            })?;
+        submit(run_start, run_last);
         self.flush_table()?;
         self.flush_fsinfo()
     }

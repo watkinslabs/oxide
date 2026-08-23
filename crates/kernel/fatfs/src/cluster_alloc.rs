@@ -16,7 +16,8 @@ pub mod zero;
 
 pub use entry::{end_mark, write_entry, FREE_MARK};
 pub use alloc::{alloc_clusters, allocate, chain_add, link_chain};
-pub use free::{free_chain, free_chain_state, truncate_chain, truncate_chain_state, valid_entry};
+pub use free::{free_chain, free_chain_state, free_chain_state_with, truncate_chain,
+               truncate_chain_state, truncate_chain_state_with, valid_entry};
 pub use count::{count_free, count_free_clusters};
 pub use zero::{zero_range, NewCluster};
 
