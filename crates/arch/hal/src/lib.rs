@@ -428,6 +428,38 @@ pub trait CpuOps {
 }
 
 // ---------------------------------------------------------------------------
+// MachineOps (32§4)
+// ---------------------------------------------------------------------------
+
+/// Irreversible machine-terminal primitives.
+///
+/// The kernel power owner supplies policy and firmware/reset callbacks; this
+/// trait owns only the architecture instructions and calling convention at
+/// the final machine boundary. Keeping that split means no kernel subsystem
+/// carries an architecture-selected `asm!` block of its own.
+pub trait MachineOps {
+    /// Mask local interrupts before stopping peer CPUs.
+    /// # SAFETY: caller owns an irreversible machine transition.
+    unsafe fn mask_local_irqs();
+
+    /// Park this CPU forever.
+    /// # SAFETY: caller owns an irreversible machine transition.
+    unsafe fn halt() -> !;
+
+    /// Invoke the architecture reset endpoint, or the supplied policy reset
+    /// ladder where the architecture has one.
+    /// # SAFETY: caller owns an irreversible machine transition; `reset` is
+    /// the kernel's validated reset callback.
+    unsafe fn restart(reset: unsafe fn() -> !) -> !;
+
+    /// Invoke the architecture power-off endpoint, or the supplied firmware
+    /// callback where the platform's power controller is kernel-owned.
+    /// # SAFETY: caller owns an irreversible machine transition; `power_off`
+    /// is the kernel's validated firmware callback.
+    unsafe fn power_off(power_off: fn()) -> !;
+}
+
+// ---------------------------------------------------------------------------
 // IrqOps (20§11 / 21§11)
 // ---------------------------------------------------------------------------
 

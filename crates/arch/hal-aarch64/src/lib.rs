@@ -37,10 +37,12 @@ pub mod hibernate;
 pub mod por;
 pub mod hw_breakpoint;
 mod mmu;
+mod machine;
 pub mod mmu_ops;
 pub mod pci;
 pub mod pl011;
 pub mod psci;
+pub use machine::ArmMachineOps;
 // Boot-selected PSCI SMC/HVC state, shared by every PSCI operation.
 pub mod psci_conduit;
 pub mod smccc;
