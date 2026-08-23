@@ -71,3 +71,11 @@ fn unusual_modulus_sizes_are_refused() {
     assert_eq!(RsaKey::new(&alloc::vec![0xffu8; 128], &[], None).err(), Some(PkeyError::BadKey),
         "a zero exponent");
 }
+
+#[test]
+fn x509_times_accept_both_profile_encodings_and_reject_invalid_dates() {
+    assert_eq!(crate::x509::parse_time(0x17, b"491231235959Z").unwrap(), 2524607999);
+    assert_eq!(crate::x509::parse_time(0x18, b"20500101000000Z").unwrap(), 2524608000);
+    assert!(crate::x509::parse_time(0x17, b"500231000000Z").is_err());
+    assert!(crate::x509::parse_time(0x18, b"20490101000000Z").is_err());
+}

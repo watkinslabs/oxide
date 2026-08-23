@@ -51,6 +51,8 @@ pub struct Signer<'a> {
     /// The `messageDigest` attribute's octets, when the attributes are
     /// present.
     pub msgdigest: Option<&'a [u8]>,
+    /// `signingTime`, when the signed attributes carry it, in Unix seconds.
+    pub signing_time: Option<i64>,
     pub signature: Vec<u8>,
 }
 
@@ -151,9 +153,12 @@ fn signer_info(si: &[u8], msg_version: u8) -> Result<Signer<'_>, Pkcs7Error> {
         _ => return Err(Pkcs7Error::BadMessage),
     };
     let digest = algorithm(r.expect(der::TAG_SEQUENCE)?, oids::digest_name)?;
-    let (authattrs, msgdigest) = match peek_raw(&mut r, TAG_CONT0)? {
-        None => (None, None),
-        Some((value, raw)) => (Some(raw), Some(attributes(value)?)),
+    let (authattrs, msgdigest, signing_time) = match peek_raw(&mut r, TAG_CONT0)? {
+        None => (None, None, None),
+        Some((value, raw)) => {
+            let (digest, time) = attributes(value)?;
+            (Some(raw), Some(digest), time)
+        }
     };
     algorithm(r.expect(der::TAG_SEQUENCE)?, |o| {
         // The signature algorithm may name the key algorithm alone
@@ -166,7 +171,8 @@ fn signer_info(si: &[u8], msg_version: u8) -> Result<Signer<'_>, Pkcs7Error> {
     let signature = r.expect(der::TAG_OCTET_STRING)?.to_vec();
     r.take_if(TAG_CONT1)?;                         // unsignedAttrs, not signed
     r.end()?;
-    Ok(Signer { version, issuer, serial, skid, digest, authattrs, msgdigest, signature })
+    Ok(Signer { version, issuer, serial, skid, digest, authattrs, msgdigest,
+                signing_time, signature })
 }
 
 /// `IssuerAndSerialNumber ::= SEQUENCE { issuer Name, serialNumber INTEGER }`.
@@ -191,8 +197,8 @@ where F: Fn(&[u8]) -> Option<&'static str> {
 /// The signed attributes: the two that must be present are checked here, so a
 /// set missing one is refused before any hashing happens. Returns the
 /// `messageDigest` octets. # C: O(attributes)
-fn attributes(set: &[u8]) -> Result<&[u8], Pkcs7Error> {
-    let (mut content_type, mut digest) = (false, None);
+fn attributes(set: &[u8]) -> Result<(&[u8], Option<i64>), Pkcs7Error> {
+    let (mut content_type, mut digest, mut signing_time) = (false, None, None);
     let mut r = Reader::new(set);
     while !r.is_empty() {
         let attr = r.expect(der::TAG_SEQUENCE)?;
@@ -212,10 +218,15 @@ fn attributes(set: &[u8]) -> Result<&[u8], Pkcs7Error> {
             if digest.is_some() { return Err(Pkcs7Error::KeyRejected); }
             digest = Some(v.expect(der::TAG_OCTET_STRING)?);
             v.end()?;
+        } else if id == oids::SIGNING_TIME {
+            if signing_time.is_some() { return Err(Pkcs7Error::KeyRejected); }
+            let tlv = v.next()?;
+            v.end()?;
+            signing_time = Some(crate::x509::parse_time(tlv.tag, tlv.value)?);
         }
     }
     if !content_type { return Err(Pkcs7Error::BadMessage); }
-    digest.ok_or(Pkcs7Error::BadMessage)
+    Ok((digest.ok_or(Pkcs7Error::BadMessage)?, signing_time))
 }
 
 /// An element's contents and its whole encoding, header included.

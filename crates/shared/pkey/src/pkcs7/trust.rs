@@ -77,6 +77,10 @@ pub enum Target<'a> {
 pub fn validate(msg: &Message<'_>, signer: &Signer<'_>, signer_cert: Option<usize>,
                 links: &Links, digest: &[u8], store: &TrustStore)
     -> Result<(), Pkcs7Error> {
+    if let (Some(time), Some(index)) = (signer.signing_time, signer_cert) {
+        let cert = &msg.certs[index].cert;
+        if time < cert.valid_from || time > cert.valid_to { return Err(Pkcs7Error::KeyRejected); }
+    }
     let mut at = signer_cert;
     let mut target = Target::Message { hash: signer.digest, digest, sig: &signer.signature };
     let mut last: Option<usize> = None;
