@@ -42,6 +42,7 @@ pub struct NftSet {
     pub data_type: u32,
     pub data_len: u32,
     pub flags: u32,
+    pub obj_type: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -51,6 +52,7 @@ pub struct NftSetElem {
     pub set_name: String,
     pub key: Vec<u8>,
     pub data: Vec<u8>,
+    pub objref: Option<String>,
 }
 
 #[derive(Clone, Debug)]

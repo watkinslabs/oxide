@@ -3,6 +3,7 @@
 // - `generation`: immutable compiled packet-path state and RCU publication.
 // - `store`: canonical control-plane mutations and nfnetlink transactions.
 mod generation;
+pub(crate) use generation::CompiledNamespace;
 mod model;
 mod store;
 

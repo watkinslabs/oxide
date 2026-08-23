@@ -115,6 +115,7 @@ struct LiveObjects<'a> {
     namespace: u64,
     family: u8,
     table: &'a str,
+    generation: &'a crate::state::CompiledNamespace,
 }
 
 impl ObjectAccess for LiveObjects<'_> {
@@ -126,6 +127,12 @@ impl ObjectAccess for LiveObjects<'_> {
                 && o.ty == obj_type && o.name == name
         })?;
         object.state.eval(pkt_len, now_ns)
+    }
+
+    fn eval_from_set(&self, family: u8, table: &str, set_id: Option<usize>,
+                     _set: &str, key: &[u8], pkt_len: u64, now_ns: u64) -> Option<i32> {
+        if family != self.family || table != self.table { return None; }
+        self.generation.object_state(set_id?, key)?.eval(pkt_len, now_ns)
     }
 }
 
@@ -349,7 +356,9 @@ fn eval_context(input: &crate::eval_context::Input<'_>) -> EvalResult {
             if input.live { ctx.route = Some(&live_route); }
             if let Some(socket) = live_socket.as_ref() { ctx.socket = Some(socket); }
             if let Some(synproxy) = live_synproxy.as_ref() { ctx.synproxy = Some(synproxy); }
-            let objects = LiveObjects { namespace, family, table: &chain.table_name };
+            let objects = LiveObjects {
+                namespace, family, table: &chain.table_name, generation: state,
+            };
             ctx.objects = Some(&objects);
             ctx.set_lookup = Some(&lookup);
             let verdict = nft_expr::run_rule_ctx(&rule.exprs, &mut ctx);

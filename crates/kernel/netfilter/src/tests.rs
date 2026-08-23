@@ -76,7 +76,7 @@ use super::*;
             table_family: 2,
             table_name:   String::from("oxide-test-t"),
             name:         String::from("blocked_ips"),
-            key_type: 7, key_len: 4, data_type: 0, data_len: 0, flags: 0,
+            key_type: 7, key_len: 4, data_type: 0, data_len: 0, flags: 0, obj_type: 0,
         };
         let before = sets_snapshot().len();
         set_insert(s.clone());
@@ -297,6 +297,7 @@ use super::*;
             set_name:     String::from("blocked"),
             key:          alloc::vec![10, 0, 0, 5],
             data:         alloc::vec![],
+            objref:      None,
         };
         let before = set_elems_snapshot().len();
         set_elem_insert(e.clone());
@@ -316,6 +317,7 @@ use super::*;
             set_name:     String::from("blocked"),
             key:          alloc::vec![1, 2, 3, 4],
             data:         alloc::vec![0xff],
+            objref:      None,
         };
         set_elem_insert(e);
         let got = set_elem_lookup(2, "oxide-test-elT2", "blocked", &[1, 2, 3, 4]);

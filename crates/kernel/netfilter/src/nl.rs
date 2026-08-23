@@ -324,6 +324,7 @@ pub(crate) fn build_newset_reply(seq: u32, pid: u32, s: &NftSet, multi: bool) ->
     put_nlattr_u32(&mut body, nfta_set::NFTA_SET_KEY_LEN, s.key_len);
     put_nlattr_u32(&mut body, nfta_set::NFTA_SET_DATA_TYPE, s.data_type);
     put_nlattr_u32(&mut body, nfta_set::NFTA_SET_DATA_LEN, s.data_len);
+    put_nlattr_u32(&mut body, nfta_set::NFTA_SET_OBJ_TYPE, s.obj_type);
     build_reply(seq, pid, nft_msg::NFT_MSG_NEWSET, multi, body)
 }
 

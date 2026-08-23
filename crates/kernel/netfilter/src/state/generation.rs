@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
 
-use crate::nft_expr::{Expr, ExprStates};
+use crate::nft_expr::{Expr, ExprStates, ObjectState};
 use super::model::{ControlState, NamespaceState, NftChain, RuleCounter, StoredRule};
 
 pub(crate) struct CompiledRule {
@@ -34,6 +34,7 @@ struct CompiledSet {
     name: String,
     key_len: usize,
     keys: Vec<Vec<u8>>,
+    object_states: Vec<Option<Arc<ObjectState>>>,
 }
 
 pub(crate) struct CompiledNamespace {
@@ -48,17 +49,30 @@ impl CompiledNamespace {
         let Some(key) = register.get(..set.key_len) else { return false; };
         set.keys.binary_search_by(|candidate| candidate.as_slice().cmp(key)).is_ok()
     }
+
+    pub(crate) fn object_state(&self, set_id: usize, register: &[u8])
+        -> Option<&Arc<ObjectState>> {
+        let set = self.sets.get(set_id)?;
+        let key = register.get(..set.key_len)?;
+        let index = set.keys.binary_search_by(|candidate| candidate.as_slice().cmp(key)).ok()?;
+        set.object_states.get(index)?.as_ref()
+    }
 }
 
 fn compile_exprs(rule: &StoredRule, sets: &[CompiledSet]) -> Vec<Expr> {
     let mut exprs = rule.exprs.clone();
     for expr in &mut exprs {
-        let Expr::Lookup { set, set_id, .. } = expr else { continue };
+        let set_name = match expr {
+            Expr::Lookup { set, set_id, .. } => Some((set, set_id)),
+            Expr::Objref { set: Some(set), set_id, .. } => Some((set, set_id)),
+            _ => None,
+        };
+        let Some((set, set_id)) = set_name else { continue };
         *set_id = Some(sets.iter().position(|candidate| {
             candidate.table_family == rule.wire.table_family
                 && candidate.table_name == rule.wire.table_name
                 && candidate.name == *set
-        }).expect("installed lookup retains its bound set"));
+        }).expect("installed set reference retains its bound set"));
     }
     exprs
 }
@@ -110,15 +124,22 @@ fn compile_namespace(control: &mut NamespaceState) -> CompiledNamespace {
 
     let mut sets = Vec::with_capacity(control.sets.len());
     for set in &control.sets {
-        let mut keys: Vec<Vec<u8>> = control.set_elems.iter().filter(|elem| {
+        let mut entries: Vec<(Vec<u8>, Option<Arc<ObjectState>>)> = control.set_elems.iter().filter(|elem| {
             elem.table_family == set.table_family && elem.table_name == set.table_name
                 && elem.set_name == set.name
-        }).map(|elem| elem.key.clone()).collect();
-        keys.sort();
-        keys.dedup();
+        }).map(|elem| {
+            let state = elem.objref.as_ref().and_then(|name| control.objects.iter().find(|object| {
+                object.table_family == set.table_family && object.table_name == set.table_name
+                    && object.ty == set.obj_type && object.name == *name
+            }).map(|object| Arc::clone(&object.state)));
+            (elem.key.clone(), state)
+        }).collect();
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        entries.dedup_by(|a, b| a.0 == b.0);
+        let (keys, object_states): (Vec<_>, Vec<_>) = entries.into_iter().unzip();
         sets.push(CompiledSet {
             table_family: set.table_family, table_name: set.table_name.clone(),
-            name: set.name.clone(), key_len: set.key_len as usize, keys,
+            name: set.name.clone(), key_len: set.key_len as usize, keys, object_states,
         });
     }
 
@@ -227,15 +248,15 @@ mod tests {
         let mut control = NamespaceState::new();
         control.sets.push(NftSet {
             table_family: 2, table_name: "table".into(), name: "other".into(),
-            key_type: 0, key_len: 4, data_type: 0, data_len: 0, flags: 0,
+            key_type: 0, key_len: 4, data_type: 0, data_len: 0, flags: 0, obj_type: 0,
         });
         control.sets.push(NftSet {
             table_family: 2, table_name: "table".into(), name: "bound".into(),
-            key_type: 0, key_len: 4, data_type: 0, data_len: 0, flags: 0,
+            key_type: 0, key_len: 4, data_type: 0, data_len: 0, flags: 0, obj_type: 0,
         });
         control.set_elems.push(super::super::model::NftSetElem {
             table_family: 2, table_name: "table".into(), set_name: "bound".into(),
-            key: alloc::vec![10, 0, 0, 5], data: Vec::new(),
+            key: alloc::vec![10, 0, 0, 5], data: Vec::new(), objref: None,
         });
         control.chains.push(NftChain {
             table_family: 2, table_name: "table".into(), name: "input".into(),
@@ -258,6 +279,27 @@ mod tests {
             Expr::Lookup { set_id: Some(1), .. }));
         assert!(compiled.set_contains(1, &[10, 0, 0, 5]));
         assert!(!compiled.set_contains(0, &[10, 0, 0, 5]));
+    }
+
+    #[test]
+    fn object_set_compilation_binds_the_named_object_state() {
+        let mut control = NamespaceState::new();
+        control.objects.push(crate::state::model::NftObject::new(
+            2, "table".into(), "counter".into(),
+            crate::nft_expr::uapi::NFT_OBJECT_COUNTER, Vec::new()));
+        control.sets.push(NftSet {
+            table_family: 2, table_name: "table".into(), name: "objects".into(),
+            key_type: 0, key_len: 4, data_type: 0, data_len: 0,
+            flags: 0x40, obj_type: crate::nft_expr::uapi::NFT_OBJECT_COUNTER,
+        });
+        control.set_elems.push(super::super::model::NftSetElem {
+            table_family: 2, table_name: "table".into(), set_name: "objects".into(),
+            key: alloc::vec![10, 0, 0, 5], data: Vec::new(),
+            objref: Some("counter".into()),
+        });
+
+        let compiled = compile_namespace(&mut control);
+        assert!(compiled.object_state(0, &[10, 0, 0, 5]).is_some());
     }
 
     #[test]

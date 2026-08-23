@@ -351,11 +351,12 @@ pub(super) fn handle_nft(
             let key_len   = find_u32_attr(attrs, nfta_set::NFTA_SET_KEY_LEN).unwrap_or(0);
             let data_type = find_u32_attr(attrs, nfta_set::NFTA_SET_DATA_TYPE).unwrap_or(0);
             let data_len  = find_u32_attr(attrs, nfta_set::NFTA_SET_DATA_LEN).unwrap_or(0);
+            let obj_type  = find_u32_attr(attrs, nfta_set::NFTA_SET_OBJ_TYPE).unwrap_or(0);
             set_insert_in(namespace, NftSet {
                 table_family: nfg.nfgen_family,
                 table_name:   String::from(table_name),
                 name:         String::from(set_name),
-                key_type, key_len, data_type, data_len, flags,
+                key_type, key_len, data_type, data_len, flags, obj_type,
             });
             nlmsg_ack(req, 0)
         }
@@ -434,13 +435,14 @@ pub(super) fn handle_nft(
             let list = find_bytes_attr(attrs, nfta_set_elem::NFTA_SET_ELEM_LIST_ELEMENTS)
                 .unwrap_or(&[]);
             let mut elems = Vec::new();
-            walk_setelem_list(list, |k, d| {
+            walk_setelem_list(list, |k, d, objref| {
                 elems.push(NftSetElem {
                     table_family: nfg.nfgen_family,
                     table_name:   String::from(table),
                     set_name:     String::from(set),
                     key:  k.to_vec(),
                     data: d.to_vec(),
+                    objref: objref.map(String::from),
                 });
             });
             set_elems_insert_in(namespace, elems);
@@ -456,7 +458,7 @@ pub(super) fn handle_nft(
             let list = find_bytes_attr(attrs, nfta_set_elem::NFTA_SET_ELEM_LIST_ELEMENTS)
                 .unwrap_or(&[]);
             let mut keys = Vec::new();
-            walk_setelem_list(list, |k, _d| {
+            walk_setelem_list(list, |k, _d, _objref| {
                 keys.push(k.to_vec());
             });
             let total = set_elems_remove_in(namespace, nfg.nfgen_family, table, set, &keys);

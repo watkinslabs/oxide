@@ -118,6 +118,7 @@ pub mod nfta_set {
     pub const NFTA_SET_ID:        u16 = 10;
     pub const NFTA_SET_TIMEOUT:   u16 = 11;
     pub const NFTA_SET_USERDATA:  u16 = 13;
+    pub const NFTA_SET_OBJ_TYPE:  u16 = 15;
 }
 
 pub mod nfta_set_elem {
@@ -127,6 +128,7 @@ pub mod nfta_set_elem {
     pub const NFTA_SET_ELEM_KEY:           u16 = 1;
     pub const NFTA_SET_ELEM_DATA:          u16 = 2;
     pub const NFTA_SET_ELEM_FLAGS:         u16 = 3;
+    pub const NFTA_SET_ELEM_OBJREF:        u16 = 9;
     pub const NFTA_DATA_VALUE:             u16 = 1;
 }
 

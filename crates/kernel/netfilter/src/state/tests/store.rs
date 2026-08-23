@@ -38,7 +38,7 @@ fn flow_offload(table: &str) -> Vec<u8> {
 fn set(table: &str, name: &str) -> NftSet {
     NftSet {
         table_family: 2, table_name: table.into(), name: name.into(),
-        key_type: 0, key_len: 4, data_type: 0, data_len: 0, flags: 0,
+        key_type: 0, key_len: 4, data_type: 0, data_len: 0, flags: 0, obj_type: 0,
     }
 }
 
