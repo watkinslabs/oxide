@@ -351,7 +351,8 @@ fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Ve
         }
     }
     if cmd == conntrack::uapi::IPCTNL_MSG_CT_NEW {
-        if let Some(raw) = find_bytes_attr(attrs, ::conntrack::uapi::CTA_TUPLE_ORIG) {
+        if let Some(raw) = find_bytes_attr(attrs, ::conntrack::uapi::CTA_TUPLE_ORIG)
+            .or_else(|| find_bytes_attr(attrs, ::conntrack::uapi::CTA_TUPLE_REPLY)) {
             let Some(tuple) = parse_ct_tuple(raw, nfg.nfgen_family,
                 find_be16_attr(attrs, ::conntrack::uapi::CTA_ZONE).unwrap_or(0)) else {
                 return nlmsg_ack(req, -22);
@@ -387,15 +388,23 @@ fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Ve
             if req.nlmsg_flags & flags::NLM_F_CREATE == 0 {
                 return nlmsg_ack(req, -2);
             }
+            let Some(orig_raw) = find_bytes_attr(attrs, ::conntrack::uapi::CTA_TUPLE_ORIG)
+                else { return nlmsg_ack(req, -22); };
+            let Some(orig) = parse_ct_tuple(orig_raw, nfg.nfgen_family,
+                find_be16_attr(attrs, ::conntrack::uapi::CTA_ZONE).unwrap_or(0)) else {
+                return nlmsg_ack(req, -22);
+            };
+            let Some(reply_raw) = find_bytes_attr(attrs, ::conntrack::uapi::CTA_TUPLE_REPLY)
+                else { return nlmsg_ack(req, -22); };
+            let Some(reply) = parse_ct_tuple(reply_raw, nfg.nfgen_family, orig.zone) else {
+                return nlmsg_ack(req, -22);
+            };
+            if orig.protonum != reply.protonum {
+                return nlmsg_ack(req, -22);
+            }
             let Some(timeout) = find_u32_attr(attrs, ::conntrack::uapi::CTA_TIMEOUT) else {
                 return nlmsg_ack(req, -22);
             };
-            let reply = find_bytes_attr(attrs, ::conntrack::uapi::CTA_TUPLE_REPLY)
-                .and_then(|raw| parse_ct_tuple(raw, nfg.nfgen_family, tuple.zone));
-            if find_bytes_attr(attrs, ::conntrack::uapi::CTA_TUPLE_REPLY).is_some()
-                && reply.is_none() {
-                return nlmsg_ack(req, -22);
-            }
             let Ok(protoinfo) = parse_tcp_protoinfo(attrs) else { return nlmsg_ack(req, -22); };
             let Ok(helper) = parse_helper_name(attrs) else { return nlmsg_ack(req, -22); };
             let Ok(labels) = parse_labels(attrs) else { return nlmsg_ack(req, -22); };
@@ -405,13 +414,13 @@ fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Ve
                 ::conntrack::uapi::CTA_NAT_DST) else { return nlmsg_ack(req, -22); };
             let id = if src_nat.is_some() || dst_nat.is_some() {
                 ::net::global_stack().conntrack_create_tuple_nat_in(
-                    namespace, tuple, reply, timeout,
+                    namespace, orig, Some(reply), timeout,
                     find_u32_attr(attrs, ::conntrack::uapi::CTA_STATUS).unwrap_or(0),
                     find_u32_attr(attrs, ::conntrack::uapi::CTA_MARK), protoinfo, helper,
                     src_nat, dst_nat, labels)
             } else {
                 ::net::global_stack().conntrack_create_tuple_in(
-                namespace, tuple, reply, timeout,
+                namespace, orig, Some(reply), timeout,
                 find_u32_attr(attrs, ::conntrack::uapi::CTA_STATUS).unwrap_or(0),
                 find_u32_attr(attrs, ::conntrack::uapi::CTA_MARK), protoinfo, helper, labels)
             };
@@ -520,10 +529,11 @@ fn handle_ct_get(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -
 mod tests {
     use alloc::vec::Vec;
     use alloc::sync::Arc;
-    use super::{parse_ct_tuple, parse_helper_name, parse_labels, parse_nat_range,
-                parse_seqadjs, parse_tcp_protoinfo};
+    use crate::{subsys, Nfgenmsg};
+    use super::{handle_one, parse_ct_tuple, parse_helper_name, parse_labels, parse_nat_range,
+                parse_seqadjs, parse_tcp_protoinfo, reply_errno};
     use ::conntrack::{ProtoPart, Tuple, TupleEnd, InetAddr};
-    use netlink::{NetlinkSocket, proto, register_netfilter_listener};
+    use netlink::{flags, NetlinkSocket, Nlmsghdr, proto, register_netfilter_listener};
 
     #[test]
     fn ctnetlink_tuple_parser_preserves_family_ports_and_zone() {
@@ -671,6 +681,50 @@ mod tests {
         ::conntrack::ctnetlink::put_attr(
             &mut bad_mask, ::conntrack::uapi::CTA_LABELS_MASK, &[0, 0, 0, 0, 0, 0, 0, 0]);
         assert!(parse_labels(&bad_mask).is_err());
+    }
+
+    #[test]
+    fn ctnetlink_create_requires_both_matching_direction_tuples() {
+        let orig = Tuple {
+            src: TupleEnd { addr: InetAddr::v4([192, 0, 2, 1]), proto: ProtoPart::port(40000) },
+            dst: TupleEnd { addr: InetAddr::v4([198, 51, 100, 2]), proto: ProtoPart::port(53) },
+            l3num: ::conntrack::uapi::NFPROTO_IPV4,
+            protonum: ::conntrack::uapi::IPPROTO_UDP,
+            zone: 0,
+        };
+        let make_request = |reply: Option<&Tuple>| {
+            let mut body = Vec::new();
+            let mut family = [0u8; Nfgenmsg::SIZE];
+            Nfgenmsg { nfgen_family: ::conntrack::uapi::NFPROTO_IPV4,
+                       version: 0, res_id: 0 }.write_to(&mut family);
+            body.extend_from_slice(&family);
+            ::conntrack::ctnetlink::put_tuple(
+                &mut body, ::conntrack::uapi::CTA_TUPLE_ORIG, &orig);
+            if let Some(reply) = reply {
+                ::conntrack::ctnetlink::put_tuple(
+                    &mut body, ::conntrack::uapi::CTA_TUPLE_REPLY, reply);
+            }
+            ::conntrack::ctnetlink::put_be32(
+                &mut body, ::conntrack::uapi::CTA_TIMEOUT, 30);
+            let hdr = Nlmsghdr {
+                nlmsg_len: (Nlmsghdr::SIZE + body.len()) as u32,
+                nlmsg_type: ((subsys::NFNL_SUBSYS_CTNETLINK as u16) << 8)
+                    | ::conntrack::uapi::IPCTNL_MSG_CT_NEW as u16,
+                nlmsg_flags: flags::NLM_F_REQUEST | flags::NLM_F_CREATE | flags::NLM_F_ACK,
+                nlmsg_seq: 1, nlmsg_pid: 0,
+            };
+            let mut frame = Vec::new();
+            let mut header = [0u8; Nlmsghdr::SIZE];
+            hdr.write_to(&mut header);
+            frame.extend_from_slice(&header);
+            frame.extend_from_slice(&body);
+            frame
+        };
+        assert_eq!(reply_errno(&handle_one(&make_request(None), 0)), Some(-22));
+
+        let reply = Tuple { protonum: ::conntrack::uapi::IPPROTO_TCP,
+                            ..orig };
+        assert_eq!(reply_errno(&handle_one(&make_request(Some(&reply)), 0)), Some(-22));
     }
 
     #[test]
