@@ -5,6 +5,7 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::ctnetlink;
 use crate::core::CtNet;
@@ -21,6 +22,10 @@ fn entry(orig: Tuple) -> Arc<Conn> {
     c.refresh(0, 100);
     Arc::new(c)
 }
+
+static TEST_REALTIME: AtomicU64 = AtomicU64::new(10);
+
+fn test_realtime() -> u64 { TEST_REALTIME.fetch_add(10, Ordering::Relaxed) }
 
 #[test]
 fn a_tcp_line_carries_both_tuples_and_the_state() {
@@ -353,6 +358,25 @@ fn ctnetlink_dump_filter_matches_the_canonical_mark_and_status() {
             ..tuple_filter
         }), ..filter
     }));
+}
+
+#[test]
+fn ctnetlink_timestamps_follow_the_enabled_owner_lifecycle() {
+    TEST_REALTIME.store(10, Ordering::Relaxed);
+    let ct = CtNet::new_with_clock(0, 7, test_realtime);
+    ct.sysctl.lock().timestamp = true;
+    let tuple = v4_udp([192, 0, 2, 1], 40000, [198, 51, 100, 2], 53);
+    let id = ct.create_tuple(tuple, None, 0, 30, 0, None, None, None)
+        .expect("timestamped flow is created");
+    let live = ct.table.find_id(id, 0).expect("timestamped flow is live");
+    assert_eq!(live.timestamp_start.load(Ordering::Acquire), 10);
+    let wire = ctnetlink::encode_entry(&live, 0, false);
+    assert!(wire.windows(8).any(|window| window == 10u64.to_be_bytes()));
+    assert!(!wire.windows(8).any(|window| window == 20u64.to_be_bytes()));
+    assert!(ct.delete_id(id, 0));
+    assert_eq!(live.timestamp_stop.load(Ordering::Acquire), 20);
+    let wire = ctnetlink::encode_entry(&live, 0, false);
+    assert!(wire.windows(8).any(|window| window == 20u64.to_be_bytes()));
 }
 
 #[test]

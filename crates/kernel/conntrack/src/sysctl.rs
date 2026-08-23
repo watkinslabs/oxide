@@ -26,6 +26,8 @@ pub struct CtSysctl {
     pub helper: bool,
     /// Accept the accounting extension's per-direction counters.
     pub acct: bool,
+    /// Allocate and report realtime insertion/removal timestamps.
+    pub timestamp: bool,
     /// Entry ceiling.
     pub max: u64,
     /// Bucket count, read-only after construction.
@@ -45,6 +47,7 @@ impl Default for CtSysctl {
             log_invalid: 0,
             helper: false,
             acct: false,
+            timestamp: false,
             max: crate::limits::CT_MAX_DEFAULT,
             buckets: crate::limits::CT_HASH_BUCKETS as u32,
         }
@@ -60,7 +63,7 @@ pub enum Knob {
     TcpLoose, TcpBeLiberal, TcpIgnoreInvalidRst, TcpMaxRetrans,
     UdpTimeout, UdpTimeoutStream,
     IcmpTimeout, Icmpv6Timeout, GenericTimeout,
-    Checksum, Events, LogInvalid, Helper, Acct, Max, Buckets,
+    Checksum, Events, LogInvalid, Helper, Acct, Timestamp, Max, Buckets,
 }
 
 impl Knob {
@@ -78,8 +81,8 @@ impl Knob {
             Self::UdpTimeoutStream => 16, Self::IcmpTimeout => 17,
             Self::Icmpv6Timeout => 18, Self::GenericTimeout => 19,
             Self::Checksum => 20, Self::Events => 21, Self::LogInvalid => 22,
-            Self::Helper => 23, Self::Acct => 24, Self::Max => 25,
-            Self::Buckets => 26,
+            Self::Helper => 23, Self::Acct => 24, Self::Timestamp => 25,
+            Self::Max => 26, Self::Buckets => 27,
         }
     }
 }
@@ -112,6 +115,7 @@ pub const KNOBS: &[(&str, Knob)] = &[
     ("nf_conntrack_log_invalid",                Knob::LogInvalid),
     ("nf_conntrack_helper",                     Knob::Helper),
     ("nf_conntrack_acct",                       Knob::Acct),
+    ("nf_conntrack_timestamp",                  Knob::Timestamp),
     ("nf_conntrack_max",                        Knob::Max),
     ("nf_conntrack_buckets",                    Knob::Buckets),
 ];
@@ -151,6 +155,7 @@ impl CtSysctl {
             Knob::LogInvalid           => self.log_invalid as u64,
             Knob::Helper               => self.helper as u64,
             Knob::Acct                 => self.acct as u64,
+            Knob::Timestamp            => self.timestamp as u64,
             Knob::Max                  => self.max,
             Knob::Buckets              => self.buckets as u64,
         }
@@ -197,6 +202,7 @@ impl CtSysctl {
             },
             Knob::Helper               => self.helper = v32 != 0,
             Knob::Acct                 => self.acct = v32 != 0,
+            Knob::Timestamp            => self.timestamp = v32 != 0,
             Knob::Max                  => self.max = v,
             // The bucket count is fixed at table construction; accepting a
             // write would report a size the hash does not have.

@@ -202,6 +202,13 @@ impl CtTable {
 
     /// Retire every expired entry. Returns how many went. # C: O(N)
     pub fn gc(&self, now: u64) -> usize {
+        self.gc_with(now, |_| {})
+    }
+
+    /// Retire expired entries and notify the owner after each unlink. # C: O(N)
+    pub fn gc_with<F>(&self, now: u64, mut after_kill: F) -> usize
+        where F: FnMut(&Arc<Conn>)
+    {
         let mut dead = Vec::new();
         for b in self.buckets.iter() {
             let g = b.lock();
@@ -210,7 +217,9 @@ impl CtTable {
             }
         }
         let mut n = 0;
-        for c in dead { if self.kill(&c) { n += 1; } }
+        for c in dead {
+            if self.kill(&c) { after_kill(&c); n += 1; }
+        }
         n
     }
 

@@ -55,6 +55,7 @@ pub struct CtNet {
     pub sysctl: sync::Spinlock<CtSysctl, sync::Socket>,
     pub events: crate::event::EventQueue,
     pub net_ns: u64,
+    realtime: fn() -> u64,
 }
 
 /// Linux ctnetlink's result when changing a helper on an existing entry.
@@ -64,6 +65,11 @@ pub enum HelperChangeError { NotFound, Unsupported, Busy }
 impl CtNet {
     /// # C: O(N_buckets)
     pub fn new(net_ns: u64, seed: u32) -> Self {
+        Self::new_with_clock(net_ns, seed, || 0)
+    }
+
+    /// Build a tracker using the namespace's canonical realtime provider. # C: O(N_buckets)
+    pub fn new_with_clock(net_ns: u64, seed: u32, realtime: fn() -> u64) -> Self {
         Self {
             table: CtTable::new(seed),
             expect: crate::expect::ExpectTable::new(seed),
@@ -71,6 +77,17 @@ impl CtNet {
             sysctl: sync::Spinlock::new(CtSysctl::default()),
             events: crate::event::EventQueue::new(),
             net_ns,
+            realtime,
+        }
+    }
+
+    fn stamp_start(&self, conn: &Arc<Conn>, enabled: bool) {
+        if enabled { conn.timestamp_start((self.realtime)()); }
+    }
+
+    fn stamp_stop(&self, conn: &Arc<Conn>) {
+        if conn.timestamp_start.load(core::sync::atomic::Ordering::Acquire) != 0 {
+            conn.timestamp_stop((self.realtime)());
         }
     }
 
@@ -93,6 +110,7 @@ impl CtNet {
         }
         let id = self.table.alloc_id();
         let conn = Arc::new(Conn::new(id, pkt.tuple, reply, self.net_ns));
+        self.stamp_start(&conn, sysctl.timestamp);
         if sysctl.helper {
             if let Some(helper) = self.helpers.find_for(&pkt.tuple) {
                 conn.attach_helper(helper.name, false);
@@ -100,7 +118,10 @@ impl CtNet {
         }
         self.table.add_pending(conn.clone());
         let r = self.run(conn.clone(), IP_CT_DIR_ORIGINAL, pkt, now, &sysctl, false);
-        if matches!(r, Track::Invalid) { self.table.kill(&conn); }
+        if matches!(r, Track::Invalid) {
+            self.stamp_stop(&conn);
+            self.table.kill(&conn);
+        }
         r
     }
 
@@ -133,6 +154,7 @@ impl CtNet {
                         tcp::TcpVerdict::Invalid => { drop(p); return Track::Invalid; }
                         tcp::TcpVerdict::Repeat  => {
                             drop(p);
+                            self.stamp_stop(&conn);
                             self.table.kill(&conn);
                             return Track::Repeat;
                         }
@@ -179,6 +201,7 @@ impl CtNet {
 
     fn kill_with_event(&self, conn: &Arc<Conn>) {
         if self.table.kill(conn) {
+            self.stamp_stop(conn);
             self.expect.purge_master(conn);
             self.events.post(&conn, IPCT_DESTROY);
         }
@@ -206,6 +229,7 @@ impl CtNet {
     pub fn delete_id(&self, id: u64, now: u64) -> bool {
         let Some(conn) = self.table.find_id(id, now) else { return false; };
         if !self.table.kill(&conn) { return false; }
+        self.stamp_stop(&conn);
         self.expect.purge_master(&conn);
         self.events.post(&conn, IPCT_DESTROY);
         true
@@ -303,8 +327,10 @@ impl CtNet {
     {
         let reply = reply.or_else(|| tuple.invert())?;
         let mut entry = Conn::new(self.table.alloc_id(), tuple, reply, self.net_ns);
+        let timestamp = self.sysctl.lock().timestamp;
         entry.master = master;
         let conn = Arc::new(entry);
+        self.stamp_start(&conn, timestamp);
         if conn.master.is_some() { conn.set_status_bits(IPS_EXPECTED); }
         conn.set_status_bits(crate::ctnetlink::writable_status(status));
         if conn.status() & IPS_FIXED_TIMEOUT != 0 {
@@ -327,9 +353,10 @@ impl CtNet {
         if let Some(update) = labels { conn.labels_replace(&update); }
         let synproxy_event = synproxy.is_some();
         if let Some(state) = synproxy { conn.synproxy_replace(state); }
-        if !setup(&conn) { return None; }
+        if !setup(&conn) { self.stamp_stop(&conn); return None; }
         self.table.add_pending(conn.clone());
         if !self.table.confirm(&conn, now) {
+            self.stamp_stop(&conn);
             let _ = self.table.kill(&conn);
             return None;
         }
@@ -340,7 +367,9 @@ impl CtNet {
     }
 
     /// Retire expired entries and expectations. # C: O(N)
-    pub fn gc(&self, now: u64) -> usize { self.table.gc(now) }
+    pub fn gc(&self, now: u64) -> usize {
+        self.table.gc_with(now, |conn| self.stamp_stop(conn))
+    }
 
     /// Kill one entry and announce it. # C: O(bucket length)
     pub fn destroy(&self, conn: &Arc<Conn>) { self.kill_with_event(conn); }

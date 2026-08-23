@@ -125,6 +125,9 @@ pub struct Conn {
     pub timeout: AtomicU64,
     pub mark: AtomicU32,
     pub secmark: AtomicU32,
+    /// Optional realtime insertion/removal timestamps exposed by ctnetlink.
+    pub timestamp_start: AtomicU64,
+    pub timestamp_stop: AtomicU64,
     /// Conntrack label bits, shared by ctnetlink and nft `ct labels`.
     pub labels: sync::Spinlock<[u8; NF_CT_LABELS_MAX_SIZE], sync::Socket>,
     pub proto: sync::Spinlock<ProtoState, sync::Socket>,
@@ -159,6 +162,8 @@ impl Conn {
             timeout: AtomicU64::new(0),
             mark: AtomicU32::new(0),
             secmark: AtomicU32::new(0),
+            timestamp_start: AtomicU64::new(0),
+            timestamp_stop: AtomicU64::new(0),
             labels: sync::Spinlock::new([0; NF_CT_LABELS_MAX_SIZE]),
             proto: sync::Spinlock::new(ProtoState::for_proto(orig.protonum)),
             counters: [DirCounters::default(), DirCounters::default()],
@@ -183,6 +188,16 @@ impl Conn {
     pub fn confirmed(&self) -> bool { self.status() & IPS_CONFIRMED != 0 }
     /// # C: O(1)
     pub fn dying(&self) -> bool { self.status() & IPS_DYING != 0 }
+
+    /// Stamp the ctnetlink timestamp extension at insertion. # C: O(1)
+    pub fn timestamp_start(&self, now_ns: u64) {
+        if now_ns != 0 { self.timestamp_start.store(now_ns, Ordering::Release); }
+    }
+
+    /// Stamp the ctnetlink timestamp extension at destruction. # C: O(1)
+    pub fn timestamp_stop(&self, now_ns: u64) {
+        if now_ns != 0 { self.timestamp_stop.store(now_ns, Ordering::Release); }
+    }
 
     /// Copy the canonical label area into an nft/ctnetlink-sized buffer.
     /// # C: O(NF_CT_LABELS_MAX_SIZE)

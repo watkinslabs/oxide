@@ -45,8 +45,9 @@ impl NetStack {
     pub fn conntrack_in(&self, net_ns: u64) -> Arc<::conntrack::CtNet> {
         let mut tables = self.conntrack.lock();
         tables.entry(net_ns).or_insert_with(|| {
-            Arc::new(::conntrack::CtNet::new(net_ns,
-                (net_ns as u32).wrapping_mul(0x9e37_79b9) ^ 0xa5a5_5a5a))
+            Arc::new(::conntrack::CtNet::new_with_clock(net_ns,
+                (net_ns as u32).wrapping_mul(0x9e37_79b9) ^ 0xa5a5_5a5a,
+                ::vfs::inode_times::realtime_now_ns))
         }).clone()
     }
 

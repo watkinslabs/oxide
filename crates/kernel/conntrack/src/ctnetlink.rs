@@ -202,6 +202,14 @@ pub fn encode_entry_with_counters(c: &Arc<Conn>, now: u64, acct: bool,
     put_be32(&mut out, CTA_MARK, c.mark.load(::core::sync::atomic::Ordering::Relaxed));
     put_be32(&mut out, CTA_ID, c.id as u32);
     put_be16(&mut out, CTA_ZONE, c.orig.zone);
+    let timestamp_start = c.timestamp_start.load(::core::sync::atomic::Ordering::Acquire);
+    if timestamp_start != 0 {
+        let timestamp = nest_start(&mut out, CTA_TIMESTAMP);
+        put_be64(&mut out, CTA_TIMESTAMP_START, timestamp_start);
+        let timestamp_stop = c.timestamp_stop.load(::core::sync::atomic::Ordering::Acquire);
+        if timestamp_stop != 0 { put_be64(&mut out, CTA_TIMESTAMP_STOP, timestamp_stop); }
+        nest_end(&mut out, timestamp);
+    }
     if let Some(master) = c.master.as_ref() {
         put_tuple(&mut out, CTA_TUPLE_MASTER, &master.orig);
     }

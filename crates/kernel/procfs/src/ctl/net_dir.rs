@@ -126,6 +126,7 @@ pub const NETFILTER_SYSCTLS: &[Node] = &[
     File("nf_conntrack_log_invalid", ConntrackInt(22, Some((0, 255)))),
     File("nf_conntrack_helper", ConntrackInt(23, Some((0, 1)))),
     File("nf_conntrack_acct", ConntrackInt(24, Some((0, 1)))),
-    File("nf_conntrack_max", ConntrackInt(25, Some((0, i64::MAX)))),
-    File("nf_conntrack_buckets", ConntrackInt(26, Some((0, i64::MAX)))),
+    File("nf_conntrack_timestamp", ConntrackInt(25, Some((0, 1)))),
+    File("nf_conntrack_max", ConntrackInt(26, Some((0, i64::MAX)))),
+    File("nf_conntrack_buckets", ConntrackInt(27, Some((0, i64::MAX)))),
 ];

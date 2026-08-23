@@ -152,6 +152,8 @@ pub const CTA_FILTER:       u16 = 25;
 pub const CTA_STATUS_MASK:  u16 = 26;
 pub const CTA_FILTER_ORIG_FLAGS:  u16 = 1;
 pub const CTA_FILTER_REPLY_FLAGS: u16 = 2;
+pub const CTA_TIMESTAMP_START: u16 = 1;
+pub const CTA_TIMESTAMP_STOP:  u16 = 2;
 
 pub const CTA_SYNPROXY_ISN:   u16 = 1;
 pub const CTA_SYNPROXY_ITS:   u16 = 2;
