@@ -32,6 +32,8 @@ use vfs::{AddressSpaceOps, FileOps, FileType, Inode, InodeBuilder, InodeOps, Ino
 const PG: u64 = hal::PAGE_SIZE_BYTES;
 /// Rendered name of a secret-memory file.
 pub const SECRETMEM_NAME: &str = "secretmem";
+/// SELinux anonymous-inode class name passed during secure creation.
+pub const SECRETMEM_ANON_NAME: &str = "[secretmem]";
 /// Permission bits of a freshly created secret-memory file.
 const SECRETMEM_PERM: u16 = 0o777;
 
@@ -49,6 +51,9 @@ pub fn secretmem_active() -> bool { USERS.load(Ordering::Acquire) != 0 }
 /// count that wrapped, and the honest answer is to refuse the file.
 /// # C: O(1)
 pub fn secretmem_can_create() -> bool { USERS.load(Ordering::Acquire) >= 0 }
+
+/// Undo the reservation when secure inode initialization rejects creation. # C: O(1)
+pub fn secretmem_creation_failed() { USERS.fetch_sub(1, Ordering::AcqRel); }
 
 /// Per-inode store: page index to the frame that page owns. Sparse — an index
 /// with no entry has never been faulted, and reads zero once it is.

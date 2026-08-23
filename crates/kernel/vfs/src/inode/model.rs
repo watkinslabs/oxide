@@ -3,7 +3,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::sync::{Arc, Weak};
 use core::any::Any;
-use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU16, AtomicU32, AtomicU64, Ordering};
 use sync::{Inode as InodeClass, RwLock};
 
 use crate::file_ops::FileOps;
@@ -154,6 +154,8 @@ pub struct Inode {
     /// it described and could disagree with them. Zero means "not resolved
     /// yet"; the label owner resolves it on first use, and no SID is ever zero.
     pub(super) i_security:     AtomicU32,
+    /// Security class selected with `i_security`; zero derives it from mode.
+    pub(super) i_security_class: AtomicU16,
     /// Policy generation that produced `i_security`; zero means untagged.
     pub(super) i_security_seq: AtomicU32,
 }
@@ -216,6 +218,7 @@ impl Inode {
             i_rwsem: super::rwsem::InodeRwsem::new(),
             i_flctx: FileLockContext::new(),
             i_security: AtomicU32::new(self.i_security.load(Ordering::Relaxed)),
+            i_security_class: AtomicU16::new(self.i_security_class.load(Ordering::Relaxed)),
             i_security_seq: AtomicU32::new(0),
         })
     }

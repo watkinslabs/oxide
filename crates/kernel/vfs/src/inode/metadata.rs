@@ -167,21 +167,34 @@ impl Inode {
         if sid == SECURITY_SID_UNSET { return None; }
         (self.i_security_seq.load(Ordering::Acquire) == seq).then_some(sid)
     }
+    /// Read the security class selected with the cached label. # C: O(1)
+    pub fn security_class_at(&self, seq: u32) -> Option<u16> {
+        let class = self.i_security_class.load(Ordering::Acquire);
+        if class == 0 || self.i_security.load(Ordering::Acquire) == SECURITY_SID_UNSET { return None; }
+        (self.i_security_seq.load(Ordering::Acquire) == seq).then_some(class)
+    }
     /// Publish the resolved MAC label. # C: O(1)
     ///
     /// Release-ordered against [`Self::security_sid`]: a reader that observes
     /// the label must observe every store the resolution made before it.
     pub fn set_security_sid(&self, sid: u32) {
         self.i_security.store(sid, Ordering::Release);
+        self.i_security_class.store(0, Ordering::Release);
     }
     /// Publish a resolved MAC label with its policy generation. # C: O(1)
     pub fn set_security_sid_at(&self, sid: u32, seq: u32) {
+        self.set_security_sid_class_at(sid, 0, seq);
+    }
+    /// Publish a resolved MAC label and an explicit security class. # C: O(1)
+    pub fn set_security_sid_class_at(&self, sid: u32, class: u16, seq: u32) {
         self.i_security.store(sid, Ordering::Release);
+        self.i_security_class.store(class, Ordering::Release);
         self.i_security_seq.store(seq, Ordering::Release);
     }
     /// Discard the cached MAC label so the next use resolves it again. # C: O(1)
     pub fn clear_security_sid(&self) {
         self.i_security.store(SECURITY_SID_UNSET, Ordering::Release);
+        self.i_security_class.store(0, Ordering::Release);
         self.i_security_seq.store(0, Ordering::Release);
     }
     /// Bind a synthesized inode to the superblock that instantiated it. An

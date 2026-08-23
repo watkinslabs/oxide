@@ -94,6 +94,9 @@ pub fn sys_memfd_create(args: &SyscallArgs) -> i64 {
     // creator's fsuid/fsgid, which is what fstat(2) on the fd reports.
     let cred = crate::pathresolve::current_cred();
     let _ = inode.set_owner(cred.uid, cred.gid);
+    if let Err(e) = vfs::inode_init_security_anon(&inode, "[memfd]", None) {
+        return -(e as i64);
+    }
     let dentry = vfs::dcache::d_alloc_pseudo(&name, inode.clone(), &crate::anon_dname::MEMFD_OPS);
     let file = File::new(inode, dentry, OpenFlags::O_RDWR);
     let fd = match fdt.alloc_limit(file, cur.nofile_soft()) {

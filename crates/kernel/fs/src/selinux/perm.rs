@@ -12,8 +12,9 @@ use vfs::{InodeRef, KResult, VfsError};
 /// refusal would refuse work the policy permits.
 pub fn inode_permission(inode: &InodeRef, mask: u32) -> KResult<()> {
     if !selinux_runtime::active() { return Ok(()); }
-    let Some((class, av)) = inode_permission_av(inode.i_mode() as u32, mask) else { return Ok(()) };
     let Some(isid) = super::label::inode_sid(inode) else { return Ok(()) };
+    let Some((_, av)) = inode_permission_av(inode.i_mode() as u32, mask) else { return Ok(()) };
+    let Some(class) = super::label::inode_security_class(inode) else { return Ok(()) };
     let ssid = selinux_runtime::task::current_sid();
     selinux_runtime::check::has_perm(ssid, isid, class, av).map_err(|_| VfsError::Eacces)
 }
@@ -23,6 +24,7 @@ pub fn install() {
     vfs::set_inode_mac_hook(inode_permission);
     vfs::set_inode_create_hook(label_created);
     vfs::set_inode_instantiated_hook(super::label::label_instantiated);
+    vfs::set_inode_init_security_anon_hook(super::label::inode_init_security_anon);
 }
 
 fn label_created(dir: &InodeRef, inode: &InodeRef, name: &str) {

@@ -34,8 +34,9 @@ pub use create::vfs_create_at;
 pub use device_permission::{device_permission, may_open_dev, set_device_permission_hook, DevicePermissionHook};
 pub use permission::{generic_permission, inode_permission, may_open, may_open_at,
                      set_inode_mac_hook, set_inode_create_hook, set_inode_instantiated_hook,
+                     set_inode_init_security_anon_hook, inode_init_security_anon,
                      inode_created, inode_instantiated, notify_inode_created, InodeMacHook,
-                     InodeCreateHook, InodeInstantiateHook, OpenIntent};
+                     InodeCreateHook, InodeInstantiateHook, InodeInitSecurityAnonHook, OpenIntent};
 pub use may_create::{may_create, may_create_in_sticky};
 pub use may_delete::{may_delete, may_delete_dentry};
 pub use may_link::{may_link, may_link_source, may_linkat};

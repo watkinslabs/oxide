@@ -180,6 +180,23 @@ fn a_genfs_inode_is_labelled_from_its_instantiated_dentry_path() {
     assert_eq!(got, want, "genfs labeling must use the instantiated dentry path");
 }
 
+/// Secure anonymous objects receive the class selected by the LSM hook, not
+/// the regular-file class implied by their mode bits. Ordinary pseudo files
+/// remain outside this opt-in path, matching the shared anonymous inode Linux
+/// uses for callers that do not request a private security context.
+#[test]
+fn a_secure_anonymous_inode_gets_anonymous_class_and_sid() {
+    if !policy_loaded() { return }
+    fs::selinux::install();
+    let (_sb, inode) = inode_on("anon_inodefs", FileType::Regular, false);
+    vfs::inode_init_security_anon(&inode, "[eventfd]", None)
+        .expect("the permissive policy initializes a secure anonymous inode");
+    let seq = selinux_runtime::policy_seq();
+    assert_eq!(inode.security_class_at(seq),
+               selinux::uapi::classmap::class_by_name("anon_inode"));
+    assert!(inode.security_sid_at(seq).is_some(), "secure creation must publish a SID");
+}
+
 /// The `nolsm` fallback: a `security.*` name no module owns is the filesystem's
 /// own attribute, and reads exactly as it was written.
 #[test]
