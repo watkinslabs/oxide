@@ -243,3 +243,30 @@ fn ctnetlink_creator_attaches_only_a_registered_tuple_helper() {
                             None, 0, 30, 0, None, None,
                             Some(String::from("ftp"))).is_none());
 }
+
+#[test]
+fn ctnetlink_existing_helper_change_matches_linux_noop_and_busy_results() {
+    let ct = CtNet::new(0, 7);
+    let tuple = v4_udp([192, 0, 2, 3], 40002, [198, 51, 100, 2], 53);
+    let c = entry(tuple);
+    ct.table.add_pending(c.clone());
+    assert!(ct.confirm(&c, 0));
+    assert_eq!(ct.update_helper_id(c.id, 0, String::from("dns")),
+               Err(crate::core::HelperChangeError::Unsupported));
+
+    let with_helper = ct.create_tuple(tuple, None, 0, 30, 0, None, None,
+                                      None);
+    assert!(with_helper.is_none(), "the test tuple is already occupied");
+    let other = v4_udp([192, 0, 2, 4], 40003, [198, 51, 100, 2], 53);
+    let c = Arc::new({
+        let c = Conn::new(99, other, other.invert().unwrap(), 0);
+        c.refresh(0, 100);
+        c.attach_helper(String::from("dns"), true);
+        c
+    });
+    ct.table.add_pending(c.clone());
+    assert!(ct.confirm(&c, 0));
+    assert_eq!(ct.update_helper_id(c.id, 0, String::from("dns")), Ok(()));
+    assert_eq!(ct.update_helper_id(c.id, 0, String::from("ftp")),
+               Err(crate::core::HelperChangeError::Busy));
+}

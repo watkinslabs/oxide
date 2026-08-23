@@ -56,6 +56,10 @@ pub struct CtNet {
     pub net_ns: u64,
 }
 
+/// Linux ctnetlink's result when changing a helper on an existing entry.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum HelperChangeError { NotFound, Unsupported, Busy }
+
 impl CtNet {
     /// # C: O(N_buckets)
     pub fn new(net_ns: u64, seed: u32) -> Self {
@@ -203,6 +207,20 @@ impl CtNet {
         self.expect.purge_master(&conn);
         self.events.post(&conn, IPCT_DESTROY);
         true
+    }
+
+    /// Apply Linux's existing-flow helper change rules. A request naming the
+    /// already attached helper is a no-op; a different helper is busy, and a
+    /// flow without a helper cannot gain one after creation. # C: O(N)
+    pub fn update_helper_id(&self, id: u64, now: u64, name: String)
+        -> Result<(), HelperChangeError> {
+        let Some(conn) = self.table.find_id(id, now) else {
+            return Err(HelperChangeError::NotFound);
+        };
+        let current = conn.helper.lock().clone();
+        if current.as_deref() == Some(name.as_str()) { return Ok(()); }
+        if current.is_some() { return Err(HelperChangeError::Busy); }
+        Err(HelperChangeError::Unsupported)
     }
 
     /// Apply the ctnetlink fields supported by the live entry owner. Linux

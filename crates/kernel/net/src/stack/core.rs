@@ -163,6 +163,15 @@ impl NetStack {
                      timeout, status, mark, seqadj, protoinfo)
     }
 
+    /// Apply ctnetlink's existing-flow helper selection through CtNet. # C: O(N)
+    pub fn conntrack_update_helper_in(&self, net_ns: u64, id: u64, name: alloc::string::String)
+        -> Result<(), ::conntrack::HelperChangeError> {
+        let Some(ct) = self.conntrack_existing_in(net_ns) else {
+            return Err(::conntrack::HelperChangeError::NotFound);
+        };
+        ct.update_helper_id(id, crate::stack::net_now_ns() / 1_000_000_000, name)
+    }
+
     /// Canonical policy-rule table owned by this network stack. # C: O(1)
     pub fn policy_rules(&self) -> &crate::policy_rule::PolicyRuleTable { self.routes.policy_rules() }
 

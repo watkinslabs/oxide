@@ -182,6 +182,14 @@ fn parse_helper_name(attrs: &[u8]) -> Result<Option<String>, ()> {
     String::from_utf8(raw[..raw.len() - 1].to_vec()).map(Some).map_err(|_| ())
 }
 
+fn helper_change_errno(error: ::conntrack::HelperChangeError) -> i32 {
+    match error {
+        ::conntrack::HelperChangeError::NotFound => -2,
+        ::conntrack::HelperChangeError::Unsupported => -95,
+        ::conntrack::HelperChangeError::Busy => -16,
+    }
+}
+
 /// Flush the canonical conntrack event queue through NETLINK_NETFILTER.
 /// # C: O(N events × listeners)
 pub(crate) fn flush_conntrack_events(namespace: u64) {
@@ -287,11 +295,12 @@ fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Ve
                 if req.nlmsg_flags & flags::NLM_F_EXCL != 0 {
                     return nlmsg_ack(req, -17);
                 }
-                if find_bytes_attr(attrs, ::conntrack::uapi::CTA_HELP).is_some() {
-                    // Linux cannot attach a helper to an existing flow that
-                    // has no helper extension; changing a sibling helper is
-                    // also not permitted by ctnetlink.
-                    return nlmsg_ack(req, -95);
+                let Ok(helper) = parse_helper_name(attrs) else { return nlmsg_ack(req, -22); };
+                if let Some(name) = helper {
+                    if let Err(error) = ::net::global_stack().conntrack_update_helper_in(
+                        namespace, id, name) {
+                        return nlmsg_ack(req, helper_change_errno(error));
+                    }
                 }
                 let mark = find_u32_attr(attrs, ::conntrack::uapi::CTA_MARK).map(|value| {
                     (value, find_u32_attr(attrs, ::conntrack::uapi::CTA_MARK_MASK))
@@ -338,8 +347,12 @@ fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Ve
             });
             let Ok(seqadj) = parse_seqadjs(attrs) else { return nlmsg_ack(req, -22); };
             let Ok(protoinfo) = parse_tcp_protoinfo(attrs) else { return nlmsg_ack(req, -22); };
-            if find_bytes_attr(attrs, conntrack::uapi::CTA_HELP).is_some() {
-                return nlmsg_ack(req, -95);
+            let Ok(helper) = parse_helper_name(attrs) else { return nlmsg_ack(req, -22); };
+            if let Some(name) = helper {
+                if let Err(error) = ::net::global_stack().conntrack_update_helper_in(
+                    namespace, id as u64, name) {
+                    return nlmsg_ack(req, helper_change_errno(error));
+                }
             }
             ::net::global_stack().conntrack_update_in(namespace, id as u64,
                                                        timeout, status, mark, seqadj, protoinfo)
