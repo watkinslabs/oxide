@@ -5183,6 +5183,11 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED c4be42cee | MISSING | med | **f2fs compressed clusters now use Linux-shaped cluster readahead and the canonical data cache.** Readahead widens to cluster boundaries, coalesces uncached image runs, decompresses once, and files plain pages; the compressed-block cache remains subordinate medium state. | `c4be42cee`; f2fs 3714/3714, compressed-cache 9/9, and allocator-fault 1/1 passed. | c4be42cee |
+### B2630-f2fs-recovery-chain-readahead
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 2334a71db | MISSING | med | **f2fs recovery-chain readahead now uses the single metadata cache's temporary POR view.** The recovery walk applies Linux's adaptive consecutive/jump window, batches main-area node reads, and probes cached blocks before issuing I/O; writes and failed replay invalidate the POR view. | Linux recovery adaptive rule; `2334a71db`; f2fs 3715/3715, recovery-chain 54/54, metadata-cache 13/13, and readahead 25/25 passed. | 2334a71db |
 ### B2624-overlay-override-creds
 
 | Status | Class | Sev | Issue | Evidence | Owner |
