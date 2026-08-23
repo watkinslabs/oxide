@@ -34,11 +34,13 @@ pub mod alb;
 pub mod master;
 pub mod netlink;
 pub mod link_kind;
+pub mod view;
 
 pub use master::{BondMaster, BondParams, BondSlave};
 pub use slave::{LinkState, SlaveRole, SlaveState};
 pub use hash::{bond_xmit_hash, dissect, FlowKeys};
 pub use mode::{select_tx, TxContext, TxTarget};
+pub use view::{BondView, BondSlaveView};
 
 #[cfg(test)] #[path = "tests/hash.rs"] mod tests_hash;
 #[cfg(test)] #[path = "tests/mode.rs"] mod tests_mode;

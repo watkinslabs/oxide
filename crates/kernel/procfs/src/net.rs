@@ -6,7 +6,8 @@
 use alloc::string::String;
 use crate::ids;
 
-use vfs::{Ino, InodeRef};
+use vfs::{mk_mode, DirContext, FileOps, FileType, Ino, Inode, InodeBuilder, InodeOps,
+          InodeRef, KResult, VfsError};
 
 /// `/proc/net/dev` — Linux text format: header + per-iface line.
 fn net_dev_body(net_ns: u64) -> alloc::vec::Vec<u8> {
@@ -293,6 +294,37 @@ pub fn make_proc_net_netlink() -> InodeRef {
 
 fn make_net_file(ino: Ino, gen: fn(u64) -> alloc::vec::Vec<u8>) -> InodeRef {
     crate::dyn_file::make_ns_gen_file(ino, net::netdev::current_net_ns, gen)
+}
+
+struct BondingDirOps;
+impl InodeOps for BondingDirOps {
+    fn lookup(&self, _inode: &Inode, name: &str) -> KResult<InodeRef> {
+        let ns = net::netdev::current_net_ns();
+        bonding::link_kind::bonds().into_iter().find_map(|(id, bond)| {
+            (net::sock::stack().ifaces.lookup_in_ns(id, ns).is_some() && bond.view().name == name)
+                .then(|| crate::dyn_file::make_owned_file(id.raw() as Ino, bond.proc_body()))
+        }).ok_or(VfsError::Enoent)
+    }
+}
+impl FileOps for BondingDirOps {
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
+        let ns = net::netdev::current_net_ns();
+        let mut es = crate::readdir::DirEntries::new(inode);
+        for (id, bond) in bonding::link_kind::bonds() {
+            if net::sock::stack().ifaces.lookup_in_ns(id, ns).is_some() {
+                es.push(&bond.view().name, FileType::Regular);
+            }
+        }
+        es.emit(ctx)
+    }
+}
+
+/// `/proc/net/bonding/` directory, derived from the live bond registry.
+pub fn make_proc_net_bonding() -> InodeRef {
+    InodeBuilder::new(ids::NET_BONDING as Ino, mk_mode(FileType::Directory, 0o555),
+                      alloc::sync::Arc::new(BondingDirOps), alloc::sync::Arc::new(BondingDirOps))
+        .build()
 }
 
 #[cfg(test)]

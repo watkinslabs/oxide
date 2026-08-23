@@ -123,16 +123,16 @@ pub struct BondSlave {
     pub partner: PortInfo,
 }
 
-struct MasterInner {
-    slaves: Vec<BondSlave>,
-    params: BondParams,
+pub(crate) struct MasterInner {
+    pub(crate) slaves: Vec<BondSlave>,
+    pub(crate) params: BondParams,
     mac: MacAddr,
     mtu: u32,
-    curr_active: Option<usize>,
-    primary: Option<String>,
-    active_agg: u16,
+    pub(crate) curr_active: Option<usize>,
+    pub(crate) primary: Option<String>,
+    pub(crate) active_agg: u16,
     /// The master itself is administratively up.
-    if_up: bool,
+    pub(crate) if_up: bool,
     identity: Option<(u64, NetIfaceId)>,
     arp_targets: Vec<Ipv4Addr>,
     arp_target_cursor: usize,
@@ -142,8 +142,8 @@ struct MasterInner {
 
 /// A bonding master interface.
 pub struct BondMaster {
-    name: String,
-    inner: BondLock<MasterInner>,
+    pub(crate) name: String,
+    pub(crate) inner: BondLock<MasterInner>,
     rr_counter: AtomicU32,
 }
 

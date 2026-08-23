@@ -40,6 +40,7 @@ pub mod mm;
 pub mod kobject;
 pub mod modules;
 mod net_class;
+mod bond_sysfs;
 pub mod power_supply;
 pub mod net_stats;
 pub mod power;

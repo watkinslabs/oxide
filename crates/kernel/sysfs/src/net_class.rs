@@ -317,6 +317,12 @@ impl NetIfaceOps {
 impl InodeOps for NetIfaceOps {
     fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
         let data = inode.private::<NetIfaceData>().ok_or(VfsError::Einval)?;
+        if name == "bonding_slave" {
+            let ifindex = lookup_net_ifindex(&data.name);
+            let bond = bonding::link_kind::bond_for(net::NetIfaceId::from_raw(ifindex))
+                .ok_or(VfsError::Enoent)?;
+            return Ok(crate::bond_sysfs::make_root(bond));
+        }
         if name == "statistics" {
             return Ok(net_stats::make_net_stats_inode(Arc::clone(&data.dev)));
         }
@@ -337,9 +343,13 @@ impl FileOps for NetIfaceOps {
     /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
+        let data = inode.private::<NetIfaceData>().ok_or(VfsError::Einval)?;
         let mut es = crate::readdir::DirEntries::new(inode);
         for attr in NET_IFACE_GROUP.attrs.iter() { es.push(attr.name, FileType::Regular); }
         es.push("statistics", FileType::Directory);
+        if bonding::link_kind::bond_for(net::NetIfaceId::from_raw(lookup_net_ifindex(&data.name))).is_some() {
+            es.push("bonding_slave", FileType::Directory);
+        }
         es.push("subsystem", FileType::Symlink);
         if inode.private::<NetIfaceData>().and_then(|data| data.parent.as_ref()).is_some() {
             es.push("device", FileType::Symlink);
