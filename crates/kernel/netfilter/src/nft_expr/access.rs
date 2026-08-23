@@ -176,11 +176,27 @@ pub trait ObjectAccess {
     /// or `None` when no such object exists. # C: O(cost of the object)
     fn eval(&self, _family: u8, _table: &str, _obj_type: u32, _name: &str,
             _pkt_len: u64, _now_ns: u64, _ct: Option<&dyn CtAccess>) -> Option<i32> { None }
+    /// Run an object with access to packet effects needed by object types that
+    /// own an action, while retaining the simple hook above for objects that
+    /// only return a verdict.
+    fn eval_with(&self, family: u8, table: &str, obj_type: u32, name: &str,
+                 _pkt: &[u8], pkt_len: u64, now_ns: u64,
+                 ct: Option<&dyn CtAccess>, _synproxy: Option<&dyn SynproxyAccess>,
+                 _actions: &mut alloc::vec::Vec<crate::nft_expr::action::Action>) -> Option<i32> {
+        self.eval(family, table, obj_type, name, pkt_len, now_ns, ct)
+    }
     /// Object an element of `set` points at, keyed by the register bytes.
     /// # C: O(cost of the set lookup)
     fn eval_from_set(&self, _family: u8, _table: &str, _set_id: Option<usize>,
                      _set: &str, _key: &[u8], _pkt_len: u64, _now_ns: u64,
                      _ct: Option<&dyn CtAccess>) -> Option<i32> {
         None
+    }
+
+    fn eval_from_set_with(&self, family: u8, table: &str, set_id: Option<usize>,
+                          set: &str, key: &[u8], _pkt: &[u8], pkt_len: u64, now_ns: u64,
+                          ct: Option<&dyn CtAccess>, _synproxy: Option<&dyn SynproxyAccess>,
+                          _actions: &mut alloc::vec::Vec<crate::nft_expr::action::Action>) -> Option<i32> {
+        self.eval_from_set(family, table, set_id, set, key, pkt_len, now_ns, ct)
     }
 }

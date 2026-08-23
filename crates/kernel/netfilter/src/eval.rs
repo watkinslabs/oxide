@@ -142,11 +142,42 @@ impl ObjectAccess for LiveObjects<'_> {
         object.state.eval_for(pkt_len, now_ns, ct)
     }
 
+    fn eval_with(&self, family: u8, table: &str, obj_type: u32, name: &str,
+                 pkt: &[u8], pkt_len: u64, now_ns: u64,
+                 ct: Option<&dyn crate::nft_expr::access::CtAccess>,
+                 synproxy: Option<&dyn crate::nft_expr::access::SynproxyAccess>,
+                 actions: &mut alloc::vec::Vec<crate::nft_expr::action::Action>) -> Option<i32> {
+        if family != self.family || table != self.table { return None; }
+        let object = crate::objects_snapshot_in(self.namespace).into_iter().find(|o| {
+            o.table_family == family && o.table_name == table
+                && o.ty == obj_type && o.name == name
+        })?;
+        match &*object.state {
+            crate::nft_expr::ObjectState::Synproxy { .. } =>
+                object.state.eval_packet(pkt, family, synproxy, actions),
+            _ => object.state.eval_for(pkt_len, now_ns, ct),
+        }
+    }
+
     fn eval_from_set(&self, family: u8, table: &str, set_id: Option<usize>,
                      _set: &str, key: &[u8], pkt_len: u64, now_ns: u64,
                      ct: Option<&dyn crate::nft_expr::access::CtAccess>) -> Option<i32> {
         if family != self.family || table != self.table { return None; }
         self.generation.object_state(set_id?, key)?.eval_for(pkt_len, now_ns, ct)
+    }
+
+    fn eval_from_set_with(&self, family: u8, table: &str, set_id: Option<usize>,
+                          _set: &str, key: &[u8], pkt: &[u8], pkt_len: u64, now_ns: u64,
+                          ct: Option<&dyn crate::nft_expr::access::CtAccess>,
+                          synproxy: Option<&dyn crate::nft_expr::access::SynproxyAccess>,
+                          actions: &mut alloc::vec::Vec<crate::nft_expr::action::Action>) -> Option<i32> {
+        if family != self.family || table != self.table { return None; }
+        let state = self.generation.object_state(set_id?, key)?;
+        match &**state {
+            crate::nft_expr::ObjectState::Synproxy { .. } =>
+                state.eval_packet(pkt, family, synproxy, actions),
+            _ => state.eval_for(pkt_len, now_ns, ct),
+        }
     }
 }
 

@@ -161,6 +161,7 @@ pub enum ObjectState {
     Connlimit { flows: Lock<BTreeMap<ConnlimitKey, Option<alloc::sync::Arc<conntrack::Conn>>>>, limit: u32,
                 invert: bool },
     CtHelper { name: String, l4proto: u8, l3proto: Option<u16> },
+    Synproxy { mss: u16, wscale: u8, flags: u32 },
     Unsupported,
 }
 
@@ -178,6 +179,7 @@ impl core::fmt::Debug for ObjectState {
             Self::Limit { .. } => "Limit",
             Self::Connlimit { .. } => "Connlimit",
             Self::CtHelper { .. } => "CtHelper",
+            Self::Synproxy { .. } => "Synproxy",
             Self::Unsupported => "Unsupported",
         })
     }
@@ -235,6 +237,15 @@ impl ObjectState {
                     .filter(|proto| *proto != 0) else { return Self::Unsupported; };
                 Self::CtHelper { name: String::from(name), l4proto,
                     l3proto: find_u16_be(data, crate::nft_expr::uapi::NFTA_CT_HELPER_L3PROTO) }
+            }
+            crate::nft_expr::uapi::NFT_OBJECT_SYNPROXY => {
+                let flags = find_u32_be(data, crate::nft_expr::uapi::NFTA_SYNPROXY_FLAGS).unwrap_or(0);
+                if flags & !crate::nft_expr::flags::NF_SYNPROXY_OPT_MASK != 0 { return Self::Unsupported; }
+                Self::Synproxy {
+                    mss: find_u16_be(data, crate::nft_expr::uapi::NFTA_SYNPROXY_MSS).unwrap_or(0),
+                    wscale: find_u8(data, crate::nft_expr::uapi::NFTA_SYNPROXY_WSCALE).unwrap_or(0),
+                    flags,
+                }
             }
             _ => Self::Unsupported,
         }
@@ -298,7 +309,20 @@ impl ObjectState {
                 let _ = ct.set_helper(name, *l4proto);
                 None
             }
+            Self::Synproxy { .. } => Some(NFT_BREAK),
             Self::Unsupported => Some(NFT_BREAK),
+        }
+    }
+
+    /// Evaluate an object whose Linux operation also records a packet action.
+    pub fn eval_packet(&self, pkt: &[u8], family: u8,
+                       synproxy: Option<&dyn crate::nft_expr::access::SynproxyAccess>,
+                       actions: &mut Vec<crate::nft_expr::action::Action>) -> Option<i32> {
+        match self {
+            Self::Synproxy { mss, wscale, flags } =>
+                crate::nft_expr::run::action::synproxy_packet(
+                    pkt, family, synproxy, *mss, *wscale, *flags, actions),
+            _ => self.eval_for(pkt.len() as u64, 0, None),
         }
     }
 }
@@ -310,7 +334,8 @@ mod tests {
     use crate::nft_expr::uapi::{NFTA_CONNLIMIT_COUNT, NFTA_CT_HELPER_L3PROTO,
                                 NFTA_CT_HELPER_L4PROTO, NFTA_CT_HELPER_NAME, NFTA_QUOTA_BYTES,
                                 NFT_OBJECT_CONNLIMIT, NFT_OBJECT_CT_HELPER,
-                                NFT_OBJECT_QUOTA, NFT_BREAK};
+                                NFT_OBJECT_QUOTA, NFT_OBJECT_SYNPROXY, NFTA_SYNPROXY_MSS,
+                                NFTA_SYNPROXY_WSCALE, NFTA_SYNPROXY_FLAGS, NF_STOLEN, NFT_BREAK};
     use alloc::sync::Arc;
     use core::cell::Cell;
     use conntrack::tuple::Tuple;
@@ -330,6 +355,26 @@ mod tests {
         let state = ObjectState::from_wire(NFT_OBJECT_QUOTA, &data);
         assert_eq!(state.eval(6, 0), None);
         assert_eq!(state.eval(5, 0), Some(NFT_BREAK));
+    }
+
+    #[test]
+    fn synproxy_object_shares_the_packet_action_with_the_expression() {
+        let mut data = attr(NFTA_SYNPROXY_MSS, &1460u16.to_be_bytes());
+        data.extend(attr(NFTA_SYNPROXY_WSCALE, &[7]));
+        data.extend(attr(NFTA_SYNPROXY_FLAGS, &1u32.to_be_bytes()));
+        let state = ObjectState::from_wire(NFT_OBJECT_SYNPROXY, &data);
+        let mut packet = alloc::vec![0; 40];
+        packet[0] = 0x45;
+        packet[2..4].copy_from_slice(&40u16.to_be_bytes());
+        packet[9] = 6;
+        packet[20 + 12] = 0x50;
+        packet[20 + 13] = 0x02;
+        let mut actions = alloc::vec::Vec::new();
+        assert_eq!(state.eval_packet(&packet, crate::nft_expr::uapi::NFPROTO_IPV4,
+                                     None, &mut actions), Some(NF_STOLEN));
+        assert!(matches!(&actions[..], [crate::nft_expr::action::Action::Synproxy {
+            mss: 1460, wscale: 7, flags: 1
+        }]));
     }
 
     struct LiveFlow(Arc<conntrack::Conn>);

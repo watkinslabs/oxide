@@ -89,12 +89,14 @@ fn step(expr: &Expr, ctx: &mut EvalCtx, regs: &mut Regs) -> Option<i32> {
         Expr::Objref { obj_type, name, sreg, set, set_id } => {
             let Some(objects) = ctx.objects else { return BREAK };
             match (name, sreg) {
-                (Some(name), _) => objects.eval(ctx.family, ctx.table.unwrap_or(""),
-                    obj_type.unwrap_or(0), name, ctx.pkt_len() as u64, ctx.now_ns, ctx.ct),
+                (Some(name), _) => objects.eval_with(ctx.family, ctx.table.unwrap_or(""),
+                    obj_type.unwrap_or(0), name, ctx.pkt, ctx.pkt_len() as u64, ctx.now_ns,
+                    ctx.ct, ctx.synproxy, &mut ctx.actions),
                 (_, Some(sreg)) => {
                     let Some(key) = regs.tail(*sreg) else { return BREAK };
-                    objects.eval_from_set(ctx.family, ctx.table.unwrap_or(""), *set_id,
-                        set.as_deref().unwrap_or(""), key, ctx.pkt_len() as u64, ctx.now_ns, ctx.ct)
+                    objects.eval_from_set_with(ctx.family, ctx.table.unwrap_or(""), *set_id,
+                        set.as_deref().unwrap_or(""), key, ctx.pkt, ctx.pkt_len() as u64,
+                        ctx.now_ns, ctx.ct, ctx.synproxy, &mut ctx.actions)
                 }
                 _ => BREAK,
             }
