@@ -141,6 +141,11 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
         Ok(t) => t,
         Err(e) => return crate::namei_common::errno_from_vfs(e),
     };
+    if let Some(inode) = target_mt.mountpoint.inode() {
+        if fs::selinux::perm::mount_on(&inode).is_err() {
+            return -(Errno::Eacces.as_i32() as i64);
+        }
+    }
     if let Some(rv) = crate::mount_perm::may_mount_or_eperm() { return rv; }
     let namespace = match cur.mount_namespace_snapshot() {
         Some(namespace) => namespace,
@@ -168,6 +173,11 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
         let at_mount_root = vfs::mount::root_dentry_for_mount_id(vp.mnt_id)
             .map(|r| alloc::sync::Arc::ptr_eq(&vp.dentry, &r)).unwrap_or(false);
         if !at_mount_root { return -(Errno::Einval.as_i32() as i64); }
+        if let Some(mount) = vfs::mount::mount_by_id(vp.mnt_id) {
+            if fs::selinux::perm::superblock_permission(&mount.sb(), "remount").is_err() {
+                return -(Errno::Eacces.as_i32() as i64);
+            }
+        }
         let r = if flags & MS_BIND != 0 {
             // A bind remount changes only the per-mount MNT_* bits; the option
             // string names the SUPERBLOCK's configuration and has no meaning

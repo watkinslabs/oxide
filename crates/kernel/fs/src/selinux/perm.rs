@@ -53,6 +53,26 @@ pub fn file_ioctl(inode: &InodeRef, _cmd: u32) -> KResult<()> {
         .map_err(|_| VfsError::Eacces)
 }
 
+/// Linux `selinux_mount`: mounting requires `file:mounton` on the target
+/// mountpoint, while remount and unmount target the filesystem object.
+pub fn mount_on(inode: &InodeRef) -> KResult<()> {
+    if !selinux_runtime::active() { return Ok(()) }
+    let Some(isid) = super::label::inode_sid(inode) else { return Ok(()) };
+    let Some(class) = super::label::inode_security_class(inode) else { return Ok(()) };
+    let Some(permission) = selinux::uapi::classmap::perm_bit(class, "mounton") else { return Ok(()) };
+    selinux_runtime::check::has_perm(selinux_runtime::task::current_sid(), isid, class, permission)
+        .map_err(|_| VfsError::Eacces)
+}
+
+pub fn superblock_permission(sb: &vfs::SuperBlock, permission: &'static str) -> KResult<()> {
+    if !selinux_runtime::active() { return Ok(()) }
+    let Some(security) = sb.security_as::<selinux_runtime::inode::SuperblockSecurity>() else { return Ok(()) };
+    let Some(class) = selinux::uapi::classmap::class_by_name("filesystem") else { return Ok(()) };
+    let Some(bit) = selinux::uapi::classmap::perm_bit(class, permission) else { return Ok(()) };
+    selinux_runtime::check::has_perm(selinux_runtime::task::current_sid(), security.sb_sid, class, bit)
+        .map_err(|_| VfsError::Eacces)
+}
+
 /// Install the check into the VFS permission path. # C: O(1)
 pub fn install() {
     security::lsm::register_inode_permission(inode_permission);
