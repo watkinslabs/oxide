@@ -91,6 +91,9 @@ const IPPROTO_TCP: u8 = 6;
 const IPPROTO_UDP: u8 = 17;
 const IPPROTO_SCTP: u8 = 132;
 const IPPROTO_ICMP: u8 = 1;
+const IPPROTO_IPIP: u8 = 4;
+const IPPROTO_GRE: u8 = 47;
+const IPPROTO_IPV6: u8 = 41;
 /// Offset of the protocol octet inside an IPv4 header.
 const IPV4_PROTO_OFF: usize = 9;
 /// Offset of the source address inside an IPv4 header.
@@ -102,6 +105,8 @@ const IPV6_SRC_OFF: usize = 8;
 const IPV6_HLEN: usize = 40;
 /// Offset of the identifier field inside an ICMP header.
 const ICMP_ID_OFF: usize = 4;
+const UDP_VXLAN: u16 = 4789;
+const UDP_GENEVE: u16 = 6081;
 
 fn word_at(buf: &[u8], off: usize) -> u32 {
     if off + 4 > buf.len() { return 0; }
@@ -112,6 +117,63 @@ fn fold_v6(buf: &[u8], off: usize) -> u32 {
     let mut acc = 0u32;
     for i in 0..4 { acc ^= word_at(buf, off + i * 4); }
     acc
+}
+
+/// Read the IP/L4 part of a flow at an arbitrary network-header offset. The
+/// generic Linux flow dissector repeatedly calls this after it recognises an
+/// encapsulation; a malformed inner header is not guessed through.
+fn parse_ip(buf: &[u8], off: usize, proto: u16) -> Option<(u32, u32, usize, u8)> {
+    match proto {
+        ETH_P_IP => {
+            if off + 20 > buf.len() { return None; }
+            let ihl = ((buf[off] & 0x0f) as usize) * 4;
+            if ihl < 20 || off + ihl > buf.len() { return None; }
+            Some((word_at(buf, off + IPV4_SRC_OFF), word_at(buf, off + IPV4_SRC_OFF + 4),
+                off + ihl, buf[off + IPV4_PROTO_OFF]))
+        }
+        ETH_P_IPV6 => {
+            if off + IPV6_HLEN > buf.len() { return None; }
+            Some((fold_v6(buf, off + IPV6_SRC_OFF), fold_v6(buf, off + IPV6_SRC_OFF + 16),
+                off + IPV6_HLEN, buf[off + IPV6_NEXT_HDR_OFF]))
+        }
+        _ => None,
+    }
+}
+
+/// Locate the inner network header for the tunnel forms the net stack can
+/// carry. Returns the inner Ethernet/IP protocol and offset, or `None` when a
+/// tunnel header is incomplete or uses a layout this owner cannot parse.
+fn inner_network(buf: &[u8], l4_off: usize, l4_proto: u8, outer_ports: u32) -> Option<(usize, u16)> {
+    match l4_proto {
+        IPPROTO_IPIP => Some((l4_off, ETH_P_IP)),
+        IPPROTO_IPV6 => Some((l4_off, ETH_P_IPV6)),
+        IPPROTO_GRE => {
+            if l4_off + 4 > buf.len() { return None; }
+            let flags = u16::from_be_bytes([buf[l4_off], buf[l4_off + 1]]);
+            // Checksum, routing, key and sequence fields are optional in GRE.
+            let mut n = l4_off + 4;
+            if flags & 0x8000 != 0 { n += 4; }
+            if flags & 0x4000 != 0 { return None; }
+            if flags & 0x2000 != 0 { n += 4; }
+            if flags & 0x1000 != 0 { n += 4; }
+            if n > buf.len() { return None; }
+            let p = u16::from_be_bytes([buf[l4_off + 2], buf[l4_off + 3]]);
+            if p == 0x6558 {
+                if n + ETH_HLEN > buf.len() { return None; }
+                Some((n + ETH_HLEN, u16::from_be_bytes([buf[n + 12], buf[n + 13]])))
+            } else { Some((n, p)) }
+        }
+        IPPROTO_UDP => {
+            let dport = (outer_ports >> 16) as u16;
+            if dport != UDP_VXLAN && dport != UDP_GENEVE { return None; }
+            if l4_off + 8 + 8 + ETH_HLEN > buf.len() { return None; }
+            // VXLAN and Geneve both carry an 8-byte tunnel prefix before the
+            // inner Ethernet frame in the forms this stack emits.
+            let n = l4_off + 16;
+            Some((n + ETH_HLEN, u16::from_be_bytes([buf[n + 12], buf[n + 13]])))
+        }
+        _ => None,
+    }
 }
 
 /// Read the hash inputs out of one complete link frame. A frame the dissector
@@ -154,6 +216,25 @@ pub fn dissect(frame: &[u8]) -> FlowKeys {
         IPPROTO_TCP | IPPROTO_UDP | IPPROTO_SCTP => fk.ports = word_at(frame, l4_off),
         IPPROTO_ICMP => fk.icmp_id = word_at(frame, l4_off + ICMP_ID_OFF),
         _ => {}
+    }
+    // The outer fields above are the normal flow. If the outer L4 protocol
+    // names a tunnel, replace the flow fields with the inner flow exactly as
+    // `skb_flow_dissect` does for encapsulation-aware consumers.
+    if let Some((inner_off, inner_proto)) = inner_network(frame, l4_off, l4_proto, fk.ports) {
+        let mut n = inner_off;
+        let mut p = inner_proto;
+        while (p == ETH_P_8021Q || p == ETH_P_8021AD) && n + VLAN_HLEN <= frame.len() {
+            p = u16::from_be_bytes([frame[n + 2], frame[n + 3]]);
+            n += VLAN_HLEN;
+        }
+        if let Some((src, dst, inner_l4, ip_proto)) = parse_ip(frame, n, p) {
+            fk.l3_src = src; fk.l3_dst = dst; fk.ports = 0; fk.icmp_id = 0;
+            match ip_proto {
+                IPPROTO_TCP | IPPROTO_UDP | IPPROTO_SCTP => fk.ports = word_at(frame, inner_l4),
+                IPPROTO_ICMP => fk.icmp_id = word_at(frame, inner_l4 + ICMP_ID_OFF),
+                _ => {}
+            }
+        }
     }
     fk
 }

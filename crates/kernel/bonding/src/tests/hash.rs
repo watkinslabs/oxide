@@ -3,6 +3,7 @@
 
 use crate::hash::{bond_xmit_hash, dissect, eth_hash, hash_to_index, is_igmp, vlan_srcmac_hash,
                   FlowKeys};
+use alloc::vec;
 use crate::uapi::{
     BOND_XMIT_POLICY_ENCAP23, BOND_XMIT_POLICY_ENCAP34, BOND_XMIT_POLICY_LAYER2,
     BOND_XMIT_POLICY_LAYER23, BOND_XMIT_POLICY_LAYER34, BOND_XMIT_POLICY_VLAN_SRCMAC,
@@ -167,6 +168,36 @@ fn dissecting_a_real_frame_reproduces_the_hand_built_keys() {
     assert_eq!(fk.eth_proto, ETH_P_IP);
     assert_eq!(bond_xmit_hash(BOND_XMIT_POLICY_LAYER34, &fk), 0x29a9_c0c2);
     assert_eq!(bond_xmit_hash(BOND_XMIT_POLICY_LAYER2, &fk), 0x0000_0833);
+}
+
+#[test]
+fn encap_policies_use_the_inner_ip_and_transport_flow() {
+    // IPv4-in-IPv4: the outer addresses identify the tunnel, while Linux's
+    // encapsulation-aware flow dissector supplies the inner addresses/ports.
+    let mut frame = vec![0u8; 14 + 20 + 20 + 20];
+    frame[0..6].copy_from_slice(&DST);
+    frame[6..12].copy_from_slice(&SRC);
+    frame[12..14].copy_from_slice(&ETH_P_IP.to_be_bytes());
+    frame[14] = 0x45; frame[14 + 9] = 4;
+    frame[14 + 12..14 + 16].copy_from_slice(&[192, 0, 2, 1]);
+    frame[14 + 16..14 + 20].copy_from_slice(&[192, 0, 2, 2]);
+    let inner = 34;
+    frame[inner] = 0x45; frame[inner + 9] = 6;
+    frame[inner + 12..inner + 16].copy_from_slice(&[10, 0, 0, 1]);
+    frame[inner + 16..inner + 20].copy_from_slice(&[10, 0, 0, 2]);
+    frame[inner + 20..inner + 22].copy_from_slice(&1234u16.to_be_bytes());
+    frame[inner + 22..inner + 24].copy_from_slice(&80u16.to_be_bytes());
+    let fk = dissect(&frame);
+    assert_eq!(fk.l3_src, u32::from_ne_bytes([10, 0, 0, 1]));
+    assert_eq!(fk.l3_dst, u32::from_ne_bytes([10, 0, 0, 2]));
+    assert_eq!(fk.ports, u32::from_ne_bytes([0x04, 0xd2, 0, 0x50]));
+    let outer = FlowKeys { l3_src: u32::from_ne_bytes([192, 0, 2, 1]),
+        l3_dst: u32::from_ne_bytes([192, 0, 2, 2]),
+        ports: u32::from_ne_bytes([0x13, 0x88, 0x13, 0x89]), ..fk };
+    assert_eq!(bond_xmit_hash(BOND_XMIT_POLICY_ENCAP34, &fk),
+               bond_xmit_hash(BOND_XMIT_POLICY_LAYER34, &fk));
+    assert_ne!(bond_xmit_hash(BOND_XMIT_POLICY_ENCAP34, &fk),
+               bond_xmit_hash(BOND_XMIT_POLICY_LAYER34, &outer));
 }
 
 #[test]
