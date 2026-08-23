@@ -4,7 +4,7 @@
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use sync::{Devices, Spinlock};
 use thermal::{Cadence, ZoneDesc, ZoneOps, ThermalZone};
 use vfs::{KResult, VfsError};
@@ -87,6 +87,7 @@ pub struct PowerSupply {
     initialized: AtomicBool,
     /// Set at the start of teardown, before the class forgets the device.
     removing: AtomicBool,
+    hwmon_id: AtomicU32,
     thermal_zone: Spinlock<Option<Arc<ThermalZone>>, Devices>,
 }
 
@@ -99,6 +100,7 @@ impl PowerSupply {
             ops: Spinlock::new(Some(ops)),
             initialized: AtomicBool::new(false),
             removing: AtomicBool::new(false),
+            hwmon_id: AtomicU32::new(u32::MAX),
             thermal_zone: Spinlock::new(None),
         }
     }
@@ -123,6 +125,16 @@ impl PowerSupply {
 
     /// Whether teardown has begun. # C: O(1)
     pub fn removing(&self) -> bool { self.removing.load(Ordering::Acquire) }
+
+    /// Assign the hwmon instance number owned by the power-supply registry.
+    /// # C: O(1)
+    pub(crate) fn set_hwmon_id(&self, id: u32) { self.hwmon_id.store(id, Ordering::Release); }
+
+    /// Return the assigned hwmon instance number, if this supply projects one.
+    /// # C: O(1)
+    pub fn hwmon_id(&self) -> Option<u32> {
+        match self.hwmon_id.load(Ordering::Acquire) { u32::MAX => None, id => Some(id) }
+    }
 
     /// Attach the class-owned thermal projection created for a temperature
     /// provider. # C: O(1)

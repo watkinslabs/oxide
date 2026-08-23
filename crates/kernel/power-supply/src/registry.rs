@@ -4,6 +4,7 @@
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU32, Ordering};
 use sync::{Devices, Spinlock};
 use vfs::{KResult, VfsError};
 
@@ -15,6 +16,7 @@ pub type ChangeHook = fn(&str);
 
 static SUPPLIES: Spinlock<Vec<Arc<PowerSupply>>, Devices> = Spinlock::new(Vec::new());
 static CHANGE_HOOK: Spinlock<Option<ChangeHook>, Devices> = Spinlock::new(None);
+static NEXT_HWMON: AtomicU32 = AtomicU32::new(0);
 
 /// Install the class change-notification callback. # C: O(1)
 pub fn set_change_hook(hook: ChangeHook) { *CHANGE_HOOK.lock() = Some(hook); }
@@ -28,6 +30,9 @@ pub fn register(desc: SupplyDesc, ops: Arc<dyn SupplyOps>) -> KResult<Arc<PowerS
     let mut supplies = SUPPLIES.lock();
     if supplies.iter().any(|psy| psy.name() == desc.name) { return Err(VfsError::Eexist); }
     let psy = Arc::new(PowerSupply::new(desc, ops));
+    if crate::hwmon::has_properties(&psy) {
+        psy.set_hwmon_id(NEXT_HWMON.fetch_add(1, Ordering::Relaxed));
+    }
     if let Some(zone) = thermal_zone(&psy)? { psy.set_thermal_zone(zone); }
     supplies.push(Arc::clone(&psy));
     drop(supplies);

@@ -20,6 +20,7 @@ extern crate std;
 
 pub mod attrs;
 pub mod format;
+pub mod hwmon;
 pub mod registry;
 pub mod supply;
 pub mod uapi;

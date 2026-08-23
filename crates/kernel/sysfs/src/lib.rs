@@ -35,6 +35,7 @@ pub mod drm;
 mod export;
 pub mod fs_subsys;
 pub mod input;
+pub mod hwmon;
 pub mod kernel;
 pub mod mm;
 pub mod kobject;
@@ -202,6 +203,7 @@ pub fn init() {
     drm::init();
     input::init();
     power_supply::init();
+    hwmon::init();
     backlight::init();
     thermal::init();
     dmi::init();
