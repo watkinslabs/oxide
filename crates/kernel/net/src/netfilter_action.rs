@@ -80,10 +80,11 @@ impl Action {
             }
             Self::TproxyAssign { addr, port } => apply_tproxy(p, *addr, *port, family, hook),
             Self::Synproxy { mss, wscale, flags } => {
-                if hook != crate::netfilter_hook::NF_INET_PRE_ROUTING {
+                if !matches!(hook, crate::netfilter_hook::NF_INET_LOCAL_IN
+                    | crate::netfilter_hook::NF_INET_FORWARD) {
                     return Err(ApplyError::Unsupported);
                 }
-                crate::global_stack().apply_synproxy(p, family, *mss, *wscale, *flags)
+                crate::global_stack().apply_synproxy(p, family, *mss, *wscale, *flags, hook)
             }
             Self::FlowOffload { table } => crate::global_stack().offload_flow(table, p, family, hook),
             Self::Fwd { oif, gateway, nfproto } => apply_fwd(p, *oif, *gateway, *nfproto, family),

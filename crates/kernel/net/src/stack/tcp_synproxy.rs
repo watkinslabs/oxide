@@ -17,7 +17,13 @@ impl NetStack {
     /// Consume one nftables synproxy packet after emitting its handshake peer.
     /// # C: O(segment + route)
     pub(crate) fn apply_synproxy(&self, p: &mut Pkt, family: u8, configured_mss: u16,
-                                 wscale: u8, flags: u32) -> Result<(), crate::netfilter_action::ApplyError> {
+        wscale: u8, flags: u32, _hook: u32)
+        -> Result<(), crate::netfilter_action::ApplyError> {
+        if !matches!(p.conntrack_state_owned(), Some((_, Some(_), _, _))) {
+            // Linux's synproxy hook is a conntrack extension; without an
+            // owner it has nothing to proxy and must leave the packet alone.
+            return Ok(());
+        }
         let packet = p.data();
         let (src, dst, off) = match family {
             crate::netfilter_hook::NFPROTO_IPV4 => {
