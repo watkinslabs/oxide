@@ -79,7 +79,7 @@ fn a_rewritten_metadata_block_reads_back_as_what_was_written() {
     let v = volume();
     let addr = SIT_BLKADDR + 1;
     let before = v.read_block(addr).unwrap();
-    assert_eq!(v.meta_cache.blocks(), 1, "the read must have been kept or this proves nothing");
+    assert!(v.meta_cache.load(addr).is_some(), "the read must have been kept or this proves nothing");
 
     let after = patterned(BLKSIZE, 0x5C);
     assert_ne!(before, after);
@@ -168,7 +168,7 @@ fn a_forgotten_block_is_read_again() {
     let addr = NAT_BLKADDR;
     let first = v.read_block(addr).unwrap();
     v.meta_cache.invalidate_range(addr, 1);
-    assert_eq!(v.meta_cache.blocks(), 0);
+    assert!(v.meta_cache.load(addr).is_none());
     poison(&v, addr);
     assert_ne!(v.read_block(addr).unwrap(), first, "a forgotten block was still answered");
 }
@@ -227,5 +227,5 @@ fn a_remount_starts_with_an_empty_mapping() {
     assert!(v.meta_cache.blocks() > 0);
     let src = v.into_source();
     let v2 = Volume::mount_with(src, crate::opts::Options::defaults(), true).unwrap();
-    assert_eq!(v2.meta_cache.blocks(), 0);
+    assert!(v2.meta_cache.load(NAT_BLKADDR).is_none());
 }

@@ -46,6 +46,8 @@ pub enum RaMeta {
     Ssa,
     /// Checkpoint-pack blocks, indexed by their own address.
     Cp,
+    /// Main-area node blocks used only while replaying a recovery chain.
+    Por,
 }
 
 /// Where each area of a volume begins and ends, as readahead needs it.
@@ -71,6 +73,8 @@ pub struct Areas {
     pub main_start: u32,
     /// Node-table blocks the volume has, which bounds a node-table index.
     pub nat_blocks: u32,
+    /// One past the main area, which bounds POR addresses.
+    pub main_end: u32,
 }
 
 /// Whether readahead of `ty` may reach index `blkno`.
@@ -91,6 +95,7 @@ pub fn meta_index_ok(ty: RaMeta, blkno: u32, a: &Areas) -> bool {
         RaMeta::Sit => blkno < a.sit_blocks,
         RaMeta::Ssa => blkno >= a.ssa_start && blkno < a.main_start,
         RaMeta::Cp => blkno >= a.cp_start && blkno < a.sit_start,
+        RaMeta::Por => blkno >= a.main_start && blkno < a.main_end,
     }
 }
 

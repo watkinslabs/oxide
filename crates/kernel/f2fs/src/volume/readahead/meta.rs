@@ -30,6 +30,7 @@ impl<S: SectorSource> Volume<S> {
             ssa_start: self.sb.ssa_blkaddr,
             main_start: self.sb.main_blkaddr,
             nat_blocks: self.max_nid() / NAT_ENTRY_PER_BLOCK as u32,
+            main_end: self.sb.max_blkaddr() as u32,
         }
     }
 
@@ -53,10 +54,10 @@ impl<S: SectorSource> Volume<S> {
         for _ in 0..nrpages {
             if !meta_index_ok(ty, blkno, &a) { break; }
             let Some(addr) = self.ra_meta_addr(blkno, ty, &a) else { break };
-            addrs.push(self.ra_meta_wanted(addr));
+            addrs.push(self.ra_meta_wanted(addr, ty));
             blkno = blkno.wrapping_add(1);
         }
-        for run in super::window::runs(&addrs) { self.ra_meta_run(run.addr, run.len); }
+        for run in super::window::runs(&addrs) { self.ra_meta_run(run.addr, run.len, ty); }
         blkno - start
     }
 
@@ -81,7 +82,7 @@ impl<S: SectorSource> Volume<S> {
                 crate::sit::area_blocks(self.sb.segment_count_sit, bps),
                 sit_ra_segno(blkno, SIT_ENTRY_PER_BLOCK as u32),
                 &self.sit_bitmap),
-            RaMeta::Ssa | RaMeta::Cp => blkno,
+            RaMeta::Ssa | RaMeta::Cp | RaMeta::Por => blkno,
         };
         if u64::from(addr) >= self.sb.max_blkaddr() { return None; }
         Some(addr)
@@ -91,18 +92,22 @@ impl<S: SectorSource> Volume<S> {
     ///
     /// Only the span the mapping covers is worth fetching: a block outside it
     /// has nowhere to be filed, so the read would be work with no result.
-    /// Recovery's main-area blocks are the case that matters — they fall
-    /// outside, and the scan reads them itself.
+    /// Recovery's main-area blocks use the cache's temporary POR view, which
+    /// gives them a filing without widening the ordinary metadata mapping.
     /// # C: O(1)
-    fn ra_meta_wanted(&self, addr: u32) -> Option<u32> {
-        if !self.meta_cache.covers(addr) { return None; }
-        if self.meta_cache.load(addr).is_some() { return None; }
+    fn ra_meta_wanted(&self, addr: u32, ty: RaMeta) -> Option<u32> {
+        let por = ty == RaMeta::Por;
+        if (por && !self.meta_cache.covers_por(addr))
+            || (!por && !self.meta_cache.covers(addr)) { return None; }
+        let held = if por { self.meta_cache.load_por(addr) }
+                   else { self.meta_cache.load(addr) };
+        if held.is_some() { return None; }
         Some(addr)
     }
 
     /// Put `len` consecutive metadata blocks in the mapping, as ONE transfer.
     /// # C: O(len * BLKSIZE)
-    fn ra_meta_run(&self, addr: u32, len: usize) {
+    fn ra_meta_run(&self, addr: u32, len: usize, ty: RaMeta) {
         if len == 0 { return; }
         let last = u64::from(addr) + len as u64 - 1;
         if last >= self.sb.max_blkaddr() { return; }
@@ -110,7 +115,12 @@ impl<S: SectorSource> Volume<S> {
         let mut buf = alloc::vec![0u8; len * BLKSIZE];
         if self.source.read_sectors(u64::from(addr), &mut buf).is_err() { return; }
         for j in 0..len {
-            self.meta_cache.store(addr + j as u32, &buf[j * BLKSIZE..(j + 1) * BLKSIZE]);
+            let at = addr + j as u32;
+            if ty == RaMeta::Por {
+                self.meta_cache.store_por(at, &buf[j * BLKSIZE..(j + 1) * BLKSIZE]);
+            } else {
+                self.meta_cache.store(at, &buf[j * BLKSIZE..(j + 1) * BLKSIZE]);
+            }
             self.io_account(crate::stats::iostat::Io::FsMetaRead, BLKSIZE as u64, false);
         }
     }

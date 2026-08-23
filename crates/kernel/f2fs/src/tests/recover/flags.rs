@@ -110,6 +110,8 @@ fn a_chain_that_cannot_even_be_walked_claims_no_recovery() {
     // refuse the walk is refused by the mount itself, and there is no volume
     // left to read a flag off.
     let mut v = with_a_standing_chain(b"f");
+    v.meta_cache
+        .invalidate_range(v.sb.main_blkaddr, u32::MAX - v.sb.main_blkaddr);
     v.set_fault(1, 0, crate::fault::Which::RATE).unwrap();
     v.set_fault(0, Fault::ReadIo.bit(), crate::fault::Which::TYPE).unwrap();
 

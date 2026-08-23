@@ -240,6 +240,22 @@ fn a_metadata_window_is_one_request() {
     assert_eq!(v.source_ref().reqs_in(start, 4), vec![]);
 }
 
+/// Recovery's main-area window is filed in the same metadata owner as its
+/// demand reads, so the chain walk can consume it without another transfer.
+/// # C: O(1)
+#[test]
+fn a_recovery_window_holds_main_nodes_for_the_chain_walk() {
+    let v = vol_with(&[0], BLKSIZE as u64);
+    v.source_ref().clear();
+    assert_eq!(v.ra_meta_pages(MAIN, 4, RaMeta::Por), 4);
+    assert_eq!(v.source_ref().reqs_in(MAIN, 4), vec![(u64::from(MAIN), 4)]);
+    assert!(v.meta_cache.load_por(MAIN).is_some());
+
+    v.source_ref().clear();
+    assert_eq!(v.ra_meta_pages(MAIN, 4, RaMeta::Por), 4);
+    assert_eq!(v.source_ref().reqs_in(MAIN, 4), vec![]);
+}
+
 /// A metadata window stops at the first index its kind may not reach, and
 /// reports how far it got. Reading on would file one area's blocks under
 /// another area's name. # C: O(1)

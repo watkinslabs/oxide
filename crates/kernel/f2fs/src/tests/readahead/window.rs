@@ -15,6 +15,7 @@ fn areas() -> Areas {
         ssa_start: 300,
         main_start: 400,
         nat_blocks: 5,
+        main_end: 500,
     }
 }
 

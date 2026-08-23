@@ -49,6 +49,8 @@ pub struct Found {
 /// How many links the fast pointer takes per link of the slow one. Two is the
 /// smallest that detects every cycle.
 const FAST_STEPS: usize = 2;
+const RECOVERY_MAX_RA_BLOCKS: u32 = super::super::readahead::window::MAX_RA_BLOCKS as u32;
+const RECOVERY_MIN_RA_BLOCKS: u32 = 1;
 
 impl<S: SectorSource> Volume<S> {
     /// Where a walk of the fsync chain begins: the block the file-node log
@@ -66,12 +68,30 @@ impl<S: SectorSource> Volume<S> {
     /// Read one link, or `None` when the chain ends here. # C: O(1 block)
     fn chain_link(&self, addr: u32) -> Result<Option<(footer::Footer, u32)>, Errno> {
         if !self.chain_addr_ok(addr) { return Ok(None); }
-        let block = self.read_block(addr)?;
+        let block = self.read_por_block(addr)?;
         let Some(f) = footer::parse(&block) else { return Ok(None) };
         let nocrc = self.cp.has(CP_NOCRC_RECOVERY_FLAG);
         if !marks::is_recoverable(&f, self.cp.version, nocrc) { return Ok(None); }
         let next = f.next_blkaddr;
         Ok(Some((f, next)))
+    }
+
+    /// Grow on a consecutive chain and shrink on an interior-segment jump. # C: O(1)
+    fn adjust_por_ra_blocks(&self, ra: u32, addr: u32, next: u32) -> u32 {
+        if addr.checked_add(1) == Some(next) {
+            ra.saturating_mul(2).min(RECOVERY_MAX_RA_BLOCKS)
+        } else if next % self.sb.blks_per_seg() != 0 {
+            (ra / 2).max(RECOVERY_MIN_RA_BLOCKS)
+        } else {
+            ra
+        }
+    }
+
+    /// Submit the next recovery window after inspecting its link. # C: O(ra blocks)
+    fn prefetch_por(&self, addr: u32, ra: u32) {
+        if ra != RECOVERY_MIN_RA_BLOCKS {
+            self.ra_meta_pages(addr, ra, super::super::readahead::RaMeta::Por);
+        }
     }
 
     /// Advance the fast pointer, and refuse a chain that comes back on itself.
@@ -80,17 +100,23 @@ impl<S: SectorSource> Volume<S> {
     /// a chain that ends cannot loop and continuing to read ahead of the slow
     /// pointer would only cost blocks.
     /// # C: O(1 block) amortised
-    fn chain_step_fast(&self, slow: u32, fast: &mut u32, detecting: &mut bool)
+    fn chain_step_fast(&self, slow: u32, fast: &mut u32, detecting: &mut bool,
+                       ra: &mut u32)
         -> Result<(), Errno> {
         if !*detecting { return Ok(()); }
         for _ in 0..FAST_STEPS {
-            match self.chain_link(*fast)? {
+            let at = *fast;
+            match self.chain_link(at)? {
                 None => { *detecting = false; return Ok(()); }
                 // A block pointing at itself ends the chain for the slow
                 // pointer too, so the fast one must stop rather than report
                 // the two meeting there as a cycle.
                 Some((_, next)) if next == *fast => { *detecting = false; return Ok(()); }
-                Some((_, next)) => *fast = next,
+                Some((_, next)) => {
+                    *ra = self.adjust_por_ra_blocks(*ra, at, next);
+                    *fast = next;
+                    self.prefetch_por(next, *ra);
+                }
             }
         }
         if *fast == slow { return Err(Errno::Einval); }
@@ -110,6 +136,7 @@ impl<S: SectorSource> Volume<S> {
         let mut slow = head;
         let mut fast = slow;
         let mut detecting = true;
+        let mut ra = RECOVERY_MAX_RA_BLOCKS;
         loop {
             let Some((f, next)) = self.chain_link(slow)? else { return Ok(()) };
             if f.is_fsync() {
@@ -130,8 +157,10 @@ impl<S: SectorSource> Volume<S> {
             // which no append-only log can produce and which the fast pointer
             // below refuses.
             if next == slow { return Ok(()); }
+            ra = self.adjust_por_ra_blocks(ra, slow, next);
             slow = next;
-            self.chain_step_fast(slow, &mut fast, &mut detecting)?;
+            self.prefetch_por(slow, ra);
+            self.chain_step_fast(slow, &mut fast, &mut detecting, &mut ra)?;
         }
     }
 

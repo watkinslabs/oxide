@@ -86,6 +86,20 @@ impl<S: SectorSource> Volume<S> {
         self.read_block(addr)
     }
 
+    /// Read a recovery-chain node through the temporary main-area view. # C: O(1 block)
+    pub(crate) fn read_por_block(&self, addr: u32) -> Result<Vec<u8>, Errno> {
+        if !self.sb_main_contains(addr) { return Err(Errno::Eio); }
+        if let Some(held) = self.meta_cache.load_por(addr) { return Ok(held); }
+        if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::ReadIo) {
+            return Err(Errno::Eio);
+        }
+        let mut buf = vec![0u8; BLKSIZE];
+        self.source.read_sectors(u64::from(addr), &mut buf)?;
+        self.meta_cache.store_por(addr, &buf);
+        self.io_account(crate::stats::iostat::Io::FsMetaRead, BLKSIZE as u64, false);
+        Ok(buf)
+    }
+
     /// Put `data` at `addr`. # C: O(BLKSIZE)
     pub(crate) fn write_block(&self, addr: u32, data: &[u8]) -> Result<(), Errno> {
         self.write_block_flags(addr, data, block::RequestFlags::NONE)
@@ -190,6 +204,7 @@ impl<S: SectorSource> Volume<S> {
                 Some(_) => self.meta_cache.invalidate_range(addr, 1),
             }
         }
+        if self.meta_cache.covers_por(addr) { self.meta_cache.invalidate_range(addr, 1); }
         Ok(())
     }
 
