@@ -47,6 +47,7 @@ pub struct NfHookCtx<'a> {
     pub ingress: Option<NetIfaceId>,
     pub egress: Option<NetIfaceId>,
     pub timestamp_ns: u64,
+    pub ct_net: Option<Arc<conntrack::CtNet>>,
     pub ct: Option<Arc<conntrack::Conn>>,
     pub ct_available: bool,
     pub ctinfo: u8,
@@ -60,7 +61,7 @@ impl<'a> NfHookCtx<'a> {
     pub const fn ingress(namespace: u64, hook_id: u32, pkt: &'a [u8], family: u8,
                          ingress: NetIfaceId, mark: u32) -> Self {
         Self { namespace, hook_id, pkt, ll: &[], family, link_protocol: None, mark, priority: 0,
-            ingress: Some(ingress), egress: None, timestamp_ns: 0,
+            ingress: Some(ingress), egress: None, timestamp_ns: 0, ct_net: None,
             ct: None, ct_available: false, ctinfo: conntrack::uapi::IP_CT_UNTRACKED, ct_dir: 0,
             chain_min_priority: None, chain_max_priority: None }
     }
@@ -68,13 +69,13 @@ impl<'a> NfHookCtx<'a> {
     /// Context retaining one canonical packet buffer's metadata. # C: O(1)
     pub fn packet(namespace: u64, hook_id: u32, p: &'a Pkt, family: u8,
                   ingress: Option<NetIfaceId>) -> Self {
-        let (ct, ct_available, ctinfo, ct_dir) = p.conntrack_state_owned()
-            .map(|(_, ct, info, dir)| (ct, true, info, dir))
-            .unwrap_or((None, false, conntrack::uapi::IP_CT_UNTRACKED, 0));
+        let (ct_net, ct, ct_available, ctinfo, ct_dir) = p.conntrack_state_owned()
+            .map(|(net, ct, info, dir)| (Some(net), ct, true, info, dir))
+            .unwrap_or((None, None, false, conntrack::uapi::IP_CT_UNTRACKED, 0));
         Self { namespace, hook_id, pkt: p.data(), ll: p.mac_frame().unwrap_or(&[]), family,
             link_protocol: (p.proto != 0).then_some(p.proto),
             mark: p.tx.mark, priority: p.tx.priority, ingress, egress: p.iface,
-            timestamp_ns: p.timestamp_ns, ct, ct_available, ctinfo, ct_dir,
+            timestamp_ns: p.timestamp_ns, ct_net, ct, ct_available, ctinfo, ct_dir,
             chain_min_priority: None, chain_max_priority: None }
     }
 }
@@ -173,7 +174,7 @@ pub(crate) fn nf_hook_eval(hook_id: u32, pkt: &[u8], family: u8) -> u32 {
 #[cfg(any(test, feature = "hosted"))]
 pub(crate) fn nf_hook_eval_in(namespace: u64, hook_id: u32, pkt: &[u8], family: u8) -> NfHookResult {
     let ctx = NfHookCtx { namespace, hook_id, pkt, ll: &[], family, link_protocol: None, mark: 0, priority: 0,
-        ingress: None, egress: None, timestamp_ns: 0,
+        ingress: None, egress: None, timestamp_ns: 0, ct_net: None,
         ct: None, ct_available: false, ctinfo: conntrack::uapi::IP_CT_UNTRACKED, ct_dir: 0,
         chain_min_priority: None, chain_max_priority: None };
     nf_hook_eval_ctx(&ctx)

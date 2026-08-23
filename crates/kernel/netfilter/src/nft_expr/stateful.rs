@@ -6,6 +6,7 @@
 
 extern crate alloc;
 use alloc::collections::BTreeMap;
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
@@ -159,6 +160,7 @@ pub enum ObjectState {
             tokens_max: u64, invert: bool },
     Connlimit { flows: Lock<BTreeMap<ConnlimitKey, Option<alloc::sync::Arc<conntrack::Conn>>>>, limit: u32,
                 invert: bool },
+    CtHelper { name: String, l4proto: u8, l3proto: Option<u16> },
     Unsupported,
 }
 
@@ -175,6 +177,7 @@ impl core::fmt::Debug for ObjectState {
             Self::Quota { .. } => "Quota",
             Self::Limit { .. } => "Limit",
             Self::Connlimit { .. } => "Connlimit",
+            Self::CtHelper { .. } => "CtHelper",
             Self::Unsupported => "Unsupported",
         })
     }
@@ -185,7 +188,7 @@ impl ObjectState {
     pub fn from_wire(ty: u32, data: &[u8]) -> Self {
         use crate::nft_expr::flags::{NFT_LIMIT_F_INV, NFT_QUOTA_F_INV};
         use crate::nft_expr::limits::{NSEC_PER_SEC, NFT_LIMIT_PKT_BURST_DEFAULT};
-        use crate::nft_expr::nla::{find_u32_be, find_u64_be};
+        use crate::nft_expr::nla::{find_str, find_u8, find_u16_be, find_u32_be, find_u64_be};
         use crate::nft_expr::parse::misc::limit_tokens_max;
         use crate::nft_expr::uapi::{NFTA_LIMIT_BURST, NFTA_LIMIT_FLAGS,
             NFTA_LIMIT_RATE, NFTA_LIMIT_TYPE, NFTA_LIMIT_UNIT, NFTA_QUOTA_BYTES,
@@ -224,6 +227,14 @@ impl ObjectState {
                 let invert = find_u32_be(data, crate::nft_expr::uapi::NFTA_CONNLIMIT_FLAGS)
                     .is_some_and(|f| f & crate::nft_expr::flags::NFT_CONNLIMIT_F_INV != 0);
                 Self::Connlimit { flows: Lock::new(BTreeMap::new()), limit, invert }
+            }
+            crate::nft_expr::uapi::NFT_OBJECT_CT_HELPER => {
+                let Some(name) = find_str(data, crate::nft_expr::uapi::NFTA_CT_HELPER_NAME)
+                    .filter(|name| !name.is_empty()) else { return Self::Unsupported; };
+                let Some(l4proto) = find_u8(data, crate::nft_expr::uapi::NFTA_CT_HELPER_L4PROTO)
+                    .filter(|proto| *proto != 0) else { return Self::Unsupported; };
+                Self::CtHelper { name: String::from(name), l4proto,
+                    l3proto: find_u16_be(data, crate::nft_expr::uapi::NFTA_CT_HELPER_L3PROTO) }
             }
             _ => Self::Unsupported,
         }
@@ -272,6 +283,21 @@ impl ObjectState {
                 let over = flows.len() as u32 > *limit;
                 (over ^ *invert).then_some(NFT_BREAK)
             }
+            Self::CtHelper { name, l4proto, l3proto } => {
+                let Some(ct) = ct else { return None; };
+                let Some(tuple) = ct.tuple(0) else { return None; };
+                if tuple.protonum != *l4proto
+                    || l3proto.is_some_and(|family| {
+                        !matches!(family as u8, crate::nft_expr::uapi::NFPROTO_INET
+                            | crate::nft_expr::uapi::NFPROTO_NETDEV
+                            | crate::nft_expr::uapi::NFPROTO_BRIDGE)
+                            && family as u8 != tuple.l3num
+                    }) {
+                    return None;
+                }
+                let _ = ct.set_helper(name, *l4proto);
+                None
+            }
             Self::Unsupported => Some(NFT_BREAK),
         }
     }
@@ -281,9 +307,12 @@ impl ObjectState {
 mod tests {
     use super::ObjectState;
     use crate::nft_expr::access::CtAccess;
-    use crate::nft_expr::uapi::{NFTA_CONNLIMIT_COUNT, NFTA_QUOTA_BYTES,
-                                NFT_OBJECT_CONNLIMIT, NFT_OBJECT_QUOTA, NFT_BREAK};
+    use crate::nft_expr::uapi::{NFTA_CONNLIMIT_COUNT, NFTA_CT_HELPER_L3PROTO,
+                                NFTA_CT_HELPER_L4PROTO, NFTA_CT_HELPER_NAME, NFTA_QUOTA_BYTES,
+                                NFT_OBJECT_CONNLIMIT, NFT_OBJECT_CT_HELPER,
+                                NFT_OBJECT_QUOTA, NFT_BREAK};
     use alloc::sync::Arc;
+    use core::cell::Cell;
     use conntrack::tuple::Tuple;
 
     fn attr(kind: u16, bytes: &[u8]) -> alloc::vec::Vec<u8> {
@@ -342,6 +371,28 @@ mod tests {
         assert_eq!(state.eval_for(60, 0, Some(&first)), None);
         assert_eq!(state.eval_for(60, 0, Some(&first)), None);
         assert_eq!(state.eval_for(60, 0, Some(&second)), Some(NFT_BREAK));
+    }
+
+    struct HelperPacket { tuple: Tuple, attached: Cell<bool> }
+    impl CtAccess for HelperPacket {
+        fn ctinfo(&self) -> u8 { 0 }
+        fn tuple(&self, _dir: u8) -> Option<Tuple> { Some(self.tuple) }
+        fn set_helper(&self, _name: &str, _l4proto: u8) -> bool {
+            self.attached.set(true);
+            true
+        }
+    }
+
+    #[test]
+    fn conntrack_helper_object_uses_the_packet_owner_and_protocol() {
+        let mut data = attr(NFTA_CT_HELPER_NAME, b"dns\0");
+        data.extend(attr(NFTA_CT_HELPER_L3PROTO, &2u16.to_be_bytes()));
+        data.extend(attr(NFTA_CT_HELPER_L4PROTO, &[17]));
+        let state = ObjectState::from_wire(NFT_OBJECT_CT_HELPER, &data);
+        let packet = HelperPacket { tuple: Tuple { l3num: 2, protonum: 17, ..Tuple::default() },
+                                     attached: Cell::new(false) };
+        assert_eq!(state.eval_for(60, 0, Some(&packet)), None);
+        assert!(packet.attached.get());
     }
 }
 

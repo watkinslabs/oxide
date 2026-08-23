@@ -249,6 +249,18 @@ impl CtNet {
         Err(HelperChangeError::Unsupported)
     }
 
+    /// Attach one nftables-selected helper through the canonical registry. # C: O(N)
+    pub fn attach_helper_for(&self, conn: &Conn, name: &str, l4proto: u8) -> bool {
+        let status = conn.status();
+        if status & (IPS_CONFIRMED | IPS_TEMPLATE) != 0 { return false; }
+        let tuple = conn.tuple(0);
+        if tuple.protonum != l4proto { return false; }
+        if self.helpers.find_named_for(name, &tuple).is_none() { return false; }
+        if status & IPS_HELPER != 0 { return true; }
+        conn.attach_helper(String::from(name), true);
+        true
+    }
+
     /// Apply the ctnetlink fields supported by the live entry owner. Linux
     /// changes timeout, status, mark, and sequence adjustment on an existing
     /// flow; immutable status bits are screened by the ctnetlink encoder's

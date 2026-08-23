@@ -63,6 +63,8 @@ pub trait CtAccess {
     fn connlimit_count(&self, _index: usize) -> Option<u32> { None }
     /// The canonical connection object, when the packet is tracked. # C: O(1)
     fn flow(&self) -> Option<Arc<conntrack::Conn>> { None }
+    /// Attach a named helper through the owning conntrack registry. # C: O(N helpers)
+    fn set_helper(&self, _name: &str, _l4proto: u8) -> bool { false }
 }
 
 /// One route lookup's answer.

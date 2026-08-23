@@ -398,6 +398,23 @@ fn ctnetlink_creator_attaches_only_a_registered_tuple_helper() {
 }
 
 #[test]
+fn nft_helper_attachment_uses_the_registry_and_rejects_confirmed_flows() {
+    let ct = CtNet::new(0, 7);
+    ct.helpers.register(Helper {
+        name: String::from("dns"), l3num: NFPROTO_IPV4, protonum: IPPROTO_UDP,
+        port: 53, policies: Vec::new(),
+    }).unwrap();
+    let tuple = v4_udp([192, 0, 2, 9], 40009, [198, 51, 100, 2], 53);
+    let pending = Arc::new(Conn::new(99, tuple, tuple.invert().unwrap(), 0));
+    assert!(ct.attach_helper_for(&pending, "dns", IPPROTO_UDP));
+    assert_eq!(pending.helper.lock().as_deref(), Some("dns"));
+    assert_ne!(pending.status() & IPS_HELPER, 0);
+    ct.table.add_pending(pending.clone());
+    assert!(ct.confirm(&pending, 0));
+    assert!(!ct.attach_helper_for(&pending, "dns", IPPROTO_UDP));
+}
+
+#[test]
 fn ctnetlink_existing_helper_change_matches_linux_noop_and_busy_results() {
     let ct = CtNet::new(0, 7);
     let tuple = v4_udp([192, 0, 2, 3], 40002, [198, 51, 100, 2], 53);

@@ -75,6 +75,9 @@ pub const NFTA_CT_KEY:       u16 = 2;
 pub const NFTA_CT_DIRECTION: u16 = 3;
 pub const NFTA_CT_SREG:      u16 = 4;
 pub const NFTA_CT_MAX:       u16 = 4;
+pub const NFTA_CT_HELPER_NAME:    u16 = 1;
+pub const NFTA_CT_HELPER_L3PROTO: u16 = 2;
+pub const NFTA_CT_HELPER_L4PROTO: u16 = 3;
 
 // --- nat / masq / redir ---
 

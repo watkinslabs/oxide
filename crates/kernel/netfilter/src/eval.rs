@@ -98,6 +98,7 @@ pub fn has_chain_in_priority_range(namespace: u64, hook_id: u32, family: u8,
 
 struct LiveCt<'a> {
     conn: Option<&'a conntrack::Conn>,
+    net_owner: Option<alloc::sync::Arc<conntrack::CtNet>>,
     owner: Option<alloc::sync::Arc<conntrack::Conn>>,
     info: u8,
     dir: u8,
@@ -327,6 +328,12 @@ impl CtAccess for LiveCt<'_> {
         })
     }
     fn flow(&self) -> Option<alloc::sync::Arc<conntrack::Conn>> { self.owner.clone() }
+    fn set_helper(&self, name: &str, l4proto: u8) -> bool {
+        match (self.net_owner.as_ref(), self.conn) {
+            (Some(net), Some(conn)) => net.attach_helper_for(conn, name, l4proto),
+            _ => false,
+        }
+    }
 }
 
 fn eval_context(input: &crate::eval_context::Input<'_>) -> EvalResult {
@@ -335,7 +342,8 @@ fn eval_context(input: &crate::eval_context::Input<'_>) -> EvalResult {
     let pkt = input.pkt;
     let family = input.family;
     let mut mark = input.mark;
-    let live_ct = LiveCt { conn: input.ct, owner: input.ct_owner.clone(), info: input.ctinfo, dir: input.ct_dir,
+    let live_ct = LiveCt { conn: input.ct, net_owner: input.ct_net_owner.clone(),
+                           owner: input.ct_owner.clone(), info: input.ctinfo, dir: input.ct_dir,
                            now: input.timestamp_ns / 1_000_000_000 };
     let live_route = LiveRoute { input };
     let live_socket = input.live.then(|| LiveSocket {
