@@ -153,8 +153,9 @@ impl ObjectAccess for LiveObjects<'_> {
                 && o.ty == obj_type && o.name == name
         })?;
         match &*object.state {
-            crate::nft_expr::ObjectState::Synproxy { .. } =>
-                object.state.eval_packet(pkt, family, synproxy, actions),
+            crate::nft_expr::ObjectState::Synproxy { .. }
+            | crate::nft_expr::ObjectState::CtTimeout { .. } =>
+                object.state.eval_packet(pkt, family, ct, now_ns, synproxy, actions),
             _ => object.state.eval_for(pkt_len, now_ns, ct),
         }
     }
@@ -174,8 +175,9 @@ impl ObjectAccess for LiveObjects<'_> {
         if family != self.family || table != self.table { return None; }
         let state = self.generation.object_state(set_id?, key)?;
         match &**state {
-            crate::nft_expr::ObjectState::Synproxy { .. } =>
-                state.eval_packet(pkt, family, synproxy, actions),
+            crate::nft_expr::ObjectState::Synproxy { .. }
+            | crate::nft_expr::ObjectState::CtTimeout { .. } =>
+                state.eval_packet(pkt, family, ct, now_ns, synproxy, actions),
             _ => state.eval_for(pkt_len, now_ns, ct),
         }
     }
@@ -373,6 +375,15 @@ impl CtAccess for LiveCt<'_> {
             (Some(net), Some(conn)) => net.attach_helper_for(conn, name, l4proto),
             _ => false,
         }
+    }
+    fn set_timeout_policy(&self, l3num: u16, l4proto: u8, values: &[u32; 14], now: u64) -> bool {
+        self.conn.is_some_and(|c| {
+            let installed = c.set_timeout_policy(conntrack::TimeoutPolicy {
+                l3num, l4proto, values: *values,
+            });
+            if installed { c.refresh(now / 1_000_000_000, values[0]); }
+            installed
+        })
     }
 }
 

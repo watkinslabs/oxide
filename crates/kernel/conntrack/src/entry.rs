@@ -102,6 +102,15 @@ pub struct SeqAdjust {
     pub active: bool,
 }
 
+/// Per-flow timeout extension installed by an nft CT-timeout object.
+/// Values use conntrack's protocol state indexes and are in seconds.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct TimeoutPolicy {
+    pub l3num: u16,
+    pub l4proto: u8,
+    pub values: [u32; 14],
+}
+
 /// Synproxy state carried by the conntrack extension between the cookie ACK
 /// and the protected peer's SYN-ACK.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
@@ -123,6 +132,7 @@ pub struct Conn {
     pub status: AtomicU32,
     /// Absolute expiry, seconds.
     pub timeout: AtomicU64,
+    pub timeout_policy: sync::Spinlock<Option<TimeoutPolicy>, sync::Socket>,
     pub mark: AtomicU32,
     pub secmark: AtomicU32,
     /// Optional realtime insertion/removal timestamps exposed by ctnetlink.
@@ -160,6 +170,7 @@ impl Conn {
             id, orig, reply: sync::Spinlock::new(reply),
             status: AtomicU32::new(0),
             timeout: AtomicU64::new(0),
+            timeout_policy: sync::Spinlock::new(None),
             mark: AtomicU32::new(0),
             secmark: AtomicU32::new(0),
             timestamp_start: AtomicU64::new(0),
@@ -183,6 +194,26 @@ impl Conn {
     /// # C: O(1)
     pub fn clear_status_bits(&self, bits: u32) {
         self.status.fetch_and(!bits, Ordering::AcqRel);
+    }
+
+    /// Install the canonical timeout extension on an unconfirmed flow.
+    pub fn set_timeout_policy(&self, policy: TimeoutPolicy) -> bool {
+        if self.confirmed() || self.status() & IPS_TEMPLATE != 0 { return false; }
+        *self.timeout_policy.lock() = Some(policy);
+        true
+    }
+
+    /// Replace a tracker-selected timeout with the installed extension value.
+    pub fn timeout_override(&self, l4proto: u8, default: u32) -> u32 {
+        let policy = self.timeout_policy.lock();
+        let Some(policy) = *policy else { return default; };
+        if policy.l4proto != l4proto { return default; }
+        let index = match &*self.proto.lock() {
+            ProtoState::Tcp(track) => track.state as usize,
+            ProtoState::Udp(_) => if self.status() & IPS_SEEN_REPLY != 0 { 1 } else { 0 },
+            _ => 0,
+        };
+        policy.values.get(index).copied().filter(|value| *value != 0).unwrap_or(default)
     }
     /// # C: O(1)
     pub fn confirmed(&self) -> bool { self.status() & IPS_CONFIRMED != 0 }
@@ -391,6 +422,33 @@ impl Conn {
                 if self.status() & IPS_SEEN_REPLY != 0 { IP_CT_ESTABLISHED } else { IP_CT_NEW }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::{Conn, TimeoutPolicy};
+    use crate::tuple::Tuple;
+    use crate::uapi::{IPPROTO_TCP, IPPROTO_UDP, IPS_SEEN_REPLY};
+
+    #[test]
+    fn timeout_policy_overrides_the_unconfirmed_flow_refresh_value() {
+        let tcp = Conn::new(1, Tuple { protonum: IPPROTO_TCP, ..Tuple::default() },
+                            Tuple::default(), 0);
+        let mut values = [0; 14];
+        values[0] = 91;
+        assert!(tcp.set_timeout_policy(TimeoutPolicy { l3num: 2, l4proto: IPPROTO_TCP, values }));
+        assert_eq!(tcp.timeout_override(IPPROTO_TCP, 120), 91);
+
+        let udp = Conn::new(2, Tuple { protonum: IPPROTO_UDP, ..Tuple::default() },
+                            Tuple::default(), 0);
+        let mut values = [0; 14];
+        values[0] = 11;
+        values[1] = 22;
+        assert!(udp.set_timeout_policy(TimeoutPolicy { l3num: 2, l4proto: IPPROTO_UDP, values }));
+        assert_eq!(udp.timeout_override(IPPROTO_UDP, 30), 11);
+        udp.set_status_bits(IPS_SEEN_REPLY);
+        assert_eq!(udp.timeout_override(IPPROTO_UDP, 30), 22);
     }
 }
 

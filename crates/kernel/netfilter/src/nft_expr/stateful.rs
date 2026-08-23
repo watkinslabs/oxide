@@ -161,6 +161,7 @@ pub enum ObjectState {
     Connlimit { flows: Lock<BTreeMap<ConnlimitKey, Option<alloc::sync::Arc<conntrack::Conn>>>>, limit: u32,
                 invert: bool },
     CtHelper { name: String, l4proto: u8, l3proto: Option<u16> },
+    CtTimeout { l3proto: Option<u16>, l4proto: u8, values: [u32; 14] },
     Synproxy { mss: u16, wscale: u8, flags: u32 },
     Unsupported,
 }
@@ -179,6 +180,7 @@ impl core::fmt::Debug for ObjectState {
             Self::Limit { .. } => "Limit",
             Self::Connlimit { .. } => "Connlimit",
             Self::CtHelper { .. } => "CtHelper",
+            Self::CtTimeout { .. } => "CtTimeout",
             Self::Synproxy { .. } => "Synproxy",
             Self::Unsupported => "Unsupported",
         })
@@ -247,6 +249,49 @@ impl ObjectState {
                     flags,
                 }
             }
+            crate::nft_expr::uapi::NFT_OBJECT_CT_TIMEOUT => {
+                let Some(l4proto) = find_u8(data, crate::nft_expr::uapi::NFTA_CT_TIMEOUT_L4PROTO)
+                    .filter(|proto| *proto != 0) else { return Self::Unsupported; };
+                let Some(nested) = crate::nft_expr::nla::find_bytes(
+                    data, crate::nft_expr::uapi::NFTA_CT_TIMEOUT_DATA) else {
+                    return Self::Unsupported;
+                };
+                let mut values = [0u32; 14];
+                match l4proto {
+                    crate::nft_expr::limits::IPPROTO_TCP => {
+                        values[..conntrack::proto::tcp_state::TCP_TIMEOUTS.len()].copy_from_slice(
+                            &conntrack::proto::tcp_state::TCP_TIMEOUTS);
+                        let ids = [
+                            crate::nft_expr::uapi::CTA_TIMEOUT_TCP_SYN_SENT,
+                            crate::nft_expr::uapi::CTA_TIMEOUT_TCP_SYN_RECV,
+                            crate::nft_expr::uapi::CTA_TIMEOUT_TCP_ESTABLISHED,
+                            crate::nft_expr::uapi::CTA_TIMEOUT_TCP_FIN_WAIT,
+                            crate::nft_expr::uapi::CTA_TIMEOUT_TCP_CLOSE_WAIT,
+                            crate::nft_expr::uapi::CTA_TIMEOUT_TCP_LAST_ACK,
+                            crate::nft_expr::uapi::CTA_TIMEOUT_TCP_TIME_WAIT,
+                            crate::nft_expr::uapi::CTA_TIMEOUT_TCP_CLOSE,
+                            crate::nft_expr::uapi::CTA_TIMEOUT_TCP_SYN_SENT2,
+                            crate::nft_expr::uapi::CTA_TIMEOUT_TCP_RETRANS,
+                            crate::nft_expr::uapi::CTA_TIMEOUT_TCP_UNACK,
+                        ];
+                        for (index, attr) in ids.into_iter().enumerate() {
+                            if let Some(value) = find_u32_be(nested, attr) { values[index + 1] = value; }
+                        }
+                        values[0] = values[1];
+                    }
+                    crate::nft_expr::limits::IPPROTO_UDP => {
+                        values[0] = conntrack::proto::udp::UDP_TIMEOUTS[0];
+                        values[1] = conntrack::proto::udp::UDP_TIMEOUTS[1];
+                        if let Some(value) = find_u32_be(nested,
+                            crate::nft_expr::uapi::CTA_TIMEOUT_UDP_UNREPLIED) { values[0] = value; }
+                        if let Some(value) = find_u32_be(nested,
+                            crate::nft_expr::uapi::CTA_TIMEOUT_UDP_REPLIED) { values[1] = value; }
+                    }
+                    _ => return Self::Unsupported,
+                }
+                Self::CtTimeout { l3proto: find_u16_be(
+                    data, crate::nft_expr::uapi::NFTA_CT_TIMEOUT_L3PROTO), l4proto, values }
+            }
             _ => Self::Unsupported,
         }
     }
@@ -309,6 +354,7 @@ impl ObjectState {
                 let _ = ct.set_helper(name, *l4proto);
                 None
             }
+            Self::CtTimeout { .. } => Some(NFT_BREAK),
             Self::Synproxy { .. } => Some(NFT_BREAK),
             Self::Unsupported => Some(NFT_BREAK),
         }
@@ -316,9 +362,21 @@ impl ObjectState {
 
     /// Evaluate an object whose Linux operation also records a packet action.
     pub fn eval_packet(&self, pkt: &[u8], family: u8,
+                       ct: Option<&dyn crate::nft_expr::access::CtAccess>, now_ns: u64,
                        synproxy: Option<&dyn crate::nft_expr::access::SynproxyAccess>,
                        actions: &mut Vec<crate::nft_expr::action::Action>) -> Option<i32> {
         match self {
+            Self::CtTimeout { l3proto, l4proto, values } => {
+                let Some(ct) = ct else { return None; };
+                let Some(tuple) = ct.tuple(0) else { return None; };
+                if tuple.protonum != *l4proto
+                    || l3proto.is_some_and(|family| family != tuple.l3num as u16) {
+                    return None;
+                }
+                let _ = ct.set_timeout_policy(l3proto.unwrap_or(tuple.l3num as u16), *l4proto,
+                                               values, now_ns);
+                None
+            }
             Self::Synproxy { mss, wscale, flags } =>
                 crate::nft_expr::run::action::synproxy_packet(
                     pkt, family, synproxy, *mss, *wscale, *flags, actions),
@@ -335,7 +393,9 @@ mod tests {
                                 NFTA_CT_HELPER_L4PROTO, NFTA_CT_HELPER_NAME, NFTA_QUOTA_BYTES,
                                 NFT_OBJECT_CONNLIMIT, NFT_OBJECT_CT_HELPER,
                                 NFT_OBJECT_QUOTA, NFT_OBJECT_SYNPROXY, NFTA_SYNPROXY_MSS,
-                                NFTA_SYNPROXY_WSCALE, NFTA_SYNPROXY_FLAGS, NF_STOLEN, NFT_BREAK};
+                                NFTA_SYNPROXY_WSCALE, NFTA_SYNPROXY_FLAGS, NF_STOLEN, NFT_BREAK,
+                                NFT_OBJECT_CT_TIMEOUT, NFTA_CT_TIMEOUT_L4PROTO,
+                                NFTA_CT_TIMEOUT_DATA, CTA_TIMEOUT_TCP_ESTABLISHED};
     use alloc::sync::Arc;
     use core::cell::Cell;
     use conntrack::tuple::Tuple;
@@ -371,10 +431,25 @@ mod tests {
         packet[20 + 13] = 0x02;
         let mut actions = alloc::vec::Vec::new();
         assert_eq!(state.eval_packet(&packet, crate::nft_expr::uapi::NFPROTO_IPV4,
-                                     None, &mut actions), Some(NF_STOLEN));
+                                     None, 0, None, &mut actions), Some(NF_STOLEN));
         assert!(matches!(&actions[..], [crate::nft_expr::action::Action::Synproxy {
             mss: 1460, wscale: 7, flags: 1
         }]));
+    }
+
+    #[test]
+    fn ct_timeout_object_keeps_linux_nested_tcp_defaults_and_override() {
+        let nested = attr(CTA_TIMEOUT_TCP_ESTABLISHED, &77u32.to_be_bytes());
+        let mut data = attr(NFTA_CT_TIMEOUT_L4PROTO, &[6]);
+        data.extend(attr(NFTA_CT_TIMEOUT_DATA, &nested));
+        let state = ObjectState::from_wire(NFT_OBJECT_CT_TIMEOUT, &data);
+        let ObjectState::CtTimeout { l4proto, values, .. } = state else {
+            panic!("valid TCP timeout data must create a timeout object");
+        };
+        assert_eq!(l4proto, 6);
+        assert_eq!(values[1], 120);
+        assert_eq!(values[3], 77);
+        assert_eq!(values[0], values[1], "Linux UNSPEC aliases SYN_SENT");
     }
 
     struct LiveFlow(Arc<conntrack::Conn>);

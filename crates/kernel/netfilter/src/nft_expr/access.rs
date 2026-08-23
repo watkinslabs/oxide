@@ -65,6 +65,8 @@ pub trait CtAccess {
     fn flow(&self) -> Option<Arc<conntrack::Conn>> { None }
     /// Attach a named helper through the owning conntrack registry. # C: O(N helpers)
     fn set_helper(&self, _name: &str, _l4proto: u8) -> bool { false }
+    /// Install a protocol timeout extension on the unconfirmed flow.
+    fn set_timeout_policy(&self, _l3num: u16, _l4proto: u8, _values: &[u32; 14], _now: u64) -> bool { false }
 }
 
 /// One route lookup's answer.

@@ -191,7 +191,10 @@ impl CtNet {
             }
         };
 
-        if let Some(t) = timeout { conn.refresh(now, t); }
+        if let Some(t) = timeout {
+            let t = conn.timeout_override(pkt.tuple.protonum, t);
+            conn.refresh(now, t);
+        }
         if sysctl.acct { conn.counters[dir as usize].account(pkt.len); }
         let ctinfo = conn.ctinfo(dir);
         let events = cache.take();
