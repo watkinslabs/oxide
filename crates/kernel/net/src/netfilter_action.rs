@@ -80,6 +80,8 @@ impl Action {
             }
             Self::Fwd { oif, gateway, nfproto } => apply_fwd(p, *oif, *gateway, *nfproto, family),
             Self::Dup { gateway, oif } => apply_dup(p, *gateway, *oif, family),
+            Self::Log { group, level, prefix, snaplen, qthreshold, flags } =>
+                apply_log(p, *group, *level, prefix, *snaplen, *qthreshold, *flags),
             Self::PayloadSet { base, offset, data, csum_type, csum_offset, csum_flags } => {
                 if *csum_type != PAYLOAD_CSUM_NONE || *csum_offset != 0 || *csum_flags != 0 {
                     return Err(ApplyError::Unsupported);
@@ -115,6 +117,27 @@ fn apply_dup(p: &crate::pkt::Pkt, gateway: Option<InetAddr>, oif: Option<u32>, f
     // Linux's netdev mirror path sends the clone under the same direct device
     // recursion guard while the original skb remains on its caller's path.
     lease.xmit_raw_policy_from(p.data(), None, true).map_err(|_| ApplyError::Invalid)
+}
+
+fn apply_log(p: &crate::pkt::Pkt, group: Option<u16>, level: u32, prefix: &str,
+             snaplen: u32, qthreshold: u16, flags: u32) -> Result<(), ApplyError> {
+    // NFLOG groups require an nfnetlink logger and queue lifetime. This
+    // kernel currently has only the canonical printk/kmsg logger; refusing
+    // that form is safer than pretending a userspace group received it.
+    if group.is_some() || qthreshold != 0 { return Err(ApplyError::Unsupported); }
+    let lvl = level.min(klog::syslog::LOGLEVEL_DEBUG);
+    klog::write_raw_at(prefix.as_bytes(), lvl);
+    klog::write_raw_at(b" nftables mark=", lvl);
+    klog::write_dec_at(p.tx.mark as u64, lvl);
+    klog::write_raw_at(b" len=", lvl);
+    let copied = if snaplen == 0 { p.len() } else { p.len().min(snaplen as usize) };
+    klog::write_dec_at(copied as u64, lvl);
+    if flags != 0 {
+        klog::write_raw_at(b" flags=", lvl);
+        klog::write_dec_at(flags as u64, lvl);
+    }
+    klog::write_raw_at(b"\n", lvl);
+    Ok(())
 }
 
 fn apply_fwd(p: &mut crate::pkt::Pkt, oif: u32, gateway: Option<InetAddr>,
@@ -324,6 +347,17 @@ mod tests {
         let mut pkt = Pkt::from_owned(vec![0; 20]);
         let action = Action::FlowOffload { table: String::new() };
         assert_eq!(action.apply(&mut pkt, 2), Err(ApplyError::Unsupported));
+    }
+
+    #[test]
+    fn syslog_log_is_consumed_without_changing_the_packet_verdict() {
+        let mut pkt = Pkt::from_owned(vec![0u8; 20]);
+        let action = Action::Log { group: None, level: 4, prefix: String::from("nft: "),
+            snaplen: 32, qthreshold: 0, flags: 0 };
+        assert_eq!(action.apply(&mut pkt, 2), Ok(()));
+        let nflog = Action::Log { group: Some(7), level: 4, prefix: String::new(),
+            snaplen: 0, qthreshold: 1, flags: 0 };
+        assert_eq!(nflog.apply(&mut pkt, 2), Err(ApplyError::Unsupported));
     }
 
     #[test]
