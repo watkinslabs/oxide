@@ -125,12 +125,17 @@ impl RouteAccess for LiveRoute<'_> {
         Some(mtu.saturating_sub(if self.input.family == crate::nft_expr::uapi::NFPROTO_IPV6 { 60 } else { 40 }) as u16)
     }
     fn src_addr(&self) -> Option<conntrack::tuple::InetAddr> {
-        let src = if self.input.family == crate::nft_expr::uapi::NFPROTO_IPV6 {
-            conntrack::tuple::InetAddr::v6(self.input.pkt.get(8..24)?.try_into().ok()?)
-        } else {
-            conntrack::tuple::InetAddr::v4(self.input.pkt.get(12..16)?.try_into().ok()?)
-        };
-        Some(src)
+        if self.input.family == crate::nft_expr::uapi::NFPROTO_IPV6 {
+            let dst = net::addr::Ipv6Addr(self.input.pkt.get(24..40)?.try_into().ok()?);
+            let route = net::global_stack().routes6.lookup_policy_mark_in(
+                self.input.namespace, dst, net::global_stack().policy_rules(), self.input.mark)?;
+            return route.src_hint.map(|addr| conntrack::tuple::InetAddr::v6(addr.0));
+        }
+        let b = self.input.pkt.get(16..20)?;
+        let dst = net::addr::Ipv4Addr::new(b[0], b[1], b[2], b[3]);
+        let route = net::global_stack().routes.lookup_result_mark_in(
+            self.input.namespace, dst, self.input.mark).ok()?;
+        route.src_hint.map(|addr| conntrack::tuple::InetAddr::v4(addr.octets()))
     }
     fn fib(&self, key: &FibKey) -> Option<FibEntry> {
         let stack = net::global_stack();
