@@ -5072,3 +5072,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2619 | MISSING | low | The older row claiming io_uring had not implemented the bundled send/receive and read/write attribute-vector feature bits was stale. Both are implemented and advertised on current main. | `0e049e5c0` added `IORING_FEAT_RECVSEND_BUNDLE` and `IORING_FEAT_RW_ATTR`; `bundle_io`, `rw::attr_admission`, and their ABI tests exercise the live behavior. Removing both bits makes `features_claim_only_what_the_ring_actually_does` fail, confirming the ledger premise is obsolete. | B2619 |
+
+### B2620-stale-console-c275-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2620 | INFRA | low | The C275 observation that `/dev/console` following the last `console=tty0` made serial userspace logging unavailable was stale after the later boot-witness fix. Linux console selection still correctly follows the last entry, while userspace logging is routed through kmsg and fans out to registered consoles. | B2233 fixed the actual capture gap by routing userspace logging through kmsg; current `cmdline` console tests retain the expected last-entry preferred-console rule, including `last_entry_backs_dev_console`. | B2620 |

@@ -406,12 +406,6 @@ here now.
 |---|---|---|---|---|---|
 | OPEN | INFRA | med | **A `debug-all` boot is impractical to iterate on: ~3000 log lines and t≈28 s of guest time in 10 minutes of wall clock.** The serial port is the bottleneck, and the boot has to reach t≈28 s before the defect above appears. Reproducing it needs either a narrower feature set that still perturbs the timing, or a hosted harness that drives `migrate_hook` directly. Chasing it by repeated `debug-all` boots costs ~10 minutes per observation and should not be the loop. | This lane: two `debug-all` boots, one killed at 10 minutes having reached 85 log lines, one reaching t=28.5 s in ~10 minutes. | unowned |
 
-### C275-cmdline-extra
-
-| Status | Class | Sev | Issue | Evidence | Owner |
-|---|---|---|---|---|---|
-| OPEN | INFRA | low | `/dev/console` resolves to `tty0` because it is the last `console=` on the command line, so a service logging to the console writes to the graphical console rather than the serial log a headless run captures. `SYSTEMD_LOG_TARGET=kmsg` reaches the serial log; `console` does not. | boot on `32420e8f3`: `SYSTEMD_LOG_TARGET=console` produced no service output on serial | — |
-
 ### D476-session-handoff
 
 | Status | Class | Sev | Issue | Evidence | Owner |
