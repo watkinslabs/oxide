@@ -13,38 +13,16 @@ use crate::{Error, KResult};
 
 // Module manifest: `relocate` is retained only for VMM-only hosted fixtures;
 // production mremap transfers raw page-table leaves through the PMM owner.
+#[cfg(test)]
 pub mod relocate;
-
-/// The exception-table copy pair, which absorbs a user fault instead of
-/// delivering it. Only compiled for a real address space — a hosted build
-/// has no user mappings to transfer, and `relocate`'s own tests drive the
-/// loop through a fake pair.
-#[cfg(not(test))]
-struct Uaccess;
-
-#[cfg(not(test))]
-impl relocate::UserXfer for Uaccess {
-    fn read(&mut self, src: u64, buf: &mut [u8]) -> usize {
-        // SAFETY: raw_copy_from_user range-checks `src` and recovers a user fault via the exception table; `buf` is a live kernel slice writable for its whole length.
-        unsafe { uaccess::raw_copy_from_user(buf.as_mut_ptr(), src, buf.len()) }
-    }
-    fn write(&mut self, dst: u64, buf: &[u8]) -> usize {
-        // SAFETY: raw_copy_to_user range-checks `dst` and recovers a user fault via the exception table; `buf` is a live kernel slice readable for its whole length.
-        unsafe { uaccess::raw_copy_to_user(dst, buf.as_ptr(), buf.len()) }
-    }
-}
 
 /// Move `len` bytes between two user ranges of this address space.
 ///
 /// Hosted-only compatibility transfer for VMM tests that have no live PMM
 /// root. Production callers inject the PMM-owned raw page-table mover below.
 /// # C: O(len)
+#[cfg(test)]
 fn relocate_user(src: u64, dst: u64, len: usize) -> KResult<()> {
-    #[cfg(not(test))]
-    {
-        if relocate::relocate(src, dst, len, &mut Uaccess).is_err() { return Err(Error::Fault); }
-    }
-    #[cfg(test)]
     let _ = (src, dst, len);
     Ok(())
 }
@@ -105,7 +83,8 @@ impl AddressSpace {
     ///   new_size < old_size  → shrink in place, drop tail
     ///   new_size == old_size → no-op, return old
     ///   new_size > old_size  → copy to a new region (MAYMOVE/FIXED)
-    /// # C: O(VMA-tree ops + min(old,new) byte copy)
+    /// # C: test-only VMA fixture; production callers use the PMM mover
+    #[cfg(test)]
     pub fn mremap(
         &self,
         old: UserVirtAddr,
@@ -122,6 +101,7 @@ impl AddressSpace {
     /// page-table mover below; this form is retained for VMM-only callers
     /// whose address space has no live PMM root.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub fn mremap_full(
         &self,
         old: UserVirtAddr,
