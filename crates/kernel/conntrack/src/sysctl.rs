@@ -63,6 +63,27 @@ pub enum Knob {
     Checksum, Events, LogInvalid, Helper, Acct, Max, Buckets,
 }
 
+impl Knob {
+    /// Stable index used by procfs' declarative per-net sysctl table.
+    pub const fn index(self) -> usize {
+        match self {
+            Self::TcpTimeoutSynSent => 0, Self::TcpTimeoutSynRecv => 1,
+            Self::TcpTimeoutEstablished => 2, Self::TcpTimeoutFinWait => 3,
+            Self::TcpTimeoutCloseWait => 4, Self::TcpTimeoutLastAck => 5,
+            Self::TcpTimeoutTimeWait => 6, Self::TcpTimeoutClose => 7,
+            Self::TcpTimeoutSynSent2 => 8, Self::TcpTimeoutMaxRetrans => 9,
+            Self::TcpTimeoutUnacknowledged => 10, Self::TcpLoose => 11,
+            Self::TcpBeLiberal => 12, Self::TcpIgnoreInvalidRst => 13,
+            Self::TcpMaxRetrans => 14, Self::UdpTimeout => 15,
+            Self::UdpTimeoutStream => 16, Self::IcmpTimeout => 17,
+            Self::Icmpv6Timeout => 18, Self::GenericTimeout => 19,
+            Self::Checksum => 20, Self::Events => 21, Self::LogInvalid => 22,
+            Self::Helper => 23, Self::Acct => 24, Self::Max => 25,
+            Self::Buckets => 26,
+        }
+    }
+}
+
 /// Every tunable, with the name the proc surface uses. Order matches the
 /// enum so a reader can index either way.
 pub const KNOBS: &[(&str, Knob)] = &[

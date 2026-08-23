@@ -29,6 +29,15 @@ fn net_dev_body(net_ns: u64) -> alloc::vec::Vec<u8> {
 /// `/proc/net/dev` inode. # C: O(1)
 pub fn make_proc_net_dev() -> InodeRef { make_net_file(ids::NET_DEV as Ino, net_dev_body) }
 
+/// `/proc/net/nf_conntrack` — rendered from the namespace's live tracker.
+fn net_nf_conntrack_body(net_ns: u64) -> alloc::vec::Vec<u8> {
+    net::global_stack().conntrack_proc_body_in(net_ns).into_bytes()
+}
+/// `/proc/net/nf_conntrack` inode. # C: O(N)
+pub fn make_proc_net_nf_conntrack() -> InodeRef {
+    make_net_file(ids::NET_NF_CONNTRACK as Ino, net_nf_conntrack_body)
+}
+
 /// `/proc/net/tcp` — Linux fixed-width per-connection table.
 fn net_tcp_body(net_ns: u64) -> alloc::vec::Vec<u8> {
     use core::fmt::Write as _;

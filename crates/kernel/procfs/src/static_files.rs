@@ -206,6 +206,7 @@ pub fn register_static_files() {
     // /proc/net/* — Linux networking surface. Entries with live kernel table
     // backing use procfs inodes, not static header snapshots.
     crate::reg::register("/proc/net/dev", crate::net::make_proc_net_dev());
+    crate::reg::register("/proc/net/nf_conntrack", crate::net::make_proc_net_nf_conntrack());
     crate::reg::register("/proc/net/route", crate::net::make_proc_net_route());
     crate::reg::register("/proc/net/tcp", crate::net::make_proc_net_tcp());
     crate::reg::register("/proc/net/tcp6", crate::net::make_proc_net_tcp6());

@@ -19,6 +19,7 @@ pub(crate) const NET_NETLINK: u64 = 0xFEED_0011;
 pub(crate) const NET_NETSTAT: u64 = 0xFEED_0012;
 pub(crate) const NET_PACKET: u64 = 0xFEED_0013;
 pub(crate) const NET_SNMP6: u64 = 0xFEED_0014;
+pub(crate) const NET_NF_CONNTRACK: u64 = 0xFEED_0015;
 /// Reserved for the `dyn_file` namespace-generated-body test fixture; no live
 /// `/proc` file claims it.
 #[cfg(test)]

@@ -116,6 +116,8 @@ enum Leaf {
     /// Two-value group window bound to subsystem accessors.
     PerNetGroupRangeHook(fn(&network_namespace::NetworkNamespaceRef) -> Result<(u32, u32), ()>,
         fn(&network_namespace::NetworkNamespaceRef, u32, u32) -> Result<(), ()>),
+    /// Conntrack's per-network-namespace sysctl array.
+    ConntrackInt(usize, Option<(i64, i64)>),
     /// `proc_dointvec` free byte slot (multi-field / not a single int).
     Bytes(&'static [u8]),
     /// Read-only constant (`StaticFileInode`, mode 0444).
@@ -347,6 +349,10 @@ fn make_leaf(leaf: &Leaf) -> InodeRef {
             HPerNetBufWindowHook { current_ns: current_net_ns, get, set, bounds })),
         Leaf::PerNetGroupRangeHook(get, set) => bound_sysctl_inode(Arc::new(HPerNetGroupRangeHook {
             current_ns: current_net_ns, get, set,
+        })),
+        ConntrackInt(key, bounds) => bound_sysctl_inode(Arc::new(HPerNetIntHook {
+            current_ns: current_net_ns, key, get: conntrack_int,
+            set: set_conntrack_int, bounds,
         })),
         Leaf::PerNetU16PairHook(get, set) => bound_sysctl_inode(Arc::new(HPerNetU16PairHook {
             current_ns: current_net_ns, get, set,

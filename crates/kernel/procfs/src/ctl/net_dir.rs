@@ -95,4 +95,37 @@ pub const NET_SYSCTLS: &[Node] = &[
             File("mld_max_msf",        NetGlobalIntHook(get_mld_max_msf, set_mld_max_msf,
                 Some(net::sysctl::MLD_MAX_MSF_BOUNDS))),
         ]),
+        Dir("netfilter", NETFILTER_SYSCTLS),
+];
+
+/// `/proc/sys/net/netfilter/` is backed by conntrack's actual per-net
+/// policy object. The index is the stable position in `conntrack::sysctl::KNOBS`.
+pub const NETFILTER_SYSCTLS: &[Node] = &[
+    File("nf_conntrack_tcp_timeout_syn_sent", ConntrackInt(0, None)),
+    File("nf_conntrack_tcp_timeout_syn_recv", ConntrackInt(1, None)),
+    File("nf_conntrack_tcp_timeout_established", ConntrackInt(2, None)),
+    File("nf_conntrack_tcp_timeout_fin_wait", ConntrackInt(3, None)),
+    File("nf_conntrack_tcp_timeout_close_wait", ConntrackInt(4, None)),
+    File("nf_conntrack_tcp_timeout_last_ack", ConntrackInt(5, None)),
+    File("nf_conntrack_tcp_timeout_time_wait", ConntrackInt(6, None)),
+    File("nf_conntrack_tcp_timeout_close", ConntrackInt(7, None)),
+    File("nf_conntrack_tcp_timeout_syn_sent2", ConntrackInt(8, None)),
+    File("nf_conntrack_tcp_timeout_max_retrans", ConntrackInt(9, None)),
+    File("nf_conntrack_tcp_timeout_unacknowledged", ConntrackInt(10, None)),
+    File("nf_conntrack_tcp_loose", ConntrackInt(11, Some((0, 1)))),
+    File("nf_conntrack_tcp_be_liberal", ConntrackInt(12, Some((0, 1)))),
+    File("nf_conntrack_tcp_ignore_invalid_rst", ConntrackInt(13, Some((0, 1)))),
+    File("nf_conntrack_tcp_max_retrans", ConntrackInt(14, Some((0, 255)))),
+    File("nf_conntrack_udp_timeout", ConntrackInt(15, None)),
+    File("nf_conntrack_udp_timeout_stream", ConntrackInt(16, None)),
+    File("nf_conntrack_icmp_timeout", ConntrackInt(17, None)),
+    File("nf_conntrack_icmpv6_timeout", ConntrackInt(18, None)),
+    File("nf_conntrack_generic_timeout", ConntrackInt(19, None)),
+    File("nf_conntrack_checksum", ConntrackInt(20, Some((0, 1)))),
+    File("nf_conntrack_events", ConntrackInt(21, Some((0, 1)))),
+    File("nf_conntrack_log_invalid", ConntrackInt(22, Some((0, 255)))),
+    File("nf_conntrack_helper", ConntrackInt(23, Some((0, 1)))),
+    File("nf_conntrack_acct", ConntrackInt(24, Some((0, 1)))),
+    File("nf_conntrack_max", ConntrackInt(25, Some((0, i64::MAX)))),
+    File("nf_conntrack_buckets", ConntrackInt(26, Some((0, i64::MAX)))),
 ];

@@ -50,6 +50,42 @@ impl NetStack {
         }).clone()
     }
 
+    /// Read an existing conntrack namespace without materializing one merely
+    /// because procfs was opened. # C: O(log N)
+    pub fn conntrack_existing_in(&self, net_ns: u64) -> Option<Arc<::conntrack::CtNet>> {
+        self.conntrack.lock().get(&net_ns).cloned()
+    }
+
+    /// Render the live conntrack proc body for one network namespace. # C: O(N)
+    pub fn conntrack_proc_body_in(&self, net_ns: u64) -> alloc::string::String {
+        let Some(ct) = self.conntrack_existing_in(net_ns) else { return alloc::string::String::new() };
+        let now = crate::stack::net_now_ns() / 1_000_000_000;
+        let acct = ct.sysctl.lock().acct;
+        ::conntrack::procfs::render(&ct.table.snapshot(now), now, acct)
+    }
+
+    /// Encode the live entries for ctnetlink's multipart GET dump. # C: O(N)
+    pub fn conntrack_dump_in(&self, net_ns: u64) -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
+        let Some(ct) = self.conntrack_existing_in(net_ns) else { return alloc::vec::Vec::new() };
+        let now = crate::stack::net_now_ns() / 1_000_000_000;
+        let acct = ct.sysctl.lock().acct;
+        ct.table.snapshot(now).iter()
+            .map(|c| ::conntrack::ctnetlink::encode_entry(c, now, acct))
+            .collect()
+    }
+
+    /// Read one live conntrack sysctl. The table is a per-net subsystem and
+    /// is initialized when its sysctl namespace is first accessed. # C: O(log N)
+    pub fn conntrack_sysctl_get(&self, net_ns: u64, knob: ::conntrack::sysctl::Knob) -> u64 {
+        self.conntrack_in(net_ns).sysctl.lock().get(knob)
+    }
+
+    /// Update one live conntrack sysctl. # C: O(log N)
+    pub fn conntrack_sysctl_set(&self, net_ns: u64,
+                                knob: ::conntrack::sysctl::Knob, value: u64) -> bool {
+        self.conntrack_in(net_ns).sysctl.lock().set(knob, value)
+    }
+
     /// Canonical policy-rule table owned by this network stack. # C: O(1)
     pub fn policy_rules(&self) -> &crate::policy_rule::PolicyRuleTable { self.routes.policy_rules() }
 

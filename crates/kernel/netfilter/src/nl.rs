@@ -99,10 +99,54 @@ fn handle_one(full_msg: &[u8], namespace: u64) -> Vec<u8> {
     };
     let attrs = &full_msg[nfg_off + Nfgenmsg::SIZE..];
     match (hdr.nlmsg_type >> 8) as u8 {
+        subsys::NFNL_SUBSYS_CTNETLINK => handle_ct_get(&hdr, &nfg, namespace),
         subsys::NFNL_SUBSYS_NFTABLES => nft_dispatch::handle_nft(
             namespace, &hdr, &nfg, (hdr.nlmsg_type & 0xFF) as u8, attrs),
         _ => nlmsg_ack(&hdr, 0),
     }
+}
+
+/// ctnetlink's GET dump is the read path used by `conntrack -L`. Each entry
+/// is encoded by conntrack itself; this layer only supplies the nfgenmsg and
+/// multipart netlink framing.
+fn handle_ct_get(req: &Nlmsghdr, nfg: &Nfgenmsg, namespace: u64) -> Vec<u8> {
+    const IPCTNL_MSG_CT_GET: u8 = 1;
+    if (req.nlmsg_type & 0xff) as u8 != IPCTNL_MSG_CT_GET {
+        return nlmsg_ack(req, -95 /* EOPNOTSUPP */);
+    }
+    let mut out = Vec::new();
+    for attrs in ::net::global_stack().conntrack_dump_in(namespace) {
+        let mut body = Vec::with_capacity(Nfgenmsg::SIZE + attrs.len());
+        let mut nfg_buf = [0u8; Nfgenmsg::SIZE];
+        nfg.write_to(&mut nfg_buf);
+        body.extend_from_slice(&nfg_buf);
+        body.extend_from_slice(&attrs);
+        let total = Nlmsghdr::SIZE + body.len();
+        let hdr = Nlmsghdr {
+            nlmsg_len: total as u32,
+            nlmsg_type: ((subsys::NFNL_SUBSYS_CTNETLINK as u16) << 8)
+                | IPCTNL_MSG_CT_GET as u16,
+            nlmsg_flags: flags::NLM_F_MULTI,
+            nlmsg_seq: req.nlmsg_seq,
+            nlmsg_pid: req.nlmsg_pid,
+        };
+        let mut hb = [0u8; Nlmsghdr::SIZE];
+        hdr.write_to(&mut hb);
+        out.extend_from_slice(&hb);
+        out.extend_from_slice(&body);
+        while out.len() % 4 != 0 { out.push(0); }
+    }
+    let done = Nlmsghdr {
+        nlmsg_len: Nlmsghdr::SIZE as u32,
+        nlmsg_type: msg::NLMSG_DONE,
+        nlmsg_flags: 0,
+        nlmsg_seq: req.nlmsg_seq,
+        nlmsg_pid: req.nlmsg_pid,
+    };
+    let mut db = [0u8; Nlmsghdr::SIZE];
+    done.write_to(&mut db);
+    out.extend_from_slice(&db);
+    out
 }
 
 fn reply_errno(reply: &[u8]) -> Option<i32> {
