@@ -257,6 +257,27 @@ fn the_mft_grows_when_its_record_bitmap_is_full() {
 }
 
 #[test]
+fn compressed_files_write_and_recompress_native_lznt_frames() {
+    let mut opts = crate::opts::Options::defaults();
+    opts.compress = true;
+    opts.settle();
+    let mut v = crate::volume::Volume::mount_with(Builder::new().finish(), opts).unwrap();
+    let made = v.create_file(MFT_REC_ROOT, "compressed", 1_800_000_000).unwrap();
+    let (_, attrs) = v.read_record(made.reference.number).unwrap();
+    let attr = crate::attrib::find(&attrs, ATTR_DATA, &[]).unwrap();
+    assert!(attr.non_resident && attr.compressed());
+    assert_eq!(attr.compression_unit(), Some(1 << LZNT_CUNIT));
+
+    let payload = alloc::vec![b'Z'; CLUSTER * 2 + 17];
+    v.write_file(made.reference.number, 0, &payload, 1_800_000_000).unwrap();
+    assert_eq!(v.read_whole(made.reference.number).unwrap(), payload);
+    assert!(v.stat(made.reference.number).unwrap().allocated < (CLUSTER * 2) as u64);
+
+    v.truncate_file(made.reference.number, 1234, 1_800_000_000).unwrap();
+    assert_eq!(v.read_whole(made.reference.number).unwrap(), alloc::vec![b'Z'; 1234]);
+}
+
+#[test]
 fn a_record_the_bitmap_calls_free_is_not_read_as_a_file() {
     let v = test_image::empty();
     // A record past everything the fixture wrote was never formatted, so

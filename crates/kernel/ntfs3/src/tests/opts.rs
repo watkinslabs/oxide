@@ -41,6 +41,8 @@ fn the_negatable_flags_can_be_turned_off_again() {
     assert!(!parse(base(), "case_sensitive,nocase_sensitive").unwrap().case_sensitive);
     assert!(parse(base(), "sparse").unwrap().sparse);
     assert!(!parse(base(), "sparse,nosparse").unwrap().sparse);
+    assert!(parse(base(), "compress").unwrap().compress);
+    assert!(!parse(base(), "compress,nocompress").unwrap().compress);
 }
 
 #[test]

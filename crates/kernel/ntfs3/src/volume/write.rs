@@ -39,13 +39,18 @@ impl<S: SectorSource> Volume<S> {
         if header.is_dir() { return Err(Errno::Eisdir); }
         let attrs = attrib::parse_all(&bytes, &header);
         let attr = attrib::find(&attrs, ATTR_DATA, name).ok_or(Errno::Enoent).cloned()?;
-        // Nothing here rewrites compressed or encrypted data; writing it as
-        // plain bytes would leave a stream the volume decompresses into
-        // nonsense.
-        if attr.compressed() || attr.encrypted() { return Err(Errno::Eopnotsupp); }
+        // Encrypted bytes have no owner here; native LZNT compression does.
+        if attr.encrypted() { return Err(Errno::Eopnotsupp); }
         let end = offset.checked_add(buf.len() as u64).ok_or(Errno::Efbig)?;
         let old_size = attr.data_size();
         let size = core::cmp::max(old_size, end);
+
+        if attr.compressed() {
+            let mut data = self.attribute_bytes(&bytes, &attrs, &attr)?;
+            data.resize(size as usize, 0);
+            data[offset as usize..offset as usize + buf.len()].copy_from_slice(buf);
+            return self.rewrite_compressed(number, name, &attr, data, now);
+        }
 
         if !attr.non_resident {
             let mut data = self.attribute_bytes(&bytes, &attrs, &attr)?;
@@ -156,9 +161,15 @@ impl<S: SectorSource> Volume<S> {
         if header.is_dir() { return Err(Errno::Eisdir); }
         let attrs = attrib::parse_all(&bytes, &header);
         let attr = attrib::find(&attrs, ATTR_DATA, &[]).ok_or(Errno::Enoent).cloned()?;
-        if attr.compressed() || attr.encrypted() { return Err(Errno::Eopnotsupp); }
+        if attr.encrypted() { return Err(Errno::Eopnotsupp); }
         let old = attr.data_size();
         if len == old { return Ok(()); }
+
+        if attr.compressed() {
+            let mut data = self.attribute_bytes(&bytes, &attrs, &attr)?;
+            data.resize(len as usize, 0);
+            return self.rewrite_compressed(number, &[], &attr, data, now).map(|_| ());
+        }
 
         if !attr.non_resident {
             let mut data = self.attribute_bytes(&bytes, &attrs, &attr)?;
@@ -236,6 +247,49 @@ impl<S: SectorSource> Volume<S> {
             }
         }
         self.write_record(number, &mut bytes)
+    }
+
+    /// Re-encode a native compressed stream one 64-KiB frame at a time.
+    /// # C: O(file bytes * LZNT window + allocated clusters)
+    fn rewrite_compressed(&mut self, number: u64, name: &[u16], attr: &attrib::Attribute,
+                          data: Vec<u8>, now: i64) -> Result<u64, Errno> {
+        let old_runs = if attr.non_resident {
+            let (bytes, attrs) = self.read_record(number)?;
+            self.attribute_runs(&bytes, &attrs, attr)?
+        } else { Runs::new() };
+        let unit = 1u64 << LZNT_CUNIT;
+        let frame_bytes = unit << self.geo.cluster_bits;
+        let mut runs = Runs::new();
+        for (index, source) in data.chunks(frame_bytes as usize).enumerate() {
+            let mut frame = vec![0u8; frame_bytes as usize];
+            frame[..source.len()].copy_from_slice(source);
+            let vcn = index as u64 * unit;
+            if frame.iter().all(|byte| *byte == 0) {
+                runs.push(crate::run::Run { vcn, lcn: SPARSE_LCN, len: unit });
+                continue;
+            }
+            let packed = crate::lznt::compress(&frame);
+            let full = packed.len() + self.geo.cluster_size as usize > frame.len();
+            let stored = if full { frame } else { packed };
+            let clusters = if full { unit } else {
+                self.geo.clusters_for(stored.len() as u64)
+            };
+            let extra = self.alloc_clusters(clusters)?;
+            let mut shifted = Runs::new();
+            for mut run in extra.runs { run.vcn += vcn; shifted.push(run); }
+            let mut on_disk = vec![0u8; (clusters << self.geo.cluster_bits) as usize];
+            on_disk[..stored.len()].copy_from_slice(&stored);
+            self.write_runs(&shifted, vcn << self.geo.cluster_bits, &on_disk)?;
+            for run in shifted.runs { runs.push(run); }
+            if clusters < unit {
+                runs.push(crate::run::Run { vcn: vcn + clusters, lcn: SPARSE_LCN,
+                                            len: unit - clusters });
+            }
+        }
+        self.replace_data(number, name, attr.offset, attr.id, &[], Some(runs),
+                          data.len() as u64, now, ATTR_FLAG_COMPRESSED)?;
+        self.free_runs(&old_runs)?;
+        Ok(data.len() as u64)
     }
 
     /// Fill a span of a runlist with zeros. # C: O(len)

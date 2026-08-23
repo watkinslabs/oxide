@@ -39,7 +39,8 @@ impl<S: SectorSource> Volume<S> {
 
         let attributes = if is_dir { FILE_ATTRIBUTE_DIRECTORY }
                          else { FILE_ATTRIBUTE_ARCHIVE
-                                | if self.opts.sparse { FILE_ATTRIBUTE_SPARSE_FILE } else { 0 } };
+                                | if self.opts.compress { FILE_ATTRIBUTE_COMPRESSED }
+                                  else if self.opts.sparse { FILE_ATTRIBUTE_SPARSE_FILE } else { 0 } };
         let fname = FileName {
             parent: Reference { number: parent, sequence: parent_seq },
             create_time: now,
@@ -100,6 +101,11 @@ impl<S: SectorSource> Volume<S> {
             let root = insert::empty_index_root(self.geo.index_size, self.geo.cluster_size);
             let attr = edit::resident(ATTR_ROOT, &I30_NAME, id, false, &root);
             let header = crate::record::parse(&bytes).map_err(|e| e.errno())?;
+            edit::insert(&mut bytes, &header, &attr)?;
+        } else if self.opts.compress {
+            let id = edit::take_attr_id(&mut bytes);
+            let attr = edit::non_resident_flags(ATTR_DATA, &[], id, &Runs::new(), 0, 0, 0,
+                                                self.geo.cluster_bits, ATTR_FLAG_COMPRESSED);
             edit::insert(&mut bytes, &header, &attr)?;
         } else if self.opts.sparse {
             let id = edit::take_attr_id(&mut bytes);

@@ -94,6 +94,7 @@ pub fn non_resident_flags(ty: u32, name: &[u16], id: u16, runs: &crate::run::Run
         .copy_from_slice(&(name_off as u16).to_le_bytes());
     out[ATTR_OFF_ID..ATTR_OFF_ID + 2].copy_from_slice(&id.to_le_bytes());
     out[ATTR_OFF_FLAGS..ATTR_OFF_FLAGS + 2].copy_from_slice(&flags.to_le_bytes());
+    if flags & ATTR_FLAG_COMPRESSED != 0 { out[NRES_OFF_C_UNIT] = LZNT_CUNIT; }
     let clusters = runs.clusters();
     let evcn = if clusters == 0 { u64::MAX } else { clusters - 1 };
     out[NRES_OFF_EVCN..NRES_OFF_EVCN + 8].copy_from_slice(&evcn.to_le_bytes());
