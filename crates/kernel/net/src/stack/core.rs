@@ -66,10 +66,18 @@ impl NetStack {
 
     /// Encode the live entries for ctnetlink's multipart GET dump. # C: O(N)
     pub fn conntrack_dump_in(&self, net_ns: u64) -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
+        self.conntrack_dump_filtered_in(net_ns, ::conntrack::ctnetlink::DumpFilter::default())
+    }
+
+    /// Encode entries selected by ctnetlink's direct table filters. # C: O(N)
+    pub fn conntrack_dump_filtered_in(&self, net_ns: u64,
+                                      filter: ::conntrack::ctnetlink::DumpFilter)
+        -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
         let Some(ct) = self.conntrack_existing_in(net_ns) else { return alloc::vec::Vec::new() };
         let now = crate::stack::net_now_ns() / 1_000_000_000;
         let acct = ct.sysctl.lock().acct;
         ct.table.snapshot(now).iter()
+            .filter(|c| ::conntrack::ctnetlink::matches_filter(c, &filter))
             .map(|c| ::conntrack::ctnetlink::encode_entry(c, now, acct))
             .collect()
     }
@@ -115,10 +123,20 @@ impl NetStack {
     /// # C: O(N)
     pub fn conntrack_dump_ctrzero_in(&self, net_ns: u64)
         -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
+        self.conntrack_dump_ctrzero_filtered_in(
+            net_ns, ::conntrack::ctnetlink::DumpFilter::default())
+    }
+
+    /// Encode selected entries while atomically zeroing their counters.
+    /// # C: O(N)
+    pub fn conntrack_dump_ctrzero_filtered_in(&self, net_ns: u64,
+                                              filter: ::conntrack::ctnetlink::DumpFilter)
+        -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
         let Some(ct) = self.conntrack_existing_in(net_ns) else { return alloc::vec::Vec::new() };
         let now = crate::stack::net_now_ns() / 1_000_000_000;
         let acct = ct.sysctl.lock().acct;
-        ct.table.snapshot(now).iter().map(|conn| {
+        ct.table.snapshot(now).iter()
+        .filter(|conn| ::conntrack::ctnetlink::matches_filter(conn, &filter)).map(|conn| {
             let counters = if acct { Some(conn.counters_read_and_zero()) } else { None };
             ::conntrack::ctnetlink::encode_entry_with_counters(conn, now, acct, counters)
         }).collect()

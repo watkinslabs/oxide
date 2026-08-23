@@ -270,6 +270,34 @@ fn parse_synproxy(attrs: &[u8])
     }))
 }
 
+fn parse_dump_filter(attrs: &[u8], family: u8)
+    -> Result<(bool, ::conntrack::ctnetlink::DumpFilter), i32>
+{
+    if find_bytes_attr(attrs, ::conntrack::uapi::CTA_FILTER).is_some() {
+        return Err(-95);
+    }
+    let mark = find_u32_attr(attrs, ::conntrack::uapi::CTA_MARK);
+    if mark.is_none() && find_u32_attr(attrs, ::conntrack::uapi::CTA_MARK_MASK).is_some() {
+        return Err(-22);
+    }
+    let status = find_u32_attr(attrs, ::conntrack::uapi::CTA_STATUS);
+    if status.is_none() && find_u32_attr(attrs, ::conntrack::uapi::CTA_STATUS_MASK).is_some() {
+        return Err(-22);
+    }
+    let mark = mark.map(|value| (value,
+        find_u32_attr(attrs, ::conntrack::uapi::CTA_MARK_MASK).unwrap_or(u32::MAX)));
+    let status = status.map(|value| (value,
+        find_u32_attr(attrs, ::conntrack::uapi::CTA_STATUS_MASK).unwrap_or(value)));
+    if status.is_some_and(|(_, mask)| mask == 0) { return Err(-22); }
+    let zone = find_be16_attr(attrs, ::conntrack::uapi::CTA_ZONE);
+    let selected = mark.is_some() || status.is_some() || zone.is_some();
+    Ok((selected, ::conntrack::ctnetlink::DumpFilter {
+        family: matches!(family, ::conntrack::uapi::NFPROTO_IPV4
+            | ::conntrack::uapi::NFPROTO_IPV6).then_some(family),
+        zone, mark, status,
+    }))
+}
+
 fn parse_helper_name(attrs: &[u8]) -> Result<Option<String>, ()> {
     let Some(help) = find_bytes_attr(attrs, ::conntrack::uapi::CTA_HELP) else {
         return Ok(None);
@@ -542,21 +570,27 @@ fn ct_single_reply(req: &Nlmsghdr, nfg: &Nfgenmsg, entry: Vec<u8>) -> Vec<u8> {
 
 fn handle_ct_get(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Vec<u8> {
     let zero = req.nlmsg_type & 0xff == conntrack::uapi::IPCTNL_MSG_CT_GET_CTRZERO as u16;
-    if let Some(raw) = find_bytes_attr(attrs, ::conntrack::uapi::CTA_TUPLE_ORIG)
-        .or_else(|| find_bytes_attr(attrs, ::conntrack::uapi::CTA_TUPLE_REPLY)) {
-        let Some(tuple) = parse_ct_tuple(raw, nfg.nfgen_family,
-            find_be16_attr(attrs, ::conntrack::uapi::CTA_ZONE).unwrap_or(0)) else {
-            return nlmsg_ack(req, -22);
-        };
-        let entry = if zero {
-            ::net::global_stack().conntrack_lookup_ctrzero_tuple_in(namespace, tuple)
-        } else {
-            ::net::global_stack().conntrack_lookup_tuple_in(namespace, tuple)
-        };
-        let Some(entry) = entry else {
-            return nlmsg_ack(req, -2);
-        };
-        return ct_single_reply(req, nfg, entry);
+    let (selected, filter) = match parse_dump_filter(attrs, nfg.nfgen_family) {
+        Ok(value) => value,
+        Err(errno) => return nlmsg_ack(req, errno),
+    };
+    if !selected {
+        if let Some(raw) = find_bytes_attr(attrs, ::conntrack::uapi::CTA_TUPLE_ORIG)
+            .or_else(|| find_bytes_attr(attrs, ::conntrack::uapi::CTA_TUPLE_REPLY)) {
+            let Some(tuple) = parse_ct_tuple(raw, nfg.nfgen_family,
+                find_be16_attr(attrs, ::conntrack::uapi::CTA_ZONE).unwrap_or(0)) else {
+                return nlmsg_ack(req, -22);
+            };
+            let entry = if zero {
+                ::net::global_stack().conntrack_lookup_ctrzero_tuple_in(namespace, tuple)
+            } else {
+                ::net::global_stack().conntrack_lookup_tuple_in(namespace, tuple)
+            };
+            let Some(entry) = entry else {
+                return nlmsg_ack(req, -2);
+            };
+            return ct_single_reply(req, nfg, entry);
+        }
     }
     if zero {
         if let Some(id) = find_u32_attr(attrs, ::conntrack::uapi::CTA_ID) {
@@ -567,9 +601,9 @@ fn handle_ct_get(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -
     }
     let mut out = Vec::new();
     let entries = if zero {
-        ::net::global_stack().conntrack_dump_ctrzero_in(namespace)
+        ::net::global_stack().conntrack_dump_ctrzero_filtered_in(namespace, filter)
     } else {
-        ::net::global_stack().conntrack_dump_in(namespace)
+        ::net::global_stack().conntrack_dump_filtered_in(namespace, filter)
     };
     for attrs in entries {
         let mut body = Vec::with_capacity(Nfgenmsg::SIZE + attrs.len());
@@ -610,9 +644,9 @@ mod tests {
     use alloc::vec::Vec;
     use alloc::sync::Arc;
     use crate::{subsys, Nfgenmsg};
-    use super::{handle_one, parse_ct_tuple, parse_helper_name, parse_labels, parse_nat_range,
-                parse_seqadjs, parse_sctp_protoinfo, parse_synproxy, parse_tcp_protoinfo,
-                reply_errno};
+    use super::{handle_one, parse_ct_tuple, parse_dump_filter, parse_helper_name, parse_labels,
+                parse_nat_range, parse_seqadjs, parse_sctp_protoinfo, parse_synproxy,
+                parse_tcp_protoinfo, reply_errno};
     use ::conntrack::{ProtoPart, Tuple, TupleEnd, InetAddr};
     use netlink::{flags, NetlinkSocket, Nlmsghdr, proto, register_netfilter_listener};
 
@@ -716,6 +750,33 @@ mod tests {
         ::conntrack::ctnetlink::nest_end(&mut incomplete, sctp);
         ::conntrack::ctnetlink::nest_end(&mut incomplete, outer);
         assert!(parse_sctp_protoinfo(&incomplete).is_err());
+    }
+
+    #[test]
+    fn ctnetlink_direct_dump_filters_use_linux_masks_and_reject_partial_filter_nests() {
+        let mut raw = Vec::new();
+        ::conntrack::ctnetlink::put_be32(
+            &mut raw, ::conntrack::uapi::CTA_MARK, 0x55);
+        ::conntrack::ctnetlink::put_be32(
+            &mut raw, ::conntrack::uapi::CTA_MARK_MASK, 0xf0);
+        ::conntrack::ctnetlink::put_be32(
+            &mut raw, ::conntrack::uapi::CTA_STATUS, 0x10);
+        let (_, filter) = parse_dump_filter(
+            &raw, ::conntrack::uapi::NFPROTO_IPV4).unwrap();
+        assert_eq!(filter.mark, Some((0x55, 0xf0)));
+        assert_eq!(filter.status, Some((0x10, 0x10)));
+        assert_eq!(filter.family, Some(::conntrack::uapi::NFPROTO_IPV4));
+
+        let mut mask_only = Vec::new();
+        ::conntrack::ctnetlink::put_be32(
+            &mut mask_only, ::conntrack::uapi::CTA_STATUS_MASK, 1);
+        assert_eq!(parse_dump_filter(&mask_only, 0), Err(-22));
+
+        let mut nested = Vec::new();
+        let n = ::conntrack::ctnetlink::nest_start(
+            &mut nested, ::conntrack::uapi::CTA_FILTER);
+        ::conntrack::ctnetlink::nest_end(&mut nested, n);
+        assert_eq!(parse_dump_filter(&nested, 0), Err(-95));
     }
 
     #[test]

@@ -9,6 +9,29 @@ use crate::entry::{Conn, ProtoState};
 use crate::tuple::Tuple;
 use crate::uapi::*;
 
+/// Direct ctnetlink dump selectors owned by the conntrack table. # C: O(1)
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct DumpFilter {
+    pub family: Option<u8>,
+    pub zone: Option<u16>,
+    pub mark: Option<(u32, u32)>,
+    pub status: Option<(u32, u32)>,
+}
+
+/// Match one live entry against the direct ctnetlink selectors. # C: O(1)
+pub fn matches_filter(c: &Conn, filter: &DumpFilter) -> bool {
+    if filter.family.is_some_and(|family| c.orig.l3num != family) { return false; }
+    if filter.zone.is_some_and(|zone| c.orig.zone != zone) { return false; }
+    if filter.mark.is_some_and(|(value, mask)|
+        (c.mark.load(::core::sync::atomic::Ordering::Acquire) & mask) != value) {
+        return false;
+    }
+    if filter.status.is_some_and(|(value, mask)| (c.status() & mask) != value) {
+        return false;
+    }
+    true
+}
+
 fn align4(n: usize) -> usize { (n + 3) & !3 }
 
 /// Append one attribute with a raw payload. # C: O(len(payload))

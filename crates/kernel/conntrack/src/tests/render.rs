@@ -321,6 +321,23 @@ fn ctnetlink_creator_confirms_a_tuple_with_timeout_status_and_mark() {
 }
 
 #[test]
+fn ctnetlink_dump_filter_matches_the_canonical_mark_and_status() {
+    let c = entry(v4_udp([192, 0, 2, 1], 40000, [198, 51, 100, 2], 53));
+    c.mark.store(0x55, core::sync::atomic::Ordering::Release);
+    c.set_status_bits(IPS_ASSURED);
+    let filter = ctnetlink::DumpFilter {
+        family: Some(NFPROTO_IPV4),
+        zone: Some(0),
+        mark: Some((0x50, 0xf0)),
+        status: Some((IPS_ASSURED, IPS_ASSURED)),
+    };
+    assert!(ctnetlink::matches_filter(&c, &filter));
+    assert!(!ctnetlink::matches_filter(&c, &ctnetlink::DumpFilter {
+        mark: Some((0x40, 0xf0)), ..filter
+    }));
+}
+
+#[test]
 fn ctnetlink_creator_attaches_only_a_registered_tuple_helper() {
     let ct = CtNet::new(0, 7);
     ct.helpers.register(Helper {
