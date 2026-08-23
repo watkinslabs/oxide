@@ -18,6 +18,7 @@ network-namespace = { path = "../network-namespace" }
 namespace-identity = { path = "../namespace-identity" }
 time-namespace = { path = "../time-namespace" }
 user-namespace = { path = "../user-namespace" }
+selinux-runtime = { path = "../selinux-runtime" }
 
 [lints]
 workspace = true

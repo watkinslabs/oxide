@@ -46,6 +46,22 @@ pub fn security_perm(ssid: Sid, permission: &str) -> Result<(), i64> {
     has_perm(ssid, crate::label::security_sid(), class, bit)
 }
 
+/// SELinux's `cred_has_capability` check for the LSM `capable` hook. The
+/// kernel capability set has two 32-bit access-vector classes: capability for
+/// CAP_0..CAP_31 and capability2 for CAP_32 onward. User-namespace checks use
+/// the corresponding cap_*_userns classes.
+pub fn capability(ssid: Sid, cap: u32, init_namespace: bool) -> Result<(), i64> {
+    let (class_name, bit) = if cap < 32 {
+        (if init_namespace { "capability" } else { "cap_userns" }, 1u32 << cap)
+    } else if cap < 64 {
+        (if init_namespace { "capability2" } else { "cap2_userns" }, 1u32 << (cap - 32))
+    } else {
+        return Err(EACCES);
+    };
+    let class = selinux::uapi::classmap::class_by_name(class_name).ok_or(EACCES)?;
+    has_perm(ssid, ssid, class, bit)
+}
+
 /// Emit the record describing one denial or audited grant.
 ///
 /// The record names the permissions, the class and both contexts. Naming the

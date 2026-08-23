@@ -248,12 +248,16 @@ pub fn has_cap_for(cur: &sched::Task, target_user_ns: &NamespacePin, cap: u32) -
     let euid = cur.creds.euid.load(core::sync::atomic::Ordering::Acquire);
     let mut ns = target_user_ns.clone();
     loop {
-        if NamespacePin::ptr_eq(&cred_ns, &ns) { return cur.has_cap(cap); }
+        if NamespacePin::ptr_eq(&cred_ns, &ns) {
+            return cur.has_cap(cap) && selinux_runtime::check::capability(
+                selinux_runtime::task::current_sid(), cap, false).is_ok();
+        }
         let Some(parent) = ns.parent() else { return false };
         if NamespacePin::ptr_eq(&cred_ns, &parent)
             && user_namespace::owner_euid(&ns) == Ok(Some(euid))
         {
-            return true;
+            return selinux_runtime::check::capability(
+                selinux_runtime::task::current_sid(), cap, false).is_ok();
         }
         ns = parent;
     }

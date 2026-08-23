@@ -1842,6 +1842,7 @@ dependencies = [
  "namespace-identity",
  "network-namespace",
  "sched",
+ "selinux-runtime",
  "sync",
  "syscall",
  "time-namespace",

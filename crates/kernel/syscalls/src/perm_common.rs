@@ -105,6 +105,7 @@ pub(crate) fn capable(cur: &sched::Task, cap: u32) -> bool {
     // uses. Treating "no namespace yet" as "not initial" would deny PID 1 the
     // capability it demonstrably holds.
     cur.has_cap(cap)
+        && selinux_runtime::check::capability(selinux_runtime::task::current_sid(), cap, true).is_ok()
         && cur.namespace_owner(namespace_identity::NamespaceKind::User)
               .is_none_or(|ns| ns.is_initial())
 }

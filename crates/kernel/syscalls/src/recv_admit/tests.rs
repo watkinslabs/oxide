@@ -23,7 +23,8 @@ const AF_INET: u16 = 2;
 fn deny(_context: Context) -> Verdict { Verdict::Deny }
 
 fn sock(namespace: u64) -> MsgSock {
-    MsgSock { namespace, family: AF_INET, proto: Proto::Udp }
+    MsgSock { namespace, family: AF_INET, proto: Proto::Udp,
+              target_sid: security::network::NO_LABEL, target_class: "socket" }
 }
 
 const FAMILIES: [RecvFamily; 4] = [
