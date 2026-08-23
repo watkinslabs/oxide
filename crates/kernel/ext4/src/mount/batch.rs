@@ -43,7 +43,6 @@ impl Mount {
     /// # C: O(N_dirty) when ordered, O(1) otherwise
     fn order_data_before_commit(&self) {
         if !self.behaviour().data.orders_data() { return; }
-        #[cfg(feature = "ext4-frame-cache")]
         // A failed data write is not lost here: the page stays dirty and the
         // store latches the error, so the next durability point reports it.
         let _ = crate::rootfs::framecache::writeback_dirty(Some(self));

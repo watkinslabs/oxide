@@ -26,12 +26,6 @@ pmm       = { path = "../mm-pmm" }
 fs        = { path = "../fs" }
 
 [features]
-# `ext4-frame-cache` (D8, default ON): route ext4 regular-file read(2)/write(2)
-# and MAP_SHARED mmap through the per-inode PMM frame store (read==write==mmap
-# coherency + writeback). OFF = legacy `Vec` page-cache read path + no
-# MAP_SHARED frame (bisect point for the boot-critical read swap).
-default = ["ext4-frame-cache"]
-ext4-frame-cache = []
 hosted = []
 debug-boot = []  # low-volume structural/device error source diagnostic
 debug-mount = []  # read-twice block verification (diagnose flaky block reads)

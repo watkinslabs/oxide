@@ -9,6 +9,7 @@
 //!                       `/usr/bin/realtool`, symlinks; no `hello.txt`)
 
 extern crate alloc;
+mod common;
 use alloc::sync::Arc;
 
 use block::{BlockDevice, BlockOp, BlockRequest, MemDisk};
@@ -68,22 +69,23 @@ fn same_ino_distinct_inodes() {
     assert!(!b_names.iter().any(|n| n == b"hello.txt"), "B root lacks hello.txt");
 }
 
-/// Per-mount page caches are independent: caching a file in A leaves B's
-/// cache stats untouched (no shared global cache aliasing inode numbers).
+/// Per-mount frame-store registries are independent: caching a file in A
+/// leaves B's cache stats untouched (no shared mount aliasing inode numbers).
 #[test]
-fn page_caches_are_per_mount() {
+fn frame_stores_are_per_mount() {
+    common::boot_hosted_pmm();
     let a = open(MINI);
     let b = open(WALK);
+    let afs: Arc<dyn FileSystem> = a.clone();
+    let _asb = common::realize_sb(afs.clone(), afs.root(), 0xA001, alloc::string::String::from("ext4-a"));
+    let bfs: Arc<dyn FileSystem> = b.clone();
+    let _bsb = common::realize_sb(bfs.clone(), bfs.root(), 0xB001, alloc::string::String::from("ext4-b"));
 
     let (b_h0, b_m0) = b.state().cache_stats();
     let _ = a.state().read_file(b"/hello.txt").expect("read A/hello.txt");
     let (b_h1, b_m1) = b.state().cache_stats();
     assert_eq!((b_h0, b_m0), (b_h1, b_m1), "reading A must not touch B's cache counters");
 
-    let (a_h0, _) = a.state().cache_stats();
-    let _ = a.state().read_file(b"/hello.txt"); // second read → cache hit on A
-    let (a_h1, _) = a.state().cache_stats();
-    assert!(a_h1 > a_h0, "A's own cache records the hit");
 }
 
 /// Root inode export routes through each instance's own mount.

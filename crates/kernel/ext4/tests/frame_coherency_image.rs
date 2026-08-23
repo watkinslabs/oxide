@@ -127,7 +127,7 @@ fn mmap_store_is_visible_to_read_and_shares_the_frame() {
 }
 
 #[test]
-fn multipage_frame_read_matches_legacy_and_source_b240() {
+fn multipage_frame_read_matches_path_helper_and_source_b240() {
     common::boot_hosted_pmm();
     let disk = fresh_disk();
     let dev: Arc<dyn BlockDevice> = disk.clone();
@@ -155,8 +155,8 @@ fn multipage_frame_read_matches_legacy_and_source_b240() {
     }
 
     // Fresh remount: no resident frames, so the frame read fills purely from
-    // disk. Compare the frame path (inode.read → read_framed) to the legacy Vec
-    // page-cache path (RootfsState::read_cached) and to the source bytes.
+    // disk. Compare the inode path with the path helper, which must acquire
+    // the same canonical frame store, and with the source bytes.
     let (m2, _sb2) = open_with_sb(dev.clone());
     let ino = m2.state().lookup_path(b"/big.bin").expect("big.bin after remount");
     let f = m2.state().wrap_file(ino).expect("wrap big.bin remount");
@@ -166,10 +166,10 @@ fn multipage_frame_read_matches_legacy_and_source_b240() {
     assert_eq!(n1, total, "frame read returns full length");
     assert_eq!(&via_frame[..], &pat[..], "frame read == source bytes (B240 multi-page fill)");
 
-    let mut via_legacy = alloc::vec![0u8; total];
-    let n2 = m2.state().read_cached(ino, 0, &mut via_legacy).expect("legacy read");
-    assert_eq!(n2, total, "legacy read returns full length");
-    assert_eq!(&via_frame[..], &via_legacy[..], "frame read byte-identical to legacy Vec page-cache read");
+    let mut via_helper = alloc::vec![0u8; total];
+    let n2 = m2.state().read_cached(ino, 0, &mut via_helper).expect("path-helper read");
+    assert_eq!(n2, total, "path helper returns full length");
+    assert_eq!(&via_frame[..], &via_helper[..], "inode and path-helper reads share the canonical frame store");
 
     // Short read past EOF: reading at total-10 with a big buffer returns 10.
     let mut tail = [0u8; 64];

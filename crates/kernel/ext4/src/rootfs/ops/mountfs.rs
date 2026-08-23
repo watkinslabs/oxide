@@ -134,7 +134,6 @@ impl vfs::SuperOps for Ext4SuperOps {
         // whole-fs pass.
         // Scoped to THIS mount: `syncfs(2)` syncs the filesystem containing the
         // fd, never a peer ext4 mount the caller did not name.
-        #[cfg(feature = "ext4-frame-cache")]
         crate::rootfs::framecache::flush_dirty(Some(&self.st.mount))
             .map_err(|_| vfs::VfsError::Eio)?;
         // Drain the running batched transaction (Linux `sync_fs` IS the

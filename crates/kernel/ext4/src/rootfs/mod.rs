@@ -3,7 +3,7 @@
 // The ROOT filesystem (`Ext4RootfsFs`, a unit struct kmain registers at
 // "/") resolves through a single published root `RootfsState`. Stage 3
 // adds `Ext4Mount` (in `ops.rs`) — a self-contained FileSystem instance
-// that carries its OWN `RootfsState` (mount + page cache + orphan set),
+// that carries its OWN `RootfsState` (mount + frame-store registry + orphan set),
 // so /home or a tools volume can each be its own ext4 mount without
 // aliasing the root's device, cache, or orphan tracking. The free-fn API
 // (`read_file`, `lookup_path`, …) and `Ext4RootfsFs` stay bound to the
@@ -118,7 +118,7 @@ pub fn set_test_mount(mount: crate::Mount) {
 /// wired the same inode could be freed twice (the second `free_inode` hitting
 /// an already-clear bitmap bit). Umount (`Ext4Mount::drop`) and mount-time
 /// `orphan_cleanup` remain the backstops, exactly as in Linux.
-/// (hits, misses) for the root mount's page cache.
+/// (hits, misses) for the root mount's canonical frame store.
 /// # C: O(1)
 pub fn cache_stats() -> (u64, u64) { root().map(|s| s.cache_stats()).unwrap_or((0, 0)) }
 

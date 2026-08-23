@@ -1,7 +1,6 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use block::types::InodeId;
 use vfs::file_ops::{FileIoctlCmd, FileIoctlReply, FileOps};
 use vfs::inode::InodeBuilder;
 use vfs::inode_ops::{InodeOps, mk_mode};
@@ -230,7 +229,6 @@ impl InodeOps for Ext4StatInodeOps {
             Ok(())
         }).map_err(super::regular::vfs_error_from_mount)?;
         d.st.orphan_remove(ino);
-        d.st.page_cache.invalidate(InodeId(ino as u64));
         target.inc_nlink();
         Ok(())
     }

@@ -9,8 +9,6 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
-use block::types::InodeId;
-
 use super::{Ext4FrameStore, PG};
 
 /// One writeback admitted before final inode eviction.  The counter spans the
@@ -198,8 +196,6 @@ impl Ext4FrameStore {
         }
         finish_writeback(&mut self.writeback.lock(), &idxs);
         vfs::memory_accounting::account_file_cache_writeback_complete(idxs.len() as u64, redirtied);
-        // Drop the legacy Vec page-cache view so the metadata path re-reads.
-        self.st.page_cache.invalidate(InodeId(self.ino as u64));
         #[cfg(feature = "debug-fsync-latency")]
         crate::fsync_latency::report(b"writeback", writeback_started_ns, idxs.len() as u64);
         if failed || rv.is_err() { Err(()) } else { Ok(()) }

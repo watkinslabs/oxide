@@ -9,9 +9,9 @@ use sched::live::WaitList;
 use super::super::state::RootfsState;
 
 /// `i_private` for a regular ext4 file. Stat (size/perm) doesn't pull file
-/// contents; read(2)/mmap serve incrementally through the owning mount's
-/// shared `page_cache` (D8 — no whole-file `Vec` snapshot). `st` carries the
-/// owning mount so reads/writes hit its device + page cache.
+/// contents; read(2)/mmap serve incrementally through the inode's canonical
+/// frame store (D8 — no whole-file `Vec` snapshot). `st` carries the owning
+/// mount so writes reach its device and journal.
 pub(crate) struct Ext4FileData {
     pub(crate) st:        Arc<RootfsState>,
     pub(crate) ino:       u32,
