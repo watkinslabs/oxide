@@ -4,6 +4,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
+use alloc::vec;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
@@ -110,10 +111,14 @@ fn positional_pwritev(args: &SyscallArgs, mut off: u64, flags: u64) -> i64 {
             Err(_)               => break,
         };
         if capped == 0 { continue; }
-        // SAFETY: `import_iovec` proved [base, base+len) readable in the active
-        // address space below USER_VA_END; `capped <= len`.
-        let buf: &[u8] = unsafe { core::slice::from_raw_parts(base as *const u8, capped) };
-        match file.pwrite_iocb(buf, off as i64, iocb) {
+        // Stage the faultable user source before entering the filesystem. No
+        // raw user slice may remain live across `pwrite_iocb`.
+        let mut bounce = vec![0u8; capped];
+        if uaccess::copy_from_user(&mut bounce, base).is_err() {
+            if total == 0 { let r = errno(Errno::Efault); cur.account_write_result(r); return r; }
+            break;
+        }
+        match file.pwrite_iocb(&bounce, off as i64, iocb) {
             Ok(0)  => break,
             Ok(n)  => {
                 total = total.saturating_add(n as u64);
