@@ -128,7 +128,7 @@ pub enum NetSysctlKey {
     /// `net.ipv4.tcp_invalid_ratelimit`, in milliseconds.
     TcpInvalidRatelimit,
     /// Per-namespace handshake-option admission.
-    TcpTimestamps, TcpSack, TcpWindowScaling,
+    TcpTimestamps, TcpSack, TcpWindowScaling, TcpEcn,
 }
 
 /// One slot of a three-value socket-buffer window. # C: O(1)
@@ -171,7 +171,8 @@ impl NetSysctlKey {
     const TCP_TIMESTAMPS: usize = Self::TCP_INVALID_RATELIMIT + 1;
     const TCP_SACK: usize = Self::TCP_TIMESTAMPS + 1;
     const TCP_WINDOW_SCALING: usize = Self::TCP_SACK + 1;
-    const COUNT: usize = Self::TCP_WINDOW_SCALING + 1;
+    const TCP_ECN: usize = Self::TCP_WINDOW_SCALING + 1;
+    const COUNT: usize = Self::TCP_ECN + 1;
 
     const fn index(self) -> usize {
         match self {
@@ -209,6 +210,7 @@ impl NetSysctlKey {
             Self::TcpTimestamps => Self::TCP_TIMESTAMPS,
             Self::TcpSack => Self::TCP_SACK,
             Self::TcpWindowScaling => Self::TCP_WINDOW_SCALING,
+            Self::TcpEcn => Self::TCP_ECN,
         }
     }
 
@@ -252,6 +254,7 @@ impl NetSysctlKey {
             Self::TCP_TIMESTAMPS => Self::TcpTimestamps,
             Self::TCP_SACK => Self::TcpSack,
             Self::TCP_WINDOW_SCALING => Self::TcpWindowScaling,
+            Self::TCP_ECN => Self::TcpEcn,
             _ => {
                 let relative = index - Self::BASE_COUNT;
                 let dev = match Ipv4ConfDev::from_index(relative / Ipv4ConfKey::COUNT) {
@@ -290,6 +293,7 @@ impl NetSysctlKey {
             Self::TCP_INVALID_RATELIMIT =>
                 crate::tcp_conn::reqsk::INVALID_RATELIMIT_DEFAULT_MS as i64,
             Self::TCP_TIMESTAMPS | Self::TCP_SACK | Self::TCP_WINDOW_SCALING => 1,
+            Self::TCP_ECN => 2,
             _ if index >= Self::WMEM_BASE && index < Self::RMEM_BASE =>
                 crate::sysctl::DEFAULT_TCP_WMEM[index - Self::WMEM_BASE],
             _ if index >= Self::RMEM_BASE && index < Self::BASE_COUNT =>

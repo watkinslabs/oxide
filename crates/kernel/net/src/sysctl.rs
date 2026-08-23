@@ -191,6 +191,13 @@ pub fn tcp_option_permissions_in(ns: u64) -> crate::syncookies::Permitted {
     }
 }
 
+/// `net.ipv4.tcp_ecn`: incoming ECN negotiation policy. Linux accepts the
+/// cookie's ECN bit when this policy is non-zero, or when the selected route
+/// explicitly advertises `RTAX_FEATURE_ECN`.
+pub fn tcp_ecn_in(ns: u64) -> i64 {
+    value_in(ns, NetSysctlKey::TcpEcn).unwrap_or(2)
+}
+
 /// Read a live namespace by numeric key without creating state. # C: O(log N)
 pub fn value_in(ns: u64, key: NetSysctlKey) -> Option<i64> {
     crate::net_ns::state_by_id(ns).map(|state| state.sysctls.get(key))
