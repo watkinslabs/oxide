@@ -126,6 +126,30 @@ pub fn parse(sector: &[u8]) -> Result<Bpb, BpbError> {
 }
 
 impl Bpb {
+    /// Decode the four DOS 1.x floppy geometries Linux accepts when the
+    /// normal BPB is absent. The boot jump and zeroed BPB fields are checked
+    /// before device size selects the complete default geometry. # C: O(1)
+    pub fn dos1x(sector: &[u8], total_sectors: u64) -> Option<Self> {
+        if sector.len() < 0x1c || sector[0] != 0xeb || sector[2] != 0x90 { return None; }
+        for (at, len) in [(off::SECTOR_SIZE, 2), (off::SEC_PER_CLUS, 1),
+                           (off::RESERVED, 2), (off::FATS, 1), (off::DIR_ENTRIES, 2),
+                           (off::TOTAL_SECT16, 2), (off::MEDIA, 1),
+                           (off::FAT_LENGTH16, 2), (0x18, 2), (0x1a, 2)] {
+            if sector[at..at + len].iter().any(|&byte| byte != 0) { return None; }
+        }
+        let (sec_per_clus, dir_entries, media, fat_length) = match total_sectors {
+            320 => (1, 64, 0xfe, 1),
+            360 => (1, 64, 0xfc, 2),
+            640 => (2, 112, 0xff, 1),
+            720 => (2, 112, 0xfd, 2),
+            _ => return None,
+        };
+        Some(Self { sector_size: 512, sec_per_clus, reserved: 1, fats: 2,
+                    dir_entries, media, fat_length16: fat_length, fat_length32: 0,
+                    total_sect16: total_sectors as u32, total_sect32: 0,
+                    root_cluster: 0, fsinfo_sector: 0 })
+    }
+
     /// Table length in sectors, from whichever field carries it. # C: O(1)
     pub fn fat_length(&self) -> u32 {
         if self.fat_length16 != 0 { self.fat_length16 } else { self.fat_length32 }

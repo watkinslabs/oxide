@@ -98,6 +98,11 @@ impl BlockSource {
 }
 
 impl SectorSource for BlockSource {
+    fn sector_count(&self) -> Option<u64> {
+        let bytes = self.dev.capacity_blocks().checked_mul(u64::from(self.dev.block_size()))?;
+        Some(bytes / u64::from(self.sector_size))
+    }
+
     fn read_sectors(&self, sector: u64, buf: &mut [u8]) -> Result<(), Errno> {
         let (first, skew, blocks) = self.span(sector, buf.len())?;
         let span = skew + buf.len();

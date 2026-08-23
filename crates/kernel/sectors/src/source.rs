@@ -21,6 +21,11 @@ pub(crate) fn crypt_errno(e: block::BlockError) -> Errno {
 
 /// Where a volume's bytes come from.
 pub trait SectorSource {
+    /// Number of addressable sectors, when the medium can report its size.
+    /// Format fallbacks that depend on an exact device geometry must refuse
+    /// to guess when this is unavailable. # C: O(1)
+    fn sector_count(&self) -> Option<u64> { None }
+
     /// Read `buf.len()` bytes starting at sector `sector`. A short read is an
     /// error: unlike a backing file, a volume's own sectors either exist or
     /// the volume is truncated.
@@ -305,6 +310,10 @@ impl MemImage {
 }
 
 impl SectorSource for MemImage {
+    fn sector_count(&self) -> Option<u64> {
+        Some(self.bytes.lock().len() as u64 / u64::from(self.sector_size))
+    }
+
     fn read_sectors(&self, sector: u64, buf: &mut [u8]) -> Result<(), Errno> {
         let bytes = self.bytes.lock();
         let (start, end) = self.span(sector, buf.len(), bytes.len()).ok_or(Errno::Eio)?;

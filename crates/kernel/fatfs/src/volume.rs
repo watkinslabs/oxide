@@ -98,7 +98,14 @@ impl<S: SectorSource> Volume<S> {
     pub fn mount_with(source: S, opts: Options) -> Result<Self, Errno> {
         let mut boot = vec![0u8; 512];
         source.read_sectors(0, &mut boot)?;
-        let parsed = bpb::parse(&boot).map_err(|e| e.errno())?;
+        let parsed = match bpb::parse(&boot) {
+            Ok(parsed) => parsed,
+            Err(error) if opts.dos1xfloppy => {
+                source.sector_count().and_then(|count| bpb::Bpb::dos1x(&boot, count))
+                    .ok_or_else(|| error.errno())?
+            }
+            Err(error) => return Err(error.errno()),
+        };
         // A volume declaring a sector larger than the one just read is read
         // again at its own size, or its later fields come from the wrong place.
         let (parsed, boot) = if parsed.sector_size as usize > boot.len() {
