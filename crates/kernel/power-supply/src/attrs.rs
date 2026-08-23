@@ -162,7 +162,7 @@ mod tests {
         let names: Vec<&str> = visible_attrs(&psy).into_iter().map(|(name, _)| name).collect();
         assert_eq!(names, alloc::vec![
             "status", "present", "technology", "voltage_now", "charge_control_end_threshold",
-            "capacity", "temp", "type", "model_name", "alarm",
+            "capacity", "temp", "type", "model_name",
         ], "class attributes keep table order and provider attributes follow them");
         assert!(!names.contains(&"online"), "a battery must not publish a mains attribute");
         assert!(!names.contains(&"energy_now"));

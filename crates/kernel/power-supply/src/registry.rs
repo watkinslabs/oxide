@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 use sync::{Devices, Spinlock};
 use vfs::{KResult, VfsError};
 
-use crate::supply::{PowerSupply, SupplyDesc, SupplyOps};
+use crate::supply::{thermal_zone, PowerSupply, SupplyDesc, SupplyOps};
 
 /// Change-notification callback, called with the supply name. The sysfs layer
 /// installs one to turn a class change into a `change` uevent.
@@ -28,6 +28,7 @@ pub fn register(desc: SupplyDesc, ops: Arc<dyn SupplyOps>) -> KResult<Arc<PowerS
     let mut supplies = SUPPLIES.lock();
     if supplies.iter().any(|psy| psy.name() == desc.name) { return Err(VfsError::Eexist); }
     let psy = Arc::new(PowerSupply::new(desc, ops));
+    if let Some(zone) = thermal_zone(&psy)? { psy.set_thermal_zone(zone); }
     supplies.push(Arc::clone(&psy));
     drop(supplies);
     // The supply becomes readable only once it is in the list, so the first
@@ -42,6 +43,7 @@ pub fn register(desc: SupplyDesc, ops: Arc<dyn SupplyOps>) -> KResult<Arc<PowerS
 /// is going away. # C: O(N_supplies)
 pub fn unregister(psy: &Arc<PowerSupply>) -> bool {
     psy.mark_removing();
+    if let Some(zone) = psy.take_thermal_zone() { let _ = thermal::unregister_zone(&zone); }
     let mut supplies = SUPPLIES.lock();
     let Some(index) = supplies.iter().position(|entry| Arc::ptr_eq(entry, psy)) else { return false; };
     supplies.remove(index);
@@ -75,7 +77,9 @@ pub fn changed(psy: &Arc<PowerSupply>) {
 
 /// Empty the registry between tests. # C: O(N_supplies)
 #[cfg(test)]
-pub fn clear_for_tests() { SUPPLIES.lock().clear(); }
+pub fn clear_for_tests() {
+    for psy in supplies() { let _ = unregister(&psy); }
+}
 
 #[cfg(test)]
 mod tests {
@@ -140,6 +144,33 @@ mod tests {
         assert_eq!(psy.get_property(Property::Online), Err(VfsError::Enodev));
         assert!(by_name("ADP1").is_none());
         assert!(!unregister(&psy));
+        clear_for_tests();
+    }
+
+    struct Temperature { tenths_c: i32 }
+    impl SupplyOps for Temperature {
+        fn get_property(&self, prop: Property) -> KResult<PropVal> {
+            match prop {
+                Property::Temp => Ok(PropVal::Int(self.tenths_c)),
+                _ => Err(VfsError::Einval),
+            }
+        }
+    }
+
+    #[test]
+    fn a_temperature_supply_gets_an_event_driven_thermal_zone_in_millidegrees() {
+        let _guard = REGISTRY_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        clear_for_tests();
+        let psy = register(
+            SupplyDesc::new("BAT-TEMP", PsyType::Battery, alloc::vec![Property::Temp]),
+            Arc::new(Temperature { tenths_c: 253 }),
+        ).expect("temperature supply");
+        let zones = thermal::zones();
+        let zone = zones.iter().find(|zone| zone.ty() == "BAT-TEMP").expect("thermal zone");
+        assert_eq!(zone.cadence(), thermal::Cadence { polling_ms: 0, passive_ms: 0 });
+        assert_eq!(zone.ops().get_temp(), Ok(25_300));
+        assert!(unregister(&psy));
+        assert!(thermal::zones().iter().all(|entry| entry.ty() != "BAT-TEMP"));
         clear_for_tests();
     }
 

@@ -45,9 +45,11 @@ pub use governor::{available_names, by_name, Governor};
 pub use monitor::Cadence;
 pub use registry::{apply_cdev, cdev_by_name, cooling_devices, device_names, next_deadline_ns,
                    rebind_zone, reconfigure_zone, register_cdev, register_cdev_for_path, register_zone,
-                   set_change_hook, set_critical_hook,
+                   set_change_hook, set_critical_hook, unregister_zone,
                    set_crossing_hook, tick, unregister_cdev, update_all, update_zone,
                    zone_by_name, zones};
+#[cfg(test)]
+pub use registry::clear_for_tests;
 pub use trip::{Bucket, Trip, TripDesc};
 pub use uapi::{Direction, Mode, Trend, TripType, CLASS_NAME, NO_LIMIT, NO_TARGET, TEMP_INVALID};
 pub use zone::{BindSpec, ThermalZone, ZoneDesc, ZoneOps};
