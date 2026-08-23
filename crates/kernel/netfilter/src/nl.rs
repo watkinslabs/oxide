@@ -668,7 +668,7 @@ fn ct_single_reply(req: &Nlmsghdr, nfg: &Nfgenmsg, entry: Vec<u8>) -> Vec<u8> {
     let hdr = Nlmsghdr {
         nlmsg_len: total as u32,
         nlmsg_type: ((subsys::NFNL_SUBSYS_CTNETLINK as u16) << 8)
-            | conntrack::uapi::IPCTNL_MSG_CT_GET as u16,
+            | (req.nlmsg_type & 0xff),
         nlmsg_flags: 0,
         nlmsg_seq: req.nlmsg_seq,
         nlmsg_pid: req.nlmsg_pid,
@@ -684,35 +684,27 @@ fn ct_single_reply(req: &Nlmsghdr, nfg: &Nfgenmsg, entry: Vec<u8>) -> Vec<u8> {
 
 fn handle_ct_get(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Vec<u8> {
     let zero = req.nlmsg_type & 0xff == conntrack::uapi::IPCTNL_MSG_CT_GET_CTRZERO as u16;
-    let (selected, filter) = match parse_dump_filter(attrs, nfg.nfgen_family) {
+    if req.nlmsg_flags & flags::NLM_F_DUMP == 0 {
+        let Some(raw) = find_bytes_attr(attrs, ::conntrack::uapi::CTA_TUPLE_ORIG)
+            .or_else(|| find_bytes_attr(attrs, ::conntrack::uapi::CTA_TUPLE_REPLY)) else {
+            return nlmsg_ack(req, -22);
+        };
+        let Some(tuple) = parse_ct_tuple(raw, nfg.nfgen_family,
+            find_be16_attr(attrs, ::conntrack::uapi::CTA_ZONE).unwrap_or(0)) else {
+            return nlmsg_ack(req, -22);
+        };
+        let entry = if zero {
+            ::net::global_stack().conntrack_lookup_ctrzero_tuple_in(namespace, tuple)
+        } else {
+            ::net::global_stack().conntrack_lookup_tuple_in(namespace, tuple)
+        };
+        let Some(entry) = entry else { return nlmsg_ack(req, -2); };
+        return ct_single_reply(req, nfg, entry);
+    }
+    let (_, filter) = match parse_dump_filter(attrs, nfg.nfgen_family) {
         Ok(value) => value,
         Err(errno) => return nlmsg_ack(req, errno),
     };
-    if !selected {
-        if let Some(raw) = find_bytes_attr(attrs, ::conntrack::uapi::CTA_TUPLE_ORIG)
-            .or_else(|| find_bytes_attr(attrs, ::conntrack::uapi::CTA_TUPLE_REPLY)) {
-            let Some(tuple) = parse_ct_tuple(raw, nfg.nfgen_family,
-                find_be16_attr(attrs, ::conntrack::uapi::CTA_ZONE).unwrap_or(0)) else {
-                return nlmsg_ack(req, -22);
-            };
-            let entry = if zero {
-                ::net::global_stack().conntrack_lookup_ctrzero_tuple_in(namespace, tuple)
-            } else {
-                ::net::global_stack().conntrack_lookup_tuple_in(namespace, tuple)
-            };
-            let Some(entry) = entry else {
-                return nlmsg_ack(req, -2);
-            };
-            return ct_single_reply(req, nfg, entry);
-        }
-    }
-    if zero {
-        if let Some(id) = find_u32_attr(attrs, ::conntrack::uapi::CTA_ID) {
-            let Some(entry) = ::net::global_stack().conntrack_lookup_ctrzero_id_in(
-                namespace, id as u64) else { return nlmsg_ack(req, -2); };
-            return ct_single_reply(req, nfg, entry);
-        }
-    }
     let mut out = Vec::new();
     let entries = if zero {
         ::net::global_stack().conntrack_dump_ctrzero_filtered_in(namespace, filter)
@@ -1055,6 +1047,36 @@ mod tests {
         let reply = Tuple { protonum: ::conntrack::uapi::IPPROTO_TCP,
                             ..orig };
         assert_eq!(reply_errno(&handle_one(&make_request(Some(&reply)), 0)), Some(-22));
+    }
+
+    #[test]
+    fn ctnetlink_get_without_dump_requires_a_directional_tuple() {
+        let make_request = |attrs: &[u8]| {
+            let mut body = Vec::new();
+            let mut family = [0u8; Nfgenmsg::SIZE];
+            Nfgenmsg { nfgen_family: ::conntrack::uapi::NFPROTO_IPV4,
+                       version: 0, res_id: 0 }.write_to(&mut family);
+            body.extend_from_slice(&family);
+            body.extend_from_slice(attrs);
+            let hdr = Nlmsghdr {
+                nlmsg_len: (Nlmsghdr::SIZE + body.len()) as u32,
+                nlmsg_type: ((subsys::NFNL_SUBSYS_CTNETLINK as u16) << 8)
+                    | ::conntrack::uapi::IPCTNL_MSG_CT_GET as u16,
+                nlmsg_flags: flags::NLM_F_REQUEST | flags::NLM_F_ACK,
+                nlmsg_seq: 1, nlmsg_pid: 0,
+            };
+            let mut frame = Vec::new();
+            let mut header = [0u8; Nlmsghdr::SIZE];
+            hdr.write_to(&mut header);
+            frame.extend_from_slice(&header);
+            frame.extend_from_slice(&body);
+            frame
+        };
+        assert_eq!(reply_errno(&handle_one(&make_request(&[]), 0)), Some(-22));
+        let mut selector = Vec::new();
+        ::conntrack::ctnetlink::put_be32(
+            &mut selector, ::conntrack::uapi::CTA_MARK, 0x55);
+        assert_eq!(reply_errno(&handle_one(&make_request(&selector), 0)), Some(-22));
     }
 
     #[test]
