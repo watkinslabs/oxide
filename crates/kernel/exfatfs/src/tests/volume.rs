@@ -69,6 +69,46 @@ fn a_corrupt_file_chain_applies_the_remount_ro_policy() {
 }
 
 #[test]
+fn malformed_lookup_set_applies_the_remount_ro_policy() {
+    let mut b = Builder::new();
+    let mut bytes = crate::dirent::set::build(
+        ATTR_ARCHIVE, &"broken".encode_utf16().collect::<alloc::vec::Vec<_>>(), 0,
+        0, 0, 0, ALLOC_FAT_CHAIN, stamp(), stamp(), stamp()).unwrap();
+    bytes[FILE_OFF_NUM_EXT] += 1;
+    bytes.extend_from_slice(&[0u8; DENTRY_BYTES]);
+    bytes[3 * DENTRY_BYTES] = TYPE_ACL;
+    crate::dirent::set::reseal(&mut bytes);
+    b.push_root_entry(&bytes);
+    let mut opts = Options::defaults();
+    opts.errors = crate::opts::Errors::RemountRo;
+    opts.settle();
+    let v = Volume::mount_with(b.finish(), opts).unwrap();
+    assert_eq!(v.find_entry(&v.root_chain(), "broken"), Err(syscall::errno::Errno::Eio));
+    assert!(!v.writable());
+}
+
+#[test]
+fn lookup_normalizes_advisory_sizes_but_rejects_impossible_data_size() {
+    let mut b = Builder::new();
+    b.push_name_sized("zero-start", false, 0, CLUSTER as u64, CLUSTER as u64,
+                      ALLOC_FAT_CHAIN);
+    let v = test_image::mount(b);
+    let entry = v.find_entry(&v.root_chain(), "zero-start").unwrap();
+    assert_eq!(entry.size(), 0);
+    assert_eq!(entry.set.stream.start_cluster, EOF_CLUSTER);
+
+    let mut b = Builder::new();
+    b.push_name("too-large", false, FIRST_CLUSTER, (CLUSTER * 100) as u64,
+                 ALLOC_NO_FAT_CHAIN);
+    let mut opts = Options::defaults();
+    opts.errors = crate::opts::Errors::Continue;
+    opts.settle();
+    let v = Volume::mount_with(b.finish(), opts).unwrap();
+    assert_eq!(v.find_entry(&v.root_chain(), "too-large"), Err(syscall::errno::Errno::Eio));
+    assert!(v.writable());
+}
+
+#[test]
 fn a_volume_with_no_allocation_bitmap_is_refused() {
     // Every cluster's freedom is the bitmap's answer, so a volume without one
     // cannot be allocated on and cannot be trusted about what is in use.

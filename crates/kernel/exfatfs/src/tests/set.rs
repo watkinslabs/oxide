@@ -60,6 +60,16 @@ fn a_stream_entry_that_is_not_one_is_refused() {
 }
 
 #[test]
+fn a_critical_secondary_after_the_name_is_refused() {
+    let mut bytes = built("readme.txt");
+    bytes[FILE_OFF_NUM_EXT] += 1;
+    bytes.extend_from_slice(&[0u8; DENTRY_BYTES]);
+    bytes[3 * DENTRY_BYTES] = TYPE_ACL;
+    reseal(&mut bytes);
+    assert_eq!(parse(&bytes, 0), Err(SetError::BadType));
+}
+
+#[test]
 fn a_set_the_bytes_end_before_is_refused() {
     let bytes = built("readme.txt");
     assert_eq!(parse(&bytes[..DENTRY_BYTES * 2], 0), Err(SetError::Truncated));

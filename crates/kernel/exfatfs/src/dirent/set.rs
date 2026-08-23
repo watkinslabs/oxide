@@ -44,6 +44,8 @@ pub enum SetError {
     BadChecksum,
     /// The declared entry count is outside what a name can occupy.
     BadCount,
+    /// A critical secondary entry is not in the position its set requires.
+    BadType,
 }
 
 impl EntrySet {
@@ -83,6 +85,16 @@ pub fn parse(bytes: &[u8], offset: u64) -> Result<EntrySet, SetError> {
     let needed = name::name_entries(name_len);
     if name_len == 0 || name_len > MAX_NAME_LENGTH { return Err(SetError::ShortName); }
     if count < ES_IDX_FIRST_NAME + needed { return Err(SetError::ShortName); }
+
+    if class_of(bytes[stream_at]) != EntryKind::Stream { return Err(SetError::BadType); }
+    for i in 0..needed {
+        let at = (ES_IDX_FIRST_NAME + i) * DENTRY_BYTES;
+        if class_of(bytes[at]) != EntryKind::Name { return Err(SetError::BadType); }
+    }
+    for i in ES_IDX_FIRST_NAME + needed..count {
+        let kind = class_of(bytes[i * DENTRY_BYTES]);
+        if !kind.is_secondary() || !kind.is_benign() { return Err(SetError::BadType); }
+    }
 
     let mut units = Vec::with_capacity(name_len);
     for i in 0..needed {

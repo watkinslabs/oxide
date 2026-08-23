@@ -76,9 +76,11 @@ impl<S: SectorSource> Volume<S> {
         let span = file.set_len() * DENTRY_BYTES;
         let mut bytes = alloc::vec![0u8; span];
         self.read_at(&pchain, offset, &mut bytes)?;
-        let parsed = set::parse(&bytes, offset).map_err(|_| Errno::Eio)?;
+        let parsed = set::parse(&bytes, offset)
+            .map_err(|_| self.fs_error("malformed exFAT directory entry set"))?;
         if !parsed.is_dir() { return Err(Errno::Enotdir); }
-        Ok((self.chain_of(&parsed), pchain))
+        let parsed = self.validate_entry(DirEntry { name: parsed.name(), set: parsed, dir: pchain })?;
+        Ok((self.chain_of(&parsed.set), pchain))
     }
 
     /// The directory holding a handle's own set, and the offset of that set.
