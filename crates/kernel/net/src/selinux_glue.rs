@@ -16,8 +16,9 @@ fn operation_permission(operation: security::network::Operation) -> &'static str
         Connect => "connect",
         Listen => "listen",
         Accept => "accept",
-        Send | Packet => "sendto",
-        Receive => "recvfrom",
+        Send => "write",
+        Receive => "read",
+        Packet => "sendto",
         Shutdown => "shutdown",
         NameQuery => "getattr",
         SetOption => "setopt",
@@ -243,8 +244,14 @@ pub fn secmark_sid(context: &str) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::socket_class_name;
-    use security::network::SocketClass;
+    use super::{operation_permission, socket_class_name};
+    use security::network::{Operation, SocketClass};
+
+    #[test]
+    fn socket_messages_use_linux_read_write_permissions() {
+        assert_eq!(operation_permission(Operation::Send), "write");
+        assert_eq!(operation_permission(Operation::Receive), "read");
+    }
 
     #[test]
     fn every_constructor_class_maps_to_its_policy_class() {
