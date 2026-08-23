@@ -84,6 +84,46 @@ impl NetStack {
         Some(::conntrack::ctnetlink::encode_entry(&found.conn, now, acct))
     }
 
+    /// Encode one tuple-selected entry while atomically zeroing its counters.
+    /// # C: O(bucket length)
+    pub fn conntrack_lookup_ctrzero_tuple_in(&self, net_ns: u64,
+                                              tuple: ::conntrack::Tuple)
+        -> Option<alloc::vec::Vec<u8>> {
+        let ct = self.conntrack_existing_in(net_ns)?;
+        let now = crate::stack::net_now_ns() / 1_000_000_000;
+        let acct = ct.sysctl.lock().acct;
+        let found = ct.table.lookup(&tuple, now)?;
+        let counters = if acct { Some(found.conn.counters_read_and_zero()) } else { None };
+        Some(::conntrack::ctnetlink::encode_entry_with_counters(
+            &found.conn, now, acct, counters))
+    }
+
+    /// Encode one id-selected entry while atomically zeroing its counters.
+    /// # C: O(N)
+    pub fn conntrack_lookup_ctrzero_id_in(&self, net_ns: u64, id: u64)
+        -> Option<alloc::vec::Vec<u8>> {
+        let ct = self.conntrack_existing_in(net_ns)?;
+        let now = crate::stack::net_now_ns() / 1_000_000_000;
+        let acct = ct.sysctl.lock().acct;
+        let found = ct.table.find_id(id, now)?;
+        let counters = if acct { Some(found.counters_read_and_zero()) } else { None };
+        Some(::conntrack::ctnetlink::encode_entry_with_counters(
+            &found, now, acct, counters))
+    }
+
+    /// Encode every entry while atomically zeroing each entry's counters.
+    /// # C: O(N)
+    pub fn conntrack_dump_ctrzero_in(&self, net_ns: u64)
+        -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
+        let Some(ct) = self.conntrack_existing_in(net_ns) else { return alloc::vec::Vec::new() };
+        let now = crate::stack::net_now_ns() / 1_000_000_000;
+        let acct = ct.sysctl.lock().acct;
+        ct.table.snapshot(now).iter().map(|conn| {
+            let counters = if acct { Some(conn.counters_read_and_zero()) } else { None };
+            ::conntrack::ctnetlink::encode_entry_with_counters(conn, now, acct, counters)
+        }).collect()
+    }
+
     /// Set ctnetlink's namespace-local notification groups. # C: O(1)
     pub fn conntrack_set_groups_in(&self, net_ns: u64, groups: u32) {
         self.conntrack_in(net_ns).events.set_subscribed(groups & 0x3f);

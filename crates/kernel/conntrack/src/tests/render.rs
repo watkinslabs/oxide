@@ -63,6 +63,20 @@ fn accounting_appears_only_when_enabled() {
 }
 
 #[test]
+fn ctnetlink_ctrzero_returns_and_resets_both_accounting_directions() {
+    let c = entry(v4_tcp([10, 0, 0, 1], 1234, [10, 0, 0, 2], 80));
+    c.counters[IP_CT_DIR_ORIGINAL as usize].account(1500);
+    c.counters[IP_CT_DIR_REPLY as usize].account(60);
+    let saved = c.counters_read_and_zero();
+    assert_eq!(saved, [(1, 1500), (1, 60)]);
+    assert_eq!(c.counters[IP_CT_DIR_ORIGINAL as usize].read(), (0, 0));
+    assert_eq!(c.counters[IP_CT_DIR_REPLY as usize].read(), (0, 0));
+    let wire = ctnetlink::encode_entry_with_counters(&c, 0, true, Some(saved));
+    assert!(wire.windows(8).any(|window| window == 1500u64.to_be_bytes()));
+    assert!(wire.windows(8).any(|window| window == 60u64.to_be_bytes()));
+}
+
+#[test]
 fn an_ipv6_address_renders_in_its_own_family_form() {
     let mut a = [0u8; 16]; a[0] = 0x20; a[1] = 0x01; a[15] = 1;
     let mut b = [0u8; 16]; b[0] = 0x20; b[1] = 0x01; b[15] = 2;

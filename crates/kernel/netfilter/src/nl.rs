@@ -370,7 +370,8 @@ fn handle_one(full_msg: &[u8], namespace: u64) -> Vec<u8> {
 /// multipart netlink framing.
 fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Vec<u8> {
     let cmd = (req.nlmsg_type & 0xff) as u8;
-    if cmd == conntrack::uapi::IPCTNL_MSG_CT_GET {
+    if cmd == conntrack::uapi::IPCTNL_MSG_CT_GET
+        || cmd == conntrack::uapi::IPCTNL_MSG_CT_GET_CTRZERO {
         return handle_ct_get(req, nfg, attrs, namespace);
     }
     if cmd == conntrack::uapi::IPCTNL_MSG_CT_DELETE {
@@ -503,40 +504,62 @@ fn handle_ct(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Ve
     nlmsg_ack(req, if ok { 0 } else { -2 /* ENOENT */ })
 }
 
+fn ct_single_reply(req: &Nlmsghdr, nfg: &Nfgenmsg, entry: Vec<u8>) -> Vec<u8> {
+    let mut body = Vec::with_capacity(Nfgenmsg::SIZE + entry.len());
+    let mut nfg_buf = [0u8; Nfgenmsg::SIZE];
+    nfg.write_to(&mut nfg_buf);
+    body.extend_from_slice(&nfg_buf);
+    body.extend_from_slice(&entry);
+    let total = Nlmsghdr::SIZE + body.len();
+    let hdr = Nlmsghdr {
+        nlmsg_len: total as u32,
+        nlmsg_type: ((subsys::NFNL_SUBSYS_CTNETLINK as u16) << 8)
+            | conntrack::uapi::IPCTNL_MSG_CT_GET as u16,
+        nlmsg_flags: 0,
+        nlmsg_seq: req.nlmsg_seq,
+        nlmsg_pid: req.nlmsg_pid,
+    };
+    let mut out = Vec::with_capacity(total);
+    let mut hb = [0u8; Nlmsghdr::SIZE];
+    hdr.write_to(&mut hb);
+    out.extend_from_slice(&hb);
+    out.extend_from_slice(&body);
+    while out.len() % 4 != 0 { out.push(0); }
+    out
+}
+
 fn handle_ct_get(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -> Vec<u8> {
+    let zero = req.nlmsg_type & 0xff == conntrack::uapi::IPCTNL_MSG_CT_GET_CTRZERO as u16;
     if let Some(raw) = find_bytes_attr(attrs, ::conntrack::uapi::CTA_TUPLE_ORIG)
         .or_else(|| find_bytes_attr(attrs, ::conntrack::uapi::CTA_TUPLE_REPLY)) {
         let Some(tuple) = parse_ct_tuple(raw, nfg.nfgen_family,
             find_be16_attr(attrs, ::conntrack::uapi::CTA_ZONE).unwrap_or(0)) else {
             return nlmsg_ack(req, -22);
         };
-        let Some(entry) = ::net::global_stack().conntrack_lookup_tuple_in(namespace, tuple) else {
+        let entry = if zero {
+            ::net::global_stack().conntrack_lookup_ctrzero_tuple_in(namespace, tuple)
+        } else {
+            ::net::global_stack().conntrack_lookup_tuple_in(namespace, tuple)
+        };
+        let Some(entry) = entry else {
             return nlmsg_ack(req, -2);
         };
-        let mut body = Vec::with_capacity(Nfgenmsg::SIZE + entry.len());
-        let mut nfg_buf = [0u8; Nfgenmsg::SIZE];
-        nfg.write_to(&mut nfg_buf);
-        body.extend_from_slice(&nfg_buf);
-        body.extend_from_slice(&entry);
-        let total = Nlmsghdr::SIZE + body.len();
-        let hdr = Nlmsghdr {
-            nlmsg_len: total as u32,
-            nlmsg_type: ((subsys::NFNL_SUBSYS_CTNETLINK as u16) << 8)
-                | conntrack::uapi::IPCTNL_MSG_CT_GET as u16,
-            nlmsg_flags: 0,
-            nlmsg_seq: req.nlmsg_seq,
-            nlmsg_pid: req.nlmsg_pid,
-        };
-        let mut out = Vec::with_capacity(total);
-        let mut hb = [0u8; Nlmsghdr::SIZE];
-        hdr.write_to(&mut hb);
-        out.extend_from_slice(&hb);
-        out.extend_from_slice(&body);
-        while out.len() % 4 != 0 { out.push(0); }
-        return out;
+        return ct_single_reply(req, nfg, entry);
+    }
+    if zero {
+        if let Some(id) = find_u32_attr(attrs, ::conntrack::uapi::CTA_ID) {
+            let Some(entry) = ::net::global_stack().conntrack_lookup_ctrzero_id_in(
+                namespace, id as u64) else { return nlmsg_ack(req, -2); };
+            return ct_single_reply(req, nfg, entry);
+        }
     }
     let mut out = Vec::new();
-    for attrs in ::net::global_stack().conntrack_dump_in(namespace) {
+    let entries = if zero {
+        ::net::global_stack().conntrack_dump_ctrzero_in(namespace)
+    } else {
+        ::net::global_stack().conntrack_dump_in(namespace)
+    };
+    for attrs in entries {
         let mut body = Vec::with_capacity(Nfgenmsg::SIZE + attrs.len());
         let mut nfg_buf = [0u8; Nfgenmsg::SIZE];
         nfg.write_to(&mut nfg_buf);

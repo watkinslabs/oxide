@@ -99,6 +99,13 @@ fn put_counters(out: &mut Vec<u8>, kind: u16, packets: u64, bytes: u64) {
 
 /// Encode one entry's attribute body. # C: O(1)
 pub fn encode_entry(c: &Arc<Conn>, now: u64, acct: bool) -> Vec<u8> {
+    encode_entry_with_counters(c, now, acct, None)
+}
+
+/// Encode one entry using counters already atomically removed from the owner.
+/// # C: O(1)
+pub fn encode_entry_with_counters(c: &Arc<Conn>, now: u64, acct: bool,
+                                  counters: Option<[(u64, u64); IP_CT_DIR_MAX]>) -> Vec<u8> {
     let mut out = Vec::new();
     put_tuple(&mut out, CTA_TUPLE_ORIG, &c.orig);
     let reply = c.reply_tuple();
@@ -152,9 +159,11 @@ pub fn encode_entry(c: &Arc<Conn>, now: u64, acct: bool) -> Vec<u8> {
         nest_end(&mut out, n);
     }
     if acct {
-        let (p, b) = c.counters[IP_CT_DIR_ORIGINAL as usize].read();
+        let (p, b) = counters.as_ref().map(|v| v[IP_CT_DIR_ORIGINAL as usize])
+            .unwrap_or_else(|| c.counters[IP_CT_DIR_ORIGINAL as usize].read());
         put_counters(&mut out, CTA_COUNTERS_ORIG, p, b);
-        let (p, b) = c.counters[IP_CT_DIR_REPLY as usize].read();
+        let (p, b) = counters.as_ref().map(|v| v[IP_CT_DIR_REPLY as usize])
+            .unwrap_or_else(|| c.counters[IP_CT_DIR_REPLY as usize].read());
         put_counters(&mut out, CTA_COUNTERS_REPLY, p, b);
     }
     let mut labels = [0u8; NF_CT_LABELS_MAX_SIZE];

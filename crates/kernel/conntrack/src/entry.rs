@@ -74,6 +74,11 @@ impl DirCounters {
     pub fn read(&self) -> (u64, u64) {
         (self.packets.load(Ordering::Relaxed), self.bytes.load(Ordering::Relaxed))
     }
+    /// Read both counters and atomically reset them, matching ctnetlink's
+    /// `GET_CTRZERO` operation. # C: O(1)
+    pub fn read_and_zero(&self) -> (u64, u64) {
+        (self.packets.swap(0, Ordering::AcqRel), self.bytes.swap(0, Ordering::AcqRel))
+    }
 }
 
 /// NAT binding recorded on an entry. The manip is decided once, on the first
@@ -215,6 +220,12 @@ impl Conn {
         let changed = *track != next;
         *track = next;
         changed
+    }
+
+    /// Read and reset both accounting directions for ctnetlink. # C: O(1)
+    pub fn counters_read_and_zero(&self) -> [(u64, u64); IP_CT_DIR_MAX] {
+        [self.counters[IP_CT_DIR_ORIGINAL as usize].read_and_zero(),
+         self.counters[IP_CT_DIR_REPLY as usize].read_and_zero()]
     }
 
     /// Replace the canonical synproxy extension state.
