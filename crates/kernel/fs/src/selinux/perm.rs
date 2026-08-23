@@ -21,16 +21,27 @@ pub fn inode_permission(inode: &InodeRef, mask: u32) -> KResult<()> {
 
 /// Linux `security_mmap_file`: mapping is a distinct file permission, not a
 /// read/write pathname check. Executable mappings additionally need execute.
-pub fn mmap_file(inode: &InodeRef, executable: bool) -> KResult<()> {
+pub fn mmap_file(inode: &InodeRef, shared_write: bool, executable: bool) -> KResult<()> {
     if !selinux_runtime::active() { return Ok(()) }
     let Some(isid) = super::label::inode_sid(inode) else { return Ok(()) };
     let Some(class) = super::label::inode_security_class(inode) else { return Ok(()) };
     let map = selinux::uapi::classmap::perm_bit(class, "map").unwrap_or(0);
-    let execute = if executable {
-        selinux::uapi::classmap::perm_bit(class, "execute").unwrap_or(0)
-    } else { 0 };
+    let read = selinux::uapi::classmap::perm_bit(class, "read").unwrap_or(0);
+    let write = if shared_write { selinux::uapi::classmap::perm_bit(class, "write").unwrap_or(0) } else { 0 };
+    let execute = if executable { selinux::uapi::classmap::perm_bit(class, "execute").unwrap_or(0) } else { 0 };
     selinux_runtime::check::has_perm(selinux_runtime::task::current_sid(), isid, class,
-        map | execute).map_err(|_| VfsError::Eacces)
+        map | read | write | execute).map_err(|_| VfsError::Eacces)
+}
+
+pub fn mprotect_file(inode: &InodeRef, shared_write: bool, executable: bool) -> KResult<()> {
+    if !selinux_runtime::active() { return Ok(()) }
+    let Some(isid) = super::label::inode_sid(inode) else { return Ok(()) };
+    let Some(class) = super::label::inode_security_class(inode) else { return Ok(()) };
+    let read = selinux::uapi::classmap::perm_bit(class, "read").unwrap_or(0);
+    let write = if shared_write { selinux::uapi::classmap::perm_bit(class, "write").unwrap_or(0) } else { 0 };
+    let execute = if executable { selinux::uapi::classmap::perm_bit(class, "execute").unwrap_or(0) } else { 0 };
+    selinux_runtime::check::has_perm(selinux_runtime::task::current_sid(), isid, class,
+        read | write | execute).map_err(|_| VfsError::Eacces)
 }
 
 /// Install the check into the VFS permission path. # C: O(1)

@@ -339,6 +339,19 @@ impl AddressSpace {
         read_implies_exec: bool,
         key_for: &mut dyn FnMut(&Vma) -> u8,
     ) -> KResult<MprotectOutcome> {
+        self.mprotect_user_with_security(addr, len, requested, read_implies_exec,
+            &mut |_, _| Ok(()), key_for)
+    }
+
+    pub fn mprotect_user_with_security(
+        &self,
+        addr: UserVirtAddr,
+        len: usize,
+        requested: VmaProt,
+        read_implies_exec: bool,
+        security: &mut dyn FnMut(&Vma, VmaProt) -> Result<(), Error>,
+        key_for: &mut dyn FnMut(&Vma) -> u8,
+    ) -> KResult<MprotectOutcome> {
         validate_len(len)?;
         validate_aligned(addr)?;
         let end = end_of(addr, len as u64)?;
@@ -369,6 +382,10 @@ impl AddressSpace {
                 || self.mdwe_denies_transition(vma.prot, prot)
             {
                 error = Some(Error::Access);
+                break;
+            }
+            if let Err(security_error) = security(vma, prot) {
+                error = Some(security_error);
                 break;
             }
             // Linux checks MDWE before `mprotect_fixup` checks VM_SEALED.

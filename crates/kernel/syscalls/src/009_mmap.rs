@@ -155,7 +155,7 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
         }
         let inode = file.inode();
         if let Err(e) = ::fs::selinux::perm::mmap_file(&inode,
-            prot & PROT_EXEC != 0) {
+            shared && prot & PROT_WRITE != 0, prot & PROT_EXEC != 0) {
             return -(e.as_i32() as i64);
         }
         if let Some(seals) = inode.fcntl_seals() {
