@@ -357,6 +357,54 @@ fn writable_vfs_mount_with_options(opts: crate::opts::Options)
     (fs, sb, disk)
 }
 
+/// Linux's `nfs=nostale_ro` uses FAT's on-medium entry position rather than
+/// the generic cluster-derived inode identity, and it makes the mount
+/// read-only so that position cannot be reused.
+#[test]
+fn nfs_nostale_ro_exports_and_decodes_position_handles() {
+    let mut opts = crate::opts::Options::vfat();
+    opts.nfs = crate::opts::Nfs::NostaleRo;
+    let (fs, sb, _) = writable_vfs_mount_with_options(opts);
+    assert!(!fs.is_writable());
+    let root = sb.s_root_inode().expect("root");
+    let file = root.lookup("HELLO.TXT").expect("file");
+    let mut bytes = vec![0u8; sb.s_op.export_fid_len(true, false) as usize];
+    let (len, ty) = sb.s_op.export_encode_fh(&file, Some((root.ino(), root.i_generation())), &mut bytes);
+    assert_eq!(len, 20);
+    assert_eq!(ty, 0x72);
+    let fid = sb.s_op.export_decode_fh(&bytes[..len as usize], ty).expect("decode");
+    let decoded = sb.s_op.fh_to_dentry(&sb, fid.ino, fid.generation).expect("file");
+    assert_eq!(decoded.ino(), file.ino());
+    let (parent_ino, parent_generation) = fid.parent.expect("connectable parent");
+    let parent = sb.s_op.fh_to_parent(&sb, parent_ino, parent_generation).expect("parent");
+    assert_eq!(parent.ino(), root.ino());
+    let sub = root.lookup("SUBDIR").expect("subdir");
+    let mut dir_bytes = vec![0u8; sb.s_op.export_fid_len(true, true) as usize];
+    let (dir_len, dir_type) = sb.s_op.export_encode_fh(&sub, None, &mut dir_bytes);
+    assert_eq!(dir_len, 12);
+    let dir_fid = sb.s_op.export_decode_fh(&dir_bytes[..dir_len as usize], dir_type)
+        .expect("directory decode");
+    assert_eq!(sb.s_op.fh_to_dentry(&sb, dir_fid.ino, dir_fid.generation)
+        .expect("directory").ino(), sub.ino());
+    let nested = sub.lookup("NESTED.TXT").expect("nested file");
+    let mut nested_bytes = vec![0u8; sb.s_op.export_fid_len(true, false) as usize];
+    let (nested_len, nested_type) = sb.s_op.export_encode_fh(
+        &nested, Some((sub.ino(), sub.i_generation())), &mut nested_bytes);
+    let nested_fid = sb.s_op.export_decode_fh(&nested_bytes[..nested_len as usize], nested_type)
+        .expect("nested decode");
+    let nested_parent = sb.s_op.fh_to_parent(
+        &sb, nested_fid.parent.expect("nested parent").0,
+        nested_fid.parent.expect("nested parent").1).expect("nested parent");
+    assert_eq!(nested_parent.ino(), sub.ino());
+    assert_eq!(root.create_child("NOPE.TXT", 0o644, &ctx()).err(), Some(VfsError::Erofs));
+}
+
+#[test]
+fn nfs_default_advertises_the_linux_stale_rw_handles() {
+    let (_fs, sb) = writable_vfs_mount();
+    assert!(sb.s_op.export_can_decode_fh());
+}
+
 fn ctx() -> vfs::CreateCtx<'static> { vfs::CreateCtx::root() }
 
 /// The Linux `flush` mount option is consumed by the per-close file hook and
