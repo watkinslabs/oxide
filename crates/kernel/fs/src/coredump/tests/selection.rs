@@ -235,13 +235,14 @@ fn a_mapping_shorter_than_a_page_never_reports_more_than_it_holds() {
 
 // --- the live-mapping adapter ------------------------------------------
 
-struct Obj { nlink: u32, mode: u16 }
+struct Obj { nlink: u32, mode: u16, huge: u64 }
 
 impl FileBacking for Obj {
     fn read_at(&self, _off: u64, _dst: &mut [u8]) -> Result<usize, FileBackingError> { Ok(0) }
     fn size_hint(&self) -> u64 { VMA_LEN }
     fn i_nlink(&self) -> u32 { self.nlink }
     fn i_mode(&self) -> u16 { self.mode }
+    fn huge_page_size(&self) -> u64 { self.huge }
     fn shared_frame(&self, _off: u64) -> Result<Option<SharedFrame>, FileBackingError> { Ok(None) }
 }
 
@@ -252,11 +253,23 @@ fn vma(flags: VmaFlags, backing: VmaBacking) -> Vma {
 }
 
 fn file(nlink: u32, mode: u16, off: u64) -> VmaBacking {
-    VmaBacking::File { backing: Arc::new(Obj { nlink, mode }), off }
+    VmaBacking::File { backing: Arc::new(Obj { nlink, mode, huge: 0 }), off }
 }
 
 const REGULAR_EXEC: u16 = 0o100755;
 const REGULAR_DATA: u16 = 0o100644;
+
+#[test]
+fn the_adapter_recognizes_a_hugetlb_backing_as_hugetlb() {
+    let backing: Arc<dyn FileBacking> = Arc::new(Obj {
+        nlink: 1, mode: REGULAR_DATA, huge: 2 * PAGE_BYTES,
+    });
+    let v = vma(VmaFlags::PRIVATE, VmaBacking::File { backing, off: 0 });
+    let d = describe_vma(&v, 0);
+    assert!(d.hugetlb);
+    assert_eq!(vma_dump_verdict(&d, F::HUGETLB_PRIVATE), Whole);
+    assert_eq!(vma_dump_verdict(&d, F::MAPPED_PRIVATE), Skipped);
+}
 
 #[test]
 fn the_adapter_reads_the_exclusion_flag_off_a_live_mapping() {

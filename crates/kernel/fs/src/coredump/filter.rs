@@ -183,10 +183,10 @@ pub fn describe_vma_in_range(vma: &Vma, vdso_start: u64, vdso_end: u64) -> VmaDu
         // A directly-mapped physical range carries no page frames, which is
         // exactly the device-memory case.
         io: matches!(vma.backing, VmaBacking::PhysRange { .. }),
-        // Neither persistent memory nor huge-page mappings exist in this
-        // kernel yet, so no live mapping can set these.
+        // A hugetlbfs backing owns huge pages as its storage; DAX remains a
+        // separate backing capability and is false for every current object.
         dax: false,
-        hugetlb: false,
+        hugetlb: matches!(file, Some((backing, _)) if backing.huge_page_size() != 0),
         // KernelFrame is a shared kernel-owned object even when an internal
         // caller did not retain MAP_SHARED in the VMA flags.
         shared: vma.flags.contains(VmaFlags::SHARED) || kernel_frame,
