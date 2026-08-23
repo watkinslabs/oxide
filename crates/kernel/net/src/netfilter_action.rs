@@ -81,7 +81,7 @@ impl Action {
             Self::Fwd { oif, gateway, nfproto } => apply_fwd(p, *oif, *gateway, *nfproto, family),
             Self::Dup { gateway, oif } => apply_dup(p, *gateway, *oif, family),
             Self::Log { group, level, prefix, snaplen, qthreshold, flags } =>
-                apply_log(p, *group, *level, prefix, *snaplen, *qthreshold, *flags),
+                apply_log(p, *group, *level, prefix, *snaplen, *qthreshold, *flags, family, hook),
             Self::PayloadSet { base, offset, data, csum_type, csum_offset, csum_flags } => {
                 if *csum_type > PAYLOAD_CSUM_INET
                     || *csum_flags & !PAYLOAD_L4CSUM_PSEUDOHDR != 0
@@ -131,11 +131,17 @@ fn apply_dup(p: &crate::pkt::Pkt, gateway: Option<InetAddr>, oif: Option<u32>, f
 }
 
 fn apply_log(p: &crate::pkt::Pkt, group: Option<u16>, level: u32, prefix: &str,
-             snaplen: u32, qthreshold: u16, flags: u32) -> Result<(), ApplyError> {
-    // NFLOG groups require an nfnetlink logger and queue lifetime. This
-    // kernel currently has only the canonical printk/kmsg logger; refusing
-    // that form is safer than pretending a userspace group received it.
-    if group.is_some() || qthreshold != 0 { return Err(ApplyError::Unsupported); }
+             snaplen: u32, _qthreshold: u16, flags: u32, family: u8, hook: u32)
+             -> Result<(), ApplyError> {
+    if let Some(group) = group {
+        let namespace = p.iface.and_then(|iface| crate::global_stack().ifaces.namespace(iface))
+            .unwrap_or_else(|| crate::net_ns::namespace_id(&crate::net_ns::current_namespace()));
+        if !crate::netfilter_hook::nf_log_packet(namespace, group, p, family, hook,
+                                                 prefix, snaplen, flags) {
+            return Err(ApplyError::Unsupported);
+        }
+        return Ok(());
+    }
     let lvl = level.min(klog::syslog::LOGLEVEL_DEBUG);
     klog::write_raw_at(prefix.as_bytes(), lvl);
     klog::write_raw_at(b" nftables mark=", lvl);

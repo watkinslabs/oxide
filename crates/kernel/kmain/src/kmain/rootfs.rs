@@ -221,6 +221,7 @@ fn debug_boot_rootfs() {
 #[cfg(target_os = "oxide-kernel")]
 fn install_network_hooks() {
     netlink::install_netfilter_handler(netfilter::handle);
+    net::stack::install_nf_logger(netfilter::log_packet);
     // NB: control-event notifier is installed earlier, in `runtime::init` before
     // netdev registration, so eth0's boot RTM_NEWLINK is not dropped.
     net::stack::install_nf_hook_with_stages(|ctx| {

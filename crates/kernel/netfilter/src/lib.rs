@@ -13,6 +13,7 @@ extern crate std;
 mod eval;
 mod eval_context;
 mod nl;
+mod nflog;
 mod nft_dispatch;
 mod nft_dispatch_helpers;
 pub mod nft_expr;
@@ -21,6 +22,7 @@ mod state;
 
 pub use eval::{EvalResult, Verdict, eval, eval_hook, eval_in, eval_in_with_mark};
 pub use nl::handle;
+pub use nflog::log_packet;
 pub use protocol::{
     Nfgenmsg, NFT_CHAIN_POLICY_ACCEPT, NFT_CHAIN_POLICY_DROP, hook, nft_msg, nfta_chain,
     nfta_gen, nfta_obj, nfta_rule, nfta_set, nfta_set_elem, nfta_table, subsys,

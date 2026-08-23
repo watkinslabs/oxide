@@ -18,6 +18,10 @@ static UEVENT_LISTENERS: Spinlock<Vec<Weak<NetlinkSocket>>, SockLockClass> =
     Spinlock::new(Vec::new());
 /// Monotonic uevent sequence number (`SEQNUM=` in each message).
 static UEVENT_SEQNUM: AtomicU32 = AtomicU32::new(UEVENT_SEQNUM_INITIAL);
+/// Live `NETLINK_NETFILTER` subscribers. NFLOG packet notifications use the
+/// same namespace-scoped multicast ownership as the Linux nfnetlink logger.
+static NETFILTER_LISTENERS: Spinlock<Vec<Weak<NetlinkSocket>>, SockLockClass> =
+    Spinlock::new(Vec::new());
 
 #[cfg(feature = "debug-uevent")]
 fn trace_uevent_emit(action: &str, devpath: &str, recipients: usize) {
@@ -43,6 +47,27 @@ pub fn register_uevent_listener(sock: &Arc<NetlinkSocket>) {
     let mut g = UEVENT_LISTENERS.lock();
     g.retain(|w| w.strong_count() > 0);
     g.push(Arc::downgrade(sock));
+}
+
+/// Register a NETLINK_NETFILTER socket for NFLOG packet notifications.
+pub fn register_netfilter_listener(sock: &Arc<NetlinkSocket>) {
+    let mut g = NETFILTER_LISTENERS.lock();
+    g.retain(|w| w.strong_count() > 0);
+    g.push(Arc::downgrade(sock));
+}
+
+/// Multicast one kernel-originated nfnetlink packet notification to sockets
+/// subscribed to the requested NFLOG group in `net_ns`.
+pub fn netfilter_multicast_in(net_ns: u64, group: u32, msg: &[u8]) -> usize {
+    if group == 0 { return 0; }
+    let targets: Vec<_> = {
+        let mut g = NETFILTER_LISTENERS.lock();
+        g.retain(|w| w.strong_count() > 0);
+        g.iter().filter_map(Weak::upgrade).filter(|s| {
+            s.net_ns.id().as_u64() == net_ns && s.groups.test(group)
+        }).collect()
+    };
+    targets.into_iter().filter(|s| s.enqueue_multicast(msg.to_vec(), group, None)).count()
 }
 
 /// Broadcast a kobject uevent to every live `NETLINK_KOBJECT_UEVENT`

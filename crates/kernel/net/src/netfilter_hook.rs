@@ -90,9 +90,11 @@ impl NfHookResult {
 /// Netfilter callback. Verdict u32: NF_DROP=0, NF_ACCEPT=1.
 pub type NfHookFn = fn(ctx: &NfHookCtx<'_>) -> NfHookResult;
 pub type NfHookStageFn = fn(u64, u32, u8, Option<i32>, Option<i32>) -> bool;
+pub type NfLogFn = fn(u64, u16, &Pkt, u8, u32, &str, u32, u32) -> bool;
 
 static NF_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static NF_STAGE: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+static NF_LOG: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 #[cfg(any(test, feature = "hosted"))]
 static NF_REPLACING: AtomicBool = AtomicBool::new(false);
 #[cfg(any(test, feature = "hosted"))]
@@ -126,6 +128,18 @@ pub fn install_nf_hook(f: NfHookFn) {
 pub fn install_nf_hook_with_stages(f: NfHookFn, stage: NfHookStageFn) {
     install_nf_hook(f);
     NF_STAGE.store(stage as *mut (), Ordering::Release);
+}
+
+/// Install the nfnetlink logger owned by the netfilter control-plane crate.
+pub fn install_nf_logger(f: NfLogFn) { NF_LOG.store(f as *mut (), Ordering::Release); }
+
+pub(crate) fn nf_log_packet(namespace: u64, group: u16, p: &Pkt, family: u8, hook: u32,
+                             prefix: &str, snaplen: u32, flags: u32) -> bool {
+    let raw = NF_LOG.load(Ordering::Acquire);
+    if raw.is_null() { return false; }
+    // SAFETY: NF_LOG is written only by install_nf_logger with NfLogFn.
+    let f: NfLogFn = unsafe { core::mem::transmute(raw) };
+    f(namespace, group, p, family, hook, prefix, snaplen, flags)
 }
 
 #[cfg(any(test, feature = "hosted"))]

@@ -76,6 +76,11 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
         if nl_proto == ::netlink::proto::NETLINK_ROUTE {
             ::netlink::register_rtnl_listener(&sock);
         }
+        // NETLINK_NETFILTER sockets receive NFLOG packet notifications once
+        // they subscribe to the selected logger group.
+        if nl_proto == ::netlink::proto::NETLINK_NETFILTER {
+            ::netlink::register_netfilter_listener(&sock);
+        }
         // NETLINK_GENERIC sockets receive genetlink family multicast (nlctrl
         // family events, VFS_DQUOT quota warnings) once subscribed to a group.
         if nl_proto == ::netlink::proto::NETLINK_GENERIC {
