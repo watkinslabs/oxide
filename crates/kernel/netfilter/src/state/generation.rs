@@ -17,6 +17,7 @@ pub(crate) struct CompiledRule {
 
 pub(crate) struct CompiledChain {
     pub(crate) table_family: u8,
+    pub(crate) priority: i32,
     pub(crate) policy: u32,
     pub(crate) rules: Vec<CompiledRule>,
 }
@@ -141,7 +142,8 @@ fn compile_namespace(control: &mut NamespaceState) -> CompiledNamespace {
                     .expect("counter inserted before ruleset compilation")),
             }).collect();
             compiled_chains.push(CompiledChain {
-                table_family: chain.table_family, policy: chain.policy, rules,
+                table_family: chain.table_family, priority: chain.priority,
+                policy: chain.policy, rules,
             });
         }
         hooks.push(CompiledHook { id, chains: compiled_chains });
@@ -254,5 +256,20 @@ mod tests {
             Expr::Lookup { set_id: Some(1), .. }));
         assert!(compiled.set_contains(1, &[10, 0, 0, 5]));
         assert!(!compiled.set_contains(0, &[10, 0, 0, 5]));
+    }
+
+    #[test]
+    fn compiled_hook_retains_linux_chain_priority_order() {
+        let mut control = NamespaceState::new();
+        for (name, priority) in [("filter", 0), ("raw", -300), ("security", 50)] {
+            control.chains.push(NftChain {
+                table_family: 2, table_name: "table".into(), name: name.into(),
+                hook: Some(1), priority, policy: crate::NFT_CHAIN_POLICY_ACCEPT,
+            });
+        }
+        let compiled = compile_namespace(&mut control);
+        let chains = &compiled.hooks[0].chains;
+        assert_eq!(chains.iter().map(|chain| chain.priority).collect::<Vec<_>>(),
+                   alloc::vec![-300, 0, 50]);
     }
 }
