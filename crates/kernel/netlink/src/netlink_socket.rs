@@ -199,9 +199,10 @@ impl NetlinkSocket {
     /// after LSM and `sock_no_shutdown` returns EOPNOTSUPP for every value.
     /// # C: O(1)
     pub fn shutdown_raw(&self, _how: u32) -> net::NetResult<()> {
-        net::security_admission::check(
+        net::security_admission::check_socket(
             net::net_ns::namespace_id(&self.net_ns), net::socket_args::AF_NETLINK_WIRE,
             security::network::Operation::Shutdown,
+            self.security_sid.load(Ordering::Acquire), self.security_class(),
         )?;
         Err(net::NetError::Eopnotsupp)
     }
@@ -444,7 +445,7 @@ impl NetlinkSocket {
         Ok(consumed)
     }
 
-    fn security_class(&self) -> &'static str {
+    pub fn security_class(&self) -> &'static str {
         match self.protocol {
             proto::NETLINK_ROUTE => "netlink_route_socket",
             proto::NETLINK_SOCK_DIAG => "netlink_tcpdiag_socket",

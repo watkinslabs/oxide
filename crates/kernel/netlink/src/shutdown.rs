@@ -7,10 +7,12 @@ impl NetlinkSocket {
     /// security admission precedes the protocol's unsupported-operation errno.
     /// # C: O(1)
     pub fn shutdown(&self) -> Result<(), net::NetError> {
-        net::security_admission::check(
+        net::security_admission::check_socket(
             net::net_ns::namespace_id(&self.net_ns),
             net::socket_args::AF_NETLINK_WIRE,
             security::network::Operation::Shutdown,
+            self.security_sid.load(core::sync::atomic::Ordering::Acquire),
+            self.security_class(),
         ).map_err(|_| net::NetError::Eacces)?;
         Err(net::NetError::Eopnotsupp)
     }
@@ -20,8 +22,10 @@ impl NetlinkSocket {
         let namespace = net::net_ns::namespace_id(&self.net_ns);
         let somaxconn = net::sysctl::somaxconn_in(namespace).ok_or(net::NetError::Enodev)?;
         let backlog = net::sysctl::normalize_listen_backlog(backlog, somaxconn);
-        net::security_admission::check_listen(namespace,
-            net::socket_args::AF_NETLINK_WIRE, backlog as u32)
+        net::security_admission::check_socket_listen(namespace,
+            net::socket_args::AF_NETLINK_WIRE, backlog as u32,
+            self.security_sid.load(core::sync::atomic::Ordering::Acquire),
+            self.security_class())
             .map_err(|_| net::NetError::Eacces)?;
         Err(net::NetError::Eopnotsupp)
     }

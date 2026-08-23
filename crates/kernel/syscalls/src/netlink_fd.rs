@@ -280,10 +280,13 @@ fn netlink_getsockopt_copyout(optval: u64, optlen_p: u64, value: &[u8], publish:
 /// `getsockname(fd, addr, addrlen)` for netlink. Writes the socket's stable
 /// port ID and current bound multicast-group mask. # C: O(1)
 pub fn getsockname(target: &NetlinkFileRef, addr_p: u64, addrlen_p: u64) -> i64 {
-    if let Err(e) = net::security_admission::check(
-        net::net_ns::namespace_id(&target.socket().net_ns),
+    let socket = target.socket();
+    if let Err(e) = net::security_admission::check_socket(
+        net::net_ns::namespace_id(&socket.net_ns),
         net::socket_args::AF_NETLINK_WIRE,
         security::network::Operation::NameQuery,
+        socket.security_sid.load(core::sync::atomic::Ordering::Acquire),
+        socket.security_class(),
     ) {
         return crate::net_errno::errno_from_neterr(e);
     }
@@ -293,7 +296,6 @@ pub fn getsockname(target: &NetlinkFileRef, addr_p: u64, addrlen_p: u64) -> i64 
     // (≠ the port_id replies use) made every reply mismatch and get
     // dropped.
     use core::sync::atomic::Ordering;
-    let socket = target.socket();
     let pid = socket.port_id.load(Ordering::Acquire);
     let groups = socket.groups.low_mask();
     let sa = encoded_sockaddr_nl(pid, groups);
@@ -305,10 +307,13 @@ pub fn getsockname(target: &NetlinkFileRef, addr_p: u64, addrlen_p: u64) -> i64 
 /// created, unconnected socket has the canonical zero port and group values.
 /// # C: O(1)
 pub fn getpeername(target: &NetlinkFileRef, addr_p: u64, addrlen_p: u64) -> i64 {
-    if let Err(e) = net::security_admission::check(
-        net::net_ns::namespace_id(&target.socket().net_ns),
+    let socket = target.socket();
+    if let Err(e) = net::security_admission::check_socket(
+        net::net_ns::namespace_id(&socket.net_ns),
         net::socket_args::AF_NETLINK_WIRE,
         security::network::Operation::NameQuery,
+        socket.security_sid.load(core::sync::atomic::Ordering::Acquire),
+        socket.security_class(),
     ) {
         return crate::net_errno::errno_from_neterr(e);
     }
