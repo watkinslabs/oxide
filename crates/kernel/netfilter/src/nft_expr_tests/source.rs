@@ -215,11 +215,11 @@ fn a_fingerprint_is_only_taken_from_an_opening_segment() {
 }
 
 #[test]
-fn a_fingerprint_with_no_database_breaks() {
+fn an_unmatched_fingerprint_reports_unknown() {
     let mut want = [0u8; crate::nft_expr::limits::NFT_OSF_MAXGENRELEN];
     want[..7].copy_from_slice(b"unknown");
     let exprs = match_key(Expr::Osf { dreg: NFT_REG_1, ttl: 0, flags: 0 }, &want);
-    assert_eq!(run(&exprs, &tcp_pkt(0x02, &[]), |c| c.meta.l4proto = Some(6)), NFT_BREAK);
+    assert_eq!(run(&exprs, &tcp_pkt(0x02, &[]), |c| c.meta.l4proto = Some(6)), NF_DROP);
 }
 
 #[test]

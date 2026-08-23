@@ -501,10 +501,32 @@ fn handle_one(full_msg: &[u8], namespace: u64) -> Vec<u8> {
     let attrs = &full_msg[nfg_off + Nfgenmsg::SIZE..];
     match (hdr.nlmsg_type >> 8) as u8 {
         subsys::NFNL_SUBSYS_CTNETLINK => handle_ct(&hdr, &nfg, attrs, namespace),
+        subsys::NFNL_SUBSYS_OSF => handle_osf(&hdr, (hdr.nlmsg_type & 0xFF) as u8, attrs),
         subsys::NFNL_SUBSYS_NFTABLES => nft_dispatch::handle_nft(
             namespace, &hdr, &nfg, (hdr.nlmsg_type & 0xFF) as u8, attrs),
         _ => nlmsg_ack(&hdr, 0),
     }
+}
+
+fn handle_osf(req: &Nlmsghdr, cmd: u8, attrs: &[u8]) -> Vec<u8> {
+    let Some(finger) = find_bytes_attr(attrs, crate::osf_attr::OSF_ATTR_FINGER) else {
+        return nlmsg_ack(req, -22);
+    };
+    let result = match cmd {
+        crate::osf_msg::OSF_MSG_ADD => {
+            if req.nlmsg_flags & flags::NLM_F_CREATE == 0 { return nlmsg_ack(req, -22); }
+            crate::nft_expr::osf::add(finger, req.nlmsg_flags & flags::NLM_F_EXCL != 0)
+        }
+        crate::osf_msg::OSF_MSG_REMOVE => crate::nft_expr::osf::remove(finger),
+        _ => return nlmsg_ack(req, -95),
+    };
+    let errno = match result {
+        Ok(()) => 0,
+        Err(crate::nft_expr::osf::Error::Invalid) => -22,
+        Err(crate::nft_expr::osf::Error::Exists) => -17,
+        Err(crate::nft_expr::osf::Error::Missing) => -2,
+    };
+    nlmsg_ack(req, errno)
 }
 
 /// ctnetlink's GET dump is the read path used by `conntrack -L`. Each entry
@@ -747,7 +769,7 @@ fn handle_ct_get(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec::Vec;
+    use alloc::{vec, vec::Vec};
     use alloc::sync::Arc;
     use crate::{subsys, Nfgenmsg};
     use super::{handle_one, parse_ct_tuple, parse_dump_filter, parse_helper_name, parse_labels,
@@ -769,6 +791,43 @@ mod tests {
         ::conntrack::ctnetlink::put_tuple(
             &mut raw, ::conntrack::uapi::CTA_TUPLE_ORIG, &expected);
         assert_eq!(parse_ct_tuple(&raw[4..], expected.l3num, expected.zone), Some(expected));
+    }
+
+    #[test]
+    fn osf_netlink_add_remove_uses_the_canonical_fingerprint_list() {
+        let mut finger = vec![0u8; 592];
+        finger[8] = 64;
+        finger[10..12].copy_from_slice(&40u16.to_ne_bytes());
+        finger[16..24].copy_from_slice(b"netlink\0");
+        finger[48..53].copy_from_slice(b"test\0");
+        finger[80..85].copy_from_slice(b"unit\0");
+        let message = |cmd: u8, nl_flags: u16| {
+            let mut body = Vec::new();
+            let mut family = [0u8; Nfgenmsg::SIZE];
+            Nfgenmsg { nfgen_family: ::conntrack::uapi::NFPROTO_IPV4,
+                       version: 0, res_id: 0 }.write_to(&mut family);
+            body.extend_from_slice(&family);
+            super::put_nlattr(&mut body, crate::osf_attr::OSF_ATTR_FINGER, &finger);
+            let hdr = Nlmsghdr {
+                nlmsg_len: (Nlmsghdr::SIZE + body.len()) as u32,
+                nlmsg_type: ((subsys::NFNL_SUBSYS_OSF as u16) << 8) | cmd as u16,
+                nlmsg_flags: nl_flags, nlmsg_seq: 8, nlmsg_pid: 0,
+            };
+            let mut frame = Vec::new();
+            let mut header = [0u8; Nlmsghdr::SIZE];
+            hdr.write_to(&mut header);
+            frame.extend_from_slice(&header);
+            frame.extend_from_slice(&body);
+            frame
+        };
+        assert_eq!(reply_errno(&handle_one(&message(crate::osf_msg::OSF_MSG_ADD,
+            flags::NLM_F_REQUEST | flags::NLM_F_CREATE | flags::NLM_F_ACK), 0)), Some(0));
+        assert_eq!(reply_errno(&handle_one(&message(crate::osf_msg::OSF_MSG_ADD,
+            flags::NLM_F_REQUEST | flags::NLM_F_CREATE | flags::NLM_F_EXCL), 0)), Some(-17));
+        assert_eq!(reply_errno(&handle_one(&message(crate::osf_msg::OSF_MSG_REMOVE,
+            flags::NLM_F_REQUEST | flags::NLM_F_ACK), 0)), Some(0));
+        assert_eq!(reply_errno(&handle_one(&message(crate::osf_msg::OSF_MSG_REMOVE,
+            flags::NLM_F_REQUEST | flags::NLM_F_ACK), 0)), Some(-2));
     }
 
     #[test]

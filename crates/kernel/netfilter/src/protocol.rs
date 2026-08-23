@@ -72,6 +72,15 @@ pub mod nft_msg {
     pub const NFT_MSG_DESTROYFLOWTABLE: u8 = 29;
 }
 
+pub mod osf_msg {
+    pub const OSF_MSG_ADD: u8 = 0;
+    pub const OSF_MSG_REMOVE: u8 = 1;
+}
+
+pub mod osf_attr {
+    pub const OSF_ATTR_FINGER: u16 = 1;
+}
+
 pub mod nfta_flowtable {
     pub const NFTA_FLOWTABLE_TABLE: u16 = 1;
     pub const NFTA_FLOWTABLE_NAME: u16 = 2;

@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 
 use crate::nft_expr::{Action, EvalCtx, uapi};
 use crate::nft_expr::access::{CtAccess, FibEntry, FibKey, ObjectAccess, RouteAccess,
-                              SocketAccess, SynproxyAccess};
+                              OsfAccess, SocketAccess, SynproxyAccess};
 use conntrack::tuple::Tuple;
 
 /// Netfilter verdict.
@@ -113,6 +113,15 @@ struct LiveSocket<'a> {
     input: &'a crate::eval_context::Input<'a>,
     info: net::SocketLookup,
     present: bool,
+}
+
+struct LiveOsf<'a> { pkt: &'a [u8], family: u8 }
+
+impl OsfAccess for LiveOsf<'_> {
+    fn genre(&self, ttl: u8, with_version: bool, out: &mut [u8]) -> bool {
+        self.family == crate::nft_expr::uapi::NFPROTO_IPV4
+            && crate::nft_expr::osf::find(self.pkt, ttl, with_version, out)
+    }
 }
 
 struct LiveObjects<'a> {
@@ -346,6 +355,7 @@ fn eval_context(input: &crate::eval_context::Input<'_>) -> EvalResult {
                            owner: input.ct_owner.clone(), info: input.ctinfo, dir: input.ct_dir,
                            now: input.timestamp_ns / 1_000_000_000 };
     let live_route = LiveRoute { input };
+    let live_osf = LiveOsf { pkt, family };
     let live_socket = input.live.then(|| LiveSocket {
         input,
         info: input.socket.unwrap_or(net::SocketLookup {
@@ -380,6 +390,7 @@ fn eval_context(input: &crate::eval_context::Input<'_>) -> EvalResult {
             if input.ct_available { ctx.ct = Some(&live_ct); }
             if input.live { ctx.route = Some(&live_route); }
             if let Some(socket) = live_socket.as_ref() { ctx.socket = Some(socket); }
+            ctx.osf = Some(&live_osf);
             if let Some(synproxy) = live_synproxy.as_ref() { ctx.synproxy = Some(synproxy); }
             let objects = LiveObjects {
                 namespace, family, table: &chain.table_name, generation: state,
