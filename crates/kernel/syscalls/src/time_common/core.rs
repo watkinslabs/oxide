@@ -48,6 +48,13 @@ pub(crate) const CLOCK_TAI:                u64 = sched::posix_clock::CLOCK_TAI a
 pub(crate) static TZ_MINUTESWEST: AtomicI32 = AtomicI32::new(0);
 pub(crate) static TZ_DSTTIME:     AtomicI32 = AtomicI32::new(0);
 
+/// VFS/filesystem view of the canonical `settimeofday` timezone state.
+/// # C: O(1)
+pub(crate) fn timezone_minuteswest() -> i32 {
+    use core::sync::atomic::Ordering;
+    TZ_MINUTESWEST.load(Ordering::Acquire)
+}
+
 /// Initialise CLOCK_REALTIME from the hardware RTC at boot (Linux reads the
 /// persistent clock in `timekeeping_init`). Without this the wall clock is
 /// 1970 until settimeofday, so PAM/shadow account checks see accounts as

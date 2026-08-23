@@ -145,4 +145,5 @@ pub fn install_vfs_hooks() {
     // write-stamped mtime would
     // be frozen at the epoch.
     vfs::inode_times::set_realtime_provider(timekeeper::realtime_ns);
+    vfs::inode_times::set_timezone_provider(crate::time_common::timezone_minuteswest);
 }

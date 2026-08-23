@@ -55,6 +55,18 @@ fn a_timestamp_with_no_offset_and_no_mount_option_is_utc() {
     assert_eq!(to_unix(&TimeConfig::default(), at_epoch(0)).sec, EPOCH_1980);
 }
 
+fn test_timezone_minuteswest() -> i32 { 120 }
+
+#[test]
+fn sys_tz_uses_the_canonical_system_timezone_for_unknown_offsets() {
+    vfs::inode_times::set_timezone_provider(test_timezone_minuteswest);
+    let cfg = effective_config(TimeConfig::with_offset(600), true);
+    assert_eq!(to_unix(&cfg, at_epoch(0)).sec, EPOCH_1980 + 2 * 3600);
+    // A timestamp carrying its own valid offset still wins over sys_tz.
+    assert_eq!(to_unix(&cfg, at_epoch(TZ_VALID)).sec, EPOCH_1980);
+    vfs::inode_times::set_timezone_provider(|| 0);
+}
+
 #[test]
 fn a_written_timestamp_says_utc_explicitly() {
     // The reading came from a clock with no timezone; claiming any other

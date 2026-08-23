@@ -13,7 +13,7 @@ use vfs::{mk_mode, FileOps, FileType, InodeBuilder, InodeOps, InodeRef};
 
 use crate::attrs::make_mode;
 use crate::ident::{self, Position};
-use crate::time::to_unix;
+use crate::time::{effective_config, to_unix};
 use crate::uapi::{ATTR_SUBDIR, ROOT_INO};
 use crate::chain::Chain;
 use crate::volume::{DirEntry, DirHandle};
@@ -67,7 +67,7 @@ pub(crate) fn node_inode(fs: Arc<ExfatFs>, entry: Option<DirEntry>, home: DirHan
                 entry_index: ident::index_of_offset(e.set.offset),
             };
             let ftype = if e.is_dir() { FileType::Directory } else { FileType::Regular };
-            let cfg = opts.time;
+            let cfg = effective_config(opts.time, opts.sys_tz);
             let times = (to_unix(&cfg, e.set.file.access), to_unix(&cfg, e.set.file.modify),
                          to_unix(&cfg, e.set.file.create));
             (ident::inode_number(&pos), ftype, e.set.file.attr, e.size(), Some(times))
