@@ -407,16 +407,20 @@ fn a_directory_fills_when_its_index_root_is_full() {
     // Once the resident root fills, Linux moves its ordered entries into the
     // first `$INDEX_ALLOCATION` buffer and keeps creating names there.
     let mut v = test_image::empty();
-    let made = 32usize;
+    let made = 30usize;
     for i in 0..made {
-        v.create_file(MFT_REC_ROOT, &alloc::format!("f{i:03}"), now()).unwrap();
+        v.create_file(MFT_REC_ROOT, &alloc::format!("long-directory-entry-{i:03}"), now())
+            .unwrap_or_else(|e| panic!("create {i}: {e:?}"));
     }
     assert_eq!(names(&v).len(), made);
     for i in 0..made {
-        assert!(v.find_entry(MFT_REC_ROOT, &alloc::format!("f{i:03}")).is_ok());
+        assert!(v.find_entry(MFT_REC_ROOT,
+                              &alloc::format!("long-directory-entry-{i:03}")).is_ok());
     }
     let (_, attrs) = v.read_live_record(MFT_REC_ROOT).unwrap();
-    assert!(crate::attrib::find(&attrs, ATTR_ALLOC, &I30_NAME).is_some());
+    let alloc = crate::attrib::find(&attrs, ATTR_ALLOC, &I30_NAME).expect("index allocation");
+    assert!(alloc.data_size() >= u64::from(test_image::INDEX_SIZE) * 2,
+            "the test must exercise an allocation-buffer split");
     let image = v.into_source();
     let mut opts = crate::opts::Options::defaults();
     opts.settle();

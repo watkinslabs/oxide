@@ -5,7 +5,6 @@
 //! entries after it sort before it, and a lookup that reaches one of them
 //! stops.
 
-use alloc::vec;
 use alloc::vec::Vec;
 
 use syscall::errno::Errno;
@@ -14,8 +13,10 @@ use sectors::SectorSource;
 
 use crate::attrib;
 use crate::index::{self, entry};
+use crate::index::walk::NodeSource;
 use crate::name::FileName;
 use crate::record::Reference;
+use crate::run::Runs;
 use crate::uapi::*;
 
 use super::{edit, Volume};
@@ -136,29 +137,90 @@ impl<S: SectorSource> Volume<S> {
     /// Insert into the first allocation node. Its fixed size is deliberately
     /// enforced before any bytes are published; a full node is split by the
     /// next growth step rather than producing an unreadable overrun.
-    fn index_insert_allocation(&mut self, parent: u64, new_entry: &[u8], fname: &FileName,
+    fn index_insert_allocation(&mut self, parent: u64, new_entry: &[u8], _fname: &FileName,
                                root: &index::Root) -> Result<(), Errno> {
         let idx = self.open_index(parent)?;
-        let alloc = idx.alloc.as_ref().ok_or(Errno::Eio)?;
-        let (alloc_bytes, attrs) = (&idx.bytes, &idx.attrs);
-        let runs = self.attribute_runs(alloc_bytes, attrs, alloc)?;
-        let mut block = vec![0u8; root.block_size as usize];
-        let got = self.read_attribute(alloc_bytes, attrs, alloc, 0, &mut block)?;
-        if got != block.len() { return Err(Errno::Eio); }
-        crate::fixup::post_read(&mut block, false).map_err(|e| e.errno())?;
-        let (header, _) = index::parse_block(&block, 0).ok_or(Errno::Eio)?;
-        let existing = entry::entries(&block, IB_OFF_IHDR, &header, root.indexed_type);
-        let position = index::walk::insert_position(&existing, &fname.units, &self.upcase);
         let mut ordered = Vec::new();
-        let mut last = entry::build_last(None);
-        for (i, e) in existing.iter().enumerate() {
-            if i == position { ordered.push(new_entry.to_vec()); }
-            let span = &block[e.offset..e.offset + usize::from(e.size)];
-            if e.is_last() { last = span.to_vec(); } else { ordered.push(span.to_vec()); }
+        for root_entry in entry::entries(&idx.root_data, root.header_at, &root.header,
+                                         root.indexed_type) {
+            if !root_entry.is_last() {
+                let span = &idx.root_data[root_entry.offset
+                    ..root_entry.offset + usize::from(root_entry.size)];
+                ordered.push(self.without_child(span, root.indexed_type)?);
+            }
+            if let Some(vbn) = root_entry.child {
+                let (block, at, header) = idx.block(vbn)?;
+                for child in entry::entries(&block, at, &header, root.indexed_type) {
+                    if child.is_last() { continue; }
+                    ordered.push(block[child.offset..child.offset + usize::from(child.size)].to_vec());
+                }
+            }
         }
-        if position >= existing.len() { ordered.push(new_entry.to_vec()); }
-        let rebuilt = self.index_block_from_entries(&ordered, &last, root.block_size, 0)?;
-        self.write_runs(&runs, 0, &rebuilt)
+        ordered.push(new_entry.to_vec());
+        self.sort_index_entries(&mut ordered, root.indexed_type);
+
+        let mut blocks = Vec::new();
+        let mut separators = Vec::new();
+        let mut at = 0usize;
+        while at < ordered.len() {
+            let mut end = at + 1;
+            while end <= ordered.len()
+                && self.index_block_from_entries(&ordered[at..end], &entry::build_last(None),
+                                                 root.block_size, blocks.len() as u64).is_ok() {
+                end += 1;
+            }
+            let take_end = end.saturating_sub(1);
+            if take_end <= at { return Err(Errno::Enospc); }
+            let mut leaf = ordered[at..take_end].to_vec();
+            if at != 0 {
+                let promoted = leaf.remove(0);
+                separators.push(promoted);
+            }
+            blocks.push(self.index_block_from_entries(&leaf, &entry::build_last(None),
+                                                      root.block_size, blocks.len() as u64)?);
+            at = take_end;
+        }
+        if blocks.len() > 1 {
+            // A separator belongs to the parent, while the child keeps only
+            // keys strictly below it. Rebuild those parent entries with the
+            // child VCN in their terminal eight bytes.
+            let mut parent_entries = Vec::new();
+            for (i, raw) in separators.iter().enumerate() {
+                let parsed = entry::parse(raw, 0, root.indexed_type).ok_or(Errno::Eio)?;
+                let key = raw[SIZEOF_DE..SIZEOF_DE + usize::from(parsed.key_size)].to_vec();
+                parent_entries.push(entry::build(&parsed.reference, &key, Some(i as u64)));
+            }
+            let last = entry::build_last(Some((blocks.len() - 1) as u64));
+            let head = &idx.root_data[..IROOT_OFF_IHDR];
+            let root_node = rebuild_node(&parent_entries, &last, root.header_at,
+                                         (SIZEOF_IHDR + parent_entries.iter().map(Vec::len)
+                                             .sum::<usize>() + last.len()) as u32,
+                                         INDEX_HDR_HAS_SUBNODES)
+                .ok_or(Errno::Enospc)?;
+            let mut root_data = Vec::with_capacity(head.len() + root_node.len());
+            root_data.extend_from_slice(head);
+            root_data.extend_from_slice(&root_node);
+            self.rewrite_index_allocation(parent, &root_data, root.block_size, &blocks)
+        } else {
+            self.rewrite_index_allocation(parent, &idx.root_data, root.block_size, &blocks)
+        }
+    }
+
+    fn without_child(&self, raw: &[u8], indexed_type: u32) -> Result<Vec<u8>, Errno> {
+        let parsed = entry::parse(raw, 0, indexed_type).ok_or(Errno::Eio)?;
+        let key = raw[SIZEOF_DE..SIZEOF_DE + usize::from(parsed.key_size)].to_vec();
+        Ok(entry::build(&parsed.reference, &key, None))
+    }
+
+    fn sort_index_entries(&self, entries: &mut [Vec<u8>], indexed_type: u32) {
+        entries.sort_by(|a, b| {
+            let aa = entry::parse(a, 0, indexed_type).and_then(|e| e.name().cloned());
+            let bb = entry::parse(b, 0, indexed_type).and_then(|e| e.name().cloned());
+            match (aa, bb) {
+                (Some(a), Some(b)) => crate::upcase::compare(&a.units, &b.units, &self.upcase, false),
+                _ => core::cmp::Ordering::Equal,
+            }
+        });
     }
 
     fn index_block_from_entries(&self, entries: &[Vec<u8>], last: &[u8], size: u32, vbn: u64)
@@ -202,6 +264,59 @@ impl<S: SectorSource> Volume<S> {
             self.write_runs(&runs, 0, block)
         })();
         if result.is_err() { let _ = self.free_runs(&runs); }
+        result
+    }
+
+    fn rewrite_index_allocation(&mut self, parent: u64, root_data: &[u8], block_size: u32,
+                                blocks: &[Vec<u8>]) -> Result<(), Errno> {
+        let (mut bytes, header) = self.read_record_raw(parent)?;
+        let attrs = attrib::parse_all(&bytes, &header);
+        let root_attr = attrib::find(&attrs, ATTR_ROOT, &I30_NAME).ok_or(Errno::Enotdir)?;
+        let root = edit::resident(ATTR_ROOT, &I30_NAME, root_attr.id, false, root_data);
+        edit::replace_at(&mut bytes, &header, root_attr.offset, &root)?;
+
+        let attrs = attrib::parse_all(&bytes, &crate::record::parse(&bytes)
+            .map_err(|e| e.errno())?);
+        let alloc_attr = attrib::find(&attrs, ATTR_ALLOC, &I30_NAME).ok_or(Errno::Eio)?;
+        let old_runs = self.attribute_runs(&bytes, &attrs, alloc_attr)?;
+        let need = self.geo.clusters_for(u64::from(block_size) * blocks.len() as u64);
+        let mut runs = old_runs.clone();
+        if need > runs.clusters() {
+            let extra = self.alloc_clusters(need - runs.clusters())?;
+            let base = runs.clusters();
+            for mut run in extra.runs { run.vcn += base; runs.push(run); }
+        }
+        let alloc = edit::non_resident(ATTR_ALLOC, &I30_NAME, alloc_attr.id, &runs,
+                                        runs.clusters() << self.geo.cluster_bits,
+                                        u64::from(block_size) * blocks.len() as u64,
+                                        u64::from(block_size) * blocks.len() as u64,
+                                        self.geo.cluster_bits);
+        let header = crate::record::parse(&bytes).map_err(|e| e.errno())?;
+        let alloc_at = attrib::find(&attrib::parse_all(&bytes, &header), ATTR_ALLOC, &I30_NAME)
+            .ok_or(Errno::Eio)?.offset;
+        edit::replace_at(&mut bytes, &header, alloc_at, &alloc)?;
+        let header = crate::record::parse(&bytes).map_err(|e| e.errno())?;
+        let attrs = attrib::parse_all(&bytes, &header);
+        let bitmap_attr = attrib::find(&attrs, ATTR_BITMAP, &I30_NAME)
+            .ok_or(Errno::Eio)?;
+        let mut bitmap = alloc::vec![0u8; (blocks.len() + 7) / 8];
+        for bit in 0..blocks.len() { bitmap[bit / 8] |= 1u8 << (bit % 8); }
+        let bitmap_new = edit::resident(ATTR_BITMAP, &I30_NAME, bitmap_attr.id, false, &bitmap);
+        edit::replace_at(&mut bytes, &header, bitmap_attr.offset, &bitmap_new)?;
+        let result = (|| {
+            self.write_record(parent, &mut bytes)?;
+            for (i, block) in blocks.iter().enumerate() {
+                self.write_runs(&runs, u64::from(block_size) * i as u64, block)?;
+            }
+            Ok(())
+        })();
+        if result.is_err() && need > old_runs.clusters() {
+            let mut added = Runs::new();
+            for run in &runs.runs {
+                if run.vcn >= old_runs.clusters() { added.push(*run); }
+            }
+            let _ = self.free_runs(&added);
+        }
         result
     }
 
