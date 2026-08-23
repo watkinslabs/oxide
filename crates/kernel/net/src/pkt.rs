@@ -41,6 +41,7 @@ pub const DEFAULT_HEADROOM: usize = 64;
 /// `pop`), `tail` is one past the last payload byte. `data..tail` is
 /// the live region; `0..data` is the headroom; `tail..end` is the
 /// tailroom.
+#[derive(Clone)]
 pub struct Pkt {
     buf:  Vec<u8>,
     data: u32,

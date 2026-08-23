@@ -79,6 +79,7 @@ impl Action {
                 apply_reject(p, *reject_type, *icmp_code, *family, hook)
             }
             Self::Fwd { oif, gateway, nfproto } => apply_fwd(p, *oif, *gateway, *nfproto, family),
+            Self::Dup { gateway, oif } => apply_dup(p, *gateway, *oif, family),
             Self::PayloadSet { base, offset, data, csum_type, csum_offset, csum_flags } => {
                 if *csum_type != PAYLOAD_CSUM_NONE || *csum_offset != 0 || *csum_flags != 0 {
                     return Err(ApplyError::Unsupported);
@@ -97,6 +98,23 @@ impl Action {
             _ => Err(ApplyError::Unsupported),
         }
     }
+}
+
+fn apply_dup(p: &crate::pkt::Pkt, gateway: Option<InetAddr>, oif: Option<u32>, family: u8)
+    -> Result<(), ApplyError> {
+    if family != crate::netfilter_hook::NFPROTO_NETDEV || gateway.is_some() {
+        return Err(ApplyError::Unsupported);
+    }
+    let oif = oif.ok_or(ApplyError::Invalid)?;
+    let ingress = p.iface.ok_or(ApplyError::Invalid)?;
+    let ns = crate::global_stack().ifaces.namespace(ingress).ok_or(ApplyError::Invalid)?;
+    let (target, _) = crate::global_stack().ifaces.lookup_ifindex_in_ns(oif, ns)
+        .ok_or(ApplyError::Invalid)?;
+    let lease = crate::global_stack().ifaces.acquire_egress_in_ns(target, ns)
+        .ok_or(ApplyError::Invalid)?;
+    // Linux's netdev mirror path sends the clone under the same direct device
+    // recursion guard while the original skb remains on its caller's path.
+    lease.xmit_raw_policy_from(p.data(), None, true).map_err(|_| ApplyError::Invalid)
 }
 
 fn apply_fwd(p: &mut crate::pkt::Pkt, oif: u32, gateway: Option<InetAddr>,
@@ -355,5 +373,26 @@ mod tests {
             Err(ApplyError::Stolen));
         assert_eq!(target_dev.rx_len(), 1);
         assert_eq!(target_dev.rx_pop().unwrap().data()[8], 63);
+    }
+
+    #[test]
+    fn netdev_dup_mirrors_the_frame_and_keeps_the_original_owner() {
+        let _domain = crate::hosted_fixture::init_net_domain();
+        let stack = crate::global_stack();
+        let (source, _) = stack.register_loopback();
+        let (target, target_dev) = stack.register_loopback();
+        let ifindex = stack.ifaces.ifindex_in_ns(target, 0).unwrap();
+        let mut frame = vec![0u8; crate::ethernet::ETH_HDR_LEN + 20];
+        crate::ethernet::EthHdr::write_to(crate::MacAddr::BROADCAST,
+            crate::MacAddr([2, 0, 0, 0, 0, 1]), crate::eth_p::IPV4, &mut frame);
+        frame[crate::ethernet::ETH_HDR_LEN] = 0x45;
+        let original = frame.clone();
+        let mut pkt = Pkt::from_owned(frame);
+        pkt.proto = crate::eth_p::IPV4;
+        pkt.iface = Some(source);
+        let action = Action::Dup { gateway: None, oif: Some(ifindex) };
+        action.apply_at(&mut pkt, crate::netfilter_hook::NFPROTO_NETDEV, 0).unwrap();
+        assert_eq!(pkt.data(), original.as_slice());
+        assert_eq!(target_dev.rx_len(), 1);
     }
 }

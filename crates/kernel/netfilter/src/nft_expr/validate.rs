@@ -84,6 +84,10 @@ pub fn validate_expr(expr: &Expr, family: u8, hook: u8) -> Result<(), ParseError
             family_allows(family == NFPROTO_NETDEV)?;
             hooks_allow(hook, HOOKS_FWD_NETDEV)
         }
+        Expr::Dup { .. } => {
+            family_allows(family == NFPROTO_NETDEV)?;
+            hooks_allow(hook, HOOKS_FWD_NETDEV)
+        }
         Expr::FlowOffload { .. } => {
             family_allows(inet_family(family))?;
             hooks_allow(hook, HOOKS_FLOW)
