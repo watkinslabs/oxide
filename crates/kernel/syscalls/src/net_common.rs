@@ -96,6 +96,15 @@ pub(crate) fn fd_file(fd: u64) -> Option<Arc<vfs::File>> {
     fdt.get(fd as i32).ok()
 }
 
+/// Resolve a control-syscall descriptor once, then hand that exact open-file
+/// reference to the operation. Linux's `fdget()`/`fdput()` pair has this
+/// shape: a concurrent close and descriptor reuse cannot change the object
+/// an in-flight syscall operates on. # C: O(1)
+pub(crate) fn resolve_once<T>(fd: u64, resolve: impl FnOnce(u64) -> Option<Arc<vfs::File>>,
+                              operation: impl FnOnce(Option<Arc<vfs::File>>) -> T) -> T {
+    operation(resolve(fd))
+}
+
 /// One classified control-syscall target: the endpoint that owns the fd, with
 /// the `fget`-style pin on the exact open file description that was looked up.
 #[cfg(target_os = "oxide-kernel")]
@@ -115,20 +124,21 @@ pub(crate) fn classify(fd: u64, op: crate::sock_route::ControlOp,
     -> Result<Routed, syscall::errno::Errno>
 {
     use crate::sock_route::{endpoint_of, route};
-    let file = fd_file(fd);
-    let endpoint = match route(op, file.as_ref().map(endpoint_of), arg_error) {
-        Ok(endpoint) => endpoint,
-        Err(error) => {
-            if error == syscall::errno::Errno::Enotsock {
-                crate::net_trace::trace_enotsock_at(fd, op.trace_name());
+    resolve_once(fd, fd_file, |file| {
+        let endpoint = match route(op, file.as_ref().map(endpoint_of), arg_error) {
+            Ok(endpoint) => endpoint,
+            Err(error) => {
+                if error == syscall::errno::Errno::Enotsock {
+                    crate::net_trace::trace_enotsock_at(fd, op.trace_name());
+                }
+                return Err(error);
             }
-            return Err(error);
-        }
-    };
-    // `route` returns the endpoint only for a file it classified, so this fd
-    // named an open file description.
-    let file = match file { Some(file) => file, None => return Err(syscall::errno::Errno::Ebadf) };
-    routed_from(endpoint, file)
+        };
+        // `route` returns the endpoint only for a file it classified, so this
+        // fd named an open file description.
+        let file = match file { Some(file) => file, None => return Err(syscall::errno::Errno::Ebadf) };
+        routed_from(endpoint, file)
+    })
 }
 
 /// Build the owning target for an already-classified open file. Split out of
@@ -159,6 +169,25 @@ pub(crate) fn routed_from(endpoint: crate::sock_route::Endpoint, file: Arc<vfs::
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn control_resolution_calls_the_fd_lookup_once_and_keeps_its_file() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+
+        let inode = vfs::InodeBuilder::new(9,
+            vfs::mk_mode(vfs::FileType::Regular, 0o644),
+            vfs::default_inode_ops(), vfs::default_file_ops()).build();
+        let dentry = vfs::Dentry::new(None, alloc::string::String::from("regular"), inode.clone());
+        let expected = vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDWR);
+        let lookups = AtomicUsize::new(0);
+        let observed = resolve_once(17, |_| {
+            lookups.fetch_add(1, Ordering::Relaxed);
+            Some(expected.clone())
+        }, |file| file.expect("resolved file"));
+
+        assert_eq!(lookups.load(Ordering::Relaxed), 1);
+        assert!(Arc::ptr_eq(&observed, &expected));
+    }
 
     #[test]
     fn vsock_ref_delays_final_file_release_until_operation_ends() {
