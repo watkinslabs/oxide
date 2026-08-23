@@ -12,7 +12,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use vfs::{mk_mode, FileOps, FileType, InodeBuilder, InodeOps, InodeRef};
 
 use crate::attrs::make_mode;
-use crate::dirent::{Record, ShortEntry};
+use crate::dirent::{Record, ShortEntry, ATTR_SYS};
 use crate::fatcache::ChainCache;
 use crate::ident::{self, DirLocation};
 use crate::time::to_unix;
@@ -126,6 +126,9 @@ fn build_inode(fs: Arc<FatFs>, entry: Option<ShortEntry>, location: DirLocation,
         .size(size)
         .owner(opts.uid, opts.gid)
         .private(Arc::new(node));
+    if opts.sys_immutable && entry.as_ref().is_some_and(|e| e.attr & ATTR_SYS != 0) {
+        builder = builder.i_flags(vfs::inode::S_IMMUTABLE);
+    }
     if let Some((atime, mtime, ctime, btime)) = times {
         // FAT has no change time of its own. The reference reports the
         // modification time for both, which is the closest true statement:

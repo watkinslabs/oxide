@@ -71,7 +71,7 @@ fn image(block_size: u32) -> Arc<Disk> {
     let e = crate::dirent::ENTRY_BYTES;
     write_entry(&mut b, root, b"HELLO   TXT", ATTR_ARCH, 2, 5);
     write_entry(&mut b, root + e, b"SUBDIR     ", ATTR_DIR, 3, 0);
-    write_entry(&mut b, root + 2 * e, b"LOCKED  CFG", ATTR_ARCH | ATTR_RO, 2, 5);
+    write_entry(&mut b, root + 2 * e, b"LOCKED  CFG", ATTR_ARCH | ATTR_RO | crate::dirent::ATTR_SYS, 2, 5);
     let sub = cluster_at(3);
     write_entry(&mut b, sub, b".          ", ATTR_DIR, 3, 0);
     write_entry(&mut b, sub + e, b"..         ", ATTR_DIR, 0, 0);
@@ -138,6 +138,18 @@ fn a_read_only_entry_presents_without_write_bits() {
     assert_eq!(locked.perm().unwrap_or(0) & 0o222, 0, "no write bits anywhere");
     let plain = root.lookup("HELLO.TXT").expect("lookup");
     assert_ne!(plain.perm().unwrap_or(0) & 0o200, 0, "an ordinary file keeps its owner write bit");
+}
+
+#[test]
+fn sys_immutable_maps_the_dos_system_attribute_to_the_vfs_flag() {
+    let mut opts = crate::opts::Options::vfat();
+    opts.sys_immutable = true;
+    let fs = writable_mount("vfat", opts);
+    let root = fs.root_inode();
+    let system = root.lookup("LOCKED.CFG").expect("lookup");
+    assert_ne!(system.i_flags() & vfs::inode::S_IMMUTABLE, 0);
+    let ordinary = root.lookup("HELLO.TXT").expect("lookup");
+    assert_eq!(ordinary.i_flags() & vfs::inode::S_IMMUTABLE, 0);
 }
 
 /// chmod reaches FAT's record writer rather than only changing the in-memory
