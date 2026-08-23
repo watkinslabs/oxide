@@ -4,14 +4,16 @@
 
 extern crate alloc;
 use alloc::vec::Vec;
+use alloc::sync::Arc;
 
 use sync::{Socket as SocketLockClass, Spinlock};
 
 use crate::uapi::*;
+use crate::entry::Conn;
 
 /// A pending conntrack event.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct CtEvent { pub conn_id: u64, pub events: u32 }
+#[derive(Clone, Debug)]
+pub struct CtEvent { pub conn: Arc<Conn>, pub events: u32 }
 
 /// A pending expectation event.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -72,10 +74,10 @@ impl EventQueue {
     }
 
     /// Queue an event if anyone is listening for its group. # C: O(1)
-    pub fn post(&self, conn_id: u64, events: u32) -> bool {
+    pub fn post(&self, conn: &Arc<Conn>, events: u32) -> bool {
         if events == 0 { return false; }
         if *self.subscribed.lock() & group_for(events) == 0 { return false; }
-        self.ct.lock().push(CtEvent { conn_id, events });
+        self.ct.lock().push(CtEvent { conn: Arc::clone(conn), events });
         true
     }
 
@@ -96,6 +98,9 @@ impl EventQueue {
     pub fn subscribe(&self, groups: u32) { *self.subscribed.lock() |= groups; }
     /// # C: O(1)
     pub fn unsubscribe(&self, groups: u32) { *self.subscribed.lock() &= !groups; }
+
+    /// Replace all ctnetlink group subscriptions for this namespace. # C: O(1)
+    pub fn set_subscribed(&self, groups: u32) { *self.subscribed.lock() = groups; }
 }
 
 impl Default for EventQueue { fn default() -> Self { Self::new() } }

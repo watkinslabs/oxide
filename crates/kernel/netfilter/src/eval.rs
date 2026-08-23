@@ -77,7 +77,9 @@ pub fn eval_in_with_mark(namespace: u64, hook_id: u32, pkt: &[u8], family: u8,
 /// Evaluate one hook from the live packet-buffer and hook ownership. # C: O(N rules)
 pub fn eval_hook(input: &net::stack::NfHookCtx<'_>) -> EvalResult {
     let input = crate::eval_context::Input::from_hook(input);
-    eval_context(&input)
+    let result = eval_context(&input);
+    crate::nl::flush_conntrack_events(input.namespace);
+    result
 }
 
 /// Whether a live hook has any chains in the requested Linux priority range.

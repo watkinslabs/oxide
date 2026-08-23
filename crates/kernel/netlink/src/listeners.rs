@@ -54,6 +54,19 @@ pub fn register_netfilter_listener(sock: &Arc<NetlinkSocket>) {
     let mut g = NETFILTER_LISTENERS.lock();
     g.retain(|w| w.strong_count() > 0);
     g.push(Arc::downgrade(sock));
+    drop(g);
+    net::global_stack().conntrack_set_groups_in(
+        sock.net_ns.id().as_u64(), netfilter_conntrack_groups_in(sock.net_ns.id().as_u64()));
+}
+
+/// Return the union of conntrack event groups subscribed by live netfilter
+/// sockets in one network namespace. # C: O(N_listeners)
+pub fn netfilter_conntrack_groups_in(net_ns: u64) -> u32 {
+    let mut g = NETFILTER_LISTENERS.lock();
+    g.retain(|w| w.strong_count() > 0);
+    g.iter().filter_map(Weak::upgrade).filter(|s| {
+        s.net_ns.id().as_u64() == net_ns
+    }).fold(0, |mask, s| mask | (s.groups.low_mask() & 0x3f))
 }
 
 /// Multicast one kernel-originated nfnetlink packet notification to sockets

@@ -119,6 +119,41 @@ fn parse_ct_tuple(raw: &[u8], family: u8, zone: u16) -> Option<::conntrack::Tupl
     })
 }
 
+/// Flush the canonical conntrack event queue through NETLINK_NETFILTER.
+/// # C: O(N events × listeners)
+pub(crate) fn flush_conntrack_events(namespace: u64) {
+    for (family, events, attrs) in ::net::global_stack().conntrack_drain_events_in(namespace) {
+        let (command, msg_flags, group) = if events & ::conntrack::uapi::IPCT_DESTROY != 0 {
+            (conntrack::uapi::IPCTNL_MSG_CT_DELETE, 0, 3u32)
+        } else if events & (::conntrack::uapi::IPCT_NEW | ::conntrack::uapi::IPCT_RELATED) != 0 {
+            (conntrack::uapi::IPCTNL_MSG_CT_NEW,
+             flags::NLM_F_CREATE | flags::NLM_F_EXCL, 1u32)
+        } else {
+            (conntrack::uapi::IPCTNL_MSG_CT_NEW, 0, 2u32)
+        };
+        let mut body = Vec::with_capacity(Nfgenmsg::SIZE + attrs.len());
+        let mut nfg = [0u8; Nfgenmsg::SIZE];
+        Nfgenmsg { nfgen_family: family, version: 0, res_id: 0 }.write_to(&mut nfg);
+        body.extend_from_slice(&nfg);
+        body.extend_from_slice(&attrs);
+        let total = Nlmsghdr::SIZE + body.len();
+        let hdr = Nlmsghdr {
+            nlmsg_len: total as u32,
+            nlmsg_type: ((subsys::NFNL_SUBSYS_CTNETLINK as u16) << 8) | command as u16,
+            nlmsg_flags: msg_flags,
+            nlmsg_seq: 0,
+            nlmsg_pid: 0,
+        };
+        let mut msg = Vec::with_capacity(total);
+        let mut hb = [0u8; Nlmsghdr::SIZE];
+        hdr.write_to(&mut hb);
+        msg.extend_from_slice(&hb);
+        msg.extend_from_slice(&body);
+        while msg.len() % 4 != 0 { msg.push(0); }
+        let _ = ::netlink::netfilter_multicast_in(namespace, group, &msg);
+    }
+}
+
 pub(crate) fn nlmsg_ack(req: &Nlmsghdr, err: i32) -> Vec<u8> {
     let total = Nlmsghdr::SIZE + 4 + Nlmsghdr::SIZE;
     let hdr = Nlmsghdr {
@@ -306,8 +341,10 @@ fn handle_ct_get(req: &Nlmsghdr, nfg: &Nfgenmsg, attrs: &[u8], namespace: u64) -
 #[cfg(test)]
 mod tests {
     use alloc::vec::Vec;
+    use alloc::sync::Arc;
     use super::parse_ct_tuple;
     use ::conntrack::{ProtoPart, Tuple, TupleEnd, InetAddr};
+    use netlink::{NetlinkSocket, proto, register_netfilter_listener};
 
     #[test]
     fn ctnetlink_tuple_parser_preserves_family_ports_and_zone() {
@@ -322,6 +359,34 @@ mod tests {
         ::conntrack::ctnetlink::put_tuple(
             &mut raw, ::conntrack::uapi::CTA_TUPLE_ORIG, &expected);
         assert_eq!(parse_ct_tuple(&raw[4..], expected.l3num, expected.zone), Some(expected));
+    }
+
+    #[test]
+    fn ctnetlink_event_flush_multicasts_the_canonical_new_message() {
+        let ns = net::net_ns::initial_namespace();
+        let socket = Arc::new(NetlinkSocket::new(proto::NETLINK_NETFILTER, &ns));
+        register_netfilter_listener(&socket);
+        socket.add_membership(1).unwrap();
+        let stack = net::global_stack();
+        let tuple = Tuple {
+            src: TupleEnd { addr: InetAddr::v4([192, 0, 2, 9]), proto: ProtoPart::port(49123) },
+            dst: TupleEnd { addr: InetAddr::v4([198, 51, 100, 9]), proto: ProtoPart::port(53) },
+            l3num: ::conntrack::uapi::NFPROTO_IPV4,
+            protonum: ::conntrack::uapi::IPPROTO_UDP,
+            zone: 0,
+        };
+        let ct = stack.conntrack_in(0);
+        let id = ct.create_tuple(tuple, None, 0, 30, 0, None).expect("create event");
+        super::flush_conntrack_events(0);
+        let mut bytes = [0u8; 512];
+        let n = socket.read(&mut bytes).expect("conntrack event datagram");
+        assert_eq!(u16::from_ne_bytes([bytes[4], bytes[5]]),
+            ((crate::subsys::NFNL_SUBSYS_CTNETLINK as u16) << 8)
+                | ::conntrack::uapi::IPCTNL_MSG_CT_NEW as u16);
+        assert_eq!(bytes[16], ::conntrack::uapi::NFPROTO_IPV4);
+        assert!(bytes[..n].windows(4).any(|w| w == (id as u32).to_be_bytes().as_slice()));
+        let _ = ct.delete_id(id, 0);
+        stack.conntrack_set_groups_in(0, 0);
     }
 }
 
@@ -389,6 +454,7 @@ pub fn handle(datagram: &[u8], namespace: u64) -> Vec<u8> {
         off += nlmsg_align(len);
     }
     if in_batch { crate::batch_abort(); }
+    flush_conntrack_events(namespace);
     replies
 }
 

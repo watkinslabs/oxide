@@ -159,14 +159,14 @@ impl CtNet {
         if sysctl.acct { conn.counters[dir as usize].account(pkt.len); }
         let ctinfo = conn.ctinfo(dir);
         let events = cache.take();
-        if sysctl.events { self.events.post(conn.id, events); }
+        if sysctl.events { self.events.post(&conn, events); }
         Track::Ok { conn, dir, ctinfo, events }
     }
 
     fn kill_with_event(&self, conn: &Arc<Conn>) {
         if self.table.kill(conn) {
             self.expect.purge_master(conn);
-            self.events.post(conn.id, IPCT_DESTROY);
+            self.events.post(&conn, IPCT_DESTROY);
         }
     }
 
@@ -182,7 +182,7 @@ impl CtNet {
         if let Some(exp) = self.expect.find(&conn.orig, now) {
             conn.set_status_bits(IPS_EXPECTED);
             self.expect.remove(&exp.tuple);
-            self.events.post(conn.id, IPCT_RELATED);
+            self.events.post(&conn, IPCT_RELATED);
         }
         true
     }
@@ -193,7 +193,7 @@ impl CtNet {
         let Some(conn) = self.table.find_id(id, now) else { return false; };
         if !self.table.kill(&conn) { return false; }
         self.expect.purge_master(&conn);
-        self.events.post(conn.id, IPCT_DESTROY);
+        self.events.post(&conn, IPCT_DESTROY);
         true
     }
 
@@ -212,14 +212,14 @@ impl CtNet {
             let old = conn.status();
             conn.status.store((old & IPS_UNCHANGEABLE_MASK) | writable,
                               core::sync::atomic::Ordering::Release);
-            if old != conn.status() { self.events.post(conn.id, IPCT_PROTOINFO); }
+            if old != conn.status() { self.events.post(&conn, IPCT_PROTOINFO); }
         }
         if let Some((value, mask)) = mark {
             let old = conn.mark.load(core::sync::atomic::Ordering::Relaxed);
             let mask = mask.unwrap_or(0);
             let new = (old & mask) ^ value;
             conn.mark.store(new, core::sync::atomic::Ordering::Release);
-            if old != new { self.events.post(conn.id, IPCT_MARK); }
+            if old != new { self.events.post(&conn, IPCT_MARK); }
         }
         true
     }
@@ -243,7 +243,7 @@ impl CtNet {
             let _ = self.table.kill(&conn);
             return None;
         }
-        self.events.post(conn.id, IPCT_NEW);
+        self.events.post(&conn, IPCT_NEW);
         Some(conn.id)
     }
 

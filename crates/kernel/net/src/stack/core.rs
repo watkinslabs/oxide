@@ -84,6 +84,25 @@ impl NetStack {
         Some(::conntrack::ctnetlink::encode_entry(&found.conn, now, acct))
     }
 
+    /// Set ctnetlink's namespace-local notification groups. # C: O(1)
+    pub fn conntrack_set_groups_in(&self, net_ns: u64, groups: u32) {
+        self.conntrack_in(net_ns).events.set_subscribed(groups & 0x3f);
+    }
+
+    /// Drain the canonical ctnetlink events as family, event mask, and entry
+    /// attributes. Destruction events retain their pre-unlink entry snapshot.
+    /// # C: O(N events)
+    pub fn conntrack_drain_events_in(&self, net_ns: u64)
+        -> alloc::vec::Vec<(u8, u32, alloc::vec::Vec<u8>)> {
+        let Some(ct) = self.conntrack_existing_in(net_ns) else { return alloc::vec::Vec::new() };
+        let now = crate::stack::net_now_ns() / 1_000_000_000;
+        let acct = ct.sysctl.lock().acct;
+        ct.events.drain().into_iter().map(|event| (
+            event.conn.orig.l3num, event.events,
+            ::conntrack::ctnetlink::encode_entry(&event.conn, now, acct),
+        )).collect()
+    }
+
     /// Read one live conntrack sysctl. The table is a per-net subsystem and
     /// is initialized when its sysctl namespace is first accessed. # C: O(log N)
     pub fn conntrack_sysctl_get(&self, net_ns: u64, knob: ::conntrack::sysctl::Knob) -> u64 {
@@ -109,7 +128,7 @@ impl NetStack {
         let Some(found) = ct.table.lookup(&tuple, now) else { return false; };
         if !ct.table.kill(&found.conn) { return false; }
         ct.expect.purge_master(&found.conn);
-        ct.events.post(found.conn.id, ::conntrack::uapi::IPCT_DESTROY);
+        ct.events.post(&found.conn, ::conntrack::uapi::IPCT_DESTROY);
         true
     }
 
