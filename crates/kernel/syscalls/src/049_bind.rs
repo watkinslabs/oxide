@@ -146,6 +146,12 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
             sock.family.load(core::sync::atomic::Ordering::Acquire)),
     };
     let admission = match &target {
+        Target::Netlink(target) => {
+            let socket = target.socket();
+            net::sock_admit::admit_bind_socket(namespace, sock_family,
+                socket.security_sid.load(core::sync::atomic::Ordering::Acquire),
+                socket.security_class())
+        }
         Target::Vsock(vs) => net::sock_admit::admit_bind_socket(namespace, sock_family,
             vs.security_label(), vs.security_class()),
         Target::Inet(sock) => {

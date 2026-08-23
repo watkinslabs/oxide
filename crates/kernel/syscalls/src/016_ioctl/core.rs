@@ -16,6 +16,34 @@ use super::common::{handle_common_ioctl, handle_nonchar_queue_ioctl, handle_sock
 use super::f2fs::handle_f2fs_ioctl;
 use super::tty_ioctl::handle_tty_ioctl;
 
+/// Apply Linux's socket ioctl hook to the retained socket object, preserving
+/// its SID and concrete SELinux class across every ioctl owner. # C: O(1)
+fn socket_ioctl_admission(file: &vfs::File) -> Result<(), net::NetError> {
+    if let Ok(sock) = file.inode().i_private().clone()
+        .downcast::<net::sock::InetSocket>() {
+        let object = net::socket_security::inet(&sock);
+        return net::security_admission::check_socket(object.namespace, object.family,
+            security::network::Operation::Ioctl, object.target_sid, object.target_class);
+    }
+    if let Ok(sock) = file.inode().i_private().clone()
+        .downcast::<::netlink::NetlinkSocket>() {
+        return net::security_admission::check_socket(
+            net::net_ns::namespace_id(&sock.net_ns), net::socket_args::AF_NETLINK_WIRE,
+            security::network::Operation::Ioctl,
+            sock.security_sid.load(core::sync::atomic::Ordering::Acquire),
+            sock.security_class());
+    }
+    if let Ok(sock) = file.inode().i_private().clone()
+        .downcast::<net::vsock_socket::VsockSocket>() {
+        return net::security_admission::check_socket(sock.net_ns(),
+            net::socket_args::AF_VSOCK as u16, security::network::Operation::Ioctl,
+            sock.security_label(), sock.security_class());
+    }
+    net::security_admission::check(net::net_ns::namespace_id(
+        &sioc_socket_net_namespace(file).expect("socket ioctl has a socket namespace")),
+        sioc_socket_family(file), security::network::Operation::Ioctl)
+}
+
 /// `sys_ioctl(fd, request, arg)` - slot 16.
 /// # C: O(1)
 pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
@@ -177,10 +205,9 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             Some(namespace) => namespace,
             None => return -(Errno::Enotty.as_i32() as i64),
         };
-        if let Err(error) = net::security_admission::check(
-            net::net_ns::namespace_id(&namespace), sioc_socket_family(&file),
-            security::network::Operation::Ioctl,
-        ) { return crate::net_errno::errno_from_neterr(error); }
+        if let Err(error) = socket_ioctl_admission(&file) {
+            return crate::net_errno::errno_from_neterr(error);
+        }
         return super::netns::handle_siocgskns(namespace);
     }
     if matches!(req, super::uapi::SIOCGSTAMP_OLD | super::uapi::SIOCGSTAMPNS_OLD
@@ -198,14 +225,12 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
         // The aliases mutate/read socket-associated asynchronous-notification
         // state. Admit them before their usercopy or f_owner transition, like
         // every other socket ioctl owner.
-        let namespace = match sioc_socket_net_namespace(&file) {
-            Some(namespace) => namespace,
-            None => return -(Errno::Enotty.as_i32() as i64),
-        };
-        if let Err(error) = net::security_admission::check(
-            net::net_ns::namespace_id(&namespace), sioc_socket_family(&file),
-            security::network::Operation::Ioctl,
-        ) { return crate::net_errno::errno_from_neterr(error); }
+        if sioc_socket_net_namespace(&file).is_none() {
+            return -(Errno::Enotty.as_i32() as i64);
+        }
+        if let Err(error) = socket_ioctl_admission(&file) {
+            return crate::net_errno::errno_from_neterr(error);
+        }
         if let Some(rv) = handle_socket_owner_ioctl(&file, req, arg) { return rv; }
     }
     // B48: SIOC* network-iface ioctls on AF_INET / AF_INET6 sockets.
@@ -221,10 +246,9 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             Some(namespace) => namespace,
             None => return -(Errno::Enotty.as_i32() as i64),
         };
-        if let Err(error) = net::security_admission::check(
-            net::net_ns::namespace_id(&net_namespace), sioc_socket_family(&file),
-            security::network::Operation::Ioctl,
-        ) { return crate::net_errno::errno_from_neterr(error); }
+        if let Err(error) = socket_ioctl_admission(&file) {
+            return crate::net_errno::errno_from_neterr(error);
+        }
         if let Some(error) = net::sock::legacy_ioctl_errno(sioc_socket_family(&file), req) {
             return crate::net_errno::errno_from_neterr(error);
         }
@@ -321,8 +345,7 @@ fn socket_receive_timestamp_ioctl(file: &vfs::File, req: u64, arg: u64) -> i64 {
         Ok(sock) => sock,
         Err(_) => return -(Errno::Enotty.as_i32() as i64),
     };
-    if let Err(error) = net::security_admission::check(sock.net_ns(),
-        sock.family.load(core::sync::atomic::Ordering::Acquire), security::network::Operation::Ioctl)
+    if let Err(error) = socket_ioctl_admission(&file)
     { return crate::net_errno::errno_from_neterr(error); }
     let timestamp_ns = match sock.enable_receive_timestamp() {
         Some(timestamp_ns) => timestamp_ns,
