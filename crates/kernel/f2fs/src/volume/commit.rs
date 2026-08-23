@@ -211,6 +211,7 @@ impl<S: SectorSource> Volume<S> {
         self.cp = cp;
         self.nat_bitmap = nat_bitmap;
         self.sit_bitmap = sit_bitmap;
+        self.nat_cache_clear();
         self.nat_journal = nat_journal;
         self.sit_journal = sit_journal;
         self.nat_dirty.clear();

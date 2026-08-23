@@ -106,6 +106,7 @@ impl<S: SectorSource> Volume<S> {
     pub(crate) fn checkpointed_node_addr(&self, nid: u32) -> Result<u32, Errno> {
         if !nat::nid_in_range(nid, self.max_nid()) { return Err(Errno::Einval); }
         if let Some(e) = nat::journalled(&self.nat_journal, nid) { return Ok(e.block_addr); }
+        if let Some(e) = self.nat_cache_get(nid) { return Ok(e.block_addr); }
         let at = nat::block_addr(
             self.sb.nat_blkaddr,
             self.sb.blks_per_seg(),
@@ -114,6 +115,7 @@ impl<S: SectorSource> Volume<S> {
         );
         let block = self.read_block(at)?;
         let entry = nat::resolve(&self.nat_journal, &block, nid).ok_or(Errno::Eio)?;
+        self.nat_cache_put(nid, entry);
         Ok(entry.block_addr)
     }
 

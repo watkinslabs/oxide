@@ -227,6 +227,7 @@ impl<S: SectorSource> Volume<S> {
         curseg::stamp_node_temp(&mut block, kind);
         if nid == ino { self.seal_inode(&mut block); }
         if was_new {
+            self.nat_cache_forget(nid);
             self.nat_dirty.insert(nid, NatEntry { version: 0, ino, block_addr: NEW_ADDR });
             // The id is a live node now, so the cache stops holding it: an id
             // left recorded as handed out is one the failure path could give
@@ -382,6 +383,7 @@ impl<S: SectorSource> Volume<S> {
             }
             Err(_) => false,
         };
+        self.nat_cache_forget(nid);
         self.nat_dirty.insert(nid, NatEntry { version: 0, ino: 0, block_addr: NULL_ADDR });
         if live { self.valid_node_count = self.valid_node_count.saturating_sub(1); }
         if nid < self.next_free_nid { self.next_free_nid = nid; }

@@ -155,6 +155,8 @@ impl<S: SectorSource> Volume<S> {
         init_field!(writable: writable);
         init_field!(curseg: curseg);
         init_field!(nat_dirty: alloc::collections::BTreeMap::new());
+        init_field!(nat_cache: core::cell::RefCell::new(alloc::collections::BTreeMap::new()));
+        init_field!(nat_lru: core::cell::RefCell::new(alloc::collections::VecDeque::new()));
         init_field!(sit: None);
         init_field!(segstate: segstate);
         init_field!(sit_dirty: alloc::collections::BTreeSet::new());

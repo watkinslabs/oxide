@@ -259,7 +259,7 @@ impl General {
             free_segs, free_secs: free_sections(v),
             prefree_count: v.prefree_count(),
             dirty_count: w.dirty_count,
-            nats: (v.nat_dirty.len() + v.nat_journal.len()) as u32,
+            nats: (v.nat_dirty.len() + v.nat_journal.len() + v.nat_cache_count()) as u32,
             dirty_nats: v.nat_dirty.len() as u32,
             sits: main_area_segs,
             dirty_sits: v.sit_dirty.len() as u32,

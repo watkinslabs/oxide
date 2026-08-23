@@ -109,7 +109,10 @@ pub fn balance_fs_choice(need: bool, excess_cached_nats: bool, enough_free_secs:
 impl<S: SectorSource> Volume<S> {
     /// Node-table entries this mount is holding that a checkpoint would
     /// retire. # C: O(1)
-    pub fn cached_nats(&self) -> usize { self.nat_dirty.len() }
+    pub fn cached_nats(&self) -> usize {
+        self.nat_dirty.len().saturating_add(self.nat_journal.len())
+            .saturating_add(self.nat_cache_count())
+    }
 
     /// Whether enough of the node table is dirty to be worth a checkpoint.
     /// # C: O(1)

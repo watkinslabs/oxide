@@ -194,7 +194,8 @@ fn resolving_the_same_inode_twice_reads_the_node_table_once() {
     v.root().unwrap();
     assert_eq!(v.counters().iostat.bytes[read], once,
                "the node table was read from the medium twice");
-    assert!(v.meta_cache.hits() > 0);
+    assert!(v.meta_cache.hits() > 0 || v.nat_cache_count() > 0,
+            "the second resolution did not use either metadata cache owner");
 }
 
 #[test]

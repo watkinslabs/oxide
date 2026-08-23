@@ -61,6 +61,7 @@
 //!                asks for them, one transfer per contiguous run.
 
 use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
 use syscall::errno::Errno;
@@ -186,6 +187,11 @@ pub struct Volume<S: SectorSource> {
     /// the table on every read: the medium still holds the old addresses
     /// until a checkpoint retires them.
     pub(crate) nat_dirty: BTreeMap<u32, NatEntry>,
+    /// Clean NAT entries read from the selected table copy. The map is the
+    /// lookup owner; the LRU contains exactly the same keys and is the reclaim
+    /// order. Dirty entries leave this cache before entering `nat_dirty`.
+    pub(crate) nat_cache: core::cell::RefCell<BTreeMap<u32, NatEntry>>,
+    pub(crate) nat_lru: core::cell::RefCell<VecDeque<u32>>,
     /// The segment table, loaded whole on the first write.
     pub(crate) sit: Option<Vec<SitEntry>>,
     /// The segment-management state that is not on the medium: the prefree

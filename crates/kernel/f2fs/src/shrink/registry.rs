@@ -105,7 +105,7 @@ pub fn count() -> usize {
         let entries = |kind: Kind| {
             caches.zombie_count(kind).saturating_add(caches.node_count(kind))
         };
-        let one = reclaimable(entries(Kind::Read), entries(Kind::BlockAge),
+        let one = reclaimable(entries(Kind::Read), entries(Kind::BlockAge), v.nat_cache_count() as u64,
                               v.free_nids.free_count());
         total = total.saturating_add(one);
     }
@@ -130,6 +130,8 @@ pub fn scan(nr: usize) -> usize {
             freed = freed.saturating_add(caches.shrink(Kind::BlockAge, share.age));
             freed = freed.saturating_add(caches.shrink(Kind::Read, share.read));
         }
+        let left = remaining(nr, freed);
+        if left > 0 { freed = freed.saturating_add(v.nat_cache_shrink(share.nat.min(left))); }
         let left = remaining(nr, freed);
         if left > 0 { freed = freed.saturating_add(v.free_nids.shrink(left)); }
     }

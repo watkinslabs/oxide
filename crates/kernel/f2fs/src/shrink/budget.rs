@@ -24,10 +24,15 @@ pub struct Budget {
     pub age: usize,
     /// Entries the read cache may lose.
     pub read: usize,
+    /// Clean NAT entries; unlike dirty NAT state these can be reconstructed
+    /// from the table and are safe to discard under reclaim.
+    pub nat: usize,
 }
 
 /// Divide `nr` between the two extent caches. # C: O(1)
-pub fn split(nr: usize) -> Budget { Budget { age: nr >> 2, read: nr >> 2 } }
+pub fn split(nr: usize) -> Budget {
+    Budget { age: nr >> 2, read: nr >> 2, nat: nr >> 2 }
+}
 
 /// What is left of `nr` for the node-id cache once the extent caches have taken
 /// `freed`.
@@ -51,9 +56,10 @@ pub fn remaining(nr: usize, freed: usize) -> usize { nr.saturating_sub(freed) }
 /// on the next `create`, which is why the count starts above them and not at
 /// zero.
 /// # C: O(1)
-pub fn reclaimable(read_entries: u64, age_entries: u64, free_nids: u32) -> usize {
+pub fn reclaimable(read_entries: u64, age_entries: u64, nat_entries: u64, free_nids: u32) -> usize {
     let nids = free_nids.saturating_sub(MAX_FREE_NIDS);
-    let total = read_entries.saturating_add(age_entries).saturating_add(u64::from(nids));
+    let total = read_entries.saturating_add(age_entries).saturating_add(nat_entries)
+        .saturating_add(u64::from(nids));
     total.min(usize::MAX as u64) as usize
 }
 
