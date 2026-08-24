@@ -186,6 +186,25 @@ fn single_planar_formats_write_the_linux_chroma_sections() {
 }
 
 #[test]
+fn multiplanar_formats_split_the_same_linux_frame() {
+    let (width, height) = (8u32, 4u32);
+    for (format, planes) in [
+        (fourcc::NV12M, 2usize),
+        (fourcc::NV21M, 2),
+        (fourcc::YUV420M, 3),
+        (fourcc::YVU420M, 3),
+        (fourcc::YUV422M, 3),
+    ] {
+        let (sizes, count) = tpg::plane_sizes(format, width, height);
+        assert_eq!(count, planes);
+        let total: usize = sizes[..count].iter().map(|n| *n as usize).sum();
+        assert_eq!(total, tpg::frame_bytes(format, width, height));
+        let mut frame = alloc::vec![0u8; total];
+        assert_eq!(tpg::render_frame(format, width, height, 0, &mut frame), total);
+    }
+}
+
+#[test]
 fn a_whole_frame_is_stride_times_height_and_every_line_is_identical() {
     let (width, height) = (32u32, 8u32);
     let stride = fourcc::bytesperline(fourcc::RGB24, width) as usize;

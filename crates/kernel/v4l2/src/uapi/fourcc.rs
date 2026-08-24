@@ -30,6 +30,11 @@ pub const NV16: u32 = 0x3631_564e;
 pub const YUV420: u32 = 0x3231_5559;
 pub const YVU420: u32 = 0x3231_5659;
 pub const YUV422P: u32 = 0x5032_3234;
+pub const NV12M: u32 = 0x3231_4d4e;
+pub const NV21M: u32 = 0x3132_4d4e;
+pub const YUV420M: u32 = 0x3231_4d59;
+pub const YVU420M: u32 = 0x3132_4d59;
+pub const YUV422M: u32 = 0x3631_4d59;
 pub const MJPEG: u32 = 0x4750_4a4d;
 pub const JPEG: u32 = 0x4745_504a;
 pub const H264: u32 = 0x3436_3248;
@@ -61,8 +66,9 @@ pub fn size_rule(pixelformat: u32) -> Option<SizeRule> {
         YUYV | UYVY | YVYU | VYUY | RGB565 | RGB565X => SizeRule::Packed { bits_per_pixel: 16 },
         RGB24 | BGR24 => SizeRule::Packed { bits_per_pixel: 24 },
         XRGB32 | ARGB32 => SizeRule::Packed { bits_per_pixel: 32 },
-        NV12 | NV21 | YUV420 | YVU420 => SizeRule::Planar { chroma_num: 1, chroma_den: 2 },
-        NV16 | YUV422P => SizeRule::Planar { chroma_num: 1, chroma_den: 1 },
+        NV12 | NV21 | YUV420 | YVU420 | NV12M | NV21M | YUV420M | YVU420M =>
+            SizeRule::Planar { chroma_num: 1, chroma_den: 2 },
+        NV16 | YUV422P | YUV422M => SizeRule::Planar { chroma_num: 1, chroma_den: 1 },
         MJPEG | JPEG | H264 | H264_NO_SC | HEVC | VP8 | VP9 => SizeRule::Compressed,
         _ => return None,
     })

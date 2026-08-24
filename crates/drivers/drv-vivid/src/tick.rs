@@ -47,18 +47,30 @@ pub fn note_streaming(started: bool) {
 /// makes the whole capture path exercisable — and what a desktop's camera
 /// settings panel needs before it will show anything at all.
 /// # C: O(1)
-pub fn register(index_hint: u32) -> bool {
-    let vivid = Vivid::new();
+pub fn register(index_hint: u32, multiplanar: bool) -> bool {
+    let vivid = if multiplanar { Vivid::new_multiplanar() } else { Vivid::new() };
     let registration = v4l2::device::Registration {
         identity: Identity {
             driver: String::from("vivid"),
             card: String::from("Virtual Video Capture"),
-            bus_info: alloc::format!("platform:vivid-{:03}", index_hint),
+            bus_info: if multiplanar {
+                alloc::format!("platform:vivid-multi-{:03}", index_hint)
+            } else {
+                alloc::format!("platform:vivid-{:03}", index_hint)
+            },
         },
-        device_caps: crate::tables::DEVICE_CAPS,
+        device_caps: if multiplanar {
+            crate::tables::DEVICE_CAPS_MPLANE
+        } else {
+            crate::tables::DEVICE_CAPS
+        },
         ops: vivid.clone(),
         alloc: Arc::new(v4l2::node::FrameAlloc),
-        buf_type: flags::BUF_TYPE_VIDEO_CAPTURE,
+        buf_type: if multiplanar {
+            flags::BUF_TYPE_VIDEO_CAPTURE_MPLANE
+        } else {
+            flags::BUF_TYPE_VIDEO_CAPTURE
+        },
         // Only the mapped model: the pages are the driver's own, and there is
         // nothing here that can import a caller's memory or a descriptor.
         buf_caps: flags::BUF_CAP_SUPPORTS_MMAP,
@@ -91,9 +103,7 @@ fn tick(now: u64) {
     for (vivid, device) in cameras {
         let Some(pending) = vivid.take_due(now) else { continue };
         let format = vivid.format();
-        let filled = fill(&device, pending.index, &format, pending.sequence, vivid.motion());
-        let mut bytesused = [0u32; v4l2::uapi::layout::MAX_PLANES];
-        bytesused[0] = filled;
+        let bytesused = fill(&device, pending.index, &format, pending.sequence, vivid.motion());
         v4l2::node::buffer_done(&device, &v4l2::vb2::Completion {
             index: pending.index,
             state: if pending.error { v4l2::vb2::BufState::Error }
@@ -111,29 +121,43 @@ fn tick(now: u64) {
 /// # C: O(pixels)
 fn fill(device: &Arc<VideoDevice>, index: u32, format: &v4l2::format::PixFormat, sequence: u32,
         motion: crate::tpg::Motion)
-    -> u32
+    -> [u32; v4l2::uapi::layout::MAX_PLANES]
 {
+    let mut bytesused = [0u32; v4l2::uapi::layout::MAX_PLANES];
     let frame_bytes = crate::tpg::frame_bytes(format.pixelformat, format.width, format.height);
-    if frame_bytes == 0 { return 0; }
+    if frame_bytes == 0 { return bytesused; }
     let mut frame = alloc::vec![0u8; frame_bytes];
     let shift = sequence % crate::tpg::BARS.len() as u32;
     if crate::tpg::render_frame_motion(format.pixelformat, format.width, format.height, shift,
                                        sequence, motion, &mut frame) == 0 {
-        return 0;
+        return bytesused;
     }
+    let (plane_sizes, num_planes) = crate::tpg::plane_sizes(
+        format.pixelformat, format.width, format.height);
     // The plane's page list is copied out and the device lock dropped before
     // the pixels are written. A frame is up to a megabyte and a half; holding
     // a spinlock across that copy would park every other caller of this
     // device — and, at thirty frames a second, do it continuously.
     let (frames, length) = {
         let state = device.state.lock();
-        let Some(buffer) = state.queue.buffer(index) else { return 0 };
-        let Some(plane) = buffer.planes.first() else { return 0 };
-        (plane.frames.clone(), plane.length as usize)
+        let Some(buffer) = state.queue.buffer(index) else { return bytesused };
+        let mut planes = Vec::new();
+        for plane in buffer.planes.iter().take(num_planes) {
+            planes.push((plane.frames.clone(), plane.length as usize));
+        }
+        planes
     };
-    let written = frame.len().min(length);
-    if written != 0 { v4l2::node::write_plane(&frames, 0, &frame[..written]); }
-    written as u32
+    let mut source = 0usize;
+    for (plane_index, (frames, length)) in frames.into_iter().enumerate() {
+        let wanted = plane_sizes[plane_index] as usize;
+        let available = frame.len().saturating_sub(source).min(wanted).min(length);
+        if available != 0 {
+            v4l2::node::write_plane(&frames, 0, &frame[source..source + available]);
+        }
+        bytesused[plane_index] = available as u32;
+        source = source.saturating_add(wanted);
+    }
+    bytesused
 }
 
 /// Start the frame producer. # C: O(1)

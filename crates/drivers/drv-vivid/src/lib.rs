@@ -43,7 +43,18 @@ pub(crate) fn note_streaming(_started: bool) {}
 pub fn init_instances(count: u32) {
     let mut registered = false;
     for index in 0..count {
-        registered |= tick::register(index);
+        registered |= tick::register(index, false);
+    }
+    if registered { tick::start(); }
+}
+
+/// Publish the Linux Vivid `multiplanar=2` variant for `count` instances.
+/// # C: O(count)
+#[cfg(target_os = "oxide-kernel")]
+pub fn init_multiplanar_instances(count: u32) {
+    let mut registered = false;
+    for index in 0..count {
+        registered |= tick::register(index, true);
     }
     if registered { tick::start(); }
 }

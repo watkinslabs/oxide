@@ -103,8 +103,9 @@ pub fn render_line_at(pixelformat: u32, width: u32, height: u32, y: u32, shift: 
         fourcc::Y10 => render_luma16(width, height, y, shift, frame, motion, dst, 10, false),
         fourcc::Y16 => render_luma16(width, height, y, shift, frame, motion, dst, 16, false),
         fourcc::Y16_BE => render_luma16(width, height, y, shift, frame, motion, dst, 16, true),
-        fourcc::NV12 | fourcc::NV21 | fourcc::NV16 |
-        fourcc::YUV420 | fourcc::YVU420 | fourcc::YUV422P => {
+        fourcc::NV12 | fourcc::NV21 | fourcc::NV16 | fourcc::NV12M | fourcc::NV21M |
+        fourcc::YUV420 | fourcc::YVU420 | fourcc::YUV420M | fourcc::YVU420M |
+        fourcc::YUV422P | fourcc::YUV422M => {
             render_luma_line(width, height, y, shift, frame, motion, dst)
         }
         fourcc::RGB565 | fourcc::RGB565X => {
@@ -217,6 +218,37 @@ pub fn frame_bytes(pixelformat: u32, width: u32, height: u32) -> usize {
     fourcc::sizeimage(pixelformat, width, height, 0) as usize
 }
 
+/// Per-plane allocation sizes for Linux's multi-planar Vivid formats.
+/// Single-planar formats return their complete frame as plane zero.
+pub fn plane_sizes(pixelformat: u32, width: u32, height: u32)
+    -> ([u32; v4l2::uapi::layout::MAX_PLANES], usize)
+{
+    let mut sizes = [0u32; v4l2::uapi::layout::MAX_PLANES];
+    let y = width.saturating_mul(height);
+    let cw = width.div_ceil(2);
+    let ch = height.div_ceil(2);
+    match pixelformat {
+        fourcc::NV12M | fourcc::NV21M => {
+            sizes[0] = y;
+            sizes[1] = cw.saturating_mul(ch).saturating_mul(2);
+            (sizes, 2)
+        }
+        fourcc::YUV420M | fourcc::YVU420M => {
+            sizes[0] = y;
+            sizes[1] = cw.saturating_mul(ch);
+            sizes[2] = sizes[1];
+            (sizes, 3)
+        }
+        fourcc::YUV422M => {
+            sizes[0] = y;
+            sizes[1] = cw.saturating_mul(height);
+            sizes[2] = sizes[1];
+            (sizes, 3)
+        }
+        _ => { sizes[0] = fourcc::sizeimage(pixelformat, width, height, 0); (sizes, 1) }
+    }
+}
+
 /// Render a whole frame into `dst`. Returns the bytes written. # C: O(pixels)
 pub fn render_frame(pixelformat: u32, width: u32, height: u32, shift: u32, dst: &mut [u8]) -> usize {
     render_frame_motion(pixelformat, width, height, shift, 0, Motion { horizontal: 0, vertical: 0 }, dst)
@@ -225,7 +257,8 @@ pub fn render_frame(pixelformat: u32, width: u32, height: u32, shift: u32, dst: 
 pub fn render_frame_motion(pixelformat: u32, width: u32, height: u32, shift: u32,
                             frame: u32, motion: Motion, dst: &mut [u8]) -> usize {
     if matches!(pixelformat, fourcc::NV12 | fourcc::NV21 | fourcc::NV16 |
-        fourcc::YUV420 | fourcc::YVU420 | fourcc::YUV422P) {
+        fourcc::NV12M | fourcc::NV21M | fourcc::YUV420 | fourcc::YVU420 |
+        fourcc::YUV420M | fourcc::YVU420M | fourcc::YUV422P | fourcc::YUV422M) {
         return render_planar(pixelformat, width, height, shift, frame, motion, dst);
     }
     let stride = fourcc::bytesperline(pixelformat, width) as usize;
@@ -281,31 +314,37 @@ fn render_planar(pixelformat: u32, width: u32, height: u32, shift: u32,
         (chroma_u(c), chroma_v(c))
     };
     match pixelformat {
-        fourcc::NV12 | fourcc::NV21 | fourcc::NV16 => {
+        fourcc::NV12 | fourcc::NV21 | fourcc::NV16 |
+        fourcc::NV12M | fourcc::NV21M => {
             let start = y_bytes;
             for y in 0..rows {
                 for x in 0..chroma_width {
                     let (u, v) = sample(x, y);
                     let at = start + (y * chroma_width + x) * 2;
-                    if pixelformat == fourcc::NV12 { dst[at..at + 2].copy_from_slice(&[u, v]); }
-                    else if pixelformat == fourcc::NV21 { dst[at..at + 2].copy_from_slice(&[v, u]); }
+                    if matches!(pixelformat, fourcc::NV12 | fourcc::NV12M | fourcc::NV16) {
+                        dst[at..at + 2].copy_from_slice(&[u, v]);
+                    }
+                    else if matches!(pixelformat, fourcc::NV21 | fourcc::NV21M) {
+                        dst[at..at + 2].copy_from_slice(&[v, u]);
+                    }
                     else { dst[at..at + 2].copy_from_slice(&[u, v]); }
                 }
             }
         }
-        fourcc::YUV420 | fourcc::YVU420 => {
+        fourcc::YUV420 | fourcc::YVU420 | fourcc::YUV420M | fourcc::YVU420M => {
             let first = y_bytes;
             let second = first + chroma_bytes;
             for y in 0..chroma_height {
                 for x in 0..chroma_width {
                     let (u, v) = sample(x, y);
                     let at = y * chroma_width + x;
-                    dst[first + at] = if pixelformat == fourcc::YUV420 { u } else { v };
-                    dst[second + at] = if pixelformat == fourcc::YUV420 { v } else { u };
+                    let yuv = matches!(pixelformat, fourcc::YUV420 | fourcc::YUV420M);
+                    dst[first + at] = if yuv { u } else { v };
+                    dst[second + at] = if yuv { v } else { u };
                 }
             }
         }
-        fourcc::YUV422P => {
+        fourcc::YUV422P | fourcc::YUV422M => {
             let first = y_bytes;
             let second = first + chroma_bytes;
             for y in 0..height as usize {

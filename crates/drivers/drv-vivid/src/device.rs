@@ -20,6 +20,7 @@ pub struct Pending {
 /// One virtual camera.
 pub struct Vivid {
     state: Spinlock<VividState, TaskList>,
+    multiplanar: bool,
 }
 
 struct VividState {
@@ -42,8 +43,15 @@ struct VividState {
 
 impl Vivid {
     /// # C: O(1)
-    pub fn new() -> Arc<Vivid> {
+    pub fn new() -> Arc<Vivid> { Self::new_with_mode(false) }
+
+    /// Construct the Linux Vivid `multiplanar=2` variant.
+    /// # C: O(1)
+    pub fn new_multiplanar() -> Arc<Vivid> { Self::new_with_mode(true) }
+
+    fn new_with_mode(multiplanar: bool) -> Arc<Vivid> {
         Arc::new(Vivid {
+            multiplanar,
             state: Spinlock::new(VividState {
                 streaming: false, handed: VecDeque::new(),
                 format: PixFormat::empty(),
@@ -127,7 +135,10 @@ pub fn next_deadline(last_ns: u64, now_ns: u64, period_ns: u64) -> u64 {
 
 impl VideoOps for Vivid {
     /// # C: O(1)
-    fn formats(&self) -> &'static [FormatDesc] { crate::tables::FORMATS }
+    fn formats(&self) -> &'static [FormatDesc] {
+        if self.multiplanar { crate::tables::MULTIPLANAR_FORMATS }
+        else { crate::tables::FORMATS }
+    }
     /// # C: O(1)
     fn inputs(&self) -> &'static [InputDesc] { crate::tables::INPUTS }
     /// # C: O(1)
@@ -176,9 +187,11 @@ impl VideoOps for Vivid {
             state.queue_setup_error = false;
             return Err(Errno::Einval);
         }
-        let mut plane_sizes = [0u32; v4l2::uapi::layout::MAX_PLANES];
-        plane_sizes[0] = format.sizeimage.max(1);
-        Ok(v4l2::vb2::QueueSetup { count: count.max(1), num_planes: 1, plane_sizes })
+        let (plane_sizes, num_planes) = crate::tpg::plane_sizes(
+            format.pixelformat, format.width, format.height);
+        Ok(v4l2::vb2::QueueSetup {
+            count: count.max(1), num_planes, plane_sizes,
+        })
     }
 
     /// # C: O(1)

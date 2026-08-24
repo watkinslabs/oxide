@@ -79,6 +79,22 @@ pub const FORMATS: &[FormatDesc] = &[
                  sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
 ];
 
+/// Formats exposed by the reference's `multiplanar=2` device. The queue
+/// supplies the separate plane sizes; these descriptors only select the
+/// pixel layout and negotiated frame geometry.
+pub const MULTIPLANAR_FORMATS: &[FormatDesc] = &[
+    FormatDesc { pixelformat: fourcc::NV12M, description: "Y/CbCr 4:2:0 multi-planar", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::NV21M, description: "Y/CrCb 4:2:0 multi-planar", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::YUV420M, description: "Planar YUV 4:2:0 multi-planar", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::YVU420M, description: "Planar YVU 4:2:0 multi-planar", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::YUV422M, description: "Planar YUV 4:2:2 multi-planar", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+];
+
 pub const INPUTS: &[InputDesc] = &[
     InputDesc { name: "Camera", input_type: flags::INPUT_TYPE_CAMERA, status: 0,
                 capabilities: 0 },
@@ -151,4 +167,8 @@ pub fn controls() -> alloc::vec::Vec<ControlDesc> {
 /// that sees the read bit will try `read(2)` and get nothing.
 pub const DEVICE_CAPS: u32 =
     flags::CAP_VIDEO_CAPTURE | flags::CAP_READWRITE | flags::CAP_STREAMING
+    | flags::CAP_EXT_PIX_FORMAT;
+
+pub const DEVICE_CAPS_MPLANE: u32 =
+    flags::CAP_VIDEO_CAPTURE_MPLANE | flags::CAP_READWRITE | flags::CAP_STREAMING
     | flags::CAP_EXT_PIX_FORMAT;
