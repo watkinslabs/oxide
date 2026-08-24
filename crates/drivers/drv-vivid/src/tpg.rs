@@ -119,6 +119,7 @@ fn render_line_at_map(pixelformat: u32, width: u32, height: u32, y: u32, shift: 
     match pixelformat {
         fourcc::RGB24 => render_triples(width, height, y, shift, frame, motion, map, dst, |c| [c.r, c.g, c.b]),
         fourcc::BGR24 => render_triples(width, height, y, shift, frame, motion, map, dst, |c| [c.b, c.g, c.r]),
+        fourcc::BGR666 => render_bgr666(width, height, y, shift, frame, motion, map, dst),
         fourcc::HSV24 => render_triples(width, height, y, shift, frame, motion, map, dst, hsv),
         fourcc::GREY => {
             let need = width as usize;
@@ -193,6 +194,21 @@ fn render_line_at_map(pixelformat: u32, width: u32, height: u32, y: u32, shift: 
         fourcc::VYUY => render_yuv(width, height, y, shift, frame, motion, map, dst, 3),
         _ => 0,
     }
+}
+
+fn render_bgr666(width: u32, height: u32, y: u32, shift: u32, frame: u32, motion: Motion,
+                 map: Option<RenderMap>, dst: &mut [u8]) -> usize {
+    let need = width as usize * 4;
+    if dst.len() < need { return 0; }
+    for x in 0..width {
+        let c = sample_pixel(x, y, width, height, shift, frame, motion, map);
+        let at = x as usize * 4;
+        dst[at] = (c.b << 2) | (c.g >> 4);
+        dst[at + 1] = (c.g << 4) | (c.r >> 2);
+        dst[at + 2] = c.r << 6;
+        dst[at + 3] = 0;
+    }
+    need
 }
 
 fn render_bayer8(pixelformat: u32, width: u32, height: u32, y: u32, shift: u32,

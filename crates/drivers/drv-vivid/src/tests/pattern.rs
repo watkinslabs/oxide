@@ -266,6 +266,19 @@ fn bayer16_variants_are_full_width_little_endian_mosaics() {
 }
 
 #[test]
+fn bgr666_matches_linux_packed_six_bit_channels() {
+    let mut line = [0u8; 4];
+    assert_eq!(tpg::render_line(fourcc::BGR666, 1, 0, &mut line), line.len());
+    assert_eq!(line, [0xff, 0xff, 0xc0, 0]);
+
+    let mut green = [0u8; 32];
+    tpg::render_line_at(fourcc::BGR666, 8, 64, 0, 0, 3,
+                        Motion { horizontal: 0, vertical: 0 }, &mut green);
+    let c = tpg::bar_at(3, 8, 0);
+    assert_eq!(&green[12..16], &[(c.b << 2) | (c.g >> 4), (c.g << 4) | (c.r >> 2), c.r << 6, 0]);
+}
+
+#[test]
 fn packed_chroma_comes_from_the_left_pixel_of_each_pair() {
     let width = 16u32;
     let mut yuyv = alloc::vec![0u8; width as usize * 2];
