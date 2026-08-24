@@ -126,7 +126,11 @@ impl Drop for PartitionRescan {
 struct DriverState { driver: BlockDriver, major: u32, allocated_minors: Vec<u32> }
 pub(super) static TABLE: LifecycleMutex<Vec<Arc<Disk>>> = LifecycleMutex::new(Vec::new());
 static DRIVERS: LifecycleMutex<Vec<DriverState>> = LifecycleMutex::new(Vec::new());
-static NEXT_DISK_INDEX: AtomicU32 = AtomicU32::new(0);
+// Index zero is the registration-failure sentinel returned by the legacy
+// block publication API. Keep live disk indexes one-based so the first
+// device cannot be mistaken for a failed publication (the Linux dev_t minor
+// remains independently allocated and is still zero for the first disk).
+static NEXT_DISK_INDEX: AtomicU32 = AtomicU32::new(1);
 type DiskRemoveHook = fn(&str);
 pub(super) static DISK_REMOVE_HOOK: LifecycleMutex<Option<DiskRemoveHook>> = LifecycleMutex::new(None);
 pub type DiskCloseHook = fn(&str);

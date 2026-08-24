@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use vfs::{FileType, Inode};
 use vfs::xattr::XattrError;
@@ -16,6 +16,11 @@ pub(crate) struct Ext4FileData {
     pub(crate) st:        Arc<RootfsState>,
     pub(crate) ino:       u32,
     pub(crate) size_hint: AtomicU64,
+    /// Timestamp metadata has been staged for the current write burst. Linux
+    /// dirties the in-core inode on every write but does not journal the same
+    /// inode once per `write(2)`; fsync forces the latest value and starts the
+    /// next burst.
+    pub(crate) timestamp_staged: AtomicBool,
     /// D8: per-inode PMM frame store. `read`/`write`/`shared_frame` all serve
     /// from THESE frames (read==write==mmap coherency); writeback flushes
     /// dirty (mmap-written) frames to disk. Shared (same `Arc`) with this

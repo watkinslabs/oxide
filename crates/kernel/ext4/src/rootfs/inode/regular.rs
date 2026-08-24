@@ -28,7 +28,18 @@ pub(crate) fn ext4_sync_file(inode: &Inode, datasync: bool) -> KResult<()> {
     let Some((st, _ino)) = super::data::ext4_state_of(inode) else {
         return Ok(()); // not an ext4-backed inode: nothing of ours to commit
     };
+    if let Some(d) = inode.private::<Ext4FileData>() {
+        d.st.mount.persist_inode_meta(
+            d.ino, inode.i_mode(), inode.uid().unwrap_or(0), inode.gid().unwrap_or(0),
+            inode.atime().unwrap_or(vfs::Timespec64::ZERO),
+            inode.mtime().unwrap_or(vfs::Timespec64::ZERO),
+            inode.ctime().unwrap_or(vfs::Timespec64::ZERO),
+        ).map_err(|e| fs_err(&d.st, e))?;
+    }
     let _ = st.mount.commit_batch_for(Some((_ino, datasync))).map_err(|e| fs_err(&st, e))?;
+    if let Some(d) = inode.private::<Ext4FileData>() {
+        d.timestamp_staged.store(false, core::sync::atomic::Ordering::Release);
+    }
     Ok(())
 }
 
@@ -154,21 +165,25 @@ impl InodeOps for Ext4RegInodeOps {
         super::meta::ext4_setattr(inode, idmap, ia)
     }
 
-    /// `ext4_update_time` — the `file_update_time` / `->update_time` backend:
-    /// apply the requested times to the in-core inode, then write them THROUGH
-    /// to the on-disk slot (journaled) so a write(2)-stamped mtime/ctime is
-    /// durable across eviction and remount. Mirrors `ext4_setattr`'s writeback.
-    /// # C: O(1) + one journaled inode write
+    /// `ext4_update_time` — apply the timestamp to the in-core inode and stage
+    /// one metadata copy for this dirty burst. Linux's ext4 `->update_time` is
+    /// not a per-write journal commit; the current value is forced by
+    /// `ext4_sync_file` before it waits for the transaction.
+    /// # C: O(1) + one staged inode write per dirty burst
     fn update_time(&self, inode: &Inode, now: vfs::Timespec64, flags: u32) -> KResult<()> {
         vfs::generic_update_time(inode, now, flags)?;
         if let Some(d) = inode.private::<Ext4FileData>() {
-            d.st.mount.persist_inode_meta(
-                d.ino, inode.i_mode(),
-                inode.uid().unwrap_or(0), inode.gid().unwrap_or(0),
-                inode.atime().unwrap_or(vfs::Timespec64::ZERO),
-                inode.mtime().unwrap_or(vfs::Timespec64::ZERO),
-                inode.ctime().unwrap_or(vfs::Timespec64::ZERO),
-            ).map_err(|e| fs_err(&d.st, e))?;
+            if !d.timestamp_staged.swap(true, core::sync::atomic::Ordering::AcqRel) {
+                if let Err(e) = d.st.mount.persist_inode_meta(
+                    d.ino, inode.i_mode(), inode.uid().unwrap_or(0), inode.gid().unwrap_or(0),
+                    inode.atime().unwrap_or(vfs::Timespec64::ZERO),
+                    inode.mtime().unwrap_or(vfs::Timespec64::ZERO),
+                    inode.ctime().unwrap_or(vfs::Timespec64::ZERO),
+                ) {
+                    d.timestamp_staged.store(false, core::sync::atomic::Ordering::Release);
+                    return Err(fs_err(&d.st, e));
+                }
+            }
         }
         Ok(())
     }
@@ -428,7 +443,8 @@ pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: 
     generation: u32, _raw_flags: u32) -> InodeRef
 {
     let frames = st.frame_store(ino, size);
-    let data = Arc::new(Ext4FileData { st, ino, size_hint: AtomicU64::new(size), frames,
+    let data = Arc::new(Ext4FileData { st, ino, size_hint: AtomicU64::new(size),
+        timestamp_staged: core::sync::atomic::AtomicBool::new(false), frames,
         swap_mutations: Arc::new(AtomicU64::new(0)), swap_wait: sched::live::WaitList::new() });
     let mapping: Arc<dyn AddressSpaceOps> = Arc::new(Ext4FileMapping { data: data.clone() });
     let weak_sb = data.st.sb.lock().clone();

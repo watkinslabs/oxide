@@ -24,7 +24,7 @@ impl Mount {
     }
 
     pub(crate) fn commit_batch_for(&self, inode: Option<(u32, bool)>) -> Result<bool, MountError> {
-        self.order_data_before_commit();
+        self.order_data_before_commit(inode.map(|(ino, _)| ino))?;
         self.txn_acquire();
         let needed = inode.map_or(true, |(ino, datasync)| self.inode_sync_needed(ino, datasync));
         let result = if needed { self.commit_batch_inner() } else { Ok(false) };
@@ -55,11 +55,13 @@ impl Mount {
     /// Runs BEFORE the transaction gate is taken: the writeback stages through
     /// that same gate, and the commit it precedes must see what it produced.
     /// # C: O(N_dirty) when ordered, O(1) otherwise
-    fn order_data_before_commit(&self) {
-        if !self.behaviour().data.orders_data() { return; }
-        // A failed data write is not lost here: the page stays dirty and the
-        // store latches the error, so the next durability point reports it.
-        let _ = crate::rootfs::framecache::writeback_dirty(Some(self));
+    fn order_data_before_commit(&self, inode: Option<u32>) -> Result<(), MountError> {
+        if !self.behaviour().data.orders_data() { return Ok(()); }
+        let result = match inode {
+            Some(ino) => crate::rootfs::framecache::writeback_inode(self, ino),
+            None => crate::rootfs::framecache::writeback_dirty(Some(self)),
+        };
+        result.map_err(|_| MountError::BlockIo)
     }
 
     fn commit_batch_inner(&self) -> Result<bool, MountError> {

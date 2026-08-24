@@ -36,7 +36,7 @@ mod verify;
 mod read;
 mod release;
 mod writeback;
-pub use dirty::{flush_all_dirty, flush_dirty, writeback_dirty};
+pub use dirty::{flush_all_dirty, flush_dirty, writeback_dirty, writeback_inode};
 #[cfg(test)]
 mod tests;
 
