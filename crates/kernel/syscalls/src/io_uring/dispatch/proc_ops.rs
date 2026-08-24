@@ -13,6 +13,7 @@
 // nothing.
 
 use alloc::sync::{Arc, Weak};
+use core::sync::atomic::{AtomicI32, Ordering};
 
 use crate::io_uring_abi::{futex_op, waitid_op};
 use crate::io_uring::req::IoReq;
@@ -26,10 +27,11 @@ fn err(e: syscall::errno::Errno) -> i64 { -(e.as_i32() as i64) }
 /// matched, so the request must register again without posting a CQE.
 pub const FUTEX_REARM: i64 = i64::MIN + 0x2f;
 
-struct FutexWaker { req: Weak<IoReq> }
+struct FutexWaker { req: Weak<IoReq>, index: Arc<AtomicI32> }
 
 impl ipc::live::futex::WaitCallback for FutexWaker {
-    fn wake(&self) {
+    fn wake(&self, index: usize) {
+        self.index.store(index as i32, Ordering::Release);
         if let Some(req) = self.req.upgrade() {
             if !req.is_done() { super::super::iowq::pool::WQ.queue(req); }
         }
@@ -42,10 +44,16 @@ impl ipc::live::futex::WaitCallback for FutexWaker {
 pub fn arm_futex_wait(req: &Arc<IoReq>) -> Armed {
     let f = match futex_op::prep(&req.sqe) { Ok(f) => f, Err(e) => return Armed::Failed(e) };
     let private = f.flags & ipc::futex2_flags::FUTEX2_PRIVATE != 0;
-    let callback = Arc::new(FutexWaker { req: Arc::downgrade(req) });
+    let index = Arc::new(AtomicI32::new(-1));
+    let callback = Arc::new(FutexWaker { req: Arc::downgrade(req), index: Arc::clone(&index) });
     match ipc::live::futex::register_callback(f.uaddr, f.val as u32, f.mask as u32,
                                                private, callback) {
-        Ok(reg) => { req.inner.lock().futex_wait = Some(reg); Armed::Waiting }
+        Ok(reg) => {
+            let mut inner = req.inner.lock();
+            inner.futex_wake_index = Some(index);
+            inner.futex_wait = Some(reg);
+            Armed::Waiting
+        }
         Err(syscall::errno::Errno::Eagain) => Armed::Queue,
         Err(e) => Armed::Failed(e),
     }
@@ -65,6 +73,40 @@ pub fn futex_wait(op: &Op) -> i64 {
         Ok(true) => 0,
         Ok(false) => FUTEX_REARM,
         Err(e) => err(e),
+    }
+}
+
+pub fn futex_waitv_probe(req: &Arc<IoReq>) -> i64 {
+    let inner = req.inner.lock();
+    let Some(entries) = inner.futex_waitv.as_deref() else { return err(syscall::errno::Errno::Einval); };
+    let preferred = inner.futex_wake_index.as_ref()
+        .map(|i| i.load(Ordering::Acquire)).unwrap_or(-1);
+    match ipc::live::futex::callback_probe_waitv(entries, preferred) {
+        Ok(Some(index)) => index as i64,
+        Ok(None) => FUTEX_REARM,
+        Err(e) => err(e),
+    }
+}
+
+pub fn arm_futex_waitv(req: &Arc<IoReq>) -> Armed {
+    let f = match futex_op::prep_waitv(&req.sqe) { Ok(f) => f, Err(e) => return Armed::Failed(e) };
+    let entries = match crate::futex_waitv::prepare_entries(f.uaddr, f.nr) {
+        Ok(entries) => entries,
+        Err(e) if e == syscall::errno::Errno::Eagain => return Armed::Queue,
+        Err(e) => return Armed::Failed(e),
+    };
+    let index = Arc::new(AtomicI32::new(-1));
+    let callback = Arc::new(FutexWaker { req: Arc::downgrade(req), index: Arc::clone(&index) });
+    match ipc::live::futex::register_waitv_callback(&entries, callback) {
+        Ok(reg) => {
+            let mut inner = req.inner.lock();
+            inner.futex_waitv = Some(entries);
+            inner.futex_wake_index = Some(index);
+            inner.futex_wait = Some(reg);
+            Armed::Waiting
+        }
+        Err(syscall::errno::Errno::Eagain) => Armed::Queue,
+        Err(e) => Armed::Failed(e),
     }
 }
 

@@ -83,6 +83,8 @@ pub struct ReqInner {
     /// Futex callback registration. The futex owner holds only the callback's
     /// weak request reference, so this does not keep a completed ring alive.
     pub futex_wait: Option<ipc::live::futex::WaitRegistration>,
+    pub futex_waitv: Option<alloc::vec::Vec<ipc::live::futex::WaitvEntry>>,
+    pub futex_wake_index: Option<Arc<core::sync::atomic::AtomicI32>>,
     /// The description a POLLED ring's transfer is outstanding against —
     /// Linux `ctx->iopoll_list`. Deliberately NOT `poll_file` above: that one
     /// is a readiness subscription ("tell me when this can be read"), this one

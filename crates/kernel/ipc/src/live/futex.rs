@@ -18,7 +18,8 @@ pub use core::{
     FUTEX_BITSET_MATCH_ANY, FUTEX_CLOCK_REALTIME, FUTEX_CMD_MASK, FUTEX_PRIVATE_FLAG,
     FUTEX_ROBUST_LIST32, FUTEX_ROBUST_UNLOCK,
 };
-pub use core::{callback_probe, register_callback, WaitCallback, WaitRegistration};
+pub use core::{callback_probe, callback_probe_waitv, register_callback, register_waitv_callback,
+    WaitCallback, WaitRegistration};
 pub use numa::futex2_key_preflight;
 pub use ops::{cmp_requeue, requeue, wake_op};
 pub use pi::{cmp_requeue_pi, exit_pi_state_list, lock_pi, unlock_pi, wait_requeue_pi};

@@ -56,6 +56,31 @@ fn absolute_deadline_ns(timeout: u64, clockid: u64) -> Result<u64, i64> {
 ///
 /// Parks until ANY listed futex is woken and returns that entry's index.
 /// # C: O(N) pre-flight + O(N) park-enqueue
+pub fn prepare_entries(ptr: u64, n: u32) -> Result<::alloc::vec::Vec<WaitvEntry>, Errno> {
+    if ptr == 0 || n == 0 || n as u64 > FUTEX_WAITV_MAX { return Err(Errno::Einval); }
+    crate::userbuf::validate_user_buf(ptr, n as u64 * ENTRY_BYTES, 1)
+        .map_err(|_| Errno::Efault)?;
+    let mut entries = ::alloc::vec::Vec::with_capacity(n as usize);
+    let mut flagv = ::alloc::vec::Vec::with_capacity(n as usize);
+    for i in 0..n as u64 {
+        let base = ptr + i * ENTRY_BYTES;
+        let (val, uaddr, flags, rsvd) = match (um::get_u64(base), um::get_u64(base + OFF_UADDR),
+            um::get_u32(base + OFF_FLAGS), um::get_u32(base + OFF_RESERVED)) {
+            (Ok(val), Ok(uaddr), Ok(flags), Ok(rsvd)) => (val, uaddr, flags, rsvd),
+            _ => return Err(Errno::Efault),
+        };
+        if rsvd != 0 { return Err(Errno::Einval); }
+        let f = validate_futex2_flags(flags).map_err(|_| Errno::Einval)?;
+        if !validate_futex2_input(f.size_bytes, val) { return Err(Errno::Einval); }
+        entries.push(WaitvEntry { uaddr, val: val as u32, private: f.private });
+        flagv.push(f);
+    }
+    for (e, f) in entries.iter().zip(flagv.iter()) {
+        ::ipc::live::futex::futex2_key_preflight(e.uaddr, f)?;
+    }
+    Ok(entries)
+}
+
 pub fn sys_futex_waitv(args: &SyscallArgs) -> i64 {
     let (ptr, n) = (args.a0, args.a1 as u32 as u64);
     // The syscall-level `flags` argument is reserved — no bit is defined and
@@ -67,37 +92,9 @@ pub fn sys_futex_waitv(args: &SyscallArgs) -> i64 {
         Ok(dl) => dl,
         Err(e) => return e,
     };
-    if let Err(rv) = crate::userbuf::validate_user_buf(ptr, n * ENTRY_BYTES, 1) { return rv; }
-    let mut entries: ::alloc::vec::Vec<WaitvEntry> = ::alloc::vec::Vec::with_capacity(n as usize);
-    let mut flagv: ::alloc::vec::Vec<::ipc::futex2_flags::Futex2Flags> =
-        ::alloc::vec::Vec::with_capacity(n as usize);
-    for i in 0..n {
-        let base = ptr + i * ENTRY_BYTES;
-        let (val, uaddr, flags, rsvd) = match (um::get_u64(base), um::get_u64(base + OFF_UADDR),
-            um::get_u32(base + OFF_FLAGS), um::get_u32(base + OFF_RESERVED)) {
-            (Ok(val), Ok(uaddr), Ok(flags), Ok(rsvd)) => (val, uaddr, flags, rsvd),
-            _ => return um::EFAULT,
-        };
-        // A non-zero `__reserved` is EINVAL: it is the extension point, and
-        // accepting garbage there would make a future meaning unusable.
-        if rsvd != 0 { return -(Errno::Einval.as_i32() as i64); }
-        let f = match validate_futex2_flags(flags) {
-            Ok(f) => f, Err(_) => return -(Errno::Einval.as_i32() as i64),
-        };
-        // `val` is `__u64`; a value wider than the futex word is EINVAL, not a
-        // truncation that would make a mismatched compare-value look equal and
-        // park the caller forever.
-        if !validate_futex2_input(f.size_bytes, val) { return -(Errno::Einval.as_i32() as i64); }
-        entries.push(WaitvEntry { uaddr, val: val as u32, private: f.private });
-        flagv.push(f);
-    }
-    // Key setup runs only once the whole array has parsed, so a malformed
-    // later entry outranks an earlier entry's node word — the array is
-    // accepted or rejected as a unit before any of it is acted on.
-    for (e, f) in entries.iter().zip(flagv.iter()) {
-        if let Err(err) = ::ipc::live::futex::futex2_key_preflight(e.uaddr, f) {
-            return -(err.as_i32() as i64);
-        }
-    }
+    let entries = match prepare_entries(ptr, n as u32) {
+        Ok(entries) => entries,
+        Err(e) => return -(e.as_i32() as i64),
+    };
     ::ipc::live::futex::dispatch_waitv_timed(&entries, deadline_ns)
 }

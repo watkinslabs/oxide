@@ -76,6 +76,7 @@ pub fn arm(req: &Arc<IoReq>) -> Armed {
         IORING_OP_LINK_TIMEOUT => Armed::Waiting,
         IORING_OP_POLL_ADD => super::poll::arm(req),
         IORING_OP_FUTEX_WAIT => super::dispatch::proc_ops::arm_futex_wait(req),
+        IORING_OP_FUTEX_WAITV => super::dispatch::proc_ops::arm_futex_waitv(req),
         // Queued at the backend, the request waits for a poll rather than for
         // a worker. A backend that queues nothing hands it back, and it takes
         // the ordinary worker path — the operation still runs, it just has

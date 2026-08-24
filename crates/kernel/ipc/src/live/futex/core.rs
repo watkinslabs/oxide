@@ -88,12 +88,12 @@ pub(super) struct Waiter {
 pub trait WaitCallback: Send + Sync {
     /// The futex wake removed this registration. The callback must arrange
     /// the consumer's own progress; it must not sleep.
-    fn wake(&self);
+    fn wake(&self, index: usize);
 }
 
 struct CallbackWaiter {
     id: u64,
-    key: Key,
+    keys: Vec<Key>,
     callback: Arc<dyn WaitCallback>,
     bitset: u32,
 }
@@ -198,7 +198,24 @@ pub fn register_callback(uaddr: u64, value: u32, bitset: u32, private: bool,
     let id = NEXT_CALLBACK_ID.fetch_add(1, Ordering::Relaxed);
     let mut g = CALLBACKS.lock();
     if load_user_u32(uaddr)? != value { return Err(Errno::Eagain); }
-    g.push(CallbackWaiter { id, key, callback, bitset });
+    g.push(CallbackWaiter { id, keys: alloc::vec![key], callback, bitset });
+    Ok(WaitRegistration { id })
+}
+
+pub fn register_waitv_callback(entries: &[super::waitv::WaitvEntry],
+                               callback: Arc<dyn WaitCallback>) -> Result<WaitRegistration, Errno> {
+    if entries.is_empty() { return Err(Errno::Einval); }
+    let mut keys = Vec::with_capacity(entries.len());
+    for entry in entries {
+        if load_user_u32(entry.uaddr)? != entry.val { return Err(Errno::Eagain); }
+        keys.push(current_key(entry.uaddr, entry.private).ok_or(Errno::Einval)?);
+    }
+    let id = NEXT_CALLBACK_ID.fetch_add(1, Ordering::Relaxed);
+    let mut g = CALLBACKS.lock();
+    for entry in entries {
+        if load_user_u32(entry.uaddr)? != entry.val { return Err(Errno::Eagain); }
+    }
+    g.push(CallbackWaiter { id, keys, callback, bitset: FUTEX_BITSET_MATCH_ANY });
     Ok(WaitRegistration { id })
 }
 
@@ -206,6 +223,21 @@ pub fn register_callback(uaddr: u64, value: u32, bitset: u32, private: bool,
 /// callback wake; `false` is a spurious wake and must be re-armed.
 pub fn callback_probe(uaddr: u64, value: u32) -> Result<bool, Errno> {
     Ok(load_user_u32(uaddr)? != value)
+}
+
+pub fn callback_probe_waitv(entries: &[super::waitv::WaitvEntry], preferred: i32)
+    -> Result<Option<usize>, Errno>
+{
+    if preferred >= 0 {
+        let i = preferred as usize;
+        if i < entries.len() && load_user_u32(entries[i].uaddr)? != entries[i].val {
+            return Ok(Some(i));
+        }
+    }
+    for (i, entry) in entries.iter().enumerate() {
+        if load_user_u32(entry.uaddr)? != entry.val { return Ok(Some(i)); }
+    }
+    Ok(None)
 }
 
 /// Current monotonic ns, arch-dispatched (same clock `202_futex.rs` uses to
@@ -320,13 +352,17 @@ pub(super) fn wake_key(key: Key, n_target: usize, bitset: u32) -> usize {
         let mut c = CALLBACKS.lock();
         let mut i = 0;
         while i < c.len() && woken.len() + callbacks.len() < n_target {
-            if c[i].key == key && (c[i].bitset & bitset) != 0 {
-                callbacks.push(c.swap_remove(i).callback);
-            } else { i += 1; }
+            if (c[i].bitset & bitset) != 0 {
+                if let Some(index) = c[i].keys.iter().position(|k| *k == key) {
+                    callbacks.push((c.swap_remove(i).callback, index));
+                    continue;
+                }
+            }
+            i += 1;
         }
     }
     let callback_count = callbacks.len();
-    for callback in callbacks { callback.wake(); }
+    for (callback, index) in callbacks { callback.wake(index); }
     if woken.is_empty() { return callback_count; }
     let n = woken.len();
     // Route each wake through the scheduler's canonical waker instead of

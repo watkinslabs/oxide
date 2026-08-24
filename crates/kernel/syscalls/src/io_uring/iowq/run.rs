@@ -155,8 +155,18 @@ pub fn issue(req: &Arc<IoReq>) {
         if let Some(out) = crate::io_uring::linux_cmd::issue(req) { complete_out(req, out); }
         return;
     }
-    let out = crate::io_uring::dispatch::dispatch_op(&req.ring, &req.sqe);
-    if matches!(req.opcode(), crate::io_uring_abi::ops::IORING_OP_FUTEX_WAIT)
+    let waitv_armed = req.opcode() == crate::io_uring_abi::ops::IORING_OP_FUTEX_WAITV
+        && req.inner.lock().futex_waitv.is_some();
+    let out = if waitv_armed {
+        crate::io_uring::dispatch::OpOutcome {
+            res: crate::io_uring::dispatch::proc_ops::futex_waitv_probe(req),
+            cqe_flags: 0, cqe32: false, big: [0; 2], notif: None,
+        }
+    } else {
+        crate::io_uring::dispatch::dispatch_op(&req.ring, &req.sqe)
+    };
+    if matches!(req.opcode(), crate::io_uring_abi::ops::IORING_OP_FUTEX_WAIT
+        | crate::io_uring_abi::ops::IORING_OP_FUTEX_WAITV)
         && out.res == crate::io_uring::dispatch::proc_ops::FUTEX_REARM
     {
         crate::io_uring::dispatch::proc_ops::disarm_futex_wait(req);
