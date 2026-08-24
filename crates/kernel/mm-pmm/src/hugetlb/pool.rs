@@ -278,3 +278,34 @@ pub fn set_nr_overcommit_hugepages(size: HugePageSize, n: u64) {
 pub fn owns(size: HugePageSize, pa: u64) -> bool {
     pool(size).lock().owned.contains(&pa)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // Pool state is intentionally process-global, just as it is in the
+    // kernel. Serialize the hosted lifecycle test so its resize/hand-out
+    // cleanup cannot race another test observing the same hstate.
+    static POOL_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn hosted_pool_resizes_hands_out_and_reclaims_a_real_buddy_run() {
+        let _guard = POOL_TEST_LOCK.lock().unwrap();
+        let size = HugePageSize::Huge2M;
+        assert_eq!(set_nr_hugepages(size, 1), 1);
+        assert_eq!(free_hugepages(size), 1);
+
+        let reservation = reserve(size, 1).expect("hosted buddy run should satisfy reservation");
+        let pa = alloc_huge_frame(size, true, Some(reservation))
+            .expect("reserved HugeTLB allocation should consume the pool page");
+        assert!(owns(size, pa));
+        assert_eq!(free_hugepages(size), 0);
+        assert_eq!(resv_hugepages(size), 0);
+
+        assert!(huge_frame_dec_and_maybe_release(size, pa));
+        assert_eq!(free_hugepages(size), 1);
+        assert_eq!(set_nr_hugepages(size, 0), 0);
+        assert_eq!(nr_hugepages(size), 0);
+    }
+}

@@ -18,7 +18,7 @@ use core::sync::atomic::AtomicU64;
 use proptest::prelude::*;
 use std::boxed::Box;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::vec;
 use std::vec::Vec;
@@ -92,6 +92,39 @@ impl PageBacking for HostedBacking {
     }
 
     fn pcp_storage(&self) -> &'static PcpStorage { self.pcp }
+}
+
+// The HugeTLB pool's hosted tests use this same buddy implementation rather
+// than a second allocator model. The live kernel still reaches the HHDM-backed
+// PMM through `setup::pmm_static`; this test-only instance supplies the
+// identical `Pmm::alloc/free` contract without requiring a boot handoff.
+static HUGE_TEST_PMM: OnceLock<Pmm<HostedBacking>> = OnceLock::new();
+static HUGE_TEST_ALLOCS: OnceLock<Mutex<BTreeSet<(u64, u8)>>> = OnceLock::new();
+
+pub(crate) fn test_alloc_contig(order: crate::Order, nowait: bool) -> Option<u64> {
+    // The hosted backing is intentionally bounded: the HugeTLB coverage lane
+    // exercises the default 2 MiB hstate, while unsupported gigantic requests
+    // retain their real ENOMEM behavior instead of allocating a 1 GiB buffer.
+    if order.0 > 9 { return None; }
+    let p = HUGE_TEST_PMM.get_or_init(|| build(8192));
+    let pfn = if nowait { p.alloc_gfp_nowait(order, 0).ok()? } else { p.alloc(order).ok()? };
+    let pa = pfn.0 * PAGE_SIZE_BYTES;
+    HUGE_TEST_ALLOCS
+        .get_or_init(|| Mutex::new(BTreeSet::new()))
+        .lock()
+        .unwrap()
+        .insert((pa, order.0));
+    Some(pa)
+}
+
+pub(crate) unsafe fn test_free_contig(pa: u64, order: crate::Order) -> bool {
+    let Some(p) = HUGE_TEST_PMM.get() else { return false; };
+    let Some(allocs) = HUGE_TEST_ALLOCS.get() else { return false; };
+    if !allocs.lock().unwrap().remove(&(pa, order.0)) { return false; }
+    // SAFETY: the allocation ledger proves this is exactly a run returned by
+    // `test_alloc_contig`, with the same order and physical alignment.
+    unsafe { p.free(Pfn(pa / PAGE_SIZE_BYTES), order); }
+    true
 }
 
 fn build(n_pages: u64) -> Pmm<HostedBacking> {
