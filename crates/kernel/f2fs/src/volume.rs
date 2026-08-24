@@ -288,6 +288,9 @@ pub struct Volume<S: SectorSource> {
     /// Maximum number of nonempty segments migrated by one background
     /// section window. Linux's `migration_granularity`.
     pub(crate) migration_granularity: u32,
+    /// Default hash base level stamped into newly created directories.
+    /// Linux's mount-wide `dir_level`.
+    pub(crate) dir_level: u8,
     /// Maximum contiguous source-read size before the medium request is split.
     /// Zero retains Linux's unlimited merge behavior.
     pub(crate) max_io_bytes: u32,

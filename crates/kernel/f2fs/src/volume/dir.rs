@@ -32,6 +32,14 @@ pub struct DirEntry {
 }
 
 impl<S: SectorSource> Volume<S> {
+    /// The base hash level used for directories created after this write.
+    /// Existing inodes retain the level stored in their own node block.
+    /// # C: O(1)
+    pub fn dir_level(&self) -> u8 { self.dir_level }
+
+    /// Set the base hash level for future directories. # C: O(1)
+    pub fn set_dir_level(&mut self, value: u8) { self.dir_level = value; }
+
     /// The entry named `name` in the directory `inode`.
     /// # C: O(depth) blocks
     pub fn lookup(&self, inode: &Inode, ino: u32, name: &[u8])

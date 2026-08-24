@@ -193,6 +193,7 @@ impl<S: SectorSource> Volume<S> {
             self.stamp_new_compress(&mut block, parent.flags, is_dir,
                                     if named { Some(name) } else { None });
         if is_dir {
+            block[I_DIR_LEVEL] = self.dir_level;
             block[I_INLINE] |= INLINE_DENTRY | INLINE_DATA | DATA_EXIST;
             put32(&mut block, I_CURRENT_DEPTH, 1);
         } else if !compressed

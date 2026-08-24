@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::test_image::nodes::dir::{ent, Ent};
+use crate::mode::S_IFDIR;
 use alloc::vec::Vec;
 
 /// Names present in every fixture directory.
@@ -132,6 +133,21 @@ fn a_directory_with_its_own_base_level_still_finds_its_names() {
     for e in some_names() {
         assert_eq!(v.lookup(&root, ROOT_INO, &e.name).unwrap().ino, e.ino);
     }
+}
+
+#[test]
+fn the_mount_directory_level_is_stamped_into_new_directories() {
+    let mut v = test_image::with_root().mount_rw().unwrap();
+    v.set_dir_level(7);
+    let spec = crate::volume::NewInode {
+        mode: S_IFDIR | 0o755,
+        uid: 0,
+        gid: 0,
+        rdev: 0,
+        now: (0, 0),
+    };
+    let ino = v.create(ROOT_INO, b"new-dir", &spec, None).unwrap();
+    assert_eq!(v.read_inode(ino).unwrap().dir_level, 7);
 }
 
 #[test]
