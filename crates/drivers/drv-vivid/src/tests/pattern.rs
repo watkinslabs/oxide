@@ -71,7 +71,6 @@ fn a_rendered_line_is_exactly_the_formats_stride() {
     // A format this generator does not produce writes nothing.
     let mut line = alloc::vec![0u8; 1024];
     assert_eq!(tpg::render_line(fourcc::MJPEG, width, 0, &mut line), 0);
-    assert_eq!(tpg::render_line(fourcc::NV12, width, 0, &mut line), 0);
 }
 
 #[test]
@@ -161,6 +160,29 @@ fn packed_rgb565_and_luma_formats_match_linux_byte_order() {
     assert_eq!(y16[1], y16be[0]);
     assert_eq!(y10[0], 0xfc);
     assert_eq!(y10[1], 0x03);
+}
+
+#[test]
+fn single_planar_formats_write_the_linux_chroma_sections() {
+    let (width, height) = (8u32, 4u32);
+    let y_bytes = (width * height) as usize;
+    let mut nv12 = alloc::vec![0u8; tpg::frame_bytes(fourcc::NV12, width, height)];
+    let mut nv21 = alloc::vec![0u8; tpg::frame_bytes(fourcc::NV21, width, height)];
+    assert_eq!(tpg::render_frame(fourcc::NV12, width, height, 0, &mut nv12), nv12.len());
+    assert_eq!(tpg::render_frame(fourcc::NV21, width, height, 0, &mut nv21), nv21.len());
+    // NV12/NV21 share the luma section and swap each interleaved chroma pair.
+    assert_eq!(&nv12[..y_bytes], &nv21[..y_bytes]);
+    assert_eq!(nv12[y_bytes], nv21[y_bytes + 1]);
+    assert_eq!(nv12[y_bytes + 1], nv21[y_bytes]);
+
+    let mut yuv420 = alloc::vec![0u8; tpg::frame_bytes(fourcc::YUV420, width, height)];
+    let mut yvu420 = alloc::vec![0u8; tpg::frame_bytes(fourcc::YVU420, width, height)];
+    assert_eq!(tpg::render_frame(fourcc::YUV420, width, height, 0, &mut yuv420), yuv420.len());
+    assert_eq!(tpg::render_frame(fourcc::YVU420, width, height, 0, &mut yvu420), yvu420.len());
+    assert_eq!(&yuv420[..y_bytes], &yvu420[..y_bytes]);
+    let chroma = y_bytes / 4;
+    assert_eq!(yuv420[y_bytes], yvu420[y_bytes + chroma]);
+    assert_eq!(yuv420[y_bytes + chroma], yvu420[y_bytes]);
 }
 
 #[test]

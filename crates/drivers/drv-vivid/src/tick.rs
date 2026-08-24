@@ -113,12 +113,12 @@ fn fill(device: &Arc<VideoDevice>, index: u32, format: &v4l2::format::PixFormat,
         motion: crate::tpg::Motion)
     -> u32
 {
-    let stride = v4l2::uapi::fourcc::bytesperline(format.pixelformat, format.width) as usize;
-    if stride == 0 { return 0; }
-    let mut line = alloc::vec![0u8; stride];
+    let frame_bytes = crate::tpg::frame_bytes(format.pixelformat, format.width, format.height);
+    if frame_bytes == 0 { return 0; }
+    let mut frame = alloc::vec![0u8; frame_bytes];
     let shift = sequence % crate::tpg::BARS.len() as u32;
-    if crate::tpg::render_line_at(format.pixelformat, format.width, format.height, 0, shift,
-                                  sequence, motion, &mut line) == 0 {
+    if crate::tpg::render_frame_motion(format.pixelformat, format.width, format.height, shift,
+                                       sequence, motion, &mut frame) == 0 {
         return 0;
     }
     // The plane's page list is copied out and the device lock dropped before
@@ -131,14 +131,8 @@ fn fill(device: &Arc<VideoDevice>, index: u32, format: &v4l2::format::PixFormat,
         let Some(plane) = buffer.planes.first() else { return 0 };
         (plane.frames.clone(), plane.length as usize)
     };
-    let mut written = 0usize;
-    for y in 0..format.height {
-        if written + stride > length { break; }
-        let n = crate::tpg::render_line_at(format.pixelformat, format.width, format.height, y,
-                                           shift, sequence, motion, &mut line);
-        if n == 0 { break; }
-        written += v4l2::node::write_plane(&frames, written, &line);
-    }
+    let written = frame.len().min(length);
+    if written != 0 { v4l2::node::write_plane(&frames, 0, &frame[..written]); }
     written as u32
 }
 

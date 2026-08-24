@@ -65,6 +65,18 @@ pub const FORMATS: &[FormatDesc] = &[
                  sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
     FormatDesc { pixelformat: fourcc::Y16_BE, description: "16-bit Greyscale BE", flags: 0,
                  sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::NV12, description: "Y/CbCr 4:2:0", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::NV21, description: "Y/CrCb 4:2:0", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::NV16, description: "Y/CbCr 4:2:2", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::YUV420, description: "Planar YUV 4:2:0", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::YVU420, description: "Planar YVU 4:2:0", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::YUV422P, description: "Planar YUV 4:2:2", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
 ];
 
 pub const INPUTS: &[InputDesc] = &[
