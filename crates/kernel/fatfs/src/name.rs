@@ -19,6 +19,7 @@
 
 pub mod cp437;
 pub mod cp850;
+pub mod cp852;
 pub mod codepage;
 pub mod flags;
 pub mod short;
@@ -31,7 +32,7 @@ pub mod msdos;
 #[path = "name/tests.rs"]
 mod tests;
 
-pub use codepage::{by_number, CodePage, CP437, CP850, DEFAULT_CODEPAGE};
+pub use codepage::{by_number, CodePage, CP437, CP850, CP852, DEFAULT_CODEPAGE};
 pub use flags::{shortname_mode, CASE_LOWER_BASE, CASE_LOWER_EXT, SFN_DEFAULT, SFN_MSDOS,
                 SHORT_BASE_LEN, SHORT_NAME_LEN};
 pub use lfn::{build_slots, encode, Encoded};
