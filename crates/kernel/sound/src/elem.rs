@@ -65,6 +65,7 @@ pub struct ElemOps {
 }
 
 /// One registered control element.
+#[derive(Copy, Clone)]
 pub struct ElemDesc {
     pub id: ElemId,
     pub etype: u32,
@@ -117,20 +118,26 @@ pub fn count(owner: crate::SoundOwnerKey) -> u32 {
 
 /// Run `f` over the `n`th element of `owner` in numid order. # C: O(elements)
 pub fn with_nth<R>(owner: crate::SoundOwnerKey, n: u32, f: impl FnOnce(u32, &ElemDesc) -> R) -> Option<R> {
-    let guard = ELEMS.lock();
-    let entry = guard.iter().filter(|entry| entry.owner == owner).nth(n as usize)?;
-    Some(f(entry.numid, &entry.desc))
+    let (numid, desc) = {
+        let guard = ELEMS.lock();
+        let entry = guard.iter().filter(|entry| entry.owner == owner).nth(n as usize)?;
+        (entry.numid, entry.desc)
+    };
+    Some(f(numid, &desc))
 }
 
 /// Run `f` over the element selected by numid, or by full id when `numid`
 /// is zero — the lookup rule ALSA's control core applies. # C: O(elements)
 pub fn with_id<R>(owner: crate::SoundOwnerKey, numid: u32, id: &ElemId,
                   f: impl FnOnce(u32, &ElemDesc) -> R) -> Option<R> {
-    let guard = ELEMS.lock();
-    let entry = guard.iter().find(|entry| {
-        entry.owner == owner && if numid != 0 { entry.numid == numid } else { entry.desc.id.same(id) }
-    })?;
-    Some(f(entry.numid, &entry.desc))
+    let (numid, desc) = {
+        let guard = ELEMS.lock();
+        let entry = guard.iter().find(|entry| {
+            entry.owner == owner && if numid != 0 { entry.numid == numid } else { entry.desc.id.same(id) }
+        })?;
+        (entry.numid, entry.desc)
+    };
+    Some(f(numid, &desc))
 }
 
 /// Clamp `values[..count]` into the element's declared range. # C: O(count)

@@ -85,6 +85,20 @@ fn lookup_falls_back_to_the_full_id_when_numid_is_zero() {
 }
 
 #[test]
+fn lookup_callback_can_reenter_registry_after_snapshot() {
+    let owner = key(0x6007);
+    unregister_card(owner);
+    register(owner, volume(b"Reentrant"));
+    let added = with_id(owner, 1, &ElemId::mixer(b"", 0), |_, _| {
+        register(owner, volume(b"Added"));
+        true
+    });
+    assert_eq!(added, Some(true));
+    assert_eq!(count(owner), 2);
+    unregister_card(owner);
+}
+
+#[test]
 fn elements_are_owner_scoped() {
     let (a, b) = (key(0x6004), key(0x6005));
     unregister_card(a);
