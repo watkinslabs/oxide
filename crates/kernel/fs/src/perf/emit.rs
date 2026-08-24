@@ -9,6 +9,8 @@
 // event ids rather than two.
 
 use alloc::sync::Arc;
+#[cfg(target_arch = "x86_64")]
+use alloc::vec::Vec;
 
 use sched::perf_sw::{CpuSw, SwSite};
 
@@ -184,7 +186,7 @@ pub fn deliver(ev: &Arc<PerfEvent>, site: &SwSite, pid: u32, tid: u32,
             // allowed for this tick.
             throttle::park_group(ev, site.cpu);
         }
-        let rec = match sample_record(st, misc, &v, read_payload.as_slice()) {
+        let rec = match sample_record(st, misc, &v, read_payload.as_ref()) {
             Some(r) => r,
             None    => {
                 rb.note_lost();
@@ -208,13 +210,12 @@ pub fn deliver(ev: &Arc<PerfEvent>, site: &SwSite, pid: u32, tid: u32,
 /// The `PERF_SAMPLE_READ` body — the same bytes `read(2)` returns for this
 /// event's `read_format` (`perf_output_read`). Empty when the bit is clear.
 /// # C: O(group members)
-fn read_payload(ev: &Arc<PerfEvent>, sample_type: u64) -> ReadPayload {
-    let mut out = ReadPayload::default();
-    if sample_type & sample::READ == 0 { return out; }
+fn formatted_read_payload(ev: &Arc<PerfEvent>, sample_type: u64) -> alloc::vec::Vec<u8> {
+    if sample_type & sample::READ == 0 { return alloc::vec::Vec::new(); }
     let rf = ev.attr.read_format;
     let bytes = if rf & fmt::GROUP != 0 {
         let members = ev.group_members();
-        if members.is_empty() { return out; }
+        if members.is_empty() { return alloc::vec::Vec::new(); }
         let (_, enabled, running) = members[0].read_value();
         let vals: alloc::vec::Vec<MemberRead> = members.iter()
             .map(|m| MemberRead { count: m.read_value().0, id: m.id,
@@ -226,25 +227,42 @@ fn read_payload(ev: &Arc<PerfEvent>, sample_type: u64) -> ReadPayload {
         let lost = ev.state.lock().lost_samples;
         format_one(rf, MemberRead { count, id: ev.id, lost }, enabled, running)
     };
-    out.set(&bytes);
-    out
+    bytes
 }
 
-/// Fixed-capacity carrier for the read payload so the sample path stays inside
-/// one record's worth of stack.
+// x86's fault path has only 16 KiB of task stack and already pays the full
+// sample record. The formatter owns this Vec today, so reuse it instead of
+// copying into a second 1 KiB stack array. Aarch64 keeps the fixed carrier:
+// its compiler's exception-entry path has a different frame shape, and this
+// preserves its independently measured reserve without changing the record.
+#[cfg(target_arch = "x86_64")]
+fn read_payload(ev: &Arc<PerfEvent>, sample_type: u64) -> Vec<u8> {
+    formatted_read_payload(ev, sample_type)
+}
+
+#[cfg(not(target_arch = "x86_64"))]
 struct ReadPayload { buf: [u8; super::sample::MAX_RECORD], len: usize }
 
-impl Default for ReadPayload {
-    fn default() -> Self { ReadPayload { buf: [0u8; super::sample::MAX_RECORD], len: 0 } }
-}
-
+#[cfg(not(target_arch = "x86_64"))]
 impl ReadPayload {
+    fn empty() -> Self { Self { buf: [0; super::sample::MAX_RECORD], len: 0 } }
     fn set(&mut self, b: &[u8]) {
         let n = core::cmp::min(b.len(), self.buf.len());
         self.buf[..n].copy_from_slice(&b[..n]);
         self.len = n;
     }
-    fn as_slice(&self) -> &[u8] { &self.buf[..self.len] }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+impl AsRef<[u8]> for ReadPayload {
+    fn as_ref(&self) -> &[u8] { &self.buf[..self.len] }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn read_payload(ev: &Arc<PerfEvent>, sample_type: u64) -> ReadPayload {
+    let mut out = ReadPayload::empty();
+    out.set(&formatted_read_payload(ev, sample_type));
+    out
 }
 
 #[cfg(test)]
