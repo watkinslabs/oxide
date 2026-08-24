@@ -14,6 +14,7 @@ const WAIT_FOR_EXIT: u64 = 0;
 /// Block until `vpid` terminates and return its `wait(2)`-encoded status.
 /// `-ECHILD` if it is not (or no longer) our child.
 /// # C: O(N_wakeups)
+#[inline(never)]
 pub fn wait_for(vpid: u32) -> i32 {
     let Some(me) = sched::live::current() else { return -(Errno::Echild.as_i32()) };
     let tid = me.tid;
