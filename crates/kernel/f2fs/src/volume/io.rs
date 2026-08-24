@@ -291,6 +291,13 @@ impl<S: SectorSource> Volume<S> {
     /// an error rather than plausible bytes.
     /// # C: O(cluster bytes)
     fn read_cluster(&self, inode: &Inode, ino: u32, index: u64) -> Result<Plain, Errno> {
+        self.read_cluster_inner(inode, ino, index, None)
+    }
+
+    /// Shared compressed-cluster reader with an optional preallocated output.
+    /// # C: O(cluster bytes)
+    fn read_cluster_inner(&self, inode: &Inode, ino: u32, index: u64,
+                          scratch: Option<&mut Vec<u8>>) -> Result<Plain, Errno> {
         let g = crate::compress::Geometry::new(
             inode.compress_algorithm,
             inode.log_cluster_size,
@@ -339,6 +346,20 @@ impl<S: SectorSource> Volume<S> {
         // A cluster that will not decompress, or whose checksum disagrees with
         // its bytes, is recorded: it is one file's problem rather than a
         // structural one, but it is still damage the next mount must know about.
+        if let Some(buf) = scratch {
+            buf.resize(g.bytes(), 0);
+            let chksum = crate::compress::decompress_cluster_into(&g, &image, buf)
+                .map_err(|e| { self.note_error(crate::errrec::Error::FailDecompression); compress_errno(e) })?;
+            // A checksum the file asked for and that does not match means the
+            // bytes are not the bytes that were written; handing them back
+            // would be worse than refusing.
+            if let crate::compress::Chksum::Mismatch { .. } = chksum {
+                self.note_error(crate::errrec::Error::FailDecompression);
+                return Err(Errno::Eio);
+            }
+            self.cache_plain_cluster(ino, first, &buf[..g.bytes()]);
+            return Ok(Plain { first, data: Vec::new() });
+        }
         let cluster = crate::compress::decompress_cluster(&g, &image)
             .map_err(|e| { self.note_error(crate::errrec::Error::FailDecompression); compress_errno(e) })?;
         // A checksum the file asked for and that does not match means the
@@ -365,7 +386,8 @@ impl<S: SectorSource> Volume<S> {
     /// Cluster read used by the address-space readahead owner. # C: O(cluster)
     pub(super) fn read_cluster_for_readahead(&self, inode: &Inode, ino: u32, index: u64)
         -> Result<(), Errno> {
-        let _ = self.read_cluster(inode, ino, index)?;
+        let mut scratch = self.decomp_scratch.borrow_mut();
+        let _ = self.read_cluster_inner(inode, ino, index, Some(&mut scratch))?;
         Ok(())
     }
 

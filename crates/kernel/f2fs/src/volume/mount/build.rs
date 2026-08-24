@@ -2,6 +2,8 @@
 
 use syscall::errno::Errno;
 
+use alloc::vec::Vec;
+
 use sectors::SectorSource;
 
 use crate::checkpoint;
@@ -226,6 +228,7 @@ impl<S: SectorSource> Volume<S> {
         init_field!(atomic: alloc::collections::BTreeMap::new());
         init_field!(ioprio_hint: alloc::collections::BTreeMap::new());
         init_field!(compress_cache: crate::compress::cache::Cache::new(compress_cache, max_nid));
+        init_field!(decomp_scratch: core::cell::RefCell::new(Vec::new()));
         init_field!(readdir_ra: true);
         init_field!(meta_cache: meta_cache);
         init_field!(data_cache: crate::filemap::Cache::new());

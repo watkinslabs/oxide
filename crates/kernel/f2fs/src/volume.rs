@@ -368,6 +368,10 @@ pub struct Volume<S: SectorSource> {
     /// to keep them; inert on every other mount. Interior-mutable already, for
     /// the reason the caches above are: a READ is what fills it.
     pub(crate) compress_cache: crate::compress::cache::Cache,
+    /// Reusable destination for speculative compressed readahead. Demand
+    /// reads retain their allocating path; only the Linux pre-allocation arm
+    /// borrows this context. # C: O(1) storage, O(cluster bytes) when grown
+    pub(crate) decomp_scratch: core::cell::RefCell<Vec<u8>>,
     /// The file DATA pages this mount has read and kept, keyed by inode
     /// number and file offset rather than by block address (`filemap`).
     /// Interior-mutable for the reason the caches above are: a READ is what

@@ -63,7 +63,7 @@ pub mod cache;
 
 pub use algo::{Algorithm, CompressError};
 pub use cluster::{data_blocks, Geometry, Header, COMPRESS_HEADER_SIZE};
-pub use decompress::{decompress_cluster, Chksum, Cluster};
+pub use decompress::{decompress_cluster, decompress_cluster_into, Chksum, Cluster};
 pub use encode::{compress_cluster, max_clen, Image, Stored};
 pub use newfile::{decide, NewFile};
 pub use plan::Slot;
