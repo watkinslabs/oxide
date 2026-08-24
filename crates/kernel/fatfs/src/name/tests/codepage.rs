@@ -1,6 +1,6 @@
 //! The code page: what a byte means, and the byte a character needs.
 
-use crate::name::codepage::{by_number, CP437, DEFAULT_CODEPAGE};
+use crate::name::codepage::{by_number, CP437, CP850, DEFAULT_CODEPAGE};
 
 /// Below 0x80 a byte is the character of the same value, which is why reading
 /// an ASCII name without a code page at all looks correct and is not.
@@ -69,5 +69,9 @@ fn case_folds_through_the_page_and_stops_where_the_page_does() {
 fn a_page_is_found_by_its_number() {
     assert!(by_number(DEFAULT_CODEPAGE).is_some());
     assert_eq!(by_number(DEFAULT_CODEPAGE).map(|p| p.number), Some(437));
-    assert!(by_number(850).is_none(), "no table for this page in this build");
+    assert_eq!(by_number(850).map(|p| p.number), Some(850));
+    assert_eq!(CP850.to_char(0x9b), 0x00f8, "CP850 maps 0x9b to o-slash");
+    assert_eq!(CP850.from_char(0x00f8), Some(0x9b));
+    assert_eq!(CP850.to_upper(0x81), 0x9a);
+    assert_eq!(CP850.to_lower(0x9a), 0x81);
 }

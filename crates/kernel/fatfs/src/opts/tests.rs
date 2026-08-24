@@ -31,7 +31,8 @@ fn the_masks_are_octal() {
 #[test]
 fn the_code_page_must_be_one_this_build_has() {
     assert_eq!(vfat("codepage=437").codepage.number, 437);
-    assert_eq!(parse(Options::vfat(), "codepage=850").err(), Some(Errno::Einval));
+    assert_eq!(vfat("codepage=850").codepage.number, 850);
+    assert_eq!(parse(Options::vfat(), "codepage=852").err(), Some(Errno::Einval));
 }
 
 #[test]

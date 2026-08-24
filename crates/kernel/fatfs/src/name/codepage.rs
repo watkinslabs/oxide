@@ -12,10 +12,13 @@
 //! not an error, it is what makes the short name an alias and forces the long
 //! name to be stored beside it.
 
-use super::cp437;
+use super::{cp437, cp850};
 
 /// The code page number a mount defaults to when it names none.
 pub const DEFAULT_CODEPAGE: u32 = 437;
+
+#[derive(Copy, Clone)]
+enum Tables { Cp437, Cp850 }
 
 /// A single-byte code page: the character each byte means, and the case
 /// mapping over the bytes themselves.
@@ -26,28 +29,33 @@ pub const DEFAULT_CODEPAGE: u32 = 437;
 pub struct CodePage {
     /// Number the mount option names this page by.
     pub number: u32,
-    to_uni: &'static [u16; 256],
-    to_lower: &'static [u8; 256],
-    to_upper: &'static [u8; 256],
+    tables: Tables,
 }
 
 /// Code page 437, the FAT default.
 pub static CP437: CodePage = CodePage {
     number: DEFAULT_CODEPAGE,
-    to_uni: &cp437::CHARSET2UNI,
-    to_lower: &cp437::CHARSET2LOWER,
-    to_upper: &cp437::CHARSET2UPPER,
+    tables: Tables::Cp437,
 };
+
+/// Code page 850, the Linux `nls_cp850` single-byte table.
+pub static CP850: CodePage = CodePage { number: 850, tables: Tables::Cp850 };
 
 /// The code page a mount option names, or `None` when this build has no table
 /// for it. # C: O(1)
 pub fn by_number(number: u32) -> Option<&'static CodePage> {
-    match number { DEFAULT_CODEPAGE => Some(&CP437), _ => None }
+    match number { DEFAULT_CODEPAGE => Some(&CP437), 850 => Some(&CP850), _ => None }
 }
 
 impl CodePage {
     /// The character `byte` means on this page. # C: O(1)
-    pub fn to_char(&self, byte: u8) -> u16 { self.to_uni[usize::from(byte)] }
+    pub fn to_char(&self, byte: u8) -> u16 {
+        if byte < 128 { return u16::from(byte); }
+        match self.tables {
+            Tables::Cp437 => cp437::CHARSET2UNI[usize::from(byte)],
+            Tables::Cp850 => cp850::CHARSET2UNI[usize::from(byte - 128)],
+        }
+    }
 
     /// The byte that stores `ch`, when this page has one.
     ///
@@ -55,18 +63,28 @@ impl CodePage {
     /// inverting it is exact and a second table would be a second place for
     /// the same fact to be wrong. # C: O(256)
     pub fn from_char(&self, ch: u16) -> Option<u8> {
-        self.to_uni.iter().position(|c| *c == ch).map(|i| i as u8)
+        (0..=u8::MAX).find(|byte| self.to_char(*byte) == ch)
     }
 
     /// Lowercase of `byte` on this page, or `byte` when it has none. # C: O(1)
     pub fn to_lower(&self, byte: u8) -> u8 {
-        let c = self.to_lower[usize::from(byte)];
+        let c = if byte < 128 {
+            if byte.is_ascii_uppercase() { byte + (b'a' - b'A') } else { byte }
+        } else { match self.tables {
+            Tables::Cp437 => cp437::CHARSET2LOWER[usize::from(byte)],
+            Tables::Cp850 => cp850::CHARSET2LOWER[usize::from(byte - 128)],
+        }};
         if c == 0 { byte } else { c }
     }
 
     /// Uppercase of `byte` on this page, or `byte` when it has none. # C: O(1)
     pub fn to_upper(&self, byte: u8) -> u8 {
-        let c = self.to_upper[usize::from(byte)];
+        let c = if byte < 128 {
+            if byte.is_ascii_lowercase() { byte - (b'a' - b'A') } else { byte }
+        } else { match self.tables {
+            Tables::Cp437 => cp437::CHARSET2UPPER[usize::from(byte)],
+            Tables::Cp850 => cp850::CHARSET2UPPER[usize::from(byte - 128)],
+        }};
         if c == 0 { byte } else { c }
     }
 }
