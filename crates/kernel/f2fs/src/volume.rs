@@ -201,6 +201,9 @@ pub struct Volume<S: SectorSource> {
     pub(crate) valid_block_count: u64,
     /// Live segment reserve used by allocation and cleaning policy.
     pub(crate) reserved_segments: u32,
+    /// Section boundary and forward-search policy used by new logs.
+    pub(crate) allocate_section_hint: u32,
+    pub(crate) allocate_section_policy: u32,
     /// Configured pool recovered from released blocks for privileged writes.
     pub(crate) reserved_blocks: u64,
     /// Portion of that pool currently held out of ordinary free space.

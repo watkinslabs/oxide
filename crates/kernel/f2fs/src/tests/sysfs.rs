@@ -134,6 +134,7 @@ fn an_attribute_is_writable_exactly_when_something_reads_it() {
                      "migration_granularity", "dir_level", "seq_file_ra_mul",
                      "max_roll_forward_node_blocks", "max_io_bytes", "max_fragment_chunk",
                      "max_fragment_hole", "reserved_pin_section", "ckpt_thread_ioprio"]);
+    controls.extend(["allocate_section_hint", "allocate_section_policy"]);
     controls.extend(["reserved_segments", "reserved_blocks", "carve_out", "peak_atomic_write"]);
     // The fourth owner is the placement pair: the armed in-place-update set and
     // the three thresholds its arms compare against.

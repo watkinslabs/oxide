@@ -48,6 +48,25 @@ fn store(a: &[Attr], name: &str, v: u64) -> Result<usize, VfsError> {
 }
 
 #[test]
+fn section_forward_controls_reach_the_allocator() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    let per = u64::from(fs.volume.lock().super_block().segs_per_sec.max(1));
+    assert_eq!(show(&a, "allocate_section_hint"),
+               u64::from(fs.volume.lock().super_block().section_count));
+    store(&a, "allocate_section_hint", 1).expect("section boundary");
+    store(&a, "allocate_section_policy", 2).expect("from-boundary policy");
+    {
+        let v = fs.volume.lock();
+        assert_eq!(v.allocate_section_hint(), 1);
+        assert_eq!(v.allocate_section_policy(), 2);
+        assert_eq!(v.section_search_hint(0), per as u32);
+    }
+    assert!(store(&a, "allocate_section_policy", 3).is_err());
+    assert_eq!(show(&a, "allocate_section_policy"), 2);
+}
+
+#[test]
 fn every_volume_owned_control_is_writable() {
     let fs = mounted();
     let a = crate::sysfs::mount_attrs(&fs);

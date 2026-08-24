@@ -145,6 +145,7 @@ impl<S: SectorSource> Volume<S> {
             cp.rsvd_segment_count.div_ceil(sb.segs_per_sec.max(1))
         };
         let reserved_segments = cp.rsvd_segment_count;
+        let allocate_section_hint = sb.section_count;
         init_field!(source: source);
         init_field!(sb: sb);
         init_field!(sb_raw: sb_raw);
@@ -172,6 +173,8 @@ impl<S: SectorSource> Volume<S> {
         init_field!(sit_dirty: alloc::collections::BTreeSet::new());
         init_field!(valid_block_count: valid_block_count);
         init_field!(reserved_segments: reserved_segments);
+        init_field!(allocate_section_hint: allocate_section_hint);
+        init_field!(allocate_section_policy: crate::volume::zonewp::ALLOCATE_FORWARD_NOHINT);
         init_field!(reserved_blocks: 0);
         init_field!(current_reserved_blocks: 0);
         init_field!(carve_out: false);

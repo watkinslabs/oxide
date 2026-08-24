@@ -74,6 +74,10 @@ pub(crate) fn attrs(fs: &Arc<F2fs>, dev: &str) -> Vec<Attr> {
                |v| v.reserved_blocks(), set_reserved_blocks),
         num_rw(fs, dev, "carve_out",
                |v| u64::from(v.carve_out()), set_carve_out),
+        num_rw(fs, dev, "allocate_section_hint",
+               |v| u64::from(v.allocate_section_hint()), set_allocate_section_hint),
+        num_rw(fs, dev, "allocate_section_policy",
+               |v| u64::from(v.allocate_section_policy()), set_allocate_section_policy),
     ];
     out.extend(atgc::knobs::ALL.iter().map(|&k| atgc_knob(fs, dev, k)));
     out
@@ -114,6 +118,16 @@ fn set_ram_thresh(v: &mut Vol, n: u64) -> Result<(), Errno> {
     if n == 0 || n > PERCENT { return Err(Errno::Einval); }
     v.set_nid_ram_thresh(n as u32);
     Ok(())
+}
+
+/// Section boundary used by regular forward allocation. # C: O(1)
+fn set_allocate_section_hint(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    v.set_allocate_section_hint(n)
+}
+
+/// Boundary policy used by regular forward allocation. # C: O(1)
+fn set_allocate_section_policy(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    v.set_allocate_section_policy(n)
 }
 
 /// Number of NAT pages to prefetch after a free-NID scan. Zero is Linux's

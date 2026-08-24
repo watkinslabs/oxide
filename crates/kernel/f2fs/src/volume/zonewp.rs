@@ -17,7 +17,47 @@ use crate::zoned::wp;
 
 use super::Volume;
 
+/// Keep the new-section search unconstrained by a boundary.
+pub const ALLOCATE_FORWARD_NOHINT: u32 = 0;
+/// Search from the beginning after crossing the boundary.
+pub const ALLOCATE_FORWARD_WITHIN_HINT: u32 = 1;
+/// Never search before the boundary.
+pub const ALLOCATE_FORWARD_FROM_HINT: u32 = 2;
+
 impl<S: SectorSource> Volume<S> {
+    /// Boundary section used by forward allocation. # C: O(1)
+    pub fn allocate_section_hint(&self) -> u32 { self.allocate_section_hint }
+
+    /// Set the forward-allocation boundary. # C: O(1)
+    pub fn set_allocate_section_hint(&mut self, value: u64) -> Result<(), Errno> {
+        if value > u64::from(u32::MAX) { return Err(Errno::Einval); }
+        self.allocate_section_hint = value as u32;
+        Ok(())
+    }
+
+    /// Forward allocation policy. # C: O(1)
+    pub fn allocate_section_policy(&self) -> u32 { self.allocate_section_policy }
+
+    /// Set the forward-allocation policy. # C: O(1)
+    pub fn set_allocate_section_policy(&mut self, value: u64) -> Result<(), Errno> {
+        if value > u64::from(ALLOCATE_FORWARD_FROM_HINT) { return Err(Errno::Einval); }
+        self.allocate_section_policy = value as u32;
+        Ok(())
+    }
+
+    /// Apply Linux's boundary policy to a section search hint. # C: O(1)
+    pub(crate) fn section_search_hint(&self, hint: u32) -> u32 {
+        let per = self.sb.segs_per_sec.max(1);
+        let mut section = crate::pin::section::section_first(hint, per) / per;
+        let boundary = self.allocate_section_hint.min(self.sb.section_count);
+        match self.allocate_section_policy {
+            ALLOCATE_FORWARD_FROM_HINT if section < boundary => section = boundary,
+            ALLOCATE_FORWARD_WITHIN_HINT if section >= boundary => section = 0,
+            _ => {}
+        }
+        section.saturating_mul(per)
+    }
+
     /// Whether a current log stands in the section beginning at `first`.
     ///
     /// A log's own zone is not reconciled by the zone sweep — it is settled
@@ -161,7 +201,8 @@ impl<S: SectorSource> Volume<S> {
         if !self.recovering && self.free_segment_count() <= reserve + per {
             let _ = self.collect(reserve + per + 1);
         }
-        let first = self.find_free_section(hint).ok_or(Errno::Enospc)?;
+        let first = self.find_free_section(self.section_search_hint(hint))
+            .ok_or(Errno::Enospc)?;
         self.curseg[log].segno = first;
         self.curseg[log].next_blkoff = 0;
         self.curseg[log].alloc_type = ALLOC_LFS;
