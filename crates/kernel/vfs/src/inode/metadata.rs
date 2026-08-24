@@ -200,7 +200,11 @@ impl Inode {
     /// Bind a synthesized inode to the superblock that instantiated it. An
     /// inode may be attached repeatedly through aliases of ONE instance, but
     /// must never migrate between live superblocks. # C: O(1)
-    pub(crate) fn bind_superblock(&self, sb: &Arc<SuperBlock>) -> bool {
+    /// Bind a synthesized inode to the superblock that publishes it.  Pseudo
+    /// filesystems may mint leaves before their superblock exists, then bind
+    /// those leaves when a path lookup crosses into the mounted tree.
+    /// # C: O(1)
+    pub fn bind_superblock(&self, sb: &Arc<SuperBlock>) -> bool {
         let mut owner = self.i_sb.write();
         match owner.upgrade() {
             Some(old) if !Arc::ptr_eq(&old, sb) => false,

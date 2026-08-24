@@ -267,7 +267,11 @@ impl PseudoDir {
         match self.sb.lock().clone().upgrade() {
             Some(sb) => {
                 let l = Arc::clone(leaf);
-                sb.iget(leaf.ino(), move || l)
+                let owner = Arc::clone(&sb);
+                sb.iget(leaf.ino(), move || {
+                    let _ = l.bind_superblock(&owner);
+                    l
+                })
             }
             None => Arc::clone(leaf),
         }

@@ -126,6 +126,8 @@ fn a_device_node_stores_and_returns_a_value() {
 #[test]
 fn a_device_node_accepts_a_posix_access_acl() {
     let n = published_dev_node("/dev/b2634_acl", "b2634_acl");
+    let sb = n.i_sb().expect("published devtmpfs node is bound to its superblock");
+    assert!(sb.is_posixacl(), "factory node sees devtmpfs POSIX-ACL capability");
     let acl = alloc::vec![
         AclEntry { tag: ACL_USER_OBJ, perm: 0o7, id: ACL_UNDEFINED_ID },
         AclEntry { tag: ACL_USER, perm: 0o4, id: 1000 },

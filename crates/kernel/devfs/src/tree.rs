@@ -31,6 +31,14 @@ use vfs::InodeRef;
 /// Per-namespace tree roots. `ns == 0` is the init (host) namespace.
 static ROOTS: Spinlock<BTreeMap<u64, Arc<PseudoDir>>, TaskListClass> = Spinlock::new(BTreeMap::new());
 
+/// Attach the shared devtmpfs superblock to every namespace tree. Leaves are
+/// bound lazily by `kernfs::PseudoDir::leaf_iget` after the tree supplies this
+/// weak owner to the lookup path.
+pub fn set_sb(sb: alloc::sync::Weak<vfs::superblock::SuperBlock>) {
+    let roots = all_roots_ensure0();
+    for root in roots { root.set_sb(sb.clone()); }
+}
+
 /// Get-or-create the root `PseudoDir` for namespace `ns` (path = "").
 /// D17/D19: devfs no longer overlays the ext4 rootfs at all. `/dev` is FULLY
 /// populated by `drv::try_device_add` + the boot `register`/`register_dir` nodes
