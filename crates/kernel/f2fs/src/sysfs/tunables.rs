@@ -74,6 +74,8 @@ pub(crate) fn attrs(fs: &Arc<F2fs>, dev: &str) -> Vec<Attr> {
                |v| v.reserved_blocks(), set_reserved_blocks),
         num_rw(fs, dev, "carve_out",
                |v| u64::from(v.carve_out()), set_carve_out),
+        num_rw(fs, dev, "cp_interval",
+               |v| v.cp_interval(), set_cp_interval),
         num_rw(fs, dev, "allocate_section_hint",
                |v| u64::from(v.allocate_section_hint()), set_allocate_section_hint),
         num_rw(fs, dev, "allocate_section_policy",
@@ -123,6 +125,12 @@ fn set_ram_thresh(v: &mut Vol, n: u64) -> Result<(), Errno> {
 /// Section boundary used by regular forward allocation. # C: O(1)
 fn set_allocate_section_hint(v: &mut Vol, n: u64) -> Result<(), Errno> {
     v.set_allocate_section_hint(n)
+}
+
+/// Seconds before a quiet mount's periodic checkpoint is due. # C: O(1)
+fn set_cp_interval(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    v.set_cp_interval(n);
+    Ok(())
 }
 
 /// Boundary policy used by regular forward allocation. # C: O(1)

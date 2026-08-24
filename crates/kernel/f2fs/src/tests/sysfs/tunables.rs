@@ -67,6 +67,23 @@ fn section_forward_controls_reach_the_allocator() {
 }
 
 #[test]
+fn checkpoint_interval_control_reaches_balance_clock() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    assert_eq!(show(&a, "cp_interval"), crate::bg::balance::CP_INTERVAL_SECS);
+    store(&a, "cp_interval", 1).expect("one-second checkpoint interval");
+    {
+        let mut v = fs.volume.lock();
+        v.set_clock(100);
+        assert!(!v.cp_time_over(), "the first clock sample starts the mount");
+        v.set_clock(102);
+        assert!(v.cp_time_over(), "the live interval controls the due decision");
+    }
+    store(&a, "cp_interval", 0).expect("Linux permits an immediate interval");
+    assert_eq!(show(&a, "cp_interval"), 0);
+}
+
+#[test]
 fn every_volume_owned_control_is_writable() {
     let fs = mounted();
     let a = crate::sysfs::mount_attrs(&fs);

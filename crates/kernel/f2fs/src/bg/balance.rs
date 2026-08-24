@@ -30,7 +30,7 @@ use crate::volume::Volume;
 pub const NAT_CACHE_THRESHOLD: usize = 100_000;
 /// Segments' worth of dirty metadata entries that make a checkpoint due.
 pub const DIRTY_THRESHOLD_SEGS: u64 = 4;
-/// Seconds between checkpoints on an otherwise quiet volume.
+/// Default seconds between checkpoints on an otherwise quiet volume.
 pub const CP_INTERVAL_SECS: u64 = 60;
 
 /// Whether `cached` dirty node-table entries out of a table of `max` is enough
@@ -143,8 +143,14 @@ impl<S: SectorSource> Volume<S> {
             0 => self.segstate.mounted_clock.unwrap_or(self.clock),
             at => at,
         };
-        self.clock.saturating_sub(base) > CP_INTERVAL_SECS
+        self.clock.saturating_sub(base) > self.cp_interval_secs
     }
+
+    /// Periodic checkpoint interval in seconds. # C: O(1)
+    pub fn cp_interval(&self) -> u64 { self.cp_interval_secs }
+
+    /// Set the periodic checkpoint interval in seconds. # C: O(1)
+    pub fn set_cp_interval(&mut self, value: u64) { self.cp_interval_secs = value; }
 
     /// Sections the allocator could still open. # C: O(main segments)
     pub fn free_section_count(&self) -> u32 {

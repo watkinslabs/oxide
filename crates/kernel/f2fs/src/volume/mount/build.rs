@@ -175,6 +175,7 @@ impl<S: SectorSource> Volume<S> {
         init_field!(reserved_segments: reserved_segments);
         init_field!(allocate_section_hint: allocate_section_hint);
         init_field!(allocate_section_policy: crate::volume::zonewp::ALLOCATE_FORWARD_NOHINT);
+        init_field!(cp_interval_secs: crate::bg::balance::CP_INTERVAL_SECS);
         init_field!(reserved_blocks: 0);
         init_field!(current_reserved_blocks: 0);
         init_field!(carve_out: false);
