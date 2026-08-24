@@ -14,6 +14,7 @@ use v4l2::ops::{InputDesc, VideoOps};
 pub struct Pending {
     pub index: u32,
     pub sequence: u32,
+    pub error: bool,
 }
 
 /// One virtual camera.
@@ -33,6 +34,7 @@ struct VividState {
     last_frame_ns: u64,
     horizontal_motion: i8,
     vertical_motion: i8,
+    dqbuf_error: bool,
 }
 
 impl Vivid {
@@ -44,7 +46,7 @@ impl Vivid {
                 format: PixFormat::empty(),
                 interval: crate::tables::INTERVALS[0],
                 sequence: 0, last_frame_ns: 0,
-                horizontal_motion: 0, vertical_motion: 0,
+                horizontal_motion: 0, vertical_motion: 0, dqbuf_error: false,
             }),
         })
     }
@@ -76,7 +78,9 @@ impl Vivid {
         // subsequent frame later and the stream keeps its nominal rate.
         state.last_frame_ns = next_deadline(state.last_frame_ns, now_ns, period);
         state.sequence = state.sequence.wrapping_add(1);
-        Some(Pending { index, sequence: state.sequence })
+        let error = state.dqbuf_error;
+        state.dqbuf_error = false;
+        Some(Pending { index, sequence: state.sequence, error })
     }
 }
 
@@ -163,6 +167,7 @@ impl VideoOps for Vivid {
         match id {
             crate::tables::CID_HOR_MOVEMENT => state.horizontal_motion = velocity,
             crate::tables::CID_VERT_MOVEMENT => state.vertical_motion = velocity,
+            crate::tables::CID_DQBUF_ERROR => state.dqbuf_error = true,
             _ => {}
         }
     }

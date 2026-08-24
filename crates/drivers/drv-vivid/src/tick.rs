@@ -96,7 +96,8 @@ fn tick(now: u64) {
         bytesused[0] = filled;
         v4l2::node::buffer_done(&device, &v4l2::vb2::Completion {
             index: pending.index,
-            state: v4l2::vb2::BufState::Done,
+            state: if pending.error { v4l2::vb2::BufState::Error }
+                   else { v4l2::vb2::BufState::Done },
             bytesused,
             timestamp_ns: now,
             sequence: pending.sequence,

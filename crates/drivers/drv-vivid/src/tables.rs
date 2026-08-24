@@ -7,6 +7,9 @@ use v4l2::ctrl::{standard, ControlDesc};
 
 pub const CID_HOR_MOVEMENT: u32 = 0x0098_20a0;
 pub const CID_VERT_MOVEMENT: u32 = 0x0098_20a1;
+/// Linux Vivid's streaming control: the next completed buffer carries
+/// `V4L2_BUF_FLAG_ERROR`. # C: O(1)
+pub const CID_DQBUF_ERROR: u32 = 0x00f0_f042;
 
 pub const MOVEMENT_MENU: &[&str] = &[
     "Move Left Fast", "Move Left", "Move Left Slow", "No Movement",
@@ -101,6 +104,8 @@ pub fn controls() -> alloc::vec::Vec<ControlDesc> {
             default_value: 3, flags: 0, menu: MOVEMENT_MENU,
             menu_values: &[], cluster: &[],
         },
+        standard::simple(CID_DQBUF_ERROR, cid::CTRL_TYPE_BUTTON,
+                         "Inject V4L2_BUF_FLAG_ERROR", 0, 0, 0, 0),
     ]
 }
 

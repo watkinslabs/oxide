@@ -66,6 +66,7 @@ fn frames_come_out_in_order_with_a_rising_sequence() {
     let period = vivid.frame_period_ns();
     let first = vivid.take_due(1_000_000).expect("the first frame is due at once");
     assert_eq!((first.index, first.sequence), (0, 1));
+    assert!(!first.error);
     // Not yet due.
     assert!(vivid.take_due(1_000_000 + period / 2).is_none());
     let second = vivid.take_due(1_000_000 + period).expect("the next period");
@@ -77,6 +78,19 @@ fn frames_come_out_in_order_with_a_rising_sequence() {
     vivid.buf_queue(1);
     let fourth = vivid.take_due(1_000_000 + period * 4).expect("the requeued buffer");
     assert_eq!((fourth.index, fourth.sequence), (1, 4));
+}
+
+#[test]
+fn dqbuf_error_button_marks_only_the_next_frame() {
+    let vivid = Vivid::new();
+    vivid.start_streaming(&[0, 1]).expect("start");
+    vivid.control_changed(crate::tables::CID_DQBUF_ERROR, 0);
+    let first = vivid.take_due(1_000).expect("first frame");
+        assert!(first.error, "the button must reach the next completion");
+        vivid.buf_queue(0);
+    let next = 1_000 + vivid.frame_period_ns();
+    let second = vivid.take_due(next).expect("requeued frame");
+    assert!(!second.error, "the reference consumes the injection once");
 }
 
 #[test]
