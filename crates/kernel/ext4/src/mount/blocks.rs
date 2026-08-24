@@ -122,7 +122,10 @@ impl Mount {
             if file_blk >= e.block && file_blk < e.block + e.real_len() {
                 if e.is_unwritten() { return Err(MountError::NotFound); }
                 let off = file_blk - e.block;
-                return Ok((e.start_lba() + off as u64, e.real_len() - off));
+                let phys = e.start_lba() + off as u64;
+                let run = e.real_len() - off;
+                self.check_inode_blocks(phys, run as u64)?;
+                return Ok((phys, run));
             }
         }
         Err(MountError::NotFound)
@@ -136,7 +139,10 @@ impl Mount {
             if file_blk >= e.block && file_blk < e.block + e.real_len() {
                 if e.is_unwritten() { return Err(MountError::NotFound); }
                 let off = file_blk - e.block;
-                return Ok((e.start_lba() + off as u64, e.real_len() - off));
+                let phys = e.start_lba() + off as u64;
+                let run = e.real_len() - off;
+                self.check_inode_blocks(phys, run as u64)?;
+                return Ok((phys, run));
             }
         }
         Err(MountError::NotFound)
@@ -199,7 +205,9 @@ impl Mount {
             let e = inode::parse_inline_extent(i_block, hdr, i).ok_or(MountError::BlockIo)?;
             if file_blk >= e.block && file_blk < e.block + e.real_len() {
                 if e.is_unwritten() { return Err(MountError::NotFound); }
-                return Ok(e.start_lba() + (file_blk - e.block) as u64);
+                let phys = e.start_lba() + (file_blk - e.block) as u64;
+                self.check_inode_blocks(phys, 1)?;
+                return Ok(phys);
             }
         }
         Err(MountError::NotFound)
@@ -213,7 +221,9 @@ impl Mount {
             let e = inode::parse_inline_extent_slice(buf, hdr, i).ok_or(MountError::BlockIo)?;
             if file_blk >= e.block && file_blk < e.block + e.real_len() {
                 if e.is_unwritten() { return Err(MountError::NotFound); }
-                return Ok(e.start_lba() + (file_blk - e.block) as u64);
+                let phys = e.start_lba() + (file_blk - e.block) as u64;
+                self.check_inode_blocks(phys, 1)?;
+                return Ok(phys);
             }
         }
         Err(MountError::NotFound)

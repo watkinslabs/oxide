@@ -10,6 +10,7 @@
 // - lifecycle: superblock state/mount-count/time writeback (mount = dirty,
 //   unmount = clean), the Linux ext4_setup_super / ext4_put_super half.
 // - quota: VFS quota backref and exact i_blocks delta charging.
+// - validity: Linux system-block ownership and block-validity checks.
 
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
@@ -37,6 +38,7 @@ mod faults;
 mod io;
 mod lifecycle;
 mod quota;
+mod validity;
 
 pub(crate) use io::read_byte_range_pub;
 pub(crate) use io::write_byte_range as io_write_byte_range;
@@ -148,6 +150,7 @@ pub type MountStateGuard<'a> = Guard<'a, MountState, SuperblockLockClass>;
 pub struct Mount {
     pub(crate) dev: Arc<dyn BlockDevice>,
     pub sb: Superblock,
+    pub(crate) system_zones: Vec<(u64, u64)>,
     pub(crate) state: Spinlock<MountState, SuperblockLockClass>,
     pub(crate) quota_sb: Spinlock<Weak<vfs::SuperBlock>, SuperblockLockClass>,
     /// This volume's error history, seeded at open from the superblock and

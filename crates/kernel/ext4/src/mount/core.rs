@@ -135,6 +135,7 @@ impl Mount {
                 }
             }
         }
+        let system_zones = super::validity::build_system_zones(&sb, &gdt_buf);
         let state = MountState {
             gdt_buf,
             sb_free_blocks: sb.free_blocks_count,
@@ -150,7 +151,7 @@ impl Mount {
             inode_generations: alloc::collections::BTreeMap::new(),
         };
         let err = sync::Spinlock::new(crate::errstat::ErrRecord::parse(&sb_bytes));
-        let m = Self { dev, sb, state: sync::Spinlock::new(state), quota_sb: sync::Spinlock::new(alloc::sync::Weak::new()), err,
+        let mut m = Self { dev, sb, system_zones, state: sync::Spinlock::new(state), quota_sb: sync::Spinlock::new(alloc::sync::Weak::new()), err,
                        #[cfg(not(target_os = "oxide-kernel"))]
                        faults: super::faults::HostedFaults::new(),
                        txn_owner: ::core::sync::atomic::AtomicU64::new(0),
@@ -161,6 +162,16 @@ impl Mount {
                            behaviour, ..Default::default() }),
                        #[cfg(not(target_os = "oxide-kernel"))]
                        test_cred: sync::Spinlock::new(None) };
+        if m.sb.journal_inum != 0 {
+            if let Ok(journal) = m.read_inode(m.sb.journal_inum) {
+                if let Ok(runs) = m.collect_phys_extents(&journal.i_block) {
+                    for run in runs {
+                        m.system_zones.push((run.phys, run.phys.saturating_add(u64::from(run.len))));
+                    }
+                    m.system_zones.sort_unstable_by_key(|zone| zone.0);
+                }
+            }
+        }
         // `noload`/`norecovery` decides this, and it decides it BEFORE the
         // replay rather than after. Every mount this code opens is writable, so
         // a dirty log plus the option is the combination that has no correct
