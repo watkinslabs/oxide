@@ -240,6 +240,7 @@ fn run_one(arg: usize) {
 /// Runs ON the helper thread — never on a submitting task, whose page tables
 /// the image load would otherwise displace.
 /// # C: O(helper)
+#[inline(never)]
 pub(super) fn run_inline(info: &mut SubprocessInfo) -> Option<u32> {
     let started = super::child::start(info);
     let child = started.as_ref().ok().map(|t| t.vtid.load(Ordering::Acquire));
