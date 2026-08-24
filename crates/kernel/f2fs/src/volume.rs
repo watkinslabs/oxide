@@ -215,6 +215,10 @@ pub struct Volume<S: SectorSource> {
     pub(crate) lifetime_write_kbytes: u64,
     /// Physical sectors written since that journal value was recorded.
     pub(crate) sectors_written_since_cp: core::cell::Cell<u64>,
+    /// Physical reads currently submitted to the block source.
+    pub(crate) inflight_reads: core::sync::atomic::AtomicU64,
+    /// Physical writes currently submitted to the block source.
+    pub(crate) inflight_writes: core::sync::atomic::AtomicU64,
     /// Configured pool recovered from released blocks for privileged writes.
     pub(crate) reserved_blocks: u64,
     /// Portion of that pool currently held out of ordinary free space.

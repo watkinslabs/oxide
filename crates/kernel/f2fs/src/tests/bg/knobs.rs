@@ -117,6 +117,18 @@ fn no_interval_may_be_zero() {
 }
 
 #[test]
+fn bggc_io_awareness_uses_linux_values_and_bounds() {
+    let b = bg();
+    assert_eq!(knobs::show(&b, Knob::BggcIoAware), 0);
+    knobs::store(&b, Knob::BggcIoAware, 1, false).unwrap();
+    assert_eq!(knobs::show(&b, Knob::BggcIoAware), 1);
+    knobs::store(&b, Knob::BggcIoAware, 2, false).unwrap();
+    assert_eq!(knobs::show(&b, Knob::BggcIoAware), 2);
+    assert_eq!(knobs::store(&b, Knob::BggcIoAware, 3, false), Err(Errno::Einval));
+    assert_eq!(knobs::show(&b, Knob::BggcIoAware), 2);
+}
+
+#[test]
 fn the_urgency_control_sets_the_mode_and_wakes_the_cleaner() {
     let b = bg();
     let before = b.waits.gc_wakes();

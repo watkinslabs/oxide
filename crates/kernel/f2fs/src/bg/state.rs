@@ -35,6 +35,8 @@ pub struct Bg {
     /// What the mount was asked for. The threads honour it every round, so a
     /// remount that turns cleaning off stops it without stopping the thread.
     pub bggc: Spinlock<BackgroundGc, TaskList>,
+    /// Linux's background-GC I/O-awareness policy: all, reads, or none.
+    pub bggc_io_aware: AtomicU64,
     /// Set once, by the unmount, and read by both threads every round.
     pub stopping: AtomicBool,
     /// Whether each thread is running, so a caller knows whether parking a
@@ -79,6 +81,7 @@ impl Bg {
             cprc: Spinlock::new(CkptControl::new()),
             flc: Spinlock::new(FlushControl::new()),
             bggc: Spinlock::new(bggc),
+            bggc_io_aware: AtomicU64::new(super::gc::BggcIoAware::All as u64),
             stopping: AtomicBool::new(false),
             gc_running: AtomicBool::new(false),
             discard_running: AtomicBool::new(false),
@@ -118,6 +121,17 @@ impl Bg {
 
     /// The cleaning mode in force. # C: O(1)
     pub fn gc_mode(&self) -> GcMode { self.gc.lock().mode }
+
+    /// Read the background-GC I/O-awareness policy. # C: O(1)
+    pub fn bggc_io_aware(&self) -> super::gc::BggcIoAware {
+        super::gc::BggcIoAware::from_u32(self.bggc_io_aware.load(Ordering::Acquire) as u32)
+            .unwrap_or(super::gc::BggcIoAware::All)
+    }
+
+    /// Set the background-GC I/O-awareness policy. # C: O(1)
+    pub fn set_bggc_io_aware(&self, value: u64) {
+        self.bggc_io_aware.store(value, Ordering::Release);
+    }
 
     /// Ask for a cleaning pass now, cutting short whatever sleep is running.
     ///

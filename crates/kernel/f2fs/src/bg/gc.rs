@@ -21,6 +21,27 @@
 
 use crate::opts::BackgroundGc;
 
+/// Which in-flight physical I/O blocks ordinary background GC. # C: O(1)
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[repr(u32)]
+pub enum BggcIoAware {
+    All = 0,
+    Read = 1,
+    None = 2,
+}
+
+impl BggcIoAware {
+    /// Decode Linux's sysfs values. # C: O(1)
+    pub fn from_u32(value: u32) -> Option<Self> {
+        Some(match value {
+            0 => Self::All,
+            1 => Self::Read,
+            2 => Self::None,
+            _ => return None,
+        })
+    }
+}
+
 /// The interval an urgent request runs at, in milliseconds.
 pub const DEF_GC_THREAD_URGENT_SLEEP_TIME: u32 = 500;
 /// The shortest ordinary interval, and the size of one step of the walk.

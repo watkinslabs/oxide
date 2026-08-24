@@ -12,7 +12,7 @@
 use syscall::errno::Errno;
 
 use super::discard::{IoAware, MAX_PLIST_NUM, MIN_DISCARD_GRANULARITY};
-use super::gc::GcMode;
+use super::gc::{BggcIoAware, GcMode};
 use super::state::Bg;
 
 /// One writable control.
@@ -50,6 +50,7 @@ pub enum Knob {
     IdleInterval,
     DiscardIdleInterval,
     GcIdleInterval,
+    BggcIoAware,
 }
 
 /// The name the control is published under. # C: O(1)
@@ -80,6 +81,7 @@ pub fn name(k: Knob) -> &'static str {
         Knob::IdleInterval => "idle_interval",
         Knob::DiscardIdleInterval => "discard_idle_interval",
         Knob::GcIdleInterval => "gc_idle_interval",
+        Knob::BggcIoAware => "bggc_io_aware",
     }
 }
 
@@ -94,6 +96,7 @@ pub const ALL: &[Knob] = &[
     Knob::MinDiscardIssueTime, Knob::MidDiscardIssueTime, Knob::MaxDiscardIssueTime,
     Knob::MaxSmallDiscards,
     Knob::IdleInterval, Knob::DiscardIdleInterval, Knob::GcIdleInterval,
+    Knob::BggcIoAware,
 ];
 
 /// The number a control reads back as. # C: O(1)
@@ -123,6 +126,7 @@ pub fn show(bg: &Bg, k: Knob) -> u64 {
         Knob::MaxDiscardIssueTime => u64::from(bg.dcc.lock().max_issue_time),
         Knob::IdleInterval | Knob::DiscardIdleInterval | Knob::GcIdleInterval =>
             bg.idle_control(k),
+        Knob::BggcIoAware => bg.bggc_io_aware() as u64,
     }
 }
 
@@ -169,6 +173,7 @@ pub fn accepts(k: Knob, v: u64, atgc: bool) -> Result<(), Errno> {
         Knob::GcBoostGcGreedy => v <= 1,
         Knob::IdleInterval | Knob::DiscardIdleInterval | Knob::GcIdleInterval =>
             v <= u64::from(u32::MAX),
+        Knob::BggcIoAware => v <= BggcIoAware::None as u64,
     };
     if ok { Ok(()) } else { Err(Errno::Einval) }
 }
@@ -208,6 +213,7 @@ pub fn store(bg: &Bg, k: Knob, v: u64, atgc: bool) -> Result<(), Errno> {
         Knob::MaxDiscardIssueTime => bg.dcc.lock().max_issue_time = n,
         Knob::IdleInterval | Knob::DiscardIdleInterval | Knob::GcIdleInterval =>
             bg.set_idle_control(k, v),
+        Knob::BggcIoAware => bg.set_bggc_io_aware(v),
     }
     Ok(())
 }

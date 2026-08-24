@@ -89,8 +89,14 @@ fn conditions(fs: &Arc<F2fs>, foreground: bool, mode: GcMode,
     // read it.
     let mut v = fs.volume.lock();
     let now = v.now_secs();
-    let idle = gc::is_idle(mode, IdleKind::Gc, now, bg.last_activity(),
-                           bg.idle_interval(IdleKind::Gc));
+    let io_busy = match bg.bggc_io_aware() {
+        gc::BggcIoAware::All => v.inflight_io(),
+        gc::BggcIoAware::Read => v.inflight_read_io(),
+        gc::BggcIoAware::None => false,
+    };
+    let idle = mode.claims_idle(IdleKind::Gc) || (!io_busy &&
+        gc::is_idle(mode, IdleKind::Gc, now, bg.last_activity(),
+                    bg.idle_interval(IdleKind::Gc)));
     let readonly = !v.writable();
     let can_lock = !v.gc_is_running();
     let loaded = v.load_segments().is_ok();

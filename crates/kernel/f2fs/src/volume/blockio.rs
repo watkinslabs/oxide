@@ -20,6 +20,8 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
 use syscall::errno::Errno;
 
 use sectors::SectorSource;
@@ -28,7 +30,42 @@ use crate::uapi::BLKSIZE;
 
 use super::Volume;
 
+struct InflightIo<'a> {
+    counter: &'a AtomicU64,
+}
+
+impl Drop for InflightIo<'_> {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 impl<S: SectorSource> Volume<S> {
+    /// Start one physical read, ending when the source operation returns.
+    /// # C: O(1)
+    fn begin_read_io(&self) -> InflightIo<'_> {
+        self.inflight_reads.fetch_add(1, Ordering::AcqRel);
+        InflightIo { counter: &self.inflight_reads }
+    }
+
+    /// Start one physical write, ending when the source operation returns.
+    /// # C: O(1)
+    fn begin_write_io(&self) -> InflightIo<'_> {
+        self.inflight_writes.fetch_add(1, Ordering::AcqRel);
+        InflightIo { counter: &self.inflight_writes }
+    }
+
+    /// Whether any physical request is in flight. # C: O(1)
+    pub(crate) fn inflight_io(&self) -> bool {
+        self.inflight_reads.load(Ordering::Acquire) != 0
+            || self.inflight_writes.load(Ordering::Acquire) != 0
+    }
+
+    /// Whether a physical read is in flight. # C: O(1)
+    pub(crate) fn inflight_read_io(&self) -> bool {
+        self.inflight_reads.load(Ordering::Acquire) != 0
+    }
+
     /// Read one block by its address.
     ///
     /// Addresses are in blocks and the source is addressed in blocks, so the
@@ -48,6 +85,7 @@ impl<S: SectorSource> Volume<S> {
         if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::ReadIo) {
             return Err(Errno::Eio);
         }
+        let _io = self.begin_read_io();
         let mut buf = vec![0u8; BLKSIZE];
         self.source.read_sectors(u64::from(addr), &mut buf)?;
         // Everything OUTSIDE the main area is metadata by the layout's own
@@ -93,6 +131,7 @@ impl<S: SectorSource> Volume<S> {
         if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::ReadIo) {
             return Err(Errno::Eio);
         }
+        let _io = self.begin_read_io();
         let mut buf = vec![0u8; BLKSIZE];
         self.source.read_sectors(u64::from(addr), &mut buf)?;
         self.meta_cache.store_por(addr, &buf);
@@ -159,6 +198,7 @@ impl<S: SectorSource> Volume<S> {
         if data.len() != BLKSIZE { return Err(Errno::Einval); }
         let main = self.sb.valid_main_blkaddr(addr);
         if !main && u64::from(addr) >= self.sb.max_blkaddr() { return Err(Errno::Eio); }
+        let _io = self.begin_write_io();
         // Everything OUTSIDE the main area is metadata by the layout's own
         // definition — the checkpoint packs, both tables, the summary area and
         // the orphan list are the only things there — so the address answers

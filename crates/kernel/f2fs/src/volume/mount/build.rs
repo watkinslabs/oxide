@@ -182,6 +182,8 @@ impl<S: SectorSource> Volume<S> {
         init_field!(umount_discard_timeout_secs: crate::bg::round::DEF_UMOUNT_DISCARD_TIMEOUT_SECS);
         init_field!(lifetime_write_kbytes: lifetime_write_kbytes);
         init_field!(sectors_written_since_cp: core::cell::Cell::new(0));
+        init_field!(inflight_reads: core::sync::atomic::AtomicU64::new(0));
+        init_field!(inflight_writes: core::sync::atomic::AtomicU64::new(0));
         init_field!(reserved_blocks: 0);
         init_field!(current_reserved_blocks: 0);
         init_field!(carve_out: false);
