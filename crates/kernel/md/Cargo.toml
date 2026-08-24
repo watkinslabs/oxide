@@ -11,6 +11,7 @@ path = "src/lib.rs"
 block = { path = "../block" }
 sync = { path = "../../shared/sync" }
 sched = { path = "../sched" }
+timekeeper = { path = "../timekeeper" }
 
 [features]
 default = []

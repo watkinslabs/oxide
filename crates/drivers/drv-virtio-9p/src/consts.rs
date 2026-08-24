@@ -32,5 +32,9 @@ pub const fn wanted_features() -> u64 { WANTED_FEATURES }
 /// One request virtqueue plus the device configuration the tag lives in.
 /// # C: O(1)
 pub const fn transport_profile() -> virtio::VirtioTransportProfile {
-    virtio::VirtioTransportProfile::q0_device_cfg(wanted_features(), None)
+    #[cfg(target_os = "oxide-kernel")]
+    let completion_irq = Some(crate::registry::wake_completions as fn());
+    #[cfg(not(target_os = "oxide-kernel"))]
+    let completion_irq = None;
+    virtio::VirtioTransportProfile::q0_device_cfg(wanted_features(), completion_irq)
 }

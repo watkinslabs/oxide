@@ -9,6 +9,93 @@ use crate::entry::{Conn, ProtoState};
 use crate::tuple::Tuple;
 use crate::uapi::*;
 
+/// Linux `CTA_FILTER` field masks for directional tuple selection.
+pub const FILTER_IP_SRC: u32 = 1 << 0;
+pub const FILTER_IP_DST: u32 = 1 << 1;
+pub const FILTER_TUPLE_ZONE: u32 = 1 << 2;
+pub const FILTER_PROTO_NUM: u32 = 1 << 3;
+pub const FILTER_PROTO_SRC_PORT: u32 = 1 << 4;
+pub const FILTER_PROTO_DST_PORT: u32 = 1 << 5;
+pub const FILTER_PROTO_ICMP_TYPE: u32 = 1 << 6;
+pub const FILTER_PROTO_ICMP_CODE: u32 = 1 << 7;
+pub const FILTER_PROTO_ICMP_ID: u32 = 1 << 8;
+pub const FILTER_PROTO_ICMPV6_TYPE: u32 = 1 << 9;
+pub const FILTER_PROTO_ICMPV6_CODE: u32 = 1 << 10;
+pub const FILTER_PROTO_ICMPV6_ID: u32 = 1 << 11;
+pub const FILTER_ALL: u32 = (1 << 12) - 1;
+
+/// One direction's selected tuple fields. # C: O(1)
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct TupleFilter {
+    pub flags: u32,
+    pub tuple: Tuple,
+}
+
+/// Direct ctnetlink dump selectors owned by the conntrack table. # C: O(1)
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct DumpFilter {
+    pub family: Option<u8>,
+    pub zone: Option<u16>,
+    pub mark: Option<(u32, u32)>,
+    pub status: Option<(u32, u32)>,
+    pub orig: Option<TupleFilter>,
+    pub reply: Option<TupleFilter>,
+}
+
+fn matches_tuple(filter: TupleFilter, tuple: Tuple) -> bool {
+    if filter.flags & FILTER_IP_SRC != 0 && filter.tuple.src.addr != tuple.src.addr {
+        return false;
+    }
+    if filter.flags & FILTER_IP_DST != 0 && filter.tuple.dst.addr != tuple.dst.addr {
+        return false;
+    }
+    if filter.flags & FILTER_PROTO_NUM != 0 && filter.tuple.protonum != tuple.protonum {
+        return false;
+    }
+    match tuple.protonum {
+        IPPROTO_TCP | IPPROTO_UDP => {
+            if filter.flags & FILTER_PROTO_SRC_PORT != 0
+                && filter.tuple.src.proto.port != tuple.src.proto.port { return false; }
+            if filter.flags & FILTER_PROTO_DST_PORT != 0
+                && filter.tuple.dst.proto.port != tuple.dst.proto.port { return false; }
+        }
+        IPPROTO_ICMP => {
+            if filter.flags & FILTER_PROTO_ICMP_TYPE != 0
+                && filter.tuple.dst.proto.icmp_type != tuple.dst.proto.icmp_type { return false; }
+            if filter.flags & FILTER_PROTO_ICMP_CODE != 0
+                && filter.tuple.dst.proto.icmp_code != tuple.dst.proto.icmp_code { return false; }
+            if filter.flags & FILTER_PROTO_ICMP_ID != 0
+                && filter.tuple.src.proto.port != tuple.src.proto.port { return false; }
+        }
+        IPPROTO_ICMPV6 => {
+            if filter.flags & FILTER_PROTO_ICMPV6_TYPE != 0
+                && filter.tuple.dst.proto.icmp_type != tuple.dst.proto.icmp_type { return false; }
+            if filter.flags & FILTER_PROTO_ICMPV6_CODE != 0
+                && filter.tuple.dst.proto.icmp_code != tuple.dst.proto.icmp_code { return false; }
+            if filter.flags & FILTER_PROTO_ICMPV6_ID != 0
+                && filter.tuple.src.proto.port != tuple.src.proto.port { return false; }
+        }
+        _ => {}
+    }
+    true
+}
+
+/// Match one live entry against the direct ctnetlink selectors. # C: O(1)
+pub fn matches_filter(c: &Conn, filter: &DumpFilter) -> bool {
+    if filter.family.is_some_and(|family| c.orig.l3num != family) { return false; }
+    if filter.zone.is_some_and(|zone| c.orig.zone != zone) { return false; }
+    if filter.orig.is_some_and(|tuple| !matches_tuple(tuple, c.orig)) { return false; }
+    if filter.reply.is_some_and(|tuple| !matches_tuple(tuple, c.reply_tuple())) { return false; }
+    if filter.mark.is_some_and(|(value, mask)|
+        (c.mark.load(::core::sync::atomic::Ordering::Acquire) & mask) != value) {
+        return false;
+    }
+    if filter.status.is_some_and(|(value, mask)| (c.status() & mask) != value) {
+        return false;
+    }
+    true
+}
+
 fn align4(n: usize) -> usize { (n + 3) & !3 }
 
 /// Append one attribute with a raw payload. # C: O(len(payload))
@@ -99,33 +186,95 @@ fn put_counters(out: &mut Vec<u8>, kind: u16, packets: u64, bytes: u64) {
 
 /// Encode one entry's attribute body. # C: O(1)
 pub fn encode_entry(c: &Arc<Conn>, now: u64, acct: bool) -> Vec<u8> {
+    encode_entry_with_counters(c, now, acct, None)
+}
+
+/// Encode one entry using counters already atomically removed from the owner.
+/// # C: O(1)
+pub fn encode_entry_with_counters(c: &Arc<Conn>, now: u64, acct: bool,
+                                  counters: Option<[(u64, u64); IP_CT_DIR_MAX]>) -> Vec<u8> {
     let mut out = Vec::new();
     put_tuple(&mut out, CTA_TUPLE_ORIG, &c.orig);
-    put_tuple(&mut out, CTA_TUPLE_REPLY, &c.reply);
+    let reply = c.reply_tuple();
+    put_tuple(&mut out, CTA_TUPLE_REPLY, &reply);
     put_be32(&mut out, CTA_STATUS, c.status());
     put_be32(&mut out, CTA_TIMEOUT, c.expires_in(now) as u32);
     put_be32(&mut out, CTA_MARK, c.mark.load(::core::sync::atomic::Ordering::Relaxed));
     put_be32(&mut out, CTA_ID, c.id as u32);
     put_be16(&mut out, CTA_ZONE, c.orig.zone);
+    let timestamp_start = c.timestamp_start.load(::core::sync::atomic::Ordering::Acquire);
+    if timestamp_start != 0 {
+        let timestamp = nest_start(&mut out, CTA_TIMESTAMP);
+        put_be64(&mut out, CTA_TIMESTAMP_START, timestamp_start);
+        let timestamp_stop = c.timestamp_stop.load(::core::sync::atomic::Ordering::Acquire);
+        if timestamp_stop != 0 { put_be64(&mut out, CTA_TIMESTAMP_STOP, timestamp_stop); }
+        nest_end(&mut out, timestamp);
+    }
+    if let Some(master) = c.master.as_ref() {
+        put_tuple(&mut out, CTA_TUPLE_MASTER, &master.orig);
+    }
     if let ProtoState::Tcp(track) = *c.proto.lock() {
         let pi = nest_start(&mut out, CTA_PROTOINFO);
         let tcp = nest_start(&mut out, CTA_PROTOINFO_TCP);
         put_u8(&mut out, CTA_PROTOINFO_TCP_STATE, track.state);
         put_u8(&mut out, CTA_PROTOINFO_TCP_WSCALE_ORIGINAL, track.seen[0].td_scale);
         put_u8(&mut out, CTA_PROTOINFO_TCP_WSCALE_REPLY, track.seen[1].td_scale);
+        put_attr(&mut out, CTA_PROTOINFO_TCP_FLAGS_ORIGINAL,
+                 &[track.seen[0].flags, 0]);
+        put_attr(&mut out, CTA_PROTOINFO_TCP_FLAGS_REPLY,
+                 &[track.seen[1].flags, 0]);
         nest_end(&mut out, tcp);
         nest_end(&mut out, pi);
     }
+    if let ProtoState::Sctp(track) = *c.proto.lock() {
+        let pi = nest_start(&mut out, CTA_PROTOINFO);
+        let sctp = nest_start(&mut out, CTA_PROTOINFO_SCTP);
+        put_u8(&mut out, CTA_PROTOINFO_SCTP_STATE, track.state);
+        put_be32(&mut out, CTA_PROTOINFO_SCTP_VTAG_ORIGINAL,
+                 track.vtag[IP_CT_DIR_ORIGINAL as usize]);
+        put_be32(&mut out, CTA_PROTOINFO_SCTP_VTAG_REPLY,
+                 track.vtag[IP_CT_DIR_REPLY as usize]);
+        nest_end(&mut out, sctp);
+        nest_end(&mut out, pi);
+    }
+    if c.status() & IPS_SEQ_ADJUST != 0 {
+        for (dir, kind) in [(IP_CT_DIR_ORIGINAL, CTA_SEQ_ADJ_ORIG),
+                             (IP_CT_DIR_REPLY, CTA_SEQ_ADJ_REPLY)] {
+            let record = c.seqadj_record(dir);
+            let n = nest_start(&mut out, kind);
+            put_be32(&mut out, CTA_SEQADJ_CORRECTION_POS, record.correction_pos);
+            put_be32(&mut out, CTA_SEQADJ_OFFSET_BEFORE, record.offset_before as u32);
+            put_be32(&mut out, CTA_SEQADJ_OFFSET_AFTER, record.offset_after as u32);
+            nest_end(&mut out, n);
+        }
+    }
     if let Some(h) = c.helper.lock().as_ref() {
         let n = nest_start(&mut out, CTA_HELP);
-        put_attr(&mut out, 1, h.as_bytes());
+        let mut name = Vec::with_capacity(h.len() + 1);
+        name.extend_from_slice(h.as_bytes());
+        name.push(0);
+        put_attr(&mut out, CTA_HELP_NAME, &name);
         nest_end(&mut out, n);
     }
     if acct {
-        let (p, b) = c.counters[IP_CT_DIR_ORIGINAL as usize].read();
+        let (p, b) = counters.as_ref().map(|v| v[IP_CT_DIR_ORIGINAL as usize])
+            .unwrap_or_else(|| c.counters[IP_CT_DIR_ORIGINAL as usize].read());
         put_counters(&mut out, CTA_COUNTERS_ORIG, p, b);
-        let (p, b) = c.counters[IP_CT_DIR_REPLY as usize].read();
+        let (p, b) = counters.as_ref().map(|v| v[IP_CT_DIR_REPLY as usize])
+            .unwrap_or_else(|| c.counters[IP_CT_DIR_REPLY as usize].read());
         put_counters(&mut out, CTA_COUNTERS_REPLY, p, b);
+    }
+    let mut labels = [0u8; NF_CT_LABELS_MAX_SIZE];
+    c.labels_copy(&mut labels);
+    if labels.iter().any(|&byte| byte != 0) {
+        put_attr(&mut out, CTA_LABELS, &labels);
+    }
+    if let Some(state) = *c.synproxy.lock() {
+        let n = nest_start(&mut out, CTA_SYNPROXY);
+        put_be32(&mut out, CTA_SYNPROXY_ISN, state.isn);
+        put_be32(&mut out, CTA_SYNPROXY_ITS, state.its);
+        put_be32(&mut out, CTA_SYNPROXY_TSOFF, state.tsoff as u32);
+        nest_end(&mut out, n);
     }
     out
 }

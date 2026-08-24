@@ -48,14 +48,14 @@ fn a_connection_request_below_the_minimum_hop_limit_is_dropped_silently() {
     // The peer must prove it is one hop away.
     listen.min_hop.set_ttl(255);
     let segment = syn(local, local);
-    stack.deliver_tcp_packet_hop(0, iface, local, local, &segment, &segment, 254).unwrap();
+    stack.deliver_tcp_packet_hop(0, iface, local, local, &segment, &segment, 254, None).unwrap();
     assert_eq!(listen.syn_backlog_used.load(core::sync::atomic::Ordering::Acquire), 0,
         "a segment below the minimum never reaches the state machine");
     // Silent: no reset, nothing the peer can tell from a lost packet.
     assert!(lo.rx_pop().is_none(), "the drop answers nothing at all");
 
     // A segment AT the minimum is admitted.
-    stack.deliver_tcp_packet_hop(0, iface, local, local, &segment, &segment, 255).unwrap();
+    stack.deliver_tcp_packet_hop(0, iface, local, local, &segment, &segment, 255, None).unwrap();
     assert_eq!(listen.syn_backlog_used.load(core::sync::atomic::Ordering::Acquire), 1);
     assert!(lo.rx_pop().is_some(), "an admitted request is answered");
 }
@@ -70,7 +70,7 @@ fn the_default_minimum_admits_a_hop_limit_of_zero() {
     while lo.rx_pop().is_some() {}
 
     let segment = syn(local, local);
-    stack.deliver_tcp_packet_hop(0, iface, local, local, &segment, &segment, 0).unwrap();
+    stack.deliver_tcp_packet_hop(0, iface, local, local, &segment, &segment, 0, None).unwrap();
     assert_eq!(listen.syn_backlog_used.load(core::sync::atomic::Ordering::Acquire), 1,
         "a socket that named no minimum accepts any hop limit");
 }
@@ -88,7 +88,7 @@ fn the_ipv4_minimum_does_not_screen_a_native_ipv6_segment() {
     // minimum, so raising only the IPv4 one leaves it open.
     listen.min_hop.set_ttl(255);
     let segment = syn(local, local);
-    stack.deliver_tcp_packet_hop(0, iface, local, local, &segment, &segment, 64).unwrap();
+    stack.deliver_tcp_packet_hop(0, iface, local, local, &segment, &segment, 64, None).unwrap();
     assert_eq!(listen.syn_backlog_used.load(core::sync::atomic::Ordering::Acquire), 1);
 
     // Raising the IPv6 minimum then closes it.
@@ -104,7 +104,7 @@ fn the_ipv4_minimum_does_not_screen_a_native_ipv6_segment() {
         h.build_into_ip(local, local, &mut buf);
         buf
     };
-    stack.deliver_tcp_packet_hop(0, iface, local, local, &second, &second, 64).unwrap();
+    stack.deliver_tcp_packet_hop(0, iface, local, local, &second, &second, 64, None).unwrap();
     assert_eq!(listen.syn_backlog_used.load(core::sync::atomic::Ordering::Acquire), 1,
         "the second request is refused, leaving the first one's reservation alone");
 }
@@ -121,4 +121,36 @@ fn a_datagram_socket_ignores_the_minimum_however_low_the_hop_limit() {
     assert!(limits.refuses(1, true));
     // The datagram queues carry no reference to it at all.
     let _ = &limits;
+}
+
+#[test]
+fn transparent_tcp_handoff_checks_wire_checksum_but_uses_target_listener() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let stack = NetStack::new();
+    let (iface, lo) = stack.register_loopback();
+    let target = IpAddr::V4(Ipv4Addr::LOOPBACK);
+    let bind = stack.tcp_reserve(target, PORT, None, false, false, 1_000, false).unwrap();
+    bind.set_transparent(true);
+    let listen = stack.tcp_listen_reserved_min_hop(
+        &bind,
+        Arc::new(crate::bpf_filter::SocketFilter::new()),
+        Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
+        Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT)),
+        Arc::new(crate::min_hop::MinHop::new()),
+    ).unwrap();
+    while lo.rx_pop().is_some() {}
+
+    let wire_src = IpAddr::V4(Ipv4Addr::LOOPBACK);
+    let wire_dst = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7));
+    let segment = syn(wire_src, wire_dst);
+    assert!(stack.transparent_tcp4_in(0, Ipv4Addr::LOOPBACK, PORT, Some(iface)));
+    let result = stack.deliver_tcp_packet_hop(
+        0, iface, wire_src, wire_dst, &segment, &segment, 64,
+        Some(crate::pkt::TproxyTarget {
+            addr: conntrack::tuple::InetAddr::v4(Ipv4Addr::LOOPBACK.octets()),
+            port: PORT,
+        }),
+    );
+    assert!(result.is_ok(), "tproxy result: {:?}", result);
+    assert_eq!(listen.syn_backlog_used.load(core::sync::atomic::Ordering::Acquire), 1);
 }

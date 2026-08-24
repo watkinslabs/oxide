@@ -36,6 +36,7 @@ pub fn cancel_one(req: &Arc<IoReq>) -> Result<(), Errno> {
         _ => {
             if !req.claim() { return Err(Errno::Ealready); }
             super::poll::disarm(req);
+            super::dispatch::proc_ops::disarm_futex_wait(req);
             run::complete(req, -(Errno::Ecanceled.as_i32() as i64), 0);
             Ok(())
         }

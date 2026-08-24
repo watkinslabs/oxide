@@ -164,3 +164,21 @@ fn a_short_sector_is_refused() {
 fn an_all_zero_sector_is_not_a_volume() {
     assert_eq!(parse(&vec![0u8; 512]), Err(BpbError::NoReservedSectors));
 }
+
+#[test]
+fn dos1x_accepts_only_the_linux_floppy_defaults() {
+    let mut sector = vec![0u8; 512];
+    sector[0] = 0xeb;
+    sector[2] = 0x90;
+    for (sectors, sec_per_clus, dirs, media, fat) in [
+        (320, 1, 64, 0xfe, 1), (360, 1, 64, 0xfc, 2),
+        (640, 2, 112, 0xff, 1), (720, 2, 112, 0xfd, 2),
+    ] {
+        let b = Bpb::dos1x(&sector, sectors).expect("recognized floppy");
+        assert_eq!((b.sec_per_clus, b.dir_entries, b.media, b.fat_length()),
+                   (sec_per_clus, dirs, media, fat));
+    }
+    assert!(Bpb::dos1x(&sector, 321).is_none(), "arbitrary media size");
+    sector[off::FATS] = 1;
+    assert!(Bpb::dos1x(&sector, 320).is_none(), "non-zero BPB");
+}

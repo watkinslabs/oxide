@@ -58,6 +58,15 @@ fn devkmsg_mode_decodes_all_three_values() {
 }
 
 #[test]
+fn boot_delay_accepts_linux_range_and_rejects_bad_values() {
+    assert_eq!(boot_delay_ms(b"boot_delay=1"), Some(1));
+    assert_eq!(boot_delay_ms(b"quiet boot_delay=10000"), Some(10_000));
+    assert_eq!(boot_delay_ms(b"boot_delay=10001"), None);
+    assert_eq!(boot_delay_ms(b"boot_delay=ten"), None);
+    assert_eq!(boot_delay_ms(b"boot_delay"), None);
+}
+
+#[test]
 fn initcall_debug_accepts_flag_and_boolean_forms() {
     assert!(initcall_debug(b"quiet initcall_debug"));
     assert!(initcall_debug(b"initcall_debug=1"));
@@ -76,21 +85,48 @@ fn no_console_suspend_is_a_bare_disable() {
 fn a_recognised_but_unhonoured_parameter_is_named() {
     // The defect this guards is a knob that parses and does nothing. Each of
     // these must produce a boot-time line saying which subsystem it needs.
-    for p in [&b"softlockup_panic"[..], b"nmi_watchdog",
-              b"log_buf_len", b"slub_debug", b"page_poison",
-              b"debug_pagealloc", b"boot_delay"] {
+    for p in [&b"debug_pagealloc"[..]] {
         assert!(unsupported_parameter(p).is_some(), "parameter must announce that it is inert");
     }
-    for p in [&b"earlycon"[..], b"loglevel", b"panic_on_warn", b"panic", b"oops", b"initcall_debug",
-              b"hung_task_panic", b"hung_task_timeout_secs", b"no_console_suspend"] {
+    for p in [&b"earlycon"[..], b"loglevel", b"panic_on_warn", b"softlockup_panic", b"panic", b"oops", b"initcall_debug",
+              b"hung_task_panic", b"hung_task_timeout_secs", b"nmi_watchdog", b"log_buf_len", b"page_poison", b"no_console_suspend"] {
         assert_eq!(unsupported_parameter(p), None, "an implemented parameter must not be announced as inert");
     }
 }
 
 #[test]
 fn unsupported_scan_finds_them_on_a_real_line() {
-    let line = b"root=/dev/oxide0 earlycon initcall_debug panic_on_warn=1 nmi_watchdog=1 slub_debug=P";
+    let line = b"root=/dev/oxide0 earlycon initcall_debug panic_on_warn=1 softlockup_panic=1 nmi_watchdog=panic slub_debug=P";
     let mut n = 0;
     for _ in unsupported_in(line) { n += 1; }
-    assert_eq!(n, 2, "both inert knobs on the line get named, and only those — panic_on_warn is honoured");
+    assert_eq!(n, 0, "global slub poison is honoured — both lockup controls are honoured");
+}
+
+#[test]
+fn slub_debug_only_honours_global_poison() {
+    assert!(slub_debug_poison(b"slub_debug=P"));
+    assert!(slub_debug_poison(b"slab_debug=p"));
+    assert!(!slub_debug_poison(b"slub_debug=FP"));
+    assert!(!slub_debug_poison(b"slub_debug=P,kmalloc-64"));
+    assert!(unsupported_in(b"slub_debug=Z").next().is_some());
+    assert!(unsupported_in(b"slub_debug=P").next().is_none());
+    assert_eq!(unsupported_in(b"slub_debug=Z slub_debug=P").count(), 1);
+}
+
+#[test]
+fn log_buf_len_accepts_linux_binary_suffixes_and_rounds_up() {
+    assert_eq!(log_buf_len(b"log_buf_len=65536"), Some(65_536));
+    assert_eq!(log_buf_len(b"log_buf_len=96K"), Some(131_072));
+    assert_eq!(log_buf_len(b"log_buf_len=1M"), Some(1_048_576));
+    assert_eq!(log_buf_len(b"log_buf_len=0"), None);
+    assert_eq!(log_buf_len(b"log_buf_len=12MB"), None);
+    assert_eq!(log_buf_len(b"log_buf_len_extra=1M"), None);
+}
+
+#[test]
+fn page_poison_takes_the_boolean_spellings() {
+    assert!(page_poison(b"page_poison"));
+    assert!(page_poison(b"page_poison=1"));
+    assert!(!page_poison(b"page_poison=0"));
+    assert!(!page_poison(b"page_poison_extra=1"));
 }

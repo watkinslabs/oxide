@@ -82,6 +82,9 @@ fn sys_umount2_impl(args: &SyscallArgs) -> i64 {
         return -(Errno::Eperm.as_i32() as i64);
     }
     let _display = vfs::mount::render_path_for_mount(resolved.mnt_id, &resolved.dentry);
+    if fs::selinux::perm::superblock_permission(&target_mount.sb(), "unmount").is_err() {
+        return -(Errno::Eacces.as_i32() as i64);
+    }
     let namespace = match cur.mount_namespace_snapshot() {
         Some(namespace) => namespace,
         None => return -(Errno::Esrch.as_i32() as i64),

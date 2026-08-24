@@ -1,7 +1,8 @@
 //! Frame pacing and the transport state machine.
 
 use crate::device::{due, next_deadline, period_ns, Vivid};
-use v4l2::format::Fract;
+use v4l2::format::{Fract, PixFormat, Rect};
+use v4l2::uapi::flags;
 use v4l2::ops::VideoOps;
 
 const THIRTY: Fract = Fract { numerator: 1, denominator: 30 };
@@ -66,6 +67,7 @@ fn frames_come_out_in_order_with_a_rising_sequence() {
     let period = vivid.frame_period_ns();
     let first = vivid.take_due(1_000_000).expect("the first frame is due at once");
     assert_eq!((first.index, first.sequence), (0, 1));
+    assert!(!first.error);
     // Not yet due.
     assert!(vivid.take_due(1_000_000 + period / 2).is_none());
     let second = vivid.take_due(1_000_000 + period).expect("the next period");
@@ -77,6 +79,39 @@ fn frames_come_out_in_order_with_a_rising_sequence() {
     vivid.buf_queue(1);
     let fourth = vivid.take_due(1_000_000 + period * 4).expect("the requeued buffer");
     assert_eq!((fourth.index, fourth.sequence), (1, 4));
+}
+
+#[test]
+fn dqbuf_error_button_marks_only_the_next_frame() {
+    let vivid = Vivid::new();
+    vivid.start_streaming(&[0, 1]).expect("start");
+    vivid.control_changed(crate::tables::CID_DQBUF_ERROR, 0);
+    let first = vivid.take_due(1_000).expect("first frame");
+        assert!(first.error, "the button must reach the next completion");
+        vivid.buf_queue(0);
+    let next = 1_000 + vivid.frame_period_ns();
+    let second = vivid.take_due(next).expect("requeued frame");
+    assert!(!second.error, "the reference consumes the injection once");
+}
+
+#[test]
+fn streaming_error_buttons_fail_once_at_their_linux_hooks() {
+    let vivid = Vivid::new();
+    vivid.control_changed(crate::tables::CID_QUEUE_SETUP_ERROR, 0);
+    assert!(vivid.queue_setup(2, &vivid.format()).is_err());
+    assert!(vivid.queue_setup(2, &vivid.format()).is_ok());
+
+    vivid.control_changed(crate::tables::CID_BUF_PREPARE_ERROR, 0);
+    assert!(vivid.buf_prepare(0).is_err());
+    assert!(vivid.buf_prepare(0).is_ok());
+
+    vivid.control_changed(crate::tables::CID_START_STREAM_ERROR, 0);
+    assert!(vivid.start_streaming(&[0]).is_err());
+    assert!(!vivid.streaming());
+    vivid.start_streaming(&[0]).expect("second stream-on");
+    assert!(vivid.control_changed(crate::tables::CID_QUEUE_ERROR, 0));
+    vivid.stop_streaming();
+    assert!(!vivid.control_changed(crate::tables::CID_QUEUE_ERROR, 0));
 }
 
 #[test]
@@ -114,4 +149,20 @@ fn every_declared_interval_produces_a_usable_period() {
         assert!(period > 0, "{interval:?} paces nothing");
         assert!(period <= 1_000_000_000, "{interval:?} is slower than one frame a second");
     }
+}
+
+#[test]
+fn crop_and_compose_rectangles_are_owned_and_bounded() {
+    let vivid = Vivid::new();
+    let format = PixFormat { width: 640, height: 480, ..PixFormat::empty() };
+    vivid.set_format(&format);
+    let crop = Rect { left: 80, top: 60, width: 320, height: 240 };
+    assert_eq!(vivid.s_selection(&format, flags::SEL_TGT_CROP, crop), Ok(crop));
+    assert_eq!(vivid.g_selection(&format, flags::SEL_TGT_CROP), Ok(crop));
+    let compose = Rect { left: 160, top: 120, width: 320, height: 240 };
+    assert_eq!(vivid.s_selection(&format, flags::SEL_TGT_COMPOSE, compose), Ok(compose));
+    assert_eq!(vivid.g_selection(&format, flags::SEL_TGT_COMPOSE), Ok(compose));
+    assert_eq!(vivid.s_selection(&format, flags::SEL_TGT_CROP,
+                                 Rect { left: 600, top: 0, width: 80, height: 80 }),
+               Err(syscall::errno::Errno::Einval));
 }

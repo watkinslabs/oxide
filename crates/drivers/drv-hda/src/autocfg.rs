@@ -14,7 +14,7 @@ pub const MAX_OUTS: usize = 4;
 pub const MAX_INS: usize = 18;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub enum InputType { Mic, LineIn, Cd, Aux }
+pub enum InputType { Mic, LineIn, Cd, Aux, Digital }
 
 /// Which group the card's primary outputs came from, which decides how the
 /// mixer controls are named and which group automute may silence.

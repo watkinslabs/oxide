@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 
 use block::{BlockDevice, BlockOp};
 
-use super::exception::Exception;
+use super::exception::{Exception, ExceptionMap};
 use crate::uapi::SECTOR_BYTES;
 
 /// Magic word at the start of a persistent store.
@@ -64,17 +64,17 @@ impl DiskHeader {
 
 /// Encode one record. # C: O(1)
 pub fn encode_exception(e: &Exception, out: &mut [u8]) {
-    out[0..8].copy_from_slice(&e.old_chunk.to_le_bytes());
+    out[0..8].copy_from_slice(&(e.old_chunk + 1).to_le_bytes());
     out[8..16].copy_from_slice(&e.new_chunk.to_le_bytes());
 }
 
-/// Decode one record. A zero origin chunk terminates an area, which is why a
-/// store never allocates chunk zero to an exception. # C: O(1)
+/// Decode one record. Zero is the terminator; stored origin chunks are biased
+/// by one so the first real chunk (chunk zero) remains representable. # C: O(1)
 pub fn decode_exception(buf: &[u8]) -> Option<Exception> {
     if buf.len() < DISK_EXCEPTION_BYTES { return None; }
-    let old_chunk = u64::from_le_bytes(buf[0..8].try_into().ok()?);
-    if old_chunk == 0 { return None; }
-    Some(Exception { old_chunk, new_chunk: u64::from_le_bytes(buf[8..16].try_into().ok()?) })
+    let stored = u64::from_le_bytes(buf[0..8].try_into().ok()?);
+    if stored == 0 { return None; }
+    Some(Exception { old_chunk: stored - 1, new_chunk: u64::from_le_bytes(buf[8..16].try_into().ok()?) })
 }
 
 /// Chunk index the metadata area `area` starts at.
@@ -106,6 +106,9 @@ pub trait ExceptionStore: Send + Sync {
     fn prepare_exception(&mut self) -> Option<u64>;
     /// Make an exception durable. # C: depends on store
     fn commit_exception(&mut self, e: Exception) -> bool;
+    /// Rewrite metadata after a merge retires an exception. Transient stores
+    /// have no durable metadata and therefore accept the new map. # C: O(N)
+    fn rewrite_exceptions(&mut self, _map: &ExceptionMap) -> bool { true }
     /// Chunks handed out so far. # C: O(1)
     fn used_chunks(&self) -> u64;
     /// Chunks the store can hold in total. # C: O(1)
@@ -118,7 +121,6 @@ pub trait ExceptionStore: Send + Sync {
 
 /// A store that keeps nothing: the snapshot dies with the machine.
 pub struct TransientStore {
-    chunk_sectors: u64,
     next_free: u64,
     total: u64,
 }
@@ -126,7 +128,7 @@ pub struct TransientStore {
 impl TransientStore {
     /// A store over a device of `device_sectors`. # C: O(1)
     pub fn new(chunk_sectors: u64, device_sectors: u64) -> Self {
-        Self { chunk_sectors, next_free: 0, total: device_sectors / chunk_sectors }
+        Self { next_free: 0, total: device_sectors / chunk_sectors }
     }
 }
 
@@ -156,6 +158,7 @@ pub struct PersistentStore {
     pending: Vec<Exception>,
     current_area: u64,
     valid: bool,
+    header_seen: bool,
 }
 
 impl PersistentStore {
@@ -169,8 +172,17 @@ impl PersistentStore {
             // Chunk zero is the header, and the first metadata area follows
             // it, so the first data chunk is the one after that.
             next_free: NUM_SNAPSHOT_HDR_CHUNKS + 1,
-            pending: Vec::new(), current_area: 0, valid: true,
+            pending: Vec::new(), current_area: 0, valid: true, header_seen: false,
         }
+    }
+
+    /// Read an existing store, or initialize the header when this is a new
+    /// COW device. An existing invalid header stays invalid; resetting it
+    /// would turn a torn snapshot into an apparently valid one. # C: O(N)
+    pub fn load_or_initialize(&mut self) -> Vec<Exception> {
+        let records = self.read_metadata();
+        if !self.header_seen { let _ = self.write_header(true); }
+        records
     }
 
     /// Write the header, marking the store valid or not. # C: O(chunk)
@@ -209,6 +221,7 @@ impl ExceptionStore for PersistentStore {
     fn read_metadata(&mut self) -> Vec<Exception> {
         let Some(head) = self.chunk_read(0) else { self.valid = false; return Vec::new() };
         let Some(h) = DiskHeader::decode(&head) else { self.valid = false; return Vec::new() };
+        self.header_seen = true;
         if !h.valid { self.valid = false; return Vec::new(); }
         let mut out = Vec::new();
         let mut area = 0u64;
@@ -256,6 +269,36 @@ impl ExceptionStore for PersistentStore {
             return false;
         }
         true
+    }
+
+    fn rewrite_exceptions(&mut self, map: &ExceptionMap) -> bool {
+        if !self.write_header(false) { return false; }
+        let per_area = self.exceptions_per_area as usize;
+        let records = map.records();
+        let area_count = (records.len() + per_area.saturating_sub(1)) / per_area;
+        for area in 0..area_count {
+            let mut buf = alloc::vec![0u8; (self.chunk_sectors * SECTOR_BYTES) as usize];
+            for (i, e) in records[area * per_area..core::cmp::min((area + 1) * per_area, records.len())].iter().enumerate() {
+                encode_exception(e, &mut buf[i * DISK_EXCEPTION_BYTES..(i + 1) * DISK_EXCEPTION_BYTES]);
+            }
+            if !self.chunk_write(area_location(self.exceptions_per_area, area as u64), &buf) { return false; }
+        }
+        // Clear one terminator area and all stale areas after it. This makes
+        // a reboot stop at the new end rather than replaying retired records.
+        let first_clear = area_count as u64;
+        let max_areas = self.total / (self.exceptions_per_area + 1);
+        for area in first_clear..=max_areas {
+            let chunk = area_location(self.exceptions_per_area, area);
+            if chunk >= self.total { break; }
+            let buf = alloc::vec![0u8; (self.chunk_sectors * SECTOR_BYTES) as usize];
+            if !self.chunk_write(chunk, &buf) { return false; }
+        }
+        self.pending.clear();
+        self.current_area = area_count as u64;
+        self.next_free = records.iter().map(|e| e.dest() + e.len()).max()
+            .unwrap_or(NUM_SNAPSHOT_HDR_CHUNKS + 1)
+            .max(area_location(self.exceptions_per_area, self.current_area) + 1);
+        self.write_header(true)
     }
 
     fn used_chunks(&self) -> u64 { self.next_free.saturating_sub(NUM_SNAPSHOT_HDR_CHUNKS + 1) }

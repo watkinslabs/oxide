@@ -38,13 +38,17 @@ pub struct TcpTelemetry {
     pub rwnd_limited_ns: u64, pub sndbuf_limited_ns: u64,
     /// Current output pacing rate and next output eligibility, owned by this TCB.
     pub pacing_rate: u64, pub pacing_next_ns: u64,
+    /// Last in-order IPv6 segment snapshot used by IPV6_2292PKTOPTIONS.
+    /// Linux keeps the packet-options skb behind the TCB; this boxed telemetry
+    /// state keeps the Rust TCB's softirq-stack footprint unchanged.
+    pub ipv6_pktoptions: Option<alloc::boxed::Box<crate::cmsg::RxMeta>>,
 }
 
 impl Default for TcpTelemetry {
     fn default() -> Self { Self { delivered: 0, delivered_mstamp_ns: 0, rate_delivered: 0,
         rate_interval_ns: 0, rate_app_limited: false, delivered_ce: 0, chrono: TcpChrono::None,
         chrono_start_ns: 0, busy_time_ns: 0, rwnd_limited_ns: 0, sndbuf_limited_ns: 0,
-        pacing_rate: 0, pacing_next_ns: 0 } }
+        pacing_rate: 0, pacing_next_ns: 0, ipv6_pktoptions: None } }
 }
 
 /// One unacked segment on the retransmission queue.

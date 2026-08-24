@@ -32,11 +32,16 @@ pub const MTYPE_BYTES: usize = 8;
 pub struct Msg {
     pub mtype: i64,
     pub data: Vec<u8>,
+    pub security_sid: u32,
 }
 
 impl Msg {
     /// Linux `m_ts` — payload length in bytes. # C: O(1)
     pub fn ts(&self) -> u64 { self.data.len() as u64 }
+
+    pub fn new(mtype: i64, data: Vec<u8>, security_sid: u32) -> Self {
+        Self { mtype, data, security_sid }
+    }
 }
 
 /// The lock-protected half of `struct msg_queue`: the FIFO plus every
@@ -107,7 +112,7 @@ pub fn with_ids<R>(f: impl FnOnce(&mut IpcIds<MsgQueue>) -> R) -> R {
 /// a caller that already reserved `(idx, seq, id)`. # C: O(1)
 pub fn new_queue(ns: NamespaceId, key: i32, id: i32, seq: u16, msgflg: i32, cred: &IpcCred) -> Arc<MsgQueue> {
     Arc::new(MsgQueue {
-        perm: IpcPerm::new(key, id, seq, msgflg, cred),
+            perm: IpcPerm::new(key, id, seq, msgflg, cred, "msgq"),
         ns,
         state: Spinlock::new(QueueState {
             msgs: VecDeque::new(),

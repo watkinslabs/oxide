@@ -2,10 +2,32 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use netlink::{Nlmsghdr, flags};
 
+use crate::nl::build_newflowtable_reply;
 use super::*;
 use crate::nft_dispatch_helpers::{
-    build_newgen_reply, build_newobj_reply, build_setelems_reply, walk_setelem_list,
+    build_newgen_reply, build_newobj_reply, build_setelems_reply,
+    walk_setelem_list,
 };
+
+fn parse_flowtable_devices(blob: &[u8]) -> Option<Vec<::net::FlowtableDevice>> {
+    let mut devices = Vec::new();
+    let mut off = 0usize;
+    while off + 4 <= blob.len() {
+        let len = u16::from_ne_bytes([blob[off], blob[off + 1]]) as usize;
+        let ty = u16::from_ne_bytes([blob[off + 2], blob[off + 3]]) & 0x3fff;
+        if len < 4 || off + len > blob.len() || !matches!(ty, 1 | 2) { return None; }
+        let raw = &blob[off + 4..off + len];
+        let end = raw.iter().position(|byte| *byte == 0).unwrap_or(raw.len());
+        let name = String::from(core::str::from_utf8(&raw[..end]).ok()?);
+        devices.push(match ty {
+            1 => ::net::FlowtableDevice::Name(name),
+            2 => ::net::FlowtableDevice::Prefix(name),
+            _ => return None,
+        });
+        off += netlink::nlmsg_align(len);
+    }
+    (off == blob.len()).then_some(devices)
+}
 
 pub(super) fn handle_nft(
     namespace: u64,
@@ -49,6 +71,101 @@ pub(super) fn handle_nft(
                 flags:  0,
             });
             nlmsg_ack(req, 0)
+        }
+        nft_msg::NFT_MSG_NEWFLOWTABLE => {
+            let table = match find_str_attr(attrs, nfta_flowtable::NFTA_FLOWTABLE_TABLE) {
+                Some(s) if !s.is_empty() => s, _ => return nlmsg_ack(req, -22),
+            };
+            if !tables_snapshot_in(namespace).iter().any(|candidate|
+                candidate.family == nfg.nfgen_family && candidate.name == table) {
+                return nlmsg_ack(req, -2);
+            }
+            let name = match find_str_attr(attrs, nfta_flowtable::NFTA_FLOWTABLE_NAME) {
+                Some(s) if !s.is_empty() => s, _ => return nlmsg_ack(req, -22),
+            };
+            let hook = find_bytes_attr(attrs, nfta_flowtable::NFTA_FLOWTABLE_HOOK)
+                .and_then(|h| find_u32_attr(h, nfta_flowtable::NFTA_FLOWTABLE_HOOK_NUM));
+            if hook != Some(0) {
+                return nlmsg_ack(req, -22);
+            }
+            let hook_attrs = match find_bytes_attr(attrs, nfta_flowtable::NFTA_FLOWTABLE_HOOK) {
+                Some(hook) => hook,
+                None => return nlmsg_ack(req, -22),
+            };
+            let priority = match find_u32_attr(hook_attrs,
+                nfta_flowtable::NFTA_FLOWTABLE_HOOK_PRIORITY) {
+                Some(value) => value as i32,
+                None => return nlmsg_ack(req, -2),
+            };
+            let devices = match find_bytes_attr(attrs, nfta_flowtable::NFTA_FLOWTABLE_HOOK)
+                .and_then(|h| find_bytes_attr(h, nfta_flowtable::NFTA_FLOWTABLE_HOOK_DEVS)) {
+                Some(blob) => match parse_flowtable_devices(blob) {
+                    Some(devices) => devices,
+                    None => return nlmsg_ack(req, -22),
+                },
+                None => Vec::new(),
+            };
+            if devices.iter().any(|dev| matches!(dev, ::net::FlowtableDevice::Name(name)
+                if ::net::global_stack().ifaces.lookup_name_in_ns(name, namespace).is_none())) {
+                return nlmsg_ack(req, -19);
+            }
+            let flags = find_u32_attr(attrs, nfta_flowtable::NFTA_FLOWTABLE_FLAGS).unwrap_or(0);
+            if ::net::global_stack().register_flowtable_in(namespace, nfg.nfgen_family,
+                table, name, 0, priority, devices, flags).is_none() {
+                return nlmsg_ack(req, -17);
+            }
+            nlmsg_ack(req, 0)
+        }
+        nft_msg::NFT_MSG_DELFLOWTABLE | nft_msg::NFT_MSG_DESTROYFLOWTABLE => {
+            let table = match find_str_attr(attrs, nfta_flowtable::NFTA_FLOWTABLE_TABLE) {
+                Some(s) if !s.is_empty() => s, _ => return nlmsg_ack(req, -22),
+            };
+            let name = match find_str_attr(attrs, nfta_flowtable::NFTA_FLOWTABLE_NAME) {
+                Some(s) if !s.is_empty() => s, _ => return nlmsg_ack(req, -22),
+            };
+            let found = ::net::global_stack().flowtables_snapshot_in(namespace, nfg.nfgen_family)
+                .into_iter().find(|flowtable| flowtable.table == table && flowtable.name == name);
+            if found.is_none() {
+                return nlmsg_ack(req, if req.nlmsg_type == nft_msg::NFT_MSG_DESTROYFLOWTABLE as u16 { 0 } else { -2 });
+            }
+            if flowtable_use_in(namespace, nfg.nfgen_family, table, name) != 0 {
+                return nlmsg_ack(req, -16);
+            }
+            ::net::global_stack().unregister_flowtable_in(namespace, nfg.nfgen_family, table, name);
+            nlmsg_ack(req, 0)
+        }
+        nft_msg::NFT_MSG_GETFLOWTABLE => {
+            let found = ::net::global_stack().flowtables_snapshot_in(namespace, nfg.nfgen_family);
+            let table = find_str_attr(attrs, nfta_flowtable::NFTA_FLOWTABLE_TABLE);
+            let name = find_str_attr(attrs, nfta_flowtable::NFTA_FLOWTABLE_NAME);
+            if req.nlmsg_flags & flags::NLM_F_DUMP == 0 && name.is_none() {
+                return nlmsg_ack(req, -22);
+            }
+            if let Some(name) = name {
+                let Some(table) = table else { return nlmsg_ack(req, -22); };
+                match found.into_iter().find(|flowtable| flowtable.table == table
+                    && flowtable.name == name) {
+                    Some(flowtable) => build_newflowtable_reply(req.nlmsg_seq, req.nlmsg_pid,
+                        &flowtable, flowtable_use_in(namespace, flowtable.family,
+                            &flowtable.table, &flowtable.name), false),
+                    None => nlmsg_ack(req, -2),
+                }
+            } else {
+                let mut reply = Vec::new();
+                for flowtable in found.iter().filter(|flowtable|
+                    table.is_none_or(|table| flowtable.table == table)) {
+                    reply.extend_from_slice(&build_newflowtable_reply(req.nlmsg_seq,
+                        req.nlmsg_pid, flowtable,
+                        flowtable_use_in(namespace, flowtable.family, &flowtable.table,
+                            &flowtable.name), true));
+                }
+                let mut done = [0u8; Nlmsghdr::SIZE];
+                let mut header = Nlmsghdr::done(req.nlmsg_seq, req.nlmsg_pid);
+                header.nlmsg_flags = flags::NLM_F_MULTI;
+                header.write_to(&mut done);
+                reply.extend_from_slice(&done);
+                reply
+            }
         }
         nft_msg::NFT_MSG_DELTABLE => {
             let name = match find_str_attr(attrs, nfta_table::NFTA_TABLE_NAME) {
@@ -234,11 +351,15 @@ pub(super) fn handle_nft(
             let key_len   = find_u32_attr(attrs, nfta_set::NFTA_SET_KEY_LEN).unwrap_or(0);
             let data_type = find_u32_attr(attrs, nfta_set::NFTA_SET_DATA_TYPE).unwrap_or(0);
             let data_len  = find_u32_attr(attrs, nfta_set::NFTA_SET_DATA_LEN).unwrap_or(0);
+            let obj_type  = find_u32_attr(attrs, nfta_set::NFTA_SET_OBJ_TYPE).unwrap_or(0);
+            if (flags & nfta_set::NFT_SET_OBJECT != 0) != (obj_type != 0) {
+                return nlmsg_ack(req, -22);
+            }
             set_insert_in(namespace, NftSet {
                 table_family: nfg.nfgen_family,
                 table_name:   String::from(table_name),
                 name:         String::from(set_name),
-                key_type, key_len, data_type, data_len, flags,
+                key_type, key_len, data_type, data_len, flags, obj_type,
             });
             nlmsg_ack(req, 0)
         }
@@ -293,12 +414,8 @@ pub(super) fn handle_nft(
             let ty = find_u32_attr(attrs, nfta_obj::NFTA_OBJ_TYPE).unwrap_or(0);
             let data = find_bytes_attr(attrs, nfta_obj::NFTA_OBJ_DATA)
                 .map(|b| b.to_vec()).unwrap_or_default();
-            object_insert_in(namespace, NftObject {
-                table_family: nfg.nfgen_family,
-                table_name:   String::from(table_name),
-                name:         String::from(obj_name),
-                ty, data,
-            });
+            object_insert_in(namespace, NftObject::new(
+                nfg.nfgen_family, String::from(table_name), String::from(obj_name), ty, data));
             nlmsg_ack(req, 0)
         }
         nft_msg::NFT_MSG_DELOBJ => {
@@ -321,15 +438,35 @@ pub(super) fn handle_nft(
             let list = find_bytes_attr(attrs, nfta_set_elem::NFTA_SET_ELEM_LIST_ELEMENTS)
                 .unwrap_or(&[]);
             let mut elems = Vec::new();
-            walk_setelem_list(list, |k, d| {
+            walk_setelem_list(list, |k, d, objref| {
                 elems.push(NftSetElem {
                     table_family: nfg.nfgen_family,
                     table_name:   String::from(table),
                     set_name:     String::from(set),
                     key:  k.to_vec(),
                     data: d.to_vec(),
+                    objref: objref.map(String::from),
                 });
             });
+            let Some(meta) = sets_snapshot_in(namespace).into_iter().find(|candidate| {
+                candidate.table_family == nfg.nfgen_family
+                    && candidate.table_name == table && candidate.name == set
+            }) else { return nlmsg_ack(req, -2); };
+            let objects = objects_snapshot_in(namespace);
+            if elems.iter().any(|elem| {
+                let has_ref = elem.objref.is_some();
+                let object_set = meta.flags & nfta_set::NFT_SET_OBJECT != 0;
+                (object_set && (!has_ref || !elem.data.is_empty()))
+                    || (!object_set && has_ref)
+                    || (has_ref && !objects.iter().any(|object| {
+                        object.table_family == meta.table_family
+                            && object.table_name == meta.table_name
+                            && object.ty == meta.obj_type
+                            && elem.objref.as_deref() == Some(object.name.as_str())
+                    }))
+            }) {
+                return nlmsg_ack(req, -22);
+            }
             set_elems_insert_in(namespace, elems);
             nlmsg_ack(req, 0)
         }
@@ -343,7 +480,7 @@ pub(super) fn handle_nft(
             let list = find_bytes_attr(attrs, nfta_set_elem::NFTA_SET_ELEM_LIST_ELEMENTS)
                 .unwrap_or(&[]);
             let mut keys = Vec::new();
-            walk_setelem_list(list, |k, _d| {
+            walk_setelem_list(list, |k, _d, _objref| {
                 keys.push(k.to_vec());
             });
             let total = set_elems_remove_in(namespace, nfg.nfgen_family, table, set, &keys);

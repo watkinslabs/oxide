@@ -1,5 +1,6 @@
 // 020 writev — one syscall, one file (docs/53 §0). Moved verbatim from fs.rs.
 
+use alloc::vec;
 use alloc::vec::Vec;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
@@ -193,17 +194,23 @@ pub fn sys_writev(args: &SyscallArgs) -> i64 {
             ranges.push((base, capped));
         }
     }
-    let mut bufs: Vec<&[u8]> = Vec::new();
-    for (base, len) in ranges {
-        // SAFETY: range validated readable in the caller's AS before CPL=0 dereference.
-        let bytes: &[u8] = unsafe {
-            core::slice::from_raw_parts(base as *const u8, len)
-        };
-        #[cfg(feature = "debug-atexit")]
+    let mut bounce: Vec<Vec<u8>> = Vec::new();
+    for &(base, len) in &ranges {
+        let mut bytes = vec![0u8; len];
+        if uaccess::copy_from_user(&mut bytes, base).is_err() {
+            cur.account_write_result(um::EFAULT);
+            return um::EFAULT;
+        }
+        bounce.push(bytes);
+    }
+    let bufs: Vec<&[u8]> = bounce.iter().map(Vec::as_slice).collect();
+    #[cfg(feature = "debug-atexit")]
+    for bytes in &bufs {
         trace_stderr_writev(fd, bytes);
-        #[cfg(all(feature = "debug-stderr", not(feature = "debug-atexit")))]
+    }
+    #[cfg(all(feature = "debug-stderr", not(feature = "debug-atexit")))]
+    for bytes in &bufs {
         trace_stderr_echo(fd, bytes);
-        bufs.push(bytes);
     }
     // One VFS iterator call owns the complete imported iovec. Record-oriented
     // socket file-ops preserve one-message semantics; streams and regular files

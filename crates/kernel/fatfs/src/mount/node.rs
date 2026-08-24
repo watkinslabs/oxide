@@ -12,13 +12,31 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use vfs::{mk_mode, FileOps, FileType, InodeBuilder, InodeOps, InodeRef};
 
 use crate::attrs::make_mode;
-use crate::dirent::{Record, ShortEntry};
+use crate::dirent::{Record, ShortEntry, ATTR_SYS};
 use crate::fatcache::ChainCache;
 use crate::ident::{self, DirLocation};
 use crate::time::to_unix;
 use crate::volume::DirHandle;
 
 use super::{ops::FatOps, FatFs};
+
+/// Position tag for the root, which has no directory entry on FAT.
+pub(crate) const ROOT_HANDLE_POSITION: u64 = 1 << 63;
+
+/// The stable generation used by FAT's position handles. `nostale_ro` keeps
+/// the records from being reused, so the record position is the incarnation
+/// Linux's FAT NFS owner protects.
+pub(crate) fn handle_generation(position: u64) -> u32 {
+    let mixed = position ^ (position >> 32);
+    let mut generation = (mixed as u32).wrapping_mul(0x9e37_79b9);
+    if generation == 0 { generation = 1; }
+    generation
+}
+
+pub(crate) fn handle_position(entry: Option<&ShortEntry>, parent: Option<u32>, slot: u64) -> u64 {
+    if entry.is_none() { ROOT_HANDLE_POSITION }
+    else { (u64::from(parent.unwrap_or(0)) << 32) | slot }
+}
 
 /// One inode of a mounted FAT volume.
 pub struct FatNode {
@@ -98,13 +116,14 @@ pub(crate) fn node_inode(fs: Arc<FatFs>, entry: Option<ShortEntry>, location: Di
                          parent: Option<u32>, slot: u64, nr_slots: usize) -> InodeRef {
     let opts = fs.options();
     let ino = ident::inode_number(&location, entry.as_ref());
-    build_inode(fs, entry, location, parent, slot, nr_slots, opts, ino)
+    let position = handle_position(entry.as_ref(), parent, slot);
+    build_inode(fs, entry, location, parent, slot, nr_slots, opts, ino, position)
 }
 
 /// Build one uncached inode after the cache miss has been decided. # C: O(1)
 fn build_inode(fs: Arc<FatFs>, entry: Option<ShortEntry>, location: DirLocation,
                parent: Option<u32>, slot: u64, nr_slots: usize, opts: crate::opts::Options,
-               ino: u64) -> InodeRef {
+               ino: u64, position: u64) -> InodeRef {
     let (ftype, perms) = match &entry {
         // The root has no record and therefore no attribute byte; it presents
         // as a directory with the mount's directory mask applied.
@@ -123,9 +142,13 @@ fn build_inode(fs: Arc<FatFs>, entry: Option<ShortEntry>, location: DirLocation,
     let weak_sb = node.fs.superblock().as_ref().map(Arc::downgrade).unwrap_or_default();
     let mut builder = InodeBuilder::new(ino, mk_mode(ftype, perms), inode_ops, file_ops)
         .sb(weak_sb)
+        .generation(handle_generation(position))
         .size(size)
         .owner(opts.uid, opts.gid)
         .private(Arc::new(node));
+    if opts.sys_immutable && entry.as_ref().is_some_and(|e| e.attr & ATTR_SYS != 0) {
+        builder = builder.i_flags(vfs::inode::S_IMMUTABLE);
+    }
     if let Some((atime, mtime, ctime, btime)) = times {
         // FAT has no change time of its own. The reference reports the
         // modification time for both, which is the closest true statement:

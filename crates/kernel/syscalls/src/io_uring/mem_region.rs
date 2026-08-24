@@ -1,9 +1,9 @@
 // One `IORING_REGISTER_MEM_REGION` region and its two backing shapes.
 //
-// A ring's regions (`region::Region`) are one contiguous refcounted run each,
-// because userspace maps them and the `VmaBacking::KernelFrame` fault path
-// resolves VMA offset `O` to `base_pa + O`. A memory region cannot always be
-// that: the caller-provided form is a range out of the CALLER's address space,
+// A ring's regions (`region::Region`) are refcounted page vectors, because
+// userspace maps them through the `VmaBacking::KernelPages` fault path. A
+// memory region cannot always be kernel-owned: the caller-provided form is a
+// range out of the CALLER's address space,
 // pinned page by page, and those pages are whatever the caller's mappings
 // happened to be backed by. Forcing them contiguous is not an option — the
 // memory already exists.
@@ -14,7 +14,7 @@
 // handing back a second mapping of them through a `KernelFrame` VMA would put
 // two independent reference schemes on one frame.
 //
-// Both arms hold their pages for the region's whole life — the contiguous run
+// Both arms hold their pages for the region's whole life — the kernel vector
 // through one object reference per page, the pinned range through one per
 // frame — so a page dies only once the ring drops the region AND every user
 // mapping of it is gone.
@@ -62,9 +62,9 @@ impl MemRegion {
 
     /// Physical base and mappable length for `mmap(2)` on the ring fd, or
     /// `None` when this region is not mappable. # C: O(1)
-    pub fn mmap_backing(&self) -> Option<(u64, u64)> {
+    pub fn mmap_backing(&self) -> Option<alloc::sync::Arc<[u64]>> {
         match self {
-            MemRegion::Kernel(r) => Some((r.base_pa, r.map_bytes)),
+            MemRegion::Kernel(r) => r.mmap_backing(),
             MemRegion::User(_) => None,
         }
     }

@@ -127,7 +127,7 @@ fn handle_alloc_increments() {
     assert_eq!(b, a + 1);
 }
 
-struct DummyDrv;
+struct DummyDrv { render: bool }
 
 impl DrmDriver for DummyDrv {
     fn name(&self) -> &'static str { "dummy" }
@@ -138,6 +138,7 @@ impl DrmDriver for DummyDrv {
     fn resource_counts(&self) -> (u32, u32, u32, u32) { (0, 1, 1, 1) }
     fn dim_bounds(&self) -> (u32, u32, u32, u32) { (1, 8192, 1, 8192) }
     fn cap(&self, cap: u64) -> u64 { default_cap(cap) }
+    fn supports_render_node(&self) -> bool { self.render }
 }
 
 #[test]
@@ -145,24 +146,42 @@ fn register_uses_stable_card_slots() {
     let _guard = crate::TEST_LOCK.lock();
     crate::registry::clear_cards_for_tests();
     node::unregister_all();
-    let idx = register(Arc::new(DummyDrv));
+    let idx = register(Arc::new(DummyDrv { render: true }));
     assert_eq!(idx, 0);
     assert_eq!(card_count(), 1);
     assert_eq!(node::registered_card_ids(), alloc::vec![0]);
-    let idx2 = register(Arc::new(DummyDrv));
+    let idx2 = register(Arc::new(DummyDrv { render: true }));
     assert_eq!(idx2, 1);
     assert_eq!(node::registered_card_ids(), alloc::vec![0, 1]);
     assert!(unregister(idx));
     assert_eq!(card_count(), 1);
     assert_eq!(node::registered_card_ids(), alloc::vec![1]);
     assert!(!unregister(idx));
-    let idx3 = register(Arc::new(DummyDrv));
+    let idx3 = register(Arc::new(DummyDrv { render: true }));
     assert_eq!(idx3, 0);
     assert_eq!(node::registered_card_ids(), alloc::vec![0, 1]);
     assert!(unregister(idx));
     assert!(unregister(idx2));
     assert_eq!(card_count(), 0);
     assert_eq!(node::registered_card_ids(), Vec::<u32>::new());
+}
+
+#[test]
+fn kms_only_card_does_not_consume_the_first_render_minor() {
+    let _guard = crate::TEST_LOCK.lock();
+    crate::registry::clear_cards_for_tests();
+    node::unregister_all();
+
+    let kms = register(Arc::new(DummyDrv { render: false }));
+    assert_eq!(kms, 0);
+    assert!(!drv::devices().iter().any(|d| d.bus == "drm" && d.addr == "renderD128"));
+
+    let render = register(Arc::new(DummyDrv { render: true }));
+    assert_eq!(render, 1);
+    assert!(drv::devices().iter().any(|d| d.bus == "drm" && d.addr == "renderD128"));
+
+    assert!(unregister(render));
+    assert!(unregister(kms));
 }
 
 #[test]
@@ -176,12 +195,12 @@ fn register_rolls_back_card_slot_when_node_publication_fails() {
     ))
     .expect("conflict device registration");
 
-    assert_eq!(register(Arc::new(DummyDrv)), u32::MAX);
+    assert_eq!(register(Arc::new(DummyDrv { render: true })), u32::MAX);
     assert_eq!(card_count(), 0);
     assert_eq!(node::registered_card_ids(), Vec::<u32>::new());
 
     drv::device_del(&conflict);
-    let idx = register(Arc::new(DummyDrv));
+    let idx = register(Arc::new(DummyDrv { render: true }));
     assert_eq!(idx, 0);
     assert!(unregister(idx));
 }
@@ -192,8 +211,8 @@ fn unregister_drops_only_that_card_runtime_state() {
     crate::registry::clear_cards_for_tests();
     node::unregister_all();
     crate::dumb::TABLES.lock().fbs.clear();
-    let card0 = register(Arc::new(DummyDrv));
-    let card1 = register(Arc::new(DummyDrv));
+    let card0 = register(Arc::new(DummyDrv { render: true }));
+    let card1 = register(Arc::new(DummyDrv { render: true }));
     assert_eq!((card0, card1), (0, 1));
 
     crate::crtc::set_owner(card0, 0x1000);

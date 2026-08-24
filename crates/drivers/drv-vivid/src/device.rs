@@ -3,22 +3,26 @@
 
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use sync::{Spinlock, TaskList};
 use syscall::errno::Errno;
 
-use v4l2::format::{Fract, FormatDesc, PixFormat};
+use v4l2::format::{Fract, FormatDesc, PixFormat, Rect};
 use v4l2::ops::{InputDesc, VideoOps};
+use v4l2::uapi::flags;
 
 /// What the tick needs to produce one frame.
 #[derive(Clone, Debug)]
 pub struct Pending {
     pub index: u32,
     pub sequence: u32,
+    pub error: bool,
 }
 
 /// One virtual camera.
 pub struct Vivid {
     state: Spinlock<VividState, TaskList>,
+    multiplanar: bool,
 }
 
 struct VividState {
@@ -31,17 +35,40 @@ struct VividState {
     /// Monotonic nanoseconds the previous frame was produced at, zero before
     /// the first.
     last_frame_ns: u64,
+    horizontal_motion: i8,
+    vertical_motion: i8,
+    dqbuf_error: bool,
+    queue_setup_error: bool,
+    buf_prepare_error: bool,
+    start_stream_error: bool,
+    test_name: Vec<u8>,
+    test_u8_table: Vec<u8>,
+    crop: Rect,
+    compose: Rect,
 }
 
 impl Vivid {
     /// # C: O(1)
-    pub fn new() -> Arc<Vivid> {
+    pub fn new() -> Arc<Vivid> { Self::new_with_mode(false) }
+
+    /// Construct the Linux Vivid `multiplanar=2` variant.
+    /// # C: O(1)
+    pub fn new_multiplanar() -> Arc<Vivid> { Self::new_with_mode(true) }
+
+    fn new_with_mode(multiplanar: bool) -> Arc<Vivid> {
         Arc::new(Vivid {
+            multiplanar,
             state: Spinlock::new(VividState {
                 streaming: false, handed: VecDeque::new(),
                 format: PixFormat::empty(),
                 interval: crate::tables::INTERVALS[0],
                 sequence: 0, last_frame_ns: 0,
+                horizontal_motion: 0, vertical_motion: 0, dqbuf_error: false,
+                queue_setup_error: false, buf_prepare_error: false,
+                start_stream_error: false,
+                test_name: b"Vivid\0".to_vec(), test_u8_table: alloc::vec![0, 1, 2, 3],
+                crop: Rect { left: 0, top: 0, width: 0, height: 0 },
+                compose: Rect { left: 0, top: 0, width: 0, height: 0 },
             }),
         })
     }
@@ -51,6 +78,15 @@ impl Vivid {
 
     /// The format frames are produced in. # C: O(1)
     pub fn format(&self) -> PixFormat { self.state.lock().format }
+
+    /// Current crop and compose rectangles, with zero rectangles expanded to
+    /// the negotiated frame for the producer.
+    pub fn selection(&self) -> (Rect, Rect) {
+        let state = self.state.lock();
+        let full = Rect { left: 0, top: 0, width: state.format.width, height: state.format.height };
+        (if state.crop.width == 0 { full } else { state.crop },
+         if state.compose.width == 0 { full } else { state.compose })
+    }
 
     /// Nanoseconds between frames, from the selected interval. # C: O(1)
     pub fn frame_period_ns(&self) -> u64 {
@@ -73,7 +109,9 @@ impl Vivid {
         // subsequent frame later and the stream keeps its nominal rate.
         state.last_frame_ns = next_deadline(state.last_frame_ns, now_ns, period);
         state.sequence = state.sequence.wrapping_add(1);
-        Some(Pending { index, sequence: state.sequence })
+        let error = state.dqbuf_error;
+        state.dqbuf_error = false;
+        Some(Pending { index, sequence: state.sequence, error })
     }
 }
 
@@ -115,11 +153,56 @@ pub fn next_deadline(last_ns: u64, now_ns: u64, period_ns: u64) -> u64 {
 
 impl VideoOps for Vivid {
     /// # C: O(1)
-    fn formats(&self) -> &'static [FormatDesc] { crate::tables::FORMATS }
+    fn formats(&self) -> &'static [FormatDesc] {
+        if self.multiplanar { crate::tables::MULTIPLANAR_FORMATS }
+        else { crate::tables::FORMATS }
+    }
     /// # C: O(1)
     fn inputs(&self) -> &'static [InputDesc] { crate::tables::INPUTS }
     /// # C: O(1)
-    fn set_format(&self, format: &PixFormat) { self.state.lock().format = *format; }
+    fn set_format(&self, format: &PixFormat) {
+        let mut state = self.state.lock();
+        state.format = *format;
+        state.crop = Rect { left: 0, top: 0, width: 0, height: 0 };
+        state.compose = Rect { left: 0, top: 0, width: 0, height: 0 };
+    }
+
+    fn g_selection(&self, format: &PixFormat, target: u32) -> Result<Rect, Errno> {
+        let state = self.state.lock();
+        let full = Rect { left: 0, top: 0, width: format.width, height: format.height };
+        match target {
+            flags::SEL_TGT_CROP => Ok(if state.crop.width == 0 { full } else { state.crop }),
+            flags::SEL_TGT_CROP_DEFAULT | flags::SEL_TGT_CROP_BOUNDS
+            | flags::SEL_TGT_NATIVE_SIZE => Ok(full),
+            flags::SEL_TGT_COMPOSE => Ok(if state.compose.width == 0 { full } else { state.compose }),
+            flags::SEL_TGT_COMPOSE_DEFAULT | flags::SEL_TGT_COMPOSE_BOUNDS => Ok(full),
+            _ => Err(Errno::Einval),
+        }
+    }
+
+    fn s_selection(&self, format: &PixFormat, target: u32, rect: Rect)
+        -> Result<Rect, Errno>
+    {
+        let full = Rect { left: 0, top: 0, width: format.width, height: format.height };
+        if rect.width == 0 || rect.height == 0 || rect.left < 0 || rect.top < 0
+            || rect.left as u64 + rect.width as u64 > full.width as u64
+            || rect.top as u64 + rect.height as u64 > full.height as u64 {
+            return Err(Errno::Einval);
+        }
+        let mut state = self.state.lock();
+        match target {
+            flags::SEL_TGT_CROP => {
+                state.crop = rect;
+                if state.compose.width != 0 {
+                    state.compose.width = state.compose.width.min(rect.width);
+                    state.compose.height = state.compose.height.min(rect.height);
+                }
+                Ok(rect)
+            }
+            flags::SEL_TGT_COMPOSE => { state.compose = rect; Ok(rect) }
+            _ => Err(Errno::Einval),
+        }
+    }
     /// # C: O(1)
     fn set_input(&self, _index: u32) -> Result<(), Errno> { Ok(()) }
     /// # C: O(1)
@@ -128,6 +211,10 @@ impl VideoOps for Vivid {
     /// # C: O(handed)
     fn start_streaming(&self, handed: &[u32]) -> Result<(), Errno> {
         let mut state = self.state.lock();
+        if state.start_stream_error {
+            state.start_stream_error = false;
+            return Err(Errno::Einval);
+        }
         if !state.streaming { crate::note_streaming(true); }
         state.streaming = true;
         state.sequence = 0;
@@ -152,5 +239,65 @@ impl VideoOps for Vivid {
     }
 
     /// # C: O(1)
+    fn queue_setup(&self, count: u32, format: &PixFormat)
+        -> Result<v4l2::vb2::QueueSetup, Errno>
+    {
+        let mut state = self.state.lock();
+        if state.queue_setup_error {
+            state.queue_setup_error = false;
+            return Err(Errno::Einval);
+        }
+        let (plane_sizes, num_planes) = crate::tpg::plane_sizes(
+            format.pixelformat, format.width, format.height);
+        Ok(v4l2::vb2::QueueSetup {
+            count: count.max(1), num_planes, plane_sizes,
+        })
+    }
+
+    /// # C: O(1)
+    fn buf_prepare(&self, _index: u32) -> Result<(), Errno> {
+        let mut state = self.state.lock();
+        if state.buf_prepare_error {
+            state.buf_prepare_error = false;
+            return Err(Errno::Einval);
+        }
+        Ok(())
+    }
+
+    /// # C: O(1)
     fn controls(&self) -> alloc::vec::Vec<v4l2::ctrl::ControlDesc> { crate::tables::controls() }
+
+    fn control_changed(&self, id: u32, value: i64) -> bool {
+        let velocity = value as i8 - 3;
+        let mut state = self.state.lock();
+        match id {
+            crate::tables::CID_HOR_MOVEMENT => state.horizontal_motion = velocity,
+            crate::tables::CID_VERT_MOVEMENT => state.vertical_motion = velocity,
+            crate::tables::CID_DQBUF_ERROR => state.dqbuf_error = true,
+            crate::tables::CID_QUEUE_SETUP_ERROR => state.queue_setup_error = true,
+            crate::tables::CID_BUF_PREPARE_ERROR => state.buf_prepare_error = true,
+            crate::tables::CID_START_STREAM_ERROR => state.start_stream_error = true,
+            crate::tables::CID_QUEUE_ERROR => return state.streaming,
+            _ => {}
+        }
+        false
+    }
+
+    fn control_payload_changed(&self, id: u32, payload: &[u8]) -> bool {
+        let mut state = self.state.lock();
+        match id {
+            crate::tables::CID_TEST_NAME => state.test_name = payload.to_vec(),
+            crate::tables::CID_TEST_U8_TABLE => state.test_u8_table = payload.to_vec(),
+            _ => {}
+        }
+        false
+    }
+
+}
+
+impl Vivid {
+    pub fn motion(&self) -> crate::tpg::Motion {
+        let state = self.state.lock();
+        crate::tpg::Motion { horizontal: state.horizontal_motion, vertical: state.vertical_motion }
+    }
 }

@@ -31,6 +31,16 @@ pub fn valid_entry(geo: &Geometry, cluster: u32) -> bool {
 /// # C: O(chain length)
 pub fn free_chain_state(geo: &Geometry, table: &mut [u8], st: &mut FreeState, first: u32)
     -> Result<usize, Errno> {
+    free_chain_state_with(geo, table, st, first, |_| {})
+}
+
+/// Release a chain and report each cluster after its table entry is freed.
+///
+/// The callback is deliberately after `write_entry`: FAT's discard owner must
+/// never be allowed to make data unreachable before the table does. # C: O(chain length)
+pub fn free_chain_state_with<F>(geo: &Geometry, table: &mut [u8], st: &mut FreeState,
+                                first: u32, mut freed_cluster: F) -> Result<usize, Errno>
+where F: FnMut(u32) {
     let mut freed = 0usize;
     let mut cluster = first;
     loop {
@@ -43,6 +53,7 @@ pub fn free_chain_state(geo: &Geometry, table: &mut [u8], st: &mut FreeState, fi
         write_entry(geo.width, table, cluster, FREE_MARK)?;
         st.gave_back();
         freed += 1;
+        freed_cluster(cluster);
         match link {
             Link::End => break,
             Link::Next(next) => cluster = next,
@@ -68,10 +79,19 @@ pub fn free_chain(geo: &Geometry, table: &mut [u8], first: u32) -> Result<usize,
 /// # C: O(chain length)
 pub fn truncate_chain_state(geo: &Geometry, table: &mut [u8], st: &mut FreeState, first: u32,
                             keep: usize) -> Result<usize, Errno> {
-    if keep == 0 { return free_chain_state(geo, table, st, first); }
+    truncate_chain_state_with(geo, table, st, first, keep, |_| {})
+}
+
+/// Truncate a chain and report each released cluster after its table entry is
+/// freed. # C: O(chain length)
+pub fn truncate_chain_state_with<F>(geo: &Geometry, table: &mut [u8], st: &mut FreeState,
+                                    first: u32, keep: usize, freed_cluster: F)
+                                    -> Result<usize, Errno>
+where F: FnMut(u32) {
+    if keep == 0 { return free_chain_state_with(geo, table, st, first, freed_cluster); }
     let Some((last_kept, after)) = seek_kept(geo, table, first, keep)? else { return Ok(0) };
     write_entry(geo.width, table, last_kept, end_mark(geo.width))?;
-    free_chain_state(geo, table, st, after)
+    free_chain_state_with(geo, table, st, after, freed_cluster)
 }
 
 /// Walk `keep` clusters in and report the last one kept together with the

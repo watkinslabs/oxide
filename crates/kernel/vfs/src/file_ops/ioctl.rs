@@ -36,6 +36,12 @@ pub enum FileIoctlCmd {
     FitTrimPrepare(bool),
     /// `FITRIM`: filesystem trim request after ABI-layer usercopy.
     FitTrim { start: u64, len: u64, minlen: u64 },
+    /// FAT/VFAT legacy attribute ioctl after its user argument was copied in.
+    FatGetAttributes,
+    FatSetAttributes { attr: u32, cap_linux_immutable: bool },
+    /// VFAT legacy directory aliases. The payload is the native 64-bit
+    /// `struct __fat_dirent[2]` byte image and its valid length.
+    FatReadDir { short_only: bool },
 }
 
 /// Return payload for [`FileOps::unlocked_ioctl`]. # C: O(1)
@@ -47,4 +53,6 @@ pub enum FileIoctlReply {
     U32(u32),
     /// ioctl returned an ext4 label buffer including the trailing NUL byte.
     Label([u8; 17]),
+    /// Fixed-size filesystem-specific byte payload plus its valid length.
+    Bytes([u8; 560], usize),
 }

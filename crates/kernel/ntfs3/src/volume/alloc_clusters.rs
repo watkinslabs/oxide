@@ -5,6 +5,8 @@
 //! leaves a cluster two files believe they own, which is the one corruption a
 //! checker cannot repair without choosing which file to lose.
 
+use alloc::vec::Vec;
+
 use syscall::errno::Errno;
 
 use sectors::SectorSource;
@@ -14,6 +16,7 @@ use crate::run::{Run, Runs};
 use crate::uapi::*;
 
 use super::Volume;
+use super::edit;
 
 impl<S: SectorSource> Volume<S> {
     /// Clusters this volume has free. # C: O(1)
@@ -129,7 +132,14 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(records)
     pub fn alloc_record(&mut self) -> Result<(u64, u16), Errno> {
         if !self.writable { return Err(Errno::Erofs); }
-        let number = self.mft_bitmap.find_free(self.record_hint).ok_or(Errno::Enospc)?;
+        let number = match self.mft_bitmap.find_free(self.record_hint) {
+            Some(number) => number,
+            None => {
+                let next = self.mft_records.checked_add(1024).ok_or(Errno::Efbig)?;
+                self.extend_mft(next)?;
+                self.mft_bitmap.find_free(self.record_hint).ok_or(Errno::Enospc)?
+            }
+        };
         if number < MFT_REC_USER { return Err(Errno::Enospc); }
         let previous = self.read_record_raw(number).map(|(_, h)| h.sequence).unwrap_or(0);
         let sequence = crate::record::next_sequence(previous);
@@ -139,6 +149,82 @@ impl<S: SectorSource> Volume<S> {
         let mut bytes = crate::record::format(self.geo.record_size, number, sequence);
         self.write_record(number, &mut bytes)?;
         Ok((number, sequence))
+    }
+
+    /// Extend `$MFT` and its record bitmap before handing out a new record.
+    ///
+    /// The table's data and bitmap are resized together: publishing a larger
+    /// record count without the corresponding bitmap would make an allocator
+    /// hand out records whose ownership cannot survive a remount. # C: O(MFT
+    /// runlist + bitmap bytes + newly allocated clusters)
+    fn extend_mft(&mut self, new_records: u64) -> Result<(), Errno> {
+        let record_bytes = new_records.checked_shl(self.geo.record_bits).ok_or(Errno::Efbig)?;
+        let new_clusters = self.geo.clusters_for(record_bytes);
+        if new_clusters <= self.mft_runs.clusters() { return Err(Errno::Eio); }
+
+        let extra = self.alloc_clusters(new_clusters - self.mft_runs.clusters())?;
+        let base = self.mft_runs.clusters();
+        let mut new_runs = self.mft_runs.clone();
+        for mut run in extra.runs { run.vcn += base; new_runs.push(run); }
+
+        let (mut mft_record, mft_attrs) = self.read_record(MFT_REC_MFT)?;
+        let mft_data = attrib::find(&mft_attrs, ATTR_DATA, &[]).ok_or(Errno::Eio)?;
+        if mft_data.record != MFT_REC_MFT { return Err(Errno::Eopnotsupp); }
+        let replacement = crate::volume::edit::non_resident(
+            ATTR_DATA, &[], mft_data.id, &new_runs,
+            new_clusters << self.geo.cluster_bits, record_bytes, record_bytes,
+            self.geo.cluster_bits);
+        let mft_header = crate::record::parse(&mft_record).map_err(|e| e.errno())?;
+        crate::volume::edit::replace_at(&mut mft_record, &mft_header,
+                                        mft_data.offset, &replacement)?;
+        self.write_record(MFT_REC_MFT, &mut mft_record)?;
+
+        let bitmap_bytes = crate::bitmap::bytes_for(new_records) as usize;
+        let mut bitmap = self.mft_bitmap.bytes().to_vec();
+        let old_bits = self.mft_records;
+        if old_bits % 8 != 0 && old_bits / 8 < bitmap.len() as u64 {
+            bitmap[(old_bits / 8) as usize] &= (1u8 << (old_bits % 8)) - 1;
+        }
+        bitmap.resize(bitmap_bytes, 0);
+        self.replace_mft_bitmap(bitmap, new_records)?;
+        self.mft_runs = new_runs;
+        self.mft_records = new_records;
+        Ok(())
+    }
+
+    /// Resize `$MFT::$BITMAP`, converting it to non-resident storage when its
+    /// record no longer has room for a resident value. # C: O(bitmap bytes)
+    fn replace_mft_bitmap(&mut self, bitmap: Vec<u8>, new_records: u64) -> Result<(), Errno> {
+        let (mut record, attrs) = self.read_record(MFT_REC_MFT)?;
+        let old = attrib::find(&attrs, ATTR_BITMAP, &[]).ok_or(Errno::Eio)?;
+        if old.record != MFT_REC_MFT { return Err(Errno::Eopnotsupp); }
+        let header = crate::record::parse(&record).map_err(|e| e.errno())?;
+        let resident = crate::volume::edit::resident(ATTR_BITMAP, &[], old.id, false, &bitmap);
+        if !old.non_resident && resident.len() <= old.size as usize + edit::free_space(&record, &header) {
+            edit::replace_at(&mut record, &header, old.offset, &resident)?;
+            self.write_record(MFT_REC_MFT, &mut record)?;
+            self.mft_bitmap = crate::bitmap::Bitmap::new(bitmap, new_records);
+            return Ok(());
+        }
+
+        let mut runs = if old.non_resident {
+            self.attribute_runs(&record, &attrs, old)?
+        } else { Runs::new() };
+        let need = self.geo.clusters_for(bitmap.len() as u64);
+        if runs.clusters() < need {
+            let extra = self.alloc_clusters(need - runs.clusters())?;
+            let base = runs.clusters();
+            for mut run in extra.runs { run.vcn += base; runs.push(run); }
+        }
+        self.write_runs(&runs, 0, &bitmap)?;
+        let replacement = edit::non_resident(ATTR_BITMAP, &[], old.id, &runs,
+                                              runs.clusters() << self.geo.cluster_bits,
+                                              bitmap.len() as u64, bitmap.len() as u64,
+                                              self.geo.cluster_bits);
+        edit::replace_at(&mut record, &header, old.offset, &replacement)?;
+        self.write_record(MFT_REC_MFT, &mut record)?;
+        self.mft_bitmap = crate::bitmap::Bitmap::new(bitmap, new_records);
+        Ok(())
     }
 
     /// Release an MFT record, clearing its in-use flag and its bit.

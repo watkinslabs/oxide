@@ -67,6 +67,7 @@ fs      = { path = "../fs" }
 umh     = { path = "../umh" }
 vmm     = { path = "../mm-vmm" }
 power    = { path = "../power" }
+input    = { path = "../input" }
 firmware = { path = "../firmware" }
 nscg     = { path = "../nscg" }
 cgroup   = { path = "../cgroup" }

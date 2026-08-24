@@ -223,6 +223,20 @@ fn the_node_table_answers_the_address_the_fixture_recorded() {
 }
 
 #[test]
+fn a_clean_nat_lookup_is_cached_and_reclaimable() {
+    let mut b = test_image::with_root();
+    nodes::add_inline_file(&mut b, 4, b"cached");
+    let v = b.mount().unwrap();
+    assert_eq!(v.nat_cache_count(), 0);
+    let addr = v.node_addr(4).unwrap();
+    assert_eq!(v.nat_cache_count(), 1, "the table lookup was not cached");
+    assert_eq!(v.node_addr(4).unwrap(), addr);
+    assert_eq!(v.nat_cache_count(), 1, "a hit duplicated the LRU entry");
+    assert_eq!(v.nat_cache_shrink(1), 1);
+    assert_eq!(v.nat_cache_count(), 0, "reclaim did not free the clean NAT entry");
+}
+
+#[test]
 fn a_journalled_node_entry_overrides_the_table() {
     // The fixture writes a STALE table copy pointing one block earlier; a
     // reader ignoring the journal reads that and gets another node's block.

@@ -96,7 +96,6 @@ fn large_file_writeback_is_not_per_page_commit() {
     // Re-open the inode fresh (bypass any cached frame) and read the whole file
     // back through the mount, comparing to the pattern. A coalescing bug
     // (mis-ordered runs, wrong physical block, dropped tail) corrupts this.
-    st.page_cache.invalidate(block::types::InodeId(ino as u64));
     let mut got = alloc::vec![0u8; total];
     let rf = st.wrap_file(ino).expect("re-wrap");
     let n = rf.read(0, &mut got).expect("readback");

@@ -21,7 +21,7 @@ use syscall::errno::Errno;
 use crate::device::{self, Registration, VideoDevice};
 
 pub use fileops::handle_ioctl;
-pub use frames::{fill_plane, write_plane, FrameAlloc};
+pub use frames::{fill_plane, read_plane, write_plane, FrameAlloc};
 
 /// Register a video device and publish its node in one step, which is what a
 /// driver actually wants: a device with no node is invisible, and a node with

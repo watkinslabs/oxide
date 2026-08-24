@@ -41,7 +41,7 @@ impl BdevMapping {
             let mut batch = Vec::with_capacity(idxs.len());
             for idx in idxs {
                 let Some(page) = g.pages.get(&idx) else { continue; };
-                let payload = page.clone();
+                let payload = page.to_vec();
                 g.writeback.insert(idx);
                 batch.push((idx, payload));
             }

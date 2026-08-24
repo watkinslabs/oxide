@@ -11,6 +11,7 @@
 //! `name::shortgen`'s, and it depends on the directory's existing names, which
 //! is why a predicate over them is a parameter here.
 
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use syscall::errno::Errno;
@@ -68,8 +69,16 @@ fn long(name: &str, is_dir: bool, cluster: u32, when: FatTime, o: &Options, seed
     // Trailing dots are not part of a name here, and a name that is nothing
     // but dots is no name at all.
     let name = striptail(name);
-    validate(name)?;
-    let units: Vec<u16> = name.encode_utf16().collect();
+    let units: Vec<u16> = if o.uni_xlate {
+        let units = lfn::input_units(name)?;
+        let logical: String = char::decode_utf16(units.iter().copied())
+            .collect::<Result<_, _>>().map_err(|_| Errno::Einval)?;
+        validate(&logical)?;
+        units
+    } else {
+        validate(name)?;
+        name.encode_utf16().collect()
+    };
     let generated = shortgen::create(&units, o.codepage, o.shortname, o.numtail, seed, exists)?;
     let raw_name = *generated.bytes();
     let (lcase, aliased) = match generated {
@@ -79,7 +88,7 @@ fn long(name: &str, is_dir: bool, cluster: u32, when: FatTime, o: &Options, seed
 
     let mut records = Vec::new();
     if aliased {
-        let encoded = lfn::encode(name)?;
+        let encoded = lfn::encode_units(&units)?;
         records = lfn::build_slots(&encoded, checksum(&raw_name));
     }
     records.push(entry(raw_name, lcase, is_dir, cluster, times(when, true)));

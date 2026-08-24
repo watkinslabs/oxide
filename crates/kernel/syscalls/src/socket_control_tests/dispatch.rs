@@ -7,14 +7,14 @@ fn connect_security_precedes_family_parse_and_unix_lookup_once() {
     let source = include_str!("../042_connect.rs");
     let body = &source[source.find("pub fn sys_connect").expect("connect slot")..];
     // One admission for every family, taken above the branch that picks one.
-    let admission = body.find("net::sock_admit::admit_connect_in").expect("generic admission");
+    let admission = body.find("net::sock_admit::admit_connect_socket").expect("generic admission");
     let family = body.find("let family = match storage.family()").expect("family parse");
     let unix_lookup = body.find("resolve_unix_addr").expect("UNIX lookup");
     let vsock = body.find("require_sockaddr_vm(copied_len)").expect("vsock length screen");
     let netlink = body.find("crate::netlink_fd::connect(").expect("netlink route");
     assert!(admission < family && admission < unix_lookup);
     assert!(admission < vsock && admission < netlink);
-    assert_eq!(body.matches("net::sock_admit::admit_connect_in").count(), 1);
+    assert_eq!(body.matches("net::sock_admit::admit_connect_socket").count(), 3);
     assert!(body.contains("preflight_connect_admitted(&sock, admission)"));
     assert!(body.contains("connect_admitted("));
     // A v6 connect settles the socket's flow information from its
@@ -34,8 +34,8 @@ fn connect_security_precedes_family_parse_and_unix_lookup_once() {
 fn bind_security_precedes_every_family_and_its_address_screens() {
     let source = include_str!("../049_bind.rs");
     let body = &source[source.find("pub fn sys_bind").expect("bind slot")..];
-    let admission = body.find("net::sock_admit::admit_bind_in").expect("generic admission");
-    assert_eq!(body.matches("net::sock_admit::admit_bind_in").count(), 1);
+    let admission = body.find("net::sock_admit::admit_bind_socket").expect("generic admission");
+    assert_eq!(body.matches("net::sock_admit::admit_bind_socket").count(), 3);
     for later in ["crate::netlink_fd::bind(", "require_sockaddr_vm(copied_len)",
         "require_sockaddr_in(copied_len)", "let family = match storage.family()"]
     {

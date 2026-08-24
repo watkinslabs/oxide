@@ -53,6 +53,13 @@ fn nothing_recorded_is_nothing_to_announce() {
 }
 
 #[test]
+fn discard_block_ceiling_defers_the_tail_without_losing_it() {
+    let (take, defer) = under_limit(vec![(MAIN, 5), (MAIN + 8, 3)], 6);
+    assert_eq!(take, vec![(MAIN, 5), (MAIN + 8, 1)]);
+    assert_eq!(defer, vec![(MAIN + 8 + 1, 2)]);
+}
+
+#[test]
 fn block_granularity_keeps_every_run() {
     let runs = vec![(MAIN, 1), (MAIN + 7, 3)];
     assert_eq!(at_granularity(runs.clone(), DiscardUnit::Block, MAIN, 1), runs);

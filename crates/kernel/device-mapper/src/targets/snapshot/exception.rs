@@ -72,7 +72,7 @@ impl Exception {
 
 /// Every completed exception, kept sorted by origin chunk so a lookup is a
 /// binary search and a fold onto the previous record is the neighbour test.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ExceptionMap {
     records: Vec<Exception>,
 }
@@ -122,6 +122,26 @@ impl ExceptionMap {
         let chunk = last.old_chunk + last.len() - 1;
         if !last.shrink() { self.records.pop(); }
         Some(chunk)
+    }
+
+    /// Retire one exception after merge copied it back to the origin. The
+    /// records are rebuilt through the same folding path as load, so a
+    /// retirement in the middle of a run cannot leave an overlapping record.
+    /// # C: O(N_records * MAX_CONSECUTIVE)
+    pub fn remove(&mut self, chunk: u64) -> bool {
+        let mut remaining = Vec::new();
+        let mut found = false;
+        for record in &self.records {
+            for i in 0..record.len() {
+                let old = record.old_chunk + i;
+                if old == chunk { found = true; } else { remaining.push(Exception::single(old, record.dest() + i)); }
+            }
+        }
+        if found {
+            self.records.clear();
+            self.load(&remaining);
+        }
+        found
     }
 
     /// Load a set of records read back from a store, in file order.

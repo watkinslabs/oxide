@@ -71,9 +71,6 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
     // `phys_range` instead of a page-cache FileBacking. Anonymous → None/None.
     let mut backing: Option<alloc::sync::Arc<dyn vmm::FileBacking>> = None;
     let mut phys_range: Option<(u64, vmm::PhysCacheMode)> = None;
-    // The mapped file's name and identity for `PERF_RECORD_MMAP`, captured
-    // before the backing takes ownership of the path.
-    let mut sideband_file: Option<(alloc::vec::Vec<u8>, u64, u64)> = None;
     let mut seal_write_reservation: Option<vmm::WritableMapReservation> = None;
     // MAP_SHARED|MAP_ANON: Linux `shmem_zero_setup` — back the mapping with a
     // fresh ANONYMOUS tmpfs (shmem) inode so its frames are owned by one
@@ -157,6 +154,10 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
             may_prot.remove(vmm::VmaProt::EXEC);
         }
         let inode = file.inode();
+        if let Err(e) = ::fs::selinux::perm::mmap_file(&inode,
+            shared && prot & PROT_WRITE != 0, prot & PROT_EXEC != 0) {
+            return crate::namei_common::errno_from_vfs(e);
+        }
         if let Some(seals) = inode.fcntl_seals() {
             let keep_may_write = match crate::fcntl_seal::plan_write_sealed_mmap(
                 seals.load(core::sync::atomic::Ordering::Acquire),
@@ -198,7 +199,7 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
                 Err(error) => return crate::namei_common::errno_from_vfs(error),
             };
             return match pmm::user_as::glue_mmap(args.a0, args.a1, prot, args.a3,
-                                                fd as i64, offset, Some(backing), None, None, may_prot, file_vma_flags) {
+                                                fd as i64, offset, Some(backing), None, None, None, may_prot, file_vma_flags) {
                 Ok(va) => va as i64,
                 Err(error) => error,
             };
@@ -214,7 +215,7 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
             }
             let drm_backing: alloc::sync::Arc<dyn vmm::FileBacking> =
                 alloc::sync::Arc::new(DrmDumbBacking { pin });
-            return match pmm::user_as::glue_mmap(args.a0, args.a1, prot, args.a3, fd as i64, 0, Some(drm_backing), None, None, may_prot, vmm::VmaFlags::empty()) {
+            return match pmm::user_as::glue_mmap(args.a0, args.a1, prot, args.a3, fd as i64, 0, Some(drm_backing), None, None, None, may_prot, vmm::VmaFlags::empty()) {
                 Ok(va)  => va as i64,
                 Err(rv) => rv,
             };
@@ -228,9 +229,10 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
         // (IoUring::Drop) freed the ring page while userspace still mapped it —
         // a free-while-mapped UAF whose stray ring writes corrupted the kalloc
         // heap (the root cause the corruption hunt traced, state.md).
-        if let Some((pa, len)) = crate::io_uring::mmap_backing(inode, offset) {
-            if args.a1 > len { return -(Errno::Einval.as_i32() as i64); }
-            return match pmm::user_as::glue_mmap(args.a0, args.a1, prot, args.a3, fd as i64, 0, None, None, Some(pa), may_prot, vmm::VmaFlags::empty()) {
+        if let Some(backing) = crate::io_uring::mmap_backing(inode, offset) {
+            if args.a1 > backing.len() { return -(Errno::Einval.as_i32() as i64); }
+            let pages = match backing { crate::io_uring::MmapBacking::Pages { pages, .. } => pages };
+            return match pmm::user_as::glue_mmap(args.a0, args.a1, prot, args.a3, fd as i64, 0, None, None, None, Some(pages), may_prot, vmm::VmaFlags::empty()) {
                 Ok(va)  => va as i64,
                 Err(rv) => rv,
             };
@@ -241,7 +243,7 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
         if let Some(result) = crate::perf_mmap::backing(&file, offset, args.a1, prot, flags) {
             let perf_backing = match result { Ok(value) => value, Err(error) => return error };
             return match pmm::user_as::glue_mmap(args.a0, args.a1, prot, args.a3,
-                                                fd as i64, offset, Some(perf_backing), None, None, may_prot, vmm::VmaFlags::empty()) {
+                                                fd as i64, offset, Some(perf_backing), None, None, None, may_prot, vmm::VmaFlags::empty()) {
                 Ok(va) => va as i64,
                 Err(error) => error,
             };
@@ -249,7 +251,7 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
         if let Some(result) = crate::packet_mmap::backing(&file, offset, args.a1, flags) {
             let packet_backing = match result { Ok(value) => value, Err(error) => return error };
             return match pmm::user_as::glue_mmap(args.a0, args.a1, prot, args.a3,
-                                                fd as i64, 0, Some(packet_backing), None, None, may_prot, vmm::VmaFlags::empty()) {
+                                                fd as i64, 0, Some(packet_backing), None, None, None, may_prot, vmm::VmaFlags::empty()) {
                 Ok(va) => va as i64,
                 Err(error) => error,
             };
@@ -264,7 +266,7 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
         if let Some(result) = crate::tcp_zerocopy::mmap_backing(&file, prot, args.a1) {
             let zc_backing = match result { Ok(value) => value, Err(error) => return error };
             return match pmm::user_as::glue_mmap(args.a0, args.a1, prot, args.a3,
-                                                fd as i64, 0, Some(zc_backing), None, None, may_prot, vmm::VmaFlags::empty()) {
+                                                fd as i64, 0, Some(zc_backing), None, None, None, may_prot, vmm::VmaFlags::empty()) {
                 Ok(va) => va as i64,
                 Err(error) => error,
             };
@@ -331,7 +333,6 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
                 // a core dump can tell a debugger which object to reopen for
                 // the pages it did not carry.
                 let map_path = file.dentry().dentry_path(None);
-                sideband_file = Some((map_path.clone().into_bytes(), inode.fsid(), inode.ino()));
                 // `POSIX_FADV_NOREUSE` on the mapping fd, snapshotted for the
                 // fault path's `vma_has_recency` predicate — see
                 // `FileBacking::noreuse`'s doc for why this is a snapshot.
@@ -345,9 +346,14 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
     // `perf_event_mmap(vma)` runs on the vma the reference has just installed,
     // so the record's name and identity are captured here, before the backing
     // is moved into the mapping.
+    if (flags & MAP_ANON) != 0 && (prot & PROT_EXEC) != 0 && (prot & PROT_WRITE) != 0 {
+        if selinux_runtime::check::process_permission("execmem").is_err() {
+            return -(Errno::Eacces.as_i32() as i64);
+        }
+    }
     let result = pmm::user_as::glue_mmap(
         args.a0, len, prot, eff_flags, fd as i64, offset, backing, phys_range,
-        None, may_prot, file_vma_flags,
+        None, None, may_prot, file_vma_flags,
     );
     drop(seal_write_reservation);
     match result {
@@ -360,13 +366,6 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
                 klog::write_hex_u64(va);
                 klog::write_raw(b"\n");
             }
-            // `perf_event_mmap(vma)`: a new mapping is what lets a consumer
-            // turn a sampled instruction pointer into an object and an offset.
-            let (name, dev, ino) = match sideband_file.as_ref() {
-                Some((n, d, i)) => (n.as_slice(), *d, *i),
-                None            => (&[][..], 0, 0),
-            };
-            crate::perf_sideband::note_mmap(va, len, offset, prot, flags, name, dev, ino);
             va as i64
         },
         Err(rv) => rv,

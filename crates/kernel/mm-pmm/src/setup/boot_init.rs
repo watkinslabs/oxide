@@ -383,6 +383,10 @@ pub unsafe fn init_from_boot_info(
         }
     }
     PMM_READY.store(true, Ordering::Release);
+    // Linux reserves HugeTLB pages from the early command line before normal
+    // boot activity can fragment the buddy allocator. The PMM is fully seeded
+    // here, while userspace and ordinary boot allocations have not started.
+    crate::hugetlb::initialize_from_cmdline(cmdline::get());
     // Every zone is seeded by this point, so the managed totals the watermarks
     // are proportional to are final. This is the one producer of both the
     // per-zone allocation gate and the aggregate the reclaim policy reads.

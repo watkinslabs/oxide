@@ -278,7 +278,7 @@ fn forwarding_steals_the_packet_and_refuses_an_exhausted_hop_limit() {
     ];
     let r = run_on(&exprs, &tcp_pkt(), |_| {});
     assert_eq!(r.code, NF_STOLEN, "the packet has left; nothing else may act on it");
-    assert!(matches!(&r.actions[..], [Action::Fwd { oif: 3, nfproto: None }]));
+    assert!(matches!(&r.actions[..], [Action::Fwd { oif: 3, nfproto: None, gateway: None }]));
 
     // The neighbour form forwards, so a packet that may not be forwarded again
     // has to be refused rather than looped.
@@ -389,9 +389,12 @@ fn the_handshake_proxy_needs_a_cookie_source() {
 fn offloading_needs_a_flow_that_may_be_offloaded() {
     let exprs = vec![Expr::FlowOffload { table: alloc::string::String::from("ft") }];
     let ready = Ct { attached: true, offloadable: true, ..Ct::default() };
-    let r = run_on(&exprs, &tcp_pkt(), |c| c.ct = Some(&ready));
+    let r = run_on(&exprs, &tcp_pkt(), |c| {
+        c.ct = Some(&ready); c.table = Some("filter");
+    });
     assert_eq!(r.code, NFT_CONTINUE);
-    assert!(matches!(&r.actions[..], [Action::FlowOffload { .. }]));
+    assert!(matches!(&r.actions[..], [Action::FlowOffload { table, flowtable }]
+        if table == "filter" && flowtable == "ft"));
     // A flow the software path must keep seeing — a helper, an unconfirmed
     // entry — must not be handed to a table that bypasses the rules.
     let not = Ct { attached: true, offloadable: false, ..Ct::default() };

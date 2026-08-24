@@ -13,6 +13,18 @@ mod layout;
 pub use layout::SwapFileGeometry;
 use layout::*;
 pub mod hibernate;
+
+/// Filesystem-provided swap backing returned through the VFS
+/// `address_space_operations::swap_activate` hook. The owning filesystem
+/// keeps any inode pin alive through `device`; dropping the backing therefore
+/// is the filesystem's swap-deactivate boundary.
+pub struct SwapFileBacking {
+    pub name: String,
+    pub device: Arc<dyn BlockDevice>,
+    pub resume_device: Option<String>,
+    pub resume_pages: Vec<u64>,
+    pub raw_device: Arc<dyn BlockDevice>,
+}
 const SWAP_AREA_COUNT: usize = SwapEntry::MAX_KIND as usize + 1;
 /// Initial PTE reference held by a slot made visible after a successful write.
 const INITIAL_SLOT_PTE_REFS: u32 = 1;
@@ -258,6 +270,20 @@ pub fn activate_file_with_options(name: String, display_name: String, device: Ar
     let layout = read_swap_layout(&device)?;
     activate_inner(name, display_name, SwapBacking::File, device, false, priority, discard,
         layout, Some(geometry))
+}
+
+/// Activate a filesystem swapfile whose address-space owner cannot provide a
+/// stable raw-device resume map. Ordinary paging is still valid; hibernation
+/// resume geometry is an additional capability, not a prerequisite for
+/// `swapon(2)`.
+pub fn activate_file_without_resume(name: String, display_name: String,
+                                     device: Arc<dyn BlockDevice>,
+                                     priority: Option<i32>, discard: SwapDiscard)
+    -> Result<u8>
+{
+    let layout = read_swap_layout(&device)?;
+    activate_inner(name, display_name, SwapBacking::File, device, false, priority,
+        discard, layout, None)
 }
 
 fn activate_inner(name: String, display_name: String, backing: SwapBacking,

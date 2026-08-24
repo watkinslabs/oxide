@@ -65,9 +65,30 @@ pub fn do_mprotect_pkey(args: &SyscallArgs, pkey: i32) -> i64 {
             vmm::pkeys::VmaKeyView { pkey: v.pkey, access_is_exec_only: v.prot == vmm::VmaProt::EXEC },
             pkey, &mut rights)) as u8
     };
-    let outcome = match mm.mprotect_user(
+    let outcome = match mm.mprotect_user_with_security(
         ua, len, requested, sched::personality::read_implies_exec(cur),
-        &mut key_for,
+        &mut |vma, prot| match &vma.backing {
+            vmm::VmaBacking::File { backing, .. } => backing.mprotect(
+                vma.flags.contains(vmm::VmaFlags::SHARED), prot.contains(vmm::VmaProt::EXEC),
+                vma.anon_vma.is_some() && prot.contains(vmm::VmaProt::EXEC)
+                    && !vma.prot.contains(vmm::VmaProt::EXEC))
+                .map_err(|_| vmm::Error::Access),
+            vmm::VmaBacking::Anonymous
+                if prot.contains(vmm::VmaProt::EXEC) && !vma.prot.contains(vmm::VmaProt::EXEC) => {
+                let is_heap = vma.start.as_u64() >= mm.start_brk()
+                    && vma.end.as_u64() <= mm.brk();
+                let permission = if is_heap {
+                    "execheap"
+                } else if vma.flags.contains(vmm::VmaFlags::GROWSDOWN) {
+                    "execstack"
+                } else {
+                    "execmem"
+                };
+                selinux_runtime::check::process_permission(permission)
+                    .map_err(|_| vmm::Error::Access)
+            },
+            _ => Ok(()),
+        }, &mut key_for,
     ) {
         Ok(outcome) => outcome,
         Err(_) => return -(Errno::Enomem.as_i32() as i64),

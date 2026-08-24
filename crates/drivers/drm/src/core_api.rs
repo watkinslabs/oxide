@@ -64,6 +64,12 @@ pub trait DrmDriver: Send + Sync {
     fn dim_bounds(&self) -> (u32, u32, u32, u32);
     fn cap(&self, cap: u64) -> u64;
 
+    /// Whether this driver advertises Linux's `DRIVER_RENDER` capability.
+    /// Simple firmware framebuffers expose KMS only; render minors are
+    /// allocated independently for drivers that can actually accept render
+    /// clients. # C: O(1)
+    fn supports_render_node(&self) -> bool { true }
+
     /// VIRTGPU_GETPARAM: `Some(value)` if this is a virtio-gpu driver answering
     /// `param`; `None` → not a virtgpu driver (caller returns ENOTTY, matching
     /// Linux where non-virtgpu cards lack the ioctl). # C: O(1)

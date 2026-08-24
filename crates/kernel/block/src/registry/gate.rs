@@ -2,11 +2,12 @@
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicBool, Ordering};
 use sync::{Devices as DevicesClass, Spinlock};
 use crate::blockdev::{BlockCompletion, BlockDevice, BlockRequest};
 use crate::queue_limits::QueueLimits;
 use crate::types::{BlockError, KResult};
-use super::core::{Disk, DISK_REMOVE_HOOK, TABLE, by_name, disk_for_dev, release_number};
+use super::core::{Disk, DISK_CLOSE_HOOK, DISK_REMOVE_HOOK, TABLE, by_name, disk_for_dev, release_number};
 
 /// Holder/open state is separate from both exclusive removal and reset queue
 /// freeze. A reset keeps the published disk, its `dev_t`, and its users live.
@@ -166,6 +167,14 @@ pub fn close_disk(disk: &Disk) -> bool {
     let mut life = unsafe { disk.life.lock() };
     if life.openers == 0 { return false; }
     life.openers -= 1;
+    let final_close = life.openers == 0;
+    drop(life);
+    if final_close {
+        // SAFETY: the close hook is copied under its lifecycle lock and runs
+        // after the opener count is visible as zero.
+        let hook = *unsafe { DISK_CLOSE_HOOK.lock() };
+        if let Some(f) = hook { f(&disk.name); }
+    }
     true
 }
 pub(super) struct DiskIo {
@@ -198,6 +207,7 @@ impl Drop for SubmissionToken {
 pub(super) struct AdmissionDev {
     pub(super) inner: Arc<dyn BlockDevice>,
     pub(super) io: Arc<Spinlock<DiskIo, DevicesClass>>,
+    pub(super) cache_disabled: Arc<AtomicBool>,
 }
 impl AdmissionDev {
     fn admit(&self) -> KResult<SubmissionToken> {
@@ -234,7 +244,12 @@ impl AdmissionDev {
 impl BlockDevice for AdmissionDev {
     fn block_size(&self) -> u32 { self.inner.block_size() }
     fn queue_limits(&self) -> KResult<QueueLimits> {
-        let limits = self.inner.queue_limits()?;
+        let mut limits = self.inner.queue_limits()?;
+        if self.cache_disabled.load(Ordering::Acquire) {
+            let features = limits.features()
+                & !(crate::QueueFeatures::WRITE_CACHE | crate::QueueFeatures::FUA);
+            limits = limits.with_features(features);
+        }
         limits.with_discard(limits.max_hw_discard_sectors(), self.io.lock_bh::<crate::bh_gate::BlockBh>().max_discard_sectors,
             limits.discard_granularity())
     }

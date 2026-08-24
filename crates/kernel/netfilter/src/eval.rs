@@ -1,5 +1,10 @@
 use crate::{NFT_CHAIN_POLICY_DROP, active_generation, nft_expr};
-use crate::nft_expr::{EvalCtx, uapi};
+use alloc::vec::Vec;
+
+use crate::nft_expr::{Action, EvalCtx, uapi};
+use crate::nft_expr::access::{CtAccess, FibEntry, FibKey, ObjectAccess, RouteAccess,
+                              OsfAccess, SocketAccess, SynproxyAccess};
+use conntrack::tuple::Tuple;
 
 /// Netfilter verdict.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -13,10 +18,14 @@ pub enum Verdict {
 }
 
 /// A hook verdict and the packet mark left by its ruleset.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EvalResult {
     pub verdict: Verdict,
     pub mark: u32,
+    /// Effects in rule-evaluation order. The packet owner applies these after
+    /// the walk; the interpreter does not own packet, route, or device state.
+    pub actions: Vec<Action>,
+    pub notrack: bool,
 }
 
 impl Verdict {
@@ -68,7 +77,328 @@ pub fn eval_in_with_mark(namespace: u64, hook_id: u32, pkt: &[u8], family: u8,
 /// Evaluate one hook from the live packet-buffer and hook ownership. # C: O(N rules)
 pub fn eval_hook(input: &net::stack::NfHookCtx<'_>) -> EvalResult {
     let input = crate::eval_context::Input::from_hook(input);
-    eval_context(&input)
+    let result = eval_context(&input);
+    crate::nl::flush_conntrack_events(input.namespace);
+    result
+}
+
+/// Whether a live hook has any chains in the requested Linux priority range.
+/// The packet path uses this to avoid invoking the hook callback once for an
+/// empty stage while still preserving the conntrack boundary between stages.
+#[allow(dead_code)]
+pub fn has_chain_in_priority_range(namespace: u64, hook_id: u32, family: u8,
+                                   min_priority: Option<i32>, max_priority: Option<i32>) -> bool {
+    let Some(generation) = active_generation(hook_id) else { return false; };
+    let Some(state) = generation.namespace(namespace) else { return false; };
+    let Some(hook) = state.hooks.iter().find(|hook| hook.id == hook_id) else { return false; };
+    hook.chains.iter().any(|chain| chain.table_family == family
+        && min_priority.is_none_or(|min| chain.priority >= min)
+        && max_priority.is_none_or(|max| chain.priority < max))
+}
+
+struct LiveCt<'a> {
+    conn: Option<&'a conntrack::Conn>,
+    net_owner: Option<alloc::sync::Arc<conntrack::CtNet>>,
+    owner: Option<alloc::sync::Arc<conntrack::Conn>>,
+    info: u8,
+    dir: u8,
+    now: u64,
+}
+
+struct LiveRoute<'a> {
+    input: &'a crate::eval_context::Input<'a>,
+}
+
+struct LiveSocket<'a> {
+    input: &'a crate::eval_context::Input<'a>,
+    info: net::SocketLookup,
+    present: bool,
+}
+
+struct LiveOsf<'a> { pkt: &'a [u8], family: u8 }
+
+impl OsfAccess for LiveOsf<'_> {
+    fn genre(&self, ttl: u8, with_version: bool, out: &mut [u8]) -> bool {
+        self.family == crate::nft_expr::uapi::NFPROTO_IPV4
+            && crate::nft_expr::osf::find(self.pkt, ttl, with_version, out)
+    }
+}
+
+struct LiveObjects<'a> {
+    namespace: u64,
+    family: u8,
+    table: &'a str,
+    generation: &'a crate::state::CompiledNamespace,
+}
+
+impl ObjectAccess for LiveObjects<'_> {
+    fn eval(&self, family: u8, table: &str, obj_type: u32, name: &str,
+            pkt_len: u64, now_ns: u64, ct: Option<&dyn crate::nft_expr::access::CtAccess>) -> Option<i32> {
+        if family != self.family || table != self.table { return None; }
+        let object = crate::objects_snapshot_in(self.namespace).into_iter().find(|o| {
+            o.table_family == family && o.table_name == table
+                && o.ty == obj_type && o.name == name
+        })?;
+        object.state.eval_for(pkt_len, now_ns, ct)
+    }
+
+    fn eval_with(&self, family: u8, table: &str, obj_type: u32, name: &str,
+                 pkt: &[u8], pkt_len: u64, now_ns: u64,
+                 ct: Option<&dyn crate::nft_expr::access::CtAccess>,
+                 synproxy: Option<&dyn crate::nft_expr::access::SynproxyAccess>,
+                 actions: &mut alloc::vec::Vec<crate::nft_expr::action::Action>,
+                 packet_secmark: &mut u32) -> Option<i32> {
+        if family != self.family || table != self.table { return None; }
+        let object = crate::objects_snapshot_in(self.namespace).into_iter().find(|o| {
+            o.table_family == family && o.table_name == table
+                && o.ty == obj_type && o.name == name
+        })?;
+        match &*object.state {
+            crate::nft_expr::ObjectState::Synproxy { .. }
+            | crate::nft_expr::ObjectState::CtTimeout { .. }
+            | crate::nft_expr::ObjectState::CtExpect { .. }
+            | crate::nft_expr::ObjectState::Secmark { .. } =>
+                object.state.eval_packet(pkt, family, ct, now_ns, synproxy, actions, packet_secmark),
+            _ => object.state.eval_for(pkt_len, now_ns, ct),
+        }
+    }
+
+    fn eval_from_set(&self, family: u8, table: &str, set_id: Option<usize>,
+                     _set: &str, key: &[u8], pkt_len: u64, now_ns: u64,
+                     ct: Option<&dyn crate::nft_expr::access::CtAccess>) -> Option<i32> {
+        if family != self.family || table != self.table { return None; }
+        self.generation.object_state(set_id?, key)?.eval_for(pkt_len, now_ns, ct)
+    }
+
+    fn eval_from_set_with(&self, family: u8, table: &str, set_id: Option<usize>,
+                          _set: &str, key: &[u8], pkt: &[u8], pkt_len: u64, now_ns: u64,
+                          ct: Option<&dyn crate::nft_expr::access::CtAccess>,
+                          synproxy: Option<&dyn crate::nft_expr::access::SynproxyAccess>,
+                          actions: &mut alloc::vec::Vec<crate::nft_expr::action::Action>,
+                          packet_secmark: &mut u32) -> Option<i32> {
+        if family != self.family || table != self.table { return None; }
+        let state = self.generation.object_state(set_id?, key)?;
+        match &**state {
+            crate::nft_expr::ObjectState::Synproxy { .. }
+            | crate::nft_expr::ObjectState::CtTimeout { .. }
+            | crate::nft_expr::ObjectState::CtExpect { .. }
+            | crate::nft_expr::ObjectState::Secmark { .. } =>
+                state.eval_packet(pkt, family, ct, now_ns, synproxy, actions, packet_secmark),
+            _ => state.eval_for(pkt_len, now_ns, ct),
+        }
+    }
+}
+
+impl SocketAccess for LiveSocket<'_> {
+    fn present(&self) -> bool { self.present }
+    fn full(&self) -> bool { self.info.full }
+    fn transparent(&self) -> bool { self.info.transparent }
+    fn mark(&self) -> u32 { self.info.mark }
+    fn wildcard(&self) -> bool { self.info.wildcard }
+    fn cgroup_id(&self, _level: u32) -> Option<u64> { self.info.cgroup }
+    fn tproxy_transparent(&self, addr: &conntrack::tuple::InetAddr, port: u16) -> bool {
+        match self.input.family {
+            crate::nft_expr::uapi::NFPROTO_IPV4 => {
+                let proto = self.input.pkt.get(9).copied().unwrap_or(0);
+                let dst = net::addr::Ipv4Addr::new(addr.0[0], addr.0[1], addr.0[2], addr.0[3]);
+                if net::global_stack().socket_lookup_in(self.input.namespace,
+                    self.input.family, self.input.pkt, self.input.ingress)
+                    .is_some_and(|info| info.transparent) { return true; }
+                if proto == conntrack::uapi::IPPROTO_TCP {
+                    return net::global_stack().transparent_tcp4_in(
+                        self.input.namespace, dst, port, self.input.ingress);
+                }
+                proto == conntrack::uapi::IPPROTO_UDP
+                    && net::global_stack().transparent_udp4_in(
+                        self.input.namespace, dst, port, self.input.ingress)
+            }
+            crate::nft_expr::uapi::NFPROTO_IPV6 => {
+                if self.input.pkt.len() < 40 { return false; }
+                let Ok(dst) = <[u8; 16]>::try_from(&addr.0[..]) else { return false; };
+                let Ok(walk) = net::ipv6_ext::walk(self.input.pkt[6], &self.input.pkt[40..])
+                    else { return false; };
+                let proto = match walk {
+                    net::ipv6_ext::ExtWalk::Done { next_header, .. } => next_header,
+                    net::ipv6_ext::ExtWalk::Fragment { next_header, offset: 0, .. } => next_header,
+                    net::ipv6_ext::ExtWalk::Fragment { .. } => return false,
+                };
+                if net::global_stack().socket_lookup_in(self.input.namespace,
+                    self.input.family, self.input.pkt, self.input.ingress)
+                    .is_some_and(|info| info.transparent) { return true; }
+                if proto == conntrack::uapi::IPPROTO_TCP {
+                    return net::global_stack().transparent_tcp6_in(
+                        self.input.namespace, net::addr::Ipv6Addr(dst), port, self.input.ingress);
+                }
+                proto == conntrack::uapi::IPPROTO_UDP
+                    && net::global_stack().transparent_udp6_in(
+                        self.input.namespace, net::addr::Ipv6Addr(dst), port, self.input.ingress)
+            }
+            _ => false,
+        }
+    }
+}
+
+impl RouteAccess for LiveRoute<'_> {
+    fn iface_addr(&self) -> Option<conntrack::tuple::InetAddr> {
+        let id = if self.input.hook_id == net::stack::NF_INET_PRE_ROUTING {
+            self.input.ingress
+        } else {
+            self.input.egress
+        }?;
+        if self.input.family == crate::nft_expr::uapi::NFPROTO_IPV6 {
+            return net::global_stack().v6_src_on_iface(id)
+                .map(|addr| conntrack::tuple::InetAddr::v6(addr.0));
+        }
+        net::iface_addr::primary(self.input.namespace, id)
+            .map(|(addr, _)| conntrack::tuple::InetAddr::v4(addr.octets()))
+    }
+
+    fn nexthop4(&self) -> Option<[u8; 4]> {
+        if self.input.family != crate::nft_expr::uapi::NFPROTO_IPV4 { return None; }
+        let b = self.input.pkt.get(16..20)?;
+        let dst = net::addr::Ipv4Addr::new(b[0], b[1], b[2], b[3]);
+        let route = net::global_stack().routes.lookup_result_mark_in(
+            self.input.namespace, dst, self.input.mark).ok()?;
+        Some(net::route::RouteRecord::next_hop_for(route.gateway, dst).octets())
+    }
+    fn nexthop6(&self) -> Option<[u8; 16]> {
+        if self.input.family != crate::nft_expr::uapi::NFPROTO_IPV6 { return None; }
+        let dst = net::addr::Ipv6Addr(self.input.pkt.get(24..40)?.try_into().ok()?);
+        let route = net::global_stack().routes6.lookup_policy_mark_in(
+            self.input.namespace, dst, net::global_stack().policy_rules(), self.input.mark)?;
+        Some(net::route6::next_hop6_for(route.gateway, dst).0)
+    }
+    fn tcpmss(&self) -> Option<u16> {
+        let dst = if self.input.family == crate::nft_expr::uapi::NFPROTO_IPV6 {
+            net::addr::IpAddr::V6(net::addr::Ipv6Addr(self.input.pkt.get(24..40)?.try_into().ok()?))
+        } else {
+            let b = self.input.pkt.get(16..20)?;
+            net::addr::IpAddr::V4(net::addr::Ipv4Addr::new(b[0], b[1], b[2], b[3]))
+        };
+        let mtu = match dst {
+            net::addr::IpAddr::V4(a) => net::global_stack().routes.lookup_result_mark_in(
+                self.input.namespace, a, self.input.mark).ok()
+                .and_then(|r| net::global_stack().ifaces.lookup_in_ns(r.iface, self.input.namespace))
+                .map(|d| d.mtu()),
+            net::addr::IpAddr::V6(a) => net::global_stack().routes6.lookup_policy_mark_in(
+                self.input.namespace, a, net::global_stack().policy_rules(), self.input.mark)
+                .and_then(|r| net::global_stack().ifaces.lookup_in_ns(r.iface, self.input.namespace))
+                .map(|d| d.mtu()),
+        }?;
+        Some(mtu.saturating_sub(if self.input.family == crate::nft_expr::uapi::NFPROTO_IPV6 { 60 } else { 40 }) as u16)
+    }
+    fn src_addr(&self) -> Option<conntrack::tuple::InetAddr> {
+        if self.input.family == crate::nft_expr::uapi::NFPROTO_IPV6 {
+            let dst = net::addr::Ipv6Addr(self.input.pkt.get(24..40)?.try_into().ok()?);
+            let route = net::global_stack().routes6.lookup_policy_mark_in(
+                self.input.namespace, dst, net::global_stack().policy_rules(), self.input.mark)?;
+            return route.src_hint.map(|addr| conntrack::tuple::InetAddr::v6(addr.0));
+        }
+        let b = self.input.pkt.get(16..20)?;
+        let dst = net::addr::Ipv4Addr::new(b[0], b[1], b[2], b[3]);
+        let route = net::global_stack().routes.lookup_result_mark_in(
+            self.input.namespace, dst, self.input.mark).ok()?;
+        route.src_hint.map(|addr| conntrack::tuple::InetAddr::v4(addr.octets()))
+    }
+    fn fib(&self, key: &FibKey) -> Option<FibEntry> {
+        let stack = net::global_stack();
+        let (iface, kind) = match key.family {
+            crate::nft_expr::uapi::NFPROTO_IPV4 => {
+                let dst = net::addr::Ipv4Addr::from_u32(key.addr.as_v4_u32());
+                let record = stack.routes.lookup_record_mark_in(self.input.namespace, dst, key.mark)?;
+                (record.route.iface, record.kind as u32)
+            }
+            _ => return None,
+        };
+        let index = stack.ifaces.ifindex_in_ns(iface, self.input.namespace)?;
+        let dev = stack.ifaces.lookup_in_ns(iface, self.input.namespace)?;
+        let mut name = [0u8; crate::nft_expr::limits::IFNAMSIZ];
+        let bytes = dev.name().as_bytes();
+        let n = bytes.len().min(name.len().saturating_sub(1));
+        name[..n].copy_from_slice(&bytes[..n]);
+        Some(FibEntry { oif: Some(index), oifname: name, addrtype: kind })
+    }
+}
+
+impl CtAccess for LiveCt<'_> {
+    fn ctinfo(&self) -> u8 { self.info }
+    fn attached(&self) -> bool { self.conn.is_some() }
+    fn status(&self) -> u32 { self.conn.map_or(0, conntrack::Conn::status) }
+    fn mark(&self) -> u32 { self.conn.map_or(0, |c| c.mark.load(core::sync::atomic::Ordering::Acquire)) }
+    fn set_mark(&self, value: u32) {
+        if let Some(c) = self.conn { c.mark.store(value, core::sync::atomic::Ordering::Release); }
+    }
+    fn secmark(&self) -> u32 { self.conn.map_or(0, |c| c.secmark.load(core::sync::atomic::Ordering::Acquire)) }
+    fn set_secmark(&self, value: u32) {
+        if let Some(c) = self.conn { c.secmark.store(value, core::sync::atomic::Ordering::Release); }
+    }
+    fn expiration_ms(&self) -> u32 {
+        self.conn.map_or(0, |c| c.expires_in(self.now).saturating_mul(1000) as u32)
+    }
+    fn helper(&self, out: &mut [u8]) -> bool {
+        let Some(c) = self.conn else { return false; };
+        let helper = c.helper.lock();
+        let Some(name) = helper.as_ref() else { return false; };
+        let n = name.len().min(out.len());
+        out[..n].copy_from_slice(&name.as_bytes()[..n]);
+        true
+    }
+    fn labels(&self, out: &mut [u8]) -> bool {
+        if let Some(c) = self.conn { c.labels_copy(out); }
+        true
+    }
+    fn set_labels(&self, value: &[u8]) {
+        let Some(c) = self.conn else { return; };
+        let mut data = [0u8; conntrack::uapi::NF_CT_LABELS_MAX_SIZE];
+        let len = value.len().min(data.len());
+        data[..len].copy_from_slice(&value[..len]);
+        let update = conntrack::entry::LabelUpdate { data, mask: None, len };
+        c.labels_replace(&update);
+    }
+    fn counters(&self, dir: u8) -> (u64, u64) {
+        self.conn.and_then(|c| c.counters.get(dir as usize)).map_or((0, 0), |x| x.read())
+    }
+    fn tuple(&self, dir: u8) -> Option<Tuple> {
+        self.conn.map(|c| c.tuple(if dir == conntrack::uapi::IP_CT_DIR_MAX as u8 {
+            self.dir
+        } else { dir }))
+    }
+    fn zone(&self) -> u16 { self.conn.map_or(0, |c| c.orig.zone) }
+    fn id(&self) -> u32 { self.conn.map_or(0, |c| c.id as u32) }
+    fn offloadable(&self) -> bool {
+        self.conn.is_some_and(|c| {
+            let status = c.status();
+            status & (conntrack::uapi::IPS_CONFIRMED | conntrack::uapi::IPS_SEEN_REPLY
+                | conntrack::uapi::IPS_ASSURED | conntrack::uapi::IPS_OFFLOAD) ==
+                (conntrack::uapi::IPS_CONFIRMED | conntrack::uapi::IPS_SEEN_REPLY
+                    | conntrack::uapi::IPS_ASSURED)
+                && c.helper.lock().is_none()
+        })
+    }
+    fn flow(&self) -> Option<alloc::sync::Arc<conntrack::Conn>> { self.owner.clone() }
+    fn set_helper(&self, name: &str, l4proto: u8) -> bool {
+        match (self.net_owner.as_ref(), self.conn) {
+            (Some(net), Some(conn)) => net.attach_helper_for(conn, name, l4proto),
+            _ => false,
+        }
+    }
+    fn set_timeout_policy(&self, l3num: u16, l4proto: u8, values: &[u32; 14], now: u64) -> bool {
+        self.conn.is_some_and(|c| {
+            let installed = c.set_timeout_policy(conntrack::TimeoutPolicy {
+                l3num, l4proto, values: *values,
+            });
+            if installed { c.refresh(now / 1_000_000_000, values[0]); }
+            installed
+        })
+    }
+    fn set_expectation(&self, l3num: u16, l4proto: u8, dport: u16,
+                       timeout_ms: u32, size: u8, now: u64) -> bool {
+        match (self.net_owner.as_ref(), self.conn) {
+            (Some(net), Some(_conn)) => self.owner.as_ref().is_some_and(|master| net.install_expectation(
+                master, self.dir, l3num, l4proto, dport, timeout_ms, size, now)),
+            _ => false,
+        }
+    }
 }
 
 fn eval_context(input: &crate::eval_context::Input<'_>) -> EvalResult {
@@ -77,26 +407,56 @@ fn eval_context(input: &crate::eval_context::Input<'_>) -> EvalResult {
     let pkt = input.pkt;
     let family = input.family;
     let mut mark = input.mark;
+    let live_ct = LiveCt { conn: input.ct, net_owner: input.ct_net_owner.clone(),
+                           owner: input.ct_owner.clone(), info: input.ctinfo, dir: input.ct_dir,
+                           now: input.timestamp_ns / 1_000_000_000 };
+    let live_route = LiveRoute { input };
+    let live_osf = LiveOsf { pkt, family };
+    let live_socket = input.live.then(|| LiveSocket {
+        input,
+        info: input.socket.unwrap_or(net::SocketLookup {
+            full: false, transparent: false, mark: 0, wildcard: false, uid: None, gid: None, cgroup: None,
+        }),
+        present: input.socket.is_some(),
+    });
+    let live_synproxy = input.live.then(|| LiveSynproxy { pkt, family });
     let Some(generation) = active_generation(hook_id) else {
-        return EvalResult { verdict: Verdict::Accept, mark };
+        return EvalResult { verdict: Verdict::Accept, mark, actions: Vec::new(), notrack: false };
     };
     let Some(state) = generation.namespace(namespace) else {
-        return EvalResult { verdict: Verdict::Accept, mark };
+        return EvalResult { verdict: Verdict::Accept, mark, actions: Vec::new(), notrack: false };
     };
     let Some(hook) = state.hooks.iter().find(|hook| hook.id == hook_id) else {
-        return EvalResult { verdict: Verdict::Accept, mark };
+        return EvalResult { verdict: Verdict::Accept, mark, actions: Vec::new(), notrack: false };
     };
-    for chain in hook.chains.iter().filter(|chain| chain.table_family == family) {
+    let mut actions = Vec::new();
+    let mut notrack = false;
+    debug_assert!(hook.chains.windows(2).all(|chains| chains[0].priority <= chains[1].priority));
+    for chain in hook.chains.iter().filter(|chain| chain.table_family == family
+        && input.chain_min_priority.is_none_or(|min| chain.priority >= min)
+        && input.chain_max_priority.is_none_or(|max| chain.priority < max)) {
         let mut chain_verdict = None;
         for rule in &chain.rules {
             let lookup = |set_id: Option<usize>, _set_name: &str, register: &[u8]| {
                 state.set_contains(set_id.expect("compiled lookup has a set id"), register)
             };
             let mut ctx = EvalCtx::new(pkt, family, &rule.states);
+            ctx.table = Some(&chain.table_name);
             input.populate(&mut ctx, mark);
+            if input.ct_available { ctx.ct = Some(&live_ct); }
+            if input.live { ctx.route = Some(&live_route); }
+            if let Some(socket) = live_socket.as_ref() { ctx.socket = Some(socket); }
+            ctx.osf = Some(&live_osf);
+            if let Some(synproxy) = live_synproxy.as_ref() { ctx.synproxy = Some(synproxy); }
+            let objects = LiveObjects {
+                namespace, family, table: &chain.table_name, generation: state,
+            };
+            ctx.objects = Some(&objects);
             ctx.set_lookup = Some(&lookup);
             let verdict = nft_expr::run_rule_ctx(&rule.exprs, &mut ctx);
             mark = ctx.mark;
+            notrack |= ctx.notrack;
+            actions.extend(ctx.actions);
             if ctx.packets != 0 { rule.counter.bump(ctx.packets, ctx.bytes); }
             if let Some(decided) = Verdict::from_code(verdict.code) {
                 chain_verdict = Some(decided);
@@ -107,7 +467,36 @@ fn eval_context(input: &crate::eval_context::Input<'_>) -> EvalResult {
             NFT_CHAIN_POLICY_DROP => Verdict::Drop,
             _ => Verdict::Accept,
         });
-        if verdict != Verdict::Accept { return EvalResult { verdict, mark }; }
+        if verdict != Verdict::Accept { return EvalResult { verdict, mark, actions, notrack }; }
     }
-    EvalResult { verdict: Verdict::Accept, mark }
+    EvalResult { verdict: Verdict::Accept, mark, actions, notrack }
+}
+
+struct LiveSynproxy<'a> {
+    pkt: &'a [u8],
+    family: u8,
+}
+
+impl SynproxyAccess for LiveSynproxy<'_> {
+    fn cookie_valid(&self, seq: u32, ack: u32) -> Option<u16> {
+        let (src, dst, off) = match self.family {
+            uapi::NFPROTO_IPV4 => {
+                let ihl = (*self.pkt.first()? & 0x0f) as usize * 4;
+                if ihl < 20 || self.pkt.len() < ihl + 20 { return None; }
+                (net::addr::IpAddr::V4(net::addr::Ipv4Addr::new(
+                    self.pkt[12], self.pkt[13], self.pkt[14], self.pkt[15])),
+                 net::addr::IpAddr::V4(net::addr::Ipv4Addr::new(
+                    self.pkt[16], self.pkt[17], self.pkt[18], self.pkt[19])), ihl)
+            }
+            uapi::NFPROTO_IPV6 if self.pkt.len() >= 60 => (
+                net::addr::IpAddr::V6(net::addr::Ipv6Addr(self.pkt[8..24].try_into().ok()?)),
+                net::addr::IpAddr::V6(net::addr::Ipv6Addr(self.pkt[24..40].try_into().ok()?)),
+                40),
+            _ => return None,
+        };
+        let src_port = u16::from_be_bytes([self.pkt[off], self.pkt[off + 1]]);
+        let dst_port = u16::from_be_bytes([self.pkt[off + 2], self.pkt[off + 3]]);
+        net::syncookies::validate(src, dst, src_port, dst_port, seq, ack,
+            net::tcp_conn::ka_now_ns(), self.family == uapi::NFPROTO_IPV6)
+    }
 }

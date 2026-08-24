@@ -31,6 +31,8 @@ pub fn complete(req: &Arc<IoReq>, res: i64, cqe_flags: u32) {
 /// whether a worker happened to take it. # C: O(N_chain)
 pub fn complete_out(req: &Arc<IoReq>, out: crate::io_uring::dispatch::OpOutcome) {
     let (res, cqe_flags) = (out.res, out.cqe_flags);
+    crate::io_uring::dispatch::proc_ops::disarm_futex_wait(req);
+    crate::io_uring::dispatch::proc_ops::disarm_waitid(req);
     req.finish();
     if posts_cqe(req.sqe.flags, res) {
         let r32 = if res > i32::MAX as i64 { i32::MAX } else { res as i32 };
@@ -154,7 +156,37 @@ pub fn issue(req: &Arc<IoReq>) {
         if let Some(out) = crate::io_uring::linux_cmd::issue(req) { complete_out(req, out); }
         return;
     }
-    let out = crate::io_uring::dispatch::dispatch_op(&req.ring, &req.sqe);
+    let waitv_armed = req.opcode() == crate::io_uring_abi::ops::IORING_OP_FUTEX_WAITV
+        && req.inner.lock().futex_waitv.is_some();
+    let out = if req.opcode() == crate::io_uring_abi::ops::IORING_OP_WAITID {
+        crate::io_uring::dispatch::OpOutcome {
+            res: crate::io_uring::dispatch::proc_ops::waitid_probe(req),
+            cqe_flags: 0, cqe32: false, big: [0; 2], notif: None,
+        }
+    } else if waitv_armed {
+        crate::io_uring::dispatch::OpOutcome {
+            res: crate::io_uring::dispatch::proc_ops::futex_waitv_probe(req),
+            cqe_flags: 0, cqe32: false, big: [0; 2], notif: None,
+        }
+    } else {
+        crate::io_uring::dispatch::dispatch_op(&req.ring, &req.sqe)
+    };
+    if out.res == crate::io_uring::dispatch::proc_ops::WAITID_ARMED { return; }
+    if matches!(req.opcode(), crate::io_uring_abi::ops::IORING_OP_FUTEX_WAIT
+        | crate::io_uring_abi::ops::IORING_OP_FUTEX_WAITV)
+        && out.res == crate::io_uring::dispatch::proc_ops::FUTEX_REARM
+    {
+        crate::io_uring::dispatch::proc_ops::disarm_futex_wait(req);
+        req.rearm();
+        match crate::io_uring::defer::arm(req) {
+            crate::io_uring::defer::Armed::Waiting => {}
+            crate::io_uring::defer::Armed::Queue => super::pool::WQ.queue(Arc::clone(req)),
+            crate::io_uring::defer::Armed::Failed(e) => {
+                if req.claim() { complete(req, -(e.as_i32() as i64), 0); }
+            }
+        }
+        return;
+    }
     // A pollable description that is not ready yet is not a failure: the
     // request goes back to waiting on that description instead of reporting an
     // error the submitter never asked to see.

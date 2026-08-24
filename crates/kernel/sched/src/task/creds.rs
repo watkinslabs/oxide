@@ -1,5 +1,6 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use namespace_identity::NamespaceKind;
 use sync::{Spinlock, TaskList as TaskListClass};
 
 use super::Task;
@@ -291,6 +292,14 @@ impl Task {
     /// # C: O(1)
     pub fn has_cap(&self, cap: u32) -> bool {
         if !self.creds.has_cap(cap) { return false; }
+        // `security_capable()` is part of the capability answer, not a
+        // caller-specific add-on.  The reference gives the LSM the task's
+        // subject credentials and distinguishes the initial user namespace's
+        // `capability` class from a nested namespace's `cap_userns` class.
+        let init_namespace = self.namespace_owner(NamespaceKind::User)
+            .is_some_and(|namespace| namespace.is_initial());
+        if selinux_runtime::check::capability(self.selinux_label.lock().sid, cap,
+            init_namespace).is_err() { return false; }
         self.used_superpriv.store(true, core::sync::atomic::Ordering::Relaxed);
         true
     }

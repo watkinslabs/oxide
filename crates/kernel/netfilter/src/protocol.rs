@@ -66,6 +66,31 @@ pub mod nft_msg {
     pub const NFT_MSG_NEWOBJ:     u8 = 18;
     pub const NFT_MSG_GETOBJ:     u8 = 19;
     pub const NFT_MSG_DELOBJ:     u8 = 20;
+    pub const NFT_MSG_NEWFLOWTABLE: u8 = 21;
+    pub const NFT_MSG_GETFLOWTABLE: u8 = 22;
+    pub const NFT_MSG_DELFLOWTABLE: u8 = 23;
+    pub const NFT_MSG_DESTROYFLOWTABLE: u8 = 29;
+}
+
+pub mod osf_msg {
+    pub const OSF_MSG_ADD: u8 = 0;
+    pub const OSF_MSG_REMOVE: u8 = 1;
+}
+
+pub mod osf_attr {
+    pub const OSF_ATTR_FINGER: u16 = 1;
+}
+
+pub mod nfta_flowtable {
+    pub const NFTA_FLOWTABLE_TABLE: u16 = 1;
+    pub const NFTA_FLOWTABLE_NAME: u16 = 2;
+    pub const NFTA_FLOWTABLE_HOOK: u16 = 3;
+    pub const NFTA_FLOWTABLE_USE: u16 = 4;
+    pub const NFTA_FLOWTABLE_HANDLE: u16 = 5;
+    pub const NFTA_FLOWTABLE_FLAGS: u16 = 7;
+    pub const NFTA_FLOWTABLE_HOOK_NUM: u16 = 1;
+    pub const NFTA_FLOWTABLE_HOOK_PRIORITY: u16 = 2;
+    pub const NFTA_FLOWTABLE_HOOK_DEVS: u16 = 3;
 }
 
 pub mod nfta_obj {
@@ -90,6 +115,7 @@ pub mod nfta_table {
 }
 
 pub mod nfta_set {
+    pub const NFT_SET_OBJECT:       u32 = 0x40;
     pub const NFTA_SET_TABLE:     u16 = 1;
     pub const NFTA_SET_NAME:      u16 = 2;
     pub const NFTA_SET_FLAGS:     u16 = 3;
@@ -102,6 +128,7 @@ pub mod nfta_set {
     pub const NFTA_SET_ID:        u16 = 10;
     pub const NFTA_SET_TIMEOUT:   u16 = 11;
     pub const NFTA_SET_USERDATA:  u16 = 13;
+    pub const NFTA_SET_OBJ_TYPE:  u16 = 15;
 }
 
 pub mod nfta_set_elem {
@@ -111,6 +138,7 @@ pub mod nfta_set_elem {
     pub const NFTA_SET_ELEM_KEY:           u16 = 1;
     pub const NFTA_SET_ELEM_DATA:          u16 = 2;
     pub const NFTA_SET_ELEM_FLAGS:         u16 = 3;
+    pub const NFTA_SET_ELEM_OBJREF:        u16 = 9;
     pub const NFTA_DATA_VALUE:             u16 = 1;
 }
 

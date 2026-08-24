@@ -23,11 +23,13 @@ pub mod fault_signal;
 pub mod tailwatch;
 mod mremap;
 mod mmap;
+mod mmap_hook;
 mod phys_cache;
 pub mod anon_vma;
 pub mod file_rmap;
 pub mod mempolicy;
 pub mod migration;
+mod mmap_event;
 pub mod mseal;
 pub mod recency;
 pub mod rmap;
@@ -45,6 +47,7 @@ pub use address_space::{
     set_mmap_rwsem_wait_hooks,
 };
 pub use mmap::{MmapError, MmapPlacement};
+pub use mmap_hook::set_mmap_addr_hook;
 pub use phys_cache::PhysCacheMode;
 pub use address_space::{
     prctl_mm_map_size, validate_mm_map, PrctlMmMap,
@@ -64,6 +67,7 @@ pub use file_rmap::{
     TruncateUnmapHook, WritableMapReservation, WriteSealError,
 };
 pub use migration::{migration_attach_marker, migration_begin, migration_drop_marker_mapping, migration_finish, migration_pending_then, migration_restore_marker_mapping};
+pub use mmap_event::{set_mmap_event_hook, MmapEventHook};
 pub use recency::vma_has_recency;
 pub use vma::{EXEC_STACK_VMA_FLAGS, FaultAccess, FaultKind, FileBacking, FileBackingError, FileMmapSetup, SharedFrame, Vma, VmaBacking, VmaFlags, VmaProt};
 pub use tree::{HomeNodeErr, VmaTree};

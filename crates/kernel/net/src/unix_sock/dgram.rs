@@ -115,6 +115,12 @@ impl UnixDgramQueue {
         self.owner_socket.lock().as_ref()?.upgrade()?.file_domain()
     }
 
+    /// Security label of the socket that published this queue. # C: O(1)
+    pub fn owner_security_label(&self) -> u32 {
+        self.owner_socket.lock().as_ref().and_then(|owner| owner.upgrade())
+            .map_or(security::network::NO_LABEL, |socket| socket.security_label())
+    }
+
     /// # C: O(1)
     pub fn new() -> Arc<Self> {
         Self::new_with_filter(Arc::new(crate::bpf_filter::SocketFilter::new()))

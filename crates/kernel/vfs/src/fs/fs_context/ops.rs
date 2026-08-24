@@ -101,7 +101,7 @@ impl FsContextOps for ClassicMountFsContextOps {
         let opts = fc.classic_mount_options();
         let pinned = fc.pinned_params();
         let target = fc.mount_target().unwrap_or("");
-        fc.fs_type.mount_at(fc.source(), target, &opts, fc.sb_flags, &pinned)
+        fc.fs_type.mount_at_with_cred(fc.source(), target, &opts, fc.sb_flags, &pinned, fc.creator_cred())
     }
 }
 

@@ -46,6 +46,23 @@ pub fn check_name_query(namespace: u64, family: u16) -> Result<(), crate::NetErr
     crate::security_admission::check(namespace, family, security::network::Operation::NameQuery)
 }
 
+/// Canonical security admission for local/peer name snapshots on an INET
+/// socket. Linux's `security_socket_getname` is a socket `getattr` check, so
+/// retain the socket label and concrete class at this boundary. # C: O(1)
+pub fn check_socket_name_query(sock: &InetSocket) -> Result<(), crate::NetError> {
+    let desc = crate::socket_security::inet(sock);
+    crate::security_admission::check_socket(desc.namespace, desc.family,
+        security::network::Operation::NameQuery, desc.target_sid, desc.target_class)
+}
+
+/// Canonical security admission for AF_VSOCK local/peer name snapshots. # C: O(1)
+pub fn check_vsock_name_query(sock: &crate::vsock_socket::VsockSocket)
+    -> Result<(), crate::NetError>
+{
+    crate::security_admission::check_socket(sock.net_ns(), crate::socket_args::AF_VSOCK as u16,
+        security::network::Operation::NameQuery, sock.security_label(), sock.security_class())
+}
+
 /// Canonical security admission for integer ioctl access. # C: O(1)
 pub fn check_ioctl(namespace: u64, family: u16) -> Result<(), crate::NetError> {
     crate::security_admission::check(namespace, family, security::network::Operation::Ioctl)

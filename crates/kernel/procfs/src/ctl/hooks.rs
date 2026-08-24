@@ -198,6 +198,24 @@ pub(super) fn set_net_int(namespace: &network_namespace::NetworkNamespaceRef,
     let key = net::net_ns::NetSysctlKey::from_usize(key).ok_or(())?;
     net::sysctl::set_value(namespace, key, value)
 }
+
+pub(super) fn conntrack_int(namespace: &network_namespace::NetworkNamespaceRef,
+                             key: usize) -> Result<i64, ()> {
+    let (_, knob) = conntrack::sysctl::KNOBS.get(key).copied().ok_or(())?;
+    let value = net::global_stack().conntrack_sysctl_get(namespace.id().as_u64(), knob);
+    i64::try_from(value).map_err(|_| ())
+}
+
+pub(super) fn set_conntrack_int(namespace: &network_namespace::NetworkNamespaceRef,
+                                key: usize, value: i64) -> Result<(), ()> {
+    if value < 0 { return Err(()); }
+    let (_, knob) = conntrack::sysctl::KNOBS.get(key).copied().ok_or(())?;
+    if net::global_stack().conntrack_sysctl_set(namespace.id().as_u64(), knob, value as u64) {
+        Ok(())
+    } else {
+        Err(())
+    }
+}
 pub(super) fn local_port_range(namespace: &network_namespace::NetworkNamespaceRef) -> Result<(u16, u16), ()> {
     let range = net::ephemeral::range_for(namespace).ok_or(())?;
     Ok((range.start, range.end))

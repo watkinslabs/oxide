@@ -200,6 +200,84 @@ fn the_mirror_agrees_with_the_table_it_mirrors() {
 }
 
 #[test]
+fn syncing_refreshes_a_mirror_after_the_primary_record_changes() {
+    let v = test_image::empty();
+    let (mut record, _) = v.read_record_raw(MFT_REC_MFT).unwrap();
+    record[MFT_OFF_FLAGS] ^= 1;
+    v.write_record(MFT_REC_MFT, &mut record).unwrap();
+    assert!(!v.mirror_agrees().unwrap(), "the primary changed before mirror sync");
+    v.update_mft_mirror().unwrap();
+    assert!(v.mirror_agrees().unwrap(), "sync copies the changed record to MFTMirr");
+}
+
+#[test]
+fn sparse_files_extend_with_holes_and_allocate_only_written_clusters() {
+    let mut opts = crate::opts::Options::defaults();
+    opts.sparse = true;
+    opts.settle();
+    let mut v = crate::volume::Volume::mount_with(Builder::new().finish(), opts).unwrap();
+    let made = v.create_file(MFT_REC_ROOT, "sparse", 1_800_000_000).unwrap();
+    let (_, attrs) = v.read_record(made.reference.number).unwrap();
+    let data = crate::attrib::find(&attrs, ATTR_DATA, &[]).unwrap();
+    assert!(data.non_resident && data.sparse());
+
+    let before = v.used_clusters();
+    v.truncate_file(made.reference.number, (CLUSTER * 3) as u64, 1_800_000_000).unwrap();
+    assert_eq!(v.used_clusters(), before, "truncating a sparse file creates holes");
+    v.write_file(made.reference.number, (CLUSTER * 2) as u64, b"tail", 1_800_000_000).unwrap();
+    assert_eq!(v.used_clusters(), before + 1, "only the written cluster is allocated");
+
+    let bytes = v.read_whole(made.reference.number).unwrap();
+    assert!(bytes[..CLUSTER * 2].iter().all(|byte| *byte == 0));
+    assert_eq!(&bytes[CLUSTER * 2..CLUSTER * 2 + 4], b"tail");
+    assert!(bytes[CLUSTER * 2 + 4..].iter().all(|byte| *byte == 0));
+    assert_eq!(v.stat(made.reference.number).unwrap().allocated, CLUSTER as u64);
+}
+
+#[test]
+fn the_mft_grows_when_its_record_bitmap_is_full() {
+    let image = Builder::new().finish();
+    let mut v = crate::volume::Volume::mount_with(image, crate::opts::Options::defaults()).unwrap();
+    let mut last = None;
+    for number in 0..41 {
+        let name = alloc::format!("file-{number}");
+        last = Some(v.create_file(MFT_REC_ROOT, &name, 1_800_000_000).unwrap());
+    }
+    assert!(v.mft_records() > test_image::MFT_RECORDS);
+    let last = last.unwrap();
+    assert_eq!(v.read_whole(last.reference.number).unwrap(), alloc::vec![]);
+    assert!(v.space().records_free > 1000);
+    let snapshot = v.source.snapshot();
+    drop(v);
+    let remount = crate::volume::Volume::mount_with(
+        sectors::MemImage::from_bytes(test_image::SECTOR as u32, snapshot),
+        crate::opts::Options::defaults()).unwrap();
+    assert!(remount.mft_records() > test_image::MFT_RECORDS);
+    assert!(remount.stat(last.reference.number).is_ok());
+}
+
+#[test]
+fn compressed_files_write_and_recompress_native_lznt_frames() {
+    let mut opts = crate::opts::Options::defaults();
+    opts.compress = true;
+    opts.settle();
+    let mut v = crate::volume::Volume::mount_with(Builder::new().finish(), opts).unwrap();
+    let made = v.create_file(MFT_REC_ROOT, "compressed", 1_800_000_000).unwrap();
+    let (_, attrs) = v.read_record(made.reference.number).unwrap();
+    let attr = crate::attrib::find(&attrs, ATTR_DATA, &[]).unwrap();
+    assert!(attr.non_resident && attr.compressed());
+    assert_eq!(attr.compression_unit(), Some(1 << LZNT_CUNIT));
+
+    let payload = alloc::vec![b'Z'; CLUSTER * 2 + 17];
+    v.write_file(made.reference.number, 0, &payload, 1_800_000_000).unwrap();
+    assert_eq!(v.read_whole(made.reference.number).unwrap(), payload);
+    assert!(v.stat(made.reference.number).unwrap().allocated < (CLUSTER * 2) as u64);
+
+    v.truncate_file(made.reference.number, 1234, 1_800_000_000).unwrap();
+    assert_eq!(v.read_whole(made.reference.number).unwrap(), alloc::vec![b'Z'; 1234]);
+}
+
+#[test]
 fn a_record_the_bitmap_calls_free_is_not_read_as_a_file() {
     let v = test_image::empty();
     // A record past everything the fixture wrote was never formatted, so

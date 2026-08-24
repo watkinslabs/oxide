@@ -2,10 +2,11 @@
 // property get/set ladder the class runs before a driver is ever asked.
 
 use alloc::string::String;
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use sync::{Devices, Spinlock};
+use thermal::{Cadence, ZoneDesc, ZoneOps, ThermalZone};
 use vfs::{KResult, VfsError};
 
 use crate::uapi::Property;
@@ -86,6 +87,8 @@ pub struct PowerSupply {
     initialized: AtomicBool,
     /// Set at the start of teardown, before the class forgets the device.
     removing: AtomicBool,
+    hwmon_id: AtomicU32,
+    thermal_zone: Spinlock<Option<Arc<ThermalZone>>, Devices>,
 }
 
 impl PowerSupply {
@@ -97,6 +100,8 @@ impl PowerSupply {
             ops: Spinlock::new(Some(ops)),
             initialized: AtomicBool::new(false),
             removing: AtomicBool::new(false),
+            hwmon_id: AtomicU32::new(u32::MAX),
+            thermal_zone: Spinlock::new(None),
         }
     }
 
@@ -120,6 +125,27 @@ impl PowerSupply {
 
     /// Whether teardown has begun. # C: O(1)
     pub fn removing(&self) -> bool { self.removing.load(Ordering::Acquire) }
+
+    /// Assign the hwmon instance number owned by the power-supply registry.
+    /// # C: O(1)
+    pub(crate) fn set_hwmon_id(&self, id: u32) { self.hwmon_id.store(id, Ordering::Release); }
+
+    /// Return the assigned hwmon instance number, if this supply projects one.
+    /// # C: O(1)
+    pub fn hwmon_id(&self) -> Option<u32> {
+        match self.hwmon_id.load(Ordering::Acquire) { u32::MAX => None, id => Some(id) }
+    }
+
+    /// Attach the class-owned thermal projection created for a temperature
+    /// provider. # C: O(1)
+    pub(crate) fn set_thermal_zone(&self, zone: Arc<ThermalZone>) {
+        *self.thermal_zone.lock() = Some(zone);
+    }
+
+    /// Take the thermal projection during supply teardown. # C: O(1)
+    pub(crate) fn take_thermal_zone(&self) -> Option<Arc<ThermalZone>> {
+        self.thermal_zone.lock().take()
+    }
 
     /// Whether this supply declares `prop`. # C: O(N_declared)
     pub fn has_property(&self, prop: Property) -> bool {
@@ -170,6 +196,30 @@ impl PowerSupply {
         self.desc.supplied_from.iter().any(|name| name == supplier.name())
             || supplier.desc.supplied_to.iter().any(|name| name == self.name())
     }
+}
+
+/// The generic Linux power-supply-to-thermal adapter. The weak reference is
+/// deliberate: the thermal registry owns the zone, while the supply owns its
+/// teardown handle, so neither class keeps the other alive.
+pub(crate) struct SupplyThermal {
+    supply: Weak<PowerSupply>,
+}
+
+impl ZoneOps for SupplyThermal {
+    fn get_temp(&self) -> KResult<i32> {
+        let supply = self.supply.upgrade().ok_or(VfsError::Enodev)?;
+        let value = supply.get_property(Property::Temp)?.as_int()?;
+        value.checked_mul(100).ok_or(VfsError::Einval)
+    }
+}
+
+pub(crate) fn thermal_zone(supply: &Arc<PowerSupply>) -> KResult<Option<Arc<ThermalZone>>> {
+    if !supply.has_property(Property::Temp) { return Ok(None); }
+    let ops = Arc::new(SupplyThermal { supply: Arc::downgrade(supply) });
+    thermal::register_zone(
+        ZoneDesc::new(supply.name(), Vec::new(), Cadence { polling_ms: 0, passive_ms: 0 }),
+        ops,
+    ).map(Some)
 }
 
 #[cfg(test)]

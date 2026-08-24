@@ -152,9 +152,10 @@ fn send_corb(regs: &Regs, rings: &mut Rings, command: u32) -> bool {
 /// Drain every RIRB entry the controller has produced, routing solicited
 /// responses to their codec slot and queueing unsolicited ones.
 /// # C: O(new entries)
-pub fn update_rirb(regs: &Regs, rings: &mut Rings) {
+pub fn update_rirb(regs: &Regs, rings: &mut Rings) -> bool {
     let hardware = regs.r16(REG_RIRBWP);
-    if hardware == ring::POINTER_INVALID { return; }
+    if hardware == ring::POINTER_INVALID { return false; }
+    let mut unsolicited = false;
     let mut pending = ring::rirb_pending(rings.rirb_read, hardware);
     while pending > 0 {
         pending -= 1;
@@ -175,6 +176,7 @@ pub fn update_rirb(regs: &Regs, rings: &mut Rings) {
             if rings.unsolicited_count < UNSOL_QUEUE {
                 rings.unsolicited[rings.unsolicited_count] = (value, extended);
                 rings.unsolicited_count += 1;
+                unsolicited = true;
             }
             continue;
         }
@@ -183,6 +185,7 @@ pub fn update_rirb(regs: &Regs, rings: &mut Rings) {
             rings.pending[addr] -= 1;
         }
     }
+    unsolicited
 }
 
 /// Send one command through the immediate-command registers. This is the
@@ -221,7 +224,7 @@ pub fn exec(regs: &Regs, ring_lock: &RegLock<Rings>, command: u32) -> Option<u32
     loop {
         {
             let mut rings = lock_regs(ring_lock);
-            update_rirb(regs, &mut rings);
+            let _ = update_rirb(regs, &mut rings);
             if rings.pending[addr] == 0 { return Some(rings.response[addr]); }
         }
         if now_ns() >= deadline { break; }

@@ -86,6 +86,11 @@ pub struct SegState {
     /// Where the next victim search resumes, so successive searches sweep the
     /// volume instead of re-costing the same low-numbered segments.
     pub gc_cursor: u32,
+    /// Next segment of a partially processed background victim section.
+    pub gc_next_segment: Option<u32>,
+    /// Whether the active cleaner pass is the ahead-of-demand background
+    /// owner, so a bounded section walk can retain its continuation.
+    pub gc_background: bool,
     /// Which policy the pass now running is attributed to, as the reclaimed
     /// figures break their total down by.
     ///
@@ -211,6 +216,8 @@ impl<S: SectorSource> Volume<S> {
             e.valid_map[off / 8] &= !(1 << (off % 8));
             e.vblocks = e.vblocks.wrapping_sub(1);
             self.valid_block_count = self.valid_block_count.saturating_sub(1);
+            self.current_reserved_blocks = self.reserved_blocks.min(
+                self.current_reserved_blocks.saturating_add(1));
             let emptied = e.valid_blocks() == 0;
             // A log's own segment is never prefree: the log is still
             // appending to it, and the blocks it hands out next would be

@@ -115,6 +115,19 @@ pub mod at {
     pub const COMPACT_SIT: usize = SUM_JOURNAL_SIZE;
     /// Journal offset in a normal summary block, either kind. # C: O(1)
     pub const NORMAL: usize = SUM_JOURNAL_OFF;
+    /// Durable write counter in the journal's extra-info union. # C: O(1)
+    pub const LIFETIME_KBYTES: usize = SUM_JOURNAL_OFF + 2;
+}
+
+/// Read Linux's durable lifetime-write counter from a summary journal. # C: O(1)
+pub fn lifetime_kbytes(b: &[u8]) -> Option<u64> {
+    le64(b, at::LIFETIME_KBYTES)
+}
+
+/// Write Linux's durable lifetime-write counter into a summary journal. # C: O(1)
+pub fn write_lifetime_kbytes(b: &mut [u8], value: u64) {
+    b[at::LIFETIME_KBYTES..at::LIFETIME_KBYTES + 8]
+        .copy_from_slice(&value.to_le_bytes());
 }
 
 /// Block address of the summary block for current-segment log `log`.

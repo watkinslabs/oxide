@@ -84,10 +84,10 @@ pub(super) fn get(sock: &Arc<InetSocket>, optname: u64, out: &OptOut) -> i64 {
 /// `IPV6_2292PKTOPTIONS`: the ancillary messages a stream socket publishes on
 /// demand, packed into the caller's buffer as a running budget.
 ///
-/// This stack stashes no per-segment receive snapshot on a stream socket, so
-/// the synthesised answer — built from the socket's own sticky and receive
-/// state — is the path that always runs. WHICH messages, under WHICH receive
-/// bit, in WHAT order is owned by `net::sock_opts::sol_ipv6::pktoptions`.
+/// A connected TCP socket first replays the last in-order IPv6 receive
+/// snapshot; sockets without one use their sticky and receive state. WHICH
+/// messages, under WHICH receive bit, in WHAT order is owned by
+/// `net::sock_opts::sol_ipv6::pktoptions`.
 /// # C: O(messages)
 fn pktoptions_get(sock: &Arc<InetSocket>, out: &OptOut) -> i64 {
     use net::sock_opts::sol_ipv6::set::{RECVHOPLIMIT, RECVPKTINFO, RECVTCLASS};
@@ -95,6 +95,19 @@ fn pktoptions_get(sock: &Arc<InetSocket>, out: &OptOut) -> i64 {
         Ok(v) => v, Err(e) => return errno(e),
     };
     if requested < 0 { return errno(Errno::Einval); }
+    let snapshot = match &*sock.kind.lock() {
+        net::sock::SockKind::TcpConn(entry) => entry.conn.lock().telemetry.ipv6_pktoptions.as_ref()
+            .map(|meta| (**meta).clone()),
+        _ => None,
+    };
+    if let Some(meta) = snapshot {
+        let want = net::sock_opts::sol_ipv6::pktoptions::want(view(sock).flags);
+        let mut control = crate::recv_control::Control::new(requested as usize);
+        for msg in net::cmsg::plan(&want, &meta) {
+            control.push(msg.level, msg.kind, &msg.bytes);
+        }
+        return out.exact(&control.to_bytes());
+    }
     let flags = view(sock).flags;
     let (sticky_addr, sticky_ifindex) = sock.opts.ipv6.sticky_pktinfo();
     let state = net::sock_opts::sol_ipv6::pktoptions::Published {

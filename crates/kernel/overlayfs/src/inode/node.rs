@@ -34,6 +34,8 @@ pub struct OvlInode {
     pub parent: Option<Arc<OvlInode>>,
     /// A handle on this state, so a child can be given the shared one.
     me: Weak<OvlInode>,
+    /// Reverse link used by exportfs's parent walk.
+    self_inode: Spinlock<Option<Weak<vfs::Inode>>, TaskList>,
     /// This object's name inside that directory.
     pub name: String,
 }
@@ -41,6 +43,8 @@ pub struct OvlInode {
 impl OvlInode {
     /// The shared handle on this state. # C: O(1)
     pub fn shared(&self) -> Option<Arc<OvlInode>> { self.me.upgrade() }
+    /// Recover the VFS inode owning this state. # C: O(1)
+    pub fn inode(&self) -> Option<InodeRef> { self.self_inode.lock().as_ref()?.upgrade() }
     /// A snapshot of the object list. # C: O(layers)
     pub fn entry(&self) -> OvlEntry { self.entry.lock().clone() }
     /// Replace it after a copy-up. # C: O(1)
@@ -84,6 +88,25 @@ pub fn report_ino(stack: &LayerStack, entry: &OvlEntry) -> u64 {
     }
 }
 
+/// Select the real inode key Linux uses for overlay inode hashing. A lower
+/// inode remains the key when copy-up must preserve its identity; an
+/// unindexed lower hardlink that will be broken on copy-up is intentionally
+/// left uncached. A pure upper object uses its upper inode directly.
+/// # C: O(1)
+fn cache_key(stack: &LayerStack, entry: &OvlEntry) -> Option<usize> {
+    let real = entry.real()?;
+    let Some(lower) = entry.lower.first() else {
+        return entry.upper.as_ref().map(|i| Arc::as_ptr(i) as usize);
+    };
+    let is_dir = real.file_type() == FileType::Directory;
+    let by_lower = if stack.upper.is_none() { true }
+        else if stack.indexdir.is_some() { true }
+        else if !is_dir && real.nlink() > 1 { false }
+        else { true };
+    if by_lower { Some(Arc::as_ptr(&lower.inode) as usize) }
+    else { entry.upper.as_ref().map(|i| Arc::as_ptr(i) as usize) }
+}
+
 /// Build the overlay inode for `entry`.
 ///
 /// Its mode, size, owner and timestamps are the real object's, so the merge is
@@ -92,6 +115,22 @@ pub fn report_ino(stack: &LayerStack, entry: &OvlEntry) -> u64 {
 /// # C: O(1)
 pub fn make_inode(stack: &Arc<LayerStack>, entry: OvlEntry, parent: Option<Arc<OvlInode>>,
                   name: &str) -> InodeRef {
+    let key = cache_key(stack, &entry);
+    if let Some(key) = key {
+        let mut cache = stack.inode_cache.lock();
+        if let Some(existing) = cache.get(&key).and_then(|w| w.upgrade()) { return existing; }
+        cache.remove(&key);
+        let inode = build_inode(stack, entry, parent, name);
+        cache.insert(key, Arc::downgrade(&inode));
+        return inode;
+    }
+    build_inode(stack, entry, parent, name)
+}
+
+/// Build one uncached overlay inode after the cache owner has selected its
+/// canonical identity. # C: O(1)
+fn build_inode(stack: &Arc<LayerStack>, entry: OvlEntry, parent: Option<Arc<OvlInode>>,
+               name: &str) -> InodeRef {
     let real = entry.real();
     let st = real.as_ref().map(|r| r.getattr(&Idmap::identity()));
     let mode = st.as_ref().map(|s| s.mode).unwrap_or(S_IFDIR as u32 | 0o755);
@@ -104,18 +143,21 @@ pub fn make_inode(stack: &Arc<LayerStack>, entry: OvlEntry, parent: Option<Arc<O
         entry: Spinlock::new(entry),
         parent,
         me: me.clone(),
+        self_inode: Spinlock::new(None),
         name: name.to_string(),
     });
     let ops: Arc<dyn InodeOps> = Arc::new(super::ops::OvlOps);
     let fops: Arc<dyn FileOps> = Arc::new(super::ops::OvlOps);
-    let mut b = InodeBuilder::new(ino, mode, ops, fops).private(ovl).size(size);
+    let mut b = InodeBuilder::new(ino, mode, ops, fops).private(ovl.clone()).size(size);
     if let Some(s) = &st {
         b = b.owner(s.uid, s.gid).times(s.atime, s.mtime, s.ctime).nlink(s.nlink).rdev(s.rdev);
     }
     if let Some(r) = &real {
         if let Some(l) = r.i_link() { b = b.link(l.to_vec().into_boxed_slice()); }
     }
-    b.build()
+    let inode = b.build();
+    *ovl.self_inode.lock() = Some(Arc::downgrade(&inode));
+    inode
 }
 
 /// Refresh an overlay inode's metadata from the real object, after something

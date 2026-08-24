@@ -302,6 +302,38 @@ fn the_geometry_and_reserve_options_land_as_written() {
     assert_eq!(off.li_wait_mult, None);
 }
 
+/// A fresh multi-block fallocate is one allocator request.  With a stripe at
+/// four filesystem blocks, ext4 prefers a four-block run whose physical start
+/// is stripe-aligned, which proves the option reaches the bitmap allocator and
+/// is not merely retained in the mount option tail.
+#[test]
+fn stripe_aligns_a_full_fallocate_run() {
+    let m = mount(spy(false), "stripe=4");
+    let mount = m.state().mount.clone();
+    let ino = mount.create_file(ROOT_INO, b"stripe-run", 0o644, 0, 0).expect("create");
+    let bs = mount.sb.block_size as u64;
+    mount.fallocate_inode(ino, 0, 4 * bs, true).expect("fallocate");
+    let runs = mount.extent_map(ino).expect("extent map");
+    assert_eq!(runs.len(), 1, "the four requested blocks stay one extent");
+    assert_eq!(runs[0].2, 4);
+    assert_eq!(runs[0].1 % 4, 0, "physical run starts on the configured stripe");
+    assert!(runs[0].3, "fallocate leaves the run unwritten");
+}
+
+#[test]
+fn stripe_aligns_a_fresh_write_run() {
+    let m = mount(spy(false), "stripe=4");
+    let mount = m.state().mount.clone();
+    let ino = mount.create_file(ROOT_INO, b"stripe-write", 0o644, 0, 0).expect("create");
+    let bs = mount.sb.block_size as usize;
+    mount.write_at(ino, 0, &vec![0x5a; 4 * bs]).expect("write");
+    let runs = mount.extent_map(ino).expect("extent map");
+    assert_eq!(runs.len(), 1, "the fresh write stays one extent");
+    assert_eq!(runs[0].2, 4);
+    assert_eq!(runs[0].1 % 4, 0, "physical run starts on the configured stripe");
+    assert!(!runs[0].3, "ordinary writes produce initialized extents");
+}
+
 /// A remount that names ONE option leaves the others where they were. The
 /// options now live on the mount rather than beside it, and this is what would
 /// break if a second copy appeared.

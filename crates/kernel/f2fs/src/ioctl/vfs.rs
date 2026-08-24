@@ -185,6 +185,7 @@ pub fn unlocked_ioctl(file: &vfs::File, cred: &vfs::Cred, cmd: FileIoctlCmd)
             v.trim_free_space(start, len, minlen).map_err(crate::mount::errno_to_vfs)?;
             Ok(FileIoctlReply::Done)
         }
+        _ => Err(VfsError::Enotty),
     }
 }
 

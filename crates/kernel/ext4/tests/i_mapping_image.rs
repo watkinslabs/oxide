@@ -1,11 +1,10 @@
 //! B235 / D8 coupling: ext4 regular-file `i_mapping` is the inode's per-inode
 //! PMM frame store, so the SAME inode (Linux `iget` shared identity) hands
-//! every mapper/reader ONE coherent page cache — two handles read identical
+//! every mapper/reader ONE coherent frame store — two handles read identical
 //! bytes from the SAME backing frame.
 //!
-//! (Before D8 the read path served from the per-mount `Vec` page cache; reads
-//! now serve from the per-inode frame store, so this asserts on the frame
-//! identity, not the legacy `Vec` cache.)
+//! The read path and mapping now both serve from the per-inode frame store, so
+//! this asserts on the shared frame identity.
 
 extern crate alloc;
 mod common;
@@ -31,7 +30,7 @@ fn build_disk() -> Arc<dyn BlockDevice> {
 }
 
 #[test]
-fn two_mappers_share_one_inode_page_cache() {
+fn two_mappers_share_one_inode_frame_store() {
     common::boot_hosted_pmm();
     let m = ext4::rootfs::Ext4Mount::open(build_disk()).unwrap();
     // Back-stamp a SuperBlock so `wrap_file` shares one inode (iget).
@@ -62,5 +61,5 @@ fn two_mappers_share_one_inode_page_cache() {
 
     // And both hand out the SAME MAP_SHARED frame for page 0 (one cache).
     assert_eq!(ma.shared_frame(0), mb.shared_frame(0),
-        "both mappers alias the SAME inode frame — one page cache");
+        "both mappers alias the SAME inode frame store");
 }

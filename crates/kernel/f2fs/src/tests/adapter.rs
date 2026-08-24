@@ -66,8 +66,24 @@ fn realize(fs: &Arc<F2fs>) -> Arc<SuperBlock> {
         Box::new(|_, _, _, _, _, _| unreachable!("fixture is already mounted")));
     let sb = SuperBlock::from_ops(ty, s_op, root, any.magic(), 0xF2F5_0002, any.block_size(),
                                  String::from("f2fs"), Arc::new(()));
+    sb.set_s_flags(any.sb_flags(), 0);
     any.set_sb(Arc::downgrade(&sb)).expect("set superblock");
     sb
+}
+
+#[test]
+fn the_acl_mount_option_stamps_the_posixacl_superblock_flag() {
+    let dev = disk(&test_image::with_root().finish());
+    let acl = crate::opts::parse(&Options::defaults(), "acl").unwrap();
+    let fs = F2fs::open_with(dev, "/dev/fake", true, acl).unwrap();
+    let sb = realize(&fs);
+    assert!(sb.is_posixacl());
+
+    let dev = disk(&test_image::with_root().finish());
+    let noacl = crate::opts::parse(&Options::defaults(), "noacl").unwrap();
+    let fs = F2fs::open_with(dev, "/dev/fake", true, noacl).unwrap();
+    let sb = realize(&fs);
+    assert!(!sb.is_posixacl());
 }
 
 #[test]
@@ -507,6 +523,25 @@ fn syncing_the_file_places_it_and_a_remount_finds_it() {
     fs.checkpoint().unwrap();
     let again = remount(&dev);
     assert_eq!(again.read_all(ino).unwrap(), page);
+}
+
+#[test]
+fn swapfile_hook_returns_the_pinned_f2fs_block_view() {
+    let (fs, _dev, ino) = with_file();
+    let page = vec![0x5Cu8; BLKSIZE];
+    let sec = u64::from(fs.volume.lock().blks_per_sec());
+    fs.volume.lock().set_pin_file(ino, 1).unwrap();
+    fs.volume.lock().expand_pinned(ino, 0, sec * BLKSIZE as u64).unwrap();
+    assert_eq!(fs.write(ino, 0, &page).unwrap(), BLKSIZE);
+    fs.sync_file(ino, false).unwrap();
+    let file = fs.root_inode().unwrap().lookup("f").unwrap();
+    let erased = file.swapfile_backing().unwrap().expect("f2fs owns swap activation");
+    let backing = erased.downcast::<pmm::swap::SwapFileBacking>()
+        .expect("the VFS hook uses the shared PMM backing ABI");
+    let mut request = BlockRequest::new_read(0, 1, BLKSIZE as u32);
+    backing.device.submit_sync(&mut request).unwrap();
+    assert_eq!(request.buffer, page);
+    assert!(backing.name.starts_with("f2fs:"));
 }
 
 #[test]

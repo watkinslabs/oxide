@@ -31,12 +31,13 @@ impl NetStack {
         let iface = lease.iface();
         crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::InReceives);
         crate::mib6::add_ip(net_ns, crate::mib6::Ip6Mib::InOctets, l3.len() as u64);
-        let pre_routing = crate::netfilter_hook::nf_hook_eval_ctx(
-            &crate::netfilter_hook::NfHookCtx::ingress(
-                net_ns, NF_INET_PRE_ROUTING, l3, NFPROTO_IPV6, iface, 0));
-        if pre_routing.verdict == 0 {
+        let mut ingress_pkt = crate::pkt::Pkt::from_owned(l3.to_vec());
+        let pre_routing = crate::netfilter_hook::nf_hook_packet_in(
+            net_ns, NF_INET_PRE_ROUTING, &mut ingress_pkt, NFPROTO_IPV6, Some(iface), 0);
+        if !pre_routing.accepted() {
             return Ok(());
         }
+        let l3 = ingress_pkt.data();
         let hdr = match Ipv6Hdr::parse(l3) {
             Ok(hdr) => hdr,
             Err(_) => {
@@ -55,10 +56,11 @@ impl NetStack {
             crate::mib6::add_ip(net_ns, crate::mib6::Ip6Mib::InMcastOctets, l3.len() as u64);
         }
         if !self.v6_dst_is_local_in(net_ns, iface, hdr.dst) {
-            return self.forward_ipv6_in(net_ns, iface, l3);
+            return self.forward_ipv6_in(net_ns, iface, l3, Some(&ingress_pkt));
         }
-        if crate::netfilter_hook::nf_hook_eval_ctx(&crate::netfilter_hook::NfHookCtx::ingress(
-            net_ns, NF_INET_LOCAL_IN, l3, NFPROTO_IPV6, iface, pre_routing.mark)).verdict == 0 { return Ok(()); }
+        if !crate::netfilter_hook::nf_hook_packet_in(
+            net_ns, NF_INET_LOCAL_IN, &mut ingress_pkt, NFPROTO_IPV6, Some(iface), pre_routing.mark).accepted() { return Ok(()); }
+        let l3 = ingress_pkt.data();
         let payload_end = crate::ipv6::IPV6_HDR_LEN + hdr.payload_length as usize;
         if payload_end > l3.len() {
             crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::InTruncatedPkts);
@@ -131,7 +133,7 @@ impl NetStack {
         self.deliver_rx_ipv6_payload(
             lease, hdr.src, hdr.dst, hdr.hop_limit, hdr.traffic_class,
             &ancillary, mld_router_alert, next_header, payload,
-            full_packet,
+            full_packet, ingress_pkt.tproxy_target(),
         )
     }
 
@@ -170,6 +172,7 @@ impl NetStack {
         next_header: u8,
         payload: &[u8],
         packet: &[u8],
+        tproxy: Option<crate::pkt::TproxyTarget>,
     ) -> NetResult<()> {
         let (net_ns, iface) = (lease.net_ns(), lease.iface());
         let flow_label = ancillary.flow_label;
@@ -196,14 +199,15 @@ impl NetStack {
             }
             n if n == IpProto::Udp as u8 => {
                 crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::InDelivers);
-                self.deliver_rx_udp6(net_ns, iface, src, dst, hop_limit, traffic_class, ancillary, payload, packet)
+                self.deliver_rx_udp6(net_ns, iface, src, dst, hop_limit, traffic_class, ancillary,
+                    payload, packet, tproxy)
             }
             n if n == IpProto::Tcp as u8 => {
                 crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::InDelivers);
                 let src = IpAddr::V6(src);
                 let dst = IpAddr::V6(dst);
                 let _ = self.deliver_tcp_packet_hop(net_ns, iface, src, dst, payload, packet,
-                    hop_limit);
+                    hop_limit, tproxy);
             }
             _ => crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::InUnknownProtos),
         }

@@ -85,6 +85,8 @@ impl<S: SectorSource> Volume<S> {
         // file no longer has. Recomputing is the only repair: a patched
         // extent is one that is sometimes wrong, which reads as stale data.
         self.refresh_extent(ino)?;
+        self.counters.borrow_mut().add_defrag_blks(
+            moved.min(u64::from(u32::MAX)) as u32);
         Ok(moved * blk)
     }
 

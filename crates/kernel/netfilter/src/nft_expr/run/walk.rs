@@ -36,6 +36,7 @@ fn step(expr: &Expr, ctx: &mut EvalCtx, regs: &mut Regs) -> Option<i32> {
             ctx.bytes = ctx.bytes.wrapping_add(ctx.pkt.len() as u64);
             None
         }
+        Expr::Notrack => { ctx.notrack = true; None }
 
         Expr::Meta { dreg, sreg, key } => match (dreg, sreg) {
             (Some(dreg), _) => meta::get(ctx, regs, *dreg, *key),
@@ -88,10 +89,14 @@ fn step(expr: &Expr, ctx: &mut EvalCtx, regs: &mut Regs) -> Option<i32> {
         Expr::Objref { obj_type, name, sreg, set, set_id } => {
             let Some(objects) = ctx.objects else { return BREAK };
             match (name, sreg) {
-                (Some(name), _) => objects.eval(obj_type.unwrap_or(0), name),
+                (Some(name), _) => objects.eval_with(ctx.family, ctx.table.unwrap_or(""),
+                    obj_type.unwrap_or(0), name, ctx.pkt, ctx.pkt_len() as u64, ctx.now_ns,
+                    ctx.ct, ctx.synproxy, &mut ctx.actions, &mut ctx.meta.secmark),
                 (_, Some(sreg)) => {
                     let Some(key) = regs.tail(*sreg) else { return BREAK };
-                    objects.eval_from_set(*set_id, set.as_deref().unwrap_or(""), key)
+                    objects.eval_from_set_with(ctx.family, ctx.table.unwrap_or(""), *set_id,
+                        set.as_deref().unwrap_or(""), key, ctx.pkt, ctx.pkt_len() as u64,
+                        ctx.now_ns, ctx.ct, ctx.synproxy, &mut ctx.actions, &mut ctx.meta.secmark)
                 }
                 _ => BREAK,
             }

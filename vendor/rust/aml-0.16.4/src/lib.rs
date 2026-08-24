@@ -60,7 +60,7 @@ pub mod value;
 
 pub use crate::{namespace::*, value::AmlValue};
 
-use alloc::{boxed::Box, string::ToString};
+use alloc::{boxed::Box, string::ToString, vec::Vec};
 use core::mem;
 use log::{error, warn};
 use misc::{ArgNum, LocalNum};
@@ -138,6 +138,12 @@ pub struct AmlContext {
 
     pub namespace: Namespace,
     method_context: Option<MethodContext>,
+    /// Mutexes acquired by the currently serialized AML evaluator. AML
+    /// methods are never evaluated concurrently on one context, so this is
+    /// the interpreter's owner/depth record; the timeout is only observable
+    /// if a future caller adds a second evaluator.
+    held_mutexes: Vec<(AmlName, usize)>,
+    method_depth: usize,
 
     /*
      * These track the state of the context while it's parsing an AML table.
@@ -155,6 +161,8 @@ impl AmlContext {
             handler,
             namespace: Namespace::new(),
             method_context: None,
+            held_mutexes: Vec::new(),
+            method_depth: 0,
 
             current_scope: AmlName::root(),
             scope_indent: 0,
@@ -197,6 +205,7 @@ impl AmlContext {
                  */
                 let old_context = mem::replace(&mut self.method_context, Some(MethodContext::new(args)));
                 let old_scope = mem::replace(&mut self.current_scope, path.clone());
+                self.method_depth += 1;
 
                 /*
                  * Create a namespace level to store local objects created by the invocation.
@@ -236,6 +245,9 @@ impl AmlContext {
                 // TODO: this should also remove objects created by the method outside the method's scope, if they
                 // weren't statically created. This is harder.
                 self.namespace.remove_level(path.clone())?;
+                let depth = self.method_depth;
+                self.held_mutexes.retain(|(_, held_depth)| *held_depth != depth);
+                self.method_depth -= 1;
 
                 /*
                  * Restore the old state.
@@ -324,6 +336,29 @@ impl AmlContext {
             Target::Arg(arg) => self.current_arg(*arg),
             Target::Local(local) => self.local(*local),
         }
+    }
+
+    pub(crate) fn acquire_mutex(&mut self, target: Target, _timeout: u16) -> Result<bool, AmlError> {
+        let Target::Name(name) = target else { return Err(AmlError::MutexNotAcquired); };
+        let (path, handle) = self.namespace.search(&name, &self.current_scope)?;
+        if !matches!(self.namespace.get(handle)?, AmlValue::Mutex { .. }) {
+            return Err(AmlError::MutexNotObject(path));
+        }
+        self.held_mutexes.push((path, self.method_depth));
+        Ok(true)
+    }
+
+    pub(crate) fn release_mutex(&mut self, target: Target) -> Result<(), AmlError> {
+        let Target::Name(name) = target else { return Err(AmlError::MutexNotAcquired); };
+        let (path, handle) = self.namespace.search(&name, &self.current_scope)?;
+        if !matches!(self.namespace.get(handle)?, AmlValue::Mutex { .. }) {
+            return Err(AmlError::MutexNotObject(path));
+        }
+        let Some(index) = self.held_mutexes.iter().rposition(|(held, _)| *held == path) else {
+            return Err(AmlError::MutexNotAcquired);
+        };
+        self.held_mutexes.remove(index);
+        Ok(())
     }
 
     /// Get the value of an argument by its argument number. Can only be executed from inside a control method.
@@ -770,6 +805,8 @@ pub enum AmlError {
     /// Returned when a `DefFatal` op is encountered. This is separately reported using [`Handler::handle_fatal_error`].
     FatalError,
     InvalidNotifyTarget,
+    MutexNotAcquired,
+    MutexNotObject(AmlName),
 
     /*
      * Errors produced manipulating AML names.

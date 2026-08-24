@@ -101,10 +101,9 @@ pub fn sys_mremap(args: &SyscallArgs) -> i64 {
         if mm.range_sealed(new_fixed, new_size) { return -(Errno::Eperm.as_i32() as i64); }
         // Linux mremap is atomic: a source error (unaligned/hole/multi-VMA/
         // zero size) must leave the caller's destination mapping intact.
-        // Validate the source FIRST — glue_munmap frees the destination's
-        // frames, so tearing it down before mremap_full's checks would
-        // silently destroy live data on an error return (bug_006). Mirror
-        // mremap_full's own move-path guards. Shrink (new_size < old_size)
+        // Validate the source FIRST — the locked mremap path tears down the
+        // destination's frames only after these source guards succeed. Mirror
+        // mremap_full's own move-path checks. Shrink (new_size < old_size)
         // never touches new_addr in mremap_full, so it is skipped here.
         if (old & page_mask) != 0 || new_size == 0 {
             return einval;
@@ -117,7 +116,6 @@ pub fn sys_mremap(args: &SyscallArgs) -> i64 {
             Some(v) if covered_end <= v.end.as_u64() => {}
             _ => return efault,
         }
-        let _ = pmm::user_as::glue_munmap(new_addr, new_size as u64);
     }
     // Linux `resize_is_valid` -> `may_expand_vm(mm, …, vrm->delta)`: only the
     // GROWTH is charged against RLIMIT_AS. `MREMAP_DONTUNMAP` is the exception
@@ -127,31 +125,31 @@ pub fn sys_mremap(args: &SyscallArgs) -> i64 {
         (new_size as u64).saturating_sub(old_size as u64)
     };
     if let Err(rv) = pmm::user_as::admit_as_growth(&mm, as_delta) { return rv; }
-    match mm.mremap_full(old_ua, old_size, new_size,
+    let mut move_pages = |src: u64, dst: u64, len: usize| {
+        pmm::user_as::move_pages(src, dst, len as u64)
+    };
+    let mut unmap_destination = |addr: u64, len: u64| {
+        let _ = pmm::user_as::evict_pages_in_range(addr, len);
+        Ok(())
+    };
+    match mm.mremap_full_with_move(old_ua, old_size, new_size,
                     (flags & MREMAP_MAYMOVE) != 0,
                     (flags & MREMAP_FIXED) != 0,
                     dontunmap,
-                    new_ua)
+                    new_ua,
+                    &mut move_pages,
+                    &mut unmap_destination)
     {
         Ok(va) => {
             if dontunmap {
-                // mremap_full installed the new VMA + copied bytes.
-                // Drop the source range's PTEs so subsequent reads
-                // on the still-mapped source VMA refault as fresh
-                // zero pages — completes the DONTUNMAP contract.
+                // The raw PTE move left the source VMA in place. Its source
+                // leaves are already empty; the canonical zap is retained to
+                // clear any sparse-range markers or entries not moved.
                 let _ = pmm::user_as::evict_pages_in_range(old, old_size as u64);
             } else if va.as_u64() != old {
-                // B53: MOVE (grow, or FIXED to a new addr). mremap_full
-                // copied old→new and removed the *VMA* for the source via
-                // AddressSpace::munmap — but that is VMA-bookkeeping only:
-                // the source range's PTEs stay mapped and its frames stay
-                // allocated (refcount>0, off the buddy free-list). The now
-                // VMA-less source VA becomes an allocatable hole; a later
-                // mmap reusing it hits the stale PTE (no demand-fault) and
-                // silently aliases the *old* frame's contents — musl
-                // mallocng then reads non-zero where a fresh group must be
-                // zero and trips a_crash() (the python `import` SIGSEGV).
-                // Tear the source PTEs + frames down to match Linux mremap.
+                // The raw move already removed the source leaves. This is a
+                // no-op for moved pages and still clears any tail not in the
+                // transferred range before the old VMA is reused.
                 let _ = pmm::user_as::evict_pages_in_range(old, old_size as u64);
             } else if new_size < old_size {
                 // SHRINK in place: mremap_full dropped the tail VMA only;

@@ -34,6 +34,13 @@ pub const RECLAIM_PREFREE_PERCENT: u32 = 5;
 /// due on volume in any case, and the share alone would defer one forever.
 pub const MAX_RECLAIM_PREFREE_SEGMENTS: u32 = 4096;
 
+/// Linux's initial `rec_prefree_segments`: five percent of main segments,
+/// capped so a large volume cannot defer the checkpoint forever. # C: O(1)
+pub const fn default_reclaim_prefree_segments(main_segments: u32) -> u32 {
+    let share = main_segments * RECLAIM_PREFREE_PERCENT / PERCENT as u32;
+    if share < MAX_RECLAIM_PREFREE_SEGMENTS { share } else { MAX_RECLAIM_PREFREE_SEGMENTS }
+}
+
 impl<S: SectorSource> Volume<S> {
     /// The segment table as victim selection sees it. # C: O(main segments)
     pub(crate) fn seg_table(&self) -> Vec<SegInfo> {
@@ -79,16 +86,24 @@ impl<S: SectorSource> Volume<S> {
     /// The section worth cleaning next under `search`, and where the search
     /// after it should resume. # C: O(main segments)
     pub fn search_victim(&self, search: Search, skip: &[u32]) -> Option<Found> {
+        self.search_victim_with_valid_thresh(search, skip, 100)
+    }
+
+    /// The foreground/one-time search with Linux's live-ratio ceiling. # C: O(main segments)
+    pub fn search_victim_with_valid_thresh(&self, search: Search, skip: &[u32], ratio: u32)
+        -> Option<Found> {
         let table = self.seg_table();
         let units = victim::units(&table, self.sb.blks_per_seg() as u16, self.sb.segs_per_sec);
-        victim::pick_unit(&units, self.sb.blks_per_seg() as u16, self.sb.segs_per_sec,
-                          search, skip)
+        victim::pick_unit_with_valid_thresh(&units, self.sb.blks_per_seg() as u16,
+                                            self.sb.segs_per_sec, search, skip, ratio)
     }
 
     /// The section worth cleaning next for a caller that needs space now.
     /// # C: O(main segments)
     pub fn pick_victim(&self, policy: Policy, skip: &[u32]) -> Option<u32> {
-        self.search_victim(Search::foreground(policy), skip).map(|f| f.segno)
+        self.search_victim_with_valid_thresh(Search::foreground(policy), skip,
+                                             self.gc_valid_thresh_ratio)
+            .map(|f| f.segno)
     }
 
     /// Clean `segno`: move out everything still live in it.
@@ -133,6 +148,16 @@ impl<S: SectorSource> Volume<S> {
             .and_then(|()| stale.into_iter().try_for_each(|a| self.release_block(a)));
         self.segstate.gc_moving = false;
         outcome?;
+        let when = if self.segstate.gc_background {
+            crate::stats::counters::gc_when::BG
+        } else {
+            crate::stats::counters::gc_when::FG
+        };
+        if nodes {
+            self.counters.borrow_mut().add_gc_node_blks(moved, when);
+        } else {
+            self.counters.borrow_mut().add_gc_data_blks(moved, when);
+        }
         // One segment cleaned, charged to the policy this pass is running
         // under. Raised here rather than where the pass ends because a pass
         // cleans several segments and the figure is per segment.
@@ -174,18 +199,46 @@ impl<S: SectorSource> Volume<S> {
     /// it cost buys nothing until every segment in it is empty.
     /// # C: O(blocks per section)
     pub fn gc_section(&mut self, first: u32) -> Result<u32, Errno> {
+        let per_sec = self.sb.segs_per_sec.max(1);
+        self.gc_section_window(first, per_sec, per_sec)
+    }
+
+    /// Clean at most `window` segments of the section containing `start`.
+    /// A background pass resumes at the returned section tail rather than
+    /// letting a bounded victim search forget the partially cleaned section.
+    /// # C: O(window * blocks per segment)
+    fn gc_section_window(&mut self, start: u32, window: u32, migration: u32)
+        -> Result<u32, Errno> {
         self.load_segments()?;
         let per_sec = self.sb.segs_per_sec.max(1);
+        let first = (start / per_sec) * per_sec;
+        let section_end = (first + per_sec).min(self.sb.segment_count_main);
+        let end = (start + window.max(1)).min(section_end);
         // The section's summary blocks, fetched before the first segment is
         // cleaned: they are consecutive, and every segment below reads one.
-        self.ra_meta_pages(crate::uapi::sum_block_addr(self.sb.ssa_blkaddr, first), per_sec,
+        self.ra_meta_pages(crate::uapi::sum_block_addr(self.sb.ssa_blkaddr, first), end - first,
                            crate::volume::readahead::RaMeta::Ssa);
         let mut moved = 0u32;
-        for segno in first..(first + per_sec).min(self.sb.segment_count_main) {
+        let mut migrated = 0u32;
+        let mut stopped_at = end;
+        for segno in start..end {
             // A log inside the section stops the section being reclaimable,
             // but the segments beside it are still worth emptying.
             if self.is_current(segno) { continue; }
+            if self.seg_valid(segno) == 0 { continue; }
+            if migrated >= migration.max(1) {
+                stopped_at = segno;
+                break;
+            }
             moved += self.gc_segment(segno)?;
+            migrated += 1;
+        }
+        if self.segstate.gc_background && stopped_at < section_end {
+            self.segstate.gc_next_segment = Some(stopped_at);
+        } else if self.segstate.gc_background && end < section_end {
+            self.segstate.gc_next_segment = Some(end);
+        } else if end >= section_end {
+            self.segstate.gc_next_segment = None;
         }
         Ok(moved)
     }
@@ -236,6 +289,7 @@ impl<S: SectorSource> Volume<S> {
     /// thread cleans under the ordinary policy and is counted as such.
     /// # C: O(sections cleaned * blocks per section)
     pub fn collect_as(&mut self, policy: Policy, target: u32, mode: usize) -> Result<u32, Errno> {
+        self.counters.borrow_mut().inc_gc_call(crate::stats::counters::call::FOREGROUND);
         self.writable_or_err()?;
         if self.segstate.gc_running { return Ok(0); }
         self.segstate.gc_running = true;
@@ -285,7 +339,8 @@ impl<S: SectorSource> Volume<S> {
                 _ => {
                     let search =
                         Search { offset: self.segstate.gc_cursor, ..Search::foreground(policy) };
-                    let Some(found) = self.search_victim(search, skip) else { break };
+                    let Some(found) = self.search_victim_with_valid_thresh(
+                        search, skip, self.gc_valid_thresh_ratio) else { break };
                     self.segstate.gc_cursor = found.cursor;
                     // A section this caller is about to empty is no longer
                     // worth remembering as a candidate.
@@ -319,6 +374,13 @@ impl<S: SectorSource> Volume<S> {
         self.gc_background_as(Policy::CostBenefit, gc_mode::NORMAL)
     }
 
+    /// The boosted zoned-background variant, with Linux's window multiplier.
+    /// # C: O(min(sections, max search) + blocks per section)
+    pub fn gc_background_age_boosted(&mut self, mode: usize, multiple: u32)
+        -> Result<Option<u32>, Errno> {
+        self.gc_background_age_inner(mode, multiple)
+    }
+
     /// Clean ahead of demand, choosing the victim by AGE.
     ///
     /// Falls back to the ordinary ahead-of-demand pass when the age policy is
@@ -328,19 +390,51 @@ impl<S: SectorSource> Volume<S> {
     /// run out of space while reporting that it had nothing to do.
     /// # C: O(main segments + blocks per section)
     pub fn gc_background_age(&mut self, mode: usize) -> Result<Option<u32>, Errno> {
+        self.gc_background_age_inner(mode, 1)
+    }
+
+    fn gc_background_age_inner(&mut self, mode: usize, multiple: u32)
+        -> Result<Option<u32>, Errno> {
         self.writable_or_err()?;
         if self.segstate.gc_running { return Ok(None); }
         self.load_segments()?;
+        if let Some(segno) = self.segstate.gc_next_segment.take() {
+            if self.is_current(segno) {
+                self.segstate.gc_next_segment = Some(segno);
+            } else {
+            self.mark_victim_section(segno);
+            self.counters.borrow_mut().inc_gc_call(
+                crate::stats::counters::call::BACKGROUND);
+            self.segstate.gc_running = true;
+            self.segstate.gc_background = true;
+            self.segstate.gc_pass_mode = mode;
+            self.segstate.gc_atgc_log = self.atgc.enabled;
+            let outcome = self.gc_section_window(segno,
+                                                 self.migration_window_granularity().saturating_mul(multiple),
+                                                 self.migration_granularity());
+            self.segstate.gc_background = false;
+            self.segstate.gc_atgc_log = false;
+            self.segstate.gc_pass_mode = gc_mode::NORMAL;
+            self.segstate.gc_running = false;
+            outcome?;
+            return Ok(Some(segno));
+            }
+        }
         let skip = self.retained_victim_segs();
         let Some(found) = self.search_victim_by_age(&skip) else {
             return self.gc_background_as(Policy::CostBenefit, mode);
         };
         self.segstate.gc_cursor = found.cursor;
         self.mark_victim_section(found.segno);
+        self.counters.borrow_mut().inc_gc_call(crate::stats::counters::call::BACKGROUND);
         self.segstate.gc_running = true;
         self.segstate.gc_pass_mode = mode;
         self.segstate.gc_atgc_log = self.atgc.enabled;
-        let outcome = self.gc_section(found.segno);
+        self.segstate.gc_background = true;
+        let outcome = self.gc_section_window(found.segno,
+                                             self.migration_window_granularity().saturating_mul(multiple),
+                                             self.migration_granularity());
+        self.segstate.gc_background = false;
         self.segstate.gc_atgc_log = false;
         self.segstate.gc_pass_mode = gc_mode::NORMAL;
         self.segstate.gc_running = false;
@@ -352,9 +446,16 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(min(sections, max search) + blocks per section)
     pub fn gc_background_as(&mut self, policy: Policy, mode: usize)
         -> Result<Option<u32>, Errno> {
+        self.gc_background_as_boosted(policy, mode, 1)
+    }
+
+    pub fn gc_background_as_boosted(&mut self, policy: Policy, mode: usize, multiple: u32)
+        -> Result<Option<u32>, Errno> {
+        self.counters.borrow_mut().inc_gc_call(crate::stats::counters::call::BACKGROUND);
         self.writable_or_err()?;
         if self.segstate.gc_running { return Ok(None); }
         self.load_segments()?;
+        let resume = self.segstate.gc_next_segment.take();
         let search = Search::background(policy, self.segstate.gc_cursor,
                                        self.max_victim_search());
         // What an earlier ahead-of-demand pass already chose is passed over.
@@ -362,18 +463,28 @@ impl<S: SectorSource> Volume<S> {
         // the same cheapest section every round and the rest of the volume
         // would never be costed at all.
         let skip = self.retained_victim_segs();
-        let Some(found) = self.search_victim(search, &skip) else { return Ok(None) };
-        self.segstate.gc_cursor = found.cursor;
-        self.mark_victim_section(found.segno);
+        let found_seg = match resume {
+            Some(segno) if !self.is_current(segno) => segno,
+            _ => {
+                let Some(found) = self.search_victim(search, &skip) else { return Ok(None) };
+                self.segstate.gc_cursor = found.cursor;
+                found.segno
+            }
+        };
+        self.mark_victim_section(found_seg);
         self.segstate.gc_running = true;
+        self.segstate.gc_background = true;
         self.segstate.gc_pass_mode = mode;
         self.segstate.gc_atgc_log = self.atgc.enabled;
-        let outcome = self.gc_section(found.segno);
+        let outcome = self.gc_section_window(found_seg,
+                                             self.migration_window_granularity().saturating_mul(multiple),
+                                             self.migration_granularity());
+        self.segstate.gc_background = false;
         self.segstate.gc_atgc_log = false;
         self.segstate.gc_pass_mode = gc_mode::NORMAL;
         self.segstate.gc_running = false;
         outcome?;
-        Ok(Some(found.segno))
+        Ok(Some(found_seg))
     }
 
     /// Whether a cleaning pass is already under way. # C: O(1)
@@ -405,7 +516,38 @@ impl<S: SectorSource> Volume<S> {
     /// large one it is noise not worth a checkpoint.
     /// # C: O(1)
     pub fn excess_prefree(&self) -> bool {
-        let share = self.sb.segment_count_main * RECLAIM_PREFREE_PERCENT / PERCENT as u32;
-        self.prefree_count() > share.min(MAX_RECLAIM_PREFREE_SEGMENTS)
+        self.prefree_count() > self.reclaim_segments
+    }
+
+    /// The current prefree-segment checkpoint threshold. # C: O(1)
+    pub fn reclaim_segments(&self) -> u32 { self.reclaim_segments }
+
+    /// Set Linux's `reclaim_segments` threshold. # C: O(1)
+    pub fn set_reclaim_segments(&mut self, value: u32) { self.reclaim_segments = value; }
+
+    /// The one-time-GC live-block ratio threshold. # C: O(1)
+    pub fn gc_valid_thresh_ratio(&self) -> u32 { self.gc_valid_thresh_ratio }
+
+    /// Set Linux's `gc_valid_thresh_ratio` control. # C: O(1)
+    pub fn set_gc_valid_thresh_ratio(&mut self, value: u32) {
+        self.gc_valid_thresh_ratio = value;
+    }
+
+    /// Current background migration window, in segments. # C: O(1)
+    pub fn migration_window_granularity(&self) -> u32 {
+        self.migration_window_granularity
+    }
+
+    /// Set Linux's background migration window. # C: O(1)
+    pub fn set_migration_window_granularity(&mut self, value: u32) {
+        self.migration_window_granularity = value;
+    }
+
+    pub fn migration_granularity(&self) -> u32 {
+        self.migration_granularity
+    }
+
+    pub fn set_migration_granularity(&mut self, value: u32) {
+        self.migration_granularity = value;
     }
 }

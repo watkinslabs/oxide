@@ -5,6 +5,7 @@
 //! when the same lookup fails — it never substitutes a fabricated value.
 
 extern crate alloc;
+use alloc::sync::Arc;
 
 use conntrack::tuple::{InetAddr, Tuple};
 
@@ -60,6 +61,15 @@ pub trait CtAccess {
     /// the current packet. `None` when the count cannot be maintained.
     /// # C: O(N conns on the list)
     fn connlimit_count(&self, _index: usize) -> Option<u32> { None }
+    /// The canonical connection object, when the packet is tracked. # C: O(1)
+    fn flow(&self) -> Option<Arc<conntrack::Conn>> { None }
+    /// Attach a named helper through the owning conntrack registry. # C: O(N helpers)
+    fn set_helper(&self, _name: &str, _l4proto: u8) -> bool { false }
+    /// Install a protocol timeout extension on the unconfirmed flow.
+    fn set_timeout_policy(&self, _l3num: u16, _l4proto: u8, _values: &[u32; 14], _now: u64) -> bool { false }
+    /// Announce a related flow through the owning expectation table.
+    fn set_expectation(&self, _l3num: u16, _l4proto: u8, _dport: u16,
+                       _timeout_ms: u32, _size: u8, _now: u64) -> bool { false }
 }
 
 /// One route lookup's answer.
@@ -169,10 +179,31 @@ pub trait SynproxyAccess {
 pub trait ObjectAccess {
     /// Run the named object's own evaluation, returning the verdict it set,
     /// or `None` when no such object exists. # C: O(cost of the object)
-    fn eval(&self, _obj_type: u32, _name: &str) -> Option<i32> { None }
+    fn eval(&self, _family: u8, _table: &str, _obj_type: u32, _name: &str,
+            _pkt_len: u64, _now_ns: u64, _ct: Option<&dyn CtAccess>) -> Option<i32> { None }
+    /// Run an object with access to packet effects needed by object types that
+    /// own an action, while retaining the simple hook above for objects that
+    /// only return a verdict.
+    fn eval_with(&self, family: u8, table: &str, obj_type: u32, name: &str,
+                 _pkt: &[u8], pkt_len: u64, now_ns: u64,
+                 ct: Option<&dyn CtAccess>, _synproxy: Option<&dyn SynproxyAccess>,
+                 _actions: &mut alloc::vec::Vec<crate::nft_expr::action::Action>,
+                 _packet_secmark: &mut u32) -> Option<i32> {
+        self.eval(family, table, obj_type, name, pkt_len, now_ns, ct)
+    }
     /// Object an element of `set` points at, keyed by the register bytes.
     /// # C: O(cost of the set lookup)
-    fn eval_from_set(&self, _set_id: Option<usize>, _set: &str, _key: &[u8]) -> Option<i32> {
+    fn eval_from_set(&self, _family: u8, _table: &str, _set_id: Option<usize>,
+                     _set: &str, _key: &[u8], _pkt_len: u64, _now_ns: u64,
+                     _ct: Option<&dyn CtAccess>) -> Option<i32> {
         None
+    }
+
+    fn eval_from_set_with(&self, family: u8, table: &str, set_id: Option<usize>,
+                          set: &str, key: &[u8], _pkt: &[u8], pkt_len: u64, now_ns: u64,
+                          ct: Option<&dyn CtAccess>, _synproxy: Option<&dyn SynproxyAccess>,
+                          _actions: &mut alloc::vec::Vec<crate::nft_expr::action::Action>,
+                          _packet_secmark: &mut u32) -> Option<i32> {
+        self.eval_from_set(family, table, set_id, set, key, pkt_len, now_ns, ct)
     }
 }

@@ -9,6 +9,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use sync::{Devices as HdaRegistryClass, Spinlock};
 
 use crate::controller::{Hda, IrqEndpoint};
+use crate::ctlname;
 use crate::elemkey::{self, ElemKind};
 use crate::ownership::ControllerLocks;
 use crate::stream;
@@ -31,23 +32,41 @@ pub struct DeviceState {
     pub vendor_id: u32,
     /// Jack elements, so a presence change can name the control that moved.
     pub jack_elems: Vec<(u8, u32, sound::elem::ElemId)>,
+    /// Physical output followers controlled by the Linux virtual master.
+    pub master_followers: Vec<MasterFollower>,
+    /// Software attenuation and mute state of the virtual master.
+    pub master_volume: u8,
+    pub master_mute: bool,
+    pub beep_generation: u32,
     /// `(physical address, order)` of every DMA frame this controller owns,
     /// so removal frees exactly what the probe took.
-    pub frames: Vec<(u64, u8)>,
+    pub frames: Vec<(u64, u8, bool)>,
     /// The BAR0 mapping, released with the device.
     pub mapping: Option<mmio_map::Mapping>,
+}
+
+#[derive(Clone, Debug)]
+pub struct MasterFollower {
+    pub nid: u8,
+    pub output: bool,
+    pub caps: widget::AmpCaps,
+    pub left: u8,
+    pub right: u8,
+    pub left_muted: bool,
+    pub right_muted: bool,
 }
 
 impl Device {
     /// # C: O(1)
     pub fn new(key: pci::Bdf, owner: sound::SoundOwnerKey, hda: Hda, vendor_id: u32,
-               frames: Vec<(u64, u8)>, mapping: mmio_map::Mapping) -> Self {
+               frames: Vec<(u64, u8, bool)>, mapping: mmio_map::Mapping) -> Self {
         let irq = IrqEndpoint::new(&hda);
         let reg = Arc::clone(&hda.rings);
         Self {
             key, owner, online: AtomicBool::new(true), irq,
             locks: ControllerLocks::from_reg(DeviceState {
-                hda, vendor_id, jack_elems: Vec::new(), frames, mapping: Some(mapping),
+                hda, vendor_id, jack_elems: Vec::new(), master_followers: Vec::new(),
+                master_volume: 0, master_mute: false, beep_generation: 0, frames, mapping: Some(mapping),
             }, reg),
         }
     }
@@ -144,102 +163,165 @@ fn identity(owner: sound::SoundOwnerKey) -> sound::CardIdentity {
                              &components[..12], b"HD-Audio Analog")
 }
 
-fn caps(owner: sound::SoundOwnerKey, playback: bool) -> sound::ops::Caps {
+fn caps(owner: sound::SoundOwnerKey, playback: bool, device_number: u32) -> sound::ops::Caps {
     with_device(owner, |device| {
         let codec = device.hda.codec.as_ref()?;
         let plan = device.hda.plan.as_ref()?;
-        let nid = if playback { plan.primary()?.dac } else { plan.primary_capture()?.adc };
+        let nid = if playback { plan.output_for(device_number)?.dac } else { plan.capture_for(device_number)?.adc };
         let par_pcm = codec.pcm_caps_of(nid);
         let formats = crate::stream_fmt::pcm_format_mask(par_pcm);
         let rates = crate::stream_fmt::pcm_rate_mask(par_pcm);
         if formats == 0 || rates == 0 { return None; }
-        let channels = codec.widget(nid).map(|w| widget::widget_channels(w.wcaps)).unwrap_or(2);
+        let base = codec.widget(nid).map(|w| widget::widget_channels(w.wcaps)).unwrap_or(2);
+        let channels = base + if playback {
+            device.hda.plan.as_ref().map(|plan| plan.multi_io.len() as u32 * 2).unwrap_or(0)
+        } else { 0 };
         Some((formats, rates, 1, channels.min(u8::MAX as u32) as u8))
     })?
 }
 
-fn pcm_caps(owner: sound::SoundOwnerKey) -> sound::ops::Caps { caps(owner, true) }
-fn cap_caps(owner: sound::SoundOwnerKey) -> sound::ops::Caps { caps(owner, false) }
+fn pcm_caps(owner: sound::SoundOwnerKey) -> sound::ops::Caps { caps(owner, true, 0) }
+fn cap_caps(owner: sound::SoundOwnerKey) -> sound::ops::Caps { caps(owner, false, 0) }
+
+fn pcm_devices(owner: sound::SoundOwnerKey) -> u32 {
+    with_device(owner, |device| {
+        let Some(plan) = device.hda.plan.as_ref() else { return 0; };
+        let outputs = plan.all_outputs().count();
+        let capture = plan.captures.len();
+        outputs.max(capture) as u32
+    }).unwrap_or(0)
+}
+
+fn pcm_caps_for(owner: sound::SoundOwnerKey, device: sound::ops::PcmDevice) -> sound::ops::Caps { caps(owner, true, device) }
+fn cap_caps_for(owner: sound::SoundOwnerKey, device: sound::ops::PcmDevice) -> sound::ops::Caps {
+    caps(owner, false, device)
+}
 
 fn hw_limits(_owner: sound::SoundOwnerKey) -> sound::ops::HwLimits {
     (stream::MAX_PERIOD_BYTES, stream::BUFFER_BYTES)
 }
 
+fn hw_limits_for(_owner: sound::SoundOwnerKey, _device: sound::ops::PcmDevice) -> sound::ops::HwLimits { hw_limits(_owner) }
+
 /// The stream engine can be halted and restarted without losing its ring
 /// position, which is exactly what SNDRV_PCM_IOCTL_PAUSE asks for.
 fn info_flags(_owner: sound::SoundOwnerKey) -> u32 { sound::uapi::PCM_INFO_PAUSE }
+fn info_flags_for(_owner: sound::SoundOwnerKey, _device: sound::ops::PcmDevice) -> u32 { info_flags(_owner) }
 
 fn period_bytes(_owner: sound::SoundOwnerKey) -> usize { stream::MAX_PERIOD_BYTES as usize }
+fn period_bytes_for(_owner: sound::SoundOwnerKey, _device: sound::ops::PcmDevice) -> usize { period_bytes(_owner) }
 
 fn config(_owner: sound::SoundOwnerKey) -> Option<(u32, u32, u32, u32)> { None }
 
 fn pcm_hw_params(owner: sound::SoundOwnerKey, format: u32, rate_hz: u32, channels: u8,
                  period_bytes: u32, _buffer_bytes: u32) -> bool {
-    with_device(owner, |device| device.hda.prepare_playback(format, rate_hz, channels, period_bytes))
+    pcm_hw_params_for(owner, 0, format, rate_hz, channels, period_bytes, _buffer_bytes)
+}
+
+fn pcm_hw_params_for(owner: sound::SoundOwnerKey, device: sound::ops::PcmDevice,
+                     format: u32, rate_hz: u32, channels: u8, period_bytes: u32,
+                     _buffer_bytes: u32) -> bool {
+    with_device(owner, |state| state.hda.prepare_playback(device, format, rate_hz, channels, period_bytes))
         .unwrap_or(false)
 }
 
 fn cap_hw_params(owner: sound::SoundOwnerKey, format: u32, rate_hz: u32, channels: u8,
                  period_bytes: u32, _buffer_bytes: u32) -> bool {
-    with_device(owner, |device| device.hda.prepare_capture(format, rate_hz, channels, period_bytes))
+    cap_hw_params_for(owner, 0, format, rate_hz, channels, period_bytes, _buffer_bytes)
+}
+
+fn cap_hw_params_for(owner: sound::SoundOwnerKey, device: sound::ops::PcmDevice,
+                     format: u32, rate_hz: u32, channels: u8, period_bytes: u32,
+                     _buffer_bytes: u32) -> bool {
+    with_device(owner, |state| state.hda.prepare_capture(device, format, rate_hz, channels, period_bytes))
         .unwrap_or(false)
 }
 
 fn pcm_prepare(owner: sound::SoundOwnerKey) -> bool {
-    with_device(owner, |device| {
-        let regs = device.hda.regs;
-        device.hda.playback.stop(&regs);
-        device.hda.playback.write_off = 0;
-        device.hda.playback.laps = 0;
-        device.hda.playback.last_position = 0;
-        device.hda.playback.silence();
+    pcm_prepare_for(owner, 0)
+}
+
+fn pcm_prepare_for(owner: sound::SoundOwnerKey, device: sound::ops::PcmDevice) -> bool {
+    with_device(owner, |device_state| {
+        let Some(stream) = device_state.hda.playback.get_mut(device as usize) else { return false; };
+        let regs = device_state.hda.regs;
+        stream.stop(&regs);
+        stream.write_off = 0;
+        stream.laps = 0;
+        stream.last_position = 0;
+        stream.silence();
         true
     }).unwrap_or(false)
 }
 
 fn cap_prepare(owner: sound::SoundOwnerKey) -> bool {
-    with_device(owner, |device| {
-        let regs = device.hda.regs;
-        device.hda.capture.stop(&regs);
-        device.hda.capture.write_off = 0;
-        device.hda.capture.laps = 0;
-        device.hda.capture.last_position = 0;
+    cap_prepare_for(owner, 0)
+}
+
+fn cap_prepare_for(owner: sound::SoundOwnerKey, device: sound::ops::PcmDevice) -> bool {
+    with_device(owner, |device_state| {
+        let Some(stream) = device_state.hda.capture.get_mut(device as usize) else { return false; };
+        let regs = device_state.hda.regs;
+        stream.stop(&regs);
+        stream.write_off = 0;
+        stream.laps = 0;
+        stream.last_position = 0;
         true
     }).unwrap_or(false)
 }
 
 fn pcm_trigger(owner: sound::SoundOwnerKey, start: bool) -> bool {
-    with_device(owner, |device| {
-        let regs = device.hda.regs;
-        if start { device.hda.playback.start(&regs) } else { device.hda.playback.stop(&regs) }
+    pcm_trigger_for(owner, 0, start)
+}
+
+fn pcm_trigger_for(owner: sound::SoundOwnerKey, device: sound::ops::PcmDevice, start: bool) -> bool {
+    with_device(owner, |device_state| {
+        let Some(stream) = device_state.hda.playback.get_mut(device as usize) else { return false; };
+        let regs = device_state.hda.regs;
+        if start { stream.start(&regs) } else { stream.stop(&regs) }
         true
     }).unwrap_or(false)
 }
 
 fn cap_trigger(owner: sound::SoundOwnerKey, start: bool) -> bool {
-    with_device(owner, |device| {
-        let regs = device.hda.regs;
-        if start { device.hda.capture.start(&regs) } else { device.hda.capture.stop(&regs) }
+    cap_trigger_for(owner, 0, start)
+}
+
+fn cap_trigger_for(owner: sound::SoundOwnerKey, device: sound::ops::PcmDevice, start: bool) -> bool {
+    with_device(owner, |device_state| {
+        let Some(stream) = device_state.hda.capture.get_mut(device as usize) else { return false; };
+        let regs = device_state.hda.regs;
+        if start { stream.start(&regs) } else { stream.stop(&regs) }
         true
     }).unwrap_or(false)
 }
 
 fn pcm_pause(owner: sound::SoundOwnerKey, pause: bool) -> bool {
-    with_device(owner, |device| {
-        let regs = device.hda.regs;
-        if pause { device.hda.playback.pause(&regs) } else { device.hda.playback.start(&regs) }
+    pcm_pause_for(owner, 0, pause)
+}
+
+fn pcm_pause_for(owner: sound::SoundOwnerKey, device: sound::ops::PcmDevice, pause: bool) -> bool {
+    with_device(owner, |device_state| {
+        let Some(stream) = device_state.hda.playback.get_mut(device as usize) else { return false; };
+        let regs = device_state.hda.regs;
+        if pause { stream.pause(&regs) } else { stream.start(&regs) }
         true
     }).unwrap_or(false)
 }
 
 /// Wait for the hardware to consume what the ring already holds. # C: O(buffer)
 fn pcm_drain(owner: sound::SoundOwnerKey) -> bool {
-    with_device(owner, |device| {
-        let regs = device.hda.regs;
-        let size = device.hda.playback.geometry.buffer_bytes();
-        if size == 0 || !device.hda.playback.running { return true; }
+    pcm_drain_for(owner, 0)
+}
+
+fn pcm_drain_for(owner: sound::SoundOwnerKey, device: sound::ops::PcmDevice) -> bool {
+    with_device(owner, |device_state| {
+        let Some(stream) = device_state.hda.playback.get_mut(device as usize) else { return false; };
+        let regs = device_state.hda.regs;
+        let size = stream.geometry.buffer_bytes();
+        if size == 0 || !stream.running { return true; }
         let deadline = crate::platform::now_ns() + 1_000_000_000;
-        while device.hda.playback.position(&regs) != device.hda.playback.write_off {
+        while stream.position(&regs) != stream.write_off {
             if crate::platform::now_ns() >= deadline { break; }
             crate::platform::udelay(100);
         }
@@ -248,53 +330,96 @@ fn pcm_drain(owner: sound::SoundOwnerKey) -> bool {
 }
 
 fn pcm_pointer(owner: sound::SoundOwnerKey) -> Option<u64> {
-    with_device(owner, |device| {
-        let regs = device.hda.regs;
-        Some(device.hda.playback.frames(&regs))
+    pcm_pointer_for(owner, 0)
+}
+
+fn pcm_pointer_for(owner: sound::SoundOwnerKey, device: sound::ops::PcmDevice) -> Option<u64> {
+    with_device(owner, |device_state| {
+        let stream = device_state.hda.playback.get_mut(device as usize)?;
+        let regs = device_state.hda.regs;
+        Some(stream.frames(&regs))
     })?
 }
 
 fn cap_pointer(owner: sound::SoundOwnerKey) -> Option<u64> {
-    with_device(owner, |device| {
-        let regs = device.hda.regs;
-        Some(device.hda.capture.frames(&regs))
+    cap_pointer_for(owner, 0)
+}
+
+fn cap_pointer_for(owner: sound::SoundOwnerKey, device: sound::ops::PcmDevice) -> Option<u64> {
+    with_device(owner, |device_state| {
+        let stream = device_state.hda.capture.get_mut(device as usize)?;
+        let regs = device_state.hda.regs;
+        Some(stream.frames(&regs))
     })?
 }
 
 fn pcm_hw_free(owner: sound::SoundOwnerKey) -> bool {
-    with_device(owner, |device| {
-        let regs = device.hda.regs;
-        device.hda.playback.stop(&regs);
-        device.hda.release(true);
+    pcm_hw_free_for(owner, 0)
+}
+
+fn pcm_hw_free_for(owner: sound::SoundOwnerKey, device: sound::ops::PcmDevice) -> bool {
+    with_device(owner, |device_state| {
+        let Some(stream) = device_state.hda.playback.get_mut(device as usize) else { return false; };
+        let regs = device_state.hda.regs;
+        stream.stop(&regs);
+        device_state.hda.release(device, true);
         true
     }).unwrap_or(false)
 }
 
 fn cap_hw_free(owner: sound::SoundOwnerKey) -> bool {
-    with_device(owner, |device| {
-        let regs = device.hda.regs;
-        device.hda.capture.stop(&regs);
-        device.hda.release(false);
+    cap_hw_free_for(owner, 0)
+}
+
+fn cap_hw_free_for(owner: sound::SoundOwnerKey, device: sound::ops::PcmDevice) -> bool {
+    with_device(owner, |device_state| {
+        let Some(stream) = device_state.hda.capture.get_mut(device as usize) else { return false; };
+        let regs = device_state.hda.regs;
+        stream.stop(&regs);
+        device_state.hda.release(device, false);
         true
     }).unwrap_or(false)
 }
 
 fn pcm_submit(owner: sound::SoundOwnerKey, bytes: &[u8]) -> usize {
+    pcm_submit_for(owner, 0, bytes)
+}
+
+fn pcm_submit_for(owner: sound::SoundOwnerKey, device: sound::ops::PcmDevice, bytes: &[u8]) -> usize {
     // A stream in flight is the one path guaranteed to run often, so it is
     // where a jack change is noticed while audio is playing.
     service_jacks(owner);
-    with_device(owner, |device| {
-        let regs = device.hda.regs;
-        device.hda.playback.write(&regs, bytes)
+    with_device(owner, |device_state| {
+        let Some(stream) = device_state.hda.playback.get_mut(device as usize) else { return 0; };
+        let regs = device_state.hda.regs;
+        stream.write(&regs, bytes)
     }).unwrap_or(0)
 }
 
 fn pcm_recv(owner: sound::SoundOwnerKey, out: &mut [u8]) -> usize {
-    with_device(owner, |device| {
-        let regs = device.hda.regs;
-        device.hda.capture.read(&regs, out)
+    pcm_recv_for(owner, 0, out)
+}
+
+fn pcm_recv_for(owner: sound::SoundOwnerKey, device: sound::ops::PcmDevice, out: &mut [u8]) -> usize {
+    with_device(owner, |device_state| {
+        let Some(stream) = device_state.hda.capture.get_mut(device as usize) else { return 0; };
+        let regs = device_state.hda.regs;
+        stream.read(&regs, out)
     }).unwrap_or(0)
 }
+
+fn pcm_mmap_frame(owner: sound::SoundOwnerKey, device: sound::ops::PcmDevice, capture: bool, offset: u64) -> Option<u64> {
+    with_device(owner, |device_state| {
+        let stream = if capture { device_state.hda.capture.get(device as usize) }
+                     else { device_state.hda.playback.get(device as usize) }?;
+        let size = u64::from(stream.geometry.buffer_bytes());
+        if offset & (hal::PAGE_SIZE_BYTES - 1) != 0 || offset >= size || size - offset < hal::PAGE_SIZE_BYTES { return None; }
+        Some(stream.buffer_pa + offset)
+    })?
+}
+
+fn pcm_mmap_commit(_owner: sound::SoundOwnerKey, _device: sound::ops::PcmDevice, _capture: bool,
+                   _appl: u64, hw: u64, _frame_bytes: u32, _buffer_frames: u32) -> Option<u64> { Some(hw) }
 
 /// The sound core's view of this card. # C: O(1)
 pub static SOUND_OPS: sound::ops::SoundOps = sound::ops::SoundOps {
@@ -321,6 +446,34 @@ pub static SOUND_OPS: sound::ops::SoundOps = sound::ops::SoundOps {
     pcm_recv,
 };
 
+/// Per-PCM-device operations. The legacy table above remains the device-zero
+/// compatibility surface for OSS; ALSA nodes use this table so every route
+/// owns an independent stream descriptor and converter binding.
+pub static PCM_DEVICE_OPS: sound::ops::PcmDeviceOps = sound::ops::PcmDeviceOps {
+    pcm_devices,
+    pcm_caps: pcm_caps_for,
+    cap_caps: cap_caps_for,
+    hw_limits: hw_limits_for,
+    info_flags: info_flags_for,
+    period_bytes: period_bytes_for,
+    pcm_hw_params: pcm_hw_params_for,
+    pcm_prepare: pcm_prepare_for,
+    pcm_trigger: pcm_trigger_for,
+    pcm_pause: pcm_pause_for,
+    pcm_drain: pcm_drain_for,
+    pcm_pointer: pcm_pointer_for,
+    pcm_hw_free: pcm_hw_free_for,
+    pcm_submit: pcm_submit_for,
+    cap_hw_params: cap_hw_params_for,
+    cap_prepare: cap_prepare_for,
+    cap_trigger: cap_trigger_for,
+    cap_pointer: cap_pointer_for,
+    cap_hw_free: cap_hw_free_for,
+    pcm_recv: pcm_recv_for,
+    pcm_mmap_frame,
+    pcm_mmap_commit,
+};
+
 /// Drain any queued jack events and publish a control notification for each
 /// jack whose presence changed. The codec round trip a re-sense needs cannot
 /// run in the interrupt that queued the event, so it runs here, from the
@@ -337,6 +490,61 @@ pub fn service_jacks(owner: sound::SoundOwnerKey) {
     }
 }
 
+/// Drain unsolicited codec events for every live HDA card. This is installed
+/// as the process-only softirq handler because jack sensing issues codec
+/// commands and publishes sound-control notifications.
+pub fn drain_jack_events() {
+    let owners: Vec<_> = lock_devices().iter()
+        .filter(|device| device.online.load(Ordering::Acquire))
+        .map(|device| device.owner)
+        .collect();
+    for owner in owners { service_jacks(owner); }
+}
+
+fn stop_beep(arg: usize) {
+    let owner_raw = arg as u32;
+    let generation = (arg >> 32) as u32;
+    let Some(owner) = sound::SoundOwnerKey::from_raw(owner_raw) else { return; };
+    let _ = with_device(owner, |device| {
+        if device.beep_generation == generation { device.hda.beep(0); }
+    });
+}
+
+/// Route VT's PC-beep request to each HDA codec that owns a beep widget.
+/// # C: O(cards) plus one delayed work item per active tone
+pub fn beep(hz: u32, milliseconds: u32) -> bool {
+    let devices: Vec<_> = lock_devices().iter()
+        .filter(|device| device.online.load(Ordering::Acquire))
+        .cloned().collect();
+    let mut handled = false;
+    for device in devices {
+        let owner = device.owner;
+        let (ok, generation) = unsafe {
+            let mut state = device.locks.process.lock();
+            state.beep_generation = state.beep_generation.wrapping_add(1);
+            (state.hda.beep(hz), state.beep_generation)
+        };
+        if !ok { continue; }
+        handled = true;
+        if milliseconds != 0 && hz != 0 {
+            let arg = ((generation as usize) << 32) | owner.raw() as usize;
+            let _ = sched::live::queue_delayed_work_on(
+                0, stop_beep, arg, sched::deadline::clock::now_ns(),
+                u64::from(milliseconds) * 1_000_000);
+        }
+    }
+    handled
+}
+
+fn follower_index(device: &DeviceState, nid: u8, output: bool) -> Option<usize> {
+    device.master_followers.iter().position(|follower| follower.nid == nid && follower.output == output)
+}
+
+fn follower_gain(base: u8, caps: widget::AmpCaps, master: u8) -> u8 {
+    let gain = i32::from(base) + i32::from(master) - i32::try_from(caps.num_steps).unwrap_or(i32::MAX);
+    gain.clamp(0, i32::from(u8::MAX)) as u8
+}
+
 fn elem_get(owner: sound::SoundOwnerKey, private: u32, out: &mut sound::elem::ElemValues) -> bool {
     let (nid, output, kind) = elemkey::unpack(private);
     if kind == ElemKind::Jack { service_jacks(owner); }
@@ -345,7 +553,29 @@ fn elem_get(owner: sound::SoundOwnerKey, private: u32, out: &mut sound::elem::El
             out[0] = i64::from(device.hda.jack_sense(nid));
             true
         }
+        ElemKind::CaptureSource => {
+            out[0] = i64::from(device.hda.capture_source);
+            true
+        }
+        ElemKind::ChannelMode => {
+            out[0] = i64::from(device.hda.multi_io_active);
+            true
+        }
+        ElemKind::MasterVolume => {
+            out[0] = i64::from(device.master_volume);
+            true
+        }
+        ElemKind::MasterSwitch => {
+            out[0] = i64::from(!device.master_mute);
+            true
+        }
         ElemKind::Volume => {
+            if let Some(index) = follower_index(device, nid, output) {
+                let follower = &device.master_followers[index];
+                out[0] = i64::from(follower.left);
+                out[1] = i64::from(follower.right);
+                return true;
+            }
             let Some((_, left)) = device.hda.amp_read(nid, output, 0, true) else { return false; };
             let right = device.hda.amp_read(nid, output, 0, false).map(|(_, gain)| gain).unwrap_or(left);
             out[0] = i64::from(left);
@@ -353,6 +583,12 @@ fn elem_get(owner: sound::SoundOwnerKey, private: u32, out: &mut sound::elem::El
             true
         }
         ElemKind::Switch => {
+            if let Some(index) = follower_index(device, nid, output) {
+                let follower = &device.master_followers[index];
+                out[0] = i64::from(!follower.left_muted);
+                out[1] = i64::from(!follower.right_muted);
+                return true;
+            }
             let Some((left_muted, _)) = device.hda.amp_read(nid, output, 0, true) else { return false; };
             let right_muted = device.hda.amp_read(nid, output, 0, false).map(|(muted, _)| muted).unwrap_or(left_muted);
             // ALSA switches are "on means audible", the inverse of the mute bit.
@@ -367,12 +603,79 @@ fn elem_put(owner: sound::SoundOwnerKey, private: u32, values: &sound::elem::Ele
     let (nid, output, kind) = elemkey::unpack(private);
     with_device(owner, |device| match kind {
         ElemKind::Jack => false,
+        ElemKind::CaptureSource => device.hda.set_capture_source(values[0] as u32),
+        ElemKind::ChannelMode => device.hda.set_multi_io(values[0] as u8),
+        ElemKind::MasterVolume => {
+            let volume = values[0] as u8;
+            let followers = device.master_followers.clone();
+            for follower in followers.iter() {
+                let left = follower_gain(follower.left, follower.caps, volume);
+                let right = follower_gain(follower.right, follower.caps, volume);
+                if !device.hda.amp_write(follower.nid, follower.output, 0, true, false,
+                                         follower.left_muted || device.master_mute, left)
+                    || !device.hda.amp_write(follower.nid, follower.output, 0, false, true,
+                                             follower.right_muted || device.master_mute, right) {
+                    return false;
+                }
+            }
+            device.master_volume = volume;
+            true
+        }
+        ElemKind::MasterSwitch => {
+            let master_mute = values[0] == 0;
+            let followers = device.master_followers.clone();
+            for follower in followers.iter() {
+                let left = follower_gain(follower.left, follower.caps, device.master_volume);
+                let right = follower_gain(follower.right, follower.caps, device.master_volume);
+                if !device.hda.amp_write(follower.nid, follower.output, 0, true, false,
+                                         follower.left_muted || master_mute, left)
+                    || !device.hda.amp_write(follower.nid, follower.output, 0, false, true,
+                                             follower.right_muted || master_mute, right) {
+                    return false;
+                }
+            }
+            device.master_mute = master_mute;
+            true
+        }
         ElemKind::Volume => {
+            if let Some(index) = follower_index(device, nid, output) {
+                let (caps, master, left_muted, right_muted) = {
+                    let follower = &device.master_followers[index];
+                    (follower.caps, device.master_volume, follower.left_muted, follower.right_muted)
+                };
+                let left = values[0] as u8;
+                let right = values[1] as u8;
+                if !device.hda.amp_write(nid, output, 0, true, false, left_muted || device.master_mute,
+                                         follower_gain(left, caps, master))
+                    || !device.hda.amp_write(nid, output, 0, false, true, right_muted || device.master_mute,
+                                              follower_gain(right, caps, master)) {
+                    return false;
+                }
+                let follower = &mut device.master_followers[index];
+                follower.left = left;
+                follower.right = right;
+                return true;
+            }
             let muted = device.hda.amp_read(nid, output, 0, true).map(|(muted, _)| muted).unwrap_or(false);
             device.hda.amp_write(nid, output, 0, true, false, muted, values[0] as u8)
                 && device.hda.amp_write(nid, output, 0, false, true, muted, values[1] as u8)
         }
         ElemKind::Switch => {
+            if let Some(index) = follower_index(device, nid, output) {
+                let left = values[0] == 0;
+                let right = values[1] == 0;
+                let follower = &device.master_followers[index];
+                if !device.hda.amp_write(nid, output, 0, true, false, left || device.master_mute,
+                                         follower_gain(follower.left, follower.caps, device.master_volume))
+                    || !device.hda.amp_write(nid, output, 0, false, true, right || device.master_mute,
+                                              follower_gain(follower.right, follower.caps, device.master_volume)) {
+                    return false;
+                }
+                let follower = &mut device.master_followers[index];
+                follower.left_muted = left;
+                follower.right_muted = right;
+                return true;
+            }
             let gain = device.hda.amp_read(nid, output, 0, true).map(|(_, gain)| gain).unwrap_or(0);
             device.hda.amp_write(nid, output, 0, true, false, values[0] == 0, gain)
                 && device.hda.amp_write(nid, output, 0, false, true, values[1] == 0, gain)
@@ -380,8 +683,43 @@ fn elem_put(owner: sound::SoundOwnerKey, private: u32, values: &sound::elem::Ele
     }).unwrap_or(false)
 }
 
-fn elem_enum(_owner: sound::SoundOwnerKey, _private: u32, _item: u32,
-             _out: &mut [u8; sound::elem::ENUM_NAME_WIDTH]) -> bool { false }
+fn elem_enum(owner: sound::SoundOwnerKey, private: u32, item: u32,
+             out: &mut [u8; sound::elem::ENUM_NAME_WIDTH]) -> bool {
+    let (_, _, kind) = elemkey::unpack(private);
+    if kind == ElemKind::ChannelMode {
+        let Some(Some((base, count))) = with_device(owner, |device| {
+            let plan = device.hda.plan.as_ref()?;
+            let route = plan.primary()?;
+            let codec = device.hda.codec.as_ref()?;
+            let base = codec.widget(route.dac).map(|w| widget::widget_channels(w.wcaps)).unwrap_or(2);
+            Some((base, plan.multi_io.len()))
+        }) else { return false; };
+        if item as usize > count { return false; }
+        let channels = base + item * 2;
+        out.fill(0);
+        if channels >= 10 {
+            out[0] = b'0' + (channels / 10) as u8;
+            out[1] = b'0' + (channels % 10) as u8;
+            out[2] = b'c'; out[3] = b'h';
+        } else {
+            out[0] = b'0' + channels as u8;
+            out[1] = b'c'; out[2] = b'h';
+        }
+        return true;
+    }
+    if kind != ElemKind::CaptureSource { return false; }
+    let Some(Some(label)) = with_device(owner, |device| {
+        let plan = device.hda.plan.as_ref()?;
+        let route = plan.captures.get(item as usize)?;
+        let inputs: Vec<_> = plan.captures.iter().map(|candidate| candidate.input).collect();
+        let needs_location = ctlname::inputs_need_location(&inputs);
+        Some(ctlname::input_label(&route.input, needs_location))
+    }) else { return false; };
+    out.fill(0);
+    let len = label.len().min(out.len());
+    out[..len].copy_from_slice(&label[..len]);
+    true
+}
 
 static ELEM_OPS: sound::elem::ElemOps =
     sound::elem::ElemOps { get: elem_get, put: elem_put, enum_name: elem_enum };
@@ -425,7 +763,68 @@ pub fn register_controls(owner: sound::SoundOwnerKey) {
         }
     });
     let Some(Some(controls)) = described else { return; };
+    if let Some(master) = controls.master.as_ref() {
+        with_device(owner, |device| {
+            device.master_volume = master.caps.num_steps.min(u32::from(u8::MAX)) as u8;
+            device.master_followers = controls.amps.iter()
+                .filter(|control| control.output && !control.volume_name.is_empty())
+                .filter_map(|control| {
+                    let (left_muted, left) = device.hda.amp_read(control.nid, control.output, 0, true)?;
+                    let (right_muted, right) = device.hda.amp_read(control.nid, control.output, 0, false)
+                        .unwrap_or((left_muted, left));
+                    Some(MasterFollower { nid: control.nid, output: control.output, caps: control.caps,
+                                          left, right, left_muted, right_muted })
+                }).collect();
+        });
+    }
     for control in controls.amps.iter() { register_amp(owner, control); }
+    if let Some(master) = controls.master.as_ref() {
+        sound::elem::register(owner, sound::elem::ElemDesc {
+            id: sound::elem::ElemId::mixer(b"Master Playback Volume", 0),
+            etype: sound::uapi::CTL_ELEM_TYPE_INTEGER,
+            access: sound::uapi::CTL_ELEM_ACCESS_READWRITE | sound::uapi::CTL_ELEM_ACCESS_TLV_READ,
+            count: 1, min: 0, max: i64::from(master.caps.num_steps), step: 0, items: 0,
+            tlv: Some(sound::elem::DbScale {
+                min_centibel: widget::amp_min_centibel(&master.caps),
+                step_centibel: master.caps.step_centibel, mute: master.caps.mute,
+            }),
+            private: elemkey::pack(master.nid, master.output, ElemKind::MasterVolume), ops: &ELEM_OPS,
+        });
+        if master.caps.mute {
+            sound::elem::register(owner, sound::elem::ElemDesc {
+                id: sound::elem::ElemId::mixer(b"Master Playback Switch", 0),
+                etype: sound::uapi::CTL_ELEM_TYPE_BOOLEAN,
+                access: sound::uapi::CTL_ELEM_ACCESS_READWRITE,
+                count: 1, min: 0, max: 1, step: 0, items: 0, tlv: None,
+                private: elemkey::pack(master.nid, master.output, ElemKind::MasterSwitch), ops: &ELEM_OPS,
+            });
+        }
+    }
+    if controls.capture_sources.len() > 1 {
+        sound::elem::register(owner, sound::elem::ElemDesc {
+            id: sound::elem::ElemId::mixer(&ctlname::capture_source(), 0),
+            etype: sound::uapi::CTL_ELEM_TYPE_ENUMERATED,
+            access: sound::uapi::CTL_ELEM_ACCESS_READWRITE,
+            count: 1, min: 0, max: (controls.capture_sources.len() - 1) as i64,
+            step: 0, items: controls.capture_sources.len() as u32, tlv: None,
+            private: elemkey::pack(0, false, ElemKind::CaptureSource), ops: &ELEM_OPS,
+        });
+    }
+    let has_multi_io = with_device(owner, |device| {
+        device.hda.plan.as_ref().is_some_and(|plan| !plan.multi_io.is_empty())
+    }).unwrap_or(false);
+    if has_multi_io {
+        let items = with_device(owner, |device| {
+            device.hda.plan.as_ref().map(|plan| plan.multi_io.len() as u32 + 1)
+        }).flatten().unwrap_or(1);
+        sound::elem::register(owner, sound::elem::ElemDesc {
+            id: sound::elem::ElemId::mixer(&ctlname::channel_mode(), 0),
+            etype: sound::uapi::CTL_ELEM_TYPE_ENUMERATED,
+            access: sound::uapi::CTL_ELEM_ACCESS_READWRITE,
+            count: 1, min: 0, max: i64::from(items - 1), step: 0, items, tlv: None,
+            private: elemkey::pack(0, false, ElemKind::ChannelMode), ops: &ELEM_OPS,
+        });
+    }
     for jack in controls.jacks.iter() {
         let id = sound::elem::ElemId::mixer(&jack.name, 0);
         let numid = sound::elem::register(owner, sound::elem::ElemDesc {

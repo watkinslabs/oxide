@@ -12,10 +12,13 @@
 //! not an error, it is what makes the short name an alias and forces the long
 //! name to be stored beside it.
 
-use super::cp437;
+use super::{cp437, cp737, cp775, cp850, cp852, cp855, cp857, cp860, cp861, cp862, cp863, cp864, cp865, cp866, cp869, cp874, cp1250, cp1251, cp1255};
 
 /// The code page number a mount defaults to when it names none.
 pub const DEFAULT_CODEPAGE: u32 = 437;
+
+#[derive(Copy, Clone)]
+enum Tables { Cp437, Cp737, Cp775, Cp850, Cp852, Cp855, Cp857, Cp860, Cp861, Cp862, Cp863, Cp864, Cp865, Cp866, Cp869, Cp874, Cp1250, Cp1251, Cp1255 }
 
 /// A single-byte code page: the character each byte means, and the case
 /// mapping over the bytes themselves.
@@ -26,28 +29,101 @@ pub const DEFAULT_CODEPAGE: u32 = 437;
 pub struct CodePage {
     /// Number the mount option names this page by.
     pub number: u32,
-    to_uni: &'static [u16; 256],
-    to_lower: &'static [u8; 256],
-    to_upper: &'static [u8; 256],
+    tables: Tables,
 }
 
 /// Code page 437, the FAT default.
 pub static CP437: CodePage = CodePage {
     number: DEFAULT_CODEPAGE,
-    to_uni: &cp437::CHARSET2UNI,
-    to_lower: &cp437::CHARSET2LOWER,
-    to_upper: &cp437::CHARSET2UPPER,
+    tables: Tables::Cp437,
 };
+
+/// Code page 850, the Linux `nls_cp850` single-byte table.
+pub static CP850: CodePage = CodePage { number: 850, tables: Tables::Cp850 };
+
+/// Code page 852, the Linux `nls_cp852` Central European table.
+pub static CP852: CodePage = CodePage { number: 852, tables: Tables::Cp852 };
+
+/// Code page 855, the Linux `nls_cp855` Cyrillic table.
+pub static CP855: CodePage = CodePage { number: 855, tables: Tables::Cp855 };
+
+/// Code page 857, the Linux `nls_cp857` Turkish table.
+pub static CP857: CodePage = CodePage { number: 857, tables: Tables::Cp857 };
+
+/// Code page 860, the Linux `nls_cp860` Portuguese table.
+pub static CP860: CodePage = CodePage { number: 860, tables: Tables::Cp860 };
+
+/// Code page 861, the Linux `nls_cp861` Icelandic table.
+pub static CP861: CodePage = CodePage { number: 861, tables: Tables::Cp861 };
+
+/// Code page 862, the Linux `nls_cp862` Hebrew table.
+pub static CP862: CodePage = CodePage { number: 862, tables: Tables::Cp862 };
+
+/// Code page 863, the Linux `nls_cp863` Canadian-French table.
+pub static CP863: CodePage = CodePage { number: 863, tables: Tables::Cp863 };
+
+/// Code page 864, the Linux `nls_cp864` Arabic table.
+pub static CP864: CodePage = CodePage { number: 864, tables: Tables::Cp864 };
+
+/// Code page 865, the Linux `nls_cp865` Nordic table.
+pub static CP865: CodePage = CodePage { number: 865, tables: Tables::Cp865 };
+
+/// Code page 866, the Linux `nls_cp866` Cyrillic/Russian table.
+pub static CP866: CodePage = CodePage { number: 866, tables: Tables::Cp866 };
+
+/// Code page 869, the Linux `nls_cp869` Greek table.
+pub static CP869: CodePage = CodePage { number: 869, tables: Tables::Cp869 };
+
+/// Code page 874, the Linux `nls_cp874` Thai table.
+pub static CP874: CodePage = CodePage { number: 874, tables: Tables::Cp874 };
+
+/// Code page 1251, the Linux `nls_cp1251` Windows Cyrillic table.
+pub static CP1251: CodePage = CodePage { number: 1251, tables: Tables::Cp1251 };
+
+/// Code page 1250, the Linux `nls_cp1250` Windows Central European table.
+pub static CP1250: CodePage = CodePage { number: 1250, tables: Tables::Cp1250 };
+
+/// Code page 1255, the Linux `nls_cp1255` Windows Hebrew table.
+pub static CP1255: CodePage = CodePage { number: 1255, tables: Tables::Cp1255 };
+
+/// Code page 737, the Linux `nls_cp737` DOS Greek table.
+pub static CP737: CodePage = CodePage { number: 737, tables: Tables::Cp737 };
+
+/// Code page 775, the Linux `nls_cp775` DOS Baltic table.
+pub static CP775: CodePage = CodePage { number: 775, tables: Tables::Cp775 };
 
 /// The code page a mount option names, or `None` when this build has no table
 /// for it. # C: O(1)
 pub fn by_number(number: u32) -> Option<&'static CodePage> {
-    match number { DEFAULT_CODEPAGE => Some(&CP437), _ => None }
+    match number { DEFAULT_CODEPAGE => Some(&CP437), 737 => Some(&CP737), 775 => Some(&CP775), 850 => Some(&CP850), 852 => Some(&CP852), 855 => Some(&CP855), 857 => Some(&CP857), 860 => Some(&CP860), 861 => Some(&CP861), 862 => Some(&CP862), 863 => Some(&CP863), 864 => Some(&CP864), 865 => Some(&CP865), 866 => Some(&CP866), 869 => Some(&CP869), 874 => Some(&CP874), 1250 => Some(&CP1250), 1251 => Some(&CP1251), 1255 => Some(&CP1255), _ => None }
 }
 
 impl CodePage {
     /// The character `byte` means on this page. # C: O(1)
-    pub fn to_char(&self, byte: u8) -> u16 { self.to_uni[usize::from(byte)] }
+    pub fn to_char(&self, byte: u8) -> u16 {
+        if byte < 128 { return u16::from(byte); }
+        match self.tables {
+            Tables::Cp437 => cp437::CHARSET2UNI[usize::from(byte)],
+            Tables::Cp737 => cp737::CHARSET2UNI[usize::from(byte - 128)],
+            Tables::Cp775 => cp775::CHARSET2UNI[usize::from(byte - 128)],
+            Tables::Cp850 => cp850::CHARSET2UNI[usize::from(byte - 128)],
+            Tables::Cp852 => cp852::CHARSET2UNI[usize::from(byte - 128)],
+            Tables::Cp855 => cp855::CHARSET2UNI[usize::from(byte - 128)],
+            Tables::Cp857 => cp857::CHARSET2UNI[usize::from(byte - 128)],
+            Tables::Cp860 => cp860::CHARSET2UNI[usize::from(byte - 128)],
+            Tables::Cp861 => cp861::CHARSET2UNI[usize::from(byte - 128)],
+            Tables::Cp862 => cp862::CHARSET2UNI[usize::from(byte - 128)],
+            Tables::Cp863 => cp863::CHARSET2UNI[usize::from(byte - 128)],
+            Tables::Cp864 => cp864::CHARSET2UNI[usize::from(byte - 128)],
+            Tables::Cp865 => cp865::CHARSET2UNI[usize::from(byte - 128)],
+            Tables::Cp866 => cp866::CHARSET2UNI[usize::from(byte - 128)],
+            Tables::Cp869 => cp869::CHARSET2UNI[usize::from(byte - 128)],
+            Tables::Cp874 => cp874::CHARSET2UNI[usize::from(byte - 128)],
+            Tables::Cp1251 => cp1251::CHARSET2UNI[usize::from(byte - 128)],
+            Tables::Cp1250 => cp1250::CHARSET2UNI[usize::from(byte - 128)],
+            Tables::Cp1255 => cp1255::CHARSET2UNI[usize::from(byte - 128)],
+        }
+    }
 
     /// The byte that stores `ch`, when this page has one.
     ///
@@ -55,18 +131,62 @@ impl CodePage {
     /// inverting it is exact and a second table would be a second place for
     /// the same fact to be wrong. # C: O(256)
     pub fn from_char(&self, ch: u16) -> Option<u8> {
-        self.to_uni.iter().position(|c| *c == ch).map(|i| i as u8)
+        (0..=u8::MAX).find(|byte| self.to_char(*byte) == ch)
     }
 
     /// Lowercase of `byte` on this page, or `byte` when it has none. # C: O(1)
     pub fn to_lower(&self, byte: u8) -> u8 {
-        let c = self.to_lower[usize::from(byte)];
+        let c = if byte < 128 {
+            if byte.is_ascii_uppercase() { byte + (b'a' - b'A') } else { byte }
+        } else { match self.tables {
+            Tables::Cp437 => cp437::CHARSET2LOWER[usize::from(byte)],
+            Tables::Cp737 => cp737::CHARSET2LOWER[usize::from(byte - 128)],
+            Tables::Cp775 => cp775::CHARSET2LOWER[usize::from(byte - 128)],
+            Tables::Cp850 => cp850::CHARSET2LOWER[usize::from(byte - 128)],
+            Tables::Cp852 => cp852::CHARSET2LOWER[usize::from(byte - 128)],
+            Tables::Cp855 => cp855::CHARSET2LOWER[usize::from(byte - 128)],
+            Tables::Cp857 => cp857::CHARSET2LOWER[usize::from(byte - 128)],
+            Tables::Cp860 => cp860::CHARSET2LOWER[usize::from(byte - 128)],
+            Tables::Cp861 => cp861::CHARSET2LOWER[usize::from(byte - 128)],
+            Tables::Cp862 => cp862::CHARSET2LOWER[usize::from(byte - 128)],
+            Tables::Cp863 => cp863::CHARSET2LOWER[usize::from(byte - 128)],
+            Tables::Cp864 => cp864::CHARSET2LOWER[usize::from(byte - 128)],
+            Tables::Cp865 => cp865::CHARSET2LOWER[usize::from(byte - 128)],
+            Tables::Cp866 => cp866::CHARSET2LOWER[usize::from(byte - 128)],
+            Tables::Cp869 => cp869::CHARSET2LOWER[usize::from(byte - 128)],
+            Tables::Cp874 => cp874::CHARSET2LOWER[usize::from(byte - 128)],
+            Tables::Cp1251 => cp1251::CHARSET2LOWER[usize::from(byte - 128)],
+            Tables::Cp1250 => cp1250::CHARSET2LOWER[usize::from(byte - 128)],
+            Tables::Cp1255 => cp1255::CHARSET2LOWER[usize::from(byte - 128)],
+        }};
         if c == 0 { byte } else { c }
     }
 
     /// Uppercase of `byte` on this page, or `byte` when it has none. # C: O(1)
     pub fn to_upper(&self, byte: u8) -> u8 {
-        let c = self.to_upper[usize::from(byte)];
+        let c = if byte < 128 {
+            if byte.is_ascii_lowercase() { byte - (b'a' - b'A') } else { byte }
+        } else { match self.tables {
+            Tables::Cp437 => cp437::CHARSET2UPPER[usize::from(byte)],
+            Tables::Cp737 => cp737::CHARSET2UPPER[usize::from(byte - 128)],
+            Tables::Cp775 => cp775::CHARSET2UPPER[usize::from(byte - 128)],
+            Tables::Cp850 => cp850::CHARSET2UPPER[usize::from(byte - 128)],
+            Tables::Cp852 => cp852::CHARSET2UPPER[usize::from(byte - 128)],
+            Tables::Cp855 => cp855::CHARSET2UPPER[usize::from(byte - 128)],
+            Tables::Cp857 => cp857::CHARSET2UPPER[usize::from(byte - 128)],
+            Tables::Cp860 => cp860::CHARSET2UPPER[usize::from(byte - 128)],
+            Tables::Cp861 => cp861::CHARSET2UPPER[usize::from(byte - 128)],
+            Tables::Cp862 => cp862::CHARSET2UPPER[usize::from(byte - 128)],
+            Tables::Cp863 => cp863::CHARSET2UPPER[usize::from(byte - 128)],
+            Tables::Cp864 => cp864::CHARSET2UPPER[usize::from(byte - 128)],
+            Tables::Cp865 => cp865::CHARSET2UPPER[usize::from(byte - 128)],
+            Tables::Cp866 => cp866::CHARSET2UPPER[usize::from(byte - 128)],
+            Tables::Cp869 => cp869::CHARSET2UPPER[usize::from(byte - 128)],
+            Tables::Cp874 => cp874::CHARSET2UPPER[usize::from(byte - 128)],
+            Tables::Cp1251 => cp1251::CHARSET2UPPER[usize::from(byte - 128)],
+            Tables::Cp1250 => cp1250::CHARSET2UPPER[usize::from(byte - 128)],
+            Tables::Cp1255 => cp1255::CHARSET2UPPER[usize::from(byte - 128)],
+        }};
         if c == 0 { byte } else { c }
     }
 }

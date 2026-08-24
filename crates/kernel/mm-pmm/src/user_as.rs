@@ -35,6 +35,7 @@ mod fault;
 pub(crate) mod uffd;
 mod mmap;
 mod unmap;
+mod mremap;
 mod diag;
 mod prefault;
 mod rlimit_as;
@@ -75,6 +76,7 @@ pub use mmap::populate_current_range;
 pub use pageout::{flush_reclaim_mapping, pageout_anon_range};
 pub use crate::munmap_range::validate_munmap_range;
 pub use unmap::{evict_pages_in_range, glue_munmap};
+pub use mremap::move_pages;
 #[cfg(target_arch = "x86_64")]
 pub use diag::diag_verify_file_pages;
 pub use prefault::{prefault_stack, prefault_user_range};

@@ -226,6 +226,14 @@ impl AddressSpace {
         validate_aligned(addr)?;
         let end = end_of_raw(addr, len as u64)?;
         let mut tree = self.vmas.write();
+        self.munmap_locked(&mut tree, addr, end)
+    }
+
+    /// VMA-only unmap with the caller's write transaction still held.
+    /// Page-table teardown remains the PMM owner's responsibility.
+    pub(crate) fn munmap_locked(
+        &self, tree: &mut VmaTree, addr: UserVirtAddr, end: u64,
+    ) -> KResult<()> {
         // mseal(2): a sealed VMA anywhere in the range refuses the whole
         // unmap, before any split.
         if tree.any_sealed_raw_end(addr, end) { return Err(Error::Perm); }
@@ -242,7 +250,7 @@ impl AddressSpace {
         // stale wide edges (still PTE-checked by the walker, so this is
         // hygiene, not a soundness fix — but it keeps the chain bounded).
         let mut removed = Vec::new();
-        self.rmap_resplit(&mut tree, addr.as_u64(), end, |t, s, e| {
+        self.rmap_resplit(tree, addr.as_u64(), end, |t, s, e| {
             removed = t.remove_range_raw_end(UserVirtAddr::new(s).expect("uva"), e); Ok(())
         })?;
         for vma in &removed { self.accounting.remove_vma(vma); }
@@ -339,6 +347,19 @@ impl AddressSpace {
         read_implies_exec: bool,
         key_for: &mut dyn FnMut(&Vma) -> u8,
     ) -> KResult<MprotectOutcome> {
+        self.mprotect_user_with_security(addr, len, requested, read_implies_exec,
+            &mut |_, _| Ok(()), key_for)
+    }
+
+    pub fn mprotect_user_with_security(
+        &self,
+        addr: UserVirtAddr,
+        len: usize,
+        requested: VmaProt,
+        read_implies_exec: bool,
+        security: &mut dyn FnMut(&Vma, VmaProt) -> Result<(), Error>,
+        key_for: &mut dyn FnMut(&Vma) -> u8,
+    ) -> KResult<MprotectOutcome> {
         validate_len(len)?;
         validate_aligned(addr)?;
         let end = end_of(addr, len as u64)?;
@@ -369,6 +390,10 @@ impl AddressSpace {
                 || self.mdwe_denies_transition(vma.prot, prot)
             {
                 error = Some(Error::Access);
+                break;
+            }
+            if let Err(security_error) = security(vma, prot) {
+                error = Some(security_error);
                 break;
             }
             // Linux checks MDWE before `mprotect_fixup` checks VM_SEALED.
@@ -412,6 +437,22 @@ impl AddressSpace {
                 steps.truncate(applied);
                 error = Some(unexpected);
                 break;
+            }
+            for vma in tree.iter().filter(|v| {
+                v.end.as_u64() > step.start.as_u64()
+                    && v.start.as_u64() < step_end
+            }) {
+                let (name, dev, ino, pgoff) = match &vma.backing {
+                    crate::VmaBacking::File { backing, off } => (
+                        backing.map_path().unwrap_or(&[]), backing.dev(), backing.ino(),
+                        *off / hal::PAGE_SIZE_BYTES,
+                    ),
+                    _ => (&[][..], 0, 0, 0),
+                };
+                crate::mmap_event::notify(
+                    vma.start.as_u64(), vma.end.as_u64() - vma.start.as_u64(),
+                    pgoff, vma.prot, vma.flags, name, dev, ino,
+                );
             }
             applied += 1;
         }

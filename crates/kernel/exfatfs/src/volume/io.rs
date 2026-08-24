@@ -20,7 +20,7 @@ impl<S: SectorSource> Volume<S> {
     pub fn preallocate_file(&mut self, entry: &mut super::DirEntry, offset: u64, len: u64,
                             now: crate::time::Stamp) -> Result<(), Errno> {
         if entry.set.is_dir() { return Err(Errno::Eisdir); }
-        if !self.writable { return Err(Errno::Erofs); }
+        if !self.writable() { return Err(Errno::Erofs); }
         let end = offset.checked_add(len).ok_or(Errno::Efbig)?;
         if end > self.geo.max_bytes() { return Err(Errno::Efbig); }
         if len == 0 || end <= entry.set.stream.size { return Ok(()); }
@@ -73,7 +73,7 @@ impl<S: SectorSource> Volume<S> {
     pub fn write_file(&mut self, entry: &mut super::DirEntry, offset: u64, buf: &[u8],
                       now: crate::time::Stamp) -> Result<u64, Errno> {
         if entry.set.is_dir() { return Err(Errno::Eisdir); }
-        if !self.writable { return Err(Errno::Erofs); }
+        if !self.writable() { return Err(Errno::Erofs); }
         if buf.is_empty() { return Ok(entry.set.stream.valid_size); }
         let end = offset.checked_add(buf.len() as u64).ok_or(Errno::Efbig)?;
         if end > self.geo.max_bytes() { return Err(Errno::Efbig); }
@@ -117,7 +117,7 @@ impl<S: SectorSource> Volume<S> {
     pub fn truncate_file(&mut self, entry: &mut super::DirEntry, len: u64, now: crate::time::Stamp)
         -> Result<(), Errno> {
         if entry.set.is_dir() { return Err(Errno::Eisdir); }
-        if !self.writable { return Err(Errno::Erofs); }
+        if !self.writable() { return Err(Errno::Erofs); }
         if len > self.geo.max_bytes() { return Err(Errno::Efbig); }
         let old = entry.set.stream.valid_size;
         let mut chain = self.chain_of(&entry.set);

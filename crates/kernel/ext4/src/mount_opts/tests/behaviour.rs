@@ -107,6 +107,23 @@ fn noload_and_norecovery_are_one_answer() {
     assert!(b("norecovery").unwrap().noload);
 }
 
+#[test]
+fn journal_checksum_pair_is_explicit_and_last_one_wins() {
+    assert_eq!(b("journal_checksum").unwrap().journal_checksum, Some(true));
+    assert_eq!(b("nojournal_checksum").unwrap().journal_checksum, Some(false));
+    assert_eq!(b("journal_checksum,nojournal_checksum").unwrap().journal_checksum,
+               Some(false));
+    assert!(refused("journal_checksum=1"));
+    assert!(refused("nojournal_checksum=0"));
+}
+
+#[test]
+fn acl_is_a_live_linux_superblock_policy() {
+    assert!(b("").unwrap().posix_acl);
+    assert!(b("acl").unwrap().posix_acl);
+    assert!(refused("acl=1"));
+}
+
 /// A remount naming one option keeps the answers it did not name. Re-parsing
 /// from the defaults would silently re-enable the barrier a mount had turned
 /// off, which is a durability change nobody asked for.
@@ -120,11 +137,12 @@ fn a_remount_keeps_the_options_it_does_not_name() {
     assert_eq!(second.commit_secs, 30);
 }
 
-/// A key nothing in this filesystem reads is still carried through rather than
-/// failing the mount — `/` is the mount at stake.
+/// The ext4 user-xattr policy has the same default as Linux and is still owned
+/// by the behavioural mount state rather than being left in the opaque list.
 #[test]
-fn a_key_no_consumer_owns_still_does_not_fail_the_mount() {
-    let o = Ext4MountOpts::parse("acl,user_xattr,errors=panic").unwrap();
+fn user_xattr_is_a_live_linux_mount_policy() {
+    let o = Ext4MountOpts::parse("user_xattr,errors=panic").unwrap();
     assert_eq!(o.behaviour.errors, ErrorsPolicy::Panic);
-    assert_eq!(o.other.len(), 2, "the keys with no consumer, and only those");
+    assert!(o.behaviour.user_xattr);
+    assert!(o.other.is_empty());
 }

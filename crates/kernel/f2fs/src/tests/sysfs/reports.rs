@@ -34,8 +34,12 @@ fn show(attrs: &[Attr], name: &str) -> String {
 fn each_report_is_read_only_and_reads_a_number() {
     let fs = mounted();
     let attrs = crate::sysfs::mount_attrs(&fs);
-    for name in ["avg_vblocks", "current_atomic_write",
-                 "unusable_blocks_per_sec", "max_open_zones"] {
+    for name in ["avg_vblocks", "cp_foreground_calls", "cp_background_calls",
+                 "gc_foreground_calls", "gc_background_calls",
+                 "moved_blocks_foreground", "moved_blocks_background",
+                 "current_atomic_write", "defrag_blocks",
+                 "unusable", "unusable_blocks_per_sec", "max_open_zones",
+                 "lifetime_write_kbytes"] {
         let a = attrs.iter().find(|a| a.dir == "vda" && a.name == name)
             .unwrap_or_else(|| panic!("no attribute vda/{name}"));
         assert_eq!(a.mode, crate::fsattr::RO, "{name} accepts a write");
@@ -43,6 +47,62 @@ fn each_report_is_read_only_and_reads_a_number() {
         assert!(body.ends_with('\n'), "{name} did not end its line");
         body.trim().parse::<u64>().unwrap_or_else(|_| panic!("{name} read {body:?}"));
     }
+}
+
+#[test]
+fn lifetime_write_report_reads_the_canonical_physical_write_owner() {
+    let fs = mounted();
+    let attrs = crate::sysfs::mount_attrs(&fs);
+    let before = show(&attrs, "lifetime_write_kbytes").trim().parse::<u64>().unwrap();
+    let addr = fs.volume.lock().super_block().ssa_blkaddr;
+    fs.volume.lock().write_block(addr, &[0u8; BLKSIZE]).expect("write");
+    assert_eq!(show(&attrs, "lifetime_write_kbytes").trim().parse::<u64>().unwrap(),
+               before + 4);
+}
+
+#[test]
+fn unusable_is_zero_on_a_clean_unzoned_mount() {
+    let fs = mounted();
+    let attrs = crate::sysfs::mount_attrs(&fs);
+    assert_eq!(show(&attrs, "unusable"), "0\n");
+}
+
+#[test]
+fn checkpoint_call_reports_follow_the_real_entry_owner() {
+    let fs = mounted();
+    let attrs = crate::sysfs::mount_attrs(&fs);
+    fs.checkpoint().expect("foreground checkpoint");
+    assert_eq!(show(&attrs, "cp_foreground_calls"), "1\n");
+    fs.checkpoint_now_background().expect("background checkpoint");
+    assert_eq!(show(&attrs, "cp_background_calls"), "1\n");
+}
+
+#[test]
+fn gc_call_and_moved_block_reports_share_the_gc_owner() {
+    let fs = mounted();
+    let attrs = crate::sysfs::mount_attrs(&fs);
+    {
+        let mut v = fs.volume.lock();
+        v.collect_as(crate::volume::gc::Policy::Greedy, 0,
+                     crate::stats::counters::gc_mode::NORMAL).expect("foreground gc");
+        v.gc_background_as(crate::volume::gc::Policy::CostBenefit,
+                           crate::stats::counters::gc_mode::NORMAL).expect("background gc");
+    }
+    assert_eq!(show(&attrs, "gc_foreground_calls"), "1\n");
+    assert_eq!(show(&attrs, "gc_background_calls"), "1\n");
+    assert_eq!(show(&attrs, "moved_blocks_foreground"), "0\n");
+    assert_eq!(show(&attrs, "moved_blocks_background"), "0\n");
+}
+
+#[test]
+fn atomic_peak_is_writable_only_as_a_zero_reset() {
+    let fs = mounted();
+    let attrs = crate::sysfs::mount_attrs(&fs);
+    let a = attrs.iter().find(|a| a.name == "peak_atomic_write").expect("published");
+    assert_eq!(a.mode, crate::fsattr::RW);
+    assert!(a.store.as_ref().unwrap()(b"1\n").is_err());
+    a.store.as_ref().unwrap()(b"0\n").expect("reset");
+    assert_eq!(show(&attrs, "peak_atomic_write"), "0\n");
 }
 
 /// The total is SUMMED from the spans the volume holds, so opening one moves it.

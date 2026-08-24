@@ -290,7 +290,7 @@ fn prepare_ipv6_egress(owner: Option<&crate::SocketOwner>, iface_id: NetIfaceId,
     prepare_ipv6(iface_id, next_hop, src, &mut full);
     let net_ns = owner.map_or_else(crate::netdev::current_net_ns, crate::SocketOwner::net_ns);
     crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::OutRequests);
-    if !crate::netfilter_hook::nf_output_in(net_ns, &full, crate::netfilter_hook::NFPROTO_IPV6) {
+    if !crate::netfilter_hook::nf_output_in(net_ns, &mut full, crate::netfilter_hook::NFPROTO_IPV6) {
         return Ok(crate::cgroup_bpf::EgressVerdict::Allow);
     }
     match owner {

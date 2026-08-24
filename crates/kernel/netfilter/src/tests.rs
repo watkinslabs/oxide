@@ -46,6 +46,7 @@ use super::*;
             table_name:   String::from("oxide-test-t"),
             name:         String::from("conn_counter"),
             ty: 1, data: vec![],
+            state: alloc::sync::Arc::new(crate::nft_expr::ObjectState::Unsupported),
         };
         let before = objects_snapshot().len();
         object_insert(o.clone());
@@ -75,7 +76,7 @@ use super::*;
             table_family: 2,
             table_name:   String::from("oxide-test-t"),
             name:         String::from("blocked_ips"),
-            key_type: 7, key_len: 4, data_type: 0, data_len: 0, flags: 0,
+            key_type: 7, key_len: 4, data_type: 0, data_len: 0, flags: 0, obj_type: 0,
         };
         let before = sets_snapshot().len();
         set_insert(s.clone());
@@ -137,6 +138,8 @@ use super::*;
         // 4242 is well outside any real hook value to avoid colliding
         // with other tests' inserts.
         assert_eq!(eval(4242, &[], nft_expr::NFPROTO_IPV4), Verdict::Accept);
+        assert!(eval_in_with_mark(0, 4242, &[], nft_expr::NFPROTO_IPV4, 0)
+            .actions.is_empty());
     }
 
     #[test]
@@ -294,6 +297,7 @@ use super::*;
             set_name:     String::from("blocked"),
             key:          alloc::vec![10, 0, 0, 5],
             data:         alloc::vec![],
+            objref:      None,
         };
         let before = set_elems_snapshot().len();
         set_elem_insert(e.clone());
@@ -313,6 +317,7 @@ use super::*;
             set_name:     String::from("blocked"),
             key:          alloc::vec![1, 2, 3, 4],
             data:         alloc::vec![0xff],
+            objref:      None,
         };
         set_elem_insert(e);
         let got = set_elem_lookup(2, "oxide-test-elT2", "blocked", &[1, 2, 3, 4]);

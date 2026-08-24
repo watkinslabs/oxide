@@ -97,6 +97,7 @@ fn seg_with(id: i32, nattch: i64, mode: u32) -> Arc<ShmSegment> {
     Arc::new(ShmSegment {
         id, key: AtomicI32::new(4242), ns: owner.key(), size: SPAN as usize, mode: AtomicU32::new(mode),
         uid: AtomicU32::new(0), gid: AtomicU32::new(0), cuid: 0, cgid: 0, cpid: 1,
+        security_sid: AtomicU32::new(selinux_runtime::label::kernel_sid()),
         nattch: AtomicI64::new(nattch),
         creator: sync::Spinlock::new(None),
         backing: Arc::new(FakeBacking),

@@ -108,7 +108,7 @@ fn a_checkpoint_failure_stops_the_checkpoints_and_disarms_the_injection() {
     arm(&v, Fault::Checkpoint);
     assert_eq!(v.checkpoint().flags & crate::flags::CP_ERROR_FLAG, 0,
                "the fixture is already stopped");
-    v.balance_fs(true).unwrap();
+    v.balance_fs(true, false).unwrap();
     assert_ne!(v.checkpoint().flags & crate::flags::CP_ERROR_FLAG, 0,
                "the volume did not stop checkpointing");
     assert_eq!(v.fault_info().rate(), 0, "a stopped volume is still injecting");
@@ -320,6 +320,7 @@ fn unpacking_a_compressed_cluster_can_be_made_to_fail() {
     let inode = v.read_inode(ino).unwrap();
     let mut buf = vec![0u8; 64];
     assert!(v.read_file(&inode, ino, 7, &mut buf).is_ok(), "the fixture's cluster does not read");
+    v.data_cache().forget_inode(ino);
     arm(&v, Fault::Vmalloc);
     assert_eq!(v.read_file(&inode, ino, BLKSIZE as u64 + 7, &mut buf), Err(Errno::Enomem));
 }
@@ -333,15 +334,15 @@ fn every_site_is_either_wired_or_named_as_having_no_counterpart() {
         Fault::AllocNid, Fault::Orphan, Fault::Block, Fault::DirDepth, Fault::EvictInode,
         Fault::Truncate, Fault::ReadIo, Fault::Checkpoint, Fault::WriteIo, Fault::DquotInit,
         Fault::BlkaddrValidity, Fault::BlkaddrConsistence, Fault::NoSegment,
-        Fault::InconsistentFooter, Fault::SkipWrite, Fault::Kmalloc, Fault::Kvmalloc,
+        Fault::InconsistentFooter, Fault::AtomicTimeout, Fault::SkipWrite,
+        Fault::Kmalloc, Fault::Kvmalloc,
         Fault::PageAlloc, Fault::PageGet, Fault::SlabAlloc, Fault::Vmalloc,
-    ];
-    // Two are reserved by the ABI for requests that can no longer fail, one
-    // names a filesystem-operation lock this design has no equivalent of, and
-    // two name timeouts on waits that never happen here.
-    let unwired = [
-        Fault::AllocBio, Fault::Discard, Fault::LockOp, Fault::AtomicTimeout,
         Fault::LockTimeout,
+    ];
+    // Two are reserved by the ABI for requests that can no longer fail, and
+    // one names a filesystem-operation lock this design has no equivalent of.
+    let unwired = [
+        Fault::AllocBio, Fault::Discard, Fault::LockOp,
     ];
     assert_eq!(wired.len() + unwired.len(), crate::fault::FAULT_MAX as usize,
                "a site was added to the ABI and neither wired nor accounted for");

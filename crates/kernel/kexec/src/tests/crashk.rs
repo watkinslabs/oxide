@@ -8,7 +8,7 @@
 // nobody left to read a log.
 
 use crate::crashk::parse::{parse_line, parse_value, round_system_ram, ParseError, Pref};
-use crate::crashk::place::{place, search, PlaceError, Placement, RamRange};
+use crate::crashk::place::{place, search, PlaceError, Placement, RamRange, DEFAULT_CRASH_LOW_SIZE};
 use crate::crashk::shrink::{shrink_target, ShrinkError};
 use crate::crashk::{CRASH_ALIGN, CRASH_SHRINK_ALIGN};
 
@@ -285,6 +285,13 @@ fn the_low_companion_is_reserved_only_when_the_main_region_landed_high() {
     assert!(p.base >= 4 * G);
     assert_eq!(p.low_size, 64 * M);
     assert!(p.low_base + p.low_size <= 4 * G, "low base {:#x}", p.low_base);
+}
+
+#[test]
+fn a_high_crash_region_gets_linux_default_low_companion() {
+    let p = place(&spec(b"crashkernel=1G,high"), &ram_all()).expect("placed");
+    assert_eq!(p.low_size, DEFAULT_CRASH_LOW_SIZE);
+    assert!(p.low_base + p.low_size <= 4 * G);
 }
 
 #[test]

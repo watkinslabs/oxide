@@ -37,6 +37,7 @@ pub const SET_CHANNEL_STREAMID: u16 = 0x0706;
 pub const SET_PIN_WIDGET_CONTROL: u16 = 0x0707;
 pub const SET_UNSOLICITED_ENABLE: u16 = 0x0708;
 pub const SET_PIN_SENSE: u16 = 0x0709;
+pub const SET_BEEP_CONTROL: u16 = 0x070a;
 pub const SET_EAPD_BTLENABLE: u16 = 0x070c;
 pub const SET_DIGI_CONVERT_1: u16 = 0x070d;
 pub const SET_CODEC_RESET: u16 = 0x07ff;

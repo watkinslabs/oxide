@@ -72,21 +72,24 @@ impl Tree {
         Ok((id, avail))
     }
 
-    /// Remove an empty, uncharged leaf cgroup. A cgid remains the canonical
-    /// PageMeta/swap-slot owner until those objects are released.
+    /// Remove an empty leaf cgroup. A cgroup with hugetlb charges is moved to
+    /// the offline/dying store: its directory disappears immediately, while
+    /// the CSS and charge counters remain valid until the final uncharge.
     /// # C: O(log n)
     pub fn remove(&mut self, id: u64) -> KResult<()> {
         if id == ROOT { return Err(VfsError::Ebusy); }
         let (parent, name) = {
             let n = self.nodes.get(&id).ok_or(VfsError::Enoent)?;
-            if !n.children.is_empty() || !n.procs.is_empty() || n.threads != 0
+            if !n.children.is_empty() || self.dying.values().any(|d| d.parent == Some(id))
+                || !n.procs.is_empty() || n.threads != 0
                 || n.memory.total() != 0 || n.swap_current != 0 {
                 return Err(VfsError::Ebusy);
             }
             (n.parent.unwrap(), n.name.clone())
         };
         self.nodes.get_mut(&parent).unwrap().children.remove(&name);
-        self.nodes.remove(&id);
+        let node = self.nodes.remove(&id).unwrap();
+        if node.hugetlb.has_charges() { self.dying.insert(id, node); }
         Ok(())
     }
 

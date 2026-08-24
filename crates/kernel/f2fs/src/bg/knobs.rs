@@ -12,7 +12,7 @@
 use syscall::errno::Errno;
 
 use super::discard::{IoAware, MAX_PLIST_NUM, MIN_DISCARD_GRANULARITY};
-use super::gc::GcMode;
+use super::gc::{BggcIoAware, GcMode};
 use super::state::Bg;
 
 /// One writable control.
@@ -33,15 +33,24 @@ pub enum Knob {
     /// has seen. A caller that needs space NOW is deliberately not bounded by
     /// it, so this only ever widens or narrows the BACKGROUND pass.
     MaxVictimSearch,
+    GcNoZonedGcPercent,
+    GcBoostZonedGcPercent,
+    GcBoostGcMultiple,
+    GcBoostGcGreedy,
     DiscardGranularity,
     MaxOrderedDiscard,
     DiscardIoAwareGran,
     DiscardIoAware,
     DiscardUrgentUtil,
     MaxDiscardRequest,
+    MaxSmallDiscards,
     MinDiscardIssueTime,
     MidDiscardIssueTime,
     MaxDiscardIssueTime,
+    IdleInterval,
+    DiscardIdleInterval,
+    GcIdleInterval,
+    BggcIoAware,
 }
 
 /// The name the control is published under. # C: O(1)
@@ -55,15 +64,24 @@ pub fn name(k: Knob) -> &'static str {
         Knob::GcIdle => "gc_idle",
         Knob::GcRemainingTrials => "gc_remaining_trials",
         Knob::MaxVictimSearch => "max_victim_search",
+        Knob::GcNoZonedGcPercent => "gc_no_zoned_gc_percent",
+        Knob::GcBoostZonedGcPercent => "gc_boost_zoned_gc_percent",
+        Knob::GcBoostGcMultiple => "gc_boost_gc_multiple",
+        Knob::GcBoostGcGreedy => "gc_boost_gc_greedy",
         Knob::DiscardGranularity => "discard_granularity",
         Knob::MaxOrderedDiscard => "max_ordered_discard",
         Knob::DiscardIoAwareGran => "discard_io_aware_gran",
         Knob::DiscardIoAware => "discard_io_aware",
         Knob::DiscardUrgentUtil => "discard_urgent_util",
         Knob::MaxDiscardRequest => "max_discard_request",
+        Knob::MaxSmallDiscards => "max_small_discards",
         Knob::MinDiscardIssueTime => "min_discard_issue_time",
         Knob::MidDiscardIssueTime => "mid_discard_issue_time",
         Knob::MaxDiscardIssueTime => "max_discard_issue_time",
+        Knob::IdleInterval => "idle_interval",
+        Knob::DiscardIdleInterval => "discard_idle_interval",
+        Knob::GcIdleInterval => "gc_idle_interval",
+        Knob::BggcIoAware => "bggc_io_aware",
     }
 }
 
@@ -71,10 +89,14 @@ pub fn name(k: Knob) -> &'static str {
 pub const ALL: &[Knob] = &[
     Knob::GcUrgentSleepTime, Knob::GcMinSleepTime, Knob::GcMaxSleepTime,
     Knob::GcNoGcSleepTime, Knob::GcUrgent, Knob::GcIdle, Knob::GcRemainingTrials,
-    Knob::MaxVictimSearch,
+    Knob::MaxVictimSearch, Knob::GcNoZonedGcPercent, Knob::GcBoostZonedGcPercent,
+    Knob::GcBoostGcMultiple, Knob::GcBoostGcGreedy,
     Knob::DiscardGranularity, Knob::MaxOrderedDiscard, Knob::DiscardIoAwareGran,
     Knob::DiscardIoAware, Knob::DiscardUrgentUtil, Knob::MaxDiscardRequest,
     Knob::MinDiscardIssueTime, Knob::MidDiscardIssueTime, Knob::MaxDiscardIssueTime,
+    Knob::MaxSmallDiscards,
+    Knob::IdleInterval, Knob::DiscardIdleInterval, Knob::GcIdleInterval,
+    Knob::BggcIoAware,
 ];
 
 /// The number a control reads back as. # C: O(1)
@@ -88,15 +110,23 @@ pub fn show(bg: &Bg, k: Knob) -> u64 {
         Knob::GcIdle => u64::from(bg.gc.lock().mode.as_u32()),
         Knob::GcRemainingTrials => u64::from(bg.gc.lock().remaining_trials),
         Knob::MaxVictimSearch => u64::from(bg.gc.lock().max_victim_search),
+        Knob::GcNoZonedGcPercent => u64::from(bg.gc.lock().no_zoned_gc_percent),
+        Knob::GcBoostZonedGcPercent => u64::from(bg.gc.lock().boost_zoned_gc_percent),
+        Knob::GcBoostGcMultiple => u64::from(bg.gc.lock().boost_gc_multiple),
+        Knob::GcBoostGcGreedy => u64::from(bg.gc.lock().boost_gc_greedy),
         Knob::DiscardGranularity => u64::from(bg.dcc.lock().granularity),
         Knob::MaxOrderedDiscard => u64::from(bg.dcc.lock().max_ordered_discard),
         Knob::DiscardIoAwareGran => u64::from(bg.dcc.lock().io_aware_gran),
         Knob::DiscardIoAware => u64::from(bg.dcc.lock().io_aware.as_u32()),
         Knob::DiscardUrgentUtil => u64::from(bg.dcc.lock().urgent_util),
         Knob::MaxDiscardRequest => u64::from(bg.dcc.lock().max_discard_request),
+        Knob::MaxSmallDiscards => bg.dcc.lock().max_discards,
         Knob::MinDiscardIssueTime => u64::from(bg.dcc.lock().min_issue_time),
         Knob::MidDiscardIssueTime => u64::from(bg.dcc.lock().mid_issue_time),
         Knob::MaxDiscardIssueTime => u64::from(bg.dcc.lock().max_issue_time),
+        Knob::IdleInterval | Knob::DiscardIdleInterval | Knob::GcIdleInterval =>
+            bg.idle_control(k),
+        Knob::BggcIoAware => bg.bggc_io_aware() as u64,
     }
 }
 
@@ -132,10 +162,18 @@ pub fn accepts(k: Knob, v: u64, atgc: bool) -> Result<(), Errno> {
         | Knob::GcNoGcSleepTime | Knob::MinDiscardIssueTime | Knob::MidDiscardIssueTime
         | Knob::MaxDiscardIssueTime | Knob::MaxDiscardRequest =>
             v != 0 && v <= u64::from(u32::MAX),
+        Knob::MaxSmallDiscards => v <= u64::from(u32::MAX),
         Knob::GcRemainingTrials => v <= u64::from(u32::MAX),
         // Zero would cost nothing and settle for nothing, so an ahead-of-demand
         // pass with it set would never find a victim at all.
         Knob::MaxVictimSearch => v != 0 && v <= u64::from(u32::MAX),
+        Knob::GcNoZonedGcPercent => v <= 100,
+        Knob::GcBoostZonedGcPercent => v <= 100,
+        Knob::GcBoostGcMultiple => v <= u64::from(u32::MAX),
+        Knob::GcBoostGcGreedy => v <= 1,
+        Knob::IdleInterval | Knob::DiscardIdleInterval | Knob::GcIdleInterval =>
+            v <= u64::from(u32::MAX),
+        Knob::BggcIoAware => v <= BggcIoAware::None as u64,
     };
     if ok { Ok(()) } else { Err(Errno::Einval) }
 }
@@ -157,6 +195,10 @@ pub fn store(bg: &Bg, k: Knob, v: u64, atgc: bool) -> Result<(), Errno> {
         Knob::GcIdle => bg.set_gc_mode(GcMode::from_u32(n).unwrap_or(GcMode::Normal)),
         Knob::GcRemainingTrials => bg.gc.lock().remaining_trials = n,
         Knob::MaxVictimSearch => bg.gc.lock().max_victim_search = n,
+        Knob::GcNoZonedGcPercent => bg.gc.lock().no_zoned_gc_percent = n,
+        Knob::GcBoostZonedGcPercent => bg.gc.lock().boost_zoned_gc_percent = n,
+        Knob::GcBoostGcMultiple => bg.gc.lock().boost_gc_multiple = n,
+        Knob::GcBoostGcGreedy => bg.gc.lock().boost_gc_greedy = n,
         Knob::DiscardGranularity => bg.dcc.lock().granularity = n,
         Knob::MaxOrderedDiscard => bg.dcc.lock().max_ordered_discard = n,
         Knob::DiscardIoAwareGran => bg.dcc.lock().io_aware_gran = n,
@@ -165,9 +207,13 @@ pub fn store(bg: &Bg, k: Knob, v: u64, atgc: bool) -> Result<(), Errno> {
         }
         Knob::DiscardUrgentUtil => bg.dcc.lock().urgent_util = n,
         Knob::MaxDiscardRequest => bg.dcc.lock().max_discard_request = n,
+        Knob::MaxSmallDiscards => bg.dcc.lock().set_max_discards(v),
         Knob::MinDiscardIssueTime => bg.dcc.lock().min_issue_time = n,
         Knob::MidDiscardIssueTime => bg.dcc.lock().mid_issue_time = n,
         Knob::MaxDiscardIssueTime => bg.dcc.lock().max_issue_time = n,
+        Knob::IdleInterval | Knob::DiscardIdleInterval | Knob::GcIdleInterval =>
+            bg.set_idle_control(k, v),
+        Knob::BggcIoAware => bg.set_bggc_io_aware(v),
     }
     Ok(())
 }

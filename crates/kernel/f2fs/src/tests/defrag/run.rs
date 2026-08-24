@@ -70,6 +70,7 @@ fn defragmenting_lays_the_blocks_out_in_file_order() {
     let (mut v, ino) = scattered();
     let moved = v.defragment_range(ino, 0, 3 * BLK).unwrap();
     assert_eq!(moved, 3 * BLK);
+    assert_eq!(v.counters().defrag_blks, 3);
     let a = addrs(&v, ino, 3);
     assert_eq!(a[1], a[0] + 1);
     assert_eq!(a[2], a[1] + 1);

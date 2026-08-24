@@ -68,6 +68,8 @@ pub struct ShmSegment {
     pub mode:  AtomicU32,
     pub uid:   AtomicU32,
     pub gid:   AtomicU32,
+    /// SELinux's retained `shm` object SID.
+    pub security_sid: AtomicU32,
     pub cuid:  u32,
     pub cgid:  u32,
     /// Creator PID (shm_cpid) for IPC_STAT.
@@ -94,6 +96,15 @@ pub(super) fn ipc_permitted(seg: &ShmSegment, cred: &IpcCred, flg: u64) -> bool 
     crate::sysv::perm::ipc_permitted_fields(
         seg.mode.load(Ordering::Acquire), seg.uid.load(Ordering::Acquire),
         seg.gid.load(Ordering::Acquire), seg.cuid, seg.cgid, cred, flg as i32)
+        && selinux_runtime::check::ipc_permission(
+            selinux_runtime::task::current_sid(),
+            seg.security_sid.load(Ordering::Acquire), "shm", flg as i32).is_ok()
+}
+
+pub(super) fn security_permissions(seg: &ShmSegment, permissions: &[&'static str]) -> bool {
+    selinux_runtime::check::class_permissions(
+        selinux_runtime::task::current_sid(),
+        seg.security_sid.load(Ordering::Acquire), "shm", permissions).is_ok()
 }
 
 fn valid_new_size(size: usize) -> bool {
@@ -154,7 +165,7 @@ where F: FnOnce(SegBacking) -> Result<Arc<dyn vmm::FileBacking>, syscall::errno:
                 if s.size < size {
                     return -(Errno::Einval.as_i32() as i64);
                 }
-                if !ipc_permitted(s, &cred, flg) {
+                if !ipc_permitted(s, &cred, flg) || !security_permissions(s, &["associate"]) {
                     return -(Errno::Eacces.as_i32() as i64);
                 }
                 return s.id as i64;
@@ -202,6 +213,7 @@ where F: FnOnce(SegBacking) -> Result<Arc<dyn vmm::FileBacking>, syscall::errno:
         mode: AtomicU32::new((flg & IPC_MODE_MASK) as u32),
         uid: AtomicU32::new(cred.euid),
         gid: AtomicU32::new(cred.egid),
+        security_sid: AtomicU32::new(selinux_runtime::check::create_sid("shm")),
         cuid: cred.euid,
         cgid: cred.egid,
         cpid,
@@ -209,6 +221,9 @@ where F: FnOnce(SegBacking) -> Result<Arc<dyn vmm::FileBacking>, syscall::errno:
         creator: Spinlock::new(self::creator::current_creator()),
         backing,
     });
+    if !security_permissions(&seg, &["create"]) {
+        return -(Errno::Eacces.as_i32() as i64);
+    }
     g.push(seg);
     id as i64
 }
@@ -339,6 +354,8 @@ fn shmat_plan(
     let addr = shmat_addr(shmaddr, shmflg)?;
     let (prot, acc_mode) = shmat_prot_access(shmflg);
     if !ipc_permitted(seg, cred, acc_mode) { return Err(Errno::Eacces); }
+    let perms = if (shmflg & SHM_RDONLY) != 0 { &["read"][..] } else { &["read", "write"][..] };
+    if !security_permissions(seg, perms) { return Err(Errno::Eacces); }
     let page = self::huge::seg_page_size(&seg.backing);
     let len = seg_span(seg).ok_or(Errno::Enomem)?;
     if let Some(a) = addr {

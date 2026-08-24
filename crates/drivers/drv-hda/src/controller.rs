@@ -3,7 +3,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 
 use crate::bdl::Geometry;
 use crate::generic::{self, OutputRoute, Plan};
@@ -44,15 +44,19 @@ pub struct Hda {
     /// Controller-global DMA position-buffer address.
     pub posbuf_pa: u64,
     pub rings: Arc<RegLock<Rings>>,
-    pub playback: Stream,
-    pub capture: Stream,
+    pub playback: Vec<Stream>,
+    pub capture: Vec<Stream>,
     pub codec: Option<Codec>,
     pub plan: Option<Plan>,
+    /// Capture route selected by the card's Capture Source mux.
+    pub capture_source: u32,
     /// Unsolicited-response tag assigned to each jack-detectable output pin.
     pub jack_tags: [(u8, u8); MAX_JACKS],
     pub jack_count: usize,
     /// Last reported presence per tracked jack.
     pub jack_present: [bool; MAX_JACKS],
+    /// Number of retaskable input pins currently driven as output pairs.
+    pub multi_io_active: u8,
     pub streams: u8,
     /// The controller has an interrupt vector, so the response ring may be
     /// serviced by the handler. Without one the driver polls, which is a
@@ -67,8 +71,8 @@ pub const MAX_JACKS: usize = 4;
 /// bounded register/ring state with process-side codec commands.
 pub struct IrqEndpoint {
     regs: Regs,
-    playback_index: u8,
-    capture_index: u8,
+    playback_indices: Vec<u8>,
+    capture_indices: Vec<u8>,
 }
 
 impl IrqEndpoint {
@@ -76,8 +80,8 @@ impl IrqEndpoint {
     pub fn new(hda: &Hda) -> Self {
         Self {
             regs: hda.regs,
-            playback_index: hda.playback.index,
-            capture_index: hda.capture.index,
+            playback_indices: hda.playback.iter().map(|stream| stream.index).collect(),
+            capture_indices: hda.capture.iter().map(|stream| stream.index).collect(),
         }
     }
 
@@ -87,18 +91,19 @@ impl IrqEndpoint {
         let mut rings = transport::lock_regs(ring_lock);
         let status = self.regs.r32(REG_INTSTS);
         if status == 0 || status == u32::MAX { return false; }
-        for index in [self.playback_index, self.capture_index] {
+        for index in self.playback_indices.iter().chain(self.capture_indices.iter()).copied() {
             if status & (1u32 << index) == 0 { continue; }
             let sd_status = self.regs.r8(self.regs.sd(index) + SD_STS);
             self.regs.w8(self.regs.sd(index) + SD_STS, SD_INT_MASK as u8);
             let _ = sd_status;
         }
         let rirb = self.regs.r8(REG_RIRBSTS);
+        let mut unsolicited = false;
         if rirb & RIRBSTS_INT_MASK != 0 {
             self.regs.w8(REG_RIRBSTS, RIRBSTS_INT_MASK);
-            if rirb & RIRBSTS_IRQ != 0 { transport::update_rirb(&self.regs, &mut rings); }
+            if rirb & RIRBSTS_IRQ != 0 { unsolicited = transport::update_rirb(&self.regs, &mut rings); }
         }
-        true
+        unsolicited
     }
 }
 
@@ -195,8 +200,58 @@ impl Hda {
         for route in plan.outputs.iter() { self.activate(route, widget::PIN_OUT); }
         for route in plan.hp.iter() { self.activate(route, widget::PIN_HP); }
         for route in plan.speaker.iter() { self.activate(route, widget::PIN_OUT); }
+        for route in plan.digital.iter() { self.activate(route, widget::PIN_OUT); }
+        self.set_multi_io(0);
         self.apply_capture(&plan);
         self.arm_jacks(&plan);
+    }
+
+    /// Retask the generic parser's line-in/mic candidates. The default is
+    /// capture mode; playback setup raises this to the number of extra stereo
+    /// pairs required by the requested channel count.
+    pub fn set_multi_io(&mut self, pairs: u8) -> bool {
+        let Some(plan) = self.plan.clone() else { return pairs == 0; };
+        if usize::from(pairs) > plan.multi_io.len() { return false; }
+        let wanted = pairs;
+        if wanted == self.multi_io_active { return true; }
+        if self.playback.iter().any(|stream| stream.running) { return false; }
+        let Some(codec) = self.codec.clone() else { return false; };
+        for (index, route) in plan.multi_io.iter().enumerate() {
+            if index < wanted as usize {
+                let output_route = generic::output_route_for_multi_io(&codec, route);
+                self.activate(&output_route, widget::PIN_OUT);
+            }
+        }
+        let Some(port) = self.port() else { return false; };
+        for (index, route) in plan.multi_io.iter().enumerate() {
+            if index >= wanted as usize {
+                for hop in route.path.hops.iter() {
+                    let Some(w) = codec.widget(hop.nid) else { continue; };
+                    if let Some(caps) = w.out_amp(codec.fg_amp_out) {
+                        let amp = widget::amp_caps(caps);
+                        if amp.mute {
+                            port.command(hop.nid, verb::SET_AMP_GAIN_MUTE,
+                                         widget::amp_set_payload(true, 0, true, true, true, 0));
+                        }
+                    }
+                }
+                if codec.widget(route.pin).is_some_and(|w| w.pincap & widget::PINCAP_EAPD != 0) {
+                    port.command(route.pin, verb::SET_EAPD_BTLENABLE, 0);
+                }
+                port.command(route.pin, verb::SET_PIN_WIDGET_CONTROL, u16::from(widget::PIN_IN));
+                for hop in route.path.hops.iter() {
+                    let Some(w) = codec.widget(hop.nid) else { continue; };
+                    if let (Some(caps), Some(sel)) = (w.in_amp(codec.fg_amp_in), hop.sel) {
+                        let amp = widget::amp_caps(caps);
+                        let gain = amp.offset.min(amp.num_steps) as u8;
+                        port.command(hop.nid, verb::SET_AMP_GAIN_MUTE,
+                                     widget::amp_set_payload(false, sel, true, true, false, gain));
+                    }
+                }
+            }
+        }
+        self.multi_io_active = wanted;
+        true
     }
 
     fn apply_capture(&mut self, plan: &Plan) {
@@ -254,10 +309,15 @@ impl Hda {
     /// Bind the playback converter to the output stream and program both
     /// sides for `alsa_format`/`rate`/`channels`.
     /// # C: O(periods + one command pair)
-    pub fn prepare_playback(&mut self, alsa_format: u32, rate: u32, channels: u8,
+    pub fn prepare_playback(&mut self, device: u32, alsa_format: u32, rate: u32, channels: u8,
                             period_bytes: u32) -> bool {
         let Some(codec) = self.codec.clone() else { return false; };
-        let Some(route) = self.plan.as_ref().and_then(|plan| plan.primary().cloned()) else { return false; };
+        let Some(route) = self.plan.as_ref().and_then(|plan| plan.output_for(device).cloned()) else { return false; };
+        let base_channels = codec.widget(route.dac).map(|w| widget::widget_channels(w.wcaps)).unwrap_or(2);
+        let extra_channels = channels.saturating_sub(base_channels as u8);
+        if extra_channels != 0 && extra_channels & 1 != 0 { return false; }
+        let extra_pairs = u32::from(extra_channels) / 2;
+        if !self.set_multi_io(extra_pairs as u8) { return false; }
         let par_pcm = codec.pcm_caps_of(route.dac);
         let Some(format) = crate::stream_fmt::format_for(alsa_format, rate, u32::from(channels), par_pcm)
             else { return false; };
@@ -265,21 +325,33 @@ impl Hda {
         let period = crate::bdl::align_period(period_bytes.min(crate::stream::MAX_PERIOD_BYTES));
         let geometry = Geometry { period_bytes: period, periods: crate::stream::PERIODS };
         let regs = self.regs;
-        if !self.playback.setup(&regs, format, geometry, frame_bytes) { return false; }
-        self.playback.silence();
-        let tag = self.playback.tag;
+        let Some(stream) = self.playback.get_mut(device as usize) else { return false; };
+        if !stream.setup(&regs, format, geometry, frame_bytes) { return false; }
+        stream.silence();
+        let tag = stream.tag;
         let Some(port) = self.port() else { return false; };
         port.command(route.dac, verb::SET_STREAM_FORMAT, format);
         port.command(route.dac, verb::SET_CHANNEL_STREAMID, verb::channel_streamid_payload(tag, 0));
+        if let Some(plan) = self.plan.clone() {
+            for (index, multi) in plan.multi_io.iter().enumerate().take(self.multi_io_active as usize) {
+                port.command(multi.dac, verb::SET_STREAM_FORMAT, format);
+                port.command(multi.dac, verb::SET_CHANNEL_STREAMID,
+                             verb::channel_streamid_payload(tag, ((index + 1) * 2) as u8));
+            }
+        }
         true
     }
 
     /// As [`Self::prepare_playback`], for the capture converter.
     /// # C: O(periods + one command pair)
-    pub fn prepare_capture(&mut self, alsa_format: u32, rate: u32, channels: u8,
+    pub fn prepare_capture(&mut self, device: u32, alsa_format: u32, rate: u32, channels: u8,
                            period_bytes: u32) -> bool {
         let Some(codec) = self.codec.clone() else { return false; };
-        let Some(route) = self.plan.as_ref().and_then(|plan| plan.primary_capture().cloned()) else { return false; };
+        let route_device = if device == 0 { self.capture_source } else { device };
+        let Some(route) = self.plan.as_ref().and_then(|plan| plan.capture_for(route_device).cloned()) else { return false; };
+        if self.plan.as_ref().is_some_and(|plan| {
+            plan.multi_io.iter().take(self.multi_io_active as usize).any(|multi| multi.pin == route.pin)
+        }) { return false; }
         let par_pcm = codec.pcm_caps_of(route.adc);
         let Some(format) = crate::stream_fmt::format_for(alsa_format, rate, u32::from(channels), par_pcm)
             else { return false; };
@@ -287,9 +359,10 @@ impl Hda {
         let period = crate::bdl::align_period(period_bytes.min(crate::stream::MAX_PERIOD_BYTES));
         let geometry = Geometry { period_bytes: period, periods: crate::stream::PERIODS };
         let regs = self.regs;
-        if !self.capture.setup(&regs, format, geometry, frame_bytes) { return false; }
-        self.capture.silence();
-        let tag = self.capture.tag;
+        let Some(stream) = self.capture.get_mut(device as usize) else { return false; };
+        if !stream.setup(&regs, format, geometry, frame_bytes) { return false; }
+        stream.silence();
+        let tag = stream.tag;
         let Some(port) = self.port() else { return false; };
         port.command(route.adc, verb::SET_STREAM_FORMAT, format);
         port.command(route.adc, verb::SET_CHANNEL_STREAMID, verb::channel_streamid_payload(tag, 0));
@@ -298,13 +371,35 @@ impl Hda {
 
     /// Detach a converter from its stream tag, which is what frees the
     /// stream for another user. # C: O(one command)
-    pub fn release(&mut self, playback: bool) {
+    pub fn release(&mut self, device: u32, playback: bool) {
         let Some(plan) = self.plan.clone() else { return; };
-        let nid = if playback { plan.primary().map(|route| route.dac) }
-                  else { plan.primary_capture().map(|route| route.adc) };
+        let route_device = if device == 0 { self.capture_source } else { device };
+        let nid = if playback { plan.output_for(device).map(|route| route.dac) }
+                  else { plan.capture_for(route_device).map(|route| route.adc) };
         let Some(nid) = nid else { return; };
         let Some(port) = self.port() else { return; };
         port.command(nid, verb::SET_CHANNEL_STREAMID, 0);
+        if playback {
+            if let Some(plan) = self.plan.clone() {
+                for route in plan.multi_io.iter().take(self.multi_io_active as usize) {
+                    port.command(route.dac, verb::SET_CHANNEL_STREAMID, 0);
+                }
+            }
+            drop(port);
+            let _ = self.set_multi_io(0);
+        }
+    }
+
+    /// Select the capture route used by PCM capture device zero.
+    /// # C: O(one command)
+    pub fn set_capture_source(&mut self, source: u32) -> bool {
+        let Some(plan) = self.plan.as_ref() else { return false; };
+        if plan.capture_for(source).is_none() { return false; }
+        if self.capture_source == source { return true; }
+        if self.capture.first().is_some_and(|stream| stream.running) { return false; }
+        self.release(0, false);
+        self.capture_source = source;
+        true
     }
 
     /// Read one amplifier's gain, in steps. # C: O(one command)
@@ -320,6 +415,17 @@ impl Hda {
         let Some(port) = self.port() else { return false; };
         port.command(nid, verb::SET_AMP_GAIN_MUTE,
                      widget::amp_set_payload(output, index, left, right, mute, gain)).is_some()
+    }
+
+    /// Program the codec's standard digital beep generator.
+    /// # C: O(one command)
+    pub fn beep(&mut self, hz: u32) -> bool {
+        let Some(codec) = self.codec.as_ref() else { return false; };
+        let Some(beep) = codec.widgets.iter()
+            .find(|widget| widget::widget_type(widget.wcaps) == widget::WidgetType::Beep) else { return false; };
+        let tone = if hz == 0 { 0 } else { (12_000 / hz).clamp(1, 0xff) as u16 };
+        let Some(port) = self.port() else { return false; };
+        port.command(beep.nid, verb::SET_BEEP_CONTROL, tone).is_some()
     }
 
     /// Drain the queued unsolicited responses, re-sense every jack they
@@ -380,8 +486,8 @@ impl Hda {
     /// Quiesce for removal or shutdown. # C: O(1)
     pub fn quiesce(&mut self) {
         let regs = self.regs;
-        self.playback.stop(&regs);
-        self.capture.stop(&regs);
+        for stream in &mut self.playback { stream.stop(&regs); }
+        for stream in &mut self.capture { stream.stop(&regs); }
         regs.w32(REG_INTCTL, 0);
         regs.w32(REG_DPLBASE, 0);
         regs.w32(REG_DPUBASE, 0);

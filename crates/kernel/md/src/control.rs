@@ -13,7 +13,6 @@ use block::{BlockError, KResult};
 pub(crate) struct Metadata {
     pub(crate) minor_version: i32,
     pub(crate) ctime: u64,
-    pub(crate) utime: u64,
     pub(crate) level: i32,
     pub(crate) layout: u32,
     pub(crate) chunk_sectors: u32,
@@ -45,6 +44,21 @@ pub fn disk_info(dev_t: u32, number: i32) -> Option<uapi::DiskInfo> {
     let disk = block::registry::by_dev(dev_t)?;
     if disk.driver != MD_DRIVER { return None; }
     Some(lookup(disk.number.minor)?.disk_info(number))
+}
+
+/// Mark one live member faulty through the canonical MD control owner.
+/// # C: O(disks + members) # Ctx: process # Sleeps: no
+pub fn set_disk_faulty(dev_t: u32, member_dev_t: u32) -> KResult<()> {
+    let (_disk, array) = live_array(dev_t)?;
+    array.set_disk_faulty(member_dev_t)
+}
+
+/// Validate the Linux `SET_ARRAY_INFO` no-change path against the live array.
+/// Unsupported geometry changes remain rejected until their personality owns
+/// reshape and persistent superblock updates. # C: O(disks + members)
+pub fn set_array_info(dev_t: u32, info: uapi::ArrayInfo) -> KResult<()> {
+    let (disk, array) = live_array(dev_t)?;
+    array.validate_array_info(disk.number.minor, &info)
 }
 
 /// Put a live assembled array into read-only service. New opens and writes
@@ -148,17 +162,29 @@ fn live_array(dev_t: u32) -> KResult<(Arc<block::registry::Disk>, Arc<Array>)> {
 }
 
 impl Array {
+    fn validate_array_info(&self, md_minor: u32, info: &uapi::ArrayInfo) -> KResult<()> {
+        let current = self.array_info(md_minor).ok_or(BlockError::Enxio)?;
+        let same_size = info.size < 0 || info.size == current.size;
+        if info.major_version != current.major_version || info.minor_version != current.minor_version
+            || info.ctime != current.ctime || info.level != current.level || info.not_persistent != current.not_persistent
+            || info.chunk_size != current.chunk_size || !same_size || info.raid_disks != current.raid_disks
+            || info.layout != current.layout || (info.state & 0xffff_fe00u32 as i32) != 0
+            || (info.state & (1 << 8)) != 0 { return Err(BlockError::Einval); }
+        Ok(())
+    }
+
     fn array_info(&self, md_minor: u32) -> Option<uapi::ArrayInfo> {
         let metadata = self.metadata.as_ref()?;
         let size = self.capacity.checked_mul(u64::from(self.block_size))?.checked_div(1024)?;
         let size = i32::try_from(size).unwrap_or(-1);
         let disks = i32::try_from(metadata.members.len()).ok()?;
+        let failed = i32::try_from(self.failed_members()).ok()?;
         Some(uapi::ArrayInfo {
             major_version: 1, minor_version: metadata.minor_version, patch_version: uapi::MD_PATCHLEVEL_VERSION,
             ctime: u32::try_from(metadata.ctime).unwrap_or(u32::MAX), level: metadata.level, size,
             nr_disks: disks, raid_disks: i32::try_from(metadata.raid_disks).ok()?, md_minor: i32::try_from(md_minor).ok()?, not_persistent: 0,
-            utime: u32::try_from(metadata.utime).unwrap_or(u32::MAX), state: 1, active_disks: disks, working_disks: disks,
-            failed_disks: 0, spare_disks: 0, layout: metadata.layout as i32,
+            utime: u32::try_from(*self.metadata_utime.lock()).unwrap_or(u32::MAX), state: 1, active_disks: disks - failed, working_disks: disks - failed,
+            failed_disks: failed, spare_disks: 0, layout: metadata.layout as i32,
             chunk_size: i32::try_from(u64::from(metadata.chunk_sectors).checked_mul(512)?).unwrap_or(-1),
         })
     }
@@ -168,6 +194,10 @@ impl Array {
         let Some(member) = u32::try_from(number).ok().and_then(|number| metadata.members.iter().find(|member| member.number == number)) else {
             return removed(number);
         };
+        if self.member_faulty(metadata.members.iter().position(|candidate| candidate.number == member.number).unwrap_or(usize::MAX)) {
+            return uapi::DiskInfo { number, major: member.number_dev.major as i32, minor: member.number_dev.minor as i32,
+                raid_disk: member.raid_disk, state: 1 << 0 };
+        }
         uapi::DiskInfo { number, major: member.number_dev.major as i32, minor: member.number_dev.minor as i32,
             raid_disk: member.raid_disk, state: (1 << 1) | (1 << 2) }
     }

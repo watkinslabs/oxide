@@ -73,6 +73,17 @@ fn a_delegate_value_is_accepted_as_a_string_and_names_no_root_attribute() {
 }
 
 #[test]
+fn bpffs_mount_keeps_delegation_on_its_own_root() {
+    let fs = pseudo_bpf_with_root_attr(
+        "bpf", TEST_MAGIC, BPF_PARAMS,
+        "delegate_cmds=MAP_CREATE,delegate_maps=HASH", &[]).expect("mount");
+    let policy = fs.root_dir().fs_private::<security::bpf::BpfDelegation>()
+        .expect("mount-owned policy");
+    assert_eq!(policy.allowed_cmds, 1u64 << security::bpf::uapi::cmd::MAP_CREATE);
+    assert_eq!(policy.allowed_maps, 1u64 << security::bpf::uapi::map_type::HASH);
+}
+
+#[test]
 fn a_key_outside_the_bpffs_table_is_refused() {
     for bad in ["size=64m", "delegate=any", "delegate_cmd=any", "nosuchopt"] {
         assert!(pseudo_with_root_attr("bpf", TEST_MAGIC, BPF_PARAMS, bad, &[]).is_err(), "{bad}");

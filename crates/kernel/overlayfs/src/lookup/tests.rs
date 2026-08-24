@@ -12,7 +12,7 @@ use crate::config::{Config, RedirectMode};
 use crate::layers::{LayerStack, OvlEntry};
 use crate::marker;
 use crate::metacopy::Metacopy;
-use crate::testfs::{layer, mkfile, mkpath, mkwhiteout, slurp, stack};
+use crate::testfs::{layer, mkfile, mkpath, mkwhiteout, set_verity, slurp, stack};
 use crate::uapi::{Marker, MARKER_YES};
 
 use super::merge::lookup;
@@ -195,6 +195,21 @@ fn a_metadata_only_upper_file_keeps_looking_for_its_data() {
 }
 
 #[test]
+fn a_verity_mismatch_rejects_metadata_only_data() {
+    let c = Config { metacopy: true, redirect_mode: RedirectMode::On,
+                     verity_mode: crate::config::VerityMode::On, ..Config::default() };
+    let (s, root, up, lo) = mount(c.clone());
+    let lower = mkfile(&lo, "f", b"contents");
+    set_verity(&lower, 8, b"original");
+    let upper = mkfile(&up, "f", b"");
+    let record = Metacopy { version: 0, flags: 0, digest_algo: 8,
+                             digest: b"original".to_vec() };
+    marker::set(&c, &upper, Marker::Metacopy, &record.encode(), Errno::Eio).unwrap();
+    set_verity(&lower, 8, b"changed");
+    assert_eq!(find(&s, &root, "f").err(), Some(Errno::Eio));
+}
+
+#[test]
 fn a_metadata_only_file_with_nothing_below_it_is_an_error() {
     // Presenting it as empty would silently lose whatever it stands for.
     let c = Config { metacopy: true, redirect_mode: RedirectMode::On, ..Config::default() };
@@ -212,6 +227,26 @@ fn a_metadata_only_record_is_not_followed_when_the_mount_refuses_to() {
     marker::set(&Config::default(), &f, Marker::Metacopy, &Metacopy::empty().encode(), Errno::Eio)
         .unwrap();
     assert_eq!(find(&s, &root, "f").err(), Some(Errno::Eperm));
+}
+
+#[test]
+fn metadata_only_data_is_resolved_from_a_data_only_layer() {
+    let c = Config { metacopy: true, redirect_mode: RedirectMode::On, ..Config::default() };
+    let up = layer(0);
+    let lower = layer(1);
+    let data = layer(2);
+    mkfile(&data, "payload", b"data-only contents");
+    let upper_file = mkfile(&up, "f", b"");
+    let lower_file = mkfile(&lower, "f", b"");
+    let record = Metacopy::empty().encode();
+    marker::set(&c, &upper_file, Marker::Metacopy, &record, Errno::Eio).unwrap();
+    marker::set(&c, &lower_file, Marker::Metacopy, &record, Errno::Eio).unwrap();
+    marker::set(&c, &lower_file, Marker::Redirect, b"/payload", Errno::Eio).unwrap();
+    let (s, root) = stack(c, Some(up), &[lower, data], &[1]);
+    let e = find(&s, &root, "f").unwrap().unwrap();
+    assert!(e.lowerdata_redirect.is_some());
+    assert_eq!(slurp(&e.realdata().unwrap()), b"data-only contents".to_vec());
+    assert_eq!(e.lower.len(), 1, "data-only paths are not ordinary lower layers");
 }
 
 #[test]

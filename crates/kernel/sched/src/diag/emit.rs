@@ -187,8 +187,9 @@ fn dump_tasks_emit() {
 /// # C: O(path length)
 #[cfg(feature = "debug-watchdog")]
 fn emit_wchan(t: &Task) {
+    let is_current = super::current_task().is_some_and(|current| core::ptr::eq(current, t));
     if !crate::park_site::reportable(t.state(), t.on_rq.load(Ordering::Relaxed),
-                                     t.on_cpu.load(Ordering::Relaxed)) {
+                                     is_current) {
         return;
     }
     let Some(site) = t.park_site.get() else { return };

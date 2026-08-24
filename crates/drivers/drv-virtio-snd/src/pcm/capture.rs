@@ -39,6 +39,47 @@ fn rx_period_on_queue(
     payload
 }
 
+pub(crate) fn mmap_commit(
+    owner: sound::SoundOwnerKey, appl: u64, hw: u64, frame_bytes: u32, buffer_frames: u32,
+) -> Option<u64> {
+    let mut g = CTX.lock_bh::<crate::state::SndBh>();
+    let ctx = active_ctx_mut_for(&mut g, owner)?;
+    if ctx.cap_state != PcmState::Running || ctx.rx_buf_pa == 0 || ctx.rx_scratch_pa == 0 {
+        return None;
+    }
+    // Capture advances while the user has released space: the ring's free
+    // distance is appl + buffer - hw, the mirror image of playback's
+    // appl - hw queued distance.
+    let wanted = appl.wrapping_add(buffer_frames as u64).wrapping_sub(hw)
+        .min(buffer_frames as u64);
+    if wanted == 0 { return Some(hw); }
+    let frames = wanted.min((ctx.cap_period_bytes as u64 / frame_bytes as u64).max(1));
+    let bytes = (frames * frame_bytes as u64) as usize;
+    let ring_bytes = (buffer_frames * frame_bytes) as u64;
+    let start = (hw % buffer_frames as u64) * frame_bytes as u64;
+    let first = bytes.min((ring_bytes - start) as usize);
+    let second = bytes - first;
+    let xfer = ctx.hhdm.wrapping_add(ctx.rx_scratch_pa) as *mut u32;
+    // SAFETY: the scratch frame is private to this Ctx while CTX is held.
+    unsafe { core::ptr::write_volatile(xfer, ctx.in_stream?); }
+    let mut segs = [
+        virtio::SplitQueueSeg { dma: ctx.rx_scratch_pa, len: SND_XFER_HDR_BYTES as u32, device_writes: false },
+        virtio::SplitQueueSeg { dma: ctx.rx_buf_pa + start, len: first as u32, device_writes: true },
+        virtio::SplitQueueSeg { dma: ctx.rx_buf_pa + ring_bytes, len: 0, device_writes: true },
+        virtio::SplitQueueSeg { dma: ctx.rx_scratch_pa + SND_XFER_STATUS_OFF, len: SND_XFER_STATUS_BYTES as u32, device_writes: true },
+    ];
+    if second != 0 { segs[2] = virtio::SplitQueueSeg { dma: ctx.rx_buf_pa, len: second as u32, device_writes: true }; }
+    let mut rxq = ctx.rxq.take()?;
+    let result = if second == 0 {
+        let short = [segs[0], segs[1], segs[3]];
+        rxq.submit(&short)
+    } else {
+        rxq.submit(&segs)
+    }.ok().and_then(|head| super::wait_for_period_completion(&mut rxq, head, ctx.cfg_va));
+    ctx.rxq = Some(rxq);
+    result.map(|_| hw + frames)
+}
+
 pub fn cap_hw_params(
     owner: sound::SoundOwnerKey, alsa_format: u32, rate_hz: u32, channels: u8, period_bytes: u32, buffer_bytes: u32,
 ) -> bool {

@@ -11,6 +11,7 @@ kernfs = { path = "../kernfs" }
 syscall = { path = "../syscall" }
 sync   = { path = "../../shared/sync" }
 net   = { path = "../net" }
+bonding = { path = "../bonding" }
 block = { path = "../block" }
 netlink = { path = "../netlink" }
 network-namespace = { path = "../network-namespace" }

@@ -14,6 +14,11 @@ use crate::decide::{Error, KResult, TerminalCmd};
 
 type DriverShutdownHook = fn();
 
+#[cfg(target_arch = "x86_64")]
+type ArchMachine = hal_x86_64::X86MachineOps;
+#[cfg(target_arch = "aarch64")]
+type ArchMachine = hal_aarch64::ArmMachineOps;
+
 static DRIVER_SHUTDOWN_HOOK: Spinlock<Option<DriverShutdownHook>, PowerListClass> = Spinlock::new(None);
 static MACHINE_SHUTDOWN_HOOK: Spinlock<Option<fn()>, PowerListClass> = Spinlock::new(None);
 static DRIVER_SHUTDOWN_DONE: AtomicBool = AtomicBool::new(false);
@@ -31,17 +36,6 @@ pub fn set_machine_shutdown_hook(f: fn()) { *MACHINE_SHUTDOWN_HOOK.lock() = Some
 fn shutdown_machine() {
     let hook = *MACHINE_SHUTDOWN_HOOK.lock();
     if let Some(h) = hook { h(); }
-}
-
-/// Mask local interrupts before terminally stopping peer CPUs. # C: O(1)
-/// # SAFETY: caller owns an irreversible machine transition.
-unsafe fn mask_local_irqs() {
-    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-    // SAFETY: terminal transition never restores the caller's interrupt state.
-    unsafe { core::arch::asm!("cli", options(nomem, nostack, preserves_flags)); }
-    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-    // SAFETY: terminal transition never restores the caller's interrupt state.
-    unsafe { core::arch::asm!("msr daifset, #2", options(nomem, nostack, preserves_flags)); }
 }
 
 /// Linux `device_shutdown()` from `kernel_restart_prepare`. Idempotent.
@@ -64,16 +58,8 @@ pub unsafe fn init() -> KResult<()> { Ok(()) }
 /// # SAFETY: kernel privilege required for hlt/wfi.
 /// # C: O(∞)
 pub unsafe fn halt() -> ! {
-    loop {
-        #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-        // SAFETY: hlt parks the core; legal at CPL=0; preserves flags.
-        unsafe { core::arch::asm!("hlt", options(nomem, nostack, preserves_flags)); }
-        #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-        // SAFETY: wfi parks the core until any wake event; unprivileged at EL1.
-        unsafe { core::arch::asm!("wfi", options(nomem, nostack, preserves_flags)); }
-        #[cfg(not(target_os = "oxide-kernel"))]
-        core::hint::spin_loop();
-    }
+    // SAFETY: this public endpoint is itself the terminal machine boundary.
+    unsafe { <ArchMachine as hal::MachineOps>::halt() }
 }
 
 /// Reset the machine. Returns only on host (test) builds.
@@ -84,21 +70,9 @@ pub unsafe fn halt() -> ! {
 /// # SAFETY: clobbers IDT (x86) / traps to EL2 (arm); irreversible.
 /// # C: O(1)
 pub unsafe fn restart() -> ! {
-    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-    {
-        // SAFETY: caller validated the reboot request and shut the drivers down; the ladder ends in a rung that never returns.
-        unsafe { crate::reset::x86::run_ladder() }
-    }
-    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-    {
-        // SAFETY: early boot selected this PSCI conduit from firmware; SYSTEM_RESET is irreversible.
-        let _ = unsafe { hal_aarch64::psci::conduit_call(hal_aarch64::psci::PSCI_SYSTEM_RESET, 0, 0, 0) };
-        // SAFETY: a terminal PSCI call that returns cannot leave this CPU executing normal work.
-        unsafe { halt() }
-    }
-    #[cfg(not(target_os = "oxide-kernel"))]
-    // SAFETY: host build path; halt only spin-loops on host with no privileged ops.
-    unsafe { halt() }
+    // SAFETY: caller validated the transition; the callback is the kernel's
+    // architecture-independent reset policy and the HAL owns its endpoint.
+    unsafe { <ArchMachine as hal::MachineOps>::restart(reset_ladder) }
 }
 
 /// Power off the machine. x86 consumes the FADT-plus-AML S5 action; arm64
@@ -106,18 +80,28 @@ pub unsafe fn restart() -> ! {
 /// # SAFETY: irreversible; clobbers I/O ports / EL2 state.
 /// # C: O(1)
 pub unsafe fn power_off() -> ! {
+    // SAFETY: caller validated the transition; the callback is the kernel's
+    // firmware policy and the HAL owns the final platform endpoint.
+    unsafe { <ArchMachine as hal::MachineOps>::power_off(poweroff_callback) }
+}
+
+unsafe fn reset_ladder() -> ! {
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
     {
-        crate::poweroff::enter_s5();
+        // SAFETY: the terminal owner has already stopped drivers and masked
+        // interrupts; the ladder ends in a rung that never returns.
+        unsafe { crate::reset::x86::run_ladder() }
     }
-    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+    #[cfg(not(all(target_os = "oxide-kernel", target_arch = "x86_64")))]
     {
-        // SAFETY: early boot selected this PSCI conduit from firmware; SYSTEM_OFF is irreversible.
-        let _raw = unsafe { hal_aarch64::psci::conduit_call(hal_aarch64::psci::PSCI_SYSTEM_OFF, 0, 0, 0) };
-        klog::announce("PSCI SYSTEM_OFF returned");
+        // SAFETY: hosted and non-x86 builds have no reset ladder.
+        unsafe { <ArchMachine as hal::MachineOps>::halt() }
     }
-    // SAFETY: power_off only reaches here when the I/O write didn't shut us down (e.g. bare metal w/o ACPI); halt is the safe terminal state.
-    unsafe { halt() }
+}
+
+fn poweroff_callback() {
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    crate::poweroff::enter_s5();
 }
 
 /// Perform a terminal transition: shut the drivers down, then transition.
@@ -137,7 +121,8 @@ pub unsafe fn terminal_claimed(_claim: &crate::transition::Claim, cmd: TerminalC
     klog::kmsg_dump(klog::kmsg_dump::REASON_SHUTDOWN);
     shutdown_devices_once();
     // SAFETY: this function is the irreversible terminal boundary.
-    unsafe { mask_local_irqs(); }
+    // SAFETY: terminal transition owns the irreversible machine boundary.
+    unsafe { <ArchMachine as hal::MachineOps>::mask_local_irqs(); }
     shutdown_machine();
     match cmd {
         // SAFETY: terminal-state primitive; caller validated CAP_SYS_BOOT + magic per `man 2 reboot`; irreversible by design.

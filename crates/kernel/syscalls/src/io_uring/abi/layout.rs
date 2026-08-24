@@ -26,18 +26,12 @@ pub const MAX_CQ_ENTRIES: u32 = 2 * MAX_ENTRIES;
 /// the two never share a line.
 pub const SMP_CACHE_BYTES: u32 = 64;
 
-/// Largest run one region may occupy, in pages. The entries ladder already
-/// bounds every geometry well under this (the deepest ring needs 512 pages per
-/// region); the constant is the structural ceiling the sizing refuses past.
+/// Largest setup geometry one region may occupy, in pages. Registered memory
+/// regions use their separate Linux `INT_MAX` page ceiling.
 pub const MAX_REGION_PAGES: u64 = 1024;
 
 /// How a region's byte size becomes a physical allocation: `bytes` rounded up
-/// to whole pages, held in one contiguous refcounted run of `2^order` pages.
-///
-/// The run is contiguous because the mapping is a `VmaBacking::KernelFrame`,
-/// whose fault path resolves the page at VMA offset `O` to `base_pa + O` and
-/// takes one reference per installed PTE. Only `map_bytes` is exposed to
-/// `mmap(2)`; the pages the order-rounding adds past it are never mapped.
+/// to whole pages. Only `map_bytes` is exposed to `mmap(2)`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct RegionPlan {
     /// Page-aligned bytes userspace may map — the region's real size.
@@ -50,10 +44,17 @@ pub struct RegionPlan {
 
 /// Plan one region's allocation at page size `page`. # C: O(1)
 pub fn region_plan(bytes: u32, page: u64) -> Result<RegionPlan, Errno> {
+    region_plan_limited(bytes as u64, page, MAX_REGION_PAGES)
+}
+
+/// Plan a region against the caller's ABI ceiling. Ring setup uses the
+/// smaller structural limit above; `IORING_REGISTER_MEM_REGION` has Linux's
+/// `INT_MAX` page limit and must not inherit the ring allocator's limit.
+pub fn region_plan_limited(bytes: u64, page: u64, max_pages: u64) -> Result<RegionPlan, Errno> {
     if page == 0 || !page.is_power_of_two() { return Err(Errno::Einval); }
-    let map_bytes = (bytes as u64).checked_add(page - 1).ok_or(Errno::Eoverflow)? & !(page - 1);
+    let map_bytes = bytes.checked_add(page - 1).ok_or(Errno::Eoverflow)? & !(page - 1);
     let pages = core::cmp::max(map_bytes / page, 1);
-    if pages > MAX_REGION_PAGES { return Err(Errno::Eoverflow); }
+    if pages > max_pages { return Err(Errno::Eoverflow); }
     let order = (pages.next_power_of_two().trailing_zeros()) as u8;
     Ok(RegionPlan { map_bytes: core::cmp::max(map_bytes, page), pages, order })
 }

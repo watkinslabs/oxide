@@ -24,6 +24,47 @@ fn every_control_reads_back_what_was_written_to_it() {
 }
 
 #[test]
+fn max_small_discards_is_distinct_from_per_round_request_limit() {
+    let b = bg();
+    knobs::store(&b, Knob::MaxSmallDiscards, 0, false).unwrap();
+    assert_eq!(knobs::show(&b, Knob::MaxSmallDiscards), 0);
+    assert_eq!(b.dcc.lock().max_discard_request, 8);
+    assert!(knobs::store(&b, Knob::MaxSmallDiscards, u64::from(u32::MAX) + 1, false).is_err());
+}
+
+#[test]
+fn no_zoned_gc_percentage_is_live_and_bounded() {
+    let b = bg();
+    assert_eq!(knobs::show(&b, Knob::GcNoZonedGcPercent), 0);
+    knobs::store(&b, Knob::GcNoZonedGcPercent, 60, false).unwrap();
+    assert_eq!(b.gc.lock().no_zoned_gc_percent, 60);
+    assert_eq!(knobs::show(&b, Knob::GcNoZonedGcPercent), 60);
+    assert!(knobs::store(&b, Knob::GcNoZonedGcPercent, 101, false).is_err());
+    assert_eq!(knobs::show(&b, Knob::GcNoZonedGcPercent), 60);
+}
+
+#[test]
+fn boost_zoned_gc_percentage_is_live_and_bounded() {
+    let b = bg();
+    knobs::store(&b, Knob::GcBoostZonedGcPercent, 25, false).unwrap();
+    assert_eq!(b.gc.lock().boost_zoned_gc_percent, 25);
+    assert_eq!(knobs::show(&b, Knob::GcBoostZonedGcPercent), 25);
+    assert!(knobs::store(&b, Knob::GcBoostZonedGcPercent, 101, false).is_err());
+}
+
+#[test]
+fn boosted_gc_controls_are_live_and_bounded() {
+    let b = bg();
+    assert_eq!(knobs::show(&b, Knob::GcBoostGcMultiple), 5);
+    assert_eq!(knobs::show(&b, Knob::GcBoostGcGreedy), 1);
+    knobs::store(&b, Knob::GcBoostGcMultiple, 7, false).unwrap();
+    knobs::store(&b, Knob::GcBoostGcGreedy, 0, false).unwrap();
+    assert_eq!(knobs::show(&b, Knob::GcBoostGcMultiple), 7);
+    assert_eq!(knobs::show(&b, Knob::GcBoostGcGreedy), 0);
+    assert!(knobs::store(&b, Knob::GcBoostGcGreedy, 2, false).is_err());
+}
+
+#[test]
 fn the_discard_granularity_refuses_zero_and_more_than_the_longest_list() {
     let b = bg();
     assert_eq!(knobs::store(&b, Knob::DiscardGranularity, 0, false), Err(Errno::Einval));
@@ -73,6 +114,18 @@ fn no_interval_may_be_zero() {
               Knob::MaxDiscardIssueTime, Knob::MaxDiscardRequest] {
         assert_eq!(knobs::store(&b, k, 0, false), Err(Errno::Einval), "{}", knobs::name(k));
     }
+}
+
+#[test]
+fn bggc_io_awareness_uses_linux_values_and_bounds() {
+    let b = bg();
+    assert_eq!(knobs::show(&b, Knob::BggcIoAware), 0);
+    knobs::store(&b, Knob::BggcIoAware, 1, false).unwrap();
+    assert_eq!(knobs::show(&b, Knob::BggcIoAware), 1);
+    knobs::store(&b, Knob::BggcIoAware, 2, false).unwrap();
+    assert_eq!(knobs::show(&b, Knob::BggcIoAware), 2);
+    assert_eq!(knobs::store(&b, Knob::BggcIoAware, 3, false), Err(Errno::Einval));
+    assert_eq!(knobs::show(&b, Knob::BggcIoAware), 2);
 }
 
 #[test]

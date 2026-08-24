@@ -2,12 +2,15 @@
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicBool, Ordering};
+use sync::{Spinlock, TaskList};
 use vfs::{default_inode_ops, mk_mode, File, FileOps, FileType, Inode, InodeBuilder, InodeRef,
           KResult, PollSubscribers, SharedFrame, VfsError};
 
 use crate::device::{self, FileHandle};
 use crate::ids;
 use crate::ioctl;
+use crate::ioctl::Ctx;
 use crate::uapi::ioctl as cmds;
 use crate::usermem::MAX_ARG_BYTES;
 use crate::vb2::poll as vb2poll;
@@ -17,9 +20,23 @@ use super::ctx::KernelCtx;
 struct VideoInode { index: u32 }
 
 /// `file->private_data`: the handle this open file description owns.
-struct VideoOpen { handle: Arc<FileHandle> }
+struct VideoOpen {
+    handle: Arc<FileHandle>,
+    fileio: Spinlock<Option<FileIo>, TaskList>,
+    reading: AtomicBool,
+}
+
+struct FileIo { current: Option<(u32, usize)> }
+
+const FILEIO_BUFFER_COUNT: u32 = 4;
 
 struct VideoFileOps;
+
+struct ReadGuard<'a>(&'a AtomicBool);
+
+impl Drop for ReadGuard<'_> {
+    fn drop(&mut self) { self.0.store(false, Ordering::Release); }
+}
 
 /// Borrow the handle this open file description owns. # C: O(1)
 fn opened(file: &File) -> Option<&VideoOpen> {
@@ -45,7 +62,9 @@ impl FileOps for VideoFileOps {
         let data = file.inode().private::<VideoInode>().ok_or(VfsError::Enodev)?;
         let dev = device::by_index(data.index).ok_or(VfsError::Enodev)?;
         let handle = device::open(&dev);
-        let raw = Box::into_raw(Box::new(VideoOpen { handle })) as u64;
+        let raw = Box::into_raw(Box::new(VideoOpen {
+            handle, fileio: Spinlock::new(None), reading: AtomicBool::new(false),
+        })) as u64;
         file.set_private_data(raw);
         Ok(())
     }
@@ -78,6 +97,29 @@ impl FileOps for VideoFileOps {
     /// # C: O(1)
     fn read(&self, _inode: &Inode, _off: u64, _buf: &mut [u8]) -> KResult<usize> {
         Err(VfsError::Einval)
+    }
+
+    #[cfg(target_os = "oxide-kernel")]
+    fn read_file(&self, file: &File, _off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let open = opened(file).ok_or(VfsError::Enodev)?;
+        if buf.is_empty() { return Ok(0); }
+        if open.handle.device.device_caps & crate::uapi::flags::CAP_READWRITE == 0 {
+            return Err(VfsError::Einval);
+        }
+        if open.reading.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+            return Err(VfsError::Ebusy);
+        }
+        let _guard = ReadGuard(&open.reading);
+        let ctx = KernelCtx::new(nonblocking(file));
+        init_fileio(open)?;
+        let (index, offset, size, frames) = dequeue_fileio(open, &ctx)?;
+        let count = core::cmp::min(buf.len(), size.saturating_sub(offset));
+        let copied = super::frames::read_plane(&frames, offset, &mut buf[..count]);
+        if copied == 0 { return Err(VfsError::Eio); }
+        let end = offset.saturating_add(copied);
+        if end >= size { requeue_fileio(open, index)?; }
+        else { open.fileio.lock().as_mut().ok_or(VfsError::Enodev)?.current = Some((index, end)); }
+        Ok(copied)
     }
     /// # C: O(1)
     fn write(&self, _inode: &Inode, _off: u64, _buf: &[u8]) -> KResult<usize> {
@@ -114,6 +156,108 @@ impl FileOps for VideoFileOps {
             }
         }
     }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn init_fileio(open: &VideoOpen) -> KResult<()> {
+    let device = &open.handle.device;
+    let mut fileio = open.fileio.lock();
+    if fileio.is_some() { return Ok(()); }
+    let ops = device.ops.clone();
+    let alloc = device.alloc.clone();
+    let handed = {
+        let mut state = device.state.lock();
+        if state.queue.streaming || state.queue.is_busy() { return Err(VfsError::Ebusy); }
+        let format = state.format;
+        let made = crate::vb2::reqbufs::reqbufs(
+            &mut state.queue, open.handle.id, crate::uapi::flags::BUF_TYPE_VIDEO_CAPTURE,
+            crate::uapi::flags::MEMORY_MMAP, FILEIO_BUFFER_COUNT,
+            |want| ops.queue_setup(want, &format), alloc.as_ref(),
+        ).map_err(|err| VfsError::from_errno(err as i32))?;
+        if made == 0 || state.queue.bufs.iter().any(|buf| buf.planes.len() != 1) {
+            crate::vb2::reqbufs::free_buffers(&mut state.queue, alloc.as_ref());
+            return Err(VfsError::Ebusy);
+        }
+        for index in 0..made {
+            let req = crate::vb2::QbufIn {
+                index, buf_type: state.queue.buf_type, memory: crate::uapi::flags::MEMORY_MMAP,
+                field: crate::uapi::flags::FIELD_NONE, flags: 0,
+                planes: [crate::vb2::PlaneIn::default(); crate::uapi::layout::MAX_PLANES],
+                num_planes: 1, bytesused: 0,
+            };
+            if crate::vb2::qbuf::qbuf(&mut state.queue, open.handle.id, &req).is_err() {
+                crate::vb2::reqbufs::free_buffers(&mut state.queue, alloc.as_ref());
+                return Err(VfsError::Einval);
+            }
+        }
+        let buf_type = state.queue.buf_type;
+        crate::vb2::stream::streamon(&mut state.queue, open.handle.id, buf_type)
+            .map_err(|err| VfsError::from_errno(err as i32))?
+    };
+    if !handed.is_empty() {
+        if let Err(err) = ops.start_streaming(&handed) {
+            let mut state = device.state.lock();
+            crate::vb2::stream::streamon_failed(&mut state.queue, &handed);
+            crate::vb2::reqbufs::free_buffers(&mut state.queue, alloc.as_ref());
+            return Err(VfsError::from_errno(err as i32));
+        }
+    }
+    *fileio = Some(FileIo { current: None });
+    Ok(())
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn dequeue_fileio(open: &VideoOpen, ctx: &KernelCtx) -> KResult<(u32, usize, usize, alloc::vec::Vec<u64>)> {
+    let device = &open.handle.device;
+    loop {
+        let mut state = device.state.lock();
+        if let Some((index, offset)) = open.fileio.lock().as_ref().and_then(|io| io.current) {
+            let buf = state.queue.buffer(index).ok_or(VfsError::Einval)?;
+            let plane = buf.planes.first().ok_or(VfsError::Einval)?;
+            return Ok((index, offset, plane.bytesused as usize, plane.frames.clone()));
+        }
+        match crate::vb2::qbuf::dqbuf_ready(&state.queue, ctx.nonblocking())
+            .map_err(|err| VfsError::from_errno(err as i32))? {
+            Some(_) => {
+                let buf_type = state.queue.buf_type;
+                let index = crate::vb2::qbuf::dqbuf(&mut state.queue, open.handle.id, buf_type)
+                    .map_err(|err| VfsError::from_errno(err as i32))?;
+                let buf = state.queue.buffer(index).ok_or(VfsError::Einval)?;
+                let plane = buf.planes.first().ok_or(VfsError::Einval)?;
+                let size = plane.bytesused as usize;
+                let frames = plane.frames.clone();
+                open.fileio.lock().as_mut().ok_or(VfsError::Enodev)?.current = Some((index, 0));
+                return Ok((index, 0, size, frames));
+            }
+            None => {
+                drop(state);
+                device.state.lock().queue.waiting_in_dqbuf = true;
+                let waited = ctx.wait_for_buffer(device);
+                device.state.lock().queue.waiting_in_dqbuf = false;
+                waited.map_err(|err| VfsError::from_errno(err as i32))?;
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn requeue_fileio(open: &VideoOpen, index: u32) -> KResult<()> {
+    let device = &open.handle.device;
+    let handoff = {
+        let mut state = device.state.lock();
+        let req = crate::vb2::QbufIn {
+            index, buf_type: state.queue.buf_type, memory: crate::uapi::flags::MEMORY_MMAP,
+            field: crate::uapi::flags::FIELD_NONE, flags: 0,
+            planes: [crate::vb2::PlaneIn::default(); crate::uapi::layout::MAX_PLANES],
+            num_planes: 1, bytesused: 0,
+        };
+        let handoff = crate::vb2::qbuf::qbuf(&mut state.queue, open.handle.id, &req)
+            .map_err(|err| VfsError::from_errno(err as i32))?;
+        open.fileio.lock().as_mut().ok_or(VfsError::Enodev)?.current = None;
+        handoff
+    };
+    if handoff { device.ops.buf_queue(index); }
+    Ok(())
 }
 
 /// Build the `/dev/videoN` inode. # C: O(1)

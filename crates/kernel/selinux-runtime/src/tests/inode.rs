@@ -123,6 +123,16 @@ fn a_defcontext_option_changes_only_the_fallback() {
 }
 
 #[test]
+fn a_rootcontext_option_changes_only_the_mount_root() {
+    let Some(s) = loaded() else { return };
+    let ctx = "system_u:object_r:etc_t:s0";
+    let opts = MountOptions { rootcontext: Some(ctx), ..MountOptions::default() };
+    let p = sb_plan(s.policy().unwrap(), "ext4", &opts);
+    assert_eq!(p.root_context.as_deref(), Some(ctx));
+    assert_eq!(p.default_context, sb_plan(s.policy().unwrap(), "ext4", &MountOptions::default()).default_context);
+}
+
+#[test]
 fn the_resolved_mount_has_real_sids() {
     let Some(mut s) = loaded() else { return };
     let sb = superblock_security(&mut s, "ext4", &MountOptions::default());

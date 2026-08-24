@@ -42,10 +42,10 @@ fn prw_decodes_named_gpe_device_state_and_power_resources() {
         context.namespace.add_level(AmlName::from_str(path).unwrap(), typ).unwrap();
     }
     let value = AmlValue::Package(alloc::vec![
-        AmlValue::Package(alloc::vec![AmlValue::String(String::from("\\GPD0")),
+        AmlValue::Package(alloc::vec![AmlValue::Reference(AmlName::from_str("\\GPD0").unwrap()),
             AmlValue::Integer(42)]),
         AmlValue::Integer(5),
-        AmlValue::String(String::from("\\PR00")),
+        AmlValue::Reference(AmlName::from_str("\\PR00").unwrap()),
     ]);
     assert_eq!(decode_prw(&context, &AmlName::from_str("\\LID0").unwrap(), value, true),
         Some(PrwDevice { path: String::from("\\LID0"),

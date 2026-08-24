@@ -100,6 +100,9 @@ pub(crate) fn build_setelems_reply(
             put_nlattr(&mut dataval, nfta_set_elem::NFTA_DATA_VALUE, &e.data);
             put_nlattr(&mut elem, nfta_set_elem::NFTA_SET_ELEM_DATA, &dataval);
         }
+        if let Some(objref) = e.objref.as_deref() {
+            put_nlattr_str(&mut elem, nfta_set_elem::NFTA_SET_ELEM_OBJREF, objref);
+        }
         put_nlattr(&mut list_payload, 1, &elem);
     }
     put_nlattr(
@@ -129,7 +132,8 @@ pub(crate) fn build_setelems_reply(
     out
 }
 
-pub(crate) fn walk_setelem_list<F: FnMut(&[u8], &[u8])>(payload: &[u8], mut f: F) -> usize {
+pub(crate) fn walk_setelem_list<F: FnMut(&[u8], &[u8], Option<&str>)>(
+    payload: &[u8], mut f: F) -> usize {
     let mut count = 0usize;
     let mut off = 0;
     while off + 4 <= payload.len() {
@@ -141,13 +145,19 @@ pub(crate) fn walk_setelem_list<F: FnMut(&[u8], &[u8])>(payload: &[u8], mut f: F
 
         let keyval = find_nested_value(elem, nfta_set_elem::NFTA_SET_ELEM_KEY);
         let dataval = find_nested_value(elem, nfta_set_elem::NFTA_SET_ELEM_DATA);
+        let objref = find_str_attr(elem, nfta_set_elem::NFTA_SET_ELEM_OBJREF);
         if let Some(k) = keyval {
-            f(k, dataval.unwrap_or(&[]));
+            f(k, dataval.unwrap_or(&[]), objref);
             count += 1;
         }
         off += nlmsg_align(nla_len);
     }
     count
+}
+
+fn find_str_attr<'a>(attrs: &'a [u8], target: u16) -> Option<&'a str> {
+    let bytes = find_bytes_attr_masked(attrs, target)?;
+    core::str::from_utf8(bytes.strip_suffix(&[0]).unwrap_or(bytes)).ok()
 }
 
 fn find_nested_value<'a>(attrs: &'a [u8], target: u16) -> Option<&'a [u8]> {

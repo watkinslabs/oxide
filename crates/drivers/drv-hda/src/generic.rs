@@ -54,6 +54,24 @@ pub struct InputRoute {
     pub input: InputPin,
 }
 
+/// A line-in/microphone jack that Linux can retask as an additional stereo
+/// output. The route is kept beside the capture route: channel-mode selection
+/// changes only the pin direction and never invents a second graph.
+#[derive(Clone, Debug)]
+pub struct MultiIoRoute {
+    pub pin: u8,
+    pub path: NidPath,
+    pub dac: u8,
+}
+
+pub fn output_route_for_multi_io(codec: &Codec, route: &MultiIoRoute) -> OutputRoute {
+    OutputRoute {
+        pin: route.pin, path: route.path.clone(), dac: route.dac,
+        volume: paths::volume_nid(codec, &route.path),
+        mute: paths::mute_nid(codec, &route.path), shared: false,
+    }
+}
+
 /// Everything the card driver needs to program and to publish controls.
 #[derive(Clone, Debug, Default)]
 pub struct Plan {
@@ -61,19 +79,29 @@ pub struct Plan {
     pub outputs: Vec<OutputRoute>,
     pub hp: Vec<OutputRoute>,
     pub speaker: Vec<OutputRoute>,
+    pub digital: Vec<OutputRoute>,
     pub captures: Vec<InputRoute>,
+    pub multi_io: Vec<MultiIoRoute>,
     pub badness: u32,
 }
 
 impl Plan {
     /// Every output route, primary group first. # C: O(routes)
     pub fn all_outputs(&self) -> impl Iterator<Item = &OutputRoute> {
-        self.outputs.iter().chain(self.hp.iter()).chain(self.speaker.iter())
+        self.outputs.iter().chain(self.hp.iter()).chain(self.speaker.iter()).chain(self.digital.iter())
     }
     /// The route a PCM playback stream drives. # C: O(1)
     pub fn primary(&self) -> Option<&OutputRoute> { self.outputs.first() }
     /// The route a PCM capture stream drives. # C: O(1)
     pub fn primary_capture(&self) -> Option<&InputRoute> { self.captures.first() }
+    /// Route selected by the Linux PCM device number. The primary analog
+    /// route is device zero; additional routed converters follow in plan order.
+    pub fn output_for(&self, device: u32) -> Option<&OutputRoute> {
+        self.all_outputs().nth(device as usize)
+    }
+    pub fn capture_for(&self, device: u32) -> Option<&InputRoute> {
+        self.captures.get(device as usize)
+    }
 }
 
 struct Assign {
@@ -181,7 +209,7 @@ fn assign_group(codec: &Codec, pins: &[u8], table: &Badness, primary_dac: Option
     routes
 }
 
-fn assign_outputs(codec: &Codec, cfg: &AutoCfg) -> (Vec<OutputRoute>, Vec<OutputRoute>, Vec<OutputRoute>, u32) {
+fn assign_outputs(codec: &Codec, cfg: &AutoCfg) -> (Vec<OutputRoute>, Vec<OutputRoute>, Vec<OutputRoute>, Vec<OutputRoute>, u32) {
     let mut state = Assign::new();
     let outputs = assign_group(codec, &cfg.line_out, &MAIN_OUT_BADNESS, None, &mut state);
     let primary = outputs.first().map(|route| route.dac);
@@ -190,7 +218,8 @@ fn assign_outputs(codec: &Codec, cfg: &AutoCfg) -> (Vec<OutputRoute>, Vec<Output
     // primary's kind would drop a real jack for free.
     let hp = assign_group(codec, &cfg.hp, &EXTRA_OUT_BADNESS, primary, &mut state);
     let speaker = assign_group(codec, &cfg.speaker, &EXTRA_OUT_BADNESS, primary, &mut state);
-    (outputs, hp, speaker, state.badness)
+    let digital = assign_group(codec, &cfg.dig_out, &EXTRA_OUT_BADNESS, primary, &mut state);
+    (outputs, hp, speaker, digital, state.badness)
 }
 
 /// Swap the primary output group with the headphone or speaker group. When a
@@ -222,24 +251,72 @@ fn assign_captures(codec: &Codec, cfg: &AutoCfg) -> Vec<InputRoute> {
             break;
         }
     }
+    if let Some(pin) = cfg.dig_in {
+        let defcfg = codec.widget(pin).map(|w| w.defcfg).unwrap_or(0);
+        let input = InputPin { nid: pin, itype: autocfg::InputType::Digital,
+                               attr: crate::defcfg::pin_attr(defcfg), boost: false,
+                               order: cfg.inputs.len() };
+        for &adc in codec.digital_adcs().iter() {
+            let Some(path) = paths::find(codec, Source::Nid(pin), adc, &[]) else { continue; };
+            routes.push(InputRoute { pin, path, adc, input });
+            break;
+        }
+    }
     routes
+}
+
+/// Find up to two input pins that Linux's generic HDA parser may retask. The
+/// reference requires a complex-connected pin with output capability, in the
+/// same physical location as the primary output, and a reachable DAC. It
+/// prefers line-in over microphone pins and only accepts a route when two
+/// pins can be assigned, so a failed partial probe never changes the card's
+/// normal capture topology.
+fn assign_multi_ios(codec: &Codec, cfg: &AutoCfg, output_groups: &[&[OutputRoute]]) -> Vec<MultiIoRoute> {
+    if output_groups.first().is_some_and(|group| group.len() >= 3) {
+        return Vec::new();
+    }
+    let Some(primary) = output_groups.iter().find_map(|group| group.first()) else {
+        return Vec::new();
+    };
+    let Some(primary_widget) = codec.widget(primary.pin) else { return Vec::new(); };
+    let location = crate::defcfg::location(primary_widget.defcfg);
+    let mut used: Vec<u8> = output_groups.iter().flat_map(|group| group.iter().map(|route| route.dac)).collect();
+    let mut routes = Vec::new();
+    for input in cfg.inputs.iter().rev() {
+        if routes.len() == 2 { break; }
+        let Some(pin) = codec.widget(input.nid) else { continue; };
+        if crate::defcfg::port_conn(pin.defcfg) != crate::defcfg::PORT_COMPLEX
+            || crate::defcfg::location(pin.defcfg) != location
+            || pin.pincap & crate::widget::PINCAP_OUT == 0 { continue; }
+        let Some(path) = paths::find(codec, Source::UnusedDac, input.nid, &used) else { continue; };
+        let Some(dac) = path.source() else { continue; };
+        used.push(dac);
+        routes.push(MultiIoRoute { pin: input.nid, path, dac });
+    }
+    if routes.len() == 2 { routes } else { Vec::new() }
 }
 
 /// Build the routing plan for `codec`. # C: O(pins × widgets × fan-in)
 pub fn build(codec: &Codec) -> Plan {
     let cfg = autocfg::parse_pin_defcfg(codec);
-    let (outputs, hp, speaker, badness) = assign_outputs(codec, &cfg);
-    let mut plan = Plan { captures: assign_captures(codec, &cfg), cfg, outputs, hp, speaker, badness };
+    let (outputs, hp, speaker, digital, badness) = assign_outputs(codec, &cfg);
+    let mut plan = Plan {
+        multi_io: assign_multi_ios(codec, &cfg, &[&outputs, &hp, &speaker, &digital]),
+        captures: assign_captures(codec, &cfg), cfg, outputs, hp, speaker, digital, badness,
+    };
     if plan.badness != 0 {
         if let Some(alternative) = swapped(&plan.cfg) {
-            let (outputs, hp, speaker, badness) = assign_outputs(codec, &alternative);
+            let (outputs, hp, speaker, digital, badness) = assign_outputs(codec, &alternative);
             if badness < plan.badness {
                 plan.captures = assign_captures(codec, &alternative);
                 plan.cfg = alternative;
                 plan.outputs = outputs;
                 plan.hp = hp;
                 plan.speaker = speaker;
+                plan.digital = digital;
                 plan.badness = badness;
+                plan.multi_io = assign_multi_ios(codec, &plan.cfg,
+                                                 &[&plan.outputs, &plan.hp, &plan.speaker, &plan.digital]);
             }
         }
     }

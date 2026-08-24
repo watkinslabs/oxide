@@ -11,12 +11,17 @@ use alloc::vec::Vec;
 
 use crate::netlink_socket::NetlinkSocket;
 use crate::{genetlink, proto};
+use crate::listeners::netfilter_conntrack_groups_in;
 
 impl NetlinkSocket {
     /// `bind` nl_groups: subscribe to the given group bitmask.
     /// # C: O(1)
     pub fn set_group_mask(&self, mask: u32) {
         self.groups.set_low_mask(mask);
+        if self.protocol == proto::NETLINK_NETFILTER {
+            net::global_stack().conntrack_set_groups_in(
+                self.net_ns.id().as_u64(), netfilter_conntrack_groups_in(self.net_ns.id().as_u64()));
+        }
         #[cfg(feature = "debug-netlink")]
         trace_subscribe(self, mask, b"bindmask");
     }
@@ -44,6 +49,10 @@ impl NetlinkSocket {
     pub fn add_membership(&self, group: u32) -> Result<(), net::NetError> {
         self.group_in_range(group)?;
         self.groups.add(group);
+        if self.protocol == proto::NETLINK_NETFILTER && group <= 6 {
+            net::global_stack().conntrack_set_groups_in(
+                self.net_ns.id().as_u64(), netfilter_conntrack_groups_in(self.net_ns.id().as_u64()));
+        }
         #[cfg(feature = "debug-netlink")]
         trace_subscribe(self, group, b"add");
         Ok(())
@@ -53,6 +62,10 @@ impl NetlinkSocket {
     pub fn drop_membership(&self, group: u32) -> Result<(), net::NetError> {
         self.group_in_range(group)?;
         self.groups.remove(group);
+        if self.protocol == proto::NETLINK_NETFILTER && group <= 6 {
+            net::global_stack().conntrack_set_groups_in(
+                self.net_ns.id().as_u64(), netfilter_conntrack_groups_in(self.net_ns.id().as_u64()));
+        }
         Ok(())
     }
 

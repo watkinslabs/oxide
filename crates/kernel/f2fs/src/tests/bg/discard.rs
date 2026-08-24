@@ -19,6 +19,7 @@ fn the_defaults_are_the_ones_the_format_states() {
     assert_eq!(d.granularity, 16);
     assert_eq!(d.max_ordered_discard, 16);
     assert_eq!(d.max_discard_request, 8);
+    assert_eq!(d.max_discards, u64::MAX, "detached control is configured at mount");
     assert_eq!(d.min_issue_time, 50);
     assert_eq!(d.mid_issue_time, 500);
     assert_eq!(d.max_issue_time, 60_000);

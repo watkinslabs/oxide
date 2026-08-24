@@ -32,10 +32,12 @@ fn build(rd: &mut RegionDesc, acct: RingAcct) -> Result<MemRegion, Errno> {
     if rd.user_provided() {
         return Ok(MemRegion::User(PinnedRange::pin(rd.user_addr, rd.size, acct, Ledgers::User)?));
     }
-    // The contiguous-run allocator is sized in `u32` bytes and bounded well
-    // below 4 GiB; a descriptor past that is memory this kernel cannot supply.
-    let bytes = u32::try_from(rd.size).map_err(|_| Errno::Enomem)?;
-    let r = Region::alloc(bytes, acct).ok_or(Errno::Enomem)?;
+    // The descriptor's E2BIG ceiling was checked above against Linux's
+    // INT_MAX pages. Allocation may still answer ENOMEM if this machine
+    // cannot supply the requested pages; do not turn the ABI ceiling into a
+    // private 32-bit byte ceiling before the allocator gets that chance.
+    let r = Region::alloc_limited(rd.size, acct, MAX_REGION_PAGES)
+        .ok_or(Errno::Enomem)?;
     rd.mmap_offset = IORING_MAP_OFF_PARAM_REGION;
     Ok(MemRegion::Kernel(r))
 }

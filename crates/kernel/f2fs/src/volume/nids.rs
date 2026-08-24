@@ -125,6 +125,9 @@ impl<S: SectorSource> Volume<S> {
                 self.free_nids.scan_nat_block(&block, start, max).map_err(|_| Errno::Eio)?;
             }
             self.free_nids.set_next_scan_nid(plan.next);
+            self.ra_meta_pages(crate::nat::locate(plan.next).0,
+                               self.free_nids.ra_nid_pages,
+                               crate::volume::readahead::RaMeta::Nat);
         }
         self.fold_pending_nids(max);
         Ok(())
@@ -169,6 +172,12 @@ impl<S: SectorSource> Volume<S> {
 
     /// # C: O(1)
     pub fn set_nid_ram_thresh(&mut self, v: u32) { self.free_nids.ram_thresh = v; }
+
+    /// NAT pages prefetched after a free-NID scan. # C: O(1)
+    pub fn ra_nid_pages(&self) -> u32 { self.free_nids.ra_nid_pages }
+
+    /// Set Linux's `ra_nid_pages` control. # C: O(1)
+    pub fn set_ra_nid_pages(&mut self, v: u32) { self.free_nids.ra_nid_pages = v; }
 
     /// Share of the node table that may be dirty before the caches are worth a
     /// checkpoint on their own. # C: O(1)

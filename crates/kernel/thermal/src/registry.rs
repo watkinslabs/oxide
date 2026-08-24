@@ -89,6 +89,18 @@ pub fn register_zone(desc: ZoneDesc, ops: Arc<dyn ZoneOps>) -> KResult<Arc<Therm
     Ok(zone)
 }
 
+/// Unregister a zone and remove every cooling binding to it before dropping
+/// the class's reference. # C: O(N_cdevs)
+pub fn unregister_zone(zone: &Arc<ThermalZone>) -> bool {
+    for (_, _, cdev) in zone.bindings() { bind::unbind(zone, &cdev); }
+    let mut zones = ZONES.lock();
+    let Some(index) = zones.iter().position(|entry| Arc::ptr_eq(entry, zone)) else {
+        return false;
+    };
+    zones.remove(index);
+    true
+}
+
 /// Register a cooling device and bind it into every zone that can use it.
 /// # C: O(N_zones * N_trips)
 pub fn register_cdev(ty: &str, ops: Arc<dyn CoolingOps>, now_ns: u64)

@@ -150,6 +150,8 @@ impl BlockDevOps for PartitionBlkOps {
     }
     fn read(&self, _devt: Devt, off: u64, buf: &mut [u8]) -> KResult<usize> { self.mapping.read_at(off, buf).map_err(block_err) }
     fn write(&self, _devt: Devt, off: u64, buf: &[u8]) -> KResult<usize> { self.mapping.write_at(off, buf).map_err(block_err) }
+    fn mmap_shared_frame(&self, _devt: Devt, off: u64) -> KResult<Option<u64>> { self.mapping.shared_frame(off).map_err(block_err) }
+    fn mmap_page_mkwrite(&self, _devt: Devt, off: u64) -> KResult<()> { self.mapping.page_mkwrite(off).map_err(block_err) }
     fn flush_cache(&self, _devt: Devt) -> KResult<()> {
         self.mapping.write_and_wait().map_err(block_err)?;
         self.part.dev.flush().map_err(block_err)
@@ -191,6 +193,12 @@ impl BlockDevOps for DiskBlkOps {
     /// page cache and writeback puts them on the medium.
     fn write(&self, _devt: Devt, off: u64, buf: &[u8]) -> KResult<usize> {
         self.disk.mapping.write_at(off, buf).map_err(block_err)
+    }
+    fn mmap_shared_frame(&self, _devt: Devt, off: u64) -> KResult<Option<u64>> {
+        self.disk.mapping.shared_frame(off).map_err(block_err)
+    }
+    fn mmap_page_mkwrite(&self, _devt: Devt, off: u64) -> KResult<()> {
+        self.disk.mapping.page_mkwrite(off).map_err(block_err)
     }
     /// The one link between `f_op->iopoll` and the driver's queue: the disk's
     /// own `BlockDevice` decides both whether it can be polled at all and how

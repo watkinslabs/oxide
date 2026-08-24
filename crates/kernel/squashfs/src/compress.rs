@@ -98,12 +98,26 @@ impl Codec {
 }
 
 /// A zlib-wrapped DEFLATE stream, bounded by the expected output length so a
-/// crafted stream cannot make the decoder allocate past it.
+/// crafted stream cannot make the decoder write past it.
+/// Keep the backend's DEFLATE workspace out of the filesystem caller. The
+/// Linux uses the same `noinline_for_stack` discipline around large working
+/// sets: zlib's bounded inflate state is materially larger than the
+/// metadata/namei working set around it.
+#[inline(never)]
 fn zlib(src: &[u8], out_len: usize) -> Result<Vec<u8>, Errno> {
-    miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(src, out_len)
-        .map_err(|_| Errno::Eio)
+    let mut out = alloc::vec![0u8; out_len];
+    let (decoded, status) = zlib_rs::decompress_slice(
+        &mut out,
+        src,
+        zlib_rs::InflateConfig { window_bits: 15 },
+    );
+    if status != zlib_rs::ReturnCode::Ok { return Err(Errno::Eio); }
+    let decoded_len = decoded.len();
+    out.truncate(decoded_len);
+    Ok(out)
 }
 
+#[inline(never)]
 fn lzo(src: &[u8], out_len: usize) -> Result<Vec<u8>, Errno> {
     let mut out = alloc::vec![0u8; out_len];
     let got = lzo1x::decode::decompress(src, &mut out).map_err(|_| Errno::Eio)?;
@@ -111,6 +125,7 @@ fn lzo(src: &[u8], out_len: usize) -> Result<Vec<u8>, Errno> {
     Ok(out)
 }
 
+#[inline(never)]
 fn lz4(src: &[u8], out_len: usize) -> Result<Vec<u8>, Errno> {
     let mut out = alloc::vec![0u8; out_len];
     let got = lz4_flex::block::decompress_into(src, &mut out).map_err(|_| Errno::Eio)?;
@@ -118,6 +133,7 @@ fn lz4(src: &[u8], out_len: usize) -> Result<Vec<u8>, Errno> {
     Ok(out)
 }
 
+#[inline(never)]
 fn zstd_block(src: &[u8], out_len: usize) -> Result<Vec<u8>, Errno> {
     let mut out = alloc::vec![0u8; out_len];
     let got = zstd::decompress_into(src, &mut out).map_err(|_| Errno::Eio)?;

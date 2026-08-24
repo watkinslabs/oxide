@@ -17,7 +17,7 @@ impl Mount {
         let new_i_blocks = prev_i_blocks.saturating_add(added_sectors);
         if !precharged { self.account_i_blocks_delta(ino, prev_i_blocks, new_i_blocks)?; }
         ino_bytes[0x1C..0x20].copy_from_slice(&new_i_blocks.to_le_bytes());
-        if let Err(e) = self.write_inode_bytes(ino, ino_bytes) {
+        if let Err(e) = self.write_inode_bytes_data(ino, ino_bytes) {
             return Err(self.rollback_i_blocks_delta(ino, new_i_blocks, prev_i_blocks, e));
         }
         Ok(())
@@ -41,6 +41,14 @@ impl Mount {
     /// slot is valid for stock Linux/e2fsck (no-op without the feature).
     /// # C: O(inode_size) csum + O(1) I/O
     pub fn write_inode_bytes(&self, ino: u32, bytes: &[u8]) -> Result<(), MountError> {
+        self.write_inode_bytes_kind(ino, bytes, false)
+    }
+
+    pub(crate) fn write_inode_bytes_data(&self, ino: u32, bytes: &[u8]) -> Result<(), MountError> {
+        self.write_inode_bytes_kind(ino, bytes, true)
+    }
+
+    fn write_inode_bytes_kind(&self, ino: u32, bytes: &[u8], datasync: bool) -> Result<(), MountError> {
         #[cfg(not(target_os = "oxide-kernel"))]
         if self.faults.next_inode_write.swap(false, Ordering::AcqRel) { return Err(MountError::BlockIo); }
         #[cfg(not(target_os = "oxide-kernel"))]
@@ -81,7 +89,9 @@ impl Mount {
         let mut owned = bytes.to_vec();
         crate::csum::stamp_inode_csum(&self.sb, ino, &mut owned);
         // Inode bytes are metadata — route through journaled path.
-        self.metadata_write(byte_off, &owned)
+        self.metadata_write(byte_off, &owned)?;
+        self.mark_inode_dirty(ino, datasync);
+        Ok(())
     }
 
     /// Stamp the `ext4_extent_tail` csum into an external extent

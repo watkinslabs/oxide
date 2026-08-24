@@ -84,6 +84,17 @@ fn reserve_early_then_audit_clean() {
     assert_eq!(pmm.free_pages(), 512 - (23 + 17 + 64 + 100));
 }
 
+#[test]
+fn reserve_early_exact_is_atomic_when_a_page_is_already_owned() {
+    let pmm = build(128);
+    pmm.reserve_early(Pfn(20), 1).unwrap();
+    assert_eq!(pmm.reserve_early_exact(Pfn(19), 3), Err(Error::Overlap));
+    assert_eq!(pmm.allocated_pages(), 1);
+    assert_eq!(pmm.free_pages(), 127);
+    // SAFETY: hosted single-thread; audit.
+    unsafe { pmm.audit() };
+}
+
 // ---------------------------------------------------------------------------
 // (7) Multi-region.
 // ---------------------------------------------------------------------------

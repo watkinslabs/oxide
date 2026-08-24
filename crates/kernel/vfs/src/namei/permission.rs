@@ -3,7 +3,7 @@ use crate::posix_acl::{self, AclType};
 use crate::types::S_IRWXG;
 use crate::types::{FileType, KResult, VfsError};
 
-use super::{Cred, MAY_EXEC, MAY_READ, MAY_WRITE};
+use super::{Cred, MAY_EXEC, MAY_NOT_BLOCK, MAY_READ, MAY_WRITE};
 
 /// `generic_permission` for the access `mask`.
 /// Owner/group/other class selection uses the caller credential snapshot.
@@ -23,7 +23,7 @@ pub fn generic_permission(inode: &crate::inode::Inode, mask: u32, cred: &Cred) -
         // group/other mode-bit selection. Absent an ACL, fall to the mode bits.
         // A denial still falls through to the capability rungs below, which is
         // the one reason this is not a plain early return.
-        match check_acl(inode, cred, uid, gid, want, mode) {
+        match check_acl(inode, cred, uid, gid, mask, want, mode) {
             Some(Ok(()))                => return Ok(()),
             Some(Err(VfsError::Eacces)) => 0,
             Some(Err(e))                => return Err(e),
@@ -31,7 +31,7 @@ pub fn generic_permission(inode: &crate::inode::Inode, mask: u32, cred: &Cred) -
             None                        => mode & 0o7,
         }
     };
-    if granted & mask == mask { return Ok(()); }
+    if granted & want == want { return Ok(()); }
     let is_dir = matches!(inode.file_type(), FileType::Directory);
     // CAP_DAC_OVERRIDE: dirs always; non-dir exec only if some exec bit set.
     if cred.cap_dac_override
@@ -69,9 +69,11 @@ pub fn generic_permission(inode: &crate::inode::Inode, mask: u32, cred: &Cred) -
 }
 
 /// Linux `check_acl`. `None` is its `-EAGAIN`: this object carries no ACL, so
-/// the caller decides from the mode bits. `Some(Err(Eacces))` is a refusal the
-/// ACL made, which the capability rungs may still override; any other error is
-/// the ACL itself being unreadable and is reported as-is.
+/// the caller decides from the mode bits. In nonblocking mode, an uncached or
+/// present ACL returns `-ECHILD` so the walker retries in ref mode.
+/// `Some(Err(Eacces))` is a refusal the ACL made, which the capability rungs
+/// may still override; any other error is the ACL itself being unreadable and
+/// is reported as-is.
 ///
 /// The group mode bits are the guard the reference uses before it looks: a
 /// mask (or, with no mask, the GROUP_OBJ entry) is folded into them by every
@@ -79,8 +81,16 @@ pub fn generic_permission(inode: &crate::inode::Inode, mask: u32, cred: &Cred) -
 /// nothing and the fetch is pointless.
 /// # C: O(N_acl_entries), one medium read per inode
 fn check_acl(inode: &crate::inode::Inode, cred: &Cred, i_uid: u32, i_gid: u32,
-             want: u32, mode: u32) -> Option<KResult<()>> {
+             mask: u32, want: u32, mode: u32) -> Option<KResult<()>> {
+    if inode.i_sb().is_some_and(|sb| !sb.is_posixacl()) { return None; }
     if mode & u32::from(S_IRWXG) == 0 { return None; }
+    if mask & MAY_NOT_BLOCK != 0 {
+        return match inode.cached_inode_acl_rcu(AclType::Access) {
+            None => Some(Err(VfsError::Echild)),
+            Some(true) => Some(Err(VfsError::Echild)),
+            Some(false) => None,
+        };
+    }
     let acl = match inode.get_inode_acl(AclType::Access) {
         Ok(acl) => acl?,
         Err(e) => return Some(Err(e)),
@@ -136,12 +146,25 @@ pub fn set_inode_mac_hook(hook: InodeMacHook) { *INODE_MAC_HOOK.lock() = Some(ho
 
 /// Label hook for a freshly materialised inode. # C: O(1)
 pub type InodeCreateHook = fn(&InodeRef, &InodeRef, &str);
+pub type InodeInstantiateHook = fn(&crate::dentry::Dentry, &InodeRef);
+/// LSM hook for secure anonymous inode initialization. # C: O(1) + hook
+pub type InodeInitSecurityAnonHook = fn(&InodeRef, &str, Option<&InodeRef>) -> KResult<()>;
 
 static INODE_CREATE_HOOK: sync::Spinlock<Option<InodeCreateHook>, sync::Inode> =
+    sync::Spinlock::new(None);
+static INODE_INSTANTIATE_HOOK: sync::Spinlock<Option<InodeInstantiateHook>, sync::Inode> =
+    sync::Spinlock::new(None);
+static INODE_INIT_SECURITY_ANON_HOOK: sync::Spinlock<Option<InodeInitSecurityAnonHook>, sync::Inode> =
     sync::Spinlock::new(None);
 
 /// Install the create-time inode label hook. # C: O(1)
 pub fn set_inode_create_hook(hook: InodeCreateHook) { *INODE_CREATE_HOOK.lock() = Some(hook); }
+/// Install the hook that labels an inode with the dentry that publishes it. # C: O(1)
+pub fn set_inode_instantiated_hook(hook: InodeInstantiateHook) { *INODE_INSTANTIATE_HOOK.lock() = Some(hook); }
+/// Install the secure anonymous-inode initialization hook. # C: O(1)
+pub fn set_inode_init_security_anon_hook(hook: InodeInitSecurityAnonHook) {
+    *INODE_INIT_SECURITY_ANON_HOOK.lock() = Some(hook);
+}
 
 /// Apply the installed create-time label decision, if any. # C: O(1)
 pub fn inode_created(dir: &InodeRef, inode: &InodeRef, name: &str) {
@@ -154,6 +177,20 @@ pub fn notify_inode_created(dir: &InodeRef, name: &str) {
     if let Ok(inode) = dir.lookup(name) { inode_created(dir, &inode, name); }
 }
 
+/// Notify the installed LSM after a positive dentry binds an inode. # C: O(1) + hook
+pub fn inode_instantiated(dentry: &crate::dentry::Dentry, inode: &InodeRef) {
+    if let Some(hook) = *INODE_INSTANTIATE_HOOK.lock() { hook(dentry, inode); }
+}
+
+/// Initialize security state before a secure anonymous inode is published. # C: O(1) + hook
+pub fn inode_init_security_anon(inode: &InodeRef, name: &str,
+                                context_inode: Option<&InodeRef>) -> KResult<()> {
+    match *INODE_INIT_SECURITY_ANON_HOOK.lock() {
+        Some(hook) => hook(inode, name, context_inode),
+        None => Ok(()),
+    }
+}
+
 /// Ask the installed module, or allow when none is installed. # C: O(1)
 fn mac_permission(inode: &InodeRef, mask: u32) -> KResult<()> {
     let hook = *INODE_MAC_HOOK.lock();
@@ -162,8 +199,8 @@ fn mac_permission(inode: &InodeRef, mask: u32) -> KResult<()> {
 
 /// `may_lookup` (Linux): search permission (MAY_EXEC) on a directory before
 /// resolving a component within it. # C: O(1)
-pub(crate) fn may_lookup(inode: &InodeRef, cred: &Cred) -> KResult<()> {
-    inode_permission(inode, MAY_EXEC, cred)
+pub(crate) fn may_lookup(inode: &InodeRef, cred: &Cred, rcu: bool) -> KResult<()> {
+    inode_permission(inode, MAY_EXEC | if rcu { MAY_NOT_BLOCK } else { 0 }, cred)
 }
 
 /// The open-flag rungs `may_open` applies AFTER the access-mode DAC check.

@@ -97,7 +97,7 @@ pub fn reqbufs(
     buf_type: u32,
     memory: u32,
     count: u32,
-    setup: impl FnOnce(u32) -> QueueSetup,
+    setup: impl FnOnce(u32) -> Result<QueueSetup, Errno>,
     alloc: &dyn PlaneAlloc,
 ) -> Result<u32, Errno> {
     if buf_type != q.buf_type { return Err(Errno::Einval); }
@@ -115,7 +115,7 @@ pub fn reqbufs(
         return Ok(0);
     }
     let want = count.min(q.max_num_buffers.min(MAX_BUFFERS));
-    let mut settled = setup(want);
+    let mut settled = setup(want)?;
     settled.count = settled.count.min(q.max_num_buffers.min(MAX_BUFFERS)).max(1);
     if settled.num_planes == 0 || settled.num_planes > crate::uapi::layout::MAX_PLANES {
         return Err(Errno::Einval);
@@ -136,7 +136,7 @@ pub fn create_bufs(
     buf_type: u32,
     memory: u32,
     count: u32,
-    setup: impl FnOnce(u32) -> QueueSetup,
+    setup: impl FnOnce(u32) -> Result<QueueSetup, Errno>,
     alloc: &dyn PlaneAlloc,
 ) -> Result<(u32, u32), Errno> {
     if buf_type != q.buf_type { return Err(Errno::Einval); }
@@ -150,7 +150,7 @@ pub fn create_bufs(
     let first = q.num_buffers();
     let headroom = q.max_num_buffers.min(MAX_BUFFERS).saturating_sub(first);
     if headroom == 0 { return Err(Errno::Enobufs); }
-    let mut settled = setup(count.min(headroom));
+    let mut settled = setup(count.min(headroom))?;
     settled.count = settled.count.min(headroom);
     if settled.num_planes == 0 || settled.num_planes > crate::uapi::layout::MAX_PLANES {
         return Err(Errno::Einval);

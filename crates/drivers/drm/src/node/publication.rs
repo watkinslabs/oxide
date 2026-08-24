@@ -15,10 +15,15 @@ use super::scanout::scanout_ops;
 
 struct DrmNodePair {
     card: Arc<drv::Device>,
-    render: Arc<drv::Device>,
+    render: Option<Arc<drv::Device>>,
+    render_slot: Option<usize>,
 }
 
 static DRM_NODES: Spinlock<Vec<Option<DrmNodePair>>, OpsLockClass> = Spinlock::new(Vec::new());
+/// Render minors have their own Linux namespace: a KMS-only card must not
+/// consume `renderD128`, so the next rendering driver still gets the first
+/// render minor. # C: O(render drivers)
+static RENDER_CARDS: Spinlock<Vec<Option<u32>>, OpsLockClass> = Spinlock::new(Vec::new());
 
 const DRM_DEVNODE_PREFIX: &str = "dri/";
 
@@ -199,10 +204,14 @@ static CARD_POLL: Spinlock<Vec<(u32, Arc<vfs::PollSubscribers>)>, OpsLockClass> 
 /// Build a `/dev/dri/renderD128+N` inode (sink f_op). `i_rdev` = `(226, 128+N)`
 /// (Linux DRM render minors start at 128), same rationale as the card node. # C: O(1)
 pub(super) fn make_render_inode(card_id: u32) -> vfs::InodeRef {
+    make_render_inode_at(card_id, crate::uapi::DRM_RENDER_MINOR_BASE + card_id)
+}
+
+fn make_render_inode_at(card_id: u32, render_minor: u32) -> vfs::InodeRef {
     vfs::InodeBuilder::new(DRM_RENDER_INO | card_id as vfs::Ino, vfs::mk_mode(vfs::FileType::CharDev, DRM_NODE_MODE),
                            vfs::default_inode_ops(), Arc::new(DrmSinkFileOps))
         .private(Arc::new(DrmNodeData { card_id, kind: DrmNodeKind::Render }))
-        .rdev(vfs::Devt::new(DRM_MAJOR, crate::uapi::DRM_RENDER_MINOR_BASE + card_id).raw()).build()
+        .rdev(vfs::Devt::new(DRM_MAJOR, render_minor).raw()).build()
 }
 
 /// Self-register a DRM `/dev` node through `drv::try_device_add` (D27): the
@@ -240,6 +249,16 @@ fn add_node(
 /// Register DRM primary + render nodes for a stable DRM card id.
 /// # C: O(1)
 pub fn register(card_id: u32, parent: Option<&Arc<drv::Device>>) -> bool {
+    register_with_render(card_id, parent, true)
+}
+
+/// Register a card with the driver's Linux `DRIVER_RENDER` capability.
+/// # C: O(1)
+pub(crate) fn register_with_render(
+    card_id: u32,
+    parent: Option<&Arc<drv::Device>>,
+    supports_render: bool,
+) -> bool {
     let mut nodes = DRM_NODES.lock();
     let idx = card_id as usize;
     if nodes.len() <= idx {
@@ -249,8 +268,6 @@ pub fn register(card_id: u32, parent: Option<&Arc<drv::Device>>) -> bool {
         return false;
     }
     let card_name = format!("dri/card{}", card_id);
-    let render_minor = crate::uapi::DRM_RENDER_MINOR_BASE + card_id;
-    let render_name = format!("dri/renderD{}", render_minor);
     let Some(card) = add_node(
         &card_name,
         "drm",
@@ -260,17 +277,35 @@ pub fn register(card_id: u32, parent: Option<&Arc<drv::Device>>) -> bool {
     ) else {
         return false;
     };
-    let Some(render) = add_node(
-        &render_name,
-        "drm",
-        (DRM_MAJOR, render_minor),
-        Arc::new(move || make_render_inode(card_id)),
-        parent,
-    ) else {
-        drv::device_del(&card);
-        return false;
+    let (render, render_slot) = if supports_render {
+        let slot = {
+            let mut slots = RENDER_CARDS.lock();
+            if let Some(idx) = slots.iter().position(Option::is_none) {
+                slots[idx] = Some(card_id);
+                idx
+            } else {
+                slots.push(Some(card_id));
+                slots.len() - 1
+            }
+        };
+        let render_minor = crate::uapi::DRM_RENDER_MINOR_BASE + slot as u32;
+        let render_name = format!("dri/renderD{}", render_minor);
+        let Some(render) = add_node(
+            &render_name,
+            "drm",
+            (DRM_MAJOR, render_minor),
+            Arc::new(move || make_render_inode_at(card_id, render_minor)),
+            parent,
+        ) else {
+            RENDER_CARDS.lock()[slot] = None;
+            drv::device_del(&card);
+            return false;
+        };
+        (Some(render), Some(slot))
+    } else {
+        (None, None)
     };
-    nodes[idx] = Some(DrmNodePair { card, render });
+    nodes[idx] = Some(DrmNodePair { card, render, render_slot });
     true
 }
 
@@ -289,7 +324,8 @@ pub fn unregister(card_id: u32) {
         clear_master_owner(card_id);
         clear_authorized_for_card(card_id);
         clear_unique_ready_for_card(card_id);
-        drv::device_del(&pair.render);
+        if let Some(render) = pair.render { drv::device_del(&render); }
+        if let Some(slot) = pair.render_slot { RENDER_CARDS.lock()[slot] = None; }
         drv::device_del(&pair.card);
     }
 }
@@ -308,7 +344,8 @@ pub fn unregister_all() {
         pairs
     };
     for pair in pairs.into_iter().rev() {
-        drv::device_del(&pair.render);
+        if let Some(render) = pair.render { drv::device_del(&render); }
+        if let Some(slot) = pair.render_slot { RENDER_CARDS.lock()[slot] = None; }
         drv::device_del(&pair.card);
     }
     reset_test_state();

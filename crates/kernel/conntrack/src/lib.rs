@@ -35,8 +35,8 @@ pub mod core;
 pub mod procfs;
 pub mod ctnetlink;
 
-pub use core::{CtNet, L4, Packet, Track};
-pub use entry::{Conn, NatBinding, ProtoState};
+pub use core::{CtNet, HelperChangeError, L4, Packet, Track};
+pub use entry::{Conn, NatBinding, ProtoState, TimeoutPolicy};
 pub use expect::{ExpectError, Expectation, ExpectTable, TupleMask};
 pub use helper::{Helper, HelperAssign, HelperRegistry};
 pub use table::{CtTable, Found};

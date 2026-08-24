@@ -61,6 +61,7 @@
 //!                asks for them, one transfer per contiguous run.
 
 use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
 use syscall::errno::Errno;
@@ -186,6 +187,11 @@ pub struct Volume<S: SectorSource> {
     /// the table on every read: the medium still holds the old addresses
     /// until a checkpoint retires them.
     pub(crate) nat_dirty: BTreeMap<u32, NatEntry>,
+    /// Clean NAT entries read from the selected table copy. The map is the
+    /// lookup owner; the LRU contains exactly the same keys and is the reclaim
+    /// order. Dirty entries leave this cache before entering `nat_dirty`.
+    pub(crate) nat_cache: core::cell::RefCell<BTreeMap<u32, NatEntry>>,
+    pub(crate) nat_lru: core::cell::RefCell<VecDeque<u32>>,
     /// The segment table, loaded whole on the first write.
     pub(crate) sit: Option<Vec<SitEntry>>,
     /// The segment-management state that is not on the medium: the prefree
@@ -193,6 +199,34 @@ pub struct Volume<S: SectorSource> {
     pub(crate) segstate: segmap::SegState,
     pub(crate) sit_dirty: BTreeSet<u32>,
     pub(crate) valid_block_count: u64,
+    /// Live segment reserve used by allocation and cleaning policy.
+    pub(crate) reserved_segments: u32,
+    /// Section boundary and forward-search policy used by new logs.
+    pub(crate) allocate_section_hint: u32,
+    pub(crate) allocate_section_policy: u32,
+    /// Zoned regular-allocation preference: sequential, only sequential, or
+    /// conventional first.
+    pub(crate) blkzone_alloc_policy: u32,
+    /// Seconds between periodic checkpoints on an otherwise quiet mount.
+    pub(crate) cp_interval_secs: u64,
+    /// Seconds the unmount discard drain may spend issuing commands.
+    pub(crate) umount_discard_timeout_secs: u64,
+    /// Write kilobytes carried by the last durable summary journal.
+    pub(crate) lifetime_write_kbytes: u64,
+    /// Physical sectors written since that journal value was recorded.
+    pub(crate) sectors_written_since_cp: core::cell::Cell<u64>,
+    /// Physical reads currently submitted to the block source.
+    pub(crate) inflight_reads: core::sync::atomic::AtomicU64,
+    /// Physical writes currently submitted to the block source.
+    pub(crate) inflight_writes: core::sync::atomic::AtomicU64,
+    /// Configured pool recovered from released blocks for privileged writes.
+    pub(crate) reserved_blocks: u64,
+    /// Portion of that pool currently held out of ordinary free space.
+    pub(crate) current_reserved_blocks: u64,
+    /// Whether the current reserved pool is carved out of `statfs` total.
+    pub(crate) carve_out: bool,
+    /// Largest number of successful atomic-write operations open at once.
+    pub(crate) peak_atomic_write: u64,
     pub(crate) valid_node_count: u32,
     pub(crate) valid_inode_count: u32,
     pub(crate) next_free_nid: u32,
@@ -265,6 +299,42 @@ pub struct Volume<S: SectorSource> {
     /// of the things being counted and a read takes `&self` — the same reason
     /// `verity_cache` above needs it.
     pub(crate) counters: core::cell::RefCell<crate::stats::Counters>,
+    /// The mode whose reclaimed-segment total the sysfs report selects.
+    /// This is a reporting selector, not the cleaner's transient run mode.
+    pub(crate) gc_segment_mode: usize,
+    /// Number of cleaner collisions a pinned file may absorb before Linux
+    /// drops its pin. Tunable through the volume's sysfs owner.
+    pub(crate) gc_pin_file_threshold: u16,
+    /// Prefree segments held before a checkpoint is requested. Linux exposes
+    /// this volume-owned threshold as `reclaim_segments`.
+    pub(crate) reclaim_segments: u32,
+    /// Maximum live-block ratio preferred against a less-live one-time victim.
+    pub(crate) gc_valid_thresh_ratio: u32,
+    /// Number of segments a background cleaner window may process in a
+    /// section. Linux's `migration_window_granularity`.
+    pub(crate) migration_window_granularity: u32,
+    /// Maximum number of nonempty segments migrated by one background
+    /// section window. Linux's `migration_granularity`.
+    pub(crate) migration_granularity: u32,
+    /// Default hash base level stamped into newly created directories.
+    /// Linux's mount-wide `dir_level`.
+    pub(crate) dir_level: u8,
+    /// Multiplier for sequential-file readahead. Linux's `seq_file_ra_mul`.
+    pub(crate) seq_file_ra_mul: u32,
+    /// Maximum number of node blocks a roll-forward chain may write between
+    /// checkpoints. Zero keeps the Linux unlimited default.
+    pub(crate) max_roll_forward_node_blocks: u32,
+    /// Node blocks written by roll-forward since the last checkpoint.
+    pub(crate) rf_node_block_count: u32,
+    /// Maximum contiguous source-read size before the medium request is split.
+    /// Zero retains Linux's unlimited merge behavior.
+    pub(crate) max_io_bytes: u32,
+    /// Maximum data blocks in one block-fragmentation chunk. Linux default 4.
+    pub(crate) max_fragment_chunk: u32,
+    /// Maximum unallocated blocks between block-fragmentation chunks. Linux default 4.
+    pub(crate) max_fragment_hole: u32,
+    /// Free sections reserved for future pinned-file allocation.
+    pub(crate) reserved_pin_section: u32,
     /// Files between START and COMMIT of an atomic write, by inode number.
     ///
     /// Never on the medium, and that is the promise: an atomic span that a
@@ -298,6 +368,10 @@ pub struct Volume<S: SectorSource> {
     /// to keep them; inert on every other mount. Interior-mutable already, for
     /// the reason the caches above are: a READ is what fills it.
     pub(crate) compress_cache: crate::compress::cache::Cache,
+    /// Reusable destination for speculative compressed readahead. Demand
+    /// reads retain their allocating path; only the Linux pre-allocation arm
+    /// borrows this context. # C: O(1) storage, O(cluster bytes) when grown
+    pub(crate) decomp_scratch: core::cell::RefCell<Vec<u8>>,
     /// The file DATA pages this mount has read and kept, keyed by inode
     /// number and file offset rather than by block address (`filemap`).
     /// Interior-mutable for the reason the caches above are: a READ is what
@@ -364,6 +438,7 @@ pub struct Volume<S: SectorSource> {
     /// statement about the call in progress, not about the file. One inode
     /// rather than a set, because the flush it spans is one file's.
     pub(crate) need_ipu: Option<u32>,
+    pub(crate) deferred_flush: Option<(u32, u64)>,
     /// Whether the writeback running right now is one a caller is WAITING on.
     ///
     /// The filesystem's own flush points — an `fsync`, a checkpoint, a truncate
@@ -554,6 +629,29 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(1)
     pub fn counters(&self) -> crate::stats::Counters { *self.counters.borrow() }
 
+    /// The cleaner policy selected for the reclaimed-segment sysfs report.
+    /// # C: O(1)
+    pub(crate) fn gc_segment_mode(&self) -> usize { self.gc_segment_mode }
+
+    /// Select a valid reclaimed-segment report slot. # C: O(1)
+    pub(crate) fn set_gc_segment_mode(&mut self, mode: usize) -> Result<(), Errno> {
+        if mode >= crate::stats::counters::gc_mode::MAX { return Err(Errno::Einval); }
+        self.gc_segment_mode = mode;
+        Ok(())
+    }
+
+    /// The live reclaimed-segment total for the selected policy. # C: O(1)
+    pub(crate) fn gc_reclaimed_segments(&self) -> u32 {
+        self.counters.borrow().gc_reclaimed_segs[self.gc_segment_mode]
+    }
+
+    /// Linux's write-zero reset for the selected reclaimed-segment total.
+    /// # C: O(1)
+    pub(crate) fn reset_gc_reclaimed_segments(&mut self) -> Result<(), Errno> {
+        self.counters.borrow_mut().gc_reclaimed_segs[self.gc_segment_mode] = 0;
+        Ok(())
+    }
+
     /// What each extent cache is holding: trees, of which zombies, and runs.
     /// # C: O(1)
     #[allow(clippy::type_complexity)]
@@ -592,6 +690,28 @@ impl<S: SectorSource> Volume<S> {
     /// Failures this mount injects, and the counts each site has taken.
     /// # C: O(1)
     pub fn fault_info(&self) -> &crate::fault::Info { &self.fault }
+
+    /// Consume one timeout fault and return the mode without sleeping while a
+    /// filesystem lock is held. # C: O(1)
+    pub(crate) fn fault_timeout_mode(&self, f: crate::fault::Fault) -> Option<vfs::FsTimeout> {
+        if crate::fault::time_to_inject(&self.fault, f) {
+            let timeout = self.fault.timeout();
+            return Some(match timeout {
+                crate::fault::Timeout::Running => vfs::FsTimeout::Running,
+                crate::fault::Timeout::IoSleep => vfs::FsTimeout::IoSleep,
+                crate::fault::Timeout::NonIoSleep => vfs::FsTimeout::NonIoSleep,
+                crate::fault::Timeout::Runnable => vfs::FsTimeout::Runnable,
+                crate::fault::Timeout::None => return None,
+            });
+        }
+        None
+    }
+
+    /// Consume one timeout fault at the operation that owns the wait.
+    /// # C: O(1), plus the installed kernel timeout owner
+    pub(crate) fn fault_timeout(&self, f: crate::fault::Fault) {
+        if let Some(mode) = self.fault_timeout_mode(f) { vfs::fs_timeout(mode); }
+    }
 
     /// Change what this mount injects, one field at a time. # C: O(1)
     pub fn set_fault(&self, rate: u32, ty: u32, which: crate::fault::Which)

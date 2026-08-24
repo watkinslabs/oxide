@@ -100,21 +100,27 @@ fn nothing_killable_fails_the_allocation_at_once() {
 }
 
 #[test]
-fn contended_selector_retries_and_stays_bounded() {
+fn contended_selector_retries_until_the_selector_reports_no_killable() {
     let killed = Cell::new(0u32);
     let out: Option<u8> = run_slowpath(0, true,
         || None, || false,
-        || { killed.set(killed.get() + 1); OomOutcome::Contended });
+        || {
+            killed.set(killed.get() + 1);
+            if killed.get() > 32 { OomOutcome::NoKillable } else { OomOutcome::Contended }
+        });
     assert_eq!(out, None);
-    assert_eq!(killed.get(), MAX_OOM_ATTEMPTS + 1, "a permanently held selector must not spin forever");
+    assert_eq!(killed.get(), 33, "selector ownership is retried until it reports no victim");
 }
 
 #[test]
-fn kill_invocations_are_bounded_per_allocation() {
+fn progressing_kills_are_retried_until_no_killable() {
     let killed = Cell::new(0u32);
     let out: Option<u8> = run_slowpath(0, true,
         || None, || false,
-        || { killed.set(killed.get() + 1); OomOutcome::Progress });
+        || {
+            killed.set(killed.get() + 1);
+            if killed.get() > 32 { OomOutcome::NoKillable } else { OomOutcome::Progress }
+        });
     assert_eq!(out, None);
-    assert_eq!(killed.get(), MAX_OOM_ATTEMPTS + 1);
+    assert_eq!(killed.get(), 33);
 }

@@ -22,6 +22,11 @@ impl PseudoFs {
     pub fn root_dir(&self) -> &Arc<PseudoDir> {
         &self.root
     }
+
+    /// Attach immutable state to this filesystem instance's root tree. # C: O(1)
+    pub fn set_root_private<T: core::any::Any + Send + Sync>(&self, value: Arc<T>) {
+        self.root.set_fs_private(value);
+    }
 }
 
 impl vfs::fs::FileSystem for PseudoFs {

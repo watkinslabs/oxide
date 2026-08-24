@@ -71,6 +71,46 @@ fn tx_period_on_queue(
     head.and_then(|head| super::wait_for_period_completion(txq, head, ctx.cfg_va)).is_some()
 }
 
+/// Submit one bounded portion of the userspace-owned mmap ring without a
+/// staging copy.  The queue owns the DMA frame only until completion, so the
+/// synchronous wait preserves the same lifetime rule as the legacy path.
+pub(crate) fn mmap_commit(
+    owner: sound::SoundOwnerKey, appl: u64, hw: u64, frame_bytes: u32, buffer_frames: u32,
+) -> Option<u64> {
+    let mut g = CTX.lock_bh::<crate::state::SndBh>();
+    let ctx = active_ctx_mut_for(&mut g, owner)?;
+    if ctx.pcm_state != PcmState::Running || ctx.tx_buf_pa == 0 || ctx.tx_scratch_pa == 0 {
+        return None;
+    }
+    let available = appl.wrapping_sub(hw).min(buffer_frames as u64);
+    if available == 0 { return Some(hw); }
+    let frames = available.min((ctx.cfg_period_bytes as u64 / frame_bytes as u64).max(1));
+    let bytes = (frames * frame_bytes as u64) as usize;
+    let ring_bytes = (buffer_frames * frame_bytes) as u64;
+    let start = (hw % buffer_frames as u64) * frame_bytes as u64;
+    let first = bytes.min((ring_bytes - start) as usize);
+    let second = bytes - first;
+    let xfer = ctx.hhdm.wrapping_add(ctx.tx_scratch_pa) as *mut u32;
+    // SAFETY: the scratch frame is private to this Ctx while CTX is held.
+    unsafe { core::ptr::write_volatile(xfer, ctx.out_stream?); }
+    let mut segs = [
+        virtio::SplitQueueSeg { dma: ctx.tx_scratch_pa, len: SND_XFER_HDR_BYTES as u32, device_writes: false },
+        virtio::SplitQueueSeg { dma: ctx.tx_buf_pa + start, len: first as u32, device_writes: false },
+        virtio::SplitQueueSeg { dma: ctx.tx_buf_pa + ring_bytes, len: 0, device_writes: false },
+        virtio::SplitQueueSeg { dma: ctx.tx_scratch_pa + SND_XFER_STATUS_OFF, len: SND_XFER_STATUS_BYTES as u32, device_writes: true },
+    ];
+    if second != 0 { segs[2] = virtio::SplitQueueSeg { dma: ctx.tx_buf_pa, len: second as u32, device_writes: false }; }
+    let mut txq = ctx.txq.take()?;
+    let result = if second == 0 {
+        let short = [segs[0], segs[1], segs[3]];
+        txq.submit(&short)
+    } else {
+        txq.submit(&segs)
+    }.ok().and_then(|head| super::wait_for_period_completion(&mut txq, head, ctx.cfg_va));
+    ctx.txq = Some(txq);
+    result.map(|_| hw + frames)
+}
+
 pub fn beep(hz: u32, ms: u32) -> bool { beep_diag(hz, ms) == 0 }
 
 pub fn beep_diag(hz: u32, ms: u32) -> u8 {

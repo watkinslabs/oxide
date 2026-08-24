@@ -72,9 +72,22 @@ impl<S: SectorSource> Volume<S> {
         self.commit_with(if closing { CpReason::Umount } else { CpReason::Sync })
     }
 
+    /// Write a checkpoint attributed to the background cleaner. # C: O(dirty table blocks + pack blocks)
+    pub(crate) fn commit_background(&mut self) -> Result<(), Errno> {
+        let closing = self.sbi.is_set(crate::sbflags::bits::IS_CLOSE);
+        self.commit_with_kind(crate::stats::counters::call::BACKGROUND,
+                              if closing { CpReason::Umount } else { CpReason::Sync })
+    }
+
     /// The same, saying why.
     /// # C: O(dirty table blocks + pack blocks)
     pub fn commit_with(&mut self, reason: CpReason) -> Result<(), Errno> {
+        self.commit_with_kind(crate::stats::counters::call::TOTAL, reason)
+    }
+
+    /// Attribute and write one checkpoint at the shared mutation owner. # C: O(dirty table blocks + pack blocks)
+    fn commit_with_kind(&mut self, kind: usize, reason: CpReason) -> Result<(), Errno> {
+        self.counters.borrow_mut().inc_cp_call(kind);
         if !self.writable { return Ok(()); }
         let outcome = self.commit_attempt(reason);
         // A sync that could not be completed leaves the medium describing the
@@ -147,6 +160,7 @@ impl<S: SectorSource> Volume<S> {
         let mut sit_bitmap = self.sit_bitmap.clone();
         let nat_journal = self.flush_nat(&mut nat_bitmap)?;
         let sit_journal = self.flush_sit(&mut sit_bitmap)?;
+        self.checkpoint_lifetime_write_kbytes();
         // The segments held since the last checkpoint become free HERE, before
         // the pack is built: this checkpoint is the one that retires the
         // references they were being held against, and it must record the
@@ -211,11 +225,13 @@ impl<S: SectorSource> Volume<S> {
         self.cp = cp;
         self.nat_bitmap = nat_bitmap;
         self.sit_bitmap = sit_bitmap;
+        self.nat_cache_clear();
         self.nat_journal = nat_journal;
         self.sit_journal = sit_journal;
         self.nat_dirty.clear();
         self.sit_dirty.clear();
         self.dirty = false;
+        self.rf_node_block_count = 0;
         // Every entry names a directory whose blocks this checkpoint has just
         // made durable, so no file below one of them needs a checkpoint on its
         // account any more. Leaving them would make one strict removal cost a
@@ -313,7 +329,11 @@ impl<S: SectorSource> Volume<S> {
             let mut block = self.curseg[log].sum.clone();
             if log == CURSEG_HOT_DATA { write_nat_journal(&mut block, nat); }
             if log == CURSEG_COLD_DATA { write_sit_journal(&mut block, sit); }
-            if log == CURSEG_HOT_DATA || log == CURSEG_COLD_DATA {
+            if log == crate::uapi::CURSEG_HOT_NODE {
+                crate::summary::write_lifetime_kbytes(&mut block, self.lifetime_write_kbytes);
+            }
+            if log == CURSEG_HOT_DATA || log == CURSEG_COLD_DATA
+                || log == crate::uapi::CURSEG_HOT_NODE {
                 // The footer sits past the journal, so resealing after the
                 // journal goes in is what keeps the two consistent.
                 let at = BLKSIZE - SUM_FOOTER_SIZE;
@@ -330,7 +350,13 @@ impl<S: SectorSource> Volume<S> {
             let segno = self.curseg[log].segno;
             if segno == NULL_SEGNO { continue; }
             self.curseg[log].seal(true);
-            let block = self.curseg[log].sum.clone();
+            let mut block = self.curseg[log].sum.clone();
+            if log == crate::uapi::CURSEG_HOT_NODE {
+                crate::summary::write_lifetime_kbytes(&mut block, self.lifetime_write_kbytes);
+                let at = BLKSIZE - SUM_FOOTER_SIZE;
+                let crc = crate::checksum::crc32(&block[..at]);
+                block[at + 1..at + 5].copy_from_slice(&crc.to_le_bytes());
+            }
             self.write_block(sum_block_addr(self.sb.ssa_blkaddr, segno), &block)?;
         }
         self.save_pinned_curseg()?;

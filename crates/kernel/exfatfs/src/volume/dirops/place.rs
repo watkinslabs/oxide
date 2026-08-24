@@ -69,14 +69,15 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(cluster bytes)
     pub(crate) fn grow_directory(&mut self, dir: &DirHandle, count: usize)
         -> Result<Chain, Errno> {
-        if !self.writable { return Err(Errno::Erofs); }
+        if !self.writable() { return Err(Errno::Erofs); }
         let per = self.geo.cluster_bytes();
         let want = (count * DENTRY_BYTES) as u64;
         let more = self.geo.clusters_for(want).max(1);
         let mut chain = self.dir_chain(dir)?;
         let before = chain.size;
         self.alloc_clusters(&mut chain, more, false)?;
-        for cluster in crate::chain::walk(&self.geo, &self.fat_reader(), &chain)?
+        for cluster in crate::chain::walk(&self.geo, &self.fat_reader(), &chain)
+            .map_err(|_| self.fs_error("corrupt exFAT cluster chain"))?
             .into_iter().skip(before as usize) {
             self.zero_cluster(cluster)?;
         }

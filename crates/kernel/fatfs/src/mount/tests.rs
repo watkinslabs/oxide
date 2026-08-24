@@ -5,6 +5,7 @@ use vfs::FileType;
 use vfs::uapi::FALLOC_FL_KEEP_SIZE;
 use crate::dirent::{ATTR_ARCH, ATTR_DIR, ATTR_RO};
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use block::{BlockDevice, BlockError, BlockOp, BlockRequest};
 
 const VOL_SECTOR: usize = 512;
@@ -71,7 +72,7 @@ fn image(block_size: u32) -> Arc<Disk> {
     let e = crate::dirent::ENTRY_BYTES;
     write_entry(&mut b, root, b"HELLO   TXT", ATTR_ARCH, 2, 5);
     write_entry(&mut b, root + e, b"SUBDIR     ", ATTR_DIR, 3, 0);
-    write_entry(&mut b, root + 2 * e, b"LOCKED  CFG", ATTR_ARCH | ATTR_RO, 2, 5);
+    write_entry(&mut b, root + 2 * e, b"LOCKED  CFG", ATTR_ARCH | ATTR_RO | crate::dirent::ATTR_SYS, 2, 5);
     let sub = cluster_at(3);
     write_entry(&mut b, sub, b".          ", ATTR_DIR, 3, 0);
     write_entry(&mut b, sub + e, b"..         ", ATTR_DIR, 0, 0);
@@ -138,6 +139,32 @@ fn a_read_only_entry_presents_without_write_bits() {
     assert_eq!(locked.perm().unwrap_or(0) & 0o222, 0, "no write bits anywhere");
     let plain = root.lookup("HELLO.TXT").expect("lookup");
     assert_ne!(plain.perm().unwrap_or(0) & 0o200, 0, "an ordinary file keeps its owner write bit");
+}
+
+#[test]
+fn sys_immutable_maps_the_dos_system_attribute_to_the_vfs_flag() {
+    let mut opts = crate::opts::Options::vfat();
+    opts.sys_immutable = true;
+    let fs = writable_mount("vfat", opts);
+    let root = fs.root_inode();
+    let system = root.lookup("LOCKED.CFG").expect("lookup");
+    assert_ne!(system.i_flags() & vfs::inode::S_IMMUTABLE, 0);
+    let ordinary = root.lookup("HELLO.TXT").expect("lookup");
+    assert_eq!(ordinary.i_flags() & vfs::inode::S_IMMUTABLE, 0);
+}
+
+#[test]
+fn quiet_makes_an_unrepresentable_owner_change_a_successful_noop() {
+    let mut opts = crate::opts::Options::vfat();
+    opts.quiet = true;
+    let fs = writable_mount("vfat", opts);
+    let file = fs.root_inode().lookup("HELLO.TXT").expect("lookup");
+    file.setattr(&vfs::IDENTITY, &vfs::Iattr {
+        valid: vfs::ATTR_UID,
+        uid: 1234,
+        ..vfs::Iattr::default()
+    }).expect("quiet chown is a successful no-op");
+    assert_eq!(file.uid(), Some(0));
 }
 
 /// chmod reaches FAT's record writer rather than only changing the in-memory
@@ -252,7 +279,11 @@ fn a_device_without_a_volume_is_refused() {
 
 /// The same image on a device that accepts writes, so the VFS operations can
 /// be driven end to end rather than only their refusals.
-struct RwDisk { bytes: sync::Spinlock<Vec<u8>, sync::TaskList>, block_size: u32 }
+struct RwDisk {
+    bytes: sync::Spinlock<Vec<u8>, sync::TaskList>,
+    block_size: u32,
+    flushes: AtomicUsize,
+}
 
 impl BlockDevice for RwDisk {
     fn block_size(&self) -> u32 { self.block_size }
@@ -275,14 +306,24 @@ impl BlockDevice for RwDisk {
             _ => Err(BlockError::Eopnotsupp),
         }
     }
-    fn flush(&self) -> block::KResult<()> { Ok(()) }
+    fn flush(&self) -> block::KResult<()> {
+        self.flushes.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
 }
 
 fn writable_mount(type_name: &'static str, opts: crate::opts::Options) -> Arc<FatFs> {
+    writable_mount_with_disk(type_name, opts).0
+}
+
+fn writable_mount_with_disk(type_name: &'static str, opts: crate::opts::Options)
+    -> (Arc<FatFs>, Arc<RwDisk>) {
     let disk = image(512);
-    let rw = Arc::new(RwDisk { bytes: sync::Spinlock::new(disk.bytes.clone()), block_size: 512 });
-    FatFs::open_typed(rw as Arc<dyn BlockDevice>, "/dev/loop0", true, type_name, opts)
-        .expect("mount")
+    let rw = Arc::new(RwDisk { bytes: sync::Spinlock::new(disk.bytes.clone()), block_size: 512,
+                               flushes: AtomicUsize::new(0) });
+    let fs = FatFs::open_typed(rw.clone() as Arc<dyn BlockDevice>, "/dev/loop0", true, type_name, opts)
+        .expect("mount");
+    (fs, rw)
 }
 
 /// A writable FAT instance realized through the same superblock boundary a
@@ -301,7 +342,85 @@ fn writable_vfs_mount() -> (Arc<FatFs>, Arc<vfs::SuperBlock>) {
     (fs, sb)
 }
 
+fn writable_vfs_mount_with_options(opts: crate::opts::Options)
+    -> (Arc<FatFs>, Arc<vfs::SuperBlock>, Arc<RwDisk>) {
+    let (fs, disk) = writable_mount_with_disk("vfat", opts);
+    let any: Arc<dyn vfs::fs::FileSystem> = fs.clone();
+    let root = Some(fs.root_inode());
+    let s_op = any.super_ops().expect("FAT super operations");
+    let ty: Arc<dyn vfs::FileSystemType> = vfs::fs::FsType::new(
+        any.name(), any.magic(), any.fs_flags(),
+        alloc::boxed::Box::new(|_, _, _, _, _, _| unreachable!("fixture is already mounted")));
+    let sb = vfs::SuperBlock::from_ops(ty, s_op, root, any.magic(), 0xFA70_0002,
+        any.block_size(), String::from("fatfs"), Arc::new(()));
+    any.set_sb(Arc::downgrade(&sb)).expect("set superblock");
+    (fs, sb, disk)
+}
+
+/// Linux's `nfs=nostale_ro` uses FAT's on-medium entry position rather than
+/// the generic cluster-derived inode identity, and it makes the mount
+/// read-only so that position cannot be reused.
+#[test]
+fn nfs_nostale_ro_exports_and_decodes_position_handles() {
+    let mut opts = crate::opts::Options::vfat();
+    opts.nfs = crate::opts::Nfs::NostaleRo;
+    let (fs, sb, _) = writable_vfs_mount_with_options(opts);
+    assert!(!fs.is_writable());
+    let root = sb.s_root_inode().expect("root");
+    let file = root.lookup("HELLO.TXT").expect("file");
+    let mut bytes = vec![0u8; sb.s_op.export_fid_len(true, false) as usize];
+    let (len, ty) = sb.s_op.export_encode_fh(&file, Some((root.ino(), root.i_generation())), &mut bytes);
+    assert_eq!(len, 20);
+    assert_eq!(ty, 0x72);
+    let fid = sb.s_op.export_decode_fh(&bytes[..len as usize], ty).expect("decode");
+    let decoded = sb.s_op.fh_to_dentry(&sb, fid.ino, fid.generation).expect("file");
+    assert_eq!(decoded.ino(), file.ino());
+    let (parent_ino, parent_generation) = fid.parent.expect("connectable parent");
+    let parent = sb.s_op.fh_to_parent(&sb, parent_ino, parent_generation).expect("parent");
+    assert_eq!(parent.ino(), root.ino());
+    let sub = root.lookup("SUBDIR").expect("subdir");
+    let mut dir_bytes = vec![0u8; sb.s_op.export_fid_len(true, true) as usize];
+    let (dir_len, dir_type) = sb.s_op.export_encode_fh(&sub, None, &mut dir_bytes);
+    assert_eq!(dir_len, 12);
+    let dir_fid = sb.s_op.export_decode_fh(&dir_bytes[..dir_len as usize], dir_type)
+        .expect("directory decode");
+    assert_eq!(sb.s_op.fh_to_dentry(&sb, dir_fid.ino, dir_fid.generation)
+        .expect("directory").ino(), sub.ino());
+    let nested = sub.lookup("NESTED.TXT").expect("nested file");
+    let mut nested_bytes = vec![0u8; sb.s_op.export_fid_len(true, false) as usize];
+    let (nested_len, nested_type) = sb.s_op.export_encode_fh(
+        &nested, Some((sub.ino(), sub.i_generation())), &mut nested_bytes);
+    let nested_fid = sb.s_op.export_decode_fh(&nested_bytes[..nested_len as usize], nested_type)
+        .expect("nested decode");
+    let nested_parent = sb.s_op.fh_to_parent(
+        &sb, nested_fid.parent.expect("nested parent").0,
+        nested_fid.parent.expect("nested parent").1).expect("nested parent");
+    assert_eq!(nested_parent.ino(), sub.ino());
+    assert_eq!(root.create_child("NOPE.TXT", 0o644, &ctx()).err(), Some(VfsError::Erofs));
+}
+
+#[test]
+fn nfs_default_advertises_the_linux_stale_rw_handles() {
+    let (_fs, sb) = writable_vfs_mount();
+    assert!(sb.s_op.export_can_decode_fh());
+}
+
 fn ctx() -> vfs::CreateCtx<'static> { vfs::CreateCtx::root() }
+
+/// The Linux `flush` mount option is consumed by the per-close file hook and
+/// reaches the block-device barrier.
+#[test]
+fn flush_option_barriers_a_writable_file_close() {
+    let mut opts = crate::opts::Options::vfat();
+    opts.flush = true;
+    let (_fs, sb, disk) = writable_vfs_mount_with_options(opts);
+    let root = sb.s_root_inode().expect("root");
+    let inode = root.lookup("HELLO.TXT").expect("file");
+    let dentry = vfs::Dentry::new_root(inode.clone());
+    let file = vfs::File::new(inode, dentry, vfs::OpenFlags::O_WRONLY);
+    file.flush(vfs::RecordOwner::Ofd(1)).expect("flush");
+    assert_eq!(disk.flushes.load(Ordering::Relaxed), 1);
+}
 
 /// Every namei operation reaches the volume through the VFS vector a real
 /// `mount -t vfat` uses. Anything short of this is machinery with no caller.

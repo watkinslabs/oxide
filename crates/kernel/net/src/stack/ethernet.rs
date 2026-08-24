@@ -27,6 +27,43 @@ impl NetStack {
                                     metadata: crate::PacketRxMetadata) -> NetResult<()>
     {
         let header = crate::ethernet::EthHdr::parse(frame).map_err(|_| NetError::Einval)?;
+        // Netdev-family chains run on the complete link frame, before bridge
+        // forwarding and packet-socket observation. A stolen verdict owns the
+        // frame in the selected device and must stop this ingress path.
+        let mut netdev_packet = crate::Pkt::from_owned(frame.to_vec());
+        netdev_packet.proto = header.ethertype;
+        netdev_packet.iface = Some(lease.iface());
+        let flow_family = match header.ethertype {
+            crate::eth_p::IPV4 => Some(crate::netfilter_hook::NFPROTO_IPV4),
+            crate::eth_p::IPV6 => Some(crate::netfilter_hook::NFPROTO_IPV6),
+            _ => None,
+        };
+        let priorities = flow_family.map_or_else(Vec::new, |family| {
+            self.flowtable_priorities_in(lease.net_ns(), family, lease.iface())
+        });
+        let mut min_priority = None;
+        let mut mark = 0;
+        for priority in priorities {
+            let netdev = crate::netfilter_hook::nf_hook_packet_stage_in(
+                lease.net_ns(), crate::netfilter_hook::NF_NETDEV_INGRESS,
+                &mut netdev_packet, crate::netfilter_hook::NFPROTO_NETDEV,
+                Some(lease.iface()), mark, min_priority, Some(priority));
+            if !netdev.accepted() { return Ok(()); }
+            mark = netdev.mark;
+            let l3 = netdev_packet.data().get(header.hdr_len..).unwrap_or(&[]);
+            if let Some(result) = self.flow_offload_ingress(
+                lease.net_ns(), lease.iface(), l3, flow_family.expect("flow priority family"),
+                priority) {
+                return result;
+            }
+            min_priority = Some(priority);
+        }
+        let netdev = crate::netfilter_hook::nf_hook_packet_stage_in(
+            lease.net_ns(), crate::netfilter_hook::NF_NETDEV_INGRESS,
+            &mut netdev_packet, crate::netfilter_hook::NFPROTO_NETDEV,
+            Some(lease.iface()), mark, min_priority, None);
+        if !netdev.accepted() { return Ok(()); }
+        let frame = netdev_packet.data();
         #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
         crate::sock::deliver_packet_ingress_meta_in(lease, frame, metadata);
         #[cfg(not(any(target_os = "oxide-kernel", test, feature = "hosted")))]
@@ -104,6 +141,37 @@ mod tests {
         let (iface, _lo) = stack.register_loopback();
         assert_eq!(stack.deliver_ethernet(iface, &[0; crate::ethernet::ETH_HDR_LEN - 1]),
             Err(NetError::Einval));
+    }
+
+    #[test]
+    fn netdev_fwd_steals_the_complete_frame_before_l3_dispatch() {
+        let domain = crate::hosted_fixture::init_net_domain();
+        use ::core::sync::atomic::{AtomicU32, Ordering};
+        static TARGET: AtomicU32 = AtomicU32::new(0);
+        fn fwd(ctx: &crate::netfilter_hook::NfHookCtx<'_>)
+            -> crate::netfilter_hook::NfHookResult
+        {
+            if ctx.family != crate::netfilter_hook::NFPROTO_NETDEV {
+                return crate::netfilter_hook::NfHookResult::ACCEPT;
+            }
+            crate::netfilter_hook::NfHookResult {
+                verdict: 2, mark: 0, notrack: false,
+                actions: alloc::vec![crate::netfilter_action::Action::Fwd {
+                    oif: TARGET.load(Ordering::Acquire), gateway: None, nfproto: None,
+                }],
+            }
+        }
+        domain.set_nf_hook(fwd);
+        let stack = crate::global_stack();
+        let (source, _source_dev) = stack.register_loopback();
+        let (target, target_dev) = stack.register_loopback();
+        TARGET.store(stack.ifaces.ifindex_in_ns(target, 0).unwrap(), Ordering::Release);
+        let mut frame = [0u8; crate::ethernet::ETH_HDR_LEN + 20];
+        crate::ethernet::EthHdr::write_to(crate::MacAddr::BROADCAST,
+            crate::MacAddr([2, 0, 0, 0, 0, 1]), crate::eth_p::IPV4, &mut frame);
+        frame[crate::ethernet::ETH_HDR_LEN] = 0x45;
+        stack.deliver_ethernet(source, &frame).unwrap();
+        assert_eq!(target_dev.rx_len(), 1);
     }
 }
 

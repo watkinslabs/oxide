@@ -99,7 +99,7 @@ impl NetStack {
             // The acknowledgement half: rebuild the handshake the cookie
             // proves happened, or stay silent.
             let Some(req) = self.check_syn_cookie(net_ns, &listener, src_ip, dst_ip, seg, hdr,
-                ipv6) else { return Ok(()); };
+                ipv6, metrics) else { return Ok(()); };
             return self.open_from_syn_cookie(net_ns, iface, src_ip, dst_ip, seg, packet, key,
                 tables, ipv6, local_ep, own_mss, path_mtu, metrics, &listener, &req);
         }

@@ -105,6 +105,14 @@ pub fn sys_mq_open(args: &syscall::SyscallArgs) -> i64 {
         OpenAction::Create => {
             let Some(cur) = sched::live::current() else { return errno(Errno::Ebadf) };
             let cap_res = cur.has_cap(sched::cap::SYS_RESOURCE);
+            // `vfs_mkobj()` checks the mqueue root before it creates the
+            // inode. This is where SELinux's directory `add_name`/`search`
+            // decision runs; labeling the child after construction cannot
+            // replace that pre-create denial.
+            let root = model::root_inode(ns);
+            if let Err(e) = vfs::namei::inode_permission(
+                &root, vfs::namei::MAY_WRITE | vfs::namei::MAY_EXEC, &cred)
+            { return -(e as i64); }
             let sysctls = model::sysctls(ns);
             let created = match validate_attr(attr, &sysctls, cap_res) {
                 Ok(c) => c, Err(e) => return errno(e),

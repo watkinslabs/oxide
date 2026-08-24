@@ -81,6 +81,9 @@ pub enum Slot {
     PerfDeferred = 9,
     /// xHCI USB keyboard and mouse report completions.
     UsbInput = 10,
+    /// HDA codec unsolicited jack responses. The codec readback and sound
+    /// control notification run from process context, not the IRQ tail.
+    HdaJack = 11,
 }
 
 const N_SLOTS: usize = 32;
@@ -103,7 +106,7 @@ impl Slot {
             Self::BridgeStp => StatClass::Timer,
             Self::PerfDeferred => StatClass::Sched,
             Self::Tasklet | Self::FbconFlush | Self::InputDrain | Self::VsockRx
-            | Self::SndEvent | Self::NetNsReap | Self::UsbInput => StatClass::Tasklet,
+            | Self::SndEvent | Self::NetNsReap | Self::UsbInput | Self::HdaJack => StatClass::Tasklet,
         }
     }
 }
@@ -121,6 +124,7 @@ fn stat_class_for_index(idx: usize) -> Option<StatClass> {
         x if x == Slot::Tasklet as usize => Some(Slot::Tasklet.stat_class()),
         x if x == Slot::PerfDeferred as usize => Some(Slot::PerfDeferred.stat_class()),
         x if x == Slot::UsbInput as usize => Some(Slot::UsbInput.stat_class()),
+        x if x == Slot::HdaJack as usize => Some(Slot::HdaJack.stat_class()),
         _ => None,
     }
 }
@@ -142,7 +146,7 @@ pub fn stat_total(class: StatClass, ncpu: usize) -> u64 {
     let n = ncpu.min(MAX_CPUS);
     (0..n).map(|cpu| stat_count(class, cpu)).sum()
 }
-const PROCESS_ONLY: u32 = 1u32 << (Slot::NetNsReap as u32);
+const PROCESS_ONLY: u32 = (1u32 << (Slot::NetNsReap as u32)) | (1u32 << (Slot::HdaJack as u32));
 /// Per-CPU array width (Linux `irq_stat[NR_CPUS]`).
 const MAX_CPUS: usize = cpu::MAX_CPUS;
 

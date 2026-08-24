@@ -14,7 +14,8 @@ pub const fn simple(id: u32, ctrl_type: u32, name: &'static str,
                     minimum: i64, maximum: i64, step: u64, default_value: i64) -> ControlDesc {
     ControlDesc {
         id, ctrl_type, name, minimum, maximum, step, default_value,
-        flags: 0, menu: &[], menu_values: &[], cluster: &[],
+        flags: 0, payload_size: 0, elem_size: 0, elems: 0, payload_default: &[],
+        menu: &[], menu_values: &[], cluster: &[],
     }
 }
 
@@ -76,6 +77,7 @@ pub const USER_CLASS: ControlDesc = ControlDesc {
     id: cid::CID_USER_CLASS, ctrl_type: cid::CTRL_TYPE_CTRL_CLASS,
     name: "User Controls", minimum: 0, maximum: 0, step: 0, default_value: 0,
     flags: cid::CTRL_FLAG_READ_ONLY, menu: &[], menu_values: &[], cluster: &[],
+    payload_size: 0, elem_size: 0, elems: 0, payload_default: &[],
 };
 
 /// The camera-class marker control.
@@ -83,6 +85,7 @@ pub const CAMERA_CLASS: ControlDesc = ControlDesc {
     id: cid::CID_CAMERA_CLASS, ctrl_type: cid::CTRL_TYPE_CTRL_CLASS,
     name: "Camera Controls", minimum: 0, maximum: 0, step: 0, default_value: 0,
     flags: cid::CTRL_FLAG_READ_ONLY, menu: &[], menu_values: &[], cluster: &[],
+    payload_size: 0, elem_size: 0, elems: 0, payload_default: &[],
 };
 
 /// `V4L2_CID_POWER_LINE_FREQUENCY`, whose four entries are what a camera
@@ -92,6 +95,7 @@ pub const POWER_LINE_FREQUENCY: ControlDesc = ControlDesc {
     name: "Power Line Frequency", minimum: 0, maximum: 3, step: 0,
     default_value: cid::POWER_LINE_FREQUENCY_50HZ,
     flags: 0, menu: POWER_LINE_MENU, menu_values: &[], cluster: &[],
+    payload_size: 0, elem_size: 0, elems: 0, payload_default: &[],
 };
 
 /// `V4L2_CID_EXPOSURE_AUTO`. It clusters with the manual exposure time and the
@@ -104,6 +108,7 @@ pub const EXPOSURE_AUTO: ControlDesc = ControlDesc {
     default_value: cid::EXPOSURE_AUTO,
     flags: cid::CTRL_FLAG_UPDATE, menu: EXPOSURE_AUTO_MENU, menu_values: &[],
     cluster: &[cid::CID_EXPOSURE_ABSOLUTE, cid::CID_EXPOSURE_AUTO_PRIORITY],
+    payload_size: 0, elem_size: 0, elems: 0, payload_default: &[],
 };
 
 /// `V4L2_CID_AUTO_WHITE_BALANCE`, clustered with the colour temperature it
@@ -113,6 +118,7 @@ pub const AUTO_WHITE_BALANCE: ControlDesc = ControlDesc {
     name: "White Balance, Automatic", minimum: 0, maximum: 1, step: 1,
     default_value: 1, flags: cid::CTRL_FLAG_UPDATE, menu: &[], menu_values: &[],
     cluster: &[cid::CID_WHITE_BALANCE_TEMPERATURE],
+    payload_size: 0, elem_size: 0, elems: 0, payload_default: &[],
 };
 
 /// `V4L2_CID_FOCUS_AUTO`, clustered with the absolute focus position.
@@ -121,6 +127,7 @@ pub const FOCUS_AUTO: ControlDesc = ControlDesc {
     name: "Focus, Automatic Continuous", minimum: 0, maximum: 1, step: 1,
     default_value: 1, flags: cid::CTRL_FLAG_UPDATE, menu: &[], menu_values: &[],
     cluster: &[cid::CID_FOCUS_ABSOLUTE],
+    payload_size: 0, elem_size: 0, elems: 0, payload_default: &[],
 };
 
 /// Should this control be inactive given the current value of the automatic

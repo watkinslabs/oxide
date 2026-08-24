@@ -596,14 +596,12 @@ pub(super) unsafe fn schedule_once(keep_irqs_disabled: bool) {
         // switch re-programs it whenever it differs. Written as a difference
         // test, not an unconditional store, so a system where no task ever
         // called `arch_prctl(ARCH_SET_CPUID)` pays no MSR write at all.
-        // `__switch_to_xtra`'s `switch_to_bitmap` plus the reference's
-        // exit-to-user window program, in one step. The common switch — two
-        // tasks that never called `ioperm`/`iopl` — reads two relaxed bools
-        // and touches no TSS byte at all; a task holding a grant gets the
-        // window pointed at its own map, and a task holding none that follows
-        // one that did gets the window parked outside the descriptor limit.
-        if now.tif_io_bitmap.load(Ordering::Relaxed) { crate::ioport::arch::update(now); }
-        else if prev_ref.tif_io_bitmap.load(Ordering::Relaxed) { crate::ioport::arch::invalidate(); }
+        // Linux `__switch_to_xtra` invalidates the outgoing task's TSS window;
+        // the incoming task's bitmap is published by exit-to-user. This keeps
+        // kernel-only preemption from programming a user permission window.
+        if prev_ref.tif_io_bitmap.load(Ordering::Relaxed) {
+            crate::ioport::arch::invalidate();
+        }
         let prev_nocpuid = prev_ref.nocpuid.load(Ordering::Relaxed);
         if now.nocpuid.load(Ordering::Relaxed) != prev_nocpuid {
             // SAFETY: running on the CPU being reprogrammed with preemption

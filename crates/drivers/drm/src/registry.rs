@@ -16,6 +16,7 @@ pub fn register_with_parent(
     driver: Arc<dyn DrmDriver>,
     parent: Option<&Arc<drv::Device>>,
 ) -> u32 {
+    let supports_render = driver.supports_render_node();
     let mut driver = Some(driver);
     let card_id = {
         let mut g = CARDS.lock();
@@ -27,7 +28,7 @@ pub fn register_with_parent(
             (g.len() - 1) as u32
         }
     };
-    if !node::register(card_id, parent) {
+    if !node::register_with_render(card_id, parent, supports_render) {
         let mut g = CARDS.lock();
         if let Some(slot) = g.get_mut(card_id as usize) {
             *slot = None;

@@ -36,6 +36,10 @@ pub fn sys_memfd_secret(args: &SyscallArgs) -> i64 {
     };
     let cred = crate::pathresolve::current_cred();
     let inode = ::fs::secretmem::secretmem_inode(cred.uid, cred.gid);
+    if let Err(e) = vfs::inode_init_security_anon(&inode, ::fs::secretmem::SECRETMEM_ANON_NAME, None) {
+        ::fs::secretmem::secretmem_creation_failed();
+        return -(e as i64);
+    }
     let dentry = vfs::dcache::d_alloc_pseudo(::fs::secretmem::SECRETMEM_NAME, inode.clone(),
                                              &::fs::secretmem::SECRETMEM_OPS);
     let file = File::new(inode, dentry, OpenFlags::O_RDWR | OpenFlags::O_LARGEFILE);

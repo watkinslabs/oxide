@@ -31,6 +31,18 @@ fn fresh_heap(size: usize) -> (Box<[u8]>, KAlloc) {
     (buf, ka)
 }
 
+fn fresh_heap_with_slub_poison(size: usize) -> (Box<[u8]>, KAlloc) {
+    let buf: Vec<u8> = vec![0u8; size];
+    let mut buf = buf.into_boxed_slice();
+    let ka = KAlloc::new();
+    ka.set_slub_debug_poison(true);
+    let start = buf.as_mut_ptr() as usize;
+    // SAFETY: the test owns `buf` for the allocator's lifetime and installs
+    // the boot-only policy before heap initialization, as kmain does.
+    unsafe { ka.init(start, size) };
+    (buf, ka)
+}
+
 fn layout(size: usize, align: usize) -> Layout {
     Layout::from_size_align(size, align).unwrap()
 }
@@ -171,6 +183,40 @@ fn dealloc_then_realloc_reuses_region() {
     assert_ne!(p1, p2, "quarantine must delay reuse while diagnostics are armed");
     // SAFETY: just allocated.
     unsafe { ka.dealloc(p2, l) };
+}
+
+#[cfg(not(any(feature = "debug-heappoison", feature = "debug-dealloc-diag",
+              feature = "debug-hw-watchpoint", feature = "debug-efence")))]
+#[test]
+fn runtime_slub_poison_checks_size_class_reuse() {
+    let (_buf, ka) = fresh_heap_with_slub_poison(64 * 1024);
+    let l = layout(64, 8);
+    // SAFETY: valid layout and initialized allocator.
+    let p = unsafe { ka.alloc(l) };
+    assert!(!p.is_null());
+    // SAFETY: the object is no longer live; the allocator owns it after free.
+    unsafe { ka.dealloc(p, l) };
+    // SAFETY: valid layout; this pops the poisoned free object and validates
+    // every byte after the intrusive freelist word.
+    let reused = unsafe { ka.alloc(l) };
+    assert_eq!(reused, p);
+    unsafe { ka.dealloc(reused, l) };
+}
+
+#[cfg(not(any(feature = "debug-heappoison", feature = "debug-dealloc-diag",
+              feature = "debug-hw-watchpoint", feature = "debug-efence")))]
+#[test]
+#[should_panic(expected = "slub poison corrupted")]
+fn runtime_slub_poison_reports_a_write_while_free() {
+    let (_buf, ka) = fresh_heap_with_slub_poison(64 * 1024);
+    let l = layout(64, 8);
+    // SAFETY: valid layout and initialized allocator.
+    let p = unsafe { ka.alloc(l) };
+    unsafe { ka.dealloc(p, l) };
+    // SAFETY: deliberate UAF write for the positive control; the next class
+    // allocation must detect it before returning the object.
+    unsafe { core::ptr::write(p.add(16), 0x5a) };
+    let _ = unsafe { ka.alloc(l) };
 }
 
 #[cfg(feature = "debug-heappoison")]

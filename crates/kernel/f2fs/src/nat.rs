@@ -14,6 +14,8 @@
 use crate::summary::{NatEntry, NatJournal};
 use crate::uapi::*;
 
+use sectors::SectorSource;
+
 /// Which NAT block a nid's entry sits in, and where inside it. # C: O(1)
 pub fn locate(nid: u32) -> (u32, usize) {
     let per = NAT_ENTRY_PER_BLOCK as u32;
@@ -69,6 +71,48 @@ pub fn nid_in_range(nid: u32, max_nid: u32) -> bool { nid > 0 && nid < max_nid }
 pub fn max_nid(segment_count_nat: u32, blks_per_seg: u32) -> u32 {
     let blocks = (segment_count_nat / 2) * blks_per_seg;
     blocks.saturating_mul(NAT_ENTRY_PER_BLOCK as u32)
+}
+
+impl<S: SectorSource> crate::volume::Volume<S> {
+    pub(crate) fn nat_cache_get(&self, nid: u32) -> Option<NatEntry> {
+        let entry = self.nat_cache.borrow().get(&nid).copied();
+        if entry.is_some() {
+            let mut lru = self.nat_lru.borrow_mut();
+            lru.retain(|&n| n != nid);
+            lru.push_back(nid);
+        }
+        entry
+    }
+
+    pub(crate) fn nat_cache_put(&self, nid: u32, entry: NatEntry) {
+        self.nat_cache.borrow_mut().insert(nid, entry);
+        let mut lru = self.nat_lru.borrow_mut();
+        lru.retain(|&n| n != nid);
+        lru.push_back(nid);
+    }
+
+    pub(crate) fn nat_cache_forget(&self, nid: u32) {
+        self.nat_cache.borrow_mut().remove(&nid);
+        self.nat_lru.borrow_mut().retain(|&n| n != nid);
+    }
+
+    pub(crate) fn nat_cache_clear(&self) {
+        self.nat_cache.borrow_mut().clear();
+        self.nat_lru.borrow_mut().clear();
+    }
+
+    pub(crate) fn nat_cache_count(&self) -> usize { self.nat_cache.borrow().len() }
+
+    pub(crate) fn nat_cache_shrink(&self, nr: usize) -> usize {
+        let mut lru = self.nat_lru.borrow_mut();
+        let mut cache = self.nat_cache.borrow_mut();
+        let mut freed = 0;
+        while freed < nr {
+            let Some(nid) = lru.pop_front() else { break; };
+            if cache.remove(&nid).is_some() { freed += 1; }
+        }
+        freed
+    }
 }
 
 #[cfg(test)]

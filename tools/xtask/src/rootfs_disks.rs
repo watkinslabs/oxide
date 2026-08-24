@@ -26,6 +26,7 @@ mod ata_sat;
 // - usb_scsi: live xHCI Bulk-Only/SCSI probe against its own USB disk.
 mod usb_scsi;
 mod v4l2_capture;
+mod ldt;
 // - gnome_input_classify: opt-in Linux input discovery/classification proof.
 mod gnome_input_classify;
 // - input_delivery: opt-in proof that injected host events reach the evdev nodes.
@@ -160,6 +161,9 @@ fn build_root(
     }
     if std::env::var_os("OXIDE_V4L2_SMOKE").is_some() {
         v4l2_capture::inject(&root_img, arch)?;
+    }
+    if std::env::var_os("OXIDE_LDT_SMOKE").is_some() {
+        ldt::inject(&root_img, arch)?;
     }
     if std::env::var_os("OXIDE_GNOME_INPUT_CLASSIFY_SMOKE").is_some() {
         gnome_input_classify::inject(&root_img, arch)?;

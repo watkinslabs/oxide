@@ -19,10 +19,14 @@ pub(crate) struct SendAdmission {
 pub(crate) fn security_sock(target: &SendFile) -> KResult<net::socket_security::MsgSock> {
     Ok(match target.kind() {
         SendKind::File => return Err(Error::Enotsock),
-        SendKind::Netlink(socket) => net::socket_security::other(
-            net::net_ns::namespace_id(&socket.net_ns), net::socket_args::AF_NETLINK_WIRE),
-        SendKind::Vsock(socket) => net::socket_security::other(
-            socket.net_ns(), net::socket_args::AF_VSOCK as u16),
+        SendKind::Netlink(socket) => net::socket_security::MsgSock {
+            namespace: net::net_ns::namespace_id(&socket.net_ns),
+            family: net::socket_args::AF_NETLINK_WIRE,
+            proto: ::landlock::netcheck::Proto::Other,
+            target_sid: socket.security_sid.load(core::sync::atomic::Ordering::Acquire),
+            target_class: socket.security_class(),
+        },
+        SendKind::Vsock(socket) => net::socket_security::vsock(socket),
         SendKind::Inet(socket) => net::socket_security::inet(socket),
     })
 }

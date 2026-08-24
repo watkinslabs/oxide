@@ -207,6 +207,41 @@ pub struct Published {
     pub rcv_flowinfo: u32,
 }
 
+/// Build the receive-option mask used by `IPV6_2292PKTOPTIONS`. # C: O(1)
+pub fn want(flags: u64) -> crate::cmsg::Want {
+    use super::flag;
+    use super::set::{RECVHOPLIMIT, RECVPKTINFO, RECVTCLASS};
+    crate::cmsg::Want {
+        pktinfo6: flags & RECVPKTINFO != 0,
+        hoplimit6: flags & RECVHOPLIMIT != 0,
+        tclass6: flags & RECVTCLASS != 0,
+        flowinfo6: flags & flag::RXFLOW != 0,
+        hopopts6: flags & flag::RXHOPOPTS != 0,
+        dstopts6: flags & flag::RXDSTOPTS != 0,
+        rthdr6: flags & flag::RXSRCRT != 0,
+        old_pktinfo6: flags & flag::RXOINFO != 0,
+        old_hoplimit6: flags & flag::RXOHLIM != 0,
+        old_hopopts6: flags & flag::RXOHOPOPTS != 0,
+        old_dstopts6: flags & flag::RXODSTOPTS != 0,
+        old_rthdr6: flags & flag::RXOSRCRT != 0,
+        ..Default::default()
+    }
+}
+
+pub fn received(flags: u64, dst: [u8; 16], ifindex: u32, hoplimit: u8,
+                tclass: u8, flow_label: u32,
+                ext_headers: Vec<(u8, Vec<u8>)>)
+    -> Option<crate::cmsg::RxMeta>
+{
+    let want = want(flags);
+    if !want.any() { return None; }
+    Some(crate::cmsg::RxMeta {
+        dst6: Some((dst, ifindex)), hoplimit: Some(hoplimit),
+        tclass: Some(tclass), flowinfo: crate::cmsg::flowinfo(tclass, flow_label),
+        ext_headers, ..Default::default()
+    })
+}
+
 /// `ip6_tclass`: the traffic-class byte inside a flow-info word. # C: O(1)
 pub fn tclass_of(flowinfo: u32) -> i32 { ((flowinfo & 0x0ff0_0000) >> 20) as i32 }
 

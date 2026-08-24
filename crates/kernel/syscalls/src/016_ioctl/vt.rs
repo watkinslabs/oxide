@@ -261,8 +261,22 @@ pub(super) fn handle_vt_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Opti
         vt::KDFONTOP | vt::PIO_UNIMAP | vt::GIO_UNIMAP | vt::PIO_UNIMAPCLR => {
             handle_font_ioctl(req, arg)
         }
-        // KIOCSOUND / KDMKTONE — accept silently.
-        vt::KIOCSOUND | vt::KDMKTONE => Some(0),
+        vt::KIOCSOUND => {
+            let hz = if arg == 0 { 0 } else { (1_193_182u64 / arg).min(u64::from(u32::MAX)) as u32 };
+            let _ = sound::beep::beep(hz, 0);
+            Some(0)
+        }
+        vt::KDMKTONE => {
+            let milliseconds = ((arg >> 16) & 0xffff) as u32;
+            let divisor = arg & 0xffff;
+            let hz = if milliseconds == 0 || divisor == 0 {
+                0
+            } else {
+                (1_193_182u64 / divisor).min(u64::from(u32::MAX)) as u32
+            };
+            let _ = sound::beep::beep(hz, milliseconds);
+            Some(0)
+        }
         // The legacy port-IO grants. Linux implements all four as a
         // `ksys_ioperm` over the VGA-adjacent port window, refusing anything
         // outside it and collapsing every `ioperm` failure to ENXIO. They

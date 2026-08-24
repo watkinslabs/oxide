@@ -26,6 +26,7 @@ use super::volume::{num_rw, Vol};
 pub(crate) fn attrs(fs: &Arc<F2fs>, dev: &str) -> Vec<Attr> {
     let mut out = alloc::vec![
         num_rw(fs, dev, "ram_thresh", |v| u64::from(v.nid_ram_thresh()), set_ram_thresh),
+        num_rw(fs, dev, "ra_nid_pages", |v| u64::from(v.ra_nid_pages()), set_ra_nid_pages),
         num_rw(fs, dev, "max_read_extent_count",
                |v| u64::from(v.extents().max_read_extent_count()), set_max_read_extent_count),
         num_rw(fs, dev, "last_age_weight",
@@ -40,6 +41,49 @@ pub(crate) fn attrs(fs: &Arc<F2fs>, dev: &str) -> Vec<Attr> {
                |v| u64::from(v.readdir_ra()), set_readdir_ra),
         num_rw(fs, dev, "dirty_nats_ratio",
                |v| u64::from(v.dirty_nats_ratio()), set_dirty_nats_ratio),
+        num_rw(fs, dev, "gc_segment_mode",
+               |v| v.gc_segment_mode() as u64, set_gc_segment_mode),
+        num_rw(fs, dev, "gc_reclaimed_segments",
+               |v| u64::from(v.gc_reclaimed_segments()), set_gc_reclaimed_segments),
+        num_rw(fs, dev, "gc_pin_file_thresh",
+               |v| u64::from(v.gc_pin_file_threshold()), set_gc_pin_file_thresh),
+        num_rw(fs, dev, "reclaim_segments",
+               |v| u64::from(v.reclaim_segments()), set_reclaim_segments),
+        num_rw(fs, dev, "gc_valid_thresh_ratio",
+               |v| u64::from(v.gc_valid_thresh_ratio()), set_gc_valid_thresh_ratio),
+        num_rw(fs, dev, "migration_window_granularity",
+               |v| u64::from(v.migration_window_granularity()), set_migration_window_granularity),
+        num_rw(fs, dev, "migration_granularity",
+               |v| u64::from(v.migration_granularity()), set_migration_granularity),
+        num_rw(fs, dev, "dir_level",
+               |v| u64::from(v.dir_level()), set_dir_level),
+        num_rw(fs, dev, "seq_file_ra_mul",
+               |v| u64::from(v.seq_file_ra_mul()), set_seq_file_ra_mul),
+        num_rw(fs, dev, "max_roll_forward_node_blocks",
+               |v| u64::from(v.max_roll_forward_node_blocks()),
+               set_max_roll_forward_node_blocks),
+        num_rw(fs, dev, "max_io_bytes",
+               |v| u64::from(v.max_io_bytes()), set_max_io_bytes),
+        num_rw(fs, dev, "max_fragment_chunk",
+               |v| u64::from(v.max_fragment_chunk()), set_max_fragment_chunk),
+        num_rw(fs, dev, "max_fragment_hole",
+               |v| u64::from(v.max_fragment_hole()), set_max_fragment_hole),
+        num_rw(fs, dev, "reserved_pin_section",
+               |v| u64::from(v.reserved_pin_section()), set_reserved_pin_section),
+        num_rw(fs, dev, "reserved_blocks",
+               |v| v.reserved_blocks(), set_reserved_blocks),
+        num_rw(fs, dev, "carve_out",
+               |v| u64::from(v.carve_out()), set_carve_out),
+        num_rw(fs, dev, "cp_interval",
+               |v| v.cp_interval(), set_cp_interval),
+        num_rw(fs, dev, "umount_discard_timeout",
+               |v| v.umount_discard_timeout(), set_umount_discard_timeout),
+        num_rw(fs, dev, "allocate_section_hint",
+               |v| u64::from(v.allocate_section_hint()), set_allocate_section_hint),
+        num_rw(fs, dev, "allocate_section_policy",
+               |v| u64::from(v.allocate_section_policy()), set_allocate_section_policy),
+        num_rw(fs, dev, "blkzone_alloc_policy",
+               |v| u64::from(v.blkzone_alloc_policy()), set_blkzone_alloc_policy),
     ];
     out.extend(atgc::knobs::ALL.iter().map(|&k| atgc_knob(fs, dev, k)));
     out
@@ -79,6 +123,42 @@ fn atgc_knob(fs: &Arc<F2fs>, dir: &str, k: atgc::Knob) -> Attr {
 fn set_ram_thresh(v: &mut Vol, n: u64) -> Result<(), Errno> {
     if n == 0 || n > PERCENT { return Err(Errno::Einval); }
     v.set_nid_ram_thresh(n as u32);
+    Ok(())
+}
+
+/// Section boundary used by regular forward allocation. # C: O(1)
+fn set_allocate_section_hint(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    v.set_allocate_section_hint(n)
+}
+
+/// Seconds before a quiet mount's periodic checkpoint is due. # C: O(1)
+fn set_cp_interval(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    v.set_cp_interval(n);
+    Ok(())
+}
+
+/// Seconds allowed for the final unmount discard drain. # C: O(1)
+fn set_umount_discard_timeout(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    v.set_umount_discard_timeout(n);
+    Ok(())
+}
+
+/// Boundary policy used by regular forward allocation. # C: O(1)
+fn set_allocate_section_policy(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    v.set_allocate_section_policy(n)
+}
+
+/// Zoned regular-allocation preference. # C: O(1)
+fn set_blkzone_alloc_policy(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    v.set_blkzone_alloc_policy(n)
+}
+
+/// Number of NAT pages to prefetch after a free-NID scan. Zero is Linux's
+/// default and means that only the scan's own synchronous pages are fetched.
+/// # C: O(1)
+fn set_ra_nid_pages(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    if n > u64::from(u32::MAX) { return Err(Errno::Einval); }
+    v.set_ra_nid_pages(n as u32);
     Ok(())
 }
 
@@ -132,6 +212,17 @@ fn set_iostat_enable(v: &mut Vol, n: u64) -> Result<(), Errno> {
     Ok(())
 }
 
+/// Maximum blocks Linux holds back for privileged allocation. # C: O(1)
+fn set_reserved_blocks(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    v.set_reserved_blocks(n)
+}
+
+/// Whether the reserved pool is removed from the filesystem total. # C: O(1)
+fn set_carve_out(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    v.set_carve_out(n != 0);
+    Ok(())
+}
+
 /// Whether a directory listing prefetches the node block of every inode it
 /// names. Any non-zero value turns it on, as the reference's own boolean
 /// control does.
@@ -151,6 +242,120 @@ fn set_dirty_nats_ratio(v: &mut Vol, n: u64) -> Result<(), Errno> {
     if n == 0 || n > PERCENT { return Err(Errno::Einval); }
     v.set_dirty_nats_ratio(n as u32);
     Ok(())
+}
+
+/// Selects which cleaner-policy total `gc_reclaimed_segments` reports.
+/// # C: O(1)
+fn set_gc_segment_mode(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    if n > usize::MAX as u64 { return Err(Errno::Einval); }
+    v.set_gc_segment_mode(n as usize)
+}
+
+/// Linux permits only a write of zero, which resets the selected total.
+/// # C: O(1)
+fn set_gc_reclaimed_segments(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    if n != 0 { return Err(Errno::Einval); }
+    v.reset_gc_reclaimed_segments()
+}
+
+/// Maximum cleaner collisions before a pinned file loses its pin. Linux
+/// accepts zero, which makes the next control attempt refuse immediately.
+/// # C: O(1)
+fn set_gc_pin_file_thresh(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    if n > u64::from(crate::pin::policy::MAX_GC_FAILED_PINNED_FILES) {
+        return Err(Errno::Einval);
+    }
+    v.set_gc_pin_file_threshold(n as u16);
+    Ok(())
+}
+
+/// Prefree segments held before a checkpoint is requested. Linux accepts the
+/// full unsigned field, including zero for immediate reclamation pressure.
+/// # C: O(1)
+fn set_reclaim_segments(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    if n > u64::from(u32::MAX) { return Err(Errno::Einval); }
+    v.set_reclaim_segments(n as u32);
+    Ok(())
+}
+
+/// Maximum live-block ratio admitted before a one-time victim receives the
+/// Linux maximum cost. # C: O(1)
+fn set_gc_valid_thresh_ratio(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    if n > 100 { return Err(Errno::Einval); }
+    v.set_gc_valid_thresh_ratio(n as u32);
+    Ok(())
+}
+
+/// Background migration window, bounded by the filesystem's section width.
+/// # C: O(1)
+fn set_migration_window_granularity(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    let max = u64::from(v.super_block().segs_per_sec.max(1));
+    if n == 0 || n > max { return Err(Errno::Einval); }
+    v.set_migration_window_granularity(n as u32);
+    Ok(())
+}
+
+/// Maximum number of nonempty segments a background section window migrates.
+/// # C: O(1)
+fn set_migration_granularity(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    let max = u64::from(v.super_block().segs_per_sec.max(1));
+    if n == 0 || n > max { return Err(Errno::Einval); }
+    v.set_migration_granularity(n as u32);
+    Ok(())
+}
+
+/// Default hash base level for newly created directories. Existing directory
+/// inodes carry and continue to use their own stored level.
+/// # C: O(1)
+fn set_dir_level(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    if n > u64::from(crate::uapi::MAX_DIR_HASH_DEPTH) { return Err(Errno::Einval); }
+    v.set_dir_level(n as u8);
+    Ok(())
+}
+
+/// Multiplier for sequential-file readahead, bounded as Linux's f2fs control.
+/// # C: O(1)
+fn set_seq_file_ra_mul(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    if !(2..=256).contains(&n) { return Err(Errno::Einval); }
+    v.set_seq_file_ra_mul(n as u32);
+    Ok(())
+}
+
+/// Maximum roll-forward node blocks before a checkpoint; zero is unlimited.
+/// # C: O(1)
+fn set_max_roll_forward_node_blocks(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    if n > u64::from(u32::MAX) { return Err(Errno::Einval); }
+    v.set_max_roll_forward_node_blocks(n as u32);
+    Ok(())
+}
+
+/// Maximum source-read merge size. Values below one filesystem block are
+/// retained as Linux values but have no smaller block request to express.
+/// # C: O(1)
+fn set_max_io_bytes(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    if n > u64::from(u32::MAX) { return Err(Errno::Einval); }
+    v.set_max_io_bytes(n as u32);
+    Ok(())
+}
+
+/// Linux's block-fragmentation bounds. # C: O(1)
+fn set_max_fragment_chunk(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    if !(1..=512).contains(&n) { return Err(Errno::Einval); }
+    v.set_max_fragment_chunk(n as u32);
+    Ok(())
+}
+
+/// Linux's block-fragmentation hole bounds. # C: O(1)
+fn set_max_fragment_hole(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    if !(1..=512).contains(&n) { return Err(Errno::Einval); }
+    v.set_max_fragment_hole(n as u32);
+    Ok(())
+}
+
+/// Free sections reserved for pinned-file allocation. # C: O(1)
+fn set_reserved_pin_section(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    if n > u64::from(u32::MAX) { return Err(Errno::Einval); }
+    v.set_reserved_pin_section(n as u32)
 }
 
 /// A whole share, which is what every percentage control is bounded by.

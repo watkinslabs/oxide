@@ -361,6 +361,7 @@ impl Mount {
         &self, ino: u32, ino_bytes: &mut alloc::vec::Vec<u8>, ino_byte_off: u64,
         i_block: &mut [u8; I_BLOCK_LEN], hdr: inode::ExtentHeader,
         new_size: u64, logical: u32, data: &[u8], unwritten: bool, defer_data: bool,
+        physical: Option<u64>,
     ) -> Result<u32, MountError> {
         let bs = self.sb.block_size as usize;
         let gen = Self::inode_generation(ino_bytes);
@@ -380,11 +381,14 @@ impl Mount {
         // from the real post-insert count, never predicted from `len() + 1`.
         let data_charged = prev_i_blocks.saturating_add(spb);
         self.account_i_blocks_delta(ino, prev_i_blocks, data_charged)?;
-        let phys = match self.alloc_block_flags(hint_group, self.data_reserve_flags(ino)) {
-            Ok(phys) => phys,
-            Err(e) => {
-                return Err(self.rollback_i_blocks_delta(ino, data_charged, prev_i_blocks, e));
-            }
+        let phys = match physical {
+            Some(phys) => phys,
+            None => match self.alloc_block_flags(hint_group, self.data_reserve_flags(ino)) {
+                Ok(phys) => phys,
+                Err(e) => {
+                    return Err(self.rollback_i_blocks_delta(ino, data_charged, prev_i_blocks, e));
+                }
+            },
         };
         let new_extent = if unwritten {
             // Preallocated: no data write; reads serve zeros via is_unwritten().

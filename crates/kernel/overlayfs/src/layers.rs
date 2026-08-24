@@ -11,10 +11,13 @@
 extern crate alloc;
 
 use alloc::string::String;
-use alloc::sync::Arc;
+use alloc::collections::BTreeMap;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
+use sync::{Inode as InodeClass, Spinlock};
 use vfs::InodeRef;
+use vfs::inode_ops::CreateCtx;
 
 use crate::config::Config;
 use crate::redirect::Redirect;
@@ -62,6 +65,10 @@ pub struct OvlPath {
 /// The whole stack of one mount.
 pub struct LayerStack {
     pub config: Config,
+    /// Credential captured when the mount context was opened. Linux stores
+    /// this as `creator_cred` and uses it for real-layer access when
+    /// `override_creds` is enabled.
+    pub creator_cred: vfs::Cred,
     /// Writable layer, absent on a read-only overlay.
     pub upper: Option<Arc<Layer>>,
     /// Lower layers in order, merged ones first and data-only ones last.
@@ -82,6 +89,10 @@ pub struct LayerStack {
     /// The mount root's own object list. An absolute redirect restarts its
     /// walk here, so it is kept once rather than rebuilt per lookup.
     pub root: OvlEntry,
+    /// Linux's overlay superblock inode cache: one live overlay inode for one
+    /// real object identity. Weak values let the ordinary inode lifetime own
+    /// reclamation; this map is only the per-mount lookup index.
+    pub(crate) inode_cache: Spinlock<BTreeMap<usize, Weak<vfs::Inode>>, InodeClass>,
 }
 
 impl LayerStack {
@@ -107,6 +118,15 @@ impl LayerStack {
     pub fn has_index(&self) -> bool { self.indexdir.is_some() }
     /// Is every object indexed, rather than only lower hardlinks? # C: O(1)
     pub fn index_all(&self) -> bool { self.config.nfs_export && self.has_index() }
+    /// Run one lower/upper mutation with Linux overlayfs's real-layer owner.
+    /// `nooverride_creds` snapshots the task at the operation, while the
+    /// default retains the mount opener's credential. # C: O(1)
+    pub fn with_access_ctx<T>(&self, f: impl FnOnce(&CreateCtx<'_>) -> T) -> T {
+        let cred = if self.config.override_creds { self.creator_cred.clone() }
+            else { sched::cred::current_vfs_cred() };
+        let ctx = CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: 0 };
+        f(&ctx)
+    }
 }
 
 /// What an overlay object is made of.
@@ -150,6 +170,9 @@ pub struct OvlEntry {
     /// Where the data of a metadata-only object lives, when it is in a
     /// data-only layer and named by an absolute redirect.
     pub lowerdata_redirect: Option<String>,
+    /// The resolved data-only object. This is separate from `lower`: data-only
+    /// layers are never part of the name-based merge.
+    pub lowerdata: Option<OvlPath>,
 }
 
 impl OvlEntry {
@@ -181,7 +204,9 @@ impl OvlEntry {
     /// the bottom of the lower list rather than the top. # C: O(1)
     pub fn realdata(&self) -> Option<InodeRef> {
         if self.upper.is_some() && !self.metacopy { return self.upper.clone(); }
-        self.lower.last().map(|p| p.inode.clone()).or_else(|| self.upper.clone())
+        self.lowerdata.as_ref().map(|p| p.inode.clone())
+            .or_else(|| self.lower.last().map(|p| p.inode.clone()))
+            .or_else(|| self.lowerdata_redirect.is_none().then(|| self.upper.clone()).flatten())
     }
     /// Topmost lower object, which is the copy-up source and the origin. # C: O(1)
     pub fn lower_top(&self) -> Option<&OvlPath> { self.lower.first() }

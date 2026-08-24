@@ -286,6 +286,41 @@ pub trait MmuOps {
     /// # Ctx: under PT lock per `06§3.6`
     unsafe fn map_at(root_pa: u64, va: Va, pa: Pa, flags: PageFlags, size: PageSize) -> Option<Pa>;
 
+    /// Move one raw 4 KiB leaf within an explicit user root. The leaf is not
+    /// decoded: present, swap, migration, and marker state all move exactly
+    /// as encoded. `false` means the source is a sparse hole; the destination
+    /// remains empty. Huge/block leaves are reported as `HitHugeOrBlock` so
+    /// the PMM owner cannot silently turn a large mapping into base pages.
+    /// # SAFETY: caller owns both ranges, holds the address-space PT lock,
+    /// proves they do not overlap, and performs the required TLB invalidation.
+    /// # C: O(walk depth)
+    unsafe fn move_leaf_4k_at(
+        _root_pa: u64, _old: Va, _new: Va,
+    ) -> Result<bool, pt_walker::WalkErr> {
+        Err(pt_walker::WalkErr::AllocFailed)
+    }
+
+    /// Move the native leaf covering `old` and return its granule. Sparse
+    /// holes return `Ok(None)`; present, swap, migration, marker, and huge
+    /// leaves retain their architecture-encoded raw entry.
+    /// # SAFETY: same ownership and TLB contract as `move_leaf_4k_at`.
+    unsafe fn move_leaf_at(
+        _root_pa: u64, _old: Va, _new: Va,
+    ) -> Result<Option<PageSize>, pt_walker::WalkErr> {
+        Err(pt_walker::WalkErr::AllocFailed)
+    }
+
+    /// Split the present native leaf covering `va` into the next smaller
+    /// page-table level. The PMM owner retries a move after this when the
+    /// destination is not aligned to the source huge leaf.
+    /// # SAFETY: caller owns the root, holds its PT lock, and invalidates the
+    /// affected range after the enclosing move transaction.
+    unsafe fn split_leaf_at(
+        _root_pa: u64, _va: Va,
+    ) -> Result<(), pt_walker::WalkErr> {
+        Err(pt_walker::WalkErr::AllocFailed)
+    }
+
     /// Read the architecture-encoded non-present swap leaf at `va` in an
     /// explicit user root.  Default is appropriate only for hosted MMU mocks
     /// that do not model swap leaves.
@@ -425,6 +460,38 @@ pub trait CpuOps {
     /// from it and sizes every `sigaltstack(2)` accordingly.
     /// # C: O(1)
     fn cpu_min_sigstksz() -> u64;
+}
+
+// ---------------------------------------------------------------------------
+// MachineOps (32§4)
+// ---------------------------------------------------------------------------
+
+/// Irreversible machine-terminal primitives.
+///
+/// The kernel power owner supplies policy and firmware/reset callbacks; this
+/// trait owns only the architecture instructions and calling convention at
+/// the final machine boundary. Keeping that split means no kernel subsystem
+/// carries an architecture-selected `asm!` block of its own.
+pub trait MachineOps {
+    /// Mask local interrupts before stopping peer CPUs.
+    /// # SAFETY: caller owns an irreversible machine transition.
+    unsafe fn mask_local_irqs();
+
+    /// Park this CPU forever.
+    /// # SAFETY: caller owns an irreversible machine transition.
+    unsafe fn halt() -> !;
+
+    /// Invoke the architecture reset endpoint, or the supplied policy reset
+    /// ladder where the architecture has one.
+    /// # SAFETY: caller owns an irreversible machine transition; `reset` is
+    /// the kernel's validated reset callback.
+    unsafe fn restart(reset: unsafe fn() -> !) -> !;
+
+    /// Invoke the architecture power-off endpoint, or the supplied firmware
+    /// callback where the platform's power controller is kernel-owned.
+    /// # SAFETY: caller owns an irreversible machine transition; `power_off`
+    /// is the kernel's validated firmware callback.
+    unsafe fn power_off(power_off: fn()) -> !;
 }
 
 // ---------------------------------------------------------------------------

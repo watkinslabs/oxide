@@ -21,6 +21,27 @@
 
 use crate::opts::BackgroundGc;
 
+/// Which in-flight physical I/O blocks ordinary background GC. # C: O(1)
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[repr(u32)]
+pub enum BggcIoAware {
+    All = 0,
+    Read = 1,
+    None = 2,
+}
+
+impl BggcIoAware {
+    /// Decode Linux's sysfs values. # C: O(1)
+    pub fn from_u32(value: u32) -> Option<Self> {
+        Some(match value {
+            0 => Self::All,
+            1 => Self::Read,
+            2 => Self::None,
+            _ => return None,
+        })
+    }
+}
+
 /// The interval an urgent request runs at, in milliseconds.
 pub const DEF_GC_THREAD_URGENT_SLEEP_TIME: u32 = 500;
 /// The shortest ordinary interval, and the size of one step of the walk.
@@ -29,6 +50,8 @@ pub const DEF_GC_THREAD_MIN_SLEEP_TIME: u32 = 30_000;
 pub const DEF_GC_THREAD_MAX_SLEEP_TIME: u32 = 60_000;
 /// The interval after a pass that found nothing worth cleaning.
 pub const DEF_GC_THREAD_NOGC_SLEEP_TIME: u32 = 300_000;
+/// Linux's one-time-GC live-block ratio ceiling.
+pub const DEF_GC_VALID_THRESH_RATIO: u32 = 80;
 
 /// Share of the volume that must be dead before background cleaning is worth
 /// the writes it costs.
@@ -140,6 +163,18 @@ pub struct GcKthread {
     /// has seen. A caller that needs space NOW is not bounded by it — a bound
     /// there would fail an allocation while a good victim sat past the cut-off.
     pub max_victim_search: u32,
+    /// Free-section percentage above which background GC is skipped on a
+    /// zoned volume. Linux's `no_zoned_gc_percent`.
+    pub no_zoned_gc_percent: u32,
+    /// Free-section percentage below which zoned background GC accelerates.
+    /// Linux's `boost_zoned_gc_percent`.
+    pub boost_zoned_gc_percent: u32,
+    /// Multiplier for the background section window while zoned GC is boosted.
+    /// Linux's `boost_gc_multiple`.
+    pub boost_gc_multiple: u32,
+    /// Whether boosted zoned GC uses the greedy victim cost.
+    /// Linux's `boost_gc_greedy`.
+    pub boost_gc_greedy: u32,
 }
 
 impl Default for GcKthread {
@@ -159,6 +194,10 @@ impl GcKthread {
             remaining_trials: 0,
             wait_ms: DEF_GC_THREAD_MIN_SLEEP_TIME,
             max_victim_search: crate::volume::gc::victim::DEF_MAX_VICTIM_SEARCH,
+            no_zoned_gc_percent: 0,
+            boost_zoned_gc_percent: 0,
+            boost_gc_multiple: 5,
+            boost_gc_greedy: 1,
         }
     }
 
@@ -210,7 +249,7 @@ pub enum GcStep {
     Sleep,
     /// Clean. `sync` picks the greedy, space-first cost over the age-first
     /// one; `foreground` says a caller is blocked waiting for the result.
-    Gc { sync: bool, foreground: bool },
+    Gc { sync: bool, foreground: bool, boosted: bool },
 }
 
 /// What the volume and the device look like to the cleaner at one wake.
@@ -226,8 +265,19 @@ pub struct Conditions {
     /// Whether there is enough dead space, and little enough free space, to
     /// make cleaning worth its writes.
     pub boost: bool,
+    /// Zoned boost threshold is active for this pass.
+    pub boosted: bool,
+    /// Boosted cleaning is configured to use greedy victims.
+    pub boost_greedy: bool,
     /// Whether the cleaner's own re-entry guard is clear.
     pub can_lock: bool,
+    /// A zoned volume has enough free sections for Linux's no-GC gate.
+    pub zoned_free_enough: bool,
+}
+
+/// Linux uses a strict greater-than comparison for this zoned GC gate. # C: O(1)
+pub fn enough_free_sections(free: u32, total: u32, limit: u32) -> bool {
+    u64::from(free) > u64::from(total).saturating_mul(u64::from(limit)) / 100
 }
 
 /// Decide one wake, and move the walk. # C: O(1)
@@ -238,6 +288,10 @@ pub fn gc_round(th: &mut GcKthread, c: Conditions, bggc: BackgroundGc) -> GcStep
     if c.readonly { return GcStep::Skip; }
     if c.frozen {
         th.wait_ms = th.increase_sleep_time(th.wait_ms);
+        return GcStep::Sleep;
+    }
+    if c.zoned_free_enough && !c.foreground && !th.mode.is_urgent() {
+        th.wait_ms = th.no_gc_sleep_time;
         return GcStep::Sleep;
     }
     if th.mode.is_urgent() {
@@ -261,8 +315,9 @@ pub fn gc_round(th: &mut GcKthread, c: Conditions, bggc: BackgroundGc) -> GcStep
 fn do_gc(_th: &GcKthread, c: Conditions, bggc: BackgroundGc) -> GcStep {
     // A blocked caller wants space at the least cost in blocks moved, and it
     // wants it now: the age-weighted cost is for a cleaner with time.
-    let sync = if c.foreground { false } else { bggc == BackgroundGc::Sync };
-    GcStep::Gc { sync, foreground: c.foreground }
+    let sync = if c.foreground { false }
+               else { bggc == BackgroundGc::Sync || (c.boosted && c.boost_greedy) };
+    GcStep::Gc { sync, foreground: c.foreground, boosted: c.boosted }
 }
 
 /// Move the walk by what the pass found.
@@ -280,9 +335,13 @@ pub fn after_gc(th: &mut GcKthread, victim_found: bool, foreground: bool) {
     }
 }
 
-/// Seconds a mount must go untouched before background work may spend the
-/// device on itself.
-pub const IDLE_INTERVAL_SECS: u64 = 5;
+/// Default seconds a mount must go untouched before background work may spend
+/// the device on itself.
+pub const DEF_IDLE_INTERVAL_SECS: u64 = 5;
+/// Linux's default zoned-volume free-space gate for background GC.
+pub const DEF_NO_ZONED_GC_PERCENT: u32 = 60;
+/// Linux's default zoned-volume acceleration threshold.
+pub const DEF_BOOST_ZONED_GC_PERCENT: u32 = 25;
 
 /// Whether the volume is quiet enough for background work of `kind`.
 ///
@@ -290,9 +349,10 @@ pub const IDLE_INTERVAL_SECS: u64 = 5;
 /// asking for it means — and the ordinary answer is how long it has been
 /// since the mount last did anything for anybody.
 /// # C: O(1)
-pub fn is_idle(mode: GcMode, kind: IdleKind, now: u64, last_op: u64) -> bool {
+pub fn is_idle(mode: GcMode, kind: IdleKind, now: u64, last_op: u64,
+               interval_secs: u64) -> bool {
     if mode.claims_idle(kind) { return true; }
-    now.saturating_sub(last_op) > IDLE_INTERVAL_SECS
+    now.saturating_sub(last_op) > interval_secs
 }
 
 /// Whether there is enough dead space, and little enough free space, for

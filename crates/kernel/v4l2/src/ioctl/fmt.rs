@@ -5,10 +5,10 @@ use alloc::sync::Arc;
 use syscall::errno::Errno;
 
 use crate::device::VideoDevice;
-use crate::format::{self, Fract, PixFormat};
+use crate::format::{self, Fract, PixFormat, Rect};
 use crate::uapi::flags;
 use crate::uapi::layout as l;
-use crate::usermem::{r32, w32, wstr, zero};
+use crate::usermem::{r32, r32i, w32, w32i, wstr, zero};
 
 /// Does this device serve `buf_type`?
 ///
@@ -216,14 +216,16 @@ pub fn cropcap(device: &Arc<VideoDevice>, arg: &mut [u8]) -> Result<(), Errno> {
     if arg.len() < l::CROPCAP_SIZE { return Err(Errno::Einval); }
     check_type(device, r32(arg, l::CROPCAP_TYPE))?;
     let f = device.state.lock().format;
-    w32(arg, l::CROPCAP_BOUNDS_LEFT, 0);
-    w32(arg, l::CROPCAP_BOUNDS_TOP, 0);
-    w32(arg, l::CROPCAP_BOUNDS_WIDTH, f.width);
-    w32(arg, l::CROPCAP_BOUNDS_HEIGHT, f.height);
-    w32(arg, l::CROPCAP_DEFRECT_LEFT, 0);
-    w32(arg, l::CROPCAP_DEFRECT_TOP, 0);
-    w32(arg, l::CROPCAP_DEFRECT_WIDTH, f.width);
-    w32(arg, l::CROPCAP_DEFRECT_HEIGHT, f.height);
+    let bounds = device.ops.g_selection(&f, flags::SEL_TGT_CROP_BOUNDS)?;
+    let default = device.ops.g_selection(&f, flags::SEL_TGT_CROP_DEFAULT)?;
+    w32i(arg, l::CROPCAP_BOUNDS_LEFT, bounds.left);
+    w32i(arg, l::CROPCAP_BOUNDS_TOP, bounds.top);
+    w32(arg, l::CROPCAP_BOUNDS_WIDTH, bounds.width);
+    w32(arg, l::CROPCAP_BOUNDS_HEIGHT, bounds.height);
+    w32i(arg, l::CROPCAP_DEFRECT_LEFT, default.left);
+    w32i(arg, l::CROPCAP_DEFRECT_TOP, default.top);
+    w32(arg, l::CROPCAP_DEFRECT_WIDTH, default.width);
+    w32(arg, l::CROPCAP_DEFRECT_HEIGHT, default.height);
     w32(arg, l::CROPCAP_PIXELASPECT_NUM, 1);
     w32(arg, l::CROPCAP_PIXELASPECT_DEN, 1);
     Ok(())
@@ -235,10 +237,11 @@ pub fn g_crop(device: &Arc<VideoDevice>, arg: &mut [u8]) -> Result<(), Errno> {
     if arg.len() < l::CROP_SIZE { return Err(Errno::Einval); }
     check_type(device, r32(arg, l::CROP_TYPE))?;
     let f = device.state.lock().format;
-    w32(arg, l::CROP_C_LEFT, 0);
-    w32(arg, l::CROP_C_TOP, 0);
-    w32(arg, l::CROP_C_WIDTH, f.width);
-    w32(arg, l::CROP_C_HEIGHT, f.height);
+    let r = device.ops.g_selection(&f, flags::SEL_TGT_CROP)?;
+    w32i(arg, l::CROP_C_LEFT, r.left);
+    w32i(arg, l::CROP_C_TOP, r.top);
+    w32(arg, l::CROP_C_WIDTH, r.width);
+    w32(arg, l::CROP_C_HEIGHT, r.height);
     Ok(())
 }
 
@@ -251,9 +254,16 @@ pub fn s_crop(device: &Arc<VideoDevice>, arg: &mut [u8]) -> Result<(), Errno> {
     if arg.len() < l::CROP_SIZE { return Err(Errno::Einval); }
     check_type(device, r32(arg, l::CROP_TYPE))?;
     let f = device.state.lock().format;
-    let matches_frame = r32(arg, l::CROP_C_LEFT) == 0 && r32(arg, l::CROP_C_TOP) == 0
-        && r32(arg, l::CROP_C_WIDTH) == f.width && r32(arg, l::CROP_C_HEIGHT) == f.height;
-    if matches_frame { Ok(()) } else { Err(Errno::Einval) }
+    let rect = Rect { left: r32i(arg, l::CROP_C_LEFT), top: r32i(arg, l::CROP_C_TOP),
+                      width: r32(arg, l::CROP_C_WIDTH), height: r32(arg, l::CROP_C_HEIGHT) };
+    let current = device.ops.g_selection(&f, flags::SEL_TGT_CROP)?;
+    if current != rect && device.state.lock().queue.is_busy() { return Err(Errno::Ebusy); }
+    let settled = device.ops.s_selection(&f, flags::SEL_TGT_CROP, rect)?;
+    w32i(arg, l::CROP_C_LEFT, settled.left);
+    w32i(arg, l::CROP_C_TOP, settled.top);
+    w32(arg, l::CROP_C_WIDTH, settled.width);
+    w32(arg, l::CROP_C_HEIGHT, settled.height);
+    Ok(())
 }
 
 /// `VIDIOC_G_SELECTION`. # C: O(1)
@@ -267,10 +277,11 @@ pub fn g_selection(device: &Arc<VideoDevice>, arg: &mut [u8]) -> Result<(), Errn
         _ => return Err(Errno::Einval),
     }
     let f = device.state.lock().format;
-    w32(arg, l::SEL_R_LEFT, 0);
-    w32(arg, l::SEL_R_TOP, 0);
-    w32(arg, l::SEL_R_WIDTH, f.width);
-    w32(arg, l::SEL_R_HEIGHT, f.height);
+    let r = device.ops.g_selection(&f, target)?;
+    w32i(arg, l::SEL_R_LEFT, r.left);
+    w32i(arg, l::SEL_R_TOP, r.top);
+    w32(arg, l::SEL_R_WIDTH, r.width);
+    w32(arg, l::SEL_R_HEIGHT, r.height);
     zero(arg, l::SEL_RESERVED, l::SEL_RESERVED_LEN);
     Ok(())
 }
@@ -280,12 +291,17 @@ pub fn g_selection(device: &Arc<VideoDevice>, arg: &mut [u8]) -> Result<(), Errn
 pub fn s_selection(device: &Arc<VideoDevice>, arg: &mut [u8]) -> Result<(), Errno> {
     if arg.len() < l::SELECTION_SIZE { return Err(Errno::Einval); }
     check_type(device, r32(arg, l::SEL_TYPE))?;
-    if r32(arg, l::SEL_TARGET) != flags::SEL_TGT_CROP { return Err(Errno::Einval); }
+    let target = r32(arg, l::SEL_TARGET);
     let f = device.state.lock().format;
-    w32(arg, l::SEL_R_LEFT, 0);
-    w32(arg, l::SEL_R_TOP, 0);
-    w32(arg, l::SEL_R_WIDTH, f.width);
-    w32(arg, l::SEL_R_HEIGHT, f.height);
+    let rect = Rect { left: r32i(arg, l::SEL_R_LEFT), top: r32i(arg, l::SEL_R_TOP),
+                      width: r32(arg, l::SEL_R_WIDTH), height: r32(arg, l::SEL_R_HEIGHT) };
+    let current = device.ops.g_selection(&f, target)?;
+    if current != rect && device.state.lock().queue.is_busy() { return Err(Errno::Ebusy); }
+    let settled = device.ops.s_selection(&f, target, rect)?;
+    w32i(arg, l::SEL_R_LEFT, settled.left);
+    w32i(arg, l::SEL_R_TOP, settled.top);
+    w32(arg, l::SEL_R_WIDTH, settled.width);
+    w32(arg, l::SEL_R_HEIGHT, settled.height);
     zero(arg, l::SEL_RESERVED, l::SEL_RESERVED_LEN);
     Ok(())
 }

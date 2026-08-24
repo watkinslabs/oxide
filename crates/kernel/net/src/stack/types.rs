@@ -1,4 +1,5 @@
 use super::*;
+use alloc::string::String;
 
 mod tcp_entry_wait;
 // The listening-socket record, split out at the per-file size cutoff.
@@ -58,6 +59,9 @@ pub enum TcpConnectWait {
 pub struct TcpBindReservation {
     pub owner: Arc<crate::SocketOwner>,
     pub local: Endpoint,
+    /// `IP_TRANSPARENT` captured from the owning socket and inherited by
+    /// listeners/children through this canonical bind reservation.
+    pub(crate) transparent: ::core::sync::atomic::AtomicBool,
     pub(crate) bound_ifindex: Arc<::core::sync::atomic::AtomicU32>,
     pub(crate) reuseaddr: bool,
     pub(crate) reuseport: bool,
@@ -82,7 +86,7 @@ impl TcpBindReservation {
                       reuseaddr: bool, reuseport: bool, v6only: bool,
                       bound_ifindex: Arc<::core::sync::atomic::AtomicU32>) -> Self {
         Self {
-            owner,
+            owner, transparent: ::core::sync::atomic::AtomicBool::new(false),
             local,
             bound_ifindex,
             reuseaddr, reuseport, v6only,
@@ -99,6 +103,16 @@ impl TcpBindReservation {
             0 => None,
             raw => Some(NetIfaceId::from_raw(raw)),
         }
+    }
+
+    /// Publish the owning socket's transparent-proxy permission. # C: O(1)
+    pub fn set_transparent(&self, enabled: bool) {
+        self.transparent.store(enabled, ::core::sync::atomic::Ordering::Release);
+    }
+
+    /// Current transparent-proxy permission. # C: O(1)
+    pub(crate) fn transparent(&self) -> bool {
+        self.transparent.load(::core::sync::atomic::Ordering::Acquire)
     }
 }
 
@@ -495,6 +509,17 @@ pub struct NetStack {
     pub(crate) inet: super::inet_tables::InetTableLock<
         BTreeMap<u64, super::inet_tables::InetNamespaceTables>,
     >,
+    /// One conntrack table per network namespace; packets carry the entry
+    /// reference after the priority-ordered tracking hook attaches it.
+    pub(crate) conntrack: Spinlock<BTreeMap<u64, Arc<::conntrack::CtNet>>, StackLockClass>,
+    /// Namespace-owned software flowtables. Entries are installed only after
+    /// conntrack confirmation and are consulted before the ordinary hook path.
+    pub(crate) flow_offload: Spinlock<BTreeMap<(u64, String, String, ::conntrack::tuple::Tuple),
+        Arc<super::flow_offload::FlowEntry>>, StackLockClass>,
+    /// Configured nftables flowtable names, scoped by network namespace and family.
+    pub(crate) flowtables: Spinlock<BTreeMap<(u64, u8, String, String), super::flow_offload::FlowtableConfig>, StackLockClass>,
+    /// Unique nftables flowtable object handle source.
+    pub(crate) next_flowtable_handle: crate::fib_lock::FibLock<u64, StackLockClass>,
     /// Monotonic id for IP packets we emit.
     pub(crate) next_ip_id: crate::fib_lock::FibLock<u16, StackLockClass>,
     /// Monotonic ISN base for TCP active opens.

@@ -126,9 +126,17 @@ fn an_attribute_is_writable_exactly_when_something_reads_it() {
     let mut controls: alloc::vec::Vec<&str> =
         crate::bg::knobs::ALL.iter().map(|&k| crate::bg::knobs::name(k)).collect();
     controls.extend(crate::atgc::knobs::ALL.iter().map(|&k| crate::atgc::knobs::name(k)));
-    controls.extend(["ram_thresh", "max_read_extent_count", "last_age_weight",
+    controls.extend(["ram_thresh", "ra_nid_pages", "max_read_extent_count", "last_age_weight",
                      "hot_data_age_threshold", "warm_data_age_threshold", "iostat_enable",
-                     "readdir_ra", "dirty_nats_ratio"]);
+                     "readdir_ra", "dirty_nats_ratio", "gc_segment_mode",
+                     "gc_reclaimed_segments", "gc_pin_file_thresh", "reclaim_segments",
+                     "gc_valid_thresh_ratio", "migration_window_granularity",
+                     "migration_granularity", "dir_level", "seq_file_ra_mul",
+                     "max_roll_forward_node_blocks", "max_io_bytes", "max_fragment_chunk",
+                     "max_fragment_hole", "reserved_pin_section", "ckpt_thread_ioprio",
+                     "cp_interval", "umount_discard_timeout", "blkzone_alloc_policy"]);
+    controls.extend(["allocate_section_hint", "allocate_section_policy"]);
+    controls.extend(["reserved_segments", "reserved_blocks", "carve_out", "peak_atomic_write"]);
     // The fourth owner is the placement pair: the armed in-place-update set and
     // the three thresholds its arms compare against.
     controls.extend(["ipu_policy", "min_ipu_util", "min_fsync_blocks", "min_ssr_sections"]);
@@ -160,6 +168,23 @@ fn a_written_control_reaches_the_machinery_and_reads_back() {
     assert_eq!(fs.bg().dcc.lock().granularity, 64, "and a refusal changed nothing");
 }
 
+#[test]
+fn idle_threshold_controls_are_live_and_wake_both_consumers() {
+    let fs = mounted("/dev/vda");
+    let attrs = mount_attrs(&fs);
+    fs.bg().gc.lock().gc_wake = false;
+    fs.bg().dcc.lock().wake = false;
+    for name in ["idle_interval", "discard_idle_interval", "gc_idle_interval"] {
+        let a = attrs.iter().find(|a| a.name == name).expect("published");
+        a.store.as_ref().unwrap()(b"17\n").expect("accepted");
+        assert_eq!((a.show)().unwrap(), b"17\n");
+    }
+    assert!(fs.bg().gc.lock().gc_wake);
+    assert!(fs.bg().dcc.lock().wake);
+    assert_eq!(fs.bg().idle_interval(crate::bg::gc::IdleKind::Gc), 17);
+    assert_eq!(fs.bg().idle_interval(crate::bg::gc::IdleKind::Discard), 17);
+}
+
 /// Setting the urgent mode through sysfs must actually start the cleaner,
 /// which is the only reason a tool writes it.
 #[test]
@@ -170,6 +195,18 @@ fn the_urgency_control_asks_the_cleaner_for_a_pass() {
     a.store.as_ref().unwrap()(b"1").expect("accepted");
     assert_eq!(fs.bg().gc_mode(), crate::bg::GcMode::UrgentHigh);
     assert!(fs.bg().gc.lock().gc_wake);
+}
+
+#[test]
+fn checkpoint_thread_priority_is_live_and_linux_shaped() {
+    let fs = mounted("/dev/vda");
+    let attrs = mount_attrs(&fs);
+    let a = attrs.iter().find(|a| a.name == "ckpt_thread_ioprio").expect("published");
+    assert_eq!((a.show)().unwrap(), b"rt,3\n");
+    a.store.as_ref().unwrap()(b"be,6\n").expect("accepted");
+    assert_eq!((a.show)().unwrap(), b"be,6\n");
+    assert!(a.store.as_ref().unwrap()(b"rt,8").is_err());
+    assert_eq!((a.show)().unwrap(), b"be,6\n");
 }
 
 /// The layout attributes must report the volume's real geometry, not a

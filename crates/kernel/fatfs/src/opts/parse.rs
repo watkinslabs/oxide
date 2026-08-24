@@ -8,6 +8,7 @@
 use syscall::errno::Errno;
 
 use crate::name::codepage::by_number;
+use crate::name::compare::IoCharset;
 use crate::name::flags::shortname_mode;
 use crate::name::msdos::NameCheck;
 use crate::time::TimeConfig;
@@ -54,7 +55,7 @@ fn one(o: &mut Options, key: &str, val: Option<&str>) -> Result<(), Errno> {
         "codepage" => o.codepage = by_number(dec(val)?).ok_or(Errno::Einval)?,
         "check" => o.check = check(need(val)?)?,
         "shortname" => o.shortname = shortname_mode(need(val)?).ok_or(Errno::Einval)?,
-        "iocharset" => charset(need(val)?)?,
+        "iocharset" => o.iocharset = charset(need(val)?)?,
         "tz" => o.time = tz(need(val)?)?,
         "time_offset" => o.time = offset(need(val)?)?,
         "errors" => o.errors = errors(need(val)?)?,
@@ -130,9 +131,13 @@ fn check(val: &str) -> Result<NameCheck, Errno> {
 /// rather than accepted and ignored. It does NOT imply the `utf8` option,
 /// which is a separate switch and is rendered separately.
 /// # C: O(len)
-fn charset(val: &str) -> Result<(), Errno> {
-    if !val.eq_ignore_ascii_case("utf8") { return Err(Errno::Einval); }
-    Ok(())
+fn charset(val: &str) -> Result<IoCharset, Errno> {
+    match val {
+        v if v.eq_ignore_ascii_case("utf8") => Ok(IoCharset::Utf8),
+        v if v.eq_ignore_ascii_case("iso8859-1") || v.eq_ignore_ascii_case("iso88591") =>
+            Ok(IoCharset::Iso88591),
+        _ => Err(Errno::Einval),
+    }
 }
 
 /// # C: O(1)

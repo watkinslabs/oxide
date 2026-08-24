@@ -12,16 +12,17 @@ mod get_tree;
 mod registry;
 
 pub use api::{
-    superblock_from_filesystem, FileSystem, FsConstructor, FsType, KResult,
+    superblock_from_filesystem, FileSystem, FsConstructor, FsCredentialedConstructor, FsType, KResult,
 };
 pub use flags::FsFlags;
 pub use fs_context::{
-    FsContext, FsContextOps, FsContextPhase, FsContextPurpose, FsContextSecurity, FsParameter,
+    FsContext, FsContextOps, FsContextPhase, FsContextPurpose, FsContextSecurity,
+    FsContextSecurityFactory, FsParameter,
     FsValue, ClassicMountFsContextOps, ParamResult, SB_FLAGS_USER_MASK, apply_sb_flags, put_fs_context,
     generic_parse_monolithic, parse_monolithic_mount_data, split_monolithic,
     finish_clean_context, reconfigure_super, vfs_clean_context, vfs_cmd_create,
     vfs_cmd_reconfigure, vfs_get_tree, vfs_get_tree_exclusive, vfs_parse_fs_param, vfs_parse_fs_param_source,
-    vfs_parse_fs_string,
+    vfs_parse_fs_string, set_security_factory,
 };
 pub use fs_parser::{
     admit as admit_fs_param, lookup_key as lookup_fs_param_key, FsParamMatch, FsParamSpec,

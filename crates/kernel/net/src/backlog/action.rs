@@ -32,7 +32,8 @@ pub fn net_rx_run() -> bool {
 /// than letting one drain monopolize the CPU.
 /// # C: O(one drain pass)
 pub fn net_rx_action() {
-    if net_rx_run() { softirq::raise(softirq::Slot::NetRx); }
+    let mld_pending = crate::stack_ipv6::drain_deferred_mld_reports();
+    if net_rx_run() || mld_pending { softirq::raise(softirq::Slot::NetRx); }
 }
 
 /// Publish pending receive work and let the bottom half take it — the sole

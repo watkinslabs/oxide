@@ -28,7 +28,7 @@ mod tests;
 pub use sizes::{HugePageSize, size_from_log, DEFAULT_HUGE_SHIFT, HUGE_FLAG_ENCODE_MASK, HUGE_FLAG_ENCODE_SHIFT};
 pub use hstate::{HstateCounts, ResizePlan};
 pub use subpool::{Subpool, SubpoolCharge, NO_LIMIT};
-pub use charge::{PageCharge, granule_of, reparent_charges};
+pub use charge::{PageCharge, ReservationToken, granule_of};
 pub use pool::{
     alloc_huge_frame, free_huge_frame, huge_frame_dec_and_maybe_release, huge_frame_inc_ref,
     nr_hugepages, free_hugepages, resv_hugepages, surplus_hugepages,
@@ -36,3 +36,15 @@ pub use pool::{
     owns,
 };
 pub use sizes::{size_from_flags, size_log_from_flags, GIGANTIC_HUGE_SHIFT};
+
+/// Apply the early HugeTLB command-line reservation after the buddy allocator
+/// is live and before ordinary boot consumers can fragment it.
+pub fn initialize_from_cmdline(line: &[u8]) {
+    let request = cmdline::hugepages::hugepage_request(line);
+    if let Some(n) = request.huge_2m {
+        let _ = pool::set_nr_hugepages_early(HugePageSize::Huge2M, n);
+    }
+    if let Some(n) = request.huge_1g {
+        let _ = pool::set_nr_hugepages_early(HugePageSize::Huge1G, n);
+    }
+}

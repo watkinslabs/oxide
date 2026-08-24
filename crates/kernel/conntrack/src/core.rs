@@ -3,15 +3,17 @@
 //! the rest of the stack keys on.
 
 extern crate alloc;
+use alloc::string::String;
 use alloc::sync::Arc;
 
-use crate::entry::{Conn, ProtoState};
+use crate::entry::{Conn, LabelUpdate, ProtoState, SctpProtoInfoUpdate, SeqAdjust,
+                   SynproxyState, TcpProtoInfoUpdate};
 use crate::event::EventCache;
 use crate::proto::{icmp, tcp, udp};
 use crate::proto::tcp_window::TcpSeg;
 use crate::sysctl::CtSysctl;
 use crate::table::CtTable;
-use crate::tuple::Tuple;
+use crate::tuple::{ProtoPart, Tuple, TupleEnd};
 use crate::uapi::*;
 
 /// L4 detail one packet carries, in the shape each tracker wants.
@@ -49,20 +51,43 @@ pub enum Track {
 pub struct CtNet {
     pub table: CtTable,
     pub expect: crate::expect::ExpectTable,
+    pub helpers: crate::helper::HelperRegistry,
     pub sysctl: sync::Spinlock<CtSysctl, sync::Socket>,
     pub events: crate::event::EventQueue,
     pub net_ns: u64,
+    realtime: fn() -> u64,
 }
+
+/// Linux ctnetlink's result when changing a helper on an existing entry.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum HelperChangeError { NotFound, Unsupported, Busy }
 
 impl CtNet {
     /// # C: O(N_buckets)
     pub fn new(net_ns: u64, seed: u32) -> Self {
+        Self::new_with_clock(net_ns, seed, || 0)
+    }
+
+    /// Build a tracker using the namespace's canonical realtime provider. # C: O(N_buckets)
+    pub fn new_with_clock(net_ns: u64, seed: u32, realtime: fn() -> u64) -> Self {
         Self {
             table: CtTable::new(seed),
             expect: crate::expect::ExpectTable::new(seed),
+            helpers: crate::helper::HelperRegistry::new(),
             sysctl: sync::Spinlock::new(CtSysctl::default()),
             events: crate::event::EventQueue::new(),
             net_ns,
+            realtime,
+        }
+    }
+
+    fn stamp_start(&self, conn: &Arc<Conn>, enabled: bool) {
+        if enabled { conn.timestamp_start((self.realtime)()); }
+    }
+
+    fn stamp_stop(&self, conn: &Arc<Conn>) {
+        if conn.timestamp_start.load(core::sync::atomic::Ordering::Acquire) != 0 {
+            conn.timestamp_stop((self.realtime)());
         }
     }
 
@@ -85,9 +110,18 @@ impl CtNet {
         }
         let id = self.table.alloc_id();
         let conn = Arc::new(Conn::new(id, pkt.tuple, reply, self.net_ns));
+        self.stamp_start(&conn, sysctl.timestamp);
+        if sysctl.helper {
+            if let Some(helper) = self.helpers.find_for(&pkt.tuple) {
+                conn.attach_helper(helper.name, false);
+            }
+        }
         self.table.add_pending(conn.clone());
         let r = self.run(conn.clone(), IP_CT_DIR_ORIGINAL, pkt, now, &sysctl, false);
-        if matches!(r, Track::Invalid) { self.table.kill(&conn); }
+        if matches!(r, Track::Invalid) {
+            self.stamp_stop(&conn);
+            self.table.kill(&conn);
+        }
         r
     }
 
@@ -120,6 +154,7 @@ impl CtNet {
                         tcp::TcpVerdict::Invalid => { drop(p); return Track::Invalid; }
                         tcp::TcpVerdict::Repeat  => {
                             drop(p);
+                            self.stamp_stop(&conn);
                             self.table.kill(&conn);
                             return Track::Repeat;
                         }
@@ -148,25 +183,30 @@ impl CtNet {
                         None => { drop(p); return Track::Invalid; }
                     }
                 }
-                (ProtoState::Generic, _) => Some(icmp::generic_packet(&sysctl.generic)),
+                (ProtoState::Generic, _) | (ProtoState::Sctp(_), _)
+                    => Some(icmp::generic_packet(&sysctl.generic)),
                 // The entry's tracker and the packet's protocol disagree, which
                 // means the tuple matched a flow it does not belong to.
                 _ => { drop(p); return Track::Invalid; }
             }
         };
 
-        if let Some(t) = timeout { conn.refresh(now, t); }
+        if let Some(t) = timeout {
+            let t = conn.timeout_override(pkt.tuple.protonum, t);
+            conn.refresh(now, t);
+        }
         if sysctl.acct { conn.counters[dir as usize].account(pkt.len); }
         let ctinfo = conn.ctinfo(dir);
         let events = cache.take();
-        if sysctl.events { self.events.post(conn.id, events); }
+        if sysctl.events { self.events.post(&conn, events); }
         Track::Ok { conn, dir, ctinfo, events }
     }
 
     fn kill_with_event(&self, conn: &Arc<Conn>) {
         if self.table.kill(conn) {
+            self.stamp_stop(conn);
             self.expect.purge_master(conn);
-            self.events.post(conn.id, IPCT_DESTROY);
+            self.events.post(&conn, IPCT_DESTROY);
         }
     }
 
@@ -182,13 +222,200 @@ impl CtNet {
         if let Some(exp) = self.expect.find(&conn.orig, now) {
             conn.set_status_bits(IPS_EXPECTED);
             self.expect.remove(&exp.tuple);
-            self.events.post(conn.id, IPCT_RELATED);
+            self.events.post(&conn, IPCT_RELATED);
         }
         true
     }
 
+    /// Delete one live entry selected by ctnetlink id and queue its destroy
+    /// notification through the canonical event queue. # C: O(N)
+    pub fn delete_id(&self, id: u64, now: u64) -> bool {
+        let Some(conn) = self.table.find_id(id, now) else { return false; };
+        if !self.table.kill(&conn) { return false; }
+        self.stamp_stop(&conn);
+        self.expect.purge_master(&conn);
+        self.events.post(&conn, IPCT_DESTROY);
+        true
+    }
+
+    /// Apply Linux's existing-flow helper change rules. A request naming the
+    /// already attached helper is a no-op; a different helper is busy, and a
+    /// flow without a helper cannot gain one after creation. # C: O(N)
+    pub fn update_helper_id(&self, id: u64, now: u64, name: String)
+        -> Result<(), HelperChangeError> {
+        let Some(conn) = self.table.find_id(id, now) else {
+            return Err(HelperChangeError::NotFound);
+        };
+        let current = conn.helper.lock().clone();
+        if current.as_deref() == Some(name.as_str()) { return Ok(()); }
+        if current.is_some() { return Err(HelperChangeError::Busy); }
+        Err(HelperChangeError::Unsupported)
+    }
+
+    /// Attach one nftables-selected helper through the canonical registry. # C: O(N)
+    pub fn attach_helper_for(&self, conn: &Conn, name: &str, l4proto: u8) -> bool {
+        let status = conn.status();
+        if status & (IPS_CONFIRMED | IPS_TEMPLATE) != 0 { return false; }
+        let tuple = conn.tuple(0);
+        if tuple.protonum != l4proto { return false; }
+        if self.helpers.find_named_for(name, &tuple).is_none() { return false; }
+        if status & IPS_HELPER != 0 { return true; }
+        conn.attach_helper(String::from(name), true);
+        true
+    }
+
+    /// Install an nft CT expectation through the canonical expectation table.
+    pub fn install_expectation(&self, master: &Arc<Conn>, dir: u8, l3num: u16,
+                               l4proto: u8, dport: u16, timeout_ms: u32,
+                               size: u8, now_ns: u64) -> bool {
+        if master.confirmed() || master.status() & IPS_TEMPLATE != 0 { return false; }
+        let base = master.tuple(dir ^ 1);
+        if base.l3num as u16 != l3num { return false; }
+        let tuple = Tuple {
+            l3num: base.l3num, protonum: l4proto,
+            src: TupleEnd { addr: base.src.addr, proto: ProtoPart::default() },
+            dst: TupleEnd { addr: base.dst.addr, proto: ProtoPart::port(dport) },
+            zone: base.zone,
+        };
+        let mask = crate::expect::TupleMask {
+            src_addr: crate::tuple::InetAddr([0xff; 16]),
+            dst_addr: crate::tuple::InetAddr([0xff; 16]),
+            src_port: 0, dst_port: 0xffff,
+        };
+        let now = now_ns / 1_000_000_000;
+        let master_count = self.expect.snapshot().into_iter().filter(|exp| {
+            Arc::ptr_eq(&exp.master, master) && exp.class == crate::limits::EXPECT_CLASS_DEFAULT
+                && exp.timeout > now
+        }).count() as u32;
+        let exp = crate::expect::Expectation {
+            tuple, mask, master: master.clone(), class: crate::limits::EXPECT_CLASS_DEFAULT,
+            flags: 0, timeout: now.saturating_add((timeout_ms as u64 + 999) / 1000),
+            helper: None, dir, saved_proto: ProtoPart::default(), saved_addr: base.dst.addr,
+        };
+        self.expect.insert(exp, size as u32, master_count, now).is_ok()
+    }
+
+    /// Apply the ctnetlink fields supported by the live entry owner. Linux
+    /// changes timeout, status, mark, and sequence adjustment on an existing
+    /// flow; immutable status bits are screened by the ctnetlink encoder's
+    /// shared mask. # C: O(N)
+    pub fn update_id(&self, id: u64, now: u64, timeout: Option<u32>,
+                     status: Option<u32>, mark: Option<(u32, Option<u32>)>,
+                     seqadj: [Option<SeqAdjust>; IP_CT_DIR_MAX],
+                     protoinfo: Option<TcpProtoInfoUpdate>,
+                     sctp_protoinfo: Option<SctpProtoInfoUpdate>,
+                     labels: Option<LabelUpdate>,
+                     synproxy: Option<SynproxyState>) -> bool {
+        let Some(conn) = self.table.find_id(id, now) else { return false; };
+        if let Some(secs) = timeout {
+            conn.set_status_bits(IPS_FIXED_TIMEOUT);
+            conn.timeout.store(now + secs as u64, core::sync::atomic::Ordering::Release);
+        }
+        if let Some(requested) = status {
+            let writable = crate::ctnetlink::writable_status(requested);
+            let old = conn.status();
+            conn.status.store((old & IPS_UNCHANGEABLE_MASK) | writable,
+                              core::sync::atomic::Ordering::Release);
+            if old != conn.status() { self.events.post(&conn, IPCT_PROTOINFO); }
+        }
+        if let Some((value, mask)) = mark {
+            let old = conn.mark.load(core::sync::atomic::Ordering::Relaxed);
+            let mask = mask.unwrap_or(0);
+            let new = (old & mask) ^ value;
+            conn.mark.store(new, core::sync::atomic::Ordering::Release);
+            if old != new { self.events.post(&conn, IPCT_MARK); }
+        }
+        for (dir, record) in seqadj.into_iter().enumerate() {
+            if let Some(record) = record {
+                if conn.seqadj_replace(dir as u8, record) {
+                    self.events.post(&conn, IPCT_SEQADJ);
+                }
+            }
+        }
+        if let Some(update) = protoinfo {
+            if conn.tcp_protoinfo_update(update) { self.events.post(&conn, IPCT_PROTOINFO); }
+        }
+        if let Some(update) = sctp_protoinfo {
+            if conn.sctp_protoinfo_update(update) { self.events.post(&conn, IPCT_PROTOINFO); }
+        }
+        if let Some(update) = labels {
+            if conn.labels_replace(&update) { self.events.post(&conn, IPCT_LABEL); }
+        }
+        if let Some(state) = synproxy {
+            if conn.synproxy_replace(state) { self.events.post(&conn, IPCT_SYNPROXY); }
+        }
+        true
+    }
+
+    /// Create and immediately confirm one userspace-supplied tuple. The
+    /// ctnetlink creator owns a confirmed entry, unlike packet tracking which
+    /// keeps a new entry pending until the packet hooks accept it. # C: O(bucket length)
+    pub fn create_tuple(&self, tuple: Tuple, reply: Option<Tuple>, now: u64,
+                        timeout: u32, status: u32, mark: Option<u32>,
+                        protoinfo: Option<TcpProtoInfoUpdate>,
+                        helper: Option<String>) -> Option<u64> {
+        self.create_tuple_with(tuple, reply, now, timeout, status, mark, protoinfo, None, helper,
+                               None, None, None, |_| true)
+    }
+
+    /// Create a userspace entry and run one final pre-confirmation setup.
+    /// NAT uses this seam because its reply tuple must be allocated before the
+    /// entry is published; the callback is never run on a confirmed entry.
+    pub fn create_tuple_with<F>(&self, tuple: Tuple, reply: Option<Tuple>, now: u64,
+                                timeout: u32, status: u32, mark: Option<u32>,
+                                protoinfo: Option<TcpProtoInfoUpdate>,
+                                sctp_protoinfo: Option<SctpProtoInfoUpdate>,
+                                helper: Option<String>, labels: Option<LabelUpdate>,
+                                synproxy: Option<SynproxyState>, master: Option<Arc<Conn>>,
+                                setup: F)
+                                -> Option<u64>
+        where F: FnOnce(&Arc<Conn>) -> bool
+    {
+        let reply = reply.or_else(|| tuple.invert())?;
+        let mut entry = Conn::new(self.table.alloc_id(), tuple, reply, self.net_ns);
+        let timestamp = self.sysctl.lock().timestamp;
+        entry.master = master;
+        let conn = Arc::new(entry);
+        self.stamp_start(&conn, timestamp);
+        if conn.master.is_some() { conn.set_status_bits(IPS_EXPECTED); }
+        conn.set_status_bits(crate::ctnetlink::writable_status(status));
+        if conn.status() & IPS_FIXED_TIMEOUT != 0 {
+            conn.timeout.store(now + timeout as u64, core::sync::atomic::Ordering::Release);
+        } else {
+            conn.refresh(now, timeout);
+        }
+        if let Some(mark) = mark { conn.mark.store(mark, core::sync::atomic::Ordering::Release); }
+        if let Some(update) = protoinfo {
+            // Non-TCP protocol owners have no TCP from_nlattr hook; Linux
+            // accepts the protocol-info container and leaves them unchanged.
+            let _ = conn.tcp_protoinfo_update(update);
+        }
+        if let Some(update) = sctp_protoinfo { let _ = conn.sctp_protoinfo_update(update); }
+        if let Some(name) = helper {
+            self.helpers.find_named_for(&name, &tuple)?;
+            conn.attach_helper(name, true);
+        }
+        let label_event = labels.is_some();
+        if let Some(update) = labels { conn.labels_replace(&update); }
+        let synproxy_event = synproxy.is_some();
+        if let Some(state) = synproxy { conn.synproxy_replace(state); }
+        if !setup(&conn) { self.stamp_stop(&conn); return None; }
+        self.table.add_pending(conn.clone());
+        if !self.table.confirm(&conn, now) {
+            self.stamp_stop(&conn);
+            let _ = self.table.kill(&conn);
+            return None;
+        }
+        self.events.post(&conn, IPCT_NEW
+            | if label_event { IPCT_LABEL } else { 0 }
+            | if synproxy_event { IPCT_SYNPROXY } else { 0 });
+        Some(conn.id)
+    }
+
     /// Retire expired entries and expectations. # C: O(N)
-    pub fn gc(&self, now: u64) -> usize { self.table.gc(now) }
+    pub fn gc(&self, now: u64) -> usize {
+        self.table.gc_with(now, |conn| self.stamp_stop(conn))
+    }
 
     /// Kill one entry and announce it. # C: O(bucket length)
     pub fn destroy(&self, conn: &Arc<Conn>) { self.kill_with_event(conn); }

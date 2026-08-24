@@ -42,11 +42,13 @@ const NS_FASTOPEN: u64 = 4_105;
 const NS_UNCONFINED: u64 = 4_106;
 
 fn udp(namespace: u64) -> MsgSock {
-    MsgSock { namespace, family: landlock::netcheck::AF_INET, proto: Proto::Udp }
+    MsgSock { namespace, family: landlock::netcheck::AF_INET, proto: Proto::Udp,
+              target_sid: security::network::NO_LABEL, target_class: "socket" }
 }
 
 fn tcp(namespace: u64) -> MsgSock {
-    MsgSock { namespace, family: landlock::netcheck::AF_INET, proto: Proto::Tcp }
+    MsgSock { namespace, family: landlock::netcheck::AF_INET, proto: Proto::Tcp,
+              target_sid: security::network::NO_LABEL, target_class: "socket" }
 }
 
 #[test]
@@ -130,4 +132,3 @@ fn a_receive_asks_the_module_registry_and_nothing_else() {
     assert_eq!(recvmsg(udp(NS_UNCONFINED), 0), Ok(()));
     assert_eq!(network::remove_namespace(NS_RECV), 1);
 }
-

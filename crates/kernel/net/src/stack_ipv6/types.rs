@@ -97,6 +97,7 @@ pub struct Udp6RxQueue {
     /// `UDP_ENCAP`, shared with the owning socket: the encapsulation identity
     /// whose receive handler screens arriving datagrams before they queue.
     pub encap_type: Arc<core::sync::atomic::AtomicI32>,
+    pub transparent: core::sync::atomic::AtomicBool,
     pub bound_ifindex: core::sync::atomic::AtomicU32,
     pub poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
     pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
@@ -227,6 +228,14 @@ impl Ipv6IfaceAddr {
 }
 
 impl Udp6RxQueue {
+    pub fn set_transparent(&self, enabled: bool) {
+        self.transparent.store(enabled, core::sync::atomic::Ordering::Release);
+    }
+
+    pub(crate) fn transparent(&self) -> bool {
+        self.transparent.load(core::sync::atomic::Ordering::Acquire)
+    }
+
     /// SO_REUSEPORT membership captured when this endpoint was bound. # C: O(1)
     pub(crate) fn reuseport_member(&self) -> bool {
         self.reuseport.load(core::sync::atomic::Ordering::Acquire) != 0
@@ -295,6 +304,7 @@ impl Udp6RxQueue {
             no_check6_rx,
             gro,
             encap_type,
+            transparent: core::sync::atomic::AtomicBool::new(false),
             bound_ifindex: core::sync::atomic::AtomicU32::new(0),
             poll_subs: Spinlock::new(None),
             bpf_filter,

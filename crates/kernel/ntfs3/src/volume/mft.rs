@@ -41,8 +41,34 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(record bytes)
     pub fn read_record(&self, number: u64) -> Result<(Vec<u8>, Vec<Attribute>), Errno> {
         let (bytes, header) = self.read_record_raw(number)?;
-        let attrs = attrib::parse_all(&bytes, &header);
+        let attrs = self.expand_attribute_list(number, &bytes,
+                                               attrib::parse_all(&bytes, &header))?;
         Ok((bytes, attrs))
+    }
+
+    /// Add attributes named by the base record's `$ATTRIBUTE_LIST`.
+    /// # C: O(list entries * record bytes)
+    fn expand_attribute_list(&self, number: u64, bytes: &[u8], mut attrs: Vec<Attribute>)
+        -> Result<Vec<Attribute>, Errno> {
+        let Some(list) = attrs.iter().find(|a| a.ty == ATTR_LIST && a.is_first_segment())
+            .cloned() else { return Ok(attrs) };
+        let raw = self.attribute_bytes(bytes, &attrs, &list)?;
+        for entry in attrib::list_entries(&raw)? {
+            if entry.record == number { continue; }
+            let (ext_bytes, ext_header) = self.read_record_raw(entry.record)?;
+            if !ext_header.in_use() || ext_header.sequence != entry.sequence {
+                return Err(Errno::Eio);
+            }
+            let ext_attrs = attrib::parse_all(&ext_bytes, &ext_header);
+            let found = ext_attrs.into_iter().find(|a| a.ty == entry.ty
+                && a.name == entry.name && a.id == entry.id
+                && match a.body {
+                    crate::attrib::Body::NonResident { svcn, .. } => svcn == entry.vcn,
+                    crate::attrib::Body::Resident { .. } => entry.vcn == 0,
+                }).ok_or(Errno::Eio)?;
+            attrs.push(found);
+        }
+        Ok(attrs)
     }
 
     /// Read one record and its header, without decoding attributes.
@@ -66,7 +92,8 @@ impl<S: SectorSource> Volume<S> {
     pub fn read_live_record(&self, number: u64) -> Result<(Vec<u8>, Vec<Attribute>), Errno> {
         let (bytes, header) = self.read_record_raw(number)?;
         if !header.in_use() { return Err(Errno::Enoent); }
-        let attrs = attrib::parse_all(&bytes, &header);
+        let attrs = self.expand_attribute_list(number, &bytes,
+                                               attrib::parse_all(&bytes, &header))?;
         Ok((bytes, attrs))
     }
 
@@ -90,6 +117,29 @@ impl<S: SectorSource> Volume<S> {
         let result = self.write_bytes(offset, bytes);
         let _ = crate::fixup::post_read(bytes, false);
         result
+    }
+
+    /// Refresh the records `$MFTMirr` covers from the primary MFT.
+    ///
+    /// Linux performs this at filesystem sync/teardown. The mirror receives
+    /// the same fixed-up bytes and update-sequence value as the primary copy;
+    /// it is not a second logical record with an independently advanced
+    /// sequence. # C: O(mirrored records * record bytes)
+    pub(crate) fn update_mft_mirror(&self) -> Result<(), Errno> {
+        if !self.writable { return Ok(()); }
+        for number in 0..MFT_REC_USER.min(self.mft_records) {
+            if self.read_mirror_record(number)?.is_none() { break; }
+            let (mut bytes, _) = self.read_record_raw(number)?;
+            let fix = usize::from(u16::from_le_bytes([
+                bytes[REC_OFF_FIX_OFF], bytes[REC_OFF_FIX_OFF + 1],
+            ]));
+            let sample = u16::from_le_bytes([bytes[fix], bytes[fix + 1]]);
+            crate::fixup::pre_write(&mut bytes, sample).map_err(|e| e.errno())?;
+            let offset = self.geo.mft_mirror_offset + (number << self.geo.record_bits);
+            if offset >= self.geo.sectors_per_volume * u64::from(self.geo.sector_size) { break; }
+            self.write_bytes(offset, &bytes)?;
+        }
+        Ok(())
     }
 
     /// The mirror's copy of a record, when the mirror covers it.

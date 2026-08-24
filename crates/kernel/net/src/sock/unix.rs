@@ -15,6 +15,10 @@ pub(super) fn connect(sock: &Arc<InetSocket>, addr: crate::UnixAddr, nonblock: b
         if let SockKind::UnixDgram(q) = &*kind {
             let Some(other) = crate::net_ns::unix_registry_for_addr_in(&sock.net_namespace, &addr)
                 .dgram_lookup_addr(&addr) else { return Err(NetError::Econnrefused) };
+            crate::security_admission::check_socket_peer(sock.net_ns(),
+                sock.family.load(core::sync::atomic::Ordering::Acquire),
+                security::network::Operation::PeerSend, other.owner_security_label(),
+                "unix_dgram_socket")?;
             // The destination is already connected to a third party, so it
             // takes traffic from that party alone. Tested once the target is
             // resolved and before this socket records it, so a refused connect

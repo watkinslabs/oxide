@@ -29,6 +29,16 @@ pub fn has_perm(ssid: Sid, tsid: Sid, class: u16, requested: u32) -> Result<(), 
     if verdict.allowed { Ok(()) } else { Err(EACCES) }
 }
 
+/// Check one ioctl/netlink extended permission after its base permission.
+pub fn has_xperm(ssid: Sid, tsid: Sid, class: u16, base_perm: u32,
+                 kind: u8, driver: u8, xperm: u8) -> Result<(), i64> {
+    let Some(verdict) = crate::with(|s| s.has_xperm(ssid, tsid, class, base_perm,
+        kind, driver, xperm))
+        else { return Ok(()); };
+    if verdict.audit { report(ssid, tsid, class, &verdict); }
+    if verdict.allowed { Ok(()) } else { Err(EACCES) }
+}
+
 /// Ask without reporting, for a caller that will report the denial itself
 /// with more context than this layer has. # C: O(1) cached
 pub fn has_perm_noaudit(ssid: Sid, tsid: Sid, class: u16, requested: u32) -> Verdict {
@@ -44,6 +54,75 @@ pub fn security_perm(ssid: Sid, permission: &str) -> Result<(), i64> {
         return Err(EACCES);
     };
     has_perm(ssid, crate::label::security_sid(), class, bit)
+}
+
+/// Check a process memory-protection permission such as `execmem`, `execstack`
+/// or `execheap` against the running task's process SID.
+pub fn process_permission(permission: &str) -> Result<(), i64> {
+    let class = selinux::uapi::classmap::class_by_name("process").ok_or(EACCES)?;
+    let bit = selinux::uapi::classmap::perm_bit(class, permission).ok_or(EACCES)?;
+    let sid = crate::task::current_sid();
+    has_perm(sid, sid, class, bit)
+}
+
+/// SELinux's `cred_has_capability` check for the LSM `capable` hook. The
+/// kernel capability set has two 32-bit access-vector classes: capability for
+/// CAP_0..CAP_31 and capability2 for CAP_32 onward. User-namespace checks use
+/// the corresponding cap_*_userns classes.
+pub fn capability(ssid: Sid, cap: u32, init_namespace: bool) -> Result<(), i64> {
+    let (class_name, bit) = if cap < 32 {
+        (if init_namespace { "capability" } else { "cap_userns" }, 1u32 << cap)
+    } else if cap < 64 {
+        (if init_namespace { "capability2" } else { "cap2_userns" }, 1u32 << (cap - 32))
+    } else {
+        return Err(EACCES);
+    };
+    let class = selinux::uapi::classmap::class_by_name(class_name).ok_or(EACCES)?;
+    has_perm(ssid, ssid, class, bit)
+}
+
+/// Label a newly-created kernel IPC object using the policy transition for its
+/// concrete object class. # C: O(1)
+pub fn create_sid(class_name: &'static str) -> Sid {
+    let sid = crate::task::current_sid();
+    let Some(class) = selinux::uapi::classmap::class_by_name(class_name) else { return sid };
+    crate::with(|s| s.transition_sid(sid, sid, class, None).unwrap_or(sid)).unwrap_or(sid)
+}
+
+pub fn transition_sid(ssid: Sid, tsid: Sid, class_name: &'static str) -> Sid {
+    let Some(class) = selinux::uapi::classmap::class_by_name(class_name) else { return ssid };
+    crate::with(|s| s.transition_sid(ssid, tsid, class, None).unwrap_or(ssid)).unwrap_or(ssid)
+}
+
+pub fn class_permissions(ssid: Sid, tsid: Sid, class_name: &'static str,
+                         permissions: &[&'static str]) -> Result<(), i64> {
+    let class = selinux::uapi::classmap::class_by_name(class_name).ok_or(EACCES)?;
+    let requested = permissions.iter().fold(0, |mask, permission|
+        mask | selinux::uapi::classmap::perm_bit(class, permission).unwrap_or(0));
+    if requested == 0 { return Ok(()) }
+    has_perm(ssid, tsid, class, requested)
+}
+
+pub fn system_permission(permission: &'static str) -> Result<(), i64> {
+    let class = selinux::uapi::classmap::class_by_name("system").ok_or(EACCES)?;
+    let bit = selinux::uapi::classmap::perm_bit(class, permission).ok_or(EACCES)?;
+    has_perm(crate::task::current_sid(), crate::label::kernel_sid(), class, bit)
+}
+
+/// Check SysV IPC read/write access against the object label. # C: O(1) cached
+pub fn ipc_permission(ssid: Sid, tsid: Sid, class_name: &'static str, requested: i32)
+    -> Result<(), i64>
+{
+    let class = selinux::uapi::classmap::class_by_name(class_name).ok_or(EACCES)?;
+    let mut av = 0;
+    if requested & 0o444 != 0 {
+        av |= selinux::uapi::classmap::perm_bit(class, "unix_read").unwrap_or(0);
+    }
+    if requested & 0o222 != 0 {
+        av |= selinux::uapi::classmap::perm_bit(class, "unix_write").unwrap_or(0);
+    }
+    if av == 0 { return Ok(()) }
+    has_perm(ssid, tsid, class, av)
 }
 
 /// Emit the record describing one denial or audited grant.

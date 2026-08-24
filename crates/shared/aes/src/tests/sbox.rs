@@ -1,7 +1,7 @@
 //! The substitution table is derived, not transcribed, so the published
 //! entries are the check that the derivation matches the standard.
 
-use crate::sbox::{SBOX, gmul, sub_byte, xtime};
+use crate::sbox::{gmul, inv_sub_byte, sub_byte, xtime};
 
 #[test]
 fn field_double_reduces_on_carry() {
@@ -34,6 +34,14 @@ fn sbox_matches_published_entries() {
 #[test]
 fn sbox_is_a_permutation() {
     let mut seen = [false; 256];
-    for i in 0..256 { seen[SBOX[i] as usize] = true; }
+    for i in 0..256 { seen[sub_byte(i as u8) as usize] = true; }
     assert!(seen.iter().all(|s| *s));
+}
+
+#[test]
+fn inverse_sbox_is_the_inverse_permutation() {
+    for i in 0..=255u8 {
+        assert_eq!(inv_sub_byte(sub_byte(i)), i);
+        assert_eq!(sub_byte(inv_sub_byte(i)), i);
+    }
 }

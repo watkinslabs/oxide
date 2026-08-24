@@ -31,7 +31,8 @@ fn booted_tree() -> Fdt {
 fn base() -> alloc::vec::Vec<u8> { booted_tree().to_blob() }
 
 fn ho<'a>(initrd_mem: u64, initrd_len: u64, cmdline: &'a [u8]) -> Handover<'a> {
-    Handover { initrd_mem, initrd_len, cmdline, old_fdt_pa: 0, old_fdt_len: 0, seeds: None, reserve: &[] }
+    Handover { initrd_mem, initrd_len, cmdline, old_fdt_pa: 0, old_fdt_len: 0,
+               seeds: None, reserve: &[], usable_memory_range: None }
 }
 
 fn chosen_of(blob: &[u8]) -> Node {
@@ -58,6 +59,19 @@ fn a_load_with_no_initramfs_deletes_both_properties_rather_than_leaving_this_boo
     let c = chosen_of(&out);
     assert_eq!(c.prop(P_INITRD_START), None);
     assert_eq!(c.prop(P_INITRD_END), None);
+}
+
+#[test]
+fn a_crash_handover_publishes_the_usable_memory_range_at_two_cell_width() {
+    let out = setup_fdt(&base(), &Handover {
+        initrd_mem: 0, initrd_len: 0, cmdline: b"crashkernel", old_fdt_pa: 0,
+        old_fdt_len: 0, seeds: None, reserve: &[],
+        usable_memory_range: Some(&[(0x8000_0000, 0x2000_0000), (0, 0x8000_0000)]),
+    }).expect("built");
+    let chosen = chosen_of(&out);
+    assert_eq!(chosen.prop(P_USABLE_MEMORY_RANGE),
+        Some(&[0, 0, 0, 0, 0x80, 0, 0, 0, 0, 0, 0, 0, 0x20, 0, 0, 0,
+               0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0, 0][..]));
 }
 
 #[test]
@@ -239,7 +253,8 @@ fn the_efi_handoff_properties_reach_the_new_kernel_unchanged() {
 #[test]
 fn the_running_trees_own_reservation_is_dropped_and_this_boots_initramfs_with_it() {
     let h = Handover { initrd_mem: 0x9000_0000, initrd_len: 0x1000, cmdline: b"quiet",
-                       old_fdt_pa: 0x4000_0000, old_fdt_len: 0x2000, seeds: None, reserve: &[] };
+                       old_fdt_pa: 0x4000_0000, old_fdt_len: 0x2000, seeds: None,
+                       reserve: &[], usable_memory_range: None };
     let out = setup_fdt(&base(), &h).expect("built");
     let rsv = parse(&out).expect("parses").rsv;
     assert!(!rsv.iter().any(|&(a, _)| a == 0x4000_0000), "the running tree's own entry is gone");
@@ -267,7 +282,8 @@ const LPI_TABLES: [(u64, u64); 2] = [(0xbf33_8000, 0x1_0000), (0xbf31_0000, 0x1_
 fn ranges_hardware_still_owns_are_reserved_in_the_new_kernels_tree() {
     for initrd_mem in [0u64, 0x9000_0000] {
         let h = Handover { initrd_mem, initrd_len: 0x1000, cmdline: b"quiet",
-                           old_fdt_pa: 0, old_fdt_len: 0, seeds: None, reserve: &LPI_TABLES };
+                           old_fdt_pa: 0, old_fdt_len: 0, seeds: None, reserve: &LPI_TABLES,
+                           usable_memory_range: None };
         let rsv = parse(&setup_fdt(&base(), &h).expect("built")).expect("parses").rsv;
         for t in LPI_TABLES {
             assert!(rsv.contains(&t), "{t:x?} is reserved whether or not there is an initramfs");
@@ -281,7 +297,7 @@ fn ranges_hardware_still_owns_are_reserved_in_the_new_kernels_tree() {
 fn a_machine_that_reports_no_such_range_gains_no_reservation() {
     let with = parse(&setup_fdt(&base(), &Handover {
         initrd_mem: 0, initrd_len: 0, cmdline: b"quiet", old_fdt_pa: 0, old_fdt_len: 0,
-        seeds: None, reserve: &LPI_TABLES }).expect("built")).expect("parses").rsv;
+        seeds: None, reserve: &LPI_TABLES, usable_memory_range: None }).expect("built")).expect("parses").rsv;
     let without = parse(&setup_fdt(&base(), &ho(0, 0, b"quiet")).expect("built")).expect("parses").rsv;
     assert_eq!(with.len(), without.len() + LPI_TABLES.len());
     for t in LPI_TABLES { assert!(!without.contains(&t)); }

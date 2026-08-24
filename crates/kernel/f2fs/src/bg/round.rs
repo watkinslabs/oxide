@@ -15,6 +15,9 @@ use crate::volume::gc::Policy;
 use super::discard::{DiscardType, Round, MIN_DISCARD_GRANULARITY};
 use super::gc::{self, Conditions, GcMode, GcStep, IdleKind};
 
+/// Default seconds allowed for the final unmount discard drain.
+pub const DEF_UMOUNT_DISCARD_TIMEOUT_SECS: u64 = 5;
+
 /// What one wake of the cleaner did, for the thread's own interval and for a
 /// test to assert on.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -42,14 +45,18 @@ pub fn gc_pass(fs: &Arc<F2fs>) -> GcPass {
     }
     let (step, wait_before) = {
         let mut th = bg.gc.lock();
-        let c = conditions(fs, merged, th.mode);
+        let c = conditions(fs, merged, th.mode, th.no_zoned_gc_percent,
+                           th.boost_zoned_gc_percent, th.boost_gc_greedy);
         (gc::gc_round(&mut th, c, bggc), th.wait_ms)
     };
-    let GcStep::Gc { sync, foreground } = step else {
+    let GcStep::Gc { sync, foreground, boosted } = step else {
         return GcPass { step, cleaned: false, wait_ms: wait_before };
     };
-    let mode = bg.gc.lock().mode;
-    let cleaned = clean(fs, sync, foreground, mode);
+    let (mode, boost_multiple) = {
+        let th = bg.gc.lock();
+        (th.mode, th.boost_gc_multiple)
+    };
+    let cleaned = clean(fs, sync, foreground, boosted, boost_multiple, mode);
     {
         let mut th = bg.gc.lock();
         gc::after_gc(&mut th, cleaned, foreground);
@@ -64,13 +71,17 @@ pub fn gc_pass(fs: &Arc<F2fs>) -> GcPass {
     // The cleaner is also where the periodic checkpoint comes from: a volume
     // written to and then left alone has nobody else to take one, and every
     // segment the cleaner just emptied stays unusable until one lands.
-    let _ = fs.volume_now().balance_fs_bg(true);
+    let recent_io = !gc::is_idle(mode, IdleKind::Request, fs.volume.lock().now_secs(),
+                                 bg.last_activity(), bg.idle_interval(IdleKind::Request));
+    let _ = fs.volume_now().balance_fs_bg(true, recent_io);
     GcPass { step, cleaned, wait_ms: bg.gc.lock().wait_ms }
 }
 
 /// What the volume and the mount look like to the cleaner right now.
 /// # C: O(main segments)
-fn conditions(fs: &Arc<F2fs>, foreground: bool, mode: GcMode) -> Conditions {
+fn conditions(fs: &Arc<F2fs>, foreground: bool, mode: GcMode,
+              no_zoned_gc_percent: u32, boost_zoned_gc_percent: u32,
+              boost_gc_greedy: u32) -> Conditions {
     let bg = fs.bg();
     // The plain lock, not the one that stamps the clock. A background pass is
     // not an operation on anyone's behalf, and stamping the mount's clock here
@@ -78,11 +89,31 @@ fn conditions(fs: &Arc<F2fs>, foreground: bool, mode: GcMode) -> Conditions {
     // read it.
     let mut v = fs.volume.lock();
     let now = v.now_secs();
-    let idle = gc::is_idle(mode, IdleKind::Gc, now, bg.last_activity());
+    let io_busy = match bg.bggc_io_aware() {
+        gc::BggcIoAware::All => v.inflight_io(),
+        gc::BggcIoAware::Read => v.inflight_read_io(),
+        gc::BggcIoAware::None => false,
+    };
+    let idle = mode.claims_idle(IdleKind::Gc) || (!io_busy &&
+        gc::is_idle(mode, IdleKind::Gc, now, bg.last_activity(),
+                    bg.idle_interval(IdleKind::Gc)));
     let readonly = !v.writable();
     let can_lock = !v.gc_is_running();
-    let boost = v.load_segments().is_ok() && v.worth_cleaning();
-    Conditions { readonly, frozen: false, foreground, idle, boost, can_lock }
+    let loaded = v.load_segments().is_ok();
+    let total = v.super_block().segment_count_main
+        .div_ceil(v.super_block().segs_per_sec.max(1));
+    let zoned_free_enough = crate::features::has_blkzoned(v.super_block().feature)
+        && no_zoned_gc_percent != 0
+        && crate::bg::gc::enough_free_sections(v.free_section_count(), total,
+                                               no_zoned_gc_percent);
+    let boosted = loaded && crate::features::has_blkzoned(v.super_block().feature)
+        && boost_zoned_gc_percent != 0
+        && !crate::bg::gc::enough_free_sections(v.free_section_count(), total,
+                                                boost_zoned_gc_percent);
+    let boost = loaded && if boosted { true } else { v.worth_cleaning() };
+    Conditions { readonly, frozen: false, foreground, idle, boost, boosted,
+                 boost_greedy: boost_gc_greedy != 0,
+                 can_lock, zoned_free_enough }
 }
 
 /// Do the cleaning the pass decided on.
@@ -93,7 +124,8 @@ fn conditions(fs: &Arc<F2fs>, foreground: bool, mode: GcMode) -> Conditions {
 /// segments this pass empties are charged to, which is the only way the
 /// reclaimed figures can ever be anything but one row.
 /// # C: O(blocks per section)
-fn clean(fs: &Arc<F2fs>, sync: bool, foreground: bool, mode: GcMode) -> bool {
+fn clean(fs: &Arc<F2fs>, sync: bool, foreground: bool, boosted: bool,
+         boost_multiple: u32, mode: GcMode) -> bool {
     let mut v = fs.volume_now();
     let slot = mode.as_u32() as usize;
     if foreground {
@@ -115,10 +147,12 @@ fn clean(fs: &Arc<F2fs>, sync: bool, foreground: bool, mode: GcMode) -> bool {
     // victim decides how many writes the volume spends over its life. A caller
     // that is blocked wants the cheapest section, not the oldest.
     if v.atgc_enabled() && matches!(mode, GcMode::Normal | GcMode::IdleAt) {
-        return v.gc_background_age(slot).map(|s| s.is_some()).unwrap_or(false);
+        return v.gc_background_age_boosted(slot, if boosted { boost_multiple } else { 1 })
+            .map(|s| s.is_some()).unwrap_or(false);
     }
     let policy = mode.idle_policy().unwrap_or(Policy::CostBenefit);
-    v.gc_background_as(policy, slot).map(|s| s.is_some()).unwrap_or(false)
+    v.gc_background_as_boosted(policy, slot, if boosted { boost_multiple } else { 1 })
+        .map(|s| s.is_some()).unwrap_or(false)
 }
 
 /// What one wake of the discard thread did.
@@ -137,7 +171,8 @@ pub fn discard_pass(fs: &Arc<F2fs>) -> DiscardPass {
         (v.utilization(), v.now_secs(), v.writable())
     };
     let mode = bg.gc_mode();
-    let idle = gc::is_idle(mode, IdleKind::Discard, now, bg.last_activity());
+    let idle = gc::is_idle(mode, IdleKind::Discard, now, bg.last_activity(),
+                           bg.idle_interval(IdleKind::Discard));
     let (round, wait_ms) = {
         let mut dcc = bg.dcc.lock();
         dcc.wake = false;
@@ -178,7 +213,7 @@ pub fn ckpt_pass(fs: &Arc<F2fs>) -> u32 {
     let bg = fs.bg();
     let count = bg.cprc.lock().take();
     if count == 0 { return 0; }
-    let outcome = fs.checkpoint_now();
+    let outcome = fs.checkpoint_now_background();
     bg.cprc.lock().served(count, outcome);
     bg.waits.wake_ckpt();
     count
@@ -193,7 +228,14 @@ pub fn ckpt_pass(fs: &Arc<F2fs>) -> u32 {
 pub fn drain_discards(fs: &F2fs) {
     let bg = fs.bg();
     let utilization = fs.volume.lock().utilization();
+    let start = fs.volume_now().now_secs();
+    let timeout = fs.volume.lock().umount_discard_timeout();
     loop {
+        let now = fs.volume_now().now_secs();
+        if umount_discard_timed_out(start, now, timeout) {
+            bg.dcc.lock().drop_pending();
+            return;
+        }
         let runs = {
             let mut dcc = bg.dcc.lock();
             let p = dcc.init_policy(DiscardType::Umount, MIN_DISCARD_GRANULARITY, utilization);
@@ -203,6 +245,11 @@ pub fn drain_discards(fs: &F2fs) {
         fs.announce_free(&runs);
         bg.dcc.lock().completed(runs.len());
     }
+}
+
+/// Whether the unmount discard deadline has elapsed. # C: O(1)
+pub fn umount_discard_timed_out(start: u64, now: u64, timeout: u64) -> bool {
+    now.saturating_sub(start) > timeout
 }
 
 #[cfg(test)]

@@ -31,7 +31,35 @@ fn the_masks_are_octal() {
 #[test]
 fn the_code_page_must_be_one_this_build_has() {
     assert_eq!(vfat("codepage=437").codepage.number, 437);
-    assert_eq!(parse(Options::vfat(), "codepage=850").err(), Some(Errno::Einval));
+    assert_eq!(vfat("codepage=850").codepage.number, 850);
+    assert_eq!(vfat("codepage=852").codepage.number, 852);
+    assert_eq!(vfat("codepage=855").codepage.number, 855);
+    assert_eq!(vfat("codepage=857").codepage.number, 857);
+    assert_eq!(vfat("codepage=860").codepage.number, 860);
+    assert_eq!(vfat("codepage=861").codepage.number, 861);
+    assert_eq!(vfat("codepage=862").codepage.number, 862);
+    assert_eq!(vfat("codepage=863").codepage.number, 863);
+    assert_eq!(vfat("codepage=864").codepage.number, 864);
+    assert_eq!(vfat("codepage=865").codepage.number, 865);
+    assert_eq!(vfat("codepage=866").codepage.number, 866);
+    assert_eq!(vfat("codepage=869").codepage.number, 869);
+    assert_eq!(vfat("codepage=874").codepage.number, 874);
+    assert_eq!(vfat("codepage=1251").codepage.number, 1251);
+    assert_eq!(vfat("codepage=1250").codepage.number, 1250);
+    assert_eq!(vfat("codepage=737").codepage.number, 737);
+    assert_eq!(vfat("codepage=775").codepage.number, 775);
+    assert_eq!(vfat("codepage=1255").codepage.number, 1255);
+    assert_eq!(parse(Options::vfat(), "codepage=932").err(), Some(Errno::Einval));
+}
+
+#[test]
+fn iocharset_is_stored_separately_from_the_disk_code_page() {
+    let o = vfat("codepage=437,iocharset=utf8");
+    assert_eq!(o.codepage.number, 437);
+    assert_eq!(o.iocharset, crate::name::compare::IoCharset::Utf8);
+    assert_eq!(vfat("iocharset=iso8859-1").iocharset,
+               crate::name::compare::IoCharset::Iso88591);
+    assert_eq!(parse(Options::vfat(), "iocharset=cp1252").err(), Some(Errno::Einval));
 }
 
 /// The four `shortname=` words each name a display and a creation rule.

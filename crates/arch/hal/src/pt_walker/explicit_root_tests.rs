@@ -380,6 +380,32 @@ fn a_page_in_transit_carries_the_barrier_through_every_migration_outcome() {
     }
 }
 
+#[test]
+fn raw_leaf_move_preserves_present_and_nonpresent_entries() {
+    let old = TEST_VA;
+    let new = TEST_VA + (1u64 << L3_SHIFT);
+    for raw in [
+        RootWalker::pack_4k_leaf(TEST_PA,
+            crate::PageFlags::READ | crate::PageFlags::WRITE | crate::PageFlags::USER),
+        RootWalker::pack_swap_entry(TEST_SLOT),
+        RootWalker::pack_migration_entry(MigrationEntry::new(0x4321).unwrap()),
+        RootWalker::pack_pte_marker(PteMarker::UFFD_WP),
+    ] {
+        let mut tree = Tree::new();
+        let root_pa = tree.root_pa();
+        let mut alloc = || -> Option<u64> {
+            let t = alloc::boxed::Box::new(Table([0; ENTRIES_PER_TABLE]));
+            let pa = t.0.as_ptr() as u64;
+            tree.tables.push(t);
+            Some(pa)
+        };
+        assert_eq!(unsafe { map_at_level_with_root::<RootWalker, _>(root_pa, old, 3, raw, 0, &mut alloc) }, Ok(()));
+        assert_eq!(unsafe { move_leaf_4k_at_root::<RootWalker, _>(root_pa, old, new, 0, &mut alloc) }, Ok(true));
+        assert_eq!(unsafe { read_leaf_4k_at_root::<RootWalker>(root_pa, old, 0) }, Some(0));
+        assert_eq!(unsafe { read_leaf_4k_at_root::<RootWalker>(root_pa, new, 0) }, Some(raw));
+    }
+}
+
 /// The barrier and write permission are ONE fact at pack time: asking for the
 /// barrier produces a leaf that is already unwritable. That is what lets a fill
 /// publish a protected page in the single store that makes it visible, instead

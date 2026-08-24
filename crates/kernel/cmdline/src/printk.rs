@@ -67,6 +67,73 @@ pub fn devkmsg_mode(line: &[u8]) -> Option<DevkmsgMode> {
     }
 }
 
+/// `boot_delay=<msec>`: delay each console-visible printk during boot.
+/// Values above ten seconds are rejected like Linux; malformed values are
+/// absent rather than silently becoming a long delay.
+/// # C: O(line length)
+pub fn boot_delay_ms(line: &[u8]) -> Option<u32> {
+    let value = value(line, b"boot_delay")?;
+    let ms = crate::token::full_uint(value)?;
+    (ms <= 10_000).then_some(ms as u32)
+}
+
+/// `log_buf_len=` requests the byte capacity of the printk ring. Linux's
+/// early `memparse()` accepts binary K/M/G/T/P/E suffixes and rounds the
+/// requested capacity up to a power of two before allocating it.
+/// # C: O(line length)
+pub fn log_buf_len(line: &[u8]) -> Option<usize> {
+    let raw = value(line, b"log_buf_len")?;
+    let bytes = memsize(raw)?;
+    if bytes == 0 || bytes > usize::MAX as u64 { return None; }
+    let mut size = bytes as usize;
+    if !size.is_power_of_two() {
+        size = size.checked_next_power_of_two()?;
+    }
+    Some(size)
+}
+
+/// `page_poison=` enables PMM's Linux-shaped free-page poison and check.
+/// # C: O(line length)
+pub fn page_poison(line: &[u8]) -> bool {
+    match value(line, b"page_poison") {
+        Some(b"0") | Some(b"n") | Some(b"N") | Some(b"off") | Some(b"false") => false,
+        Some(_) => true,
+        None => bare_flag(line, b"page_poison"),
+    }
+}
+
+/// `slub_debug=P` enables Linux's free-object poison/check path for the
+/// allocator's size-class caches. Cache-list forms are not silently widened
+/// to every cache and remain reported as unsupported.
+/// # C: O(line length)
+pub fn slub_debug_poison(line: &[u8]) -> bool {
+    let Some(raw) = value(line, b"slub_debug").or_else(|| value(line, b"slab_debug")) else {
+        return false;
+    };
+    raw.len() == 1 && (raw[0] == b'P' || raw[0] == b'p')
+}
+
+fn slub_debug_value_supported(value: Option<&[u8]>) -> bool {
+    value.is_some_and(|raw| raw.len() == 1 && (raw[0] == b'P' || raw[0] == b'p'))
+}
+
+fn memsize(raw: &[u8]) -> Option<u64> {
+    let (number, consumed) = crate::token::parse_uint(raw);
+    if consumed == 0 { return None; }
+    let shift: u32 = match raw.get(consumed).copied() {
+        None => 0,
+        Some(b'K' | b'k') => 10,
+        Some(b'M' | b'm') => 20,
+        Some(b'G' | b'g') => 30,
+        Some(b'T' | b't') => 40,
+        Some(b'P' | b'p') => 50,
+        Some(b'E' | b'e') => 60,
+        Some(_) => return None,
+    };
+    if consumed + if shift == 0 { 0 } else { 1 } != raw.len() { return None; }
+    number.checked_shl(shift)
+}
+
 /// `initcall_debug`: trace each boot init step's entry, return value and
 /// elapsed time. A boot that never completes then names the step it entered
 /// last, which a silent boot cannot.
@@ -95,13 +162,7 @@ fn parse_bool(v: &[u8]) -> Option<bool> {
 /// # C: O(1)
 pub fn unsupported_parameter(name: &[u8]) -> Option<&'static str> {
     match name {
-        b"softlockup_panic" => Some("softlockup_panic: lockup detector is report-only"),
-        b"nmi_watchdog" => Some("nmi_watchdog: no periodic NMI lockup detector"),
-        b"log_buf_len" => Some("log_buf_len: record ring is a fixed-size static"),
-        b"slub_debug" => Some("slub_debug: allocator debug is build-time only"),
-        b"page_poison" => Some("page_poison: page poisoning is build-time only"),
         b"debug_pagealloc" => Some("debug_pagealloc: page-alloc debug is build-time only"),
-        b"boot_delay" => Some("boot_delay: no calibrated delay loop"),
         _ => None,
     }
 }
@@ -111,7 +172,14 @@ pub fn unsupported_parameter(name: &[u8]) -> Option<&'static str> {
 /// from missing output.
 /// # C: O(line length)
 pub fn unsupported_in(line: &[u8]) -> impl Iterator<Item = &'static str> + '_ {
-    crate::token::tokens(line).filter_map(|t| unsupported_parameter(crate::token::split_token(t).0))
+    crate::token::tokens(line).filter_map(move |t| {
+        let (key, value) = crate::token::split_token(t);
+        if key == b"slub_debug" || key == b"slab_debug" {
+            return (!slub_debug_value_supported(value))
+                .then_some("slub_debug: only global P poison is currently honoured");
+        }
+        unsupported_parameter(key)
+    })
 }
 
 /// Does the line carry `<name>` at all? Re-exported for callers that only

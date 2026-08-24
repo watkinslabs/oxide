@@ -21,6 +21,25 @@ const GPE_LIMIT: usize = 256;
 const SCI_ENABLE: u64 = 1;
 const ACPI_ENABLE_RETRIES: usize = 30_000;
 const ACPI_ENABLE_STALL_NS: u64 = 100_000;
+const FIXED_EVENT_COUNT: usize = 16;
+
+/// One owner for a PM1 fixed event. The callback runs in SCI hard-IRQ context
+/// and must only acknowledge/queue work; process-context policy belongs to the
+/// registered subsystem, just as ACPICA's fixed-event handler does.
+pub type FixedEventHandler = fn();
+static FIXED_HANDLERS: [AtomicUsize; FIXED_EVENT_COUNT] =
+    [const { AtomicUsize::new(0) }; FIXED_EVENT_COUNT];
+
+/// Register the sole owner of one PM1 fixed event before [`init`].
+pub fn register_fixed_event(event: u8, handler: FixedEventHandler) -> bool {
+    let Some(slot) = FIXED_HANDLERS.get(usize::from(event)) else { return false; };
+    slot.compare_exchange(0, handler as usize, Ordering::AcqRel, Ordering::Acquire).is_ok()
+}
+
+fn fixed_handler(event: u8) -> Option<FixedEventHandler> {
+    let raw = FIXED_HANDLERS.get(usize::from(event))?.load(Ordering::Acquire);
+    (raw != 0).then(|| unsafe { core::mem::transmute(raw) })
+}
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum ModeTransition { Complete, Unsupported, Write(u8) }
@@ -172,6 +191,35 @@ fn disable_fixed_events(gas: Gas, bytes: u8) -> bool {
     true
 }
 
+fn fixed_event_irq(registers: EventRegisters) -> bool {
+    let Some((enable_base, count)) = fixed_enable_half(registers.pm1_event_len) else { return false; };
+    let mut handled = false;
+    for gas in [registers.pm1a_event, registers.pm1b_event] {
+        if gas.address == 0 { continue; }
+        for offset in 0..count {
+            let Some(status) = read8(gas, offset) else { continue; };
+            let Some(enable) = read8(gas, enable_base + offset) else { continue; };
+            let asserted = status & enable;
+            if asserted == 0 { continue; }
+            let mut clear = 0;
+            for bit_index in 0..8u8 {
+                let bit = 1u8 << bit_index;
+                if asserted & bit == 0 { continue; }
+                let event = offset * 8 + bit_index;
+                let owned = fixed_handler(event).is_some();
+                if !owned { let _ = write8(gas, enable_base + offset, enable & !bit); }
+                clear |= bit;
+                handled = true;
+                if let Some(handler) = fixed_handler(event) { handler(); }
+            }
+            // PM1 status bits are write-one-to-clear. Do this even for an
+            // unowned source; the enable bit remains masked above.
+            if clear != 0 { let _ = write8(gas, offset, clear); }
+        }
+    }
+    handled
+}
+
 fn fixed_enable_half(bytes: u8) -> Option<(u8, u8)> {
     let registers = bytes / 2;
     if registers == 0 { return None; }
@@ -189,9 +237,12 @@ fn locate(runtime: &Runtime, number: u8) -> Option<(Block, u8, u8)> {
 /// # C: O(GPE register bytes) # Ctx: hard IRQ
 pub fn handle_sci_irq() -> bool {
     let Some(runtime) = runtime() else { return false; };
-    let (handled, deferred) = mask_active(runtime, read8, |gas, offset, value| {
+    let Some(registers) = super::fadt::event_registers_published() else { return false; };
+    let fixed = fixed_event_irq(registers);
+    let (gpe_handled, deferred) = mask_active(runtime, read8, |gas, offset, value| {
         write8(gas, offset, value)
     });
+    let handled = fixed || gpe_handled;
     if !handled { return false; }
     if !deferred { return true; }
     if !ensure_worker(runtime) {

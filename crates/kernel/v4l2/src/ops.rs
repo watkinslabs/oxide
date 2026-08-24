@@ -9,7 +9,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use syscall::errno::Errno;
 
-use crate::format::{Fract, FormatDesc, PixFormat};
+use crate::format::{Fract, FormatDesc, PixFormat, Rect};
 
 /// The three identity strings `VIDIOC_QUERYCAP` reports.
 #[derive(Clone, Debug)]
@@ -61,6 +61,28 @@ pub trait VideoOps: Send + Sync {
     /// set. # C: O(1)
     fn set_interval(&self, interval: Fract);
 
+    /// Read a crop/compose rectangle owned by the driver. The core supplies
+    /// the negotiated format so fixed-frame devices can return their bounds.
+    fn g_selection(&self, format: &PixFormat, target: u32) -> Result<Rect, Errno> {
+        let full = Rect { left: 0, top: 0, width: format.width, height: format.height };
+        match target {
+            crate::uapi::flags::SEL_TGT_CROP
+            | crate::uapi::flags::SEL_TGT_CROP_DEFAULT
+            | crate::uapi::flags::SEL_TGT_CROP_BOUNDS
+            | crate::uapi::flags::SEL_TGT_NATIVE_SIZE => Ok(full),
+            _ => Err(Errno::Einval),
+        }
+    }
+
+    /// Set a crop/compose rectangle and return the settled rectangle.
+    fn s_selection(&self, format: &PixFormat, target: u32, rect: Rect)
+        -> Result<Rect, Errno>
+    {
+        let full = Rect { left: 0, top: 0, width: format.width, height: format.height };
+        if target == crate::uapi::flags::SEL_TGT_CROP && rect == full { Ok(rect) }
+        else { Err(Errno::Einval) }
+    }
+
     /// Begin producing frames into the buffers named by `handed`, in that
     /// order. A refusal leaves the queue as it was, with every buffer back in
     /// the queued state and usable by a second attempt.
@@ -79,11 +101,17 @@ pub trait VideoOps: Send + Sync {
     /// The default derives both from the format the core already computed,
     /// which is right for every single-planar capture device.
     /// # C: O(1)
-    fn queue_setup(&self, count: u32, format: &PixFormat) -> crate::vb2::QueueSetup {
+    fn queue_setup(&self, count: u32, format: &PixFormat)
+        -> Result<crate::vb2::QueueSetup, Errno>
+    {
         let mut plane_sizes = [0u32; crate::uapi::layout::MAX_PLANES];
         plane_sizes[0] = format.sizeimage.max(1);
-        crate::vb2::QueueSetup { count: count.max(1), num_planes: 1, plane_sizes }
+        Ok(crate::vb2::QueueSetup { count: count.max(1), num_planes: 1, plane_sizes })
     }
+
+    /// Validate and prepare one buffer before `QBUF` or `PREPARE_BUF` commits
+    /// it to the queue. # C: O(planes)
+    fn buf_prepare(&self, _index: u32) -> Result<(), Errno> { Ok(()) }
 
     /// Controls this device offers, in any order — the handler sorts them.
     /// # C: O(1)
@@ -92,7 +120,13 @@ pub trait VideoOps: Send + Sync {
     /// A control's value changed. A driver that programs hardware from a
     /// control does it here.
     /// # C: O(1)
-    fn control_changed(&self, _id: u32, _value: i64) {}
+    /// Apply a control. Returns true when the control makes the queue fail
+    /// permanently, so the core can publish that queue error.
+    /// # C: O(1)
+    fn control_changed(&self, _id: u32, _value: i64) -> bool { false }
+
+    /// A pointer-backed control's validated payload changed.
+    fn control_payload_changed(&self, _id: u32, _payload: &[u8]) -> bool { false }
 
     /// Is the device progressive, i.e. does it deliver whole frames? A
     /// progressive device reports `V4L2_FIELD_NONE` whatever the caller asked

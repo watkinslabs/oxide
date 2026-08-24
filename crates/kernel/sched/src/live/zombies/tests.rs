@@ -13,7 +13,7 @@
 // code provably violated — see the inline "pre-fix" notes.
 
 use alloc::sync::Arc;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use super::*;
 use crate::live::runqueue::{self, Runqueue};
@@ -26,6 +26,26 @@ use crate::task::SchedClass;
 fn test_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+struct CallbackProbe(Arc<AtomicUsize>);
+impl ChildWaitCallback for CallbackProbe {
+    fn wake(&self) { self.0.fetch_add(1, Ordering::Relaxed); }
+}
+
+#[test]
+fn child_callback_is_one_shot_and_parent_scoped() {
+    let _g = test_lock();
+    CALLBACKS.lock().clear();
+    let hit = Arc::new(AtomicUsize::new(0));
+    let reg = register_child_wait(9301, Arc::new(CallbackProbe(Arc::clone(&hit))));
+    wake_wait4_parent(9302);
+    assert_eq!(hit.load(Ordering::Relaxed), 0);
+    wake_wait4_parent(9301);
+    assert_eq!(hit.load(Ordering::Relaxed), 1);
+    wake_wait4_parent(9301);
+    assert_eq!(hit.load(Ordering::Relaxed), 1, "publisher wake consumes one registration");
+    drop(reg);
 }
 
 /// Install a fresh single-CPU runqueue and publish `cur` as its `current`.

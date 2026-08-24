@@ -14,6 +14,8 @@ pub const READ_10: u8 = 0x28;
 pub const WRITE_10: u8 = 0x2a;
 /// SYNCHRONIZE CACHE(10) operation code. # C: O(1)
 pub const SYNCHRONIZE_CACHE_10: u8 = 0x35;
+/// MODE SENSE(6), used to read the SCSI caching mode page.
+pub const MODE_SENSE_6: u8 = 0x1a;
 /// READ(16) operation code. # C: O(1)
 pub const READ_16: u8 = 0x88;
 /// WRITE(16) operation code. # C: O(1)
@@ -22,6 +24,25 @@ pub const WRITE_16: u8 = 0x8a;
 pub const SERVICE_ACTION_IN_16: u8 = 0x9e;
 /// READ CAPACITY(16) service action. # C: O(1)
 pub const READ_CAPACITY_16: u8 = 0x10;
+
+/// Read WCE from a MODE SENSE(6) caching page. `None` means the response was
+/// absent or malformed, so a caller must retain a conservative barrier fact.
+pub fn caching_mode_page_writeback(data: &[u8]) -> Option<bool> {
+    if data.len() < 4 { return None; }
+    let length = (usize::from(data[0]) + 1).min(data.len());
+    let mut at = 4usize;
+    while at + 2 <= length {
+        let code = data[at] & 0x3f;
+        let page_len = usize::from(data[at + 1]);
+        let end = at.checked_add(2)?.checked_add(page_len)?;
+        if end > length { return None; }
+        if code == 0x08 {
+            return (page_len >= 3).then(|| data[at + 2] & 0x04 != 0);
+        }
+        at = end;
+    }
+    None
+}
 
 /// Largest CDB accepted by the shared SCSI layer. Individual transports may
 /// expose a lower SG_IO limit. # C: O(1)
@@ -62,5 +83,21 @@ impl Command {
     /// Fixed SERVICE ACTION IN(16)/READ CAPACITY(16) command. # C: O(1)
     pub(crate) fn capacity_16() -> Self {
         Self::fixed(&[SERVICE_ACTION_IN_16, READ_CAPACITY_16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::caching_mode_page_writeback;
+
+    #[test]
+    fn caching_page_reports_wce_and_skips_other_pages() {
+        let mut page = [0u8; 16];
+        page[0] = 15;
+        page[4..8].copy_from_slice(&[0x01, 2, 0xaa, 0xbb]);
+        page[8..14].copy_from_slice(&[0x08, 4, 0x04, 0, 0, 0]);
+        assert_eq!(caching_mode_page_writeback(&page), Some(true));
+        page[10] = 0;
+        assert_eq!(caching_mode_page_writeback(&page), Some(false));
     }
 }

@@ -62,13 +62,6 @@ impl<S: SectorSource> Volume<S> {
         // needs the key exactly as a write does.
         let crypt = self.crypt_require_key(&inode, ino)?;
         if inode.encrypted() && crypt.is_none() { return Err(Errno::Enokey); }
-        // A compressed file's unpacked cluster is not held in this mapping at
-        // all — the cluster reader unpacks per access — so there is no page here
-        // for a user page table to point at and no place a store could land.
-        // Refused rather than accepted-and-dropped: a store that appeared to
-        // work and vanished at the flush is the failure this whole path exists
-        // to remove.
-        if inode.compressed() { return Err(Errno::Eopnotsupp); }
         // A span holds its writes in a shadow inode, so this inode's blocks are
         // not where a store through it belongs.
         if self.is_atomic_file(ino) { return Err(Errno::Eopnotsupp); }
@@ -146,16 +139,15 @@ impl<S: SectorSource> Volume<S> {
     /// CLEAN: nothing has been written, and a dirty page here would have the
     /// next flush place a block for a hole nobody wrote.
     ///
-    /// `None` means this file's pages cannot be mapped — a compressed file, or a
-    /// frame that could not be had. Never a heap buffer offered as if a page
-    /// table could point at it.
+    /// `None` means a frame could not be had. Compressed clusters are filed in
+    /// this same mapping by the cluster reader, and their cluster-wide writer
+    /// owns invalidation when the materialized pages are replaced.
     /// # Ctx: process # Sleeps: y # C: O(1 block read) on a miss
     pub(crate) fn mapped_frame(&self, ino: u32, index: u64) -> Option<u64> {
         if !self.data_cache.holds(ino, index) {
             self.populate_mapped(ino, index, 1);
             if !self.data_cache.holds(ino, index) {
                 let inode = self.read_inode(ino).ok()?;
-                if inode.compressed() { return None; }
                 let off = index.checked_mul(BLKSIZE as u64)?;
                 if off >= inode.size { return None; }
                 self.data_cache.insert_clean(ino, index, alloc::vec![0u8; BLKSIZE]);

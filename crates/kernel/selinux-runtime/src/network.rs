@@ -49,6 +49,31 @@ pub fn extended_socket_class() -> bool {
         .unwrap_or(false)
 }
 
+/// Whether the loaded policy asks SELinux to refine netlink message access
+/// with `nlmsg` xperms rather than only the class's read/write bit.
+pub fn netlink_xperm() -> bool {
+    crate::with(|s| s.policycap(selinux::uapi::policycap::POLICYDB_CAP_NETLINK_XPERM))
+        .unwrap_or(false)
+}
+
+/// Resolve one transport port through the loaded policy's `portcon` table.
+/// Unmatched ports retain SELinux's initial `port` SID, exactly as the kernel
+/// object-context lookup does. # C: O(portcon entries)
+pub fn port_sid(protocol: u8, port: u16) -> Sid {
+    crate::with(|s| s.network_port_sid(protocol, port))
+        .unwrap_or(selinux::uapi::initsid::InitSid::Port.sid())
+}
+
+pub fn node_sid_v4(addr: u32) -> Sid {
+    crate::with(|s| s.network_node_sid_v4(addr))
+        .unwrap_or(selinux::uapi::initsid::InitSid::Node.sid())
+}
+
+pub fn node_sid_v6(addr: [u32; 4]) -> Sid {
+    crate::with(|s| s.network_node_sid_v6(addr))
+        .unwrap_or(selinux::uapi::initsid::InitSid::Node.sid())
+}
+
 /// Label the server end of a new connection takes. # C: O(categories)
 ///
 /// The listening socket's identity carrying the connecting socket's
@@ -81,6 +106,18 @@ pub fn context(label: Sid) -> Result<Vec<u8>, ContextError> {
         selinux::Error::NoMemory => ContextError::NoMemory,
         _ => ContextError::InvalidLabel,
     })
+}
+
+/// Resolve a written security context for a kernel object. Unlike the inode
+/// label path, a failed secmark context is an object-creation error: Linux
+/// does not silently turn an nft security context into the unlabeled SID.
+pub fn sid_from_context(written: &str) -> Option<Sid> {
+    let sid = crate::with(|s| s.context_to_sid(written).ok()).flatten()
+        .filter(|sid| *sid != 0)?;
+    let class = selinux::uapi::classmap::class_by_name("packet")?;
+    let permission = selinux::uapi::classmap::perm_bit(class, "relabelto")?;
+    crate::check::has_perm(crate::task::current_sid(), sid, class, permission).ok()?;
+    Some(sid)
 }
 
 /// Label reported for a peer no label was ever recorded for. # C: O(1)

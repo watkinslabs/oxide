@@ -50,10 +50,41 @@ fn disk() -> Arc<Disk> {
 }
 
 fn mounted(disk: &Arc<Disk>) -> Arc<NtfsFs> {
-    let mut opts = Options::defaults();
+    mounted_with(disk, Options::defaults())
+}
+
+fn mounted_with(disk: &Arc<Disk>, mut opts: Options) -> Arc<NtfsFs> {
     opts.settle();
     NtfsFs::open_with(Arc::clone(disk) as Arc<dyn BlockDevice>, "/dev/loop0", true, opts)
         .expect("mount")
+}
+
+fn stream_disk() -> Arc<Disk> {
+    let mut b = crate::test_image::Builder::new();
+    b.push_file_with_stream("report.txt", b"body", "secret", b"hidden");
+    Arc::new(Disk { bytes: sync::Spinlock::new(b.finish().snapshot()) })
+}
+
+#[test]
+fn alternate_streams_are_real_user_xattrs() {
+    let fs = mounted_with(&stream_disk(), Options::defaults());
+    let file = fs.root_inode().unwrap().lookup("report.txt").unwrap();
+    assert_eq!(file.listxattr().unwrap(), alloc::vec!["user.secret"]);
+    assert_eq!(file.getxattr("user.secret").unwrap(), b"hidden");
+    assert_eq!(file.getxattr("user.missing"), Err(vfs::XattrError::NotFound));
+    assert_eq!(file.setxattr("user.secret", b"new".to_vec(), false, true),
+               Err(vfs::XattrError::NotSup));
+}
+
+#[test]
+fn windows_streams_are_files_named_after_their_base_file() {
+    let mut opts = Options::defaults();
+    opts.streams = crate::opts::StreamInterface::Windows;
+    let fs = mounted_with(&stream_disk(), opts);
+    let file = fs.root_inode().unwrap().lookup("report.txt:secret").unwrap();
+    let mut data = [0u8; 6];
+    assert_eq!(file.read(0, &mut data).unwrap(), 6);
+    assert_eq!(&data, b"hidden");
 }
 
 #[test]
@@ -108,7 +139,7 @@ fn hard_link_refuses_a_directory_and_an_existing_name() {
 }
 
 #[test]
-fn a_full_directory_does_not_leave_an_unreachable_name_on_the_target() {
+fn a_grown_directory_keeps_a_link_reachable_on_the_target() {
     let disk = disk();
     let fs = mounted(&disk);
     let root = fs.root_inode().expect("root");
@@ -117,9 +148,9 @@ fn a_full_directory_does_not_leave_an_unreachable_name_on_the_target() {
         let name = alloc::format!("fill-{i}");
         if root.create_child(&name, 0o644, &CreateCtx::root()).is_err() { break; }
     }
-    assert_eq!(root.link_child(&original, "cannot-fit", &CreateCtx::root()), Err(VfsError::Enospc));
-    assert_eq!(original.nlink(), 1);
-    assert!(root.lookup("cannot-fit").is_err());
+    root.link_child(&original, "cannot-fit", &CreateCtx::root()).expect("allocation-backed link");
+    assert_eq!(original.nlink(), 2);
+    assert!(root.lookup("cannot-fit").is_ok());
 
     let node = original.private::<super::node::NtfsNode>().expect("NTFS node");
     let (record, attrs) = fs.volume.lock().read_record(node.info.number).expect("record");
@@ -127,5 +158,5 @@ fn a_full_directory_does_not_leave_an_unreachable_name_on_the_target() {
         .filter(|attr| attr.resident_span().is_some_and(|(start, end)| {
             crate::name::parse_filename(&record[start..end]).is_some()
         })).count();
-    assert_eq!(names, 1, "failed index insertion rolls the target record back");
+    assert_eq!(names, 2, "the new hard link adds one target name");
 }

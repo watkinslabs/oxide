@@ -38,10 +38,11 @@ fn caching() -> Options {
 /// fixture serves the cached and uncached cases and any difference between
 /// them is the option rather than the image.
 /// # C: O(1 image)
-fn volume(cache: bool) -> (Volume<MemImage>, u32) {
+fn volume_with_memory(cache: bool, memory: crate::opts::MemoryMode) -> (Volume<MemImage>, u32) {
     let mut b = test_image::with_root();
     b.feature |= crate::flags::FEATURE_COMPRESSION;
-    let opts = if cache { caching() } else { Options::defaults() };
+    let mut opts = if cache { caching() } else { Options::defaults() };
+    opts.memory = memory;
     let mut v = b.mount_opts(opts).unwrap();
     let spec = NewInode { mode: S_IFREG | 0o644, uid: 0, gid: 0, rdev: 0, now: NOW };
     let ino = v.create(ROOT_INO, b"c", &spec, None).unwrap();
@@ -53,6 +54,10 @@ fn volume(cache: bool) -> (Volume<MemImage>, u32) {
     })
     .unwrap();
     (v, ino)
+}
+
+fn volume(cache: bool) -> (Volume<MemImage>, u32) {
+    volume_with_memory(cache, crate::opts::MemoryMode::Normal)
 }
 
 /// Bytes that compress into a single block, so a cluster's stored image is one
@@ -140,6 +145,33 @@ fn a_second_read_of_a_cluster_never_reaches_the_medium() {
 }
 
 #[test]
+fn readahead_files_decompressed_cluster_pages_in_the_canonical_mapping() {
+    let (mut v, ino) = volume(false);
+    let data = patterned(4 * BLKSIZE, 0x4A);
+    wrote(&mut v, ino, 0, &data);
+    let inode = v.read_inode(ino).unwrap();
+    v.readahead_data(&inode, ino, 1, 1);
+    assert!((0..4).all(|i| v.data_cache().held(ino, i)), "cluster pages were not filed");
+    let a = image_addr(&v, ino);
+    poison(&v, a);
+    assert_eq!(whole(&v, ino).unwrap(), data,
+               "the read fell back to the compressed image after readahead");
+}
+
+#[test]
+fn memory_low_skips_speculative_compressed_readahead_but_demand_reads_still_work() {
+    let (mut v, ino) = volume_with_memory(false, crate::opts::MemoryMode::Low);
+    let data = patterned(4 * BLKSIZE, 0x4B);
+    wrote(&mut v, ino, 0, &data);
+    let inode = v.read_inode(ino).unwrap();
+    v.readahead_data(&inode, ino, 1, 1);
+    assert!(!(0..4).any(|i| v.data_cache().held(ino, i)),
+            "memory=low must not preallocate decompressed readahead pages");
+    assert_eq!(whole(&v, ino).unwrap(), data,
+               "memory=low keeps the demand decompression path");
+}
+
+#[test]
 fn a_mount_that_did_not_ask_reads_the_medium_every_time() {
     // The control for the case above: the same poisoning, on a mount without
     // the option, must be visible.
@@ -148,6 +180,7 @@ fn a_mount_that_did_not_ask_reads_the_medium_every_time() {
     wrote(&mut v, ino, 0, &data);
     let a = image_addr(&v, ino);
     assert_eq!(whole(&v, ino).unwrap(), data);
+    v.data_cache().forget_inode(ino);
     poison(&v, a);
     assert!(whole(&v, ino).is_err(), "a mount with no cache cannot have served this");
 }

@@ -85,6 +85,7 @@ impl<S: SectorSource> Volume<S> {
             use crate::stats::iostat::Io;
             self.io_account(self.io_gc_kind(Io::FsNode, Io::FsGcNode), BLKSIZE as u64, false);
         }
+        self.nat_cache_forget(nid);
         self.nat_dirty.insert(nid, NatEntry { version: 0, ino: f.ino, block_addr: addr });
         // The count the node was charged when it was changed is the count this
         // block just took up. Released after the segment update raised it, so

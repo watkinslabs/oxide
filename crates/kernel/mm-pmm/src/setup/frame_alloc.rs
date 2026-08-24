@@ -193,6 +193,36 @@ pub fn frame_ptr(pa: u64) -> Option<*mut u8> {
     Some(unsafe { p.page_ptr(crate::Pfn(pa / PAGE_BYTES)) })
 }
 
+/// Copy kernel-owned bytes into one PMM frame without exposing its HHDM
+/// pointer to callers. # C: O(len)
+pub fn copy_frame_from(pa: u64, offset: usize, src: &[u8]) -> bool {
+    if offset > PAGE_BYTES as usize
+        || src.len() > PAGE_BYTES as usize - offset { return false; }
+    let Some(p) = frame_ptr(pa) else { return false };
+    // SAFETY: the range check bounds the destination to this PMM frame, which
+    // remains allocated for the caller's object reference.
+    unsafe { core::ptr::copy_nonoverlapping(src.as_ptr(), p.add(offset), src.len()); }
+    true
+}
+
+/// Clear one PMM frame owned by a kernel object. # C: O(PAGE_BYTES)
+pub fn zero_frame(pa: u64) -> bool {
+    let Some(p) = frame_ptr(pa) else { return false };
+    // SAFETY: the caller owns this PMM frame and the write covers exactly it.
+    unsafe { core::ptr::write_bytes(p, 0, PAGE_BYTES as usize); }
+    true
+}
+
+/// Acquire one user-mapping reference through the PMM's canonical refcount
+/// owner. # C: O(1)
+pub fn acquire_mapping_ref(pa: u64) -> bool {
+    if page_meta().and_then(|m| m.get(hal::Pfn(pa / PAGE_BYTES))).is_none() { return false; }
+    // SAFETY: the caller holds the object reference that keeps this managed
+    // frame allocated while the prospective PTE reference is installed.
+    unsafe { super::refs::inc_ref(pa); }
+    true
+}
+
 /// Release one PMM page held solely by a movable kernel object such as a
 /// zsmalloc zspage. It has no user PTE mapping; its object reference is the
 /// canonical lifetime owner. # C: O(1) amortised

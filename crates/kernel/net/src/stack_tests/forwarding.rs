@@ -64,7 +64,8 @@ fn transit_ipv6(src: Ipv6Addr, dst: Ipv6Addr, hop_limit: u8) -> alloc::vec::Vec<
 fn mark_transparent_packet(_ctx: &crate::netfilter_hook::NfHookCtx<'_>)
     -> crate::netfilter_hook::NfHookResult
 {
-    crate::netfilter_hook::NfHookResult { verdict: 1, mark: 0x20 }
+    crate::netfilter_hook::NfHookResult { verdict: 1, mark: 0x20,
+        actions: alloc::vec::Vec::new(), notrack: false }
 }
 
 #[test]
@@ -109,7 +110,7 @@ fn ipv4_ingress_mib_names_unforwardable_and_unknown_packets() {
 
     let transit = transit_ipv4(Ipv4Addr::new(192, 0, 2, 10), Ipv4Addr::new(198, 51, 100, 20), 9);
     let addr_before = crate::mib::get(0, crate::mib::Mib::IpInAddrErrors);
-    stack.forward_ipv4_mark_in(0, in_id, &transit, 0).unwrap();
+    stack.forward_ipv4_mark_in(0, in_id, &transit, 0, None).unwrap();
     assert_eq!(crate::mib::get(0, crate::mib::Mib::IpInAddrErrors), addr_before + 1);
 
     let mut unknown = transit_ipv4(Ipv4Addr::new(192, 0, 2, 10), Ipv4Addr::LOOPBACK, 9);

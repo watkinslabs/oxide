@@ -8,6 +8,7 @@
 //! mechanism, the callers own the timers (docs/53 kernel=glue).
 extern crate alloc;
 
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use sync::{Spinlock, Timer as TimerLock};
@@ -19,7 +20,7 @@ pub type OwnedOneShotFn = fn(usize, TimerId);
 pub type OwnedOneShotDropFn = fn(usize);
 
 /// Opaque id for a registered periodic timer.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct TimerId(u64);
 
 impl TimerId {
@@ -36,7 +37,6 @@ impl TimerId {
 
 struct Entry { id: TimerId, interval_ns: u64, last_ns: u64, f: TimerFn }
 struct OneShot {
-    id: TimerId,
     deadline_ns: u64,
     arg: usize,
     f: Option<OneShotFn>,
@@ -45,7 +45,10 @@ struct OneShot {
 }
 
 static TIMERS: Spinlock<Vec<Entry>, TimerLock> = Spinlock::new(Vec::new());
-static ONESHOTS: Spinlock<Vec<OneShot>, TimerLock> = Spinlock::new(Vec::new());
+/// Active one-shots keyed by their owner id. The key is the timer handle, so
+/// cancellation removes the embedded timer record without scanning every
+/// armed timer, matching the reference's keyed timer-tree removal.
+static ONESHOTS: Spinlock<BTreeMap<TimerId, OneShot>, TimerLock> = Spinlock::new(BTreeMap::new());
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 /// B1347: ids cancelled AFTER `run_due` already drained them out of `ONESHOTS`
 /// but BEFORE it fired them (the drain-then-fire-without-lock window). A cancel
@@ -82,11 +85,11 @@ pub fn unregister_periodic(id: TimerId) -> bool {
 
 /// Register a one-shot callback fired from the timer driver's process context
 /// when `now_ns >= deadline_ns`.
-/// # C: O(1) amortized
+/// # C: O(log N)
 pub fn register_oneshot(deadline_ns: u64, arg: usize, f: OneShotFn) -> TimerId {
     let id = next_id();
-    ONESHOTS.lock().push(OneShot {
-        id, deadline_ns, arg, f: Some(f), owned_f: None, owned_drop: None,
+    ONESHOTS.lock().insert(id, OneShot {
+        deadline_ns, arg, f: Some(f), owned_f: None, owned_drop: None,
     });
     id
 }
@@ -95,24 +98,22 @@ pub fn register_oneshot(deadline_ns: u64, arg: usize, f: OneShotFn) -> TimerId {
 /// runs exactly once when the timer fires or is cancelled, including a cancel
 /// racing the drain-to-fire window. This is the safe form for callbacks that
 /// retain an `Arc` or boxed context beyond their caller's lifetime.
-/// # C: O(1) amortized
+/// # C: O(log N)
 pub fn register_oneshot_owned(deadline_ns: u64, arg: usize, f: OwnedOneShotFn,
                               drop_arg: OwnedOneShotDropFn) -> TimerId {
     let id = next_id();
-    ONESHOTS.lock().push(OneShot {
-        id, deadline_ns, arg, f: None, owned_f: Some(f), owned_drop: Some(drop_arg),
+    ONESHOTS.lock().insert(id, OneShot {
+        deadline_ns, arg, f: None, owned_f: Some(f), owned_drop: Some(drop_arg),
     });
     id
 }
 
 /// Unregister a one-shot timer previously returned by `register_oneshot`.
 /// Returns true if the timer was still registered.
-/// # C: O(N registered)
+/// # C: O(log N)
 pub fn unregister_oneshot(id: TimerId) -> bool {
-    let mut g = ONESHOTS.lock();
-    let removed = g.iter().position(|entry| entry.id == id).map(|pos| g.remove(pos));
+    let removed = ONESHOTS.lock().remove(&id);
     let was_pending = removed.is_some();
-    drop(g);
     if let Some(entry) = removed { drop_oneshot_arg(&entry); }
     if !was_pending {
         // B1347: not in ONESHOTS ⇒ either already fired (harmless: arg was live
@@ -155,7 +156,7 @@ pub fn next_deadline_ns(now_ns: u64) -> Option<u64> {
     for entry in TIMERS.lock().iter() {
         consider(entry.last_ns.saturating_add(entry.interval_ns));
     }
-    for entry in ONESHOTS.lock().iter() { consider(entry.deadline_ns); }
+    for entry in ONESHOTS.lock().values() { consider(entry.deadline_ns); }
     earliest
 }
 
@@ -179,7 +180,7 @@ pub fn run_due(now_ns: u64) {
 /// # C: O(N registered) + O(`budget` callback cost)
 pub fn run_due_budgeted(now_ns: u64, budget: usize) -> bool {
     let mut due: Vec<TimerFn> = Vec::new();
-    let mut one: Vec<OneShot> = Vec::new();
+    let mut one: Vec<(TimerId, OneShot)> = Vec::new();
     RUN_PHASE.store(PHASE_SCAN_PERIODIC, Ordering::Relaxed);
     {
         let mut g = TIMERS.lock();
@@ -194,13 +195,12 @@ pub fn run_due_budgeted(now_ns: u64, budget: usize) -> bool {
     RUN_PHASE.store(PHASE_SCAN_ONESHOT, Ordering::Relaxed);
     {
         let mut g = ONESHOTS.lock();
-        let mut i = 0;
-        while i < g.len() && due.len() + one.len() < budget {
-            if now_ns >= g[i].deadline_ns {
-                one.push(g.remove(i));
-            } else {
-                i += 1;
-            }
+        let due_ids: Vec<TimerId> = g.iter()
+            .filter_map(|(id, entry)| (now_ns >= entry.deadline_ns).then_some(*id))
+            .take(budget.saturating_sub(due.len()))
+            .collect();
+        for id in due_ids {
+            if let Some(entry) = g.remove(&id) { one.push((id, entry)); }
         }
     }
     RUN_PHASE.store(PHASE_FIRE_PERIODIC, Ordering::Relaxed);
@@ -214,10 +214,10 @@ pub fn run_due_budgeted(now_ns: u64, budget: usize) -> bool {
     // drain→fire window (checked live per-fire — the owner may cancel between
     // earlier fires and this one). A cancelled one-shot's arg object is being
     // released by its owner; firing f(arg) on it would be a stale-pointer write.
-    for entry in one {
+    for (id, entry) in one {
         let cancelled = {
             let mut c = CANCELLED_ONESHOTS.lock();
-            match c.iter().position(|&x| x == entry.id.0) {
+            match c.iter().position(|&x| x == id.raw()) {
                 Some(pos) => { c.swap_remove(pos); true }
                 None => false,
             }
@@ -229,7 +229,7 @@ pub fn run_due_budgeted(now_ns: u64, budget: usize) -> bool {
             f(entry.arg);
         } else if let Some(f) = entry.owned_f {
             RUN_FN.store(f as usize, Ordering::Relaxed);
-            f(entry.arg, entry.id);
+            f(entry.arg, id);
             drop_oneshot_arg(&entry);
         }
     }
@@ -246,7 +246,7 @@ fn has_due(now_ns: u64) -> bool {
     if TIMERS.lock().iter().any(|e| now_ns.saturating_sub(e.last_ns) >= e.interval_ns) {
         return true;
     }
-    ONESHOTS.lock().iter().any(|e| now_ns >= e.deadline_ns)
+    ONESHOTS.lock().values().any(|e| now_ns >= e.deadline_ns)
 }
 
 fn next_id() -> TimerId {

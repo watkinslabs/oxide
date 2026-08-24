@@ -20,6 +20,7 @@ fn clamp(v: u64) -> i32 { if v > i32::MAX as u64 { i32::MAX } else { v as i32 } 
 /// only through the `msqid < 0` gate in `ksys_msgctl`.
 /// # C: O(N_queues)
 pub fn msgctl_info(ns: NamespaceId, cmd: i32, buf: u64) -> Result<i64, Errno> {
+    selinux_runtime::check::system_permission("ipc_info").map_err(|_| Errno::Eacces)?;
     let mut out = [0u8; MSGINFO_BYTES];
     put_i32(&mut out, MSGINFO_MSGMNI_OFF, MSGMNI as i32);
     put_i32(&mut out, MSGINFO_MSGMAX_OFF, MSGMAX as i32);

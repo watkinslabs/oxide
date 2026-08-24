@@ -101,6 +101,60 @@ impl F2fsOps {
 }
 
 impl InodeOps for F2fsOps {
+    fn swapfile_backing(&self, inode: &InodeRef)
+        -> KResult<Option<alloc::sync::Arc<dyn core::any::Any + Send + Sync>>> {
+        let node = Self::node(inode)?;
+        let map = node.fs.volume_now().swap_activate(node.ino, u64::MAX)
+            .map_err(errno_to_vfs)?;
+        let device = match crate::swap::device::F2fsSwapDevice::new(
+            node.fs.clone(), node.ino, map) {
+            Ok(device) => device,
+            Err(error) => {
+                let _ = node.fs.volume_now().swap_deactivate(node.ino);
+                return Err(match error {
+                    block::BlockError::Einval => VfsError::Einval,
+                    _ => VfsError::Eio,
+                });
+            }
+        };
+        let uuid = node.fs.volume.lock().super_block().uuid;
+        let id = u64::from_le_bytes(uuid[..8].try_into().unwrap_or([0; 8]));
+        let name = alloc::format!("f2fs:{id}:{ino}", ino = node.ino);
+        let raw_device = node.fs.swap_devices()[0].clone();
+        Ok(Some(alloc::sync::Arc::new(pmm::swap::SwapFileBacking {
+            name,
+            device: alloc::sync::Arc::new(device),
+            resume_device: None,
+            resume_pages: alloc::vec::Vec::new(),
+            raw_device,
+        })))
+    }
+
+    /// Expose the volume's validated fs-verity descriptor to union filesystems
+    /// without creating a second digest implementation. # C: O(descriptor + chain)
+    fn verity_digest(&self, inode: &Inode) -> KResult<Option<(u8, Vec<u8>)>> {
+        let node = Self::node(inode)?;
+        let live = node.live()?;
+        if !live.verity() { return Ok(None); }
+        let info = node.fs.volume.lock().verity_info(&live, node.ino).map_err(errno_to_vfs)?;
+        Ok(Some((info.params.hash_alg, info.file_digest)))
+    }
+
+    /// `file_update_time` for buffered and shared-mapping writes. The inode
+    /// stamp is persisted by the same volume owner that serves setattr and
+    /// fallocate, so mapped writes cannot create a second timestamp truth.
+    /// # C: O(1 block)
+    fn update_time(&self, inode: &Inode, now: vfs::Timespec64, flags: u32) -> KResult<()> {
+        let node = Self::node(inode)?;
+        if !node.fs.is_writable() { return Err(VfsError::Erofs); }
+        vfs::generic_update_time(inode, now, flags)?;
+        if flags & (vfs::S_MTIME | vfs::S_CTIME) != 0 {
+            let stamp = (now.sec.max(0) as u64, now.nsec);
+            node.fs.volume_now().stamp_modified(node.ino, stamp).map_err(errno_to_vfs)?;
+        }
+        Ok(())
+    }
+
     /// The generic ioctl stage's file-attribute pair, which is where the flag
     /// commands land for every filesystem. # C: O(1 block)
     fn fileattr_get(&self, inode: &Inode) -> KResult<vfs::FileAttr> {
@@ -348,6 +402,14 @@ impl InodeOps for F2fsOps {
 }
 
 impl FileOps for F2fsOps {
+    /// Linux f2fs replaces the generic sequential readahead factor with its
+    /// live per-mount `seq_file_ra_mul` control.
+    /// # C: O(1)
+    fn sequential_ra_multiplier(&self, file: &vfs::File) -> u32 {
+        F2fsOps::node(file.inode()).map(|node| node.fs.volume.lock().seq_file_ra_mul())
+            .unwrap_or(2)
+    }
+
     /// The typed ioctl stage: the version, label and trim commands the
     /// interface carries for every filesystem. This filesystem's OWN commands
     /// do not come through here — they carry their own numbers and reach

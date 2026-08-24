@@ -28,27 +28,6 @@ pub fn prot_bits(p: vmm::VmaProt) -> u64 {
     out
 }
 
-/// `perf_event_mmap(vma)` for every mapping an `execve` installed.
-///
-/// The reference gets these for free: `elf_map()` goes through `do_mmap()`, so
-/// a PT_LOAD is reported by the same VMA-layer code that reports an `mmap(2)`.
-/// oxide's emitter sits above the VMA layer, so the loader hands back what it
-/// mapped and this runs the same records over it.
-///
-/// Without it a sample taken in the main executable — the common case for
-/// `PERF_SAMPLE_IP` — names no object at all, because the binary's own
-/// segments never went through `mmap(2)`. The interpreter's DSOs always did.
-/// # C: O(mappings × events)
-pub fn note_exec_mappings(maps: &[elf_load::ImageMapping]) {
-    for m in maps {
-        let (name, ino) = match m.file.as_ref() {
-            Some(f) => (f.map_path().unwrap_or(&[]), f.ino()),
-            None    => (&[][..], 0),
-        };
-        note_mmap(m.addr, m.len, m.pgoff, prot_bits(m.prot), MAP_PRIVATE, name, m.dev, ino);
-    }
-}
-
 /// Who the record is about and which CPU it is attributed to.
 fn who() -> Option<(u32, i32)> {
     let cur = sched::live::current()?;
@@ -76,6 +55,19 @@ pub fn note_mmap(addr: u64, len: u64, pgoff: u64, prot: u64, flags: u64,
         executable: prot & PROT_EXEC != 0,
         name,
     });
+}
+
+/// mm-vmm's VMA-layer callback. Internal VMA flags retain the mapping class
+/// needed by perf's mmap2 record; protection changes arrive here as well.
+pub fn note_vma_mmap(
+    addr: u64, len: u64, pgoff: u64, prot: vmm::VmaProt, flags: vmm::VmaFlags,
+    name: &[u8], dev: u64, ino: u64,
+) {
+    let mut map_flags = 0;
+    if flags.contains(vmm::VmaFlags::SHARED) { map_flags |= 1; }
+    if flags.contains(vmm::VmaFlags::PRIVATE) { map_flags |= MAP_PRIVATE; }
+    if flags.contains(vmm::VmaFlags::ANONYMOUS) { map_flags |= 0x20; }
+    note_mmap(addr, len, pgoff * hal::PAGE_SIZE_BYTES, prot_bits(prot), map_flags, name, dev, ino);
 }
 
 /// `perf_event_fork(child)`. # C: O(events)

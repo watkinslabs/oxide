@@ -99,6 +99,12 @@ impl Codec {
     pub fn adcs(&self) -> Vec<u8> {
         self.widgets.iter().filter(|w| w.is_adc() && !w.digital()).map(|w| w.nid).collect()
     }
+
+    /// Digital input converters are kept separate from analog ADCs because
+    /// Linux publishes them as a distinct PCM capture route.
+    pub fn digital_adcs(&self) -> Vec<u8> {
+        self.widgets.iter().filter(|w| w.is_adc() && w.digital()).map(|w| w.nid).collect()
+    }
 }
 
 /// Read one widget's connection list. # C: O(list length)

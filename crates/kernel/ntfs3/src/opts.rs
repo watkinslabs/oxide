@@ -10,6 +10,14 @@ use alloc::string::String;
 
 use syscall::errno::Errno;
 
+/// How NTFS named data streams are presented to callers.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StreamInterface {
+    None,
+    Xattr,
+    Windows,
+}
+
 /// Longest name this filesystem admits.
 pub const NTFS_NAME_MAX: u64 = crate::uapi::NTFS_NAME_LEN as u64;
 
@@ -34,10 +42,12 @@ pub struct Options {
     pub discard: bool,
     /// Whether the journal is replayed at mount.
     pub force: bool,
-    /// Whether alternate data streams are presented at all.
-    pub streams: bool,
+    /// How alternate data streams are presented.
+    pub streams: StreamInterface,
     /// Whether a compressed file may be created.
     pub compress: bool,
+    /// Whether regular files are created with sparse `$DATA` attributes.
+    pub sparse: bool,
     /// Whether every metadata write reaches the medium immediately.
     pub sync: bool,
 }
@@ -56,8 +66,9 @@ impl Options {
             case_sensitive: false,
             discard: false,
             force: false,
-            streams: true,
+            streams: StreamInterface::Xattr,
             compress: false,
+            sparse: false,
             sync: false,
         }
     }
@@ -116,7 +127,9 @@ fn one(o: &mut Options, key: &str, val: Option<&str>) -> Result<(), Errno> {
         "streams_interface" => o.streams = streams(need(val)?)?,
         "compress" => { flag(val)?; o.compress = true; }
         "nocompress" => { flag(val)?; o.compress = false; }
-        "sparse" | "nosparse" | "prealloc" | "noprealloc" | "hide_dot_files" => flag(val)?,
+        "sparse" => { flag(val)?; o.sparse = true; }
+        "nosparse" => { flag(val)?; o.sparse = false; }
+        "prealloc" | "noprealloc" | "hide_dot_files" => flag(val)?,
         _ => {}
     }
     Ok(())
@@ -150,10 +163,11 @@ fn charset(val: &str) -> Result<(), Errno> {
 }
 
 /// How alternate data streams are presented. # C: O(1)
-fn streams(val: &str) -> Result<bool, Errno> {
+fn streams(val: &str) -> Result<StreamInterface, Errno> {
     match val {
-        "none" => Ok(false),
-        "xattr" | "windows" => Ok(true),
+        "none" => Ok(StreamInterface::None),
+        "xattr" => Ok(StreamInterface::Xattr),
+        "windows" => Ok(StreamInterface::Windows),
         _ => Err(Errno::Einval),
     }
 }
@@ -174,8 +188,13 @@ pub fn show(o: &Options) -> String {
     if o.case_sensitive { s.push_str(",case_sensitive"); }
     if o.discard { s.push_str(",discard"); }
     if o.force { s.push_str(",force"); }
-    s.push_str(if o.streams { ",streams_interface=xattr" } else { ",streams_interface=none" });
+    s.push_str(match o.streams {
+        StreamInterface::None => ",streams_interface=none",
+        StreamInterface::Xattr => ",streams_interface=xattr",
+        StreamInterface::Windows => ",streams_interface=windows",
+    });
     if o.compress { s.push_str(",compress"); }
+    if o.sparse { s.push_str(",sparse"); }
     s
 }
 

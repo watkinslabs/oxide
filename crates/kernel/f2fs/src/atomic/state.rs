@@ -68,6 +68,12 @@ impl<S: SectorSource> Volume<S> {
         self.atomic.get(&ino).map(|a| a.write_cnt).unwrap_or(0)
     }
 
+    /// Highest simultaneous count of atomic-write operations. # C: O(1)
+    pub fn peak_atomic_write(&self) -> u64 { self.peak_atomic_write }
+
+    /// Reset the Linux writable peak counter. # C: O(1)
+    pub fn reset_peak_atomic_write(&mut self) { self.peak_atomic_write = 0; }
+
     /// Files with a span open, in inode order. # C: O(spans)
     pub fn atomic_files(&self) -> alloc::vec::Vec<u32> {
         self.atomic.keys().copied().collect()

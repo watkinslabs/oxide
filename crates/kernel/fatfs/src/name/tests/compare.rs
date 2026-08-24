@@ -1,6 +1,7 @@
 //! Which two names are one name, and which names may be stored at all.
 
-use crate::name::compare::{eq, eq_insensitive, eq_sensitive, fold_byte, striptail,
+use crate::name::compare::{eq, eq_insensitive, eq_insensitive_with, eq_sensitive, fold_byte,
+                           IoCharset, striptail,
                           striptail_len, validate};
 
 use syscall::errno::Errno;
@@ -50,6 +51,12 @@ fn folding_covers_the_latin_range_and_no_further() {
     // Two spellings of one Greek letter are two names, because their UTF-8
     // bytes fall outside the range the fold covers.
     assert!(!eq_insensitive("\u{3a3}", "\u{3c3}"));
+}
+
+#[test]
+fn iocharset_selects_the_long_name_fold_table() {
+    assert!(eq_insensitive_with("Ä", "ä", IoCharset::Iso88591));
+    assert!(!eq_insensitive_with("Ä", "ä", IoCharset::Utf8));
 }
 
 /// A character the format forbids, or a trailing space that a reader would

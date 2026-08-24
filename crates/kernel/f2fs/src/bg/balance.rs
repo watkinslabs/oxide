@@ -30,7 +30,7 @@ use crate::volume::Volume;
 pub const NAT_CACHE_THRESHOLD: usize = 100_000;
 /// Segments' worth of dirty metadata entries that make a checkpoint due.
 pub const DIRTY_THRESHOLD_SEGS: u64 = 4;
-/// Seconds between checkpoints on an otherwise quiet volume.
+/// Default seconds between checkpoints on an otherwise quiet volume.
 pub const CP_INTERVAL_SECS: u64 = 60;
 
 /// Whether `cached` dirty node-table entries out of a table of `max` is enough
@@ -109,7 +109,10 @@ pub fn balance_fs_choice(need: bool, excess_cached_nats: bool, enough_free_secs:
 impl<S: SectorSource> Volume<S> {
     /// Node-table entries this mount is holding that a checkpoint would
     /// retire. # C: O(1)
-    pub fn cached_nats(&self) -> usize { self.nat_dirty.len() }
+    pub fn cached_nats(&self) -> usize {
+        self.nat_dirty.len().saturating_add(self.nat_journal.len())
+            .saturating_add(self.nat_cache_count())
+    }
 
     /// Whether enough of the node table is dirty to be worth a checkpoint.
     /// # C: O(1)
@@ -140,7 +143,21 @@ impl<S: SectorSource> Volume<S> {
             0 => self.segstate.mounted_clock.unwrap_or(self.clock),
             at => at,
         };
-        self.clock.saturating_sub(base) > CP_INTERVAL_SECS
+        self.clock.saturating_sub(base) > self.cp_interval_secs
+    }
+
+    /// Periodic checkpoint interval in seconds. # C: O(1)
+    pub fn cp_interval(&self) -> u64 { self.cp_interval_secs }
+
+    /// Set the periodic checkpoint interval in seconds. # C: O(1)
+    pub fn set_cp_interval(&mut self, value: u64) { self.cp_interval_secs = value; }
+
+    /// Seconds allowed for the final unmount discard drain. # C: O(1)
+    pub fn umount_discard_timeout(&self) -> u64 { self.umount_discard_timeout_secs }
+
+    /// Set the final unmount discard drain timeout in seconds. # C: O(1)
+    pub fn set_umount_discard_timeout(&mut self, value: u64) {
+        self.umount_discard_timeout_secs = value;
     }
 
     /// Sections the allocator could still open. # C: O(main segments)
@@ -193,14 +210,14 @@ impl<S: SectorSource> Volume<S> {
     }
 
     /// What the background balance sees right now. # C: O(main segments)
-    pub fn bg_state(&self) -> BgState {
+    pub fn bg_state(&self, recent_io: bool) -> BgState {
         BgState {
             recovering: self.recovering,
             excess_dirty_nats: self.excess_dirty_nats(),
             excess_dirty_meta: self.excess_dirty_meta(),
             excess_prefree: self.excess_prefree(),
             space_for_roll_forward: self.space_for_roll_forward(),
-            recent_io: false,
+            recent_io,
             cp_time_over: self.cp_time_over(),
             excess_cached_nats: self.excess_cached_nats(),
         }
@@ -212,11 +229,11 @@ impl<S: SectorSource> Volume<S> {
     /// blocking path's job, and doing it here would stall the thread that is
     /// supposed to be keeping out of the way.
     /// # C: O(main segments), plus a checkpoint when one is due
-    pub fn balance_fs_bg(&mut self, _from_bg: bool) -> Result<(), Errno> {
+    pub fn balance_fs_bg(&mut self, _from_bg: bool, recent_io: bool) -> Result<(), Errno> {
         if !self.writable || self.recovering { return Ok(()); }
         self.load_segments()?;
-        if !needs_checkpoint(&self.bg_state()) { return Ok(()); }
-        self.commit()
+        if !needs_checkpoint(&self.bg_state(recent_io)) { return Ok(()); }
+        self.commit_background()
     }
 
     /// Keep the volume able to allocate, after an operation that used space.
@@ -225,7 +242,7 @@ impl<S: SectorSource> Volume<S> {
     /// operation that only touched bytes already allocated has not grown the
     /// caches and does not need them looked at.
     /// # C: O(main segments), plus a clean or a checkpoint when one is due
-    pub fn balance_fs(&mut self, need: bool) -> Result<(), Errno> {
+    pub fn balance_fs(&mut self, need: bool, recent_io: bool) -> Result<(), Errno> {
         // A checkpoint failure is not an error the caller can act on: the
         // volume stops instead, which is what keeps a filesystem that can no
         // longer describe itself from writing any more of itself down.
@@ -241,7 +258,7 @@ impl<S: SectorSource> Volume<S> {
         self.load_segments()?;
         let choice = balance_fs_choice(need, self.excess_cached_nats(),
                                        self.has_enough_free_secs(0, 0));
-        if choice.background { self.balance_fs_bg(false)?; }
+        if choice.background { self.balance_fs_bg(false, recent_io)?; }
         if !choice.clean { return Ok(()); }
         // One section is what the caller needs to go on. Cleaning to the
         // reserve would make every short write pay for the whole shortfall.

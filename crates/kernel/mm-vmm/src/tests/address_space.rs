@@ -140,6 +140,31 @@ fn fork_kernel_bytes_outlives_parent() {
     }
 }
 
+#[test]
+fn fork_kernel_pages_mapping_outlives_original_owner() {
+    let parent = AddressSpace::new(0).unwrap();
+    let h = UserVirtAddr::new(0x4100_0000).unwrap();
+    let pages: alloc::sync::Arc<[u64]> = alloc::sync::Arc::from(alloc::vec![
+        0x2000_0000, 0x3000_0000,
+    ].into_boxed_slice());
+    parent.mmap(Some(h), PAGE * 2, VmaProt::READ | VmaProt::WRITE,
+        VmaFlags::PRIVATE,
+        VmaBacking::KernelPages { pages: alloc::sync::Arc::clone(&pages), off: 0 },
+        false).unwrap();
+    let child = parent.fork(0).unwrap();
+    assert_eq!(alloc::sync::Arc::strong_count(&pages), 3);
+    drop(parent);
+    let v = child.find_vma(h).expect("old mapping remains after owner replacement");
+    match &v.backing {
+        VmaBacking::KernelPages { pages: mapped, off } => {
+            assert_eq!(*off, 0);
+            assert!(alloc::sync::Arc::ptr_eq(mapped, &pages));
+            assert_eq!(&mapped[..], &[0x2000_0000, 0x3000_0000]);
+        }
+        _ => panic!("expected KernelPages backing"),
+    }
+}
+
 // F156: topdown mmap places anon mappings in high-address arena.
 #[test]
 fn anon_mmap_uses_high_address_topdown() {

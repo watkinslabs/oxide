@@ -6,7 +6,7 @@
 // - `hierarchy`: mount/lookup/create/remove and directory surface helpers.
 // - `accounting`: proc/thread/memory/io/cpu accounting and freezer state.
 // - `hugetlb_types`: huge-page granule identity, counter pair, file tables.
-// - `hugetlb`: hugetlb charge/uncharge, limits, reparenting and its files.
+// - `hugetlb`: hugetlb charge/uncharge, limits, dying CSS lifetime and files.
 // - `files`: cgroup control-file read/write handling.
 
 mod accounting;

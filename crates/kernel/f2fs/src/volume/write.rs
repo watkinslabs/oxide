@@ -34,13 +34,20 @@ impl<S: SectorSource> Volume<S> {
     /// Segments held back from the allocator so the cleaner always has
     /// somewhere to move live blocks to.
     ///
-    /// What the volume was FORMATTED with, and nothing else. A volume that
-    /// reserves none is refused at mount rather than given a floor here: a
-    /// substituted one would report a reserve the volume does not have and
-    /// leave the cleaner with nowhere to move live blocks the first time the
-    /// volume filled.
+    /// The live reserve, seeded from the checkpoint and retunable through
+    /// `reserved_segments`. A volume that reserves none is refused at mount;
+    /// a later zero is still the value Linux's control asks the allocator to
+    /// use.
     /// # C: O(1)
-    pub(crate) fn gc_reserve(&self) -> u32 { self.cp.rsvd_segment_count }
+    pub(crate) fn gc_reserve(&self) -> u32 { self.reserved_segments }
+
+    /// Change the live segment reserve without rewriting the checkpoint.
+    /// # C: O(1)
+    pub(crate) fn set_reserved_segments(&mut self, value: u64) -> Result<(), Errno> {
+        if value > u64::from(u32::MAX) { return Err(Errno::Einval); }
+        self.reserved_segments = value as u32;
+        Ok(())
+    }
 
     /// Whether the volume has room for one more block, and for one more node
     /// when the block is a node's.
@@ -75,7 +82,8 @@ impl<S: SectorSource> Volume<S> {
         // the node reserve is in force; the block-only path always does.
         let cap = !node || r.nodes != 0;
         let allow = crate::reserve::allow_reserved_root(&r, caller.as_ref(), quota_file, cap);
-        let avail = crate::reserve::available_blocks(self.cp.user_block_count, &r, allow);
+        let ordinary = self.cp.user_block_count.saturating_sub(self.current_reserved_blocks);
+        let avail = crate::reserve::available_blocks(ordinary, &r, allow);
         if self.valid_block_count + 1 > avail { return Err(Errno::Enospc); }
         if node {
             let total = u64::from(self.max_nid()).saturating_sub(u64::from(RESERVED_NODE_NUM));
@@ -147,12 +155,33 @@ impl<S: SectorSource> Volume<S> {
         let addr = self.curseg[log].next_addr(self.sb.main_blkaddr);
         self.curseg[log].set_summary(slot, sum);
         self.advance(log);
+        if !kind.is_node()
+            && self.curseg[log].alloc_type == ALLOC_LFS
+            && self.opts.mode == crate::opts::Mode::Fragment(crate::opts::Fragment::Block)
+        {
+            self.randomize_fragment_chunk(log);
+        }
         self.update_seg(addr, true)?;
         self.update_seg(old, false)?;
         self.note_discard(old);
         if !self.curseg_has_room(log) { self.open_segment(log)?; }
         self.dirty = true;
         Ok(addr)
+    }
+
+    /// Linux's block-fragmentation mode leaves a random hole after each
+    /// random-sized run of data blocks. The skipped blocks remain unallocated;
+    /// the next allocation therefore opens a real physical gap. # C: O(1)
+    fn randomize_fragment_chunk(&mut self, log: usize) {
+        let remained = &mut self.curseg[log].fragment_remained_chunk;
+        if *remained > 1 {
+            *remained -= 1;
+            return;
+        }
+        *remained = crng::next_u64() as u32 % self.max_fragment_chunk + 1;
+        let hole = crng::next_u64() as u32 % self.max_fragment_hole + 1;
+        self.curseg[log].next_blkoff = self.curseg[log].next_blkoff
+            .saturating_add(hole as u16);
     }
 
     /// Move a log past the block it just handed out.
@@ -227,6 +256,7 @@ impl<S: SectorSource> Volume<S> {
         curseg::stamp_node_temp(&mut block, kind);
         if nid == ino { self.seal_inode(&mut block); }
         if was_new {
+            self.nat_cache_forget(nid);
             self.nat_dirty.insert(nid, NatEntry { version: 0, ino, block_addr: NEW_ADDR });
             // The id is a live node now, so the cache stops holding it: an id
             // left recorded as handed out is one the failure path could give
@@ -382,6 +412,7 @@ impl<S: SectorSource> Volume<S> {
             }
             Err(_) => false,
         };
+        self.nat_cache_forget(nid);
         self.nat_dirty.insert(nid, NatEntry { version: 0, ino: 0, block_addr: NULL_ADDR });
         if live { self.valid_node_count = self.valid_node_count.saturating_sub(1); }
         if nid < self.next_free_nid { self.next_free_nid = nid; }

@@ -26,9 +26,23 @@ pub struct Attribute {
     pub name: Vec<u16>,
     pub flags: u16,
     pub id: u16,
+    /// MFT record that owns this header. Attribute-list continuations live in
+    /// extension records, so an offset alone is not enough to read a body.
+    pub record: u64,
     /// Where the header sits in the record.
     pub offset: usize,
     pub body: Body,
+}
+
+/// One decoded `$ATTRIBUTE_LIST` entry.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ListEntry {
+    pub ty: u32,
+    pub name: Vec<u16>,
+    pub vcn: u64,
+    pub record: u64,
+    pub sequence: u16,
+    pub id: u16,
 }
 
 /// What the header carries beyond the common part.
@@ -189,15 +203,48 @@ pub fn parse(bytes: &[u8], at: usize) -> Option<Attribute> {
             indexed: bytes[at + RES_OFF_FLAGS] & RESIDENT_FLAG_INDEXED != 0,
         }
     };
-    Some(Attribute { ty, size, non_resident, name, flags, id, offset: at, body })
+    Some(Attribute { ty, size, non_resident, name, flags, id, record: 0, offset: at, body })
 }
 
 /// Every attribute in a record, in order. # C: O(record bytes)
 pub fn parse_all(bytes: &[u8], header: &crate::record::RecordHeader) -> Vec<Attribute> {
     crate::record::attribute_offsets(bytes, header)
         .into_iter()
-        .filter_map(|at| parse(bytes, at))
+        .filter_map(|at| parse(bytes, at).map(|mut attr| {
+            attr.record = u64::from(header.record_number);
+            attr
+        }))
         .collect()
+}
+
+/// Decode the packed entries in an attribute-list value. # C: O(list bytes)
+pub fn list_entries(bytes: &[u8]) -> Result<Vec<ListEntry>, syscall::errno::Errno> {
+    let mut out = Vec::new();
+    let mut at = 0usize;
+    while at < bytes.len() {
+        if bytes.len() - at < 0x20 { return Err(syscall::errno::Errno::Eio); }
+        let ty = le32(bytes, at);
+        let size = usize::from(le16(bytes, at + 4));
+        let name_len = usize::from(bytes[at + 6]);
+        let name_off = usize::from(bytes[at + 7]);
+        let end = at.checked_add(size).ok_or(syscall::errno::Errno::Eio)?;
+        let name_end = name_off.checked_add(name_len * 2).ok_or(syscall::errno::Errno::Eio)?;
+        if size < 0x20 || size % 8 != 0 || end > bytes.len() || name_off < 0x1a || name_end > size {
+            return Err(syscall::errno::Errno::Eio);
+        }
+        let mut name = Vec::with_capacity(name_len);
+        for i in 0..name_len { name.push(le16(bytes, at + name_off + i * 2)); }
+        out.push(ListEntry {
+            ty,
+            name,
+            vcn: le64(bytes, at + 8),
+            record: u64::from(le32(bytes, at + 0x10)) | (u64::from(le16(bytes, at + 0x14)) << 32),
+            sequence: le16(bytes, at + 0x16),
+            id: le16(bytes, at + 0x18),
+        });
+        at = end;
+    }
+    Ok(out)
 }
 
 /// The attribute of `ty` whose name is `name`, or `None`.

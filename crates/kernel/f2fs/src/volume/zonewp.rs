@@ -17,7 +17,115 @@ use crate::zoned::wp;
 
 use super::Volume;
 
+/// Keep the new-section search unconstrained by a boundary.
+pub const ALLOCATE_FORWARD_NOHINT: u32 = 0;
+/// Search from the beginning after crossing the boundary.
+pub const ALLOCATE_FORWARD_WITHIN_HINT: u32 = 1;
+/// Never search before the boundary.
+pub const ALLOCATE_FORWARD_FROM_HINT: u32 = 2;
+/// Prefer free sections in sequential zones.
+pub const BLKZONE_ALLOC_PRIOR_SEQ: u32 = 0;
+/// Refuse free sections in conventional zones while zoned allocation applies.
+pub const BLKZONE_ALLOC_ONLY_SEQ: u32 = 1;
+/// Prefer free sections in conventional zones.
+pub const BLKZONE_ALLOC_PRIOR_CONV: u32 = 2;
+
 impl<S: SectorSource> Volume<S> {
+    /// Boundary section used by forward allocation. # C: O(1)
+    pub fn allocate_section_hint(&self) -> u32 { self.allocate_section_hint }
+
+    /// Set the forward-allocation boundary. # C: O(1)
+    pub fn set_allocate_section_hint(&mut self, value: u64) -> Result<(), Errno> {
+        if value > u64::from(u32::MAX) { return Err(Errno::Einval); }
+        self.allocate_section_hint = value as u32;
+        Ok(())
+    }
+
+    /// Forward allocation policy. # C: O(1)
+    pub fn allocate_section_policy(&self) -> u32 { self.allocate_section_policy }
+
+    /// Set the forward-allocation policy. # C: O(1)
+    pub fn set_allocate_section_policy(&mut self, value: u64) -> Result<(), Errno> {
+        if value > u64::from(ALLOCATE_FORWARD_FROM_HINT) { return Err(Errno::Einval); }
+        self.allocate_section_policy = value as u32;
+        Ok(())
+    }
+
+    /// Zoned regular-allocation preference. # C: O(1)
+    pub fn blkzone_alloc_policy(&self) -> u32 { self.blkzone_alloc_policy }
+
+    /// Set the zoned regular-allocation preference. # C: O(1)
+    pub fn set_blkzone_alloc_policy(&mut self, value: u64) -> Result<(), Errno> {
+        if value > u64::from(BLKZONE_ALLOC_PRIOR_CONV) { return Err(Errno::Einval); }
+        self.blkzone_alloc_policy = value as u32;
+        Ok(())
+    }
+
+    /// Apply Linux's boundary policy to a section search hint. # C: O(1)
+    pub(crate) fn section_search_hint(&self, hint: u32) -> u32 {
+        let per = self.sb.segs_per_sec.max(1);
+        let mut section = crate::pin::section::section_first(hint, per) / per;
+        let boundary = self.allocate_section_hint.min(self.sb.section_count);
+        match self.allocate_section_policy {
+            ALLOCATE_FORWARD_FROM_HINT if section < boundary => section = boundary,
+            ALLOCATE_FORWARD_WITHIN_HINT if section >= boundary => section = 0,
+            _ => {}
+        }
+        section.saturating_mul(per)
+    }
+
+    /// Whether a section begins in a sequential zone, when geometry says so.
+    /// # C: O(1)
+    pub(crate) fn section_is_sequential(&self, first: u32) -> Option<bool> {
+        let geometry = self.zoned.as_ref()?;
+        if geometry.blocks_per_zone == 0 { return None; }
+        let block = u64::from(self.sb.main_blkaddr)
+            + u64::from(first) * u64::from(self.sb.blks_per_seg());
+        let (dev, local) = self.devs.target(u32::try_from(block).ok()?);
+        Some(geometry.is_seq(dev, (local / geometry.blocks_per_zone) as usize))
+    }
+
+    /// First free section of the requested zone kind after `hint`. # C: O(main sections)
+    fn find_free_section_kind(&self, hint: u32, sequential: bool) -> Option<u32> {
+        let per = self.sb.segs_per_sec.max(1);
+        let sections = self.sb.segment_count_main / per;
+        let from = crate::pin::section::section_first(hint, per) / per;
+        (from..sections).map(|section| section * per).find(|&first| {
+            crate::pin::section::section_is_free(
+                first, per, self.sb.segment_count_main, |seg| self.seg_is_free(seg),
+            ) && self.section_is_sequential(first) == Some(sequential)
+        })
+    }
+
+    /// Apply Linux's zoned allocation preference to a regular search.
+    /// # C: O(main sections)
+    fn find_policy_section(&self, hint: u32) -> Option<u32> {
+        if self.zoned.is_none() { return self.find_free_section(hint); }
+        match self.blkzone_alloc_policy {
+            BLKZONE_ALLOC_ONLY_SEQ => {
+                let first_seq = self.find_first_sequential_section();
+                self.find_free_section_kind(first_seq, true)
+            }
+            BLKZONE_ALLOC_PRIOR_CONV => {
+                self.find_free_section_kind(0, false)
+                    .or_else(|| self.find_free_section(0))
+            }
+            _ => {
+                let first_seq = self.find_first_sequential_section();
+                self.find_free_section_kind(hint.max(first_seq), true)
+                    .or_else(|| self.find_free_section(0))
+            }
+        }
+    }
+
+    /// First section whose drive zone is sequential. # C: O(main sections)
+    fn find_first_sequential_section(&self) -> u32 {
+        let per = self.sb.segs_per_sec.max(1);
+        (0..self.sb.segment_count_main).step_by(per as usize)
+            .find(|&first| self.section_is_sequential(first) == Some(true))
+            .unwrap_or(self.sb.segment_count_main)
+    }
+
     /// Whether a current log stands in the section beginning at `first`.
     ///
     /// A log's own zone is not reconciled by the zone sweep — it is settled
@@ -161,7 +269,8 @@ impl<S: SectorSource> Volume<S> {
         if !self.recovering && self.free_segment_count() <= reserve + per {
             let _ = self.collect(reserve + per + 1);
         }
-        let first = self.find_free_section(hint).ok_or(Errno::Enospc)?;
+        let first = self.find_policy_section(self.section_search_hint(hint))
+            .ok_or(Errno::Enospc)?;
         self.curseg[log].segno = first;
         self.curseg[log].next_blkoff = 0;
         self.curseg[log].alloc_type = ALLOC_LFS;

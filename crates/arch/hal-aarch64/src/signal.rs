@@ -20,6 +20,28 @@ use crate::SvcFrame;
 
 mod records;
 
+/// HAL-local exception-table usercopy. The kernel `uaccess` crate depends on
+/// this HAL, so signal code uses the primitive directly at this layer.
+fn copy_to_user(dst: u64, src: &[u8]) -> bool {
+    unsafe { crate::raw_copy_to_user(dst as *mut u8, src.as_ptr(), src.len()) == 0 }
+}
+
+fn copy_from_user(dst: &mut [u8], src: u64) -> bool {
+    unsafe { crate::raw_copy_from_user(dst.as_mut_ptr(), src as *const u8, dst.len()) == 0 }
+}
+
+fn object_bytes<T>(value: &T) -> &[u8] {
+    unsafe { core::slice::from_raw_parts((value as *const T).cast::<u8>(), core::mem::size_of::<T>()) }
+}
+
+fn put_u64_user(dst: u64, value: u64) -> bool {
+    copy_to_user(dst, &value.to_ne_bytes())
+}
+
+fn put_object_user<T>(dst: u64, value: &T) -> bool {
+    copy_to_user(dst, object_bytes(value))
+}
+
 const SIGCONTEXT_RESERVED_BYTES: usize = records::RESERVED_BYTES;
 /// AAPCS64 requires `sp % 16 == 0` at every public function entry (`54§3.4`).
 const FRAME_ALIGN: u64 = 16;
@@ -245,33 +267,29 @@ pub unsafe fn build_signal_frame(frame: *mut SvcFrame, handler: u64, restorer: u
     // C213 traced a whole class of heap corruption to exactly that overflow.
     let uc = new_sp + core::mem::offset_of!(RtSigframe, uc) as u64;
     let mc = uc + core::mem::offset_of!(Ucontext, uc_mcontext) as u64;
-    // SAFETY: every address below lies inside `[new_sp, l.top)`, which `sigframe_range` proved is user memory ending at or below USER_VA_END; EL1 writes reach the caller's own EL0 stack through the active TTBR0; each offset comes from `offset_of!` on the repr(C) types the restore reads back.
-    unsafe {
-        let u64_at = |off: u64, v: u64| core::ptr::write_volatile((uc + off) as *mut u64, v);
-        u64_at(core::mem::offset_of!(Ucontext, uc_flags) as u64, 0);
-        u64_at(core::mem::offset_of!(Ucontext, uc_link) as u64, 0);
-        // Linux `save_altstack_ex`: `uc_stack` records the alt-stack state as
-        // of frame build, so `rt_sigreturn`'s `restore_altstack` re-arms an
-        // SS_AUTODISARM stack the handler ran on.
-        core::ptr::write_volatile((uc + core::mem::offset_of!(Ucontext, uc_stack) as u64) as *mut StackT,
-                                  StackT { ss_sp: alt.sp, ss_flags: alt.flags, _pad: 0, ss_size: alt.size });
-        u64_at(core::mem::offset_of!(Ucontext, uc_sigmask) as u64, old_sigmask);
-        // glibc's sigset_t is 1024 bits; Linux copies only the kernel's 8 and
-        // leaves the rest as-is. Zeroed here so a handler that reads the full
-        // glibc-sized mask never sees its own stale stack bytes.
-        let pad = uc + core::mem::offset_of!(Ucontext, __unused) as u64;
-        for i in 0..(SIGMASK_PAD_BYTES as u64 / 8) { core::ptr::write_volatile((pad + i * 8) as *mut u64, 0); }
-
-        let mc_at = |off: u64, v: u64| core::ptr::write_volatile((mc + off) as *mut u64, v);
-        mc_at(core::mem::offset_of!(Sigctx, fault_address) as u64, 0);
-        let rbase = mc + core::mem::offset_of!(Sigctx, regs) as u64;
-        for (i, r) in regs.iter().enumerate() { core::ptr::write_volatile((rbase + (i as u64) * 8) as *mut u64, *r); }
-        mc_at(core::mem::offset_of!(Sigctx, sp) as u64, saved_sp);
-        mc_at(core::mem::offset_of!(Sigctx, pc) as u64,
-              if restart { saved_pc.saturating_sub(SVC_INSTRUCTION_BYTES) } else { saved_pc });
-        mc_at(core::mem::offset_of!(Sigctx, pstate) as u64, saved_pstate);
-        mc_at(core::mem::offset_of!(Sigctx, __pad) as u64, 0);
+    // Linux's `__put_user_error` writes each member through the exception
+    // table. The range check above is admission only; each copy can still
+    // recover if the caller unmaps a stack page during delivery.
+    let stack = StackT { ss_sp: alt.sp, ss_flags: alt.flags, _pad: 0, ss_size: alt.size };
+    let mut ok = put_u64_user(uc + core::mem::offset_of!(Ucontext, uc_flags) as u64, 0)
+        && put_u64_user(uc + core::mem::offset_of!(Ucontext, uc_link) as u64, 0)
+        && put_object_user(uc + core::mem::offset_of!(Ucontext, uc_stack) as u64, &stack)
+        && put_u64_user(uc + core::mem::offset_of!(Ucontext, uc_sigmask) as u64, old_sigmask);
+    let pad = uc + core::mem::offset_of!(Ucontext, __unused) as u64;
+    for i in 0..(SIGMASK_PAD_BYTES as u64 / 8) {
+        ok = ok && put_u64_user(pad + i * 8, 0);
     }
+    ok = ok && put_u64_user(mc + core::mem::offset_of!(Sigctx, fault_address) as u64, 0);
+    let rbase = mc + core::mem::offset_of!(Sigctx, regs) as u64;
+    for (i, r) in regs.iter().enumerate() {
+        ok = ok && put_u64_user(rbase + (i as u64) * 8, *r);
+    }
+    ok = ok && put_u64_user(mc + core::mem::offset_of!(Sigctx, sp) as u64, saved_sp)
+        && put_u64_user(mc + core::mem::offset_of!(Sigctx, pc) as u64,
+                        if restart { saved_pc.saturating_sub(SVC_INSTRUCTION_BYTES) } else { saved_pc })
+        && put_u64_user(mc + core::mem::offset_of!(Sigctx, pstate) as u64, saved_pstate)
+        && put_u64_user(mc + core::mem::offset_of!(Sigctx, __pad) as u64, 0);
+    if !ok { return false; }
     // Linux `preserve_fpsimd_context` + the null terminator, written in place
     // in the user frame. Without this the frame is one `restore_sigframe`
     // rejects outright, AND a handler calling any NEON-optimised glibc routine
@@ -281,30 +299,26 @@ pub unsafe fn build_signal_frame(frame: *mut SvcFrame, handler: u64, restorer: u
     // the process already had there, exactly as Linux leaves it — the parser
     // stops at the terminator and the bytes are the caller's own stack.
     // SAFETY: `mc + __reserved` through +4096 is inside the span `sigframe_range` validated; EL1 writes reach the caller's EL0 stack via the active TTBR0; the slice is plain bytes aliasing no kernel object.
-    let reserved = unsafe {
-        core::slice::from_raw_parts_mut(
-            (mc + core::mem::offset_of!(Sigctx, __reserved) as u64) as *mut u8,
-            SIGCONTEXT_RESERVED_BYTES)
-    };
+    let mut reserved = alloc::vec![0u8; SIGCONTEXT_RESERVED_BYTES];
     if fpu.len() >= crate::FPU_STATE_BYTES {
         let (fpcr, fpsr) = fpcr_fpsr(fpu);
         let por = crate::por::poe_enabled().then(crate::por::read_por);
-        if !records::write_chain(reserved, &fpu[..crate::FPU_VREGS_BYTES], fpcr, fpsr, por) { return false; }
+        if !records::write_chain(&mut reserved, &fpu[..crate::FPU_VREGS_BYTES], fpcr, fpsr, por) { return false; }
     } else {
         // No FPU image to carry: still terminate the chain, or the parser
         // walks whatever the process left in `__reserved`.
-        records::write_terminator(reserved);
+        records::write_terminator(&mut reserved);
     }
+    if !copy_to_user(mc + core::mem::offset_of!(Sigctx, __reserved) as u64, &reserved) { return false; }
     let mut info = [0u8; 128];
     hal::write_siginfo(&mut info, sig, payload);
-    // SAFETY: `new_sp + 128` is inside the validated span; EL1 write via the caller's TTBR0; `info` is a fully-initialised local byte array.
-    unsafe { core::ptr::write_volatile(new_sp as *mut [u8; 128], info); }
+    if !copy_to_user(new_sp, &info) { return false; }
     // Linux `setup_sigframe`: "set up the stack frame for unwinding" — the
     // AAPCS64 `{ fp, lr }` pair holding the INTERRUPTED frame's x29/x30, with
     // x29 below pointed at it. Without it a backtrace from inside a handler
     // stops at the handler.
-    // SAFETY: `l.next_frame + 16 == l.top <= USER_VA_END` was proved by `sigframe_range` above; 16-aligned by construction; EL1 writes reach the caller's own EL0 stack through the active TTBR0.
-    unsafe { core::ptr::write_volatile(l.next_frame as *mut [u64; 2], [saved_x29, saved_x30]); }
+    let next_frame = [saved_x29, saved_x30];
+    if !copy_to_user(l.next_frame, object_bytes(&next_frame)) { return false; }
 
     let info_ptr = new_sp + core::mem::offset_of!(RtSigframe, info) as u64;
     let uc_ptr   = new_sp + core::mem::offset_of!(RtSigframe, uc) as u64;
@@ -387,23 +401,29 @@ pub unsafe fn restore_signal_frame(frame: *mut SvcFrame, fpu: &mut [u8])
         .filter(|end| *end <= hal::USER_VA_END).is_none() { return None; }
     let uc_base = frame_base + core::mem::offset_of!(RtSigframe, uc) as u64;
     let mc_base = uc_base + core::mem::offset_of!(Ucontext, uc_mcontext) as u64;
-    let st_ptr = (uc_base + core::mem::offset_of!(Ucontext, uc_stack) as u64) as *const StackT;
-    // Read the scalars ONE AT A TIME — Linux `__get_user_error` per member —
-    // never `read_volatile` of the whole `Sigctx`. That struct is 4384 bytes
-    // and LLVM turned a single by-value read of it into a 21 KiB stack frame,
-    // which overflows a 16 KiB guard-paged kstack on the first sigreturn.
-    // SAFETY: every address below is inside `[frame_base, frame_base + sizeof(RtSigframe))`, proved above to end at or below USER_VA_END; EL1 reads run through the caller's TTBR0 so they read the calling process's own stack; offsets come from `offset_of!` on the repr(C) types the build path wrote.
-    let rd = |off: u64| unsafe { core::ptr::read_volatile((mc_base + off) as *const u64) };
+    let st_ptr = uc_base + core::mem::offset_of!(Ucontext, uc_stack) as u64;
+    // Read the scalars through exception-table usercopy. Never materialize the
+    // 4384-byte `Sigctx` on the kernel stack: the old by-value read became a
+    // 21 KiB frame and overflowed the 16 KiB guard-paged kstack.
+    let mut rd_bytes = [0u8; 8];
+    let rd = |off: u64, bytes: &mut [u8; 8]| copy_from_user(bytes, mc_base + off);
     let mut regs = [0u64; 31];
     let rbase = core::mem::offset_of!(Sigctx, regs) as u64;
-    for (i, r) in regs.iter_mut().enumerate() { *r = rd(rbase + (i as u64) * 8); }
-    let mc_sp     = rd(core::mem::offset_of!(Sigctx, sp) as u64);
-    let mc_pc     = rd(core::mem::offset_of!(Sigctx, pc) as u64);
-    let mc_pstate = rd(core::mem::offset_of!(Sigctx, pstate) as u64);
-    // SAFETY: uc_sigmask lies inside the same validated frame_base region, read through the caller's TTBR0 exactly like the scalars above.
-    let sigmask = unsafe { core::ptr::read_volatile((uc_base + core::mem::offset_of!(Ucontext, uc_sigmask) as u64) as *const u64) };
-    // SAFETY: st_ptr is uc_stack inside the same validated frame_base region; EL1 read via the caller's TTBR0, identical validity to the reads above.
-    let st = unsafe { core::ptr::read_volatile(st_ptr) };
+    for (i, r) in regs.iter_mut().enumerate() {
+        if !rd(rbase + (i as u64) * 8, &mut rd_bytes) { return None; }
+        *r = u64::from_ne_bytes(rd_bytes);
+    }
+    if !rd(core::mem::offset_of!(Sigctx, sp) as u64, &mut rd_bytes) { return None; }
+    let mc_sp = u64::from_ne_bytes(rd_bytes);
+    if !rd(core::mem::offset_of!(Sigctx, pc) as u64, &mut rd_bytes) { return None; }
+    let mc_pc = u64::from_ne_bytes(rd_bytes);
+    if !rd(core::mem::offset_of!(Sigctx, pstate) as u64, &mut rd_bytes) { return None; }
+    let mc_pstate = u64::from_ne_bytes(rd_bytes);
+    if !copy_from_user(&mut rd_bytes, uc_base + core::mem::offset_of!(Ucontext, uc_sigmask) as u64) { return None; }
+    let sigmask = u64::from_ne_bytes(rd_bytes);
+    let mut stack_bytes = [0u8; core::mem::size_of::<StackT>()];
+    if !copy_from_user(&mut stack_bytes, st_ptr) { return None; }
+    let st = unsafe { core::ptr::read_unaligned(stack_bytes.as_ptr().cast::<StackT>()) };
     if mc_pc >= hal::USER_VA_END || mc_sp >= hal::USER_VA_END { return None; }
     // Linux `restore_sigframe`: `err |= !valid_user_regs(&regs->user_regs,
     // current)` and `rt_sigreturn` then `goto badframe` → `force_sig(SIGSEGV)`.
@@ -417,14 +437,10 @@ pub unsafe fn restore_signal_frame(frame: *mut SvcFrame, fpu: &mut [u8])
     if !accepted { return None; }
     // The chain is walked IN PLACE in user memory for the same reason: a
     // kernel-stack copy of `__reserved` is 4096 bytes on its own.
-    // SAFETY: `__reserved` spans 4096 bytes inside the region proved to end at or below USER_VA_END; EL1 reads reach the caller's own EL0 stack via the active TTBR0; the slice is plain bytes aliasing no kernel object.
-    let reserved = unsafe {
-        core::slice::from_raw_parts(
-            (mc_base + core::mem::offset_of!(Sigctx, __reserved) as u64) as *const u8,
-            SIGCONTEXT_RESERVED_BYTES)
-    };
+    let mut reserved = alloc::vec![0u8; SIGCONTEXT_RESERVED_BYTES];
+    if !copy_from_user(&mut reserved, mc_base + core::mem::offset_of!(Sigctx, __reserved) as u64) { return None; }
     // SAFETY: `restore_fpsimd` proves any `extra_context` span lies below USER_VA_END before touching it; the same TTBR0 contract applies.
-    let (fpu_dirty, por) = unsafe { restore_fpsimd(reserved, frame_base, fpu) }?;
+    let (fpu_dirty, por) = unsafe { restore_fpsimd(&reserved, frame_base, fpu) }?;
     if let Some(por) = por { crate::por::write_por(por); }
     // Restore x0..x30 into the scattered SvcFrame slots.
     for i in 0..18 { frame.gp[i] = regs[i]; }
@@ -454,12 +470,18 @@ unsafe fn restore_fpsimd(reserved: &[u8], frame_base: u64, fpu: &mut [u8]) -> Op
     let reserved_va = frame_base.checked_add(RESERVED_IN_FRAME as u64)?;
     let poe_enabled = crate::por::poe_enabled();
     let scan = records::scan_region(reserved, reserved_va, frame_base, false, false, false, poe_enabled).ok()?;
-    let (region, hit, por) = match scan.rebase {
-        None => (reserved, scan.fpsimd, match scan.poe { Some((off, size)) => Some(records::read_poe(reserved, off, size).ok()?), None => None }),
+    let extra_storage = match scan.rebase {
+        None => None,
         Some((datap, size)) => {
             datap.checked_add(size as u64).filter(|e| *e <= hal::USER_VA_END)?;
-            // SAFETY: `[datap, datap+size)` was just proved to end at or below USER_VA_END and EL1 reads run through the caller's active TTBR0, so this reads the calling process's own memory.
-            let extra = unsafe { core::slice::from_raw_parts(datap as *const u8, size) };
+            let mut extra = alloc::vec![0u8; size];
+            if !copy_from_user(&mut extra, datap) { return None; }
+            Some(extra)
+        }
+    };
+    let (region, hit, por) = match (&extra_storage, scan.rebase) {
+        (None, None) => (reserved, scan.fpsimd, match scan.poe { Some((off, size)) => Some(records::read_poe(reserved, off, size).ok()?), None => None }),
+        (Some(extra), Some((datap, _size))) => {
             let s2 = records::scan_region(extra, datap, frame_base, scan.fpsimd.is_some(), scan.poe.is_some(), true, poe_enabled).ok()?;
             let por = match (scan.poe, s2.poe) {
                 (Some((off, size)), None) => Some(records::read_poe(reserved, off, size).ok()?),
@@ -468,12 +490,13 @@ unsafe fn restore_fpsimd(reserved: &[u8], frame_base: u64, fpu: &mut [u8]) -> Op
             };
             let (region, hit) = match (scan.fpsimd, s2.fpsimd) {
                 (Some(h), None) => (reserved, Some(h)),
-                (None, Some(h)) => (extra, Some(h)),
+                (None, Some(h)) => (extra.as_slice(), Some(h)),
                 (None, None)    => (reserved, None),
                 (Some(_), Some(_)) => return None,
             };
             (region, hit, por)
         }
+        _ => return None,
     };
     let (off, size) = hit?;   // `!user.fpsimd` ⇒ -EINVAL
     let (fpsr, fpcr, vregs) = records::read_fpsimd(region, off, size).ok()?;

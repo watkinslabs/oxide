@@ -47,7 +47,42 @@ impl IoPrio {
     /// best-effort, at the middle level, so a checkpoint neither starves
     /// ordinary traffic nor waits behind all of it.
     /// # C: O(1)
-    pub const fn at_start() -> Self { Self { class: IoClass::BestEffort, level: 3 } }
+    pub const fn at_start() -> Self { Self { class: IoClass::RealTime, level: 3 } }
+
+    /// The scheduler's packed priority value for this control.
+    /// # C: O(1)
+    #[cfg(target_os = "oxide-kernel")]
+    pub fn packed(self) -> i32 {
+        let class = match self.class {
+            IoClass::RealTime => sched::ioprio::CLASS_RT,
+            IoClass::BestEffort => sched::ioprio::CLASS_BE,
+        };
+        sched::ioprio::prio_value(class, self.level as u32)
+    }
+
+    /// The sysfs spelling used by Linux f2fs.
+    /// # C: O(1)
+    pub fn name(self) -> &'static str {
+        match self.class {
+            IoClass::RealTime => "rt",
+            IoClass::BestEffort => "be",
+        }
+    }
+
+    /// Parse one Linux f2fs `ckpt_thread_ioprio` value.
+    /// # C: O(len)
+    pub fn parse(value: &[u8]) -> Result<Self, syscall::errno::Errno> {
+        let text = core::str::from_utf8(value).map_err(|_| syscall::errno::Errno::Einval)?.trim();
+        let (class, level) = text.split_once(',').ok_or(syscall::errno::Errno::Einval)?;
+        let class = match class {
+            "rt" => IoClass::RealTime,
+            "be" => IoClass::BestEffort,
+            _ => return Err(syscall::errno::Errno::Einval),
+        };
+        let level = level.parse::<u8>().map_err(|_| syscall::errno::Errno::Einval)?;
+        if level >= IOPRIO_LEVELS { return Err(syscall::errno::Errno::Einval); }
+        Ok(Self { class, level })
+    }
 }
 
 /// Everything the merge queue holds.

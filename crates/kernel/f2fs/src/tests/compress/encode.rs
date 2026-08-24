@@ -7,7 +7,8 @@ use crate::compress::algo::{COMPRESS_LZ4, COMPRESS_LZO, COMPRESS_LZORLE, COMPRES
                             COMPRESS_ZSTD};
 use crate::compress::cluster::COMPRESS_HEADER_SIZE;
 use crate::compress::{
-    decompress_cluster, encode, max_clen, Chksum, CompressError, Geometry, Stored,
+    decompress_cluster, decompress_cluster_into, encode, max_clen, Chksum, CompressError,
+    Geometry, Stored,
 };
 use crate::uapi::{le32, BLKSIZE};
 
@@ -48,6 +49,22 @@ fn a_compressible_cluster_comes_back_as_the_bytes_it_went_in_as() {
             let back = decompress_cluster(&g, &img.bytes).unwrap();
             assert_eq!(back.data, plain, "codec {algo} log {log}");
         }
+    }
+}
+
+#[test]
+fn speculative_decompression_can_reuse_one_preallocated_destination() {
+    let mut scratch = vec![0u8; 8 * BLKSIZE];
+    let ptr = scratch.as_mut_ptr();
+    for algo in CODECS {
+        let g = Geometry::new(algo, 2, 0).unwrap();
+        let plain = patterned(&g);
+        let Stored::Compressed(img) = encode::compress_cluster(&g, &plain).unwrap() else {
+            panic!("codec {algo} refused compressible input");
+        };
+        assert_eq!(decompress_cluster_into(&g, &img.bytes, &mut scratch).unwrap(), Chksum::Absent);
+        assert_eq!(&scratch[..g.bytes()], &plain);
+        assert_eq!(scratch.as_mut_ptr(), ptr, "readahead context moved");
     }
 }
 

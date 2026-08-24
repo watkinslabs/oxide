@@ -15,6 +15,7 @@ use crate::dirent::kind::{class_of, EntryKind};
 use crate::dirent::set::{self, EntrySet};
 use crate::name::{self, UniName};
 use crate::uapi::DENTRY_BYTES;
+use crate::uapi::{ALLOC_NO_FAT_CHAIN, EOF_CLUSTER};
 
 use super::Volume;
 
@@ -83,6 +84,25 @@ pub fn parse_dir(bytes: &[u8], dir: Chain) -> Vec<DirEntry> {
     out
 }
 
+fn parse_dir_strict(bytes: &[u8], dir: Chain) -> Result<Vec<DirEntry>, Errno> {
+    let mut out = Vec::new();
+    let mut at = 0usize;
+    while at + DENTRY_BYTES <= bytes.len() {
+        let record = &bytes[at..at + DENTRY_BYTES];
+        match class_of(record[0]) {
+            EntryKind::Unused => break,
+            EntryKind::File => {
+                let parsed = set::parse(&bytes[at..], at as u64).map_err(|_| Errno::Eio)?;
+                let span = parsed.entries * DENTRY_BYTES;
+                out.push(DirEntry { name: parsed.name(), set: parsed, dir });
+                at += span;
+            }
+            _ => at += DENTRY_BYTES,
+        }
+    }
+    Ok(out)
+}
+
 impl<S: SectorSource> Volume<S> {
     /// Every byte of a directory, up to its first unused entry.
     /// # C: O(directory bytes)
@@ -111,11 +131,38 @@ impl<S: SectorSource> Volume<S> {
 
     /// Find one name already encoded. # C: O(directory bytes)
     pub fn find_uni(&self, dir: &Chain, wanted: &UniName) -> Result<DirEntry, Errno> {
-        for entry in self.read_dir(dir)? {
+        let bytes = self.chain_bytes(dir)?;
+        for entry in parse_dir_strict(&bytes, *dir)
+            .map_err(|_| self.fs_error("malformed exFAT directory entry set"))? {
             if entry.set.stream.name_hash != wanted.hash { continue; }
-            if self.upcase.eq(&entry.set.units, &wanted.units) { return Ok(entry); }
+            if self.upcase.eq(&entry.set.units, &wanted.units) {
+                return self.validate_entry(entry);
+            }
         }
         Err(Errno::Enoent)
+    }
+
+    pub(crate) fn validate_entry(&self, mut entry: DirEntry) -> Result<DirEntry, Errno> {
+        let stream = &mut entry.set.stream;
+        if stream.size != 0 && !self.geo.valid_cluster(stream.start_cluster) {
+            klog::kwarn!("exfat: invalid start cluster; treating file as empty");
+            stream.size = 0;
+            stream.valid_size = 0;
+            stream.start_cluster = EOF_CLUSTER;
+            stream.flags = ALLOC_NO_FAT_CHAIN;
+        }
+        if stream.valid_size > stream.size {
+            klog::kwarn!("exfat: valid size exceeds data size; clamping");
+            stream.valid_size = stream.size;
+        }
+        if self.geo.clusters_for(stream.size) > self.used_clusters {
+            return Err(self.fs_error("invalid exFAT data size"));
+        }
+        if stream.size == 0 {
+            stream.start_cluster = EOF_CLUSTER;
+            stream.flags = ALLOC_NO_FAT_CHAIN;
+        }
+        Ok(entry)
     }
 
     /// Whether a directory holds any name at all. # C: O(directory bytes)

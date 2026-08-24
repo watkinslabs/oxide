@@ -12,7 +12,8 @@ fn th() -> GcKthread { GcKthread::new() }
 
 fn quiet() -> Conditions {
     Conditions { readonly: false, frozen: false, foreground: false, idle: true, boost: false,
-                 can_lock: true }
+                 boosted: false, boost_greedy: false,
+                 can_lock: true, zoned_free_enough: false }
 }
 
 #[test]
@@ -91,7 +92,7 @@ fn an_idle_volume_worth_cleaning_cleans_and_looks_again_sooner() {
     let mut t = th();
     t.wait_ms = 60_000;
     let step = gc_round(&mut t, Conditions { boost: true, ..quiet() }, BackgroundGc::On);
-    assert_eq!(step, GcStep::Gc { sync: false, foreground: false });
+    assert_eq!(step, GcStep::Gc { sync: false, foreground: false, boosted: false });
     assert_eq!(t.wait_ms, 30_000);
 }
 
@@ -99,7 +100,7 @@ fn an_idle_volume_worth_cleaning_cleans_and_looks_again_sooner() {
 fn an_idle_volume_not_worth_cleaning_still_looks_but_less_often() {
     let mut t = th();
     let step = gc_round(&mut t, quiet(), BackgroundGc::On);
-    assert_eq!(step, GcStep::Gc { sync: false, foreground: false });
+    assert_eq!(step, GcStep::Gc { sync: false, foreground: false, boosted: false });
     assert_eq!(t.wait_ms, 60_000);
 }
 
@@ -107,7 +108,7 @@ fn an_idle_volume_not_worth_cleaning_still_looks_but_less_often() {
 fn background_gc_sync_moves_blocks_the_way_the_foreground_does() {
     let mut t = th();
     let step = gc_round(&mut t, quiet(), BackgroundGc::Sync);
-    assert_eq!(step, GcStep::Gc { sync: true, foreground: false });
+    assert_eq!(step, GcStep::Gc { sync: true, foreground: false, boosted: false });
 }
 
 #[test]
@@ -117,7 +118,7 @@ fn a_blocked_caller_is_never_served_by_the_slower_cost() {
     let mut t = th();
     let c = Conditions { foreground: true, idle: false, ..quiet() };
     let step = gc_round(&mut t, c, BackgroundGc::Sync);
-    assert_eq!(step, GcStep::Gc { sync: false, foreground: true });
+    assert_eq!(step, GcStep::Gc { sync: false, foreground: true, boosted: false });
 }
 
 #[test]
@@ -183,6 +184,14 @@ fn a_pass_that_cleaned_re_enters_the_walk_at_its_floor() {
 }
 
 #[test]
+fn a_boosted_zoned_pass_can_select_greedy_cleaning() {
+    let mut t = th();
+    let c = Conditions { boost: true, boosted: true, boost_greedy: true, ..quiet() };
+    assert_eq!(gc_round(&mut t, c, BackgroundGc::On),
+               GcStep::Gc { sync: true, foreground: false, boosted: true });
+}
+
+#[test]
 fn a_pass_that_cleaned_leaves_an_ordinary_interval_alone() {
     let mut t = th();
     t.wait_ms = 45_000;
@@ -241,11 +250,14 @@ fn only_the_high_mode_claims_the_device_is_idle_for_everything() {
 
 #[test]
 fn a_volume_touched_moments_ago_is_not_idle() {
-    use crate::bg::gc::{is_idle, IdleKind, IDLE_INTERVAL_SECS};
-    assert!(!is_idle(GcMode::Normal, IdleKind::Gc, 100, 100));
-    assert!(!is_idle(GcMode::Normal, IdleKind::Gc, 100 + IDLE_INTERVAL_SECS, 100));
-    assert!(is_idle(GcMode::Normal, IdleKind::Gc, 101 + IDLE_INTERVAL_SECS, 100));
-    assert!(is_idle(GcMode::UrgentHigh, IdleKind::Gc, 100, 100), "urgent does not wait");
+    use crate::bg::gc::{is_idle, IdleKind, DEF_IDLE_INTERVAL_SECS};
+    assert!(!is_idle(GcMode::Normal, IdleKind::Gc, 100, 100, DEF_IDLE_INTERVAL_SECS));
+    assert!(!is_idle(GcMode::Normal, IdleKind::Gc, 100 + DEF_IDLE_INTERVAL_SECS,
+                     100, DEF_IDLE_INTERVAL_SECS));
+    assert!(is_idle(GcMode::Normal, IdleKind::Gc, 101 + DEF_IDLE_INTERVAL_SECS,
+                    100, DEF_IDLE_INTERVAL_SECS));
+    assert!(is_idle(GcMode::UrgentHigh, IdleKind::Gc, 100, 100, DEF_IDLE_INTERVAL_SECS),
+            "urgent does not wait");
 }
 
 #[test]
@@ -260,4 +272,11 @@ fn cleaning_is_worth_it_only_when_dead_space_is_high_and_free_space_is_low() {
     assert!(!has_enough_invalid_blocks(1000, 900, 10, 0));
     // Overprovisioning is not free space and does not count as room.
     assert!(has_enough_invalid_blocks(1000, 500, 300, 250));
+}
+
+#[test]
+fn zoned_gc_gate_uses_linux_strict_free_section_percentage() {
+    assert!(!enough_free_sections(60, 100, 60));
+    assert!(enough_free_sections(61, 100, 60));
+    assert!(enough_free_sections(1, 1, 0));
 }

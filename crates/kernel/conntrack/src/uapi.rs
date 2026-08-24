@@ -128,6 +128,7 @@ pub const CTA_TUPLE_REPLY:  u16 = 2;
 pub const CTA_STATUS:       u16 = 3;
 pub const CTA_PROTOINFO:    u16 = 4;
 pub const CTA_HELP:         u16 = 5;
+pub const CTA_HELP_NAME:    u16 = 1;
 pub const CTA_NAT_SRC:      u16 = 6;
 pub const CTA_TIMEOUT:      u16 = 7;
 pub const CTA_MARK:         u16 = 8;
@@ -136,7 +137,38 @@ pub const CTA_COUNTERS_REPLY: u16 = 10;
 pub const CTA_USE:          u16 = 11;
 pub const CTA_ID:           u16 = 12;
 pub const CTA_NAT_DST:      u16 = 13;
+pub const CTA_TUPLE_MASTER: u16 = 14;
+pub const CTA_SEQ_ADJ_ORIG: u16 = 15;
+pub const CTA_SEQ_ADJ_REPLY: u16 = 16;
+pub const CTA_SECMARK:      u16 = 17;
 pub const CTA_ZONE:         u16 = 18;
+pub const CTA_SECCTX:       u16 = 19;
+pub const CTA_TIMESTAMP:    u16 = 20;
+pub const CTA_MARK_MASK:    u16 = 21;
+pub const CTA_LABELS:       u16 = 22;
+pub const CTA_LABELS_MASK:  u16 = 23;
+pub const CTA_SYNPROXY:     u16 = 24;
+pub const CTA_FILTER:       u16 = 25;
+pub const CTA_STATUS_MASK:  u16 = 26;
+pub const CTA_FILTER_ORIG_FLAGS:  u16 = 1;
+pub const CTA_FILTER_REPLY_FLAGS: u16 = 2;
+pub const CTA_TIMESTAMP_START: u16 = 1;
+pub const CTA_TIMESTAMP_STOP:  u16 = 2;
+
+pub const CTA_SYNPROXY_ISN:   u16 = 1;
+pub const CTA_SYNPROXY_ITS:   u16 = 2;
+pub const CTA_SYNPROXY_TSOFF: u16 = 3;
+
+/// Conntrack label extension width, matching Linux's 128 label bits.
+pub const NF_CT_LABELS_MAX_SIZE: usize = 16;
+
+pub const CTA_NAT_V4_MINIP: u16 = 1;
+pub const CTA_NAT_V4_MAXIP: u16 = 2;
+pub const CTA_NAT_PROTO:    u16 = 3;
+pub const CTA_NAT_V6_MINIP: u16 = 4;
+pub const CTA_NAT_V6_MAXIP: u16 = 5;
+pub const CTA_PROTONAT_PORT_MIN: u16 = 1;
+pub const CTA_PROTONAT_PORT_MAX: u16 = 2;
 
 pub const CTA_TUPLE_IP:     u16 = 1;
 pub const CTA_TUPLE_PROTO:  u16 = 2;
@@ -162,6 +194,16 @@ pub const CTA_PROTOINFO_TCP_WSCALE_ORIGINAL: u16 = 2;
 pub const CTA_PROTOINFO_TCP_WSCALE_REPLY:    u16 = 3;
 pub const CTA_PROTOINFO_TCP_FLAGS_ORIGINAL:  u16 = 4;
 pub const CTA_PROTOINFO_TCP_FLAGS_REPLY:     u16 = 5;
+pub const CTA_PROTOINFO_SCTP:                  u16 = 3;
+pub const CTA_PROTOINFO_SCTP_STATE:            u16 = 1;
+pub const CTA_PROTOINFO_SCTP_VTAG_ORIGINAL:    u16 = 2;
+pub const CTA_PROTOINFO_SCTP_VTAG_REPLY:       u16 = 3;
+
+pub const SCTP_CONNTRACK_HEARTBEAT_SENT: u8 = 8;
+
+pub const CTA_SEQADJ_CORRECTION_POS: u16 = 1;
+pub const CTA_SEQADJ_OFFSET_BEFORE:   u16 = 2;
+pub const CTA_SEQADJ_OFFSET_AFTER:    u16 = 3;
 
 pub const CTA_COUNTERS_PACKETS: u16 = 1;
 pub const CTA_COUNTERS_BYTES:   u16 = 2;

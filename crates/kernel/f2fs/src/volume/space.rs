@@ -32,12 +32,37 @@ pub struct Space {
 }
 
 impl<S: SectorSource> Volume<S> {
+    /// Configured reserved-block pool. # C: O(1)
+    pub fn reserved_blocks(&self) -> u64 { self.reserved_blocks }
+
+    /// Live reserved blocks held out of ordinary free space. # C: O(1)
+    pub fn current_reserved_blocks(&self) -> u64 { self.current_reserved_blocks }
+
+    /// Change the reserved pool's ceiling without exceeding ordinary space.
+    /// # C: O(1)
+    pub fn set_reserved_blocks(&mut self, value: u64) -> Result<(), syscall::errno::Errno> {
+        let max = self.cp.user_block_count.saturating_sub(u64::from(self.opts.reserve_root));
+        if value > max { return Err(syscall::errno::Errno::Einval); }
+        self.reserved_blocks = value;
+        let free = self.cp.user_block_count.saturating_sub(self.valid_block_count);
+        self.current_reserved_blocks = value.min(free);
+        Ok(())
+    }
+
+    /// Whether the reserved pool is excluded from the reported total. # C: O(1)
+    pub fn carve_out(&self) -> bool { self.carve_out }
+
+    /// Set whether the reserved pool is excluded from `statfs.f_blocks`. # C: O(1)
+    pub fn set_carve_out(&mut self, on: bool) { self.carve_out = on; }
+
     /// The counts `statfs` reports. # C: O(1)
     pub fn space(&self) -> Space {
         let start = u64::from(self.sb.segment0_blkaddr);
-        let total = self.sb.block_count.saturating_sub(start);
+        let total = self.sb.block_count.saturating_sub(start)
+            .saturating_sub(if self.carve_out { self.current_reserved_blocks } else { 0 });
         let user = self.cp.user_block_count;
-        let free = user.saturating_sub(self.valid_block_count);
+        let free = user.saturating_sub(self.valid_block_count)
+            .saturating_sub(self.current_reserved_blocks);
         let reserved = u64::from(self.opts.reserve_root);
         let avail = free.saturating_sub(reserved);
         let nodes = u64::from(self.max_nid()).saturating_sub(u64::from(RESERVED_NODE_NUM));

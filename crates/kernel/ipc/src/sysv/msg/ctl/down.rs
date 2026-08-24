@@ -32,6 +32,7 @@ pub fn ipc_set(ns: NamespaceId, msqid: i32, buf: u64, cred: &IpcCred) -> Result<
 
     let q = model::lookup_checked(ns, msqid)?;
     if !q.perm.admin_allowed(cred) { return Err(Errno::Eperm); }
+    if !q.perm.security_permissions("msgq", &["setattr"]) { return Err(Errno::Eacces); }
     if qbytes as i64 > MSGMNB as i64 && !cred.cap_sys_resource { return Err(Errno::Eperm); }
 
     let mut st = q.state.lock();
@@ -53,6 +54,7 @@ pub fn ipc_rmid(ns: NamespaceId, msqid: i32, cred: &IpcCred) -> Result<i64, Errn
     let doomed = model::with_ids(|ids| {
         let q = ids.lookup_checked(ns, msqid, |q| q.perm.seq).ok_or(Errno::Einval)?;
         if !q.perm.admin_allowed(cred) { return Err(Errno::Eperm); }
+        if !q.perm.security_permissions("msgq", &["destroy"]) { return Err(Errno::Eacces); }
         ids.remove(ns, msqid);
         Ok(q)
     })?;
