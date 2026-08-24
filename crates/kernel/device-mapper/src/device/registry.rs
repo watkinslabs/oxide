@@ -23,6 +23,14 @@ use crate::uapi::DM_CONTROL_NODE;
 pub const DM_BLOCK_DRIVER: block::registry::BlockDriver =
     block::registry::BlockDriver::unpartitioned_fixed("device-mapper", DM_MAJOR);
 
+/// Retry Linux's deferred remove at the final block opener close. # C: O(N_devices)
+pub fn on_disk_close(disk_name: &str) {
+    let Some(dev) = CELLS.lock().iter().find(|c| c.published && c.disk_name == disk_name).map(|c| c.dev.clone()) else { return; };
+    if dev.flags().contains(crate::suspend::DmFlags::DEFERRED_REMOVE) {
+        let _ = remove(&dev, false);
+    }
+}
+
 struct Cell {
     dev: Arc<MappedDevice>,
     /// Internal block-registry identity. `/dev/mapper/<name>` is the node,

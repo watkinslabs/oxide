@@ -30,6 +30,7 @@ pub mod uapi;
 /// operation is idempotent for staged initialization and hosted tests.
 /// # C: O(built-in targets + device registration)
 pub fn init() -> crate::target::DmResult<()> {
+    block::registry::set_close_hook(device::registry::on_disk_close);
     types::register_builtin();
     let devt = vfs::Devt::new(10, uapi::MISC_MAPPER_CONTROL_MINOR);
     if vfs::lookup_chrdev(devt).is_none() {

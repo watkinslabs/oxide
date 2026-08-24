@@ -127,6 +127,8 @@ static DRIVERS: LifecycleMutex<Vec<DriverState>> = LifecycleMutex::new(Vec::new(
 static NEXT_DISK_INDEX: AtomicU32 = AtomicU32::new(0);
 type DiskRemoveHook = fn(&str);
 pub(super) static DISK_REMOVE_HOOK: LifecycleMutex<Option<DiskRemoveHook>> = LifecycleMutex::new(None);
+pub type DiskCloseHook = fn(&str);
+pub(super) static DISK_CLOSE_HOOK: LifecycleMutex<Option<DiskCloseHook>> = LifecycleMutex::new(None);
 
 /// Default owner for in-kernel tests and legacy module adapters. It is dynamic
 /// and therefore cannot collide with physical-driver majors.
@@ -136,6 +138,13 @@ pub const GENERIC_BLOCK_DRIVER: BlockDriver = BlockDriver::dynamic("oxide-block"
 pub fn set_remove_hook(f: DiskRemoveHook) {
     // SAFETY: registration runs in process context; this is lifecycle policy.
     *unsafe { DISK_REMOVE_HOOK.lock() } = Some(f);
+}
+
+/// Install the owner hook notified when a disk reaches its final opener close.
+/// # C: O(1)
+pub fn set_close_hook(f: DiskCloseHook) {
+    // SAFETY: registration runs in process context; this is lifecycle policy.
+    *unsafe { DISK_CLOSE_HOOK.lock() } = Some(f);
 }
 
 /// Register an explicitly-owned block device. # C: O(N_disks + N_drivers)

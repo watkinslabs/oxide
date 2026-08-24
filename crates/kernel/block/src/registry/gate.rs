@@ -6,7 +6,7 @@ use sync::{Devices as DevicesClass, Spinlock};
 use crate::blockdev::{BlockCompletion, BlockDevice, BlockRequest};
 use crate::queue_limits::QueueLimits;
 use crate::types::{BlockError, KResult};
-use super::core::{Disk, DISK_REMOVE_HOOK, TABLE, by_name, disk_for_dev, release_number};
+use super::core::{Disk, DISK_CLOSE_HOOK, DISK_REMOVE_HOOK, TABLE, by_name, disk_for_dev, release_number};
 
 /// Holder/open state is separate from both exclusive removal and reset queue
 /// freeze. A reset keeps the published disk, its `dev_t`, and its users live.
@@ -166,6 +166,14 @@ pub fn close_disk(disk: &Disk) -> bool {
     let mut life = unsafe { disk.life.lock() };
     if life.openers == 0 { return false; }
     life.openers -= 1;
+    let final_close = life.openers == 0;
+    drop(life);
+    if final_close {
+        // SAFETY: the close hook is copied under its lifecycle lock and runs
+        // after the opener count is visible as zero.
+        let hook = *unsafe { DISK_CLOSE_HOOK.lock() };
+        if let Some(f) = hook { f(&disk.name); }
+    }
     true
 }
 pub(super) struct DiskIo {
