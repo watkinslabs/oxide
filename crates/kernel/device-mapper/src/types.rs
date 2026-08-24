@@ -49,4 +49,5 @@ pub fn register_builtin() {
     register(crate::targets::crypt::TYPE);
     register(crate::targets::snapshot::SNAPSHOT_TYPE);
     register(crate::targets::snapshot::ORIGIN_TYPE);
+    register(crate::targets::snapshot::MERGE_TYPE);
 }

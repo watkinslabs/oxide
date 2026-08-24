@@ -145,6 +145,24 @@ impl Snapshot {
         Ok(MapResult::Remapped { dev: self.cow.bdev.clone(), sector: destination * self.chunk_sectors + within })
     }
 
+    fn merge_io(&self, io: &mut DmIo<'_>) -> DmResult<MapResult> {
+        let (chunk, within) = self.chunk(io.sector)?;
+        let mut state = unsafe { self.state.lock() };
+        if state.exceptions.lookup(chunk).is_some() {
+            let mut data = Vec::new();
+            crate::device::io::forward(&*self.cow.bdev, BlockOp::Read,
+                state.exceptions.lookup(chunk).ok_or(Errno::Eio)? * self.chunk_sectors,
+                self.chunk_sectors, &mut data).map_err(|_| Errno::Eio)?;
+            crate::device::io::forward(&*self.origin.bdev, BlockOp::Write,
+                self.origin_offset(chunk), self.chunk_sectors, &mut data).map_err(|_| Errno::Eio)?;
+            let mut next = state.exceptions.clone();
+            next.remove(chunk);
+            if !state.store.rewrite_exceptions(&next) { state.invalid = true; return Err(Errno::Eio); }
+            state.exceptions = next;
+        }
+        Ok(MapResult::Remapped { dev: self.origin.bdev.clone(), sector: self.origin_offset(chunk) + within })
+    }
+
     fn table_status(&self, kind: StatusType, persistent: bool) -> String {
         let mode = if persistent { "P" } else { "N" };
         match kind {
@@ -162,10 +180,13 @@ impl Snapshot {
 struct SnapshotTarget {
     snapshot: Arc<Snapshot>,
     persistent: bool,
+    merge: bool,
 }
 
 impl DmTarget for SnapshotTarget {
-    fn map(&self, io: &mut DmIo<'_>) -> DmResult<MapResult> { self.snapshot.map_io(io) }
+    fn map(&self, io: &mut DmIo<'_>) -> DmResult<MapResult> {
+        if self.merge { self.snapshot.merge_io(io) } else { self.snapshot.map_io(io) }
+    }
     fn status(&self, kind: StatusType) -> String { self.snapshot.table_status(kind, self.persistent) }
     fn iterate_devices(&self) -> Vec<DmDev> { alloc::vec![self.snapshot.origin.clone(), self.snapshot.cow.clone()] }
     fn max_io_len(&self) -> u64 { self.snapshot.chunk_sectors }
@@ -187,9 +208,10 @@ impl DmTarget for OriginTarget {
     fn iterate_devices(&self) -> Vec<DmDev> { alloc::vec![self.origin.dev.clone()] }
 }
 
-fn snapshot_ctr(c: &mut Ctr<'_>) -> DmResult<Arc<dyn DmTarget>> {
+fn snapshot_ctr_impl(c: &mut Ctr<'_>, merge: bool) -> DmResult<Arc<dyn DmTarget>> {
     if c.argv.len() < 4 { return Err(c.fail("requires 4 or more arguments", Errno::Einval)); }
-    let origin = c.resolver.get_device(c.argv[0], DevMode::RO).map_err(|_| c.fail("Cannot get origin device", Errno::Enxio))?;
+    let origin = c.resolver.get_device(c.argv[0], if merge { DevMode::RW } else { DevMode::RO })
+        .map_err(|_| c.fail("Cannot get origin device", Errno::Enxio))?;
     let cow = c.resolver.get_device(c.argv[1], DevMode::RW).map_err(|_| c.fail("Cannot get COW device", Errno::Enxio))?;
     if origin.major == cow.major && origin.minor == cow.minor { return Err(c.fail("COW device cannot be the origin device", Errno::Einval)); }
     let persistent = match c.argv[2] { "P" => true, "N" => false, _ => return Err(c.fail("Invalid exception store type", Errno::Einval)) };
@@ -208,8 +230,12 @@ fn snapshot_ctr(c: &mut Ctr<'_>) -> DmResult<Arc<dyn DmTarget>> {
     let snapshot = Arc::new(Snapshot { begin: c.begin, origin, cow, chunk_sectors: chunk,
         state: Mutex::new(SnapshotState { exceptions, store, invalid: false }) });
     origin_state.add(&snapshot);
-    Ok(Arc::new(SnapshotTarget { snapshot, persistent }))
+    Ok(Arc::new(SnapshotTarget { snapshot, persistent, merge }))
 }
+
+fn snapshot_ctr(c: &mut Ctr<'_>) -> DmResult<Arc<dyn DmTarget>> { snapshot_ctr_impl(c, false) }
+
+fn merge_ctr(c: &mut Ctr<'_>) -> DmResult<Arc<dyn DmTarget>> { snapshot_ctr_impl(c, true) }
 
 fn origin_ctr(c: &mut Ctr<'_>) -> DmResult<Arc<dyn DmTarget>> {
     if c.argv.len() != 1 { return Err(c.fail("requires one origin device", Errno::Einval)); }
@@ -227,6 +253,9 @@ pub const SNAPSHOT_TYPE: TargetType = TargetType {
 };
 pub const ORIGIN_TYPE: TargetType = TargetType {
     name: "snapshot-origin", version: [1, 9, 0], features: FEATURES, ctr: origin_ctr,
+};
+pub const MERGE_TYPE: TargetType = TargetType {
+    name: "snapshot-merge", version: [1, 5, 0], features: FEATURES, ctr: merge_ctr,
 };
 
 #[cfg(test)]
@@ -274,5 +303,32 @@ mod tests {
         let mut read = BlockRequest::new_read(sector, 1, 512);
         dev.submit_sync(&mut read).expect("read snapshot COW");
         assert_eq!(read.buffer, changed);
+    }
+
+    #[test]
+    fn persistent_snapshot_merge_replays_cow_data_to_origin() {
+        let origin: Arc<dyn BlockDevice> = MemDisk::<TaskList>::new(512, 64);
+        let cow: Arc<dyn BlockDevice> = MemDisk::<TaskList>::new(512, 64);
+        let origin_dev = DmDev { major: 241, minor: 1, name: "origin-merge".into(), mode: DevMode::RW, bdev: origin.clone() };
+        let cow_dev = DmDev { major: 241, minor: 2, name: "cow-merge".into(), mode: DevMode::RW, bdev: cow.clone() };
+        let resolver = Resolver { origin: origin_dev, cow: cow_dev };
+        let original = alloc::vec![0x31; 512];
+        origin.submit_sync(&mut BlockRequest::new_write(0, 1, original)).expect("seed origin");
+
+        let args = ["origin", "cow", "P", "8"];
+        let mut ctr = Ctr { begin: 0, len: 32, argv: &args, resolver: &resolver, error: None };
+        let snapshot = snapshot_ctr(&mut ctr).expect("persistent snapshot");
+        let changed = alloc::vec![0x42; 512];
+        let mut io = DmIo { op: BlockOp::Write, sector: 0, n_sectors: 1, data: &mut changed.clone() };
+        let MapResult::Remapped { dev, sector } = snapshot.map(&mut io).expect("map snapshot write") else { panic!("write must remap") };
+        dev.submit_sync(&mut BlockRequest::new_write(sector, 1, changed)).expect("write COW");
+
+        let mut merge_ctr = Ctr { begin: 0, len: 32, argv: &args, resolver: &resolver, error: None };
+        let merge = snapshot_ctr_impl(&mut merge_ctr, true).expect("snapshot merge");
+        let mut merge_io = DmIo { op: BlockOp::Read, sector: 0, n_sectors: 1, data: &mut Vec::new() };
+        let MapResult::Remapped { dev, sector } = merge.map(&mut merge_io).expect("merge exception") else { panic!("merge must remap") };
+        let mut read = BlockRequest::new_read(sector, 1, 512);
+        dev.submit_sync(&mut read).expect("read merged origin");
+        assert_eq!(read.buffer, alloc::vec![0x42; 512]);
     }
 }
