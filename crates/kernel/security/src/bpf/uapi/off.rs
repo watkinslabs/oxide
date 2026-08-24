@@ -12,6 +12,7 @@ pub mod map_create {
     pub const MAP_FLAGS:   usize = 16;
     pub const NUMA_NODE:   usize = 24;
     pub const MAP_EXTRA:   usize = 64;
+    pub const TOKEN_FD:    usize = 76;
     pub const LAST_END:    usize = 92;
 }
 /// `BPF_MAP_*_ELEM` / `BPF_MAP_FREEZE`. `LAST_FIELD` differs per
@@ -47,6 +48,7 @@ pub mod prog_load {
     /// the two share one slot.
     pub const ATTACH_BTF_OBJ_FD: usize = 112;
     pub const LAST_END:   usize = 168;
+    pub const TOKEN_FD:   usize = 144;
 }
 /// `BPF_PROG_ATTACH` / `BPF_PROG_DETACH`;
 /// `LAST_FIELD expected_revision`.

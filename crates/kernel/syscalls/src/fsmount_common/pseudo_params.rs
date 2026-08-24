@@ -58,6 +58,20 @@ pub fn pseudo_with_root_attr(name: &'static str, magic: u64, specs: &'static [Fs
     Ok(fs)
 }
 
+/// Build bpffs and attach its mount-owned delegation masks to the same root
+/// tree that token creation later reads. # C: O(len data)
+pub fn pseudo_bpf_with_root_attr(name: &'static str, magic: u64,
+    specs: &'static [FsParamSpec], data: &str, pinned: &[FsParameter]) -> KResult<Arc<PseudoFs>>
+{
+    let opts = opts_for_mount(specs, data, pinned, UnknownKey::Refuse)?;
+    let delegation = security::bpf::parse_mount_delegation(data)
+        .map_err(|_| vfs::VfsError::Einval)?;
+    let fs = PseudoFs::new(name, magic);
+    fs.set_root_private(Arc::new(delegation));
+    apply_root_attr(fs.root_dir(), &opts);
+    Ok(fs)
+}
+
 /// Admit the option string of a type that declares no parameters. A non-empty
 /// string is the caller naming something the filesystem does not have.
 /// # C: O(len data)

@@ -72,6 +72,7 @@ impl PseudoDir {
             children: Spinlock::new(nc),
             inode: Spinlock::new(Weak::new()),
             hooks: Spinlock::new(self.hooks.lock().clone()),
+            fs_private: Spinlock::new(self.fs_private.lock().clone()),
             // The copy inherits the owner/mode the source carries: a mount
             // namespace's private view of a tree starts as what it saw, not as
             // a fresh default that would silently undo a mount option.

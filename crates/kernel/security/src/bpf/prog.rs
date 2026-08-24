@@ -36,7 +36,21 @@ const LICENSE_MAX: usize = 128;
 
 /// `bpf_prog_load()`. # C: O(insn_cnt)
 pub(super) fn load(a: &Attr, caps: Caps) -> Result<i64, Errno> {
-    let p = attr::prog_load_check(a, caps, attr::unpriv_bpf_disabled())?;
+    use uapi::off::prog_load as o;
+    let token = if a.u32_at(o::PROG_FLAGS) & uapi::prog_flags::TOKEN_FD != 0 {
+        Some(super::token::from_fd(a.u32_at(o::TOKEN_FD))?)
+    } else { None };
+    let mut normalized = *a;
+    let flags = normalized.u32_at(o::PROG_FLAGS) & !uapi::prog_flags::TOKEN_FD;
+    normalized.bytes[o::PROG_FLAGS..o::PROG_FLAGS + 4].copy_from_slice(&flags.to_ne_bytes());
+    let mut effective = caps;
+    if let Some(t) = token {
+        if t.allowed_cmds & (1u64 << uapi::cmd::PROG_LOAD) != 0
+            && t.allowed_progs & (1u64 << normalized.u32_at(o::PROG_TYPE)) != 0 {
+            effective.bpf = true;
+        }
+    }
+    let p = attr::prog_load_check(&normalized, effective, attr::unpriv_bpf_disabled())?;
     let total = p.insn_cnt as usize * uapi::INSN_SIZE as usize;
     let (mut insns, license) = load_check_attach_then(&p, || {
         // Linux copies insns then license before `find_prog_type()`.

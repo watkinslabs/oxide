@@ -1,6 +1,7 @@
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
+use core::any::Any;
 use alloc::vec::Vec;
 
 use sync::{Kernfs as KernfsClass, Spinlock};
@@ -87,6 +88,9 @@ pub struct PseudoDir {
     pub(crate) children: Spinlock<BTreeMap<String, PseudoEntry>, KernfsClass>,
     pub(crate) inode: Spinlock<Weak<Inode>, KernfsClass>,
     pub(crate) hooks: Spinlock<Option<Arc<dyn PseudoDirHooks>>, KernfsClass>,
+    /// Immutable filesystem-owned state carried by this tree's root. It is
+    /// intentionally attached to the owning tree, not kept in a registry.
+    pub(crate) fs_private: Spinlock<Option<Arc<dyn Any + Send + Sync>>, KernfsClass>,
     /// Owner + permission bits this directory's inode is BORN with.
     ///
     /// The inode itself is a cache entry — `as_inode` rebuilds it whenever the
@@ -163,6 +167,7 @@ impl PseudoDir {
             children: Spinlock::new(BTreeMap::new()),
             inode: Spinlock::new(Weak::new()),
             hooks: Spinlock::new(None),
+            fs_private: Spinlock::new(None),
             attr: Spinlock::new(DirAttr::default()),
             dir_iops: Arc::new(PseudoDirOps::new(fileattr)),
             dir_xattrs,
@@ -179,6 +184,7 @@ impl PseudoDir {
             children: Spinlock::new(BTreeMap::new()),
             inode: Spinlock::new(Weak::new()),
             hooks: Spinlock::new(None),
+            fs_private: Spinlock::new(None),
             attr: Spinlock::new(DirAttr::default()),
             dir_iops,
             dir_xattrs,
@@ -187,6 +193,16 @@ impl PseudoDir {
 
     /// This directory's birth owner and permission bits. # C: O(1)
     pub fn attr(&self) -> DirAttr { *self.attr.lock() }
+
+    /// Attach immutable state owned by this filesystem instance. # C: O(1)
+    pub fn set_fs_private<T: Any + Send + Sync>(self: &Arc<PseudoDir>, value: Arc<T>) {
+        *self.fs_private.lock() = Some(value);
+    }
+
+    /// Read a filesystem instance's immutable state. # C: O(1)
+    pub fn fs_private<T: Any + Send + Sync>(&self) -> Option<Arc<T>> {
+        self.fs_private.lock().as_ref()?.clone().downcast().ok()
+    }
 
     /// Stamp a new owner/permission on this directory: the durable record on
     /// the node AND the inode that is live right now, so a mount option takes

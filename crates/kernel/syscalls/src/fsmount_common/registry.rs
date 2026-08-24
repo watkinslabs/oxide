@@ -446,6 +446,13 @@ fn register_filesystems() {
             mounted(ty, fs, None, $name, sb_flags)
         }), Some($params)));
     }; }
+    macro_rules! pseudo_bpf_root_attr { ($name:literal, $magic:expr, $params:expr) => {
+        let _ = register_fs(FsType::with_parameters($name, $magic, FsFlags::empty(), Box::new(|ty, _, _, d: &str, sb_flags, p: &[vfs::fs::FsParameter]| -> R {
+            let fs: Arc<dyn vfs::fs::FileSystem> =
+                crate::fsmount_pseudo_params::pseudo_bpf_with_root_attr($name, $magic, $params, d, p)?;
+            mounted(ty, fs, None, $name, sb_flags)
+        }), Some($params)));
+    }; }
     pseudo_no_params!("securityfs", SECURITYFS_MAGIC);
     // selinuxfs declares no parameter, and unlike the generic pseudo types
     // its mount root is the policy interface's OWN tree — a fresh empty tree
@@ -475,7 +482,7 @@ fn register_filesystems() {
     // instance root here; the four `delegate_*` values name what a bpf TOKEN
     // created from this mount may do, which the token subsystem answers, not
     // the mount.
-    pseudo_root_attr!("bpf", BPF_FS_MAGIC, crate::fsmount_pseudo_params::BPF_PARAMS);
+    pseudo_bpf_root_attr!("bpf", BPF_FS_MAGIC, crate::fsmount_pseudo_params::BPF_PARAMS);
     let _ = register_fs(FsType::with_parameters("configfs", CONFIGFS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, d: &str, sb_flags, p: &[vfs::fs::FsParameter]| -> R {
         tracefs::mount_opts::mount_configfs(d, p)?;
         mounted(ty, Arc::new(tracefs::fs_impl::ConfigfsFs), None, "configfs", sb_flags)

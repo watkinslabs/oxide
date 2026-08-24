@@ -45,6 +45,7 @@ pub mod sk_reuseport;
 pub mod map;
 mod ids;
 mod token;
+mod mount;
 mod object;
 
 use uapi::cmd;
@@ -134,12 +135,18 @@ pub fn kernel_btf_len() -> u64 { btf::published_len() }
 pub fn kernel_btf_read(off: u64, buf: &mut [u8]) -> usize { btf::published_read(off, buf) }
 
 /// Delegation token derived from a bpffs superblock.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BpfTokenInode {
     pub source_magic: u64,
     pub flags: u32,
+    pub allowed_cmds: u64,
+    pub allowed_maps: u64,
+    pub allowed_progs: u64,
+    pub allowed_attachs: u64,
 }
 
 pub(crate) const BPF_FS_MAGIC: u64 = 0xcafe4a11;
+pub use mount::{BpfDelegation, parse_mount_delegation};
 
 /// Build the `Arc<Inode>` for a bpffs delegation token. # C: O(1)
 pub fn make_bpf_token_inode(token: BpfTokenInode) -> InodeRef {
