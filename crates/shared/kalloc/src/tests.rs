@@ -20,10 +20,14 @@ const QUARANTINE_TEST_LAYOUT_BYTES: usize = 64;
 /// Allocate `size` bytes of u8-aligned scratch space, returning the
 /// raw start address. Pointer is into the test's own heap-allocated
 /// `Vec<u8>` and lives for the scope of the test.
-fn fresh_heap(size: usize) -> (Box<[u8]>, KAlloc) {
+fn fresh_heap(size: usize) -> (Box<[u8]>, Box<KAlloc>) {
     let buf: Vec<u8> = vec![0u8; size];
     let mut buf = buf.into_boxed_slice();
-    let ka = KAlloc::new();
+    // Diagnostic builds carry a large quarantine ring in KAlloc. Keep the
+    // allocator state on the hosted heap, like the kernel's static allocator
+    // keeps it in BSS, so the test thread's small stack is not part of the
+    // debug-feature contract.
+    let ka = Box::new(KAlloc::new());
     let start = buf.as_mut_ptr() as usize;
     // SAFETY: we own `buf` for the lifetime of the test; nothing else
     // will read or write the region until `KAlloc` is dropped here.
@@ -31,10 +35,10 @@ fn fresh_heap(size: usize) -> (Box<[u8]>, KAlloc) {
     (buf, ka)
 }
 
-fn fresh_heap_with_slub_poison(size: usize) -> (Box<[u8]>, KAlloc) {
+fn fresh_heap_with_slub_poison(size: usize) -> (Box<[u8]>, Box<KAlloc>) {
     let buf: Vec<u8> = vec![0u8; size];
     let mut buf = buf.into_boxed_slice();
-    let ka = KAlloc::new();
+    let ka = Box::new(KAlloc::new());
     ka.set_slub_debug_poison(true);
     let start = buf.as_mut_ptr() as usize;
     // SAFETY: the test owns `buf` for the allocator's lifetime and installs
@@ -158,7 +162,7 @@ fn init_then_alloc_returns_aligned() {
 
 #[test]
 fn alloc_before_init_returns_null() {
-    let ka = KAlloc::new();
+    let ka = Box::new(KAlloc::new());
     let l = layout(16, 8);
     // SAFETY: layout valid; ka uninitialized so returns null.
     let p = unsafe { ka.alloc(l) };
@@ -477,7 +481,7 @@ fn grow_hook_satisfies_over_capacity_alloc() {
     // Static-like tiny heap.
     let buf: Vec<u8> = vec![0u8; GROW_TEST_TINY_HEAP];
     let mut buf = buf.into_boxed_slice();
-    let ka = KAlloc::new();
+    let ka = Box::new(KAlloc::new());
     unsafe { ka.init(buf.as_mut_ptr() as usize, buf.len()) };
 
     // Layout much bigger than the tiny static heap.
@@ -627,6 +631,8 @@ fn concurrent_alloc_free_never_lets_free_list_overlap_quarantine() {
 // `kmalloc` size-class front end (`sizeclass.rs`).
 // ---------------------------------------------------------------------------
 
+#[cfg(not(any(feature = "debug-heappoison", feature = "debug-dealloc-diag",
+              feature = "debug-hw-watchpoint", feature = "debug-efence")))]
 #[test]
 fn size_class_routing_matches_the_kmalloc_cache_table() {
     use crate::sizeclass::{class_index, CLASS_SIZES, MAX_CLASS_BYTES, SLAB_ALIGN};
@@ -645,6 +651,8 @@ fn size_class_routing_matches_the_kmalloc_cache_table() {
     assert_eq!(class_index(layout(0, 8)), None, "zero-size request is not a cache request");
 }
 
+#[cfg(not(any(feature = "debug-heappoison", feature = "debug-dealloc-diag",
+              feature = "debug-hw-watchpoint", feature = "debug-efence")))]
 #[test]
 fn size_class_allocations_are_distinct_aligned_and_reusable() {
     let (_buf, ka) = fresh_heap(1024 * 1024);
@@ -687,6 +695,8 @@ fn size_class_allocations_are_distinct_aligned_and_reusable() {
     unsafe { ka.dealloc(b, l) };
 }
 
+#[cfg(not(any(feature = "debug-heappoison", feature = "debug-dealloc-diag",
+              feature = "debug-hw-watchpoint", feature = "debug-efence")))]
 #[test]
 fn idle_class_memory_is_reclaimed_when_a_large_request_needs_it() {
     // A cache that once served small objects must not pin that memory against
