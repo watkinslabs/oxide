@@ -194,6 +194,13 @@ impl vfs::fs::FileSystem for DevfsFs {
     /// devtmpfs is tmpfs-backed and therefore carries the POSIX ACL VFS path.
     /// # C: O(1)
     fn sb_flags(&self) -> u64 { vfs::superblock::SB_POSIXACL }
+    /// Bind the one shared devtmpfs superblock to every namespace tree. The
+    /// tree's leaves are minted by drivers before mount and attached by leaf
+    /// lookup, like synthesized pseudo-fs inodes at d_instantiate.
+    fn set_sb(&self, sb: alloc::sync::Weak<vfs::superblock::SuperBlock>) -> vfs::KResult<()> {
+        tree::set_sb(sb);
+        Ok(())
+    }
     /// Mount root = the `/dev` `DevDir` (a real per-component `vfs::Inode`).
     /// The path walk crosses into the devfs mount and resolves every
     /// `/dev/*` component via `DevDir::lookup` — no whole-path lookup.
