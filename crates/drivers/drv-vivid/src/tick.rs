@@ -103,7 +103,8 @@ fn tick(now: u64) {
     for (vivid, device) in cameras {
         let Some(pending) = vivid.take_due(now) else { continue };
         let format = vivid.format();
-        let bytesused = fill(&device, pending.index, &format, pending.sequence, vivid.motion());
+        let bytesused = fill(&device, pending.index, &format, pending.sequence, vivid.motion(),
+                             vivid.selection());
         v4l2::node::buffer_done(&device, &v4l2::vb2::Completion {
             index: pending.index,
             state: if pending.error { v4l2::vb2::BufState::Error }
@@ -120,7 +121,7 @@ fn tick(now: u64) {
 /// Render the pattern into the buffer's pages, returning the bytes written.
 /// # C: O(pixels)
 fn fill(device: &Arc<VideoDevice>, index: u32, format: &v4l2::format::PixFormat, sequence: u32,
-        motion: crate::tpg::Motion)
+        motion: crate::tpg::Motion, selection: (v4l2::format::Rect, v4l2::format::Rect))
     -> [u32; v4l2::uapi::layout::MAX_PLANES]
 {
     let mut bytesused = [0u32; v4l2::uapi::layout::MAX_PLANES];
@@ -128,8 +129,11 @@ fn fill(device: &Arc<VideoDevice>, index: u32, format: &v4l2::format::PixFormat,
     if frame_bytes == 0 { return bytesused; }
     let mut frame = alloc::vec![0u8; frame_bytes];
     let shift = sequence % crate::tpg::BARS.len() as u32;
-    if crate::tpg::render_frame_motion(format.pixelformat, format.width, format.height, shift,
-                                       sequence, motion, &mut frame) == 0 {
+    let (source, dest) = selection;
+    let map = crate::tpg::RenderMap { source, dest, output_width: format.width,
+                                      output_height: format.height };
+    if crate::tpg::render_frame_motion_window(format.pixelformat, format.width, format.height, shift,
+                                              sequence, motion, map, &mut frame) == 0 {
         return bytesused;
     }
     let (plane_sizes, num_planes) = crate::tpg::plane_sizes(

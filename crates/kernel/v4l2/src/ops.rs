@@ -9,7 +9,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use syscall::errno::Errno;
 
-use crate::format::{Fract, FormatDesc, PixFormat};
+use crate::format::{Fract, FormatDesc, PixFormat, Rect};
 
 /// The three identity strings `VIDIOC_QUERYCAP` reports.
 #[derive(Clone, Debug)]
@@ -60,6 +60,28 @@ pub trait VideoOps: Send + Sync {
     /// The device now paces at `interval`, already clamped to the declared
     /// set. # C: O(1)
     fn set_interval(&self, interval: Fract);
+
+    /// Read a crop/compose rectangle owned by the driver. The core supplies
+    /// the negotiated format so fixed-frame devices can return their bounds.
+    fn g_selection(&self, format: &PixFormat, target: u32) -> Result<Rect, Errno> {
+        let full = Rect { left: 0, top: 0, width: format.width, height: format.height };
+        match target {
+            crate::uapi::flags::SEL_TGT_CROP
+            | crate::uapi::flags::SEL_TGT_CROP_DEFAULT
+            | crate::uapi::flags::SEL_TGT_CROP_BOUNDS
+            | crate::uapi::flags::SEL_TGT_NATIVE_SIZE => Ok(full),
+            _ => Err(Errno::Einval),
+        }
+    }
+
+    /// Set a crop/compose rectangle and return the settled rectangle.
+    fn s_selection(&self, format: &PixFormat, target: u32, rect: Rect)
+        -> Result<Rect, Errno>
+    {
+        let full = Rect { left: 0, top: 0, width: format.width, height: format.height };
+        if target == crate::uapi::flags::SEL_TGT_CROP && rect == full { Ok(rect) }
+        else { Err(Errno::Einval) }
+    }
 
     /// Begin producing frames into the buffers named by `handed`, in that
     /// order. A refusal leaves the queue as it was, with every buffer back in

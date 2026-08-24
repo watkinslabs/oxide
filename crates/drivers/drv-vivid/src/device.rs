@@ -7,8 +7,9 @@ use alloc::vec::Vec;
 use sync::{Spinlock, TaskList};
 use syscall::errno::Errno;
 
-use v4l2::format::{Fract, FormatDesc, PixFormat};
+use v4l2::format::{Fract, FormatDesc, PixFormat, Rect};
 use v4l2::ops::{InputDesc, VideoOps};
+use v4l2::uapi::flags;
 
 /// What the tick needs to produce one frame.
 #[derive(Clone, Debug)]
@@ -42,6 +43,8 @@ struct VividState {
     start_stream_error: bool,
     test_name: Vec<u8>,
     test_u8_table: Vec<u8>,
+    crop: Rect,
+    compose: Rect,
 }
 
 impl Vivid {
@@ -64,6 +67,8 @@ impl Vivid {
                 queue_setup_error: false, buf_prepare_error: false,
                 start_stream_error: false,
                 test_name: b"Vivid\0".to_vec(), test_u8_table: alloc::vec![0, 1, 2, 3],
+                crop: Rect { left: 0, top: 0, width: 0, height: 0 },
+                compose: Rect { left: 0, top: 0, width: 0, height: 0 },
             }),
         })
     }
@@ -73,6 +78,15 @@ impl Vivid {
 
     /// The format frames are produced in. # C: O(1)
     pub fn format(&self) -> PixFormat { self.state.lock().format }
+
+    /// Current crop and compose rectangles, with zero rectangles expanded to
+    /// the negotiated frame for the producer.
+    pub fn selection(&self) -> (Rect, Rect) {
+        let state = self.state.lock();
+        let full = Rect { left: 0, top: 0, width: state.format.width, height: state.format.height };
+        (if state.crop.width == 0 { full } else { state.crop },
+         if state.compose.width == 0 { full } else { state.compose })
+    }
 
     /// Nanoseconds between frames, from the selected interval. # C: O(1)
     pub fn frame_period_ns(&self) -> u64 {
@@ -146,7 +160,49 @@ impl VideoOps for Vivid {
     /// # C: O(1)
     fn inputs(&self) -> &'static [InputDesc] { crate::tables::INPUTS }
     /// # C: O(1)
-    fn set_format(&self, format: &PixFormat) { self.state.lock().format = *format; }
+    fn set_format(&self, format: &PixFormat) {
+        let mut state = self.state.lock();
+        state.format = *format;
+        state.crop = Rect { left: 0, top: 0, width: 0, height: 0 };
+        state.compose = Rect { left: 0, top: 0, width: 0, height: 0 };
+    }
+
+    fn g_selection(&self, format: &PixFormat, target: u32) -> Result<Rect, Errno> {
+        let state = self.state.lock();
+        let full = Rect { left: 0, top: 0, width: format.width, height: format.height };
+        match target {
+            flags::SEL_TGT_CROP => Ok(if state.crop.width == 0 { full } else { state.crop }),
+            flags::SEL_TGT_CROP_DEFAULT | flags::SEL_TGT_CROP_BOUNDS
+            | flags::SEL_TGT_NATIVE_SIZE => Ok(full),
+            flags::SEL_TGT_COMPOSE => Ok(if state.compose.width == 0 { full } else { state.compose }),
+            flags::SEL_TGT_COMPOSE_DEFAULT | flags::SEL_TGT_COMPOSE_BOUNDS => Ok(full),
+            _ => Err(Errno::Einval),
+        }
+    }
+
+    fn s_selection(&self, format: &PixFormat, target: u32, rect: Rect)
+        -> Result<Rect, Errno>
+    {
+        let full = Rect { left: 0, top: 0, width: format.width, height: format.height };
+        if rect.width == 0 || rect.height == 0 || rect.left < 0 || rect.top < 0
+            || rect.left as u64 + rect.width as u64 > full.width as u64
+            || rect.top as u64 + rect.height as u64 > full.height as u64 {
+            return Err(Errno::Einval);
+        }
+        let mut state = self.state.lock();
+        match target {
+            flags::SEL_TGT_CROP => {
+                state.crop = rect;
+                if state.compose.width != 0 {
+                    state.compose.width = state.compose.width.min(rect.width);
+                    state.compose.height = state.compose.height.min(rect.height);
+                }
+                Ok(rect)
+            }
+            flags::SEL_TGT_COMPOSE => { state.compose = rect; Ok(rect) }
+            _ => Err(Errno::Einval),
+        }
+    }
     /// # C: O(1)
     fn set_input(&self, _index: u32) -> Result<(), Errno> { Ok(()) }
     /// # C: O(1)

@@ -1,6 +1,7 @@
 //! The test-pattern generator.
 
 use crate::tpg::{self, Motion, Rgb, BARS};
+use v4l2::format::Rect;
 use v4l2::uapi::fourcc;
 
 #[test]
@@ -22,6 +23,21 @@ fn the_bars_divide_the_width_evenly_and_cover_every_column() {
     assert_eq!(tpg::bar_at(width + 100, width, 0), BARS[BARS.len() - 1]);
     // A zero width cannot divide by zero.
     let _ = tpg::bar_at(0, 0, 0);
+}
+
+#[test]
+fn crop_and_compose_sampling_changes_the_rendered_frame() {
+    let map = tpg::RenderMap {
+        source: Rect { left: 8, top: 0, width: 8, height: 1 },
+        dest: Rect { left: 4, top: 0, width: 8, height: 1 },
+        output_width: 16, output_height: 1,
+    };
+    let mut frame = alloc::vec![0u8; 16 * 3];
+    assert_eq!(tpg::render_frame_motion_window(fourcc::RGB24, 16, 1, 0, 0,
+                                               Motion { horizontal: 0, vertical: 0 },
+                                               map, &mut frame), frame.len());
+    assert_eq!(&frame[..12], &[0; 12], "outside compose must be black");
+    assert_eq!(&frame[12..15], &[BARS[4].r, BARS[4].g, BARS[4].b]);
 }
 
 #[test]

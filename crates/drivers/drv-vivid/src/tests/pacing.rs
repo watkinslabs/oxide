@@ -1,7 +1,8 @@
 //! Frame pacing and the transport state machine.
 
 use crate::device::{due, next_deadline, period_ns, Vivid};
-use v4l2::format::Fract;
+use v4l2::format::{Fract, PixFormat, Rect};
+use v4l2::uapi::flags;
 use v4l2::ops::VideoOps;
 
 const THIRTY: Fract = Fract { numerator: 1, denominator: 30 };
@@ -148,4 +149,20 @@ fn every_declared_interval_produces_a_usable_period() {
         assert!(period > 0, "{interval:?} paces nothing");
         assert!(period <= 1_000_000_000, "{interval:?} is slower than one frame a second");
     }
+}
+
+#[test]
+fn crop_and_compose_rectangles_are_owned_and_bounded() {
+    let vivid = Vivid::new();
+    let format = PixFormat { width: 640, height: 480, ..PixFormat::empty() };
+    vivid.set_format(&format);
+    let crop = Rect { left: 80, top: 60, width: 320, height: 240 };
+    assert_eq!(vivid.s_selection(&format, flags::SEL_TGT_CROP, crop), Ok(crop));
+    assert_eq!(vivid.g_selection(&format, flags::SEL_TGT_CROP), Ok(crop));
+    let compose = Rect { left: 160, top: 120, width: 320, height: 240 };
+    assert_eq!(vivid.s_selection(&format, flags::SEL_TGT_COMPOSE, compose), Ok(compose));
+    assert_eq!(vivid.g_selection(&format, flags::SEL_TGT_COMPOSE), Ok(compose));
+    assert_eq!(vivid.s_selection(&format, flags::SEL_TGT_CROP,
+                                 Rect { left: 600, top: 0, width: 80, height: 80 }),
+               Err(syscall::errno::Errno::Einval));
 }

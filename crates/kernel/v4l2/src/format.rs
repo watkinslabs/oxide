@@ -47,6 +47,10 @@ pub struct Fract { pub numerator: u32, pub denominator: u32 }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct FrameSize { pub width: u32, pub height: u32 }
 
+/// A V4L2 crop/compose rectangle.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct Rect { pub left: i32, pub top: i32, pub width: u32, pub height: u32 }
+
 /// One entry of a driver's format table.
 #[derive(Copy, Clone, Debug)]
 pub struct FormatDesc {

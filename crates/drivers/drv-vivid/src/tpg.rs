@@ -5,6 +5,7 @@
 //! devices or the kernel, which is why every pixel rule below is checked by a
 //! hosted test.
 
+use v4l2::format::Rect;
 use v4l2::uapi::fourcc;
 
 /// One bar's colour, as full-range 8-bit red, green and blue.
@@ -13,6 +14,9 @@ pub struct Rgb { pub r: u8, pub g: u8, pub b: u8 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Motion { pub horizontal: i8, pub vertical: i8 }
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct RenderMap { pub source: Rect, pub dest: Rect, pub output_width: u32, pub output_height: u32 }
 
 const OBJECT: Rgb = Rgb { r: 128, g: 128, b: 128 };
 const OBJECT_SIZE: u32 = 32;
@@ -63,6 +67,22 @@ fn pixel(x: u32, y: u32, width: u32, height: u32, shift: u32, frame: u32, motion
     if object_at(x, y, width, height, frame, motion) { OBJECT } else { bar_at(x, width, shift) }
 }
 
+fn sample_pixel(x: u32, y: u32, width: u32, height: u32, shift: u32, frame: u32,
+                motion: Motion, map: Option<RenderMap>) -> Rgb {
+    let Some(map) = map else { return pixel(x, y, width, height, shift, frame, motion); };
+    if x < map.dest.left.max(0) as u32 || y < map.dest.top.max(0) as u32
+        || x >= map.dest.left.max(0) as u32 + map.dest.width
+        || y >= map.dest.top.max(0) as u32 + map.dest.height { return Rgb { r: 0, g: 0, b: 0 }; }
+    let dx = x - map.dest.left.max(0) as u32;
+    let dy = y - map.dest.top.max(0) as u32;
+    let sx = map.source.left.max(0) as u32
+        + dx.saturating_mul(map.source.width) / map.dest.width.max(1);
+    let sy = map.source.top.max(0) as u32
+        + dy.saturating_mul(map.source.height) / map.dest.height.max(1);
+    pixel(sx.min(width.saturating_sub(1)), sy.min(height.saturating_sub(1)),
+          width, height, shift, frame, motion)
+}
+
 /// Full-range BT.601 luma of a colour. # C: O(1)
 pub fn luma(c: Rgb) -> u8 {
     let y = 77u32 * c.r as u32 + 150 * c.g as u32 + 29 * c.b as u32;
@@ -91,39 +111,44 @@ pub fn render_line(pixelformat: u32, width: u32, shift: u32, dst: &mut [u8]) -> 
 
 pub fn render_line_at(pixelformat: u32, width: u32, height: u32, y: u32, shift: u32,
                       frame: u32, motion: Motion, dst: &mut [u8]) -> usize {
+    render_line_at_map(pixelformat, width, height, y, shift, frame, motion, None, dst)
+}
+
+fn render_line_at_map(pixelformat: u32, width: u32, height: u32, y: u32, shift: u32,
+                      frame: u32, motion: Motion, map: Option<RenderMap>, dst: &mut [u8]) -> usize {
     match pixelformat {
-        fourcc::RGB24 => render_triples(width, height, y, shift, frame, motion, dst, |c| [c.r, c.g, c.b]),
-        fourcc::BGR24 => render_triples(width, height, y, shift, frame, motion, dst, |c| [c.b, c.g, c.r]),
+        fourcc::RGB24 => render_triples(width, height, y, shift, frame, motion, map, dst, |c| [c.r, c.g, c.b]),
+        fourcc::BGR24 => render_triples(width, height, y, shift, frame, motion, map, dst, |c| [c.b, c.g, c.r]),
         fourcc::GREY => {
             let need = width as usize;
             if dst.len() < need { return 0; }
-            for x in 0..width { dst[x as usize] = luma(pixel(x, y, width, height, shift, frame, motion)); }
+            for x in 0..width { dst[x as usize] = luma(sample_pixel(x, y, width, height, shift, frame, motion, map)); }
             need
         }
         fourcc::RGB332 => {
             let need = width as usize;
             if dst.len() < need { return 0; }
             for x in 0..width {
-                let c = pixel(x, y, width, height, shift, frame, motion);
+                let c = sample_pixel(x, y, width, height, shift, frame, motion, map);
                 dst[x as usize] = (c.r & 0xe0) | ((c.g & 0xe0) >> 3) | (c.b >> 6);
             }
             need
         }
-        fourcc::Y12 => render_luma12(width, height, y, shift, frame, motion, dst),
-        fourcc::Y10 => render_luma16(width, height, y, shift, frame, motion, dst, 10, false),
-        fourcc::Y16 => render_luma16(width, height, y, shift, frame, motion, dst, 16, false),
-        fourcc::Y16_BE => render_luma16(width, height, y, shift, frame, motion, dst, 16, true),
+        fourcc::Y12 => render_luma12(width, height, y, shift, frame, motion, map, dst),
+        fourcc::Y10 => render_luma16(width, height, y, shift, frame, motion, map, dst, 10, false),
+        fourcc::Y16 => render_luma16(width, height, y, shift, frame, motion, map, dst, 16, false),
+        fourcc::Y16_BE => render_luma16(width, height, y, shift, frame, motion, map, dst, 16, true),
         fourcc::NV12 | fourcc::NV21 | fourcc::NV16 | fourcc::NV24 | fourcc::NV42 |
         fourcc::NV12M | fourcc::NV21M |
         fourcc::YUV420 | fourcc::YVU420 | fourcc::YUV420M | fourcc::YVU420M |
         fourcc::YUV422P | fourcc::YUV422M => {
-            render_luma_line(width, height, y, shift, frame, motion, dst)
+            render_luma_line(width, height, y, shift, frame, motion, map, dst)
         }
         fourcc::RGB565 | fourcc::RGB565X => {
             let need = width as usize * 2;
             if dst.len() < need { return 0; }
             for x in 0..width {
-                let c = pixel(x, y, width, height, shift, frame, motion);
+                let c = sample_pixel(x, y, width, height, shift, frame, motion, map);
                 let v = ((c.r as u16 & 0xf8) << 8) | ((c.g as u16 & 0xfc) << 3) | (c.b as u16 >> 3);
                 let bytes = if pixelformat == fourcc::RGB565 {
                     v.to_le_bytes()
@@ -134,22 +159,22 @@ pub fn render_line_at(pixelformat: u32, width: u32, height: u32, y: u32, shift: 
             }
             need
         }
-        fourcc::XRGB32 => render_quads(width, height, y, shift, frame, motion, dst, false),
-        fourcc::ARGB32 => render_quads(width, height, y, shift, frame, motion, dst, true),
-        fourcc::YUYV => render_yuv(width, height, y, shift, frame, motion, dst, 0),
-        fourcc::UYVY => render_yuv(width, height, y, shift, frame, motion, dst, 1),
-        fourcc::YVYU => render_yuv(width, height, y, shift, frame, motion, dst, 2),
-        fourcc::VYUY => render_yuv(width, height, y, shift, frame, motion, dst, 3),
+        fourcc::XRGB32 => render_quads(width, height, y, shift, frame, motion, map, dst, false),
+        fourcc::ARGB32 => render_quads(width, height, y, shift, frame, motion, map, dst, true),
+        fourcc::YUYV => render_yuv(width, height, y, shift, frame, motion, map, dst, 0),
+        fourcc::UYVY => render_yuv(width, height, y, shift, frame, motion, map, dst, 1),
+        fourcc::YVYU => render_yuv(width, height, y, shift, frame, motion, map, dst, 2),
+        fourcc::VYUY => render_yuv(width, height, y, shift, frame, motion, map, dst, 3),
         _ => 0,
     }
 }
 
 fn render_luma16(width: u32, height: u32, y: u32, shift: u32, frame: u32, motion: Motion,
-                 dst: &mut [u8], bits: u32, big_endian: bool) -> usize {
+                 map: Option<RenderMap>, dst: &mut [u8], bits: u32, big_endian: bool) -> usize {
     let need = width as usize * 2;
     if dst.len() < need { return 0; }
     for x in 0..width {
-        let luma = luma(pixel(x, y, width, height, shift, frame, motion));
+        let luma = luma(sample_pixel(x, y, width, height, shift, frame, motion, map));
         let value = if bits == 10 {
             ((luma as u16) << 2) & 0x03ff
         } else {
@@ -162,11 +187,11 @@ fn render_luma16(width: u32, height: u32, y: u32, shift: u32, frame: u32, motion
 }
 
 fn render_luma12(width: u32, height: u32, y: u32, shift: u32, frame: u32, motion: Motion,
-                 dst: &mut [u8]) -> usize {
+                 map: Option<RenderMap>, dst: &mut [u8]) -> usize {
     let need = width as usize * 2;
     if dst.len() < need { return 0; }
     for x in 0..width {
-        let luma = luma(pixel(x, y, width, height, shift, frame, motion));
+        let luma = luma(sample_pixel(x, y, width, height, shift, frame, motion, map));
         let bytes = ((luma as u16) << 4).to_le_bytes();
         dst[x as usize * 2..x as usize * 2 + 2].copy_from_slice(&bytes);
     }
@@ -174,11 +199,11 @@ fn render_luma12(width: u32, height: u32, y: u32, shift: u32, frame: u32, motion
 }
 
 fn render_quads(width: u32, height: u32, y: u32, shift: u32, frame: u32, motion: Motion,
-                dst: &mut [u8], alpha: bool) -> usize {
+                map: Option<RenderMap>, dst: &mut [u8], alpha: bool) -> usize {
     let need = width as usize * 4;
     if dst.len() < need { return 0; }
     for x in 0..width as usize {
-        let c = pixel(x as u32, y, width, height, shift, frame, motion);
+        let c = sample_pixel(x as u32, y, width, height, shift, frame, motion, map);
         let at = x * 4;
         // Linux's little-endian TPG stores X/alpha first for XRGB/ARGB and
         // BGR components after it.
@@ -191,11 +216,11 @@ fn render_quads(width: u32, height: u32, y: u32, shift: u32, frame: u32, motion:
 }
 
 fn render_triples(width: u32, height: u32, y: u32, shift: u32, frame: u32, motion: Motion,
-                  dst: &mut [u8], order: impl Fn(Rgb) -> [u8; 3]) -> usize {
+                  map: Option<RenderMap>, dst: &mut [u8], order: impl Fn(Rgb) -> [u8; 3]) -> usize {
     let need = width as usize * 3;
     if dst.len() < need { return 0; }
     for x in 0..width as usize {
-        let bytes = order(pixel(x as u32, y, width, height, shift, frame, motion));
+        let bytes = order(sample_pixel(x as u32, y, width, height, shift, frame, motion, map));
         dst[x * 3..x * 3 + 3].copy_from_slice(&bytes);
     }
     need
@@ -206,13 +231,13 @@ fn render_triples(width: u32, height: u32, y: u32, shift: u32, frame: u32, motio
 /// falling between the two shows the left bar's colour rather than a blend the
 /// pattern never contained.
 fn render_yuv(width: u32, height: u32, y: u32, shift: u32, frame: u32, motion: Motion,
-              dst: &mut [u8], order: u8) -> usize {
+             map: Option<RenderMap>, dst: &mut [u8], order: u8) -> usize {
     let need = width as usize * 2;
     if dst.len() < need { return 0; }
     let mut x = 0u32;
     while x < width {
-        let left = pixel(x, y, width, height, shift, frame, motion);
-        let right = pixel((x + 1).min(width - 1), y, width, height, shift, frame, motion);
+        let left = sample_pixel(x, y, width, height, shift, frame, motion, map);
+        let right = sample_pixel((x + 1).min(width - 1), y, width, height, shift, frame, motion, map);
         let (y0, y1) = (luma(left), luma(right));
         let (u, v) = (chroma_u(left), chroma_v(left));
         let at = x as usize * 2;
@@ -279,19 +304,33 @@ pub fn render_frame(pixelformat: u32, width: u32, height: u32, shift: u32, dst: 
 
 pub fn render_frame_motion(pixelformat: u32, width: u32, height: u32, shift: u32,
                             frame: u32, motion: Motion, dst: &mut [u8]) -> usize {
+    render_frame_motion_map(pixelformat, width, height, shift, frame, motion, None, dst)
+}
+
+/// Render a frame while sampling `source` into `dest`, leaving pixels outside
+/// the compose rectangle black. The output geometry remains the negotiated
+/// format, as it does for a scaler-backed capture node.
+pub fn render_frame_motion_window(pixelformat: u32, width: u32, height: u32, shift: u32,
+                                   frame: u32, motion: Motion, map: RenderMap,
+                                   dst: &mut [u8]) -> usize {
+    render_frame_motion_map(pixelformat, width, height, shift, frame, motion, Some(map), dst)
+}
+
+fn render_frame_motion_map(pixelformat: u32, width: u32, height: u32, shift: u32,
+                            frame: u32, motion: Motion, map: Option<RenderMap>, dst: &mut [u8]) -> usize {
     if matches!(pixelformat, fourcc::NV12 | fourcc::NV21 | fourcc::NV16 |
         fourcc::NV24 | fourcc::NV42 |
         fourcc::NV12M | fourcc::NV21M | fourcc::YUV420 | fourcc::YVU420 |
         fourcc::YUV420M | fourcc::YVU420M | fourcc::YUV422P | fourcc::YUV422M) {
-        return render_planar(pixelformat, width, height, shift, frame, motion, dst);
+        return render_planar(pixelformat, width, height, shift, frame, motion, map, dst);
     }
     let stride = fourcc::bytesperline(pixelformat, width) as usize;
     if stride == 0 { return 0; }
     let mut written = 0usize;
     for y in 0..height {
         if written + stride > dst.len() { break; }
-        let n = render_line_at(pixelformat, width, height, y, shift, frame, motion,
-                                &mut dst[written..written + stride]);
+        let n = render_line_at_map(pixelformat, width, height, y, shift, frame, motion, map,
+                                    &mut dst[written..written + stride]);
         if n == 0 { return written; }
         written += stride;
     }
@@ -299,11 +338,11 @@ pub fn render_frame_motion(pixelformat: u32, width: u32, height: u32, shift: u32
 }
 
 fn render_luma_line(width: u32, height: u32, y: u32, shift: u32, frame: u32,
-                    motion: Motion, dst: &mut [u8]) -> usize {
+                    motion: Motion, map: Option<RenderMap>, dst: &mut [u8]) -> usize {
     let need = width as usize;
     if dst.len() < need { return 0; }
     for x in 0..width {
-        dst[x as usize] = luma(pixel(x, y, width, height, shift, frame, motion));
+        dst[x as usize] = luma(sample_pixel(x, y, width, height, shift, frame, motion, map));
     }
     need
 }
@@ -312,7 +351,7 @@ fn render_luma_line(width: u32, height: u32, y: u32, shift: u32, frame: u32,
 /// queue still owns one plane; the chroma sections simply follow the luma
 /// section inside that plane.
 fn render_planar(pixelformat: u32, width: u32, height: u32, shift: u32,
-                 frame: u32, motion: Motion, dst: &mut [u8]) -> usize {
+                 frame: u32, motion: Motion, map: Option<RenderMap>, dst: &mut [u8]) -> usize {
     let y_bytes = width as usize * height as usize;
     let full_chroma = matches!(pixelformat, fourcc::NV24 | fourcc::NV42);
     let chroma_width = if full_chroma { width as usize } else { width.div_ceil(2) as usize };
@@ -322,7 +361,7 @@ fn render_planar(pixelformat: u32, width: u32, height: u32, shift: u32,
     for y in 0..height {
         for x in 0..width {
             dst[y as usize * width as usize + x as usize] =
-                luma(pixel(x, y, width, height, shift, frame, motion));
+                luma(sample_pixel(x, y, width, height, shift, frame, motion, map));
         }
     }
     let rows = if matches!(pixelformat, fourcc::NV16 | fourcc::NV24 | fourcc::NV42 |
@@ -337,7 +376,7 @@ fn render_planar(pixelformat: u32, width: u32, height: u32, shift: u32,
             .min(width.saturating_sub(1) as usize) as u32;
         let py = (y * if rows == height as usize { 1 } else { 2 })
             .min(height.saturating_sub(1) as usize) as u32;
-        let c = pixel(px, py, width, height, shift, frame, motion);
+        let c = sample_pixel(px, py, width, height, shift, frame, motion, map);
         (chroma_u(c), chroma_v(c))
     };
     match pixelformat {
