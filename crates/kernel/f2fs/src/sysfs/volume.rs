@@ -84,6 +84,7 @@ pub(crate) fn attrs(fs: &Arc<F2fs>, dev: &str) -> Vec<Attr> {
         num(fs, dev, "current_reserved_blocks", |v| Ok(v.current_reserved_blocks())),
         num(fs, dev, "mounted_time_sec", |v| Ok(v.checkpoint().elapsed_time)),
         num(fs, dev, "pending_discard", pending_discard),
+        num(fs, dev, "lifetime_write_kbytes", |v| Ok(v.lifetime_write_kbytes())),
         // What the mount SETTLED ON, not what it asked for. A volume too young
         // for age-threshold cleaning mounts with the option and the policy
         // off, and reporting the option here would tell a tool the policy was

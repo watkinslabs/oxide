@@ -78,6 +78,8 @@ impl<S: SectorSource> Volume<S> {
             .map_err(|_| Errno::Einval)?;
         let (nat_journal, sit_journal) = read_journals(&source, &sb, &cp)?;
         let curseg = read_cursegs(&source, &sb, &cp)?;
+        let lifetime_write_kbytes = crate::summary::lifetime_kbytes(
+            &curseg[crate::uapi::CURSEG_HOT_NODE].sum).ok_or(Errno::Einval)?;
         let inode_seed = checksum::inode_seed(&sb.uuid);
         // Refused above unless it loads, so a folding volume always has one.
         let casefold = if features::has_casefold(sb.feature) {
@@ -178,6 +180,8 @@ impl<S: SectorSource> Volume<S> {
         init_field!(blkzone_alloc_policy: crate::volume::zonewp::BLKZONE_ALLOC_PRIOR_SEQ);
         init_field!(cp_interval_secs: crate::bg::balance::CP_INTERVAL_SECS);
         init_field!(umount_discard_timeout_secs: crate::bg::round::DEF_UMOUNT_DISCARD_TIMEOUT_SECS);
+        init_field!(lifetime_write_kbytes: lifetime_write_kbytes);
+        init_field!(sectors_written_since_cp: core::cell::Cell::new(0));
         init_field!(reserved_blocks: 0);
         init_field!(current_reserved_blocks: 0);
         init_field!(carve_out: false);

@@ -38,7 +38,8 @@ fn each_report_is_read_only_and_reads_a_number() {
                  "gc_foreground_calls", "gc_background_calls",
                  "moved_blocks_foreground", "moved_blocks_background",
                  "current_atomic_write", "defrag_blocks",
-                 "unusable", "unusable_blocks_per_sec", "max_open_zones"] {
+                 "unusable", "unusable_blocks_per_sec", "max_open_zones",
+                 "lifetime_write_kbytes"] {
         let a = attrs.iter().find(|a| a.dir == "vda" && a.name == name)
             .unwrap_or_else(|| panic!("no attribute vda/{name}"));
         assert_eq!(a.mode, crate::fsattr::RO, "{name} accepts a write");
@@ -46,6 +47,17 @@ fn each_report_is_read_only_and_reads_a_number() {
         assert!(body.ends_with('\n'), "{name} did not end its line");
         body.trim().parse::<u64>().unwrap_or_else(|_| panic!("{name} read {body:?}"));
     }
+}
+
+#[test]
+fn lifetime_write_report_reads_the_canonical_physical_write_owner() {
+    let fs = mounted();
+    let attrs = crate::sysfs::mount_attrs(&fs);
+    let before = show(&attrs, "lifetime_write_kbytes").trim().parse::<u64>().unwrap();
+    let addr = fs.volume.lock().super_block().ssa_blkaddr;
+    fs.volume.lock().write_block(addr, &[0u8; BLKSIZE]).expect("write");
+    assert_eq!(show(&attrs, "lifetime_write_kbytes").trim().parse::<u64>().unwrap(),
+               before + 4);
 }
 
 #[test]

@@ -172,6 +172,7 @@ impl<S: SectorSource> Volume<S> {
         } else {
             self.source.write_sectors_durable(u64::from(addr), data, flags, want)?;
         }
+        self.record_physical_write(data.len());
         // Charged by the same derivation that set the flag. A main-area write
         // is a node or a page of data and is charged by the typed writer that
         // knows which; only the metadata areas can be classified from the

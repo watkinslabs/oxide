@@ -211,6 +211,10 @@ pub struct Volume<S: SectorSource> {
     pub(crate) cp_interval_secs: u64,
     /// Seconds the unmount discard drain may spend issuing commands.
     pub(crate) umount_discard_timeout_secs: u64,
+    /// Write kilobytes carried by the last durable summary journal.
+    pub(crate) lifetime_write_kbytes: u64,
+    /// Physical sectors written since that journal value was recorded.
+    pub(crate) sectors_written_since_cp: core::cell::Cell<u64>,
     /// Configured pool recovered from released blocks for privileged writes.
     pub(crate) reserved_blocks: u64,
     /// Portion of that pool currently held out of ordinary free space.
