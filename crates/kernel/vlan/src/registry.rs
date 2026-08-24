@@ -11,6 +11,7 @@ use sync::{Socket as SocketLockClass, Spinlock};
 use syscall::errno::Errno;
 
 use crate::dev::{IngressResult, VlanDev};
+use crate::registration;
 use crate::tci;
 use crate::uapi::VLAN_VID_MASK;
 
@@ -102,6 +103,26 @@ impl VlanTable {
             .map(|r| (r.iface, r.dev.clone())).collect()
     }
 
+    /// Offer a lower-device GVRP/MVRP frame to every VLAN applicant stacked on
+    /// that device. # C: O(N + len)
+    pub fn registration(&self, real: NetIfaceId, frame: &[u8]) -> bool {
+        let Some((kind, vid, event)) = registration::parse(frame) else { return false; };
+        let rows = self.on_real(real);
+        let mut handled = false;
+        for (_, dev) in rows {
+            if dev.vlan_id() == vid {
+                dev.receive_registration(kind, vid, event);
+                handled = true;
+            }
+        }
+        handled
+    }
+
+    pub fn registration_tick(&self) {
+        let rows: Vec<_> = self.rows.lock().iter().map(|row| row.dev.clone()).collect();
+        for dev in rows { dev.registration_tick(); }
+    }
+
     /// Offer a frame the lower interface received to the VLAN layer.
     /// # C: O(N + len)
     pub fn demux(&self, real: NetIfaceId, frame: &[u8]) -> Demux {
@@ -120,3 +141,7 @@ static TABLE: VlanTable = VlanTable::new();
 
 /// The kernel's one tag-to-interface table. # C: O(1)
 pub fn table() -> &'static VlanTable { &TABLE }
+
+pub fn receive_link_control(real: NetIfaceId, frame: &[u8]) -> bool {
+    TABLE.registration(real, frame)
+}

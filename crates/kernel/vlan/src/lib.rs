@@ -28,6 +28,7 @@ pub mod tci;
 pub mod prio;
 pub mod caps;
 pub mod xmit;
+pub mod registration;
 pub mod dev;
 pub mod registry;
 pub mod nla;
@@ -36,7 +37,7 @@ pub mod link_kind;
 
 pub use caps::RealDevCaps;
 pub use dev::{IngressResult, VlanDev};
-pub use registry::{table, Demux, VlanKey, VlanTable};
+pub use registry::{receive_link_control, table, Demux, VlanKey, VlanTable};
 pub use link_kind::{VlanLinkKind, VLAN_LINK_KIND_OPS};
 pub use xmit::{EgressFrame, TagMode};
 

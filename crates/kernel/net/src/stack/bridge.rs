@@ -79,15 +79,15 @@ impl BridgeTable {
 
     /// Attach a live same-namespace port to one bridge. # C: O(log N)
     /// # Lk: matching stack RTNL held by `rtnl`
-    pub(crate) fn add_port(&self, rtnl: &crate::RtnlGuard<'_>, bridge: NetIfaceId,
+    pub(crate) fn add_port(&self, rtnl: &crate::RtnlGuard<'_>, bridge_id: NetIfaceId,
                            port: NetIfaceId) -> NetResult<()>
     {
-        let net_ns = rtnl.stack().ifaces.namespace(bridge).ok_or(NetError::Enodev)?;
-        let dev = if bridge == port { return Err(NetError::Enodev); }
+        let net_ns = rtnl.stack().ifaces.namespace(bridge_id).ok_or(NetError::Enodev)?;
+        let dev = if bridge_id == port { return Err(NetError::Enodev); }
             else { rtnl.stack().ifaces.control_ready_in_ns(rtnl, port, net_ns).ok_or(NetError::Enodev)? };
         let mut state = self.state.lock();
         if state.values().any(|row| row.ports.contains_key(&port)) { return Err(NetError::Ebusy); }
-        let bridge = state.get_mut(&bridge).ok_or(NetError::Enodev)?;
+        let bridge = state.get_mut(&bridge_id).ok_or(NetError::Enodev)?;
         if bridge.net_ns != net_ns || bridge.deleting { return Err(NetError::Enodev); }
         let number = (1..BR_MAX_PORTS).find(|number|
             !bridge.ports.values().any(|existing| existing.number == *number))
@@ -98,6 +98,10 @@ impl BridgeTable {
             path_cost: bridge_path_cost(dev.link_speed_mbps()), stp: super::bridge_stp::StpPort::new(id, port_id) });
         if bridge.stp.enabled { super::bridge_stp::recompute(bridge, super::monotonic_ns_safe()); }
         bridge.fdb.insert((0, dev.mac().0), FdbEntry { port: Some(port), learned_ns: 0, local: true });
+        if dev.bridge_binding() {
+            let carrier = rtnl.stack().ifaces.iface_carrier(bridge_id).unwrap_or(false);
+            let _ = rtnl.stack().ifaces.set_iface_carrier_in_ns(rtnl, port, net_ns, carrier);
+        }
         Ok(())
     }
 
@@ -160,6 +164,15 @@ impl BridgeTable {
     pub(crate) fn has_port(&self, net_ns: u64, port: NetIfaceId) -> bool {
         self.state.lock().values().any(|bridge|
             bridge.net_ns == net_ns && bridge.ports.contains_key(&port))
+    }
+
+    /// Ports whose carrier is owned by this bridge rather than their lower
+    /// device. # C: O(ports)
+    pub(crate) fn binding_ports(&self, net_ns: u64, bridge: NetIfaceId) -> Vec<NetIfaceId> {
+        let state = self.state.lock();
+        let Some(row) = state.get(&bridge) else { return Vec::new(); };
+        if row.net_ns != net_ns || row.deleting { return Vec::new(); }
+        row.ports.keys().copied().collect()
     }
 
     /// Whether `iface` names a live bridge owner in `net_ns`. # C: O(log N)

@@ -76,6 +76,18 @@ pub trait NetDev: Send + Sync {
     fn address_len(&self) -> u8 { 6 }
     /// Linux ARPHRD type exposed by link-layer socket metadata. # C: O(1)
     fn hardware_type(&self) -> u16 { crate::uapi::ARPHRD_ETHER }
+    /// Initial driver carrier, before any lower-device relationship is
+    /// resolved. Stacked devices override this when Linux starts them with
+    /// carrier off (for example a bridge-bound VLAN).
+    fn initial_carrier(&self) -> bool { true }
+    /// Lower interface owned by a stacked device, if any. The interface
+    /// registry uses this single relationship for carrier propagation.
+    fn lower_iface(&self) -> Option<crate::NetIfaceId> { None }
+    /// Convert a lower-device carrier transition into this device's carrier.
+    /// `None` means an upper owner (such as a bridge) controls the state.
+    fn carrier_from_lower(&self, _lower_carrier: bool) -> Option<bool> { None }
+    /// Whether a bridge owns this device's carrier while it is a port.
+    fn bridge_binding(&self) -> bool { false }
     /// Driver feature word used by stacked link devices. # C: O(1)
     fn features(&self) -> NetDevFeatures { NetDevFeatures::NONE }
     /// Linux `SIOCGIFMAP` resource coordinates, owned by the device. # C: O(1)

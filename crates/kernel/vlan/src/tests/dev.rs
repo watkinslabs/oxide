@@ -10,7 +10,9 @@ use syscall::errno::Errno;
 
 use super::support::{eth_frame, plain_caps, vlan_on, FakeDev, REAL_MAC};
 use crate::dev::{ingress_frame, IngressResult, VlanDev};
-use crate::flags::{VLAN_FLAG_GVRP, VLAN_FLAG_MASK, VLAN_FLAG_REORDER_HDR};
+use crate::flags::{VLAN_FLAG_BRIDGE_BINDING, VLAN_FLAG_GVRP, VLAN_FLAG_MASK, VLAN_FLAG_MVRP,
+                    VLAN_FLAG_REORDER_HDR};
+use crate::registration::{self, ApplicantKind};
 use crate::tci::{encode, insert, pcp, strip, vlan_id};
 use crate::uapi::{ETH_P_8021Q, VLAN_HLEN};
 
@@ -56,6 +58,32 @@ fn unknown_flag_bits_are_refused_and_change_nothing() {
     assert_eq!(dev.flags(), VLAN_FLAG_REORDER_HDR);
     assert_eq!(dev.change_flags(VLAN_FLAG_GVRP, VLAN_FLAG_GVRP),
                Ok(VLAN_FLAG_REORDER_HDR | VLAN_FLAG_GVRP));
+}
+
+#[test]
+fn gvrp_and_mvrp_follow_the_vlan_admin_lifecycle() {
+    let real = FakeDev::new("eth0", REAL_MAC, 1500);
+    let dev = vlan_on(&real, 42, ETH_P_8021Q);
+    dev.change_flags(VLAN_FLAG_GVRP | VLAN_FLAG_MVRP, VLAN_FLAG_GVRP | VLAN_FLAG_MVRP).unwrap();
+    let frames = real.frames();
+    assert_eq!(frames.len(), 2);
+    assert_eq!(registration::parse(&frames[0]), Some((ApplicantKind::Gvrp, 42, 2)));
+    assert_eq!(registration::parse(&frames[1]), Some((ApplicantKind::Mvrp, 42, 0)));
+    dev.admin_up_changed(false);
+    let frames = real.frames();
+    assert_eq!(frames.len(), 4);
+    assert_eq!(registration::parse(&frames[2]), Some((ApplicantKind::Gvrp, 42, 3)));
+    assert_eq!(registration::parse(&frames[3]), Some((ApplicantKind::Mvrp, 42, 5)));
+}
+
+#[test]
+fn bridge_binding_starts_without_independent_carrier() {
+    let real = FakeDev::new("eth0", REAL_MAC, 1500);
+    let dev = VlanDev::new(String::from("eth0.42"), 42, ETH_P_8021Q, NetIfaceId(1),
+                           real.clone() as Arc<dyn NetDev>, plain_caps(1500), MacAddr::ZERO);
+    dev.change_flags(VLAN_FLAG_BRIDGE_BINDING, VLAN_FLAG_BRIDGE_BINDING).unwrap();
+    assert!(!dev.initial_carrier());
+    assert_eq!(dev.carrier_from_lower(true), None);
 }
 
 #[test]

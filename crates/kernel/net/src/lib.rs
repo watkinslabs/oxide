@@ -29,6 +29,8 @@ pub mod ordered;
 pub mod pkt;
 pub mod tcp_state;
 pub mod netdev;
+mod link_control;
+pub use link_control::register as register_link_control_handler;
 pub mod page_pool;
 pub mod sysctl;
 pub mod uapi;

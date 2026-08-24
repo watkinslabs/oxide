@@ -102,15 +102,34 @@ impl NetStack {
         let Some(net_ns) = self.ifaces.namespace(iface) else { return false };
         let Some(namespace) = Self::namespace_owner(net_ns) else { return false };
         let rtnl = self.rtnl_lock();
-        let Some(dev) = self.ifaces.control_ready_in_ns(&rtnl, iface, net_ns) else { return false };
-        let Some(changed) = self.ifaces.set_iface_carrier_in_ns(&rtnl, iface, net_ns, up) else { return false };
-        if !changed { return true; }
-        let properties = crate::control_event::LinkProperties::from_dev(dev.as_ref());
-        let Some(event) = self.live_link_event(&rtnl, namespace, iface, properties,
-            crate::control_event::EventKind::New) else { return false };
-        let ticket = crate::control_event::stage(&rtnl, crate::control_event::ControlEvent::Link(event));
+        let Some(mut changes) = self.ifaces.set_iface_carrier_tree_in_ns(&rtnl, iface, net_ns, up) else { return false };
+        if changes.is_empty() { return true; }
+        let mut cursor = 0;
+        while cursor < changes.len() {
+            let (changed_iface, _) = changes[cursor];
+            if self.bridges.contains(net_ns, changed_iface) {
+                let bridge_carrier = self.ifaces.iface_carrier(changed_iface).unwrap_or(false);
+                for port in self.bridges.binding_ports(net_ns, changed_iface) {
+                    let Some(dev) = self.ifaces.control_ready_in_ns(&rtnl, port, net_ns) else { continue; };
+                    if !dev.bridge_binding() { continue; }
+                    if let Some(mut port_changes) = self.ifaces.set_iface_carrier_tree_in_ns(
+                        &rtnl, port, net_ns, bridge_carrier) {
+                        changes.append(&mut port_changes);
+                    }
+                }
+            }
+            cursor += 1;
+        }
+        let mut tickets = alloc::vec::Vec::new();
+        for (changed_iface, _) in changes {
+            let Some(dev) = self.ifaces.control_ready_in_ns(&rtnl, changed_iface, net_ns) else { continue };
+            let properties = crate::control_event::LinkProperties::from_dev(dev.as_ref());
+            let Some(event) = self.live_link_event(&rtnl, namespace.clone(), changed_iface, properties,
+                crate::control_event::EventKind::New) else { return false };
+            tickets.push(crate::control_event::stage(&rtnl, crate::control_event::ControlEvent::Link(event)));
+        }
         drop(rtnl);
-        crate::control_event::publish(ticket);
+        for ticket in tickets { crate::control_event::publish(ticket); }
         true
     }
 
