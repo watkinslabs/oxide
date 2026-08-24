@@ -138,7 +138,7 @@ fn fill(device: &Arc<VideoDevice>, index: u32, format: &v4l2::format::PixFormat,
     // the pixels are written. A frame is up to a megabyte and a half; holding
     // a spinlock across that copy would park every other caller of this
     // device — and, at thirty frames a second, do it continuously.
-    let (frames, length) = {
+    let frames = {
         let state = device.state.lock();
         let Some(buffer) = state.queue.buffer(index) else { return bytesused };
         let mut planes = Vec::new();
