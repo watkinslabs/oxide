@@ -58,12 +58,6 @@ pub(crate) fn check_resolved_unix(ctx: &SendContext<'_>, found: &vfs::VfsPath,
     net::landlock_addr::unix_resolve_verdict(ctx.sandbox(), found, addr).map_err(Error::from)
 }
 
-/// Decode one kernel-owned INET sockaddr without protocol side effects. # C: O(1)
-pub(crate) fn inet(name: Option<&[u8]>) -> KResult<InetAddress> {
-    let Some(name) = name else { return Ok(InetAddress::None); };
-    inet_family(name, family(name)?)
-}
-
 /// Decode an INET destination using the socket's family for Linux's
 /// unspecified-family sockaddr form. `rawv6_sendmsg` (and the corresponding
 /// IPv4 path) accepts `sin_family == 0`; the address is still interpreted as
@@ -99,7 +93,7 @@ fn inet_family(name: &[u8], family: u16) -> KResult<InetAddress> {
 
 #[cfg(test)]
 mod tests {
-    use super::{inet, inet_for_socket, InetAddress};
+    use super::{inet_for_socket, InetAddress};
 
     fn v6(family: u16, len: usize) -> alloc::vec::Vec<u8> {
         let mut out = alloc::vec![0; len];
@@ -112,7 +106,7 @@ mod tests {
     fn raw6_accepts_linux_unspecified_family_and_short_rfc2133_name() {
         assert!(matches!(inet_for_socket(Some(&v6(0, 24)), 10),
             Ok(InetAddress::V6 { scope_id: 0, .. })));
-        assert!(matches!(inet(Some(&v6(10, 24))),
+        assert!(matches!(inet_for_socket(Some(&v6(10, 24)), 10),
             Ok(InetAddress::V6 { scope_id: 0, .. })));
     }
 
@@ -120,7 +114,8 @@ mod tests {
     fn unspecified_family_still_needs_the_socket_to_supply_an_inet_family() {
         assert_eq!(inet_for_socket(Some(&v6(0, 24)), 1).err(),
                    Some(crate::Error::Eafnosupport));
-        assert_eq!(inet(Some(v6(0, 24).as_slice())).err(), Some(crate::Error::Eafnosupport));
+        assert_eq!(inet_for_socket(Some(v6(0, 24).as_slice()), 1).err(),
+                   Some(crate::Error::Eafnosupport));
     }
 }
 

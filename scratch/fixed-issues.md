@@ -1,5 +1,9 @@
 # Fixed issues
 
+### B2633-kernel-warning-gate-security-f2fs
+
+| FIXED B2633-kernel-warning-gate-security-f2fs | INFRA | med | **The x86_64 and aarch64 kernel warning gates are clean again.** The unused test-only BPF UAPI import is now test-gated, the f2fs production-only `writes_in_place` wrapper was removed in favor of the actual policy function, AHCI's IDENTIFY WCE decoder is owned by the live port path, and the superseded socket address wrapper was removed. | Linux 7.2.0-rc4 keeps the in-place decision in the active f2fs data path (`f2fs_should_update_inplace`), and the AHCI WCE bit is read from IDENTIFY word 85 (`ata_id_wcache_enabled`). `cargo test -p security --lib`: 529/529; `cargo test -p f2fs --lib`: 3775/3775; `cargo test -p drv-ahci --lib`: 24/24; `cargo test -p socket --lib`: 95/95; `make x86` and `make arm` both pass. | B2633-kernel-warning-gate-security-f2fs |
+
 ### B2632-zram-boot-initialization
 
 | FIXED B2632-zram-boot-initialization | DEFECT | high | **Early graphical boot is no longer serialized behind per-write ext4 durability work.** Ext4 now scopes ordered-data writeback to the fsyncing inode and coalesces timestamp metadata until fsync, matching Linux's inode-scoped `file_write_and_wait_range()` and in-core timestamp-dirtying model. | Before: `target/boot-logs/x86_64-20260824-160428.log` shows hwdb starting at `[6.577]` and repeated synchronous small writebacks through at least 46 s. After, `target/boot-logs/x86_64-20260824-162455.log` shows `systemd-hwdb-update.service` finishing at `[12.016]`, udev starting at `[12.025]`, `/dev/zram0` at `[26.162]`, and `/dev/ttyS0` at `[26.304]`, with no 50 s device-unit timeouts. The test used SMP=2; the separate SMP=1 early-userspace spinlock issue remains open. | B2632-zram-boot-initialization |

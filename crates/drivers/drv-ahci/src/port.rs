@@ -89,7 +89,7 @@ impl Ahci {
     /// ATA IDENTIFY word 85 bit 5: write-cache feature is enabled.
     pub(crate) fn write_cache_enabled(&self) -> bool {
         let word = u16::from_le_bytes([self.identity[170], self.identity[171]]);
-        word & (1 << 5) != 0
+        regs::identify_write_cache_word(word)
     }
     fn free_frame(pa: &mut u64) {
         if *pa == 0 {

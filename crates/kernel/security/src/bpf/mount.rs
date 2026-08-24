@@ -1,5 +1,6 @@
 use syscall::errno::Errno;
 
+#[cfg(test)]
 use super::uapi;
 
 /// Delegation masks owned by one bpffs mount and copied into each token it

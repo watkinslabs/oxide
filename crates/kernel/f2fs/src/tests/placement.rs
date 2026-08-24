@@ -100,7 +100,9 @@ fn a_directory_is_refused_in_place_writes() {
     let mut v = test_image::with_root().mount_rw().unwrap();
     v.set_ipu_policy(bits::bit(bits::FORCE)).unwrap();
     let i = v.read_inode(ROOT_INO).unwrap();
-    assert!(!v.writes_in_place(ROOT_INO, &i, v.super_block().main_blkaddr, true).unwrap());
+    assert!(!v.writes_in_place_kind(
+        ROOT_INO, &i, v.super_block().main_blkaddr, true, i.compressed(),
+    ).unwrap());
 }
 
 /// The tuning is LIVE on a real mount: the fixture's image is sixteen
