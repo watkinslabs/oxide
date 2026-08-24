@@ -199,6 +199,8 @@ pub struct Volume<S: SectorSource> {
     pub(crate) segstate: segmap::SegState,
     pub(crate) sit_dirty: BTreeSet<u32>,
     pub(crate) valid_block_count: u64,
+    /// Live segment reserve used by allocation and cleaning policy.
+    pub(crate) reserved_segments: u32,
     /// Configured pool recovered from released blocks for privileged writes.
     pub(crate) reserved_blocks: u64,
     /// Portion of that pool currently held out of ordinary free space.

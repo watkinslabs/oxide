@@ -225,7 +225,7 @@ impl General {
         let valid_count = v.valid_block_count;
         let free_segs = v.free_segment_count();
         let overp_segs = cp.overprov_segment_count;
-        let rsvd_segs = cp.rsvd_segment_count;
+        let rsvd_segs = v.gc_reserve();
         let mounted_time = cp.elapsed_time;
         let cp_flags = cp.flags;
         // Straight off the cache that owns them. The remaining count is the

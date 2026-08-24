@@ -144,6 +144,7 @@ impl<S: SectorSource> Volume<S> {
         } else {
             cp.rsvd_segment_count.div_ceil(sb.segs_per_sec.max(1))
         };
+        let reserved_segments = cp.rsvd_segment_count;
         init_field!(source: source);
         init_field!(sb: sb);
         init_field!(sb_raw: sb_raw);
@@ -170,6 +171,7 @@ impl<S: SectorSource> Volume<S> {
         init_field!(segstate: segstate);
         init_field!(sit_dirty: alloc::collections::BTreeSet::new());
         init_field!(valid_block_count: valid_block_count);
+        init_field!(reserved_segments: reserved_segments);
         init_field!(reserved_blocks: 0);
         init_field!(current_reserved_blocks: 0);
         init_field!(carve_out: false);

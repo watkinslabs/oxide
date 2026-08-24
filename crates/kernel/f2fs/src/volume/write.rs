@@ -34,13 +34,20 @@ impl<S: SectorSource> Volume<S> {
     /// Segments held back from the allocator so the cleaner always has
     /// somewhere to move live blocks to.
     ///
-    /// What the volume was FORMATTED with, and nothing else. A volume that
-    /// reserves none is refused at mount rather than given a floor here: a
-    /// substituted one would report a reserve the volume does not have and
-    /// leave the cleaner with nowhere to move live blocks the first time the
-    /// volume filled.
+    /// The live reserve, seeded from the checkpoint and retunable through
+    /// `reserved_segments`. A volume that reserves none is refused at mount;
+    /// a later zero is still the value Linux's control asks the allocator to
+    /// use.
     /// # C: O(1)
-    pub(crate) fn gc_reserve(&self) -> u32 { self.cp.rsvd_segment_count }
+    pub(crate) fn gc_reserve(&self) -> u32 { self.reserved_segments }
+
+    /// Change the live segment reserve without rewriting the checkpoint.
+    /// # C: O(1)
+    pub(crate) fn set_reserved_segments(&mut self, value: u64) -> Result<(), Errno> {
+        if value > u64::from(u32::MAX) { return Err(Errno::Einval); }
+        self.reserved_segments = value as u32;
+        Ok(())
+    }
 
     /// Whether the volume has room for one more block, and for one more node
     /// when the block is a node's.

@@ -50,10 +50,11 @@ fn store(a: &[Attr], name: &str, v: u64) -> Result<usize, VfsError> {
 #[test]
 fn every_volume_owned_control_is_writable() {
     let fs = mounted();
-    let a = attrs(&fs);
+    let a = crate::sysfs::mount_attrs(&fs);
     for name in ["ram_thresh", "ra_nid_pages", "gc_pin_file_thresh", "reclaim_segments", "gc_valid_thresh_ratio", "max_io_bytes", "max_fragment_chunk", "max_fragment_hole", "migration_window_granularity", "migration_granularity", "dir_level", "seq_file_ra_mul", "max_roll_forward_node_blocks", "max_read_extent_count", "last_age_weight",
                  "hot_data_age_threshold", "warm_data_age_threshold",
                  "gc_segment_mode", "gc_reclaimed_segments",
+                 "reserved_segments",
                  "reserved_blocks", "carve_out",
                  "atgc_candidate_ratio", "atgc_candidate_count",
                  "atgc_age_weight", "atgc_age_threshold"] {
@@ -257,6 +258,20 @@ fn reserved_pin_sections_are_live_and_overprovision_bounded() {
     assert_eq!(show(&a, "reserved_pin_section"), 0);
     assert!(store(&a, "reserved_pin_section", max + 1).is_err());
     assert_eq!(show(&a, "reserved_pin_section"), 0);
+}
+
+#[test]
+fn reserved_segments_changes_the_live_allocator_reserve() {
+    let fs = mounted();
+    let a = crate::sysfs::mount_attrs(&fs);
+    let before = show(&a, "reserved_segments");
+    assert!(find(&a, "reserved_segments").store.is_some());
+    store(&a, "reserved_segments", 2).expect("segment reserve");
+    assert_eq!(show(&a, "reserved_segments"), 2);
+    assert_eq!(fs.volume.lock().gc_reserve(), 2);
+    assert_ne!(before, 2);
+    assert!(store(&a, "reserved_segments", u64::from(u32::MAX) + 1).is_err());
+    assert_eq!(show(&a, "reserved_segments"), 2);
 }
 
 /// The point of the knob: what is written is what the machinery then holds.

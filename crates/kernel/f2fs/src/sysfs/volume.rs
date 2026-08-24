@@ -78,7 +78,8 @@ pub(crate) fn attrs(fs: &Arc<F2fs>, dev: &str) -> Vec<Attr> {
         num(fs, dev, "dirty_segments", dirty_segments),
         num(fs, dev, "free_segments", free_segments),
         num(fs, dev, "ovp_segments", |v| Ok(u64::from(v.checkpoint().overprov_segment_count))),
-        num(fs, dev, "reserved_segments", |v| Ok(u64::from(v.checkpoint().rsvd_segment_count))),
+        num_rw(fs, dev, "reserved_segments", |v| u64::from(v.gc_reserve()),
+               set_reserved_segments),
         num(fs, dev, "current_reserved_blocks", |v| Ok(v.current_reserved_blocks())),
         num(fs, dev, "mounted_time_sec", |v| Ok(v.checkpoint().elapsed_time)),
         num(fs, dev, "pending_discard", pending_discard),
@@ -93,6 +94,12 @@ pub(crate) fn attrs(fs: &Arc<F2fs>, dev: &str) -> Vec<Attr> {
         text(fs, dev, "features", features),
         extension_list_attr(fs, dev),
     ]
+}
+
+/// Change the live allocator reserve; the checkpoint remains the on-disk
+/// format value, as it does for Linux's runtime control. # C: O(1)
+fn set_reserved_segments(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    v.set_reserved_segments(n)
 }
 
 /// The two extension lists, and the one write that changes them.
