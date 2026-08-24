@@ -16,6 +16,27 @@ pub const YVYU: u32 = 0x5559_5659;
 pub const VYUY: u32 = 0x5955_5956;
 pub const RGB565: u32 = 0x5042_4752;
 pub const RGB565X: u32 = 0x5242_4752;
+pub const RGB444: u32 = 0x3434_3452;
+pub const ARGB444: u32 = 0x3231_5241;
+pub const XRGB444: u32 = 0x3231_5258;
+pub const RGBA444: u32 = 0x3231_4152;
+pub const RGBX444: u32 = 0x3231_5852;
+pub const ABGR444: u32 = 0x3231_4241;
+pub const XBGR444: u32 = 0x3231_4258;
+pub const BGRA444: u32 = 0x3231_4147;
+pub const BGRX444: u32 = 0x3231_5842;
+pub const RGB555: u32 = 0x4f42_4752;
+pub const ARGB555: u32 = 0x3531_5241;
+pub const XRGB555: u32 = 0x3531_5258;
+pub const RGBA555: u32 = 0x3531_4152;
+pub const RGBX555: u32 = 0x3531_5852;
+pub const ABGR555: u32 = 0x3531_4241;
+pub const XBGR555: u32 = 0x3531_4258;
+pub const BGRA555: u32 = 0x3531_4142;
+pub const BGRX555: u32 = 0x3531_5842;
+pub const RGB555X: u32 = 0x5142_4752;
+pub const ARGB555X: u32 = 0xb531_5241;
+pub const XRGB555X: u32 = 0xb531_5258;
 pub const YUV555: u32 = 0x4f56_5559;
 pub const YUV565: u32 = 0x5056_5559;
 pub const YUV444: u32 = 0x3434_3459;
@@ -84,7 +105,10 @@ pub fn size_rule(pixelformat: u32) -> Option<SizeRule> {
         GREY => SizeRule::Packed { bits_per_pixel: 8 },
         RGB332 => SizeRule::Packed { bits_per_pixel: 8 },
         Y10 | Y12 | Y16 | Y16_BE => SizeRule::Packed { bits_per_pixel: 16 },
-        YUYV | UYVY | YVYU | VYUY | RGB565 | RGB565X | YUV555 | YUV565 | YUV444 =>
+        YUYV | UYVY | YVYU | VYUY | RGB565 | RGB565X |
+        RGB444 | ARGB444 | XRGB444 | RGBA444 | RGBX444 | ABGR444 | XBGR444 | BGRA444 | BGRX444 |
+        RGB555 | ARGB555 | XRGB555 | RGBA555 | RGBX555 | ABGR555 | XBGR555 | BGRA555 | BGRX555 |
+        RGB555X | ARGB555X | XRGB555X | YUV555 | YUV565 | YUV444 =>
             SizeRule::Packed { bits_per_pixel: 16 },
         RGB24 | BGR24 => SizeRule::Packed { bits_per_pixel: 24 },
         XRGB32 | ARGB32 | YUV32 | AYUV32 | XYUV32 | VUYA32 | VUYX32 | YUVA32 | YUVX32 =>

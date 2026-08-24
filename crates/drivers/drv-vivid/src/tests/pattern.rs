@@ -204,6 +204,39 @@ fn packed_yuv_variants_match_linux_bit_layouts() {
 }
 
 #[test]
+fn packed_rgb444_and_rgb555_variants_match_linux_layouts() {
+    let mut rgb444 = [0u8; 16];
+    let mut rgba444 = [0u8; 16];
+    let mut abgr444 = [0u8; 16];
+    let mut bgrx444 = [0u8; 16];
+    tpg::render_line(fourcc::RGB444, 8, 0, &mut rgb444);
+    tpg::render_line(fourcc::RGBA444, 8, 0, &mut rgba444);
+    tpg::render_line(fourcc::ABGR444, 8, 0, &mut abgr444);
+    tpg::render_line(fourcc::BGRX444, 8, 0, &mut bgrx444);
+    // The second bar is yellow (R=G=255, B=0), exposing each nibble order.
+    assert_eq!(&rgb444[2..4], &[0xf0, 0xff]);
+    assert_eq!(&rgba444[2..4], &[0x0f, 0xff]);
+    assert_eq!(&abgr444[2..4], &[0xff, 0xf0]);
+    assert_eq!(&bgrx444[2..4], &[0xf0, 0xff]);
+
+    let mut rgb555 = [0u8; 16];
+    let mut rgba555 = [0u8; 16];
+    let mut abgr555 = [0u8; 16];
+    let mut bgra555 = [0u8; 16];
+    let mut rgb555x = [0u8; 16];
+    tpg::render_line(fourcc::RGB555, 8, 0, &mut rgb555);
+    tpg::render_line(fourcc::RGBA555, 8, 0, &mut rgba555);
+    tpg::render_line(fourcc::ABGR555, 8, 0, &mut abgr555);
+    tpg::render_line(fourcc::BGRA555, 8, 0, &mut bgra555);
+    tpg::render_line(fourcc::RGB555X, 8, 0, &mut rgb555x);
+    assert_eq!(&rgb555[2..4], &[0xe0, 0xff]);
+    assert_eq!(&rgba555[2..4], &[0xc1, 0xff]);
+    assert_eq!(&abgr555[2..4], &[0xff, 0x9f]);
+    assert_eq!(&bgra555[2..4], &[0xff, 0x3f]);
+    assert_eq!(&rgb555x[2..4], &[0xff, 0xe0]);
+}
+
+#[test]
 fn single_planar_formats_write_the_linux_chroma_sections() {
     let (width, height) = (8u32, 4u32);
     let y_bytes = (width * height) as usize;
