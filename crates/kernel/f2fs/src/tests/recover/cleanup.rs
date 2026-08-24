@@ -12,6 +12,7 @@
 //! at the NEXT flush, whether this mount's or the machine's.
 
 use crate::fault::{Fault, Which};
+use alloc::vec;
 use crate::opts::Options;
 use crate::volume::recover::fixture::{checkpointed, grow_and_fsync};
 
@@ -89,4 +90,29 @@ fn a_replay_that_succeeds_is_not_treated_as_a_failure() {
     let f = v.read_inode(e.ino).unwrap();
     assert_eq!(f.size, (crate::volume::recover::fixture::BODY + crate::uapi::BLKSIZE) as u64,
                "the replayed block is not in the file");
+}
+
+#[test]
+fn a_replayed_volume_can_be_mounted_again_without_reusing_the_chain_log() {
+    let mut v = with_a_standing_chain();
+    let out = v.recover().expect("the replay must succeed");
+    assert!(matches!(out, crate::volume::recover::Recovery::Replayed(_)));
+    let root = v.read_inode(v.root_ino()).expect("root inode");
+    let entry = v.lookup(&root, v.root_ino(), b"f").expect("replayed file");
+    let ino = entry.ino;
+    let tail = vec![0xD4; crate::uapi::BLKSIZE];
+    let size = v.read_inode(ino).expect("replayed inode").size;
+    v.write_file(ino, size, &tail).expect("write after replay");
+    v.fsync(ino).expect("fsync after replay");
+
+    let image = v.into_source().snapshot();
+    let second = crate::volume::Volume::mount_with(
+        sectors::MemImage::from_bytes(crate::uapi::BLKSIZE as u32, image),
+        crate::opts::Options::defaults(), true,
+    ).expect("second mount");
+    let root = second.read_inode(second.root_ino()).expect("second root");
+    let entry = second.lookup(&root, second.root_ino(), b"f").expect("second file");
+    let inode = second.read_inode(entry.ino).expect("second inode");
+    let bytes = second.read_whole(&inode, entry.ino).expect("second contents");
+    assert_eq!(&bytes[bytes.len() - crate::uapi::BLKSIZE..], &tail[..]);
 }
