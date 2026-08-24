@@ -46,7 +46,8 @@ pub(super) fn load(a: &Attr, caps: Caps) -> Result<i64, Errno> {
     let mut effective = caps;
     if let Some(t) = token {
         if t.allowed_cmds & (1u64 << uapi::cmd::PROG_LOAD) != 0
-            && t.allowed_progs & (1u64 << normalized.u32_at(o::PROG_TYPE)) != 0 {
+            && t.allowed_progs & (1u64 << normalized.u32_at(o::PROG_TYPE)) != 0
+            && t.allowed_attachs & (1u64 << normalized.u32_at(o::EXPECTED_ATTACH_TYPE)) != 0 {
             effective.bpf = true;
         }
     }
