@@ -88,6 +88,8 @@ struct Snapshot {
     origin: DmDev,
     cow: DmDev,
     chunk_sectors: u64,
+    discard_zeroes_cow: bool,
+    discard_passdown_origin: bool,
     state: Mutex<SnapshotState>,
 }
 
@@ -128,7 +130,24 @@ impl Snapshot {
             unsafe { self.state.lock() }.exceptions.lookup(chunk)
         };
         match io.op {
-            BlockOp::Write => self.preserve_chunk(chunk)?,
+            BlockOp::Flush => return Ok(MapResult::Remapped { dev: self.origin.bdev.clone(), sector: io.sector }),
+            BlockOp::Discard => {
+                if destination.is_none() {
+                    if self.discard_passdown_origin {
+                        crate::device::io::forward(&*self.origin.bdev, BlockOp::Discard, self.origin_offset(chunk), self.chunk_sectors, &mut Vec::new()).map_err(|_| Errno::Eio)?;
+                    }
+                    return Ok(MapResult::Submitted);
+                }
+                if self.discard_zeroes_cow {
+                    let cow = destination.ok_or(Errno::Eio)?;
+                    crate::device::io::forward(&*self.cow.bdev, BlockOp::Discard, cow * self.chunk_sectors, self.chunk_sectors, &mut Vec::new()).map_err(|_| Errno::Eio)?;
+                }
+                if self.discard_passdown_origin {
+                    crate::device::io::forward(&*self.origin.bdev, BlockOp::Discard, self.origin_offset(chunk), self.chunk_sectors, &mut Vec::new()).map_err(|_| Errno::Eio)?;
+                }
+                return Ok(MapResult::Submitted);
+            }
+            BlockOp::Write | BlockOp::WriteZeroes { .. } => self.preserve_chunk(chunk)?,
             BlockOp::Read if destination.is_none() => {
                 return Ok(MapResult::Remapped {
                     dev: self.origin.bdev.clone(),
@@ -147,6 +166,12 @@ impl Snapshot {
 
     fn merge_io(&self, io: &mut DmIo<'_>) -> DmResult<MapResult> {
         let (chunk, within) = self.chunk(io.sector)?;
+        if matches!(io.op, BlockOp::Flush) {
+            return Ok(MapResult::Remapped { dev: self.origin.bdev.clone(), sector: io.sector });
+        }
+        if matches!(io.op, BlockOp::Discard) {
+            return Ok(MapResult::Submitted);
+        }
         let mut state = unsafe { self.state.lock() };
         if state.exceptions.lookup(chunk).is_some() {
             let mut data = Vec::new();
@@ -166,7 +191,13 @@ impl Snapshot {
     fn table_status(&self, kind: StatusType, persistent: bool) -> String {
         let mode = if persistent { "P" } else { "N" };
         match kind {
-            StatusType::Table => format!("{} {} {} {}", self.origin.name, self.cow.name, mode, self.chunk_sectors),
+            StatusType::Table => {
+                let mut out = format!("{} {} {} {} {}", self.origin.name, self.cow.name, mode,
+                    self.chunk_sectors, u32::from(self.discard_zeroes_cow) + u32::from(self.discard_passdown_origin));
+                if self.discard_zeroes_cow { out.push_str(" discard_zeroes_cow"); }
+                if self.discard_passdown_origin { out.push_str(" discard_passdown_origin"); }
+                out
+            }
             StatusType::Info => {
                 // Linux reports the current exception count and capacity as
                 // the snapshot's live status, not a table reconstruction.
@@ -217,6 +248,24 @@ fn snapshot_ctr_impl(c: &mut Ctr<'_>, merge: bool) -> DmResult<Arc<dyn DmTarget>
     let persistent = match c.argv[2] { "P" => true, "N" => false, _ => return Err(c.fail("Invalid exception store type", Errno::Einval)) };
     let chunk = parse_u64(c.argv[3]).ok_or_else(|| c.fail("Invalid chunk size", Errno::Einval))?;
     if chunk == 0 || !chunk.is_power_of_two() { return Err(c.fail("Invalid chunk size", Errno::Einval)); }
+    let (discard_zeroes_cow, discard_passdown_origin) = if c.argv.len() == 4 {
+        (false, false)
+    } else {
+        let count = c.argv.get(4).and_then(|word| word.parse::<usize>().ok())
+            .ok_or_else(|| c.fail("Invalid feature count", Errno::Einval))?;
+        if c.argv.len() != 5 + count { return Err(c.fail("Invalid feature count", Errno::Einval)); }
+        let mut zeroes = false;
+        let mut passdown = false;
+        for feature in &c.argv[5..] {
+            match *feature {
+                "discard_zeroes_cow" => zeroes = true,
+                "discard_passdown_origin" => passdown = true,
+                _ => return Err(c.fail("Unrecognised feature requested", Errno::Einval)),
+            }
+        }
+        if passdown && !zeroes { return Err(c.fail("discard_passdown_origin requires discard_zeroes_cow", Errno::Einval)); }
+        (zeroes, passdown)
+    };
     let origin_state = registry::for_device(&origin);
     let (store, metadata): (Box<dyn ExceptionStore>, Vec<Exception>) = if persistent {
         let mut p = PersistentStore::new(cow.bdev.clone(), chunk);
@@ -228,6 +277,7 @@ fn snapshot_ctr_impl(c: &mut Ctr<'_>, merge: bool) -> DmResult<Arc<dyn DmTarget>
     let mut exceptions = ExceptionMap::new();
     exceptions.load(&metadata);
     let snapshot = Arc::new(Snapshot { begin: c.begin, origin, cow, chunk_sectors: chunk,
+        discard_zeroes_cow, discard_passdown_origin,
         state: Mutex::new(SnapshotState { exceptions, store, invalid: false }) });
     origin_state.add(&snapshot);
     Ok(Arc::new(SnapshotTarget { snapshot, persistent, merge }))
@@ -330,5 +380,19 @@ mod tests {
         let mut read = BlockRequest::new_read(sector, 1, 512);
         dev.submit_sync(&mut read).expect("read merged origin");
         assert_eq!(read.buffer, alloc::vec![0x42; 512]);
+    }
+
+    #[test]
+    fn snapshot_rejects_passdown_without_zeroing_feature() {
+        let origin: Arc<dyn BlockDevice> = MemDisk::<TaskList>::new(512, 64);
+        let cow: Arc<dyn BlockDevice> = MemDisk::<TaskList>::new(512, 64);
+        let resolver = Resolver {
+            origin: DmDev { major: 244, minor: 1, name: "origin-feature".into(), mode: DevMode::RW, bdev: origin },
+            cow: DmDev { major: 244, minor: 2, name: "cow-feature".into(), mode: DevMode::RW, bdev: cow },
+        };
+        let args = ["origin", "cow", "N", "8", "1", "discard_passdown_origin"];
+        let mut ctr = Ctr { begin: 0, len: 32, argv: &args, resolver: &resolver, error: None };
+        assert_eq!(snapshot_ctr(&mut ctr).err(), Some(Errno::Einval));
+        assert_eq!(ctr.error, Some("discard_passdown_origin requires discard_zeroes_cow"));
     }
 }

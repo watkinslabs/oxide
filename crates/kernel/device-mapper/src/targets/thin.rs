@@ -2,10 +2,10 @@
 //!
 //! `dm-thin-metadata.c` owns virtual-device IDs and virtual-block mappings;
 //! `dm-thin.c` owns pool policy and the copy-on-write transition.  The pool
-//! below keeps those owners together behind one sleeping mutex.  The metadata
-//! device is retained as a dependency and commit boundary; mappings are kept
-//! in memory until the persistent metadata format is added, so this module
-//! deliberately does not claim reboot persistence yet.
+//! below keeps those owners together behind one sleeping mutex. The metadata
+//! device is retained as the durable commit boundary for the pool's mapping
+//! records; the format is intentionally smaller than Linux's persistent-data
+//! btree and is tracked as an open compatibility gap in the issue ledger.
 
 extern crate alloc;
 
