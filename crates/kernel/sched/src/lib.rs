@@ -58,6 +58,8 @@ pub mod idle;
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
 pub mod kthread;
 pub mod kstack;
+/// Bounded saved-task frame walking for procfs stack diagnostics.
+pub mod stack_trace;
 pub mod preempt;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 mod fpu_hibernate;

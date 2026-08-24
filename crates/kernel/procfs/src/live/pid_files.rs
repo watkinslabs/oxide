@@ -191,6 +191,7 @@ pid_gated_ctor!(make_pid_personality, pid_personality_body, crate::ino::PID_INO_
 pid_gated_ctor!(make_pid_auxv, pid_auxv_body, 0x2f, "auxv");
 pid_inode_ctor!(make_pid_wchan, pid_wchan_body, crate::ino::PID_INO_TAG_WCHAN);
 pid_gated_ctor!(make_pid_syscall, pid_syscall_body, 0x2a, "syscall");
+pid_gated_ctor!(make_pid_stack, pid_stack_body, 0x2b, "stack");
 
 /// Linux `proc_pid_syscall`: report the saved syscall entry for an off-CPU
 /// task, or `running` only while the task is currently executing in syscall
@@ -226,6 +227,27 @@ fn pid_wchan_body(tid: u32) -> Vec<u8> {
                                                   task.on_cpu.load(Ordering::Relaxed));
     let site = task.park_site.get().map(|s| (s.file(), s.line()));
     crate::wchan_render::body(site, reportable)
+}
+
+/// Linux `proc_pid_stack`: ptrace access plus `CAP_SYS_ADMIN`, followed by a
+/// bounded walk of the target's saved kernel context.  The tree has no
+/// kallsyms resolver yet, so the ABI-compatible one-address-per-line form is
+/// emitted with raw hexadecimal return addresses rather than pretending they
+/// are symbol names.
+/// # C: O(MAX_FRAMES)
+fn pid_stack_body(tid: u32) -> Vec<u8> {
+    let Some(cur) = sched::live::current() else { return Vec::new() };
+    if !cur.has_cap(sched::cap::SYS_ADMIN) || super::pid_access::ptrace_may_access(tid).is_err() {
+        return Vec::new();
+    }
+    let Some(task) = sched::live::registry::lookup(tid) else { return Vec::new() };
+    let mut out = Vec::new();
+    for ip in sched::stack_trace::saved(&task) {
+        push(&mut out, b"[<0>] 0x");
+        push_hex(&mut out, ip);
+        out.push(b'\n');
+    }
+    out
 }
 
 /// Linux `auxv_read`: serve the mm's `saved_auxv` array, truncated at the
