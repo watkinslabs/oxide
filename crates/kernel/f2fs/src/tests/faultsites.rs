@@ -108,7 +108,7 @@ fn a_checkpoint_failure_stops_the_checkpoints_and_disarms_the_injection() {
     arm(&v, Fault::Checkpoint);
     assert_eq!(v.checkpoint().flags & crate::flags::CP_ERROR_FLAG, 0,
                "the fixture is already stopped");
-    v.balance_fs(true).unwrap();
+    v.balance_fs(true, false).unwrap();
     assert_ne!(v.checkpoint().flags & crate::flags::CP_ERROR_FLAG, 0,
                "the volume did not stop checkpointing");
     assert_eq!(v.fault_info().rate(), 0, "a stopped volume is still injecting");

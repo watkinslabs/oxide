@@ -68,7 +68,9 @@ pub fn gc_pass(fs: &Arc<F2fs>) -> GcPass {
     // The cleaner is also where the periodic checkpoint comes from: a volume
     // written to and then left alone has nobody else to take one, and every
     // segment the cleaner just emptied stays unusable until one lands.
-    let _ = fs.volume_now().balance_fs_bg(true);
+    let recent_io = !gc::is_idle(mode, IdleKind::Request, fs.volume.lock().now_secs(),
+                                 bg.last_activity(), bg.idle_interval(IdleKind::Request));
+    let _ = fs.volume_now().balance_fs_bg(true, recent_io);
     GcPass { step, cleaned, wait_ms: bg.gc.lock().wait_ms }
 }
 

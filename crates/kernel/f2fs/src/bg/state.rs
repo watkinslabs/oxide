@@ -248,16 +248,13 @@ impl Bg {
     /// When the mount last did work for somebody. # C: O(1)
     pub fn last_activity(&self) -> u64 { self.last_op.load(Ordering::Acquire) }
 
-    /// The threshold for one background consumer, including Linux's common
-    /// request-idle floor. # C: O(1)
+    /// The threshold for one Linux activity clock. # C: O(1)
     pub fn idle_interval(&self, kind: IdleKind) -> u64 {
-        let request = self.idle_interval.load(Ordering::Acquire);
-        let own = match kind {
+        match kind {
             IdleKind::Gc => self.gc_idle_interval.load(Ordering::Acquire),
             IdleKind::Discard => self.discard_idle_interval.load(Ordering::Acquire),
-            IdleKind::Request => request,
-        };
-        request.max(own)
+            IdleKind::Request => self.idle_interval.load(Ordering::Acquire),
+        }
     }
 
     /// Read one idle threshold. # C: O(1)
@@ -281,6 +278,8 @@ impl Bg {
             _ => return,
         };
         target.store(value, Ordering::Release);
+        self.gc.lock().gc_wake = true;
+        self.dcc.lock().wake = true;
         self.waits.wake_gc();
         self.waits.wake_discard();
     }

@@ -81,7 +81,7 @@ impl F2fs {
             v.has_enough_free_secs(0, 0)
         };
         if !enough && self.options().gc_merge && run::delegate_gc(self) { return Ok(()); }
-        self.volume_now().balance_fs(need).map_err(errno_to_vfs)
+        self.volume_now().balance_fs(need, true).map_err(errno_to_vfs)
     }
 
     /// Whether this mount asked for its checkpoints to be merged. # C: O(1)

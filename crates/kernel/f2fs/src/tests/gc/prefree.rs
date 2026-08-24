@@ -212,7 +212,7 @@ fn balancing_a_volume_short_of_room_finds_some_and_retires_it() {
     v.write_file(ino, 0, b"AAAA").unwrap();
     v.sync_data().unwrap();
     assert!(!v.has_enough_free_secs(0, 0), "the fixture is at the reserve");
-    v.balance_fs(true).unwrap();
+    v.balance_fs(true, false).unwrap();
     assert_eq!(v.seg_valid(victim), 0, "the cleaner emptied the best victim");
     assert_eq!(v.prefree_count(), 0, "and nothing was left held");
     assert!(v.has_enough_free_secs(0, 0), "there is room to allocate again");
@@ -222,8 +222,8 @@ fn balancing_a_volume_short_of_room_finds_some_and_retires_it() {
 fn a_read_only_mount_balances_nothing() {
     let mut v = test_image::with_root().mount().unwrap();
     assert!(!v.writable());
-    v.balance_fs(true).unwrap();
-    v.balance_fs_bg(true).unwrap();
+    v.balance_fs(true, false).unwrap();
+    v.balance_fs_bg(true, false).unwrap();
     assert_eq!(v.prefree_count(), 0);
 }
 

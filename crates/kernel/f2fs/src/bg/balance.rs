@@ -196,14 +196,14 @@ impl<S: SectorSource> Volume<S> {
     }
 
     /// What the background balance sees right now. # C: O(main segments)
-    pub fn bg_state(&self) -> BgState {
+    pub fn bg_state(&self, recent_io: bool) -> BgState {
         BgState {
             recovering: self.recovering,
             excess_dirty_nats: self.excess_dirty_nats(),
             excess_dirty_meta: self.excess_dirty_meta(),
             excess_prefree: self.excess_prefree(),
             space_for_roll_forward: self.space_for_roll_forward(),
-            recent_io: false,
+            recent_io,
             cp_time_over: self.cp_time_over(),
             excess_cached_nats: self.excess_cached_nats(),
         }
@@ -215,10 +215,10 @@ impl<S: SectorSource> Volume<S> {
     /// blocking path's job, and doing it here would stall the thread that is
     /// supposed to be keeping out of the way.
     /// # C: O(main segments), plus a checkpoint when one is due
-    pub fn balance_fs_bg(&mut self, _from_bg: bool) -> Result<(), Errno> {
+    pub fn balance_fs_bg(&mut self, _from_bg: bool, recent_io: bool) -> Result<(), Errno> {
         if !self.writable || self.recovering { return Ok(()); }
         self.load_segments()?;
-        if !needs_checkpoint(&self.bg_state()) { return Ok(()); }
+        if !needs_checkpoint(&self.bg_state(recent_io)) { return Ok(()); }
         self.commit()
     }
 
@@ -228,7 +228,7 @@ impl<S: SectorSource> Volume<S> {
     /// operation that only touched bytes already allocated has not grown the
     /// caches and does not need them looked at.
     /// # C: O(main segments), plus a clean or a checkpoint when one is due
-    pub fn balance_fs(&mut self, need: bool) -> Result<(), Errno> {
+    pub fn balance_fs(&mut self, need: bool, recent_io: bool) -> Result<(), Errno> {
         // A checkpoint failure is not an error the caller can act on: the
         // volume stops instead, which is what keeps a filesystem that can no
         // longer describe itself from writing any more of itself down.
@@ -244,7 +244,7 @@ impl<S: SectorSource> Volume<S> {
         self.load_segments()?;
         let choice = balance_fs_choice(need, self.excess_cached_nats(),
                                        self.has_enough_free_secs(0, 0));
-        if choice.background { self.balance_fs_bg(false)?; }
+        if choice.background { self.balance_fs_bg(false, recent_io)?; }
         if !choice.clean { return Ok(()); }
         // One section is what the caller needs to go on. Cleaning to the
         // reserve would make every short write pay for the whole shortfall.
