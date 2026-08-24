@@ -212,6 +212,7 @@ impl drm::DrmDriver for SimpleDrm {
     fn resource_counts(&self) -> (u32, u32, u32, u32) { (0, 1, 1, 1) }
     fn dim_bounds(&self) -> (u32, u32, u32, u32) { (self.width, self.width, self.height, self.height) }
     fn cap(&self, cap: u64) -> u64 { drm::default_cap(cap) }
+    fn supports_render_node(&self) -> bool { false }
     fn crtc_ids(&self) -> Vec<u32> { alloc::vec![drm::crtc_id_for(0)] }
     fn connector_ids(&self) -> Vec<u32> { alloc::vec![drm::connector_id_for(0)] }
     fn encoder_ids(&self) -> Vec<u32> { alloc::vec![drm::encoder_id_for(0)] }

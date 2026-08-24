@@ -35,7 +35,7 @@ fn unregister_then_register_restores_card_and_render_nodes() {
     let _guard = crate::TEST_LOCK.lock();
     let card_id = REPUBLISH_CARD_ID;
     let card_addr = format!("card{card_id}");
-    let render_minor = DRM_RENDER_MINOR_BASE + card_id;
+    let render_minor = DRM_RENDER_MINOR_BASE;
     let render_addr = format!("renderD{render_minor}");
     unregister(card_id);
 
@@ -69,7 +69,7 @@ fn register_publishes_render_node() {
     let _guard = crate::TEST_LOCK.lock();
     let card_id = RENDER_PUBLICATION_CARD_ID;
     unregister(card_id);
-    let render_minor = DRM_RENDER_MINOR_BASE + card_id;
+    let render_minor = DRM_RENDER_MINOR_BASE;
     let render_addr = format!("renderD{render_minor}");
     let render_name = format!("dri/{render_addr}");
 
@@ -105,7 +105,7 @@ fn register_publishes_card_and_render_metadata_per_stable_slot() {
     assert_eq!(inode.file_type(), vfs::FileType::CharDev);
     assert_eq!(super::super::publication::drm_inode_parts(&inode), Some((super::super::publication::DrmNodeKind::Card, card_id)));
 
-    let render_minor = DRM_RENDER_MINOR_BASE + card_id;
+    let render_minor = DRM_RENDER_MINOR_BASE;
     let render_addr = format!("renderD{render_minor}");
     let render = drv::devices().into_iter().find(|d| d.bus == "drm" && d.addr == render_addr).expect("drm render device");
     assert_eq!(render.dev_t, Some((crate::DRM_MAJOR, render_minor)));
