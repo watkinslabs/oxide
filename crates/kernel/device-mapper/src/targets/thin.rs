@@ -27,12 +27,18 @@ use crate::target::{Ctr, DevMode, DmDev, DmIo, DmResult, DmTarget, MapResult,
 const MIN_BLOCK_SECTORS: u64 = 64 * 1024 / crate::uapi::SECTOR_BYTES;
 const MAX_BLOCK_SECTORS: u64 = 1024 * 1024 * 1024 / crate::uapi::SECTOR_BYTES;
 const MAX_THIN_ID: u64 = (1 << 24) - 1;
+const META_MAGIC: u32 = 0x5448_4d31;
+const META_VERSION: u32 = 1;
+const META_HEADER_BYTES: usize = 48;
 
+#[derive(Clone)]
 struct ThinDevice {
     mappings: BTreeMap<u64, u64>,
     shared: BTreeSet<u64>,
+    origin: Option<u64>,
 }
 
+#[derive(Clone)]
 struct PoolState {
     devices: BTreeMap<u64, ThinDevice>,
     next_data_block: u64,
@@ -48,6 +54,113 @@ pub struct ThinPool {
 }
 
 impl ThinPool {
+    fn new(metadata: DmDev, data: DmDev, block_sectors: u64, low_water_blocks: u64) -> DmResult<Self> {
+        let pool = Self { metadata, data, block_sectors, low_water_blocks,
+            state: Mutex::new(PoolState { devices: BTreeMap::new(), next_data_block: 0, out_of_data: false }) };
+        let mut state = unsafe { pool.state.lock() };
+        pool.load_metadata(&mut state)?;
+        if state.devices.is_empty() && state.next_data_block == 0 { pool.persist_metadata(&state)?; }
+        drop(state);
+        Ok(pool)
+    }
+
+    fn metadata_block_sectors(&self) -> u64 {
+        (self.metadata.bdev.block_size() as u64 / crate::uapi::SECTOR_BYTES).max(1)
+    }
+
+    fn metadata_read(&self, sector: u64, sectors: u64) -> DmResult<Vec<u8>> {
+        let mut data = Vec::new();
+        crate::device::io::forward(&*self.metadata.bdev, BlockOp::Read, sector, sectors, &mut data).map_err(|_| Errno::Eio)?;
+        Ok(data)
+    }
+
+    fn metadata_write(&self, sector: u64, sectors: u64, data: &mut Vec<u8>) -> DmResult<()> {
+        crate::device::io::forward(&*self.metadata.bdev, BlockOp::Write, sector, sectors, data).map_err(|_| Errno::Eio)
+    }
+
+    fn load_metadata(&self, state: &mut PoolState) -> DmResult<()> {
+        let header_sectors = self.metadata_block_sectors();
+        let header = self.metadata_read(0, header_sectors)?;
+        if header.len() < META_HEADER_BYTES { return Err(Errno::Eio); }
+        let magic = u32::from_le_bytes(header[0..4].try_into().map_err(|_| Errno::Eio)?);
+        if magic == 0 { return Ok(()); }
+        if magic != META_MAGIC || u32::from_le_bytes(header[4..8].try_into().map_err(|_| Errno::Eio)?) != 1
+            || u32::from_le_bytes(header[8..12].try_into().map_err(|_| Errno::Eio)?) != META_VERSION {
+            return Err(Errno::Eio);
+        }
+        let block = u64::from_le_bytes(header[16..24].try_into().map_err(|_| Errno::Eio)?);
+        if block != self.block_sectors { return Err(Errno::Einval); }
+        state.next_data_block = u64::from_le_bytes(header[24..32].try_into().map_err(|_| Errno::Eio)?);
+        let devices = usize::try_from(u64::from_le_bytes(header[32..40].try_into().map_err(|_| Errno::Eio)?)).map_err(|_| Errno::Eio)?;
+        let mappings = usize::try_from(u64::from_le_bytes(header[40..48].try_into().map_err(|_| Errno::Eio)?)).map_err(|_| Errno::Eio)?;
+        let payload_bytes = devices.checked_mul(16).and_then(|n| n.checked_add(mappings.checked_mul(24)?)).ok_or(Errno::Eio)?;
+        let payload_sectors = u64::try_from((payload_bytes + crate::uapi::SECTOR_BYTES as usize - 1) / crate::uapi::SECTOR_BYTES as usize).map_err(|_| Errno::Eio)?;
+        let payload = if payload_sectors == 0 { Vec::new() } else { self.metadata_read(header_sectors, payload_sectors)? };
+        for i in 0..devices {
+            let at = i * 16;
+            let id = u64::from_le_bytes(payload[at..at + 8].try_into().map_err(|_| Errno::Eio)?).checked_sub(1).ok_or(Errno::Eio)?;
+            let origin_raw = u64::from_le_bytes(payload[at + 8..at + 16].try_into().map_err(|_| Errno::Eio)?);
+            let origin = if origin_raw == 0 { None } else { Some(origin_raw - 1) };
+            state.devices.insert(id, ThinDevice { mappings: BTreeMap::new(), shared: BTreeSet::new(), origin });
+        }
+        let mappings_at = devices * 16;
+        for i in 0..mappings {
+            let at = mappings_at + i * 24;
+            let id = u64::from_le_bytes(payload[at..at + 8].try_into().map_err(|_| Errno::Eio)?);
+            let virtual_block = u64::from_le_bytes(payload[at + 8..at + 16].try_into().map_err(|_| Errno::Eio)?);
+            let physical_block = u64::from_le_bytes(payload[at + 16..at + 24].try_into().map_err(|_| Errno::Eio)?);
+            state.devices.get_mut(&id).ok_or(Errno::Eio)?.mappings.insert(virtual_block, physical_block);
+        }
+        let ids: Vec<u64> = state.devices.keys().copied().collect();
+        for id in ids {
+            if let Some(origin) = state.devices.get(&id).and_then(|d| d.origin) {
+                let shared: Vec<u64> = state.devices.get(&origin).map(|d| d.mappings.values().copied().collect()).ok_or(Errno::Eio)?;
+                state.devices.get_mut(&id).ok_or(Errno::Eio)?.shared.extend(shared.iter().copied());
+                state.devices.get_mut(&origin).ok_or(Errno::Eio)?.shared.extend(shared);
+            }
+        }
+        Ok(())
+    }
+
+    fn persist_metadata(&self, state: &PoolState) -> DmResult<()> {
+        let header_sectors = self.metadata_block_sectors();
+        let mut devices = Vec::new();
+        let mut mappings = Vec::new();
+        for (id, thin) in &state.devices {
+            devices.extend_from_slice(&(id + 1).to_le_bytes());
+            devices.extend_from_slice(&thin.origin.map_or(0, |origin| origin + 1).to_le_bytes());
+            for (virtual_block, physical_block) in &thin.mappings {
+                mappings.extend_from_slice(&id.to_le_bytes());
+                mappings.extend_from_slice(&virtual_block.to_le_bytes());
+                mappings.extend_from_slice(&physical_block.to_le_bytes());
+            }
+        }
+        let payload_bytes = devices.len().checked_add(mappings.len()).ok_or(Errno::Eio)?;
+        let payload_sectors = (payload_bytes + crate::uapi::SECTOR_BYTES as usize - 1) / crate::uapi::SECTOR_BYTES as usize;
+        let total_sectors = header_sectors.checked_add(payload_sectors as u64).ok_or(Errno::Eio)?;
+        let capacity = self.metadata.bdev.capacity_blocks() * self.metadata.bdev.block_size() as u64 / crate::uapi::SECTOR_BYTES;
+        if total_sectors > capacity { return Err(Errno::Enospc); }
+        let mut header = alloc::vec![0u8; (header_sectors * crate::uapi::SECTOR_BYTES) as usize];
+        header[0..4].copy_from_slice(&META_MAGIC.to_le_bytes());
+        header[4..8].copy_from_slice(&0u32.to_le_bytes());
+        header[8..12].copy_from_slice(&META_VERSION.to_le_bytes());
+        header[12..16].copy_from_slice(&1u32.to_le_bytes());
+        header[16..24].copy_from_slice(&self.block_sectors.to_le_bytes());
+        header[24..32].copy_from_slice(&state.next_data_block.to_le_bytes());
+        header[32..40].copy_from_slice(&(state.devices.len() as u64).to_le_bytes());
+        header[40..48].copy_from_slice(&((mappings.len() / 24) as u64).to_le_bytes());
+        let mut valid_header = header.clone();
+        self.metadata_write(0, header_sectors, &mut header)?;
+        if payload_sectors != 0 {
+            let mut payload = alloc::vec![0u8; payload_sectors * crate::uapi::SECTOR_BYTES as usize];
+            payload[..devices.len()].copy_from_slice(&devices);
+            payload[devices.len()..devices.len() + mappings.len()].copy_from_slice(&mappings);
+            self.metadata_write(header_sectors, payload_sectors as u64, &mut payload)?;
+        }
+        valid_header[4..8].copy_from_slice(&1u32.to_le_bytes());
+        self.metadata_write(0, header_sectors, &mut valid_header)
+    }
+
     fn data_blocks(&self) -> u64 {
         self.data.bdev.capacity_blocks() * self.data.bdev.block_size() as u64
             / crate::uapi::SECTOR_BYTES / self.block_sectors
@@ -57,7 +170,9 @@ impl ThinPool {
         if id > MAX_THIN_ID { return Err(Errno::Einval); }
         let mut state = unsafe { self.state.lock() };
         if state.devices.contains_key(&id) { return Err(Errno::Ebusy); }
-        state.devices.insert(id, ThinDevice { mappings: BTreeMap::new(), shared: BTreeSet::new() });
+        let before = state.clone();
+        state.devices.insert(id, ThinDevice { mappings: BTreeMap::new(), shared: BTreeSet::new(), origin: None });
+        if let Err(e) = self.persist_metadata(&state) { *state = before; return Err(e); }
         Ok(())
     }
 
@@ -65,17 +180,22 @@ impl ThinPool {
         if id > MAX_THIN_ID || origin > MAX_THIN_ID { return Err(Errno::Einval); }
         let mut state = unsafe { self.state.lock() };
         if state.devices.contains_key(&id) { return Err(Errno::Ebusy); }
+        let before = state.clone();
         let source = state.devices.get(&origin).ok_or(Errno::Enxio)?;
         let mappings = source.mappings.clone();
         let shared: BTreeSet<u64> = mappings.values().copied().collect();
         if let Some(source) = state.devices.get_mut(&origin) { source.shared.extend(shared.iter().copied()); }
-        state.devices.insert(id, ThinDevice { mappings, shared });
+        state.devices.insert(id, ThinDevice { mappings, shared, origin: Some(origin) });
+        if let Err(e) = self.persist_metadata(&state) { *state = before; return Err(e); }
         Ok(())
     }
 
     fn delete_thin(&self, id: u64) -> DmResult<()> {
         let mut state = unsafe { self.state.lock() };
-        state.devices.remove(&id).map(|_| ()).ok_or(Errno::Enxio)
+        let before = state.clone();
+        state.devices.remove(&id).map(|_| ()).ok_or(Errno::Enxio)?;
+        if let Err(e) = self.persist_metadata(&state) { *state = before; return Err(e); }
+        Ok(())
     }
 
     fn allocate(&self, state: &mut PoolState) -> DmResult<u64> {
@@ -92,6 +212,10 @@ impl ThinPool {
         let block = io.sector / self.block_sectors;
         let within = io.sector % self.block_sectors;
         let mut state = unsafe { self.state.lock() };
+        if matches!(io.op, BlockOp::Flush) {
+            return Ok(MapResult::Remapped { dev: self.data.bdev.clone(), sector: io.sector });
+        }
+        let before = state.clone();
         let (mapped, shared) = state.devices.get(&id).ok_or(Errno::Enxio)
             .map(|thin| (thin.mappings.get(&block).copied(), mapped_is_shared(thin, block)))?;
         if matches!(io.op, BlockOp::Read) && mapped.is_none() {
@@ -100,6 +224,7 @@ impl ThinPool {
         }
         if matches!(io.op, BlockOp::Discard) {
             state.devices.get_mut(&id).expect("thin still exists").mappings.remove(&block);
+            if let Err(e) = self.persist_metadata(&state) { *state = before; return Err(e); }
             return Ok(MapResult::Submitted);
         }
         let physical = match mapped {
@@ -124,6 +249,7 @@ impl ThinPool {
                 fresh
             }
         };
+        if let Err(e) = self.persist_metadata(&state) { *state = before; return Err(e); }
         Ok(MapResult::Remapped { dev: self.data.bdev.clone(), sector: physical * self.block_sectors + within })
     }
 
@@ -205,7 +331,7 @@ fn pool_ctr(c: &mut Ctr<'_>) -> DmResult<Arc<dyn DmTarget>> {
             }
         }
     }
-    Ok(Arc::new(PoolTarget { pool: Arc::new(ThinPool { metadata, data, block_sectors, low_water_blocks, state: Mutex::new(PoolState { devices: BTreeMap::new(), next_data_block: 0, out_of_data: false }) }) }))
+    Ok(Arc::new(PoolTarget { pool: Arc::new(ThinPool::new(metadata, data, block_sectors, low_water_blocks)?) }))
 }
 
 fn thin_ctr(c: &mut Ctr<'_>) -> DmResult<Arc<dyn DmTarget>> {
@@ -273,5 +399,31 @@ mod tests {
         let mut second_read = BlockRequest::new_read(sector, 1, 512);
         dev.submit_sync(&mut second_read).expect("read snapshot thin");
         assert_eq!(second_read.buffer, alloc::vec![0x22; 512]);
+    }
+
+    #[test]
+    fn thin_metadata_reloads_virtual_mapping_after_pool_reopen() {
+        let metadata: Arc<dyn BlockDevice> = MemDisk::<TaskList>::new(512, 256);
+        let data: Arc<dyn BlockDevice> = MemDisk::<TaskList>::new(512, 256);
+        let metadata_dev = DmDev { major: 243, minor: 1, name: "meta-reload".into(), mode: DevMode::RW, bdev: metadata };
+        let data_dev = DmDev { major: 243, minor: 2, name: "data-reload".into(), mode: DevMode::RW, bdev: data };
+        let pool1 = Arc::new(ThinPool::new(metadata_dev.clone(), data_dev.clone(), MIN_BLOCK_SECTORS, 0).expect("format pool"));
+        pool1.create_thin(7).expect("create thin");
+        let target = ThinTarget { pool: pool1.clone(), id: 7, pool_dev: data_dev.clone() };
+        let mut data_in = alloc::vec![0x73; 512];
+        let mut io = DmIo { op: BlockOp::Write, sector: 0, n_sectors: 1, data: &mut data_in };
+        let MapResult::Remapped { dev, sector } = target.map(&mut io).expect("map write") else { panic!("write must map") };
+        dev.submit_sync(&mut BlockRequest::new_write(sector, 1, data_in)).expect("write thin data");
+        drop(target);
+        drop(pool1);
+
+        let pool2 = Arc::new(ThinPool::new(metadata_dev, data_dev.clone(), MIN_BLOCK_SECTORS, 0).expect("reload pool"));
+        let target = ThinTarget { pool: pool2, id: 7, pool_dev: data_dev };
+        let mut read_data = Vec::new();
+        let mut read_io = DmIo { op: BlockOp::Read, sector: 0, n_sectors: 1, data: &mut read_data };
+        let MapResult::Remapped { dev, sector } = target.map(&mut read_io).expect("map reload read") else { panic!("read must map") };
+        let mut read = BlockRequest::new_read(sector, 1, 512);
+        dev.submit_sync(&mut read).expect("read reloaded thin");
+        assert_eq!(read.buffer, alloc::vec![0x73; 512]);
     }
 }
