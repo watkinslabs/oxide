@@ -388,6 +388,18 @@ mod fs_tests {
         assert!(lookup("/dev/vdtest0").is_none(), "del_device_node removes the node");
     }
 
+    #[test]
+    fn urandom_and_loop_control_keep_distinct_cached_inodes() {
+        let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        register("/dev/b2628-urandom", crate::misc::make_urandom_inode());
+        register("/dev/b2628-loop-control", crate::misc::make_loop_control_inode());
+        let urandom = lookup("/dev/b2628-urandom").expect("urandom node");
+        let loop_control = lookup("/dev/b2628-loop-control").expect("loop-control node");
+        assert_ne!(urandom.ino(), loop_control.ino(), "device inode numbers are cache keys");
+        assert_eq!(urandom.rdev(), crate::uapi::DEV_MEM_URANDOM);
+        assert_eq!(loop_control.rdev(), crate::uapi::DEV_MISC_LOOP_CONTROL);
+    }
+
     /// The zram driver uses the same `device_add` → devtmpfs path as every
     /// dynamic block disk. A live zram control entry therefore requires a
     /// block special inode whose `dev_t` resolves through the VFS block table.
