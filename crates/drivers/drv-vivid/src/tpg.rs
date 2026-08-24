@@ -119,6 +119,7 @@ fn render_line_at_map(pixelformat: u32, width: u32, height: u32, y: u32, shift: 
     match pixelformat {
         fourcc::RGB24 => render_triples(width, height, y, shift, frame, motion, map, dst, |c| [c.r, c.g, c.b]),
         fourcc::BGR24 => render_triples(width, height, y, shift, frame, motion, map, dst, |c| [c.b, c.g, c.r]),
+        fourcc::HSV24 => render_triples(width, height, y, shift, frame, motion, map, dst, hsv),
         fourcc::GREY => {
             let need = width as usize;
             if dst.len() < need { return 0; }
@@ -175,6 +176,7 @@ fn render_line_at_map(pixelformat: u32, width: u32, height: u32, y: u32, shift: 
         fourcc::RGB32 | fourcc::RGBA32 | fourcc::RGBX32 | fourcc::BGR32 |
         fourcc::ABGR32 | fourcc::XBGR32 | fourcc::BGRA32 | fourcc::BGRX32 =>
             render_rgb32(pixelformat, width, height, y, shift, frame, motion, map, dst),
+        fourcc::HSV32 => render_hsv32(width, height, y, shift, frame, motion, map, dst),
         fourcc::XRGB32 => render_quads(width, height, y, shift, frame, motion, map, dst, false),
         fourcc::ARGB32 => render_quads(width, height, y, shift, frame, motion, map, dst, true),
         fourcc::YUYV => render_yuv(width, height, y, shift, frame, motion, map, dst, 0),
@@ -299,6 +301,35 @@ fn render_rgb32(pixelformat: u32, width: u32, height: u32, y: u32, shift: u32,
             _ => return 0,
         };
         dst[x as usize * 4..x as usize * 4 + 4].copy_from_slice(&bytes);
+    }
+    need
+}
+
+fn hsv(c: Rgb) -> [u8; 3] {
+    let r = (c.r >> 4) as i32;
+    let g = (c.g >> 4) as i32;
+    let b = (c.b >> 4) as i32;
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    if max == 0 { return [0, 0, 0]; }
+    let diff = max - min;
+    let sat = ((255 * diff + max / 2) / max) as u8;
+    if sat == 0 { return [0, sat, max as u8]; }
+    let third_size = 85i32;
+    let (aux, third) = if max == r { (g - b, 0) } else if max == g { (b - r, third_size) }
+        else { (r - g, third_size * 2) };
+    let mut hue = (aux * (third_size / 2) + diff / 2) / diff + third;
+    hue &= 0xff;
+    [hue as u8, sat, max as u8]
+}
+
+fn render_hsv32(width: u32, height: u32, y: u32, shift: u32, frame: u32,
+                motion: Motion, map: Option<RenderMap>, dst: &mut [u8]) -> usize {
+    let need = width as usize * 4;
+    if dst.len() < need { return 0; }
+    for x in 0..width {
+        let [h, s, v] = hsv(sample_pixel(x, y, width, height, shift, frame, motion, map));
+        dst[x as usize * 4..x as usize * 4 + 4].copy_from_slice(&[0, h, s, v]);
     }
     need
 }

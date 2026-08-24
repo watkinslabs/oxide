@@ -136,6 +136,19 @@ fn packed_rgb32_variants_match_linux_byte_order() {
 }
 
 #[test]
+fn hsv_variants_match_linux_hue_scale_and_layout() {
+    let mut hsv24 = [0u8; 24];
+    let mut hsv32 = [0u8; 32];
+    tpg::render_line(fourcc::HSV24, 8, 0, &mut hsv24);
+    tpg::render_line(fourcc::HSV32, 8, 0, &mut hsv32);
+    // Linux's default 256-degree HSV encoding reduces RGB to 4 bits first.
+    assert_eq!(&hsv24[..3], &[0, 0, 15]);
+    assert_eq!(&hsv24[3..6], &[42, 255, 15]);
+    assert_eq!(&hsv32[..4], &[0, 0, 0, 15]);
+    assert_eq!(&hsv32[4..8], &[0, 42, 255, 15]);
+}
+
+#[test]
 fn packed_chroma_comes_from_the_left_pixel_of_each_pair() {
     let width = 16u32;
     let mut yuyv = alloc::vec![0u8; width as usize * 2];
