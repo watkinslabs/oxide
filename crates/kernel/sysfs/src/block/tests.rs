@@ -136,3 +136,29 @@ fn block_queue_renders_discard_and_stable_write_facts_from_one_record() {
     assert_eq!(&stable[..count], STABLE_WRITES);
     assert!(block::registry::unregister(NAME));
 }
+
+#[test]
+fn block_queue_write_cache_is_a_live_durability_control() {
+    const NAME: &str = "sysfsblkwc";
+    let limits = block::QueueLimits::for_logical_block_size(TEST_BLOCK_SIZE)
+        .unwrap().with_features(block::QueueFeatures::WRITE_CACHE);
+    let inner = block::MemDisk::<TaskList>::new(TEST_BLOCK_SIZE, TEST_BLOCK_COUNT);
+    let dev: Arc<dyn block::BlockDevice> = Arc::new(TopologyDisk { inner, limits });
+    assert_ne!(block::registry::register(NAME, dev), 0);
+    let queue = make_sys_block_inode().lookup(NAME).expect("disk")
+        .lookup("queue").expect("queue");
+    let cache = queue.lookup("write_cache").expect("write_cache");
+    let mut out = [0u8; 16];
+    let count = cache.read(0, &mut out).expect("initial read");
+    assert_eq!(&out[..count], b"write back\n");
+    assert!(block::registry::queue_limits(NAME).unwrap().write_cache());
+
+    assert_eq!(cache.write(0, b"write through\n"), Ok("write through\n".len()));
+    let count = cache.read(0, &mut out).expect("disabled read");
+    assert_eq!(&out[..count], b"write through\n");
+    assert!(!block::registry::queue_limits(NAME).unwrap().write_cache());
+    assert_eq!(cache.write(0, b"write back\n"), Ok("write back\n".len()));
+    assert!(block::registry::queue_limits(NAME).unwrap().write_cache());
+    assert_eq!(cache.write(0, b"bogus\n"), Err(vfs::VfsError::Einval));
+    assert!(block::registry::unregister(NAME));
+}

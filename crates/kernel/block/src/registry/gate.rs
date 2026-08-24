@@ -2,6 +2,7 @@
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicBool, Ordering};
 use sync::{Devices as DevicesClass, Spinlock};
 use crate::blockdev::{BlockCompletion, BlockDevice, BlockRequest};
 use crate::queue_limits::QueueLimits;
@@ -206,6 +207,7 @@ impl Drop for SubmissionToken {
 pub(super) struct AdmissionDev {
     pub(super) inner: Arc<dyn BlockDevice>,
     pub(super) io: Arc<Spinlock<DiskIo, DevicesClass>>,
+    pub(super) cache_disabled: Arc<AtomicBool>,
 }
 impl AdmissionDev {
     fn admit(&self) -> KResult<SubmissionToken> {
@@ -242,7 +244,12 @@ impl AdmissionDev {
 impl BlockDevice for AdmissionDev {
     fn block_size(&self) -> u32 { self.inner.block_size() }
     fn queue_limits(&self) -> KResult<QueueLimits> {
-        let limits = self.inner.queue_limits()?;
+        let mut limits = self.inner.queue_limits()?;
+        if self.cache_disabled.load(Ordering::Acquire) {
+            let features = limits.features()
+                & !(crate::QueueFeatures::WRITE_CACHE | crate::QueueFeatures::FUA);
+            limits = limits.with_features(features);
+        }
         limits.with_discard(limits.max_hw_discard_sectors(), self.io.lock_bh::<crate::bh_gate::BlockBh>().max_discard_sectors,
             limits.discard_granularity())
     }
