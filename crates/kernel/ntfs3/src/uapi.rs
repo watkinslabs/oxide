@@ -44,6 +44,12 @@ pub const MFT_REC_EXTEND: u64 = 11;
 /// The first record a user file may occupy.
 pub const MFT_REC_USER: u64 = 24;
 
+/// Named streams and indexes owned by `$Secure`.
+pub const SII_NAME: [u16; 4] = ['$' as u16, 'S' as u16, 'I' as u16, 'I' as u16];
+pub const SDS_NAME: [u16; 4] = ['$' as u16, 'S' as u16, 'D' as u16, 'S' as u16];
+pub const SECURITY_ID_FIRST: u32 = 0x100;
+pub const SECURITY_HEADER_SIZE: usize = 0x14;
+
 /// Record signatures, as they read on the medium.
 pub const SIG_FILE: &[u8; 4] = b"FILE";
 pub const SIG_INDX: &[u8; 4] = b"INDX";

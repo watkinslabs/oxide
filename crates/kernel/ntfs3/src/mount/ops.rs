@@ -133,6 +133,15 @@ impl InodeOps for NtfsOps {
 
     fn getxattr(&self, inode: &Inode, name: &str) -> Result<Vec<u8>, XattrError> {
         let node = Self::node(inode).map_err(XattrError::Fs)?;
+        if name == "system.ntfs_security" {
+            let id = node.info.security_id.ok_or(XattrError::NotFound)?;
+            return node.fs.volume.lock().security_descriptor(id)
+                .map_err(|e| match e {
+                    syscall::errno::Errno::Enodata | syscall::errno::Errno::Enoent =>
+                        XattrError::NotFound,
+                    e => XattrError::Fs(errno_to_vfs(e)),
+                });
+        }
         if node.fs.options().streams != StreamInterface::Xattr {
             return Err(XattrError::NotSup);
         }
@@ -152,8 +161,15 @@ impl InodeOps for NtfsOps {
 
     fn listxattr(&self, inode: &Inode) -> Result<Vec<String>, XattrError> {
         let node = Self::node(inode).map_err(XattrError::Fs)?;
-        if node.fs.options().streams != StreamInterface::Xattr { return Err(XattrError::NotSup); }
-        Ok(node.info.streams.iter().map(|s| alloc::format!("user.{s}")).collect())
+        let mut names = Vec::new();
+        if node.fs.options().streams == StreamInterface::Xattr {
+            names.extend(node.info.streams.iter().map(|s| alloc::format!("user.{s}")));
+        }
+        if node.info.security_id.is_some() { names.push(String::from("system.ntfs_security")); }
+        if names.is_empty() && node.fs.options().streams != StreamInterface::Xattr {
+            return Err(XattrError::NotSup);
+        }
+        Ok(names)
     }
 }
 

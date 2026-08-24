@@ -78,6 +78,19 @@ fn the_child_pointer_is_the_entrys_last_eight_bytes() {
 }
 
 #[test]
+fn a_raw_index_entry_exposes_the_value_after_its_key() {
+    let key = 7u32.to_le_bytes();
+    let mut built = entry::build(&Reference::default(), &key, None);
+    built.resize(32, 0);
+    built[DE_OFF_SIZE..DE_OFF_SIZE + 2].copy_from_slice(&32u16.to_le_bytes());
+    built[SIZEOF_DE + key.len()..SIZEOF_DE + key.len() + 8]
+        .copy_from_slice(&[0x14, 0, 0, 0, 0xaa, 0xbb, 0xcc, 0xdd]);
+    let parsed = entry::parse(&built, 0, 0).unwrap();
+    assert_eq!(parsed.key, Some(Key::Raw(key.to_vec())));
+    assert_eq!(&parsed.payload[..8], &[0x14, 0, 0, 0, 0xaa, 0xbb, 0xcc, 0xdd]);
+}
+
+#[test]
 fn an_entry_without_a_child_reads_none() {
     let key = crate::name::write_filename(&fname("leaf"));
     let built = entry::build(&Reference { number: 9, sequence: 1 }, &key, None);

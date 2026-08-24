@@ -81,13 +81,18 @@ impl<S: SectorSource> NodeSource for DirIndex<'_, S> {
 
 impl<S: SectorSource> Volume<S> {
     /// A directory's index, ready to be walked. # C: O(record bytes)
-    pub fn open_index(&self, number: u64) -> Result<DirIndex<'_, S>, Errno> {
+    pub fn open_named_index(&self, number: u64, name: &[u16]) -> Result<DirIndex<'_, S>, Errno> {
         let (bytes, attrs) = self.read_live_record(number)?;
-        let root_attr = attrib::find(&attrs, ATTR_ROOT, &I30_NAME).ok_or(Errno::Enotdir)?;
+        let root_attr = attrib::find(&attrs, ATTR_ROOT, name).ok_or(Errno::Enotdir)?;
         let root_data = self.attribute_bytes(&bytes, &attrs, root_attr)?;
         let root = index::parse_root(&root_data).ok_or(Errno::Eio)?;
-        let alloc = attrib::find(&attrs, ATTR_ALLOC, &I30_NAME).cloned();
+        let alloc = attrib::find(&attrs, ATTR_ALLOC, name).cloned();
         Ok(DirIndex { vol: self, bytes, attrs, root, root_data, alloc })
+    }
+
+    /// Open an ordinary directory's `$I30` index. # C: O(record bytes)
+    pub fn open_index(&self, number: u64) -> Result<DirIndex<'_, S>, Errno> {
+        self.open_named_index(number, &I30_NAME)
     }
 
     /// Every name in a directory.
