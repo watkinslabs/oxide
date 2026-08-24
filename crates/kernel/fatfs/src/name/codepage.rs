@@ -12,13 +12,13 @@
 //! not an error, it is what makes the short name an alias and forces the long
 //! name to be stored beside it.
 
-use super::{cp437, cp850, cp852, cp855, cp857, cp860, cp861, cp862, cp863};
+use super::{cp437, cp850, cp852, cp855, cp857, cp860, cp861, cp862, cp863, cp864};
 
 /// The code page number a mount defaults to when it names none.
 pub const DEFAULT_CODEPAGE: u32 = 437;
 
 #[derive(Copy, Clone)]
-enum Tables { Cp437, Cp850, Cp852, Cp855, Cp857, Cp860, Cp861, Cp862, Cp863 }
+enum Tables { Cp437, Cp850, Cp852, Cp855, Cp857, Cp860, Cp861, Cp862, Cp863, Cp864 }
 
 /// A single-byte code page: the character each byte means, and the case
 /// mapping over the bytes themselves.
@@ -62,10 +62,13 @@ pub static CP862: CodePage = CodePage { number: 862, tables: Tables::Cp862 };
 /// Code page 863, the Linux `nls_cp863` Canadian-French table.
 pub static CP863: CodePage = CodePage { number: 863, tables: Tables::Cp863 };
 
+/// Code page 864, the Linux `nls_cp864` Arabic table.
+pub static CP864: CodePage = CodePage { number: 864, tables: Tables::Cp864 };
+
 /// The code page a mount option names, or `None` when this build has no table
 /// for it. # C: O(1)
 pub fn by_number(number: u32) -> Option<&'static CodePage> {
-    match number { DEFAULT_CODEPAGE => Some(&CP437), 850 => Some(&CP850), 852 => Some(&CP852), 855 => Some(&CP855), 857 => Some(&CP857), 860 => Some(&CP860), 861 => Some(&CP861), 862 => Some(&CP862), 863 => Some(&CP863), _ => None }
+    match number { DEFAULT_CODEPAGE => Some(&CP437), 850 => Some(&CP850), 852 => Some(&CP852), 855 => Some(&CP855), 857 => Some(&CP857), 860 => Some(&CP860), 861 => Some(&CP861), 862 => Some(&CP862), 863 => Some(&CP863), 864 => Some(&CP864), _ => None }
 }
 
 impl CodePage {
@@ -82,6 +85,7 @@ impl CodePage {
             Tables::Cp861 => cp861::CHARSET2UNI[usize::from(byte - 128)],
             Tables::Cp862 => cp862::CHARSET2UNI[usize::from(byte - 128)],
             Tables::Cp863 => cp863::CHARSET2UNI[usize::from(byte - 128)],
+            Tables::Cp864 => cp864::CHARSET2UNI[usize::from(byte - 128)],
         }
     }
 
@@ -108,6 +112,7 @@ impl CodePage {
             Tables::Cp861 => cp861::CHARSET2LOWER[usize::from(byte - 128)],
             Tables::Cp862 => cp862::CHARSET2LOWER[usize::from(byte - 128)],
             Tables::Cp863 => cp863::CHARSET2LOWER[usize::from(byte - 128)],
+            Tables::Cp864 => cp864::CHARSET2LOWER[usize::from(byte - 128)],
         }};
         if c == 0 { byte } else { c }
     }
@@ -126,6 +131,7 @@ impl CodePage {
             Tables::Cp861 => cp861::CHARSET2UPPER[usize::from(byte - 128)],
             Tables::Cp862 => cp862::CHARSET2UPPER[usize::from(byte - 128)],
             Tables::Cp863 => cp863::CHARSET2UPPER[usize::from(byte - 128)],
+            Tables::Cp864 => cp864::CHARSET2UPPER[usize::from(byte - 128)],
         }};
         if c == 0 { byte } else { c }
     }
