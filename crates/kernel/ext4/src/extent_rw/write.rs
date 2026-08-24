@@ -92,6 +92,30 @@ impl Mount {
         self.run_journaled(|m| m.write_at_inner(ino, off, data, None))
     }
 
+    /// Allocate the blocks touched by a buffered write when delayed allocation
+    /// is disabled. Keep them unwritten until page writeback supplies data, so
+    /// metadata publication cannot expose stale media contents. # C: O(N_blocks)
+    pub(crate) fn prepare_nodelalloc(&self, ino: u32, off: u64, len: usize) -> Result<(), MountError> {
+        if len == 0 { return Ok(()); }
+        let bs = self.sb.block_size as u64;
+        let end = off.checked_add(len as u64).ok_or(MountError::Inode(inode::InodeError::BadLen))?;
+        let first = off / bs;
+        let last = (end - 1) / bs;
+        if last > u32::MAX as u64 { return Err(MountError::Inode(inode::InodeError::BadLen)); }
+        self.run_journaled(|m| {
+            for logical in first..=last {
+                let inode = m.read_inode(ino)?;
+                let mapped = m.collect_phys_extents(&inode.i_block)?.iter().any(|run|
+                    logical >= u64::from(run.logical)
+                        && logical < u64::from(run.logical) + u64::from(run.len));
+                if !mapped {
+                    m.map_unwritten_block_inner(ino, logical as u32, core::cmp::max(inode.size, end))?;
+                }
+            }
+            Ok(())
+        })
+    }
+
     /// Allocate backing blocks through `offset + len`. With `keep_size`, the
     /// original `i_size` is restored after allocation without freeing extents.
     /// # C: O(file growth)

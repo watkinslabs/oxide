@@ -290,6 +290,10 @@ impl FileOps for Ext4RegFileOps {
     fn write(&self, inode: &Inode, off: u64, buf: &[u8]) -> KResult<usize> {
         let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
         let _mutation = d.begin_swap_mutation(inode)?;
+        let behaviour = d.st.mount.behaviour();
+        if !behaviour.delalloc || behaviour.data == crate::mount_opts::DataMode::Journal {
+            d.st.mount.prepare_nodelalloc(d.ino, off, buf.len()).map_err(|e| fs_err(&d.st, e))?;
+        }
         // Linux buffered write: land bytes in the one inode frame store and
         // return; disk I/O is deferred to writeback (fsync/msync/sync/drop).
         d.frames.write_buffered(off, buf)?;
