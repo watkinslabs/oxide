@@ -116,6 +116,10 @@ mod tests {
             md_minor: array.number.minor as i32, not_persistent: 0, utime: 23, state: 1, active_disks: 2, working_disks: 2,
             failed_disks: 0, spare_disks: 0, layout: 0, chunk_size: 0,
         });
+        let current = crate::array_info(dev_t).expect("current MD ioctl state");
+        assert_eq!(crate::set_array_info(dev_t, current), Ok(()));
+        let mut changed = current; changed.level = 0;
+        assert_eq!(crate::set_array_info(dev_t, changed), Err(BlockError::Einval));
         let left_part = block::registry::by_name(LEFT).expect("left disk").partitions().pop().expect("left RAID partition");
         assert_eq!(crate::disk_info(dev_t, 0).expect("MD member 0"), crate::uapi::DiskInfo {
             number: 0, major: left_part.number_dev.major as i32, minor: left_part.number_dev.minor as i32, raid_disk: 0, state: 6,

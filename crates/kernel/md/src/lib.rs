@@ -27,7 +27,7 @@ use sync::{Devices as MdStateClass, Spinlock};
 
 pub use superblock::{MetadataVersion, Superblock, read_superblock};
 pub use assembly::assemble;
-pub use control::{array_info, disk_info, is_md_device, restart_array_read_write, set_disk_faulty, stop_array, stop_array_read_only};
+pub use control::{array_info, disk_info, is_md_device, restart_array_read_write, set_array_info, set_disk_faulty, stop_array, stop_array_read_only};
 
 /// Linux's fixed block major for MD arrays. # C: O(1)
 pub const MD_MAJOR: u32 = 9;

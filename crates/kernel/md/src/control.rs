@@ -54,6 +54,14 @@ pub fn set_disk_faulty(dev_t: u32, member_dev_t: u32) -> KResult<()> {
     array.set_disk_faulty(member_dev_t)
 }
 
+/// Validate the Linux `SET_ARRAY_INFO` no-change path against the live array.
+/// Unsupported geometry changes remain rejected until their personality owns
+/// reshape and persistent superblock updates. # C: O(disks + members)
+pub fn set_array_info(dev_t: u32, info: uapi::ArrayInfo) -> KResult<()> {
+    let (disk, array) = live_array(dev_t)?;
+    array.validate_array_info(disk.number.minor, &info)
+}
+
 /// Put a live assembled array into read-only service. New opens and writes
 /// close before the block-device mapping drains its existing dirty pages;
 /// later writes observe `EROFS` until [`restart_array_read_write`].
@@ -155,6 +163,17 @@ fn live_array(dev_t: u32) -> KResult<(Arc<block::registry::Disk>, Arc<Array>)> {
 }
 
 impl Array {
+    fn validate_array_info(&self, md_minor: u32, info: &uapi::ArrayInfo) -> KResult<()> {
+        let current = self.array_info(md_minor).ok_or(BlockError::Enxio)?;
+        let same_size = info.size < 0 || info.size == current.size;
+        if info.major_version != current.major_version || info.minor_version != current.minor_version
+            || info.ctime != current.ctime || info.level != current.level || info.not_persistent != current.not_persistent
+            || info.chunk_size != current.chunk_size || !same_size || info.raid_disks != current.raid_disks
+            || info.layout != current.layout || (info.state & 0xffff_fe00u32 as i32) != 0
+            || (info.state & (1 << 8)) != 0 { return Err(BlockError::Einval); }
+        Ok(())
+    }
+
     fn array_info(&self, md_minor: u32) -> Option<uapi::ArrayInfo> {
         let metadata = self.metadata.as_ref()?;
         let size = self.capacity.checked_mul(u64::from(self.block_size))?.checked_div(1024)?;
