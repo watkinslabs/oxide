@@ -32,6 +32,9 @@ pub struct IndexEntry {
     /// The child node's block number, when the entry has one.
     pub child: Option<u64>,
     pub key: Option<Key>,
+    /// Bytes after the key and before the optional child pointer.  Security
+    /// indexes store their value here rather than in the MFT reference.
+    pub payload: Vec<u8>,
     /// Where the entry sits within its node's bytes.
     pub offset: usize,
 }
@@ -89,6 +92,11 @@ pub fn parse(bytes: &[u8], at: usize, indexed_type: u32) -> Option<IndexEntry> {
         }
     };
 
+    let payload_start = at.checked_add(SIZEOF_DE)?.checked_add(usize::from(key_size))?;
+    let payload_end = child.map_or(end, |_| end.checked_sub(8).unwrap_or(end));
+    let payload = if payload_start <= payload_end {
+        bytes[payload_start..payload_end].to_vec()
+    } else { return None };
     Some(IndexEntry {
         reference: crate::record::reference(bytes, at + DE_OFF_REF),
         size,
@@ -96,6 +104,7 @@ pub fn parse(bytes: &[u8], at: usize, indexed_type: u32) -> Option<IndexEntry> {
         flags,
         child,
         key,
+        payload,
         offset: at,
     })
 }

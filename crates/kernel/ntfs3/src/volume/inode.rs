@@ -4,6 +4,7 @@
 //! where the attributes are turned back into the thing a caller asked about.
 
 use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
 
 use syscall::errno::Errno;
@@ -33,6 +34,9 @@ pub struct NodeInfo {
     pub modify_time: i64,
     pub change_time: i64,
     pub access_time: i64,
+    /// `$STANDARD_INFORMATION.security_id`, resolved through `$Secure` when
+    /// present on an NTFS 3.x record.
+    pub security_id: Option<u32>,
     /// The reparse tag, when the record carries one.
     pub reparse_tag: Option<u32>,
     /// Names of the alternate data streams beside the file's own data.
@@ -95,6 +99,9 @@ impl<S: SectorSource> Volume<S> {
         let mut attributes = le32(info, STD_OFF_FA);
         if header.is_dir() { attributes |= FILE_ATTRIBUTE_DIRECTORY; }
 
+        let security_id = (end - start >= SIZEOF_STD_INFO5)
+            .then(|| le32(info, STD_OFF_SECURITY_ID));
+
         let reparse_tag = attrib::find(attrs, ATTR_REPARSE, &[])
             .and_then(|a| self.attribute_bytes(bytes, attrs, a).ok())
             .filter(|raw| raw.len() >= 4)
@@ -117,9 +124,45 @@ impl<S: SectorSource> Volume<S> {
             modify_time: le64(info, STD_OFF_M_TIME) as i64,
             change_time: le64(info, STD_OFF_C_TIME) as i64,
             access_time: le64(info, STD_OFF_A_TIME) as i64,
+            security_id,
             reparse_tag,
             streams,
         })
+    }
+
+    /// Read the descriptor named by `$STANDARD_INFORMATION.security_id`.
+    /// Linux resolves this through `$Secure::$SII` and then `$SDS`; the ID is
+    /// never treated as a byte offset supplied by the file itself.
+    pub fn security_descriptor(&self, id: u32) -> Result<Vec<u8>, Errno> {
+        if id < SECURITY_ID_FIRST { return Err(Errno::Enodata); }
+        let index = self.open_named_index(MFT_REC_SECURE, &SII_NAME)?;
+        let entries = crate::index::walk::walk_all(&index)?;
+        let wanted = id.to_le_bytes();
+        let entry = entries.into_iter().find(|entry| {
+            matches!(&entry.key, Some(crate::index::Key::Raw(key)) if key.as_slice() == wanted)
+        }).ok_or(Errno::Enodata)?;
+        if entry.payload.len() < SECURITY_HEADER_SIZE { return Err(Errno::Eio); }
+        let header = &entry.payload;
+        if u32::from_le_bytes(header[4..8].try_into().unwrap()) != id {
+            return Err(Errno::Eio);
+        }
+        let offset = u64::from_le_bytes(header[8..16].try_into().unwrap());
+        let total = u32::from_le_bytes(header[16..20].try_into().unwrap()) as usize;
+        if total < SECURITY_HEADER_SIZE || total > SECURITY_HEADER_SIZE + 0x10000 {
+            return Err(Errno::Efbig);
+        }
+        if offset & 0xf != 0 { return Err(Errno::Eio); }
+        let descriptor_len = total - SECURITY_HEADER_SIZE;
+        let mut descriptor = vec![0u8; descriptor_len];
+        let stream = &SDS_NAME;
+        let mut done = 0;
+        while done < descriptor_len {
+            let got = self.read_stream(MFT_REC_SECURE, stream, offset + SECURITY_HEADER_SIZE as u64
+                + done as u64, &mut descriptor[done..])?;
+            if got == 0 { return Err(Errno::Eio); }
+            done += got;
+        }
+        Ok(descriptor)
     }
 
     /// Every `$FILE_NAME` record one MFT record carries. # C: O(attributes)
