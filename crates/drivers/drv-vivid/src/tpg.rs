@@ -163,6 +163,12 @@ fn render_line_at_map(pixelformat: u32, width: u32, height: u32, y: u32, shift: 
         fourcc::YUV555 => render_yuv16(width, height, y, shift, frame, motion, map, dst, 0),
         fourcc::YUV565 => render_yuv16(width, height, y, shift, frame, motion, map, dst, 1),
         fourcc::YUV444 => render_yuv16(width, height, y, shift, frame, motion, map, dst, 2),
+        fourcc::RGB444 | fourcc::ARGB444 | fourcc::XRGB444 | fourcc::RGBA444 |
+        fourcc::RGBX444 | fourcc::ABGR444 | fourcc::XBGR444 | fourcc::BGRA444 |
+        fourcc::BGRX444 | fourcc::RGB555 | fourcc::ARGB555 | fourcc::XRGB555 |
+        fourcc::RGBA555 | fourcc::RGBX555 | fourcc::ABGR555 | fourcc::XBGR555 |
+        fourcc::BGRA555 | fourcc::BGRX555 | fourcc::RGB555X | fourcc::ARGB555X |
+        fourcc::XRGB555X => render_rgb16(pixelformat, width, height, y, shift, frame, motion, map, dst),
         fourcc::YUV32 | fourcc::AYUV32 | fourcc::XYUV32 | fourcc::VUYA32 |
         fourcc::VUYX32 | fourcc::YUVA32 | fourcc::YUVX32 =>
             render_yuv32(pixelformat, width, height, y, shift, frame, motion, map, dst),
@@ -210,6 +216,46 @@ fn render_yuv16(width: u32, height: u32, y: u32, shift: u32, frame: u32, motion:
             }
         };
         dst[x as usize * 2..x as usize * 2 + 2].copy_from_slice(&value.to_le_bytes());
+    }
+    need
+}
+
+fn render_rgb16(pixelformat: u32, width: u32, height: u32, y: u32, shift: u32,
+                frame: u32, motion: Motion, map: Option<RenderMap>, dst: &mut [u8]) -> usize {
+    let need = width as usize * 2;
+    if dst.len() < need { return 0; }
+    for x in 0..width {
+        let c = sample_pixel(x, y, width, height, shift, frame, motion, map);
+        let r = c.r as u16;
+        let g = c.g as u16;
+        let b = c.b as u16;
+        let alpha = if matches!(pixelformat, fourcc::ARGB444 | fourcc::ARGB555 |
+            fourcc::RGBA444 | fourcc::RGBA555 | fourcc::ABGR444 | fourcc::ABGR555 |
+            fourcc::BGRA444 | fourcc::BGRA555 | fourcc::ARGB555X) { 0xff } else { 0 };
+        let bytes = match pixelformat {
+            fourcc::RGB444 | fourcc::XRGB444 | fourcc::ARGB444 =>
+                [((g << 4) | b) as u8, ((alpha & 0xf0) | r) as u8],
+            fourcc::RGBX444 | fourcc::RGBA444 =>
+                [((b << 4) | (alpha >> 4)) as u8, ((r << 4) | g) as u8],
+            fourcc::XBGR444 | fourcc::ABGR444 =>
+                [((g << 4) | r) as u8, ((alpha & 0xf0) | b) as u8],
+            fourcc::BGRX444 | fourcc::BGRA444 =>
+                [((r << 4) | (alpha >> 4)) as u8, ((b << 4) | g) as u8],
+            fourcc::RGB555 | fourcc::XRGB555 | fourcc::ARGB555 =>
+                [((g << 5) | b) as u8, ((alpha & 0x80) | (r << 2) | (g >> 3)) as u8],
+            fourcc::RGBX555 | fourcc::RGBA555 =>
+                [((g << 6) | (b << 1) | ((alpha & 0x80) >> 7)) as u8,
+                 ((r << 3) | (g >> 2)) as u8],
+            fourcc::XBGR555 | fourcc::ABGR555 =>
+                [((g << 5) | r) as u8, ((alpha & 0x80) | (b << 2) | (g >> 3)) as u8],
+            fourcc::BGRX555 | fourcc::BGRA555 =>
+                [((g << 6) | (r << 1) | ((alpha & 0x80) >> 7)) as u8,
+                 ((b << 3) | (g >> 2)) as u8],
+            fourcc::RGB555X | fourcc::XRGB555X | fourcc::ARGB555X =>
+                [((alpha & 0x80) | (r << 2) | (g >> 3)) as u8, ((g << 5) | b) as u8],
+            _ => return 0,
+        };
+        dst[x as usize * 2..x as usize * 2 + 2].copy_from_slice(&bytes);
     }
     need
 }
