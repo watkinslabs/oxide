@@ -48,6 +48,9 @@ pub struct Array {
     block_size: u32,
     capacity: u64,
     metadata: Option<control::Metadata>,
+    metadata_members: Vec<Arc<dyn BlockDevice>>,
+    metadata_version: Option<MetadataVersion>,
+    metadata_events: Spinlock<u64, MdStateClass>,
     lifecycle: lifecycle::State,
     faulty: Spinlock<Vec<bool>, MdStateClass>,
 }
@@ -69,11 +72,17 @@ impl Array {
         Self::new(Level::Raid1, members, None)
     }
 
-    pub(crate) fn from_metadata(level: Level, members: Vec<Arc<dyn BlockDevice>>, metadata: control::Metadata) -> KResult<Arc<Self>> {
-        Self::new(level, members, Some(metadata))
+    pub(crate) fn from_metadata(level: Level, members: Vec<Arc<dyn BlockDevice>>, metadata: control::Metadata,
+                                metadata_members: Vec<Arc<dyn BlockDevice>>, version: MetadataVersion, events: u64) -> KResult<Arc<Self>> {
+        Self::new_with_metadata(level, members, Some(metadata), metadata_members, Some(version), events)
     }
 
     fn new(level: Level, members: Vec<Arc<dyn BlockDevice>>, metadata: Option<control::Metadata>) -> KResult<Arc<Self>> {
+        Self::new_with_metadata(level, members, metadata, Vec::new(), None, 0)
+    }
+
+    fn new_with_metadata(level: Level, members: Vec<Arc<dyn BlockDevice>>, metadata: Option<control::Metadata>,
+                         metadata_members: Vec<Arc<dyn BlockDevice>>, metadata_version: Option<MetadataVersion>, metadata_events: u64) -> KResult<Arc<Self>> {
         let Some(first) = members.first() else { return Err(BlockError::Einval); };
         let block_size = first.block_size();
         if members.iter().any(|member| member.block_size() != block_size || member.capacity_blocks() == 0) {
@@ -93,7 +102,7 @@ impl Array {
         };
         if capacity == 0 { return Err(BlockError::Einval); }
         Ok(Arc::new(Self { level, faulty: Spinlock::new(vec![false; members.len()]), members,
-            block_size, capacity, metadata, lifecycle: lifecycle::State::new() }))
+            block_size, capacity, metadata, metadata_members, metadata_version, metadata_events: Spinlock::new(metadata_events), lifecycle: lifecycle::State::new() }))
     }
 
     /// Array personality. # C: O(1)
@@ -120,12 +129,22 @@ impl Array {
         let member = metadata.members.iter().position(|member|
             block::registry::encode_dev(member.number_dev.major, member.number_dev.minor) == dev_t)
             .ok_or(BlockError::Enxio)?;
-        let mut faulty = self.faulty.lock();
-        if faulty[member] { return Ok(()); }
-        if self.level == Level::Raid1 && faulty.iter().filter(|faulty| !**faulty).count() <= 1 {
-            return Err(BlockError::Ebusy);
+        let member_number = metadata.members[member].number;
+        {
+            let faulty = self.faulty.lock();
+            if faulty[member] { return Ok(()); }
+            if self.level == Level::Raid1 && faulty.iter().filter(|faulty| !**faulty).count() <= 1 { return Err(BlockError::Ebusy); }
         }
-        faulty[member] = true;
+        let events = { let current = *self.metadata_events.lock(); current.wrapping_add(1) };
+        if let Some(version) = self.metadata_version {
+            for (index, disk) in self.metadata_members.iter().enumerate() {
+                if index != member && !self.member_faulty(index) {
+                    crate::superblock::write_faulty(disk.as_ref(), version, member_number, events)?;
+                }
+            }
+        }
+        self.faulty.lock()[member] = true;
+        *self.metadata_events.lock() = events;
         Ok(())
     }
 

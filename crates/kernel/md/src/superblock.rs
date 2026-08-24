@@ -114,17 +114,44 @@ pub fn read_superblock(member: &dyn BlockDevice, version: MetadataVersion) -> KR
     let block_size = u64::from(member.block_size());
     if block_size == 0 || SUPERBLOCK_BYTES as u64 % block_size != 0 { return Err(BlockError::Einval); }
     let sectors = member.capacity_blocks().checked_mul(block_size).ok_or(BlockError::Eoverflow)? / SECTOR_BYTES;
-    let super_sector = match version {
-        MetadataVersion::V1_0 => sectors.checked_sub(SUPERBLOCK_SECTORS * 2).ok_or(BlockError::Einval)? & !(SUPERBLOCK_SECTORS - 1),
-        MetadataVersion::V1_1 => 0,
-        MetadataVersion::V1_2 => SUPERBLOCK_SECTORS,
-    };
+    let super_sector = super_sector(version, sectors)?;
     let byte_offset = super_sector.checked_mul(SECTOR_BYTES).ok_or(BlockError::Eoverflow)?;
     if byte_offset % block_size != 0 { return Err(BlockError::Einval); }
     let blocks = (SUPERBLOCK_BYTES as u64 / block_size).try_into().map_err(|_| BlockError::Eoverflow)?;
     let mut request = BlockRequest::new_read(byte_offset / block_size, blocks, member.block_size());
     member.submit_sync(&mut request)?;
     parse(&request.buffer, super_sector)
+}
+
+fn super_sector(version: MetadataVersion, sectors: u64) -> KResult<u64> {
+    Ok(match version {
+        MetadataVersion::V1_0 => sectors.checked_sub(SUPERBLOCK_SECTORS * 2).ok_or(BlockError::Einval)? & !(SUPERBLOCK_SECTORS - 1),
+        MetadataVersion::V1_1 => 0,
+        MetadataVersion::V1_2 => SUPERBLOCK_SECTORS,
+    })
+}
+
+/// Persist a member-fault transition in one version-1 superblock. Linux
+/// rewrites surviving members with the advanced event counter and does not
+/// write the member whose device has just been declared faulty. # C: O(8 KiB)
+pub(crate) fn write_faulty(member: &dyn BlockDevice, version: MetadataVersion, dev_number: u32, events: u64) -> KResult<()> {
+    let block_size = u64::from(member.block_size());
+    if block_size == 0 || SUPERBLOCK_BYTES as u64 % block_size != 0 { return Err(BlockError::Einval); }
+    let sectors = member.capacity_blocks().checked_mul(block_size).ok_or(BlockError::Eoverflow)? / SECTOR_BYTES;
+    let sector = super_sector(version, sectors)?;
+    let blocks = (SUPERBLOCK_BYTES as u64 / block_size).try_into().map_err(|_| BlockError::Eoverflow)?;
+    let mut read = BlockRequest::new_read(sector.checked_mul(SECTOR_BYTES).ok_or(BlockError::Eoverflow)? / block_size, blocks, member.block_size());
+    member.submit_sync(&mut read)?;
+    if parse(&read.buffer, sector).is_err() { return Err(BlockError::Einval); }
+    let max_dev = le32(&read.buffer, 220)? as usize;
+    let role = usize::try_from(dev_number).map_err(|_| BlockError::Einval)?;
+    if role >= max_dev || HEADER_BYTES + max_dev * 2 > read.buffer.len() { return Err(BlockError::Einval); }
+    read.buffer[HEADER_BYTES + role * 2..HEADER_BYTES + role * 2 + 2].copy_from_slice(&ROLE_FAULTY.to_le_bytes());
+    read.buffer[200..208].copy_from_slice(&events.to_le_bytes());
+    let sum = checksum(&read.buffer, HEADER_BYTES + max_dev * 2)?;
+    read.buffer[216..220].copy_from_slice(&sum.to_le_bytes());
+    let mut write = BlockRequest::new_write(sector * SECTOR_BYTES / block_size, blocks, read.buffer);
+    member.submit_sync(&mut write)
 }
 
 fn parse(bytes: &[u8], super_sector: u64) -> KResult<Superblock> {
@@ -211,6 +238,17 @@ mod tests {
         let mut write = BlockRequest::new_write(8, 8, bytes.to_vec());
         member.submit_sync(&mut write).expect("write metadata");
         assert_eq!(read_superblock(member.as_ref(), MetadataVersion::V1_2), Err(BlockError::Einval));
+    }
+
+    #[test]
+    fn faulty_member_write_advances_event_and_marks_role() {
+        let member: Arc<dyn BlockDevice> = block::MemDisk::<TaskList>::new(512, 256);
+        let mut write = BlockRequest::new_write(8, 8, image(8).to_vec());
+        member.submit_sync(&mut write).expect("write metadata");
+        write_faulty(member.as_ref(), MetadataVersion::V1_2, 1, 10).expect("persist fault");
+        let found = read_superblock(member.as_ref(), MetadataVersion::V1_2).expect("read metadata");
+        assert_eq!(found.events(), 10); assert_eq!(found.member_role(), Some(ROLE_FAULTY));
+        assert!(!found.is_active_member());
     }
 
     #[test]

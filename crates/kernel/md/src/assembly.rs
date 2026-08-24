@@ -86,20 +86,21 @@ fn assemble_members(members: Vec<Member>, version: MetadataVersion) -> KResult<A
     let control_members = found.iter().map(|(superblock, member)| Some(ControlMember {
         number: superblock.dev_number(), number_dev: member.number_dev?, raid_disk: i32::from(superblock.member_role()?),
     })).collect::<Option<Vec<_>>>();
+    let metadata_members = found.iter().map(|(_, member)| member.inner.clone()).collect::<Vec<_>>();
     let data_members = found.into_iter().map(|(superblock, member)| DataMember::new(member, &superblock).map(|member| member as Arc<dyn BlockDevice>))
         .collect::<KResult<Vec<_>>>()?;
     let metadata = control_members.map(|members| ControlMetadata { minor_version: version.minor_version(), ctime: reference.ctime(), utime: reference.utime(),
         level: reference.level(), layout: reference.layout(), chunk_sectors: reference.chunk_sectors(), raid_disks: reference.raid_disks(), members });
     match reference.level() {
-        -1 => match metadata { Some(metadata) => Array::from_metadata(Level::Linear, data_members, metadata), None => Array::linear(data_members) },
+        -1 => match metadata { Some(metadata) => Array::from_metadata(Level::Linear, data_members, metadata, metadata_members, version, reference.events()), None => Array::linear(data_members) },
         0 => {
             let sectors_per_block = block_size / 512;
             if sectors_per_block == 0 || reference.chunk_sectors() == 0 || reference.chunk_sectors() % sectors_per_block != 0 { return Err(BlockError::Einval); }
             if data_members.iter().any(|member| member.capacity_blocks() != data_members[0].capacity_blocks()) { return Err(BlockError::Eopnotsupp); }
             let level = Level::Raid0 { chunk_blocks: reference.chunk_sectors() / sectors_per_block };
-            match metadata { Some(metadata) => Array::from_metadata(level, data_members, metadata), None => Array::raid0(data_members, reference.chunk_sectors() / sectors_per_block) }
+            match metadata { Some(metadata) => Array::from_metadata(level, data_members, metadata, metadata_members, version, reference.events()), None => Array::raid0(data_members, reference.chunk_sectors() / sectors_per_block) }
         }
-        1 => match metadata { Some(metadata) => Array::from_metadata(Level::Raid1, data_members, metadata), None => Array::raid1(data_members) },
+        1 => match metadata { Some(metadata) => Array::from_metadata(Level::Raid1, data_members, metadata, metadata_members, version, reference.events()), None => Array::raid1(data_members) },
         _ => Err(BlockError::Eopnotsupp),
     }
 }
