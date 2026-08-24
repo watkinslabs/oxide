@@ -50,7 +50,8 @@ fn node_inode_with_stream(fs: Arc<NtfsFs>, info: NodeInfo, stream: Option<Vec<u1
     let inode_ops: Arc<dyn InodeOps> = Arc::new(NtfsOps);
     let file_ops: Arc<dyn FileOps> = Arc::new(NtfsOps);
     let ino = crate::ident::inode_number(info.number);
-    let mode = mk_mode(ftype, make_mode(info.attributes, &opts));
+    let mode = mk_mode(ftype, info.posix_mode.unwrap_or_else(|| make_mode(info.attributes, &opts)));
+    let (uid, gid) = info.posix_owner.unwrap_or((opts.uid, opts.gid));
     let (atime, mtime, ctime, btime) = (to_unix(info.access_time), to_unix(info.modify_time),
                                         to_unix(info.change_time), to_unix(info.create_time));
     let size = if stream.is_some() {
@@ -61,7 +62,7 @@ fn node_inode_with_stream(fs: Arc<NtfsFs>, info: NodeInfo, stream: Option<Vec<u1
     let node = NtfsNode { fs, info, stream };
     InodeBuilder::new(ino, mode, inode_ops, file_ops)
         .size(size)
-        .owner(opts.uid, opts.gid)
+        .owner(uid, gid)
         .nlink(u32::from(links))
         .times(atime, mtime, ctime)
         .btime(btime)

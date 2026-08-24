@@ -38,6 +38,29 @@ fn a_created_files_record_says_what_it_is() {
 }
 
 #[test]
+fn wsl_permissions_and_posix_acl_survive_the_native_ea_rewrite() {
+    let mut v = test_image::empty();
+    let made = v.create_file(MFT_REC_ROOT, "acl", now()).unwrap();
+    let number = made.reference.number;
+    v.write_ea(number, b"$LXUID", Some(&1000u32.to_le_bytes()), now()).unwrap();
+    v.write_ea(number, b"$LXGID", Some(&1001u32.to_le_bytes()), now()).unwrap();
+    v.write_ea(number, b"$LXMOD", Some(&0o100640u32.to_le_bytes()), now()).unwrap();
+    let acl = vfs::posix_acl::to_xattr(&[
+        vfs::posix_acl::AclEntry { tag: vfs::posix_acl::ACL_USER_OBJ, perm: 7, id: 0 },
+        vfs::posix_acl::AclEntry { tag: vfs::posix_acl::ACL_GROUP_OBJ, perm: 6, id: 0 },
+        vfs::posix_acl::AclEntry { tag: vfs::posix_acl::ACL_MASK, perm: 6, id: 0 },
+        vfs::posix_acl::AclEntry { tag: vfs::posix_acl::ACL_OTHER, perm: 0, id: 0 },
+    ]);
+    let disk = vfs::posix_acl::disk::disk_from_xattr(&acl).unwrap();
+    v.write_ea(number, b"system.posix_acl_access", Some(&disk), now()).unwrap();
+
+    let info = v.stat(number).unwrap();
+    assert_eq!(info.posix_owner, Some((1000, 1001)));
+    assert_eq!(info.posix_mode, Some(0o100640));
+    assert_eq!(v.read_ea(number, b"system.posix_acl_access").unwrap(), disk);
+}
+
+#[test]
 fn creating_a_name_that_exists_is_refused() {
     let mut v = test_image::empty();
     v.create_file(MFT_REC_ROOT, "dup", now()).unwrap();

@@ -34,6 +34,9 @@ pub struct NodeInfo {
     pub modify_time: i64,
     pub change_time: i64,
     pub access_time: i64,
+    /// Linux ntfs3's WSL permission triplet, when all three EAs are present.
+    pub posix_owner: Option<(u32, u32)>,
+    pub posix_mode: Option<u16>,
     /// `$STANDARD_INFORMATION.security_id`, resolved through `$Secure` when
     /// present on an NTFS 3.x record.
     pub security_id: Option<u32>,
@@ -101,6 +104,18 @@ impl<S: SectorSource> Volume<S> {
 
         let security_id = (end - start >= SIZEOF_STD_INFO5)
             .then(|| le32(info, STD_OFF_SECURITY_ID));
+        let wsl_perms = attrib::find(attrs, ATTR_EA, &[])
+            .and_then(|ea| self.attribute_bytes(bytes, attrs, ea).ok())
+            .and_then(|raw| {
+                let uid = crate::volume::ea::value(&raw, b"$LXUID").ok().flatten()?;
+                let gid = crate::volume::ea::value(&raw, b"$LXGID").ok().flatten()?;
+                let mode = crate::volume::ea::value(&raw, b"$LXMOD").ok().flatten()?;
+                (uid.len() == 4 && gid.len() == 4 && mode.len() == 4).then(|| (
+                    u32::from_le_bytes(uid.try_into().unwrap()),
+                    u32::from_le_bytes(gid.try_into().unwrap()),
+                    u32::from_le_bytes(mode.try_into().unwrap()) as u16,
+                ))
+            });
 
         let reparse_tag = attrib::find(attrs, ATTR_REPARSE, &[])
             .and_then(|a| self.attribute_bytes(bytes, attrs, a).ok())
@@ -124,6 +139,8 @@ impl<S: SectorSource> Volume<S> {
             modify_time: le64(info, STD_OFF_M_TIME) as i64,
             change_time: le64(info, STD_OFF_C_TIME) as i64,
             access_time: le64(info, STD_OFF_A_TIME) as i64,
+            posix_owner: wsl_perms.map(|(uid, gid, _)| (uid, gid)),
+            posix_mode: wsl_perms.map(|(_, _, mode)| mode),
             security_id,
             reparse_tag,
             streams,
