@@ -80,6 +80,9 @@ pub struct ReqInner {
     /// The readiness callback registered on that description. Owned here
     /// because the description holds only a weak reference to it.
     pub poll_waker: Option<Arc<super::poll::PollWaker>>,
+    /// Futex callback registration. The futex owner holds only the callback's
+    /// weak request reference, so this does not keep a completed ring alive.
+    pub futex_wait: Option<ipc::live::futex::WaitRegistration>,
     /// The description a POLLED ring's transfer is outstanding against —
     /// Linux `ctx->iopoll_list`. Deliberately NOT `poll_file` above: that one
     /// is a readiness subscription ("tell me when this can be read"), this one

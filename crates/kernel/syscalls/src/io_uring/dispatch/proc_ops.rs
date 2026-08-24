@@ -12,11 +12,48 @@
 // the field ladder is testable; this file resolves nothing and decides
 // nothing.
 
-use crate::io_uring_abi::{futex_op, waitid_op};
+use alloc::sync::{Arc, Weak};
 
+use crate::io_uring_abi::{futex_op, waitid_op};
+use crate::io_uring::req::IoReq;
+
+use super::super::defer::Armed;
 use super::router::{call, Op};
 
 fn err(e: syscall::errno::Errno) -> i64 { -(e.as_i32() as i64) }
+
+/// Private dispatch result: the callback fired but the futex value still
+/// matched, so the request must register again without posting a CQE.
+pub const FUTEX_REARM: i64 = i64::MIN + 0x2f;
+
+struct FutexWaker { req: Weak<IoReq> }
+
+impl ipc::live::futex::WaitCallback for FutexWaker {
+    fn wake(&self) {
+        if let Some(req) = self.req.upgrade() {
+            if !req.is_done() { super::super::iowq::pool::WQ.queue(req); }
+        }
+    }
+}
+
+/// Arm one single-futex wait from the submitting task. The callback owns no
+/// strong request reference, so an abandoned ring cannot be kept alive by the
+/// futex key.
+pub fn arm_futex_wait(req: &Arc<IoReq>) -> Armed {
+    let f = match futex_op::prep(&req.sqe) { Ok(f) => f, Err(e) => return Armed::Failed(e) };
+    let private = f.flags & ipc::futex2_flags::FUTEX2_PRIVATE != 0;
+    let callback = Arc::new(FutexWaker { req: Arc::downgrade(req) });
+    match ipc::live::futex::register_callback(f.uaddr, f.val as u32, f.mask as u32,
+                                               private, callback) {
+        Ok(reg) => { req.inner.lock().futex_wait = Some(reg); Armed::Waiting }
+        Err(syscall::errno::Errno::Eagain) => Armed::Queue,
+        Err(e) => Armed::Failed(e),
+    }
+}
+
+/// Drop the current callback registration before a request is re-armed or
+/// completed. `WaitRegistration::drop` removes only the matching callback.
+pub fn disarm_futex_wait(req: &Arc<IoReq>) { req.inner.lock().futex_wait.take(); }
 
 /// Park until the futex word changes, the bitset is woken, or the request is
 /// cancelled. No timeout: an entry that wants one links a timeout to it, which
@@ -24,8 +61,11 @@ fn err(e: syscall::errno::Errno) -> i64 { -(e.as_i32() as i64) }
 /// field of its own. # C: O(1) park
 pub fn futex_wait(op: &Op) -> i64 {
     let f = match futex_op::prep(op.sqe) { Ok(f) => f, Err(e) => return err(e) };
-    call(crate::s455_futex_wait::sys_futex_wait,
-         [f.uaddr, f.val, f.mask, f.flags as u64, 0, 0])
+    match ipc::live::futex::callback_probe(f.uaddr, f.val as u32) {
+        Ok(true) => 0,
+        Ok(false) => FUTEX_REARM,
+        Err(e) => err(e),
+    }
 }
 
 /// Wake up to `val` waiters whose bitset intersects `mask`. # C: O(waiters)

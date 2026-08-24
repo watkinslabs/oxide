@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicI32, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
 use sched::Task;
 use syscall::errno::Errno;
@@ -83,6 +83,27 @@ pub(super) struct Waiter {
     pub(super) bitset: u32,
 }
 
+/// A non-task consumer of a futex wait queue. io_uring uses this form so a
+/// request can remain armed without pinning an io-wq worker in `schedule()`.
+pub trait WaitCallback: Send + Sync {
+    /// The futex wake removed this registration. The callback must arrange
+    /// the consumer's own progress; it must not sleep.
+    fn wake(&self);
+}
+
+struct CallbackWaiter {
+    id: u64,
+    key: Key,
+    callback: Arc<dyn WaitCallback>,
+    bitset: u32,
+}
+
+/// Registration owned by the caller. Dropping it removes an un-fired
+/// callback; a callback removed by `wake_key` is already absent.
+pub struct WaitRegistration { id: u64 }
+
+static NEXT_CALLBACK_ID: AtomicU64 = AtomicU64::new(1);
+
 /// Multi-futex wait group. Used by `futex_waitv` — a single task
 /// parks on N keys at once; the first key that fires wakes the
 /// task and records its index in `woken_idx`. Other group entries
@@ -97,6 +118,7 @@ pub(super) struct WaitvGroup {
 
 pub(super) static WAITERS: Spinlock<Vec<Waiter>, TtyClass> = Spinlock::new(Vec::new());
 pub(super) static WAITV_GROUPS: Spinlock<Vec<Arc<WaitvGroup>>, TtyClass> = Spinlock::new(Vec::new());
+static CALLBACKS: Spinlock<Vec<CallbackWaiter>, TtyClass> = Spinlock::new(Vec::new());
 
 /// Compute the futex key (Linux `get_futex_key`).
 ///
@@ -159,6 +181,31 @@ pub(crate) fn current_key(uaddr: u64, private: bool) -> Option<Key> {
         Some(pa) => Some(Key { kind: KeyKind::SharedPhys, mm_root: 0, va: pa }),
         None => Some(Key { kind: KeyKind::Private, mm_root: mm.root_pa(), va: uaddr }),
     }
+}
+
+impl Drop for WaitRegistration {
+    fn drop(&mut self) { CALLBACKS.lock().retain(|w| w.id != self.id); }
+}
+
+/// Register a callback after the Linux value check and the same recheck-under-
+/// queue-lock that task waits use. `Err(Eagain)` means the word already
+/// changed and no registration was made.
+pub fn register_callback(uaddr: u64, value: u32, bitset: u32, private: bool,
+                         callback: Arc<dyn WaitCallback>) -> Result<WaitRegistration, Errno> {
+    if bitset == 0 { return Err(Errno::Einval); }
+    if load_user_u32(uaddr)? != value { return Err(Errno::Eagain); }
+    let key = current_key(uaddr, private).ok_or(Errno::Einval)?;
+    let id = NEXT_CALLBACK_ID.fetch_add(1, Ordering::Relaxed);
+    let mut g = CALLBACKS.lock();
+    if load_user_u32(uaddr)? != value { return Err(Errno::Eagain); }
+    g.push(CallbackWaiter { id, key, callback, bitset });
+    Ok(WaitRegistration { id })
+}
+
+/// Probe the futex word without sleeping. Used by an io_uring worker after a
+/// callback wake; `false` is a spurious wake and must be re-armed.
+pub fn callback_probe(uaddr: u64, value: u32) -> Result<bool, Errno> {
+    Ok(load_user_u32(uaddr)? != value)
 }
 
 /// Current monotonic ns, arch-dispatched (same clock `202_futex.rs` uses to
@@ -268,7 +315,19 @@ pub(super) fn wake_key(key: Key, n_target: usize, bitset: u32) -> usize {
         }
         g.retain(|grp| grp.woken_idx.load(Ordering::Acquire) < 0);
     }
-    if woken.is_empty() { return 0; }
+    let mut callbacks = Vec::new();
+    if woken.len() < n_target {
+        let mut c = CALLBACKS.lock();
+        let mut i = 0;
+        while i < c.len() && woken.len() + callbacks.len() < n_target {
+            if c[i].key == key && (c[i].bitset & bitset) != 0 {
+                callbacks.push(c.swap_remove(i).callback);
+            } else { i += 1; }
+        }
+    }
+    let callback_count = callbacks.len();
+    for callback in callbacks { callback.wake(); }
+    if woken.is_empty() { return callback_count; }
     let n = woken.len();
     // Route each wake through the scheduler's canonical waker instead of
     // hand-rolling set_state(Runnable)+enqueue. try_to_wake_up does the atomic
@@ -281,5 +340,5 @@ pub(super) fn wake_key(key: Key, n_target: usize, bitset: u32) -> usize {
         // SAFETY: wake-site; the Arc keeps `t` alive across the call.
         unsafe { sched::live::try_to_wake_up(t.clone()); }
     }
-    n
+    n + callback_count
 }
