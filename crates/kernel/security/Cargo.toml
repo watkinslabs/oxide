@@ -13,6 +13,7 @@ crng    = { path = "../../kernel/crng" }
 hal     = { path = "../../arch/hal" }
 klog    = { path = "../../shared/klog" }
 kernfs  = { path = "../../kernel/kernfs" }
+namespace-identity = { path = "../../kernel/namespace-identity" }
 pmm     = { path = "../../kernel/mm-pmm" }
 sched   = { path = "../../kernel/sched" }
 sync    = { path = "../../shared/sync" }

@@ -2397,6 +2397,7 @@ dependencies = [
  "hal",
  "kernfs",
  "klog",
+ "namespace-identity",
  "pmm",
  "sched",
  "sync",

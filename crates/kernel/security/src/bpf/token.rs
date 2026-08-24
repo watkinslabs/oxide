@@ -41,7 +41,19 @@ pub(super) fn create(a: &Attr) -> Result<i64, Errno> {
         return Err(Errno::Einval);
     };
     if !root.is_root() { return Err(Errno::Einval); }
+    let sb = file.inode().i_sb().ok_or(Errno::Enodev)?;
+    let owner = cur.namespace_owner(namespace_identity::NamespaceKind::User)
+        .ok_or(Errno::Eperm)?;
+    if !namespace_identity::NamespacePin::ptr_eq(&sb.s_user_ns, &owner.pin()) {
+        return Err(Errno::Eperm);
+    }
+    if !cur.has_cap(sched::cap::BPF) { return Err(Errno::Eperm); }
+    if owner.is_initial() { return Err(Errno::Eopnotsupp); }
     let delegation = root.fs_private::<BpfDelegation>().unwrap_or_default();
+    if delegation.allowed_cmds == 0 && delegation.allowed_maps == 0
+        && delegation.allowed_progs == 0 && delegation.allowed_attachs == 0 {
+        return Err(Errno::Enoent);
+    }
     let inode = make_bpf_token_inode(BpfTokenInode {
         source_magic: BPF_FS_MAGIC,
         flags,
