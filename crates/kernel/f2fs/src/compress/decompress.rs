@@ -47,24 +47,41 @@ pub struct Cluster {
 pub fn decompress_cluster(g: &Geometry, image: &[u8]) -> Result<Cluster, CompressError> {
     let rlen = g.bytes();
     if image.is_empty() { return Ok(Cluster { data: vec![0u8; rlen], chksum: Chksum::Absent }); }
-    let (h, cdata) = header(image)?;
     let mut data = vec![0u8; rlen];
+    let chksum = decompress_cluster_into(g, image, &mut data)?;
+    Ok(Cluster { data, chksum })
+}
+
+/// Decompress one stored image into caller-owned scratch.
+///
+/// Linux's `f2fs_prepare_decomp_mem(..., true)` retains the destination and
+/// codec working memory for speculative decompression. The codecs in this
+/// tree are stateless, so the destination is the complete reusable context;
+/// demand reads continue to use the allocating wrapper above. # C: O(cluster bytes)
+pub fn decompress_cluster_into(g: &Geometry, image: &[u8], data: &mut [u8])
+    -> Result<Chksum, CompressError> {
+    let rlen = g.bytes();
+    if data.len() < rlen { return Err(CompressError::ShortOutput); }
+    if image.is_empty() {
+        data[..rlen].fill(0);
+        return Ok(Chksum::Absent);
+    }
+    let (h, cdata) = header(image)?;
     let produced = match g.algorithm() {
-        Algorithm::Lz4 => lz4::decompress(cdata, &mut data).map_err(|_| CompressError::Decode)?,
+        Algorithm::Lz4 => lz4::decompress(cdata, &mut data[..rlen]).map_err(|_| CompressError::Decode)?,
         Algorithm::Lzo | Algorithm::LzoRle => {
-            lzo::decompress(cdata, &mut data).map_err(|_| CompressError::Decode)?
+            lzo::decompress(cdata, &mut data[..rlen]).map_err(|_| CompressError::Decode)?
         }
         // The destination is a whole cluster and is the bound the codec is
         // given: the frame states no size the reader may trust, so the
         // cluster's own width is what decides how much output is legitimate.
-        Algorithm::Zstd => zstd::decompress(cdata, &mut data)?,
+        Algorithm::Zstd => zstd::decompress(cdata, &mut data[..rlen])?,
     };
     if produced != rlen { return Err(CompressError::ShortOutput); }
-    let chksum = if g.checksummed() {
+    Ok(if g.checksummed() {
         let computed = checksum::crc32(cdata);
         if computed == h.chksum { Chksum::Ok } else { Chksum::Mismatch { stored: h.chksum, computed } }
     } else {
         Chksum::Absent
-    };
-    Ok(Cluster { data, chksum })
+    })
 }

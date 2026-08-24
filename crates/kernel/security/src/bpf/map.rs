@@ -29,7 +29,21 @@ pub(crate) use storage::{BpfMapValue, MapStorage};
 /// `map_create()`.
 /// # C: O(max_entries × (key_size + value_size)) for preallocated maps
 pub(super) fn create(a: &Attr, caps: Caps) -> Result<i64, Errno> {
-    let m = attr::map_create_check(a, caps, attr::unpriv_bpf_disabled())?;
+    use uapi::off::map_create as o;
+    let token = if a.u32_at(o::MAP_FLAGS) & uapi::map_flags::TOKEN_FD != 0 {
+        Some(super::token::from_fd(a.u32_at(o::TOKEN_FD))?)
+    } else { None };
+    let mut normalized = *a;
+    let flags = normalized.u32_at(o::MAP_FLAGS) & !uapi::map_flags::TOKEN_FD;
+    normalized.bytes[o::MAP_FLAGS..o::MAP_FLAGS + 4].copy_from_slice(&flags.to_ne_bytes());
+    let mut effective = caps;
+    if let Some(t) = token {
+        if t.allowed_cmds & (1u64 << uapi::cmd::MAP_CREATE) != 0
+            && t.allowed_maps & (1u64 << normalized.u32_at(o::MAP_TYPE)) != 0 {
+            effective.bpf = true;
+        }
+    }
+    let m = attr::map_create_check(&normalized, effective, attr::unpriv_bpf_disabled())?;
     let inode = allocate(
         m.map_type, m.key_size, m.value_size, m.max_entries, m.map_flags,
     )?;

@@ -59,7 +59,10 @@ impl PolicyOps for KernelOps {
     fn set_enforcing(&mut self, on: bool) -> KResult<()> {
         let mode = if on { selinux::Enforcing::Enforcing } else { selinux::Enforcing::Permissive };
         match selinux_runtime::with(|s| s.set_enforcing(mode)) {
-            Some(Ok(())) => Ok(()),
+            Some(Ok(())) => {
+                crate::nodes::stats::refresh_status_page();
+                Ok(())
+            },
             // No server installed: the state userspace asked for is the state
             // a server-less kernel already reports, so the write is inert
             // rather than an error the caller cannot act on.
@@ -85,6 +88,7 @@ impl PolicyOps for KernelOps {
             None => return Err(VfsError::Einval),
         }
         *IMAGE.lock() = Some(retained);
+        crate::nodes::stats::refresh_status_page();
         Ok(())
     }
 
@@ -124,8 +128,10 @@ impl PolicyOps for KernelOps {
 
     /// # C: O(conditional rules)
     fn commit_bools(&mut self) -> KResult<()> {
-        selinux_runtime::with(|s| s.commit_bools().map_err(engine_error))
-            .unwrap_or(Err(VfsError::Einval))
+        let result = selinux_runtime::with(|s| s.commit_bools().map_err(engine_error))
+            .unwrap_or(Err(VfsError::Einval));
+        if result.is_ok() { crate::nodes::stats::refresh_status_page(); }
+        result
     }
 
     /// # C: O(booleans)

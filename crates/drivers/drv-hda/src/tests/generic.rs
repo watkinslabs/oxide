@@ -3,7 +3,7 @@
 // route, a capture route, and a control owner for each.
 
 use super::*;
-use crate::defcfg::{DEV_HP_OUT, DEV_LINE_OUT, DEV_SPEAKER, LOC_FRONT, LOC_INTERNAL, LOC_REAR,
+use crate::defcfg::{DEV_HP_OUT, DEV_LINE_OUT, DEV_MIC_IN, DEV_SPEAKER, DEV_SPDIF_IN, LOC_FRONT, LOC_INTERNAL, LOC_REAR,
                     PORT_COMPLEX, PORT_FIXED};
 use crate::fixture::{self, cfg};
 use crate::graph;
@@ -26,6 +26,22 @@ fn a_duplex_codec_gets_a_playback_and_a_capture_route_with_no_penalty() {
     let capture = plan.primary_capture().expect("capture route");
     assert_eq!(capture.pin, 5);
     assert_eq!(capture.adc, 4);
+}
+
+#[test]
+fn a_digital_input_gets_its_own_capture_route_after_analog_inputs() {
+    let mut builder = fixture::Builder::new(0x1af4_0011, 1, 2);
+    builder.adc(2, &[3]);
+    builder.pin(3, cfg(DEV_MIC_IN, PORT_COMPLEX, LOC_REAR, 1, 0), widget::PINCAP_IN, &[]);
+    builder.digital_adc(4, &[5]);
+    builder.pin(5, cfg(DEV_SPDIF_IN, PORT_FIXED, LOC_INTERNAL, 2, 0), widget::PINCAP_IN, &[]);
+    let plan = plan_of(&builder.build());
+    assert_eq!(plan.cfg.dig_in, Some(5));
+    assert_eq!(plan.cfg.inputs.len(), 1);
+    assert_eq!(plan.captures.len(), 2);
+    assert_eq!(plan.captures[1].pin, 5);
+    assert_eq!(plan.captures[1].adc, 4);
+    assert_eq!(plan.captures[1].input.itype, crate::autocfg::InputType::Digital);
 }
 
 #[test]
@@ -112,4 +128,25 @@ fn control_ownership_is_claimed_once_per_widget() {
     assert_eq!(plan.outputs[0].volume, Some(2));
     assert_eq!(plan.hp[0].volume, None);
     assert_eq!(plan.hp[0].mute, None);
+}
+
+#[test]
+fn two_same_location_input_pins_become_linux_multi_io_routes() {
+    let mut builder = fixture::Builder::new(0x1af4_0011, 1, 2);
+    builder.dac(2);
+    builder.dac(3);
+    builder.dac(8);
+    builder.adc(4, &[5, 6]);
+    builder.pin(7, cfg(DEV_LINE_OUT, PORT_COMPLEX, LOC_REAR, 1, 0),
+                widget::PINCAP_OUT, &[2]);
+    builder.pin(5, cfg(crate::defcfg::DEV_LINE_IN, PORT_COMPLEX, LOC_REAR, 2, 0),
+                widget::PINCAP_IN | widget::PINCAP_OUT, &[3]);
+    builder.pin(6, cfg(crate::defcfg::DEV_MIC_IN, PORT_COMPLEX, LOC_REAR, 3, 0),
+                widget::PINCAP_IN | widget::PINCAP_OUT, &[8]);
+    let plan = plan_of(&builder.build());
+    assert_eq!(plan.multi_io.len(), 2);
+    assert_eq!(plan.multi_io[0].pin, 5, "line-in candidates are preferred");
+    assert_eq!(plan.multi_io[1].pin, 6);
+    assert_eq!(plan.multi_io[0].dac, 3);
+    assert_eq!(plan.multi_io[1].dac, 8);
 }

@@ -12,11 +12,99 @@
 // the field ladder is testable; this file resolves nothing and decides
 // nothing.
 
-use crate::io_uring_abi::{futex_op, waitid_op};
+use alloc::sync::{Arc, Weak};
+use core::sync::atomic::{AtomicI32, Ordering};
 
+use crate::io_uring_abi::{futex_op, waitid_op};
+use crate::io_uring::req::IoReq;
+
+use super::super::defer::Armed;
 use super::router::{call, Op};
 
 fn err(e: syscall::errno::Errno) -> i64 { -(e.as_i32() as i64) }
+
+/// Private dispatch result: the callback fired but the futex value still
+/// matched, so the request must register again without posting a CQE.
+pub const FUTEX_REARM: i64 = i64::MIN + 0x2f;
+pub const WAITID_ARMED: i64 = i64::MIN + 0x30;
+
+struct FutexWaker { req: Weak<IoReq>, index: Arc<AtomicI32> }
+
+impl ipc::live::futex::WaitCallback for FutexWaker {
+    fn wake(&self, index: usize) {
+        self.index.store(index as i32, Ordering::Release);
+        if let Some(req) = self.req.upgrade() {
+            if !req.is_done() { super::super::iowq::pool::WQ.queue(req); }
+        }
+    }
+}
+
+struct ChildWaker { req: Weak<IoReq> }
+
+impl sched::live::ChildWaitCallback for ChildWaker {
+    fn wake(&self) {
+        if let Some(req) = self.req.upgrade() {
+            if !req.is_done() { super::super::iowq::pool::WQ.queue(req); }
+        }
+    }
+}
+
+/// Arm one single-futex wait from the submitting task. The callback owns no
+/// strong request reference, so an abandoned ring cannot be kept alive by the
+/// futex key.
+pub fn arm_futex_wait(req: &Arc<IoReq>) -> Armed {
+    let f = match futex_op::prep(&req.sqe) { Ok(f) => f, Err(e) => return Armed::Failed(e) };
+    let private = f.flags & ipc::futex2_flags::FUTEX2_PRIVATE != 0;
+    let index = Arc::new(AtomicI32::new(-1));
+    let callback = Arc::new(FutexWaker { req: Arc::downgrade(req), index: Arc::clone(&index) });
+    match ipc::live::futex::register_callback(f.uaddr, f.val as u32, f.mask as u32,
+                                               private, callback) {
+        Ok(reg) => {
+            let mut inner = req.inner.lock();
+            inner.futex_wake_index = Some(index);
+            inner.futex_wait = Some(reg);
+            Armed::Waiting
+        }
+        Err(syscall::errno::Errno::Eagain) => Armed::Queue,
+        Err(e) => Armed::Failed(e),
+    }
+}
+
+/// Drop the current callback registration before a request is re-armed or
+/// completed. `WaitRegistration::drop` removes only the matching callback.
+pub fn disarm_futex_wait(req: &Arc<IoReq>) { req.inner.lock().futex_wait.take(); }
+
+pub fn arm_waitid(_req: &Arc<IoReq>) -> Armed { Armed::Queue }
+
+pub fn disarm_waitid(req: &Arc<IoReq>) { req.inner.lock().child_wait.take(); }
+
+/// Probe WAITID with WNOHANG, then register on the submitting task's child
+/// event stream if no matching event is ready. The syscall remains the sole
+/// owner of option/id filtering and siginfo copyout.
+pub fn waitid_probe(req: &Arc<IoReq>) -> i64 {
+    let w = match waitid_op::prep(&req.sqe) { Ok(w) => w, Err(e) => return err(e) };
+    let rv = crate::waitid::sys_waitid_for(
+        &syscall::SyscallArgs { a0: w.which as u64, a1: w.id as u32 as u64,
+            a2: w.infop, a3: (w.options as u64) | syscall::wait::WNOHANG,
+            a4: 0, a5: 0 }, req.owner_tid);
+    if rv != 0 { return if rv > 0 { 0 } else { rv }; }
+    let callback = Arc::new(ChildWaker { req: Arc::downgrade(req) });
+    let registration = sched::live::register_child_wait(req.owner_tid, callback);
+    // Recheck after publication. This is the wait-queue equivalent of
+    // Linux's set_current_state()+__do_wait() ordering: a child event that
+    // lands between the first probe and callback insertion cannot be lost.
+    let rv = crate::waitid::sys_waitid_for(
+        &syscall::SyscallArgs { a0: w.which as u64, a1: w.id as u32 as u64,
+            a2: w.infop, a3: (w.options as u64) | syscall::wait::WNOHANG,
+            a4: 0, a5: 0 }, req.owner_tid);
+    if rv == 0 {
+        req.inner.lock().child_wait = Some(registration);
+        WAITID_ARMED
+    } else {
+        drop(registration);
+        if rv > 0 { 0 } else { rv }
+    }
+}
 
 /// Park until the futex word changes, the bitset is woken, or the request is
 /// cancelled. No timeout: an entry that wants one links a timeout to it, which
@@ -24,8 +112,45 @@ fn err(e: syscall::errno::Errno) -> i64 { -(e.as_i32() as i64) }
 /// field of its own. # C: O(1) park
 pub fn futex_wait(op: &Op) -> i64 {
     let f = match futex_op::prep(op.sqe) { Ok(f) => f, Err(e) => return err(e) };
-    call(crate::s455_futex_wait::sys_futex_wait,
-         [f.uaddr, f.val, f.mask, f.flags as u64, 0, 0])
+    match ipc::live::futex::callback_probe(f.uaddr, f.val as u32) {
+        Ok(true) => 0,
+        Ok(false) => FUTEX_REARM,
+        Err(e) => err(e),
+    }
+}
+
+pub fn futex_waitv_probe(req: &Arc<IoReq>) -> i64 {
+    let inner = req.inner.lock();
+    let Some(entries) = inner.futex_waitv.as_deref() else { return err(syscall::errno::Errno::Einval); };
+    let preferred = inner.futex_wake_index.as_ref()
+        .map(|i| i.load(Ordering::Acquire)).unwrap_or(-1);
+    match ipc::live::futex::callback_probe_waitv(entries, preferred) {
+        Ok(Some(index)) => index as i64,
+        Ok(None) => FUTEX_REARM,
+        Err(e) => err(e),
+    }
+}
+
+pub fn arm_futex_waitv(req: &Arc<IoReq>) -> Armed {
+    let f = match futex_op::prep_waitv(&req.sqe) { Ok(f) => f, Err(e) => return Armed::Failed(e) };
+    let entries = match crate::futex_waitv::prepare_entries(f.uaddr, f.nr) {
+        Ok(entries) => entries,
+        Err(e) if e == syscall::errno::Errno::Eagain => return Armed::Queue,
+        Err(e) => return Armed::Failed(e),
+    };
+    let index = Arc::new(AtomicI32::new(-1));
+    let callback = Arc::new(FutexWaker { req: Arc::downgrade(req), index: Arc::clone(&index) });
+    match ipc::live::futex::register_waitv_callback(&entries, callback) {
+        Ok(reg) => {
+            let mut inner = req.inner.lock();
+            inner.futex_waitv = Some(entries);
+            inner.futex_wake_index = Some(index);
+            inner.futex_wait = Some(reg);
+            Armed::Waiting
+        }
+        Err(syscall::errno::Errno::Eagain) => Armed::Queue,
+        Err(e) => Armed::Failed(e),
+    }
 }
 
 /// Wake up to `val` waiters whose bitset intersects `mask`. # C: O(waiters)

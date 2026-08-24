@@ -144,10 +144,15 @@ pub(crate) fn build(fs: Arc<F2fs>, ino: u32, inode: Inode, rdev: u32) -> InodeRe
         .nlink(links)
         .times(atime, mtime, ctime)
         .private(Arc::new(node));
-    if let Some(space) = space { b = b.mapping(space); }
+    if let Some(space) = &space {
+        let mapped: Arc<dyn vfs::mapping::AddressSpaceOps> = space.clone();
+        b = b.mapping(mapped);
+    }
     if matches!(ftype, FileType::CharDev | FileType::BlockDev) { b = b.rdev(rdev); }
     if let Some(t) = crtime { b = b.btime(t); }
-    b.build()
+    let out = b.build();
+    if let Some(space) = space { space.bind(&out); }
+    out
 }
 
 /// A stored second-and-nanosecond pair as the interface's instant.

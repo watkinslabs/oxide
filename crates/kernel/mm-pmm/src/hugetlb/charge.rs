@@ -36,6 +36,14 @@ pub struct PageCharge {
     pub deferred_rsvd: bool,
 }
 
+/// The cgroup charged for a reservation. It is carried by the reservation
+/// until the promise is consumed or released; the releasing task is not an
+/// accounting authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReservationToken {
+    pub cgid: u64,
+}
+
 /// Owner records for one granule.
 #[derive(Default)]
 pub struct Ledger {
@@ -59,41 +67,14 @@ impl Ledger {
         *e = e.saturating_add(huge_pages);
     }
 
-    /// Choose who a release of `huge_pages` reservations comes off.
-    ///
-    /// The releasing task's own cgroup is drawn from first, which is the
-    /// ordinary case — the same mount reserves and releases. Whatever it
-    /// cannot cover comes off the other outstanding records, so a release can
-    /// never uncharge more than was charged and can never strand a charge on
-    /// a cgroup nothing will release. Returns `(cgid, huge_pages)` pairs.
-    /// # C: O(records)
-    pub fn take_resv(&mut self, cgid: u64, huge_pages: u64) -> alloc::vec::Vec<(u64, u64)> {
-        let mut out = alloc::vec::Vec::new();
-        let mut left = huge_pages;
-        let mut order: alloc::vec::Vec<u64> = alloc::vec::Vec::new();
-        if self.resv.contains_key(&cgid) { order.push(cgid); }
-        order.extend(self.resv.keys().copied().filter(|c| *c != cgid));
-        for owner in order {
-            if left == 0 { break; }
-            let Some(have) = self.resv.get_mut(&owner) else { continue };
-            let take = core::cmp::min(*have, left);
-            if take == 0 { continue; }
-            *have -= take;
-            left -= take;
-            if *have == 0 { self.resv.remove(&owner); }
-            out.push((owner, take));
-        }
-        out
-    }
-
-    /// Retarget every record naming `from` at `to`, so a charge the controller
-    /// has already moved to the parent is released against the cgroup that now
-    /// holds it. # C: O(records)
-    pub fn reparent(&mut self, from: u64, to: u64) {
-        for c in self.pages.values_mut() {
-            if c.cgid == from { c.cgid = to; }
-        }
-        if let Some(pages) = self.resv.remove(&from) { self.add_resv(to, pages); }
+    /// Take back reservations from the cgroup that created them.
+    /// # C: O(1)
+    pub fn take_resv(&mut self, cgid: u64, huge_pages: u64) -> u64 {
+        let Some(have) = self.resv.get_mut(&cgid) else { return 0 };
+        let take = core::cmp::min(*have, huge_pages);
+        *have -= take;
+        if *have == 0 { self.resv.remove(&cgid); }
+        take
     }
 
     /// Outstanding reservation pages charged to `cgid`. The ledger's own
@@ -128,23 +109,21 @@ fn current_cgid() -> u64 { cgroup::cgroup_of(0) }
 /// `Err(())` when a limit refuses it — the caller reports ENOMEM, which is
 /// what a mapping the cgroup may not have gets.
 /// # C: O(depth · subtree)
-pub(super) fn charge_reserve(size: HugePageSize, delta: u64) -> Result<(), ()> {
-    if delta == 0 { return Ok(()); }
-    ensure_reparent_hook();
+pub(super) fn charge_reserve(size: HugePageSize, delta: u64) -> Result<ReservationToken, ()> {
+    if delta == 0 { return Ok(ReservationToken { cgid: current_cgid() }); }
     let cgid = current_cgid();
     cgroup::try_charge_hugetlb(cgid, granule_of(size), HugeCounterKind::Reservation, delta)
         .map_err(|_| ())?;
     ledger(size).lock().add_resv(cgid, delta);
-    Ok(())
+    Ok(ReservationToken { cgid })
 }
 
 /// Release `delta` promised pages of `size`. # C: O(records)
-pub(super) fn uncharge_reserve(size: HugePageSize, delta: u64) {
+pub(super) fn uncharge_reserve(size: HugePageSize, owner: ReservationToken, delta: u64) {
     if delta == 0 { return; }
-    let cgid = current_cgid();
-    let released = ledger(size).lock().take_resv(cgid, delta);
-    for (owner, pages) in released {
-        cgroup::uncharge_hugetlb(owner, granule_of(size), HugeCounterKind::Reservation, pages);
+    let released = ledger(size).lock().take_resv(owner.cgid, delta);
+    if released != 0 {
+        cgroup::uncharge_hugetlb(owner.cgid, granule_of(size), HugeCounterKind::Reservation, released);
     }
 }
 
@@ -157,8 +136,8 @@ pub(super) fn uncharge_reserve(size: HugePageSize, delta: u64) {
 /// what keeps a fault that bypassed mapping-time reservation inside the same
 /// reservation limit rather than outside every limit there is.
 /// # C: O(depth · subtree)
-pub(super) fn charge_alloc(size: HugePageSize, reserved: bool) -> Result<PageCharge, ()> {
-    ensure_reparent_hook();
+pub(super) fn charge_alloc(size: HugePageSize, reserved: bool,
+                           reservation: Option<ReservationToken>) -> Result<PageCharge, ()> {
     let cgid = current_cgid();
     let g = granule_of(size);
     let deferred_rsvd = !reserved;
@@ -169,7 +148,13 @@ pub(super) fn charge_alloc(size: HugePageSize, reserved: bool) -> Result<PageCha
         if deferred_rsvd { cgroup::uncharge_hugetlb(cgid, g, HugeCounterKind::Reservation, 1); }
         return Err(());
     }
-    if reserved { uncharge_reserve(size, 1); }
+    if reserved {
+        let Some(owner) = reservation else {
+            cgroup::uncharge_hugetlb(cgid, g, HugeCounterKind::Usage, 1);
+            return Err(());
+        };
+        uncharge_reserve(size, owner, 1);
+    }
     Ok(PageCharge { cgid, deferred_rsvd })
 }
 
@@ -194,29 +179,6 @@ pub(super) fn uncharge_page(size: HugePageSize, pa: u64) {
     cancel_alloc(size, charge);
 }
 
-/// Retarget every owner record naming `from` at `to`. Installed as the
-/// controller's reparent hook: a removed cgroup's charges move to its parent,
-/// and the records the release path reads have to move with them.
-/// # C: O(records)
-pub fn reparent_charges(from: u64, to: u64) {
-    LEDGER_2M.lock().reparent(from, to);
-    LEDGER_1G.lock().reparent(from, to);
-}
-
-/// Ensure the controller can retarget this module's owner records.
-///
-/// Installed on the first charge rather than from a bring-up call: the pool is
-/// the only thing that creates records, so there is no window in which a
-/// record exists and the hook does not, and no separate boot step that can be
-/// forgotten.
-/// # C: O(1)
-fn ensure_reparent_hook() {
-    use core::sync::atomic::{AtomicBool, Ordering};
-    static INSTALLED: AtomicBool = AtomicBool::new(false);
-    if INSTALLED.swap(true, Ordering::AcqRel) { return; }
-    cgroup::set_hugetlb_reparent_hook(reparent_charges);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,39 +193,23 @@ mod tests {
     }
 
     #[test]
-    fn a_reservation_release_draws_on_the_releasing_cgroup_first() {
+    fn a_reservation_release_uses_the_recorded_cgroup() {
         let mut l = Ledger::new();
         l.add_resv(3, 4);
         l.add_resv(9, 6);
-        assert_eq!(l.take_resv(9, 2), alloc::vec![(9, 2)]);
+        assert_eq!(l.take_resv(9, 2), 2);
         assert_eq!(l.resv_of(9), 4);
         assert_eq!(l.resv_of(3), 4);
     }
 
     #[test]
-    fn a_release_larger_than_one_record_spills_over_but_never_past_the_total() {
+    fn a_release_from_one_record_never_spills_into_another() {
         let mut l = Ledger::new();
         l.add_resv(3, 4);
         l.add_resv(9, 6);
-        let taken = l.take_resv(9, 100);
-        let total: u64 = taken.iter().map(|(_, n)| *n).sum();
-        assert_eq!(total, 10, "a release can never uncharge more than was charged");
-        assert_eq!(l.resv_of(3), 0);
+        assert_eq!(l.take_resv(9, 100), 6);
+        assert_eq!(l.resv_of(3), 4, "a release never steals another cgroup's reservation");
         assert_eq!(l.resv_of(9), 0);
-    }
-
-    #[test]
-    fn reparenting_retargets_both_page_and_reservation_records() {
-        let mut l = Ledger::new();
-        l.insert_page(0x1000, PageCharge { cgid: 5, deferred_rsvd: false });
-        l.insert_page(0x2000, PageCharge { cgid: 6, deferred_rsvd: false });
-        l.add_resv(5, 3);
-        l.add_resv(6, 1);
-        l.reparent(5, 6);
-        assert_eq!(l.page_of(0x1000).unwrap().cgid, 6);
-        assert_eq!(l.page_of(0x2000).unwrap().cgid, 6, "an unrelated record is untouched");
-        assert_eq!(l.resv_of(5), 0);
-        assert_eq!(l.resv_of(6), 4, "the moved reservation adds to what the parent held");
     }
 
     #[test]

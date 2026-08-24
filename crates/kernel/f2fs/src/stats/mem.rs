@@ -61,7 +61,8 @@ impl Footprint {
         }
 
         // Grows with what the mount has touched.
-        let nat = v.nat_dirty.len() as u64 * (size_of::<u32>() + size_of::<NatEntry>()) as u64;
+    let nat = v.nat_dirty.len().saturating_add(v.nat_cache_count()) as u64
+        * (size_of::<u32>() + size_of::<NatEntry>()) as u64;
         let nat_j = v.nat_journal.len() as u64 * (size_of::<u32>() + size_of::<NatEntry>()) as u64;
         let sit_j = v.sit_journal.len() as u64 * (size_of::<u32>() + size_of::<SitEntry>()) as u64;
         let sit_d = v.sit_dirty.len() as u64 * size_of::<u32>() as u64;

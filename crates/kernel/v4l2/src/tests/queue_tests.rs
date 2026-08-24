@@ -89,9 +89,9 @@ fn reqbufs_while_streaming_is_ebusy() {
     let alloc = rig.alloc.clone();
     let outcome = vb2::reqbufs::reqbufs(&mut state.queue, rig.handle.id,
                                         flags::BUF_TYPE_VIDEO_CAPTURE, flags::MEMORY_MMAP, 4,
-                                        |c| crate::vb2::QueueSetup {
+                                        |c| Ok(crate::vb2::QueueSetup {
                                             count: c, num_planes: 1,
-                                            plane_sizes: [4096; l::MAX_PLANES] },
+                                            plane_sizes: [4096; l::MAX_PLANES] }),
                                         alloc.as_ref());
     assert_eq!(outcome.err(), Some(Errno::Ebusy));
 }

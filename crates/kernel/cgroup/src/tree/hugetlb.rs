@@ -1,6 +1,6 @@
 // hugetlb-controller accounting: hierarchical charge/uncharge against the
 // split usage/reservation counters, the interface files over them, and the
-// reparenting a departing cgroup's charges undergo.
+// dying CSS lifetime of a departing cgroup.
 //
 // The charge is refused by the FIRST ancestor whose limit it would exceed, and
 // that ancestor — not the cgroup doing the charging — is the one whose failure
@@ -28,20 +28,32 @@ impl Tree {
     /// Hierarchical charge of one (granule, kind) at `id`: this cgroup's own
     /// pages plus every descendant's. # C: O(subtree)
     pub fn subtree_hugetlb(&self, id: u64, g: HugeGranule, k: HugeCounterKind) -> u64 {
-        let n = match self.nodes.get(&id) { Some(n) => n, None => return 0 };
+        let Some(n) = self.nodes.get(&id).or_else(|| self.dying.get(&id)) else { return 0 };
         let mut pages = n.hugetlb.counter(g, k).usage;
-        for &child in n.children.values() {
+        let children: Vec<u64> = n.children.values().copied().collect();
+        for child in children {
             pages = pages.saturating_add(self.subtree_hugetlb(child, g, k));
+        }
+        // Offline nodes are not directory children anymore, but their charge
+        // still contributes to the parent's page-counter hierarchy.
+        for dying in self.dying.values() {
+            if dying.parent == Some(id) {
+                pages = pages.saturating_add(dying.hugetlb.counter(g, k).usage);
+            }
         }
         pages
     }
 
     /// Hierarchical count of refused charges for one granule. # C: O(subtree)
     pub fn subtree_hugetlb_events(&self, id: u64, g: HugeGranule) -> u64 {
-        let n = match self.nodes.get(&id) { Some(n) => n, None => return 0 };
+        let Some(n) = self.nodes.get(&id).or_else(|| self.dying.get(&id)) else { return 0 };
         let mut max = n.hugetlb.events(g).max;
-        for &child in n.children.values() {
+        let children: Vec<u64> = n.children.values().copied().collect();
+        for child in children {
             max = max.saturating_add(self.subtree_hugetlb_events(child, g));
+        }
+        for dying in self.dying.values() {
+            if dying.parent == Some(id) { max = max.saturating_add(dying.hugetlb.events(g).max); }
         }
         max
     }
@@ -86,41 +98,17 @@ impl Tree {
     pub fn uncharge_hugetlb(&mut self, id: u64, g: HugeGranule, k: HugeCounterKind, huge_pages: u64) {
         if huge_pages == 0 { return; }
         let pages = huge_pages.saturating_mul(g.base_pages());
-        if let Some(n) = self.nodes.get_mut(&id) {
-            let c = n.hugetlb.counter_mut(g, k);
-            c.usage = c.usage.saturating_sub(pages);
-        }
-    }
-
-    /// Move every hugetlb charge `id` still holds onto its parent, so a cgroup
-    /// with outstanding huge pages can be removed instead of being refused.
-    /// Returns the parent the charges landed on, or `None` when there was
-    /// nothing to move — the caller uses it to retarget the charges' owners.
-    /// # C: O(granules)
-    pub fn reparent_hugetlb(&mut self, id: u64) -> Option<u64> {
-        if id == ROOT { return None; }
-        let parent = self.nodes.get(&id)?.parent?;
-        let mut moved = false;
-        for g in HugeGranule::ALL {
-            for k in HugeCounterKind::ALL {
-                let pages = match self.nodes.get_mut(&id) {
-                    Some(n) => core::mem::take(&mut n.hugetlb.counter_mut(g, k).usage),
-                    None => 0,
-                };
-                if pages == 0 { continue; }
-                moved = true;
-                if let Some(p) = self.nodes.get_mut(&parent) {
-                    let c = p.hugetlb.counter_mut(g, k);
-                    c.usage = c.usage.saturating_add(pages);
-                }
-            }
-        }
-        if moved { Some(parent) } else { None }
+        let dying = !self.nodes.contains_key(&id);
+        let Some(n) = self.nodes.get_mut(&id).or_else(|| self.dying.get_mut(&id)) else { return; };
+        let c = n.hugetlb.counter_mut(g, k);
+        c.usage = c.usage.saturating_sub(pages);
+        let empty = dying && !n.hugetlb.has_charges();
+        if empty { self.dying.remove(&id); }
     }
 
     /// True while `id` still holds a hugetlb usage charge. # C: O(granules)
     pub fn hugetlb_has_usage(&self, id: u64) -> bool {
-        self.nodes.get(&id).is_some_and(|n| n.hugetlb.has_usage())
+        self.nodes.get(&id).or_else(|| self.dying.get(&id)).is_some_and(|n| n.hugetlb.has_usage())
     }
 
     /// Record a refused charge: the event at the charging cgroup, the failure

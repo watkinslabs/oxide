@@ -114,6 +114,7 @@ impl<S: SectorSource> Volume<S> {
             };
             let flag = marks::flag_word(ofs, true, dent && is_inode, true);
             self.write_chained_node(nid, ino, block, flag)?;
+            self.rf_node_block_count = self.rf_node_block_count.saturating_add(1);
             written += 1;
         }
         Ok(written)

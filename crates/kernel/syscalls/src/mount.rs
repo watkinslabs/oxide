@@ -37,6 +37,16 @@ fn current_fscreate_sid() -> Option<selinux::sidtab::Sid> {
     sched::live::current().and_then(|c| c.selinux_label.lock().fscreate)
 }
 
+/// Landlock's filesystem admission provider in the common LSM open chain.
+/// # C: O(path hierarchy)
+fn landlock_open_hook(ctx: &security::lsm::OpenContext<'_>) -> Result<u64, i64> {
+    if (ctx.flags & crate::open_flags::O_TRUNC as u64) != 0
+        && (ctx.flags & crate::open_flags::O_PATH as u64) == 0 {
+        crate::landlock::check(ctx.path, ::landlock::uapi::ACCESS_FS_TRUNCATE)?;
+    }
+    crate::landlock::open_decide(ctx.path, ctx.access, ctx.is_device)
+}
+
 /// Linux `capable(CAP_SYS_RESOURCE)` for the quota limit ladder: the holder
 /// charges past hard limits and expired grace periods. # C: O(1)
 fn quota_has_sys_resource() -> bool {
@@ -82,6 +92,32 @@ fn fs_halt(fs: &'static str, reason: &'static str) {
     hal::kassert!(false, "filesystem mounted errors=panic hit a critical error");
 }
 
+/// Realize f2fs's fault-injection timeout modes in the scheduler owner.
+/// # C: O(1) for sleeping modes; bounded by one second for the others
+fn fs_timeout(timeout: vfs::FsTimeout) {
+    const FAULT_TIMEOUT_NS: u64 = 1_000_000_000;
+    let deadline = timekeeper::monotonic_ns().saturating_add(FAULT_TIMEOUT_NS);
+    match timeout {
+        vfs::FsTimeout::Running => {
+            while timekeeper::monotonic_ns() < deadline { core::hint::spin_loop(); }
+        }
+        vfs::FsTimeout::IoSleep | vfs::FsTimeout::NonIoSleep => {
+            // The scheduler currently has one uninterruptible timed-sleep
+            // primitive; both f2fs sleep modes use it, while retaining their
+            // distinct ABI modes at the filesystem boundary.
+            // SAFETY: f2fs invokes this from process context without a
+            // scheduler-owned lock held across the hook.
+            unsafe { sched::live::sleep_uninterruptible_until(deadline, timekeeper::monotonic_ns); }
+        }
+        vfs::FsTimeout::Runnable => {
+            while timekeeper::monotonic_ns() < deadline {
+                // SAFETY: this hook runs in process or kernel-thread context.
+                unsafe { sched::live::sched_yield(); }
+            }
+        }
+    }
+}
+
 /// Install the VFS path-walk hooks (mount-crossing) AND the mount-ns
 /// provider at boot. Resolution is now always per-component
 /// (`d_lookup → i_op->lookup → d_add`); there is no whole-path delegate to
@@ -104,9 +140,12 @@ pub fn install_vfs_hooks() {
     selinux_runtime::task::set_current_sid_source(current_selinux_sid);
     selinux_runtime::task::set_fscreate_sid_source(current_fscreate_sid);
     fs::selinux::install();
+    fs::selinux::mount::install();
+    security::lsm::register_open(landlock_open_hook);
     vfs::set_quota_sys_resource_hook(quota_has_sys_resource);
     vfs::set_reserved_caller_hook(current_reserved_caller);
     vfs::set_fs_halt_hook(fs_halt);
+    vfs::set_fs_timeout_hook(fs_timeout);
     vfs::set_quota_wait_hooks(
         sched::live::quota_wait::park,
         sched::live::quota_wait::schedule_after_park,
@@ -145,4 +184,5 @@ pub fn install_vfs_hooks() {
     // write-stamped mtime would
     // be frozen at the epoch.
     vfs::inode_times::set_realtime_provider(timekeeper::realtime_ns);
+    vfs::inode_times::set_timezone_provider(crate::time_common::timezone_minuteswest);
 }

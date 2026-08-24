@@ -36,6 +36,10 @@ pub const FORMATS: &[FormatDesc] = &[
                  flags: flags::FMT_FLAG_COMPRESSED, sizes: SIZES, intervals: INTERVALS,
                  compressed_sizeimage: 1024 * 1024 },
 ];
+pub const PAYLOAD_STRING_ID: u32 = 0x00f0_f100;
+pub const PAYLOAD_ARRAY_ID: u32 = 0x00f0_f101;
+pub const PAYLOAD_STRING_DEFAULT: &[u8] = b"fake\0";
+pub const PAYLOAD_ARRAY_DEFAULT: &[u8] = &[1, 2, 3, 4];
 pub const INPUTS: &[InputDesc] = &[
     InputDesc { name: "Camera", input_type: flags::INPUT_TYPE_CAMERA, status: 0,
                 capabilities: 0 },
@@ -53,6 +57,7 @@ pub struct FakeOps {
     pub refuse_start: AtomicBool,
     pub input: AtomicU32,
     pub changed: Spinlock<Vec<(u32, i64)>, TaskList>,
+    pub payloads: Spinlock<Vec<(u32, Vec<u8>)>, TaskList>,
 }
 
 impl FakeOps {
@@ -62,6 +67,7 @@ impl FakeOps {
             stop_count: AtomicU32::new(0), queued: Spinlock::new(Vec::new()),
             refuse_start: AtomicBool::new(false), input: AtomicU32::new(0),
             changed: Spinlock::new(Vec::new()),
+            payloads: Spinlock::new(Vec::new()),
         })
     }
 }
@@ -102,6 +108,20 @@ impl VideoOps for FakeOps {
             standard::simple(cid::CID_WHITE_BALANCE_TEMPERATURE, cid::CTRL_TYPE_INTEGER,
                              "White Balance Temperature", 2800, 6500, 100, 4600),
             standard::CAMERA_CLASS,
+            ControlDesc {
+                id: PAYLOAD_STRING_ID, ctrl_type: cid::CTRL_TYPE_STRING,
+                name: "Payload String", minimum: 0, maximum: 15, step: 1, default_value: 0,
+                flags: 0, payload_size: 16, elem_size: 16, elems: 1,
+                payload_default: PAYLOAD_STRING_DEFAULT,
+                menu: &[], menu_values: &[], cluster: &[],
+            },
+            ControlDesc {
+                id: PAYLOAD_ARRAY_ID, ctrl_type: cid::CTRL_TYPE_U8,
+                name: "Payload Array", minimum: 0, maximum: 255, step: 1, default_value: 0,
+                flags: 0, payload_size: 4, elem_size: 1, elems: 4,
+                payload_default: PAYLOAD_ARRAY_DEFAULT,
+                menu: &[], menu_values: &[], cluster: &[],
+            },
             standard::EXPOSURE_AUTO,
             standard::simple(cid::CID_EXPOSURE_ABSOLUTE, cid::CTRL_TYPE_INTEGER,
                              "Exposure Time, Absolute", 1, 10000, 1, 156),
@@ -109,7 +129,14 @@ impl VideoOps for FakeOps {
                              "Exposure, Dynamic Framerate", 0, 1, 1, 0),
         ]
     }
-    fn control_changed(&self, id: u32, value: i64) { self.changed.lock().push((id, value)); }
+    fn control_changed(&self, id: u32, value: i64) -> bool {
+        self.changed.lock().push((id, value));
+        false
+    }
+    fn control_payload_changed(&self, id: u32, payload: &[u8]) -> bool {
+        self.payloads.lock().push((id, payload.to_vec()));
+        false
+    }
 }
 
 /// Plane allocator handing out increasing fake frame addresses, counting what

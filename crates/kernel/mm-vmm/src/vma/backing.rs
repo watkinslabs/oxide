@@ -24,6 +24,8 @@ use crate::vma::FileMmapSetup;
 /// `mm-vmm`. Concrete impls live in `kernel/src/dev/...` (inode
 /// wrapper) and pull `vfs::Inode::read` through the page cache.
 pub trait FileBacking: Send + Sync {
+    /// SELinux `file_mprotect` owner for a file-backed VMA. # C: O(1) cached
+    fn mprotect(&self, _shared_write: bool, _executable: bool, _execmod: bool) -> Result<(), FileBackingError> { Ok(()) }
     /// Establish file-specific VMA state after placement selected its exact
     /// range and before the VMA becomes visible to faults or other threads.
     /// # C: driver-dependent
@@ -43,6 +45,11 @@ pub trait FileBacking: Send + Sync {
     /// Backing inode number — diagnostics only (identify which file a
     /// file-backed VMA maps). Default 0 for non-inode backings.
     fn ino(&self) -> u64 { 0 }
+
+    /// Device number of the mapped object, in the same encoded form as
+    /// `stat(2)`/`perf_event_mmap`'s `st_dev`. Default 0 for non-inode
+    /// backings and device mappings whose owner has no filesystem identity.
+    fn dev(&self) -> u64 { 0 }
 
     /// Directory-entry count of the mapped object. Zero marks an object with
     /// no name in any directory — an unlinked file, or the anonymous shared

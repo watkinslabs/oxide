@@ -99,6 +99,7 @@ unsafe fn mount_root() {
             fs::keyring::native::key_revoke, fs::keyring::native::nvme_tls_psk_refresh);
         modules::registry::init_exports();
         crate::syscalls::mount::install_vfs_hooks();
+        vmm::set_mmap_event_hook(crate::syscalls::perf_sideband::note_vma_mmap);
         crate::syscalls::ensure_mount_filesystems_registered();
     }
 }
@@ -221,12 +222,14 @@ fn debug_boot_rootfs() {
 #[cfg(target_os = "oxide-kernel")]
 fn install_network_hooks() {
     netlink::install_netfilter_handler(netfilter::handle);
+    net::stack::install_nf_logger(netfilter::log_packet);
     // NB: control-event notifier is installed earlier, in `runtime::init` before
     // netdev registration, so eth0's boot RTM_NEWLINK is not dropped.
-    net::stack::install_nf_hook(|ctx| {
+    net::stack::install_nf_hook_with_stages(|ctx| {
         let result = netfilter::eval_hook(ctx);
-        net::stack::NfHookResult { verdict: result.verdict.as_u32(), mark: result.mark }
-    });
+        net::stack::NfHookResult { verdict: result.verdict.as_u32(), mark: result.mark,
+            actions: result.actions, notrack: result.notrack }
+    }, netfilter::has_chain_in_priority_range);
     use security::bpf::sk_filter::{self, SkFilterContext};
     net::stack::install_bpf_filter_runner(|kind, insns, packet| match kind {
         // A socket with no netdevice carries neither an EtherType nor an

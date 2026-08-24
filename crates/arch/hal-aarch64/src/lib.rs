@@ -37,10 +37,12 @@ pub mod hibernate;
 pub mod por;
 pub mod hw_breakpoint;
 mod mmu;
+mod machine;
 pub mod mmu_ops;
 pub mod pci;
 pub mod pl011;
 pub mod psci;
+pub use machine::ArmMachineOps;
 // Boot-selected PSCI SMC/HVC state, shared by every PSCI operation.
 pub mod psci_conduit;
 pub mod smccc;
@@ -91,7 +93,8 @@ pub use mmu::{
     ENTRIES_PER_TABLE, L0_SHIFT, L1_SHIFT, L2_SHIFT, L3_SHIFT, PTE_PHYS_MASK,
 };
 pub use pt_regs::PtRegsAArch64;
-pub use uaccess::{raw_cmpxchg_user_u32, raw_copy_from_user, raw_copy_to_user};
+pub use uaccess::{raw_cmpxchg_user_u32, raw_copy_from_user, raw_copy_to_user,
+                  raw_get_user_u32, raw_get_user_u64, raw_put_user_u32, raw_put_user_u64};
 
 /// IRQ gate: save DAIF, set the I (IRQ) bit. Restore DAIF on release.
 /// Per `06§3.1` we mask IRQ only — FIQ is not used in our model.

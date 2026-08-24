@@ -13,6 +13,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 /// IRQ can interrupt the installing/reading task and must never spin on that
 /// task's clock-provider lock. Zero is the pre-install sentinel.
 static REALTIME_PROVIDER: AtomicUsize = AtomicUsize::new(0);
+static TIMEZONE_PROVIDER: AtomicUsize = AtomicUsize::new(0);
 
 /// Install the wall-clock provider (kernel boot). Idempotent, last-writer-wins.
 /// # C: O(1)
@@ -30,6 +31,24 @@ pub fn realtime_now_ns() -> u64 {
     // `set_realtime_provider` from this exact function-pointer type; both
     // supported kernel architectures represent it in one usize.
     let f = unsafe { core::mem::transmute::<usize, fn() -> u64>(raw) };
+    f()
+}
+
+/// Install the provider for Linux's system timezone (`tz_minuteswest`).
+/// Filesystems use this only for timestamps whose on-disk format carries no
+/// offset of its own. # C: O(1)
+pub fn set_timezone_provider(f: fn() -> i32) {
+    TIMEZONE_PROVIDER.store(f as usize, Ordering::Release);
+}
+
+/// Current system timezone in minutes west of UTC, or zero before the syscall
+/// layer has installed its provider. # C: O(1)
+pub fn timezone_minuteswest() -> i32 {
+    let raw = TIMEZONE_PROVIDER.load(Ordering::Acquire);
+    if raw == 0 { return 0; }
+    // SAFETY: every non-zero value is published by set_timezone_provider from
+    // this exact function-pointer type.
+    let f = unsafe { core::mem::transmute::<usize, fn() -> i32>(raw) };
     f()
 }
 

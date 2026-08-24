@@ -93,6 +93,16 @@ fn take_planes(q: &mut Queue, index: u32, req: &QbufIn) -> Result<(), Errno> {
 /// giving the buffer to the device, so the cost is paid off the streaming path.
 /// # C: O(planes)
 pub fn prepare_buf(q: &mut Queue, who: Owner, req: &QbufIn) -> Result<(), Errno> {
+    prepare_buf_with(q, who, req, || Ok(()))
+}
+
+/// `PREPARE_BUF` with the driver's per-buffer validation inserted after the
+/// queue's own admission checks and before any queue state is changed.
+/// # C: O(planes)
+pub fn prepare_buf_with(
+    q: &mut Queue, who: Owner, req: &QbufIn,
+    prepare: impl FnOnce() -> Result<(), Errno>,
+) -> Result<(), Errno> {
     if !q.owned_by(who) { return Err(Errno::Ebusy); }
     resolve(q, req.buf_type, Some(req.memory), req.index)?;
     if q.error { return Err(Errno::Eio); }
@@ -102,6 +112,7 @@ pub fn prepare_buf(q: &mut Queue, who: Owner, req: &QbufIn) -> Result<(), Errno>
     // caller's: the preparation would be done twice, and on a memory model
     // where it pins pages that is a leak.
     if q.buffer(req.index).map(|b| b.prepared).unwrap_or(false) { return Err(Errno::Einval); }
+    prepare()?;
     take_planes(q, req.index, req)?;
     if let Some(buf) = q.buffer_mut(req.index) {
         buf.prepared = true;
@@ -114,12 +125,23 @@ pub fn prepare_buf(q: &mut Queue, who: Owner, req: &QbufIn) -> Result<(), Errno>
 /// straight away, which is the case whenever the queue is already streaming.
 /// # C: O(planes)
 pub fn qbuf(q: &mut Queue, who: Owner, req: &QbufIn) -> Result<bool, Errno> {
+    qbuf_with(q, who, req, || Ok(()))
+}
+
+/// `QBUF` with the driver's per-buffer validation inserted after the queue's
+/// own admission checks and before any queue state is changed.
+/// # C: O(planes)
+pub fn qbuf_with(
+    q: &mut Queue, who: Owner, req: &QbufIn,
+    prepare: impl FnOnce() -> Result<(), Errno>,
+) -> Result<bool, Errno> {
     if !q.owned_by(who) { return Err(Errno::Ebusy); }
     resolve(q, req.buf_type, Some(req.memory), req.index)?;
     if q.error { return Err(Errno::Eio); }
     let state = q.buffer(req.index).map(|b| b.state).ok_or(Errno::Einval)?;
     may_queue(state)?;
     let already_prepared = q.buffer(req.index).map(|b| b.prepared).unwrap_or(false);
+    if !already_prepared { prepare()?; }
     if !already_prepared { take_planes(q, req.index, req)?; }
     let field = req.field;
     if let Some(buf) = q.buffer_mut(req.index) {

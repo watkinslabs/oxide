@@ -4,6 +4,7 @@ use crate::test_image::{self, Builder, CLUSTER};
 use crate::time::Stamp;
 use crate::uapi::*;
 use crate::volume::dirops::rename::{RENAME_EXCHANGE, RENAME_NOREPLACE};
+use crate::chain::Chain;
 use crate::volume::{DirHandle, Volume};
 use sectors::MemImage;
 use syscall::errno::Errno;
@@ -280,6 +281,42 @@ fn the_two_removals_refuse_each_others_kind() {
 }
 
 #[test]
+fn a_deferred_unlink_keeps_clusters_until_the_owner_releases_them() {
+    let mut v = test_image::empty();
+    let dir = root(&v);
+    let mut made = v.create_file(&dir, "open.bin", stamp()).unwrap();
+    v.write_file(&mut made, 0, &[0x5a; CLUSTER], stamp()).unwrap();
+    let before = v.free_clusters();
+    let chains = v.unlink_name(&dir, "open.bin", stamp()).unwrap();
+    assert_eq!(v.free_clusters(), before,
+        "unlink released clusters before the inode lifetime ended");
+    assert_eq!(v.read_whole(&made).unwrap(), alloc::vec![0x5a; CLUSTER]);
+    for chain in &chains { v.free_chain(chain).unwrap(); }
+    assert_eq!(v.free_clusters(), before + 1,
+        "final owner release did not return the detached cluster");
+}
+
+#[test]
+fn freeing_clusters_discards_each_contiguous_run() {
+    let mut opts = crate::opts::Options::defaults();
+    opts.discard = true;
+    opts.settle();
+    let image = test_image::Builder::new().finish();
+    let mut v = Volume::mount_with(image, opts).unwrap();
+    let dir = root(&v);
+    let mut made = v.create_file(&dir, "discard.bin", stamp()).unwrap();
+    v.write_file(&mut made, 0, &[0x5a; CLUSTER * 2], stamp()).unwrap();
+    let chain = Chain::new(made.set.stream.start_cluster,
+                           (made.set.stream.size / v.geometry().cluster_bytes()) as u32,
+                           made.set.stream.flags);
+    let first_sector = v.geometry().cluster_sector(chain.dir).unwrap();
+    let sectors = u64::from(v.geometry().sectors_per_cluster) * 2;
+    v.free_chain(&chain).unwrap();
+    let image = v.into_source();
+    assert_eq!(image.erased(), alloc::vec![(first_sector, sectors)]);
+}
+
+#[test]
 fn a_rename_keeps_the_files_bytes() {
     let mut v = test_image::empty();
     let dir = root(&v);
@@ -289,6 +326,29 @@ fn a_rename_keeps_the_files_bytes() {
     assert_eq!(names(&v), alloc::vec!["after.txt"]);
     let hit = v.find_entry(&v.root_chain(), "after.txt").unwrap();
     assert_eq!(v.read_whole(&hit).unwrap(), b"contents survive");
+}
+
+#[test]
+fn a_rename_preserves_benign_secondary_entries() {
+    let mut v = test_image::empty();
+    let dir = root(&v);
+    let made = v.create_file(&dir, "before.txt", stamp()).unwrap();
+    let root_chain = v.root_chain();
+    let mut set_bytes = v.directory_bytes(&root_chain).unwrap();
+    let mut extra = alloc::vec![0u8; crate::uapi::DENTRY_BYTES];
+    extra[0] = crate::uapi::TYPE_VENDOR_EXT;
+    set_bytes[made.set.offset as usize + crate::uapi::FILE_OFF_NUM_EXT] += 1;
+    let extra_at = made.set.offset as usize + made.set.entries * crate::uapi::DENTRY_BYTES;
+    set_bytes[extra_at..extra_at + extra.len()].copy_from_slice(&extra);
+    crate::dirent::set::reseal(&mut set_bytes[made.set.offset as usize..extra_at + extra.len()]);
+    v.write_at(&root_chain, 0, &set_bytes).unwrap();
+
+    v.rename(&dir, "before.txt", &dir, "after.txt", 0, stamp()).unwrap();
+    let hit = v.find_entry(&v.root_chain(), "after.txt").unwrap();
+    assert_eq!(hit.set.entries, 4);
+    let bytes = v.directory_bytes(&hit.dir).unwrap();
+    let at = hit.set.offset as usize + 3 * crate::uapi::DENTRY_BYTES;
+    assert_eq!(&bytes[at..at + crate::uapi::DENTRY_BYTES], &extra);
 }
 
 #[test]

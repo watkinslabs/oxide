@@ -2,11 +2,8 @@
 //
 // The reference splits this in two: `__switch_to_xtra` invalidates the
 // outgoing task's window, and the exit-to-user path programs the incoming
-// one. Both halves are done here at switch-in instead, because the window is
-// only ever consulted from ring 3 and nothing between the switch and that
-// ring-3 instruction can change the grant. The observable result is
-// identical; what differs is that a task which is preempted and resumed
-// without reaching user mode pays the (sequence-elided) update anyway.
+// one. Keep that ordering here: kernel-only preemption must not publish a
+// user permission window before the return-to-user boundary.
 //
 // x86-only by construction: aarch64 has no port space, no such syscalls in
 // its generic ABI, and therefore nothing to publish.
@@ -18,7 +15,7 @@ use crate::task::Task;
 
 /// Program THIS CPU's I/O window to exactly `task`'s grant.
 /// # C: O(bitmap bytes copied); zero when the CPU already holds the revision
-/// # Ctx: process|context-switch path, preempt-off
+/// # Ctx: exit-to-user path, preempt-off
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub fn update(task: &Task) {
     let level = task.iopl_emul.load(Ordering::Relaxed);

@@ -17,6 +17,7 @@ pub struct Waits {
     /// and the callers park on it for the result, and a wake of either kind
     /// wakes both — which costs a condition re-test and cannot lose a wake.
     pub ckpt: WaitList,
+    pub flush: WaitList,
     /// Callers blocked in the balance path, waiting for the cleaner's pass.
     pub foreground: WaitList,
 }
@@ -29,7 +30,7 @@ impl Waits {
     /// # C: O(1)
     pub fn new() -> Self {
         Self { gc: WaitList::new(), discard: WaitList::new(), ckpt: WaitList::new(),
-               foreground: WaitList::new() }
+               flush: WaitList::new(), foreground: WaitList::new() }
     }
 
     /// # C: O(1)
@@ -40,6 +41,7 @@ impl Waits {
 
     /// Wake the merge thread AND everybody waiting on its result. # C: O(waiters)
     pub fn wake_ckpt(&self) { self.ckpt.wake_all(); }
+    pub fn wake_flush(&self) { self.flush.wake_all(); }
 
     /// Release every caller blocked on the pass that just finished.
     ///

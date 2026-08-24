@@ -21,6 +21,7 @@ use sectors::SectorSource;
 
 use crate::crypto::Info;
 use crate::node::Inode;
+use crate::opts::MemoryMode;
 use crate::uapi::BLKSIZE;
 
 use super::super::map::Mapped;
@@ -38,6 +39,55 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(nr) blocks, O(runs) transfers
     pub fn readahead_data(&self, inode: &Inode, ino: u32, start: u64, nr: usize) {
         if nr == 0 || inode.inline_data() { return; }
+        if inode.compressed() {
+            self.readahead_compressed(inode, ino, start, nr);
+            return;
+        }
+        self.readahead_plain(inode, ino, start, nr);
+    }
+
+    /// Fill compressed clusters through the ordinary file-page cache.
+    ///
+    /// Linux widens a compressed readahead window to the cluster boundaries,
+    /// gathers the cluster's pages, reads its stored image, and completes
+    /// those pages after decompression. The compressed-block cache remains an
+    /// optimization underneath that owner; it is not the file's answer.
+    /// # C: O(nr) blocks, O(clusters) decompressions
+    fn readahead_compressed(&self, inode: &Inode, ino: u32, start: u64, nr: usize) {
+        // Readahead is advisory. Do not consume an armed demand-side
+        // allocation fault while speculating; the subsequent fault must still
+        // reach the reader that actually asks for the cluster.
+        if self.fault_info().armed(crate::fault::Fault::Vmalloc) { return; }
+        let Ok(g) = crate::compress::Geometry::new(inode.compress_algorithm,
+                                                    inode.log_cluster_size,
+                                                    inode.compress_flag) else { return };
+        let blocks = inode.size.div_ceil(BLKSIZE as u64);
+        if start >= blocks { return; }
+        let end = start.saturating_add(nr as u64).min(blocks);
+        let mut first = g.first_block(start);
+        while first < end {
+            match self.map_block(inode, ino, first) {
+                Ok(Mapped::Compressed) => {
+                    // Linux's memory=low mode disables the preallocated
+                    // decompression path. Demand reads still allocate their
+                    // temporary cluster buffer; uncompressed clusters in a
+                    // compressed file retain ordinary readahead.
+                    if !compressed_readahead_allowed(self.options().memory, live_memory_watermark()) {
+                        return;
+                    }
+                    if self.read_cluster_for_readahead(inode, ino, first).is_err() { return; }
+                }
+                Ok(_) => self.readahead_plain(inode, ino, first,
+                                               g.blocks().min((blocks - first) as usize)),
+                Err(_) => return,
+            }
+            first = first.saturating_add(g.blocks() as u64);
+        }
+    }
+
+    /// Plain-file readahead owner, also used for uncompressed clusters in a
+    /// compressed file. # C: O(nr) blocks, O(runs) transfers
+    fn readahead_plain(&self, inode: &Inode, ino: u32, start: u64, nr: usize) {
         // The last block of a file is whole on the medium; what stops
         // readahead is the file's SIZE, so a window past the end fetches
         // nothing rather than reading padding into the mapping.
@@ -47,11 +97,6 @@ impl<S: SectorSource> Volume<S> {
         // a window whose record is absent is fetched as nothing rather than
         // resolved from underneath the fetch.
         let crypt = match self.crypt_info_held(inode, ino) { Ok(c) => c, Err(_) => return };
-        // A compressed file's blocks are not its bytes: a cluster is the unit
-        // that unpacks, and the blocks it stores are read by the cluster
-        // reader. Fetching them here would fill the image cache from outside
-        // the path that owns it.
-        if inode.compressed() { return; }
         let want = nr.min(MAX_RA_BLOCKS).min((blocks - start) as usize);
         let addrs = self.ra_window(inode, ino, start, want);
         for run in runs(&addrs) {
@@ -112,7 +157,15 @@ impl<S: SectorSource> Volume<S> {
         let first_unit = crypt.map(|c| self.first_unit(c, first_index));
         let ctx = crypt.zip(first_unit).and_then(|(c, u)| c.crypt_ctx(u));
         let mut buf = vec![0u8; len * BLKSIZE];
-        self.source.read_sectors_crypt(u64::from(addr), &mut buf, ctx.as_ref())?;
+        let mut at = 0;
+        while at < len {
+            let blocks = self.io_run_blocks(len - at);
+            let end = at + blocks;
+            self.source.read_sectors_crypt(
+                u64::from(addr) + at as u64,
+                &mut buf[at * BLKSIZE..end * BLKSIZE], ctx.as_ref())?;
+            at = end;
+        }
         if let (Some(c), Some(u)) = (crypt, first_unit) {
             if !c.uses_inline_crypto() {
                 c.crypt_contents(u, &mut buf, false).map_err(|e| e.errno())?;
@@ -150,4 +203,24 @@ impl<S: SectorSource> Volume<S> {
         }
         true
     }
+}
+
+/// Whether speculative compressed decompression may take temporary/cache
+/// memory. Linux's compressed-page path declines when the free-page count has
+/// fallen below the published low watermark; a demand read still proceeds and
+/// reports its own allocation failure. # C: O(1)
+pub(crate) fn compressed_readahead_allowed(mode: MemoryMode,
+                                            watermark: Option<(u64, u64)>) -> bool {
+    if mode == MemoryMode::Low { return false; }
+    watermark.is_none_or(|(free, low)| free >= low)
+}
+
+/// Read the PMM's one published free-memory observation. Hosted F2FS tests
+/// have no live PMM and deliberately retain the normal advisory behavior.
+/// # C: O(1)
+fn live_memory_watermark() -> Option<(u64, u64)> {
+    let pmm = pmm::setup::pmm_static()?;
+    let free = pmm.free_pages();
+    let snapshot = pmm::setup::watermark_snapshot(free)?;
+    Some((free, snapshot.zone.low))
 }

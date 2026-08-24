@@ -194,6 +194,9 @@ impl vfs::fs::FileSystem for TmpfsFs {
         }
         flags
     }
+    fn sb_flags(&self) -> u64 {
+        if self.magic == vfs::uapi::TMPFS_SUPER_MAGIC { vfs::superblock::SB_POSIXACL } else { 0 }
+    }
     /// tmpfs block size = page size (statfs `f_bsize`). # C: O(1)
     fn block_size(&self) -> u32 { PG as u32 }
     /// This instance's root inode (mount table per-mount root). # C: O(1)

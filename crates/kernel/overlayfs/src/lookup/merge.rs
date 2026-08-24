@@ -18,6 +18,7 @@ use syscall::errno::Errno;
 use vfs::InodeRef;
 
 use crate::layers::{LayerStack, OvlEntry, OvlPath};
+use crate::metacopy;
 use crate::marker;
 use crate::origin;
 use crate::redirect;
@@ -67,6 +68,7 @@ struct Walk {
     metacopy_size: usize,
     indexed: bool,
     lowerdata_redirect: Option<String>,
+    lowerdata: Option<OvlPath>,
 }
 
 /// Walk the writable layer. # C: O(components · log n)
@@ -105,11 +107,15 @@ fn lower_layers(stack: &Arc<LayerStack>, parent: &OvlEntry, root: &OvlEntry, d: 
         let poe = if from_root { root } else { parent };
         if i >= poe.lower.len() { break; }
         let lower = poe.lower[i].clone();
+        if lower.layer.data_only {
+            i += 1;
+            continue;
+        }
         if !d.may_follow() { return Err(Errno::Eperm); }
         if !stack.config.redirect_follow() && stack.num_data() == 0 {
             d.last = i == poe.lower.len() - 1;
         } else if d.is_dir || stack.num_data() == 0 {
-            d.last = lower.layer.idx == root.lower.len();
+            d.last = lower.layer.idx == stack.num_merged_lower();
         }
 
         if let Some(this) = walk::layer(&lower.inode, d, &lower.layer)? {
@@ -191,6 +197,9 @@ fn finish(stack: &Arc<LayerStack>, d: &mut Data, w: &mut Walk) -> Result<(), Err
     // layers, so it costs a whole path walk that most opens never need.
     if d.metacopy > 0 && !w.lower.is_empty() && stack.num_data() > 0 && d.absolute_redirect {
         w.lowerdata_redirect = d.redirect.clone();
+        if let Some(redirect) = &w.lowerdata_redirect {
+            w.lowerdata = lookup_data_layers(stack, redirect);
+        }
         d.metacopy = 0;
     } else if !d.may_follow() {
         return Err(Errno::Eperm);
@@ -207,11 +216,34 @@ fn finish(stack: &Arc<LayerStack>, d: &mut Data, w: &mut Walk) -> Result<(), Err
             w.lower.push(op);
         }
     }
+    if w.upper_metacopy && stack.config.verity_mode != crate::config::VerityMode::Off {
+        validate_verity(stack, w.upper.as_ref(), w.lowerdata.as_ref()
+                        .or_else(|| w.lower.last()))?;
+    }
     if w.upper.is_none() && !w.lower.is_empty() { w.origin = Some(w.lower[0].inode.clone()); }
 
     if w.origin.is_some() && stack.has_index() && (!d.is_dir || stack.index_all()) {
         index(stack, d, w)?;
     }
+    Ok(())
+}
+
+/// Compare a metacopy record with the digest owned by its lower filesystem.
+/// # C: O(descriptor + chain)
+fn validate_verity(stack: &LayerStack, upper: Option<&InodeRef>, lower: Option<&OvlPath>)
+    -> Result<(), Errno> {
+    let Some(upper) = upper else { return Err(Errno::Eio) };
+    let marker = marker::get(&stack.config, upper, Marker::Metacopy).ok_or(Errno::Eio)?;
+    let record = metacopy::decode(&marker)?;
+    if !record.has_digest() {
+        return if stack.config.verity_mode == crate::config::VerityMode::Require {
+            Err(Errno::Eio)
+        } else { Ok(()) };
+    }
+    let lower = lower.ok_or(Errno::Eio)?;
+    let got = lower.inode.i_op().verity_digest(&lower.inode)
+        .map_err(crate::err::to_errno)?.ok_or(Errno::Eio)?;
+    if got.0 != record.digest_algo || got.1 != record.digest { return Err(Errno::Eio); }
     Ok(())
 }
 
@@ -255,9 +287,25 @@ fn entry(d: &Data, w: Walk) -> OvlEntry {
         xwhiteouts: d.xwhiteouts,
         indexed: w.indexed,
         lowerdata_redirect: w.lowerdata_redirect,
+        lowerdata: w.lowerdata,
         upper: w.upper,
         lower: w.lower,
         impure: false,
         whiteouts: false,
     }
+}
+
+/// Resolve a metadata-only object's absolute redirect in the data-only
+/// layers. The resulting path is kept on the entry, just as Linux keeps a
+/// separate lowerdata path; it must not be added to the ordinary lower list.
+fn lookup_data_layers(stack: &Arc<LayerStack>, redirect: &str) -> Option<OvlPath> {
+    if !redirect.starts_with('/') { return None; }
+    for layer in stack.data_layers() {
+        let mut data = Data::new(stack, redirect, false);
+        let Ok(Some(inode)) = walk::layer(&layer.root, &mut data, layer) else { continue };
+        if inode.file_type() == vfs::types::FileType::Regular {
+            return Some(OvlPath { layer: layer.clone(), inode });
+        }
+    }
+    None
 }

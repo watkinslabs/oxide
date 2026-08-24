@@ -91,6 +91,14 @@ pub unsafe fn init() {
     let va = (hhdm as usize).wrapping_add(pa);
     let record_size = cmdline_usize(b"ramoops.record_size").unwrap_or(DEFAULT_RECORD_SIZE);
     let console_size = cmdline_usize(b"ramoops.console_size").unwrap_or(DEFAULT_CONSOLE_SIZE);
+    // Linux's ramoops.ecc=1 is the historical shorthand for 16 parity
+    // symbols; larger explicit values select that many RS symbols. Zero or
+    // absence keeps the legacy unprotected format byte-for-byte compatible.
+    let ecc = match cmdline_usize(b"ramoops.ecc") {
+        None | Some(0) => None,
+        Some(1) => crate::zone::EccConfig::new(16),
+        Some(n) => crate::zone::EccConfig::new(n),
+    };
     if let Some(m) = cmdline_usize(b"ramoops.max_reason") {
         psinfo::set_max_reason(m as u8);
     }
@@ -98,7 +106,7 @@ pub unsafe fn init() {
     // so nothing else owns it; the direct map covers every usable physical
     // page, making `va` a mapped writable alias of it for the whole boot.
     let region = unsafe { RamRegion::new(va, len) };
-    let (backend, survivors) = RamBackend::attach(region, record_size, console_size);
+    let (backend, survivors) = RamBackend::attach_with_ecc(region, record_size, console_size, ecc);
     // The geometry and the survivor count are the two facts that say whether
     // the region came back intact, and they are the only ones a boot log needs.
     #[cfg(feature = "debug-pstore")] {

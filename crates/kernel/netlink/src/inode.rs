@@ -17,8 +17,11 @@ static NEXT_NETLINK_INO: vfs::pseudo_ino::RegionAllocator
 struct NetlinkFileOps;
 
 fn admit(socket: &NetlinkSocket, operation: security::network::Operation) -> vfs::KResult<()> {
-    net::security_admission::check(net::net_ns::namespace_id(&socket.net_ns),
-        net::socket_args::AF_NETLINK_WIRE, operation).map_err(|_| vfs::VfsError::Eacces)
+    net::security_admission::check_socket(
+        net::net_ns::namespace_id(&socket.net_ns),
+        net::socket_args::AF_NETLINK_WIRE, operation,
+        socket.security_sid.load(core::sync::atomic::Ordering::Acquire),
+        socket.security_class()).map_err(|_| vfs::VfsError::Eacces)
 }
 
 impl vfs::FileOps for NetlinkFileOps {
@@ -100,10 +103,12 @@ impl vfs::FileOps for NetlinkFileOps {
 
     fn ioctl_int(&self, file: &vfs::File, cmd: vfs::IoctlIntCmd) -> vfs::KResult<u32> {
         let Some(s) = file.inode().private::<NetlinkSocket>() else { return Err(vfs::VfsError::Einval); };
-        net::security_admission::check(
+        net::security_admission::check_socket(
             net::net_ns::namespace_id(&s.net_ns),
             net::socket_args::AF_NETLINK_WIRE,
             security::network::Operation::Ioctl,
+            s.security_sid.load(core::sync::atomic::Ordering::Acquire),
+            s.security_class(),
         ).map_err(|_| vfs::VfsError::Eacces)?;
         match cmd {
             vfs::IoctlIntCmd::Fionread => Ok(s.front_len()),

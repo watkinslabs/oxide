@@ -35,17 +35,17 @@ use super::ifq::ZcrxIfq;
 const STAT_COPY_COUNT: u64 = 0;
 const STAT_COPY_BYTES: u64 = 1;
 
-/// Post one delivery. The buffer is charged to the caller BEFORE the
-/// completion is posted: a caller that saw the completion first could hand the
-/// buffer back through the refill queue before the kernel had recorded that it
-/// owned it, and the return would be dropped as a buffer it never held.
+/// Post one delivery. The CQE is written before the buffer reference is
+/// charged, but `post_cqe_with` publishes the CQ tail only after that charge,
+/// matching Linux's cached-tail transaction.
 /// # C: O(1)
 fn queue_cqe(ring: &Arc<IoUringInode>, ifq: &ZcrxIfq, user_data: u64, idx: u32, off: u64, len: u32) {
-    ifq.area.get_uref(idx);
     let mut flags = IORING_CQE_F_MORE;
     if ring.flags & IORING_SETUP_CQE_MIXED != 0 { flags |= IORING_CQE_F_32; }
     let big = zcrx_cqe(ifq.area.area_id, ifq.area.byte_off(idx) + off);
-    ring.post_cqe(Cqe::big32(user_data, len as i32, flags, big));
+    ring.post_cqe_with(Cqe::big32(user_data, len as i32, flags, big), || {
+        ifq.area.get_uref(idx);
+    });
 }
 
 /// Copy one run of received bytes into buffers taken from the freelist,

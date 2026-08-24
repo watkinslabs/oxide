@@ -72,6 +72,11 @@ pub fn recv_oob(shape: OobShape) -> RecvOob {
 /// room for it still consumes the byte and still reports one.
 pub const URGENT_RECV_LEN: i64 = 1;
 
+/// Message flags published by a successful urgent receive.  Keep this beside
+/// the urgent-byte result so the syscall cannot report the right byte count
+/// while silently dropping the Linux `MSG_OOB` indication.
+pub fn urgent_recv_flags() -> u32 { crate::uapi::MSG_OOB as u32 }
+
 /// What a completed `recv(MSG_OOB)` reports, given how many bytes the copy to
 /// the destination actually took. The copy's own count is NOT the answer: a
 /// zero-length destination takes nothing and still consumes the byte, and the
@@ -130,6 +135,7 @@ mod tests {
         // The divergence that matters: a destination with no room takes
         // nothing, consumes the byte anyway, and still reports one.
         assert_eq!(urgent_recv_len(0), 1, "a zero-length destination still reports one");
+        assert_eq!(urgent_recv_flags(), crate::uapi::MSG_OOB as u32);
     }
 
     #[test]

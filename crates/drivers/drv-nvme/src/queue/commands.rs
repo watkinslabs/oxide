@@ -13,6 +13,7 @@ impl Nvme {
         let bytes = unsafe { core::slice::from_raw_parts(va as *const u8, PAGE as usize) };
         let Some(limit) = regs::abort_limit_from_identify(bytes) else { return false; };
         self.abort_limit = limit;
+        self.write_cache = regs::write_cache_from_identify(bytes);
         true
     }
 

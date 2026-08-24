@@ -1,6 +1,7 @@
 //! What an inode of this filesystem is, and the mode it presents.
 
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use vfs::{mk_mode, FileOps, FileType, InodeBuilder, InodeOps, InodeRef};
 
@@ -25,6 +26,7 @@ fn file_type(reparse_tag: Option<u32>, is_dir: bool) -> FileType {
 pub struct NtfsNode {
     pub(crate) fs: Arc<NtfsFs>,
     pub(crate) info: NodeInfo,
+    pub(crate) stream: Option<Vec<u16>>,
 }
 
 /// Build the inode for one record.
@@ -34,6 +36,15 @@ pub struct NtfsNode {
 /// are not paths merely because they share the reparse attribute container.
 /// # C: O(1)
 pub(crate) fn node_inode(fs: Arc<NtfsFs>, info: NodeInfo) -> InodeRef {
+    node_inode_with_stream(fs, info, None)
+}
+
+/// Build an inode presenting one named data stream of a regular file.
+pub(crate) fn stream_inode(fs: Arc<NtfsFs>, info: NodeInfo, stream: Vec<u16>) -> InodeRef {
+    node_inode_with_stream(fs, info, Some(stream))
+}
+
+fn node_inode_with_stream(fs: Arc<NtfsFs>, info: NodeInfo, stream: Option<Vec<u16>>) -> InodeRef {
     let opts = fs.options();
     let ftype = file_type(info.reparse_tag, info.is_dir);
     let inode_ops: Arc<dyn InodeOps> = Arc::new(NtfsOps);
@@ -42,9 +53,12 @@ pub(crate) fn node_inode(fs: Arc<NtfsFs>, info: NodeInfo) -> InodeRef {
     let mode = mk_mode(ftype, make_mode(info.attributes, &opts));
     let (atime, mtime, ctime, btime) = (to_unix(info.access_time), to_unix(info.modify_time),
                                         to_unix(info.change_time), to_unix(info.create_time));
-    let size = info.size;
+    let size = if stream.is_some() {
+        fs.volume.lock().read_stream_whole(info.number, stream.as_ref().unwrap())
+            .map(|data| data.len() as u64).unwrap_or(0)
+    } else { info.size };
     let links = info.hard_links;
-    let node = NtfsNode { fs, info };
+    let node = NtfsNode { fs, info, stream };
     InodeBuilder::new(ino, mode, inode_ops, file_ops)
         .size(size)
         .owner(opts.uid, opts.gid)

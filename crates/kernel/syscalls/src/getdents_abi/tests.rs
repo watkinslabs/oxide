@@ -349,6 +349,17 @@ fn sealing_an_empty_fill_writes_nothing() {
     assert_eq!(out, [0xEEu8; 64]);
 }
 
+/// Linux's final `put_user(d_off)` error overrides a positive record count;
+/// this differs from a fill error after an earlier record.
+#[test]
+fn final_d_off_fault_overrides_written_bytes() {
+    let mut fill = DirentFill::new(DirentLayout::Modern, 64);
+    let mut out = [0u8; 64];
+    fill.offer(&mut out, 1, 10, DT_REG, b"a");
+    fill.fail_tail(Errno::Efault);
+    assert_eq!(fill.ret(None), -(Errno::Efault.as_i32() as i64));
+}
+
 fn walk_offs(buf: &[u8]) -> Vec<u64> {
     let mut out = Vec::new();
     let mut p = 0usize;

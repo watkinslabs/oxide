@@ -28,7 +28,8 @@ fn recv_urgent(pair: &Arc<net::UnixPair>, end: net::UnixEnd, sock: &Arc<InetSock
     let copied = match user.copy_payload_at(0, &[byte]) { Ok(n) => n, Err(e) => return e };
     let path = net::sock::unix_peer_path(sock).unwrap_or(None);
     let sa = encoded_sockaddr_un(path.as_deref());
-    if let Err(e) = finish(sock, user, alloc::vec::Vec::new(), None, flags, MSG_OOB as u32, sa.as_bytes()) {
+    if let Err(e) = finish(sock, user, alloc::vec::Vec::new(), None, flags,
+                           net::sock::oob_class::urgent_recv_flags(), sa.as_bytes()) {
         return e;
     }
     sock.note_receive_now();

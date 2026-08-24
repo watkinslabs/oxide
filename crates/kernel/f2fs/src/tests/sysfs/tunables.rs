@@ -48,15 +48,287 @@ fn store(a: &[Attr], name: &str, v: u64) -> Result<usize, VfsError> {
 }
 
 #[test]
-fn every_volume_owned_control_is_writable() {
+fn section_forward_controls_reach_the_allocator() {
     let fs = mounted();
     let a = attrs(&fs);
-    for name in ["ram_thresh", "max_read_extent_count", "last_age_weight",
+    let per = u64::from(fs.volume.lock().super_block().segs_per_sec.max(1));
+    assert_eq!(show(&a, "allocate_section_hint"),
+               u64::from(fs.volume.lock().super_block().section_count));
+    store(&a, "allocate_section_hint", 1).expect("section boundary");
+    store(&a, "allocate_section_policy", 2).expect("from-boundary policy");
+    {
+        let v = fs.volume.lock();
+        assert_eq!(v.allocate_section_hint(), 1);
+        assert_eq!(v.allocate_section_policy(), 2);
+        assert_eq!(v.section_search_hint(0), per as u32);
+    }
+    assert!(store(&a, "allocate_section_policy", 3).is_err());
+    assert_eq!(show(&a, "allocate_section_policy"), 2);
+}
+
+#[test]
+fn checkpoint_interval_control_reaches_balance_clock() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    assert_eq!(show(&a, "cp_interval"), crate::bg::balance::CP_INTERVAL_SECS);
+    store(&a, "cp_interval", 1).expect("one-second checkpoint interval");
+    {
+        let mut v = fs.volume.lock();
+        v.set_clock(100);
+        assert!(!v.cp_time_over(), "the first clock sample starts the mount");
+        v.set_clock(102);
+        assert!(v.cp_time_over(), "the live interval controls the due decision");
+    }
+    store(&a, "cp_interval", 0).expect("Linux permits an immediate interval");
+    assert_eq!(show(&a, "cp_interval"), 0);
+}
+
+#[test]
+fn unmount_discard_timeout_is_a_live_volume_control() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    assert_eq!(show(&a, "umount_discard_timeout"),
+               crate::bg::round::DEF_UMOUNT_DISCARD_TIMEOUT_SECS);
+    store(&a, "umount_discard_timeout", 0).expect("Linux permits zero timeout");
+    assert_eq!(fs.volume.lock().umount_discard_timeout(), 0);
+}
+
+#[test]
+fn zoned_allocation_policy_is_a_live_control() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    assert_eq!(show(&a, "blkzone_alloc_policy"),
+               crate::volume::zonewp::BLKZONE_ALLOC_PRIOR_SEQ as u64);
+    store(&a, "blkzone_alloc_policy", 2).expect("conventional-first policy");
+    assert_eq!(fs.volume.lock().blkzone_alloc_policy(), 2);
+    assert!(store(&a, "blkzone_alloc_policy", 3).is_err());
+}
+
+#[test]
+fn every_volume_owned_control_is_writable() {
+    let fs = mounted();
+    let a = crate::sysfs::mount_attrs(&fs);
+    for name in ["ram_thresh", "ra_nid_pages", "gc_pin_file_thresh", "reclaim_segments", "gc_valid_thresh_ratio", "max_io_bytes", "max_fragment_chunk", "max_fragment_hole", "migration_window_granularity", "migration_granularity", "dir_level", "seq_file_ra_mul", "max_roll_forward_node_blocks", "max_read_extent_count", "last_age_weight",
                  "hot_data_age_threshold", "warm_data_age_threshold",
+                 "gc_segment_mode", "gc_reclaimed_segments",
+                 "reserved_segments",
+                 "reserved_blocks", "carve_out",
                  "atgc_candidate_ratio", "atgc_candidate_count",
                  "atgc_age_weight", "atgc_age_threshold"] {
         assert!(find(&a, name).store.is_some(), "{name} is not writable");
     }
+}
+
+#[test]
+fn reserved_pool_and_carve_out_change_the_live_volume_answer() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    let total = fs.volume.lock().space().total;
+    store(&a, "reserved_blocks", 8).expect("within ordinary space");
+    assert_eq!(show(&a, "reserved_blocks"), 8);
+    assert_eq!(fs.volume.lock().current_reserved_blocks(), 8);
+    assert!(store(&a, "reserved_blocks", u64::MAX).is_err());
+    store(&a, "carve_out", 1).expect("enable carve-out");
+    assert_eq!(show(&a, "carve_out"), 1);
+    assert_eq!(fs.volume.lock().space().total, total - 8);
+    {
+        let mut v = fs.volume.lock();
+        v.current_reserved_blocks = 3;
+    }
+    assert_eq!(fs.volume.lock().space().total, total - 3);
+    store(&a, "carve_out", 0).expect("disable carve-out");
+    assert_eq!(fs.volume.lock().space().total, total);
+}
+
+#[test]
+fn reclaimed_segment_report_uses_one_selected_live_counter() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    {
+        let v = fs.volume.lock();
+        let mut counters = v.counters.borrow_mut();
+        counters.gc_reclaimed_segs[crate::stats::counters::gc_mode::NORMAL] = 3;
+        counters.gc_reclaimed_segs[crate::stats::counters::gc_mode::IDLE_CB] = 7;
+    }
+    assert_eq!(show(&a, "gc_segment_mode"), 0);
+    assert_eq!(show(&a, "gc_reclaimed_segments"), 3);
+    store(&a, "gc_segment_mode", 1).expect("select idle-cb");
+    assert_eq!(show(&a, "gc_reclaimed_segments"), 7);
+    store(&a, "gc_reclaimed_segments", 0).expect("reset selected total");
+    assert_eq!(show(&a, "gc_reclaimed_segments"), 0);
+    store(&a, "gc_segment_mode", 0).expect("select normal");
+    assert_eq!(show(&a, "gc_reclaimed_segments"), 3, "reset crossed modes");
+}
+
+#[test]
+fn reclaimed_segment_controls_refuse_invalid_writes() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    assert!(store(&a, "gc_segment_mode", crate::stats::counters::gc_mode::MAX as u64).is_err());
+    assert!(store(&a, "gc_reclaimed_segments", 1).is_err());
+}
+
+#[test]
+fn pin_collision_threshold_is_live_and_linux_bounded() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    assert_eq!(show(&a, "gc_pin_file_thresh"),
+               u64::from(crate::pin::policy::GC_PIN_FILE_THRESHOLD));
+    store(&a, "gc_pin_file_thresh", 0).expect("Linux accepts zero");
+    assert_eq!(fs.volume.lock().gc_pin_file_threshold(), 0);
+    assert_eq!(show(&a, "gc_pin_file_thresh"), 0);
+    assert!(store(&a, "gc_pin_file_thresh",
+                  u64::from(crate::pin::policy::MAX_GC_FAILED_PINNED_FILES) + 1).is_err());
+    assert_eq!(show(&a, "gc_pin_file_thresh"), 0, "a refused write changed the policy");
+}
+
+#[test]
+fn reclaim_segments_is_the_live_prefree_checkpoint_threshold() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    let main = fs.volume.lock().super_block().segment_count_main;
+    assert_eq!(show(&a, "reclaim_segments"),
+               u64::from(crate::volume::gc::collect::default_reclaim_prefree_segments(main)));
+    store(&a, "reclaim_segments", 0).expect("zero is a valid Linux threshold");
+    {
+        let v = fs.volume.lock();
+        assert_eq!(v.excess_prefree(), v.prefree_count() > 0);
+    }
+    store(&a, "reclaim_segments", u64::from(u32::MAX)).expect("u32 is the field width");
+    assert_eq!(show(&a, "reclaim_segments"), u64::from(u32::MAX));
+    assert!(store(&a, "reclaim_segments", u64::from(u32::MAX) + 1).is_err());
+}
+
+#[test]
+fn gc_valid_threshold_is_live_and_percentage_bounded() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    assert_eq!(show(&a, "gc_valid_thresh_ratio"), 80);
+    store(&a, "gc_valid_thresh_ratio", 0).expect("zero is a valid Linux ratio");
+    assert_eq!(fs.volume.lock().gc_valid_thresh_ratio(), 0);
+    store(&a, "gc_valid_thresh_ratio", 100).expect("one hundred is the upper bound");
+    assert_eq!(show(&a, "gc_valid_thresh_ratio"), 100);
+    assert!(store(&a, "gc_valid_thresh_ratio", 101).is_err());
+    assert_eq!(show(&a, "gc_valid_thresh_ratio"), 100);
+}
+
+#[test]
+fn max_io_bytes_is_a_live_merge_boundary() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    assert_eq!(show(&a, "max_io_bytes"), 0);
+    store(&a, "max_io_bytes", (2 * BLKSIZE) as u64).expect("store");
+    assert_eq!(fs.volume.lock().max_io_bytes(), (2 * BLKSIZE) as u32);
+    assert_eq!(show(&a, "max_io_bytes"), (2 * BLKSIZE) as u64);
+    store(&a, "max_io_bytes", 0).expect("zero means unlimited");
+    assert_eq!(show(&a, "max_io_bytes"), 0);
+    assert!(store(&a, "max_io_bytes", u64::from(u32::MAX) + 1).is_err());
+}
+
+#[test]
+fn migration_window_is_live_and_section_bounded() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    let max = u64::from(fs.volume.lock().super_block().segs_per_sec.max(1));
+    assert_eq!(show(&a, "migration_window_granularity"), max);
+    store(&a, "migration_window_granularity", 1).expect("one segment is valid");
+    assert_eq!(show(&a, "migration_window_granularity"), 1);
+    assert!(store(&a, "migration_window_granularity", 0).is_err());
+    assert!(store(&a, "migration_window_granularity", max + 1).is_err());
+    assert_eq!(show(&a, "migration_window_granularity"), 1);
+}
+
+#[test]
+fn migration_granularity_is_live_and_section_bounded() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    let max = u64::from(fs.volume.lock().super_block().segs_per_sec.max(1));
+    assert_eq!(show(&a, "migration_granularity"), max);
+    store(&a, "migration_granularity", 1).expect("one segment is valid");
+    assert_eq!(show(&a, "migration_granularity"), 1);
+    assert!(store(&a, "migration_granularity", 0).is_err());
+    assert!(store(&a, "migration_granularity", max + 1).is_err());
+    assert_eq!(show(&a, "migration_granularity"), 1);
+}
+
+#[test]
+fn dir_level_is_live_and_linux_bounded() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    assert_eq!(show(&a, "dir_level"), 0);
+    store(&a, "dir_level", 7).expect("Linux accepts a hash level");
+    assert_eq!(show(&a, "dir_level"), 7);
+    assert!(store(&a, "dir_level", u64::from(crate::uapi::MAX_DIR_HASH_DEPTH) + 1).is_err());
+    assert_eq!(show(&a, "dir_level"), 7);
+}
+
+#[test]
+fn seq_file_ra_multiplier_is_live_and_linux_bounded() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    assert_eq!(show(&a, "seq_file_ra_mul"), 2);
+    store(&a, "seq_file_ra_mul", 8).expect("Linux accepts the multiplier");
+    assert_eq!(show(&a, "seq_file_ra_mul"), 8);
+    assert!(store(&a, "seq_file_ra_mul", 1).is_err());
+    assert!(store(&a, "seq_file_ra_mul", 257).is_err());
+    assert_eq!(show(&a, "seq_file_ra_mul"), 8);
+}
+
+#[test]
+fn max_roll_forward_node_blocks_is_live_and_u32_bounded() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    assert_eq!(show(&a, "max_roll_forward_node_blocks"), 0);
+    store(&a, "max_roll_forward_node_blocks", 3).expect("store");
+    assert_eq!(fs.volume.lock().max_roll_forward_node_blocks(), 3);
+    assert_eq!(show(&a, "max_roll_forward_node_blocks"), 3);
+    assert!(store(&a, "max_roll_forward_node_blocks", u64::from(u32::MAX) + 1).is_err());
+    assert_eq!(show(&a, "max_roll_forward_node_blocks"), 3);
+}
+
+#[test]
+fn fragment_limits_are_live_and_linux_bounded() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    assert_eq!(show(&a, "max_fragment_chunk"), 4);
+    assert_eq!(show(&a, "max_fragment_hole"), 4);
+    store(&a, "max_fragment_chunk", 8).expect("chunk");
+    store(&a, "max_fragment_hole", 9).expect("hole");
+    assert_eq!(show(&a, "max_fragment_chunk"), 8);
+    assert_eq!(show(&a, "max_fragment_hole"), 9);
+    assert!(store(&a, "max_fragment_chunk", 0).is_err());
+    assert!(store(&a, "max_fragment_hole", 513).is_err());
+    assert_eq!(show(&a, "max_fragment_chunk"), 8);
+    assert_eq!(show(&a, "max_fragment_hole"), 9);
+}
+
+#[test]
+fn reserved_pin_sections_are_live_and_overprovision_bounded() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    let max = {
+        let v = fs.volume.lock();
+        u64::from(v.gc_reserve().div_ceil(v.super_block().segs_per_sec.max(1)))
+    };
+    assert_eq!(show(&a, "reserved_pin_section"), max);
+    store(&a, "reserved_pin_section", 0).expect("zero is accepted");
+    assert_eq!(show(&a, "reserved_pin_section"), 0);
+    assert!(store(&a, "reserved_pin_section", max + 1).is_err());
+    assert_eq!(show(&a, "reserved_pin_section"), 0);
+}
+
+#[test]
+fn reserved_segments_changes_the_live_allocator_reserve() {
+    let fs = mounted();
+    let a = crate::sysfs::mount_attrs(&fs);
+    let before = show(&a, "reserved_segments");
+    assert!(find(&a, "reserved_segments").store.is_some());
+    store(&a, "reserved_segments", 2).expect("segment reserve");
+    assert_eq!(show(&a, "reserved_segments"), 2);
+    assert_eq!(fs.volume.lock().gc_reserve(), 2);
+    assert_ne!(before, 2);
+    assert!(store(&a, "reserved_segments", u64::from(u32::MAX) + 1).is_err());
+    assert_eq!(show(&a, "reserved_segments"), 2);
 }
 
 /// The point of the knob: what is written is what the machinery then holds.
@@ -75,6 +347,20 @@ fn a_stored_value_reaches_the_cache_the_decision_reads() {
 
     store(&a, "ram_thresh", 9).expect("store");
     assert_eq!(fs.volume.lock().nid_ram_thresh(), 9);
+
+    store(&a, "ra_nid_pages", 12).expect("store");
+    assert_eq!(fs.volume.lock().ra_nid_pages(), 12);
+    assert_eq!(show(&a, "ra_nid_pages"), 12);
+}
+
+#[test]
+fn ra_nid_pages_accepts_zero_and_refuses_values_outside_u32() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    assert_eq!(show(&a, "ra_nid_pages"), 0, "Linux default disables the advisory read-ahead");
+    store(&a, "ra_nid_pages", 0).expect("zero is the Linux default");
+    assert!(store(&a, "ra_nid_pages", u64::from(u32::MAX) + 1).is_err());
+    assert_eq!(show(&a, "ra_nid_pages"), 0);
 }
 
 #[test]
@@ -175,23 +461,28 @@ fn the_dirty_node_share_reaches_the_decision_that_reads_it() {
         assert!(store(&a, "dirty_nats_ratio", bad).is_err(), "{bad} was accepted");
     }
     assert_eq!(fs.volume.lock().dirty_nats_ratio(), 40, "a refusal changed it");
-    // And the share genuinely decides the answer. Asserted at the comparison
-    // rather than through the volume: the fixture's node table holds 232960 ids
-    // and a create dirties ONE entry, so no admissible share (1..=100) crosses
-    // the threshold and the volume-level answer is false either way.
-    // A filed row records that; what is pinned here is that the written value is
-    // what the comparison reads.
+    // And the share genuinely decides the live volume answer. The fixture's
+    // node table is large, so one create cannot cross even the minimum 1%
+    // threshold; create the required real entries rather than editing the
+    // accounting fields underneath the decision.
     use crate::bg::balance::excess_dirty_nats_at;
     assert!(excess_dirty_nats_at(10, 100, 10), "a tenth of the table is a tenth");
     assert!(!excess_dirty_nats_at(9, 100, 10));
     assert!(!excess_dirty_nats_at(0, 100, 1), "an empty table is never excessive");
     assert!(excess_dirty_nats_at(1, 100, 1));
+    store(&a, "dirty_nats_ratio", 1).expect("minimum accepted ratio");
     {
         let mut v = fs.volume.lock();
         let spec = crate::volume::NewInode { mode: crate::mode::S_IFREG | 0o644, uid: 0, gid: 0,
                                              rdev: 0, now: (1_800_000_000, 0) };
-        v.create(crate::test_image::ROOT_INO, b"nat", &spec, None).unwrap();
+        for i in 0..5000usize {
+            if v.excess_dirty_nats() { break; }
+            let name = alloc::format!("nat-{i}");
+            v.create(crate::test_image::ROOT_INO, name.as_bytes(), &spec, None).unwrap();
+        }
         assert!(v.cached_nats() > 0, "a create dirtied no node-table entry");
+        assert!(v.excess_dirty_nats(),
+                "a real file workload never crossed the minimum dirty-NAT share");
         assert_eq!(v.excess_dirty_nats(),
                    excess_dirty_nats_at(v.cached_nats(), v.max_nid() as usize,
                                         v.dirty_nats_ratio() as usize),

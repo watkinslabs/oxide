@@ -82,3 +82,26 @@ fn a_zoned_volume_may_also_be_spread() {
     assert!(v.devices().is_multi());
     assert!(v.zones().is_some());
 }
+
+#[test]
+fn regular_allocation_policy_prefers_the_requested_zone_kind() {
+    let per_sec = {
+        let s = image::Builder::new().finish();
+        let sb = crate::sb::parse(
+            &s[crate::uapi::SUPER_OFFSET..crate::uapi::SUPER_OFFSET + crate::uapi::SUPER_SIZE])
+            .unwrap();
+        sb.segs_per_sec * sb.blks_per_seg()
+    };
+    let report = spread::report(4, per_sec, per_sec, 2);
+    {
+        let mut v = spread::mount_zoned(zoned(&[("/dev/a", 15)]), &[Some(report.clone())])
+            .expect("mounts");
+        v.load_segments().expect("segment map");
+        v.set_blkzone_alloc_policy(crate::volume::zonewp::BLKZONE_ALLOC_PRIOR_CONV as u64)
+            .expect("policy");
+        v.open_new_section(crate::uapi::CURSEG_HOT_DATA).expect("new section");
+        let seg = v.curseg_segno(crate::uapi::CURSEG_HOT_DATA);
+        let first = crate::pin::section::section_first(seg, v.super_block().segs_per_sec);
+        assert_eq!(v.section_is_sequential(first), Some(false));
+    }
+}

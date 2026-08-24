@@ -7,6 +7,7 @@ use alloc::vec;
 
 const TAG: u32 = 0;
 const ZONE: usize = 64;
+const ECC: EccConfig = EccConfig { block_size: 128, ecc_size: 16 };
 
 fn fresh() -> Vec<u8> {
     let mut z = vec![0u8; ZONE];
@@ -135,4 +136,40 @@ fn an_empty_write_changes_nothing() {
     write(&mut z, TAG, b"kept");
     assert_eq!(write(&mut z, TAG, b""), 0);
     assert_eq!(read_all(&z), b"kept".to_vec());
+}
+
+#[test]
+fn ecc_repairs_a_corrupted_body_before_attach_publishes_it() {
+    let mut z = vec![0u8; 4096];
+    assert_eq!(attach_with_ecc(&mut z, TAG, ECC), Attach::Fresh);
+    let payload: Vec<u8> = (0..700).map(|i| (i as u8).wrapping_mul(19)).collect();
+    write_with_ecc(&mut z, TAG, &payload, ECC);
+    let mut reboot = z.clone();
+    reboot[ZONE_HDR_LEN + 211] ^= 0x40;
+    assert_eq!(attach_with_ecc(&mut reboot, TAG, ECC), Attach::Valid { bytes: payload.len() });
+    assert_eq!(read_all_with_ecc(&reboot, ECC), payload);
+}
+
+#[test]
+fn ecc_repairs_header_and_parity_corruption() {
+    let mut z = vec![0u8; 4096];
+    attach_with_ecc(&mut z, TAG, ECC);
+    write_with_ecc(&mut z, TAG, b"persistent", ECC);
+    let mut reboot = z.clone();
+    reboot[4] ^= 0x01;
+    let cap = ecc_capacity(reboot.len(), ECC).unwrap();
+    reboot[ZONE_HDR_LEN + cap + 3] ^= 0x80;
+    assert_eq!(attach_with_ecc(&mut reboot, TAG, ECC), Attach::Valid { bytes: 10 });
+    assert_eq!(read_all_with_ecc(&reboot, ECC), b"persistent".to_vec());
+}
+
+#[test]
+fn ecc_validates_a_wrapped_stream_against_the_ecc_data_capacity() {
+    let mut z = vec![0u8; 4096];
+    attach_with_ecc(&mut z, TAG, ECC);
+    let cap = ecc_capacity(z.len(), ECC).unwrap();
+    let payload: Vec<u8> = (0..cap + 211).map(|i| (i as u8).wrapping_mul(13)).collect();
+    write_with_ecc(&mut z, TAG, &payload, ECC);
+    assert_eq!(attach_with_ecc(&mut z, TAG, ECC), Attach::Valid { bytes: cap });
+    assert_eq!(read_all_with_ecc(&z, ECC), payload[payload.len() - cap..].to_vec());
 }

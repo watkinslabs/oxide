@@ -75,8 +75,9 @@ pub use inode::{
     make_netlink_socket_inode, netlink_arc_from_inode, netlink_from_inode,
 };
 pub use listeners::{
-    emit_uevent, emit_uevent_with_env, emit_uevent_with_env_bytes, rebroadcast_cooked_uevent,
-    register_rtnl_listener, register_uevent_listener, rtnl_multicast, rtnl_multicast_in,
+    emit_uevent, emit_uevent_with_env, emit_uevent_with_env_bytes, netfilter_multicast_in,
+    rebroadcast_cooked_uevent, register_netfilter_listener, register_rtnl_listener,
+    register_uevent_listener, rtnl_multicast, rtnl_multicast_in,
     uevent_seqnum,
     unicast_uevent_to_port,
 };

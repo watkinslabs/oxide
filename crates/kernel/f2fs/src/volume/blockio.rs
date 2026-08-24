@@ -20,6 +20,8 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
 use syscall::errno::Errno;
 
 use sectors::SectorSource;
@@ -28,7 +30,42 @@ use crate::uapi::BLKSIZE;
 
 use super::Volume;
 
+struct InflightIo<'a> {
+    counter: &'a AtomicU64,
+}
+
+impl Drop for InflightIo<'_> {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 impl<S: SectorSource> Volume<S> {
+    /// Start one physical read, ending when the source operation returns.
+    /// # C: O(1)
+    fn begin_read_io(&self) -> InflightIo<'_> {
+        self.inflight_reads.fetch_add(1, Ordering::AcqRel);
+        InflightIo { counter: &self.inflight_reads }
+    }
+
+    /// Start one physical write, ending when the source operation returns.
+    /// # C: O(1)
+    fn begin_write_io(&self) -> InflightIo<'_> {
+        self.inflight_writes.fetch_add(1, Ordering::AcqRel);
+        InflightIo { counter: &self.inflight_writes }
+    }
+
+    /// Whether any physical request is in flight. # C: O(1)
+    pub(crate) fn inflight_io(&self) -> bool {
+        self.inflight_reads.load(Ordering::Acquire) != 0
+            || self.inflight_writes.load(Ordering::Acquire) != 0
+    }
+
+    /// Whether a physical read is in flight. # C: O(1)
+    pub(crate) fn inflight_read_io(&self) -> bool {
+        self.inflight_reads.load(Ordering::Acquire) != 0
+    }
+
     /// Read one block by its address.
     ///
     /// Addresses are in blocks and the source is addressed in blocks, so the
@@ -48,6 +85,7 @@ impl<S: SectorSource> Volume<S> {
         if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::ReadIo) {
             return Err(Errno::Eio);
         }
+        let _io = self.begin_read_io();
         let mut buf = vec![0u8; BLKSIZE];
         self.source.read_sectors(u64::from(addr), &mut buf)?;
         // Everything OUTSIDE the main area is metadata by the layout's own
@@ -84,6 +122,21 @@ impl<S: SectorSource> Volume<S> {
             return Err(Errno::Eio);
         }
         self.read_block(addr)
+    }
+
+    /// Read a recovery-chain node through the temporary main-area view. # C: O(1 block)
+    pub(crate) fn read_por_block(&self, addr: u32) -> Result<Vec<u8>, Errno> {
+        if !self.sb_main_contains(addr) { return Err(Errno::Eio); }
+        if let Some(held) = self.meta_cache.load_por(addr) { return Ok(held); }
+        if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::ReadIo) {
+            return Err(Errno::Eio);
+        }
+        let _io = self.begin_read_io();
+        let mut buf = vec![0u8; BLKSIZE];
+        self.source.read_sectors(u64::from(addr), &mut buf)?;
+        self.meta_cache.store_por(addr, &buf);
+        self.io_account(crate::stats::iostat::Io::FsMetaRead, BLKSIZE as u64, false);
+        Ok(buf)
     }
 
     /// Put `data` at `addr`. # C: O(BLKSIZE)
@@ -145,6 +198,7 @@ impl<S: SectorSource> Volume<S> {
         if data.len() != BLKSIZE { return Err(Errno::Einval); }
         let main = self.sb.valid_main_blkaddr(addr);
         if !main && u64::from(addr) >= self.sb.max_blkaddr() { return Err(Errno::Eio); }
+        let _io = self.begin_write_io();
         // Everything OUTSIDE the main area is metadata by the layout's own
         // definition — the checkpoint packs, both tables, the summary area and
         // the orphan list are the only things there — so the address answers
@@ -158,6 +212,7 @@ impl<S: SectorSource> Volume<S> {
         } else {
             self.source.write_sectors_durable(u64::from(addr), data, flags, want)?;
         }
+        self.record_physical_write(data.len());
         // Charged by the same derivation that set the flag. A main-area write
         // is a node or a page of data and is charged by the typed writer that
         // knows which; only the metadata areas can be classified from the
@@ -190,6 +245,7 @@ impl<S: SectorSource> Volume<S> {
                 Some(_) => self.meta_cache.invalidate_range(addr, 1),
             }
         }
+        if self.meta_cache.covers_por(addr) { self.meta_cache.invalidate_range(addr, 1); }
         Ok(())
     }
 

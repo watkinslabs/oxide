@@ -34,7 +34,9 @@ pub use accessors::{
 
 mod playback;
 pub use playback::{beep, beep_diag, pcm_hw_free, pcm_hw_params, pcm_prepare, pcm_submit, pcm_trigger};
+pub(crate) use playback::mmap_commit as mmap_playback_commit;
 pub(crate) use playback::{pcm_ctl, PERIOD_BYTES};
 
 mod capture;
 pub use capture::{cap_hw_free, cap_hw_params, cap_prepare, cap_trigger, pcm_recv};
+pub(crate) use capture::mmap_commit as mmap_capture_commit;

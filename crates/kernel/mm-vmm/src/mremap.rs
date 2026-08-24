@@ -8,47 +8,21 @@ use hal::UserVirtAddr;
 
 use crate::address_space::AddressSpace;
 use crate::uffd::{UffdContext, UffdEvent, UffdEventKind};
-use crate::vma::{VmaBacking, VmaFlags, VmaProt};
+use crate::vma::{VmaBacking, VmaFlags};
 use crate::{Error, KResult};
 
-// Module manifest: `relocate` owns the chunked, fault-recovering user→user
-// byte transfer and its accounting; this file owns the mremap decision.
+// Module manifest: `relocate` is retained only for VMM-only hosted fixtures;
+// production mremap transfers raw page-table leaves through the PMM owner.
+#[cfg(test)]
 pub mod relocate;
-
-/// The exception-table copy pair, which absorbs a user fault instead of
-/// delivering it. Only compiled for a real address space — a hosted build
-/// has no user mappings to transfer, and `relocate`'s own tests drive the
-/// loop through a fake pair.
-#[cfg(not(test))]
-struct Uaccess;
-
-#[cfg(not(test))]
-impl relocate::UserXfer for Uaccess {
-    fn read(&mut self, src: u64, buf: &mut [u8]) -> usize {
-        // SAFETY: raw_copy_from_user range-checks `src` and recovers a user fault via the exception table; `buf` is a live kernel slice writable for its whole length.
-        unsafe { uaccess::raw_copy_from_user(buf.as_mut_ptr(), src, buf.len()) }
-    }
-    fn write(&mut self, dst: u64, buf: &[u8]) -> usize {
-        // SAFETY: raw_copy_to_user range-checks `dst` and recovers a user fault via the exception table; `buf` is a live kernel slice readable for its whole length.
-        unsafe { uaccess::raw_copy_to_user(dst, buf.as_ptr(), buf.len()) }
-    }
-}
 
 /// Move `len` bytes between two user ranges of this address space.
 ///
-/// The reference relocates page-table entries under the mm write lock and
-/// so has no user access to lose. Oxide's VMA layer copies instead, without
-/// holding a lock across the operation, so a sibling thread unmapping
-/// either range mid-transfer is reachable — recovered here as `EFAULT`
-/// rather than a kernel fault. See `scratch/known_issues.md` for the
-/// page-table-move and whole-operation-lock rows this leaves open.
+/// Hosted-only compatibility transfer for VMM tests that have no live PMM
+/// root. Production callers inject the PMM-owned raw page-table mover below.
 /// # C: O(len)
+#[cfg(test)]
 fn relocate_user(src: u64, dst: u64, len: usize) -> KResult<()> {
-    #[cfg(not(test))]
-    {
-        if relocate::relocate(src, dst, len, &mut Uaccess).is_err() { return Err(Error::Fault); }
-    }
-    #[cfg(test)]
     let _ = (src, dst, len);
     Ok(())
 }
@@ -99,6 +73,8 @@ fn rebase_backing(backing: &VmaBacking, delta: u64) -> VmaBacking {
             VmaBacking::File { backing: backing.clone(), off: off + delta },
         VmaBacking::KernelBytes { data, off } =>
             VmaBacking::KernelBytes { data: data.clone(), off: off + delta as usize },
+        VmaBacking::KernelPages { pages, off } =>
+            VmaBacking::KernelPages { pages: pages.clone(), off: off + delta as usize },
         b => b.clone(),
     }
 }
@@ -109,7 +85,8 @@ impl AddressSpace {
     ///   new_size < old_size  → shrink in place, drop tail
     ///   new_size == old_size → no-op, return old
     ///   new_size > old_size  → copy to a new region (MAYMOVE/FIXED)
-    /// # C: O(VMA-tree ops + min(old,new) byte copy)
+    /// # C: test-only VMA fixture; production callers use the PMM mover
+    #[cfg(test)]
     pub fn mremap(
         &self,
         old: UserVirtAddr,
@@ -122,6 +99,27 @@ impl AddressSpace {
         self.mremap_full(old, old_size, new_size, maymove, fixed, false, new_addr)
     }
 
+    /// Hosted/legacy convenience form. The kernel syscall supplies the PMM
+    /// page-table mover below; this form is retained for VMM-only callers
+    /// whose address space has no live PMM root.
+    #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
+    pub fn mremap_full(
+        &self,
+        old: UserVirtAddr,
+        old_size: usize,
+        new_size: usize,
+        maymove: bool,
+        fixed: bool,
+        dontunmap: bool,
+        new_addr: Option<UserVirtAddr>,
+    ) -> KResult<UserVirtAddr> {
+        let mut copy = |src: u64, dst: u64, len: usize| relocate_user(src, dst, len);
+        let mut unmap_destination = |_addr: u64, _len: u64| Ok(());
+        self.mremap_full_with_move(old, old_size, new_size, maymove, fixed,
+                                   dontunmap, new_addr, &mut copy, &mut unmap_destination)
+    }
+
     /// `mremap` with MREMAP_DONTUNMAP support. Linux semantics
     /// (mremap(2), since Linux 5.7):
     ///   * MREMAP_DONTUNMAP requires MREMAP_MAYMOVE.
@@ -132,11 +130,11 @@ impl AddressSpace {
     ///     refault as fresh zero pages. The destination range holds
     ///     the original contents.
     /// Implemented as: install a destination VMA with the source
-    /// prot/flags/backing, byte-copy populated writable private data, then
-    /// leave source VMA in place for syscall-layer PTE eviction.
+    /// prot/flags/backing, transfer the source page-table leaves, then leave
+    /// the source VMA in place for syscall-layer PTE eviction.
     /// # C: O(min(old,new))
     #[allow(clippy::too_many_arguments)]
-    pub fn mremap_full(
+    pub fn mremap_full_with_move(
         &self,
         old: UserVirtAddr,
         old_size: usize,
@@ -145,6 +143,8 @@ impl AddressSpace {
         fixed: bool,
         dontunmap: bool,
         new_addr: Option<UserVirtAddr>,
+        move_pages: &mut dyn FnMut(u64, u64, usize) -> KResult<()>,
+        unmap_destination: &mut dyn FnMut(u64, u64) -> KResult<()>,
     ) -> KResult<UserVirtAddr> {
         if old.as_u64() & (hal::PAGE_SIZE_BYTES - 1) != 0 || new_size == 0 {
             return Err(Error::Inval);
@@ -159,15 +159,25 @@ impl AddressSpace {
             if !maymove || new_size != old_size {
                 return Err(Error::Inval);
             }
-            let src_vma = self.find_vma(old).ok_or(Error::Fault)?;
+            let watch = self.remap_watch(old);
+            let mut vmas = self.vmas.write();
+            let src_vma = vmas.find_containing(old).ok_or(Error::Fault)?.clone();
             if old_size == 0 || old_end > src_vma.end.as_u64() {
                 return Err(Error::Fault);
             }
             let delta = old.as_u64() - src_vma.start.as_u64();
             let moved_backing = rebase_backing(&src_vma.backing, delta);
             let hint = new_addr;
-            let watch = self.remap_watch(old);
-            let new_va = match self.mmap_preserving_prot(
+            if fixed {
+                if let Some(destination) = hint {
+                    if let Err(e) = unmap_destination(destination.as_u64(), new_size as u64) {
+                        remap_failed(watch);
+                        return Err(e);
+                    }
+                }
+            }
+            let new_va = match self.mmap_preserving_prot_locked(
+                &mut vmas,
                 hint,
                 new_size,
                 src_vma.prot,
@@ -179,21 +189,29 @@ impl AddressSpace {
                 Ok(v) => v,
                 Err(e) => { remap_failed(watch); return Err(e); }
             };
-            if let Err(e) = relocate_user(old.as_u64(), new_va.as_u64(), old_size) {
+            if let Err(e) = move_pages(old.as_u64(), new_va.as_u64(), old_size) {
                 // The source is still whole — only the destination this call
                 // created is abandoned, mirroring the reference's revert-then-
                 // unmap-the-new-area error path.
-                let _ = self.munmap(new_va, new_size);
+                let end = new_va.as_u64() + new_size as u64;
+                let _ = self.munmap_locked(&mut vmas, new_va, end);
                 remap_failed(watch);
                 return Err(e);
             }
             // Source VMA stays. PTE eviction so future reads refault
             // as zero is performed by the syscall-layer caller (it
             // sits in the mm-pmm crate where the PT walker lives).
+            drop(vmas);
             self.remap_done(watch, old.as_u64(), new_va.as_u64(), old_size as u64);
             return Ok(new_va);
         }
-        let src_vma = self.find_vma(old).ok_or(Error::Fault)?;
+        let watch = if (new_size >= old_size || fixed) && (maymove || fixed) {
+            self.remap_watch(old)
+        } else {
+            None
+        };
+        let mut vmas = self.vmas.write();
+        let src_vma = vmas.find_containing(old).ok_or(Error::Fault)?.clone();
         if move_or_expand {
             let covered_old_len = if new_size < old_size { new_size } else { old_size };
             let covered_end = old.as_u64().checked_add(covered_old_len as u64).ok_or(Error::Inval)?;
@@ -208,7 +226,9 @@ impl AddressSpace {
         if new_size < old_size && !fixed {
             let drop_va = old.as_u64() + new_size as u64;
             if let Some(da) = UserVirtAddr::new(drop_va) {
-                let _ = self.munmap(da, old_size - new_size);
+                if let Some(end) = UserVirtAddr::new(old.as_u64() + old_size as u64) {
+                    let _ = self.munmap_locked(&mut vmas, da, end.as_u64());
+                }
             }
             return Ok(old);
         }
@@ -227,8 +247,16 @@ impl AddressSpace {
         let delta = old.as_u64() - src_vma.start.as_u64();
         let moved_backing = rebase_backing(&src_vma.backing, delta);
         let hint = if fixed { new_addr.or(Some(old)) } else { None };
-        let watch = self.remap_watch(old);
-        let new_va = match self.mmap_preserving_prot(
+        if fixed {
+            if let Some(destination) = hint {
+                if let Err(e) = unmap_destination(destination.as_u64(), new_size as u64) {
+                    remap_failed(watch);
+                    return Err(e);
+                }
+            }
+        }
+        let new_va = match self.mmap_preserving_prot_locked(
+            &mut vmas,
             hint,
             new_size,
             src_vma.prot,
@@ -240,26 +268,23 @@ impl AddressSpace {
             Ok(v) => v,
             Err(e) => { remap_failed(watch); return Err(e); }
         };
-        // Migrate DIRTY private data: the dest's own demand-faults refill
-        // clean pages from the (preserved) backing, but pages the process
-        // already wrote exist only in the source's private frames. Byte-copy
-        // through user VAs — only when the mapping is writable (an RO
-        // mapping cannot hold private dirty data; writing the dest would
-        // fault a read-only PTE at CPL=0).
-        if src_vma.prot.contains(VmaProt::WRITE) {
-            let copy_len = core::cmp::min(old_size, new_size);
-            if let Err(e) = relocate_user(old.as_u64(), new_va.as_u64(), copy_len) {
-                // The source has not been unmapped yet, so abandoning the
-                // destination leaves the caller's mapping exactly as it was.
-                let _ = self.munmap(new_va, new_size);
-                remap_failed(watch);
-                return Err(e);
-            }
+        // Linux moves the source PTEs, including clean read-only, swap and
+        // marker leaves. No user virtual address is read or written here.
+        let move_len = core::cmp::min(old_size, new_size);
+        if let Err(e) = move_pages(old.as_u64(), new_va.as_u64(), move_len) {
+            // The source has not been unmapped yet, so abandoning the
+            // destination leaves the caller's mapping exactly as it was.
+            let end = new_va.as_u64() + new_size as u64;
+            let _ = self.munmap_locked(&mut vmas, new_va, end);
+            remap_failed(watch);
+            return Err(e);
         }
-        let _ = self.munmap(old, old_size);
+        let old_end_va = old.as_u64() + old_size as u64;
+        let _ = self.munmap_locked(&mut vmas, old, old_end_va);
         // The move is complete before the monitor is told, and the monitor is
         // told before the caller returns: the mapping is never observable at
         // its new address by anyone the monitor has not yet heard about.
+        drop(vmas);
         self.remap_done(watch, old.as_u64(), new_va.as_u64(), old_size as u64);
         Ok(new_va)
     }
@@ -271,7 +296,7 @@ mod tests {
     use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
     use crate::uffd::{UffdContext, UffdEvent, UffdEventKind, UffdFaultKind};
-    use crate::vma::VmaBacking;
+    use crate::vma::{VmaBacking, VmaProt};
 
     const REGION: u64 = 0x1_0000;
     const LEN: u64 = 4 * hal::PAGE_SIZE_BYTES;

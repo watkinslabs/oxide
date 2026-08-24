@@ -7,7 +7,7 @@ use crate::ctrl::range::{check_range, round_to_range, validate};
 use crate::uapi::ctrl_ids as cid;
 use crate::uapi::ioctl::*;
 use crate::uapi::layout as l;
-use crate::usermem::{r32, r32i, r64i, w32, w32i, w64i};
+use crate::usermem::{r32, r32i, r64i, w32, w32i, w64, w64i};
 
 #[test]
 fn snapping_rounds_to_nearest_then_clamps_then_truncates_to_the_grid() {
@@ -125,7 +125,9 @@ fn queryctrl_describes_a_control_and_ends_the_walk_with_einval() {
         }
         assert!(seen.len() < 64, "the walk must terminate");
     }
-    assert_eq!(seen.len(), rig.device.controls.descs().len());
+    let legacy_count = rig.device.controls.descs().iter()
+        .filter(|desc| desc.payload_size == 0).count();
+    assert_eq!(seen.len(), legacy_count);
     let mut sorted = seen.clone();
     sorted.sort_unstable();
     assert_eq!(seen, sorted, "the walk must be in id order");
@@ -256,6 +258,47 @@ fn an_extended_batch_is_all_or_nothing_and_names_the_failing_entry() {
     assert_eq!(r32(&arg, l::EXT_CTRLS_ERROR_IDX), 2);
     assert_eq!(rig.device.controls.value(cid::CID_BRIGHTNESS).unwrap(), 20);
     assert_eq!(rig.device.controls.value(cid::CID_CONTRAST).unwrap(), 30);
+}
+
+#[test]
+fn extended_controls_copy_string_and_compound_payloads_through_the_owner() {
+    let rig = Rig::new();
+    let ctx = FakeCtx::new(true);
+    const ARRAY: u64 = 0x5000_0000;
+    const STRING: u64 = 0x5000_0100;
+    const BYTES: u64 = 0x5000_0200;
+    ctx.user.place(STRING, b"camera\0xxxxxxxxxx".to_vec());
+    ctx.user.place(BYTES, alloc::vec![9, 8, 7, 6]);
+    let mut controls = alloc::vec![0u8; l::EXT_CONTROL_SIZE * 2];
+    w32(&mut controls, l::EXT_CTRL_ID, super::harness::PAYLOAD_STRING_ID);
+    w32(&mut controls, l::EXT_CTRL_SIZE_FIELD, 16);
+    w64(&mut controls, l::EXT_CTRL_VALUE, STRING);
+    let second = &mut controls[l::EXT_CONTROL_SIZE..];
+    w32(second, l::EXT_CTRL_ID, super::harness::PAYLOAD_ARRAY_ID);
+    w32(second, l::EXT_CTRL_SIZE_FIELD, 4);
+    w64(second, l::EXT_CTRL_VALUE, BYTES);
+    ctx.user.place(ARRAY, controls);
+    let mut arg = alloc::vec![0u8; l::EXT_CONTROLS_SIZE];
+    w32(&mut arg, l::EXT_CTRLS_WHICH, cid::CTRL_WHICH_CUR_VAL);
+    w32(&mut arg, l::EXT_CTRLS_COUNT, 2);
+    w64(&mut arg, l::EXT_CTRLS_CONTROLS, ARRAY);
+    rig.call(VIDIOC_S_EXT_CTRLS, &mut arg, &ctx).expect("payload set succeeds");
+    assert_eq!(rig.ops.payloads.lock().as_slice(), &[
+        (super::harness::PAYLOAD_STRING_ID, b"camera\0xxxxxxxx\0".to_vec()),
+        (super::harness::PAYLOAD_ARRAY_ID, alloc::vec![9, 8, 7, 6]),
+    ]);
+    let mut out = alloc::vec![0u8; l::EXT_CONTROL_SIZE * 2];
+    w32(&mut out, l::EXT_CTRL_ID, super::harness::PAYLOAD_STRING_ID);
+    w32(&mut out, l::EXT_CTRL_SIZE_FIELD, 16);
+    w64(&mut out, l::EXT_CTRL_VALUE, STRING);
+    let second = &mut out[l::EXT_CONTROL_SIZE..];
+    w32(second, l::EXT_CTRL_ID, super::harness::PAYLOAD_ARRAY_ID);
+    w32(second, l::EXT_CTRL_SIZE_FIELD, 4);
+    w64(second, l::EXT_CTRL_VALUE, BYTES);
+    ctx.user.place(ARRAY, out);
+    rig.call(VIDIOC_G_EXT_CTRLS, &mut arg, &ctx).expect("payload get succeeds");
+    assert_eq!(&ctx.user.peek(STRING, 7), b"camera\0");
+    assert_eq!(ctx.user.peek(BYTES, 4), alloc::vec![9, 8, 7, 6]);
 }
 
 #[test]

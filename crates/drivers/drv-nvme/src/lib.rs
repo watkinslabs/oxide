@@ -66,6 +66,7 @@ mod imp {
         irq:      IrqBinding,
         blk_size: u32,
         capacity: u64,
+        write_cache: bool,
         removed:  AtomicBool,
         poisoned: AtomicBool,
         resetting: AtomicBool,
@@ -172,6 +173,7 @@ mod imp {
         let nsid = nv.namespace_id();
         let blk_size = nv.blk_size;
         let capacity = nv.ns_blocks;
+        let write_cache = nv.write_cache;
 
         #[cfg(feature = "debug-boot")]
         {
@@ -187,6 +189,7 @@ mod imp {
             requests: Spinlock::new(request::Requests::new()),
             irq,
             blk_size, capacity,
+            write_cache,
             removed: AtomicBool::new(false),
             poisoned: AtomicBool::new(false),
             resetting: AtomicBool::new(false),

@@ -25,7 +25,25 @@ impl<S: SectorSource> Volume<S> {
         let root_attr = attrib::find(&attrs, ATTR_ROOT, &I30_NAME).cloned().ok_or(Errno::Enotdir)?;
         let root_data = self.attribute_bytes(&bytes, &attrs, &root_attr)?;
         let root = index::parse_root(&root_data).ok_or(Errno::Eio)?;
-        if root.header.has_subnodes() { return Err(Errno::Enospc); }
+        if root.header.has_subnodes() {
+            let idx = self.open_index(parent)?;
+            let mut ordered: Vec<Vec<u8>> = Vec::new();
+            self.collect_index_node(&idx, &idx.root_data, root.header_at, &root.header,
+                                    root.indexed_type, &mut ordered)?;
+            let mut removed = false;
+            let mut kept: Vec<Vec<u8>> = Vec::new();
+            for raw in ordered {
+                if !removed && entry::parse(&raw, 0, root.indexed_type)
+                    .and_then(|e| e.name().map(|n| n.units == units)).unwrap_or(false) {
+                    removed = true;
+                } else {
+                    kept.push(raw);
+                }
+            }
+            if !removed { return Err(Errno::Enoent); }
+            self.sort_index_entries_for_remove(&mut kept, root.indexed_type);
+            return self.rebuild_index_entries(parent, &idx.root_data, &root, kept);
+        }
 
         let existing = entry::entries(&root_data, root.header_at, &root.header, root.indexed_type);
         let mut ordered: Vec<Vec<u8>> = Vec::new();
@@ -59,5 +77,17 @@ impl<S: SectorSource> Volume<S> {
         data.extend_from_slice(head);
         data.extend_from_slice(&node);
         self.replace_index_root(parent, &data)
+    }
+
+    fn sort_index_entries_for_remove(&self, entries: &mut [Vec<u8>], indexed_type: u32) {
+        entries.sort_by(|a, b| {
+            let aa = entry::parse(a, 0, indexed_type).and_then(|e| e.name().cloned());
+            let bb = entry::parse(b, 0, indexed_type).and_then(|e| e.name().cloned());
+            match (aa, bb) {
+                (Some(a), Some(b)) => crate::upcase::compare(&a.units, &b.units,
+                                                             &self.upcase, false),
+                _ => core::cmp::Ordering::Equal,
+            }
+        });
     }
 }

@@ -69,6 +69,8 @@ pub struct Nvme {
     /// Selected namespace geometry harvested at IDENTIFY.
     pub ns_blocks: u64,
     pub blk_size:  u32,
+    /// Identify Controller VWC bit: acknowledged writes may be volatile.
+    pub write_cache: bool,
     /// Identify Controller ACL plus one. The serialized timeout worker never
     /// submits more than this number of Admin Abort commands concurrently.
     abort_limit: u16,
@@ -232,7 +234,7 @@ impl Nvme {
 
         let mut nv = Nvme {
             bdf, dma_mask, mmio, bar0_va, admin, io, admin_data_pa: admin_data, admin_data_dma,
-            nsid: 0, ns_blocks: 0, blk_size: 512, abort_limit: 1,
+            nsid: 0, ns_blocks: 0, blk_size: 512, write_cache: false, abort_limit: 1,
         };
         let to_ms = regs::cap_to_ms(cap).max(2_000);
 

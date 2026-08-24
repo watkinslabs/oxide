@@ -21,6 +21,26 @@ use crate::volume::Volume;
 
 use super::count::Counting;
 
+#[test]
+fn compressed_readahead_respects_the_low_memory_mount_mode() {
+    assert!(!crate::volume::readahead::data::compressed_readahead_allowed(
+        crate::opts::MemoryMode::Low, None));
+}
+
+#[test]
+fn compressed_readahead_stops_below_the_pmm_low_watermark() {
+    assert!(!crate::volume::readahead::data::compressed_readahead_allowed(
+        crate::opts::MemoryMode::Normal, Some((99, 100))));
+    assert!(crate::volume::readahead::data::compressed_readahead_allowed(
+        crate::opts::MemoryMode::Normal, Some((100, 100))));
+}
+
+#[test]
+fn missing_hosted_pmm_keeps_normal_readahead_advisory() {
+    assert!(crate::volume::readahead::data::compressed_readahead_allowed(
+        crate::opts::MemoryMode::Normal, None));
+}
+
 const FILE_INO: u32 = 9;
 /// First block of the main area in the fixture geometry.
 const MAIN: u32 = test_image::MAIN_BLKADDR;
@@ -66,6 +86,20 @@ fn a_sequential_read_is_one_request_for_the_whole_run() {
     assert_eq!(got.len(), (n * BLKSIZE as u64) as usize);
     assert_eq!(v.source_ref().reqs_in(first, n as u32),
                vec![(u64::from(first), n as usize)]);
+}
+
+#[test]
+fn a_sequential_read_obeys_the_io_merge_boundary() {
+    let n = 8u64;
+    let mut v = vol_with(&(0..n).collect::<Vec<_>>(), n * BLKSIZE as u64);
+    v.set_max_io_bytes((2 * BLKSIZE) as u32);
+    let first = addr_of(&v, 0);
+    let inode = v.read_inode(FILE_INO).unwrap();
+    v.source_ref().clear();
+    v.read_whole(&inode, FILE_INO).unwrap();
+    assert_eq!(v.source_ref().reqs_in(first, n as u32),
+               vec![(u64::from(first), 2), (u64::from(first) + 2, 2),
+                    (u64::from(first) + 4, 2), (u64::from(first) + 6, 2)]);
 }
 
 /// The bytes a merged read returns are the file's bytes, in order.
@@ -238,6 +272,22 @@ fn a_metadata_window_is_one_request() {
     v.source_ref().clear();
     assert_eq!(v.ra_meta_pages(start, 4, RaMeta::Cp), 4);
     assert_eq!(v.source_ref().reqs_in(start, 4), vec![]);
+}
+
+/// Recovery's main-area window is filed in the same metadata owner as its
+/// demand reads, so the chain walk can consume it without another transfer.
+/// # C: O(1)
+#[test]
+fn a_recovery_window_holds_main_nodes_for_the_chain_walk() {
+    let v = vol_with(&[0], BLKSIZE as u64);
+    v.source_ref().clear();
+    assert_eq!(v.ra_meta_pages(MAIN, 4, RaMeta::Por), 4);
+    assert_eq!(v.source_ref().reqs_in(MAIN, 4), vec![(u64::from(MAIN), 4)]);
+    assert!(v.meta_cache.load_por(MAIN).is_some());
+
+    v.source_ref().clear();
+    assert_eq!(v.ra_meta_pages(MAIN, 4, RaMeta::Por), 4);
+    assert_eq!(v.source_ref().reqs_in(MAIN, 4), vec![]);
 }
 
 /// A metadata window stops at the first index its kind may not reach, and

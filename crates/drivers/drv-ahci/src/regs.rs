@@ -276,6 +276,12 @@ pub fn identify_sector_size(words: &[u16]) -> u32 {
     512
 }
 
+/// Whether ATA IDENTIFY reports its volatile write cache enabled (word 85,
+/// WCE). # C: O(1)
+pub fn identify_write_cache(words: &[u16]) -> bool {
+    words.get(85).is_some_and(|word| word & (1 << 5) != 0)
+}
+
 /// Decode the ATA IDENTIFY DEVICE serial field (words 10..19). ATA strings
 /// store each two-byte word with characters in high-byte, low-byte order even
 /// though the word itself is little-endian in memory. Leading/trailing space
@@ -475,6 +481,14 @@ mod tests {
         w[106] = (1 << 14) | (1 << 12);
         w[117] = 2048; w[118] = 0; // 2048 words = 4096 bytes
         assert_eq!(identify_sector_size(&w), 4096);
+    }
+
+    #[test]
+    fn identify_write_cache_follows_wce() {
+        let mut w = [0u16; 256];
+        assert!(!identify_write_cache(&w));
+        w[85] = 1 << 5;
+        assert!(identify_write_cache(&w));
     }
 
     #[test]

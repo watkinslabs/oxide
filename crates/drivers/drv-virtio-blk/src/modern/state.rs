@@ -76,6 +76,13 @@ pub(super) fn wake_all_blk_waiters() {
 #[cfg(target_os = "oxide-kernel")]
 pub fn wake_completions() {
     note_completion_interrupt();
+    // The interrupt is the completion notification for both wait conditions:
+    // it may finish the synchronous owner, or retire an asynchronous request
+    // that frees the engine turn. Wake both classes in hard-IRQ context; each
+    // waiter rechecks its predicate, while the block softirq still owns
+    // used-ring retirement and completion callbacks.
+    BLK_COMPL.wake_all();
+    BLK_TURN.wake_one();
     block::completion::raise();
 }
 
@@ -168,6 +175,7 @@ fn can_sleep() -> bool {
 /// cannot strand the waiter past the I/O deadline. # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
 #[inline]
+#[track_caller]
 pub(super) fn park_blk_checked(list: &WaitList, deadline_ns: u64, done: impl FnMut() -> bool) {
     if can_sleep() {
         // SAFETY: process context (can_sleep() ruled out IRQ-stack/idle), no
@@ -266,6 +274,27 @@ pub(super) const STATUS_OFF: usize = HDR_OFF + VIRTIO_BLK_REQUEST_HEADER_BYTES;
 /// overlap a device data transfer.
 pub(super) const DATA_OFF: usize = hal::PAGE_SIZE_BYTES as usize;
 pub(super) const BOUNCE_BYTES: usize = DATA_OFF + blk::BOUNCE_DATA_BYTES;
+
+/// Publish one request's CPU-written bounce allocation to the device before a
+/// descriptor names it.  The x86 DMA contract is coherent; ARM still needs
+/// the explicit clean that Linux's dma_map_single() performs for a
+/// non-coherent device.
+#[inline]
+pub(super) fn clean_bounce_for_device(h: u64, bounce_pa: u64) {
+    virtio::dma::clean_to_device(h.wrapping_add(bounce_pa), BOUNCE_BYTES);
+}
+
+/// Publish the descriptor and driver areas after writing a chain and its
+/// avail entry.  The device owns these frames once avail.idx is visible.
+#[inline]
+pub(super) fn clean_queue_submission(h: u64, q: &BlkQueue) {
+    virtio::dma::clean_to_device(
+        h.wrapping_add(q.res.desc_pa), hal::PAGE_SIZE_BYTES as usize,
+    );
+    virtio::dma::clean_to_device(
+        h.wrapping_add(q.res.driver_pa), hal::PAGE_SIZE_BYTES as usize,
+    );
+}
 
 /// Smallest PMM buddy order that contains `bytes`, derived instead of tied to
 /// a specific 4 KiB-page machine or a handwritten allocation size.

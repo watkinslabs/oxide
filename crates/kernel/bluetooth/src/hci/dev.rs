@@ -15,6 +15,7 @@ use crate::uapi::hci::{DEV_CLASS_LEN, HCI_MAX_NAME_LENGTH};
 use crate::uapi::hci_sock::{HCI_INIT, HCI_RAW, HCI_RUNNING, HCI_UP};
 use super::cmd::CmdQueue;
 use super::conn::ConnList;
+use crate::l2cap::L2capRegistry;
 
 /// Counters a controller reports through the device-info ioctl.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
@@ -148,6 +149,9 @@ pub struct HciDevState {
     pub local_name: Vec<u8>,
     pub cmd: CmdQueue,
     pub conns: ConnList,
+    /// L2CAP ownership is per HCI connection, not global: handles are only
+    /// unique within a controller.
+    pub l2cap: L2capRegistry,
     pub stats: DevStats,
 }
 
@@ -157,7 +161,7 @@ impl HciDevState {
         HciDevState {
             index, bus, bdaddr: BDADDR_ANY, flags: 0, info: LocalInfo::default(),
             buffers: BufferSizes::default(), class: [0; DEV_CLASS_LEN],
-            local_name: Vec::new(), cmd: CmdQueue::new(), conns: ConnList::new(),
+            local_name: Vec::new(), cmd: CmdQueue::new(), conns: ConnList::new(), l2cap: L2capRegistry::default(),
             stats: DevStats::default(),
         }
     }
@@ -206,6 +210,7 @@ impl HciDevState {
     /// requires: the links no longer exist and the queued commands name a state
     /// the controller has forgotten. # C: O(n)
     pub fn tear_down(&mut self) {
+        self.l2cap.clear();
         self.conns.clear();
         self.cmd.flush();
         self.set_flag(HCI_UP, false);

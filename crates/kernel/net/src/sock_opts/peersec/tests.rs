@@ -44,7 +44,8 @@ fn context(label: u32) -> Result<Vec<u8>, syscall::errno::Errno> {
 }
 
 fn ops() -> security::network::SocketLabelOps {
-    security::network::SocketLabelOps { create, unlabeled: UNLABELED, context, server_end }
+    security::network::SocketLabelOps { create, create_netlink: |_| UNLABELED,
+        unlabeled: UNLABELED, context, server_end }
 }
 
 /// The labelling module is ONE process-wide slot and socket creation reads it,

@@ -212,6 +212,13 @@ pub trait PtWalker {
     /// # C: O(1)
     fn can_split_kernel_leaf() -> bool;
 
+    /// Whether a live user leaf may be re-granularised under the address
+    /// space page-table lock. Architectures currently share the same
+    /// break-before-make capability for kernel and user leaves, but the
+    /// contracts remain explicit so a future architecture cannot accidentally
+    /// reuse the direct-map policy.
+    fn can_split_user_leaf() -> bool { Self::can_split_kernel_leaf() }
+
     /// Derive one child of a split block leaf. `child_level` is `2` for a
     /// 2 MiB child and `3` for a 4 KiB child; `child_pa` is that child's output
     /// address, aligned to the child's span. Every attribute of `block` carries

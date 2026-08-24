@@ -343,7 +343,7 @@ impl NetStack {
         header[10..12].copy_from_slice(&checksum.to_be_bytes());
         packet.proto = crate::addr::eth_p::IPV4;
         packet.iface = Some(iface);
-        if !crate::netfilter_hook::nf_output(&packet, crate::netfilter_hook::NFPROTO_IPV4) { return Ok(()); }
+        if !crate::netfilter_hook::nf_output(&mut packet, crate::netfilter_hook::NFPROTO_IPV4) { return Ok(()); }
         dev.xmit(packet)
     }
     /// Join an IPv4 multicast group and emit a state-change report. # C: O(N groups + routes)

@@ -77,7 +77,8 @@ pub fn dispatch_mount(source: Option<&str>, fstype: &str, target: &str, target_d
         // rejected on its own merits and the errno does not leak whether the
         // caller would have been allowed to mount.
         let sb_flags = ms_flags & vfs::fs::SB_FLAGS_USER_MASK;
-        let mut fc = vfs::fs::FsContext::for_mount(ty.clone() as Arc<dyn vfs::FileSystemType>, sb_flags);
+        let mut fc = vfs::fs::FsContext::for_mount_with_cred(
+            ty.clone() as Arc<dyn vfs::FileSystemType>, sb_flags, sched::cred::current_vfs_cred());
         fc.set_mount_target(target);
         if let Some(name) = source {
             if let Err(e) = vfs::fs::vfs_parse_fs_string(&mut fc, "source", name) {

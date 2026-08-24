@@ -16,11 +16,35 @@ use crate::stats::iostat::Io;
 
 use super::Volume;
 
+const SECTOR_BYTES: u64 = 512;
+
 #[cfg(test)]
 #[path = "../tests/iostatwire.rs"]
 mod tests;
 
 impl<S: SectorSource> Volume<S> {
+    /// Record one successful physical write for the durable lifetime report.
+    /// # C: O(1)
+    pub(crate) fn record_physical_write(&self, bytes: usize) {
+        let sectors = (bytes as u64) / SECTOR_BYTES;
+        self.sectors_written_since_cp.set(
+            self.sectors_written_since_cp.get().saturating_add(sectors));
+    }
+
+    /// Current lifetime writes, including sectors since the last checkpoint.
+    /// # C: O(1)
+    pub fn lifetime_write_kbytes(&self) -> u64 {
+        self.lifetime_write_kbytes.saturating_add(
+            self.sectors_written_since_cp.get() >> 1)
+    }
+
+    /// Fold this mount's physical writes into the durable lifetime total.
+    /// # C: O(1)
+    pub(crate) fn checkpoint_lifetime_write_kbytes(&mut self) {
+        self.lifetime_write_kbytes = self.lifetime_write_kbytes.saturating_add(
+            self.sectors_written_since_cp.replace(0) >> 1);
+    }
+
     /// Record one request of `kind` carrying `bytes`.
     ///
     /// `compressed` adds the compressed twin of the kind where one exists, so

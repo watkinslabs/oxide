@@ -12,6 +12,40 @@ fn a_volume_mounts_and_reports_its_layout() {
                RESERVED + FATS * FAT_SECTORS + ROOT_ENTRIES * dirent::ENTRY_BYTES / SECTOR);
 }
 
+/// `dos1xfloppy` supplies the reference's geometry only after the normal BPB
+/// has failed, and only when the source reports an exact floppy capacity.
+#[test]
+fn dos1xfloppy_mounts_a_bootstrap_only_floppy() {
+    let image = sectors::MemImage::new(SECTOR as u32, 320);
+    image.poke(0, &[0xeb, 0x00, 0x90]);
+    let mut opts = crate::opts::Options::vfat();
+    opts.dos1xfloppy = true;
+    let v = Volume::mount_with(image, opts).expect("DOS 1.x fallback");
+    assert_eq!(v.geometry().sector_size, 512);
+    assert_eq!(v.geometry().sec_per_clus, 1);
+    assert_eq!(v.geometry().dir_entries, 64);
+    assert_eq!(v.geometry().fat_length, 1);
+    assert_eq!(v.geometry().total_clusters, 313);
+}
+
+/// Linux reports the same corrupt-chain EIO under every policy, but
+/// `errors=remount-ro` also gates later mutation while `continue` leaves the
+/// mount writable.
+#[test]
+fn errors_policy_controls_whether_corruption_remounts_read_only() {
+    for (policy, writable) in [(crate::opts::Errors::Continue, true),
+                               (crate::opts::Errors::RemountRo, false)] {
+        let (mut img, _) = populated();
+        img.put_fat(2, 0); // DATA.BIN's chain is now free at its first cluster.
+        let mut opts = crate::opts::Options::vfat();
+        opts.errors = policy;
+        let v = Volume::mount_with(img.image(true), opts).expect("mount");
+        let hit = v.lookup("DATA.BIN").expect("directory still readable");
+        assert_eq!(v.read_whole(&hit.entry).err(), Some(Errno::Eio));
+        assert_eq!(v.writable(), writable, "policy {policy:?}");
+    }
+}
+
 /// The root lists its files, hides the volume label, and carries long names
 /// where the image wrote them.
 #[test]
@@ -180,4 +214,3 @@ fn the_fixed_root_is_read_as_a_region_not_a_chain() {
                Some(crate::chain::Link::End));
     assert!(!v.read_root().unwrap().is_empty());
 }
-

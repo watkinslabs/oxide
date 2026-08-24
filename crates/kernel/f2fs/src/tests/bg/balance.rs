@@ -89,7 +89,7 @@ fn a_fresh_volume_has_room_and_the_balance_does_nothing() {
     v.load_segments().unwrap();
     assert!(v.has_enough_free_secs(0, 0));
     let before = v.checkpoint().version;
-    v.balance_fs(true).unwrap();
+    v.balance_fs(true, false).unwrap();
     assert_eq!(v.checkpoint().version, before, "no checkpoint was needed");
 }
 
@@ -125,7 +125,7 @@ fn a_volume_holding_prefree_segments_is_checkpointed_by_the_background_pass() {
     let held = v.prefree_count();
     if held == 0 { return; }
     let before = v.checkpoint().version;
-    v.balance_fs_bg(true).unwrap();
+    v.balance_fs_bg(true, false).unwrap();
     assert!(v.checkpoint().version > before, "the held space was retired");
     assert_eq!(v.prefree_count(), 0);
 }
@@ -152,6 +152,6 @@ fn utilization_is_the_share_of_the_volume_in_use() {
 #[test]
 fn a_read_only_mount_neither_cleans_nor_checkpoints() {
     let mut v = test_image::with_root().mount().unwrap();
-    v.balance_fs(true).unwrap();
-    v.balance_fs_bg(true).unwrap();
+    v.balance_fs(true, false).unwrap();
+    v.balance_fs_bg(true, false).unwrap();
 }

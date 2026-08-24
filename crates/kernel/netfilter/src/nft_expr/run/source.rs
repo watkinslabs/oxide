@@ -127,9 +127,11 @@ pub fn osf(ctx: &EvalCtx, regs: &mut Regs, dreg: u32, ttl: u8, flags: u32) -> Op
     let Some(thoff) = transport_offset(ctx) else { return BREAK };
     let Some(tcp) = ctx.pkt.get(thoff..thoff + TCP_MIN_HDR) else { return BREAK };
     if tcp[13] & TCP_FLAG_SYN == 0 || tcp[13] & TCP_FLAG_ACK != 0 { return BREAK; }
-    let Some(prints) = ctx.osf else { return BREAK };
     let mut genre = [0u8; NFT_OSF_MAXGENRELEN];
-    if !prints.genre(ttl, flags & NFT_OSF_F_VERSION != 0, &mut genre) { return BREAK; }
+    if ctx.osf.is_none_or(|prints|
+        !prints.genre(ttl, flags & NFT_OSF_F_VERSION != 0, &mut genre)) {
+        genre[..7].copy_from_slice(b"unknown");
+    }
     stored(regs.store(dreg, &genre))
 }
 

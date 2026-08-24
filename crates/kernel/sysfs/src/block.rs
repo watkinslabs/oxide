@@ -133,6 +133,7 @@ const QUEUE_ATTR_LIST: &[Attribute] = &[
     Attribute { name: "discard_max_bytes", mode: RW_PERM },
     Attribute { name: "discard_granularity", mode: RO_PERM },
     Attribute { name: "stable_writes", mode: RO_PERM },
+    Attribute { name: "write_cache", mode: RW_PERM },
 ];
 static QUEUE_GROUP: AttrGroup = AttrGroup { attrs: QUEUE_ATTR_LIST };
 
@@ -183,11 +184,28 @@ struct QueueKobj { name: String }
 impl SysfsOps for QueueKobj {
     fn show(&self, attr: &str) -> KResult<Vec<u8>> {
         QUEUE_GROUP.find(attr).ok_or(VfsError::Enoent)?;
+        if attr == "write_cache" {
+            let mode = block::registry::write_cache(&self.name).map_err(|_| VfsError::Enodev)?;
+            return Ok(if mode { b"write back\n".to_vec() } else { b"write through\n".to_vec() });
+        }
         let limits = block::registry::queue_limits(&self.name).map_err(|_| VfsError::Einval)?;
         let value = limits.sysfs_value(attr).ok_or(VfsError::Enoent)?;
         Ok(alloc::format!("{}\n", value).into_bytes())
     }
     fn store(&self, attr: &str, buf: &[u8]) -> KResult<usize> {
+        if attr == "write_cache" {
+            let text = core::str::from_utf8(buf).map_err(|_| VfsError::Einval)?.trim();
+            let write_back = match text {
+                "write back" => true,
+                "write through" | "none" => false,
+                _ => return Err(VfsError::Einval),
+            };
+            block::registry::set_write_cache(&self.name, write_back).map_err(|error| match error {
+                block::BlockError::Eopnotsupp => VfsError::Eopnotsupp,
+                _ => VfsError::Einval,
+            })?;
+            return Ok(buf.len());
+        }
         if attr != "discard_max_bytes" { return Err(VfsError::Erofs); }
         let bytes = core::str::from_utf8(buf).ok().and_then(|text| text.trim().parse::<u64>().ok()).ok_or(VfsError::Einval)?;
         block::registry::set_discard_max_bytes(&self.name, bytes).map_err(|_| VfsError::Einval)?;

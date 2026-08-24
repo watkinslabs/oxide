@@ -29,7 +29,7 @@ pub fn icr_lo_init_deassert() -> u32 { build_icr_lo(0, 0b101, false, true) }
 
 /// Startup IPI carrying the real-mode trampoline page. # C: O(1)
 pub fn icr_lo_sipi(startup_page: u8) -> u32 {
-    build_icr_lo(startup_page, 0b110, true, false)
+    build_icr_lo(startup_page, 0b110, false, false)
 }
 
 #[cfg(test)]
@@ -58,8 +58,8 @@ mod tests {
 
     #[test]
     fn sipi_value_carries_the_startup_page() {
-        assert_eq!(icr_lo_sipi(0x08), 0x4608);
-        assert_eq!(icr_lo_sipi(0), 0x4600);
+        assert_eq!(icr_lo_sipi(0x08), 0x0608);
+        assert_eq!(icr_lo_sipi(0), 0x0600);
     }
 
     #[test]

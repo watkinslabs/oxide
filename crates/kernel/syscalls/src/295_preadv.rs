@@ -4,6 +4,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
+use alloc::vec;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
@@ -91,13 +92,22 @@ fn do_preadv(args: &SyscallArgs, v2: bool) -> i64 {
     };
     let mut total: u64 = 0;
     for (base, len) in ranges {
-        // SAFETY: `import_iovec` proved [base, base+len) is a writable
-        // user range below USER_VA_END in the active address space.
-        let buf: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(base as *mut u8, len) };
-        let r = if eff.nowait { file.pread_nowait(buf, off as i64) } else { file.pread(buf, off as i64) };
+        // Keep the filesystem call entirely on kernel-owned storage. The
+        // user destination is faultable and must only be touched through
+        // `uaccess`, after the read has completed.
+        let mut bounce = vec![0u8; len];
+        let r = if eff.nowait {
+            file.pread_nowait(&mut bounce, off as i64)
+        } else {
+            file.pread(&mut bounce, off as i64)
+        };
         match r {
             Ok(0)                => break,                     // EOF
             Ok(n)                => {
+                if uaccess::copy_to_user(base, &bounce[..n]).is_err() {
+                    if total == 0 { let r = errno(Errno::Efault); cur.account_read_result(r); return r; }
+                    break;
+                }
                 total = total.saturating_add(n as u64);
                 off   = off.saturating_add(n as u64);
                 if n < len { break; }                          // short fill ends the walk

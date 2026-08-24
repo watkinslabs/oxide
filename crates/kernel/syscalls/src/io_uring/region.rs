@@ -1,19 +1,16 @@
 // One shared io_uring region: the physical memory behind a rings or SQEs
 // mapping, and its lifetime.
 //
-// A region is a CONTIGUOUS refcounted run of `2^order` pages, each carrying
-// one object reference for the region's whole life. Userspace maps it as a
-// `VmaBacking::KernelFrame`, whose fault path resolves the page at VMA offset
-// `O` to `base_pa + O` and takes one reference per installed PTE; munmap and
-// address-space teardown drop those. A page therefore dies only once BOTH the
-// ring released its object reference AND every user mapping is gone.
+// A region is a refcounted vector of pages, each carrying one object reference
+// for the region's whole life. Userspace maps it as a
+// `VmaBacking::KernelPages`, whose fault path selects the page at VMA offset
+// `O` and takes one reference per installed PTE; munmap and address-space
+// teardown drop those. A page therefore dies only once BOTH the ring released
+// its object reference AND every user mapping is gone.
 //
 // It is never a `PhysRange`: that arm installs the PTE with no refcount and no
 // mapcount, so closing the ring fd would free a page userspace still maps —
 // the free-while-mapped UAF this file's shape exists to prevent.
-//
-// One buddy run rather than a page vector: `KernelFrame` has no page-vector
-// form, so the order rounding is dead space (`scratch/known_issues.md`).
 //
 // A ring built `IORING_SETUP_NO_MMAP` does not own its memory at all — the
 // CALLER supplied it, and it is whatever physical pages backed the caller's
@@ -22,10 +19,11 @@
 // into it resolves one page at a time. Nothing else changes, because no ring
 // object straddles a page (`io_uring_abi::user_ring::spans_one_page`).
 
+use alloc::sync::Arc;
 use syscall::errno::Errno;
 
 use crate::io_uring_abi::acct::{Charge, Ledgers, RingAcct};
-use crate::io_uring_abi::layout::region_plan;
+use crate::io_uring_abi::layout::{region_plan, region_plan_limited, MAX_REGION_PAGES};
 
 use super::pin::PinnedRange;
 
@@ -33,11 +31,7 @@ use super::pin::PinnedRange;
 pub struct Region {
     /// First page of the run; the PA userspace maps at VMA offset zero. Zero
     /// for a caller-supplied region, which is never mapped from the ring.
-    pub base_pa: u64,
-    /// Direct-map alias the kernel reads and writes a kernel run through.
-    kva: u64,
-    /// Buddy order of the run. Zero for a caller-supplied region.
-    order: u8,
+    pages: Option<Arc<[u64]>>,
     /// Page-aligned bytes userspace may map — the region's real size. The
     /// pages the order rounding adds past this are never exposed.
     pub map_bytes: u64,
@@ -61,18 +55,35 @@ impl Region {
     /// (`scratch/known_issues.md`), and charging a user for it would make the
     /// ceiling depend on an allocator detail. # C: O(2^order)
     pub fn alloc(bytes: u32, acct: RingAcct) -> Option<Self> {
+        Self::alloc_limited(bytes as u64, acct, MAX_REGION_PAGES)
+    }
+
+    /// Allocate a page-vector region using the limit belonging to its ABI
+    /// owner. The MEM_REGION descriptor has Linux's INT_MAX-page ceiling,
+    /// unlike the bounded setup geometry.
+    pub fn alloc_limited(bytes: u64, acct: RingAcct, max_pages: u64) -> Option<Self> {
         let page = hal::PAGE_SIZE_BYTES;
-        let plan = region_plan(bytes, page).ok()?;
+        let plan = region_plan_limited(bytes, page, max_pages).ok()?;
         let charge = super::acct::charge_bytes(acct, plan.map_bytes).ok()?;
-        let base_pa = pmm::setup::alloc_contig_object(pmm::Order(plan.order))?;
-        let kva = base_pa + pmm::user_as::hhdm_offset();
-        for i in 0..(1u64 << plan.order) {
-            let va = kva + i * page;
+        let mut pages = alloc::vec::Vec::new();
+        pages.try_reserve_exact(plan.pages as usize).ok()?;
+        for _ in 0..plan.pages {
+            let pa = match pmm::setup::alloc_object_frame() {
+                Some(pa) => pa,
+                None => {
+                    for pa in pages.drain(..) {
+                        unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(pa); }
+                    }
+                    return None;
+                }
+            };
+            pages.push(pa);
+            let va = pa + pmm::user_as::hhdm_offset();
             hal::zerotrap::trap(va as *const u8, page as usize);
             // SAFETY: HHDM alias of a run this call just allocated, not yet published to another CPU or to userspace.
             unsafe { core::ptr::write_bytes(va as *mut u8, 0, page as usize); }
         }
-        Some(Self { base_pa, kva, order: plan.order, map_bytes: plan.map_bytes, user: None, _charge: charge })
+        Some(Self { pages: Some(Arc::from(pages)), map_bytes: plan.map_bytes, user: None, _charge: charge })
     }
 
     /// Adopt `bytes` of the caller's memory at `base` as this region, pinning
@@ -92,7 +103,7 @@ impl Region {
         let zero = alloc::vec![0u8; page as usize];
         let mut off = 0;
         while off < plan.map_bytes { user.write_at(off, &zero)?; off += page; }
-        Ok(Self { base_pa: 0, kva: 0, order: 0, map_bytes: plan.map_bytes, user: Some(user), _charge: Charge::none() })
+        Ok(Self { pages: None, map_bytes: plan.map_bytes, user: Some(user), _charge: Charge::none() })
     }
 
     /// Direct-map address of `off` bytes into the region. Callers bound `off`
@@ -101,7 +112,13 @@ impl Region {
     /// of a caller-supplied region a plain address. # C: O(1)
     pub fn at(&self, off: u64) -> u64 {
         match &self.user {
-            None => self.kva + off,
+            None => {
+                let pages = self.pages.as_ref().expect("kernel region pages");
+                let index = (off / hal::PAGE_SIZE_BYTES) as usize;
+                let in_page = off % hal::PAGE_SIZE_BYTES;
+                pages.get(index).copied().unwrap_or(0)
+                    + pmm::user_as::hhdm_offset() + in_page
+            }
             // The offset was bounded by the geometry that sized this region,
             // so a miss here cannot happen; answering with the region's first
             // byte keeps a bug from becoming a wild pointer.
@@ -113,9 +130,8 @@ impl Region {
     /// or `None` for a caller-supplied region — those pages are already in the
     /// caller's address space, and a second mapping of them would put two
     /// independent reference schemes on one frame. # C: O(1)
-    pub fn mmap_backing(&self) -> Option<(u64, u64)> {
-        if self.user.is_some() { return None; }
-        Some((self.base_pa, self.map_bytes))
+    pub fn mmap_backing(&self) -> Option<Arc<[u64]>> {
+        self.pages.clone()
     }
 }
 
@@ -127,9 +143,9 @@ impl Drop for Region {
         // A caller-supplied region owns no run; its pages are released by the
         // pinned range this struct holds.
         if self.user.is_some() { return; }
-        for i in 0..(1u64 << self.order) {
+        if let Some(pages) = &self.pages { for &pa in pages.iter() {
             // SAFETY: base_pa came from alloc_contig_object, which seeds exactly one object reference per page in the run; this releases that one reference.
-            unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(self.base_pa + i * hal::PAGE_SIZE_BYTES); }
-        }
+            unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(pa); }
+        }}
     }
 }

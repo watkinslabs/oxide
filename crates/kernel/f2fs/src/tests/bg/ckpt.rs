@@ -68,5 +68,15 @@ fn a_request_during_a_write_leaves_the_thread_asked_for() {
 /// The thread's own scheduling starts where the reference starts it.
 #[test]
 fn the_thread_starts_at_the_middle_of_the_ordinary_class() {
-    assert_eq!(CkptControl::new().ioprio, IoPrio { class: IoClass::BestEffort, level: 3 });
+    assert_eq!(CkptControl::new().ioprio, IoPrio { class: IoClass::RealTime, level: 3 });
+}
+
+#[test]
+fn the_thread_priority_uses_linux_sysfs_spelling_and_bounds() {
+    assert_eq!(IoPrio::parse(b"rt,3").unwrap(),
+               IoPrio { class: IoClass::RealTime, level: 3 });
+    assert_eq!(IoPrio::parse(b"be,7\n").unwrap(),
+               IoPrio { class: IoClass::BestEffort, level: 7 });
+    assert!(IoPrio::parse(b"rt,8").is_err());
+    assert!(IoPrio::parse(b"idle,3").is_err());
 }

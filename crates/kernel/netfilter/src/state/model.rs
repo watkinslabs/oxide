@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::nft_expr::{Expr, ExprStates};
+use crate::nft_expr::{Expr, ExprStates, ObjectState};
 
 #[derive(Clone, Debug)]
 pub struct NftTable {
@@ -42,6 +42,7 @@ pub struct NftSet {
     pub data_type: u32,
     pub data_len: u32,
     pub flags: u32,
+    pub obj_type: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -51,6 +52,7 @@ pub struct NftSetElem {
     pub set_name: String,
     pub key: Vec<u8>,
     pub data: Vec<u8>,
+    pub objref: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -60,6 +62,16 @@ pub struct NftObject {
     pub name: String,
     pub ty: u32,
     pub data: Vec<u8>,
+    pub state: Arc<ObjectState>,
+}
+
+impl NftObject {
+    /// Create one object with its persistent evaluator state. # C: O(len(data))
+    pub fn new(table_family: u8, table_name: String, name: String, ty: u32,
+               data: Vec<u8>) -> Self {
+        let state = Arc::new(ObjectState::from_wire(ty, &data));
+        Self { table_family, table_name, name, ty, data, state }
+    }
 }
 
 /// Canonical nftables control-plane state. Netlink serializes mutations here,

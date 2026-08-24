@@ -466,6 +466,21 @@ impl TxJob {
                 }
             }
             TxPayload::Raw { frame, origin: _origin } => {
+                // Netdev-family egress chains see the completed link frame,
+                // immediately before device ownership. A stolen verdict has
+                // already handed the frame to its selected device.
+                let mut netdev_packet = crate::Pkt::from_owned(frame.clone());
+                if frame.len() >= crate::ethernet::ETH_HDR_LEN {
+                    if let Ok(header) = crate::ethernet::EthHdr::parse(&frame) {
+                        netdev_packet.proto = header.ethertype;
+                    }
+                }
+                netdev_packet.iface = Some(lease.iface());
+                let netdev = crate::netfilter_hook::nf_hook_packet_in(
+                    lease.net_ns(), crate::netfilter_hook::NF_NETDEV_EGRESS,
+                    &mut netdev_packet, crate::netfilter_hook::NFPROTO_NETDEV,
+                    None, 0);
+                if !netdev.accepted() { return Ok(()); }
                 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
                 {
                     crate::sock::deliver_packet_egress_in(&lease, &frame,

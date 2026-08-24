@@ -232,6 +232,11 @@ pub unsafe fn exit_to_user_mode_loop(regs: *mut UserRegs, syscall_rv: Option<i64
     // with an LDTR older than its own address space. The gate is a relaxed
     // load of a global no system sets unless something called `modify_ldt`.
     if vmm::any_ldt_in_use() { reload_ldt_if_stale(); }
+    // Linux `arch_exit_to_user_mode_prepare` publishes the incoming task's
+    // I/O bitmap at the user-return boundary, after all kernel-only work.
+    if let Some(current) = sched::live::current() {
+        sched::ioport::arch::update(current);
+    }
     match arch_retval {
         Some(v) => v,
         None => syscall::restart::normalize_user_return(rv) as u64,

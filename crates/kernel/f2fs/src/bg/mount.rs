@@ -81,11 +81,36 @@ impl F2fs {
             v.has_enough_free_secs(0, 0)
         };
         if !enough && self.options().gc_merge && run::delegate_gc(self) { return Ok(()); }
-        self.volume_now().balance_fs(need).map_err(errno_to_vfs)
+        self.volume_now().balance_fs(need, true).map_err(errno_to_vfs)
     }
 
     /// Whether this mount asked for its checkpoints to be merged. # C: O(1)
     pub fn merges_checkpoints(&self) -> bool { self.options().checkpoint_merge }
+
+    pub(crate) fn flush_members(&self, mask: u64) -> Result<(), syscall::errno::Errno> {
+        self.volume_now().flush_members(mask)
+    }
+
+    #[cfg(not(target_os = "oxide-kernel"))]
+    pub(crate) fn merged_flush(&self, mask: u64) -> KResult<()> {
+        self.flush_members(mask).map_err(errno_to_vfs)
+    }
+
+    #[cfg(target_os = "oxide-kernel")]
+    pub(crate) fn merged_flush(&self, mask: u64) -> KResult<()> {
+        if !self.options().flush_merge {
+            self.flush_members(mask).map_err(errno_to_vfs)?;
+            return Ok(())
+        }
+        let bg = self.bg();
+        let seen = bg.enrol_flush(mask);
+        let deadline = timekeeper::monotonic_ns().saturating_add(5_000_000_000);
+        let _ = unsafe { sched::live::wait_event_uninterruptible_until(
+            &bg.waits.flush, deadline, timekeeper::monotonic_ns,
+            || bg.flush_served(seen) || bg.stopping()) };
+        if !bg.flush_served(seen) { return Err(vfs::VfsError::Eio); }
+        bg.flush_result().map_err(errno_to_vfs)
+    }
 
     /// Make everything durable, through the merge thread where the mount asked
     /// for one.

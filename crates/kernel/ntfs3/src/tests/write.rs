@@ -404,29 +404,57 @@ fn a_name_past_the_length_ceiling_is_refused_before_anything_is_written() {
 
 #[test]
 fn a_directory_fills_when_its_index_root_is_full() {
-    // The tree does not yet grow into `$INDEX_ALLOCATION`, so a directory
-    // holds what its resident root holds and then refuses. The refusal is
-    // ENOSPC and nothing is left half-created: the record the failed create
-    // claimed is released.
+    // Once the resident root fills, Linux moves its ordered entries into the
+    // first `$INDEX_ALLOCATION` buffer and keeps creating names there.
     let mut v = test_image::empty();
-    let mut made = 0usize;
-    loop {
-        let name = alloc::format!("f{made:03}");
-        match v.create_file(MFT_REC_ROOT, &name, now()) {
-            Ok(_) => made += 1,
-            Err(Errno::Enospc) => break,
-            Err(other) => panic!("unexpected {other:?}"),
-        }
-        assert!(made < 1000, "the root never filled");
-    }
-    assert!(made > 0, "the root took no names at all");
-    assert_eq!(names(&v).len(), made);
-    // Every name that WAS taken is still findable, and the volume is
-    // consistent: nothing was left behind by the refusal.
+    let made = 30usize;
     for i in 0..made {
-        assert!(v.find_entry(MFT_REC_ROOT, &alloc::format!("f{i:03}")).is_ok());
+        v.create_file(MFT_REC_ROOT, &alloc::format!("long-directory-entry-{i:03}"), now())
+            .unwrap_or_else(|e| panic!("create {i}: {e:?}"));
     }
-    let free_before = v.space().records_free;
-    assert_eq!(v.create_file(MFT_REC_ROOT, "one-more", now()).unwrap_err(), Errno::Enospc);
-    assert_eq!(v.space().records_free, free_before, "the failed create leaked a record");
+    assert_eq!(names(&v).len(), made);
+    for i in 0..made {
+        assert!(v.find_entry(MFT_REC_ROOT,
+                              &alloc::format!("long-directory-entry-{i:03}")).is_ok());
+    }
+    let (_, attrs) = v.read_live_record(MFT_REC_ROOT).unwrap();
+    let alloc = crate::attrib::find(&attrs, ATTR_ALLOC, &I30_NAME).expect("index allocation");
+    assert!(alloc.data_size() >= u64::from(test_image::INDEX_SIZE) * 2,
+            "the test must exercise an allocation-buffer split");
+    let image = v.into_source();
+    let mut opts = crate::opts::Options::defaults();
+    opts.settle();
+    let mut v = Volume::mount_with(image, opts).unwrap();
+    assert_eq!(v.read_dir(MFT_REC_ROOT).unwrap().len(), made);
+    v.unlink(MFT_REC_ROOT, "long-directory-entry-010", now()).unwrap();
+    assert!(v.find_entry(MFT_REC_ROOT, "long-directory-entry-010").is_err());
+    assert_eq!(v.read_dir(MFT_REC_ROOT).unwrap().len(), made - 1);
+}
+
+#[test]
+fn a_directory_promotes_allocation_parents_when_the_root_fills() {
+    let mut v = test_image::empty();
+    let mut targets = alloc::vec::Vec::new();
+    for i in 0..24 {
+        let name = alloc::format!("p{i:02}");
+        targets.push(v.create_file(MFT_REC_ROOT, &name, now()).unwrap().reference.number);
+    }
+    let mut made = targets.len();
+    for (i, target) in targets.iter().enumerate() {
+        for j in 0..6 {
+            let name = alloc::format!("alias-{i:02}-{j}");
+            v.link(MFT_REC_ROOT, &name, *target, now()).unwrap();
+            made += 1;
+        }
+    }
+    assert_eq!(v.read_dir(MFT_REC_ROOT).unwrap().len(), made);
+    assert!(v.find_entry(MFT_REC_ROOT, "alias-23-5").is_ok());
+    let image = v.into_source();
+    let mut opts = crate::opts::Options::defaults();
+    opts.settle();
+    let mut v = Volume::mount_with(image, opts).unwrap();
+    assert_eq!(v.read_dir(MFT_REC_ROOT).unwrap().len(), made);
+    assert!(v.find_entry(MFT_REC_ROOT, "alias-23-5").is_ok());
+    v.unlink(MFT_REC_ROOT, "alias-23-5", now()).unwrap();
+    assert_eq!(v.read_dir(MFT_REC_ROOT).unwrap().len(), made - 1);
 }

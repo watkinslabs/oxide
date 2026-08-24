@@ -176,9 +176,10 @@ fn read_user_iov(p: u64, n: u64) -> Result<Vec<u8>, i64> {
 fn write_user_bytes(p: u64, src: &[u8]) -> Result<(), i64> {
     if src.is_empty() { return Ok(()); }
     validate_user_buf_writable(p, src.len() as u64, 1)?;
-    // SAFETY: exact user byte range validated writable; source is kernel-owned.
-    unsafe { for i in 0..src.len() { core::ptr::write_unaligned((p + i as u64) as *mut u8, src[i]); } }
-    Ok(())
+    // The range check establishes Linux's validate-before-copy ordering, but
+    // it cannot pin the mapping. The exception-table copy is still required
+    // to turn a concurrent unmap into EFAULT instead of a kernel fault.
+    uaccess::copy_to_user(p, src).map_err(err)
 }
 
 /// `KEYCTL_READ` / `KEYCTL_GET_SECURITY` copy-out: write at most `buflen`

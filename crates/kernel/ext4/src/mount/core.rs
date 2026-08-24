@@ -135,6 +135,7 @@ impl Mount {
                 }
             }
         }
+        let system_zones = super::validity::build_system_zones(&sb, &gdt_buf);
         let state = MountState {
             gdt_buf,
             sb_free_blocks: sb.free_blocks_count,
@@ -143,9 +144,14 @@ impl Mount {
             metadata_cache: alloc::collections::BTreeMap::new(),
             batch: false,
             undo: Vec::new(),
+            next_generation: 0,
+            running_generation: 0,
+            committed_generation: 0,
+            barrier_generation: 0,
+            inode_generations: alloc::collections::BTreeMap::new(),
         };
         let err = sync::Spinlock::new(crate::errstat::ErrRecord::parse(&sb_bytes));
-        let m = Self { dev, sb, state: sync::Spinlock::new(state), quota_sb: sync::Spinlock::new(alloc::sync::Weak::new()), err,
+        let mut m = Self { dev, sb, system_zones, state: sync::Spinlock::new(state), quota_sb: sync::Spinlock::new(alloc::sync::Weak::new()), err,
                        #[cfg(not(target_os = "oxide-kernel"))]
                        faults: super::faults::HostedFaults::new(),
                        txn_owner: ::core::sync::atomic::AtomicU64::new(0),
@@ -156,6 +162,16 @@ impl Mount {
                            behaviour, ..Default::default() }),
                        #[cfg(not(target_os = "oxide-kernel"))]
                        test_cred: sync::Spinlock::new(None) };
+        if m.sb.journal_inum != 0 {
+            if let Ok(journal) = m.read_inode(m.sb.journal_inum) {
+                if let Ok(runs) = m.collect_phys_extents(&journal.i_block) {
+                    for run in runs {
+                        m.system_zones.push((run.phys, run.phys.saturating_add(u64::from(run.len))));
+                    }
+                    m.system_zones.sort_unstable_by_key(|zone| zone.0);
+                }
+            }
+        }
         // `noload`/`norecovery` decides this, and it decides it BEFORE the
         // replay rather than after. Every mount this code opens is writable, so
         // a dirty log plus the option is the combination that has no correct
@@ -165,9 +181,10 @@ impl Mount {
         const MOUNTED_READ_ONLY: bool = false;
         match crate::mount_opts::recovery_action(behaviour.noload, MOUNTED_READ_ONLY, needs_recovery) {
             Err(_) => return Err(MountError::UnsupportedFeature),
-            Ok(crate::mount_opts::JournalRecovery::Replay) => { let _ = m.recover_journal(); }
+            Ok(crate::mount_opts::JournalRecovery::Replay) => { m.recover_journal()?; }
             Ok(crate::mount_opts::JournalRecovery::Skip) => {}
         }
+        m.configure_journal_checksum()?;
         if cleanup_orphans { let _ = m.orphan_cleanup(); }
         Ok(m)
     }
@@ -196,6 +213,13 @@ impl Mount {
         #[cfg(not(target_os = "oxide-kernel"))]
         if self.should_fail_metadata_write_for_tests() { return Err(MountError::BlockIo); }
         let bs = self.sb.block_size as u64;
+        {
+            let mut s = self.state.lock();
+            if s.running_generation == 0 {
+                s.next_generation = s.next_generation.wrapping_add(1).max(1);
+                s.running_generation = s.next_generation;
+            }
+        }
         let first_blk = byte_off / bs;
         let last_byte = byte_off + data.len() as u64;
         let last_blk_excl = (last_byte + bs - 1) / bs;
@@ -392,6 +416,9 @@ impl Mount {
                             .collect();
                         self.commit_metadata(staged.clone())?;
                         self.cache_committed(&staged);
+                        let mut s = self.state.lock();
+                        s.committed_generation = s.running_generation;
+                        s.running_generation = 0;
                     }
                     Ok(v)
                 }
@@ -465,6 +492,26 @@ impl Mount {
     /// populating state.shadow which subsequent reads consult.
     /// # C: O(1)
     pub fn flush_pending_tx(&self) -> Result<(), MountError> { Ok(()) }
+
+    pub(crate) fn mark_inode_dirty(&self, ino: u32, datasync: bool) {
+        let mut s = self.state.lock();
+        let tid = s.running_generation;
+        if tid == 0 { return; }
+        let e = s.inode_generations.entry(ino).or_insert((0, 0));
+        e.0 = tid;
+        if datasync { e.1 = tid; }
+    }
+
+    pub(crate) fn inode_sync_needed(&self, ino: u32, datasync: bool) -> bool {
+        let s = self.state.lock();
+        let tid = s.inode_generations.get(&ino).map_or(0, |p| if datasync { p.1 } else { p.0 });
+        tid != 0 && tid > s.committed_generation
+    }
+
+    pub(crate) fn mark_generation_barriered(&self, generation: u64) {
+        let mut s = self.state.lock();
+        if generation > s.barrier_generation { s.barrier_generation = generation; }
+    }
 
     /// Read `len` bytes starting at `byte_off`, splicing in
     /// shadow-buffered fs-block bytes where present. Use this

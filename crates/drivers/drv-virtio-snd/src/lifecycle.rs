@@ -180,6 +180,10 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
         let _ = uninstall(p.device_key);
         return None;
     }
+    if !sound::ops::register_pcm_devices(owner, &PCM_DEVICE_OPS) {
+        let _ = uninstall(p.device_key);
+        return None;
+    }
     if !sound::register_card(owner) {
         let _ = uninstall(p.device_key);
         return None;
@@ -237,9 +241,9 @@ pub(super) fn stop_reset_free(mut ctx: Ctx) {
     // this terminal transport reset delay.
     let _ = unsafe { virtio::reset_device_sleepable(ctx.cfg_va) };
     free_frame(ctx.event_buf_pa);
-    free_frame(ctx.rx_buf_pa);
+    free_object_frame(ctx.rx_buf_pa);
     free_frame(ctx.rx_scratch_pa);
-    free_frame(ctx.tx_buf_pa);
+    free_object_frame(ctx.tx_buf_pa);
     free_frame(ctx.tx_scratch_pa);
     free_frame(ctx.scratch_pa);
 }

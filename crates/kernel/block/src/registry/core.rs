@@ -4,7 +4,7 @@ extern crate alloc;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use sync::{Spinlock, Devices as DevicesClass};
 use sched::live::Mutex as LifecycleMutex;
 
@@ -79,6 +79,8 @@ pub struct Disk {
     /// first, so a mounted filesystem and a raw open cannot disagree.
     pub mapping: Arc<crate::bdev::BdevMapping>,
     pub stats: Arc<crate::stats::DiskStats>,
+    pub(super) cache_disabled: Arc<AtomicBool>,
+    pub(super) cache_capable: bool,
     partitions: LifecycleMutex<Vec<Arc<Partition>>>,
     pub(super) life: LifecycleMutex<DiskLifecycle>,
     pub(super) io: Arc<Spinlock<DiskIo, DevicesClass>>,
@@ -127,6 +129,8 @@ static DRIVERS: LifecycleMutex<Vec<DriverState>> = LifecycleMutex::new(Vec::new(
 static NEXT_DISK_INDEX: AtomicU32 = AtomicU32::new(0);
 type DiskRemoveHook = fn(&str);
 pub(super) static DISK_REMOVE_HOOK: LifecycleMutex<Option<DiskRemoveHook>> = LifecycleMutex::new(None);
+pub type DiskCloseHook = fn(&str);
+pub(super) static DISK_CLOSE_HOOK: LifecycleMutex<Option<DiskCloseHook>> = LifecycleMutex::new(None);
 
 /// Default owner for in-kernel tests and legacy module adapters. It is dynamic
 /// and therefore cannot collide with physical-driver majors.
@@ -136,6 +140,13 @@ pub const GENERIC_BLOCK_DRIVER: BlockDriver = BlockDriver::dynamic("oxide-block"
 pub fn set_remove_hook(f: DiskRemoveHook) {
     // SAFETY: registration runs in process context; this is lifecycle policy.
     *unsafe { DISK_REMOVE_HOOK.lock() } = Some(f);
+}
+
+/// Install the owner hook notified when a disk reaches its final opener close.
+/// # C: O(1)
+pub fn set_close_hook(f: DiskCloseHook) {
+    // SAFETY: registration runs in process context; this is lifecycle policy.
+    *unsafe { DISK_CLOSE_HOOK.lock() } = Some(f);
 }
 
 /// Register an explicitly-owned block device. # C: O(N_disks + N_drivers)
@@ -153,17 +164,20 @@ pub fn register_with_driver_at(driver: BlockDriver, name: &str, node_name: &str,
                                dev: Arc<dyn BlockDevice>) -> u32 {
     if let Some(disk) = by_name(name) { return disk.index; }
     let number = match allocate_number_at(driver, requested_minor) { Some(n) => n, None => return 0 };
-    let max_discard_sectors = match dev.queue_limits() {
-        Ok(limits) => limits.max_discard_sectors(),
+    let base_limits = match dev.queue_limits() {
+        Ok(limits) => limits,
         Err(_) => { release_number(driver, number); return 0; }
     };
+    let max_discard_sectors = base_limits.max_discard_sectors();
+    let cache_capable = base_limits.write_cache();
+    let cache_disabled = Arc::new(AtomicBool::new(false));
     let io = Arc::new(Spinlock::new(DiskIo {
         in_flight: 0, closed: false, detached: false, max_discard_sectors,
         #[cfg(target_os = "oxide-kernel")]
         drain_wait: Arc::new(sched::live::WaitList::new()),
     }));
     let admitted: Arc<dyn BlockDevice> = Arc::new(AdmissionDev {
-        inner: dev, io: Arc::clone(&io),
+        inner: dev, io: Arc::clone(&io), cache_disabled: Arc::clone(&cache_disabled),
     });
     let (accounted, stats) = crate::stats::StatsDev::wrap(admitted);
     // The cache submits through the ACCOUNTED handle and every other
@@ -182,6 +196,7 @@ pub fn register_with_driver_at(driver: BlockDriver, name: &str, node_name: &str,
             let disk = Arc::new(Disk {
                 name: name.to_string(), node_name: LifecycleMutex::new(node_name.to_string()), index, driver, number,
                 serial: serial.filter(|s| !s.is_empty()).map(ToString::to_string), dev, mapping, stats,
+                cache_disabled, cache_capable,
                 partitions: LifecycleMutex::new(Vec::new()),
         life: LifecycleMutex::new(DiskLifecycle { holders: 0, openers: 0, closing: false, lifecycle_held: false, reset_frozen: false, detached: false }),
                 io,
@@ -394,6 +409,20 @@ pub fn opener_count(name: &str) -> Option<u32> {
 }
 /// Return canonical limits, including the Linux-writable discard user cap. # C: O(N_disks)
 pub fn queue_limits(name: &str) -> KResult<QueueLimits> { by_name(name).ok_or(BlockError::Enxio)?.dev.queue_limits() }
+
+/// Whether this disk currently advertises a volatile write cache. # C: O(1)
+pub fn write_cache(name: &str) -> KResult<bool> {
+    let disk = by_name(name).ok_or(BlockError::Enxio)?;
+    Ok(disk.cache_capable && !disk.cache_disabled.load(Ordering::Acquire))
+}
+
+/// Apply Linux's queue `write_cache` control to the canonical disk owner. # C: O(1)
+pub fn set_write_cache(name: &str, write_back: bool) -> KResult<()> {
+    let disk = by_name(name).ok_or(BlockError::Enxio)?;
+    if write_back && !disk.cache_capable { return Err(BlockError::Eopnotsupp); }
+    disk.cache_disabled.store(!write_back, Ordering::Release);
+    Ok(())
+}
 
 /// Set Linux `discard_max_bytes` as a registry-owned effective user cap. # C: O(N_disks)
 pub fn set_discard_max_bytes(name: &str, bytes: u64) -> KResult<()> {

@@ -18,12 +18,43 @@ use crate::jbd2::{
     StagedBlock, LogCursor, TransactionError,
     transaction_block_count_for, emit_transaction_for,
 };
+use crate::jbd2::checksum::ChecksumMode;
 
 use crate::inode::{self, Inode};
 use crate::mount::{Mount, MountError, read_byte_range_pub};
 use crate::superblock::INCOMPAT_RECOVER;
 
 impl Mount {
+    /// Apply an explicit ext4 journal checksum mount option to the clean JBD2
+    /// superblock. Replay is intentionally performed before this operation:
+    /// the existing feature words are the authority for reading an old log.
+    /// # C: O(1) journal-superblock I/O
+    pub fn configure_journal_checksum(&self) -> Result<(), MountError> {
+        let Some(enabled) = self.opts().behaviour.journal_checksum else { return Ok(()); };
+        if self.sb.journal_inum == 0 { return Ok(()); }
+        let jinode = self.read_inode(self.sb.journal_inum)?;
+        let log = ExtentLogReader::build(self, &jinode)?;
+        let old = log.read_journal_block(0).map_err(|_| MountError::BlockIo)?;
+        let mut jsb = JournalSuperblock::parse(&old).map_err(map_journal_superblock_error)?;
+        if jsb.needs_recovery() { return Err(MountError::UnsupportedFeature); }
+        let desired = if enabled {
+            if self.sb.has_metadata_csum() { ChecksumMode::V3 } else { ChecksumMode::V1 }
+        } else { ChecksumMode::None };
+        if jsb.checksum_mode() == desired { return Ok(()); }
+        // JBD2's v1 superblock has no feature words. Linux only changes the
+        // checksum feature set on the v2 superblock format; refusing here is
+        // safer than writing bytes that replay will never read.
+        if jsb.block_type != 4 { return Err(MountError::UnsupportedFeature); }
+        jsb.set_checksum_mode(desired);
+        let mut bytes = old;
+        bytes[0x24..0x28].copy_from_slice(&jsb.feature_compat.to_be_bytes());
+        bytes[0x28..0x2C].copy_from_slice(&jsb.feature_incompat.to_be_bytes());
+        bytes[0x50] = jsb.checksum_type;
+        if !jsb.stamp_checksum(&mut bytes) { return Err(MountError::BadChecksum); }
+        log.write_journal_block(0, &bytes)?;
+        self.dev.flush().map_err(|_| MountError::BlockIo)
+    }
+
     /// Replay the on-disk journal if `INCOMPAT_RECOVER` is set
     /// + `sb.s_journal_inum != 0`. After replay, marks the
     /// journal clean (sets `s_start = 0` in the journal SB on
@@ -89,14 +120,32 @@ impl Mount {
             Err(_) => return self.apply_staged_to_target(&staged).map(|_| 0),
         };
         let log = ExtentLogReader::build(self, &jinode)?;
-        let sb_bytes = log.read_journal_block(0).map_err(|_| MountError::BlockIo)?;
-        let jsb = match JournalSuperblock::parse(&sb_bytes) {
+        let mut sb_bytes = log.read_journal_block(0).map_err(|_| MountError::BlockIo)?;
+        let mut jsb = match JournalSuperblock::parse(&sb_bytes) {
             Ok(s) => s,
             Err(e) => return Err(map_journal_superblock_error(e)),
         };
         let bs = jsb.block_size as usize;
         let bit64 = jsb.feature_incompat & crate::jbd2::superblock::JBD2_INCOMPAT_64BIT != 0;
-        let checksum_mode = jsb.checksum_mode();
+        let checksum_mode = self.opts().behaviour.journal_checksum.map(|enabled| {
+            if enabled {
+                if self.sb.has_metadata_csum() { ChecksumMode::V3 } else { ChecksumMode::V1 }
+            } else { ChecksumMode::None }
+        }).unwrap_or_else(|| jsb.checksum_mode());
+        // A remount may have changed an explicit checksum option. The mount
+        // path applies it eagerly; this branch keeps the same invariant for a
+        // live remount before the first subsequent transaction.
+        if jsb.checksum_mode() != checksum_mode {
+            if jsb.needs_recovery() { return Err(MountError::UnsupportedFeature); }
+            if jsb.block_type != 4 { return Err(MountError::UnsupportedFeature); }
+            jsb.set_checksum_mode(checksum_mode);
+            sb_bytes[0x24..0x28].copy_from_slice(&jsb.feature_compat.to_be_bytes());
+            sb_bytes[0x28..0x2C].copy_from_slice(&jsb.feature_incompat.to_be_bytes());
+            sb_bytes[0x50] = jsb.checksum_type;
+            if !jsb.stamp_checksum(&mut sb_bytes) { return Err(MountError::BadChecksum); }
+            log.write_journal_block(0, &sb_bytes)?;
+            self.dev.flush().map_err(|_| MountError::BlockIo)?;
+        }
         let transaction_blocks = transaction_block_count_for(staged.len(), bs, bit64, checksum_mode)
             .map_err(|_| MountError::NoSpace)?;
         let mut cursor = LogCursor::new(jsb.start, jsb.first, jsb.maxlen, jsb.sequence);

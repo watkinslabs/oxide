@@ -25,6 +25,7 @@
 pub mod policy;
 pub mod extents;
 pub mod ops;
+pub mod device;
 
 pub use extents::{Extent, SwapMap};
 pub use policy::SwapFacts;

@@ -3,9 +3,9 @@ use super::PAGE_SIZE_BYTES;
 const FREE_NODE_BYTES: usize = 32;
 const POISON_ID_BYTES: usize = 16;
 
-#[cfg(all(test, feature = "debug-watchdog"))]
+#[cfg(test)]
 const NO_TEST_MISMATCH: usize = usize::MAX;
-#[cfg(all(test, feature = "debug-watchdog"))]
+#[cfg(test)]
 static TEST_MISMATCH_OFFSET: core::sync::atomic::AtomicUsize =
     core::sync::atomic::AtomicUsize::new(NO_TEST_MISMATCH);
 
@@ -36,7 +36,6 @@ unsafe fn first_mismatch(page: *const u8, poison: u8) -> Option<(usize, u8)> {
 /// Report a write into a 0xAA watchdog-poisoned page while it was free.
 ///
 /// # SAFETY: `page` points to one readable PMM-owned page at physical `pa`.
-#[cfg(feature = "debug-watchdog")]
 pub(super) unsafe fn report_watchdog_mismatch(page: *const u8, pa: u64) {
     // SAFETY: this fn's own contract already requires `page` to name one
     // readable PMM-owned page, which is exactly `first_mismatch`'s precondition.

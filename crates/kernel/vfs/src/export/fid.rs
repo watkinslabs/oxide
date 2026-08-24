@@ -49,6 +49,14 @@ pub struct Fid {
     pub parent: Option<(u64, u32)>,
 }
 
+/// A decoded filesystem handle: the generic identity used by reconnect and
+/// the filesystem-owned payload needed by non-generic export backends.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExportFid {
+    pub fid: Fid,
+    pub raw: alloc::vec::Vec<u8>,
+}
+
 /// Payload length a `handle_type` claims, or `None` for a type this kernel did
 /// not encode. A well-formed handle from a foreign encoder lands here and is
 /// the caller's ESTALE, not EINVAL — it may simply describe an object this

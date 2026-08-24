@@ -40,7 +40,7 @@ fn a_translated_reply_tuple_is_what_gets_indexed() {
     let t = CtTable::new(1);
     let orig = v4_tcp([10, 0, 0, 1], 1234, [93, 184, 216, 34], 80);
     let translated = v4_tcp([93, 184, 216, 34], 80, [203, 0, 113, 5], 40000);
-    let mut c = Conn::new(t.alloc_id(), orig, orig.invert().unwrap(), 0);
+    let c = Conn::new(t.alloc_id(), orig, orig.invert().unwrap(), 0);
     assert!(c.alter_reply(translated));
     let c = Arc::new(c);
     t.add_pending(c.clone());
@@ -59,7 +59,7 @@ fn the_reply_tuple_cannot_change_after_confirmation() {
     let c = conn(&t, orig);
     c.refresh(0, 100);
     assert!(t.confirm(&c, 0));
-    let mut owned = Conn::new(99, orig, orig.invert().unwrap(), 0);
+    let owned = Conn::new(99, orig, orig.invert().unwrap(), 0);
     owned.set_status_bits(IPS_CONFIRMED);
     assert!(!owned.alter_reply(v4_tcp([1, 1, 1, 1], 1, [2, 2, 2, 2], 2)),
         "changing a key after insertion strands the old one");
@@ -140,7 +140,7 @@ fn two_flows_may_not_share_a_reply_tuple() {
         let t = CtTable::with_buckets(buckets, 1);
         let shared_reply = v4_tcp([93, 184, 216, 34], 80, [203, 0, 113, 5], 40000);
 
-        let mut a = Conn::new(t.alloc_id(),
+        let a = Conn::new(t.alloc_id(),
             v4_tcp([10, 0, 0, 1], 1234, [93, 184, 216, 34], 80), shared_reply, 0);
         assert!(a.alter_reply(shared_reply));
         let a = Arc::new(a);

@@ -5,6 +5,7 @@
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
+extern crate alloc;
 
 mod context;
 mod cpu;
@@ -29,6 +30,7 @@ pub mod ldt;
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub mod linux_retpoline;
 mod mmu;
+mod machine;
 mod pat;
 pub mod mmu_ops;
 pub mod msr;
@@ -83,6 +85,7 @@ pub use mmu::{
     flush_local_all, flush_local_va, va_to_indices, PteFlags, PteX86_64, PtIndices,
     ENTRIES_PER_TABLE, PD_SHIFT, PDPT_SHIFT, PML4_SHIFT, PT_SHIFT, PTE_PHYS_MASK,
 };
+pub use machine::X86MachineOps;
 pub use pat::{enabled as pat_enabled, init_for_cpu as init_pat_for_cpu, LINUX_PAT};
 pub use pt_regs::{PtRegs, PT_REGS_BYTES, PT_REGS_VECTOR_NMI, PT_REGS_VECTOR_SYSCALL};
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
@@ -108,7 +111,8 @@ pub use tss::io_bitmap::{
     tss_update_io_bitmap, IO_BITMAP_BITS, IO_BITMAP_BYTES, IO_BITMAP_LONGS,
     IO_BITMAP_OFFSET_INVALID, IO_BITMAP_OFFSET_VALID_ALL, IO_BITMAP_OFFSET_VALID_MAP,
 };
-pub use uaccess::{raw_cmpxchg_user_u32, raw_copy_from_user, raw_copy_to_user};
+pub use uaccess::{raw_cmpxchg_user_u32, raw_copy_from_user, raw_copy_to_user,
+                  raw_get_user_u32, raw_get_user_u64, raw_put_user_u32, raw_put_user_u64};
 
 #[cfg(test)]
 mod tests;

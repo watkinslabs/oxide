@@ -25,6 +25,26 @@
 use core::alloc::Layout;
 use core::ptr::NonNull;
 
+const POISON_FREE: u8 = 0x6b;
+
+unsafe fn poison_free_object(p: *mut u8, obj: usize) {
+    let first = core::mem::size_of::<*mut u8>();
+    // SAFETY: the caller owns a complete class object; the freelist link is
+    // preserved in the first word and the remainder is the poison area.
+    unsafe { core::ptr::write_bytes(p.add(first), POISON_FREE, obj - first); }
+}
+
+unsafe fn check_free_object(p: *mut u8, obj: usize) {
+    let first = core::mem::size_of::<*mut u8>();
+    for off in first..obj {
+        // SAFETY: the object remains allocator-owned until this check ends.
+        let got = unsafe { core::ptr::read(p.add(off)) };
+        if got != POISON_FREE {
+            panic!("slub poison corrupted: offset={off} value=0x{got:02x}");
+        }
+    }
+}
+
 /// Serviced object sizes. Linux `kmalloc_info[]` minus the
 /// 8-byte cache, which is below this heap's `MIN_HOLE_SIZE`.
 pub const CLASS_SIZES: [usize; 11] =
@@ -94,19 +114,28 @@ impl SizeClasses {
     pub const fn new() -> Self { Self { heads: [core::ptr::null_mut(); CLASS_SIZES.len()] } }
 
     /// Take the class head. # C: O(1)
-    pub fn pop(&mut self, i: usize) -> Option<NonNull<u8>> {
+    pub fn pop(&mut self, i: usize, poison: bool) -> Option<NonNull<u8>> {
         let head = self.heads[i];
         let nn = NonNull::new(head)?;
         // SAFETY: `head` is a block this allocator carved for class `i`
         // (>= 16 bytes) and pushed; its first word holds the successor link.
         self.heads[i] = unsafe { core::ptr::read(head as *const *mut u8) };
+        if poison {
+            // SAFETY: `head` was pushed as a complete object of this class.
+            unsafe { check_free_object(head, CLASS_SIZES[i]); }
+        }
         Some(nn)
     }
 
     /// Return an object to its class. # C: O(1)
     /// # SAFETY: `p` was carved for class `i` by `push_slab` and is no longer
     /// borrowed by the caller.
-    pub unsafe fn push(&mut self, i: usize, p: *mut u8) {
+    pub unsafe fn push(&mut self, i: usize, p: *mut u8, poison: bool) {
+        if poison {
+            // SAFETY: caller owns this complete class object and it is no
+            // longer live; the link is written immediately afterward.
+            unsafe { poison_free_object(p, CLASS_SIZES[i]); }
+        }
         // SAFETY: caller-asserted ownership; the object is at least
         // `CLASS_SIZES[0]` = 16 bytes, so the link word fits.
         unsafe { core::ptr::write(p as *mut *mut u8, self.heads[i]) };
@@ -137,11 +166,11 @@ impl SizeClasses {
     /// # SAFETY: `[base, base + count*CLASS_SIZES[i])` is a live, exclusively
     /// owned, `SLAB_ALIGN`-aligned allocation.
     /// # C: O(count)
-    pub unsafe fn push_slab(&mut self, i: usize, base: *mut u8, count: usize) {
+    pub unsafe fn push_slab(&mut self, i: usize, base: *mut u8, count: usize, poison: bool) {
         let obj = CLASS_SIZES[i];
         for k in 0..count {
             // SAFETY: `k < count` keeps the offset inside the caller's slab.
-            unsafe { self.push(i, base.add(k * obj)) };
+            unsafe { self.push(i, base.add(k * obj), poison) };
         }
     }
 }

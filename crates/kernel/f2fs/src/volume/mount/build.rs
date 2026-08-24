@@ -2,6 +2,8 @@
 
 use syscall::errno::Errno;
 
+use alloc::vec::Vec;
+
 use sectors::SectorSource;
 
 use crate::checkpoint;
@@ -78,6 +80,8 @@ impl<S: SectorSource> Volume<S> {
             .map_err(|_| Errno::Einval)?;
         let (nat_journal, sit_journal) = read_journals(&source, &sb, &cp)?;
         let curseg = read_cursegs(&source, &sb, &cp)?;
+        let lifetime_write_kbytes = crate::summary::lifetime_kbytes(
+            &curseg[crate::uapi::CURSEG_HOT_NODE].sum).ok_or(Errno::Einval)?;
         let inode_seed = checksum::inode_seed(&sb.uuid);
         // Refused above unless it loads, so a folding volume always has one.
         let casefold = if features::has_casefold(sb.feature) {
@@ -113,6 +117,8 @@ impl<S: SectorSource> Volume<S> {
         let meta_cache = crate::checkpoint::cache::Cache::new(
             sb.meta_ino, sb.cp_blkaddr, sb.main_blkaddr);
         let node_ino = sb.node_ino;
+        let reclaim_segments =
+            crate::volume::gc::collect::default_reclaim_prefree_segments(sb.segment_count_main);
         // The armed in-place policy follows the volume's SIZE and the recycling
         // floor the reserve it was formatted with, so both are resolved from
         // the superblock and the checkpoint before either is moved in.
@@ -135,6 +141,15 @@ impl<S: SectorSource> Volume<S> {
                 unsafe { core::ptr::addr_of_mut!((*dst).$field).write($value) };
             };
         }
+        let migration_window_granularity = sb.segs_per_sec.max(1);
+        let migration_granularity = migration_window_granularity;
+        let reserved_pin_section = if features::has_blkzoned(sb.feature) {
+            1
+        } else {
+            cp.rsvd_segment_count.div_ceil(sb.segs_per_sec.max(1))
+        };
+        let reserved_segments = cp.rsvd_segment_count;
+        let allocate_section_hint = sb.section_count;
         init_field!(source: source);
         init_field!(sb: sb);
         init_field!(sb_raw: sb_raw);
@@ -155,10 +170,26 @@ impl<S: SectorSource> Volume<S> {
         init_field!(writable: writable);
         init_field!(curseg: curseg);
         init_field!(nat_dirty: alloc::collections::BTreeMap::new());
+        init_field!(nat_cache: core::cell::RefCell::new(alloc::collections::BTreeMap::new()));
+        init_field!(nat_lru: core::cell::RefCell::new(alloc::collections::VecDeque::new()));
         init_field!(sit: None);
         init_field!(segstate: segstate);
         init_field!(sit_dirty: alloc::collections::BTreeSet::new());
         init_field!(valid_block_count: valid_block_count);
+        init_field!(reserved_segments: reserved_segments);
+        init_field!(allocate_section_hint: allocate_section_hint);
+        init_field!(allocate_section_policy: crate::volume::zonewp::ALLOCATE_FORWARD_NOHINT);
+        init_field!(blkzone_alloc_policy: crate::volume::zonewp::BLKZONE_ALLOC_PRIOR_SEQ);
+        init_field!(cp_interval_secs: crate::bg::balance::CP_INTERVAL_SECS);
+        init_field!(umount_discard_timeout_secs: crate::bg::round::DEF_UMOUNT_DISCARD_TIMEOUT_SECS);
+        init_field!(lifetime_write_kbytes: lifetime_write_kbytes);
+        init_field!(sectors_written_since_cp: core::cell::Cell::new(0));
+        init_field!(inflight_reads: core::sync::atomic::AtomicU64::new(0));
+        init_field!(inflight_writes: core::sync::atomic::AtomicU64::new(0));
+        init_field!(reserved_blocks: 0);
+        init_field!(current_reserved_blocks: 0);
+        init_field!(carve_out: false);
+        init_field!(peak_atomic_write: 0);
         init_field!(valid_node_count: valid_node_count);
         init_field!(valid_inode_count: valid_inode_count);
         init_field!(next_free_nid: next_free_nid);
@@ -180,9 +211,24 @@ impl<S: SectorSource> Volume<S> {
         init_field!(free_nids: crate::freenid::FreeNids::new(next_free_nid, avail_nids));
         init_field!(atgc: atgc);
         init_field!(counters: core::cell::RefCell::new(crate::stats::Counters::new()));
+        init_field!(gc_segment_mode: crate::stats::counters::gc_mode::NORMAL);
+        init_field!(gc_pin_file_threshold: crate::pin::policy::GC_PIN_FILE_THRESHOLD);
+        init_field!(reclaim_segments: reclaim_segments);
+        init_field!(gc_valid_thresh_ratio: crate::bg::gc::DEF_GC_VALID_THRESH_RATIO);
+        init_field!(migration_window_granularity: migration_window_granularity);
+        init_field!(migration_granularity: migration_granularity);
+        init_field!(dir_level: 0);
+        init_field!(seq_file_ra_mul: 2);
+        init_field!(max_roll_forward_node_blocks: 0);
+        init_field!(rf_node_block_count: 0);
+        init_field!(max_io_bytes: 0);
+        init_field!(max_fragment_chunk: 4);
+        init_field!(max_fragment_hole: 4);
+        init_field!(reserved_pin_section: reserved_pin_section);
         init_field!(atomic: alloc::collections::BTreeMap::new());
         init_field!(ioprio_hint: alloc::collections::BTreeMap::new());
         init_field!(compress_cache: crate::compress::cache::Cache::new(compress_cache, max_nid));
+        init_field!(decomp_scratch: core::cell::RefCell::new(Vec::new()));
         init_field!(readdir_ra: true);
         init_field!(meta_cache: meta_cache);
         init_field!(data_cache: crate::filemap::Cache::new());
@@ -196,6 +242,7 @@ impl<S: SectorSource> Volume<S> {
         init_field!(place: place);
         init_field!(bg: None);
         init_field!(need_ipu: None);
+        init_field!(deferred_flush: None);
         init_field!(sync_writeback: false);
         // SAFETY: every `Volume` field was written exactly once above.
         let vol = unsafe { uninit.assume_init() };

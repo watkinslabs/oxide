@@ -28,6 +28,8 @@ pub struct Curseg {
     pub next_blkoff: u16,
     /// Whether the log appends or recycles.
     pub alloc_type: u8,
+    /// Data blocks remaining in the current fragment chunk.
+    pub fragment_remained_chunk: u32,
     /// The summary block for the open segment: one entry per block, naming
     /// the node that owns it.
     pub sum: Vec<u8>,
@@ -36,7 +38,8 @@ pub struct Curseg {
 impl Curseg {
     /// A log with nothing open. # C: O(BLKSIZE)
     pub fn empty() -> Self {
-        Self { segno: NULL_SEGNO, next_blkoff: 0, alloc_type: ALLOC_LFS, sum: vec![0u8; BLKSIZE] }
+        Self { segno: NULL_SEGNO, next_blkoff: 0, alloc_type: ALLOC_LFS,
+               fragment_remained_chunk: 0, sum: vec![0u8; BLKSIZE] }
     }
 
     /// Whether the log has an open segment with room, given how many blocks

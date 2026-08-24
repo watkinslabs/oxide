@@ -240,6 +240,26 @@ mod prepost;
     }
 
     #[test]
+    fn mmap_advertises_the_persistent_data_page_and_rejects_invalid_offsets() {
+        reset_test_state();
+        let device = key(0x00a0_0000);
+        let owner = owner_key(device);
+        let mut c = ctx_with_test_frames(device, 0x0400);
+        c.pcm_state = PcmState::Prepared;
+        c.cap_state = PcmState::Prepared;
+        CTX.lock().push(c);
+
+        assert_eq!(hw_limits(owner), (SND_FRAME_BYTES as u32, SND_FRAME_BYTES as u32));
+        assert_eq!(info_flags_for(owner, 0), sound::uapi::PCM_INFO_MMAP | sound::uapi::PCM_INFO_MMAP_VALID);
+        assert_eq!(pcm_mmap_frame(owner, 0, false, 0), Some(test_frame_pa(0x0402)));
+        assert_eq!(pcm_mmap_frame(owner, 0, true, 0), Some(test_frame_pa(0x0404)));
+        assert_eq!(pcm_mmap_frame(owner, 0, false, 1), None);
+        assert_eq!(pcm_mmap_frame(owner, 1, false, 0), None);
+        assert_eq!(pcm_mmap_frame(owner, 0, false, hal::PAGE_SIZE_BYTES), None);
+        reset_test_state();
+    }
+
+    #[test]
     fn removing_one_snd_context_keeps_event_softirq_installed() {
         let _guard = TEST_LOCK.lock();
         reset_test_state();

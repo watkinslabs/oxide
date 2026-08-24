@@ -87,7 +87,9 @@ impl Disk {
 
 impl BlockDevice for Disk {
     fn block_size(&self) -> u32 { self.block_size }
-    fn queue_limits(&self) -> KResult<QueueLimits> { self.transport.queue_limits(self.block_size) }
+    fn queue_limits(&self) -> KResult<QueueLimits> {
+        self.transport.queue_limits_for(self.lun, self.block_size)
+    }
     fn capacity_blocks(&self) -> u64 { self.capacity }
     fn submit_sync(&self, request: &mut BlockRequest) -> KResult<()> {
         match request.op {

@@ -33,6 +33,7 @@ pub mod bpf_interp;
 mod bpf_layout;
 pub mod socket_filter;
 pub mod network;
+pub mod lsm;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Error { Inval, Perm }
@@ -44,7 +45,9 @@ pub type KResult<T> = core::result::Result<T, Error>;
 /// # C: O(1)
 /// # Ctx: pre-init, IRQ-off, single-CPU
 pub unsafe fn init() -> KResult<()> {
-    vfs::set_device_permission_hook(bpf::cgroup_device_inode_permission);
+    lsm::register_device_permission(bpf::cgroup_device_inode_permission);
+    vfs::set_device_permission_hook(lsm::device_permission);
+    lsm::register_open(bpf_lsm::open_hook);
     Ok(())
 }
 

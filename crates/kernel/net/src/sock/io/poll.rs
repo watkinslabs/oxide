@@ -127,10 +127,10 @@ impl InetSocket {
 
     /// Linux `SIOCINQ/FIONREAD` and `SIOCOUTQ` queue-count ioctls. # C: O(queue)
     pub fn ioctl_int(&self, cmd: vfs::IoctlIntCmd) -> vfs::KResult<u32> {
-        crate::sock_opts::check_ioctl(
-            self.net_ns(),
-            self.family.load(core::sync::atomic::Ordering::Acquire),
-        ).map_err(|_| vfs::VfsError::Eacces)?;
+        let object = crate::socket_security::inet(self);
+        crate::security_admission::check_socket(object.namespace, object.family,
+            security::network::Operation::Ioctl, object.target_sid, object.target_class)
+            .map_err(|_| vfs::VfsError::Eacces)?;
         match cmd {
             vfs::IoctlIntCmd::Fionread => Ok(self.inq_len() as u32),
             vfs::IoctlIntCmd::Siocoutq => Ok(self.outq_len() as u32),

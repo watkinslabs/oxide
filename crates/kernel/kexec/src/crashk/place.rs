@@ -12,6 +12,10 @@ use crate::crashk::CRASH_ALIGN;
 /// Ceiling for a region that must be addressable by a 32-bit device.
 pub const CRASH_ADDR_LOW_MAX: u64 = 4 * 1024 * 1024 * 1024;
 
+/// Linux's default low crash-kernel reservation when the main image lands
+/// above the 32-bit device boundary (`DEFAULT_CRASH_KERNEL_LOW_SIZE`).
+pub const DEFAULT_CRASH_LOW_SIZE: u64 = 128 * 1024 * 1024;
+
 /// Ceiling for the search as a whole. The identity tables the relocation runs
 /// under are built to cover the addresses the image actually uses, and a
 /// reservation beyond this is outside the range those tables are sized for.
@@ -31,10 +35,10 @@ pub struct Placement {
     pub base: u64,
     /// Its length.
     pub size: u64,
-    /// Base of the companion region below the 32-bit boundary; zero when none
-    /// was asked for or none was needed.
+    /// Base of the companion region below the 32-bit boundary; zero when the
+    /// main region is already low.
     pub low_base: u64,
-    /// Its length; zero when there is none.
+    /// Its length; zero when the main region is already low.
     pub low_size: u64,
 }
 
@@ -108,22 +112,22 @@ pub fn place(spec: &CrashKernelSpec, ram: &[RamRange]) -> Result<Placement, Plac
     };
     let mut out = Placement { base, size, low_base: 0, low_size: 0 };
     // The companion is only meaningful when the main region is out of a
-    // 32-bit device's reach; asked for while the main region is already low,
-    // it would reserve a second region for a problem that does not exist.
-    if let Some(low) = spec.low {
-        if base >= CRASH_ADDR_LOW_MAX {
-            let low_size = (low + CRASH_ALIGN - 1) & !(CRASH_ALIGN - 1);
-            // No overlap check is needed and none is written: the companion is
-            // only sought when the main region sits at or above the boundary,
-            // and the search for it stops below the boundary. The two windows
-            // are disjoint by construction, and a redundant check here would
-            // be a second place that could disagree about which is which.
-            let lb = search(ram, low_size, 0, CRASH_ADDR_LOW_MAX)
-                .ok_or(PlaceError::NoLowSpace)?;
-            out.low_base = lb;
-            out.low_size = low_size;
-        }
+    // 32-bit device's reach. Linux reserves the default low window even when
+    // the command line does not spell `,low`; an explicit suffix overrides
+    // that default. Omitting it for a high image leaves the crash kernel's
+    // early low-memory users without reserved backing.
+    if base >= CRASH_ADDR_LOW_MAX {
+        let low = spec.low.unwrap_or(DEFAULT_CRASH_LOW_SIZE);
+        let low_size = (low + CRASH_ALIGN - 1) & !(CRASH_ALIGN - 1);
+        // No overlap check is needed and none is written: the companion is
+        // only sought when the main region sits at or above the boundary,
+        // and the search for it stops below the boundary. The two windows
+        // are disjoint by construction, and a redundant check here would
+        // be a second place that could disagree about which is which.
+        let lb = search(ram, low_size, 0, CRASH_ADDR_LOW_MAX)
+            .ok_or(PlaceError::NoLowSpace)?;
+        out.low_base = lb;
+        out.low_size = low_size;
     }
     Ok(out)
 }
-

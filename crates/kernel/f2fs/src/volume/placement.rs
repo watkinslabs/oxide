@@ -34,6 +34,30 @@ use crate::uapi::{CURSEG_WARM_NODE, NR_CURSEG_DATA_TYPE};
 use super::Volume;
 
 impl<S: SectorSource> Volume<S> {
+    /// Maximum data blocks in one block-fragmentation chunk. # C: O(1)
+    pub fn max_fragment_chunk(&self) -> u32 { self.max_fragment_chunk }
+
+    /// Set the block-fragmentation chunk ceiling. # C: O(1)
+    pub fn set_max_fragment_chunk(&mut self, value: u32) { self.max_fragment_chunk = value; }
+
+    /// Maximum hole between block-fragmentation chunks. # C: O(1)
+    pub fn max_fragment_hole(&self) -> u32 { self.max_fragment_hole }
+
+    /// Set the block-fragmentation hole ceiling. # C: O(1)
+    pub fn set_max_fragment_hole(&mut self, value: u32) { self.max_fragment_hole = value; }
+
+    /// Free sections reserved for pinned-file allocation. # C: O(1)
+    pub fn reserved_pin_section(&self) -> u32 { self.reserved_pin_section }
+
+    /// Set the pin reserve, bounded by the formatted overprovision reserve.
+    /// # C: O(1)
+    pub fn set_reserved_pin_section(&mut self, value: u32) -> Result<(), Errno> {
+        let max = self.gc_reserve().div_ceil(self.sb.segs_per_sec.max(1));
+        if value > max { return Err(Errno::Einval); }
+        self.reserved_pin_section = value;
+        Ok(())
+    }
+
     /// The pressure the recycling decision reads. # C: O(main segments)
     pub(crate) fn ssr_state(&self) -> ssr::Need {
         let per_sec = self.blks_per_sec();
@@ -174,9 +198,19 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(1), plus O(main segments) when a pressure arm is armed
     pub(crate) fn writes_in_place(&self, ino: u32, inode: &Inode, old: u32, sync: bool)
         -> Result<bool, Errno> {
+        self.writes_in_place_kind(ino, inode, old, sync, inode.compressed())
+    }
+
+    /// Whether a page's stored cluster shape permits the ordinary in-place
+    /// policy. A compressed inode may carry raw clusters; those pages are
+    /// ordinary data and must not inherit the inode-wide image refusal.
+    /// # C: O(1), plus O(main segments) when a pressure arm is armed
+    pub(crate) fn writes_in_place_kind(&self, ino: u32, inode: &Inode, old: u32, sync: bool,
+                                       compressed: bool) -> Result<bool, Errno> {
         if crate::node::is_hole(old) || crate::node::is_compressed(old) { return Ok(false); }
         if !self.sb_main_contains(old) { return Ok(false); }
-        let f = self.ipu_facts(ino, inode, old, sync)?;
+        let mut f = self.ipu_facts(ino, inode, old, sync)?;
+        f.compressed = compressed;
         Ok(ipu::need_inplace_update(&f, || self.need_ssr()))
     }
 

@@ -15,6 +15,7 @@ sectors = { path = "../sectors" }
 crc     = { path = "../../shared/crc" }
 zstd = { path = "../../shared/zstd" }
 miniz_oxide = { version = "0.8.9", default-features = false, features = ["with-alloc"] }
+zlib-rs = { path = "../../../vendor/rust/zlib-rs-0.6.6", default-features = false, features = ["rust-allocator", "kernel_scalar"] }
 lz4_flex = { version = "0.14.0", default-features = false, features = ["safe-decode"] }
 lzo1x = { path = "../../shared/lzo1x" }
 

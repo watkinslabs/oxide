@@ -20,6 +20,7 @@ pub enum Expr {
     Meta { dreg: Option<u32>, sreg: Option<u32>, key: u32 },
     Lookup { sreg: u32, dreg: Option<u32>, set: String, set_id: Option<usize>, invert: bool },
     Counter,
+    Notrack,
     Bitwise { sreg: u32, dreg: u32, mask: Vec<u8>, xor: Vec<u8> },
     Byteorder { sreg: u32, dreg: u32, op: u32, len: u32, size: u32 },
 

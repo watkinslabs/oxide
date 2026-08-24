@@ -51,6 +51,8 @@ pub const ATTR_KILL_SGID: u32 = 1 << 10;
 /// re-fail — here.
 pub const ATTR_FORCE:     u32 = 1 << 11;
 
+const ATTR_TIME_BITS: u32 = ATTR_ATIME | ATTR_MTIME | ATTR_ATIME_SET | ATTR_MTIME_SET;
+
 /// Requested attribute change (`struct iattr` shape). `valid` selects which
 /// fields apply; uid/gid are vfs ids (the caller's view) until `map_in_*` at
 /// apply. Times are absolute [`Timespec64`] wall-clock instants — SIGNED
@@ -112,6 +114,12 @@ pub fn inode_newsize_ok(inode: &Inode, offset: u64) -> KResult<()> {
 /// any mutation. Mutates `ia` to strip a disallowed S_ISGID (chmod) and to set
 /// the S_ISUID/S_ISGID kill flags (chown of a non-directory). # C: O(ngroups)
 pub fn setattr_prepare(idmap: &Idmap, inode: &InodeRef, ia: &mut Iattr, cred: &Cred) -> KResult<()> {
+    // FAT-family filesystems may explicitly permit a non-owner to set times
+    // through their mount option. Linux evaluates that decision before the
+    // generic gate, then restores the timestamp selection for the backend.
+    let original_valid = ia.valid;
+    let fs_allows_time = inode.allow_set_time(idmap, cred);
+    if fs_allows_time { ia.valid &= !ATTR_TIME_BITS; }
     // `may_setattr` runs first (Linux calls it at the top of `notify_change`,
     // ahead of this function): an immutable or append-only inode refuses every
     // mode / owner / explicit-timestamp change with EPERM, and the "set both
@@ -119,7 +127,9 @@ pub fn setattr_prepare(idmap: &Idmap, inode: &InodeRef, ia: &mut Iattr, cred: &C
     // access may make. Keeping it here rather than only in `notify_change`
     // means a direct `setattr_prepare` caller (`file_setattr`, a backend
     // `->setattr`) cannot skip the flag gate.
-    may_setattr(idmap, inode, ia.valid, cred)?;
+    let result = may_setattr(idmap, inode, ia.valid, cred);
+    ia.valid = original_valid;
+    result?;
     // The size constraints can't be overridden using ATTR_FORCE, so they run
     // ahead of it. The append-only reject on a size change is also enforced by
     // the truncate callers directly (an `S_APPEND` inode refuses any size
@@ -179,7 +189,7 @@ pub fn setattr_prepare(idmap: &Idmap, inode: &InodeRef, ia: &mut Iattr, cred: &C
     // other UTIME_OMIT), which Linux gates on ownership even though the live
     // field's value is "now". The "both to now" form's own gate is the
     // MAY_WRITE fallback inside `may_setattr` above.
-    if attr_times_set(ia.valid) && !is_owner { return Err(VfsError::Eperm); }
+    if attr_times_set(ia.valid) && !is_owner && !fs_allows_time { return Err(VfsError::Eperm); }
     Ok(())
 }
 

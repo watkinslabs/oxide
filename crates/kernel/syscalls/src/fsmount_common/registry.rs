@@ -57,6 +57,7 @@ const TRACEFS_MAGIC: u64 = 0x7472_6163;
 const CONFIGFS_MAGIC: u64 = 0x6265_6570;
 const AUTOFS_SUPER_MAGIC: u64 = 0x0187;
 const BINFMTFS_MAGIC: u64 = 0x4249_4e4d;
+const SQUASHFS_MAGIC: u64 = squashfs::SQUASHFS_SUPER_MAGIC;
 
 static FS_TYPES_REGISTERED: Spinlock<bool, LockClass> = Spinlock::new(false);
 
@@ -251,11 +252,12 @@ fn register_filesystems() {
     // namespace — and that is exactly the caller whose private markers have to
     // go in the unprivileged attribute namespace, which is why the constructor
     // has to know which namespace it is being mounted from.
-    fn overlay_ctor(ty: Arc<dyn vfs::FileSystemType>, d: &str, sb_flags: u64) -> R {
+    fn overlay_ctor(ty: Arc<dyn vfs::FileSystemType>, d: &str, sb_flags: u64,
+        creator_cred: &vfs::Cred) -> R {
         let resolve = |p: &str| -> Result<vfs::InodeRef, syscall::errno::Errno> {
             vfs::resolve_abs(p).map_err(overlayfs::err::to_errno)
         };
-        let fs = overlayfs::OverlayFs::open(d, &resolve, in_initial_user_ns())
+        let fs = overlayfs::OverlayFs::open_with_cred(d, &resolve, in_initial_user_ns(), creator_cred)
             .map_err(overlayfs::err::to_vfs)?;
         let root = fs.root_inode();
         // A mount with no writable layer reports itself read-only, so a write
@@ -265,10 +267,12 @@ fn register_filesystems() {
         mounted(ty, f, Some(root), overlayfs::FS_NAME, sb_flags)
     }
     for name in [overlayfs::FS_NAME, overlayfs::FS_NAME_LEGACY] {
-        let _ = register_fs(FsType::new(name, overlayfs::OVERLAYFS_SUPER_MAGIC,
+        let _ = register_fs(FsType::with_credentialed_constructor(name, overlayfs::OVERLAYFS_SUPER_MAGIC,
             FsFlags::FS_USERNS_MOUNT,
             Box::new(|ty, _s: Option<&str>, _t: &str, d: &str, f: u64,
-                      _p: &[vfs::fs::FsParameter]| -> R { overlay_ctor(ty, d, f) })));
+                      _p: &[vfs::fs::FsParameter], c: &vfs::Cred| -> R {
+                overlay_ctor(ty, d, f, c)
+            }), None));
     }
     // exFAT is what large removable media carry: FAT cannot hold a file over
     // four gigabytes, so every camera card and external drive sold for use
@@ -364,6 +368,24 @@ fn register_filesystems() {
                   _p: &[vfs::fs::FsParameter]| -> R {
         f2fs_fill(ty, source, d, sb_flags)
     })));
+    // SquashFS is an immutable block filesystem. Linux registers it with both
+    // the device requirement and idmapped-mount capability, then forces
+    // SB_RDONLY in get_tree before the superblock is published. Resolve only
+    // read access here: asking for a writable mount must not make a read-only
+    // format fail merely because the block node is not writable.
+    let _ = register_fs(FsType::with_parameters(
+        "squashfs", SQUASHFS_MAGIC, FsFlags::FS_REQUIRES_DEV | FsFlags::FS_ALLOW_IDMAP,
+        Box::new(|ty, source: Option<&str>, _t: &str, d: &str, _sb_flags: u64,
+                  _p: &[vfs::fs::FsParameter]| -> R {
+            let source = source.ok_or(vfs::VfsError::Enoent)?;
+            let (dev, _dev_t) = resolve_block_source(source, vfs::MAY_READ)?;
+            let opts = squashfs::opts::parse(squashfs::Options::defaults(), d)
+                .map_err(squashfs::mount::errno_to_vfs)?;
+            let fs = squashfs::SquashFs::open_with(dev, source, false, opts)?;
+            let root = fs.root_inode()?;
+            let fs: Arc<dyn vfs::fs::FileSystem> = fs;
+            mounted(ty, fs, Some(root), source, vfs::superblock::SB_RDONLY)
+        }), Some(squashfs::SQUASHFS_PARAMS)));
     // procfs declares the three options it ENFORCES (`gid=`, `hidepid=`,
     // `subset=`) and builds a per-mount root that carries them. The table was an
     // empty list while the root inode was a process-global singleton — there was
@@ -424,6 +446,13 @@ fn register_filesystems() {
             mounted(ty, fs, None, $name, sb_flags)
         }), Some($params)));
     }; }
+    macro_rules! pseudo_bpf_root_attr { ($name:literal, $magic:expr, $params:expr) => {
+        let _ = register_fs(FsType::with_parameters($name, $magic, FsFlags::empty(), Box::new(|ty, _, _, d: &str, sb_flags, p: &[vfs::fs::FsParameter]| -> R {
+            let fs: Arc<dyn vfs::fs::FileSystem> =
+                crate::fsmount_pseudo_params::pseudo_bpf_with_root_attr($name, $magic, $params, d, p)?;
+            mounted(ty, fs, None, $name, sb_flags)
+        }), Some($params)));
+    }; }
     pseudo_no_params!("securityfs", SECURITYFS_MAGIC);
     // selinuxfs declares no parameter, and unlike the generic pseudo types
     // its mount root is the policy interface's OWN tree — a fresh empty tree
@@ -453,7 +482,7 @@ fn register_filesystems() {
     // instance root here; the four `delegate_*` values name what a bpf TOKEN
     // created from this mount may do, which the token subsystem answers, not
     // the mount.
-    pseudo_root_attr!("bpf", BPF_FS_MAGIC, crate::fsmount_pseudo_params::BPF_PARAMS);
+    pseudo_bpf_root_attr!("bpf", BPF_FS_MAGIC, crate::fsmount_pseudo_params::BPF_PARAMS);
     let _ = register_fs(FsType::with_parameters("configfs", CONFIGFS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, d: &str, sb_flags, p: &[vfs::fs::FsParameter]| -> R {
         tracefs::mount_opts::mount_configfs(d, p)?;
         mounted(ty, Arc::new(tracefs::fs_impl::ConfigfsFs), None, "configfs", sb_flags)

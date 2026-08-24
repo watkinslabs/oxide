@@ -69,7 +69,7 @@ impl NetStack {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn check_syn_cookie(&self, net_ns: u64, listener: &TcpListenEntry,
         src_ip: IpAddr, dst_ip: IpAddr, seg: &[u8], hdr: &crate::tcp_hdr::TcpHdr,
-        ipv6: bool) -> Option<Rebuild>
+        ipv6: bool, route_metrics: crate::route_metrics::RouteMetrics) -> Option<Rebuild>
     {
         let now = crate::tcp_conn::ka_now_ns();
         if listener.no_recent_synq_overflow(now) { return None; }
@@ -87,9 +87,12 @@ impl NetStack {
         let ts = crate::tcp_hdr::parse_ts_option(seg);
         let ts_off = crate::secure_seq::secure_tcp_ts_off(
             dst_ip, src_ip, hdr.dst_port, hdr.src_port);
-        let opts = syncookies::tsopt::decode(ts.is_some(),
+        let mut opts = syncookies::tsopt::decode(ts.is_some(),
             ts.map_or(0, |(_, tsecr)| tsecr.wrapping_sub(ts_off)),
             crate::sysctl::tcp_option_permissions_in(net_ns))?;
+        if !cookie_ecn_ok(crate::sysctl::tcp_ecn_in(net_ns), route_metrics.features) {
+            opts.ecn_ok = false;
+        }
         Some(Rebuild {
             isn: hdr.ack.wrapping_sub(1),
             peer_isn: hdr.seq.wrapping_sub(1),
@@ -167,5 +170,22 @@ impl NetStack {
         }
         self.activate_tcp_timers(&entry);
         Ok(())
+    }
+}
+
+fn cookie_ecn_ok(tcp_ecn: i64, route_features: u32) -> bool {
+    tcp_ecn != 0 || route_features & crate::route_metrics::RTAX_FEATURE_ECN != 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cookie_ecn_ok;
+    use crate::route_metrics::RTAX_FEATURE_ECN;
+
+    #[test]
+    fn cookie_ecn_requires_policy_or_route_feature() {
+        assert!(!cookie_ecn_ok(0, 0));
+        assert!(cookie_ecn_ok(0, RTAX_FEATURE_ECN));
+        assert!(cookie_ecn_ok(2, 0));
     }
 }

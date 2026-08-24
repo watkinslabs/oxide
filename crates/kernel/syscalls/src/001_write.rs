@@ -1,4 +1,5 @@
 // 001 write — one syscall, one file (docs/53 §0).
+use alloc::vec::Vec;
 use syscall::{errno::Errno, SyscallArgs};
 #[cfg(test)]
 use crate::socket;
@@ -119,9 +120,8 @@ pub fn sys_write(args: &SyscallArgs) -> i64 {
             }
         }
     }
-    let empty: [u8; 0] = [];
-    let slice: &[u8] = if cnt == 0 {
-        &empty
+    let bounce = if cnt == 0 {
+        Vec::new()
     } else {
         if let Err(rv) = crate::userbuf::validate_user_buf_readable(buf, cnt as u64, 1) { return rv; }
         cnt = crate::userbuf::clamp_rw_count(cnt);
@@ -130,19 +130,22 @@ pub fn sys_write(args: &SyscallArgs) -> i64 {
             Ok(n)  => n,
             Err(e) => return e,
         };
-        // SAFETY: range [buf, buf+cnt) validated readable in the caller's AS before CPL=0 dereference.
-        unsafe { core::slice::from_raw_parts(buf as *const u8, cnt) }
+        let mut bytes = alloc::vec![0u8; cnt];
+        if uaccess::copy_from_user(&mut bytes, buf).is_err() {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+        bytes
     };
     #[cfg(feature = "debug-zram-lifecycle")]
     crate::signal_trace::zram_lifecycle_stage(b"write-buffer");
     #[cfg(feature = "debug-session")]
-    trace_session_write(&file, slice);
+    trace_session_write(&file, &bounce);
     #[cfg(feature = "debug-stderr")]
-    trace_stderr_write(fd, slice);
+    trace_stderr_write(fd, &bounce);
     let context = socket::SendContext::new(cur);
     #[cfg(feature = "debug-zram-lifecycle")]
     crate::signal_trace::zram_lifecycle_stage(b"write-dispatch");
-    let wr = socket::write(&context, file.clone(), slice);
+    let wr = socket::write(&context, file.clone(), &bounce);
     #[cfg(feature = "debug-zram-lifecycle")]
     crate::signal_trace::zram_lifecycle_stage(b"write-complete");
     #[cfg(feature = "debug-udevdb")]

@@ -193,6 +193,14 @@ impl Cache {
         self.pages.writeback_range_with(Self::key(ino), lo, hi, max, sink)
     }
 
+    /// Complete dirty pages covered by a cluster already materialized by the
+    /// compressed writer. The cluster writer may receive only part of the
+    /// cluster from generic writeback, but it writes the whole object.
+    /// # C: O(dirty pages in cluster)
+    pub fn clean_range(&self, ino: u32, lo: u64, hi: u64) -> usize {
+        self.pages.clean_range(Self::key(ino), lo, hi)
+    }
+
     /// The machine frame page `index` of `ino` already lives in.
     ///
     /// Never fills and never converts: what a residency question may ask.

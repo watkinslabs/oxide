@@ -134,6 +134,17 @@ fn sys_move_mount_impl(args: &SyscallArgs) -> i64 {
     let target_d = target_mt.mountpoint.clone();
     let target_mnt = target_mt.parent.mnt_id;
 
+    // Linux security_move_mount() checks the destination mountpoint before
+    // any detached or existing mount is grafted there. The target inode is
+    // the object being mounted on; checking only in the source-specific
+    // branches would leave bind, beneath, and set-group moves inconsistent.
+    let Some(target_inode) = target_d.inode() else {
+        return -(Errno::Enoent.as_i32() as i64);
+    };
+    if fs::selinux::perm::mount_on(&target_inode).is_err() {
+        return -(Errno::Eacces.as_i32() as i64);
+    }
+
     #[cfg(feature = "debug-boot")]
     if target.contains("credentials") {
         let ns = sched::live::current().and_then(sched::Task::mount_namespace_id).unwrap_or(0);

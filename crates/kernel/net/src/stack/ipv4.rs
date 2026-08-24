@@ -186,14 +186,14 @@ impl NetStack {
         let Some((reassembled, frag_max)) = account_ingress_copy(net_ns,
             self.ipv4_nf_defrag_ingress(net_ns, iface, l3))?
             else { return Ok(()); };
-        let l3 = &reassembled[..];
+        let mut ingress_pkt = Pkt::from_owned(reassembled);
         // PRE_ROUTING fires on every received packet before the routing
         // decision. Non-local destinations are forwarded only when
         // `net.ipv4.ip_forward` enables router mode.
-        let pre_routing = crate::netfilter_hook::nf_hook_eval_ctx(
-            &crate::netfilter_hook::NfHookCtx::ingress(
-                net_ns, NF_INET_PRE_ROUTING, l3, NFPROTO_IPV4, iface, 0));
-        if pre_routing.verdict == 0 { return Ok(()); }
+        let pre_routing = crate::netfilter_hook::nf_hook_packet_in(
+            net_ns, NF_INET_PRE_ROUTING, &mut ingress_pkt, NFPROTO_IPV4, Some(iface), 0);
+        if !pre_routing.accepted() { return Ok(()); }
+        let l3 = ingress_pkt.data();
         crate::mib::bump(net_ns, crate::mib::Mib::IpInReceives);
         let hdr = Ipv4Hdr::parse(l3).map_err(|e| {
             crate::mib::bump(net_ns, crate::mib::Mib::IpInHdrErrors);
@@ -204,10 +204,18 @@ impl NetStack {
         { return Ok(()); }
         if !self.ipv4_dst_is_local_mark_in(net_ns, hdr.dst, pre_routing.mark) {
             crate::mib::bump(net_ns, crate::mib::Mib::IpForwDatagrams);
-            return self.forward_ipv4_mark_in(net_ns, iface, l3, pre_routing.mark);
+            return self.forward_ipv4_mark_in(net_ns, iface, l3, pre_routing.mark, Some(&ingress_pkt));
         }
-        if crate::netfilter_hook::nf_hook_eval_ctx(&crate::netfilter_hook::NfHookCtx::ingress(
-            net_ns, NF_INET_LOCAL_IN, l3, NFPROTO_IPV4, iface, pre_routing.mark)).verdict == 0 { return Ok(()); }
+        if !crate::netfilter_hook::nf_hook_packet_in(
+            net_ns, NF_INET_LOCAL_IN, &mut ingress_pkt, NFPROTO_IPV4, Some(iface), pre_routing.mark).accepted() { return Ok(()); }
+        let l3 = ingress_pkt.data();
+        let tproxy = ingress_pkt.tproxy_target().and_then(|target| {
+            (target.addr.0[4..] == [0; 12]).then(|| (
+                if target.addr.0[..4] == [0; 4] { hdr.dst } else {
+                    Ipv4Addr::new(target.addr.0[0], target.addr.0[1],
+                        target.addr.0[2], target.addr.0[3])
+                }, target.port))
+        });
         let total = hdr.total_len as usize;
         if total > l3.len() { return Err(NetError::Einval); }
         // A delivered header's option area is compiled and PAID before
@@ -266,7 +274,7 @@ impl NetStack {
                     let dev = self.ifaces.acquire_egress_in_ns(iface, net_ns)
                         .ok_or(NetError::Enetunreach)?;
                     // ICMP echo reply is kernel-generated → LOCAL_OUT + POST_ROUTING.
-                    if nf_output(&p, NFPROTO_IPV4) { dev.xmit(p)?; }
+                    if nf_output(&mut p, NFPROTO_IPV4) { dev.xmit(p)?; }
                 } else if crate::ping::is_reply(crate::ping::PingFamily::V4, echo.typ) {
                     let hatype = self.ifaces.lookup_in_ns(iface, net_ns)
                         .map_or(0, |dev| dev.hardware_type());
@@ -295,8 +303,11 @@ impl NetStack {
                 // transport header, so resolve it once before the demux
                 // rather than per selected endpoint.
                 let datagram = payload.get(..udp.length as usize).unwrap_or(payload);
-                let endpoints = self.udp_demux_in(net_ns, hdr.src, udp.src_port, hdr.dst,
-                    udp.dst_port, iface, datagram);
+                let (demux_dst, demux_port) = tproxy
+                    .map(|(dst, port)| (dst, if port == 0 { udp.dst_port } else { port }))
+                    .unwrap_or((hdr.dst, udp.dst_port));
+                let endpoints = self.udp_demux_in(net_ns, hdr.src, udp.src_port, demux_dst,
+                    demux_port, iface, datagram);
                 let hatype = self.ifaces.lookup_in_ns(iface, net_ns)
                     .map_or(0, |dev| dev.hardware_type());
                 let gro_offered = crate::udp_gro::device_offers_gro(hatype);
@@ -395,7 +406,7 @@ impl NetStack {
                 crate::mib::bump(net_ns, crate::mib::Mib::IpInDelivers);
                 crate::mib::bump(net_ns, crate::mib::Mib::TcpInSegs);
                 self.deliver_tcp_packet_hop(net_ns, iface, IpAddr::V4(hdr.src), IpAddr::V4(hdr.dst),
-                    payload, full_packet, hdr.ttl)?
+                    payload, full_packet, hdr.ttl, ingress_pkt.tproxy_target())?
             }
             p if p == IpProto::Igmp as u8 => {
                 crate::mib::bump(net_ns, crate::mib::Mib::IpInDelivers);

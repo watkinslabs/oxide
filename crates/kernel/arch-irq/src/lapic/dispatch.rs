@@ -258,8 +258,8 @@ unsafe extern "C" fn oxide_irq_dispatch(regs: *mut hal_x86_64::PtRegs) {
 /// interrupted `PtRegs`.
 ///
 /// `user_mode(regs)` picks the arm: a user-mode return runs the return-to-user
-/// work loop; a kernel-mode return services a pending preemption through the
-/// shared IRQ-return scheduler loop. Both arms preserve the masked-IRQ return
+/// work loop; a kernel-mode return leaves a pending tick for the next
+/// voluntary preemption point. Both arms preserve the masked-IRQ return
 /// contract expected by the assembly epilogue.
 ///
 /// # SAFETY: invoked only from the IRQ-exit asm with IRQs masked, the hardirq
@@ -281,9 +281,12 @@ unsafe extern "C" fn oxide_irq_exit_to_user(regs: *mut hal_x86_64::PtRegs) {
         // SAFETY: same checked, live interrupted frame; RIP is the kernel PC
         // the IRQ-return path is about to resume.
         sched::diag::note_interrupted_kernel_pc(unsafe { (*regs).rip });
-        // SAFETY: this is the outer IRQ return on the interrupted task stack;
-        // hardirq/softirq accounting was released by the dispatcher.
-        unsafe { sched::live::preempt_schedule_irq::<hal_x86_64::X86IrqGate>(); }
+        // This build uses VOLUNTARY preemption. Linux's
+        // irqentry_exit_to_kernel_mode_preempt() only calls
+        // irqentry_exit_cond_resched() when full kernel preemption is enabled;
+        // keep a pending tick for the next explicit preempt_enable/cond_resched
+        // point instead of nesting the scheduler on the task's IRQ-return
+        // stack.
         return;
     }
     // Linux routes NMI through `irqentry_nmi_enter`/`irqentry_nmi_exit`, which

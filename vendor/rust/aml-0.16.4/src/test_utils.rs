@@ -68,6 +68,10 @@ pub(crate) fn crudely_cmp_values(a: &AmlValue, b: &AmlValue) -> bool {
             AmlValue::String(ref b) => a == b,
             _ => false,
         },
+        AmlValue::Reference(a) => match b {
+            AmlValue::Reference(b) => a == b,
+            _ => false,
+        },
         AmlValue::OpRegion { region, offset, length, parent_device } => match b {
             AmlValue::OpRegion {
                 region: b_region,

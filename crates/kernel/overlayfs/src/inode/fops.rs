@@ -8,9 +8,11 @@
 
 extern crate alloc;
 
+use alloc::string::String;
+use alloc::sync::Arc;
 use vfs::file_ops::{DirContext, FileOps};
 use vfs::types::FileType;
-use vfs::{Inode, KResult, VfsError};
+use vfs::{Dentry, File, Inode, InodeRef, KResult, OpenFlags, VfsError};
 
 use crate::readdir;
 
@@ -18,6 +20,37 @@ use super::node::{ovl_of, refresh};
 use super::ops::{copy_up_chain, real_of, OvlOps};
 
 impl FileOps for OvlOps {
+    fn mmap_shared_frame(&self, inode: &Inode, off: u64) -> KResult<Option<vfs::SharedFrame>> {
+        real_of(inode, true).ok_or(VfsError::Eio)?.mmap_shared_frame(off)
+    }
+
+    fn mmap_page_mkwrite(&self, inode: &Inode, off: u64) -> KResult<()> {
+        super::ops::copy_up_with_data(inode).map_err(super::ops::err)?;
+        real_of(inode, false).ok_or(VfsError::Erofs)?.mmap_page_mkwrite(off)
+    }
+
+    fn supports_remap_file_range(&self) -> bool { true }
+
+    fn remap_file_range(&self, src: &File, src_off: u64, dst: &File, dst_off: u64,
+                        len: u64, flags: u32) -> KResult<u64> {
+        const REMAP_FILE_DEDUP: u32 = 1;
+        const REMAP_FILE_CAN_SHORTEN: u32 = 2;
+        if flags & !(REMAP_FILE_DEDUP | REMAP_FILE_CAN_SHORTEN) != 0 {
+            return Err(VfsError::Einval);
+        }
+        if flags & REMAP_FILE_DEDUP == 0 {
+            super::ops::copy_up_with_data(dst.inode()).map_err(super::ops::err)?;
+        } else if ovl_of(dst.inode()).is_none_or(|o| o.entry().upper.is_none())
+            || ovl_of(src.inode()).is_none_or(|o| o.entry().upper.is_none()) {
+            return Err(VfsError::Eperm);
+        }
+        let source = real_of(src.inode(), true).ok_or(VfsError::Eio)?;
+        let target = real_of(dst.inode(), false).ok_or(VfsError::Erofs)?;
+        let source_file = backing_file(source, OpenFlags::O_RDONLY);
+        let target_file = backing_file(target, OpenFlags::O_RDWR);
+        source_file.remap_file_range(src_off, &target_file, dst_off, len, flags)
+    }
+
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         real_of(inode, true).ok_or(VfsError::Eio)?.read(off, buf)
     }
@@ -62,4 +95,8 @@ impl FileOps for OvlOps {
         let _ = datasync;
         Ok(())
     }
+}
+
+fn backing_file(inode: InodeRef, flags: OpenFlags) -> Arc<File> {
+    File::new(inode.clone(), Dentry::new(None, String::new(), inode), flags)
 }

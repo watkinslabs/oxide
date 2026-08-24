@@ -198,6 +198,7 @@ dependencies = [
  "rtnl-link",
  "sync",
  "syscall",
+ "timer",
 ]
 
 [[package]]
@@ -406,6 +407,7 @@ dependencies = [
  "crng",
  "crypt",
  "drv",
+ "sched",
  "sync",
  "syscall",
  "vfs",
@@ -550,6 +552,7 @@ dependencies = [
  "pci-irq",
  "pmm",
  "sched",
+ "softirq",
  "sound",
  "sync",
  "syscall",
@@ -715,10 +718,13 @@ name = "drv-virtio-9p"
 version = "0.1.0"
 dependencies = [
  "hal",
+ "hal-aarch64",
+ "hal-x86_64",
  "iommu",
  "ninep",
  "pci",
  "pmm",
+ "sched",
  "sync",
  "virtio",
 ]
@@ -748,9 +754,12 @@ version = "0.1.0"
 dependencies = [
  "fuse-transport",
  "hal",
+ "hal-aarch64",
+ "hal-x86_64",
  "iommu",
  "pci",
  "pmm",
+ "sched",
  "sync",
  "virtio",
 ]
@@ -1052,6 +1061,7 @@ dependencies = [
  "blockcipher",
  "boot-info",
  "crc",
+ "crng",
  "crypt",
  "fs",
  "klog",
@@ -1327,6 +1337,7 @@ checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 name = "ima"
 version = "0.1.0"
 dependencies = [
+ "audit",
  "crypt",
  "tpm",
 ]
@@ -1378,6 +1389,7 @@ dependencies = [
  "netlink",
  "pmm",
  "sched",
+ "selinux-runtime",
  "sync",
  "syscall",
  "timekeeper",
@@ -1500,6 +1512,7 @@ dependencies = [
  "hal",
  "hal-aarch64",
  "hal-x86_64",
+ "input",
  "iommu",
  "ipc",
  "kalloc",
@@ -1657,6 +1670,7 @@ dependencies = [
  "block",
  "sched",
  "sync",
+ "timekeeper",
 ]
 
 [[package]]
@@ -1755,6 +1769,7 @@ dependencies = [
  "bitflags",
  "bluetooth",
  "cgroup",
+ "conntrack",
  "cpu",
  "crng",
  "drv",
@@ -1765,11 +1780,13 @@ dependencies = [
  "landlock",
  "loom",
  "namespace-identity",
+ "nat",
  "network-namespace",
  "nscg",
  "pmm",
  "sched",
  "security",
+ "selinux",
  "selinux-runtime",
  "siphash",
  "softirq",
@@ -1836,6 +1853,7 @@ dependencies = [
  "namespace-identity",
  "network-namespace",
  "sched",
+ "selinux-runtime",
  "sync",
  "syscall",
  "time-namespace",
@@ -1895,6 +1913,7 @@ name = "overlayfs"
 version = "0.1.0"
 dependencies = [
  "klog",
+ "sched",
  "sync",
  "syscall",
  "vfs",
@@ -2059,6 +2078,7 @@ version = "0.1.0"
 dependencies = [
  "kstrtox",
  "sync",
+ "thermal",
  "vfs",
 ]
 
@@ -2098,7 +2118,9 @@ dependencies = [
  "aslr",
  "audit",
  "block",
+ "bonding",
  "cgroup",
+ "conntrack",
  "cpu",
  "cpufreq",
  "cpuidle",
@@ -2376,6 +2398,7 @@ dependencies = [
  "hal",
  "kernfs",
  "klog",
+ "namespace-identity",
  "pmm",
  "sched",
  "sync",
@@ -2404,8 +2427,10 @@ name = "selinuxfs"
 version = "0.1.0"
 dependencies = [
  "audit",
+ "hal",
  "kernfs",
  "netlink",
+ "pmm",
  "selinux",
  "selinux-runtime",
  "sync",
@@ -2577,6 +2602,7 @@ dependencies = [
  "drv",
  "hal",
  "klog",
+ "pmm",
  "sched",
  "sync",
  "syscall",
@@ -2611,6 +2637,7 @@ dependencies = [
  "sync",
  "syscall",
  "vfs",
+ "zlib-rs",
  "zstd",
 ]
 
@@ -2728,6 +2755,7 @@ dependencies = [
  "socket",
  "softirq",
  "sound",
+ "squashfs",
  "sync",
  "syscall",
  "sysfs",
@@ -2749,6 +2777,7 @@ version = "0.1.0"
 dependencies = [
  "backlight",
  "block",
+ "bonding",
  "cmdline",
  "cpu",
  "cpufreq",

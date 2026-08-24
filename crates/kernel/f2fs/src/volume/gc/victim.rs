@@ -259,6 +259,13 @@ pub struct Found {
 /// # C: O(min(sections, max_search))
 pub fn pick_unit(us: &[Unit], per_seg: u16, segs_per_sec: u32, search: Search, skip: &[u32])
     -> Option<Found> {
+    pick_unit_with_valid_thresh(us, per_seg, segs_per_sec, search, skip, 100)
+}
+
+/// One-time-GC selection with Linux's live-block ratio ceiling. # C: O(min(sections, max_search))
+pub fn pick_unit_with_valid_thresh(us: &[Unit], per_seg: u16, segs_per_sec: u32,
+                                   search: Search, skip: &[u32], valid_thresh_ratio: u32)
+    -> Option<Found> {
     if us.is_empty() { return None; }
     let per_sec = segs_per_sec.max(1);
     let (min_mtime, max_mtime) = unit_mtime_span(us);
@@ -270,7 +277,14 @@ pub fn pick_unit(us: &[Unit], per_seg: u16, segs_per_sec: u32, search: Search, s
     for i in 0..us.len() {
         let u = &us[(start + i) % us.len()];
         if !unit_eligible(u) || skip.contains(&u.first) { continue; }
-        let c = unit_cost(search.policy, u, per_seg, per_sec, min_mtime, max_mtime);
+        let capacity = u64::from(per_seg) * u64::from(per_sec);
+        let over_valid = u64::from(u.live) * 100
+            >= capacity.saturating_mul(u64::from(valid_thresh_ratio));
+        let c = if valid_thresh_ratio < 100 && over_valid {
+            COST_CEILING
+        } else {
+            unit_cost(search.policy, u, per_seg, per_sec, min_mtime, max_mtime)
+        };
         if best.is_none_or(|(bc, _)| c < bc) { best = Some((c, u.first)); }
         searched += 1;
         cursor = (u.first + per_sec) % total;

@@ -45,6 +45,7 @@ impl SuperBlock {
             s_root: RwLock::new(None),
             s_umount: crate::rwsem::VfsRwsem::<sync::Superblock>::new(),
             s_fs_info: Spinlock::new(s_fs_info),
+            s_security: Spinlock::new(Arc::new(())),
             icache: Spinlock::new(BTreeMap::new()),
             s_wb: Spinlock::new(BTreeMap::new()),
             s_encoding: AtomicU32::new(0),
@@ -124,5 +125,15 @@ impl SuperBlock {
     /// `inode.private::<T>()`. # C: O(1)
     pub fn fs_info_as<T: Any + Send + Sync>(&self) -> Option<Arc<T>> {
         self.s_fs_info.lock().clone().downcast::<T>().ok()
+    }
+
+    /// Install the concrete LSM blob for this superblock.
+    pub fn set_security<T: Any + Send + Sync>(&self, security: Arc<T>) {
+        *self.s_security.lock() = security;
+    }
+
+    /// Read the concrete LSM blob for this superblock.
+    pub fn security_as<T: Any + Send + Sync>(&self) -> Option<Arc<T>> {
+        self.s_security.lock().clone().downcast::<T>().ok()
     }
 }

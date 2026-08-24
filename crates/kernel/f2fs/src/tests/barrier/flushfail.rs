@@ -32,7 +32,7 @@ fn spec() -> NewInode {
 /// The second, because member zero carries the pack and is fenced by its own
 /// commit block rather than by the device pass this is about.
 fn spread_refusing(refuse: u32) -> Volume<DeviceSet<MemImage>> {
-    let b = test_image::with_root().devices(&[("/dev/a", 8), ("/dev/b", 7)]);
+    let b = test_image::with_root().devices(&[("/dev/a", 9), ("/dev/b", 6)]);
     let (media, table) = test_image::spread::members(b);
     let media: Vec<MemImage> = media.into_iter().enumerate()
         .map(|(i, m)| {
@@ -114,21 +114,18 @@ fn an_fsync_fences_only_the_members_the_files_blocks_landed_on() {
     v.sync_data().unwrap();
     let mask = v.dirty_ino_devs.mask(ino);
     assert!(mask != 0, "nothing was recorded for a file that has been written");
-    // Non-vacuity: a file spread over BOTH members would make the assertion
-    // below identical to the old fence-everything behaviour. Measured at 0x2 on
-    // this fixture — one member — so the loop can genuinely fail.
-    assert!(mask != 0b11, "the file is on both members; this case proves nothing");
-    // The record must cover the member the DATA landed on, not only the one its
-    // node did: a build that recorded node writes alone would fence the node's
-    // member and leave the file's bytes in another member's cache.
-    let at = v.holder_addr(ino, crate::volume::Holder::Inode, 0).unwrap();
-    let (data_member, _) = v.devices().target(at);
-    assert!(mask & (1 << data_member) != 0,
-            "the member the data landed on ({data_member}) is not in the record {mask:#x}");
-    // Measured on this fixture: the file's data block and its node both land on
-    // member 1, so this assertion cannot tell the data writer's record from the
-    // node writer's. A filed row records that gap rather than a fixture bent to
-    // hide it.
+    // The record must cover BOTH owners: the member the DATA landed on, not
+    // only the one its inode node did. A build that recorded node writes alone
+    // would leave the file's bytes in another member's cache.
+    let data_at = v.holder_addr(ino, crate::volume::Holder::Inode, 0).unwrap();
+    let (data_member, _) = v.devices().target(data_at);
+    let node_at = v.node_addr(ino).unwrap();
+    let (node_member, _) = v.devices().target(node_at);
+    assert_ne!(data_member, node_member,
+               "fixture must put file data and its inode node on different members: data={data_at} node={node_at}");
+    let expected = (1u64 << data_member) | (1u64 << node_member);
+    assert_eq!(mask, expected,
+               "the data and node members were not both recorded: data={data_member} node={node_member} mask={mask:#x}");
     for m in v.source_ref().members() { m.forget_commands(); }
     v.fsync(ino).unwrap();
     for i in 0..2usize {

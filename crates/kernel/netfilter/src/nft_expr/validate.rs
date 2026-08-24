@@ -27,6 +27,7 @@ const HOOKS_TCPMSS:  u32 = bit(NF_INET_FORWARD) | bit(NF_INET_LOCAL_OUT)
 const HOOKS_SOCKET:  u32 = bit(NF_INET_PRE_ROUTING) | bit(NF_INET_LOCAL_IN)
     | bit(NF_INET_LOCAL_OUT);
 const HOOKS_TPROXY:   u32 = bit(NF_INET_PRE_ROUTING);
+const HOOKS_NOTRACK:  u32 = bit(NF_INET_PRE_ROUTING) | bit(NF_INET_LOCAL_OUT);
 const HOOKS_SYNPROXY: u32 = bit(NF_INET_LOCAL_IN) | bit(NF_INET_FORWARD);
 const HOOKS_XFRM_IN:  u32 = bit(NF_INET_FORWARD) | bit(NF_INET_LOCAL_IN)
     | bit(NF_INET_PRE_ROUTING);
@@ -83,6 +84,10 @@ pub fn validate_expr(expr: &Expr, family: u8, hook: u8) -> Result<(), ParseError
             family_allows(family == NFPROTO_NETDEV)?;
             hooks_allow(hook, HOOKS_FWD_NETDEV)
         }
+        Expr::Dup { .. } => {
+            family_allows(family == NFPROTO_NETDEV)?;
+            hooks_allow(hook, HOOKS_FWD_NETDEV)
+        }
         Expr::FlowOffload { .. } => {
             family_allows(inet_family(family))?;
             hooks_allow(hook, HOOKS_FLOW)
@@ -96,6 +101,7 @@ pub fn validate_expr(expr: &Expr, family: u8, hook: u8) -> Result<(), ParseError
             }
         }
         Expr::Socket { .. } => hooks_allow(hook, HOOKS_SOCKET),
+        Expr::Notrack => hooks_allow(hook, HOOKS_NOTRACK),
         Expr::Tproxy { .. } => {
             family_allows(inet_family(family))?;
             hooks_allow(hook, HOOKS_TPROXY)

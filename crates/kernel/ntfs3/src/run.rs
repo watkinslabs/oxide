@@ -133,7 +133,7 @@ fn signed(bytes: &[u8], width: usize) -> i64 {
 /// # C: O(packed bytes)
 pub fn unpack(packed: &[u8], svcn: u64, evcn: u64, clusters: u64) -> Result<Runs, RunError> {
     let mut out = Runs::new();
-    if evcn + 1 == svcn { return Ok(out); }
+    if (evcn == u64::MAX && svcn == 0) || evcn + 1 == svcn { return Ok(out); }
     if evcn < svcn { return Err(RunError::Mismatch); }
 
     let mut at = 0usize;

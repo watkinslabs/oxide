@@ -3,7 +3,6 @@ use alloc::sync::Arc;
 mod mountfs;
 mod sync_policy;
 
-use block::types::InodeId;
 use super::inode::{build_file_inode, build_stat_inode, ext4_wrap_ino};
 use super::state::RootfsState;
 
@@ -58,7 +57,6 @@ impl RootfsState {
     /// wrapping the new on-disk type, or `iget` can return the old FileType.
     /// # C: O(log N_ino)
     pub(crate) fn forget_created_ino(&self, ino: u32) {
-        self.page_cache.invalidate(InodeId(ino as u64));
         if let Some(sb) = self.i_sb() { sb.iforget(ext4_wrap_ino(ino)); }
     }
 
@@ -239,7 +237,6 @@ impl RootfsState {
         if raw.links_count != 0 { return Ok(()); }
         self.mount.free_orphan_inode(ino).map_err(|_| vfs::VfsError::Eio)?;
         let quota = super::quota::release_existing_inode_retry(self, ino, &raw);
-        self.page_cache.invalidate(InodeId(ino as u64));
         quota
     }
 

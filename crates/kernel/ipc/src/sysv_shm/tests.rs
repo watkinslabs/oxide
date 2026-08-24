@@ -75,6 +75,7 @@ fn segment_on(mode: u32, size: usize, backing: Arc<dyn vmm::FileBacking>) -> Arc
     Arc::new(ShmSegment {
         id: 1, key: AtomicI32::new(1), ns: owner.key(), size, mode: AtomicU32::new(mode),
         uid: AtomicU32::new(10), gid: AtomicU32::new(20), cuid: 10, cgid: 20, cpid: 77,
+        security_sid: AtomicU32::new(selinux_runtime::label::kernel_sid()),
         nattch: core::sync::atomic::AtomicI64::new(0),
         creator: Spinlock::new(None),
         backing,

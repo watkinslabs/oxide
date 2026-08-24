@@ -280,6 +280,10 @@ impl Node {
 
 pub struct Tree {
     pub(super) nodes: BTreeMap<u64, Node>,
+    /// Offline cgroups whose hugetlb CSS is kept alive by a reservation or a
+    /// page charge. They have no directory, but their recorded parent and
+    /// counters remain visible to ancestor usage and valid to uncharge.
+    pub(super) dying: BTreeMap<u64, Node>,
     pub(super) next_id: u64,
     /// Next cgroupfs node inode.  Directory and control-file nodes share this
     /// one hierarchy-owned sequence, so a file handle names exactly one node.
@@ -303,7 +307,7 @@ impl Tree {
     /// Empty (unmounted) tree.
     /// # C: O(1)
     pub const fn new() -> Self {
-        Self { nodes: BTreeMap::new(), next_id: ROOT, next_ino: ROOT, proc_cg: BTreeMap::new(),
+        Self { nodes: BTreeMap::new(), dying: BTreeMap::new(), next_id: ROOT, next_ino: ROOT, proc_cg: BTreeMap::new(),
                thread_cg: BTreeMap::new(), exited_procs: BTreeSet::new(), mounted: false,
                hierarchy: HierarchyKind::V2 }
     }
@@ -330,6 +334,18 @@ impl Tree {
     /// Shared `cgroup.events` readiness source for one live cgroup. # C: O(log n)
     pub fn events_poll(&self, id: u64) -> Option<Arc<PollSubscribers>> {
         self.nodes.get(&id).map(|n| Arc::clone(&n.events_poll))
+    }
+
+    /// Number of offline CSS descendants retained for charge lifetime. # C: O(N)
+    pub fn dying_descendants(&self, id: u64) -> usize {
+        self.dying.values().filter(|n| {
+            let mut cur = n.parent;
+            while let Some(parent) = cur {
+                if parent == id { return true; }
+                cur = self.nodes.get(&parent).and_then(|p| p.parent);
+            }
+            false
+        }).count()
     }
 }
 

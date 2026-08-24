@@ -44,6 +44,7 @@ fn pc_comm(t: u32, _s: bool) -> InodeRef { make_pid_comm(t) }
 fn pc_environ(t: u32, _s: bool) -> InodeRef { make_pid_environ(t) }
 fn pc_statm(t: u32, _s: bool) -> InodeRef { make_pid_statm(t) }
 fn pc_wchan(t: u32, _s: bool) -> InodeRef { super::pid_files::make_pid_wchan(t) }
+fn pc_stack(t: u32, _s: bool) -> InodeRef { super::pid_files::make_pid_stack(t) }
 fn pc_oom_score(t: u32, _s: bool) -> InodeRef { make_pid_oom_score(t) }
 fn pc_oom_score_adj(t: u32, _s: bool) -> InodeRef { make_pid_oom_score_adj(t) }
 fn pc_loginuid(t: u32, _s: bool) -> InodeRef { crate::audit_identity::make_loginuid(t) }
@@ -58,7 +59,7 @@ fn pc_uid_map(t: u32, _s: bool) -> InodeRef { crate::userns_idmap::make(t, nscg:
 fn pc_gid_map(t: u32, _s: bool) -> InodeRef { crate::userns_idmap::make(t, nscg::user_ns::IdMapKind::Gid) }
 fn pc_projid_map(t: u32, _s: bool) -> InodeRef { crate::userns_idmap::make(t, nscg::user_ns::IdMapKind::Projid) }
 fn pc_setgroups(t: u32, _s: bool) -> InodeRef { crate::userns_idmap::make_setgroups(t) }
-fn pc_syscall(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"running\n") }
+fn pc_syscall(t: u32, _s: bool) -> InodeRef { super::pid_files::make_pid_syscall(t) }
 fn pc_empty(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"") }
 fn pc_mounts(t: u32, is_self: bool) -> InodeRef {
     crate::mounts::make_proc_mounts(if is_self { None } else { Some(t) })
@@ -109,7 +110,7 @@ const PID_ENTRIES: &[(&str, FileType, PidCtor)] = &[
     ("projid_map", FileType::Regular, PidCtor::Fixed(pc_projid_map)),
     ("setgroups", FileType::Regular, PidCtor::Fixed(pc_setgroups)),
     ("syscall", FileType::Regular, PidCtor::Fixed(pc_syscall)),
-    ("stack", FileType::Regular, PidCtor::Fixed(pc_empty)),
+    ("stack", FileType::Regular, PidCtor::Fixed(pc_stack)),
     ("mounts", FileType::Regular, PidCtor::Fixed(pc_mounts)),
     ("mountinfo", FileType::Regular, PidCtor::Fixed(pc_mountinfo)),
     ("mountstats", FileType::Regular, PidCtor::Fixed(pc_empty)),

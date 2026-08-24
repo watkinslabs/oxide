@@ -44,6 +44,8 @@ const CONSOLE_OUT_DEVICE_GUID: [u8; 16] = [
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 const BS_HANDLE_PROTOCOL: usize = 0x98;
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+const BS_ALLOCATE_POOL: usize = 0x40;
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 const BS_FREE_POOL: usize = 0x48;
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 const BS_LOCATE_HANDLE_BUFFER: usize = 0x138;
@@ -216,31 +218,65 @@ pub unsafe extern "C" fn efi_stub_setup(handle: u64, systab: *const u8) -> u64 {
         // reason as load options: GOP is a boot-services protocol.
         capture_framebuffer(boot_services);
 
-        // GetMemoryMap @ bs+0x38, ExitBootServices @ bs+0xE8.
+        // GetMemoryMap @ bs+0x38, AllocatePool @ bs+0x40,
+        // ExitBootServices @ bs+0xE8.
         type GetMemoryMapFn =
             extern "C" fn(*mut u64, *mut u8, *mut u64, *mut u64, *mut u32) -> u64;
+        type AllocatePoolFn = extern "C" fn(u32, usize, *mut *mut u8) -> u64;
         type ExitBootServicesFn = extern "C" fn(u64, u64) -> u64;
         let get_memory_map: GetMemoryMapFn =
             core::mem::transmute(*(boot_services.add(0x38) as *const u64));
+        let allocate_pool: AllocatePoolFn =
+            core::mem::transmute(*(boot_services.add(BS_ALLOCATE_POOL) as *const u64));
         let exit_boot_services: ExitBootServicesFn =
             core::mem::transmute(*(boot_services.add(0xE8) as *const u64));
 
-        // QEMU virt's map is a few KiB. The 16 KiB that covers it does not go on
-        // the stack: the kernel stack is 16 KiB total, and the firmware calls
-        // below run while the buffer is live.
-        // SAFETY: boot CPU inside the EFI stub, taken once per boot — this is
-        // the only `scratch` call in the kernel.
-        let buf = super::efi_memmap::scratch();
+        // Size and allocate the map with Linux's 32-descriptor slack. The
+        // allocation itself changes the map, so the headroom is required for
+        // the subsequent GetMemoryMap and ExitBootServices retry.
+        const EFI_BUFFER_TOO_SMALL: u64 = 5;
+        const EFI_LOADER_DATA: u32 = 2;
+        const EFI_MMAP_NR_SLACK_SLOTS: u64 = 32;
+        let mut required = 0u64;
+        let mut initial_key = 0u64;
+        let mut initial_desc_size = 0u64;
+        let mut initial_desc_ver = 0u32;
+        if get_memory_map(&mut required, core::ptr::null_mut(), &mut initial_key,
+                          &mut initial_desc_size, &mut initial_desc_ver) != EFI_BUFFER_TOO_SMALL
+            || initial_desc_size == 0
+        { return dtb; }
+        let mut alloc_size = match required.checked_add(initial_desc_size.checked_mul(EFI_MMAP_NR_SLACK_SLOTS).unwrap_or(0)) {
+            Some(size) if size != 0 => size as usize,
+            _ => return dtb,
+        };
+        let mut map_buf = core::ptr::null_mut();
+        if allocate_pool(EFI_LOADER_DATA, alloc_size, &mut map_buf) != 0 || map_buf.is_null() { return dtb; }
         let mut map_key: u64 = 0;
         let mut desc_size: u64 = 0;
         let mut desc_ver: u32 = 0;
         let mut tries = 0;
         loop {
-            let mut map_size: u64 = buf.len() as u64;
-            let _ = get_memory_map(
-                &mut map_size, buf.as_mut_ptr(),
+            let mut map_size: u64 = alloc_size as u64;
+            let map_status = get_memory_map(
+                &mut map_size, map_buf,
                 &mut map_key, &mut desc_size, &mut desc_ver,
             );
+            if map_status != 0 || map_size > alloc_size as u64 {
+                // A firmware with more descriptors than the initial sizing
+                // call reported needs a larger pool. Keep the old allocation
+                // alive: freeing it would itself mutate the map and consume
+                // the fresh key we need for the next attempt.
+                if map_size <= alloc_size as u64 { break; }
+                let Some(new_size) = map_size.checked_add(desc_size.checked_mul(EFI_MMAP_NR_SLACK_SLOTS).unwrap_or(0))
+                    .and_then(|size| usize::try_from(size).ok()) else { break; };
+                let mut new_buf = core::ptr::null_mut();
+                if allocate_pool(EFI_LOADER_DATA, new_size, &mut new_buf) != 0 || new_buf.is_null() { break; }
+                map_buf = new_buf;
+                alloc_size = new_size;
+                tries += 1;
+                if tries > 8 { break; }
+                continue;
+            }
             // Capture EfiConventionalMemory (type 7 = genuinely-free DRAM,
             // excludes the kernel image, ACPI tables, reserved + MMIO) so
             // build_selfboot_memmap can size the PMM from the real map when
@@ -254,7 +290,7 @@ pub unsafe extern "C" fn efi_stub_setup(handle: u64, systab: *const u8) -> u64 {
                 let mut k = 0usize;
                 while k < 16 { EFI_TYPE_PAGES[k].store(0, core::sync::atomic::Ordering::Release); k += 1; }
                 while off + desc_size <= map_size {
-                    let d = buf.as_ptr().add(off as usize);
+                    let d = map_buf.add(off as usize);
                     let ty = *(d as *const u32);
                     let phys = *(d.add(8) as *const u64);
                     let pages = *(d.add(24) as *const u64);
@@ -279,10 +315,10 @@ pub unsafe extern "C" fn efi_stub_setup(handle: u64, systab: *const u8) -> u64 {
                 // A map the firmware could not fit reports the size it
                 // WANTED, not the size it wrote; copying that many bytes would
                 // read past the buffer.
-                if map_size <= buf.len() as u64 {
-                    // SAFETY: `buf` holds `map_size` bytes the firmware just
+                if map_size <= alloc_size as u64 {
+                    // SAFETY: `map_buf` holds `map_size` bytes the firmware just
                     // wrote; boot CPU, single writer of the retained block.
-                    super::efi_memmap::retain(buf.as_ptr(), map_size, desc_size, desc_ver);
+                    let _ = super::efi_memmap::retain(map_buf, map_buf, map_size, desc_size, desc_ver);
                 }
             }
             // ExitBootServices must immediately follow GetMemoryMap with

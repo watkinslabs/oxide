@@ -194,7 +194,7 @@ impl NetStack {
     {
         // A hop limit of the maximum admits every socket, which is what an
         // adapter with no header in hand must supply.
-        self.deliver_tcp_packet_hop(net_ns, iface, src_ip, dst_ip, seg, packet, u8::MAX)
+        self.deliver_tcp_packet_hop(net_ns, iface, src_ip, dst_ip, seg, packet, u8::MAX, None)
     }
 
     /// Demultiplex one TCP segment, carrying the hop limit its IP header
@@ -202,14 +202,29 @@ impl NetStack {
     /// # C: O(log N + payload)
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn deliver_tcp_packet_hop(&self, net_ns: u64, iface: NetIfaceId,
-                    src_ip: IpAddr, dst_ip: IpAddr, seg: &[u8], packet: &[u8], hop: u8)
+                    src_ip: IpAddr, dst_ip: IpAddr, seg: &[u8], packet: &[u8], hop: u8,
+                    tproxy: Option<crate::pkt::TproxyTarget>)
         -> NetResult<()>
     {
-        let ipv6 = matches!(dst_ip, IpAddr::V6(_));
+        let wire_dst_ip = dst_ip;
         if seg.len() < TCP_HDR_MIN_LEN { return Err(NetError::Einval); }
-        let hdr = match crate::tcp_hdr::parse_ip(seg, src_ip, dst_ip) {
+        let mut hdr = match crate::tcp_hdr::parse_ip(seg, src_ip, wire_dst_ip) {
             Ok(h) => h, Err(_) => return Ok(()),
         };
+        let dst_ip = tproxy.and_then(|target| match wire_dst_ip {
+            IpAddr::V4(wire) if target.addr.0[4..] == [0; 12] => Some(IpAddr::V4(
+                if target.addr.0[..4] == [0; 4] { wire } else {
+                    Ipv4Addr::new(target.addr.0[0], target.addr.0[1],
+                        target.addr.0[2], target.addr.0[3])
+                })),
+            IpAddr::V6(wire) => Some(IpAddr::V6(
+                if target.addr.0 == [0; 16] { wire } else { Ipv6Addr(target.addr.0) })),
+            _ => None,
+        }).unwrap_or(wire_dst_ip);
+        if let Some(target) = tproxy {
+            if target.port != 0 { hdr.dst_port = target.port; }
+        }
+        let ipv6 = matches!(dst_ip, IpAddr::V6(_));
         let key = TcpKey {
             local_ip: dst_ip, local_port: hdr.dst_port,
             remote_ip: src_ip, remote_port: hdr.src_port,
@@ -287,6 +302,25 @@ impl NetStack {
                 }
                 let input = c.input_prevalidated_with_options(src_ip, dst_ip, seg,
                     crate::sysctl::tcp_option_permissions_in(net_ns));
+                let payload_len = seg.len().saturating_sub(hdr.payload_offset()) as u32;
+                let mut end_seq = hdr.seq.wrapping_add(payload_len);
+                if hdr.flags & crate::tcp_hdr::flags::SYN != 0 { end_seq = end_seq.wrapping_add(1); }
+                if hdr.flags & crate::tcp_hdr::flags::FIN != 0 { end_seq = end_seq.wrapping_add(1); }
+                if ipv6 && c.rcv_nxt == end_seq
+                    && !matches!(c.state, crate::tcp_state::TcpState::Listen
+                        | crate::tcp_state::TcpState::Closed)
+                {
+                    if let Ok(ip) = crate::ipv6::Ipv6Hdr::parse(packet) {
+                        if let Some(ext) = packet.get(crate::ipv6::IPV6_HDR_LEN..)
+                            .map(|bytes| crate::ipv6_ext::collect(ip.next_header, bytes))
+                        {
+                            if let Some(snapshot) = crate::sock_opts::sol_ipv6::pktoptions::received(
+                                entry.ipv6_opts.flags(), ip.dst.0, iface.raw(), ip.hop_limit,
+                                ip.traffic_class, ip.flow_label, ext)
+                            { c.telemetry.ipv6_pktoptions = Some(alloc::boxed::Box::new(snapshot)); }
+                        }
+                    }
+                }
                 let urgent = crate::sock::oob_notify::urgent_arrived(pre_urg, c.peek_urgent());
                 let acked = c.snd_una != pre_una;
                 (pre_len, pre_state, input, c.recv_buf.len, c.state, fastopen_child, urgent, acked)

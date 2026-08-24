@@ -12,6 +12,7 @@ path = "src/lib.rs"
 kstrtox = { path = "../../shared/kstrtox" }
 sync    = { path = "../../shared/sync" }
 vfs     = { path = "../vfs" }
+thermal = { path = "../thermal" }
 
 [lints]
 workspace = true

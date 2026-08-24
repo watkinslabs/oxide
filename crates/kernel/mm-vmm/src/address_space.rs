@@ -147,7 +147,7 @@ pub use mmfields::{
 /// (PML4 on x86_64; L0 on aarch64). `MmuOps::activate(root_pa)`
 /// installs it as the active CR3 / TTBR0_EL1 per `13§8`.
 pub struct AddressSpace {
-    vmas:    rwsem::MmapRwsem<VmaTree>,
+    pub(crate) vmas:    rwsem::MmapRwsem<VmaTree>,
     /// Serializes page-table leaf inspection and rewrite for this address
     /// space. It is deliberately distinct from `vmas`: page faults drop the
     /// VMA lock before backing I/O, then take this lock only for PTE commit and
@@ -434,6 +434,16 @@ impl AddressSpace {
     /// # C: O(1) lock acquire
     pub fn vmas_for_test(&self) -> rwsem::MmapReadGuard<'_, VmaTree> {
         self.vmas.read()
+    }
+
+    /// Acquire the VMA tree for a killable operation such as
+    /// `process_mrelease`. The syscall supplies the current task's pending
+    /// signal predicate; VMM remains independent of the scheduler.
+    /// # C: O(contention)
+    pub fn vmas_killable(&self, interrupted: fn() -> bool)
+        -> Result<rwsem::MmapReadGuard<'_, VmaTree>, ()>
+    {
+        self.vmas.read_killable(interrupted)
     }
 
     /// Set the per-mm exe path captured at `execve`. Linux's

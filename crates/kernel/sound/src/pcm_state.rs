@@ -3,7 +3,9 @@ use sync::{Spinlock, TaskList as L};
 
 pub(crate) struct Pcm {
     pub owner: crate::SoundOwnerKey,
+    pub device: crate::ops::PcmDevice,
     pub state: u32,
+    pub access: u32,
     pub format: u32,
     pub rate: u32,
     pub channels: u32,
@@ -14,16 +16,17 @@ pub(crate) struct Pcm {
     pub appl_ptr: u64,
     pub hw_ptr: u64,
     pub time: crate::pcm_time::PcmTime,
+    pub mmap: crate::mmap::Pages,
 }
 
 pub(crate) static PCM: Spinlock<Vec<Pcm>, L> = Spinlock::new(Vec::new());
 
 /// # C: O(cards)
-pub(crate) fn initial(owner: crate::SoundOwnerKey) -> Pcm {
+pub(crate) fn initial(owner: crate::SoundOwnerKey, device: crate::ops::PcmDevice) -> Pcm {
     Pcm {
-        owner, state: crate::uapi::STATE_OPEN, format: crate::uapi::FMT_S16_LE, rate: 44100, channels: 2,
+        owner, device, state: crate::uapi::STATE_OPEN, access: crate::uapi::ACCESS_RW_INTERLEAVED, format: crate::uapi::FMT_S16_LE, rate: 44100, channels: 2,
         frame_bytes: 4, period_frames: 512, buffer_frames: 1024, start_threshold: 1, appl_ptr: 0, hw_ptr: 0,
-        time: crate::pcm_time::PcmTime::new(),
+        time: crate::pcm_time::PcmTime::new(), mmap: crate::mmap::Pages::default(),
     }
 }
 
@@ -31,13 +34,19 @@ pub(crate) fn initial(owner: crate::SoundOwnerKey) -> Pcm {
 pub(crate) fn register_card(owner: crate::SoundOwnerKey) {
     let mut guard = PCM.lock();
     if !guard.iter().any(|p| p.owner == owner) {
-        guard.push(initial(owner));
+        let count = crate::ops::pcm_devices(owner).max(1);
+        for device in 0..count {
+            if device == 0 || crate::ops::pcm_caps_for(owner, device).is_some() {
+                guard.push(initial(owner, device));
+            }
+        }
     }
 }
 
 /// # C: O(cards)
 pub(crate) fn unregister_card(owner: crate::SoundOwnerKey) {
     let mut guard = PCM.lock();
+    for p in guard.iter_mut().filter(|p| p.owner == owner) { p.mmap.release(); }
     guard.retain(|p| p.owner != owner);
 }
 

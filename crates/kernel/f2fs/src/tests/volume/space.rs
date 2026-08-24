@@ -21,7 +21,7 @@ fn the_reported_total_excludes_the_leading_superblock_area() {
 #[test]
 fn the_free_count_is_the_user_count_less_what_is_live() {
     let mut b = test_image::with_root();
-    nodes::add_inline_file(&mut b, 4, b"x");
+    nodes::add_sparse_file(&mut b, 4, BLKSIZE as u64, &[(0, vec![b'x'])]);
     let live = b.valid_block_count;
     let v = b.mount().unwrap();
     let s = v.space();
@@ -37,6 +37,39 @@ fn a_reservation_comes_out_of_what_is_available_not_out_of_what_is_free() {
     let v = Volume::mount_with(b.image(), opts, false).unwrap();
     let s = v.space();
     assert_eq!(s.avail, s.free - 100);
+}
+
+#[test]
+fn released_blocks_replenish_the_reserved_pool_and_reduce_ordinary_free_space() {
+    let mut b = test_image::with_root();
+    nodes::add_inline_file(&mut b, 4, b"x");
+    let v = b.mount().unwrap();
+    let addr = (test_image::MAIN_BLKADDR..test_image::MAIN_BLKADDR + 32)
+        .find(|&a| v.block_is_live(a).unwrap())
+        .expect("fixture has a live main block");
+    let mut v = v;
+    v.set_reserved_blocks(4).unwrap();
+    v.current_reserved_blocks = 0;
+    let before = v.space();
+    v.release_block(addr).unwrap();
+    let after = v.space();
+    assert_eq!(v.current_reserved_blocks(), 1);
+    assert_eq!(after.free, before.free);
+    assert_eq!(after.avail, before.avail);
+}
+
+#[test]
+fn carve_out_only_changes_the_reported_total() {
+    let mut v = test_image::with_root().mount().unwrap();
+    let total = v.space().total;
+    v.set_reserved_blocks(4).unwrap();
+    v.current_reserved_blocks = 2;
+    let ordinary = v.space();
+    v.set_carve_out(true);
+    let carved = v.space();
+    assert_eq!(carved.total, total - 2);
+    assert_eq!(carved.free, ordinary.free);
+    assert_eq!(carved.avail, ordinary.avail);
 }
 
 #[test]

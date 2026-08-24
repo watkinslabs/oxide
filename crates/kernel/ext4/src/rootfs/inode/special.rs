@@ -1,7 +1,6 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use block::types::InodeId;
 use vfs::file_ops::{FileIoctlCmd, FileIoctlReply, FileOps};
 use vfs::inode::InodeBuilder;
 use vfs::inode_ops::{InodeOps, mk_mode};
@@ -230,7 +229,6 @@ impl InodeOps for Ext4StatInodeOps {
             Ok(())
         }).map_err(super::regular::vfs_error_from_mount)?;
         d.st.orphan_remove(ino);
-        d.st.page_cache.invalidate(InodeId(ino as u64));
         target.inc_nlink();
         Ok(())
     }
@@ -292,8 +290,8 @@ impl FileOps for Ext4StatFileOps {
     /// `ext4_sync_file` — Linux installs the same `fsync` slot on
     /// `ext4_dir_operations`, so `fsync(dirfd)` commits the directory's
     /// metadata rather than silently succeeding. # C: O(journal tx)
-    fn fsync(&self, file: &vfs::File, _datasync: bool) -> KResult<()> {
-        super::regular::ext4_sync_file(file.inode())
+    fn fsync(&self, file: &vfs::File, datasync: bool) -> KResult<()> {
+        super::regular::ext4_sync_file(file.inode(), datasync)
     }
 
     fn unlocked_ioctl(
@@ -332,6 +330,7 @@ impl FileOps for Ext4StatFileOps {
                 super::meta::ext4_fitrim(start, len, minlen)?;
                 Ok(FileIoctlReply::Done)
             }
+            _ => Err(VfsError::Enotty),
         }
     }
 

@@ -75,6 +75,18 @@ pub const NFTA_CT_KEY:       u16 = 2;
 pub const NFTA_CT_DIRECTION: u16 = 3;
 pub const NFTA_CT_SREG:      u16 = 4;
 pub const NFTA_CT_MAX:       u16 = 4;
+pub const NFTA_CT_HELPER_NAME:    u16 = 1;
+pub const NFTA_CT_HELPER_L3PROTO: u16 = 2;
+pub const NFTA_CT_HELPER_L4PROTO: u16 = 3;
+pub const NFTA_CT_TIMEOUT_L3PROTO: u16 = 1;
+pub const NFTA_CT_TIMEOUT_L4PROTO: u16 = 2;
+pub const NFTA_CT_TIMEOUT_DATA:    u16 = 3;
+pub const NFTA_CT_EXPECT_L3PROTO:  u16 = 1;
+pub const NFTA_CT_EXPECT_L4PROTO:  u16 = 2;
+pub const NFTA_CT_EXPECT_DPORT:    u16 = 3;
+pub const NFTA_CT_EXPECT_TIMEOUT:  u16 = 4;
+pub const NFTA_CT_EXPECT_SIZE:     u16 = 5;
+pub const NFTA_SECMARK_CTX:        u16 = 1;
 
 // --- nat / masq / redir ---
 
@@ -217,6 +229,20 @@ pub const NFTA_SYNPROXY_MSS:    u16 = 1;
 pub const NFTA_SYNPROXY_WSCALE: u16 = 2;
 pub const NFTA_SYNPROXY_FLAGS:  u16 = 3;
 pub const NFTA_SYNPROXY_MAX:    u16 = 3;
+
+pub const CTA_TIMEOUT_TCP_SYN_SENT:    u16 = 1;
+pub const CTA_TIMEOUT_TCP_SYN_RECV:    u16 = 2;
+pub const CTA_TIMEOUT_TCP_ESTABLISHED: u16 = 3;
+pub const CTA_TIMEOUT_TCP_FIN_WAIT:    u16 = 4;
+pub const CTA_TIMEOUT_TCP_CLOSE_WAIT:  u16 = 5;
+pub const CTA_TIMEOUT_TCP_LAST_ACK:    u16 = 6;
+pub const CTA_TIMEOUT_TCP_TIME_WAIT:   u16 = 7;
+pub const CTA_TIMEOUT_TCP_CLOSE:       u16 = 8;
+pub const CTA_TIMEOUT_TCP_SYN_SENT2:   u16 = 9;
+pub const CTA_TIMEOUT_TCP_RETRANS:     u16 = 10;
+pub const CTA_TIMEOUT_TCP_UNACK:       u16 = 11;
+pub const CTA_TIMEOUT_UDP_UNREPLIED:   u16 = 1;
+pub const CTA_TIMEOUT_UDP_REPLIED:     u16 = 2;
 
 pub const NFTA_CONNLIMIT_COUNT: u16 = 1;
 pub const NFTA_CONNLIMIT_FLAGS: u16 = 2;

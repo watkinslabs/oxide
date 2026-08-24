@@ -164,7 +164,7 @@ fn netlink_connect_runs_one_admission_before_destination_state() {
     assert!(connect.contains("_admission: net::sock_admit::AddrAdmission"));
     assert!(!owner.contains("security::network::Operation::Connect"));
     let body = &slot[slot.find("pub fn sys_connect").expect("connect slot")..];
-    let admission = body.find("net::sock_admit::admit_connect_in").expect("generic admission");
+    let admission = body.find("net::sock_admit::admit_connect_socket").expect("generic admission");
     assert!(admission < body.find("crate::netlink_fd::connect(").expect("netlink route"));
 }
 

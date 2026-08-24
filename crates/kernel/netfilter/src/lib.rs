@@ -13,17 +13,21 @@ extern crate std;
 mod eval;
 mod eval_context;
 mod nl;
+mod nflog;
 mod nft_dispatch;
 mod nft_dispatch_helpers;
 pub mod nft_expr;
 mod protocol;
 mod state;
 
-pub use eval::{EvalResult, Verdict, eval, eval_hook, eval_in, eval_in_with_mark};
+pub use eval::{EvalResult, Verdict, eval, eval_hook, eval_in, eval_in_with_mark,
+               has_chain_in_priority_range};
 pub use nl::handle;
+pub use nflog::log_packet;
 pub use protocol::{
     Nfgenmsg, NFT_CHAIN_POLICY_ACCEPT, NFT_CHAIN_POLICY_DROP, hook, nft_msg, nfta_chain,
-    nfta_gen, nfta_obj, nfta_rule, nfta_set, nfta_set_elem, nfta_table, subsys,
+    nfta_flowtable, nfta_gen, nfta_obj, nfta_rule, nfta_set, nfta_set_elem, nfta_table, subsys,
+    osf_attr, osf_msg,
 };
 pub use state::{
     NftChain, NftObject, NftRule, NftSet, NftSetElem, NftTable, chain_insert, chain_insert_in,
@@ -31,6 +35,7 @@ pub use state::{
     counter_get_in, gen_current, gen_current_in, next_rule_handle, object_insert,
     object_insert_in, object_remove, object_remove_in, objects_snapshot, objects_snapshot_in,
     rule_insert, rule_insert_in, rule_remove, rule_remove_in, rules_snapshot, rules_snapshot_in,
+    flowtable_use_in,
     set_elem_insert, set_elem_insert_in, set_elem_lookup, set_elem_lookup_in, set_elem_remove,
     set_elem_remove_in, set_elems_snapshot, set_elems_snapshot_in, set_insert, set_insert_in,
     set_remove, set_remove_in, sets_snapshot, sets_snapshot_in, table_insert, table_insert_in,

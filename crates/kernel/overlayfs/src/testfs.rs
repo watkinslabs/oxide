@@ -36,11 +36,13 @@ use crate::uapi::WHITEOUT_RDEV;
 pub struct Node {
     kids: Spinlock<BTreeMap<String, InodeRef>, TaskList>,
     data: Spinlock<Vec<u8>, TaskList>,
+    verity: Spinlock<Option<(u8, Vec<u8>)>, TaskList>,
 }
 
 impl Node {
     fn new() -> Arc<Node> {
-        Arc::new(Node { kids: Spinlock::new(BTreeMap::new()), data: Spinlock::new(Vec::new()) })
+        Arc::new(Node { kids: Spinlock::new(BTreeMap::new()), data: Spinlock::new(Vec::new()),
+                        verity: Spinlock::new(None) })
     }
 }
 
@@ -93,6 +95,7 @@ pub fn layer(fsid: u64) -> InodeRef {
                                                                 options: String::new() }),
                                   Some(root.clone()), 0, next_anon_dev(), 4096,
                                   String::from("overlay-test-layer"), Arc::new(()));
+    sb.set_s_flags(vfs::superblock::SB_POSIXACL, 0);
     *alloc.sb.lock() = Some(Arc::downgrade(&sb));
     // The superblock outlives the test only through the root inode, which is
     // what the caller keeps; leaking it here is what makes that true.
@@ -123,6 +126,10 @@ impl Ops {
 }
 
 impl InodeOps for Ops {
+    fn verity_digest(&self, inode: &Inode) -> KResult<Option<(u8, Vec<u8>)>> {
+        Ok(node_of(inode).verity.lock().clone())
+    }
+
     fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
         node_of(inode).kids.lock().get(name).cloned().ok_or(VfsError::Enoent)
     }
@@ -182,6 +189,37 @@ impl InodeOps for Ops {
         let n = node_of(inode);
         n.data.lock().resize(len as usize, 0);
         inode.set_size(len);
+        Ok(())
+    }
+
+    fn tmpfile(&self, _inode: &Inode, mode: u32, _ctx: &CreateCtx) -> KResult<InodeRef> {
+        let child = self.child((mode & !S_IFMT as u32) | S_IFREG as u32, 0, None);
+        child.drop_nlink();
+        Ok(child)
+    }
+
+    fn fallocate(&self, inode: &Inode, mode: u32, off: u64, len: u64) -> KResult<()> {
+        if mode & !vfs::uapi::FALLOC_FL_KEEP_SIZE != 0 { return Err(VfsError::Eopnotsupp); }
+        let end = off.checked_add(len).ok_or(VfsError::Einval)?;
+        let n = node_of(inode);
+        let mut data = n.data.lock();
+        if end > data.len() as u64 { data.resize(end as usize, 0); }
+        if mode & vfs::uapi::FALLOC_FL_KEEP_SIZE == 0 { inode.set_size(end); }
+        Ok(())
+    }
+
+    fn fiemap(&self, inode: &Inode, start: u64, len: u64,
+              emit: &mut dyn FnMut(vfs::FiemapExtent) -> bool) -> KResult<()> {
+        let size = inode.size();
+        let end = start.saturating_add(len);
+        if start < size && end != 0 {
+            let logical = start;
+            let length = size.saturating_sub(start).min(end.saturating_sub(start));
+            if length != 0 {
+                emit(vfs::FiemapExtent { logical, physical: inode.ino() * 4096,
+                                         length, flags: vfs::inode::FIEMAP_EXTENT_LAST });
+            }
+        }
         Ok(())
     }
 }
@@ -272,6 +310,11 @@ pub fn mkfile(dir: &InodeRef, path: &str, body: &[u8]) -> InodeRef {
     f
 }
 
+/// Give a test-layer file the digest a real fs-verity filesystem would own.
+pub fn set_verity(file: &InodeRef, algorithm: u8, digest: &[u8]) {
+    node_of(file).verity.lock().replace((algorithm, digest.to_vec()));
+}
+
 /// Read a whole file back. # C: O(size)
 pub fn slurp(f: &InodeRef) -> Vec<u8> {
     let mut out = Vec::new();
@@ -341,9 +384,10 @@ pub fn stack(config: crate::config::Config, upper: Option<InodeRef>, lowers: &[I
     }
     let workdir = upper.as_ref().map(|u| mkpath(u, "..work"));
     let stack = Arc::new(LayerStack {
-        config, upper: upper_layer, lower, workdir, indexdir: None,
+        config, creator_cred: vfs::Cred::root(), upper: upper_layer, lower, workdir, indexdir: None,
         xino: crate::xino::Mode::Off, namelen: crate::limits::NAME_MAX,
         noxattr: core::sync::atomic::AtomicBool::new(false), root: root.clone(),
+        inode_cache: sync::Spinlock::new(BTreeMap::new()),
     });
     (stack, root)
 }

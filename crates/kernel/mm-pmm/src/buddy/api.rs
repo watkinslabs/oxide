@@ -83,6 +83,7 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {    /// Allocate one buddy block of 
     /// # C: O(NR_ZONES × MAX_ORDER) bounded
     /// # Ctx: any; brief IRQ-off; does not sleep
     /// # Lk: pageset for a local order-0 hit; Buddy for refill or larger blocks
+    #[inline(never)]
     pub(crate) fn alloc_gfp_nowait(&self, order: Order, gfp: u32) -> KResult<Pfn> {
         let (hi, mt) = self.alloc_gfp_args(gfp)?;
         match self.alloc_inner_zoned(order, hi, AllocWmark::Low, mt) {
@@ -253,14 +254,15 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {    /// Allocate one buddy block of 
             // its intrusive header. Inspect the preserved body now: the zero
             // below is the first allocator write that would erase evidence of
             // a stale write while the page was free.
-            #[cfg(feature = "debug-watchdog")]
-            // SAFETY: p names the just-allocated, still-unzeroed page.
-            unsafe {
-                super::poison::report_watchdog_mismatch(
-                    p,
-                    (pfn + k) * PAGE_SIZE_BYTES,
-                )
-            };
+            if crate::page_poison_enabled() {
+                // SAFETY: p names the just-allocated, still-unzeroed page.
+                unsafe {
+                    super::poison::report_watchdog_mismatch(
+                        p,
+                        (pfn + k) * PAGE_SIZE_BYTES,
+                    )
+                };
+            }
             #[cfg(feature = "debug-cow")]
             // SAFETY: same ownership and bounds as the watchdog scan above.
             unsafe {

@@ -196,7 +196,8 @@ pub(crate) fn prepare(ctx: &SendContext<'_>, target: &SendFile, message: &Messag
             if udp && oob
                 && socket.family.load(Ordering::Acquire) != net::socket_args::AF_INET6 as u16
             { return Err(Error::Eopnotsupp); }
-            let address = crate::address::inet(message.name.as_deref())?;
+            let address = crate::address::inet_for_socket(message.name.as_deref(),
+                socket.family.load(Ordering::Acquire))?;
             if udp && oob && crate::control_family::ipv4_send_path(socket, Some(&address)) {
                 return Err(Error::Eopnotsupp);
             }

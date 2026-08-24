@@ -7,7 +7,6 @@
 
 mod range;
 
-use block::types::InodeId;
 use core::sync::atomic::Ordering;
 use vfs::uapi::{FALLOC_FL_ALLOCATE_RANGE, FALLOC_FL_COLLAPSE_RANGE, FALLOC_FL_INSERT_RANGE,
     FALLOC_FL_KEEP_SIZE, FALLOC_FL_MODE_MASK, FALLOC_FL_PUNCH_HOLE, FALLOC_FL_WRITE_ZEROES,
@@ -80,13 +79,11 @@ pub(crate) fn ext4_fallocate(inode: &Inode, mode: u32, off: u64, len: u64) -> KR
         }
         _ => return Err(VfsError::Eopnotsupp),
     }
-    d.st.page_cache.invalidate(InodeId(d.ino as u64));
     let invalidate_end = if invalidate_to_eof { Some(u64::MAX) } else { off.checked_add(len) };
     if let Some(end) = invalidate_end { d.frames.invalidate_range(off & PAGE_MASK, end); }
     d.refresh_size();
     inode.set_size(d.size_hint.load(Ordering::Acquire));
     d.refresh_inode_usage(inode);
-    #[cfg(feature = "ext4-frame-cache")]
     d.frames.set_size(d.size_hint.load(Ordering::Acquire));
     Ok(())
 }

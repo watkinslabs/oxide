@@ -1,6 +1,6 @@
 //! The code page: what a byte means, and the byte a character needs.
 
-use crate::name::codepage::{by_number, CP437, DEFAULT_CODEPAGE};
+use crate::name::codepage::{by_number, CP437, CP737, CP775, CP850, CP852, CP855, CP857, CP860, CP861, CP862, CP863, CP864, CP865, CP866, CP869, CP874, CP1250, CP1251, CP1255, DEFAULT_CODEPAGE};
 
 /// Below 0x80 a byte is the character of the same value, which is why reading
 /// an ASCII name without a code page at all looks correct and is not.
@@ -41,6 +41,12 @@ fn the_table_is_injective() {
     for b in 0u8..=0xff {
         assert_eq!(CP437.from_char(CP437.to_char(b)), Some(b), "byte {b:#04x}");
     }
+    for b in 0u8..=0xff {
+        assert_eq!(CP852.from_char(CP852.to_char(b)), Some(b), "CP852 byte {b:#04x}");
+    }
+    for b in 0u8..=0xff {
+        assert_eq!(CP855.from_char(CP855.to_char(b)), Some(b), "CP855 byte {b:#04x}");
+    }
 }
 
 /// A character the page cannot store has no byte. That is not an error: it is
@@ -69,5 +75,102 @@ fn case_folds_through_the_page_and_stops_where_the_page_does() {
 fn a_page_is_found_by_its_number() {
     assert!(by_number(DEFAULT_CODEPAGE).is_some());
     assert_eq!(by_number(DEFAULT_CODEPAGE).map(|p| p.number), Some(437));
-    assert!(by_number(850).is_none(), "no table for this page in this build");
+    assert_eq!(by_number(850).map(|p| p.number), Some(850));
+    assert_eq!(CP850.to_char(0x9b), 0x00f8, "CP850 maps 0x9b to o-slash");
+    assert_eq!(CP850.from_char(0x00f8), Some(0x9b));
+    assert_eq!(CP850.to_upper(0x81), 0x9a);
+    assert_eq!(CP850.to_lower(0x9a), 0x81);
+    assert_eq!(by_number(852).map(|p| p.number), Some(852));
+    assert_eq!(CP852.to_char(0x86), 0x0107);
+    assert_eq!(CP852.to_char(0x8a), 0x0150);
+    assert_eq!(CP852.from_char(0x017e), Some(0xa7));
+    assert_eq!(CP852.to_lower(0x8d), 0xab);
+    assert_eq!(CP852.to_upper(0xab), 0x8d);
+    assert_eq!(by_number(855).map(|p| p.number), Some(855));
+    assert_eq!(CP855.to_char(0x80), 0x0452);
+    assert_eq!(CP855.to_char(0xa0), 0x0430);
+    assert_eq!(CP855.from_char(0x0410), Some(0xa1));
+    assert_eq!(CP855.to_lower(0x81), 0x80);
+    assert_eq!(CP855.to_upper(0x80), 0x81);
+    assert_eq!(by_number(857).map(|p| p.number), Some(857));
+    assert_eq!(CP857.to_char(0x8d), 0x0131);
+    assert_eq!(CP857.to_char(0x98), 0x0130);
+    assert_eq!(CP857.from_char(0x011e), Some(0xa6));
+    assert_eq!(CP857.to_lower(0xa6), 0xa7);
+    assert_eq!(CP857.to_upper(0xa7), 0xa6);
+    assert_eq!(by_number(860).map(|p| p.number), Some(860));
+    assert_eq!(CP860.to_char(0x8d), 0x00ec);
+    assert_eq!(CP860.to_char(0x9e), 0x20a7);
+    assert_eq!(CP860.from_char(0x03b1), Some(0xe0));
+    assert_eq!(CP860.to_lower(0x80), 0x87);
+    assert_eq!(CP860.to_upper(0x87), 0x80);
+    assert_eq!(by_number(861).map(|p| p.number), Some(861));
+    assert_eq!(CP861.to_char(0x8b), 0x00d0);
+    assert_eq!(CP861.to_char(0x9e), 0x20a7);
+    assert_eq!(CP861.from_char(0x03b1), Some(0xe0));
+    assert_eq!(CP861.to_lower(0x8b), 0x8c);
+    assert_eq!(by_number(862).map(|p| p.number), Some(862));
+    assert_eq!(CP862.to_char(0x80), 0x05d0);
+    assert_eq!(CP862.to_char(0x9a), 0x05ea);
+    assert_eq!(CP862.from_char(0x05d0), Some(0x80));
+    assert_eq!(by_number(863).map(|p| p.number), Some(863));
+    assert_eq!(CP863.to_char(0x80), 0x00c7);
+    assert_eq!(CP863.to_char(0x86), 0x00b6);
+    assert_eq!(CP863.from_char(0x2017), Some(0x8d));
+    assert_eq!(by_number(864).map(|p| p.number), Some(864));
+    assert_eq!(CP864.to_char(0x80), 0x00b0);
+    assert_eq!(CP864.to_char(0xb0), 0x0660);
+    assert_eq!(CP864.from_char(0x060c), Some(0xac));
+    assert_eq!(by_number(865).map(|p| p.number), Some(865));
+    assert_eq!(CP865.to_char(0x80), 0x00c7);
+    assert_eq!(CP865.to_char(0x9f), 0x0192);
+    assert_eq!(CP865.from_char(0x20a7), Some(0x9e));
+    assert_eq!(CP865.to_lower(0x80), 0x87);
+    assert_eq!(CP865.to_upper(0x87), 0x80);
+    assert_eq!(by_number(866).map(|p| p.number), Some(866));
+    assert_eq!(CP866.to_char(0x80), 0x0410);
+    assert_eq!(CP866.to_char(0xb0), 0x2591);
+    assert_eq!(CP866.from_char(0x0451), Some(0xf1));
+    assert_eq!(CP866.to_lower(0x80), 0xa0);
+    assert_eq!(CP866.to_upper(0xa0), 0x80);
+    assert_eq!(by_number(869).map(|p| p.number), Some(869));
+    assert_eq!(CP869.to_char(0x86), 0x0386);
+    assert_eq!(CP869.to_char(0xb0), 0x2591);
+    assert_eq!(CP869.from_char(0x03b0), Some(0xfc));
+    assert_eq!(CP869.to_lower(0xa4), 0xd6);
+    assert_eq!(CP869.to_upper(0xd6), 0xa4);
+    assert_eq!(by_number(874).map(|p| p.number), Some(874));
+    assert_eq!(CP874.to_char(0xa1), 0x0e01);
+    assert_eq!(CP874.to_char(0x85), 0x2026);
+    assert_eq!(CP874.from_char(0x0e5b), Some(0xfb));
+    assert_eq!(CP874.to_lower(0x91), 0x91);
+    assert_eq!(by_number(1251).map(|p| p.number), Some(1251));
+    assert_eq!(CP1251.to_char(0x80), 0x0402);
+    assert_eq!(CP1251.to_char(0xc0), 0x0410);
+    assert_eq!(CP1251.from_char(0x044f), Some(0xff));
+    assert_eq!(CP1251.to_lower(0xc0), 0xe0);
+    assert_eq!(CP1251.to_upper(0xe0), 0xc0);
+    assert_eq!(by_number(1250).map(|p| p.number), Some(1250));
+    assert_eq!(CP1250.to_char(0x80), 0x20ac);
+    assert_eq!(CP1250.to_char(0x8a), 0x0160);
+    assert_eq!(CP1250.from_char(0x0171), Some(0xfb));
+    assert_eq!(CP1250.to_lower(0x8a), 0x9a);
+    assert_eq!(CP1250.to_upper(0x9a), 0x8a);
+    assert_eq!(by_number(737).map(|p| p.number), Some(737));
+    assert_eq!(CP737.to_char(0x80), 0x0391);
+    assert_eq!(CP737.to_char(0xb0), 0x2591);
+    assert_eq!(CP737.from_char(0x03ce), Some(0xe9));
+    assert_eq!(CP737.to_lower(0x80), 0x98);
+    assert_eq!(CP737.to_upper(0x98), 0x80);
+    assert_eq!(by_number(775).map(|p| p.number), Some(775));
+    assert_eq!(CP775.to_char(0x80), 0x0106);
+    assert_eq!(CP775.to_char(0xb0), 0x2591);
+    assert_eq!(CP775.from_char(0x017e), Some(0xd8));
+    assert_eq!(CP775.to_lower(0x80), 0x98);
+    assert_eq!(CP775.to_upper(0x87), 0x80);
+    assert_eq!(by_number(1255).map(|p| p.number), Some(1255));
+    assert_eq!(CP1255.to_char(0xa4), 0x20aa);
+    assert_eq!(CP1255.to_char(0xe0), 0x05d0);
+    assert_eq!(CP1255.from_char(0x05ea), Some(0xfa));
+    assert_eq!(CP1255.to_lower(0xa0), 0xa0);
 }

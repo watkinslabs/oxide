@@ -187,7 +187,20 @@ impl FileOps for DeviceFileOps {
                 o.mmap_shared_frame(d.devt, off)
                     .map(|frame| frame.map(|pa| crate::SharedFrame { pa, map_ref_held: false }))
             }),
+            FileType::BlockDev => lookup_blkdev(d.devt).map_or(Ok(None), |o| {
+                o.mmap_shared_frame(d.devt, off)
+                    .map(|frame| frame.map(|pa| crate::SharedFrame { pa, map_ref_held: false }))
+            }),
             _ => Ok(None),
+        }
+    }
+
+    fn mmap_page_mkwrite(&self, inode: &Inode, off: u64) -> KResult<()> {
+        let d = device_data(inode)?;
+        match d.ft {
+            FileType::CharDev => Ok(()),
+            FileType::BlockDev => lookup_blkdev(d.devt).map_or(Ok(()), |o| o.mmap_page_mkwrite(d.devt, off)),
+            _ => Ok(()),
         }
     }
 }

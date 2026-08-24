@@ -23,10 +23,12 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use block::{BlockDevice, BlockError, BlockOp, BlockRequest, KResult, QueueLimits};
+use sched::live::Mutex as LifecycleMutex;
+use sync::{Devices as MdStateClass, Spinlock};
 
 pub use superblock::{MetadataVersion, Superblock, read_superblock};
 pub use assembly::assemble;
-pub use control::{array_info, disk_info, is_md_device, restart_array_read_write, stop_array, stop_array_read_only};
+pub use control::{array_info, disk_info, is_md_device, restart_array_read_write, set_array_info, set_disk_faulty, stop_array, stop_array_read_only};
 
 /// Linux's fixed block major for MD arrays. # C: O(1)
 pub const MD_MAJOR: u32 = 9;
@@ -47,7 +49,13 @@ pub struct Array {
     block_size: u32,
     capacity: u64,
     metadata: Option<control::Metadata>,
+    metadata_members: Vec<Arc<dyn BlockDevice>>,
+    metadata_version: Option<MetadataVersion>,
+    metadata_events: Spinlock<u64, MdStateClass>,
+    metadata_utime: Spinlock<u64, MdStateClass>,
+    mutation: LifecycleMutex<()>,
     lifecycle: lifecycle::State,
+    faulty: Spinlock<Vec<bool>, MdStateClass>,
 }
 
 impl Array {
@@ -67,11 +75,17 @@ impl Array {
         Self::new(Level::Raid1, members, None)
     }
 
-    pub(crate) fn from_metadata(level: Level, members: Vec<Arc<dyn BlockDevice>>, metadata: control::Metadata) -> KResult<Arc<Self>> {
-        Self::new(level, members, Some(metadata))
+    pub(crate) fn from_metadata(level: Level, members: Vec<Arc<dyn BlockDevice>>, metadata: control::Metadata,
+                                metadata_members: Vec<Arc<dyn BlockDevice>>, version: MetadataVersion, events: u64, utime: u64) -> KResult<Arc<Self>> {
+        Self::new_with_metadata(level, members, Some(metadata), metadata_members, Some(version), events, utime)
     }
 
     fn new(level: Level, members: Vec<Arc<dyn BlockDevice>>, metadata: Option<control::Metadata>) -> KResult<Arc<Self>> {
+        Self::new_with_metadata(level, members, metadata, Vec::new(), None, 0, 0)
+    }
+
+    fn new_with_metadata(level: Level, members: Vec<Arc<dyn BlockDevice>>, metadata: Option<control::Metadata>,
+                         metadata_members: Vec<Arc<dyn BlockDevice>>, metadata_version: Option<MetadataVersion>, metadata_events: u64, metadata_utime: u64) -> KResult<Arc<Self>> {
         let Some(first) = members.first() else { return Err(BlockError::Einval); };
         let block_size = first.block_size();
         if members.iter().any(|member| member.block_size() != block_size || member.capacity_blocks() == 0) {
@@ -90,7 +104,9 @@ impl Array {
             Level::Raid1 => members.iter().map(|member| member.capacity_blocks()).min().ok_or(BlockError::Einval)?,
         };
         if capacity == 0 { return Err(BlockError::Einval); }
-        Ok(Arc::new(Self { level, members, block_size, capacity, metadata, lifecycle: lifecycle::State::new() }))
+        Ok(Arc::new(Self { level, faulty: Spinlock::new(vec![false; members.len()]), members,
+            block_size, capacity, metadata, metadata_members, metadata_version, metadata_events: Spinlock::new(metadata_events), metadata_utime: Spinlock::new(metadata_utime),
+            mutation: LifecycleMutex::new(()), lifecycle: lifecycle::State::new() }))
     }
 
     /// Array personality. # C: O(1)
@@ -108,6 +124,42 @@ impl Array {
     pub(crate) fn cancel_read_only(&self) { self.lifecycle.cancel_read_only(); }
     /// Return the array to writable service. # C: O(1)
     pub(crate) fn restart_read_write(&self) -> KResult<()> { self.lifecycle.restart_read_write() }
+
+    /// Mark one assembled member faulty using its canonical Linux device number.
+    /// The state transition is owned by the array, so reporting and I/O observe
+    /// one value. A RAID1 array must retain one working member. # C: O(members)
+    pub fn set_disk_faulty(&self, dev_t: u32) -> KResult<()> {
+        // SAFETY: this control operation runs in process context and the
+        // lifecycle mutex is the sleepable MD serialization boundary; no
+        // spinlock or block-device lock is held while metadata is written.
+        let _mutation = unsafe { self.mutation.lock() };
+        let metadata = self.metadata.as_ref().ok_or(BlockError::Enxio)?;
+        let member = metadata.members.iter().position(|member|
+            block::registry::encode_dev(member.number_dev.major, member.number_dev.minor) == dev_t)
+            .ok_or(BlockError::Enxio)?;
+        let member_number = metadata.members[member].number;
+        {
+            let faulty = self.faulty.lock();
+            if faulty[member] { return Ok(()); }
+            if self.level == Level::Raid1 && faulty.iter().filter(|faulty| !**faulty).count() <= 1 { return Err(BlockError::Ebusy); }
+        }
+        let events = { let current = *self.metadata_events.lock(); current.wrapping_add(1) };
+        let utime = timekeeper::realtime_ns() / 1_000_000_000;
+        if let Some(version) = self.metadata_version {
+            for (index, disk) in self.metadata_members.iter().enumerate() {
+                if index != member && !self.member_faulty(index) {
+                    crate::superblock::write_faulty(disk.as_ref(), version, member_number, events, utime)?;
+                }
+            }
+        }
+        self.faulty.lock()[member] = true;
+        *self.metadata_events.lock() = events;
+        *self.metadata_utime.lock() = utime;
+        Ok(())
+    }
+
+    pub(crate) fn member_faulty(&self, member: usize) -> bool { self.faulty.lock().get(member).copied().unwrap_or(true) }
+    pub(crate) fn failed_members(&self) -> usize { self.faulty.lock().iter().filter(|faulty| **faulty).count() }
 
     fn validate(&self, request: &BlockRequest) -> KResult<()> {
         let end = request.start_block.checked_add(u64::from(request.len_blocks)).ok_or(BlockError::Einval)?;
@@ -135,6 +187,7 @@ impl Array {
 
     fn submit_piece(&self, member: usize, member_block: u64, request: &mut BlockRequest,
                     blocks: u32, byte_offset: usize) -> KResult<()> {
+        if self.member_faulty(member) { return Err(BlockError::Eio); }
         let mut child = self.child_request(request, member_block, blocks, byte_offset)?;
         self.members[member].submit_sync(&mut child)?;
         if request.op == BlockOp::Read {
@@ -202,6 +255,7 @@ impl Array {
             _ => {
                 let mut failure = None;
                 for member in 0..self.members.len() {
+                    if self.member_faulty(member) { continue; }
                     if let Err(error) = self.submit_piece(member, request.start_block, request, request.len_blocks, 0) {
                         failure.get_or_insert(error);
                     }
@@ -227,7 +281,8 @@ impl BlockDevice for Array {
     }
     fn flush(&self) -> KResult<()> {
         let mut failure = None;
-        for member in &self.members {
+        for (index, member) in self.members.iter().enumerate() {
+            if self.member_faulty(index) { continue; }
             if let Err(error) = member.flush() { failure.get_or_insert(error); }
         }
         failure.map_or(Ok(()), Err)

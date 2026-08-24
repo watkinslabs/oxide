@@ -154,7 +154,14 @@ impl Nameidata {
             let follow_leaf = is_final && self.flags.parent && !trailing_dot
                 && self.flags.follow && comp != "..";
             if is_final && self.flags.parent && !trailing_dot && !follow_leaf {
-                may_lookup(&self.cur_inode, &self.cred)?;
+                if let Err(e) = may_lookup(&self.cur_inode, &self.cred, self.rcu) {
+                    if self.rcu && matches!(e, VfsError::Echild | VfsError::Eagain) {
+                        self.rcu = false;
+                        idx -= 1;
+                        continue;
+                    }
+                    return Err(e);
+                }
                 last_component = Some(String::from(comp));
                 break;
             }
@@ -180,7 +187,14 @@ impl Nameidata {
 
             // `may_lookup`: search permission (MAY_EXEC) on the current
             // directory before resolving a child within it (Linux).
-            may_lookup(&self.cur_inode, &self.cred)?;
+            if let Err(e) = may_lookup(&self.cur_inode, &self.cred, self.rcu) {
+                if self.rcu && matches!(e, VfsError::Echild | VfsError::Eagain) {
+                    self.rcu = false;
+                    idx -= 1;
+                    continue;
+                }
+                return Err(e);
+            }
 
             // Resolve the named child (`child.rs`: dcache fast path, `i_op->lookup`
             // slow path, negative caching). One owner, so the trailing component

@@ -39,7 +39,8 @@ impl Tree {
             "cgroup.freeze" => format!("{}\n", n.frozen as u8),
             "cgroup.stat" => {
                 let desc = n.children.len();
-                format!("nr_descendants {}\nnr_dying_descendants 0\n", desc)
+                format!("nr_descendants {}\nnr_dying_descendants {}\n", desc,
+                    self.dying_descendants(id))
             }
             "cgroup.max.depth" => "max\n".to_string(),
             "cgroup.max.descendants" => "max\n".to_string(),

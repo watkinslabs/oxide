@@ -63,6 +63,15 @@ fn the_priority_queue_comes_before_the_request_queue() {
 }
 
 #[test]
+fn every_bounded_request_queue_is_handed_to_the_child_when_present() {
+    let p = crate::transport_profile();
+    for index in REQUEST_QUEUE as usize..virtio::MAX_RESOURCE_QUEUES {
+        assert!(p.child_requirements.optional_queues[index] || index == REQUEST_QUEUE as usize);
+        assert_eq!(p.queue_plans[index].map(|plan| plan.index), Some(index as u16));
+    }
+}
+
+#[test]
 fn the_device_identity_is_the_shared_filesystem_one() {
     assert_eq!(crate::VIRTIO_ID_FS, 26);
     assert_eq!(crate::DRIVER_ID.device_id, crate::VIRTIO_ID_FS);

@@ -61,7 +61,13 @@ impl Encoded {
 /// what the format actually constrains.
 /// # C: O(name length)
 pub fn encode(name: &str) -> Result<Encoded, Errno> {
-    let mut units: Vec<u16> = name.encode_utf16().collect();
+    encode_units(&name.encode_utf16().collect::<Vec<u16>>())
+}
+
+/// Encode already-decoded UTF-16 units, including units produced by
+/// `uni_xlate` input escapes. # C: O(name length)
+pub fn encode_units(input: &[u16]) -> Result<Encoded, Errno> {
+    let mut units = input.to_vec();
     if units.is_empty() { return Err(Errno::Enoent); }
     if units.len() > MAX_LONG_NAME { return Err(Errno::Enametoolong); }
     let len = units.len();
@@ -71,6 +77,39 @@ pub fn encode(name: &str) -> Result<Encoded, Errno> {
         units.resize(units.len() + fill, NAME_PADDING);
     }
     Ok(Encoded { units, len })
+}
+
+/// Decode Linux's `uni_xlate` input spelling (`:XXXX`) into the UTF-16 units
+/// stored by FAT. A malformed escape is an invalid name, never literal text.
+/// # C: O(name length)
+pub fn input_units(name: &str) -> Result<Vec<u16>, Errno> {
+    let bytes = name.as_bytes();
+    let mut out = Vec::new();
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] == b':' {
+            if at + 5 > bytes.len() { return Err(Errno::Einval); }
+            let mut unit = 0u16;
+            for &byte in &bytes[at + 1..at + 5] {
+                let digit = match byte {
+                    b'0'..=b'9' => byte - b'0',
+                    b'a'..=b'f' => byte - b'a' + 10,
+                    b'A'..=b'F' => byte - b'A' + 10,
+                    _ => return Err(Errno::Einval),
+                };
+                unit = (unit << 4) | u16::from(digit);
+            }
+            out.push(unit);
+            at += 5;
+        } else {
+            let ch = name[at..].chars().next().ok_or(Errno::Einval)?;
+            let mut encoded = [0u16; 2];
+            let encoded = ch.encode_utf16(&mut encoded);
+            out.extend(encoded.iter().copied());
+            at += ch.len_utf8();
+        }
+    }
+    Ok(out)
 }
 
 /// The slot records for an encoded name, in the order they are written to

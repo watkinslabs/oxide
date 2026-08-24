@@ -6,10 +6,14 @@
 
 extern crate alloc;
 
+use alloc::sync::Arc;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use syscall::errno::Errno;
+use sync::{Spinlock, StackedBlock as DmClass};
+use vfs::PollSubscribers;
 
 use crate::device::{Geometry, MappedDevice};
 use crate::device::registry::{self, BlockResolver};
@@ -39,7 +43,46 @@ const MAX_PAYLOAD: usize = (uapi::DM_MAX_TARGETS as usize) * (uapi::DM_MAX_TARGE
 /// The kernel ioctl shim recognizes the exact `(10,236)` node and invokes
 /// [`dispatch`], preserving the same route for a node recreated with mknod.
 pub struct ControlCharOps;
-impl vfs::CharDevOps for ControlCharOps {}
+static GLOBAL_EVENT_NR: AtomicU64 = AtomicU64::new(0);
+static GLOBAL_EVENTQ: Spinlock<Option<Arc<PollSubscribers>>, DmClass> = Spinlock::new(None);
+
+fn global_eventq() -> Arc<PollSubscribers> {
+    let mut q = GLOBAL_EVENTQ.lock();
+    q.get_or_insert_with(|| Arc::new(PollSubscribers::new())).clone()
+}
+
+/// Publish one control-plane event to every open control-file description.
+/// Linux's `dm_global_event_nr` and `dm_global_eventq` are global to the
+/// control file, not to one mapped device. # C: O(subscribers)
+pub fn notify_global_event() {
+    GLOBAL_EVENT_NR.fetch_add(1, Ordering::AcqRel);
+    global_eventq().notify();
+}
+
+/// Arm one control-file description at the current global event number. This
+/// is the owner-side equivalent of Linux `DM_DEV_ARM_POLL`. # C: O(1)
+pub fn arm_poll_file(file: &vfs::File) {
+    file.set_private_data(GLOBAL_EVENT_NR.load(Ordering::Acquire));
+}
+
+impl vfs::CharDevOps for ControlCharOps {
+    fn open_file(&self, _devt: vfs::Devt, file: &vfs::File) -> vfs::KResult<()> {
+        arm_poll_file(file);
+        Ok(())
+    }
+
+    fn poll_file(&self, _devt: vfs::Devt, file: &vfs::File) -> vfs::KResult<u32> {
+        Ok(if GLOBAL_EVENT_NR.load(Ordering::Acquire) != file.private_data() {
+            vfs::POLL_IN
+        } else { 0 })
+    }
+
+    fn poll_subscribers_file(&self, _devt: vfs::Devt, _file: &vfs::File) -> Option<Arc<PollSubscribers>> {
+        Some(global_eventq())
+    }
+
+    fn can_poll(&self, _devt: vfs::Devt) -> bool { true }
+}
 
 #[derive(Copy, Clone)]
 struct Header {
@@ -150,10 +193,21 @@ fn dev_suspend(header: Header, bytes: &mut [u8]) -> DmResult<()> {
 
 fn dev_wait(header: Header, bytes: &mut [u8]) -> DmResult<()> {
     let dev = device_of(header, bytes)?;
-    // Sleeping needs the file-owned wait queue that wakes pollers as well;
-    // the byte-buffer work function has no file description. A caller whose
-    // observed event is stale receives the current state here.
-    if dev.event_nr() == header.event_nr { return Err(Errno::Eagain); }
+    if dev.event_nr() == header.event_nr {
+        #[cfg(target_os = "oxide-kernel")]
+        {
+            // SAFETY: this is process context, the device predicate is read
+            // without holding the device lock across schedule, and
+            // bump_event publishes the counter before waking this list.
+            unsafe {
+                let _ = sched::live::wait_event_uninterruptible(
+                    dev.event_waiters(), || dev.event_nr() != header.event_nr,
+                );
+            }
+        }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        return Err(Errno::Eagain);
+    }
     fill_status(bytes, &dev);
     Ok(())
 }
@@ -459,6 +513,11 @@ mod tests {
 
         let mut resume = named(name);
         dispatch(uapi::DM_DEV_SUSPEND, &mut resume).expect("resume");
+        assert_eq!(read_u32(&resume, EVENT_NR).expect("event number"), 1);
+        let mut wait = named(name);
+        put_u32(&mut wait, EVENT_NR, 0).expect("wait event number");
+        dispatch(uapi::DM_DEV_WAIT, &mut wait).expect("wait for table event");
+        assert_eq!(read_u32(&wait, EVENT_NR).expect("wait result"), 1);
         let disk = block::registry::by_name("dm-0").expect("published disk");
         let mut read = block::BlockRequest::new_read(0, 1, 512);
         disk.dev.submit_sync(&mut read).expect("zero read");

@@ -33,15 +33,17 @@ pub use lookup::{mount_target_from_resolved_path, mountpoint_lookup_at_root_cred
 pub use create::vfs_create_at;
 pub use device_permission::{device_permission, may_open_dev, set_device_permission_hook, DevicePermissionHook};
 pub use permission::{generic_permission, inode_permission, may_open, may_open_at,
-                     set_inode_mac_hook, set_inode_create_hook, inode_created,
-                     notify_inode_created, InodeMacHook, InodeCreateHook, OpenIntent};
+                     set_inode_mac_hook, set_inode_create_hook, set_inode_instantiated_hook,
+                     set_inode_init_security_anon_hook, inode_init_security_anon,
+                     inode_created, inode_instantiated, notify_inode_created, InodeMacHook,
+                     InodeCreateHook, InodeInstantiateHook, InodeInitSecurityAnonHook, OpenIntent};
 pub use may_create::{may_create, may_create_in_sticky};
 pub use may_delete::{may_delete, may_delete_dentry};
 pub use may_link::{may_link, may_link_source, may_linkat};
 pub use may_rename::{may_rename, rename_flags_check, RENAME_EXCHANGE, RENAME_NOREPLACE, RENAME_WHITEOUT};
 pub use root::{resolve_abs, resolve_path_dentry, root_dentry, set_root_dentry_provider, walk_to_mount};
 pub use group_list::GroupList;
-pub use types::{Cred, LastType, LinkTarget, LookupFlags, MountTarget, VfsPath, MAX_NESTED_LINKS, MAX_SYMLINK_DEPTH, MAY_EXEC, MAY_READ, MAY_WRITE, S_IALLUGO, S_ISGID, S_ISUID, S_IXGRP};
+pub use types::{Cred, LastType, LinkTarget, LookupFlags, MountTarget, VfsPath, MAX_NESTED_LINKS, MAX_SYMLINK_DEPTH, MAY_EXEC, MAY_NOT_BLOCK, MAY_READ, MAY_WRITE, S_IALLUGO, S_ISGID, S_ISUID, S_IXGRP};
 pub use state::Nameidata;
 
 pub(super) use permission::may_lookup;

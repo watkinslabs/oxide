@@ -189,6 +189,29 @@ fn cookie_acknowledgement_is_refused_when_its_negotiated_option_is_disabled() {
 }
 
 #[test]
+fn cookie_ecn_is_cleared_when_the_namespace_disables_incoming_ecn() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let stack = NetStack::new();
+    let port = 7_425;
+    let (iface, lo, _) = fixture(&stack, port);
+    fill_syn_queue(&stack, iface, port, &lo);
+    crate::sysctl::set_value_in(0, crate::net_ns::NetSysctlKey::TcpEcn, 0)
+        .expect("disable incoming ECN");
+    deliver(&stack, iface, port, 40_002, flags::SYN | flags::ECE | flags::CWR,
+        CLIENT_SEQ, 0, syn_options());
+    let segment = sent(&lo).expect("cookie SYN-ACK");
+    let synack = head(&segment);
+    drain(&lo);
+    let echo = SynOptions { timestamp: Some((0x1111_3333, tsval(&segment))), ..SynOptions::default() };
+    deliver(&stack, iface, port, 40_002, flags::ACK, CLIENT_SEQ.wrapping_add(1),
+        synack.seq.wrapping_add(1), echo);
+    crate::sysctl::set_value_in(0, crate::net_ns::NetSysctlKey::TcpEcn, 2)
+        .expect("restore incoming ECN");
+    let child = child(&stack, port, 40_002).expect("the cookie still opens the connection");
+    assert!(!child.conn.lock().ecn_enabled);
+}
+
+#[test]
 fn cookie_syn_ack_never_offers_a_namespace_disabled_option() {
     let _domain = crate::hosted_fixture::init_net_domain();
     for (offset, key) in [

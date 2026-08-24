@@ -14,7 +14,6 @@ use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use syscall::errno::Errno;
-use vfs::inode_ops::CreateCtx;
 use vfs::types::FileType;
 
 use crate::err::to_errno;
@@ -79,12 +78,12 @@ pub fn rename(stack: &Arc<LayerStack>, old_parent: &OvlEntry, old_name: &str,
     let mut real = 0u32;
     if plan.exchange { real |= RENAME_EXCHANGE; }
     if plan.whiteout { real |= RENAME_WHITEOUT; }
-    od.rename_child(old_name, &nd, new_name, real, &CreateCtx::root()).map_err(to_errno)?;
+    stack.with_access_ctx(|ctx| od.rename_child(old_name, &nd, new_name, real, ctx)).map_err(to_errno)?;
 
     if plan.cleanup {
         // The exchange sent the destination's whiteout back to the source
         // name, where nothing needs covering.
-        let _ = od.unlink_child(old_name);
+        let _ = stack.with_access_ctx(|ctx| od.unlink_child_with_ctx(old_name, ctx));
     }
     Ok(())
 }

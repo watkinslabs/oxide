@@ -48,6 +48,7 @@ fn update_mode(inode: &InodeRef, entries: &[AclEntry], c: &XattrCred) -> Result<
 /// `do_set_acl` → `vfs_set_acl` → `set_posix_acl`. The generic set flags are
 /// deliberately unused: Linux drops them before this path. # C: O(N_entries)
 pub fn set_acl(inode: &InodeRef, name: &str, value: Vec<u8>, c: &XattrCred) -> Result<(), i64> {
+    if inode.i_sb().is_some_and(|sb| !sb.is_posixacl()) { return Err(err(Errno::Eopnotsupp)); }
     let entries = decode(&value)?;
     may_write_xattr(inode)?;
     let is_dir = inode.file_type() == FileType::Directory;
@@ -69,6 +70,7 @@ pub fn set_acl(inode: &InodeRef, name: &str, value: Vec<u8>, c: &XattrCred) -> R
 /// `vfs_remove_acl` — same inode restrictions, then unconditional removal.
 /// A missing ACL is not an error (Linux `set_cached_acl(NULL)`). # C: O(1)
 pub fn remove_acl(inode: &InodeRef, name: &str, c: &XattrCred) -> Result<(), i64> {
+    if inode.i_sb().is_some_and(|sb| !sb.is_posixacl()) { return Err(err(Errno::Eopnotsupp)); }
     may_write_xattr(inode)?;
     if name == NAME_ACL_DEFAULT && inode.file_type() != FileType::Directory { return Ok(()); }
     if !c.owns(inode) { return Err(err(Errno::Eperm)); }

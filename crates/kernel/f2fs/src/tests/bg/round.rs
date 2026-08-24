@@ -36,6 +36,13 @@ fn mounted_with(opts: Options) -> Arc<F2fs> {
 
 fn mounted() -> Arc<F2fs> { mounted_with(Options::defaults()) }
 
+#[test]
+fn unmount_discard_deadline_drops_only_after_the_timeout() {
+    assert!(!crate::bg::round::umount_discard_timed_out(100, 105, 5));
+    assert!(crate::bg::round::umount_discard_timed_out(100, 106, 5));
+    assert!(!crate::bg::round::umount_discard_timed_out(100, 100, 0));
+}
+
 /// A mount with something written to it, so a pass has state to read.
 fn with_a_file(name: &str, blocks: usize) -> Arc<F2fs> {
     let fs = mounted();
@@ -82,6 +89,21 @@ fn a_pass_over_a_busy_volume_backs_off_instead_of_cleaning() {
     let pass = crate::bg::gc_pass(&fs);
     assert_eq!(pass.step, GcStep::Sleep);
     assert!(!pass.cleaned);
+}
+
+#[test]
+fn bggc_io_aware_blocks_only_the_configured_inflight_class() {
+    let fs = with_a_file("f", 2);
+    fs.volume.lock().set_clock(1_000);
+    fs.bg().note_activity(0);
+    fs.volume.lock().inflight_reads.fetch_add(1, core::sync::atomic::Ordering::Release);
+    assert_eq!(crate::bg::gc_pass(&fs).step, GcStep::Sleep,
+               "all-I/O awareness yields to an in-flight read");
+    fs.bg().set_bggc_io_aware(2);
+    let pass = crate::bg::gc_pass(&fs);
+    assert!(matches!(pass.step, GcStep::Gc { .. }),
+            "none-awareness does not treat the read as a busy device");
+    fs.volume.lock().inflight_reads.fetch_sub(1, core::sync::atomic::Ordering::Release);
 }
 
 #[test]

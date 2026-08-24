@@ -69,7 +69,7 @@ pub mod iopoll;
 pub mod linux_cmd;
 
 pub use ctx::IoUringInode;
-pub use ring::{make_io_uring_inode, mmap_backing, ring_ctx, ring_of, IoUring};
+pub use ring::{make_io_uring_inode, mmap_backing, ring_ctx, ring_of, IoUring, MmapBacking};
 pub use rsrc::IoUringReg;
 
 // The three io_uring syscall handlers live in per-syscall files per docs/53§0;

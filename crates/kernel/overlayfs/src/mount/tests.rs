@@ -19,6 +19,7 @@ use vfs::inode_ops::CreateCtx;
 use vfs::types::{FileType, S_IFREG};
 use vfs::posix_acl::{to_xattr, AclEntry, ACL_GROUP_OBJ, ACL_MASK, ACL_OTHER,
                      ACL_UNDEFINED_ID, ACL_USER, ACL_USER_OBJ};
+use vfs::fs::FileSystem;
 use vfs::{Cred, GroupList, Iattr, InodeRef, VfsError, ATTR_MODE, MAY_READ, MAY_WRITE};
 
 use crate::config::Config;
@@ -90,6 +91,91 @@ fn a_lower_file_reads_through() {
 }
 
 #[test]
+fn repeated_lookup_returns_the_cached_overlay_inode() {
+    let (l, _up, lo) = image();
+    mkfile(&lo, "f", b"image contents");
+    let fs = OverlayFs::open(OPTS, &l.resolve(), true).unwrap();
+    let first = fs.root_inode().lookup("f").unwrap();
+    let second = fs.root_inode().lookup("f").unwrap();
+    assert!(Arc::ptr_eq(&first, &second), "one real object has one overlay inode");
+}
+
+#[test]
+fn pure_upper_lookup_returns_the_cached_overlay_inode() {
+    let (l, up, _lo) = image();
+    mkfile(&up, "f", b"upper");
+    let fs = OverlayFs::open(OPTS, &l.resolve(), true).unwrap();
+    let first = fs.root_inode().lookup("f").unwrap();
+    let second = fs.root_inode().lookup("f").unwrap();
+    assert!(Arc::ptr_eq(&first, &second), "a pure upper object has one inode");
+}
+
+#[test]
+fn nfs_export_round_trips_a_lower_handle_through_origin_state() {
+    let (l, _up, lo) = image();
+    mkfile(&lo, "f", b"lower");
+    let fs = OverlayFs::open("lowerdir=/lower,upperdir=/upper,workdir=/work,nfs_export=on",
+                             &l.resolve(), true).unwrap();
+    let original = fs.root_inode().lookup("f").unwrap();
+    let ops = fs.super_ops().unwrap();
+    let mut bytes = vec![0u8; ops.export_fid_len(false, false) as usize];
+    let (len, ty) = ops.export_encode_fh_raw(&original, None, &mut bytes);
+    assert_eq!(ty, crate::uapi::OVERLAY_FILEID_V1);
+    bytes.truncate(len as usize);
+    let fid = ops.export_decode_fh_raw(&bytes, ty).unwrap();
+    let sb = lo.i_sb().unwrap();
+    let reopened = ops.fh_to_dentry_raw(&sb, &fid).unwrap();
+    let mut data = [0u8; 8];
+    let n = reopened.read(0, &mut data).unwrap();
+    assert_eq!(&data[..n], b"lower");
+}
+
+#[test]
+fn nfs_export_round_trips_a_pure_upper_handle() {
+    let (l, up, _lo) = image();
+    mkfile(&up, "f", b"upper");
+    let fs = OverlayFs::open("lowerdir=/lower,upperdir=/upper,workdir=/work,nfs_export=on",
+                             &l.resolve(), true).unwrap();
+    let original = fs.root_inode().lookup("f").unwrap();
+    let ops = fs.super_ops().unwrap();
+    let mut bytes = vec![0u8; ops.export_fid_len(false, false) as usize];
+    let (len, ty) = ops.export_encode_fh_raw(&original, None, &mut bytes);
+    bytes.truncate(len as usize);
+    assert!(crate::fh::decode(&bytes).unwrap().is_upper);
+    let fid = ops.export_decode_fh_raw(&bytes, ty).unwrap();
+    let sb = up.i_sb().unwrap();
+    let reopened = ops.fh_to_dentry_raw(&sb, &fid).unwrap();
+    let mut data = [0u8; 8];
+    let n = reopened.read(0, &mut data).unwrap();
+    assert_eq!(&data[..n], b"upper");
+}
+
+#[test]
+fn nfs_export_rejects_connectable_overlay_handles() {
+    let (l, _up, lo) = image();
+    mkfile(&lo, "f", b"lower");
+    let fs = OverlayFs::open("lowerdir=/lower,upperdir=/upper,workdir=/work,nfs_export=on",
+                             &l.resolve(), true).unwrap();
+    let inode = fs.root_inode().lookup("f").unwrap();
+    let ops = fs.super_ops().unwrap();
+    let mut bytes = vec![0u8; ops.export_fid_len(true, false) as usize];
+    let (len, ty) = ops.export_encode_fh_raw(&inode, Some((1, 1)), &mut bytes);
+    assert_eq!((len, ty), (0, -1));
+}
+
+#[test]
+fn indexed_lower_hardlinks_share_one_overlay_inode() {
+    let (l, _up, lo) = image();
+    let first = mkfile(&lo, "a", b"image");
+    lo.link_child(&first, "b", &CreateCtx::root()).unwrap();
+    let fs = OverlayFs::open("lowerdir=/lower,upperdir=/upper,workdir=/work,index=on",
+                             &l.resolve(), true).unwrap();
+    let a = fs.root_inode().lookup("a").unwrap();
+    let b = fs.root_inode().lookup("b").unwrap();
+    assert!(Arc::ptr_eq(&a, &b), "indexed hardlinks use one real inode key");
+}
+
+#[test]
 fn writing_a_lower_file_copies_it_up_and_leaves_the_image_alone() {
     let (l, up, lo) = image();
     mkfile(&lo, "f", b"image");
@@ -101,6 +187,43 @@ fn writing_a_lower_file_copies_it_up_and_leaves_the_image_alone() {
     let mut buf = [0u8; 16];
     let n = f.read(0, &mut buf).unwrap();
     assert_eq!(&buf[..n], b"local");
+}
+
+#[test]
+fn fallocate_on_a_lower_file_copies_data_up_before_forwarding() {
+    let (l, up, lo) = image();
+    mkfile(&lo, "f", b"image");
+    let fs = OverlayFs::open(OPTS, &l.resolve(), true).unwrap();
+    let f = fs.root_inode().lookup("f").unwrap();
+    f.fallocate(0, 4096, 4096).unwrap();
+    assert_eq!(f.size(), 8192);
+    assert_eq!(slurp(&find_path(&lo, "f").unwrap()), b"image".to_vec());
+    assert_eq!(find_path(&up, "f").unwrap().size(), 8192);
+}
+
+#[test]
+fn fiemap_on_a_metadata_only_file_reads_the_data_owner() {
+    let (l, up, lo) = image();
+    mkfile(&lo, "f", b"image");
+    let fs = OverlayFs::open("lowerdir=/lower,upperdir=/upper,workdir=/work,metacopy=on",
+                             &l.resolve(), true).unwrap();
+    let f = fs.root_inode().lookup("f").unwrap();
+    let mut extents = Vec::new();
+    f.fiemap(0, 4096, &mut |e| { extents.push(e); true }).unwrap();
+    assert_eq!(extents.len(), 1);
+    assert!(find_path(&up, "f").is_none(), "fiemap is read-only");
+    assert_eq!(slurp(&find_path(&lo, "f").unwrap()), b"image".to_vec());
+}
+
+#[test]
+fn overlay_tmpfile_is_unlinked_until_linked_into_the_upper_layer() {
+    let (l, up, _lo) = image();
+    let fs = OverlayFs::open(OPTS, &l.resolve(), true).unwrap();
+    let tmp = fs.root_inode().tmpfile(S_IFREG as u32 | 0o600, &CreateCtx::root()).unwrap();
+    assert_eq!(tmp.nlink(), 0);
+    tmp.write(0, b"anonymous").unwrap();
+    fs.root_inode().link_child(&tmp, "published", &CreateCtx::root()).unwrap();
+    assert_eq!(slurp(&find_path(&up, "published").unwrap()), b"anonymous".to_vec());
 }
 
 #[test]
@@ -200,6 +323,40 @@ fn chmod_forwards_the_acl_rewrite_to_the_copied_up_inode() {
                "the forwarded chmod must rewrite the copied-up ACL");
     assert_eq!(lower.permission(MAY_READ | MAY_WRITE, &user), Ok(()),
                "copy-up must not mutate the image layer's ACL");
+}
+
+#[test]
+fn override_creds_uses_the_mount_owner_for_the_real_layer_check() {
+    let (l, _up, lo) = image();
+    let lower = mkfile(&lo, "private", b"image");
+    lower.set_perm(0).unwrap();
+    let mounter = Cred { uid: 1000, gid: 1000, cap_dac_override: false,
+        cap_dac_read_search: false, cap_fowner: false, cap_chown: false,
+        cap_fsetid: false, groups: GroupList::empty() };
+    let caller = Cred { uid: 2000, gid: 2000, cap_dac_override: false,
+        cap_dac_read_search: true, cap_fowner: false, cap_chown: false,
+        cap_fsetid: false, groups: GroupList::empty() };
+    let fs = OverlayFs::open_with_cred(OPTS, &l.resolve(), true, &mounter).unwrap();
+    let f = fs.root_inode().lookup("private").unwrap();
+    assert_eq!(f.permission(MAY_READ, &caller), Err(VfsError::Eacces));
+}
+
+#[test]
+fn nooverride_creds_uses_the_requesting_task_for_the_real_layer_check() {
+    let (l, _up, lo) = image();
+    let lower = mkfile(&lo, "private", b"image");
+    lower.set_perm(0).unwrap();
+    let mounter = Cred { uid: 1000, gid: 1000, cap_dac_override: false,
+        cap_dac_read_search: false, cap_fowner: false, cap_chown: false,
+        cap_fsetid: false, groups: GroupList::empty() };
+    let caller = Cred { uid: 2000, gid: 2000, cap_dac_override: false,
+        cap_dac_read_search: true, cap_fowner: false, cap_chown: false,
+        cap_fsetid: false, groups: GroupList::empty() };
+    let fs = OverlayFs::open_with_cred(
+        "lowerdir=/lower,upperdir=/upper,workdir=/work,nooverride_creds",
+        &l.resolve(), true, &mounter).unwrap();
+    let f = fs.root_inode().lookup("private").unwrap();
+    assert_eq!(f.permission(MAY_READ, &caller), Ok(()));
 }
 
 #[test]

@@ -92,6 +92,7 @@ pub use unix_sock::{
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub use unix_sock::bind_file;
 pub mod net_ns;
+pub mod netfilter_action;
 pub mod security_admission;
 pub mod control_event;
 #[cfg(any(test, feature = "hosted"))]
@@ -127,7 +128,8 @@ pub mod stack_forward;
 pub mod stack_diag;
 mod global;
 pub use global::global_stack;
-pub use stack::{BridgeTiming, NetStack, UdpRxQueue, stp_softirq_init, stp_raise_from_tick};
+pub use stack::{BridgeTiming, FlowtableConfig, FlowtableDevice, NetStack, SocketLookup, UdpRxQueue, stp_softirq_init,
+                stp_raise_from_tick};
 pub use route::{ResolvedRoute, RouteEntry, RouteRecord, RouteTable};
 pub use route_metrics::RouteMetrics;
 pub use route6::{Route6Entry, Route6Origin, Route6Table};

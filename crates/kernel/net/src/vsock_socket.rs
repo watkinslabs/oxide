@@ -89,6 +89,9 @@ pub struct VsockSocket {
     binding: Spinlock<VsockBinding, SockLockClass>,
     released: core::sync::atomic::AtomicBool,
     pub so_type: core::sync::atomic::AtomicU8,
+    /// SELinux socket SID retained from socket creation, matching Linux's
+    /// `sk_security_struct::sid`.
+    pub security_sid: core::sync::atomic::AtomicU32,
     /// AF_VSOCK transport buffer policy, in bytes. These are socket-owned
     /// Linux SOL_VSOCK values; the transport consumes them when attached.
     pub buffer_size: core::sync::atomic::AtomicU64,
@@ -153,6 +156,8 @@ impl VsockSocket {
             binding: Spinlock::new(VsockBinding::None),
             released: core::sync::atomic::AtomicBool::new(false),
             so_type: core::sync::atomic::AtomicU8::new(typ as u8),
+            security_sid: core::sync::atomic::AtomicU32::new(
+                security::network::new_socket_label(security::network::SocketClass::Vsock)),
             buffer_size: core::sync::atomic::AtomicU64::new(crate::uapi::VSOCK_DEFAULT_BUFFER_SIZE),
             buffer_min_size: core::sync::atomic::AtomicU64::new(crate::uapi::VSOCK_DEFAULT_BUFFER_MIN_SIZE),
             buffer_max_size: core::sync::atomic::AtomicU64::new(crate::uapi::VSOCK_DEFAULT_BUFFER_MAX_SIZE),
@@ -199,8 +204,8 @@ impl VsockSocket {
 
     /// Admit an accept and snapshot its exact listener owner. # C: O(1)
     pub fn listener_for_accept(&self) -> Result<Arc<vsock::Listener>, crate::NetError> {
-        crate::security_admission::check(self.net_ns(), crate::socket_args::AF_VSOCK as u16,
-            security::network::Operation::Accept)?;
+        crate::security_admission::check_socket(self.net_ns(), crate::socket_args::AF_VSOCK as u16,
+            security::network::Operation::Accept, self.security_label(), self.security_class())?;
         match &*self.kind.lock() {
             VsockKind::Listener(listener) => Ok(listener.clone()),
             _ => return Err(crate::NetError::Einval),
@@ -220,6 +225,14 @@ impl VsockSocket {
     /// Derive the short-lived namespace table key. # C: O(1)
     pub fn net_ns(&self) -> u64 { crate::net_ns::namespace_id(&self.net_namespace) }
 
+    /// This socket's retained SELinux SID. # C: O(1)
+    pub fn security_label(&self) -> u32 {
+        self.security_sid.load(core::sync::atomic::Ordering::Acquire)
+    }
+
+    /// SELinux class for every AF_VSOCK socket type. # C: O(1)
+    pub const fn security_class(&self) -> &'static str { "vsock_socket" }
+
     /// Socket protocol personality retained from `socket(2)`. # C: O(1)
     pub const fn socket_type(&self) -> VsockSocketType { self.socket_type }
 
@@ -235,18 +248,14 @@ impl VsockSocket {
 
     /// Check the retained namespace before consuming VSOCK receive state. # C: O(1)
     pub fn check_receive(&self) -> Result<(), crate::NetError> {
-        crate::security_admission::check(
-            self.net_ns(), crate::socket_args::AF_VSOCK as u16,
-            security::network::Operation::Receive,
-        )
+        crate::security_admission::check_socket(self.net_ns(), crate::socket_args::AF_VSOCK as u16,
+            security::network::Operation::Receive, self.security_label(), self.security_class())
     }
 
     /// Check the retained namespace before transmitting VSOCK payload. # C: O(1)
     pub fn check_send(&self) -> Result<(), crate::NetError> {
-        crate::security_admission::check(
-            self.net_ns(), crate::socket_args::AF_VSOCK as u16,
-            security::network::Operation::Send,
-        )
+        crate::security_admission::check_socket(self.net_ns(), crate::socket_args::AF_VSOCK as u16,
+            security::network::Operation::Send, self.security_label(), self.security_class())
     }
 
     /// Check the retained namespace before inspecting or mutating one VSOCK
@@ -254,7 +263,8 @@ impl VsockSocket {
     pub fn check_option(&self, access: crate::socket_security::option::Access,
                         level: i32, optname: i32) -> Result<(), crate::NetError>
     {
-        crate::socket_security::option::check(self.opt_sock(), access, level, optname)
+        crate::socket_security::option::check_target(self.opt_sock(), access, level, optname,
+            self.security_label(), self.security_class())
     }
 
     /// This socket's identity as the option hooks see it. # C: O(1)

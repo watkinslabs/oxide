@@ -225,7 +225,7 @@ impl General {
         let valid_count = v.valid_block_count;
         let free_segs = v.free_segment_count();
         let overp_segs = cp.overprov_segment_count;
-        let rsvd_segs = cp.rsvd_segment_count;
+        let rsvd_segs = v.gc_reserve();
         let mounted_time = cp.elapsed_time;
         let cp_flags = cp.flags;
         // Straight off the cache that owns them. The remaining count is the
@@ -259,7 +259,7 @@ impl General {
             free_segs, free_secs: free_sections(v),
             prefree_count: v.prefree_count(),
             dirty_count: w.dirty_count,
-            nats: (v.nat_dirty.len() + v.nat_journal.len()) as u32,
+            nats: (v.nat_dirty.len() + v.nat_journal.len() + v.nat_cache_count()) as u32,
             dirty_nats: v.nat_dirty.len() as u32,
             sits: main_area_segs,
             dirty_sits: v.sit_dirty.len() as u32,

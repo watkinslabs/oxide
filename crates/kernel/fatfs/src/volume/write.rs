@@ -17,13 +17,13 @@ use alloc::vec;
 use syscall::errno::Errno;
 
 use crate::cluster_alloc::{alloc_clusters, chain_add, count_free, count_free_clusters,
-                           free_chain_state, truncate_chain_state};
+                           truncate_chain_state_with};
 use crate::dirent::{Record, ENTRY_BYTES};
 use crate::fatcache::{get_cluster, ChainCache, Seek, TO_EOF};
 use crate::fsinfo;
 use crate::time::FatTime;
 
-use super::{chain_errno, DirEntry, SectorSource, Volume};
+use super::{DirEntry, SectorSource, Volume};
 
 impl<S: SectorSource> Volume<S> {
     /// Whether this volume may be written — a question about the MEDIUM only.
@@ -34,7 +34,9 @@ impl<S: SectorSource> Volume<S> {
     /// would leave a user unable to save anything to a stick that was pulled
     /// once. The warning is the caller's to emit; [`Self::was_dirty`] is how
     /// it knows. # C: O(1)
-    pub fn writable(&self) -> bool { self.source.writable() }
+    pub fn writable(&self) -> bool {
+        self.source.writable() && !self.forced_ro.load(core::sync::atomic::Ordering::Acquire)
+    }
 
     /// Was this volume left dirty by whoever had it last? # C: O(1)
     pub fn was_dirty(&self) -> bool { self.dirty }
@@ -103,6 +105,12 @@ impl<S: SectorSource> Volume<S> {
         Ok(())
     }
 
+    /// Flush the medium's volatile write cache. FAT's ordinary write owner
+    /// already places data and metadata synchronously; this is the remaining
+    /// part of the Linux `flush` mount option's release contract.
+    /// # C: O(1 device barrier)
+    pub fn flush_device(&self) -> Result<(), Errno> { self.source.flush() }
+
     /// Set or clear the volume's dirty flag on the medium.
     ///
     /// Marked before the first write and cleared at unmount, so a medium
@@ -153,7 +161,8 @@ impl<S: SectorSource> Volume<S> {
                 self.source.write_sectors(sector, &buf)
             }
             Some(first) => {
-                let clusters = crate::chain::walk(&self.geo, &self.table, first).map_err(chain_errno)?;
+                let clusters = crate::chain::walk(&self.geo, &self.table, first)
+                    .map_err(|_| self.fs_error())?;
                 let index = usize::try_from(slot / per).map_err(|_| Errno::Eio)?;
                 let within = usize::try_from(slot % per).map_err(|_| Errno::Eio)?;
                 let cluster = *clusters.get(index).ok_or(Errno::Eio)?;
@@ -205,7 +214,8 @@ impl<S: SectorSource> Volume<S> {
             let pos = offset + done as u64;
             let index = u32::try_from(pos / per).map_err(|_| Errno::Eio)?;
             let within = usize::try_from(pos % per).map_err(|_| Errno::Eio)?;
-            let Seek::At { dclus, .. } = get_cluster(&self.geo, &self.table, cache, first, index)?
+            let Seek::At { dclus, .. } = get_cluster(&self.geo, &self.table, cache, first, index)
+                .map_err(|_| self.fs_error())?
                 else { return Err(Errno::Eio) };
             let take = core::cmp::min(usize::try_from(per).map_err(|_| Errno::Eio)? - within,
                                       data.len() - done);
@@ -260,7 +270,8 @@ impl<S: SectorSource> Volume<S> {
         let (have, tail) = if first == 0 {
             (0usize, None)
         } else {
-            match get_cluster(&self.geo, &self.table, cache, first, TO_EOF)? {
+            match get_cluster(&self.geo, &self.table, cache, first, TO_EOF)
+                .map_err(|_| self.fs_error())? {
                 Seek::Eof { fclus, dclus } => (fclus as usize + 1, Some(dclus)),
                 Seek::At { fclus, dclus } => (fclus as usize + 1, Some(dclus)),
             }
@@ -303,12 +314,30 @@ impl<S: SectorSource> Volume<S> {
             first = self.extend_chain(first, cache, keep)?;
             self.fill_zeros(first, cache, old, len)?;
         } else if first != 0 {
-            if keep == 0 {
-                free_chain_state(&self.geo, &mut self.table, &mut self.free, first)?;
-                first = 0;
-            } else {
-                truncate_chain_state(&self.geo, &mut self.table, &mut self.free, first, keep)?;
-            }
+            let discard = self.opts.discard && self.source.supports_discard();
+            let source = &self.source;
+            let geo = self.geo;
+            let mut run_start: Option<u32> = None;
+            let mut run_last: Option<u32> = None;
+            let submit = |start: Option<u32>, last: Option<u32>| {
+                if !discard { return; }
+                if let (Some(start), Some(last)) = (start, last) {
+                    if let (Some(sector), Some(end)) = (geo.cluster_sector(start), geo.cluster_sector(last)) {
+                        let count = u64::from(end - sector) + u64::from(geo.sec_per_clus);
+                        let _ = source.discard_sectors(u64::from(sector), count);
+                    }
+                }
+            };
+            truncate_chain_state_with(&self.geo, &mut self.table, &mut self.free, first, keep,
+                |cluster| {
+                    if run_last.map_or(false, |last| cluster != last.saturating_add(1)) {
+                        submit(run_start.take(), run_last.take());
+                    }
+                    if run_start.is_none() { run_start = Some(cluster); }
+                    run_last = Some(cluster);
+                })?;
+            submit(run_start, run_last);
+            if keep == 0 { first = 0; }
             cache.invalidate();
             self.flush_table()?;
             self.flush_fsinfo()?;
@@ -337,7 +366,8 @@ impl<S: SectorSource> Volume<S> {
             let index = u32::try_from(pos / per).map_err(|_| Errno::Eio)?;
             let within = usize::try_from(pos % per).map_err(|_| Errno::Eio)?;
             let take = core::cmp::min(width - within, usize::try_from(to - pos).unwrap_or(width));
-            let Seek::At { dclus, .. } = get_cluster(&self.geo, &self.table, cache, first, index)?
+            let Seek::At { dclus, .. } = get_cluster(&self.geo, &self.table, cache, first, index)
+                .map_err(|_| self.fs_error())?
                 else { return Err(Errno::Eio) };
             if take < width {
                 self.read_cluster(dclus, &mut scratch)?;

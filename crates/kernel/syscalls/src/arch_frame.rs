@@ -45,6 +45,18 @@ pub fn current_user_pc() -> u64 {
     }
 }
 
+/// The trapped user stack pointer of the syscall currently dispatching.
+/// # C: O(1)
+pub fn current_user_sp() -> u64 {
+    let regs = current_user_regs();
+    if regs.is_null() { return 0; }
+    // SAFETY: `current_user_regs` returns this task's live syscall entry frame on its own kstack; read-only field access under dispatch context.
+    unsafe {
+        #[cfg(target_arch = "x86_64")]   { (*regs).rsp }
+        #[cfg(target_arch = "aarch64")]  { (*regs).sp_el0 }
+    }
+}
+
 /// The syscall number the live entry frame currently carries, re-read after a
 /// ptrace stop so a tracer's rewrite is visible (Linux
 /// `syscall_get_nr(current, current_pt_regs())`).

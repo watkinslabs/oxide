@@ -90,7 +90,7 @@ impl Mount {
                 return Err(self.rollback_truncate_quota(ino, sectors, old_sectors, account_quota, e));
             }
         }
-        if let Err(e) = self.write_inode_bytes(ino, &bytes) {
+        if let Err(e) = self.write_inode_bytes_data(ino, &bytes) {
             return Err(self.rollback_truncate_quota(ino, sectors, old_sectors, account_quota, e));
         }
         for b in blocks_to_free {

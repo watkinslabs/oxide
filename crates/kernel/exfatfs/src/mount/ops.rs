@@ -47,6 +47,16 @@ impl ExfatOps {
     fn child(node: &ExfatNode, home: &DirHandle, hit: DirEntry) -> InodeRef {
         node_inode(Arc::clone(&node.fs), Some(hit), home.clone())
     }
+
+    /// Attach removed allocations to the exact victim inode. # C: O(1)
+    fn defer_removed(node: &ExfatNode, inode: &InodeRef, chains: alloc::vec::Vec<crate::chain::Chain>)
+        -> KResult<()> {
+        let victim = inode.private::<ExfatNode>().ok_or(VfsError::Einval)?;
+        if !Arc::ptr_eq(&node.fs, &victim.fs) { return Err(VfsError::Exdev); }
+        victim.defer_release(chains);
+        inode.set_nlink(0);
+        Ok(())
+    }
 }
 
 impl InodeOps for ExfatOps {
@@ -88,9 +98,25 @@ impl InodeOps for ExfatOps {
         node.fs.volume.lock().rmdir(&dir, name, now()).map_err(errno_to_vfs)
     }
 
+    fn rmdir_with_victim(&self, inode: &Inode, name: &str, victim: &InodeRef) -> KResult<()> {
+        let (node, dir) = Self::dir_of(inode)?;
+        let mut v = node.fs.volume.lock();
+        let chains = v.rmdir_name(&dir, name, now()).map_err(errno_to_vfs)?;
+        drop(v);
+        Self::defer_removed(node, victim, chains)
+    }
+
     fn unlink(&self, inode: &Inode, name: &str) -> KResult<()> {
         let (node, dir) = Self::dir_of(inode)?;
         node.fs.volume.lock().unlink(&dir, name, now()).map_err(errno_to_vfs)
+    }
+
+    fn unlink_with_victim(&self, inode: &Inode, name: &str, victim: &InodeRef) -> KResult<()> {
+        let (node, dir) = Self::dir_of(inode)?;
+        let mut v = node.fs.volume.lock();
+        let chains = v.unlink_name(&dir, name, now()).map_err(errno_to_vfs)?;
+        drop(v);
+        Self::defer_removed(node, victim, chains)
     }
 
     fn rename(&self, inode: &Inode, old_name: &str, new_dir: &Inode, new_name: &str, flags: u32,
@@ -150,6 +176,17 @@ impl InodeOps for ExfatOps {
         entry.set.file.access = from_unix(access);
         entry.set.file.modify = without_centiseconds(from_unix(modify));
         v.write_entry_set(&entry).map_err(errno_to_vfs)
+    }
+
+    /// exFAT's `allow_utime=` is the same non-owner exception as Linux FAT:
+    /// it is checked before generic VFS `setattr_prepare`, while owner and
+    /// CAP_FOWNER callers retain the ordinary VFS path.
+    fn allow_set_time(&self, inode: &Inode, idmap: &vfs::Idmap, cred: &vfs::Cred) -> bool {
+        let node = match Self::node(inode) { Ok(node) => node, Err(_) => return false };
+        let v = node.fs.volume.lock();
+        let owner = vfs::inode::inode_owner_or_capable(idmap, inode, cred);
+        let group = cred.in_group(idmap.map_out_gid(inode.gid().unwrap_or(0)));
+        v.options().allows_non_owner_utime(owner, group)
     }
 }
 

@@ -113,12 +113,16 @@ impl<S: SectorSource> Volume<S> {
         for number in 0..MFT_REC_USER.min(self.mft_records) {
             let Some(mirror) = self.read_mirror_record(number)? else { return Ok(true) };
             let Ok((primary, _)) = self.read_record_raw(number) else { return Ok(false) };
-            // The update sequence differs between two copies of one record by
-            // design, so the comparison is over what the record SAYS rather
-            // than over its bytes.
-            let a = crate::record::parse(&primary).map_err(|e| e.errno())?;
-            let b = crate::record::parse(&mirror).map_err(|e| e.errno())?;
-            if a.sequence != b.sequence || a.used != b.used || a.flags != b.flags {
+            // The update sequence sample belongs to each physical copy's
+            // write, so it may differ even when the logical record agrees.
+            // Every other byte is the record content the mirror protects.
+            let fix = usize::from(u16::from_le_bytes([
+                primary[REC_OFF_FIX_OFF], primary[REC_OFF_FIX_OFF + 1],
+            ]));
+            if fix + 2 > primary.len() || fix + 2 > mirror.len()
+                || primary.len() != mirror.len() { return Ok(false); }
+            if primary[..fix] != mirror[..fix]
+                || primary[fix + 2..] != mirror[fix + 2..] {
                 return Ok(false);
             }
         }

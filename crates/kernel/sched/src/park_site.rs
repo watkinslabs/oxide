@@ -10,8 +10,8 @@
 //! can act on without a symbol lookup.
 //!
 //! The publication rule is the reference's: the value only means anything for a
-//! task that is off-CPU and blocked, so [`reportable`] refuses it otherwise
-//! rather than handing back a stale site for a task that is running.
+//! task that is blocked and off every runqueue, so [`reportable`] refuses it
+//! otherwise rather than handing back a stale site for a task that is running.
 
 use core::panic::Location;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -53,11 +53,13 @@ impl Default for ParkSite {
 }
 
 /// The reference's `get_wchan` gate: a site is only reported for a task that is
-/// neither running nor mid-wake and is off every runqueue. Reporting one for a
-/// running task would name the last sleep it woke from, not where it is.
+/// not the reader's current task, is neither running nor mid-wake, and is off
+/// every runqueue. `on_cpu` is intentionally not an input: Linux does not add
+/// that test, and a blocked task may still be in the scheduler's context-switch
+/// window while its `on_rq` state already says it is not queued.
 /// # C: O(1)
-pub const fn reportable(state: TaskState, on_rq: bool, on_cpu: bool) -> bool {
-    if on_rq || on_cpu { return false; }
+pub const fn reportable(state: TaskState, on_rq: bool, is_current: bool) -> bool {
+    if on_rq || is_current { return false; }
     match state {
         TaskState::Sleeping | TaskState::Stopped => true,
         TaskState::Runnable | TaskState::Waking | TaskState::Zombie => false,
@@ -140,6 +142,9 @@ mod tests {
         assert!(!reportable(TaskState::Waking, false, false));
         assert!(!reportable(TaskState::Zombie, false, false));
         assert!(!reportable(TaskState::Sleeping, true, false), "on a runqueue");
-        assert!(!reportable(TaskState::Sleeping, false, true), "on a CPU");
+        assert!(!reportable(TaskState::Sleeping, false, true), "current task");
+        // Linux's get_wchan does not reject a blocked task merely because a
+        // context-switch window still marks it on a CPU.
+        assert!(reportable(TaskState::Sleeping, false, false));
     }
 }

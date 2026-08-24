@@ -71,6 +71,7 @@ pub(super) fn notify_xattr(inode: &InodeRef) { crate::inotify::fire_attrib(inode
 pub fn vfs_getxattr(inode: &InodeRef, name: &str, c: &XattrCred) -> Result<Vec<u8>, i64> {
     // POSIX ACLs bypass `xattr_permission` entirely (`do_get_acl`).
     if acl::is_acl_name(name) {
+        if inode.i_sb().is_some_and(|sb| !sb.is_posixacl()) { return Err(err(Errno::Eopnotsupp)); }
         super::policy::lsm_read_gate(inode, name, vfs::MAY_READ)?;
         return inode.getxattr(name).map_err(xattr_errno);
     }

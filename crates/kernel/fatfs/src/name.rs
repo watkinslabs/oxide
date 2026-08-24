@@ -18,6 +18,24 @@
 //! - `msdos`:    the 8.3-only rules, where a name that will not fit is refused.
 
 pub mod cp437;
+pub mod cp850;
+pub mod cp852;
+pub mod cp855;
+pub mod cp857;
+pub mod cp860;
+pub mod cp861;
+pub mod cp862;
+pub mod cp863;
+pub mod cp864;
+pub mod cp865;
+pub mod cp866;
+pub mod cp869;
+pub mod cp874;
+pub mod cp1251;
+pub mod cp1250;
+pub mod cp737;
+pub mod cp775;
+pub mod cp1255;
 pub mod codepage;
 pub mod flags;
 pub mod short;
@@ -30,7 +48,7 @@ pub mod msdos;
 #[path = "name/tests.rs"]
 mod tests;
 
-pub use codepage::{by_number, CodePage, CP437, DEFAULT_CODEPAGE};
+pub use codepage::{by_number, CodePage, CP437, CP737, CP775, CP850, CP852, CP855, CP857, CP860, CP861, CP862, CP863, CP864, CP865, CP866, CP869, CP874, CP1250, CP1251, CP1255, DEFAULT_CODEPAGE};
 pub use flags::{shortname_mode, CASE_LOWER_BASE, CASE_LOWER_EXT, SFN_DEFAULT, SFN_MSDOS,
                 SHORT_BASE_LEN, SHORT_NAME_LEN};
 pub use lfn::{build_slots, encode, Encoded};

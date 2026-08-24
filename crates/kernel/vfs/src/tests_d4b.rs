@@ -8,10 +8,12 @@ use crate::idmap::Idmap;
 use crate::inode::InodeBuilder;
 use crate::inode::InodeRef;
 use crate::inode_ops::{default_inode_ops, mk_mode};
+use crate::inode_ops::InodeOps;
 use crate::file_ops::default_file_ops;
 use crate::namei::Cred;
 use crate::setattr::{notify_change, setattr_prepare, Iattr, ATTR_ATIME, ATTR_MTIME, ATTR_MTIME_SET, ATTR_UID};
 use crate::types::{FileType, VfsError};
+use alloc::sync::Arc;
 
 // Mutable test inode recording perm/owner/times so apply paths are observable.
 // The concrete `Inode` owns these fields natively (mode/owner/atime/mtime via
@@ -22,6 +24,11 @@ use crate::types::{FileType, VfsError};
 // always carry `0o777`, so the old `perm()==None → default_perm_for` fallback
 // is now just the literal mode and the assertions hold unchanged.
 struct MetaInode;
+struct AllowTimeOps;
+impl InodeOps for AllowTimeOps {
+    fn allow_set_time(&self, _inode: &crate::Inode, _idmap: &Idmap, _cred: &Cred) -> bool { true }
+}
+
 impl MetaInode {
     fn reg(perm: u16, uid: u32, gid: u32) -> InodeRef {
         InodeBuilder::new(1, mk_mode(FileType::Regular, perm), default_inode_ops(), default_file_ops())
@@ -30,6 +37,10 @@ impl MetaInode {
     fn symlink(target: &[u8]) -> InodeRef {
         InodeBuilder::new(1, mk_mode(FileType::Symlink, 0o777), default_inode_ops(), default_file_ops())
             .link(target.to_vec().into_boxed_slice()).build()
+    }
+    fn allow_time_reg() -> InodeRef {
+        InodeBuilder::new(1, mk_mode(FileType::Regular, 0o644), Arc::new(AllowTimeOps), default_file_ops())
+            .owner(1000, 1000).build()
     }
 }
 
@@ -86,6 +97,12 @@ fn t2_setattr_prepare_utimes_eperm() {
     // non-owner, single-field "now" {UTIME_OMIT, UTIME_NOW} -> EPERM (ATTR_TIMES_SET)
     let mut ia3b = Iattr { valid: ATTR_MTIME, mtime: crate::Timespec64::from_secs(999), ..Default::default() };
     assert_eq!(setattr_prepare(&Idmap::identity(), &inode, &mut ia3b, &cred_with(2000)), Err(VfsError::Eperm));
+    // A filesystem-owned allow_utime decision bypasses only the generic time
+    // ownership gate and restores the selection for its backend.
+    let allowed = MetaInode::allow_time_reg();
+    let mut ia5 = Iattr { valid: ATTR_MTIME | ATTR_MTIME_SET, mtime: crate::Timespec64::from_secs(123), ..Default::default() };
+    assert!(setattr_prepare(&Idmap::identity(), &allowed, &mut ia5, &cred_with(2000)).is_ok());
+    assert_eq!(ia5.valid, ATTR_MTIME | ATTR_MTIME_SET);
     // non-owner, BOTH-to-now, no write perm -> EACCES
     let ro: InodeRef = MetaInode::reg(0o644, 1000, 1000);
     let mut ia4 = Iattr { valid: ATTR_ATIME | ATTR_MTIME, atime: crate::Timespec64::from_secs(999), mtime: crate::Timespec64::from_secs(999), ..Default::default() };

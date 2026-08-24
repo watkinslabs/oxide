@@ -32,4 +32,5 @@ pub use types::{Ipv6AddrOrigin, Ipv6AddrState, Ipv6IfaceAddr, MappedIpv4Ancillar
     Udp6Datagram, Udp6RxQueue};
 pub(crate) use types::PendingRa;
 pub(crate) use tx::ipv6_output_mtu;
+pub(crate) use mld::drain_deferred_mld_reports;
 #[cfg(test)] pub(crate) use ra::DAD_DELAY_NS;

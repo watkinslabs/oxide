@@ -140,7 +140,7 @@ pub fn fwd(ctx: &mut EvalCtx, regs: &Regs, sreg_dev: u32, sreg_addr: Option<u32>
 {
     let Some(oif) = regs.load_u32(sreg_dev) else { return BREAK };
     let Some(proto) = nfproto else {
-        ctx.actions.push(Action::Fwd { oif, nfproto: None });
+        ctx.actions.push(Action::Fwd { oif, gateway: None, nfproto: None });
         return Some(NF_STOLEN);
     };
     // The neighbour form rewrites the next hop, so it must be reading the
@@ -154,8 +154,11 @@ pub fn fwd(ctx: &mut EvalCtx, regs: &Regs, sreg_dev: u32, sreg_addr: Option<u32>
     let ttl_at = if proto == NFPROTO_IPV6 { 7 } else { 8 };
     let Some(&ttl) = ctx.pkt.get(ttl_at) else { return BREAK };
     if ttl <= HOPLIMIT_EXHAUSTED { return Some(NF_DROP); }
-    let _ = sreg_addr;
-    ctx.actions.push(Action::Fwd { oif, nfproto: Some(proto) });
+    let gateway = match sreg_addr {
+        Some(addr_reg) => Some(reg_addr(regs, addr_reg, proto)?),
+        None => None,
+    };
+    ctx.actions.push(Action::Fwd { oif, gateway, nfproto: Some(proto) });
     Some(NF_STOLEN)
 }
 
@@ -258,24 +261,32 @@ const TCP_FLAG_RST: u8 = 0x04;
 
 /// # C: O(1)
 pub fn synproxy(ctx: &mut EvalCtx, mss: u16, wscale: u8, flags: u32) -> Option<i32> {
-    if l4proto(ctx) != Some(IPPROTO_TCP) { return BREAK; }
-    let Some(thoff) = transport_offset(ctx) else { return BREAK };
-    let Some(tcp) = ctx.pkt.get(thoff..thoff + 20) else { return BREAK };
+    synproxy_packet(ctx.pkt, ctx.family, ctx.synproxy, mss, wscale, flags, &mut ctx.actions)
+}
+
+/// Shared packet operation for the `synproxy` expression and object.
+pub fn synproxy_packet(pkt: &[u8], family: u8, cookies: Option<&dyn crate::nft_expr::access::SynproxyAccess>,
+                       mss: u16, wscale: u8, flags: u32, actions: &mut alloc::vec::Vec<Action>) -> Option<i32> {
+    let states = crate::nft_expr::stateful::ExprStates::empty();
+    let fake = EvalCtx::new(pkt, family, &states);
+    if l4proto(&fake) != Some(IPPROTO_TCP) { return BREAK; }
+    let Some(thoff) = transport_offset(&fake) else { return BREAK };
+    let Some(tcp) = pkt.get(thoff..thoff + 20) else { return BREAK };
     let control = tcp[13];
     if control & TCP_FLAG_RST != 0 { return None; }
     if control & TCP_FLAG_SYN != 0 && control & TCP_FLAG_ACK == 0 {
         // The proxy answers the opening segment itself, so the packet never
         // reaches the protected host.
-        ctx.actions.push(Action::Synproxy { mss, wscale, flags });
+        actions.push(Action::Synproxy { mss, wscale, flags });
         return Some(NF_STOLEN);
     }
     if control & TCP_FLAG_ACK != 0 && control & TCP_FLAG_SYN == 0 {
         let seq = u32::from_be_bytes([tcp[4], tcp[5], tcp[6], tcp[7]]);
         let ack = u32::from_be_bytes([tcp[8], tcp[9], tcp[10], tcp[11]]);
-        let Some(cookies) = ctx.synproxy else { return BREAK };
+        let Some(cookies) = cookies else { return BREAK };
         return match cookies.cookie_valid(seq, ack) {
             Some(_) => {
-                ctx.actions.push(Action::Synproxy { mss, wscale, flags });
+                actions.push(Action::Synproxy { mss, wscale, flags });
                 Some(NF_STOLEN)
             }
             None => Some(NF_DROP),
@@ -288,6 +299,8 @@ pub fn synproxy(ctx: &mut EvalCtx, mss: u16, wscale: u8, flags: u32) -> Option<i
 pub fn flow_offload(ctx: &mut EvalCtx, table: &str) -> Option<i32> {
     let Some(ct) = ctx.ct else { return BREAK };
     if !ct.offloadable() { return BREAK; }
-    ctx.actions.push(Action::FlowOffload { table: String::from(table) });
+    ctx.actions.push(Action::FlowOffload {
+        table: String::from(ctx.table.unwrap_or("")), flowtable: String::from(table),
+    });
     None
 }

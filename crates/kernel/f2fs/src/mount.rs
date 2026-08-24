@@ -139,6 +139,13 @@ impl F2fs {
         let bg = Arc::new(crate::bg::Bg::new(volume.options().background_gc,
                                              volume.options().discard_unit,
                                              volume.super_block().segs_per_sec));
+        if crate::features::has_blkzoned(volume.super_block().feature) {
+            bg.gc.lock().no_zoned_gc_percent = crate::bg::gc::DEF_NO_ZONED_GC_PERCENT;
+            bg.gc.lock().boost_zoned_gc_percent = crate::bg::gc::DEF_BOOST_ZONED_GC_PERCENT;
+        }
+        bg.dcc.lock().set_max_discards(
+            u64::from(volume.super_block().segment_count_main)
+                * u64::from(volume.super_block().blks_per_seg()));
         // Before the volume is handed to anything that can allocate: the
         // allocator reads the cleaner's mode to decide whether to recycle a
         // segment, and a volume that could not see it would answer "nothing is
@@ -211,6 +218,8 @@ impl F2fs {
         self.devs.iter().all(|d| d.supports_discard())
     }
 
+    pub(crate) fn swap_devices(&self) -> &[Arc<dyn block::BlockDevice>] { &self.devs }
+
     /// Whether this mount ended up writable.
     ///
     /// A mount that asked to write a volume whose own features forbid it, or
@@ -263,9 +272,26 @@ impl F2fs {
     /// need.
     /// # C: O(a checkpoint)
     pub fn checkpoint_now(&self) -> KResult<()> {
+        self.checkpoint_now_as(false)
+    }
+
+    /// Write one checkpoint for the merge thread and attribute it to the
+    /// background owner. # C: O(a checkpoint)
+    pub(crate) fn checkpoint_now_background(&self) -> KResult<()> {
+        self.checkpoint_now_as(true)
+    }
+
+    /// The common checkpoint entry point. # C: O(a checkpoint)
+    fn checkpoint_now_as(&self, background: bool) -> KResult<()> {
+        let timeout = {
+            let volume = self.volume.lock();
+            volume.fault_timeout_mode(crate::fault::Fault::LockTimeout)
+        };
+        if let Some(timeout) = timeout { vfs::fs_timeout(timeout); }
         let runs = {
             let mut v = self.volume.lock();
-            v.commit().map_err(errno_to_vfs)?;
+            if background { v.commit_background() } else { v.commit() }
+                .map_err(errno_to_vfs)?;
             v.take_discards()
         };
         self.queue_discards(runs);
@@ -281,11 +307,16 @@ impl F2fs {
     /// segments it writes.
     /// # C: O(nodes the file has) blocks, or O(a checkpoint)
     pub fn sync_file(&self, ino: u32, datasync: bool) -> KResult<()> {
-        let reason = {
+        let (reason, deferred) = {
             let mut v = self.volume_now();
             let reason = v.fsync_for_mount(ino, datasync).map_err(errno_to_vfs)?;
-            reason
+            (reason, v.take_deferred_flush())
         };
+        if let Some((deferred_ino, mask)) = deferred.filter(|(_, mask)| *mask != 0) {
+            let fs = self.me.upgrade().ok_or(vfs::VfsError::Eio)?;
+            fs.merged_flush(mask)?;
+            self.volume_now().complete_deferred_flush(deferred_ino);
+        }
         if reason.needed() {
             // The volume lock is deliberately released before enrollment: the
             // merge thread needs that same lock to write its checkpoint. A
@@ -426,6 +457,9 @@ impl vfs::fs::FileSystem for F2fs {
     fn name(&self) -> &str { F2FS_NAME }
     fn magic(&self) -> u64 { crate::uapi::F2FS_SUPER_MAGIC }
     fn fs_flags(&self) -> vfs::fs::FsFlags { vfs::fs::FsFlags::FS_REQUIRES_DEV }
+    fn sb_flags(&self) -> u64 {
+        if self.volume.lock().options().acl { vfs::superblock::SB_POSIXACL } else { 0 }
+    }
     fn block_size(&self) -> u32 { BLKSIZE as u32 }
     fn show_options(&self) -> String { { let v = self.volume.lock(); crate::opts::show(v.options(), v.super_block().feature) } }
     fn super_ops(&self) -> Option<Arc<dyn vfs::superblock::SuperOps>> {

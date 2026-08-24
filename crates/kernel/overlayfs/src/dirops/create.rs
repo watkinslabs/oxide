@@ -11,7 +11,6 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::sync::Arc;
 use syscall::errno::Errno;
-use vfs::inode_ops::CreateCtx;
 use vfs::namei::RENAME_EXCHANGE;
 use vfs::types::{FileType, S_IFDIR, S_IFMT};
 use vfs::InodeRef;
@@ -54,7 +53,7 @@ pub fn create(stack: &Arc<LayerStack>, parent: &OvlEntry, name: &str, what: New,
     if existing.is_some() && !over_whiteout { return Err(Errno::Eexist); }
 
     if !over_whiteout {
-        let made = make(&dir, name, &what)?;
+        let made = make(stack, &dir, name, &what)?;
         if matches!(what, New::Dir(_)) && new_dir_opaque(&stack.config, false, parent_merges) {
             // Best effort: a layer that will not hold the marker still gives a
             // correct merge, just a slower one.
@@ -65,38 +64,37 @@ pub fn create(stack: &Arc<LayerStack>, parent: &OvlEntry, name: &str, what: New,
 
     let Some(workdir) = stack.workdir.clone() else { return Err(Errno::Erofs) };
     let tmp = crate::copyup::run::tempname();
-    let made = make(&workdir, &tmp, &what)?;
+    let made = make(stack, &workdir, &tmp, &what)?;
     if matches!(what, New::Dir(_)) {
         // The whiteout it replaces was hiding a lower directory; without this
         // the lower one would merge into the new one.
         marker::set(&stack.config, &made, Marker::Opaque, MARKER_YES, Errno::Eio)?;
     }
-    workdir.rename_child(&tmp, &dir, name, RENAME_EXCHANGE, &CreateCtx::root())
+    stack.with_access_ctx(|ctx| workdir.rename_child(&tmp, &dir, name, RENAME_EXCHANGE, ctx))
         .map_err(to_errno)?;
     // The exchange put the whiteout in the work directory; it has done its job.
-    let _ = workdir.unlink_child(&tmp);
+    let _ = stack.with_access_ctx(|ctx| workdir.unlink_child_with_ctx(&tmp, ctx));
     dir.lookup(name).map_err(to_errno)
 }
 
 /// Create one object in one real directory. # C: O(1)
-fn make(dir: &InodeRef, name: &str, what: &New) -> Result<InodeRef, Errno> {
-    let ctx = CreateCtx::root();
-    match what {
-        New::File(mode) => dir.create_child(name, *mode, &ctx).map_err(to_errno),
-        New::Dir(mode) => dir.mkdir(name, mode | S_IFDIR as u32, &ctx).map_err(to_errno),
+fn make(stack: &Arc<LayerStack>, dir: &InodeRef, name: &str, what: &New) -> Result<InodeRef, Errno> {
+    stack.with_access_ctx(|ctx| match what {
+        New::File(mode) => dir.create_child(name, *mode, ctx).map_err(to_errno),
+        New::Dir(mode) => dir.mkdir(name, mode | S_IFDIR as u32, ctx).map_err(to_errno),
         New::Node(mode, rdev) => {
-            dir.mknod_child(name, *mode as u16, *rdev, &ctx).map_err(to_errno)?;
+            dir.mknod_child(name, *mode as u16, *rdev, ctx).map_err(to_errno)?;
             dir.lookup(name).map_err(to_errno)
         }
         New::Symlink(target) => {
-            dir.symlink_child(name, target, &ctx).map_err(to_errno)?;
+            dir.symlink_child(name, target, ctx).map_err(to_errno)?;
             dir.lookup(name).map_err(to_errno)
         }
         New::Hardlink(target) => {
-            dir.link_child(target, name, &ctx).map_err(to_errno)?;
+            dir.link_child(target, name, ctx).map_err(to_errno)?;
             dir.lookup(name).map_err(to_errno)
         }
-    }
+    })
 }
 
 /// Refuse to create the object that stands for a deleted name.

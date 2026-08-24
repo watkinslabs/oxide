@@ -7,6 +7,26 @@ use alloc::vec::Vec;
 
 use sync::{Spinlock, TaskList as DriverLockClass};
 
+#[cfg(target_os = "oxide-kernel")]
+static COMPLETION_WAITERS: sched::live::WaitList = sched::live::WaitList::new();
+
+/// Wait list shared by connection transports; the IRQ handler only wakes it.
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn completion_waiters() -> &'static sched::live::WaitList { &COMPLETION_WAITERS }
+
+/// Queue completion IRQ entry. Used-ring retirement stays in process context.
+#[cfg(target_os = "oxide-kernel")]
+pub fn wake_completions() { COMPLETION_WAITERS.wake_all(); }
+
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn now_ns() -> u64 {
+    use hal::TimerOps;
+    #[cfg(target_arch = "x86_64")]
+    { hal_x86_64::X86TimerOps::monotonic_ns().0 }
+    #[cfg(target_arch = "aarch64")]
+    { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
+}
+
 use crate::consts::{BUFFER_BYTES, BUFFER_ORDER, HIPRIO_QUEUE, REQUEST_QUEUE};
 
 /// One bound virtiofs device.
@@ -21,13 +41,11 @@ pub(crate) struct DeviceState {
     /// FORGET and INTERRUPT queue. Kept separate so a backlog of them cannot
     /// queue ahead of a request a caller is blocked on.
     pub hiprioq: Option<virtio::VirtioSplitQueue>,
-    pub requestq: Option<virtio::VirtioSplitQueue>,
-    pub tx_pa: u64,
-    pub tx_dma: u64,
-    pub rx_pa: u64,
-    pub rx_dma: u64,
-    /// Request queues the device declared. Only the first is used; the rest
-    /// would each need their own staging buffers to be worth binding.
+    /// Every request virtqueue handed over by the transport, keyed by its
+    /// virtio queue index. Linux keeps one `virtio_fs_vq` per request queue.
+    pub requestq: Vec<(u16, virtio::VirtioSplitQueue)>,
+    /// Request queues the device declared in its configuration. This is kept
+    /// separately from the actually handed-over queue set for diagnostics.
     pub num_request_queues: u32,
     pub shutdown: bool,
 }
@@ -67,27 +85,27 @@ pub fn install(
         else { return false };
 
     let mk = |res| virtio::VirtioSplitQueue::new_with_features(res, resources.hhdm, resources.drv_features);
-    let (Ok(hiprioq), Ok(requestq)) = (mk(hiprio_res), mk(request_res)) else { return false };
-
-    let Some((tx_pa, tx_dma)) = alloc_staging(bdf) else { return false };
-    let Some((rx_pa, rx_dma)) = alloc_staging(bdf) else {
-        free_staging(bdf, tx_pa, tx_dma);
-        return false;
-    };
+    let Ok(hiprioq) = mk(hiprio_res) else { return false };
+    let Ok(requestq) = mk(request_res) else { return false };
+    let mut requestqs = Vec::new();
+    requestqs.push((REQUEST_QUEUE, requestq));
+    for index in (REQUEST_QUEUE + 1)..virtio::MAX_RESOURCE_QUEUES as u16 {
+        let Some(resource) = resources.require_queue(index) else { continue; };
+        let Ok(queue) = mk(resource) else { return false };
+        requestqs.push((index, queue));
+    }
 
     let mut list = DEVICES.lock();
     if list.iter().any(|e| e.handle.lock().device_key == device_key || e.tag == tag) {
         drop(list);
-        free_staging(bdf, tx_pa, tx_dma);
-        free_staging(bdf, rx_pa, rx_dma);
         return false;
     }
     list.push(Entry {
         tag,
         handle: Arc::new(Spinlock::new(DeviceState {
             device_key, bdf, cfg_va: resources.cfg_va, hhdm: resources.hhdm,
-            hiprioq: Some(hiprioq), requestq: Some(requestq),
-            tx_pa, tx_dma, rx_pa, rx_dma, num_request_queues, shutdown: false,
+            hiprioq: Some(hiprioq), requestq: requestqs,
+            num_request_queues, shutdown: false,
         })),
         in_use: false,
     });
@@ -106,9 +124,7 @@ pub fn uninstall(device_key: virtio::VirtioChildDeviceKey) -> bool {
     true
 }
 
-/// Request queues the device named by `device_key` declared. Only the first is
-/// served; the count is reported so a diagnosis can say how much of the device
-/// is going unused rather than leaving that invisible. # C: O(N)
+/// Request queues the device named by `device_key` declared. # C: O(N)
 pub fn request_queue_count(device_key: virtio::VirtioChildDeviceKey) -> u32 {
     find(device_key).map(|h| h.lock().num_request_queues).unwrap_or(0)
 }
@@ -149,17 +165,41 @@ pub(crate) fn unclaim(device_key: virtio::VirtioChildDeviceKey) {
 /// record lock first makes that submit fail rather than name a freed frame to
 /// the device. # C: O(1)
 pub(crate) fn disarm_and_free(h: &DeviceHandle) {
-    let (bdf, tx_pa, tx_dma, rx_pa, rx_dma) = {
+    {
         let mut s = h.lock();
         s.shutdown = true;
         s.hiprioq = None;
-        s.requestq = None;
-        (s.bdf,
-         core::mem::replace(&mut s.tx_pa, 0), core::mem::replace(&mut s.tx_dma, 0),
-         core::mem::replace(&mut s.rx_pa, 0), core::mem::replace(&mut s.rx_dma, 0))
+        s.requestq.clear();
+    }
+}
+
+/// One request's private device-readable and device-writable buffers.
+pub(crate) struct RequestStaging {
+    pub bdf: pci::Bdf,
+    pub tx_pa: u64,
+    pub tx_dma: u64,
+    pub rx_pa: u64,
+    pub rx_dma: u64,
+}
+
+/// Allocate the buffers owned by one submitted request. # C: O(1)
+pub(crate) fn alloc_request_staging(device_key: virtio::VirtioChildDeviceKey)
+    -> Option<RequestStaging>
+{
+    let h = find(device_key)?;
+    let bdf = h.lock().bdf;
+    let (tx_pa, tx_dma) = alloc_staging(bdf)?;
+    let Some((rx_pa, rx_dma)) = alloc_staging(bdf) else {
+        free_staging(bdf, tx_pa, tx_dma);
+        return None;
     };
-    free_staging(bdf, tx_pa, tx_dma);
-    free_staging(bdf, rx_pa, rx_dma);
+    Some(RequestStaging { bdf, tx_pa, tx_dma, rx_pa, rx_dma })
+}
+
+/// Return a request's buffers after its descriptor has been retired. # C: O(1)
+pub(crate) fn free_request_staging(staging: RequestStaging) {
+    free_staging(staging.bdf, staging.tx_pa, staging.tx_dma);
+    free_staging(staging.bdf, staging.rx_pa, staging.rx_dma);
 }
 
 fn alloc_staging(bdf: pci::Bdf) -> Option<(u64, u64)> {

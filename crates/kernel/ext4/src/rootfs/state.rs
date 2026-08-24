@@ -1,16 +1,17 @@
-// Per-mount ext4 state: the owning `Mount`, that mount's page cache,
-// and that mount's O_TMPFILE orphan set. Every path/inode operation a
+// Per-mount ext4 state: the owning `Mount`, its canonical per-inode frame
+// stores, and that mount's O_TMPFILE orphan set. Every path/inode operation a
 // mount performs goes through its own `RootfsState`, so a second mount
 // (e.g. /home, a tools volume) can never read through the first
 // mount's device nor corrupt its orphan tracking — Stage 3 of the
 // disk-rootfs de-singletonisation.
 
+use alloc::collections::BTreeMap;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
-use block::{BlockDevice, PageCache};
-use block::types::{BlockError, InodeId, KResult, PAGE_BYTES};
+use block::BlockDevice;
+use block::types::{BlockError, KResult};
 use ::sync as sync;
 use crate::Mount;
 
@@ -25,9 +26,11 @@ pub struct RootfsState {
     /// derives from the per-instance `sb.s_dev` (Linux `st_dev`), not a
     /// hardcoded constant. PER MOUNT.
     pub sb: sync::Spinlock<Weak<vfs::SuperBlock>, sync::Inode>,
-    /// Page cache keyed by (inode_id, page_offset). PER MOUNT, so inode
-    /// numbers that collide across mounts don't alias cached pages.
-    pub page_cache: PageCache,
+    /// Canonical regular-file data stores keyed by raw ext4 inode. The weak
+    /// registry lets path helpers acquire the same store as the VFS inode;
+    /// it is an index, not a second data cache.
+    pub(crate) frame_stores: sync::Spinlock<
+        BTreeMap<u32, Weak<super::framecache::Ext4FrameStore>>, sync::Inode>,
     /// O_TMPFILE orphan inodes pending cleanup. `create_anonymous`
     /// inserts; `link_inode` removes; the close-path frees only if the
     /// closed inode is in this set. PER MOUNT.
@@ -54,7 +57,7 @@ impl RootfsState {
             mount,
             wr_start,
             sb: sync::Spinlock::new(Weak::new()),
-            page_cache: PageCache::new(),
+            frame_stores: sync::Spinlock::new(BTreeMap::new()),
             orphans: sync::Spinlock::new(Vec::new()),
             cache_hits:   core::sync::atomic::AtomicU64::new(0),
             cache_misses: core::sync::atomic::AtomicU64::new(0),
@@ -72,6 +75,18 @@ impl RootfsState {
             quota: self.mount.sb.has_quota(),
             project: self.mount.sb.has_project(),
         }
+    }
+
+    /// Return the one data store for `ino`, creating it before an inode is
+    /// published when a path helper reaches the file first. # C: O(log N)
+    pub(crate) fn frame_store(self: &Arc<Self>, ino: u32, size: u64)
+        -> Arc<super::framecache::Ext4FrameStore>
+    {
+        let mut stores = self.frame_stores.lock();
+        if let Some(store) = stores.get(&ino).and_then(Weak::upgrade) { return store; }
+        let store = super::framecache::Ext4FrameStore::new(self.clone(), ino, size);
+        stores.insert(ino, Arc::downgrade(&store));
+        store
     }
 
     /// Snapshot of the options in force on this mount.
@@ -233,43 +248,20 @@ impl RootfsState {
         Some(())
     }
 
-    /// Read whole file at `path` via this mount's page cache.
+    /// Read whole file at `path` via its canonical frame store.
     /// # C: O(file size)
-    pub fn read_file(&self, path: &[u8]) -> Option<Vec<u8>> {
+    pub fn read_file(self: &Arc<Self>, path: &[u8]) -> Option<Vec<u8>> {
         let ino = self.mount.lookup_path(path).ok()?;
         let inode = self.mount.read_inode(ino).ok()?;
         if !inode.is_reg() { return None; }
-        let inode_id = InodeId(ino as u64);
         let total = inode.size as usize;
-        let mut out = Vec::with_capacity(total);
-        let pages = (total + PAGE_BYTES - 1) / PAGE_BYTES;
-        for p in 0..pages {
-            let page_off = (p as u64) * PAGE_BYTES as u64;
-            let was_hit = self.page_cache.lookup(inode_id, page_off).is_some();
-            let cached = self.page_cache.read_page_with(inode_id, page_off, || {
-                let bs = self.mount.sb.block_size as u64;
-                let blocks_per_page = (PAGE_BYTES as u64 / bs) as u32;
-                let first_blk = (page_off / bs) as u32;
-                let mut buf = Vec::with_capacity(PAGE_BYTES);
-                for i in 0..blocks_per_page {
-                    let blk = match self.mount.read_file_block(&inode, first_blk + i) {
-                        Ok(b)  => b,
-                        Err(crate::MountError::NotFound) => alloc::vec![0u8; bs as usize],
-                        Err(_) => return Err(BlockError::Eio),
-                    };
-                    buf.extend_from_slice(&blk);
-                }
-                Ok(buf)
-            }).ok()?;
-            if was_hit { self.cache_hits.fetch_add(1, Ordering::Relaxed); }
-            else       { self.cache_misses.fetch_add(1, Ordering::Relaxed); }
-            let g = cached.data.lock();
-            let remaining = total - out.len();
-            let take = remaining.min(g.len());
-            out.extend_from_slice(&g[..take]);
-            drop(g);
-            if out.len() >= total { break; }
-        }
+        let mut out = alloc::vec![0u8; total];
+        let file = self.wrap_file(ino)?;
+        let store = self.frame_store(ino, inode.size);
+        let was_resident = store.mincore_page(0);
+        file.read(0, &mut out).ok()?;
+        if was_resident { self.cache_hits.fetch_add(1, Ordering::Relaxed); }
+        else { self.cache_misses.fetch_add(1, Ordering::Relaxed); }
         Some(out)
     }
 
@@ -316,50 +308,23 @@ impl RootfsState {
         Some(out)
     }
 
-    /// Page-cache-backed read of regular file `ino` into `dst` starting at
-    /// byte `off` (Linux `address_space` fill). Pages are keyed by `InodeId`
-    /// in this mount's shared `page_cache`, so every mapper/reader of one
-    /// inode hits the SAME cached pages — the `i_mapping` read-side share.
+    /// Read regular file `ino` through its canonical frame store.
     /// Short read past EOF; holes read as zero. # C: O(dst.len)
-    pub fn read_cached(&self, ino: u32, off: u64, dst: &mut [u8]) -> Result<usize, ()> {
+    pub fn read_cached(self: &Arc<Self>, ino: u32, off: u64, dst: &mut [u8]) -> Result<usize, ()> {
         let inode = self.mount.read_inode(ino).map_err(|_| ())?;
         if !inode.is_reg() { return Err(()); }
-        let inode_id = InodeId(ino as u64);
-        let total = inode.size;
-        let mut written = 0usize;
-        while written < dst.len() {
-            let cur = off + written as u64;
-            if cur >= total { break; }
-            let page_off = cur & !((PAGE_BYTES as u64) - 1);
-            let in_page  = (cur - page_off) as usize;
-            let cached = self.page_cache.read_page_with(inode_id, page_off, || {
-                let bs = self.mount.sb.block_size as u64;
-                let blocks_per_page = (PAGE_BYTES as u64 / bs).max(1) as u32;
-                let first_blk = (page_off / bs) as u32;
-                let mut buf = Vec::with_capacity(PAGE_BYTES);
-                for i in 0..blocks_per_page {
-                    let blk = match self.mount.read_file_block(&inode, first_blk + i) {
-                        Ok(b)  => b,
-                        Err(crate::MountError::NotFound) => alloc::vec![0u8; bs as usize],
-                        Err(_) => return Err(BlockError::Eio),
-                    };
-                    buf.extend_from_slice(&blk);
-                }
-                Ok(buf)
-            }).map_err(|_| ())?;
-            let g = cached.data.lock();
-            let avail_in_page = g.len().saturating_sub(in_page);
-            let want = (dst.len() - written).min(avail_in_page).min((total - cur) as usize);
-            if want == 0 { break; }
-            dst[written..written + want].copy_from_slice(&g[in_page..in_page + want]);
-            written += want;
-        }
-        Ok(written)
+        let file = self.wrap_file(ino).ok_or(())?;
+        let store = self.frame_store(ino, inode.size);
+        let was_resident = store.mincore_page(off);
+        let n = file.read(off, dst).map_err(|_| ())?;
+        if was_resident { self.cache_hits.fetch_add(1, Ordering::Relaxed); }
+        else { self.cache_misses.fetch_add(1, Ordering::Relaxed); }
+        Ok(n)
     }
 
     /// In-place first-block write (Phase 7b minimum).
     /// # C: O(N_extents) + O(1) block I/O
-    pub fn write_file(&self, path: &[u8], data: &[u8]) -> Option<()> {
+    pub fn write_file(self: &Arc<Self>, path: &[u8], data: &[u8]) -> Option<()> {
         let ino = self.mount.lookup_path(path).ok()?;
         let inode = self.mount.read_inode(ino).ok()?;
         if !inode.is_reg() { return None; }
@@ -369,7 +334,7 @@ impl RootfsState {
         if blk.len() < bs { blk.resize(bs, 0); }
         blk[..data.len()].copy_from_slice(data);
         self.mount.write_file_block(&inode, 0, &blk).ok()?;
-        self.page_cache.invalidate(InodeId(ino as u64));
+        self.frame_store(ino, inode.size).invalidate_range(0, u64::MAX);
         Some(())
     }
 }

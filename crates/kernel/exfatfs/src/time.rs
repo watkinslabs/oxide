@@ -67,6 +67,17 @@ pub fn to_unix(cfg: &TimeConfig, stamp: Stamp) -> Timespec64 {
     Timespec64::new(sec, nsec)
 }
 
+/// Resolve the mount's fallback timezone exactly once for an inode read.
+/// Linux's `sys_tz.tz_minuteswest` is minutes WEST of UTC, while exFAT's
+/// `time_offset` is minutes AHEAD of UTC. # C: O(1)
+pub fn effective_config(cfg: TimeConfig, sys_tz: bool) -> TimeConfig {
+    if sys_tz {
+        TimeConfig::with_offset(-vfs::inode_times::timezone_minuteswest())
+    } else {
+        cfg
+    }
+}
+
 /// An instant as a stored timestamp.
 ///
 /// The offset byte says UTC — offset zero, valid — because the reading came

@@ -45,6 +45,17 @@ fn allow_utime_defaults_to_the_directory_masks_write_bits() {
 }
 
 #[test]
+fn allow_utime_matches_linux_owner_and_group_exception() {
+    let mut o = base();
+    o.settle();
+    assert!(!o.allows_non_owner_utime(true, false));
+    assert!(o.allows_non_owner_utime(false, false));
+    assert!(o.allows_non_owner_utime(false, true));
+    o.allow_utime = Some(0);
+    assert!(!o.allows_non_owner_utime(false, false));
+}
+
+#[test]
 fn a_charset_this_build_cannot_honour_is_refused_rather_than_ignored() {
     assert!(parse(base(), "iocharset=utf8").is_ok());
     assert_eq!(parse(base(), "iocharset=iso8859-1").unwrap_err(), Errno::Einval);

@@ -1,8 +1,7 @@
 use super::*;
 const PAGE_BYTES: u64 = hal::PAGE_SIZE_BYTES;
-// Only the poison-fill probes read this: the 0xCC `debug-cow` fill and the 0xAA
-// `debug-watchdog` fill (kernel-only — needs the HHDM mirror).
-#[cfg(any(feature = "debug-cow", all(feature = "debug-watchdog", target_os = "oxide-kernel")))]
+// Poison fills need the HHDM mirror and therefore are used only on the kernel
+// target; the 0xAA page-poison policy itself is runtime-controlled.
 const PAGE_BYTES_USIZE: usize = hal::PAGE_SIZE_BYTES as usize;
 #[cfg(feature = "debug-cow")]
 use super::metadata::{cow_dbg_rmap_report, cow_dbg_who};
@@ -24,9 +23,23 @@ const CONTIG_INTEGRITY_RETRY_COUNT: usize = 64;
 /// never returned to a caller) and the allocator retries.
 /// # C: O(retries * 2^order)
 pub fn alloc_contig(order: crate::Order) -> Option<u64> {
+    alloc_contig_with(order, false)
+}
+
+/// Allocate a contiguous physical run without entering reclaim or the OOM
+/// selector. Early boot reservations have no reclaimable task context and
+/// must fail short rather than walk the process-killing slow path.
+/// # C: O(retries * 2^order)
+pub(crate) fn alloc_contig_nowait(order: crate::Order) -> Option<u64> {
+    alloc_contig_with(order, true)
+}
+
+fn alloc_contig_with(order: crate::Order, nowait: bool) -> Option<u64> {
     let p = pmm_static()?;
     for _ in 0..CONTIG_INTEGRITY_RETRY_COUNT {
-        let pa = p.alloc(order).ok().map(|pfn| pfn.0 * PAGE_BYTES)?;
+        let pfn = if nowait { p.alloc_gfp_nowait(order, 0).ok()? }
+                  else { p.alloc(order).ok()? };
+        let pa = pfn.0 * PAGE_BYTES;
         if let Some(meta) = page_meta() {
             let frames = 1u64 << order.0;
             let mut in_use = false;
@@ -93,6 +106,22 @@ pub fn alloc_contig_object(order: crate::Order) -> Option<u64> {
     Some(pa)
 }
 
+/// Allocate an object-owned contiguous run under a legacy DMA mask.
+pub fn alloc_contig_object_below(order: crate::Order, max_pa: u64) -> Option<u64> {
+    let p = pmm_static()?;
+    let pa = p.alloc_below(order, hal::Pfn(max_pa / PAGE_BYTES)).ok().map(|pfn| pfn.0 * PAGE_BYTES)?;
+    if let Some(meta) = page_meta() {
+        for i in 0..(1u64 << order.0) {
+            let pfn = hal::Pfn((pa / PAGE_BYTES) + i);
+            if let Some(m) = meta.get(pfn) {
+                m.refcount.store(1, Ordering::Release);
+                m.mapcount.store(0, Ordering::Release);
+            }
+        }
+    }
+    Some(pa)
+}
+
 /// Free a contiguous physical region previously returned by `alloc_contig`
 /// with the same `order`.
 ///
@@ -116,6 +145,14 @@ pub unsafe fn free_contig(pa: u64, order: crate::Order) {
     // by CPU or device — exactly `Pmm::free`'s precondition. The KHEAP scan
     // just above additionally rejects a frame owned by the kernel heap.
     unsafe { p.free(pfn, order); }
+}
+
+/// Release a contiguous run previously returned by `alloc_contig_object` or
+/// `alloc_contig_object_below`. User PTE references keep mapped pages alive.
+pub fn free_contig_object(pa: u64, order: crate::Order) {
+    for offset in 0..(1u64 << order.0) {
+        super::release_object_frame(pa + offset * PAGE_BYTES);
+    }
 }
 
 /// Free a single 4 KiB frame back to the kernel-owned PMM. Pair of
@@ -232,13 +269,13 @@ pub unsafe fn free_one_frame(pa: u64) {
                     | crate::PageFlags::UPTODATE | crate::PageFlags::PAGETABLE);
         }
     }
-    // PAGE POISONING (debug-watchdog): fill the freed frame with 0xAA so a
+    // PAGE POISONING (`page_poison=`): fill the freed frame with 0xAA so a
     // later alloc can detect a write-while-free (use-after-free / stale-TLB
     // write that the PT-walk-based FWM detector can't see). Linux PAGE_POISONING.
     // `user_as`/`sched::live` are kernel-target-only, so the gate carries
     // `target_os` too — without it the feature does not build hosted.
-    #[cfg(all(feature = "debug-watchdog", target_os = "oxide-kernel"))]
-    {
+    #[cfg(target_os = "oxide-kernel")]
+    if crate::page_poison_enabled() {
         let hhdm = crate::user_as::hhdm_offset();
         if hhdm != 0 {
             // SAFETY: pa is a just-freed PMM frame; HHDM mirror is kernel-writable; 4 KiB granule.

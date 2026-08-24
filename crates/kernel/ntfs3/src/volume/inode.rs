@@ -148,6 +148,13 @@ impl<S: SectorSource> Volume<S> {
         self.read_attribute(&bytes, &attrs, attr, offset, buf)
     }
 
+    /// Read the complete named data stream. # C: O(stream bytes)
+    pub fn read_stream_whole(&self, number: u64, name: &[u16]) -> Result<Vec<u8>, Errno> {
+        let (bytes, attrs) = self.read_live_record(number)?;
+        let attr = attrib::find(&attrs, ATTR_DATA, name).ok_or(Errno::Enoent)?;
+        self.attribute_bytes(&bytes, &attrs, attr)
+    }
+
     /// The whole of a file. # C: O(file bytes)
     pub fn read_whole(&self, number: u64) -> Result<Vec<u8>, Errno> {
         let (bytes, attrs) = self.read_live_record(number)?;

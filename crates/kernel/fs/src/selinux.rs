@@ -13,6 +13,7 @@
 //           a read of the label attribute reports
 
 pub mod label;
+pub mod mount;
 pub mod perm;
 pub mod xattr;
 

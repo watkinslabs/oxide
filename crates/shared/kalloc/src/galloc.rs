@@ -58,10 +58,10 @@ unsafe impl GlobalAlloc for KAlloc {
         if let Some(i) = sizeclass::class_index(carve_layout) {
             {
                 let mut g = self.inner.lock();
-                if let Some(p) = g.classes.pop(i) { return p.as_ptr(); }
+                if let Some(p) = g.classes.pop(i, self.slub_debug_poison_enabled()) { return p.as_ptr(); }
             }
             // SAFETY: refill carves an allocator-owned slab under the same lock.
-            return unsafe { self.refill_class(i) }.map_or(ptr::null_mut(), |p| p.as_ptr());
+            return unsafe { self.refill_class(i, self.slub_debug_poison_enabled()) }.map_or(ptr::null_mut(), |p| p.as_ptr());
         }
         // Disarm before this op touches the hole list, so kalloc's own header
         // writes (split/coalesce) don't self-trip the freed-block watchpoint.
@@ -153,7 +153,7 @@ unsafe impl GlobalAlloc for KAlloc {
             let mut g = self.inner.lock();
             // SAFETY: `ptr` came from `alloc(layout)`, which routed the identical
             // layout to class `i`, and the caller no longer borrows it.
-            unsafe { g.classes.push(i, ptr) };
+            unsafe { g.classes.push(i, ptr, self.slub_debug_poison_enabled()) };
             return;
         }
         // B1347: tight-mode op-START validate (before the coalesce can panic).

@@ -1,4 +1,5 @@
 use hal::{MmuOps, Pa, PageSize, UserVirtAddr, Va, PAGE_SIZE_BYTES};
+use alloc::sync::Arc;
 
 use crate::{PhysCacheMode, vma::Vma};
 use crate::KResult;
@@ -6,6 +7,38 @@ use crate::KResult;
 use super::super::AddressSpace;
 
 impl AddressSpace {
+    /// Map one page from a refcounted, non-contiguous kernel page vector.
+    /// The vector is indexed in VMA order, so the backing remains correct when
+    /// physical allocation is fragmented or a VMA is split.
+    pub(super) unsafe fn map_kernel_pages<M, DR, IR>(
+        &self,
+        va: UserVirtAddr,
+        vma: &Vma,
+        pages: &Arc<[u64]>,
+        backing_off: usize,
+        _dec_ref: &mut DR,
+        inc_ref: &mut IR,
+    ) -> KResult<()>
+    where
+        M: MmuOps,
+        DR: FnMut(u64),
+        IR: FnMut(u64),
+    {
+        let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
+        let off = (va_page - vma.start.as_u64()) as usize + backing_off;
+        let index = off / PAGE_SIZE_BYTES as usize;
+        let pa = *pages.get(index).ok_or(crate::Error::Inval)?;
+        let installed = unsafe {
+            self.map_if_absent::<M>(
+                Va(va_page), Pa(pa), vma.page_flags(), PageSize::P4K,
+            )
+        };
+        if !installed { return Ok(()); }
+        self.accounting.install_pte(vma);
+        inc_ref(pa);
+        Ok(())
+    }
+
     /// Map a kernel-owned frame such as vvar into userspace.
     /// # SAFETY: caller supplies the live MMU implementation and valid refcount callbacks.
     /// # C: O(walk depth)

@@ -59,6 +59,15 @@ fn port_range(op: u32, from: u16, to: u16, port: u16) -> i32 {
 }
 
 #[test]
+fn notrack_marks_the_raw_stage_without_changing_the_verdict() {
+    let exprs = vec![Expr::Notrack];
+    let states = ExprStates::empty();
+    let mut ctx = EvalCtx::ipv4(&[], &states);
+    assert_eq!(run_rule_ctx(&exprs, &mut ctx).code, NFT_CONTINUE);
+    assert!(ctx.notrack);
+}
+
+#[test]
 fn a_range_is_inclusive_at_both_ends() {
     // Ports 1000 to 2000. The bounds themselves are inside the range; a
     // strict comparison at either end silently exempts a port the rule names.
@@ -262,7 +271,9 @@ fn the_link_header_base_breaks_where_no_link_header_survives() {
 fn an_object_reference_runs_the_object_it_names() {
     struct Objects;
     impl crate::nft_expr::access::ObjectAccess for Objects {
-        fn eval(&self, _t: u32, name: &str) -> Option<i32> {
+        fn eval(&self, _family: u8, _table: &str, _t: u32, name: &str,
+                _pkt_len: u64, _now_ns: u64,
+                _ct: Option<&dyn crate::nft_expr::access::CtAccess>) -> Option<i32> {
             if name == "spent" { Some(NFT_BREAK) } else { None }
         }
     }

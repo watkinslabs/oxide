@@ -6,7 +6,8 @@
 //! read over and over — resolving one node id reads a table block, and the
 //! next node id in the same block reads it again — so without a mapping every
 //! lookup, every allocation and every checkpoint pays the medium for bytes the
-//! mount already had.
+//! mount already had. Recovery also gets a temporary view over main-area node
+//! blocks, owned by this same cache rather than by a second cache truth.
 //!
 //! Keyed by BLOCK ADDRESS, in the mapping of the volume's own metadata inode.
 //! That inode number is the format's, not one invented here: the superblock
@@ -80,6 +81,8 @@ pub struct Cache {
     /// and file a file's block here.
     start: u32,
     end: u32,
+    /// First main-area block the temporary recovery view may hold.
+    por_start: u32,
     /// Blocks this mount served from here rather than from the medium. Never
     /// derivable afterwards — the whole point of the mapping is that the read
     /// left no trace at the device — so it is counted as it happens.
@@ -101,6 +104,7 @@ impl Cache {
             ino: InodeId(u64::from(meta_ino)),
             start: cp_blkaddr,
             end: main_blkaddr.max(cp_blkaddr),
+            por_start: main_blkaddr,
             hits: Cell::new(0),
         }
     }
@@ -108,8 +112,17 @@ impl Cache {
     /// Whether `addr` is a block this mapping is responsible for. # C: O(1)
     pub fn covers(&self, addr: u32) -> bool { addr >= self.start && addr < self.end }
 
+    /// Whether `addr` is eligible for the temporary recovery view. # C: O(1)
+    pub fn covers_por(&self, addr: u32) -> bool { addr >= self.por_start }
+
     /// # C: O(1)
     fn off(addr: u32) -> u64 { u64::from(addr) * BLKSIZE as u64 }
+
+    /// Internal offset for the temporary POR view, disjoint from ordinary
+    /// metadata offsets while remaining in the same cache owner. # C: O(1)
+    fn por_off(addr: u32) -> u64 {
+        (u64::from(u32::MAX) + 1 + u64::from(addr)) * BLKSIZE as u64
+    }
 
     /// The block at `addr`, if this mount has it.
     ///
@@ -118,6 +131,14 @@ impl Cache {
     /// # C: O(log cached)
     pub fn load(&self, addr: u32) -> Option<Vec<u8>> {
         let page = self.pages.lookup(self.ino, Self::off(addr))?;
+        let bytes = page.data.lock().to_vec();
+        self.hits.set(self.hits.get() + 1);
+        Some(bytes)
+    }
+
+    /// Load a main-area node block through the recovery view. # C: O(log cached)
+    pub fn load_por(&self, addr: u32) -> Option<Vec<u8>> {
+        let page = self.pages.lookup(self.ino, Self::por_off(addr))?;
         let bytes = page.data.lock().to_vec();
         self.hits.set(self.hits.get() + 1);
         Some(bytes)
@@ -132,6 +153,13 @@ impl Cache {
     pub fn store(&self, addr: u32, data: &[u8]) {
         if data.len() != BLKSIZE { return; }
         self.pages.insert_new(self.ino, Self::off(addr), data.to_vec(), 0,
+                              META_CACHE_MAX_BLOCKS);
+    }
+
+    /// File a main-area node block for recovery. # C: O(log cached)
+    pub fn store_por(&self, addr: u32, data: &[u8]) {
+        if data.len() != BLKSIZE || !self.covers_por(addr) { return; }
+        self.pages.insert_new(self.ino, Self::por_off(addr), data.to_vec(), 0,
                               META_CACHE_MAX_BLOCKS);
     }
 
@@ -165,6 +193,8 @@ impl Cache {
         if len == 0 { return; }
         self.pages.invalidate_range(self.ino, Self::off(addr),
                                     Self::off(addr) + u64::from(len) * BLKSIZE as u64);
+        self.pages.invalidate_range(self.ino, Self::por_off(addr),
+                                    Self::por_off(addr.saturating_add(len)));
     }
 
     /// Blocks held right now. # C: O(1)

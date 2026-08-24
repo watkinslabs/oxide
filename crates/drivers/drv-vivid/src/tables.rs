@@ -5,6 +5,23 @@ use v4l2::ops::InputDesc;
 use v4l2::uapi::{ctrl_ids as cid, flags, fourcc};
 use v4l2::ctrl::{standard, ControlDesc};
 
+pub const CID_HOR_MOVEMENT: u32 = 0x0098_20a0;
+pub const CID_VERT_MOVEMENT: u32 = 0x0098_20a1;
+/// Linux Vivid's streaming control: the next completed buffer carries
+/// `V4L2_BUF_FLAG_ERROR`. # C: O(1)
+pub const CID_DQBUF_ERROR: u32 = 0x00f0_f042;
+pub const CID_QUEUE_SETUP_ERROR: u32 = 0x00f0_f043;
+pub const CID_BUF_PREPARE_ERROR: u32 = 0x00f0_f044;
+pub const CID_START_STREAM_ERROR: u32 = 0x00f0_f045;
+pub const CID_QUEUE_ERROR: u32 = 0x00f0_f046;
+pub const CID_TEST_NAME: u32 = 0x00f0_f060;
+pub const CID_TEST_U8_TABLE: u32 = 0x00f0_f061;
+
+pub const MOVEMENT_MENU: &[&str] = &[
+    "Move Left Fast", "Move Left", "Move Left Slow", "No Movement",
+    "Move Right Slow", "Move Right", "Move Right Fast",
+];
+
 pub const SIZES: &[FrameSize] = &[
     FrameSize { width: 320, height: 240 },
     FrameSize { width: 640, height: 480 },
@@ -26,13 +43,97 @@ pub const FORMATS: &[FormatDesc] = &[
                  sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
     FormatDesc { pixelformat: fourcc::UYVY, description: "UYVY 4:2:2", flags: 0,
                  sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::YVYU, description: "YVYU 4:2:2", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::VYUY, description: "VYUY 4:2:2", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
     FormatDesc { pixelformat: fourcc::RGB24, description: "24-bit RGB 8-8-8", flags: 0,
                  sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
     FormatDesc { pixelformat: fourcc::BGR24, description: "24-bit BGR 8-8-8", flags: 0,
                  sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
     FormatDesc { pixelformat: fourcc::RGB565, description: "16-bit RGB 5-6-5", flags: 0,
                  sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::RGB565X, description: "16-bit RGB 5-6-5 BE", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::YUV555, description: "16-bit YUV 5-5-5", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::YUV565, description: "16-bit YUV 5-6-5", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::YUV444, description: "16-bit YUV 4-4-4", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::YUV32, description: "32-bit YUV", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::AYUV32, description: "32-bit AYUV", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::XYUV32, description: "32-bit XYUV", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::VUYA32, description: "32-bit VUYA", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::VUYX32, description: "32-bit VUYX", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::YUVA32, description: "32-bit YUVA", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::YUVX32, description: "32-bit YUVX", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::RGB332, description: "8-bit RGB 3-3-2", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::XRGB32, description: "32-bit XRGB 8-8-8-8", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::ARGB32, description: "32-bit ARGB 8-8-8-8", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
     FormatDesc { pixelformat: fourcc::GREY, description: "8-bit Greyscale", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::Y10, description: "10-bit Greyscale", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::Y16, description: "16-bit Greyscale", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::Y16_BE, description: "16-bit Greyscale BE", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::Y12, description: "12-bit Greyscale", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::NV12, description: "Y/CbCr 4:2:0", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::NV21, description: "Y/CrCb 4:2:0", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::NV16, description: "Y/CbCr 4:2:2", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::NV61, description: "Y/CrCb 4:2:2", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::NV24, description: "Y/CbCr 4:4:4", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::NV42, description: "Y/CrCb 4:4:4", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::YUV420, description: "Planar YUV 4:2:0", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::YVU420, description: "Planar YVU 4:2:0", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::YUV422P, description: "Planar YUV 4:2:2", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+];
+
+/// Formats exposed by the reference's `multiplanar=2` device. The queue
+/// supplies the separate plane sizes; these descriptors only select the
+/// pixel layout and negotiated frame geometry.
+pub const MULTIPLANAR_FORMATS: &[FormatDesc] = &[
+    FormatDesc { pixelformat: fourcc::NV12M, description: "Y/CbCr 4:2:0 multi-planar", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::NV21M, description: "Y/CrCb 4:2:0 multi-planar", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::YUV420M, description: "Planar YUV 4:2:0 multi-planar", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::YVU420M, description: "Planar YVU 4:2:0 multi-planar", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::YUV422M, description: "Planar YUV 4:2:2 multi-planar", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::NV16M, description: "Y/CbCr 4:2:2 multi-planar", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::NV61M, description: "Y/CrCb 4:2:2 multi-planar", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::YVU422M, description: "Planar YVU 4:2:2 multi-planar", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::YUV444M, description: "Planar YUV 4:4:4 multi-planar", flags: 0,
+                 sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
+    FormatDesc { pixelformat: fourcc::YVU444M, description: "Planar YVU 4:4:4 multi-planar", flags: 0,
                  sizes: SIZES, intervals: INTERVALS, compressed_sizeimage: 0 },
 ];
 
@@ -67,6 +168,18 @@ pub fn controls() -> alloc::vec::Vec<ControlDesc> {
         standard::simple(cid::CID_WHITE_BALANCE_TEMPERATURE, cid::CTRL_TYPE_INTEGER,
                          "White Balance Temperature", 2800, 6500, 100, 4600),
         standard::CAMERA_CLASS,
+        ControlDesc {
+            id: CID_TEST_NAME, ctrl_type: cid::CTRL_TYPE_STRING,
+            name: "Test Name", minimum: 0, maximum: 31, step: 1, default_value: 0,
+            flags: 0, payload_size: 32, elem_size: 32, elems: 1,
+            payload_default: b"Vivid\0", menu: &[], menu_values: &[], cluster: &[],
+        },
+        ControlDesc {
+            id: CID_TEST_U8_TABLE, ctrl_type: cid::CTRL_TYPE_U8,
+            name: "Test U8 Table", minimum: 0, maximum: 255, step: 1, default_value: 0,
+            flags: 0, payload_size: 4, elem_size: 1, elems: 4,
+            payload_default: &[0, 1, 2, 3], menu: &[], menu_values: &[], cluster: &[],
+        },
         standard::EXPOSURE_AUTO,
         standard::simple(cid::CID_EXPOSURE_ABSOLUTE, cid::CTRL_TYPE_INTEGER,
                          "Exposure Time, Absolute", 1, 5000, 1, 156),
@@ -77,6 +190,30 @@ pub fn controls() -> alloc::vec::Vec<ControlDesc> {
                          "Focus, Absolute", 0, 255, 5, 0),
         standard::simple(cid::CID_ZOOM_ABSOLUTE, cid::CTRL_TYPE_INTEGER,
                          "Zoom, Absolute", 100, 500, 1, 100),
+        ControlDesc {
+            id: CID_HOR_MOVEMENT, ctrl_type: cid::CTRL_TYPE_MENU,
+            name: "Horizontal Movement", minimum: 0, maximum: 6, step: 0,
+            default_value: 3, flags: 0, menu: MOVEMENT_MENU,
+            menu_values: &[], cluster: &[], payload_size: 0, elem_size: 0, elems: 0,
+            payload_default: &[],
+        },
+        ControlDesc {
+            id: CID_VERT_MOVEMENT, ctrl_type: cid::CTRL_TYPE_MENU,
+            name: "Vertical Movement", minimum: 0, maximum: 6, step: 0,
+            default_value: 3, flags: 0, menu: MOVEMENT_MENU,
+            menu_values: &[], cluster: &[], payload_size: 0, elem_size: 0, elems: 0,
+            payload_default: &[],
+        },
+        standard::simple(CID_DQBUF_ERROR, cid::CTRL_TYPE_BUTTON,
+                         "Inject V4L2_BUF_FLAG_ERROR", 0, 0, 0, 0),
+        standard::simple(CID_QUEUE_SETUP_ERROR, cid::CTRL_TYPE_BUTTON,
+                         "Inject VIDIOC_REQBUFS Error", 0, 0, 0, 0),
+        standard::simple(CID_BUF_PREPARE_ERROR, cid::CTRL_TYPE_BUTTON,
+                         "Inject VIDIOC_QBUF Error", 0, 0, 0, 0),
+        standard::simple(CID_START_STREAM_ERROR, cid::CTRL_TYPE_BUTTON,
+                         "Inject VIDIOC_STREAMON Error", 0, 0, 0, 0),
+        standard::simple(CID_QUEUE_ERROR, cid::CTRL_TYPE_BUTTON,
+                         "Inject Fatal Streaming Error", 0, 0, 0, 0),
     ]
 }
 
@@ -85,4 +222,9 @@ pub fn controls() -> alloc::vec::Vec<ControlDesc> {
 /// device delivers frames through the buffer queue only, and an application
 /// that sees the read bit will try `read(2)` and get nothing.
 pub const DEVICE_CAPS: u32 =
-    flags::CAP_VIDEO_CAPTURE | flags::CAP_STREAMING | flags::CAP_EXT_PIX_FORMAT;
+    flags::CAP_VIDEO_CAPTURE | flags::CAP_READWRITE | flags::CAP_STREAMING
+    | flags::CAP_EXT_PIX_FORMAT;
+
+pub const DEVICE_CAPS_MPLANE: u32 =
+    flags::CAP_VIDEO_CAPTURE_MPLANE | flags::CAP_READWRITE | flags::CAP_STREAMING
+    | flags::CAP_EXT_PIX_FORMAT;

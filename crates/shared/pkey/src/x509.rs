@@ -18,6 +18,8 @@ const TAG_VERSION: u8 = 0xa0;
 /// The prefix length two names are compared over when deciding whether an
 /// organization name is already carried by the common name.
 const NAME_PREFIX_MATCH: usize = 7;
+const TAG_UTC_TIME: u8 = 0x17;
+const TAG_GENERALIZED_TIME: u8 = 0x18;
 
 /// What a certificate contributes to a key.
 pub struct Certificate {
@@ -41,6 +43,9 @@ pub struct Certificate {
     pub signature_hash: Option<&'static str>,
     /// Signature octets after the BIT STRING's unused-bit count.
     pub signature: Vec<u8>,
+    /// Inclusive validity interval, in Unix seconds.
+    pub valid_from: i64,
+    pub valid_to: i64,
 }
 
 /// Parse a DER certificate.
@@ -69,7 +74,8 @@ pub fn parse(blob: &[u8]) -> Result<alloc::boxed::Box<Certificate>, PkeyError> {
     let serial = der::positive_integer(r.expect(der::TAG_INTEGER)?)?.to_vec();
     r.expect(der::TAG_SEQUENCE)?;          // inner signature algorithm
     let issuer = r.expect(der::TAG_SEQUENCE)?.to_vec();
-    r.expect(der::TAG_SEQUENCE)?;          // validity
+    let validity = r.expect(der::TAG_SEQUENCE)?;
+    let (valid_from, valid_to) = parse_validity(validity)?;
     let subject_raw = r.expect(der::TAG_SEQUENCE)?;
     let spki = r.expect(der::TAG_SEQUENCE)?;
 
@@ -78,8 +84,69 @@ pub fn parse(blob: &[u8]) -> Result<alloc::boxed::Box<Certificate>, PkeyError> {
     let skid = find_skid(&mut r)?;
     Ok(alloc::boxed::Box::new(Certificate {
         subject, subject_id: subject_raw.to_vec(), serial, issuer, skid, algo, key,
-        tbs: tbs_raw.to_vec(), signature_hash, signature,
+        tbs: tbs_raw.to_vec(), signature_hash, signature, valid_from, valid_to,
     }))
+}
+
+/// Parse `Validity ::= SEQUENCE { notBefore, notAfter }`. # C: O(1)
+fn parse_validity(value: &[u8]) -> Result<(i64, i64), PkeyError> {
+    let mut r = Reader::new(value);
+    let from_tag = r.peek_tag().ok_or(PkeyError::BadMessage)?;
+    let from = r.next()?.value;
+    let to_tag = r.peek_tag().ok_or(PkeyError::BadMessage)?;
+    let to = r.next()?.value;
+    r.end()?;
+    Ok((parse_time(from_tag, from)?, parse_time(to_tag, to)?))
+}
+
+/// Decode the DER time forms accepted by the X.509 profile. # C: O(1)
+pub(crate) fn parse_time(tag: u8, value: &[u8]) -> Result<i64, PkeyError> {
+    let (year, at) = match tag {
+        TAG_UTC_TIME if value.len() == 13 => {
+            let yy = two_digits(&value[..2])? as i32;
+            (if yy >= 50 { 1900 + yy } else { 2000 + yy }, 2)
+        }
+        TAG_GENERALIZED_TIME if value.len() == 15 => {
+            let y = four_digits(&value[..4])? as i32;
+            if (1950..=2049).contains(&y) { return Err(PkeyError::BadMessage); }
+            (y, 4)
+        }
+        _ => return Err(PkeyError::BadMessage),
+    };
+    if value[value.len() - 1] != b'Z' { return Err(PkeyError::BadMessage); }
+    let month = two_digits(&value[at..at + 2])? as i32;
+    let day = two_digits(&value[at + 2..at + 4])? as i32;
+    let hour = two_digits(&value[at + 4..at + 6])? as i32;
+    let min = two_digits(&value[at + 6..at + 8])? as i32;
+    let sec = two_digits(&value[at + 8..at + 10])? as i32;
+    if year < 1970 || !(1..=12).contains(&month) || hour > 24 || min > 59 || sec > 60 {
+        return Err(PkeyError::BadMessage);
+    }
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30,
+                31, 31, 30, 31, 30, 31];
+    if day < 1 || day > days[(month - 1) as usize] { return Err(PkeyError::BadMessage); }
+    let mut y = i64::from(year);
+    let m = i64::from(month);
+    y -= i64::from(month <= 2);
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = m + if m > 2 { -3 } else { 9 };
+    let doy = (153 * mp + 2) / 5 + i64::from(day) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days_since_epoch = era * 146097 + doe - 719468;
+    Ok(days_since_epoch * 86_400 + i64::from(hour) * 3_600
+       + i64::from(min) * 60 + i64::from(sec))
+}
+
+fn two_digits(value: &[u8]) -> Result<u8, PkeyError> {
+    if value.len() != 2 || !value.iter().all(|b| b.is_ascii_digit()) { return Err(PkeyError::BadMessage); }
+    Ok((value[0] - b'0') * 10 + value[1] - b'0')
+}
+
+fn four_digits(value: &[u8]) -> Result<u16, PkeyError> {
+    if value.len() != 4 || !value.iter().all(|b| b.is_ascii_digit()) { return Err(PkeyError::BadMessage); }
+    Ok(u16::from(two_digits(&value[..2])?) * 100 + u16::from(two_digits(&value[2..])?))
 }
 
 /// `SubjectPublicKeyInfo ::= SEQUENCE { algorithm AlgorithmIdentifier,

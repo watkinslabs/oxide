@@ -11,10 +11,29 @@
 //! mount and cannot drift from what the threads actually accept.
 
 use alloc::sync::Arc;
+use alloc::format;
 
 use crate::bg::knobs::{self, Knob};
 use crate::fsattr::{line_u64, Attr};
 use crate::mount::{errno_to_vfs, F2fs};
+
+fn checkpoint_ioprio(fs: &Arc<F2fs>, dir: &str) -> crate::fsattr::Attr {
+    let show_fs = Arc::clone(fs);
+    let store_fs = Arc::clone(fs);
+    crate::fsattr::Attr::rw(
+        dir,
+        "ckpt_thread_ioprio",
+        Arc::new(move || {
+            let p = show_fs.bg().checkpoint_ioprio();
+            Ok(format!("{},{}\n", p.name(), p.level).into_bytes())
+        }),
+        Arc::new(move |bytes: &[u8]| {
+            let p = crate::bg::IoPrio::parse(bytes).map_err(errno_to_vfs)?;
+            store_fs.bg().set_checkpoint_ioprio(p);
+            Ok(bytes.len())
+        }),
+    )
+}
 
 /// One control, bound to the mount whose threads it turns. # C: O(1)
 fn knob(fs: &Arc<F2fs>, dir: &str, k: Knob) -> Attr {
@@ -35,5 +54,7 @@ fn knob(fs: &Arc<F2fs>, dir: &str, k: Knob) -> Attr {
 
 /// Every control one mount publishes. # C: O(N controls)
 pub(crate) fn attrs(fs: &Arc<F2fs>, dev: &str) -> alloc::vec::Vec<Attr> {
-    knobs::ALL.iter().map(|&k| knob(fs, dev, k)).collect()
+    let mut out: alloc::vec::Vec<Attr> = knobs::ALL.iter().map(|&k| knob(fs, dev, k)).collect();
+    out.push(checkpoint_ioprio(fs, dev));
+    out
 }

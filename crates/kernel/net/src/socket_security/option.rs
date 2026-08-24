@@ -50,12 +50,49 @@ pub fn check(sock: OptSock, access: Access, level: i32, optname: i32) -> Result<
     }
 }
 
+/// Option admission for an INET socket, retaining the socket object Linux's
+/// `security_socket_{get,set}sockopt` hooks receive. # C: O(1)
+pub fn check_inet(sock: &crate::sock::InetSocket, access: Access, level: i32,
+                  optname: i32) -> Result<(), NetError> {
+    let option = inet(sock);
+    let object = crate::socket_security::inet(sock);
+    verdict_socket(option, access.operation(), level, optname,
+        object.target_sid, object.target_class)
+}
+
+/// Option admission for a socket implementation that owns its own descriptor
+/// rather than an `InetSocket` (currently netlink). # C: O(1)
+pub fn check_target(sock: OptSock, access: Access, level: i32, optname: i32,
+                    target_sid: u32, target_class: &'static str) -> Result<(), NetError> {
+    verdict_socket(sock, access.operation(), level, optname, target_sid, target_class)
+}
+
+impl Access {
+    const fn operation(self) -> security::network::Operation {
+        match self {
+            Self::Set => security::network::Operation::SetOption,
+            Self::Get => security::network::Operation::GetOption,
+        }
+    }
+}
+
 fn verdict(sock: OptSock, operation: security::network::Operation, level: i32, optname: i32)
     -> Result<(), NetError>
 {
     let context = security::network::Context::option(sock.namespace, sock.family,
         sock.socket_type, sock.protocol, operation, level, optname);
     match security::network::evaluate(context) {
+        security::network::Verdict::Deny => Err(NetError::Eacces),
+        security::network::Verdict::Allow => Ok(()),
+    }
+}
+
+fn verdict_socket(sock: OptSock, operation: security::network::Operation, level: i32,
+                  optname: i32, target_sid: u32, target_class: &'static str)
+                  -> Result<(), NetError> {
+    let context = security::network::Context::option(sock.namespace, sock.family,
+        sock.socket_type, sock.protocol, operation, level, optname);
+    match security::network::evaluate_socket(context, target_sid, target_class) {
         security::network::Verdict::Deny => Err(NetError::Eacces),
         security::network::Verdict::Allow => Ok(()),
     }

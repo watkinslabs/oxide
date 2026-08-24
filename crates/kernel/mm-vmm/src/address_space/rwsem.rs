@@ -100,6 +100,29 @@ impl<T> MmapRwsem<T> {
         }
     }
 
+    /// Killable shared acquisition, matching `mmap_read_lock_killable`.
+    /// `interrupted` is checked before each wait and after every wake; an
+    /// interrupted caller never owns a partial reader reservation.
+    /// # C: O(contention)
+    pub fn read_killable(&self, interrupted: fn() -> bool)
+        -> Result<MmapReadGuard<'_, T>, ()>
+    {
+        loop {
+            if interrupted() { return Err(()); }
+            let gate = self.wait_lock.lock();
+            let state = self.state.load(Ordering::Relaxed);
+            if state & WRITER == 0
+                && state & READERS != READERS
+                && self.writers_waiting.load(Ordering::Relaxed) == 0
+            {
+                self.state.store(state + 1, Ordering::Release);
+                drop(gate);
+                return Ok(MmapReadGuard { lock: self });
+            }
+            self.park(gate, false);
+        }
+    }
+
     /// Acquire exclusive, sleeping until readers and the writer drain.
     /// # C: O(contention)
     /// # Sleeps: yes, on contention after runtime hooks are installed
@@ -248,6 +271,18 @@ mod tests {
         drop(state);
         drop(writer);
         reader.join().unwrap();
+        assert_eq!(sem.debug_state(), (0, false));
+        clear_mmap_rwsem_wait_hooks();
+    }
+
+    fn interrupted() -> bool { true }
+
+    #[test]
+    fn killable_reader_returns_interrupted_before_taking_the_lock() {
+        let _serial = serial().lock().unwrap();
+        reset();
+        let sem = MmapRwsem::new(0u32);
+        assert!(sem.read_killable(interrupted).is_err());
         assert_eq!(sem.debug_state(), (0, false));
         clear_mmap_rwsem_wait_hooks();
     }

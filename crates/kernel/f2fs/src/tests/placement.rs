@@ -213,6 +213,21 @@ fn a_log_under_pressure_recycles_a_partly_used_segment() {
     assert_eq!(w.curseg[CURSEG_WARM_DATA].alloc_type, ALLOC_LFS);
 }
 
+#[test]
+fn block_fragmentation_limits_reach_data_allocation() {
+    let mut o = crate::opts::Options::defaults();
+    o.mode = crate::opts::Mode::Fragment(crate::opts::Fragment::Block);
+    let mut v = test_image::with_root().mount_opts(o).unwrap();
+    v.set_max_fragment_chunk(1);
+    v.set_max_fragment_hole(2);
+    let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
+    v.write_file(ino, 0, &alloc::vec![0xD4u8; 3 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
+    let a = [slot(&v, ino, 0), slot(&v, ino, 1), slot(&v, ino, 2)];
+    assert!(a[1] > a[0] + 1, "first fragment hole missing: {a:?}");
+    assert!(a[2] > a[1] + 1, "second fragment hole missing: {a:?}");
+}
+
 /// A volume with a segment that is partly live: a file long enough to fill one,
 /// with its first half released.
 fn fragmented() -> (Volume<MemImage>, u32) {

@@ -89,6 +89,7 @@ struct Zones {
     /// under a name that promises the previous one's — the record would be
     /// there and be wrong, which is worse than absent.
     console_old: Vec<u8>,
+    ecc: Option<zone::EccConfig>,
 }
 
 /// The persistent-RAM backend.
@@ -105,6 +106,16 @@ impl RamBackend {
     pub fn attach(region: RamRegion, record_size: usize, console_size: usize)
         -> (Arc<RamBackend>, Vec<Record>)
     {
+        Self::attach_with_ecc(region, record_size, console_size, None)
+    }
+
+    /// ECC-enabled variant of [`attach`]. The same configuration must be used
+    /// on every boot for a reserved region; its parity geometry is part of the
+    /// on-media format, just as in Linux's `persistent_ram_zone`.
+    pub fn attach_with_ecc(region: RamRegion, record_size: usize, console_size: usize,
+                           ecc: Option<zone::EccConfig>)
+        -> (Arc<RamBackend>, Vec<Record>)
+    {
         let layout = carve(region.len(), record_size, console_size);
         let mut found = Vec::new();
         let mut next_dump = 0usize;
@@ -113,9 +124,9 @@ impl RamBackend {
             // SAFETY: nothing else holds this region yet — the backend it
             // will belong to has not been constructed, let alone published.
             let buf = unsafe { region.zone_mut(*z) };
-            let ok = matches!(zone::attach(buf, SIG_DUMP), zone::Attach::Valid { .. });
+            let ok = matches!(Self::attach_zone(buf, SIG_DUMP, ecc), zone::Attach::Valid { .. });
             if !ok { continue; }
-            match Self::decode_dump(buf, i) {
+            match Self::decode_dump(buf, i, ecc) {
                 Some(r) => {
                     // Keep writing after the newest survivor so a second
                     // crash does not land on the record of the first.
@@ -125,15 +136,15 @@ impl RamBackend {
                 // A zone that validated but carries no record header of ours
                 // is discarded, exactly as the reference discards a dump zone
                 // with no valid header.
-                None => zone::zap(buf, SIG_DUMP),
+                None => Self::zap_zone(buf, SIG_DUMP, ecc),
             }
         }
         let mut console_old = Vec::new();
         if let Some(z) = layout.console {
             // SAFETY: same as the dump loop above — sole owner at attach.
             let buf = unsafe { region.zone_mut(z) };
-            if matches!(zone::attach(buf, SIG_CONSOLE), zone::Attach::Valid { .. }) {
-                console_old = zone::read_all(buf);
+            if matches!(Self::attach_zone(buf, SIG_CONSOLE, ecc), zone::Attach::Valid { .. }) {
+                console_old = Self::read_zone(buf, ecc);
                 if !console_old.is_empty() {
                     found.push(Record { id: RecordId { ty: RecordType::Console, index: 0 },
                         sec: 0, nsec: 0, body: console_old.clone() });
@@ -141,12 +152,31 @@ impl RamBackend {
             }
         }
         let b = Arc::new(RamBackend {
-            zones: Spinlock::new(Zones { region, layout, next_dump, console_old }) });
+            zones: Spinlock::new(Zones { region, layout, next_dump, console_old, ecc }) });
         (b, found)
     }
 
-    fn decode_dump(buf: &mut [u8], index: usize) -> Option<Record> {
-        let body = zone::read_all(buf);
+    fn attach_zone(buf: &mut [u8], tag: u32, ecc: Option<zone::EccConfig>) -> zone::Attach {
+        match ecc { Some(cfg) => zone::attach_with_ecc(buf, tag, cfg), None => zone::attach(buf, tag) }
+    }
+
+    fn read_zone(buf: &[u8], ecc: Option<zone::EccConfig>) -> Vec<u8> {
+        match ecc { Some(cfg) => zone::read_all_with_ecc(buf, cfg), None => zone::read_all(buf) }
+    }
+
+    fn zap_zone(buf: &mut [u8], tag: u32, ecc: Option<zone::EccConfig>) {
+        match ecc { Some(cfg) => zone::zap_with_ecc(buf, tag, cfg), None => zone::zap(buf, tag) }
+    }
+
+    fn write_zone(buf: &mut [u8], tag: u32, bytes: &[u8], ecc: Option<zone::EccConfig>) -> usize {
+        match ecc {
+            Some(cfg) => zone::write_with_ecc(buf, tag, bytes, cfg),
+            None => zone::write(buf, tag, bytes),
+        }
+    }
+
+    fn decode_dump(buf: &mut [u8], index: usize, ecc: Option<zone::EccConfig>) -> Option<Record> {
+        let body = Self::read_zone(buf, ecc);
         let h = parse_kmsg_hdr(&body)?;
         Some(Record {
             id: RecordId { ty: RecordType::Dmesg, index },
@@ -165,7 +195,10 @@ impl RamBackend {
             None => 0,
             // A generous allowance for the timestamp line; a body that
             // overruns is truncated by the zone anyway.
-            Some(z) => zone::capacity(z.len).saturating_sub(64),
+            Some(z) => match g.ecc {
+                Some(cfg) => zone::ecc_capacity(z.len, cfg).unwrap_or(0).saturating_sub(64),
+                None => zone::capacity(z.len).saturating_sub(64),
+            },
         }
     }
 
@@ -175,13 +208,14 @@ impl RamBackend {
     pub fn write_dmesg(&self, sec: u64, nsec: u32, body: &[u8]) {
         let mut g = self.zones.lock();
         let Some(z) = g.layout.dump.get(g.next_dump).copied() else { return };
+        let ecc = g.ecc;
         // SAFETY: the lock is held, so this is the only live slice over the
         // region, and `z` came from the carve of that same region.
         let buf = unsafe { g.region.zone_mut(z) };
-        zone::zap(buf, SIG_DUMP);
+        Self::zap_zone(buf, SIG_DUMP, ecc);
         let hdr = write_kmsg_hdr(sec, nsec);
-        zone::write(buf, SIG_DUMP, hdr.as_bytes());
-        zone::write(buf, SIG_DUMP, body);
+        Self::write_zone(buf, SIG_DUMP, hdr.as_bytes(), ecc);
+        Self::write_zone(buf, SIG_DUMP, body, ecc);
         let n = g.layout.dump.len();
         if n > 0 { g.next_dump = (g.next_dump + 1) % n; }
     }
@@ -190,15 +224,17 @@ impl RamBackend {
     pub fn write_console(&self, bytes: &[u8]) {
         let g = self.zones.lock();
         let Some(z) = g.layout.console else { return };
+        let ecc = g.ecc;
         // SAFETY: the lock is held; see `write_dmesg`.
         let buf = unsafe { g.region.zone_mut(z) };
-        zone::write(buf, SIG_CONSOLE, bytes);
+        Self::write_zone(buf, SIG_CONSOLE, bytes, ecc);
     }
 
     /// Erase the zone one record came from — what unlinking its file does.
     /// # C: O(1)
     pub fn erase(&self, id: RecordId) -> Result<(), VfsError> {
         let mut g = self.zones.lock();
+        let ecc = g.ecc;
         let (z, tag) = match id.ty {
             RecordType::Dmesg => {
                 let z = *g.layout.dump.get(id.index).ok_or(VfsError::Einval)?;
@@ -209,7 +245,7 @@ impl RamBackend {
         };
         // SAFETY: the lock is held; see `write_dmesg`.
         let buf = unsafe { g.region.zone_mut(z) };
-        zone::zap(buf, tag);
+        Self::zap_zone(buf, tag, ecc);
         // The snapshot is the console record; dropping the zone alone would
         // leave the file still readable from a copy nothing can erase.
         if id.ty == RecordType::Console { g.console_old.clear(); }
@@ -225,7 +261,7 @@ impl RamBackend {
             if i >= MAX_RECORDS_PER_SCAN { break; }
             // SAFETY: the lock is held; see `write_dmesg`.
             let buf = unsafe { g.region.zone_mut(*z) };
-            if let Some(r) = Self::decode_dump(buf, i) { out.push(r); }
+            if let Some(r) = Self::decode_dump(buf, i, g.ecc) { out.push(r); }
         }
         if !g.console_old.is_empty() {
             out.push(Record { id: RecordId { ty: RecordType::Console, index: 0 },

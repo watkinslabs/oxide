@@ -65,23 +65,29 @@ pub fn sys_swapon(args: &SyscallArgs) -> i64 {
             pmm::swap::activate_registered_with_options(&disk.name, flags.priority, discard)
         }
         vfs::FileType::Regular => {
-            let backing = match ext4::rootfs::swapfile_backing(&node.inode) {
-                Ok(backing) => backing,
+            let backing = match node.inode.swapfile_backing() {
+                Ok(Some(backing)) => match backing.downcast::<pmm::swap::SwapFileBacking>() {
+                    Ok(backing) => backing,
+                    Err(_) => return errno(Errno::Eopnotsupp),
+                },
+                Ok(None) => return errno(Errno::Eopnotsupp),
                 Err(error) => return crate::namei_common::errno_from_vfs(error),
             };
             #[cfg(any(feature = "debug-boot", feature = "debug-swap"))]
             { klog::write_raw(b"[SWAPON] activate "); klog::write_raw(backing.name.as_bytes()); klog::write_raw(b"\n"); }
-            let resume_device = match backing.resume_device {
-                Some(name) => name,
-                None => return errno(Errno::Einval),
-            };
-            let geometry = pmm::swap::SwapFileGeometry {
-                device_name: resume_device,
-                pages: backing.resume_pages,
-                device: backing.raw_device,
-            };
-            pmm::swap::activate_file_with_options(backing.name, path, backing.device,
-                flags.priority, discard, geometry)
+            match backing.resume_device.clone() {
+                Some(resume_device) => {
+                    let geometry = pmm::swap::SwapFileGeometry {
+                        device_name: resume_device,
+                        pages: backing.resume_pages.clone(),
+                        device: backing.raw_device.clone(),
+                    };
+                    pmm::swap::activate_file_with_options(backing.name.clone(), path,
+                        backing.device.clone(), flags.priority, discard, geometry)
+                }
+                None => pmm::swap::activate_file_without_resume(backing.name.clone(), path,
+                    backing.device.clone(), flags.priority, discard),
+            }
         }
         // `claim_swapfile` accepts S_ISBLK and S_ISREG only.
         _ => return errno(Errno::Einval),

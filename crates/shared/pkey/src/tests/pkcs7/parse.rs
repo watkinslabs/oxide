@@ -38,6 +38,9 @@ fn signed_attributes_are_kept_with_their_header() {
     let attrs = s.authattrs.expect("this signature carries attributes");
     assert_eq!(attrs[0], parse::TAG_CONT0);
     assert_eq!(s.msgdigest.expect("messageDigest is required").len(), 32);
+    let signing_time = s.signing_time.expect("signingTime is decoded");
+    assert!(signing_time >= m.certs[0].cert.valid_from);
+    assert!(signing_time <= m.certs[0].cert.valid_to);
 }
 
 #[test]

@@ -16,6 +16,7 @@
 
 use alloc::string::{String, ToString};
 use alloc::sync::{Arc, Weak};
+use alloc::vec::Vec;
 use core::sync::atomic::AtomicBool;
 
 use syscall::errno::Errno;
@@ -88,6 +89,9 @@ impl FatFs {
     /// # C: O(table bytes)
     pub fn open_typed(dev: Arc<dyn block::BlockDevice>, source: &str, write: bool,
                       type_name: &'static str, opts: Options) -> KResult<Arc<Self>> {
+        // Linux's FAT `nfs=nostale_ro` export uses directory-entry positions;
+        // preventing mutation is what makes those positions non-reusable.
+        let write = write && opts.nfs != crate::opts::Nfs::NostaleRo;
         let volume = Volume::mount_with(BlockSource::new(dev).writable(write), opts)
             .map_err(errno_to_vfs)?;
         if volume.was_dirty() {
@@ -139,6 +143,60 @@ impl FatFs {
 
     /// This mount's option set. # C: O(1)
     pub fn options(&self) -> Options { *self.volume.lock().options() }
+
+    /// Rebuild a FAT inode named by its directory-entry position. This is the
+    /// `nfs=nostale_ro` owner: the medium, rather than the inode cache, is the
+    /// source of truth after an eviction. # C: O(directory bytes)
+    pub(crate) fn inode_for_handle(self: &Arc<Self>, sb: &vfs::SuperBlock,
+                                   position: u64, generation: u32) -> Option<InodeRef> {
+        if position == node::ROOT_HANDLE_POSITION {
+            let inode = self.root_inode();
+            return if generation == vfs::export::GENERATION_ANY
+                || inode.i_generation() == generation { Some(inode) } else { None };
+        }
+        let parent = u32::try_from(position >> 32).ok()?;
+        let slot = position & u64::from(u32::MAX);
+        let (hit, location) = {
+            let v = self.volume.lock();
+            let cluster = (parent != 0).then_some(parent);
+            let hit = v.read_dir(cluster).ok()?.into_iter().find(|entry| entry.slot == slot)?;
+            let parent_location = if parent == 0 { DirLocation::FixedRoot }
+                                  else { DirLocation::Cluster(parent) };
+            let location = crate::ident::location_of(&hit.entry, &parent_location);
+            (hit, location)
+        };
+        let ino = crate::ident::inode_number(&location, Some(&hit.entry));
+        if let Some(existing) = sb.ilookup(ino) {
+            return if generation == vfs::export::GENERATION_ANY
+                || existing.i_generation() == generation { Some(existing) } else { None };
+        }
+        let inode = node::node_inode(Arc::clone(self), Some(hit.entry), location,
+                                     (parent != 0).then_some(parent), hit.slot, hit.nr_slots);
+        if generation != vfs::export::GENERATION_ANY && inode.i_generation() != generation {
+            return None;
+        }
+        Some(inode)
+    }
+
+    /// Resolve a directory identity for a connectable FAT handle. Directory
+    /// identities are their starting clusters; if the inode is not resident,
+    /// walk the directory tree to recover the entry position. # C: O(volume)
+    pub(crate) fn directory_for_handle(self: &Arc<Self>, sb: &vfs::SuperBlock,
+                                       identity: u64, generation: u32) -> Option<InodeRef> {
+        if identity == 0 || identity == crate::ident::ROOT_INO {
+            return self.inode_for_handle(sb, node::ROOT_HANDLE_POSITION, generation);
+        }
+        let target = u32::try_from(identity & u64::from(u32::MAX)).ok()?;
+        if target == self.volume.lock().geometry().root_cluster {
+            return self.inode_for_handle(sb, node::ROOT_HANDLE_POSITION, generation);
+        }
+        let position = {
+            let v = self.volume.lock();
+            let mut seen = Vec::new();
+            find_directory_position(&v, None, target, &mut seen)?
+        };
+        self.inode_for_handle(sb, position, generation)
+    }
 
     /// The superblock this instance was realized into. # C: O(1)
     pub(crate) fn superblock(&self) -> Option<Arc<vfs::SuperBlock>> { self.sb.lock().upgrade() }
@@ -206,6 +264,24 @@ pub fn read_path(fs: &FatFs, path: &str) -> KResult<alloc::vec::Vec<u8>> {
 
 /// The device this filesystem was mounted from. # C: O(1)
 pub fn source_of(fs: &FatFs) -> &str { &fs.source }
+
+fn find_directory_position<S: crate::volume::SectorSource>(v: &Volume<S>,
+        cluster: Option<u32>, target: u32, seen: &mut Vec<u32>) -> Option<u64> {
+    if let Some(c) = cluster {
+        if c < 2 || !seen.iter().all(|seen| *seen != c) { return None; }
+        seen.push(c);
+    }
+    let entries = v.read_dir(cluster).ok()?;
+    for entry in entries {
+        if !entry.is_dir() || entry.entry.cluster < 2 { continue; }
+        let position = (u64::from(cluster.unwrap_or(0)) << 32) | entry.slot;
+        if entry.entry.cluster == target { return Some(position); }
+        if let Some(found) = find_directory_position(v, Some(entry.entry.cluster), target, seen) {
+            return Some(found);
+        }
+    }
+    None
+}
 
 #[cfg(test)]
 #[path = "mount/tests.rs"]
