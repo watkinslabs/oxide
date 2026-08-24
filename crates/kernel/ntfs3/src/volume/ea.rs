@@ -12,6 +12,7 @@ use sectors::SectorSource;
 
 use super::{edit, Volume};
 use crate::attrib;
+use crate::run::Runs;
 use crate::uapi::*;
 
 const EA_INFO_SIZE: usize = 8;
@@ -74,6 +75,11 @@ fn encode(eas: &[Ea]) -> Result<Vec<u8>, Errno> {
     Ok(out)
 }
 
+fn packed_size(ea: &Ea) -> Result<usize, Errno> {
+    4usize.checked_add(ea.name.len()).and_then(|n| n.checked_add(1))
+        .and_then(|n| n.checked_add(ea.value.len())).ok_or(Errno::E2big)
+}
+
 impl<S: SectorSource> Volume<S> {
     /// Read one native EA by its byte name. # C: O(EA bytes)
     pub fn read_ea(&self, number: u64, name: &[u8]) -> Result<Vec<u8>, Errno> {
@@ -85,12 +91,18 @@ impl<S: SectorSource> Volume<S> {
     }
 
     /// Replace or remove one native EA. # C: O(record + EA bytes)
-    pub fn write_ea(&self, number: u64, name: &[u8], value: Option<&[u8]>, now: i64)
+    pub fn write_ea(&mut self, number: u64, name: &[u8], value: Option<&[u8]>, now: i64)
         -> Result<(), Errno> {
         if !self.writable { return Err(Errno::Erofs); }
         let (mut bytes, header) = self.read_record_raw(number)?;
         let attrs = attrib::parse_all(&bytes, &header);
-        let mut eas = attrib::find(&attrs, ATTR_EA, &[])
+        let old_attr = attrib::find(&attrs, ATTR_EA, &[]).cloned();
+        let old_runs = match old_attr.as_ref().map(|attr| attr.body) {
+            Some(crate::attrib::Body::NonResident { .. }) =>
+                self.attribute_runs(&bytes, &attrs, old_attr.as_ref().unwrap())?,
+            _ => Runs::new(),
+        };
+        let mut eas = old_attr.as_ref()
             .map(|attr| self.attribute_bytes(&bytes, &attrs, attr))
             .transpose()?.map(|raw| decode(&raw)).transpose()?.unwrap_or_default();
         eas.retain(|ea| ea.name != name);
@@ -103,19 +115,49 @@ impl<S: SectorSource> Volume<S> {
         let attrs = attrib::parse_all(&bytes, &header);
         let info_at = attrib::find(&attrs, ATTR_EA_INFO, &[]).map(|a| a.offset);
         if let Some(at) = info_at { edit::remove_at(&mut bytes, &header, at)?; }
+        let mut new_runs = Runs::new();
         if !eas.is_empty() {
             let raw = encode(&eas)?;
-            if raw.len() > u16::MAX as usize { return Err(Errno::E2big); }
-            let header = crate::record::parse(&bytes).map_err(|e| e.errno())?;
+            let packed = eas.iter().map(packed_size).try_fold(0usize, |sum, size| {
+                sum.checked_add(size?).ok_or(Errno::E2big)
+            })?;
+            if raw.len() > u32::MAX as usize || packed > u16::MAX as usize {
+                return Err(Errno::E2big);
+            }
             let mut info = [0u8; EA_INFO_SIZE];
-            info[..2].copy_from_slice(&(raw.len() as u16).to_le_bytes());
+            info[..2].copy_from_slice(&(packed as u16).to_le_bytes());
             info[2..4].copy_from_slice(&(eas.iter().filter(|ea| ea.flags & FILE_NEED_EA != 0).count() as u16).to_le_bytes());
             info[4..8].copy_from_slice(&(raw.len() as u32).to_le_bytes());
-            let id = edit::take_attr_id(&mut bytes);
-            edit::insert(&mut bytes, &header, &edit::resident(ATTR_EA_INFO, &[], id, false, &info))?;
-            let header = crate::record::parse(&bytes).map_err(|e| e.errno())?;
-            let id = edit::take_attr_id(&mut bytes);
-            edit::insert(&mut bytes, &header, &edit::resident(ATTR_EA, &[], id, false, &raw))?;
+            let mut candidate = bytes.clone();
+            let header = crate::record::parse(&candidate).map_err(|e| e.errno())?;
+            let id = edit::take_attr_id(&mut candidate);
+            edit::insert(&mut candidate, &header, &edit::resident(ATTR_EA_INFO, &[], id, false, &info))?;
+            let header = crate::record::parse(&candidate).map_err(|e| e.errno())?;
+            let id = edit::take_attr_id(&mut candidate);
+            let resident = edit::resident(ATTR_EA, &[], id, false, &raw);
+            if edit::insert(&mut candidate, &header, &resident).is_ok() {
+                bytes = candidate;
+            } else {
+                let clusters = self.geo.clusters_for(raw.len() as u64);
+                new_runs = self.alloc_clusters(clusters)?;
+                let header = crate::record::parse(&bytes).map_err(|e| e.errno())?;
+                let id = edit::take_attr_id(&mut bytes);
+                edit::insert(&mut bytes, &header, &edit::resident(ATTR_EA_INFO, &[], id, false, &info))?;
+                let header = crate::record::parse(&bytes).map_err(|e| e.errno())?;
+                let id = edit::take_attr_id(&mut bytes);
+                let attr = edit::non_resident(ATTR_EA, &[], id, &new_runs,
+                                              new_runs.clusters() << self.geo.cluster_bits,
+                                              raw.len() as u64, raw.len() as u64,
+                                              self.geo.cluster_bits);
+                if let Err(err) = edit::insert(&mut bytes, &header, &attr) {
+                    let _ = self.free_runs(&new_runs);
+                    return Err(err);
+                }
+                if let Err(err) = self.write_runs(&new_runs, 0, &raw) {
+                    let _ = self.free_runs(&new_runs);
+                    return Err(err);
+                }
+            }
         }
         let attrs = attrib::parse_all(&bytes, &crate::record::parse(&bytes).map_err(|e| e.errno())?);
         if let Some(std) = attrib::find(&attrs, ATTR_STD, &[]) {
@@ -127,7 +169,12 @@ impl<S: SectorSource> Volume<S> {
                 }
             }
         }
-        self.write_record(number, &mut bytes)
+        if let Err(err) = self.write_record(number, &mut bytes) {
+            if !new_runs.runs.is_empty() { let _ = self.free_runs(&new_runs); }
+            return Err(err);
+        }
+        if !old_runs.runs.is_empty() { self.free_runs(&old_runs)?; }
+        Ok(())
     }
 }
 
