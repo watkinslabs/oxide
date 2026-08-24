@@ -51,7 +51,7 @@ fn store(a: &[Attr], name: &str, v: u64) -> Result<usize, VfsError> {
 fn every_volume_owned_control_is_writable() {
     let fs = mounted();
     let a = attrs(&fs);
-    for name in ["ram_thresh", "ra_nid_pages", "gc_pin_file_thresh", "reclaim_segments", "gc_valid_thresh_ratio", "max_io_bytes", "migration_window_granularity", "migration_granularity", "dir_level", "seq_file_ra_mul", "max_read_extent_count", "last_age_weight",
+    for name in ["ram_thresh", "ra_nid_pages", "gc_pin_file_thresh", "reclaim_segments", "gc_valid_thresh_ratio", "max_io_bytes", "migration_window_granularity", "migration_granularity", "dir_level", "seq_file_ra_mul", "max_roll_forward_node_blocks", "max_read_extent_count", "last_age_weight",
                  "hot_data_age_threshold", "warm_data_age_threshold",
                  "gc_segment_mode", "gc_reclaimed_segments",
                  "atgc_candidate_ratio", "atgc_candidate_count",
@@ -192,6 +192,18 @@ fn seq_file_ra_multiplier_is_live_and_linux_bounded() {
     assert!(store(&a, "seq_file_ra_mul", 1).is_err());
     assert!(store(&a, "seq_file_ra_mul", 257).is_err());
     assert_eq!(show(&a, "seq_file_ra_mul"), 8);
+}
+
+#[test]
+fn max_roll_forward_node_blocks_is_live_and_u32_bounded() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    assert_eq!(show(&a, "max_roll_forward_node_blocks"), 0);
+    store(&a, "max_roll_forward_node_blocks", 3).expect("store");
+    assert_eq!(fs.volume.lock().max_roll_forward_node_blocks(), 3);
+    assert_eq!(show(&a, "max_roll_forward_node_blocks"), 3);
+    assert!(store(&a, "max_roll_forward_node_blocks", u64::from(u32::MAX) + 1).is_err());
+    assert_eq!(show(&a, "max_roll_forward_node_blocks"), 3);
 }
 
 /// The point of the knob: what is written is what the machinery then holds.

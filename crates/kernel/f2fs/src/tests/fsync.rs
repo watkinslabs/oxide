@@ -65,6 +65,18 @@ fn a_checkpointed_regular_file_takes_the_chain() {
 }
 
 #[test]
+fn roll_forward_node_limit_forces_checkpoint_and_resets_afterward() {
+    let (mut v, ino) = dirtied(Options::defaults());
+    v.set_max_roll_forward_node_blocks(1);
+    assert_eq!(v.fsync(ino).expect("fsync"), CpReason::None);
+    assert!(v.rf_node_block_count() >= 1);
+    assert!(!v.space_for_roll_forward());
+    v.commit().expect("checkpoint");
+    assert_eq!(v.rf_node_block_count(), 0);
+    assert!(v.space_for_roll_forward());
+}
+
+#[test]
 fn a_directory_takes_the_checkpoint() {
     let (mut v, _) = ready(Options::defaults());
     v.create(ROOT_INO, b"g", &spec(), None).expect("create");

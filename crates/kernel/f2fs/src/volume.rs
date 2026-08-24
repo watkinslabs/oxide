@@ -293,6 +293,11 @@ pub struct Volume<S: SectorSource> {
     pub(crate) dir_level: u8,
     /// Multiplier for sequential-file readahead. Linux's `seq_file_ra_mul`.
     pub(crate) seq_file_ra_mul: u32,
+    /// Maximum number of node blocks a roll-forward chain may write between
+    /// checkpoints. Zero keeps the Linux unlimited default.
+    pub(crate) max_roll_forward_node_blocks: u32,
+    /// Node blocks written by roll-forward since the last checkpoint.
+    pub(crate) rf_node_block_count: u32,
     /// Maximum contiguous source-read size before the medium request is split.
     /// Zero retains Linux's unlimited merge behavior.
     pub(crate) max_io_bytes: u32,

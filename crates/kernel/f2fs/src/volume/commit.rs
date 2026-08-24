@@ -217,6 +217,7 @@ impl<S: SectorSource> Volume<S> {
         self.nat_dirty.clear();
         self.sit_dirty.clear();
         self.dirty = false;
+        self.rf_node_block_count = 0;
         // Every entry names a directory whose blocks this checkpoint has just
         // made durable, so no file below one of them needs a checkpoint on its
         // account any more. Leaving them would make one strict removal cost a

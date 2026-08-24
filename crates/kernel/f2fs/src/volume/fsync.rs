@@ -72,7 +72,22 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(1)
     pub(crate) fn space_for_roll_forward(&self) -> bool {
         self.valid_block_count < self.cp.user_block_count
+            && (self.max_roll_forward_node_blocks == 0
+                || self.rf_node_block_count < self.max_roll_forward_node_blocks)
     }
+
+    /// Maximum roll-forward node blocks permitted before a checkpoint. # C: O(1)
+    pub fn max_roll_forward_node_blocks(&self) -> u32 {
+        self.max_roll_forward_node_blocks
+    }
+
+    /// Set the roll-forward node-block ceiling. Zero means unlimited. # C: O(1)
+    pub fn set_max_roll_forward_node_blocks(&mut self, value: u32) {
+        self.max_roll_forward_node_blocks = value;
+    }
+
+    /// Node blocks written by roll-forward since the last checkpoint. # C: O(1)
+    pub fn rf_node_block_count(&self) -> u32 { self.rf_node_block_count }
 
     /// Make `ino` durable, and report which path it took.
     ///
