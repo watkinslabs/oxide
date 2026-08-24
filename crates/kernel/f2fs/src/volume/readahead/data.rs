@@ -21,6 +21,7 @@ use sectors::SectorSource;
 
 use crate::crypto::Info;
 use crate::node::Inode;
+use crate::opts::MemoryMode;
 use crate::uapi::BLKSIZE;
 
 use super::super::map::Mapped;
@@ -71,7 +72,9 @@ impl<S: SectorSource> Volume<S> {
                     // decompression path. Demand reads still allocate their
                     // temporary cluster buffer; uncompressed clusters in a
                     // compressed file retain ordinary readahead.
-                    if self.options().memory == crate::opts::MemoryMode::Low { return; }
+                    if !compressed_readahead_allowed(self.options().memory, live_memory_watermark()) {
+                        return;
+                    }
                     if self.read_cluster_for_readahead(inode, ino, first).is_err() { return; }
                 }
                 Ok(_) => self.readahead_plain(inode, ino, first,
@@ -192,4 +195,24 @@ impl<S: SectorSource> Volume<S> {
         }
         true
     }
+}
+
+/// Whether speculative compressed decompression may take temporary/cache
+/// memory. Linux's compressed-page path declines when the free-page count has
+/// fallen below the published low watermark; a demand read still proceeds and
+/// reports its own allocation failure. # C: O(1)
+pub(crate) fn compressed_readahead_allowed(mode: MemoryMode,
+                                            watermark: Option<(u64, u64)>) -> bool {
+    if mode == MemoryMode::Low { return false; }
+    watermark.is_none_or(|(free, low)| free >= low)
+}
+
+/// Read the PMM's one published free-memory observation. Hosted F2FS tests
+/// have no live PMM and deliberately retain the normal advisory behavior.
+/// # C: O(1)
+fn live_memory_watermark() -> Option<(u64, u64)> {
+    let pmm = pmm::setup::pmm_static()?;
+    let free = pmm.free_pages();
+    let snapshot = pmm::setup::watermark_snapshot(free)?;
+    Some((free, snapshot.zone.low))
 }

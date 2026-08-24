@@ -21,6 +21,26 @@ use crate::volume::Volume;
 
 use super::count::Counting;
 
+#[test]
+fn compressed_readahead_respects_the_low_memory_mount_mode() {
+    assert!(!crate::volume::readahead::data::compressed_readahead_allowed(
+        crate::opts::MemoryMode::Low, None));
+}
+
+#[test]
+fn compressed_readahead_stops_below_the_pmm_low_watermark() {
+    assert!(!crate::volume::readahead::data::compressed_readahead_allowed(
+        crate::opts::MemoryMode::Normal, Some((99, 100))));
+    assert!(crate::volume::readahead::data::compressed_readahead_allowed(
+        crate::opts::MemoryMode::Normal, Some((100, 100))));
+}
+
+#[test]
+fn missing_hosted_pmm_keeps_normal_readahead_advisory() {
+    assert!(crate::volume::readahead::data::compressed_readahead_allowed(
+        crate::opts::MemoryMode::Normal, None));
+}
+
 const FILE_INO: u32 = 9;
 /// First block of the main area in the fixture geometry.
 const MAIN: u32 = test_image::MAIN_BLKADDR;
