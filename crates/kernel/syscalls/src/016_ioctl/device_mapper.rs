@@ -28,8 +28,9 @@ fn is_control_node(inode: &vfs::InodeRef) -> bool {
 /// request even when its command number is unknown, matching the reference's
 /// `ENOTTY` response instead of leaking it to a generic character driver.
 /// # C: O(data_size + command payload)
-pub(super) fn handle_mapper_control_ioctl(inode: &vfs::InodeRef, request: u64, arg: u64,
+pub(super) fn handle_mapper_control_ioctl(file: &vfs::File, request: u64, arg: u64,
                                            cap_sys_admin: bool) -> Option<i64> {
+    let inode = file.inode();
     if !is_control_node(inode) { return None; }
     if !cap_sys_admin { return Some(err(Errno::Eperm)); }
     let mut prefix = [0u8; HEADER_BYTES];
@@ -45,7 +46,12 @@ pub(super) fn handle_mapper_control_ioctl(inode: &vfs::InodeRef, request: u64, a
     if uaccess::copy_from_user(&mut bytes, arg).is_err() { return Some(err(Errno::Efault)); }
     match device_mapper::control::dispatch(request as u32, &mut bytes) {
         Ok(()) => match uaccess::copy_to_user(arg, &bytes) {
-            Ok(()) => Some(0),
+            Ok(()) => {
+                if device_mapper::uapi::cmd_nr(request as u32) == device_mapper::uapi::DM_DEV_ARM_POLL_CMD {
+                    device_mapper::control::arm_poll_file(file);
+                }
+                Some(0)
+            },
             Err(_) => Some(err(Errno::Efault)),
         },
         Err(error) => Some(err(error)),

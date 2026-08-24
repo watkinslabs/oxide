@@ -132,6 +132,7 @@ impl MappedDevice {
             s.event_nr
         };
         self.event_waiters.wake_all();
+        crate::control::notify_global_event();
         event
     }
 

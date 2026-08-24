@@ -162,7 +162,7 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     // Device mapper owns every command arriving on `/dev/mapper/control`.
     // This is before generic character dispatch so the control ABI is the
     // same for its devtmpfs node and an equivalent mknod-created node.
-    if let Some(rv) = handle_mapper_control_ioctl(file.inode(), req, arg,
+    if let Some(rv) = handle_mapper_control_ioctl(&file, req, arg,
         cur.has_cap(sched::cap::SYS_ADMIN)) {
         return rv;
     }
