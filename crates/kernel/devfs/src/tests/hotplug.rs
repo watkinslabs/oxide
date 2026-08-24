@@ -48,9 +48,9 @@ fn mount_devtmpfs() -> Arc<SuperBlock> {
 }
 
 /// One driver-binding generation's node inode. Distinct `Arc` per call.
-fn generation_inode() -> InodeRef {
+fn generation_inode(ino: u64) -> InodeRef {
     vfs::InodeBuilder::new(
-        NODE_INO,
+        ino,
         vfs::mk_mode(vfs::FileType::CharDev, NODE_PERMISSIONS),
         vfs::default_inode_ops(),
         vfs::default_file_ops(),
@@ -74,7 +74,7 @@ fn a_rebound_device_publishes_a_node_that_resolves_to_the_new_generation() {
     let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     crate::register_dir("/dev/input");
 
-    let first = generation_inode();
+    let first = generation_inode(NODE_INO);
     publish(&first);
     let sb = mount_devtmpfs();
     let root = sb.s_root().expect("devtmpfs root dentry");
@@ -83,7 +83,7 @@ fn a_rebound_device_publishes_a_node_that_resolves_to_the_new_generation() {
 
     // Unbind, then rebind: same name, same inode number, new object.
     crate::del_device_node(NODE_NAME);
-    let second = generation_inode();
+    let second = generation_inode(NODE_INO);
     publish(&second);
 
     let resolved = resolve(&root).expect("rebound node resolves");
@@ -99,7 +99,7 @@ fn an_unplugged_device_node_stops_resolving_through_the_dcache() {
     let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     crate::register_dir("/dev/input");
 
-    let node = generation_inode();
+    let node = generation_inode(NODE_INO);
     publish(&node);
     let sb = mount_devtmpfs();
     let root = sb.s_root().expect("devtmpfs root dentry");
@@ -122,9 +122,9 @@ fn unplugging_one_node_leaves_its_siblings_cached() {
     const SIBLING_NAME: &str = "input/b1614event1";
     const SIBLING_PATH: &str = "/input/b1614event1";
 
-    let node = generation_inode();
+    let node = generation_inode(NODE_INO);
     publish(&node);
-    let sibling = generation_inode();
+    let sibling = generation_inode(NODE_INO + 1);
     let published = InodeRef::clone(&sibling);
     let factory: crate::NodeFactory = Arc::new(move || InodeRef::clone(&published));
     crate::add_device_node(NODE_CLASS, SIBLING_NAME, None, Some(factory));

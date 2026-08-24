@@ -81,3 +81,21 @@ fn dev_device_nodes_have_no_fileattr_vector() {
                    "set {p}");
     }
 }
+
+/// The special-inode fileattr vector is absent, but ordinary chmod still uses
+/// the generic inode setattr path. Linux separates these two operations:
+/// `file_setattr` asks `i_op->fileattr_set`, while `fchmod` asks `i_op->setattr`.
+#[test]
+fn loop_control_accepts_ordinary_fchmod() {
+    let _g = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let inode = crate::misc::make_loop_control_inode();
+    let mut ia = vfs::Iattr {
+        valid: vfs::ATTR_MODE | vfs::ATTR_CTIME,
+        mode: 0o640,
+        ctime: vfs::Timespec64::from_clock_ns(1),
+        ..Default::default()
+    };
+    vfs::notify_change_mnt(&inode, 0, &mut ia, &vfs::Cred::root(), 1)
+        .expect("special device nodes support ordinary chmod");
+    assert_eq!(inode.perm(), Some(0o640));
+}
