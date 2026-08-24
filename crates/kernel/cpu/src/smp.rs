@@ -39,9 +39,6 @@ const HP_OFFLINE: u8 = 4;
 static HOTPLUG: [AtomicU8; crate::MAX_CPUS] = [const { AtomicU8::new(HP_IDLE) }; crate::MAX_CPUS];
 static FROZEN: crate::AtomicCpuMask = crate::AtomicCpuMask::new();
 
-/// Bitmask of online logical CPUs. # C: O(1)
-pub fn online_mask() -> u64 { ONLINE_MASK.load(Ordering::Acquire).low_word() }
-
 /// Complete online CPU set encoded at the architecture transport width. This
 /// is for generic infrastructure that cannot depend on the scheduler's CPU
 /// mask type; scheduler consumers use [`online_cpumask`] directly.
