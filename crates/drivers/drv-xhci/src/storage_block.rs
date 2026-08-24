@@ -46,7 +46,8 @@ impl UsbStorageTransport {
     fn write_cache_for(&self, lun: scsi::Lun) -> bool {
         let Ok(command) = scsi::Command::new(&[scsi::MODE_SENSE_6, 0x08, 0x08, 0, 192, 0])
         else { return true };
-        let mut data = vec![0u8; 192];
+        let mut data = Vec::new();
+        data.resize(192, 0);
         let Ok(done) = self.execute_with_timeout_inner(
             lun, &command, &mut data, scsi::DataDirection::FromDevice, 1_000)
         else { return true };
