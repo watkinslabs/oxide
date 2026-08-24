@@ -34,6 +34,8 @@ fn the_private_key_round_trips_node_direction_and_kind() {
     }
     // A node id of 0x7f is the widest the field carries.
     assert_eq!(unpack(pack(0x7f, true, ElemKind::Volume)), (0x7f, true, ElemKind::Volume));
+    assert_eq!(unpack_for(pack_for(3, 0x14, false, ElemKind::Switch)),
+               (3, 0x14, false, ElemKind::Switch));
 }
 
 #[test]

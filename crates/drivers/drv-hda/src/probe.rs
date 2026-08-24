@@ -124,13 +124,9 @@ fn bring_up(bdf: pci::Bdf, mmio_base: u64, mapping: mmio_map::Mapping) -> bool {
             Stream::new(index, tag, *bdl, hhdm + *bdl, *buffer, hhdm + *buffer,
                         crate::position::slot_va(hhdm + frames.posbuf, index))
         }).collect(),
-        codec: None,
-        plan: None,
-        capture_source: 0,
-        jack_tags: [(0, 0); crate::controller::MAX_JACKS],
-        jack_count: 0,
-        jack_present: [false; crate::controller::MAX_JACKS],
-        multi_io_active: 0,
+        codecs: Vec::new(),
+        playback_routes: Vec::new(),
+        capture_routes: Vec::new(),
         streams,
         interrupts: false,
     };
@@ -150,7 +146,7 @@ fn bring_up(bdf: pci::Bdf, mmio_base: u64, mapping: mmio_map::Mapping) -> bool {
         return false;
     }
     hda.apply_plan();
-    let vendor_id = hda.codec.as_ref().map(|codec| codec.vendor_id).unwrap_or(0);
+    let vendor_id = hda.codecs.first().map(|state| state.codec.vendor_id).unwrap_or(0);
 
     if !sound::reserve_card(owner) {
         hda.quiesce();
