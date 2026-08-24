@@ -8,6 +8,7 @@
 #[path = "field.rs"] mod field;
 #[path = "point.rs"] mod point;
 #[path = "ecdh.rs"] mod ecdh;
+#[path = "ecdsa.rs"] mod ecdsa;
 
 const fn hexval(c: u8) -> u8 {
     match c {
