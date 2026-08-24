@@ -117,4 +117,10 @@ pub trait Transport: Send + Sync {
     fn queue_limits(&self, block_size: u32) -> KResult<QueueLimits> {
         QueueLimits::for_logical_block_size(block_size)
     }
+
+    /// Queue facts for one addressed LUN. Adapters that discover cache state
+    /// per target override this; the default preserves older transports.
+    fn queue_limits_for(&self, _lun: Lun, block_size: u32) -> KResult<QueueLimits> {
+        self.queue_limits(block_size)
+    }
 }

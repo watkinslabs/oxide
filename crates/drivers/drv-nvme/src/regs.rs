@@ -83,12 +83,18 @@ pub const CNS_ACTIVE_NAMESPACE_LIST: u32 = 0x02;
 /// Identify-Controller payload. The host may have this many Abort commands
 /// outstanding, so a serialized timeout worker always stays within it.
 pub const ID_CTRL_ACL_BYTE: usize = 258;
+/// Identify Controller VWC byte (NVMe 1.4 §5.15.2.1), bit 0.
+pub const ID_CTRL_VWC_BYTE: usize = 525;
 
 /// Return the controller's concurrent Admin-Abort limit. A valid controller
 /// encodes this as a zero-based value, so even zero permits one command.
 /// # C: O(1)
 pub fn abort_limit_from_identify(bytes: &[u8]) -> Option<u16> {
     bytes.get(ID_CTRL_ACL_BYTE).map(|acl| u16::from(*acl) + 1)
+}
+
+pub fn write_cache_from_identify(bytes: &[u8]) -> bool {
+    bytes.get(ID_CTRL_VWC_BYTE).is_some_and(|v| v & 1 != 0)
 }
 
 /// Return the first nonzero namespace ID from one active-namespace list page.
@@ -231,6 +237,14 @@ mod tests {
         assert_eq!(abort_limit_from_identify(&identify), Some(1));
         identify[ID_CTRL_ACL_BYTE] = 7;
         assert_eq!(abort_limit_from_identify(&identify), Some(8));
+    }
+
+    #[test]
+    fn identify_controller_vwc_is_the_cache_fact() {
+        let mut identify = [0u8; ID_CTRL_VWC_BYTE + 1];
+        assert!(!write_cache_from_identify(&identify));
+        identify[ID_CTRL_VWC_BYTE] = 1;
+        assert!(write_cache_from_identify(&identify));
     }
 
     #[test]

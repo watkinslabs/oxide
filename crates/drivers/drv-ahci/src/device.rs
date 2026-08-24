@@ -23,6 +23,7 @@ pub struct AhciBlk {
     turn_busy:  AtomicBool,
     blk_size:   u32,
     capacity:   u64,
+    write_cache: bool,
     removed:    AtomicBool,
     media_offline: AtomicBool,
     teardown:   AtomicBool,
@@ -36,6 +37,7 @@ impl AhciBlk {
         irq: IrqBinding,
         blk_size: u32,
         capacity: u64,
+        write_cache: bool,
     ) -> Self {
         Self {
             ctrl: Spinlock::new(ctrl),
@@ -44,6 +46,7 @@ impl AhciBlk {
             turn_busy: AtomicBool::new(false),
             blk_size,
             capacity,
+            write_cache,
             removed: AtomicBool::new(false),
             media_offline: AtomicBool::new(false),
             teardown: AtomicBool::new(false),
@@ -319,15 +322,14 @@ impl BlockDevice for AhciBlk {
     /// the layer that sequences durability promises reads this, and a device
     /// that stayed silent would have every barrier above it optimised away — an
     /// `fsync` returning with the data still in the drive's cache. Said
-    /// unconditionally rather than read from the drive's identify data: this driver does not
-    /// parse that field yet, and the conservative direction costs a cache-flush command a
-    /// write-through drive completes immediately and cannot lose one that
-    /// matters. Forced unit access is not claimed, because no request here
+    /// derived from ATA IDENTIFY word 85, which is the drive's current WCE
+    /// state. Forced unit access is not claimed, because no request here
     /// carries it — that promise is kept by a flush after the write.
     /// # C: O(1)
     fn queue_limits(&self) -> KResult<block::QueueLimits> {
-        Ok(block::QueueLimits::for_logical_block_size(self.blk_size)?
-            .with_features(block::QueueFeatures::WRITE_CACHE))
+        let mut limits = block::QueueLimits::for_logical_block_size(self.blk_size)?;
+        if self.write_cache { limits = limits.with_features(block::QueueFeatures::WRITE_CACHE); }
+        Ok(limits)
     }
 
     fn capacity_blocks(&self) -> u64 { self.capacity }

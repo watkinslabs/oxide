@@ -22,8 +22,8 @@ mod transport;
 #[cfg(test)] mod tests;
 
 pub use block_transport::BlockTransport;
-pub use command::{Command, MAX_CDB_BYTES, READ_10, READ_16, READ_CAPACITY_10, READ_CAPACITY_16, SERVICE_ACTION_IN_16,
-    SYNCHRONIZE_CACHE_10, TEST_UNIT_READY, WRITE_10, WRITE_16};
+pub use command::{caching_mode_page_writeback, Command, MAX_CDB_BYTES, READ_10, READ_16, READ_CAPACITY_10, READ_CAPACITY_16, SERVICE_ACTION_IN_16,
+    MODE_SENSE_6, SYNCHRONIZE_CACHE_10, TEST_UNIT_READY, WRITE_10, WRITE_16};
 pub use disk::{Disk, init, publish, publish_block_transport, publish_lun};
 pub use recovery::{ALUA_TRANSITION_DELAY_MS, BlockDisposition, DEFAULT_RETRIES, QUEUE_RETRY_DELAY_MS, SenseHeader,
     block_disposition};

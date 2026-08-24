@@ -186,14 +186,19 @@ impl BlockDevice for LoopDevice {
     fn capacity_blocks(&self) -> u64 { self.sectors.load(Ordering::Acquire) }
 
     /// The topology, saying a write this device acknowledged may still be
-    /// volatile — because it is: the write went into the BACKING description,
-    /// which holds it until something flushes it through. A filesystem on a
-    /// loop device fences its commit record for exactly the same reason it does
-    /// on a disk, and the flush here is forwarded to that backing.
+    /// volatile when the backing uses buffered I/O. Direct-I/O and read-only
+    /// bindings do not publish that fact; the flush is still forwarded to the
+    /// backing whenever a caller requests one.
     /// # C: O(1)
     fn queue_limits(&self) -> KResult<block::QueueLimits> {
-        Ok(block::QueueLimits::for_logical_block_size(SECTOR_BYTES as u32)?
-            .with_features(block::QueueFeatures::WRITE_CACHE))
+        let write_cache = self.state.lock().as_ref().is_some_and(|bound| {
+            bound.backing.writable()
+                && bound.flags & LO_FLAGS_READ_ONLY == 0
+                && bound.flags & crate::uapi::LO_FLAGS_DIRECT_IO == 0
+        });
+        let mut limits = block::QueueLimits::for_logical_block_size(SECTOR_BYTES as u32)?;
+        if write_cache { limits = limits.with_features(block::QueueFeatures::WRITE_CACHE); }
+        Ok(limits)
     }
 
     fn submit_sync(&self, req: &mut BlockRequest) -> KResult<()> {

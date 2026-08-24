@@ -41,6 +41,21 @@ impl UsbStorageTransport {
 
     fn next_tag(&self) -> u32 { self.next_tag.fetch_add(1, Ordering::Relaxed) }
 
+    /// Read the SCSI caching mode page for one LUN. Linux's sd driver uses
+    /// WCE in this page as the source of the queue's volatile-cache fact.
+    fn write_cache_for(&self, lun: scsi::Lun) -> bool {
+        let Ok(command) = scsi::Command::new(&[scsi::MODE_SENSE_6, 0x08, 0x08, 0, 192, 0])
+        else { return true };
+        let mut data = vec![0u8; 192];
+        let Ok(done) = self.execute_with_timeout_inner(
+            lun, &command, &mut data, scsi::DataDirection::FromDevice, 1_000)
+        else { return true };
+        if !done.is_good() { return true; }
+        // Unknown cache state is kept conservative: a failed or absent mode
+        // page must not make a durability barrier disappear.
+        scsi::caching_mode_page_writeback(&data).unwrap_or(true)
+    }
+
     fn request_sense(&self, lun: scsi::Lun, timeout_ms: u32) -> KResult<Vec<u8>> {
         let result = storage_command(&self.device, self.next_tag(), lun, &[0x03, 0, 0, 0, scsi::SENSE_BYTES as u8, 0],
             scsi::SENSE_BYTES as u32, true, None, timeout_ms).ok_or(BlockError::Eio)?;
@@ -106,6 +121,13 @@ impl scsi::Transport for UsbStorageTransport {
     fn queue_limits(&self, block_size: u32) -> KResult<QueueLimits> {
         if block_size as usize > crate::device::STORAGE_MAX_TRANSFER_BYTES { return Err(BlockError::Einval); }
         Ok(QueueLimits::for_logical_block_size(block_size)?.with_features(block::QueueFeatures::WRITE_CACHE))
+    }
+
+    fn queue_limits_for(&self, lun: scsi::Lun, block_size: u32) -> KResult<QueueLimits> {
+        if block_size as usize > crate::device::STORAGE_MAX_TRANSFER_BYTES { return Err(BlockError::Einval); }
+        let mut limits = QueueLimits::for_logical_block_size(block_size)?;
+        if self.write_cache_for(lun) { limits = limits.with_features(block::QueueFeatures::WRITE_CACHE); }
+        Ok(limits)
     }
 }
 

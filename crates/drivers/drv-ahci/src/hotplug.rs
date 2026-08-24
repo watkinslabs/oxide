@@ -80,12 +80,13 @@ pub(super) fn publish_port(device_key: pci::Bdf, command_orig: u16,
     let mut ctrl = Ahci::bring_up(host, port).ok()?;
     let blk_size = ctrl.blk_size;
     let capacity = ctrl.sectors;
+    let write_cache = ctrl.write_cache_enabled();
     let serial = ctrl.serial.clone();
     let Some(binding) = irq::bind(device_key, &ctrl) else {
         ctrl.shutdown_and_free();
         return None;
     };
-    let dev = Arc::new(AhciBlk::new(ctrl, binding, blk_size, capacity));
+    let dev = Arc::new(AhciBlk::new(ctrl, binding, blk_size, capacity, write_cache));
     let ata_device: Arc<dyn ata::Device> = dev.clone();
     let transport = ata::scsi_transport(dev.clone(), ata_device.clone());
     let Some(name) = scsi::publish(transport, blk_size, capacity, serial.as_deref()) else {
