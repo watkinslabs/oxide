@@ -40,7 +40,8 @@ fn the_code_page_must_be_one_this_build_has() {
     assert_eq!(vfat("codepage=862").codepage.number, 862);
     assert_eq!(vfat("codepage=863").codepage.number, 863);
     assert_eq!(vfat("codepage=864").codepage.number, 864);
-    assert_eq!(parse(Options::vfat(), "codepage=865").err(), Some(Errno::Einval));
+    assert_eq!(vfat("codepage=865").codepage.number, 865);
+    assert_eq!(parse(Options::vfat(), "codepage=866").err(), Some(Errno::Einval));
 }
 
 #[test]
