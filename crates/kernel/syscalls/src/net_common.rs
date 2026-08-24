@@ -364,11 +364,11 @@ mod tests {
             ("let target = match socket::FilterFile::from_file",
              "socket_security::option::setsockopt("),
             ("if let Some(target) = crate::netlink_fd::from_file",
-             "socket_security::option::setsockopt("),
+             "socket_security::option::check_target("),
             ("if let Some(vsock) = vsock_from_file",
              "vsock.check_option(net::socket_security::option::Access::Set,"),
             ("let sock = match socket_from_file",
-             "socket_security::option::inet(&sock)"),
+             "socket_security::option::check_inet("),
         ] {
             let tail = &setsockopt[setsockopt.find(route).unwrap()..];
             let screen = tail.find("if signed_optlen < 0").unwrap();
