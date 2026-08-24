@@ -3114,6 +3114,7 @@ dependencies = [
  "sched",
  "sync",
  "syscall",
+ "timer",
 ]
 
 [[package]]

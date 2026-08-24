@@ -341,8 +341,31 @@ impl IfaceRegistry {
         // under RTNL but outside the interface registry lock. Driver startup
         // can take DMA/IRQ locks and must never nest beneath this index.
         if let Some((dev, up)) = admin_transition { dev.admin_up_changed(up); }
+        // A stacked device may also change ownership of its carrier when a
+        // device-specific flag changes (for example VLAN bridge binding).
+        // Reconcile after every flag mutation, not only an IFF_UP edge.
+        let _ = self.sync_stacked_carrier_in_ns(rtnl, id, ns);
         if let Some((dev, mode)) = notify { dev.packet_rx_mode_changed(&mode); }
         Some(next)
+    }
+
+    fn sync_stacked_carrier_in_ns(&self, rtnl: &crate::RtnlGuard<'_>, id: NetIfaceId, ns: u64)
+        -> Option<Vec<(NetIfaceId, bool)>>
+    {
+        if !self.guard_matches(rtnl) { return None; }
+        let g = self.inner.lock();
+        let dev = g.entries.iter().find(|entry| entry.id == id && entry.ns == ns
+            && entry.ingress.live() && entry.ingress.ready())?.dev.clone();
+        let lower = dev.lower_iface()?;
+        let lower_carrier = g.entries.iter().find(|entry| entry.id == lower && entry.ns == ns)
+            .map(|entry| entry.carrier.load(Ordering::Acquire))?;
+        let wanted = if dev.bridge_binding() {
+            false
+        } else {
+            dev.carrier_from_lower(lower_carrier)?
+        };
+        drop(g);
+        self.set_iface_carrier_tree_in_ns(rtnl, id, ns, wanted)
     }
 
     /// Apply a driver carrier transition under the matching RTNL. The caller
@@ -351,12 +374,43 @@ impl IfaceRegistry {
     /// # Lk: matching stack RTNL held by `rtnl`
     pub fn set_iface_carrier_in_ns(&self, rtnl: &crate::RtnlGuard<'_>, id: NetIfaceId, ns: u64,
                                    up: bool) -> Option<bool> {
+        let changes = self.set_iface_carrier_tree_in_ns(rtnl, id, ns, up)?;
+        Some(changes.iter().any(|(changed_id, changed)| *changed_id == id && *changed))
+    }
+
+    /// Apply one carrier transition to the canonical stacked-device tree.
+    /// Linux's `netif_stacked_transfer_operstate` walks upper devices from the
+    /// lower carrier event; keeping that walk here prevents VLAN and future
+    /// stacked links from inventing parallel carrier state.
+    /// # C: O(N interfaces²) worst case, bounded by the live interface table
+    /// # Lk: matching stack RTNL held by `rtnl`
+    pub fn set_iface_carrier_tree_in_ns(&self, rtnl: &crate::RtnlGuard<'_>, id: NetIfaceId, ns: u64,
+                                        up: bool) -> Option<Vec<(NetIfaceId, bool)>> {
         if !self.guard_matches(rtnl) { return None; }
         let g = self.inner.lock();
         let entry = g.entries.iter().find(|entry| entry.id == id && entry.ns == ns
             && entry.ingress.live() && entry.ingress.ready())?;
         let was = entry.carrier.swap(up, Ordering::AcqRel);
-        Some(was != up)
+        let mut changes = alloc::vec::Vec::new();
+        if was != up { changes.push((id, true)); }
+        let mut cursor = 0;
+        while cursor < changes.len() {
+            let (lower, _) = changes[cursor];
+            let lower_carrier = g.entries.iter().find(|entry| entry.id == lower)
+                .map(|entry| entry.carrier.load(Ordering::Acquire)).unwrap_or(up);
+            let ids: alloc::vec::Vec<_> = g.entries.iter()
+                .filter(|entry| entry.ns == ns && entry.ingress.live() && entry.ingress.ready()
+                    && entry.dev.lower_iface() == Some(lower))
+                .map(|entry| (entry.id, entry.dev.clone())).collect();
+            for (upper, dev) in ids {
+                let Some(wanted) = dev.carrier_from_lower(lower_carrier) else { continue; };
+                let Some(entry) = g.entries.iter().find(|entry| entry.id == upper) else { continue; };
+                let previous = entry.carrier.swap(wanted, Ordering::AcqRel);
+                if previous != wanted { changes.push((upper, true)); }
+            }
+            cursor += 1;
+        }
+        Some(changes)
     }
 
     /// Look up a registered iface by id, restricted to the given

@@ -1,5 +1,5 @@
 use super::*;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 static CARRIER_NEWLINKS: AtomicUsize = AtomicUsize::new(0);
 
@@ -11,6 +11,20 @@ impl NetDev for LifecycleDev {
     fn admin_up_changed(&self, up: bool) {
         self.edges.fetch_add(if up { 1 } else { 10 }, Ordering::AcqRel);
     }
+    fn retire_namespace(&self) {}
+    fn namespace_drop_action(&self) -> NamespaceDropAction { NamespaceDropAction::Destroy }
+    fn xmit(&self, _pkt: Pkt) -> NetResult<()> { Ok(()) }
+}
+
+struct StackedDev { lower: NetIfaceId, up: AtomicBool }
+impl NetDev for StackedDev {
+    fn name(&self) -> &str { "stacked0" }
+    fn mac(&self) -> MacAddr { MacAddr::ZERO }
+    fn mtu(&self) -> u32 { 1500 }
+    fn initial_carrier(&self) -> bool { false }
+    fn lower_iface(&self) -> Option<NetIfaceId> { Some(self.lower) }
+    fn carrier_from_lower(&self, lower: bool) -> Option<bool> { Some(lower && self.up.load(Ordering::Acquire)) }
+    fn admin_up_changed(&self, up: bool) { self.up.store(up, Ordering::Release); }
     fn retire_namespace(&self) {}
     fn namespace_drop_action(&self) -> NamespaceDropAction { NamespaceDropAction::Destroy }
     fn xmit(&self, _pkt: Pkt) -> NetResult<()> { Ok(()) }
@@ -41,6 +55,31 @@ fn administrative_up_edges_invoke_the_driver_lifecycle_once() {
     assert!(stack.ifaces.set_iface_flags_in_ns(&rtnl, id, owner.id().as_u64(),
         0, crate::netdev::iff::IFF_UP).is_some());
     assert_eq!(dev.edges.load(Ordering::Acquire), 11);
+}
+
+#[test]
+fn lower_carrier_transitions_follow_one_stacked_device() {
+    let stack = crate::NetStack::new();
+    let owner = owner();
+    let lower = stack.prepare_iface(Arc::new(DummyDev {
+        name: "lower0", mtu: 1500, stats: NetStats::default(),
+    }), &owner).unwrap();
+    let lower_id = lower.id();
+    assert!(stack.publish_iface(lower));
+    let upper = stack.prepare_iface(Arc::new(StackedDev {
+        lower: lower_id, up: AtomicBool::new(false),
+    }), &owner).unwrap();
+    let upper_id = upper.id();
+    assert!(stack.publish_iface(upper));
+    let rtnl = stack.rtnl_lock();
+    assert!(stack.ifaces.set_iface_flags_in_ns(&rtnl, upper_id, owner.id().as_u64(),
+        crate::netdev::iff::IFF_UP, crate::netdev::iff::IFF_UP).is_some());
+    assert_eq!(stack.ifaces.iface_carrier(upper_id), Some(true));
+    drop(rtnl);
+    assert!(stack.set_iface_carrier(lower_id, false));
+    assert_eq!(stack.ifaces.iface_carrier(upper_id), Some(false));
+    assert!(stack.set_iface_carrier(lower_id, true));
+    assert_eq!(stack.ifaces.iface_carrier(upper_id), Some(true));
 }
 
 fn record_carrier_newlink(event: &crate::control_event::ControlEvent) {

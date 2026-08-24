@@ -16,8 +16,10 @@ use sync::{Socket as SocketLockClass, Spinlock};
 use syscall::errno::Errno;
 
 use crate::caps::{check_mtu, inherit_mac, RealDevCaps};
-use crate::flags::{reorder_hdr, VLAN_FLAG_DEFAULT};
+use crate::flags::{reorder_hdr, VLAN_FLAG_DEFAULT, VLAN_FLAG_BRIDGE_BINDING, VLAN_FLAG_GVRP,
+                    VLAN_FLAG_MVRP};
 use crate::prio::PrioMaps;
+use crate::registration::{self, Applicant, ApplicantKind};
 use crate::tci;
 use crate::uapi::{ARPHRD_ETHER, ETH_HLEN, VLAN_VID_MASK};
 use crate::xmit::{apply, egress_tag_mode, EgressFrame};
@@ -51,6 +53,7 @@ pub struct VlanDev {
     mac: Spinlock<MacAddr, SocketLockClass>,
     maps: Spinlock<PrioMaps, SocketLockClass>,
     stats: Spinlock<NetStats, SocketLockClass>,
+    registrations: Spinlock<[Applicant; 2], SocketLockClass>,
 }
 
 impl VlanDev {
@@ -68,6 +71,8 @@ impl VlanDev {
             mac: Spinlock::new(inherit_mac(mac, &caps)),
             maps: Spinlock::new(PrioMaps::new()),
             stats: Spinlock::new(NetStats::default()),
+            registrations: Spinlock::new([Applicant::new(ApplicantKind::Gvrp),
+                                          Applicant::new(ApplicantKind::Mvrp)]),
         }
     }
 
@@ -83,12 +88,69 @@ impl VlanDev {
     pub fn set_flags(&self, value: u32) { self.flags.store(value, Ordering::Release); }
     /// Fold a `{flags, mask}` request into the current word. # C: O(1)
     pub fn change_flags(&self, value: u32, mask: u32) -> Result<u32, Errno> {
-        let next = crate::flags::change(self.flags(), value, mask)?;
+        let old = self.flags();
+        let next = crate::flags::change(old, value, mask)?;
         self.set_flags(next);
+        if self.is_up() {
+            self.sync_registration(old, next, VLAN_FLAG_GVRP, ApplicantKind::Gvrp);
+            self.sync_registration(old, next, VLAN_FLAG_MVRP, ApplicantKind::Mvrp);
+        }
         Ok(next)
     }
     /// # C: O(1)
     pub fn is_up(&self) -> bool { self.up.load(Ordering::Acquire) }
+
+    fn sync_registration(&self, old: u32, next: u32, bit: u32, kind: ApplicantKind) {
+        if old & bit == next & bit { return; }
+        self.set_registration(kind, next & bit != 0);
+    }
+
+    fn registration_index(kind: ApplicantKind) -> usize {
+        match kind { ApplicantKind::Gvrp => 0, ApplicantKind::Mvrp => 1 }
+    }
+
+    fn set_registration(&self, kind: ApplicantKind, joined: bool) {
+        let index = Self::registration_index(kind);
+        let should_send = {
+            let mut apps = self.registrations.lock();
+            if apps[index].joined == joined { false }
+            else { apps[index].joined = joined; true }
+        };
+        if !should_send { return; }
+        let frame = registration::pdu(kind, self.mac(), self.vlan_id, joined);
+        if self.real.xmit_raw(&frame).is_err() {
+            self.registrations.lock()[index].joined = !joined;
+        }
+    }
+
+    /// Consume a registration PDU received on the lower device. # C: O(1)
+    pub fn receive_registration(&self, kind: ApplicantKind, vid: u16, event: u8) {
+        if vid != self.vlan_id || !self.is_up() { return; }
+        let bit = match kind { ApplicantKind::Gvrp => VLAN_FLAG_GVRP, ApplicantKind::Mvrp => VLAN_FLAG_MVRP };
+        if self.flags() & bit == 0 { return; }
+        let index = Self::registration_index(kind);
+        let mut apps = self.registrations.lock();
+        // A leave event withdraws the peer's declaration; any join/new event
+        // records it. The local applicant remains independently joined.
+        apps[index].remote = event != 3 && event != 5;
+    }
+
+    /// Periodic applicant transmission. MRP's one-second periodic event and
+    /// GARP's join retransmission both re-advertise the local VID; the
+    /// applicant state remains owned by this device rather than a timer copy.
+    pub fn registration_tick(&self) {
+        if !self.is_up() { return; }
+        let flags = self.flags();
+        for (bit, kind) in [(VLAN_FLAG_GVRP, ApplicantKind::Gvrp),
+                            (VLAN_FLAG_MVRP, ApplicantKind::Mvrp)] {
+            if flags & bit == 0 { continue; }
+            let joined = self.registrations.lock()[Self::registration_index(kind)].joined;
+            if joined {
+                let frame = registration::pdu(kind, self.mac(), self.vlan_id, true);
+                let _ = self.real.xmit_raw(&frame);
+            }
+        }
+    }
 
     /// Run a closure over the priority tables under their lock. # C: O(closure)
     pub fn with_maps<R>(&self, f: impl FnOnce(&mut PrioMaps) -> R) -> R {
@@ -158,7 +220,20 @@ impl NetDev for VlanDev {
     fn set_mac(&self, mac: MacAddr) -> NetResult<()> { *self.mac.lock() = mac; Ok(()) }
 
     /// # C: O(1)
-    fn admin_up_changed(&self, up: bool) { self.up.store(up, Ordering::Release); }
+    fn admin_up_changed(&self, up: bool) {
+        self.up.store(up, Ordering::Release);
+        let flags = self.flags();
+        self.set_registration(ApplicantKind::Gvrp, up && flags & VLAN_FLAG_GVRP != 0);
+        self.set_registration(ApplicantKind::Mvrp, up && flags & VLAN_FLAG_MVRP != 0);
+    }
+
+    fn initial_carrier(&self) -> bool { false }
+    fn lower_iface(&self) -> Option<NetIfaceId> { Some(self.real_id) }
+    fn carrier_from_lower(&self, lower_carrier: bool) -> Option<bool> {
+        if self.flags() & VLAN_FLAG_BRIDGE_BINDING != 0 { None }
+        else { Some(lower_carrier && self.is_up()) }
+    }
+    fn bridge_binding(&self) -> bool { self.flags() & VLAN_FLAG_BRIDGE_BINDING != 0 }
 
     /// The packet body is a complete link frame; tagging is all this interface
     /// adds. # C: O(len)

@@ -41,6 +41,8 @@ pub struct VlanLinkKind;
 /// The registration this kind publishes.
 pub static VLAN_LINK_KIND_OPS: VlanLinkKind = VlanLinkKind;
 
+fn registration_timer(_now_ns: u64) { crate::table().registration_tick(); }
+
 impl LinkKindOps for VlanLinkKind {
     /// # C: O(1)
     fn kind(&self) -> &'static str { VLAN_LINK_KIND }
@@ -145,4 +147,9 @@ fn install(req: &netlink::CreateRequest, name: &str, real: Arc<dyn NetDev>)
 /// Publish the kind. Called once during network initialisation; a second call
 /// is refused by the registry rather than shadowing the first.
 /// # C: O(N_kinds)
-pub fn init() -> bool { rtnl_link::register(&VLAN_LINK_KIND_OPS).is_ok() }
+pub fn init() -> bool {
+    if !net::register_link_control_handler(crate::receive_link_control)
+        || rtnl_link::register(&VLAN_LINK_KIND_OPS).is_err() { return false; }
+    timer::register_periodic(1_000_000_000, registration_timer);
+    true
+}

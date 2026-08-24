@@ -14,6 +14,7 @@ rtnl-link = { path = "../rtnl-link" }
 sync    = { path = "../../shared/sync" }
 net     = { path = "../net" }
 syscall = { path = "../syscall" }
+timer  = { path = "../timer" }
 
 [dev-dependencies]
 sched = { path = "../sched", features = ["hosted"] }

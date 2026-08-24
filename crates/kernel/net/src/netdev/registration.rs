@@ -49,7 +49,7 @@ impl Drop for IfaceRegistration<'_> {
 /// the link for traffic. A driver that learns otherwise later reports it
 /// through the registry rather than by rewriting the flags word.
 /// # C: O(1)
-fn initial_carrier(_hardware_type: u16) -> bool { true }
+fn initial_carrier(dev: &dyn NetDev) -> bool { dev.initial_carrier() }
 
 /// The flags a device carries the moment it is registered.
 ///
@@ -85,13 +85,14 @@ impl IfaceRegistry {
         let ifindex = g.entries.iter().filter(|entry| entry.ns == ns)
             .map(|entry| entry.ifindex).max().unwrap_or(0).saturating_add(1);
         let dev_hw = dev.hardware_type();
+        let carrier = initial_carrier(dev.as_ref());
         let flags = initial_flags(dev_hw);
         let gate = Arc::new(IngressGate::registration_pending(owner, 1));
         let name = String::from(dev.name());
         let rx_queues = Arc::new(super::RxQueues::new(dev.rx_queue_count()));
         g.entries.push(IfaceEntry { id, ifindex, ns, dev, parent, name, flags: AtomicU32::new(flags),
             rx_queues,
-            carrier: core::sync::atomic::AtomicBool::new(initial_carrier(dev_hw)),
+            carrier: core::sync::atomic::AtomicBool::new(carrier),
             mcast_report: Arc::new(McastReportState::new()),
             packet_filter: Arc::new(PacketDeviceFilter::new()),
             arp: Arc::new(crate::arp::ArpCache::new()),
@@ -208,12 +209,13 @@ impl IfaceRegistry {
         let ifindex = g.entries.iter().filter(|entry| entry.ns == ns)
             .map(|entry| entry.ifindex).max().unwrap_or(0).saturating_add(1);
         let dev_hw = dev.hardware_type();
+        let carrier = initial_carrier(dev.as_ref());
         let flags = initial_flags(dev_hw);
         let name = String::from(dev.name());
         let rx_queues = Arc::new(super::RxQueues::new(dev.rx_queue_count()));
         g.entries.push(IfaceEntry { id, ifindex, ns, dev, parent: None, name, flags: AtomicU32::new(flags),
             rx_queues,
-            carrier: core::sync::atomic::AtomicBool::new(initial_carrier(dev_hw)),
+            carrier: core::sync::atomic::AtomicBool::new(carrier),
             mcast_report: Arc::new(McastReportState::new()),
             packet_filter: Arc::new(PacketDeviceFilter::new()),
             arp: Arc::new(crate::arp::ArpCache::new()),

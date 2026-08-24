@@ -27,6 +27,7 @@ impl NetStack {
                                     metadata: crate::PacketRxMetadata) -> NetResult<()>
     {
         let header = crate::ethernet::EthHdr::parse(frame).map_err(|_| NetError::Einval)?;
+        if crate::link_control::dispatch(lease.iface(), frame) { return Ok(()); }
         // Netdev-family chains run on the complete link frame, before bridge
         // forwarding and packet-socket observation. A stolen verdict owns the
         // frame in the selected device and must stop this ingress path.
