@@ -192,7 +192,7 @@ unsafe fn send_ipi_result(logical_cpu: u32) -> IpiResult {
         Some(a) => a,
         None => return IpiResult::NoHardware,
     };
-    let lo = crate::lapic::build_icr_lo(hal_x86_64::VEC_CALL_FUNCTION, 0b000, true, false);
+    let lo = crate::lapic::build_icr_lo(hal_x86_64::VEC_CALL_FUNCTION, 0b000, false, false);
     // SAFETY: serialize prior ICR write, then deliver the fixed IPI.
     unsafe {
         crate::lapic::wait_icr_idle();

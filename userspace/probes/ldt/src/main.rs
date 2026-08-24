@@ -1,5 +1,8 @@
 //! `/usr/local/bin/ldt_probe` — exercise the x86 LDT ABI on a running guest.
 
+use std::sync::{Arc, Barrier};
+use std::thread;
+
 use support::{fail, line, report, Verdict};
 
 const PROBE: &str = "ldt_probe";
@@ -24,6 +27,13 @@ fn pin_cpu(cpu: usize) -> Result<(), i32> {
     // SAFETY: the mask is a live byte array of the size passed to the kernel.
     let rc = unsafe { libc::sched_setaffinity(0, mask.len(), mask.as_ptr().cast()) };
     (rc == 0).then_some(()).ok_or_else(|| unsafe { *libc::__errno_location() })
+}
+
+fn current_cpu() -> Result<i32, i32> {
+    let mut cpu = 0u32;
+    // SAFETY: the kernel writes one u32 to a valid stack location; node is unused.
+    let rc = unsafe { libc::syscall(309, &mut cpu, std::ptr::null_mut::<u32>(), 0) };
+    (rc == 0).then_some(cpu as i32).ok_or_else(|| unsafe { *libc::__errno_location() })
 }
 
 fn sldt() -> u16 {
@@ -56,10 +66,37 @@ fn install() -> Result<(), i64> {
 fn run() -> Verdict {
     if !cfg!(target_arch = "x86_64") { return fail("x86-only"); }
     if let Err(e) = pin_cpu(0) { return fail(&format!("pin-cpu0:{e}")); }
+    let ready = Arc::new(Barrier::new(2));
+    let go = Arc::new(Barrier::new(2));
+    let worker_ready = Arc::clone(&ready);
+    let worker_go = Arc::clone(&go);
+    let worker = thread::spawn(move || {
+        if let Err(e) = pin_cpu(1) { return Err(format!("pin-cpu1:{e}")); }
+        let cpu = current_cpu().map_err(|e| format!("getcpu-worker:{e}"))?;
+        line(&format!("{PROBE}: worker_cpu={cpu}"));
+        worker_ready.wait();
+        worker_go.wait();
+        let ldt = sldt();
+        if ldt == 0 { return Err("worker-ldtr-empty".to_string()); }
+        load_ds().map_err(|_| "worker-ds-load".to_string())?;
+        Ok(ldt)
+    });
+    let main_cpu = match current_cpu() {
+        Ok(cpu) => cpu,
+        Err(e) => return fail(&format!("getcpu-main:{e}")),
+    };
+    line(&format!("{PROBE}: main_cpu={main_cpu}"));
+    ready.wait();
     if let Err(e) = install() { return fail(&format!("modify_ldt:{e}")); }
     let local_ldt = sldt();
     if local_ldt == 0 { return fail("local-ldtr-empty"); }
     if load_ds().is_err() { return fail("local-ds-load"); }
-    line(&format!("{PROBE}: local_ldtr={local_ldt:#x} selector={SELECTOR:#x}"));
-    Verdict::Pass(format!("local_ldtr={local_ldt:#x}"))
+    go.wait();
+    let remote_ldt = match worker.join() {
+        Ok(Ok(value)) => value,
+        Ok(Err(e)) => return fail(&e),
+        Err(_) => return fail("worker-panicked"),
+    };
+    line(&format!("{PROBE}: local_ldtr={local_ldt:#x} remote_ldtr={remote_ldt:#x} selector={SELECTOR:#x}"));
+    Verdict::Pass(format!("local_ldtr={local_ldt:#x} remote_ldtr={remote_ldt:#x}"))
 }

@@ -69,7 +69,7 @@ pub unsafe fn send_resched_ipi(target_cpu: u32) -> bool {
     };
     // SAFETY: LAPIC enabled per fn contract; ICR delivery completes asynchronously, wait_icr_idle bounds prior write.
     unsafe { wait_icr_idle(); }
-    let lo = build_icr_lo(hal_x86_64::VEC_RESCHED, 0b000, true, false);
+    let lo = build_icr_lo(hal_x86_64::VEC_RESCHED, 0b000, false, false);
     // SAFETY: same -- ICR write triggers IPI delivery to target.
     let ok = unsafe { write_icr(target_apic_id, lo) };
     if ok {
@@ -90,7 +90,7 @@ pub unsafe fn send_resched_ipi(target_cpu: u32) -> bool {
 pub unsafe fn send_nmi_ipi(apic_id: u32) -> bool {
     // SAFETY: LAPIC enabled per fn contract; serialise prior ICR write.
     unsafe { wait_icr_idle(); }
-    let lo = build_icr_lo(0, 0b100, true, false); // vector ignored for NMI delivery
+    let lo = build_icr_lo(0, 0b100, false, false); // vector ignored for NMI delivery
     // SAFETY: ICR write triggers NMI delivery to the target APIC.
     let ok = unsafe { write_icr(apic_id, lo) };
     if ok {
