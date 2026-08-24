@@ -194,7 +194,7 @@ impl VideoOps for Vivid {
     /// # C: O(1)
     fn controls(&self) -> alloc::vec::Vec<v4l2::ctrl::ControlDesc> { crate::tables::controls() }
 
-    fn control_changed(&self, id: u32, value: i64) {
+    fn control_changed(&self, id: u32, value: i64) -> bool {
         let velocity = value as i8 - 3;
         let mut state = self.state.lock();
         match id {
@@ -204,8 +204,10 @@ impl VideoOps for Vivid {
             crate::tables::CID_QUEUE_SETUP_ERROR => state.queue_setup_error = true,
             crate::tables::CID_BUF_PREPARE_ERROR => state.buf_prepare_error = true,
             crate::tables::CID_START_STREAM_ERROR => state.start_stream_error = true,
+            crate::tables::CID_QUEUE_ERROR => return state.streaming,
             _ => {}
         }
+        false
     }
 
 }

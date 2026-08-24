@@ -13,6 +13,7 @@ pub const CID_DQBUF_ERROR: u32 = 0x00f0_f042;
 pub const CID_QUEUE_SETUP_ERROR: u32 = 0x00f0_f043;
 pub const CID_BUF_PREPARE_ERROR: u32 = 0x00f0_f044;
 pub const CID_START_STREAM_ERROR: u32 = 0x00f0_f045;
+pub const CID_QUEUE_ERROR: u32 = 0x00f0_f046;
 
 pub const MOVEMENT_MENU: &[&str] = &[
     "Move Left Fast", "Move Left", "Move Left Slow", "No Movement",
@@ -115,6 +116,8 @@ pub fn controls() -> alloc::vec::Vec<ControlDesc> {
                          "Inject VIDIOC_QBUF Error", 0, 0, 0, 0),
         standard::simple(CID_START_STREAM_ERROR, cid::CTRL_TYPE_BUTTON,
                          "Inject VIDIOC_STREAMON Error", 0, 0, 0, 0),
+        standard::simple(CID_QUEUE_ERROR, cid::CTRL_TYPE_BUTTON,
+                         "Inject Fatal Streaming Error", 0, 0, 0, 0),
     ]
 }
 

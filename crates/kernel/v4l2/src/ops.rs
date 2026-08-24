@@ -98,7 +98,10 @@ pub trait VideoOps: Send + Sync {
     /// A control's value changed. A driver that programs hardware from a
     /// control does it here.
     /// # C: O(1)
-    fn control_changed(&self, _id: u32, _value: i64) {}
+    /// Apply a control. Returns true when the control makes the queue fail
+    /// permanently, so the core can publish that queue error.
+    /// # C: O(1)
+    fn control_changed(&self, _id: u32, _value: i64) -> bool { false }
 
     /// Is the device progressive, i.e. does it deliver whole frames? A
     /// progressive device reports `V4L2_FIELD_NONE` whatever the caller asked

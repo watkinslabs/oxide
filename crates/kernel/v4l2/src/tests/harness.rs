@@ -109,7 +109,10 @@ impl VideoOps for FakeOps {
                              "Exposure, Dynamic Framerate", 0, 1, 1, 0),
         ]
     }
-    fn control_changed(&self, id: u32, value: i64) { self.changed.lock().push((id, value)); }
+    fn control_changed(&self, id: u32, value: i64) -> bool {
+        self.changed.lock().push((id, value));
+        false
+    }
 }
 
 /// Plane allocator handing out increasing fake frame addresses, counting what

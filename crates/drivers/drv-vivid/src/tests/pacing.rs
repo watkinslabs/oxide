@@ -108,6 +108,9 @@ fn streaming_error_buttons_fail_once_at_their_linux_hooks() {
     assert!(vivid.start_streaming(&[0]).is_err());
     assert!(!vivid.streaming());
     vivid.start_streaming(&[0]).expect("second stream-on");
+    assert!(vivid.control_changed(crate::tables::CID_QUEUE_ERROR, 0));
+    vivid.stop_streaming();
+    assert!(!vivid.control_changed(crate::tables::CID_QUEUE_ERROR, 0));
 }
 
 #[test]

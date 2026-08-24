@@ -61,7 +61,9 @@ pub fn s_ctrl(handle: &Arc<FileHandle>, arg: &mut [u8], ctx: &dyn Ctx) -> Result
     let device = handle.device.clone();
     let id = r32(arg, l::CONTROL_ID);
     let stored = access::set_ctrl(&device.controls, id, r32i(arg, l::CONTROL_VALUE))?;
-    device.ops.control_changed(id, stored as i64);
+    if device.ops.control_changed(id, stored as i64) {
+        crate::vb2::stream::set_error(&mut device.state.lock().queue);
+    }
     announce(handle, id, stored as i64, ctx);
     w32i(arg, l::CONTROL_VALUE, stored);
     Ok(())
@@ -231,7 +233,9 @@ pub fn s_ext_ctrls(handle: &Arc<FileHandle>, arg: &mut [u8], ctx: &dyn Ctx)
         Err((index, e)) => { set_error_idx(arg, index); return Err(e); }
     };
     for (id, value) in changed.iter() {
-        device.ops.control_changed(*id, *value);
+        if device.ops.control_changed(*id, *value) {
+            crate::vb2::stream::set_error(&mut device.state.lock().queue);
+        }
         announce(handle, *id, *value, ctx);
     }
     for (index, entry) in entries.iter().enumerate() {
