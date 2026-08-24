@@ -197,6 +197,8 @@ impl<S: SectorSource> Volume<S> {
         init_field!(max_roll_forward_node_blocks: 0);
         init_field!(rf_node_block_count: 0);
         init_field!(max_io_bytes: 0);
+        init_field!(max_fragment_chunk: 4);
+        init_field!(max_fragment_hole: 4);
         init_field!(atomic: alloc::collections::BTreeMap::new());
         init_field!(ioprio_hint: alloc::collections::BTreeMap::new());
         init_field!(compress_cache: crate::compress::cache::Cache::new(compress_cache, max_nid));

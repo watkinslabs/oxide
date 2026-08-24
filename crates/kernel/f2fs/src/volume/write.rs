@@ -147,12 +147,33 @@ impl<S: SectorSource> Volume<S> {
         let addr = self.curseg[log].next_addr(self.sb.main_blkaddr);
         self.curseg[log].set_summary(slot, sum);
         self.advance(log);
+        if !kind.is_node()
+            && self.curseg[log].alloc_type == ALLOC_LFS
+            && self.opts.mode == crate::opts::Mode::Fragment(crate::opts::Fragment::Block)
+        {
+            self.randomize_fragment_chunk(log);
+        }
         self.update_seg(addr, true)?;
         self.update_seg(old, false)?;
         self.note_discard(old);
         if !self.curseg_has_room(log) { self.open_segment(log)?; }
         self.dirty = true;
         Ok(addr)
+    }
+
+    /// Linux's block-fragmentation mode leaves a random hole after each
+    /// random-sized run of data blocks. The skipped blocks remain unallocated;
+    /// the next allocation therefore opens a real physical gap. # C: O(1)
+    fn randomize_fragment_chunk(&mut self, log: usize) {
+        let remained = &mut self.curseg[log].fragment_remained_chunk;
+        if *remained > 1 {
+            *remained -= 1;
+            return;
+        }
+        *remained = crng::next_u64() as u32 % self.max_fragment_chunk + 1;
+        let hole = crng::next_u64() as u32 % self.max_fragment_hole + 1;
+        self.curseg[log].next_blkoff = self.curseg[log].next_blkoff
+            .saturating_add(hole as u16);
     }
 
     /// Move a log past the block it just handed out.

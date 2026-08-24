@@ -301,6 +301,10 @@ pub struct Volume<S: SectorSource> {
     /// Maximum contiguous source-read size before the medium request is split.
     /// Zero retains Linux's unlimited merge behavior.
     pub(crate) max_io_bytes: u32,
+    /// Maximum data blocks in one block-fragmentation chunk. Linux default 4.
+    pub(crate) max_fragment_chunk: u32,
+    /// Maximum unallocated blocks between block-fragmentation chunks. Linux default 4.
+    pub(crate) max_fragment_hole: u32,
     /// Files between START and COMMIT of an atomic write, by inode number.
     ///
     /// Never on the medium, and that is the promise: an atomic span that a

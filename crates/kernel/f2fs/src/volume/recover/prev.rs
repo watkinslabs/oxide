@@ -42,7 +42,8 @@ impl<S: SectorSource> Volume<S> {
             return Ok(c.summary(slot));
         }
         let block = self.read_block(sum_block_addr(self.sb.ssa_blkaddr, segno))?;
-        let held = Curseg { segno, next_blkoff: 0, alloc_type: ALLOC_LFS, sum: block };
+    let held = Curseg { segno, next_blkoff: 0, alloc_type: ALLOC_LFS,
+                        fragment_remained_chunk: 0, sum: block };
         Ok(held.summary(slot))
     }
 

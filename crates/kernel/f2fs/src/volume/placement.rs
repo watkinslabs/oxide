@@ -34,6 +34,18 @@ use crate::uapi::{CURSEG_WARM_NODE, NR_CURSEG_DATA_TYPE};
 use super::Volume;
 
 impl<S: SectorSource> Volume<S> {
+    /// Maximum data blocks in one block-fragmentation chunk. # C: O(1)
+    pub fn max_fragment_chunk(&self) -> u32 { self.max_fragment_chunk }
+
+    /// Set the block-fragmentation chunk ceiling. # C: O(1)
+    pub fn set_max_fragment_chunk(&mut self, value: u32) { self.max_fragment_chunk = value; }
+
+    /// Maximum hole between block-fragmentation chunks. # C: O(1)
+    pub fn max_fragment_hole(&self) -> u32 { self.max_fragment_hole }
+
+    /// Set the block-fragmentation hole ceiling. # C: O(1)
+    pub fn set_max_fragment_hole(&mut self, value: u32) { self.max_fragment_hole = value; }
+
     /// The pressure the recycling decision reads. # C: O(main segments)
     pub(crate) fn ssr_state(&self) -> ssr::Need {
         let per_sec = self.blks_per_sec();

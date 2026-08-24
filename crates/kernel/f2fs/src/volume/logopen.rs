@@ -79,6 +79,7 @@ impl<S: SectorSource> Volume<S> {
                 self.curseg[log].segno = segno;
                 self.curseg[log].next_blkoff = off;
                 self.curseg[log].alloc_type = ALLOC_SSR;
+                self.curseg[log].fragment_remained_chunk = 0;
                 self.curseg[log].sum = sum;
                 self.stamp_seg_type(segno, log);
                 return Ok(());
@@ -97,6 +98,8 @@ impl<S: SectorSource> Volume<S> {
         self.curseg[log].segno = segno;
         self.curseg[log].next_blkoff = 0;
         self.curseg[log].alloc_type = ALLOC_LFS;
+        self.curseg[log].fragment_remained_chunk = if self.opts.mode == crate::opts::Mode::Fragment(
+            crate::opts::Fragment::Block) { crng::next_u64() as u32 % self.max_fragment_chunk + 1 } else { 0 };
         self.curseg[log].sum = vec![0u8; BLKSIZE];
         self.stamp_seg_type(segno, log);
         Ok(())

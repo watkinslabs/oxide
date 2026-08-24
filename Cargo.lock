@@ -1061,6 +1061,7 @@ dependencies = [
  "blockcipher",
  "boot-info",
  "crc",
+ "crng",
  "crypt",
  "fs",
  "klog",

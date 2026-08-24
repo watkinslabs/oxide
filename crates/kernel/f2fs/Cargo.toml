@@ -14,6 +14,7 @@ vfs     = { path = "../vfs" }
 block   = { path = "../block" }
 sectors = { path = "../sectors" }
 crc     = { path = "../../shared/crc" }
+crng    = { path = "../crng" }
 crypt   = { path = "../../shared/crypt" }
 pkey    = { path = "../../shared/pkey" }
 aes     = { path = "../../shared/aes" }

@@ -64,6 +64,10 @@ pub(crate) fn attrs(fs: &Arc<F2fs>, dev: &str) -> Vec<Attr> {
                set_max_roll_forward_node_blocks),
         num_rw(fs, dev, "max_io_bytes",
                |v| u64::from(v.max_io_bytes()), set_max_io_bytes),
+        num_rw(fs, dev, "max_fragment_chunk",
+               |v| u64::from(v.max_fragment_chunk()), set_max_fragment_chunk),
+        num_rw(fs, dev, "max_fragment_hole",
+               |v| u64::from(v.max_fragment_hole()), set_max_fragment_hole),
     ];
     out.extend(atgc::knobs::ALL.iter().map(|&k| atgc_knob(fs, dev, k)));
     out
@@ -277,6 +281,20 @@ fn set_max_roll_forward_node_blocks(v: &mut Vol, n: u64) -> Result<(), Errno> {
 fn set_max_io_bytes(v: &mut Vol, n: u64) -> Result<(), Errno> {
     if n > u64::from(u32::MAX) { return Err(Errno::Einval); }
     v.set_max_io_bytes(n as u32);
+    Ok(())
+}
+
+/// Linux's block-fragmentation bounds. # C: O(1)
+fn set_max_fragment_chunk(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    if !(1..=512).contains(&n) { return Err(Errno::Einval); }
+    v.set_max_fragment_chunk(n as u32);
+    Ok(())
+}
+
+/// Linux's block-fragmentation hole bounds. # C: O(1)
+fn set_max_fragment_hole(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    if !(1..=512).contains(&n) { return Err(Errno::Einval); }
+    v.set_max_fragment_hole(n as u32);
     Ok(())
 }
 
