@@ -148,6 +148,12 @@ pub struct GcKthread {
     /// Free-section percentage below which zoned background GC accelerates.
     /// Linux's `boost_zoned_gc_percent`.
     pub boost_zoned_gc_percent: u32,
+    /// Multiplier for the background section window while zoned GC is boosted.
+    /// Linux's `boost_gc_multiple`.
+    pub boost_gc_multiple: u32,
+    /// Whether boosted zoned GC uses the greedy victim cost.
+    /// Linux's `boost_gc_greedy`.
+    pub boost_gc_greedy: u32,
 }
 
 impl Default for GcKthread {
@@ -169,6 +175,8 @@ impl GcKthread {
             max_victim_search: crate::volume::gc::victim::DEF_MAX_VICTIM_SEARCH,
             no_zoned_gc_percent: 0,
             boost_zoned_gc_percent: 0,
+            boost_gc_multiple: 5,
+            boost_gc_greedy: 1,
         }
     }
 
@@ -220,7 +228,7 @@ pub enum GcStep {
     Sleep,
     /// Clean. `sync` picks the greedy, space-first cost over the age-first
     /// one; `foreground` says a caller is blocked waiting for the result.
-    Gc { sync: bool, foreground: bool },
+    Gc { sync: bool, foreground: bool, boosted: bool },
 }
 
 /// What the volume and the device look like to the cleaner at one wake.
@@ -236,6 +244,10 @@ pub struct Conditions {
     /// Whether there is enough dead space, and little enough free space, to
     /// make cleaning worth its writes.
     pub boost: bool,
+    /// Zoned boost threshold is active for this pass.
+    pub boosted: bool,
+    /// Boosted cleaning is configured to use greedy victims.
+    pub boost_greedy: bool,
     /// Whether the cleaner's own re-entry guard is clear.
     pub can_lock: bool,
     /// A zoned volume has enough free sections for Linux's no-GC gate.
@@ -282,8 +294,9 @@ pub fn gc_round(th: &mut GcKthread, c: Conditions, bggc: BackgroundGc) -> GcStep
 fn do_gc(_th: &GcKthread, c: Conditions, bggc: BackgroundGc) -> GcStep {
     // A blocked caller wants space at the least cost in blocks moved, and it
     // wants it now: the age-weighted cost is for a cleaner with time.
-    let sync = if c.foreground { false } else { bggc == BackgroundGc::Sync };
-    GcStep::Gc { sync, foreground: c.foreground }
+    let sync = if c.foreground { false }
+               else { bggc == BackgroundGc::Sync || (c.boosted && c.boost_greedy) };
+    GcStep::Gc { sync, foreground: c.foreground, boosted: c.boosted }
 }
 
 /// Move the walk by what the pass found.

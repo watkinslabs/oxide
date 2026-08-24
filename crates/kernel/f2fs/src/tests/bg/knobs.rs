@@ -53,6 +53,18 @@ fn boost_zoned_gc_percentage_is_live_and_bounded() {
 }
 
 #[test]
+fn boosted_gc_controls_are_live_and_bounded() {
+    let b = bg();
+    assert_eq!(knobs::show(&b, Knob::GcBoostGcMultiple), 5);
+    assert_eq!(knobs::show(&b, Knob::GcBoostGcGreedy), 1);
+    knobs::store(&b, Knob::GcBoostGcMultiple, 7, false).unwrap();
+    knobs::store(&b, Knob::GcBoostGcGreedy, 0, false).unwrap();
+    assert_eq!(knobs::show(&b, Knob::GcBoostGcMultiple), 7);
+    assert_eq!(knobs::show(&b, Knob::GcBoostGcGreedy), 0);
+    assert!(knobs::store(&b, Knob::GcBoostGcGreedy, 2, false).is_err());
+}
+
+#[test]
 fn the_discard_granularity_refuses_zero_and_more_than_the_longest_list() {
     let b = bg();
     assert_eq!(knobs::store(&b, Knob::DiscardGranularity, 0, false), Err(Errno::Einval));

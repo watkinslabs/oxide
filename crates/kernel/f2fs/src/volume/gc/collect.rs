@@ -363,6 +363,13 @@ impl<S: SectorSource> Volume<S> {
         self.gc_background_as(Policy::CostBenefit, gc_mode::NORMAL)
     }
 
+    /// The boosted zoned-background variant, with Linux's window multiplier.
+    /// # C: O(min(sections, max search) + blocks per section)
+    pub fn gc_background_age_boosted(&mut self, mode: usize, multiple: u32)
+        -> Result<Option<u32>, Errno> {
+        self.gc_background_age_inner(mode, multiple)
+    }
+
     /// Clean ahead of demand, choosing the victim by AGE.
     ///
     /// Falls back to the ordinary ahead-of-demand pass when the age policy is
@@ -372,6 +379,11 @@ impl<S: SectorSource> Volume<S> {
     /// run out of space while reporting that it had nothing to do.
     /// # C: O(main segments + blocks per section)
     pub fn gc_background_age(&mut self, mode: usize) -> Result<Option<u32>, Errno> {
+        self.gc_background_age_inner(mode, 1)
+    }
+
+    fn gc_background_age_inner(&mut self, mode: usize, multiple: u32)
+        -> Result<Option<u32>, Errno> {
         self.writable_or_err()?;
         if self.segstate.gc_running { return Ok(None); }
         self.load_segments()?;
@@ -384,7 +396,8 @@ impl<S: SectorSource> Volume<S> {
             self.segstate.gc_background = true;
             self.segstate.gc_pass_mode = mode;
             self.segstate.gc_atgc_log = self.atgc.enabled;
-            let outcome = self.gc_section_window(segno, self.migration_window_granularity(),
+            let outcome = self.gc_section_window(segno,
+                                                 self.migration_window_granularity().saturating_mul(multiple),
                                                  self.migration_granularity());
             self.segstate.gc_background = false;
             self.segstate.gc_atgc_log = false;
@@ -404,7 +417,8 @@ impl<S: SectorSource> Volume<S> {
         self.segstate.gc_pass_mode = mode;
         self.segstate.gc_atgc_log = self.atgc.enabled;
         self.segstate.gc_background = true;
-        let outcome = self.gc_section_window(found.segno, self.migration_window_granularity(),
+        let outcome = self.gc_section_window(found.segno,
+                                             self.migration_window_granularity().saturating_mul(multiple),
                                              self.migration_granularity());
         self.segstate.gc_background = false;
         self.segstate.gc_atgc_log = false;
@@ -417,6 +431,11 @@ impl<S: SectorSource> Volume<S> {
     /// The same, under a stated cost and charged to a stated policy.
     /// # C: O(min(sections, max search) + blocks per section)
     pub fn gc_background_as(&mut self, policy: Policy, mode: usize)
+        -> Result<Option<u32>, Errno> {
+        self.gc_background_as_boosted(policy, mode, 1)
+    }
+
+    pub fn gc_background_as_boosted(&mut self, policy: Policy, mode: usize, multiple: u32)
         -> Result<Option<u32>, Errno> {
         self.writable_or_err()?;
         if self.segstate.gc_running { return Ok(None); }
@@ -442,7 +461,8 @@ impl<S: SectorSource> Volume<S> {
         self.segstate.gc_background = true;
         self.segstate.gc_pass_mode = mode;
         self.segstate.gc_atgc_log = self.atgc.enabled;
-        let outcome = self.gc_section_window(found_seg, self.migration_window_granularity(),
+        let outcome = self.gc_section_window(found_seg,
+                                             self.migration_window_granularity().saturating_mul(multiple),
                                              self.migration_granularity());
         self.segstate.gc_background = false;
         self.segstate.gc_atgc_log = false;

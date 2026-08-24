@@ -12,6 +12,7 @@ fn th() -> GcKthread { GcKthread::new() }
 
 fn quiet() -> Conditions {
     Conditions { readonly: false, frozen: false, foreground: false, idle: true, boost: false,
+                 boosted: false, boost_greedy: false,
                  can_lock: true, zoned_free_enough: false }
 }
 
@@ -91,7 +92,7 @@ fn an_idle_volume_worth_cleaning_cleans_and_looks_again_sooner() {
     let mut t = th();
     t.wait_ms = 60_000;
     let step = gc_round(&mut t, Conditions { boost: true, ..quiet() }, BackgroundGc::On);
-    assert_eq!(step, GcStep::Gc { sync: false, foreground: false });
+    assert_eq!(step, GcStep::Gc { sync: false, foreground: false, boosted: false });
     assert_eq!(t.wait_ms, 30_000);
 }
 
@@ -99,7 +100,7 @@ fn an_idle_volume_worth_cleaning_cleans_and_looks_again_sooner() {
 fn an_idle_volume_not_worth_cleaning_still_looks_but_less_often() {
     let mut t = th();
     let step = gc_round(&mut t, quiet(), BackgroundGc::On);
-    assert_eq!(step, GcStep::Gc { sync: false, foreground: false });
+    assert_eq!(step, GcStep::Gc { sync: false, foreground: false, boosted: false });
     assert_eq!(t.wait_ms, 60_000);
 }
 
@@ -107,7 +108,7 @@ fn an_idle_volume_not_worth_cleaning_still_looks_but_less_often() {
 fn background_gc_sync_moves_blocks_the_way_the_foreground_does() {
     let mut t = th();
     let step = gc_round(&mut t, quiet(), BackgroundGc::Sync);
-    assert_eq!(step, GcStep::Gc { sync: true, foreground: false });
+    assert_eq!(step, GcStep::Gc { sync: true, foreground: false, boosted: false });
 }
 
 #[test]
@@ -117,7 +118,7 @@ fn a_blocked_caller_is_never_served_by_the_slower_cost() {
     let mut t = th();
     let c = Conditions { foreground: true, idle: false, ..quiet() };
     let step = gc_round(&mut t, c, BackgroundGc::Sync);
-    assert_eq!(step, GcStep::Gc { sync: false, foreground: true });
+    assert_eq!(step, GcStep::Gc { sync: false, foreground: true, boosted: false });
 }
 
 #[test]
@@ -180,6 +181,14 @@ fn a_pass_that_cleaned_re_enters_the_walk_at_its_floor() {
     t.wait_ms = 300_000;
     after_gc(&mut t, true, false);
     assert_eq!(t.wait_ms, 30_000);
+}
+
+#[test]
+fn a_boosted_zoned_pass_can_select_greedy_cleaning() {
+    let mut t = th();
+    let c = Conditions { boost: true, boosted: true, boost_greedy: true, ..quiet() };
+    assert_eq!(gc_round(&mut t, c, BackgroundGc::On),
+               GcStep::Gc { sync: true, foreground: false, boosted: true });
 }
 
 #[test]

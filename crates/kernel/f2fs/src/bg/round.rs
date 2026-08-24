@@ -43,14 +43,17 @@ pub fn gc_pass(fs: &Arc<F2fs>) -> GcPass {
     let (step, wait_before) = {
         let mut th = bg.gc.lock();
         let c = conditions(fs, merged, th.mode, th.no_zoned_gc_percent,
-                           th.boost_zoned_gc_percent);
+                           th.boost_zoned_gc_percent, th.boost_gc_greedy);
         (gc::gc_round(&mut th, c, bggc), th.wait_ms)
     };
-    let GcStep::Gc { sync, foreground } = step else {
+    let GcStep::Gc { sync, foreground, boosted } = step else {
         return GcPass { step, cleaned: false, wait_ms: wait_before };
     };
-    let mode = bg.gc.lock().mode;
-    let cleaned = clean(fs, sync, foreground, mode);
+    let (mode, boost_multiple) = {
+        let th = bg.gc.lock();
+        (th.mode, th.boost_gc_multiple)
+    };
+    let cleaned = clean(fs, sync, foreground, boosted, boost_multiple, mode);
     {
         let mut th = bg.gc.lock();
         gc::after_gc(&mut th, cleaned, foreground);
@@ -72,7 +75,8 @@ pub fn gc_pass(fs: &Arc<F2fs>) -> GcPass {
 /// What the volume and the mount look like to the cleaner right now.
 /// # C: O(main segments)
 fn conditions(fs: &Arc<F2fs>, foreground: bool, mode: GcMode,
-              no_zoned_gc_percent: u32, boost_zoned_gc_percent: u32) -> Conditions {
+              no_zoned_gc_percent: u32, boost_zoned_gc_percent: u32,
+              boost_gc_greedy: u32) -> Conditions {
     let bg = fs.bg();
     // The plain lock, not the one that stamps the clock. A background pass is
     // not an operation on anyone's behalf, and stamping the mount's clock here
@@ -90,14 +94,14 @@ fn conditions(fs: &Arc<F2fs>, foreground: bool, mode: GcMode,
         && no_zoned_gc_percent != 0
         && crate::bg::gc::enough_free_sections(v.free_section_count(), total,
                                                no_zoned_gc_percent);
-    let boost = loaded && if crate::features::has_blkzoned(v.super_block().feature)
-        && boost_zoned_gc_percent != 0 {
-        !crate::bg::gc::enough_free_sections(v.free_section_count(), total,
-                                             boost_zoned_gc_percent)
-    } else {
-        v.worth_cleaning()
-    };
-    Conditions { readonly, frozen: false, foreground, idle, boost, can_lock, zoned_free_enough }
+    let boosted = loaded && crate::features::has_blkzoned(v.super_block().feature)
+        && boost_zoned_gc_percent != 0
+        && !crate::bg::gc::enough_free_sections(v.free_section_count(), total,
+                                                boost_zoned_gc_percent);
+    let boost = loaded && if boosted { true } else { v.worth_cleaning() };
+    Conditions { readonly, frozen: false, foreground, idle, boost, boosted,
+                 boost_greedy: boost_gc_greedy != 0,
+                 can_lock, zoned_free_enough }
 }
 
 /// Do the cleaning the pass decided on.
@@ -108,7 +112,8 @@ fn conditions(fs: &Arc<F2fs>, foreground: bool, mode: GcMode,
 /// segments this pass empties are charged to, which is the only way the
 /// reclaimed figures can ever be anything but one row.
 /// # C: O(blocks per section)
-fn clean(fs: &Arc<F2fs>, sync: bool, foreground: bool, mode: GcMode) -> bool {
+fn clean(fs: &Arc<F2fs>, sync: bool, foreground: bool, boosted: bool,
+         boost_multiple: u32, mode: GcMode) -> bool {
     let mut v = fs.volume_now();
     let slot = mode.as_u32() as usize;
     if foreground {
@@ -130,10 +135,12 @@ fn clean(fs: &Arc<F2fs>, sync: bool, foreground: bool, mode: GcMode) -> bool {
     // victim decides how many writes the volume spends over its life. A caller
     // that is blocked wants the cheapest section, not the oldest.
     if v.atgc_enabled() && matches!(mode, GcMode::Normal | GcMode::IdleAt) {
-        return v.gc_background_age(slot).map(|s| s.is_some()).unwrap_or(false);
+        return v.gc_background_age_boosted(slot, if boosted { boost_multiple } else { 1 })
+            .map(|s| s.is_some()).unwrap_or(false);
     }
     let policy = mode.idle_policy().unwrap_or(Policy::CostBenefit);
-    v.gc_background_as(policy, slot).map(|s| s.is_some()).unwrap_or(false)
+    v.gc_background_as_boosted(policy, slot, if boosted { boost_multiple } else { 1 })
+        .map(|s| s.is_some()).unwrap_or(false)
 }
 
 /// What one wake of the discard thread did.
