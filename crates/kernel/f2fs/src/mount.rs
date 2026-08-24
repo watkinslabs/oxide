@@ -288,11 +288,16 @@ impl F2fs {
     /// segments it writes.
     /// # C: O(nodes the file has) blocks, or O(a checkpoint)
     pub fn sync_file(&self, ino: u32, datasync: bool) -> KResult<()> {
-        let reason = {
+        let (reason, deferred) = {
             let mut v = self.volume_now();
             let reason = v.fsync_for_mount(ino, datasync).map_err(errno_to_vfs)?;
-            reason
+            (reason, v.take_deferred_flush())
         };
+        if let Some((deferred_ino, mask)) = deferred.filter(|(_, mask)| *mask != 0) {
+            let fs = self.me.upgrade().ok_or(vfs::VfsError::Eio)?;
+            fs.merged_flush(mask)?;
+            self.volume_now().complete_deferred_flush(deferred_ino);
+        }
         if reason.needed() {
             // The volume lock is deliberately released before enrollment: the
             // merge thread needs that same lock to write its checkpoint. A

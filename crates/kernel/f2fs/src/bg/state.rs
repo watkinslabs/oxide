@@ -15,6 +15,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use sync::{Spinlock, TaskList};
 
 use crate::opts::{BackgroundGc, DiscardUnit};
+use syscall::errno::Errno;
 
 use super::ckpt::CkptControl;
 use super::ckpt::IoPrio;
@@ -28,6 +29,9 @@ pub struct Bg {
     pub dcc: Spinlock<DiscardControl, TaskList>,
     /// The checkpoint requests waiting to be merged into one write.
     pub cprc: Spinlock<CkptControl, TaskList>,
+    /// Flush barriers waiting for the merge thread. The mask is the union of
+    /// every caller enrolled in the current window.
+    pub flc: Spinlock<FlushControl, TaskList>,
     /// What the mount was asked for. The threads honour it every round, so a
     /// remount that turns cleaning off stops it without stopping the thread.
     pub bggc: Spinlock<BackgroundGc, TaskList>,
@@ -38,6 +42,7 @@ pub struct Bg {
     pub gc_running: AtomicBool,
     pub discard_running: AtomicBool,
     pub ckpt_running: AtomicBool,
+    pub flush_running: AtomicBool,
     /// When the mount last did work for somebody, in the clock's seconds.
     /// Both threads yield to a volume that is being used.
     pub last_op: AtomicU64,
@@ -48,6 +53,18 @@ pub struct Bg {
     pub waits: Waits,
 }
 
+#[derive(Debug)]
+pub struct FlushControl {
+    pub pending: u64,
+    pub generation: u64,
+    pub inflight: bool,
+    pub last: Result<(), Errno>,
+}
+
+impl FlushControl {
+    pub fn new() -> Self { Self { pending: 0, generation: 0, inflight: false, last: Ok(()) } }
+}
+
 impl Bg {
     /// The state a mount starts with. # C: O(MAX_PLIST_NUM)
     pub fn new(bggc: BackgroundGc, unit: DiscardUnit, segs_per_sec: u32) -> Self {
@@ -55,11 +72,13 @@ impl Bg {
             gc: Spinlock::new(GcKthread::new()),
             dcc: Spinlock::new(DiscardControl::new(unit, segs_per_sec)),
             cprc: Spinlock::new(CkptControl::new()),
+            flc: Spinlock::new(FlushControl::new()),
             bggc: Spinlock::new(bggc),
             stopping: AtomicBool::new(false),
             gc_running: AtomicBool::new(false),
             discard_running: AtomicBool::new(false),
             ckpt_running: AtomicBool::new(false),
+            flush_running: AtomicBool::new(false),
             last_op: AtomicU64::new(0),
             fggc_gen: AtomicU64::new(0),
             balances: AtomicU64::new(0),
@@ -130,6 +149,34 @@ impl Bg {
         self.cprc.lock().last()
     }
 
+    pub fn enrol_flush(&self, mask: u64) -> u64 {
+        let mut f = self.flc.lock();
+        let seen = f.generation.wrapping_add(u64::from(f.inflight));
+        f.pending |= mask;
+        self.waits.wake_flush();
+        seen
+    }
+
+    pub fn flush_served(&self, seen: u64) -> bool { self.flc.lock().generation != seen }
+
+    pub fn flush_result(&self) -> Result<(), Errno> { self.flc.lock().last }
+
+    pub fn take_flush(&self) -> Option<u64> {
+        let mut f = self.flc.lock();
+        if f.pending == 0 { None } else {
+            f.inflight = true;
+            Some(core::mem::replace(&mut f.pending, 0))
+        }
+    }
+
+    pub fn finish_flush(&self, result: Result<(), Errno>) {
+        let mut f = self.flc.lock();
+        f.last = result;
+        f.inflight = false;
+        f.generation = f.generation.wrapping_add(1);
+        self.waits.wake_flush();
+    }
+
     /// The checkpoint merge thread's scheduling control.
     /// # C: O(1)
     pub fn checkpoint_ioprio(&self) -> IoPrio { self.cprc.lock().ioprio }
@@ -192,4 +239,24 @@ impl Bg {
 
     /// When the mount last did work for somebody. # C: O(1)
     pub fn last_activity(&self) -> u64 { self.last_op.load(Ordering::Acquire) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FlushControl;
+
+    #[test]
+    fn a_flush_arriving_during_io_waits_for_the_next_barrier() {
+        let mut f = FlushControl::new();
+        let first_seen = f.generation + u64::from(f.inflight);
+        f.pending = 1;
+        f.inflight = true;
+        let follower_seen = f.generation + u64::from(f.inflight);
+        assert_ne!(first_seen, follower_seen);
+        f.pending |= 2;
+        f.inflight = false;
+        f.generation += 1;
+        assert_eq!(f.generation, follower_seen);
+        assert_ne!(f.generation, first_seen);
+    }
 }

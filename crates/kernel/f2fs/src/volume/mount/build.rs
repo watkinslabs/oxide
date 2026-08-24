@@ -198,6 +198,7 @@ impl<S: SectorSource> Volume<S> {
         init_field!(place: place);
         init_field!(bg: None);
         init_field!(need_ipu: None);
+        init_field!(deferred_flush: None);
         init_field!(sync_writeback: false);
         // SAFETY: every `Volume` field was written exactly once above.
         let vol = unsafe { uninit.assume_init() };

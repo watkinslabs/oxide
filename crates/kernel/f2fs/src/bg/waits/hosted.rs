@@ -14,6 +14,7 @@ pub struct Waits {
     gc: AtomicU32,
     discard: AtomicU32,
     ckpt: AtomicU32,
+    flush: AtomicU32,
     foreground: AtomicU32,
 }
 
@@ -29,6 +30,7 @@ impl Waits {
 
     /// # C: O(1)
     pub fn wake_ckpt(&self) { self.ckpt.fetch_add(1, Ordering::Release); }
+    pub fn wake_flush(&self) { self.flush.fetch_add(1, Ordering::Release); }
 
     /// Times the merge thread has been asked to write. # C: O(1)
     pub fn ckpt_wakes(&self) -> u32 { self.ckpt.load(Ordering::Acquire) }

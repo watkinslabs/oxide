@@ -370,6 +370,7 @@ pub struct Volume<S: SectorSource> {
     /// statement about the call in progress, not about the file. One inode
     /// rather than a set, because the flush it spans is one file's.
     pub(crate) need_ipu: Option<u32>,
+    pub(crate) deferred_flush: Option<(u32, u64)>,
     /// Whether the writeback running right now is one a caller is WAITING on.
     ///
     /// The filesystem's own flush points — an `fsync`, a checkpoint, a truncate

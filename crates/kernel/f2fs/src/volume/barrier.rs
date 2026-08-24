@@ -15,6 +15,12 @@ use crate::devices::barrier::{self, FLUSH_RETRIES};
 use super::Volume;
 
 impl<S: SectorSource> Volume<S> {
+    pub(crate) fn flush_members(&self, mask: u64) -> Result<(), Errno> {
+        for i in (0..64usize).filter(|i| mask & (1u64 << i) != 0) {
+            self.barrier_member(i)?;
+        }
+        Ok(())
+    }
     /// Empty one member's write cache, and charge it.
     ///
     /// A medium with no volatile cache is asked for nothing, and that is not a
@@ -73,6 +79,12 @@ impl<S: SectorSource> Volume<S> {
     pub(crate) fn fsync_barrier(&mut self, ino: u32, atomic: bool) -> Result<(), Errno> {
         if !barrier::fsync_needs_flush(self.opts.barrier, self.opts.fsync_mode, atomic) {
             return Ok(());
+        }
+        let targets = barrier::fsync_flush_targets(
+            self.source.members(), self.dirty_ino_devs.mask(ino));
+        if self.deferred_flush.is_some() {
+            self.deferred_flush = Some((ino, targets_mask(targets)));
+            return Ok(())
         }
         self.issue_flush_for(ino)?;
         self.update_writes.borrow_mut().fenced(ino);
@@ -191,4 +203,17 @@ impl<S: SectorSource> Volume<S> {
         d.mark(member);
         self.dirty_devs.set(d);
     }
+
+    pub(crate) fn take_deferred_flush(&mut self) -> Option<(u32, u64)> {
+        self.deferred_flush.take()
+    }
+
+    pub(crate) fn complete_deferred_flush(&mut self, ino: u32) {
+        self.update_writes.borrow_mut().fenced(ino);
+        self.dirty_ino_devs.forget(ino);
+    }
+}
+
+fn targets_mask(targets: barrier::Members) -> u64 {
+    targets.iter().fold(0, |m, i| m | (1u64 << i))
 }

@@ -47,6 +47,11 @@ pub fn start(fs: &Arc<F2fs>) {
         && !spawn(fs, "f2fs_ckpt", ckpt_thread) {
         bg.ckpt_running.store(false, Ordering::Release);
     }
+    if fs.options().flush_merge
+        && !bg.flush_running.swap(true, Ordering::AcqRel)
+        && !spawn(fs, "f2fs_flush", flush_thread) {
+        bg.flush_running.store(false, Ordering::Release);
+    }
 }
 
 /// Hand one thread a weak reference to the mount and let the scheduler have
@@ -80,13 +85,36 @@ pub fn stop(fs: &F2fs) {
     bg.waits.wake_gc();
     bg.waits.wake_discard();
     bg.waits.wake_ckpt();
+    bg.waits.wake_flush();
     bg.waits.wake_foreground();
     while bg.gc_running.load(Ordering::Acquire) || bg.discard_running.load(Ordering::Acquire)
-        || bg.ckpt_running.load(Ordering::Acquire) {
+        || bg.ckpt_running.load(Ordering::Acquire)
+        || bg.flush_running.load(Ordering::Acquire) {
         // SAFETY: unmount runs in process context holding no volume lock; the
         // threads being waited for need the CPU to observe the stop flag.
         unsafe { sched::live::schedule(); }
     }
+}
+
+extern "C" fn flush_thread(arg: usize) -> ! {
+    let weak = unsafe { Weak::from_raw(arg as *const F2fs) };
+    while !winding_up(&weak) {
+        let Some(fs) = weak.upgrade() else { break };
+        let bg = fs.bg();
+        let _ = unsafe { sched::live::wait_event_uninterruptible(&bg.waits.flush,
+            || bg.stopping() || bg.flc.lock().pending != 0) };
+        if bg.stopping() { break; }
+        if let Some(mask) = bg.take_flush() {
+            let result = fs.flush_members(mask);
+            bg.finish_flush(result);
+        }
+    }
+    if let Some(fs) = weak.upgrade() {
+        fs.bg().flush_running.store(false, Ordering::Release);
+        fs.bg().waits.wake_flush();
+    }
+    drop(weak);
+    unsafe { sched::live::kthread_exit(0) }
 }
 
 /// Longest a caller blocked in the balance path waits for the cleaner before

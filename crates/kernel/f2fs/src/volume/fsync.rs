@@ -89,6 +89,7 @@ impl<S: SectorSource> Volume<S> {
     pub(crate) fn fsync_for_mount(&mut self, ino: u32, datasync: bool)
         -> Result<CpReason, Errno>
     {
+        self.deferred_flush = Some((ino, 0));
         self.sync_file(ino, datasync, false)
     }
 
