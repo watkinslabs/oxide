@@ -1,6 +1,6 @@
 //! The code page: what a byte means, and the byte a character needs.
 
-use crate::name::codepage::{by_number, CP437, CP850, CP852, DEFAULT_CODEPAGE};
+use crate::name::codepage::{by_number, CP437, CP850, CP852, CP855, DEFAULT_CODEPAGE};
 
 /// Below 0x80 a byte is the character of the same value, which is why reading
 /// an ASCII name without a code page at all looks correct and is not.
@@ -44,6 +44,9 @@ fn the_table_is_injective() {
     for b in 0u8..=0xff {
         assert_eq!(CP852.from_char(CP852.to_char(b)), Some(b), "CP852 byte {b:#04x}");
     }
+    for b in 0u8..=0xff {
+        assert_eq!(CP855.from_char(CP855.to_char(b)), Some(b), "CP855 byte {b:#04x}");
+    }
 }
 
 /// A character the page cannot store has no byte. That is not an error: it is
@@ -83,4 +86,10 @@ fn a_page_is_found_by_its_number() {
     assert_eq!(CP852.from_char(0x017e), Some(0xa7));
     assert_eq!(CP852.to_lower(0x8d), 0xab);
     assert_eq!(CP852.to_upper(0xab), 0x8d);
+    assert_eq!(by_number(855).map(|p| p.number), Some(855));
+    assert_eq!(CP855.to_char(0x80), 0x0452);
+    assert_eq!(CP855.to_char(0xa0), 0x0430);
+    assert_eq!(CP855.from_char(0x0410), Some(0xa1));
+    assert_eq!(CP855.to_lower(0x81), 0x80);
+    assert_eq!(CP855.to_upper(0x80), 0x81);
 }
