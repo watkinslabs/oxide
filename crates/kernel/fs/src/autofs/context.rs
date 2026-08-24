@@ -80,7 +80,12 @@ fn current_identity() -> (u32, u32, u32) {
 fn current_identity() -> (u32, u32, u32) { (0, 0, 0) }
 
 #[cfg(target_os = "oxide-kernel")]
-fn pgrp_exists(pgrp: u32) -> bool { !sched::registry::tasks_in_pgrp(pgrp).is_empty() }
+fn pgrp_exists(pgrp: u32) -> bool {
+    // Linux retains the PID object named by autofs' pgrp= parameter. A
+    // process-group member scan is not equivalent: the leader can be
+    // publishing its group while the PID identity is already resolvable.
+    sched::registry::lookup_by_vpid(pgrp).is_some()
+}
 
 #[cfg(not(target_os = "oxide-kernel"))]
 fn pgrp_exists(_pgrp: u32) -> bool { true }
