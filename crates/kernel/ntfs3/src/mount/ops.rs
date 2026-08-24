@@ -52,7 +52,7 @@ impl InodeOps for NtfsOps {
                       else { inode.gid().unwrap_or(0) };
             let mode = if ia.valid & ATTR_MODE != 0 { ia.mode as u32 }
                        else { inode.i_mode() as u32 };
-            let volume = node.fs.volume.lock();
+            let mut volume = node.fs.volume.lock();
             for (name, value) in [(b"$LXUID".as_slice(), uid.to_le_bytes()),
                                   (b"$LXGID".as_slice(), gid.to_le_bytes()),
                                   (b"$LXMOD".as_slice(), mode.to_le_bytes())] {

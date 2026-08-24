@@ -61,6 +61,31 @@ fn wsl_permissions_and_posix_acl_survive_the_native_ea_rewrite() {
 }
 
 #[test]
+fn a_large_native_ea_uses_nonresident_storage_and_releases_it() {
+    let mut v = test_image::empty();
+    let made = v.create_file(MFT_REC_ROOT, "large-ea", now()).unwrap();
+    let number = made.reference.number;
+    let value = alloc::vec![0x5a; 2_000];
+    let before = v.free_clusters();
+    v.write_ea(number, b"user.large", Some(&value), now()).unwrap();
+    let (_, attrs) = v.read_record(number).unwrap();
+    let ea = crate::attrib::find(&attrs, ATTR_EA, &[]).unwrap();
+    assert!(ea.non_resident);
+    assert_eq!(v.read_ea(number, b"user.large").unwrap(), value);
+    let allocated = v.free_clusters();
+    assert!(allocated < before);
+    let replacement = alloc::vec![0xa5; 2_000];
+    v.write_ea(number, b"user.large", Some(&replacement), now()).unwrap();
+    assert_eq!(v.read_ea(number, b"user.large").unwrap(), replacement);
+    assert_eq!(v.free_clusters(), allocated);
+    v.write_ea(number, b"user.large", None, now()).unwrap();
+    assert_eq!(v.read_ea(number, b"user.large"), Err(Errno::Enodata));
+    assert_eq!(v.free_clusters(), before);
+    let (_, attrs) = v.read_record(number).unwrap();
+    assert!(crate::attrib::find(&attrs, ATTR_EA, &[]).is_none());
+}
+
+#[test]
 fn creating_a_name_that_exists_is_refused() {
     let mut v = test_image::empty();
     v.create_file(MFT_REC_ROOT, "dup", now()).unwrap();
