@@ -211,6 +211,8 @@ impl F2fs {
         self.devs.iter().all(|d| d.supports_discard())
     }
 
+    pub(crate) fn swap_devices(&self) -> &[Arc<dyn block::BlockDevice>] { &self.devs }
+
     /// Whether this mount ended up writable.
     ///
     /// A mount that asked to write a volume whose own features forbid it, or

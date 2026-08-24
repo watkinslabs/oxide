@@ -9,6 +9,7 @@
 // optional query ops), so a backend overrides only what it implements.
 
 extern crate alloc;
+use core::any::Any;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -68,6 +69,13 @@ impl CreateCtx<'_> {
 
 /// `inode_operations` — the inode's `i_op` namespace/metadata vtable.
 pub trait InodeOps: Send + Sync {
+    /// `address_space_operations->swap_activate`: return the filesystem's
+    /// pinned direct backing for a regular swap file. The erased return keeps
+    /// VFS independent of the block layer; the PMM owns the shared backing
+    /// ABI and the syscall adapter downcasts it there. # C: O(extents)
+    fn swapfile_backing(&self, _inode: &InodeRef)
+        -> KResult<Option<Arc<dyn Any + Send + Sync>>> { Ok(None) }
+
     /// `i_op->lookup` — resolve `name` within this directory inode. Default
     /// `Enotdir` (a non-directory has no `lookup`). # C: backend-dependent
     fn lookup(&self, _inode: &Inode, _name: &str) -> KResult<InodeRef> {

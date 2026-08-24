@@ -24,15 +24,8 @@ pub struct SwapFileDevice {
 }
 
 /// Stable identity plus the direct block-device view owned by one active
-/// ext4 swapfile. The identity is inode-based, so hard links and path aliases
-/// resolve to the same PMM swap area.
-pub struct SwapFileBacking {
-    pub name: String,
-    pub device: Arc<dyn BlockDevice>,
-    pub resume_device: Option<String>,
-    pub resume_pages: Vec<u64>,
-    pub raw_device: Arc<dyn BlockDevice>,
-}
+/// ext4 swapfile. The shared PMM type is the VFS swap hook's ABI.
+pub type SwapFileBacking = pmm::swap::SwapFileBacking;
 
 /// Return the inode-stable PMM area identity for an ext4 regular file.
 ///

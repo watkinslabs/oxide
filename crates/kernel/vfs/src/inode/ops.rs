@@ -2,6 +2,7 @@ extern crate alloc;
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::any::Any;
 
 use crate::file_ops::DirContext;
 use crate::getattr::Kstat;
@@ -14,6 +15,13 @@ use crate::{CreateCtx, namei};
 use super::model::{FileAttr, FiemapExtent, Inode, InodeRef};
 
 impl Inode {
+    /// `a_ops->swap_activate`: ask the owning filesystem for its pinned
+    /// direct swap backing. # C: O(extents)
+    pub fn swapfile_backing(self: &InodeRef)
+        -> KResult<Option<alloc::sync::Arc<dyn Any + Send + Sync>>> {
+        self.i_op.swapfile_backing(self)
+    }
+
     /// `i_op->lookup`. # C: backend-dependent
     pub fn lookup(&self, name: &str) -> KResult<InodeRef> { self.i_op.lookup(self, name) }
     /// `i_op->create`. # C: backend-dependent

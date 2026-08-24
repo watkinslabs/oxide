@@ -526,6 +526,25 @@ fn syncing_the_file_places_it_and_a_remount_finds_it() {
 }
 
 #[test]
+fn swapfile_hook_returns_the_pinned_f2fs_block_view() {
+    let (fs, _dev, ino) = with_file();
+    let page = vec![0x5Cu8; BLKSIZE];
+    let sec = u64::from(fs.volume.lock().blks_per_sec());
+    fs.volume.lock().set_pin_file(ino, 1).unwrap();
+    fs.volume.lock().expand_pinned(ino, 0, sec * BLKSIZE as u64).unwrap();
+    assert_eq!(fs.write(ino, 0, &page).unwrap(), BLKSIZE);
+    fs.sync_file(ino, false).unwrap();
+    let file = fs.root_inode().unwrap().lookup("f").unwrap();
+    let erased = file.swapfile_backing().unwrap().expect("f2fs owns swap activation");
+    let backing = erased.downcast::<pmm::swap::SwapFileBacking>()
+        .expect("the VFS hook uses the shared PMM backing ABI");
+    let mut request = BlockRequest::new_read(0, 1, BLKSIZE as u32);
+    backing.device.submit_sync(&mut request).unwrap();
+    assert_eq!(request.buffer, page);
+    assert!(backing.name.starts_with("f2fs:"));
+}
+
+#[test]
 fn the_machines_flusher_places_this_mounts_pages() {
     // The proof that the mapping's own writeback target reaches this mount.
     // It is what the flusher and page reclaim use, and it is the only path

@@ -68,6 +68,12 @@ pub(crate) struct Ext4RegInodeOps;
 const BMAP_HOLE: u64 = 0;
 
 impl InodeOps for Ext4RegInodeOps {
+    fn swapfile_backing(&self, inode: &InodeRef)
+        -> KResult<Option<alloc::sync::Arc<dyn core::any::Any + Send + Sync>>> {
+        let backing = super::super::swapfile::swapfile_backing(inode)?;
+        Ok(Some(alloc::sync::Arc::new(backing)))
+    }
+
     /// `ext4_bmap`: translate one logical ext4 block through the authoritative
     /// extent tree.  Swapfile activation uses this same mapping to reject
     /// holes and unwritten extents before it can expose persistent swap I/O.

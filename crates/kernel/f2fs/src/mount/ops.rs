@@ -101,6 +101,35 @@ impl F2fsOps {
 }
 
 impl InodeOps for F2fsOps {
+    fn swapfile_backing(&self, inode: &InodeRef)
+        -> KResult<Option<alloc::sync::Arc<dyn core::any::Any + Send + Sync>>> {
+        let node = Self::node(inode)?;
+        let map = node.fs.volume_now().swap_activate(node.ino, u64::MAX)
+            .map_err(errno_to_vfs)?;
+        let device = match crate::swap::device::F2fsSwapDevice::new(
+            node.fs.clone(), node.ino, map) {
+            Ok(device) => device,
+            Err(error) => {
+                let _ = node.fs.volume_now().swap_deactivate(node.ino);
+                return Err(match error {
+                    block::BlockError::Einval => VfsError::Einval,
+                    _ => VfsError::Eio,
+                });
+            }
+        };
+        let uuid = node.fs.volume.lock().super_block().uuid;
+        let id = u64::from_le_bytes(uuid[..8].try_into().unwrap_or([0; 8]));
+        let name = alloc::format!("f2fs:{id}:{ino}", ino = node.ino);
+        let raw_device = node.fs.swap_devices()[0].clone();
+        Ok(Some(alloc::sync::Arc::new(pmm::swap::SwapFileBacking {
+            name,
+            device: alloc::sync::Arc::new(device),
+            resume_device: None,
+            resume_pages: alloc::vec::Vec::new(),
+            raw_device,
+        })))
+    }
+
     /// Expose the volume's validated fs-verity descriptor to union filesystems
     /// without creating a second digest implementation. # C: O(descriptor + chain)
     fn verity_digest(&self, inode: &Inode) -> KResult<Option<(u8, Vec<u8>)>> {
