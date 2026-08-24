@@ -24,10 +24,24 @@ impl Mount {
     }
 
     pub(crate) fn commit_batch_for(&self, inode: Option<(u32, bool)>) -> Result<bool, MountError> {
+        #[cfg(feature = "debug-fsync-latency")]
+        let started_ns = crate::fsync_latency::now_ns();
         self.order_data_before_commit(inode.map(|(ino, _)| ino))?;
+        #[cfg(feature = "debug-fsync-latency")]
+        crate::fsync_latency::report(b"batch-order", started_ns, 0);
+        #[cfg(feature = "debug-fsync-latency")]
+        let gate_ns = crate::fsync_latency::now_ns();
         self.txn_acquire();
+        #[cfg(feature = "debug-fsync-latency")]
+        crate::fsync_latency::report(b"batch-gate", gate_ns, 0);
         let needed = inode.map_or(true, |(ino, datasync)| self.inode_sync_needed(ino, datasync));
+        #[cfg(feature = "debug-fsync-latency")]
+        let staged_blocks = self.state.lock().shadow.as_ref().map_or(0, |s| s.len() as u64);
+        #[cfg(feature = "debug-fsync-latency")]
+        let commit_ns = crate::fsync_latency::now_ns();
         let result = if needed { self.commit_batch_inner() } else { Ok(false) };
+        #[cfg(feature = "debug-fsync-latency")]
+        crate::fsync_latency::report(b"batch-commit", commit_ns, staged_blocks);
         self.txn_release();
         let direct = result?;
         let generation = self.state.lock().committed_generation;

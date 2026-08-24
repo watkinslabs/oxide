@@ -25,6 +25,8 @@ use crate::mount::{Mount, MountError, read_byte_range_pub};
 use crate::superblock::INCOMPAT_RECOVER;
 
 impl Mount {
+    const TARGET_WRITE_CLUSTER_BYTES: usize = 128 * 1024;
+
     /// Apply an explicit ext4 journal checksum mount option to the clean JBD2
     /// superblock. Replay is intentionally performed before this operation:
     /// the existing feature words are the authority for reading an old log.
@@ -219,12 +221,75 @@ impl Mount {
     /// Write each staged block to its target LBA verbatim.
     fn apply_staged_to_target(&self, staged: &[StagedBlock]) -> Result<(), MountError> {
         let bs = self.sb.block_size as u64;
-        for s in staged {
-            // Checkpoint writes belong to the journal, not to whoever happened
-            // to dirty the block, so they carry the journal's priority too.
-            self.write_journal_byte_range(s.target_lba * bs, &s.data)?;
+        let block_bytes = bs as usize;
+        for (start_lba, run) in coalesce_target_writes(
+            staged, block_bytes, Self::TARGET_WRITE_CLUSTER_BYTES)?
+        {
+            // Checkpoint writes belong to the journal, not to whoever
+            // happened to dirty the block, so they carry the journal's
+            // priority too. Coalesce adjacent targets into one BIO-sized
+            // request, as Linux writeback does.
+            self.write_journal_byte_range(start_lba * bs, &run)?;
         }
         Ok(())
+    }
+}
+
+fn coalesce_target_writes(
+    staged: &[StagedBlock], block_bytes: usize, max_bytes: usize,
+) -> Result<Vec<(u64, Vec<u8>)>, MountError> {
+    if block_bytes == 0 || max_bytes < block_bytes { return Err(MountError::BlockIo); }
+    let mut runs = Vec::new();
+    let mut run_start = None;
+    let mut next_lba = 0u64;
+    let mut run = Vec::new();
+    for s in staged {
+        if s.data.len() != block_bytes { return Err(MountError::BlockIo); }
+        let contiguous = run_start.is_some()
+            && s.target_lba == next_lba
+            && run.len().saturating_add(block_bytes) <= max_bytes;
+        if !contiguous && !run.is_empty() {
+            runs.push((run_start.unwrap(), core::mem::take(&mut run)));
+        }
+        if run_start.is_none() || !contiguous { run_start = Some(s.target_lba); }
+        run.extend_from_slice(&s.data);
+        next_lba = s.target_lba + 1;
+    }
+    if !run.is_empty() { runs.push((run_start.unwrap(), run)); }
+    Ok(runs)
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use super::coalesce_target_writes;
+    use crate::jbd2::StagedBlock;
+
+    fn block(lba: u64, value: u8) -> StagedBlock {
+        StagedBlock { target_lba: lba, data: vec![value; 4] }
+    }
+
+    #[test]
+    fn coalesces_adjacent_blocks_and_splits_gaps() {
+        let staged = [block(10, 1), block(11, 2), block(13, 3)];
+        let runs = coalesce_target_writes(&staged, 4, 8).unwrap();
+        assert_eq!(runs, vec![(10, vec![1, 1, 1, 1, 2, 2, 2, 2]), (13, vec![3; 4])]);
+    }
+
+    #[test]
+    fn splits_a_contiguous_run_at_the_bio_bound() {
+        let staged = [block(20, 1), block(21, 2), block(22, 3)];
+        let runs = coalesce_target_writes(&staged, 4, 8).unwrap();
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].0, 20);
+        assert_eq!(runs[1].0, 22);
+    }
+
+    #[test]
+    fn rejects_a_partial_staged_block() {
+        let staged = [StagedBlock { target_lba: 1, data: vec![0; 3] }];
+        assert_eq!(coalesce_target_writes(&staged, 4, 8), Err(crate::MountError::BlockIo));
     }
 }
 
