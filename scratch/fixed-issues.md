@@ -1,5 +1,9 @@
 # Fixed issues
 
+### B2635-ext4-csum-origin
+
+| FIXED 55e6eb5ca | DEFECT | critical | **The x86 root filesystem previously became metadata-checksum-invalid during early systemd writes and later reported a directory-parent inconsistency.** The ext4 metadata cache now publishes checkpointed blocks as the single clean-buffer source, and batched target writes use bounded contiguous BIO-sized requests while preserving target ordering and durability. | Linux ext4's no-journal fsync path writes dirty metadata and then barriers the device; Linux writeback also coalesces adjacent target buffers. `cargo test -p ext4 --lib`: 328/328; focused real-rootfs VFS and batched-journal workloads pass; the 1,200-directory/15,600-operation stress test remounts clean. A fresh SMP=2 x86 boot reaches `graphical.target` at 60.144s with no `EXT4-CSUM-FIRST`, `EXT4-ERROR`, ACL failure, or `Operation not supported`; x86 and aarch64 release builds pass. | 55e6eb5ca |
+
 ### B2634-devtmpfs-posix-acl
 
 | FIXED B2634-devtmpfs-posix-acl | DEFECT | high | **devtmpfs device nodes now accept POSIX ACL operations, so udev no longer logs `Failed to apply ACL: Operation not supported` for audio/video devices.** `DevfsFs` advertises `SB_POSIXACL`, matching the tmpfs-backed devtmpfs superblock; the existing VFS ACL owner then validates the blob, folds access permissions into the inode mode, and stores the ACL xattr. | `cargo test -p fs --test devfs_xattr_store`: 6/6; `cargo test -p devfs --lib`: 27/27; `make x86` and `make arm` pass. Branch boot `target/boot-logs/x86_64-20260824-165343.log` contains no `Failed to apply ACL` or `Operation not supported` ACL messages, while the unrelated pre-existing ext4 fsync/stack-guard stall remains recorded at 11.268 s. | B2634-devtmpfs-posix-acl |
