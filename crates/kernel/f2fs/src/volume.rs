@@ -205,6 +205,8 @@ pub struct Volume<S: SectorSource> {
     pub(crate) current_reserved_blocks: u64,
     /// Whether the current reserved pool is carved out of `statfs` total.
     pub(crate) carve_out: bool,
+    /// Largest number of successful atomic-write operations open at once.
+    pub(crate) peak_atomic_write: u64,
     pub(crate) valid_node_count: u32,
     pub(crate) valid_inode_count: u32,
     pub(crate) next_free_nid: u32,

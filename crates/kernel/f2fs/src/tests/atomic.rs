@@ -185,6 +185,7 @@ fn a_commit_lands_every_write_at_once() {
     v.start_atomic_write(ino, false).unwrap();
     v.atomic_write_file(ino, 0, b"one").unwrap();
     v.atomic_write_file(ino, BLKSIZE as u64, b"two").unwrap();
+    assert_eq!(v.peak_atomic_write(), 2);
     v.commit_atomic_write(ino).unwrap();
     let v = remount(v);
     let got = whole(&v, ino);

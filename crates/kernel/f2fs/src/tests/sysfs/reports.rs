@@ -34,7 +34,7 @@ fn show(attrs: &[Attr], name: &str) -> String {
 fn each_report_is_read_only_and_reads_a_number() {
     let fs = mounted();
     let attrs = crate::sysfs::mount_attrs(&fs);
-    for name in ["avg_vblocks", "current_atomic_write",
+    for name in ["avg_vblocks", "current_atomic_write", "defrag_blocks",
                  "unusable_blocks_per_sec", "max_open_zones"] {
         let a = attrs.iter().find(|a| a.dir == "vda" && a.name == name)
             .unwrap_or_else(|| panic!("no attribute vda/{name}"));
@@ -43,6 +43,17 @@ fn each_report_is_read_only_and_reads_a_number() {
         assert!(body.ends_with('\n'), "{name} did not end its line");
         body.trim().parse::<u64>().unwrap_or_else(|_| panic!("{name} read {body:?}"));
     }
+}
+
+#[test]
+fn atomic_peak_is_writable_only_as_a_zero_reset() {
+    let fs = mounted();
+    let attrs = crate::sysfs::mount_attrs(&fs);
+    let a = attrs.iter().find(|a| a.name == "peak_atomic_write").expect("published");
+    assert_eq!(a.mode, crate::fsattr::RW);
+    assert!(a.store.as_ref().unwrap()(b"1\n").is_err());
+    a.store.as_ref().unwrap()(b"0\n").expect("reset");
+    assert_eq!(show(&attrs, "peak_atomic_write"), "0\n");
 }
 
 /// The total is SUMMED from the spans the volume holds, so opening one moves it.

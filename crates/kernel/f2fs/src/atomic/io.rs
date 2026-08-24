@@ -50,6 +50,8 @@ impl<S: SectorSource> Volume<S> {
                 a.dirtied = true;
                 a.write_cnt += 1;
             }
+            let current = self.atomic.values().map(|a| a.write_cnt).sum::<u64>();
+            self.peak_atomic_write = self.peak_atomic_write.max(current);
         }
         match stopped {
             Some(e) if done == 0 => Err(e),

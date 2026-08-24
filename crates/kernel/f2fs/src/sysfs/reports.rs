@@ -1,4 +1,4 @@
-//! `/sys/fs/f2fs/<dev>/` — reports the volume computes rather than stores.
+//! `/sys/fs/f2fs/<dev>/` — reports the volume computes, plus the atomic-write peak control.
 //!
 //! Each of these is derived on the read, from state some other module owns, and
 //! that is deliberate: a stored copy is a second answer to the same question and
@@ -16,14 +16,16 @@ use crate::fsattr::Attr;
 use crate::mount::F2fs;
 use crate::zoned::geom::OPEN_ZONES_UNBOUNDED;
 
-use super::volume::{num, Vol};
+use super::volume::{num, num_rw, Vol};
 
-/// The reports one mount publishes that are neither a control nor stored.
+/// The reports one mount publishes, including the atomic-write peak control.
 /// # C: O(1)
 pub(crate) fn attrs(fs: &Arc<F2fs>, dev: &str) -> Vec<Attr> {
     alloc::vec![
         num(fs, dev, "avg_vblocks", avg_vblocks),
         num(fs, dev, "current_atomic_write", current_atomic_write),
+        num_rw(fs, dev, "peak_atomic_write", |v| v.peak_atomic_write(), reset_peak_atomic_write),
+        num(fs, dev, "defrag_blocks", defrag_blocks),
         num(fs, dev, "unusable_blocks_per_sec", unusable_blocks_per_sec),
         num(fs, dev, "max_open_zones", max_open_zones),
     ]
@@ -53,6 +55,19 @@ fn current_atomic_write(v: &mut Vol) -> Result<u64, Errno> {
     Ok(v.atomic_files().into_iter()
         .map(|ino| v.atomic_write_count(ino))
         .fold(0u64, u64::saturating_add))
+}
+
+/// Linux permits only zero, which clears the peak rather than accepting a
+/// replacement value. # C: O(1)
+fn reset_peak_atomic_write(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    if n != 0 { return Err(Errno::Einval); }
+    v.reset_peak_atomic_write();
+    Ok(())
+}
+
+/// Defragmentation blocks moved by successful range operations. # C: O(1)
+fn defrag_blocks(v: &mut Vol) -> Result<u64, Errno> {
+    Ok(u64::from(v.counters().defrag_blks))
 }
 
 /// Blocks a section holds that no write can ever be placed in.
