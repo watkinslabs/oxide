@@ -223,8 +223,9 @@ fn pid_wchan_body(tid: u32) -> Vec<u8> {
     if super::pid_access::ptrace_may_access(tid).is_err() { return crate::wchan_render::body(None, false); }
     let Some(task) = sched::live::registry::lookup(tid) else { return crate::wchan_render::body(None, false) };
     use core::sync::atomic::Ordering;
+    let is_current = sched::live::current().is_some_and(|current| core::ptr::eq(current, &*task));
     let reportable = sched::park_site::reportable(task.state(), task.on_rq.load(Ordering::Relaxed),
-                                                  task.on_cpu.load(Ordering::Relaxed));
+                                                  is_current);
     let site = task.park_site.get().map(|s| (s.file(), s.line()));
     crate::wchan_render::body(site, reportable)
 }
