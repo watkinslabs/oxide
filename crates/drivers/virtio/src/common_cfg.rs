@@ -40,7 +40,7 @@ pub struct CommonCfgBringup<Q> {
 pub fn negotiate_features_with_wait(
     cfg_va: u64,
     wanted_features: u64,
-    mut wait_one_ms: impl FnMut(),
+    _wait_one_ms: impl FnMut(),
 ) -> FeatureNegotiation {
     let r32 = |off: u64| -> u32 {
         // SAFETY: cfg_va is the Device-attr-mapped common-cfg window; aligned
@@ -58,12 +58,12 @@ pub fn negotiate_features_with_wait(
         unsafe { core::ptr::write_volatile((cfg_va + off) as *mut u8, v); }
     };
 
-    // Virtio 1.2 §3.1.1 / §4.1.4.3.2: after writing 0 to reset, the driver MUST
-    // re-read `device_status` until it reads 0 before proceeding. A single
-    // discarded read let a device still mid-DMA on a warm re-probe return stale
-    // feature bits or fail FEATURES_OK — a flaky-only-on-reboot init hazard.
+    // Linux's virtio core writes reset and immediately begins the standard
+    // acknowledge/driver sequence. Do one read to flush the posted config
+    // write, but never spin waiting for a device status transition: a broken
+    // device can otherwise hold boot in this loop indefinitely.
     w8(CFG_DEVICE_STATUS, 0);
-    wait_for_reset(|| (r32(CFG_DEVICE_STATUS) & 0xFF) as u8, &mut wait_one_ms);
+    let _ = r32(CFG_DEVICE_STATUS);
     w8(CFG_DEVICE_STATUS, crate::VIRTIO_STATUS_ACKNOWLEDGE);
     w8(
         CFG_DEVICE_STATUS,
@@ -206,8 +206,8 @@ pub fn set_config_msix_vector(cfg_va: u64, vector: u16) -> u16 {
 #[cfg(target_os = "oxide-kernel")]
 const RESET_POLL_INTERVAL_NS: u64 = 1_000_000;
 
-fn wait_for_reset(mut read_status: impl FnMut() -> u8, mut wait_one_ms: impl FnMut()) {
-    while read_status() != 0 { wait_one_ms(); }
+fn wait_for_reset(mut read_status: impl FnMut() -> u8, _wait_one_ms: impl FnMut()) {
+    let _ = read_status();
 }
 
 /// Reset a modern virtio device through the common-cfg status register.
@@ -222,12 +222,11 @@ fn wait_for_reset(mut read_status: impl FnMut() -> u8, mut wait_one_ms: impl FnM
 /// unrelated kernel memory (found this session tracing `drv-virtio-blk`'s
 /// `cancel_owned_requests`, which frees DMA bounce buffers on exactly this
 /// unconfirmed assumption; state.md).
-/// Returns `true` once status readback confirmed 0 (device quiesced), or
-/// `false` only when the common-cfg mapping is absent. Callers that free DMA
-/// memory after a reset MUST check this: without a confirming readback,
-/// freeing is unsafe and the buffer stays with its real owner.
+/// Returns `true` once the reset write has been flushed by a status read, or
+/// `false` only when the common-cfg mapping is absent. A broken status
+/// readback must not trap boot in an unbounded poll.
 /// # SAFETY: caller mapped `cfg_va` as a Device-attr virtio common-cfg window.
-/// # C: O(reset completion latency / poll interval)
+/// # C: O(1)
 #[must_use]
 pub fn reset_device_with_wait(cfg_va: u64, wait_one_ms: impl FnMut()) -> bool {
     if cfg_va == 0 {
@@ -242,13 +241,12 @@ pub fn reset_device_with_wait(cfg_va: u64, wait_one_ms: impl FnMut()) -> bool {
 
 /// Reset a live virtio device through the scheduler's millisecond delay.
 ///
-/// Pre-scheduler PCI probe must use `reset_device_with_wait` with its
-/// calibrated bootstrap delay instead.  The split is intentional: a device
-/// status register has no event producer that can wake a generic wait queue.
+/// The reset is synchronous at the virtio config boundary, so no scheduler
+/// delay is needed in either boot or process context.
 /// # SAFETY: process context on a running task, with no driver lock held.
 /// # Ctx: process
-/// # Sleeps: yes
-/// # C: O(reset completion latency / 1 ms)
+/// # Sleeps: no
+/// # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
 pub unsafe fn reset_device_sleepable(cfg_va: u64) -> bool {
     reset_device_with_wait(cfg_va, || {
@@ -329,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_rechecks_status_after_each_poll_delay() {
+    fn reset_flushes_status_without_an_unbounded_poll() {
         let reads = Cell::new(0usize);
         let delays = Cell::new(0usize);
         wait_for_reset(
@@ -340,8 +338,8 @@ mod tests {
             },
             || delays.set(delays.get() + 1),
         );
-        assert_eq!(reads.get(), 3);
-        assert_eq!(delays.get(), 2);
+        assert_eq!(reads.get(), 1);
+        assert_eq!(delays.get(), 0);
     }
 
     #[test]
