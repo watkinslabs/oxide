@@ -181,6 +181,8 @@ fn render_line_at_map(pixelformat: u32, width: u32, height: u32, y: u32, shift: 
             render_bayer8(pixelformat, width, height, y, shift, frame, motion, map, dst),
         fourcc::SBGGR10 | fourcc::SGBRG10 | fourcc::SGRBG10 | fourcc::SRGGB10 =>
             render_bayer10(pixelformat, width, height, y, shift, frame, motion, map, dst),
+        fourcc::SBGGR12 | fourcc::SGBRG12 | fourcc::SGRBG12 | fourcc::SRGGB12 =>
+            render_bayer12(pixelformat, width, height, y, shift, frame, motion, map, dst),
         fourcc::XRGB32 => render_quads(width, height, y, shift, frame, motion, map, dst, false),
         fourcc::ARGB32 => render_quads(width, height, y, shift, frame, motion, map, dst, true),
         fourcc::YUYV => render_yuv(width, height, y, shift, frame, motion, map, dst, 0),
@@ -246,6 +248,38 @@ fn render_bayer10(pixelformat: u32, width: u32, height: u32, y: u32, shift: u32,
             _ => return 0,
         };
         let value = ((v as u16) << 2) | ((v as u16) >> 6);
+        let at = x as usize * 2;
+        dst[at..at + 2].copy_from_slice(&value.to_le_bytes());
+    }
+    need
+}
+
+fn render_bayer12(pixelformat: u32, width: u32, height: u32, y: u32, shift: u32,
+                  frame: u32, motion: Motion, map: Option<RenderMap>, dst: &mut [u8]) -> usize {
+    let need = width as usize * 2;
+    if dst.len() < need { return 0; }
+    for x in 0..width {
+        let c = sample_pixel(x, y, width, height, shift, frame, motion, map);
+        let v = match pixelformat {
+            fourcc::SBGGR12 => match (y & 1, x & 1) {
+                (0, 0) => c.b, (0, 1) | (1, 0) => c.g, (1, 1) => c.r,
+                _ => unreachable!(),
+            },
+            fourcc::SGBRG12 => match (y & 1, x & 1) {
+                (0, 0) | (1, 1) => c.g, (0, 1) => c.b, (1, 0) => c.r,
+                _ => unreachable!(),
+            },
+            fourcc::SGRBG12 => match (y & 1, x & 1) {
+                (0, 0) | (1, 1) => c.g, (0, 1) => c.r, (1, 0) => c.b,
+                _ => unreachable!(),
+            },
+            fourcc::SRGGB12 => match (y & 1, x & 1) {
+                (0, 0) => c.r, (0, 1) | (1, 0) => c.g, (1, 1) => c.b,
+                _ => unreachable!(),
+            },
+            _ => return 0,
+        };
+        let value = ((v as u16) << 4) | ((v as u16) >> 4);
         let at = x as usize * 2;
         dst[at..at + 2].copy_from_slice(&value.to_le_bytes());
     }

@@ -207,6 +207,36 @@ fn bayer10_variants_are_right_aligned_little_endian_mosaics() {
 }
 
 #[test]
+fn bayer12_variants_are_right_aligned_little_endian_mosaics() {
+    let width = 8u32;
+    let height = 64u32;
+    for format in [fourcc::SBGGR12, fourcc::SGBRG12, fourcc::SGRBG12, fourcc::SRGGB12] {
+        let mut frame = alloc::vec![0u8; (width * height * 2) as usize];
+        assert_eq!(tpg::render_frame(format, width, height, 0, &mut frame), frame.len());
+        for y in 0..2 {
+            for x in 0..width {
+                let c = tpg::bar_at(x, width, 0);
+                let sample = match (format, y & 1, x & 1) {
+                    (fourcc::SBGGR12, 0, 0) => c.b,
+                    (fourcc::SBGGR12, 1, 1) => c.r,
+                    (fourcc::SGBRG12, 0, 1) => c.b,
+                    (fourcc::SGBRG12, 1, 0) => c.r,
+                    (fourcc::SGRBG12, 0, 1) => c.r,
+                    (fourcc::SGRBG12, 1, 0) => c.b,
+                    (fourcc::SRGGB12, 0, 0) => c.r,
+                    (fourcc::SRGGB12, 1, 1) => c.b,
+                    _ => c.g,
+                };
+                let value = ((sample as u16) << 4) | ((sample as u16) >> 4);
+                let at = (y * width + x) as usize * 2;
+                assert_eq!(&frame[at..at + 2], &value.to_le_bytes(),
+                           "format {format:#x} at ({x}, {y})");
+            }
+        }
+    }
+}
+
+#[test]
 fn packed_chroma_comes_from_the_left_pixel_of_each_pair() {
     let width = 16u32;
     let mut yuyv = alloc::vec![0u8; width as usize * 2];
