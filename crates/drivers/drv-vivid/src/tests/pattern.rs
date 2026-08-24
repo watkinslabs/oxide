@@ -179,6 +179,31 @@ fn packed_rgb565_and_luma_formats_match_linux_byte_order() {
 }
 
 #[test]
+fn packed_yuv_variants_match_linux_bit_layouts() {
+    let mut yuv555 = [0u8; 2];
+    let mut yuv565 = [0u8; 2];
+    let mut yuv444 = [0u8; 2];
+    tpg::render_line(fourcc::YUV555, 1, 0, &mut yuv555);
+    tpg::render_line(fourcc::YUV565, 1, 0, &mut yuv565);
+    tpg::render_line(fourcc::YUV444, 1, 0, &mut yuv444);
+    // The first bar is white: Y=255 and U=V=128. These are the exact
+    // little-endian layouts emitted by v4l2-tpg-core.c.
+    assert_eq!(yuv555, [0x10, 0xfe]);
+    assert_eq!(yuv565, [0x10, 0xfc]);
+    assert_eq!(yuv444, [0x88, 0xff]);
+
+    let mut yuv32 = [0u8; 4];
+    let mut yuvx32 = [0u8; 4];
+    let mut vuya32 = [0u8; 4];
+    tpg::render_line(fourcc::YUV32, 1, 0, &mut yuv32);
+    tpg::render_line(fourcc::YUVX32, 1, 0, &mut yuvx32);
+    tpg::render_line(fourcc::VUYA32, 1, 0, &mut vuya32);
+    assert_eq!(yuv32, [255, 255, 128, 128]);
+    assert_eq!(yuvx32, [255, 128, 128, 0]);
+    assert_eq!(vuya32, [128, 128, 255, 255]);
+}
+
+#[test]
 fn single_planar_formats_write_the_linux_chroma_sections() {
     let (width, height) = (8u32, 4u32);
     let y_bytes = (width * height) as usize;

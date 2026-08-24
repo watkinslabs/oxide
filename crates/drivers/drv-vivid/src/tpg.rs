@@ -160,6 +160,12 @@ fn render_line_at_map(pixelformat: u32, width: u32, height: u32, y: u32, shift: 
             }
             need
         }
+        fourcc::YUV555 => render_yuv16(width, height, y, shift, frame, motion, map, dst, 0),
+        fourcc::YUV565 => render_yuv16(width, height, y, shift, frame, motion, map, dst, 1),
+        fourcc::YUV444 => render_yuv16(width, height, y, shift, frame, motion, map, dst, 2),
+        fourcc::YUV32 | fourcc::AYUV32 | fourcc::XYUV32 | fourcc::VUYA32 |
+        fourcc::VUYX32 | fourcc::YUVA32 | fourcc::YUVX32 =>
+            render_yuv32(pixelformat, width, height, y, shift, frame, motion, map, dst),
         fourcc::XRGB32 => render_quads(width, height, y, shift, frame, motion, map, dst, false),
         fourcc::ARGB32 => render_quads(width, height, y, shift, frame, motion, map, dst, true),
         fourcc::YUYV => render_yuv(width, height, y, shift, frame, motion, map, dst, 0),
@@ -168,6 +174,65 @@ fn render_line_at_map(pixelformat: u32, width: u32, height: u32, y: u32, shift: 
         fourcc::VYUY => render_yuv(width, height, y, shift, frame, motion, map, dst, 3),
         _ => 0,
     }
+}
+
+fn render_yuv16(width: u32, height: u32, y: u32, shift: u32, frame: u32, motion: Motion,
+                map: Option<RenderMap>, dst: &mut [u8], kind: u8) -> usize {
+    let need = width as usize * 2;
+    if dst.len() < need { return 0; }
+    for x in 0..width {
+        let c = sample_pixel(x, y, width, height, shift, frame, motion, map);
+        let yy = luma(c);
+        let u = chroma_u(c);
+        let v = chroma_v(c);
+        let value = match kind {
+            // Linux first reduces each component to the format's bit depth,
+            // then writes the split fields in little-endian byte order.
+            0 => {
+                let y5 = yy >> 3;
+                let u5 = u >> 3;
+                let v5 = v >> 3;
+                (((0x80 | (y5 << 2) | (u5 >> 3)) as u16) << 8)
+                    | ((u5 as u16) << 5) | v5 as u16
+            }
+            1 => {
+                let y5 = yy >> 3;
+                let u6 = u >> 2;
+                let v5 = v >> 3;
+                (((y5 << 3) | (u6 >> 3)) as u16) << 8
+                    | ((u6 as u16) << 5) | v5 as u16
+            }
+            _ => {
+                let y4 = yy >> 4;
+                let u4 = u >> 4;
+                let v4 = v >> 4;
+                (((0xf0 | y4) as u16) << 8) | ((u4 as u16) << 4) | v4 as u16
+            }
+        };
+        dst[x as usize * 2..x as usize * 2 + 2].copy_from_slice(&value.to_le_bytes());
+    }
+    need
+}
+
+fn render_yuv32(pixelformat: u32, width: u32, height: u32, y: u32, shift: u32,
+                frame: u32, motion: Motion, map: Option<RenderMap>, dst: &mut [u8]) -> usize {
+    let need = width as usize * 4;
+    if dst.len() < need { return 0; }
+    for x in 0..width {
+        let c = sample_pixel(x, y, width, height, shift, frame, motion, map);
+        let yv = luma(c);
+        let u = chroma_u(c);
+        let v = chroma_v(c);
+        let alpha = if matches!(pixelformat, fourcc::YUV32 | fourcc::AYUV32 |
+            fourcc::VUYA32 | fourcc::YUVA32) { 255 } else { 0 };
+        let bytes = match pixelformat {
+            fourcc::VUYA32 | fourcc::VUYX32 => [v, u, yv, alpha],
+            fourcc::YUVA32 | fourcc::YUVX32 => [yv, u, v, alpha],
+            _ => [alpha, yv, u, v],
+        };
+        dst[x as usize * 4..x as usize * 4 + 4].copy_from_slice(&bytes);
+    }
+    need
 }
 
 fn render_luma16(width: u32, height: u32, y: u32, shift: u32, frame: u32, motion: Motion,
