@@ -250,11 +250,14 @@ fn only_the_high_mode_claims_the_device_is_idle_for_everything() {
 
 #[test]
 fn a_volume_touched_moments_ago_is_not_idle() {
-    use crate::bg::gc::{is_idle, IdleKind, IDLE_INTERVAL_SECS};
-    assert!(!is_idle(GcMode::Normal, IdleKind::Gc, 100, 100));
-    assert!(!is_idle(GcMode::Normal, IdleKind::Gc, 100 + IDLE_INTERVAL_SECS, 100));
-    assert!(is_idle(GcMode::Normal, IdleKind::Gc, 101 + IDLE_INTERVAL_SECS, 100));
-    assert!(is_idle(GcMode::UrgentHigh, IdleKind::Gc, 100, 100), "urgent does not wait");
+    use crate::bg::gc::{is_idle, IdleKind, DEF_IDLE_INTERVAL_SECS};
+    assert!(!is_idle(GcMode::Normal, IdleKind::Gc, 100, 100, DEF_IDLE_INTERVAL_SECS));
+    assert!(!is_idle(GcMode::Normal, IdleKind::Gc, 100 + DEF_IDLE_INTERVAL_SECS,
+                     100, DEF_IDLE_INTERVAL_SECS));
+    assert!(is_idle(GcMode::Normal, IdleKind::Gc, 101 + DEF_IDLE_INTERVAL_SECS,
+                    100, DEF_IDLE_INTERVAL_SECS));
+    assert!(is_idle(GcMode::UrgentHigh, IdleKind::Gc, 100, 100, DEF_IDLE_INTERVAL_SECS),
+            "urgent does not wait");
 }
 
 #[test]

@@ -314,9 +314,9 @@ pub fn after_gc(th: &mut GcKthread, victim_found: bool, foreground: bool) {
     }
 }
 
-/// Seconds a mount must go untouched before background work may spend the
-/// device on itself.
-pub const IDLE_INTERVAL_SECS: u64 = 5;
+/// Default seconds a mount must go untouched before background work may spend
+/// the device on itself.
+pub const DEF_IDLE_INTERVAL_SECS: u64 = 5;
 /// Linux's default zoned-volume free-space gate for background GC.
 pub const DEF_NO_ZONED_GC_PERCENT: u32 = 60;
 /// Linux's default zoned-volume acceleration threshold.
@@ -328,9 +328,10 @@ pub const DEF_BOOST_ZONED_GC_PERCENT: u32 = 25;
 /// asking for it means — and the ordinary answer is how long it has been
 /// since the mount last did anything for anybody.
 /// # C: O(1)
-pub fn is_idle(mode: GcMode, kind: IdleKind, now: u64, last_op: u64) -> bool {
+pub fn is_idle(mode: GcMode, kind: IdleKind, now: u64, last_op: u64,
+               interval_secs: u64) -> bool {
     if mode.claims_idle(kind) { return true; }
-    now.saturating_sub(last_op) > IDLE_INTERVAL_SECS
+    now.saturating_sub(last_op) > interval_secs
 }
 
 /// Whether there is enough dead space, and little enough free space, for

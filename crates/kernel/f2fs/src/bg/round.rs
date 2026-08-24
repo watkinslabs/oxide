@@ -84,7 +84,8 @@ fn conditions(fs: &Arc<F2fs>, foreground: bool, mode: GcMode,
     // read it.
     let mut v = fs.volume.lock();
     let now = v.now_secs();
-    let idle = gc::is_idle(mode, IdleKind::Gc, now, bg.last_activity());
+    let idle = gc::is_idle(mode, IdleKind::Gc, now, bg.last_activity(),
+                           bg.idle_interval(IdleKind::Gc));
     let readonly = !v.writable();
     let can_lock = !v.gc_is_running();
     let loaded = v.load_segments().is_ok();
@@ -159,7 +160,8 @@ pub fn discard_pass(fs: &Arc<F2fs>) -> DiscardPass {
         (v.utilization(), v.now_secs(), v.writable())
     };
     let mode = bg.gc_mode();
-    let idle = gc::is_idle(mode, IdleKind::Discard, now, bg.last_activity());
+    let idle = gc::is_idle(mode, IdleKind::Discard, now, bg.last_activity(),
+                           bg.idle_interval(IdleKind::Discard));
     let (round, wait_ms) = {
         let mut dcc = bg.dcc.lock();
         dcc.wake = false;

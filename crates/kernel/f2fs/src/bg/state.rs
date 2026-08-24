@@ -20,7 +20,7 @@ use syscall::errno::Errno;
 use super::ckpt::CkptControl;
 use super::ckpt::IoPrio;
 use super::discard::DiscardControl;
-use super::gc::{GcKthread, GcMode};
+use super::gc::{GcKthread, GcMode, IdleKind, DEF_IDLE_INTERVAL_SECS};
 use super::waits::Waits;
 
 /// Everything the cleaner and the discard thread share with the mount.
@@ -46,6 +46,11 @@ pub struct Bg {
     /// When the mount last did work for somebody, in the clock's seconds.
     /// Both threads yield to a volume that is being used.
     pub last_op: AtomicU64,
+    /// The three Linux idle thresholds. The request threshold is a floor for
+    /// both background consumers because every request restarts their clocks.
+    idle_interval: AtomicU64,
+    discard_idle_interval: AtomicU64,
+    gc_idle_interval: AtomicU64,
     /// Cleaning passes blocked callers have been released from.
     fggc_gen: AtomicU64,
     /// Operations that have been through the balance path since the mount.
@@ -80,6 +85,9 @@ impl Bg {
             ckpt_running: AtomicBool::new(false),
             flush_running: AtomicBool::new(false),
             last_op: AtomicU64::new(0),
+            idle_interval: AtomicU64::new(DEF_IDLE_INTERVAL_SECS),
+            discard_idle_interval: AtomicU64::new(DEF_IDLE_INTERVAL_SECS),
+            gc_idle_interval: AtomicU64::new(DEF_IDLE_INTERVAL_SECS),
             fggc_gen: AtomicU64::new(0),
             balances: AtomicU64::new(0),
             waits: Waits::new(),
@@ -239,6 +247,43 @@ impl Bg {
 
     /// When the mount last did work for somebody. # C: O(1)
     pub fn last_activity(&self) -> u64 { self.last_op.load(Ordering::Acquire) }
+
+    /// The threshold for one background consumer, including Linux's common
+    /// request-idle floor. # C: O(1)
+    pub fn idle_interval(&self, kind: IdleKind) -> u64 {
+        let request = self.idle_interval.load(Ordering::Acquire);
+        let own = match kind {
+            IdleKind::Gc => self.gc_idle_interval.load(Ordering::Acquire),
+            IdleKind::Discard => self.discard_idle_interval.load(Ordering::Acquire),
+            IdleKind::Request => request,
+        };
+        request.max(own)
+    }
+
+    /// Read one idle threshold. # C: O(1)
+    pub fn idle_control(&self, k: super::knobs::Knob) -> u64 {
+        match k {
+            super::knobs::Knob::IdleInterval => self.idle_interval.load(Ordering::Acquire),
+            super::knobs::Knob::DiscardIdleInterval =>
+                self.discard_idle_interval.load(Ordering::Acquire),
+            super::knobs::Knob::GcIdleInterval =>
+                self.gc_idle_interval.load(Ordering::Acquire),
+            _ => 0,
+        }
+    }
+
+    /// Set one idle threshold. # C: O(1)
+    pub fn set_idle_control(&self, k: super::knobs::Knob, value: u64) {
+        let target = match k {
+            super::knobs::Knob::IdleInterval => &self.idle_interval,
+            super::knobs::Knob::DiscardIdleInterval => &self.discard_idle_interval,
+            super::knobs::Knob::GcIdleInterval => &self.gc_idle_interval,
+            _ => return,
+        };
+        target.store(value, Ordering::Release);
+        self.waits.wake_gc();
+        self.waits.wake_discard();
+    }
 }
 
 #[cfg(test)]

@@ -166,6 +166,23 @@ fn a_written_control_reaches_the_machinery_and_reads_back() {
     assert_eq!(fs.bg().dcc.lock().granularity, 64, "and a refusal changed nothing");
 }
 
+#[test]
+fn idle_threshold_controls_are_live_and_wake_both_consumers() {
+    let fs = mounted("/dev/vda");
+    let attrs = mount_attrs(&fs);
+    fs.bg().gc.lock().gc_wake = false;
+    fs.bg().dcc.lock().wake = false;
+    for name in ["idle_interval", "discard_idle_interval", "gc_idle_interval"] {
+        let a = attrs.iter().find(|a| a.name == name).expect("published");
+        a.store.as_ref().unwrap()(b"17\n").expect("accepted");
+        assert_eq!((a.show)().unwrap(), b"17\n");
+    }
+    assert!(fs.bg().gc.lock().gc_wake);
+    assert!(fs.bg().dcc.lock().wake);
+    assert_eq!(fs.bg().idle_interval(crate::bg::gc::IdleKind::Gc), 17);
+    assert_eq!(fs.bg().idle_interval(crate::bg::gc::IdleKind::Discard), 17);
+}
+
 /// Setting the urgent mode through sysfs must actually start the cleaner,
 /// which is the only reason a tool writes it.
 #[test]
