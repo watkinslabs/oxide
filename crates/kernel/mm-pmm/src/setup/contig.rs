@@ -35,6 +35,8 @@ pub(crate) fn alloc_contig_nowait(order: crate::Order) -> Option<u64> {
 }
 
 fn alloc_contig_with(order: crate::Order, nowait: bool) -> Option<u64> {
+    #[cfg(test)]
+    if let Some(pa) = crate::tests::test_alloc_contig(order, nowait) { return Some(pa); }
     let p = pmm_static()?;
     for _ in 0..CONTIG_INTEGRITY_RETRY_COUNT {
         let pfn = if nowait { p.alloc_gfp_nowait(order, 0).ok()? }
@@ -131,6 +133,8 @@ pub fn alloc_contig_object_below(order: crate::Order, max_pa: u64) -> Option<u64
 /// # C: O(MAX_ORDER)
 #[track_caller]
 pub unsafe fn free_contig(pa: u64, order: crate::Order) {
+    #[cfg(test)]
+    if crate::tests::test_free_contig(pa, order) { return; }
     let p = match pmm_static() { Some(p) => p, None => return };
     let pfn = hal::Pfn(pa / PAGE_BYTES);
     if let Some(meta) = page_meta() {
