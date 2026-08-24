@@ -112,8 +112,7 @@ impl<S: SectorSource> Volume<S> {
         let last = u64::from(addr) + len as u64 - 1;
         if last >= self.sb.max_blkaddr() { return; }
         if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::ReadIo) { return; }
-        let mut buf = alloc::vec![0u8; len * BLKSIZE];
-        if self.source.read_sectors(u64::from(addr), &mut buf).is_err() { return; }
+        let Ok(buf) = self.read_source_run(addr, len) else { return };
         for j in 0..len {
             let at = addr + j as u32;
             if ty == RaMeta::Por {

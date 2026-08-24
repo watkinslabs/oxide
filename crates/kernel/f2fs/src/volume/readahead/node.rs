@@ -95,9 +95,7 @@ impl<S: SectorSource> Volume<S> {
         if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::ReadIo) {
             return Err(Errno::Eio);
         }
-        let mut buf = alloc::vec![0u8; len * BLKSIZE];
-        self.source.read_sectors(u64::from(addr), &mut buf)?;
-        Ok(buf)
+        self.read_source_run(addr, len)
     }
 }
 

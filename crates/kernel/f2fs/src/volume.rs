@@ -282,6 +282,9 @@ pub struct Volume<S: SectorSource> {
     pub(crate) reclaim_segments: u32,
     /// Maximum live-block ratio preferred against a less-live one-time victim.
     pub(crate) gc_valid_thresh_ratio: u32,
+    /// Maximum contiguous source-read size before the medium request is split.
+    /// Zero retains Linux's unlimited merge behavior.
+    pub(crate) max_io_bytes: u32,
     /// Files between START and COMMIT of an atomic write, by inode number.
     ///
     /// Never on the medium, and that is the promise: an atomic span that a

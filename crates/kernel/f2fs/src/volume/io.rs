@@ -320,8 +320,7 @@ impl<S: SectorSource> Volume<S> {
             if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::ReadIo) {
                 return Err(Errno::Eio);
             }
-            let mut fetched = vec![0u8; run.len * BLKSIZE];
-            self.source.read_sectors(u64::from(run.addr), &mut fetched)?;
+            let fetched = self.read_source_run(run.addr, run.len)?;
             for j in 0..run.len {
                 let addr = run.addr + j as u32;
                 let page = Vec::from(&fetched[j * BLKSIZE..(j + 1) * BLKSIZE]);

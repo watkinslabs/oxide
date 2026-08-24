@@ -88,6 +88,20 @@ fn a_sequential_read_is_one_request_for_the_whole_run() {
                vec![(u64::from(first), n as usize)]);
 }
 
+#[test]
+fn a_sequential_read_obeys_the_io_merge_boundary() {
+    let n = 8u64;
+    let mut v = vol_with(&(0..n).collect::<Vec<_>>(), n * BLKSIZE as u64);
+    v.set_max_io_bytes((2 * BLKSIZE) as u32);
+    let first = addr_of(&v, 0);
+    let inode = v.read_inode(FILE_INO).unwrap();
+    v.source_ref().clear();
+    v.read_whole(&inode, FILE_INO).unwrap();
+    assert_eq!(v.source_ref().reqs_in(first, n as u32),
+               vec![(u64::from(first), 2), (u64::from(first) + 2, 2),
+                    (u64::from(first) + 4, 2), (u64::from(first) + 6, 2)]);
+}
+
 /// The bytes a merged read returns are the file's bytes, in order.
 ///
 /// The request-shape test above cannot catch a run assembled with the wrong

@@ -157,7 +157,15 @@ impl<S: SectorSource> Volume<S> {
         let first_unit = crypt.map(|c| self.first_unit(c, first_index));
         let ctx = crypt.zip(first_unit).and_then(|(c, u)| c.crypt_ctx(u));
         let mut buf = vec![0u8; len * BLKSIZE];
-        self.source.read_sectors_crypt(u64::from(addr), &mut buf, ctx.as_ref())?;
+        let mut at = 0;
+        while at < len {
+            let blocks = self.io_run_blocks(len - at);
+            let end = at + blocks;
+            self.source.read_sectors_crypt(
+                u64::from(addr) + at as u64,
+                &mut buf[at * BLKSIZE..end * BLKSIZE], ctx.as_ref())?;
+            at = end;
+        }
         if let (Some(c), Some(u)) = (crypt, first_unit) {
             if !c.uses_inline_crypto() {
                 c.crypt_contents(u, &mut buf, false).map_err(|e| e.errno())?;

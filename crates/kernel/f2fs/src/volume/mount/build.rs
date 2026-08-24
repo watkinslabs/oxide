@@ -188,6 +188,7 @@ impl<S: SectorSource> Volume<S> {
         init_field!(gc_pin_file_threshold: crate::pin::policy::GC_PIN_FILE_THRESHOLD);
         init_field!(reclaim_segments: reclaim_segments);
         init_field!(gc_valid_thresh_ratio: crate::bg::gc::DEF_GC_VALID_THRESH_RATIO);
+        init_field!(max_io_bytes: 0);
         init_field!(atomic: alloc::collections::BTreeMap::new());
         init_field!(ioprio_hint: alloc::collections::BTreeMap::new());
         init_field!(compress_cache: crate::compress::cache::Cache::new(compress_cache, max_nid));

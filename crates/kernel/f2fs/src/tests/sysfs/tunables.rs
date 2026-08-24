@@ -51,7 +51,7 @@ fn store(a: &[Attr], name: &str, v: u64) -> Result<usize, VfsError> {
 fn every_volume_owned_control_is_writable() {
     let fs = mounted();
     let a = attrs(&fs);
-    for name in ["ram_thresh", "ra_nid_pages", "gc_pin_file_thresh", "reclaim_segments", "gc_valid_thresh_ratio", "max_read_extent_count", "last_age_weight",
+    for name in ["ram_thresh", "ra_nid_pages", "gc_pin_file_thresh", "reclaim_segments", "gc_valid_thresh_ratio", "max_io_bytes", "max_read_extent_count", "last_age_weight",
                  "hot_data_age_threshold", "warm_data_age_threshold",
                  "gc_segment_mode", "gc_reclaimed_segments",
                  "atgc_candidate_ratio", "atgc_candidate_count",
@@ -130,6 +130,19 @@ fn gc_valid_threshold_is_live_and_percentage_bounded() {
     assert_eq!(show(&a, "gc_valid_thresh_ratio"), 100);
     assert!(store(&a, "gc_valid_thresh_ratio", 101).is_err());
     assert_eq!(show(&a, "gc_valid_thresh_ratio"), 100);
+}
+
+#[test]
+fn max_io_bytes_is_a_live_merge_boundary() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    assert_eq!(show(&a, "max_io_bytes"), 0);
+    store(&a, "max_io_bytes", (2 * BLKSIZE) as u64).expect("store");
+    assert_eq!(fs.volume.lock().max_io_bytes(), (2 * BLKSIZE) as u32);
+    assert_eq!(show(&a, "max_io_bytes"), (2 * BLKSIZE) as u64);
+    store(&a, "max_io_bytes", 0).expect("zero means unlimited");
+    assert_eq!(show(&a, "max_io_bytes"), 0);
+    assert!(store(&a, "max_io_bytes", u64::from(u32::MAX) + 1).is_err());
 }
 
 /// The point of the knob: what is written is what the machinery then holds.
