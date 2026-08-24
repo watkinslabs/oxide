@@ -285,6 +285,9 @@ pub struct Volume<S: SectorSource> {
     /// Number of segments a background cleaner window may process in a
     /// section. Linux's `migration_window_granularity`.
     pub(crate) migration_window_granularity: u32,
+    /// Maximum number of nonempty segments migrated by one background
+    /// section window. Linux's `migration_granularity`.
+    pub(crate) migration_granularity: u32,
     /// Maximum contiguous source-read size before the medium request is split.
     /// Zero retains Linux's unlimited merge behavior.
     pub(crate) max_io_bytes: u32,

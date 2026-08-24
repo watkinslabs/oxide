@@ -53,6 +53,8 @@ pub(crate) fn attrs(fs: &Arc<F2fs>, dev: &str) -> Vec<Attr> {
                |v| u64::from(v.gc_valid_thresh_ratio()), set_gc_valid_thresh_ratio),
         num_rw(fs, dev, "migration_window_granularity",
                |v| u64::from(v.migration_window_granularity()), set_migration_window_granularity),
+        num_rw(fs, dev, "migration_granularity",
+               |v| u64::from(v.migration_granularity()), set_migration_granularity),
         num_rw(fs, dev, "max_io_bytes",
                |v| u64::from(v.max_io_bytes()), set_max_io_bytes),
     ];
@@ -225,6 +227,15 @@ fn set_migration_window_granularity(v: &mut Vol, n: u64) -> Result<(), Errno> {
     let max = u64::from(v.super_block().segs_per_sec.max(1));
     if n == 0 || n > max { return Err(Errno::Einval); }
     v.set_migration_window_granularity(n as u32);
+    Ok(())
+}
+
+/// Maximum number of nonempty segments a background section window migrates.
+/// # C: O(1)
+fn set_migration_granularity(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    let max = u64::from(v.super_block().segs_per_sec.max(1));
+    if n == 0 || n > max { return Err(Errno::Einval); }
+    v.set_migration_granularity(n as u32);
     Ok(())
 }
 
