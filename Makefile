@@ -736,6 +736,7 @@ smoke-grub:
 # exist — they appear only after the controller reset, a codec answered, the
 # generic parser found a route and the ALSA card registered.
 V4L2_SMOKE_TIMEOUT ?= 900
+LDT_SMOKE_TIMEOUT ?= 600
 ATA_IDENTITY_SMOKE_TIMEOUT ?= 900
 ATA_SAT_SMOKE_TIMEOUT ?= 900
 USB_SCSI_SMOKE_TIMEOUT ?= 900
@@ -752,7 +753,12 @@ smoke-v4l2-arm:
 smoke-v4l2:
 	OXIDE_V4L2_SMOKE=1 SMOKE_ALIVE_PROBE= SMOKE_MARKER='v4l2_probe: PASS' ./tools/boot-smoke.sh x86 $(V4L2_SMOKE_TIMEOUT) & p1=$$!; \
 	OXIDE_V4L2_SMOKE=1 SMOKE_ALIVE_PROBE= SMOKE_MARKER='v4l2_probe: PASS' ./tools/boot-smoke.sh arm $(V4L2_SMOKE_TIMEOUT) & p2=$$!; \
-	rc=0; wait $$p1 || rc=1; wait $$p2 || rc=1; exit $$rc
+	 rc=0; wait $$p1 || rc=1; wait $$p2 || rc=1; exit $$rc
+
+# x86 LDT acceptance: install a descriptor, load DS, and keep a second thread
+# on CPU1 while the CPU0 syscall converges the address space's LDT remotely.
+smoke-ldt-x86:
+	OXIDE_LDT_SMOKE=1 SMOKE_ALIVE_PROBE= SMOKE_MARKER='ldt_probe: PASS' ./tools/boot-smoke.sh x86 $(LDT_SMOKE_TIMEOUT)
 
 # Both default QEMU profiles provide the same emulated AHCI disk. This
 # acceptance opens its real `sd*` node and checks the IDENTIFY page copied

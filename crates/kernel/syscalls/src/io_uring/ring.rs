@@ -128,8 +128,12 @@ impl IoUring {
         match mmap_region(offset) {
             // A caller-supplied region reports nothing: those pages are
             // already in the caller's address space.
-            MmapRegion::Rings   => self.rings.mmap_backing(),
-            MmapRegion::Sqes    => self.sqes.mmap_backing(),
+            MmapRegion::Rings   => self.rings.mmap_backing().map(|pages| MmapBacking::Pages {
+                pages, len: self.rings.map_bytes,
+            }),
+            MmapRegion::Sqes    => self.sqes.mmap_backing().map(|pages| MmapBacking::Pages {
+                pages, len: self.sqes.map_bytes,
+            }),
             // Owned by the inode, not by this struct — routed in `mmap_backing`.
             MmapRegion::Param   => None,
             // Owned by the inode's instance table, not by this struct.

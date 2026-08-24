@@ -133,6 +133,9 @@ pub fn glue_mmap(
     // over itself is free.
     admit_current_as_growth(len_aligned as u64)?;
     let vma_backing = match (kframe, kpages, phys_range, backing) {
+        // The two kernel-backed forms are mutually exclusive ownership
+        // contracts: one VMA cannot carry both a single frame and a page run.
+        (Some(_), Some(_), _, _) => return Err(-(Errno::Einval.as_i32() as i64)),
         // Refcounted shared kernel RAM frame (single page, io_uring ring):
         // map_kernel_frame inc_ref's on fault, AS-teardown dec's — so the
         // page cannot be freed while a user mapping survives.

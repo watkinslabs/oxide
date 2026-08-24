@@ -20,6 +20,8 @@ pub const SYN_CONFIG: u16 = 0x01;
 pub const SYN_MT_REPORT: u16 = 0x02;
 
 pub const KEY_RESERVED: u16 = 0;
+pub const KEY_POWER: u16 = 116;
+pub const KEY_SLEEP: u16 = 142;
 pub const BTN_LEFT: u16 = 0x110;
 pub const BTN_RIGHT: u16 = 0x111;
 pub const BTN_MIDDLE: u16 = 0x112;
