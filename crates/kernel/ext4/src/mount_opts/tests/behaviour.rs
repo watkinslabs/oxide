@@ -117,6 +117,13 @@ fn journal_checksum_pair_is_explicit_and_last_one_wins() {
     assert!(refused("nojournal_checksum=0"));
 }
 
+#[test]
+fn acl_is_a_live_linux_superblock_policy() {
+    assert!(b("").unwrap().posix_acl);
+    assert!(b("acl").unwrap().posix_acl);
+    assert!(refused("acl=1"));
+}
+
 /// A remount naming one option keeps the answers it did not name. Re-parsing
 /// from the defaults would silently re-enable the barrier a mount had turned
 /// off, which is a durability change nobody asked for.
@@ -134,7 +141,7 @@ fn a_remount_keeps_the_options_it_does_not_name() {
 /// failing the mount — `/` is the mount at stake.
 #[test]
 fn a_key_no_consumer_owns_still_does_not_fail_the_mount() {
-    let o = Ext4MountOpts::parse("acl,user_xattr,errors=panic").unwrap();
+    let o = Ext4MountOpts::parse("user_xattr,errors=panic").unwrap();
     assert_eq!(o.behaviour.errors, ErrorsPolicy::Panic);
-    assert_eq!(o.other.len(), 2, "the keys with no consumer, and only those");
+    assert_eq!(o.other.len(), 1, "only the key with no consumer");
 }

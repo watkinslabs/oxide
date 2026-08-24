@@ -212,7 +212,10 @@ impl vfs::fs::FileSystem for Ext4RootfsFs {
     fn fs_flags(&self) -> vfs::fs::FsFlags {
         vfs::fs::FsFlags::FS_REQUIRES_DEV | vfs::fs::FsFlags::FS_ALLOW_IDMAP
     }
-    fn sb_flags(&self) -> u64 { vfs::superblock::SB_POSIXACL }
+    fn sb_flags(&self) -> u64 {
+        root().filter(|st| st.mount.behaviour().posix_acl)
+            .map_or(0, |_| vfs::superblock::SB_POSIXACL)
+    }
     /// On-disk `s_blocksize` of the published root mount. # C: O(1)
     fn block_size(&self) -> u32 { root().map(|st| st.mount.sb.block_size).unwrap_or(4096) }
     /// Install live ext4 statfs accounting (root mount's state) as `s_op`.
