@@ -58,7 +58,7 @@ fn pc_uid_map(t: u32, _s: bool) -> InodeRef { crate::userns_idmap::make(t, nscg:
 fn pc_gid_map(t: u32, _s: bool) -> InodeRef { crate::userns_idmap::make(t, nscg::user_ns::IdMapKind::Gid) }
 fn pc_projid_map(t: u32, _s: bool) -> InodeRef { crate::userns_idmap::make(t, nscg::user_ns::IdMapKind::Projid) }
 fn pc_setgroups(t: u32, _s: bool) -> InodeRef { crate::userns_idmap::make_setgroups(t) }
-fn pc_syscall(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"running\n") }
+fn pc_syscall(t: u32, _s: bool) -> InodeRef { super::pid_files::make_pid_syscall(t) }
 fn pc_empty(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"") }
 fn pc_mounts(t: u32, is_self: bool) -> InodeRef {
     crate::mounts::make_proc_mounts(if is_self { None } else { Some(t) })

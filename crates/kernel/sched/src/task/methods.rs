@@ -10,7 +10,7 @@ use vmm::AddressSpace;
 
 use crate::ARCH_CTX_SIZE;
 
-use super::{ArchCtxBuf, ArchFpuBuf, Creds, PendingWake, SigActions, SignalPending, SchedClass, Task, TaskState, WaitState};
+use super::{ArchCtxBuf, ArchFpuBuf, Creds, PendingWake, SigActions, SignalPending, SchedClass, SyscallSnapshot, Task, TaskState, WaitState};
 #[cfg(feature = "debug-watchdog")]
 use super::WakeDiagPhase;
 use super::namespaces::TaskNamespaces;
@@ -74,6 +74,15 @@ fn debug_frame_pointer() -> usize { 0 }
 fn debug_stack_pointer() -> usize { 0 }
 
 impl Task {
+    /// Publish the syscall entry snapshot consumed by procfs. # C: O(1)
+    pub fn record_syscall_snapshot(&self, snapshot: SyscallSnapshot) {
+        *self.syscall_snapshot.lock() = snapshot;
+    }
+
+    /// Read the last syscall entry without borrowing an architectural frame.
+    /// # C: O(1)
+    pub fn syscall_snapshot(&self) -> SyscallSnapshot { *self.syscall_snapshot.lock() }
+
     /// Join an existing thread group while this task is still unpublished.
     /// # C: O(1)
     pub fn join_thread_group(&mut self, group: Arc<crate::thread_group::ThreadGroup>) {
@@ -352,6 +361,7 @@ impl Task {
             }),
             last_syscall_nr: AtomicU32::new(u32::MAX),
             nsyscalls: AtomicU64::new(0),
+            syscall_snapshot: Spinlock::new(crate::task::SyscallSnapshot::default()),
             min_flt: AtomicU64::new(0),
             maj_flt: AtomicU64::new(0),
             nvcsw:   AtomicU64::new(0),

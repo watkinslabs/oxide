@@ -190,6 +190,21 @@ pid_inode_ctor!(make_pid_sched, pid_sched_body, 0x27);
 pid_gated_ctor!(make_pid_personality, pid_personality_body, crate::ino::PID_INO_TAG_PERSONALITY, "personality");
 pid_gated_ctor!(make_pid_auxv, pid_auxv_body, 0x2f, "auxv");
 pid_inode_ctor!(make_pid_wchan, pid_wchan_body, crate::ino::PID_INO_TAG_WCHAN);
+pid_gated_ctor!(make_pid_syscall, pid_syscall_body, 0x2a, "syscall");
+
+/// Linux `proc_pid_syscall`: report the saved syscall entry for an off-CPU
+/// task, or `running` only while the task is currently executing in syscall
+/// context. The snapshot is task-owned, so a blocked task does not expose a
+/// stale per-CPU frame. # C: O(1)
+fn pid_syscall_body(tid: u32) -> Vec<u8> {
+    let Some(task) = sched::live::registry::lookup(tid) else { return Vec::new() };
+    use core::sync::atomic::Ordering;
+    let in_syscall = !task.kernel_thread.load(Ordering::Acquire)
+        && task.last_syscall_nr.load(Ordering::Acquire) != u32::MAX
+        && task.on_cpu.load(Ordering::Acquire)
+        && task.vtime_state.load(Ordering::Acquire) == sched::cpustat::VTIME_SYSTEM;
+    crate::syscall_render::body(task.syscall_snapshot(), in_syscall)
+}
 
 /// Linux `proc_pid_wchan`: where a blocked task is parked. The reference
 /// unwinds the task's kernel stack past the scheduler frames and names the

@@ -76,6 +76,17 @@ pub use types::WakeDiagPhase;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PendingWake { Drop, Ready, Defer }
 
+/// The last syscall entry saved for `/proc/<pid>/syscall`. The snapshot is
+/// replaced at entry and remains readable after the task blocks or is
+/// descheduled, matching Linux's `task_current_syscall` source. # C: O(1)
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SyscallSnapshot {
+    pub nr: u32,
+    pub args: [u64; 6],
+    pub sp: u64,
+    pub ip: u64,
+}
+
 pub use uapi::{MCE_KILL_EARLY, MCE_KILL_PROCESS, SUID_DUMP_DISABLE, SUID_DUMP_ROOT,
     SUID_DUMP_USER, TASK_COMM_LEN, THP_DISABLE_COMPLETELY, THP_DISABLE_EXCEPT_ADVISED,
     THP_DISABLE_OFF};
@@ -213,6 +224,7 @@ pub struct Task {
     pub vtime_state: AtomicU8,
     pub last_syscall_nr: AtomicU32, // diag: last syscall nr entered (u32::MAX=none); stamped in diag::note_syscall
     pub nsyscalls: AtomicU64,        // diag: monotonic syscall-entry count (sysrq/watchdog dump)
+    pub syscall_snapshot: Spinlock<SyscallSnapshot, TaskListClass>,
     /// Linux `task_struct::min_flt` / `maj_flt` — page faults resolved without
     /// and with a backing-store read. Feed `/proc/<pid>/stat` fields 10/12 and
     /// `PERF_COUNT_SW_PAGE_FAULTS{,_MIN,_MAJ}`.

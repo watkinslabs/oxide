@@ -467,6 +467,14 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     // here and which nothing else writes until the next entry.
     let a5 = unsafe { crate::syscall_a5::read() };
     let args = SyscallArgs { a0, a1, a2, a3, a4, a5 };
+    if let Some(task) = dispatch_task {
+        task.record_syscall_snapshot(sched::SyscallSnapshot {
+            nr: orig_nr as u32,
+            args: [a0, a1, a2, a3, a4, a5],
+            sp: crate::arch_frame::current_user_sp(),
+            ip: crate::arch_frame::current_user_pc(),
+        });
+    }
     // Linux rseq syscall-entry work revokes a current slice grant before any
     // tracer, filter, or syscall body can observe this kernel entry.
     sched::rseq::slice_syscall_enter(nr);
