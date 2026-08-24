@@ -210,6 +210,11 @@ fn multiplanar_formats_split_the_same_linux_frame() {
         (fourcc::YUV420M, 3),
         (fourcc::YVU420M, 3),
         (fourcc::YUV422M, 3),
+        (fourcc::NV16M, 2),
+        (fourcc::NV61M, 2),
+        (fourcc::YVU422M, 3),
+        (fourcc::YUV444M, 3),
+        (fourcc::YVU444M, 3),
     ] {
         let (sizes, count) = tpg::plane_sizes(format, width, height);
         assert_eq!(count, planes);
