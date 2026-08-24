@@ -462,15 +462,6 @@ impl AddressSpace {
         self.exe_path.lock().clone()
     }
 
-    /// Snapshot of this mm's `cpumask` (Linux `mm_cpumask`): the set of
-    /// logical CPUs that may hold its user TLB entries. The TLB-shootdown
-    /// sender intersects this with the online set to target only the CPUs
-    /// that actually need invalidating.
-    /// # C: O(1)
-    pub fn cpumask(&self) -> u64 {
-        self.cpumask.load(core::sync::atomic::Ordering::Acquire).low_word()
-    }
-
     /// Full residency set for the address space.  New wide-target callers
     /// must use this rather than introducing another scalar mm mask.
     /// # C: O(words)
