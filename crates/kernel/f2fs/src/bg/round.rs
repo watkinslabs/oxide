@@ -204,7 +204,7 @@ pub fn ckpt_pass(fs: &Arc<F2fs>) -> u32 {
     let bg = fs.bg();
     let count = bg.cprc.lock().take();
     if count == 0 { return 0; }
-    let outcome = fs.checkpoint_now();
+    let outcome = fs.checkpoint_now_background();
     bg.cprc.lock().served(count, outcome);
     bg.waits.wake_ckpt();
     count

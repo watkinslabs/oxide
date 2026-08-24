@@ -23,12 +23,24 @@ use super::volume::{num, num_rw, Vol};
 pub(crate) fn attrs(fs: &Arc<F2fs>, dev: &str) -> Vec<Attr> {
     alloc::vec![
         num(fs, dev, "avg_vblocks", avg_vblocks),
+        num(fs, dev, "cp_foreground_calls", cp_foreground_calls),
+        num(fs, dev, "cp_background_calls", cp_background_calls),
         num(fs, dev, "current_atomic_write", current_atomic_write),
         num_rw(fs, dev, "peak_atomic_write", |v| v.peak_atomic_write(), reset_peak_atomic_write),
         num(fs, dev, "defrag_blocks", defrag_blocks),
         num(fs, dev, "unusable_blocks_per_sec", unusable_blocks_per_sec),
         num(fs, dev, "max_open_zones", max_open_zones),
     ]
+}
+
+/// Checkpoint requests made by foreground callers. # C: O(1)
+fn cp_foreground_calls(v: &mut Vol) -> Result<u64, Errno> {
+    Ok(u64::from(v.counters().cp_call_count[crate::stats::counters::call::TOTAL]))
+}
+
+/// Checkpoint requests served by background work. # C: O(1)
+fn cp_background_calls(v: &mut Vol) -> Result<u64, Errno> {
+    Ok(u64::from(v.counters().cp_call_count[crate::stats::counters::call::BACKGROUND]))
 }
 
 /// Mean live blocks across the sections that are neither full nor empty.

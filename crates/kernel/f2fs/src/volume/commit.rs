@@ -72,9 +72,22 @@ impl<S: SectorSource> Volume<S> {
         self.commit_with(if closing { CpReason::Umount } else { CpReason::Sync })
     }
 
+    /// Write a checkpoint attributed to the background cleaner. # C: O(dirty table blocks + pack blocks)
+    pub(crate) fn commit_background(&mut self) -> Result<(), Errno> {
+        let closing = self.sbi.is_set(crate::sbflags::bits::IS_CLOSE);
+        self.commit_with_kind(crate::stats::counters::call::BACKGROUND,
+                              if closing { CpReason::Umount } else { CpReason::Sync })
+    }
+
     /// The same, saying why.
     /// # C: O(dirty table blocks + pack blocks)
     pub fn commit_with(&mut self, reason: CpReason) -> Result<(), Errno> {
+        self.commit_with_kind(crate::stats::counters::call::TOTAL, reason)
+    }
+
+    /// Attribute and write one checkpoint at the shared mutation owner. # C: O(dirty table blocks + pack blocks)
+    fn commit_with_kind(&mut self, kind: usize, reason: CpReason) -> Result<(), Errno> {
+        self.counters.borrow_mut().inc_cp_call(kind);
         if !self.writable { return Ok(()); }
         let outcome = self.commit_attempt(reason);
         // A sync that could not be completed leaves the medium describing the

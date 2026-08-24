@@ -272,6 +272,17 @@ impl F2fs {
     /// need.
     /// # C: O(a checkpoint)
     pub fn checkpoint_now(&self) -> KResult<()> {
+        self.checkpoint_now_as(false)
+    }
+
+    /// Write one checkpoint for the merge thread and attribute it to the
+    /// background owner. # C: O(a checkpoint)
+    pub(crate) fn checkpoint_now_background(&self) -> KResult<()> {
+        self.checkpoint_now_as(true)
+    }
+
+    /// The common checkpoint entry point. # C: O(a checkpoint)
+    fn checkpoint_now_as(&self, background: bool) -> KResult<()> {
         let timeout = {
             let volume = self.volume.lock();
             volume.fault_timeout_mode(crate::fault::Fault::LockTimeout)
@@ -279,7 +290,8 @@ impl F2fs {
         if let Some(timeout) = timeout { vfs::fs_timeout(timeout); }
         let runs = {
             let mut v = self.volume.lock();
-            v.commit().map_err(errno_to_vfs)?;
+            if background { v.commit_background() } else { v.commit() }
+                .map_err(errno_to_vfs)?;
             v.take_discards()
         };
         self.queue_discards(runs);

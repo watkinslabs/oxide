@@ -219,7 +219,7 @@ impl<S: SectorSource> Volume<S> {
         if !self.writable || self.recovering { return Ok(()); }
         self.load_segments()?;
         if !needs_checkpoint(&self.bg_state(recent_io)) { return Ok(()); }
-        self.commit()
+        self.commit_background()
     }
 
     /// Keep the volume able to allocate, after an operation that used space.

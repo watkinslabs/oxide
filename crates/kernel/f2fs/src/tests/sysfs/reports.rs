@@ -34,7 +34,8 @@ fn show(attrs: &[Attr], name: &str) -> String {
 fn each_report_is_read_only_and_reads_a_number() {
     let fs = mounted();
     let attrs = crate::sysfs::mount_attrs(&fs);
-    for name in ["avg_vblocks", "current_atomic_write", "defrag_blocks",
+    for name in ["avg_vblocks", "cp_foreground_calls", "cp_background_calls",
+                 "current_atomic_write", "defrag_blocks",
                  "unusable", "unusable_blocks_per_sec", "max_open_zones"] {
         let a = attrs.iter().find(|a| a.dir == "vda" && a.name == name)
             .unwrap_or_else(|| panic!("no attribute vda/{name}"));
@@ -50,6 +51,16 @@ fn unusable_is_zero_on_a_clean_unzoned_mount() {
     let fs = mounted();
     let attrs = crate::sysfs::mount_attrs(&fs);
     assert_eq!(show(&attrs, "unusable"), "0\n");
+}
+
+#[test]
+fn checkpoint_call_reports_follow_the_real_entry_owner() {
+    let fs = mounted();
+    let attrs = crate::sysfs::mount_attrs(&fs);
+    fs.checkpoint().expect("foreground checkpoint");
+    assert_eq!(show(&attrs, "cp_foreground_calls"), "1\n");
+    fs.checkpoint_now_background().expect("background checkpoint");
+    assert_eq!(show(&attrs, "cp_background_calls"), "1\n");
 }
 
 #[test]
