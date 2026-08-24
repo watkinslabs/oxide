@@ -145,6 +145,9 @@ pub struct GcKthread {
     /// Free-section percentage above which background GC is skipped on a
     /// zoned volume. Linux's `no_zoned_gc_percent`.
     pub no_zoned_gc_percent: u32,
+    /// Free-section percentage below which zoned background GC accelerates.
+    /// Linux's `boost_zoned_gc_percent`.
+    pub boost_zoned_gc_percent: u32,
 }
 
 impl Default for GcKthread {
@@ -165,6 +168,7 @@ impl GcKthread {
             wait_ms: DEF_GC_THREAD_MIN_SLEEP_TIME,
             max_victim_search: crate::volume::gc::victim::DEF_MAX_VICTIM_SEARCH,
             no_zoned_gc_percent: 0,
+            boost_zoned_gc_percent: 0,
         }
     }
 

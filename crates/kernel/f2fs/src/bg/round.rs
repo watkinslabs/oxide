@@ -42,7 +42,8 @@ pub fn gc_pass(fs: &Arc<F2fs>) -> GcPass {
     }
     let (step, wait_before) = {
         let mut th = bg.gc.lock();
-        let c = conditions(fs, merged, th.mode);
+        let c = conditions(fs, merged, th.mode, th.no_zoned_gc_percent,
+                           th.boost_zoned_gc_percent);
         (gc::gc_round(&mut th, c, bggc), th.wait_ms)
     };
     let GcStep::Gc { sync, foreground } = step else {
@@ -70,7 +71,8 @@ pub fn gc_pass(fs: &Arc<F2fs>) -> GcPass {
 
 /// What the volume and the mount look like to the cleaner right now.
 /// # C: O(main segments)
-fn conditions(fs: &Arc<F2fs>, foreground: bool, mode: GcMode) -> Conditions {
+fn conditions(fs: &Arc<F2fs>, foreground: bool, mode: GcMode,
+              no_zoned_gc_percent: u32, boost_zoned_gc_percent: u32) -> Conditions {
     let bg = fs.bg();
     // The plain lock, not the one that stamps the clock. A background pass is
     // not an operation on anyone's behalf, and stamping the mount's clock here
@@ -81,13 +83,20 @@ fn conditions(fs: &Arc<F2fs>, foreground: bool, mode: GcMode) -> Conditions {
     let idle = gc::is_idle(mode, IdleKind::Gc, now, bg.last_activity());
     let readonly = !v.writable();
     let can_lock = !v.gc_is_running();
-    let boost = v.load_segments().is_ok() && v.worth_cleaning();
+    let loaded = v.load_segments().is_ok();
     let total = v.super_block().segment_count_main
         .div_ceil(v.super_block().segs_per_sec.max(1));
-    let percent = bg.gc.lock().no_zoned_gc_percent;
     let zoned_free_enough = crate::features::has_blkzoned(v.super_block().feature)
-        && percent != 0
-        && crate::bg::gc::enough_free_sections(v.free_section_count(), total, percent);
+        && no_zoned_gc_percent != 0
+        && crate::bg::gc::enough_free_sections(v.free_section_count(), total,
+                                               no_zoned_gc_percent);
+    let boost = loaded && if crate::features::has_blkzoned(v.super_block().feature)
+        && boost_zoned_gc_percent != 0 {
+        !crate::bg::gc::enough_free_sections(v.free_section_count(), total,
+                                             boost_zoned_gc_percent)
+    } else {
+        v.worth_cleaning()
+    };
     Conditions { readonly, frozen: false, foreground, idle, boost, can_lock, zoned_free_enough }
 }
 

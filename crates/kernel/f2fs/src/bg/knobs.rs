@@ -34,6 +34,7 @@ pub enum Knob {
     /// it, so this only ever widens or narrows the BACKGROUND pass.
     MaxVictimSearch,
     GcNoZonedGcPercent,
+    GcBoostZonedGcPercent,
     DiscardGranularity,
     MaxOrderedDiscard,
     DiscardIoAwareGran,
@@ -58,6 +59,7 @@ pub fn name(k: Knob) -> &'static str {
         Knob::GcRemainingTrials => "gc_remaining_trials",
         Knob::MaxVictimSearch => "max_victim_search",
         Knob::GcNoZonedGcPercent => "gc_no_zoned_gc_percent",
+        Knob::GcBoostZonedGcPercent => "gc_boost_zoned_gc_percent",
         Knob::DiscardGranularity => "discard_granularity",
         Knob::MaxOrderedDiscard => "max_ordered_discard",
         Knob::DiscardIoAwareGran => "discard_io_aware_gran",
@@ -75,7 +77,7 @@ pub fn name(k: Knob) -> &'static str {
 pub const ALL: &[Knob] = &[
     Knob::GcUrgentSleepTime, Knob::GcMinSleepTime, Knob::GcMaxSleepTime,
     Knob::GcNoGcSleepTime, Knob::GcUrgent, Knob::GcIdle, Knob::GcRemainingTrials,
-    Knob::MaxVictimSearch, Knob::GcNoZonedGcPercent,
+    Knob::MaxVictimSearch, Knob::GcNoZonedGcPercent, Knob::GcBoostZonedGcPercent,
     Knob::DiscardGranularity, Knob::MaxOrderedDiscard, Knob::DiscardIoAwareGran,
     Knob::DiscardIoAware, Knob::DiscardUrgentUtil, Knob::MaxDiscardRequest,
     Knob::MinDiscardIssueTime, Knob::MidDiscardIssueTime, Knob::MaxDiscardIssueTime,
@@ -94,6 +96,7 @@ pub fn show(bg: &Bg, k: Knob) -> u64 {
         Knob::GcRemainingTrials => u64::from(bg.gc.lock().remaining_trials),
         Knob::MaxVictimSearch => u64::from(bg.gc.lock().max_victim_search),
         Knob::GcNoZonedGcPercent => u64::from(bg.gc.lock().no_zoned_gc_percent),
+        Knob::GcBoostZonedGcPercent => u64::from(bg.gc.lock().boost_zoned_gc_percent),
         Knob::DiscardGranularity => u64::from(bg.dcc.lock().granularity),
         Knob::MaxOrderedDiscard => u64::from(bg.dcc.lock().max_ordered_discard),
         Knob::DiscardIoAwareGran => u64::from(bg.dcc.lock().io_aware_gran),
@@ -145,6 +148,7 @@ pub fn accepts(k: Knob, v: u64, atgc: bool) -> Result<(), Errno> {
         // pass with it set would never find a victim at all.
         Knob::MaxVictimSearch => v != 0 && v <= u64::from(u32::MAX),
         Knob::GcNoZonedGcPercent => v <= 100,
+        Knob::GcBoostZonedGcPercent => v <= 100,
     };
     if ok { Ok(()) } else { Err(Errno::Einval) }
 }
@@ -167,6 +171,7 @@ pub fn store(bg: &Bg, k: Knob, v: u64, atgc: bool) -> Result<(), Errno> {
         Knob::GcRemainingTrials => bg.gc.lock().remaining_trials = n,
         Knob::MaxVictimSearch => bg.gc.lock().max_victim_search = n,
         Knob::GcNoZonedGcPercent => bg.gc.lock().no_zoned_gc_percent = n,
+        Knob::GcBoostZonedGcPercent => bg.gc.lock().boost_zoned_gc_percent = n,
         Knob::DiscardGranularity => bg.dcc.lock().granularity = n,
         Knob::MaxOrderedDiscard => bg.dcc.lock().max_ordered_discard = n,
         Knob::DiscardIoAwareGran => bg.dcc.lock().io_aware_gran = n,
