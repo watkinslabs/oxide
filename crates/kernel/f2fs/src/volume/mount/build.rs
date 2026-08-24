@@ -113,6 +113,8 @@ impl<S: SectorSource> Volume<S> {
         let meta_cache = crate::checkpoint::cache::Cache::new(
             sb.meta_ino, sb.cp_blkaddr, sb.main_blkaddr);
         let node_ino = sb.node_ino;
+        let reclaim_segments =
+            crate::volume::gc::collect::default_reclaim_prefree_segments(sb.segment_count_main);
         // The armed in-place policy follows the volume's SIZE and the recycling
         // floor the reserve it was formatted with, so both are resolved from
         // the superblock and the checkpoint before either is moved in.
@@ -184,6 +186,7 @@ impl<S: SectorSource> Volume<S> {
         init_field!(counters: core::cell::RefCell::new(crate::stats::Counters::new()));
         init_field!(gc_segment_mode: crate::stats::counters::gc_mode::NORMAL);
         init_field!(gc_pin_file_threshold: crate::pin::policy::GC_PIN_FILE_THRESHOLD);
+        init_field!(reclaim_segments: reclaim_segments);
         init_field!(atomic: alloc::collections::BTreeMap::new());
         init_field!(ioprio_hint: alloc::collections::BTreeMap::new());
         init_field!(compress_cache: crate::compress::cache::Cache::new(compress_cache, max_nid));

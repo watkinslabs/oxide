@@ -51,7 +51,7 @@ fn store(a: &[Attr], name: &str, v: u64) -> Result<usize, VfsError> {
 fn every_volume_owned_control_is_writable() {
     let fs = mounted();
     let a = attrs(&fs);
-    for name in ["ram_thresh", "ra_nid_pages", "gc_pin_file_thresh", "max_read_extent_count", "last_age_weight",
+    for name in ["ram_thresh", "ra_nid_pages", "gc_pin_file_thresh", "reclaim_segments", "max_read_extent_count", "last_age_weight",
                  "hot_data_age_threshold", "warm_data_age_threshold",
                  "gc_segment_mode", "gc_reclaimed_segments",
                  "atgc_candidate_ratio", "atgc_candidate_count",
@@ -100,6 +100,23 @@ fn pin_collision_threshold_is_live_and_linux_bounded() {
     assert!(store(&a, "gc_pin_file_thresh",
                   u64::from(crate::pin::policy::MAX_GC_FAILED_PINNED_FILES) + 1).is_err());
     assert_eq!(show(&a, "gc_pin_file_thresh"), 0, "a refused write changed the policy");
+}
+
+#[test]
+fn reclaim_segments_is_the_live_prefree_checkpoint_threshold() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    let main = fs.volume.lock().super_block().segment_count_main;
+    assert_eq!(show(&a, "reclaim_segments"),
+               u64::from(crate::volume::gc::collect::default_reclaim_prefree_segments(main)));
+    store(&a, "reclaim_segments", 0).expect("zero is a valid Linux threshold");
+    {
+        let v = fs.volume.lock();
+        assert_eq!(v.excess_prefree(), v.prefree_count() > 0);
+    }
+    store(&a, "reclaim_segments", u64::from(u32::MAX)).expect("u32 is the field width");
+    assert_eq!(show(&a, "reclaim_segments"), u64::from(u32::MAX));
+    assert!(store(&a, "reclaim_segments", u64::from(u32::MAX) + 1).is_err());
 }
 
 /// The point of the knob: what is written is what the machinery then holds.

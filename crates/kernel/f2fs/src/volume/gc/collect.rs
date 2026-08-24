@@ -34,6 +34,13 @@ pub const RECLAIM_PREFREE_PERCENT: u32 = 5;
 /// due on volume in any case, and the share alone would defer one forever.
 pub const MAX_RECLAIM_PREFREE_SEGMENTS: u32 = 4096;
 
+/// Linux's initial `rec_prefree_segments`: five percent of main segments,
+/// capped so a large volume cannot defer the checkpoint forever. # C: O(1)
+pub const fn default_reclaim_prefree_segments(main_segments: u32) -> u32 {
+    let share = main_segments * RECLAIM_PREFREE_PERCENT / PERCENT as u32;
+    if share < MAX_RECLAIM_PREFREE_SEGMENTS { share } else { MAX_RECLAIM_PREFREE_SEGMENTS }
+}
+
 impl<S: SectorSource> Volume<S> {
     /// The segment table as victim selection sees it. # C: O(main segments)
     pub(crate) fn seg_table(&self) -> Vec<SegInfo> {
@@ -405,7 +412,12 @@ impl<S: SectorSource> Volume<S> {
     /// large one it is noise not worth a checkpoint.
     /// # C: O(1)
     pub fn excess_prefree(&self) -> bool {
-        let share = self.sb.segment_count_main * RECLAIM_PREFREE_PERCENT / PERCENT as u32;
-        self.prefree_count() > share.min(MAX_RECLAIM_PREFREE_SEGMENTS)
+        self.prefree_count() > self.reclaim_segments
     }
+
+    /// The current prefree-segment checkpoint threshold. # C: O(1)
+    pub fn reclaim_segments(&self) -> u32 { self.reclaim_segments }
+
+    /// Set Linux's `reclaim_segments` threshold. # C: O(1)
+    pub fn set_reclaim_segments(&mut self, value: u32) { self.reclaim_segments = value; }
 }

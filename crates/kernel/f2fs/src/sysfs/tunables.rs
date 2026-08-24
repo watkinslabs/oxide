@@ -47,6 +47,8 @@ pub(crate) fn attrs(fs: &Arc<F2fs>, dev: &str) -> Vec<Attr> {
                |v| u64::from(v.gc_reclaimed_segments()), set_gc_reclaimed_segments),
         num_rw(fs, dev, "gc_pin_file_thresh",
                |v| u64::from(v.gc_pin_file_threshold()), set_gc_pin_file_thresh),
+        num_rw(fs, dev, "reclaim_segments",
+               |v| u64::from(v.reclaim_segments()), set_reclaim_segments),
     ];
     out.extend(atgc::knobs::ALL.iter().map(|&k| atgc_knob(fs, dev, k)));
     out
@@ -191,6 +193,15 @@ fn set_gc_pin_file_thresh(v: &mut Vol, n: u64) -> Result<(), Errno> {
         return Err(Errno::Einval);
     }
     v.set_gc_pin_file_threshold(n as u16);
+    Ok(())
+}
+
+/// Prefree segments held before a checkpoint is requested. Linux accepts the
+/// full unsigned field, including zero for immediate reclamation pressure.
+/// # C: O(1)
+fn set_reclaim_segments(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    if n > u64::from(u32::MAX) { return Err(Errno::Einval); }
+    v.set_reclaim_segments(n as u32);
     Ok(())
 }
 

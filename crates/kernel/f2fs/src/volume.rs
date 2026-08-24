@@ -277,6 +277,9 @@ pub struct Volume<S: SectorSource> {
     /// Number of cleaner collisions a pinned file may absorb before Linux
     /// drops its pin. Tunable through the volume's sysfs owner.
     pub(crate) gc_pin_file_threshold: u16,
+    /// Prefree segments held before a checkpoint is requested. Linux exposes
+    /// this volume-owned threshold as `reclaim_segments`.
+    pub(crate) reclaim_segments: u32,
     /// Files between START and COMMIT of an atomic write, by inode number.
     ///
     /// Never on the medium, and that is the promise: an atomic span that a
