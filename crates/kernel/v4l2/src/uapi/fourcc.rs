@@ -66,6 +66,10 @@ pub const SBGGR8: u32 = 0x3138_4142;
 pub const SGBRG8: u32 = 0x4752_4247;
 pub const SGRBG8: u32 = 0x4742_5247;
 pub const SRGGB8: u32 = 0x4247_4752;
+pub const SBGGR10: u32 = 0x3031_4742;
+pub const SGBRG10: u32 = 0x3031_4247;
+pub const SGRBG10: u32 = 0x3031_4142;
+pub const SRGGB10: u32 = 0x3031_4752;
 pub const GREY: u32 = 0x5945_5247;
 pub const Y10: u32 = 0x2030_3159;
 pub const Y12: u32 = 0x2032_3159;
@@ -118,7 +122,8 @@ pub fn size_rule(pixelformat: u32) -> Option<SizeRule> {
     Some(match pixelformat {
         GREY | SBGGR8 | SGBRG8 | SGRBG8 | SRGGB8 => SizeRule::Packed { bits_per_pixel: 8 },
         RGB332 => SizeRule::Packed { bits_per_pixel: 8 },
-        Y10 | Y12 | Y16 | Y16_BE => SizeRule::Packed { bits_per_pixel: 16 },
+        Y10 | Y12 | Y16 | Y16_BE | SBGGR10 | SGBRG10 | SGRBG10 | SRGGB10 =>
+            SizeRule::Packed { bits_per_pixel: 16 },
         YUYV | UYVY | YVYU | VYUY | RGB565 | RGB565X |
         RGB444 | ARGB444 | XRGB444 | RGBA444 | RGBX444 | ABGR444 | XBGR444 | BGRA444 | BGRX444 |
         RGB555 | ARGB555 | XRGB555 | RGBA555 | RGBX555 | ABGR555 | XBGR555 | BGRA555 | BGRX555 |
