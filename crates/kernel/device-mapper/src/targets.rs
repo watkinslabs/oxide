@@ -8,6 +8,7 @@
 pub mod crypt;
 pub mod linear;
 pub mod stripe;
+pub mod snapshot;
 pub mod trivial;
 
 pub use trivial::{delay, error, zero};

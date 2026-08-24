@@ -118,7 +118,6 @@ pub trait ExceptionStore: Send + Sync {
 
 /// A store that keeps nothing: the snapshot dies with the machine.
 pub struct TransientStore {
-    chunk_sectors: u64,
     next_free: u64,
     total: u64,
 }
@@ -126,7 +125,7 @@ pub struct TransientStore {
 impl TransientStore {
     /// A store over a device of `device_sectors`. # C: O(1)
     pub fn new(chunk_sectors: u64, device_sectors: u64) -> Self {
-        Self { chunk_sectors, next_free: 0, total: device_sectors / chunk_sectors }
+        Self { next_free: 0, total: device_sectors / chunk_sectors }
     }
 }
 
@@ -156,6 +155,7 @@ pub struct PersistentStore {
     pending: Vec<Exception>,
     current_area: u64,
     valid: bool,
+    header_seen: bool,
 }
 
 impl PersistentStore {
@@ -169,8 +169,17 @@ impl PersistentStore {
             // Chunk zero is the header, and the first metadata area follows
             // it, so the first data chunk is the one after that.
             next_free: NUM_SNAPSHOT_HDR_CHUNKS + 1,
-            pending: Vec::new(), current_area: 0, valid: true,
+            pending: Vec::new(), current_area: 0, valid: true, header_seen: false,
         }
+    }
+
+    /// Read an existing store, or initialize the header when this is a new
+    /// COW device. An existing invalid header stays invalid; resetting it
+    /// would turn a torn snapshot into an apparently valid one. # C: O(N)
+    pub fn load_or_initialize(&mut self) -> Vec<Exception> {
+        let records = self.read_metadata();
+        if !self.header_seen { let _ = self.write_header(true); }
+        records
     }
 
     /// Write the header, marking the store valid or not. # C: O(chunk)
@@ -209,6 +218,7 @@ impl ExceptionStore for PersistentStore {
     fn read_metadata(&mut self) -> Vec<Exception> {
         let Some(head) = self.chunk_read(0) else { self.valid = false; return Vec::new() };
         let Some(h) = DiskHeader::decode(&head) else { self.valid = false; return Vec::new() };
+        self.header_seen = true;
         if !h.valid { self.valid = false; return Vec::new(); }
         let mut out = Vec::new();
         let mut area = 0u64;
