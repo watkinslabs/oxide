@@ -138,6 +138,11 @@ mod tests {
         assert_eq!(crate::restart_array_read_write(dev_t), Ok(()));
         assert_eq!(array.mapping.write_at(0, &[0x44; 512]), Ok(512));
         assert_eq!(crate::stop_array_read_only(dev_t), Ok(()), "final stop may follow completed read-only service");
+        let left_dev_t = block::registry::encode_dev(left_part.number_dev.major, left_part.number_dev.minor);
+        assert_eq!(crate::set_disk_faulty(dev_t, left_dev_t), Ok(()));
+        assert_eq!(crate::array_info(dev_t).expect("faulted MD array").failed_disks, 1);
+        assert_eq!(crate::array_info(dev_t).expect("faulted MD array").active_disks, 1);
+        assert_eq!(crate::disk_info(dev_t, 0).expect("faulted MD member").state, 1);
         let name = array.name.clone();
         assert_eq!(crate::stop_array(dev_t), Ok(()));
         let mut stopped = BlockRequest::new_read(17, 1, 512); left.submit_sync(&mut stopped).expect("final cache drain");

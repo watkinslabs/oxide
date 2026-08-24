@@ -26,6 +26,8 @@ pub const RAID_VERSION: u64 = ior(0x10, VERSION_BYTES as u64);
 pub const GET_ARRAY_INFO: u64 = ior(0x11, ARRAY_INFO_BYTES as u64);
 /// `GET_DISK_INFO`, `_IOR(9, 0x12, mdu_disk_info_t)`.
 pub const GET_DISK_INFO: u64 = ior(0x12, DISK_INFO_BYTES as u64);
+/// `SET_DISK_FAULTY`, `_IO(9, 0x29)`.
+pub const SET_DISK_FAULTY: u64 = io(0x29);
 /// `STOP_ARRAY`, `_IO(9, 0x32)`.
 pub const STOP_ARRAY: u64 = io(0x32);
 /// `STOP_ARRAY_RO`, `_IO(9, 0x33)`.
@@ -103,7 +105,7 @@ mod tests {
     #[test]
     fn linux_md_ioctl_numbers_and_native_layouts_are_exact() {
         assert_eq!((RAID_VERSION, GET_ARRAY_INFO, GET_DISK_INFO), (0x800c_0910, 0x8048_0911, 0x8014_0912));
-        assert_eq!((STOP_ARRAY, STOP_ARRAY_RO, RESTART_ARRAY_RW), (0x0000_0932, 0x0000_0933, 0x0000_0934));
+        assert_eq!((SET_DISK_FAULTY, STOP_ARRAY, STOP_ARRAY_RO, RESTART_ARRAY_RW), (0x0000_0929, 0x0000_0932, 0x0000_0933, 0x0000_0934));
         assert_eq!(Version::current().encode(), [0, 0, 0, 0, 90, 0, 0, 0, 3, 0, 0, 0]);
         let info = ArrayInfo { major_version: 1, minor_version: 2, patch_version: 3, ctime: 4, level: -1, size: 6, nr_disks: 2, raid_disks: 2, md_minor: 7, not_persistent: 0, utime: 8, state: 1, active_disks: 2, working_disks: 2, failed_disks: 0, spare_disks: 0, layout: 9, chunk_size: 10 };
         assert_eq!(info.encode().len(), ARRAY_INFO_BYTES); assert_eq!(&info.encode()[16..24], &[0xff, 0xff, 0xff, 0xff, 6, 0, 0, 0]);

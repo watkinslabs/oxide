@@ -23,10 +23,11 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use block::{BlockDevice, BlockError, BlockOp, BlockRequest, KResult, QueueLimits};
+use sync::{Devices as MdStateClass, Spinlock};
 
 pub use superblock::{MetadataVersion, Superblock, read_superblock};
 pub use assembly::assemble;
-pub use control::{array_info, disk_info, is_md_device, restart_array_read_write, stop_array, stop_array_read_only};
+pub use control::{array_info, disk_info, is_md_device, restart_array_read_write, set_disk_faulty, stop_array, stop_array_read_only};
 
 /// Linux's fixed block major for MD arrays. # C: O(1)
 pub const MD_MAJOR: u32 = 9;
@@ -48,6 +49,7 @@ pub struct Array {
     capacity: u64,
     metadata: Option<control::Metadata>,
     lifecycle: lifecycle::State,
+    faulty: Spinlock<Vec<bool>, MdStateClass>,
 }
 
 impl Array {
@@ -90,7 +92,8 @@ impl Array {
             Level::Raid1 => members.iter().map(|member| member.capacity_blocks()).min().ok_or(BlockError::Einval)?,
         };
         if capacity == 0 { return Err(BlockError::Einval); }
-        Ok(Arc::new(Self { level, members, block_size, capacity, metadata, lifecycle: lifecycle::State::new() }))
+        Ok(Arc::new(Self { level, faulty: Spinlock::new(vec![false; members.len()]), members,
+            block_size, capacity, metadata, lifecycle: lifecycle::State::new() }))
     }
 
     /// Array personality. # C: O(1)
@@ -108,6 +111,26 @@ impl Array {
     pub(crate) fn cancel_read_only(&self) { self.lifecycle.cancel_read_only(); }
     /// Return the array to writable service. # C: O(1)
     pub(crate) fn restart_read_write(&self) -> KResult<()> { self.lifecycle.restart_read_write() }
+
+    /// Mark one assembled member faulty using its canonical Linux device number.
+    /// The state transition is owned by the array, so reporting and I/O observe
+    /// one value. A RAID1 array must retain one working member. # C: O(members)
+    pub fn set_disk_faulty(&self, dev_t: u32) -> KResult<()> {
+        let metadata = self.metadata.as_ref().ok_or(BlockError::Enxio)?;
+        let member = metadata.members.iter().position(|member|
+            block::registry::encode_dev(member.number_dev.major, member.number_dev.minor) == dev_t)
+            .ok_or(BlockError::Enxio)?;
+        let mut faulty = self.faulty.lock();
+        if faulty[member] { return Ok(()); }
+        if self.level == Level::Raid1 && faulty.iter().filter(|faulty| !**faulty).count() <= 1 {
+            return Err(BlockError::Ebusy);
+        }
+        faulty[member] = true;
+        Ok(())
+    }
+
+    pub(crate) fn member_faulty(&self, member: usize) -> bool { self.faulty.lock().get(member).copied().unwrap_or(true) }
+    pub(crate) fn failed_members(&self) -> usize { self.faulty.lock().iter().filter(|faulty| **faulty).count() }
 
     fn validate(&self, request: &BlockRequest) -> KResult<()> {
         let end = request.start_block.checked_add(u64::from(request.len_blocks)).ok_or(BlockError::Einval)?;
@@ -135,6 +158,7 @@ impl Array {
 
     fn submit_piece(&self, member: usize, member_block: u64, request: &mut BlockRequest,
                     blocks: u32, byte_offset: usize) -> KResult<()> {
+        if self.member_faulty(member) { return Err(BlockError::Eio); }
         let mut child = self.child_request(request, member_block, blocks, byte_offset)?;
         self.members[member].submit_sync(&mut child)?;
         if request.op == BlockOp::Read {
@@ -202,6 +226,7 @@ impl Array {
             _ => {
                 let mut failure = None;
                 for member in 0..self.members.len() {
+                    if self.member_faulty(member) { continue; }
                     if let Err(error) = self.submit_piece(member, request.start_block, request, request.len_blocks, 0) {
                         failure.get_or_insert(error);
                     }
@@ -227,7 +252,8 @@ impl BlockDevice for Array {
     }
     fn flush(&self) -> KResult<()> {
         let mut failure = None;
-        for member in &self.members {
+        for (index, member) in self.members.iter().enumerate() {
+            if self.member_faulty(index) { continue; }
             if let Err(error) = member.flush() { failure.get_or_insert(error); }
         }
         failure.map_or(Ok(()), Err)

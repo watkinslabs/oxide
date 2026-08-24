@@ -47,6 +47,13 @@ pub fn disk_info(dev_t: u32, number: i32) -> Option<uapi::DiskInfo> {
     Some(lookup(disk.number.minor)?.disk_info(number))
 }
 
+/// Mark one live member faulty through the canonical MD control owner.
+/// # C: O(disks + members) # Ctx: process # Sleeps: no
+pub fn set_disk_faulty(dev_t: u32, member_dev_t: u32) -> KResult<()> {
+    let (_disk, array) = live_array(dev_t)?;
+    array.set_disk_faulty(member_dev_t)
+}
+
 /// Put a live assembled array into read-only service. New opens and writes
 /// close before the block-device mapping drains its existing dirty pages;
 /// later writes observe `EROFS` until [`restart_array_read_write`].
@@ -153,12 +160,13 @@ impl Array {
         let size = self.capacity.checked_mul(u64::from(self.block_size))?.checked_div(1024)?;
         let size = i32::try_from(size).unwrap_or(-1);
         let disks = i32::try_from(metadata.members.len()).ok()?;
+        let failed = i32::try_from(self.failed_members()).ok()?;
         Some(uapi::ArrayInfo {
             major_version: 1, minor_version: metadata.minor_version, patch_version: uapi::MD_PATCHLEVEL_VERSION,
             ctime: u32::try_from(metadata.ctime).unwrap_or(u32::MAX), level: metadata.level, size,
             nr_disks: disks, raid_disks: i32::try_from(metadata.raid_disks).ok()?, md_minor: i32::try_from(md_minor).ok()?, not_persistent: 0,
-            utime: u32::try_from(metadata.utime).unwrap_or(u32::MAX), state: 1, active_disks: disks, working_disks: disks,
-            failed_disks: 0, spare_disks: 0, layout: metadata.layout as i32,
+            utime: u32::try_from(metadata.utime).unwrap_or(u32::MAX), state: 1, active_disks: disks - failed, working_disks: disks - failed,
+            failed_disks: failed, spare_disks: 0, layout: metadata.layout as i32,
             chunk_size: i32::try_from(u64::from(metadata.chunk_sectors).checked_mul(512)?).unwrap_or(-1),
         })
     }
@@ -168,6 +176,10 @@ impl Array {
         let Some(member) = u32::try_from(number).ok().and_then(|number| metadata.members.iter().find(|member| member.number == number)) else {
             return removed(number);
         };
+        if self.member_faulty(metadata.members.iter().position(|candidate| candidate.number == member.number).unwrap_or(usize::MAX)) {
+            return uapi::DiskInfo { number, major: member.number_dev.major as i32, minor: member.number_dev.minor as i32,
+                raid_disk: member.raid_disk, state: 1 << 0 };
+        }
         uapi::DiskInfo { number, major: member.number_dev.major as i32, minor: member.number_dev.minor as i32,
             raid_disk: member.raid_disk, state: (1 << 1) | (1 << 2) }
     }
