@@ -29,6 +29,8 @@ pub const DEF_GC_THREAD_MIN_SLEEP_TIME: u32 = 30_000;
 pub const DEF_GC_THREAD_MAX_SLEEP_TIME: u32 = 60_000;
 /// The interval after a pass that found nothing worth cleaning.
 pub const DEF_GC_THREAD_NOGC_SLEEP_TIME: u32 = 300_000;
+/// Linux's one-time-GC live-block ratio ceiling.
+pub const DEF_GC_VALID_THRESH_RATIO: u32 = 80;
 
 /// Share of the volume that must be dead before background cleaning is worth
 /// the writes it costs.

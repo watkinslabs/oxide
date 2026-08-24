@@ -280,6 +280,8 @@ pub struct Volume<S: SectorSource> {
     /// Prefree segments held before a checkpoint is requested. Linux exposes
     /// this volume-owned threshold as `reclaim_segments`.
     pub(crate) reclaim_segments: u32,
+    /// Maximum live-block ratio preferred against a less-live one-time victim.
+    pub(crate) gc_valid_thresh_ratio: u32,
     /// Files between START and COMMIT of an atomic write, by inode number.
     ///
     /// Never on the medium, and that is the promise: an atomic span that a

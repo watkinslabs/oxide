@@ -7,7 +7,8 @@
 use alloc::vec::Vec;
 
 use crate::volume::gc::victim::{
-    pick_unit, section_mtime, unit_cost, unit_eligible, unit_mtime_span, units, Found, Policy,
+    pick_unit, pick_unit_with_valid_thresh, section_mtime, unit_cost, unit_eligible,
+    unit_mtime_span, units, Found, Policy,
     Search, SegInfo, Unit, DEF_MAX_VICTIM_SEARCH,
 };
 
@@ -95,6 +96,15 @@ fn cost_benefit_over_sections_prefers_the_older_of_two_alike() {
     assert!(old < young, "an older section is cheaper to justify cleaning");
     let found = pick_unit(&us, PER, 2, Search::foreground(Policy::CostBenefit), &[]).unwrap();
     assert_eq!(found.segno, 2);
+}
+
+#[test]
+fn one_time_gc_live_ratio_ceiling_prefers_a_less_live_section() {
+    let t = [seg(0, 90, 1_000), seg(1, 50, 0)];
+    let us = units(&t, 100, 1);
+    let found = pick_unit_with_valid_thresh(
+        &us, 100, 1, Search::foreground(Policy::Greedy), &[], 80).unwrap();
+    assert_eq!(found.segno, 1, "a section at or above the Linux ratio is max-cost");
 }
 
 #[test]

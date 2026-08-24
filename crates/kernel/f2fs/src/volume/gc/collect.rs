@@ -86,16 +86,24 @@ impl<S: SectorSource> Volume<S> {
     /// The section worth cleaning next under `search`, and where the search
     /// after it should resume. # C: O(main segments)
     pub fn search_victim(&self, search: Search, skip: &[u32]) -> Option<Found> {
+        self.search_victim_with_valid_thresh(search, skip, 100)
+    }
+
+    /// The foreground/one-time search with Linux's live-ratio ceiling. # C: O(main segments)
+    pub fn search_victim_with_valid_thresh(&self, search: Search, skip: &[u32], ratio: u32)
+        -> Option<Found> {
         let table = self.seg_table();
         let units = victim::units(&table, self.sb.blks_per_seg() as u16, self.sb.segs_per_sec);
-        victim::pick_unit(&units, self.sb.blks_per_seg() as u16, self.sb.segs_per_sec,
-                          search, skip)
+        victim::pick_unit_with_valid_thresh(&units, self.sb.blks_per_seg() as u16,
+                                            self.sb.segs_per_sec, search, skip, ratio)
     }
 
     /// The section worth cleaning next for a caller that needs space now.
     /// # C: O(main segments)
     pub fn pick_victim(&self, policy: Policy, skip: &[u32]) -> Option<u32> {
-        self.search_victim(Search::foreground(policy), skip).map(|f| f.segno)
+        self.search_victim_with_valid_thresh(Search::foreground(policy), skip,
+                                             self.gc_valid_thresh_ratio)
+            .map(|f| f.segno)
     }
 
     /// Clean `segno`: move out everything still live in it.
@@ -292,7 +300,8 @@ impl<S: SectorSource> Volume<S> {
                 _ => {
                     let search =
                         Search { offset: self.segstate.gc_cursor, ..Search::foreground(policy) };
-                    let Some(found) = self.search_victim(search, skip) else { break };
+                    let Some(found) = self.search_victim_with_valid_thresh(
+                        search, skip, self.gc_valid_thresh_ratio) else { break };
                     self.segstate.gc_cursor = found.cursor;
                     // A section this caller is about to empty is no longer
                     // worth remembering as a candidate.
@@ -420,4 +429,12 @@ impl<S: SectorSource> Volume<S> {
 
     /// Set Linux's `reclaim_segments` threshold. # C: O(1)
     pub fn set_reclaim_segments(&mut self, value: u32) { self.reclaim_segments = value; }
+
+    /// The one-time-GC live-block ratio threshold. # C: O(1)
+    pub fn gc_valid_thresh_ratio(&self) -> u32 { self.gc_valid_thresh_ratio }
+
+    /// Set Linux's `gc_valid_thresh_ratio` control. # C: O(1)
+    pub fn set_gc_valid_thresh_ratio(&mut self, value: u32) {
+        self.gc_valid_thresh_ratio = value;
+    }
 }

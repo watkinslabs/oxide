@@ -49,6 +49,8 @@ pub(crate) fn attrs(fs: &Arc<F2fs>, dev: &str) -> Vec<Attr> {
                |v| u64::from(v.gc_pin_file_threshold()), set_gc_pin_file_thresh),
         num_rw(fs, dev, "reclaim_segments",
                |v| u64::from(v.reclaim_segments()), set_reclaim_segments),
+        num_rw(fs, dev, "gc_valid_thresh_ratio",
+               |v| u64::from(v.gc_valid_thresh_ratio()), set_gc_valid_thresh_ratio),
     ];
     out.extend(atgc::knobs::ALL.iter().map(|&k| atgc_knob(fs, dev, k)));
     out
@@ -202,6 +204,14 @@ fn set_gc_pin_file_thresh(v: &mut Vol, n: u64) -> Result<(), Errno> {
 fn set_reclaim_segments(v: &mut Vol, n: u64) -> Result<(), Errno> {
     if n > u64::from(u32::MAX) { return Err(Errno::Einval); }
     v.set_reclaim_segments(n as u32);
+    Ok(())
+}
+
+/// Maximum live-block ratio admitted before a one-time victim receives the
+/// Linux maximum cost. # C: O(1)
+fn set_gc_valid_thresh_ratio(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    if n > 100 { return Err(Errno::Einval); }
+    v.set_gc_valid_thresh_ratio(n as u32);
     Ok(())
 }
 
