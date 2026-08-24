@@ -61,8 +61,18 @@ fn register_pci_model_drivers() {
     #[cfg(target_arch = "x86_64")]
     drv::register_driver(&drv_bochs::BOCHS_DRIVER);
     drv::register_driver(&drv_xhci::XHCI_DRIVER);
-    drv::register_driver(&drv_hda::HDA_DRIVER);
     virtio_drv::register_model_drivers();
+}
+
+/// Register HDA after the boot workqueue exists. Linux's PCI driver core may
+/// probe codec graphs asynchronously; keeping this optional audio probe out of
+/// the BSP's synchronous PCI publication prevents a missing codec response
+/// from serializing the whole boot while preserving normal driver binding.
+pub fn register_deferred_hda() {
+    fn register(_: usize) { drv::register_driver(&drv_hda::HDA_DRIVER); }
+    if !sched::live::workqueue::queue_work(register, 0) {
+        drv::register_driver(&drv_hda::HDA_DRIVER);
+    }
 }
 
 fn resolve_firmware_intx(bdf: pci::Bdf, pin: u8) -> Option<pci_irq::IntxRoute> {
@@ -264,7 +274,6 @@ fn finish_probe_irq_window() {
     }
     #[cfg(target_arch = "x86_64")]
     {
-        for _ in 0..2_000_000 { core::hint::spin_loop(); }
         debug_boot! {
             let pre = arch_irq::MSI_FIRES.load(core::sync::atomic::Ordering::Acquire);
             // SAFETY: LAPIC mapped+enabled; ICR write is well-defined; self-shorthand targets this CPU; IF=1 from the sti above.

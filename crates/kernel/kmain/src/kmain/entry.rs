@@ -98,6 +98,7 @@ fn spawn_kthreads() {
         klog::kerror!("fatal: kworker spawn failed");
         sched::halt_forever();
     }
+    step("pci_boot::register_deferred_hda", crate::pci_boot::register_deferred_hda);
     #[cfg(target_arch = "aarch64")]
     step("firmware::fdt::cpufreq::start_deferred", firmware::fdt::cpufreq::start_deferred);
     #[cfg(target_arch = "aarch64")]

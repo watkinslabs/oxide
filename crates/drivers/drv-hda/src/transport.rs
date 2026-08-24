@@ -228,7 +228,13 @@ pub fn exec(regs: &Regs, ring_lock: &RegLock<Rings>, command: u32) -> Option<u32
             if rings.pending[addr] == 0 { return Some(rings.response[addr]); }
         }
         if now_ns() >= deadline { break; }
-        udelay(RESPONSE_POLL_US);
+        // This path runs from the process-context HDA probe. Linux sleeps
+        // between CORB/RIRB checks; spinning here monopolizes Oxide's single
+        // kworker while an absent codec consumes the one-second timeout.
+        let wake = now_ns().saturating_add(RESPONSE_POLL_US * 1_000);
+        // SAFETY: the ring lock is dropped above and this is a process-context
+        // probe with no scheduler-owned lock held across the sleep.
+        unsafe { sched::live::sleep_uninterruptible_until(wake, now_ns); }
     }
     // The ring never answered: forget the outstanding command so the next
     // one is not matched against this response, and try the direct path.

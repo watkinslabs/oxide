@@ -2,6 +2,10 @@
 
 | FIXED 986508f47 | MISSING | med | **Task and per-CPU hard-IRQ stacks now expose Linux-style runtime high-water accounting, and hard-IRQ nesting is bounded by the preemption field.** Zero-filled stacks scan from the low end at task teardown or IRQ/softirq entry; monotonic maxima are retained, the hard-IRQ depth maximum is recorded per CPU, overflow is rejected before the four-bit field wraps, and SysRq `u` reports the task/IRQ watermarks and maximum nesting depth. | Linux zero-fill/first-nonzero stack accounting and hard-IRQ preemption-field shape; `sched::kstack`, `sched::preempt`, the x86/aarch64 IRQ-stack SP readers, and the canonical SysRq table/perform path. Scheduler, SysRq, both HAL suites, and x86_64/aarch64 kernel-target checks pass. | 986508f47 |
 
+### B262601-pci-enumeration-delay
+
+| FIXED 74b001324 | DEFECT | high | **PCI boot no longer serializes normal startup behind fixed waits and synchronous optional-device probes.** The x86 post-enumeration busy wait was removed; virtio reset now follows Linux's write-and-read-flush sequence without an unbounded status poll; HDA registration is queued after kworkers exist, and its CORB/RIRB response loop sleeps between checks instead of monopolizing the BSP worker. This preserves PCI publication, driver matching, codec enumeration, and real audio binding while allowing userspace startup to proceed. | Linux `drivers/virtio/virtio.c::virtio_reset_device`, `sound/hda/core/controller.c::{snd_hdac_bus_init_cmd_io,snd_hdac_bus_get_response_rirb}`, and asynchronous process-context driver work. Before: PCI `00:13.0` HDA publication at 3.028s did not return until 42.036s; after: boot reached root mount at 4.083s and systemd queued `graphical.target` at 5.112s. No `[FAULT]`, `[BUG]`, `[PREEMPT-LEAK]`, or soft-lockup record appeared after the change. `drv-hda` 91/91, `virtio` 106/106, `pci-boot` passed; x86/aarch64 feature gates remain blocked by the pre-existing missing `VmaBacking::KernelPages` arm in `crates/kernel/mm-pmm/src/user_as/debug.rs:128`. | 74b001324 |
+
 ### B2621-nftables-packet-path
 
 | Status | Class | Sev | Issue | Evidence | Owner |
