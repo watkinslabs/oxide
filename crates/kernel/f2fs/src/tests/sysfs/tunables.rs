@@ -94,6 +94,17 @@ fn unmount_discard_timeout_is_a_live_volume_control() {
 }
 
 #[test]
+fn zoned_allocation_policy_is_a_live_control() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    assert_eq!(show(&a, "blkzone_alloc_policy"),
+               crate::volume::zonewp::BLKZONE_ALLOC_PRIOR_SEQ as u64);
+    store(&a, "blkzone_alloc_policy", 2).expect("conventional-first policy");
+    assert_eq!(fs.volume.lock().blkzone_alloc_policy(), 2);
+    assert!(store(&a, "blkzone_alloc_policy", 3).is_err());
+}
+
+#[test]
 fn every_volume_owned_control_is_writable() {
     let fs = mounted();
     let a = crate::sysfs::mount_attrs(&fs);

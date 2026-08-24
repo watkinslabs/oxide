@@ -82,6 +82,8 @@ pub(crate) fn attrs(fs: &Arc<F2fs>, dev: &str) -> Vec<Attr> {
                |v| u64::from(v.allocate_section_hint()), set_allocate_section_hint),
         num_rw(fs, dev, "allocate_section_policy",
                |v| u64::from(v.allocate_section_policy()), set_allocate_section_policy),
+        num_rw(fs, dev, "blkzone_alloc_policy",
+               |v| u64::from(v.blkzone_alloc_policy()), set_blkzone_alloc_policy),
     ];
     out.extend(atgc::knobs::ALL.iter().map(|&k| atgc_knob(fs, dev, k)));
     out
@@ -144,6 +146,11 @@ fn set_umount_discard_timeout(v: &mut Vol, n: u64) -> Result<(), Errno> {
 /// Boundary policy used by regular forward allocation. # C: O(1)
 fn set_allocate_section_policy(v: &mut Vol, n: u64) -> Result<(), Errno> {
     v.set_allocate_section_policy(n)
+}
+
+/// Zoned regular-allocation preference. # C: O(1)
+fn set_blkzone_alloc_policy(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    v.set_blkzone_alloc_policy(n)
 }
 
 /// Number of NAT pages to prefetch after a free-NID scan. Zero is Linux's

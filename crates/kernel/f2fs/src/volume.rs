@@ -204,6 +204,9 @@ pub struct Volume<S: SectorSource> {
     /// Section boundary and forward-search policy used by new logs.
     pub(crate) allocate_section_hint: u32,
     pub(crate) allocate_section_policy: u32,
+    /// Zoned regular-allocation preference: sequential, only sequential, or
+    /// conventional first.
+    pub(crate) blkzone_alloc_policy: u32,
     /// Seconds between periodic checkpoints on an otherwise quiet mount.
     pub(crate) cp_interval_secs: u64,
     /// Seconds the unmount discard drain may spend issuing commands.
