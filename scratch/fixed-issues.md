@@ -76,6 +76,7 @@
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
+| FIXED 8b9dcbea1 | MISSING | med | **Regular-file swap activation now uses the Linux `a_ops->swap_activate` ownership boundary.** `swapon(2)` asks the VFS inode hook instead of naming ext4; ext4 returns the shared PMM backing and f2fs returns a pinned global-block view that routes through its member table and releases the pin on drop. Filesystems without a hook return `EOPNOTSUPP`. Swapfiles without a stable raw-device hibernation map still activate for ordinary paging; hibernation geometry remains optional. | Linux `fs/f2fs/data.c::f2fs_swap_activate` and `address_space_operations::swap_activate`; `vfs::InodeOps::swapfile_backing`, `pmm::swap::SwapFileBacking`, `f2fs::F2fsSwapDevice`, and the generic `sys_swapon` path. f2fs VFS swap-hook regression, ext4 swapfile image 4/4, PMM 311/311, and `cargo check -p syscalls` pass. | 8b9dcbea1 |
 | FIXED B253501 | COVERAGE | med | The historical pre-branch marker observation is stale and has no current source artifact. | The named `einval 1`, `msa6`, `msa7`, and `msa8` markers are absent from the current tracked source; current policy requires harness/targeted-trace evidence rather than retaining ad-hoc instrumentation. | B253501 |
 
 ### B253401-stale-systemctl-enotconn-row
