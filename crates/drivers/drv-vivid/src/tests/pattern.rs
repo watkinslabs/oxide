@@ -117,6 +117,25 @@ fn xrgb_and_argb_use_the_reference_little_endian_byte_order() {
 }
 
 #[test]
+fn packed_rgb32_variants_match_linux_byte_order() {
+    let mut rgb = [0u8; 4];
+    let mut rgba = [0u8; 4];
+    let mut bgr = [0u8; 4];
+    let mut abgr = [0u8; 4];
+    let mut bgra = [0u8; 4];
+    tpg::render_line(fourcc::RGB32, 1, 0, &mut rgb);
+    tpg::render_line(fourcc::RGBA32, 1, 0, &mut rgba);
+    tpg::render_line(fourcc::BGR32, 1, 0, &mut bgr);
+    tpg::render_line(fourcc::ABGR32, 1, 0, &mut abgr);
+    tpg::render_line(fourcc::BGRA32, 1, 0, &mut bgra);
+    assert_eq!(rgb, [0, 255, 255, 255]);
+    assert_eq!(rgba, [255, 255, 255, 255]);
+    assert_eq!(bgr, [255, 255, 255, 0]);
+    assert_eq!(abgr, [255, 255, 255, 255]);
+    assert_eq!(bgra, [255, 255, 255, 255]);
+}
+
+#[test]
 fn packed_chroma_comes_from_the_left_pixel_of_each_pair() {
     let width = 16u32;
     let mut yuyv = alloc::vec![0u8; width as usize * 2];

@@ -172,6 +172,9 @@ fn render_line_at_map(pixelformat: u32, width: u32, height: u32, y: u32, shift: 
         fourcc::YUV32 | fourcc::AYUV32 | fourcc::XYUV32 | fourcc::VUYA32 |
         fourcc::VUYX32 | fourcc::YUVA32 | fourcc::YUVX32 =>
             render_yuv32(pixelformat, width, height, y, shift, frame, motion, map, dst),
+        fourcc::RGB32 | fourcc::RGBA32 | fourcc::RGBX32 | fourcc::BGR32 |
+        fourcc::ABGR32 | fourcc::XBGR32 | fourcc::BGRA32 | fourcc::BGRX32 =>
+            render_rgb32(pixelformat, width, height, y, shift, frame, motion, map, dst),
         fourcc::XRGB32 => render_quads(width, height, y, shift, frame, motion, map, dst, false),
         fourcc::ARGB32 => render_quads(width, height, y, shift, frame, motion, map, dst, true),
         fourcc::YUYV => render_yuv(width, height, y, shift, frame, motion, map, dst, 0),
@@ -275,6 +278,25 @@ fn render_yuv32(pixelformat: u32, width: u32, height: u32, y: u32, shift: u32,
             fourcc::VUYA32 | fourcc::VUYX32 => [v, u, yv, alpha],
             fourcc::YUVA32 | fourcc::YUVX32 => [yv, u, v, alpha],
             _ => [alpha, yv, u, v],
+        };
+        dst[x as usize * 4..x as usize * 4 + 4].copy_from_slice(&bytes);
+    }
+    need
+}
+
+fn render_rgb32(pixelformat: u32, width: u32, height: u32, y: u32, shift: u32,
+                frame: u32, motion: Motion, map: Option<RenderMap>, dst: &mut [u8]) -> usize {
+    let need = width as usize * 4;
+    if dst.len() < need { return 0; }
+    for x in 0..width {
+        let c = sample_pixel(x, y, width, height, shift, frame, motion, map);
+        let alpha = if matches!(pixelformat, fourcc::RGB32 | fourcc::BGR32 |
+            fourcc::RGBX32 | fourcc::XBGR32 | fourcc::BGRX32) { 0 } else { 255 };
+        let bytes = match pixelformat {
+            fourcc::RGB32 | fourcc::RGBA32 | fourcc::RGBX32 => [alpha, c.r, c.g, c.b],
+            fourcc::BGR32 | fourcc::ABGR32 | fourcc::XBGR32 => [c.b, c.g, c.r, alpha],
+            fourcc::BGRA32 | fourcc::BGRX32 => [alpha, c.b, c.g, c.r],
+            _ => return 0,
         };
         dst[x as usize * 4..x as usize * 4 + 4].copy_from_slice(&bytes);
     }
