@@ -306,6 +306,8 @@ pub fn after_gc(th: &mut GcKthread, victim_found: bool, foreground: bool) {
 pub const IDLE_INTERVAL_SECS: u64 = 5;
 /// Linux's default zoned-volume free-space gate for background GC.
 pub const DEF_NO_ZONED_GC_PERCENT: u32 = 60;
+/// Linux's default zoned-volume acceleration threshold.
+pub const DEF_BOOST_ZONED_GC_PERCENT: u32 = 25;
 
 /// Whether the volume is quiet enough for background work of `kind`.
 ///

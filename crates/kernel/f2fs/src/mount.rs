@@ -141,7 +141,7 @@ impl F2fs {
                                              volume.super_block().segs_per_sec));
         if crate::features::has_blkzoned(volume.super_block().feature) {
             bg.gc.lock().no_zoned_gc_percent = crate::bg::gc::DEF_NO_ZONED_GC_PERCENT;
-            bg.gc.lock().boost_zoned_gc_percent = 25;
+            bg.gc.lock().boost_zoned_gc_percent = crate::bg::gc::DEF_BOOST_ZONED_GC_PERCENT;
         }
         bg.dcc.lock().set_max_discards(
             u64::from(volume.super_block().segment_count_main)
