@@ -149,6 +149,34 @@ fn hsv_variants_match_linux_hue_scale_and_layout() {
 }
 
 #[test]
+fn bayer8_variants_follow_linux_row_and_column_mosaics() {
+    let width = 8u32;
+    let height = 64u32;
+    for format in [fourcc::SBGGR8, fourcc::SGBRG8, fourcc::SGRBG8, fourcc::SRGGB8] {
+        let mut frame = alloc::vec![0u8; (width * height) as usize];
+        assert_eq!(tpg::render_frame(format, width, height, 0, &mut frame), frame.len());
+        for y in 0..2 {
+            for x in 0..width {
+                let c = tpg::bar_at(x, width, 0);
+                let expected = match (format, y & 1, x & 1) {
+                    (fourcc::SBGGR8, 0, 0) | (fourcc::SBGGR8, 1, 1) => if y == 0 { c.b } else { c.r },
+                    (fourcc::SBGGR8, _, _) => c.g,
+                    (fourcc::SGBRG8, 0, 1) | (fourcc::SGBRG8, 1, 0) => if y == 0 { c.b } else { c.r },
+                    (fourcc::SGBRG8, _, _) => c.g,
+                    (fourcc::SGRBG8, 0, 1) | (fourcc::SGRBG8, 1, 0) => if y == 0 { c.r } else { c.b },
+                    (fourcc::SGRBG8, _, _) => c.g,
+                    (fourcc::SRGGB8, 0, 0) | (fourcc::SRGGB8, 1, 1) => if y == 0 { c.r } else { c.b },
+                    (fourcc::SRGGB8, _, _) => c.g,
+                    _ => unreachable!(),
+                };
+                assert_eq!(frame[y as usize * width as usize + x as usize], expected,
+                           "format {format:#x} at ({x}, {y})");
+            }
+        }
+    }
+}
+
+#[test]
 fn packed_chroma_comes_from_the_left_pixel_of_each_pair() {
     let width = 16u32;
     let mut yuyv = alloc::vec![0u8; width as usize * 2];
