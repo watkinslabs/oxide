@@ -14,7 +14,8 @@ mod parse;
 
 pub use parse::{OPT_BARRIER, OPT_BLOCK_VALIDITY, OPT_COMMIT, OPT_DATA, OPT_DAX, OPT_DELALLOC,
                 OPT_DISCARD, OPT_ERRORS, OPT_INIT_ITABLE, OPT_JOURNAL_IOPRIO,
-                OPT_MAX_DIR_SIZE_KB, OPT_MB_OPTIMIZE_SCAN, OPT_NOBARRIER,
+                OPT_JOURNAL_CHECKSUM, OPT_NOJOURNAL_CHECKSUM, OPT_MAX_DIR_SIZE_KB,
+                OPT_MB_OPTIMIZE_SCAN, OPT_NOBARRIER,
                 OPT_NOBLOCK_VALIDITY, OPT_NODELALLOC, OPT_NODISCARD, OPT_NOINIT_ITABLE,
                 OPT_NOLOAD, OPT_NORECOVERY, OPT_NOWARN_ON_ERROR, OPT_RESGID, OPT_RESUID,
                 OPT_STRIPE, OPT_WARN_ON_ERROR};
@@ -184,6 +185,9 @@ pub struct Ext4Behaviour {
     pub noload: bool,
     /// `warn_on_error` — announce a filesystem error loudly.
     pub warn_on_error: bool,
+    /// Explicit journal checksum policy. `None` preserves the journal's
+    /// existing JBD2 format; an explicit value is applied after recovery.
+    pub journal_checksum: Option<bool>,
 }
 
 impl Default for Ext4Behaviour {
@@ -206,6 +210,7 @@ impl Default for Ext4Behaviour {
             block_validity: true,
             noload: false,
             warn_on_error: false,
+            journal_checksum: None,
         }
     }
 }

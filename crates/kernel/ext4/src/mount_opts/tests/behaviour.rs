@@ -107,6 +107,16 @@ fn noload_and_norecovery_are_one_answer() {
     assert!(b("norecovery").unwrap().noload);
 }
 
+#[test]
+fn journal_checksum_pair_is_explicit_and_last_one_wins() {
+    assert_eq!(b("journal_checksum").unwrap().journal_checksum, Some(true));
+    assert_eq!(b("nojournal_checksum").unwrap().journal_checksum, Some(false));
+    assert_eq!(b("journal_checksum,nojournal_checksum").unwrap().journal_checksum,
+               Some(false));
+    assert!(refused("journal_checksum=1"));
+    assert!(refused("nojournal_checksum=0"));
+}
+
 /// A remount naming one option keeps the answers it did not name. Re-parsing
 /// from the defaults would silently re-enable the barrier a mount had turned
 /// off, which is a durability change nobody asked for.

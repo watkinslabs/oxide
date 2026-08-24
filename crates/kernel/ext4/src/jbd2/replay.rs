@@ -353,6 +353,7 @@ mod tests {
 
     fn make_journal_sb(start: u32, sequence: u32, bs: u32, maxlen: u32) -> JournalSuperblock {
         JournalSuperblock {
+            block_type: 4,
             block_size: bs, maxlen, first: 1, sequence, start,
             feature_compat: 0, feature_incompat: 0, feature_ro: 0, uuid: [0u8; 16],
             checksum_type: 0,

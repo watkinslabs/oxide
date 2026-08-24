@@ -6,6 +6,9 @@
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct JournalSuperblock {
+    /// JBD2 superblock format: 3 is the legacy 1024-byte form, 4 carries
+    /// the feature words and checksum type.
+    pub block_type: u32,
     /// Block size of the journal device in bytes.
     pub block_size:    u32,
     /// Total number of journal blocks (incl. superblock).
@@ -74,6 +77,7 @@ impl JournalSuperblock {
             }
         }
         Ok(JournalSuperblock {
+            block_type: bt,
             block_size:       u32::from_be_bytes([buf[0x0C], buf[0x0D], buf[0x0E], buf[0x0F]]),
             maxlen:           u32::from_be_bytes([buf[0x10], buf[0x11], buf[0x12], buf[0x13]]),
             first:            u32::from_be_bytes([buf[0x14], buf[0x15], buf[0x16], buf[0x17]]),
@@ -103,6 +107,32 @@ impl JournalSuperblock {
             super::checksum::ChecksumMode::V1
         } else {
             super::checksum::ChecksumMode::None
+        }
+    }
+
+    /// Select the JBD2 checksum feature set used by future transactions.
+    /// Existing log replay must happen before this is called: changing the
+    /// feature words while `s_start` names an old-format transaction would
+    /// make the recovery reader interpret that transaction incorrectly.
+    /// # C: O(1)
+    pub fn set_checksum_mode(&mut self, mode: super::checksum::ChecksumMode) {
+        self.feature_compat &= !JBD2_COMPAT_CHECKSUM;
+        self.feature_incompat &= !(JBD2_INCOMPAT_CSUM_V2 | JBD2_INCOMPAT_CSUM_V3);
+        self.checksum_type = 0;
+        match mode {
+            super::checksum::ChecksumMode::V1 => {
+                self.feature_compat |= JBD2_COMPAT_CHECKSUM;
+                self.checksum_type = super::checksum::JBD2_CRC32_CHKSUM;
+            }
+            super::checksum::ChecksumMode::V2 => {
+                self.feature_incompat |= JBD2_INCOMPAT_CSUM_V2;
+                self.checksum_type = super::checksum::JBD2_CRC32C_CHKSUM;
+            }
+            super::checksum::ChecksumMode::V3 => {
+                self.feature_incompat |= JBD2_INCOMPAT_CSUM_V3;
+                self.checksum_type = super::checksum::JBD2_CRC32C_CHKSUM;
+            }
+            super::checksum::ChecksumMode::None => {}
         }
     }
 
@@ -186,6 +216,21 @@ mod tests {
         assert_eq!(sb.checksum_mode(), super::super::checksum::ChecksumMode::V3);
         b[0x60] ^= 1;
         assert_eq!(JournalSuperblock::parse(&b), Err(JournalSuperblockError::BadChecksum));
+    }
+
+    #[test]
+    fn checksum_mode_mutation_selects_linux_feature_sets() {
+        let mut sb = JournalSuperblock::parse(&build_sb(4096, 8192, 1, 1, 0)).unwrap();
+        sb.block_type = 4;
+        sb.set_checksum_mode(super::super::checksum::ChecksumMode::V3);
+        assert_eq!(sb.checksum_mode(), super::super::checksum::ChecksumMode::V3);
+        assert_eq!(sb.checksum_type, super::super::checksum::JBD2_CRC32C_CHKSUM);
+        sb.set_checksum_mode(super::super::checksum::ChecksumMode::V1);
+        assert_eq!(sb.checksum_mode(), super::super::checksum::ChecksumMode::V1);
+        assert_eq!(sb.checksum_type, super::super::checksum::JBD2_CRC32_CHKSUM);
+        sb.set_checksum_mode(super::super::checksum::ChecksumMode::None);
+        assert_eq!(sb.checksum_mode(), super::super::checksum::ChecksumMode::None);
+        assert_eq!(sb.checksum_type, 0);
     }
 
     #[test]

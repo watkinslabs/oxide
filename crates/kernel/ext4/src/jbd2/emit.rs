@@ -461,6 +461,7 @@ mod tests {
                 ChecksumMode::None => unreachable!(),
             };
             let sb = super::super::JournalSuperblock {
+                block_type: 4,
                 block_size: bs as u32, maxlen: 16, first: 1, sequence: seq, start: 1,
                 feature_compat, feature_incompat, feature_ro: 0, uuid: UUID,
                 checksum_type,
@@ -532,6 +533,7 @@ mod tests {
         let j = VecJournal(blocks);
         let disk: Arc<MemDisk<TaskList>> = MemDisk::new(bs as u32, 32);
         let sb = super::super::JournalSuperblock {
+            block_type: 4,
             block_size: bs as u32, maxlen: 32, first: 1, sequence: 7, start: 1,
             feature_compat: 0, feature_incompat: 0, feature_ro: 0, uuid: UUID,
             checksum_type: 0,
@@ -576,6 +578,7 @@ mod tests {
         let journal = VecJournal(blocks);
         let disk: Arc<MemDisk<TaskList>> = MemDisk::new(bs as u32, 512);
         let sb = super::super::JournalSuperblock {
+            block_type: 4,
             block_size: bs as u32, maxlen, first: 1, sequence: 9, start: 1,
             feature_compat: 0, feature_incompat: 0, feature_ro: 0, uuid: UUID,
             checksum_type: 0,
@@ -618,6 +621,7 @@ mod tests {
         let journal = VecJournal(blocks);
         let disk: Arc<MemDisk<TaskList>> = MemDisk::new(bs as u32, 16);
         let sb = super::super::JournalSuperblock {
+            block_type: 4,
             block_size: bs as u32, maxlen: 20, first: 4, sequence: 11, start: 18,
             feature_compat: 0, feature_incompat: 0, feature_ro: 0, uuid: UUID,
             checksum_type: 0,

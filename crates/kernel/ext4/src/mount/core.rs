@@ -181,9 +181,10 @@ impl Mount {
         const MOUNTED_READ_ONLY: bool = false;
         match crate::mount_opts::recovery_action(behaviour.noload, MOUNTED_READ_ONLY, needs_recovery) {
             Err(_) => return Err(MountError::UnsupportedFeature),
-            Ok(crate::mount_opts::JournalRecovery::Replay) => { let _ = m.recover_journal(); }
+            Ok(crate::mount_opts::JournalRecovery::Replay) => { m.recover_journal()?; }
             Ok(crate::mount_opts::JournalRecovery::Skip) => {}
         }
+        m.configure_journal_checksum()?;
         if cleanup_orphans { let _ = m.orphan_cleanup(); }
         Ok(m)
     }
