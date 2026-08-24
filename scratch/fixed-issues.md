@@ -1,5 +1,7 @@
 # Fixed issues
 
+| FIXED 986508f47 | MISSING | med | **Task and per-CPU hard-IRQ stacks now expose Linux-style runtime high-water accounting, and hard-IRQ nesting is bounded by the preemption field.** Zero-filled stacks scan from the low end at task teardown or IRQ/softirq entry; monotonic maxima are retained, the hard-IRQ depth maximum is recorded per CPU, overflow is rejected before the four-bit field wraps, and SysRq `u` reports the task/IRQ watermarks and maximum nesting depth. | Linux zero-fill/first-nonzero stack accounting and hard-IRQ preemption-field shape; `sched::kstack`, `sched::preempt`, the x86/aarch64 IRQ-stack SP readers, and the canonical SysRq table/perform path. Scheduler, SysRq, both HAL suites, and x86_64/aarch64 kernel-target checks pass. | 986508f47 |
+
 ### B2621-nftables-packet-path
 
 | Status | Class | Sev | Issue | Evidence | Owner |
