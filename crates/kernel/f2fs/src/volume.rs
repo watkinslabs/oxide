@@ -274,6 +274,9 @@ pub struct Volume<S: SectorSource> {
     /// The mode whose reclaimed-segment total the sysfs report selects.
     /// This is a reporting selector, not the cleaner's transient run mode.
     pub(crate) gc_segment_mode: usize,
+    /// Number of cleaner collisions a pinned file may absorb before Linux
+    /// drops its pin. Tunable through the volume's sysfs owner.
+    pub(crate) gc_pin_file_threshold: u16,
     /// Files between START and COMMIT of an atomic write, by inode number.
     ///
     /// Never on the medium, and that is the promise: an atomic span that a

@@ -51,7 +51,7 @@ fn store(a: &[Attr], name: &str, v: u64) -> Result<usize, VfsError> {
 fn every_volume_owned_control_is_writable() {
     let fs = mounted();
     let a = attrs(&fs);
-    for name in ["ram_thresh", "ra_nid_pages", "max_read_extent_count", "last_age_weight",
+    for name in ["ram_thresh", "ra_nid_pages", "gc_pin_file_thresh", "max_read_extent_count", "last_age_weight",
                  "hot_data_age_threshold", "warm_data_age_threshold",
                  "gc_segment_mode", "gc_reclaimed_segments",
                  "atgc_candidate_ratio", "atgc_candidate_count",
@@ -86,6 +86,20 @@ fn reclaimed_segment_controls_refuse_invalid_writes() {
     let a = attrs(&fs);
     assert!(store(&a, "gc_segment_mode", crate::stats::counters::gc_mode::MAX as u64).is_err());
     assert!(store(&a, "gc_reclaimed_segments", 1).is_err());
+}
+
+#[test]
+fn pin_collision_threshold_is_live_and_linux_bounded() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    assert_eq!(show(&a, "gc_pin_file_thresh"),
+               u64::from(crate::pin::policy::GC_PIN_FILE_THRESHOLD));
+    store(&a, "gc_pin_file_thresh", 0).expect("Linux accepts zero");
+    assert_eq!(fs.volume.lock().gc_pin_file_threshold(), 0);
+    assert_eq!(show(&a, "gc_pin_file_thresh"), 0);
+    assert!(store(&a, "gc_pin_file_thresh",
+                  u64::from(crate::pin::policy::MAX_GC_FAILED_PINNED_FILES) + 1).is_err());
+    assert_eq!(show(&a, "gc_pin_file_thresh"), 0, "a refused write changed the policy");
 }
 
 /// The point of the knob: what is written is what the machinery then holds.

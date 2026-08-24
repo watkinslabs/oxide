@@ -102,7 +102,7 @@ impl<S: SectorSource> Volume<S> {
             blkzoned: self.sb.feature & crate::flags::FEATURE_BLKZONED != 0,
             update_outplace: self.should_update_outplace(ino, inode),
             gc_failures: self.gc_failures_of(ino, inode)?,
-            threshold: policy::GC_PIN_FILE_THRESHOLD,
+            threshold: self.gc_pin_file_threshold,
         })
     }
 
@@ -130,7 +130,7 @@ impl<S: SectorSource> Volume<S> {
     pub fn pin_file_control(&mut self, ino: u32, inc: bool) -> Result<u16, Errno> {
         let inode = self.read_inode(ino)?;
         let now = self.gc_failures_of(ino, &inode)?;
-        match policy::pin_file_control(now, policy::GC_PIN_FILE_THRESHOLD, inc) {
+        match policy::pin_file_control(now, self.gc_pin_file_threshold, inc) {
             Err(e) => {
                 self.stamp_inode(ino, |b| state::set_pin(b, false))?;
                 Err(e)
@@ -143,6 +143,14 @@ impl<S: SectorSource> Volume<S> {
                 Ok(next)
             }
         }
+    }
+
+    /// The cleaner-collision limit for pinned files. # C: O(1)
+    pub fn gc_pin_file_threshold(&self) -> u16 { self.gc_pin_file_threshold }
+
+    /// Set Linux's `gc_pin_file_thresh` control. # C: O(1)
+    pub fn set_gc_pin_file_threshold(&mut self, value: u16) {
+        self.gc_pin_file_threshold = value;
     }
 
     /// The owning inode of the data block a summary entry names, when that

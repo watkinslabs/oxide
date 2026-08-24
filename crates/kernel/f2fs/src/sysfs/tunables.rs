@@ -45,6 +45,8 @@ pub(crate) fn attrs(fs: &Arc<F2fs>, dev: &str) -> Vec<Attr> {
                |v| v.gc_segment_mode() as u64, set_gc_segment_mode),
         num_rw(fs, dev, "gc_reclaimed_segments",
                |v| u64::from(v.gc_reclaimed_segments()), set_gc_reclaimed_segments),
+        num_rw(fs, dev, "gc_pin_file_thresh",
+               |v| u64::from(v.gc_pin_file_threshold()), set_gc_pin_file_thresh),
     ];
     out.extend(atgc::knobs::ALL.iter().map(|&k| atgc_knob(fs, dev, k)));
     out
@@ -179,6 +181,17 @@ fn set_gc_segment_mode(v: &mut Vol, n: u64) -> Result<(), Errno> {
 fn set_gc_reclaimed_segments(v: &mut Vol, n: u64) -> Result<(), Errno> {
     if n != 0 { return Err(Errno::Einval); }
     v.reset_gc_reclaimed_segments()
+}
+
+/// Maximum cleaner collisions before a pinned file loses its pin. Linux
+/// accepts zero, which makes the next control attempt refuse immediately.
+/// # C: O(1)
+fn set_gc_pin_file_thresh(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    if n > u64::from(crate::pin::policy::MAX_GC_FAILED_PINNED_FILES) {
+        return Err(Errno::Einval);
+    }
+    v.set_gc_pin_file_threshold(n as u16);
+    Ok(())
 }
 
 /// A whole share, which is what every percentage control is bounded by.
