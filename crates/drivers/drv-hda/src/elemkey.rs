@@ -16,20 +16,32 @@ pub enum ElemKind { Volume, Switch, Jack, CaptureSource, MasterVolume, MasterSwi
 const KIND_SHIFT: u32 = 9;
 const OUTPUT_BIT: u32 = 1 << 8;
 const NID_MASK: u32 = 0xff;
+const CODEC_SHIFT: u32 = 12;
+const CODEC_MASK: u32 = 0xf;
 
 /// Pack an element's amplifier target into the private word. # C: O(1)
 pub fn pack(nid: u8, output: bool, kind: ElemKind) -> u32 {
+    pack_for(0, nid, output, kind)
+}
+
+pub fn pack_for(codec: usize, nid: u8, output: bool, kind: ElemKind) -> u32 {
     let kind_bits = match kind {
         ElemKind::Volume => 0u32, ElemKind::Switch => 1, ElemKind::Jack => 2,
         ElemKind::CaptureSource => 3, ElemKind::MasterVolume => 4, ElemKind::MasterSwitch => 5,
         ElemKind::ChannelMode => 6,
     };
-    u32::from(nid) | if output { OUTPUT_BIT } else { 0 } | (kind_bits << KIND_SHIFT)
+    u32::from(nid) | if output { OUTPUT_BIT } else { 0 }
+        | (kind_bits << KIND_SHIFT) | (((codec as u32) & CODEC_MASK) << CODEC_SHIFT)
 }
 
 /// # C: O(1)
 pub fn unpack(private: u32) -> (u8, bool, ElemKind) {
-    let kind = match private >> KIND_SHIFT {
+    let (_, nid, output, kind) = unpack_for(private);
+    (nid, output, kind)
+}
+
+pub fn unpack_for(private: u32) -> (usize, u8, bool, ElemKind) {
+    let kind = match (private >> KIND_SHIFT) & 0x7 {
         0 => ElemKind::Volume,
         1 => ElemKind::Switch,
         2 => ElemKind::Jack,
@@ -39,12 +51,14 @@ pub fn unpack(private: u32) -> (u8, bool, ElemKind) {
         6 => ElemKind::ChannelMode,
         _ => ElemKind::MasterSwitch,
     };
-    ((private & NID_MASK) as u8, private & OUTPUT_BIT != 0, kind)
+    (((private >> CODEC_SHIFT) & CODEC_MASK) as usize,
+     (private & NID_MASK) as u8, private & OUTPUT_BIT != 0, kind)
 }
 
 /// One amplifier exposed as a volume and, when it can mute, a switch.
 #[derive(Clone, Debug)]
 pub struct AmpControl {
+    pub codec: usize,
     pub volume_name: Vec<u8>,
     pub switch_name: Vec<u8>,
     pub nid: u8,
@@ -55,6 +69,7 @@ pub struct AmpControl {
 /// One jack exposed as a read-only presence boolean.
 #[derive(Clone, Debug)]
 pub struct JackControl {
+    pub codec: usize,
     pub name: Vec<u8>,
     pub pin: u8,
 }
@@ -62,6 +77,7 @@ pub struct JackControl {
 /// The first output follower supplies the Linux virtual-master range and TLV.
 #[derive(Clone, Debug)]
 pub struct MasterControl {
+    pub codec: usize,
     pub nid: u8,
     pub output: bool,
     pub caps: AmpCaps,
@@ -82,11 +98,12 @@ fn amp_of(codec: &Codec, nid: u8, output: bool) -> Option<AmpCaps> {
     if decoded.num_steps == 0 && !decoded.mute { None } else { Some(decoded) }
 }
 
-fn push_route(controls: &mut Controls, codec: &Codec, route: &OutputRoute, prefix: &[u8]) {
+fn push_route(controls: &mut Controls, codec_index: usize, codec: &Codec, route: &OutputRoute, prefix: &[u8]) {
     // The volume and the mute may sit on different widgets; each is published
     // against the one that actually owns it.
     if let Some((nid, caps)) = route.volume.and_then(|nid| amp_of(codec, nid, true).map(|caps| (nid, caps))) {
         controls.amps.push(AmpControl {
+            codec: codec_index,
             volume_name: ctlname::tidy(ctlname::playback_volume(prefix)),
             switch_name: ctlname::tidy(ctlname::playback_switch(prefix)),
             nid, output: true, caps,
@@ -96,6 +113,7 @@ fn push_route(controls: &mut Controls, codec: &Codec, route: &OutputRoute, prefi
     if route.volume == Some(mute_nid) { return; }
     if let Some(caps) = amp_of(codec, mute_nid, output) {
         controls.amps.push(AmpControl {
+            codec: codec_index,
             volume_name: Vec::new(),
             switch_name: ctlname::tidy(ctlname::playback_switch(prefix)),
             nid: mute_nid, output, caps,
@@ -105,24 +123,29 @@ fn push_route(controls: &mut Controls, codec: &Codec, route: &OutputRoute, prefi
 
 /// Controls the card should publish for `plan`. # C: O(routes)
 pub fn describe(codec: &Codec, plan: &Plan) -> Controls {
+    describe_for(0, codec, plan)
+}
+
+pub fn describe_for(codec_index: usize, codec: &Codec, plan: &Plan) -> Controls {
     let mut controls = Controls::default();
     for (index, route) in plan.outputs.iter().enumerate() {
-        push_route(&mut controls, codec, route, ctlname::line_out_prefix(plan, index));
+        push_route(&mut controls, codec_index, codec, route, ctlname::line_out_prefix(plan, index));
     }
     for (index, route) in plan.hp.iter().enumerate() {
-        push_route(&mut controls, codec, route, ctlname::extra_out_prefix(b"Headphone", plan.hp.len(), index));
+        push_route(&mut controls, codec_index, codec, route, ctlname::extra_out_prefix(b"Headphone", plan.hp.len(), index));
     }
     for (index, route) in plan.speaker.iter().enumerate() {
-        push_route(&mut controls, codec, route, ctlname::extra_out_prefix(b"Speaker", plan.speaker.len(), index));
+        push_route(&mut controls, codec_index, codec, route, ctlname::extra_out_prefix(b"Speaker", plan.speaker.len(), index));
     }
     let followers: Vec<_> = controls.amps.iter().filter(|amp| amp.output && !amp.volume_name.is_empty()).collect();
     if followers.len() > 1 {
         let first = followers[0];
-        controls.master = Some(MasterControl { nid: first.nid, output: first.output, caps: first.caps });
+        controls.master = Some(MasterControl { codec: first.codec, nid: first.nid, output: first.output, caps: first.caps });
     }
     if let Some(capture) = plan.primary_capture() {
         if let Some(caps) = amp_of(codec, capture.adc, false) {
             controls.amps.push(AmpControl {
+                codec: codec_index,
                 volume_name: ctlname::tidy(ctlname::capture_volume()),
                 switch_name: ctlname::tidy(ctlname::capture_switch()),
                 nid: capture.adc, output: false, caps,
@@ -139,6 +162,7 @@ pub fn describe(codec: &Codec, plan: &Plan) -> Controls {
     for (index, route) in plan.hp.iter().enumerate() {
         if !codec.widget(route.pin).is_some_and(graph::jack_detectable) { continue; }
         controls.jacks.push(JackControl {
+            codec: codec_index,
             name: ctlname::tidy(ctlname::jack_name(
                 ctlname::extra_out_prefix(b"Headphone", plan.hp.len(), index))),
             pin: route.pin,
@@ -147,9 +171,28 @@ pub fn describe(codec: &Codec, plan: &Plan) -> Controls {
     for (index, route) in plan.outputs.iter().enumerate() {
         if !codec.widget(route.pin).is_some_and(graph::jack_detectable) { continue; }
         controls.jacks.push(JackControl {
+            codec: codec_index,
             name: ctlname::tidy(ctlname::jack_name(ctlname::line_out_prefix(plan, index))),
             pin: route.pin,
         });
+    }
+    if codec_index != 0 {
+        let mut prefix = b"Codec ".to_vec();
+        prefix.push(b'0' + (codec_index.min(9) as u8));
+        prefix.push(b' ');
+        for amp in controls.amps.iter_mut() {
+            let mut name = prefix.clone();
+            name.extend_from_slice(&amp.volume_name);
+            amp.volume_name = name;
+            let mut name = prefix.clone();
+            name.extend_from_slice(&amp.switch_name);
+            amp.switch_name = name;
+        }
+        for jack in controls.jacks.iter_mut() {
+            let mut name = prefix.clone();
+            name.extend_from_slice(&jack.name);
+            jack.name = name;
+        }
     }
     controls
 }
