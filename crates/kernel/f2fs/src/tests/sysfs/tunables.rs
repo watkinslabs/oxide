@@ -51,7 +51,7 @@ fn store(a: &[Attr], name: &str, v: u64) -> Result<usize, VfsError> {
 fn every_volume_owned_control_is_writable() {
     let fs = mounted();
     let a = attrs(&fs);
-    for name in ["ram_thresh", "ra_nid_pages", "gc_pin_file_thresh", "reclaim_segments", "gc_valid_thresh_ratio", "max_io_bytes", "migration_window_granularity", "migration_granularity", "dir_level", "max_read_extent_count", "last_age_weight",
+    for name in ["ram_thresh", "ra_nid_pages", "gc_pin_file_thresh", "reclaim_segments", "gc_valid_thresh_ratio", "max_io_bytes", "migration_window_granularity", "migration_granularity", "dir_level", "seq_file_ra_mul", "max_read_extent_count", "last_age_weight",
                  "hot_data_age_threshold", "warm_data_age_threshold",
                  "gc_segment_mode", "gc_reclaimed_segments",
                  "atgc_candidate_ratio", "atgc_candidate_count",
@@ -180,6 +180,18 @@ fn dir_level_is_live_and_linux_bounded() {
     assert_eq!(show(&a, "dir_level"), 7);
     assert!(store(&a, "dir_level", u64::from(crate::uapi::MAX_DIR_HASH_DEPTH) + 1).is_err());
     assert_eq!(show(&a, "dir_level"), 7);
+}
+
+#[test]
+fn seq_file_ra_multiplier_is_live_and_linux_bounded() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    assert_eq!(show(&a, "seq_file_ra_mul"), 2);
+    store(&a, "seq_file_ra_mul", 8).expect("Linux accepts the multiplier");
+    assert_eq!(show(&a, "seq_file_ra_mul"), 8);
+    assert!(store(&a, "seq_file_ra_mul", 1).is_err());
+    assert!(store(&a, "seq_file_ra_mul", 257).is_err());
+    assert_eq!(show(&a, "seq_file_ra_mul"), 8);
 }
 
 /// The point of the knob: what is written is what the machinery then holds.

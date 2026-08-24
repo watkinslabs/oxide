@@ -291,6 +291,8 @@ pub struct Volume<S: SectorSource> {
     /// Default hash base level stamped into newly created directories.
     /// Linux's mount-wide `dir_level`.
     pub(crate) dir_level: u8,
+    /// Multiplier for sequential-file readahead. Linux's `seq_file_ra_mul`.
+    pub(crate) seq_file_ra_mul: u32,
     /// Maximum contiguous source-read size before the medium request is split.
     /// Zero retains Linux's unlimited merge behavior.
     pub(crate) max_io_bytes: u32,

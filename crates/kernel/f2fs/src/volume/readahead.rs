@@ -32,6 +32,18 @@ pub mod meta;
 
 pub use window::{RaMeta, MAX_RA_NODE};
 
+use sectors::SectorSource;
+
+impl<S: SectorSource> Volume<S> {
+    /// Linux's multiplier for sequential-file fadvise, read by the VFS file
+    /// owner when it turns `POSIX_FADV_SEQUENTIAL` into a live ceiling.
+    /// # C: O(1)
+    pub fn seq_file_ra_mul(&self) -> u32 { self.seq_file_ra_mul }
+
+    /// Set the sequential-file multiplier. # C: O(1)
+    pub fn set_seq_file_ra_mul(&mut self, value: u32) { self.seq_file_ra_mul = value; }
+}
+
 impl<S: sectors::SectorSource> Volume<S> {
     /// Linux's `max_io_bytes` is a merge boundary, not a file-read limit.
     /// Keep the unit at whole filesystem blocks: every source request here is

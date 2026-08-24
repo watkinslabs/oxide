@@ -44,6 +44,12 @@ pub use direct::{DirectDone, DirectIo, DirectSubmit};
 /// `file_operations` — the inode's `i_fop` data-path vtable. # Lk: callers hold
 /// no inode lock; an op serialises its own backend state.
 pub trait FileOps: Send + Sync {
+    /// Multiplier for `POSIX_FADV_SEQUENTIAL`'s per-open readahead ceiling.
+    /// Linux filesystems may replace the backing-device default for their
+    /// sequential file path; ordinary backends retain the generic factor 2.
+    /// # C: O(1)
+    fn sequential_ra_multiplier(&self, _file: &File) -> u32 { 2 }
+
     /// `f_op->read` — read into `buf` at byte offset `off`; `0` = EOF. Default
     /// binds to `S_IFMT`: `EISDIR` for a directory, `EINVAL` otherwise (Linux
     /// `vfs_read` with no `read`/`read_iter`). # C: backend-dependent

@@ -193,6 +193,7 @@ impl<S: SectorSource> Volume<S> {
         init_field!(migration_window_granularity: migration_window_granularity);
         init_field!(migration_granularity: migration_granularity);
         init_field!(dir_level: 0);
+        init_field!(seq_file_ra_mul: 2);
         init_field!(max_io_bytes: 0);
         init_field!(atomic: alloc::collections::BTreeMap::new());
         init_field!(ioprio_hint: alloc::collections::BTreeMap::new());

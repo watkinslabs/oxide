@@ -408,9 +408,12 @@ impl File {
     /// does not carry the number. # C: O(1)
     pub fn ra_set_normal(&self) { self.set_ra_pages(DEFAULT_RA_PAGES); }
 
-    /// `POSIX_FADV_SEQUENTIAL` — double the window (Linux `bdi->ra_pages * 2`).
+    /// `POSIX_FADV_SEQUENTIAL` — use the backend's Linux sequential multiplier.
     /// # C: O(1)
-    pub fn ra_set_sequential(&self) { self.set_ra_pages(DEFAULT_RA_PAGES.saturating_mul(2)); }
+    pub fn ra_set_sequential(&self) {
+        let multiplier = self.f_op.sequential_ra_multiplier(self);
+        self.set_ra_pages(DEFAULT_RA_PAGES.saturating_mul(multiplier));
+    }
 
     /// `POSIX_FADV_RANDOM` — disable readahead for this open. Linux expresses
     /// this as `FMODE_RANDOM`, which `page_cache_sync_ra` reads to bypass the

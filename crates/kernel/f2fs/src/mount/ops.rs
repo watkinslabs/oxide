@@ -402,6 +402,14 @@ impl InodeOps for F2fsOps {
 }
 
 impl FileOps for F2fsOps {
+    /// Linux f2fs replaces the generic sequential readahead factor with its
+    /// live per-mount `seq_file_ra_mul` control.
+    /// # C: O(1)
+    fn sequential_ra_multiplier(&self, file: &vfs::File) -> u32 {
+        F2fsOps::node(file.inode()).map(|node| node.fs.volume.lock().seq_file_ra_mul())
+            .unwrap_or(2)
+    }
+
     /// The typed ioctl stage: the version, label and trim commands the
     /// interface carries for every filesystem. This filesystem's OWN commands
     /// do not come through here — they carry their own numbers and reach
