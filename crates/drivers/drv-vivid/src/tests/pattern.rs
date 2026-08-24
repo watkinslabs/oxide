@@ -56,8 +56,9 @@ fn luma_orders_the_bars_from_white_down_to_black() {
 #[test]
 fn a_rendered_line_is_exactly_the_formats_stride() {
     let width = 64u32;
-    for format in [fourcc::YUYV, fourcc::UYVY, fourcc::RGB24, fourcc::BGR24,
-                   fourcc::RGB565, fourcc::GREY] {
+    for format in [fourcc::YUYV, fourcc::UYVY, fourcc::YVYU, fourcc::VYUY,
+                   fourcc::RGB24, fourcc::BGR24, fourcc::RGB565, fourcc::RGB565X,
+                   fourcc::GREY, fourcc::Y10, fourcc::Y16, fourcc::Y16_BE] {
         let stride = fourcc::bytesperline(format, width) as usize;
         let mut line = alloc::vec![0u8; stride];
         assert_eq!(tpg::render_line(format, width, 0, &mut line), stride,
@@ -122,6 +123,44 @@ fn packed_chroma_comes_from_the_left_pixel_of_each_pair() {
         assert_eq!(uyvy[x * 2 + 2], yuyv[x * 2 + 3]);
         assert_eq!(uyvy[x * 2 + 3], yuyv[x * 2 + 2]);
     }
+
+    let mut yvyu = alloc::vec![0u8; width as usize * 2];
+    tpg::render_line(fourcc::YVYU, width, 0, &mut yvyu);
+    for x in (0..width as usize).step_by(2) {
+        assert_eq!(yvyu[x * 2], yuyv[x * 2]);
+        assert_eq!(yvyu[x * 2 + 1], yuyv[x * 2 + 3]);
+        assert_eq!(yvyu[x * 2 + 2], yuyv[x * 2 + 2]);
+        assert_eq!(yvyu[x * 2 + 3], yuyv[x * 2 + 1]);
+    }
+    let mut vyuy = alloc::vec![0u8; width as usize * 2];
+    tpg::render_line(fourcc::VYUY, width, 0, &mut vyuy);
+    for x in (0..width as usize).step_by(2) {
+        assert_eq!(vyuy[x * 2], yuyv[x * 2 + 3]);
+        assert_eq!(vyuy[x * 2 + 1], yuyv[x * 2]);
+        assert_eq!(vyuy[x * 2 + 2], yuyv[x * 2 + 1]);
+        assert_eq!(vyuy[x * 2 + 3], yuyv[x * 2 + 2]);
+    }
+}
+
+#[test]
+fn packed_rgb565_and_luma_formats_match_linux_byte_order() {
+    let mut little = [0u8; 2];
+    let mut big = [0u8; 2];
+    tpg::render_line(fourcc::RGB565, 1, 0, &mut little);
+    tpg::render_line(fourcc::RGB565X, 1, 0, &mut big);
+    assert_eq!(little[0], big[1]);
+    assert_eq!(little[1], big[0]);
+
+    let mut y10 = [0u8; 2];
+    let mut y16 = [0u8; 2];
+    let mut y16be = [0u8; 2];
+    tpg::render_line(fourcc::Y10, 1, 0, &mut y10);
+    tpg::render_line(fourcc::Y16, 1, 0, &mut y16);
+    tpg::render_line(fourcc::Y16_BE, 1, 0, &mut y16be);
+    assert_eq!(y16[0], y16be[1]);
+    assert_eq!(y16[1], y16be[0]);
+    assert_eq!(y10[0], 0xfc);
+    assert_eq!(y10[1], 0x03);
 }
 
 #[test]

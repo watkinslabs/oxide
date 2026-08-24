@@ -100,22 +100,49 @@ pub fn render_line_at(pixelformat: u32, width: u32, height: u32, y: u32, shift: 
             for x in 0..width { dst[x as usize] = luma(pixel(x, y, width, height, shift, frame, motion)); }
             need
         }
-        fourcc::RGB565 => {
+        fourcc::Y10 => render_luma16(width, height, y, shift, frame, motion, dst, 10, false),
+        fourcc::Y16 => render_luma16(width, height, y, shift, frame, motion, dst, 16, false),
+        fourcc::Y16_BE => render_luma16(width, height, y, shift, frame, motion, dst, 16, true),
+        fourcc::RGB565 | fourcc::RGB565X => {
             let need = width as usize * 2;
             if dst.len() < need { return 0; }
             for x in 0..width {
                 let c = pixel(x, y, width, height, shift, frame, motion);
                 let v = ((c.r as u16 & 0xf8) << 8) | ((c.g as u16 & 0xfc) << 3) | (c.b as u16 >> 3);
-                dst[x as usize * 2..x as usize * 2 + 2].copy_from_slice(&v.to_le_bytes());
+                let bytes = if pixelformat == fourcc::RGB565 {
+                    v.to_le_bytes()
+                } else {
+                    v.to_be_bytes()
+                };
+                dst[x as usize * 2..x as usize * 2 + 2].copy_from_slice(&bytes);
             }
             need
         }
         fourcc::XRGB32 => render_quads(width, height, y, shift, frame, motion, dst, false),
         fourcc::ARGB32 => render_quads(width, height, y, shift, frame, motion, dst, true),
-        fourcc::YUYV => render_yuv(width, height, y, shift, frame, motion, dst, true),
-        fourcc::UYVY => render_yuv(width, height, y, shift, frame, motion, dst, false),
+        fourcc::YUYV => render_yuv(width, height, y, shift, frame, motion, dst, 0),
+        fourcc::UYVY => render_yuv(width, height, y, shift, frame, motion, dst, 1),
+        fourcc::YVYU => render_yuv(width, height, y, shift, frame, motion, dst, 2),
+        fourcc::VYUY => render_yuv(width, height, y, shift, frame, motion, dst, 3),
         _ => 0,
     }
+}
+
+fn render_luma16(width: u32, height: u32, y: u32, shift: u32, frame: u32, motion: Motion,
+                 dst: &mut [u8], bits: u32, big_endian: bool) -> usize {
+    let need = width as usize * 2;
+    if dst.len() < need { return 0; }
+    for x in 0..width {
+        let luma = luma(pixel(x, y, width, height, shift, frame, motion));
+        let value = if bits == 10 {
+            ((luma as u16) << 2) & 0x03ff
+        } else {
+            if luma == 0xff { 0xffff } else { (luma as u16) << 8 }
+        };
+        let bytes = if big_endian { value.to_be_bytes() } else { value.to_le_bytes() };
+        dst[x as usize * 2..x as usize * 2 + 2].copy_from_slice(&bytes);
+    }
+    need
 }
 
 fn render_quads(width: u32, height: u32, y: u32, shift: u32, frame: u32, motion: Motion,
@@ -151,7 +178,7 @@ fn render_triples(width: u32, height: u32, y: u32, shift: u32, frame: u32, motio
 /// falling between the two shows the left bar's colour rather than a blend the
 /// pattern never contained.
 fn render_yuv(width: u32, height: u32, y: u32, shift: u32, frame: u32, motion: Motion,
-              dst: &mut [u8], luma_first: bool) -> usize {
+              dst: &mut [u8], order: u8) -> usize {
     let need = width as usize * 2;
     if dst.len() < need { return 0; }
     let mut x = 0u32;
@@ -161,11 +188,19 @@ fn render_yuv(width: u32, height: u32, y: u32, shift: u32, frame: u32, motion: M
         let (y0, y1) = (luma(left), luma(right));
         let (u, v) = (chroma_u(left), chroma_v(left));
         let at = x as usize * 2;
-        if luma_first { dst[at] = y0; dst[at + 1] = u; }
-        else { dst[at] = u; dst[at + 1] = y0; }
+        match order {
+            0 => { dst[at] = y0; dst[at + 1] = u; }
+            1 => { dst[at] = u; dst[at + 1] = y0; }
+            2 => { dst[at] = y0; dst[at + 1] = v; }
+            _ => { dst[at] = v; dst[at + 1] = y0; }
+        }
         if x + 1 < width {
-            if luma_first { dst[at + 2] = y1; dst[at + 3] = v; }
-            else { dst[at + 2] = v; dst[at + 3] = y1; }
+            match order {
+                0 => { dst[at + 2] = y1; dst[at + 3] = v; }
+                1 => { dst[at + 2] = v; dst[at + 3] = y1; }
+                2 => { dst[at + 2] = y1; dst[at + 3] = u; }
+                _ => { dst[at + 2] = u; dst[at + 3] = y1; }
+            }
         }
         x += 2;
     }
