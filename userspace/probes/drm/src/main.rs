@@ -2,7 +2,7 @@
 //!
 //! Proves the kernel's DRM primary/render nodes are Linux-shaped and the card
 //! node returns REAL CRTC/connector/encoder objects built from the virtio-gpu
-//! display info, not counts-only + EINVAL. Opens `/dev/dri/card0`, then:
+//! display info, not counts-only + EINVAL. Enumerates the DRM nodes, then:
 //!   1. `MODE_GETRESOURCES` two-pass (learn counts, alloc, fetch ids) -> assert
 //!      at least one crtc / connector / encoder.
 //!   2. `MODE_GETCONNECTOR` two-pass for the mode list -> assert connected and
@@ -19,8 +19,9 @@ use support::{Verdict, fail, fail_errno, report};
 mod uapi;
 
 const PROBE: &str = "drm_probe";
-const CARD_NODE: &str = "/dev/dri/card0";
-const RENDER_NODE: &str = "/dev/dri/renderD128";
+const MAX_CARDS: u32 = 32;
+const RENDER_MINOR_BASE: u32 = 128;
+const MAX_RENDER_NODES: u32 = 64;
 /// Sanity ceiling on a reported object count. Buffers are sized from the count
 /// the kernel reports, NOT from this — a fixed-size buffer is what made this
 /// probe silently unable to pass: Linux fills a counted array only when the
@@ -37,18 +38,10 @@ fn main() -> std::process::ExitCode { report(PROBE, run()) }
 fn run() -> Verdict {
     if let Some(f) = render_node_refuses_kms() { return f; }
 
-    let card = match std::fs::OpenOptions::new().read(true).write(true).open(CARD_NODE) {
-        Ok(f) => f,
-        Err(_) => return fail_errno("open /dev/dri/card0"),
+    let (card, mut res) = match find_kms_card() {
+        Some(v) => v,
+        None => return fail("no DRM primary node with KMS resources"),
     };
-
-    let mut res = uapi::CardRes::default();
-    if ioctl(&card, uapi::DRM_IOCTL_MODE_GETRESOURCES, &mut res) < 0 {
-        return fail_errno("GETRESOURCES pass1");
-    }
-    if res.count_crtcs < 1 || res.count_connectors < 1 || res.count_encoders < 1 {
-        return fail("no crtc/connector/encoder");
-    }
     if res.count_crtcs as usize > MAX_OBJECTS
         || res.count_connectors as usize > MAX_OBJECTS
         || res.count_encoders as usize > MAX_OBJECTS {
@@ -106,15 +99,32 @@ fn run() -> Verdict {
 /// `Some(failure)` if the render node accepted a KMS ioctl, or refused it with
 /// anything other than EACCES. # C: O(1)
 fn render_node_refuses_kms() -> Option<Verdict> {
-    let render = match std::fs::OpenOptions::new().read(true).write(true).open(RENDER_NODE) {
-        Ok(f) => f,
-        Err(_) => return Some(fail_errno("open /dev/dri/renderD128")),
-    };
-    let mut res = uapi::CardRes::default();
-    let rc = ioctl(&render, uapi::DRM_IOCTL_MODE_GETRESOURCES, &mut res);
-    if rc >= 0 { return Some(fail("render node allowed KMS ioctl")); }
-    if support::errno() != libc::EACCES {
-        return Some(fail_errno("render node refused KMS ioctl with the wrong error"));
+    for minor in RENDER_MINOR_BASE..RENDER_MINOR_BASE + MAX_RENDER_NODES {
+        let path = format!("/dev/dri/renderD{minor}");
+        let Ok(render) = std::fs::OpenOptions::new().read(true).write(true).open(&path) else { continue };
+        let mut res = uapi::CardRes::default();
+        let rc = ioctl(&render, uapi::DRM_IOCTL_MODE_GETRESOURCES, &mut res);
+        if rc >= 0 { return Some(fail("render node allowed KMS ioctl")); }
+        if support::errno() != libc::EACCES {
+            return Some(fail_errno("render node refused KMS ioctl with the wrong error"));
+        }
+        return None;
+    }
+    Some(fail("no DRM render node"))
+}
+
+/// Enumerate primary nodes instead of assuming firmware and native DRM
+/// registration order. Linux allocates card minors independently, so a native
+/// driver may be `card1` after a firmware KMS card owns `card0`.
+fn find_kms_card() -> Option<(std::fs::File, uapi::CardRes)> {
+    for card_id in 0..MAX_CARDS {
+        let path = format!("/dev/dri/card{card_id}");
+        let Ok(card) = std::fs::OpenOptions::new().read(true).write(true).open(&path) else { continue };
+        let mut res = uapi::CardRes::default();
+        if ioctl(&card, uapi::DRM_IOCTL_MODE_GETRESOURCES, &mut res) >= 0
+            && res.count_crtcs > 0 && res.count_connectors > 0 && res.count_encoders > 0 {
+            return Some((card, res));
+        }
     }
     None
 }
