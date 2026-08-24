@@ -182,7 +182,8 @@ pub fn prepare_buf(handle: &Arc<FileHandle>, arg: &mut [u8], ctx: &dyn Ctx) -> R
     let device = handle.device.clone();
     let req = read_buffer(arg, ctx)?;
     let mut state = device.state.lock();
-    vb2::qbuf::prepare_buf(&mut state.queue, handle.id, &req)?;
+    vb2::qbuf::prepare_buf_with(&mut state.queue, handle.id, &req,
+                                || device.ops.buf_prepare(req.index))?;
     let buf = state.queue.buffer(req.index).cloned().ok_or(Errno::Einval)?;
     write_buffer(arg, &buf, &state.queue, ctx)
 }
@@ -194,7 +195,9 @@ pub fn qbuf(handle: &Arc<FileHandle>, arg: &mut [u8], ctx: &dyn Ctx) -> Result<(
     let req = read_buffer(arg, ctx)?;
     let (hand_off, buf) = {
         let mut state = device.state.lock();
-        let hand_off = vb2::qbuf::qbuf(&mut state.queue, handle.id, &req)?;
+        let hand_off = vb2::qbuf::qbuf_with(
+            &mut state.queue, handle.id, &req,
+            || device.ops.buf_prepare(req.index))?;
         if hand_off {
             if let Some(b) = state.queue.buffer_mut(req.index) { b.state = vb2::BufState::Active; }
             state.queue.queued.retain(|i| *i != req.index);

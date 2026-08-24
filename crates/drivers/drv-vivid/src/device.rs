@@ -35,6 +35,9 @@ struct VividState {
     horizontal_motion: i8,
     vertical_motion: i8,
     dqbuf_error: bool,
+    queue_setup_error: bool,
+    buf_prepare_error: bool,
+    start_stream_error: bool,
 }
 
 impl Vivid {
@@ -47,6 +50,8 @@ impl Vivid {
                 interval: crate::tables::INTERVALS[0],
                 sequence: 0, last_frame_ns: 0,
                 horizontal_motion: 0, vertical_motion: 0, dqbuf_error: false,
+                queue_setup_error: false, buf_prepare_error: false,
+                start_stream_error: false,
             }),
         })
     }
@@ -135,6 +140,10 @@ impl VideoOps for Vivid {
     /// # C: O(handed)
     fn start_streaming(&self, handed: &[u32]) -> Result<(), Errno> {
         let mut state = self.state.lock();
+        if state.start_stream_error {
+            state.start_stream_error = false;
+            return Err(Errno::Einval);
+        }
         if !state.streaming { crate::note_streaming(true); }
         state.streaming = true;
         state.sequence = 0;
@@ -159,6 +168,30 @@ impl VideoOps for Vivid {
     }
 
     /// # C: O(1)
+    fn queue_setup(&self, count: u32, format: &PixFormat)
+        -> Result<v4l2::vb2::QueueSetup, Errno>
+    {
+        let mut state = self.state.lock();
+        if state.queue_setup_error {
+            state.queue_setup_error = false;
+            return Err(Errno::Einval);
+        }
+        let mut plane_sizes = [0u32; v4l2::uapi::layout::MAX_PLANES];
+        plane_sizes[0] = format.sizeimage.max(1);
+        Ok(v4l2::vb2::QueueSetup { count: count.max(1), num_planes: 1, plane_sizes })
+    }
+
+    /// # C: O(1)
+    fn buf_prepare(&self, _index: u32) -> Result<(), Errno> {
+        let mut state = self.state.lock();
+        if state.buf_prepare_error {
+            state.buf_prepare_error = false;
+            return Err(Errno::Einval);
+        }
+        Ok(())
+    }
+
+    /// # C: O(1)
     fn controls(&self) -> alloc::vec::Vec<v4l2::ctrl::ControlDesc> { crate::tables::controls() }
 
     fn control_changed(&self, id: u32, value: i64) {
@@ -168,6 +201,9 @@ impl VideoOps for Vivid {
             crate::tables::CID_HOR_MOVEMENT => state.horizontal_motion = velocity,
             crate::tables::CID_VERT_MOVEMENT => state.vertical_motion = velocity,
             crate::tables::CID_DQBUF_ERROR => state.dqbuf_error = true,
+            crate::tables::CID_QUEUE_SETUP_ERROR => state.queue_setup_error = true,
+            crate::tables::CID_BUF_PREPARE_ERROR => state.buf_prepare_error = true,
+            crate::tables::CID_START_STREAM_ERROR => state.start_stream_error = true,
             _ => {}
         }
     }

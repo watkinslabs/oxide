@@ -94,6 +94,23 @@ fn dqbuf_error_button_marks_only_the_next_frame() {
 }
 
 #[test]
+fn streaming_error_buttons_fail_once_at_their_linux_hooks() {
+    let vivid = Vivid::new();
+    vivid.control_changed(crate::tables::CID_QUEUE_SETUP_ERROR, 0);
+    assert!(vivid.queue_setup(2, &vivid.format()).is_err());
+    assert!(vivid.queue_setup(2, &vivid.format()).is_ok());
+
+    vivid.control_changed(crate::tables::CID_BUF_PREPARE_ERROR, 0);
+    assert!(vivid.buf_prepare(0).is_err());
+    assert!(vivid.buf_prepare(0).is_ok());
+
+    vivid.control_changed(crate::tables::CID_START_STREAM_ERROR, 0);
+    assert!(vivid.start_streaming(&[0]).is_err());
+    assert!(!vivid.streaming());
+    vivid.start_streaming(&[0]).expect("second stream-on");
+}
+
+#[test]
 fn stopping_drops_the_buffers_the_transport_was_holding() {
     let vivid = Vivid::new();
     vivid.start_streaming(&[0, 1, 2]).expect("start");

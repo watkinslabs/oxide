@@ -79,11 +79,17 @@ pub trait VideoOps: Send + Sync {
     /// The default derives both from the format the core already computed,
     /// which is right for every single-planar capture device.
     /// # C: O(1)
-    fn queue_setup(&self, count: u32, format: &PixFormat) -> crate::vb2::QueueSetup {
+    fn queue_setup(&self, count: u32, format: &PixFormat)
+        -> Result<crate::vb2::QueueSetup, Errno>
+    {
         let mut plane_sizes = [0u32; crate::uapi::layout::MAX_PLANES];
         plane_sizes[0] = format.sizeimage.max(1);
-        crate::vb2::QueueSetup { count: count.max(1), num_planes: 1, plane_sizes }
+        Ok(crate::vb2::QueueSetup { count: count.max(1), num_planes: 1, plane_sizes })
     }
+
+    /// Validate and prepare one buffer before `QBUF` or `PREPARE_BUF` commits
+    /// it to the queue. # C: O(planes)
+    fn buf_prepare(&self, _index: u32) -> Result<(), Errno> { Ok(()) }
 
     /// Controls this device offers, in any order — the handler sorts them.
     /// # C: O(1)

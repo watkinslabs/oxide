@@ -10,6 +10,9 @@ pub const CID_VERT_MOVEMENT: u32 = 0x0098_20a1;
 /// Linux Vivid's streaming control: the next completed buffer carries
 /// `V4L2_BUF_FLAG_ERROR`. # C: O(1)
 pub const CID_DQBUF_ERROR: u32 = 0x00f0_f042;
+pub const CID_QUEUE_SETUP_ERROR: u32 = 0x00f0_f043;
+pub const CID_BUF_PREPARE_ERROR: u32 = 0x00f0_f044;
+pub const CID_START_STREAM_ERROR: u32 = 0x00f0_f045;
 
 pub const MOVEMENT_MENU: &[&str] = &[
     "Move Left Fast", "Move Left", "Move Left Slow", "No Movement",
@@ -106,6 +109,12 @@ pub fn controls() -> alloc::vec::Vec<ControlDesc> {
         },
         standard::simple(CID_DQBUF_ERROR, cid::CTRL_TYPE_BUTTON,
                          "Inject V4L2_BUF_FLAG_ERROR", 0, 0, 0, 0),
+        standard::simple(CID_QUEUE_SETUP_ERROR, cid::CTRL_TYPE_BUTTON,
+                         "Inject VIDIOC_REQBUFS Error", 0, 0, 0, 0),
+        standard::simple(CID_BUF_PREPARE_ERROR, cid::CTRL_TYPE_BUTTON,
+                         "Inject VIDIOC_QBUF Error", 0, 0, 0, 0),
+        standard::simple(CID_START_STREAM_ERROR, cid::CTRL_TYPE_BUTTON,
+                         "Inject VIDIOC_STREAMON Error", 0, 0, 0, 0),
     ]
 }
 
