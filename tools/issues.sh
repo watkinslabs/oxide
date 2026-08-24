@@ -9,6 +9,7 @@
 #   tools/issues.sh --count         row count
 #   tools/issues.sh --status-count  `STATUS<TAB>n` totals
 #   tools/issues.sh --summary       live class/severity totals
+#   tools/issues.sh --check         validate the live-ledger shape and count
 set -euo pipefail
 
 root=$(git rev-parse --show-toplevel)
@@ -54,9 +55,31 @@ summary() {
   ' "$curated"
 }
 
+check() {
+  local fixed live advertised
+  fixed=$(grep -c '^| FIXED ' "$curated" 2>/dev/null || true)
+  if [ "$fixed" -ne 0 ]; then
+    printf 'issues: known_issues.md contains %s FIXED rows; move them to scratch/fixed-issues.md\n' "$fixed" >&2
+    return 1
+  fi
+  live=$(grep -c '^| \(OPEN\|IN-PROGRESS\)' "$curated" 2>/dev/null || true)
+  advertised=$(sed -n 's/^\*\*Live issue count: \([0-9][0-9]*\)\*\*.*/\1/p' "$curated" | head -1)
+  if [ -z "$advertised" ] || [ "$advertised" -ne "$live" ]; then
+    printf 'issues: top live count is %s, table contains %s live rows\n' "${advertised:-missing}" "$live" >&2
+    return 1
+  fi
+  if [ "$(grep -c '^| Status | Class | Sev | Issue | Evidence | Owner |$' "$curated" || true)" -ne 1 ]; then
+    printf 'issues: known_issues.md must contain exactly one issue table\n' >&2
+    return 1
+  fi
+}
+
 case "${1:-}" in
   --summary)
     summary
+    ;;
+  --check)
+    check
     ;;
   --status-count)
     for st in OPEN IN-PROGRESS FIXED; do
