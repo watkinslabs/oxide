@@ -50,8 +50,9 @@ impl BlockDevice for DataMember {
     fn flush(&self) -> KResult<()> { self.inner.flush() }
 }
 
-/// Read v1 member metadata and assemble a complete supported MD array. Every
-/// supplied member must describe the same current, non-degraded array. # C: O(members × 4 KiB)
+/// Read v1 member metadata and assemble a supported MD array. RAID1 may start
+/// degraded with a strict subset of its active roles; linear and RAID0 still
+/// require every role because their mapping cannot omit a component. # C: O(members × 4 KiB)
 pub fn assemble(members: Vec<Arc<dyn BlockDevice>>, version: MetadataVersion) -> KResult<Arc<Array>> {
     assemble_members(members.into_iter().map(|inner| Member { inner, claim: None, number_dev: None }).collect(), version)
 }
@@ -77,10 +78,14 @@ fn assemble_members(members: Vec<Member>, version: MetadataVersion) -> KResult<A
     if found.iter().any(|(superblock, _)| !reference.same_array(superblock)
         || superblock.events().saturating_add(1) < reference.events()) { return Err(BlockError::Einval); }
     let roles = reference.raid_disks() as usize;
-    if roles == 0 || found.len() != roles { return Err(BlockError::Einval); }
+    if roles == 0 || found.len() > roles || (found.len() != roles && reference.level() != 1) { return Err(BlockError::Einval); }
     found.sort_unstable_by_key(|(superblock, _)| reference.roles().get(superblock.dev_number() as usize).copied());
-    if found.iter().enumerate().any(|(role, (superblock, _))|
-        reference.roles().get(superblock.dev_number() as usize).copied() != Some(role as u16)) { return Err(BlockError::Einval); }
+    let mut seen_roles = Vec::with_capacity(found.len());
+    for (superblock, _) in &found {
+        let role = reference.roles().get(superblock.dev_number() as usize).copied().ok_or(BlockError::Einval)?;
+        if usize::from(role) >= roles || seen_roles.contains(&role) { return Err(BlockError::Einval); }
+        seen_roles.push(role);
+    }
     let block_size = found[0].1.inner.block_size();
     if found.iter().any(|(_, member)| member.inner.block_size() != block_size) { return Err(BlockError::Einval); }
     let control_members = found.iter().map(|(superblock, member)| Some(ControlMember {
@@ -140,5 +145,23 @@ mod tests {
         let mut write = BlockRequest::new_write(128, 1, vec![0x5a; 512]); array.submit_sync(&mut write).expect("array write");
         let mut read = BlockRequest::new_read(16, 1, 512); second.submit_sync(&mut read).expect("member read");
         assert_eq!(read.buffer, vec![0x5a; 512]);
+    }
+
+    #[test]
+    fn raid1_assembles_with_a_missing_role_and_keeps_the_live_mapping() {
+        let member: Arc<dyn BlockDevice> = block::MemDisk::<TaskList>::new(512, 256);
+        let mut bytes = metadata(0);
+        put32(&mut bytes, 72, 1);
+        let checksum = crate::superblock::checksum(&bytes, 260).expect("checksum");
+        put32(&mut bytes, 216, checksum);
+        let mut write = BlockRequest::new_write(8, 8, bytes);
+        member.submit_sync(&mut write).expect("metadata");
+
+        let array = assemble(vec![member.clone()], MetadataVersion::V1_2).expect("degraded RAID1");
+        let mut data = BlockRequest::new_write(3, 1, vec![0x6b; 512]);
+        array.submit_sync(&mut data).expect("write to surviving role");
+        let mut read = BlockRequest::new_read(19, 1, 512);
+        member.submit_sync(&mut read).expect("member read");
+        assert_eq!(read.buffer, vec![0x6b; 512]);
     }
 }
