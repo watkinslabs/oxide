@@ -407,6 +407,7 @@ dependencies = [
  "crng",
  "crypt",
  "drv",
+ "sched",
  "sync",
  "syscall",
  "vfs",

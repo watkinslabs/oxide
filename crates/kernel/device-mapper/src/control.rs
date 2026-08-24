@@ -150,10 +150,21 @@ fn dev_suspend(header: Header, bytes: &mut [u8]) -> DmResult<()> {
 
 fn dev_wait(header: Header, bytes: &mut [u8]) -> DmResult<()> {
     let dev = device_of(header, bytes)?;
-    // Sleeping needs the file-owned wait queue that wakes pollers as well;
-    // the byte-buffer work function has no file description. A caller whose
-    // observed event is stale receives the current state here.
-    if dev.event_nr() == header.event_nr { return Err(Errno::Eagain); }
+    if dev.event_nr() == header.event_nr {
+        #[cfg(target_os = "oxide-kernel")]
+        {
+            // SAFETY: this is process context, the device predicate is read
+            // without holding the device lock across schedule, and
+            // bump_event publishes the counter before waking this list.
+            unsafe {
+                let _ = sched::live::wait_event_uninterruptible(
+                    dev.event_waiters(), || dev.event_nr() != header.event_nr,
+                );
+            }
+        }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        return Err(Errno::Eagain);
+    }
     fill_status(bytes, &dev);
     Ok(())
 }
@@ -459,6 +470,11 @@ mod tests {
 
         let mut resume = named(name);
         dispatch(uapi::DM_DEV_SUSPEND, &mut resume).expect("resume");
+        assert_eq!(read_u32(&resume, EVENT_NR).expect("event number"), 1);
+        let mut wait = named(name);
+        put_u32(&mut wait, EVENT_NR, 0).expect("wait event number");
+        dispatch(uapi::DM_DEV_WAIT, &mut wait).expect("wait for table event");
+        assert_eq!(read_u32(&wait, EVENT_NR).expect("wait result"), 1);
         let disk = block::registry::by_name("dm-0").expect("published disk");
         let mut read = block::BlockRequest::new_read(0, 1, 512);
         disk.dev.submit_sync(&mut read).expect("zero read");

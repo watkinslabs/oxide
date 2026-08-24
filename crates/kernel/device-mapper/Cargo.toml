@@ -9,6 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 block   = { path = "../block" }
+sched   = { path = "../sched" }
 syscall = { path = "../syscall" }
 sync    = { path = "../../shared/sync" }
 aes     = { path = "../../shared/aes" }

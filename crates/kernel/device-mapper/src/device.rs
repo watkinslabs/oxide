@@ -71,6 +71,9 @@ pub struct MappedDevice {
     /// Minor number, fixed for the device's whole life.
     pub minor: u32,
     state: Spinlock<DevState, DmClass>,
+    /// Waiters for `DM_DEV_WAIT`; publication happens under `state`, wake
+    /// happens after that lock is released, matching Linux's event queue.
+    event_waiters: alloc::sync::Arc<sched::live::WaitList>,
 }
 
 /// Block major device-mapper devices are published under.
@@ -92,6 +95,7 @@ impl MappedDevice {
                 name: name.to_string(),
                 uuid: uuid.map(|s| s.to_string()),
             }),
+            event_waiters: alloc::sync::Arc::new(sched::live::WaitList::new()),
         })
     }
 
@@ -122,10 +126,17 @@ impl MappedDevice {
     /// Raise the event counter. Called when a table changes or a target
     /// reports something a caller waits for. # C: O(1)
     pub fn bump_event(&self) -> u32 {
-        let mut s = self.state.lock();
-        s.event_nr = s.event_nr.wrapping_add(1);
-        s.event_nr
+        let event = {
+            let mut s = self.state.lock();
+            s.event_nr = s.event_nr.wrapping_add(1);
+            s.event_nr
+        };
+        self.event_waiters.wake_all();
+        event
     }
+
+    /// Wait list used by the control owner for `DM_DEV_WAIT`. # C: O(1)
+    pub fn event_waiters(&self) -> &sched::live::WaitList { &self.event_waiters }
 
     /// Record that a description opened the device. # C: O(1)
     pub fn open(&self) { self.state.lock().open_count += 1; }
@@ -209,7 +220,8 @@ impl MappedDevice {
                 Step::SwapTable => {
                     let mut s = self.state.lock();
                     if let Some(t) = s.inactive.take() { s.active = Some(t); }
-                    s.event_nr = s.event_nr.wrapping_add(1);
+                    drop(s);
+                    self.bump_event();
                 }
                 Step::ResumeTargets => { let t = self.state.lock().active.clone(); if let Some(t) = t { t.resume(); } }
                 Step::FlushDeferred => self.flush_deferred(),
