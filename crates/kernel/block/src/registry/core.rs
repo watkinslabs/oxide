@@ -164,11 +164,12 @@ pub fn register_with_driver_at(driver: BlockDriver, name: &str, node_name: &str,
                                dev: Arc<dyn BlockDevice>) -> u32 {
     if let Some(disk) = by_name(name) { return disk.index; }
     let number = match allocate_number_at(driver, requested_minor) { Some(n) => n, None => return 0 };
-    let max_discard_sectors = match dev.queue_limits() {
-        Ok(limits) => limits.max_discard_sectors(),
+    let base_limits = match dev.queue_limits() {
+        Ok(limits) => limits,
         Err(_) => { release_number(driver, number); return 0; }
     };
-    let cache_capable = dev.queue_limits().map(|limits| limits.write_cache()).unwrap_or(false);
+    let max_discard_sectors = base_limits.max_discard_sectors();
+    let cache_capable = base_limits.write_cache();
     let cache_disabled = Arc::new(AtomicBool::new(false));
     let io = Arc::new(Spinlock::new(DiskIo {
         in_flight: 0, closed: false, detached: false, max_discard_sectors,

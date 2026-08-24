@@ -119,8 +119,7 @@ impl scsi::Transport for UsbStorageTransport {
     fn sg_io_max_transfer_bytes(&self) -> Option<usize> { Some(crate::device::STORAGE_MAX_TRANSFER_BYTES) }
 
     fn queue_limits(&self, block_size: u32) -> KResult<QueueLimits> {
-        if block_size as usize > crate::device::STORAGE_MAX_TRANSFER_BYTES { return Err(BlockError::Einval); }
-        Ok(QueueLimits::for_logical_block_size(block_size)?.with_features(block::QueueFeatures::WRITE_CACHE))
+        self.queue_limits_for(scsi::Lun::ZERO, block_size)
     }
 
     fn queue_limits_for(&self, lun: scsi::Lun, block_size: u32) -> KResult<QueueLimits> {
