@@ -140,33 +140,37 @@ impl Mount {
             // the O(range) eager zero-write that made journald's multi-MB journal
             // preallocation a per-block alloc+write storm.
             let mut allocated = alloc::vec::Vec::new();
-            let request_count = last_lb.checked_sub(first_lb).and_then(|n| n.checked_add(1))
-                .ok_or(MountError::Inode(inode::InodeError::BadLen))?;
-            let mut all_unmapped = true;
+            let mut unmapped_count = 0u32;
             for lb in first_lb..=last_lb {
                 let inode = m.read_inode(ino)?;
                 let was_mapped = m.collect_phys_extents(&inode.i_block)?
                     .iter()
                     .any(|r| lb >= r.logical && lb < r.logical + r.len);
-                if was_mapped { all_unmapped = false; break; }
+                if !was_mapped { unmapped_count = unmapped_count.checked_add(1)
+                    .ok_or(MountError::Inode(inode::InodeError::BadLen))?; }
             }
-            // A fresh range is one multiblock request, just as ext4's mballoc
-            // path sees it. Existing mappings still take the per-block path so
-            // a partial fallocate never reserves blocks it will not consume.
-            let reserved = if all_unmapped {
-                Some(m.alloc_blocks_flags(0, request_count, m.data_reserve_flags(ino))?)
+            // One fallocate request can contain both mapped and hole blocks.
+            // Linux mballoc reserves the missing part as one request; do not
+            // turn a partial range back into one bitmap scan per hole.
+            let reserved = if unmapped_count != 0 {
+                Some(m.alloc_blocks_flags(0, unmapped_count, m.data_reserve_flags(ino))?)
             } else { None };
-            for (offset, lb) in (first_lb..=last_lb).enumerate() {
+            let mut reserved_at = 0usize;
+            for lb in first_lb..=last_lb {
                 let inode = m.read_inode(ino)?;
                 let was_mapped = m.collect_phys_extents(&inode.i_block)?
                     .iter()
                     .any(|r| lb >= r.logical && lb < r.logical + r.len);
                 let visible_size = core::cmp::max(inode.size, (lb as u64 + 1) * bs);
-                let physical = reserved.as_ref().map(|run| run[offset]);
+                let physical = if was_mapped { None } else {
+                    let block = reserved.as_ref().map(|run| run[reserved_at]);
+                    reserved_at += 1;
+                    block
+                };
                 if let Err(e) = m.map_unwritten_block_inner_with_physical(ino, lb, visible_size, physical) {
                     let _ = m.rollback_allocated_logical_blocks(ino, old_size, &allocated);
                     if let Some(run) = reserved.as_ref() {
-                        for &block in run.iter().skip(offset) {
+                        for &block in run.iter().skip(reserved_at) {
                             let _ = m.free_block(block);
                         }
                     }
@@ -234,20 +238,20 @@ impl Mount {
             return Err(MountError::Inode(inode::InodeError::BadLen));
         }
         let last_lb = last_lb64 as u32;
-        let request_count = last_lb.checked_sub(first_lb).and_then(|n| n.checked_add(1))
-            .ok_or(MountError::Inode(inode::InodeError::BadLen))?;
         // (phys_block, assembled block bytes) in logical order.
         let mut pending: alloc::vec::Vec<(u64, alloc::vec::Vec<u8>)> = alloc::vec::Vec::new();
         let mut allocated = alloc::vec::Vec::new();
         let initial = self.read_inode(ino)?;
         let initial_extents = self.collect_phys_extents(&initial.i_block)?;
-        let fresh_range = (first_lb..=last_lb).all(|lb| !initial_extents.iter().any(|run|
-            lb >= run.logical && lb < run.logical + run.len));
-        let reserved = if fresh_range {
-            Some(self.alloc_blocks_flags(0, request_count, self.data_reserve_flags(ino))?)
+        let unmapped_count = (first_lb..=last_lb).filter(|lb| !initial_extents.iter().any(|run|
+            *lb >= run.logical && *lb < run.logical + run.len));
+        let unmapped_count = unmapped_count.count() as u32;
+        let reserved = if unmapped_count != 0 {
+            Some(self.alloc_blocks_flags(0, unmapped_count, self.data_reserve_flags(ino))?)
         } else { None };
+        let mut reserved_at = 0usize;
         let mut written = 0usize;
-        for (offset, lb) in (first_lb..=last_lb).enumerate() {
+        for lb in first_lb..=last_lb {
             // An UNWRITTEN (fallocate-preallocated) extent must be converted to a
             // written extent before write_file_block (else it rejects with
             // NotFound). No-op for a written extent or a hole.
@@ -284,11 +288,15 @@ impl Mount {
                 // coalesced flush below. `extent_vec_contains` guards a re-map.
                 let vis = core::cmp::max(inode2.size, blk_end_byte);
                 let (mut ib, ioff) = self.read_inode_bytes(ino)?;
-                let physical = reserved.as_ref().map(|run| run[offset]);
+                let physical = if mapped { None } else {
+                    let block = reserved.as_ref().map(|run| run[reserved_at]);
+                    reserved_at += 1;
+                    block
+                };
                 if let Err(e) = self.alloc_written_block_defer_with_physical(ino, &mut ib, ioff, lb, vis, physical) {
                     if let Err(rb) = self.rollback_allocated_logical_blocks(ino, cur_size, &allocated) { return Err(rb); }
                     if let Some(run) = reserved.as_ref() {
-                        for &block in run.iter().skip(offset) { let _ = self.free_block(block); }
+                        for &block in run.iter().skip(reserved_at) { let _ = self.free_block(block); }
                     }
                     return Err(e);
                 }
