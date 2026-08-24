@@ -52,6 +52,14 @@ pub const RGB24: u32 = 0x3342_4752;
 pub const BGR24: u32 = 0x3352_4742;
 pub const XRGB32: u32 = 0x3432_5842;
 pub const ARGB32: u32 = 0x3432_4142;
+pub const BGR32: u32 = 0x3452_4742;
+pub const ABGR32: u32 = 0x3432_5241;
+pub const XBGR32: u32 = 0x3432_5258;
+pub const BGRA32: u32 = 0x3432_4152;
+pub const BGRX32: u32 = 0x3432_5852;
+pub const RGB32: u32 = 0x3442_4752;
+pub const RGBA32: u32 = 0x3432_4241;
+pub const RGBX32: u32 = 0x3432_4258;
 pub const GREY: u32 = 0x5945_5247;
 pub const Y10: u32 = 0x2030_3159;
 pub const Y12: u32 = 0x2032_3159;
@@ -111,7 +119,8 @@ pub fn size_rule(pixelformat: u32) -> Option<SizeRule> {
         RGB555X | ARGB555X | XRGB555X | YUV555 | YUV565 | YUV444 =>
             SizeRule::Packed { bits_per_pixel: 16 },
         RGB24 | BGR24 => SizeRule::Packed { bits_per_pixel: 24 },
-        XRGB32 | ARGB32 | YUV32 | AYUV32 | XYUV32 | VUYA32 | VUYX32 | YUVA32 | YUVX32 =>
+        XRGB32 | ARGB32 | BGR32 | ABGR32 | XBGR32 | BGRA32 | BGRX32 |
+        RGB32 | RGBA32 | RGBX32 | YUV32 | AYUV32 | XYUV32 | VUYA32 | VUYX32 | YUVA32 | YUVX32 =>
             SizeRule::Packed { bits_per_pixel: 32 },
         NV12 | NV21 | YUV420 | YVU420 | NV12M | NV21M | YUV420M | YVU420M =>
             SizeRule::Planar { chroma_num: 1, chroma_den: 2 },
