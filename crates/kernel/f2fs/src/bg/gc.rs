@@ -142,6 +142,9 @@ pub struct GcKthread {
     /// has seen. A caller that needs space NOW is not bounded by it — a bound
     /// there would fail an allocation while a good victim sat past the cut-off.
     pub max_victim_search: u32,
+    /// Free-section percentage above which background GC is skipped on a
+    /// zoned volume. Linux's `no_zoned_gc_percent`.
+    pub no_zoned_gc_percent: u32,
 }
 
 impl Default for GcKthread {
@@ -161,6 +164,7 @@ impl GcKthread {
             remaining_trials: 0,
             wait_ms: DEF_GC_THREAD_MIN_SLEEP_TIME,
             max_victim_search: crate::volume::gc::victim::DEF_MAX_VICTIM_SEARCH,
+            no_zoned_gc_percent: 0,
         }
     }
 
@@ -230,6 +234,13 @@ pub struct Conditions {
     pub boost: bool,
     /// Whether the cleaner's own re-entry guard is clear.
     pub can_lock: bool,
+    /// A zoned volume has enough free sections for Linux's no-GC gate.
+    pub zoned_free_enough: bool,
+}
+
+/// Linux uses a strict greater-than comparison for this zoned GC gate. # C: O(1)
+pub fn enough_free_sections(free: u32, total: u32, limit: u32) -> bool {
+    u64::from(free) > u64::from(total).saturating_mul(u64::from(limit)) / 100
 }
 
 /// Decide one wake, and move the walk. # C: O(1)
@@ -240,6 +251,10 @@ pub fn gc_round(th: &mut GcKthread, c: Conditions, bggc: BackgroundGc) -> GcStep
     if c.readonly { return GcStep::Skip; }
     if c.frozen {
         th.wait_ms = th.increase_sleep_time(th.wait_ms);
+        return GcStep::Sleep;
+    }
+    if c.zoned_free_enough && !c.foreground && !th.mode.is_urgent() {
+        th.wait_ms = th.no_gc_sleep_time;
         return GcStep::Sleep;
     }
     if th.mode.is_urgent() {
@@ -285,6 +300,8 @@ pub fn after_gc(th: &mut GcKthread, victim_found: bool, foreground: bool) {
 /// Seconds a mount must go untouched before background work may spend the
 /// device on itself.
 pub const IDLE_INTERVAL_SECS: u64 = 5;
+/// Linux's default zoned-volume free-space gate for background GC.
+pub const DEF_NO_ZONED_GC_PERCENT: u32 = 60;
 
 /// Whether the volume is quiet enough for background work of `kind`.
 ///

@@ -82,7 +82,13 @@ fn conditions(fs: &Arc<F2fs>, foreground: bool, mode: GcMode) -> Conditions {
     let readonly = !v.writable();
     let can_lock = !v.gc_is_running();
     let boost = v.load_segments().is_ok() && v.worth_cleaning();
-    Conditions { readonly, frozen: false, foreground, idle, boost, can_lock }
+    let total = v.super_block().segment_count_main
+        .div_ceil(v.super_block().segs_per_sec.max(1));
+    let percent = bg.gc.lock().no_zoned_gc_percent;
+    let zoned_free_enough = crate::features::has_blkzoned(v.super_block().feature)
+        && percent != 0
+        && crate::bg::gc::enough_free_sections(v.free_section_count(), total, percent);
+    Conditions { readonly, frozen: false, foreground, idle, boost, can_lock, zoned_free_enough }
 }
 
 /// Do the cleaning the pass decided on.

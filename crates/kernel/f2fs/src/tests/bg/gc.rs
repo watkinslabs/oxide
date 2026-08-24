@@ -12,7 +12,7 @@ fn th() -> GcKthread { GcKthread::new() }
 
 fn quiet() -> Conditions {
     Conditions { readonly: false, frozen: false, foreground: false, idle: true, boost: false,
-                 can_lock: true }
+                 can_lock: true, zoned_free_enough: false }
 }
 
 #[test]
@@ -260,4 +260,11 @@ fn cleaning_is_worth_it_only_when_dead_space_is_high_and_free_space_is_low() {
     assert!(!has_enough_invalid_blocks(1000, 900, 10, 0));
     // Overprovisioning is not free space and does not count as room.
     assert!(has_enough_invalid_blocks(1000, 500, 300, 250));
+}
+
+#[test]
+fn zoned_gc_gate_uses_linux_strict_free_section_percentage() {
+    assert!(!enough_free_sections(60, 100, 60));
+    assert!(enough_free_sections(61, 100, 60));
+    assert!(enough_free_sections(1, 1, 0));
 }
