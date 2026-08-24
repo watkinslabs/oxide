@@ -13,7 +13,6 @@ use block::{BlockError, KResult};
 pub(crate) struct Metadata {
     pub(crate) minor_version: i32,
     pub(crate) ctime: u64,
-    pub(crate) utime: u64,
     pub(crate) level: i32,
     pub(crate) layout: u32,
     pub(crate) chunk_sectors: u32,
@@ -184,7 +183,7 @@ impl Array {
             major_version: 1, minor_version: metadata.minor_version, patch_version: uapi::MD_PATCHLEVEL_VERSION,
             ctime: u32::try_from(metadata.ctime).unwrap_or(u32::MAX), level: metadata.level, size,
             nr_disks: disks, raid_disks: i32::try_from(metadata.raid_disks).ok()?, md_minor: i32::try_from(md_minor).ok()?, not_persistent: 0,
-            utime: u32::try_from(metadata.utime).unwrap_or(u32::MAX), state: 1, active_disks: disks - failed, working_disks: disks - failed,
+            utime: u32::try_from(*self.metadata_utime.lock()).unwrap_or(u32::MAX), state: 1, active_disks: disks - failed, working_disks: disks - failed,
             failed_disks: failed, spare_disks: 0, layout: metadata.layout as i32,
             chunk_size: i32::try_from(u64::from(metadata.chunk_sectors).checked_mul(512)?).unwrap_or(-1),
         })

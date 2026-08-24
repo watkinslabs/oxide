@@ -52,6 +52,7 @@ pub struct Array {
     metadata_members: Vec<Arc<dyn BlockDevice>>,
     metadata_version: Option<MetadataVersion>,
     metadata_events: Spinlock<u64, MdStateClass>,
+    metadata_utime: Spinlock<u64, MdStateClass>,
     mutation: LifecycleMutex<()>,
     lifecycle: lifecycle::State,
     faulty: Spinlock<Vec<bool>, MdStateClass>,
@@ -75,16 +76,16 @@ impl Array {
     }
 
     pub(crate) fn from_metadata(level: Level, members: Vec<Arc<dyn BlockDevice>>, metadata: control::Metadata,
-                                metadata_members: Vec<Arc<dyn BlockDevice>>, version: MetadataVersion, events: u64) -> KResult<Arc<Self>> {
-        Self::new_with_metadata(level, members, Some(metadata), metadata_members, Some(version), events)
+                                metadata_members: Vec<Arc<dyn BlockDevice>>, version: MetadataVersion, events: u64, utime: u64) -> KResult<Arc<Self>> {
+        Self::new_with_metadata(level, members, Some(metadata), metadata_members, Some(version), events, utime)
     }
 
     fn new(level: Level, members: Vec<Arc<dyn BlockDevice>>, metadata: Option<control::Metadata>) -> KResult<Arc<Self>> {
-        Self::new_with_metadata(level, members, metadata, Vec::new(), None, 0)
+        Self::new_with_metadata(level, members, metadata, Vec::new(), None, 0, 0)
     }
 
     fn new_with_metadata(level: Level, members: Vec<Arc<dyn BlockDevice>>, metadata: Option<control::Metadata>,
-                         metadata_members: Vec<Arc<dyn BlockDevice>>, metadata_version: Option<MetadataVersion>, metadata_events: u64) -> KResult<Arc<Self>> {
+                         metadata_members: Vec<Arc<dyn BlockDevice>>, metadata_version: Option<MetadataVersion>, metadata_events: u64, metadata_utime: u64) -> KResult<Arc<Self>> {
         let Some(first) = members.first() else { return Err(BlockError::Einval); };
         let block_size = first.block_size();
         if members.iter().any(|member| member.block_size() != block_size || member.capacity_blocks() == 0) {
@@ -104,7 +105,7 @@ impl Array {
         };
         if capacity == 0 { return Err(BlockError::Einval); }
         Ok(Arc::new(Self { level, faulty: Spinlock::new(vec![false; members.len()]), members,
-            block_size, capacity, metadata, metadata_members, metadata_version, metadata_events: Spinlock::new(metadata_events),
+            block_size, capacity, metadata, metadata_members, metadata_version, metadata_events: Spinlock::new(metadata_events), metadata_utime: Spinlock::new(metadata_utime),
             mutation: LifecycleMutex::new(()), lifecycle: lifecycle::State::new() }))
     }
 
@@ -143,15 +144,17 @@ impl Array {
             if self.level == Level::Raid1 && faulty.iter().filter(|faulty| !**faulty).count() <= 1 { return Err(BlockError::Ebusy); }
         }
         let events = { let current = *self.metadata_events.lock(); current.wrapping_add(1) };
+        let utime = timekeeper::realtime_ns() / 1_000_000_000;
         if let Some(version) = self.metadata_version {
             for (index, disk) in self.metadata_members.iter().enumerate() {
                 if index != member && !self.member_faulty(index) {
-                    crate::superblock::write_faulty(disk.as_ref(), version, member_number, events)?;
+                    crate::superblock::write_faulty(disk.as_ref(), version, member_number, events, utime)?;
                 }
             }
         }
         self.faulty.lock()[member] = true;
         *self.metadata_events.lock() = events;
+        *self.metadata_utime.lock() = utime;
         Ok(())
     }
 

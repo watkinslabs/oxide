@@ -134,7 +134,7 @@ fn super_sector(version: MetadataVersion, sectors: u64) -> KResult<u64> {
 /// Persist a member-fault transition in one version-1 superblock. Linux
 /// rewrites surviving members with the advanced event counter and does not
 /// write the member whose device has just been declared faulty. # C: O(8 KiB)
-pub(crate) fn write_faulty(member: &dyn BlockDevice, version: MetadataVersion, dev_number: u32, events: u64) -> KResult<()> {
+pub(crate) fn write_faulty(member: &dyn BlockDevice, version: MetadataVersion, dev_number: u32, events: u64, utime: u64) -> KResult<()> {
     let block_size = u64::from(member.block_size());
     if block_size == 0 || SUPERBLOCK_BYTES as u64 % block_size != 0 { return Err(BlockError::Einval); }
     let sectors = member.capacity_blocks().checked_mul(block_size).ok_or(BlockError::Eoverflow)? / SECTOR_BYTES;
@@ -147,6 +147,7 @@ pub(crate) fn write_faulty(member: &dyn BlockDevice, version: MetadataVersion, d
     let role = usize::try_from(dev_number).map_err(|_| BlockError::Einval)?;
     if role >= max_dev || HEADER_BYTES + max_dev * 2 > read.buffer.len() { return Err(BlockError::Einval); }
     read.buffer[HEADER_BYTES + role * 2..HEADER_BYTES + role * 2 + 2].copy_from_slice(&ROLE_FAULTY.to_le_bytes());
+    read.buffer[192..200].copy_from_slice(&utime.to_le_bytes());
     read.buffer[200..208].copy_from_slice(&events.to_le_bytes());
     let sum = checksum(&read.buffer, HEADER_BYTES + max_dev * 2)?;
     read.buffer[216..220].copy_from_slice(&sum.to_le_bytes());
@@ -245,9 +246,9 @@ mod tests {
         let member: Arc<dyn BlockDevice> = block::MemDisk::<TaskList>::new(512, 256);
         let mut write = BlockRequest::new_write(8, 8, image(8).to_vec());
         member.submit_sync(&mut write).expect("write metadata");
-        write_faulty(member.as_ref(), MetadataVersion::V1_2, 1, 10).expect("persist fault");
+        write_faulty(member.as_ref(), MetadataVersion::V1_2, 1, 10, 11).expect("persist fault");
         let found = read_superblock(member.as_ref(), MetadataVersion::V1_2).expect("read metadata");
-        assert_eq!(found.events(), 10); assert_eq!(found.member_role(), Some(ROLE_FAULTY));
+        assert_eq!((found.events(), found.utime()), (10, 11)); assert_eq!(found.member_role(), Some(ROLE_FAULTY));
         assert!(!found.is_active_member());
     }
 
