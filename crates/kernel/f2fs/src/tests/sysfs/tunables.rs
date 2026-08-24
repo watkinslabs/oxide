@@ -175,23 +175,28 @@ fn the_dirty_node_share_reaches_the_decision_that_reads_it() {
         assert!(store(&a, "dirty_nats_ratio", bad).is_err(), "{bad} was accepted");
     }
     assert_eq!(fs.volume.lock().dirty_nats_ratio(), 40, "a refusal changed it");
-    // And the share genuinely decides the answer. Asserted at the comparison
-    // rather than through the volume: the fixture's node table holds 232960 ids
-    // and a create dirties ONE entry, so no admissible share (1..=100) crosses
-    // the threshold and the volume-level answer is false either way.
-    // A filed row records that; what is pinned here is that the written value is
-    // what the comparison reads.
+    // And the share genuinely decides the live volume answer. The fixture's
+    // node table is large, so one create cannot cross even the minimum 1%
+    // threshold; create the required real entries rather than editing the
+    // accounting fields underneath the decision.
     use crate::bg::balance::excess_dirty_nats_at;
     assert!(excess_dirty_nats_at(10, 100, 10), "a tenth of the table is a tenth");
     assert!(!excess_dirty_nats_at(9, 100, 10));
     assert!(!excess_dirty_nats_at(0, 100, 1), "an empty table is never excessive");
     assert!(excess_dirty_nats_at(1, 100, 1));
+    store(&a, "dirty_nats_ratio", 1).expect("minimum accepted ratio");
     {
         let mut v = fs.volume.lock();
         let spec = crate::volume::NewInode { mode: crate::mode::S_IFREG | 0o644, uid: 0, gid: 0,
                                              rdev: 0, now: (1_800_000_000, 0) };
-        v.create(crate::test_image::ROOT_INO, b"nat", &spec, None).unwrap();
+        for i in 0..5000usize {
+            if v.excess_dirty_nats() { break; }
+            let name = alloc::format!("nat-{i}");
+            v.create(crate::test_image::ROOT_INO, name.as_bytes(), &spec, None).unwrap();
+        }
         assert!(v.cached_nats() > 0, "a create dirtied no node-table entry");
+        assert!(v.excess_dirty_nats(),
+                "a real file workload never crossed the minimum dirty-NAT share");
         assert_eq!(v.excess_dirty_nats(),
                    excess_dirty_nats_at(v.cached_nats(), v.max_nid() as usize,
                                         v.dirty_nats_ratio() as usize),

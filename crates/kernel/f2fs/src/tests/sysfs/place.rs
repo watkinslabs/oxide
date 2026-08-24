@@ -117,17 +117,26 @@ fn the_armed_set_written_through_the_file_moves_the_next_rewrite() {
 /// The utilisation threshold written through the file is the one the arm
 /// compares against.
 ///
-/// Asserted at the decision's own input rather than at an address, because the
-/// fixture's occupancy is a fraction of a percent and reports as ZERO — so no
-/// threshold this attribute can carry is below it, and the arm cannot be made
-/// to fire at this geometry. The comparison itself is pinned in
-/// `tests/place/ipu.rs`; what is pinned here is that the written value is what
-/// that comparison reads.
+/// A real multi-block workload raises the fixture's utilization above zero, so
+/// both the zero-threshold and maximum-threshold arms are reachable here. The
+/// comparison is still owned by `tests/place/ipu.rs`; this test proves the
+/// sysfs value reaches that live decision with realistic volume state.
 #[test]
 fn the_utilisation_threshold_reaches_the_arm_that_reads_it() {
     let fs = mounted();
     let a = attrs(&fs);
     let (ino, at) = with_placed_block(&fs, &a);
+    // One block rounds down to zero percent on this fixture. Fill a real
+    // portion of the main area so the utilization comparison has both sides
+    // reachable; this is a workload, not a mutation of the accounting input.
+    {
+        let spec = NewInode { mode: S_IFREG | 0o644, uid: 0, gid: 0, rdev: 0, now: NOW };
+        let mut v = fs.volume.lock();
+        let filler = v.create(ROOT_INO, b"util", &spec, None).unwrap();
+        v.write_file(filler, 0, &alloc::vec![0x5Au8; 512 * BLKSIZE]).unwrap();
+        v.sync_data().unwrap();
+        assert!(v.utilization() > 0, "the utilization workload still rounds to zero");
+    }
     store(&a, "ipu_policy", u64::from(bits::bit(bits::UTIL))).expect("arm");
     for want in [0u32, 41, u32::MAX] {
         store(&a, "min_ipu_util", u64::from(want)).expect("store");
@@ -136,6 +145,8 @@ fn the_utilisation_threshold_reaches_the_arm_that_reads_it() {
         let f = v.ipu_facts(ino, &inode, at, true).unwrap();
         assert_eq!(f.min_ipu_util, want, "the threshold did not reach the decision");
         assert_eq!(f.policy, bits::bit(bits::UTIL), "the armed set did not reach the decision");
+        assert_eq!(crate::place::ipu::check_policy(&f, || false), want == 0,
+                   "the utilization threshold did not change the live decision");
     }
 }
 
