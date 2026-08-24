@@ -276,10 +276,11 @@ pub fn identify_sector_size(words: &[u16]) -> u32 {
     512
 }
 
-/// Whether ATA IDENTIFY reports its volatile write cache enabled (word 85,
-/// WCE). # C: O(1)
-pub fn identify_write_cache(words: &[u16]) -> bool {
-    words.get(85).is_some_and(|word| word & (1 << 5) != 0)
+/// Decode the WCE bit after the caller has already extracted IDENTIFY word 85.
+/// # C: O(1)
+#[inline]
+pub fn identify_write_cache_word(word: u16) -> bool {
+    word & (1 << 5) != 0
 }
 
 /// Decode the ATA IDENTIFY DEVICE serial field (words 10..19). ATA strings
@@ -486,9 +487,9 @@ mod tests {
     #[test]
     fn identify_write_cache_follows_wce() {
         let mut w = [0u16; 256];
-        assert!(!identify_write_cache(&w));
+        assert!(!identify_write_cache_word(w[85]));
         w[85] = 1 << 5;
-        assert!(identify_write_cache(&w));
+        assert!(identify_write_cache_word(w[85]));
     }
 
     #[test]
