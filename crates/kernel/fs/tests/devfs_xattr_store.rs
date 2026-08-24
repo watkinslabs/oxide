@@ -23,6 +23,8 @@ use alloc::vec::Vec;
 use fs::xattr::{vfs_getxattr, vfs_listxattr, vfs_setxattr, XattrCred};
 use syscall::errno::Errno;
 use vfs::{default_file_ops, default_inode_ops, mk_mode, FileType, InodeBuilder, InodeRef};
+use vfs::posix_acl::{from_xattr, to_xattr, AclEntry, ACL_GROUP_OBJ, ACL_MASK, ACL_OTHER,
+                     ACL_UNDEFINED_ID, ACL_USER, ACL_USER_OBJ};
 
 fn e(x: Errno) -> i64 { -(x.as_i32() as i64) }
 
@@ -116,6 +118,27 @@ fn a_device_node_stores_and_returns_a_value() {
     let names: Vec<String> = String::from_utf8(vfs_listxattr(&n, &c).expect("list"))
         .expect("names are text").split('\0').filter(|s| !s.is_empty()).map(String::from).collect();
     assert_eq!(names, alloc::vec![String::from("security.ima")], "the written name is listed");
+}
+
+/// Linux devtmpfs accepts the POSIX ACL xattr path, and an access ACL updates
+/// the mode before the interchange blob is stored. This catches the
+/// superblock capability gate that ordinary security.* xattrs do not exercise.
+#[test]
+fn a_device_node_accepts_a_posix_access_acl() {
+    let n = published_dev_node("/dev/b2634_acl", "b2634_acl");
+    let acl = alloc::vec![
+        AclEntry { tag: ACL_USER_OBJ, perm: 0o7, id: ACL_UNDEFINED_ID },
+        AclEntry { tag: ACL_USER, perm: 0o4, id: 1000 },
+        AclEntry { tag: ACL_GROUP_OBJ, perm: 0o5, id: ACL_UNDEFINED_ID },
+        AclEntry { tag: ACL_MASK, perm: 0o5, id: ACL_UNDEFINED_ID },
+        AclEntry { tag: ACL_OTHER, perm: 0o1, id: ACL_UNDEFINED_ID },
+    ];
+    let blob = to_xattr(&acl);
+    vfs_setxattr(&n, "system.posix_acl_access", blob.clone(), 0, &XattrCred::root())
+        .expect("devtmpfs accepts POSIX access ACLs");
+    assert_eq!(get(&n, "system.posix_acl_access"), Ok(blob.clone()));
+    assert_eq!(from_xattr(&blob), Ok(acl));
+    assert_eq!(n.perm(), Some(0o751));
 }
 
 /// A node minted by a driver's `dev_t` — no factory, no filesystem knowledge in
