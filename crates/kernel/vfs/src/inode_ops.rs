@@ -235,14 +235,10 @@ pub trait InodeOps: Send + Sync {
     fn allow_set_time(&self, _inode: &Inode, _idmap: &Idmap, _cred: &Cred) -> bool { false }
 
     /// `i_op->setattr` — apply a prepared `Iattr`. Default `simple_setattr`
-    /// (writes the inode's own metadata fields), then keep an existing access
-    /// ACL consistent with a changed mode. # C: O(1) without an ACL
+    /// writes the inode's own metadata fields. POSIX-ACL filesystems perform
+    /// their ACL rewrite in their filesystem-owned setattr path. # C: O(1)
     fn setattr(&self, inode: &Inode, idmap: &Idmap, ia: &Iattr) -> KResult<()> {
-        crate::setattr::simple_setattr(inode, idmap, ia)?;
-        if ia.valid & crate::setattr::ATTR_MODE != 0 {
-            inode.store_posix_acl_chmod(inode.perm().unwrap_or(0))?;
-        }
-        Ok(())
+        crate::setattr::simple_setattr(inode, idmap, ia)
     }
 
     /// `i_op->update_time` (Linux `->update_time(inode, now, flags)`) — apply the
