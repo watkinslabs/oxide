@@ -46,6 +46,18 @@ impl<S: SectorSource> Volume<S> {
     /// Set the block-fragmentation hole ceiling. # C: O(1)
     pub fn set_max_fragment_hole(&mut self, value: u32) { self.max_fragment_hole = value; }
 
+    /// Free sections reserved for pinned-file allocation. # C: O(1)
+    pub fn reserved_pin_section(&self) -> u32 { self.reserved_pin_section }
+
+    /// Set the pin reserve, bounded by the formatted overprovision reserve.
+    /// # C: O(1)
+    pub fn set_reserved_pin_section(&mut self, value: u32) -> Result<(), Errno> {
+        let max = self.gc_reserve().div_ceil(self.sb.segs_per_sec.max(1));
+        if value > max { return Err(Errno::Einval); }
+        self.reserved_pin_section = value;
+        Ok(())
+    }
+
     /// The pressure the recycling decision reads. # C: O(main segments)
     pub(crate) fn ssr_state(&self) -> ssr::Need {
         let per_sec = self.blks_per_sec();

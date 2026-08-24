@@ -68,6 +68,8 @@ pub(crate) fn attrs(fs: &Arc<F2fs>, dev: &str) -> Vec<Attr> {
                |v| u64::from(v.max_fragment_chunk()), set_max_fragment_chunk),
         num_rw(fs, dev, "max_fragment_hole",
                |v| u64::from(v.max_fragment_hole()), set_max_fragment_hole),
+        num_rw(fs, dev, "reserved_pin_section",
+               |v| u64::from(v.reserved_pin_section()), set_reserved_pin_section),
     ];
     out.extend(atgc::knobs::ALL.iter().map(|&k| atgc_knob(fs, dev, k)));
     out
@@ -296,6 +298,12 @@ fn set_max_fragment_hole(v: &mut Vol, n: u64) -> Result<(), Errno> {
     if !(1..=512).contains(&n) { return Err(Errno::Einval); }
     v.set_max_fragment_hole(n as u32);
     Ok(())
+}
+
+/// Free sections reserved for pinned-file allocation. # C: O(1)
+fn set_reserved_pin_section(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    if n > u64::from(u32::MAX) { return Err(Errno::Einval); }
+    v.set_reserved_pin_section(n as u32)
 }
 
 /// A whole share, which is what every percentage control is bounded by.

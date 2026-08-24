@@ -25,6 +25,26 @@ use crate::volume::Volume;
 use super::section;
 
 impl<S: SectorSource> Volume<S> {
+    /// Keep Linux's pin-mapping reserve check at the section allocator's
+    /// boundary: cleaning may reclaim space, but pinned mapping never spends
+    /// the sections reserved for its own future blocks. # C: O(main segments)
+    fn ensure_pinned_space(&mut self) -> Result<(), Errno> {
+        if self.reserved_pin_section == 0 {
+            return Ok(());
+        }
+        if self.free_section_count() < self.reserved_pin_section {
+            let per = self.sb.segs_per_sec.max(1);
+            let target = (self.free_section_count() + self.reserved_pin_section)
+                .saturating_mul(per);
+            let _ = self.collect(target.max(per))?;
+        }
+        if self.free_section_count() >= self.reserved_pin_section {
+            Ok(())
+        } else {
+            Err(Errno::Enospc)
+        }
+    }
+
     /// Blocks one section holds, ignoring any zone capacity. # C: O(1)
     pub(crate) fn blks_per_sec(&self) -> u32 {
         crate::zoned::usable::blks_per_sec(&self.sb)
@@ -135,6 +155,7 @@ impl<S: SectorSource> Volume<S> {
         let first = (off / BLKSIZE as u64) / sec * sec;
         let last = end.div_ceil(BLKSIZE as u64);
         let count = (last - first).div_ceil(sec) * sec;
+        self.ensure_pinned_space()?;
         self.allocate_pinning_section()?;
         let made = self.fill_pinned(ino, first, count, false)?;
         let size = end.max(self.read_inode(ino)?.size);

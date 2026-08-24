@@ -139,6 +139,11 @@ impl<S: SectorSource> Volume<S> {
         }
         let migration_window_granularity = sb.segs_per_sec.max(1);
         let migration_granularity = migration_window_granularity;
+        let reserved_pin_section = if features::has_blkzoned(sb.feature) {
+            1
+        } else {
+            cp.rsvd_segment_count.div_ceil(sb.segs_per_sec.max(1))
+        };
         init_field!(source: source);
         init_field!(sb: sb);
         init_field!(sb_raw: sb_raw);
@@ -199,6 +204,7 @@ impl<S: SectorSource> Volume<S> {
         init_field!(max_io_bytes: 0);
         init_field!(max_fragment_chunk: 4);
         init_field!(max_fragment_hole: 4);
+        init_field!(reserved_pin_section: reserved_pin_section);
         init_field!(atomic: alloc::collections::BTreeMap::new());
         init_field!(ioprio_hint: alloc::collections::BTreeMap::new());
         init_field!(compress_cache: crate::compress::cache::Cache::new(compress_cache, max_nid));

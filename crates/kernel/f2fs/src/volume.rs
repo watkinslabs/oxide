@@ -305,6 +305,8 @@ pub struct Volume<S: SectorSource> {
     pub(crate) max_fragment_chunk: u32,
     /// Maximum unallocated blocks between block-fragmentation chunks. Linux default 4.
     pub(crate) max_fragment_hole: u32,
+    /// Free sections reserved for future pinned-file allocation.
+    pub(crate) reserved_pin_section: u32,
     /// Files between START and COMMIT of an atomic write, by inode number.
     ///
     /// Never on the medium, and that is the promise: an atomic span that a

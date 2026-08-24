@@ -222,6 +222,21 @@ fn fragment_limits_are_live_and_linux_bounded() {
     assert_eq!(show(&a, "max_fragment_hole"), 9);
 }
 
+#[test]
+fn reserved_pin_sections_are_live_and_overprovision_bounded() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    let max = {
+        let v = fs.volume.lock();
+        u64::from(v.gc_reserve().div_ceil(v.super_block().segs_per_sec.max(1)))
+    };
+    assert_eq!(show(&a, "reserved_pin_section"), max);
+    store(&a, "reserved_pin_section", 0).expect("zero is accepted");
+    assert_eq!(show(&a, "reserved_pin_section"), 0);
+    assert!(store(&a, "reserved_pin_section", max + 1).is_err());
+    assert_eq!(show(&a, "reserved_pin_section"), 0);
+}
+
 /// The point of the knob: what is written is what the machinery then holds.
 /// A control that stored somewhere the decision does not read would pass a
 /// read-back test against its own copy and change nothing.
