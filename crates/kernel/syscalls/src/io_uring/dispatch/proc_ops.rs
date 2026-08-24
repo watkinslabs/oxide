@@ -26,12 +26,23 @@ fn err(e: syscall::errno::Errno) -> i64 { -(e.as_i32() as i64) }
 /// Private dispatch result: the callback fired but the futex value still
 /// matched, so the request must register again without posting a CQE.
 pub const FUTEX_REARM: i64 = i64::MIN + 0x2f;
+pub const WAITID_ARMED: i64 = i64::MIN + 0x30;
 
 struct FutexWaker { req: Weak<IoReq>, index: Arc<AtomicI32> }
 
 impl ipc::live::futex::WaitCallback for FutexWaker {
     fn wake(&self, index: usize) {
         self.index.store(index as i32, Ordering::Release);
+        if let Some(req) = self.req.upgrade() {
+            if !req.is_done() { super::super::iowq::pool::WQ.queue(req); }
+        }
+    }
+}
+
+struct ChildWaker { req: Weak<IoReq> }
+
+impl sched::live::ChildWaitCallback for ChildWaker {
+    fn wake(&self) {
         if let Some(req) = self.req.upgrade() {
             if !req.is_done() { super::super::iowq::pool::WQ.queue(req); }
         }
@@ -62,6 +73,38 @@ pub fn arm_futex_wait(req: &Arc<IoReq>) -> Armed {
 /// Drop the current callback registration before a request is re-armed or
 /// completed. `WaitRegistration::drop` removes only the matching callback.
 pub fn disarm_futex_wait(req: &Arc<IoReq>) { req.inner.lock().futex_wait.take(); }
+
+pub fn arm_waitid(_req: &Arc<IoReq>) -> Armed { Armed::Queue }
+
+pub fn disarm_waitid(req: &Arc<IoReq>) { req.inner.lock().child_wait.take(); }
+
+/// Probe WAITID with WNOHANG, then register on the submitting task's child
+/// event stream if no matching event is ready. The syscall remains the sole
+/// owner of option/id filtering and siginfo copyout.
+pub fn waitid_probe(req: &Arc<IoReq>) -> i64 {
+    let w = match waitid_op::prep(&req.sqe) { Ok(w) => w, Err(e) => return err(e) };
+    let rv = crate::waitid::sys_waitid_for(
+        &syscall::SyscallArgs { a0: w.which as u64, a1: w.id as u32 as u64,
+            a2: w.infop, a3: (w.options as u64) | syscall::wait::WNOHANG,
+            a4: 0, a5: 0 }, req.owner_tid);
+    if rv != 0 { return if rv > 0 { 0 } else { rv }; }
+    let callback = Arc::new(ChildWaker { req: Arc::downgrade(req) });
+    let registration = sched::live::register_child_wait(req.owner_tid, callback);
+    // Recheck after publication. This is the wait-queue equivalent of
+    // Linux's set_current_state()+__do_wait() ordering: a child event that
+    // lands between the first probe and callback insertion cannot be lost.
+    let rv = crate::waitid::sys_waitid_for(
+        &syscall::SyscallArgs { a0: w.which as u64, a1: w.id as u32 as u64,
+            a2: w.infop, a3: (w.options as u64) | syscall::wait::WNOHANG,
+            a4: 0, a5: 0 }, req.owner_tid);
+    if rv == 0 {
+        req.inner.lock().child_wait = Some(registration);
+        WAITID_ARMED
+    } else {
+        drop(registration);
+        if rv > 0 { 0 } else { rv }
+    }
+}
 
 /// Park until the futex word changes, the bitset is woken, or the request is
 /// cancelled. No timeout: an entry that wants one links a timeout to it, which

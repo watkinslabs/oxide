@@ -85,6 +85,7 @@ pub struct ReqInner {
     pub futex_wait: Option<ipc::live::futex::WaitRegistration>,
     pub futex_waitv: Option<alloc::vec::Vec<ipc::live::futex::WaitvEntry>>,
     pub futex_wake_index: Option<Arc<core::sync::atomic::AtomicI32>>,
+    pub child_wait: Option<sched::live::ChildWaitRegistration>,
     /// The description a POLLED ring's transfer is outstanding against —
     /// Linux `ctx->iopoll_list`. Deliberately NOT `poll_file` above: that one
     /// is a readiness subscription ("tell me when this can be read"), this one
@@ -116,6 +117,7 @@ pub struct IoReq {
     /// The address space, descriptor table and credentials a worker borrows to
     /// run this request as the task that submitted it.
     pub owner: Arc<super::iowq::Owner>,
+    pub owner_tid: u32,
     st: crate::io_uring_abi::reqstate::ReqState,
     pub inner: Spinlock<ReqInner, ReqLockClass>,
 }
@@ -125,8 +127,10 @@ impl IoReq {
     pub fn new(ring: &Arc<IoUringInode>, sqe: &Sqe, creds: Option<Arc<CredSnapshot>>,
                owner: Arc<super::iowq::Owner>) -> Arc<Self>
     {
+        let owner_tid = sched::live::current().map(|t| t.tid).unwrap_or(0);
         Arc::new(Self {
             ring: Arc::clone(ring), sqe: *sqe, creds, owner,
+            owner_tid,
             user_data: AtomicU64::new(sqe.user_data),
             st: crate::io_uring_abi::reqstate::ReqState::new(),
             inner: Spinlock::new(ReqInner::default()),

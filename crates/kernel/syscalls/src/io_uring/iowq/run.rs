@@ -32,6 +32,7 @@ pub fn complete(req: &Arc<IoReq>, res: i64, cqe_flags: u32) {
 pub fn complete_out(req: &Arc<IoReq>, out: crate::io_uring::dispatch::OpOutcome) {
     let (res, cqe_flags) = (out.res, out.cqe_flags);
     crate::io_uring::dispatch::proc_ops::disarm_futex_wait(req);
+    crate::io_uring::dispatch::proc_ops::disarm_waitid(req);
     req.finish();
     if posts_cqe(req.sqe.flags, res) {
         let r32 = if res > i32::MAX as i64 { i32::MAX } else { res as i32 };
@@ -157,7 +158,12 @@ pub fn issue(req: &Arc<IoReq>) {
     }
     let waitv_armed = req.opcode() == crate::io_uring_abi::ops::IORING_OP_FUTEX_WAITV
         && req.inner.lock().futex_waitv.is_some();
-    let out = if waitv_armed {
+    let out = if req.opcode() == crate::io_uring_abi::ops::IORING_OP_WAITID {
+        crate::io_uring::dispatch::OpOutcome {
+            res: crate::io_uring::dispatch::proc_ops::waitid_probe(req),
+            cqe_flags: 0, cqe32: false, big: [0; 2], notif: None,
+        }
+    } else if waitv_armed {
         crate::io_uring::dispatch::OpOutcome {
             res: crate::io_uring::dispatch::proc_ops::futex_waitv_probe(req),
             cqe_flags: 0, cqe32: false, big: [0; 2], notif: None,
@@ -165,6 +171,7 @@ pub fn issue(req: &Arc<IoReq>) {
     } else {
         crate::io_uring::dispatch::dispatch_op(&req.ring, &req.sqe)
     };
+    if out.res == crate::io_uring::dispatch::proc_ops::WAITID_ARMED { return; }
     if matches!(req.opcode(), crate::io_uring_abi::ops::IORING_OP_FUTEX_WAIT
         | crate::io_uring_abi::ops::IORING_OP_FUTEX_WAITV)
         && out.res == crate::io_uring::dispatch::proc_ops::FUTEX_REARM

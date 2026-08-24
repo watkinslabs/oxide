@@ -15,13 +15,18 @@ use syscall::wait::{
 /// `sys_waitid(idtype, id, infop, options, rusage)`.
 /// # C: same as wait4 — bounded by the child-event scan
 pub fn sys_waitid(args: &SyscallArgs) -> i64 {
+    let Some(current) = sched::live::current() else { return -(syscall::errno::Errno::Einval.as_i32() as i64); };
+    sys_waitid_for(args, current.tid)
+}
+
+pub fn sys_waitid_for(args: &SyscallArgs, parent_tid: u32) -> i64 {
     let infop  = args.a2;
     let rusage = args.a4;
 
     let (plan, forced_nonblock) = match waitid_prepare(args.a0, args.a1 as i32, args.a3) {
         Err(e) => return -(e.as_i32() as i64),
         Ok(WaitidPrepare::Ready(p)) => (p, false),
-        Ok(WaitidPrepare::Pidfd { fd, options }) => match pidfd_bind(options, resolve_pidfd(fd)) {
+        Ok(WaitidPrepare::Pidfd { fd, options }) => match pidfd_bind(options, resolve_pidfd(fd, parent_tid)) {
             Err(e) => return -(e.as_i32() as i64),
             Ok(v)  => v,
         },
@@ -30,7 +35,7 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
     let mut local_wstat: i32 = 0;
     let mut local_uid: u32 = 0;
     let mut local_kind = WaitEventKind::Exited;
-    let rv = crate::wait::wait_engine(plan, |kind, wstat| {
+    let rv = crate::wait::wait_engine_for(plan, parent_tid, |kind, wstat| {
         local_kind  = kind;
         local_wstat = wstat;
         Ok(())
@@ -56,9 +61,9 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
 /// `P_PIDFD`: look the descriptor up in the caller's fd table. The errno
 /// ladder over the outcome is `syscall::wait::pidfd_bind`'s.
 /// # C: O(1)
-fn resolve_pidfd(fd: i32) -> PidfdTarget {
-    let Some(current) = sched::live::current() else { return PidfdTarget::BadFd };
-    let (target, flags) = match pidfd::task_and_flags_from_fd(current, fd) {
+fn resolve_pidfd(fd: i32, parent_tid: u32) -> PidfdTarget {
+    let Some(current) = sched::live::registry::lookup(parent_tid) else { return PidfdTarget::BadFd };
+    let (target, flags) = match pidfd::task_and_flags_from_fd(&current, fd) {
         Ok(v) => v,
         Err(pidfd::ResolveError::Released) => return PidfdTarget::Released,
         Err(pidfd::ResolveError::BadFd | pidfd::ResolveError::NotPidfd) => return PidfdTarget::BadFd,

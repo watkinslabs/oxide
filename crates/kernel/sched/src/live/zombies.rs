@@ -14,7 +14,7 @@
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{Task, TaskState, WaitState};
 use sync::{Spinlock, TaskList as TaskListClass};
@@ -58,6 +58,24 @@ static ZOMBIES: Spinlock<Vec<Arc<Task>>, TaskListClass>
 static WAITERS: Spinlock<Vec<Arc<Task>>, TaskListClass>
     = Spinlock::new(Vec::new());
 
+pub trait ChildWaitCallback: Send + Sync { fn wake(&self); }
+struct CallbackWaiter { id: u64, parent_tid: u32, callback: Arc<dyn ChildWaitCallback> }
+pub struct ChildWaitRegistration { id: u64 }
+static NEXT_CALLBACK_ID: AtomicU64 = AtomicU64::new(1);
+static CALLBACKS: Spinlock<Vec<CallbackWaiter>, TaskListClass> = Spinlock::new(Vec::new());
+
+impl Drop for ChildWaitRegistration {
+    fn drop(&mut self) { CALLBACKS.lock().retain(|w| w.id != self.id); }
+}
+
+pub fn register_child_wait(parent_tid: u32, callback: Arc<dyn ChildWaitCallback>)
+    -> ChildWaitRegistration
+{
+    let id = NEXT_CALLBACK_ID.fetch_add(1, Ordering::Relaxed);
+    CALLBACKS.lock().push(CallbackWaiter { id, parent_tid, callback });
+    ChildWaitRegistration { id }
+}
+
 /// Test-only: drop every queued zombie and parked waiter. Both lists are
 /// process-global in a hosted test binary, so a case that publishes a zombie
 /// and does not reap it leaves one visible to every later case that queries by
@@ -67,6 +85,7 @@ static WAITERS: Spinlock<Vec<Arc<Task>>, TaskListClass>
 pub fn clear_for_tests() {
     ZOMBIES.lock().clear();
     WAITERS.lock().clear();
+    CALLBACKS.lock().clear();
 }
 
 
@@ -319,6 +338,18 @@ pub(crate) fn wake_wait4_parent(parent_tid: u32) {
         // taken off WAITERS keeps the parent alive across placement.
         unsafe { super::try_to_wake_up(t); }
     }
+    let callbacks = {
+        let mut callbacks = CALLBACKS.lock();
+        let mut fired = Vec::new();
+        let mut i = 0;
+        while i < callbacks.len() {
+            if callbacks[i].parent_tid == parent_tid {
+                fired.push(callbacks.swap_remove(i).callback);
+            } else { i += 1; }
+        }
+        fired
+    };
+    for callback in callbacks { callback.wake(); }
 }
 
 /// Detach every WAITERS entry parked by `parent_tid` and hand the strong refs

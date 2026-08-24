@@ -50,17 +50,27 @@ fn take_event(plan: &WaitPlan, w: (u32, u32, u32)) -> Option<(WaitChildSnapshot,
 /// Shared wait engine (`do_wait`). Syscall `wait4` passes user-copy sinks;
 /// `waitid` passes kernel-local ones.
 /// # C: O(N_loop × N_children)
-pub(crate) fn wait_engine<F, R>(plan: WaitPlan, mut write_status: F, mut write_usage: R) -> i64
+pub(crate) fn wait_engine<F, R>(plan: WaitPlan, write_status: F, write_usage: R) -> i64
 where
     F: FnMut(WaitEventKind, i32) -> Result<(), i64>,
     R: FnMut(WaitChildSnapshot) -> Result<(), i64>,
 {
-    let w = match sched::live::current() {
+    let tid = match sched::live::current() { Some(c) => c.tid, None => return -(Errno::Einval.as_i32() as i64) };
+    wait_engine_for(plan, tid, write_status, write_usage)
+}
+
+pub(crate) fn wait_engine_for<F, R>(plan: WaitPlan, parent_tid: u32,
+                                    mut write_status: F, mut write_usage: R) -> i64
+where
+    F: FnMut(WaitEventKind, i32) -> Result<(), i64>,
+    R: FnMut(WaitChildSnapshot) -> Result<(), i64>,
+{
+    let w = match sched::live::registry::lookup(parent_tid) {
         Some(c) => {
             let ns = sched::live::registry::reader_pid_ns();
             (c.tid, c.tgid.load(core::sync::atomic::Ordering::Acquire), c.pgrp().nr_in_or_tid(&ns))
         }
-        None    => return -(Errno::Einval.as_i32() as i64),
+        None => return -(Errno::Einval.as_i32() as i64),
     };
     loop {
         let event = take_event(&plan, w);
@@ -74,7 +84,7 @@ where
             event.is_some(),
             sched::live::registry::has_wait_children(w.0, w.1, plan.pid, w.2, plan.options),
             plan.options,
-            signal_aborts_wait());
+            signal_aborts_wait_for(w.0));
         match step {
             WaitStep::Report => {
                 let (child, kind, wstat) = match event { Some(e) => e, None => continue };
@@ -137,7 +147,7 @@ where
 /// # C: O(N_zombies)
 fn drop_sigchld_if_drained(plan: &WaitPlan, w: (u32, u32, u32)) {
     if sched::live::has_wait_zombies(w.0, w.1, plan.pid, w.2, plan.options) { return; }
-    if let Some(cur) = sched::live::current() {
+    if let Some(cur) = sched::live::registry::lookup(w.0) {
         // The child record is queued on the PROCESS' shared set, so the private
         // bit alone is not the whole pending SIGCHLD — dropping only that left
         // the record and the shared bit behind for a later handler run.
@@ -153,8 +163,8 @@ fn drop_sigchld_if_drained(plan: &WaitPlan, w: (u32, u32, u32)) {
 /// send time), so a queued SIG_DFL-ignore signal such as SIGWINCH made every
 /// pass return ERESTARTSYS and re-enter, spinning instead of parking.
 /// # C: O(N_sig)
-fn signal_aborts_wait() -> bool {
-    let Some(cur) = sched::live::current() else { return false };
+fn signal_aborts_wait_for(tid: u32) -> bool {
+    let Some(cur) = sched::live::registry::lookup(tid) else { return false };
     sched::task::signal_pending_state(&cur, sched::task::WaitState::Interruptible)
 }
 
