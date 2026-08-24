@@ -1,6 +1,6 @@
 //! The code page: what a byte means, and the byte a character needs.
 
-use crate::name::codepage::{by_number, CP437, CP850, CP852, CP855, CP857, CP860, CP861, CP862, CP863, CP864, CP865, CP866, DEFAULT_CODEPAGE};
+use crate::name::codepage::{by_number, CP437, CP850, CP852, CP855, CP857, CP860, CP861, CP862, CP863, CP864, CP865, CP866, CP869, DEFAULT_CODEPAGE};
 
 /// Below 0x80 a byte is the character of the same value, which is why reading
 /// an ASCII name without a code page at all looks correct and is not.
@@ -133,4 +133,10 @@ fn a_page_is_found_by_its_number() {
     assert_eq!(CP866.from_char(0x0451), Some(0xf1));
     assert_eq!(CP866.to_lower(0x80), 0xa0);
     assert_eq!(CP866.to_upper(0xa0), 0x80);
+    assert_eq!(by_number(869).map(|p| p.number), Some(869));
+    assert_eq!(CP869.to_char(0x86), 0x0386);
+    assert_eq!(CP869.to_char(0xb0), 0x2591);
+    assert_eq!(CP869.from_char(0x03b0), Some(0xfc));
+    assert_eq!(CP869.to_lower(0xa4), 0xd6);
+    assert_eq!(CP869.to_upper(0xd6), 0xa4);
 }
