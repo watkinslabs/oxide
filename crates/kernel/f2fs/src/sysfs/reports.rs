@@ -25,7 +25,11 @@ pub(crate) fn attrs(fs: &Arc<F2fs>, dev: &str) -> Vec<Attr> {
         num(fs, dev, "avg_vblocks", avg_vblocks),
         num(fs, dev, "cp_foreground_calls", cp_foreground_calls),
         num(fs, dev, "cp_background_calls", cp_background_calls),
+        num(fs, dev, "gc_foreground_calls", gc_foreground_calls),
+        num(fs, dev, "gc_background_calls", gc_background_calls),
         num(fs, dev, "current_atomic_write", current_atomic_write),
+        num(fs, dev, "moved_blocks_foreground", moved_blocks_foreground),
+        num(fs, dev, "moved_blocks_background", moved_blocks_background),
         num_rw(fs, dev, "peak_atomic_write", |v| v.peak_atomic_write(), reset_peak_atomic_write),
         num(fs, dev, "defrag_blocks", defrag_blocks),
         num(fs, dev, "unusable_blocks_per_sec", unusable_blocks_per_sec),
@@ -41,6 +45,28 @@ fn cp_foreground_calls(v: &mut Vol) -> Result<u64, Errno> {
 /// Checkpoint requests served by background work. # C: O(1)
 fn cp_background_calls(v: &mut Vol) -> Result<u64, Errno> {
     Ok(u64::from(v.counters().cp_call_count[crate::stats::counters::call::BACKGROUND]))
+}
+
+/// GC calls made because a caller needed space. # C: O(1)
+fn gc_foreground_calls(v: &mut Vol) -> Result<u64, Errno> {
+    Ok(u64::from(v.counters().gc_call_count[crate::stats::counters::call::FOREGROUND]))
+}
+
+/// GC calls made ahead of demand. # C: O(1)
+fn gc_background_calls(v: &mut Vol) -> Result<u64, Errno> {
+    Ok(u64::from(v.counters().gc_call_count[crate::stats::counters::call::BACKGROUND]))
+}
+
+/// Blocks moved by foreground GC. # C: O(1)
+fn moved_blocks_foreground(v: &mut Vol) -> Result<u64, Errno> {
+    let c = v.counters();
+    Ok(u64::from(c.tot_blks.saturating_sub(c.bg_data_blks + c.bg_node_blks)))
+}
+
+/// Blocks moved by background GC. # C: O(1)
+fn moved_blocks_background(v: &mut Vol) -> Result<u64, Errno> {
+    let c = v.counters();
+    Ok(u64::from(c.bg_data_blks + c.bg_node_blks))
 }
 
 /// Mean live blocks across the sections that are neither full nor empty.

@@ -35,6 +35,8 @@ fn each_report_is_read_only_and_reads_a_number() {
     let fs = mounted();
     let attrs = crate::sysfs::mount_attrs(&fs);
     for name in ["avg_vblocks", "cp_foreground_calls", "cp_background_calls",
+                 "gc_foreground_calls", "gc_background_calls",
+                 "moved_blocks_foreground", "moved_blocks_background",
                  "current_atomic_write", "defrag_blocks",
                  "unusable", "unusable_blocks_per_sec", "max_open_zones"] {
         let a = attrs.iter().find(|a| a.dir == "vda" && a.name == name)
@@ -61,6 +63,23 @@ fn checkpoint_call_reports_follow_the_real_entry_owner() {
     assert_eq!(show(&attrs, "cp_foreground_calls"), "1\n");
     fs.checkpoint_now_background().expect("background checkpoint");
     assert_eq!(show(&attrs, "cp_background_calls"), "1\n");
+}
+
+#[test]
+fn gc_call_and_moved_block_reports_share_the_gc_owner() {
+    let fs = mounted();
+    let attrs = crate::sysfs::mount_attrs(&fs);
+    {
+        let mut v = fs.volume.lock();
+        v.collect_as(crate::volume::gc::Policy::Greedy, 0,
+                     crate::stats::counters::gc_mode::NORMAL).expect("foreground gc");
+        v.gc_background_as(crate::volume::gc::Policy::CostBenefit,
+                           crate::stats::counters::gc_mode::NORMAL).expect("background gc");
+    }
+    assert_eq!(show(&attrs, "gc_foreground_calls"), "1\n");
+    assert_eq!(show(&attrs, "gc_background_calls"), "1\n");
+    assert_eq!(show(&attrs, "moved_blocks_foreground"), "0\n");
+    assert_eq!(show(&attrs, "moved_blocks_background"), "0\n");
 }
 
 #[test]

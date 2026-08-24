@@ -148,6 +148,16 @@ impl<S: SectorSource> Volume<S> {
             .and_then(|()| stale.into_iter().try_for_each(|a| self.release_block(a)));
         self.segstate.gc_moving = false;
         outcome?;
+        let when = if self.segstate.gc_background {
+            crate::stats::counters::gc_when::BG
+        } else {
+            crate::stats::counters::gc_when::FG
+        };
+        if nodes {
+            self.counters.borrow_mut().add_gc_node_blks(moved, when);
+        } else {
+            self.counters.borrow_mut().add_gc_data_blks(moved, when);
+        }
         // One segment cleaned, charged to the policy this pass is running
         // under. Raised here rather than where the pass ends because a pass
         // cleans several segments and the figure is per segment.
@@ -279,6 +289,7 @@ impl<S: SectorSource> Volume<S> {
     /// thread cleans under the ordinary policy and is counted as such.
     /// # C: O(sections cleaned * blocks per section)
     pub fn collect_as(&mut self, policy: Policy, target: u32, mode: usize) -> Result<u32, Errno> {
+        self.counters.borrow_mut().inc_gc_call(crate::stats::counters::call::FOREGROUND);
         self.writable_or_err()?;
         if self.segstate.gc_running { return Ok(0); }
         self.segstate.gc_running = true;
@@ -392,6 +403,8 @@ impl<S: SectorSource> Volume<S> {
                 self.segstate.gc_next_segment = Some(segno);
             } else {
             self.mark_victim_section(segno);
+            self.counters.borrow_mut().inc_gc_call(
+                crate::stats::counters::call::BACKGROUND);
             self.segstate.gc_running = true;
             self.segstate.gc_background = true;
             self.segstate.gc_pass_mode = mode;
@@ -413,6 +426,7 @@ impl<S: SectorSource> Volume<S> {
         };
         self.segstate.gc_cursor = found.cursor;
         self.mark_victim_section(found.segno);
+        self.counters.borrow_mut().inc_gc_call(crate::stats::counters::call::BACKGROUND);
         self.segstate.gc_running = true;
         self.segstate.gc_pass_mode = mode;
         self.segstate.gc_atgc_log = self.atgc.enabled;
@@ -437,6 +451,7 @@ impl<S: SectorSource> Volume<S> {
 
     pub fn gc_background_as_boosted(&mut self, policy: Policy, mode: usize, multiple: u32)
         -> Result<Option<u32>, Errno> {
+        self.counters.borrow_mut().inc_gc_call(crate::stats::counters::call::BACKGROUND);
         self.writable_or_err()?;
         if self.segstate.gc_running { return Ok(None); }
         self.load_segments()?;
