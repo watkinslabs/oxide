@@ -152,6 +152,14 @@ impl<S: SectorSource> Volume<S> {
     /// Set the periodic checkpoint interval in seconds. # C: O(1)
     pub fn set_cp_interval(&mut self, value: u64) { self.cp_interval_secs = value; }
 
+    /// Seconds allowed for the final unmount discard drain. # C: O(1)
+    pub fn umount_discard_timeout(&self) -> u64 { self.umount_discard_timeout_secs }
+
+    /// Set the final unmount discard drain timeout in seconds. # C: O(1)
+    pub fn set_umount_discard_timeout(&mut self, value: u64) {
+        self.umount_discard_timeout_secs = value;
+    }
+
     /// Sections the allocator could still open. # C: O(main segments)
     pub fn free_section_count(&self) -> u32 {
         let per_sec = self.sb.segs_per_sec.max(1);

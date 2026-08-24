@@ -206,6 +206,8 @@ pub struct Volume<S: SectorSource> {
     pub(crate) allocate_section_policy: u32,
     /// Seconds between periodic checkpoints on an otherwise quiet mount.
     pub(crate) cp_interval_secs: u64,
+    /// Seconds the unmount discard drain may spend issuing commands.
+    pub(crate) umount_discard_timeout_secs: u64,
     /// Configured pool recovered from released blocks for privileged writes.
     pub(crate) reserved_blocks: u64,
     /// Portion of that pool currently held out of ordinary free space.

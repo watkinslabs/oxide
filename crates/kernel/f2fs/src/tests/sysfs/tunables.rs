@@ -84,6 +84,16 @@ fn checkpoint_interval_control_reaches_balance_clock() {
 }
 
 #[test]
+fn unmount_discard_timeout_is_a_live_volume_control() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    assert_eq!(show(&a, "umount_discard_timeout"),
+               crate::bg::round::DEF_UMOUNT_DISCARD_TIMEOUT_SECS);
+    store(&a, "umount_discard_timeout", 0).expect("Linux permits zero timeout");
+    assert_eq!(fs.volume.lock().umount_discard_timeout(), 0);
+}
+
+#[test]
 fn every_volume_owned_control_is_writable() {
     let fs = mounted();
     let a = crate::sysfs::mount_attrs(&fs);

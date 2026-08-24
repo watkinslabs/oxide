@@ -206,6 +206,9 @@ impl DiscardControl {
         self.pend.iter().flatten().map(|&(_, len)| u64::from(len)).sum()
     }
 
+    /// Drop parked commands after an expired unmount deadline. # C: O(runs)
+    pub fn drop_pending(&mut self) { for list in &mut self.pend { list.clear(); } }
+
     /// The rules for one round.
     ///
     /// `utilization` is the share of the volume in use, as a percentage.

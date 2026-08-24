@@ -15,6 +15,9 @@ use crate::volume::gc::Policy;
 use super::discard::{DiscardType, Round, MIN_DISCARD_GRANULARITY};
 use super::gc::{self, Conditions, GcMode, GcStep, IdleKind};
 
+/// Default seconds allowed for the final unmount discard drain.
+pub const DEF_UMOUNT_DISCARD_TIMEOUT_SECS: u64 = 5;
+
 /// What one wake of the cleaner did, for the thread's own interval and for a
 /// test to assert on.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -219,7 +222,14 @@ pub fn ckpt_pass(fs: &Arc<F2fs>) -> u32 {
 pub fn drain_discards(fs: &F2fs) {
     let bg = fs.bg();
     let utilization = fs.volume.lock().utilization();
+    let start = fs.volume_now().now_secs();
+    let timeout = fs.volume.lock().umount_discard_timeout();
     loop {
+        let now = fs.volume_now().now_secs();
+        if umount_discard_timed_out(start, now, timeout) {
+            bg.dcc.lock().drop_pending();
+            return;
+        }
         let runs = {
             let mut dcc = bg.dcc.lock();
             let p = dcc.init_policy(DiscardType::Umount, MIN_DISCARD_GRANULARITY, utilization);
@@ -229,6 +239,11 @@ pub fn drain_discards(fs: &F2fs) {
         fs.announce_free(&runs);
         bg.dcc.lock().completed(runs.len());
     }
+}
+
+/// Whether the unmount discard deadline has elapsed. # C: O(1)
+pub fn umount_discard_timed_out(start: u64, now: u64, timeout: u64) -> bool {
+    now.saturating_sub(start) > timeout
 }
 
 #[cfg(test)]
