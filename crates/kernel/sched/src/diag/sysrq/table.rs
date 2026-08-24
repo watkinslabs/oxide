@@ -21,6 +21,8 @@ pub enum Cmd {
     /// `p` — this CPU's registers. Rendered here as its heartbeat, which is
     /// the per-CPU state this kernel actually retains.
     ShowRegisters,
+    /// `u` — task and hard-IRQ stack watermarks.
+    ShowStackUsage,
     /// `h` — the key list.
     Help,
     /// A key with no command bound to it. Carried rather than collapsed into
@@ -40,6 +42,7 @@ pub fn decode(key: u8) -> Cmd {
         b'w' => Cmd::ShowBlocked,
         b'l' => Cmd::ShowBacktraceAllCpus,
         b'p' => Cmd::ShowRegisters,
+        b'u' => Cmd::ShowStackUsage,
         b'h' => Cmd::Help,
         other => Cmd::Unbound(other),
     }
@@ -52,6 +55,7 @@ pub const KEYS: &[(u8, &[u8])] = &[
     (b'l', b"backtrace-all-cpus"),
     (b'o', b"poweroff"),
     (b'p', b"registers"),
+    (b'u', b"stack-usage"),
     (b't', b"tasks"),
     (b'w', b"blocked-tasks"),
 ];

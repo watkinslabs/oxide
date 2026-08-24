@@ -52,6 +52,8 @@ pub(crate) const MAX_STACKS: usize = 16384;
 
 /// Largest task-stack usage observed by the lifetime scanner.
 static MAX_STACK_USAGE: AtomicUsize = AtomicUsize::new(0);
+/// Largest per-CPU hard-IRQ-stack usage observed by the IRQ/softirq paths.
+static MAX_IRQ_STACK_USAGE: AtomicUsize = AtomicUsize::new(0);
 
 fn record_stack_usage(bytes: usize) {
     let mut old = MAX_STACK_USAGE.load(Ordering::Relaxed);
@@ -72,6 +74,53 @@ pub fn record_task_usage(stack: &GuardedStack) {
 /// Maximum task-stack bytes observed since boot.
 /// # C: O(1)
 pub fn max_task_usage() -> usize { MAX_STACK_USAGE.load(Ordering::Relaxed) }
+
+/// Record the current per-CPU hard-IRQ stack watermark, if this CPU is on one.
+/// The stack is zero-filled once at allocation, so scanning its low end gives
+/// the lifetime high-water mark even though the stack itself is permanent.
+/// # C: O(KSTACK_BYTES)
+pub fn record_irq_stack_usage() {
+    let sp = {
+        #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+        { hal_x86_64::current_stack_pointer() }
+        #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+        { hal_aarch64::current_stack_pointer() }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        { 0 }
+    };
+    let Some(span) = span_of(sp) else { return; };
+    if classify::kind_from_tag(SLOT_TAG[span.slot].load(Ordering::Acquire)) != classify::StackKind::Irq { return; }
+    // SAFETY: span names the live, permanently mapped IRQ stack slot selected
+    // by the current architectural SP; this read-only scan cannot race a free.
+    let bytes = unsafe { core::slice::from_raw_parts(span.stack_lo as *const u8, KSTACK_BYTES) };
+    record_max(&MAX_IRQ_STACK_USAGE, KSTACK_BYTES - classify::unused_bytes(bytes));
+}
+
+fn record_max(dst: &AtomicUsize, bytes: usize) {
+    let mut old = dst.load(Ordering::Relaxed);
+    while bytes > old {
+        match dst.compare_exchange_weak(old, bytes, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(next) => old = next,
+        }
+    }
+}
+
+/// Maximum per-CPU hard-IRQ-stack bytes observed since boot.
+/// # C: O(1)
+pub fn max_irq_usage() -> usize { MAX_IRQ_STACK_USAGE.load(Ordering::Relaxed) }
+
+/// Emit the operator-facing stack watermark and hard-IRQ nesting report.
+/// # C: O(number of CPUs)
+pub fn emit_usage_report() {
+    klog::write_raw(b"[sysrq] stack usage task=");
+    klog::write_dec_u64(max_task_usage() as u64);
+    klog::write_raw(b" irq=");
+    klog::write_dec_u64(max_irq_usage() as u64);
+    klog::write_raw(b" max_irq_depth=");
+    klog::write_dec_u64(crate::preempt::max_hardirq_depth() as u64);
+    klog::write_raw(b"\n");
+}
 
 pub mod classify;
 /// aarch64 bad-stack probe body (`badstack::report`), installed by kmain.

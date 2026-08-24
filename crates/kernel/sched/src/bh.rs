@@ -172,6 +172,7 @@ pub unsafe fn local_bh_enable_no_drain() {
 pub unsafe fn do_softirq() {
     if preempt::in_interrupt() { return; }
     if !softirq::pending() { return; }
+    crate::kstack::record_irq_stack_usage();
     preempt::preempt_count_add(SOFTIRQ_OFFSET); // in_serving_softirq = true
     // SAFETY: bh-accounted; the core drains this CPU's mask (restart gate).
     unsafe { softirq::run_pending_accounted::<SchedHandlerAccounting>(); }
@@ -201,6 +202,7 @@ pub unsafe fn do_softirq() {
 pub fn softirq_tail_begin() -> bool {
     if preempt::in_interrupt() { return false; }
     if !softirq::pending() { return false; }
+    crate::kstack::record_irq_stack_usage();
     preempt::preempt_count_add(SOFTIRQ_OFFSET);
     true
 }

@@ -17,6 +17,7 @@ fn the_dump_keys_are_the_reference_letters() {
     assert_eq!(decode(b'w'), Cmd::ShowBlocked);
     assert_eq!(decode(b'l'), Cmd::ShowBacktraceAllCpus);
     assert_eq!(decode(b'p'), Cmd::ShowRegisters);
+    assert_eq!(decode(b'u'), Cmd::ShowStackUsage);
 }
 
 /// An upper-case letter is not the same command in a different case: the shift

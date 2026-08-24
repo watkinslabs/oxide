@@ -11,7 +11,7 @@ fn the_rendered_list_is_one_line_naming_every_key() {
     let text = core::str::from_utf8(&buf[..n]).expect("ascii");
     assert_eq!(text,
         "[sysrq] keys: b=reboot c=crash l=backtrace-all-cpus o=poweroff \
-p=registers t=tasks w=blocked-tasks");
+p=registers u=stack-usage t=tasks w=blocked-tasks");
     assert!(!text.contains('\n'), "the newline belongs to the emitter: {text}");
     assert!(text.starts_with(core::str::from_utf8(HELP_PREFIX).unwrap()));
 }
