@@ -191,6 +191,9 @@ impl vfs::fs::FileSystem for DevfsFs {
     /// TMPFS_MAGIC — devtmpfs shares the tmpfs superblock magic.
     /// # C: O(1)
     fn magic(&self) -> u64 { vfs::uapi::TMPFS_SUPER_MAGIC }
+    /// devtmpfs is tmpfs-backed and therefore carries the POSIX ACL VFS path.
+    /// # C: O(1)
+    fn sb_flags(&self) -> u64 { vfs::superblock::SB_POSIXACL }
     /// Mount root = the `/dev` `DevDir` (a real per-component `vfs::Inode`).
     /// The path walk crosses into the devfs mount and resolves every
     /// `/dev/*` component via `DevDir::lookup` — no whole-path lookup.

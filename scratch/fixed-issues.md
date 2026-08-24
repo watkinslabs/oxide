@@ -1,5 +1,9 @@
 # Fixed issues
 
+### B2634-devtmpfs-posix-acl
+
+| FIXED B2634-devtmpfs-posix-acl | DEFECT | high | **devtmpfs device nodes now accept POSIX ACL operations, so udev no longer logs `Failed to apply ACL: Operation not supported` for audio/video devices.** `DevfsFs` advertises `SB_POSIXACL`, matching the tmpfs-backed devtmpfs superblock; the existing VFS ACL owner then validates the blob, folds access permissions into the inode mode, and stores the ACL xattr. | `cargo test -p fs --test devfs_xattr_store`: 6/6; `cargo test -p devfs --lib`: 27/27; `make x86` and `make arm` pass. Branch boot `target/boot-logs/x86_64-20260824-165343.log` contains no `Failed to apply ACL` or `Operation not supported` ACL messages, while the unrelated pre-existing ext4 fsync/stack-guard stall remains recorded at 11.268 s. | B2634-devtmpfs-posix-acl |
+
 ### B2633-kernel-warning-gate-security-f2fs
 
 | FIXED B2633-kernel-warning-gate-security-f2fs | INFRA | med | **The x86_64 and aarch64 kernel warning gates are clean again.** The unused test-only BPF UAPI import is now test-gated, the f2fs production-only `writes_in_place` wrapper was removed in favor of the actual policy function, AHCI's IDENTIFY WCE decoder is owned by the live port path, and the superseded socket address wrapper was removed. | Linux 7.2.0-rc4 keeps the in-place decision in the active f2fs data path (`f2fs_should_update_inplace`), and the AHCI WCE bit is read from IDENTIFY word 85 (`ata_id_wcache_enabled`). `cargo test -p security --lib`: 529/529; `cargo test -p f2fs --lib`: 3775/3775; `cargo test -p drv-ahci --lib`: 24/24; `cargo test -p socket --lib`: 95/95; `make x86` and `make arm` both pass. | B2633-kernel-warning-gate-security-f2fs |
