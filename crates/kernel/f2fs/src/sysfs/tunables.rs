@@ -40,6 +40,10 @@ pub(crate) fn attrs(fs: &Arc<F2fs>, dev: &str) -> Vec<Attr> {
                |v| u64::from(v.readdir_ra()), set_readdir_ra),
         num_rw(fs, dev, "dirty_nats_ratio",
                |v| u64::from(v.dirty_nats_ratio()), set_dirty_nats_ratio),
+        num_rw(fs, dev, "gc_segment_mode",
+               |v| v.gc_segment_mode() as u64, set_gc_segment_mode),
+        num_rw(fs, dev, "gc_reclaimed_segments",
+               |v| u64::from(v.gc_reclaimed_segments()), set_gc_reclaimed_segments),
     ];
     out.extend(atgc::knobs::ALL.iter().map(|&k| atgc_knob(fs, dev, k)));
     out
@@ -151,6 +155,20 @@ fn set_dirty_nats_ratio(v: &mut Vol, n: u64) -> Result<(), Errno> {
     if n == 0 || n > PERCENT { return Err(Errno::Einval); }
     v.set_dirty_nats_ratio(n as u32);
     Ok(())
+}
+
+/// Selects which cleaner-policy total `gc_reclaimed_segments` reports.
+/// # C: O(1)
+fn set_gc_segment_mode(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    if n > usize::MAX as u64 { return Err(Errno::Einval); }
+    v.set_gc_segment_mode(n as usize)
+}
+
+/// Linux permits only a write of zero, which resets the selected total.
+/// # C: O(1)
+fn set_gc_reclaimed_segments(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    if n != 0 { return Err(Errno::Einval); }
+    v.reset_gc_reclaimed_segments()
 }
 
 /// A whole share, which is what every percentage control is bounded by.

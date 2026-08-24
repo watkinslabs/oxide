@@ -271,6 +271,9 @@ pub struct Volume<S: SectorSource> {
     /// of the things being counted and a read takes `&self` — the same reason
     /// `verity_cache` above needs it.
     pub(crate) counters: core::cell::RefCell<crate::stats::Counters>,
+    /// The mode whose reclaimed-segment total the sysfs report selects.
+    /// This is a reporting selector, not the cleaner's transient run mode.
+    pub(crate) gc_segment_mode: usize,
     /// Files between START and COMMIT of an atomic write, by inode number.
     ///
     /// Never on the medium, and that is the promise: an atomic span that a
@@ -560,6 +563,29 @@ impl<S: SectorSource> Volume<S> {
     /// can, because nothing ever writes back through it.
     /// # C: O(1)
     pub fn counters(&self) -> crate::stats::Counters { *self.counters.borrow() }
+
+    /// The cleaner policy selected for the reclaimed-segment sysfs report.
+    /// # C: O(1)
+    pub(crate) fn gc_segment_mode(&self) -> usize { self.gc_segment_mode }
+
+    /// Select a valid reclaimed-segment report slot. # C: O(1)
+    pub(crate) fn set_gc_segment_mode(&mut self, mode: usize) -> Result<(), Errno> {
+        if mode >= crate::stats::counters::gc_mode::MAX { return Err(Errno::Einval); }
+        self.gc_segment_mode = mode;
+        Ok(())
+    }
+
+    /// The live reclaimed-segment total for the selected policy. # C: O(1)
+    pub(crate) fn gc_reclaimed_segments(&self) -> u32 {
+        self.counters.borrow().gc_reclaimed_segs[self.gc_segment_mode]
+    }
+
+    /// Linux's write-zero reset for the selected reclaimed-segment total.
+    /// # C: O(1)
+    pub(crate) fn reset_gc_reclaimed_segments(&mut self) -> Result<(), Errno> {
+        self.counters.borrow_mut().gc_reclaimed_segs[self.gc_segment_mode] = 0;
+        Ok(())
+    }
 
     /// What each extent cache is holding: trees, of which zombies, and runs.
     /// # C: O(1)

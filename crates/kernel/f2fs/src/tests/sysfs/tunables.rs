@@ -53,10 +53,39 @@ fn every_volume_owned_control_is_writable() {
     let a = attrs(&fs);
     for name in ["ram_thresh", "max_read_extent_count", "last_age_weight",
                  "hot_data_age_threshold", "warm_data_age_threshold",
+                 "gc_segment_mode", "gc_reclaimed_segments",
                  "atgc_candidate_ratio", "atgc_candidate_count",
                  "atgc_age_weight", "atgc_age_threshold"] {
         assert!(find(&a, name).store.is_some(), "{name} is not writable");
     }
+}
+
+#[test]
+fn reclaimed_segment_report_uses_one_selected_live_counter() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    {
+        let v = fs.volume.lock();
+        let mut counters = v.counters.borrow_mut();
+        counters.gc_reclaimed_segs[crate::stats::counters::gc_mode::NORMAL] = 3;
+        counters.gc_reclaimed_segs[crate::stats::counters::gc_mode::IDLE_CB] = 7;
+    }
+    assert_eq!(show(&a, "gc_segment_mode"), 0);
+    assert_eq!(show(&a, "gc_reclaimed_segments"), 3);
+    store(&a, "gc_segment_mode", 1).expect("select idle-cb");
+    assert_eq!(show(&a, "gc_reclaimed_segments"), 7);
+    store(&a, "gc_reclaimed_segments", 0).expect("reset selected total");
+    assert_eq!(show(&a, "gc_reclaimed_segments"), 0);
+    store(&a, "gc_segment_mode", 0).expect("select normal");
+    assert_eq!(show(&a, "gc_reclaimed_segments"), 3, "reset crossed modes");
+}
+
+#[test]
+fn reclaimed_segment_controls_refuse_invalid_writes() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    assert!(store(&a, "gc_segment_mode", crate::stats::counters::gc_mode::MAX as u64).is_err());
+    assert!(store(&a, "gc_reclaimed_segments", 1).is_err());
 }
 
 /// The point of the knob: what is written is what the machinery then holds.
