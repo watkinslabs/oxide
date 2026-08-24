@@ -14,6 +14,7 @@ mod parse;
 
 pub use parse::{OPT_BARRIER, OPT_BLOCK_VALIDITY, OPT_COMMIT, OPT_DATA, OPT_DAX, OPT_DELALLOC,
                 OPT_ACL,
+                OPT_USER_XATTR,
                 OPT_DISCARD, OPT_ERRORS, OPT_INIT_ITABLE, OPT_JOURNAL_IOPRIO,
                 OPT_JOURNAL_CHECKSUM, OPT_NOJOURNAL_CHECKSUM, OPT_MAX_DIR_SIZE_KB,
                 OPT_MB_OPTIMIZE_SCAN, OPT_NOBARRIER,
@@ -191,6 +192,12 @@ pub struct Ext4Behaviour {
     pub journal_checksum: Option<bool>,
     /// `acl` — whether the superblock advertises and consults POSIX ACLs.
     pub posix_acl: bool,
+    /// `user_xattr` — ext4's user.* xattr handler is enabled.
+    ///
+    /// Linux enables this by default; the mount option is retained as an
+    /// explicit policy value so the accepted option has the same owner as
+    /// the xattr namespace it exposes.
+    pub user_xattr: bool,
 }
 
 impl Default for Ext4Behaviour {
@@ -215,6 +222,7 @@ impl Default for Ext4Behaviour {
             warn_on_error: false,
             journal_checksum: None,
             posix_acl: true,
+            user_xattr: true,
         }
     }
 }

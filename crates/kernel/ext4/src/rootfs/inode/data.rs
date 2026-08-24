@@ -131,6 +131,16 @@ fn persist_xattr_entries(inode: &Inode, entries: &[(alloc::string::String, Vec<u
     Ok(())
 }
 
+/// Linux's `ext4_xattr_user` handler is present only while the mounted
+/// superblock's `XATTR_USER` policy is enabled.  The option defaults on, but
+/// the decision belongs to the owning ext4 mount rather than to the generic
+/// VFS xattr layer.
+fn user_xattr_allowed(inode: &Inode, name: &str) -> Result<(), XattrError> {
+    if !name.starts_with("user.") { return Ok(()); }
+    let Some((st, _)) = ext4_state_of(inode) else { return Err(XattrError::NotSup); };
+    if st.mount.behaviour().user_xattr { Ok(()) } else { Err(XattrError::NotSup) }
+}
+
 /// `ext4_xattr_get` — the value for `name`.
 ///
 /// The two ACL names are stored as this filesystem's own record, not as the
@@ -139,6 +149,7 @@ fn persist_xattr_entries(inode: &Inode, entries: &[(alloc::string::String, Vec<u
 /// permission check cannot decode the ACL that is supposed to decide it.
 /// # C: O(log N_xattr)
 pub(crate) fn get_inode_xattr(inode: &Inode, name: &str) -> Result<Vec<u8>, XattrError> {
+    user_xattr_allowed(inode, name)?;
     let store = inode.simple_xattrs().ok_or(XattrError::NotSup)?;
     let stored = store.get(name).ok_or(XattrError::NotFound)?;
     if vfs::posix_acl::AclType::from_xattr_name(name).is_some() {
@@ -152,6 +163,7 @@ pub(crate) fn get_inode_xattr(inode: &Inode, name: &str) -> Result<Vec<u8>, Xatt
 pub(crate) fn set_inode_xattr(inode: &Inode, name: &str, value: Vec<u8>, create: bool, replace: bool)
     -> Result<(), XattrError>
 {
+    user_xattr_allowed(inode, name)?;
     let value = if vfs::posix_acl::AclType::from_xattr_name(name).is_some() {
         vfs::posix_acl::disk::disk_from_xattr(&value).map_err(vfs::posix_acl::disk::xattr_error)?
     } else {
@@ -174,6 +186,7 @@ pub(crate) fn set_inode_xattr(inode: &Inode, name: &str, value: Vec<u8>, create:
 /// `ext4_xattr_set` remove path: commit removal before updating the cache.
 /// # C: O(N_xattr)+journal I/O
 pub(crate) fn remove_inode_xattr(inode: &Inode, name: &str) -> Result<(), XattrError> {
+    user_xattr_allowed(inode, name)?;
     let store = inode.simple_xattrs().ok_or(XattrError::NotSup)?;
     let mut entries = store.entries();
     let Some(pos) = entries.iter().position(|(n, _)| n == name) else {

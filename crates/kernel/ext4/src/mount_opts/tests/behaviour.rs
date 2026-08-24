@@ -137,11 +137,12 @@ fn a_remount_keeps_the_options_it_does_not_name() {
     assert_eq!(second.commit_secs, 30);
 }
 
-/// A key nothing in this filesystem reads is still carried through rather than
-/// failing the mount — `/` is the mount at stake.
+/// The ext4 user-xattr policy has the same default as Linux and is still owned
+/// by the behavioural mount state rather than being left in the opaque list.
 #[test]
-fn a_key_no_consumer_owns_still_does_not_fail_the_mount() {
+fn user_xattr_is_a_live_linux_mount_policy() {
     let o = Ext4MountOpts::parse("user_xattr,errors=panic").unwrap();
     assert_eq!(o.behaviour.errors, ErrorsPolicy::Panic);
-    assert_eq!(o.other.len(), 1, "only the key with no consumer");
+    assert!(o.behaviour.user_xattr);
+    assert!(o.other.is_empty());
 }
