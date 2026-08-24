@@ -26,7 +26,7 @@ mod terminal_irq;
 use local::{preempt_count_add_local, preempt_count_load, preempt_count_sub_local};
 pub use local::preempt_count_on;
 pub use terminal_irq::TerminalIrqExit;
-pub(crate) use local::{preempt_count_set, this_cpu};
+pub(crate) use local::this_cpu;
 
 /// Level `schedule()` runs its own body at: one `preempt_disable`, taken on
 /// entry and paid back by the resumer in `finish_task_switch`. Linux's
@@ -65,6 +65,17 @@ pub unsafe fn set_schedule_hook(hook: unsafe fn()) {
 /// Current preempt count on this CPU.
 /// # C: O(1)
 pub fn preempt_count() -> u32 { preempt_count_load() }
+
+/// Replace this CPU's count at an explicit scheduler/softirq recovery
+/// boundary. A recovery must not erase an active hard-IRQ level; debug builds
+/// name that caller before the architectural `irq_exit` can report a later
+/// underflow.
+#[track_caller]
+pub(crate) fn preempt_count_set(value: u32) {
+    #[cfg(feature = "debug-preempt")]
+    debug::check_count_set(preempt_count(), value);
+    local::preempt_count_set(value);
+}
 
 static MAX_HARDIRQ_DEPTH: [AtomicU8; MAX_CPUS] = [const { AtomicU8::new(0) }; MAX_CPUS];
 

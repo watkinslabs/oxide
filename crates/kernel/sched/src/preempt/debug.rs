@@ -102,6 +102,22 @@ pub fn check_irq_exit(pc: u32) {
     klog::write_raw(b" (HARDIRQ field already clear: the sub borrows into SOFTIRQ and pins in_interrupt() true)\n");
 }
 
+/// Report a recovery that erases a live hard-IRQ field. # C: O(1)
+#[track_caller]
+pub fn check_count_set(old: u32, new: u32) {
+    if old & HARDIRQ_MASK == 0 || new & HARDIRQ_MASK != 0 { return; }
+    klog::write_raw(b"\n[PREEMPT-LEAK] count recovery erased HARDIRQ old=0x");
+    klog::write_hex_u64(old as u64);
+    klog::write_raw(b" new=0x");
+    klog::write_hex_u64(new as u64);
+    klog::write_raw(b" caller=");
+    let caller = core::panic::Location::caller();
+    klog::write_raw(caller.file().as_bytes());
+    klog::write_raw(b":");
+    klog::write_dec_u64(caller.line() as u64);
+    klog::write_raw(b"\n");
+}
+
 /// Pure decision: subtracting `n` borrows out of the PREEMPT field (or out of
 /// the word entirely), i.e. one more decrement is being paid than was ever
 /// taken. # C: O(1)
@@ -221,6 +237,13 @@ mod tests {
         // does not read as a preempt-field underflow while a level is held.
         assert!(!is_preempt_sub_underflow(HARDIRQ_OFFSET, HARDIRQ_OFFSET));
         assert!(is_preempt_sub_underflow(0, HARDIRQ_OFFSET));
+    }
+
+    #[test]
+    fn count_set_witness_only_flags_erasing_hardirq() {
+        assert_eq!(HARDIRQ_MASK & HARDIRQ_OFFSET, HARDIRQ_OFFSET);
+        assert!(HARDIRQ_OFFSET & HARDIRQ_MASK != 0);
+        assert!(0 & HARDIRQ_MASK == 0);
     }
 
     #[test]
