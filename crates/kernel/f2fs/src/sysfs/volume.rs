@@ -80,6 +80,7 @@ pub(crate) fn attrs(fs: &Arc<F2fs>, dev: &str) -> Vec<Attr> {
         num(fs, dev, "ovp_segments", |v| Ok(u64::from(v.checkpoint().overprov_segment_count))),
         num_rw(fs, dev, "reserved_segments", |v| u64::from(v.gc_reserve()),
                set_reserved_segments),
+        num(fs, dev, "unusable", unusable),
         num(fs, dev, "current_reserved_blocks", |v| Ok(v.current_reserved_blocks())),
         num(fs, dev, "mounted_time_sec", |v| Ok(v.checkpoint().elapsed_time)),
         num(fs, dev, "pending_discard", pending_discard),
@@ -100,6 +101,29 @@ pub(crate) fn attrs(fs: &Arc<F2fs>, dev: &str) -> Vec<Attr> {
 /// format value, as it does for Linux's runtime control. # C: O(1)
 fn set_reserved_segments(v: &mut Vol, n: u64) -> Result<(), Errno> {
     v.set_reserved_segments(n)
+}
+
+/// Blocks stranded in partial dirty segments after overprovision holes are
+/// removed. Data and node holes are tracked separately, and the larger one is
+/// the unusable amount Linux exposes. # C: O(main segments)
+fn unusable(v: &mut Vol) -> Result<u64, Errno> {
+    v.load_segments()?;
+    let mut holes = [0u64; 2];
+    for segno in 0..v.super_block().segment_count_main {
+        if v.is_current(segno) { continue; }
+        let e = &v.segments()[segno as usize];
+        let valid = u64::from(e.valid_blocks());
+        let usable = u64::from(crate::zoned::usable::usable_blks_in_seg(
+            v.super_block(), v.zones(), segno));
+        if valid == 0 || valid >= usable { continue; }
+        let kind = usize::from(e.seg_type() >= crate::uapi::NR_CURSEG_DATA_TYPE as u8);
+        holes[kind] = holes[kind].saturating_add(usable - valid);
+    }
+    let overprov = v.checkpoint().overprov_segment_count
+        .saturating_sub(v.gc_reserve());
+    let overprov_holes = u64::from(overprov)
+        .saturating_mul(u64::from(v.super_block().blks_per_seg()));
+    Ok(holes[0].max(holes[1]).saturating_sub(overprov_holes))
 }
 
 /// The two extension lists, and the one write that changes them.

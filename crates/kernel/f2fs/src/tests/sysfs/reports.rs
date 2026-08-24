@@ -35,7 +35,7 @@ fn each_report_is_read_only_and_reads_a_number() {
     let fs = mounted();
     let attrs = crate::sysfs::mount_attrs(&fs);
     for name in ["avg_vblocks", "current_atomic_write", "defrag_blocks",
-                 "unusable_blocks_per_sec", "max_open_zones"] {
+                 "unusable", "unusable_blocks_per_sec", "max_open_zones"] {
         let a = attrs.iter().find(|a| a.dir == "vda" && a.name == name)
             .unwrap_or_else(|| panic!("no attribute vda/{name}"));
         assert_eq!(a.mode, crate::fsattr::RO, "{name} accepts a write");
@@ -43,6 +43,13 @@ fn each_report_is_read_only_and_reads_a_number() {
         assert!(body.ends_with('\n'), "{name} did not end its line");
         body.trim().parse::<u64>().unwrap_or_else(|_| panic!("{name} read {body:?}"));
     }
+}
+
+#[test]
+fn unusable_is_zero_on_a_clean_unzoned_mount() {
+    let fs = mounted();
+    let attrs = crate::sysfs::mount_attrs(&fs);
+    assert_eq!(show(&attrs, "unusable"), "0\n");
 }
 
 #[test]
