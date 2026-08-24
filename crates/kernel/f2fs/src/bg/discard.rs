@@ -111,6 +111,10 @@ pub struct DiscardPolicy {
 /// Everything the discard thread issues from, and the knobs that shape it.
 #[derive(Clone, Debug)]
 pub struct DiscardControl {
+    /// Maximum number of discard blocks staged before another checkpoint may
+    /// add more. Linux calls this `max_small_discards`; it is separate from
+    /// the per-round request count below.
+    pub max_discards: u64,
     pub granularity: u32,
     pub max_ordered_discard: u32,
     pub io_aware_gran: u32,
@@ -153,6 +157,7 @@ impl DiscardControl {
             DiscardUnit::Section => BLKS_PER_SEG.saturating_mul(segs_per_sec.max(1)),
         };
         Self {
+            max_discards: u64::MAX,
             granularity,
             max_ordered_discard: DEFAULT_MAX_ORDERED_DISCARD_GRANULARITY,
             io_aware_gran: MAX_PLIST_NUM as u32,
@@ -169,6 +174,9 @@ impl DiscardControl {
             wake: false,
         }
     }
+
+    /// Set Linux's discard-block accumulation ceiling. # C: O(1)
+    pub fn set_max_discards(&mut self, value: u64) { self.max_discards = value; }
 
     /// Park a run until a round issues it. # C: O(1)
     pub fn add(&mut self, run: Range) {

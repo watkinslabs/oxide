@@ -24,6 +24,15 @@ fn every_control_reads_back_what_was_written_to_it() {
 }
 
 #[test]
+fn max_small_discards_is_distinct_from_per_round_request_limit() {
+    let b = bg();
+    knobs::store(&b, Knob::MaxSmallDiscards, 0, false).unwrap();
+    assert_eq!(knobs::show(&b, Knob::MaxSmallDiscards), 0);
+    assert_eq!(b.dcc.lock().max_discard_request, 8);
+    assert!(knobs::store(&b, Knob::MaxSmallDiscards, u64::from(u32::MAX) + 1, false).is_err());
+}
+
+#[test]
 fn the_discard_granularity_refuses_zero_and_more_than_the_longest_list() {
     let b = bg();
     assert_eq!(knobs::store(&b, Knob::DiscardGranularity, 0, false), Err(Errno::Einval));

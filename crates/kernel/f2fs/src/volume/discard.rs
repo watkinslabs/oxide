@@ -74,6 +74,27 @@ pub fn at_granularity(runs: Vec<Range>, unit: DiscardUnit, main: u32, segs_per_s
         .collect()
 }
 
+/// Split safe discard runs at the live Linux accumulation ceiling. The tail
+/// remains safe to announce after a later checkpoint; dropping it here would
+/// make the ceiling silently lose an optimisation forever.
+/// # C: O(runs)
+pub fn under_limit(runs: Vec<Range>, max_blocks: u64) -> (Vec<Range>, Vec<Range>) {
+    let mut used = 0u64;
+    let mut take = Vec::new();
+    let mut defer = Vec::new();
+    for (start, len) in runs {
+        let room = max_blocks.saturating_sub(used).min(u64::from(len));
+        if room != 0 {
+            take.push((start, room as u32));
+            used += room;
+        }
+        if room < u64::from(len) {
+            defer.push((start + room as u32, len - room as u32));
+        }
+    }
+    (take, defer)
+}
+
 impl<S: SectorSource> Volume<S> {
     /// Note that `addr` is no longer referenced.
     ///
@@ -103,7 +124,19 @@ impl<S: SectorSource> Volume<S> {
         let live: Vec<u32> =
             pending.into_iter().filter(|&a| !self.block_is_live(a).unwrap_or(true)).collect();
         let runs = coalesce(live);
-        at_granularity(runs, self.opts.discard_unit, self.sb.main_blkaddr, self.sb.segs_per_sec)
+        let runs = at_granularity(runs, self.opts.discard_unit,
+                                  self.sb.main_blkaddr, self.sb.segs_per_sec);
+        let max = self.bg.as_ref().filter(|b| {
+            b.discard_running.load(core::sync::atomic::Ordering::Acquire)
+        }).map_or(u64::MAX, |b| {
+            let d = b.dcc.lock();
+            d.max_discards.saturating_sub(d.undiscard_blks())
+        });
+        let (out, defer) = under_limit(runs, max);
+        for (start, len) in defer {
+            for addr in start..start.saturating_add(len) { self.pending_discard.push(addr); }
+        }
+        out
     }
 
     /// Whether this mount announces freed space at all. # C: O(1)

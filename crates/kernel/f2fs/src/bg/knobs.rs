@@ -39,6 +39,7 @@ pub enum Knob {
     DiscardIoAware,
     DiscardUrgentUtil,
     MaxDiscardRequest,
+    MaxSmallDiscards,
     MinDiscardIssueTime,
     MidDiscardIssueTime,
     MaxDiscardIssueTime,
@@ -61,6 +62,7 @@ pub fn name(k: Knob) -> &'static str {
         Knob::DiscardIoAware => "discard_io_aware",
         Knob::DiscardUrgentUtil => "discard_urgent_util",
         Knob::MaxDiscardRequest => "max_discard_request",
+        Knob::MaxSmallDiscards => "max_small_discards",
         Knob::MinDiscardIssueTime => "min_discard_issue_time",
         Knob::MidDiscardIssueTime => "mid_discard_issue_time",
         Knob::MaxDiscardIssueTime => "max_discard_issue_time",
@@ -75,6 +77,7 @@ pub const ALL: &[Knob] = &[
     Knob::DiscardGranularity, Knob::MaxOrderedDiscard, Knob::DiscardIoAwareGran,
     Knob::DiscardIoAware, Knob::DiscardUrgentUtil, Knob::MaxDiscardRequest,
     Knob::MinDiscardIssueTime, Knob::MidDiscardIssueTime, Knob::MaxDiscardIssueTime,
+    Knob::MaxSmallDiscards,
 ];
 
 /// The number a control reads back as. # C: O(1)
@@ -94,6 +97,7 @@ pub fn show(bg: &Bg, k: Knob) -> u64 {
         Knob::DiscardIoAware => u64::from(bg.dcc.lock().io_aware.as_u32()),
         Knob::DiscardUrgentUtil => u64::from(bg.dcc.lock().urgent_util),
         Knob::MaxDiscardRequest => u64::from(bg.dcc.lock().max_discard_request),
+        Knob::MaxSmallDiscards => bg.dcc.lock().max_discards,
         Knob::MinDiscardIssueTime => u64::from(bg.dcc.lock().min_issue_time),
         Knob::MidDiscardIssueTime => u64::from(bg.dcc.lock().mid_issue_time),
         Knob::MaxDiscardIssueTime => u64::from(bg.dcc.lock().max_issue_time),
@@ -132,6 +136,7 @@ pub fn accepts(k: Knob, v: u64, atgc: bool) -> Result<(), Errno> {
         | Knob::GcNoGcSleepTime | Knob::MinDiscardIssueTime | Knob::MidDiscardIssueTime
         | Knob::MaxDiscardIssueTime | Knob::MaxDiscardRequest =>
             v != 0 && v <= u64::from(u32::MAX),
+        Knob::MaxSmallDiscards => v <= u64::from(u32::MAX),
         Knob::GcRemainingTrials => v <= u64::from(u32::MAX),
         // Zero would cost nothing and settle for nothing, so an ahead-of-demand
         // pass with it set would never find a victim at all.
@@ -165,6 +170,7 @@ pub fn store(bg: &Bg, k: Knob, v: u64, atgc: bool) -> Result<(), Errno> {
         }
         Knob::DiscardUrgentUtil => bg.dcc.lock().urgent_util = n,
         Knob::MaxDiscardRequest => bg.dcc.lock().max_discard_request = n,
+        Knob::MaxSmallDiscards => bg.dcc.lock().set_max_discards(v),
         Knob::MinDiscardIssueTime => bg.dcc.lock().min_issue_time = n,
         Knob::MidDiscardIssueTime => bg.dcc.lock().mid_issue_time = n,
         Knob::MaxDiscardIssueTime => bg.dcc.lock().max_issue_time = n,
