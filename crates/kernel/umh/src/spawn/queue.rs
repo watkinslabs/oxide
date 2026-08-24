@@ -243,19 +243,19 @@ fn run_one(arg: usize) {
 #[inline(never)]
 pub(super) fn run_inline(info: &mut SubprocessInfo) -> Option<u32> {
     let started = super::child::start(info);
-    let child = started.as_ref().ok().map(|t| t.vtid.load(Ordering::Acquire));
     let wants_status = info.wait & UMH_WAIT_PROC != 0;
     // `UMH_WAIT_PROC` reports the finished helper's status, so it waits here.
     // Every other mode reports only whether the image was loaded.
-    info.retval = match (started, wants_status) {
+    let (retval, pending_child) = match (started, wants_status) {
         // The exec failed and no process was ever created, so the negated errno
         // is the answer for every mode; a `UMH_WAIT_PROC` caller tells it from a
         // status by its sign.
-        (Err(rc), _) => rc,
-        (Ok(_), false) => 0,
-        (Ok(_), true) => super::reap::wait_for(child.unwrap_or(0)),
+        (Err(rc), _) => (rc, None),
+        (Ok(task), false) => (0, Some(task.vtid.load(Ordering::Acquire))),
+        (Ok(task), true) => (super::reap::wait_for(task.vtid.load(Ordering::Acquire)), None),
     };
-    if wants_status { None } else { child }
+    info.retval = retval;
+    pending_child
 }
 
 /// Sleep roughly a millisecond. Used by the gate's drain loop, which must let

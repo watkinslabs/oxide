@@ -54,6 +54,12 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
     ///
     /// # C: O(n + N) where n=regions, N=max_pfn / smallest order
     /// # Ctx: pre-init, single-CPU
+    // Linux `noinline_for_stack`: boot PMM construction is called from the
+    // early allocator bring-up path, whose frame is already close to the
+    // task-stack ceiling. Keep the zone seeding frame separate from the boot
+    // map/layout frame; the two phases are sequential and do not need to
+    // overlap on one stack frame.
+    #[inline(never)]
     pub fn init_zoned_in_place(
         backing: B,
         regions: &[UsableRegion],
