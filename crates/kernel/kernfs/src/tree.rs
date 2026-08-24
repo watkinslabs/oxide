@@ -119,6 +119,9 @@ pub trait PseudoDirHooks: Send + Sync {
 }
 
 impl PseudoDir {
+    /// Whether this tree node is the filesystem instance root. # C: O(1)
+    pub fn is_root(&self) -> bool { self.path.is_empty() }
+
     /// Tree root with the pseudo-filesystem inode-op default (no fileattr
     /// vector). # C: O(1)
     pub fn new_root(root_ino: Ino, fsid: u64) -> Arc<PseudoDir> {

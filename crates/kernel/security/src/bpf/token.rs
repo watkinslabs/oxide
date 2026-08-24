@@ -23,6 +23,14 @@ pub(super) fn create(a: &Attr) -> Result<i64, Errno> {
     let fdt = unsafe { cur.fd_table_ref() }.ok_or(Errno::Ebadf)?.clone();
     let file = fdt.get(fd).map_err(|_| Errno::Ebadf)?;
     if file.inode().statfs_magic() != BPF_FS_MAGIC { return Err(Errno::Enodev); }
+    // Linux accepts only the bpffs superblock root as the token's source.
+    // Checking the inode's owning pseudo-tree, rather than its inode number,
+    // keeps a child entry from being mistaken for the root and avoids a
+    // second path registry beside kernfs's canonical tree.
+    let Some(root) = file.inode().private::<kernfs::PseudoDir>() else {
+        return Err(Errno::Einval);
+    };
+    if !root.is_root() { return Err(Errno::Einval); }
     let inode = make_bpf_token_inode(BpfTokenInode { source_magic: BPF_FS_MAGIC, flags });
     install_fd(inode, "bpf-token")
 }

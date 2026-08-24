@@ -33,6 +33,14 @@ fn root() -> Arc<PseudoDir> {
 }
 
 #[test]
+fn only_the_instance_root_reports_as_root() {
+    let r = root();
+    assert!(r.is_root());
+    r.ensure_dir_path("child");
+    assert!(!r.lookup_dir("child").expect("child").is_root());
+}
+
+#[test]
 fn insert_then_lookup_per_component() {
     let r = root();
     let leaf = PseudoSymlink::new(1, 0xDEAD, b"/target");
