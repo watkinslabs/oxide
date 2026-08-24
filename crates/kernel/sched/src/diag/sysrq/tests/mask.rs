@@ -27,7 +27,8 @@ fn without_the_boot_parameter_the_sysctl_still_decides() {
 #[test]
 fn a_mask_of_one_enables_every_command() {
     for cmd in [Cmd::Crash, Cmd::Reboot, Cmd::PowerOff, Cmd::ShowTasks,
-                Cmd::ShowBlocked, Cmd::ShowBacktraceAllCpus, Cmd::ShowRegisters] {
+                Cmd::ShowBlocked, Cmd::ShowBacktraceAllCpus, Cmd::ShowRegisters,
+                Cmd::ShowStackUsage] {
         assert!(mask_allows(ENABLE_ALL, cmd), "{cmd:?} refused under the enable-all mask");
     }
 }

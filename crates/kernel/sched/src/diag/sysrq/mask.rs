@@ -21,7 +21,7 @@ pub const ENABLE_BOOT: u32 = 0x0080;
 pub fn enable_bit(cmd: Cmd) -> u32 {
     match cmd {
         Cmd::Crash | Cmd::ShowTasks | Cmd::ShowBlocked
-        | Cmd::ShowBacktraceAllCpus | Cmd::ShowRegisters => ENABLE_DUMP,
+        | Cmd::ShowBacktraceAllCpus | Cmd::ShowRegisters | Cmd::ShowStackUsage => ENABLE_DUMP,
         Cmd::Reboot | Cmd::PowerOff => ENABLE_BOOT,
         Cmd::Help | Cmd::Unbound(_) => ENABLE_LOG,
     }

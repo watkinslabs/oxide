@@ -323,6 +323,20 @@ pub fn on_irq_stack() -> bool {
     { false }
 }
 
+/// Read the current RSP for stack diagnostics.
+/// # C: O(1)
+pub fn current_stack_pointer() -> u64 {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    {
+        let sp: u64;
+        // SAFETY: reads RSP only; no memory, flags, or control state change.
+        unsafe { core::arch::asm!("mov {v}, rsp", v = out(reg) sp, options(nomem, nostack, preserves_flags)); }
+        sp
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+    { 0 }
+}
+
 /// Arm THIS CPU's hardirq stack. `top` is the 16-aligned high end of a
 /// guard-paged 16 KiB stack (from `sched::kstack::alloc().top()`, leaked).
 /// Call after `set_percpu_base` (gs valid) and BEFORE this CPU's first `sti`.

@@ -424,6 +424,20 @@ pub fn on_irq_stack() -> bool {
     { false }
 }
 
+/// Read the current SP for stack diagnostics.
+/// # C: O(1)
+pub fn current_stack_pointer() -> u64 {
+    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+    {
+        let sp: u64;
+        // SAFETY: reads SP only; no memory, flags, or control state change.
+        unsafe { core::arch::asm!("mov {v}, sp", v = out(reg) sp, options(nomem, nostack, preserves_flags)); }
+        sp
+    }
+    #[cfg(not(all(target_arch = "aarch64", target_os = "oxide-kernel")))]
+    { 0 }
+}
+
 #[cfg(any(test, all(target_arch = "aarch64", target_os = "oxide-kernel")))]
 fn sysreg_ec(esr: u64) -> u64 {
     (esr >> ESR_EC_SHIFT) & ESR_EC_MASK

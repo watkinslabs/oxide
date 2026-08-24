@@ -28,6 +28,7 @@ pub fn perform(cmd: Cmd, mask: u32) {
         Cmd::ShowTasks | Cmd::ShowBlocked => crate::diag::emit::dump_tasks(),
         Cmd::ShowBacktraceAllCpus => crate::diag::nmi::backtrace_all(),
         Cmd::ShowRegisters => crate::diag::percpu::dump_cpus(),
+        Cmd::ShowStackUsage => crate::kstack::emit_usage_report(),
         Cmd::Help | Cmd::Unbound(_) => unreachable!(),
     }
 }

@@ -16,6 +16,8 @@
 //     schedules iff count returned to zero and need_resched is set.
 
 use core::sync::atomic::{AtomicPtr, Ordering};
+use core::sync::atomic::AtomicU8;
+use cpu::MAX_CPUS;
 
 // Module manifest: `local` owns migration-safe per-CPU count access;
 // `terminal_irq` owns terminal CPU-hotplug IRQ accounting transfer.
@@ -63,6 +65,8 @@ pub unsafe fn set_schedule_hook(hook: unsafe fn()) {
 /// Current preempt count on this CPU.
 /// # C: O(1)
 pub fn preempt_count() -> u32 { preempt_count_load() }
+
+static MAX_HARDIRQ_DEPTH: [AtomicU8; MAX_CPUS] = [const { AtomicU8::new(0) }; MAX_CPUS];
 
 // ---- Linux preempt_count bit-field layout ----
 //
@@ -114,8 +118,27 @@ pub fn hardirq_count() -> u32 { preempt_count() & HARDIRQ_MASK }
 /// garbage — SP observed at irq-stack top+224 and even inside `.text`.)
 /// # C: O(1)
 pub fn irq_enter() {
+    let depth = (hardirq_count() >> HARDIRQ_SHIFT) + 1;
+    hal::kassert!(depth <= (HARDIRQ_MASK >> HARDIRQ_SHIFT), "hardirq nesting exceeded preempt field");
+    let cpu = this_cpu();
+    if let Some(max) = MAX_HARDIRQ_DEPTH.get(cpu) {
+        let mut old = max.load(Ordering::Relaxed);
+        while depth as u8 > old {
+            match max.compare_exchange_weak(old, depth as u8, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => break,
+                Err(next) => old = next,
+            }
+        }
+    }
+    crate::kstack::record_irq_stack_usage();
     #[cfg(feature = "debug-preempt")] debug::note_irq_enter();
     preempt_count_add(HARDIRQ_OFFSET);
+}
+
+/// Largest hard-IRQ nesting depth observed on any CPU.
+/// # C: O(number of CPUs)
+pub fn max_hardirq_depth() -> u8 {
+    MAX_HARDIRQ_DEPTH.iter().map(|v| v.load(Ordering::Relaxed)).max().unwrap_or(0)
 }
 
 /// Linux `irq_exit` (accounting half): drop the hard-IRQ field. The caller
