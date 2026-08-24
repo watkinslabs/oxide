@@ -188,6 +188,12 @@ pub trait DmTarget: Send + Sync {
     /// Called after the table became live and before I/O is re-admitted.
     /// # C: O(1)
     fn resume(&self) {}
+
+    /// Bind a live target to the mapped-device owner after table publication.
+    /// `thin` uses this Linux-shaped lifecycle point so a later table can
+    /// resolve the already-live `thin-pool` by its mapper device number.
+    /// # C: O(1)
+    fn bind(&self, _dev: &crate::device::MappedDevice) {}
 }
 
 /// A registered mapping type: its name, its version, and how to build one.

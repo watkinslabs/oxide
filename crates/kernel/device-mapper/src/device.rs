@@ -221,7 +221,9 @@ impl MappedDevice {
                 Step::SwapTable => {
                     let mut s = self.state.lock();
                     if let Some(t) = s.inactive.take() { s.active = Some(t); }
+                    let active = s.active.clone();
                     drop(s);
+                    if let Some(t) = active { t.bind(self); }
                     self.bump_event();
                 }
                 Step::ResumeTargets => { let t = self.state.lock().active.clone(); if let Some(t) = t { t.resume(); } }

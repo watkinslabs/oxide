@@ -222,4 +222,7 @@ impl Table {
     }
     /// Run every target's resume hook. # C: O(N_targets)
     pub fn resume(&self) { for t in &self.targets { t.target.resume(); } }
+    /// Publish target-owned cross-table handles after this table is live.
+    /// # C: O(N_targets)
+    pub fn bind(&self, dev: &crate::device::MappedDevice) { for t in &self.targets { t.target.bind(dev); } }
 }

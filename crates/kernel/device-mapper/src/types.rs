@@ -50,4 +50,6 @@ pub fn register_builtin() {
     register(crate::targets::snapshot::SNAPSHOT_TYPE);
     register(crate::targets::snapshot::ORIGIN_TYPE);
     register(crate::targets::snapshot::MERGE_TYPE);
+    register(crate::targets::thin::POOL_TYPE);
+    register(crate::targets::thin::THIN_TYPE);
 }
