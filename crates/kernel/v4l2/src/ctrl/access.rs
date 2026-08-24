@@ -2,6 +2,7 @@
 //! forms.
 
 use syscall::errno::Errno;
+use alloc::vec::Vec;
 
 use crate::uapi::ctrl_ids as cid;
 use super::desc::Handler;
@@ -20,7 +21,7 @@ pub fn may_read(handler: &Handler, id: u32) -> Result<(), Errno> {
     let flags = handler.flags(id).unwrap_or(0);
     if flags & cid::CTRL_FLAG_DISABLED != 0 { return Err(Errno::Einval); }
     if flags & cid::CTRL_FLAG_WRITE_ONLY != 0 { return Err(Errno::Eacces); }
-    if desc.is_compound() { return Err(Errno::Einval); }
+    if desc.is_compound() && desc.payload_size == 0 { return Err(Errno::Einval); }
     Ok(())
 }
 
@@ -36,7 +37,7 @@ pub fn may_write(handler: &Handler, id: u32) -> Result<(), Errno> {
     if flags & cid::CTRL_FLAG_DISABLED != 0 { return Err(Errno::Einval); }
     if flags & cid::CTRL_FLAG_READ_ONLY != 0 { return Err(Errno::Eacces); }
     if flags & cid::CTRL_FLAG_GRABBED != 0 { return Err(Errno::Ebusy); }
-    if desc.is_compound() { return Err(Errno::Einval); }
+    if desc.is_compound() && desc.payload_size == 0 { return Err(Errno::Einval); }
     Ok(())
 }
 
@@ -78,8 +79,12 @@ pub fn set_ctrl(handler: &Handler, id: u32, value: i32) -> Result<i32, Errno> {
 }
 
 /// One entry of an extended-control request.
-#[derive(Copy, Clone, Debug)]
-pub struct ExtEntry { pub id: u32, pub size: u32, pub value: i64 }
+#[derive(Clone, Debug)]
+pub struct ExtEntry { pub id: u32, pub size: u32, pub value: i64, pub payload: Vec<u8> }
+
+/// A changed control, retaining pointer-backed bytes for the driver owner.
+#[derive(Clone, Debug)]
+pub struct Changed { pub id: u32, pub value: i64, pub payload: Option<Vec<u8>> }
 
 /// Is `which` a selector this device answers?
 ///
@@ -132,8 +137,20 @@ pub fn try_ext(handler: &Handler, which: u32, entries: &[ExtEntry]) -> Result<()
         let index = index as u32;
         let Some(desc) = handler.find(entry.id).copied() else { return Err((index, Errno::Einval)) };
         may_write(handler, entry.id).map_err(|e| (index, e))?;
-        validate(desc.ctrl_type, entry.value, desc.minimum, desc.maximum, desc.step)
-            .map_err(|e| (index, e))?;
+        if desc.payload_size != 0 {
+            let size = entry.payload.len() as u32;
+            if desc.ctrl_type == cid::CTRL_TYPE_STRING {
+                if size == 0 || size > desc.payload_size { return Err((index, Errno::Erange)); }
+                if entry.payload.last().copied() != Some(0) {
+                    return Err((index, Errno::Erange));
+                }
+            } else if size != desc.payload_size {
+                return Err((index, Errno::Einval));
+            }
+        } else {
+            validate(desc.ctrl_type, entry.value, desc.minimum, desc.maximum, desc.step)
+                .map_err(|e| (index, e))?;
+        }
     }
     Ok(())
 }
@@ -142,15 +159,25 @@ pub fn try_ext(handler: &Handler, which: u32, entries: &[ExtEntry]) -> Result<()
 /// value actually moved so the caller can raise one control event each.
 /// # C: O(entries * log n)
 pub fn set_ext(handler: &Handler, which: u32, entries: &[ExtEntry])
-    -> Result<alloc::vec::Vec<(u32, i64)>, (u32, Errno)>
+    -> Result<Vec<Changed>, (u32, Errno)>
 {
     try_ext(handler, which, entries)?;
     let mut changed = alloc::vec::Vec::new();
     for (index, entry) in entries.iter().enumerate() {
-        match set_value(handler, entry.id, entry.value) {
-            Ok(w) if w.changed => changed.push((entry.id, w.value)),
-            Ok(_) => {}
-            Err(e) => return Err((index as u32, e)),
+        let desc = handler.find(entry.id).ok_or((index as u32, Errno::Einval))?;
+        if desc.payload_size != 0 {
+            let changed_payload = handler.store_payload(entry.id, &entry.payload)
+                .ok_or((index as u32, Errno::Einval))?;
+            if changed_payload {
+                changed.push(Changed { id: entry.id, value: 0,
+                                        payload: Some(entry.payload.clone()) });
+            }
+        } else {
+            match set_value(handler, entry.id, entry.value) {
+                Ok(w) if w.changed => changed.push(Changed { id: entry.id, value: w.value, payload: None }),
+                Ok(_) => {}
+                Err(e) => return Err((index as u32, e)),
+            }
         }
     }
     Ok(changed)

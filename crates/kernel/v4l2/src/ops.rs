@@ -103,6 +103,9 @@ pub trait VideoOps: Send + Sync {
     /// # C: O(1)
     fn control_changed(&self, _id: u32, _value: i64) -> bool { false }
 
+    /// A pointer-backed control's validated payload changed.
+    fn control_payload_changed(&self, _id: u32, _payload: &[u8]) -> bool { false }
+
     /// Is the device progressive, i.e. does it deliver whole frames? A
     /// progressive device reports `V4L2_FIELD_NONE` whatever the caller asked
     /// for.

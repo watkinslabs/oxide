@@ -14,6 +14,8 @@ pub const CID_QUEUE_SETUP_ERROR: u32 = 0x00f0_f043;
 pub const CID_BUF_PREPARE_ERROR: u32 = 0x00f0_f044;
 pub const CID_START_STREAM_ERROR: u32 = 0x00f0_f045;
 pub const CID_QUEUE_ERROR: u32 = 0x00f0_f046;
+pub const CID_TEST_NAME: u32 = 0x00f0_f060;
+pub const CID_TEST_U8_TABLE: u32 = 0x00f0_f061;
 
 pub const MOVEMENT_MENU: &[&str] = &[
     "Move Left Fast", "Move Left", "Move Left Slow", "No Movement",
@@ -134,6 +136,18 @@ pub fn controls() -> alloc::vec::Vec<ControlDesc> {
         standard::simple(cid::CID_WHITE_BALANCE_TEMPERATURE, cid::CTRL_TYPE_INTEGER,
                          "White Balance Temperature", 2800, 6500, 100, 4600),
         standard::CAMERA_CLASS,
+        ControlDesc {
+            id: CID_TEST_NAME, ctrl_type: cid::CTRL_TYPE_STRING,
+            name: "Test Name", minimum: 0, maximum: 31, step: 1, default_value: 0,
+            flags: 0, payload_size: 32, elem_size: 32, elems: 1,
+            payload_default: b"Vivid\0", menu: &[], menu_values: &[], cluster: &[],
+        },
+        ControlDesc {
+            id: CID_TEST_U8_TABLE, ctrl_type: cid::CTRL_TYPE_U8,
+            name: "Test U8 Table", minimum: 0, maximum: 255, step: 1, default_value: 0,
+            flags: 0, payload_size: 4, elem_size: 1, elems: 4,
+            payload_default: &[0, 1, 2, 3], menu: &[], menu_values: &[], cluster: &[],
+        },
         standard::EXPOSURE_AUTO,
         standard::simple(cid::CID_EXPOSURE_ABSOLUTE, cid::CTRL_TYPE_INTEGER,
                          "Exposure Time, Absolute", 1, 5000, 1, 156),
@@ -148,13 +162,15 @@ pub fn controls() -> alloc::vec::Vec<ControlDesc> {
             id: CID_HOR_MOVEMENT, ctrl_type: cid::CTRL_TYPE_MENU,
             name: "Horizontal Movement", minimum: 0, maximum: 6, step: 0,
             default_value: 3, flags: 0, menu: MOVEMENT_MENU,
-            menu_values: &[], cluster: &[],
+            menu_values: &[], cluster: &[], payload_size: 0, elem_size: 0, elems: 0,
+            payload_default: &[],
         },
         ControlDesc {
             id: CID_VERT_MOVEMENT, ctrl_type: cid::CTRL_TYPE_MENU,
             name: "Vertical Movement", minimum: 0, maximum: 6, step: 0,
             default_value: 3, flags: 0, menu: MOVEMENT_MENU,
-            menu_values: &[], cluster: &[],
+            menu_values: &[], cluster: &[], payload_size: 0, elem_size: 0, elems: 0,
+            payload_default: &[],
         },
         standard::simple(CID_DQBUF_ERROR, cid::CTRL_TYPE_BUTTON,
                          "Inject V4L2_BUF_FLAG_ERROR", 0, 0, 0, 0),

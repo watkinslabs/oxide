@@ -3,6 +3,7 @@
 
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use sync::{Spinlock, TaskList};
 use syscall::errno::Errno;
 
@@ -39,6 +40,8 @@ struct VividState {
     queue_setup_error: bool,
     buf_prepare_error: bool,
     start_stream_error: bool,
+    test_name: Vec<u8>,
+    test_u8_table: Vec<u8>,
 }
 
 impl Vivid {
@@ -60,6 +63,7 @@ impl Vivid {
                 horizontal_motion: 0, vertical_motion: 0, dqbuf_error: false,
                 queue_setup_error: false, buf_prepare_error: false,
                 start_stream_error: false,
+                test_name: b"Vivid\0".to_vec(), test_u8_table: alloc::vec![0, 1, 2, 3],
             }),
         })
     }
@@ -218,6 +222,16 @@ impl VideoOps for Vivid {
             crate::tables::CID_BUF_PREPARE_ERROR => state.buf_prepare_error = true,
             crate::tables::CID_START_STREAM_ERROR => state.start_stream_error = true,
             crate::tables::CID_QUEUE_ERROR => return state.streaming,
+            _ => {}
+        }
+        false
+    }
+
+    fn control_payload_changed(&self, id: u32, payload: &[u8]) -> bool {
+        let mut state = self.state.lock();
+        match id {
+            crate::tables::CID_TEST_NAME => state.test_name = payload.to_vec(),
+            crate::tables::CID_TEST_U8_TABLE => state.test_u8_table = payload.to_vec(),
             _ => {}
         }
         false

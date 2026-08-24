@@ -16,6 +16,14 @@ pub struct ControlDesc {
     /// Step for a numeric control; the skip mask for a menu.
     pub step: u64,
     pub default_value: i64,
+    /// Size, in bytes, of a pointer-backed value. Zero means scalar.
+    pub payload_size: u32,
+    /// Element size and count reported by `QUERY_EXT_CTRL`.
+    pub elem_size: u32,
+    pub elems: u32,
+    /// Initial bytes for a pointer-backed value. Must be `payload_size` bytes
+    /// when non-empty; strings may use a shorter NUL-terminated initializer.
+    pub payload_default: &'static [u8],
     /// `V4L2_CTRL_FLAG_*` the driver declares. The handler adds the ones it
     /// derives itself, such as the slider hint on a plain integer.
     pub flags: u32,
@@ -42,7 +50,7 @@ impl ControlDesc {
                 flags |= cid::CTRL_FLAG_WRITE_ONLY | cid::CTRL_FLAG_EXECUTE_ON_WRITE;
             }
             cid::CTRL_TYPE_CTRL_CLASS => flags |= cid::CTRL_FLAG_READ_ONLY,
-            cid::CTRL_TYPE_STRING => flags |= cid::CTRL_FLAG_HAS_PAYLOAD,
+            _ if self.payload_size != 0 => flags |= cid::CTRL_FLAG_HAS_PAYLOAD,
             _ => {}
         }
         flags
@@ -55,9 +63,10 @@ impl ControlDesc {
 }
 
 /// Live state of one control.
-#[derive(Copy, Clone, Debug)]
+#[derive(Debug)]
 pub struct ControlState {
     pub value: i64,
+    pub payload: Vec<u8>,
     /// Runtime flag overlay: `INACTIVE` while another control disables this
     /// one, `GRABBED` while streaming pins it.
     pub runtime_flags: u32,
@@ -81,7 +90,12 @@ impl Handler {
         let mut descs: Vec<ControlDesc> = descs.to_vec();
         descs.sort_by_key(|d| d.id);
         let state = descs.iter()
-            .map(|d| ControlState { value: d.default_value, runtime_flags: 0 })
+            .map(|d| {
+                let mut payload = alloc::vec![0u8; d.payload_size as usize];
+                let count = payload.len().min(d.payload_default.len());
+                payload[..count].copy_from_slice(&d.payload_default[..count]);
+                ControlState { value: d.default_value, payload, runtime_flags: 0 }
+            })
             .collect();
         Handler { descs, state: Spinlock::new(state) }
     }
@@ -105,6 +119,12 @@ impl Handler {
         Some(self.state.lock()[index].value)
     }
 
+    /// Current bytes of a pointer-backed control.
+    pub fn payload(&self, id: u32) -> Option<Vec<u8>> {
+        let index = self.position(id)?;
+        Some(self.state.lock()[index].payload.clone())
+    }
+
     /// Store a value already validated against the control's range. Returns
     /// the previous value, so a caller can tell whether the write changed
     /// anything and skip the change event if it did not.
@@ -115,6 +135,16 @@ impl Handler {
         let previous = guard[index].value;
         guard[index].value = value;
         Some(previous)
+    }
+
+    /// Store bytes already validated against the descriptor's payload shape.
+    pub fn store_payload(&self, id: u32, payload: &[u8]) -> Option<bool> {
+        let index = self.position(id)?;
+        let mut guard = self.state.lock();
+        let changed = guard[index].payload.as_slice() != payload;
+        guard[index].payload.clear();
+        guard[index].payload.extend_from_slice(payload);
+        Some(changed)
     }
 
     /// Flags reported for `id`: the description's, plus the runtime overlay.
@@ -150,6 +180,11 @@ impl Handler {
     /// Reset every control to its default. # C: O(n)
     pub fn reset_to_defaults(&self) {
         let mut guard = self.state.lock();
-        for (i, desc) in self.descs.iter().enumerate() { guard[i].value = desc.default_value; }
+        for (i, desc) in self.descs.iter().enumerate() {
+            guard[i].value = desc.default_value;
+            guard[i].payload.clear();
+            guard[i].payload.extend_from_slice(desc.payload_default);
+            guard[i].payload.resize(desc.payload_size as usize, 0);
+        }
     }
 }

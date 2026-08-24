@@ -73,9 +73,15 @@ pub fn s_ctrl(handle: &Arc<FileHandle>, arg: &mut [u8], ctx: &dyn Ctx) -> Result
 pub fn queryctrl(device: &Arc<VideoDevice>, arg: &mut [u8]) -> Result<(), Errno> {
     if arg.len() < l::QUERYCTRL_SIZE { return Err(Errno::Einval); }
     let handler = &device.controls;
-    let desc = *query::find(handler, r32(arg, l::QUERYCTRL_ID))?;
-    let flags = handler.flags(desc.id).unwrap_or(desc.effective_flags());
-    let (minimum, maximum, step, default_value) = query::legacy_view(&desc, flags)?;
+    let mut desc = *query::find(handler, r32(arg, l::QUERYCTRL_ID))?;
+    let mut flags = handler.flags(desc.id).unwrap_or(desc.effective_flags());
+    let mut legacy = query::legacy_view(&desc, flags);
+    while legacy.is_err() && r32(arg, l::QUERYCTRL_ID) & cid::CTRL_QUERY_FLAGS != 0 {
+        desc = *query::find(handler, desc.id | cid::CTRL_FLAG_NEXT_CTRL)?;
+        flags = handler.flags(desc.id).unwrap_or(desc.effective_flags());
+        legacy = query::legacy_view(&desc, flags);
+    }
+    let (minimum, maximum, step, default_value) = legacy?;
     w32(arg, l::QUERYCTRL_ID, desc.id);
     w32(arg, l::QUERYCTRL_TYPE, desc.ctrl_type);
     wstr(arg, l::QUERYCTRL_NAME, l::QUERYCTRL_NAME_LEN, desc.name);
@@ -103,9 +109,10 @@ pub fn query_ext_ctrl(device: &Arc<VideoDevice>, arg: &mut [u8]) -> Result<(), E
     w64(arg, l::QEC_STEP, desc.step);
     w64i(arg, l::QEC_DEFAULT_VALUE, desc.default_value);
     w32(arg, l::QEC_FLAGS, flags);
-    let elem_size = if desc.is_64bit() { 8u32 } else { 4u32 };
+    let elem_size = if desc.payload_size != 0 { desc.elem_size }
+        else if desc.is_64bit() { 8u32 } else { 4u32 };
     w32(arg, l::QEC_ELEM_SIZE, elem_size);
-    w32(arg, l::QEC_ELEMS, 1);
+    w32(arg, l::QEC_ELEMS, if desc.payload_size != 0 { desc.elems } else { 1 });
     w32(arg, l::QEC_NR_OF_DIMS, 0);
     zero(arg, l::QEC_DIMS, l::QEC_DIMS_LEN);
     zero(arg, l::QEC_RESERVED, l::QEC_RESERVED_LEN);
@@ -135,7 +142,8 @@ pub fn querymenu(device: &Arc<VideoDevice>, arg: &mut [u8]) -> Result<(), Errno>
 
 /// The caller's extended-control array, read out of their memory.
 /// # C: O(count)
-fn read_entries(arg: &[u8], ctx: &dyn Ctx) -> Result<(u32, u64, Vec<access::ExtEntry>), Errno> {
+fn read_entries(arg: &[u8], ctx: &dyn Ctx, handler: &crate::ctrl::Handler)
+    -> Result<(u32, u64, Vec<access::ExtEntry>), Errno> {
     let which = r32(arg, l::EXT_CTRLS_WHICH);
     let count = r32(arg, l::EXT_CTRLS_COUNT);
     let base = crate::usermem::r64(arg, l::EXT_CTRLS_CONTROLS);
@@ -149,23 +157,63 @@ fn read_entries(arg: &[u8], ctx: &dyn Ctx) -> Result<(u32, u64, Vec<access::ExtE
     let mut entries = Vec::with_capacity(count as usize);
     for i in 0..count as usize {
         let e = &raw[i * l::EXT_CONTROL_SIZE..];
+        let id = r32(e, l::EXT_CTRL_ID);
+        let payload = match handler.find(id) {
+            Some(desc) if desc.payload_size != 0 => {
+                let ptr = r64i(e, l::EXT_CTRL_VALUE) as u64;
+                let size = r32(e, l::EXT_CTRL_SIZE_FIELD) as usize;
+                if size > desc.payload_size as usize + 1 { return Err(Errno::Einval); }
+                if size == 0 { return Err(Errno::Erange); }
+                let mut bytes = alloc::vec![0u8; size];
+                ctx.user().read(ptr, &mut bytes)?;
+                if desc.ctrl_type == cid::CTRL_TYPE_STRING {
+                    let last = bytes[size - 1];
+                    bytes[size - 1] = 0;
+                    if !bytes[..size - 1].contains(&0)
+                        && last != 0 && size == desc.maximum as usize + 1 {
+                        return Err(Errno::Erange);
+                    }
+                }
+                bytes
+            }
+            _ => Vec::new(),
+        };
         entries.push(access::ExtEntry {
-            id: r32(e, l::EXT_CTRL_ID),
+            id,
             size: r32(e, l::EXT_CTRL_SIZE_FIELD),
             value: r64i(e, l::EXT_CTRL_VALUE),
+            payload,
         });
     }
     Ok((which, base, entries))
 }
 
 /// Write one entry's value back into the caller's array. # C: O(1)
-fn write_entry(base: u64, index: usize, desc_64bit: bool, value: i64, ctx: &dyn Ctx)
+fn write_entry(base: u64, index: usize, desc: &crate::ctrl::ControlDesc,
+               value: i64, payload: Option<&[u8]>, ctx: &dyn Ctx)
     -> Result<(), Errno>
 {
     let mut raw = [0u8; l::EXT_CONTROL_SIZE];
     let addr = base + (index * l::EXT_CONTROL_SIZE) as u64;
     ctx.user().read(addr, &mut raw)?;
-    if desc_64bit { w64i(&mut raw, l::EXT_CTRL_VALUE, value); }
+    if desc.payload_size != 0 {
+        let bytes = payload.ok_or(Errno::Einval)?;
+        let bytes = if desc.ctrl_type == cid::CTRL_TYPE_STRING {
+            let len = bytes.iter().position(|byte| *byte == 0)
+                .map(|index| index + 1).unwrap_or(bytes.len());
+            &bytes[..len]
+        } else { bytes };
+        let capacity = r32(&raw, l::EXT_CTRL_SIZE_FIELD) as usize;
+        if desc.ctrl_type == cid::CTRL_TYPE_STRING && capacity < bytes.len() {
+            w32(&mut raw, l::EXT_CTRL_SIZE_FIELD, desc.payload_size);
+            ctx.user().write(addr, &raw)?;
+            return Err(Errno::Enospc);
+        }
+        if capacity < bytes.len() { return Err(Errno::Enospc); }
+        ctx.user().write(addr, &raw)?;
+        return ctx.user().write(r64i(&raw, l::EXT_CTRL_VALUE) as u64, bytes);
+    }
+    if desc.is_64bit() { w64i(&mut raw, l::EXT_CTRL_VALUE, value); }
     else {
         // The value union is eight bytes; a 32-bit control occupies the low
         // half and the high half must be cleared, or a caller reading the
@@ -181,8 +229,9 @@ fn set_error_idx(arg: &mut [u8], index: u32) { w32(arg, l::EXT_CTRLS_ERROR_IDX, 
 /// `VIDIOC_G_EXT_CTRLS`. # C: O(count * log n)
 pub fn g_ext_ctrls(device: &Arc<VideoDevice>, arg: &mut [u8], ctx: &dyn Ctx) -> Result<(), Errno> {
     if arg.len() < l::EXT_CONTROLS_SIZE { return Err(Errno::Einval); }
-    let (which, base, entries) = read_entries(arg, ctx)?;
-    access::check_which(which).inspect_err(|_| set_error_idx(arg, 0))?;
+    let requested_which = r32(arg, l::EXT_CTRLS_WHICH);
+    access::check_which(requested_which).inspect_err(|_| set_error_idx(arg, 0))?;
+    let (which, base, entries) = read_entries(arg, ctx, &device.controls)?;
     // The error index means "this entry failed"; a batch that succeeds must
     // leave it at the count, which is how the reference says "none of them".
     set_error_idx(arg, entries.len() as u32);
@@ -191,8 +240,14 @@ pub fn g_ext_ctrls(device: &Arc<VideoDevice>, arg: &mut [u8], ctx: &dyn Ctx) -> 
             Ok(v) => v,
             Err(e) => { set_error_idx(arg, index as u32); return Err(e); }
         };
-        let is64 = device.controls.find(entry.id).map(|d| d.is_64bit()).unwrap_or(false);
-        if let Err(e) = write_entry(base, index, is64, value, ctx) {
+        let desc = device.controls.find(entry.id).ok_or(Errno::Einval)?;
+        let payload = if desc.payload_size != 0 {
+            Some(match which {
+                cid::CTRL_WHICH_DEF_VAL => desc.payload_default.to_vec(),
+                _ => device.controls.payload(entry.id).ok_or(Errno::Einval)?,
+            })
+        } else { None };
+        if let Err(e) = write_entry(base, index, desc, value, payload.as_deref(), ctx) {
             set_error_idx(arg, index as u32);
             return Err(e);
         }
@@ -206,7 +261,9 @@ pub fn try_ext_ctrls(device: &Arc<VideoDevice>, arg: &mut [u8], ctx: &dyn Ctx)
     -> Result<(), Errno>
 {
     if arg.len() < l::EXT_CONTROLS_SIZE { return Err(Errno::Einval); }
-    let (which, _base, entries) = read_entries(arg, ctx)?;
+    let requested_which = r32(arg, l::EXT_CTRLS_WHICH);
+    access::check_which(requested_which).inspect_err(|_| set_error_idx(arg, 0))?;
+    let (which, _base, entries) = read_entries(arg, ctx, &device.controls)?;
     set_error_idx(arg, entries.len() as u32);
     match access::try_ext(&device.controls, which, &entries) {
         Ok(()) => Ok(()),
@@ -226,22 +283,31 @@ pub fn s_ext_ctrls(handle: &Arc<FileHandle>, arg: &mut [u8], ctx: &dyn Ctx)
 {
     if arg.len() < l::EXT_CONTROLS_SIZE { return Err(Errno::Einval); }
     let device = handle.device.clone();
-    let (which, base, entries) = read_entries(arg, ctx)?;
+    let requested_which = r32(arg, l::EXT_CTRLS_WHICH);
+    access::check_which(requested_which).inspect_err(|_| set_error_idx(arg, 0))?;
+    let (which, base, entries) = read_entries(arg, ctx, &device.controls)?;
     set_error_idx(arg, entries.len() as u32);
     let changed = match access::set_ext(&device.controls, which, &entries) {
         Ok(changed) => changed,
         Err((index, e)) => { set_error_idx(arg, index); return Err(e); }
     };
-    for (id, value) in changed.iter() {
-        if device.ops.control_changed(*id, *value) {
+    for change in changed.iter() {
+        if let Some(payload) = change.payload.as_deref() {
+            if device.ops.control_payload_changed(change.id, payload) {
+                crate::vb2::stream::set_error(&mut device.state.lock().queue);
+            }
+        } else if device.ops.control_changed(change.id, change.value) {
             crate::vb2::stream::set_error(&mut device.state.lock().queue);
         }
-        announce(handle, *id, *value, ctx);
+        announce(handle, change.id, change.value, ctx);
     }
     for (index, entry) in entries.iter().enumerate() {
         let Some(stored) = device.controls.value(entry.id) else { continue };
-        let is64 = device.controls.find(entry.id).map(|d| d.is_64bit()).unwrap_or(false);
-        if let Err(e) = write_entry(base, index, is64, stored, ctx) {
+        let desc = device.controls.find(entry.id).ok_or(Errno::Einval)?;
+        let payload = if desc.payload_size != 0 {
+            Some(device.controls.payload(entry.id).ok_or(Errno::Einval)?)
+        } else { None };
+        if let Err(e) = write_entry(base, index, desc, stored, payload.as_deref(), ctx) {
             set_error_idx(arg, index as u32);
             return Err(e);
         }
