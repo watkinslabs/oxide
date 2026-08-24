@@ -67,6 +67,11 @@ impl<S: SectorSource> Volume<S> {
         while first < end {
             match self.map_block(inode, ino, first) {
                 Ok(Mapped::Compressed) => {
+                    // Linux's memory=low mode disables the preallocated
+                    // decompression path. Demand reads still allocate their
+                    // temporary cluster buffer; uncompressed clusters in a
+                    // compressed file retain ordinary readahead.
+                    if self.options().memory == crate::opts::MemoryMode::Low { return; }
                     if self.read_cluster_for_readahead(inode, ino, first).is_err() { return; }
                 }
                 Ok(_) => self.readahead_plain(inode, ino, first,
