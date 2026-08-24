@@ -23,6 +23,7 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use block::{BlockDevice, BlockError, BlockOp, BlockRequest, KResult, QueueLimits};
+use sched::live::Mutex as LifecycleMutex;
 use sync::{Devices as MdStateClass, Spinlock};
 
 pub use superblock::{MetadataVersion, Superblock, read_superblock};
@@ -51,6 +52,7 @@ pub struct Array {
     metadata_members: Vec<Arc<dyn BlockDevice>>,
     metadata_version: Option<MetadataVersion>,
     metadata_events: Spinlock<u64, MdStateClass>,
+    mutation: LifecycleMutex<()>,
     lifecycle: lifecycle::State,
     faulty: Spinlock<Vec<bool>, MdStateClass>,
 }
@@ -102,7 +104,8 @@ impl Array {
         };
         if capacity == 0 { return Err(BlockError::Einval); }
         Ok(Arc::new(Self { level, faulty: Spinlock::new(vec![false; members.len()]), members,
-            block_size, capacity, metadata, metadata_members, metadata_version, metadata_events: Spinlock::new(metadata_events), lifecycle: lifecycle::State::new() }))
+            block_size, capacity, metadata, metadata_members, metadata_version, metadata_events: Spinlock::new(metadata_events),
+            mutation: LifecycleMutex::new(()), lifecycle: lifecycle::State::new() }))
     }
 
     /// Array personality. # C: O(1)
@@ -125,6 +128,10 @@ impl Array {
     /// The state transition is owned by the array, so reporting and I/O observe
     /// one value. A RAID1 array must retain one working member. # C: O(members)
     pub fn set_disk_faulty(&self, dev_t: u32) -> KResult<()> {
+        // SAFETY: this control operation runs in process context and the
+        // lifecycle mutex is the sleepable MD serialization boundary; no
+        // spinlock or block-device lock is held while metadata is written.
+        let _mutation = unsafe { self.mutation.lock() };
         let metadata = self.metadata.as_ref().ok_or(BlockError::Enxio)?;
         let member = metadata.members.iter().position(|member|
             block::registry::encode_dev(member.number_dev.major, member.number_dev.minor) == dev_t)
