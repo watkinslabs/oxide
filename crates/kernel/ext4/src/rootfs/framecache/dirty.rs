@@ -116,6 +116,28 @@ pub fn writeback_dirty(only: Option<&crate::Mount>) -> Result<(), ()> {
     if failed { Err(()) } else { Ok(()) }
 }
 
+/// Write back one inode's dirty page cache on `mount`.  `fsync(2)` names an
+/// inode, so its ordered-data phase must not flush unrelated stores on the
+/// same superblock.  The mount-wide walk belongs to `sync(2)`/`syncfs(2)`.
+/// This is the local equivalent of Linux `file_write_and_wait_range()` in
+/// `ext4_sync_file`. # C: O(N_stores)
+pub fn writeback_inode(mount: &crate::Mount, ino: u32) -> Result<(), ()> {
+    let snapshot: Vec<Weak<Ext4FrameStore>> = { DIRTY_STORES.lock().iter().cloned().collect() };
+    let mut failed = false;
+    for w in &snapshot {
+        let Some(s) = w.upgrade() else { continue };
+        if s.ino != ino
+            || !core::ptr::eq(alloc::sync::Arc::as_ptr(&s.st.mount), mount as *const crate::Mount)
+        {
+            continue;
+        }
+        if s.writeback().is_err() { failed = true; }
+        break;
+    }
+    DIRTY_STORES.lock().retain(|w| w.strong_count() > 0);
+    if failed { Err(()) } else { Ok(()) }
+}
+
 /// Write back the selected stores; report failure and the mounts covered.
 /// # C: O(N_stores · N_dirty)
 fn writeback_dirty_inner(only: Option<&crate::Mount>)
