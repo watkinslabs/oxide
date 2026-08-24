@@ -64,6 +64,6 @@ pub use volstate::{fat_copy_starts, is_dirty, set_dirty, FAT_STATE_DIRTY};
 pub use volume::{DirEntry, SectorSource, Volume};
 pub use dirent::{checksum, short_name, short_name_with, Entry, LongName, Record, RecordTimes,
                  ShortEntry};
-pub use name::{CodePage, ShortName, CP437, CP852, CP855, CP857, CP860, CP861, CP862, CP863, CP864, CP865, SFN_DEFAULT, SFN_MSDOS};
+pub use name::{CodePage, ShortName, CP437, CP852, CP855, CP857, CP860, CP861, CP862, CP863, CP864, CP865, CP866, SFN_DEFAULT, SFN_MSDOS};
 pub use time::{from_unix, to_unix, truncate_atime, truncate_mtime, FatTime, TimeConfig};
 pub use geometry::{Geometry, GeometryError, FatWidth};
