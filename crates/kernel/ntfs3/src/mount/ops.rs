@@ -9,7 +9,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use vfs::{CreateCtx, DirContext, FileOps, FileType, Inode, InodeOps, InodeRef, KResult,
-          VfsError, XattrError};
+          VfsError, XattrError, Idmap, Iattr, ATTR_GID, ATTR_MODE, ATTR_UID};
 
 use crate::attrs;
 
@@ -43,6 +43,26 @@ impl NtfsOps {
 }
 
 impl InodeOps for NtfsOps {
+    fn setattr(&self, inode: &Inode, idmap: &Idmap, ia: &Iattr) -> KResult<()> {
+        if ia.valid & (ATTR_UID | ATTR_GID | ATTR_MODE) != 0 {
+            let node = Self::node(inode)?;
+            let uid = if ia.valid & ATTR_UID != 0 { idmap.map_in_uid(ia.uid) }
+                      else { inode.uid().unwrap_or(0) };
+            let gid = if ia.valid & ATTR_GID != 0 { idmap.map_in_gid(ia.gid) }
+                      else { inode.gid().unwrap_or(0) };
+            let mode = if ia.valid & ATTR_MODE != 0 { ia.mode as u32 }
+                       else { inode.i_mode() as u32 };
+            let volume = node.fs.volume.lock();
+            for (name, value) in [(b"$LXUID".as_slice(), uid.to_le_bytes()),
+                                  (b"$LXGID".as_slice(), gid.to_le_bytes()),
+                                  (b"$LXMOD".as_slice(), mode.to_le_bytes())] {
+                volume.write_ea(node.info.number, name, Some(&value), now())
+                    .map_err(errno_to_vfs)?;
+            }
+        }
+        vfs::setattr::simple_setattr(inode, idmap, ia)
+    }
+
     fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
         let node = Self::dir_of(inode)?;
         let (base, stream) = match node.fs.options().streams {
@@ -133,6 +153,16 @@ impl InodeOps for NtfsOps {
 
     fn getxattr(&self, inode: &Inode, name: &str) -> Result<Vec<u8>, XattrError> {
         let node = Self::node(inode).map_err(XattrError::Fs)?;
+        if vfs::posix_acl::AclType::from_xattr_name(name).is_some() {
+            let disk = node.fs.volume.lock().read_ea(node.info.number, name.as_bytes())
+                .map_err(|e| match e {
+                    syscall::errno::Errno::Enodata | syscall::errno::Errno::Enoent =>
+                        XattrError::NotFound,
+                    e => XattrError::Fs(errno_to_vfs(e)),
+                })?;
+            return vfs::posix_acl::disk::xattr_from_disk(&disk)
+                .map_err(vfs::posix_acl::disk::xattr_error);
+        }
         if name == "system.ntfs_security" {
             let id = node.info.security_id.ok_or(XattrError::NotFound)?;
             return node.fs.volume.lock().security_descriptor(id)
@@ -152,11 +182,28 @@ impl InodeOps for NtfsOps {
                                     e => XattrError::Fs(errno_to_vfs(e)) })
     }
 
-    fn setxattr(&self, _inode: &Inode, _name: &str, _value: Vec<u8>, _create: bool,
-                _replace: bool) -> Result<(), XattrError> { Err(XattrError::NotSup) }
+    fn setxattr(&self, inode: &Inode, name: &str, value: Vec<u8>, _create: bool,
+                _replace: bool) -> Result<(), XattrError> {
+        if vfs::posix_acl::AclType::from_xattr_name(name).is_none() {
+            return Err(XattrError::NotSup);
+        }
+        let disk = vfs::posix_acl::disk::disk_from_xattr(&value)
+            .map_err(vfs::posix_acl::disk::xattr_error)?;
+        let node = Self::node(inode).map_err(XattrError::Fs)?;
+        node.fs.volume.lock().write_ea(node.info.number, name.as_bytes(), Some(&disk), now())
+            .map_err(|e| XattrError::Fs(errno_to_vfs(e)))
+    }
 
-    fn removexattr(&self, _inode: &Inode, _name: &str) -> Result<(), XattrError> {
-        Err(XattrError::NotSup)
+    fn removexattr(&self, inode: &Inode, name: &str) -> Result<(), XattrError> {
+        if vfs::posix_acl::AclType::from_xattr_name(name).is_none() {
+            return Err(XattrError::NotSup);
+        }
+        let node = Self::node(inode).map_err(XattrError::Fs)?;
+        node.fs.volume.lock().write_ea(node.info.number, name.as_bytes(), None, now())
+            .map_err(|e| match e {
+                syscall::errno::Errno::Enodata => XattrError::NotFound,
+                e => XattrError::Fs(errno_to_vfs(e)),
+            })
     }
 
     fn listxattr(&self, inode: &Inode) -> Result<Vec<String>, XattrError> {
@@ -166,6 +213,11 @@ impl InodeOps for NtfsOps {
             names.extend(node.info.streams.iter().map(|s| alloc::format!("user.{s}")));
         }
         if node.info.security_id.is_some() { names.push(String::from("system.ntfs_security")); }
+        for name in [vfs::posix_acl::XATTR_NAME_ACL_ACCESS, vfs::posix_acl::XATTR_NAME_ACL_DEFAULT] {
+            if node.fs.volume.lock().read_ea(node.info.number, name.as_bytes()).is_ok() {
+                names.push(String::from(name));
+            }
+        }
         if names.is_empty() && node.fs.options().streams != StreamInterface::Xattr {
             return Err(XattrError::NotSup);
         }

@@ -44,6 +44,7 @@ pub mod dirops;
 pub mod edit;
 pub mod write;
 pub mod meta;
+pub mod ea;
 
 pub use dir::DirEntry;
 pub use inode::NodeInfo;

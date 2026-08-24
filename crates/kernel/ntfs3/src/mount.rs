@@ -141,6 +141,9 @@ impl vfs::fs::FileSystem for NtfsFs {
     fn name(&self) -> &str { NTFS_NAME }
     fn magic(&self) -> u64 { crate::uapi::NTFS_SUPER_MAGIC }
     fn fs_flags(&self) -> vfs::fs::FsFlags { vfs::fs::FsFlags::FS_REQUIRES_DEV }
+    fn sb_flags(&self) -> u64 {
+        if self.volume.lock().options().acl { vfs::superblock::SB_POSIXACL } else { 0 }
+    }
     fn block_size(&self) -> u32 { self.volume.lock().geometry().cluster_size }
     fn show_options(&self) -> String { crate::opts::show(self.volume.lock().options()) }
     fn super_ops(&self) -> Option<Arc<dyn vfs::superblock::SuperOps>> {
