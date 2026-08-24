@@ -31,6 +31,55 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 impl Mount {
+    /// Allocate a contiguous run of previously-free filesystem blocks.
+    ///
+    /// This is the small request-shaped part of Linux ext4's multiblock
+    /// allocator.  A full-stripe request prefers a stripe-aligned run, then
+    /// falls back to the first contiguous run when fragmentation makes the
+    /// preferred placement unavailable.  The returned physical addresses are
+    /// the blocks reserved by this call, in request order.
+    /// # C: O(N_groups * block_size * count)
+    pub(crate) fn alloc_blocks_flags(&self, hint: u32, count: u32, flags: ReserveFlags)
+        -> Result<Vec<u64>, MountError>
+    {
+        if count == 0 { return Ok(Vec::new()); }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        if self.faults.next_alloc_block.swap(false, Ordering::AcqRel) { return Err(MountError::BlockIo); }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        {
+            let left = self.faults.alloc_block_after.load(Ordering::Acquire);
+            if left != 0 {
+                // A test fault counts allocation attempts, not bitmap writes.
+                // A multiblock request is atomic, so a fault within its span
+                // rejects the request before reserving any of its blocks.
+                if left <= count {
+                    self.faults.alloc_block_after.store(0, Ordering::Release);
+                    return Err(MountError::BlockIo);
+                }
+                self.faults.alloc_block_after.fetch_sub(count, Ordering::AcqRel);
+            }
+        }
+        let optimize = self.optimize_scan();
+        let may_dip = reserve::may_dip_into_reserve(&self.behaviour(), &self.alloc_cred(), flags);
+        self.run_journaled(|m| {
+            let groups = m.sb.group_count();
+            if groups == 0 { return Err(MountError::NoSpace); }
+            let free = m.state.lock().sb_free_blocks;
+            if !reserve::has_free_blocks(free, u64::from(count), m.sb.r_blocks_count, may_dip) {
+                return Err(MountError::NoSpace);
+            }
+            let freest = if optimize { m.freest_group(groups) } else { None };
+            let start = scan::scan_start(hint, groups, optimize, freest);
+            for off in 0..groups {
+                let group = (start + off) % groups;
+                if let Some(run) = m.try_alloc_run_in_group(group, count)? {
+                    return Ok(run);
+                }
+            }
+            Err(MountError::NoSpace)
+        })
+    }
+
     /// Allocate one previously-free filesystem block for file data. Wraps in a
     /// journal scope so bitmap + GDT + SB counter writes commit
     /// atomically.
@@ -183,6 +232,56 @@ impl Mount {
         Ok(Some(phys))
     }
 
+    /// Reserve one contiguous run in a group and persist its bitmap/counters.
+    /// The stripe-aligned candidate is tried first for a request at least as
+    /// wide as the configured stripe; otherwise the first run wins.
+    fn try_alloc_run_in_group(&self, group: u32, count: u32)
+        -> Result<Option<Vec<u64>>, MountError>
+    {
+        let gd_orig = {
+            let s = self.state.lock();
+            gdt::parse_descriptor(&s.gdt_buf, group, &self.sb)?
+        };
+        if u32::from(gd_orig.free_blocks_count) < count { return Ok(None); }
+        let bbm_byte_off = gd_orig.block_bitmap * (self.sb.block_size as u64);
+        let uninit = { let s = self.state.lock(); gdt::block_uninit(&s.gdt_buf, group, &self.sb) };
+        let mut bitmap = if uninit {
+            let s = self.state.lock();
+            init_block_bitmap_for_group(&self.sb, &s.gdt_buf, group)?
+        } else {
+            let bitmap = self.read_meta_byte_range(bbm_byte_off, self.sb.block_size as usize)?;
+            if !crate::csum::verify_block_bitmap_csum_at(&self.sb, &self.state.lock().gdt_buf, group, &bitmap) {
+                crate::mount::first_csum_failure(b"block-bitmap-alloc-run", group as u64, bbm_byte_off);
+                return Err(MountError::BadChecksum);
+            }
+            bitmap
+        };
+        let blocks = self.blocks_in_group(group);
+        let stripe = self.behaviour().stripe;
+        let first_phys = group_first_block(&self.sb, group);
+        let aligned = if count >= stripe && stripe > 1 {
+            find_contiguous_run(&bitmap, blocks, count, first_phys, Some(stripe))
+        } else { None };
+        let start = aligned.or_else(|| find_contiguous_run(&bitmap, blocks, count, first_phys, None));
+        let Some(start) = start else { return Ok(None) };
+        for bit in start..start + count { bitmap[bit as usize >> 3] |= 1u8 << (bit & 7); }
+        let mut gd = gd_orig;
+        gd.free_blocks_count = gd.free_blocks_count.saturating_sub(count);
+        {
+            let mut s = self.state.lock();
+            gdt::write_descriptor_counters(&mut s.gdt_buf, group, &self.sb, &gd)?;
+            crate::csum::set_block_bitmap_csum(&self.sb, &mut s.gdt_buf, group, &bitmap);
+            gdt::on_block_allocated(&mut s.gdt_buf, group, &self.sb);
+            crate::csum::stamp_group_desc_csum(&self.sb, &mut s.gdt_buf, group);
+            s.sb_free_blocks = s.sb_free_blocks.saturating_sub(u64::from(count));
+        }
+        self.metadata_write(bbm_byte_off, &bitmap)?;
+        self.persist_gdt_slot_meta(group)?;
+        self.persist_sb_free_blocks_meta()?;
+        self.flush_pending_tx()?;
+        Ok(Some((0..count).map(|n| first_phys + u64::from(start + n)).collect()))
+    }
+
     fn locate_block(&self, phys: u64) -> Result<(u32, u32), MountError> {
         let bpg = self.sb.blocks_per_group as u64;
         if bpg == 0 || phys < self.sb.first_data_block as u64 {
@@ -315,6 +414,32 @@ fn set_bit(bitmap: &mut [u8], bit: usize) {
     if bit / 8 < bitmap.len() { bitmap[bit >> 3] |= 1u8 << (bit & 7); }
 }
 
+fn find_contiguous_run(bitmap: &[u8], max_bits: u32, count: u32, first_phys: u64,
+                       stripe: Option<u32>) -> Option<u32> {
+    if count == 0 || count > max_bits { return None; }
+    let mut run_start = 0;
+    let mut run_len = 0;
+    for bit in 0..max_bits {
+        if bitmap[bit as usize >> 3] & (1u8 << (bit & 7)) != 0 {
+            run_len = 0;
+            continue;
+        }
+        if run_len == 0 { run_start = bit; }
+        run_len += 1;
+        if run_len < count { continue; }
+        let run_end = bit + 1;
+        let candidate = match stripe {
+            Some(width) => {
+                let misalignment = (first_phys + u64::from(run_start)) % u64::from(width);
+                run_start + if misalignment == 0 { 0 } else { width - misalignment as u32 }
+            }
+            None => run_end - count,
+        };
+        if candidate + count <= run_end { return Some(candidate); }
+    }
+    None
+}
+
 /// Scan `bitmap` for the first 0 bit in `[0, max_bits)`. Returns
 /// the bit index, or None when every covered bit is already set.
 /// # C: O(max_bits / 8)
@@ -397,6 +522,16 @@ mod tests {
         // All 12 bits set in lower nibble → None even though high
         // nibble has clears (those are out of range).
         assert_eq!(find_first_clear(&[0xFF, 0b0000_1111], 12), None);
+    }
+
+    #[test]
+    fn contiguous_run_requires_every_bit_and_stays_in_the_bitmap() {
+        let bitmap = [0b0001_0000, 0b0000_0000];
+        assert_eq!(find_contiguous_run(&bitmap, 16, 3, 0, None), Some(5));
+        assert_eq!(find_contiguous_run(&bitmap, 8, 4, 0, None), None,
+                   "a used bit breaks the only four-block run");
+        assert_eq!(find_contiguous_run(&bitmap, 16, 17, 0, None), None,
+                   "a request past the bitmap is not free");
     }
 
     #[test]

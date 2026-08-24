@@ -140,14 +140,36 @@ impl Mount {
             // the O(range) eager zero-write that made journald's multi-MB journal
             // preallocation a per-block alloc+write storm.
             let mut allocated = alloc::vec::Vec::new();
+            let request_count = last_lb.checked_sub(first_lb).and_then(|n| n.checked_add(1))
+                .ok_or(MountError::Inode(inode::InodeError::BadLen))?;
+            let mut all_unmapped = true;
             for lb in first_lb..=last_lb {
                 let inode = m.read_inode(ino)?;
                 let was_mapped = m.collect_phys_extents(&inode.i_block)?
                     .iter()
                     .any(|r| lb >= r.logical && lb < r.logical + r.len);
+                if was_mapped { all_unmapped = false; break; }
+            }
+            // A fresh range is one multiblock request, just as ext4's mballoc
+            // path sees it. Existing mappings still take the per-block path so
+            // a partial fallocate never reserves blocks it will not consume.
+            let reserved = if all_unmapped {
+                Some(m.alloc_blocks_flags(0, request_count, m.data_reserve_flags(ino))?)
+            } else { None };
+            for (offset, lb) in (first_lb..=last_lb).enumerate() {
+                let inode = m.read_inode(ino)?;
+                let was_mapped = m.collect_phys_extents(&inode.i_block)?
+                    .iter()
+                    .any(|r| lb >= r.logical && lb < r.logical + r.len);
                 let visible_size = core::cmp::max(inode.size, (lb as u64 + 1) * bs);
-                if let Err(e) = m.map_unwritten_block_inner(ino, lb, visible_size) {
+                let physical = reserved.as_ref().map(|run| run[offset]);
+                if let Err(e) = m.map_unwritten_block_inner_with_physical(ino, lb, visible_size, physical) {
                     let _ = m.rollback_allocated_logical_blocks(ino, old_size, &allocated);
+                    if let Some(run) = reserved.as_ref() {
+                        for &block in run.iter().skip(offset) {
+                            let _ = m.free_block(block);
+                        }
+                    }
                     return Err(e);
                 }
                 if !was_mapped { allocated.push(lb); }
