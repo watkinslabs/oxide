@@ -137,6 +137,7 @@ impl<S: SectorSource> Volume<S> {
                 unsafe { core::ptr::addr_of_mut!((*dst).$field).write($value) };
             };
         }
+        let migration_window_granularity = sb.segs_per_sec.max(1);
         init_field!(source: source);
         init_field!(sb: sb);
         init_field!(sb_raw: sb_raw);
@@ -188,6 +189,7 @@ impl<S: SectorSource> Volume<S> {
         init_field!(gc_pin_file_threshold: crate::pin::policy::GC_PIN_FILE_THRESHOLD);
         init_field!(reclaim_segments: reclaim_segments);
         init_field!(gc_valid_thresh_ratio: crate::bg::gc::DEF_GC_VALID_THRESH_RATIO);
+        init_field!(migration_window_granularity: migration_window_granularity);
         init_field!(max_io_bytes: 0);
         init_field!(atomic: alloc::collections::BTreeMap::new());
         init_field!(ioprio_hint: alloc::collections::BTreeMap::new());

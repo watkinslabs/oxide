@@ -86,6 +86,11 @@ pub struct SegState {
     /// Where the next victim search resumes, so successive searches sweep the
     /// volume instead of re-costing the same low-numbered segments.
     pub gc_cursor: u32,
+    /// Next segment of a partially processed background victim section.
+    pub gc_next_segment: Option<u32>,
+    /// Whether the active cleaner pass is the ahead-of-demand background
+    /// owner, so a bounded section walk can retain its continuation.
+    pub gc_background: bool,
     /// Which policy the pass now running is attributed to, as the reclaimed
     /// figures break their total down by.
     ///

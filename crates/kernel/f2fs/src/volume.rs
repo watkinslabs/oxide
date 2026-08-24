@@ -282,6 +282,9 @@ pub struct Volume<S: SectorSource> {
     pub(crate) reclaim_segments: u32,
     /// Maximum live-block ratio preferred against a less-live one-time victim.
     pub(crate) gc_valid_thresh_ratio: u32,
+    /// Number of segments a background cleaner window may process in a
+    /// section. Linux's `migration_window_granularity`.
+    pub(crate) migration_window_granularity: u32,
     /// Maximum contiguous source-read size before the medium request is split.
     /// Zero retains Linux's unlimited merge behavior.
     pub(crate) max_io_bytes: u32,
