@@ -233,6 +233,7 @@ impl Context for ContextX86_64 {
     /// values `oxide_context_switch` loaded from `Context` with zeros.
     ///
     /// # C: O(1)
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     fn new_kernel_with_irq_frame(
         stack_top: *mut u8,
         entry: extern "C" fn(usize) -> !,
@@ -387,6 +388,7 @@ impl ContextX86_64 {
     /// `hal::Context` trait): arm parity rides a follow-up that adds
     /// sp_el0 save/restore to the IRQ frame.
     /// # C: O(1)
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn new_user_with_irq_frame(stack_top: *mut u8, user_ip: u64, user_sp: u64) -> Self {
         // USER CS/SS per `36-bootloader-handoff` GDT (P1-93): USER_CS =
         // 0x4B (DPL=3 64-bit code), USER_DS = 0x43 (DPL=3 data).
@@ -425,6 +427,7 @@ impl ContextX86_64 {
     /// `user_ip`/`user_sp`/`user_rflags` are passed separately: a thread
     /// clone overrides the stack, and `sys_clone` already resolved them.
     /// # C: O(1)
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn new_user_for_fork(
         stack_top: *mut u8,
         user_ip: u64,
