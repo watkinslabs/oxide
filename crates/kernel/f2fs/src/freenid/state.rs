@@ -71,6 +71,9 @@ pub enum Corrupt {
 pub struct FreeNids {
     /// The share of memory the cache may take, in percent.
     pub ram_thresh: u32,
+    /// Number of NAT pages to prefetch after a free-NID scan. Linux exposes
+    /// this as `ra_nid_pages`; zero disables the advisory prefetch.
+    pub ra_nid_pages: u32,
     /// Share of the node table that may be dirty before the caches are worth a
     /// checkpoint on their own, in percent. Live rather than a constant because a
     /// volume with a large table and steady traffic wants it lower and a small
@@ -94,6 +97,7 @@ impl FreeNids {
     pub fn new(next_scan_nid: u32, available_nids: u32) -> Self {
         Self {
             ram_thresh: DEF_RAM_THRESHOLD,
+            ra_nid_pages: 0,
             dirty_nats_ratio: super::limits::DEF_DIRTY_NATS_RATIO,
             entries: BTreeMap::new(),
             order: BTreeMap::new(),

@@ -51,7 +51,7 @@ fn store(a: &[Attr], name: &str, v: u64) -> Result<usize, VfsError> {
 fn every_volume_owned_control_is_writable() {
     let fs = mounted();
     let a = attrs(&fs);
-    for name in ["ram_thresh", "max_read_extent_count", "last_age_weight",
+    for name in ["ram_thresh", "ra_nid_pages", "max_read_extent_count", "last_age_weight",
                  "hot_data_age_threshold", "warm_data_age_threshold",
                  "gc_segment_mode", "gc_reclaimed_segments",
                  "atgc_candidate_ratio", "atgc_candidate_count",
@@ -104,6 +104,20 @@ fn a_stored_value_reaches_the_cache_the_decision_reads() {
 
     store(&a, "ram_thresh", 9).expect("store");
     assert_eq!(fs.volume.lock().nid_ram_thresh(), 9);
+
+    store(&a, "ra_nid_pages", 12).expect("store");
+    assert_eq!(fs.volume.lock().ra_nid_pages(), 12);
+    assert_eq!(show(&a, "ra_nid_pages"), 12);
+}
+
+#[test]
+fn ra_nid_pages_accepts_zero_and_refuses_values_outside_u32() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    assert_eq!(show(&a, "ra_nid_pages"), 0, "Linux default disables the advisory read-ahead");
+    store(&a, "ra_nid_pages", 0).expect("zero is the Linux default");
+    assert!(store(&a, "ra_nid_pages", u64::from(u32::MAX) + 1).is_err());
+    assert_eq!(show(&a, "ra_nid_pages"), 0);
 }
 
 #[test]

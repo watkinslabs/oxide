@@ -26,6 +26,7 @@ use super::volume::{num_rw, Vol};
 pub(crate) fn attrs(fs: &Arc<F2fs>, dev: &str) -> Vec<Attr> {
     let mut out = alloc::vec![
         num_rw(fs, dev, "ram_thresh", |v| u64::from(v.nid_ram_thresh()), set_ram_thresh),
+        num_rw(fs, dev, "ra_nid_pages", |v| u64::from(v.ra_nid_pages()), set_ra_nid_pages),
         num_rw(fs, dev, "max_read_extent_count",
                |v| u64::from(v.extents().max_read_extent_count()), set_max_read_extent_count),
         num_rw(fs, dev, "last_age_weight",
@@ -83,6 +84,15 @@ fn atgc_knob(fs: &Arc<F2fs>, dir: &str, k: atgc::Knob) -> Attr {
 fn set_ram_thresh(v: &mut Vol, n: u64) -> Result<(), Errno> {
     if n == 0 || n > PERCENT { return Err(Errno::Einval); }
     v.set_nid_ram_thresh(n as u32);
+    Ok(())
+}
+
+/// Number of NAT pages to prefetch after a free-NID scan. Zero is Linux's
+/// default and means that only the scan's own synchronous pages are fetched.
+/// # C: O(1)
+fn set_ra_nid_pages(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    if n > u64::from(u32::MAX) { return Err(Errno::Einval); }
+    v.set_ra_nid_pages(n as u32);
     Ok(())
 }
 
