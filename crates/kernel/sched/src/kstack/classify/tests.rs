@@ -7,6 +7,16 @@
 
 use super::*;
 
+#[test]
+fn unused_bytes_reports_the_first_written_byte() {
+    let mut stack = [0u8; 32];
+    assert_eq!(unused_bytes(&stack), 32);
+    stack[19] = 1;
+    assert_eq!(unused_bytes(&stack), 19);
+    stack[3] = 1;
+    assert_eq!(unused_bytes(&stack), 3);
+}
+
 /// The geometry the window is actually built with, restated so a change to
 /// either constant fails here rather than silently renaming every slot.
 const GUARD: u64 = PAGE;

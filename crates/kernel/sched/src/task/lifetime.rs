@@ -6,6 +6,9 @@ use super::Task;
 
 impl Drop for Task {
     fn drop(&mut self) {
+        if let Some(stack) = self.stack.lock().as_ref() {
+            crate::kstack::record_task_usage(stack);
+        }
         // Production exit clears this slot before the final schedule. This is
         // the process-context backstop for unpublished/hosted tasks and failed
         // spawn paths: a task-owned use must reach mmput, never become an Arc

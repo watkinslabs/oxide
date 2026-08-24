@@ -65,6 +65,16 @@ impl Span {
     }
 }
 
+/// Bytes at the low end that remain untouched in a zero-filled stack.
+///
+/// Kernel stacks are zeroed when allocated, so the first non-zero byte is the
+/// same watermark Linux reports from its stack scan. A byte scan is used here
+/// because saved frames need not preserve word alignment at their boundary.
+/// # C: O(n)
+pub fn unused_bytes(stack: &[u8]) -> usize {
+    stack.iter().position(|&b| b != 0).unwrap_or(stack.len())
+}
+
 /// The slot containing `va`, or `None` outside the window.
 ///
 /// Takes an address, not a one-past-the-end bound: a stack's `top` is the first

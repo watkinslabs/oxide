@@ -50,6 +50,29 @@ pub(crate) const KSTACK_VA_BASE: u64 = 0xffff_fb00_0000_0000;
 /// less because slots recycle.
 pub(crate) const MAX_STACKS: usize = 16384;
 
+/// Largest task-stack usage observed by the lifetime scanner.
+static MAX_STACK_USAGE: AtomicUsize = AtomicUsize::new(0);
+
+fn record_stack_usage(bytes: usize) {
+    let mut old = MAX_STACK_USAGE.load(Ordering::Relaxed);
+    while bytes > old {
+        match MAX_STACK_USAGE.compare_exchange_weak(old, bytes, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(next) => old = next,
+        }
+    }
+}
+
+/// Record a task's zero-fill watermark before its stack is released.
+/// # C: O(KSTACK_BYTES)
+pub fn record_task_usage(stack: &GuardedStack) {
+    record_stack_usage(KSTACK_BYTES - classify::unused_bytes(stack.as_slice()));
+}
+
+/// Maximum task-stack bytes observed since boot.
+/// # C: O(1)
+pub fn max_task_usage() -> usize { MAX_STACK_USAGE.load(Ordering::Relaxed) }
+
 pub mod classify;
 /// aarch64 bad-stack probe body (`badstack::report`), installed by kmain.
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
