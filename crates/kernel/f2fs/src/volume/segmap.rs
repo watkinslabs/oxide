@@ -216,6 +216,8 @@ impl<S: SectorSource> Volume<S> {
             e.valid_map[off / 8] &= !(1 << (off % 8));
             e.vblocks = e.vblocks.wrapping_sub(1);
             self.valid_block_count = self.valid_block_count.saturating_sub(1);
+            self.current_reserved_blocks = self.reserved_blocks.min(
+                self.current_reserved_blocks.saturating_add(1));
             let emptied = e.valid_blocks() == 0;
             // A log's own segment is never prefree: the log is still
             // appending to it, and the blocks it hands out next would be

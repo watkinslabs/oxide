@@ -170,6 +170,9 @@ impl<S: SectorSource> Volume<S> {
         init_field!(segstate: segstate);
         init_field!(sit_dirty: alloc::collections::BTreeSet::new());
         init_field!(valid_block_count: valid_block_count);
+        init_field!(reserved_blocks: 0);
+        init_field!(current_reserved_blocks: 0);
+        init_field!(carve_out: false);
         init_field!(valid_node_count: valid_node_count);
         init_field!(valid_inode_count: valid_inode_count);
         init_field!(next_free_nid: next_free_nid);

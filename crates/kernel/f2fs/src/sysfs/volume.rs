@@ -79,6 +79,7 @@ pub(crate) fn attrs(fs: &Arc<F2fs>, dev: &str) -> Vec<Attr> {
         num(fs, dev, "free_segments", free_segments),
         num(fs, dev, "ovp_segments", |v| Ok(u64::from(v.checkpoint().overprov_segment_count))),
         num(fs, dev, "reserved_segments", |v| Ok(u64::from(v.checkpoint().rsvd_segment_count))),
+        num(fs, dev, "current_reserved_blocks", |v| Ok(v.current_reserved_blocks())),
         num(fs, dev, "mounted_time_sec", |v| Ok(v.checkpoint().elapsed_time)),
         num(fs, dev, "pending_discard", pending_discard),
         // What the mount SETTLED ON, not what it asked for. A volume too young

@@ -70,6 +70,10 @@ pub(crate) fn attrs(fs: &Arc<F2fs>, dev: &str) -> Vec<Attr> {
                |v| u64::from(v.max_fragment_hole()), set_max_fragment_hole),
         num_rw(fs, dev, "reserved_pin_section",
                |v| u64::from(v.reserved_pin_section()), set_reserved_pin_section),
+        num_rw(fs, dev, "reserved_blocks",
+               |v| v.reserved_blocks(), set_reserved_blocks),
+        num_rw(fs, dev, "carve_out",
+               |v| u64::from(v.carve_out()), set_carve_out),
     ];
     out.extend(atgc::knobs::ALL.iter().map(|&k| atgc_knob(fs, dev, k)));
     out
@@ -168,6 +172,17 @@ fn set_warm_age(v: &mut Vol, n: u64) -> Result<(), Errno> {
 /// # C: O(N kinds)
 fn set_iostat_enable(v: &mut Vol, n: u64) -> Result<(), Errno> {
     v.set_iostat_enabled(n != 0);
+    Ok(())
+}
+
+/// Maximum blocks Linux holds back for privileged allocation. # C: O(1)
+fn set_reserved_blocks(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    v.set_reserved_blocks(n)
+}
+
+/// Whether the reserved pool is removed from the filesystem total. # C: O(1)
+fn set_carve_out(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    v.set_carve_out(n != 0);
     Ok(())
 }
 

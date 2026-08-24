@@ -75,7 +75,8 @@ impl<S: SectorSource> Volume<S> {
         // the node reserve is in force; the block-only path always does.
         let cap = !node || r.nodes != 0;
         let allow = crate::reserve::allow_reserved_root(&r, caller.as_ref(), quota_file, cap);
-        let avail = crate::reserve::available_blocks(self.cp.user_block_count, &r, allow);
+        let ordinary = self.cp.user_block_count.saturating_sub(self.current_reserved_blocks);
+        let avail = crate::reserve::available_blocks(ordinary, &r, allow);
         if self.valid_block_count + 1 > avail { return Err(Errno::Enospc); }
         if node {
             let total = u64::from(self.max_nid()).saturating_sub(u64::from(RESERVED_NODE_NUM));

@@ -54,10 +54,32 @@ fn every_volume_owned_control_is_writable() {
     for name in ["ram_thresh", "ra_nid_pages", "gc_pin_file_thresh", "reclaim_segments", "gc_valid_thresh_ratio", "max_io_bytes", "max_fragment_chunk", "max_fragment_hole", "migration_window_granularity", "migration_granularity", "dir_level", "seq_file_ra_mul", "max_roll_forward_node_blocks", "max_read_extent_count", "last_age_weight",
                  "hot_data_age_threshold", "warm_data_age_threshold",
                  "gc_segment_mode", "gc_reclaimed_segments",
+                 "reserved_blocks", "carve_out",
                  "atgc_candidate_ratio", "atgc_candidate_count",
                  "atgc_age_weight", "atgc_age_threshold"] {
         assert!(find(&a, name).store.is_some(), "{name} is not writable");
     }
+}
+
+#[test]
+fn reserved_pool_and_carve_out_change_the_live_volume_answer() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    let total = fs.volume.lock().space().total;
+    store(&a, "reserved_blocks", 8).expect("within ordinary space");
+    assert_eq!(show(&a, "reserved_blocks"), 8);
+    assert_eq!(fs.volume.lock().current_reserved_blocks(), 8);
+    assert!(store(&a, "reserved_blocks", u64::MAX).is_err());
+    store(&a, "carve_out", 1).expect("enable carve-out");
+    assert_eq!(show(&a, "carve_out"), 1);
+    assert_eq!(fs.volume.lock().space().total, total - 8);
+    {
+        let mut v = fs.volume.lock();
+        v.current_reserved_blocks = 3;
+    }
+    assert_eq!(fs.volume.lock().space().total, total - 3);
+    store(&a, "carve_out", 0).expect("disable carve-out");
+    assert_eq!(fs.volume.lock().space().total, total);
 }
 
 #[test]

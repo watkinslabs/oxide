@@ -199,6 +199,12 @@ pub struct Volume<S: SectorSource> {
     pub(crate) segstate: segmap::SegState,
     pub(crate) sit_dirty: BTreeSet<u32>,
     pub(crate) valid_block_count: u64,
+    /// Configured pool recovered from released blocks for privileged writes.
+    pub(crate) reserved_blocks: u64,
+    /// Portion of that pool currently held out of ordinary free space.
+    pub(crate) current_reserved_blocks: u64,
+    /// Whether the current reserved pool is carved out of `statfs` total.
+    pub(crate) carve_out: bool,
     pub(crate) valid_node_count: u32,
     pub(crate) valid_inode_count: u32,
     pub(crate) next_free_nid: u32,

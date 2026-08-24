@@ -196,6 +196,8 @@ impl<S: SectorSource> Volume<S> {
     /// holding it. # C: O(1)
     pub(crate) fn release_reservation(&mut self) {
         self.valid_block_count = self.valid_block_count.saturating_sub(1);
+        self.current_reserved_blocks = self.reserved_blocks.min(
+            self.current_reserved_blocks.saturating_add(1));
     }
 
     /// One address out of the recovered block, in the shape that block has.
