@@ -145,7 +145,7 @@ impl LdtInstallOps for Install<'_> {
         hal::smp_call::call_function_many(
             targets.as_words(),
             hal::smp_call::CallKind::LdtReload,
-            self.mm.root_pa(),
+            self.mm as *const AddressSpace as u64,
             true,
         );
     }
@@ -155,8 +155,10 @@ impl LdtInstallOps for Install<'_> {
     }
 }
 
-/// The cross-CPU call handler: reload LDTR if this CPU is running the
-/// address space whose page-table root is `root_pa`, otherwise do nothing.
+/// The cross-CPU call handler: reload LDTR if this CPU has the passed address
+/// space loaded in CR3, otherwise do nothing. Linux's `flush_ldt()` compares
+/// `cpu_tlbstate.loaded_mm`, not `current->mm`: a CPU may be idle or running a
+/// kernel thread while retaining a user mm as its lazy-TLB address space.
 ///
 /// The reference's `flush_ldt` makes the same test against the mm the CPU has
 /// loaded and returns without touching LDTR when it does not match — a CPU
@@ -164,15 +166,19 @@ impl LdtInstallOps for Install<'_> {
 /// # C: O(1)
 /// # Ctx: IRQ context or a spin-relax drain; takes no lock, never sleeps
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
-pub fn flush_ldt_remote(root_pa: u64) {
+pub fn flush_ldt_remote(mm_ptr: u64) {
     if !vmm::any_ldt_in_use() { return; }
-    let Some(cur) = crate::live::current() else { return };
-    // SAFETY: runs on this CPU with interrupts masked (IRQ dispatch) or
-    // inside a lock spin on this CPU; neither can race an `execve` replacing
-    // this task's mm, which only the task itself performs.
-    let Some(mm) = (unsafe { cur.mm_ref() }) else { return };
-    if mm.root_pa() != root_pa { return; }
-    apply(Some(&**mm));
+    // The installer keeps its AddressSpace Arc alive until the call queue
+    // acknowledges this handler, so this stable Arc allocation cannot be
+    // freed while the target dereferences it. This is the same ownership
+    // relationship as Linux's on_each_cpu_mask(..., mm, true) call.
+    let mm = unsafe { &*(mm_ptr as *const AddressSpace) };
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    {
+        let loaded = hal_x86_64::read_cr3() & !(hal::PAGE_SIZE_BYTES - 1);
+        if loaded != mm.root_pa() { return; }
+    }
+    apply(Some(mm));
 }
 
 /// Same entry point where the runqueue is not compiled in (a hosted build
@@ -180,7 +186,7 @@ pub fn flush_ldt_remote(root_pa: u64) {
 /// remote reload has nothing to reload.
 /// # C: O(1)
 #[cfg(not(any(target_os = "oxide-kernel", test, feature = "hosted")))]
-pub fn flush_ldt_remote(root_pa: u64) { let _ = root_pa; }
+pub fn flush_ldt_remote(mm_ptr: u64) { let _ = mm_ptr; }
 
 /// Program LDTR for `mm` (or clear it when `None`). The one place `lldt` is
 /// reached from.
