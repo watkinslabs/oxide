@@ -526,10 +526,10 @@ mod tests {
 
     #[test]
     fn contiguous_run_requires_every_bit_and_stays_in_the_bitmap() {
-        let bitmap = [0b0001_0000, 0b0000_0000];
-        assert_eq!(find_contiguous_run(&bitmap, 16, 3, 0, None), Some(5));
-        assert_eq!(find_contiguous_run(&bitmap, 8, 4, 0, None), None,
-                   "a used bit breaks the only four-block run");
+        let bitmap = [0b0000_0011, 0b0001_0000];
+        assert_eq!(find_contiguous_run(&bitmap, 16, 3, 0, None), Some(2));
+        assert_eq!(find_contiguous_run(&bitmap, 8, 7, 0, None), None,
+                   "a used bit breaks the requested run");
         assert_eq!(find_contiguous_run(&bitmap, 16, 17, 0, None), None,
                    "a request past the bitmap is not free");
     }

@@ -43,9 +43,11 @@ impl Mount {
     /// final data location, so a later direct `write_byte_range` to it (before
     /// the batch commit) satisfies data=ordered. Distinct from `unwritten`
     /// (which marks the extent unwritten and serves zeros on read).
-    /// # C: O(N_extents) + 1 alloc
-    pub(super) fn alloc_written_block_defer(&self, ino: u32, ino_bytes: &mut alloc::vec::Vec<u8>, ino_byte_off: u64, logical: u32, new_size: u64) -> Result<u32, MountError> {
-        self.insert_logical_block_with_inode_bytes(ino, ino_bytes, ino_byte_off, logical, &[], new_size, false, true, None)
+    pub(super) fn alloc_written_block_defer_with_physical(
+        &self, ino: u32, ino_bytes: &mut alloc::vec::Vec<u8>, ino_byte_off: u64,
+        logical: u32, new_size: u64, physical: Option<u64>,
+    ) -> Result<u32, MountError> {
+        self.insert_logical_block_with_inode_bytes(ino, ino_bytes, ino_byte_off, logical, &[], new_size, false, true, physical)
     }
 
     /// `unwritten`: map the block as a preallocated UNWRITTEN extent — allocate

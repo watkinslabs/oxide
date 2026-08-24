@@ -229,12 +229,25 @@ impl Mount {
         // all land before the batch commit persists the (already-WRITTEN)
         // extents. Partial-block edges keep the per-block RMW.
         let first_lb = (off / bs) as u32;
-        let last_lb  = ((end - 1) / bs) as u32;
+        let last_lb64 = (end - 1) / bs;
+        if last_lb64 > u32::MAX as u64 {
+            return Err(MountError::Inode(inode::InodeError::BadLen));
+        }
+        let last_lb = last_lb64 as u32;
+        let request_count = last_lb.checked_sub(first_lb).and_then(|n| n.checked_add(1))
+            .ok_or(MountError::Inode(inode::InodeError::BadLen))?;
         // (phys_block, assembled block bytes) in logical order.
         let mut pending: alloc::vec::Vec<(u64, alloc::vec::Vec<u8>)> = alloc::vec::Vec::new();
         let mut allocated = alloc::vec::Vec::new();
+        let initial = self.read_inode(ino)?;
+        let initial_extents = self.collect_phys_extents(&initial.i_block)?;
+        let fresh_range = (first_lb..=last_lb).all(|lb| !initial_extents.iter().any(|run|
+            lb >= run.logical && lb < run.logical + run.len));
+        let reserved = if fresh_range {
+            Some(self.alloc_blocks_flags(0, request_count, self.data_reserve_flags(ino))?)
+        } else { None };
         let mut written = 0usize;
-        for lb in first_lb..=last_lb {
+        for (offset, lb) in (first_lb..=last_lb).enumerate() {
             // An UNWRITTEN (fallocate-preallocated) extent must be converted to a
             // written extent before write_file_block (else it rejects with
             // NotFound). No-op for a written extent or a hole.
@@ -271,7 +284,14 @@ impl Mount {
                 // coalesced flush below. `extent_vec_contains` guards a re-map.
                 let vis = core::cmp::max(inode2.size, blk_end_byte);
                 let (mut ib, ioff) = self.read_inode_bytes(ino)?;
-                self.alloc_written_block_defer(ino, &mut ib, ioff, lb, vis)?;
+                let physical = reserved.as_ref().map(|run| run[offset]);
+                if let Err(e) = self.alloc_written_block_defer_with_physical(ino, &mut ib, ioff, lb, vis, physical) {
+                    if let Err(rb) = self.rollback_allocated_logical_blocks(ino, cur_size, &allocated) { return Err(rb); }
+                    if let Some(run) = reserved.as_ref() {
+                        for &block in run.iter().skip(offset) { let _ = self.free_block(block); }
+                    }
+                    return Err(e);
+                }
                 let inode3 = self.read_inode(ino)?;
                 allocated.push(lb);
                 self.resolve_pblock(&inode3, lb)?
