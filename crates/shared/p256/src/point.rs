@@ -36,6 +36,18 @@ impl Point {
     /// Lift affine coordinates into projective ones. # C: O(1)
     pub fn from_affine(a: &Affine) -> Point { Point { x: a.x, y: a.y, z: Fp::one() } }
 
+    /// Parse an uncompressed P-256 public point without its `0x04` prefix. # C: O(1)
+    pub fn from_bytes(bytes: &[u8]) -> Option<Point> {
+        if bytes.len() != 2 * ELEM_LEN { return None; }
+        let mut x = [0; ELEM_LEN];
+        let mut y = [0; ELEM_LEN];
+        x.copy_from_slice(&bytes[..ELEM_LEN]);
+        y.copy_from_slice(&bytes[ELEM_LEN..]);
+        let a = Affine { x: Fp::from_bytes_be(&x)?, y: Fp::from_bytes_be(&y)? };
+        if !a.on_curve() { return None; }
+        Some(Point::from_affine(&a))
+    }
+
     /// Whether the point is the identity, as a zero-or-one flag. # C: O(1)
     pub fn is_identity(&self) -> u64 { self.z.is_zero() }
 

@@ -14,6 +14,7 @@ license = "MPL-2.0"
 [dependencies]
 mpi   = { path = "../mpi" }
 crypt = { path = "../crypt" }
+p256  = { path = "../p256" }
 
 [features]
 default = []

@@ -65,7 +65,9 @@ pub fn parse(blob: &[u8]) -> Result<alloc::boxed::Box<Certificate>, PkeyError> {
     let sig_oid = sig_alg.expect(der::TAG_OID)?;
     sig_alg.take_if(der::TAG_NULL)?;
     sig_alg.end()?;
-    let signature_hash = if sig_oid == oid::SHA256_WITH_RSA { Some("sha256") } else { None };
+    let signature_hash = if sig_oid == oid::SHA256_WITH_RSA || sig_oid == oid::ECDSA_WITH_SHA256 {
+        Some("sha256")
+    } else { None };
     let signature = der::bit_string_bytes(top.expect(der::TAG_BIT_STRING)?)?.to_vec();
     top.end()?;
 
@@ -157,7 +159,20 @@ fn parse_spki(spki: &[u8]) -> Result<(&'static str, Vec<u8>), PkeyError> {
     let mut ar = Reader::new(alg);
     let algo_oid = ar.expect(der::TAG_OID)?;
     let algo = oid::pkey_algo(algo_oid).ok_or(PkeyError::NoPackage)?;
-    let key = der::bit_string_bytes(r.expect(der::TAG_BIT_STRING)?)?.to_vec();
+    let key = if algo == "ecdsa-nist-p256" {
+        let params = ar.expect(der::TAG_OID)?;
+        if params != oid::PRIME256V1 { return Err(PkeyError::NoPackage); }
+        ar.end()?;
+        let key = der::bit_string_bytes(r.expect(der::TAG_BIT_STRING)?)?;
+        if key.first() != Some(&0x04) || key.len() != 65 { return Err(PkeyError::BadKey); }
+        key[1..].to_vec()
+    } else {
+        ar.take_if(der::TAG_NULL)?;
+        let key = der::bit_string_bytes(r.expect(der::TAG_BIT_STRING)?)?.to_vec();
+        ar.end()?;
+        key
+    };
+    r.end()?;
     Ok((algo, key))
 }
 

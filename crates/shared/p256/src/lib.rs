@@ -10,6 +10,7 @@
 //! - `point`: projective points and the complete addition law, which has no
 //!   exceptional cases so no input can steer it down a different path.
 //! - `scalar`: the constant-time double-and-add-always ladder.
+//! - `ecdsa`: P-256 ECDSA verification and signature-boundary parsing helpers.
 //! - `ecdh`: key validation, key generation from caller-supplied entropy, and
 //!   the shared secret.
 //!
@@ -25,6 +26,7 @@ pub mod params;
 pub mod field;
 pub mod point;
 pub mod scalar;
+pub mod ecdsa;
 pub mod ecdh;
 
 pub use ecdh::{PublicKey, SecretKey, SharedSecret, ECDH_COORD_LEN, ECDH_PUBKEY_LEN};

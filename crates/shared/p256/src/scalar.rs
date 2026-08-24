@@ -5,6 +5,7 @@
 //! operation sequence and the memory access pattern are identical for every
 //! scalar, so neither the bit pattern nor the bit count is observable.
 
+use crate::field::mask_of;
 use crate::params::{ELEM_LEN, LIMBS, N, SCALAR_BITS};
 use crate::point::Point;
 
@@ -51,6 +52,79 @@ impl Scalar {
 
     /// Bit `i` of the scalar as a zero-or-one flag. # C: O(1)
     pub fn bit(&self, i: usize) -> u64 { (self.0[i / 64] >> (i % 64)) & 1 }
+
+    /// Reduce a 32-byte integer modulo the group order. # C: O(256)
+    pub fn from_bytes_reduced(b: &[u8; ELEM_LEN]) -> Scalar {
+        let mut r = Scalar([0; LIMBS]);
+        let v = Scalar::from_bytes_be(b);
+        for i in (0..SCALAR_BITS).rev() {
+            r = r.double_mod();
+            r = r.add_mod(&Scalar::select(v.bit(i), &Scalar::one(), &Scalar::zero()));
+        }
+        r
+    }
+
+    /// The zero scalar. # C: O(1)
+    pub const fn zero() -> Scalar { Scalar([0; LIMBS]) }
+
+    /// The one scalar. # C: O(1)
+    pub const fn one() -> Scalar { Scalar([1, 0, 0, 0]) }
+
+    /// Select a scalar without branching on its value. # C: O(1)
+    pub fn select(c: u64, a: &Scalar, b: &Scalar) -> Scalar {
+        let m = mask_of(c);
+        let mut r = [0; LIMBS];
+        for i in 0..LIMBS { r[i] = (a.0[i] & m) | (b.0[i] & !m); }
+        Scalar(r)
+    }
+
+    /// Add modulo the group order. # C: O(1)
+    pub fn add_mod(&self, o: &Scalar) -> Scalar {
+        let mut r = [0; LIMBS];
+        let mut carry = 0u128;
+        for i in 0..LIMBS {
+            let z = self.0[i] as u128 + o.0[i] as u128 + carry;
+            r[i] = z as u64;
+            carry = z >> 64;
+        }
+        let mut d = [0; LIMBS];
+        let mut borrow = 0u128;
+        for i in 0..LIMBS {
+            let z = (r[i] as u128).wrapping_sub(N[i] as u128).wrapping_sub(borrow);
+            d[i] = z as u64;
+            borrow = (z >> 127) & 1;
+        }
+        Scalar::select(((carry | (borrow ^ 1)) & 1) as u64, &Scalar(d), &Scalar(r))
+    }
+
+    /// Double modulo the group order. # C: O(1)
+    pub fn double_mod(&self) -> Scalar { self.add_mod(self) }
+
+    /// Multiply modulo the group order using a fixed 256-step ladder. # C: O(256)
+    pub fn mul_mod(&self, o: &Scalar) -> Scalar {
+        let mut r = Scalar::zero();
+        for i in (0..SCALAR_BITS).rev() {
+            r = r.double_mod();
+            r = r.add_mod(&Scalar::select(o.bit(i), self, &Scalar::zero()));
+        }
+        r
+    }
+
+    /// Invert modulo the group order by Fermat exponentiation. # C: O(65536)
+    pub fn inv_mod(&self) -> Scalar {
+        let mut r = Scalar::one();
+        let exp = Scalar::from_bytes_be(&[
+            0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xbc, 0xe6, 0xfa, 0xad, 0xa7, 0x17, 0x9e, 0x84,
+            0xf3, 0xb9, 0xca, 0xc2, 0xfc, 0x63, 0x25, 0x4f,
+        ]);
+        for i in (0..SCALAR_BITS).rev() {
+            r = r.mul_mod(&r);
+            r = Scalar::select(exp.bit(i), &r.mul_mod(self), &r);
+        }
+        r
+    }
 }
 
 /// Multiply a point by a scalar. # C: O(1)
