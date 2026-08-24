@@ -177,6 +177,8 @@ fn render_line_at_map(pixelformat: u32, width: u32, height: u32, y: u32, shift: 
         fourcc::ABGR32 | fourcc::XBGR32 | fourcc::BGRA32 | fourcc::BGRX32 =>
             render_rgb32(pixelformat, width, height, y, shift, frame, motion, map, dst),
         fourcc::HSV32 => render_hsv32(width, height, y, shift, frame, motion, map, dst),
+        fourcc::SBGGR8 | fourcc::SGBRG8 | fourcc::SGRBG8 | fourcc::SRGGB8 =>
+            render_bayer8(pixelformat, width, height, y, shift, frame, motion, map, dst),
         fourcc::XRGB32 => render_quads(width, height, y, shift, frame, motion, map, dst, false),
         fourcc::ARGB32 => render_quads(width, height, y, shift, frame, motion, map, dst, true),
         fourcc::YUYV => render_yuv(width, height, y, shift, frame, motion, map, dst, 0),
@@ -185,6 +187,35 @@ fn render_line_at_map(pixelformat: u32, width: u32, height: u32, y: u32, shift: 
         fourcc::VYUY => render_yuv(width, height, y, shift, frame, motion, map, dst, 3),
         _ => 0,
     }
+}
+
+fn render_bayer8(pixelformat: u32, width: u32, height: u32, y: u32, shift: u32,
+                 frame: u32, motion: Motion, map: Option<RenderMap>, dst: &mut [u8]) -> usize {
+    let need = width as usize;
+    if dst.len() < need { return 0; }
+    for x in 0..width {
+        let c = sample_pixel(x, y, width, height, shift, frame, motion, map);
+        dst[x as usize] = match pixelformat {
+            fourcc::SBGGR8 => match (y & 1, x & 1) {
+                (0, 0) => c.b, (0, 1) | (1, 0) => c.g, (1, 1) => c.r,
+                _ => unreachable!(),
+            },
+            fourcc::SGBRG8 => match (y & 1, x & 1) {
+                (0, 0) | (1, 1) => c.g, (0, 1) => c.b, (1, 0) => c.r,
+                _ => unreachable!(),
+            },
+            fourcc::SGRBG8 => match (y & 1, x & 1) {
+                (0, 0) | (1, 1) => c.g, (0, 1) => c.r, (1, 0) => c.b,
+                _ => unreachable!(),
+            },
+            fourcc::SRGGB8 => match (y & 1, x & 1) {
+                (0, 0) => c.r, (0, 1) | (1, 0) => c.g, (1, 1) => c.b,
+                _ => unreachable!(),
+            },
+            _ => return 0,
+        };
+    }
+    need
 }
 
 fn render_yuv16(width: u32, height: u32, y: u32, shift: u32, frame: u32, motion: Motion,

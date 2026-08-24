@@ -62,6 +62,10 @@ pub const RGBA32: u32 = 0x3432_4241;
 pub const RGBX32: u32 = 0x3432_4258;
 pub const HSV24: u32 = 0x3356_5348;
 pub const HSV32: u32 = 0x3456_5348;
+pub const SBGGR8: u32 = 0x3138_4142;
+pub const SGBRG8: u32 = 0x4752_4247;
+pub const SGRBG8: u32 = 0x4742_5247;
+pub const SRGGB8: u32 = 0x4247_4752;
 pub const GREY: u32 = 0x5945_5247;
 pub const Y10: u32 = 0x2030_3159;
 pub const Y12: u32 = 0x2032_3159;
@@ -112,7 +116,7 @@ pub enum SizeRule {
 /// describe. # C: O(1)
 pub fn size_rule(pixelformat: u32) -> Option<SizeRule> {
     Some(match pixelformat {
-        GREY => SizeRule::Packed { bits_per_pixel: 8 },
+        GREY | SBGGR8 | SGBRG8 | SGRBG8 | SRGGB8 => SizeRule::Packed { bits_per_pixel: 8 },
         RGB332 => SizeRule::Packed { bits_per_pixel: 8 },
         Y10 | Y12 | Y16 | Y16_BE => SizeRule::Packed { bits_per_pixel: 16 },
         YUYV | UYVY | YVYU | VYUY | RGB565 | RGB565X |
