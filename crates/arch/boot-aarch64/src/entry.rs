@@ -13,6 +13,10 @@ use crate::selfboot;
 #[cfg(target_os = "oxide-kernel")]
 #[no_mangle]
 unsafe extern "C" fn _start_rust() -> ! {
+    // SAFETY: mask EL1 IRQs before any Rust code can enter an IRQ-save guard;
+    // firmware may hand off with PSTATE.I clear, while the boot path has no
+    // per-CPU owner until `kmain::early::boot_cpu::init` publishes one.
+    unsafe { core::arch::asm!("msr daifset, #2", options(nomem, nostack, preserves_flags)); }
     // selfboot breadcrumb 'G': proves _start -> _start_rust transition.
     // Raw HHDM PL011 write — gated under debug-boot per `04§4.0`.
     debug_boot! {
