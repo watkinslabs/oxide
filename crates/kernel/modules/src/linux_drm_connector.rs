@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) struct ConnectorRecord { pub(super) ptr: usize, name: usize, layout: Layout, pub(super) modes: Vec<usize>, pub(super) probed_modes: Vec<usize> }
+pub(crate) struct ConnectorRecord { pub(super) ptr: usize, name: usize, layout: Layout, pub(super) modes: Vec<usize>, pub(super) probed_modes: Vec<usize> }
 
 const DRM_CONNECTOR_HEAD_OFF: usize = 32;
 pub(super) const DRM_CONNECTOR_BASE_OFF: usize = 64;
