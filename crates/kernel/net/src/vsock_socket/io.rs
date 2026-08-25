@@ -150,4 +150,142 @@ impl VsockSocket {
         }
         Ok(sent)
     }
+    /// Blocking stream read: drain buffered RX, park on the conn's
+    /// waiters when empty + still live. EOF (Ok(0)) on peer shutdown.
+    /// # C: backend-dependent
+    pub fn read(&self, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        if self.socket_type() == VsockSocketType::Seqpacket {
+            return self.read_seqpacket(buf, false);
+        }
+        self.check_receive().map_err(|_| vfs::VfsError::Eacces)?;
+        if self.read_shut.load(core::sync::atomic::Ordering::Acquire) { return Ok(0); }
+        if self.is_datagram() { return Err(vfs::VfsError::Eopnotsupp); }
+        let Some(c) = self.conn() else { return Err(vfs::VfsError::Enotconn) };
+        loop {
+            if self.read_shut.load(core::sync::atomic::Ordering::Acquire) { return Ok(0); }
+            #[cfg(target_os = "oxide-kernel")]
+            let _ = vsock::poll_rx_for(c.owner);
+            match vsock::recv(&c, buf) {
+                Ok(n)  => return Ok(n),
+                Err(crate::NetError::Eagain) => {
+                    let eno = self.take_pending_recv_error();
+                    if eno != 0 { return Err(vsock_vfs_error(eno)); }
+                    #[cfg(test)]
+                    if let Some(hook) = self.read_retry_hook.lock().take() { hook(self); }
+                    if self.read_shut.load(core::sync::atomic::Ordering::Acquire) { return Ok(0); }
+                    {
+                        let st = c.st.lock();
+                        let rx = c.rx.lock();
+                        if rx.is_empty()
+                            && matches!(*st, VsockState::RcvShutdown | VsockState::Closed)
+                        { return Ok(0); }
+                    }
+                    #[cfg(target_os = "oxide-kernel")]
+                    {
+                        // A signal uses `sock_intr_errno(timeout)`.
+                        // NOTE: AF_VSOCK carries no SO_RCVTIMEO/SO_SNDTIMEO here (`VsockSocket` has
+                        // no timeo fields), so the wait is always untimed and `sock_intr_errno`
+                        // necessarily yields ERESTARTSYS. Timed waits use their socket timeouts;
+                        // wiring those options is a separate gap, tracked in the plan.
+                        if sched::live::interruptible_work_pending_self() {
+                            // A signal uses the receive timeout's shared rule.
+                            return Err(crate::sock_intr::sock_intr_vfs(
+                                self.recv_deadline_ns()));
+                        }
+                        let st = c.st.lock();
+                        let rx = c.rx.lock();
+                        if !rx.is_empty() || matches!(*st,
+                            VsockState::RcvShutdown | VsockState::Closed)
+                            || self.has_pending_recv_error()
+                            || self.read_shut.load(core::sync::atomic::Ordering::Acquire)
+                        { continue; }
+                        // SAFETY: process ctx (VsockSocket::read); runqueue
+                        // installed; preempt-off owned by the read syscall stub;
+                        // RX lock closes data/error publication before park.
+                        unsafe { c.waiters.prepare_to_wait(); }
+                        drop(rx);
+                        drop(st);
+                        // SAFETY: current is parked on this connection's wait list.
+                        unsafe { sched::live::schedule::schedule(); }
+                    }
+                    #[cfg(not(target_os = "oxide-kernel"))]
+                    return Err(vfs::VfsError::Eagain);
+                }
+                Err(_) => return Err(vfs::VfsError::Eio),
+            }
+        }
+    }
+
+    /// Read one immediately available VSOCK stream prefix. # C: O(buf len)
+    pub fn read_nonblock(&self, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        if self.socket_type() == VsockSocketType::Seqpacket {
+            return self.read_seqpacket(buf, true);
+        }
+        self.check_receive().map_err(|_| vfs::VfsError::Eacces)?;
+        if self.read_shut.load(core::sync::atomic::Ordering::Acquire) { return Ok(0); }
+        if self.is_datagram() { return Err(vfs::VfsError::Eopnotsupp); }
+        let Some(c) = self.conn() else { return Err(vfs::VfsError::Enotconn) };
+        match vsock::recv(&c, buf) {
+            Ok(n)  => Ok(n),
+            Err(crate::NetError::Eagain) => {
+                let eno = self.take_pending_recv_error();
+                if eno != 0 { Err(vsock_vfs_error(eno)) } else { Err(vfs::VfsError::Eagain) }
+            }
+            Err(_) => Err(vfs::VfsError::Eio),
+        }
+    }
+
+    /// Snapshot VSOCK readiness from canonical endpoint state. # C: O(1)
+    pub fn poll(&self) -> u32 {
+        use core::sync::atomic::Ordering::Acquire;
+        use vfs::{POLL_ERR, POLL_IN, POLL_OUT, POLL_HUP, POLL_RDHUP};
+        let read_shut = self.read_shut.load(Acquire);
+        self.attach_poll_source();
+        if self.is_datagram() {
+            let write_shut = self.dgram_write_shut.load(Acquire);
+            let mut mask = if read_shut { POLL_IN | POLL_RDHUP } else { 0 };
+            if !write_shut { mask |= POLL_OUT; }
+            if read_shut && write_shut { mask |= POLL_HUP; }
+            return if self.has_pending_recv_error() || self.has_zerocopy_completion()
+                { mask | POLL_ERR } else { mask };
+        }
+        let kind = self.kind.lock();
+        let pending = if self.has_pending_recv_error() || self.has_zerocopy_completion()
+            { POLL_ERR } else { 0 };
+        match &*kind {
+            VsockKind::Conn(c) => {
+                let mut mask = 0;
+                let tx = c.tx.lock();
+                let send_shut = tx.shut();
+                let local_write_shut = tx.local_shut;
+                let peer_credit = tx.credit.peer_credit();
+                drop(tx);
+                let readable = if self.socket_type() == VsockSocketType::Seqpacket {
+                    c.seq_rx.lock().ready_count() != 0
+                } else { !c.rx.lock().is_empty() };
+                if readable || read_shut { mask |= POLL_IN; }
+                match *c.st.lock() {
+                    VsockState::Connected => {
+                        if !send_shut && peer_credit > 0 { mask |= POLL_OUT; }
+                    }
+                    VsockState::RcvShutdown => {
+                        mask |= POLL_IN | POLL_RDHUP;
+                        if !send_shut && peer_credit > 0 { mask |= POLL_OUT; }
+                        if local_write_shut { mask |= POLL_HUP; }
+                    }
+                    VsockState::Closed => { mask |= POLL_HUP; }
+                    VsockState::Connecting => {}
+                }
+                if read_shut { mask |= POLL_RDHUP; }
+                if read_shut && local_write_shut { mask |= POLL_HUP; }
+                mask | pending
+            }
+            VsockKind::Listener(listener) => {
+                (if !listener.backlog.lock().is_empty() { POLL_IN } else { 0 }) | pending
+            }
+            VsockKind::Init | VsockKind::Bound { .. } => POLL_OUT | pending,
+            VsockKind::Released => POLL_HUP | pending,
+        }
+    }
+
 }

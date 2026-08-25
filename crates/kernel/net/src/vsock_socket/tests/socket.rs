@@ -459,5 +459,5 @@ fn accepted_connection_failed_publication_and_table_drop_release_synchronously()
 
 // Shutdown-specific coverage lives in the sibling module (file-length cap,
 // `08§7`); it shares the fixtures above through `use super::*`.
-#[path = "vsock_socket_tests/shutdown.rs"]
+#[path = "shutdown.rs"]
 mod shutdown;
