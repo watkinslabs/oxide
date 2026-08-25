@@ -7,6 +7,13 @@ mod tcp_entry_wait;
 mod listen;
 pub use listen::TcpListenEntry;
 mod pacing;
+#[path = "../stack/tcp_helpers.rs"]
+mod tcp_helpers;
+pub(crate) use tcp_helpers::{ecn_tos, monotonic_ns_safe, net_now_ns, stamp_last_sent,
+    stamp_last_sent_public, tcp_send_closed, tcp_transmit_ready};
+#[path = "../stack/net_stack.rs"]
+mod net_stack;
+pub use net_stack::NetStack;
 // The UDP receive types, split out at the per-file size cutoff. The TCP bind
 // and connection types stay here.
 #[path = "types/udp.rs"]
@@ -431,126 +438,8 @@ impl TcpEntry {
     pub fn net_ns(&self) -> u64 { self.bind.as_ref().map(|bind| bind.net_ns()).unwrap_or(0) }
 }
 
-fn tcp_transmit_ready(conn: &TcpConn, sndbuf_cap: usize) -> bool {
-    let in_flight: usize = conn.retx_q.iter().map(|segment| segment.payload.len()).sum();
-    conn.send_buf.len().saturating_add(in_flight) < sndbuf_cap
-}
-
-/// Report whether TCP state forbids additional stream payload. # C: O(1)
-pub(crate) fn tcp_send_closed(state: crate::tcp_state::TcpState) -> bool {
-    matches!(state, crate::tcp_state::TcpState::Closed
-        | crate::tcp_state::TcpState::LastAck
-        | crate::tcp_state::TcpState::Closing | crate::tcp_state::TcpState::TimeWait
-        | crate::tcp_state::TcpState::FinWait1 | crate::tcp_state::TcpState::FinWait2)
-}
-
-/// F159: monotonic time source visible to net crate. On
-/// `oxide-kernel` builds uses the per-arch HAL timer; hosted tests
-/// return 0 so retx_tick is a no-op without a real clock.
-/// # C: O(1)
-pub(crate) fn monotonic_ns_safe() -> u64 {
-    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-    {
-        use hal::TimerOps;
-        return hal_x86_64::X86TimerOps::monotonic_ns().0;
-    }
-    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-    {
-        use hal::TimerOps;
-        return hal_aarch64::ArmTimerOps::monotonic_ns().0;
-    }
-    #[allow(unreachable_code)]
-    0
-}
-
-/// F159: stamp the last `n` entries of `entry`'s retx_q with the
-/// current monotonic ns. Called immediately after the corresponding
-/// segments are handed to the iface for xmit so retx_tick has a
-/// real baseline to compare RTO against. No-op on n == 0 / empty
-/// queue.
-/// # C: O(n)
-/// F190: TOS byte for an outbound TCP segment — ECT(0)=0x02 when
-/// the conn negotiated ECN, else 0. # C: O(1)
-pub(crate) fn ecn_tos(c: &TcpConn) -> u8 {
-    if c.ecn_enabled { 0x02 } else { 0 }
-}
-
-/// Bridge to tcp_conn::ka_now_ns from stack code. # C: O(1)
-pub(crate) fn net_now_ns() -> u64 { crate::tcp_conn::ka_now_ns() }
-
-/// # C: O(n)
-pub(crate) fn stamp_last_sent(entry: &TcpEntry, n: usize) {
-    if n == 0 { return; }
-    let now = monotonic_ns_safe();
-    if now == 0 { return; } // hosted tests / pre-timer boot
-    let mut c = entry.conn.lock();
-    let len = c.retx_q.len();
-    let start = len.saturating_sub(n);
-    for i in start..len {
-        c.retx_q[i].last_sent_ns = now;
-    }
-    c.note_delivery_sent_at(start, now);
-    c.note_info_data_sent_at(now);
-}
-
-/// # C: O(n)
-pub(crate) fn stamp_last_sent_public(entry: &TcpEntry, n: usize) {
-    stamp_last_sent(entry, n);
-}
 
 
-pub struct NetStack {
-    pub(crate) rtnl: crate::rtnl::Rtnl,
-    pub ifaces: IfaceRegistry,
-    pub routes: RouteTable,
-    pub routes6: Route6Table,
-    /// Canonical IPv4 proxy-neighbour keys, scoped to namespace and interface generation.
-    pub(crate) arp_proxy: crate::arp::proxy::ProxyTable,
-    /// Canonical bridge-port and forwarding database owner, serialized by RTNL.
-    pub(crate) bridges: super::bridge::BridgeTable,
-    /// Packets accepted by a bridge while its next-hop neighbour is unresolved.
-    pub(crate) bridge_pending: Spinlock<BTreeMap<(NetIfaceId, IpAddr), BridgePending>, StackLockClass>,
-    /// Sole AF_INET/AF_INET6 transport owner, indexed by network namespace.
-    pub(crate) inet: super::inet_tables::InetTableLock<
-        BTreeMap<u64, super::inet_tables::InetNamespaceTables>,
-    >,
-    /// One conntrack table per network namespace; packets carry the entry
-    /// reference after the priority-ordered tracking hook attaches it.
-    pub(crate) conntrack: Spinlock<BTreeMap<u64, Arc<::conntrack::CtNet>>, StackLockClass>,
-    /// Namespace-owned software flowtables. Entries are installed only after
-    /// conntrack confirmation and are consulted before the ordinary hook path.
-    pub(crate) flow_offload: Spinlock<BTreeMap<(u64, String, String, ::conntrack::tuple::Tuple),
-        Arc<super::flow_offload::FlowEntry>>, StackLockClass>,
-    /// Configured nftables flowtable names, scoped by network namespace and family.
-    pub(crate) flowtables: Spinlock<BTreeMap<(u64, u8, String, String), super::flow_offload::FlowtableConfig>, StackLockClass>,
-    /// Unique nftables flowtable object handle source.
-    pub(crate) next_flowtable_handle: crate::fib_lock::FibLock<u64, StackLockClass>,
-    /// Monotonic id for IP packets we emit.
-    pub(crate) next_ip_id: crate::fib_lock::FibLock<u16, StackLockClass>,
-    /// Monotonic ISN base for TCP active opens.
-    /// F180c: IPv6 neighbor cache keyed by ingress/egress interface.
-    /// F195: IPv4 reassembly table.
-    pub ipv4_reasm: crate::ipv4_reasm::ReasmTable,
-    /// IPv6 Fragment extension reassembly table.
-    pub ipv6_reasm: crate::ipv6_reasm::ReasmTable,
-    /// F180c: per-iface IPv6 address registry (NS responder).
-    pub(crate) v6_addrs: StackBhLock<BTreeMap<NetIfaceId, Vec<crate::stack_ipv6::Ipv6IfaceAddr>>>,
-    /// IPv6 anycast address ownership, one ref for each socket membership.
-    pub(crate) v6_anycast: StackBhLock<BTreeMap<NetIfaceId, Vec<super::anycast::AnycastAddr>>>,
-    pub(crate) v6_mcast: StackBhLock<BTreeMap<NetIfaceId, Vec<crate::mcast_state::V6IfaceGroup>>>,
-    pub(crate) v4_mcast: StackBhLock<BTreeMap<NetIfaceId, Vec<crate::mcast_state::V4IfaceGroup>>>,
-    pub(crate) v6_ra_pending: StackBhLock<Vec<crate::stack_ipv6::PendingRa>>,
-    /// Per-CPU receive backlog. Frames land here from a device's transmit-side
-    /// caller and leave on the NET_RX bottom half's own stack, which is what
-    /// keeps receive traversal off every transmit call chain.
-    pub(crate) softnet: [crate::fib_lock::FibLock<super::rx_backlog::SoftnetData, StackLockClass>; cpu::MAX_CPUS],
-    /// Receive sources the bottom half polls, registered at device creation.
-    pub(crate) rx_poll: crate::fib_lock::FibLock<Vec<super::rx_backlog::RxPollEntry>, StackLockClass>,
-    #[cfg(not(target_os = "oxide-kernel"))]
-    pub(crate) ra_now_ns: ::core::sync::atomic::AtomicU64,
-}
-
-impl Default for NetStack { fn default() -> Self { Self::new() } }
 
 #[cfg(test)]
 #[path = "types_tests.rs"]
