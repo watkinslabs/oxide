@@ -7,6 +7,8 @@ mod de_thread;
 #[cfg(all(target_arch = "x86_64", feature = "debug-execload"))] mod trace;
 #[cfg(target_arch = "aarch64")] mod aarch64;
 #[cfg(target_arch = "x86_64")] mod x86_64;
+#[cfg(target_arch = "x86_64")] mod entry;
 
 #[cfg(target_arch = "aarch64")] pub use aarch64::{execve_inner, sys_execve};
-#[cfg(target_arch = "x86_64")] pub use x86_64::{execve_inner, sys_execve};
+#[cfg(target_arch = "x86_64")] pub use entry::sys_execve;
+#[cfg(target_arch = "x86_64")] pub use x86_64::execve_inner;

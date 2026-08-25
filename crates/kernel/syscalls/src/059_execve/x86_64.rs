@@ -4,53 +4,19 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
 use crate::execve_common::{
-    open_exec_image, read_user_exec_path, reset_caught_signals, reset_per_execve_state,
+    open_exec_image, reset_caught_signals, reset_per_execve_state,
     resolve_shebang_chain,
 };
 
 use super::fd_table::unshare_fd_table_and_close_on_exec;
+#[cfg(feature = "debug-swap")]
+use super::entry::trace_swap_exec_stage;
 
 /// RFLAGS the freshly-exec'd image starts with: IF=1 (preemptible) plus the
 /// always-set reserved bit 1, every other flag clear. Linux `start_thread`
 /// reaches the same state via `regs->flags = X86_EFLAGS_IF | X86_EFLAGS_FIXED`
 /// (`start_thread_common`).
 const EXEC_ENTRY_RFLAGS: u64 = 0x202;
-
-/// `sys_execve(path, argv, envp)` per `15§5` / `31§4`. Thin wrapper
-/// that reads the user-space path then delegates to `execve_inner`.
-/// # SAFETY: syscall process context, IRQs enabled.
-/// # C: O(64) + execve_inner cost
-pub fn sys_execve(args: &SyscallArgs) -> i64 {
-    let path_owned = match read_user_exec_path(args.a0) {
-        Ok(v) => v,
-        Err(rc) => return rc,
-    };
-    #[cfg(feature = "debug-swap")]
-    trace_swap_exec(&path_owned);
-    execve_inner(args, path_owned)
-}
-
-/// Retained, feature-gated trace for the userspace half of swap activation.
-/// # C: O(path length)
-#[cfg(feature = "debug-swap")]
-fn trace_swap_exec(path: &[u8]) {
-    if matches!(path, b"/sbin/swapon" | b"/usr/sbin/swapon" | b"/usr/bin/swapon") {
-        klog::write_raw(b"[SWAPON] exec ");
-        klog::write_raw(path);
-        klog::write_raw(b"\n");
-    }
-}
-
-/// Retained, feature-gated `execve` stage trace for the swap activator.
-/// # C: O(path length)
-#[cfg(feature = "debug-swap")]
-fn trace_swap_exec_stage(path: &[u8], stage: &[u8]) {
-    if matches!(path, b"/sbin/swapon" | b"/usr/sbin/swapon" | b"/usr/bin/swapon") {
-        klog::write_raw(b"[SWAPON] exec-stage ");
-        klog::write_raw(stage);
-        klog::write_raw(b"\n");
-    }
-}
 
 /// execve body shared between `sys_execve` (path from user pointer)
 /// and `sys_execveat` (path resolved from `dirfd` for AT_EMPTY_PATH).
