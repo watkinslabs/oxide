@@ -278,7 +278,7 @@ impl<S: SectorSource> Volume<S> {
 mod tests;
 
 #[cfg(test)]
-#[path = "tests/write.rs"]
+#[path = "tests/write/mod.rs"]
 mod write_tests;
 
 #[cfg(test)]
