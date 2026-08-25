@@ -1,0 +1,238 @@
+use alloc::vec::Vec;
+use crate::jbd2::StagedBlock;
+use super::gdt_byte_offset_for;
+use super::super::{Mount, MountError};
+use super::ctx_id;
+
+impl Mount {
+    /// Open a shadow scope: every `metadata_write` inside `f`
+    /// populates `state.shadow` with the new fs-block bytes;
+    /// shadow-aware reads (`read_metadata_block`, `read_meta_byte_range`)
+    /// see the staged bytes immediately, so multiple sub-ops
+    /// (e.g. two `alloc_block` calls) within one fs op observe
+    /// each other's writes. At scope close, the shadow drains
+    /// into `commit_metadata` as one JBD2 transaction. On
+    /// `Err`, the shadow is dropped (no commit, no target writes).
+    ///
+    /// Re-entrant: nested calls participate in the outermost
+    /// shadow without opening a new one.
+    /// # C: O(N shadow blocks) commit + 2 journal I/Os + N target I/Os
+    /// Serialize + run a top-level metadata transaction. Acquires the reentrant
+    /// transaction gate for the current context so concurrent tasks/CPUs can't
+    /// race the group bitmaps / GDT / superblock counters / shadow; nested
+    /// same-context calls join without re-locking. # C: same as inner.
+    pub fn run_journaled<R, F>(&self, f: F) -> Result<R, MountError>
+    where F: FnOnce(&Self) -> Result<R, MountError>
+    {
+        self.txn_acquire();
+        let r = self.run_journaled_inner(f);
+        self.txn_release();
+        r
+    }
+
+    /// Try to claim the transaction gate, retaining same-context reentrancy.
+    /// # C: O(1)
+    fn try_txn_acquire(&self, me: u64) -> bool {
+        use ::core::sync::atomic::Ordering;
+        if self.txn_owner.load(Ordering::Acquire) == me {
+            self.txn_depth.fetch_add(1, Ordering::Relaxed);
+            return true;
+        }
+        if self.txn_owner.compare_exchange(0, me, Ordering::AcqRel, Ordering::Relaxed).is_err() {
+            return false;
+        }
+        self.txn_depth.store(1, Ordering::Relaxed);
+        true
+    }
+
+    /// Reentrant transaction-gate acquire keyed on `ctx_id()`. A contender
+    /// publishes on the mount's wait queue, rechecks the atomic claim, then
+    /// sleeps until the releasing owner wakes it.
+    /// # Ctx: process
+    /// # Sleeps: yes on contention
+    /// # C: O(N wakeups)
+    pub(in crate::mount) fn txn_acquire(&self) {
+        let me = ctx_id();
+        if self.try_txn_acquire(me) { return; }
+        // SAFETY: this process-context waiter holds neither the transaction
+        // gate nor the state lock; release publishes owner=0 before wake_all.
+        let _ = unsafe {
+            sched::live::wait_event_uninterruptible(&self.txn_wait, || self.try_txn_acquire(me))
+        };
+    }
+
+    /// Release one level of the transaction gate; frees it at depth 0.
+    /// # C: O(1)
+    pub(in crate::mount) fn txn_release(&self) {
+        use ::core::sync::atomic::Ordering;
+        if self.txn_depth.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.txn_owner.store(0, Ordering::Release);
+            self.txn_wait.wake_all();
+        }
+    }
+
+    fn run_journaled_inner<R, F>(&self, f: F) -> Result<R, MountError>
+    where F: FnOnce(&Self) -> Result<R, MountError>
+    {
+        let (already_open, batch) = { let s = self.state.lock(); (s.shadow.is_some(), s.batch) };
+        if already_open {
+            if !batch { return f(self); }
+            // Batch mode: this op JOINS the running transaction. Push an undo
+            // frame so a failure rolls back only THIS op's staged blocks (and
+            // its gdt_buf/counter mutations, refreshed from the restored shadow)
+            // without discarding prior batched ops. Success merges the frame up
+            // (or drops it at top level, leaving the writes in the running txn).
+            self.state.lock().undo.push(alloc::collections::BTreeMap::new());
+            let r = f(self);
+            match r {
+                Ok(v) => { self.batch_frame_commit(); self.maybe_commit_batch()?; Ok(v) }
+                Err(e) => { self.batch_frame_rollback(); Err(e) }
+            }
+        } else {
+            self.state.lock().shadow = Some(alloc::collections::BTreeMap::new());
+            let r = f(self);
+            let shadow = self.state.lock().shadow.take().unwrap_or_default();
+            match r {
+                Ok(v) => {
+                    if !shadow.is_empty() {
+                        let staged: Vec<StagedBlock> = shadow.into_iter()
+                            .map(|(target_lba, data)| StagedBlock { target_lba, data })
+                            .collect();
+                        self.commit_metadata(staged.clone())?;
+                        self.cache_committed(&staged);
+                        let mut s = self.state.lock();
+                        s.committed_generation = s.running_generation;
+                        s.running_generation = 0;
+                    }
+                    Ok(v)
+                }
+                Err(e) => {
+                    self.refresh_cached_meta();
+                    Err(e)
+                }
+            }
+        }
+    }
+
+    /// Run a top-level create op with `creating` set (which defers the
+    /// size-triggered batch commit until AFTER the transaction gate is released:
+    /// the batch commit's `dev.flush` SLEEPS on the virtio completion, and
+    /// yielding I/O while the gate is held livelocks a spinning contender). The
+    /// gate is now taken inside `run_journaled` for EVERY mutator, so creates no
+    /// longer need a separate lock; the commit still drains the shadow atomically
+    /// under `state.lock`, so ordering is preserved.
+    /// # C: same as the inner op + amortized O(1) deferred commit
+    pub(crate) fn create_op<R, F>(&self, f: F) -> Result<R, MountError>
+    where F: FnOnce(&Self) -> Result<R, MountError>
+    {
+        let r = {
+            self.creating.store(true, ::core::sync::atomic::Ordering::Release);
+            let r = self.run_journaled(f);
+            self.creating.store(false, ::core::sync::atomic::Ordering::Release);
+            r
+        };
+        let v = match r {
+            Ok(v) => v,
+            Err(e) => {
+                self.refresh_cached_meta();
+                return Err(e);
+            }
+        };
+        self.maybe_commit_batch()?;
+        Ok(v)
+    }
+
+    /// Reload the in-memory `gdt_buf` + free counters from the (shadow-aware)
+    /// current metadata, used after a batch op rollback: those mirrors are
+    /// mutated in place by alloc/free and persisted to the shadow, so restoring
+    /// the shadow requires re-reading them to stay in step. # C: O(gdt size) I/O
+    pub(crate) fn refresh_cached_meta(&self) {
+        // ext4 superblock field offsets (bytes into the 1024-byte SB @ byte 1024).
+        const SB_BYTE_OFF: u64 = 1024;
+        const SB_FREE_BLOCKS_LO: usize = 0x0C;
+        const SB_FREE_INODES:    usize = 0x10;
+        const SB_FREE_BLOCKS_HI: usize = 0x158;
+        const SB_READ_LEN: usize = SB_FREE_BLOCKS_HI + 4;
+        let gdt_off = gdt_byte_offset_for(&self.sb);
+        let gdt_len = self.state.lock().gdt_buf.len();
+        if let Ok(bytes) = self.read_meta_byte_range(gdt_off, gdt_len) {
+            self.state.lock().gdt_buf = bytes;
+        }
+        if let Ok(sbb) = self.read_meta_byte_range(SB_BYTE_OFF, SB_READ_LEN) {
+            let fb_lo = u32::from_le_bytes([sbb[SB_FREE_BLOCKS_LO], sbb[SB_FREE_BLOCKS_LO+1],
+                                            sbb[SB_FREE_BLOCKS_LO+2], sbb[SB_FREE_BLOCKS_LO+3]]) as u64;
+            let fb_hi = u32::from_le_bytes([sbb[SB_FREE_BLOCKS_HI], sbb[SB_FREE_BLOCKS_HI+1],
+                                            sbb[SB_FREE_BLOCKS_HI+2], sbb[SB_FREE_BLOCKS_HI+3]]) as u64;
+            let fi = u32::from_le_bytes([sbb[SB_FREE_INODES], sbb[SB_FREE_INODES+1],
+                                         sbb[SB_FREE_INODES+2], sbb[SB_FREE_INODES+3]]);
+            let mut s = self.state.lock();
+            s.sb_free_blocks = (fb_hi << 32) | fb_lo;
+            s.sb_free_inodes = fi;
+        }
+    }
+
+    /// No-op alias kept for legacy call sites. The shadow
+    /// scope mid-flushes implicitly through `metadata_write`
+    /// populating state.shadow which subsequent reads consult.
+    /// # C: O(1)
+    pub fn flush_pending_tx(&self) -> Result<(), MountError> { Ok(()) }
+
+    pub(crate) fn mark_inode_dirty(&self, ino: u32, datasync: bool) {
+        let mut s = self.state.lock();
+        let tid = s.running_generation;
+        if tid == 0 { return; }
+        let e = s.inode_generations.entry(ino).or_insert((0, 0));
+        e.0 = tid;
+        if datasync { e.1 = tid; }
+    }
+
+    pub(crate) fn inode_sync_needed(&self, ino: u32, datasync: bool) -> bool {
+        let s = self.state.lock();
+        let tid = s.inode_generations.get(&ino).map_or(0, |p| if datasync { p.1 } else { p.0 });
+        tid != 0 && tid > s.committed_generation
+    }
+
+    pub(crate) fn mark_generation_barriered(&self, generation: u64) {
+        let mut s = self.state.lock();
+        if generation > s.barrier_generation { s.barrier_generation = generation; }
+    }
+
+    /// Read `len` bytes starting at `byte_off`, splicing in
+    /// shadow-buffered fs-block bytes where present. Use this
+    /// in metadata read paths inside a `run_journaled` scope so
+    /// staged-but-uncommitted writes are visible.
+    /// # C: O(N affected fs blocks)
+    #[inline(never)]
+    pub fn read_meta_byte_range(&self, byte_off: u64, len: usize) -> Result<Vec<u8>, MountError> {
+        if len == 0 { return Ok(Vec::new()); }
+        let bs = self.sb.block_size as u64;
+        let first_blk = byte_off / bs;
+        let last_byte = byte_off.saturating_add(len as u64);
+        let last_blk_excl = (last_byte + bs - 1) / bs;
+        let n_blocks = (last_blk_excl - first_blk) as u32;
+        let inner_off = (byte_off - first_blk * bs) as usize;
+        // Assemble the requested range directly.  The previous implementation
+        // first built a complete block-aligned buffer and then cloned the
+        // requested slice, doubling transient metadata allocation during
+        // mount and bitmap reads.  Linux's buffer-cache readers copy only the
+        // bytes requested by the caller; keep the same shadow/cache source
+        // while avoiding that second temporary allocation.
+        let mut out = Vec::with_capacity(len);
+        for i in 0..n_blocks as u64 {
+            let block = self.read_metadata_block(first_blk + i)?;
+            let start = if i == 0 { inner_off } else { 0 };
+            let end = core::cmp::min(bs as usize, inner_off + len - out.len());
+            out.extend_from_slice(&block[start..end]);
+        }
+        debug_assert_eq!(out.len(), len);
+        Ok(out)
+    }
+
+    /// Live free-blocks counter (mirrors `s_free_blocks_count`).
+    /// # C: O(1)
+    pub fn state_free_blocks(&self) -> u64 { self.state.lock().sb_free_blocks }
+
+    /// Live free-inodes counter.
+    /// # C: O(1)
+    pub fn state_free_inodes(&self) -> u32 { self.state.lock().sb_free_inodes }
+}
