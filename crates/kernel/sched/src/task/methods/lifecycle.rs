@@ -16,6 +16,10 @@ use super::super::{ArchCtxBuf, ArchFpuBuf, Creds, PendingWake, SigActions, Signa
 use super::super::WakeDiagPhase;
 use super::super::namespaces::TaskNamespaces;
 use crate::signum::Signum;
+#[cfg(feature = "debug-smp")]
+use super::{task_canary_head, task_canary_tail};
+#[cfg(any(feature = "debug-smp", feature = "debug-stack-guard"))]
+use super::{TASK_STACK_GUARD, TASK_STACK_GUARD_BYTES, TASK_STACK_WATERMARK_OFF};
 
 /// Linux `init_task.timer_slack_ns` / `default_timer_slack_ns` — 50 microseconds.
 const DEFAULT_TIMER_SLACK_NS: u64 = 50_000;
@@ -383,5 +387,4 @@ impl Task {
         self.arch_ctx.get() as *mut C
     }
 }
-
 

@@ -3,6 +3,11 @@
 // in a focused child module.
 mod identity;
 mod diagnostics;
+#[cfg(feature = "debug-smp")]
+pub(super) use diagnostics::{task_canary_head, task_canary_tail};
+#[cfg(any(feature = "debug-smp", feature = "debug-stack-guard"))]
+pub(super) use diagnostics::{debug_frame_pointer, debug_stack_pointer,
+    TASK_STACK_GUARD, TASK_STACK_GUARD_BYTES, TASK_STACK_WATERMARK_OFF};
 mod lifecycle;
 mod state;
 mod accounting;
