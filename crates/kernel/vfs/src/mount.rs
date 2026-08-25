@@ -178,6 +178,7 @@ include!("mount/graph.rs");
 include!("mount/model.rs");
 include!("mount/attach.rs");
 include!("mount/clone_tree.rs");
+include!("mount/clone_tree/detached.rs");
 include!("mount/recursive.rs");
 include!("mount/namespace.rs");
 include!("mount/pivot.rs");
