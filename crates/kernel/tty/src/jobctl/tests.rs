@@ -78,6 +78,7 @@ fn probe_background_read(kind: TtyKind, o_noctty: bool) -> Decision {
     let leader_acquired = should_acquire_ctty(
         kind_can_be_ctty(kind),
         o_noctty,
+        /*o_path*/ false,
         /*is_session_leader*/ true,
         /*has_ctty*/ false,
         /*tty_has_session*/ false,

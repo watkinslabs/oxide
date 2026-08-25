@@ -51,6 +51,7 @@ pub const fn kind_can_be_ctty(kind: TtyKind) -> bool {
 /// controlling terminal (Linux `tty_open` ctty acquisition). Inputs:
 ///   `is_tty`            — the opened inode is a console/serial/VT tty
 ///   `o_noctty`          — the open flags carried `O_NOCTTY`
+///   `o_path`            — the open is an `O_PATH` fd-reference, not a tty open
 ///   `is_session_leader` — caller's session id == its own (v)pid
 ///   `has_ctty`          — caller already owns a controlling terminal
 ///   `tty_has_session`   — the tty already belongs to a session (sid != 0)
@@ -60,11 +61,12 @@ pub const fn kind_can_be_ctty(kind: TtyKind) -> bool {
 pub fn should_acquire_ctty(
     is_tty: bool,
     o_noctty: bool,
+    o_path: bool,
     is_session_leader: bool,
     has_ctty: bool,
     tty_has_session: bool,
 ) -> bool {
-    is_tty && !o_noctty && is_session_leader && !has_ctty && !tty_has_session
+    is_tty && !o_noctty && !o_path && is_session_leader && !has_ctty && !tty_has_session
 }
 
 #[cfg(test)]
@@ -83,41 +85,46 @@ mod tests {
     fn a_session_leader_opening_a_pts_slave_acquires_it() {
         // The probe's session child: setsid() then open("/dev/pts/<n>").
         assert!(should_acquire_ctty(
-            kind_can_be_ctty(TtyKind::PtySlave), false, true, false, false));
+            kind_can_be_ctty(TtyKind::PtySlave), false, false, true, false, false));
         // Same call on the master half must not.
         assert!(!should_acquire_ctty(
-            kind_can_be_ctty(TtyKind::PtyMaster), false, true, false, false));
+            kind_can_be_ctty(TtyKind::PtyMaster), false, false, true, false, false));
     }
 
     #[test]
     fn session_leader_no_ctty_unclaimed_acquires() {
         // The getty path: a session leader (post-setsid) opens an unclaimed
         // console tty without O_NOCTTY → it becomes the ctty.
-        assert!(should_acquire_ctty(true, false, true, false, false));
+        assert!(should_acquire_ctty(true, false, false, true, false, false));
     }
 
     #[test]
     fn o_noctty_suppresses_acquisition() {
-        assert!(!should_acquire_ctty(true, true, true, false, false));
+        assert!(!should_acquire_ctty(true, true, false, true, false, false));
     }
 
     #[test]
     fn non_leader_never_acquires() {
-        assert!(!should_acquire_ctty(true, false, false, false, false));
+        assert!(!should_acquire_ctty(true, false, false, false, false, false));
     }
 
     #[test]
     fn caller_with_existing_ctty_does_not_acquire() {
-        assert!(!should_acquire_ctty(true, false, true, true, false));
+        assert!(!should_acquire_ctty(true, false, false, true, true, false));
     }
 
     #[test]
     fn already_claimed_tty_is_not_stolen() {
-        assert!(!should_acquire_ctty(true, false, true, false, true));
+        assert!(!should_acquire_ctty(true, false, false, true, false, true));
     }
 
     #[test]
     fn non_tty_inode_never_acquires() {
-        assert!(!should_acquire_ctty(false, false, true, false, false));
+        assert!(!should_acquire_ctty(false, false, false, true, false, false));
+    }
+
+    #[test]
+    fn o_path_fd_reference_never_acquires_ctty() {
+        assert!(!should_acquire_ctty(true, false, true, true, false, false));
     }
 }

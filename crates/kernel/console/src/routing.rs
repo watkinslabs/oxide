@@ -86,6 +86,7 @@ pub fn acquire_ctty_on_open(inode: &InodeRef, flags: u32) {
 
     let Some(tgt) = route(inode) else { return; };
     let o_noctty = flags & OpenFlags::O_NOCTTY.bits() != 0;
+    let o_path = flags & OpenFlags::O_PATH.bits() != 0;
     let cur = match sched::live::current() {
         Some(c) => c,
         None => return,
@@ -104,7 +105,7 @@ pub fn acquire_ctty_on_open(inode: &InodeRef, flags: u32) {
     // `devpts::acquire_ctty_on_open`, which owns those inodes.
     let kind = tty::ctty::TtyKind::Terminal;
     if !tty::ctty::should_acquire_ctty(
-        tty::ctty::kind_can_be_ctty(kind), o_noctty, is_leader, has_ctty, tty_sid != 0)
+        tty::ctty::kind_can_be_ctty(kind), o_noctty, o_path, is_leader, has_ctty, tty_sid != 0)
     {
         return;
     }

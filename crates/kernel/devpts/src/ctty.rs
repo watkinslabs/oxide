@@ -30,6 +30,7 @@ pub fn acquire_ctty_on_open(inode: &InodeRef, flags: u32) {
     let pair = ep.pair();
     let kind = if ep.is_master() { TtyKind::PtyMaster } else { TtyKind::PtySlave };
     let o_noctty = flags & OpenFlags::O_NOCTTY.bits() != 0;
+    let o_path = flags & OpenFlags::O_PATH.bits() != 0;
     let Some(cur) = sched::live::current() else { return; };
     let vpid = cur.vtgid.load(Ordering::Acquire);
     let my_pid = if vpid != 0 { vpid } else { cur.tid };
@@ -37,7 +38,7 @@ pub fn acquire_ctty_on_open(inode: &InodeRef, flags: u32) {
     let is_leader = session.nr_in_or_tid(&sched::live::registry::reader_pid_ns()) == my_pid;
     let has_ctty = cur.ctty_ino().is_some();
     let tty_has_session = pair.with_pair(|p| p.session.is_some());
-    if !should_acquire_ctty(kind_can_be_ctty(kind), o_noctty, is_leader, has_ctty, tty_has_session) {
+    if !should_acquire_ctty(kind_can_be_ctty(kind), o_noctty, o_path, is_leader, has_ctty, tty_has_session) {
         return;
     }
     let pgrp = cur.pgrp();

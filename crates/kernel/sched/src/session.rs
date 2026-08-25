@@ -174,7 +174,11 @@ pub fn setpgid(cur: &Task, pid: i32, pgid: i32) -> Result<(), Errno> {
 /// # C: O(N_tasks) (pgrp-existence scan); # Lk: TaskList
 pub fn setsid(cur: &Task) -> Result<u32, Errno> {
     let session = process_vpid(cur);
-    if cur.thread_group.is_session_leader() { return Err(Errno::Eperm); }
+    // Linux tests signal->leader.  The identity fallback is required for the
+    // boot-time/session objects that predate the explicit flag, and must be
+    // used here as well as by tty hangup and setpgid; otherwise a task that is
+    // already the session leader can create a second session.
+    if is_session_leader(cur) { return Err(Errno::Eperm); }
     if !registry::tasks_in_pgrp_nr(&pid_ns(cur), session).is_empty() { return Err(Errno::Eperm); }
     if !cur.thread_group.claim_session_leader() { return Err(Errno::Eperm); }
 
