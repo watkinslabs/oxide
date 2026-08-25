@@ -17,31 +17,26 @@ use super::super::WakeDiagPhase;
 use super::super::namespaces::TaskNamespaces;
 use crate::signum::Signum;
 
-impl Task {
-
-/// Linux `init_task.timer_slack_ns` / `default_timer_slack_ns` — 50 microseconds.
-const DEFAULT_TIMER_SLACK_NS: u64 = 50_000;
-
 #[cfg(feature = "debug-smp")]
-pub(super) const TASK_CANARY_HEAD: u64 = 0x5441_534b_4845_4144;
+pub(crate) const TASK_CANARY_HEAD: u64 = 0x5441_534b_4845_4144;
 #[cfg(feature = "debug-smp")]
-pub(super) const TASK_CANARY_TAIL: u64 = 0x5441_534b_5441_494c;
+pub(crate) const TASK_CANARY_TAIL: u64 = 0x5441_534b_5441_494c;
 #[cfg(any(feature = "debug-smp", feature = "debug-stack-guard"))]
-pub(super) const TASK_STACK_GUARD: u8 = 0xa5;
+pub(crate) const TASK_STACK_GUARD: u8 = 0xa5;
 #[cfg(any(feature = "debug-smp", feature = "debug-stack-guard"))]
-pub(super) const TASK_STACK_GUARD_BYTES: usize = 32;
+pub(crate) const TASK_STACK_GUARD_BYTES: usize = 32;
 #[cfg(any(feature = "debug-smp", feature = "debug-stack-guard"))]
-pub(super) const TASK_STACK_WATERMARK_OFF: usize = 16 * 1024;
+pub(crate) const TASK_STACK_WATERMARK_OFF: usize = 16 * 1024;
 
 #[cfg(feature = "debug-smp")]
 #[inline]
-pub(super) fn task_canary_head(tid: u32) -> u64 {
+pub(crate) fn task_canary_head(tid: u32) -> u64 {
     TASK_CANARY_HEAD ^ ((tid as u64) << 32) ^ tid as u64
 }
 
 #[cfg(feature = "debug-smp")]
 #[inline]
-pub(super) fn task_canary_tail(tid: u32) -> u64 {
+pub(crate) fn task_canary_tail(tid: u32) -> u64 {
     TASK_CANARY_TAIL ^ ((tid as u64) << 17) ^ ((tid as u64) << 1)
 }
 
@@ -51,7 +46,7 @@ pub(super) fn task_canary_tail(tid: u32) -> u64 {
 /// unrelated write overlapped it.
 #[cfg(all(any(feature = "debug-smp", feature = "debug-stack-guard"), target_arch = "aarch64"))]
 #[inline]
-pub(super) fn debug_stack_pointer() -> usize {
+pub(crate) fn debug_stack_pointer() -> usize {
     let sp: usize;
     // SAFETY: reads the architectural SP register only; no memory or flags
     // are changed.  AArch64 permits `mov <gpr>, sp` at EL1.
@@ -61,7 +56,7 @@ pub(super) fn debug_stack_pointer() -> usize {
 
 #[cfg(all(any(feature = "debug-smp", feature = "debug-stack-guard"), target_arch = "aarch64"))]
 #[inline]
-pub(super) fn debug_frame_pointer() -> usize {
+pub(crate) fn debug_frame_pointer() -> usize {
     let fp: usize;
     // SAFETY: reads x29 only; see `debug_stack_pointer`.
     unsafe { core::arch::asm!("mov {}, x29", out(reg) fp, options(nomem, nostack, preserves_flags)); }
@@ -70,13 +65,14 @@ pub(super) fn debug_frame_pointer() -> usize {
 
 #[cfg(all(any(feature = "debug-smp", feature = "debug-stack-guard"), not(target_arch = "aarch64")))]
 #[inline]
-pub(super) fn debug_frame_pointer() -> usize { 0 }
+pub(crate) fn debug_frame_pointer() -> usize { 0 }
 
 #[cfg(all(any(feature = "debug-smp", feature = "debug-stack-guard"), not(target_arch = "aarch64")))]
 #[inline]
-pub(super) fn debug_stack_pointer() -> usize { 0 }
+pub(crate) fn debug_stack_pointer() -> usize { 0 }
 
 
+impl Task {
     /// Debug-smp Task lifetime sentinel. Trips when a stale `Task*` is used after
     /// its allocation was freed/reused, before the later victim object faults.
     /// The task-identity canary (`dbg_canary_head`/`tail`) needs `debug-smp`
@@ -201,4 +197,3 @@ pub(super) fn debug_stack_pointer() -> usize { 0 }
     #[inline]
     pub fn debug_check_fpu_state(&self, _site: &'static str) {}
 }
-
