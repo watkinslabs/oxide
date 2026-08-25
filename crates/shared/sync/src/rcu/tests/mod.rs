@@ -111,3 +111,4 @@ fn grace_period_includes_an_online_cpu_above_the_first_mask_word() {
     CPU_QS[cpu].0.store(1, Ordering::Release);
     assert!(all_quiesced(&snap, online));
 }
+
