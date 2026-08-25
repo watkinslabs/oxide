@@ -40,11 +40,24 @@ pub enum Error { Inval, Perm }
 
 pub type KResult<T> = core::result::Result<T, Error>;
 
+/// Active LSM identities in the single framework order used by hooks and
+/// `lsm_list_modules`. Capability is part of the framework's fixed-first set.
+pub fn active_lsm_ids() -> alloc::vec::Vec<u64> {
+    lsm_framework::registry::id_list().into_iter().map(|id| id.id).collect()
+}
+
 /// Boot-time init reporter.
 /// # SAFETY: caller is the boot path; pre-init; single-CPU.
 /// # C: O(1)
 /// # Ctx: pre-init, IRQ-off, single-CPU
 pub unsafe fn init() -> KResult<()> {
+    let line = core::str::from_utf8(cmdline::get()).unwrap_or("");
+    let params = lsm_framework::cmdline::parse(line);
+    let selinux_enabled = cmdline::parameter_value(b"selinux").is_none_or(|v| v != b"0");
+    let _ = lsm_framework::registry::start(
+        lsm_framework::modules::builtin(selinux_enabled),
+        params.selection(lsm_framework::modules::BUILTIN_ORDER),
+    );
     lsm::register_device_permission(bpf::cgroup_device_inode_permission);
     vfs::set_device_permission_hook(lsm::device_permission);
     lsm::register_open(bpf_lsm::open_hook);

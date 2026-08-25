@@ -11,6 +11,10 @@ use alloc::vec::Vec;
 use sync::{SecurityPolicy as LockClass, Spinlock};
 use vfs::{Dentry, FileType, InodeRef, KResult, VfsPath};
 
+pub const LSM_ID_LANDLOCK: u64 = lsm_framework::uapi::LSM_ID_LANDLOCK;
+pub const LSM_ID_SELINUX: u64 = lsm_framework::uapi::LSM_ID_SELINUX;
+pub const LSM_ID_BPF: u64 = lsm_framework::uapi::LSM_ID_BPF;
+
 /// Context passed to the common open hook. `access` is the current access
 /// mask; a provider may return a reduced/recorded mask, or refuse the open.
 pub struct OpenContext<'a> {
@@ -32,64 +36,97 @@ pub type InodeInitSecurityAnonHook = fn(&InodeRef, &str, Option<&InodeRef>) -> K
 pub type DevicePermissionHook = fn(FileType, u32, u32) -> KResult<()>;
 pub type FileIoctlHook = fn(&InodeRef, u32) -> KResult<()>;
 
-static OPEN_HOOKS: Spinlock<Vec<OpenHook>, LockClass> = Spinlock::new(Vec::new());
-static INODE_PERMISSION_HOOKS: Spinlock<Vec<InodePermissionHook>, LockClass> =
+static OPEN_HOOKS: Spinlock<Vec<(u16, OpenHook)>, LockClass> = Spinlock::new(Vec::new());
+static INODE_PERMISSION_HOOKS: Spinlock<Vec<(u16, InodePermissionHook)>, LockClass> =
     Spinlock::new(Vec::new());
-static INODE_CREATE_HOOKS: Spinlock<Vec<InodeCreateHook>, LockClass> = Spinlock::new(Vec::new());
-static INODE_INSTANTIATE_HOOKS: Spinlock<Vec<InodeInstantiateHook>, LockClass> =
+static INODE_CREATE_HOOKS: Spinlock<Vec<(u16, InodeCreateHook)>, LockClass> = Spinlock::new(Vec::new());
+static INODE_INSTANTIATE_HOOKS: Spinlock<Vec<(u16, InodeInstantiateHook)>, LockClass> =
     Spinlock::new(Vec::new());
-static INODE_INIT_SECURITY_ANON_HOOKS: Spinlock<Vec<InodeInitSecurityAnonHook>, LockClass> =
+static INODE_INIT_SECURITY_ANON_HOOKS: Spinlock<Vec<(u16, InodeInitSecurityAnonHook)>, LockClass> =
     Spinlock::new(Vec::new());
-static DEVICE_PERMISSION_HOOKS: Spinlock<Vec<DevicePermissionHook>, LockClass> =
+static DEVICE_PERMISSION_HOOKS: Spinlock<Vec<(u16, DevicePermissionHook)>, LockClass> =
     Spinlock::new(Vec::new());
-static FILE_IOCTL_HOOKS: Spinlock<Vec<FileIoctlHook>, LockClass> = Spinlock::new(Vec::new());
+static FILE_IOCTL_HOOKS: Spinlock<Vec<(u16, FileIoctlHook)>, LockClass> = Spinlock::new(Vec::new());
+
+fn position(module: u64) -> Option<u16> {
+    lsm_framework::registry::position(module)
+}
 
 /// Register one open provider. Registration is idempotent by function address,
 /// matching the one-time LSM init window and preventing duplicate decisions.
 pub fn register_open(hook: OpenHook) {
+    register_open_for(LSM_ID_BPF, hook);
+}
+
+pub fn register_open_for(module: u64, hook: OpenHook) {
+    let Some(at) = position(module) else { return };
     let mut hooks = OPEN_HOOKS.lock();
-    if hooks.iter().any(|installed| *installed as usize == hook as usize) { return; }
-    hooks.push(hook);
+    if hooks.iter().any(|(_, installed)| *installed as usize == hook as usize) { return; }
+    hooks.push((at, hook));
+    hooks.sort_by_key(|(at, _)| *at);
 }
 
 /// Register one inode-permission provider. # C: O(providers)
 pub fn register_inode_permission(hook: InodePermissionHook) {
-    let mut hooks = INODE_PERMISSION_HOOKS.lock();
-    if hooks.iter().any(|installed| *installed as usize == hook as usize) { return; }
-    hooks.push(hook);
+    register_inode_permission_for(LSM_ID_SELINUX, hook);
 }
 
-fn register_once<T>(hooks: &mut Vec<T>, hook: T, same: fn(&T, &T) -> bool) {
-    if hooks.iter().any(|installed| same(installed, &hook)) { return; }
-    hooks.push(hook);
+pub fn register_inode_permission_for(module: u64, hook: InodePermissionHook) {
+    let Some(at) = position(module) else { return };
+    let mut hooks = INODE_PERMISSION_HOOKS.lock();
+    if hooks.iter().any(|(_, installed)| *installed as usize == hook as usize) { return; }
+    hooks.push((at, hook));
+    hooks.sort_by_key(|(at, _)| *at);
+}
+
+fn register_once<T>(hooks: &mut Vec<(u16, T)>, module: u64, hook: T, same: fn(&T, &T) -> bool) {
+    let Some(at) = position(module) else { return };
+    if hooks.iter().any(|(_, installed)| same(installed, &hook)) { return; }
+    hooks.push((at, hook));
+    hooks.sort_by_key(|(at, _)| *at);
 }
 
 /// Register an inode-create provider. # C: O(providers)
 pub fn register_inode_create(hook: InodeCreateHook) {
-    register_once(&mut INODE_CREATE_HOOKS.lock(), hook,
+    register_inode_create_for(LSM_ID_SELINUX, hook);
+}
+pub fn register_inode_create_for(module: u64, hook: InodeCreateHook) {
+    register_once(&mut INODE_CREATE_HOOKS.lock(), module, hook,
                   |a, b| *a as usize == *b as usize);
 }
 
 /// Register an inode-instantiation provider. # C: O(providers)
 pub fn register_inode_instantiate(hook: InodeInstantiateHook) {
-    register_once(&mut INODE_INSTANTIATE_HOOKS.lock(), hook,
+    register_inode_instantiate_for(LSM_ID_SELINUX, hook);
+}
+pub fn register_inode_instantiate_for(module: u64, hook: InodeInstantiateHook) {
+    register_once(&mut INODE_INSTANTIATE_HOOKS.lock(), module, hook,
                   |a, b| *a as usize == *b as usize);
 }
 
 /// Register a secure-anonymous-inode provider. # C: O(providers)
 pub fn register_inode_init_security_anon(hook: InodeInitSecurityAnonHook) {
-    register_once(&mut INODE_INIT_SECURITY_ANON_HOOKS.lock(), hook,
+    register_inode_init_security_anon_for(LSM_ID_SELINUX, hook);
+}
+pub fn register_inode_init_security_anon_for(module: u64, hook: InodeInitSecurityAnonHook) {
+    register_once(&mut INODE_INIT_SECURITY_ANON_HOOKS.lock(), module, hook,
                   |a, b| *a as usize == *b as usize);
 }
 
 /// Register a device-permission provider. # C: O(providers)
 pub fn register_device_permission(hook: DevicePermissionHook) {
-    register_once(&mut DEVICE_PERMISSION_HOOKS.lock(), hook,
+    register_device_permission_for(LSM_ID_BPF, hook);
+}
+pub fn register_device_permission_for(module: u64, hook: DevicePermissionHook) {
+    register_once(&mut DEVICE_PERMISSION_HOOKS.lock(), module, hook,
                   |a, b| *a as usize == *b as usize);
 }
 
 pub fn register_file_ioctl(hook: FileIoctlHook) {
-    register_once(&mut FILE_IOCTL_HOOKS.lock(), hook,
+    register_file_ioctl_for(LSM_ID_SELINUX, hook);
+}
+pub fn register_file_ioctl_for(module: u64, hook: FileIoctlHook) {
+    register_once(&mut FILE_IOCTL_HOOKS.lock(), module, hook,
                   |a, b| *a as usize == *b as usize);
 }
 
@@ -99,7 +136,7 @@ pub fn open(path: &VfsPath, inode: &InodeRef, access: u64, flags: u64,
 {
     let hooks = OPEN_HOOKS.lock().clone();
     let mut access = access;
-    for hook in hooks {
+    for (_, hook) in hooks {
         access = hook(&OpenContext { path, inode, access, flags, is_device })?;
     }
     Ok(access)
@@ -108,27 +145,27 @@ pub fn open(path: &VfsPath, inode: &InodeRef, access: u64, flags: u64,
 /// VFS adapter for the common inode-permission hook. # C: O(providers)
 pub fn inode_permission(inode: &InodeRef, mask: u32) -> KResult<()> {
     let hooks = INODE_PERMISSION_HOOKS.lock().clone();
-    for hook in hooks { hook(inode, mask)?; }
+    for (_, hook) in hooks { hook(inode, mask)?; }
     Ok(())
 }
 
 /// VFS adapter for inode creation notifications. # C: O(providers)
 pub fn inode_created(dir: &InodeRef, inode: &InodeRef, name: &str) {
     let hooks = INODE_CREATE_HOOKS.lock().clone();
-    for hook in hooks { hook(dir, inode, name); }
+    for (_, hook) in hooks { hook(dir, inode, name); }
 }
 
 /// VFS adapter for inode instantiation notifications. # C: O(providers)
 pub fn inode_instantiated(dentry: &Dentry, inode: &InodeRef) {
     let hooks = INODE_INSTANTIATE_HOOKS.lock().clone();
-    for hook in hooks { hook(dentry, inode); }
+    for (_, hook) in hooks { hook(dentry, inode); }
 }
 
 /// VFS adapter for secure anonymous inode initialization. # C: O(providers)
 pub fn inode_init_security_anon(inode: &InodeRef, name: &str,
                                 context: Option<&InodeRef>) -> KResult<()> {
     let hooks = INODE_INIT_SECURITY_ANON_HOOKS.lock().clone();
-    for hook in hooks { hook(inode, name, context)?; }
+    for (_, hook) in hooks { hook(inode, name, context)?; }
     Ok(())
 }
 
@@ -138,12 +175,12 @@ pub fn device_permission(file_type: FileType, rdev: u32, mask: u32) -> KResult<(
         return Ok(());
     }
     let hooks = DEVICE_PERMISSION_HOOKS.lock().clone();
-    for hook in hooks { hook(file_type, rdev, mask)?; }
+    for (_, hook) in hooks { hook(file_type, rdev, mask)?; }
     Ok(())
 }
 
 pub fn file_ioctl(inode: &InodeRef, cmd: u32) -> KResult<()> {
     let hooks = FILE_IOCTL_HOOKS.lock().clone();
-    for hook in hooks { hook(inode, cmd)?; }
+    for (_, hook) in hooks { hook(inode, cmd)?; }
     Ok(())
 }

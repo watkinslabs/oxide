@@ -10,8 +10,10 @@ use syscall::errno::Errno;
 /// `LSM_ID_UNDEF`.
 pub const LSM_ID_UNDEF: u64 = 0;
 /// `LSM_ID_CAPABILITY`.
+#[cfg(test)]
 pub const LSM_ID_CAPABILITY: u64 = 100;
 /// `LSM_ID_LANDLOCK`.
+#[cfg(test)]
 pub const LSM_ID_LANDLOCK: u64 = 110;
 /// `LSM_ATTR_UNDEF`.
 pub const LSM_ATTR_UNDEF: u32 = 0;
@@ -72,6 +74,7 @@ pub const LSM_ID_BYTES: u32 = 8;
 /// `getselfattr`/`setselfattr` hooks for no attribute, so 459/460 still answer
 /// EOPNOTSUPP — reporting a module and reporting an attribute for it are
 /// separate facts, and inventing the second would be worse than an empty set.
+#[cfg(test)]
 pub const ACTIVE_LSM_IDS: &[u64] = &[LSM_ID_CAPABILITY, LSM_ID_LANDLOCK];
 
 /// `lsm_list_modules`' only argument rule: `flags` is reserved and must be 0.
@@ -84,8 +87,8 @@ pub fn list_modules_precheck(flags: u32) -> Result<(), Errno> {
 /// The active-module count times one id — the
 /// byte count written back through `size` on EVERY path, success or E2BIG.
 /// # C: O(1)
-pub const fn list_modules_total_size() -> u32 {
-    ACTIVE_LSM_IDS.len() as u32 * LSM_ID_BYTES
+pub const fn list_modules_total_size(ids: &[u64]) -> u32 {
+    ids.len() as u32 * LSM_ID_BYTES
 }
 
 /// `if (usize < total_size) return -E2BIG`. E2BIG,
@@ -93,8 +96,8 @@ pub const fn list_modules_total_size() -> u32 {
 /// retries. The write-back happens BEFORE this check, so a too-small buffer
 /// still learns the size.
 /// # C: O(1)
-pub fn list_modules_fits(usize_bytes: u32) -> Result<(), Errno> {
-    if usize_bytes < list_modules_total_size() { return Err(Errno::E2big); }
+pub fn list_modules_fits(usize_bytes: u32, total: u32) -> Result<(), Errno> {
+    if usize_bytes < total { return Err(Errno::E2big); }
     Ok(())
 }
 
@@ -175,8 +178,8 @@ mod tests {
         // CONFIG_SECURITY=y kernel. An empty list would misreport oxide as a
         // kernel with no capability enforcement at all.
         assert!(ACTIVE_LSM_IDS.contains(&LSM_ID_CAPABILITY));
-        assert_eq!(list_modules_total_size(), ACTIVE_LSM_IDS.len() as u32 * 8);
-        assert!(list_modules_total_size() > 0);
+        assert_eq!(list_modules_total_size(ACTIVE_LSM_IDS), ACTIVE_LSM_IDS.len() as u32 * 8);
+        assert!(list_modules_total_size(ACTIVE_LSM_IDS) > 0);
     }
 
     #[test]
@@ -189,10 +192,10 @@ mod tests {
     fn a_short_buffer_is_e2big_not_enospc() {
         // The sibling `lsm_set_self_attr` uses E2BIG for "too big"; this one
         // uses E2BIG for "too small". Both match Linux's errno choice.
-        let total = list_modules_total_size();
-        assert_eq!(list_modules_fits(0), Err(Errno::E2big));
-        assert_eq!(list_modules_fits(total - 1), Err(Errno::E2big));
-        assert_eq!(list_modules_fits(total), Ok(()));
-        assert_eq!(list_modules_fits(total + 1), Ok(()));
+        let total = list_modules_total_size(ACTIVE_LSM_IDS);
+        assert_eq!(list_modules_fits(0, total), Err(Errno::E2big));
+        assert_eq!(list_modules_fits(total - 1, total), Err(Errno::E2big));
+        assert_eq!(list_modules_fits(total, total), Ok(()));
+        assert_eq!(list_modules_fits(total + 1, total), Ok(()));
     }
 }
