@@ -177,3 +177,4 @@ fn listener_transition_consumes_one_reservation_role() {
     stack.tcp_unlisten_entry(&listener);
     assert_eq!(bind.role.load(Ordering::Acquire), TCP_BIND_BOUND);
 }
+
