@@ -56,3 +56,4 @@ fn transport_entry_pins_namespace_owner_through_timer_work() {
         "final transport release drops namespace owner");
     super::tcp_listener::remove_tcp_entry_exact(&stack.inet_tables(0), &init_key, &init_entry);
 }
+
