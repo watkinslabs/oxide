@@ -182,3 +182,4 @@ fn production_delivery_signals_the_owner_on_a_new_urgent_pointer() {
     assert_eq!(SIG.load(Ordering::Acquire), vfs::file::SIGURG);
     assert_eq!(OWNER.load(Ordering::Acquire), 25_106);
 }
+
