@@ -246,3 +246,20 @@ fn synchronous_turn_release_dispatches_deferred_before_waking_next_owner() {
     assert!(free < dispatch && dispatch < wake,
         "free turn, raise dispatch for queued I/O, then wake the next owner");
 }
+
+/// A synchronous waiter consumes its own used-ring entry before releasing the
+/// turn, so the release-triggered block softirq can observe no new completion.
+/// It must still run queue-release dispatch or deferred async I/O can leave the
+/// turn predicate false forever.
+#[test]
+fn completion_softirq_dispatches_deferred_without_a_new_used_entry() {
+    let source = include_str!("../modern/state.rs");
+    let drain = source.find("let _reaped = device.drain_owned_completions(q)")
+        .expect("completion softirq drain");
+    let dispatch = source.find("device.start_deferred_requests(q)")
+        .expect("completion softirq queue-release dispatch");
+    let wake = source.find("device.turn_wait.wake_one()")
+        .expect("completion softirq turn wake");
+    assert!(drain < dispatch && dispatch < wake,
+        "drain completions, dispatch deferred requests, then wake turn waiters");
+}
