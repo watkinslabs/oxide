@@ -39,11 +39,14 @@ impl BlkState {
                 // Park off-CPU on the completion condition immediately. The
                 // register-then-recheck closes the SMP lost-wakeup window, and
                 // the deadline wakes us even if the device interrupt is lost.
+                let waiter = sched::current();
+                if let Some(task) = waiter { task.begin_iowait(); }
                 park_blk_checked(&BLK_COMPL, deadline, || {
                     // SAFETY: virtio owns the used-ring index at this DMA address.
                     virtio::dma::invalidate_from_device(used as u64, core::mem::size_of::<u16>() * 2);
                     unsafe { core::ptr::read_volatile(used.add(1)) == target }
                 });
+                if let Some(task) = waiter { task.end_iowait(); }
             }
         }
     }

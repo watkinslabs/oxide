@@ -131,7 +131,16 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
                 task.lift_vruntime(inner.cfs.min_vruntime());
                 preempt |= curr.is_none_or(|c| wakeup_preempt(cand_of(&task), c));
                 rq.account_wake(&task);
+                #[cfg(target_os = "oxide-kernel")]
+                let _ = task.update_util(crate::deadline::clock::now_ns(), false);
+                #[cfg(target_os = "oxide-kernel")]
+                let wake_util = task.util_avg.load(Ordering::Acquire);
+                #[cfg(target_os = "oxide-kernel")]
+                let wake_iowait = task.take_iowait();
                 inner.enqueue(Arc::clone(&task));
+                #[cfg(target_os = "oxide-kernel")]
+                crate::cpufreq_hook::update_from_scheduler(
+                    cpu as usize, wake_util, wake_iowait, crate::deadline::clock::now_ns());
                 placed = true;
             }
         }
@@ -448,7 +457,16 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
             #[cfg(feature = "debug-watchdog")]
             task.wake_diag_mark(WakeDiagPhase::Activating, wake_diag_now_ns());
             rq.account_wake(&task);
+            #[cfg(target_os = "oxide-kernel")]
+            let _ = task.update_util(crate::deadline::clock::now_ns(), false);
+            #[cfg(target_os = "oxide-kernel")]
+            let wake_util = task.util_avg.load(Ordering::Acquire);
+            #[cfg(target_os = "oxide-kernel")]
+            let wake_iowait = task.take_iowait();
             inner.enqueue(task);
+            #[cfg(target_os = "oxide-kernel")]
+            crate::cpufreq_hook::update_from_scheduler(
+                me as usize, wake_util, wake_iowait, crate::deadline::clock::now_ns());
             rq.publish_nr_running(inner.nr_running());
         }
         if preempt { resched_curr(me); }

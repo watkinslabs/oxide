@@ -30,6 +30,12 @@ impl DlRunqueue {
     /// # C: O(1)
     pub fn has_runnable(&self) -> bool { !self.tree.is_empty() }
 
+    /// Sum runnable deadline entity signals for the CPU utilization hook.
+    pub fn util_avg(&self) -> u32 {
+        self.tree.values().map(|task| task.util_avg.load(Ordering::Acquire))
+            .fold(0, u32::saturating_add)
+    }
+
     /// Earliest absolute deadline queued, or `None`.
     /// # C: O(log N)
     pub fn earliest_deadline(&self) -> Option<u64> { self.tree.keys().next().map(|(d, _)| *d) }

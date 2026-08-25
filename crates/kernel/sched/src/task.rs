@@ -9,6 +9,7 @@
 // - signals: sigaction storage plus mm/rlimit accessors.
 // - arch: opaque arch context/FPU buffers and POSIX timer slot type.
 // - methods: constructors/fd-table/stack/context/state/pid; load: blocked-load handoff.
+// - util: task-owned PELT utilization and I/O-wait state for schedutil.
 // - exe_path: pin-locked /proc/<pid>/exe path accessors (clone/with/set).
 // - comm: spinlock-guarded TASK_COMM_LEN `comm` buffer accessors (`prctl`
 //   PR_SET_NAME/PR_GET_NAME, procfs, diagnostics).
@@ -49,7 +50,7 @@ mod mm_slot;
 mod fs_context;
 mod io_context;
 pub mod io_uring;
-mod lifetime; mod load;
+mod lifetime; mod load; mod util;
 mod mempolicy;
 mod methods;
 mod net_namespace;
@@ -208,6 +209,14 @@ pub struct Task {
     /// the list.
     pub on_wake_list: AtomicBool,
     pub cpu:      AtomicU16,
+    /// Linux `se.avg.util_avg`: exponentially decayed runnable utilization.
+    /// It is updated only at scheduler ownership boundaries and consumed by
+    /// the cpufreq update-util hook; it is not reconstructed from tick totals.
+    pub util_avg: AtomicU32,
+    pub util_last_update_ns: AtomicU64,
+    /// Set while this task is parked waiting for a device completion. The
+    /// wake path consumes it to raise schedutil's iowait boost exactly once.
+    pub in_iowait: AtomicBool,
     pub vruntime: AtomicU64,
     /// Monotonic ns this task last (re)started running; update_curr charges
     /// `now - exec_start` to runtime+vruntime then re-stamps. 0 = never-run.

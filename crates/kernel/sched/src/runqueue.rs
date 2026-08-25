@@ -50,6 +50,15 @@ impl RunqueueInner {
         self.dl.nr_running() + self.rt.nr_running() + self.cfs.nr_running()
     }
 
+    /// Aggregate runnable entity utilization, including the task currently
+    /// executing on this CPU. The idle task contributes zero.
+    pub fn util_avg(&self, current: &Task) -> u32 {
+        self.dl.util_avg().saturating_add(self.rt.util_avg())
+            .saturating_add(self.cfs.util_avg())
+            .saturating_add(current.util_avg.load(core::sync::atomic::Ordering::Acquire))
+            .min(1024)
+    }
+
     /// Enqueue a task by class. Idle tasks are rejected — they live in
     /// `self.idle` and never appear on the RT/CFS lists per `13§2`.
     /// # C: O(log N) (CFS) / O(1) (RT)

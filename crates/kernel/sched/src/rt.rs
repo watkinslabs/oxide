@@ -43,6 +43,13 @@ impl RtRunqueue {
     /// # C: O(1)
     pub fn has_runnable(&self) -> bool { self.nonempty != 0 }
 
+    /// Sum runnable RT entity signals for the CPU utilization hook.
+    pub fn util_avg(&self) -> u32 {
+        self.queues.iter().flat_map(|queue| queue.iter())
+            .map(|task| task.util_avg.load(Ordering::Acquire))
+            .fold(0, u32::saturating_add)
+    }
+
     /// Insert at the tail of the priority's FIFO — the wakeup position
     /// (`13§3`).
     /// # C: O(1)

@@ -71,6 +71,7 @@ fn now_ns() -> u64 {
 /// re-select it, starving higher-tid peers (the F144 rotation bug).
 /// Runs before pick + re-enqueue so the re-keyed insert sorts correctly.
 fn update_curr(prev: &Task, inner: &RunqueueInner, now: u64) {
+    prev.update_util(now, true);
     // The deadline class charges wall time against a budget, not vruntime
     // against a weight, so it has its own accounting (`deadline::live`). Doing
     // it HERE — on every schedule-out, not only on the periodic tick — is what
@@ -507,6 +508,15 @@ pub(super) unsafe fn schedule_once(keep_irqs_disabled: bool) {
     }
     // SAFETY: rq.current was just set to the new Arc by swap_current.
     unsafe { rq.current_ref() }.exec_start_ns.store(now, Ordering::Release);
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        let current = unsafe { rq.current_ref() };
+        let _ = current.update_util(now, false);
+        crate::cpufreq_hook::update_from_scheduler(me, inner.util_avg(current),
+                                               unsafe { rq.current_ref() }.take_iowait(), now);
+    }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    let _ = unsafe { rq.current_ref() }.update_util(now, false);
     // SAFETY: rq.current was just set to next and this scheduler context owns
     // the incoming task's CPU ownership transition.
     // Linux `set_task_cpu()` bumps `se.nr_migrations` when a task lands on a
