@@ -150,7 +150,10 @@ fn reject_duplicate_keys(entries: &[FilenameTrans]) -> Result<()> {
     let mut order: Vec<usize> = Vec::new();
     order.try_reserve(entries.len()).map_err(|_| Error::NoMemory)?;
     for i in 0..entries.len() { order.push(i); }
-    order.sort_by(|&a, &b| key_cmp(&entries[a], &entries[b]));
+    // Only adjacency of equal keys matters here; the temporary index order is
+    // not part of the policy. Unstable ordering avoids the stable-sort scratch
+    // path on the task stack while preserving the same duplicate decision.
+    order.sort_unstable_by(|&a, &b| key_cmp(&entries[a], &entries[b]));
     for pair in order.windows(2) {
         if key_cmp(&entries[pair[0]], &entries[pair[1]]) == core::cmp::Ordering::Equal {
             return Err(Error::Duplicate);

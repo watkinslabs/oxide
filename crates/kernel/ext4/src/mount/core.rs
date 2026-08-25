@@ -157,6 +157,7 @@ impl Mount {
                        txn_owner: ::core::sync::atomic::AtomicU64::new(0),
                        txn_depth: ::core::sync::atomic::AtomicU32::new(0),
                        txn_wait: sched::live::WaitList::new(),
+                       committing_batch: ::core::sync::atomic::AtomicBool::new(false),
                        creating: ::core::sync::atomic::AtomicBool::new(false),
                        opts: sync::Spinlock::new(crate::mount_opts::Ext4SbOpts {
                            behaviour, ..Default::default() }),
@@ -275,6 +276,7 @@ impl Mount {
     /// Publish checkpointed metadata into the clean buffer cache. The running
     /// transaction's shadow remains the only source for uncheckpointed bytes.
     /// # C: O(N staged blocks)
+    #[inline(never)]
     pub(super) fn cache_committed(&self, staged: &[StagedBlock]) {
         const META_CACHE_MAX_BLOCKS: usize = 8192;
         let mut s = self.state.lock();
@@ -301,6 +303,7 @@ impl Mount {
     /// buffer cache, then the underlying device.  This is the ext4 equivalent
     /// of Linux's buffer-cache lookup before `sb_bread` submits I/O.
     /// # C: O(log N) cache lookup or O(1) device I/O on a cold block
+    #[inline(never)]
     pub(crate) fn read_metadata_block(&self, lba: u64) -> Result<Vec<u8>, MountError> {
         if let Some(buf) = {
             let s = self.state.lock();
@@ -518,18 +521,30 @@ impl Mount {
     /// in metadata read paths inside a `run_journaled` scope so
     /// staged-but-uncommitted writes are visible.
     /// # C: O(N affected fs blocks)
+    #[inline(never)]
     pub fn read_meta_byte_range(&self, byte_off: u64, len: usize) -> Result<Vec<u8>, MountError> {
+        if len == 0 { return Ok(Vec::new()); }
         let bs = self.sb.block_size as u64;
         let first_blk = byte_off / bs;
-        let last_byte = byte_off + len as u64;
+        let last_byte = byte_off.saturating_add(len as u64);
         let last_blk_excl = (last_byte + bs - 1) / bs;
         let n_blocks = (last_blk_excl - first_blk) as u32;
         let inner_off = (byte_off - first_blk * bs) as usize;
-        let mut full = Vec::with_capacity((n_blocks as usize) * bs as usize);
+        // Assemble the requested range directly.  The previous implementation
+        // first built a complete block-aligned buffer and then cloned the
+        // requested slice, doubling transient metadata allocation during
+        // mount and bitmap reads.  Linux's buffer-cache readers copy only the
+        // bytes requested by the caller; keep the same shadow/cache source
+        // while avoiding that second temporary allocation.
+        let mut out = Vec::with_capacity(len);
         for i in 0..n_blocks as u64 {
-            full.extend_from_slice(&self.read_metadata_block(first_blk + i)?);
+            let block = self.read_metadata_block(first_blk + i)?;
+            let start = if i == 0 { inner_off } else { 0 };
+            let end = core::cmp::min(bs as usize, inner_off + len - out.len());
+            out.extend_from_slice(&block[start..end]);
         }
-        Ok(full[inner_off .. inner_off + len].to_vec())
+        debug_assert_eq!(out.len(), len);
+        Ok(out)
     }
 
     /// Live free-blocks counter (mirrors `s_free_blocks_count`).

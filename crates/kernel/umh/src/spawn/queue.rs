@@ -181,8 +181,29 @@ extern "C" fn khelper(arg: usize) -> ! {
                 // Before running anything: this thread may now block for the
                 // whole lifetime of a helper program, so hand the queue a
                 // successor rather than leaving the next request behind it.
-                if POOL.claim() == Grow::Spawn { start_servicer(GROWN_SERVICER); }
-                run_one(req);
+                let grow = POOL.claim();
+                if grow == Grow::Spawn { start_servicer(GROWN_SERVICER); }
+
+                // Linux's usermodehelper work item hands execution to a
+                // separate helper context.  Keep the dispatcher stack out of
+                // image loading and filesystem setup: those paths can block
+                // and are substantially deeper than queue servicing.  The
+                // one-shot thread takes over this context's pool slot; the
+                // replacement reserved above keeps the dispatcher pool
+                // available for the next request.
+                let tid = sched::live::next_tid();
+                let started = unsafe {
+                    sched::live::spawn_kernel_thread(tid, "umh-exec", run_one_thread, req)
+                };
+                if started.is_ok() {
+                    // The request now owns this context's slot.  The worker
+                    // releases it after publishing the helper result, then
+                    // exits without leaving a waitable kernel-thread zombie.
+                    unsafe { sched::live::kthread_exit(0) }
+                }
+
+                if grow == Grow::Spawn { POOL.spawn_failed(); }
+                fail_one(req);
                 POOL.released();
             }
             // SAFETY: running kthread with no queue lock held; the generic
@@ -193,6 +214,14 @@ extern "C" fn khelper(arg: usize) -> ! {
             }; },
         }
     }
+}
+
+/// Execute one request on a dedicated kernel-thread stack, then return its
+/// pool slot before terminating the short-lived worker.
+extern "C" fn run_one_thread(arg: usize) -> ! {
+    run_one(arg);
+    POOL.released();
+    unsafe { sched::live::kthread_exit(0) }
 }
 
 /// Start one servicing thread against a slot the pool has already reserved.
@@ -233,6 +262,20 @@ fn run_one(arg: usize) {
     // parent, and a helper nobody reaps stays queued as a terminated process
     // forever. A system that runs a helper per crash would accumulate them.
     if let Some(vpid) = pending_child { let _ = super::reap::wait_for(vpid); }
+}
+
+/// Complete a request when its execution worker could not be created.
+fn fail_one(arg: usize) {
+    let req = unsafe { Arc::from_raw(arg as *const Req) };
+    let Some(mut info) = take(&req) else { return };
+    info.retval = -(Errno::Eagain.as_i32());
+    if info.wait == UMH_NO_WAIT {
+        info.free();
+    } else {
+        put(&req, info);
+        req.done.store(true, Ordering::Release);
+        req.wq.wake_all();
+    }
 }
 
 /// Start the helper and fill `info.retval` per its wait mode. Returns the

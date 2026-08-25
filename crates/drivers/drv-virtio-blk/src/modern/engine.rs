@@ -27,6 +27,7 @@ impl BlkState {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
     pub(super) fn do_request(&self, h: u64, type_: u32, sector: u64, data: &mut [u8],
                   is_in: bool, is_flush: bool, data_len: u32, _trace: u16) -> KResult<InHeader> {
         let bounce = h.wrapping_add(self.bounce_pa) as *mut u8;

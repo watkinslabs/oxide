@@ -33,6 +33,7 @@ const HELPER_STACK_BYTES: u64 = 0x10000;
 /// is the case that matters most because it is the usual state of a system with
 /// no helper installed.
 /// # C: O(phdrs) + O(image size)
+#[inline(never)]
 pub fn start(info: &mut SubprocessInfo) -> Result<Arc<sched::Task>, i32> {
     let mm = new_address_space()?;
     let tid = sched::live::next_tid();

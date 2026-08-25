@@ -1,6 +1,7 @@
 use super::*;
 
 impl BlkState {
+    #[inline(never)]
     pub(super) fn wait_for_completion(&self, h: u64, target: u16) -> KResult<()> {
         let used = h.wrapping_add(self.requestq.res.device_pa) as *const u16;
         #[cfg(not(target_os = "oxide-kernel"))]
@@ -56,12 +57,13 @@ impl BlkState {
             }
             #[cfg(target_os = "oxide-kernel")]
             {
-                // Park on BLK_TURN (turn availability), NOT BLK_COMPL: a
-                // request completion must not wake every turn-waiter.
+                // Park on this device's turn wait list, not the shared
+                // completion fan-out: a completion on another device must
+                // not consume this queue's only turn wake.
                 // Register-then-recheck under `inflight` (same B1426 gap:
                 // `release_turn` can run on another cpu between our last poll
                 // and the park registration).
-                park_blk_checked(&BLK_TURN, 0, || {
+                park_blk_checked(&self.turn_wait, 0, || {
                     self.poisoned.load(core::sync::atomic::Ordering::Acquire) || {
                         let g = self.requestq.lock();
                         !g.busy && g.pending.is_empty() && g.deferred.is_empty()
@@ -75,15 +77,17 @@ impl BlkState {
 
     pub(super) fn release_turn(&self) {
         self.requestq.lock().busy = false;
-        // A synchronous owner can have accumulated async requests behind it.
-        // Re-run dispatch before waking a synchronous turn waiter: queue
-        // release is the completion event those requests were waiting for,
-        // and no device completion exists to dispatch them later.
-        self.start_deferred_requests(&self.requestq);
+        // Queue release is a block-dispatch event, not a reason to recurse
+        // into request posting on the caller's filesystem stack. Linux
+        // blk-mq schedules hardware-queue dispatch separately; the registered
+        // completion bottom half owns the same deferred-dispatch transition.
+        // Raising it here also covers a synchronous owner whose completion
+        // was observed directly by its waiter rather than by the walker.
+        block::completion::raise();
         // Hand a still-free turn to exactly ONE FIFO waiter (no herd). The
-        // woken task re-checks the condition and re-parks if dispatch above
+        // woken task re-checks the condition and re-parks if dispatch has
         // consumed the turn or populated the async pending queue.
         #[cfg(target_os = "oxide-kernel")]
-        BLK_TURN.wake_one();
+        self.turn_wait.wake_one();
     }
 }

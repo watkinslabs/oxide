@@ -63,7 +63,7 @@ impl BlkState {
             // Poisoned abort: returns WITHOUT release_turn, so every sleeper on
             // either condition must be roused to re-check and bail.
             #[cfg(target_os = "oxide-kernel")]
-            wake_all_blk_waiters();
+            self.wake_all_blk_waiters();
             return result;
         }
         self.release_turn();

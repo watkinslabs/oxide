@@ -81,6 +81,7 @@ pub fn select_estimate_accuracy(deadline_ns: u64) -> u64 {
 /// accounting tick.
 /// # C: O(N armed)
 /// # Ctx: process
+#[inline(never)]
 pub fn arm(task: &Arc<Task>, soft_ns: u64, slack_ns: u64) {
     if soft_ns == 0 { disarm(task); return; }
     let hard_ns = hard_expiry(soft_ns, slack_ns);

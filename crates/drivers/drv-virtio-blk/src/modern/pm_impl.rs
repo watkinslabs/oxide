@@ -43,7 +43,7 @@ impl BlkPm for BlkFreeze<'_> {
             FreezeStep::FlushConfigWork => {
                 self.dev.cancel_owned_requests(self.reset_confirmed);
                 #[cfg(target_os = "oxide-kernel")]
-                wake_all_blk_waiters();
+                self.dev.wake_all_blk_waiters();
             }
             // The rings are the transport's allocation and are released when
             // it tears the child down; a freeze hands them back through the
@@ -127,7 +127,7 @@ fn unquiesce_state(state: &BlkState) -> bool {
     core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
     state.poisoned.store(false, core::sync::atomic::Ordering::Release);
     #[cfg(target_os = "oxide-kernel")]
-    wake_all_blk_waiters();
+    state.wake_all_blk_waiters();
     true
 }
 
