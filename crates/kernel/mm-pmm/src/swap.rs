@@ -298,7 +298,9 @@ fn activate_inner(name: String, display_name: String, backing: SwapBacking,
     reserved.sort_unstable();
     let discard = discard.for_device(device.supports_discard());
     if backing == SwapBacking::File {
-        validate_file_geometry(file_geometry.as_ref().ok_or(SwapError::Inval)?, layout.slots)?;
+        if let Some(geometry) = file_geometry.as_ref() {
+            validate_file_geometry(geometry, layout.slots)?;
+        }
     } else if file_geometry.is_some() { return Err(SwapError::Inval); }
     let mut area = Area { name, display_name, backing, claimed, draining: false, hibernating: false, priority: DEFAULT_PRIORITY, discard, device: device.clone(), blocks_per_page, file_geometry,
         slots: BTreeMap::new(), slot_count: layout.slots, reserved, next_free: FIRST_DATA_PAGE as usize };
