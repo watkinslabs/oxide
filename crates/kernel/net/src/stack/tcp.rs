@@ -24,6 +24,9 @@ impl NetStack {
     /// Application drains up to `max` bytes from the recv buffer.
     /// # C: O(min(max, recv_buf.len))
     pub fn tcp_recv(&self, entry: &TcpEntry, max: usize) -> Vec<u8> {
+        // Linux serializes process-context socket readers with lock_sock();
+        // the connection spinlock is only the short state/NET_RX lock.
+        let _gate = unsafe { entry.recv_gate.lock() };
         entry.conn.lock().recv(max)
     }
 
@@ -31,14 +34,14 @@ impl NetStack {
     pub fn tcp_recv_with<R, E>(&self, entry: &TcpEntry, max: usize, peek: bool, copy: impl FnOnce(&[u8]) -> Result<(R, usize), E>)
         -> Result<Option<R>, E>
     {
-        entry.conn.lock().recv_with(max, peek, copy)
+        self.tcp_recv_with_offset_oob(entry, max, peek, 0, true, copy)
     }
 
     /// Transactional application receive after a non-consuming logical offset. # C: O(offset + max)
     pub fn tcp_recv_with_offset<R, E>(&self, entry: &TcpEntry, max: usize, peek: bool, offset: usize, copy: impl FnOnce(&[u8]) -> Result<(R, usize), E>)
         -> Result<Option<R>, E>
     {
-        entry.conn.lock().recv_with_offset(max, peek, offset, copy)
+        self.tcp_recv_with_offset_oob(entry, max, peek, offset, true, copy)
     }
 
     /// Transactional normal receive with canonical SO_OOBINLINE behavior. # C: O(offset + max)
@@ -54,17 +57,27 @@ impl NetStack {
         // connection deadlocks permanently. `poll` correctly reporting the
         // sender un-writable turns that deadlock from a busy spin into a stall,
         // so the update has to exist for the writability predicate to be safe.
+        let _gate = unsafe { entry.recv_gate.lock() };
         let (result, update) = {
+            let before = entry.conn.lock().current_rcv_window() as u32;
+            let snapshot = {
+                let conn = entry.conn.lock();
+                conn.snapshot_recv_with_offset_oob(max, offset, inline)
+            };
+            let Some(snapshot) = snapshot else { return Ok(None); };
+            let (result, commit) = copy(&snapshot.bytes)?;
+            {
+                let mut conn = entry.conn.lock();
+                conn.commit_recv_snapshot(&snapshot, commit, peek, inline);
+            }
             let mut conn = entry.conn.lock();
-            let before = conn.current_rcv_window() as u32;
-            let result = conn.recv_with_offset_oob(max, peek, offset, inline, copy);
             let after = conn.current_rcv_window() as u32;
             let raised = after != 0 && after >= before.saturating_mul(2) && after > before;
             let update = if raised && !peek {
                 Some((conn.build_segment(crate::tcp_hdr::flags::ACK, &[]),
                       conn.local.ip, conn.remote.ip, ecn_tos(&conn)))
             } else { None };
-            (result, update)
+            (Ok(Some(result)), update)
         };
         if let Some((seg, src, dst, tos)) = update {
             let _ = self.send_tcp_segment_in(entry.net_ns(), src, dst, &seg, tos,
@@ -77,10 +90,15 @@ impl NetStack {
     pub fn tcp_recv_urgent<E>(&self, entry: &TcpEntry, peek: bool, copy: impl FnOnce(&[u8]) -> Result<(), E>)
         -> Result<Option<u8>, E>
     {
-        let mut conn = entry.conn.lock();
-        let Some((_, byte)) = conn.peek_urgent() else { return Ok(None); };
+        // Linux's lock_sock() serializes process-context receive operations,
+        // while the transport state lock is held only for the snapshot and
+        // commit. The user copy may fault and schedule.
+        let _gate = unsafe { entry.recv_gate.lock() };
+        let Some((seq, byte)) = ({ entry.conn.lock().peek_urgent() }) else {
+            return Ok(None);
+        };
         copy(&[byte])?;
-        if !peek { conn.take_urgent(); }
+        if !peek { entry.conn.lock().take_urgent_if(seq); }
         Ok(Some(byte))
     }
 

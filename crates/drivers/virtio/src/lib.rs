@@ -99,6 +99,10 @@ pub const VIRTIO_STATUS_DRIVER_OK:   u8 = 4;
 pub const VIRTIO_STATUS_FEATURES_OK: u8 = 8;
 pub const VIRTIO_STATUS_FAILED:      u8 = 0x80;
 
+/// Virtio-pci legacy ISR status bits. Reading the ISR acknowledges the line.
+pub const VIRTIO_PCI_ISR_QUEUE: u8 = 0x1;
+pub const VIRTIO_PCI_ISR_CONFIG: u8 = 0x2;
+
 /// Common feature bits (high bits = device-specific).
 pub const VIRTIO_F_VERSION_1: u64 = 1 << 32;
 pub const VIRTIO_F_RING_INDIRECT_DESC: u64 = 1 << 28;

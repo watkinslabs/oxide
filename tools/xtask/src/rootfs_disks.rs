@@ -4,7 +4,7 @@
 // - root-<arch>.img : the base distro + tools, staged in place by cmd_rootfs,
 //   plus empty mount-point dirs /home and /usr/local added here. Identified by
 //   the kernel via virtio-blk serial `oxide-root`.
-// - home-<arch>.img : small (64 MiB) ext4 with /oxide (0755, uid/gid 1000)
+// - home-<arch>.img : desktop-sized (512 MiB) ext4 with /oxide (0755, uid/gid 1000)
 //   at its filesystem root.  It is mounted at /home, so this appears to
 //   userspace as /home/oxide.  Serial `oxide-home`.
 //
@@ -274,7 +274,7 @@ fn dbg_ignore(img: &Path, cmd: &str) {
     let _ = dbg(img, cmd);
 }
 
-/// home disk = fresh 64 MiB ext4 with /oxide owned by uid/gid 1000 (mode
+/// home disk = fresh 512 MiB ext4 with /oxide owned by uid/gid 1000 (mode
 /// 0755).  The disk is mounted at /home, mirroring rootfs's oxide passwd
 /// entry without accidentally adding a second /home path component.
 fn build_home(blobs: &std::path::Path, arch: &str) -> Result<(), u8> {
@@ -284,7 +284,7 @@ fn build_home(blobs: &std::path::Path, arch: &str) -> Result<(), u8> {
         let mut c = Command::new("dd");
         c.args(["if=/dev/zero",
                 &format!("of={}", home_img.display()),
-                "bs=1M", "count=64"]);
+                "bs=1M", "count=512"]);
         run(c)?;
     }
     {

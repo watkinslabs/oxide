@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
 use super::{
-    MsixBinding, TransportMappings, publish_transport_record,
+    LegacyBinding, MsixBinding, TransportMappings, publish_transport_record,
     release_failed_probe_frames, release_msix_bindings, reset_failed_probe,
     restore_pci_command,
 };
@@ -15,6 +15,7 @@ pub(crate) struct VirtioProbeDevres {
     queue_resources: [virtio::VirtQueueResource; virtio::MAX_RESOURCE_QUEUES],
     mappings: TransportMappings,
     msix: Vec<MsixBinding>,
+    legacy: Option<LegacyBinding>,
     frames: virtio::VirtioProbeOwnedFrames,
     lease: virtio::VirtioProbeLease,
 }
@@ -29,6 +30,7 @@ impl VirtioProbeDevres {
         queue_resources: [virtio::VirtQueueResource; virtio::MAX_RESOURCE_QUEUES],
         mappings: TransportMappings,
         msix: Vec<MsixBinding>,
+        legacy: Option<LegacyBinding>,
         frames: virtio::VirtioProbeOwnedFrames,
     ) -> Self {
         Self {
@@ -37,6 +39,7 @@ impl VirtioProbeDevres {
             cfg_va, hhdm, drv_features, queue_resources,
             mappings,
             msix,
+            legacy,
             frames,
             lease: virtio::VirtioProbeLease::live(),
         }
@@ -49,6 +52,7 @@ impl VirtioProbeDevres {
         let frames = self.frames.take_all();
         let quiesced = reset_failed_probe(self.cfg_va);
         release_msix_bindings(&mut self.msix);
+        if let Some(legacy) = self.legacy.take() { legacy.release(); }
         restore_pci_command(self.bdf, self.command_orig);
         self.mappings.unmap_all();
         // Unconfirmed reset ⇒ the device may still hold these frames in a
@@ -72,6 +76,7 @@ impl VirtioProbeDevres {
             core::mem::take(&mut self.mappings),
             self.frames.take_vring_frames(),
             core::mem::take(&mut self.msix),
+            self.legacy.take(),
         );
     }
 }

@@ -60,6 +60,12 @@ static CANCELLED_ONESHOTS: Spinlock<Vec<u64>, TimerLock> = Spinlock::new(Vec::ne
 /// Bound on retained straggler cancelled-ids (ids monotonic, never reused, so
 /// dropping an old straggler can never mis-skip a future one-shot).
 const CANCELLED_CAP: usize = 1024;
+/// The timer worker deliberately drains in bounded batches.  Keep the batch
+/// on its stack so the timer spinlocks are never held across an allocator
+/// call.  This is the same ownership boundary as Linux's preallocated
+/// `timer_list`/`hrtimer` nodes: the wheel lock protects the tree, while
+/// callback staging belongs outside that critical section.
+const DISPATCH_BATCH: usize = 32;
 
 /// Register a periodic callback fired roughly every `interval_ns` from the
 /// timer driver's process context (safe to take runqueue/subsystem locks).
@@ -170,7 +176,7 @@ pub fn run_state() -> (usize, usize) {
 /// registry lock held, so a callback may itself arm timers.
 /// # C: O(N registered) + callback cost
 pub fn run_due(now_ns: u64) {
-    let _ = run_due_budgeted(now_ns, usize::MAX);
+    while run_due_budgeted(now_ns, DISPATCH_BATCH) {}
 }
 
 /// Fire at most `budget` elapsed callbacks. The return value says another
@@ -179,34 +185,59 @@ pub fn run_due(now_ns: u64) {
 /// Callbacks run without either registry lock held.
 /// # C: O(N registered) + O(`budget` callback cost)
 pub fn run_due_budgeted(now_ns: u64, budget: usize) -> bool {
-    let mut due: Vec<TimerFn> = Vec::new();
-    let mut one: Vec<(TimerId, OneShot)> = Vec::new();
+    let limit = budget.min(DISPATCH_BATCH);
+    if limit == 0 { return has_due(now_ns); }
+    // These are intentionally fixed-size.  `TIMERS` and `ONESHOTS` are
+    // spinlocks (Linux timer-base locks); growing a Vec while either lock is
+    // held can enter reclaim and leave another CPU spinning forever with IRQs
+    // disabled — exactly the shape reported by the GNOME boot watchdog in
+    // `scan-oneshot`.
+    let mut due: [Option<TimerFn>; DISPATCH_BATCH] = [None; DISPATCH_BATCH];
+    let mut due_len = 0;
+    let mut due_ids: [Option<TimerId>; DISPATCH_BATCH] = [None; DISPATCH_BATCH];
+    let mut due_id_len = 0;
     RUN_PHASE.store(PHASE_SCAN_PERIODIC, Ordering::Relaxed);
     {
         let mut g = TIMERS.lock();
         for e in g.iter_mut() {
-            if due.len() >= budget { break; }
+            if due_len >= limit { break; }
             if now_ns.saturating_sub(e.last_ns) >= e.interval_ns {
                 e.last_ns = now_ns;
-                due.push(e.f);
+                due[due_len] = Some(e.f);
+                due_len += 1;
             }
         }
     }
     RUN_PHASE.store(PHASE_SCAN_ONESHOT, Ordering::Relaxed);
     {
+        let g = ONESHOTS.lock();
+        for (id, entry) in g.iter() {
+            if due_id_len >= limit.saturating_sub(due_len) { break; }
+            if now_ns >= entry.deadline_ns {
+                due_ids[due_id_len] = Some(*id);
+                due_id_len += 1;
+            }
+        }
+    }
+    // Removal is a separate lock hold so no callback staging/allocation is
+    // performed while walking the ordered timer owner.  A concurrent cancel
+    // may have removed an id already; that is the expected harmless race.
+    let mut one: [Option<(TimerId, OneShot)>; DISPATCH_BATCH] =
+        core::array::from_fn(|_| None);
+    let mut one_len = 0;
+    {
         let mut g = ONESHOTS.lock();
-        let due_ids: Vec<TimerId> = g.iter()
-            .filter_map(|(id, entry)| (now_ns >= entry.deadline_ns).then_some(*id))
-            .take(budget.saturating_sub(due.len()))
-            .collect();
-        for id in due_ids {
-            if let Some(entry) = g.remove(&id) { one.push((id, entry)); }
+        for id in due_ids[..due_id_len].iter().flatten() {
+            if let Some(entry) = g.remove(id) {
+                one[one_len] = Some((*id, entry));
+                one_len += 1;
+            }
         }
     }
     RUN_PHASE.store(PHASE_FIRE_PERIODIC, Ordering::Relaxed);
-    for f in due {
-        RUN_FN.store(f as usize, Ordering::Relaxed);
-        f(now_ns);
+    for f in due[..due_len].iter().flatten() {
+        RUN_FN.store(*f as usize, Ordering::Relaxed);
+        (*f)(now_ns);
     }
     RUN_FN.store(0, Ordering::Relaxed);
     RUN_PHASE.store(PHASE_FIRE_ONESHOT, Ordering::Relaxed);
@@ -214,7 +245,7 @@ pub fn run_due_budgeted(now_ns: u64, budget: usize) -> bool {
     // drain→fire window (checked live per-fire — the owner may cancel between
     // earlier fires and this one). A cancelled one-shot's arg object is being
     // released by its owner; firing f(arg) on it would be a stale-pointer write.
-    for (id, entry) in one {
+    for (id, entry) in one[..one_len].iter_mut().filter_map(Option::take) {
         let cancelled = {
             let mut c = CANCELLED_ONESHOTS.lock();
             match c.iter().position(|&x| x == id.raw()) {
@@ -417,5 +448,17 @@ mod tests {
         assert_eq!(A.load(Ordering::Relaxed), 2);
         assert!(!run_due_budgeted(10, 2));
         assert_eq!(A.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn unbudgeted_dispatch_drains_more_than_one_stack_batch() {
+        let _wheel = claim_wheel();
+        for _ in 0..(DISPATCH_BATCH + 8) {
+            register_oneshot(10, 1, |v| { A.fetch_add(v as u64, Ordering::Relaxed); });
+        }
+
+        run_due(10);
+
+        assert_eq!(A.load(Ordering::Relaxed), (DISPATCH_BATCH + 8) as u64);
     }
 }

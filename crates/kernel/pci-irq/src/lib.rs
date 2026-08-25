@@ -152,6 +152,24 @@ pub fn request_intx(bdf: pci::Bdf, route: IntxRoute, action: arch_irq::DeviceAct
     { let _ = (bdf, route, action, handler); None }
 }
 
+/// Request the device's legacy INTx line through the firmware-owned PCI route.
+/// This is the driver-facing counterpart of Linux `pci_dev->irq`: the PCI
+/// core reads and swizzles the device pin, then asks the platform route owner
+/// for the interrupt-controller input before programming the line.
+/// # C: O(capabilities + N_vectors + IRTE scan)
+pub fn request_intx_resolved(bdf: pci::Bdf, action: arch_irq::DeviceAction,
+    handler: fn()) -> Option<Binding> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let reader = hal_x86_64::pci::EcamPci::from_published()?;
+        let pin = pci::read8(&reader, bdf, pci::uapi::INTERRUPT_PIN_OFF);
+        let (route_bdf, route_pin) = pci::swizzle_intx_to_root(&reader, bdf, pin)?;
+        resolved_intx(route_bdf, route_pin).and_then(|route| request_intx(bdf, route, action, handler))
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    { let _ = (bdf, action, handler); None }
+}
+
 /// Linux `pci_irq_vector(dev, 0)` equivalent for this single-vector owner.
 /// # C: O(1)
 pub const fn irq(binding: Binding) -> u32 { binding.irq }
