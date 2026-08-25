@@ -141,6 +141,7 @@ claiming errno values, error ordering, capability checks, layouts, or flag masks
 - Error cap: **1000 lines** per `.rs` or `.md` file. CI/spec-lint fails above this. Applies to our source in `crates/**`, `kernel/**`, `tools/**`, `docs/**` (excluding `docs/v2/`, `vendor/**`, and `vendors/**`). Imported third-party vendor code is not subject to line caps.
 - Split big files into submodules: Rust `mod foo; foo/{a.rs,b.rs}`; markdown into sister docs cross-referenced via `<doc>§<sec>`.
 - Tests count toward the cap — split `tests.rs` into `tests/<feature>.rs` once it grows.
+- Tests for a module live in that module's `tests/` directory (`tests/<feature>.rs`), not beside production files. Keep the parent module's test declaration as a path-only manifest entry.
 - Parent module files are manifests: keep a short `Module manifest` comment near the top that names each child module and its owned responsibility. The parent coordinates/re-exports; it must not contain implementation logic, tests, long impl blocks, dispatch bodies, policy, backend translation, or helper piles.
 
 ## Crate/module shape rules
