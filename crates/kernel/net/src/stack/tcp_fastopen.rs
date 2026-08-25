@@ -135,5 +135,5 @@ impl Plan {
 }
 
 #[cfg(test)]
-#[path = "tcp_fastopen_tests.rs"]
+#[path = "tcp_fastopen_tests/mod.rs"]
 mod tests;
