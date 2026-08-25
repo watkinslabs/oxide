@@ -7,6 +7,13 @@ use net::sock_opts::SenderCreds;
 
 use crate::NetlinkSocket;
 
+#[path = "receive/queue.rs"]
+mod queue;
+pub(crate) use queue::ReceiveQueue;
+#[path = "receive/errors.rs"]
+mod errors;
+pub(crate) use errors::vfs_error;
+
 #[cfg(feature = "debug-netlink")]
 fn trace_rx(event: &'static [u8], value: usize) {
     klog::write_raw(b"[NL-RX event=");
@@ -14,38 +21,6 @@ fn trace_rx(event: &'static [u8], value: usize) {
     klog::write_raw(b" value=");
     klog::write_dec_u64(value as u64);
     klog::write_raw(b"]\n");
-}
-
-/// One socket-owned NETLINK receive queue.  Byte accounting is retained with
-/// the datagrams so multicast overrun and `sk_err` share one canonical owner.
-pub(crate) struct ReceiveQueue {
-    datagrams: alloc::collections::VecDeque<(Vec<u8>, u32, u32, Option<i32>, SenderCreds, Option<Vec<u8>>)>,
-    pub(crate) bytes: usize,
-}
-
-impl ReceiveQueue {
-    pub(crate) const fn new() -> Self {
-        Self { datagrams: alloc::collections::VecDeque::new(), bytes: 0 }
-    }
-
-    fn charge(bytes: &Vec<u8>) -> usize {
-        bytes.capacity().saturating_add(core::mem::size_of::<(Vec<u8>, u32, u32, Option<i32>, SenderCreds, Option<Vec<u8>>)>() )
-    }
-
-    /// Charge one datagram to the queue budget and queue it. # C: O(1)
-    pub(crate) fn push(&mut self, bytes: Vec<u8>, src_port: u32, multicast_group: u32, nsid: Option<i32>, creds: SenderCreds,
-        security: Option<Vec<u8>>) {
-        self.bytes = self.bytes.saturating_add(Self::charge(&bytes));
-        self.datagrams.push_back((bytes, src_port, multicast_group, nsid, creds, security));
-    }
-
-    fn pop(&mut self) -> Option<(Vec<u8>, u32, u32, Option<i32>, SenderCreds, Option<Vec<u8>>)> {
-        let dgram = self.datagrams.pop_front()?;
-        self.bytes = self.bytes.saturating_sub(Self::charge(&dgram.0));
-        Some(dgram)
-    }
-
-    pub(crate) fn is_empty(&self) -> bool { self.datagrams.is_empty() }
 }
 
 /// One kernel-owned NETLINK datagram removed from, or observed at, the RX head.
@@ -70,64 +45,6 @@ pub enum ReceiveState {
     Datagram(ReceivedDatagram),
     Error(i32),
     Empty,
-}
-
-pub(crate) fn vfs_error(errno: i32) -> vfs::VfsError {
-    match errno {
-        x if x == vfs::VfsError::Eperm as i32 => vfs::VfsError::Eperm,
-        x if x == vfs::VfsError::Enoent as i32 => vfs::VfsError::Enoent,
-        x if x == vfs::VfsError::Esrch as i32 => vfs::VfsError::Esrch,
-        x if x == vfs::VfsError::Eintr as i32 => vfs::VfsError::Eintr,
-        x if x == vfs::VfsError::Eio as i32 => vfs::VfsError::Eio,
-        x if x == vfs::VfsError::Enxio as i32 => vfs::VfsError::Enxio,
-        x if x == vfs::VfsError::Ebadf as i32 => vfs::VfsError::Ebadf,
-        x if x == vfs::VfsError::Enomem as i32 => vfs::VfsError::Enomem,
-        x if x == vfs::VfsError::Eacces as i32 => vfs::VfsError::Eacces,
-        x if x == vfs::VfsError::Efault as i32 => vfs::VfsError::Efault,
-        x if x == vfs::VfsError::Eexist as i32 => vfs::VfsError::Eexist,
-        x if x == vfs::VfsError::Exdev as i32 => vfs::VfsError::Exdev,
-        x if x == vfs::VfsError::Enodev as i32 => vfs::VfsError::Enodev,
-        x if x == vfs::VfsError::Enotdir as i32 => vfs::VfsError::Enotdir,
-        x if x == vfs::VfsError::Eisdir as i32 => vfs::VfsError::Eisdir,
-        x if x == vfs::VfsError::Einval as i32 => vfs::VfsError::Einval,
-        x if x == vfs::VfsError::Emfile as i32 => vfs::VfsError::Emfile,
-        x if x == vfs::VfsError::Enotty as i32 => vfs::VfsError::Enotty,
-        x if x == vfs::VfsError::Etxtbsy as i32 => vfs::VfsError::Etxtbsy,
-        x if x == vfs::VfsError::Efbig as i32 => vfs::VfsError::Efbig,
-        x if x == vfs::VfsError::Espipe as i32 => vfs::VfsError::Espipe,
-        x if x == vfs::VfsError::Emlink as i32 => vfs::VfsError::Emlink,
-        x if x == vfs::VfsError::Eagain as i32 => vfs::VfsError::Eagain,
-        x if x == vfs::VfsError::Epipe as i32 => vfs::VfsError::Epipe,
-        x if x == vfs::VfsError::Erange as i32 => vfs::VfsError::Erange,
-        x if x == vfs::VfsError::Erofs as i32 => vfs::VfsError::Erofs,
-        x if x == vfs::VfsError::Ebusy as i32 => vfs::VfsError::Ebusy,
-        x if x == vfs::VfsError::Enospc as i32 => vfs::VfsError::Enospc,
-        x if x == vfs::VfsError::Enotempty as i32 => vfs::VfsError::Enotempty,
-        x if x == vfs::VfsError::Enosys as i32 => vfs::VfsError::Enosys,
-        x if x == vfs::VfsError::Eloop as i32 => vfs::VfsError::Eloop,
-        x if x == vfs::VfsError::Ebade as i32 => vfs::VfsError::Ebade,
-        x if x == vfs::VfsError::Enodata as i32 => vfs::VfsError::Enodata,
-        x if x == vfs::VfsError::Emsgsize as i32 => vfs::VfsError::Emsgsize,
-        x if x == vfs::VfsError::Enonet as i32 => vfs::VfsError::Enonet,
-        x if x == vfs::VfsError::Enoprotoopt as i32 => vfs::VfsError::Enoprotoopt,
-        x if x == vfs::VfsError::Eproto as i32 => vfs::VfsError::Eproto,
-        x if x == vfs::VfsError::Ehostdown as i32 => vfs::VfsError::Ehostdown,
-        x if x == vfs::VfsError::Eopnotsupp as i32 => vfs::VfsError::Eopnotsupp,
-        x if x == vfs::VfsError::Edestaddrreq as i32 => vfs::VfsError::Edestaddrreq,
-        x if x == vfs::VfsError::Eaddrnotavail as i32 => vfs::VfsError::Eaddrnotavail,
-        x if x == vfs::VfsError::Enetunreach as i32 => vfs::VfsError::Enetunreach,
-        x if x == vfs::VfsError::Ehostunreach as i32 => vfs::VfsError::Ehostunreach,
-        x if x == vfs::VfsError::Enobufs as i32 => vfs::VfsError::Enobufs,
-        x if x == vfs::VfsError::Enametoolong as i32 => vfs::VfsError::Enametoolong,
-        x if x == vfs::VfsError::Enotconn as i32 => vfs::VfsError::Enotconn,
-        x if x == vfs::VfsError::Econnreset as i32 => vfs::VfsError::Econnreset,
-        x if x == vfs::VfsError::Etimedout as i32 => vfs::VfsError::Etimedout,
-        x if x == vfs::VfsError::Econnrefused as i32 => vfs::VfsError::Econnrefused,
-        x if x == vfs::VfsError::Euclean as i32 => vfs::VfsError::Euclean,
-        x if x == vfs::VfsError::Ecanceled as i32 => vfs::VfsError::Ecanceled,
-        x if x == vfs::VfsError::Edquot as i32 => vfs::VfsError::Edquot,
-        _ => vfs::VfsError::Eio,
-    }
 }
 
 impl NetlinkSocket {
