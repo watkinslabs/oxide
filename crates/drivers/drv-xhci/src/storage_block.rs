@@ -8,7 +8,8 @@ use alloc::vec::Vec;
 use block::{BlockError, KResult, QueueLimits};
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use crate::probe::{control_complete, storage_command, UsbDevice};
+use crate::probe::{control_complete, UsbDevice};
+use crate::storage_command::storage_command;
 
 struct UsbStorageTransport {
     device: Arc<UsbDevice>,
