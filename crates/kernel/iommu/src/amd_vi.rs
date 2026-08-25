@@ -1,4 +1,7 @@
 /// AMD-Vi MMIO register offsets used by the initial translation path.
+#[path = "amd_vi/registers.rs"]
+mod registers;
+pub use registers::AmdViRegisters;
 pub const DEVICE_TABLE: u64 = 0x0000;
 pub const COMMAND_BUFFER: u64 = 0x0008;
 pub const EVENT_LOG: u64 = 0x0010;
@@ -299,30 +302,6 @@ impl AmdViTables {
     }
 }
 
-/// Owned AMD-Vi register aperture. It is mapped as device memory and may only
-/// be enabled after its device and command tables are programmed.
-pub struct AmdViRegisters { map: mmio_map::Mapping }
-impl AmdViRegisters {
-    /// Map a validated IVRS register aperture. # C: O(page-table depth * pages)
-    pub unsafe fn map(mmio_pa: u64) -> Option<Self> {
-        if mmio_pa & (PAGE_BYTES - 1) != 0 { return None; }
-        // SAFETY: caller proved IVRS ownership of this aligned AMD-Vi aperture.
-        Some(Self { map: unsafe { mmio_map::map_owned(mmio_pa, MMIO_BYTES / PAGE_BYTES) } })
-    }
-    /// Volatile 64-bit register read. # C: O(1)
-    pub fn read64(&self, offset: u64) -> Option<u64> {
-        if offset & 7 != 0 || offset >= MMIO_BYTES { return None; }
-        // SAFETY: offset is aligned and inside this owned Device mapping.
-        Some(unsafe { core::ptr::read_volatile((self.map.base_va() + offset) as *const u64) })
-    }
-    /// Volatile 64-bit register write. # C: O(1)
-    pub fn write64(&self, offset: u64, value: u64) -> bool {
-        if offset & 7 != 0 || offset >= MMIO_BYTES { return false; }
-        // SAFETY: offset is aligned and inside this owned Device mapping.
-        unsafe { core::ptr::write_volatile((self.map.base_va() + offset) as *mut u64, value) }; true
-    }
-}
-
 /// Hardware activation state. Each transition corresponds to a required
 /// completed ownership step; translation cannot precede attached domains.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -498,4 +477,6 @@ const FIRMWARE_QUIESCE_ORDER: [u64; 9] = [
     CONTROL_IRT_CACHE_DISABLE,
 ];
 
-#[cfg(test)] mod tests;
+#[cfg(test)]
+#[path = "amd_vi/tests/mod.rs"]
+mod tests;
