@@ -28,7 +28,31 @@ impl Mount {
             super::first_csum_failure(b"inode", ino as u64, byte_off);
             return Err(MountError::BadChecksum);
         }
-        let mut node = Inode::parse(&buf, &self.sb)?;
+        let mut node = match Inode::parse(&buf, &self.sb) {
+            Ok(node) => node,
+            Err(error) => {
+                #[cfg(feature = "debug-fillverify")]
+                {
+                    klog::write_raw(b"[FILLVERIFY] inode-parse failed ino=");
+                    klog::write_dec_u64(ino as u64);
+                    klog::write_raw(b" byte-off=");
+                    klog::write_hex_u64(byte_off);
+                    klog::write_raw(b" got=");
+                    klog::write_dec_u64(buf.len() as u64);
+                    klog::write_raw(b" need=");
+                    klog::write_dec_u64(self.sb.inode_size as u64);
+                    klog::write_raw(b" why=");
+                    let label: &'static [u8] = match error {
+                        InodeError::BadLen => b"bad-len",
+                        InodeError::BadExtentMagic => b"bad-extent-magic",
+                        InodeError::TooManyExtents => b"too-many-extents",
+                    };
+                    klog::write_raw(label);
+                    klog::write_raw(b"\n");
+                }
+                return Err(MountError::Inode(error));
+            }
+        };
         node.ino = ino; // stamp so dir/extent-block verify can key the inode seed
         Ok(node)
     }
