@@ -236,21 +236,18 @@ pub fn signal_wake_up(task: &alloc::sync::Arc<crate::Task>) {
     super::resched_curr(target_cpu as u32);
 }
 
-/// vfork completion (Linux `vfork_done`): clear the departing child's
-/// `vfork_pending` and, if it was actually set (a genuine CLONE_VFORK child),
-/// wake the parent parked in `sys_clone`'s vfork wait. The `swap` gates the
-/// wake — a non-vfork child, or a second departure event, never spuriously
-/// wakes its parent. Called from EVERY child-departure site: execve-success,
-/// exit / exit_group, and signal-death — so a vfork child that dies any way
-/// (not just via the exit syscall) still releases the parent. Replaces the
-/// old busy-yield model where the parent spun Runnable and starved a vfork
-/// child that blocked in a syscall (UP deadlock, dead timer).
+/// vfork completion (Linux `vfork_done`): complete the departing child's
+/// child-owned completion and wake the parent parked in `sys_clone`'s vfork
+/// wait. The completion's one-shot transition gates the wake — a non-vfork
+/// child, or a second departure event, never spuriously wakes its parent.
+/// Called from EVERY child-departure site: execve-success, exit / exit_group,
+/// and signal-death — so a vfork child that dies any way (not just via the exit
+/// syscall) still releases the parent. Replaces the old busy-yield model where
+/// the parent spun Runnable and starved a vfork child that blocked in a syscall
+/// (UP deadlock, dead timer).
 /// # C: O(1) + one wake
 pub fn vfork_done(child: &crate::Task) {
-    use core::sync::atomic::Ordering;
-    if child.vfork_pending.swap(false, Ordering::AcqRel) {
-        super::vfork_wait::wake(child);
-    }
+    child.vfork_completion.complete();
 }
 
 /// VFS fasync (`O_ASYNC`) SIGIO delivery (Linux `send_sigio` -> `do_send_sig_info`

@@ -456,7 +456,7 @@ impl Task {
             clear_child_tid: AtomicU64::new(0),
             set_child_tid: AtomicU64::new(0),
             restart_block: super::restart::RestartBlock::new(),
-            vfork_pending: AtomicBool::new(false),
+            vfork_completion: Arc::new(crate::vfork_completion::VforkCompletion::new()),
             park_site: crate::park_site::ParkSite::new(),
             hung_last_switch_count: AtomicU64::new(0),
             hung_last_switch_ns: AtomicU64::new(0),
