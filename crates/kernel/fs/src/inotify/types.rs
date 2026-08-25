@@ -19,6 +19,8 @@ impl ReadWaiters {
 
 use vfs::InodeRef;
 
+pub(crate) use crate::inotify::event::Event;
+
 /// Every inotify/fanotify group used to carry the SAME number, the base of its
 /// range. Linux gives each anon inode its own; userspace separates two
 /// descriptions by `(st_dev, st_ino)`, so every group in the system reported
@@ -414,63 +416,6 @@ pub(crate) fn perm_delta(old: u32, new: u32) {
     let (o, n) = ((old & PERM_BITS) != 0, (new & PERM_BITS) != 0);
     if n && !o { PERM_MARK_COUNT.fetch_add(1, Ordering::AcqRel); }
     else if o && !n { PERM_MARK_COUNT.fetch_sub(1, Ordering::AcqRel); }
-}
-
-/// One queued notification. Most fields are common to every family; the tail
-/// carries the payload only one family has, so a record that is not of that
-/// family leaves it at the zero value (`Default`) and every construction site
-/// names only what it actually reports.
-#[derive(Default)]
-pub(crate) struct Event {
-    pub(crate) wd:     i32,
-    pub(crate) mask:   u32,
-    pub(crate) cookie: u32,
-    /// Linux `inotify_event_info::name` — the affected dir-entry leaf, held as
-    /// raw bytes. Non-empty exactly when the event was reported on a WATCHED
-    /// DIRECTORY about an entry inside it (create/delete/move, and any child
-    /// open/access/modify/close reaching the parent's mark); empty for an event
-    /// on the watched object itself. The wire `len` is derived from this at
-    /// read time (`layout::round_event_name_len`) and is the PADDED length.
-    pub(crate) name:   Vec<u8>,
-    /// fanotify only: the object that triggered the event (read() opens a
-    /// fresh fd to it for `fanotify_event_metadata.fd`). `None` for inotify.
-    pub(crate) obj:    Option<InodeRef>,
-    /// fanotify only: pid that caused the event (captured at fire time).
-    pub(crate) pid:    u32,
-    /// Set exactly on a `FAN_*_PERM` record: the shared state the accessing
-    /// task is parked on. Its presence is what makes the record unmergeable
-    /// and what a reader keys the minted descriptor to.
-    pub(crate) perm:   Option<Arc<PermState>>,
-    /// The mount a `FAN_MNT_ATTACH`/`FAN_MNT_DETACH` record is about, reported
-    /// in a `FAN_EVENT_INFO_TYPE_MNT` info record. `0` on every other record —
-    /// mount ids start at 1, so it is never a real mount.
-    pub(crate) mnt_id: u64,
-    /// `FAN_RENAME` only: the DESTINATION parent directory. The SOURCE parent
-    /// is the ordinary `obj`/`name` pair, so ONE record carries both halves of
-    /// the rename and userspace never has to re-pair two events. `None` on
-    /// every other record, and also on a rename reported to a mark that covers
-    /// only the destination — such a mark is told the new parent alone, in
-    /// `obj`/`name`.
-    pub(crate) dir2:   Option<InodeRef>,
-    /// `FAN_RENAME` only: the entry name inside `dir2`.
-    pub(crate) name2:  Vec<u8>,
-    /// `FAN_FS_ERROR` only: the errno the filesystem reported, as the POSITIVE
-    /// number userspace reads out of the record.
-    pub(crate) error:  i32,
-    /// The `st_dev` of the filesystem a record whose object is the FILESYSTEM
-    /// itself is about (`FAN_FS_ERROR`). Every other family derives its fsid
-    /// from `obj`, which such a record may not have — a corrupt filesystem
-    /// often cannot name an inode at all.
-    pub(crate) fsid:   u64,
-    /// `FAN_FS_ERROR` only: how many errors this record stands for. Starts at
-    /// 1 and rises every time another error on the same filesystem is folded
-    /// into it, so a filesystem failing continuously produces one record with a
-    /// climbing count instead of flooding the queue.
-    pub(crate) err_count: u32,
-    /// `FAN_PRE_ACCESS` only: the PAGE-ALIGNED byte range the access covers, as
-    /// `(offset, count)`. `None` when the access names no range — such an event
-    /// carries no range record at all.
-    pub(crate) range:  Option<(u64, u64)>,
 }
 
 pub struct InotifyData {
