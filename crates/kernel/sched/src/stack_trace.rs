@@ -82,8 +82,9 @@ mod tests {
         words[0] = base + 16;
         words[1] = 0xaaaa;
         words[2] = 0;
-        core::hint::black_box(&mut words[3]);
-        words[3] = 0xbbbb;
+        // Keep the synthetic return address visible through the raw frame
+        // walk even when the optimizer cannot see that pointer read.
+        unsafe { core::ptr::write_volatile(words.as_mut_ptr().add(3), 0xbbbb); }
         let mut out = Vec::new();
         walk_frames(base, base + 64, base, base, &mut out);
         assert_eq!(out, [0xaaaa, 0xbbbb]);

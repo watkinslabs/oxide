@@ -23,6 +23,17 @@ mod netlink_fd {
 
 pub fn access_ok(ptr: u64, len: usize) -> bool { len == 0 || ptr != 0 }
 
+/// Hosted stand-in for the kernel exception-table usercopy. The test passes
+/// real host buffers as user addresses, so copying preserves the production
+/// `sys_read` contract instead of merely making the included source compile.
+pub fn copy_to_user(dst: u64, src: &[u8]) -> Result<(), Errno> {
+    if dst == 0 { return Err(Errno::Efault); }
+    // SAFETY: callers provide a host buffer and the shape test bounds the
+    // source to the destination allocation it supplied.
+    unsafe { core::ptr::copy_nonoverlapping(src.as_ptr(), dst as *mut u8, src.len()); }
+    Ok(())
+}
+
 // The message-ABI layout the slot passes through; the read path is always
 // native, so the stub carries just enough of the shape to compile.
 mod msg_layout {
