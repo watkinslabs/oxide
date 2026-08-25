@@ -4,6 +4,9 @@ use sync::{Spinlock, Socket as SocketLockClass};
 use super::ingress::EgressLease;
 use super::{NetDev, NetError, NetResult};
 
+#[path = "tx_dispatch/queue.rs"]
+mod tx_queue;
+
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 macro_rules! tx_lock { ($lock:expr) => { $lock.lock_irqsave::<hal_x86_64::X86IrqGate>() }; }
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
@@ -255,43 +258,6 @@ impl TxDispatch {
     }
 }
 
-impl TxQueue {
-    const fn new() -> Self {
-        Self { draining: false, head: [0; super::tx_band::TX_BANDS],
-            len: [0; super::tx_band::TX_BANDS], jobs: Vec::new() }
-    }
-
-    /// A band is full on its own; a low-priority flood cannot take the slots a
-    /// higher-priority one would use.
-    fn full(&self, band: usize) -> bool { self.len[band] == TX_BAND_CAPACITY }
-
-    /// Materialise the rings on first use. Kept out of `new` so that stays
-    /// `const`; each band's `len` is bounded by `TX_BAND_CAPACITY`, so the
-    /// slots are allocated exactly once and never grow after this.
-    fn ensure_slots(&mut self) {
-        if self.jobs.is_empty() {
-            self.jobs.resize_with(TX_QUEUE_CAPACITY, || None);
-        }
-    }
-
-    fn push(&mut self, band: usize, job: TxJob) {
-        self.ensure_slots();
-        let tail = band * TX_BAND_CAPACITY
-            + (self.head[band] + self.len[band]) % TX_BAND_CAPACITY;
-        self.jobs[tail] = Some(job);
-        self.len[band] += 1;
-    }
-
-    fn pop(&mut self) -> Option<TxJob> {
-        let band = (0..super::tx_band::TX_BANDS).find(|band| self.len[*band] != 0)?;
-        // A nonzero length implies `push` ran, so the slots are materialised.
-        let job = self.jobs[band * TX_BAND_CAPACITY + self.head[band]].take();
-        self.head[band] = (self.head[band] + 1) % TX_BAND_CAPACITY;
-        self.len[band] -= 1;
-        job
-    }
-}
-
 impl TxJob {
     fn new(lease: EgressLease, payload: TxPayload) -> Self {
         Self(alloc::boxed::Box::new(TxJobRecord { lease, payload,
@@ -528,20 +494,4 @@ fn ipv4_multicast_mac(ip: crate::Ipv4Addr) -> crate::MacAddr {
     const PREFIX: [u8; 3] = [0x01, 0x00, 0x5e];
     let octets = ip.octets();
     crate::MacAddr([PREFIX[0], PREFIX[1], PREFIX[2], octets[1] & 0x7f, octets[2], octets[3]])
-}
-
-impl TxCompletion {
-    fn complete(&self, result: NetResult<()>) { *tx_lock!(self.result) = Some(result); }
-
-    fn wait(&self) -> NetResult<()> {
-        loop {
-            if let Some(result) = *tx_lock!(self.result) { return result; }
-            // `sync::relax`, not a bare `spin_loop`: it is the crate's single
-            // relax step (services owed cross-CPU work on a kernel target, and
-            // yields periodically in a hosted build, where 64 waiter threads
-            // can otherwise starve the one drainer that completes them —
-            // B1653's unbounded `net` test-binary spin).
-            sync::relax();
-        }
-    }
 }

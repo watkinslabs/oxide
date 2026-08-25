@@ -110,10 +110,10 @@ fn msgpair_creds_are_per_message_fifo() {
     }
     let m1 = p.recv_msg(UnixEnd::A, 64).expect("first");
     assert_eq!(m1.payload, b"first");
-    assert_eq!(m1.security.creds, (100, 0, 0), "first message must carry its OWN sender, not last-sender-wins");
+    assert_eq!(m1.creds, (100, 0, 0), "first message must carry its OWN sender, not last-sender-wins");
     let m2 = p.recv_msg(UnixEnd::A, 64).expect("second");
     assert_eq!(m2.payload, b"second");
-    assert_eq!(m2.security.creds, (200, 0, 0));
+    assert_eq!(m2.creds, (200, 0, 0));
 }
 
 #[test]
@@ -353,6 +353,6 @@ fn dgram_message_preserves_sender_creds() {
     }).unwrap();
     let got = q.pop().expect("one queued message");
     assert_eq!(&got.payload[..], b"READY=1");
-    assert_eq!(got.security.creds, (40, 0, 0));
+    assert_eq!(got.creds, (40, 0, 0));
     assert!(q.pop().is_none());
 }
