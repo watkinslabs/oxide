@@ -12,6 +12,116 @@ pub(crate) struct MsixBinding {
 const SHARED_MSIX_SLOTS: usize = 32;
 const SHARED_MSIX_HANDLERS: usize = virtio::MAX_RESOURCE_QUEUES + 1;
 
+const LEGACY_SLOTS: usize = 32;
+
+#[derive(Copy, Clone)]
+struct LegacySlot {
+    used: bool,
+    isr_va: u64,
+    config: Option<virtio::VirtioQueueIrq>,
+    queues: [Option<virtio::VirtioQueueIrq>; virtio::MAX_RESOURCE_QUEUES],
+}
+
+impl LegacySlot {
+    const fn empty() -> Self {
+        Self { used: false, isr_va: 0, config: None, queues: [None; virtio::MAX_RESOURCE_QUEUES] }
+    }
+}
+
+static LEGACY_DISPATCH: Spinlock<[LegacySlot; LEGACY_SLOTS], VirtioTransportLockClass> =
+    Spinlock::new([const { LegacySlot::empty() }; LEGACY_SLOTS]);
+
+#[derive(Copy, Clone)]
+pub(crate) struct LegacyBinding {
+    binding: pci_irq::Binding,
+    slot: usize,
+}
+
+impl LegacyBinding {
+    pub(crate) fn release(self) {
+        if let Some(entry) = LEGACY_DISPATCH.lock().get_mut(self.slot) {
+            *entry = LegacySlot::empty();
+        }
+        self.binding.release();
+    }
+}
+
+const fn legacy_interrupt_sources(isr: u8) -> (bool, bool) {
+    (
+        isr & virtio::VIRTIO_PCI_ISR_QUEUE != 0,
+        isr & virtio::VIRTIO_PCI_ISR_CONFIG != 0,
+    )
+}
+
+fn dispatch_legacy(slot: usize) {
+    let (isr, config_handler, queues) = {
+        let mut slots = LEGACY_DISPATCH.lock();
+        let Some(entry) = slots.get_mut(slot).filter(|entry| entry.used) else { return; };
+        // SAFETY: the transport retains this mapping until the binding is
+        // released; virtio's ISR is a read-to-clear byte.
+        let isr = unsafe { core::ptr::read_volatile(entry.isr_va as *const u8) };
+        (isr, entry.config, entry.queues)
+    };
+    if isr == 0 { return; }
+    let (queue, config) = legacy_interrupt_sources(isr);
+    if config {
+        if let Some(handler) = config_handler { handler.call(); }
+    }
+    if queue {
+        for handler in queues.into_iter().flatten() { handler.call(); }
+    }
+}
+
+macro_rules! legacy_dispatchers {
+    ($($name:ident:$slot:literal),+ $(,)?) => {
+        $(fn $name() { dispatch_legacy($slot); })+
+        const LEGACY_DISPATCHERS: [fn(); LEGACY_SLOTS] = [$($name),+];
+    };
+}
+
+legacy_dispatchers!(
+    legacy_0:0, legacy_1:1, legacy_2:2, legacy_3:3, legacy_4:4, legacy_5:5, legacy_6:6, legacy_7:7,
+    legacy_8:8, legacy_9:9, legacy_10:10, legacy_11:11, legacy_12:12, legacy_13:13, legacy_14:14, legacy_15:15,
+    legacy_16:16, legacy_17:17, legacy_18:18, legacy_19:19, legacy_20:20, legacy_21:21, legacy_22:22, legacy_23:23,
+    legacy_24:24, legacy_25:25, legacy_26:26, legacy_27:27, legacy_28:28, legacy_29:29, legacy_30:30, legacy_31:31,
+);
+
+pub(crate) fn bind_legacy_intx(
+    bdf: pci::Bdf,
+    isr_va: u64,
+    profile: &virtio::VirtioTransportProfile,
+) -> Option<LegacyBinding> {
+    if isr_va == 0 { return None; }
+    let mut queues = [None; virtio::MAX_RESOURCE_QUEUES];
+    for (index, plan) in profile.queue_plans.iter().enumerate() {
+        queues[index] = plan.and_then(|plan| plan.msix_handler);
+    }
+    let mut slots = LEGACY_DISPATCH.lock();
+    let slot = slots.iter().position(|entry| !entry.used)?;
+    slots[slot] = LegacySlot { used: true, isr_va, config: profile.config_handler, queues };
+    drop(slots);
+    let Some(binding) = pci_irq::request_intx_resolved(
+        bdf, arch_irq::DeviceAction::VirtioPci, LEGACY_DISPATCHERS[slot],
+    ) else {
+        LEGACY_DISPATCH.lock()[slot] = LegacySlot::empty();
+        return None;
+    };
+    Some(LegacyBinding { binding, slot })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::legacy_interrupt_sources;
+
+    #[test]
+    fn legacy_isr_separates_queue_and_configuration_sources() {
+        assert_eq!(legacy_interrupt_sources(0), (false, false));
+        assert_eq!(legacy_interrupt_sources(1), (true, false));
+        assert_eq!(legacy_interrupt_sources(2), (false, true));
+        assert_eq!(legacy_interrupt_sources(3), (true, true));
+    }
+}
+
 #[derive(Clone, Copy)]
 struct SharedMsixSlot {
     used: bool,
@@ -81,6 +191,7 @@ struct TransportRecord {
     mappings: TransportMappings,
     vring_frames: Vec<virtio::VirtioDmaFrame>,
     msix: Vec<MsixBinding>,
+    legacy: Option<LegacyBinding>,
 }
 
 static TRANSPORT_MMIO: Spinlock<Vec<TransportRecord>, VirtioTransportLockClass> =
@@ -203,6 +314,7 @@ pub(crate) fn publish_transport_record(
     mappings: TransportMappings,
     vring_frames: Vec<virtio::VirtioDmaFrame>,
     msix: Vec<MsixBinding>,
+    legacy: Option<LegacyBinding>,
 ) {
     // SAFETY: cfg_va is the retained Device-attr common-cfg mapping from the
     // successful probe and the config-vector field is an aligned u16.
@@ -232,6 +344,7 @@ pub(crate) fn publish_transport_record(
         mappings,
         vring_frames,
         msix,
+        legacy,
     };
     let mut records = TRANSPORT_MMIO.lock();
     if let Some(idx) = records.iter().position(|old| old.device_key == device_key) {
@@ -375,10 +488,12 @@ fn release_transport_record(rec: TransportRecord) {
         mut mappings,
         vring_frames,
         msix,
+        legacy,
         ..
     } = rec;
     let mut msix = msix;
     release_msix_bindings(&mut msix);
+    if let Some(legacy) = legacy { legacy.release(); }
     restore_pci_command(bdf, command_orig);
     mappings.unmap_all();
     for frame in vring_frames.iter().copied() {

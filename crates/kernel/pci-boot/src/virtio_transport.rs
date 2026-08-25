@@ -21,7 +21,7 @@ pub(super) const VIRTIO_PCI_PAGE_BASE_MASK: u64 = !VIRTIO_PCI_PAGE_OFFSET_MASK;
 
 pub(crate) use devres::VirtioProbeDevres;
 pub(super) use msix::{
-    MsixBinding, bind_msix_vector, bind_shared_msix_vector, disable_pci_command, publish_transport_record,
+    LegacyBinding, MsixBinding, bind_legacy_intx, bind_msix_vector, bind_shared_msix_vector, disable_pci_command, publish_transport_record,
     release_failed_probe_frames, release_msix_bindings, reset_failed_probe,
     restore_pci_command, unmask_msix_bindings, unpublish_transport_record,
     unpublish_transport_record_by_bdf, restore_transport_record,
@@ -274,6 +274,18 @@ impl TransportMappings {
         isr_cap: Option<&virtio::VirtioPciCap>,
         bars: &[pci::Bar; 6],
     ) -> u8 {
+        let isr_va = self.map_isr_va(isr_cap, bars);
+        if isr_va == 0 { return 0; }
+        // SAFETY: isr_va is a Device-attr-mapped virtio-pci ISR register;
+        // reading it acknowledges the pending legacy interrupt.
+        unsafe { core::ptr::read_volatile(isr_va as *const u8) }
+    }
+
+    pub(super) fn map_isr_va(
+        &mut self,
+        isr_cap: Option<&virtio::VirtioPciCap>,
+        bars: &[pci::Bar; 6],
+    ) -> u64 {
         let Some(isr_cap) = isr_cap else {
             return 0;
         };
@@ -283,11 +295,7 @@ impl TransportMappings {
         let isr_pa = ibar_pa + isr_cap.offset as u64;
         let page_pa = isr_pa & VIRTIO_PCI_PAGE_BASE_MASK;
         let page_off = isr_pa - page_pa;
-        let isr_va = self.map_page(page_pa) + page_off;
-        // SAFETY: isr_va is decoded from the virtio-pci ISR capability and
-        // mapped as Device memory by the transport mapping owner. The ISR byte
-        // is a read-to-clear u8 register.
-        unsafe { core::ptr::read_volatile(isr_va as *const u8) }
+        self.map_page(page_pa) + page_off
     }
 }
 

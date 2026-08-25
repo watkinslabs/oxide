@@ -1,6 +1,6 @@
 use super::runtime::VirtioPciRuntime;
 use super::{
-    bind_msix_vector, bind_shared_msix_vector, kick_queue_notify, release_msix_bindings,
+    bind_legacy_intx, bind_msix_vector, bind_shared_msix_vector, kick_queue_notify, release_msix_bindings,
     restore_pci_command, unmask_msix_bindings, MsixBinding,
     NetRxBootBuffer, ProgrammedQueues, TransportMappings, VirtioProbeDevres, Vec,
     VIRTIO_PCI_PAGE_BASE_MASK,
@@ -12,14 +12,17 @@ pub(super) struct VirtioProbeState {
     mappings: TransportMappings,
     cfg_va: u64,
     device_cfg_va: u64,
+    isr_va: u64,
     msix: Vec<MsixBinding>,
+    legacy: Option<super::super::virtio_transport::LegacyBinding>,
     next_msix_vector: u16,
 }
 
 impl VirtioProbeState {
-    fn new(bdf: pci::Bdf, mappings: TransportMappings, cfg_va: u64, device_cfg_va: u64) -> Self {
+    fn new(bdf: pci::Bdf, mappings: TransportMappings, cfg_va: u64, device_cfg_va: u64, isr_va: u64) -> Self {
         Self {
-            bdf, mappings, cfg_va, device_cfg_va, msix: Vec::new(), next_msix_vector: 0,
+            bdf, mappings, cfg_va, device_cfg_va, isr_va, msix: Vec::new(), legacy: None,
+            next_msix_vector: 0,
         }
     }
 
@@ -40,7 +43,9 @@ impl VirtioProbeState {
             .find(virtio::VIRTIO_PCI_CAP_DEVICE_CFG)
             .and_then(|devcfg| map_cap_window(&mut mappings, devcfg, bars))
             .unwrap_or(0);
-        Some(Self::new(bdf, mappings, cfg_va, device_cfg_va))
+        let isr_va = vcaps.find(virtio::VIRTIO_PCI_CAP_ISR_CFG)
+            .map(|cap| mappings.map_isr_va(Some(&cap), bars)).unwrap_or(0);
+        Some(Self::new(bdf, mappings, cfg_va, device_cfg_va, isr_va))
     }
 
     pub(super) fn cfg_va(&self) -> u64 {
@@ -177,7 +182,18 @@ impl VirtioProbeState {
         bars: &[pci::Bar; 6],
         profile: &virtio::VirtioTransportProfile,
     ) -> Option<(u16, u16, [Option<virtio::VirtioQueuePlan>; virtio::MAX_RESOURCE_QUEUES])> {
-        let config = self.bind_optional_msix(d, caps, bars, profile.config_handler)?;
+        let config = match self.bind_optional_msix(d, caps, bars, profile.config_handler) {
+            Some(config) => config,
+            None => {
+                self.legacy = bind_legacy_intx(self.bdf, self.isr_va, profile);
+                self.legacy.as_ref()?;
+                let mut queues = profile.queue_plans;
+                for plan in queues.iter_mut().flatten() {
+                    *plan = plan.with_msix_vec(virtio::VIRTIO_MSI_NO_VECTOR);
+                }
+                return Some((virtio::VIRTIO_MSI_NO_VECTOR, virtio::VIRTIO_MSI_NO_VECTOR, queues));
+            }
+        };
         if let Some((q0, queues)) = self.resolve_per_queue_msix(d, caps, bars, profile) {
             return Some((config, q0, queues));
         }
@@ -188,9 +204,17 @@ impl VirtioProbeState {
         }
         release_msix_bindings(&mut self.msix);
         self.next_msix_vector = 0;
-        let config = self.bind_optional_msix(d, caps, bars, profile.config_handler)?;
-        let (q0, queues) = self.resolve_shared_queue_msix(d, bars, profile)?;
-        Some((config, q0, queues))
+        if let Some(config) = self.bind_optional_msix(d, caps, bars, profile.config_handler) {
+            let (q0, queues) = self.resolve_shared_queue_msix(d, bars, profile)?;
+            return Some((config, q0, queues));
+        }
+        self.legacy = bind_legacy_intx(self.bdf, self.isr_va, profile);
+        self.legacy.as_ref()?;
+        let mut queues = profile.queue_plans;
+        for plan in queues.iter_mut().flatten() {
+            *plan = plan.with_msix_vec(virtio::VIRTIO_MSI_NO_VECTOR);
+        }
+        Some((virtio::VIRTIO_MSI_NO_VECTOR, virtio::VIRTIO_MSI_NO_VECTOR, queues))
     }
 
     pub(super) fn negotiate_and_program(
@@ -361,6 +385,7 @@ impl VirtioProbeState {
             result.queue_resources,
             self.mappings,
             self.msix,
+            self.legacy,
             owned_frames,
         )
     }
