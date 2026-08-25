@@ -31,6 +31,30 @@ fn spin_mutex_and_rw_paths_round_trip() {
 }
 
 #[test]
+fn raw_spin_paths_hold_linux_preempt_and_bh_credits() {
+    let _modules = crate::test_serial::claim();
+    let mut first = LinuxSpinlock { state: 0 };
+    let mut second = LinuxSpinlock { state: 0 };
+    spin_lock_init(&mut first);
+    spin_lock_init(&mut second);
+    spin_lock(&mut first);
+    assert_eq!(sched::preempt::preempt_count(), sched::preempt::PREEMPT_DISABLED);
+    assert_eq!(spin_trylock(&mut second), 1);
+    assert_eq!(sched::preempt::preempt_count(), sched::preempt::PREEMPT_DISABLED * 2);
+    spin_unlock(&mut second);
+    assert_eq!(sched::preempt::preempt_count(), sched::preempt::PREEMPT_DISABLED);
+    assert_eq!(spin_trylock(&mut first), 0);
+    assert_eq!(sched::preempt::preempt_count(), sched::preempt::PREEMPT_DISABLED);
+    spin_unlock(&mut first);
+    assert_eq!(sched::preempt::preempt_count(), 0);
+
+    raw_spin_lock_bh(&mut first);
+    assert_eq!(sched::preempt::preempt_count(), sched::preempt::SOFTIRQ_LOCK_OFFSET);
+    raw_spin_unlock_bh(&mut first);
+    assert_eq!(sched::preempt::preempt_count(), 0);
+}
+
+#[test]
 fn completion_refcount_kref_and_seq_work() {
     let _modules = crate::test_serial::claim();
     let mut c = LinuxCompletion { done: 0 };

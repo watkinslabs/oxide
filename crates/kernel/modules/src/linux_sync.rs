@@ -174,9 +174,21 @@ extern "C" fn spin_lock_init(l: *mut LinuxSpinlock) {
     // SAFETY: non-null pointer names caller-owned spinlock storage.
     unsafe { (*l).state = 0; }
 }
-pub(crate) extern "C" fn spin_lock(l: *mut LinuxSpinlock) { lock_u32(field_u32(l)); }
-extern "C" fn spin_trylock(l: *mut LinuxSpinlock) -> i32 { try_lock_u32(field_u32(l)) as i32 }
-pub(crate) extern "C" fn spin_unlock(l: *mut LinuxSpinlock) { unlock_u32(field_u32(l)); }
+pub(crate) extern "C" fn spin_lock(l: *mut LinuxSpinlock) {
+    sched::preempt::preempt_disable();
+    lock_u32(field_u32(l));
+}
+extern "C" fn spin_trylock(l: *mut LinuxSpinlock) -> i32 {
+    sched::preempt::preempt_disable();
+    if try_lock_u32(field_u32(l)) { 1 } else {
+        sched::preempt::preempt_enable_no_check();
+        0
+    }
+}
+pub(crate) extern "C" fn spin_unlock(l: *mut LinuxSpinlock) {
+    unlock_u32(field_u32(l));
+    sched::preempt::preempt_enable_no_check();
+}
 extern "C" fn spin_is_locked(l: *mut LinuxSpinlock) -> i32 { load_u32(field_u32(l)) as i32 }
 extern "C" fn raw_spin_lock_init(l: *mut LinuxSpinlock) { spin_lock_init(l); }
 extern "C" fn raw_spin_lock(l: *mut LinuxSpinlock) { spin_lock(l); }
