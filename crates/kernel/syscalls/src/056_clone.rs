@@ -19,6 +19,8 @@ mod io_context;
 mod request;
 #[path = "056_clone/arch_spawn.rs"]
 mod arch_spawn;
+#[path = "056_clone/debug.rs"]
+mod debug;
 
 use arch_spawn::clone_spawn_arch;
 use request::{caller_facts, errno, put_tid_best_effort, user_i32_ptr_ok};
@@ -426,15 +428,7 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     let _ = (tls, CLONE_SETTLS);
 
-    debug_sched! {
-        klog::write_raw(b"[INFO]  sys_clone: parent_tid=");
-        klog::write_dec_u64(cur.tid as u64);
-        klog::write_raw(b" child_tid=");
-        klog::write_dec_u64(child_tid as u64);
-        klog::write_raw(b" flags=");
-        klog::write_hex_u64(flags);
-        klog::write_raw(b"\n");
-    }
+    debug::log_clone(cur.tid as u64, child_tid as u64, flags);
 
     // Arm the vfork completion before publication. The child can run as soon
     // as publication commits it; arming afterwards loses a fast exec/exit and
