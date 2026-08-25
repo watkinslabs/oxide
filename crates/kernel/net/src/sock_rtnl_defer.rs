@@ -121,8 +121,13 @@ extern "C" fn sock_rtnl_reaper(_arg: usize) -> ! {
         }
         // SAFETY: running kthread with no producer-held gate owned by this
         // task; the shared wait loop publishes, rechecks, and schedules.
+        // This is an idle event-driven worker, not a task waiting for a
+        // resource invariant. Linux workqueue workers do not publish
+        // TASK_UNINTERRUPTIBLE while their queue is empty; using the
+        // worker policy keeps the idle reaper out of khungtaskd's stuck-task
+        // set while retaining the same publish/recheck/wake ordering.
         let _ = unsafe {
-            sched::live::wait_event_uninterruptible(&WAIT, || pending_len() != 0)
+            sched::live::wait_event_worker(&WAIT, || pending_len() != 0)
         };
     }
 }
