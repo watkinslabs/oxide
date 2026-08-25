@@ -294,8 +294,8 @@ const ARG_MAX_STR: u64 = 4096;
 
 /// Walk one NULL-terminated user array of string pointers (argv or envp) and
 /// copy every string it names into kernel storage, accumulating the shared byte
-/// budget. `false` means the walk exceeded a bound and the caller must answer
-/// `E2BIG`; a NULL array is an empty vector, not an error.
+/// budget. User-memory faults remain `EFAULT`; only an exceeded argument bound
+/// is `E2BIG`. A NULL array is an empty vector, not an error.
 ///
 /// One copy for both architectures. It was two identical closures, which is how
 /// a fix to one of them silently misses the other — and this walk is on every
@@ -310,18 +310,19 @@ pub(crate) fn read_user_string_vector(
     uva: u64,
     out: &mut alloc::vec::Vec<alloc::vec::Vec<u8>>,
     total: &mut usize,
-) -> bool {
-    if uva == 0 { return true; }
+) -> Result<(), Errno> {
+    if uva == 0 { return Ok(()); }
     for i in 0..ARG_MAX_ENTRIES {
         let mut w = [0u8; 8];
-        let at = match uva.checked_add((i as u64) * 8) { Some(v) => v, None => return false };
-        if uaccess::copy_from_user(&mut w, at).is_err() { return false; }
+        let at = uva.checked_add((i as u64) * 8).ok_or(Errno::Efault)?;
+        uaccess::copy_from_user(&mut w, at)?;
         let s = u64::from_ne_bytes(w);
-        if s == 0 { return true; }
-        let buf = match uaccess::strncpy_from_user(s, ARG_MAX_STR) { Ok(b) => b, Err(_) => return false };
-        *total += buf.len();
-        if *total > ARG_MAX_BYTES { return false; }
+        if s == 0 { return Ok(()); }
+        let buf = uaccess::strncpy_from_user(s, ARG_MAX_STR)?;
+        if buf.len() as u64 >= ARG_MAX_STR { return Err(Errno::E2big); }
+        *total = (*total).checked_add(buf.len()).ok_or(Errno::E2big)?;
+        if *total > ARG_MAX_BYTES { return Err(Errno::E2big); }
         out.push(buf);
     }
-    true
+    Err(Errno::E2big)
 }

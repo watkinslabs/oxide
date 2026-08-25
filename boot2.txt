@@ -1,0 +1,1067 @@
+67108864 bytes (67 MB, 64 MiB) copied, 0.0943629 s, 711 MB/s
+mke2fs 1.47.2 (1-Jan-2025)
+Discarding device blocks: done                            
+Creating filesystem with 16384 4k blocks and 16384 inodes
+
+Allocating group tables: done                            
+Writing inode tables: done                            
+Writing superblocks and filesystem accounting information: done
+
+xtask rootfs: built /home/nd/oxide/kernel/target/builds/default/home-x86_64.img (67108864 bytes)
+xtask: build and validate vDSO (x86_64)
+vdso: building vdso-x86_64.so
+   Compiling syscalls v0.1.0 (/home/nd/oxide/kernel/crates/kernel/syscalls)
+   Compiling kmain v0.1.0 (/home/nd/oxide/kernel/crates/kernel/kmain)
+   Compiling boot-x86_64 v0.1.0 (/home/nd/oxide/kernel/crates/arch/boot-x86_64)
+   Compiling kernel-bin-x86_64 v0.1.0 (/home/nd/oxide/kernel/crates/arch/kernel-bin-x86_64)
+    Finished `release` profile [optimized + debuginfo] target(s) in 1m 26s
+xorriso 1.5.8 : RockRidge filesystem manipulator, libburnia project.
+
+Drive current: -outdev 'stdio:/home/nd/oxide/kernel/target/builds/default/oxide-x86_64-grub.iso'
+Media current: stdio file, overwriteable
+Media status : is blank
+Media summary: 0 sessions, 0 data blocks, 0 data, 1523g free
+  Booting `oxide (multiboot2)'
+
+MB2
+L64
+[XSTATE] xsave=on pre_osxsave=0 cpuid0d_eax=0000000000000007 xcr0=0000000000000007 area=832
+[BOOT] early kernel initialization
+[1.778] Kernel command line: BOOT_IMAGE=/boot/oxide-x86_64 root=/dev/vda rw earlycon printk.time=1 systemd.log_target=kmsg systemd.journald.forward_to_kmsg=1 sysctl.kernel.sysrq=1 sysrq_always_enabled enforcing=0 console=ttyS0,115200 console=tty0 systemd.mask=firewalld.service systemd.mask=chronyd.service systemd.mask=ModemManager.service systemd.mask=plymouth-start.service systemd.mask=NetworkManager-wait-online.service systemd.mask=flatpak-add-fedora-repos.service systemd.debug_shell=tty9 oxide.bootargs=grub
+[1.788] [INFO]  selinux: enabled, awaiting policy
+[BOOT] initializing runtime services
+[1.793] [sysrq] always enabled by the boot line
+[BOOT] graphical console ready
+[BOOT] probing devices
+[BOOT] starting secondary CPUs
+[BOOT] starting kernel workers
+[BOOT] mounting root filesystem
+[3.906] [BOOT-DEV-NULL] type=8192 fs=devtmpfs
+[BOOT] starting userspace
+[4.047] systemd[1]: Successfully loaded SELinux policy in 51.654ms.
+[4.125] systemd[1]: Relabeled /dev/, /dev/shm/, /run/ in 17.523ms.
+[4.139] systemd[1]: systemd 257.13-1.fc42 running in system mode (+PAM +AUDIT +SELINUX -APPARMOR +IMA +IPE +SMACK +SECCOMP -GCRYPT +GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 -IDN -IPTC +KMOD +LIBCRYPTSETUP +LIBCRYPTSETUP_PLUGINS +LIBFDISK +PCRE2 +PWQUALITY +P11KIT +QRENCODE +TPM2 +BZIP2 +LZ4 +XZ +ZLIB +ZSTD +BPF_FRAMEWORK +BTF +XKBCOMMON +UTMP +SYSVINIT +LIBARCHIVE)
+[4.146] systemd[1]: Detected virtualization kvm.
+[4.148] systemd[1]: Detected architecture x86-64.
+[4.308] systemd[1]: bpf-restrict-fs: BPF LSM hook not enabled in the kernel, BPF LSM not supported.
+[4.936] systemd[1]: Queued start job for default target graphical.target.
+[4.946] systemd[1]: Created slice system-getty.slice - Slice /system/getty.
+[4.949] systemd[1]: Created slice system-modprobe.slice - Slice /system/modprobe.
+[4.953] systemd[1]: Created slice system-serial\x2dgetty.slice - Slice /system/serial-getty.
+[4.956] systemd[1]: Created slice system-sshd\x2dkeygen.slice - Slice /system/sshd-keygen.
+[4.959] systemd[1]: Created slice system-systemd\x2dzram\x2dsetup.slice - Slice /system/systemd-zram-setup.
+[4.962] systemd[1]: Created slice user.slice - User and Session Slice.
+[4.964] systemd[1]: Started systemd-ask-password-console.path - Dispatch Password Requests to Console Directory Watch.
+[4.967] systemd[1]: Started systemd-ask-password-wall.path - Forward Password Requests to Wall Directory Watch.
+[4.971] systemd[1]: Set up automount proc-sys-fs-binfmt_misc.automount - Arbitrary Executable File Formats File System Automount Point.
+[4.973] systemd[1]: Expecting device dev-ttyS0.device - /dev/ttyS0...
+[4.975] systemd[1]: Expecting device dev-zram0.device - /dev/zram0...
+[4.977] systemd[1]: Reached target cryptsetup.target - Local Encrypted Volumes.
+[4.979] systemd[1]: Reached target integritysetup.target - Local Integrity Protected Volumes.
+[4.981] systemd[1]: Reached target paths.target - Path Units.
+[4.987] systemd[1]: Reached target remote-cryptsetup.target - Remote Encrypted Volumes.
+[4.991] systemd[1]: Reached target remote-fs.target - Remote File Systems.
+[4.996] systemd[1]: Reached target slices.target - Slice Units.
+[5.001] systemd[1]: Reached target veritysetup.target - Local Verity Protected Volumes.
+[5.011] systemd[1]: Listening on systemd-coredump.socket - Process Core Dump Socket.
+[5.019] systemd[1]: Listening on systemd-creds.socket - Credential Encryption/Decryption.
+[5.024] systemd[1]: Listening on systemd-initctl.socket - initctl Compatibility Named Pipe.
+[5.031] systemd[1]: Listening on systemd-journald-audit.socket - Journal Audit Socket.
+[5.038] systemd[1]: Listening on systemd-journald-dev-log.socket - Journal Socket (/dev/log).
+[5.044] systemd[1]: Listening on systemd-journald.socket - Journal Sockets.
+[5.051] systemd[1]: Listening on systemd-oomd.socket - Userspace Out-Of-Memory (OOM) Killer Socket.
+[5.055] systemd[1]: systemd-pcrextend.socket - TPM PCR Measurements skipped, unmet condition check ConditionSecurity=measured-uki
+[5.059] systemd[1]: systemd-pcrlock.socket - Make TPM PCR Policy skipped, unmet condition check ConditionSecurity=measured-uki
+[5.067] systemd[1]: Listening on systemd-udevd-control.socket - udev Control Socket.
+[5.072] systemd[1]: Listening on systemd-udevd-kernel.socket - udev Kernel Socket.
+[5.077] systemd[1]: Listening on systemd-userdbd.socket - User Database Manager Socket.
+[5.091] systemd[1]: Mounting dev-hugepages.mount - Huge Pages File System...
+[5.103] systemd[1]: Mounting dev-mqueue.mount - POSIX Message Queue File System...
+[5.119] systemd[1]: sys-kernel-debug.mount: Directory /sys/kernel/debug to mount over is not empty, mounting anyway.
+[5.135] systemd[1]: Mounting sys-kernel-debug.mount - Kernel Debug File System...
+[5.143] systemd[1]: sys-kernel-tracing.mount: Directory /sys/kernel/tracing to mount over is not empty, mounting anyway.
+[5.153] systemd[1]: Mounting sys-kernel-tracing.mount - Kernel Trace File System...
+[5.178] systemd[1]: Started debug-shell.service - Early root shell on /dev/tty9 FOR DEBUGGING ONLY.
+[5.193] systemd[1]: fips-crypto-policy-overlay.service - Bind-mount FIPS crypto-policy in FIPS mode skipped, unmet condition check ConditionKernelCommandLine=fips=1
+[5.198] systemd[1]: kmod-static-nodes.service - Create List of Static Device Nodes skipped, unmet condition check ConditionFileNotEmpty=/lib/modules/6.19.0-oxide/modules.devname
+[5.213] systemd[1]: Starting modprobe@configfs.service - Load Kernel Module configfs...
+[5.227] systemd[1]: Starting modprobe@dm_mod.service - Load Kernel Module dm_mod...
+[5.251] systemd[1]: Starting modprobe@drm.service - Load Kernel Module drm...
+[5.273] systemd[1]: Starting modprobe@efi_pstore.service - Load Kernel Module efi_pstore...
+[5.288] systemd[1]: Starting modprobe@fuse.service - Load Kernel Module fuse...
+[5.312] systemd[1]: Starting modprobe@loop.service - Load Kernel Module loop...
+[5.331] systemd[1]: systemd-hibernate-clear.service - Clear Stale Hibernate Storage Info skipped, unmet condition check ConditionPathExists=/sys/firmware/efi/efivars/HibernateLocation-8cf2644b-4b0b-428f-9387-6d876050dc67
+[5.346] systemd[1]: Starting systemd-journald.service - Journal Service...
+[5.376] systemd[1]: Starting systemd-modules-load.service - Load Kernel Modules...
+[5.404] systemd[1]: Starting systemd-network-generator.service - Generate Network Units from Kernel Command Line...
+[5.435] systemd[1]: systemd-pcrmachine.service - TPM PCR Machine ID Measurement skipped, unmet condition check ConditionSecurity=measured-uki
+[5.443] systemd-modules-load[39]: Failed to find module 'i2c_dev'
+[5.448] systemd-modules-load[39]: Failed to find module 'msr'
+[5.461] systemd[1]: Starting systemd-remount-fs.service - Remount Root and Kernel File Systems...
+[5.468] systemd-journald[37]: Collecting audit messages is enabled.
+[5.501] systemd[1]: Starting systemd-tmpfiles-setup-dev-early.service - Create Static Device Nodes in /dev gracefully...
+[5.536] systemd[1]: systemd-tpm2-setup-early.service - Early TPM SRK Setup skipped, unmet condition check ConditionSecurity=measured-uki
+[5.558] systemd[1]: Starting systemd-udev-load-credentials.service - Load udev Rules from Credentials...
+[5.580] systemd[1]: Starting systemd-udev-trigger.service - Coldplug All udev Devices...
+[5.656] systemd[1]: Started systemd-journald.service - Journal Service.
+[5.693] systemd[1]: Mounted dev-hugepages.mount - Huge Pages File System.
+[5.708] systemd[1]: Mounted dev-mqueue.mount - POSIX Message Queue File System.
+[5.714] systemd[1]: Mounted sys-kernel-debug.mount - Kernel Debug File System.
+[5.721] systemd[1]: Mounted sys-kernel-tracing.mount - Kernel Trace File System.
+[5.730] systemd[1]: modprobe@dm_mod.service: Deactivated successfully.
+[5.734] systemd[1]: Finished modprobe@dm_mod.service - Load Kernel Module dm_mod.
+[5.748] systemd[1]: modprobe@configfs.service: Deactivated successfully.
+[5.754] systemd[1]: Finished modprobe@configfs.service - Load Kernel Module configfs.
+[5.765] systemd[1]: modprobe@drm.service: Deactivated successfully.
+[5.771] systemd[1]: Finished modprobe@drm.service - Load Kernel Module drm.
+[5.779] systemd[1]: modprobe@efi_pstore.service: Deactivated successfully.
+[5.787] systemd[1]: Finished modprobe@efi_pstore.service - Load Kernel Module efi_pstore.
+[5.796] systemd[1]: modprobe@fuse.service: Deactivated successfully.
+[5.802] systemd[1]: Finished modprobe@fuse.service - Load Kernel Module fuse.
+[5.810] systemd[1]: modprobe@loop.service: Deactivated successfully.
+[5.816] systemd[1]: Finished modprobe@loop.service - Load Kernel Module loop.
+[5.823] systemd[1]: Finished systemd-modules-load.service - Load Kernel Modules.
+[5.832] systemd[1]: Finished systemd-network-generator.service - Generate Network Units from Kernel Command Line.
+[5.846] systemd[1]: Finished systemd-remount-fs.service - Remount Root and Kernel File Systems.
+[5.854] systemd[1]: debug-shell.service: Deactivated successfully.
+[6.195] systemd[1]: Finished systemd-udev-load-credentials.service - Load udev Rules from Credentials.
+[6.203] systemd[1]: Finished systemd-udev-trigger.service - Coldplug All udev Devices.
+[6.242] systemd[1]: debug-shell.service: Scheduled restart job, restart counter is at 1.
+[6.248] systemd[1]: Reached target network-pre.target - Preparation for Network.
+[6.258] systemd[1]: Started debug-shell.service - Early root shell on /dev/tty9 FOR DEBUGGING ONLY.
+[6.280] systemd[1]: Starting systemd-hwdb-update.service - Rebuild Hardware Database...
+[6.292] systemd[1]: Starting systemd-journal-flush.service - Flush Journal to Persistent Storage...
+[6.311] systemd[1]: systemd-pstore.service - Platform Persistent Storage Archival skipped, unmet condition check ConditionDirectoryNotEmpty=/sys/fs/pstore
+[6.332] systemd[1]: Starting systemd-random-seed.service - Load/Save OS Random Seed...
+[6.342] systemd-journald[37]: Received client request to flush runtime journal.
+[6.360] systemd[1]: systemd-repart.service - Repartition Root Disk skipped, no trigger condition checks were met.
+[6.380] systemd[1]: Starting systemd-sysctl.service - Apply Kernel Variables...
+[6.397] systemd[1]: systemd-tpm2-setup.service - TPM SRK Setup skipped, unmet condition check ConditionSecurity=measured-uki
+[6.412] systemd[1]: Starting systemd-userdbd.service - User Database Manager...
+[6.457] systemd[1]: Finished systemd-random-seed.service - Load/Save OS Random Seed.
+[6.673] systemd[1]: debug-shell.service: Deactivated successfully.
+[7.033] systemd[1]: Started systemd-userdbd.service - User Database Manager.
+[7.060] systemd[1]: Finished systemd-journal-flush.service - Flush Journal to Persistent Storage.
+[7.076] systemd[1]: debug-shell.service: Scheduled restart job, restart counter is at 2.
+[7.094] systemd[1]: sys-fs-fuse-connections.mount - FUSE Control File System skipped, unmet condition check ConditionPathExists=/sys/fs/fuse/connections
+[7.115] systemd[1]: Mounting sys-kernel-config.mount - Kernel Configuration File System...
+[7.161] systemd[1]: Started debug-shell.service - Early root shell on /dev/tty9 FOR DEBUGGING ONLY.
+[7.184] systemd[1]: Mounted sys-kernel-config.mount - Kernel Configuration File System.
+[7.306] systemd[1]: Finished systemd-sysctl.service - Apply Kernel Variables.
+[7.529] systemd[1]: debug-shell.service: Deactivated successfully.
+[7.875] systemd[1]: Finished systemd-tmpfiles-setup-dev-early.service - Create Static Device Nodes in /dev gracefully.
+[7.883] systemd[1]: debug-shell.service: Scheduled restart job, restart counter is at 3.
+[7.897] systemd[1]: Started debug-shell.service - Early root shell on /dev/tty9 FOR DEBUGGING ONLY.
+[7.923] systemd[1]: Starting systemd-sysusers.service - Create System Users...
+[8.252] systemd[1]: debug-shell.service: Deactivated successfully.
+[8.597] systemd[1]: debug-shell.service: Scheduled restart job, restart counter is at 4.
+[8.611] systemd[1]: Started debug-shell.service - Early root shell on /dev/tty9 FOR DEBUGGING ONLY.
+[8.738] systemd[1]: Finished systemd-sysusers.service - Create System Users.
+[8.757] systemd[1]: Starting systemd-tmpfiles-setup-dev.service - Create Static Device Nodes in /dev...
+[8.977] systemd[1]: debug-shell.service: Deactivated successfully.
+[9.327] systemd[1]: Finished systemd-tmpfiles-setup-dev.service - Create Static Device Nodes in /dev.
+[9.404] systemd[1]: debug-shell.service: Scheduled restart job, restart counter is at 5.
+[9.410] systemd[1]: Reached target local-fs-pre.target - Preparation for Local File Systems.
+[9.415] systemd[1]: Reached target local-fs.target - Local File Systems.
+[9.476] systemd[1]: Listening on systemd-bootctl.socket - Boot Entries Service Socket.
+[9.516] systemd[1]: Listening on systemd-sysext.socket - System Extension Image Management.
+[9.522] systemd[1]: debug-shell.service: Start request repeated too quickly.
+[9.525] systemd[1]: debug-shell.service: Failed with result 'start-limit-hit'.
+[9.530] systemd[1]: Failed to start debug-shell.service - Early root shell on /dev/tty9 FOR DEBUGGING ONLY.
+[9.874] systemd[1]: Starting plymouth-read-write.service - Tell Plymouth To Write Out Runtime Data...
+[9.885] systemd[1]: selinux-autorelabel-mark.service - Mark the need to relabel after reboot skipped, unmet condition check ConditionSecurity=!selinux
+[9.896] systemd[1]: systemd-binfmt.service - Set Up Additional Binary Formats skipped, no trigger condition checks were met.
+[9.902] systemd[1]: systemd-boot-random-seed.service - Update Boot Loader Random Seed skipped, no trigger condition checks were met.
+[9.908] systemd[1]: systemd-confext.service - Merge System Configuration Images into /etc/ skipped, no trigger condition checks were met.
+[9.915] systemd[1]: systemd-sysext.service - Merge System Extension Images into /usr/ and /opt/ skipped, no trigger condition checks were met.
+[9.929] systemd[1]: Starting systemd-tmpfiles-setup.service - Create System Files and Directories...
+[9.942] systemd[1]: Finished systemd-hwdb-update.service - Rebuild Hardware Database.
+[9.965] systemd[1]: Starting systemd-udevd.service - Rule-based Manager for Device Events and Files...
+[9.997] systemd[1]: Finished plymouth-read-write.service - Tell Plymouth To Write Out Runtime Data.
+[10.112] systemd-udevd[94]: Using default interface naming scheme 'v257'.
+[12.403] systemd[1]: Finished systemd-tmpfiles-setup.service - Create System Files and Directories.
+[12.420] systemd[1]: Starting auditd.service - Security Audit Logging Service...
+[12.443] systemd[1]: Starting ldconfig.service - Rebuild Dynamic Linker Cache...
+[12.463] systemd[1]: systemd-firstboot.service - First Boot Wizard skipped, unmet condition check ConditionFirstBoot=yes
+[12.467] systemd[1]: first-boot-complete.target - First Boot Complete skipped, unmet condition check ConditionFirstBoot=yes
+[12.487] systemd[1]: Starting systemd-journal-catalog-update.service - Rebuild Journal Catalog...
+[12.507] systemd[1]: systemd-machine-id-commit.service - Save Transient machine-id to Disk skipped, unmet condition check ConditionPathIsMountPoint=/etc/machine-id
+[12.595] auditd[103]: No plugins found, not dispatching events
+[12.742] systemd[1]: Starting systemd-oomd.service - Userspace Out-Of-Memory (OOM) Killer...
+[12.885] (udev-worker)[112]: sda: /usr/lib/udev/rules.d/60-block-scheduler.rules:5 Failed to write ATTR{/sys/devices/virtual/block/sda/queue/scheduler}="bfq", ignoring: No such file or directory
+[12.902] systemd[1]: Starting systemd-resolved.service - Network Name Resolution...
+[13.015] systemd[1]: Started systemd-udevd.service - Rule-based Manager for Device Events and Files.
+[13.123] systemd[1]: Started auditd.service - Security Audit Logging Service.
+[13.201] systemd[1]: Found device dev-zram0.device - /dev/zram0.
+[13.421] systemd[1]: Found device dev-ttyS0.device - /dev/ttyS0.
+[13.494] systemd[1]: Starting audit-rules.service - Load Audit Rules...
+[13.531] systemd[1]: Starting systemd-update-utmp.service - Record System Boot/Shutdown in UTMP...
+[13.583] systemd[1]: Starting systemd-zram-setup@zram0.service - Create swap on /dev/zram0...
+[13.681] systemd[1]: Started systemd-oomd.service - Userspace Out-Of-Memory (OOM) Killer.
+[13.989] systemd[1]: Started systemd-resolved.service - Network Name Resolution.
+[13.997] systemd[1]: Reached target nss-lookup.target - Host and Network Name Lookups.
+[14.240] systemd[1]: Finished systemd-update-utmp.service - Record System Boot/Shutdown in UTMP.
+[14.462] systemd[1]: Finished systemd-journal-catalog-update.service - Rebuild Journal Catalog.
+[14.906] systemd[1]: Finished systemd-zram-setup@zram0.service - Create swap on /dev/zram0.
+[14.917] systemd[1]: audit-rules.service: Deactivated successfully.
+[14.924] systemd[1]: Finished audit-rules.service - Load Audit Rules.
+[15.043] systemd[1]: Activating swap dev-zram0.swap - Compressed Swap on /dev/zram0...
+[15.057] systemd[1]: fips-crypto-policy-overlay.service - Bind-mount FIPS crypto-policy in FIPS mode skipped, unmet condition check ConditionKernelCommandLine=fips=1
+[15.063] systemd[1]: kmod-static-nodes.service - Create List of Static Device Nodes skipped, unmet condition check ConditionFileNotEmpty=/lib/modules/6.19.0-oxide/modules.devname
+[15.084] systemd[1]: Starting modprobe@dm_mod.service - Load Kernel Module dm_mod...
+[15.112] systemd[1]: Starting modprobe@efi_pstore.service - Load Kernel Module efi_pstore...
+[15.144] systemd[1]: Starting modprobe@fuse.service - Load Kernel Module fuse...
+[15.169] systemd[1]: Starting modprobe@loop.service - Load Kernel Module loop...
+[15.184] systemd[1]: selinux-autorelabel-mark.service - Mark the need to relabel after reboot skipped, unmet condition check ConditionSecurity=!selinux
+[15.197] systemd[1]: systemd-binfmt.service - Set Up Additional Binary Formats skipped, no trigger condition checks were met.
+[15.202] systemd[1]: systemd-boot-random-seed.service - Update Boot Loader Random Seed skipped, no trigger condition checks were met.
+[15.209] systemd[1]: systemd-confext.service - Merge System Configuration Images into /etc/ skipped, no trigger condition checks were met.
+[15.224] systemd[1]: systemd-firstboot.service - First Boot Wizard skipped, unmet condition check ConditionFirstBoot=yes
+[15.231] systemd[1]: first-boot-complete.target - First Boot Complete skipped, unmet condition check ConditionFirstBoot=yes
+[15.236] systemd[1]: systemd-hibernate-clear.service - Clear Stale Hibernate Storage Info skipped, unmet condition check ConditionPathExists=/sys/firmware/efi/efivars/HibernateLocation-8cf2644b-4b0b-428f-9387-6d876050dc67
+[15.245] systemd[1]: systemd-machine-id-commit.service - Save Transient machine-id to Disk skipped, unmet condition check ConditionPathIsMountPoint=/etc/machine-id
+[15.249] systemd[1]: systemd-pcrmachine.service - TPM PCR Machine ID Measurement skipped, unmet condition check ConditionSecurity=measured-uki
+[15.259] systemd[1]: systemd-sysext.service - Merge System Extension Images into /usr/ and /opt/ skipped, no trigger condition checks were met.
+[15.264] systemd[1]: systemd-tpm2-setup-early.service - Early TPM SRK Setup skipped, unmet condition check ConditionSecurity=measured-uki
+[15.269] systemd[1]: systemd-tpm2-setup.service - TPM SRK Setup skipped, unmet condition check ConditionSecurity=measured-uki
+[15.296] systemd[1]: modprobe@dm_mod.service: Deactivated successfully.
+[15.304] systemd[1]: Finished modprobe@dm_mod.service - Load Kernel Module dm_mod.
+[15.339] systemd[1]: modprobe@efi_pstore.service: Deactivated successfully.
+[15.345] systemd[1]: Finished modprobe@efi_pstore.service - Load Kernel Module efi_pstore.
+[15.356] systemd[1]: modprobe@fuse.service: Deactivated successfully.
+[15.360] systemd[1]: Finished modprobe@fuse.service - Load Kernel Module fuse.
+[15.371] systemd[1]: modprobe@loop.service: Deactivated successfully.
+[15.375] systemd[1]: Finished modprobe@loop.service - Load Kernel Module loop.
+[15.424] systemd[1]: Activated swap dev-zram0.swap - Compressed Swap on /dev/zram0.
+[15.452] systemd[1]: Reached target swap.target - Swaps.
+[15.459] systemd[1]: sys-fs-fuse-connections.mount - FUSE Control File System skipped, unmet condition check ConditionPathExists=/sys/fs/fuse/connections
+[15.465] systemd[1]: systemd-pstore.service - Platform Persistent Storage Archival skipped, unmet condition check ConditionDirectoryNotEmpty=/sys/fs/pstore
+[15.470] systemd[1]: systemd-repart.service - Repartition Root Disk skipped, no trigger condition checks were met.
+[33.006] systemd[1]: Finished ldconfig.service - Rebuild Dynamic Linker Cache.
+[33.018] systemd[1]: Starting systemd-update-done.service - Update is Completed...
+[33.254] systemd[1]: Finished systemd-update-done.service - Update is Completed.
+[33.266] systemd[1]: Reached target sysinit.target - System Initialization.
+[33.273] systemd[1]: Started dnf-makecache.timer - dnf5 makecache.
+[33.351] systemd[1]: Started fstrim.timer - Discard unused filesystem blocks once a week.
+[33.398] systemd[1]: Started raid-check.timer - Weekly RAID setup health check.
+[33.404] systemd[1]: Started sysstat-collect.timer - Run system activity accounting tool every 10 minutes.
+[33.410] systemd[1]: Started sysstat-rotate.timer - Rotate daily system activity data file at midnight.
+[33.417] systemd[1]: Started sysstat-summary.timer - Generate summary of yesterday's process accounting.
+[33.422] systemd[1]: Started systemd-tmpfiles-clean.timer - Daily Cleanup of Temporary Directories.
+[33.426] systemd[1]: Reached target timers.target - Timer Units.
+[33.434] systemd[1]: Listening on avahi-daemon.socket - Avahi mDNS/DNS-SD Stack Activation Socket.
+[33.444] systemd[1]: Listening on dbus.socket - D-Bus System Message Bus Socket.
+[33.477] systemd[1]: Listening on sshd-unix-local.socket - OpenSSH Server Socket (systemd-ssh-generator, AF_UNIX Local).
+[33.485] systemd[1]: Listening on sssd-kcm.socket - SSSD Kerberos Cache Manager responder socket.
+[33.492] systemd[1]: Listening on systemd-hostnamed.socket - Hostname Service Socket.
+[33.498] systemd[1]: Reached target sockets.target - Socket Units.
+[33.569] systemd[1]: Starting dbus-broker.service - D-Bus System Message Bus...
+[33.576] systemd[1]: rpmdb-rebuild.service - RPM database rebuild skipped, unmet condition check ConditionPathExists=/usr/lib/sysimage/rpm/.rebuilddb
+[33.580] systemd[1]: systemd-pcrphase-sysinit.service - TPM PCR Barrier (Initialization) skipped, unmet condition check ConditionSecurity=measured-uki
+[33.664] systemd[1]: Started dbus-broker.service - D-Bus System Message Bus.
+[33.673] systemd[1]: Reached target basic.target - Basic System.
+[33.686] systemd[1]: System is tainted: support-ended
+[33.708] systemd[1]: Starting NetworkManager.service - Network Manager...
+[33.752] systemd[1]: Starting avahi-daemon.service - Avahi mDNS/DNS-SD Stack...
+[33.799] systemd[1]: Starting dracut-shutdown.service - Restore /run/initramfs on shutdown...
+[33.823] systemd[1]: mdmonitor.service - Software RAID monitoring and management skipped, unmet condition check ConditionPathExists=/etc/mdadm.conf
+[33.955] systemd[1]: Starting rtkit-daemon.service - RealtimeKit Scheduling Policy Service...
+[34.126] systemd[1]: Starting ssh-host-keys-migration.service - Update OpenSSH host key permissions...
+[34.214] systemd[1]: Starting sshd-keygen@ecdsa.service - OpenSSH ecdsa Server Key Generation...
+[34.261] systemd[1]: Starting sshd-keygen@ed25519.service - OpenSSH ed25519 Server Key Generation...
+[34.308] systemd[1]: Starting sshd-keygen@rsa.service - OpenSSH rsa Server Key Generation...
+[34.337] systemd[1]: sssd.service - System Security Services Daemon skipped, no trigger condition checks were met.
+[34.355] systemd[1]: Reached target nss-user-lookup.target - User and Group Name Lookups.
+[34.407] systemd[1]: Starting accounts-daemon.service - Accounts Service...
+[34.466] systemd[1]: Starting switcheroo-control.service - Switcheroo Control Proxy service...
+[34.533] systemd[1]: Starting sysstat.service - Resets System Activity Logs...
+[34.610] systemd[1]: Starting systemd-homed.service - Home Area Manager...
+[34.810] systemd[1]: Starting systemd-logind.service - User Login Management...
+[34.863] systemd[1]: systemd-pcrphase.service - TPM PCR Barrier (User) skipped, unmet condition check ConditionSecurity=measured-uki
+[34.922] systemd[1]: Starting udisks2.service - Disk Manager...
+[35.188] systemd[1]: Starting upower.service - Daemon for power management...
+[35.270] systemd[1]: Finished dracut-shutdown.service - Restore /run/initramfs on shutdown.
+[35.291] systemd[1]: Finished sysstat.service - Resets System Activity Logs.
+[35.354] systemd[1]: sshd-keygen@rsa.service: Deactivated successfully.
+[35.377] systemd[1]: Finished sshd-keygen@rsa.service - OpenSSH rsa Server Key Generation.
+[35.436] systemd[1]: sshd-keygen@ed25519.service: Deactivated successfully.
+[35.449] systemd[1]: Finished sshd-keygen@ed25519.service - OpenSSH ed25519 Server Key Generation.
+[35.458] systemd[1]: sshd-keygen@ecdsa.service: Deactivated successfully.
+[35.464] systemd[1]: Finished sshd-keygen@ecdsa.service - OpenSSH ecdsa Server Key Generation.
+[35.508] systemd[1]: Started switcheroo-control.service - Switcheroo Control Proxy service.
+[35.552] systemd[1]: Started rtkit-daemon.service - RealtimeKit Scheduling Policy Service.
+[35.595] systemd[1]: Finished ssh-host-keys-migration.service - Update OpenSSH host key permissions.
+[35.789] systemd[1]: Started systemd-logind.service - User Login Management.
+[35.805] systemd[1]: Started systemd-homed.service - Home Area Manager.
+[35.813] avahi-daemon[177]: WARNING: No NSS support for mDNS detected, consider installing nss-mdns!
+[35.857] systemd[1]: Started avahi-daemon.service - Avahi mDNS/DNS-SD Stack.
+[35.867] systemd[1]: Reached target sshd-keygen.target.
+[35.871] systemd[1]: alsa-restore.service - Save/Restore Sound Card State skipped, unmet condition check ConditionPathExists=!/etc/alsa/state-daemon.conf
+[35.884] systemd[1]: Started alsa-state.service - Manage Sound Card State (restore and store).
+[35.892] systemd[1]: Reached target sound.target - Sound Card.
+[35.925] alsactl[251]: /usr/sbin/alsactl: load_state:1745: Cannot open /var/lib/alsa/asound.state for reading: No such file or directory
+[35.936] alsactl[251]: alsa-lib main.c:1804:(snd_use_case_mgr_open) [error.ucm] failed to import hw:0 use case configuration -2
+[36.008] systemd[1]: Starting polkit.service - Authorization Manager...
+[36.019] systemd[1]: Finished systemd-homed-activate.service - Home Area Activation.
+[36.141] systemd[1]: Starting systemd-hostnamed.service - Hostname Service...
+[36.459] systemd[1]: Started systemd-hostnamed.service - Hostname Service.
+[36.510] systemd[1]: Started polkit.service - Authorization Manager.
+[36.724] systemd[1]: Started accounts-daemon.service - Accounts Service.
+[36.747] systemd[1]: Started NetworkManager.service - Network Manager.
+[36.810] systemd[1]: Reached target network.target - Network.
+[36.840] systemd[1]: Reached target network-online.target - Network is Online.
+[36.869] systemd[1]: Starting NetworkManager-dispatcher.service - Network Manager Script Dispatcher Service...
+[36.925] systemd[1]: Starting sshd.service - OpenSSH server daemon...
+[36.973] systemd[1]: Starting systemd-user-sessions.service - Permit User Sessions...
+[37.010] NetworkManager[176]: <warn>  [1787619786.0941] l3cfg[8b9a0ebc3646e5c1,ifindex=2]: unable to configure IPv6 route: type unicast fe80::/64 dev 2 metric 1024 mss 0 rt-src ipv6ll
+[37.099] systemd[1]: Started sshd.service - OpenSSH server daemon.
+[37.154] systemd[1]: Finished systemd-user-sessions.service - Permit User Sessions.
+[37.187] systemd[1]: Started NetworkManager-dispatcher.service - Network Manager Script Dispatcher Service.
+[37.248] systemd[1]: Starting gdm.service - GNOME Display Manager...
+[37.297] systemd[1]: Starting plymouth-quit-wait.service - Hold until boot process finishes up...
+[37.330] systemd[1]: Started udisks2.service - Disk Manager.
+[37.367] systemd[1]: Finished plymouth-quit-wait.service - Hold until boot process finishes up.
+[37.404] systemd[1]: Started serial-getty@ttyS0.service - Serial Getty on ttyS0.
+[37.425] systemd[1]: Reached target getty.target - Login Prompts.
+[37.437] systemd[1]: Reached target multi-user.target - Multi-User System.
+[37.602] systemd[1]: Starting power-profiles-daemon.service - Power Profiles daemon...
+[37.770] systemd[1]: Started upower.service - Daemon for power management.
+[37.856] systemd[1]: Started gdm.service - GNOME Display Manager.
+[38.131] NetworkManager[176]: <warn>  [1787619787.3399] l3cfg[8b9a0ebc3646e5c1,ifindex=2]: unable to configure IPv6 route: type unicast fec0::/64 dev 2 metric 100 mss 0 rt-src ndisc
+[38.147] NetworkManager[176]: <warn>  [1787619787.3400] l3cfg[8b9a0ebc3646e5c1,ifindex=2]: unable to configure IPv6 route: type unicast ::/0 via fe80::2 dev 2 metric 100 mss 0 rt-src ndisc
+[38.219] systemd[1]: Started power-profiles-daemon.service - Power Profiles daemon.
+[38.247] systemd[1]: Reached target graphical.target - Graphical Interface.
+[38.267] systemd[1]: Starting systemd-update-utmp-runlevel.service - Record Runlevel Change in UTMP...
+[38.334] systemd[1]: systemd-update-utmp-runlevel.service: Deactivated successfully.
+[38.341] systemd[1]: Finished systemd-update-utmp-runlevel.service - Record Runlevel Change in UTMP.
+[38.350] systemd[1]: Startup finished in 3.985s (kernel) + 34.364s (userspace) = 38.350s.
+[38.379] systemd[1]: serial-getty@ttyS0.service: Deactivated successfully.
+[38.729] systemd[1]: serial-getty@ttyS0.service: Scheduled restart job, restart counter is at 1.
+[38.752] systemd[1]: Started serial-getty@ttyS0.service - Serial Getty on ttyS0.
+[38.794] systemd[1]: serial-getty@ttyS0.service: Deactivated successfully.
+[38.938] gdm-autologin][296]: gkr-pam: unable to locate daemon control file
+[38.947] systemd[1]: serial-getty@ttyS0.service: Scheduled restart job, restart counter is at 2.
+[38.973] systemd[1]: Started serial-getty@ttyS0.service - Serial Getty on ttyS0.
+[38.995] systemd[1]: serial-getty@ttyS0.service: Deactivated successfully.
+[39.177] systemd[1]: serial-getty@ttyS0.service: Scheduled restart job, restart counter is at 3.
+[39.200] systemd[1]: Started serial-getty@ttyS0.service - Serial Getty on ttyS0.
+[39.246] systemd[1]: serial-getty@ttyS0.service: Deactivated successfully.
+[39.391] systemd[1]: serial-getty@ttyS0.service: Scheduled restart job, restart counter is at 4.
+[39.492] systemd[1]: Created slice user-1000.slice - User Slice of UID 1000.
+[39.505] systemd[1]: Started serial-getty@ttyS0.service - Serial Getty on ttyS0.
+[39.520] systemd[1]: Starting user-runtime-dir@1000.service - User Runtime Directory /run/user/1000...
+[39.600] systemd[1]: Finished user-runtime-dir@1000.service - User Runtime Directory /run/user/1000.
+[39.616] systemd[1]: Starting user@1000.service - User Manager for UID 1000...
+[41.500] systemd[1]: Started user@1000.service - User Manager for UID 1000.
+[41.512] systemd[1]: Started session-1.scope - Session 1 of User oxide.
+[41.543] systemd[1]: serial-getty@ttyS0.service: Deactivated successfully.
+[41.646] systemd[1]: serial-getty@ttyS0.service: Scheduled restart job, restart counter is at 5.
+[41.655] systemd[1]: serial-getty@ttyS0.service: Start request repeated too quickly.
+[41.659] systemd[1]: serial-getty@ttyS0.service: Failed with result 'start-limit-hit'.
+[41.670] systemd[1]: Failed to start serial-getty@ttyS0.service - Serial Getty on ttyS0.
+[48.572] gnome-keyring-daemon[432]: discover_other_daemon: 1
+[48.596] gnome-keyring-daemon[436]: discover_other_daemon: 1
+[48.617] gnome-keyring-daemon[434]: discover_other_daemon: 1
+[48.641] gnome-session-binary[417]: GnomeDesktop-WARNING: Could not create transient scope for PID 440: GDBus.Error:org.freedesktop.DBus.Error.UnixProcessIdUnknown: Failed to set unit properties: No such process
+[50.110] systemd[1]: run-user-1000-gvfs.mount: Deactivated successfully.
+[50.194] gnome-shell[444]: Running GNOME Shell (using mutter 48.8) as a Wayland display server
+[50.233] gnome-shell[444]: Enabling experimental feature 'scale-monitor-framebuffer'
+[50.237] gnome-shell[444]: Enabling experimental feature 'xwayland-native-scaling'
+[70.433] gnome-shell[444]: Thread 'KMS thread' will be using high priority scheduling
+[70.959] gnome-shell[444]: Added device '/dev/dri/card0' (bochs) using atomic mode setting.
+[70.965] gnome-shell[444]: Failed to initialize accelerated iGPU/dGPU framebuffer sharing: Not hardware accelerated
+[70.968] gnome-shell[444]: Created gbm renderer for '/dev/dri/card0'
+[70.969] gnome-shell[444]: Boot VGA GPU /dev/dri/card0 selected as primary
+[73.953] gnome-shell[444]: Using public X11 display :0, (using :1 for managed services)
+[73.960] gnome-shell[444]: Using Wayland display name 'wayland-0'
+[74.037] gnome-shell[444]: Couldn't find suitable cursor plane format for /dev/dri/card0, disabling HW cursor
+[74.157] systemd[1]: systemd-hostnamed.service: Deactivated successfully.
+[76.105] systemd[1]: Starting colord.service - Manage, Install and Generate Color Profiles...
+[77.841] systemd[1]: Started colord.service - Manage, Install and Generate Color Profiles.
+[80.296] gnome-shell[444]: Unset XDG_SESSION_ID, getCurrentSessionProxy() called outside a user session. Asking logind directly.
+[85.160] goa-daemon[661]: goa-daemon version 3.54.11 starting
+[87.097] systemd[1]: Starting sssd-kcm.service - SSSD Kerberos Cache Manager...
+[87.384] gnome-session-binary[417]: Entering running state
+[88.288] gnome-session-binary[417]: GnomeDesktop-WARNING: Could not create transient scope for PID 686: GDBus.Error:org.freedesktop.DBus.Error.UnixProcessIdUnknown: Failed to set unit properties: No such process
+[94.319] dbus-broker-launch[174]: Activation request for 'org.usbguard1' failed: The systemd unit 'dbus-org.usbguard.service' could not be found.
+[95.225] systemd[1]: Starting systemd-hostnamed.service - Hostname Service...
+[95.921] systemd[1]: Started systemd-hostnamed.service - Hostname Service.
+[96.129] gnome-session-binary[417]: WARNING: Could not retrieve current screensaver active state: Timeout was reached
+[97.663] gnome-shell[444]: Error looking up permission: GDBus.Error:org.freedesktop.portal.Error.NotFound: No entry for geolocation
+[97.703] gsd-usb-protect[583]: Failed to fetch USBGuard parameters: GDBus.Error:org.freedesktop.DBus.Error.NameHasNoOwner: Could not activate remote peer 'org.usbguard1': activation request failed: unknown unit
+[98.109] gnome-shell[444]: Will monitor session 1
+[104.221] systemd[1]: Starting geoclue.service - Location Lookup Service...
+[104.767] systemd[1]: Started geoclue.service - Location Lookup Service.
+[104.867] systemd[1]: NetworkManager-dispatcher.service: Deactivated successfully.
+[106.913] gnome-shell[444]: Error connecting to the screencast service
+[108.990] gnome-shell[444]: GNOME Shell started at Tue Aug 25 2026 01:03:51 GMT+0000 (Coordinated Universal Time)
+[109.034] gnome-shell[444]: Registering session with GDM
+[109.065] gsd-media-keys[564]: Failed to grab accelerator for keybinding settings:playback-repeat
+[109.068] gsd-media-keys[564]: Failed to grab accelerator for keybinding settings:hibernate
+[112.892] systemd[1]: Starting systemd-localed.service - Locale Service...
+[113.465] systemd[1]: Started sssd-kcm.service - SSSD Kerberos Cache Manager.
+[113.881] systemd[1]: Started systemd-localed.service - Locale Service.
+[114.671] gsd-keyboard[561]: g_variant_unref: assertion 'value != NULL' failed
+[122.779] systemd[1]: Starting modprobe@sd_mod.service - Load Kernel Module sd_mod...
+[122.889] systemd[1]: modprobe@sd_mod.service: Deactivated successfully.
+[122.899] systemd[1]: Finished modprobe@sd_mod.service - Load Kernel Module sd_mod.
+[123.231] wireplumber[861]: spa.bluez5: BlueZ system service is not available
+[123.422] systemd[1]: Starting fwupd.service - Firmware update daemon...
+[124.316] goa-identity-se[672]: GoaKerberosIdentityManager: Using polling for change notification for credential cache type 'KCM'
+[124.969] wireplumber[861]: wp-device: SPA handle 'api.libcamera.enum.manager' could not be loaded; is it installed?
+[124.975] wireplumber[861]: s-monitors-libcamera: PipeWire's libcamera SPA plugin is missing or broken. Some camera types may not be supported.
+[125.072] systemd[1]: Starting flatpak-system-helper.service - flatpak system helper...
+[125.315] systemd[1]: Started flatpak-system-helper.service - flatpak system helper.
+[127.903] [NAMEI] mkdir path="/home/oxide/.config/mozilla/firefox" err=17
+[127.917] [NAMEI] mkdir path="/home/oxide/.config/mozilla/firefox/Crash Reports" err=17
+[130.673] systemd[1]: Starting systemd-timedated.service - Time & Date Service...
+[131.092] systemd[1]: Started systemd-timedated.service - Time & Date Service.
+[142.218] systemd[1]: systemd-hostnamed.service: Deactivated successfully.
+[144.294] systemd[1]: systemd-localed.service: Deactivated successfully.
+[157.743] 
+[157.743] [WATCHDOG] soft lockup: no reschedule for 10s on tid=4096 (ktimers) last_syscall=none preempt_count=0x0000000000010102 resched=y irqs_off=y interrupt=y kernel_pc=0xffffffff80bf121f held_lock_rank=5 held_lock_depth=2 timer_phase=scan-oneshot
+[157.743] [sysrq] task dump  switches=4708099 current=tid:4096
+[157.743]   PID   TID name             ST onrq oncpu onwl cpu  last-sysc  nsysc      cputime_ms
+[157.743]  4096   4096 ktimers          R  n  y    n     0  none                0       1358 tgid=  4096 vtid=     0 ptid=     0
+[157.744]  4097   4097 ksoftirqd        R  y  n    n     0  none                0       1069 tgid=  4097 vtid=     0 ptid=     0
+[157.744]  4098   4098 kworker          S  n  n    n     0  none                0       5744 tgid=  4098 vtid=     0 ptid=     0 wchan=crates/kernel/sched/src/live/workqueue.rs:212
+[157.744]  4099   4099 kworkermgr       R  y  n    n     0  none                0       3045 tgid=  4099 vtid=     0 ptid=     0
+[157.744]  4100   4100 khelper          S  n  n    n     0  none                0          0 tgid=  4100 vtid=     0 ptid=     0 wchan=crates/kernel/umh/src/spawn/queue.rs:212
+[157.744]  4101   4101 kswapd0          S  n  n    n     0  none                0          0 tgid=  4101 vtid=     0 ptid=     0 wchan=crates/kernel/mm-pmm/src/kswapd.rs:101
+[157.744]  4102   4102 kflushd          R  y  n    n     0  none                0          0 tgid=  4102 vtid=     0 ptid=     0
+[157.744]  4103   4103 oom_reaper       R  y  n    n     0  none                0          0 tgid=  4103 vtid=     0 ptid=     0
+[157.744]  4104   4104 khungtaskd       D  n  n    n     0  none                0          0 tgid=  4104 vtid=     0 ptid=     0 wake_dl_ns=243926103819
+[157.744]  4105   4105 netns_reaper     D  n  n    n     0  none                0          0 tgid=  4105 vtid=     0 ptid=     0 wchan=crates/kernel/net/src/net_ns/teardown.rs:152
+[157.744]  4106   4106 sock-rtnl-reap   D  n  n    n     0  none                0          0 tgid=  4106 vtid=     0 ptid=     0 wchan=crates/kernel/net/src/sock_rtnl_defer.rs:125
+[157.744]  4107   4107 fw_loader        D  n  n    n     0  none                0          0 tgid=  4107 vtid=     0 ptid=     0 wchan=crates/kernel/modules/src/linux_firmware.rs:238
+[157.744]  4108   4108 kworker          R  y  n    n     0  none                0       2932 tgid=  4108 vtid=     0 ptid=     0
+[157.744]    37   4144 systemd-journal  S  n  n    n     0  epoll_wait      16455       1392 tgid=  4144 vtid=    37 ptid=3235774466 wake_dl_ns=306347903000 wchan=crates/kernel/fs/src/epoll.rs:364 exe=/usr/lib/systemd/systemd-journald
+[157.744]    69   4176 systemd-userdbd  S  n  n    n     0  epoll_wait       2893         85 tgid=  4176 vtid=    69 ptid=3235774466 wchan=crates/kernel/fs/src/epoll.rs:364 exe=/usr/lib/systemd/systemd-userdbd
+[157.744]    94   4201 systemd-udevd    S  n  n    n     0  epoll_wait      15243        550 tgid=  4201 vtid=    94 ptid=3235774466 wchan=crates/kernel/fs/src/epoll.rs:364 exe=/usr/lib/systemd/systemd-udevd
+[157.744]   103   4210 auditd           S  n  n    n     0  pselect6         1151         43 tgid=  4210 vtid=   103 ptid=3235774466 wake_dl_ns=204043202685 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/auditd
+[157.744]   103   4211 auditd           S  n  n    n     0  futex              17         59 tgid=  4210 vtid=   104 ptid=  4210 fux=000055fdd10080a0 wchan=crates/drivers/drv-virtio-blk/src/modern/wait.rs:44 exe=/usr/bin/auditd
+[157.744]   105   4212 systemd-oomd     R  y  n    n     0  epoll_wait       6941        126 tgid=  4212 vtid=   105 ptid=3235774466 exe=/usr/lib/systemd/systemd-oomd
+[157.744]   114   4221 systemd-resolve  S  n  n    n     0  epoll_wait      13418        323 tgid=  4221 vtid=   114 ptid=3235774466 wake_dl_ns=7435752287646211970 wchan=crates/kernel/fs/src/epoll.rs:364 exe=/usr/lib/systemd/systemd-resolved
+[157.744]   174   4281 dbus-broker-lau  S  n  n    n     0  epoll_wait       3752        109 tgid=  4281 vtid=   174 ptid=3235774466 wchan=crates/kernel/fs/src/epoll.rs:364 exe=/usr/bin/dbus-broker-launch
+[157.744]   175   4282 dbus-broker      S  n  n    n     0  epoll_wait      25181        601 tgid=  4282 vtid=   175 ptid=  4281 wchan=crates/kernel/fs/src/epoll.rs:364 exe=/usr/bin/dbus-broker
+[157.744]   176   4283 NetworkManager   S  n  n    n     0  ppoll           12627        260 tgid=  4283 vtid=   176 ptid=3235774466 wake_dl_ns=336883567163 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/NetworkManager
+[157.744]   177   4284 avahi-daemon     R  y  n    n     0  poll             6519         77 tgid=  4284 vtid=   177 ptid=3235774466 exe=/usr/bin/avahi-daemon
+[157.744]   179   4286 rtkit-daemon     S  n  n    n     0  poll             3620        102 tgid=  4286 vtid=   179 ptid=3235774466 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/rtkit-daemon
+[157.744]   179   4293 rtkit-daemon     R  y  n    n     0  poll               56          0 tgid=  4286 vtid=   186 ptid=  4286 exe=/usr/libexec/rtkit-daemon
+[157.744]   179   4294 rtkit-daemon     R  y  n    n     0  poll               57          0 tgid=  4286 vtid=   187 ptid=  4286 exe=/usr/libexec/rtkit-daemon
+[157.744]   190   4297 accounts-daemon  S  n  n    n     0  ppoll            5473        165 tgid=  4297 vtid=   190 ptid=3235774466 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/accounts-daemon
+[157.744]   194   4301 switcheroo-cont  S  n  n    n     0  ppoll            2358         66 tgid=  4301 vtid=   194 ptid=3235774466 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/switcheroo-control
+[157.744]   176   4305 gmain            R  y  n    n     0  ppoll             274          3 tgid=  4283 vtid=   198 ptid=  4283 exe=/usr/bin/NetworkManager
+[157.744]   176   4306 pool-spawner     S  n  n    n     0  futex              18          1 tgid=  4283 vtid=   199 ptid=  4283 fux=000055c5d9057470 exe=/usr/bin/NetworkManager
+[157.744]   200   4307 systemd-homed    S  n  n    n     0  epoll_wait      56762        414 tgid=  4307 vtid=   200 ptid=3235774466 wchan=crates/kernel/fs/src/epoll.rs:364 exe=/usr/lib/systemd/systemd-homed
+[157.744]   176   4308 gdbus            S  n  n    n     0  ppoll            9534         31 tgid=  4283 vtid=   201 ptid=  4283 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/NetworkManager
+[157.744]   203   4310 systemd-logind   S  n  n    n     0  epoll_wait      17650        486 tgid=  4310 vtid=   203 ptid=3235774466 wchan=crates/kernel/fs/src/epoll.rs:364 exe=/usr/lib/systemd/systemd-logind
+[157.744]   205   4312 udisksd          S  n  n    n     0  ppoll           33808        206 tgid=  4312 vtid=   205 ptid=3235774466 wake_dl_ns=638000000553 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/udisks2/udisksd
+[157.744]   194   4315 pool-spawner     S  n  n    n     0  futex              18          2 tgid=  4301 vtid=   208 ptid=  4301 fux=000055feb04ddc90 exe=/usr/libexec/switcheroo-control
+[157.744]   194   4316 gmain            S  n  n    n     0  ppoll               9          1 tgid=  4301 vtid=   209 ptid=  4301 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/switcheroo-control
+[157.744]   194   4319 gdbus            S  n  n    n     0  ppoll             299          3 tgid=  4301 vtid=   212 ptid=  4301 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/switcheroo-control
+[157.744]   205   4327 gmain            R  y  n    n     0  ppoll             320          3 tgid=  4312 vtid=   220 ptid=  4312 exe=/usr/libexec/udisks2/udisksd
+[157.744]   205   4328 pool-spawner     S  n  n    n     0  futex              18          1 tgid=  4312 vtid=   221 ptid=  4312 fux=00005621f1fabaf0 exe=/usr/libexec/udisks2/udisksd
+[157.744]   190   4329 pool-spawner     S  n  n    n     0  futex              19          1 tgid=  4297 vtid=   222 ptid=  4297 fux=00005560084351b0 exe=/usr/libexec/accounts-daemon
+[157.745]   190   4330 gmain            S  n  n    n     0  ppoll             109          1 tgid=  4297 vtid=   223 ptid=  4297 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/accounts-daemon
+[157.745]   205   4337 gdbus            S  n  n    n     0  ppoll            1509          6 tgid=  4312 vtid=   230 ptid=  4312 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/udisks2/udisksd
+[157.745]   190   4339 gdbus            S  n  n    n     0  ppoll            2847         15 tgid=  4297 vtid=   232 ptid=  4297 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/accounts-daemon
+[157.745]   233   4340 upowerd          S  n  n    n     0  ppoll           11417        348 tgid=  4340 vtid=   233 ptid=3235774466 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/upowerd
+[157.745]   233   4354 pool-spawner     S  n  n    n     0  futex              18          1 tgid=  4340 vtid=   247 ptid=  4340 fux=0000564f3542b0b0 exe=/usr/libexec/upowerd
+[157.745]   233   4355 gmain            S  n  n    n     0  ppoll              10          1 tgid=  4340 vtid=   248 ptid=  4340 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/upowerd
+[157.745]   233   4356 gdbus            S  n  n    n     0  ppoll            3118         16 tgid=  4340 vtid=   249 ptid=  4340 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/upowerd
+[157.745]   250   4357 avahi-daemon     S  n  n    n     0  read               11          0 tgid=  4357 vtid=   250 ptid=  4284 wchan=crates/kernel/net/src/sock_wait/kernel.rs:21 exe=/usr/bin/avahi-daemon
+[157.745]   251   4358 alsactl          S  n  n    n     0  poll              835         17 tgid=  4358 vtid=   251 ptid=3235774466 wake_dl_ns=213326856315 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/sbin/alsactl
+[157.745]   252   4359 polkitd          S  n  n    n     0  ppoll          122036       1500 tgid=  4359 vtid=   252 ptid=3235774466 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/lib/polkit-1/polkitd
+[157.745]   252   4362 gmain            R  y  n    n     0  ppoll             353          4 tgid=  4359 vtid=   255 ptid=  4359 exe=/usr/lib/polkit-1/polkitd
+[157.745]   252   4363 pool-spawner     S  n  n    n     0  futex              13          0 tgid=  4359 vtid=   256 ptid=  4359 fux=000056181e19c6e0 exe=/usr/lib/polkit-1/polkitd
+[157.745]   252   4364 gdbus            S  n  n    n     0  ppoll           19836        129 tgid=  4359 vtid=   257 ptid=  4359 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/lib/polkit-1/polkitd
+[157.745]   205   4377 udisks-probing-  S  n  n    n     0  futex               5          0 tgid=  4312 vtid=   270 ptid=  4312 fux=00005621f1fe3090 exe=/usr/libexec/udisks2/udisksd
+[157.745]   205   4378 udisks-uevent-m  S  n  n    n     0  ppoll              34          0 tgid=  4312 vtid=   271 ptid=  4312 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/udisks2/udisksd
+[157.745]   274   4381 sshd             S  n  n    n     0  ppoll             836         24 tgid=  4381 vtid=   274 ptid=3235774466 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/sbin/sshd
+[157.745]   282   4389 gdm              S  n  n    n     0  ppoll            3475         80 tgid=  4389 vtid=   282 ptid=3235774466 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gdm
+[157.745]   205   4390 cleanup          S  n  n    n     0  ppoll              28          1 tgid=  4312 vtid=   283 ptid=  4312 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/udisks2/udisksd
+[157.745]   288   4395 power-profiles-  S  n  n    n     0  ppoll            4164        143 tgid=  4395 vtid=   288 ptid=3235774466 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/power-profiles-daemon
+[157.745]   282   4399 pool-spawner     S  n  n    n     0  futex              17          0 tgid=  4389 vtid=   292 ptid=  4389 fux=00005615902fa530 exe=/usr/bin/gdm
+[157.745]   282   4400 gmain            S  n  n    n     0  ppoll              17          1 tgid=  4389 vtid=   293 ptid=  4389 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gdm
+[157.745]   282   4401 gdbus            S  n  n    n     0  ppoll            3486         12 tgid=  4389 vtid=   294 ptid=  4389 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gdm
+[157.745]   296   4403 gdm-session-wor  S  n  n    n     0  ppoll            3853        325 tgid=  4403 vtid=   296 ptid=  4389 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gdm-session-worker
+[157.745]   296   4410 pool-spawner     S  n  n    n     0  futex              15          0 tgid=  4403 vtid=   303 ptid=  4403 fux=000055d5ec3606f0 exe=/usr/libexec/gdm-session-worker
+[157.745]   296   4411 gmain            S  n  n    n     0  ppoll              26          1 tgid=  4403 vtid=   304 ptid=  4403 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gdm-session-worker
+[157.745]   296   4413 gdbus            S  n  n    n     0  ppoll            2184          6 tgid=  4403 vtid=   306 ptid=  4403 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gdm-session-worker
+[157.745]   288   4414 pool-spawner     S  n  n    n     0  futex              17          0 tgid=  4395 vtid=   307 ptid=  4395 fux=0000561e31d5b0c0 exe=/usr/libexec/power-profiles-daemon
+[157.745]   288   4415 gmain            S  n  n    n     0  ppoll              19          1 tgid=  4395 vtid=   308 ptid=  4395 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/power-profiles-daemon
+[157.745]   288   4416 gdbus            S  n  n    n     0  ppoll            2001         10 tgid=  4395 vtid=   309 ptid=  4395 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/power-profiles-daemon
+[157.745]   320   4427 systemd          S  n  n    n     0  epoll_wait      63041       2672 tgid=  4427 vtid=   320 ptid=3235774466 wake_dl_ns=348347903000 wchan=crates/kernel/fs/src/epoll.rs:364 exe=/usr/lib/systemd/systemd
+[157.745]   322   4429 (sd-pam)         S  n  n    n     0  rt_sigtime         27          0 tgid=  4429 vtid=   322 ptid=  4427 wchan=crates/kernel/syscalls/src/128_rt_sigtimedwait.rs:131 exe=/proc/self/fd/9
+[157.745]   334   4441 gnome-keyring-d  S  n  n    n     0  ppoll            8921         19 tgid=  4441 vtid=   334 ptid=3235774466 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gnome-keyring-daemon
+[157.745]   334   4442 pool-spawner     S  n  n    n     0  futex               5          0 tgid=  4441 vtid=   335 ptid=  4441 fux=0000561146af7950 exe=/usr/bin/gnome-keyring-daemon
+[157.745]   334   4443 gmain            S  n  n    n     0  ppoll              17          1 tgid=  4441 vtid=   336 ptid=  4441 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gnome-keyring-daemon
+[157.745]   334   4444 gdbus            S  n  n    n     0  ppoll            9732         57 tgid=  4441 vtid=   337 ptid=  4441 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gnome-keyring-daemon
+[157.745]   339   4446 gdm-wayland-ses  S  n  n    n     0  ppoll             712         14 tgid=  4446 vtid=   339 ptid=  4403 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gdm-wayland-session
+[157.746]   339   4447 gmain            S  n  n    n     0  ppoll              23          1 tgid=  4446 vtid=   340 ptid=  4446 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gdm-wayland-session
+[157.746]   339   4448 pool-spawner     S  n  n    n     0  futex               5          0 tgid=  4446 vtid=   341 ptid=  4446 fux=000055b93137a3f0 exe=/usr/libexec/gdm-wayland-session
+[157.746]   342   4449 dbus-broker-lau  S  n  n    n     0  epoll_wait       5012        889 tgid=  4449 vtid=   342 ptid=  4427 wchan=crates/kernel/fs/src/epoll.rs:364 exe=/usr/bin/dbus-broker-launch
+[157.746]   349   4456 dbus-broker      S  n  n    n     0  epoll_wait      28341        848 tgid=  4456 vtid=   349 ptid=  4449 wchan=crates/kernel/fs/src/epoll.rs:364 exe=/usr/bin/dbus-broker
+[157.746]   339   4457 gdbus            S  n  n    n     0  ppoll             552          3 tgid=  4446 vtid=   350 ptid=  4446 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gdm-wayland-session
+[157.746]   351   4458 gnome-session-b  S  n  n    n     0  ppoll            3035        343 tgid=  4458 vtid=   351 ptid=  4446 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gnome-session-binary
+[157.746]   351   4516 pool-spawner     S  n  n    n     0  futex               5          0 tgid=  4458 vtid=   409 ptid=  4458 fux=000056510a4fabe0 exe=/usr/libexec/gnome-session-binary
+[157.746]   351   4517 gmain            S  n  n    n     0  ppoll              10          1 tgid=  4458 vtid=   410 ptid=  4458 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gnome-session-binary
+[157.746]   351   4518 gdbus            S  n  n    n     0  ppoll            1552          5 tgid=  4458 vtid=   411 ptid=  4458 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gnome-session-binary
+[157.746]   351   4519 dconf worker     S  n  n    n     0  ppoll             231          2 tgid=  4458 vtid=   412 ptid=  4458 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gnome-session-binary
+[157.746]   413   4520 gnome-session-c  S  n  n    n     0  ppoll             871         17 tgid=  4520 vtid=   413 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gnome-session-ctl
+[157.746]   413   4522 gmain            S  n  n    n     0  ppoll              10          1 tgid=  4520 vtid=   415 ptid=  4520 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gnome-session-ctl
+[157.746]   417   4524 gnome-session-b  S  n  n    n     0  ppoll           13874        234 tgid=  4524 vtid=   417 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gnome-session-binary
+[157.746]   417   4526 pool-spawner     S  n  n    n     0  futex              52          0 tgid=  4524 vtid=   419 ptid=  4524 fux=0000557ced2edd00 exe=/usr/libexec/gnome-session-binary
+[157.746]   417   4527 gmain            S  n  n    n     0  ppoll             266          2 tgid=  4524 vtid=   420 ptid=  4524 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gnome-session-binary
+[157.746]   417   4528 gdbus            S  n  n    n     0  ppoll           18539         81 tgid=  4524 vtid=   421 ptid=  4524 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gnome-session-binary
+[157.746]   417   4530 dconf worker     S  n  n    n     0  ppoll             448          1 tgid=  4524 vtid=   423 ptid=  4524 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gnome-session-binary
+[157.746]   334   4544 timer            S  n  n    n     0  futex               5          0 tgid=  4441 vtid=   437 ptid=  4441 fux=0000561137a05688 exe=/usr/bin/gnome-keyring-daemon
+[157.746]   444   4551 gnome-shell      R  y  n    n     0  ppoll          830542      17580 tgid=  4551 vtid=   444 ptid=  4427 exe=/usr/bin/gnome-shell
+[157.746]   444   4554 pool-spawner     S  n  n    n     0  futex             135          3 tgid=  4551 vtid=   447 ptid=  4551 fux=000056154800a2c0 exe=/usr/bin/gnome-shell
+[157.746]   444   4555 gmain            R  y  n    n     0  ppoll             981          4 tgid=  4551 vtid=   448 ptid=  4551 exe=/usr/bin/gnome-shell
+[157.746]   444   4557 gdbus            S  n  n    n     0  ppoll           73750        286 tgid=  4551 vtid=   450 ptid=  4551 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gnome-shell
+[157.746]   451   4558 gvfsd            S  n  n    n     0  ppoll            1768        424 tgid=  4558 vtid=   451 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfsd
+[157.746]   451   4559 pool-spawner     S  n  n    n     0  futex              17          0 tgid=  4558 vtid=   452 ptid=  4558 fux=000055a80a22bc10 exe=/usr/libexec/gvfsd
+[157.746]   451   4560 gmain            S  n  n    n     0  ppoll              17          1 tgid=  4558 vtid=   453 ptid=  4558 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfsd
+[157.746]   451   4561 gdbus            S  n  n    n     0  ppoll            2412         13 tgid=  4558 vtid=   454 ptid=  4558 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfsd
+[157.746]   444   4565 dconf worker     S  n  n    n     0  ppoll            4761          9 tgid=  4551 vtid=   458 ptid=  4551 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gnome-shell
+[157.746]   444   4566 JS Helper        S  n  n    n     0  futex             212          4 tgid=  4551 vtid=   459 ptid=  4551 fux=000056154802631c exe=/usr/bin/gnome-shell
+[157.746]   444   4567 JS Helper        S  n  n    n     0  futex              39          0 tgid=  4551 vtid=   460 ptid=  4551 fux=00005615480270e8 exe=/usr/bin/gnome-shell
+[157.746]   444   4585 KMS thread       S  n  n    n     0  ppoll           63921       1269 tgid=  4551 vtid=   478 ptid=  4551 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gnome-shell
+[157.746]   444   4588 gnome-s:disk$0   S  n  n    n     0  futex            1572         29 tgid=  4551 vtid=   481 ptid=  4551 fux=00005615483438a4 wchan=crates/drivers/drv-virtio-blk/src/modern/wait.rs:44 exe=/usr/bin/gnome-shell
+[157.746]   444   4592 Mutter Input Th  S  n  n    n     0  ppoll           33965       1364 tgid=  4551 vtid=   485 ptid=  4551 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gnome-shell
+[157.746]   493   4600 at-spi-bus-laun  S  n  n    n     0  ppoll            1416         17 tgid=  4600 vtid=   493 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/at-spi-bus-launcher
+[157.746]   493   4601 pool-spawner     S  n  n    n     0  futex              18          1 tgid=  4600 vtid=   494 ptid=  4600 fux=0000564cf69232d0 exe=/usr/libexec/at-spi-bus-launcher
+[157.746]   493   4602 gmain            S  n  n    n     0  ppoll              17          1 tgid=  4600 vtid=   495 ptid=  4600 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/at-spi-bus-launcher
+[157.746]   493   4603 dconf worker     S  n  n    n     0  ppoll             307          0 tgid=  4600 vtid=   496 ptid=  4600 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/at-spi-bus-launcher
+[157.746]   493   4605 gdbus            S  n  n    n     0  ppoll            2219          4 tgid=  4600 vtid=   498 ptid=  4603 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/at-spi-bus-launcher
+[157.746]   499   4606 dbus-broker-lau  S  n  n    n     0  epoll_wait        611         50 tgid=  4606 vtid=   499 ptid=  4600 wchan=crates/kernel/fs/src/epoll.rs:364 exe=/usr/bin/dbus-broker-launch
+[157.746]   501   4608 dbus-broker      S  n  n    n     0  epoll_wait        901         37 tgid=  4608 vtid=   501 ptid=  4606 wchan=crates/kernel/fs/src/epoll.rs:364 exe=/usr/bin/dbus-broker
+[157.747]   505   4612 at-spi2-registr  S  n  n    n     0  ppoll            2668         35 tgid=  4612 vtid=   505 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/at-spi2-registryd
+[157.747]   505   4613 pool-spawner     S  n  n    n     0  futex               5          0 tgid=  4612 vtid=   506 ptid=  4612 fux=0000565094848e90 exe=/usr/libexec/at-spi2-registryd
+[157.747]   505   4614 gmain            S  n  n    n     0  ppoll              10          2 tgid=  4612 vtid=   507 ptid=  4612 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/at-spi2-registryd
+[157.747]   505   4615 gdbus            S  n  n    n     0  ppoll            1683         16 tgid=  4612 vtid=   508 ptid=  4612 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/at-spi2-registryd
+[157.747]   509   4616 colord           S  n  n    n     0  ppoll            4476        614 tgid=  4616 vtid=   509 ptid=3235774466 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/colord
+[157.747]   509   4621 pool-spawner     S  n  n    n     0  futex              24          1 tgid=  4616 vtid=   514 ptid=  4616 fux=000055c695c91720 exe=/usr/libexec/colord
+[157.747]   509   4622 gmain            S  n  n    n     0  ppoll              15          1 tgid=  4616 vtid=   515 ptid=  4616 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/colord
+[157.747]   509   4624 gdbus            S  n  n    n     0  ppoll            1622         13 tgid=  4616 vtid=   517 ptid=  4616 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/colord
+[157.747]   528   4635 gnome-shell-cal  S  n  n    n     0  ppoll            2156         94 tgid=  4635 vtid=   528 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gnome-shell-calendar-server
+[157.747]   529   4636 xdg-permission-  S  n  n    n     0  ppoll            1008         16 tgid=  4636 vtid=   529 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/xdg-permission-store
+[157.747]   529   4637 pool-spawner     S  n  n    n     0  futex              18          1 tgid=  4636 vtid=   530 ptid=  4636 fux=00005571b5914250 exe=/usr/libexec/xdg-permission-store
+[157.747]   529   4638 gmain            S  n  n    n     0  ppoll               9          1 tgid=  4636 vtid=   531 ptid=  4636 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/xdg-permission-store
+[157.747]   529   4640 gdbus            S  n  n    n     0  ppoll             723          7 tgid=  4636 vtid=   533 ptid=  4636 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/xdg-permission-store
+[157.747]   528   4641 pool-spawner     S  n  n    n     0  futex              26          1 tgid=  4635 vtid=   534 ptid=  4635 fux=000055da37bbd840 exe=/usr/libexec/gnome-shell-calendar-server
+[157.747]   528   4642 gmain            S  n  n    n     0  ppoll               9          1 tgid=  4635 vtid=   535 ptid=  4635 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gnome-shell-calendar-server
+[157.747]   528   4644 gdbus            S  n  n    n     0  ppoll            7542         44 tgid=  4635 vtid=   537 ptid=  4635 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gnome-shell-calendar-server
+[157.747]   528   4645 dconf worker     S  n  n    n     0  ppoll             153          1 tgid=  4635 vtid=   538 ptid=  4635 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gnome-shell-calendar-server
+[157.747]   528   4646 gnome-shell-cal  S  n  n    n     0  ppoll             779         16 tgid=  4635 vtid=   539 ptid=  4635 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gnome-shell-calendar-server
+[157.747]   540   4647 evolution-sourc  S  n  n    n     0  ppoll            4387        577 tgid=  4647 vtid=   540 ptid=  4427 wake_dl_ns=3684940488758 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-source-registry
+[157.747]   540   4649 pool-spawner     S  n  n    n     0  futex              21          3 tgid=  4647 vtid=   542 ptid=  4647 fux=000055efa3419d60 exe=/usr/libexec/evolution-source-registry
+[157.747]   540   4650 gmain            S  n  n    n     0  ppoll              44          1 tgid=  4647 vtid=   543 ptid=  4647 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-source-registry
+[157.747]   540   4651 dconf worker     S  n  n    n     0  ppoll             666          5 tgid=  4647 vtid=   544 ptid=  4647 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-source-registry
+[157.747]   540   4652 gdbus            S  n  n    n     0  ppoll            3662         27 tgid=  4647 vtid=   545 ptid=  4651 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-source-registry
+[157.747]   546   4653 dconf-service    S  n  n    n     0  ppoll            1181         31 tgid=  4653 vtid=   546 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/dconf-service
+[157.747]   546   4654 pool-spawner     S  n  n    n     0  futex               5          0 tgid=  4653 vtid=   547 ptid=  4653 fux=000055c033c4af00 exe=/usr/libexec/dconf-service
+[157.747]   546   4655 gmain            S  n  n    n     0  ppoll              10          1 tgid=  4653 vtid=   548 ptid=  4653 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/dconf-service
+[157.747]   546   4656 gdbus            S  n  n    n     0  ppoll             634          5 tgid=  4653 vtid=   549 ptid=  4653 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/dconf-service
+[157.747]   552   4659 gjs              S  n  n    n     0  ppoll           10051        129 tgid=  4659 vtid=   552 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gjs
+[157.747]   554   4661 ibus-daemon      S  n  n    n     0  ppoll           13426        144 tgid=  4661 vtid=   554 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/ibus-daemon
+[157.747]   555   4662 gsd-a11y-settin  S  n  n    n     0  ppoll            1478         46 tgid=  4662 vtid=   555 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-a11y-settings
+[157.747]   556   4663 gsd-color        S  n  n    n     0  ppoll            5002        202 tgid=  4663 vtid=   556 ptid=  4427 wake_dl_ns=166791436203 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-color
+[157.747]   557   4664 gsd-datetime     S  n  n    n     0  ppoll            1810         39 tgid=  4664 vtid=   557 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-datetime
+[157.747]   558   4665 gsd-housekeepin  S  n  n    n     0  ppoll           21849        114 tgid=  4665 vtid=   558 ptid=  4427 wake_dl_ns=204940488533 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-housekeeping
+[157.747]   561   4668 gsd-keyboard     S  n  n    n     0  ppoll            4899        179 tgid=  4668 vtid=   561 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-keyboard
+[157.747]   564   4671 gsd-media-keys   S  n  n    n     0  ppoll            8604        262 tgid=  4671 vtid=   564 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-media-keys
+[157.747]   565   4672 gsd-power        S  n  n    n     0  ppoll            5503        177 tgid=  4672 vtid=   565 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-power
+[157.747]   567   4674 gsd-print-notif  R  y  n    n     0  poll             1685         47 tgid=  4674 vtid=   567 ptid=  4427 exe=/usr/libexec/gsd-print-notifications
+[157.747]   568   4675 gsd-rfkill       S  n  n    n     0  ppoll            1773         34 tgid=  4675 vtid=   568 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-rfkill
+[157.747]   552   4676 pool-spawner     S  n  n    n     0  futex              18          1 tgid=  4659 vtid=   569 ptid=  4659 fux=0000555c7842c860 exe=/usr/bin/gjs
+[157.747]   552   4677 gmain            S  n  n    n     0  ppoll               6          0 tgid=  4659 vtid=   570 ptid=  4659 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gjs
+[157.748]   558   4678 gmain            S  n  n    n     0  ppoll             159          3 tgid=  4665 vtid=   571 ptid=  4665 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-housekeeping
+[157.748]   558   4679 pool-spawner     S  n  n    n     0  futex              18          1 tgid=  4665 vtid=   572 ptid=  4665 fux=000055eaf595da30 exe=/usr/libexec/gsd-housekeeping
+[157.748]   552   4680 gdbus            S  n  n    n     0  ppoll            1361         14 tgid=  4659 vtid=   573 ptid=  4659 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gjs
+[157.748]   574   4681 gsd-screensaver  S  n  n    n     0  ppoll            1445         28 tgid=  4681 vtid=   574 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-screensaver-proxy
+[157.748]   558   4682 gdbus            S  n  n    n     0  ppoll            9675         80 tgid=  4665 vtid=   575 ptid=  4665 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-housekeeping
+[157.748]   557   4683 gmain            S  n  n    n     0  ppoll              10          1 tgid=  4664 vtid=   576 ptid=  4664 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-datetime
+[157.748]   557   4684 pool-spawner     S  n  n    n     0  futex               5          0 tgid=  4664 vtid=   577 ptid=  4664 fux=000055931df69a80 exe=/usr/libexec/gsd-datetime
+[157.748]   578   4685 gsd-sharing      S  n  n    n     0  ppoll            1822         42 tgid=  4685 vtid=   578 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-sharing
+[157.748]   557   4686 gdbus            S  n  n    n     0  ppoll            2436         20 tgid=  4664 vtid=   579 ptid=  4664 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-datetime
+[157.748]   580   4687 gsd-smartcard    S  n  n    n     0  ppoll            1652         33 tgid=  4687 vtid=   580 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-smartcard
+[157.748]   581   4688 gsd-sound        S  n  n    n     0  ppoll            1746         43 tgid=  4688 vtid=   581 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-sound
+[157.748]   556   4689 [pango] fontcon  S  n  n    n     0  futex            3932       1066 tgid=  4663 vtid=   582 ptid=  4663 fux=00005570eff66840 wchan=crates/drivers/drv-virtio-blk/src/modern/wait.rs:44 exe=/usr/libexec/gsd-color
+[157.748]   583   4690 gsd-usb-protect  S  n  n    n     0  ppoll            1910         35 tgid=  4690 vtid=   583 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-usb-protection
+[157.748]   556   4691 pool-spawner     S  n  n    n     0  futex              18          1 tgid=  4663 vtid=   584 ptid=  4663 fux=00005570eff71680 exe=/usr/libexec/gsd-color
+[157.748]   556   4692 gmain            S  n  n    n     0  ppoll               9          1 tgid=  4663 vtid=   585 ptid=  4663 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-color
+[157.748]   561   4693 [pango] fontcon  S  n  n    n     0  futex            3726        556 tgid=  4668 vtid=   586 ptid=  4668 fux=00005583b1cd3840 wchan=crates/drivers/drv-virtio-blk/src/modern/wait.rs:44 exe=/usr/libexec/gsd-keyboard
+[157.748]   561   4694 pool-spawner     S  n  n    n     0  futex              23          0 tgid=  4668 vtid=   587 ptid=  4668 fux=00005583b1cde670 exe=/usr/libexec/gsd-keyboard
+[157.748]   561   4695 gmain            S  n  n    n     0  ppoll               9          1 tgid=  4668 vtid=   588 ptid=  4668 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-keyboard
+[157.748]   568   4696 gmain            S  n  n    n     0  ppoll              10          1 tgid=  4675 vtid=   589 ptid=  4675 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-rfkill
+[157.748]   568   4697 pool-spawner     S  n  n    n     0  futex              33          0 tgid=  4675 vtid=   590 ptid=  4675 fux=000055ddb57c9a60 exe=/usr/libexec/gsd-rfkill
+[157.748]   568   4700 gdbus            S  n  n    n     0  ppoll            3395         20 tgid=  4675 vtid=   593 ptid=  4675 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-rfkill
+[157.748]   561   4701 dconf worker     S  n  n    n     0  ppoll             987          2 tgid=  4668 vtid=   594 ptid=  4668 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-keyboard
+[157.748]   595   4702 gsd-wacom        S  n  n    n     0  ppoll            7881        243 tgid=  4702 vtid=   595 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-wacom
+[157.748]   556   4703 dconf worker     S  n  n    n     0  ppoll             670          3 tgid=  4663 vtid=   596 ptid=  4663 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-color
+[157.748]   567   4704 gmain            S  n  n    n     0  ppoll              10          1 tgid=  4674 vtid=   597 ptid=  4674 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-print-notifications
+[157.748]   567   4705 pool-spawner     S  n  n    n     0  futex               5          0 tgid=  4674 vtid=   598 ptid=  4674 fux=000055687efb6070 exe=/usr/libexec/gsd-print-notifications
+[157.748]   556   4706 gdbus            S  n  n    n     0  ppoll            4262         22 tgid=  4663 vtid=   599 ptid=  4663 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-color
+[157.748]   574   4707 gmain            S  n  n    n     0  ppoll              17          1 tgid=  4681 vtid=   600 ptid=  4681 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-screensaver-proxy
+[157.748]   561   4708 gdbus            S  n  n    n     0  ppoll            5343         25 tgid=  4668 vtid=   601 ptid=  4668 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-keyboard
+[157.748]   574   4709 pool-spawner     S  n  n    n     0  futex               5          0 tgid=  4681 vtid=   602 ptid=  4681 fux=000056550fddca30 exe=/usr/libexec/gsd-screensaver-proxy
+[157.748]   567   4710 gdbus            S  n  n    n     0  ppoll            1452         14 tgid=  4674 vtid=   603 ptid=  4674 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-print-notifications
+[157.748]   574   4711 gdbus            S  n  n    n     0  ppoll            1764         18 tgid=  4681 vtid=   604 ptid=  4681 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-screensaver-proxy
+[157.748]   565   4712 [pango] fontcon  S  n  n    n     0  futex            3768        540 tgid=  4672 vtid=   605 ptid=  4672 fux=000055b842d859f0 wchan=crates/drivers/drv-virtio-blk/src/modern/wait.rs:44 exe=/usr/libexec/gsd-power
+[157.748]   580   4713 gmain            S  n  n    n     0  ppoll              10          1 tgid=  4687 vtid=   606 ptid=  4687 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-smartcard
+[157.748]   580   4714 pool-spawner     S  n  n    n     0  futex              17          0 tgid=  4687 vtid=   607 ptid=  4687 fux=0000556a21a90a90 exe=/usr/libexec/gsd-smartcard
+[157.748]   565   4715 pool-spawner     S  n  n    n     0  futex              32          1 tgid=  4672 vtid=   608 ptid=  4672 fux=000055b842d90830 exe=/usr/libexec/gsd-power
+[157.748]   565   4716 gmain            S  n  n    n     0  ppoll              17          1 tgid=  4672 vtid=   609 ptid=  4672 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-power
+[157.748]   578   4717 pool-spawner     S  n  n    n     0  futex              26          1 tgid=  4685 vtid=   610 ptid=  4685 fux=000055ac0900ef20 exe=/usr/libexec/gsd-sharing
+[157.748]   578   4718 gmain            S  n  n    n     0  ppoll              10          1 tgid=  4685 vtid=   611 ptid=  4685 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-sharing
+[157.748]   578   4719 dconf worker     S  n  n    n     0  ppoll             343          5 tgid=  4685 vtid=   612 ptid=  4685 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-sharing
+[157.748]   580   4721 gdbus            S  n  n    n     0  ppoll            2588         22 tgid=  4687 vtid=   614 ptid=  4687 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-smartcard
+[157.749]   565   4722 dconf worker     S  n  n    n     0  ppoll             722          4 tgid=  4672 vtid=   615 ptid=  4672 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-power
+[157.749]   578   4723 gdbus            S  n  n    n     0  ppoll            3665         29 tgid=  4685 vtid=   616 ptid=  4719 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-sharing
+[157.749]   583   4724 gmain            S  n  n    n     0  ppoll              17          1 tgid=  4690 vtid=   617 ptid=  4690 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-usb-protection
+[157.749]   583   4725 pool-spawner     S  n  n    n     0  futex              34          1 tgid=  4690 vtid=   618 ptid=  4690 fux=0000558fbd1a0a60 exe=/usr/libexec/gsd-usb-protection
+[157.749]   565   4726 gdbus            S  n  n    n     0  ppoll            8995         34 tgid=  4672 vtid=   619 ptid=  4672 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-power
+[157.749]   583   4727 gdbus            S  n  n    n     0  ppoll            4339         27 tgid=  4690 vtid=   620 ptid=  4690 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-usb-protection
+[157.749]   581   4728 gmain            S  n  n    n     0  ppoll              16          1 tgid=  4688 vtid=   621 ptid=  4688 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-sound
+[157.749]   581   4729 pool-spawner     S  n  n    n     0  futex               5          0 tgid=  4688 vtid=   622 ptid=  4688 fux=000055ef5fe03a00 exe=/usr/libexec/gsd-sound
+[157.749]   581   4730 gdbus            S  n  n    n     0  ppoll            2615         23 tgid=  4688 vtid=   623 ptid=  4688 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-sound
+[157.749]   595   4731 [pango] fontcon  S  n  n    n     0  futex            3623        474 tgid=  4702 vtid=   624 ptid=  4702 fux=000055f42cdba840 wchan=crates/drivers/drv-virtio-blk/src/modern/wait.rs:44 exe=/usr/libexec/gsd-wacom
+[157.749]   595   4732 pool-spawner     S  n  n    n     0  futex              18          1 tgid=  4702 vtid=   625 ptid=  4702 fux=000055f42cdc5680 exe=/usr/libexec/gsd-wacom
+[157.749]   595   4733 gmain            S  n  n    n     0  ppoll               9          1 tgid=  4702 vtid=   626 ptid=  4702 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-wacom
+[157.749]   552   4734 JS Helper        S  n  n    n     0  futex              37          2 tgid=  4659 vtid=   627 ptid=  4659 fux=0000555c78454d5c exe=/usr/bin/gjs
+[157.749]   552   4735 JS Helper        S  n  n    n     0  futex              11          0 tgid=  4659 vtid=   628 ptid=  4659 fux=0000555c78454f3c exe=/usr/bin/gjs
+[157.749]   595   4737 gdbus            S  n  n    n     0  ppoll            3685         24 tgid=  4702 vtid=   630 ptid=  4702 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-wacom
+[157.749]   595   4738 dconf worker     S  n  n    n     0  ppoll             633          2 tgid=  4702 vtid=   631 ptid=  4702 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-wacom
+[157.749]   555   4741 gmain            S  n  n    n     0  ppoll              10          1 tgid=  4662 vtid=   634 ptid=  4662 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-a11y-settings
+[157.749]   555   4742 pool-spawner     S  n  n    n     0  futex               5          0 tgid=  4662 vtid=   635 ptid=  4662 fux=000055c21abf49f0 exe=/usr/libexec/gsd-a11y-settings
+[157.749]   555   4743 gdbus            S  n  n    n     0  ppoll            2399         22 tgid=  4662 vtid=   636 ptid=  4662 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-a11y-settings
+[157.749]   564   4744 [pango] fontcon  S  n  n    n     0  futex            3700        423 tgid=  4671 vtid=   637 ptid=  4671 fux=000055de298a3840 wchan=crates/drivers/drv-virtio-blk/src/modern/wait.rs:44 exe=/usr/libexec/gsd-media-keys
+[157.749]   564   4745 pool-spawner     S  n  n    n     0  futex              48          2 tgid=  4671 vtid=   638 ptid=  4671 fux=000055de298ae690 exe=/usr/libexec/gsd-media-keys
+[157.749]   564   4746 gmain            S  n  n    n     0  ppoll               8          0 tgid=  4671 vtid=   639 ptid=  4671 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-media-keys
+[157.749]   564   4748 dconf worker     S  n  n    n     0  ppoll             919          2 tgid=  4671 vtid=   641 ptid=  4671 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-media-keys
+[157.749]   564   4749 gdbus            S  n  n    n     0  ppoll            7604        105 tgid=  4671 vtid=   642 ptid=  4671 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-media-keys
+[157.749]   554   4750 pool-spawner     S  n  n    n     0  futex              26          0 tgid=  4661 vtid=   643 ptid=  4661 fux=00005615da23b4f0 exe=/usr/bin/ibus-daemon
+[157.749]   554   4751 gmain            S  n  n    n     0  ppoll              16          1 tgid=  4661 vtid=   644 ptid=  4661 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/ibus-daemon
+[157.749]   554   4752 gdbus            S  n  n    n     0  ppoll           20057         55 tgid=  4661 vtid=   645 ptid=  4661 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/ibus-daemon
+[157.749]   647   4754 ibus-dconf       S  n  n    n     0  ppoll             735         50 tgid=  4754 vtid=   647 ptid=  4661 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/ibus-dconf
+[157.749]   648   4755 ibus-extension-  S  n  n    n     0  ppoll            4654       1384 tgid=  4755 vtid=   648 ptid=  4661 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/ibus-extension-gtk3
+[157.749]   647   4756 pool-spawner     S  n  n    n     0  futex               5          0 tgid=  4754 vtid=   649 ptid=  4754 fux=0000559b85683f20 exe=/usr/libexec/ibus-dconf
+[157.749]   647   4757 gmain            S  n  n    n     0  ppoll              16          1 tgid=  4754 vtid=   650 ptid=  4754 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/ibus-dconf
+[157.749]   647   4759 gdbus            S  n  n    n     0  ppoll            1041          9 tgid=  4754 vtid=   652 ptid=  4754 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/ibus-dconf
+[157.749]   648   4761 [pango] fontcon  S  n  n    n     0  futex            3588        420 tgid=  4755 vtid=   654 ptid=  4755 fux=0000561bc572af90 wchan=crates/drivers/drv-virtio-blk/src/modern/wait.rs:44 exe=/usr/libexec/ibus-extension-gtk3
+[157.749]   648   4762 pool-spawner     S  n  n    n     0  futex              18          1 tgid=  4755 vtid=   655 ptid=  4755 fux=0000561bc572f700 exe=/usr/libexec/ibus-extension-gtk3
+[157.749]   648   4763 gmain            S  n  n    n     0  ppoll              16          1 tgid=  4755 vtid=   656 ptid=  4755 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/ibus-extension-gtk3
+[157.749]   657   4764 ibus-portal      S  n  n    n     0  ppoll            2007         38 tgid=  4764 vtid=   657 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/ibus-portal
+[157.749]   648   4766 gdbus            S  n  n    n     0  ppoll            6107         27 tgid=  4755 vtid=   659 ptid=  4755 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/ibus-extension-gtk3
+[157.749]   648   4767 dconf worker     S  n  n    n     0  ppoll             722          3 tgid=  4755 vtid=   660 ptid=  4755 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/ibus-extension-gtk3
+[157.749]   661   4768 goa-daemon       S  n  n    n     0  ppoll            2335         92 tgid=  4768 vtid=   661 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/goa-daemon
+[157.749]   657   4769 gmain            S  n  n    n     0  ppoll              21          1 tgid=  4764 vtid=   662 ptid=  4764 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/ibus-portal
+[157.749]   657   4770 pool-spawner     S  n  n    n     0  futex              18          1 tgid=  4764 vtid=   663 ptid=  4764 fux=0000560b1201be30 exe=/usr/libexec/ibus-portal
+[157.750]   657   4771 gdbus            S  n  n    n     0  ppoll            5654         41 tgid=  4764 vtid=   664 ptid=  4764 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/ibus-portal
+[157.750]   661   4773 gmain            S  n  n    n     0  ppoll              16          1 tgid=  4768 vtid=   666 ptid=  4768 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/goa-daemon
+[157.750]   661   4774 pool-spawner     S  n  n    n     0  futex              26          1 tgid=  4768 vtid=   667 ptid=  4768 fux=0000558b9d9738e0 exe=/usr/libexec/goa-daemon
+[157.750]   661   4776 gdbus            S  n  n    n     0  ppoll            2531         25 tgid=  4768 vtid=   669 ptid=  4768 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/goa-daemon
+[157.750]   661   4777 dconf worker     S  n  n    n     0  ppoll             210          2 tgid=  4768 vtid=   670 ptid=  4768 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/goa-daemon
+[157.750]   672   4779 goa-identity-se  R  y  n    n     0  ppoll            1245        107 tgid=  4779 vtid=   672 ptid=  4427 exe=/usr/libexec/goa-identity-service
+[157.750]   672   4780 pool-spawner     S  n  n    n     0  futex              25          1 tgid=  4779 vtid=   673 ptid=  4779 fux=0000559400855130 exe=/usr/libexec/goa-identity-service
+[157.750]   672   4781 gmain            S  n  n    n     0  ppoll               9          1 tgid=  4779 vtid=   674 ptid=  4779 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/goa-identity-service
+[157.750]   672   4783 gdbus            S  n  n    n     0  ppoll             782          9 tgid=  4779 vtid=   676 ptid=  4779 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/goa-identity-service
+[157.750]   647   4784 dconf worker     S  n  n    n     0  ppoll             116          3 tgid=  4754 vtid=   677 ptid=  4754 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/ibus-dconf
+[157.750]   680   4787 evolution-alarm  S  n  n    n     0  ppoll            7392        281 tgid=  4787 vtid=   680 ptid=  4524 wake_dl_ns=167940489638 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-data-server/evolution-alarm-notify
+[157.750]   683   4790 canberra-gtk-pl  S  n  n    n     0  futex            3760        169 tgid=  4790 vtid=   683 ptid=  4524 fux=0000564de3f65e50 wchan=crates/drivers/drv-virtio-blk/src/modern/wait.rs:44 exe=/usr/bin/canberra-gtk-play
+[157.750]   685   4792 gsd-disk-utilit  S  n  n    n     0  ppoll             369         13 tgid=  4792 vtid=   685 ptid=  4524 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-disk-utility-notify
+[157.750]   688   4795 gnome-software   S  n  n    n     0  ppoll            6435        615 tgid=  4795 vtid=   688 ptid=  4524 wake_dl_ns=7318940489299 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gnome-software
+[157.750]   555   4797 dconf worker     S  n  n    n     0  ppoll             202          2 tgid=  4662 vtid=   690 ptid=  4662 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-a11y-settings
+[157.750]   581   4800 dconf worker     S  n  n    n     0  ppoll             143          2 tgid=  4688 vtid=   693 ptid=  4688 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-sound
+[157.750]   580   4801 dconf worker     S  n  n    n     0  ppoll             139          3 tgid=  4687 vtid=   694 ptid=  4687 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-smartcard
+[157.750]   685   4803 pool-spawner     S  n  n    n     0  futex              18          1 tgid=  4792 vtid=   696 ptid=  4792 fux=0000557cff3d1810 exe=/usr/libexec/gsd-disk-utility-notify
+[157.750]   685   4804 gmain            S  n  n    n     0  ppoll              10          1 tgid=  4792 vtid=   697 ptid=  4792 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-disk-utility-notify
+[157.750]   557   4805 dconf worker     S  n  n    n     0  ppoll             139          2 tgid=  4664 vtid=   698 ptid=  4664 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-datetime
+[157.750]   558   4806 dconf worker     S  n  n    n     0  ppoll             276          2 tgid=  4665 vtid=   699 ptid=  4665 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-housekeeping
+[157.750]   583   4807 dconf worker     S  n  n    n     0  ppoll              80          1 tgid=  4690 vtid=   700 ptid=  4690 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-usb-protection
+[157.750]   685   4817 gdbus            S  n  n    n     0  ppoll             966         10 tgid=  4792 vtid=   710 ptid=  4792 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-disk-utility-notify
+[157.750]   683   4819 [pango] fontcon  S  n  n    n     0  futex            3758        357 tgid=  4790 vtid=   712 ptid=  4790 fux=0000564de3dceec0 wchan=crates/drivers/drv-virtio-blk/src/modern/wait.rs:44 exe=/usr/bin/canberra-gtk-play
+[157.750]   683   4820 pool-spawner     S  n  n    n     0  futex              17          1 tgid=  4790 vtid=   713 ptid=  4790 fux=0000564de3dd9f40 exe=/usr/bin/canberra-gtk-play
+[157.750]   683   4821 gmain            S  n  n    n     0  ppoll               9          1 tgid=  4790 vtid=   714 ptid=  4790 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/canberra-gtk-play
+[157.750]   683   4823 dconf worker     S  n  n    n     0  ppoll             623          4 tgid=  4790 vtid=   716 ptid=  4790 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/canberra-gtk-play
+[157.750]   683   4824 gdbus            S  n  n    n     0  ppoll            1928         20 tgid=  4790 vtid=   717 ptid=  4790 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/canberra-gtk-play
+[157.750]   680   4826 [pango] fontcon  S  n  n    n     0  futex            3258        287 tgid=  4787 vtid=   719 ptid=  4787 fux=000055b2602c6470 wchan=crates/drivers/drv-virtio-blk/src/modern/wait.rs:44 exe=/usr/libexec/evolution-data-server/evolution-alarm-notify
+[157.750]   680   4827 pool-spawner     S  n  n    n     0  futex              33          0 tgid=  4787 vtid=   720 ptid=  4787 fux=000055b2602d08a0 exe=/usr/libexec/evolution-data-server/evolution-alarm-notify
+[157.750]   680   4828 gmain            S  n  n    n     0  ppoll             331          2 tgid=  4787 vtid=   721 ptid=  4787 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-data-server/evolution-alarm-notify
+[157.750]   680   4830 gdbus            S  n  n    n     0  ppoll            9192         37 tgid=  4787 vtid=   723 ptid=  4787 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-data-server/evolution-alarm-notify
+[157.750]   680   4831 dconf worker     S  n  n    n     0  ppoll             775          4 tgid=  4787 vtid=   724 ptid=  4787 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-data-server/evolution-alarm-notify
+[157.750]   528   4833 cal-client-dbus  S  n  n    n     0  ppoll             729          5 tgid=  4635 vtid=   726 ptid=  4635 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gnome-shell-calendar-server
+[157.750]   727   4834 evolution-calen  S  n  n    n     0  ppoll            4209        153 tgid=  4834 vtid=   727 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-calendar-factory
+[157.750]   727   4835 gmain            S  n  n    n     0  ppoll              22          1 tgid=  4834 vtid=   728 ptid=  4834 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-calendar-factory
+[157.750]   727   4836 pool-spawner     S  n  n    n     0  futex              23          0 tgid=  4834 vtid=   729 ptid=  4834 fux=000055b7011223d0 exe=/usr/libexec/evolution-calendar-factory
+[157.750]   727   4837 gdbus            S  n  n    n     0  ppoll           10801         54 tgid=  4834 vtid=   730 ptid=  4834 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-calendar-factory
+[157.750]   731   4838 gvfs-udisks2-vo  S  n  n    n     0  ppoll           19325         91 tgid=  4838 vtid=   731 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfs-udisks2-volume-monitor
+[157.751]   731   4839 pool-spawner     S  n  n    n     0  futex              18          1 tgid=  4838 vtid=   732 ptid=  4838 fux=000055ebd5ff3c70 exe=/usr/libexec/gvfs-udisks2-volume-monitor
+[157.751]   731   4840 gmain            S  n  n    n     0  ppoll             276          6 tgid=  4838 vtid=   733 ptid=  4838 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfs-udisks2-volume-monitor
+[157.751]   731   4841 gdbus            S  n  n    n     0  ppoll            1685         18 tgid=  4838 vtid=   734 ptid=  4838 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfs-udisks2-volume-monitor
+[157.751]   731   4842 dconf worker     S  n  n    n     0  ppoll              92          0 tgid=  4838 vtid=   735 ptid=  4838 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfs-udisks2-volume-monitor
+[157.751]   737   4844 gvfs-mtp-volume  S  n  n    n     0  ppoll            1033         34 tgid=  4844 vtid=   737 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfs-mtp-volume-monitor
+[157.751]   737   4845 pool-spawner     S  n  n    n     0  futex              18          1 tgid=  4844 vtid=   738 ptid=  4844 fux=000055f5f9884070 exe=/usr/libexec/gvfs-mtp-volume-monitor
+[157.751]   737   4846 gmain            S  n  n    n     0  ppoll               9          1 tgid=  4844 vtid=   739 ptid=  4844 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfs-mtp-volume-monitor
+[157.751]   737   4848 gdbus            S  n  n    n     0  ppoll             418          6 tgid=  4844 vtid=   741 ptid=  4844 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfs-mtp-volume-monitor
+[157.751]   742   4849 gvfs-gphoto2-vo  S  n  n    n     0  ppoll            1090         40 tgid=  4849 vtid=   742 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfs-gphoto2-volume-monitor
+[157.751]   742   4850 pool-spawner     S  n  n    n     0  futex              18          1 tgid=  4849 vtid=   743 ptid=  4849 fux=000055ebe483f070 exe=/usr/libexec/gvfs-gphoto2-volume-monitor
+[157.751]   742   4851 gmain            S  n  n    n     0  ppoll              17          1 tgid=  4849 vtid=   744 ptid=  4849 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfs-gphoto2-volume-monitor
+[157.751]   742   4853 gdbus            S  n  n    n     0  ppoll             449          6 tgid=  4849 vtid=   746 ptid=  4849 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfs-gphoto2-volume-monitor
+[157.751]   747   4854 gvfs-goa-volume  S  n  n    n     0  ppoll            1217         38 tgid=  4854 vtid=   747 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfs-goa-volume-monitor
+[157.751]   747   4855 pool-spawner     S  n  n    n     0  futex              17          0 tgid=  4854 vtid=   748 ptid=  4854 fux=0000558970f08f60 exe=/usr/libexec/gvfs-goa-volume-monitor
+[157.751]   747   4856 gmain            S  n  n    n     0  ppoll              17          1 tgid=  4854 vtid=   749 ptid=  4854 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfs-goa-volume-monitor
+[157.751]   747   4857 gdbus            S  n  n    n     0  ppoll             846         13 tgid=  4854 vtid=   750 ptid=  4854 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfs-goa-volume-monitor
+[157.751]   688   4859 gmain            R  y  n    n     0  ppoll             549          3 tgid=  4795 vtid=   752 ptid=  4795 exe=/usr/bin/gnome-software
+[157.751]   688   4860 pool-spawner     S  n  n    n     0  futex              34          1 tgid=  4795 vtid=   753 ptid=  4795 fux=0000556209f42670 exe=/usr/bin/gnome-software
+[157.751]   688   4861 gdbus            S  n  n    n     0  ppoll            8336         50 tgid=  4795 vtid=   754 ptid=  4795 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gnome-software
+[157.751]   688   4862 [pango] fontcon  S  n  n    n     0  futex            3422        307 tgid=  4795 vtid=   755 ptid=  4795 fux=0000556209f81bb0 wchan=crates/drivers/drv-virtio-blk/src/modern/wait.rs:44 exe=/usr/bin/gnome-software
+[157.751]   688   4863 dconf worker     S  n  n    n     0  ppoll             954          4 tgid=  4795 vtid=   756 ptid=  4795 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gnome-software
+[157.751]   772   4879 gjs              S  n  n    n     0  ppoll            7532         90 tgid=  4879 vtid=   772 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gjs
+[157.751]   772   4881 pool-spawner     S  n  n    n     0  futex              18          1 tgid=  4879 vtid=   774 ptid=  4879 fux=000055eed93ba860 exe=/usr/bin/gjs
+[157.751]   772   4882 gmain            S  n  n    n     0  ppoll               6          0 tgid=  4879 vtid=   775 ptid=  4879 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gjs
+[157.751]   772   4883 gdbus            S  n  n    n     0  ppoll            2243         17 tgid=  4879 vtid=   776 ptid=  4879 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gjs
+[157.751]   772   4884 JS Helper        S  n  n    n     0  futex              50          2 tgid=  4879 vtid=   777 ptid=  4879 fux=000055eed93e2d48 exe=/usr/bin/gjs
+[157.751]   772   4885 JS Helper        S  n  n    n     0  futex              18          0 tgid=  4879 vtid=   778 ptid=  4879 fux=000055eed93e2f2c exe=/usr/bin/gjs
+[157.751]   727   4887 dconf worker     S  n  n    n     0  ppoll             286          2 tgid=  4834 vtid=   780 ptid=  4834 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-calendar-factory
+[157.751]   727   4888 evolution-calen  S  n  n    n     0  ppoll             762         14 tgid=  4834 vtid=   781 ptid=  4834 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-calendar-factory
+[157.751]   727   4889 pool-0           S  n  n    n     0  futex             119          2 tgid=  4834 vtid=   782 ptid=  4836 fux=00007f9440008b10 wchan=crates/drivers/drv-virtio-blk/src/modern/wait.rs:44 exe=/usr/libexec/evolution-calendar-factory
+[157.751]   727   4891 pool-2           S  n  n    n     0  futex              20          0 tgid=  4834 vtid=   784 ptid=  4834 fux=00007f944001c520 exe=/usr/libexec/evolution-calendar-factory
+[157.751]   727   4892 book-client-dbu  S  n  n    n     0  ppoll             334          3 tgid=  4834 vtid=   785 ptid=  4834 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-calendar-factory
+[157.751]   727   4894 pool-3           S  n  n    n     0  futex              46          0 tgid=  4834 vtid=   787 ptid=  4834 fux=000055b701163a90 wchan=crates/drivers/drv-virtio-blk/src/modern/wait.rs:44 exe=/usr/libexec/evolution-calendar-factory
+[157.751]   793   4900 evolution-addre  S  n  n    n     0  ppoll            2766         84 tgid=  4900 vtid=   793 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-addressbook-factory
+[157.751]   794   4901 gvfsd-metadata   R  y  n    n     0  ppoll            1223         21 tgid=  4901 vtid=   794 ptid=  4427 exe=/usr/libexec/gvfsd-metadata
+[157.751]   794   4902 pool-spawner     S  n  n    n     0  futex               5          0 tgid=  4901 vtid=   795 ptid=  4901 fux=0000558867e02c70 exe=/usr/libexec/gvfsd-metadata
+[157.751]   794   4903 gmain            S  n  n    n     0  ppoll              10          1 tgid=  4901 vtid=   796 ptid=  4901 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfsd-metadata
+[157.751]   794   4904 gdbus            S  n  n    n     0  ppoll             508          3 tgid=  4901 vtid=   797 ptid=  4901 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfsd-metadata
+[157.751]   793   4906 gmain            S  n  n    n     0  ppoll              20          1 tgid=  4900 vtid=   799 ptid=  4900 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-addressbook-factory
+[157.751]   793   4907 pool-spawner     S  n  n    n     0  futex              25          0 tgid=  4900 vtid=   800 ptid=  4900 fux=000055f275b5a3c0 exe=/usr/libexec/evolution-addressbook-factory
+[157.751]   793   4908 gdbus            S  n  n    n     0  ppoll            4393         11 tgid=  4900 vtid=   801 ptid=  4900 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-addressbook-factory
+[157.752]   830   4937 ibus-engine-sim  S  n  n    n     0  ppoll            1289  [187.743] 
+[187.743] [WATCHDOG] no-progress: 0 context switches for 40s (parked wedge?) task dump:
+[187.743] [sysrq] task dump  switches=4708099 current=tid:4096
+[187.743]   PID   TID name             ST onrq oncpu onwl cpu  last-sysc  nsysc      cputime_ms
+[187.743]  4096   4096 ktimers          R  n  y    n     0  none                0       1358 tgid=  4096 vtid=     0 ptid=     0
+[187.743]  4097   4097 ksoftirqd        R  y  n    n     0  none                0       1069 tgid=  4097 vtid=     0 ptid=     0
+[187.743]  4098   4098 kworker          S  n  n    n     0  none                0       5744 tgid=  4098 vtid=     0 ptid=     0 wchan=crates/kernel/sched/src/live/workqueue.rs:212
+[187.743]  4099   4099 kworkermgr       R  y  n    n     0  none                0       3045 tgid=  4099 vtid=     0 ptid=     0
+[187.743]  4100   4100 khelper          S  n  n    n     0  none                0          0 tgid=  4100 vtid=     0 ptid=     0 wchan=crates/kernel/umh/src/spawn/queue.rs:212
+[187.743]  4101   4101 kswapd0          S  n  n    n     0  none                0          0 tgid=  4101 vtid=     0 ptid=     0 wchan=crates/kernel/mm-pmm/src/kswapd.rs:101
+[187.744]  4102   4102 kflushd          R  y  n    n     0  none                0          0 tgid=  4102 vtid=     0 ptid=     0
+[187.744]  4103   4103 oom_reaper       R  y  n    n     0  none                0          0 tgid=  4103 vtid=     0 ptid=     0
+[187.744]  4104   4104 khungtaskd       D  n  n    n     0  none                0          0 tgid=  4104 vtid=     0 ptid=     0 wake_dl_ns=243926103819
+[187.744]  4105   4105 netns_reaper     D  n  n    n     0  none                0          0 tgid=  4105 vtid=     0 ptid=     0 wchan=crates/kernel/net/src/net_ns/teardown.rs:152
+[187.744]  4106   4106 sock-rtnl-reap   D  n  n    n     0  none                0          0 tgid=  4106 vtid=     0 ptid=     0 wchan=crates/kernel/net/src/sock_rtnl_defer.rs:125
+[187.744]  4107   4107 fw_loader        D  n  n    n     0  none                0          0 tgid=  4107 vtid=     0 ptid=     0 wchan=crates/kernel/modules/src/linux_firmware.rs:238
+[187.744]  4108   4108 kworker          R  y  n    n     0  none                0       2932 tgid=  4108 vtid=     0 ptid=     0
+[187.744]    37   4144 systemd-journal  S  n  n    n     0  epoll_wait      16455       1392 tgid=  4144 vtid=    37 ptid=3235774466 wake_dl_ns=306347903000 wchan=crates/kernel/fs/src/epoll.rs:364 exe=/usr/lib/systemd/systemd-journald
+[187.744]    69   4176 systemd-userdbd  S  n  n    n     0  epoll_wait       2893         85 tgid=  4176 vtid=    69 ptid=3235774466 wchan=crates/kernel/fs/src/epoll.rs:364 exe=/usr/lib/systemd/systemd-userdbd
+[187.744]    94   4201 systemd-udevd    S  n  n    n     0  epoll_wait      15243        550 tgid=  4201 vtid=    94 ptid=3235774466 wchan=crates/kernel/fs/src/epoll.rs:364 exe=/usr/lib/systemd/systemd-udevd
+[187.744]   103   4210 auditd           S  n  n    n     0  pselect6         1151         43 tgid=  4210 vtid=   103 ptid=3235774466 wake_dl_ns=204043202685 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/auditd
+[187.744]   103   4211 auditd           S  n  n    n     0  futex              17         59 tgid=  4210 vtid=   104 ptid=  4210 fux=000055fdd10080a0 wchan=crates/drivers/drv-virtio-blk/src/modern/wait.rs:44 exe=/usr/bin/auditd
+[187.744]   105   4212 systemd-oomd     R  y  n    n     0  epoll_wait       6941        126 tgid=  4212 vtid=   105 ptid=3235774466 exe=/usr/lib/systemd/systemd-oomd
+[187.744]   114   4221 systemd-resolve  S  n  n    n     0  epoll_wait      13418        323 tgid=  4221 vtid=   114 ptid=3235774466 wake_dl_ns=7435752287646211970 wchan=crates/kernel/fs/src/epoll.rs:364 exe=/usr/lib/systemd/systemd-resolved
+[187.744]   174   4281 dbus-broker-lau  S  n  n    n     0  epoll_wait       3752        109 tgid=  4281 vtid=   174 ptid=3235774466 wchan=crates/kernel/fs/src/epoll.rs:364 exe=/usr/bin/dbus-broker-launch
+[187.744]   175   4282 dbus-broker      S  n  n    n     0  epoll_wait      25181        601 tgid=  4282 vtid=   175 ptid=  4281 wchan=crates/kernel/fs/src/epoll.rs:364 exe=/usr/bin/dbus-broker
+[187.744]   176   4283 NetworkManager   S  n  n    n     0  ppoll           12627        260 tgid=  4283 vtid=   176 ptid=3235774466 wake_dl_ns=336883567163 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/NetworkManager
+[187.744]   177   4284 avahi-daemon     R  y  n    n     0  poll             6519         77 tgid=  4284 vtid=   177 ptid=3235774466 exe=/usr/bin/avahi-daemon
+[187.744]   179   4286 rtkit-daemon     S  n  n    n     0  poll             3620        102 tgid=  4286 vtid=   179 ptid=3235774466 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/rtkit-daemon
+[187.744]   179   4293 rtkit-daemon     R  y  n    n     0  poll               56          0 tgid=  4286 vtid=   186 ptid=  4286 exe=/usr/libexec/rtkit-daemon
+[187.744]   179   4294 rtkit-daemon     R  y  n    n     0  poll               57          0 tgid=  4286 vtid=   187 ptid=  4286 exe=/usr/libexec/rtkit-daemon
+[187.744]   190   4297 accounts-daemon  S  n  n    n     0  ppoll            5473        165 tgid=  4297 vtid=   190 ptid=3235774466 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/accounts-daemon
+[187.744]   194   4301 switcheroo-cont  S  n  n    n     0  ppoll            2358         66 tgid=  4301 vtid=   194 ptid=3235774466 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/switcheroo-control
+[187.744]   176   4305 gmain            R  y  n    n     0  ppoll             274          3 tgid=  4283 vtid=   198 ptid=  4283 exe=/usr/bin/NetworkManager
+[187.744]   176   4306 pool-spawner     S  n  n    n     0  futex              18          1 tgid=  4283 vtid=   199 ptid=  4283 fux=000055c5d9057470 exe=/usr/bin/NetworkManager
+[187.744]   200   4307 systemd-homed    S  n  n    n     0  epoll_wait      56762        414 tgid=  4307 vtid=   200 ptid=3235774466 wchan=crates/kernel/fs/src/epoll.rs:364 exe=/usr/lib/systemd/systemd-homed
+[187.744]   176   4308 gdbus            S  n  n    n     0  ppoll            9534         31 tgid=  4283 vtid=   201 ptid=  4283 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/NetworkManager
+[187.744]   203   4310 systemd-logind   S  n  n    n     0  epoll_wait      17650        486 tgid=  4310 vtid=   203 ptid=3235774466 wchan=crates/kernel/fs/src/epoll.rs:364 exe=/usr/lib/systemd/systemd-logind
+[187.744]   205   4312 udisksd          S  n  n    n     0  ppoll           33808        206 tgid=  4312 vtid=   205 ptid=3235774466 wake_dl_ns=638000000553 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/udisks2/udisksd
+[187.744]   194   4315 pool-spawner     S  n  n    n     0  futex              18          2 tgid=  4301 vtid=   208 ptid=  4301 fux=000055feb04ddc90 exe=/usr/libexec/switcheroo-control
+[187.744]   194   4316 gmain            S  n  n    n     0  ppoll               9          1 tgid=  4301 vtid=   209 ptid=  4301 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/switcheroo-control
+[187.744]   194   4319 gdbus            S  n  n    n     0  ppoll             299          3 tgid=  4301 vtid=   212 ptid=  4301 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/switcheroo-control
+[187.744]   205   4327 gmain            R  y  n    n     0  ppoll             320          3 tgid=  4312 vtid=   220 ptid=  4312 exe=/usr/libexec/udisks2/udisksd
+[187.744]   205   4328 pool-spawner     S  n  n    n     0  futex              18          1 tgid=  4312 vtid=   221 ptid=  4312 fux=00005621f1fabaf0 exe=/usr/libexec/udisks2/udisksd
+[187.744]   190   4329 pool-spawner     S  n  n    n     0  futex              19          1 tgid=  4297 vtid=   222 ptid=  4297 fux=00005560084351b0 exe=/usr/libexec/accounts-daemon
+[187.744]   190   4330 gmain            S  n  n    n     0  ppoll             109          1 tgid=  4297 vtid=   223 ptid=  4297 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/accounts-daemon
+[187.744]   205   4337 gdbus            S  n  n    n     0  ppoll            1509          6 tgid=  4312 vtid=   230 ptid=  4312 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/udisks2/udisksd
+[187.744]   190   4339 gdbus            S  n  n    n     0  ppoll            2847         15 tgid=  4297 vtid=   232 ptid=  4297 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/accounts-daemon
+[187.744]   233   4340 upowerd          S  n  n    n     0  ppoll           11417        348 tgid=  4340 vtid=   233 ptid=3235774466 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/upowerd
+[187.745]   233   4354 pool-spawner     S  n  n    n     0  futex              18          1 tgid=  4340 vtid=   247 ptid=  4340 fux=0000564f3542b0b0 exe=/usr/libexec/upowerd
+[187.745]   233   4355 gmain            S  n  n    n     0  ppoll              10          1 tgid=  4340 vtid=   248 ptid=  4340 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/upowerd
+[187.745]   233   4356 gdbus            S  n  n    n     0  ppoll            3118         16 tgid=  4340 vtid=   249 ptid=  4340 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/upowerd
+[187.745]   250   4357 avahi-daemon     S  n  n    n     0  read               11          0 tgid=  4357 vtid=   250 ptid=  4284 wchan=crates/kernel/net/src/sock_wait/kernel.rs:21 exe=/usr/bin/avahi-daemon
+[187.745]   251   4358 alsactl          S  n  n    n     0  poll              835         17 tgid=  4358 vtid=   251 ptid=3235774466 wake_dl_ns=213326856315 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/sbin/alsactl
+[187.745]   252   4359 polkitd          S  n  n    n     0  ppoll          122036       1500 tgid=  4359 vtid=   252 ptid=3235774466 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/lib/polkit-1/polkitd
+[187.745]   252   4362 gmain            R  y  n    n     0  ppoll             353          4 tgid=  4359 vtid=   255 ptid=  4359 exe=/usr/lib/polkit-1/polkitd
+[187.745]   252   4363 pool-spawner     S  n  n    n     0  futex              13          0 tgid=  4359 vtid=   256 ptid=  4359 fux=000056181e19c6e0 exe=/usr/lib/polkit-1/polkitd
+[187.745]   252   4364 gdbus            S  n  n    n     0  ppoll           19836        129 tgid=  4359 vtid=   257 ptid=  4359 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/lib/polkit-1/polkitd
+[187.745]   205   4377 udisks-probing-  S  n  n    n     0  futex               5          0 tgid=  4312 vtid=   270 ptid=  4312 fux=00005621f1fe3090 exe=/usr/libexec/udisks2/udisksd
+[187.745]   205   4378 udisks-uevent-m  S  n  n    n     0  ppoll              34          0 tgid=  4312 vtid=   271 ptid=  4312 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/udisks2/udisksd
+[187.745]   274   4381 sshd             S  n  n    n     0  ppoll             836         24 tgid=  4381 vtid=   274 ptid=3235774466 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/sbin/sshd
+[187.745]   282   4389 gdm              S  n  n    n     0  ppoll            3475         80 tgid=  4389 vtid=   282 ptid=3235774466 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gdm
+[187.745]   205   4390 cleanup          S  n  n    n     0  ppoll              28          1 tgid=  4312 vtid=   283 ptid=  4312 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/udisks2/udisksd
+[187.745]   288   4395 power-profiles-  S  n  n    n     0  ppoll            4164        143 tgid=  4395 vtid=   288 ptid=3235774466 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/power-profiles-daemon
+[187.745]   282   4399 pool-spawner     S  n  n    n     0  futex              17          0 tgid=  4389 vtid=   292 ptid=  4389 fux=00005615902fa530 exe=/usr/bin/gdm
+[187.745]   282   4400 gmain            S  n  n    n     0  ppoll              17          1 tgid=  4389 vtid=   293 ptid=  4389 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gdm
+[187.745]   282   4401 gdbus            S  n  n    n     0  ppoll            3486         12 tgid=  4389 vtid=   294 ptid=  4389 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gdm
+[187.745]   296   4403 gdm-session-wor  S  n  n    n     0  ppoll            3853        325 tgid=  4403 vtid=   296 ptid=  4389 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gdm-session-worker
+[187.745]   296   4410 pool-spawner     S  n  n    n     0  futex              15          0 tgid=  4403 vtid=   303 ptid=  4403 fux=000055d5ec3606f0 exe=/usr/libexec/gdm-session-worker
+[187.745]   296   4411 gmain            S  n  n    n     0  ppoll              26          1 tgid=  4403 vtid=   304 ptid=  4403 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gdm-session-worker
+[187.745]   296   4413 gdbus            S  n  n    n     0  ppoll            2184          6 tgid=  4403 vtid=   306 ptid=  4403 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gdm-session-worker
+[187.745]   288   4414 pool-spawner     S  n  n    n     0  futex              17          0 tgid=  4395 vtid=   307 ptid=  4395 fux=0000561e31d5b0c0 exe=/usr/libexec/power-profiles-daemon
+[187.745]   288   4415 gmain            S  n  n    n     0  ppoll              19          1 tgid=  4395 vtid=   308 ptid=  4395 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/power-profiles-daemon
+[187.745]   288   4416 gdbus            S  n  n    n     0  ppoll            2001         10 tgid=  4395 vtid=   309 ptid=  4395 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/power-profiles-daemon
+[187.745]   320   4427 systemd          S  n  n    n     0  epoll_wait      63041       2672 tgid=  4427 vtid=   320 ptid=3235774466 wake_dl_ns=348347903000 wchan=crates/kernel/fs/src/epoll.rs:364 exe=/usr/lib/systemd/systemd
+[187.745]   322   4429 (sd-pam)         S  n  n    n     0  rt_sigtime         27          0 tgid=  4429 vtid=   322 ptid=  4427 wchan=crates/kernel/syscalls/src/128_rt_sigtimedwait.rs:131 exe=/proc/self/fd/9
+[187.745]   334   4441 gnome-keyring-d  S  n  n    n     0  ppoll            8921         19 tgid=  4441 vtid=   334 ptid=3235774466 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gnome-keyring-daemon
+[187.745]   334   4442 pool-spawner     S  n  n    n     0  futex               5          0 tgid=  4441 vtid=   335 ptid=  4441 fux=0000561146af7950 exe=/usr/bin/gnome-keyring-daemon
+[187.745]   334   4443 gmain            S  n  n    n     0  ppoll              17          1 tgid=  4441 vtid=   336 ptid=  4441 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gnome-keyring-daemon
+[187.745]   334   4444 gdbus            S  n  n    n     0  ppoll            9732         57 tgid=  4441 vtid=   337 ptid=  4441 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gnome-keyring-daemon
+[187.745]   339   4446 gdm-wayland-ses  S  n  n    n     0  ppoll             712         14 tgid=  4446 vtid=   339 ptid=  4403 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gdm-wayland-session
+[187.745]   339   4447 gmain            S  n  n    n     0  ppoll              23          1 tgid=  4446 vtid=   340 ptid=  4446 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gdm-wayland-session
+[187.745]   339   4448 pool-spawner     S  n  n    n     0  futex               5          0 tgid=  4446 vtid=   341 ptid=  4446 fux=000055b93137a3f0 exe=/usr/libexec/gdm-wayland-session
+[187.745]   342   4449 dbus-broker-lau  S  n  n    n     0  epoll_wait       5012        889 tgid=  4449 vtid=   342 ptid=  4427 wchan=crates/kernel/fs/src/epoll.rs:364 exe=/usr/bin/dbus-broker-launch
+[187.745]   349   4456 dbus-broker      S  n  n    n     0  epoll_wait      28341        848 tgid=  4456 vtid=   349 ptid=  4449 wchan=crates/kernel/fs/src/epoll.rs:364 exe=/usr/bin/dbus-broker
+[187.745]   339   4457 gdbus            S  n  n    n     0  ppoll             552          3 tgid=  4446 vtid=   350 ptid=  4446 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gdm-wayland-session
+[187.745]   351   4458 gnome-session-b  S  n  n    n     0  ppoll            3035        343 tgid=  4458 vtid=   351 ptid=  4446 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gnome-session-binary
+[187.745]   351   4516 pool-spawner     S  n  n    n     0  futex               5          0 tgid=  4458 vtid=   409 ptid=  4458 fux=000056510a4fabe0 exe=/usr/libexec/gnome-session-binary
+[187.746]   351   4517 gmain            S  n  n    n     0  ppoll              10          1 tgid=  4458 vtid=   410 ptid=  4458 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gnome-session-binary
+[187.746]   351   4518 gdbus            S  n  n    n     0  ppoll            1552          5 tgid=  4458 vtid=   411 ptid=  4458 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gnome-session-binary
+[187.746]   351   4519 dconf worker     S  n  n    n     0  ppoll             231          2 tgid=  4458 vtid=   412 ptid=  4458 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gnome-session-binary
+[187.746]   413   4520 gnome-session-c  S  n  n    n     0  ppoll             871         17 tgid=  4520 vtid=   413 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gnome-session-ctl
+[187.746]   413   4522 gmain            S  n  n    n     0  ppoll              10          1 tgid=  4520 vtid=   415 ptid=  4520 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gnome-session-ctl
+[187.746]   417   4524 gnome-session-b  S  n  n    n     0  ppoll           13874        234 tgid=  4524 vtid=   417 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gnome-session-binary
+[187.746]   417   4526 pool-spawner     S  n  n    n     0  futex              52          0 tgid=  4524 vtid=   419 ptid=  4524 fux=0000557ced2edd00 exe=/usr/libexec/gnome-session-binary
+[187.746]   417   4527 gmain            S  n  n    n     0  ppoll             266          2 tgid=  4524 vtid=   420 ptid=  4524 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gnome-session-binary
+[187.746]   417   4528 gdbus            S  n  n    n     0  ppoll           18539         81 tgid=  4524 vtid=   421 ptid=  4524 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gnome-session-binary
+[187.746]   417   4530 dconf worker     S  n  n    n     0  ppoll             448          1 tgid=  4524 vtid=   423 ptid=  4524 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gnome-session-binary
+[187.746]   334   4544 timer            S  n  n    n     0  futex               5          0 tgid=  4441 vtid=   437 ptid=  4441 fux=0000561137a05688 exe=/usr/bin/gnome-keyring-daemon
+[187.746]   444   4551 gnome-shell      R  y  n    n     0  ppoll          830542      17580 tgid=  4551 vtid=   444 ptid=  4427 exe=/usr/bin/gnome-shell
+[187.746]   444   4554 pool-spawner     S  n  n    n     0  futex             135          3 tgid=  4551 vtid=   447 ptid=  4551 fux=000056154800a2c0 exe=/usr/bin/gnome-shell
+[187.746]   444   4555 gmain            R  y  n    n     0  ppoll             981          4 tgid=  4551 vtid=   448 ptid=  4551 exe=/usr/bin/gnome-shell
+[187.746]   444   4557 gdbus            S  n  n    n     0  ppoll           73750        286 tgid=  4551 vtid=   450 ptid=  4551 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gnome-shell
+[187.746]   451   4558 gvfsd            S  n  n    n     0  ppoll            1768        424 tgid=  4558 vtid=   451 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfsd
+[187.746]   451   4559 pool-spawner     S  n  n    n     0  futex              17          0 tgid=  4558 vtid=   452 ptid=  4558 fux=000055a80a22bc10 exe=/usr/libexec/gvfsd
+[187.746]   451   4560 gmain            S  n  n    n     0  ppoll              17          1 tgid=  4558 vtid=   453 ptid=  4558 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfsd
+[187.746]   451   4561 gdbus            S  n  n    n     0  ppoll            2412         13 tgid=  4558 vtid=   454 ptid=  4558 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfsd
+[187.746]   444   4565 dconf worker     S  n  n    n     0  ppoll            4761          9 tgid=  4551 vtid=   458 ptid=  4551 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gnome-shell
+[187.746]   444   4566 JS Helper        S  n  n    n     0  futex             212          4 tgid=  4551 vtid=   459 ptid=  4551 fux=000056154802631c exe=/usr/bin/gnome-shell
+[187.746]   444   4567 JS Helper        S  n  n    n     0  futex              39          0 tgid=  4551 vtid=   460 ptid=  4551 fux=00005615480270e8 exe=/usr/bin/gnome-shell
+[187.746]   444   4585 KMS thread       S  n  n    n     0  ppoll           63921       1269 tgid=  4551 vtid=   478 ptid=  4551 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gnome-shell
+[187.746]   444   4588 gnome-s:disk$0   S  n  n    n     0  futex            1572         29 tgid=  4551 vtid=   481 ptid=  4551 fux=00005615483438a4 wchan=crates/drivers/drv-virtio-blk/src/modern/wait.rs:44 exe=/usr/bin/gnome-shell
+[187.746]   444   4592 Mutter Input Th  S  n  n    n     0  ppoll           33965       1364 tgid=  4551 vtid=   485 ptid=  4551 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gnome-shell
+[187.746]   493   4600 at-spi-bus-laun  S  n  n    n     0  ppoll            1416         17 tgid=  4600 vtid=   493 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/at-spi-bus-launcher
+[187.746]   493   4601 pool-spawner     S  n  n    n     0  futex              18          1 tgid=  4600 vtid=   494 ptid=  4600 fux=0000564cf69232d0 exe=/usr/libexec/at-spi-bus-launcher
+[187.746]   493   4602 gmain            S  n  n    n     0  ppoll              17          1 tgid=  4600 vtid=   495 ptid=  4600 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/at-spi-bus-launcher
+[187.746]   493   4603 dconf worker     S  n  n    n     0  ppoll             307          0 tgid=  4600 vtid=   496 ptid=  4600 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/at-spi-bus-launcher
+[187.746]   493   4605 gdbus            S  n  n    n     0  ppoll            2219          4 tgid=  4600 vtid=   498 ptid=  4603 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/at-spi-bus-launcher
+[187.746]   499   4606 dbus-broker-lau  S  n  n    n     0  epoll_wait        611         50 tgid=  4606 vtid=   499 ptid=  4600 wchan=crates/kernel/fs/src/epoll.rs:364 exe=/usr/bin/dbus-broker-launch
+[187.746]   501   4608 dbus-broker      S  n  n    n     0  epoll_wait        901         37 tgid=  4608 vtid=   501 ptid=  4606 wchan=crates/kernel/fs/src/epoll.rs:364 exe=/usr/bin/dbus-broker
+[187.746]   505   4612 at-spi2-registr  S  n  n    n     0  ppoll            2668         35 tgid=  4612 vtid=   505 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/at-spi2-registryd
+[187.746]   505   4613 pool-spawner     S  n  n    n     0  futex               5          0 tgid=  4612 vtid=   506 ptid=  4612 fux=0000565094848e90 exe=/usr/libexec/at-spi2-registryd
+[187.746]   505   4614 gmain            S  n  n    n     0  ppoll              10          2 tgid=  4612 vtid=   507 ptid=  4612 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/at-spi2-registryd
+[187.746]   505   4615 gdbus            S  n  n    n     0  ppoll            1683         16 tgid=  4612 vtid=   508 ptid=  4612 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/at-spi2-registryd
+[187.746]   509   4616 colord           S  n  n    n     0  ppoll            4476        614 tgid=  4616 vtid=   509 ptid=3235774466 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/colord
+[187.746]   509   4621 pool-spawner     S  n  n    n     0  futex              24          1 tgid=  4616 vtid=   514 ptid=  4616 fux=000055c695c91720 exe=/usr/libexec/colord
+[187.746]   509   4622 gmain            S  n  n    n     0  ppoll              15          1 tgid=  4616 vtid=   515 ptid=  4616 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/colord
+[187.747]   509   4624 gdbus            S  n  n    n     0  ppoll            1622         13 tgid=  4616 vtid=   517 ptid=  4616 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/colord
+[187.747]   528   4635 gnome-shell-cal  S  n  n    n     0  ppoll            2156         94 tgid=  4635 vtid=   528 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gnome-shell-calendar-server
+[187.747]   529   4636 xdg-permission-  S  n  n    n     0  ppoll            1008         16 tgid=  4636 vtid=   529 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/xdg-permission-store
+[187.747]   529   4637 pool-spawner     S  n  n    n     0  futex              18          1 tgid=  4636 vtid=   530 ptid=  4636 fux=00005571b5914250 exe=/usr/libexec/xdg-permission-store
+[187.747]   529   4638 gmain            S  n  n    n     0  ppoll               9          1 tgid=  4636 vtid=   531 ptid=  4636 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/xdg-permission-store
+[187.747]   529   4640 gdbus            S  n  n    n     0  ppoll             723          7 tgid=  4636 vtid=   533 ptid=  4636 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/xdg-permission-store
+[187.747]   528   4641 pool-spawner     S  n  n    n     0  futex              26          1 tgid=  4635 vtid=   534 ptid=  4635 fux=000055da37bbd840 exe=/usr/libexec/gnome-shell-calendar-server
+[187.747]   528   4642 gmain            S  n  n    n     0  ppoll               9          1 tgid=  4635 vtid=   535 ptid=  4635 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gnome-shell-calendar-server
+[187.747]   528   4644 gdbus            S  n  n    n     0  ppoll            7542         44 tgid=  4635 vtid=   537 ptid=  4635 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gnome-shell-calendar-server
+[187.747]   528   4645 dconf worker     S  n  n    n     0  ppoll             153          1 tgid=  4635 vtid=   538 ptid=  4635 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gnome-shell-calendar-server
+[187.747]   528   4646 gnome-shell-cal  S  n  n    n     0  ppoll             779         16 tgid=  4635 vtid=   539 ptid=  4635 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gnome-shell-calendar-server
+[187.747]   540   4647 evolution-sourc  S  n  n    n     0  ppoll            4387        577 tgid=  4647 vtid=   540 ptid=  4427 wake_dl_ns=3684940488758 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-source-registry
+[187.747]   540   4649 pool-spawner     S  n  n    n     0  futex              21          3 tgid=  4647 vtid=   542 ptid=  4647 fux=000055efa3419d60 exe=/usr/libexec/evolution-source-registry
+[187.747]   540   4650 gmain            S  n  n    n     0  ppoll              44          1 tgid=  4647 vtid=   543 ptid=  4647 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-source-registry
+[187.747]   540   4651 dconf worker     S  n  n    n     0  ppoll             666          5 tgid=  4647 vtid=   544 ptid=  4647 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-source-registry
+[187.747]   540   4652 gdbus            S  n  n    n     0  ppoll            3662         27 tgid=  4647 vtid=   545 ptid=  4651 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-source-registry
+[187.747]   546   4653 dconf-service    S  n  n    n     0  ppoll            1181         31 tgid=  4653 vtid=   546 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/dconf-service
+[187.747]   546   4654 pool-spawner     S  n  n    n     0  futex               5          0 tgid=  4653 vtid=   547 ptid=  4653 fux=000055c033c4af00 exe=/usr/libexec/dconf-service
+[187.747]   546   4655 gmain            S  n  n    n     0  ppoll              10          1 tgid=  4653 vtid=   548 ptid=  4653 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/dconf-service
+[187.747]   546   4656 gdbus            S  n  n    n     0  ppoll             634          5 tgid=  4653 vtid=   549 ptid=  4653 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/dconf-service
+[187.747]   552   4659 gjs              S  n  n    n     0  ppoll           10051        129 tgid=  4659 vtid=   552 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gjs
+[187.747]   554   4661 ibus-daemon      S  n  n    n     0  ppoll           13426        144 tgid=  4661 vtid=   554 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/ibus-daemon
+[187.747]   555   4662 gsd-a11y-settin  S  n  n    n     0  ppoll            1478         46 tgid=  4662 vtid=   555 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-a11y-settings
+[187.747]   556   4663 gsd-color        R  y  n    n     0  ppoll            5002        202 tgid=  4663 vtid=   556 ptid=  4427 exe=/usr/libexec/gsd-color
+[187.747]   557   4664 gsd-datetime     S  n  n    n     0  ppoll            1810         39 tgid=  4664 vtid=   557 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-datetime
+[187.747]   558   4665 gsd-housekeepin  S  n  n    n     0  ppoll           21849        114 tgid=  4665 vtid=   558 ptid=  4427 wake_dl_ns=204940488533 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-housekeeping
+[187.747]   561   4668 gsd-keyboard     S  n  n    n     0  ppoll            4899        179 tgid=  4668 vtid=   561 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-keyboard
+[187.747]   564   4671 gsd-media-keys   S  n  n    n     0  ppoll            8604        262 tgid=  4671 vtid=   564 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-media-keys
+[187.747]   565   4672 gsd-power        S  n  n    n     0  ppoll            5503        177 tgid=  4672 vtid=   565 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-power
+[187.747]   567   4674 gsd-print-notif  R  y  n    n     0  poll             1685         47 tgid=  4674 vtid=   567 ptid=  4427 exe=/usr/libexec/gsd-print-notifications
+[187.747]   568   4675 gsd-rfkill       S  n  n    n     0  ppoll            1773         34 tgid=  4675 vtid=   568 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-rfkill
+[187.747]   552   4676 pool-spawner     S  n  n    n     0  futex              18          1 tgid=  4659 vtid=   569 ptid=  4659 fux=0000555c7842c860 exe=/usr/bin/gjs
+[187.747]   552   4677 gmain            S  n  n    n     0  ppoll               6          0 tgid=  4659 vtid=   570 ptid=  4659 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gjs
+[187.747]   558   4678 gmain            S  n  n    n     0  ppoll             159          3 tgid=  4665 vtid=   571 ptid=  4665 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-housekeeping
+[187.747]   558   4679 pool-spawner     S  n  n    n     0  futex              18          1 tgid=  4665 vtid=   572 ptid=  4665 fux=000055eaf595da30 exe=/usr/libexec/gsd-housekeeping
+[187.747]   552   4680 gdbus            S  n  n    n     0  ppoll            1361         14 tgid=  4659 vtid=   573 ptid=  4659 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gjs
+[187.747]   574   4681 gsd-screensaver  S  n  n    n     0  ppoll            1445         28 tgid=  4681 vtid=   574 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-screensaver-proxy
+[187.747]   558   4682 gdbus            S  n  n    n     0  ppoll            9675         80 tgid=  4665 vtid=   575 ptid=  4665 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-housekeeping
+[187.747]   557   4683 gmain            S  n  n    n     0  ppoll              10          1 tgid=  4664 vtid=   576 ptid=  4664 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-datetime
+[187.748]   557   4684 pool-spawner     S  n  n    n     0  futex               5          0 tgid=  4664 vtid=   577 ptid=  4664 fux=000055931df69a80 exe=/usr/libexec/gsd-datetime
+[187.748]   578   4685 gsd-sharing      S  n  n    n     0  ppoll            1822         42 tgid=  4685 vtid=   578 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-sharing
+[187.748]   557   4686 gdbus            S  n  n    n     0  ppoll            2436         20 tgid=  4664 vtid=   579 ptid=  4664 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-datetime
+[187.748]   580   4687 gsd-smartcard    S  n  n    n     0  ppoll            1652         33 tgid=  4687 vtid=   580 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-smartcard
+[187.748]   581   4688 gsd-sound        S  n  n    n     0  ppoll            1746         43 tgid=  4688 vtid=   581 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-sound
+[187.748]   556   4689 [pango] fontcon  S  n  n    n     0  futex            3932       1066 tgid=  4663 vtid=   582 ptid=  4663 fux=00005570eff66840 wchan=crates/drivers/drv-virtio-blk/src/modern/wait.rs:44 exe=/usr/libexec/gsd-color
+[187.748]   583   4690 gsd-usb-protect  S  n  n    n     0  ppoll            1910         35 tgid=  4690 vtid=   583 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-usb-protection
+[187.748]   556   4691 pool-spawner     S  n  n    n     0  futex              18          1 tgid=  4663 vtid=   584 ptid=  4663 fux=00005570eff71680 exe=/usr/libexec/gsd-color
+[187.748]   556   4692 gmain            S  n  n    n     0  ppoll               9          1 tgid=  4663 vtid=   585 ptid=  4663 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-color
+[187.748]   561   4693 [pango] fontcon  S  n  n    n     0  futex            3726        556 tgid=  4668 vtid=   586 ptid=  4668 fux=00005583b1cd3840 wchan=crates/drivers/drv-virtio-blk/src/modern/wait.rs:44 exe=/usr/libexec/gsd-keyboard
+[187.748]   561   4694 pool-spawner     S  n  n    n     0  futex              23          0 tgid=  4668 vtid=   587 ptid=  4668 fux=00005583b1cde670 exe=/usr/libexec/gsd-keyboard
+[187.748]   561   4695 gmain            S  n  n    n     0  ppoll               9          1 tgid=  4668 vtid=   588 ptid=  4668 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-keyboard
+[187.748]   568   4696 gmain            S  n  n    n     0  ppoll              10          1 tgid=  4675 vtid=   589 ptid=  4675 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-rfkill
+[187.748]   568   4697 pool-spawner     S  n  n    n     0  futex              33          0 tgid=  4675 vtid=   590 ptid=  4675 fux=000055ddb57c9a60 exe=/usr/libexec/gsd-rfkill
+[187.748]   568   4700 gdbus            S  n  n    n     0  ppoll            3395         20 tgid=  4675 vtid=   593 ptid=  4675 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-rfkill
+[187.748]   561   4701 dconf worker     S  n  n    n     0  ppoll             987          2 tgid=  4668 vtid=   594 ptid=  4668 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-keyboard
+[187.748]   595   4702 gsd-wacom        S  n  n    n     0  ppoll            7881        243 tgid=  4702 vtid=   595 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-wacom
+[187.748]   556   4703 dconf worker     S  n  n    n     0  ppoll             670          3 tgid=  4663 vtid=   596 ptid=  4663 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-color
+[187.748]   567   4704 gmain            S  n  n    n     0  ppoll              10          1 tgid=  4674 vtid=   597 ptid=  4674 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-print-notifications
+[187.748]   567   4705 pool-spawner     S  n  n    n     0  futex               5          0 tgid=  4674 vtid=   598 ptid=  4674 fux=000055687efb6070 exe=/usr/libexec/gsd-print-notifications
+[187.748]   556   4706 gdbus            S  n  n    n     0  ppoll            4262         22 tgid=  4663 vtid=   599 ptid=  4663 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-color
+[187.748]   574   4707 gmain            S  n  n    n     0  ppoll              17          1 tgid=  4681 vtid=   600 ptid=  4681 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-screensaver-proxy
+[187.748]   561   4708 gdbus            S  n  n    n     0  ppoll            5343         25 tgid=  4668 vtid=   601 ptid=  4668 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-keyboard
+[187.748]   574   4709 pool-spawner     S  n  n    n     0  futex               5          0 tgid=  4681 vtid=   602 ptid=  4681 fux=000056550fddca30 exe=/usr/libexec/gsd-screensaver-proxy
+[187.748]   567   4710 gdbus            S  n  n    n     0  ppoll            1452         14 tgid=  4674 vtid=   603 ptid=  4674 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-print-notifications
+[187.748]   574   4711 gdbus            S  n  n    n     0  ppoll            1764         18 tgid=  4681 vtid=   604 ptid=  4681 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-screensaver-proxy
+[187.748]   565   4712 [pango] fontcon  S  n  n    n     0  futex            3768        540 tgid=  4672 vtid=   605 ptid=  4672 fux=000055b842d859f0 wchan=crates/drivers/drv-virtio-blk/src/modern/wait.rs:44 exe=/usr/libexec/gsd-power
+[187.748]   580   4713 gmain            S  n  n    n     0  ppoll              10          1 tgid=  4687 vtid=   606 ptid=  4687 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-smartcard
+[187.748]   580   4714 pool-spawner     S  n  n    n     0  futex              17          0 tgid=  4687 vtid=   607 ptid=  4687 fux=0000556a21a90a90 exe=/usr/libexec/gsd-smartcard
+[187.748]   565   4715 pool-spawner     S  n  n    n     0  futex              32          1 tgid=  4672 vtid=   608 ptid=  4672 fux=000055b842d90830 exe=/usr/libexec/gsd-power
+[187.748]   565   4716 gmain            S  n  n    n     0  ppoll              17          1 tgid=  4672 vtid=   609 ptid=  4672 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-power
+[187.748]   578   4717 pool-spawner     S  n  n    n     0  futex              26          1 tgid=  4685 vtid=   610 ptid=  4685 fux=000055ac0900ef20 exe=/usr/libexec/gsd-sharing
+[187.748]   578   4718 gmain            S  n  n    n     0  ppoll              10          1 tgid=  4685 vtid=   611 ptid=  4685 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-sharing
+[187.748]   578   4719 dconf worker     S  n  n    n     0  ppoll             343          5 tgid=  4685 vtid=   612 ptid=  4685 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-sharing
+[187.748]   580   4721 gdbus            S  n  n    n     0  ppoll            2588         22 tgid=  4687 vtid=   614 ptid=  4687 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-smartcard
+[187.748]   565   4722 dconf worker     S  n  n    n     0  ppoll             722          4 tgid=  4672 vtid=   615 ptid=  4672 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-power
+[187.748]   578   4723 gdbus            S  n  n    n     0  ppoll            3665         29 tgid=  4685 vtid=   616 ptid=  4719 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-sharing
+[187.748]   583   4724 gmain            S  n  n    n     0  ppoll              17          1 tgid=  4690 vtid=   617 ptid=  4690 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-usb-protection
+[187.748]   583   4725 pool-spawner     S  n  n    n     0  futex              34          1 tgid=  4690 vtid=   618 ptid=  4690 fux=0000558fbd1a0a60 exe=/usr/libexec/gsd-usb-protection
+[187.749]   565   4726 gdbus            S  n  n    n     0  ppoll            8995         34 tgid=  4672 vtid=   619 ptid=  4672 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-power
+[187.749]   583   4727 gdbus            S  n  n    n     0  ppoll            4339         27 tgid=  4690 vtid=   620 ptid=  4690 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-usb-protection
+[187.749]   581   4728 gmain            S  n  n    n     0  ppoll              16          1 tgid=  4688 vtid=   621 ptid=  4688 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-sound
+[187.749]   581   4729 pool-spawner     S  n  n    n     0  futex               5          0 tgid=  4688 vtid=   622 ptid=  4688 fux=000055ef5fe03a00 exe=/usr/libexec/gsd-sound
+[187.749]   581   4730 gdbus            S  n  n    n     0  ppoll            2615         23 tgid=  4688 vtid=   623 ptid=  4688 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-sound
+[187.749]   595   4731 [pango] fontcon  S  n  n    n     0  futex            3623        474 tgid=  4702 vtid=   624 ptid=  4702 fux=000055f42cdba840 wchan=crates/drivers/drv-virtio-blk/src/modern/wait.rs:44 exe=/usr/libexec/gsd-wacom
+[187.749]   595   4732 pool-spawner     S  n  n    n     0  futex              18          1 tgid=  4702 vtid=   625 ptid=  4702 fux=000055f42cdc5680 exe=/usr/libexec/gsd-wacom
+[187.749]   595   4733 gmain            S  n  n    n     0  ppoll               9          1 tgid=  4702 vtid=   626 ptid=  4702 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-wacom
+[187.749]   552   4734 JS Helper        S  n  n    n     0  futex              37          2 tgid=  4659 vtid=   627 ptid=  4659 fux=0000555c78454d5c exe=/usr/bin/gjs
+[187.749]   552   4735 JS Helper        S  n  n    n     0  futex              11          0 tgid=  4659 vtid=   628 ptid=  4659 fux=0000555c78454f3c exe=/usr/bin/gjs
+[187.749]   595   4737 gdbus            S  n  n    n     0  ppoll            3685         24 tgid=  4702 vtid=   630 ptid=  4702 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-wacom
+[187.749]   595   4738 dconf worker     S  n  n    n     0  ppoll             633          2 tgid=  4702 vtid=   631 ptid=  4702 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-wacom
+[187.749]   555   4741 gmain            S  n  n    n     0  ppoll              10          1 tgid=  4662 vtid=   634 ptid=  4662 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-a11y-settings
+[187.749]   555   4742 pool-spawner     S  n  n    n     0  futex               5          0 tgid=  4662 vtid=   635 ptid=  4662 fux=000055c21abf49f0 exe=/usr/libexec/gsd-a11y-settings
+[187.749]   555   4743 gdbus            S  n  n    n     0  ppoll            2399         22 tgid=  4662 vtid=   636 ptid=  4662 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-a11y-settings
+[187.749]   564   4744 [pango] fontcon  S  n  n    n     0  futex            3700        423 tgid=  4671 vtid=   637 ptid=  4671 fux=000055de298a3840 wchan=crates/drivers/drv-virtio-blk/src/modern/wait.rs:44 exe=/usr/libexec/gsd-media-keys
+[187.749]   564   4745 pool-spawner     S  n  n    n     0  futex              48          2 tgid=  4671 vtid=   638 ptid=  4671 fux=000055de298ae690 exe=/usr/libexec/gsd-media-keys
+[187.749]   564   4746 gmain            S  n  n    n     0  ppoll               8          0 tgid=  4671 vtid=   639 ptid=  4671 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-media-keys
+[187.749]   564   4748 dconf worker     S  n  n    n     0  ppoll             919          2 tgid=  4671 vtid=   641 ptid=  4671 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-media-keys
+[187.749]   564   4749 gdbus            S  n  n    n     0  ppoll            7604        105 tgid=  4671 vtid=   642 ptid=  4671 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-media-keys
+[187.749]   554   4750 pool-spawner     S  n  n    n     0  futex              26          0 tgid=  4661 vtid=   643 ptid=  4661 fux=00005615da23b4f0 exe=/usr/bin/ibus-daemon
+[187.749]   554   4751 gmain            S  n  n    n     0  ppoll              16          1 tgid=  4661 vtid=   644 ptid=  4661 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/ibus-daemon
+[187.749]   554   4752 gdbus            S  n  n    n     0  ppoll           20057         55 tgid=  4661 vtid=   645 ptid=  4661 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/ibus-daemon
+[187.749]   647   4754 ibus-dconf       S  n  n    n     0  ppoll             735         50 tgid=  4754 vtid=   647 ptid=  4661 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/ibus-dconf
+[187.749]   648   4755 ibus-extension-  S  n  n    n     0  ppoll            4654       1384 tgid=  4755 vtid=   648 ptid=  4661 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/ibus-extension-gtk3
+[187.749]   647   4756 pool-spawner     S  n  n    n     0  futex               5          0 tgid=  4754 vtid=   649 ptid=  4754 fux=0000559b85683f20 exe=/usr/libexec/ibus-dconf
+[187.749]   647   4757 gmain            S  n  n    n     0  ppoll              16          1 tgid=  4754 vtid=   650 ptid=  4754 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/ibus-dconf
+[187.749]   647   4759 gdbus            S  n  n    n     0  ppoll            1041          9 tgid=  4754 vtid=   652 ptid=  4754 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/ibus-dconf
+[187.749]   648   4761 [pango] fontcon  S  n  n    n     0  futex            3588        420 tgid=  4755 vtid=   654 ptid=  4755 fux=0000561bc572af90 wchan=crates/drivers/drv-virtio-blk/src/modern/wait.rs:44 exe=/usr/libexec/ibus-extension-gtk3
+[187.749]   648   4762 pool-spawner     S  n  n    n     0  futex              18          1 tgid=  4755 vtid=   655 ptid=  4755 fux=0000561bc572f700 exe=/usr/libexec/ibus-extension-gtk3
+[187.749]   648   4763 gmain            S  n  n    n     0  ppoll              16          1 tgid=  4755 vtid=   656 ptid=  4755 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/ibus-extension-gtk3
+[187.749]   657   4764 ibus-portal      S  n  n    n     0  ppoll            2007         38 tgid=  4764 vtid=   657 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/ibus-portal
+[187.749]   648   4766 gdbus            S  n  n    n     0  ppoll            6107         27 tgid=  4755 vtid=   659 ptid=  4755 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/ibus-extension-gtk3
+[187.749]   648   4767 dconf worker     S  n  n    n     0  ppoll             722          3 tgid=  4755 vtid=   660 ptid=  4755 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/ibus-extension-gtk3
+[187.749]   661   4768 goa-daemon       S  n  n    n     0  ppoll            2335         92 tgid=  4768 vtid=   661 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/goa-daemon
+[187.749]   657   4769 gmain            S  n  n    n     0  ppoll              21          1 tgid=  4764 vtid=   662 ptid=  4764 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/ibus-portal
+[187.749]   657   4770 pool-spawner     S  n  n    n     0  futex              18          1 tgid=  4764 vtid=   663 ptid=  4764 fux=0000560b1201be30 exe=/usr/libexec/ibus-portal
+[187.749]   657   4771 gdbus            S  n  n    n     0  ppoll            5654         41 tgid=  4764 vtid=   664 ptid=  4764 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/ibus-portal
+[187.749]   661   4773 gmain            S  n  n    n     0  ppoll              16          1 tgid=  4768 vtid=   666 ptid=  4768 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/goa-daemon
+[187.750]   661   4774 pool-spawner     S  n  n    n     0  futex              26          1 tgid=  4768 vtid=   667 ptid=  4768 fux=0000558b9d9738e0 exe=/usr/libexec/goa-daemon
+[187.750]   661   4776 gdbus            S  n  n    n     0  ppoll            2531         25 tgid=  4768 vtid=   669 ptid=  4768 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/goa-daemon
+[187.750]   661   4777 dconf worker     S  n  n    n     0  ppoll             210          2 tgid=  4768 vtid=   670 ptid=  4768 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/goa-daemon
+[187.750]   672   4779 goa-identity-se  R  y  n    n     0  ppoll            1245        107 tgid=  4779 vtid=   672 ptid=  4427 exe=/usr/libexec/goa-identity-service
+[187.750]   672   4780 pool-spawner     S  n  n    n     0  futex              25          1 tgid=  4779 vtid=   673 ptid=  4779 fux=0000559400855130 exe=/usr/libexec/goa-identity-service
+[187.750]   672   4781 gmain            S  n  n    n     0  ppoll               9          1 tgid=  4779 vtid=   674 ptid=  4779 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/goa-identity-service
+[187.750]   672   4783 gdbus            S  n  n    n     0  ppoll             782          9 tgid=  4779 vtid=   676 ptid=  4779 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/goa-identity-service
+[187.750]   647   4784 dconf worker     S  n  n    n     0  ppoll             116          3 tgid=  4754 vtid=   677 ptid=  4754 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/ibus-dconf
+[187.750]   680   4787 evolution-alarm  R  y  n    n     0  ppoll            7392        281 tgid=  4787 vtid=   680 ptid=  4524 exe=/usr/libexec/evolution-data-server/evolution-alarm-notify
+[187.750]   683   4790 canberra-gtk-pl  S  n  n    n     0  futex            3760        169 tgid=  4790 vtid=   683 ptid=  4524 fux=0000564de3f65e50 wchan=crates/drivers/drv-virtio-blk/src/modern/wait.rs:44 exe=/usr/bin/canberra-gtk-play
+[187.750]   685   4792 gsd-disk-utilit  S  n  n    n     0  ppoll             369         13 tgid=  4792 vtid=   685 ptid=  4524 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-disk-utility-notify
+[187.750]   688   4795 gnome-software   S  n  n    n     0  ppoll            6435        615 tgid=  4795 vtid=   688 ptid=  4524 wake_dl_ns=7318940489299 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gnome-software
+[187.750]   555   4797 dconf worker     S  n  n    n     0  ppoll             202          2 tgid=  4662 vtid=   690 ptid=  4662 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-a11y-settings
+[187.750]   581   4800 dconf worker     S  n  n    n     0  ppoll             143          2 tgid=  4688 vtid=   693 ptid=  4688 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-sound
+[187.750]   580   4801 dconf worker     S  n  n    n     0  ppoll             139          3 tgid=  4687 vtid=   694 ptid=  4687 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-smartcard
+[187.750]   685   4803 pool-spawner     S  n  n    n     0  futex              18          1 tgid=  4792 vtid=   696 ptid=  4792 fux=0000557cff3d1810 exe=/usr/libexec/gsd-disk-utility-notify
+[187.750]   685   4804 gmain            S  n  n    n     0  ppoll              10          1 tgid=  4792 vtid=   697 ptid=  4792 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-disk-utility-notify
+[187.750]   557   4805 dconf worker     S  n  n    n     0  ppoll             139          2 tgid=  4664 vtid=   698 ptid=  4664 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-datetime
+[187.750]   558   4806 dconf worker     S  n  n    n     0  ppoll             276          2 tgid=  4665 vtid=   699 ptid=  4665 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-housekeeping
+[187.750]   583   4807 dconf worker     S  n  n    n     0  ppoll              80          1 tgid=  4690 vtid=   700 ptid=  4690 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-usb-protection
+[187.750]   685   4817 gdbus            S  n  n    n     0  ppoll             966         10 tgid=  4792 vtid=   710 ptid=  4792 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gsd-disk-utility-notify
+[187.750]   683   4819 [pango] fontcon  S  n  n    n     0  futex            3758        357 tgid=  4790 vtid=   712 ptid=  4790 fux=0000564de3dceec0 wchan=crates/drivers/drv-virtio-blk/src/modern/wait.rs:44 exe=/usr/bin/canberra-gtk-play
+[187.750]   683   4820 pool-spawner     S  n  n    n     0  futex              17          1 tgid=  4790 vtid=   713 ptid=  4790 fux=0000564de3dd9f40 exe=/usr/bin/canberra-gtk-play
+[187.750]   683   4821 gmain            S  n  n    n     0  ppoll               9          1 tgid=  4790 vtid=   714 ptid=  4790 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/canberra-gtk-play
+[187.750]   683   4823 dconf worker     S  n  n    n     0  ppoll             623          4 tgid=  4790 vtid=   716 ptid=  4790 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/canberra-gtk-play
+[187.750]   683   4824 gdbus            S  n  n    n     0  ppoll            1928         20 tgid=  4790 vtid=   717 ptid=  4790 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/canberra-gtk-play
+[187.750]   680   4826 [pango] fontcon  S  n  n    n     0  futex            3258        287 tgid=  4787 vtid=   719 ptid=  4787 fux=000055b2602c6470 wchan=crates/drivers/drv-virtio-blk/src/modern/wait.rs:44 exe=/usr/libexec/evolution-data-server/evolution-alarm-notify
+[187.750]   680   4827 pool-spawner     S  n  n    n     0  futex              33          0 tgid=  4787 vtid=   720 ptid=  4787 fux=000055b2602d08a0 exe=/usr/libexec/evolution-data-server/evolution-alarm-notify
+[187.750]   680   4828 gmain            S  n  n    n     0  ppoll             331          2 tgid=  4787 vtid=   721 ptid=  4787 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-data-server/evolution-alarm-notify
+[187.750]   680   4830 gdbus            S  n  n    n     0  ppoll            9192         37 tgid=  4787 vtid=   723 ptid=  4787 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-data-server/evolution-alarm-notify
+[187.750]   680   4831 dconf worker     S  n  n    n     0  ppoll             775          4 tgid=  4787 vtid=   724 ptid=  4787 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-data-server/evolution-alarm-notify
+[187.750]   528   4833 cal-client-dbus  S  n  n    n     0  ppoll             729          5 tgid=  4635 vtid=   726 ptid=  4635 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gnome-shell-calendar-server
+[187.750]   727   4834 evolution-calen  S  n  n    n     0  ppoll            4209        153 tgid=  4834 vtid=   727 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-calendar-factory
+[187.750]   727   4835 gmain            S  n  n    n     0  ppoll              22          1 tgid=  4834 vtid=   728 ptid=  4834 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-calendar-factory
+[187.750]   727   4836 pool-spawner     S  n  n    n     0  futex              23          0 tgid=  4834 vtid=   729 ptid=  4834 fux=000055b7011223d0 exe=/usr/libexec/evolution-calendar-factory
+[187.750]   727   4837 gdbus            S  n  n    n     0  ppoll           10801         54 tgid=  4834 vtid=   730 ptid=  4834 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-calendar-factory
+[187.750]   731   4838 gvfs-udisks2-vo  S  n  n    n     0  ppoll           19325         91 tgid=  4838 vtid=   731 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfs-udisks2-volume-monitor
+[187.750]   731   4839 pool-spawner     S  n  n    n     0  futex              18          1 tgid=  4838 vtid=   732 ptid=  4838 fux=000055ebd5ff3c70 exe=/usr/libexec/gvfs-udisks2-volume-monitor
+[187.750]   731   4840 gmain            S  n  n    n     0  ppoll             276          6 tgid=  4838 vtid=   733 ptid=  4838 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfs-udisks2-volume-monitor
+[187.751]   731   4841 gdbus            S  n  n    n     0  ppoll            1685         18 tgid=  4838 vtid=   734 ptid=  4838 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfs-udisks2-volume-monitor
+[187.751]   731   4842 dconf worker     S  n  n    n     0  ppoll              92          0 tgid=  4838 vtid=   735 ptid=  4838 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfs-udisks2-volume-monitor
+[187.751]   737   4844 gvfs-mtp-volume  S  n  n    n     0  ppoll            1033         34 tgid=  4844 vtid=   737 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfs-mtp-volume-monitor
+[187.751]   737   4845 pool-spawner     S  n  n    n     0  futex              18          1 tgid=  4844 vtid=   738 ptid=  4844 fux=000055f5f9884070 exe=/usr/libexec/gvfs-mtp-volume-monitor
+[187.751]   737   4846 gmain            S  n  n    n     0  ppoll               9          1 tgid=  4844 vtid=   739 ptid=  4844 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfs-mtp-volume-monitor
+[187.751]   737   4848 gdbus            S  n  n    n     0  ppoll             418          6 tgid=  4844 vtid=   741 ptid=  4844 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfs-mtp-volume-monitor
+[187.751]   742   4849 gvfs-gphoto2-vo  S  n  n    n     0  ppoll            1090         40 tgid=  4849 vtid=   742 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfs-gphoto2-volume-monitor
+[187.751]   742   4850 pool-spawner     S  n  n    n     0  futex              18          1 tgid=  4849 vtid=   743 ptid=  4849 fux=000055ebe483f070 exe=/usr/libexec/gvfs-gphoto2-volume-monitor
+[187.751]   742   4851 gmain            S  n  n    n     0  ppoll              17          1 tgid=  4849 vtid=   744 ptid=  4849 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfs-gphoto2-volume-monitor
+[187.751]   742   4853 gdbus            S  n  n    n     0  ppoll             449          6 tgid=  4849 vtid=   746 ptid=  4849 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfs-gphoto2-volume-monitor
+[187.751]   747   4854 gvfs-goa-volume  S  n  n    n     0  ppoll            1217         38 tgid=  4854 vtid=   747 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfs-goa-volume-monitor
+[187.751]   747   4855 pool-spawner     S  n  n    n     0  futex              17          0 tgid=  4854 vtid=   748 ptid=  4854 fux=0000558970f08f60 exe=/usr/libexec/gvfs-goa-volume-monitor
+[187.751]   747   4856 gmain            S  n  n    n     0  ppoll              17          1 tgid=  4854 vtid=   749 ptid=  4854 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfs-goa-volume-monitor
+[187.751]   747   4857 gdbus            S  n  n    n     0  ppoll             846         13 tgid=  4854 vtid=   750 ptid=  4854 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfs-goa-volume-monitor
+[187.751]   688   4859 gmain            R  y  n    n     0  ppoll             549          3 tgid=  4795 vtid=   752 ptid=  4795 exe=/usr/bin/gnome-software
+[187.751]   688   4860 pool-spawner     S  n  n    n     0  futex              34          1 tgid=  4795 vtid=   753 ptid=  4795 fux=0000556209f42670 exe=/usr/bin/gnome-software
+[187.751]   688   4861 gdbus            S  n  n    n     0  ppoll            8336         50 tgid=  4795 vtid=   754 ptid=  4795 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gnome-software
+[187.751]   688   4862 [pango] fontcon  S  n  n    n     0  futex            3422        307 tgid=  4795 vtid=   755 ptid=  4795 fux=0000556209f81bb0 wchan=crates/drivers/drv-virtio-blk/src/modern/wait.rs:44 exe=/usr/bin/gnome-software
+[187.751]   688   4863 dconf worker     S  n  n    n     0  ppoll             954          4 tgid=  4795 vtid=   756 ptid=  4795 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gnome-software
+[187.751]   772   4879 gjs              S  n  n    n     0  ppoll            7532         90 tgid=  4879 vtid=   772 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gjs
+[187.751]   772   4881 pool-spawner     S  n  n    n     0  futex              18          1 tgid=  4879 vtid=   774 ptid=  4879 fux=000055eed93ba860 exe=/usr/bin/gjs
+[187.751]   772   4882 gmain            S  n  n    n     0  ppoll               6          0 tgid=  4879 vtid=   775 ptid=  4879 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gjs
+[187.751]   772   4883 gdbus            S  n  n    n     0  ppoll            2243         17 tgid=  4879 vtid=   776 ptid=  4879 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/bin/gjs
+[187.751]   772   4884 JS Helper        S  n  n    n     0  futex              50          2 tgid=  4879 vtid=   777 ptid=  4879 fux=000055eed93e2d48 exe=/usr/bin/gjs
+[187.751]   772   4885 JS Helper        S  n  n    n     0  futex              18          0 tgid=  4879 vtid=   778 ptid=  4879 fux=000055eed93e2f2c exe=/usr/bin/gjs
+[187.751]   727   4887 dconf worker     S  n  n    n     0  ppoll             286          2 tgid=  4834 vtid=   780 ptid=  4834 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-calendar-factory
+[187.751]   727   4888 evolution-calen  S  n  n    n     0  ppoll             762         14 tgid=  4834 vtid=   781 ptid=  4834 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-calendar-factory
+[187.751]   727   4889 pool-0           S  n  n    n     0  futex             119          2 tgid=  4834 vtid=   782 ptid=  4836 fux=00007f9440008b10 wchan=crates/drivers/drv-virtio-blk/src/modern/wait.rs:44 exe=/usr/libexec/evolution-calendar-factory
+[187.751]   727   4891 pool-2           S  n  n    n     0  futex              20          0 tgid=  4834 vtid=   784 ptid=  4834 fux=00007f944001c520 exe=/usr/libexec/evolution-calendar-factory
+[187.751]   727   4892 book-client-dbu  S  n  n    n     0  ppoll             334          3 tgid=  4834 vtid=   785 ptid=  4834 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-calendar-factory
+[187.751]   727   4894 pool-3           S  n  n    n     0  futex              46          0 tgid=  4834 vtid=   787 ptid=  4834 fux=000055b701163a90 wchan=crates/drivers/drv-virtio-blk/src/modern/wait.rs:44 exe=/usr/libexec/evolution-calendar-factory
+[187.751]   793   4900 evolution-addre  S  n  n    n     0  ppoll            2766         84 tgid=  4900 vtid=   793 ptid=  4427 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-addressbook-factory
+[187.751]   794   4901 gvfsd-metadata   R  y  n    n     0  ppoll            1223         21 tgid=  4901 vtid=   794 ptid=  4427 exe=/usr/libexec/gvfsd-metadata
+[187.751]   794   4902 pool-spawner     S  n  n    n     0  futex               5          0 tgid=  4901 vtid=   795 ptid=  4901 fux=0000558867e02c70 exe=/usr/libexec/gvfsd-metadata
+[187.751]   794   4903 gmain            S  n  n    n     0  ppoll              10          1 tgid=  4901 vtid=   796 ptid=  4901 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfsd-metadata
+[187.751]   794   4904 gdbus            S  n  n    n     0  ppoll             508          3 tgid=  4901 vtid=   797 ptid=  4901 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/gvfsd-metadata
+[187.751]   793   4906 gmain            S  n  n    n     0  ppoll              20          1 tgid=  4900 vtid=   799 ptid=  4900 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-addressbook-factory
+[187.751]   793   4907 pool-spawner     S  n  n    n     0  futex              25          0 tgid=  4900 vtid=   800 ptid=  4900 fux=000055f275b5a3c0 exe=/usr/libexec/evolution-addressbook-factory
+[187.751]   793   4908 gdbus            S  n  n    n     0  ppoll            4393         11 tgid=  4900 vtid=   801 ptid=  4900 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/evolution-addressbook-factory
+[187.752]   830   4937 ibus-engine-sim  S  n  n    n     0  ppoll            1289         13 tgid=  4937 vtid=   830 ptid=  4661 wchan=crates/kernel/syscalls/src/poll_common.rs:77 exe=/usr/libexec/ibus-engine-simple
+[187.752]   830   4938 pool-spawner     S  n  n    n     0  futex               5          0 tgid=  4937 vtid=   831 ptid=  4937 fux=0000558ca8b02b00 exe=/usr/libexec/ibus-engine-snd@fedora:~/oxide/kernel$ 
+

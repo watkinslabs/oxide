@@ -1,12 +1,11 @@
 // The helper threads and the caller's completion.
 //
-// Helpers run on threads of their own rather than on the shared deferred-work
-// pool, for two reasons. The exec cannot run on the submitting task's page
-// tables — loading an image writes through the NEW address space's user
-// addresses, so it needs a thread that owns no address space of its own. And a
-// `UMH_WAIT_PROC` request blocks until the helper program terminates, which on
-// a shared worker would stall every other piece of deferred work behind it for
-// as long as that program runs.
+// Helpers run on kernel worker threads rather than on the submitting task's
+// page tables — loading an image writes through the NEW address space's user
+// addresses, so the worker must own no address space of its own. A
+// `UMH_WAIT_PROC` request blocks its worker until the helper terminates; the
+// pool grows a replacement before taking the request, so another request does
+// not wait behind it.
 //
 // There is more than ONE such thread, and the count grows on demand: a request
 // that blocks must not block a pending one. `pool` states why, and owns the
@@ -14,8 +13,8 @@
 // a request starts a replacement first, so an idle servicer is always waiting
 // behind whatever the busy ones are doing.
 //
-// A waiting caller blocks on its own request's completion, so two helpers
-// started at once do not wake each other.
+// A waiting caller blocks on its own request's completion, so two helpers do
+// not wake each other.
 
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
@@ -184,26 +183,11 @@ extern "C" fn khelper(arg: usize) -> ! {
                 let grow = POOL.claim();
                 if grow == Grow::Spawn { start_servicer(GROWN_SERVICER); }
 
-                // Linux's usermodehelper work item hands execution to a
-                // separate helper context.  Keep the dispatcher stack out of
-                // image loading and filesystem setup: those paths can block
-                // and are substantially deeper than queue servicing.  The
-                // one-shot thread takes over this context's pool slot; the
-                // replacement reserved above keeps the dispatcher pool
-                // available for the next request.
-                let tid = sched::live::next_tid();
-                let started = unsafe {
-                    sched::live::spawn_kernel_thread(tid, "umh-exec", run_one_thread, req)
-                };
-                if started.is_ok() {
-                    // The request now owns this context's slot.  The worker
-                    // releases it after publishing the helper result, then
-                    // exits without leaving a waitable kernel-thread zombie.
-                    unsafe { sched::live::kthread_exit(0) }
-                }
-
-                if grow == Grow::Spawn { POOL.spawn_failed(); }
-                fail_one(req);
+                // Linux's usermodehelper work item runs on the worker that
+                // dequeued it. The worker owns no address space, so the image
+                // loader can borrow the helper's mm while this request waits.
+                // The replacement reserved above keeps another worker ready.
+                run_one(req);
                 POOL.released();
             }
             // SAFETY: running kthread with no queue lock held; the generic
@@ -214,14 +198,6 @@ extern "C" fn khelper(arg: usize) -> ! {
             }; },
         }
     }
-}
-
-/// Execute one request on a dedicated kernel-thread stack, then return its
-/// pool slot before terminating the short-lived worker.
-extern "C" fn run_one_thread(arg: usize) -> ! {
-    run_one(arg);
-    POOL.released();
-    unsafe { sched::live::kthread_exit(0) }
 }
 
 /// Start one servicing thread against a slot the pool has already reserved.
@@ -262,20 +238,6 @@ fn run_one(arg: usize) {
     // parent, and a helper nobody reaps stays queued as a terminated process
     // forever. A system that runs a helper per crash would accumulate them.
     if let Some(vpid) = pending_child { let _ = super::reap::wait_for(vpid); }
-}
-
-/// Complete a request when its execution worker could not be created.
-fn fail_one(arg: usize) {
-    let req = unsafe { Arc::from_raw(arg as *const Req) };
-    let Some(mut info) = take(&req) else { return };
-    info.retval = -(Errno::Eagain.as_i32());
-    if info.wait == UMH_NO_WAIT {
-        info.free();
-    } else {
-        put(&req, info);
-        req.done.store(true, Ordering::Release);
-        req.wq.wake_all();
-    }
 }
 
 /// Start the helper and fill `info.retval` per its wait mode. Returns the
