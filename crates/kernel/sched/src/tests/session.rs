@@ -381,6 +381,20 @@ fn setsid_twice_is_eperm() {
 }
 
 #[test]
+fn setsid_rejects_identity_session_leader_without_explicit_flag() {
+    let _g = registry_test_lock();
+    crate::registry::clear_for_tests();
+    let parent = published(110);
+    let child = child_of(&parent, 111);
+    // Model the boot/session identity shape where the session already names
+    // this process but the explicit signal_struct leader bit was not latched.
+    child.set_session(Arc::clone(&child.pid));
+    assert!(!child.thread_group.is_session_leader());
+    assert!(session::is_session_leader(&child));
+    assert_eq!(session::setsid(&child), Err(Errno::Eperm));
+}
+
+#[test]
 fn setsid_by_a_process_group_leader_is_eperm() {
     let _g = registry_test_lock();
     crate::registry::clear_for_tests();

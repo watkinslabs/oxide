@@ -87,6 +87,7 @@ mod namei_common {
             vfs::VfsError::Ekeyrejected => Errno::Ekeyrejected,
             vfs::VfsError::Ebadfd => Errno::Ebadfd,
             vfs::VfsError::Ehostdown => Errno::Ehostdown, vfs::VfsError::Eoverflow => Errno::Eoverflow,
+            vfs::VfsError::Echild => Errno::Echild,
         }.as_i32() as i64)
     }
 
