@@ -4,24 +4,24 @@ use sched::{SchedClass, Task};
 fn task(tid: u32) -> Task {
     let t = Task::new(tid, "ptrace-perm-test", SchedClass::Normal { weight: 1024 });
     t.tgid.store(tid, Ordering::Release);
-    t.dumpable.store(SUID_DUMP_USER, Ordering::Release);
+    t.security.dumpable.store(SUID_DUMP_USER, Ordering::Release);
     t
 }
 
 fn set_uids(t: &Task, ruid: u32, euid: u32, suid: u32) {
-    t.creds.ruid.store(ruid, Ordering::Release);
-    t.creds.euid.store(euid, Ordering::Release);
-    t.creds.suid.store(suid, Ordering::Release);
+    t.security.creds.ruid.store(ruid, Ordering::Release);
+    t.security.creds.euid.store(euid, Ordering::Release);
+    t.security.creds.suid.store(suid, Ordering::Release);
 }
 
 fn set_gids(t: &Task, rgid: u32, egid: u32, sgid: u32) {
-    t.creds.rgid.store(rgid, Ordering::Release);
-    t.creds.egid.store(egid, Ordering::Release);
-    t.creds.sgid.store(sgid, Ordering::Release);
+    t.security.creds.rgid.store(rgid, Ordering::Release);
+    t.security.creds.egid.store(egid, Ordering::Release);
+    t.security.creds.sgid.store(sgid, Ordering::Release);
 }
 
 /// `Task::new` seeds `Creds::root()` (CAP_FULL); model an unprivileged caller.
-fn drop_caps(t: &Task) { t.creds.cap_effective.store(0, Ordering::Release); }
+fn drop_caps(t: &Task) { t.security.creds.cap_effective.store(0, Ordering::Release); }
 
 #[test]
 fn attach_by_different_uid_without_cap_is_eperm() {
@@ -90,7 +90,7 @@ fn cap_sys_ptrace_bypasses_uid_mismatch() {
     let cur = task(1); let target = task(2);
     set_uids(&cur, 1000, 1000, 1000);
     set_uids(&target, 0, 0, 0);
-    cur.creds.cap_effective.store(1u64 << sched::cap::SYS_PTRACE, Ordering::Release);
+    cur.security.creds.cap_effective.store(1u64 << sched::cap::SYS_PTRACE, Ordering::Release);
     assert_eq!(may_attach(&cur, &target, false, false), Ok(()));
 }
 
@@ -99,10 +99,10 @@ fn non_dumpable_target_needs_cap_even_at_same_uid() {
     let cur = task(1); let target = task(2);
     set_uids(&cur, 1000, 1000, 1000);
     set_uids(&target, 1000, 1000, 1000);
-    target.dumpable.store(0, Ordering::Release);
+    target.security.dumpable.store(0, Ordering::Release);
     drop_caps(&cur);
     assert_eq!(may_attach(&cur, &target, false, false), Err(Errno::Eperm));
-    cur.creds.cap_effective.store(1u64 << sched::cap::SYS_PTRACE, Ordering::Release);
+    cur.security.creds.cap_effective.store(1u64 << sched::cap::SYS_PTRACE, Ordering::Release);
     assert_eq!(may_attach(&cur, &target, false, false), Ok(()));
 }
 
@@ -140,7 +140,7 @@ fn may_access_allows_same_thread_group_regardless_of_dumpability() {
     let cur = task(1);
     let peer = task(2);
     peer.tgid.store(1, Ordering::Release);
-    peer.dumpable.store(0, Ordering::Release);
+    peer.security.dumpable.store(0, Ordering::Release);
     drop_caps(&cur);
     assert_eq!(may_access(&cur, &peer), Ok(()));
 }

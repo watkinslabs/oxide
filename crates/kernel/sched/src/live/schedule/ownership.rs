@@ -32,7 +32,7 @@ pub(super) unsafe fn report_ownership_conflict(t: &Task, me: usize) {
         klog::write_raw(b"[OWNCONFLICT] cpu=");       klog::write_dec_u64(c as u64);
         klog::write_raw(b" current_tid=");
         // SAFETY: `current` is non-null after `install_global` and its Arc is held by the slot.
-        klog::write_dec_u64(if cur.is_null() { 0 } else { unsafe { (*cur).tid } } as u64);
+        klog::write_dec_u64(if cur.is_null() { 0 } else { unsafe { (&(*cur)).tid } } as u64);
         klog::write_raw(b" current_is_victim=");      klog::write_dec_u64((cur == victim) as u64);
         klog::write_raw(b" switched_from_is_victim="); klog::write_dec_u64((sf == victim) as u64);
         klog::write_raw(b" nr_running=");             klog::write_dec_u64(orq.nr_running.load(Ordering::Acquire) as u64);

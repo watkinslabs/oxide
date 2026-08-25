@@ -19,7 +19,7 @@
 #[no_mangle]
 pub unsafe extern "C" fn oxide_untag_user_pointers() -> u64 {
     match crate::live::current() {
-        Some(cur) => cur.tagged_addr.load(core::sync::atomic::Ordering::Acquire) as u64,
+        Some(cur) => cur.security.tagged_addr.load(core::sync::atomic::Ordering::Acquire) as u64,
         None => 1,
     }
 }

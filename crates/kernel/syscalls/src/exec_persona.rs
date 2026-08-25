@@ -42,7 +42,7 @@ pub(crate) fn set_personality(cur: &sched::Task) {
 /// # C: O(1)
 pub(crate) fn arch_setup_new_exec(cur: &sched::Task) {
     use core::sync::atomic::Ordering;
-    if cur.nocpuid.swap(crate::arch_prctl_abi::cpuid::nocpuid_after_exec(), Ordering::AcqRel) {
+    if cur.security.nocpuid.swap(crate::arch_prctl_abi::cpuid::nocpuid_after_exec(), Ordering::AcqRel) {
         #[cfg(target_arch = "x86_64")]
         // SAFETY: runs on the CPU whose MSR is being reprogrammed, inside the
         // exec commit with preemption disabled by the caller's scope; a no-op
@@ -50,8 +50,8 @@ pub(crate) fn arch_setup_new_exec(cur: &sched::Task) {
         unsafe { hal_x86_64::set_cpuid_faulting(false); }
     }
     let reset = crate::arch_prctl_abi::shstk::ShstkState::after_exec();
-    cur.shstk_features.store(reset.features, Ordering::Release);
-    cur.shstk_locked.store(reset.locked, Ordering::Release);
+    cur.security.shstk_features.store(reset.features, Ordering::Release);
+    cur.security.shstk_locked.store(reset.locked, Ordering::Release);
 }
 
 /// Linux `load_elf_binary`'s SVR4 emulation, dispatched to its owner.

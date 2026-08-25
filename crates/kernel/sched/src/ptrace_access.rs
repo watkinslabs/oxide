@@ -86,7 +86,7 @@ pub fn may_access_mode(cur: &Task, target: &Task, mode: Mode) -> Result<(), Deni
     if !capable && !creds_match_mode(cur, target, mode) { return Err(Denied); }
     // A target that dropped privileges became non-dumpable; only
     // CAP_SYS_PTRACE may still attach (Linux `task_still_dumpable`).
-    if target.dumpable.load(Ordering::Acquire) != SUID_DUMP_USER && !capable {
+    if target.security.dumpable.load(Ordering::Acquire) != SUID_DUMP_USER && !capable {
         return Err(Denied);
     }
     Ok(())
@@ -101,15 +101,15 @@ pub fn creds_match(cur: &Task, target: &Task) -> bool {
 /// against the target's real/effective/saved ids. # C: O(1)
 pub fn creds_match_mode(cur: &Task, target: &Task, mode: Mode) -> bool {
     let (uid, gid) = match mode {
-        Mode::RealCreds => (cur.creds.ruid.load(Ordering::Acquire),
-                            cur.creds.rgid.load(Ordering::Acquire)),
-        Mode::FsCreds   => (cur.creds.fsuid.load(Ordering::Acquire),
-                            cur.creds.fsgid.load(Ordering::Acquire)),
+        Mode::RealCreds => (cur.security.creds.ruid.load(Ordering::Acquire),
+                            cur.security.creds.rgid.load(Ordering::Acquire)),
+        Mode::FsCreds   => (cur.security.creds.fsuid.load(Ordering::Acquire),
+                            cur.security.creds.fsgid.load(Ordering::Acquire)),
     };
-    target.creds.ruid.load(Ordering::Acquire) == uid
-        && target.creds.euid.load(Ordering::Acquire) == uid
-        && target.creds.suid.load(Ordering::Acquire) == uid
-        && target.creds.rgid.load(Ordering::Acquire) == gid
-        && target.creds.egid.load(Ordering::Acquire) == gid
-        && target.creds.sgid.load(Ordering::Acquire) == gid
+    target.security.creds.ruid.load(Ordering::Acquire) == uid
+        && target.security.creds.euid.load(Ordering::Acquire) == uid
+        && target.security.creds.suid.load(Ordering::Acquire) == uid
+        && target.security.creds.rgid.load(Ordering::Acquire) == gid
+        && target.security.creds.egid.load(Ordering::Acquire) == gid
+        && target.security.creds.sgid.load(Ordering::Acquire) == gid
 }

@@ -256,8 +256,8 @@ pub(super) fn run_inline(info: &mut SubprocessInfo) -> Option<u32> {
         // is the answer for every mode; a `UMH_WAIT_PROC` caller tells it from a
         // status by its sign.
         (Err(rc), _) => (rc, None),
-        (Ok(task), false) => (0, Some(task.vtid.load(Ordering::Acquire))),
-        (Ok(task), true) => (super::reap::wait_for(task.vtid.load(Ordering::Acquire)), None),
+        (Ok(task), false) => (0, Some(task.security.vtid.load(Ordering::Acquire))),
+        (Ok(task), true) => (super::reap::wait_for(task.security.vtid.load(Ordering::Acquire)), None),
     };
     info.retval = retval;
     pending_child

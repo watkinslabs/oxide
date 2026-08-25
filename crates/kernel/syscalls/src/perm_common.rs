@@ -39,8 +39,8 @@ pub(crate) fn sig_perm_check(cur: &sched::Task, target: &sched::Task, sig: i32) 
     // outside its domain, and this applies to every path below — including a
     // capability holder — so a denial here wins outright.
     {
-        let mine = cur.landlock_domain.lock().clone();
-        let theirs = target.landlock_domain.lock().clone();
+        let mine = cur.security.landlock_domain.lock().clone();
+        let theirs = target.security.landlock_domain.lock().clone();
         if ::landlock::domain::scope_denied(mine.as_ref(), theirs.as_ref(),
                                             ::landlock::uapi::SCOPE_SIGNAL)
         {
@@ -54,10 +54,10 @@ pub(crate) fn sig_perm_check(cur: &sched::Task, target: &sched::Task, sig: i32) 
     {
         return true;
     }
-    let ce = cur.creds.euid.load(Ordering::Acquire);
-    let cr = cur.creds.ruid.load(Ordering::Acquire);
-    let tr = target.creds.ruid.load(Ordering::Acquire);
-    let ts = target.creds.suid.load(Ordering::Acquire);
+    let ce = cur.security.creds.euid.load(Ordering::Acquire);
+    let cr = cur.security.creds.ruid.load(Ordering::Acquire);
+    let tr = target.security.creds.ruid.load(Ordering::Acquire);
+    let ts = target.security.creds.suid.load(Ordering::Acquire);
     if ce == tr || ce == ts || cr == tr || cr == ts { return true; }
     // SIGCONT (18) — same session bypass.
     if sig == Signum::Sigcont as i32 && Arc::ptr_eq(&cur.session(), &target.session()) {
@@ -72,9 +72,9 @@ pub(crate) fn sig_perm_check(cur: &sched::Task, target: &sched::Task, sig: i32) 
 /// # C: O(userns-depth)
 pub(crate) fn prlimit_perm_check(cur: &sched::Task, target: &sched::Task) -> bool {
     use core::sync::atomic::Ordering;
-    let cruid = cur.creds.ruid.load(Ordering::Acquire);
-    let crgid = cur.creds.rgid.load(Ordering::Acquire);
-    let tcred = &target.creds;
+    let cruid = cur.security.creds.ruid.load(Ordering::Acquire);
+    let crgid = cur.security.creds.rgid.load(Ordering::Acquire);
+    let tcred = &target.security.creds;
     let uid_ok = cruid == tcred.euid.load(Ordering::Acquire)
         && cruid == tcred.suid.load(Ordering::Acquire)
         && cruid == tcred.ruid.load(Ordering::Acquire);
@@ -117,21 +117,21 @@ mod tests {
 
     fn task(tid: u32, uid: u32) -> sched::Task {
         let t = sched::Task::new(tid, "perm-test", sched::SchedClass::Normal { weight: 1024 });
-        t.creds.ruid.store(uid, Ordering::Release);
-        t.creds.euid.store(uid, Ordering::Release);
-        t.creds.suid.store(uid, Ordering::Release);
-        t.creds.rgid.store(uid, Ordering::Release);
-        t.creds.egid.store(uid, Ordering::Release);
-        t.creds.sgid.store(uid, Ordering::Release);
+        t.security.creds.ruid.store(uid, Ordering::Release);
+        t.security.creds.euid.store(uid, Ordering::Release);
+        t.security.creds.suid.store(uid, Ordering::Release);
+        t.security.creds.rgid.store(uid, Ordering::Release);
+        t.security.creds.egid.store(uid, Ordering::Release);
+        t.security.creds.sgid.store(uid, Ordering::Release);
         // Simulate a real unprivileged process (post-setuid-drop): the
         // Task::new() default is CAP_FULL (root-equivalent), which would
         // make every check below a trivial no-op.
-        t.creds.cap_effective.store(0, Ordering::Release);
+        t.security.creds.cap_effective.store(0, Ordering::Release);
         t
     }
 
     fn grant(t: &sched::Task, cap: u32) {
-        t.creds.cap_effective.fetch_or(1u64 << cap, Ordering::Release);
+        t.security.creds.cap_effective.fetch_or(1u64 << cap, Ordering::Release);
     }
 
     // --- sig_perm_check ---------------------------------------------
@@ -234,7 +234,7 @@ mod landlock_signal_scope_tests {
 
     fn task(tid: u32, uid: u32) -> sched::Task {
         let t = sched::Task::new(tid, "ll-scope", sched::SchedClass::Normal { weight: 1024 });
-        for f in [&t.creds.ruid, &t.creds.euid, &t.creds.suid] { f.store(uid, Ordering::Release); }
+        for f in [&t.security.creds.ruid, &t.security.creds.euid, &t.security.creds.suid] { f.store(uid, Ordering::Release); }
         t
     }
 
@@ -249,7 +249,7 @@ mod landlock_signal_scope_tests {
         // outranks the capability path rather than being shadowed by it.
         let cur = task(1, 0);
         let target = task(2, 0);
-        *cur.landlock_domain.lock() = Some(scoped_domain(None));
+        *cur.security.landlock_domain.lock() = Some(scoped_domain(None));
         assert!(!sig_perm_check(&cur, &target, sched::Signum::Sigterm as i32));
     }
 
@@ -258,8 +258,8 @@ mod landlock_signal_scope_tests {
         let cur = task(1, 0);
         let target = task(2, 0);
         let dom = scoped_domain(None);
-        *cur.landlock_domain.lock() = Some(dom.clone());
-        *target.landlock_domain.lock() = Some(dom);
+        *cur.security.landlock_domain.lock() = Some(dom.clone());
+        *target.security.landlock_domain.lock() = Some(dom);
         assert!(sig_perm_check(&cur, &target, sched::Signum::Sigterm as i32));
     }
 
@@ -269,12 +269,12 @@ mod landlock_signal_scope_tests {
         let target = task(2, 0);
         let outer = scoped_domain(None);
         let inner = scoped_domain(Some(&outer));
-        *cur.landlock_domain.lock() = Some(outer);
-        *target.landlock_domain.lock() = Some(inner.clone());
+        *cur.security.landlock_domain.lock() = Some(outer);
+        *target.security.landlock_domain.lock() = Some(inner.clone());
         assert!(sig_perm_check(&cur, &target, sched::Signum::Sigterm as i32));
         // And the nested one cannot signal back out.
-        *cur.landlock_domain.lock() = Some(inner);
-        *target.landlock_domain.lock() = Some(scoped_domain(None));
+        *cur.security.landlock_domain.lock() = Some(inner);
+        *target.security.landlock_domain.lock() = Some(scoped_domain(None));
         assert!(!sig_perm_check(&cur, &target, sched::Signum::Sigterm as i32));
     }
 
@@ -285,7 +285,7 @@ mod landlock_signal_scope_tests {
         let target = task(2, 0);
         let rs = Ruleset::new(&RulesetAttr {
             handled_fs: ACCESS_FS_READ_FILE, ..Default::default() });
-        *cur.landlock_domain.lock() = Some(Domain::merge(None, &rs).unwrap());
+        *cur.security.landlock_domain.lock() = Some(Domain::merge(None, &rs).unwrap());
         assert!(sig_perm_check(&cur, &target, sched::Signum::Sigterm as i32));
     }
 
@@ -294,7 +294,7 @@ mod landlock_signal_scope_tests {
         // The scope test reads both tasks' domains; for a self-signal those are
         // the same lock, so the check has to be skipped rather than taken twice.
         let cur = task(1, 0);
-        *cur.landlock_domain.lock() = Some(scoped_domain(None));
+        *cur.security.landlock_domain.lock() = Some(scoped_domain(None));
         assert!(sig_perm_check(&cur, &cur, sched::Signum::Sigterm as i32));
     }
 
@@ -309,7 +309,7 @@ mod landlock_signal_scope_tests {
         let target = task(2, 0);
         cur.tgid.store(1, Ordering::Release);
         target.tgid.store(1, Ordering::Release);
-        *cur.landlock_domain.lock() = Some(scoped_domain(None));
+        *cur.security.landlock_domain.lock() = Some(scoped_domain(None));
         assert!(sig_perm_check(&cur, &target, sched::Signum::Sigterm as i32));
         // The reported errata bitmask has to agree with the behaviour above,
         // because a program feature-detects the fix through it.
@@ -324,7 +324,7 @@ mod landlock_signal_scope_tests {
         let target = task(2, 0);
         cur.tgid.store(1, Ordering::Release);
         target.tgid.store(2, Ordering::Release);
-        *cur.landlock_domain.lock() = Some(scoped_domain(None));
+        *cur.security.landlock_domain.lock() = Some(scoped_domain(None));
         assert!(!sig_perm_check(&cur, &target, sched::Signum::Sigterm as i32));
     }
 }

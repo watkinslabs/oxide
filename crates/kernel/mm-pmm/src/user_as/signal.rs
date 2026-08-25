@@ -227,7 +227,7 @@ pub(super) fn trace_user_fault_arm(esr: u64, far: u64, elr: u64) {
         if let Some(c) = sched::live::current() {
             klog::write_dec_u64(c.tid as u64);
             klog::write_raw(b" vpid=");
-            klog::write_dec_u64(c.vtgid.load(Ordering::Acquire) as u64);
+            klog::write_dec_u64(c.security.vtgid.load(Ordering::Acquire) as u64);
             klog::write_raw(b" last_nr=");
             klog::write_dec_u64(c.last_syscall_nr.load(Ordering::Relaxed) as u64);
             c.with_exe_path(|path| if let Some(path) = path {

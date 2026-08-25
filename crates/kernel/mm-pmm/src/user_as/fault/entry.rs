@@ -142,7 +142,7 @@ pub fn user_fault_handler(esr: u64, far: u64, elr: u64) -> bool {
         klog::write_raw(b"[FAULT-ARM-CTX] tid=");
         klog::write_dec_u64(cur.tid as u64);
         klog::write_raw(b" vpid=");
-        klog::write_dec_u64(cur.vtgid.load(Ordering::Acquire) as u64);
+        klog::write_dec_u64(cur.security.vtgid.load(Ordering::Acquire) as u64);
         klog::write_raw(b" esr=");
         klog::write_hex_u64(esr);
         klog::write_raw(b" ec=");

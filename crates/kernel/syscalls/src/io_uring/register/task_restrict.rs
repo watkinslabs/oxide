@@ -59,7 +59,7 @@ pub fn register_task(arg: u64, nr_args: u32) -> i64 {
     if cur.io_uring_restrict.lock().is_some() { return err(Errno::Eperm); }
 
     use core::sync::atomic::Ordering;
-    let nnp = cur.no_new_privs.load(Ordering::Acquire);
+    let nnp = cur.security.no_new_privs.load(Ordering::Acquire);
     if !nnp && !cur.has_cap(sched::cap::SYS_ADMIN) { return err(Errno::Eacces); }
     if nr_args != 1 { return err(Errno::Einval); }
 

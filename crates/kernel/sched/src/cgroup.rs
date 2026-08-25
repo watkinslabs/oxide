@@ -227,8 +227,8 @@ mod freezer_tests {
             97_006, "cgroup-freeze-test", crate::SchedClass::Normal { weight: 1024 }));
         task.kernel_thread.store(false, CgOrd::Release);
         task.nofreeze.store(false, CgOrd::Release);
-        task.vtgid.store(606, CgOrd::Release);
-        task.vtid.store(606, CgOrd::Release);
+        task.security.vtgid.store(606, CgOrd::Release);
+        task.security.vtid.store(606, CgOrd::Release);
         crate::registry::insert(&task);
         install();
         assert_eq!(cgroup::inode::make_cg_file(cgid, "cgroup.procs").write(0, b"606").unwrap(), 3);

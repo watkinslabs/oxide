@@ -14,8 +14,8 @@ use std::vec::Vec;
 
 fn leader(tid: u32, vpid: u32) -> Arc<Task> {
     let t = Arc::new(Task::new(tid, "leader", SchedClass::Normal { weight: 1024 }));
-    t.vtgid.store(vpid, Ordering::Release);
-    t.vtid.store(vpid, Ordering::Release);
+    t.security.vtgid.store(vpid, Ordering::Release);
+    t.security.vtid.store(vpid, Ordering::Release);
     t
 }
 
@@ -24,8 +24,8 @@ fn leader(tid: u32, vpid: u32) -> Arc<Task> {
 fn member(tid: u32, leader_tid: u32, vpid: u32, vtid: u32) -> Arc<Task> {
     let t = Arc::new(Task::new(tid, "member", SchedClass::Normal { weight: 1024 }));
     t.tgid.store(leader_tid, Ordering::Release);
-    t.vtgid.store(vpid, Ordering::Release);
-    t.vtid.store(vtid, Ordering::Release);
+    t.security.vtgid.store(vpid, Ordering::Release);
+    t.security.vtid.store(vtid, Ordering::Release);
     t
 }
 

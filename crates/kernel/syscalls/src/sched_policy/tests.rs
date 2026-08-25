@@ -29,9 +29,9 @@ const EPERM: i64 = -(Errno::Eperm as i32 as i64);
 /// Unprivileged task owned by `uid`, running `policy`.
 fn task(tid: u32, uid: u32, class: SchedClass, policy: u32) -> Arc<Task> {
     let t = Task::new(tid, "sched-policy-test", class);
-    t.creds.ruid.store(uid, Ordering::Release);
-    t.creds.euid.store(uid, Ordering::Release);
-    t.creds.cap_effective.store(0, Ordering::Release);
+    t.security.creds.ruid.store(uid, Ordering::Release);
+    t.security.creds.euid.store(uid, Ordering::Release);
+    t.security.creds.cap_effective.store(0, Ordering::Release);
     t.policy.store(policy, Ordering::Release);
     Arc::new(t)
 }
@@ -41,7 +41,7 @@ fn normal(tid: u32, uid: u32) -> Arc<Task> {
 }
 
 fn privileged(t: &Arc<Task>) {
-    t.creds.cap_effective.store(1u64 << sched::cap::SYS_NICE, Ordering::Release);
+    t.security.creds.cap_effective.store(1u64 << sched::cap::SYS_NICE, Ordering::Release);
 }
 
 fn set_rtprio(t: &Arc<Task>, v: u64) {
@@ -399,8 +399,8 @@ fn reset_on_fork_lifts_a_negative_nice_child_to_zero() {
 fn pid_lookup_is_scoped_to_a_pid_namespace() {
     use namespace_identity::NamespaceKind;
     let t = normal(90001, 0);
-    t.vtid.store(4242, Ordering::Release);
-    t.vtgid.store(4242, Ordering::Release);
+    t.security.vtid.store(4242, Ordering::Release);
+    t.security.vtgid.store(4242, Ordering::Release);
     sched::live::registry::insert(&t);
 
     let init_ns = namespace_identity::initial(NamespaceKind::Pid);

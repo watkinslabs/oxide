@@ -15,8 +15,8 @@ use crate::task::{SaHandler, SchedClass, Task, TaskState};
 
 fn task(tid: u32, vpid: u32) -> Arc<Task> {
     let t = Arc::new(Task::new(tid, "t", SchedClass::Normal { weight: 1024 }));
-    t.vtgid.store(vpid, Ordering::Release);
-    t.vtid.store(vpid, Ordering::Release);
+    t.security.vtgid.store(vpid, Ordering::Release);
+    t.security.vtid.store(vpid, Ordering::Release);
     t.tgid.store(tid, Ordering::Release);
     t.exit_signal.store(Signum::Sigchld.as_u8(), Ordering::Release);
     crate::registry::insert(&t);
@@ -32,8 +32,8 @@ fn parent_of(child: &Arc<Task>, parent: &Arc<Task>) {
 /// A second thread of `leader`'s group (shares tgid, own tid).
 fn sibling_thread(tid: u32, leader: &Arc<Task>) -> Arc<Task> {
     let t = Arc::new(Task::new(tid, "th", SchedClass::Normal { weight: 1024 }));
-    t.vtgid.store(leader.vtgid.load(Ordering::Acquire), Ordering::Release);
-    t.vtid.store(tid, Ordering::Release);
+    t.security.vtgid.store(leader.security.vtgid.load(Ordering::Acquire), Ordering::Release);
+    t.security.vtid.store(tid, Ordering::Release);
     t.tgid.store(leader.tgid.load(Ordering::Acquire), Ordering::Release);
     crate::registry::insert(&t);
     t
@@ -109,7 +109,7 @@ fn pdeathsig_fires_on_the_children_of_the_dying_parent() {
     parent_of(&dying, &init);
     let child = task(200, 60);
     parent_of(&child, &dying);
-    child.pdeathsig.store(Signum::Sigterm.as_u8() as u32, Ordering::Release);
+    child.security.pdeathsig.store(Signum::Sigterm.as_u8() as u32, Ordering::Release);
 
     dying.set_state(TaskState::Zombie);
     reparent_children(dying.tid);
@@ -123,7 +123,7 @@ fn pdeathsig_fires_on_the_children_of_the_dying_parent() {
         .expect("the pdeathsig must be claimable")
         .expect("and it must carry a record, not just a bit");
     assert_eq!(rec.code, crate::signum::SI_USER);
-    assert_eq!(rec.pid, dying.vtgid.load(Ordering::Acquire));
+    assert_eq!(rec.pid, dying.security.vtgid.load(Ordering::Acquire));
 }
 
 /// Install a `SIGCHLD` disposition on `t` and read it back the way

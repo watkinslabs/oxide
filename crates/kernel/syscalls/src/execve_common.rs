@@ -83,23 +83,23 @@ pub(crate) fn reset_per_execve_state(cur: &sched::Task) {
     // sigaltstack disabled (Linux `sas_ss_reset` in `begin_new_exec`).
     cur.set_altstack(sched::sigaltstack::reset());
     // robust futex list dropped — stale user-VA into the old AS.
-    cur.robust_list_head.store(0, Ordering::Release);
-    cur.robust_list_len.store(0, Ordering::Release);
+    cur.security.robust_list_head.store(0, Ordering::Release);
+    cur.security.robust_list_len.store(0, Ordering::Release);
     // rseq registration points into the old userspace image.
-    cur.rseq_ptr.store(0, Ordering::Release);
-    cur.rseq_len.store(0, Ordering::Release);
-    cur.rseq_sig.store(0, Ordering::Release);
-    cur.rseq_slice_enabled.store(false, Ordering::Release);
-    cur.rseq_slice_granted.store(false, Ordering::Release);
-    cur.rseq_slice_expires_ns.store(0, Ordering::Release);
-    cur.rseq_slice_yielded.store(false, Ordering::Release);
+    cur.security.rseq_ptr.store(0, Ordering::Release);
+    cur.security.rseq_len.store(0, Ordering::Release);
+    cur.security.rseq_sig.store(0, Ordering::Release);
+    cur.security.rseq_slice_enabled.store(false, Ordering::Release);
+    cur.security.rseq_slice_granted.store(false, Ordering::Release);
+    cur.security.rseq_slice_expires_ns.store(0, Ordering::Release);
+    cur.security.rseq_slice_yielded.store(false, Ordering::Release);
     // parent-death signal cleared — handler would be in the old text.
-    cur.pdeathsig.store(0, Ordering::Release);
+    cur.security.pdeathsig.store(0, Ordering::Release);
     // Linux `begin_new_exec`: `clear_syscall_work_syscall_user_dispatch(me)`.
     // The registration names a code range and a selector byte in the OLD
     // image; carrying it across execve would test the new program's PC
     // against the old dispatcher's window and SIGSYS it at random.
-    cur.syscall_dispatch.clear();
+    cur.security.syscall_dispatch.clear();
     // Linux `exec_task_namespaces`/`begin_new_exec` path resets
     // `signal->timer_create_restore_ids`: the option exists to restore a
     // checkpoint's timer ids, and the new image is not that checkpoint.
@@ -130,7 +130,7 @@ pub(crate) fn reset_per_execve_state(cur: &sched::Task) {
 /// # C: O(N_schedule) when the event is reported
 pub(crate) fn ptrace_exec_event(cur: &sched::Task) {
     use core::sync::atomic::Ordering;
-    let old_vpid = cur.vtgid.load(Ordering::Acquire) as u64;
+    let old_vpid = cur.security.vtgid.load(Ordering::Acquire) as u64;
     crate::ptrace::stop::ptrace_event(crate::s101_ptrace_uapi::EVENT_EXEC, old_vpid);
 }
 

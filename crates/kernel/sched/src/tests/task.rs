@@ -314,10 +314,10 @@ fn only_a_sigcont_wake_records_a_continue_event() {
         let t = Task::new(31, "t", SchedClass::Normal { weight: 1024 });
         t.set_state(TaskState::Stopped);
         assert!(crate::registry::try_wake_stopped(&t, wake));
-        assert_eq!(t.cont_pending.load(Ordering::Acquire), expect,
+        assert_eq!(t.security.cont_pending.load(Ordering::Acquire), expect,
                    "{wake:?}");
         // The reason is published for the resuming task to read back.
-        assert_eq!(crate::jobctl::wake_of(t.jobctl.load(Ordering::Acquire)), wake);
+        assert_eq!(crate::jobctl::wake_of(t.security.jobctl.load(Ordering::Acquire)), wake);
     }
 }
 
@@ -376,9 +376,9 @@ fn task_reporting_distinguishes_interruptible_and_uninterruptible_sleep() {
 fn visible_pid_prefers_vtgid_then_falls_back_to_tgid() {
     let t = Task::new(4120, "svc", SchedClass::Normal { weight: 1024 });
     t.tgid.store(4120, Ordering::Release);
-    t.vtgid.store(0, Ordering::Release);
+    t.security.vtgid.store(0, Ordering::Release);
     assert_eq!(t.visible_pid(), 4120);
-    t.vtgid.store(40, Ordering::Release);
+    t.security.vtgid.store(40, Ordering::Release);
     assert_eq!(t.visible_pid(), 40);
 }
 
@@ -428,7 +428,7 @@ fn parked_child_tid_write_is_claimed_exactly_once() {
     let t = Task::new(1, "t", SchedClass::Normal { weight: 1024 });
     // Nothing parked: every return to user mode asks and gets nothing.
     assert_eq!(t.take_set_child_tid(), None);
-    t.vtid.store(4242, Ordering::Release);
+    t.security.vtid.store(4242, Ordering::Release);
     t.set_child_tid.store(0x7fff_0000, Ordering::Release);
     // The value published is the tid userspace sees, not the internal one.
     assert_eq!(t.take_set_child_tid(), Some((0x7fff_0000, 4242)));

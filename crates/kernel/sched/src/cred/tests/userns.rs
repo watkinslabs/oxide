@@ -64,10 +64,10 @@ fn getters_report_the_namespace_number_not_the_internal_id() {
     let task = in_namespace();
     set_uids(&task, (NS_BASE + 7, NS_BASE + 8, NS_BASE + 9));
     set_gids(&task, (NS_BASE + 1, NS_BASE + 2, NS_BASE + 3));
-    assert_eq!(uid_out(&task, task.creds.ruid.load(core::sync::atomic::Ordering::Acquire)), 7);
-    assert_eq!(uid_out(&task, task.creds.euid.load(core::sync::atomic::Ordering::Acquire)), 8);
-    assert_eq!(gid_out(&task, task.creds.rgid.load(core::sync::atomic::Ordering::Acquire)), 1);
-    assert_eq!(gid_out(&task, task.creds.egid.load(core::sync::atomic::Ordering::Acquire)), 2);
+    assert_eq!(uid_out(&task, task.security.creds.ruid.load(core::sync::atomic::Ordering::Acquire)), 7);
+    assert_eq!(uid_out(&task, task.security.creds.euid.load(core::sync::atomic::Ordering::Acquire)), 8);
+    assert_eq!(gid_out(&task, task.security.creds.rgid.load(core::sync::atomic::Ordering::Acquire)), 1);
+    assert_eq!(gid_out(&task, task.security.creds.egid.load(core::sync::atomic::Ordering::Acquire)), 2);
 }
 
 #[test]
@@ -151,24 +151,24 @@ fn getresuid_writes_namespace_numbers_and_munges_what_it_cannot_name() {
 #[test]
 fn setfsuid_returns_the_previous_id_in_namespace_numbering() {
     let task = in_namespace();
-    task.creds.fsuid.store(NS_BASE + 42, core::sync::atomic::Ordering::Release);
+    task.security.creds.fsuid.store(NS_BASE + 42, core::sync::atomic::Ordering::Release);
     assert_eq!(setfsuid_on(&task, 500), 42, "previous fsuid, as this namespace numbers it");
-    assert_eq!(task.creds.fsuid.load(core::sync::atomic::Ordering::Acquire), NS_BASE + 500);
+    assert_eq!(task.security.creds.fsuid.load(core::sync::atomic::Ordering::Acquire), NS_BASE + 500);
 }
 
 #[test]
 fn setfsuid_treats_an_unmapped_argument_like_the_invalid_id() {
     let task = in_namespace();
-    task.creds.fsuid.store(NS_BASE + 42, core::sync::atomic::Ordering::Release);
+    task.security.creds.fsuid.store(NS_BASE + 42, core::sync::atomic::Ordering::Release);
     assert_eq!(setfsuid_on(&task, UNMAPPED_NS_ID), 42, "never an errno");
-    assert_eq!(task.creds.fsuid.load(core::sync::atomic::Ordering::Acquire), NS_BASE + 42,
+    assert_eq!(task.security.creds.fsuid.load(core::sync::atomic::Ordering::Acquire), NS_BASE + 42,
         "an unmapped argument changes nothing");
 }
 
 #[test]
 fn setfsgid_returns_the_previous_id_in_namespace_numbering() {
     let task = in_namespace();
-    task.creds.fsgid.store(NS_BASE + 7, core::sync::atomic::Ordering::Release);
+    task.security.creds.fsgid.store(NS_BASE + 7, core::sync::atomic::Ordering::Release);
     assert_eq!(setfsgid_on(&task, 9), 7);
     assert_eq!(setfsgid_on(&task, UNMAPPED_NS_ID), 9);
 }
@@ -178,7 +178,7 @@ fn setgroups_maps_every_element_and_getgroups_maps_them_back() {
     let task = in_namespace();
     let list = [30u32, 10, 20];
     assert_eq!(setgroups_on(&task, &args2(3, list.as_ptr() as u64)), 0);
-    let stored = task.creds.group_list().unwrap();
+    let stored = task.security.creds.group_list().unwrap();
     assert_eq!(&stored[..], &[NS_BASE + 10, NS_BASE + 20, NS_BASE + 30],
         "internal ids, sorted ascending like Linux `groups_sort`");
     let mut out = [0u32; 3];
@@ -192,7 +192,7 @@ fn setgroups_rejects_an_unmapped_element_with_einval_and_keeps_the_old_list() {
     seed_groups(&task, &[NS_BASE + 5]);
     let list = [10u32, UNMAPPED_NS_ID];
     assert_eq!(setgroups_on(&task, &args2(2, list.as_ptr() as u64)), err(Errno::Einval));
-    assert_eq!(&task.creds.group_list().unwrap()[..], &[NS_BASE + 5]);
+    assert_eq!(&task.security.creds.group_list().unwrap()[..], &[NS_BASE + 5]);
 }
 
 #[test]
@@ -211,9 +211,9 @@ fn capability_drop_follows_the_namespace_root_not_the_host_superuser() {
     let task = in_namespace();
     assert_eq!(setresuid_on(&task, 1, 1, 1), 0);
     assert_eq!(uids(&task), (NS_BASE + 1, NS_BASE + 1, NS_BASE + 1, NS_BASE + 1));
-    assert_eq!(task.creds.cap_permitted.load(core::sync::atomic::Ordering::Acquire), 0,
+    assert_eq!(task.security.creds.cap_permitted.load(core::sync::atomic::Ordering::Acquire), 0,
         "a complete exit from the namespace's root drops permitted");
-    assert_eq!(task.creds.cap_effective.load(core::sync::atomic::Ordering::Acquire), 0);
+    assert_eq!(task.security.creds.cap_effective.load(core::sync::atomic::Ordering::Acquire), 0);
 }
 
 #[test]
@@ -223,10 +223,10 @@ fn the_host_superuser_id_is_not_root_inside_a_namespace_that_cannot_name_it() {
     // and Linux's `cap_emulate_setxuid` leaves the capability sets alone.
     let task = in_namespace();
     set_uids(&task, (0, 0, 0));
-    let caps = task.creds.cap_permitted.load(core::sync::atomic::Ordering::Acquire);
+    let caps = task.security.creds.cap_permitted.load(core::sync::atomic::Ordering::Acquire);
     assert_ne!(caps, 0);
     assert_eq!(setresuid_on(&task, 1, 1, 1), 0);
-    assert_eq!(task.creds.cap_permitted.load(core::sync::atomic::Ordering::Acquire), caps,
+    assert_eq!(task.security.creds.cap_permitted.load(core::sync::atomic::Ordering::Acquire), caps,
         "host uid 0 is not this namespace's superuser");
 }
 
@@ -249,7 +249,7 @@ fn the_initial_namespace_is_still_the_identity_map() {
     assert_eq!(uids(&task), (1234, 1234, 1234, 1234));
     assert_eq!(uid_out(&task, 1234), 1234);
     let groups: Arc<[u32]> = Arc::from(&[3u32, 1, 2][..]);
-    task.creds.set_group_list(Some(groups));
+    task.security.creds.set_group_list(Some(groups));
     let mut out = [0u32; 3];
     assert_eq!(getgroups_on(&task, &args2(3, out.as_mut_ptr() as u64)), 3);
     assert_eq!(out, [3, 1, 2]);

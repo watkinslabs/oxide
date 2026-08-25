@@ -97,8 +97,8 @@ fn build_source(cur: &sched::Task, sig: i32, info: u64, targets_self: bool, scop
 {
     if info == 0 {
         return Ok(SigSource::User {
-            pid: cur.vtgid.load(Ordering::Acquire),
-            uid: cur.creds.ruid.load(Ordering::Acquire),
+            pid: cur.security.vtgid.load(Ordering::Acquire),
+            uid: cur.security.creds.ruid.load(Ordering::Acquire),
         });
     }
     crate::userbuf::validate_user_buf(info, KERNEL_SIGINFO_BYTES, 1)?;

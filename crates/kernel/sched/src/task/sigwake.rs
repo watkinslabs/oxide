@@ -58,7 +58,7 @@ impl Task {
     /// # C: O(N_sig)
     pub fn sleep_wake(&self) -> SleepWake {
         use core::sync::atomic::Ordering;
-        if self.notify_signal.load(Ordering::Acquire)
+        if self.security.notify_signal.load(Ordering::Acquire)
             || self.freeze_reasons.load(Ordering::Acquire) != 0
         {
             return SleepWake::Notify;
@@ -153,7 +153,7 @@ impl WaitOutcome {
 /// # C: O(N_sig)
 pub fn signal_pending_state(task: &Task, state: WaitState) -> bool {
     if matches!(state, WaitState::Uninterruptible) { return false; }
-    if task.notify_signal.load(core::sync::atomic::Ordering::Acquire)
+    if task.security.notify_signal.load(core::sync::atomic::Ordering::Acquire)
         || task.freeze_reasons.load(core::sync::atomic::Ordering::Acquire) != 0
     {
         return matches!(state, WaitState::Interruptible);
@@ -204,7 +204,7 @@ mod tests {
     #[test]
     fn notify_signal_breaks_interruptible_waits_without_becoming_a_real_signal() {
         let t = task();
-        t.notify_signal.store(true, Ordering::Release);
+        t.security.notify_signal.store(true, Ordering::Release);
         assert_eq!(t.sleep_wake(), SleepWake::Notify);
         assert!(t.sleep_wake().interrupted());
         assert!(signal_pending_state(&t, WaitState::Interruptible));

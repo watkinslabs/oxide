@@ -11,7 +11,7 @@ use vmm::AddressSpace;
 
 use crate::ARCH_CTX_SIZE;
 
-use super::super::{ArchCtxBuf, ArchFpuBuf, Creds, PendingWake, SigActions, SignalPending, SchedClass, SyscallSnapshot, Task, TaskState, WaitState};
+use super::super::{ArchCtxBuf, ArchFpuBuf, Creds, PendingWake, SigActions, SignalPending, SchedClass, SyscallSnapshot, Task, TaskCore, TaskSecurity, TaskState, WaitState};
 #[cfg(feature = "debug-watchdog")]
 use super::super::WakeDiagPhase;
 use super::super::namespaces::TaskNamespaces;
@@ -66,93 +66,189 @@ impl Task {
         #[cfg(feature = "debug-task-fpu-provenance")]
         let dbg_fpu_state_expected = fpu_state.debug_ptr_bits();
         Self {
-            #[cfg(feature = "debug-smp")]
-            dbg_canary_head: AtomicU64::new(task_canary_head(tid)),
-            tid,
-            tgid: AtomicU32::new(tid),
-            pid,
-            thread_group,
-            name: Spinlock::new(Task::pack_spawn_name(name)),
-            state:    AtomicU8::new(TaskState::Runnable as u8),
-            on_rq:    AtomicBool::new(false),
-            on_cpu:   AtomicBool::new(false),
-            need_resched: AtomicBool::new(false),
-            frozen:   AtomicBool::new(false),
-            freeze_reasons: core::sync::atomic::AtomicU8::new(0),
-            // Linux kthreads start with PF_NOFREEZE and opt in with
-            // set_freezable(); userspace is freezable by default.
-            nofreeze: AtomicBool::new(!starts_in_user),
-            suspend_task: AtomicBool::new(false),
-            yield_pending: AtomicBool::new(false),
-            kthread_stop: AtomicBool::new(false),
-            kthread_park: AtomicBool::new(false),
-            kthread_parked: AtomicBool::new(false),
-            kernel_thread: AtomicBool::new(!starts_in_user),
-            kthread_result: AtomicI32::new(0),
-            kthread_exited: AtomicBool::new(false),
+            core: TaskCore {
+                #[cfg(feature = "debug-smp")]
+                dbg_canary_head: AtomicU64::new(task_canary_head(tid)),
+                tid,
+                tgid: AtomicU32::new(tid),
+                pid,
+                thread_group,
+                name: Spinlock::new(Task::pack_spawn_name(name)),
+                state:    AtomicU8::new(TaskState::Runnable as u8),
+                on_rq:    AtomicBool::new(false),
+                on_cpu:   AtomicBool::new(false),
+                need_resched: AtomicBool::new(false),
+                frozen:   AtomicBool::new(false),
+                freeze_reasons: core::sync::atomic::AtomicU8::new(0),
+                // Linux kthreads start with PF_NOFREEZE and opt in with
+                // set_freezable(); userspace is freezable by default.
+                nofreeze: AtomicBool::new(!starts_in_user),
+                suspend_task: AtomicBool::new(false),
+                yield_pending: AtomicBool::new(false),
+                kthread_stop: AtomicBool::new(false),
+                kthread_park: AtomicBool::new(false),
+                kthread_parked: AtomicBool::new(false),
+                kernel_thread: AtomicBool::new(!starts_in_user),
+                kthread_result: AtomicI32::new(0),
+                kthread_exited: AtomicBool::new(false),
+                reaped:   AtomicBool::new(false),
+                exiting:  AtomicBool::new(false),
+                oom_score_adj: AtomicI32::new(0),
+                oom_victim: AtomicBool::new(false),
+                wake_next: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+                on_wake_list: AtomicBool::new(false),
+                cpu:      AtomicU16::new(u16::MAX),
+                util_avg: AtomicU32::new(0),
+                util_last_update_ns: AtomicU64::new(0),
+                in_iowait: AtomicBool::new(false),
+                vruntime: AtomicU64::new(0),
+                exec_start_ns: AtomicU64::new(0),
+                sum_exec_runtime_ns: AtomicU64::new(0),
+                vtime_start_ns: AtomicU64::new(0),
+                vtime_state: AtomicU8::new(if starts_in_user {
+                    crate::cpustat::VTIME_USER
+                } else {
+                    crate::cpustat::VTIME_SYSTEM
+                }),
+                last_syscall_nr: AtomicU32::new(u32::MAX),
+                nsyscalls: AtomicU64::new(0),
+                syscall_snapshot: Spinlock::new(crate::task::SyscallSnapshot::default()),
+                min_flt: AtomicU64::new(0),
+                maj_flt: AtomicU64::new(0),
+                nvcsw:   AtomicU64::new(0),
+                nivcsw:  AtomicU64::new(0),
+                nr_migrations: AtomicU64::new(0),
+                #[cfg(feature = "debug-getdents")]
+                getdents: crate::diag::getdents::GetdentsState::new(),
+                #[cfg(feature = "debug-syscall-return")]
+                syscall_return: crate::diag::syscall_return::SyscallReturnState::new(),
+                io_rchar: AtomicU64::new(0),
+                io_wchar: AtomicU64::new(0),
+                io_syscr: AtomicU64::new(0),
+                io_syscw: AtomicU64::new(0),
+                io_read_bytes: AtomicU64::new(0),
+                io_write_bytes: AtomicU64::new(0),
+                io_cancelled_write_bytes: AtomicU64::new(0),
+                futex_uaddr: AtomicU64::new(0),
+                load_weight: AtomicU32::new(match class {
+                    SchedClass::Normal { weight } => weight,
+                    _ => crate::cputime::NICE_0_WEIGHT,
+                }),
+                mempolicy: [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)],
+                task_wake_lock: Spinlock::new(()),
+                #[cfg(feature = "debug-watchdog")]
+                wake_diag_phase: AtomicU8::new(WakeDiagPhase::None as u8),
+                #[cfg(feature = "debug-watchdog")]
+                wake_diag_ns: AtomicU64::new(0),
+                cpus_allowed: cpu::AtomicCpuMask::all(),
+                user_cpus_allowed: cpu::AtomicCpuMask::new(),
+                cpuset_cpus_allowed: cpu::AtomicCpuMask::all(),
+                no_setaffinity: AtomicBool::new(false),
+                class_enc: AtomicU64::new(class.encode()),
+                policy: AtomicU32::new(crate::sched_enc::policy_code_for(class)),
+                sched_reset_on_fork: AtomicBool::new(false),
+                sched_slice_ns: AtomicU64::new(0),
+                uclamp_min: AtomicU32::new(0),
+                uclamp_max: AtomicU32::new(crate::sched_enc::UCLAMP_CAPACITY_SCALE),
+                uclamp_user_defined: AtomicU8::new(0),
+                exit_status: AtomicI32::new(0),
+                exit_signal: AtomicU8::new(Signum::Sigchld as u8),
+                parent_tid: AtomicU32::new(0),
+                forknoexec: AtomicBool::new(true),
+                nproc_exceeded: AtomicBool::new(false),
+                nproc_charged:  AtomicBool::new(false),
+                ucounts_ns:     AtomicU64::new(0),
+                ucounts_uid:    AtomicU32::new(0),
+                used_superpriv: AtomicBool::new(false),
+                rt_time_slice: AtomicU32::new(crate::sched_enc::RR_TIMESLICE_TICKS),
+                dl: crate::deadline::DlEntity::new(),
+                rt_requeue_tail: AtomicBool::new(false),
+            },
+            security: TaskSecurity {
+                landlock_domain: Spinlock::new(None),
+                // A thread with no address space has never run user code and
+                // carries the kernel's own label; a user task starts in the
+                // policy's init domain until an execve transitions it. `62§5`.
+                selinux_label: Spinlock::new(if starts_in_user {
+                    crate::selinux_label::TaskLabel::init()
+                } else {
+                    crate::selinux_label::TaskLabel::kernel()
+                }),
+                landlock_tsync_work: Spinlock::new(None),
+                landlock_tsync_id: AtomicU64::new(0),
+                landlock_log_state: AtomicU32::new(0),
+                notify_signal: AtomicBool::new(false),
+                fpu_state:       UnsafeCell::new(fpu_state),
+                #[cfg(feature = "debug-task-fpu-provenance")]
+                dbg_fpu_state_expected: AtomicUsize::new(dbg_fpu_state_expected),
+                ptrace_fpu_dirty: AtomicBool::new(false),
+                singlestep:    AtomicU32::new(0),
+                nocpuid:       AtomicBool::new(false),
+                iopl_emul:     core::sync::atomic::AtomicU8::new(0),
+                io_bitmap:     Spinlock::new(None),
+                tif_io_bitmap: AtomicBool::new(false),
+                // POR_EL0 begins restrictive; a thread opens keys deliberately.
+                #[cfg(target_arch = "aarch64")]
+                pkey_rights:   AtomicU64::new(crate::pkey_rights::init_value()),
+                shstk_features: AtomicU64::new(0),
+                shstk_locked:   AtomicU64::new(0),
+                #[cfg(target_arch = "aarch64")]
+                svc_frame:     core::sync::atomic::AtomicU64::new(0),
+                #[cfg(target_arch = "x86_64")]
+                fault_frame:   AtomicU64::new(0),
+                #[cfg(target_arch = "x86_64")]
+                fault_rsp:     AtomicU64::new(0),
+                #[cfg(target_arch = "x86_64")]
+                fault_rip:     AtomicU64::new(0),
+                seccomp_filters: Spinlock::new(alloc::vec::Vec::new()),
+                seccomp_mode:    AtomicU8::new(0),
+                robust_list_head: AtomicU64::new(0),
+                robust_list_len:  AtomicU64::new(0),
+                sysvsem_undo:     AtomicU64::new(0),
+                pi_base_class: AtomicU64::new(u64::MAX),
+                no_new_privs:   AtomicBool::new(false),
+                tsc_sigsegv:    AtomicBool::new(false),
+                tagged_addr:    AtomicBool::new(false),
+                dumpable:       AtomicU8::new(super::super::SUID_DUMP_USER),
+                thp_disable:    AtomicU8::new(super::super::THP_DISABLE_OFF),
+                timer_slack_ns: AtomicU64::new(DEFAULT_TIMER_SLACK_NS),
+                default_timer_slack_ns: AtomicU64::new(DEFAULT_TIMER_SLACK_NS),
+                mce_kill:       AtomicU8::new(0),
+                pdeathsig:      AtomicU32::new(0),
+                io_flusher:     crate::prctl::io_flusher::IoFlusher::new(),
+                syscall_dispatch: crate::prctl::sud::SyscallUserDispatch::new(),
+                // Reconciled against the global registration state while the task
+                // is published under REG; an unpublished task cannot enter a syscall.
+                syscall_work: AtomicU32::new(0),
+                personality:    AtomicU32::new(0),
+                net_namespace:  Spinlock::new(Some(network_namespace::initial())),
+                vtgid:          AtomicU32::new(0),
+                vtid:           AtomicU32::new(0),
+                ptrace_syscall_armed: AtomicBool::new(false),
+                ptrace_seized:   AtomicBool::new(false),
+                ptrace_stop_rax: AtomicU64::new(0),
+                stop_pending:    AtomicBool::new(false),
+                cont_pending:    AtomicBool::new(false),
+                stop_code:       AtomicU32::new(0),
+                debugregs:       crate::debugreg::slab::Lazy::new(),
+                #[cfg(target_arch = "aarch64")]
+                hw_break: crate::debugreg::slab::Lazy::new(),
+                jobctl:          AtomicU64::new(0),
+                rseq_ptr:       AtomicU64::new(0),
+                rseq_len:       AtomicU32::new(0),
+                rseq_sig:       AtomicU32::new(0),
+                rseq_ids:       AtomicU64::new(u64::MAX),
+                rseq_slice_enabled: AtomicBool::new(false),
+                rseq_slice_granted: AtomicBool::new(false),
+                rseq_slice_expires_ns: AtomicU64::new(0),
+                rseq_slice_yielded: AtomicBool::new(false),
+                rseq_force_fixup: AtomicBool::new(false),
+                creds: Creds::root(),
+                audit_identity: AtomicU64::new(u64::MAX),
+                #[cfg(feature = "debug-smp")]
+                dbg_canary_tail: AtomicU64::new(task_canary_tail(tid)),
+            },
             registered_rings: Spinlock::new(None),
-            reaped:   AtomicBool::new(false),
-            exiting:  AtomicBool::new(false),
-            oom_score_adj: AtomicI32::new(0),
-            oom_victim: AtomicBool::new(false),
-            wake_next: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
-            on_wake_list: AtomicBool::new(false),
-            cpu:      AtomicU16::new(u16::MAX),
-            util_avg: AtomicU32::new(0),
-            util_last_update_ns: AtomicU64::new(0),
-            in_iowait: AtomicBool::new(false),
-            vruntime: AtomicU64::new(0),
-            exec_start_ns: AtomicU64::new(0),
-            sum_exec_runtime_ns: AtomicU64::new(0),
-            vtime_start_ns: AtomicU64::new(0),
-            vtime_state: AtomicU8::new(if starts_in_user {
-                crate::cpustat::VTIME_USER
-            } else {
-                crate::cpustat::VTIME_SYSTEM
-            }),
-            last_syscall_nr: AtomicU32::new(u32::MAX),
-            nsyscalls: AtomicU64::new(0),
-            syscall_snapshot: Spinlock::new(crate::task::SyscallSnapshot::default()),
-            min_flt: AtomicU64::new(0),
-            maj_flt: AtomicU64::new(0),
-            nvcsw:   AtomicU64::new(0),
-            nivcsw:  AtomicU64::new(0),
-            nr_migrations: AtomicU64::new(0),
-            #[cfg(feature = "debug-getdents")]
-            getdents: crate::diag::getdents::GetdentsState::new(),
-            #[cfg(feature = "debug-syscall-return")]
-            syscall_return: crate::diag::syscall_return::SyscallReturnState::new(),
-            io_rchar: AtomicU64::new(0),
-            io_wchar: AtomicU64::new(0),
-            io_syscr: AtomicU64::new(0),
-            io_syscw: AtomicU64::new(0),
-            io_read_bytes: AtomicU64::new(0),
-            io_write_bytes: AtomicU64::new(0),
-            io_cancelled_write_bytes: AtomicU64::new(0),
-            futex_uaddr: AtomicU64::new(0),
-            load_weight: AtomicU32::new(match class {
-                SchedClass::Normal { weight } => weight,
-                _ => crate::cputime::NICE_0_WEIGHT,
-            }),
-            mempolicy: [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)],
-            task_wake_lock: Spinlock::new(()),
-            #[cfg(feature = "debug-watchdog")]
-            wake_diag_phase: AtomicU8::new(WakeDiagPhase::None as u8),
-            #[cfg(feature = "debug-watchdog")]
-            wake_diag_ns: AtomicU64::new(0),
-            cpus_allowed: cpu::AtomicCpuMask::all(),
-            user_cpus_allowed: cpu::AtomicCpuMask::new(),
-            cpuset_cpus_allowed: cpu::AtomicCpuMask::all(),
-            no_setaffinity: AtomicBool::new(false),
-            class_enc: AtomicU64::new(class.encode()),
-            policy: AtomicU32::new(crate::sched_enc::policy_code_for(class)),
-            sched_reset_on_fork: AtomicBool::new(false),
-            sched_slice_ns: AtomicU64::new(0),
-            uclamp_min: AtomicU32::new(0),
-            uclamp_max: AtomicU32::new(crate::sched_enc::UCLAMP_CAPACITY_SCALE),
-            uclamp_user_defined: AtomicU8::new(0),
-            exit_status: AtomicI32::new(0),
-            exit_signal: AtomicU8::new(Signum::Sigchld as u8),
             kernel_stack: AtomicPtr::new(core::ptr::null_mut()),
             kernel_stack_memcg: AtomicU64::new(cgroup::NO_MEMCG),
             kernel_stack_charge_bytes: AtomicU64::new(0),
@@ -160,13 +256,6 @@ impl Task {
             mm: UnsafeCell::new(mm),
             mm_pin_lock: Spinlock::new(()),
             stack: Spinlock::new(None),
-            parent_tid: AtomicU32::new(0),
-            forknoexec: AtomicBool::new(true),
-            nproc_exceeded: AtomicBool::new(false),
-            nproc_charged:  AtomicBool::new(false),
-            ucounts_ns:     AtomicU64::new(0),
-            ucounts_uid:    AtomicU32::new(0),
-            used_superpriv: AtomicBool::new(false),
             fd_table: UnsafeCell::new(None),
             fd_table_pin_lock: Spinlock::new(()),
             sigpending: SignalPending::with_poll(signalfd_poll),
@@ -182,9 +271,6 @@ impl Task {
             cmdline:    Spinlock::new(None),
             exe_path:   Spinlock::new(None),
             exe_inode:  Spinlock::new(None),
-            rt_time_slice: AtomicU32::new(crate::sched_enc::RR_TIMESLICE_TICKS),
-            dl: crate::deadline::DlEntity::new(),
-            rt_requeue_tail: AtomicBool::new(false),
             fs_context: Spinlock::new(Arc::new(super::super::FsContext::new())),
             environ:    Spinlock::new(None),
             nice:       AtomicI8::new(0),
@@ -213,90 +299,8 @@ impl Task {
             ptrace_options:  AtomicU32::new(0),
             ptrace_eventmsg: AtomicU64::new(0),
             ptrace_siginfo:  Spinlock::new(None),
-            landlock_domain: Spinlock::new(None),
-            // A thread with no address space has never run user code and
-            // carries the kernel's own label; a user task starts in the
-            // policy's init domain until an execve transitions it. `62§5`.
-            selinux_label: Spinlock::new(if starts_in_user {
-                crate::selinux_label::TaskLabel::init()
-            } else {
-                crate::selinux_label::TaskLabel::kernel()
-            }),
-            landlock_tsync_work: Spinlock::new(None),
-            landlock_tsync_id: AtomicU64::new(0),
-            landlock_log_state: AtomicU32::new(0),
-            notify_signal: AtomicBool::new(false),
-            fpu_state:       UnsafeCell::new(fpu_state),
-            #[cfg(feature = "debug-task-fpu-provenance")]
-            dbg_fpu_state_expected: AtomicUsize::new(dbg_fpu_state_expected),
-            ptrace_fpu_dirty: AtomicBool::new(false),
-            singlestep:    AtomicU32::new(0),
-            nocpuid:       AtomicBool::new(false),
-            iopl_emul:     core::sync::atomic::AtomicU8::new(0),
-            io_bitmap:     Spinlock::new(None),
-            tif_io_bitmap: AtomicBool::new(false),
-            // POR_EL0 begins restrictive; a thread opens keys deliberately.
-            #[cfg(target_arch = "aarch64")]
-            pkey_rights:   AtomicU64::new(crate::pkey_rights::init_value()),
-            shstk_features: AtomicU64::new(0),
-            shstk_locked:   AtomicU64::new(0),
-            #[cfg(target_arch = "aarch64")]
-            svc_frame:     core::sync::atomic::AtomicU64::new(0),
-            #[cfg(target_arch = "x86_64")]
-            fault_frame:   AtomicU64::new(0),
-            #[cfg(target_arch = "x86_64")]
-            fault_rsp:     AtomicU64::new(0),
-            #[cfg(target_arch = "x86_64")]
-            fault_rip:     AtomicU64::new(0),
             io_uring_filters: Spinlock::new(None),
             io_uring_restrict: Spinlock::new(None),
-            seccomp_filters: Spinlock::new(alloc::vec::Vec::new()),
-            seccomp_mode:    AtomicU8::new(0),
-            robust_list_head: AtomicU64::new(0),
-            robust_list_len:  AtomicU64::new(0),
-            sysvsem_undo:     AtomicU64::new(0),
-            pi_base_class: AtomicU64::new(u64::MAX),
-            no_new_privs:   AtomicBool::new(false),
-            tsc_sigsegv:    AtomicBool::new(false),
-            tagged_addr:    AtomicBool::new(false),
-            dumpable:       AtomicU8::new(super::super::SUID_DUMP_USER),
-            thp_disable:    AtomicU8::new(super::super::THP_DISABLE_OFF),
-            timer_slack_ns: AtomicU64::new(DEFAULT_TIMER_SLACK_NS),
-            default_timer_slack_ns: AtomicU64::new(DEFAULT_TIMER_SLACK_NS),
-            mce_kill:       AtomicU8::new(0),
-            pdeathsig:      AtomicU32::new(0),
-            io_flusher:     crate::prctl::io_flusher::IoFlusher::new(),
-            syscall_dispatch: crate::prctl::sud::SyscallUserDispatch::new(),
-            // Reconciled against the global registration state while the task
-            // is published under REG; an unpublished task cannot enter a syscall.
-            syscall_work: AtomicU32::new(0),
-            personality:    AtomicU32::new(0),
-            net_namespace:  Spinlock::new(Some(network_namespace::initial())),
-            vtgid:          AtomicU32::new(0),
-            vtid:           AtomicU32::new(0),
-            ptrace_syscall_armed: AtomicBool::new(false),
-            ptrace_seized:   AtomicBool::new(false),
-            ptrace_stop_rax: AtomicU64::new(0),
-            stop_pending:    AtomicBool::new(false),
-            cont_pending:    AtomicBool::new(false),
-            stop_code:       AtomicU32::new(0),
-            debugregs:       crate::debugreg::slab::Lazy::new(),
-            #[cfg(target_arch = "aarch64")]
-            hw_break: crate::debugreg::slab::Lazy::new(),
-            jobctl:          AtomicU64::new(0),
-            rseq_ptr:       AtomicU64::new(0),
-            rseq_len:       AtomicU32::new(0),
-            rseq_sig:       AtomicU32::new(0),
-            rseq_ids:       AtomicU64::new(u64::MAX),
-            rseq_slice_enabled: AtomicBool::new(false),
-            rseq_slice_granted: AtomicBool::new(false),
-            rseq_slice_expires_ns: AtomicU64::new(0),
-            rseq_slice_yielded: AtomicBool::new(false),
-            rseq_force_fixup: AtomicBool::new(false),
-            creds: Creds::root(),
-            audit_identity: AtomicU64::new(u64::MAX),
-            #[cfg(feature = "debug-smp")]
-            dbg_canary_tail: AtomicU64::new(task_canary_tail(tid)),
         }
     }
 
@@ -387,4 +391,3 @@ impl Task {
         self.arch_ctx.get() as *mut C
     }
 }
-

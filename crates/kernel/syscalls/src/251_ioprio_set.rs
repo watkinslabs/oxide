@@ -35,8 +35,8 @@ pub fn sys_ioprio_set(args: &SyscallArgs) -> i64 {
     let base = match ioprio::who_base(which) { Ok(b) => b, Err(rv) => return rv };
 
     let has_nice = cur.has_cap(sched::cap::SYS_NICE);
-    let euid = cur.creds.euid.load(Ordering::Acquire);
-    let ruid = cur.creds.ruid.load(Ordering::Acquire);
+    let euid = cur.security.creds.euid.load(Ordering::Acquire);
+    let ruid = cur.security.creds.ruid.load(Ordering::Acquire);
     // Linux `set_task_ioprio` owner check: the target's REAL uid must match the
     // caller's euid or ruid, or the caller holds CAP_SYS_NICE. The loop aborts
     // on the first failure and returns it, so a partially-applied PGRP/USER
@@ -44,7 +44,7 @@ pub fn sys_ioprio_set(args: &SyscallArgs) -> i64 {
     let mut ret: i64 = err(Errno::Esrch);
     crate::priority::priority_common::for_each_target(base, who, |t| {
         if ret != err(Errno::Esrch) && ret != 0 { return; }
-        let target_ruid = t.creds.ruid.load(Ordering::Acquire);
+        let target_ruid = t.security.creds.ruid.load(Ordering::Acquire);
         if !(has_nice || target_ruid == euid || target_ruid == ruid) {
             ret = err(Errno::Eperm);
             return;

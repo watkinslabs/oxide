@@ -11,7 +11,7 @@ fn task(tid: u32, name: &'static str) -> sched::Task {
 }
 
 fn drop_all_caps(t: &sched::Task) {
-    t.creds.cap_effective.store(0, core::sync::atomic::Ordering::Release);
+    t.security.creds.cap_effective.store(0, core::sync::atomic::Ordering::Release);
 }
 
 fn eperm() -> i64 { -(syscall::errno::Errno::Eperm.as_i32() as i64) }
@@ -126,7 +126,7 @@ fn mnt_setns_requires_sys_chroot_on_top_of_sys_admin() {
     // CAP_SYS_ADMIN alone is not enough: entering a mount namespace re-roots
     // the task, so Linux also demands CAP_SYS_CHROOT.
     let admin_only = 1u64 << sched::cap::SYS_ADMIN;
-    t.creds.cap_effective.store(admin_only, core::sync::atomic::Ordering::Release);
+    t.security.creds.cap_effective.store(admin_only, core::sync::atomic::Ordering::Release);
     assert_eq!(setns_apply(&ns, CLONE_NEWNS, &t), eperm());
 
     // With CAP_SYS_CHROOT the permission ladder passes. The call still fails

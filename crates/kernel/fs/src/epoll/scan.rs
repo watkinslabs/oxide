@@ -34,7 +34,7 @@ pub(super) fn scan_once(ep: &Arc<EpollData>, evp: u64, maxevents: i32) -> i64 {
             // watched fd, which is exactly the evidence needed here.
             if (raw_poll & vfs::POLL_IN) != 0 {
                 let target = sched::current().map(|c| {
-                    c.creds.euid.load(Ordering::Acquire) == 1000
+                    c.security.creds.euid.load(Ordering::Acquire) == 1000
                         || c.with_exe_path(|p| p.map(|s| s.contains("dbus-broker")).unwrap_or(false))
                 }).unwrap_or(false);
                 if target {

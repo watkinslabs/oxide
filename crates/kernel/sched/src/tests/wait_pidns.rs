@@ -59,8 +59,8 @@ fn uninstall() { unsafe { runqueue::uninstall_global(); } }
 
 /// A stopped child with a pending job-control stop for its parent to collect.
 fn stop(child: &Arc<Task>, code: u32) {
-    child.stop_code.store(code, Ordering::Release);
-    child.stop_pending.store(true, Ordering::Release);
+    child.security.stop_code.store(code, Ordering::Release);
+    child.security.stop_pending.store(true, Ordering::Release);
 }
 
 /// Build parent + child inside a nested namespace and return

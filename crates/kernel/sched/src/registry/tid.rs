@@ -68,10 +68,10 @@ pub fn try_wake_stopped(task: &Task, wake: crate::jobctl::WakeKind) -> bool {
     if task.state() != TaskState::Stopped {
         return false;
     }
-    let jc = task.jobctl.load(core::sync::atomic::Ordering::Acquire);
-    task.jobctl.store(crate::jobctl::with_wake(jc, wake), core::sync::atomic::Ordering::Release);
+    let jc = task.security.jobctl.load(core::sync::atomic::Ordering::Acquire);
+    task.security.jobctl.store(crate::jobctl::with_wake(jc, wake), core::sync::atomic::Ordering::Release);
     if crate::jobctl::records_continued(wake) {
-        task.cont_pending
+        task.security.cont_pending
             .store(true, core::sync::atomic::Ordering::Release);
     }
     task.set_state(TaskState::Runnable);

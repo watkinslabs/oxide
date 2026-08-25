@@ -21,45 +21,45 @@ pub(super) fn unprivileged(uids: (u32, u32, u32), gids: (u32, u32, u32)) -> Task
 
 /// Strip every capability set. # C: O(1)
 pub(super) fn drop_caps(task: &Task) {
-    task.creds.cap_effective.store(0, Ordering::Release);
-    task.creds.cap_permitted.store(0, Ordering::Release);
-    task.creds.cap_inheritable.store(0, Ordering::Release);
-    task.creds.cap_ambient.store(0, Ordering::Release);
+    task.security.creds.cap_effective.store(0, Ordering::Release);
+    task.security.creds.cap_permitted.store(0, Ordering::Release);
+    task.security.creds.cap_inheritable.store(0, Ordering::Release);
+    task.security.creds.cap_ambient.store(0, Ordering::Release);
 }
 
 /// Grant exactly the listed capabilities in permitted + effective.
 pub(super) fn grant_caps(task: &Task, caps: &[u32]) {
     let mask = caps.iter().fold(0u64, |acc, cap| acc | (1u64 << cap));
-    task.creds.cap_effective.store(mask, Ordering::Release);
-    task.creds.cap_permitted.store(mask, Ordering::Release);
+    task.security.creds.cap_effective.store(mask, Ordering::Release);
+    task.security.creds.cap_permitted.store(mask, Ordering::Release);
 }
 
 /// # C: O(1)
 pub(super) fn set_uids(task: &Task, (r, e, s): (u32, u32, u32)) {
-    task.creds.ruid.store(r, Ordering::Release);
-    task.creds.euid.store(e, Ordering::Release);
-    task.creds.suid.store(s, Ordering::Release);
-    task.creds.fsuid.store(e, Ordering::Release);
+    task.security.creds.ruid.store(r, Ordering::Release);
+    task.security.creds.euid.store(e, Ordering::Release);
+    task.security.creds.suid.store(s, Ordering::Release);
+    task.security.creds.fsuid.store(e, Ordering::Release);
 }
 
 /// # C: O(1)
 pub(super) fn set_gids(task: &Task, (r, e, s): (u32, u32, u32)) {
-    task.creds.rgid.store(r, Ordering::Release);
-    task.creds.egid.store(e, Ordering::Release);
-    task.creds.sgid.store(s, Ordering::Release);
-    task.creds.fsgid.store(e, Ordering::Release);
+    task.security.creds.rgid.store(r, Ordering::Release);
+    task.security.creds.egid.store(e, Ordering::Release);
+    task.security.creds.sgid.store(s, Ordering::Release);
+    task.security.creds.fsgid.store(e, Ordering::Release);
 }
 
 /// `(ruid, euid, suid, fsuid)`. # C: O(1)
 pub(super) fn uids(task: &Task) -> (u32, u32, u32, u32) {
-    (task.creds.ruid.load(Ordering::Acquire), task.creds.euid.load(Ordering::Acquire),
-     task.creds.suid.load(Ordering::Acquire), task.creds.fsuid.load(Ordering::Acquire))
+    (task.security.creds.ruid.load(Ordering::Acquire), task.security.creds.euid.load(Ordering::Acquire),
+     task.security.creds.suid.load(Ordering::Acquire), task.security.creds.fsuid.load(Ordering::Acquire))
 }
 
 /// `(rgid, egid, sgid, fsgid)`. # C: O(1)
 pub(super) fn gids(task: &Task) -> (u32, u32, u32, u32) {
-    (task.creds.rgid.load(Ordering::Acquire), task.creds.egid.load(Ordering::Acquire),
-     task.creds.sgid.load(Ordering::Acquire), task.creds.fsgid.load(Ordering::Acquire))
+    (task.security.creds.rgid.load(Ordering::Acquire), task.security.creds.egid.load(Ordering::Acquire),
+     task.security.creds.sgid.load(Ordering::Acquire), task.security.creds.fsgid.load(Ordering::Acquire))
 }
 
 /// Negated errno as a syscall return value. # C: O(1)
@@ -73,7 +73,7 @@ pub(super) const KERNEL_PTR: u64 = hal::USER_VA_END;
 /// test can seed an unsorted or oversized list). # C: O(n)
 pub(super) fn seed_groups(task: &Task, gids: &[u32]) {
     let list = if gids.is_empty() { None } else { Some(alloc::sync::Arc::from(gids)) };
-    task.creds.set_group_list(list);
+    task.security.creds.set_group_list(list);
 }
 
 /// `NGROUPS_MAX` re-export so the boundary tests read literally. # C: O(1)

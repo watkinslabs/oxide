@@ -27,9 +27,9 @@ fn creation_allowed() -> Result<(), Errno> {
     let disabled = syscall::io_uring_ctl::disabled();
     let group    = syscall::io_uring_ctl::group();
     let Some(cur) = sched::live::current() else { return Ok(()) };
-    let egid = cur.creds.egid.load(Ordering::Acquire);
+    let egid = cur.security.creds.egid.load(Ordering::Acquire);
     let cap  = cur.has_cap(sched::cap::SYS_ADMIN);
-    let groups = cur.creds.groups.lock().clone();
+    let groups = cur.security.creds.groups.lock().clone();
     match groups {
         Some(g) => allowed(disabled, group, cap, egid, &g),
         None    => allowed(disabled, group, cap, egid, &[]),

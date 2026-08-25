@@ -245,7 +245,7 @@ pub fn user_ns_is_ancestor(ancestor: &NamespacePin, descendant: &NamespacePin) -
 pub fn has_cap_for(cur: &sched::Task, target_user_ns: &NamespacePin, cap: u32) -> bool {
     let Some(cur_ns) = cur.namespace_owner(NamespaceKind::User) else { return false; };
     let cred_ns = cur_ns.pin();
-    let euid = cur.creds.euid.load(core::sync::atomic::Ordering::Acquire);
+    let euid = cur.security.creds.euid.load(core::sync::atomic::Ordering::Acquire);
     let mut ns = target_user_ns.clone();
     loop {
         if NamespacePin::ptr_eq(&cred_ns, &ns) {
@@ -256,7 +256,7 @@ pub fn has_cap_for(cur: &sched::Task, target_user_ns: &NamespacePin, cap: u32) -
             && user_namespace::owner_euid(&ns) == Ok(Some(euid))
         {
             return selinux_runtime::check::capability(
-                cur.selinux_label.lock().sid, cap, false).is_ok();
+                cur.security.selinux_label.lock().sid, cap, false).is_ok();
         }
         ns = parent;
     }
@@ -392,7 +392,7 @@ pub fn setns_apply(ns: &NsInode, nstype: u64, cur: &sched::Task) -> i64 {
             // namespace walk grants — and the same rule was applied on the
             // unshare/clone path and not here, which is one rule with two
             // answers depending on how the namespace was entered.
-            if ok { cur.creds.enter_new_user_namespace(); }
+            if ok { cur.security.creds.enter_new_user_namespace(); }
             ok
         }
         NsOwner::Cgroup(owner) | NsOwner::Ipc(owner)
@@ -471,7 +471,7 @@ fn time_setns_checks_type_then_single_thread_then_capabilities() {
 
     let no_cap = sched::Task::new(87, "time-no-cap",
         sched::SchedClass::Normal { weight: 1024 });
-    no_cap.creds.cap_effective.store(0, core::sync::atomic::Ordering::Release);
+    no_cap.security.creds.cap_effective.store(0, core::sync::atomic::Ordering::Release);
     assert_eq!(setns_apply(&ns, CLONE_NEWTIME, &no_cap),
         -(syscall::errno::Errno::Eperm.as_i32() as i64));
 }

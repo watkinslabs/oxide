@@ -232,7 +232,7 @@ fn successful_old_copyout_uses_native_itimerspec_layout() {
 fn alarm_capability_is_rechecked_after_input_and_fd_validation() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let fixture = Fixture::new(CLOCK_REALTIME_ALARM);
-    fixture.task.creds.cap_effective.fetch_and(
+    fixture.task.security.creds.cap_effective.fetch_and(
         !(1u64 << sched::cap::WAKE_ALARM),
         Ordering::AcqRel,
     );

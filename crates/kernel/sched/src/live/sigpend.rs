@@ -51,13 +51,13 @@ pub fn zap_other_threads() {
             // Linux `task_clear_jobctl_pending(t, JOBCTL_PENDING_MASK)` runs
             // BEFORE the wake: a queued group-stop or ptrace trap must not
             // re-stop (or re-trap) a thread we just killed.
-            t.jobctl.store(crate::jobctl::clear_pending(t.jobctl.load(Ordering::Acquire),
+            t.security.jobctl.store(crate::jobctl::clear_pending(t.security.jobctl.load(Ordering::Acquire),
                 crate::jobctl::PENDING_MASK | crate::jobctl::LISTENING), Ordering::Release);
             super::registry::wake_if_stopped(&t, crate::jobctl::WakeKind::Kill);
             // Resuming a thread so it can die is not a `wait4(WCONTINUED)`
             // event either.
-            t.stop_pending.store(false, Ordering::Release);
-            t.cont_pending.store(false, Ordering::Release);
+            t.security.stop_pending.store(false, Ordering::Release);
+            t.security.cont_pending.store(false, Ordering::Release);
             signal_wake_up(&t);
         }
     }
@@ -300,8 +300,8 @@ fn send_sigio_to_task(t: &alloc::sync::Arc<crate::Task>, info: crate::task::SigI
     creds: crate::sigio::FileOwnerCreds, thread_directed: bool)
 {
     let target = crate::sigio::TargetCreds {
-        uid:  t.creds.ruid.load(Ordering::Acquire),
-        suid: t.creds.suid.load(Ordering::Acquire),
+        uid:  t.security.creds.ruid.load(Ordering::Acquire),
+        suid: t.security.creds.suid.load(Ordering::Acquire),
     };
     if !crate::sigio::sigio_perm(creds, target) { return; }
     // `switch (signum)`: `case 0` (no `F_SETSIG`) is a bare `SEND_SIG_PRIV`

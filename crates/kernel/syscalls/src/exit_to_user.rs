@@ -115,7 +115,7 @@ fn work_flags() -> u32 {
     // it never clears and every return burns the pass bound. It rides along on
     // a pass another item earned; the syscall tail calls `rseq_writeback()`
     // directly before this loop, so a return with no other work still gets it.
-    let rseq = cur.rseq_ptr.load(Ordering::Acquire) != 0;
+    let rseq = cur.security.rseq_ptr.load(Ordering::Acquire) != 0;
     let freeze = sched::live::freezer::freeze_requested(&cur);
     sched::exit_to_user::work_flags(need_resched, pending, blocked,
                                     notify_signal, false, rseq, freeze)

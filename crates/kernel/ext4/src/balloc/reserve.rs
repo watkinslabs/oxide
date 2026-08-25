@@ -98,8 +98,8 @@ pub fn has_free_blocks(free: u64, want: u64, r_blocks: u64, may_dip: bool) -> bo
 pub fn current_alloc_cred() -> AllocCred {
     let Some(t) = sched::current() else { return AllocCred::kernel_context() };
     AllocCred {
-        uid: t.creds.fsuid.load(::core::sync::atomic::Ordering::Acquire),
-        gids: t.creds.group_list().map(|g| g.to_vec()).unwrap_or_default(),
+        uid: t.security.creds.fsuid.load(::core::sync::atomic::Ordering::Acquire),
+        gids: t.security.creds.group_list().map(|g| g.to_vec()).unwrap_or_default(),
         cap_sys_resource: t.has_cap(sched::cap::SYS_RESOURCE),
     }
 }

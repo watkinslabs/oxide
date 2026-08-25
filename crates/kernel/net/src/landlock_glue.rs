@@ -13,7 +13,7 @@ use landlock::Domain;
 /// # C: O(1)
 pub fn current_domain() -> Option<Arc<Domain>> {
     #[cfg(target_os = "oxide-kernel")]
-    { sched::live::current().and_then(|c| c.landlock_domain.lock().clone()) }
+    { sched::live::current().and_then(|c| c.security.landlock_domain.lock().clone()) }
     #[cfg(not(target_os = "oxide-kernel"))]
     { None }
 }

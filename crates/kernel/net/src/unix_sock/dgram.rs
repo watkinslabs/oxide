@@ -393,7 +393,7 @@ impl UnixDgramQueue {
             }
         };
         if peek {
-            let msg = UnixDgram { payload: front.payload.clone(), creds: front.creds.clone(), fds: front.rights.clone_files() };
+        let msg = UnixDgram { payload: front.payload.clone(), creds: front.creds.clone(), fds: front.rights.clone_files() };
             return Ok(Some((copied, msg, front.sender.clone())));
         }
         let mut record = q.pop_front().unwrap();

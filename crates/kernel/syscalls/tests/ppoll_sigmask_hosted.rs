@@ -333,7 +333,7 @@ fn a_zero_timeout_leaves_the_callers_timespec_untouched() {
 fn a_sticky_timeouts_persona_suppresses_the_writeback() {
     let _g = begin();
     let task = install_task(0);
-    task.personality.store(sched::personality::STICKY_TIMEOUTS, Ordering::Release);
+    task.security.personality.store(sched::personality::STICKY_TIMEOUTS, Ordering::Release);
     let (_fd, mut pfd) = one_fd(task, vfs::POLL_IN);
     ADVANCE_ON_POLL.store(2_000_000_000, Ordering::SeqCst);
     let mut t = ts(5, 0);
@@ -346,7 +346,7 @@ fn a_sticky_timeouts_persona_suppresses_the_writeback() {
 fn an_interrupted_sticky_timeouts_wait_reports_eintr_because_it_cannot_restart() {
     let _g = begin();
     let task = install_task(0);
-    task.personality.store(sched::personality::STICKY_TIMEOUTS, Ordering::Release);
+    task.security.personality.store(sched::personality::STICKY_TIMEOUTS, Ordering::Release);
     let (_fd, mut pfd) = one_fd(task, 0);
     poll::poll_common::SIGNAL_ON_PARK.store(SIGUSR1_BIT, Ordering::SeqCst);
     let mut t = ts(5, 0);

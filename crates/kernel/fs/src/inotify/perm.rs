@@ -142,7 +142,7 @@ fn ask_group(group: &Arc<InotifyData>, inode: &InodeRef, perm_mask: u32,
 pub(crate) fn reporting_pid(group: &InotifyData) -> u32 {
     let Some(t) = sched::current() else { return 0 };
     crate::inotify::fan_ids::select_reported_pid(
-        group.reports_tid(), t.visible_pid(), t.vtid.load(Ordering::Acquire), t.tid)
+        group.reports_tid(), t.visible_pid(), t.security.vtid.load(Ordering::Acquire), t.tid)
 }
 
 /// # C: O(1)

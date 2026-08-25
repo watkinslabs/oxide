@@ -24,20 +24,20 @@ fn task(uid: u32) -> Task {
 }
 
 fn set_uid(t: &Task, uid: u32) {
-    t.creds.ruid.store(uid, Ordering::Release);
-    t.creds.euid.store(uid, Ordering::Release);
-    t.creds.suid.store(uid, Ordering::Release);
-    t.creds.fsuid.store(uid, Ordering::Release);
+    t.security.creds.ruid.store(uid, Ordering::Release);
+    t.security.creds.euid.store(uid, Ordering::Release);
+    t.security.creds.suid.store(uid, Ordering::Release);
+    t.security.creds.fsuid.store(uid, Ordering::Release);
 }
 
 fn drop_caps(t: &Task) {
-    t.creds.cap_effective.store(0, Ordering::Release);
-    t.creds.cap_permitted.store(0, Ordering::Release);
+    t.security.creds.cap_effective.store(0, Ordering::Release);
+    t.security.creds.cap_permitted.store(0, Ordering::Release);
 }
 
 fn grant(t: &Task, cap: u32) {
-    t.creds.cap_effective.store(1u64 << cap, Ordering::Release);
-    t.creds.cap_permitted.store(1u64 << cap, Ordering::Release);
+    t.security.creds.cap_effective.store(1u64 << cap, Ordering::Release);
+    t.security.creds.cap_permitted.store(1u64 << cap, Ordering::Release);
 }
 
 fn count(uid: u32) -> i64 { ucounts::value(UcountKey::new(0, uid), Counter::Nproc) }
@@ -205,7 +205,7 @@ fn setuid_that_does_not_move_the_real_uid_leaves_the_charge_alone() {
     charge_task(&t);
     // Without CAP_SETUID only the effective uid moves, and the charge is
     // keyed on the REAL uid, so the account must not change.
-    t.creds.suid.store(UID + 1, Ordering::Release);
+    t.security.creds.suid.store(UID + 1, Ordering::Release);
     assert_eq!(setuid_on(&t, UID + 1), 0);
     assert_eq!(count(UID), 1);
     assert_eq!(count(UID + 1), 0);

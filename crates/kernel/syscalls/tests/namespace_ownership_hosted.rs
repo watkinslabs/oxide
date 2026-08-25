@@ -214,8 +214,8 @@ fn clone_replaces_every_supported_nonnetwork_owner_and_final_release_drops_them(
     // the child draws a number from each level of it. The new namespace's
     // first task is its init, so that number is 1.
     child.alloc_pid_mappings(&[], true).unwrap();
-    assert_eq!(child.vtid.load(Ordering::Acquire), 1);
-    assert_eq!(child.vtgid.load(Ordering::Acquire), 1);
+    assert_eq!(child.security.vtid.load(Ordering::Acquire), 1);
+    assert_eq!(child.security.vtgid.load(Ordering::Acquire), 1);
     assert_ne!(child.pid_nr_ns(&parent_set.pid), 0,
         "the parent namespace still numbers a child it can see");
     assert_ne!(child.pid_nr_ns(&parent_set.pid), 1,
@@ -256,7 +256,7 @@ fn unshare_pid_is_for_children_until_the_next_clone() {
     let _guard = guard();
     let parent = task(905);
     let current = owner(&parent, NamespaceKind::Pid);
-    let visible_tid = parent.vtid.load(Ordering::Acquire);
+    let visible_tid = parent.security.vtid.load(Ordering::Acquire);
     let snapshot = parent.namespace_snapshot().unwrap();
     let bits = s272_unshare::ns_bits_from_flags(CLONE_NEWPID);
 
@@ -266,7 +266,7 @@ fn unshare_pid_is_for_children_until_the_next_clone() {
     assert!(NamespaceRef::ptr_eq(&owner(&parent, NamespaceKind::Pid), &current));
     assert!(!NamespaceRef::ptr_eq(&pending, &current));
     assert!(NamespacePin::ptr_eq(&pending.parent().unwrap(), &current.pin()));
-    assert_eq!(parent.vtid.load(Ordering::Acquire), visible_tid);
+    assert_eq!(parent.security.vtid.load(Ordering::Acquire), visible_tid);
 
     let child = task(906);
     s272_unshare::apply_new_namespaces(&child, parent.namespace_snapshot().unwrap(),
@@ -275,7 +275,7 @@ fn unshare_pid_is_for_children_until_the_next_clone() {
     assert!(NamespaceRef::ptr_eq(&owner(&child, NamespaceKind::Pid), &pending));
     assert!(NamespaceRef::ptr_eq(&child.pid_namespace_for_children().unwrap(), &pending));
     child.alloc_pid_mappings(&[], true).unwrap();
-    assert_eq!(child.vtid.load(Ordering::Acquire), 1);
+    assert_eq!(child.security.vtid.load(Ordering::Acquire), 1);
 }
 
 #[test]

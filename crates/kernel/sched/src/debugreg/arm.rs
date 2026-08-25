@@ -33,7 +33,7 @@ unsafe impl Send for Shadow {}
 /// reset value without touching an allocation.
 /// # C: O(1)
 pub fn snapshot(t: &Task) -> HwBreakpointState {
-    let Some(sh) = t.hw_break.get() else { return HwBreakpointState::empty() };
+    let Some(sh) = t.security.hw_break.get() else { return HwBreakpointState::empty() };
     // SAFETY: single-mutator rule per `13§5` as documented on `Shadow` — the owning task on its own CPU, or a tracer while the tracee is ptrace-stopped.
     unsafe { *sh.0.get() }
 }
@@ -43,7 +43,7 @@ pub fn snapshot(t: &Task) -> HwBreakpointState {
 /// partially-accepted write is never installed.
 /// # C: O(1)
 pub fn store(t: &Task, st: &HwBreakpointState) {
-    let Some(sh) = t.hw_break.get_or_init() else { return };
+    let Some(sh) = t.security.hw_break.get_or_init() else { return };
     // SAFETY: same single-mutator rule as `snapshot`; `HwBreakpointState` is plain `Copy` data with no interior pointers or handles.
     unsafe { *sh.0.get() = *st; }
 }
@@ -57,7 +57,7 @@ pub fn armed(t: &Task) -> bool { snapshot(t).is_armed() }
 /// # C: O(1)
 pub fn clear(t: &Task) {
     // Nothing to clear if nothing was ever armed — and no reason to allocate.
-    if t.hw_break.get().is_some() { store(t, &HwBreakpointState::empty()); }
+    if t.security.hw_break.get().is_some() { store(t, &HwBreakpointState::empty()); }
 }
 
 /// Install one slot, through the architecture's validation ladder. Nothing is
@@ -102,7 +102,7 @@ pub unsafe fn switch_to(prev: &Task, next: &Task) {
     // sits on the deepest syscall chain the stack gate measures. `#[inline(never)]`
     // keeps even the borrow bookkeeping out of that frame, since the common
     // case returns without touching either state.
-    let (Some(p), Some(n)) = (prev.hw_break.get(), next.hw_break.get()) else {
+    let (Some(p), Some(n)) = (prev.security.hw_break.get(), next.security.hw_break.get()) else {
         // At most one side is armed; a null slot IS the reset state, so a
         // half-armed switch only has to install the side that exists.
         // SAFETY: forwarded contract — the context switch owns both tasks, so
@@ -124,11 +124,11 @@ pub unsafe fn switch_to(prev: &Task, next: &Task) {
 #[cfg(target_os = "oxide-kernel")]
 #[inline(never)]
 unsafe fn switch_one(prev: &Task, next: &Task) {
-    let armed_prev = prev.hw_break.get().is_some_and(|s| {
+    let armed_prev = prev.security.hw_break.get().is_some_and(|s| {
         // SAFETY: single-mutator rule per `13§5`; the context switch owns this task.
         unsafe { (*s.0.get()).is_armed() }
     });
-    match next.hw_break.get() {
+    match next.security.hw_break.get() {
         // SAFETY: context switch at EL1 owns this CPU's debug registers; `s` is the incoming task's live register file.
         Some(s) => unsafe {
             let n = &*s.0.get();

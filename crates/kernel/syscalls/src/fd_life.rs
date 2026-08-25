@@ -11,13 +11,13 @@ pub(crate) fn op(task: &sched::Task, fdt: &vfs::FdTable, name: &'static [u8],
         (vfs::fdtable::debug::OP_CLOSE_EXEC, second)
     } else if name == b"close" {
         (vfs::fdtable::debug::OP_CLOSE_CALL,
-            task.vtid.load(core::sync::atomic::Ordering::Acquire) as i32)
+            task.security.vtid.load(core::sync::atomic::Ordering::Acquire) as i32)
     } else {
         return;
     };
     vfs::fdtable::debug::record_task(
         fdt, operation, first, second, 0,
-        task.vtgid.load(core::sync::atomic::Ordering::Acquire) as u64,
+        task.security.vtgid.load(core::sync::atomic::Ordering::Acquire) as u64,
     );
 }
 

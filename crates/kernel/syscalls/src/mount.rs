@@ -29,12 +29,12 @@ fn current_user_ns() -> Option<namespace_identity::NamespacePin> {
 /// own label, which is the label those contexts genuinely act under. # C: O(1)
 fn current_selinux_sid() -> selinux::sidtab::Sid {
     sched::live::current().map_or_else(selinux_runtime::label::kernel_sid,
-                                       |c| c.selinux_label.lock().sid)
+                                       |c| c.security.selinux_label.lock().sid)
 }
 
 /// Label the running thread staged for the next file it creates. # C: O(1)
 fn current_fscreate_sid() -> Option<selinux::sidtab::Sid> {
-    sched::live::current().and_then(|c| c.selinux_label.lock().fscreate)
+    sched::live::current().and_then(|c| c.security.selinux_label.lock().fscreate)
 }
 
 /// Landlock's filesystem admission provider in the common LSM open chain.
@@ -64,9 +64,9 @@ fn current_reserved_caller(res_gid: u32) -> vfs::ReservedCaller {
     match sched::live::current() {
         None => vfs::ReservedCaller { fsuid: 0, in_res_group: true, cap_sys_resource: true },
         Some(cur) => {
-            let fsuid = cur.creds.fsuid.load(Ordering::Acquire);
-            let fsgid = cur.creds.fsgid.load(Ordering::Acquire);
-            let in_res_group = fsgid == res_gid || cur.creds.vfs_group_list().contains(res_gid);
+            let fsuid = cur.security.creds.fsuid.load(Ordering::Acquire);
+            let fsgid = cur.security.creds.fsgid.load(Ordering::Acquire);
+            let in_res_group = fsgid == res_gid || cur.security.creds.vfs_group_list().contains(res_gid);
             vfs::ReservedCaller {
                 fsuid, in_res_group,
                 cap_sys_resource: cur.has_cap(sched::cap::SYS_RESOURCE),

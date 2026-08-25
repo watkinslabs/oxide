@@ -140,7 +140,7 @@ fn dedupe_cred(_cur: &sched::Task) -> vfs::Cred {
 #[cfg(test)]
 fn dedupe_cred(cur: &sched::Task) -> vfs::Cred {
     use core::sync::atomic::Ordering;
-    let effective = cur.creds.cap_effective.load(Ordering::Acquire);
-    cur.creds.to_vfs_cred(cur.creds.fsuid.load(Ordering::Acquire),
-        cur.creds.fsgid.load(Ordering::Acquire), effective)
+    let effective = cur.security.creds.cap_effective.load(Ordering::Acquire);
+    cur.security.creds.to_vfs_cred(cur.security.creds.fsuid.load(Ordering::Acquire),
+        cur.security.creds.fsgid.load(Ordering::Acquire), effective)
 }

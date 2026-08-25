@@ -47,7 +47,7 @@ pub fn unpriv_write_verdict(current: u32, new: i64, cap_sys_admin: bool)
 /// # C: O(1)
 pub fn write_unpriv_bpf_disabled(new: i64) -> Result<(), Errno> {
     let cap = sched::current()
-        .map(|c| c.creds.has_cap(sched::cap::SYS_ADMIN))
+        .map(|c| c.security.creds.has_cap(sched::cap::SYS_ADMIN))
         .unwrap_or(false);
     let v = unpriv_write_verdict(unpriv_bpf_disabled_value(), new, cap)?;
     set_unpriv_bpf_disabled(v);

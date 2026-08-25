@@ -80,7 +80,7 @@ fn setgroups_size_zero_clears_the_list() {
     let task = privileged();
     seed_groups(&task, &[1, 2]);
     assert_eq!(setgroups_on(&task, &args2(0, 0)), 0);
-    assert_eq!(task.creds.ngroups(), 0);
+    assert_eq!(task.security.creds.ngroups(), 0);
 }
 
 #[test]
@@ -104,7 +104,7 @@ fn setgroups_accepts_exactly_ngroups_max_entries() {
     let task = privileged();
     let input: Vec<u32> = (0..NGROUPS_MAX as u32).rev().collect();
     assert_eq!(setgroups_on(&task, &args2(NGROUPS_MAX as u64, input.as_ptr() as u64)), 0);
-    assert_eq!(task.creds.ngroups(), NGROUPS_MAX);
+    assert_eq!(task.security.creds.ngroups(), NGROUPS_MAX);
     let mut out = alloc::vec![0u32; NGROUPS_MAX];
     assert_eq!(getgroups_on(&task, &args2(NGROUPS_MAX as u64, out.as_mut_ptr() as u64)),
         NGROUPS_MAX as i64);
@@ -118,7 +118,7 @@ fn setgroups_reports_efault_for_an_unreadable_list_and_keeps_the_old_one() {
     seed_groups(&task, &[5]);
     assert_eq!(setgroups_on(&task, &args2(2, KERNEL_PTR)), err(Errno::Efault));
     assert_eq!(setgroups_on(&task, &args2(2, 0)), err(Errno::Efault));
-    assert_eq!(task.creds.ngroups(), 1, "a failed setgroups leaves the list intact");
+    assert_eq!(task.security.creds.ngroups(), 1, "a failed setgroups leaves the list intact");
 }
 
 #[test]
@@ -127,7 +127,7 @@ fn setgroups_rejects_the_invalid_gid_with_einval_and_keeps_the_old_list() {
     seed_groups(&task, &[5]);
     let input = [1u32, u32::MAX, 3];
     assert_eq!(setgroups_on(&task, &args2(3, input.as_ptr() as u64)), err(Errno::Einval));
-    assert_eq!(task.creds.ngroups(), 1);
+    assert_eq!(task.security.creds.ngroups(), 1);
 }
 
 #[test]
@@ -139,7 +139,7 @@ fn setgroups_validates_each_gid_as_it_is_read() {
         let mut input = [1u32, 2, 3];
         input[position] = u32::MAX;
         assert_eq!(setgroups_on(&task, &args2(3, input.as_ptr() as u64)), err(Errno::Einval));
-        assert_eq!(task.creds.ngroups(), 0, "no partial install");
+        assert_eq!(task.security.creds.ngroups(), 0, "no partial install");
     }
 }
 
@@ -163,7 +163,7 @@ fn the_dac_snapshot_carries_every_group_not_just_the_first_thirty_two() {
     let task = privileged();
     let input: Vec<u32> = (100..300u32).collect();
     assert_eq!(setgroups_on(&task, &args2(200, input.as_ptr() as u64)), 0);
-    let cred = task.creds.to_vfs_cred(0, 4242, 0);
+    let cred = task.security.creds.to_vfs_cred(0, 4242, 0);
     assert_eq!(cred.groups.len(), 200);
     assert!(cred.in_group(299), "the last supplementary group still grants access");
     assert!(cred.in_group(150));
@@ -176,6 +176,6 @@ fn supplementary_group_membership_uses_the_sorted_list() {
     let task = privileged();
     let input = [90u32, 10, 50];
     assert_eq!(setgroups_on(&task, &args2(3, input.as_ptr() as u64)), 0);
-    assert!(task.creds.in_supplementary_group(50));
-    assert!(!task.creds.in_supplementary_group(51));
+    assert!(task.security.creds.in_supplementary_group(50));
+    assert!(!task.security.creds.in_supplementary_group(51));
 }

@@ -161,7 +161,7 @@ mod tests {
     }
 
     fn opener(task: &sched::Task) -> FileCred {
-        let effective = task.creds.cap_effective.load(Ordering::Acquire);
+        let effective = task.security.creds.cap_effective.load(Ordering::Acquire);
         FileCred::new(vfs::Cred::root(), task.namespace_owner(NamespaceKind::User).unwrap(), effective)
     }
 
@@ -228,7 +228,7 @@ mod tests {
         let current = sched::Task::new(915, "timens-opener", sched::SchedClass::Normal { weight: 1024 });
         let file_cred = opener(&current);
 
-        current.creds.cap_effective.store(0, Ordering::Release);
+        current.security.creds.cap_effective.store(0, Ordering::Release);
         let moved = allocate(NamespaceKind::User, initial(NamespaceKind::User),
             Some(initial(NamespaceKind::User))).unwrap();
         assert!(current.replace_namespace(moved).is_ok());
@@ -248,11 +248,11 @@ mod tests {
         let sibling = allocate(NamespaceKind::User, initial(NamespaceKind::User),
             Some(initial(NamespaceKind::User))).unwrap();
         assert!(current.replace_namespace(sibling).is_ok());
-        current.creds.cap_effective.store(0, Ordering::Release);
+        current.security.creds.cap_effective.store(0, Ordering::Release);
         let file_cred = opener(&current);
 
         assert!(current.replace_namespace(initial(NamespaceKind::User)).is_ok());
-        current.creds.cap_effective.store(1u64 << sched::cap::SYS_TIME, Ordering::Release);
+        current.security.creds.cap_effective.store(1u64 << sched::cap::SYS_TIME, Ordering::Release);
 
         assert_eq!(update_target(&file_cred, &target, b"monotonic 1 0\n", 10_000_000_000),
             Err(VfsError::Eperm));

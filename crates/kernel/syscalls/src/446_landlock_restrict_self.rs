@@ -26,7 +26,7 @@ pub fn sys_landlock_restrict_self(args: &SyscallArgs) -> i64 {
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };
-    let nnp = cur.no_new_privs.load(Ordering::Acquire);
+    let nnp = cur.security.no_new_privs.load(Ordering::Acquire);
     if let Err(e) = abi::restrict_self_precheck(nnp, cap_sys_admin_in_own_user_ns(&cur), flags) {
         return -(e.as_i32() as i64);
     }
@@ -36,13 +36,13 @@ pub fn sys_landlock_restrict_self(args: &SyscallArgs) -> i64 {
     // landlock crate free of a boot-order slot, and no domain can exist before
     // the first call to this syscall.
     ::landlock::audit::set_exec_layers_source(current_exec_layers);
-    let log_state = cur.landlock_log_state.load(Ordering::Acquire);
+    let log_state = cur.security.landlock_log_state.load(Ordering::Acquire);
 
     // A pure logging-configuration change installs no layer: it only asks that
     // the layers stacked from here on stay silent, which is how a launcher
     // quietens the sandbox it is about to hand to a child.
     if !plan.needs_ruleset {
-        cur.landlock_log_state.store(
+        cur.security.landlock_log_state.store(
             logging::state_after_restrict(log_state, flags, None), Ordering::Release);
         if plan.propagate_no_new_privs {
             if let Err(sched::landlock_tsync::StartError::Restart) =
@@ -62,7 +62,7 @@ pub fn sys_landlock_restrict_self(args: &SyscallArgs) -> i64 {
     let dom = match Domain::merge_logged(parent.as_ref(), &rs, log, details(&cur)) {
         Ok(d) => d, Err(e) => return -(e.as_i32() as i64),
     };
-    cur.landlock_log_state.store(
+    cur.security.landlock_log_state.store(
         logging::state_after_restrict(log_state, flags, Some(dom.num_layers() - 1)),
         Ordering::Release);
     if plan.tsync {
@@ -98,7 +98,7 @@ fn cap_sys_admin_in_own_user_ns(cur: &sched::Task) -> bool {
 fn details(cur: &sched::Task) -> DomainDetails {
     DomainDetails {
         pid: cur.visible_pid(),
-        uid: cur.creds.euid.load(Ordering::Acquire),
+        uid: cur.security.creds.euid.load(Ordering::Acquire),
         exe: cur.exe_path().map(|p| p.into_bytes()).unwrap_or_default(),
         comm: cur.comm().into_bytes(),
     }
@@ -109,7 +109,7 @@ fn details(cur: &sched::Task) -> DomainDetails {
 /// # C: O(1)
 fn current_exec_layers() -> u32 {
     match sched::live::current() {
-        Some(c) => ::landlock::logging::exec_layers(c.landlock_log_state.load(Ordering::Acquire)),
+        Some(c) => ::landlock::logging::exec_layers(c.security.landlock_log_state.load(Ordering::Acquire)),
         None => 0,
     }
 }

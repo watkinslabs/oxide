@@ -12,7 +12,7 @@ fn socket(protocol: u16) -> NetlinkSocket {
 
 fn received(state: ReceiveState) -> (alloc::vec::Vec<u8>, SenderCreds) {
     match state {
-        ReceiveState::Datagram(dgram) => (dgram.bytes, dgram.creds),
+        ReceiveState::Datagram(dgram) => (dgram.bytes, dgram.security.creds),
         _ => panic!("expected a queued datagram"),
     }
 }

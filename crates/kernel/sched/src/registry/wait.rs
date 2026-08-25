@@ -36,7 +36,7 @@ impl WaitChildSnapshot {
             // The waiter reads this number, so it is expressed in the WAITER's
             // pid namespace — not the child's own.
             vpid:     super::leader_tgid_nr_in(t, &super::reader_pid_ns()).unwrap_or(0),
-            uid:      t.creds.ruid.load(Ordering::Acquire),
+            uid:      t.security.creds.ruid.load(Ordering::Acquire),
             utime_ns: t.utime_ns.load(Ordering::Acquire),
             stime_ns: t.stime_ns.load(Ordering::Acquire),
             rusage:   task_rusage_both(t),
@@ -168,14 +168,14 @@ pub fn child_stop_event(
         // is not a stop code: a tracer that resumed its tracee without waiting
         // wrote its `data` there and the tracee then cleared it, so reporting
         // it would hand userspace a `WIFSTOPPED` status with signal 0.
-        if (want_stop || trapped) && t.stop_pending.load(Ordering::Acquire) {
-            let code = t.stop_code.load(Ordering::Acquire);
-            if code != 0 && take_flag(&t.stop_pending, consume) {
+        if (want_stop || trapped) && t.security.stop_pending.load(Ordering::Acquire) {
+            let code = t.security.stop_code.load(Ordering::Acquire);
+            if code != 0 && take_flag(&t.security.stop_pending, consume) {
                 let kind = if trapped { WaitEventKind::Trapped } else { WaitEventKind::Stopped };
                 return Some((WaitChildSnapshot::from_task(&t), kind, code));
             }
         }
-        if want_cont && take_flag(&t.cont_pending, consume) {
+        if want_cont && take_flag(&t.security.cont_pending, consume) {
             return Some((WaitChildSnapshot::from_task(&t), WaitEventKind::Continued, 0));
         }
     }

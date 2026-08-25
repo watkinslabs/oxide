@@ -24,17 +24,17 @@ fn an_absent_register_denies_nothing() {
 fn the_handoff_is_inert_without_a_register() {
     let prev = task(1);
     let next = task(2);
-    prev.pkey_rights.store(0xDEAD_BEEF, Ordering::Relaxed);
-    next.pkey_rights.store(0x1234_5678, Ordering::Relaxed);
+    prev.security.pkey_rights.store(0xDEAD_BEEF, Ordering::Relaxed);
+    next.security.pkey_rights.store(0x1234_5678, Ordering::Relaxed);
     switch_to(&prev, &next);
-    assert_eq!(prev.pkey_rights.load(Ordering::Relaxed), 0xDEAD_BEEF);
-    assert_eq!(next.pkey_rights.load(Ordering::Relaxed), 0x1234_5678);
+    assert_eq!(prev.security.pkey_rights.load(Ordering::Relaxed), 0xDEAD_BEEF);
+    assert_eq!(next.security.pkey_rights.load(Ordering::Relaxed), 0x1234_5678);
 }
 
 // A task is born holding the default rather than an arbitrary value.
 #[test]
 fn a_new_task_starts_at_the_default() {
-    assert_eq!(task(3).pkey_rights.load(Ordering::Relaxed), init_value());
+    assert_eq!(task(3).security.pkey_rights.load(Ordering::Relaxed), init_value());
 }
 
 // exec resets the snapshot: a fresh program must not inherit rights the old
@@ -42,9 +42,9 @@ fn a_new_task_starts_at_the_default() {
 #[test]
 fn exec_resets_the_snapshot_to_the_default() {
     let t = task(4);
-    t.pkey_rights.store(0xAAAA_AAAA, Ordering::Relaxed);
+    t.security.pkey_rights.store(0xAAAA_AAAA, Ordering::Relaxed);
     reset_on_exec(&t);
-    assert_eq!(t.pkey_rights.load(Ordering::Relaxed), init_value());
+    assert_eq!(t.security.pkey_rights.load(Ordering::Relaxed), init_value());
 }
 
 // ── the read-before-write ordering ──────────────────────────────────────
@@ -69,15 +69,15 @@ fn a_user_write_the_kernel_never_saw_survives_a_switch() {
     let _g = ();
     let a = task(10);
     let b = task(11);
-    a.pkey_rights.store(0x1111, Ordering::Relaxed);
-    b.pkey_rights.store(0x2222, Ordering::Relaxed);
+    a.security.pkey_rights.store(0x1111, Ordering::Relaxed);
+    b.security.pkey_rights.store(0x2222, Ordering::Relaxed);
     arm_fake(0x1111);
 
     // Userspace opens a key behind the kernel's back.
     super::fake::VALUE.store(0xBEEF, Ordering::Relaxed);
     // ... and is switched away from.
     switch_to(&a, &b);
-    assert_eq!(a.pkey_rights.load(Ordering::Relaxed), 0xBEEF,
+    assert_eq!(a.security.pkey_rights.load(Ordering::Relaxed), 0xBEEF,
         "the outgoing task's snapshot must capture the user's write");
     assert_eq!(read_live(), 0x2222, "the incoming task's rights must be installed");
 
@@ -93,12 +93,12 @@ fn a_user_write_the_kernel_never_saw_survives_a_switch() {
 fn the_incoming_tasks_rights_are_installed_not_the_outgoing_tasks() {
     let a = task(12);
     let b = task(13);
-    a.pkey_rights.store(0xAAAA, Ordering::Relaxed);
-    b.pkey_rights.store(0xBBBB, Ordering::Relaxed);
+    a.security.pkey_rights.store(0xAAAA, Ordering::Relaxed);
+    b.security.pkey_rights.store(0xBBBB, Ordering::Relaxed);
     arm_fake(0xCCCC);
     switch_to(&a, &b);
-    assert_eq!(a.pkey_rights.load(Ordering::Relaxed), 0xCCCC);
-    assert_eq!(b.pkey_rights.load(Ordering::Relaxed), 0xBBBB);
+    assert_eq!(a.security.pkey_rights.load(Ordering::Relaxed), 0xCCCC);
+    assert_eq!(b.security.pkey_rights.load(Ordering::Relaxed), 0xBBBB);
     assert_eq!(read_live(), 0xBBBB);
     disarm_fake();
 }

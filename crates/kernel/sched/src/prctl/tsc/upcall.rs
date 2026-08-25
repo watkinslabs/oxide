@@ -21,7 +21,7 @@ use core::sync::atomic::Ordering;
 #[no_mangle]
 pub unsafe extern "C" fn oxide_arm_counter_read_denied() -> u64 {
     match crate::live::current() {
-        Some(cur) => cur.tsc_sigsegv.load(Ordering::Acquire) as u64,
+        Some(cur) => cur.security.tsc_sigsegv.load(Ordering::Acquire) as u64,
         None => 0,
     }
 }
@@ -45,7 +45,7 @@ pub unsafe extern "C" fn oxide_arm_counter_read_sigsegv(frame_ptr: *mut u8) -> u
     // the signal-frame builder would rewrite the wrong one without this.
     hal_aarch64::set_current_svc_frame(frame_ptr as u64);
     let Some(cur) = crate::live::current() else { return 0 };
-    cur.svc_frame.store(frame_ptr as u64, Ordering::Release);
+    cur.security.svc_frame.store(frame_ptr as u64, Ordering::Release);
     // SAFETY: `frame_ptr` is the 288 B lower-EL sync frame; user x0 sits at offset 0.
     let saved_x0 = unsafe { core::ptr::read_volatile(frame_ptr as *const u64) };
     crate::live::force_sig_fault(crate::signum::Signum::Sigsegv, hal::fault_class::SI_KERNEL, 0, 0);

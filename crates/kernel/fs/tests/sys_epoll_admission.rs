@@ -65,7 +65,7 @@ fn install_current_with_fdt(fdt: Arc<FdTable>) -> &'static Task {
 /// harness runs the tests in one process.
 fn install_current_as(fdt: Arc<FdTable>, uid: u32) -> &'static Task {
     let task = Box::leak(Box::new(Task::new(0x9100, "epoll-adm", SchedClass::Normal { weight: 1024 })));
-    task.creds.ruid.store(uid, Ordering::Release);
+    task.security.creds.ruid.store(uid, Ordering::Release);
     // SAFETY: freshly leaked test task is not scheduled and has no concurrent fd-table writer.
     unsafe { task.replace_fd_table(Some(fdt)); }
     CURRENT.store(task as *const Task as *mut Task, Ordering::Release);

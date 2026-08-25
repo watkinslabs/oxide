@@ -9,16 +9,16 @@ use core::sync::atomic::Ordering;
 /// # C: O(1)
 pub fn current_vfs_cred() -> vfs::Cred {
     let Some(task) = crate::current() else { return vfs::Cred::root(); };
-    let effective = task.creds.cap_effective.load(Ordering::Acquire);
-    task.creds.to_vfs_cred(task.creds.fsuid.load(Ordering::Acquire),
-        task.creds.fsgid.load(Ordering::Acquire), effective)
+    let effective = task.security.creds.cap_effective.load(Ordering::Acquire);
+    task.security.creds.to_vfs_cred(task.security.creds.fsuid.load(Ordering::Acquire),
+        task.security.creds.fsgid.load(Ordering::Acquire), effective)
 }
 
 /// Snapshot the running task's complete opener credentials for a VFS file.
 /// # C: O(1)
 pub fn current_vfs_file_cred() -> vfs::FileCred {
     let Some(task) = crate::current() else { return vfs::FileCred::root(); };
-    let effective = task.creds.cap_effective.load(Ordering::Acquire);
+    let effective = task.security.creds.cap_effective.load(Ordering::Acquire);
     let Some(user_namespace) = task.namespace_owner(namespace_identity::NamespaceKind::User) else {
         return vfs::FileCred::root();
     };

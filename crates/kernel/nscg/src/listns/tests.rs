@@ -50,7 +50,7 @@ fn visibility_is_exact_current_or_init_privileged() {
     let current_id = current.ns_id().as_u64();
     let foreign_id = foreign.ns_id().as_u64();
     assert!(caller.replace_namespace(current.clone()).is_ok());
-    caller.creds.cap_effective.store(0, Ordering::Release);
+    caller.security.creds.cap_effective.store(0, Ordering::Release);
 
     let page = listns_page(&caller, 0, CLONE_NEWUTS as u32,
         ListNsOwnerFilter::All, usize::MAX).unwrap();
@@ -125,7 +125,7 @@ fn zero_cursor_empty_owner_tree_returns_empty_page() {
 fn structural_no_successor_differs_from_filtered_empty_page() {
     let _scan = crate::test_support::registry_scan();
     let caller = task("listns-successor");
-    caller.creds.cap_effective.store(0, Ordering::Release);
+    caller.security.creds.cap_effective.store(0, Ordering::Release);
     let _foreign = allocate(NamespaceKind::Uts,
         &namespace_identity::initial(NamespaceKind::User));
 

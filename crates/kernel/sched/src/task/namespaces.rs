@@ -227,8 +227,8 @@ impl Task {
             .ok_or(PidMappingError::NamespaceKind)?;
         let numbers = self.pid.alloc_mappings(&namespace, set_tid)?;
         let own = numbers[0];
-        self.vtid.store(own, core::sync::atomic::Ordering::Release);
-        if group_leader { self.vtgid.store(own, core::sync::atomic::Ordering::Release); }
+        self.security.vtid.store(own, core::sync::atomic::Ordering::Release);
+        if group_leader { self.security.vtgid.store(own, core::sync::atomic::Ordering::Release); }
         Ok(())
     }
 
@@ -247,8 +247,8 @@ impl Task {
         // The number this task is known by: its own thread number, else the
         // process number a leader was stamped with, else the internal tid for
         // a kernel thread that took neither.
-        let mut nr = self.vtid.load(core::sync::atomic::Ordering::Acquire);
-        if nr == 0 { nr = self.vtgid.load(core::sync::atomic::Ordering::Acquire); }
+        let mut nr = self.security.vtid.load(core::sync::atomic::Ordering::Acquire);
+        if nr == 0 { nr = self.security.vtgid.load(core::sync::atomic::Ordering::Acquire); }
         if nr == 0 { nr = self.tid; }
         let _ = self.pid.configure_mappings(&namespace, &[nr]);
     }

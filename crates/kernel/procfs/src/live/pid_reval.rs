@@ -51,9 +51,9 @@ fn dentry_task(d: &Dentry) -> Option<Arc<sched::Task>> {
 fn task_owner(task: &sched::Task) -> TaskOwner {
     TaskOwner {
         kthread: task.clone_mm().is_none(),
-        euid: task.creds.euid.load(Ordering::Acquire),
-        egid: task.creds.egid.load(Ordering::Acquire),
-        dumpable: task.dumpable.load(Ordering::Acquire),
+        euid: task.security.creds.euid.load(Ordering::Acquire),
+        egid: task.security.creds.egid.load(Ordering::Acquire),
+        dumpable: task.security.dumpable.load(Ordering::Acquire),
     }
 }
 

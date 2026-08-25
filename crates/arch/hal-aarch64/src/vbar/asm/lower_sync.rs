@@ -373,4 +373,3 @@ core::arch::global_asm!(
     // `finish_task_switch` handoff) which then reaches this epilogue.
     stack_bytes = const hal::KERNEL_STACK_BYTES,
 );
-

@@ -138,12 +138,12 @@ pub fn kernel_arch_prctl(args: &SyscallArgs) -> i64 {
         }
         ArchOp::GetCpuid => {
             let nocpuid = sched::live::current()
-                .map(|c| c.nocpuid.load(Ordering::Acquire)).unwrap_or(false);
+                .map(|c| c.security.nocpuid.load(Ordering::Acquire)).unwrap_or(false);
             arch_prctl_abi::get_cpuid_mode(nocpuid)
         }
         ArchOp::SetCpuid(enable) => {
             let Some(cur) = sched::live::current() else { return arch_prctl_abi::cpuid::enodev() };
-            let now = cur.nocpuid.load(Ordering::Acquire);
+            let now = cur.security.nocpuid.load(Ordering::Acquire);
             match arch_prctl_abi::set_cpuid_mode(cpuid_fault_msr(), enable, now) {
                 CpuidModeChange::Enodev => arch_prctl_abi::cpuid::enodev(),
                 CpuidModeChange::AlreadySet => 0,
@@ -153,7 +153,7 @@ pub fn kernel_arch_prctl(args: &SyscallArgs) -> i64 {
                     // write must not be separated by a reschedule, or the
                     // switch path's difference test compares against a flag
                     // that already moved and skips the write.
-                    cur.nocpuid.store(nocpuid, Ordering::Release);
+                    cur.security.nocpuid.store(nocpuid, Ordering::Release);
                     // SAFETY: running on this task's CPU inside its own
                     // syscall; the callee is a no-op unless the probe found a
                     // vendor mechanism, which `set_cpuid_mode` just confirmed.
@@ -167,14 +167,14 @@ pub fn kernel_arch_prctl(args: &SyscallArgs) -> i64 {
                 return -(Errno::Einval.as_i32() as i64)
             };
             let st = ShstkState {
-                features: cur.shstk_features.load(Ordering::Acquire),
-                locked: cur.shstk_locked.load(Ordering::Acquire),
+                features: cur.security.shstk_features.load(Ordering::Acquire),
+                locked: cur.security.shstk_locked.load(Ordering::Acquire),
             };
             match arch_prctl_abi::shstk_prctl(option, features, st, USER_SHSTK_ENABLED) {
                 ShstkOutcome::PutUser { ptr, val } => put_user_u64(ptr, val),
                 ShstkOutcome::Store(n) => {
-                    cur.shstk_features.store(n.features, Ordering::Release);
-                    cur.shstk_locked.store(n.locked, Ordering::Release);
+                    cur.security.shstk_features.store(n.features, Ordering::Release);
+                    cur.security.shstk_locked.store(n.locked, Ordering::Release);
                     0
                 }
                 ShstkOutcome::Ret(rv) => rv,

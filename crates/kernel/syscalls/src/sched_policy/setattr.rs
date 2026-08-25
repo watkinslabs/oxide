@@ -185,9 +185,9 @@ fn apply(t: &Arc<sched::Task>, attr: &SchedAttr, policy: u32) {
     // timed wait reads the field directly, so this write is what makes an RT
     // task's timeouts exact instead of coalesced.
     if t.is_rt_or_dl_policy() {
-        t.timer_slack_ns.store(0, Ordering::Release);
-    } else if t.timer_slack_ns.load(Ordering::Acquire) == 0 {
-        t.timer_slack_ns.store(t.default_timer_slack_ns.load(Ordering::Acquire), Ordering::Release);
+        t.security.timer_slack_ns.store(0, Ordering::Release);
+    } else if t.security.timer_slack_ns.load(Ordering::Acquire) == 0 {
+        t.security.timer_slack_ns.store(t.security.default_timer_slack_ns.load(Ordering::Acquire), Ordering::Release);
     }
     crate::sched_policy::commit::set_class(t, new_class);
 }

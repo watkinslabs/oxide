@@ -109,7 +109,7 @@ impl Default for TaskLabel {
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub fn current_sid() -> Sid {
     match crate::live::current() {
-        Some(t) => t.selinux_label.lock().sid,
+        Some(t) => t.security.selinux_label.lock().sid,
         None => selinux_runtime::label::kernel_sid(),
     }
 }
@@ -117,7 +117,7 @@ pub fn current_sid() -> Sid {
 /// Label the running thread staged for the next object it creates. # C: O(1)
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub fn current_fscreate_sid() -> Option<Sid> {
-    crate::live::current().and_then(|t| t.selinux_label.lock().fscreate)
+    crate::live::current().and_then(|t| t.security.selinux_label.lock().fscreate)
 }
 
 /// Label the running thread staged for the next SOCKET it creates. # C: O(1)
@@ -127,5 +127,5 @@ pub fn current_fscreate_sid() -> Option<Sid> {
 /// slots are written through different attributes.
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub fn current_sockcreate_sid() -> Option<Sid> {
-    crate::live::current().and_then(|t| t.selinux_label.lock().sockcreate)
+    crate::live::current().and_then(|t| t.security.selinux_label.lock().sockcreate)
 }

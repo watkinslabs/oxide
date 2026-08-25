@@ -17,7 +17,7 @@ fn members(pgid: u32) -> Vec<PgrpMember> {
         .map(|p| {
             let parent = p.parent();
             let parent_is_init = parent.as_ref().is_some_and(|q| {
-                q.vtgid.load(Ordering::Acquire) == super::pidns::INIT_VPID
+                q.security.vtgid.load(Ordering::Acquire) == super::pidns::INIT_VPID
                     && super::pidns::in_initial_pid_namespace(q)
             });
             PgrpMember {

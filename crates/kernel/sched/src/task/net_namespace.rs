@@ -12,7 +12,7 @@ impl Task {
     /// # Lk: takes `Namespace` (rank 75)
     /// # Sleeps: no
     pub fn network_namespace_snapshot(&self) -> Option<NetworkNamespaceRef> {
-        self.net_namespace.lock().as_ref().map(Arc::clone)
+        self.security.net_namespace.lock().as_ref().map(Arc::clone)
     }
 
     /// Read the stable identity of the task's current network namespace.
@@ -21,7 +21,7 @@ impl Task {
     /// # Lk: takes `Namespace` (rank 75)
     /// # Sleeps: no
     pub fn network_namespace_id(&self) -> Option<NetworkNamespaceId> {
-        self.net_namespace.lock().as_ref().map(|namespace| namespace.id())
+        self.security.net_namespace.lock().as_ref().map(|namespace| namespace.id())
     }
 
     /// Replace network namespace membership and drop the old owner unlocked.
@@ -33,7 +33,7 @@ impl Task {
         -> Result<(), NetworkNamespaceRef>
     {
         let old = {
-            let mut slot = self.net_namespace.lock();
+            let mut slot = self.security.net_namespace.lock();
             if slot.is_none() { return Err(namespace); }
             slot.replace(namespace)
         };
@@ -48,7 +48,7 @@ impl Task {
     /// # Sleeps: no
     pub fn release_network_namespace(&self) {
         let old = {
-            let mut slot = self.net_namespace.lock();
+            let mut slot = self.security.net_namespace.lock();
             slot.take()
         };
         drop(old);

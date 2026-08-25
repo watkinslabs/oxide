@@ -96,7 +96,7 @@ pub fn has_users(id: u64) -> bool {
     {
         for tid in sched::registry::live_tids() {
             let Some(t) = sched::registry::lookup(tid) else { continue };
-            if t.seccomp_filters.lock().iter().any(|f| f.listener == Some(id)) { return true; }
+            if t.security.seccomp_filters.lock().iter().any(|f| f.listener == Some(id)) { return true; }
         }
         false
     }

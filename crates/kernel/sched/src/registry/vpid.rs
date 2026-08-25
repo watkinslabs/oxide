@@ -53,7 +53,7 @@ pub fn vnr_in(t: &Task, ns: &NamespaceRef) -> Option<u32> {
     use core::sync::atomic::Ordering;
     if let Some(nr) = t.pid.visible_tid(ns) { return Some(nr); }
     if !ns.is_initial() { return None; }
-    let vtid = t.vtid.load(Ordering::Acquire);
+    let vtid = t.security.vtid.load(Ordering::Acquire);
     Some(if vtid != 0 { vtid } else { t.tid })
 }
 
@@ -114,7 +114,7 @@ pub fn tgid_nr_in(t: &Task, ns: &NamespaceRef) -> Option<u32> {
 fn group_nr_without_leader(t: &Task, ns: &NamespaceRef) -> Option<u32> {
     use core::sync::atomic::Ordering;
     if !ns.is_initial() { return None; }
-    let vtgid = t.vtgid.load(Ordering::Acquire);
+    let vtgid = t.security.vtgid.load(Ordering::Acquire);
     Some(if vtgid != 0 { vtgid } else { t.tgid.load(Ordering::Acquire) })
 }
 
@@ -125,7 +125,7 @@ pub fn leader_tgid_nr_in(t: &Task, ns: &NamespaceRef) -> Option<u32> {
     use core::sync::atomic::Ordering;
     if let Some(nr) = t.pid.visible_tid(ns) { return Some(nr); }
     if !ns.is_initial() { return None; }
-    let vtgid = t.vtgid.load(Ordering::Acquire);
+    let vtgid = t.security.vtgid.load(Ordering::Acquire);
     Some(if vtgid != 0 { vtgid } else { t.tgid.load(Ordering::Acquire) })
 }
 
@@ -186,7 +186,7 @@ pub fn lookup_by_vpid(vpid: u32) -> Option<Arc<Task>> {
         match w.upgrade() {
             Some(t) if !t.reaped.load(Ordering::Acquire)
                 && tgid_nr_in_locked(&g, &t, &ns) == Some(vpid)
-                && t.vtid.load(Ordering::Acquire) == t.vtgid.load(Ordering::Acquire) =>
+                && t.security.vtid.load(Ordering::Acquire) == t.security.vtgid.load(Ordering::Acquire) =>
             {
                 return Some(t);
             }
@@ -201,7 +201,7 @@ pub fn lookup_by_vpid(vpid: u32) -> Option<Arc<Task>> {
         if t.reaped.load(Ordering::Acquire) || tgid_nr_in_locked(&g, &t, &ns) != Some(vpid) {
             continue;
         }
-        if t.vtid.load(Ordering::Acquire) == t.vtgid.load(Ordering::Acquire) {
+        if t.security.vtid.load(Ordering::Acquire) == t.security.vtgid.load(Ordering::Acquire) {
             leader = Some(alloc::sync::Weak::clone(w));
             fallback = Some(t);
             break;

@@ -192,7 +192,7 @@ pub unsafe fn schedule_once(keep_irqs_disabled: bool) {
         // SAFETY: `swap_current` just published the incoming task as
         // `rq.current`, and `schedule` runs preempt-off, so the runqueue's Arc
         // keeps this borrow alive for the whole read.
-        let frame = unsafe { rq.current_ref() }.svc_frame.load(Ordering::Acquire);
+        let frame = unsafe { rq.current_ref() }.security.svc_frame.load(Ordering::Acquire);
         hal_aarch64::set_current_svc_frame(frame);
         // Publish the incoming task's kernel-stack bounds for the exception-entry
         // bad-stack check. x86 has published its equivalent on every switch since
@@ -327,11 +327,11 @@ pub unsafe fn schedule_once(keep_irqs_disabled: bool) {
         // Linux `__switch_to_xtra` invalidates the outgoing task's TSS window;
         // the incoming task's bitmap is published by exit-to-user. This keeps
         // kernel-only preemption from programming a user permission window.
-        if prev_ref.tif_io_bitmap.load(Ordering::Relaxed) {
+        if prev_ref.security.tif_io_bitmap.load(Ordering::Relaxed) {
             crate::ioport::arch::invalidate();
         }
-        let prev_nocpuid = prev_ref.nocpuid.load(Ordering::Relaxed);
-        if now.nocpuid.load(Ordering::Relaxed) != prev_nocpuid {
+        let prev_nocpuid = prev_ref.security.nocpuid.load(Ordering::Relaxed);
+        if now.security.nocpuid.load(Ordering::Relaxed) != prev_nocpuid {
             // SAFETY: running on the CPU being reprogrammed with preemption
             // disabled, so the MSR and the incoming task's flag cannot
             // diverge; the callee is a no-op when the CPU has no mechanism.
@@ -345,8 +345,8 @@ pub unsafe fn schedule_once(keep_irqs_disabled: bool) {
         unsafe {
             prev_ref.debug_check_fpu_state("schedule-save-prev");
             now.debug_check_fpu_state("schedule-restore-next");
-            hal_x86_64::fpu_save((*prev_ref.fpu_state.get()).as_mut_ptr() as *mut hal_x86_64::FpuStateX86_64);
-            hal_x86_64::fpu_restore((*now.fpu_state.get()).as_mut_ptr() as *const hal_x86_64::FpuStateX86_64);
+            hal_x86_64::fpu_save((*prev_ref.security.fpu_state.get()).as_mut_ptr() as *mut hal_x86_64::FpuStateX86_64);
+            hal_x86_64::fpu_restore((*now.security.fpu_state.get()).as_mut_ptr() as *const hal_x86_64::FpuStateX86_64);
         }
     }
     #[cfg(target_arch = "aarch64")]
@@ -363,8 +363,8 @@ pub unsafe fn schedule_once(keep_irqs_disabled: bool) {
         unsafe {
             prev_ref.debug_check_fpu_state("schedule-save-prev");
             now.debug_check_fpu_state("schedule-restore-next");
-            hal_aarch64::fpu_save((*prev_ref.fpu_state.get()).as_mut_ptr() as *mut hal_aarch64::FpuStateAArch64);
-            hal_aarch64::fpu_restore((*now.fpu_state.get()).as_mut_ptr() as *const hal_aarch64::FpuStateAArch64);
+            hal_aarch64::fpu_save((*prev_ref.security.fpu_state.get()).as_mut_ptr() as *mut hal_aarch64::FpuStateAArch64);
+            hal_aarch64::fpu_restore((*now.security.fpu_state.get()).as_mut_ptr() as *const hal_aarch64::FpuStateAArch64);
         }
     }
 

@@ -26,7 +26,7 @@ const SYS_USER_DISPATCH: i32 = 2;
 /// # C: O(1)
 pub(super) fn user_dispatch_gate(nr: u64, a0: u64) -> Option<u64> {
     let cur = sched::live::current()?;
-    let cfg = cur.syscall_dispatch.armed()?;
+    let cfg = cur.security.syscall_dispatch.armed()?;
     let pc = crate::arch_frame::current_user_pc();
     // Only read the selector byte when the range test did not already exempt
     // this PC — the common in-dispatcher case must not touch user memory.
@@ -37,7 +37,7 @@ pub(super) fn user_dispatch_gate(nr: u64, a0: u64) -> Option<u64> {
     match sud::decide(&cfg, pc, byte) {
         Action::Run => None,
         Action::Dispatch => {
-            cur.syscall_dispatch.set_on_dispatch();
+            cur.security.syscall_dispatch.set_on_dispatch();
             raise_sigsys(nr, pc);
             Some(crate::syscall_rollback::rolled_back_return(nr, a0))
         }
@@ -56,7 +56,7 @@ pub(super) fn user_dispatch_gate(nr: u64, a0: u64) -> Option<u64> {
 /// the entry work was.
 /// # C: O(1)
 pub(super) fn rolled_back_this_syscall() -> bool {
-    sched::live::current().is_some_and(|c| c.syscall_dispatch.take_on_dispatch())
+    sched::live::current().is_some_and(|c| c.security.syscall_dispatch.take_on_dispatch())
 }
 
 /// `trigger_sigsys()` — a CATCHABLE `SIGSYS` carrying the trapping PC and the

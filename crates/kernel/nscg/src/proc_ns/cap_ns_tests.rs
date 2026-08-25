@@ -15,8 +15,8 @@ const STRANGER_UID: u32 = 1001;
 
 fn task(tid: u32, name: &'static str, euid: u32) -> sched::Task {
     let t = sched::Task::new(tid, name, sched::SchedClass::Normal { weight: 1024 });
-    t.creds.euid.store(euid, core::sync::atomic::Ordering::Release);
-    t.creds.cap_effective.store(0, core::sync::atomic::Ordering::Release);
+    t.security.creds.euid.store(euid, core::sync::atomic::Ordering::Release);
+    t.security.creds.cap_effective.store(0, core::sync::atomic::Ordering::Release);
     t
 }
 
@@ -116,17 +116,17 @@ fn entering_a_user_namespace_by_setns_grants_the_full_set() {
     use core::sync::atomic::Ordering;
     let t = task(706, "setns-enter", CREATOR_UID);
     let target = child_of(initial_user(), CREATOR_UID);
-    assert_eq!(t.creds.cap_effective.load(Ordering::Acquire), 0, "holds nothing to start");
+    assert_eq!(t.security.creds.cap_effective.load(Ordering::Acquire), 0, "holds nothing to start");
 
     let ns = NsInode { kind: NsKind::User, owner: NsOwner::User(target.clone()) };
     assert_eq!(super::setns_apply(&ns, 0, &t), 0, "the owner may enter what it created");
 
-    assert_eq!(t.creds.cap_effective.load(Ordering::Acquire), sched::Creds::CAP_FULL,
+    assert_eq!(t.security.creds.cap_effective.load(Ordering::Acquire), sched::Creds::CAP_FULL,
         "entering rewrites the effective set, as creating one does");
-    assert_eq!(t.creds.cap_permitted.load(Ordering::Acquire), sched::Creds::CAP_FULL);
-    assert_eq!(t.creds.cap_bounding.load(Ordering::Acquire), sched::Creds::CAP_FULL);
-    assert_eq!(t.creds.cap_inheritable.load(Ordering::Acquire), 0, "inheritable is cleared");
-    assert_eq!(t.creds.cap_ambient.load(Ordering::Acquire), 0, "ambient is cleared");
+    assert_eq!(t.security.creds.cap_permitted.load(Ordering::Acquire), sched::Creds::CAP_FULL);
+    assert_eq!(t.security.creds.cap_bounding.load(Ordering::Acquire), sched::Creds::CAP_FULL);
+    assert_eq!(t.security.creds.cap_inheritable.load(Ordering::Acquire), 0, "inheritable is cleared");
+    assert_eq!(t.security.creds.cap_ambient.load(Ordering::Acquire), 0, "ambient is cleared");
 }
 
 /// The rewrite is the LAST step: a refused install must leave the caller's
@@ -142,6 +142,6 @@ fn a_refused_user_namespace_install_leaves_credentials_alone() {
     let ns = NsInode { kind: NsKind::User, owner: NsOwner::User(target) };
 
     assert_ne!(super::setns_apply(&ns, 0, &t), 0, "a stranger's namespace is refused");
-    assert_eq!(t.creds.cap_effective.load(Ordering::Acquire), 0,
+    assert_eq!(t.security.creds.cap_effective.load(Ordering::Acquire), 0,
         "a refused install must not hand out the full set");
 }

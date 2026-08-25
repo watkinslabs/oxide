@@ -89,7 +89,7 @@ pub fn reset_ids(ptr: u64) -> bool {
 /// number. Best effort — the area may already be gone, which is often why
 /// the task is dying. # C: O(1)
 pub fn mark_registration_failed(cur: &crate::Task) {
-    let ptr = cur.rseq_ptr.load(Ordering::Acquire);
+    let ptr = cur.security.rseq_ptr.load(Ordering::Acquire);
     if ptr == 0 { return; }
     let _ = put_u32(ptr + abi::RSEQ_OFF_CPU_ID_START, abi::RSEQ_CPU_ID_REGISTRATION_FAILED);
     let _ = put_u32(ptr + abi::RSEQ_OFF_CPU_ID, abi::RSEQ_CPU_ID_REGISTRATION_FAILED);

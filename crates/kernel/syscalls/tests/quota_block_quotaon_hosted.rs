@@ -129,7 +129,7 @@ fn begin_test() -> MutexGuard<'static, ()> {
 
 fn install_root() {
     let task = Box::leak(Box::new(sched::Task::new(0x2790, "quotactl-block-quotaon-hosted", sched::SchedClass::Normal { weight: 1024 })));
-    task.creds.euid.store(0, Ordering::Release);
+    task.security.creds.euid.store(0, Ordering::Release);
     CURRENT_TASK_PTR.store(task as *const sched::Task as u64, Ordering::Release);
 }
 

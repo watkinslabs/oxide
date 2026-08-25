@@ -82,7 +82,7 @@ fn discover_until_stable(mut discover: impl FnMut() -> bool, mut wait: impl FnMu
 
 /// Whether `task` has pseudo-signal work that must run before user mode.
 /// # C: O(1)
-pub fn pending(task: &Task) -> bool { task.notify_signal.load(Ordering::Acquire) }
+pub fn pending(task: &Task) -> bool { task.security.notify_signal.load(Ordering::Acquire) }
 
 /// Queue one target exactly once for this transaction.
 #[cfg(any(target_os = "oxide-kernel", feature = "hosted"))]
@@ -90,18 +90,18 @@ fn enqueue(txn: &Arc<Transaction>, task: &Arc<Task>) -> bool {
     if task.exiting.load(Ordering::Acquire) || task.state() == TaskState::Zombie {
         return false;
     }
-    if task.landlock_tsync_id.load(Ordering::Acquire) == txn.id { return false; }
+    if task.security.landlock_tsync_id.load(Ordering::Acquire) == txn.id { return false; }
 
-    let mut slot = task.landlock_tsync_work.lock();
-    if task.landlock_tsync_id.load(Ordering::Acquire) == txn.id { return false; }
+    let mut slot = task.security.landlock_tsync_work.lock();
+    if task.security.landlock_tsync_id.load(Ordering::Acquire) == txn.id { return false; }
     // The thread-group writer exclusion permits only this group's one TSYNC
     // work. A non-empty different slot can only be a transaction the target
     // must run before this contender retries.
     if slot.is_some() { return false; }
     txn.expected.fetch_add(1, Ordering::AcqRel);
-    task.landlock_tsync_id.store(txn.id, Ordering::Release);
+    task.security.landlock_tsync_id.store(txn.id, Ordering::Release);
     *slot = Some(Arc::clone(txn));
-    task.notify_signal.store(true, Ordering::Release);
+    task.security.notify_signal.store(true, Ordering::Release);
     drop(slot);
 
     // Linux `set_notify_signal`: wake TASK_INTERRUPTIBLE, otherwise kick the
@@ -153,9 +153,9 @@ pub fn restrict_siblings(cur: &Task, domain: Option<Arc<Domain>>,
     }
 
     if let Some(domain) = txn.domain.as_ref() {
-        *cur.landlock_domain.lock() = Some(Arc::clone(domain));
+        *cur.security.landlock_domain.lock() = Some(Arc::clone(domain));
     }
-    if txn.set_no_new_privs { cur.no_new_privs.store(true, Ordering::Release); }
+    if txn.set_no_new_privs { cur.security.no_new_privs.store(true, Ordering::Release); }
     Ok(())
 }
 
@@ -166,8 +166,8 @@ pub fn restrict_siblings(cur: &Task, domain: Option<Arc<Domain>>,
 #[cfg(target_os = "oxide-kernel")]
 pub fn run_current_work() {
     let Some(cur) = crate::live::current() else { return };
-    let txn = cur.landlock_tsync_work.lock().take();
-    cur.notify_signal.store(false, Ordering::Release);
+    let txn = cur.security.landlock_tsync_work.lock().take();
+    cur.security.notify_signal.store(false, Ordering::Release);
     let Some(txn) = txn else { return };
 
     txn.prepared.fetch_add(1, Ordering::AcqRel);
@@ -177,9 +177,9 @@ pub fn run_current_work() {
         unsafe { crate::live::sched_yield(); }
     }
     if let Some(domain) = txn.domain.as_ref() {
-        *cur.landlock_domain.lock() = Some(Arc::clone(domain));
+        *cur.security.landlock_domain.lock() = Some(Arc::clone(domain));
     }
-    if txn.set_no_new_privs { cur.no_new_privs.store(true, Ordering::Release); }
+    if txn.set_no_new_privs { cur.security.no_new_privs.store(true, Ordering::Release); }
     txn.finished.fetch_add(1, Ordering::AcqRel);
 }
 
@@ -188,8 +188,8 @@ pub fn run_current_work() {
 /// # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
 pub fn cancel_current_on_exit(task: &Task) {
-    let txn = task.landlock_tsync_work.lock().take();
-    task.notify_signal.store(false, Ordering::Release);
+    let txn = task.security.landlock_tsync_work.lock().take();
+    task.security.notify_signal.store(false, Ordering::Release);
     if let Some(txn) = txn {
         txn.prepared.fetch_add(1, Ordering::AcqRel);
         txn.finished.fetch_add(1, Ordering::AcqRel);

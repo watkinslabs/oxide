@@ -46,7 +46,7 @@ pub fn kernel_uname(args: &SyscallArgs) -> i64 {
     // state: `/proc/sys/kernel/version` copies the same utsname field, so a
     // value assembled here would be a second answer for one field.
     let version = crate::uname_release::UTS_VERSION.as_bytes();
-    let img = build_utsname(host, dom, version, cur.personality.load(Ordering::Acquire));
+    let img = build_utsname(host, dom, version, cur.security.personality.load(Ordering::Acquire));
     if um::put_bytes(tp, &img).is_err() { return -(Errno::Efault.as_i32() as i64); }
     0
 }

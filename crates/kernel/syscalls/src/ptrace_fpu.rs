@@ -21,7 +21,7 @@ pub fn snapshot_current() {
     cur.debug_check_fpu_state("ptrace-snapshot-current");
     // SAFETY: running task on this CPU; preempt-off; fpu_state slot is single-mutator per `13§5`; FpuState{X86_64,AArch64} layout matches ArchFpuBuf's 16-byte alignment.
     unsafe {
-        let buf = (*cur.fpu_state.get()).as_mut_ptr();
+        let buf = (*cur.security.fpu_state.get()).as_mut_ptr();
         #[cfg(target_arch = "x86_64")]
         {
             hal_x86_64::fpu_save(buf as *mut hal_x86_64::FpuStateX86_64);
@@ -40,11 +40,11 @@ pub fn snapshot_current() {
 /// # C: O(1) — one FXRSTOR / per-arch restore.
 pub fn restore_if_dirty() {
     let cur = match sched::live::current() { Some(c) => c, None => return };
-    if !cur.ptrace_fpu_dirty.swap(false, Ordering::AcqRel) { return; }
+    if !cur.security.ptrace_fpu_dirty.swap(false, Ordering::AcqRel) { return; }
     cur.debug_check_fpu_state("ptrace-restore-current");
     // SAFETY: running task on this CPU; preempt-off; fpu_state slot is single-mutator per `13§5`; restore loads 512/528 B from a validated per-task buffer; matches the snapshot in snapshot_current.
     unsafe {
-        let buf = (*cur.fpu_state.get()).as_ptr();
+        let buf = (*cur.security.fpu_state.get()).as_ptr();
         #[cfg(target_arch = "x86_64")]
         {
             hal_x86_64::fpu_restore(buf as *const hal_x86_64::FpuStateX86_64);

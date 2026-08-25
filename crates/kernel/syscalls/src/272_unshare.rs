@@ -39,6 +39,7 @@ fn ns_bit_for_clone(clone_flag: u64) -> Option<u32> {
     })
 }
 
+
 fn has_bit(bits: u64, bit: u32) -> bool { (bits & (1u64 << bit)) != 0 }
 
 /// Translate CLONE_NEW* flags into requested replacement bits. # C: O(1)
@@ -142,9 +143,9 @@ pub fn sys_unshare(args: &SyscallArgs) -> i64 {
     // namespace, so leaving them registered would apply an adjustment to an
     // array the caller can no longer see.
     if sysvsem {
-        let vtg = cur.vtgid.load(core::sync::atomic::Ordering::Acquire);
+        let vtg = cur.security.vtgid.load(core::sync::atomic::Ordering::Acquire);
         let tg = cur.tgid.load(core::sync::atomic::Ordering::Acquire);
-        ipc::sysv::sem::undo::exit_sem(&cur.sysvsem_undo,
+        ipc::sysv::sem::undo::exit_sem(&cur.security.sysvsem_undo,
             if vtg != 0 { vtg } else { tg });
     }
     if let Some(table) = new_fd_table {
@@ -183,7 +184,7 @@ pub(crate) fn apply_new_namespaces(task: &sched::Task,
         // namespace is reachable — the CAP_SYS_ADMIN gate for the rest of the
         // requested set is decided against it moments later.
         ::user_namespace::register_owner(&snapshot.user,
-            task.creds.euid.load(core::sync::atomic::Ordering::Acquire))
+            task.security.creds.euid.load(core::sync::atomic::Ordering::Acquire))
             .map_err(|_| Errno::Eio)?;
         // Linux `create_user_ns`: the new namespace remembers the account
         // that made it and the `RLIMIT_NPROC` ceiling that account was under
@@ -297,7 +298,7 @@ pub(crate) fn apply_new_namespaces(task: &sched::Task,
     // user namespace would be an escalation rather than a grant, and every
     // check above this line is decided with the credentials the caller
     // actually had.
-    if has_bit(bits, USER_BIT) { task.creds.enter_new_user_namespace(); }
+    if has_bit(bits, USER_BIT) { task.security.creds.enter_new_user_namespace(); }
     if let Some(namespace) = network {
         task.replace_network_namespace(namespace).map_err(|_| Errno::Esrch)?;
     }
@@ -314,4 +315,3 @@ fn cgroup_key(task: &sched::Task) -> u64 {
 fn remap_task_fs_paths(task: &sched::Task, mount_map: &[(u64, u64)]) {
     task.remap_fs_mount_ids(mount_map);
 }
-

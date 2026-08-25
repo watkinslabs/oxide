@@ -148,8 +148,8 @@ fn admit(inode: &Arc<IoUringInode>, sqe: &Sqe) -> Result<(), Errno> {
 /// # C: one operation
 #[inline(always)]
 fn issue(inode: &Arc<IoUringInode>, sqe: &Sqe) -> OpOutcome {
-    if sqe.personality == 0 { return dispatch_op(inode, sqe); }
-    let creds = inode.reg.lock().personality(sqe.personality as u32);
+    if sqe.security.personality == 0 { return dispatch_op(inode, sqe); }
+    let creds = inode.reg.lock().security.personality(sqe.security.personality as u32);
     let Some(creds) = creds else { return OpOutcome::res(err(Errno::Einval)) };
     let _guard = super::personality::CredsOverride::install(&creds);
     dispatch_op(inode, sqe)
@@ -157,8 +157,8 @@ fn issue(inode: &Arc<IoUringInode>, sqe: &Sqe) -> OpOutcome {
 
 /// Build the request object a deferred entry needs. # C: O(1)
 fn build(inode: &Arc<IoUringInode>, sqe: &Sqe) -> Arc<IoReq> {
-    let creds = if sqe.personality == 0 { None } else {
-        inode.reg.lock().personality(sqe.personality as u32)
+    let creds = if sqe.security.personality == 0 { None } else {
+        inode.reg.lock().security.personality(sqe.security.personality as u32)
     };
     let req = IoReq::new(inode, sqe, creds, inode.owner_ctx());
     // A deferred transfer on a polled ring is the only work a poll can find:

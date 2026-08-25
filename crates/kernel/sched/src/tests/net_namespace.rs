@@ -26,7 +26,7 @@ fn observe_final_drop() {
     if task.is_null() { return; }
     // SAFETY: the test keeps its Arc<Task> alive until after the callback and
     // clears EXIT_TASK before dropping that final strong task reference.
-    let state = unsafe { (*task).state.load(Ordering::Acquire) };
+    let state = unsafe { (&(*task)).state.load(Ordering::Acquire) };
     DROP_STATE.store(state, Ordering::Release);
 }
 

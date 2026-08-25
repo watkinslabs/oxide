@@ -152,7 +152,7 @@ pub fn enqueue_zombie(task: Arc<Task>) {
         klog::write_raw(b"[zombie publish] child=");
         klog::write_dec_u64(task.tid as u64);
         klog::write_raw(b" vpid=");
-        klog::write_dec_u64(task.vtgid.load(Ordering::Acquire) as u64);
+        klog::write_dec_u64(task.security.vtgid.load(Ordering::Acquire) as u64);
         klog::write_raw(b" parent=");
         klog::write_dec_u64(parent_tid as u64);
         klog::write_raw(b" exit_signal=");
@@ -471,7 +471,7 @@ pub fn reap_one(parent: u32, parent_tgid: u32, pid: i32, parent_pgid: u32, optio
         // `ptrace_unlink(p)` — the tracer is done with it.
         t.traced_by.store(0, Ordering::Release);
         t.ptrace_options.store(0, Ordering::Release);
-        t.ptrace_seized.store(false, Ordering::Release);
+        t.security.ptrace_seized.store(false, Ordering::Release);
         // `do_notify_parent(p, p->exit_signal)` again, now that `parent` has
         // reverted to `real_parent`.
         notify_real_parent_of_zombie(&t);

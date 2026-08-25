@@ -46,7 +46,7 @@ pub fn sys_rt_sigqueueinfo(args: &SyscallArgs) -> i64 {
 pub(crate) fn forgery_rejected(si_code: i32, pid_arg: i32) -> bool {
     use core::sync::atomic::Ordering;
     let caller = match sched::live::current() {
-        Some(c) => c.vtid.load(Ordering::Acquire),
+        Some(c) => c.security.vtid.load(Ordering::Acquire),
         // No current task means no identity to match; a forged code cannot be
         // excused, so keep the strict answer.
         None    => u32::MAX,

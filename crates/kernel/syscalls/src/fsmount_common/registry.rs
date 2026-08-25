@@ -141,7 +141,7 @@ fn caller_fsuid() -> u32 { caller_fsids().0 }
 fn caller_fsids() -> (u32, u32) {
     use core::sync::atomic::Ordering;
     match sched::live::current() {
-        Some(t) => (t.creds.fsuid.load(Ordering::Acquire), t.creds.fsgid.load(Ordering::Acquire)),
+        Some(t) => (t.security.creds.fsuid.load(Ordering::Acquire), t.security.creds.fsgid.load(Ordering::Acquire)),
         None => (0, 0),
     }
 }

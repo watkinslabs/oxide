@@ -80,14 +80,14 @@ pub fn rule_target_fd(f: &Arc<vfs::File>) -> ::landlock::abi::RuleTargetFd {
 /// The calling thread's enforced domain, or `None` when unconfined.
 /// # C: O(1)
 pub fn current_domain() -> Option<Arc<Domain>> {
-    sched::live::current().and_then(|c| c.landlock_domain.lock().clone())
+    sched::live::current().and_then(|c| c.security.landlock_domain.lock().clone())
 }
 
 /// Install a deeper domain on the calling thread.
 /// # C: O(1)
 pub fn set_current_domain(d: Arc<Domain>) -> Result<(), Errno> {
     let cur = sched::live::current().ok_or(Errno::Esrch)?;
-    *cur.landlock_domain.lock() = Some(d);
+    *cur.security.landlock_domain.lock() = Some(d);
     Ok(())
 }
 
@@ -172,4 +172,3 @@ pub fn check_socket(proto: ::landlock::netcheck::Proto, op: ::landlock::netcheck
 // only the AF_UNIX registry holds, so the gate is composed in `net` and both
 // call sites — `connect(2)` and a send naming a recipient — use that one. A
 // wrapper here would put the not-bound-is-not-a-denial rule in two places.
-

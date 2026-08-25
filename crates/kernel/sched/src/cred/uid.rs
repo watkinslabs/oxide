@@ -29,9 +29,9 @@ fn einval() -> i64 { -(Errno::Einval.as_i32() as i64) }
 /// Read the task's internal `(ruid, euid, suid)`. # C: O(1)
 fn triple(cur: &Task) -> UidTriple {
     UidTriple {
-        r: cur.creds.ruid.load(Ordering::Acquire),
-        e: cur.creds.euid.load(Ordering::Acquire),
-        s: cur.creds.suid.load(Ordering::Acquire),
+        r: cur.security.creds.ruid.load(Ordering::Acquire),
+        e: cur.security.creds.euid.load(Ordering::Acquire),
+        s: cur.security.creds.suid.load(Ordering::Acquire),
     }
 }
 
@@ -57,10 +57,10 @@ fn optional_kuid(cur: &Task, id: u32) -> Result<Option<u32>, ()> {
 fn publish(cur: &Task, old: UidTriple, new: UidTriple, fsuid: u32) {
     let identity = CredIdentity::capture(cur);
     let root = userns::root_uid(cur);
-    cur.creds.ruid.store(new.r, Ordering::Release);
-    cur.creds.euid.store(new.e, Ordering::Release);
-    cur.creds.suid.store(new.s, Ordering::Release);
-    cur.creds.fsuid.store(fsuid, Ordering::Release);
+    cur.security.creds.ruid.store(new.r, Ordering::Release);
+    cur.security.creds.euid.store(new.e, Ordering::Release);
+    cur.security.creds.suid.store(new.s, Ordering::Release);
+    cur.security.creds.fsuid.store(fsuid, Ordering::Release);
     task_fix_setuid(cur, old, new, root);
     commit_creds(cur, identity);
 }
@@ -69,7 +69,7 @@ fn publish(cur: &Task, old: UidTriple, new: UidTriple, fsuid: u32) {
 /// namespace numbers it. # C: O(extents)
 pub fn sys_getuid(_args: &SyscallArgs) -> i64 {
     match crate::live::current() {
-        Some(t) => uid_out(&t, t.creds.ruid.load(Ordering::Acquire)) as i64,
+        Some(t) => uid_out(&t, t.security.creds.ruid.load(Ordering::Acquire)) as i64,
         None    => 0,
     }
 }
@@ -77,7 +77,7 @@ pub fn sys_getuid(_args: &SyscallArgs) -> i64 {
 /// `sys_geteuid` — slot 107. Returns the effective uid. # C: O(extents)
 pub fn sys_geteuid(_args: &SyscallArgs) -> i64 {
     match crate::live::current() {
-        Some(t) => uid_out(&t, t.creds.euid.load(Ordering::Acquire)) as i64,
+        Some(t) => uid_out(&t, t.security.creds.euid.load(Ordering::Acquire)) as i64,
         None    => 0,
     }
 }
@@ -155,7 +155,7 @@ pub(crate) fn setresuid_on(cur: &Task, ruid: u32, euid: u32, suid: u32) -> i64 {
         (optional_kuid(cur, ruid), optional_kuid(cur, euid), optional_kuid(cur, suid))
         else { return einval(); };
     let old = triple(cur);
-    let old_fsuid = cur.creds.fsuid.load(Ordering::Acquire);
+    let old_fsuid = cur.security.creds.fsuid.load(Ordering::Acquire);
     // Linux's explicit no-op short circuit: nothing observable would change.
     if kr.is_none_or(|r| r == old.r)
         && ke.is_none_or(|e| e == old.e && e == old_fsuid)

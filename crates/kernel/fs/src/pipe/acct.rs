@@ -19,7 +19,7 @@ pub(super) fn current_account() -> (u32, PipeCaps) {
         Some(t) => {
             let sys_resource = t.has_cap(sched::cap::SYS_RESOURCE);
             let unprivileged = !sys_resource && !t.has_cap(sched::cap::SYS_ADMIN);
-            (t.creds.ruid.load(Ordering::Acquire), PipeCaps { sys_resource, unprivileged })
+            (t.security.creds.ruid.load(Ordering::Acquire), PipeCaps { sys_resource, unprivileged })
         }
         None => (0, PipeCaps { sys_resource: false, unprivileged: true }),
     }

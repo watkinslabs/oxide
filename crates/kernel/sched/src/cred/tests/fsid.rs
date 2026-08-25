@@ -47,7 +47,7 @@ fn setfsuid_leaving_root_drops_the_filesystem_capabilities() {
     let task = privileged();
     set_uids(&task, (0, 0, 0));
     assert_eq!(setfsuid_on(&task, 1000), 0);
-    let effective = task.creds.cap_effective.load(Ordering::Acquire);
+    let effective = task.security.creds.cap_effective.load(Ordering::Acquire);
     assert_eq!(effective & (1u64 << crate::cap::DAC_OVERRIDE), 0);
     assert_eq!(effective & (1u64 << crate::cap::CHOWN), 0);
     assert_ne!(effective & (1u64 << crate::cap::SYS_ADMIN), 0,
@@ -60,7 +60,7 @@ fn setfsuid_returning_to_root_raises_the_filesystem_capabilities_from_permitted(
     set_uids(&task, (0, 0, 0));
     setfsuid_on(&task, 1000);
     assert_eq!(setfsuid_on(&task, 0), 1000);
-    let effective = task.creds.cap_effective.load(Ordering::Acquire);
+    let effective = task.security.creds.cap_effective.load(Ordering::Acquire);
     assert_ne!(effective & (1u64 << crate::cap::DAC_OVERRIDE), 0);
     assert_ne!(effective & (1u64 << crate::cap::FOWNER), 0);
 }
@@ -69,10 +69,10 @@ fn setfsuid_returning_to_root_raises_the_filesystem_capabilities_from_permitted(
 fn setfsuid_with_the_no_setuid_fixup_securebit_leaves_capabilities_alone() {
     let task = privileged();
     set_uids(&task, (0, 0, 0));
-    task.creds.securebits.store(
+    task.security.creds.securebits.store(
         crate::task::creds::securebits::SECBIT_NO_SETUID_FIXUP, Ordering::Release);
     setfsuid_on(&task, 1000);
-    assert_eq!(task.creds.cap_effective.load(Ordering::Acquire), Creds::CAP_FULL);
+    assert_eq!(task.security.creds.cap_effective.load(Ordering::Acquire), Creds::CAP_FULL);
 }
 
 #[test]

@@ -20,7 +20,7 @@ fn every_field_decodes_at_its_wire_offset() {
     assert_eq!(Sqe::from_bytes(&wire(28, &0x77u32.to_le_bytes())).op_flags, 0x77);
     assert_eq!(Sqe::from_bytes(&wire(32, &0xF00Du64.to_le_bytes())).user_data, 0xF00D);
     assert_eq!(Sqe::from_bytes(&wire(40, &12u16.to_le_bytes())).buf_index, 12);
-    assert_eq!(Sqe::from_bytes(&wire(42, &34u16.to_le_bytes())).personality, 34);
+    assert_eq!(Sqe::from_bytes(&wire(42, &34u16.to_le_bytes())).security.personality, 34);
     assert_eq!(Sqe::from_bytes(&wire(44, &(-2i32).to_le_bytes())).splice_fd_in, -2);
     assert_eq!(Sqe::from_bytes(&wire(48, &0xBEEFu64.to_le_bytes())).addr3, 0xBEEF);
 }
@@ -42,7 +42,7 @@ fn personality_does_not_alias_the_buffer_index() {
     b[40..42].copy_from_slice(&5u16.to_le_bytes());
     b[42..44].copy_from_slice(&6u16.to_le_bytes());
     let s = Sqe::from_bytes(&b);
-    assert_eq!((s.buf_index, s.personality), (5, 6));
+    assert_eq!((s.buf_index, s.security.personality), (5, 6));
 }
 
 #[test]

@@ -16,7 +16,7 @@ pub fn current_user_regs() -> *mut UserRegs {
     {
         use core::sync::atomic::Ordering;
         sched::current()
-            .map(|task| task.svc_frame.load(Ordering::Acquire))
+            .map(|task| task.security.svc_frame.load(Ordering::Acquire))
             .filter(|frame| *frame != 0)
             .map(|frame| frame as *mut UserRegs)
             .unwrap_or(core::ptr::null_mut())

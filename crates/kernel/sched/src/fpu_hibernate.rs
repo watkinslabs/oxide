@@ -47,7 +47,7 @@ pub fn flush_current_fpu_for_hibernate() -> bool {
     // guarantees the 64-byte alignment required by XSAVE (and therefore by
     // the weaker FXSAVE/AArch64 requirements). Kernel interrupt handlers do
     // not use task FP/SIMD state.
-    let state = unsafe { (*task.fpu_state.get()).as_mut_ptr() };
+    let state = unsafe { (*task.security.fpu_state.get()).as_mut_ptr() };
     // SAFETY: the closure receives the same exclusively owned aligned task
     // save area while preemption remains disabled on this processor.
     save_present(Some(state), |state| unsafe {
@@ -76,7 +76,7 @@ pub fn restore_current_fpu_after_hibernate() -> bool {
 
     // SAFETY: the restored task is current and preemption remains disabled;
     // the canonical buffer was part of the admitted image and is 64-aligned.
-    let state = unsafe { (*task.fpu_state.get()).as_ptr() };
+    let state = unsafe { (*task.security.fpu_state.get()).as_ptr() };
     // SAFETY: the closure reads the admitted canonical task buffer while the
     // restored task remains current and cannot migrate.
     restore_present(Some(state), |state| unsafe {

@@ -45,11 +45,11 @@ impl CredIdentity {
     /// Capture the task's current privilege identity. # C: O(1)
     pub(super) fn capture(cur: &Task) -> Self {
         Self {
-            euid:  cur.creds.euid.load(Ordering::Acquire),
-            egid:  cur.creds.egid.load(Ordering::Acquire),
-            fsuid: cur.creds.fsuid.load(Ordering::Acquire),
-            fsgid: cur.creds.fsgid.load(Ordering::Acquire),
-            cap_permitted: cur.creds.cap_permitted.load(Ordering::Acquire),
+            euid:  cur.security.creds.euid.load(Ordering::Acquire),
+            egid:  cur.security.creds.egid.load(Ordering::Acquire),
+            fsuid: cur.security.creds.fsuid.load(Ordering::Acquire),
+            fsgid: cur.security.creds.fsgid.load(Ordering::Acquire),
+            cap_permitted: cur.security.creds.cap_permitted.load(Ordering::Acquire),
         }
     }
 }
@@ -76,10 +76,10 @@ pub(super) fn commit_creds(cur: &Task, old: CredIdentity) {
         || now.egid != old.egid
         || now.fsuid != old.fsuid
         || now.fsgid != old.fsgid
-        || !cur.creds.cap_permitted_is_subset_of(old.cap_permitted);
+        || !cur.security.creds.cap_permitted_is_subset_of(old.cap_permitted);
     if !changed { return; }
     if cur.clone_mm().is_some() {
-        cur.dumpable.store(suid_dumpable(), Ordering::Release);
+        cur.security.dumpable.store(suid_dumpable(), Ordering::Release);
     }
-    cur.pdeathsig.store(0, Ordering::Release);
+    cur.security.pdeathsig.store(0, Ordering::Release);
 }

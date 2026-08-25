@@ -31,7 +31,7 @@ pub fn sys_rt_tgsigqueueinfo(args: &SyscallArgs) -> i64 {
     if sig < 0 { return -(Errno::Einval.as_i32() as i64); }
     // `do_send_specific`: the thread must actually belong to `tgid`.
     match sched::live::registry::resolve_user_pid(tid as u32) {
-        Some(t) if t.vtgid.load(Ordering::Acquire) == tgid as u32 => {}
+        Some(t) if t.security.vtgid.load(Ordering::Acquire) == tgid as u32 => {}
         _ => return -(Errno::Esrch.as_i32() as i64),
     }
     sigqueue_to(tid as u32, sig as u32, info)

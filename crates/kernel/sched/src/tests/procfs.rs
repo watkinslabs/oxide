@@ -155,7 +155,7 @@ fn display_vpid_resolves_vtgid_not_internal_tid() {
     let _g = registry_test_lock();
     crate::registry::clear_for_tests();
     let init = Arc::new(Task::new(0xC0DE_0002, "systemd", SchedClass::Normal { weight: 1024 }));
-    init.vtgid.store(1, Ordering::Release);
+    init.security.vtgid.store(1, Ordering::Release);
     crate::registry::insert(&init);
     assert_eq!(crate::registry::display_vpid(0xC0DE_0002), 1);
     let kth = Arc::new(Task::new(42, "kworker", SchedClass::Normal { weight: 1024 }));
@@ -169,10 +169,10 @@ fn parent_vpid_resolves_parent_vtgid() {
     let _g = registry_test_lock();
     crate::registry::clear_for_tests();
     let init = Arc::new(Task::new(0xC0DE_0002, "systemd", SchedClass::Normal { weight: 1024 }));
-    init.vtgid.store(1, Ordering::Release);
+    init.security.vtgid.store(1, Ordering::Release);
     crate::registry::insert(&init);
     let child = Arc::new(Task::new(0xC0DE_0050, "sh", SchedClass::Normal { weight: 1024 }));
-    child.vtgid.store(7, Ordering::Release);
+    child.security.vtgid.store(7, Ordering::Release);
     child.parent_tid.store(0xC0DE_0002, Ordering::Release);
     crate::registry::insert(&child);
     assert_eq!(crate::registry::parent_vpid(0xC0DE_0050), 1);
@@ -185,15 +185,15 @@ fn reaped_pidfd_pinned_task_is_not_wait_child() {
     crate::registry::clear_for_tests();
     let parent = Arc::new(Task::new(0xC0DE_0002, "systemd", SchedClass::Normal { weight: 1024 }));
     parent.tgid.store(0xC0DE_0002, Ordering::Release);
-    parent.vtgid.store(1, Ordering::Release);
-    parent.vtid.store(1, Ordering::Release);
+    parent.security.vtgid.store(1, Ordering::Release);
+    parent.security.vtid.store(1, Ordering::Release);
     parent.set_pgid(1);
     crate::registry::insert(&parent);
 
     let child = Arc::new(Task::new(0xC0DE_0050, "svc", SchedClass::Normal { weight: 1024 }));
     child.parent_tid.store(parent.tid, Ordering::Release);
-    child.vtgid.store(50, Ordering::Release);
-    child.vtid.store(50, Ordering::Release);
+    child.security.vtgid.store(50, Ordering::Release);
+    child.security.vtid.store(50, Ordering::Release);
     child.set_pgid(1);
     child.exit_signal.store(crate::signum::Signum::Sigchld as u8, Ordering::Release);
     crate::registry::insert(&child);
@@ -209,8 +209,8 @@ fn reaped_task_is_not_resolved_by_visible_pid() {
     let _g = registry_test_lock();
     crate::registry::clear_for_tests();
     let t = Arc::new(Task::new(0xC0DE_0050, "svc", SchedClass::Normal { weight: 1024 }));
-    t.vtgid.store(50, Ordering::Release);
-    t.vtid.store(50, Ordering::Release);
+    t.security.vtgid.store(50, Ordering::Release);
+    t.security.vtid.store(50, Ordering::Release);
     crate::registry::insert(&t);
 
     assert!(crate::registry::lookup_by_vpid(50).is_some());
@@ -225,8 +225,8 @@ fn reaped_task_is_not_resolved_by_user_pid_lookup() {
     let _g = registry_test_lock();
     crate::registry::clear_for_tests();
     let t = Arc::new(Task::new(0xC0DE_0060, "svc", SchedClass::Normal { weight: 1024 }));
-    t.vtgid.store(60, Ordering::Release);
-    t.vtid.store(60, Ordering::Release);
+    t.security.vtgid.store(60, Ordering::Release);
+    t.security.vtid.store(60, Ordering::Release);
     crate::registry::insert(&t);
     let namespace = namespace_identity::initial(namespace_identity::NamespaceKind::Pid);
     assert!(crate::registry::lookup_in_namespace(&namespace, 60).is_some());

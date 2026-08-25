@@ -52,7 +52,7 @@ fn observe(mm: &vmm::AddressSpace) -> Option<OomMemory> {
 fn process(tid: u32, resident: u64) -> Arc<Task> {
     let task = Arc::new(Task::new(tid, "victim", SchedClass::Normal { weight: 1024 }));
     task.tgid.store(tid, Ordering::Release);
-    task.vtgid.store(tid, Ordering::Release);
+    task.security.vtgid.store(tid, Ordering::Release);
     let mm = vmm::AddressSpace::new(0).expect("hosted address space");
     table().lock().unwrap_or_else(|e| e.into_inner())
         .push((Arc::as_ptr(&mm) as *const vmm::AddressSpace as usize, resident));
@@ -135,7 +135,7 @@ fn a_kernel_thread_is_never_chosen() {
     let _guard = fixture();
     let helper = Arc::new(Task::new(4201, "kworker", SchedClass::Normal { weight: 1024 }));
     helper.tgid.store(4201, Ordering::Release);
-    helper.vtgid.store(4201, Ordering::Release);
+    helper.security.vtgid.store(4201, Ordering::Release);
     helper.kernel_thread.store(true, Ordering::Release);
     crate::registry::insert(&helper);
 
@@ -248,7 +248,7 @@ fn a_process_with_no_address_space_is_skipped_not_chosen() {
     let _guard = fixture();
     let bare = Arc::new(Task::new(4701, "bare", SchedClass::Normal { weight: 1024 }));
     bare.tgid.store(4701, Ordering::Release);
-    bare.vtgid.store(4701, Ordering::Release);
+    bare.security.vtgid.store(4701, Ordering::Release);
     bare.kernel_thread.store(false, Ordering::Release);
     crate::registry::insert(&bare);
     let real = process(4702, 5);
@@ -264,7 +264,7 @@ fn all_threads_of_the_chosen_process_are_scored_through_the_one_holding_the_mm()
     // Leader dropped its mm; a sibling thread still owns the process memory.
     let leader = Arc::new(Task::new(4801, "leader", SchedClass::Normal { weight: 1024 }));
     leader.tgid.store(4801, Ordering::Release);
-    leader.vtgid.store(4801, Ordering::Release);
+    leader.security.vtgid.store(4801, Ordering::Release);
     leader.kernel_thread.store(false, Ordering::Release);
     crate::registry::insert(&leader);
     let sibling = process(4802, 900_000);

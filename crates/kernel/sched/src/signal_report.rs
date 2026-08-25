@@ -101,7 +101,7 @@ pub fn report_user_fault(sig: u32, addr: u64, ip: u64, sp: u64, err: u64, vma: O
     if !show_unhandled_signals() { return; }
     let Some(cur) = crate::live::current() else { return };
     let handler = cur.sigactions_ref().get(sig).handler;
-    let is_init = cur.vtgid.load(Ordering::Relaxed) == 1;
+    let is_init = cur.security.vtgid.load(Ordering::Relaxed) == 1;
     let fatal_pending = cur.sigpending.load(Ordering::Acquire) & crate::Signum::Sigkill.bit() != 0;
     let ptraced = cur.traced_by.load(Ordering::Acquire) != 0;
     if !unhandled_signal(handler, is_init, fatal_pending, ptraced) { return; }
@@ -110,7 +110,7 @@ pub fn report_user_fault(sig: u32, addr: u64, ip: u64, sp: u64, err: u64, vma: O
     let comm = cur.comm_bytes();
     klog::write_raw(crate::Task::comm_trim(&comm).as_bytes());
     klog::write_raw(b"[");
-    klog::write_dec_u64(cur.vtgid.load(Ordering::Relaxed) as u64);
+    klog::write_dec_u64(cur.security.vtgid.load(Ordering::Relaxed) as u64);
     klog::write_raw(b"]: ");
     klog::write_raw(fault_kind(sig));
     klog::write_raw(b" at ");   klog::write_hex_u64(addr);

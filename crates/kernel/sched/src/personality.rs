@@ -93,13 +93,13 @@ pub const PERSONALITY_QUERY: u32 = 0xffff_ffff;
 /// sets the new one unless `persona` is the query sentinel.
 /// # C: O(1)
 pub fn get_set(cur: &Task, persona: u32) -> u32 {
-    let prev = cur.personality.load(Ordering::Acquire);
-    if persona != PERSONALITY_QUERY { cur.personality.store(persona, Ordering::Release); }
+    let prev = cur.security.personality.load(Ordering::Acquire);
+    if persona != PERSONALITY_QUERY { cur.security.personality.store(persona, Ordering::Release); }
     prev
 }
 
 /// Current persona. # C: O(1)
-pub fn get(cur: &Task) -> u32 { cur.personality.load(Ordering::Acquire) }
+pub fn get(cur: &Task) -> u32 { cur.security.personality.load(Ordering::Acquire) }
 
 /// Linux `begin_new_exec`: `me->personality &= ~bprm->per_clear`. The exec
 /// credential transition raises [`PER_CLEAR_ON_SETID`] whenever the new image
@@ -107,7 +107,7 @@ pub fn get(cur: &Task) -> u32 { cur.personality.load(Ordering::Acquire) }
 /// or `READ_IMPLIES_EXEC` and have a privileged binary inherit them.
 /// # C: O(1)
 pub fn clear(cur: &Task, mask: u32) {
-    if mask != 0 { cur.personality.fetch_and(!mask, Ordering::AcqRel); }
+    if mask != 0 { cur.security.personality.fetch_and(!mask, Ordering::AcqRel); }
 }
 
 /// Whether `PROT_READ` must imply `PROT_EXEC` for this task's mappings.

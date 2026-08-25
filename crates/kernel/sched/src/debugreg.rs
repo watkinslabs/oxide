@@ -72,7 +72,7 @@ pub const MAX_IDX: usize = 7;
 /// architectural reset value without touching an allocation.
 /// # C: O(1)
 pub fn get(t: &Task, idx: usize) -> u64 {
-    let (Some(slot), Some(sh)) = (slot_of_u_debugreg(idx), t.debugregs.get()) else { return 0 };
+    let (Some(slot), Some(sh)) = (slot_of_u_debugreg(idx), t.security.debugregs.get()) else { return 0 };
     sh.regs[slot].load(Ordering::Acquire)
 }
 
@@ -81,13 +81,13 @@ pub fn get(t: &Task, idx: usize) -> u64 {
 /// # C: O(1)
 pub fn put(t: &Task, slot: usize, v: u64) {
     if slot >= SLOTS { return; }
-    if let Some(sh) = t.debugregs.get_or_init() { sh.regs[slot].store(v, Ordering::Release); }
+    if let Some(sh) = t.security.debugregs.get_or_init() { sh.regs[slot].store(v, Ordering::Release); }
 }
 
 /// The four breakpoint addresses. # C: O(1)
 pub fn addrs(t: &Task) -> [u64; NR_ADDR] {
     let mut a = [0u64; NR_ADDR];
-    let Some(sh) = t.debugregs.get() else { return a };
+    let Some(sh) = t.security.debugregs.get() else { return a };
     let mut i = 0;
     while i < NR_ADDR { a[i] = sh.regs[i].load(Ordering::Acquire); i += 1; }
     a
@@ -97,7 +97,7 @@ pub fn addrs(t: &Task) -> [u64; NR_ADDR] {
 /// no-shadow answer must be reachable without an allocation.
 /// # C: O(1)
 pub fn armed(t: &Task) -> bool {
-    match t.debugregs.get() {
+    match t.security.debugregs.get() {
         Some(sh) => sh.regs[CONTROL].load(Ordering::Acquire) & DR7_ENABLE_MASK != 0,
         None     => false,
     }
@@ -108,7 +108,7 @@ pub fn armed(t: &Task) -> bool {
 /// image names an address that no longer belongs to anything.
 /// # C: O(1)
 pub fn clear(t: &Task) {
-    let Some(sh) = t.debugregs.get() else { return };
+    let Some(sh) = t.security.debugregs.get() else { return };
     let mut i = 0;
     while i < SLOTS { sh.regs[i].store(0, Ordering::Release); i += 1; }
 }
@@ -116,7 +116,7 @@ pub fn clear(t: &Task) {
 /// Accumulate the cause bits of a #DB into the task's DR6 shadow, so its
 /// tracer can read WHY the trap fired after the fact. # C: O(1)
 pub fn record_status(t: &Task, cause: u64) {
-    if let Some(sh) = t.debugregs.get_or_init() { sh.regs[STATUS].fetch_or(cause, Ordering::AcqRel); }
+    if let Some(sh) = t.security.debugregs.get_or_init() { sh.regs[STATUS].fetch_or(cause, Ordering::AcqRel); }
 }
 
 #[cfg(target_arch = "x86_64")]

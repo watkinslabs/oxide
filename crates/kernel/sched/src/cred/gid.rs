@@ -32,9 +32,9 @@ struct GidTriple { r: u32, e: u32, s: u32 }
 /// # C: O(1)
 fn triple(cur: &Task) -> GidTriple {
     GidTriple {
-        r: cur.creds.rgid.load(Ordering::Acquire),
-        e: cur.creds.egid.load(Ordering::Acquire),
-        s: cur.creds.sgid.load(Ordering::Acquire),
+        r: cur.security.creds.rgid.load(Ordering::Acquire),
+        e: cur.security.creds.egid.load(Ordering::Acquire),
+        s: cur.security.creds.sgid.load(Ordering::Acquire),
     }
 }
 
@@ -57,10 +57,10 @@ fn optional_kgid(cur: &Task, id: u32) -> Result<Option<u32>, ()> {
 /// # C: O(1); # Lk: TaskList
 fn publish(cur: &Task, new: GidTriple, fsgid: u32) {
     let identity = CredIdentity::capture(cur);
-    cur.creds.rgid.store(new.r, Ordering::Release);
-    cur.creds.egid.store(new.e, Ordering::Release);
-    cur.creds.sgid.store(new.s, Ordering::Release);
-    cur.creds.fsgid.store(fsgid, Ordering::Release);
+    cur.security.creds.rgid.store(new.r, Ordering::Release);
+    cur.security.creds.egid.store(new.e, Ordering::Release);
+    cur.security.creds.sgid.store(new.s, Ordering::Release);
+    cur.security.creds.fsgid.store(fsgid, Ordering::Release);
     commit_creds(cur, identity);
 }
 
@@ -68,7 +68,7 @@ fn publish(cur: &Task, new: GidTriple, fsgid: u32) {
 /// namespace numbers it. # C: O(extents)
 pub fn sys_getgid(_args: &SyscallArgs) -> i64 {
     match crate::live::current() {
-        Some(t) => gid_out(&t, t.creds.rgid.load(Ordering::Acquire)) as i64,
+        Some(t) => gid_out(&t, t.security.creds.rgid.load(Ordering::Acquire)) as i64,
         None    => 0,
     }
 }
@@ -76,7 +76,7 @@ pub fn sys_getgid(_args: &SyscallArgs) -> i64 {
 /// `sys_getegid` — slot 108. Returns the effective gid. # C: O(extents)
 pub fn sys_getegid(_args: &SyscallArgs) -> i64 {
     match crate::live::current() {
-        Some(t) => gid_out(&t, t.creds.egid.load(Ordering::Acquire)) as i64,
+        Some(t) => gid_out(&t, t.security.creds.egid.load(Ordering::Acquire)) as i64,
         None    => 0,
     }
 }
@@ -144,7 +144,7 @@ pub(crate) fn setresgid_on(cur: &Task, rgid: u32, egid: u32, sgid: u32) -> i64 {
         (optional_kgid(cur, rgid), optional_kgid(cur, egid), optional_kgid(cur, sgid))
         else { return einval(); };
     let old = triple(cur);
-    let old_fsgid = cur.creds.fsgid.load(Ordering::Acquire);
+    let old_fsgid = cur.security.creds.fsgid.load(Ordering::Acquire);
     if kr.is_none_or(|r| r == old.r)
         && ke.is_none_or(|e| e == old.e && e == old_fsgid)
         && ks.is_none_or(|s| s == old.s)

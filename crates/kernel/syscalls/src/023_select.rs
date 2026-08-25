@@ -151,7 +151,7 @@ pub fn sys_select(args: &SyscallArgs) -> i64 {
     // timeout could not be written back.
     if timeout_p == 0 { return rv; }
     let persona = current_task()
-        .map(|c| c.personality.load(core::sync::atomic::Ordering::Acquire))
+        .map(|c| c.security.personality.load(core::sync::atomic::Ordering::Acquire))
         .unwrap_or(0);
     let plan = timeout_writeback_plan(persona, req_sec, req_usec);
     if plan != TimeoutWriteback::Wrote { return finish_return(rv, plan); }

@@ -67,9 +67,9 @@ pub(super) static REG: Spinlock<Registry, TaskListClass> = Spinlock::new(Registr
 /// # C: O(log N)
 pub(super) fn hint_upsert(map: &mut BTreeMap<u32, Weak<Task>>, task: &Task, weak: Weak<Task>) {
     use core::sync::atomic::Ordering;
-    let vpid = task.vtgid.load(Ordering::Acquire);
+    let vpid = task.security.vtgid.load(Ordering::Acquire);
     if vpid == 0 { return; } // kthreads / pre-namespace tasks carry no vpid
-    if task.vtid.load(Ordering::Acquire) == vpid {
+    if task.security.vtid.load(Ordering::Acquire) == vpid {
         map.insert(vpid, weak);
         return;
     }

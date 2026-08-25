@@ -27,7 +27,7 @@ pub fn sys_prctl(args: &SyscallArgs) -> i64 {
     match op {
         Op::SetPdeathsig(sig) => task_state::set_pdeathsig(&cur, sig),
         Op::GetPdeathsig(p) => task_state::get_pdeathsig(&cur, p),
-        Op::GetDumpable => cur.dumpable.load(core::sync::atomic::Ordering::Acquire) as i64,
+        Op::GetDumpable => cur.security.dumpable.load(core::sync::atomic::Ordering::Acquire) as i64,
         Op::SetDumpable(v) => name::set_dumpable(&cur, v),
         Op::GetKeepcaps => caps::get_keepcaps(&cur),
         Op::SetKeepcaps(on) => caps::set_keepcaps(&cur, on),
@@ -147,11 +147,11 @@ pub fn sys_prctl(args: &SyscallArgs) -> i64 {
             else { -(Errno::Einval.as_i32() as i64) }
         }
         Op::SetTaggedAddrCtrl(arg) => match arm64::tagged_addr_set_check(arm64::features(), arg) {
-            Ok(on) => { cur.tagged_addr.store(on, Ordering::Release); 0 }
+            Ok(on) => { cur.security.tagged_addr.store(on, Ordering::Release); 0 }
             Err(e) => -(e.as_i32() as i64),
         },
         Op::GetTaggedAddrCtrl =>
-            match arm64::tagged_addr_get(cur.tagged_addr.load(Ordering::Acquire)) {
+            match arm64::tagged_addr_get(cur.security.tagged_addr.load(Ordering::Acquire)) {
                 Ok(v) => v,
                 Err(e) => -(e.as_i32() as i64),
             },

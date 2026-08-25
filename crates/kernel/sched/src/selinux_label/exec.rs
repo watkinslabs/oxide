@@ -107,7 +107,7 @@ impl ExecPlan {
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub fn exec_plan(task: &crate::Task, file_sid: Sid, nosuid: bool) -> Result<ExecPlan, Errno> {
     let (old, staged) = {
-        let mut label = task.selinux_label.lock();
+        let mut label = task.security.selinux_label.lock();
         let staged = label.exec.take();
         (label.sid, staged)
     };
@@ -120,7 +120,7 @@ pub fn exec_plan(task: &crate::Task, file_sid: Sid, nosuid: bool) -> Result<Exec
         _ => None,
     };
     let candidate = staged.or(policy_sid).unwrap_or(old);
-    let no_new_privs = task.no_new_privs.load(core::sync::atomic::Ordering::Acquire);
+    let no_new_privs = task.security.no_new_privs.load(core::sync::atomic::Ordering::Acquire);
     let inputs = ExecInputs {
         old_sid: old,
         staged,
@@ -153,7 +153,7 @@ pub fn exec_plan(task: &crate::Task, file_sid: Sid, nosuid: bool) -> Result<Exec
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub fn exec_commit(task: &crate::Task, plan: &ExecPlan) {
     let ExecDomain::Enter(new) = plan.domain else { return };
-    task.selinux_label.lock().enter(new);
+    task.security.selinux_label.lock().enter(new);
 }
 
 /// Label an executable image carries, or the unlabelled SID. # C: O(1)

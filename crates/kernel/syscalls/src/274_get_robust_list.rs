@@ -29,13 +29,13 @@ pub fn sys_get_robust_list(args: &SyscallArgs) -> i64 {
     let len_out  = args.a2;
     let cur = match sched::live::current() { Some(c) => c, None => return err(Errno::Esrch) };
     let head = if pid == 0 {
-        cur.robust_list_head.load(Ordering::Acquire)
+        cur.security.robust_list_head.load(Ordering::Acquire)
     } else {
         let task = match sched::live::registry::resolve_user_pid(pid as u32) {
             Some(t) => t, None => return err(Errno::Esrch),
         };
         if crate::s101_ptrace_perm::may_access(cur, &task).is_err() { return err(Errno::Eperm); }
-        task.robust_list_head.load(Ordering::Acquire)
+        task.security.robust_list_head.load(Ordering::Acquire)
     };
     // Linux writes the length first and returns EFAULT from either put_user.
     if let Err(rv) = validate_user_buf_writable(len_out, 8, 1) { return rv; }

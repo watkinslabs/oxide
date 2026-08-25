@@ -31,7 +31,7 @@ fn setresuid_resets_the_fs_uid_to_the_effective_uid_even_when_euid_is_unchanged(
     // setfsuid() is undone by ANY successful setresuid().
     let task = privileged();
     set_uids(&task, (10, 20, 30));
-    task.creds.fsuid.store(99, Ordering::Release);
+    task.security.creds.fsuid.store(99, Ordering::Release);
     assert_eq!(setresuid_on(&task, 11, KEEP, KEEP), 0);
     assert_eq!(uids(&task), (11, 20, 30, 20));
 }
@@ -80,7 +80,7 @@ fn setresgid_mirrors_the_uid_rules_over_the_gid_triple() {
 fn setresgid_resets_the_fs_gid_to_the_effective_gid() {
     let task = privileged();
     set_gids(&task, (10, 20, 30));
-    task.creds.fsgid.store(77, Ordering::Release);
+    task.security.creds.fsgid.store(77, Ordering::Release);
     assert_eq!(setresgid_on(&task, 11, ID_UNCHANGED, ID_UNCHANGED), 0);
     assert_eq!(gids(&task), (11, 20, 30, 20));
 }

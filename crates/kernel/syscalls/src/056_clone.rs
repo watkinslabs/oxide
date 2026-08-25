@@ -215,7 +215,7 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
         // root cgroup (that pid was never placed in a cgroup) — logind's
         // GetSessionByPID then returned NoSessionForPID and GNOME never logged
         // in.
-        child.vtgid.store(cur.vtgid.load(Ordering::Acquire), Ordering::Release);
+        child.security.vtgid.store(cur.security.vtgid.load(Ordering::Acquire), Ordering::Release);
     } else {
         // Linux `copy_signal` -> `tty_audit_fork`: a NEW thread group inherits
         // the parent's terminal-audit mask, and only the mask. A CLONE_THREAD
@@ -258,7 +258,7 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
     // clone(CLONE_SYSVSEM) child WITHOUT CLONE_THREAD must share the parent's,
     // or each would undo the other's operations at its own exit.
     if let Err(e) = ipc::sysv::sem::undo::copy_semundo(
-        (flags & CLONE_SYSVSEM) != 0, &cur.sysvsem_undo, &child.sysvsem_undo)
+        (flags & CLONE_SYSVSEM) != 0, &cur.security.sysvsem_undo, &child.security.sysvsem_undo)
     {
         return errno(e);
     }
@@ -278,7 +278,7 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
     // across fork; only `execve` re-derives it. Without this every child came up
     // at PER_LINUX and `personality(0xffffffff)` in a forked child reported the
     // wrong persona.
-    child.personality.store(cur.personality.load(Ordering::Acquire), Ordering::Release);
+    child.security.personality.store(cur.security.personality.load(Ordering::Acquire), Ordering::Release);
     // Linux `rseq_fork`: a CLONE_VM child (a thread) starts unregistered and
     // its libc registers a fresh area; a non-CLONE_VM child (fork) INHERITS
     // the registration, because its copied address space still holds the same
@@ -288,10 +288,10 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
     // critical sections — the exact silent-corruption shape rseq exists to
     // prevent. `Task::new` already left the CLONE_VM case cleared.
     if !share_vm {
-        child.rseq_ptr.store(cur.rseq_ptr.load(Ordering::Acquire), Ordering::Release);
-        child.rseq_len.store(cur.rseq_len.load(Ordering::Acquire), Ordering::Release);
-        child.rseq_sig.store(cur.rseq_sig.load(Ordering::Acquire), Ordering::Release);
-        child.rseq_slice_enabled.store(cur.rseq_slice_enabled.load(Ordering::Acquire), Ordering::Release);
+        child.security.rseq_ptr.store(cur.security.rseq_ptr.load(Ordering::Acquire), Ordering::Release);
+        child.security.rseq_len.store(cur.security.rseq_len.load(Ordering::Acquire), Ordering::Release);
+        child.security.rseq_sig.store(cur.security.rseq_sig.load(Ordering::Acquire), Ordering::Release);
+        child.security.rseq_slice_enabled.store(cur.security.rseq_slice_enabled.load(Ordering::Acquire), Ordering::Release);
     }
     // The number to return to the parent: the child's pid AS THE CALLER'S pid
     // namespace numbers it, which is not the child's own number whenever this
@@ -358,7 +358,7 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
         // The child's TID as userspace numbers it (the vtid), not the opaque
         // internal one. The child already exists at this point, so a store that
         // faults cannot un-create it and must not fail the call.
-        put_tid_best_effort(ptid, child.vtid.load(Ordering::Acquire));
+        put_tid_best_effort(ptid, child.security.vtid.load(Ordering::Acquire));
     }
     // CLONE_CHILD_SETTID writes the child's TID into the CHILD's address
     // space. Only a CLONE_VM child shares the caller's page tables, so the
@@ -378,7 +378,7 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
         if (flags & CLONE_VM) != 0 {
             // The address space is shared, so the store lands in the child's
             // mapping and can be made from here.
-            put_tid_best_effort(ctid, child.vtid.load(Ordering::Acquire));
+            put_tid_best_effort(ctid, child.security.vtid.load(Ordering::Acquire));
         } else {
             child.set_child_tid.store(ctid, Ordering::Release);
         }
@@ -454,7 +454,7 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
     crate::ptrace::stop::init_task(cur, &child, traced_event);
     // The message `PTRACE_GETEVENTMSG` reports for a fork/vfork/clone event is
     // the CHILD's pid as the tracer's pid namespace numbers it.
-    let child_event_msg = child.vtid.load(Ordering::Acquire) as u64;
+    let child_event_msg = child.security.vtid.load(Ordering::Acquire) as u64;
 
     // Linux `wake_up_new_task`: the child is now fully built — vtgid, fd
     // table, sigmask, CLONE_SETTLS FS_BASE, and the set_child_tid writes are

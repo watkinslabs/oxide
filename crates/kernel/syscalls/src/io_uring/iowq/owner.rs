@@ -69,7 +69,7 @@ impl Borrow {
         Self {
             mm: owner.mm.is_some(),
             fdt: owner.fdt.is_some(),
-            _creds: owner.creds.as_ref().map(|c| CredsOverride::install(c)),
+            _creds: owner.security.creds.as_ref().map(|c| CredsOverride::install(c)),
         }
     }
 }

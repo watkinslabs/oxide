@@ -84,10 +84,10 @@ fn name_is_per_thread_not_shared() {
 #[test]
 fn dumpable_round_trips_valid_values_and_defaults_to_user() {
     let t = Task::new(8, "spawn", SchedClass::Normal { weight: 1024 });
-    assert_eq!(t.dumpable.load(Ordering::Acquire), SUID_DUMP_USER, "Linux default");
+    assert_eq!(t.security.dumpable.load(Ordering::Acquire), SUID_DUMP_USER, "Linux default");
     for v in [SUID_DUMP_DISABLE, SUID_DUMP_USER] {
         assert_eq!(sys_set_dumpable(&t, &args1(0, v as u64)), 0);
-        assert_eq!(t.dumpable.load(Ordering::Acquire), v);
+        assert_eq!(t.security.dumpable.load(Ordering::Acquire), v);
     }
 }
 
@@ -99,10 +99,10 @@ fn dumpable_rejects_suid_dump_root_from_userspace() {
     // `fs.suid_dumpable`); PR_GET_DUMPABLE can report it but PR_SET_DUMPABLE
     // may never request it.
     let t = Task::new(9, "spawn", SchedClass::Normal { weight: 1024 });
-    t.dumpable.store(SUID_DUMP_ROOT, Ordering::Release);
+    t.security.dumpable.store(SUID_DUMP_ROOT, Ordering::Release);
     assert_eq!(sys_set_dumpable(&t, &args1(0, SUID_DUMP_ROOT as u64)),
                -(Errno::Einval.as_i32() as i64));
-    assert_eq!(t.dumpable.load(Ordering::Acquire), SUID_DUMP_ROOT,
+    assert_eq!(t.security.dumpable.load(Ordering::Acquire), SUID_DUMP_ROOT,
                "rejected SET must not mutate state");
 }
 
@@ -112,7 +112,7 @@ fn dumpable_rejects_out_of_range_value_with_einval() {
     sys_set_dumpable(&t, &args1(0, SUID_DUMP_DISABLE as u64));
     let rc = sys_set_dumpable(&t, &args1(0, 3));
     assert_eq!(rc, -(Errno::Einval.as_i32() as i64));
-    assert_eq!(t.dumpable.load(Ordering::Acquire), SUID_DUMP_DISABLE, "rejected SET must not mutate state");
+    assert_eq!(t.security.dumpable.load(Ordering::Acquire), SUID_DUMP_DISABLE, "rejected SET must not mutate state");
 }
 
 #[test]

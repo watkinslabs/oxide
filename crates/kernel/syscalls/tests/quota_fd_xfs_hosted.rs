@@ -279,10 +279,10 @@ fn begin_test() -> MutexGuard<'static, ()> {
 
 fn install_current_with_creds(fdt: Arc<vfs::FdTable>, euid: u32, cap_sys_admin: bool) {
     let task = Box::leak(Box::new(sched::Task::new(0x445, "quotactl-fd-xfs-hosted", sched::SchedClass::Normal { weight: 1024 })));
-    task.creds.euid.store(euid, Ordering::Release);
+    task.security.creds.euid.store(euid, Ordering::Release);
     if !cap_sys_admin {
         let mask = !(1u64 << sched::cap::SYS_ADMIN);
-        task.creds.cap_effective.fetch_and(mask, Ordering::AcqRel);
+        task.security.creds.cap_effective.fetch_and(mask, Ordering::AcqRel);
     }
     // SAFETY: hosted test owns this leaked task and publishes its fd table before installing the current hook pointer.
     unsafe { task.replace_fd_table(Some(fdt)); }

@@ -71,7 +71,7 @@ fn fpregs_block(cur: &sched::Task) -> (Vec<u8>, Option<Vec<u8>>) {
     {
         // SAFETY: `cur` is the running task and this CPU owns its FPU save area under the single-mutator rule; `fpu_save` writes exactly the area `ArchFpuBuf` allocated, 64-byte aligned.
         unsafe {
-            let p = (*cur.fpu_state.get()).as_mut_ptr();
+            let p = (*cur.security.fpu_state.get()).as_mut_ptr();
             hal_x86_64::fpu_save(p as *mut hal_x86_64::FpuStateX86_64);
             // The legacy note is the leading FXSAVE-compatible region. When
             // XSAVE is active, the extended note copies the exact complete
@@ -88,7 +88,7 @@ fn fpregs_block(cur: &sched::Task) -> (Vec<u8>, Option<Vec<u8>>) {
     {
         // SAFETY: `cur` is the running task and this CPU owns its FPU save area under the single-mutator rule; `fpu_save` writes exactly the area `ArchFpuBuf` allocated.
         unsafe {
-            let p = (*cur.fpu_state.get()).as_mut_ptr();
+            let p = (*cur.security.fpu_state.get()).as_mut_ptr();
             hal_aarch64::fpu_save(p as *mut hal_aarch64::FpuStateAArch64);
             let st = &*(p as *const hal_aarch64::FpuStateAArch64);
             (gregset::aarch64_fpregs_block(&st.q, st.fpsr, st.fpcr), None)
@@ -141,7 +141,7 @@ pub unsafe fn build_image(
     let (cutime_ns, cstime_ns) = cur.thread_group.child_acct().cpu_ns();
 
     let threads = [CoreThread {
-        tid: cx.vtid as i32, regs: &gregs, fpregs: Some(&fpregs), xstate: xstate.as_deref(),
+        tid: cx.security.vtid as i32, regs: &gregs, fpregs: Some(&fpregs), xstate: xstate.as_deref(),
         times: CoreTimes {
             utime: timeval_of_ns(utime_ns), stime: timeval_of_ns(stime_ns),
             ..CoreTimes::default()

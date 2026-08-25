@@ -21,7 +21,7 @@ fn published(tid: u32) -> Arc<Task> {
     t.exit_signal.store(Signum::Sigchld as u8, Ordering::Release);
     // Hosted fixtures carry no VPID by default; stamp it so the snapshot the
     // wait family returns to userspace is checkable.
-    t.vtgid.store(tid, Ordering::Release);
+    t.security.vtgid.store(tid, Ordering::Release);
     crate::registry::insert(&t);
     t
 }
@@ -53,17 +53,17 @@ fn fixture() -> (Arc<Task>, Arc<Task>) {
 fn a_job_control_stop_is_invisible_to_a_wait_without_wuntraced() {
     let _g = registry_test_lock();
     let (p, c) = fixture();
-    c.stop_code.store(Signum::Sigtstp as u32, Ordering::Release);
-    c.stop_pending.store(true, Ordering::Release);
+    c.security.stop_code.store(Signum::Sigtstp as u32, Ordering::Release);
+    c.security.stop_pending.store(true, Ordering::Release);
 
     assert!(scan(&p, false, false, true).is_none(), "no WUNTRACED, no tracer: nothing to report");
-    assert!(c.stop_pending.load(Ordering::Acquire), "a skipped event must stay pending");
+    assert!(c.security.stop_pending.load(Ordering::Acquire), "a skipped event must stay pending");
 
     let (child, kind, sig) = scan(&p, true, false, true).expect("WUNTRACED sees the stop");
     assert_eq!(kind, WaitEventKind::Stopped);
     assert_eq!(sig, Signum::Sigtstp as u32);
     assert_eq!(child.vpid, CHILD);
-    assert!(!c.stop_pending.load(Ordering::Acquire), "a consumed stop is cleared");
+    assert!(!c.security.stop_pending.load(Ordering::Acquire), "a consumed stop is cleared");
 }
 
 #[test]
@@ -71,8 +71,8 @@ fn a_tracer_sees_its_tracees_stop_without_wuntraced_and_it_reports_as_a_trap() {
     let _g = registry_test_lock();
     let (p, c) = fixture();
     c.traced_by.store(p.tid, Ordering::Release);
-    c.stop_code.store(Signum::Sigtrap as u32, Ordering::Release);
-    c.stop_pending.store(true, Ordering::Release);
+    c.security.stop_code.store(Signum::Sigtrap as u32, Ordering::Release);
+    c.security.stop_pending.store(true, Ordering::Release);
 
     let (_, kind, sig) = scan(&p, false, false, true).expect("a tracee stop is visible with no options");
     assert_eq!(kind, WaitEventKind::Trapped, "a ptrace stop is CLD_TRAPPED, not CLD_STOPPED");
@@ -86,8 +86,8 @@ fn a_stop_reports_as_a_plain_stop_to_a_waiter_that_is_not_the_tracer() {
     // Traced by an unrelated task: this waiter is the real parent, so the
     // event is a job-control stop and still needs WUNTRACED.
     c.traced_by.store(PARENT + 50, Ordering::Release);
-    c.stop_code.store(Signum::Sigstop as u32, Ordering::Release);
-    c.stop_pending.store(true, Ordering::Release);
+    c.security.stop_code.store(Signum::Sigstop as u32, Ordering::Release);
+    c.security.stop_pending.store(true, Ordering::Release);
 
     assert!(scan(&p, false, false, true).is_none());
     let (_, kind, _) = scan(&p, true, false, true).expect("WUNTRACED sees it");
@@ -98,14 +98,14 @@ fn a_stop_reports_as_a_plain_stop_to_a_waiter_that_is_not_the_tracer() {
 fn wnowait_observes_the_event_without_consuming_it() {
     let _g = registry_test_lock();
     let (p, c) = fixture();
-    c.stop_code.store(Signum::Sigttin as u32, Ordering::Release);
-    c.stop_pending.store(true, Ordering::Release);
+    c.security.stop_code.store(Signum::Sigttin as u32, Ordering::Release);
+    c.security.stop_pending.store(true, Ordering::Release);
 
     for _ in 0..3 {
         let (_, kind, sig) = scan(&p, true, false, false).expect("peek repeats");
         assert_eq!(kind, WaitEventKind::Stopped);
         assert_eq!(sig, Signum::Sigttin as u32);
-        assert!(c.stop_pending.load(Ordering::Acquire));
+        assert!(c.security.stop_pending.load(Ordering::Acquire));
     }
     assert!(scan(&p, true, false, true).is_some());
     assert!(scan(&p, true, false, true).is_none(), "consumed exactly once");
@@ -115,22 +115,22 @@ fn wnowait_observes_the_event_without_consuming_it() {
 fn continued_events_are_reported_only_when_wcontinued_was_requested() {
     let _g = registry_test_lock();
     let (p, c) = fixture();
-    c.cont_pending.store(true, Ordering::Release);
+    c.security.cont_pending.store(true, Ordering::Release);
 
     assert!(scan(&p, true, false, true).is_none(), "WUNTRACED alone does not report a continue");
     let (_, kind, sig) = scan(&p, false, true, true).expect("WCONTINUED sees it");
     assert_eq!(kind, WaitEventKind::Continued);
     assert_eq!(sig, 0);
-    assert!(!c.cont_pending.load(Ordering::Acquire));
+    assert!(!c.security.cont_pending.load(Ordering::Acquire));
 }
 
 #[test]
 fn a_pending_stop_is_preferred_over_a_pending_continue_on_the_same_child() {
     let _g = registry_test_lock();
     let (p, c) = fixture();
-    c.stop_code.store(Signum::Sigstop as u32, Ordering::Release);
-    c.stop_pending.store(true, Ordering::Release);
-    c.cont_pending.store(true, Ordering::Release);
+    c.security.stop_code.store(Signum::Sigstop as u32, Ordering::Release);
+    c.security.stop_pending.store(true, Ordering::Release);
+    c.security.cont_pending.store(true, Ordering::Release);
 
     assert_eq!(scan(&p, true, true, true).unwrap().1, WaitEventKind::Stopped);
     assert_eq!(scan(&p, true, true, true).unwrap().1, WaitEventKind::Continued);
@@ -179,11 +179,11 @@ fn a_stop_belonging_to_another_parent_is_not_reported() {
     let _g = registry_test_lock();
     let (p, _c) = fixture();
     let stranger = published(PARENT + 900);
-    stranger.stop_code.store(Signum::Sigstop as u32, Ordering::Release);
-    stranger.stop_pending.store(true, Ordering::Release);
+    stranger.security.stop_code.store(Signum::Sigstop as u32, Ordering::Release);
+    stranger.security.stop_pending.store(true, Ordering::Release);
 
     assert!(scan(&p, true, true, true).is_none());
-    assert!(stranger.stop_pending.load(Ordering::Acquire));
+    assert!(stranger.security.stop_pending.load(Ordering::Acquire));
 }
 
 #[test]
@@ -192,8 +192,8 @@ fn a_ptrace_event_stop_code_survives_the_registry_and_the_status_encoder() {
     let (p, c) = fixture();
     c.traced_by.store(p.tid, Ordering::Release);
     let code = syscall::ptrace::event_stop_code(syscall::ptrace::EVENT_EXEC);
-    c.stop_code.store(code as u32, Ordering::Release);
-    c.stop_pending.store(true, Ordering::Release);
+    c.security.stop_code.store(code as u32, Ordering::Release);
+    c.security.stop_pending.store(true, Ordering::Release);
 
     let (_, kind, got) = scan(&p, false, false, true).expect("a tracee stop is always visible");
     assert_eq!(kind, WaitEventKind::Trapped);
@@ -295,8 +295,8 @@ fn a_tracer_outside_the_parent_chain_sees_its_tracees_stop() {
     let (real_parent, c) = fixture();
     let tracer = published(PARENT + 700);
     c.traced_by.store(tracer.tid, Ordering::Release);
-    c.stop_code.store(Signum::Sigstop as u32, Ordering::Release);
-    c.stop_pending.store(true, Ordering::Release);
+    c.security.stop_code.store(Signum::Sigstop as u32, Ordering::Release);
+    c.security.stop_pending.store(true, Ordering::Release);
 
     // WNOWAIT-style peek so both waiters can be checked against one event.
     let (_, kind, got) = scan(&tracer, false, false, false)
@@ -322,8 +322,8 @@ fn a_tracer_sees_a_clone_child_without_wclone() {
     let tracer = published(PARENT + 710);
     c.exit_signal.store(0, Ordering::Release);
     c.traced_by.store(tracer.tid, Ordering::Release);
-    c.stop_code.store(Signum::Sigtrap as u32, Ordering::Release);
-    c.stop_pending.store(true, Ordering::Release);
+    c.security.stop_code.store(Signum::Sigtrap as u32, Ordering::Release);
+    c.security.stop_pending.store(true, Ordering::Release);
     let (_, kind, _) = scan(&tracer, false, false, true)
         .expect("a ptrace wait is not filtered by __WCLONE");
     assert_eq!(kind, WaitEventKind::Trapped);
@@ -337,8 +337,8 @@ fn an_unrelated_task_still_cannot_wait_for_someone_elses_tracee() {
     let tracer = published(PARENT + 720);
     let stranger = published(PARENT + 721);
     c.traced_by.store(tracer.tid, Ordering::Release);
-    c.stop_code.store(Signum::Sigstop as u32, Ordering::Release);
-    c.stop_pending.store(true, Ordering::Release);
+    c.security.stop_code.store(Signum::Sigstop as u32, Ordering::Release);
+    c.security.stop_pending.store(true, Ordering::Release);
     assert!(scan(&stranger, true, true, true).is_none());
 }
 
@@ -350,12 +350,12 @@ fn an_unrelated_task_still_cannot_wait_for_someone_elses_tracee() {
 fn a_cleared_stop_code_is_not_reported_and_does_not_consume_the_event() {
     let _g = registry_test_lock();
     let (p, c) = fixture();
-    c.stop_code.store(0, Ordering::Release);
-    c.stop_pending.store(true, Ordering::Release);
+    c.security.stop_code.store(0, Ordering::Release);
+    c.security.stop_pending.store(true, Ordering::Release);
     assert!(scan(&p, true, false, true).is_none());
     // The flag survives, so the real stop that follows is still reportable.
-    assert!(c.stop_pending.load(Ordering::Acquire));
-    c.stop_code.store(Signum::Sigtstp as u32, Ordering::Release);
+    assert!(c.security.stop_pending.load(Ordering::Acquire));
+    c.security.stop_code.store(Signum::Sigtstp as u32, Ordering::Release);
     let (_, _, got) = scan(&p, true, false, true).expect("the next real stop reports");
     assert_eq!(got, Signum::Sigtstp as u32);
 }

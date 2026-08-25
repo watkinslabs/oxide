@@ -40,8 +40,8 @@ pub fn sys_kill(args: &SyscallArgs) -> i64 {
     // si_pid == 0, si_uid == 0 — systemd's `sd_event` signal handlers key on
     // si_pid to tell a child's death from an operator's `systemctl kill`.
     let src = SigSource::User {
-        pid: cur.vtgid.load(Ordering::Acquire),
-        uid: cur.creds.ruid.load(Ordering::Acquire),
+        pid: cur.security.vtgid.load(Ordering::Acquire),
+        uid: cur.security.creds.ruid.load(Ordering::Acquire),
     };
     match classify(pid) {
         PidClass::NoSuchGroup => -(Errno::Esrch.as_i32() as i64),
@@ -95,7 +95,7 @@ fn post_broadcast(cur: &sched::Task, sig: i32, src: SigSource) -> i64 {
     let mut fold = BroadcastFold::new();
     for t in &tasks {
         if t.reaped.load(Ordering::Acquire) { continue; }
-        let vtgid = t.vtgid.load(Ordering::Acquire);
+        let vtgid = t.security.vtgid.load(Ordering::Acquire);
         // vpid 0 is a kernel thread (no user pid at all); vpid 1 is init, which
         // Linux excludes from the broadcast by the `> 1` test.
         if vtgid <= 1 { continue; }

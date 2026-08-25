@@ -103,7 +103,7 @@ fn ns_to_ticks(ns: u64) -> i32 { (ns / sol::NS_PER_TICK) as i32 }
 
 fn net_admin(sock: &InetSocket) -> bool {
     match sched::live::current() {
-        Some(cur) => nscg::has_net_admin_for(cur, &sock.net_namespace),
+        Some(cur) => nscg::has_net_admin_for(cur, &sock.security.net_namespace),
         None => false,
     }
 }

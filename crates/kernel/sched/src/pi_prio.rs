@@ -76,7 +76,7 @@ pub const PI_NOT_BOOSTED: u64 = u64::MAX;
 /// permanent.
 /// # C: O(1)
 pub fn base_class(task: &Task) -> SchedClass {
-    match task.pi_base_class.load(Ordering::Acquire) {
+    match task.security.pi_base_class.load(Ordering::Acquire) {
         PI_NOT_BOOSTED => task.sched_class(),
         enc => SchedClass::decode(enc),
     }
@@ -85,7 +85,7 @@ pub fn base_class(task: &Task) -> SchedClass {
 /// True iff a PI boost is currently applied to `task`.
 /// # C: O(1)
 pub fn is_boosted(task: &Task) -> bool {
-    task.pi_base_class.load(Ordering::Acquire) != PI_NOT_BOOSTED
+    task.security.pi_base_class.load(Ordering::Acquire) != PI_NOT_BOOSTED
 }
 
 #[cfg(test)]

@@ -102,9 +102,9 @@ pub fn sys_mount(args: &SyscallArgs) -> i64 {
         if let Some(c) = sched::live::current() {
             use core::sync::atomic::Ordering::Acquire;
             klog::write_raw(b"[mnt-cap] euid=");
-            klog::write_dec_u64(c.creds.euid.load(Acquire) as u64);
+            klog::write_dec_u64(c.security.creds.euid.load(Acquire) as u64);
             klog::write_raw(b" ruid=");
-            klog::write_dec_u64(c.creds.ruid.load(Acquire) as u64);
+            klog::write_dec_u64(c.security.creds.ruid.load(Acquire) as u64);
             klog::write_raw(b" sysadmin=");
             klog::write_dec_u64(if c.has_cap(sched::cap::SYS_ADMIN) { 1 } else { 0 });
             klog::write_raw(b" vpid=");

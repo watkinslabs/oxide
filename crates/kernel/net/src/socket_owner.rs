@@ -20,8 +20,8 @@ impl SocketOwner {
         let Some(task) = sched::live::current() else {
             return Self::root(net_namespace, 0);
         };
-        let owner_uid = task.creds.euid.load(core::sync::atomic::Ordering::Acquire);
-        let owner_gid = task.creds.egid.load(core::sync::atomic::Ordering::Acquire);
+        let owner_uid = task.security.creds.euid.load(core::sync::atomic::Ordering::Acquire);
+        let owner_gid = task.security.creds.egid.load(core::sync::atomic::Ordering::Acquire);
         Arc::new(Self {
             net_namespace,
             owner_uid, owner_gid,

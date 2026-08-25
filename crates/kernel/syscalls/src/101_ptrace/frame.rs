@@ -41,7 +41,7 @@ fn base(t: &Task) -> Option<*mut Frame> {
     // prefer it over deriving the address from the stack top.
     #[cfg(target_arch = "aarch64")]
     {
-        let p = t.svc_frame.load(Ordering::Acquire);
+        let p = t.security.svc_frame.load(Ordering::Acquire);
         if p != 0 { return Some(p as *mut Frame); }
     }
     let top = t.kernel_stack.load(Ordering::Acquire);
@@ -70,7 +70,7 @@ pub fn write(t: &Task, f: &Frame) -> Option<()> {
 /// # C: O(1)
 pub fn user_regs(t: &Task) -> Option<[u64; REGS_N]> {
     let f = read(t)?;
-    let rv = t.ptrace_stop_rax.load(Ordering::Acquire);
+    let rv = t.security.ptrace_stop_rax.load(Ordering::Acquire);
     #[cfg(target_arch = "x86_64")]
     {
         Some(crate::s101_ptrace_regs::x86::to_user_regs(&f, rv, &seg_state(t)))
@@ -95,12 +95,12 @@ pub fn set_user_regs(t: &Task, u: &[u64; REGS_N]) -> Result<(), Errno> {
             (*p).fs_base = seg.fs_base;
             (*p).gs_base = seg.gs_base;
         }
-        t.ptrace_stop_rax.store(rax, Ordering::Release);
+        t.security.ptrace_stop_rax.store(rax, Ordering::Release);
     }
     #[cfg(target_arch = "aarch64")]
     {
         crate::s101_ptrace_regs::arm64::from_user_pt_regs(u, &mut f);
-        t.ptrace_stop_rax.store(u[0], Ordering::Release);
+        t.security.ptrace_stop_rax.store(u[0], Ordering::Release);
     }
     match write(t, &f) { Some(()) => Ok(()), None => Err(Errno::Esrch) }
 }
@@ -112,7 +112,7 @@ pub fn set_user_regs(t: &Task, u: &[u64; REGS_N]) -> Result<(), Errno> {
 pub fn syscall_regs(t: &Task) -> Option<crate::s101_ptrace_sysinfo::Regs> {
     use crate::s101_ptrace_sysinfo::Regs;
     let f = read(t)?;
-    let rval = t.ptrace_stop_rax.load(Ordering::Acquire) as i64;
+    let rval = t.security.ptrace_stop_rax.load(Ordering::Acquire) as i64;
     #[cfg(target_arch = "x86_64")]
     {
         // The frame's `rax` slot holds the syscall number for the whole
@@ -169,7 +169,7 @@ pub fn set_syscall_entry(t: &Task, nr: i64, args: &[u64; 6], set_args: bool)
 /// rather than the frame word holding the syscall number.
 /// # C: O(1)
 pub fn set_syscall_return(t: &Task, rval: i64) -> Result<(), Errno> {
-    t.ptrace_stop_rax.store(rval as u64, Ordering::Release);
+    t.security.ptrace_stop_rax.store(rval as u64, Ordering::Release);
     #[cfg(target_arch = "aarch64")]
     {
         let mut f = read(t).ok_or(Errno::Esrch)?;

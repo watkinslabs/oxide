@@ -97,8 +97,8 @@ pub fn sys_kcmp(args: &SyscallArgs) -> i64 {
         // reported two threads of one process as sharing a list even when
         // neither had ever registered an adjustment, and reported a
         // `clone(CLONE_SYSVSEM)` child that genuinely shares one as different.
-        abi::KCMP_SYSVSEM => ptr_cmp(t1.sysvsem_undo.load(Ordering::Acquire) as usize,
-                                     t2.sysvsem_undo.load(Ordering::Acquire) as usize),
+        abi::KCMP_SYSVSEM => ptr_cmp(t1.security.sysvsem_undo.load(Ordering::Acquire) as usize,
+                                     t2.security.sysvsem_undo.load(Ordering::Acquire) as usize),
         abi::KCMP_EPOLL_TFD => epoll_tfd::compare(&t1, &t2, idx1, idx2),
         _ => errno(Errno::Einval),
     }

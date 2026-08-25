@@ -32,7 +32,7 @@ pub fn acquire_ctty_on_open(inode: &InodeRef, flags: u32) {
     let o_noctty = flags & OpenFlags::O_NOCTTY.bits() != 0;
     let o_path = flags & OpenFlags::O_PATH.bits() != 0;
     let Some(cur) = sched::live::current() else { return; };
-    let vpid = cur.vtgid.load(Ordering::Acquire);
+    let vpid = cur.security.vtgid.load(Ordering::Acquire);
     let my_pid = if vpid != 0 { vpid } else { cur.tid };
     let session = cur.session();
     let is_leader = session.nr_in_or_tid(&sched::live::registry::reader_pid_ns()) == my_pid;

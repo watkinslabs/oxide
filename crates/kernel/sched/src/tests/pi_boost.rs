@@ -21,7 +21,7 @@ fn a_boosted_task_reports_the_saved_base_not_the_inherited_class() {
     let t = Task::new(8, "t", fair(1024));
     // What `live::pi_boost::apply_boost` does: save the base, then raise
     // the effective class.
-    t.pi_base_class.store(fair(1024).encode(), core::sync::atomic::Ordering::Release);
+    t.security.pi_base_class.store(fair(1024).encode(), core::sync::atomic::Ordering::Release);
     t.set_sched_class(rt(70));
     assert!(is_boosted(&t));
     assert_eq!(t.sched_class(), rt(70), "the task really does RUN at the inherited priority");

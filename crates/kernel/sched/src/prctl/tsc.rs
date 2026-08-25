@@ -56,7 +56,7 @@ pub fn flag_to_mode(armed: bool) -> u32 {
 /// write is a no-op when the bit already matches.
 /// # C: O(1)
 pub fn apply(cur: &Task, armed: bool) {
-    cur.tsc_sigsegv.store(armed, core::sync::atomic::Ordering::Release);
+    cur.security.tsc_sigsegv.store(armed, core::sync::atomic::Ordering::Release);
     // SAFETY: per-CPU control register write, legal at the kernel's privilege
     // level; `cur` is the task running on this CPU so the register and the
     // flag describe the same thread.
@@ -82,7 +82,7 @@ pub fn switch_to(prev_armed: bool, next_armed: bool) {
 /// sysreg-trap emulator consults before it hands back a counter value.
 /// # C: O(1)
 pub fn denied(cur: &Task) -> bool {
-    cur.tsc_sigsegv.load(core::sync::atomic::Ordering::Acquire)
+    cur.security.tsc_sigsegv.load(core::sync::atomic::Ordering::Acquire)
 }
 
 // The HAL's EL0 counter-read trap emulator upcalls into this policy; the

@@ -153,7 +153,7 @@ pub type WaitList = HostedWaitList;
 pub fn current_tgid() -> u32 {
     match sched::current() {
         Some(t) => {
-            let v = t.vtgid.load(core::sync::atomic::Ordering::Acquire);
+            let v = t.security.vtgid.load(core::sync::atomic::Ordering::Acquire);
             if v != 0 { v } else { t.tgid.load(core::sync::atomic::Ordering::Acquire) }
         }
         None => 0,
@@ -166,7 +166,7 @@ pub fn current_tgid() -> u32 {
 /// # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
 pub fn current_undo_slot() -> Option<&'static core::sync::atomic::AtomicU64> {
-    sched::current().map(|t| &t.sysvsem_undo)
+    sched::current().map(|t| &t.security.sysvsem_undo)
 }
 
 /// Hosted builds have no task registry, so the whole test process stands in for
