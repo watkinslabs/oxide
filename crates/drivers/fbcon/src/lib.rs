@@ -14,6 +14,7 @@ pub mod font;
 pub mod vcrender;
 
 #[cfg(test)]
+#[path = "tests/fbcon.rs"]
 mod tests;
 
 pub mod answerback;
