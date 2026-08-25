@@ -8,6 +8,7 @@ use crate::{Error, KResult};
 use super::AddressSpace;
 
 mod fill;
+mod file;
 mod huge;
 mod around;
 mod device;
