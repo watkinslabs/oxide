@@ -218,6 +218,9 @@ struct SysReg {
 // Only the handler reads CNTFRQ_EL0; the test below decodes CNTVCT_EL0.
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 const SYSREG_CNTFRQ_EL0: SysReg = SysReg { op0: 3, op1: 3, crn: 14, crm: 0, op2: 0 };
+/// `CTR_EL0`, the cache-type register Linux exposes through its trap hook.
+#[cfg(any(test, all(target_arch = "aarch64", target_os = "oxide-kernel")))]
+const SYSREG_CTR_EL0: SysReg = SysReg { op0: 3, op1: 3, crn: 0, crm: 0, op2: 1 };
 #[cfg(any(test, all(target_arch = "aarch64", target_os = "oxide-kernel")))]
 const SYSREG_CNTVCT_EL0: SysReg = SysReg { op0: 3, op1: 3, crn: 14, crm: 0, op2: 2 };
 
@@ -516,6 +519,14 @@ pub unsafe extern "C" fn oxide_arm_sysreg_trap_handler(frame: *mut SvcFrame, esr
         return unsafe { oxide_arm_undef_handler(frame.cast::<u8>()) };
     }
     let reg = sysreg_iss_reg(esr);
+    if reg == SYSREG_CTR_EL0 {
+        let saved_x0 = f.gp[0];
+        let value = crate::cpuid::ctr_el0();
+        let rt = sysreg_iss_rt(esr);
+        write_saved_rt(f, rt, value);
+        f.elr_el1 = f.elr_el1.wrapping_add(AARCH64_INSN_BYTES);
+        return if rt == 0 { value } else { saved_x0 };
+    }
     // Linux `cntvct_read_handler` / `cntfrq_read_handler`: a task that armed
     // `PR_TSC_SIGSEGV` gets the signal INSTEAD of the emulated value. Without
     // this arm the trap still fires (the enable bits are cleared) but the

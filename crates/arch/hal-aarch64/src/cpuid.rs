@@ -98,6 +98,48 @@ pub fn isar0_hwcap(isar0: u64) -> u64 {
     h
 }
 
+/// `CTR_EL0` fields exposed to EL0. Linux presents the effective cache type,
+/// not an unsanitised per-CPU value: DIC is at least one for the user ABI and
+/// IDC is raised when the cache hierarchy makes instruction/data coherence
+/// maintenance unnecessary.
+pub const CTR_DIC: u64 = 1 << 29;
+pub const CTR_IDC: u64 = 1 << 28;
+pub const CTR_RES1: u64 = 1 << 31;
+pub const CLIDR_LOUU_SHIFT: u32 = 27;
+pub const CLIDR_LOUIS_SHIFT: u32 = 21;
+pub const CLIDR_LOC_SHIFT: u32 = 24;
+
+/// Sanitize one raw `CTR_EL0` value to Linux's effective user-visible value.
+/// # C: O(1)
+pub fn effective_ctr_el0(raw: u64, clidr: u64) -> u64 {
+    let mut ctr = raw as u32 as u64;
+    ctr |= CTR_RES1 | CTR_DIC;
+    let loc = (clidr >> CLIDR_LOC_SHIFT) & 0x7;
+    let louis = (clidr >> CLIDR_LOUIS_SHIFT) & 0x7;
+    let louu = (clidr >> CLIDR_LOUU_SHIFT) & 0x7;
+    if ctr & CTR_IDC == 0 && (loc == 0 || (louis == 0 && louu == 0)) { ctr |= CTR_IDC; }
+    ctr
+}
+
+/// Read the effective `CTR_EL0` value returned by an EL0 system-register trap.
+/// # C: O(1)
+pub fn ctr_el0() -> u64 {
+    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+    {
+        let (raw, clidr): (u64, u64);
+        // SAFETY: both registers are EL1-readable architectural cache
+        // descriptors; these MRS instructions have no memory side effects.
+        unsafe { core::arch::asm!(
+            "mrs {raw}, ctr_el0",
+            "mrs {clidr}, clidr_el1",
+            raw = out(reg) raw, clidr = out(reg) clidr,
+            options(nomem, nostack, preserves_flags)); }
+        return effective_ctr_el0(raw, clidr);
+    }
+    #[cfg(not(all(target_arch = "aarch64", target_os = "oxide-kernel")))]
+    { 0 }
+}
+
 // ---------------------------------------------------------------------------
 // Optional-feature ID registers.
 //
@@ -334,5 +376,22 @@ mod tests {
         // AES=2, SHA1=1, SHA2=1 (no CRC) → AES|PMULL|SHA1|SHA2.
         let v = (2u64 << 4) | (1u64 << 8) | (1u64 << 12);
         assert_eq!(isar0_hwcap(v), (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6));
+    }
+
+    #[test]
+    fn ctr_user_value_has_linux_safe_bits_and_effective_idc() {
+        let raw = 0x1234_0000u64;
+        let value = effective_ctr_el0(raw, 0);
+        assert_eq!(value & CTR_RES1, CTR_RES1);
+        assert_eq!(value & CTR_DIC, CTR_DIC);
+        assert_eq!(value & CTR_IDC, CTR_IDC);
+        assert_eq!(value & 0xffff_ffff, (raw | CTR_RES1 | CTR_DIC | CTR_IDC) & 0xffff_ffff);
+    }
+
+    #[test]
+    fn ctr_user_value_keeps_idc_when_cache_hierarchy_requires_it() {
+        let raw = 0;
+        let clidr = (1 << CLIDR_LOC_SHIFT) | (1 << CLIDR_LOUIS_SHIFT) | (1 << CLIDR_LOUU_SHIFT);
+        assert_eq!(effective_ctr_el0(raw, clidr) & CTR_IDC, 0);
     }
 }
