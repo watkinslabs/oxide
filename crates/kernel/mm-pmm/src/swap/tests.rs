@@ -246,6 +246,19 @@ fn file_backing_records_linux_proc_swaps_identity_and_path() {
 }
 
 #[test]
+fn file_backing_without_resume_geometry_activates_for_paging() {
+    let _guard = swap_test_lock();
+    let disk = MemDisk::<TaskList>::new(TEST_BLOCK_BYTES, TEST_DEVICE_BLOCKS);
+    write_linux_swap_header(&disk, &[]);
+    let device: Arc<dyn BlockDevice> = disk;
+    let kind = activate_file_without_resume(String::from("ext4:test-fsid:test-ino-no-resume"),
+        String::from("/var/tmp/swapfile"), device, Some(DEFAULT_PRIORITY), SwapDiscard::None).unwrap();
+    let info = snapshot().into_iter().find(|area| area.kind == kind).unwrap();
+    assert_eq!(info.backing, SwapBacking::File);
+    deactivate(kind).unwrap();
+}
+
+#[test]
 fn snapshot_excludes_header_and_bad_pages_from_capacity() {
     let _guard = swap_test_lock();
     let disk = MemDisk::<TaskList>::new(TEST_BLOCK_BYTES, TEST_DEVICE_BLOCKS);
