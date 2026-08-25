@@ -305,15 +305,33 @@ impl Mount {
     /// # C: O(log N) cache lookup or O(1) device I/O on a cold block
     #[inline(never)]
     pub(crate) fn read_metadata_block(&self, lba: u64) -> Result<Vec<u8>, MountError> {
-        if let Some(buf) = {
-            let s = self.state.lock();
-            s.shadow.as_ref().and_then(|m| m.get(&lba).cloned())
-                .or_else(|| s.metadata_cache.get(&lba).cloned())
-        } {
-            return Ok(buf);
-        }
         let bs = self.sb.block_size as u64;
+        let cached = {
+            let mut s = self.state.lock();
+            if let Some(buf) = s.shadow.as_ref().and_then(|m| m.get(&lba).cloned()) {
+                if buf.len() == bs as usize { return Ok(buf); }
+                // A journal shadow is an in-flight full filesystem block. A
+                // short value cannot be interpreted as metadata: Linux's
+                // buffer-head/page-cache contract never publishes a partial
+                // block as a readable buffer.
+                return Err(MountError::Inode(crate::InodeError::BadLen));
+            }
+            match s.metadata_cache.get(&lba).cloned() {
+                Some(buf) if buf.len() == bs as usize => Some(buf),
+                Some(_) => {
+                    // Clean cache entries are replaceable. Drop a malformed
+                    // entry and perform the authoritative device read below;
+                    // retaining it would turn one bad cache publication into
+                    // a repeatable SIGBUS on every file fault for this block.
+                    s.metadata_cache.remove(&lba);
+                    None
+                }
+                None => None,
+            }
+        };
+        if let Some(buf) = cached { return Ok(buf); }
         let buf = read_byte_range(&*self.dev, lba * bs, self.sb.block_size as usize)?;
+        if buf.len() != bs as usize { return Err(MountError::Inode(crate::InodeError::BadLen)); }
         // Metadata is bounded by the mount image in the normal boot path.  A
         // cap prevents a streaming metadata workload from pinning unlimited
         // memory; clear only clean entries, never a live journal shadow.

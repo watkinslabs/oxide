@@ -228,3 +228,38 @@ impl Mount {
         self.state.lock().metadata_cache.clear();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use alloc::sync::Arc;
+    use alloc::vec;
+    use alloc::vec::Vec;
+    use block::{BlockDevice, BlockOp, BlockRequest, MemDisk};
+    use sync::TaskList;
+
+    use super::Mount;
+
+    const IMAGE: &[u8] = include_bytes!("../../tests/mini-j.img");
+    const SECTOR: u32 = 512;
+
+    fn fresh_dev() -> Arc<dyn BlockDevice> {
+        let cap = (IMAGE.len() as u64) / SECTOR as u64;
+        let inner: Arc<MemDisk<TaskList>> = MemDisk::new(SECTOR, cap);
+        let mut req = BlockRequest {
+            op: BlockOp::Write, start_block: 0, len_blocks: cap as u32,
+            buffer: Vec::from(IMAGE), ..Default::default()
+        };
+        inner.submit_sync(&mut req).unwrap();
+        inner
+    }
+
+    #[test]
+    fn malformed_clean_metadata_cache_is_refetched() {
+        let m = Mount::open(fresh_dev()).unwrap();
+        let lba = m.group_desc(0).unwrap().inode_table as u64;
+        let expected = m.read_metadata_block(lba).unwrap();
+        m.state.lock().metadata_cache.insert(lba, vec![0; expected.len() - 1]);
+        let actual = m.read_metadata_block(lba).unwrap();
+        assert_eq!(actual, expected);
+    }
+}
