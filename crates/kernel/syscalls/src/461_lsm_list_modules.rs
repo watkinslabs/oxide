@@ -13,7 +13,7 @@
 use syscall::{errno::Errno, SyscallArgs};
 
 use crate::lsm::{list_modules_fits, list_modules_precheck, list_modules_total_size,
-    ACTIVE_LSM_IDS, LSM_ID_BYTES};
+    LSM_ID_BYTES};
 
 /// # C: O(1)
 fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
@@ -29,14 +29,15 @@ pub fn sys_lsm_list_modules(args: &SyscallArgs) -> i64 {
     let mut have = [0u8; 4];
     if uaccess::copy_from_user(&mut have, size_ptr).is_err() { return errno(Errno::Efault); }
     let usize_bytes = u32::from_ne_bytes(have);
-    let total = list_modules_total_size();
+    let active = security::active_lsm_ids();
+    let total = list_modules_total_size(&active);
     // `put_user(total_size, size)` — before the E2BIG decision.
     if uaccess::copy_to_user(size_ptr, &total.to_ne_bytes()).is_err() {
         return errno(Errno::Efault);
     }
-    if let Err(e) = list_modules_fits(usize_bytes) { return errno(e); }
+    if let Err(e) = list_modules_fits(usize_bytes, total) { return errno(e); }
     let mut slot = ids_ptr;
-    for id in ACTIVE_LSM_IDS {
+    for id in &active {
         if uaccess::copy_to_user(slot, &id.to_ne_bytes()).is_err() {
             return errno(Errno::Efault);
         }
@@ -45,5 +46,5 @@ pub fn sys_lsm_list_modules(args: &SyscallArgs) -> i64 {
             None => return errno(Errno::Efault),
         };
     }
-    ACTIVE_LSM_IDS.len() as i64
+    active.len() as i64
 }

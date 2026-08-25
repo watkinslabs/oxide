@@ -2395,10 +2395,12 @@ name = "security"
 version = "0.1.0"
 dependencies = [
  "cgroup",
+ "cmdline",
  "crng",
  "hal",
  "kernfs",
  "klog",
+ "lsm",
  "namespace-identity",
  "pmm",
  "sched",

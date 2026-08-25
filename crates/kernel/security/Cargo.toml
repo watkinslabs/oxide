@@ -12,6 +12,8 @@ cgroup  = { path = "../../kernel/cgroup" }
 crng    = { path = "../../kernel/crng" }
 hal     = { path = "../../arch/hal" }
 klog    = { path = "../../shared/klog" }
+cmdline = { path = "../cmdline" }
+lsm-framework = { package = "lsm", path = "../lsm" }
 kernfs  = { path = "../../kernel/kernfs" }
 namespace-identity = { path = "../../kernel/namespace-identity" }
 pmm     = { path = "../../kernel/mm-pmm" }

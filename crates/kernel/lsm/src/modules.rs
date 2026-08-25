@@ -16,7 +16,12 @@ use crate::uapi;
 /// Path-based mediation runs ahead of label-based, matching the reference
 /// order, so a sandbox a process built for itself is consulted before the
 /// system-wide policy and a refusal by either stands.
-pub const BUILTIN_ORDER: &str = "landlock,selinux";
+pub const BUILTIN_ORDER: &str = "landlock,bpf,selinux";
+
+/// Capability checks are the fixed first security module, as in Linux.
+pub fn capability() -> LsmInfo {
+    LsmInfo::new("capability", uapi::LSM_ID_CAPABILITY).order(crate::module::Order::First)
+}
 
 /// Slot each module asks for, in units of one typed value per object.
 ///
@@ -51,6 +56,10 @@ pub fn selinux(enabled: bool) -> LsmInfo {
             .with(BlobKind::MsgMsg, ONE_SLOT))
 }
 
+/// BPF LSM hook provider. Its programs are attached dynamically, but the
+/// provider itself is still part of the resolved hook order.
+pub fn bpf() -> LsmInfo { LsmInfo::new("bpf", uapi::LSM_ID_BPF) }
+
 /// Every module compiled into this kernel, in declaration order.
 ///
 /// Declaration order is not initialisation order — the boot list decides
@@ -58,7 +67,7 @@ pub fn selinux(enabled: bool) -> LsmInfo {
 /// so it is fixed here rather than left to whoever registers.
 /// # C: O(1)
 pub fn builtin(selinux_enabled: bool) -> Vec<LsmInfo> {
-    alloc::vec![landlock(), selinux(selinux_enabled)]
+    alloc::vec![capability(), landlock(), bpf(), selinux(selinux_enabled)]
 }
 
 #[cfg(test)]

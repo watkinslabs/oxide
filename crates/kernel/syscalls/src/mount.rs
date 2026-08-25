@@ -141,7 +141,7 @@ pub fn install_vfs_hooks() {
     selinux_runtime::task::set_fscreate_sid_source(current_fscreate_sid);
     fs::selinux::install();
     fs::selinux::mount::install();
-    security::lsm::register_open(landlock_open_hook);
+    security::lsm::register_open_for(security::lsm::LSM_ID_LANDLOCK, landlock_open_hook);
     vfs::set_quota_sys_resource_hook(quota_has_sys_resource);
     vfs::set_reserved_caller_hook(current_reserved_caller);
     vfs::set_fs_halt_hook(fs_halt);

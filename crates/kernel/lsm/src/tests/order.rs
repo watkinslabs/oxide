@@ -189,14 +189,14 @@ fn set(list: &str) -> Selection<'static> {
     let mods = crate::modules::builtin(true);
     let o = resolve(&mods, Selection {
         builtin: crate::modules::BUILTIN_ORDER, cmdline: None, legacy: None });
-    assert_eq!(names(&mods, &o), ["landlock", "selinux"]);
-    assert!(o.is_active(0) && o.is_active(1));
+    assert_eq!(names(&mods, &o), ["capability", "landlock", "bpf", "selinux"]);
+    assert!(o.is_active(0) && o.is_active(1) && o.is_active(2) && o.is_active(3));
 }
 
 #[test] fn disabling_the_label_module_leaves_the_path_module_running() {
     let mods = crate::modules::builtin(false);
     let o = resolve(&mods, Selection {
         builtin: crate::modules::BUILTIN_ORDER, cmdline: None, legacy: None });
-    assert_eq!(names(&mods, &o), ["landlock"]);
-    assert_eq!(mods[1].id.id, uapi::LSM_ID_SELINUX);
+    assert_eq!(names(&mods, &o), ["capability", "landlock", "bpf"]);
+    assert_eq!(mods[3].id.id, uapi::LSM_ID_SELINUX);
 }
