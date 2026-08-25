@@ -21,6 +21,7 @@
 // - `test_claim`: hosted-test claim on the one global group registry (test-only).
 
 mod dispatch;
+mod event;
 mod fan_err;
 mod fan_ids;
 mod fan_layout;
