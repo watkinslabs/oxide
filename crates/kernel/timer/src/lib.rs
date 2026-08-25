@@ -8,7 +8,7 @@
 //! mechanism, the callers own the timers (docs/53 kernel=glue).
 extern crate alloc;
 
-use alloc::collections::BTreeMap;
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use sync::{Spinlock, Timer as TimerLock};
@@ -37,6 +37,7 @@ impl TimerId {
 
 struct Entry { id: TimerId, interval_ns: u64, last_ns: u64, f: TimerFn }
 struct OneShot {
+    id: TimerId,
     deadline_ns: u64,
     arg: usize,
     f: Option<OneShotFn>,
@@ -44,33 +45,35 @@ struct OneShot {
     owned_drop: Option<OwnedOneShotDropFn>,
 }
 
-struct OneShotRegistry {
-    by_id: BTreeMap<TimerId, OneShot>,
-    by_deadline: BTreeMap<(u64, TimerId), ()>,
+struct OneShotNode {
+    timer: OneShot,
+    next: Option<Box<OneShotNode>>,
 }
 
+struct OneShotRegistry { head: Option<Box<OneShotNode>> }
+
 impl OneShotRegistry {
-    const fn new() -> Self {
-        Self { by_id: BTreeMap::new(), by_deadline: BTreeMap::new() }
-    }
+    const fn new() -> Self { Self { head: None } }
 }
 
 static TIMERS: Spinlock<Vec<Entry>, TimerLock> = Spinlock::new(Vec::new());
-/// Active one-shots keyed by their owner id. The key is the timer handle, so
-/// cancellation removes the embedded timer record without scanning every
-/// armed timer, matching the reference's keyed timer-tree removal.
+/// Active one-shots owned by preallocated nodes. The timer lock only links or
+/// unlinks a node; node allocation and destruction stay outside the IRQ-masking
+/// critical section, matching Linux's preallocated timer-list ownership.
 static ONESHOTS: Spinlock<OneShotRegistry, TimerLock> = Spinlock::new(OneShotRegistry::new());
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+/// Bound on retained straggler cancelled-ids (ids monotonic, never reused, so
+/// dropping an old straggler can never mis-skip a future one-shot).
+const CANCELLED_CAP: usize = 1024;
 /// B1347: ids cancelled AFTER `run_due` already drained them out of `ONESHOTS`
 /// but BEFORE it fired them (the drain-then-fire-without-lock window). A cancel
 /// in that window makes `unregister_oneshot` return false — the drained callback
 /// would still fire `f(arg)` on an `arg` the owner is now free to release, a
 /// stale-pointer write. `run_due` consults this set right before each fire and
 /// SKIPS a cancelled one-shot, so the freed-object write never happens.
-static CANCELLED_ONESHOTS: Spinlock<Vec<u64>, TimerLock> = Spinlock::new(Vec::new());
-/// Bound on retained straggler cancelled-ids (ids monotonic, never reused, so
-/// dropping an old straggler can never mis-skip a future one-shot).
-const CANCELLED_CAP: usize = 1024;
+struct CancelledOneshots { ids: [u64; CANCELLED_CAP], len: usize }
+static CANCELLED_ONESHOTS: Spinlock<CancelledOneshots, TimerLock> =
+    Spinlock::new(CancelledOneshots { ids: [0; CANCELLED_CAP], len: 0 });
 /// The timer worker deliberately drains in bounded batches.  Keep the batch
 /// on its stack so the timer spinlocks are never held across an allocator
 /// call.  This is the same ownership boundary as Linux's preallocated
@@ -102,14 +105,19 @@ pub fn unregister_periodic(id: TimerId) -> bool {
 
 /// Register a one-shot callback fired from the timer driver's process context
 /// when `now_ns >= deadline_ns`.
-/// # C: O(log N)
+/// # C: O(1) allocation + O(1) link
 pub fn register_oneshot(deadline_ns: u64, arg: usize, f: OneShotFn) -> TimerId {
     let id = next_id();
+    // Allocate the timer node before taking the IRQ-masking timer lock. Linux
+    // timer nodes are preallocated by their owners; allocating a BTreeMap node
+    // under this lock let reclaim/descheduling leave ktimers spinning forever.
+    let node = Box::new(OneShotNode { timer: OneShot {
+        id, deadline_ns, arg, f: Some(f), owned_f: None, owned_drop: None,
+    }, next: None });
     let mut g = ONESHOTS.lock();
-    g.by_id.insert(id, OneShot {
-        deadline_ns, arg, f: Some(f), owned_f: None, owned_drop: None,
-    });
-    g.by_deadline.insert((deadline_ns, id), ());
+    let mut node = node;
+    node.next = g.head.take();
+    g.head = Some(node);
     id
 }
 
@@ -117,39 +125,57 @@ pub fn register_oneshot(deadline_ns: u64, arg: usize, f: OneShotFn) -> TimerId {
 /// runs exactly once when the timer fires or is cancelled, including a cancel
 /// racing the drain-to-fire window. This is the safe form for callbacks that
 /// retain an `Arc` or boxed context beyond their caller's lifetime.
-/// # C: O(log N)
+/// # C: O(1) allocation + O(1) link
 pub fn register_oneshot_owned(deadline_ns: u64, arg: usize, f: OwnedOneShotFn,
                               drop_arg: OwnedOneShotDropFn) -> TimerId {
     let id = next_id();
+    let node = Box::new(OneShotNode { timer: OneShot {
+        id, deadline_ns, arg, f: None, owned_f: Some(f), owned_drop: Some(drop_arg),
+    }, next: None });
     let mut g = ONESHOTS.lock();
-    g.by_id.insert(id, OneShot {
-        deadline_ns, arg, f: None, owned_f: Some(f), owned_drop: Some(drop_arg),
-    });
-    g.by_deadline.insert((deadline_ns, id), ());
+    let mut node = node;
+    node.next = g.head.take();
+    g.head = Some(node);
     id
 }
 
 /// Unregister a one-shot timer previously returned by `register_oneshot`.
 /// Returns true if the timer was still registered.
-/// # C: O(log N)
+/// # C: O(N)
 pub fn unregister_oneshot(id: TimerId) -> bool {
     let removed = {
         let mut g = ONESHOTS.lock();
-        let removed = g.by_id.remove(&id);
-        if let Some(entry) = removed.as_ref() {
-            g.by_deadline.remove(&(entry.deadline_ns, id));
+        let mut link = &mut g.head;
+        let mut removed: Option<Box<OneShotNode>> = None;
+        while let Some(node) = link.as_ref() {
+            if node.timer.id == id {
+                let mut node = link.take().expect("one-shot link disappeared");
+                *link = node.next.take();
+                removed = Some(node);
+                break;
+            }
+            link = &mut link.as_mut().expect("one-shot link disappeared").next;
         }
         removed
     };
     let was_pending = removed.is_some();
-    if let Some(entry) = removed { drop_oneshot_arg(&entry); }
+    if let Some(node) = removed {
+        drop_oneshot_arg(&node.timer);
+        // Dropping the node (and its allocation) is deliberately outside the
+        // timer spinlock.
+    }
     if !was_pending {
         // B1347: not in ONESHOTS ⇒ either already fired (harmless: arg was live
         // during that fire) or drained-in-flight by run_due (about to fire on an
         // arg the caller is releasing — mark it so run_due skips the stale fire).
         let mut c = CANCELLED_ONESHOTS.lock();
-        c.push(id.0);
-        if c.len() > CANCELLED_CAP { let drop_n = c.len() - CANCELLED_CAP; c.drain(0..drop_n); }
+        if c.len == CANCELLED_CAP {
+            c.ids.copy_within(1..CANCELLED_CAP, 0);
+            c.len -= 1;
+        }
+        let pos = c.len;
+        c.ids[pos] = id.0;
+        c.len += 1;
     }
     was_pending
 }
@@ -184,8 +210,12 @@ pub fn next_deadline_ns(now_ns: u64) -> Option<u64> {
     for entry in TIMERS.lock().iter() {
         consider(entry.last_ns.saturating_add(entry.interval_ns));
     }
-    if let Some((&(deadline, _), _)) = ONESHOTS.lock().by_deadline.first_key_value() {
-        consider(deadline);
+    for node in ONESHOTS.lock().head.iter() {
+        let mut node = node;
+        loop {
+            consider(node.timer.deadline_ns);
+            match node.next.as_ref() { Some(next) => node = next, None => break }
+        }
     }
     earliest
 }
@@ -235,26 +265,35 @@ pub fn run_due_budgeted(now_ns: u64, budget: usize) -> bool {
     RUN_PHASE.store(PHASE_SCAN_ONESHOT, Ordering::Relaxed);
     {
         let g = ONESHOTS.lock();
-        for (&(deadline, id), _) in g.by_deadline.iter() {
+        let mut node = g.head.as_ref();
+        while let Some(current) = node {
             if due_id_len >= limit.saturating_sub(due_len) { break; }
-            if deadline > now_ns { break; }
-            due_ids[due_id_len] = Some(id);
-            due_id_len += 1;
+            if current.timer.deadline_ns <= now_ns {
+                due_ids[due_id_len] = Some(current.timer.id);
+                due_id_len += 1;
+            }
+            node = current.next.as_ref();
         }
     }
     // Removal is a separate lock hold so no callback staging/allocation is
     // performed while walking the ordered timer owner.  A concurrent cancel
     // may have removed an id already; that is the expected harmless race.
-    let mut one: [Option<(TimerId, OneShot)>; DISPATCH_BATCH] =
+    let mut one: [Option<Box<OneShotNode>>; DISPATCH_BATCH] =
         core::array::from_fn(|_| None);
     let mut one_len = 0;
     {
         let mut g = ONESHOTS.lock();
         for id in due_ids[..due_id_len].iter().flatten() {
-            if let Some(entry) = g.by_id.remove(id) {
-                g.by_deadline.remove(&(entry.deadline_ns, *id));
-                one[one_len] = Some((*id, entry));
-                one_len += 1;
+            let mut link = &mut g.head;
+            while let Some(node) = link.as_ref() {
+                if node.timer.id == *id {
+                    let mut node = link.take().expect("one-shot link disappeared");
+                    *link = node.next.take();
+                    one[one_len] = Some(node);
+                    one_len += 1;
+                    break;
+                }
+                link = &mut link.as_mut().expect("one-shot link disappeared").next;
             }
         }
     }
@@ -269,23 +308,31 @@ pub fn run_due_budgeted(now_ns: u64, budget: usize) -> bool {
     // drain→fire window (checked live per-fire — the owner may cancel between
     // earlier fires and this one). A cancelled one-shot's arg object is being
     // released by its owner; firing f(arg) on it would be a stale-pointer write.
-    for (id, entry) in one[..one_len].iter_mut().filter_map(Option::take) {
+    for mut node in one[..one_len].iter_mut().filter_map(Option::take) {
+        let id = node.timer.id;
+        let entry = &mut node.timer;
         let cancelled = {
             let mut c = CANCELLED_ONESHOTS.lock();
-            match c.iter().position(|&x| x == id.raw()) {
-                Some(pos) => { c.swap_remove(pos); true }
-                None => false,
+            let mut found = false;
+            for pos in 0..c.len {
+                if c.ids[pos] == id.raw() {
+                    c.ids[pos] = c.ids[c.len - 1];
+                    c.len -= 1;
+                    found = true;
+                    break;
+                }
             }
+            found
         };
         if cancelled {
-            drop_oneshot_arg(&entry);
+            drop_oneshot_arg(entry);
         } else if let Some(f) = entry.f {
             RUN_FN.store(f as usize, Ordering::Relaxed);
             f(entry.arg);
         } else if let Some(f) = entry.owned_f {
             RUN_FN.store(f as usize, Ordering::Relaxed);
             f(entry.arg, id);
-            drop_oneshot_arg(&entry);
+            drop_oneshot_arg(entry);
         }
     }
     RUN_FN.store(0, Ordering::Relaxed);
@@ -301,8 +348,15 @@ fn has_due(now_ns: u64) -> bool {
     if TIMERS.lock().iter().any(|e| now_ns.saturating_sub(e.last_ns) >= e.interval_ns) {
         return true;
     }
-    ONESHOTS.lock().by_deadline.first_key_value()
-        .is_some_and(|(&(deadline, _), _)| deadline <= now_ns)
+    ONESHOTS.lock().head.as_ref()
+        .is_some_and(|head| {
+            let mut node = Some(head.as_ref());
+            while let Some(current) = node {
+                if current.timer.deadline_ns <= now_ns { return true; }
+                node = current.next.as_ref().map(Box::as_ref);
+            }
+            false
+        })
 }
 
 fn next_id() -> TimerId {
@@ -345,10 +399,8 @@ mod tests {
 
     fn reset() {
         TIMERS.lock().clear();
-        let mut oneshots = ONESHOTS.lock();
-        oneshots.by_id.clear();
-        oneshots.by_deadline.clear();
-        CANCELLED_ONESHOTS.lock().clear();
+        ONESHOTS.lock().head = None;
+        CANCELLED_ONESHOTS.lock().len = 0;
         NEXT_ID.store(1, Ordering::Relaxed);
         A.store(0, Ordering::Relaxed);
         B.store(0, Ordering::Relaxed);
