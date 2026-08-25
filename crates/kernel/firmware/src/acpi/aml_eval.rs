@@ -301,4 +301,6 @@ pub(crate) fn eval_with_integers(scope: &str, name: &str, args: &[u64]) -> bool 
 mod tests;
 mod discovery;
 pub use discovery::{children_of, devices_with_hid, processor_scopes, processors, thermal_zones};
-pub(crate) use discovery::{decode_prw, power_resources, wake_devices};
+pub(crate) use discovery::{power_resources, wake_devices};
+#[cfg(test)]
+pub(crate) use discovery::decode_prw;
