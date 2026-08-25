@@ -76,8 +76,8 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
     let mut argv_vec: alloc::vec::Vec<alloc::vec::Vec<u8>> = alloc::vec::Vec::new();
     let mut envp_vec: alloc::vec::Vec<alloc::vec::Vec<u8>> = alloc::vec::Vec::new();
     let mut total_bytes: usize = 0;
-    if !crate::execve_common::read_user_string_vector(args.a1, &mut argv_vec, &mut total_bytes) { return -(Errno::E2big.as_i32() as i64); }
-    if !crate::execve_common::read_user_string_vector(args.a2, &mut envp_vec, &mut total_bytes) { return -(Errno::E2big.as_i32() as i64); }
+    if let Err(e) = crate::execve_common::read_user_string_vector(args.a1, &mut argv_vec, &mut total_bytes) { return -(e.as_i32() as i64); }
+    if let Err(e) = crate::execve_common::read_user_string_vector(args.a2, &mut envp_vec, &mut total_bytes) { return -(e.as_i32() as i64); }
     #[cfg(feature = "debug-desktop")]
     if path_owned.windows(b"gnome-shell".len()).any(|part| part == b"gnome-shell") {
         for entry in &envp_vec {
