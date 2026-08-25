@@ -81,6 +81,11 @@ pub(super) fn run_completion_bottom_half() {
         // completions out from under the poller that owns them.
         for q in device.queues().filter(|q| softirq_drains(q)) {
             let _reaped = device.drain_owned_completions(q);
+            // Queue release can raise this softirq after a synchronous owner
+            // has consumed its own used entry. In that case the drain above
+            // finds no completion, but deferred requests still need the Linux
+            // blk-mq queue-release dispatch transition.
+            device.start_deferred_requests(q);
         }
         // Wake the in-flight turn-holder (≤1 waiter), then hand a chance to one
         // waiter belonging to the device whose queue was drained. The wait list is
