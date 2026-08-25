@@ -42,7 +42,7 @@ mod types;
 mod validate;
 
 #[cfg(test)]
-#[path = "inotify_fan_tests.rs"]
+#[path = "inotify/tests/fan.rs"]
 mod fan_tests;
 
 #[cfg(test)]
