@@ -465,45 +465,9 @@ mod sock_name;
 // `048_shutdown`/`050_listen`/`043_accept`/`052_getpeername` stay ABI shims.
 mod sock_route;
 
-#[cfg(all(test, not(target_os = "oxide-kernel")))]
-mod socket_control_tests;
-
-#[cfg(all(test, not(target_os = "oxide-kernel")))]
-mod getdents_debug_tests;
-
-#[cfg(all(test, not(target_os = "oxide-kernel")))]
-mod poll_ownership_tests;
-
-#[cfg(all(test, not(target_os = "oxide-kernel")))]
-mod fcntl_dup_tests;
 #[cfg(test)]
-mod return_fastpath_tests;
-#[cfg(test)]
-mod tty_ioctl_source_tests;
-
-#[cfg(all(test, not(target_os = "oxide-kernel")))]
-#[path = "recvmsg/vsock.rs"]
-mod vsock_recv_shutdown_boundary;
-
-#[cfg(all(test, not(target_os = "oxide-kernel")))]
-#[path = "016_ioctl/netns_fd.rs"]
-mod siocgskns_fd;
-
-#[cfg(all(test, not(target_os = "oxide-kernel")))]
-#[path = "054_setsockopt/multicast.rs"]
-mod mcast_set_boundary;
-#[cfg(all(test, not(target_os = "oxide-kernel")))]
-#[path = "054_setsockopt/packet_abi.rs"]
-mod packet_membership_abi;
-#[cfg(all(test, not(target_os = "oxide-kernel")))]
-#[path = "055_getsockopt/packet_abi.rs"]
-mod packet_get_abi;
-#[cfg(all(test, not(target_os = "oxide-kernel")))]
-#[path = "055_getsockopt/out.rs"]
-mod out;
-#[cfg(all(test, not(target_os = "oxide-kernel")))]
-#[path = "055_getsockopt/multicast.rs"]
-mod mcast_get_boundary;
+#[path = "tests/mod.rs"]
+mod tests;
 
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 mod namei_common {
