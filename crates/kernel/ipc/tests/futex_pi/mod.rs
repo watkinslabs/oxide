@@ -11,5 +11,6 @@
 #[path = "../../src/live/futex/wait.rs"] pub mod wait;
 #[path = "../../src/live/futex/ops.rs"] pub mod ops;
 #[path = "../../src/live/futex/robust.rs"] pub mod robust;
+#[path = "../../src/live/futex/waitv.rs"] pub mod waitv;
 
 pub mod pi;

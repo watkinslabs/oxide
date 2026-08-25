@@ -136,6 +136,12 @@ pub(super) fn segv_dump(rip: u64, cr2: u64, err: u64) {
                         klog::write_raw(b",kb_off=");
                         klog::write_hex_u64(*off as u64);
                     }
+                    VmaBacking::KernelPages { pages, off } => {
+                        klog::write_raw(b",kpages_len=");
+                        klog::write_hex_u64(pages.len() as u64);
+                        klog::write_raw(b",kpage_off=");
+                        klog::write_hex_u64(*off as u64);
+                    }
                     VmaBacking::Anonymous => klog::write_raw(b",anon"),
                     VmaBacking::KernelFrame { pa } => {
                         klog::write_raw(b",kframe=");
