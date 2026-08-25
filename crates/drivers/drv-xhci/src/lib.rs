@@ -44,4 +44,6 @@ mod root_hub;
 #[cfg(target_os = "oxide-kernel")]
 mod storage_block;
 #[cfg(target_os = "oxide-kernel")]
+mod storage_command;
+#[cfg(target_os = "oxide-kernel")]
 pub use probe::XHCI_DRIVER;
