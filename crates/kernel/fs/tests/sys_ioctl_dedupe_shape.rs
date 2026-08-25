@@ -114,9 +114,9 @@ fn install_current_with_fdt_cred(fdt: Arc<FdTable>, uid: u32, gid: u32, caps: u6
     let task = Box::leak(Box::new(Task::new(0x7900, "ioctl-dedupe-test", SchedClass::Normal { weight: 1024 })));
     // SAFETY: freshly leaked test task is not scheduled and has no concurrent fd-table writer.
     unsafe { task.replace_fd_table(Some(fdt)); }
-    task.creds.fsuid.store(uid, Ordering::Release);
-    task.creds.fsgid.store(gid, Ordering::Release);
-    task.creds.cap_effective.store(caps, Ordering::Release);
+    task.security.creds.fsuid.store(uid, Ordering::Release);
+    task.security.creds.fsgid.store(gid, Ordering::Release);
+    task.security.creds.cap_effective.store(caps, Ordering::Release);
     CURRENT.store(task as *const Task as *mut Task, Ordering::Release);
     sched::set_current_hook(hooked_current);
     task

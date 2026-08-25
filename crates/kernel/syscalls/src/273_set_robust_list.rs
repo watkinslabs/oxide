@@ -23,7 +23,7 @@ pub fn sys_set_robust_list(args: &SyscallArgs) -> i64 {
         return -(Errno::Efault.as_i32() as i64);
     }
     let cur = match sched::live::current() { Some(c) => c, None => return 0 };
-    cur.robust_list_head.store(head, Ordering::Release);
-    cur.robust_list_len.store(len, Ordering::Release);
+    cur.security.robust_list_head.store(head, Ordering::Release);
+    cur.security.robust_list_len.store(len, Ordering::Release);
     0
 }

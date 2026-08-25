@@ -37,7 +37,7 @@ fn thread(tid: u32, ns: &NamespaceRef, leader: &Arc<Task>) -> Arc<Task> {
     task.thread_group.commit_member();
     let task = Arc::new(task);
     task.alloc_pid_mappings(&[], false).unwrap();
-    task.vtgid.store(leader.vtgid.load(Ordering::Acquire), Ordering::Release);
+    task.security.vtgid.store(leader.security.vtgid.load(Ordering::Acquire), Ordering::Release);
     registry::insert(&task);
     task
 }
@@ -123,7 +123,7 @@ fn a_group_is_named_by_the_readers_numbering() {
     let root = initial(NamespaceKind::Pid);
     let inner = nested(&root);
     let task = leader(0x2041, &inner);
-    let own = task.vtgid.load(Ordering::Acquire);
+    let own = task.security.vtgid.load(Ordering::Acquire);
 
     let inside = task.pgrp().nr_chain_from_or_tid(&inner);
     let outside = task.pgrp().nr_chain_from_or_tid(&root);
@@ -185,7 +185,7 @@ fn a_signal_names_its_sender_in_the_receivers_namespace() {
     // The container's init, seen by a host reader, is the host's number for it.
     let seen_by_host = registry::tgid_nr_seen_by(&insider, &outsider);
     assert_eq!(seen_by_host, registry::tgid_nr_in(&insider, &root).unwrap());
-    assert_ne!(seen_by_host, insider.vtgid.load(Ordering::Acquire));
+    assert_ne!(seen_by_host, insider.security.vtgid.load(Ordering::Acquire));
     // The host task, seen from inside the container, has no name at all.
     assert_eq!(registry::tgid_nr_seen_by(&outsider, &insider), 0);
 }
@@ -202,6 +202,6 @@ fn the_number_a_clone_reports_is_the_callers_not_the_childs() {
     // What `clone` returns to a parent outside the new namespace.
     let reported = child.pid_nr_ns(&parent.namespace_owner(NamespaceKind::Pid).unwrap());
     assert_eq!(reported, registry::tgid_nr_in(&child, &root).unwrap());
-    assert_eq!(child.vtgid.load(Ordering::Acquire), 1, "the child is its namespace's init");
+    assert_eq!(child.security.vtgid.load(Ordering::Acquire), 1, "the child is its namespace's init");
     assert_ne!(reported, 1);
 }

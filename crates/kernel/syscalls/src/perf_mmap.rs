@@ -100,7 +100,7 @@ fn wakeup_watermark(ev: &Arc<fs::perf::PerfEvent>) -> u32 { ev.attr.wakeup_event
 /// it runs as.
 fn current_uid() -> u32 {
     sched::live::current()
-        .map_or(0, |c| c.creds.ruid.load(core::sync::atomic::Ordering::Acquire))
+        .map_or(0, |c| c.security.creds.ruid.load(core::sync::atomic::Ordering::Acquire))
 }
 
 /// `perf_mmap_calc_limits`' live inputs. `user->locked_vm` is filled in by

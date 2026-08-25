@@ -39,11 +39,11 @@ fn current_cpu_id() -> u32 {
 fn update_ids(cur: &crate::Task, ptr: u64) -> bool {
     let cpu = current_cpu_id();
     let packed = pack_ids(cpu, cpu);
-    if cur.rseq_ids.load(Ordering::Relaxed) == packed { return true; }
+    if cur.security.rseq_ids.load(Ordering::Relaxed) == packed { return true; }
     // No NUMA topology: every CPU reports node 0, matching `cpu_to_node` on a
     // kernel built without CONFIG_NUMA.
     if ua::put_ids(ptr, cpu, 0, cpu).is_err() { return false; }
-    cur.rseq_ids.store(packed, Ordering::Relaxed);
+    cur.security.rseq_ids.store(packed, Ordering::Relaxed);
     true
 }
 
@@ -57,7 +57,7 @@ fn update_ids(cur: &crate::Task, ptr: u64) -> bool {
 /// # Ctx: syscall-return tail
 pub fn rseq_writeback() {
     let cur = match crate::live::current() { Some(c) => c, None => return };
-    let ptr = cur.rseq_ptr.load(Ordering::Acquire);
+    let ptr = cur.security.rseq_ptr.load(Ordering::Acquire);
     if ptr == 0 { return; }
     if !update_ids(cur, ptr) { registration_died(cur); }
 }
@@ -81,7 +81,7 @@ pub fn rseq_writeback() {
 /// # Ctx: IRQ-exit, returning to user
 pub fn rseq_preempt_return(ip: &mut u64) {
     let cur = match crate::live::current() { Some(c) => c, None => return };
-    let ptr = cur.rseq_ptr.load(Ordering::Acquire);
+    let ptr = cur.security.rseq_ptr.load(Ordering::Acquire);
     if ptr == 0 { return; }
     if !update_ids(cur, ptr) { registration_died(cur); }
     let csaddr = match ua::get_u64(ptr + abi::RSEQ_OFF_RSEQ_CS) {
@@ -101,9 +101,9 @@ pub fn rseq_preempt_return(ip: &mut u64) {
     // region and only compares it on the in-section path; a read failure
     // there is an EFAULT exit, so an unreadable word is fatal either way.
     let usig = if abort_ip >= abi::RSEQ_SIG_BYTES && abort_ip < hal::USER_VA_END {
-        ua::get_u32(abort_ip - abi::RSEQ_SIG_BYTES).unwrap_or(!cur.rseq_sig.load(Ordering::Acquire))
+        ua::get_u32(abort_ip - abi::RSEQ_SIG_BYTES).unwrap_or(!cur.security.rseq_sig.load(Ordering::Acquire))
     } else { 0 };
-    let sig = cur.rseq_sig.load(Ordering::Acquire);
+    let sig = cur.security.rseq_sig.load(Ordering::Acquire);
     match abi::cs_outcome(*ip, start_ip, offset, abort_ip, hal::USER_VA_END, sig, usig) {
         abi::CsOutcome::Fixup(target) => {
             if ua::put_u64(ptr + abi::RSEQ_OFF_RSEQ_CS, 0).is_err() { registration_died(cur); }
@@ -122,8 +122,8 @@ pub fn rseq_preempt_return(ip: &mut u64) {
 /// # C: task-exit teardown
 pub(crate) fn registration_died(cur: &crate::Task) -> ! {
     ua::mark_registration_failed(cur);
-    cur.rseq_ptr.store(0, Ordering::Release);
-    cur.rseq_len.store(0, Ordering::Release);
-    cur.rseq_sig.store(0, Ordering::Release);
+    cur.security.rseq_ptr.store(0, Ordering::Release);
+    cur.security.rseq_len.store(0, Ordering::Release);
+    cur.security.rseq_sig.store(0, Ordering::Release);
     crate::live::terminate_current_with_signal(crate::signum::Signum::Sigsegv.as_u8())
 }

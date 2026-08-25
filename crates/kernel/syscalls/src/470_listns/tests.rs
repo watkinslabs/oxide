@@ -128,7 +128,7 @@ fn unknown_type_precedes_owner_lookup_and_zero_capacity_still_checks_cursor() {
 #[test]
 fn element_fault_keeps_written_prefix() {
     let caller = task("listns-prefix");
-    caller.creds.cap_effective.store(u64::MAX, Ordering::Release);
+    caller.security.creds.cap_effective.store(u64::MAX, Ordering::Release);
     let init_user = namespace_identity::initial(NamespaceKind::User);
     let first = namespace_identity::allocate(NamespaceKind::Uts,
         init_user.clone(), None).unwrap();

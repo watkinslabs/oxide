@@ -10,9 +10,9 @@ use vfs::namei::root_dentry;
 /// # C: O(1)
 pub(super) fn current_cred() -> vfs::Cred {
     let Some(c) = sched::current() else { return vfs::Cred::root(); };
-    let effective = c.creds.cap_effective.load(Ordering::Acquire);
-    c.creds.to_vfs_cred(c.creds.fsuid.load(Ordering::Acquire),
-        c.creds.fsgid.load(Ordering::Acquire), effective)
+    let effective = c.security.creds.cap_effective.load(Ordering::Acquire);
+    c.security.creds.to_vfs_cred(c.security.creds.fsuid.load(Ordering::Acquire),
+        c.security.creds.fsgid.load(Ordering::Acquire), effective)
 }
 
 fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }

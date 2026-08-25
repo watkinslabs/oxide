@@ -41,7 +41,7 @@ fn args() -> SyscallArgs {
 fn install_current(tid: u32, tgid: u32, vtgid: u32) -> &'static Task {
     let task = Box::leak(Box::new(Task::new(tid, "getpid-test", SchedClass::Normal { weight: 1024 })));
     task.tgid.store(tgid, Ordering::Release);
-    task.vtgid.store(vtgid, Ordering::Release);
+    task.security.vtgid.store(vtgid, Ordering::Release);
     CURRENT.store(task as *const Task as *mut Task, Ordering::Release);
     sched::set_current_hook(hooked_current);
     task

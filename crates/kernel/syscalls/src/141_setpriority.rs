@@ -29,7 +29,7 @@ pub fn sys_setpriority(args: &SyscallArgs) -> i64 {
     let w = sched::cputime::nice_to_weight(n);
     let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64) };
     let has_nice = cur.has_cap(sched::cap::SYS_NICE);
-    let euid = cur.creds.euid.load(Ordering::Acquire);
+    let euid = cur.security.creds.euid.load(Ordering::Acquire);
 
     // Linux seeds `error = -ESRCH`; a permitted target flips it to 0, a
     // permission failure overwrites it with EPERM/EACCES.
@@ -38,8 +38,8 @@ pub fn sys_setpriority(args: &SyscallArgs) -> i64 {
         // `set_one_prio_perm`: caller's euid matches the target's euid or ruid,
         // or the caller holds CAP_SYS_NICE.
         let owner_ok = has_nice
-            || euid == t.creds.euid.load(Ordering::Acquire)
-            || euid == t.creds.ruid.load(Ordering::Acquire);
+            || euid == t.security.creds.euid.load(Ordering::Acquire)
+            || euid == t.security.creds.ruid.load(Ordering::Acquire);
         if !owner_ok { error = -(Errno::Eperm.as_i32() as i64); return; }
         // `can_nice`: a nice reduction (raising priority) needs CAP_SYS_NICE or
         // RLIMIT_NICE headroom, expressed by Linux as `20 - nice`.

@@ -149,7 +149,7 @@ fn install_sigio_hook() {}
 fn socket_owner_creds() -> (u32, u32) {
     use core::sync::atomic::Ordering;
     sched::live::current()
-        .map(|t| (t.creds.ruid.load(Ordering::Acquire), t.creds.euid.load(Ordering::Acquire)))
+        .map(|t| (t.security.creds.ruid.load(Ordering::Acquire), t.security.creds.euid.load(Ordering::Acquire)))
         .unwrap_or((0, 0))
 }
 

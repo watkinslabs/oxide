@@ -105,9 +105,9 @@ fn capset_installs_the_sets_it_read() {
     let data: [u32; 6] = [want as u32, want as u32, want as u32,
                           (want >> 32) as u32, (want >> 32) as u32, (want >> 32) as u32];
     assert_eq!(capset_on(&task, &args2(addr(&h), addr(&data))), 0);
-    assert_eq!(task.creds.cap_effective.load(Ordering::Acquire), want);
-    assert_eq!(task.creds.cap_permitted.load(Ordering::Acquire), want);
-    assert_eq!(task.creds.cap_inheritable.load(Ordering::Acquire), want);
+    assert_eq!(task.security.creds.cap_effective.load(Ordering::Acquire), want);
+    assert_eq!(task.security.creds.cap_permitted.load(Ordering::Acquire), want);
+    assert_eq!(task.security.creds.cap_inheritable.load(Ordering::Acquire), want);
 }
 
 /// A v1 capset carries one block, so the upper 32 bits stay zero rather than
@@ -118,7 +118,7 @@ fn capset_v1_never_reads_past_its_single_block() {
     let h = hdr(CAPV1, 0);
     let data: [u32; 6] = [1, 1, 1, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff];
     assert_eq!(capset_on(&task, &args2(addr(&h), addr(&data))), 0);
-    assert_eq!(task.creds.cap_permitted.load(Ordering::Acquire), 1);
+    assert_eq!(task.security.creds.cap_permitted.load(Ordering::Acquire), 1);
 }
 
 /// Linux writes the preferred version back from `cap_validate_magic` on the

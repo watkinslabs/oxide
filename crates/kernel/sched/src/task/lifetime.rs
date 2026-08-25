@@ -18,9 +18,9 @@ impl Drop for Task {
         }
         // Release the lazily-allocated debug-register shadows. No other
         // reference to this task exists here, so the claim is uncontended.
-        self.debugregs.free();
+        self.security.debugregs.free();
         #[cfg(target_arch = "aarch64")]
-        self.hw_break.free();
+        self.security.hw_break.free();
         #[cfg(feature = "debug-taskdrop")]
         {
             let top = self.kernel_stack.load(Ordering::Acquire) as u64;

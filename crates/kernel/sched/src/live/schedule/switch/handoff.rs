@@ -75,7 +75,7 @@ unsafe fn finish_switched_from(rq: &Runqueue) {
         unsafe { (*from).debug_check_canary("finish_switched_from"); }
         // SAFETY: `from` was stored by schedule() before a context switch; the
         // outgoing task is kept alive by the switcher's frame or task registry.
-        unsafe { (*from).on_cpu.store(false, Ordering::Release); }
+        unsafe { (&(*from)).on_cpu.store(false, Ordering::Release); }
     }
 }
 

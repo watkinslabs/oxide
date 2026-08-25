@@ -44,12 +44,12 @@ fn credentials(data: &[u8], task: &sched::Task) -> KResult<net::sock::SenderCred
     let gid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
     if pid <= 0 { return Err(Error::Esrch); }
     let pid_ok = pid == task.visible_pid() as i32 || task.has_cap(sched::cap::SYS_ADMIN);
-    let uid_ok = uid == task.creds.ruid.load(Ordering::Acquire)
-        || uid == task.creds.euid.load(Ordering::Acquire)
-        || uid == task.creds.suid.load(Ordering::Acquire) || task.has_cap(sched::cap::SETUID);
-    let gid_ok = gid == task.creds.rgid.load(Ordering::Acquire)
-        || gid == task.creds.egid.load(Ordering::Acquire)
-        || gid == task.creds.sgid.load(Ordering::Acquire) || task.has_cap(sched::cap::SETGID);
+    let uid_ok = uid == task.security.creds.ruid.load(Ordering::Acquire)
+        || uid == task.security.creds.euid.load(Ordering::Acquire)
+        || uid == task.security.creds.suid.load(Ordering::Acquire) || task.has_cap(sched::cap::SETUID);
+    let gid_ok = gid == task.security.creds.rgid.load(Ordering::Acquire)
+        || gid == task.security.creds.egid.load(Ordering::Acquire)
+        || gid == task.security.creds.sgid.load(Ordering::Acquire) || task.has_cap(sched::cap::SETGID);
     if !pid_ok || !uid_ok || !gid_ok { return Err(Error::Eperm); }
     if pid != task.visible_pid() as i32 && sched::registry::resolve_user_pid(pid as u32).is_none() {
         return Err(Error::Esrch);

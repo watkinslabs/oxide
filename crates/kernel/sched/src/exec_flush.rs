@@ -40,7 +40,7 @@ pub fn flush_thread_flags(cur: &Task) {
     #[cfg(target_arch = "aarch64")]
     {
         crate::prctl::tsc::apply(cur, false);
-        cur.tagged_addr.store(false, core::sync::atomic::Ordering::Release);
+        cur.security.tagged_addr.store(false, core::sync::atomic::Ordering::Release);
     }
 }
 
@@ -71,13 +71,13 @@ mod tests {
     fn flush_clears_the_reset_flags() {
         let t = Task::new(1, "exec", SchedClass::Normal { weight: 1024 });
         crate::prctl::tsc::apply(&t, true);
-        t.tagged_addr.store(true, core::sync::atomic::Ordering::Release);
+        t.security.tagged_addr.store(true, core::sync::atomic::Ordering::Release);
         flush_thread_flags(&t);
         if tsc_mode_survives_exec() {
             assert!(crate::prctl::tsc::denied(&t), "x86 keeps the TSC trap across exec");
         } else {
             assert!(!crate::prctl::tsc::denied(&t), "arm64 resets the TSC trap at exec");
-            assert!(!t.tagged_addr.load(core::sync::atomic::Ordering::Acquire));
+            assert!(!t.security.tagged_addr.load(core::sync::atomic::Ordering::Acquire));
         }
     }
 }

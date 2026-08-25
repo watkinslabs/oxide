@@ -99,8 +99,8 @@ impl SenderCreds {
         match sched::live::current() {
             Some(t) => Self {
                 pid: t.visible_pid(),
-                uid: t.creds.ruid.load(core::sync::atomic::Ordering::Acquire),
-                gid: t.creds.rgid.load(core::sync::atomic::Ordering::Acquire),
+                uid: t.security.creds.ruid.load(core::sync::atomic::Ordering::Acquire),
+                gid: t.security.creds.rgid.load(core::sync::atomic::Ordering::Acquire),
             },
             None => Self::default(),
         }

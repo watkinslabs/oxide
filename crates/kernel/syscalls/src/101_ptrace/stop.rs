@@ -52,7 +52,7 @@ fn self_vpid(cur: &Task) -> u32 {
 
 /// Linux `current_uid()` — the real uid of the task the record describes.
 /// # C: O(1)
-fn self_uid(cur: &Task) -> u32 { cur.creds.ruid.load(Ordering::Acquire) }
+fn self_uid(cur: &Task) -> u32 { cur.security.creds.ruid.load(Ordering::Acquire) }
 
 /// `ptrace_notify` with a caller-supplied `last_siginfo`. A signal-delivery
 /// stop reports the SIGNAL's record, not a synthesised SIGTRAP, so a tracer's
@@ -86,7 +86,7 @@ pub fn notify_with(stop_code: i32, message: u64, info: sched::SigInfo)
     // side (in `ptrace_resume`) would race the tracee's read and throw the
     // rewrite away — Linux clears it here, on the tracee, for that reason.
     let edited = cur.ptrace_siginfo.lock().take();
-    let resume_sig = cur.stop_code.swap(0, Ordering::AcqRel);
+    let resume_sig = cur.security.stop_code.swap(0, Ordering::AcqRel);
     cur.ptrace_eventmsg.store(0, Ordering::Release);
     (resume_sig, edited)
 }
@@ -107,7 +107,7 @@ pub fn ptrace_event(ev: u32, message: u64) {
         return;
     }
     if ev == uapi::EVENT_EXEC {
-        let seized = cur.ptrace_seized.load(Ordering::Acquire);
+        let seized = cur.security.ptrace_seized.load(Ordering::Acquire);
         if event::legacy_exec_sigtrap(traced, seized, opts) {
             sched::live::send_signal_self(Signum::Sigtrap);
         }
@@ -149,9 +149,9 @@ pub fn signal_stop(sig: u32, info: Option<sched::SigInfo>)
         sigstop::Outcome::Deliver { sig: new, substituted: true } => {
             let tracer = cur.traced_by.load(Ordering::Acquire);
             let uid = sched::live::registry::lookup(tracer)
-                .map(|t| t.creds.ruid.load(Ordering::Acquire)).unwrap_or(0);
+                .map(|t| t.security.creds.ruid.load(Ordering::Acquire)).unwrap_or(0);
             let vpid = sched::live::registry::lookup(tracer)
-                .map(|t| t.vtgid.load(Ordering::Acquire)).unwrap_or(0);
+                .map(|t| t.security.vtgid.load(Ordering::Acquire)).unwrap_or(0);
             Some(sched::SigInfo {
                 signo: new, code: sigstop::SI_USER, pid: vpid, uid,
                 value: 0, sys: None, fault: None, poll: None,
@@ -173,28 +173,28 @@ pub fn signal_stop(sig: u32, info: Option<sched::SigInfo>)
 pub fn init_task(parent: &Task, child: &Arc<Task>, reported_event: Option<u32>) {
     let tracer = parent.traced_by.load(Ordering::Acquire);
     let opts = parent.ptrace_options.load(Ordering::Acquire);
-    let seized = parent.ptrace_seized.load(Ordering::Acquire);
+    let seized = parent.security.ptrace_seized.load(Ordering::Acquire);
     let Some(inherited) = event::inherited_trace(reported_event, tracer, opts, seized) else {
         return;
     };
     child.traced_by.store(inherited.tracer, Ordering::Release);
     child.ptrace_options.store(inherited.opts, Ordering::Release);
-    child.ptrace_seized.store(inherited.seized, Ordering::Release);
+    child.security.ptrace_seized.store(inherited.seized, Ordering::Release);
     let code = inherited.child_stop_code();
-    child.stop_code.store(code as u32, Ordering::Release);
+    child.security.stop_code.store(code as u32, Ordering::Release);
     // The record names the CHILD, the task it describes, exactly as the stop it
     // comes to rest in would have built it.
-    let vpid = child.vtid.load(Ordering::Acquire);
+    let vpid = child.security.vtid.load(Ordering::Acquire);
     let vpid = if vpid != 0 { vpid } else { child.tid };
     *child.ptrace_siginfo.lock() =
-        Some(event::notify_record(vpid, child.creds.ruid.load(Ordering::Acquire), code));
+        Some(event::notify_record(vpid, child.security.creds.ruid.load(Ordering::Acquire), code));
     // A SEIZED child is trapped by `JOBCTL_TRAP_STOP`, which has no signal
     // behind it; a classic attach adds SIGSTOP to the child's pending set and
     // the child stops at its first signal-delivery point.
     if !inherited.seized {
         child.sigpending.fetch_or(Signum::Sigstop.bit(), Ordering::Release);
     } else {
-        child.stop_pending.store(true, Ordering::Release);
+        child.security.stop_pending.store(true, Ordering::Release);
     }
 }
 
@@ -211,9 +211,9 @@ pub fn exit_ptrace(tracer_tid: u32) {
         }
         t.traced_by.store(0, Ordering::Release);
         t.ptrace_options.store(0, Ordering::Release);
-        t.ptrace_seized.store(false, Ordering::Release);
-        t.ptrace_syscall_armed.store(false, Ordering::Release);
-        t.singlestep.store(0, Ordering::Release);
+        t.security.ptrace_seized.store(false, Ordering::Release);
+        t.security.ptrace_syscall_armed.store(false, Ordering::Release);
+        t.security.singlestep.store(0, Ordering::Release);
         *t.ptrace_siginfo.lock() = None;
         // A tracee that ALREADY died was notified to its tracer, not to its
         // real parent (Linux notifies `tsk->parent`). With the tracer gone the
@@ -225,7 +225,7 @@ pub fn exit_ptrace(tracer_tid: u32) {
             sched::live::zombies::notify_real_parent_of_zombie(&t);
         }
         // A tracee parked in a ptrace stop has no tracer left to resume it.
-        t.jobctl.store(sched::jobctl::resume_clears(t.jobctl.load(Ordering::Acquire)),
+        t.security.jobctl.store(sched::jobctl::resume_clears(t.security.jobctl.load(Ordering::Acquire)),
                        Ordering::Release);
         sched::live::registry::wake_if_stopped(&t, sched::jobctl::WakeKind::PtraceResume);
     }

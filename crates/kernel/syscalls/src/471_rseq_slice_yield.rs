@@ -19,5 +19,5 @@ use syscall::SyscallArgs;
 /// # C: O(1)
 pub fn sys_rseq_slice_yield(_args: &SyscallArgs) -> i64 {
     let Some(cur) = sched::live::current() else { return 0 };
-    cur.rseq_slice_yielded.swap(false, Ordering::AcqRel) as i64
+    cur.security.rseq_slice_yielded.swap(false, Ordering::AcqRel) as i64
 }

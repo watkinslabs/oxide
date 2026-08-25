@@ -45,9 +45,9 @@ impl PeerCred {
         let cur = sched::live::current()?;
         Some(Self {
             pid: cur.visible_pid(),
-            uid: cur.creds.euid.load(Ordering::Relaxed),
-            gid: cur.creds.egid.load(Ordering::Relaxed),
-            groups: cur.creds.group_list(),
+            uid: cur.security.creds.euid.load(Ordering::Relaxed),
+            gid: cur.security.creds.egid.load(Ordering::Relaxed),
+            groups: cur.security.creds.group_list(),
         })
     }
 }

@@ -23,13 +23,13 @@ pub(super) fn inherit_from_parent(task: &mut Task) {
     let Some(parent) = crate::live::current() else { return };
     // SAFETY: parent is the running task on this CPU (single-mutator
     // invariant per `13§5`); `task` is local and not yet scheduled.
-    unsafe { task.creds = parent.creds.snapshot(); }
+    unsafe { task.security.creds = parent.security.creds.snapshot(); }
     // oom_score_adj is inherited across fork and CLONE_THREAD exactly as
     // Linux copies it in dup_task_struct.
     task.oom_score_adj.store(parent.oom_score_adj(), Ordering::Release);
     // PR_SET_TIMERSLACK state is inherited across fork and preserved by
     // exec, like Linux task_struct::timer_slack_ns.
-    task.timer_slack_ns.store(parent.timer_slack_ns.load(Ordering::Acquire), Ordering::Release);
+    task.security.timer_slack_ns.store(parent.security.timer_slack_ns.load(Ordering::Acquire), Ordering::Release);
     // Linux sched_fork(): policy, RT priority, nice and load weight are
     // inherited across fork/clone; SCHED_RESET_ON_FORK demotes the child.
     crate::live::sched_fork::inherit_sched_params(&task, &parent);
@@ -53,25 +53,25 @@ pub(super) fn inherit_from_parent(task: &mut Task) {
     task.set_comm_inherited(parent.comm_bytes());
     // SUID_DUMP_* / THP_DISABLE are inherited across fork/clone (Linux
     // copies mm->flags).
-    task.dumpable.store(parent.dumpable.load(Ordering::Acquire), Ordering::Release);
-    task.thp_disable.store(parent.thp_disable.load(Ordering::Acquire), Ordering::Release);
+    task.security.dumpable.store(parent.security.dumpable.load(Ordering::Acquire), Ordering::Release);
+    task.security.thp_disable.store(parent.security.thp_disable.load(Ordering::Acquire), Ordering::Release);
     // PR_SET_TIMERSLACK's restore-target rides along with the live value
     // (Linux copies `default_timer_slack_ns` in `dup_task_struct`).
-    task.default_timer_slack_ns
-        .store(parent.default_timer_slack_ns.load(Ordering::Acquire), Ordering::Release);
+    task.security.default_timer_slack_ns
+        .store(parent.security.default_timer_slack_ns.load(Ordering::Acquire), Ordering::Release);
     // `prctl(PR_SET_TSC)` and `prctl(PR_SET_TAGGED_ADDR_CTRL)` are thread
     // flags, which fork copies wholesale with the rest of `thread_info`. A
     // child that did NOT inherit the TSC trap would be a one-`fork()` escape
     // from the very restriction its parent asked for.
-    task.tsc_sigsegv.store(parent.tsc_sigsegv.load(Ordering::Acquire), Ordering::Release);
-    task.tagged_addr.store(parent.tagged_addr.load(Ordering::Acquire), Ordering::Release);
+    task.security.tsc_sigsegv.store(parent.security.tsc_sigsegv.load(Ordering::Acquire), Ordering::Release);
+    task.security.tagged_addr.store(parent.security.tagged_addr.load(Ordering::Acquire), Ordering::Release);
     // PR_MCE_KILL policy lives in `task_struct::flags`, copied by fork.
-    task.mce_kill.store(parent.mce_kill.load(Ordering::Acquire), Ordering::Release);
+    task.security.mce_kill.store(parent.security.mce_kill.load(Ordering::Acquire), Ordering::Release);
     // PR_SET_IO_FLUSHER is `PF_MEMALLOC_NOIO | PF_LOCAL_THROTTLE`, also in
     // `task_struct::flags`: `copy_process` clears only PF_SUPERPRIV/WQ_WORKER/
     // IDLE/NO_SETAFFINITY, so a forked helper of a block server inherits the
     // no-IO-reclaim promise its parent made.
-    task.io_flusher.set(parent.io_flusher.get());
+    task.security.io_flusher.set(parent.security.io_flusher.get());
     // `PR_SET_SYSCALL_USER_DISPATCH` is NOT inherited: `copy_process` runs
     // `clear_syscall_work_syscall_user_dispatch(tsk)`, so a fork child starts
     // with dispatch off (a fresh `Task` already does).
@@ -81,8 +81,8 @@ pub(super) fn inherit_from_parent(task: &mut Task) {
     // would run WITHOUT the restriction — it could then exec a setuid
     // binary or gain file capabilities, which is the whole thing the flag
     // exists to prevent.
-    if parent.no_new_privs.load(Ordering::Acquire) {
-        task.no_new_privs.store(true, Ordering::Release);
+    if parent.security.no_new_privs.load(Ordering::Acquire) {
+        task.security.no_new_privs.store(true, Ordering::Release);
     }
     // `arch_prctl` per-thread arch state. Linux carries all of it in
     // `thread_info::flags` and `thread_struct`, both of which `dup_task_struct`
@@ -91,7 +91,7 @@ pub(super) fn inherit_from_parent(task: &mut Task) {
     // see `cpuid` fault, or a determinism sandbox leaks through fork. The CET
     // feature/lock pair: a child of a shadow-stack thread must not be able to
     // re-open a facility its parent locked.
-    task.nocpuid.store(parent.nocpuid.load(Ordering::Acquire), Ordering::Release);
+    task.security.nocpuid.store(parent.security.nocpuid.load(Ordering::Acquire), Ordering::Release);
     // `io_bitmap_share` + the inherited `iopl_emul`: a child starts with the
     // parent's port grant, sharing the map by reference until either edits it.
     crate::ioport::inherit(parent, task);
@@ -99,9 +99,9 @@ pub(super) fn inherit_from_parent(task: &mut Task) {
     // POR_EL0 is separate from the aarch64 FPSIMD image, so it is inherited
     // explicitly. x86 PKRU rides in the xstate copy above.
     #[cfg(target_arch = "aarch64")]
-    task.pkey_rights.store(parent.pkey_rights.load(Ordering::Acquire), Ordering::Release);
-    task.shstk_features.store(parent.shstk_features.load(Ordering::Acquire), Ordering::Release);
-    task.shstk_locked.store(parent.shstk_locked.load(Ordering::Acquire), Ordering::Release);
+    task.security.pkey_rights.store(parent.security.pkey_rights.load(Ordering::Acquire), Ordering::Release);
+    task.security.shstk_features.store(parent.security.shstk_features.load(Ordering::Acquire), Ordering::Release);
+    task.security.shstk_locked.store(parent.security.shstk_locked.load(Ordering::Acquire), Ordering::Release);
     // The child's visible numbers are NOT seeded here: they are drawn from the
     // PID namespace it ends up in, which clone only publishes afterwards.
     // Seccomp is INHERITED across fork/clone and PRESERVED across execve
@@ -117,9 +117,9 @@ pub(super) fn inherit_from_parent(task: &mut Task) {
     // escape by another route — and `PR_GET_SECCOMP` / `/proc/<pid>/status`
     // reported the child unconfined. A `SECCOMP_MODE_DEAD` parent cannot
     // fork (it is being killed), so the value is copied verbatim.
-    let parent_chain = parent.seccomp_filters.lock().clone();
-    *task.seccomp_filters.lock() = parent_chain;
-    task.seccomp_mode.store(parent.seccomp_mode.load(Ordering::Acquire), Ordering::Release);
+    let parent_chain = parent.security.seccomp_filters.lock().clone();
+    *task.security.seccomp_filters.lock() = parent_chain;
+    task.security.seccomp_mode.store(parent.security.seccomp_mode.load(Ordering::Acquire), Ordering::Release);
     // io_uring self-imposed filters follow the same rule and for the same
     // reason: a child that did not inherit them could open a ring the parent
     // confined itself out of.
@@ -132,14 +132,14 @@ pub(super) fn inherit_from_parent(task: &mut Task) {
     *task.io_uring_restrict.lock() = parent_res;
     // Landlock ruleset chain is likewise inherited across fork and kept
     // across execve — a Landlock-confined process's children stay confined.
-    let parent_domain = parent.landlock_domain.lock().clone();
-    *task.landlock_domain.lock() = parent_domain;
+    let parent_domain = parent.security.landlock_domain.lock().clone();
+    *task.security.landlock_domain.lock() = parent_domain;
     // The mandatory-access-control label carries across fork EXCEPT the domain
     // staged for the next `execve`: that names one operation the parent was
     // about to perform, and a child that inherited it would enter a domain
     // nobody requested. The rule itself lives with the label.
-    let parent_label = *parent.selinux_label.lock();
-    *task.selinux_label.lock() = crate::selinux_label::TaskLabel::inherit(&parent_label);
+    let parent_label = *parent.security.selinux_label.lock();
+    *task.security.selinux_label.lock() = crate::selinux_label::TaskLabel::inherit(&parent_label);
 }
 
 /// Snapshot the running parent's architectural state, then give the child an
@@ -149,8 +149,8 @@ fn inherit_fpu_state(task: &Task, parent: &Task) {
     // SAFETY: parent is current and fork's caller holds preemption off; task
     // is unpublished. Both buffers are distinct `ARCH_FPU_SIZE` allocations.
     unsafe {
-        let src = (*parent.fpu_state.get()).as_mut_ptr();
-        let dst = (*task.fpu_state.get()).as_mut_ptr();
+        let src = (*parent.security.fpu_state.get()).as_mut_ptr();
+        let dst = (*task.security.fpu_state.get()).as_mut_ptr();
         #[cfg(target_arch = "x86_64")]
         hal_x86_64::fpu_save(src as *mut hal_x86_64::FpuStateX86_64);
         #[cfg(target_arch = "aarch64")]

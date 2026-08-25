@@ -39,13 +39,13 @@ pub fn current_ipc_cred() -> IpcCred {
         cap_sys_resource: true,
     };
     if let Some(t) = sched::current() {
-        out.euid = t.creds.euid.load(Ordering::Acquire);
-        out.egid = t.creds.egid.load(Ordering::Acquire);
+        out.euid = t.security.creds.euid.load(Ordering::Acquire);
+        out.egid = t.security.creds.egid.load(Ordering::Acquire);
         out.cap_ipc_owner = t.has_cap(sched::cap::IPC_OWNER);
         out.cap_ipc_lock = t.has_cap(sched::cap::IPC_LOCK);
         out.cap_sys_admin = t.has_cap(sched::cap::SYS_ADMIN);
         out.cap_sys_resource = t.has_cap(sched::cap::SYS_RESOURCE);
-        out.groups = t.creds.vfs_group_list();
+        out.groups = t.security.creds.vfs_group_list();
     }
     out
 }

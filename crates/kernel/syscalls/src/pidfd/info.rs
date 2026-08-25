@@ -82,7 +82,7 @@ pub fn get_info(identity: &Arc<sched::pid::PidIdentity>, want: usize, arg: u64) 
         if req_mask & PIDFD_INFO_COREDUMP != 0 && mask & PIDFD_INFO_COREDUMP == 0 {
             if let Some(task) = identity.task() {
                 mask |= PIDFD_INFO_COREDUMP;
-                let dumpable = task.dumpable.load(core::sync::atomic::Ordering::Acquire);
+                let dumpable = task.security.dumpable.load(core::sync::atomic::Ordering::Acquire);
                 put32(&mut out, INFO_OFF_COREDUMP_MASK,
                       ::fs::coredump::dumpable::coredump_rights_mask(dumpable as i32));
             }

@@ -23,7 +23,7 @@ use super::verifier;
 /// # C: O(1)
 pub fn mode_of_current() -> u32 {
     match sched::current() {
-        Some(c) => c.seccomp_mode.load(Ordering::Acquire) as u32,
+        Some(c) => c.security.seccomp_mode.load(Ordering::Acquire) as u32,
         None => SECCOMP_MODE_DISABLED,
     }
 }
@@ -44,7 +44,7 @@ pub fn check(nr: u64, args: &[u64; 6], ip: u64) -> Verdict {
     let opts = cur.ptrace_options.load(Ordering::Acquire);
     if opts & PTRACE_O_SUSPEND_SECCOMP != 0 { return Verdict::Allow; }
 
-    match cur.seccomp_mode.load(Ordering::Acquire) as u32 {
+    match cur.security.seccomp_mode.load(Ordering::Acquire) as u32 {
         SECCOMP_MODE_DISABLED => Verdict::Allow,
         SECCOMP_MODE_STRICT => {
             if action::strict_allows(nr as i32) { Verdict::Allow }
@@ -53,7 +53,7 @@ pub fn check(nr: u64, args: &[u64; 6], ip: u64) -> Verdict {
         SECCOMP_MODE_FILTER => {
             let d = SeccompData { nr: nr as i32, arch: native_audit_arch(), ip, args: *args };
             let (ret, listener) = {
-                let chain = cur.seccomp_filters.lock();
+                let chain = cur.security.seccomp_filters.lock();
                 // `WARN_ON(f == NULL) return SECCOMP_RET_KILL_PROCESS` —
                 // "Ensure unexpected behavior doesn't result in failing open".
                 if chain.is_empty() { drop(chain); return kill_process(&cur, nr, ip); }
@@ -77,7 +77,7 @@ pub fn check(nr: u64, args: &[u64; 6], ip: u64) -> Verdict {
             // MODE_DEAD arm on its next syscall instead of being filtered
             // again.
             if matches!(v, Verdict::KillThread(_) | Verdict::KillProcess(_)) {
-                cur.seccomp_mode.store(SECCOMP_MODE_DEAD as u8, Ordering::Release);
+                cur.security.seccomp_mode.store(SECCOMP_MODE_DEAD as u8, Ordering::Release);
             }
             v
         }
@@ -87,12 +87,12 @@ pub fn check(nr: u64, args: &[u64; 6], ip: u64) -> Verdict {
 }
 
 fn die(_cur: &sched::Task) -> Verdict {
-    _cur.seccomp_mode.store(SECCOMP_MODE_DEAD as u8, Ordering::Release);
+    _cur.security.seccomp_mode.store(SECCOMP_MODE_DEAD as u8, Ordering::Release);
     Verdict::DieSigkill
 }
 
 fn kill_process(cur: &sched::Task, nr: u64, ip: u64) -> Verdict {
-    cur.seccomp_mode.store(SECCOMP_MODE_DEAD as u8, Ordering::Release);
+    cur.security.seccomp_mode.store(SECCOMP_MODE_DEAD as u8, Ordering::Release);
     Verdict::KillProcess(action::Sigsys {
         call_addr: ip, syscall: nr as i32, arch: native_audit_arch(), errno: 0,
     })
@@ -120,9 +120,9 @@ fn do_seccomp_inner(op: u64, flags: u64, uargs: u64) -> Result<i64, Errno> {
     super::flags::validate_op_flags(op, flags, uargs)?;
     match op {
         SECCOMP_SET_MODE_STRICT => {
-            if !install::may_assign_mode(cur.seccomp_mode.load(Ordering::Acquire) as u32,
+            if !install::may_assign_mode(cur.security.seccomp_mode.load(Ordering::Acquire) as u32,
                                          SECCOMP_MODE_STRICT) { return Err(Errno::Einval); }
-            cur.seccomp_mode.store(SECCOMP_MODE_STRICT as u8, Ordering::Release);
+            cur.security.seccomp_mode.store(SECCOMP_MODE_STRICT as u8, Ordering::Release);
             Ok(0)
         }
         SECCOMP_SET_MODE_FILTER => set_mode_filter(&cur, flags, uargs),
@@ -145,11 +145,11 @@ fn set_mode_filter(cur: &sched::Task, flags: u64, uargs: u64) -> Result<i64, Err
     let ctx = InstallCtx {
         flags,
         len: len as usize,
-        no_new_privs: cur.no_new_privs.load(Ordering::Acquire),
+        no_new_privs: cur.security.no_new_privs.load(Ordering::Acquire),
         // `ns_capable_noaudit` — the NOAUDIT form. `Task::has_cap` latches
         // `PF_SUPERPRIV`, which this check must not do.
-        cap_sys_admin: cur.creds.has_cap(sched::cap::SYS_ADMIN),
-        cur_mode: cur.seccomp_mode.load(Ordering::Acquire) as u32,
+        cap_sys_admin: cur.security.creds.has_cap(sched::cap::SYS_ADMIN),
+        cur_mode: cur.security.seccomp_mode.load(Ordering::Acquire) as u32,
     };
     install::pre_verify_gate(&ctx)?;
     let prog = user::read_prog(filter_p, ctx.len)?;
@@ -188,7 +188,7 @@ fn finish_install(cur: &sched::Task, ctx: &InstallCtx, prog: Vec<u64>, flags: u6
     // notify on would have to reach two supervisors, and only one of them can
     // decide the call.
     if listener.is_some()
-        && cur.seccomp_filters.lock().iter().any(|f| f.listener.is_some()) {
+        && cur.security.seccomp_filters.lock().iter().any(|f| f.listener.is_some()) {
         return Err(Errno::Ebusy);
     }
     attach(cur, prog, flags, listener)
@@ -219,8 +219,8 @@ fn attach(cur: &sched::Task, prog: Vec<u64>, flags: u64, listener: Option<u64>)
         Some(id) => sched::seccomp_filter::SeccompFilter::with_listener(prog, flags, id),
         None => sched::seccomp_filter::SeccompFilter::new(prog, flags),
     };
-    cur.seccomp_filters.lock().push(f);
-    cur.seccomp_mode.store(SECCOMP_MODE_FILTER as u8, Ordering::Release);
+    cur.security.seccomp_filters.lock().push(f);
+    cur.security.seccomp_mode.store(SECCOMP_MODE_FILTER as u8, Ordering::Release);
     if flags & SECCOMP_FILTER_FLAG_TSYNC != 0 { sync_threads(cur); }
     Ok(0)
 }
@@ -228,14 +228,14 @@ fn attach(cur: &sched::Task, prog: Vec<u64>, flags: u64, listener: Option<u64>)
 /// Total cBPF instructions already on this task's chain, with Linux's
 /// `walker->prog->len + 4` per-filter penalty.
 fn chain_insns(cur: &sched::Task) -> usize {
-    cur.seccomp_filters.lock().iter().map(|f| f.len() + install::FILTER_PENALTY_INSNS).sum()
+    cur.security.seccomp_filters.lock().iter().map(|f| f.len() + install::FILTER_PENALTY_INSNS).sum()
 }
 
 /// `seccomp_can_sync_threads` — the eligibility scan, run against the
 /// caller's chain BEFORE the new filter joins it. Returns the vpid of the
 /// first thread that cannot be synchronised, or `None` when all can.
 fn can_sync_threads(cur: &sched::Task) -> Option<u32> {
-    let mine: Vec<sched::seccomp_filter::SeccompFilter> = cur.seccomp_filters.lock().clone();
+    let mine: Vec<sched::seccomp_filter::SeccompFilter> = cur.security.seccomp_filters.lock().clone();
     for (vtid, tid) in sched::registry::thread_entries(cur.tgid.load(Ordering::Acquire)) {
         if tid == cur.tid { continue; }
         let Some(t) = sched::registry::lookup(tid) else { continue };
@@ -243,8 +243,8 @@ fn can_sync_threads(cur: &sched::Task) -> Option<u32> {
         // be running an ANCESTOR of the caller's chain — Linux
         // `is_ancestor(thread->seccomp.filter, caller->seccomp.filter)`,
         // which with per-task chain copies is "a prefix of the caller's".
-        if t.seccomp_mode.load(Ordering::Acquire) as u32 == SECCOMP_MODE_DISABLED { continue; }
-        let theirs = t.seccomp_filters.lock();
+        if t.security.seccomp_mode.load(Ordering::Acquire) as u32 == SECCOMP_MODE_DISABLED { continue; }
+        let theirs = t.security.seccomp_filters.lock();
         if theirs.len() <= mine.len() && theirs[..] == mine[..theirs.len()] { continue; }
         return Some(if vtid != 0 { vtid } else { tid });
     }
@@ -255,19 +255,19 @@ fn can_sync_threads(cur: &sched::Task) -> Option<u32> {
 /// whole chain, the caller's `no_new_privs`, and `SECCOMP_MODE_FILTER` if it
 /// was previously unconfined. Eligibility was settled by `can_sync_threads`.
 fn sync_threads(cur: &sched::Task) {
-    let mine: Vec<sched::seccomp_filter::SeccompFilter> = cur.seccomp_filters.lock().clone();
-    let nnp = cur.no_new_privs.load(Ordering::Acquire);
+    let mine: Vec<sched::seccomp_filter::SeccompFilter> = cur.security.seccomp_filters.lock().clone();
+    let nnp = cur.security.no_new_privs.load(Ordering::Acquire);
     let tgid = cur.tgid.load(Ordering::Acquire);
     for (_vtid, tid) in sched::registry::thread_entries(tgid) {
         if tid == cur.tid { continue; }
         let Some(t) = sched::registry::lookup(tid) else { continue };
-        *t.seccomp_filters.lock() = mine.clone();
+        *t.security.seccomp_filters.lock() = mine.clone();
         // "Don't let an unprivileged task work around the no_new_privs
         // restriction by creating a thread that sets it up, enters seccomp,
         // then dies."
-        if nnp { t.no_new_privs.store(true, Ordering::Release); }
-        if t.seccomp_mode.load(Ordering::Acquire) as u32 == SECCOMP_MODE_DISABLED {
-            t.seccomp_mode.store(SECCOMP_MODE_FILTER as u8, Ordering::Release);
+        if nnp { t.security.no_new_privs.store(true, Ordering::Release); }
+        if t.security.seccomp_mode.load(Ordering::Acquire) as u32 == SECCOMP_MODE_DISABLED {
+            t.security.seccomp_mode.store(SECCOMP_MODE_FILTER as u8, Ordering::Release);
         }
     }
 }

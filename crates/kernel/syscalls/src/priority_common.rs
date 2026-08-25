@@ -44,7 +44,7 @@ pub(crate) fn for_each_target(which: u64, who: u32, mut f: impl FnMut(&alloc::sy
             // namespace does not map names no task at all, so the target set
             // is empty and the caller reports its seed ESRCH.
             let mapped = sched::cred::make_kuid(who);
-            let caller_ruid = cur.creds.ruid.load(Ordering::Acquire);
+            let caller_ruid = cur.security.creds.ruid.load(Ordering::Acquire);
             let Some(uid) = user_target_uid(who, caller_ruid, mapped) else { return; };
             // The pid-namespace visibility guard, resolved once for the walk
             // instead of per task.
@@ -55,7 +55,7 @@ pub(crate) fn for_each_target(which: u64, who: u32, mut f: impl FnMut(&alloc::sy
                         Some(ns) => sched::live::registry::vnr_in(&t, ns).is_some(),
                         None => true,
                     };
-                    let ruid = t.creds.ruid.load(Ordering::Acquire);
+                    let ruid = t.security.creds.ruid.load(Ordering::Acquire);
                     if user_target_matches(uid, ruid, visible) { f(&t); }
                 }
             }

@@ -62,7 +62,7 @@ fn now_ns() -> u64 { 0 }
 /// The write sites hold that invariant here too; this reader states the
 /// invariant it depends on rather than re-deriving it.
 /// # C: O(1)
-pub fn task_slack_ns(task: &Task) -> u64 { task.timer_slack_ns.load(Ordering::Acquire) }
+pub fn task_slack_ns(task: &Task) -> u64 { task.security.timer_slack_ns.load(Ordering::Acquire) }
 
 /// Linux `select_estimate_accuracy` for an absolute monotonic deadline —
 /// poll(2), select(2) and epoll_wait(2) coalesce far more aggressively than the

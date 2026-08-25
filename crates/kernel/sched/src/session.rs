@@ -36,7 +36,7 @@ fn pid_ns(cur: &Task) -> NamespaceRef {
 /// `registry::display_vpid`.
 /// # C: O(1)
 pub fn process_vpid(t: &Task) -> u32 {
-    let v = t.vtgid.load(Ordering::Acquire);
+    let v = t.security.vtgid.load(Ordering::Acquire);
     if v != 0 { v } else { t.tgid.load(Ordering::Acquire) }
 }
 

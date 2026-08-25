@@ -114,13 +114,13 @@ mod live {
     /// silently no-op.
     /// # C: O(1)
     fn queue_si_tkill(cur: &sched::Task, t: &alloc::sync::Arc<sched::Task>, sig: i32) {
-        let spid = cur.vtgid.load(Ordering::Acquire);
+        let spid = cur.security.vtgid.load(Ordering::Acquire);
         let spid = if spid != 0 { spid } else { cur.tgid.load(Ordering::Acquire) };
         let info = sched::SigInfo {
             signo: sig as u32,
             code: sched::signum::SI_TKILL,
             pid: spid,
-            uid: cur.creds.ruid.load(Ordering::Relaxed),
+            uid: cur.security.creds.ruid.load(Ordering::Relaxed),
             value: 0,
             sys:   None, fault: None, poll: None
         };

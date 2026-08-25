@@ -33,7 +33,7 @@ const CHILD_FAULTS: u64 = 5;
 fn published(tid: u32) -> Arc<Task> {
     let t = Arc::new(Task::new(tid, "il", SchedClass::Normal { weight: 1024 }));
     t.exit_signal.store(Signum::Sigchld.as_u8(), Ordering::Release);
-    t.vtgid.store(tid, Ordering::Release);
+    t.security.vtgid.store(tid, Ordering::Release);
     crate::registry::insert(&t);
     t
 }

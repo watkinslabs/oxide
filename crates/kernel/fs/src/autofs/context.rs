@@ -68,8 +68,8 @@ impl Context {
 fn current_identity() -> (u32, u32, u32) {
     match sched::current() {
         Some(task) => (
-            task.creds.fsuid.load(Ordering::Acquire),
-            task.creds.fsgid.load(Ordering::Acquire),
+            task.security.creds.fsuid.load(Ordering::Acquire),
+            task.security.creds.fsgid.load(Ordering::Acquire),
             task.pgrp().nr_in_or_tid(&sched::live::registry::reader_pid_ns()),
         ),
         None => (0, 0, 0),

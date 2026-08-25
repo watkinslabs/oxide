@@ -83,7 +83,7 @@ pub(crate) fn poll_select_finish(cur: Option<&sched::Task>, rv: i64, tsp: u64,
         if restores_saved_sigmask(rv) { c.restore_saved_sigmask(); }
     }
     if tsp == 0 { return rv; }
-    let persona = cur.map(|c| c.personality.load(Ordering::Acquire)).unwrap_or(0);
+    let persona = cur.map(|c| c.security.personality.load(Ordering::Acquire)).unwrap_or(0);
     let plan = timeout_writeback_plan(persona, req_sec, req_nsec);
     if plan != TimeoutWriteback::Wrote { return finish_return(rv, plan); }
     let Some(deadline) = deadline_ns else { return finish_return(rv, TimeoutWriteback::Skipped) };

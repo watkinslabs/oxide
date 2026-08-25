@@ -90,7 +90,7 @@ impl Task {
             let eh = task_canary_head(self.tid);
             let et = task_canary_tail(self.tid);
             let gh = self.dbg_canary_head.load(Ordering::Acquire);
-            let gt = self.dbg_canary_tail.load(Ordering::Acquire);
+            let gt = self.security.dbg_canary_tail.load(Ordering::Acquire);
             if gh != eh || gt != et {
                 klog::write_raw(b"[TASK-CANARY site=");
                 klog::write_raw(site.as_bytes());
@@ -167,11 +167,11 @@ impl Task {
     /// # C: O(1)
     #[cfg(feature = "debug-task-fpu-provenance")]
     pub fn debug_check_fpu_state(&self, site: &'static str) {
-        let expected = self.dbg_fpu_state_expected.load(Ordering::Acquire);
+        let expected = self.security.dbg_fpu_state_expected.load(Ordering::Acquire);
         // SAFETY: this reads the pointer-sized Box representation from the
         // task-owned UnsafeCell without dereferencing the candidate address;
         // scheduler/ptrace serialization prevents a concurrent field mutation.
-        let actual = unsafe { core::ptr::read(self.fpu_state.get().cast::<usize>()) };
+        let actual = unsafe { core::ptr::read(self.security.fpu_state.get().cast::<usize>()) };
         let align = ArchFpuBuf::debug_alignment();
         let valid = actual == expected && actual != 0 && actual & (align - 1) == 0;
         if !valid {

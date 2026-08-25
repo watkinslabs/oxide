@@ -31,7 +31,7 @@ fn queued(uid: u32) -> i64 { ucounts::value(UcountKey::new(0, uid), Counter::Sig
 /// the task (Linux `set_cred_ucounts`).
 fn task(tid: u32, uid: u32) -> Arc<Task> {
     let t = Arc::new(Task::new(tid, "sigp", SchedClass::Normal { weight: 1024 }));
-    t.creds.ruid.store(uid, Ordering::Release);
+    t.security.creds.ruid.store(uid, Ordering::Release);
     crate::ucounts::charge_task(&t);
     t.set_rlimit(rlim::SIGPENDING, (8, 8));
     t
@@ -220,7 +220,7 @@ fn a_record_releases_against_the_account_it_charged_across_a_setuid() {
     let t = task(12, OLD);
     for n in 0..3 { assert!(push(&t, info(SIGRTMIN, n))); }
     assert_eq!(queued(OLD), 3);
-    t.creds.ruid.store(NEW, Ordering::Release);
+    t.security.creds.ruid.store(NEW, Ordering::Release);
     crate::ucounts::recharge_after_setuid(&t);
     assert_eq!(queued(OLD), 3, "queued records stay charged where they were taken");
     assert_eq!(queued(NEW), 0);

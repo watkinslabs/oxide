@@ -97,15 +97,15 @@ fn the_generic_rule_gates_so_mark_on_a_capability_for_every_family_that_runs_it(
     let _policy = unpoliced();
     let task = task(403);
     let ctx = SendContext::new(&task);
-    task.creds.cap_effective.store(0, core::sync::atomic::Ordering::Release);
-    task.creds.cap_permitted.store(0, core::sync::atomic::Ordering::Release);
+    task.security.creds.cap_effective.store(0, core::sync::atomic::Ordering::Release);
+    task.security.creds.cap_permitted.store(0, core::sync::atomic::Ordering::Release);
     let control = cmsg(SOL_SOCKET, SO_MARK, &1u32.to_ne_bytes());
     for socket in [net::sock::InetSocket::new_udp(), net::sock::InetSocket::new_tcp()] {
         assert_eq!(admit(&ctx, &Arc::new(socket), &control, None), Err(Error::Eperm));
     }
     // The same message from a capable caller is admitted, so the refusal above
     // is the capability answer and not a length or type one.
-    task.creds.cap_effective.store(u64::MAX, core::sync::atomic::Ordering::Release);
+    task.security.creds.cap_effective.store(u64::MAX, core::sync::atomic::Ordering::Release);
     assert!(admit(&ctx, &Arc::new(net::sock::InetSocket::new_udp()), &control, None).is_ok());
 }
 

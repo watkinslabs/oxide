@@ -17,13 +17,13 @@ use crate::user_mem as um;
 /// carries for DAC. # C: O(1)
 pub(crate) fn fowner_uid() -> u32 {
     use core::sync::atomic::Ordering;
-    sched::live::current().map(|t| t.creds.ruid.load(Ordering::Acquire)).unwrap_or(0)
+    sched::live::current().map(|t| t.security.creds.ruid.load(Ordering::Acquire)).unwrap_or(0)
 }
 
 /// `f_modown`'s `fown->euid`. # C: O(1)
 pub(crate) fn fowner_euid() -> u32 {
     use core::sync::atomic::Ordering;
-    sched::live::current().map(|t| t.creds.euid.load(Ordering::Acquire)).unwrap_or(0)
+    sched::live::current().map(|t| t.security.creds.euid.load(Ordering::Acquire)).unwrap_or(0)
 }
 
 /// Read + validate the caller's `struct delegation`. `Err` is the negative

@@ -23,9 +23,9 @@ fn unix_path(name: &[u8]) -> KResult<Vec<u8>> {
 }
 
 fn cred(task: &sched::Task) -> vfs::Cred {
-    let effective = task.creds.cap_effective.load(Ordering::Acquire);
-    task.creds.to_vfs_cred(task.creds.fsuid.load(Ordering::Acquire),
-        task.creds.fsgid.load(Ordering::Acquire), effective)
+    let effective = task.security.creds.cap_effective.load(Ordering::Acquire);
+    task.security.creds.to_vfs_cred(task.security.creds.fsuid.load(Ordering::Acquire),
+        task.security.creds.fsgid.load(Ordering::Acquire), effective)
 }
 
 fn resolve_unix(ctx: &SendContext<'_>, path: Vec<u8>) -> KResult<net::UnixAddr> {

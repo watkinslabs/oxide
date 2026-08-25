@@ -54,9 +54,9 @@ fn cap_load_target(pid: i32) -> Result<(u64, u64, u64), i64> {
     }
     fn caps_of(c: &crate::Task) -> (u64, u64, u64) {
         (
-            c.creds.cap_effective.load(Ordering::Acquire),
-            c.creds.cap_permitted.load(Ordering::Acquire),
-            c.creds.cap_inheritable.load(Ordering::Acquire),
+            c.security.creds.cap_effective.load(Ordering::Acquire),
+            c.security.creds.cap_permitted.load(Ordering::Acquire),
+            c.security.creds.cap_inheritable.load(Ordering::Acquire),
         )
     }
     let esrch = -(Errno::Esrch.as_i32() as i64);
@@ -70,7 +70,7 @@ fn cap_load_target(pid: i32) -> Result<(u64, u64, u64), i64> {
     // process"), aborting every service spawn at the CAPABILITIES step.
     let v = pid as u32;
     if let Some(c) = crate::live::current() {
-        if v == c.vtid.load(Ordering::Acquire) || v == c.vtgid.load(Ordering::Acquire) {
+        if v == c.security.vtid.load(Ordering::Acquire) || v == c.security.vtgid.load(Ordering::Acquire) {
             return Ok(caps_of(c));
         }
     }
@@ -152,8 +152,8 @@ pub(super) fn capset_on(cur: &crate::Task, args: &SyscallArgs) -> i64 {
     // getpid() vpid, not the internal tid).
     if pid != 0
         && pid as u32 != cur.tid
-        && pid as u32 != cur.vtid.load(Ordering::Acquire)
-        && pid as u32 != cur.vtgid.load(Ordering::Acquire)
+        && pid as u32 != cur.security.vtid.load(Ordering::Acquire)
+        && pid as u32 != cur.security.vtgid.load(Ordering::Acquire)
     {
         return -(Errno::Eperm.as_i32() as i64);
     }
@@ -162,20 +162,20 @@ pub(super) fn capset_on(cur: &crate::Task, args: &SyscallArgs) -> i64 {
     if uaccess::copy_from_user(&mut raw[..len], dp).is_err() { return efault(); }
     let (raw_eff, raw_perm, raw_inh) = decode_cap_data(&raw, nblocks);
     let old = CapsetOld {
-        effective:   cur.creds.cap_effective.load(Ordering::Acquire),
-        permitted:   cur.creds.cap_permitted.load(Ordering::Acquire),
-        inheritable: cur.creds.cap_inheritable.load(Ordering::Acquire),
-        bounding:    cur.creds.cap_bounding.load(Ordering::Acquire),
-        ambient:     cur.creds.cap_ambient.load(Ordering::Acquire),
+        effective:   cur.security.creds.cap_effective.load(Ordering::Acquire),
+        permitted:   cur.security.creds.cap_permitted.load(Ordering::Acquire),
+        inheritable: cur.security.creds.cap_inheritable.load(Ordering::Acquire),
+        bounding:    cur.security.creds.cap_bounding.load(Ordering::Acquire),
+        ambient:     cur.security.creds.cap_ambient.load(Ordering::Acquire),
     };
     let new = match capset_check(old, raw_eff, raw_perm, raw_inh) {
         Ok(n) => n,
         Err(e) => return -(e.as_i32() as i64),
     };
-    cur.creds.cap_permitted.store(new.permitted, Ordering::Release);
-    cur.creds.cap_effective.store(new.effective, Ordering::Release);
-    cur.creds.cap_inheritable.store(new.inheritable, Ordering::Release);
-    cur.creds.cap_ambient.store(new.ambient, Ordering::Release);
+    cur.security.creds.cap_permitted.store(new.permitted, Ordering::Release);
+    cur.security.creds.cap_effective.store(new.effective, Ordering::Release);
+    cur.security.creds.cap_inheritable.store(new.inheritable, Ordering::Release);
+    cur.security.creds.cap_ambient.store(new.ambient, Ordering::Release);
     0
 }
 

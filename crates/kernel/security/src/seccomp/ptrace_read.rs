@@ -50,10 +50,10 @@ fn nth(task: &sched::Task, filter_off: u64)
     -> Result<(alloc::vec::Vec<u64>, u64), Errno>
 {
     use core::sync::atomic::Ordering;
-    if task.seccomp_mode.load(Ordering::Acquire) as u32 != SECCOMP_MODE_FILTER {
+    if task.security.seccomp_mode.load(Ordering::Acquire) as u32 != SECCOMP_MODE_FILTER {
         return Err(Errno::Einval);
     }
-    let chain = task.seccomp_filters.lock();
+    let chain = task.security.seccomp_filters.lock();
     let count = chain.len() as u64;
     if filter_off >= count { return Err(Errno::Enoent); }
     // `count -= filter_off; for (filter = orig; count > 1; filter = filter->prev)`

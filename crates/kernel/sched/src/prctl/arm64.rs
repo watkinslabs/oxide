@@ -168,7 +168,7 @@ pub fn untagged_addr(addr: u64) -> u64 {
 /// # C: O(1)
 pub fn user_ptr_for_check(cur: Option<&Task>, addr: u64) -> u64 {
     match cur {
-        Some(t) if t.tagged_addr.load(core::sync::atomic::Ordering::Acquire) => untagged_addr(addr),
+        Some(t) if t.security.tagged_addr.load(core::sync::atomic::Ordering::Acquire) => untagged_addr(addr),
         // No current task = a kernel context acting on a borrowed mm, Linux's
         // `current->flags & PF_KTHREAD` arm: always untag, because the thread
         // flag belongs to the process that owns the mm, not to this thread.

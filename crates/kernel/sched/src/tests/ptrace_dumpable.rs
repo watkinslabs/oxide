@@ -20,12 +20,12 @@ fn peers() -> (Task, Task) {
     a.tgid.store(9101, Ordering::Release);
     b.tgid.store(9102, Ordering::Release);
     for t in [&a, &b] {
-        for f in [&t.creds.ruid, &t.creds.euid, &t.creds.suid] { f.store(1000, Ordering::Release); }
-        for f in [&t.creds.rgid, &t.creds.egid, &t.creds.sgid] { f.store(1000, Ordering::Release); }
+        for f in [&t.security.creds.ruid, &t.security.creds.euid, &t.security.creds.suid] { f.store(1000, Ordering::Release); }
+        for f in [&t.security.creds.rgid, &t.security.creds.egid, &t.security.creds.sgid] { f.store(1000, Ordering::Release); }
         // A fresh Task carries a full capability set. Leaving it would take the
         // CAP_SYS_PTRACE bypass and make every assertion below vacuous — which
         // is exactly what the first run of this test did.
-        t.creds.cap_effective.store(0, Ordering::Release);
+        t.security.creds.cap_effective.store(0, Ordering::Release);
     }
     (a, b)
 }
@@ -34,12 +34,12 @@ fn peers() -> (Task, Task) {
 fn matching_creds_alone_do_not_grant_access_to_a_non_dumpable_target() {
     let _g = registry_test_lock();
     let (cur, target) = peers();
-    target.dumpable.store(SUID_DUMP_USER, Ordering::Release);
+    target.security.dumpable.store(SUID_DUMP_USER, Ordering::Release);
     assert!(may_access(&cur, &target).is_ok(), "same real ids, dumpable: allowed");
 
     // The target drops privileges — Linux clears dumpable, and the SAME
     // credential match must no longer be enough.
-    target.dumpable.store(SUID_DUMP_DISABLE, Ordering::Release);
+    target.security.dumpable.store(SUID_DUMP_DISABLE, Ordering::Release);
     assert!(may_access(&cur, &target).is_err(),
         "non-dumpable target must be refused despite matching creds");
 }
@@ -48,8 +48,8 @@ fn matching_creds_alone_do_not_grant_access_to_a_non_dumpable_target() {
 fn cap_sys_ptrace_still_reaches_a_non_dumpable_target() {
     let _g = registry_test_lock();
     let (cur, target) = peers();
-    target.dumpable.store(SUID_DUMP_DISABLE, Ordering::Release);
-    cur.creds.cap_effective.store(1u64 << crate::cap::SYS_PTRACE, Ordering::Release);
+    target.security.dumpable.store(SUID_DUMP_DISABLE, Ordering::Release);
+    cur.security.creds.cap_effective.store(1u64 << crate::cap::SYS_PTRACE, Ordering::Release);
     assert!(may_access(&cur, &target).is_ok(),
         "CAP_SYS_PTRACE bypasses the dumpability gate, as Linux allows");
 }
@@ -58,7 +58,7 @@ fn cap_sys_ptrace_still_reaches_a_non_dumpable_target() {
 fn the_gate_applies_to_fscreds_mode_too() {
     let _g = registry_test_lock();
     let (cur, target) = peers();
-    target.dumpable.store(SUID_DUMP_DISABLE, Ordering::Release);
+    target.security.dumpable.store(SUID_DUMP_DISABLE, Ordering::Release);
     assert!(may_access_mode(&cur, &target, Mode::FsCreds).is_err(),
         "dumpability is checked on top of EITHER credential path");
 }

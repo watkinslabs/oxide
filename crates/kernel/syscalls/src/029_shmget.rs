@@ -58,7 +58,7 @@ pub fn sys_shmget(args: &SyscallArgs) -> i64 {
     // reaches the handler, and the size selector lives inside that half.
     let flg  = (args.a2 as u32) as u64;
     let cpid = sched::live::current()
-        .map(|c| c.vtgid.load(core::sync::atomic::Ordering::Acquire))
+        .map(|c| c.security.vtgid.load(core::sync::atomic::Ordering::Acquire))
         .unwrap_or(0);
     ipc::sysv_shm::shmget_with_backing(key, size, flg, cpid, make_backing)
 }

@@ -8,13 +8,13 @@ use super::Task;
 impl Task {
     /// Snapshot login uid and session id in publication order. # C: O(1)
     pub fn audit_identity(&self) -> (u32, u32) {
-        let word = self.audit_identity.load(Ordering::Acquire);
+        let word = self.security.audit_identity.load(Ordering::Acquire);
         ((word >> 32) as u32, word as u32)
     }
 
     /// Publish a successfully admitted login identity. # C: O(1)
     pub fn set_audit_identity(&self, login: u32, session: u32) {
-        self.audit_identity.store(((login as u64) << 32) | session as u64,
+        self.security.audit_identity.store(((login as u64) << 32) | session as u64,
             Ordering::Release);
     }
 

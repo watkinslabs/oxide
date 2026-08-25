@@ -62,7 +62,7 @@ fn actor<'a>(t: &sched::Task, comm: &'a [u8]) -> TtyActor<'a> {
     let (auid, ses) = t.audit_identity();
     TtyActor {
         pid: t.visible_pid(),
-        uid: t.creds.euid.load(core::sync::atomic::Ordering::Acquire),
+        uid: t.security.creds.euid.load(core::sync::atomic::Ordering::Acquire),
         auid,
         ses,
         comm,

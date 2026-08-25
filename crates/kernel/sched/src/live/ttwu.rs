@@ -76,7 +76,7 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
     while !node.is_null() {
         // SAFETY: wake_list_take claimed this chain exclusively; read the next
         // raw link before Arc::from_raw retakes this node's strong reference.
-        let next = unsafe { (*node).wake_next.load(Ordering::Relaxed) };
+        let next = unsafe { (&(*node)).wake_next.load(Ordering::Relaxed) };
         // SAFETY: wake_list_push transferred exactly one strong reference into
         // each node, and this detached-chain walk consumes it exactly once.
         let task = unsafe { Arc::from_raw(node as *const Task) };
@@ -319,7 +319,7 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
             let cur = rq.current.load(Ordering::Acquire);
             // SAFETY: rq.current is non-null after install; the pointee is kept
             // alive by the rq's strong ref; reading the tid field is sound.
-            if !cur.is_null() && unsafe { (*cur).tid } == tid {
+            if !cur.is_null() && unsafe { (&(*cur)).tid } == tid {
                 resched_curr(cpu);
             }
         }

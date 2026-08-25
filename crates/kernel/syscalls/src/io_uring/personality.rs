@@ -31,7 +31,7 @@ pub fn snapshot_current() -> Option<CredSnapshot> {
 
 /// # C: O(1)
 fn snapshot_of(t: &sched::Task) -> CredSnapshot {
-    let c = &t.creds;
+    let c = &t.security.creds;
     CredSnapshot {
         ruid: c.ruid.load(Ordering::Acquire), euid: c.euid.load(Ordering::Acquire),
         suid: c.suid.load(Ordering::Acquire), fsuid: c.fsuid.load(Ordering::Acquire),
@@ -42,13 +42,13 @@ fn snapshot_of(t: &sched::Task) -> CredSnapshot {
         cap_inheritable: c.cap_inheritable.load(Ordering::Acquire),
         cap_ambient: c.cap_ambient.load(Ordering::Acquire),
         cap_bounding: c.cap_bounding.load(Ordering::Acquire),
-        groups: t.creds.groups.lock().clone(),
+        groups: t.security.creds.groups.lock().clone(),
     }
 }
 
 /// Install `snap` on the running task. # C: O(1)
 fn install(t: &sched::Task, snap: &CredSnapshot) {
-    let c = &t.creds;
+    let c = &t.security.creds;
     c.ruid.store(snap.ruid, Ordering::Release); c.euid.store(snap.euid, Ordering::Release);
     c.suid.store(snap.suid, Ordering::Release); c.fsuid.store(snap.fsuid, Ordering::Release);
     c.rgid.store(snap.rgid, Ordering::Release); c.egid.store(snap.egid, Ordering::Release);

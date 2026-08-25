@@ -36,7 +36,7 @@ pub fn charged_key(task: &Task) -> UcountKey {
 /// # C: O(1); # Lk: Namespace
 pub fn current_key(task: &Task) -> UcountKey {
     let ns = task.namespace_owner(NamespaceKind::User).map_or(0, |owner| owner.id().as_u64());
-    UcountKey::new(ns, task.creds.ruid.load(Ordering::Acquire))
+    UcountKey::new(ns, task.security.creds.ruid.load(Ordering::Acquire))
 }
 
 /// This task's effective `RLIMIT_NPROC` soft limit. # C: O(1); # Lk: TaskList

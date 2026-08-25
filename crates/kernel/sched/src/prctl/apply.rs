@@ -22,7 +22,7 @@ fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 pub fn set_io_flusher(cur: &Task, a2: u64, a3: u64, a4: u64, a5: u64) -> i64 {
     let cap = cur.has_cap(crate::cap::SYS_RESOURCE);
     match io_flusher::set_decide(cap, a2, a3, a4, a5) {
-        Ok(on) => { cur.io_flusher.set(on); 0 }
+        Ok(on) => { cur.security.io_flusher.set(on); 0 }
         Err(e) => err(e),
     }
 }
@@ -31,7 +31,7 @@ pub fn set_io_flusher(cur: &Task, a2: u64, a3: u64, a4: u64, a5: u64) -> i64 {
 pub fn get_io_flusher(cur: &Task, a2: u64, a3: u64, a4: u64, a5: u64) -> i64 {
     let cap = cur.has_cap(crate::cap::SYS_RESOURCE);
     match io_flusher::get_decide(cap, a2, a3, a4, a5) {
-        Ok(()) => cur.io_flusher.get() as i64,
+        Ok(()) => cur.security.io_flusher.get() as i64,
         Err(e) => err(e),
     }
 }
@@ -47,7 +47,7 @@ pub fn set_syscall_user_dispatch(cur: &Task, cfg: &sud::Config) -> i64 {
     if cfg.on && cfg.selector != 0 && !selector_addr_ok(cfg.selector) {
         return err(Errno::Efault);
     }
-    cur.syscall_dispatch.install(cfg);
+    cur.security.syscall_dispatch.install(cfg);
     0
 }
 

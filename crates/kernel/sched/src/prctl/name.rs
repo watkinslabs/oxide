@@ -41,7 +41,7 @@ pub fn sys_get_name(cur: &Task, args: &SyscallArgs) -> i64 {
 /// kernel enters by itself on a privilege change).
 /// # C: O(1)
 pub fn set_dumpable(cur: &Task, v: u8) -> i64 {
-    cur.dumpable.store(v, Ordering::Release);
+    cur.security.dumpable.store(v, Ordering::Release);
     0
 }
 

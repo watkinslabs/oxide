@@ -120,7 +120,7 @@ mod tests {
         use namespace_identity::{allocate, initial, NamespaceKind};
 
         let t = task();
-        t.creds.cap_effective.store(1u64 << sched::cap::SYS_RESOURCE, Ordering::Release);
+        t.security.creds.cap_effective.store(1u64 << sched::cap::SYS_RESOURCE, Ordering::Release);
         t.set_rlimit(rlim::CORE, (0, 4096));
 
         // Root of a NON-initial user namespace holds a full effective set
@@ -147,7 +147,7 @@ mod tests {
         use core::sync::atomic::Ordering;
         use namespace_identity::{allocate, initial, NamespaceKind};
         let t = task();
-        t.creds.cap_effective.store(0, Ordering::Release);
+        t.security.creds.cap_effective.store(0, Ordering::Release);
         t.set_rlimit(rlim::CORE, (4096, 4096));
         let init_user = initial(NamespaceKind::User);
         let inner = allocate(NamespaceKind::User, init_user.clone(), Some(init_user)).unwrap();

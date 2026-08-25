@@ -113,9 +113,9 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) -> i64 
                 let cur = sched::live::current();
                 let (vpid, euid) = match &cur {
                     Some(c) => {
-                        let v = c.vtgid.load(Ordering::Acquire);
+                        let v = c.security.vtgid.load(Ordering::Acquire);
                         let vpid = if v != 0 { v } else { c.tgid.load(Ordering::Acquire) };
-                        (vpid as u64, c.creds.euid.load(Ordering::Acquire) as u64)
+                        (vpid as u64, c.security.creds.euid.load(Ordering::Acquire) as u64)
                     }
                     None => (0, 0),
                 };

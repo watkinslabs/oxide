@@ -38,7 +38,7 @@ pub fn acct_process_current(task: &sched::Task, internal_status: i32) {
     // it: the record above is the namespace's last, and leaving the file bound
     // would keep a dead namespace's reference on the accounting filesystem.
     let own_ns = targets.first().map(|t| t.ns_id).unwrap_or(crate::acct_ns::INITIAL_PID_NS);
-    let is_ns_init = task.vtgid.load(Ordering::Acquire) == NS_INIT_VPID;
+    let is_ns_init = task.security.vtgid.load(Ordering::Acquire) == NS_INIT_VPID;
     if own_ns != crate::acct_ns::INITIAL_PID_NS && is_ns_init {
         ::fs::acct::acct_exit_ns(own_ns);
     }
@@ -86,8 +86,8 @@ fn collect(task: &sched::Task, internal_status: i32, now_ns: u64) -> AcctFacts {
     // `ac_exitcode` is the Linux wstatus form, not the raw exit() argument.
     f.exitcode = status::wait_status(internal_status) as u32;
 
-    f.uid = task.creds.ruid.load(Ordering::Acquire);
-    f.gid = task.creds.rgid.load(Ordering::Acquire);
+    f.uid = task.security.creds.ruid.load(Ordering::Acquire);
+    f.gid = task.security.creds.rgid.load(Ordering::Acquire);
     // `ac_pid` / `ac_ppid` are filled per target namespace by the writer.
 
     // Elapsed wall-clock life of the thread group.

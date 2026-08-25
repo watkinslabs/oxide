@@ -134,7 +134,7 @@ fn env_for(sock: &Arc<InetSocket>) -> SetEnv {
 
 fn net_admin(sock: &InetSocket) -> bool {
     match sched::live::current() {
-        Some(cur) => nscg::has_net_admin_for(cur, &sock.net_namespace),
+        Some(cur) => nscg::has_net_admin_for(cur, &sock.security.net_namespace),
         None => false,
     }
 }

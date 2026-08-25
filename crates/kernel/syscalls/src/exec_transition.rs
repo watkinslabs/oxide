@@ -18,7 +18,7 @@ use crate::exec_creds::{self, ExecContext, ExecTransition, FileCaps, TaskCreds};
 /// Linux `prepare_creds`: `bprm->cred` starts as a copy of `current_cred()`.
 /// # C: O(1)
 fn snapshot_creds(cur: &sched::Task) -> TaskCreds {
-    let c = &cur.creds;
+    let c = &cur.security.creds;
     TaskCreds {
         ruid: c.ruid.load(Ordering::Acquire), euid: c.euid.load(Ordering::Acquire),
         suid: c.suid.load(Ordering::Acquire), fsuid: c.fsuid.load(Ordering::Acquire),
@@ -61,7 +61,7 @@ fn ptracer_capable(cur: &sched::Task) -> bool {
     let tracer = cur.traced_by.load(Ordering::Acquire);
     if tracer == 0 { return true; }
     match sched::live::registry::lookup(tracer) {
-        Some(t) => t.creds.has_cap(sched::cap::SYS_PTRACE),
+        Some(t) => t.security.creds.has_cap(sched::cap::SYS_PTRACE),
         None => true,
     }
 }
@@ -113,7 +113,7 @@ pub(crate) fn decide(cur: &sched::Task, file: Option<&vfs::VfsPath>)
             }
         };
 
-    let groups = cur.creds.group_list();
+    let groups = cur.security.creds.group_list();
     let groups: &[u32] = groups.as_deref().unwrap_or(&[]);
     let cx = ExecContext {
         old,
@@ -127,7 +127,7 @@ pub(crate) fn decide(cur: &sched::Task, file: Option<&vfs::VfsPath>)
         file_caps_rootid_is_root: user_ns::has_mapping(&user_map, file_caps.rootid)
             && user_ns::to_ns(&user_map, file_caps.rootid, user_ns::OverflowId::Uid) == 0,
         file_caps,
-        no_new_privs: cur.no_new_privs.load(Ordering::Acquire),
+        no_new_privs: cur.security.no_new_privs.load(Ordering::Acquire),
         fs_shared: cur.fs_context_shared_outside_thread_group(),
         ptracer_capable: ptracer_capable(cur),
         can_setuid: old.cap_effective & (1u64 << sched::cap::SETUID) != 0,
@@ -189,7 +189,7 @@ pub(crate) fn selinux_commit(cur: &sched::Task, plan: &sched::selinux_label::Exe
 /// cannot fail — Linux commits in `begin_new_exec` for the same reason.
 /// # C: O(1)
 pub(crate) fn commit(cur: &sched::Task, t: &ExecTransition) {
-    let c = &cur.creds;
+    let c = &cur.security.creds;
     let n = &t.new;
     c.euid.store(n.euid, Ordering::Release);
     c.suid.store(n.suid, Ordering::Release);
@@ -217,14 +217,14 @@ pub(crate) fn commit(cur: &sched::Task, t: &ExecTransition) {
     // flags whose exec rule is architecture-specific (TSC trap, tagged-address
     // ABI). Owned by sched so the two arches cannot drift apart here.
     sched::exec_flush::flush_thread_flags(cur);
-    cur.dumpable.store(t.dumpable, Ordering::Release);
+    cur.security.dumpable.store(t.security.dumpable, Ordering::Release);
     // Landlock's `bprm_creds_prepare`: the layer set this EXECUTION enforced
     // is empty for a program that has just replaced the one that enforced it,
     // so its denials fall under the new-execution reporting rule rather than
     // the same-execution one. The subdomain switch survives — it was a
     // decision about the layers, not about the program that made it.
-    let ll = cur.landlock_log_state.load(Ordering::Acquire);
-    cur.landlock_log_state.store(::landlock::logging::state_after_exec(ll), Ordering::Release);
+    let ll = cur.security.landlock_log_state.load(Ordering::Acquire);
+    cur.security.landlock_log_state.store(::landlock::logging::state_after_exec(ll), Ordering::Release);
     // Linux `prepare_exec_creds`: the new image gets no thread keyring and a
     // fresh (absent) process keyring; the session keyring and any assumed
     // instantiation authority are inherited. Dropping the first two is what
@@ -232,7 +232,7 @@ pub(crate) fn commit(cur: &sched::Task, t: &ExecTransition) {
     // setuid exec, so it belongs at the credential commit — the same point the
     // euid/fsuid/capability transition above lands.
     fs::keyring::exec_keys(cur.tid, fs::keyring::process_key_identity(
-        cur.tgid.load(Ordering::Acquire), cur.vtgid.load(Ordering::Acquire)));
+        cur.tgid.load(Ordering::Acquire), cur.security.vtgid.load(Ordering::Acquire)));
 }
 
 /// Draw this exec's address randomisation (`aslr::ExecRnd`).

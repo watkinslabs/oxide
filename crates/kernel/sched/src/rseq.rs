@@ -21,12 +21,12 @@ use core::sync::atomic::Ordering;
 const ENOTSUPP: i64 = 524;
 
 fn clear_slice_grant(cur: &crate::Task) {
-    cur.rseq_slice_granted.store(false, Ordering::Release);
-    cur.rseq_slice_expires_ns.store(0, Ordering::Release);
+    cur.security.rseq_slice_granted.store(false, Ordering::Release);
+    cur.security.rseq_slice_expires_ns.store(0, Ordering::Release);
 }
 
 fn clear_slice_ctrl(cur: &crate::Task) {
-    let ptr = cur.rseq_ptr.load(Ordering::Acquire);
+    let ptr = cur.security.rseq_ptr.load(Ordering::Acquire);
     if ptr != 0 && uaccess::put_u32(ptr + abi::RSEQ_OFF_SLICE_CTRL, 0).is_err() {
         exit::registration_died(cur);
     }
@@ -42,7 +42,7 @@ fn clear_slice_ctrl(cur: &crate::Task) {
 /// # Ctx: IRQ
 pub fn force_fixup() {
     let Some(cur) = crate::live::current() else { return };
-    cur.rseq_force_fixup.store(true, Ordering::Release);
+    cur.security.rseq_force_fixup.store(true, Ordering::Release);
 }
 
 /// Read-and-clear the forced-fixup latch. The return-to-user path must call
@@ -51,7 +51,7 @@ pub fn force_fixup() {
 /// # C: O(1)
 /// # Ctx: return-to-user
 pub fn take_force_fixup() -> bool {
-    crate::live::current().is_some_and(|c| c.rseq_force_fixup.swap(false, Ordering::AcqRel))
+    crate::live::current().is_some_and(|c| c.security.rseq_force_fixup.swap(false, Ordering::AcqRel))
 }
 
 /// Revoke an active grant before every syscall body.  In particular, the
@@ -60,11 +60,11 @@ pub fn take_force_fixup() -> bool {
 /// # Ctx: syscall entry
 pub fn slice_syscall_enter(nr: u64) {
     let Some(cur) = crate::live::current() else { return };
-    if !cur.rseq_slice_granted.load(Ordering::Acquire) { return; }
+    if !cur.security.rseq_slice_granted.load(Ordering::Acquire) { return; }
     clear_slice_grant(cur);
     clear_slice_ctrl(cur);
     if nr == syscall::nrs::NR_RSEQ_SLICE_YIELD {
-        cur.rseq_slice_yielded.store(true, Ordering::Release);
+        cur.security.rseq_slice_yielded.store(true, Ordering::Release);
     }
     crate::preempt::set_need_resched();
     crate::timers::reprogram_local();
@@ -75,8 +75,8 @@ pub fn slice_syscall_enter(nr: u64) {
 /// # C: O(1)
 pub fn slice_deadline() -> u64 {
     let Some(cur) = crate::live::current() else { return u64::MAX };
-    if cur.rseq_slice_granted.load(Ordering::Acquire) {
-        cur.rseq_slice_expires_ns.load(Ordering::Acquire)
+    if cur.security.rseq_slice_granted.load(Ordering::Acquire) {
+        cur.security.rseq_slice_expires_ns.load(Ordering::Acquire)
     } else { u64::MAX }
 }
 
@@ -86,8 +86,8 @@ pub fn slice_deadline() -> u64 {
 /// # Ctx: timer IRQ
 pub fn slice_timer_expired() {
     let Some(cur) = crate::live::current() else { return };
-    if !cur.rseq_slice_granted.load(Ordering::Acquire) { return; }
-    let expiry = cur.rseq_slice_expires_ns.load(Ordering::Acquire);
+    if !cur.security.rseq_slice_granted.load(Ordering::Acquire) { return; }
+    let expiry = cur.security.rseq_slice_expires_ns.load(Ordering::Acquire);
     if expiry != 0 && timekeeper::monotonic_ns() >= expiry {
         crate::preempt::set_need_resched();
     }
@@ -103,16 +103,16 @@ pub fn try_grant_slice(from_irq: bool, blocked: bool) -> bool {
     let Some(cur) = crate::live::current() else { return false };
     // Any reschedule that reaches this point consumes a prior grant.  It must
     // not survive a context switch (nor a same-task schedule decision).
-    if cur.rseq_slice_granted.load(Ordering::Acquire) {
+    if cur.security.rseq_slice_granted.load(Ordering::Acquire) {
         clear_slice_grant(cur);
         clear_slice_ctrl(cur);
         crate::timers::reprogram_local();
         return false;
     }
-    if !cur.rseq_slice_enabled.load(Ordering::Acquire)
-        || !abi::is_v2(cur.rseq_len.load(Ordering::Acquire))
+    if !cur.security.rseq_slice_enabled.load(Ordering::Acquire)
+        || !abi::is_v2(cur.security.rseq_len.load(Ordering::Acquire))
     { return false; }
-    let ptr = cur.rseq_ptr.load(Ordering::Acquire);
+    let ptr = cur.security.rseq_ptr.load(Ordering::Acquire);
     if ptr == 0 { return false; }
     let ctrl = match uaccess::get_u32(ptr + abi::RSEQ_OFF_SLICE_CTRL) {
         Ok(ctrl) => ctrl,
@@ -122,8 +122,8 @@ pub fn try_grant_slice(from_irq: bool, blocked: bool) -> bool {
     if uaccess::put_u32(ptr + abi::RSEQ_OFF_SLICE_CTRL, next).is_err() {
         exit::registration_died(cur);
     }
-    cur.rseq_slice_granted.store(true, Ordering::Release);
-    cur.rseq_slice_expires_ns.store(
+    cur.security.rseq_slice_granted.store(true, Ordering::Release);
+    cur.security.rseq_slice_expires_ns.store(
         crate::rseq_slice::grant_deadline(timekeeper::monotonic_ns()), Ordering::Release);
     crate::timers::reprogram_local();
     true
@@ -133,18 +133,18 @@ pub fn try_grant_slice(from_irq: bool, blocked: bool) -> bool {
 pub fn slice_extension_prctl(cur: &crate::Task, req: crate::prctl::rseq_slice::Request) -> i64 {
     match req {
         crate::prctl::rseq_slice::Request::Get =>
-            cur.rseq_slice_enabled.load(Ordering::Acquire) as i64,
+            cur.security.rseq_slice_enabled.load(Ordering::Acquire) as i64,
         crate::prctl::rseq_slice::Request::Set(enable) => {
-            let ptr = cur.rseq_ptr.load(Ordering::Acquire);
+            let ptr = cur.security.rseq_ptr.load(Ordering::Acquire);
             if ptr == 0 { return -(syscall::errno::Errno::Enxio.as_i32() as i64); }
-            if !abi::is_v2(cur.rseq_len.load(Ordering::Acquire)) { return -ENOTSUPP; }
-            if enable == cur.rseq_slice_enabled.load(Ordering::Acquire) { return 0; }
+            if !abi::is_v2(cur.security.rseq_len.load(Ordering::Acquire)) { return -ENOTSUPP; }
+            if enable == cur.security.rseq_slice_enabled.load(Ordering::Acquire) { return 0; }
             let old = match uaccess::get_u32(ptr + abi::RSEQ_OFF_FLAGS) {
                 Ok(v) => v,
                 Err(_) => exit::registration_died(cur),
             };
             let required = abi::RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE
-                | if cur.rseq_slice_enabled.load(Ordering::Acquire) {
+                | if cur.security.rseq_slice_enabled.load(Ordering::Acquire) {
                     abi::RSEQ_CS_FLAG_SLICE_EXT_ENABLED
                 } else { 0 };
             if old & required != required { exit::registration_died(cur); }
@@ -153,7 +153,7 @@ pub fn slice_extension_prctl(cur: &crate::Task, req: crate::prctl::rseq_slice::R
             if uaccess::put_u32(ptr + abi::RSEQ_OFF_FLAGS, next).is_err() {
                 exit::registration_died(cur);
             }
-            cur.rseq_slice_enabled.store(enable, Ordering::Release);
+            cur.security.rseq_slice_enabled.store(enable, Ordering::Release);
             0
         }
     }
@@ -162,12 +162,12 @@ pub fn slice_extension_prctl(cur: &crate::Task, req: crate::prctl::rseq_slice::R
 /// This thread's live registration as `syscall::rseq::decide` sees it.
 /// `None` once the ptr slot is clear. # C: O(1)
 fn registration(cur: &crate::Task) -> Option<abi::Registration> {
-    let ptr = cur.rseq_ptr.load(Ordering::Acquire);
+    let ptr = cur.security.rseq_ptr.load(Ordering::Acquire);
     if ptr == 0 { return None; }
     Some(abi::Registration {
         ptr,
-        len: cur.rseq_len.load(Ordering::Acquire),
-        sig: cur.rseq_sig.load(Ordering::Acquire),
+        len: cur.security.rseq_len.load(Ordering::Acquire),
+        sig: cur.security.rseq_sig.load(Ordering::Acquire),
     })
 }
 
@@ -204,14 +204,14 @@ pub fn sys_rseq(args: &SyscallArgs) -> i64 {
             // thread still reading its stale TLS copy sees a value it must
             // treat as invalid rather than a plausible cpu number.
             if !uaccess::reset_ids(ptr) { return -(Errno::Efault.as_i32() as i64); }
-            cur.rseq_ptr.store(0, Ordering::Release);
-            cur.rseq_len.store(0, Ordering::Release);
-            cur.rseq_sig.store(0, Ordering::Release);
-            cur.rseq_ids.store(exit::IDS_UNSET, Ordering::Release);
-            cur.rseq_slice_enabled.store(false, Ordering::Release);
-            cur.rseq_slice_granted.store(false, Ordering::Release);
-            cur.rseq_slice_expires_ns.store(0, Ordering::Release);
-            cur.rseq_slice_yielded.store(false, Ordering::Release);
+            cur.security.rseq_ptr.store(0, Ordering::Release);
+            cur.security.rseq_len.store(0, Ordering::Release);
+            cur.security.rseq_sig.store(0, Ordering::Release);
+            cur.security.rseq_ids.store(exit::IDS_UNSET, Ordering::Release);
+            cur.security.rseq_slice_enabled.store(false, Ordering::Release);
+            cur.security.rseq_slice_granted.store(false, Ordering::Release);
+            cur.security.rseq_slice_expires_ns.store(0, Ordering::Release);
+            cur.security.rseq_slice_yielded.store(false, Ordering::Release);
             0
         }
         abi::RseqAction::Register => {
@@ -222,16 +222,16 @@ pub fn sys_rseq(args: &SyscallArgs) -> i64 {
             // The kernel only ever writes the first `ORIG_RSEQ_SIZE` bytes,
             // so that is the span that must be mapped and writable.
             if !uaccess::init_area(ptr, len, flags) { return -(Errno::Efault.as_i32() as i64); }
-            cur.rseq_ptr.store(ptr, Ordering::Release);
-            cur.rseq_len.store(len, Ordering::Release);
-            cur.rseq_sig.store(sig, Ordering::Release);
-            cur.rseq_ids.store(exit::IDS_UNSET, Ordering::Release);
-            cur.rseq_slice_enabled.store(
+            cur.security.rseq_ptr.store(ptr, Ordering::Release);
+            cur.security.rseq_len.store(len, Ordering::Release);
+            cur.security.rseq_sig.store(sig, Ordering::Release);
+            cur.security.rseq_ids.store(exit::IDS_UNSET, Ordering::Release);
+            cur.security.rseq_slice_enabled.store(
                 abi::is_v2(len) && flags & abi::RSEQ_FLAG_SLICE_EXT_DEFAULT_ON != 0,
                 Ordering::Release);
-            cur.rseq_slice_granted.store(false, Ordering::Release);
-            cur.rseq_slice_expires_ns.store(0, Ordering::Release);
-            cur.rseq_slice_yielded.store(false, Ordering::Release);
+            cur.security.rseq_slice_granted.store(false, Ordering::Release);
+            cur.security.rseq_slice_expires_ns.store(0, Ordering::Release);
+            cur.security.rseq_slice_yielded.store(false, Ordering::Release);
             // Linux `rseq_force_update()`: publish the real ids before the
             // syscall returns so the first critical section already sees a
             // usable `cpu_id`.

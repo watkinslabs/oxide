@@ -20,7 +20,7 @@ pub use crate::pi_prio::{PI_NOT_BOOSTED, base_class, is_boosted};
 /// # C: O(N_cpus · log N)
 pub fn set_base_class(task: &Arc<Task>, new: SchedClass) {
     if !is_boosted(task) { super::runqueue::set_class(task, new); return; }
-    task.pi_base_class.store(new.encode(), Ordering::Release);
+    task.security.pi_base_class.store(new.encode(), Ordering::Release);
     // Re-derive the boost against the new base: a base raised ABOVE the
     // inherited class must take effect now, or the task runs below the
     // priority userspace just asked for.
@@ -41,7 +41,7 @@ pub fn apply_boost(task: &Arc<Task>, waiters: &[SchedClass]) {
             // Save the base on the FIRST boost only; a re-boost must not
             // record the already-inherited class as the base, which would
             // make the elevation permanent.
-            let _ = task.pi_base_class.compare_exchange(
+            let _ = task.security.pi_base_class.compare_exchange(
                 PI_NOT_BOOSTED, base.encode(), Ordering::AcqRel, Ordering::Acquire);
             if task.sched_class() != boosted { super::runqueue::set_class(task, boosted); }
         }
@@ -52,7 +52,7 @@ pub fn apply_boost(task: &Arc<Task>, waiters: &[SchedClass]) {
 /// Drop any PI boost and return `task` to its base class.
 /// # C: O(N_cpus · log N)
 pub fn deboost(task: &Arc<Task>) {
-    let saved = task.pi_base_class.swap(PI_NOT_BOOSTED, Ordering::AcqRel);
+    let saved = task.security.pi_base_class.swap(PI_NOT_BOOSTED, Ordering::AcqRel);
     if saved == PI_NOT_BOOSTED { return; }
     let base = SchedClass::decode(saved);
     if task.sched_class() != base { super::runqueue::set_class(task, base); }

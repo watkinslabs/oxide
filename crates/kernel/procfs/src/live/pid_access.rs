@@ -35,9 +35,9 @@ fn stamp_owner(tid: u32, inode: &InodeRef, is_pid_dir: bool) {
     let Some(task) = sched::live::registry::lookup(tid) else { return };
     let (uid, gid) = dump_owner(
         task.clone_mm().is_none(),
-        task.creds.euid.load(Ordering::Acquire),
-        task.creds.egid.load(Ordering::Acquire),
-        task.dumpable.load(Ordering::Acquire),
+        task.security.creds.euid.load(Ordering::Acquire),
+        task.security.creds.egid.load(Ordering::Acquire),
+        task.security.dumpable.load(Ordering::Acquire),
         is_pid_dir,
     );
     let _ = inode.set_owner(uid, gid);
@@ -102,8 +102,8 @@ pub(crate) fn pid_visible(info: &crate::fs_info::ProcFsInfo, tid: u32,
                           min: crate::fs_info::HidePid) -> bool {
     if info.hide_pid == crate::fs_info::HidePid::Off { return true; }
     let in_group = match (info.pid_gid, sched::live::current()) {
-        (Some(g), Some(cur)) => cur.creds.egid.load(core::sync::atomic::Ordering::Acquire) == g
-            || cur.creds.group_list().is_some_and(|l| l.contains(&g)),
+        (Some(g), Some(cur)) => cur.security.creds.egid.load(core::sync::atomic::Ordering::Acquire) == g
+            || cur.security.creds.group_list().is_some_and(|l| l.contains(&g)),
         _ => false,
     };
     crate::fs_info::has_pid_permissions(info, min, in_group, ptrace_may_access(tid).is_ok())

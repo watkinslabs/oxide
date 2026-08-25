@@ -94,7 +94,7 @@ fn current_has_cap(cap: u32) -> bool {
 /// `current_euid()` — the ucount key a group's instance/mark charges are held
 /// against. # C: O(1)
 fn current_euid() -> u32 {
-    sched::current().map(|c| c.creds.euid.load(Ordering::Acquire)).unwrap_or(0)
+    sched::current().map(|c| c.security.creds.euid.load(Ordering::Acquire)).unwrap_or(0)
 }
 
 /// `sys_fanotify_init(flags, event_f_flags)`. Allocates a fanotify GROUP fd

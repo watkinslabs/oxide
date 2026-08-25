@@ -128,7 +128,7 @@ fn dump_tasks_emit() {
         }
     };
     for t in tasks.iter() {
-        let vpid = t.vtgid.load(Ordering::Relaxed);
+        let vpid = t.security.vtgid.load(Ordering::Relaxed);
         col_dec(if vpid != 0 { vpid as u64 } else { t.tid as u64 }, 5);
         klog::write_raw(b" ");
         col_dec(t.tid as u64, 6);
@@ -160,7 +160,7 @@ fn dump_tasks_emit() {
         klog::write_raw(b" ");
         col_dec(t.sum_exec_runtime_ns.load(Ordering::Relaxed) / 1_000_000, 10);
         klog::write_raw(b" tgid="); col_dec(t.tgid.load(Ordering::Relaxed) as u64, 6);
-        klog::write_raw(b" vtid="); col_dec(t.vtid.load(Ordering::Relaxed) as u64, 6);
+        klog::write_raw(b" vtid="); col_dec(t.security.vtid.load(Ordering::Relaxed) as u64, 6);
         klog::write_raw(b" ptid="); col_dec(t.parent_tid.load(Ordering::Relaxed) as u64, 6);
         let fux = t.futex_uaddr.load(Ordering::Relaxed);
         if fux != 0 { klog::write_raw(b" fux="); klog::write_hex_u64(fux); }

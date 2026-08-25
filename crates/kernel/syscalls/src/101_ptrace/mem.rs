@@ -147,7 +147,7 @@ pub fn fpregs_out(target: &Task, data: u64, n: usize) -> Result<(), Errno> {
     }
     // SAFETY: the tracee is ptrace-stopped, so its fpu_state cannot be torn by a concurrent ctxsw fpu_save; `n` is the regset size and is inside that allocation; the copy itself recovers a user fault through the exception table.
     let left = unsafe {
-        let src = (*target.fpu_state.get()).as_ptr();
+        let src = (*target.security.fpu_state.get()).as_ptr();
         uaccess::raw_copy_to_user(data, src, n)
     };
     if left != 0 { return Err(Errno::Efault); }
@@ -165,10 +165,10 @@ pub fn fpregs_in(target: &Task, data: u64, n: usize) -> Result<(), Errno> {
     // not read, which here is the TRACEE's live FPU state. A fault leaves the
     // prefix it did manage, as `user_regset_copyin` does, and reports EFAULT.
     let left = unsafe {
-        let dst = (*target.fpu_state.get()).as_mut_ptr();
+        let dst = (*target.security.fpu_state.get()).as_mut_ptr();
         uaccess::raw_copy_from_user(dst, data, n)
     };
-    target.ptrace_fpu_dirty.store(true, Ordering::Release);
+    target.security.ptrace_fpu_dirty.store(true, Ordering::Release);
     if left != 0 { return Err(Errno::Efault); }
     Ok(())
 }

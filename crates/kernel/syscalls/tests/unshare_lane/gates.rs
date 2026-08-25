@@ -15,7 +15,7 @@ fn sys_unshare_namespace_flags_require_cap_sys_admin() {
     let _guard = guard();
     let current = install_current(915);
     let before = current.namespace_snapshot().unwrap();
-    current.creds.cap_effective.store(0, Ordering::Release);
+    current.security.creds.cap_effective.store(0, Ordering::Release);
 
     for flag in [CLONE_NEWNS, CLONE_NEWUTS, CLONE_NEWIPC, CLONE_NEWPID,
         CLONE_NEWCGROUP, CLONE_NEWTIME]
@@ -33,7 +33,7 @@ fn sys_unshare_newuser_alone_needs_no_cap_sys_admin() {
     let _guard = guard();
     let current = install_current(916);
     let before = current.namespace_snapshot().unwrap();
-    current.creds.cap_effective.store(0, Ordering::Release);
+    current.security.creds.cap_effective.store(0, Ordering::Release);
 
     assert_eq!(s272_unshare::sys_unshare(&args(CLONE_NEWUSER)), 0);
     assert!(!NamespaceRef::ptr_eq(&before.user,
@@ -52,8 +52,8 @@ fn rootless_unshare_of_a_user_namespace_carries_the_rest_of_the_set() {
     let _guard = guard();
     let current = install_current(918);
     let before = current.namespace_snapshot().unwrap();
-    current.creds.cap_effective.store(0, Ordering::Release);
-    current.creds.euid.store(1000, Ordering::Release);
+    current.security.creds.cap_effective.store(0, Ordering::Release);
+    current.security.creds.euid.store(1000, Ordering::Release);
 
     assert_eq!(s272_unshare::sys_unshare(&args(CLONE_NEWUSER | CLONE_NEWNS)), 0,
         "the creator of the new user namespace is privileged inside it");
@@ -64,12 +64,12 @@ fn rootless_unshare_of_a_user_namespace_carries_the_rest_of_the_set() {
 
     // Linux `set_cred_user_ns`: init's capabilities, scoped to the new
     // namespace. Without them the very next in-namespace operation is EPERM.
-    assert_eq!(current.creds.cap_effective.load(Ordering::Acquire),
+    assert_eq!(current.security.creds.cap_effective.load(Ordering::Acquire),
         sched::task::Creds::CAP_FULL);
-    assert_eq!(current.creds.cap_bounding.load(Ordering::Acquire),
+    assert_eq!(current.security.creds.cap_bounding.load(Ordering::Acquire),
         sched::task::Creds::CAP_FULL);
-    assert_eq!(current.creds.cap_inheritable.load(Ordering::Acquire), 0);
-    assert_eq!(current.creds.cap_ambient.load(Ordering::Acquire), 0,
+    assert_eq!(current.security.creds.cap_inheritable.load(Ordering::Acquire), 0);
+    assert_eq!(current.security.creds.cap_ambient.load(Ordering::Acquire), 0,
         "an ambient set carried in from outside would survive an execve");
 }
 
@@ -81,13 +81,13 @@ fn a_namespace_flag_without_newuser_is_still_refused() {
     let _guard = guard();
     let current = install_current(919);
     let before = current.namespace_snapshot().unwrap();
-    current.creds.cap_effective.store(0, Ordering::Release);
-    current.creds.euid.store(1000, Ordering::Release);
+    current.security.creds.cap_effective.store(0, Ordering::Release);
+    current.security.creds.euid.store(1000, Ordering::Release);
 
     assert_eq!(s272_unshare::sys_unshare(&args(CLONE_NEWNS)),
         -(Errno::Eperm.as_i32() as i64));
     assert_same_set(&before, &current.namespace_snapshot().unwrap());
-    assert_eq!(current.creds.cap_effective.load(Ordering::Acquire), 0,
+    assert_eq!(current.security.creds.cap_effective.load(Ordering::Acquire), 0,
         "a refused unshare grants nothing");
 }
 
@@ -97,7 +97,7 @@ fn a_namespace_flag_without_newuser_is_still_refused() {
 fn sys_unshare_files_and_fs_need_no_capability() {
     let _guard = guard();
     let current = install_current(917);
-    current.creds.cap_effective.store(0, Ordering::Release);
+    current.security.creds.cap_effective.store(0, Ordering::Release);
 
     assert_eq!(s272_unshare::sys_unshare(&args(CLONE_FILES)), 0);
     assert_eq!(s272_unshare::sys_unshare(&args(unshare_policy::CLONE_FS)), 0);
@@ -143,7 +143,7 @@ fn sys_unshare_detaches_the_sysvsem_undo_list() {
     // The list is reached through the TASK's handle, so each re-registration
     // below allocates a fresh one — which is itself the detach being asserted.
     let register = || {
-        let id = get_undo_list(&current.sysvsem_undo).unwrap();
+        let id = get_undo_list(&current.security.sysvsem_undo).unwrap();
         find_alloc(id, ns, SEMID, NSEMS).unwrap();
         id
     };
@@ -152,7 +152,7 @@ fn sys_unshare_detaches_the_sysvsem_undo_list() {
     assert!(has_entry(id, ns, SEMID));
     assert_eq!(s272_unshare::sys_unshare(&args(unshare_policy::CLONE_SYSVSEM)), 0);
     assert!(!has_entry(id, ns, SEMID), "CLONE_SYSVSEM is equivalent to sys_exit()");
-    assert_eq!(current.sysvsem_undo.load(Ordering::Acquire), 0,
+    assert_eq!(current.security.sysvsem_undo.load(Ordering::Acquire), 0,
         "the caller is left holding no list at all, not an emptied one");
 
     // A flag set that touches neither SYSVSEM nor NEWIPC leaves it alone.

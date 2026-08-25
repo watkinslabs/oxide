@@ -21,7 +21,7 @@ fn with_scope(s: u8) -> ScopeGuard {
 fn task(tid: u32, caps: u64) -> Task {
     let t = Task::new(tid, "yama", SchedClass::Normal { weight: 1024 });
     t.tgid.store(tid, Ordering::Release);
-    t.creds.cap_effective.store(caps, Ordering::Release);
+    t.security.creds.cap_effective.store(caps, Ordering::Release);
     t
 }
 

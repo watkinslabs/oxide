@@ -336,9 +336,9 @@ fn resume_group(t: &Task) {
     let tgid = t.tgid.load(Ordering::Acquire);
     for (_vtid, tid) in crate::registry::thread_entries(tgid) {
         let Some(m) = super::registry::lookup(tid) else { continue };
-        m.jobctl.store(crate::jobctl::clear_pending(m.jobctl.load(Ordering::Acquire),
+        m.security.jobctl.store(crate::jobctl::clear_pending(m.security.jobctl.load(Ordering::Acquire),
                                                     crate::jobctl::STOP_PENDING), Ordering::Release);
-        if m.ptrace_seized.load(Ordering::Acquire) { trap_notify(&m); continue; }
+        if m.security.ptrace_seized.load(Ordering::Acquire) { trap_notify(&m); continue; }
         super::registry::wake_if_stopped(&m, crate::jobctl::WakeKind::Cont);
     }
 }
@@ -349,7 +349,7 @@ fn resume_group(t: &Task) {
 /// tracer will see the latch when it resumes it.
 /// # C: O(1)
 fn trap_notify(t: &Arc<Task>) {
-    let (new, wake) = crate::jobctl::trap_notify(t.jobctl.load(Ordering::Acquire));
-    t.jobctl.store(new, Ordering::Release);
+    let (new, wake) = crate::jobctl::trap_notify(t.security.jobctl.load(Ordering::Acquire));
+    t.security.jobctl.store(new, Ordering::Release);
     if wake { super::registry::wake_if_stopped(t, crate::jobctl::WakeKind::Cont); }
 }

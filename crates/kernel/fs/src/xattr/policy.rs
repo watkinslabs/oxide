@@ -73,10 +73,10 @@ impl XattrCred {
 /// # C: O(1)
 pub fn current_xattr_cred() -> XattrCred {
     let Some(c) = sched::current() else { return XattrCred::root(); };
-    let effective = c.creds.cap_effective.load(Ordering::Acquire);
+    let effective = c.security.creds.cap_effective.load(Ordering::Acquire);
     XattrCred {
-        cred: c.creds.to_vfs_cred(c.creds.fsuid.load(Ordering::Acquire),
-                                  c.creds.fsgid.load(Ordering::Acquire), effective),
+        cred: c.security.creds.to_vfs_cred(c.security.creds.fsuid.load(Ordering::Acquire),
+                                  c.security.creds.fsgid.load(Ordering::Acquire), effective),
         sys_admin: c.has_cap(sched::cap::SYS_ADMIN),
         setfcap:   c.has_cap(sched::cap::SETFCAP),
     }

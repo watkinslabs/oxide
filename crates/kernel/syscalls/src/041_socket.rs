@@ -54,7 +54,7 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
         Some(namespace) => namespace,
         None => return -(Errno::Esrch.as_i32() as i64),
     };
-    let opener_caps = cur.creds.cap_effective.load(core::sync::atomic::Ordering::Acquire);
+    let opener_caps = cur.security.creds.cap_effective.load(core::sync::atomic::Ordering::Acquire);
     let env = net::socket_create::CreateEnv {
         namespace: net_namespace.id().as_u64(),
         has_net_raw: nscg::has_net_raw_for(cur, &net_namespace),
@@ -62,8 +62,8 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
         vsock_seqpacket_ready: net::vsock::driver_supports_seqpacket(),
     };
     let admitted = || {
-        let egid = cur.creds.egid.load(core::sync::atomic::Ordering::Acquire);
-        let groups = cur.creds.group_list();
+        let egid = cur.security.creds.egid.load(core::sync::atomic::Ordering::Acquire);
+        let groups = cur.security.creds.group_list();
         let supplementary: &[u32] = groups.as_ref().map_or(&[], |list| &list[..]);
         net::ping::admits(&net_namespace, net::ping::CallerGroups { egid, supplementary })
     };

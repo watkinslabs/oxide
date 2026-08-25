@@ -68,8 +68,8 @@ pub fn switch_to(prev: &Task, next: &Task) {
     #[cfg(target_arch = "aarch64")]
     {
     if !supported() && !fake::active() { return; }
-    prev.pkey_rights.store(read_live(), Ordering::Relaxed);
-    write_live(next.pkey_rights.load(Ordering::Relaxed));
+    prev.security.pkey_rights.store(read_live(), Ordering::Relaxed);
+    write_live(next.security.pkey_rights.load(Ordering::Relaxed));
     }
     #[cfg(not(target_arch = "aarch64"))]
     { let _ = (prev, next); }
@@ -82,7 +82,7 @@ pub fn reset_on_exec(task: &Task) {
     #[cfg(target_arch = "aarch64")]
     {
     let init = init_value();
-    task.pkey_rights.store(init, Ordering::Relaxed);
+    task.security.pkey_rights.store(init, Ordering::Relaxed);
     write_live(init);
     }
     #[cfg(target_arch = "x86_64")]
@@ -90,7 +90,7 @@ pub fn reset_on_exec(task: &Task) {
         // SAFETY: exec resets its running task before user return; no other
         // CPU may access this task's single-mutator xstate buffer.
         unsafe {
-            let fpu = &mut *task.fpu_state.get();
+            let fpu = &mut *task.security.fpu_state.get();
             fpu.reset_initial();
             hal_x86_64::fpu_restore(fpu.as_ptr() as *const hal_x86_64::FpuStateX86_64);
         }

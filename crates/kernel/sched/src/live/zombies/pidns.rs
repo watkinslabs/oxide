@@ -52,7 +52,7 @@ pub fn pid_namespace_chain(task: &Task) -> alloc::vec::Vec<u64> {
 /// would reap them.
 /// # C: O(1)
 pub fn is_namespace_init(task: &Task) -> bool {
-    task.vtgid.load(core::sync::atomic::Ordering::Acquire) == 1
+    task.security.vtgid.load(core::sync::atomic::Ordering::Acquire) == 1
 }
 
 /// Whether `task` lives in the INITIAL pid namespace — the qualifier that
@@ -71,7 +71,7 @@ pub fn namespace_child_reaper(task: &Task) -> Option<Arc<Task>> {
     let mut fallback = None;
     for tid in registry::live_tids() {
         let Some(t) = registry::lookup(tid) else { continue };
-        if t.vtgid.load(Ordering::Acquire) != INIT_VPID { continue; }
+        if t.security.vtgid.load(Ordering::Acquire) != INIT_VPID { continue; }
         if t.tid != t.tgid.load(Ordering::Acquire) { continue; }
         if pid_namespace_id(&t) == ns { return Some(t); }
         if fallback.is_none() && in_initial_pid_namespace(&t) { fallback = Some(t); }
@@ -92,7 +92,7 @@ pub fn initial_init_task() -> Option<Arc<Task>> {
         let Some(t) = registry::lookup(tid) else { continue };
         let tgid = t.tgid.load(Ordering::Acquire);
         if t.tid != tgid { continue; }
-        let vtgid = t.vtgid.load(Ordering::Acquire);
+        let vtgid = t.security.vtgid.load(Ordering::Acquire);
         let visible = if vtgid != 0 { vtgid } else { tgid };
         if visible != INIT_VPID { continue; }
         if in_initial_pid_namespace(&t) { return Some(t); }

@@ -104,7 +104,7 @@ fn caps_for(socket: &net::vsock_socket::VsockSocket) -> net::sock_opts::sol_sock
     let Some(cur) = sched::live::current() else {
         return net::sock_opts::sol_socket::OptCaps::default();
     };
-    let namespace = &socket.net_namespace;
+    let namespace = &socket.security.net_namespace;
     net::sock_opts::sol_socket::OptCaps {
         net_admin: nscg::has_net_admin_for(cur, namespace),
         net_raw: nscg::has_net_raw_for(cur, namespace),

@@ -35,13 +35,13 @@ fn put_user_u64(ptr: u64, v: u64) -> i64 {
 /// never torn. `reparent_children` reads it with the same atomic.
 /// # C: O(1)
 pub fn set_pdeathsig(cur: &Task, sig: u32) -> i64 {
-    cur.pdeathsig.store(sig, Ordering::Release);
+    cur.security.pdeathsig.store(sig, Ordering::Release);
     0
 }
 
 /// `PR_GET_PDEATHSIG`. # C: O(1)
 pub fn get_pdeathsig(cur: &Task, ptr: u64) -> i64 {
-    put_user_i32(ptr, cur.pdeathsig.load(Ordering::Acquire) as i32)
+    put_user_i32(ptr, cur.security.pdeathsig.load(Ordering::Acquire) as i32)
 }
 
 /// `PR_SET_CHILD_SUBREAPER` — Linux `me->signal->is_child_subreaper = !!arg2`.
@@ -68,13 +68,13 @@ pub fn get_child_subreaper(cur: &Task, ptr: u64) -> i64 {
 /// is what makes the bit mean something rather than merely round-trip.
 /// # C: O(1)
 pub fn set_no_new_privs(cur: &Task) -> i64 {
-    cur.no_new_privs.store(true, Ordering::Release);
+    cur.security.no_new_privs.store(true, Ordering::Release);
     0
 }
 
 /// `PR_GET_NO_NEW_PRIVS` — returns the flag as the syscall VALUE. # C: O(1)
 pub fn get_no_new_privs(cur: &Task) -> i64 {
-    cur.no_new_privs.load(Ordering::Acquire) as i64
+    cur.security.no_new_privs.load(Ordering::Acquire) as i64
 }
 
 /// `PR_SET_TIMERSLACK` — Linux skips RT and deadline tasks entirely
@@ -84,14 +84,14 @@ pub fn get_no_new_privs(cur: &Task) -> i64 {
 /// # C: O(1)
 pub fn set_timerslack(cur: &Task, ns: u64) -> i64 {
     if cur.is_rt_or_dl_policy() { return 0; }
-    let v = if ns == 0 { cur.default_timer_slack_ns.load(Ordering::Acquire) } else { ns };
-    cur.timer_slack_ns.store(v, Ordering::Release);
+    let v = if ns == 0 { cur.security.default_timer_slack_ns.load(Ordering::Acquire) } else { ns };
+    cur.security.timer_slack_ns.store(v, Ordering::Release);
     0
 }
 
 /// `PR_GET_TIMERSLACK` — returns the value, not 0. # C: O(1)
 pub fn get_timerslack(cur: &Task) -> i64 {
-    cur.timer_slack_ns.load(Ordering::Acquire) as i64
+    cur.security.timer_slack_ns.load(Ordering::Acquire) as i64
 }
 
 /// `PR_SET_THP_DISABLE` — Linux keeps two mutually exclusive `mm` flags;
@@ -100,31 +100,31 @@ pub fn set_thp_disable(cur: &Task, disable: bool, except_advised: bool) -> i64 {
     let state = if !disable { crate::task::THP_DISABLE_OFF }
         else if except_advised { crate::task::THP_DISABLE_EXCEPT_ADVISED }
         else { crate::task::THP_DISABLE_COMPLETELY };
-    cur.thp_disable.store(state, Ordering::Release);
+    cur.security.thp_disable.store(state, Ordering::Release);
     0
 }
 
 /// `PR_GET_THP_DISABLE`. # C: O(1)
 pub fn get_thp_disable(cur: &Task) -> i64 {
-    decide::thp_disable_report(cur.thp_disable.load(Ordering::Acquire))
+    decide::thp_disable_report(cur.security.thp_disable.load(Ordering::Acquire))
 }
 
 /// `PR_MCE_KILL(PR_MCE_KILL_CLEAR)` — `current->flags &= ~PF_MCE_PROCESS`.
 /// # C: O(1)
 pub fn mce_kill_clear(cur: &Task) -> i64 {
-    cur.mce_kill.fetch_and(!crate::task::MCE_KILL_PROCESS, Ordering::AcqRel);
+    cur.security.mce_kill.fetch_and(!crate::task::MCE_KILL_PROCESS, Ordering::AcqRel);
     0
 }
 
 /// `PR_MCE_KILL(PR_MCE_KILL_SET, policy)`. # C: O(1)
 pub fn mce_kill_set(cur: &Task, policy: u64) -> i64 {
-    cur.mce_kill.store(decide::mce_kill_apply(policy), Ordering::Release);
+    cur.security.mce_kill.store(decide::mce_kill_apply(policy), Ordering::Release);
     0
 }
 
 /// `PR_MCE_KILL_GET`. # C: O(1)
 pub fn mce_kill_get(cur: &Task) -> i64 {
-    decide::mce_kill_report(cur.mce_kill.load(Ordering::Acquire))
+    decide::mce_kill_report(cur.security.mce_kill.load(Ordering::Acquire))
 }
 
 /// `PR_GET_TID_ADDRESS` — Linux `prctl_get_tid_address` writes

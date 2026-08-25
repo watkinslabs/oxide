@@ -46,7 +46,7 @@ pub fn body(tid: u32, owner: &namespace_identity::NamespaceRef) -> Vec<u8> {
     // internal tid; `ps` reads these fields and must show 1, not 0xC0DE….
     let vpid = sched::live::registry::display_vpid(tid);
     let ppid = sched::live::registry::parent_vpid(tid);
-    let c = &task.creds;
+    let c = &task.security.creds;
     let group_list = c.group_list();
     let groups: &[u32] = group_list.as_deref().unwrap_or(&[]);
     let (sig_ign, sig_cgt) = sigign_sigcatch(&task);
@@ -111,8 +111,8 @@ pub fn body(tid: u32, owner: &namespace_identity::NamespaceRef) -> Vec<u8> {
         cap_eff: c.cap_effective.load(Ordering::Acquire),
         cap_bnd: c.cap_bounding.load(Ordering::Acquire),
         cap_amb: c.cap_ambient.load(Ordering::Acquire),
-        no_new_privs: task.no_new_privs.load(Ordering::Acquire),
-        seccomp: task.seccomp_mode.load(Ordering::Acquire) as u64,
+        no_new_privs: task.security.no_new_privs.load(Ordering::Acquire),
+        seccomp: task.security.seccomp_mode.load(Ordering::Acquire) as u64,
         seccomp_filters: task.seccomp_filter_count() as u64,
         cpus_allowed: task.cpus_allowed.load(Ordering::Acquire),
         // Linux `nr_cpu_ids` — the width `%*pb` pads the mask to.

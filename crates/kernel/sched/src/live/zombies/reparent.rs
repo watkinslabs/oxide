@@ -88,7 +88,7 @@ fn subreaper_chain(dying: &Task, ns_level: u32) -> alloc::vec::Vec<(Ancestor, Ar
             ns_level: pid_ns_level(&p),
             is_child_subreaper,
             alive_thread: alive.as_ref().map(|t| t.tid),
-            is_init_task: p.vtgid.load(Ordering::Acquire) == super::pidns::INIT_VPID
+            is_init_task: p.security.vtgid.load(Ordering::Acquire) == super::pidns::INIT_VPID
                 && super::pidns::in_initial_pid_namespace(&p),
         };
         next = p.parent();
@@ -148,12 +148,12 @@ pub fn reparent_children(dying_tid: u32) {
         // names the parent that just died so an `SA_SIGINFO` handler can tell
         // which death it is reporting. The raw bit-set this replaced queued no
         // record and posted to one thread's private set.
-        let pds = t.pdeathsig.load(Ordering::Acquire);
+        let pds = t.security.pdeathsig.load(Ordering::Acquire);
         if crate::bit_for(pds as u32).is_some() {
             let src = crate::sigsend::SigSource::User {
                 // PDEATHSIG's si_pid is read by the child, in the child's ns.
                 pid: crate::registry::tgid_nr_seen_by(&dying, &t),
-                uid: dying.creds.ruid.load(Ordering::Acquire),
+                uid: dying.security.creds.ruid.load(Ordering::Acquire),
             };
             let _ = crate::live::sigpend::post_group_signal(&t, pds as u32, src);
         }

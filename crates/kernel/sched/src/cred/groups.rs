@@ -60,7 +60,7 @@ pub(crate) fn may_setgroups(cur: &Task) -> bool {
 pub(crate) fn getgroups_on(cur: &Task, args: &SyscallArgs) -> i64 {
     let size = gidsetsize(args.a0);
     if size < 0 { return einval(); }
-    let list = cur.creds.group_list();
+    let list = cur.security.creds.group_list();
     let groups: &[u32] = list.as_deref().unwrap_or(&[]);
     if size == 0 { return groups.len() as i64; }
     if groups.len() > size as usize { return einval(); }
@@ -97,7 +97,7 @@ pub(crate) fn setgroups_on(cur: &Task, args: &SyscallArgs) -> i64 {
     if size as u32 as usize > Creds::NGROUPS_MAX { return einval(); }
     let count = size as usize;
     if count == 0 {
-        cur.creds.set_group_list(None);
+        cur.security.creds.set_group_list(None);
         return 0;
     }
     let mut groups: Vec<u32> = Vec::new();
@@ -114,7 +114,7 @@ pub(crate) fn setgroups_on(cur: &Task, args: &SyscallArgs) -> i64 {
         groups.push(gid);
     }
     groups.sort_unstable();
-    cur.creds.set_group_list(Some(Arc::from(groups.as_slice())));
+    cur.security.creds.set_group_list(Some(Arc::from(groups.as_slice())));
     0
 }
 

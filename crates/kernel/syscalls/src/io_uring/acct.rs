@@ -18,7 +18,7 @@ use crate::io_uring_abi::acct::{limit_pages, pages_of, Charge, RingAcct};
 /// # C: O(1)
 pub fn of_current() -> RingAcct {
     let Some(cur) = sched::live::current() else { return RingAcct::UNCHARGED };
-    RingAcct::of(cur.has_cap(sched::cap::IPC_LOCK), cur.creds.ruid.load(Ordering::Acquire))
+    RingAcct::of(cur.has_cap(sched::cap::IPC_LOCK), cur.security.creds.ruid.load(Ordering::Acquire))
 }
 
 /// The charging task's `RLIMIT_MEMLOCK` soft limit in pages. A charge with no

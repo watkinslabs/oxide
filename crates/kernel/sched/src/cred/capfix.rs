@@ -46,7 +46,7 @@ fn is_root(id: u32, root: Option<u32>) -> bool { root == Some(id) }
 /// True when `SECBIT_NO_SETUID_FIXUP` suppresses every capability juggle.
 /// # C: O(1)
 fn fixup_suppressed(cur: &Task) -> bool {
-    cur.creds.securebits.load(Ordering::Acquire) & SECBIT_NO_SETUID_FIXUP != 0
+    cur.security.creds.securebits.load(Ordering::Acquire) & SECBIT_NO_SETUID_FIXUP != 0
 }
 
 /// Linux `cap_emulate_setxuid` — the `LSM_SETID_RE`/`ID`/`RES` juggle.
@@ -63,19 +63,19 @@ fn fixup_suppressed(cur: &Task) -> bool {
 pub(super) fn task_fix_setuid(cur: &Task, old: UidTriple, new: UidTriple, root: Option<u32>) {
     if fixup_suppressed(cur) { return; }
     if old.has_root(root) && !new.has_root(root) {
-        if cur.creds.securebits.load(Ordering::Acquire) & SECBIT_KEEP_CAPS == 0 {
-            cur.creds.cap_permitted.store(0, Ordering::Release);
-            cur.creds.cap_effective.store(0, Ordering::Release);
+        if cur.security.creds.securebits.load(Ordering::Acquire) & SECBIT_KEEP_CAPS == 0 {
+            cur.security.creds.cap_permitted.store(0, Ordering::Release);
+            cur.security.creds.cap_effective.store(0, Ordering::Release);
         }
         // Linux clears ambient on EVERY complete root-to-non-root
         // transition, `SECURE_KEEP_CAPS` included.
-        cur.creds.cap_ambient.store(0, Ordering::Release);
+        cur.security.creds.cap_ambient.store(0, Ordering::Release);
     }
     if is_root(old.e, root) && !is_root(new.e, root) {
-        cur.creds.cap_effective.store(0, Ordering::Release);
+        cur.security.creds.cap_effective.store(0, Ordering::Release);
     } else if !is_root(old.e, root) && is_root(new.e, root) {
-        let permitted = cur.creds.cap_permitted.load(Ordering::Acquire);
-        cur.creds.cap_effective.store(permitted, Ordering::Release);
+        let permitted = cur.security.creds.cap_permitted.load(Ordering::Acquire);
+        cur.security.creds.cap_effective.store(permitted, Ordering::Release);
     }
 }
 
@@ -85,11 +85,11 @@ pub(super) fn task_fix_setuid(cur: &Task, old: UidTriple, new: UidTriple, root: 
 /// # C: O(1)
 pub(super) fn task_fix_setfsuid(cur: &Task, old_fsuid: u32, new_fsuid: u32, root: Option<u32>) {
     if fixup_suppressed(cur) { return; }
-    let effective = cur.creds.cap_effective.load(Ordering::Acquire);
+    let effective = cur.security.creds.cap_effective.load(Ordering::Acquire);
     if is_root(old_fsuid, root) && !is_root(new_fsuid, root) {
-        cur.creds.cap_effective.store(effective & !FS_CAP_MASK, Ordering::Release);
+        cur.security.creds.cap_effective.store(effective & !FS_CAP_MASK, Ordering::Release);
     } else if !is_root(old_fsuid, root) && is_root(new_fsuid, root) {
-        let permitted = cur.creds.cap_permitted.load(Ordering::Acquire);
-        cur.creds.cap_effective.store(effective | (permitted & FS_CAP_MASK), Ordering::Release);
+        let permitted = cur.security.creds.cap_permitted.load(Ordering::Acquire);
+        cur.security.creds.cap_effective.store(effective | (permitted & FS_CAP_MASK), Ordering::Release);
     }
 }

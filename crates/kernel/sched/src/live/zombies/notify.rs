@@ -35,7 +35,7 @@ pub(super) fn child_exit_info(child: &Task, signo: u32, receiver: &Task)
         code,
         // Read by the RECEIVER, so numbered in the receiver's namespace.
         pid:   crate::registry::tgid_nr_seen_by(child, receiver),
-        uid:   child.creds.ruid.load(Ordering::Acquire),
+        uid:   child.security.creds.ruid.load(Ordering::Acquire),
         value: status as u64,
         sys:   None, fault: None, poll: None
     }

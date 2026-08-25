@@ -323,7 +323,7 @@ unsafe extern "C" fn oxide_irq_exit_to_user(regs: *mut hal_aarch64::SvcFrame) {
     // A slice-extension grant consumed this preemption without switching the
     // task, so its rseq critical section remains valid.
     let slice_granted = sched::live::current().is_some_and(|t|
-        t.rseq_slice_granted.load(Ordering::Acquire));
+        t.security.rseq_slice_granted.load(Ordering::Acquire));
     // `MEMBARRIER_CMD_PRIVATE_EXPEDITED_RSEQ` owes an abort on every target
     // whether or not the barrier preempted it, and a slice grant does not
     // excuse it — the barrier's whole promise is that no critical section

@@ -225,11 +225,11 @@ fn cur_ctx() -> Ctx {
                 .unwrap_or(INITIAL_USER_NS);
             let t = TaskIds {
                 tid: c.tid,
-                tgid: process_key_identity(c.tgid.load(Acquire), c.vtgid.load(Acquire)),
-                ruid: c.creds.ruid.load(Acquire),
-                fsuid: c.creds.fsuid.load(Acquire),
-                fsgid: c.creds.fsgid.load(Acquire),
-                groups: c.creds.group_list().map(|g| g.to_vec()).unwrap_or_default(),
+                tgid: process_key_identity(c.tgid.load(Acquire), c.security.vtgid.load(Acquire)),
+                ruid: c.security.creds.ruid.load(Acquire),
+                fsuid: c.security.creds.fsuid.load(Acquire),
+                fsgid: c.security.creds.fsgid.load(Acquire),
+                groups: c.security.creds.group_list().map(|g| g.to_vec()).unwrap_or_default(),
                 user_ns,
                 // Read for the domain tag, which only a network-scoped key
                 // type has; every other type indexes under the default domain
@@ -264,16 +264,16 @@ fn parent_info() -> Option<ops::ParentInfo> {
     let p = sched::current()?.parent()?;
     Some(ops::ParentInfo {
         tid: p.tid,
-        vpid: p.vtgid.load(Acquire),
+        vpid: p.security.vtgid.load(Acquire),
         // SAFETY: `mm` is read-only here through a live Arc<Task>; the pointer is only tested for presence, never dereferenced or retained.
         has_mm: unsafe { (*p.mm.get()).is_some() },
         single_threaded: p.thread_group.is_single_member(),
-        uid:  p.creds.ruid.load(Acquire),
-        euid: p.creds.euid.load(Acquire),
-        suid: p.creds.suid.load(Acquire),
-        gid:  p.creds.rgid.load(Acquire),
-        egid: p.creds.egid.load(Acquire),
-        sgid: p.creds.sgid.load(Acquire),
+        uid:  p.security.creds.ruid.load(Acquire),
+        euid: p.security.creds.euid.load(Acquire),
+        suid: p.security.creds.suid.load(Acquire),
+        gid:  p.security.creds.rgid.load(Acquire),
+        egid: p.security.creds.egid.load(Acquire),
+        sgid: p.security.creds.sgid.load(Acquire),
     })
 }
 

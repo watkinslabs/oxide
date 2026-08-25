@@ -14,7 +14,7 @@ use syscall::SyscallArgs;
 pub fn sys_gettid(_args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     sched::live::current().map(|c| {
-        let v = c.vtid.load(Ordering::Acquire);
+        let v = c.security.vtid.load(Ordering::Acquire);
         if v != 0 { v as i64 } else { c.tid as i64 }
     }).unwrap_or(1)
 }

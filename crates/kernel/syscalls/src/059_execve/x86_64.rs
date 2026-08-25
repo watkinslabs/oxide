@@ -105,7 +105,7 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
             #[cfg(feature = "debug-syscall")]
             {
                 use core::sync::atomic::Ordering;
-                let v = cur.vtgid.load(Ordering::Acquire);
+                let v = cur.security.vtgid.load(Ordering::Acquire);
                 let vpid = if v != 0 { v } else { cur.tgid.load(Ordering::Acquire) };
                 klog::write_raw(b"[EXECNOENT] vpid=");
                 klog::write_dec_u64(vpid as u64);
@@ -177,7 +177,7 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     #[cfg(feature = "debug-syscall")]
     {
         use core::sync::atomic::Ordering;
-        let ruid = cur.creds.ruid.load(Ordering::Acquire);
+        let ruid = cur.security.creds.ruid.load(Ordering::Acquire);
         let is_systemd = path_owned.windows(7).any(|w| w == b"systemd");
         if is_systemd && ruid != 0 {
             let mut xdg: Option<&[u8]> = None;

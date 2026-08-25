@@ -18,7 +18,7 @@ pub(super) fn view(sock: &Arc<InetSocket>) -> SockView {
         acceptconn: super::socket_acceptconn(sock),
         socket_type: super::socket_type(sock),
         protocol: super::socket_protocol(sock),
-        netns_cookie: net::net_ns::namespace_cookie(&sock.net_namespace),
+        netns_cookie: net::net_ns::namespace_cookie(&sock.security.net_namespace),
         // No receive path in this stack runs inside a NAPI context, so no
         // socket ever records a valid identifier and the option reads zero.
         napi_id: 0,

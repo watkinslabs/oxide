@@ -369,7 +369,7 @@ fn the_remaining_time_is_written_back_for_a_nonzero_timeout_only() {
 fn a_sticky_timeouts_persona_suppresses_the_writeback() {
     let _g = begin();
     let task = install_task(0);
-    task.personality.store(sched::personality::STICKY_TIMEOUTS, Ordering::Release);
+    task.security.personality.store(sched::personality::STICKY_TIMEOUTS, Ordering::Release);
     let mut set = one_fd(task, vfs::POLL_IN);
     ADVANCE_ON_POLL.store(2_000_000_000, Ordering::SeqCst);
     let mut t = ts(5, 0);

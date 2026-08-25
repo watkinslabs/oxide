@@ -168,7 +168,7 @@ pub fn seccomp_get_metadata(cur: &Task, target: &Task, size: u64, data: u64)
 /// # C: O(1)
 pub fn get_sud_config(target: &Task, size: u64, data: u64) -> Result<i64, Errno> {
     sysinfo::sud_size_ok(size)?;
-    let armed = target.syscall_dispatch.armed();
+    let armed = target.security.syscall_dispatch.armed();
     let cfg = match armed {
         Some(c) => sysinfo::SudConfig {
             mode: sysinfo::PR_SYS_DISPATCH_ON,
@@ -197,7 +197,7 @@ pub fn set_sud_config(target: &Task, size: u64, data: u64) -> Result<i64, Errno>
     uaccess::copy_from_user(&mut buf, data)?;
     let rec = sysinfo::sud_decode(&buf);
     let cfg = sched::prctl::sud::classify_set(rec.mode, rec.offset, rec.len, rec.selector)?;
-    target.syscall_dispatch.install(&cfg);
+    target.security.syscall_dispatch.install(&cfg);
     Ok(0)
 }
 
@@ -207,9 +207,9 @@ pub fn set_sud_config(target: &Task, size: u64, data: u64) -> Result<i64, Errno>
 /// of how much was copied.
 /// # C: O(1)
 pub fn get_rseq_configuration(target: &Task, size: u64, data: u64) -> Result<i64, Errno> {
-    let rec = user::rseq_rec(target.rseq_ptr.load(Ordering::Acquire),
-                             target.rseq_len.load(Ordering::Acquire),
-                             target.rseq_sig.load(Ordering::Acquire));
+    let rec = user::rseq_rec(target.security.rseq_ptr.load(Ordering::Acquire),
+                             target.security.rseq_len.load(Ordering::Acquire),
+                             target.security.rseq_sig.load(Ordering::Acquire));
     let write = user::copy_len(rec.len(), size);
     if write > 0 {
         if crate::userbuf::validate_user_buf_writable(data, write as u64, 1).is_err() {

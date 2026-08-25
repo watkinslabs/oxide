@@ -133,7 +133,7 @@ fn a_queued_realtime_overflow_reports_eagain_only_for_a_user_queueing_sender() {
     // records — Linux puts no per-signal cap on a real-time queue. A private
     // account keeps this test independent of whatever else is charged.
     const UID: u32 = 82_708;
-    t.creds.ruid.store(UID, core::sync::atomic::Ordering::Release);
+    t.security.creds.ruid.store(UID, core::sync::atomic::Ordering::Release);
     crate::ucounts::charge_task(&t);
     const DEPTH: u64 = 4;
     t.set_rlimit(crate::rlimit::rlim::SIGPENDING, (DEPTH, DEPTH));

@@ -139,10 +139,8 @@ impl Task {
     /// # C: O(1)
     pub fn visible_pid(&self) -> u32 {
         self.debug_check_canary("visible_pid");
-        let v = self.vtgid.load(Ordering::Acquire);
+        let v = self.security.vtgid.load(Ordering::Acquire);
         if v != 0 { v } else { self.tgid.load(Ordering::Acquire) }
     }
 
 }
-
-

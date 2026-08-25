@@ -5,8 +5,8 @@ use core::sync::atomic::Ordering;
 
 fn confined(tid: u32, chain: &[(&[u64], u64)]) -> Task {
     let t = Task::new(tid, "seccomp", SchedClass::Normal { weight: 1024 });
-    t.seccomp_mode.store(SECCOMP_MODE_FILTER as u8, Ordering::Release);
-    let mut g = t.seccomp_filters.lock();
+    t.security.seccomp_mode.store(SECCOMP_MODE_FILTER as u8, Ordering::Release);
+    let mut g = t.security.seccomp_filters.lock();
     for (prog, flags) in chain { g.push(SeccompFilter::new(prog.to_vec(), *flags)); }
     drop(g);
     t
@@ -29,7 +29,7 @@ fn a_task_not_in_filter_mode_is_einval_not_enoent() {
     let t = Task::new(8001, "plain", SchedClass::Normal { weight: 1024 });
     assert_eq!(nth_filter(&t, 0), Err(Errno::Einval));
     // Even STRICT mode, whose chain is legitimately empty.
-    t.seccomp_mode.store(SECCOMP_MODE_STRICT as u8, Ordering::Release);
+    t.security.seccomp_mode.store(SECCOMP_MODE_STRICT as u8, Ordering::Release);
     assert_eq!(nth_filter(&t, 0), Err(Errno::Einval));
 }
 
@@ -64,10 +64,10 @@ fn metadata_reports_only_the_log_flag() {
 #[test]
 fn the_flags_travel_with_the_program_across_a_chain_clone() {
     let t = confined(8005, &[(&[9], SECCOMP_FILTER_FLAG_LOG)]);
-    let copy: alloc::vec::Vec<SeccompFilter> = t.seccomp_filters.lock().clone();
+    let copy: alloc::vec::Vec<SeccompFilter> = t.security.seccomp_filters.lock().clone();
     let u = Task::new(8006, "child", SchedClass::Normal { weight: 1024 });
-    u.seccomp_mode.store(SECCOMP_MODE_FILTER as u8, Ordering::Release);
-    *u.seccomp_filters.lock() = copy;
+    u.security.seccomp_mode.store(SECCOMP_MODE_FILTER as u8, Ordering::Release);
+    *u.security.seccomp_filters.lock() = copy;
     assert_eq!(nth_filter_flags(&u, 0), Ok(SECCOMP_FILTER_FLAG_LOG));
     assert_eq!(nth_filter(&u, 0), Ok(alloc::vec![9]));
 }

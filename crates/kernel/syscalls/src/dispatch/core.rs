@@ -81,7 +81,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         entry_frame,
         |frame| {
             if let Some(task) = dispatch_task {
-                task.svc_frame.store(frame as u64, core::sync::atomic::Ordering::Release);
+                task.security.svc_frame.store(frame as u64, core::sync::atomic::Ordering::Release);
             }
         },
         super::process_irq::ProcessIrqs::enable,

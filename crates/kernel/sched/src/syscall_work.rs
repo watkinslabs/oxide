@@ -40,16 +40,16 @@ pub(crate) fn reconcile_new_task(task: &Task) {
 /// # C: O(1)
 #[inline]
 pub fn tracepoint_pending(task: Option<&Task>) -> bool {
-    task.map_or(false, |t| t.syscall_work.load(Ordering::Acquire) & TRACEPOINT != 0)
+    task.map_or(false, |t| t.security.syscall_work.load(Ordering::Acquire) & TRACEPOINT != 0)
 }
 
 /// Update one task's work word without disturbing future syscall-work bits.
 /// # C: O(1)
 pub(crate) fn set_task_tracepoint(task: &Task, active: bool) {
     if active {
-        task.syscall_work.fetch_or(TRACEPOINT, Ordering::Release);
+        task.security.syscall_work.fetch_or(TRACEPOINT, Ordering::Release);
     } else {
-        task.syscall_work.fetch_and(!TRACEPOINT, Ordering::Release);
+        task.security.syscall_work.fetch_and(!TRACEPOINT, Ordering::Release);
     }
 }
 

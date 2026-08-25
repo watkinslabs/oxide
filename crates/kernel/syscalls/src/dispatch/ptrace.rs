@@ -25,8 +25,8 @@ pub(super) fn ptrace_syscall_stop_if_armed(rax: u64, entry: bool) -> bool {
     use crate::s101_ptrace_event as event;
     let cur = match sched::live::current() { Some(c) => c, None => return false };
     if cur.traced_by.load(Ordering::Acquire) == 0 { return false; }
-    if !cur.ptrace_syscall_armed.swap(false, Ordering::AcqRel) { return false; }
-    cur.ptrace_stop_rax.store(rax, Ordering::Release);
+    if !cur.security.ptrace_syscall_armed.swap(false, Ordering::AcqRel) { return false; }
+    cur.security.ptrace_stop_rax.store(rax, Ordering::Release);
     // Linux `ptrace_report_syscall`: the stop signal reported through
     // wait(2) is `SIGTRAP | 0x80` when PTRACE_O_TRACESYSGOOD is set, which is
     // how a tracer tells a syscall stop from a real SIGTRAP. `ptrace_notify`

@@ -332,7 +332,7 @@ fn owner_identity() -> flowlabel::Owner {
     let Some(task) = sched::live::current() else { return flowlabel::Owner::default(); };
     flowlabel::Owner {
         pid: task.tgid.load(Ordering::Acquire) as u32,
-        uid: task.creds.euid.load(Ordering::Acquire),
+        uid: task.security.creds.euid.load(Ordering::Acquire),
     }
 }
 

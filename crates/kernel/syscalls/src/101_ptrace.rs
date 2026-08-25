@@ -124,7 +124,7 @@ fn traceme(cur: &sched::Task) -> Result<(), Errno> {
     // refuse even a volunteered trace.
     if let Some(p) = sched::live::registry::lookup(parent) { perm::may_traceme(&p)?; }
     cur.traced_by.store(parent, Ordering::Release);
-    cur.ptrace_seized.store(false, Ordering::Release);
+    cur.security.ptrace_seized.store(false, Ordering::Release);
     Ok(())
 }
 
@@ -146,7 +146,7 @@ fn attach(cur: &sched::Task, target: &Arc<sched::Task>, request: u64, addr: u64,
     let exiting = target.state() == sched::TaskState::Zombie;
     perm::may_attach(cur, target, is_kthread, exiting)?;
     target.traced_by.store(cur.tid, Ordering::Release);
-    target.ptrace_seized.store(seize, Ordering::Release);
+    target.security.ptrace_seized.store(seize, Ordering::Release);
     target.ptrace_options.store(opts, Ordering::Release);
     if !seize {
         // ATTACH posts SIGSTOP so the tracee stops at its next signal-delivery
@@ -171,13 +171,13 @@ fn resume(target: &Arc<sched::Task>, request: u64, data: u64) -> Result<(), Errn
     // Linux `ptrace_resume` rejects an out-of-range signal with EIO before
     // touching any state.
     if !decide::valid_signal(data) { return Err(Errno::Eio); }
-    target.singlestep.store(u32::from(request == uapi::SINGLESTEP), Ordering::Release);
-    target.ptrace_syscall_armed.store(request == uapi::SYSCALL, Ordering::Release);
+    target.security.singlestep.store(u32::from(request == uapi::SINGLESTEP), Ordering::Release);
+    target.security.ptrace_syscall_armed.store(request == uapi::SYSCALL, Ordering::Release);
     // `child->exit_code = data` — the cell `stop_code` already is. The
     // tracee's `last_siginfo` is NOT cleared here: `PTRACE_SETSIGINFO` may
     // have rewritten the record this very resume is about to deliver, and the
     // tracee clears it itself once it has read it (Linux `ptrace_stop`'s tail).
-    target.stop_code.store(data as u32, Ordering::Release);
+    target.security.stop_code.store(data as u32, Ordering::Release);
     // The tracer's own resume clears the whole trap latch, `JOBCTL_LISTENING`
     // included: a `PTRACE_LISTEN` is ended by the next resume, not carried
     // into it, or the tracee would re-trap instead of running.
@@ -189,8 +189,8 @@ fn resume(target: &Arc<sched::Task>, request: u64, data: u64) -> Result<(), Errn
 /// Clear `JOBCTL_PENDING_MASK | JOBCTL_LISTENING` on a resumed tracee.
 /// # C: O(1)
 fn clear_trap_latch(target: &sched::Task) {
-    let jc = target.jobctl.load(Ordering::Acquire);
-    target.jobctl.store(sched::jobctl::resume_clears(jc), Ordering::Release);
+    let jc = target.security.jobctl.load(Ordering::Acquire);
+    target.security.jobctl.store(sched::jobctl::resume_clears(jc), Ordering::Release);
 }
 
 /// PTRACE_DETACH. Same `valid_signal` gate as resume, and the same
@@ -199,12 +199,12 @@ fn clear_trap_latch(target: &sched::Task) {
 /// the stop the tracee is sitting in.
 fn detach(target: &Arc<sched::Task>, data: u64) -> Result<(), Errno> {
     if !decide::valid_signal(data) { return Err(Errno::Eio); }
-    target.stop_code.store(data as u32, Ordering::Release);
+    target.security.stop_code.store(data as u32, Ordering::Release);
     target.traced_by.store(0, Ordering::Release);
-    target.ptrace_seized.store(false, Ordering::Release);
+    target.security.ptrace_seized.store(false, Ordering::Release);
     target.ptrace_options.store(0, Ordering::Release);
-    target.ptrace_syscall_armed.store(false, Ordering::Release);
-    target.singlestep.store(0, Ordering::Release);
+    target.security.ptrace_syscall_armed.store(false, Ordering::Release);
+    target.security.singlestep.store(0, Ordering::Release);
     // Drop the ATTACH-induced SIGSTOP unless the tracer asked for a signal.
     if data == 0 {
         target.sigpending.fetch_and(!Signum::Sigstop.bit(), Ordering::Release);

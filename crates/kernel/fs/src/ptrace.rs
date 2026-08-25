@@ -55,7 +55,7 @@ const FRAME_ELR_OFF:  usize = 0xb0;
 #[no_mangle]
 pub unsafe extern "C" fn oxide_x86_arm_singlestep(rflags_ptr: *mut u64) {
     let cur = match sched::current() { Some(c) => c, None => return };
-    if cur.singlestep.load(Ordering::Acquire) == 0 { return; }
+    if cur.security.singlestep.load(Ordering::Acquire) == 0 { return; }
     // SAFETY: per fn contract; `rflags_ptr` is a live aligned u64 on
     // the kernel stack we own at this asm point.
     unsafe { *rflags_ptr |= RFLAGS_TF; }
@@ -82,7 +82,7 @@ fn x86_user_trap_hook(regs: &mut hal_x86_64::PtRegs) -> bool {
     #[allow(unused_mut, unused_assignments)]
     let mut code = hal::siginfo::code::TRAP_TRACE;
     if let Some(cur) = sched::current() {
-        cur.singlestep.store(0, Ordering::Release);
+        cur.security.singlestep.store(0, Ordering::Release);
         #[cfg(target_os = "oxide-kernel")]
         {
             // SAFETY: #DB dispatch from CPL=3 with interrupts masked, so this
@@ -108,7 +108,7 @@ fn x86_user_trap_hook(regs: &mut hal_x86_64::PtRegs) -> bool {
 #[no_mangle]
 pub unsafe extern "C" fn oxide_arm_arm_singlestep(frame_ptr: *mut u8) {
     let cur = match sched::current() { Some(c) => c, None => return };
-    if cur.singlestep.load(Ordering::Acquire) == 0 { return; }
+    if cur.security.singlestep.load(Ordering::Acquire) == 0 { return; }
     // SAFETY: per fn contract; the SPSR slot is an aligned u64 within the 288 B frame we own.
     unsafe {
         let spsr_ptr = frame_ptr.add(FRAME_SPSR_OFF) as *mut u64;
@@ -180,7 +180,7 @@ pub unsafe extern "C" fn oxide_arm_software_step_handler(frame_ptr: *mut u8) -> 
                 options(nostack, preserves_flags),
             );
         }
-        if let Some(cur) = sched::current() { cur.singlestep.store(0, Ordering::Release); }
+        if let Some(cur) = sched::current() { cur.security.singlestep.store(0, Ordering::Release); }
     }
     // `arm64_force_sig_fault(SIGTRAP, code, addr)`: TRAP_TRACE for the step,
     // TRAP_HWBKPT for a breakpoint or watchpoint hit. Delivered by the
@@ -228,7 +228,7 @@ pub unsafe extern "C" fn oxide_arm_undef_handler(frame_ptr: *mut u8) -> u64 {
     // work loop's frame builder would otherwise rewrite the wrong frame.
     hal_aarch64::set_current_svc_frame(frame_ptr as u64);
     let Some(cur) = sched::current() else { return 0 };
-    cur.svc_frame.store(frame_ptr as u64, Ordering::Release);
+    cur.security.svc_frame.store(frame_ptr as u64, Ordering::Release);
     // SAFETY: frame_ptr is the 288 B frame; x0 at offset 0, ELR at FRAME_ELR_OFF.
     let (saved_x0, elr) = unsafe {
         (core::ptr::read_volatile(frame_ptr.add(FRAME_X0_OFF) as *const u64),

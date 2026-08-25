@@ -47,8 +47,8 @@ fn helper_uid_gid(
     _state: &mut HelperState, _a: i64, _b: i64, _c: i64, _d: i64, _e: i64,
 ) -> i64 {
     let Some(task) = sched::current() else { return -(Errno::Einval.as_i32() as i64) };
-    let uid = task.creds.ruid.load(Ordering::Acquire);
-    let gid = task.creds.rgid.load(Ordering::Acquire);
+    let uid = task.security.creds.ruid.load(Ordering::Acquire);
+    let gid = task.security.creds.rgid.load(Ordering::Acquire);
     ((gid as u64) << 32 | uid as u64) as i64
 }
 

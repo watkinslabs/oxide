@@ -178,12 +178,12 @@ pub fn slot_answer(rendered: Option<Option<Vec<u8>>>) -> Result<Vec<u8>, Errno> 
 /// task's state and is governed by the policy.
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub fn read_attr(target: &crate::Task, slot: AttrSlot) -> Result<Vec<u8>, Errno> {
-    let value = target.selinux_label.lock().slot(slot);
+    let value = target.security.selinux_label.lock().slot(slot);
     let caller = crate::live::current();
     if let Some(caller) = caller {
         if caller.tid != target.tid {
-            let ssid = caller.selinux_label.lock().sid;
-            let tsid = target.selinux_label.lock().sid;
+            let ssid = caller.security.selinux_label.lock().sid;
+            let tsid = target.security.selinux_label.lock().sid;
             policy::check(ssid, tsid, CLASS_PROCESS, PERM_GETATTR)?;
         }
     }
@@ -198,7 +198,7 @@ pub fn read_attr(target: &crate::Task, slot: AttrSlot) -> Result<Vec<u8>, Errno>
 pub fn write_attr(target: &crate::Task, slot: AttrSlot, src: &[u8]) -> Result<usize, Errno> {
     let caller = crate::live::current().ok_or(Errno::Eacces)?;
     attr_write_target(caller.tid, target.tid)?;
-    let old = target.selinux_label.lock().sid;
+    let old = target.security.selinux_label.lock().sid;
     match write_permission(slot) {
         AttrWritePerm::Refused => return Err(Errno::Eacces),
         AttrWritePerm::Dynamic => policy::check(old, old, CLASS_PROCESS, PERM_SETCURRENT)?,
@@ -227,9 +227,9 @@ pub fn write_attr(target: &crate::Task, slot: AttrSlot, src: &[u8]) -> Result<us
                 }
             }
             policy::check(old, new, CLASS_PROCESS, PERM_DYNTRANSITION)?;
-            target.selinux_label.lock().enter(new);
+            target.security.selinux_label.lock().enter(new);
         }
-        _ => target.selinux_label.lock().set_staged(slot, value),
+        _ => target.security.selinux_label.lock().set_staged(slot, value),
     }
     Ok(src.len())
 }

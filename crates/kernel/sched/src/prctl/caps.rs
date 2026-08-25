@@ -21,7 +21,7 @@ fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 /// `PR_CAPBSET_READ` — `!!cap_raised(old->cap_bset, arg2)`, returned as the
 /// syscall VALUE. # C: O(1)
 pub fn capbset_read(cur: &Task, cap: u32) -> i64 {
-    ((cur.creds.cap_bounding.load(Ordering::Acquire) >> cap) & 1) as i64
+    ((cur.security.creds.cap_bounding.load(Ordering::Acquire) >> cap) & 1) as i64
 }
 
 fn capbset_drop_check(has_setpcap: bool, cap: u64) -> Result<u32, Errno> {
@@ -37,29 +37,29 @@ pub fn capbset_drop(cur: &Task, cap: u64) -> i64 {
         Ok(cap) => cap,
         Err(e) => return err(e),
     };
-    cur.creds.cap_bounding.fetch_and(!(1u64 << cap), Ordering::AcqRel);
+    cur.security.creds.cap_bounding.fetch_and(!(1u64 << cap), Ordering::AcqRel);
     0
 }
 
 /// `PR_GET_KEEPCAPS` — `!!issecure(SECURE_KEEP_CAPS)`. # C: O(1)
 pub fn get_keepcaps(cur: &Task) -> i64 {
-    ((cur.creds.securebits.load(Ordering::Acquire) & securebits::SECBIT_KEEP_CAPS) != 0) as i64
+    ((cur.security.creds.securebits.load(Ordering::Acquire) & securebits::SECBIT_KEEP_CAPS) != 0) as i64
 }
 
 /// `PR_SET_KEEPCAPS` — EPERM once `SECBIT_KEEP_CAPS_LOCKED` is set. # C: O(1)
 pub fn set_keepcaps(cur: &Task, on: bool) -> i64 {
-    let old = cur.creds.securebits.load(Ordering::Acquire);
+    let old = cur.security.creds.securebits.load(Ordering::Acquire);
     if (old & securebits::SECBIT_KEEP_CAPS_LOCKED) != 0 { return err(Errno::Eperm); }
     let new = if on { old | securebits::SECBIT_KEEP_CAPS }
         else { old & !securebits::SECBIT_KEEP_CAPS };
-    cur.creds.securebits.store(new, Ordering::Release);
+    cur.security.creds.securebits.store(new, Ordering::Release);
     0
 }
 
 /// `PR_GET_SECUREBITS` — `old->securebits`, returned as the syscall VALUE.
 /// # C: O(1)
 pub fn get_securebits(cur: &Task) -> i64 {
-    cur.creds.securebits.load(Ordering::Acquire) as i64
+    cur.security.creds.securebits.load(Ordering::Acquire) as i64
 }
 
 /// `PR_SET_SECUREBITS` — no changing locked bits, no unlocking locks, no
@@ -72,10 +72,10 @@ pub fn get_securebits(cur: &Task) -> i64 {
 pub fn set_securebits(cur: &Task, requested: u64) -> i64 {
     if requested > u32::MAX as u64 { return err(Errno::Eperm); }
     let requested = requested as u32;
-    let old = cur.creds.securebits.load(Ordering::Acquire);
+    let old = cur.security.creds.securebits.load(Ordering::Acquire);
     if !securebits::replacement_is_allowed(old, requested) { return err(Errno::Eperm); }
     if !cur.has_cap(crate::cap::SETPCAP) { return err(Errno::Eperm); }
-    cur.creds.securebits.store(requested, Ordering::Release);
+    cur.security.creds.securebits.store(requested, Ordering::Release);
     0
 }
 
@@ -85,25 +85,25 @@ pub fn set_securebits(cur: &Task, requested: u64) -> i64 {
 /// # C: O(1)
 pub fn cap_ambient(cur: &Task, op: Ambient) -> i64 {
     match op {
-        Ambient::ClearAll => { cur.creds.cap_ambient.store(0, Ordering::Release); 0 }
+        Ambient::ClearAll => { cur.security.creds.cap_ambient.store(0, Ordering::Release); 0 }
         Ambient::IsSet(cap) =>
-            ((cur.creds.cap_ambient.load(Ordering::Acquire) >> cap) & 1) as i64,
+            ((cur.security.creds.cap_ambient.load(Ordering::Acquire) >> cap) & 1) as i64,
         Ambient::Raise(cap) => {
             // Linux: the cap must be in BOTH permitted and inheritable, and
             // SECBIT_NO_CAP_AMBIENT_RAISE must be clear, else EPERM.
             let bit = 1u64 << cap;
-            let perm = cur.creds.cap_permitted.load(Ordering::Acquire);
-            let inh  = cur.creds.cap_inheritable.load(Ordering::Acquire);
-            let sb   = cur.creds.securebits.load(Ordering::Acquire);
+            let perm = cur.security.creds.cap_permitted.load(Ordering::Acquire);
+            let inh  = cur.security.creds.cap_inheritable.load(Ordering::Acquire);
+            let sb   = cur.security.creds.securebits.load(Ordering::Acquire);
             if (perm & bit) == 0 || (inh & bit) == 0
                 || (sb & securebits::SECBIT_NO_CAP_AMBIENT_RAISE) != 0 {
                 return err(Errno::Eperm);
             }
-            cur.creds.cap_ambient.fetch_or(bit, Ordering::AcqRel);
+            cur.security.creds.cap_ambient.fetch_or(bit, Ordering::AcqRel);
             0
         }
         Ambient::Lower(cap) => {
-            cur.creds.cap_ambient.fetch_and(!(1u64 << cap), Ordering::AcqRel);
+            cur.security.creds.cap_ambient.fetch_and(!(1u64 << cap), Ordering::AcqRel);
             0
         }
     }
@@ -113,7 +113,7 @@ pub fn cap_ambient(cur: &Task, op: Ambient) -> i64 {
 /// SECCOMP_MODE_STRICT (1) and SECCOMP_MODE_FILTER (2) are distinguishable.
 /// # C: O(1)
 pub fn get_seccomp(cur: &Task) -> i64 {
-    cur.seccomp_mode.load(Ordering::Acquire) as i64
+    cur.security.seccomp_mode.load(Ordering::Acquire) as i64
 }
 
 #[cfg(test)]

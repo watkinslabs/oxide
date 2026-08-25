@@ -428,7 +428,7 @@ pub fn make_epoll_inode() -> InodeRef {
     let id = NEXT_EPOLL_ID.fetch_add(1, Ordering::Relaxed);
     let poll_subs = Arc::new(vfs::PollSubscribers::new());
     let owner_uid = sched::current()
-        .map(|c| c.creds.ruid.load(Ordering::Acquire)).unwrap_or(0);
+        .map(|c| c.security.creds.ruid.load(Ordering::Acquire)).unwrap_or(0);
     let data = Arc::new(EpollData {
         id,
         owner_uid,

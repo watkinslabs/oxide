@@ -172,10 +172,10 @@ fn begin_test() -> MutexGuard<'static, ()> {
 
 fn install_current(euid: u32, cap_sys_admin: bool) {
     let task = Box::leak(Box::new(sched::Task::new(0x17A0, "quotactl-block-classic-hosted", sched::SchedClass::Normal { weight: 1024 })));
-    task.creds.euid.store(euid, Ordering::Release);
+    task.security.creds.euid.store(euid, Ordering::Release);
     if !cap_sys_admin {
         let mask = !(1u64 << sched::cap::SYS_ADMIN);
-        task.creds.cap_effective.fetch_and(mask, Ordering::AcqRel);
+        task.security.creds.cap_effective.fetch_and(mask, Ordering::AcqRel);
     }
     CURRENT_TASK_PTR.store(task as *const sched::Task as u64, Ordering::Release);
 }

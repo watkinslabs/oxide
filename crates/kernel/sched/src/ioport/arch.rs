@@ -18,8 +18,8 @@ use crate::task::Task;
 /// # Ctx: exit-to-user path, preempt-off
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub fn update(task: &Task) {
-    let level = task.iopl_emul.load(Ordering::Relaxed);
-    let g = task.io_bitmap.lock();
+    let level = task.security.iopl_emul.load(Ordering::Relaxed);
+    let g = task.security.io_bitmap.lock();
     match g.as_ref() {
         // SAFETY: callers hold preemption off on the CPU being programmed at
         // CPL 0, and the guard keeps the byte image alive across the copy.

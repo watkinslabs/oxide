@@ -58,8 +58,8 @@ impl MsgCred {
                 let security = security::network::message_security(Some(&identity));
                 Self {
                 pid: c.visible_pid(),
-                uid: c.creds.ruid.load(Relaxed),
-                gid: c.creds.rgid.load(Relaxed),
+                uid: c.security.creds.ruid.load(Relaxed),
+                gid: c.security.creds.rgid.load(Relaxed),
                 // The credential names the PROCESS, so it pins the thread
                 // group's identity — a worker thread's message must be
                 // attributed to its process, not to the thread.

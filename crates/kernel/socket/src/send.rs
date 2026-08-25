@@ -40,7 +40,7 @@ impl<'a> SendContext<'a> {
     /// domain is snapshotted once so every message of a batch is judged against
     /// the policy the call started under. # C: O(1)
     pub fn new(task: &'a sched::Task) -> Self {
-        Self { task, sandbox: task.landlock_domain.lock().clone() }
+        Self { task, sandbox: task.security.landlock_domain.lock().clone() }
     }
 
     /// Build a sender context with an explicit sandbox snapshot. # C: O(1)
@@ -55,8 +55,8 @@ impl<'a> SendContext<'a> {
     pub(crate) fn creds(&self) -> net::sock::SenderCreds {
         net::sock::SenderCreds {
             pid: self.task.visible_pid(),
-            uid: self.task.creds.ruid.load(Ordering::Acquire),
-            gid: self.task.creds.rgid.load(Ordering::Acquire),
+            uid: self.task.security.creds.ruid.load(Ordering::Acquire),
+            gid: self.task.security.creds.rgid.load(Ordering::Acquire),
         }
     }
 
@@ -301,7 +301,7 @@ fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<net::sock::I
     let mut total = 0usize;
     loop {
         let end = if stream { body } else { message.payload.len() };
-        match net::sock::sendto(socket, &message.payload[total..end], dest.clone(), ctx.creds(),
+        match net::sock::sendto(socket, &message.payload[total..end], dest.clone(), ctx.security.creds(),
             &control, autobind.as_ref())
         {
             Ok(bytes) if stream && bytes != 0 => {

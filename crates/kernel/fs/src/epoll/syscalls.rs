@@ -12,7 +12,7 @@ use crate::userbuf::validate_user_buf;
 
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-fdlife"))]
 fn trace_ebadf(cur: &sched::Task, fdt: &vfs::FdTable, epfd: i32, op: i32, fd: i32, missing: &'static [u8]) {
-    klog::write_raw(b"[EPBADF pid="); klog::write_dec_u64(cur.vtgid.load(Ordering::Acquire) as u64);
+    klog::write_raw(b"[EPBADF pid="); klog::write_dec_u64(cur.security.vtgid.load(Ordering::Acquire) as u64);
     klog::write_raw(b" table="); klog::write_hex_u64(fdt as *const vfs::FdTable as u64);
     klog::write_raw(b" epfd="); klog::write_dec_u64(epfd as u32 as u64);
     klog::write_raw(b" op="); klog::write_dec_u64(op as u32 as u64);
@@ -132,7 +132,7 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
             #[cfg(all(target_os = "oxide-kernel", feature = "debug-syscost"))]
             {
                 let target = sched::current().map(|c| {
-                    c.creds.euid.load(Ordering::Acquire) == 1000
+                    c.security.creds.euid.load(Ordering::Acquire) == 1000
                         || c.with_exe_path(|p| p.map(|s| s.contains("dbus-broker")).unwrap_or(false))
                 }).unwrap_or(false);
                 if target {
@@ -156,7 +156,7 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
             ep.reserve_ready_for(entries.len() + 1);
             #[cfg(feature = "debug-epoll")]
             if super::diag_slot() {
-                klog::write_raw(b"[EPADD pid="); klog::write_dec_u64(cur.vtgid.load(Ordering::Acquire) as u64);
+                klog::write_raw(b"[EPADD pid="); klog::write_dec_u64(cur.security.vtgid.load(Ordering::Acquire) as u64);
                 klog::write_raw(b" ep="); klog::write_dec_u64(ep.id as u64);
                 klog::write_raw(b" fd="); klog::write_dec_u64(fd as u64);
                 klog::write_raw(b" ino="); klog::write_hex_u64(target_file.inode().ino());
@@ -303,7 +303,7 @@ fn sys_epoll_wait_timeout(args: &syscall::SyscallArgs, timeout_ns: Option<u64>) 
     };
     #[cfg(feature = "debug-epoll")]
     if super::diag_slot() {
-        klog::write_raw(b"[EPWAIT pid="); klog::write_dec_u64(cur.vtgid.load(Ordering::Acquire) as u64);
+        klog::write_raw(b"[EPWAIT pid="); klog::write_dec_u64(cur.security.vtgid.load(Ordering::Acquire) as u64);
         klog::write_raw(b" ep="); klog::write_dec_u64(ep.id as u64);
         klog::write_raw(b" fd="); klog::write_dec_u64(epfd as u64);
         klog::write_raw(b" to="); klog::write_hex_u64(timeout_ns.unwrap_or(u64::MAX));

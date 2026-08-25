@@ -64,14 +64,14 @@ pub(crate) fn fsid_records(tid: u32) -> Vec<(u32, u32, u32)> {
 
 fn leader(tid: u32, vtgid: u32) -> Arc<Task> {
     let task = Arc::new(Task::new(tid, "keyring", SchedClass::Normal { weight: 1024 }));
-    task.vtgid.store(vtgid, Ordering::Release);
+    task.security.vtgid.store(vtgid, Ordering::Release);
     task
 }
 
 fn member(tid: u32, leader: &Arc<Task>) -> Arc<Task> {
     let mut task = Task::new(tid, "keyring-thread", SchedClass::Normal { weight: 1024 });
     task.tgid.store(leader.tid, Ordering::Release);
-    task.vtgid.store(leader.vtgid.load(Ordering::Acquire), Ordering::Release);
+    task.security.vtgid.store(leader.security.vtgid.load(Ordering::Acquire), Ordering::Release);
     task.join_thread_group(Arc::clone(&leader.thread_group));
     task.thread_group.commit_member();
     Arc::new(task)

@@ -15,8 +15,8 @@ fn nested_pid_ns(parent: NamespaceRef) -> NamespaceRef {
 fn task(tid: u32, ns: &NamespaceRef, numbers: &[u32], vtgid: u32) -> Arc<Task> {
     let task = Arc::new(Task::new(tid, "pidfd", SchedClass::Normal { weight: 1024 }));
     assert!(task.replace_namespace(ns.clone()).is_ok());
-    task.vtid.store(numbers[0], Ordering::Release);
-    task.vtgid.store(vtgid, Ordering::Release);
+    task.security.vtid.store(numbers[0], Ordering::Release);
+    task.security.vtgid.store(vtgid, Ordering::Release);
     task.configure_pid_mappings(numbers).unwrap();
     task
 }
@@ -25,8 +25,8 @@ fn thread(tid: u32, ns: &NamespaceRef, numbers: &[u32], leader: &Arc<Task>) -> A
     let mut task = Task::new(tid, "pidfd-thread", SchedClass::Normal { weight: 1024 });
     task.tgid.store(leader.tid, Ordering::Release);
     assert!(task.replace_namespace(ns.clone()).is_ok());
-    task.vtid.store(numbers[0], Ordering::Release);
-    task.vtgid.store(leader.vtgid.load(Ordering::Acquire), Ordering::Release);
+    task.security.vtid.store(numbers[0], Ordering::Release);
+    task.security.vtgid.store(leader.security.vtgid.load(Ordering::Acquire), Ordering::Release);
     task.join_thread_group(Arc::clone(&leader.thread_group));
     task.thread_group.commit_member();
     let task = Arc::new(task);
@@ -275,7 +275,7 @@ fn failed_clone_pid_mapping_does_not_publish_registry_member() {
     let inner = nested_pid_ns(parent.clone());
     let child = Arc::new(Task::new(195, "failed-clone", SchedClass::Normal { weight: 1024 }));
     assert!(child.replace_namespace(inner.clone()).is_ok());
-    child.vtid.store(1, Ordering::Release);
+    child.security.vtid.store(1, Ordering::Release);
 
     assert!(child.configure_pid_mappings(&[1, 86]).is_err());
     assert!(registry::lookup(child.tid).is_none());

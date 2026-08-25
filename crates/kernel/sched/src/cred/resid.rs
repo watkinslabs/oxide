@@ -38,9 +38,9 @@ fn put3(pa: u64, a: u32, pb: u64, b: u32, pc: u64, c: u32) -> i64 {
 
 /// Linux `getresuid`. # C: O(extents)
 pub(crate) fn getresuid_on(cur: &Task, args: &SyscallArgs) -> i64 {
-    put3(args.a0, uid_out(cur, cur.creds.ruid.load(Ordering::Acquire)),
-         args.a1, uid_out(cur, cur.creds.euid.load(Ordering::Acquire)),
-         args.a2, uid_out(cur, cur.creds.suid.load(Ordering::Acquire)))
+    put3(args.a0, uid_out(cur, cur.security.creds.ruid.load(Ordering::Acquire)),
+         args.a1, uid_out(cur, cur.security.creds.euid.load(Ordering::Acquire)),
+         args.a2, uid_out(cur, cur.security.creds.suid.load(Ordering::Acquire)))
 }
 
 /// `sys_getresuid(ruid_out, euid_out, suid_out)` — slot 118. # C: O(extents)
@@ -50,9 +50,9 @@ pub fn sys_getresuid(args: &SyscallArgs) -> i64 {
 
 /// Linux `getresgid`. # C: O(extents)
 pub(crate) fn getresgid_on(cur: &Task, args: &SyscallArgs) -> i64 {
-    put3(args.a0, gid_out(cur, cur.creds.rgid.load(Ordering::Acquire)),
-         args.a1, gid_out(cur, cur.creds.egid.load(Ordering::Acquire)),
-         args.a2, gid_out(cur, cur.creds.sgid.load(Ordering::Acquire)))
+    put3(args.a0, gid_out(cur, cur.security.creds.rgid.load(Ordering::Acquire)),
+         args.a1, gid_out(cur, cur.security.creds.egid.load(Ordering::Acquire)),
+         args.a2, gid_out(cur, cur.security.creds.sgid.load(Ordering::Acquire)))
 }
 
 /// `sys_getresgid(rgid_out, egid_out, sgid_out)` — slot 120. # C: O(extents)

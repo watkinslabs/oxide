@@ -57,7 +57,7 @@ pub fn mark_reaped(task: &Task) {
     // re-validates `reaped` on every hit regardless, so leaving it would
     // still be correct, just a wasted hint slot until the next insert/lookup
     // heals it.
-    let vpid = task.vtgid.load(Ordering::Acquire);
+    let vpid = task.security.vtgid.load(Ordering::Acquire);
     if vpid != 0 {
         let stale = g.vpid_hint.get(&vpid)
             .map_or(false, |w| w.upgrade().map_or(true, |t| t.tid == task.tid));

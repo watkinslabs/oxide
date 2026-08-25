@@ -73,14 +73,14 @@ pub fn stop_until_cont_code(code: u32, kind: StopKind) {
     // the death waiting on a tracer that may never resume it, which is the one
     // thing SIGKILL is guaranteed against.
     if kind == StopKind::Ptrace && dying(cur) { return; }
-    cur.stop_code.store(code, Ordering::Release);
-    cur.stop_pending.store(true, Ordering::Release);
+    cur.security.stop_code.store(code, Ordering::Release);
+    cur.security.stop_pending.store(true, Ordering::Release);
     // Entering a trap settles the latch that asked for it: any trap clears a
     // pending TRAP_STOP, and a trap REPORTING PTRACE_EVENT_STOP also clears the
     // TRAP_NOTIFY whose event it is announcing.
     let reports_event_stop = kind == StopKind::Ptrace && syscall::ptrace::event_of_stop_code(code as i32) == syscall::ptrace::EVENT_STOP;
-    let latched = jobctl::trap_entry_clears(cur.jobctl.load(Ordering::Acquire), reports_event_stop);
-    cur.jobctl.store(latched | match kind {
+    let latched = jobctl::trap_entry_clears(cur.security.jobctl.load(Ordering::Acquire), reports_event_stop);
+    cur.security.jobctl.store(latched | match kind {
         StopKind::Ptrace     => jobctl::TRACED,
         StopKind::JobControl => jobctl::STOPPED,
     }, Ordering::Release);
@@ -90,22 +90,22 @@ pub fn stop_until_cont_code(code: u32, kind: StopKind) {
         // SAFETY: process context, preempt-off, single-CPU; same as voluntary `schedule()` per `13§8`.
         unsafe { crate::live::schedule(); }
         if cur.state() == TaskState::Runnable {
-            let wake = jobctl::wake_of(cur.jobctl.load(Ordering::Acquire));
+            let wake = jobctl::wake_of(cur.security.jobctl.load(Ordering::Acquire));
             // Leaving the trap drops LISTENING, so PTRACE_LISTEN is per-stop:
             // the tracer must re-issue it after each report.
-            let jc = jobctl::stop_exit_clears(cur.jobctl.load(Ordering::Acquire));
+            let jc = jobctl::stop_exit_clears(cur.security.jobctl.load(Ordering::Acquire));
             // An event landed while we were parked and nobody has been told.
             // Re-enter the trap and report it rather than running on.
             if jobctl::wake_retraps(jc, wake) && !dying(cur) {
-                cur.jobctl.store(jobctl::trap_entry_clears(jc, true) | jobctl::TRACED,
+                cur.security.jobctl.store(jobctl::trap_entry_clears(jc, true) | jobctl::TRACED,
                                  Ordering::Release);
-                cur.stop_code.store(code, Ordering::Release);
-                cur.stop_pending.store(true, Ordering::Release);
+                cur.security.stop_code.store(code, Ordering::Release);
+                cur.security.stop_pending.store(true, Ordering::Release);
                 enter_stopped(cur);
                 notify_stop(cur, kind, sig as u32);
                 continue;
             }
-            cur.jobctl.store(jc & !jobctl::STOPPED, Ordering::Release);
+            cur.security.jobctl.store(jc & !jobctl::STOPPED, Ordering::Release);
             if let Some(why) = jobctl::resume_notify(kind, wake) {
                 notify_continued(cur, why);
             }
@@ -140,10 +140,10 @@ fn group_stop_done(cur: &crate::Task, kind: StopKind) -> bool {
     if kind == StopKind::Ptrace { return false; }
     // Take on the counter debt unless this thread already carries one, so a
     // thread re-parking inside one group stop cannot pay for it twice.
-    let jc = cur.jobctl.fetch_or(jobctl::STOP_PENDING | jobctl::STOP_CONSUME, Ordering::AcqRel)
+    let jc = cur.security.jobctl.fetch_or(jobctl::STOP_PENDING | jobctl::STOP_CONSUME, Ordering::AcqRel)
         | jobctl::STOP_PENDING | jobctl::STOP_CONSUME;
     let step = cur.thread_group.join_group_stop(jc);
-    cur.jobctl.store(step.jobctl, Ordering::Release);
+    cur.security.jobctl.store(step.jobctl, Ordering::Release);
     step.completed
 }
 
@@ -238,7 +238,7 @@ fn notify_parent_cldstop(cur: &crate::Task, why: Cldstop, status_sig: u32, to: N
         code:  n.si_code,
         // Read by the parent, so numbered in the PARENT's pid namespace.
         pid:   crate::registry::tgid_nr_seen_by(cur, &parent),
-        uid:   cur.creds.ruid.load(Ordering::Acquire),
+        uid:   cur.security.creds.ruid.load(Ordering::Acquire),
         value: status_sig as u64,
         sys:   None, fault: None, poll: None
     };

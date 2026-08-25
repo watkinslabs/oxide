@@ -222,8 +222,8 @@ pub unsafe fn spawn_user_thread_with_vpid(
 
     // F153-1: stamp namespace-visible pids on the Task before
     // it's made visible via registry/runqueue.
-    if vpid_tgid != 0 { task.vtgid.store(vpid_tgid, Ordering::Release); }
-    if vpid_tid  != 0 { task.vtid.store(vpid_tid,   Ordering::Release); }
+    if vpid_tgid != 0 { task.security.vtgid.store(vpid_tgid, Ordering::Release); }
+    if vpid_tid  != 0 { task.security.vtid.store(vpid_tid,   Ordering::Release); }
     // The fresh thread group's pgrp/session both reference this task's PID
     // identity. Publishing mappings on that identity supplies every visible
     // number; there is no numeric shadow to re-seed.
@@ -288,9 +288,9 @@ pub unsafe fn new_user_task_unpublished(
     let mut arc = dup::new_user_arc(tid, name, class, mm);
     let task = dup::unique_mut(&mut arc);
     if vpid_tgid != 0 {
-        task.vtgid.store(vpid_tgid, Ordering::Release);
+        task.security.vtgid.store(vpid_tgid, Ordering::Release);
     }
-    if vpid_tid != 0 { task.vtid.store(vpid_tid, Ordering::Release); }
+    if vpid_tid != 0 { task.security.vtid.store(vpid_tid, Ordering::Release); }
     // SAFETY: `task` is unpublished; no concurrent reader of kernel_stack exists yet.
     if !unsafe { task.install_stack() } { return Err(SpawnError::NoMem); }
     if !task.try_charge_kernel_stack(cgroup::kernel_context_memcg()) {

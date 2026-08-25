@@ -18,8 +18,8 @@ fn pid_namespace() -> namespace_identity::NamespaceRef {
 fn task(tid: u32, namespace: &namespace_identity::NamespaceRef, visible: u32) -> Arc<Task> {
     let task = Arc::new(Task::new(tid, "pidfd", SchedClass::Normal { weight: 1024 }));
     assert!(task.replace_namespace(namespace.clone()).is_ok());
-    task.vtid.store(visible, Ordering::Release);
-    task.vtgid.store(visible, Ordering::Release);
+    task.security.vtid.store(visible, Ordering::Release);
+    task.security.vtgid.store(visible, Ordering::Release);
     task.configure_pid_mappings(&[visible]).unwrap();
     task
 }
@@ -109,7 +109,7 @@ fn info_retains_exact_thread_pid_and_group_pid_after_reap() {
     let namespace = pid_namespace();
     let target = task(193, &namespace, 83);
     target.tgid.store(192, Ordering::Release);
-    target.vtgid.store(82, Ordering::Release);
+    target.security.vtgid.store(82, Ordering::Release);
     target.pid.join_group();
     target.exit_status.store(17, Ordering::Release);
     sched::registry::insert(&target);

@@ -320,7 +320,7 @@ unsafe fn with_fpu<R>(cur: Option<&sched::Task>, mode: Fpu,
                       f: impl FnOnce(&mut [u8]) -> (R, bool)) -> R {
     let Some(c) = cur else { return f(&mut []).0 };
     // SAFETY: running task on this CPU; the `fpu_state` slot is single-mutator per `13§5`, and the HAL types' layout matches `ArchFpuBuf`'s 64-byte-aligned backing.
-    let buf = unsafe { (*c.fpu_state.get()).as_mut_ptr() };
+    let buf = unsafe { (*c.security.fpu_state.get()).as_mut_ptr() };
     if let Fpu::Snapshot = mode {
         let _g = sched::preempt::PreemptGuard::new();
         // SAFETY: same slot; the running task owns the live FPU registers, and this is exactly the sync `ptrace_fpu::snapshot_current` performs at a ptrace stop.

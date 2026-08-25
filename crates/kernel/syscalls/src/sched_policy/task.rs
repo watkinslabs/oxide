@@ -64,9 +64,9 @@ fn is_nice_reduction(target: &sched::Task, nice: i32) -> bool {
 /// Linux `check_same_owner()`: caller's euid matches the target's euid or ruid.
 /// # C: O(1)
 pub fn check_same_owner(caller: &sched::Task, target: &sched::Task) -> bool {
-    let euid = caller.creds.euid.load(Ordering::Acquire);
-    euid == target.creds.euid.load(Ordering::Acquire)
-        || euid == target.creds.ruid.load(Ordering::Acquire)
+    let euid = caller.security.creds.euid.load(Ordering::Acquire);
+    euid == target.security.creds.euid.load(Ordering::Acquire)
+        || euid == target.security.creds.ruid.load(Ordering::Acquire)
 }
 
 /// Linux `user_check_sched_setscheduler()` verbatim: every branch that needs

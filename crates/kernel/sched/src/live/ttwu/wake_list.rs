@@ -39,7 +39,7 @@ pub fn wake_list_push(cpu: u32, task: Arc<Task>) -> bool {
     loop {
         let head = WAKE_LISTS[i].load(Ordering::Acquire);
         // SAFETY: raw owns the list reference until this cmpxchg publishes it.
-        unsafe { (*raw).wake_next.store(head, Ordering::Relaxed); }
+        unsafe { (&(*raw)).wake_next.store(head, Ordering::Relaxed); }
         if WAKE_LISTS[i].compare_exchange_weak(head, raw, Ordering::AcqRel, Ordering::Acquire).is_ok() {
             // The target may have observed an empty list and cleared its batch
             // latch while this producer was between the claim above and this
@@ -77,7 +77,7 @@ pub fn wake_list_debug(cpu: u32) -> (bool, u32) {
     while !node.is_null() && n < WAKE_LIST_WALK_CAP {
         // SAFETY: wake_list_debug walks a chain whose nodes each hold a list
         // strong reference until a drain reclaims them; this read takes none.
-        node = unsafe { (*node).wake_next.load(Ordering::Relaxed) };
+        node = unsafe { (&(*node)).wake_next.load(Ordering::Relaxed) };
         n += 1;
     }
     (pending, n)
@@ -100,7 +100,7 @@ pub fn wake_list_drain(cpu: u32) -> Vec<Arc<Task>> {
     let mut out = Vec::new();
     while !node.is_null() {
         // SAFETY: the detached chain has one list reference per node.
-        let next = unsafe { (*node).wake_next.load(Ordering::Relaxed) };
+        let next = unsafe { (&(*node)).wake_next.load(Ordering::Relaxed) };
         // SAFETY: this reclaims the list reference exactly once.
         let task = unsafe { Arc::from_raw(node as *const Task) };
         task.on_wake_list.store(false, Ordering::Release);

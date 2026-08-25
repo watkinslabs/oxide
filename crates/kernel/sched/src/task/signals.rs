@@ -401,7 +401,7 @@ impl Task {
     /// the ONE chain `seccomp(2)` appends to; no shadow counter exists to
     /// disagree with it. # C: O(1)
     pub fn seccomp_filter_count(&self) -> usize {
-        self.seccomp_filters.lock().len()
+        self.security.seccomp_filters.lock().len()
     }
 
 }

@@ -131,7 +131,7 @@ impl UnixPair {
             {
                 let cur = sched::live::current();
                 let target = cur.map(|c| {
-                    c.creds.euid.load(core::sync::atomic::Ordering::Acquire) == 1000
+                    c.security.creds.euid.load(core::sync::atomic::Ordering::Acquire) == 1000
                         || c.with_exe_path(|p| p.map(|s| s.contains("dbus-broker") || s.contains("polkit")).unwrap_or(false))
                 }).unwrap_or(false);
                 if target {

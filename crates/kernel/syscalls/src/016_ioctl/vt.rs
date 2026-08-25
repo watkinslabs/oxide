@@ -205,7 +205,7 @@ pub(super) fn handle_vt_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Opti
             // tid (monotonic, never reused) so the handshake's liveness test is
             // immune to vpid reuse.
             let (vpid, tid) = sched::live::current()
-                .map(|t| (t.vtgid.load(core::sync::atomic::Ordering::Acquire), t.tid))
+                .map(|t| (t.security.vtgid.load(core::sync::atomic::Ordering::Acquire), t.tid))
                 .unwrap_or((0, 0));
             match vt::set_vt_mode(vt_target, m, vpid, tid) {
                 Ok(()) => Some(0),
@@ -219,7 +219,7 @@ pub(super) fn handle_vt_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Opti
             // — a non-owner that tries to ack/cancel another's switch gets
             // EPERM (Linux `vt_reldisp` ownership check).
             let (vpid, tid) = sched::live::current()
-                .map(|t| (t.vtgid.load(core::sync::atomic::Ordering::Acquire), t.tid))
+                .map(|t| (t.security.vtgid.load(core::sync::atomic::Ordering::Acquire), t.tid))
                 .unwrap_or((0, 0));
             match vt::reldisp(arg as i32, vpid, tid) {
                 Ok(()) => Some(0),

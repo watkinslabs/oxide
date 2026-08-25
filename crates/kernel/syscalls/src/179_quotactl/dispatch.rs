@@ -269,10 +269,10 @@ fn quota_cmd(subcmd: u64) -> Option<vfs::QuotaCtlCmd> {
 
 fn current_quota_cred(cur: &sched::Task) -> vfs::QuotaCtlCred {
     vfs::QuotaCtlCred {
-        euid: cur.creds.euid.load(Ordering::Acquire),
-        egid: cur.creds.egid.load(Ordering::Acquire),
+        euid: cur.security.creds.euid.load(Ordering::Acquire),
+        egid: cur.security.creds.egid.load(Ordering::Acquire),
         cap_sys_admin: cur.has_cap(sched::cap::SYS_ADMIN),
-        groups: cur.creds.vfs_group_list(),
+        groups: cur.security.creds.vfs_group_list(),
     }
 }
 

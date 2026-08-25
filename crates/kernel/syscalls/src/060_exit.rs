@@ -196,9 +196,9 @@ pub fn do_exit(status: i32) -> i64 {
             // hangs forever (boot wedge: init parks in waitid behind a service
             // stuck on a dead owner's mutex). MUST run while the dying task's mm
             // is still mapped (before replace_mm below).
-            let rl = task.robust_list_head.load(Ordering::Acquire);
+            let rl = task.security.robust_list_head.load(Ordering::Acquire);
             if rl != 0 {
-                let vt = task.vtid.load(Ordering::Acquire);
+                let vt = task.security.vtid.load(Ordering::Acquire);
                 let owner_tid = if vt != 0 { vt } else { task.tid };
                 ipc::live::futex::exit_robust_list(rl, owner_tid);
             }
@@ -208,7 +208,7 @@ pub fn do_exit(status: i32) -> i64 {
             // mutex to the next waiter with FUTEX_OWNER_DIED. Same mm-still-
             // mapped requirement as the robust walk above.
             {
-                let vt = task.vtid.load(Ordering::Acquire);
+                let vt = task.security.vtid.load(Ordering::Acquire);
                 ipc::live::futex::exit_pi_state_list(if vt != 0 { vt } else { task.tid });
             }
             // SysV SEM_UNDO recovery (Linux do_exit -> exit_sem): this task
@@ -220,9 +220,9 @@ pub fn do_exit(status: i32) -> i64 {
             // group instead lost the adjustments of a clone(CLONE_SYSVSEM)
             // child that was not a thread.
             {
-                let vtg = task.vtgid.load(Ordering::Acquire);
+                let vtg = task.security.vtgid.load(Ordering::Acquire);
                 let tg = task.tgid.load(Ordering::Acquire);
-                ipc::sysv::sem::undo::exit_sem(&task.sysvsem_undo,
+                ipc::sysv::sem::undo::exit_sem(&task.security.sysvsem_undo,
                     if vtg != 0 { vtg } else { tg });
             }
             // Final `put_cred` for the keyring state (Linux `exit_creds`):
@@ -313,7 +313,7 @@ fn init_exit_check(task: &sched::Task) {
     use core::sync::atomic::Ordering;
     use sched::exit::init::{init_exit, InitExit};
     let group_dead = task.thread_group.is_single_member();
-    let is_ns_init = task.vtgid.load(Ordering::Acquire) == INIT_VPID;
+    let is_ns_init = task.security.vtgid.load(Ordering::Acquire) == INIT_VPID;
     let is_global_init = is_ns_init && sched::live::in_initial_pid_namespace(task);
     match init_exit(group_dead, is_global_init, is_ns_init) {
         InitExit::None         => {}

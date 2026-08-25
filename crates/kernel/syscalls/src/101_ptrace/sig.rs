@@ -104,18 +104,18 @@ pub fn setsigmask(target: &Task, addr: u64, data: u64) -> Result<(), Errno> {
 /// the switch's initial `ret = -EIO` otherwise).
 /// # C: O(1)
 pub fn interrupt(target: &Arc<Task>) -> Result<(), Errno> {
-    if !target.ptrace_seized.load(Ordering::Acquire) { return Err(Errno::Eio); }
+    if !target.security.ptrace_seized.load(Ordering::Acquire) { return Err(Errno::Eio); }
     // A SEIZE-mode interrupt is a PTRACE_EVENT_STOP: the wait status a tracer
     // reads must carry the event byte, not a bare SIGSTOP.
-    target.stop_code.store(uapi::event_stop_code(uapi::EVENT_STOP) as u32, Ordering::Release);
-    target.stop_pending.store(true, Ordering::Release);
+    target.security.stop_code.store(uapi::event_stop_code(uapi::EVENT_STOP) as u32, Ordering::Release);
+    target.security.stop_pending.store(true, Ordering::Release);
     // Same synthesised-event record `ptrace_do_notify` builds, and it names the
     // TRACEE — the tracer's own pid in that field would be read as the
     // `si_addr` of any record whose si_code selects the `_sigfault` arm.
-    let vtid = target.vtid.load(Ordering::Acquire);
+    let vtid = target.security.vtid.load(Ordering::Acquire);
     *target.ptrace_siginfo.lock() = Some(crate::s101_ptrace_event::notify_record(
         if vtid != 0 { vtid } else { target.tid },
-        target.creds.ruid.load(Ordering::Acquire),
+        target.security.creds.ruid.load(Ordering::Acquire),
         uapi::event_stop_code(uapi::EVENT_STOP)));
     sched::live::send_sig_priv_group(target, sched::Signum::Sigstop as u32);
     Ok(())
@@ -131,14 +131,14 @@ pub fn interrupt(target: &Arc<Task>) -> Result<(), Errno> {
 /// indistinguishable from doing nothing.
 /// # C: O(1)
 pub fn listen(target: &Arc<Task>) -> Result<(), Errno> {
-    if !target.ptrace_seized.load(Ordering::Acquire) { return Err(Errno::Eio); }
+    if !target.security.ptrace_seized.load(Ordering::Acquire) { return Err(Errno::Eio); }
     let in_event_stop = target.ptrace_siginfo.lock().as_ref()
         .map(|si| uapi::event_of_stop_code(si.code) == uapi::EVENT_STOP)
         .unwrap_or(false);
     if !in_event_stop { return Err(Errno::Eio); }
-    target.cont_pending.store(false, Ordering::Release);
-    let armed = sched::jobctl::listen(target.jobctl.load(Ordering::Acquire));
-    target.jobctl.store(armed, Ordering::Release);
+    target.security.cont_pending.store(false, Ordering::Release);
+    let armed = sched::jobctl::listen(target.security.jobctl.load(Ordering::Acquire));
+    target.security.jobctl.store(armed, Ordering::Release);
     // The window LISTEN exists to close: an event that landed between the
     // tracee entering this trap and this call already set `TRAP_NOTIFY`, and
     // no further event is coming to wake it. Trigger the re-trap now, or the

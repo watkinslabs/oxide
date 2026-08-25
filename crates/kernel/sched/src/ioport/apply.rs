@@ -18,8 +18,8 @@ use super::ladder::{self, IoplAction};
 /// path can decide in one relaxed load whether it must touch the TSS at all.
 /// # C: O(1)
 pub fn recompute_flag(task: &Task, has_map: bool) {
-    let on = task.iopl_emul.load(Ordering::Relaxed) == 3 || has_map;
-    task.tif_io_bitmap.store(on, Ordering::Relaxed);
+    let on = task.security.iopl_emul.load(Ordering::Relaxed) == 3 || has_map;
+    task.security.tif_io_bitmap.store(on, Ordering::Relaxed);
 }
 
 /// `ksys_ioperm`. `turn_on` grants `num` ports from `from`; otherwise it
@@ -42,7 +42,7 @@ pub fn ioperm(task: &Task, from: u64, num: u64, turn_on: bool, capable: bool) ->
     // landing in between would publish a window for the half-edited map, and
     // the switch path reads the very lock held here.
     crate::preempt::preempt_disable();
-    let mut g = task.io_bitmap.lock();
+    let mut g = task.security.io_bitmap.lock();
     let mut map = match g.take() {
         Some(m) => m,
         None => match fresh {
@@ -75,13 +75,13 @@ pub fn ioperm(task: &Task, from: u64, num: u64, turn_on: bool, capable: bool) ->
 /// # C: O(1)
 /// # Ctx: process
 pub fn iopl(task: &Task, level: u32, capable: bool) -> i64 {
-    match ladder::iopl_check(level, task.iopl_emul.load(Ordering::Relaxed), capable) {
+    match ladder::iopl_check(level, task.security.iopl_emul.load(Ordering::Relaxed), capable) {
         Err(e) => -(e.as_i32() as i64),
         Ok(IoplAction::Unchanged) => 0,
         Ok(IoplAction::Set(l)) => {
             crate::preempt::preempt_disable();
-            task.iopl_emul.store(l, Ordering::Relaxed);
-            let has_map = task.io_bitmap.lock().is_some();
+            task.security.iopl_emul.store(l, Ordering::Relaxed);
+            let has_map = task.security.io_bitmap.lock().is_some();
             recompute_flag(task, has_map);
             arch::update(task);
             crate::preempt::preempt_enable_no_check();
@@ -97,9 +97,9 @@ pub fn iopl(task: &Task, level: u32, capable: bool) -> i64 {
 /// # C: O(1)
 /// # Ctx: process (fork)
 pub fn inherit(parent: &Task, child: &Task) {
-    child.iopl_emul.store(parent.iopl_emul.load(Ordering::Acquire), Ordering::Release);
-    let map = parent.io_bitmap.lock().clone();
+    child.security.iopl_emul.store(parent.security.iopl_emul.load(Ordering::Acquire), Ordering::Release);
+    let map = parent.security.io_bitmap.lock().clone();
     let has_map = map.is_some();
-    *child.io_bitmap.lock() = map;
+    *child.security.io_bitmap.lock() = map;
     recompute_flag(child, has_map);
 }

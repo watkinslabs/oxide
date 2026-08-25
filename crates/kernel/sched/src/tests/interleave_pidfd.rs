@@ -38,8 +38,8 @@ fn nested_pid_ns() -> NamespaceRef {
 fn target_in(ns: &NamespaceRef) -> Arc<Task> {
     let t = Arc::new(Task::new(TARGET_TID, "pidfd-il", SchedClass::Normal { weight: 1024 }));
     assert!(t.replace_namespace(ns.clone()).is_ok());
-    t.vtid.store(INNER_NR, Ordering::Release);
-    t.vtgid.store(INNER_NR, Ordering::Release);
+    t.security.vtid.store(INNER_NR, Ordering::Release);
+    t.security.vtgid.store(INNER_NR, Ordering::Release);
     t.configure_pid_mappings(&[INNER_NR, OUTER_NR]).expect("two-level numbering");
     registry::insert(&t);
     t

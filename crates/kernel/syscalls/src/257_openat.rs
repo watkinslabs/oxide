@@ -335,9 +335,9 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
                 klog::write_raw(b" vpid=");
                 klog::write_dec_u64(sched::live::registry::display_vpid(c.tid) as u64);
                 klog::write_raw(b" euid=");
-                klog::write_dec_u64(c.creds.euid.load(core::sync::atomic::Ordering::Acquire) as u64);
+                klog::write_dec_u64(c.security.creds.euid.load(core::sync::atomic::Ordering::Acquire) as u64);
                 klog::write_raw(b" dumpable=");
-                klog::write_dec_u64(c.dumpable.load(core::sync::atomic::Ordering::Acquire) as u64);
+                klog::write_dec_u64(c.security.dumpable.load(core::sync::atomic::Ordering::Acquire) as u64);
             }
             klog::write_raw(b"\n");
         }

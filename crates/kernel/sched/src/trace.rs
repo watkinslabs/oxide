@@ -25,7 +25,7 @@ fn trace_desktop_session(t: &crate::Task) -> bool {
             // select PID 1 or a fixed account ID: the executable plus the
             // non-root credential is the Linux process identity we need.
             || (path == "/usr/lib/systemd/systemd"
-                && t.creds.euid.load(Ordering::Relaxed) != 0)));
+                && t.security.creds.euid.load(Ordering::Relaxed) != 0)));
     desktop_process && DESKTOP_TRACE_N.fetch_add(1, Ordering::Relaxed) < DESKTOP_TRACE_MAX
 }
 
@@ -43,7 +43,7 @@ pub fn entry(nr: u64, a0: u64, a1: u64, a2: u64, a3: u64) {
             Some(t) => t,
             None => return,
         };
-        let (pid, vpid) = (t.tid, t.vtgid.load(core::sync::atomic::Ordering::Relaxed));
+        let (pid, vpid) = (t.tid, t.security.vtgid.load(core::sync::atomic::Ordering::Relaxed));
         // Keep capability-transition tracing permanently available without
         // reintroducing the thousands of unrelated PRCTL probes emitted by
         // desktop services. These are precisely the operations that change
@@ -93,7 +93,7 @@ pub fn ret(nr: u64, rv: i64) {
             Some(t) => t,
             None => return,
         };
-        let (pid, vpid) = (t.tid, t.vtgid.load(core::sync::atomic::Ordering::Relaxed));
+        let (pid, vpid) = (t.tid, t.security.vtgid.load(core::sync::atomic::Ordering::Relaxed));
         let interesting = matches!(nr,
             24 | 41..=55 | 56 | 57 | 58 | 435 | 59 | 60 | 61
             | 202 | 231 | 247 | 449 | 454 | 455 | 456

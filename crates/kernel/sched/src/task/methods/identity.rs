@@ -94,8 +94,7 @@ impl Task {
     pub fn take_set_child_tid(&self) -> Option<(u64, u32)> {
         let addr = self.set_child_tid.swap(0, Ordering::AcqRel);
         if addr == 0 { return None; }
-        Some((addr, self.vtid.load(Ordering::Acquire)))
+        Some((addr, self.security.vtid.load(Ordering::Acquire)))
     }
 
 }
-

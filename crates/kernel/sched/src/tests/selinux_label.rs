@@ -189,10 +189,10 @@ fn a_refused_exec_still_consumes_the_staged_label() {
     // The staging names one operation. Whether that operation succeeded is not
     // a reason to leave it armed for an unrelated later exec.
     let task = Arc::new(Task::new(1, "stage", SchedClass::Normal { weight: 1024 }));
-    task.selinux_label.lock().exec = Some(SID_NEW);
+    task.security.selinux_label.lock().exec = Some(SID_NEW);
     let plan = crate::selinux_label::exec_plan(&task, SID_FILE, false);
     assert!(plan.is_ok(), "no policy is loaded, so the exec is not refused here");
-    assert_eq!(task.selinux_label.lock().exec, None);
+    assert_eq!(task.security.selinux_label.lock().exec, None);
 }
 
 #[test]
@@ -202,7 +202,7 @@ fn with_no_policy_an_exec_changes_nothing() {
     assert_eq!(plan.domain, ExecDomain::Keep);
     assert!(!plan.secure_exec);
     crate::selinux_label::exec_commit(&task, &plan);
-    let label = *task.selinux_label.lock();
+    let label = *task.security.selinux_label.lock();
     assert_eq!(label.sid, TaskLabel::kernel().sid);
     assert_eq!(label.prev, None);
 }
@@ -213,22 +213,22 @@ fn a_thread_with_no_address_space_carries_the_kernels_own_label() {
     // would describe it wrongly — and `init` is the domain the first user
     // process is meant to be distinguishable in.
     let kthread = Arc::new(Task::new(5, "kthread", SchedClass::Normal { weight: 1024 }));
-    assert_eq!(kthread.selinux_label.lock().sid, TaskLabel::kernel().sid);
+    assert_eq!(kthread.security.selinux_label.lock().sid, TaskLabel::kernel().sid);
     assert_ne!(TaskLabel::kernel().sid, TaskLabel::init().sid);
 }
 
 #[test]
 fn exec_commit_installs_only_a_real_transition() {
     let task = Arc::new(Task::new(3, "commit", SchedClass::Normal { weight: 1024 }));
-    task.selinux_label.lock().sid = SID_OLD;
+    task.security.selinux_label.lock().sid = SID_OLD;
     crate::selinux_label::exec_commit(
         &task,
         &crate::selinux_label::ExecPlan { domain: ExecDomain::Keep, secure_exec: false });
-    assert_eq!(task.selinux_label.lock().prev, None);
+    assert_eq!(task.security.selinux_label.lock().prev, None);
     crate::selinux_label::exec_commit(
         &task,
         &crate::selinux_label::ExecPlan { domain: ExecDomain::Enter(SID_NEW), secure_exec: true });
-    let label = *task.selinux_label.lock();
+    let label = *task.security.selinux_label.lock();
     assert_eq!((label.sid, label.prev), (SID_NEW, Some(SID_OLD)));
 }
 

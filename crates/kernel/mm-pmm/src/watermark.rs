@@ -63,7 +63,7 @@ pub enum AllocationPolicy { Allow, WakeBackground, DirectReclaim }
 /// # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
 fn current_is_io_flusher() -> bool {
-    sched::live::current().is_some_and(|c| c.io_flusher.get())
+    sched::live::current().is_some_and(|c| c.security.io_flusher.get())
 }
 
 /// Apply allocation-side watermark policy before the buddy takes ownership of

@@ -154,12 +154,12 @@ fn untagging_at_the_range_check_is_opt_in() {
     let t = Task::new(1, "tag", SchedClass::Normal { weight: 1024 });
     let tagged = 0x00abu64 << 48 | 0x1000;
     assert_eq!(user_ptr_for_check(Some(&t), tagged), tagged);
-    t.tagged_addr.store(true, core::sync::atomic::Ordering::Release);
+    t.security.tagged_addr.store(true, core::sync::atomic::Ordering::Release);
     assert_eq!(user_ptr_for_check(Some(&t), tagged), tagged);
     let top_byte_tagged = 0xabu64 << 56 | 0x1000;
-    t.tagged_addr.store(false, core::sync::atomic::Ordering::Release);
+    t.security.tagged_addr.store(false, core::sync::atomic::Ordering::Release);
     assert_eq!(user_ptr_for_check(Some(&t), top_byte_tagged), top_byte_tagged);
-    t.tagged_addr.store(true, core::sync::atomic::Ordering::Release);
+    t.security.tagged_addr.store(true, core::sync::atomic::Ordering::Release);
     assert_eq!(user_ptr_for_check(Some(&t), top_byte_tagged), 0x1000);
 }
 

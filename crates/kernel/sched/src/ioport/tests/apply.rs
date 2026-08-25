@@ -14,8 +14,8 @@ fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 fn withdraw_without_a_map_allocates_nothing() {
     let t = task(1);
     assert_eq!(ioport::ioperm(&t, 0x3f8, 8, false, false), 0);
-    assert!(t.io_bitmap.lock().is_none());
-    assert!(!t.tif_io_bitmap.load(Ordering::Relaxed));
+    assert!(t.security.io_bitmap.lock().is_none());
+    assert!(!t.security.tif_io_bitmap.load(Ordering::Relaxed));
 }
 
 /// The first successful grant creates the map, marks the task as holding a
@@ -24,12 +24,12 @@ fn withdraw_without_a_map_allocates_nothing() {
 fn the_first_grant_creates_the_map_and_arms_the_switch_flag() {
     let t = task(2);
     assert_eq!(ioport::ioperm(&t, 0x3f8, 8, true, true), 0);
-    let g = t.io_bitmap.lock();
+    let g = t.security.io_bitmap.lock();
     let m = g.as_ref().expect("map created");
     assert!(m.permits(0x3f8) && m.permits(0x3ff) && !m.permits(0x400));
     assert_eq!(m.max, 128, "window must reach the word holding port 0x3ff");
     drop(g);
-    assert!(t.tif_io_bitmap.load(Ordering::Relaxed));
+    assert!(t.security.tif_io_bitmap.load(Ordering::Relaxed));
 }
 
 /// Giving every port back drops the map and disarms the switch flag, so the
@@ -38,10 +38,10 @@ fn the_first_grant_creates_the_map_and_arms_the_switch_flag() {
 fn giving_the_last_port_back_drops_the_map() {
     let t = task(3);
     assert_eq!(ioport::ioperm(&t, 0x60, 2, true, true), 0);
-    assert!(t.tif_io_bitmap.load(Ordering::Relaxed));
+    assert!(t.security.tif_io_bitmap.load(Ordering::Relaxed));
     assert_eq!(ioport::ioperm(&t, 0x60, 2, false, false), 0);
-    assert!(t.io_bitmap.lock().is_none());
-    assert!(!t.tif_io_bitmap.load(Ordering::Relaxed));
+    assert!(t.security.io_bitmap.lock().is_none());
+    assert!(!t.security.tif_io_bitmap.load(Ordering::Relaxed));
 }
 
 /// A refused call must change NOTHING. An EPERM that had already allocated or
@@ -50,10 +50,10 @@ fn giving_the_last_port_back_drops_the_map() {
 fn a_refused_call_leaves_the_task_untouched() {
     let t = task(4);
     assert_eq!(ioport::ioperm(&t, 0x3f8, 8, true, false), err(Errno::Eperm));
-    assert!(t.io_bitmap.lock().is_none());
+    assert!(t.security.io_bitmap.lock().is_none());
     assert_eq!(ioport::ioperm(&t, 0, 0, true, true), err(Errno::Einval));
-    assert!(t.io_bitmap.lock().is_none());
-    assert!(!t.tif_io_bitmap.load(Ordering::Relaxed));
+    assert!(t.security.io_bitmap.lock().is_none());
+    assert!(!t.security.tif_io_bitmap.load(Ordering::Relaxed));
 }
 
 /// A forked child SHARES the parent's map, and the first edit on either side
@@ -65,13 +65,13 @@ fn fork_shares_the_map_and_the_next_edit_copies() {
     assert_eq!(ioport::ioperm(&p, 0x60, 1, true, true), 0);
     let c = task(6);
     ioport::inherit(&p, &c);
-    assert!(c.io_bitmap.lock().as_ref().expect("shared").permits(0x60));
-    assert!(c.tif_io_bitmap.load(Ordering::Relaxed));
+    assert!(c.security.io_bitmap.lock().as_ref().expect("shared").permits(0x60));
+    assert!(c.security.tif_io_bitmap.load(Ordering::Relaxed));
 
     // Parent grants itself another port AFTER the fork.
     assert_eq!(ioport::ioperm(&p, 0x64, 1, true, true), 0);
-    assert!(p.io_bitmap.lock().as_ref().expect("map").permits(0x64));
-    assert!(!c.io_bitmap.lock().as_ref().expect("map").permits(0x64),
+    assert!(p.security.io_bitmap.lock().as_ref().expect("map").permits(0x64));
+    assert!(!c.security.io_bitmap.lock().as_ref().expect("map").permits(0x64),
             "the child must NOT inherit a grant made after the fork");
 }
 
@@ -81,20 +81,20 @@ fn fork_shares_the_map_and_the_next_edit_copies() {
 fn iopl_level_three_arms_the_grant_and_is_inherited() {
     let t = task(7);
     assert_eq!(ioport::iopl(&t, 2, true), 0);
-    assert_eq!(t.iopl_emul.load(Ordering::Relaxed), 2);
-    assert!(!t.tif_io_bitmap.load(Ordering::Relaxed), "levels 0-2 grant no port");
+    assert_eq!(t.security.iopl_emul.load(Ordering::Relaxed), 2);
+    assert!(!t.security.tif_io_bitmap.load(Ordering::Relaxed), "levels 0-2 grant no port");
 
     assert_eq!(ioport::iopl(&t, 3, true), 0);
-    assert!(t.tif_io_bitmap.load(Ordering::Relaxed));
+    assert!(t.security.tif_io_bitmap.load(Ordering::Relaxed));
 
     let c = task(8);
     ioport::inherit(&t, &c);
-    assert_eq!(c.iopl_emul.load(Ordering::Relaxed), 3);
-    assert!(c.tif_io_bitmap.load(Ordering::Relaxed));
+    assert_eq!(c.security.iopl_emul.load(Ordering::Relaxed), 3);
+    assert!(c.security.tif_io_bitmap.load(Ordering::Relaxed));
 
     // Dropping back to 0 disarms it again.
     assert_eq!(ioport::iopl(&t, 0, false), 0);
-    assert!(!t.tif_io_bitmap.load(Ordering::Relaxed));
+    assert!(!t.security.tif_io_bitmap.load(Ordering::Relaxed));
 }
 
 /// A refused `iopl` leaves the level where it was, and the no-change case is
@@ -103,9 +103,9 @@ fn iopl_level_three_arms_the_grant_and_is_inherited() {
 fn iopl_refusals_do_not_move_the_level() {
     let t = task(9);
     assert_eq!(ioport::iopl(&t, 4, true), err(Errno::Einval));
-    assert_eq!(t.iopl_emul.load(Ordering::Relaxed), 0);
+    assert_eq!(t.security.iopl_emul.load(Ordering::Relaxed), 0);
     assert_eq!(ioport::iopl(&t, 3, false), err(Errno::Eperm));
-    assert_eq!(t.iopl_emul.load(Ordering::Relaxed), 0);
+    assert_eq!(t.security.iopl_emul.load(Ordering::Relaxed), 0);
     assert_eq!(ioport::iopl(&t, 0, false), 0, "no change needs no privilege");
     assert_eq!(crate::ioport::iopl_check(0, 0, false), Ok(IoplAction::Unchanged));
 }

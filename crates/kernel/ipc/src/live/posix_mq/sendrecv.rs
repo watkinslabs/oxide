@@ -98,7 +98,7 @@ pub fn sys_mq_timedsend(args: &syscall::SyscallArgs) -> i64 {
 fn notify_sender_side(q: &MqQueue) {
     let Some(cur) = sched::live::current() else { return };
     let vpid = sched::session::process_vpid(&cur);
-    let uid = cur.creds.euid.load(Ordering::Acquire);
+    let uid = cur.security.creds.euid.load(Ordering::Acquire);
     super::notify::do_notify(q, vpid, uid);
 }
 
