@@ -7,6 +7,14 @@ use crate::tcp_conn::TcpConn;
 use crate::tcp_state::TcpState;
 use crate::tcp_hdr::flags;
 
+/// Immutable receive snapshot held across the process-context copy callback.
+/// The queue lock is released before the callback; only the per-entry
+/// sleepable receive gate remains held. # C: O(max)
+pub(crate) struct RecvSnapshot {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) take: usize,
+}
+
 impl TcpConn {
     /// Application bytes accepted but not yet emitted into a TCP segment. # C: O(1)
     pub fn notsent_bytes(&self) -> u32 {
@@ -126,6 +134,13 @@ impl TcpConn {
         Some(urgent)
     }
 
+    /// Consume the urgent byte only if it is still the one observed before a
+    /// process-context copy. # C: O(1)
+    pub(crate) fn take_urgent_if(&mut self, seq: u32) -> Option<(u32, u8)> {
+        if self.urgent.map(|urgent| urgent.0) != Some(seq) { return None; }
+        self.take_urgent()
+    }
+
     /// Observe the latest received urgent byte without consuming it. # C: O(1)
     pub fn peek_urgent(&self) -> Option<(u32, u8)> { self.urgent }
 
@@ -140,6 +155,44 @@ impl TcpConn {
         self.rcv_read_seq = self.rcv_read_seq.wrapping_add(take as u32);
         if take != 0 { self.note_rcv_space_at(crate::tcp_conn::ka_now_ns()); }
         out
+    }
+
+    /// Snapshot the normal receive prefix without invoking a callback while
+    /// the BH-safe connection spinlock is held. # C: O(max)
+    pub(crate) fn snapshot_recv_with_offset_oob(&self, max: usize, offset: usize,
+        inline: bool) -> Option<RecvSnapshot>
+    {
+        let mut limit = self.recv_buf.len;
+        if !inline {
+            if let Some((seq, _)) = self.urgent {
+                let mark = seq.wrapping_sub(self.rcv_read_seq) as usize;
+                if mark < limit { limit = mark; }
+            }
+        }
+        if offset >= limit { return None; }
+        let take = core::cmp::min(max, limit - offset);
+        Some(RecvSnapshot { bytes: self.recv_buf.bytes(offset, take), take })
+    }
+
+    /// Commit bytes from a previously captured receive snapshot. Packet
+    /// delivery may append while the callback runs, but no other process
+    /// reader can consume the prefix while `TcpEntry::recv_gate` is held.
+    /// # C: O(1)
+    pub(crate) fn commit_recv_snapshot(&mut self, snapshot: &RecvSnapshot,
+        commit: usize, peek: bool, inline: bool)
+    {
+        if peek { return; }
+        let consumed = core::cmp::min(commit, snapshot.take);
+        self.recv_buf.consume(consumed);
+        self.rcv_read_seq = self.rcv_read_seq.wrapping_add(consumed as u32);
+        if consumed != 0 { self.note_rcv_space_at(crate::tcp_conn::ka_now_ns()); }
+        if inline {
+            if let Some((seq, _)) = self.urgent {
+                if (seq.wrapping_sub(self.rcv_read_seq) as i32) < 0 {
+                    self.urgent = None;
+                }
+            }
+        }
     }
 
     /// Inspect one receive prefix and drain it only after callback success. # C: O(max)

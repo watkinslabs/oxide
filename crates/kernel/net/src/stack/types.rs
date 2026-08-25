@@ -165,6 +165,11 @@ pub struct TcpEntry {
     /// Socket identity retained across asynchronous transport processing.
     pub owner: Arc<crate::SocketOwner>,
     pub conn: TcpConnLock,
+    /// Process-context receive serialization, matching Linux `lock_sock()`.
+    /// The transport state remains behind the BH-safe spinlock, but a reader
+    /// may fault or otherwise sleep while copying its snapshot to userspace.
+    /// Keep other readers out without holding that spinlock across the copy.
+    pub(crate) recv_gate: sched::live::Mutex<()>,
     /// Canonical Linux `sk_err`, shared with the owning socket.
     pub error: Arc<crate::SocketError>,
     /// Canonical Linux `inet_sk(sk)->pmtudisc`, shared with the owning socket.

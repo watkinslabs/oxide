@@ -54,6 +54,27 @@ fn data_round_trip_after_handshake() {
 }
 
 #[test]
+fn receive_snapshot_commits_only_after_process_copy() {
+    let lo = crate::addr::Ipv4Addr::LOOPBACK;
+    let mut client = TcpConn::new_client(ep(lo, 5006), ep(lo, 80), 1000);
+    let mut server = TcpConn::new_listener(ep(lo, 80));
+    let syn = client.active_open().unwrap();
+    let synack = server.input(lo_ip(), lo_ip(), &syn).unwrap().unwrap();
+    let ack = client.input(lo_ip(), lo_ip(), &synack).unwrap().unwrap();
+    let _ = server.input(lo_ip(), lo_ip(), &ack).unwrap();
+
+    client.send(b"snapshot");
+    let segment = client.output(1500, true, false).remove(0);
+    let _ = server.input(lo_ip(), lo_ip(), &segment).unwrap();
+
+    let snapshot = server.snapshot_recv_with_offset_oob(8, 0, true).unwrap();
+    assert_eq!(&snapshot.bytes, b"snapshot");
+    assert_eq!(server.recv_buf.len, 8, "snapshot does not consume state");
+    server.commit_recv_snapshot(&snapshot, snapshot.bytes.len(), false, true);
+    assert_eq!(server.recv_buf.len, 0, "commit consumes only after copy succeeds");
+}
+
+#[test]
 fn receiver_mss_uses_live_policy_then_validated_payload() {
     let lo = crate::addr::Ipv4Addr::LOOPBACK;
     let mut c = TcpConn::new_client(ep(lo, 5000), ep(lo, 80), 1);

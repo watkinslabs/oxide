@@ -79,7 +79,7 @@ impl TcpEntry {
                     bind.bound_ifindex.load(::core::sync::atomic::Ordering::Acquire)))))),
             (None, _) => None,
         };
-        Self { owner, conn: TcpConnLock::new(conn), error, ip_mtu_discover, ipv6_mtu_discover,
+        Self { owner, conn: TcpConnLock::new(conn), recv_gate: sched::live::Mutex::new(()), error, ip_mtu_discover, ipv6_mtu_discover,
             ipv6_frag_size, ipv6_opts, max_pacing_rate, ip_opts, min_hop, mark, bind,
             bpf_filter, passive_listener,
             syn_backlog_reserved: ::core::sync::atomic::AtomicBool::new(syn_backlog_reserved),
