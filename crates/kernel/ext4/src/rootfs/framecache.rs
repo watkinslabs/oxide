@@ -50,6 +50,12 @@ const PG: usize = hal::PAGE_SIZE_BYTES as usize;
 /// second page cache.
 const SHADOW_FLOOR: usize = 64;
 
+struct FillGuard<'a> { store: &'a Ext4FrameStore }
+
+impl Drop for FillGuard<'_> {
+    fn drop(&mut self) { self.store.finish_fill(); }
+}
+
 fn shadow_budget(resident_pages: usize) -> usize {
     resident_pages.saturating_mul(2).saturating_add(SHADOW_FLOOR)
 }
@@ -118,6 +124,11 @@ pub(crate) struct Ext4FrameStore {
     active_writebacks: AtomicU32,
     /// Waiters for the final active writeback completion.
     writeback_wait: WaitList,
+    /// Page-cache fills admitted before final inode eviction. This covers
+    /// inode/extent/data reads between a fault miss and frame publication.
+    active_fills: AtomicU32,
+    /// Waiters for final active fill completion.
+    fill_wait: WaitList,
     /// Eviction shadows (Linux workingset shadow entries in the mapping
     /// xarray): `page_idx -> nonresident-age stamp` for a page reclaim dropped.
     /// The index stays *present* in the cache's index space with no frame, so
@@ -148,6 +159,8 @@ impl Ext4FrameStore {
             evicting: AtomicBool::new(false),
             active_writebacks: AtomicU32::new(0),
             writeback_wait: WaitList::new(),
+            active_fills: AtomicU32::new(0),
+            fill_wait: WaitList::new(),
             shadows: Spinlock::new(BTreeMap::new()),
             #[cfg(feature = "debug-fillverify")]
             sums: Spinlock::new(BTreeMap::new()),
@@ -155,6 +168,25 @@ impl Ext4FrameStore {
         *s.me.lock() = Arc::downgrade(&s);
         dirty::register_store(&s);
         s
+    }
+
+    fn finish_fill(&self) {
+        if self.active_fills.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.fill_wait.wake_all();
+        }
+    }
+
+    /// Admit one cache fill unless final eviction has started. The second
+    /// check closes the race where eviction publishes `evicting` between the
+    /// first check and the counter increment.
+    fn begin_fill(&self) -> Option<FillGuard<'_>> {
+        if self.evicting.load(Ordering::Acquire) { return None; }
+        self.active_fills.fetch_add(1, Ordering::AcqRel);
+        if self.evicting.load(Ordering::Acquire) {
+            self.finish_fill();
+            return None;
+        }
+        Some(FillGuard { store: self })
     }
 
     /// Resident frame for page `idx`, filling from disk on a miss. Block I/O
@@ -168,6 +200,7 @@ impl Ext4FrameStore {
     /// # C: O(PG/bs) on miss, O(log N) on hit
     fn ensure_page(&self, idx: u64) -> KResult<u64> {
         if let Some(page) = self.pages.lock().get(&idx) { return Ok(page.pa); }
+        let Some(_active_fill) = self.begin_fill() else { return Err(VfsError::Eio); };
         let dinode = self.st.mount.read_inode(self.ino).map_err(|_e| {
             // DIAG (debug-fillverify): inode-table errors otherwise collapse
             // to EIO before the range-read diagnostic can identify them.

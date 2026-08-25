@@ -15,6 +15,8 @@ impl Ext4FrameStore {
         // writeback admission and holds no page-cache lock across the wait.
         let _ = unsafe { sched::live::wait_event_uninterruptible(&self.writeback_wait,
             || self.active_writebacks.load(Ordering::Acquire) == 0) };
+        let _ = unsafe { sched::live::wait_event_uninterruptible(&self.fill_wait,
+            || self.active_fills.load(Ordering::Acquire) == 0) };
         self.invalidate_range(0, u64::MAX);
     }
 }
