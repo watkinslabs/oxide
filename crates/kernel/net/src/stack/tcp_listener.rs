@@ -461,7 +461,7 @@ impl NetStack {
 }
 
 #[cfg(test)]
-#[path = "tcp_listener_tests.rs"]
+#[path = "tcp_listener/tests/mod.rs"]
 mod tests;
 
 #[cfg(test)]
