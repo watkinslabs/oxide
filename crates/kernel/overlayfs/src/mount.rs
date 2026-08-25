@@ -460,5 +460,5 @@ pub const FS_NAME_LEGACY: &str = "overlayfs";
 pub fn identity() -> String { FS_NAME.to_string() }
 
 #[cfg(test)]
-#[path = "mount/tests.rs"]
+#[path = "mount/tests/mod.rs"]
 mod tests;
