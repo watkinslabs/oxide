@@ -294,3 +294,4 @@ fn device_node_routes_open_state_poll_mmap_and_release() {
     cdev_del(&mut cdev);
     unregister_chrdev_region(dev, 1);
 }
+
