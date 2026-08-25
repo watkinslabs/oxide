@@ -44,11 +44,22 @@ struct OneShot {
     owned_drop: Option<OwnedOneShotDropFn>,
 }
 
+struct OneShotRegistry {
+    by_id: BTreeMap<TimerId, OneShot>,
+    by_deadline: BTreeMap<(u64, TimerId), ()>,
+}
+
+impl OneShotRegistry {
+    const fn new() -> Self {
+        Self { by_id: BTreeMap::new(), by_deadline: BTreeMap::new() }
+    }
+}
+
 static TIMERS: Spinlock<Vec<Entry>, TimerLock> = Spinlock::new(Vec::new());
 /// Active one-shots keyed by their owner id. The key is the timer handle, so
 /// cancellation removes the embedded timer record without scanning every
 /// armed timer, matching the reference's keyed timer-tree removal.
-static ONESHOTS: Spinlock<BTreeMap<TimerId, OneShot>, TimerLock> = Spinlock::new(BTreeMap::new());
+static ONESHOTS: Spinlock<OneShotRegistry, TimerLock> = Spinlock::new(OneShotRegistry::new());
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 /// B1347: ids cancelled AFTER `run_due` already drained them out of `ONESHOTS`
 /// but BEFORE it fired them (the drain-then-fire-without-lock window). A cancel
@@ -94,9 +105,11 @@ pub fn unregister_periodic(id: TimerId) -> bool {
 /// # C: O(log N)
 pub fn register_oneshot(deadline_ns: u64, arg: usize, f: OneShotFn) -> TimerId {
     let id = next_id();
-    ONESHOTS.lock().insert(id, OneShot {
+    let mut g = ONESHOTS.lock();
+    g.by_id.insert(id, OneShot {
         deadline_ns, arg, f: Some(f), owned_f: None, owned_drop: None,
     });
+    g.by_deadline.insert((deadline_ns, id), ());
     id
 }
 
@@ -108,9 +121,11 @@ pub fn register_oneshot(deadline_ns: u64, arg: usize, f: OneShotFn) -> TimerId {
 pub fn register_oneshot_owned(deadline_ns: u64, arg: usize, f: OwnedOneShotFn,
                               drop_arg: OwnedOneShotDropFn) -> TimerId {
     let id = next_id();
-    ONESHOTS.lock().insert(id, OneShot {
+    let mut g = ONESHOTS.lock();
+    g.by_id.insert(id, OneShot {
         deadline_ns, arg, f: None, owned_f: Some(f), owned_drop: Some(drop_arg),
     });
+    g.by_deadline.insert((deadline_ns, id), ());
     id
 }
 
@@ -118,7 +133,14 @@ pub fn register_oneshot_owned(deadline_ns: u64, arg: usize, f: OwnedOneShotFn,
 /// Returns true if the timer was still registered.
 /// # C: O(log N)
 pub fn unregister_oneshot(id: TimerId) -> bool {
-    let removed = ONESHOTS.lock().remove(&id);
+    let removed = {
+        let mut g = ONESHOTS.lock();
+        let removed = g.by_id.remove(&id);
+        if let Some(entry) = removed.as_ref() {
+            g.by_deadline.remove(&(entry.deadline_ns, id));
+        }
+        removed
+    };
     let was_pending = removed.is_some();
     if let Some(entry) = removed { drop_oneshot_arg(&entry); }
     if !was_pending {
@@ -162,7 +184,9 @@ pub fn next_deadline_ns(now_ns: u64) -> Option<u64> {
     for entry in TIMERS.lock().iter() {
         consider(entry.last_ns.saturating_add(entry.interval_ns));
     }
-    for entry in ONESHOTS.lock().values() { consider(entry.deadline_ns); }
+    if let Some((&(deadline, _), _)) = ONESHOTS.lock().by_deadline.first_key_value() {
+        consider(deadline);
+    }
     earliest
 }
 
@@ -211,12 +235,11 @@ pub fn run_due_budgeted(now_ns: u64, budget: usize) -> bool {
     RUN_PHASE.store(PHASE_SCAN_ONESHOT, Ordering::Relaxed);
     {
         let g = ONESHOTS.lock();
-        for (id, entry) in g.iter() {
+        for (&(deadline, id), _) in g.by_deadline.iter() {
             if due_id_len >= limit.saturating_sub(due_len) { break; }
-            if now_ns >= entry.deadline_ns {
-                due_ids[due_id_len] = Some(*id);
-                due_id_len += 1;
-            }
+            if deadline > now_ns { break; }
+            due_ids[due_id_len] = Some(id);
+            due_id_len += 1;
         }
     }
     // Removal is a separate lock hold so no callback staging/allocation is
@@ -228,7 +251,8 @@ pub fn run_due_budgeted(now_ns: u64, budget: usize) -> bool {
     {
         let mut g = ONESHOTS.lock();
         for id in due_ids[..due_id_len].iter().flatten() {
-            if let Some(entry) = g.remove(id) {
+            if let Some(entry) = g.by_id.remove(id) {
+                g.by_deadline.remove(&(entry.deadline_ns, *id));
                 one[one_len] = Some((*id, entry));
                 one_len += 1;
             }
@@ -277,7 +301,8 @@ fn has_due(now_ns: u64) -> bool {
     if TIMERS.lock().iter().any(|e| now_ns.saturating_sub(e.last_ns) >= e.interval_ns) {
         return true;
     }
-    ONESHOTS.lock().values().any(|e| now_ns >= e.deadline_ns)
+    ONESHOTS.lock().by_deadline.first_key_value()
+        .is_some_and(|(&(deadline, _), _)| deadline <= now_ns)
 }
 
 fn next_id() -> TimerId {
@@ -320,7 +345,9 @@ mod tests {
 
     fn reset() {
         TIMERS.lock().clear();
-        ONESHOTS.lock().clear();
+        let mut oneshots = ONESHOTS.lock();
+        oneshots.by_id.clear();
+        oneshots.by_deadline.clear();
         CANCELLED_ONESHOTS.lock().clear();
         NEXT_ID.store(1, Ordering::Relaxed);
         A.store(0, Ordering::Relaxed);
