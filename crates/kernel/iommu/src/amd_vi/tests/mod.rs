@@ -64,3 +64,4 @@ use crate::AmdViIrMode;
     let range = AmdViCommand::invalidate_iova_pages(7, 0x4000, 0x9000, true).unwrap();
     assert_eq!(range.words(), [0, 0x3000_0007, 0x7003, 0]);
 }
+
