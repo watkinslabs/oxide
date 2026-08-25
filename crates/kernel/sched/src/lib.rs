@@ -235,6 +235,7 @@ pub mod live;
 #[cfg(target_os = "oxide-kernel")] pub mod compat;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))] pub mod cred;
 pub mod hung_task;
+pub mod vfork_completion;
 pub mod park_site;
 pub mod pkey_rights;
 pub mod prctl;

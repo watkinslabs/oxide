@@ -668,13 +668,10 @@ pub struct Task {
     /// `restart_syscall(2)` resumes through after ERESTART_RESTARTBLOCK.
     pub restart_block: restart::RestartBlock,
 
-    /// CLONE_VFORK rendezvous flag (mirrors Linux mm_struct::
-    /// vfork_done): parent blocks until child clears it via
-    /// execve/exit. Without this, parent + child race on the
-    /// shared CLONE_VM address space.
-    /// 0 = not vfork-tracked or already-cleared (default);
-    /// 1 = parent waiting on this child.
-    pub vfork_pending: AtomicBool,
+    /// Child-owned Linux `task_struct::vfork_done` completion. The parent
+    /// waits on this object and exec/exit completes it; the state and wait
+    /// queue therefore have one owner instead of a global TID lookup.
+    pub vfork_completion: Arc<crate::vfork_completion::VforkCompletion>,
 
     /// Source position of the wait this task is blocked in — the datum
     /// `/proc/<pid>/wchan` reports. See [`crate::park_site`].

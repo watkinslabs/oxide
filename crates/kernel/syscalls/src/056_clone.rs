@@ -440,7 +440,7 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
     // as publication commits it; arming afterwards loses a fast exec/exit and
     // can leave the parent parked forever on a completion that already ran.
     if (flags & CLONE_VFORK) != 0 {
-        child.vfork_pending.store(true, Ordering::Release);
+        child.vfork_completion.arm();
     }
 
     // Linux `copy_process(..., trace, ...)` -> `ptrace_init_task`: decide the
