@@ -33,6 +33,12 @@ impl CfsRunqueue {
     /// # C: O(1)
     pub fn has_runnable(&self) -> bool { !self.tree.is_empty() }
 
+    /// Sum the current entity signals for the CPU utilization hook.
+    pub fn util_avg(&self) -> u32 {
+        self.tree.values().map(|task| task.util_avg.load(Ordering::Acquire))
+            .fold(0, u32::saturating_add)
+    }
+
     /// `min_vruntime` is the leftmost task's vruntime per `13§3`.
     /// Empty tree returns `0` (matches an empty Linux RQ at boot).
     /// # C: O(log N)

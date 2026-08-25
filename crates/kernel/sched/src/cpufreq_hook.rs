@@ -1,15 +1,8 @@
 // The scheduler's side of frequency scaling: turn what this kernel knows
 // about how busy each CPU has been into the demand signal cpufreq consumes.
 //
-// The reference feeds its utilisation governor a per-entity load average
-// updated on every wakeup, so the frequency can move on the same wakeup that
-// created the demand. This scheduler has no such per-entity average; what it
-// has is the per-CPU user/system/idle accounting the tick already maintains.
-// That is a real utilisation measure over the sampling window, and it is what
-// the demand signal is built from here. The consequence is recorded in
-// `scratch/known_issues.md`: the signal is tick-granular rather than
-// wakeup-granular, so a burst shorter than the window raises the frequency one
-// window late.
+// schedutil receives the task-owned PELT signal from the context-switch path;
+// only the explicitly sampled governors use the periodic cpustat sampler.
 
 #![cfg(target_os = "oxide-kernel")]
 
@@ -59,23 +52,25 @@ fn utilisation(load_percent: u32) -> u64 {
 pub fn sample(now_ns: u64) {
     for policy in cpufreq::policies() {
         let Some(cpu) = policy.cpus.first().copied() else { continue; };
-        let Some(load_percent) = busy_percent(cpu) else { continue; };
         let governor = cpufreq::governor::by_name(policy.governor());
         let sampled = governor.is_some_and(|gov| gov.sampled);
-        if sampled {
-            let demand = Demand {
-                load_percent,
-                util: utilisation(load_percent),
-                capacity: CAPACITY_SCALE,
-                iowait_boost: 0,
-            };
-            let Some(target) = cpufreq::govern_target(&policy, &demand) else { continue; };
-            let _ = cpufreq::util::submit(cpu, &policy, target, now_ns);
-            continue;
-        }
-        cpufreq::util::update_util(cpu, utilisation(load_percent), CAPACITY_SCALE, false,
-                                   now_ns, SAMPLE_PERIOD_NS);
+        if !sampled { continue; }
+        let Some(load_percent) = busy_percent(cpu) else { continue; };
+        let demand = Demand {
+            load_percent,
+            util: utilisation(load_percent),
+            capacity: CAPACITY_SCALE,
+            iowait_boost: 0,
+        };
+        let Some(target) = cpufreq::govern_target(&policy, &demand) else { continue; };
+        let _ = cpufreq::util::submit(cpu, &policy, target, now_ns);
     }
+}
+
+/// Linux `cpufreq_update_util`: consume the scheduler-owned entity signal.
+pub fn update_from_scheduler(cpu: usize, util: u32, iowait: bool, now_ns: u64) {
+    cpufreq::util::update_util(cpu, u64::from(util), CAPACITY_SCALE, iowait,
+                               now_ns, SAMPLE_PERIOD_NS);
 }
 
 /// Start resampling. Called once from kernel init, after the timer registry
