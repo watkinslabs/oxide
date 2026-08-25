@@ -42,46 +42,6 @@ pub(crate) struct TcpTimers {
     cleanup: TimerSlot,
 }
 
-/// Timer ownership and the socket wait/poll state share one allocation,
-/// keeping the interrupt-path TcpEntry itself within its stack-size budget.
-pub(crate) struct TcpAsyncState {
-    timers: TcpTimers,
-    sleep: crate::sock_wait::SockWaitQueue,
-    subscribers: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
-    /// The owning open file description (Linux `sk->sk_socket->file`), which
-    /// urgent arrival signals through its `f_owner`. Weak, and published by
-    /// the same bind that publishes `subscribers`, so the two notification
-    /// targets of one socket cannot name different descriptions.
-    owner_file: Spinlock<alloc::sync::Weak<vfs::File>, StackLockClass>,
-}
-
-impl TcpAsyncState {
-    /// # C: O(1)
-    pub(crate) const fn new() -> Self {
-        Self { timers: TcpTimers::new(), sleep: crate::sock_wait::SockWaitQueue::new(),
-               subscribers: Spinlock::new(None),
-               owner_file: Spinlock::new(alloc::sync::Weak::new()) }
-    }
-
-    /// Socket sleep queue shared by connect, receive, and transmit. # C: O(1)
-    pub(crate) fn sleep(&self) -> &crate::sock_wait::SockWaitQueue { &self.sleep }
-
-    /// The owning description, while a descriptor is bound. # C: O(1)
-    pub(crate) fn owner_file(&self) -> Option<alloc::sync::Arc<vfs::File>> {
-        self.owner_file.lock().upgrade()
-    }
-
-    /// Publish the owning description. # C: O(1)
-    pub(crate) fn set_owner_file(&self, file: &alloc::sync::Arc<vfs::File>) {
-        *self.owner_file.lock() = alloc::sync::Arc::downgrade(file);
-    }
-}
-
-impl ::core::ops::Deref for TcpAsyncState {
-    type Target = Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>;
-    fn deref(&self) -> &Self::Target { &self.subscribers }
-}
-
 impl TcpTimers {
     /// # C: O(1)
     pub(crate) const fn new() -> Self {
@@ -505,16 +465,8 @@ impl NetStack {
     }
 }
 
+mod state;
+pub(crate) use state::TcpAsyncState;
 #[cfg(test)]
-mod give_up_tests {
-    use super::give_up_cause;
-    use syscall::errno::Errno;
-
-    /// A connection that recorded a non-fatal report reports THAT when it runs
-    /// out of retransmissions; one that recorded nothing reports the timeout.
-    #[test]
-    fn the_give_up_cause_prefers_the_recorded_non_fatal_error() {
-        assert_eq!(give_up_cause(0), Errno::Etimedout as i32);
-        assert_eq!(give_up_cause(Errno::Ehostunreach as i32), Errno::Ehostunreach as i32);
-    }
-}
+#[path = "tcp_timer/tests/give_up.rs"]
+mod give_up_tests;
