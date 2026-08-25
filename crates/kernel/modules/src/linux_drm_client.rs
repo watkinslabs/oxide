@@ -22,7 +22,7 @@ const DRM_DEVICE_CLIENTLIST_OFF: usize = 272;
 const DRM_DEVICE_FILELIST_INTERNAL_OFF: usize = 224;
 const DRM_FILE_LHEAD_OFF: usize = 56;
 
-pub(super) struct ClientRecord { pub(super) client: usize, pub(super) file: usize, modesets: usize, modesets_layout: Layout, connector_arrays: Vec<(usize, Layout)>, registered: bool }
+pub(crate) struct ClientRecord { pub(super) client: usize, pub(super) file: usize, modesets: usize, modesets_layout: Layout, connector_arrays: Vec<(usize, Layout)>, registered: bool }
 
 pub(super) fn export_symbols() {
     crate::symtab::export("drm_client_init", drm_client_init as *const () as usize, false);
