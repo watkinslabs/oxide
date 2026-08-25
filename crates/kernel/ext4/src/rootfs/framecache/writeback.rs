@@ -19,6 +19,7 @@ impl Drop for WritebackGuard<'_> {
     fn drop(&mut self) { self.store.finish_writeback(); }
 }
 
+#[inline(never)]
 fn start_writeback(dirty: &mut BTreeSet<u64>, writeback: &mut BTreeMap<u64, u32>, idxs: Vec<u64>) -> Vec<u64> {
     for idx in &idxs {
         dirty.remove(idx);
@@ -95,6 +96,7 @@ impl Ext4FrameStore {
     /// Flush the given (already-cleared) dirty page indices to disk. Block I/O
     /// runs WITHOUT the `pages` lock held. Any failure aborts the journal batch
     /// and re-marks the whole planned set dirty.
+    #[inline(never)]
     fn writeback_idxs(&self, idxs: Vec<u64>) -> Result<(), ()> {
         if idxs.is_empty() { return Ok(()); }
         #[cfg(feature = "debug-fsync-latency")]

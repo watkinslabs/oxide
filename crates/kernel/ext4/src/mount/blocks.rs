@@ -9,6 +9,7 @@ use super::io::read_byte_range;
 impl Mount {
     /// Read inode `ino` (1-indexed) from disk.
     /// # C: O(1) I/O + O(1) parse
+    #[inline(never)]
     pub fn read_inode(&self, ino: u32) -> Result<Inode, MountError> {
         #[cfg(not(target_os = "oxide-kernel"))]
         if self.should_fail_inode_read_for_tests() { return Err(MountError::BlockIo); }

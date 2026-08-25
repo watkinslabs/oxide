@@ -176,6 +176,12 @@ pub struct Mount {
     /// clears the owner before waking so every resumed waiter retries the same
     /// atomic claim predicate.
     pub(crate) txn_wait: sched::live::WaitList,
+    /// True while `commit_batch_for` is ordering data and draining the
+    /// metadata transaction. Dirty-data writeback can itself perform journaled
+    /// writes; those writes must not recursively start another batch commit.
+    /// Linux's ordered-data phase completes writeback before the metadata
+    /// commit, so nested `maybe_commit_batch` calls defer to this owner.
+    pub(crate) committing_batch: ::core::sync::atomic::AtomicBool,
     /// True while a create op holds `op_lock`. The size-triggered batch commit
     /// (`maybe_commit_batch` → `dev.flush`, which SLEEPS on the virtio
     /// completion) must NOT fire while `op_lock` is held: `op_lock` is a

@@ -29,7 +29,7 @@ impl BlkState {
             klog::write_raw(b"[BLK-REMOVE] reset unconfirmed, leaking bounce buffer\n");
         }
         #[cfg(target_os = "oxide-kernel")]
-        wake_all_blk_waiters();
+        self.wake_all_blk_waiters();
     }
 
     pub(super) fn shutdown(&self) {
@@ -41,7 +41,7 @@ impl BlkState {
             klog::write_raw(b"[BLK-SHUTDOWN] reset with busy request quarantined\n");
         }
         #[cfg(target_os = "oxide-kernel")]
-        wake_all_blk_waiters();
+        self.wake_all_blk_waiters();
     }
 
     /// Every programmed queue must be idle, not just the default one: a polled
@@ -67,7 +67,7 @@ impl BlkState {
                     return false;
                 }
                 // Register-then-recheck (B1426): see wait.rs::acquire_turn.
-                park_blk_checked(&BLK_TURN, deadline, || self.all_queues_idle());
+                park_blk_checked(&self.turn_wait, deadline, || self.all_queues_idle());
             }
             #[cfg(not(target_os = "oxide-kernel"))]
             {
@@ -83,7 +83,7 @@ impl BlkState {
     pub(super) fn freeze_new_io(&self) {
         self.poisoned.store(true, core::sync::atomic::Ordering::Release);
         #[cfg(target_os = "oxide-kernel")]
-        wake_all_blk_waiters();
+        self.wake_all_blk_waiters();
     }
 
     #[must_use]

@@ -190,7 +190,9 @@ fn kernel_wait_path_parks_without_driver_owned_polling() {
     assert!(!wait.contains("for _ in 0.."));
     assert!(!wait.contains("while spun <"));
     assert!(wait.contains("park_blk_checked(&BLK_COMPL, deadline"));
-    assert!(wait.contains("park_blk_checked(&BLK_TURN, 0"));
+    assert!(wait.contains("park_blk_checked(&self.turn_wait, 0"));
+    assert!(state.contains("pub(super) turn_wait: WaitList"));
+    assert!(!state.contains("static BLK_TURN"), "turn waits must not cross devices");
 }
 
 /// Queue state is reached from the block softirq as well as from process
@@ -228,19 +230,19 @@ fn softirq_shared_queue_state_is_bottom_half_safe() {
 }
 
 /// A request queued while the synchronous owner is active has no hardware
-/// completion that could kick dispatch. Releasing that owner is therefore the
-/// event that must start the deferred request; merely waking another owner
-/// leaves `deferred` nonempty forever and makes every later sync owner re-park.
+/// completion that could kick dispatch. Releasing that owner therefore raises
+/// the block completion dispatcher; it must happen before waking another
+/// synchronous owner so queued async work cannot be stranded.
 #[test]
 fn synchronous_turn_release_dispatches_deferred_before_waking_next_owner() {
     let source = include_str!("../modern/wait.rs");
     let release = source.split("pub(super) fn release_turn").nth(1)
         .expect("release_turn implementation");
     let free = release.find("busy = false").expect("turn release");
-    let dispatch = release.find("self.start_deferred_requests(&self.requestq)")
-        .expect("release must kick queued async I/O");
-    let wake = release.find("BLK_TURN.wake_one()")
+    let dispatch = release.find("block::completion::raise()")
+        .expect("release must raise the block dispatcher for queued async I/O");
+    let wake = release.find("self.turn_wait.wake_one()")
         .expect("release must wake a synchronous waiter");
     assert!(free < dispatch && dispatch < wake,
-        "free turn, dispatch already-queued I/O, then wake the next owner");
+        "free turn, raise dispatch for queued I/O, then wake the next owner");
 }

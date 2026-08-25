@@ -8,19 +8,13 @@ pub const VIRTIO_ID_BLOCK: u16 = 2;
 pub const DRIVER_ID: virtio::VirtioChildDriverId =
     virtio::VirtioChildDriverId::new("virtio-blk", VIRTIO_ID_BLOCK);
 
-/// Per-condition wait queues — Linux waits on the CONDITION, not on a shared
-/// per-device list. `BLK_COMPL`: the turn-holder waiting for its in-flight
-/// request's used-ring entry (≤1 waiter). `BLK_TURN`: tasks in `acquire_turn`
-/// waiting for the engine's single-outstanding turn to free (N waiters).
-///
-/// One shared list made every completion `wake_all` rouse EVERY turn-waiter,
-/// all but one of which immediately re-parked: a thundering herd costing O(N)
-/// scheduling churn per I/O, which serialized into multi-ms wake latency across
-/// an I/O-storm boot.
+/// The completion wait list is shared only for the IRQ fan-out: completion
+/// waiters recheck their own used ring and a spurious wake is harmless. Turn
+/// waiters live on each `BlkState`, because their predicate includes that
+/// device's queue state. A global turn list lets one device consume another
+/// device's only wake and strand its waiter.
 #[cfg(target_os = "oxide-kernel")]
 pub(super) static BLK_COMPL: WaitList = WaitList::new();
-#[cfg(target_os = "oxide-kernel")]
-pub(super) static BLK_TURN: WaitList = WaitList::new();
 
 #[cfg(feature = "debug-hibernate")]
 static HIBERNATE_SYNC_TRACE: AtomicU16 = AtomicU16::new(0);
@@ -61,28 +55,12 @@ pub(super) fn claim_hibernate_sync_trace() -> u16 {
     }
 }
 
-/// Rouse every block waiter regardless of which condition it sleeps on. For
-/// abort-everything transitions (poison / shutdown / device removal) where a
-/// sleeper on EITHER queue must re-check and bail — waking only one queue after
-/// the split above would strand `acquire_turn` sleepers forever, since
-/// `park_blk_checked` parks with no deadline.
-/// # C: O(waiters)
-#[cfg(target_os = "oxide-kernel")]
-pub(super) fn wake_all_blk_waiters() {
-    BLK_COMPL.wake_all();
-    BLK_TURN.wake_all();
-}
-
 #[cfg(target_os = "oxide-kernel")]
 pub fn wake_completions() {
     note_completion_interrupt();
-    // The interrupt is the completion notification for both wait conditions:
-    // it may finish the synchronous owner, or retire an asynchronous request
-    // that frees the engine turn. Wake both classes in hard-IRQ context; each
-    // waiter rechecks its predicate, while the block softirq still owns
-    // used-ring retirement and completion callbacks.
+    // The interrupt wakes the in-flight completion waiter; the block softirq
+    // retires the used entry and wakes the owning device's turn waiter.
     BLK_COMPL.wake_all();
-    BLK_TURN.wake_one();
     block::completion::raise();
 }
 
@@ -104,12 +82,12 @@ pub(super) fn run_completion_bottom_half() {
         for q in device.queues().filter(|q| softirq_drains(q)) {
             let _reaped = device.drain_owned_completions(q);
         }
+        // Wake the in-flight turn-holder (≤1 waiter), then hand a chance to one
+        // waiter belonging to the device whose queue was drained. The wait list is
+        // device-local because the predicate is device-local.
+        device.turn_wait.wake_one();
     }
-    // Wake the in-flight turn-holder (≤1 waiter, no herd), then hand a chance to
-    // ONE turn-waiter in case the drain freed the engine turn for an async
-    // completion (FIFO; the woken task re-checks and re-parks if still busy).
     BLK_COMPL.wake_all();
-    BLK_TURN.wake_one();
 }
 
 #[inline]
@@ -156,10 +134,10 @@ fn can_sleep() -> bool {
 }
 
 /// Register-then-recheck park for the block-wait condition variables
-/// (`BLK_COMPL`/`BLK_TURN`). A naive "poll condition, then park" (safe on a
+/// (`BLK_COMPL`/the device-local turn list). A naive "poll condition, then park" (safe on a
 /// single CPU is a lost-wakeup under SMP: the completion IRQ can land on a
 /// DIFFERENT cpu, so `run_completion_bottom_half` can observe
-/// the completion and `wake_all()` an EMPTY `BLK_COMPL`/`BLK_TURN` in the gap
+/// the completion and `wake_all()` an EMPTY wait list in the gap
 /// between this cpu's last poll and its `park()` call. With exactly one
 /// outstanding turn/completion, no later wake ever arrives to rescue the
 /// sleeper — a permanent lost-wakeup hang (B1426: `fstat` parked forever
@@ -174,7 +152,7 @@ fn can_sleep() -> bool {
 /// `deadline_ns` also arms the scheduler's timeout queue, so a lost device IRQ
 /// cannot strand the waiter past the I/O deadline. # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
-#[inline]
+#[inline(never)]
 #[track_caller]
 pub(super) fn park_blk_checked(list: &WaitList, deadline_ns: u64, done: impl FnMut() -> bool) {
     if can_sleep() {
@@ -350,6 +328,8 @@ pub struct BlkState {
     /// The interrupt-driven request queue. Its completions raise the device
     /// interrupt, which raises the block softirq, which drains it.
     pub(super) requestq: BlkQueue,
+    #[cfg(target_os = "oxide-kernel")]
+    pub(super) turn_wait: WaitList,
     /// The interrupt-free request queue, when the device offered one to spare.
     /// No MSI-X vector is bound to it and its `avail.flags` carry
     /// `VRING_AVAIL_F_NO_INTERRUPT`, so its completions reach the driver only
@@ -371,6 +351,18 @@ pub struct BlkState {
     pub(super) poisoned: core::sync::atomic::AtomicBool,
 }
 
+#[cfg(target_os = "oxide-kernel")]
+impl BlkState {
+    /// Rouse this device's completion and turn waiters during poison, reset or
+    /// removal. Completion waiters are shared for IRQ fan-out; turn waiters
+    /// must remain attached to this device's queue predicate.
+    /// # C: O(waiters)
+    pub(super) fn wake_all_blk_waiters(&self) {
+        BLK_COMPL.wake_all();
+        self.turn_wait.wake_all();
+    }
+}
+
 #[cfg(test)]
 impl BlkState {
     pub(crate) fn for_test_cfg(cfg_va: u64) -> Self {
@@ -384,6 +376,8 @@ impl BlkState {
             bdf: pci::Bdf { segment: 0, bus: 0, device: 0, function: 0 },
             cfg_va,
             requestq: BlkQueue::new(unprogrammed_queue(0), 0, false),
+            #[cfg(target_os = "oxide-kernel")]
+            turn_wait: WaitList::new(),
             pollq: if with_poll_queue {
                 Some(BlkQueue::new(unprogrammed_queue(virtio::POLL_QUEUE_INDEX), 0, true))
             } else {

@@ -61,9 +61,12 @@ impl CfsRunqueue {
 
     /// Pick + remove the leftmost task per `13§7`.
     /// # C: O(log N)
+    #[inline(never)]
     pub fn pick_leftmost(&mut self) -> Option<Arc<Task>> {
-        let (&k, _) = self.tree.iter().next()?;
-        let t = self.tree.remove(&k).expect("leftmost key just observed");
+        // `pop_first` is the cached-leftmost equivalent of Linux's
+        // `rb_first_cached` followed by `rb_erase_cached`: it does not perform
+        // a second key search before rebalancing the tree.
+        let (_, t) = self.tree.pop_first()?;
         self.nr_running -= 1;
         // Off the tree → clear on-rq so a later enqueue (re-queue / migrate)
         // passes the guard in RunqueueInner::enqueue (Linux `p->on_rq`).

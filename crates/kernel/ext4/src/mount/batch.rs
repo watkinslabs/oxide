@@ -24,6 +24,14 @@ impl Mount {
     }
 
     pub(crate) fn commit_batch_for(&self, inode: Option<(u32, bool)>) -> Result<bool, MountError> {
+        if self.committing_batch.swap(true, core::sync::atomic::Ordering::AcqRel) {
+            // A writeback operation can reach this method through a nested
+            // journaled write. The outer commit owns the ordering/commit
+            // sequence; starting another one here would recurse through the
+            // block device and consume the task stack.
+            return Ok(false);
+        }
+        let _commit_guard = BatchCommitGuard(&self.committing_batch);
         #[cfg(feature = "debug-fsync-latency")]
         let started_ns = crate::fsync_latency::now_ns();
         self.order_data_before_commit(inode.map(|(ino, _)| ino))?;
@@ -106,7 +114,9 @@ impl Mount {
     /// # C: amortized O(1); O(N) on the commit tick
     pub(crate) fn maybe_commit_batch(&self) -> Result<(), MountError> {
         const BATCH_MAX_BLOCKS: usize = 512;
-        if self.creating.load(::core::sync::atomic::Ordering::Acquire) { return Ok(()); }
+        if self.creating.load(::core::sync::atomic::Ordering::Acquire)
+            || self.committing_batch.load(::core::sync::atomic::Ordering::Acquire)
+        { return Ok(()); }
         let over = {
             let s = self.state.lock();
             s.undo.is_empty() && s.shadow.as_ref().map_or(0, |m| m.len()) >= BATCH_MAX_BLOCKS
@@ -137,5 +147,13 @@ impl Mount {
             }
         }
         self.refresh_cached_meta();
+    }
+}
+
+struct BatchCommitGuard<'a>(&'a ::core::sync::atomic::AtomicBool);
+
+impl Drop for BatchCommitGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, ::core::sync::atomic::Ordering::Release);
     }
 }

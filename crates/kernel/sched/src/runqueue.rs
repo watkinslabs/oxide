@@ -172,6 +172,7 @@ impl RunqueueInner {
     /// Pick + remove the next task per `13§7`. Falls back to the per-CPU
     /// idle task if both class queues are empty.
     /// # C: O(log N) (CFS path) / O(1) (RT path)
+    #[inline(never)]
     pub fn pick_next_task(&mut self) -> Arc<Task> {
         if let Some(t) = self.dl.pick_earliest() { return t; }
         if let Some(t) = self.rt.pick_highest()  { return t; }

@@ -226,6 +226,8 @@ pub fn init_blk(init: BlkInit) -> u32 {
         bdf: init.bdf,
         cfg_va: init.resources.cfg_va,
         requestq: BlkQueue::new(requestq, seed, false),
+        #[cfg(target_os = "oxide-kernel")]
+        turn_wait: WaitList::new(),
         pollq: build_poll_queue(init.resources, init.drv_features, device_cfg.num_queues, h),
         capacity: device_cfg.capacity,
         blk_size,
