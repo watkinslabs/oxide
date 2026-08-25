@@ -1,4 +1,9 @@
-use super::*;
+extern crate alloc;
+
+use alloc::vec::Vec;
+
+use crate::irq::Binding;
+use crate::probe::UsbDevice;
 
 fn storage_complete(irq: Binding, trb_pa: u64, slot: u8, endpoint: u8, length: u32, timeout_ns: u64) -> bool {
     let endpoint_id = (endpoint & 0x0f).checked_mul(2).and_then(|id| id.checked_add(u8::from(endpoint & 0x80 != 0)));

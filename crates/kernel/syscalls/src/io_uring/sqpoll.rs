@@ -353,7 +353,7 @@ pub fn offload_create(ring: &Arc<IoUringInode>, p: &Params) -> Result<(), Errno>
     let tid = sched::live::next_tid();
     let raw = Arc::into_raw(Arc::clone(&sqd)) as usize;
     // SAFETY: called from the syscall path with the runqueue installed; entry is a 'static extern "C" fn and the argument is the Arc raw pointer reclaimed by exactly that function.
-    let task = match unsafe { sched::live::spawn_kernel_thread(tid, "iou-sqp", sq_thread, raw) } {
+    let task = match unsafe { sched::live::spawn_kernel_thread(tid, "iou-sqp", thread::sq_thread, raw) } {
         Ok(t) => t,
         Err(_) => {
             // SAFETY: the thread never started, so nobody else holds this raw pointer; reclaiming it here releases the reference `into_raw` leaked.

@@ -235,13 +235,18 @@ impl RestartBlockMock {
     pub fn args(&self) -> [u64; task::restart::RESTART_ARGS] { *self.args.lock().unwrap() }
 }
 
+/// `u64::MAX` = not boosted. Production semantics.
+pub struct TaskSecurity {
+    pub pi_base_class: AtomicU64,
+}
+
 pub struct Task {
     pub tid: u32,
     pub futex_uaddr: AtomicU64,
     pub wakeup_deadline_ns: AtomicU64,
     pub restart_block: RestartBlockMock,
     pub class_enc: AtomicU64,
-    pub pi_base_class: AtomicU64,
+    pub security: TaskSecurity,
     state: AtomicU8,
     signal_pending: AtomicBool,
     mm_root: u64,
@@ -256,7 +261,7 @@ impl Task {
             wakeup_deadline_ns: AtomicU64::new(0),
             restart_block: RestartBlockMock::default(),
             class_enc: AtomicU64::new(SchedClass::Normal { weight: 1024 }.encode()),
-            pi_base_class: AtomicU64::new(u64::MAX),
+            security: TaskSecurity { pi_base_class: AtomicU64::new(u64::MAX) },
             state: AtomicU8::new(0),
             signal_pending: AtomicBool::new(false),
             mm_root,

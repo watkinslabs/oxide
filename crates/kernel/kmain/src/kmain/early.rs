@@ -417,10 +417,12 @@ fn init_pmm_and_arch(info: &BootInfo) {
 
 #[cfg(target_os = "oxide-kernel")]
 mod diagnostics;
-use diagnostics::kalloc_smoke;
-use diagnostics::debug_sched_smokes;
-use diagnostics::debug_pf_smoke;
+#[cfg(target_os = "oxide-kernel")] use diagnostics::kalloc_smoke;
+#[cfg(target_os = "oxide-kernel")] use diagnostics::debug_sched_smokes;
+#[cfg(target_os = "oxide-kernel")] use diagnostics::debug_pf_smoke;
+#[cfg(all(target_os = "oxide-kernel", any(feature = "debug-heappoison", feature = "debug-dealloc-diag")))]
 use diagnostics::kalloc_current_ctx;
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel", any(feature = "debug-heappoison", feature = "debug-dealloc-diag")))]
 use diagnostics::kalloc_irq_info;
-use diagnostics::debug_boot_smokes;
-use diagnostics::stack_name_for_fault;
+#[cfg(target_os = "oxide-kernel")] use diagnostics::debug_boot_smokes;
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))] use diagnostics::stack_name_for_fault;

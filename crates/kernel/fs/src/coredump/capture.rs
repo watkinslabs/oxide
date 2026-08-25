@@ -141,7 +141,7 @@ pub unsafe fn build_image(
     let (cutime_ns, cstime_ns) = cur.thread_group.child_acct().cpu_ns();
 
     let threads = [CoreThread {
-        tid: cx.security.vtid as i32, regs: &gregs, fpregs: Some(&fpregs), xstate: xstate.as_deref(),
+        tid: cx.vtid as i32, regs: &gregs, fpregs: Some(&fpregs), xstate: xstate.as_deref(),
         times: CoreTimes {
             utime: timeval_of_ns(utime_ns), stime: timeval_of_ns(stime_ns),
             ..CoreTimes::default()

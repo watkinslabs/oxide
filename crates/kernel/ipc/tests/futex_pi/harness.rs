@@ -164,6 +164,11 @@ impl RestartBlockMock {
     }
 }
 
+/// `u64::MAX` = not boosted. Production semantics.
+pub struct TaskSecurity {
+    pub pi_base_class: AtomicU64,
+}
+
 pub struct Task {
     pub tid: u32,
     pub futex_uaddr: AtomicU64,
@@ -171,8 +176,8 @@ pub struct Task {
     pub restart_block: RestartBlockMock,
     /// Encoded `SchedClass` — the EFFECTIVE class, exactly as production.
     pub class_enc: AtomicU64,
-    /// `u64::MAX` = not boosted. Production semantics.
-    pub pi_base_class: AtomicU64,
+    /// Mirrors the production split of per-task security state.
+    pub security: TaskSecurity,
     state: AtomicU8,
     signal_pending: AtomicBool,
     has_mm: AtomicBool,
@@ -189,7 +194,7 @@ impl Task {
             wakeup_deadline_ns: AtomicU64::new(0),
             restart_block: RestartBlockMock::default(),
             class_enc: AtomicU64::new(class.encode()),
-            pi_base_class: AtomicU64::new(u64::MAX),
+            security: TaskSecurity { pi_base_class: AtomicU64::new(u64::MAX) },
             state: AtomicU8::new(0),
             signal_pending: AtomicBool::new(false),
             has_mm: AtomicBool::new(true),

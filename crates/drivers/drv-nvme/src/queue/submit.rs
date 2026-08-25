@@ -24,7 +24,7 @@ impl Nvme {
         self.submit_with_timeout(qid_is_io, cmd, IO_TIMEOUT_NS)
     }
 
-    fn submit_with_timeout(&mut self, qid_is_io: bool, mut cmd: [u32; 16], timeout_ns: u64) -> Option<u16> {
+    pub(super) fn submit_with_timeout(&mut self, qid_is_io: bool, mut cmd: [u32; 16], timeout_ns: u64) -> Option<u16> {
         // Stamp CID into dword0 bits 31:16, advance the queue's rolling CID.
         let (sq_pa, slot, cid) = {
             let q = if qid_is_io { &mut self.io } else { &mut self.admin };

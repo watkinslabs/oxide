@@ -1,7 +1,5 @@
 use boot_info::{BootFramebuffer, BootMemKind, BootMemRegion};
 
-    use boot_info::{BootFramebuffer, BootMemKind, BootMemRegion};
-
     /// Value a multiboot2-compliant loader leaves in EAX at handoff.
     pub const MB2_BOOTLOADER_MAGIC: u32 = 0x36d7_6289;
     /// HHDM offset the trampoline's page tables install (0xFFFF_8000…

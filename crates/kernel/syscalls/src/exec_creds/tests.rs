@@ -58,7 +58,7 @@ fn plain_exec_by_an_unprivileged_user_changes_no_id_and_is_not_secure() {
     assert_eq!(t.new.cap_effective, 0);
     assert!(!t.secure_exec, "AT_SECURE must be 0 for an ordinary exec");
     assert_eq!(t.per_clear, 0);
-    assert_eq!(t.security.dumpable, sched::SUID_DUMP_USER);
+    assert_eq!(t.dumpable, sched::SUID_DUMP_USER);
 }
 
 #[test]
@@ -72,7 +72,7 @@ fn plain_exec_by_root_regains_the_bounding_set_as_permitted_and_effective() {
     assert_eq!(t.new.cap_permitted, CAP_ALL);
     assert_eq!(t.new.cap_effective, CAP_ALL);
     assert!(!t.secure_exec, "root exec'ing a plain binary is not a secure exec");
-    assert_eq!(t.security.dumpable, sched::SUID_DUMP_USER);
+    assert_eq!(t.dumpable, sched::SUID_DUMP_USER);
 }
 
 #[test]
@@ -98,7 +98,7 @@ fn setuid_root_binary_raises_euid_and_grants_full_caps() {
     assert_eq!(t.new.cap_effective, CAP_ALL);
     assert!(t.secure_exec, "AT_SECURE must be 1 for a setuid exec");
     assert_ne!(t.per_clear & sched::personality::PER_CLEAR_ON_SETID, 0);
-    assert_eq!(t.security.dumpable, sched::SUID_DUMP_DISABLE,
+    assert_eq!(t.dumpable, sched::SUID_DUMP_DISABLE,
         "a setuid process is not dumpable by its unprivileged owner");
 }
 
@@ -397,15 +397,15 @@ fn keep_caps_is_cleared_by_exec_but_its_lock_survives() {
 #[test]
 fn an_unreadable_binary_forces_the_suid_dumpable_policy() {
     let cx = ExecContext { not_readable: true, suid_dumpable: sched::SUID_DUMP_DISABLE, ..ctx(user_creds()) };
-    assert_eq!(transition(&cx).unwrap().security.dumpable, sched::SUID_DUMP_DISABLE);
+    assert_eq!(transition(&cx).unwrap().dumpable, sched::SUID_DUMP_DISABLE);
     let cx = ExecContext { not_readable: true, suid_dumpable: sched::SUID_DUMP_ROOT, ..ctx(user_creds()) };
-    assert_eq!(transition(&cx).unwrap().security.dumpable, sched::SUID_DUMP_ROOT);
+    assert_eq!(transition(&cx).unwrap().dumpable, sched::SUID_DUMP_ROOT);
 }
 
 #[test]
 fn a_suppressed_setuid_exec_stays_owner_dumpable() {
     let cx = ExecContext { mnt_may_suid: false, ..setuid_root(user_creds()) };
-    assert_eq!(transition(&cx).unwrap().security.dumpable, sched::SUID_DUMP_USER);
+    assert_eq!(transition(&cx).unwrap().dumpable, sched::SUID_DUMP_USER);
 }
 
 // -------------------------------------------------------------- AT_SECURE
