@@ -31,7 +31,7 @@ fn close_and_reuse_after_pin() {
 
 fn duplicate_across_source_reuse(cloexec: bool) {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    super::fcntl_dup::set_post_pin_hook(None);
+    crate::fcntl_dup::set_post_pin_hook(None);
     *REUSE.lock().unwrap() = None;
     let fdt = Arc::new(FdTable::new());
     let original = file(0x7201);
@@ -42,8 +42,8 @@ fn duplicate_across_source_reuse(cloexec: bool) {
         fdt: Arc::clone(&fdt), source, original: Arc::clone(&original),
         replacement: Arc::clone(&replacement),
     });
-    super::fcntl_dup::set_post_pin_hook(Some(close_and_reuse_after_pin));
-    let duplicate = super::fcntl_dup::duplicate_fd(&fdt, source, 0, cloexec, 8).unwrap();
+    crate::fcntl_dup::set_post_pin_hook(Some(close_and_reuse_after_pin));
+    let duplicate = crate::fcntl_dup::duplicate_fd(&fdt, source, 0, cloexec, 8).unwrap();
 
     assert_ne!(duplicate, source);
     assert!(Arc::ptr_eq(&fdt.get(source).unwrap(), &replacement));
