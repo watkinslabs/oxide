@@ -42,6 +42,8 @@ mod ipv6_conf;
 mod mcast_report;
 #[path = "netdev/registry_state.rs"]
 mod registry_state;
+#[path = "netdev/registry_lookup.rs"]
+mod registry_lookup;
 #[path = "netdev/stats.rs"]
 mod stats;
 pub use ingress::{EgressLease, IngressLease};
@@ -413,114 +415,6 @@ impl IfaceRegistry {
         Some(changes)
     }
 
-    /// Look up a registered iface by id, restricted to the given
-    /// net namespace. `ns=0` is the init NS.
-    /// # C: O(N)
-    pub fn lookup_in_ns(&self, id: NetIfaceId, ns: u64) -> Option<Arc<dyn NetDev>> {
-        let g = self.inner.lock();
-        g.entries.iter().find(|e| e.id == id && e.ns == ns
-            && e.ingress.live() && e.ingress.ready())
-            .map(|e| Arc::clone(&e.dev))
-    }
-
-    /// Canonical IPv4 neighbour cache for one live interface generation.
-    /// # C: O(N)
-    pub fn arp_cache_in_ns(&self, id: NetIfaceId, ns: u64) -> Option<Arc<crate::arp::ArpCache>> {
-        let g = self.inner.lock();
-        g.entries.iter().find(|e| e.id == id && e.ns == ns
-            && e.ingress.live() && e.ingress.ready()).map(|e| e.arp.clone())
-    }
-
-    /// The IPv6 half of one interface's neighbour table. One state machine
-    /// serves both families, so this is the type the IPv4 half uses.
-    /// # C: O(N)
-    pub fn ndp_cache_for(&self, id: NetIfaceId)
-        -> Option<Arc<crate::neigh::NeighCache<crate::Ipv6Addr>>>
-    {
-        let g = self.inner.lock();
-        g.entries.iter().find(|e| e.id == id && e.ingress.live()).map(|e| e.ndp.clone())
-    }
-
-    /// Resolve one Linux-visible interface index in its owning namespace.
-    /// Internal device ownership always continues to use `NetIfaceId`.
-    /// # C: O(N)
-    pub fn lookup_ifindex_in_ns(&self, ifindex: u32, ns: u64)
-        -> Option<(NetIfaceId, Arc<dyn NetDev>)> {
-        let g = self.inner.lock();
-        g.entries.iter().find(|e| e.ifindex == ifindex && e.ns == ns
-            && e.ingress.live() && e.ingress.ready())
-            .map(|e| (e.id, Arc::clone(&e.dev)))
-    }
-
-    /// Return the Linux-visible interface index for an internal handle in
-    /// the supplied network namespace. # C: O(N)
-    pub fn ifindex_in_ns(&self, id: NetIfaceId, ns: u64) -> Option<u32> {
-        let g = self.inner.lock();
-        g.entries.iter().find(|e| e.id == id && e.ns == ns
-            && e.ingress.live() && e.ingress.ready()).map(|e| e.ifindex)
-    }
-
-    /// Return an interface's current namespace-local index without requiring
-    /// the caller to know its namespace. Control notifications retain an
-    /// interface generation across namespace teardown and use this only as a
-    /// post-teardown fallback. # C: O(N)
-    pub fn ifindex(&self, id: NetIfaceId) -> Option<u32> {
-        let g = self.inner.lock();
-        g.entries.iter().find(|e| e.id == id && e.ingress.live())
-            .map(|e| e.ifindex)
-    }
-
-    /// Return the canonical registry-owned name for one live interface. # C: O(N)
-    pub fn name_in_ns(&self, id: NetIfaceId, ns: u64) -> Option<String> {
-        let g = self.inner.lock();
-        g.entries.iter().find(|e| e.id == id && e.ns == ns
-            && e.ingress.live() && e.ingress.ready()).map(|e| e.name.clone())
-    }
-
-    /// Network namespace that canonically owns `id`. # C: O(N)
-    pub fn namespace(&self, id: NetIfaceId) -> Option<u64> {
-        let g = self.inner.lock();
-        g.entries.iter().find(|entry| entry.id == id
-            && entry.ingress.live() && entry.ingress.ready())
-            .map(|entry| entry.ns)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn registered(&self, id: NetIfaceId) -> bool {
-        self.inner.lock().entries.iter().any(|entry| entry.id == id)
-    }
-
-    /// Interface-owned multicast transition ordering in one namespace. # C: O(N)
-    pub(crate) fn mcast_report_in_ns(&self, id: NetIfaceId, ns: u64)
-        -> Option<Arc<McastReportState>> {
-        let g = self.inner.lock();
-        g.entries.iter().find(|entry| entry.id == id && entry.ns == ns
-            && entry.ingress.live() && entry.ingress.ready())
-            .map(|entry| entry.mcast_report.clone())
-    }
-
-    /// Init-NS lookup compatibility shim — pre-F101 callers default
-    /// to ns=0 until they're updated to pass the calling task's NS.
-    /// # C: O(N)
-    pub fn lookup(&self, id: NetIfaceId) -> Option<Arc<dyn NetDev>> {
-        self.lookup_in_ns(id, 0)
-    }
-
-    /// Look up by stable name within the given namespace.
-    /// # C: O(N)
-    pub fn lookup_name_in_ns(&self, name: &str, ns: u64) -> Option<(NetIfaceId, Arc<dyn NetDev>)> {
-        let g = self.inner.lock();
-        g.entries.iter()
-            .find(|e| e.name == name && e.ns == ns
-                && e.ingress.live() && e.ingress.ready())
-            .map(|e| (e.id, Arc::clone(&e.dev)))
-    }
-
-    /// Init-NS name lookup compatibility shim.
-    /// # C: O(N)
-    pub fn lookup_name(&self, name: &str) -> Option<(NetIfaceId, Arc<dyn NetDev>)> {
-        self.lookup_name_in_ns(name, 0)
-    }
 }
 
 /// The running task's network namespace id (CLONE_NEWNET; 0 = init ns).
