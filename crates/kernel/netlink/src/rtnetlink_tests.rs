@@ -21,7 +21,7 @@
 
     #[path = "rtnetlink_tests/route_semantics.rs"]
     mod route_semantics;
-    #[path = "rtnetlink_tests/notification_races.rs"]
+    #[path = "rtnetlink_tests/notification_races/mod.rs"]
     mod notification_races;
     #[path = "rtnetlink_tests/address_semantics.rs"]
     mod address_semantics;
