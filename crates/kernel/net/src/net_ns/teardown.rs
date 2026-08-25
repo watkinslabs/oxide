@@ -149,7 +149,7 @@ extern "C" fn namespace_reaper(_arg: usize) -> ! {
         // SAFETY: final-drop publication is a pure predicate and its producer
         // wakes REAPER_WAIT; this worker holds no subsystem lock while asleep.
         unsafe {
-            sched::live::wait_event_uninterruptible(&REAPER_WAIT,
+            sched::live::wait_event_worker(&REAPER_WAIT,
                 || FINAL_DROP_PENDING.published_after_arm());
         }
     }
