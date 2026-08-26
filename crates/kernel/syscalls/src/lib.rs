@@ -477,6 +477,9 @@ mod namei_common {
     pub fn read_user_path(_addr: u64) -> Result<String, i64> {
         Err(-(syscall::errno::Errno::Efault.as_i32() as i64))
     }
+    pub fn read_user_path_allow_empty(_addr: u64) -> Result<String, i64> {
+        Err(-(syscall::errno::Errno::Efault.as_i32() as i64))
+    }
 }
 
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
