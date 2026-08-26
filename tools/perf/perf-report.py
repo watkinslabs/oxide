@@ -159,6 +159,12 @@ def main() -> int:
     emit("Both sides are measured. The host figure is a tight loop over one shape "
          "of the call; the oxide figure is the average over every such call a real "
          "desktop boot made. Read a ratio as an order of magnitude, not a score.")
+    emit()
+    emit("Run-to-run variance on the oxide side is large — the boot does not make "
+         "the same mix of calls twice, and the socket rows swing by tens of percent "
+         "between runs. A change is only demonstrated here when it moves a row by "
+         "more than about half, or moves it across a verdict band. Anything smaller "
+         "needs repeated runs or a hosted microbenchmark.")
 
     worst = max((r for r, *_ in rows), default=0)
     if args.markdown:
