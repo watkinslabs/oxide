@@ -185,11 +185,17 @@ pub fn build_user_stack(
     // their ORIGINAL index so the pointer vectors below stay forward
     // (argv[0] pointer first).
     if argv.len() > MAX_STACK_VECTOR || envp.len() > MAX_STACK_VECTOR { return None; }
-    let mut envp_vas = [0u64; MAX_STACK_VECTOR];
+    // Sized to the vectors actually being placed, not to the ceiling they are
+    // allowed to reach. Two `MAX_STACK_VECTOR` arrays are 4096 B of kernel
+    // stack held across the whole placement — and this function inlines into
+    // the helper-spawn path, which then carries that page down through the
+    // loader into ext4 and the block layer. Almost every exec places a handful
+    // of entries and reserved the page anyway.
+    let mut envp_vas = alloc::vec![0u64; envp.len()];
     for i in (0..envp.len()).rev() {
         envp_vas[i] = push_cstr(&mut cursor, envp[i])?;
     }
-    let mut argv_vas = [0u64; MAX_STACK_VECTOR];
+    let mut argv_vas = alloc::vec![0u64; argv.len()];
     for i in (0..argv.len()).rev() {
         argv_vas[i] = push_cstr(&mut cursor, argv[i])?;
     }
@@ -254,7 +260,7 @@ pub fn build_user_stack(
     // the highest; arg_end = past argv[last]'s NUL. Same for env. So
     // `/proc/<pid>/cmdline` reads [arg_start,arg_end) = argv[0]\0…argv[last]\0
     // in order, exactly like Linux. 0/0 when the vector is empty.
-    let bounds = |vas: &[u64; MAX_STACK_VECTOR], v: &[&[u8]]| -> (u64, u64) {
+    let bounds = |vas: &[u64], v: &[&[u8]]| -> (u64, u64) {
         if v.is_empty() { return (0, 0); }
         let n = v.len();
         let lo = vas[0];
