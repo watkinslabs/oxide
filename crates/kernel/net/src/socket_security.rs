@@ -42,22 +42,28 @@ pub struct MsgSock {
 pub fn inet(sock: &crate::sock::InetSocket) -> MsgSock {
     let family = sock.family.load(core::sync::atomic::Ordering::Acquire);
     let socket_type = sock.opts.so_type.load(core::sync::atomic::Ordering::Acquire);
-    let target_class = if family == crate::sock::AF_UNIX {
+    let (proto, target_class) = if family == crate::sock::AF_UNIX {
+        // One kind snapshot supplies both values for the shared AF_UNIX
+        // object. Keeping this together avoids the old `sock_proto()` lock
+        // followed by a second kind lock for target-class selection.
         match &*sock.kind.lock() {
-            crate::sock::SockKind::UnixDgram(_) => "unix_dgram_socket",
-            _ => "unix_stream_socket",
+            crate::sock::SockKind::UnixDgram(_) =>
+                (Proto::Other, "unix_dgram_socket"),
+            _ => (Proto::Other, "unix_stream_socket"),
         }
     } else {
-        match socket_type {
+        let proto = crate::landlock_addr::sock_proto(sock);
+        let target_class = match socket_type {
             1 => "tcp_socket",
             3 => "rawip_socket",
             _ => "udp_socket",
-        }
+        };
+        (proto, target_class)
     };
     MsgSock {
         namespace: sock.net_ns(),
         family,
-        proto: crate::landlock_addr::sock_proto(sock),
+        proto,
         target_sid: sock.security_label(),
         target_class,
     }
