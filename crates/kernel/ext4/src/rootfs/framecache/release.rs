@@ -18,19 +18,24 @@ impl Ext4FrameStore {
         let _ = unsafe { sched::live::wait_event_uninterruptible(&self.fill_wait,
             || self.active_fills.load(Ordering::Acquire) == 0) };
         self.invalidate_range(0, u64::MAX);
+        // An unlinked inode's pages are discarded, not written, so the dirty
+        // pin has nothing left to wait for and must not keep the store alive.
+        self.unpin_if_clean();
     }
 }
 
 impl Drop for Ext4FrameStore {
     /// Flush then release every inode-owned resident frame. # C: O(N_pages)
     fn drop(&mut self) {
-        // A linked inode's final cache drop remains a durability path.  An
-        // unlinked inode was already discarded by `discard_for_eviction`; it
-        // must never write through an inode number that may now name another
-        // object.
-        if !self.evicting.load(Ordering::Acquire) && !self.dirty.lock().is_empty() {
-            let _ = self.writeback();
-        }
+        // A final drop is guaranteed clean and writes nothing. A store holds a
+        // strong reference to itself for exactly as long as it has dirty pages,
+        // so reaching a zero count means the flusher, a sync or eviction has
+        // already emptied the dirty set. Writing here instead meant a journal
+        // commit ran on whichever stack released the last reference — a kernel
+        // helper's ELF read, for instance — and carried the block layer down
+        // with it.
+        debug_assert!(self.evicting.load(Ordering::Acquire) || self.dirty.lock().is_empty(),
+            "a dirty frame store must be pinned, so it cannot reach its final drop");
         let g = self.pages.lock();
         for (_idx, page) in g.iter() {
             // SAFETY: each frame's remaining object reference belongs to this store.

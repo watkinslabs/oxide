@@ -17,6 +17,9 @@ static ALL_STORES: Spinlock<Vec<Weak<Ext4FrameStore>>, TaskListClass> = Spinlock
 
 pub(super) fn register_store(s: &Arc<Ext4FrameStore>) {
     ALL_STORES.lock().push(Arc::downgrade(s));
+    // This filesystem keeps its own page cache, so the periodic flusher has to
+    // be told it exists. Idempotent on the block side.
+    block::pagecache::register_fs_flusher(flush_pass);
     let _ = pmm::shrinker::register_shrinker(pmm::shrinker::Shrinker {
         class: pmm::shrinker::ShrinkerClass::LruBacked,
         count_objects: count_clean_pages,
@@ -84,6 +87,18 @@ pub(super) fn register(s: &Arc<Ext4FrameStore>) {
 /// silently swallow the loss. # C: O(N_stores · N_dirty)
 pub fn flush_all_dirty() -> Result<(), ()> { flush_dirty(None) }
 
+/// The periodic flusher's visit: get this filesystem's dirty page cache onto
+/// the device on the flusher's own stack, on its own schedule.
+///
+/// Registered with the block layer at mount, because that is the only way the
+/// dependency can run — the writeback machinery cannot name a filesystem. A
+/// failure here is not reportable to anyone: the daemon has no caller to return
+/// `EIO` to, and the pages stay dirty and pinned for the next visit, which is
+/// what the reference does when background writeback fails.
+/// # C: O(N_stores · N_dirty)
+pub fn flush_pass() { let _ = writeback_dirty(None); }
+
+
 /// Flush the registered frame stores belonging to ONE mount — the
 /// per-superblock scope `sync_fs` needs. `None` flushes every mount
 /// (`msync(2)`, which names no filesystem).
@@ -132,6 +147,7 @@ pub fn writeback_inode(mount: &crate::Mount, ino: u32) -> Result<(), ()> {
             continue;
         }
         if s.writeback().is_err() { failed = true; }
+        s.unpin_if_clean();
         break;
     }
     DIRTY_STORES.lock().retain(|w| w.strong_count() > 0);
@@ -159,6 +175,9 @@ fn writeback_dirty_inner(only: Option<&crate::Mount>)
             mounts.push(s.st.mount.clone());
         }
         if s.writeback().is_err() { failed = true; }
+        // The walk holds `s`, so releasing the store's own dirty pin here can
+        // never be the drop that frees it.
+        s.unpin_if_clean();
     }
     DIRTY_STORES.lock().retain(|w| w.strong_count() > 0);
     (failed, mounts)
