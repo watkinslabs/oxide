@@ -40,14 +40,14 @@ const fn align_up(addr: u64, align: u64) -> u64 { (addr.wrapping_add(align - 1))
 pub(crate) fn find_hole_aligned(tree: &VmaTree, len: u64, mmap_top: u64, align: u64)
     -> Option<UserVirtAddr> {
     if len == 0 || len > mmap_top.saturating_sub(MIN_USER_VA) { return None; }
-    let mut vmas: alloc::vec::Vec<(u64, u64)> = alloc::vec::Vec::new();
-    for v in tree.iter() {
+    let mut top = mmap_top;
+    // BTreeMap::Values is double-ended, so walk the canonical VMA tree
+    // directly. Building a temporary Vec here made every top-down mmap pay
+    // an allocation plus a full copy before doing the actual reverse scan.
+    for v in tree.map.values().rev() {
         let s = v.start.as_u64().max(MIN_USER_VA);
         let e = v.end.as_u64().min(mmap_top);
-        if e > s { vmas.push((s, e)); }
-    }
-    let mut top = mmap_top;
-    for &(s, e) in vmas.iter().rev() {
+        if e <= s { continue; }
         if top.saturating_sub(e) >= len {
             let at = align_down(top - len, align);
             if at >= e && at >= MIN_USER_VA { return UserVirtAddr::new(at); }
@@ -87,5 +87,4 @@ pub(crate) fn find_hole_bottom_up_aligned(tree: &VmaTree, len: u64, mmap_floor: 
     }
     if MMAP_TOP.saturating_sub(low) >= len { UserVirtAddr::new(low) } else { None }
 }
-
 
