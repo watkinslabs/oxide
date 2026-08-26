@@ -1,6 +1,8 @@
 // 000 read — one syscall, one file (docs/53 §0).
 use syscall::{errno::Errno, SyscallArgs};
 
+const READ_STACK_BUF: usize = hal::PAGE_SIZE_BYTES as usize;
+
 #[cfg(target_os = "oxide-kernel")]
 fn current_task() -> Option<&'static sched::Task> { sched::live::current() }
 
@@ -55,13 +57,28 @@ pub fn sys_read(args: &SyscallArgs) -> i64 {
     // The range check is only admission. Read into kernel-owned storage so a
     // concurrent unmap cannot turn a VFS read into an unrecoverable CPL0
     // store; publish the result through the exception-table usercopy.
-    let mut bounce = alloc::vec![0u8; cnt];
-    let ret = match file.read(&mut bounce) {
-        Ok(n) => match uaccess::copy_to_user(buf, &bounce[..n]) {
-            Ok(()) => n as i64,
-            Err(_) => -(Errno::Efault.as_i32() as i64),
-        },
-        Err(e) => -(e as i64),
+    // Most boot reads fit one page. Keep that common transfer on the syscall
+    // stack: Linux's synchronous read path does not allocate a transfer-sized
+    // heap buffer before entering the file operation. Larger reads retain the
+    // bounded kernel-owned fallback until the VFS grows a user-backed iterator.
+    let ret = if cnt <= READ_STACK_BUF {
+        let mut bounce = [0u8; READ_STACK_BUF];
+        match file.read(&mut bounce[..cnt]) {
+            Ok(n) => match uaccess::copy_to_user(buf, &bounce[..n]) {
+                Ok(()) => n as i64,
+                Err(_) => -(Errno::Efault.as_i32() as i64),
+            },
+            Err(e) => -(e as i64),
+        }
+    } else {
+        let mut bounce = alloc::vec![0u8; cnt];
+        match file.read(&mut bounce) {
+            Ok(n) => match uaccess::copy_to_user(buf, &bounce[..n]) {
+                Ok(()) => n as i64,
+                Err(_) => -(Errno::Efault.as_i32() as i64),
+            },
+            Err(e) => -(e as i64),
+        }
     };
     cur.account_read_result(ret);
     ret
