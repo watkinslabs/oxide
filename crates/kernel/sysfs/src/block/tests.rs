@@ -162,3 +162,23 @@ fn block_queue_write_cache_is_a_live_durability_control() {
     assert_eq!(cache.write(0, b"bogus\n"), Err(vfs::VfsError::Einval));
     assert!(block::registry::unregister(NAME));
 }
+
+/// `queue/scheduler` exists, names the active elevator in brackets, and takes
+/// only a registered name. Without it, udev's `60-block-scheduler.rules` write
+/// fails with ENOENT on every disk at coldplug.
+#[test]
+fn queue_scheduler_reports_none_active_and_refuses_an_unregistered_name() {
+    const NAME: &str = "sysfs-block-sched";
+    let dev: Arc<dyn block::BlockDevice> = block::MemDisk::<TaskList>::new(TEST_BLOCK_SIZE, TEST_BLOCK_COUNT);
+    assert_ne!(block::registry::register(NAME, dev), 0);
+    let sched = make_sys_block_inode().lookup(NAME).expect("disk")
+        .lookup("queue").expect("queue")
+        .lookup("scheduler").expect("scheduler");
+    let mut out = [0u8; 32];
+    let count = sched.read(0, &mut out).expect("scheduler read");
+    assert_eq!(&out[..count], b"[none] \n");
+    assert_eq!(sched.write(0, b"none\n"), Ok("none\n".len()));
+    assert_eq!(sched.write(0, b"bfq\n"), Err(vfs::VfsError::Einval));
+    assert_eq!(sched.write(0, b"mq-deadline\n"), Err(vfs::VfsError::Einval));
+    assert!(block::registry::unregister(NAME));
+}

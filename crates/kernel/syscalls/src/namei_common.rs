@@ -160,6 +160,18 @@ pub(crate) fn fsid_to_dev(fsid: u64) -> u64 {
 }
 
 /// Boot diagnostic for namespace mutation failures during systemd setup.
+///
+/// Armed only under `debug-namei`. Every caller sits on an ordinary syscall
+/// error return, where a failure is routine rather than remarkable — an
+/// `O_CREAT|O_EXCL` that finds the file already there is the normal outcome of
+/// a create race, not a fault — and the reference prints nothing for any of
+/// them. Left ungated it put a klog line, a path copy and a serial write on
+/// the error path of every create in the system.
+#[cfg(not(feature = "debug-namei"))]
+pub(crate) fn trace_run_vfs_error(_op: &[u8], _path: &str, _e: vfs::VfsError) {}
+
+/// Armed form of the create-failure diagnostic. # C: O(path length)
+#[cfg(feature = "debug-namei")]
 pub(crate) fn trace_run_vfs_error(op: &[u8], path: &str, e: vfs::VfsError) {
     klog::write_raw(b"[NAMEI] ");
     klog::write_raw(op);

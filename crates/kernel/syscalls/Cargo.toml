@@ -133,6 +133,7 @@ debug-polktrace = []  # compile the polkit-only live syscall producer used by sc
 debug-fdlife = ["vfs/debug-fdlife"]  # [FDHIST] low-distortion socket-activation fd history
 debug-scmfd = ["net/debug-scmfd"]  # [SCMW]/[SCMR] AF_UNIX stream SCM_RIGHTS fd-relay probe (dbus-broker two-hop pidfd trace)
 debug-wakelat = ["sched/debug-wakelat"]  # recvmsg/poll busy-wait stall probe ([WLBLK]) + wait-kind tags for the gnome wakeup-latency hunt
+debug-namei = []  # [NAMEI] create/mkdir/symlink/mknod failure trace — OFF by default: every caller is an ordinary syscall error return (EEXIST on a create race, ENOENT on a probe), which the reference does not log
 debug-openat = []  # verbose per-openat path log ([OPENAT] dirfd/flags/path) — split from debug-syscall so syscall-trace captures aren't drowned by the openat flood
 debug-ssh = ["kmacros/debug-ssh"]
 debug-sshd = []  # [SSHD-EXEC]/[SSHD-LISTEN] lifecycle restricted to /usr/bin/sshd

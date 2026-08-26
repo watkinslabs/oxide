@@ -26,6 +26,7 @@
 //       discard_max_bytes             effective discard maximum
 //       discard_granularity           device discard alignment unit
 //       stable_writes                 immutable stable-write queue feature
+//       scheduler                     registered I/O schedulers, active bracketed
 //
 // Linux gotcha: /sys/block/<dev>/size is ALWAYS reported in 512-byte
 // units regardless of the device's logical block size:
@@ -134,6 +135,7 @@ const QUEUE_ATTR_LIST: &[Attribute] = &[
     Attribute { name: "discard_granularity", mode: RO_PERM },
     Attribute { name: "stable_writes", mode: RO_PERM },
     Attribute { name: "write_cache", mode: RW_PERM },
+    Attribute { name: "scheduler", mode: RW_PERM },
 ];
 static QUEUE_GROUP: AttrGroup = AttrGroup { attrs: QUEUE_ATTR_LIST };
 
@@ -178,12 +180,27 @@ impl SysfsOps for DiskKobj {
     }
 }
 
+/// `queue/scheduler` render. No elevator is registered, so the active choice
+/// is the bracketed `none` and the list that follows it is empty — the shape
+/// `elv_iosched_show` produces for a queue with no scheduler and an empty
+/// elevator list, trailing space included. # C: O(1)
+fn scheduler_show() -> Vec<u8> { b"[none] \n".to_vec() }
+
+/// `queue/scheduler` write. Only the name of a registered scheduler is
+/// accepted, and `none` is always one; every other name is `EINVAL`, which is
+/// what a switch to an unknown elevator reports. # C: O(len)
+fn scheduler_store(buf: &[u8]) -> KResult<usize> {
+    let text = core::str::from_utf8(buf).map_err(|_| VfsError::Einval)?.trim();
+    if text == "none" { Ok(buf.len()) } else { Err(VfsError::Einval) }
+}
+
 /// `sysfs_ops` for a `/sys/block/<dev>/queue` kobject. Every value comes from
 /// the device's one canonical queue-topology record. # C: O(1)
 struct QueueKobj { name: String }
 impl SysfsOps for QueueKobj {
     fn show(&self, attr: &str) -> KResult<Vec<u8>> {
         QUEUE_GROUP.find(attr).ok_or(VfsError::Enoent)?;
+        if attr == "scheduler" { return Ok(scheduler_show()); }
         if attr == "write_cache" {
             let mode = block::registry::write_cache(&self.name).map_err(|_| VfsError::Enodev)?;
             return Ok(if mode { b"write back\n".to_vec() } else { b"write through\n".to_vec() });
@@ -193,6 +210,7 @@ impl SysfsOps for QueueKobj {
         Ok(alloc::format!("{}\n", value).into_bytes())
     }
     fn store(&self, attr: &str, buf: &[u8]) -> KResult<usize> {
+        if attr == "scheduler" { return scheduler_store(buf); }
         if attr == "write_cache" {
             let text = core::str::from_utf8(buf).map_err(|_| VfsError::Einval)?.trim();
             let write_back = match text {
