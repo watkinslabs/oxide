@@ -39,6 +39,8 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
         return -(Errno::Eagain.as_i32() as i64);
     }
     // D1/D2: PATH_MAX errno contract (EFAULT/ENOENT-on-empty/ENAMETOOLONG).
+    #[cfg(feature = "debug-syscost")]
+    let __ph = crate::syscost_phase::Phase::start(crate::syscost_phase::PH_GETNAME);
     let path = match if empty_path {
         crate::mount_common::read_user_path_allow_empty(path_ptr)
     } else {
@@ -47,6 +49,8 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
         Ok(p)   => p,
         Err(rv) => return rv,
     };
+    #[cfg(feature = "debug-syscost")]
+    drop(__ph);
     let s: &str = path.as_str();
     #[cfg(feature = "debug-startlat")]
     __openlat.copied();
@@ -95,6 +99,8 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
     // EAGAIN (CACHED) surface to userspace instead of collapsing to ENOENT.
     // BENEATH/IN_ROOT re-base the walk START on the dirfd (resolve_confined).
     let nofollow = (flags & O_NOFOLLOW) != 0;
+    #[cfg(feature = "debug-syscost")]
+    let __ph_resolve = crate::syscost_phase::Phase::start(crate::syscost_phase::PH_RESOLVE);
     let lookup_resolved: Option<vfs::VfsPath> = if crate::openat2_resolve::resolve_active(&extra) {
         let mut lookup = extra;
         lookup.no_follow_final = nofollow;
@@ -123,6 +129,8 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
             Err(rv) => return rv,
         }
     };
+    #[cfg(feature = "debug-syscost")]
+    drop(__ph_resolve);
     let mut pty_allocation: Option<devpts::PtyAllocation> = None;
     #[cfg(feature = "debug-startlat")]
     __openlat.resolved();
