@@ -16,6 +16,11 @@ pub fn set_mmap_event_hook(hook: MmapEventHook) {
     MMAP_EVENT_HOOK.store(hook as usize as u64, Ordering::Release);
 }
 
+/// Whether any consumer is listening for VMA lifecycle notifications.
+/// Callers that would otherwise walk a range solely to invoke [`notify`]
+/// can use this O(1) gate, matching Linux's conditional perf-event callback.
+pub(crate) fn enabled() -> bool { MMAP_EVENT_HOOK.load(Ordering::Acquire) != 0 }
+
 pub(crate) fn notify(
     addr: u64, len: u64, pgoff: u64, prot: VmaProt, flags: VmaFlags,
     name: &[u8], dev: u64, ino: u64,
@@ -27,4 +32,3 @@ pub(crate) fn notify(
     let hook: MmapEventHook = unsafe { core::mem::transmute_copy(&raw) };
     hook(addr, len, pgoff, prot, flags, name, dev, ino);
 }
-

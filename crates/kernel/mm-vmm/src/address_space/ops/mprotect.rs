@@ -146,21 +146,26 @@ impl AddressSpace {
                 error = Some(unexpected);
                 break;
             }
-            for vma in tree.iter().filter(|v| {
-                v.end.as_u64() > step.start.as_u64()
-                    && v.start.as_u64() < step_end
-            }) {
-                let (name, dev, ino, pgoff) = match &vma.backing {
-                    crate::VmaBacking::File { backing, off } => (
-                        backing.map_path().unwrap_or(&[]), backing.dev(), backing.ino(),
-                        *off / hal::PAGE_SIZE_BYTES,
-                    ),
-                    _ => (&[][..], 0, 0, 0),
-                };
-                crate::mmap_event::notify(
-                    vma.start.as_u64(), vma.end.as_u64() - vma.start.as_u64(),
-                    pgoff, vma.prot, vma.flags, name, dev, ino,
-                );
+            // No perf mmap listener means there is no reason to walk the VMA
+            // range just to have notify() return immediately. Linux invokes
+            // perf_event_mmap only when an event is subscribed.
+            if crate::mmap_event::enabled() {
+                for vma in tree.iter().filter(|v| {
+                    v.end.as_u64() > step.start.as_u64()
+                        && v.start.as_u64() < step_end
+                }) {
+                    let (name, dev, ino, pgoff) = match &vma.backing {
+                        crate::VmaBacking::File { backing, off } => (
+                            backing.map_path().unwrap_or(&[]), backing.dev(), backing.ino(),
+                            *off / hal::PAGE_SIZE_BYTES,
+                        ),
+                        _ => (&[][..], 0, 0, 0),
+                    };
+                    crate::mmap_event::notify(
+                        vma.start.as_u64(), vma.end.as_u64() - vma.start.as_u64(),
+                        pgoff, vma.prot, vma.flags, name, dev, ino,
+                    );
+                }
             }
             applied += 1;
         }
