@@ -83,7 +83,7 @@ fn a_datagram_socketpair_with_no_destination_keeps_its_peer() {
     let message = message(None, b"peer");
 
     let scm = prepare_unix(&ctx, &socket, &message, 0).unwrap().unwrap();
-    assert!(matches!(scm, UnixScm::Stream(_)), "an unnamed send keeps the pair");
+    assert!(matches!(scm, UnixScm::Stream { .. }), "an unnamed send keeps the pair");
     assert_eq!(send_unix_once(&ctx, &socket, &message, &scm, SNDBUF, 0, message.payload.len(),
         false), Ok(4));
     let net::sock::SockKind::UnixMsgPair(pair, end) = &*socket.kind.lock() else { unreachable!() };
@@ -100,7 +100,7 @@ fn a_seqpacket_socketpair_discards_a_supplied_destination() {
     let message = message(Some(abstract_name(b"b1962-seqpacket-pair-named")), b"seq");
 
     let scm = prepare_unix(&ctx, &socket, &message, 0).unwrap().unwrap();
-    assert!(matches!(scm, UnixScm::Stream(_)), "a seqpacket send never looks at the name");
+    assert!(matches!(scm, UnixScm::Stream { .. }), "a seqpacket send never looks at the name");
     assert_eq!(send_unix_once(&ctx, &socket, &message, &scm, SNDBUF, 0, message.payload.len(),
         false), Ok(3));
     assert!(queue.pop().is_none());

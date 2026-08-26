@@ -13,6 +13,11 @@ pub(crate) struct Scm {
     creds: Option<net::sock::SenderCreds>,
 }
 
+pub(crate) enum StreamTarget {
+    Stream(Arc<net::UnixPair>, net::UnixEnd),
+    Message(Arc<net::UnixMsgPair>, net::UnixEnd),
+}
+
 pub(crate) enum UnixScm {
     Datagram {
         scm: Scm,
@@ -30,7 +35,7 @@ pub(crate) enum UnixScm {
         /// queue alone.
         local: Option<Arc<net::UnixDgramQueue>>,
     },
-    Stream(Scm),
+    Stream { scm: Scm, target: StreamTarget },
 }
 
 fn i32_at(bytes: &[u8], offset: usize) -> i32 {
@@ -100,39 +105,33 @@ pub(crate) fn validate_scm_no_rights(ctx: &SendContext<'_>, control: &[u8]) -> K
     parse(ctx, control, false).map(|_| ())
 }
 
-fn stream(_ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSocket>, payload: &[u8],
-    scm: &Scm, cap: usize, include_control: bool, oob: bool) -> KResult<usize>
+fn stream(payload: &[u8], target: &StreamTarget, scm: &Scm, cap: usize,
+    include_control: bool, oob: bool) -> KResult<usize>
 {
-    enum Target { Stream(Arc<net::UnixPair>, net::UnixEnd), Msg(Arc<net::UnixMsgPair>, net::UnixEnd) }
-    let target = match &*socket.kind.lock() {
-        net::sock::SockKind::Unix(pair, end) => Target::Stream(pair.clone(), *end),
-        net::sock::SockKind::UnixMsgPair(pair, end) => Target::Msg(pair.clone(), *end),
-        _ => return Err(Error::Einval),
-    };
     let rights = net::classify_files(if include_control { scm.files.clone() } else { Vec::new() });
     let supplied = if include_control { scm.creds } else { None };
     if oob {
-        let Target::Stream(pair, end) = target else { return Err(Error::Eopnotsupp) };
+        let StreamTarget::Stream(pair, end) = target else { return Err(Error::Eopnotsupp) };
         let byte = *payload.first().ok_or(Error::Eopnotsupp)?;
         let creds = supplied.map(|c| (c.pid, c.uid, c.gid));
-        return pair.write_oob(end, byte, rights, creds, cap).map_err(|error| match error {
+        return pair.write_oob(*end, byte, rights, creds, cap).map_err(|error| match error {
             net::unix_sock::UnixStreamSendError::PeerClosed => Error::Epipe,
             net::unix_sock::UnixStreamSendError::WouldBlock => Error::Eagain,
         });
     }
     let result = match target {
-        Target::Stream(pair, end) => match supplied {
-            Some(creds) => pair.write_with_rights_and_creds_bounded(end, payload, rights,
+        StreamTarget::Stream(pair, end) => match supplied {
+            Some(creds) => pair.write_with_rights_and_creds_bounded(*end, payload, rights,
                 (creds.pid, creds.uid, creds.gid), cap),
-            None => pair.write_with_rights_bounded(end, payload, rights, cap),
+            None => pair.write_with_rights_bounded(*end, payload, rights, cap),
         }.map_err(|error| match error {
             net::unix_sock::UnixStreamSendError::PeerClosed => Error::Epipe,
             net::unix_sock::UnixStreamSendError::WouldBlock => Error::Eagain,
         }),
-        Target::Msg(pair, end) => match supplied {
-            Some(creds) => pair.send_with_rights_and_creds_bounded(end, payload, rights,
+        StreamTarget::Message(pair, end) => match supplied {
+            Some(creds) => pair.send_with_rights_and_creds_bounded(*end, payload, rights,
                 (creds.pid, creds.uid, creds.gid), cap),
-            None => pair.send_with_rights_bounded(end, payload, rights, cap),
+            None => pair.send_with_rights_bounded(*end, payload, rights, cap),
         }.map_err(|error| match error {
             net::unix_sock::UnixMsgSendError::PeerClosed => Error::Epipe,
             net::unix_sock::UnixMsgSendError::PeerRefused => Error::Econnrefused,
@@ -167,23 +166,33 @@ fn datagram(ctx: &SendContext<'_>, message: &Message, scm: &Scm,
 pub(crate) fn prepare_unix(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSocket>,
     message: &Message, flags: u32) -> Option<KResult<UnixScm>>
 {
-    enum Kind { Datagram(Arc<net::UnixDgramQueue>), PairDatagram, Stream, Unconnected }
+    enum Kind {
+        Datagram(Arc<net::UnixDgramQueue>),
+        PairDatagram(StreamTarget),
+        Stream(StreamTarget),
+        Unconnected,
+    }
     // Every SOCK_STREAM flavour, connected or not: they share the out-of-band
     // division and the rule that a destination address is not theirs to take.
-    let byte_stream = matches!(*socket.kind.lock(), net::sock::SockKind::Unix(_, _)
-        | net::sock::SockKind::UnixUnbound(_, _) | net::sock::SockKind::UnixListener(_));
-    let connected = matches!(*socket.kind.lock(), net::sock::SockKind::Unix(_, _));
-    let kind = match &*socket.kind.lock() {
-        net::sock::SockKind::UnixDgram(queue) => Kind::Datagram(queue.clone()),
+    // Linux selects the protocol operation once and keeps that selection for
+    // the send. Snapshot the equivalent tagged socket state once; repeating
+    // this lock for byte-stream policy, connection state, and dispatch made a
+    // single AF_UNIX message pay for three classifications.
+    let (byte_stream, connected, kind) = match &*socket.kind.lock() {
+        net::sock::SockKind::UnixDgram(queue) => (false, false, Kind::Datagram(queue.clone())),
         // A DATAGRAM socketpair end runs the datagram send, so a supplied
         // destination is resolved by the ordinary name lookup and outranks the
         // peer it was created with. A SEQPACKET one discards `msg_namelen`
         // before the datagram send ever sees it, so it keeps the pair.
-        net::sock::SockKind::UnixMsgPair(pair, _)
-            if pair.kind == net::UnixMsgKind::Datagram => Kind::PairDatagram,
-        net::sock::SockKind::Unix(_, _) | net::sock::SockKind::UnixMsgPair(_, _) => Kind::Stream,
+        net::sock::SockKind::UnixMsgPair(pair, end)
+            if pair.kind == net::UnixMsgKind::Datagram =>
+                (false, false, Kind::PairDatagram(StreamTarget::Message(pair.clone(), *end))),
+        net::sock::SockKind::Unix(pair, end) =>
+            (true, true, Kind::Stream(StreamTarget::Stream(pair.clone(), *end))),
+        net::sock::SockKind::UnixMsgPair(pair, end) =>
+            (false, false, Kind::Stream(StreamTarget::Message(pair.clone(), *end))),
         net::sock::SockKind::UnixUnbound(_, _) | net::sock::SockKind::UnixListener(_) =>
-            Kind::Unconnected,
+            (true, false, Kind::Unconnected),
         _ => return None,
     };
     Some((|| {
@@ -203,15 +212,17 @@ pub(crate) fn prepare_unix(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSo
         match kind {
             // No peer was ever published, so there is nothing to send to.
             Kind::Unconnected => Err(Error::Enotconn),
-            Kind::Stream => Ok(UnixScm::Stream(scm)),
-            Kind::PairDatagram => {
+            Kind::Stream(target) => Ok(UnixScm::Stream { scm, target }),
+            Kind::PairDatagram(target) => {
                 if socket.write_shut.load(Ordering::Acquire) { return Err(Error::Epipe); }
                 // No name: the pair's own peer, which is what the socketpair
                 // was created around. A named one is resolved and delivered
                 // like any other datagram; the sending end owns no queue, so
                 // it publishes no source address and charges no write memory
                 // of its own.
-                let Some(name) = message.name.as_deref() else { return Ok(UnixScm::Stream(scm)); };
+                let Some(name) = message.name.as_deref() else {
+                    return Ok(UnixScm::Stream { scm, target });
+                };
                 let address = crate::address::unix(ctx, name)?;
                 let queue = net::net_ns::unix_registry_for_addr_in(&socket.net_namespace, &address)
                     .dgram_lookup_addr(&address).ok_or(Error::Econnrefused)?;
@@ -255,7 +266,7 @@ pub(crate) fn prepare_unix(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSo
 }
 
 /// Commit one prepared AF_UNIX send transaction. # C: O(payload)
-pub(crate) fn send_unix_once(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSocket>,
+pub(crate) fn send_unix_once(ctx: &SendContext<'_>, _socket: &Arc<net::sock::InetSocket>,
     message: &Message, scm: &UnixScm, cap: usize, offset: usize, body: usize, oob: bool)
     -> KResult<usize>
 {
@@ -268,10 +279,10 @@ pub(crate) fn send_unix_once(ctx: &SendContext<'_>, socket: &Arc<net::sock::Inet
                 if *symmetric { usize::MAX } else { cap }, local.as_ref(), cap),
         // The out-of-band tail is the payload's LAST byte; the body loop stops
         // one short of it and this step queues it as the urgent record.
-        UnixScm::Stream(scm) if oob =>
-            stream(ctx, socket, &message.payload[body..], scm, cap, offset == 0, true),
-        UnixScm::Stream(scm) =>
-            stream(ctx, socket, &message.payload[offset..body], scm, cap, offset == 0, false),
+        UnixScm::Stream { scm, target } if oob =>
+            stream(&message.payload[body..], target, scm, cap, offset == 0, true),
+        UnixScm::Stream { scm, target } =>
+            stream(&message.payload[offset..body], target, scm, cap, offset == 0, false),
     }
 }
 
@@ -306,7 +317,7 @@ pub(crate) fn wait_unix_send(socket: &Arc<net::sock::InetSocket>, scm: &UnixScm,
                 Ok(())
             }
         }},
-        UnixScm::Stream(_) => {
+        UnixScm::Stream { .. } => {
             enum Target { Stream(Arc<net::UnixPair>, net::UnixEnd), Msg(Arc<net::UnixMsgPair>, net::UnixEnd) }
             let target = match &*socket.kind.lock() {
                 net::sock::SockKind::Unix(pair, end) => Target::Stream(pair.clone(), *end),
