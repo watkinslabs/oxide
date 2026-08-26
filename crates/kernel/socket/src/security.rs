@@ -60,17 +60,23 @@ pub(crate) fn admit_cached(ctx: &SendContext<'_>, target: &SendFile, message: &M
 fn admit_inner(ctx: &SendContext<'_>, target: &SendFile, message: &Message, flags: u32,
     skip_socket_hook: bool) -> KResult<SendAdmission>
 {
+    // Build the message-hook identity once.  `inet()` already snapshots the
+    // transport protocol while composing the Linux-equivalent socket identity;
+    // asking `sock_proto()` again here used to take the socket-kind lock a
+    // second time on every UDP send.  The autobind decision is made against
+    // the same per-message state snapshot as the hook, while the hook itself
+    // remains skippable for sendmmsg's repeated destination.
+    let sock = security_sock(target)?;
     if !skip_socket_hook {
-        let sock = security_sock(target)?;
         // The one point every send reaches the namespace-keyed policy registry.
         #[cfg(test)]
         crate::test_support::assert_policy_owned(sock.namespace);
         net::socket_security::sendmsg(ctx.sandbox(), sock, message.name.as_deref(), flags as u64)
             .map_err(Error::from)?;
     }
-    let udp_autobind = match target.kind() {
-        SendKind::Inet(socket) if matches!(*socket.kind.lock(), net::sock::SockKind::Udp) => {
-            Some(net::landlock_addr::admit_udp_send_autobind_for(socket, ctx.sandbox())
+    let udp_autobind = match (sock.proto, target.kind()) {
+        (::landlock::netcheck::Proto::Udp, SendKind::Inet(socket)) => {
+            Some(net::landlock_addr::admit_udp_send_autobind_snapshot_for(socket, ctx.sandbox())
                 .map_err(Error::from)?)
         }
         _ => None,

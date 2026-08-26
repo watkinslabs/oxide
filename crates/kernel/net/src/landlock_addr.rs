@@ -88,7 +88,20 @@ pub fn admit_udp_send_autobind_for(sock: &crate::sock::InetSocket,
     if sock.local_port.lock().is_some() {
         return Ok(UdpAutobindAdmission { _private: () });
     }
-    admit_autobind_udp_for(sock, client)
+    admit_autobind_udp_for_proto(sock, client, Proto::Udp)
+}
+
+/// Produce the send-path proof when the caller already owns the transport
+/// snapshot used by the common message hook.  This avoids reacquiring the
+/// mutable socket-kind lock merely to rediscover that the socket is UDP.
+pub fn admit_udp_send_autobind_snapshot_for(sock: &crate::sock::InetSocket,
+                                            client: Option<&Arc<Domain>>)
+    -> Result<UdpAutobindAdmission, NetError>
+{
+    if sock.local_port.lock().is_some() {
+        return Ok(UdpAutobindAdmission { _private: () });
+    }
+    admit_autobind_udp_for_proto(sock, client, Proto::Udp)
 }
 
 /// Produce the send-path proof against the running domain.
@@ -112,8 +125,15 @@ pub fn admit_autobind_udp_for(sock: &crate::sock::InetSocket,
                              client: Option<&Arc<Domain>>)
     -> Result<UdpAutobindAdmission, NetError>
 {
+    admit_autobind_udp_for_proto(sock, client, sock_proto(sock))
+}
+
+fn admit_autobind_udp_for_proto(sock: &crate::sock::InetSocket,
+                                client: Option<&Arc<Domain>>, proto: Proto)
+    -> Result<UdpAutobindAdmission, NetError>
+{
     use core::sync::atomic::Ordering;
-    if sock_proto(sock) != Proto::Udp { return Err(NetError::Einval); }
+    if proto != Proto::Udp { return Err(NetError::Einval); }
     let family = sock.family.load(Ordering::Acquire);
     let len = if family == netcheck::AF_INET6 { netcheck::SOCKADDR_IN6_LEN }
         else { netcheck::SOCKADDR_IN_LEN };
