@@ -48,8 +48,10 @@ fn do_preadv(args: &SyscallArgs, v2: bool) -> i64 {
         None    => return errno(Errno::Ebadf),
     };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+    // Borrow current->files like Linux; the running task cannot replace this
+    // table while the syscall is executing.
     let fdt = match unsafe { cur.fd_table_ref() } {
-        Some(t) => t.clone(),
+        Some(t) => t.as_ref(),
         None    => return errno(Errno::Ebadf),
     };
     let file = match fdt.get(fd) {
@@ -133,8 +135,10 @@ fn current_offset_readv(args: &SyscallArgs, flags: u64) -> i64 {
     if flags != 0 {
         let Some(cur) = sched::live::current() else { return errno(Errno::Ebadf) };
         // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+        // Borrow current->files like Linux; the running task cannot replace this
+        // table while the syscall is executing.
         let Some(fdt) = (unsafe { cur.fd_table_ref() }) else { return errno(Errno::Ebadf) };
-        let fdt = fdt.clone();
+        let fdt = fdt.as_ref();
         let Ok(file) = fdt.get(args.a0 as i32) else { return errno(Errno::Ebadf) };
         let caps = RwCaps {
             nowait: file.f_mode().contains(vfs::Fmode::NOWAIT),

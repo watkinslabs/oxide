@@ -75,8 +75,10 @@ fn positional_pwritev(args: &SyscallArgs, mut off: u64, flags: u64) -> i64 {
     let iovcnt = args.a2;
     let Some(cur) = sched::live::current() else { return errno(Errno::Ebadf) };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+    // Borrow current->files like Linux; the running task cannot replace this
+    // table while the syscall is executing.
     let Some(fdt) = (unsafe { cur.fd_table_ref() }) else { return errno(Errno::Ebadf) };
-    let fdt = fdt.clone();
+    let fdt = fdt.as_ref();
     let Ok(file) = fdt.get(fd) else {
         let r = errno(Errno::Ebadf); cur.account_write_result(r); return r;
     };
@@ -153,8 +155,10 @@ fn current_offset_writev(args: &SyscallArgs, flags: u64) -> i64 {
     if flags == 0 { return crate::s020_writev::sys_writev(args); }
     let Some(cur) = sched::live::current() else { return errno(Errno::Ebadf) };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+    // Borrow current->files like Linux; the running task cannot replace this
+    // table while the syscall is executing.
     let Some(fdt) = (unsafe { cur.fd_table_ref() }) else { return errno(Errno::Ebadf) };
-    let fdt = fdt.clone();
+    let fdt = fdt.as_ref();
     let Ok(file) = fdt.get(args.a0 as i32) else { return errno(Errno::Ebadf) };
     let eff = match rwf_effect(&file, flags) { Ok(e) => e, Err(e) => return e };
     let n = crate::s020_writev::sys_writev(args);
