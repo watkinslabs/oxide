@@ -16,12 +16,16 @@ impl SendFile {
     /// Retain and classify one open file description for a complete operation. # C: O(1)
     pub fn new(file: Arc<vfs::File>) -> Self {
         let private = file.inode().i_private();
-        let kind = if let Ok(socket) = private.clone().downcast::<netlink::NetlinkSocket>() {
-            SendKind::Netlink(socket)
+        // Linux resolves a socket through its file-operation owner once. Most
+        // socket traffic here is InetSocket (including AF_UNIX); probe that
+        // owner first so the common case avoids two failed Any downcasts and
+        // their temporary Arc clones.
+        let kind = if let Ok(socket) = private.clone().downcast::<net::sock::InetSocket>() {
+            SendKind::Inet(socket)
         } else if let Ok(socket) = private.clone().downcast::<net::vsock_socket::VsockSocket>() {
             SendKind::Vsock(socket)
-        } else if let Ok(socket) = private.clone().downcast::<net::sock::InetSocket>() {
-            SendKind::Inet(socket)
+        } else if let Ok(socket) = private.clone().downcast::<netlink::NetlinkSocket>() {
+            SendKind::Netlink(socket)
         } else { SendKind::File };
         Self { file, kind }
     }
