@@ -50,6 +50,16 @@ const PG: usize = hal::PAGE_SIZE_BYTES as usize;
 /// second page cache.
 const SHADOW_FLOOR: usize = 64;
 
+/// Report one coalesced page-cache fill's duration into the fault profile,
+/// however the fill returns. # C: O(1)
+#[cfg(feature = "debug-faultcost")]
+struct FillCostGuard(u64);
+
+#[cfg(feature = "debug-faultcost")]
+impl Drop for FillCostGuard {
+    fn drop(&mut self) { pmm::faultcost::note_fill(pmm::faultcost::stamp().saturating_sub(self.0)); }
+}
+
 struct FillGuard<'a> { store: &'a Ext4FrameStore }
 
 impl Drop for FillGuard<'_> {
@@ -248,6 +258,10 @@ impl Ext4FrameStore {
     /// of one serialized per-page read — the cold process-startup bottleneck.
     /// Returns `start_idx`'s frame; the window is best-effort. # C: O(window)
     fn fill_window(&self, dinode: &crate::Inode, start_idx: u64) -> KResult<u64> {
+        #[cfg(feature = "debug-faultcost")]
+        let __fill_t0 = pmm::faultcost::stamp();
+        #[cfg(feature = "debug-faultcost")]
+        let _fill_cost = FillCostGuard(__fill_t0);
         let bs = self.st.mount.sb.block_size.max(1) as u64;
         let bpp = (PG as u64 / bs).max(1);
         // Clamp to the file's last page so no past-EOF page is ever cached.

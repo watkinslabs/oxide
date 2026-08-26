@@ -27,6 +27,7 @@ fs        = { path = "../fs" }
 
 [features]
 hosted = []
+debug-faultcost = ["pmm/debug-faultcost"]  # report each coalesced page-cache fill into the [FAULTCOST] profile
 debug-boot = []  # low-volume structural/device error source diagnostic
 debug-mount = []  # read-twice block verification (diagnose flaky block reads)
 debug-wakelat = []  # [WAEXT] write_at zero-extend span + file-size growth probe (O(n²) writeback / unbounded-trie hunt)
