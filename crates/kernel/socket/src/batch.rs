@@ -1,7 +1,8 @@
 use alloc::sync::Arc;
 
 use crate::{Error, ImportMode, KResult, Message, SendContext, SendFile, SendKind};
-use crate::send::{InetPrepared, PreparedSend, prepare, send_prepared, send_retained};
+use crate::send::{InetPrepared, PreparedSend, UsedAddress, prepare_cached, send_prepared,
+    send_retained};
 
 pub const UIO_MAXIOV: u32 = 1024;
 pub const MSG_BATCH: u32 = 0x4_0000;
@@ -49,6 +50,7 @@ pub fn send_batch<I: BatchIo>(ctx: &SendContext<'_>, spec: BatchSpec, io: &mut I
         _ => ImportMode::Full,
     };
     let mut sent = 0u32;
+    let mut used_address = UsedAddress::empty();
     for index in 0..len {
         let flags = entry_flags(spec.flags, index, len);
         let attempt = (|| {
@@ -57,15 +59,22 @@ pub fn send_batch<I: BatchIo>(ctx: &SendContext<'_>, spec: BatchSpec, io: &mut I
                     crate::send::unresolved_address());
             }
             if let Some(mut message) = io.import_envelope(index)? {
-                let prepared = prepare(ctx, &target, &message, flags)?;
+                let candidate = UsedAddress::from_name(message.name.as_deref());
+                let prepared = prepare_cached(ctx, &target, &message, flags, &used_address)?;
                 let tx_ring = matches!((&prepared, target.kind()),
                     (PreparedSend::Inet(InetPrepared::Packet), SendKind::Inet(socket))
                         if socket.has_packet_tx_ring());
                 if !tx_ring { io.import_payload(index, &mut message)?; }
-                return send_prepared(ctx, &target, message, flags, prepared);
+                let outcome = send_prepared(ctx, &target, message, flags, prepared)?;
+                used_address = candidate;
+                return Ok(outcome);
             }
-            send_retained(ctx, &target, io.import(index, mode)?, flags,
-                crate::send::unresolved_address())
+            let message = io.import(index, mode)?;
+            let candidate = UsedAddress::from_name(message.name.as_deref());
+            let prepared = prepare_cached(ctx, &target, &message, flags, &used_address)?;
+            let outcome = send_prepared(ctx, &target, message, flags, prepared)?;
+            used_address = candidate;
+            Ok(outcome)
         })();
         let outcome = match attempt {
             Ok(outcome) => outcome,

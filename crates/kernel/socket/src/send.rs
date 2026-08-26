@@ -35,6 +35,35 @@ pub struct SendContext<'a> {
     sandbox: Option<Arc<landlock::Domain>>,
 }
 
+/// Linux's `struct used_address`, kept on the batch stack without an
+/// allocation. It intentionally caches only an explicit destination and only
+/// the last successful message's destination. # C: O(address length)
+#[derive(Clone, Copy)]
+pub(crate) struct UsedAddress {
+    bytes: [u8; 128],
+    len: usize,
+    valid: bool,
+}
+
+impl UsedAddress {
+    pub(crate) const fn empty() -> Self {
+        Self { bytes: [0; 128], len: 0, valid: false }
+    }
+
+    pub(crate) fn from_name(name: Option<&[u8]>) -> Self {
+        let Some(name) = name else { return Self::empty() };
+        if name.len() > 128 { return Self::empty() }
+        let mut address = Self { bytes: [0; 128], len: name.len(), valid: true };
+        address.bytes[..name.len()].copy_from_slice(name);
+        address
+    }
+
+    pub(crate) fn matches(&self, name: Option<&[u8]>) -> bool {
+        let Some(name) = name else { return false };
+        self.valid && self.len == name.len() && self.bytes[..self.len] == *name
+    }
+}
+
 impl<'a> SendContext<'a> {
     /// Capture explicit task state needed by socket send policy. The sandbox
     /// domain is snapshotted once so every message of a batch is judged against
@@ -165,7 +194,24 @@ use transport::send_inet;
 pub(crate) fn prepare(ctx: &SendContext<'_>, target: &SendFile, message: &Message, flags: u32)
     -> KResult<PreparedSend>
 {
-    let admission = crate::security::admit(ctx, target, message, flags)?;
+    prepare_inner(ctx, target, message, flags, false)
+}
+
+/// Prepare a batched message, retaining Linux's repeated-destination security
+/// decision cache while still running all family validation and control work.
+#[inline(never)]
+pub(crate) fn prepare_cached(ctx: &SendContext<'_>, target: &SendFile, message: &Message,
+    flags: u32, used_address: &UsedAddress) -> KResult<PreparedSend>
+{
+    prepare_inner(ctx, target, message, flags, used_address.matches(message.name.as_deref()))
+}
+
+#[inline(never)]
+fn prepare_inner(ctx: &SendContext<'_>, target: &SendFile, message: &Message, flags: u32,
+    skip_socket_hook: bool) -> KResult<PreparedSend>
+{
+    let admission = crate::security::admit_cached(ctx, target, message, flags,
+        skip_socket_hook)?;
     match target.kind() {
         SendKind::File => Err(Error::Enotsock),
         SendKind::Netlink(socket) => {

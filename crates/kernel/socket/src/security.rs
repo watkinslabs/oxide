@@ -41,12 +41,33 @@ pub(crate) fn security_sock(target: &SendFile) -> KResult<net::socket_security::
 pub(crate) fn admit(ctx: &SendContext<'_>, target: &SendFile, message: &Message, flags: u32)
     -> KResult<SendAdmission>
 {
-    let sock = security_sock(target)?;
-    // The one point every send reaches the namespace-keyed policy registry.
-    #[cfg(test)]
-    crate::test_support::assert_policy_owned(sock.namespace);
-    net::socket_security::sendmsg(ctx.sandbox(), sock, message.name.as_deref(), flags as u64)
-        .map_err(Error::from)?;
+    admit_inner(ctx, target, message, flags, false)
+}
+
+/// Admit a message whose explicit destination may have been admitted by the
+/// immediately preceding successful message in the same `sendmmsg` call.
+/// Linux's `used_address` fast path skips only the socket security hook; the
+/// UDP autobind proof remains per-message because it is socket state, not an
+/// address hook decision. # C: O(1) when the hook is skipped
+#[inline(never)]
+pub(crate) fn admit_cached(ctx: &SendContext<'_>, target: &SendFile, message: &Message,
+    flags: u32, skip_socket_hook: bool) -> KResult<SendAdmission>
+{
+    admit_inner(ctx, target, message, flags, skip_socket_hook)
+}
+
+#[inline(never)]
+fn admit_inner(ctx: &SendContext<'_>, target: &SendFile, message: &Message, flags: u32,
+    skip_socket_hook: bool) -> KResult<SendAdmission>
+{
+    if !skip_socket_hook {
+        let sock = security_sock(target)?;
+        // The one point every send reaches the namespace-keyed policy registry.
+        #[cfg(test)]
+        crate::test_support::assert_policy_owned(sock.namespace);
+        net::socket_security::sendmsg(ctx.sandbox(), sock, message.name.as_deref(), flags as u64)
+            .map_err(Error::from)?;
+    }
     let udp_autobind = match target.kind() {
         SendKind::Inet(socket) if matches!(*socket.kind.lock(), net::sock::SockKind::Udp) => {
             Some(net::landlock_addr::admit_udp_send_autobind_for(socket, ctx.sandbox())
