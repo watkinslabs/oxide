@@ -156,14 +156,18 @@ impl Mount {
         let seq = cursor.seq;
         #[cfg(feature = "debug-fsync-latency")]
         let journal_started_ns = crate::fsync_latency::now_ns();
+        let mut body = JournalBodyWriter::new(&log, bs);
         emit_transaction_for(seq, &staged, bs, bit64, &jsb.uuid, checksum_mode, |block| {
             let at = cursor.reserve(1);
-            log.write_journal_block(at, block)
+            body.push(at, block)
         }).map_err(|e| match e {
             TransactionError::Emit(crate::jbd2::EmitError::BlockNumber) => MountError::BadBlock,
             TransactionError::Emit(_) => MountError::NoSpace,
             TransactionError::Write(e) => e,
         })?;
+        // The whole body reaches the device before the barrier below, exactly
+        // as it did when each block was its own request.
+        body.flush()?;
         #[cfg(feature = "debug-fsync-latency")]
         crate::fsync_latency::report(b"journal-body", journal_started_ns, staged_blocks);
         // WAL barrier (jbd2 write-ahead, ext4fix §6.1): make the journal body
@@ -290,6 +294,55 @@ mod tests {
     fn rejects_a_partial_staged_block() {
         let staged = [StagedBlock { target_lba: 1, data: vec![0; 3] }];
         assert_eq!(coalesce_target_writes(&staged, 4, 8), Err(crate::MountError::BlockIo));
+    }
+}
+
+/// Accumulate journal-body blocks into contiguous device runs.
+///
+/// Every block of a transaction used to be its own `submit_sync`: a 512-block
+/// transaction meant 512 serialised round-trips through the queue before the
+/// commit barrier could even start. The reference submits the log as bios that
+/// span many blocks, and a transaction's blocks are laid out sequentially in
+/// the log, so they coalesce almost perfectly. The bytes, their order and the
+/// barrier that follows them are unchanged; only the number of requests drops.
+struct JournalBodyWriter<'a, 'm> {
+    log:       &'a ExtentLogReader<'m>,
+    block_len: usize,
+    /// Device byte offset the buffered run starts at.
+    run_at:    Option<u64>,
+    /// Device byte offset the next block must land at to extend the run.
+    next_at:   u64,
+    run:       Vec<u8>,
+}
+
+impl<'a, 'm> JournalBodyWriter<'a, 'm> {
+    fn new(log: &'a ExtentLogReader<'m>, block_len: usize) -> Self {
+        Self { log, block_len, run_at: None, next_at: 0, run: Vec::new() }
+    }
+
+    /// Buffer one journal block, flushing first when it does not extend the
+    /// current run or the run has reached the request cluster.
+    /// # C: O(block) amortised, one device write per run
+    fn push(&mut self, jblk: u32, data: &[u8]) -> Result<(), MountError> {
+        if data.len() != self.block_len { return Err(MountError::BlockIo); }
+        let bs = self.log.mount.sb.block_size as u64;
+        let at = self.log.map(jblk).ok_or(MountError::NotFound)? * bs;
+        let extends = self.run_at.is_some()
+            && at == self.next_at
+            && self.run.len().saturating_add(self.block_len) <= Mount::TARGET_WRITE_CLUSTER_BYTES;
+        if !extends { self.flush()?; self.run_at = Some(at); }
+        self.run.extend_from_slice(data);
+        self.next_at = at + self.block_len as u64;
+        Ok(())
+    }
+
+    /// Issue the buffered run, if any. # C: one device write
+    fn flush(&mut self) -> Result<(), MountError> {
+        let Some(at) = self.run_at.take() else { self.run.clear(); return Ok(()); };
+        if self.run.is_empty() { return Ok(()); }
+        self.log.mount.write_journal_byte_range(at, &self.run)?;
+        self.run.clear();
+        Ok(())
     }
 }
 

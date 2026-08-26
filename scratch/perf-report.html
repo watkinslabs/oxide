@@ -1,0 +1,99 @@
+<title>Syscall Cost Against Linux</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root {
+  --ground:#f4f7f8; --panel:#ffffff; --line:#d2dcdf; --ink:#0f1a1e; --dim:#5a6b70;
+  --accent:#127d8c; --ok:#2f7d54; --slow:#a8761a; --bad:#c05621; --severe:#b02a41;
+  --grid:#e3ebed;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground:#0c1316; --panel:#121c20; --line:#243237; --ink:#e6eef0; --dim:#8ea3a9;
+    --accent:#4fc3d4; --ok:#5cbf8a; --slow:#d8a53f; --bad:#e8834e; --severe:#f0637f;
+    --grid:#1b272c;
+  }
+}
+:root[data-theme="dark"] {
+  --ground:#0c1316; --panel:#121c20; --line:#243237; --ink:#e6eef0; --dim:#8ea3a9;
+  --accent:#4fc3d4; --ok:#5cbf8a; --slow:#d8a53f; --bad:#e8834e; --severe:#f0637f;
+  --grid:#1b272c;
+}
+* { box-sizing:border-box; }
+body {
+  margin:0; background:var(--ground); color:var(--ink);
+  font:400 16px/1.6 "IBM Plex Sans", system-ui, sans-serif;
+  padding:clamp(20px,4vw,56px);
+}
+.wrap { max-width:1000px; margin:0 auto; display:flex; flex-direction:column; gap:28px; }
+header h1 {
+  font:600 clamp(24px,3.4vw,36px)/1.15 "IBM Plex Sans", system-ui, sans-serif;
+  margin:0 0 8px; letter-spacing:-.02em; text-wrap:balance;
+}
+header p { margin:0; color:var(--dim); max-width:66ch; }
+.eyebrow {
+  font:500 11px/1 "IBM Plex Mono", ui-monospace, monospace; letter-spacing:.16em;
+  text-transform:uppercase; color:var(--accent); margin:0 0 12px;
+}
+ul.stats { list-style:none; margin:0; padding:0; display:flex; flex-wrap:wrap; gap:10px; }
+ul.stats li {
+  flex:1 1 190px; background:var(--panel); border:1px solid var(--line);
+  border-radius:3px; padding:14px 16px; display:flex; flex-direction:column; gap:2px;
+}
+ul.stats b {
+  font:600 21px/1.2 "IBM Plex Mono", ui-monospace, monospace;
+  font-variant-numeric:tabular-nums;
+}
+ul.stats span { color:var(--dim); font-size:13px; }
+.panel { background:var(--panel); border:1px solid var(--line); border-radius:3px; overflow-x:auto; }
+table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+caption {
+  text-align:left; padding:16px 18px 2px;
+  font:500 12px/1 "IBM Plex Mono", ui-monospace, monospace;
+  letter-spacing:.12em; text-transform:uppercase; color:var(--dim);
+}
+th, td { padding:9px 12px; text-align:left; border-bottom:1px solid var(--grid); }
+thead th {
+  font:500 11px/1 "IBM Plex Mono", ui-monospace, monospace; letter-spacing:.1em;
+  text-transform:uppercase; color:var(--dim); border-bottom:1px solid var(--line);
+}
+tbody tr:last-child th, tbody tr:last-child td { border-bottom:none; }
+.r th { font-weight:500; white-space:nowrap; }
+.n { font-family:"IBM Plex Mono", ui-monospace, monospace; text-align:right; white-space:nowrap; }
+.base { color:var(--dim); }
+.track { width:42%; min-width:150px; }
+.bar { display:block; height:9px; border-radius:1px; }
+.ratio { font-weight:600; }
+.bar.ok { background:var(--ok); }
+.bar.slow { background:var(--slow); }
+.bar.bad { background:var(--bad); }
+.bar.severe { background:var(--severe); }
+.ratio.ok { color:var(--ok); }
+.ratio.slow { color:var(--slow); }
+.ratio.bad { color:var(--bad); }
+.ratio.severe { color:var(--severe); }
+footer { color:var(--dim); font-size:14px; max-width:72ch; }
+footer p { margin:0 0 10px; }
+code { font-family:"IBM Plex Mono", ui-monospace, monospace; font-size:.92em; }
+</style>
+<div class="wrap">
+  <header>
+    <p class="eyebrow">oxide kernel &middot; measured against the host</p>
+    <h1>How much more does a syscall cost here than on Linux?</h1>
+    <p>Both sides are measured on the same machine. The Linux figure is a tight loop over one shape of the call on the host kernel; the oxide figure is the average over every such call a real desktop boot made. Bars are log-scaled &mdash; the range runs from single digits to four figures.</p>
+  </header>
+  <ul class="stats"><li><b>1,364,946</b><span>syscalls in the boot</span></li><li><b>11,874 ms</b><span>on CPU in the kernel</span></li><li><b>8,699 ns</b><span>average per call</span></li></ul>
+  <div class="panel"><table>
+    <caption>Cost per call, worst first</caption>
+    <thead><tr><th>operation</th><th class="n">oxide ns</th><th class="n">linux ns</th><th>ratio</th><th class="n">&nbsp;</th></tr></thead>
+    <tbody><tr class="r"><th scope="row">writev</th><td class="n">1,272,120</td><td class="n base">495</td><td class="track"><span class="bar severe" style="width:85.2%"></span></td><td class="n ratio severe">2570&times;</td></tr><tr class="r"><th scope="row">recvmsg</th><td class="n">67,451</td><td class="n base">776</td><td class="track"><span class="bar severe" style="width:48.5%"></span></td><td class="n ratio severe">87&times;</td></tr><tr class="r"><th scope="row">sendmmsg</th><td class="n">58,288</td><td class="n base">776</td><td class="track"><span class="bar severe" style="width:46.9%"></span></td><td class="n ratio severe">75&times;</td></tr><tr class="r"><th scope="row">munmap</th><td class="n">88,289</td><td class="n base">1,382</td><td class="track"><span class="bar severe" style="width:45.1%"></span></td><td class="n ratio severe">64&times;</td></tr><tr class="r"><th scope="row">sendmsg</th><td class="n">45,446</td><td class="n base">776</td><td class="track"><span class="bar severe" style="width:44.2%"></span></td><td class="n ratio severe">59&times;</td></tr><tr class="r"><th scope="row">recvfrom</th><td class="n">30,929</td><td class="n base">776</td><td class="track"><span class="bar severe" style="width:40.0%"></span></td><td class="n ratio severe">40&times;</td></tr><tr class="r"><th scope="row">newfstatat</th><td class="n">27,063</td><td class="n base">788</td><td class="track"><span class="bar severe" style="width:38.4%"></span></td><td class="n ratio severe">34&times;</td></tr><tr class="r"><th scope="row">close</th><td class="n">15,179</td><td class="n base">628</td><td class="track"><span class="bar severe" style="width:34.6%"></span></td><td class="n ratio severe">24&times;</td></tr><tr class="r"><th scope="row">read</th><td class="n">9,163</td><td class="n base">518</td><td class="track"><span class="bar bad" style="width:31.2%"></span></td><td class="n ratio bad">18&times;</td></tr><tr class="r"><th scope="row">mprotect</th><td class="n">14,954</td><td class="n base">1,180</td><td class="track"><span class="bar bad" style="width:27.6%"></span></td><td class="n ratio bad">13&times;</td></tr><tr class="r"><th scope="row">openat</th><td class="n">11,732</td><td class="n base">994</td><td class="track"><span class="bar bad" style="width:26.8%"></span></td><td class="n ratio bad">12&times;</td></tr><tr class="r"><th scope="row">write fault, page absent</th><td class="n">11,599</td><td class="n base">1,227</td><td class="track"><span class="bar bad" style="width:24.4%"></span></td><td class="n ratio bad">9&times;</td></tr><tr class="r"><th scope="row">mmap</th><td class="n">12,500</td><td class="n base">1,382</td><td class="track"><span class="bar bad" style="width:23.9%"></span></td><td class="n ratio bad">9&times;</td></tr></tbody>
+  </table></div>
+  <div class="panel"><table>
+    <caption>Block device, same boot</caption>
+    <thead><tr><th>operation</th><th class="n">requests</th><th class="n">total</th><th class="n">average</th></tr></thead>
+    <tbody><tr><th scope="row">read</th><td class="n">16,532</td><td class="n">3,430 ms</td><td class="n">207.5 &micro;s</td></tr><tr><th scope="row">write</th><td class="n">389,310</td><td class="n">30,558 ms</td><td class="n">78.5 &micro;s</td></tr><tr><th scope="row">flush</th><td class="n">2,946</td><td class="n">25,168 ms</td><td class="n">8,543.1 &micro;s</td></tr><tr><th scope="row">other</th><td class="n">2</td><td class="n">0 ms</td><td class="n">32.1 &micro;s</td></tr></tbody>
+  </table></div>
+  <footer>
+    <p>Run-to-run variance on the oxide side is large &mdash; the boot does not make the same mix of calls twice. A change is demonstrated here when it moves a row by more than about half, or across a colour band. Anything smaller needs repeated runs or a hosted microbenchmark.</p>
+    <p>Regenerate with <code>make perf-report</code>. Source: <code>/home/nd/oxide/kernel-B2675/target/perf-report-x86_64.log</code></p>
+  </footer>
+</div>
