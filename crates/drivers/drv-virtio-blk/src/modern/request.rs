@@ -64,13 +64,13 @@ impl BlkState {
         let __dev_t0 = pmm::faultcost::stamp();
         let result = self.do_request(h, type_, sector, data, is_in, is_flush, data_len, trace);
         #[cfg(feature = "debug-faultcost")]
-        pmm::faultcost::note_device(pmm::faultcost::stamp().saturating_sub(__dev_t0),
+        pmm::faultcost::note_device_sized(pmm::faultcost::stamp().saturating_sub(__dev_t0),
             match type_ {
                 blk::VIRTIO_BLK_T_IN => 0,
                 blk::VIRTIO_BLK_T_OUT => 1,
                 blk::VIRTIO_BLK_T_FLUSH => 2,
                 _ => 3,
-            });
+            }, data_len);
         #[cfg(feature = "debug-boot")]
         if let Err(error) = result { log_submit_failure(b"request", type_, sector, data_len, error); }
         if matches!(result, Err(BlockError::Eio)) && self.poisoned.load(core::sync::atomic::Ordering::Acquire) {

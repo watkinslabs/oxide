@@ -67,7 +67,32 @@ static BLK_NS:  [AtomicU64; BLK_KINDS] = [const { AtomicU64::new(0) }; BLK_KINDS
 static BLK_CNT: [AtomicU64; BLK_KINDS] = [const { AtomicU64::new(0) }; BLK_KINDS];
 const BLK_NAME: [&[u8]; BLK_KINDS] = [b"read", b"write", b"flush", b"other"];
 
+/// Write-size buckets. A write's size says a great deal about its origin: a
+/// single filesystem block is metadata or a journal descriptor, a large run is
+/// writeback or a coalesced log body. Attributing the write traffic by hand
+/// went wrong once already, so the profile carries the split.
+const SIZE_BUCKETS: usize = 4;
+static WSIZE_CNT: [AtomicU64; SIZE_BUCKETS] = [const { AtomicU64::new(0) }; SIZE_BUCKETS];
+static WSIZE_NS:  [AtomicU64; SIZE_BUCKETS] = [const { AtomicU64::new(0) }; SIZE_BUCKETS];
+const WSIZE_NAME: [&[u8]; SIZE_BUCKETS] = [b"<=4K", b"<=32K", b"<=128K", b">128K"];
+
+/// # C: O(1)
+fn size_bucket(bytes: u32) -> usize {
+    if bytes <= 4096 { 0 } else if bytes <= 32 * 1024 { 1 } else if bytes <= 128 * 1024 { 2 } else { 3 }
+}
+
 /// Time one block request spent between doorbell and completion. # C: O(1)
+#[inline]
+pub fn note_device_sized(ns: u64, kind: usize, bytes: u32) {
+    note_device(ns, kind);
+    if kind == 1 {
+        let b = size_bucket(bytes);
+        WSIZE_CNT[b].fetch_add(1, Ordering::Relaxed);
+        WSIZE_NS[b].fetch_add(ns, Ordering::Relaxed);
+    }
+}
+
+/// # C: O(1)
 #[inline]
 pub fn note_device(ns: u64, kind: usize) {
     DEV_NS.fetch_add(ns, Ordering::Relaxed);
@@ -147,6 +172,16 @@ fn dump() {
         klog::write_raw(b" cnt=");         klog::write_dec_u64(c);
         klog::write_raw(b" ms=");          klog::write_dec_u64(n / NS_PER_MS);
         klog::write_raw(b" avg_ns=");      klog::write_dec_u64(n / c);
+        klog::write_raw(b"\n");
+    }
+    for i in 0..SIZE_BUCKETS {
+        let c = WSIZE_CNT[i].load(Ordering::Relaxed);
+        if c == 0 { continue; }
+        let n = WSIZE_NS[i].load(Ordering::Relaxed);
+        klog::write_raw(b"  wr-size ");     klog::write_raw(WSIZE_NAME[i]);
+        klog::write_raw(b" cnt=");          klog::write_dec_u64(c);
+        klog::write_raw(b" ms=");           klog::write_dec_u64(n / NS_PER_MS);
+        klog::write_raw(b" avg_ns=");       klog::write_dec_u64(n / c);
         klog::write_raw(b"\n");
     }
     let fc = FILL_CNT.load(Ordering::Relaxed);
