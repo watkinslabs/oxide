@@ -126,6 +126,10 @@ fn file_err(e: vmm::FileBackingError) -> i64 {
         vmm::FileBackingError::Io => err(Errno::Eio),
         vmm::FileBackingError::NoMem => err(Errno::Enomem),
         vmm::FileBackingError::OpNotSupp => err(Errno::Eopnotsupp),
+        // `madvise` reports the transient to the caller as EAGAIN rather than
+        // swallowing it: the advice was not applied, and a caller that cares
+        // can repeat it.
+        vmm::FileBackingError::Again => err(Errno::Eagain),
     }
 }
 

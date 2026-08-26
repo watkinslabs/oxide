@@ -210,7 +210,10 @@ impl Ext4FrameStore {
     /// # C: O(PG/bs) on miss, O(log N) on hit
     fn ensure_page(&self, idx: u64) -> KResult<u64> {
         if let Some(page) = self.pages.lock().get(&idx) { return Ok(page.pa); }
-        let Some(_active_fill) = self.begin_fill() else { return Err(VfsError::Eio); };
+        // Eviction is sweeping this store: the miss cannot be filled now, but
+        // nothing is wrong with the file. Reported as a transient so a fault
+        // retries rather than taking it for an I/O error and dying.
+        let Some(_active_fill) = self.begin_fill() else { return Err(VfsError::Eagain); };
         let dinode = self.st.mount.read_inode(self.ino).map_err(|_e| {
             // DIAG (debug-fillverify): inode-table errors otherwise collapse
             // to EIO before the range-read diagnostic can identify them.
