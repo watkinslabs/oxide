@@ -1,6 +1,5 @@
 use alloc::sync::Arc;
 
-use net::sock::SockKind;
 use syscall::errno::Errno;
 use vfs::OpenFlags;
 
@@ -46,8 +45,8 @@ pub(crate) fn from_file(file: Arc<vfs::File>) -> Result<RecvTarget, i64> {
 pub(crate) fn recv(target: &RecvTarget, user: &RecvUser, flags: u64) -> i64 {
     // The one receive-side security decision, and the only source of a route:
     // no protocol owner can be reached without it.
-    let route = match crate::recv_admit::admit_and_route(target.security_sock(),
-        target.family(), flags)
+    let (sock, family) = target.identity();
+    let route = match crate::recv_admit::admit_and_route(sock, family, flags)
     { Ok(route) => route, Err(error) => return error };
     let nonblock = target.file.flags().contains(OpenFlags::O_NONBLOCK);
     match (route, &target.kind) {
@@ -66,31 +65,27 @@ pub(crate) fn recv(target: &RecvTarget, user: &RecvUser, flags: u64) -> i64 {
 }
 
 impl RecvTarget {
-    /// Describe the pinned receive target to the one message security
-    /// boundary. # C: O(1)
-    pub(crate) fn security_sock(&self) -> net::socket_security::MsgSock {
+    /// Snapshot the policy identity and route family together. Linux selects
+    /// one socket operation after its receive security hook; taking the
+    /// mutable kind lock separately for each decision made every recvmsg do
+    /// the same classification twice.
+    pub(crate) fn identity(&self) -> (net::socket_security::MsgSock, RecvFamily) {
         match &self.kind {
-            RecvKind::Inet(sock) => net::socket_security::inet(sock),
-            RecvKind::Netlink(sock) => net::socket_security::MsgSock {
+            RecvKind::Inet(sock) => {
+                let identity = net::socket_security::inet(sock);
+                let unix = matches!(identity.target_class,
+                    "unix_stream_socket" | "unix_dgram_socket");
+                (identity, RecvFamily::Inet { unix })
+            }
+            RecvKind::Netlink(sock) => (net::socket_security::MsgSock {
                 namespace: net::net_ns::namespace_id(&sock.net_ns),
                 family: net::socket_args::AF_NETLINK_WIRE,
                 proto: ::landlock::netcheck::Proto::Other,
                 target_sid: sock.security_sid.load(core::sync::atomic::Ordering::Acquire),
                 target_class: sock.security_class(),
-            },
-            RecvKind::Vsock(sock) => net::socket_security::vsock(sock),
-        }
-    }
-
-    /// Concrete family of the pinned target, for admission and routing. # C: O(1)
-    pub(crate) fn family(&self) -> RecvFamily {
-        match &self.kind {
-            RecvKind::Netlink(_) => RecvFamily::Netlink,
-            RecvKind::Vsock(_) => RecvFamily::Vsock,
-            RecvKind::Inet(sock) => RecvFamily::Inet {
-                unix: matches!(*sock.kind.lock(), SockKind::Unix(_, _)
-                    | SockKind::UnixMsgPair(_, _) | SockKind::UnixDgram(_)),
-            },
+            }, RecvFamily::Netlink),
+            RecvKind::Vsock(sock) =>
+                (net::socket_security::vsock(sock), RecvFamily::Vsock),
         }
     }
 
