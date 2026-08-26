@@ -53,10 +53,28 @@ fn leaf(as_: &AddressSpace, va: u64, hhdm: u64) -> Option<u64> {
 /// # C: O(walk depth)
 pub(super) fn poisoned(as_: &AddressSpace, va_page: u64, user_mode: bool, hhdm: u64)
     -> Option<Intercept> {
-    if !leaf(as_, va_page, hhdm).is_some_and(<Walker as hal::pt_walker::PtWalker>::is_poison_marker) {
+    let raw = leaf(as_, va_page, hhdm);
+    if !raw.is_some_and(<Walker as hal::pt_walker::PtWalker>::is_poison_marker) {
         return None;
     }
     if !user_mode { return Some(Intercept::Fail); }
+    // This is the ONLY path in the kernel that turns a user fault into SIGBUS,
+    // and the only production writer of the encoding it tests is UFFDIO_POISON.
+    // A boot that calls no userfaultfd ioctl should therefore never arrive
+    // here; when one does, the raw leaf is the whole evidence and it used to be
+    // discarded — the process died and the log said only "bus error". Printing
+    // it costs nothing on a path that is supposed to be unreachable.
+    klog::write_raw(b"[POISON-SIGBUS] va=");
+    klog::write_hex_u64(va_page);
+    klog::write_raw(b" leaf=");
+    klog::write_hex_u64(raw.unwrap_or(0));
+    klog::write_raw(b" root=");
+    klog::write_hex_u64(as_.root_pa());
+    if let Some(t) = sched::live::current() {
+        klog::write_raw(b" tid=");
+        klog::write_dec_u64(t.tid as u64);
+    }
+    klog::write_raw(b"\n");
     let (code, fault) = vmm::fault_signal::poisoned_page_fault(va_page);
     sched::live::force_sig_fault(sched::signum::Signum::Sigbus, code, fault.addr, fault.addr_lsb);
     Some(Intercept::Retry)

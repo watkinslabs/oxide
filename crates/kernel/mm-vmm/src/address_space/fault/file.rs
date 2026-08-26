@@ -300,7 +300,12 @@ impl AddressSpace {
                     // file-valid extent. Do NOT install a partially-zero page
                     // (silent corruption). Free the fresh frame and fail the
                     // fault → SIGBUS-equivalent at the dispatcher (false→fatal).
-                    #[cfg(feature = "debug-shortfill")]
+                    // Always on: this is a page the process is about to die
+                    // for, and the four values here are the whole diagnosis —
+                    // whether the fault was at EOF, how much the backing
+                    // supplied, and which size each side believed. Gated, the
+                    // log said only "bus error" and the cause took a night to
+                    // find.
                     {
                         klog::write_raw(b"[SHORT-FILE-FAULT-FATAL ino="); klog::write_hex_u64(backing.ino());
                         klog::write_raw(b" off="); klog::write_hex_u64(file_off);
