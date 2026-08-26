@@ -81,7 +81,7 @@ fn recv(fd: i32, segs: &[Seg], sqe: &Sqe) -> i64 {
     }
     let user = crate::recv_user::RecvUser { sink: crate::recv_user::Sink::User,
         msgp: 0, name: 0, namelen: 0, name_len_ptr: 0, control: 0, controllen: 0,
-        iov, capacity, layout: crate::msg_layout::MsgLayout::Native,
+        iov: iov.into(), capacity, layout: crate::msg_layout::MsgLayout::Native,
     };
     crate::recvmsg::recv(&target, &user, sqe.op_flags as u64)
 }

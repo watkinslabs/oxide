@@ -68,7 +68,7 @@ pub fn recvmsg_from_group(op: &Op, multishot: bool) -> i64 {
     };
     let (payload, room) = s.payload;
     let capacity = core::cmp::min(uaccess::MAX_RW_COUNT, room as usize);
-    user.iov = alloc::vec![IoVec { base: payload, len: capacity }];
+    user.iov = crate::recv_user::IoVecs::one(payload, capacity);
     user.capacity = capacity;
     if let Some(f) = s.frame { frame_header(&mut user, op.addr, &f); }
     let res = crate::recvmsg::recv(&target, &user, op.sqe.op_flags as u64);
@@ -130,7 +130,7 @@ pub fn recv_fixed(op: &Op, buf: &Arc<PinnedRange>, w: Window) -> i64 {
     }
     let user = RecvUser {
         msgp: 0, name: 0, namelen: 0, name_len_ptr: 0, control: 0, controllen: 0,
-        iov, capacity, layout: MsgLayout::Native, sink: Sink::Pinned,
+        iov: iov.into(), capacity, layout: MsgLayout::Native, sink: Sink::Pinned,
     };
     crate::recvmsg::recv(&target, &user, op.sqe.op_flags as u64)
 }

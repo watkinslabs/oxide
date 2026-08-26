@@ -21,11 +21,47 @@ const MSGHDR_MAX: usize = 56;
 /// oversized `msg_namelen` to this before the receive.
 const SOCKADDR_STORAGE_LEN: u32 = 128;
 const UIO_MAXIOV: usize = 1024;
+const UIO_FASTIOV: usize = 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct IoVec {
     pub base: u64,
     pub len: usize,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum IoVecs {
+    Inline { entries: [IoVec; UIO_FASTIOV], len: usize },
+    Heap(Vec<IoVec>),
+}
+
+impl IoVecs {
+    pub(crate) fn empty() -> Self {
+        Self::Inline { entries: [IoVec { base: 0, len: 0 }; UIO_FASTIOV], len: 0 }
+    }
+
+    pub(crate) fn as_slice(&self) -> &[IoVec] {
+        match self {
+            Self::Inline { entries, len } => &entries[..*len],
+            Self::Heap(entries) => entries,
+        }
+    }
+
+    pub(crate) fn one(base: u64, len: usize) -> Self {
+        let mut entries = [IoVec { base: 0, len: 0 }; UIO_FASTIOV];
+        entries[0] = IoVec { base, len };
+        Self::Inline { entries, len: 1 }
+    }
+}
+
+impl From<Vec<IoVec>> for IoVecs {
+    fn from(entries: Vec<IoVec>) -> Self {
+        if entries.len() > UIO_FASTIOV { return Self::Heap(entries); }
+        let len = entries.len();
+        let mut inline = [IoVec { base: 0, len: 0 }; UIO_FASTIOV];
+        inline[..len].copy_from_slice(&entries);
+        Self::Inline { entries: inline, len }
+    }
 }
 
 /// Where a receive's bytes land, and where it publishes what it delivered.
@@ -66,7 +102,7 @@ pub(crate) struct RecvUser {
     pub name_len_ptr: u64,
     pub control: u64,
     pub controllen: usize,
-    pub iov: Vec<IoVec>,
+    pub iov: IoVecs,
     pub capacity: usize,
     /// The shape `msgp` and the control stream are written back in, decided
     /// once by the entry (`crate::msg_layout`) and never re-derived here.
@@ -109,18 +145,37 @@ fn import_iov_inner(msgp: u64, name: u64, namelen: u32, control: u64, controllen
 {
     let stride = layout.iovec_size();
     let bytes_len = iovlen.checked_mul(stride).ok_or_else(|| errno(Errno::Emsgsize))?;
-    let mut raw = vec![0u8; bytes_len];
-    if bytes_len != 0 { uaccess::copy_from_user(&mut raw, iovp).map_err(errno)?; }
-    let mut iov = Vec::with_capacity(iovlen);
+    let mut raw_inline = [0u8; UIO_FASTIOV * 16];
+    let raw_heap = if iovlen <= UIO_FASTIOV {
+        if bytes_len != 0 {
+            uaccess::copy_from_user(&mut raw_inline[..bytes_len], iovp).map_err(errno)?;
+        }
+        None
+    } else { Some({
+        let mut raw = vec![0u8; bytes_len];
+        if bytes_len != 0 { uaccess::copy_from_user(&mut raw, iovp).map_err(errno)?; }
+        raw
+    }) };
+    let raw = match &raw_heap {
+        Some(raw) => raw.as_slice(),
+        None => &raw_inline[..bytes_len],
+    };
+    let mut inline = [IoVec { base: 0, len: 0 }; UIO_FASTIOV];
+    let mut heap = if iovlen > UIO_FASTIOV { Some(Vec::with_capacity(iovlen)) } else { None };
     let mut capacity = 0usize;
-    for entry in raw.chunks_exact(stride) {
+    for (index, entry) in raw.chunks_exact(stride).enumerate() {
         let base = layout.word_at(entry, 0);
         let len = usize::try_from(layout.word_at(entry, layout.word()))
             .map_err(|_| errno(Errno::Einval))?;
         if len != 0 && !uaccess::access_ok(base, len) { return Err(errno(Errno::Efault)); }
         capacity = core::cmp::min(MAX_RW_COUNT, capacity.saturating_add(len));
-        iov.push(IoVec { base, len });
+        let iov = IoVec { base, len };
+        if let Some(entries) = heap.as_mut() { entries.push(iov); } else { inline[index] = iov; }
     }
+    let iov = match heap {
+        Some(entries) => IoVecs::Heap(entries),
+        None => IoVecs::Inline { entries: inline, len: iovlen },
+    };
     Ok(RecvUser { sink: crate::recv_user::Sink::User, msgp, name, namelen, name_len_ptr: 0, control, controllen, iov, capacity,
         layout })
 }
@@ -160,7 +215,7 @@ pub(crate) fn import_hdr(msgp: u64, layout: MsgLayout) -> Result<(RecvUser, u64)
     let cap = crate::io_uring_abi::recvsend::dest::cap_from_iovlen(iovlen, first)
         .map_err(errno)?;
     Ok((RecvUser { msgp, name, namelen, name_len_ptr: 0, control, controllen,
-                   iov: Vec::new(), capacity: 0, layout, sink: Sink::User }, cap))
+                   iov: IoVecs::empty(), capacity: 0, layout, sink: Sink::User }, cap))
 }
 
 /// Import a readv iovec array into the common receive destination shape. # C: O(iovlen + faults)
@@ -175,7 +230,7 @@ pub(crate) fn import_recvfrom(base: u64, len: usize, name: u64,
 {
     let capacity = core::cmp::min(MAX_RW_COUNT, len);
     RecvUser { sink: crate::recv_user::Sink::User, msgp: 0, name, namelen: 0, name_len_ptr, control: 0,
-        controllen: 0, iov: vec![IoVec { base, len: capacity }], capacity,
+        controllen: 0, iov: IoVecs::one(base, capacity), capacity,
         layout: MsgLayout::Native }
 }
 
@@ -187,7 +242,7 @@ impl RecvUser {
     /// the addresses here are the kernel's own view of them. # C: O(iov)
     pub fn validate_payload_range(&self) -> Result<(), i64> {
         if self.sink == Sink::Pinned { return Ok(()); }
-        for iov in &self.iov {
+        for iov in self.iov.as_slice() {
             if !uaccess::access_ok(iov.base, iov.len) { return Err(errno(Errno::Efault)); }
         }
         Ok(())
@@ -222,7 +277,7 @@ impl RecvUser {
     fn scatter(&self, offset: usize, payload: &[u8]) -> (usize, bool) {
         let mut copied = 0usize;
         let mut skip = offset;
-        for iov in &self.iov {
+        for iov in self.iov.as_slice() {
             if skip >= iov.len { skip -= iov.len; continue; }
             if copied == payload.len() { break; }
             let at = skip;

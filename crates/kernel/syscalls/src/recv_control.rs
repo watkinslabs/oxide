@@ -86,7 +86,7 @@ impl Control {
     /// Emit the control stream at the option ABI's raw user pointer. # C: O(entries + data + faults)
     pub fn copy_to_raw(&mut self, control: u64) -> Result<usize, i64> {
         self.copy_to(&RecvUser { sink: crate::recv_user::Sink::User, msgp: 0, name: 0, namelen: 0, name_len_ptr: 0,
-            control, controllen: self.cap, iov: Vec::new(), capacity: 0, layout: MsgLayout::Native })
+            control, controllen: self.cap, iov: crate::recv_user::IoVecs::empty(), capacity: 0, layout: MsgLayout::Native })
     }
 
     /// One entry at a time, exactly as Linux's `put_cmsg` cursor runs: an
@@ -245,7 +245,7 @@ mod tests {
         for cap in 0..=32 {
             let mut bytes = [0u8; 32];
             let user = RecvUser { sink: crate::recv_user::Sink::User, msgp: 0, name: 0, namelen: 0, name_len_ptr: 0, control: bytes.as_mut_ptr() as u64,
-                controllen: cap, iov: Vec::new(), capacity: 0, layout: MsgLayout::Native };
+                controllen: cap, iov: crate::recv_user::IoVecs::empty(), capacity: 0, layout: MsgLayout::Native };
             let mut control = Control::new(cap);
             control.push(SOL_SOCKET, SCM_CREDENTIALS, &data);
             let copied = control.copy_to(&user).unwrap();
@@ -265,7 +265,7 @@ mod tests {
     fn complete_cmsg_does_not_write_alignment_padding() {
         let mut bytes = [0xa5u8; 32];
         let user = RecvUser { sink: crate::recv_user::Sink::User, msgp: 0, name: 0, namelen: 0, name_len_ptr: 0, control: bytes.as_mut_ptr() as u64,
-            controllen: bytes.len(), iov: Vec::new(), capacity: 0, layout: MsgLayout::Native };
+            controllen: bytes.len(), iov: crate::recv_user::IoVecs::empty(), capacity: 0, layout: MsgLayout::Native };
         let mut control = Control::new(bytes.len());
         control.push(SOL_SOCKET, SCM_CREDENTIALS, &[0x5a; 12]);
 
@@ -277,7 +277,7 @@ mod tests {
     fn socket_security_follows_credentials_in_the_one_control_cursor() {
         let mut bytes = [0u8; 64];
         let user = RecvUser { sink: crate::recv_user::Sink::User, msgp: 0, name: 0, namelen: 0, name_len_ptr: 0,
-            control: bytes.as_mut_ptr() as u64, controllen: bytes.len(), iov: Vec::new(), capacity: 0, layout: MsgLayout::Native };
+            control: bytes.as_mut_ptr() as u64, controllen: bytes.len(), iov: crate::recv_user::IoVecs::empty(), capacity: 0, layout: MsgLayout::Native };
         let mut control = Control::new(bytes.len());
         control.push(SOL_SOCKET, SCM_CREDENTIALS, &[0; 12]);
         control.push(SOL_SOCKET, SCM_SECURITY, b"sender_t");
@@ -300,7 +300,7 @@ mod tests {
             let mut bytes = [0u8; 32];
             let user = RecvUser { sink: crate::recv_user::Sink::User, msgp: 0, name: 0, namelen: 0, name_len_ptr: 0,
                 control: bytes.as_mut_ptr() as u64, controllen: bytes.len(),
-                iov: Vec::new(), capacity: 0, layout: MsgLayout::Native };
+                iov: crate::recv_user::IoVecs::empty(), capacity: 0, layout: MsgLayout::Native };
             let mut control = Control::new(bytes.len());
             control.push_inq(Some(inq));
             let copied = control.copy_to(&user).unwrap();
@@ -317,7 +317,7 @@ mod tests {
         let mut bytes = [0u8; 32];
         let user = RecvUser { sink: crate::recv_user::Sink::User, msgp: 0, name: 0, namelen: 0, name_len_ptr: 0,
             control: bytes.as_mut_ptr() as u64, controllen: bytes.len(),
-            iov: Vec::new(), capacity: 0, layout: MsgLayout::Native };
+                iov: crate::recv_user::IoVecs::empty(), capacity: 0, layout: MsgLayout::Native };
         let mut control = Control::new(bytes.len());
         control.push_inq(None);
         assert_eq!(control.copy_to(&user).unwrap(), 0);
@@ -336,7 +336,7 @@ mod tests {
     fn a_compat_receiver_gets_twelve_byte_headers_on_the_four_byte_grid() {
         let mut bytes = [0xa5u8; 64];
         let user = RecvUser { sink: crate::recv_user::Sink::User, msgp: 0, name: 0, namelen: 0, name_len_ptr: 0,
-            control: bytes.as_mut_ptr() as u64, controllen: bytes.len(), iov: Vec::new(),
+            control: bytes.as_mut_ptr() as u64, controllen: bytes.len(), iov: crate::recv_user::IoVecs::empty(),
             capacity: 0, layout: MsgLayout::Compat };
         let mut control = Control::new(bytes.len());
         control.push(SOL_SOCKET, SCM_CREDENTIALS, &[1u8; 12]);
@@ -363,7 +363,7 @@ mod tests {
         let mut bytes = [0u8; 32];
         for cap in 0..=16usize {
             let user = RecvUser { sink: crate::recv_user::Sink::User, msgp: 0, name: 0, namelen: 0, name_len_ptr: 0,
-                control: bytes.as_mut_ptr() as u64, controllen: cap, iov: Vec::new(),
+                control: bytes.as_mut_ptr() as u64, controllen: cap, iov: crate::recv_user::IoVecs::empty(),
                 capacity: 0, layout: MsgLayout::Compat };
             let mut control = Control::new(cap);
             control.push(SOL_SOCKET, SCM_CREDENTIALS, &[0u8; 4]);
@@ -407,7 +407,7 @@ mod tests {
     #[test]
     fn the_two_control_abis_answer_a_fault_differently() {
         let user = RecvUser { sink: crate::recv_user::Sink::User, msgp: 0, name: 0, namelen: 0, name_len_ptr: 0, control: 0,
-            controllen: 64, iov: Vec::new(), capacity: 0, layout: MsgLayout::Native };
+            controllen: 64, iov: crate::recv_user::IoVecs::empty(), capacity: 0, layout: MsgLayout::Native };
         let mut control = Control::new(64);
         control.push(SOL_SOCKET, SCM_CREDENTIALS, &[0u8; 4]);
         assert_eq!(control.copy_to(&user), Err(errno(syscall::errno::Errno::Efault)));
