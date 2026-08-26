@@ -177,6 +177,31 @@ fn submit_batch(map: &Arc<Mapping>, sink: Sink<'_>, batch: Vec<(u64, Arc<super::
     (written, first_err)
 }
 
+/// Filesystems whose page cache is their own, not this layer's `Mapping` list.
+/// A filesystem that keeps its own dirty set registers a writeback callback
+/// here at mount, and the flusher visits it on every pass.
+///
+/// The dependency runs one way — this crate cannot name a filesystem — so the
+/// filesystem hands its flush down instead. It is the same reason the reference
+/// drives per-superblock writeback through a registered operation rather than
+/// letting the writeback machinery know what a filesystem is.
+static FS_FLUSHERS: sync::Spinlock<alloc::vec::Vec<fn()>, sync::TaskList> =
+    sync::Spinlock::new(alloc::vec::Vec::new());
+
+/// Register a filesystem's periodic writeback. Idempotent per function
+/// pointer, so a second mount of the same filesystem does not queue a second
+/// visit. # C: O(registered)
+pub fn register_fs_flusher(flush: fn()) {
+    let mut g = FS_FLUSHERS.lock();
+    if g.iter().any(|f| core::ptr::fn_addr_eq(*f, flush)) { return; }
+    g.push(flush);
+}
+
+/// Snapshot of the registered filesystem flushers, taken under the lock and
+/// released before any of them runs — a flusher writes back, which sleeps.
+/// # C: O(registered)
+fn fs_flushers() -> alloc::vec::Vec<fn()> { FS_FLUSHERS.lock().clone() }
+
 /// One `kflushd` visit (`17§4.3` step 5): write back dirty mappings while the
 /// machine is over its background dirty threshold, plus any mapping that has
 /// been dirty longer than the expiry regardless of the threshold. Returns
@@ -196,6 +221,13 @@ pub fn flush_pass(now: u64) -> usize {
         if map.nr_dirty() == 0 { map.dirtied_when.store(0, Ordering::Release); }
         if over && global::nr_dirty() <= background { over = false; }
     }
+    // A filesystem that owns its own page cache is visited unconditionally:
+    // its dirty set is not counted in this layer's thresholds, so there is no
+    // `over`/`expired` decision here to make. Without this the only thing that
+    // ever wrote those pages was an explicit sync — or an inode's last
+    // reference being dropped, which put a journal commit on whatever stack
+    // happened to release it.
+    for flush in fs_flushers() { flush(); }
     written
 }
 

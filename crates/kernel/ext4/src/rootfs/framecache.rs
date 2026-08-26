@@ -36,7 +36,7 @@ mod verify;
 mod read;
 mod release;
 mod writeback;
-pub use dirty::{flush_all_dirty, flush_dirty, writeback_dirty, writeback_inode};
+pub use dirty::{flush_all_dirty, flush_dirty, flush_pass, writeback_dirty, writeback_inode};
 #[cfg(test)]
 mod tests;
 
@@ -124,6 +124,15 @@ pub(crate) struct Ext4FrameStore {
     me: Spinlock<Weak<Ext4FrameStore>, TaskListClass>,
     /// One-shot: registered in the global dirty list (on first dirty).
     registered: AtomicBool,
+    /// A strong reference to itself, held for exactly as long as this store has
+    /// dirty pages. The cycle is deliberate: the reference tracks the same
+    /// thing the reference implementation's writeback list does, which owns a
+    /// dirty inode until its pages are written. While it is held the store
+    /// cannot reach a zero count, so its final drop is guaranteed to be clean
+    /// — and `Drop` therefore does not have to write anything, which is what
+    /// used to put a journal commit, a block allocation and an extent-tree
+    /// rewrite onto whichever unrelated stack released the last reference.
+    pin: Spinlock<Option<Arc<Ext4FrameStore>>, TaskListClass>,
     /// Final inode eviction has started.  Linux sets AS_EXITING and waits for
     /// inode writeback before `truncate_inode_pages_final`; once published,
     /// no new writeback may reach this inode's blocks.
@@ -166,6 +175,7 @@ impl Ext4FrameStore {
             writeback: Spinlock::new(BTreeMap::new()),
             me: Spinlock::new(Weak::new()),
             registered: AtomicBool::new(false),
+            pin: Spinlock::new(None),
             evicting: AtomicBool::new(false),
             active_writebacks: AtomicU32::new(0),
             writeback_wait: WaitList::new(),
@@ -429,6 +439,24 @@ impl Ext4FrameStore {
         if !self.registered.swap(true, Ordering::AcqRel) {
             if let Some(arc) = self.me.lock().upgrade() { dirty::register(&arc); }
         }
+        // Pin for as long as there is anything to write. Dropped again by
+        // `unpin_if_clean` once the flusher, a sync, or eviction has emptied
+        // the dirty set.
+        let mut pin = self.pin.lock();
+        if pin.is_none() { *pin = self.me.lock().upgrade(); }
+    }
+
+    /// Release the dirty pin once nothing is outstanding.
+    ///
+    /// The caller must hold its own reference to this store: dropping the pin
+    /// can be the release that frees it, and it must not be the one taken while
+    /// a method is running on `&self`. Every caller reached this store by
+    /// upgrading out of a registry, so it does.
+    /// # C: O(1)
+    pub(crate) fn unpin_if_clean(&self) {
+        if !self.dirty.lock().is_empty() || !self.writeback.lock().is_empty() { return; }
+        let released = self.pin.lock().take();
+        drop(released);
     }
 
 }

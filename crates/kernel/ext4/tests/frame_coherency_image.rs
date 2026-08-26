@@ -384,3 +384,41 @@ fn shared_mapping_over_unwritten_extent_persists_across_batched_remount() {
     assert_eq!(f.read(PG as u64, &mut second).expect("read second page"), second.len());
     assert_eq!(second, [0x5A; 16], "mapped second page persisted");
 }
+
+/// A store with dirty pages is pinned by its own dirty state, so dropping every
+/// outward reference cannot be the moment its data is written.
+///
+/// This is the property that lets the final drop write nothing. Before it, a
+/// refcount reaching zero ran writeback — and therefore a journal transaction,
+/// a block allocation and an extent-tree rewrite — on whichever stack happened
+/// to release the last reference, including a kernel helper reading its own ELF
+/// image. Here the file is written, every handle to it is dropped WITHOUT an
+/// explicit flush, and the data must still reach the device when the periodic
+/// flusher visits.
+#[test]
+fn a_dropped_dirty_mapping_is_written_by_the_flusher_not_by_the_drop() {
+    common::boot_hosted_pmm();
+    let disk = fresh_disk();
+    let dev: Arc<dyn BlockDevice> = disk.clone();
+    let payload = *b"PINNED-UNTIL-THE-FLUSHER-RUNS";
+
+    {
+        let (m, _sb) = open_with_sb(dev.clone());
+        let st = m.state();
+        let root = st.lookup_path(b"/").expect("root");
+        let ino = st.mount.create_file(root, b"pinned.bin", 0o644, 0, 0).expect("create pinned.bin");
+        let f = st.wrap_file(ino).expect("wrap pinned.bin");
+        f.write(0, &payload).expect("buffered write");
+        // Every handle goes away with the page still dirty and no flush.
+        drop(f);
+        // The flusher's visit, on its own stack — what `kflushd` calls.
+        ext4::rootfs::flush_pass();
+    }
+
+    let (m2, _sb2) = open_with_sb(dev.clone());
+    let ino2 = m2.state().lookup_path(b"/pinned.bin").expect("pinned.bin after remount");
+    let f2 = m2.state().wrap_file(ino2).expect("wrap after remount");
+    let mut got = alloc::vec![0u8; payload.len()];
+    f2.read(0, &mut got).expect("read after remount");
+    assert_eq!(&got[..], &payload[..], "the flusher wrote what the drop no longer does");
+}
