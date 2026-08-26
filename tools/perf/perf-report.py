@@ -33,7 +33,6 @@ SYSCALLS = {
     10:  ("mprotect",   "mprotect_64k",        2),
     11:  ("munmap",     "mmap+munmap_64k",     2),
     18:  ("pwrite64",   "pwrite_4k",           1),
-    20:  ("writev",     "writev_4x4k",         1),
     28:  ("madvise",    "madvise_dontneed_64k",1),
     45:  ("recvfrom",   "sendmsg+recvmsg_256", 2),
     46:  ("sendmsg",    "sendmsg+recvmsg_256", 2),
@@ -41,6 +40,16 @@ SYSCALLS = {
     257: ("openat",     "openat+close",        2),
     262: ("newfstatat", "fstatat",             1),
     307: ("sendmmsg",   "sendmsg+recvmsg_256", 2),
+}
+
+# Measured but deliberately NOT compared. `writev` in a desktop boot is
+# overwhelmingly console output: the write reaches the VT, and fbcon scrolls by
+# copying the whole framebuffer (`copy_within` over ~3 MB at 1024x768x4), which
+# is what the reference's unaccelerated fbcon does too. Comparing that against a
+# host loop writing to /dev/null said 2600x and meant nothing. Give it a host
+# baseline that scrolls a framebuffer, or leave it out of the ratio.
+UNCOMPARED = {
+    20: ("writev", "console output; fbcon scrolls the framebuffer, host baseline writes to /dev/null"),
 }
 
 FAULTS = {
@@ -147,6 +156,16 @@ def main() -> int:
 
     for ratio, name, ours, theirs in sorted(rows, reverse=True):
         emit(f"| {name} | {ours:,} | {theirs:,} | {ratio:.0f}x | {bar(ratio)} | {verdict(ratio)} |")
+
+    if any(nr in sysrows for nr in UNCOMPARED):
+        emit()
+        emit("## Measured, not compared")
+        emit()
+        emit("| operation | oxide ns | why no ratio |")
+        emit("|---|---:|---|")
+        for nr, (name, why) in UNCOMPARED.items():
+            if nr in sysrows:
+                emit(f"| {name} | {sysrows[nr][2]:,} | {why} |")
 
     if blk:
         emit()
