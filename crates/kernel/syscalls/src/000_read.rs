@@ -29,21 +29,27 @@ pub fn sys_read(args: &SyscallArgs) -> i64 {
     if let Err(e) = ::fs::inotify::check_file_area_perm(&file.inode(), false, Some(file.pos()), cnt as u64) {
         return -(e.as_i32() as i64);
     }
-    if let Ok(target) = crate::recvmsg::from_file(file.clone()) {
-        if cnt == 0 {
-            cur.account_read_result(0);
-            return 0;
+    // Linux reaches sockets through their socket file operation, but ordinary
+    // files go straight to vfs_read. Do not probe three socket private-data
+    // types on every regular-file read; the inode mode is the VFS's canonical
+    // dispatch key and is fixed for the open file's lifetime.
+    if file.inode().file_type() == vfs::FileType::Socket {
+        if let Ok(target) = crate::recvmsg::from_file(file.clone()) {
+            if cnt == 0 {
+                cur.account_read_result(0);
+                return 0;
+            }
+            if !uaccess::access_ok(buf, cnt) { return -(Errno::Efault.as_i32() as i64); }
+            cnt = crate::userbuf::clamp_rw_count(cnt);
+            let user = crate::recv_user::RecvUser { sink: crate::recv_user::Sink::User,
+                msgp: 0, name: 0, namelen: 0, name_len_ptr: 0, control: 0, controllen: 0,
+                iov: crate::recv_user::IoVecs::one(buf, cnt), capacity: cnt,
+                layout: crate::msg_layout::MsgLayout::Native,
+            };
+            let ret = crate::recvmsg::recv(&target, &user, 0);
+            cur.account_read_result(ret);
+            return ret;
         }
-        if !uaccess::access_ok(buf, cnt) { return -(Errno::Efault.as_i32() as i64); }
-        cnt = crate::userbuf::clamp_rw_count(cnt);
-        let user = crate::recv_user::RecvUser { sink: crate::recv_user::Sink::User,
-            msgp: 0, name: 0, namelen: 0, name_len_ptr: 0, control: 0, controllen: 0,
-            iov: crate::recv_user::IoVecs::one(buf, cnt), capacity: cnt,
-            layout: crate::msg_layout::MsgLayout::Native,
-        };
-        let ret = crate::recvmsg::recv(&target, &user, 0);
-        cur.account_read_result(ret);
-        return ret;
     }
     if cnt == 0 {
         let ret = match file.read(&mut []) { Ok(n) => n as i64, Err(e) => -(e as i64) };

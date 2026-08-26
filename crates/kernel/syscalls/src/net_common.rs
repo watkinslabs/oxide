@@ -273,6 +273,7 @@ mod tests {
     #[test]
     fn read_receive_and_writev_do_not_reresolve_pinned_files() {
         let read = include_str!("000_read.rs");
+        assert!(read.contains("file.inode().file_type() == vfs::FileType::Socket"));
         assert!(read.contains("recvmsg::from_file(file.clone())"));
         assert!(!read.contains("socket_from_fd"));
         assert!(!read.contains("sys_recvfrom"));
