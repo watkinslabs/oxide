@@ -109,7 +109,10 @@ pub fn edid_blob_bytes(card: &Arc<dyn DrmDriver>, blob_id: u32) -> Option<alloc:
 /// # C: O(objects)
 fn value(card_id: u32, card: &Arc<dyn DrmDriver>, obj_id: u32, prop: u32) -> u64 {
     let fb = crate::crtc::current_fb(card_id);
-    let active = fb != 0;
+    // Linux stores CRTC `active` in CRTC state, independently of the primary
+    // plane's framebuffer pointer. The boot console can leave the primary FB
+    // unowned by DRM while the hardware mode is still enabled.
+    let active = card.crtc_info(0).is_some_and(|info| info.mode_valid != 0);
     let crtc = card.crtc_ids().first().copied().unwrap_or(0);
     let plane_idx = card.plane_ids().iter().position(|id| *id == obj_id);
     let is_primary = plane_idx == Some(0);
