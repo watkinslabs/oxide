@@ -85,7 +85,24 @@ mod kernel {
         fn unique(&self) -> &str { self.unique.as_str() }
         fn resource_counts(&self) -> (u32, u32, u32, u32) { (0, 1, 1, 1) }
         fn dim_bounds(&self) -> (u32, u32, u32, u32) { (MODE_WIDTH, MODE_WIDTH, MODE_HEIGHT, MODE_HEIGHT) }
-        fn cap(&self, cap: u64) -> u64 { drm::default_cap(cap) }
+        fn cap(&self, cap: u64) -> u64 {
+            // This backend presents by copying the userspace dumb buffer into
+            // the Bochs LFB; it cannot scan the userspace allocation directly.
+            // Linux advertises this exact contract through
+            // DRM_CAP_DUMB_PREFER_SHADOW, which makes Xorg select its normal
+            // shadow-buffer path when glamor is unavailable on llvmpipe.
+            match cap {
+                drm::DRM_CAP_DUMB_PREFER_SHADOW => 1,
+                // Xorg's modesetting driver uses these capabilities to size
+                // its software cursor BO.  Returning success with zero would
+                // make it issue CREATE_DUMB(0, 0, 32), which Linux drivers do
+                // not advertise and which the DRM dumb-buffer ABI correctly
+                // rejects.  Bochs supports the conventional 64x64 cursor
+                // resource used by this backend.
+                drm::DRM_CAP_CURSOR_WIDTH | drm::DRM_CAP_CURSOR_HEIGHT => 64,
+                _ => drm::default_cap(cap),
+            }
+        }
         fn crtc_ids(&self) -> Vec<u32> { alloc::vec![drm::crtc_id_for(0)] }
         fn connector_ids(&self) -> Vec<u32> { alloc::vec![drm::connector_id_for(0)] }
         fn encoder_ids(&self) -> Vec<u32> { alloc::vec![drm::encoder_id_for(0)] }

@@ -16,6 +16,7 @@ use crate::{
 };
 
 fn einval() -> i64 { -(Errno::Einval.as_i32() as i64) }
+fn enoent() -> i64 { -(Errno::Enoent.as_i32() as i64) }
 
 /// True iff `[ptr, ptr+len)` is a usable user range. # C: O(1)
 fn user_ok(ptr: u64, len: u64) -> bool {
@@ -91,18 +92,18 @@ pub fn get_crtc(card_id: u32, card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
     let count = card.crtc_ids().len();
     let idx = match crtc_idx_of(c.crtc_id, count) { Some(i) => i, None => return einval() };
     let info = match card.crtc_info(idx) { Some(i) => i, None => return einval() };
-    // The fbcon boot surface is not a userspace DRM framebuffer. Reporting
-    // the CRTC active with fb_id=0 makes a compositor believe it inherited a
-    // usable KMS scanout while no primary plane is bound. Reflect the actual
-    // userspace-owned framebuffer state instead; a subsequent SETCRTC or
-    // SETPLANE makes the mode visible through this same ioctl.
-    let fb_id = crate::crtc::current_fb(card_id);
-    c.fb_id      = fb_id;
+    // The fbcon boot surface is not a userspace DRM framebuffer, so its fb_id
+    // remains zero.  The CRTC mode is independent state, however: Linux still
+    // reports the active hardware mode before a userspace FB has been bound.
+    // Xorg uses that mode while constructing its KMS objects; zeroing it just
+    // because fb_id is zero makes the otherwise valid connector look
+    // unconfigured and can crash the modesetting driver during plane setup.
+    c.fb_id      = crate::crtc::current_fb(card_id);
     c.x          = info.x;
     c.y          = info.y;
     c.gamma_size = info.gamma_size;
-    c.mode_valid = if fb_id != 0 { info.mode_valid } else { 0 };
-    c.mode       = if fb_id != 0 { info.mode } else { DrmModeModeinfo::default() };
+    c.mode_valid = info.mode_valid;
+    c.mode       = info.mode;
     c.count_connectors = 0;
     // SAFETY: arg validated; struct is 104 B; aligned struct write through caller's AS at CPL=0.
     if crate::uarg::write_arg(arg, c).is_err() { return efault(); }
@@ -199,7 +200,14 @@ pub fn get_plane(card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
     if p.format_type_ptr != 0 && p.count_format_types >= fmts.len() as u32 {
         write_ids(p.format_type_ptr, &fmts, p.count_format_types);
     }
-    p.crtc_id            = info.crtc_id;
+    // Linux reports the plane's current state here, not its possible CRTC
+    // routing.  A freshly reset atomic plane has no CRTC until a commit binds
+    // it; the possible_crtcs bitmask below still advertises the routing.
+    p.crtc_id            = if card.crtc_info(0).is_some_and(|crtc| crtc.mode_valid != 0) {
+        info.crtc_id
+    } else {
+        0
+    };
     p.fb_id              = info.fb_id;
     p.possible_crtcs     = info.possible_crtcs;
     p.gamma_size         = 0;
@@ -251,8 +259,13 @@ fn in_formats_blob(formats: &[u32]) -> alloc::vec::Vec<u8> {
 /// report its true byte length. # C: O(n)
 fn copy_driver_blob(arg: u64, ulen: u32, data_ptr: u64, bytes: &[u8]) -> i64 {
     let len = bytes.len() as u32;
-    if ulen >= len && data_ptr != 0 && uaccess::copy_to_user(data_ptr, bytes).is_err() {
-        return efault();
+    // Linux's drm_mode_getblob copies only for an exact-size request.  A
+    // caller that supplies that size must also supply a valid destination;
+    // the length=0 query is the only no-copy pass.
+    if ulen == len {
+        if data_ptr == 0 || uaccess::copy_to_user(data_ptr, bytes).is_err() {
+            return efault();
+        }
     }
     if crate::uarg::write_arg(arg + 4, len).is_err() { return efault(); }
     0
@@ -284,7 +297,10 @@ pub fn get_prop_blob(card: Option<&Arc<dyn DrmDriver>>, arg: u64) -> i64 {
             0
         }
         Some(err) => err,
-        None => einval(),
+        // drm_mode_getblob_ioctl() returns -ENOENT when the id is not a
+        // registered property blob. In particular, a connector without EDID
+        // is probed as blob id 0 and must not be reported as EINVAL.
+        None => enoent(),
     }
 }
 

@@ -62,6 +62,7 @@ use crate::{
     DRM_IOCTL_MODE_OBJ_SETPROPERTY, DRM_IOCTL_MODE_SETPROPERTY,
     DRM_IOCTL_MODE_GETGAMMA, DRM_IOCTL_MODE_SETGAMMA, DRM_IOCTL_MODE_GETFB,
     DRM_IOCTL_MODE_CURSOR, DRM_IOCTL_MODE_CURSOR2,
+    DRM_IOCTL_MODE_LIST_LESSEES,
 };
 
 use vfs::File;
@@ -296,6 +297,25 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
                 Some(d) => Some(crate::modeset::get_connector(card_id, d, client_cap_atomic(file), arg)),
                 None    => Some(-(Errno::Einval.as_i32() as i64)),
             }
+        }
+        // Linux exposes lease enumeration even when this DRM device has no
+        // lease support.  There are no leases in this kernel, so a valid
+        // master gets the required zero count.  Xorg/libdrm probes this during
+        // DRM setup; returning ENOTTY here sends it down an invalid path.
+        DRM_IOCTL_MODE_LIST_LESSEES => {
+            if !is_master(card_id, token) {
+                return Some(-(Errno::Eacces.as_i32() as i64));
+            }
+            let Ok(v) = crate::uarg::read_arg::<crate::DrmModeListLessees>(arg)
+                else { return Some(-(Errno::Efault.as_i32() as i64)); };
+            if v.pad != 0 {
+                return Some(-(Errno::Einval.as_i32() as i64));
+            }
+            let out = crate::DrmModeListLessees { count_lessees: 0, ..v };
+            if crate::uarg::write_arg(arg, out).is_err() {
+                return Some(-(Errno::Efault.as_i32() as i64));
+            }
+            Some(0)
         }
         DRM_IOCTL_SET_CLIENT_CAP => Some(client_caps::set_client_cap(file, arg)),
         DRM_IOCTL_SET_MASTER => Some(set_master_owner(card_id, token)),

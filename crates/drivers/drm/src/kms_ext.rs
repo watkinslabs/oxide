@@ -31,6 +31,7 @@ const GAMMA_ENTRY_MAX:   u64 = 0xFFFF;
 
 fn einval() -> i64 { -(Errno::Einval.as_i32() as i64) }
 fn efault() -> i64 { -(Errno::Efault.as_i32() as i64) }
+fn enoent() -> i64 { -(Errno::Enoent.as_i32() as i64) }
 fn enxio()  -> i64 { -(Errno::Enxio.as_i32()  as i64) }
 
 /// `struct drm_clip_rect` ABI width — four `u16` corners.
@@ -243,13 +244,77 @@ pub fn cursor2(card_id: u32, card: &Arc<dyn DrmDriver>, token: u64, arg: u64) ->
 /// (Linux dirtyfb on an unbound fb is a successful no-op).
 /// # C: O(clips) + O(scanout).
 pub fn dirty_fb(card_id: u32, arg: u64) -> i64 {
+    let rv = dirty_fb_inner(card_id, arg);
+    // A desktop that renders into a mapped dumb buffer is invisible unless
+    // something pushes that buffer to the scanout. Keep the decision this
+    // ioctl made — which fb was asked for, which one is on screen, and what
+    // the caller was told — visible, so a black screen can be separated into
+    // "the client never asked" and "we refused".
+    #[cfg(feature = "debug-desktop")]
+    {
+        let asked = crate::uarg::read_arg::<DrmModeFbDirtyCmd>(arg).map(|d| d.fb_id).unwrap_or(0);
+        klog::write_raw(b"[DRMDIRTY fb=");
+        klog::write_dec_u64(asked as u64);
+        klog::write_raw(b" onscreen=");
+        klog::write_dec_u64(crate::crtc::current_fb(card_id) as u64);
+        klog::write_raw(if rv < 0 { b" rv=-" } else { b" rv=" });
+        klog::write_dec_u64(rv.unsigned_abs());
+        klog::write_raw(b"]\n");
+    }
+    rv
+}
+
+/// What a DIRTYFB request resolves to once its framebuffer has been looked up.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub(crate) enum DirtyVerdict {
+    /// The id names no framebuffer on this card — `ENOENT`.
+    NoFramebuffer,
+    /// The request contradicts itself — `EINVAL`.
+    Malformed,
+    /// A real framebuffer nobody is scanning out: nothing to refresh, success.
+    NotOnScreen,
+    /// Push the damaged region to the scanout.
+    Refresh,
+}
+
+/// Decide a DIRTYFB request from the request alone plus the two facts the card
+/// supplies: whether the framebuffer exists, and which framebuffer is on screen.
+///
+/// The order matters as much as the values. The framebuffer lookup is FIRST and
+/// its failure is `ENOENT`, not `EINVAL`. A display server probes this ioctl
+/// with an id that resolves to nothing to learn whether the driver refreshes on
+/// demand; `EINVAL` reads as "this ABI is malformed here", it stops asking, and
+/// a shadow-buffered desktop then renders into a mapped dumb buffer that nothing
+/// ever pushes to the scanout — a running session on a black screen.
+/// # C: O(1)
+pub(crate) fn dirty_verdict(d: &DrmModeFbDirtyCmd, fb_exists: bool, on_screen: u32) -> DirtyVerdict {
+    if !fb_exists { return DirtyVerdict::NoFramebuffer; }
+    // Clip count and clip pointer are supplied together or not at all.
+    if (d.num_clips == 0) != (d.clips_ptr == 0) { return DirtyVerdict::Malformed; }
+    // A copy annotation names source/destination pairs, so its clips come in twos.
+    if d.flags & crate::DRM_MODE_FB_DIRTY_ANNOTATE_COPY != 0 && d.num_clips % 2 != 0 {
+        return DirtyVerdict::Malformed;
+    }
+    if d.num_clips > crate::damage::MAX_DAMAGE_CLIPS { return DirtyVerdict::Malformed; }
+    // A framebuffer that exists but is not on screen has nothing to refresh; the
+    // refresh is bound to the scanout, not to the framebuffer object.
+    if on_screen != d.fb_id { return DirtyVerdict::NotOnScreen; }
+    DirtyVerdict::Refresh
+}
+
+/// Body of `dirty_fb`; separated so the ioctl's verdict can be traced once.
+/// # C: O(clips) + O(scanout).
+fn dirty_fb_inner(card_id: u32, arg: u64) -> i64 {
     if !user_ok(arg, core::mem::size_of::<DrmModeFbDirtyCmd>() as u64) { return einval(); }
     // SAFETY: arg range validated; DrmModeFbDirtyCmd is repr(C) 24 B; aligned read at CPL=0.
     let Ok(d) = crate::uarg::read_arg::<DrmModeFbDirtyCmd>(arg) else { return efault() };
-    if d.fb_id == 0 { return einval(); }
-    // Not the on-screen fb → nothing to refresh (Linux dirtyfb on an unbound fb
-    // is a successful no-op).
-    if crate::crtc::current_fb(card_id) != d.fb_id { return 0; }
+    match dirty_verdict(&d, crate::dumb::fb_exists(card_id, d.fb_id),
+                        crate::crtc::current_fb(card_id)) {
+        DirtyVerdict::NoFramebuffer => return enoent(),
+        DirtyVerdict::Malformed     => return einval(),
+        DirtyVerdict::NotOnScreen   => return 0,
+        DirtyVerdict::Refresh       => {}
+    }
     let ops = match scanout_ops(card_id) { Some(o) => o, None => return einval() };
     let (res_id, w, h) = match crate::crtc::fb_scanout_resource(card_id, ops, d.fb_id) {
         Some(v) => v, None => return einval(),

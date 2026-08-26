@@ -252,6 +252,14 @@ pub fn replace_bound_fb(card_id: u32, old_id: u32, new_id: u32) {
     if let Some(retired) = retired { release_fb(card_id, retired); }
 }
 
+/// True when `fb_id` names a live framebuffer object on `card_id`. The DIRTYFB
+/// and GETFB paths need the framebuffer-lookup verdict on its own: an id that
+/// resolves to nothing is `ENOENT`, which is a different answer from an id that
+/// resolves to a framebuffer nothing is scanning out. # C: O(fbs)
+pub fn fb_exists(card_id: u32, fb_id: u32) -> bool {
+    TABLES.lock().find_fb(card_id, fb_id).is_some()
+}
+
 pub fn bind_fb_scanout_resource(card_id: u32, fb_id: u32, res_id: u32) -> bool {
     if res_id == 0 {
         return false;

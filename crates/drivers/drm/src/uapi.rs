@@ -77,6 +77,10 @@ pub const DRM_IOCTL_MODE_OBJ_SETPROPERTY:   u64 = 0xc01864ba;
 // CURSOR2 is nr 0xBB (drm_mode_cursor2, 36 bytes) — the earlier 0xBF byte was a
 // transcription error (0xBF is SYNCOBJ_CREATE's nr) and never matched libdrm.
 pub const DRM_IOCTL_MODE_CURSOR2:           u64 = 0xc02464bb;
+// _IOWR(0xC7, struct drm_mode_list_lessees): DRM lease enumeration.  This
+// kernel does not create leases, but Linux still exposes the ioctl and returns
+// a zero count to a valid master.
+pub const DRM_IOCTL_MODE_LIST_LESSEES:       u64 = 0xc01064c7;
 // `struct drm_mode_atomic` (DRM/KMS modesetting UAPI) is flags+count_objs (2×u32) + 6×u64 =
 // 56 (0x38) bytes, so DRM_IOWR(0xBC, ..) encodes 0x38, not 0x40. The former
 // 0x40 size never matched libdrm's request number, so every drmModeAtomicCommit
@@ -191,6 +195,15 @@ pub struct DrmModeCardRes {
     pub max_width:        u32,
     pub min_height:       u32,
     pub max_height:       u32,
+}
+
+// `struct drm_mode_list_lessees` — 16 bytes, Linux DRM UAPI.
+#[repr(C)]
+#[derive(Copy, Clone, Default, Debug)]
+pub struct DrmModeListLessees {
+    pub count_lessees: u32,
+    pub pad:           u32,
+    pub lessees_ptr:   u64,
 }
 
 #[repr(C)]
@@ -360,6 +373,10 @@ pub struct DrmModeSetPlane {
     pub src_h:    u32,
     pub src_w:    u32,
 }
+
+/// DIRTYFB `flags`: the caller annotated its clips as source/destination copy
+/// pairs, so they must arrive in twos.
+pub const DRM_MODE_FB_DIRTY_ANNOTATE_COPY: u32 = 0x01;
 
 /// `struct drm_mode_fb_dirty_cmd` — DIRTYFB, 0xc01864b1, 24 bytes.
 #[repr(C)]

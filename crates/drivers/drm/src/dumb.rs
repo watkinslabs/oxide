@@ -53,6 +53,7 @@ pub use tables::{
     bind_fb_scanout_resource,
     clear_card_state,
     cursor_source,
+    fb_exists,
     mmap_backing,
     pin_mmap,
     ref_cursor_handle,

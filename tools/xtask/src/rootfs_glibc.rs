@@ -41,7 +41,7 @@ fn packed_image(repo: &Path, arch: &str) -> Result<PathBuf, u8> {
     if !src.is_file() {
         eprintln!("xtask rootfs: no packed glibc root image at {}", src.display());
         eprintln!("  build it in the images repo: (cd {} && make {profile}-{arch})", images.display());
-        eprintln!("  or select another with OXIDE_QUICKBOOT_PROFILE=<cli|gnome|live-gnome|dev-qemu>");
+        eprintln!("  or select another with OXIDE_QUICKBOOT_PROFILE=<micro|cli|gnome|live-gnome|dev-qemu>");
         return Err(2);
     }
     Ok(src)

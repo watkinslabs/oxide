@@ -271,6 +271,8 @@ fn ioctl_size_fields_match_structs() {
     assert_eq!(DRM_IOCTL_MODE_CURSOR  & 0xff, 0xa3);
     assert_eq!(ioc_size(DRM_IOCTL_MODE_CURSOR2),         size_of::<DrmModeCursor2>() as u64);
     assert_eq!(DRM_IOCTL_MODE_CURSOR2 & 0xff, 0xbb);
+    assert_eq!(ioc_size(DRM_IOCTL_MODE_LIST_LESSEES),     size_of::<DrmModeListLessees>() as u64);
+    assert_eq!(DRM_IOCTL_MODE_LIST_LESSEES & 0xff, 0xc7);
 }
 
 #[test]
@@ -284,6 +286,7 @@ fn new_kms_struct_sizes() {
     assert_eq!(size_of::<DrmModeCursor>(),               28);
     assert_eq!(size_of::<DrmModeCursor2>(),              36);
     assert_eq!(size_of::<DrmModeFbCmd>(),                28);
+    assert_eq!(size_of::<DrmModeListLessees>(),           16);
 }
 
 // ---------------------------------------------------------------------------
@@ -328,6 +331,7 @@ fn ioctl_numbers_encode_their_linux_struct_size() {
     assert_eq!(DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT,  ioc(IOC_RW, 0xCA, 48), "drm_syncobj_timeline_wait");
     assert_eq!(DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD,   ioc(IOC_RW, 0xC1, 24), "drm_syncobj_handle");
     assert_eq!(DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE,   ioc(IOC_RW, 0xC2, 24), "drm_syncobj_handle");
+    assert_eq!(DRM_IOCTL_MODE_LIST_LESSEES,       ioc(IOC_RW, 0xC7, 16), "drm_mode_list_lessees");
 }
 
 /// Each wire struct must be exactly the size its own request number claims.
@@ -375,4 +379,64 @@ fn wire_struct_field_offsets_match_linux() {
     assert_eq!(offset_of!(DrmModeGetConnector, count_modes),     32);
     assert_eq!(offset_of!(DrmModeGetConnector, count_props),     36);
     assert_eq!(offset_of!(DrmModeGetConnector, count_encoders),  40);
+}
+
+/// A DIRTYFB probe carrying an id that resolves to no framebuffer is answered
+/// ENOENT, never EINVAL. Xorg's modesetting driver issues exactly this probe
+/// before it owns a framebuffer, and reads EINVAL as "this driver does not
+/// refresh on demand": it then stops calling DIRTYFB for the life of the
+/// session, its shadow buffer is never pushed, and the desktop runs on a black
+/// screen with every other part of the stack reporting success.
+#[test]
+fn a_dirtyfb_probe_for_an_unknown_framebuffer_is_enoent() {
+    let probe = DrmModeFbDirtyCmd { fb_id: 0, ..Default::default() };
+    assert_eq!(crate::kms_ext::dirty_verdict(&probe, false, 0),
+               crate::kms_ext::DirtyVerdict::NoFramebuffer);
+    // Still ENOENT when a framebuffer is on screen — the id, not the scanout,
+    // decides this leg.
+    assert_eq!(crate::kms_ext::dirty_verdict(&probe, false, 2),
+               crate::kms_ext::DirtyVerdict::NoFramebuffer);
+}
+
+/// The lookup outranks the request's own validity: an unknown id reports the
+/// missing framebuffer even when the clip fields contradict each other.
+#[test]
+fn the_framebuffer_lookup_is_decided_before_the_clip_fields() {
+    let contradictory = DrmModeFbDirtyCmd { fb_id: 7, num_clips: 4, clips_ptr: 0, ..Default::default() };
+    assert_eq!(crate::kms_ext::dirty_verdict(&contradictory, false, 7),
+               crate::kms_ext::DirtyVerdict::NoFramebuffer);
+    assert_eq!(crate::kms_ext::dirty_verdict(&contradictory, true, 7),
+               crate::kms_ext::DirtyVerdict::Malformed);
+}
+
+/// Clip count and clip pointer are supplied together or not at all; a copy
+/// annotation names source/destination pairs, so its clips come in twos; and
+/// the clip walk has a ceiling.
+#[test]
+fn a_contradictory_dirtyfb_request_is_einval() {
+    let base = DrmModeFbDirtyCmd { fb_id: 2, ..Default::default() };
+    let cases = [
+        DrmModeFbDirtyCmd { num_clips: 1, clips_ptr: 0, ..base },
+        DrmModeFbDirtyCmd { num_clips: 0, clips_ptr: 0x4000, ..base },
+        DrmModeFbDirtyCmd { flags: DRM_MODE_FB_DIRTY_ANNOTATE_COPY, num_clips: 3, clips_ptr: 0x4000, ..base },
+        DrmModeFbDirtyCmd { num_clips: crate::damage::MAX_DAMAGE_CLIPS + 1, clips_ptr: 0x4000, ..base },
+    ];
+    for c in cases {
+        assert_eq!(crate::kms_ext::dirty_verdict(&c, true, 2),
+                   crate::kms_ext::DirtyVerdict::Malformed, "{c:?}");
+    }
+    // A whole-surface refresh carries no clips at all, and is not malformed.
+    assert_eq!(crate::kms_ext::dirty_verdict(&base, true, 2), crate::kms_ext::DirtyVerdict::Refresh);
+    // An even pair count under a copy annotation is accepted.
+    let pairs = DrmModeFbDirtyCmd { flags: DRM_MODE_FB_DIRTY_ANNOTATE_COPY, num_clips: 4, clips_ptr: 0x4000, ..base };
+    assert_eq!(crate::kms_ext::dirty_verdict(&pairs, true, 2), crate::kms_ext::DirtyVerdict::Refresh);
+}
+
+/// A framebuffer that exists but is not the one on screen has nothing to
+/// refresh: that is a success, not an error, and it is not a scanout push.
+#[test]
+fn dirtyfb_on_a_framebuffer_that_is_not_on_screen_succeeds_without_a_push() {
+    let d = DrmModeFbDirtyCmd { fb_id: 3, ..Default::default() };
+    assert_eq!(crate::kms_ext::dirty_verdict(&d, true, 2), crate::kms_ext::DirtyVerdict::NotOnScreen);
+    assert_eq!(crate::kms_ext::dirty_verdict(&d, true, 3), crate::kms_ext::DirtyVerdict::Refresh);
 }
