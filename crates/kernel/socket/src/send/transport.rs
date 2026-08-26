@@ -146,9 +146,15 @@ fn send_unix_blocking(ctx: &SendContext<'_>, target: &SendFile,
     let timeout = socket.opts.base.sndtimeo_ns.load(Ordering::Acquire);
     let deadline = if timeout > 0 { monotonic_ns().saturating_add(timeout as u64) } else { 0 };
     let cap = socket.opts.base.sndbuf.load(Ordering::Acquire).max(net::sock::TCP_SNDBUF_DEFAULT) as usize;
-    let stream = matches!(&*socket.kind.lock(), net::sock::SockKind::Unix(_, _));
-    let seqpacket = matches!(&*socket.kind.lock(),
-        net::sock::SockKind::UnixMsgPair(pair, _) if pair.kind == net::UnixMsgKind::SeqPacket);
+    // Linux dispatches through the selected socket operation. Keep the
+    // equivalent stream classification from one state snapshot instead of
+    // taking two more kind locks before the first transmit attempt.
+    let (stream, seqpacket) = match &*socket.kind.lock() {
+        net::sock::SockKind::Unix(_, _) => (true, false),
+        net::sock::SockKind::UnixMsgPair(pair, _)
+            if pair.kind == net::UnixMsgKind::SeqPacket => (false, true),
+        _ => (false, false),
+    };
     // The out-of-band byte is the payload's last: the ordinary loop stops one
     // short of it, then one more pass queues it as the urgent record. Its
     // count is part of the return, so a `MSG_OOB` send reports every byte it
@@ -200,4 +206,3 @@ fn send_unix_blocking(ctx: &SendContext<'_>, target: &SendFile,
         }
     }
 }
-

@@ -170,20 +170,22 @@ pub(crate) fn prepare_unix(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSo
     enum Kind { Datagram(Arc<net::UnixDgramQueue>), PairDatagram, Stream, Unconnected }
     // Every SOCK_STREAM flavour, connected or not: they share the out-of-band
     // division and the rule that a destination address is not theirs to take.
-    let byte_stream = matches!(*socket.kind.lock(), net::sock::SockKind::Unix(_, _)
-        | net::sock::SockKind::UnixUnbound(_, _) | net::sock::SockKind::UnixListener(_));
-    let connected = matches!(*socket.kind.lock(), net::sock::SockKind::Unix(_, _));
-    let kind = match &*socket.kind.lock() {
-        net::sock::SockKind::UnixDgram(queue) => Kind::Datagram(queue.clone()),
+    // Linux selects the protocol operation once and keeps that selection for
+    // the send. Snapshot the equivalent tagged socket state once; repeating
+    // this lock for byte-stream policy, connection state, and dispatch made a
+    // single AF_UNIX message pay for three classifications.
+    let (byte_stream, connected, kind) = match &*socket.kind.lock() {
+        net::sock::SockKind::UnixDgram(queue) => (false, false, Kind::Datagram(queue.clone())),
         // A DATAGRAM socketpair end runs the datagram send, so a supplied
         // destination is resolved by the ordinary name lookup and outranks the
         // peer it was created with. A SEQPACKET one discards `msg_namelen`
         // before the datagram send ever sees it, so it keeps the pair.
         net::sock::SockKind::UnixMsgPair(pair, _)
-            if pair.kind == net::UnixMsgKind::Datagram => Kind::PairDatagram,
-        net::sock::SockKind::Unix(_, _) | net::sock::SockKind::UnixMsgPair(_, _) => Kind::Stream,
+            if pair.kind == net::UnixMsgKind::Datagram => (false, false, Kind::PairDatagram),
+        net::sock::SockKind::Unix(_, _) => (true, true, Kind::Stream),
+        net::sock::SockKind::UnixMsgPair(_, _) => (false, false, Kind::Stream),
         net::sock::SockKind::UnixUnbound(_, _) | net::sock::SockKind::UnixListener(_) =>
-            Kind::Unconnected,
+            (true, false, Kind::Unconnected),
         _ => return None,
     };
     Some((|| {
