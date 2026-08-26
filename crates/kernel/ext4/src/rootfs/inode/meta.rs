@@ -251,7 +251,7 @@ fn ext4_setattr_size(inode: &Inode, idmap: &Idmap, ia: &Iattr) -> KResult<()> {
     let old_ctime = inode.ctime().unwrap_or(Timespec64::ZERO);
     let raw_before = st.mount.read_inode(ino).map_err(|_| VfsError::Eio)?;
     inode.set_blocks(raw_before.i_blocks as u64);
-    inode.set_size(raw_before.size);
+    super::data::publish_size(inode, raw_before.size);
     let new_uid = if ia.valid & vfs::ATTR_UID != 0 { idmap.map_in_uid(ia.uid) } else { old_uid };
     let new_gid = if ia.valid & vfs::ATTR_GID != 0 { idmap.map_in_gid(ia.gid) } else { old_gid };
     let owner_changed = new_uid != old_uid || new_gid != old_gid;
@@ -370,7 +370,7 @@ fn refresh_cached_usage_from_raw(
 ) -> KResult<()> {
     let raw = st.mount.read_inode(ino).map_err(|_| VfsError::Eio)?;
     inode.set_blocks(raw.i_blocks as u64);
-    inode.set_size(raw.size);
+    super::data::publish_size(inode, raw.size);
     Ok(())
 }
 
