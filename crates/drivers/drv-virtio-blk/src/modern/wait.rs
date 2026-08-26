@@ -18,8 +18,17 @@ impl BlkState {
         }
         #[cfg(target_os = "oxide-kernel")]
         {
-            let deadline = now_ns().saturating_add(IO_TIMEOUT_NS);
+            // A completion is waited for, never given up on. The reference's
+            // synchronous block wait re-waits around its timeout for as long as
+            // the transfer takes; the timeout exists only to keep the hung-task
+            // detector quiet, and there is no path by which the wait reports an
+            // error of its own. `park_blk_checked` still takes a deadline so a
+            // lost device interrupt cannot park this task forever -- expiry
+            // re-polls the used ring and parks again.
+            let warn_at = now_ns().saturating_add(IO_WARN_NS);
+            let mut warned = false;
             loop {
+                let deadline = now_ns().saturating_add(IO_TIMEOUT_NS);
                 // Linux's ordinary submit-and-wait path checks completion and
                 // sleeps; only a request explicitly created as polled enters
                 // the block polling loop. Syscall and process-fault dispatch now
@@ -31,10 +40,15 @@ impl BlkState {
                     self.requestq.lock().used_seen = target;
                     return Ok(());
                 }
-                if now_ns() >= deadline {
-                    self.poisoned.store(true, core::sync::atomic::Ordering::Release);
-                    klog::write_raw(b"[BLK-TIMEOUT] device poisoned, used stuck\n");
-                    return Err(BlockError::Eio);
+                if !warned && now_ns() >= warn_at {
+                    // The hung-task equivalent: a synchronous transfer that has
+                    // taken this long is worth naming once, and is not worth
+                    // abandoning. A deadline here used to poison the device and
+                    // return an I/O error, which made one slow transfer fail
+                    // every later request on the device -- and a failed
+                    // filesystem read reaches a faulting process as SIGBUS.
+                    warned = true;
+                    klog::write_raw(b"[BLK-SLOW] transfer outstanding past 10s, still waiting\n");
                 }
                 // Park off-CPU on the completion condition immediately. The
                 // register-then-recheck closes the SMP lost-wakeup window, and

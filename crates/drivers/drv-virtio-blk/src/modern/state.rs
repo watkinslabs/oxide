@@ -173,6 +173,9 @@ pub(super) fn park_blk_checked(list: &WaitList, deadline_ns: u64, done: impl FnM
 
 #[cfg(target_os = "oxide-kernel")]
 pub(super) const IO_TIMEOUT_NS: u64 = 5_000_000_000;
+/// How long a synchronous transfer may run before it is named once on the
+/// console. Naming is all that happens: the wait continues either way.
+pub(super) const IO_WARN_NS: u64 = 10_000_000_000;
 #[cfg(not(target_os = "oxide-kernel"))]
 pub(super) const IO_FALLBACK_SPINS: u64 = 50_000_000;
 

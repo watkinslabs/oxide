@@ -26,6 +26,7 @@ pub(super) const fn used_entry_id_off(slot: usize) -> usize {
 
 /// Byte offset of a used entry's `len` — how many bytes the device says it
 /// wrote into the chain (Virtio 1.2 §2.7.8). # C: O(1)
+#[cfg(feature = "debug-blk-verify")]
 pub(super) const fn used_entry_len_off(slot: usize) -> usize {
     used_entry_id_off(slot) + core::mem::size_of::<u32>()
 }
@@ -34,6 +35,7 @@ pub(super) const fn used_entry_len_off(slot: usize) -> usize {
 /// always writes, plus the data it wrote for a device-to-driver transfer.
 /// A driver-to-device write has only the status byte written back.
 /// # C: O(1)
+#[cfg(feature = "debug-blk-verify")]
 pub(super) const fn expected_used_len(is_in: bool, data_len: u32, in_len: u32) -> u32 {
     if is_in { data_len + in_len } else { in_len }
 }
