@@ -40,6 +40,7 @@ extern crate std;
 
 pub mod bdev;
 mod bh_gate;
+pub mod submit_wait;
 pub mod blockdev;
 pub mod completion;
 pub mod crypto;
@@ -137,3 +138,13 @@ pub static IRQ_RAISES: core::sync::atomic::AtomicU64 = core::sync::atomic::Atomi
 pub static BH_RUNS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 /// Used-ring entries the completion softirq has reaped.
 pub static BH_REAPED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Ring occupancy published by the driver on every post, for the stall report:
+/// requests in flight, requests queued for a free descriptor chain, and free
+/// chains. A stall with a non-empty deferred queue and no in-flight request is
+/// a dispatch that nothing will restart.
+pub static RING_PENDING:  core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+/// Requests waiting for a descriptor chain.
+pub static RING_DEFERRED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+/// Descriptor chains available.
+pub static RING_FREE:     core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);

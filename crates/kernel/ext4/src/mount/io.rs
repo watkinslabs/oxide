@@ -103,8 +103,13 @@ pub(super) fn read_byte_range(dev: &dyn BlockDevice, byte_off: u64, len: usize)
     let last_byte = byte_off + len as u64;
     let last_blk_excl = (last_byte + bs - 1) / bs;
     let n_blocks = (last_blk_excl - first_blk) as u32;
-    let mut req = BlockRequest::new_read(first_blk, n_blocks, dev.block_size());
-    dev.submit_sync(&mut req).map_err(|_| MountError::BlockIo)?;
+    let req = BlockRequest::new_read(first_blk, n_blocks, dev.block_size());
+    // Hand the request to the device's own queue and sleep, rather than
+    // holding the device-wide turn for the whole transfer: the turnstile
+    // admits one request at a time, which caps every reader on this device at
+    // a queue depth of one.
+    let (req, result) = block::submit_wait::submit_and_wait(dev, req);
+    result.map_err(|_| MountError::BlockIo)?;
     let inner_off = (byte_off - first_blk * bs) as usize;
     let mut out = Vec::with_capacity(len);
     out.extend_from_slice(&req.buffer[inner_off .. inner_off + len]);
