@@ -97,14 +97,23 @@ impl Mount {
             match self.resolve_pblock_run(inode, blk) {
                 Ok((phys, run)) => {
                     let run = run.min(end - blk).max(1);
-                    let data = read_byte_range(&*self.dev, phys * bs as u64, run as usize * bs)?;
+                    // The two sources of BlockIo here answer to different
+                    // subsystems — the extent tree and the device — and the
+                    // caller collapses both into one label, so each says which
+                    // it was.
+                    let data = read_byte_range(&*self.dev, phys * bs as u64, run as usize * bs)
+                        .inspect_err(|_| super::super::rootfs::framecache::fill_err(
+                            b"run-read", inode.ino, blk as u64))?;
                     let dst = (blk - first_blk) as usize * bs;
                     let n = data.len().min(out.len() - dst);
                     out[dst..dst + n].copy_from_slice(&data[..n]);
                     blk += run;
                 }
                 Err(MountError::NotFound) => { blk += 1; } // hole/unwritten → stays zero
-                Err(e) => return Err(e),
+                Err(e) => {
+                    super::super::rootfs::framecache::fill_err(b"extent-resolve", inode.ino, blk as u64);
+                    return Err(e);
+                }
             }
         }
         Ok(out)
