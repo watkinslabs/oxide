@@ -67,6 +67,38 @@ static BLK_NS:  [AtomicU64; BLK_KINDS] = [const { AtomicU64::new(0) }; BLK_KINDS
 static BLK_CNT: [AtomicU64; BLK_KINDS] = [const { AtomicU64::new(0) }; BLK_KINDS];
 const BLK_NAME: [&[u8]; BLK_KINDS] = [b"read", b"write", b"flush", b"other"];
 
+/// Why a block write was issued. The filesystem stamps this around its write
+/// sites so the profile can say which of them moves the volume, instead of it
+/// being inferred — inferring it went wrong twice.
+pub const WSRC_OTHER: usize = 0;
+pub const WSRC_JOURNAL: usize = 1;
+pub const WSRC_CHECKPOINT: usize = 2;
+pub const WSRC_DATA_WRITEBACK: usize = 3;
+pub const WSRC_DATA_DIRECT: usize = 4;
+const WSRC_KINDS: usize = 5;
+const WSRC_NAME: [&[u8]; WSRC_KINDS] =
+    [b"other", b"journal-body", b"checkpoint", b"data-writeback", b"data-direct"];
+
+static WSRC_CNT:   [AtomicU64; WSRC_KINDS] = [const { AtomicU64::new(0) }; WSRC_KINDS];
+static WSRC_BYTES: [AtomicU64; WSRC_KINDS] = [const { AtomicU64::new(0) }; WSRC_KINDS];
+static WSRC_NS:    [AtomicU64; WSRC_KINDS] = [const { AtomicU64::new(0) }; WSRC_KINDS];
+
+/// The reason in effect on this CPU. A plain static is enough: the value is
+/// only read by the write that the stamping scope encloses, and a wrong
+/// attribution under preemption costs a mis-labelled row, never correctness.
+static CURRENT_WSRC: AtomicU64 = AtomicU64::new(WSRC_OTHER as u64);
+
+/// Stamp the reason for every block write issued until the returned value is
+/// handed back to [`restore_write_source`]. # C: O(1)
+#[inline]
+pub fn set_write_source(src: usize) -> usize {
+    CURRENT_WSRC.swap(src as u64, Ordering::Relaxed) as usize
+}
+
+/// # C: O(1)
+#[inline]
+pub fn restore_write_source(prev: usize) { CURRENT_WSRC.store(prev as u64, Ordering::Relaxed); }
+
 /// Write-size buckets. A write's size says a great deal about its origin: a
 /// single filesystem block is metadata or a journal descriptor, a large run is
 /// writeback or a coalesced log body. Attributing the write traffic by hand
@@ -89,6 +121,10 @@ pub fn note_device_sized(ns: u64, kind: usize, bytes: u32) {
         let b = size_bucket(bytes);
         WSIZE_CNT[b].fetch_add(1, Ordering::Relaxed);
         WSIZE_NS[b].fetch_add(ns, Ordering::Relaxed);
+        let src = (CURRENT_WSRC.load(Ordering::Relaxed) as usize).min(WSRC_KINDS - 1);
+        WSRC_CNT[src].fetch_add(1, Ordering::Relaxed);
+        WSRC_BYTES[src].fetch_add(bytes as u64, Ordering::Relaxed);
+        WSRC_NS[src].fetch_add(ns, Ordering::Relaxed);
     }
 }
 
@@ -182,6 +218,15 @@ fn dump() {
         klog::write_raw(b" cnt=");          klog::write_dec_u64(c);
         klog::write_raw(b" ms=");           klog::write_dec_u64(n / NS_PER_MS);
         klog::write_raw(b" avg_ns=");       klog::write_dec_u64(n / c);
+        klog::write_raw(b"\n");
+    }
+    for i in 0..WSRC_KINDS {
+        let c = WSRC_CNT[i].load(Ordering::Relaxed);
+        if c == 0 { continue; }
+        klog::write_raw(b"  wr-src ");   klog::write_raw(WSRC_NAME[i]);
+        klog::write_raw(b" cnt=");       klog::write_dec_u64(c);
+        klog::write_raw(b" MiB=");       klog::write_dec_u64(WSRC_BYTES[i].load(Ordering::Relaxed) / (1024 * 1024));
+        klog::write_raw(b" ms=");        klog::write_dec_u64(WSRC_NS[i].load(Ordering::Relaxed) / NS_PER_MS);
         klog::write_raw(b"\n");
     }
     let fc = FILL_CNT.load(Ordering::Relaxed);

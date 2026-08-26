@@ -1,32 +1,32 @@
 # Syscall and fault cost vs the host Linux kernel
 
-oxide: /home/nd/oxide/kernel-B2676/target/perf-report-x86_64.log
-boot totals: 1363132 syscalls, 13270 ms on CPU, 9735 ns average
+oxide: /home/nd/oxide/kernel-B2677/target/perf-report-x86_64.log
+boot totals: 1363580 syscalls, 8359 ms on CPU, 6130 ns average
 
 | operation | oxide ns | linux ns | ratio | | verdict |
 |---|---:|---:|---:|---|---|
-| writev | 1,408,230 | 495 | 2845x | ######################## | SEVERE |
-| recvmsg | 91,713 | 776 | 118x | ######################## | SEVERE |
-| sendmmsg | 71,013 | 776 | 92x | ###################### | SEVERE |
-| munmap | 105,380 | 1,382 | 76x | ################## | SEVERE |
-| sendmsg | 54,816 | 776 | 71x | ################# | SEVERE |
-| recvfrom | 27,927 | 776 | 36x | ######### | SEVERE |
-| newfstatat | 27,205 | 788 | 35x | ######## | SEVERE |
-| close | 19,290 | 628 | 31x | ####### | SEVERE |
-| read | 9,457 | 518 | 18x | #### | BAD |
-| mprotect | 18,204 | 1,180 | 15x | #### | BAD |
-| openat | 11,333 | 994 | 11x | ### | BAD |
-| mmap | 11,648 | 1,382 | 8x | ## | BAD |
-| write fault, page absent | 9,929 | 1,227 | 8x | ## | BAD |
+| writev | 1,315,092 | 495 | 2657x | ######################## | SEVERE |
+| sendmmsg | 51,938 | 776 | 67x | ################ | SEVERE |
+| munmap | 89,252 | 1,382 | 65x | ############### | SEVERE |
+| sendmsg | 40,985 | 776 | 53x | ############# | SEVERE |
+| newfstatat | 22,848 | 788 | 29x | ####### | SEVERE |
+| recvfrom | 18,166 | 776 | 23x | ###### | SEVERE |
+| write fault, page absent | 20,901 | 1,227 | 17x | #### | BAD |
+| mprotect | 17,976 | 1,180 | 15x | #### | BAD |
+| recvmsg | 10,270 | 776 | 13x | ### | BAD |
+| openat | 10,782 | 994 | 11x | ### | BAD |
+| read | 5,581 | 518 | 11x | ### | BAD |
+| mmap | 11,852 | 1,382 | 9x | ## | BAD |
+| close | 3,241 | 628 | 5x | # | BAD |
 
 ## Block device
 
 | op | count | total ms | avg |
 |---|---:|---:|---:|
-| read | 16,507 | 3,378 | 204.6 us |
-| write | 413,407 | 32,988 | 79.8 us |
-| flush | 3,014 | 24,870 | 8251.5 us |
-| other | 2 | 0 | 9.5 us |
+| read | 18,703 | 8,138 | 435.1 us |
+| write | 7,882 | 2,271 | 288.2 us |
+| flush | 27 | 160 | 5949.6 us |
+| other | 2 | 0 | 19.7 us |
 
 Both sides are measured. The host figure is a tight loop over one shape of the call; the oxide figure is the average over every such call a real desktop boot made. Read a ratio as an order of magnitude, not a score.
 

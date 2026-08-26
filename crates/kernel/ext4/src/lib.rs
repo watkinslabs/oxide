@@ -91,3 +91,26 @@ pub use rootfs::commit_rootfs_journal;
 pub use journal::ExtentLogReader;
 pub mod jbd2;
 pub use crate::jbd2::StagedBlock;
+
+/// Scoped stamp naming why the block writes inside it are being issued, so the
+/// `[FAULTCOST]` profile attributes write volume to a call site instead of
+/// leaving it to be inferred. Compiled only under `debug-faultcost`.
+#[cfg(feature = "debug-faultcost")]
+pub(crate) struct WriteSource(usize);
+
+#[cfg(feature = "debug-faultcost")]
+impl WriteSource {
+    /// # C: O(1)
+    pub(crate) fn journal() -> Self { Self(pmm::faultcost::set_write_source(pmm::faultcost::WSRC_JOURNAL)) }
+    /// # C: O(1)
+    pub(crate) fn checkpoint() -> Self { Self(pmm::faultcost::set_write_source(pmm::faultcost::WSRC_CHECKPOINT)) }
+    /// # C: O(1)
+    pub(crate) fn data_writeback() -> Self { Self(pmm::faultcost::set_write_source(pmm::faultcost::WSRC_DATA_WRITEBACK)) }
+    /// # C: O(1)
+    pub(crate) fn data_direct() -> Self { Self(pmm::faultcost::set_write_source(pmm::faultcost::WSRC_DATA_DIRECT)) }
+}
+
+#[cfg(feature = "debug-faultcost")]
+impl Drop for WriteSource {
+    fn drop(&mut self) { pmm::faultcost::restore_write_source(self.0); }
+}
