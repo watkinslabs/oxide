@@ -21,11 +21,16 @@ fn vblank_event_layout() {
 #[test]
 fn default_caps_all_one_or_set() {
     assert_eq!(default_cap(DRM_CAP_DUMB_BUFFER), 1);
-    assert_eq!(default_cap(DRM_CAP_DUMB_PREFERRED_DEPTH), 32);
+    // A depth is the driver's to name; the core answers zero for a driver that
+    // names none, and never a bit count.
+    assert_eq!(default_cap(DRM_CAP_DUMB_PREFERRED_DEPTH), 0);
     assert_eq!(default_cap(DRM_CAP_VBLANK_HIGH_CRTC), 0);
     assert_eq!(default_cap(DRM_CAP_CRTC_IN_VBLANK_EVENT), 0);
-    assert_eq!(default_cap(DRM_CAP_CURSOR_WIDTH), 0);
-    assert_eq!(default_cap(DRM_CAP_CURSOR_HEIGHT), 0);
+    // Every device gets the core's 64x64 cursor size, including the ones with
+    // no cursor plane at all: a display server sizes its cursor buffer object
+    // from these before it can discover whether the cursor ioctls work.
+    assert_eq!(default_cap(DRM_CAP_CURSOR_WIDTH), 64);
+    assert_eq!(default_cap(DRM_CAP_CURSOR_HEIGHT), 64);
     assert_eq!(default_cap(DRM_CAP_PRIME), 0);
     assert_eq!(default_cap(DRM_CAP_ADDFB2_MODIFIERS), 0);
     assert_eq!(default_cap(DRM_CAP_SYNCOBJ), 0);
@@ -439,4 +444,32 @@ fn dirtyfb_on_a_framebuffer_that_is_not_on_screen_succeeds_without_a_push() {
     let d = DrmModeFbDirtyCmd { fb_id: 3, ..Default::default() };
     assert_eq!(crate::kms_ext::dirty_verdict(&d, true, 2), crate::kms_ext::DirtyVerdict::NotOnScreen);
     assert_eq!(crate::kms_ext::dirty_verdict(&d, true, 3), crate::kms_ext::DirtyVerdict::Refresh);
+}
+
+/// The cursor size is a CORE answer, not a per-driver one. Every device reports
+/// 64x64 unless it names a size of its own — devices with no cursor plane
+/// included, because a display server sizes its cursor buffer object from these
+/// two numbers before it can discover whether the cursor ioctls work. This
+/// lived in two drivers and was missing from the third, so the one firmware
+/// framebuffer answered zero and a client asking it for a cursor was told to
+/// allocate a 0x0 buffer.
+#[test]
+fn every_device_reports_a_usable_cursor_size() {
+    for cap in [DRM_CAP_CURSOR_WIDTH, DRM_CAP_CURSOR_HEIGHT] {
+        assert_eq!(default_cap(cap), 64);
+        // The advertising filter must not zero it back out on the way to the
+        // caller: this cap is reported, not suppressed.
+        assert_eq!(advertised_cap(cap, default_cap(cap)), 64);
+    }
+}
+
+/// A preferred depth counts colour bits, not the pixel's size. XRGB8888 is 32
+/// bits per pixel carrying a depth of 24 — its fourth byte is padding.
+#[test]
+fn a_preferred_depth_is_colour_bits_not_pixel_bits() {
+    assert_eq!(format_depth(DRM_FORMAT_XRGB8888), 24);
+    assert_eq!(format_depth(DRM_FORMAT_ARGB8888), 32);
+    // A format nothing scans out has no depth to prefer.
+    assert_eq!(format_depth(0), 0);
+    assert_eq!(format_depth(0x3631_5044), 0); // 'DP16', a format this stack does not scan out
 }

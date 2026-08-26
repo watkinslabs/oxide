@@ -34,8 +34,6 @@ mod bochs {
     pub const MODE_WIDTH: u32 = 1024;
     pub const MODE_HEIGHT: u32 = 768;
     pub const MODE_BPP: u8 = 32;
-    pub const DRM_FORMAT_XRGB8888: u32 = 0x3432_5258;
-    pub const DRM_FORMAT_ARGB8888: u32 = 0x3432_5241;
 
     pub fn mode_bytes(width: u32, height: u32, bpp: u8) -> Option<u64> {
         u64::from(width).checked_mul(u64::from(height))?.checked_mul(u64::from(bpp).checked_div(8)?)
@@ -66,6 +64,11 @@ mod kernel {
     use alloc::vec::Vec;
     use core::sync::atomic::{AtomicU32, Ordering};
     use sync::{Spinlock, TaskList as DriverLockClass};
+    // The scanout fourccs are the DRM crate's, taken where they are matched on:
+    // a second copy in this driver could drift from the one every other layer
+    // compares against. They belong to the DRM glue, not to the DISPI register
+    // module beside it, which is why they are imported here.
+    use drm::{DRM_FORMAT_ARGB8888, DRM_FORMAT_XRGB8888};
 
     use super::*;
 
@@ -86,23 +89,20 @@ mod kernel {
         fn resource_counts(&self) -> (u32, u32, u32, u32) { (0, 1, 1, 1) }
         fn dim_bounds(&self) -> (u32, u32, u32, u32) { (MODE_WIDTH, MODE_WIDTH, MODE_HEIGHT, MODE_HEIGHT) }
         fn cap(&self, cap: u64) -> u64 {
-            // This backend presents by copying the userspace dumb buffer into
-            // the Bochs LFB; it cannot scan the userspace allocation directly.
-            // Linux advertises this exact contract through
-            // DRM_CAP_DUMB_PREFER_SHADOW, which makes Xorg select its normal
-            // shadow-buffer path when glamor is unavailable on llvmpipe.
             match cap {
-                drm::DRM_CAP_DUMB_PREFER_SHADOW => 1,
-                // Xorg's modesetting driver uses these capabilities to size
-                // its software cursor BO.  Returning success with zero would
-                // make it issue CREATE_DUMB(0, 0, 32), which Linux drivers do
-                // not advertise and which the DRM dumb-buffer ABI correctly
-                // rejects.  Bochs supports the conventional 64x64 cursor
-                // resource used by this backend.
-                drm::DRM_CAP_CURSOR_WIDTH | drm::DRM_CAP_CURSOR_HEIGHT => 64,
+                // This backend's preferred scanout format is XRGB8888. Every
+                // other capability is the core's answer: it names no cursor
+                // size, so the core's 64x64 stands, and it does not ask a
+                // client to prefer a shadow buffer.
+                drm::DRM_CAP_DUMB_PREFERRED_DEPTH =>
+                    u64::from(drm::format_depth(DRM_FORMAT_XRGB8888)),
                 _ => drm::default_cap(cap),
             }
         }
+        // This device does KMS and dumb buffers only — it accepts no render
+        // clients, so it publishes no render minor. Advertising one hands a
+        // renderer a node whose UAPI is not there to answer it.
+        fn supports_render_node(&self) -> bool { false }
         fn crtc_ids(&self) -> Vec<u32> { alloc::vec![drm::crtc_id_for(0)] }
         fn connector_ids(&self) -> Vec<u32> { alloc::vec![drm::connector_id_for(0)] }
         fn encoder_ids(&self) -> Vec<u32> { alloc::vec![drm::encoder_id_for(0)] }

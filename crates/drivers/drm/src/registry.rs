@@ -78,19 +78,40 @@ pub fn alloc_handle() -> u32 {
     NEXT_HANDLE.fetch_add(1, Ordering::AcqRel)
 }
 
+/// Colour depth of a scanout format — the value a driver reports as its
+/// preferred depth. It is the number of colour bits, not the pixel's size:
+/// XRGB8888 is 32 bits per pixel carrying a depth of 24, because its fourth
+/// byte is padding rather than colour. A format we do not scan out has no
+/// preferred depth to report. # C: O(1)
+pub fn format_depth(fourcc: u32) -> u32 {
+    match fourcc {
+        DRM_FORMAT_XRGB8888 => 24,
+        DRM_FORMAT_ARGB8888 => 32,
+        _ => 0,
+    }
+}
+
 pub fn default_cap(cap: u64) -> u64 {
     match cap {
         DRM_CAP_DUMB_BUFFER => 1,
         // We do not implement DRM_IOCTL_WAIT_VBLANK or generate vblank
         // events, so advertising either vblank extension would be false.
         DRM_CAP_VBLANK_HIGH_CRTC => 0,
-        DRM_CAP_DUMB_PREFERRED_DEPTH => 32,
+        // The preferred depth is the DRIVER's, and a driver that names none
+        // reports zero — it is a depth (24 for XRGB8888), never a bit count.
+        DRM_CAP_DUMB_PREFERRED_DEPTH => 0,
         DRM_CAP_DUMB_PREFER_SHADOW => 0,
         DRM_CAP_PRIME => 0,
         DRM_CAP_TIMESTAMP_MONOTONIC => 1,
         DRM_CAP_ASYNC_PAGE_FLIP => 0,
-        DRM_CAP_CURSOR_WIDTH => 0,
-        DRM_CAP_CURSOR_HEIGHT => 0,
+        // 64x64 is what the core answers for EVERY device that does not name a
+        // cursor size of its own — including devices with no cursor plane at
+        // all. It is not a claim of hardware support: a display server sizes
+        // its cursor buffer object from these two numbers before it discovers
+        // whether the cursor ioctls work, and a zero pair makes it ask for a
+        // 0x0 buffer, which the dumb-buffer ABI rejects.
+        DRM_CAP_CURSOR_WIDTH => 64,
+        DRM_CAP_CURSOR_HEIGHT => 64,
         DRM_CAP_ADDFB2_MODIFIERS => 0,
         DRM_CAP_PAGE_FLIP_TARGET => 0,
         DRM_CAP_CRTC_IN_VBLANK_EVENT => 0,

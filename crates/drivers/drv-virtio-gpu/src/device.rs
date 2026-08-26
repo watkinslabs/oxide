@@ -151,12 +151,10 @@ impl drm::DrmDriver for VirtioGpuDrm {
         // QEMU virtio-gpu accepts up to 4096×2160; min 1×1.
         (1, 4096, 1, 2160)
     }
-    fn cap(&self, c: u64) -> u64 {
-        match c {
-            drm::DRM_CAP_CURSOR_WIDTH | drm::DRM_CAP_CURSOR_HEIGHT => 64,
-            _ => drm::default_cap(c),
-        }
-    }
+    // This device names no cursor size, no preferred depth and no shadow
+    // preference of its own, so every capability is the core's answer — the
+    // core already reports the 64x64 cursor this device's cursor plane uses.
+    fn cap(&self, c: u64) -> u64 { drm::default_cap(c) }
 
     /// VIRTGPU_GETPARAM. This device does not negotiate VIRTIO_GPU_F_VIRGL, so
     /// there is no host 3D/virgl — report 3D_FEATURES=0 so Mesa's virtio_gpu

@@ -211,7 +211,15 @@ impl drm::DrmDriver for SimpleDrm {
     fn unique(&self) -> &str { self.unique.as_str() }
     fn resource_counts(&self) -> (u32, u32, u32, u32) { (0, 1, 1, 1) }
     fn dim_bounds(&self) -> (u32, u32, u32, u32) { (self.width, self.width, self.height, self.height) }
-    fn cap(&self, cap: u64) -> u64 { drm::default_cap(cap) }
+    fn cap(&self, cap: u64) -> u64 {
+        match cap {
+            // A firmware framebuffer's preferred depth is the depth of the
+            // format it was handed. Everything else is the core's answer.
+            drm::DRM_CAP_DUMB_PREFERRED_DEPTH =>
+                u64::from(drm::format_depth(drm::DRM_FORMAT_XRGB8888)),
+            _ => drm::default_cap(cap),
+        }
+    }
     fn supports_render_node(&self) -> bool { false }
     fn crtc_ids(&self) -> Vec<u32> { alloc::vec![drm::crtc_id_for(0)] }
     fn connector_ids(&self) -> Vec<u32> { alloc::vec![drm::connector_id_for(0)] }
