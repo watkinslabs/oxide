@@ -451,6 +451,12 @@ pub(super) struct RingShadow {
 /// their headers, payloads, status bytes, or completion continuations.
 pub(super) struct PendingRequest {
     pub(super) head: u16,
+    /// When this chain was handed to the device. The gap to its delivery is
+    /// what separates "the device is slow" from "the completion sat undelivered
+    /// after the device finished", which is the open question about this
+    /// engine under several outstanding chains.
+    #[cfg(feature = "debug-blk-verify")]
+    pub(super) posted_ns: u64,
     pub(super) bounce_pa: u64,
     pub(super) bounce_dma: u64,
     pub(super) request: BlockRequest,
@@ -497,4 +503,60 @@ pub(super) struct BlkDeviceConfig {
     /// What the zoned characteristics say, before the logical block size has
     /// been validated against them.
     pub(super) zoned: virtio::blk::zoned::ZonedProbe,
+}
+
+/// Completion-latency histogram (`debug-blk-verify`): how long each owned
+/// chain took from doorbell to delivery, in decade buckets, plus the deepest
+/// the in-flight list ever got. Reported beside the used-length cross-check.
+#[cfg(all(target_os = "oxide-kernel", feature = "debug-blk-verify"))]
+pub(super) mod latency {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    const BUCKETS: usize = 6;
+    const NAME: [&[u8]; BUCKETS] =
+        [b"<100us", b"<1ms", b"<10ms", b"<100ms", b"<1s", b">=1s"];
+    static CNT: [AtomicU64; BUCKETS] = [const { AtomicU64::new(0) }; BUCKETS];
+    static DEEPEST: AtomicU64 = AtomicU64::new(0);
+    static DEFERRED: AtomicU64 = AtomicU64::new(0);
+
+    /// # C: O(1)
+    fn bucket(ns: u64) -> usize {
+        if ns < 100_000 { 0 } else if ns < 1_000_000 { 1 } else if ns < 10_000_000 { 2 }
+        else if ns < 100_000_000 { 3 } else if ns < 1_000_000_000 { 4 } else { 5 }
+    }
+
+    /// Record one delivered chain and the depth it completed at. # C: O(1)
+    pub(in crate::modern) fn record(ns: u64, inflight: usize) {
+        CNT[bucket(ns)].fetch_add(1, Ordering::Relaxed);
+        DEEPEST.fetch_max(inflight as u64, Ordering::Relaxed);
+        // Report on a cadence rather than needing a caller: the question this
+        // answers is about a boot that may never reach a reporting point.
+        const DUMP_EVERY: u64 = 20_000;
+        if SINCE.fetch_add(1, Ordering::Relaxed) + 1 >= DUMP_EVERY {
+            SINCE.store(0, Ordering::Relaxed);
+            dump();
+        }
+    }
+
+    static SINCE: AtomicU64 = AtomicU64::new(0);
+
+    /// Record one request that found no free chain and was queued. # C: O(1)
+    pub(in crate::modern) fn note_deferred() { DEFERRED.fetch_add(1, Ordering::Relaxed); }
+
+    /// # C: O(BUCKETS)
+    pub(in crate::modern) fn dump() {
+        klog::write_raw(b"[BLK-LATENCY] deepest_inflight=");
+        klog::write_dec_u64(DEEPEST.load(Ordering::Relaxed));
+        klog::write_raw(b" deferred=");
+        klog::write_dec_u64(DEFERRED.load(Ordering::Relaxed));
+        for i in 0..BUCKETS {
+            let c = CNT[i].load(Ordering::Relaxed);
+            if c == 0 { continue; }
+            klog::write_raw(b" ");
+            klog::write_raw(NAME[i]);
+            klog::write_raw(b"=");
+            klog::write_dec_u64(c);
+        }
+        klog::write_raw(b"\n");
+    }
 }

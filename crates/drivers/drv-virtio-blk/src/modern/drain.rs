@@ -128,6 +128,13 @@ impl BlkState {
                         klog::write_raw(b"\n");
                     }
                 }
+                #[cfg(feature = "debug-blk-verify")]
+                {
+                    let posted = ring.pending[position].posted_ns;
+                    let depth = ring.pending.len();
+                    super::state::latency::record(
+                        timekeeper::monotonic_ns().saturating_sub(posted), depth);
+                }
                 ring.free_heads.push(head);
                 ring.pending.remove(position)
             };
@@ -141,6 +148,15 @@ impl BlkState {
                 bounce as u64, BOUNCE_BYTES,
             );
             let status = unsafe { core::ptr::read_volatile(bounce.add(STATUS_OFF)) };
+            #[cfg(feature = "debug-blk-verify")]
+            if blk::decode_status(status).is_err() {
+                klog::write_raw(b"[BLK-VERIFY] error status head=");
+                klog::write_dec_u64(pending.head as u64);
+                klog::write_raw(b" status="); klog::write_dec_u64(status as u64);
+                klog::write_raw(b" is_in="); klog::write_dec_u64(pending.is_in as u64);
+                klog::write_raw(b" len="); klog::write_dec_u64(pending.data_len as u64);
+                klog::write_raw(b"\n");
+            }
             let result = match blk::decode_status(status) {
                 Ok(()) if pending.is_in => {
                     if request.buffer.len() < pending.data_len as usize {
