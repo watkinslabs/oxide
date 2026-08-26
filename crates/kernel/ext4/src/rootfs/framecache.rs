@@ -225,10 +225,14 @@ impl Ext4FrameStore {
                 klog::write_raw(b" why="); klog::write_raw(debug::fill_error_label(_e));
                 klog::write_raw(b"\n");
             }
+            fill_err(b"read-inode", self.ino, idx);
             VfsError::Eio
         })?;
-        if !dinode.is_reg() { return Err(VfsError::Eio); }
-        self.fill_window(&dinode, idx)
+        if !dinode.is_reg() {
+            fill_err(b"not-reg", self.ino, idx);
+            return Err(VfsError::Eio);
+        }
+        self.fill_window(&dinode, idx).inspect_err(|_| fill_err(b"fill-window", self.ino, idx))
     }
 
     /// Pages fetched in ONE coalesced device read. 64 KiB, Linux-conservative.
@@ -429,3 +433,17 @@ impl Ext4FrameStore {
 
 }
 mod io;
+
+/// Name which leg of a page fill failed. The fault path turns any of them into
+/// the same `Eio`, and the same SIGBUS, so without this the log says a fill
+/// errored but not where — and the legs want different fixes.
+/// # C: O(1)
+pub(crate) fn fill_err(leg: &'static [u8], ino: u32, idx: u64) {
+    klog::write_raw(b"[FILL-ERR ");
+    klog::write_raw(leg);
+    klog::write_raw(b" ino=");
+    klog::write_dec_u64(ino as u64);
+    klog::write_raw(b" page=");
+    klog::write_hex_u64(idx);
+    klog::write_raw(b"]\n");
+}
