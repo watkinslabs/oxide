@@ -2,6 +2,26 @@ use core::ptr;
 
 use super::{MigrationEntry, PtWalker, SwapEntry, L0_SHIFT, L1_SHIFT, L2_SHIFT, L3_SHIFT, TABLE_IDX_MASK};
 
+/// Read one raw 4 KiB leaf, preserving non-present software PTE state. # C: O(4)
+/// # SAFETY: HHDM covers the page tables and the root remains live for this read.
+pub unsafe fn raw_leaf_4k<W: PtWalker>(va: u64, hhdm_offset: u64) -> Option<u64> {
+    // SAFETY: privileged page-table base read; legal in kernel mode.
+    let mut current_pa = unsafe { W::read_pt_base(va) };
+    let shifts = [L0_SHIFT, L1_SHIFT, L2_SHIFT, L3_SHIFT];
+    for (level, shift) in shifts.into_iter().enumerate() {
+        let idx = ((va >> shift) & TABLE_IDX_MASK) as usize;
+        // SAFETY: HHDM covers page-table memory per the function contract.
+        let entry = unsafe {
+            let table = (hhdm_offset.wrapping_add(current_pa)) as *const u64;
+            ptr::read_volatile(table.add(idx))
+        };
+        if level == 3 { return Some(entry); }
+        if !W::is_valid(entry) || W::is_huge_or_block(entry) { return None; }
+        current_pa = entry & W::PHYS_MASK;
+    }
+    None
+}
+
 /// Translate `va` to (`pa`, raw_leaf_entry) by walking the live
 /// tables. Returns `None` if the leaf is missing or sits at a
 /// non-bottom level (huge/block — caller decides). Reads only;

@@ -5,7 +5,7 @@ mod walk;
 use walk::{
     account_present_removed, clear_current_migration_entry, clear_current_pte_marker,
     clear_current_swap_entry, clear_leaf, huge_split_refused, range_sealed,
-    release_leaf_frame, translate_leaf, zap_watchers,
+    release_leaf_frame, translate_leaf, zap_watchers, current_nonpresent_kind, NonpresentKind,
 };
 
 const PAGE_MASK: u64 = hal::PAGE_SIZE_BYTES - 1;
@@ -45,7 +45,11 @@ fn drain_gather(gather: &mut alloc::vec::Vec<(u64, u64, hal::PageSize)>, mask: &
         // translation can still reach the frame; a base page goes back through
         // the rmap-aware path and a huge page back to the pool that owns it.
         unsafe { release_leaf_frame(pa, leaf); }
+        #[cfg(feature = "debug-syscost")]
+        let account_started = crate::unmapcost::now_ns();
         account_present_removed(va);
+        #[cfg(feature = "debug-syscost")]
+        crate::unmapcost::account(account_started);
     }
 }
 
@@ -95,6 +99,11 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
         // Granule read from the tables, never assumed: a hugetlbfs mapping
         // resolves through one block leaf per huge page.
         let translated = translate_leaf(va);
+        let nonpresent = if translated.is_none() {
+            current_nonpresent_kind(va)
+        } else {
+            None
+        };
         if let Some((pa_raw, leaf)) = translated {
             step = leaf.bytes();
             let pa = hal::Pa(pa_raw);
@@ -145,23 +154,29 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
             }
             gather.push((va, pa.0, leaf));
             if gather.len() >= TLB_GATHER_PAGES { drain_gather(&mut gather, &mask); }
-        } else if let Some(entry) = clear_current_swap_entry(va) {
+        } else if matches!(nonpresent, Some(NonpresentKind::Swap)) {
             // Swap PTEs are non-present and therefore invisible to `translate`.
             // Clear the exact leaf before dropping its slot reference so a fault
             // cannot resurrect a page whose VMA has been zapped.
-            hal::tlb::shootdown_others_va(va, mask.as_words());
-            let _ = crate::swap::free_page(entry);
-        } else if clear_current_pte_marker(va) {
+            if let Some(entry) = clear_current_swap_entry(va) {
+                hal::tlb::shootdown_others_va(va, mask.as_words());
+                let _ = crate::swap::free_page(entry);
+            }
+        } else if matches!(nonpresent, Some(NonpresentKind::Marker)) {
             // The marker described contents this zap is discarding; it names
             // no frame and no swap slot, so nothing is released with it.
-            hal::tlb::shootdown_others_va(va, mask.as_words());
-        } else if let Some(marker) = clear_current_migration_entry(va) {
-            hal::tlb::shootdown_others_va(va, mask.as_words());
-            account_present_removed(va);
-            if let Some(pa) = vmm::migration_drop_marker_mapping(marker) {
-                // SAFETY: removing this marker tears down precisely one
-                // original resident PTE reference recorded by its token.
-                unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa); }
+            if clear_current_pte_marker(va) {
+                hal::tlb::shootdown_others_va(va, mask.as_words());
+            }
+        } else if matches!(nonpresent, Some(NonpresentKind::Migration)) {
+            if let Some(marker) = clear_current_migration_entry(va) {
+                hal::tlb::shootdown_others_va(va, mask.as_words());
+                account_present_removed(va);
+                if let Some(pa) = vmm::migration_drop_marker_mapping(marker) {
+                    // SAFETY: removing this marker tears down precisely one
+                    // original resident PTE reference recorded by its token.
+                    unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa); }
+                }
             }
         }
         va += step;
@@ -238,7 +253,19 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
         let mut step = PAGE_BYTES;
         // Granule read from the tables, never assumed: a hugetlbfs mapping
         // resolves through one block leaf per huge page.
+        #[cfg(feature = "debug-syscost")]
+        let walk_started = crate::unmapcost::now_ns();
         let translated = translate_leaf(va);
+        #[cfg(feature = "debug-syscost")]
+        crate::unmapcost::walk(walk_started, translated.is_some());
+        // Classify all non-present software PTEs with one page-table walk.
+        // The individual clear helpers retain their locking/validation, but
+        // probing each kind separately made an empty page cost four walks.
+        let nonpresent = if translated.is_none() {
+            current_nonpresent_kind(va)
+        } else {
+            None
+        };
         if let Some((pa_raw, leaf)) = translated {
             step = leaf.bytes();
             let pa = hal::Pa(pa_raw);
@@ -302,23 +329,37 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
             }
             // SAFETY: the leaf was cleared and invalidated everywhere above, so no translation can still reach the frame; a base page goes back through the rmap-aware path and a huge page back to the pool that owns it.
             unsafe { release_leaf_frame(pa.0, leaf); }
+            #[cfg(feature = "debug-syscost")]
+            let account_started = crate::unmapcost::now_ns();
             account_present_removed(va);
-        } else if let Some(entry) = clear_current_swap_entry(va) {
+            #[cfg(feature = "debug-syscost")]
+            crate::unmapcost::account(account_started);
+        } else if matches!(nonpresent, Some(NonpresentKind::Swap)) {
             // `munmap` must release a non-present swap leaf exactly as it
             // releases a present anonymous leaf; otherwise memory.swap.current
             // remains charged after the mapping is gone.
-            hal::tlb::shootdown_others_va(va, mask.as_words());
-            let _ = crate::swap::free_page(entry);
-        } else if clear_current_pte_marker(va) {
+            if let Some(entry) = clear_current_swap_entry(va) {
+                hal::tlb::shootdown_others_va(va, mask.as_words());
+                let _ = crate::swap::free_page(entry);
+            }
+        } else if matches!(nonpresent, Some(NonpresentKind::Marker)) {
             // The marker described contents this zap is discarding; it names
             // no frame and no swap slot, so nothing is released with it.
-            hal::tlb::shootdown_others_va(va, mask.as_words());
-        } else if let Some(marker) = clear_current_migration_entry(va) {
-            hal::tlb::shootdown_others_va(va, mask.as_words());
-            account_present_removed(va);
-            if let Some(pa) = vmm::migration_drop_marker_mapping(marker) {
-                // SAFETY: marker removal transfers this original PTE ref.
-                unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa); }
+            if clear_current_pte_marker(va) {
+                hal::tlb::shootdown_others_va(va, mask.as_words());
+            }
+        } else if matches!(nonpresent, Some(NonpresentKind::Migration)) {
+            if let Some(marker) = clear_current_migration_entry(va) {
+                hal::tlb::shootdown_others_va(va, mask.as_words());
+                #[cfg(feature = "debug-syscost")]
+                let account_started = crate::unmapcost::now_ns();
+                account_present_removed(va);
+                #[cfg(feature = "debug-syscost")]
+                crate::unmapcost::account(account_started);
+                if let Some(pa) = vmm::migration_drop_marker_mapping(marker) {
+                    // SAFETY: marker removal transfers this original PTE ref.
+                    unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa); }
+                }
             }
         }
         va += step;
@@ -329,6 +370,8 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
     // cur.mm — that's where the user's VMAs live, not the global
     // boot AS. Mirror glue_mmap so MAP_FIXED's overlap-clear
     // (via glue_munmap) hits the right AS.
+    #[cfg(feature = "debug-syscost")]
+    let vma_started = crate::unmapcost::now_ns();
     let r = if let Some(cur) = sched::live::current() {
         // SAFETY: running task on this CPU; sole mm writer.
         if let Some(mm) = unsafe { cur.mm_ref() } {
@@ -339,6 +382,8 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
     } else {
         with(|as_| as_.munmap(range.start, range.len_aligned))
     };
+    #[cfg(feature = "debug-syscost")]
+    crate::unmapcost::vma(vma_started);
     // Announced AFTER the VMAs are gone, whatever the outcome: a monitor is
     // told about pages that have already been torn down, never about a
     // teardown still in progress.
