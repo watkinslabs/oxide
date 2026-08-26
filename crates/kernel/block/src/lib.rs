@@ -127,3 +127,13 @@ mod stub_tests {
         assert_eq!(r, Err(Error::NotImplemented));
     }
 }
+
+/// Hard-IRQ completion notifications the virtio-blk driver has observed.
+/// Paired with `BH_RUNS` this separates "the device stopped notifying us"
+/// from "the softirq stopped running" -- indistinguishable from a stalled
+/// waiter, and the two have opposite repairs.
+pub static IRQ_RAISES: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+/// Completion-softirq entries.
+pub static BH_RUNS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+/// Used-ring entries the completion softirq has reaped.
+pub static BH_REAPED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);

@@ -57,6 +57,8 @@ pub(super) fn claim_hibernate_sync_trace() -> u16 {
 
 #[cfg(target_os = "oxide-kernel")]
 pub fn wake_completions() {
+    #[cfg(feature = "debug-blk-verify")]
+    block::IRQ_RAISES.fetch_add(1, Ordering::Relaxed);
     note_completion_interrupt();
     // The interrupt wakes the in-flight completion waiter; the block softirq
     // retires the used entry and wakes the owning device's turn waiter.
@@ -72,6 +74,8 @@ pub fn wake_completions() {
 /// multiple outstanding descriptor chains.
 #[cfg(target_os = "oxide-kernel")]
 pub(super) fn run_completion_bottom_half() {
+    #[cfg(feature = "debug-blk-verify")]
+    block::BH_RUNS.fetch_add(1, Ordering::Relaxed);
     let devices: Vec<Arc<BlkState>> = DEVICES.lock_bh::<sched::bh::SchedBh>()
         .iter().map(|record| record.state.clone()).collect();
     for device in devices {
@@ -81,6 +85,8 @@ pub(super) fn run_completion_bottom_half() {
         // completions out from under the poller that owns them.
         for q in device.queues().filter(|q| softirq_drains(q)) {
             let _reaped = device.drain_owned_completions(q);
+            #[cfg(feature = "debug-blk-verify")]
+            block::BH_REAPED.fetch_add(_reaped as u64, Ordering::Relaxed);
             // Queue release can raise this softirq after a synchronous owner
             // has consumed its own used entry. In that case the drain above
             // finds no completion, but deferred requests still need the Linux
@@ -176,6 +182,10 @@ pub(super) const IO_TIMEOUT_NS: u64 = 5_000_000_000;
 /// How long a synchronous transfer may run before it is named once on the
 /// console. Naming is all that happens: the wait continues either way.
 pub(super) const IO_WARN_NS: u64 = 10_000_000_000;
+/// How often one non-progressing synchronous wait reports the completion
+/// counters. Diagnostic only (`debug-blk-verify`).
+#[cfg(feature = "debug-blk-verify")]
+pub(super) const STALL_REPORT_NS: u64 = 1_000_000_000;
 #[cfg(not(target_os = "oxide-kernel"))]
 pub(super) const IO_FALLBACK_SPINS: u64 = 50_000_000;
 
