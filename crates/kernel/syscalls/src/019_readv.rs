@@ -29,8 +29,10 @@ pub fn sys_readv(args: &SyscallArgs) -> i64 {
         None    => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+    // Borrow current->files like Linux; the running task cannot replace this
+    // table while the syscall is executing.
     let fdt = match unsafe { cur.fd_table_ref() } {
-        Some(t) => t.clone(),
+        Some(t) => t.as_ref(),
         None    => return -(Errno::Ebadf.as_i32() as i64),
     };
     let file = match fdt.get(fd) {
