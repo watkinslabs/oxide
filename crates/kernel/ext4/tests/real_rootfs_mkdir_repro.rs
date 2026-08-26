@@ -272,6 +272,30 @@ fn real_rootfs_vfs_path_journald_workload() {
     eprintln!("OK: VFS-path journald workload clean");
 }
 
+/// The boot image contains real merged-usr systemd symlinks whose targets are
+/// present on disk. Keep the VFS walk separate from the raw ext4 lookup so a
+/// resolver failure cannot be mistaken for a missing image entry.
+#[test]
+#[ignore]
+fn real_rootfs_systemd_symlink_walk() {
+    common::boot_hosted_pmm();
+    let path = match std::env::var("OXIDE_ROOTFS_IMG") { Ok(p) => p, Err(_) => { eprintln!("SKIP: set OXIDE_ROOTFS_IMG"); return; } };
+    let bytes = std::fs::read(&path).expect("image readable");
+    let cap = (bytes.len() as u64) / (SECTOR as u64);
+    let disk: Arc<MemDisk<TaskList>> = MemDisk::new(SECTOR, cap);
+    let mut req = BlockRequest { op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: bytes, ..Default::default() };
+    disk.submit_sync(&mut req).unwrap();
+    let m = ext4::rootfs::Ext4Mount::open(disk).expect("open rootfs");
+    let root_inode = vfs::fs::FileSystem::root(&*m).expect("root inode");
+    let root = vfs::Dentry::new_root(root_inode);
+    for path in ["/etc/systemd/system/default.target", "/usr/lib/systemd/system/default.target"] {
+        match vfs::path_lookup(root.clone(), root.clone(), path, vfs::LookupFlags::default()) {
+            Ok((inode, _)) => eprintln!("OK: VFS symlink walk {path} -> {:?} ino={}", inode.file_type(), inode.ino()),
+            Err(e) => panic!("VFS symlink walk {path}: {e:?}"),
+        }
+    }
+}
+
 #[test]
 #[ignore]
 fn real_run_udev_mkdir() {
