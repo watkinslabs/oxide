@@ -92,7 +92,9 @@ pub(crate) fn vsock_from_file(file: Arc<vfs::File>) -> Option<VsockFileRef> {
 pub(crate) fn fd_file(fd: u64) -> Option<Arc<vfs::File>> {
     let cur = sched::live::current()?;
     // SAFETY: running task on this CPU; sole reader of fd_table slot.
-    let fdt = unsafe { cur.fd_table_ref() }?.clone();
+    // Borrow current->files like Linux; FdTable::get supplies the file pin
+    // that keeps this open-file description alive for the syscall.
+    let fdt = unsafe { cur.fd_table_ref() }?;
     fdt.get(fd as i32).ok()
 }
 
