@@ -1,4 +1,5 @@
 extern crate alloc;
+use alloc::borrow::Cow;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -69,11 +70,69 @@ pub(crate) fn dotdot_step(
     false
 }
 
-/// Split `path` into the walk queue's owned component strings.
-/// # C: O(len)
+/// One active Linux `nameidata` pathname frame. The frame owns its pathname,
+/// but keeps the component cursor as a byte offset, so ordinary components are
+/// borrowed directly from the pathname instead of becoming one heap `String`
+/// each. Symlink targets create a new frame; the suspended remainder is kept
+/// in the walker's frame stack just like Linux `nd->stack`. # C: O(1)
+pub(crate) struct WalkFrame<'a> {
+    pub(crate) path: Cow<'a, str>,
+    pub(crate) pos: usize,
+    next_component: Option<(usize, usize)>,
+}
+
+impl<'a> WalkFrame<'a> {
+    pub(crate) fn borrowed(path: &'a str) -> Self {
+        let next_component = Self::next_range(path.as_bytes(), 0).map(|(start, end, _)| (start, end));
+        Self { path: Cow::Borrowed(path), pos: 0, next_component }
+    }
+
+    pub(crate) fn owned(path: String) -> Self {
+        let next_component = Self::next_range(path.as_bytes(), 0).map(|(start, end, _)| (start, end));
+        Self { path: Cow::Owned(path), pos: 0, next_component }
+    }
+
+    fn next_range(bytes: &[u8], mut pos: usize) -> Option<(usize, usize, usize)> {
+        while pos < bytes.len() {
+            while pos < bytes.len() && bytes[pos] == b'/' { pos += 1; }
+            let start = pos;
+            while pos < bytes.len() && bytes[pos] != b'/' { pos += 1; }
+            if start == pos { continue; }
+            if &bytes[start..pos] == b"." { continue; }
+            return Some((start, pos, pos));
+        }
+        None
+    }
+
+    /// Return the next non-empty, non-dot component as a byte range and move
+    /// the cursor past it. `..` remains a control component for the walker.
+    /// # C: O(component length)
+    pub(crate) fn next(&mut self) -> Option<(usize, usize)> {
+        let (start, end) = self.next_component?;
+        self.pos = end;
+        self.next_component = Self::next_range(self.path.as_bytes(), self.pos)
+            .map(|(next_start, next_end, _)| (next_start, next_end));
+        Some((start, end))
+    }
+
+    pub(crate) fn rewind(&mut self, pos: usize) {
+        self.pos = pos;
+        self.next_component = Self::next_range(self.path.as_bytes(), pos)
+            .map(|(start, end, _)| (start, end));
+    }
+
+    /// Whether another semantic component remains after the current cursor.
+    /// # C: O(remaining component prefix)
+    pub(crate) fn has_next(&self) -> bool {
+        self.next_component.is_some()
+    }
+}
+
+/// Split a path for the mount-root helper, whose callers need an owned list
+/// because they iterate outside the main nameidata walker.
 pub(crate) fn components(path: &str) -> Vec<String> {
     crate::path::components(path).into_iter().filter_map(|c| match c {
-        crate::path::Component::Root      => None,                  // leading '/' → walk's to_root()
+        crate::path::Component::Root      => None,
         crate::path::Component::ParentDir => Some(String::from("..")),
         crate::path::Component::Normal(s) => Some(String::from(s)),
     }).collect()

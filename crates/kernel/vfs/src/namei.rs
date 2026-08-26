@@ -47,5 +47,5 @@ pub use types::{Cred, LastType, LinkTarget, LookupFlags, MountTarget, VfsPath, M
 pub use state::Nameidata;
 
 pub(super) use permission::may_lookup;
-pub(super) use traverse::{components, dotdot_step, follow_mount_down, neg_cache_ok};
+pub(super) use traverse::{components, dotdot_step, follow_mount_down, neg_cache_ok, WalkFrame};
 pub(super) use state::WalkOutcome;

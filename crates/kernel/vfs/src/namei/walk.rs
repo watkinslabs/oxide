@@ -6,7 +6,8 @@ use alloc::vec::Vec;
 use crate::dentry::Dentry;
 use crate::types::{FileType, KResult, VfsError};
 
-use super::{components, follow_mount_down, may_lookup, LinkTarget, Nameidata, VfsPath, WalkOutcome, MAX_NESTED_LINKS, MAX_SYMLINK_DEPTH};
+use super::{follow_mount_down, may_lookup, LinkTarget, Nameidata, VfsPath, WalkFrame,
+    WalkOutcome, MAX_NESTED_LINKS, MAX_SYMLINK_DEPTH};
 
 impl Nameidata {
     /// ONE component-walk pass. `validate` gates the D22 seqretry restarts (the final degraded pass passes `false` so the Arc result is taken as-is).
@@ -70,9 +71,11 @@ impl Nameidata {
         // components, and relative/absolute targets resolve from the right
         // directory context (`cur_*` for relative, `to_root()` for absolute)
         // exactly as before.
-        let mut queue: Vec<String> = components(path);
-        let mut idx = 0usize;
-        let mut saved: Vec<(Vec<String>, usize)> = Vec::new();
+        // Linux's `getname` owns one pathname buffer and `nameidata` advances a
+        // cursor through it. Keep that shape: only a followed symlink gets a
+        // new owned frame, and ordinary components stay borrowed from it.
+        let mut frame = WalkFrame::borrowed(path);
+        let mut saved: Vec<WalkFrame<'_>> = Vec::new();
         let mut last_component: Option<String> = None;
 
         loop {
@@ -80,33 +83,29 @@ impl Nameidata {
             // `put_link` + walk continuation). Only a NON-empty remainder is ever
             // pushed, so a popped frame always has a component to process; an
             // empty stack with the active frame consumed ends the walk.
-            while idx >= queue.len() {
+            while !frame.has_next() {
                 match saved.pop() {
                     // Linux `put_link`: the suspended remainder resumes, so the
                     // symlink whose target it followed is fully consumed — drop
                     // one level of nesting depth (`nd->depth--`). Stays in lock-
                     // step with `saved.len()` (the live link stack).
-                    Some((q, i)) => { queue = q; idx = i; self.depth = self.depth.saturating_sub(1); }
+                    Some(next) => { frame = next; self.depth = self.depth.saturating_sub(1); }
                     None => break,
                 }
             }
-            if idx >= queue.len() { break; }
+            let component_start = frame.pos;
+            let Some((start, end)) = frame.next() else { break };
 
             // D23: BORROW the active component in place rather than cloning a
-            // fresh `String` every iteration. The dcache probe (`d_lookup`),
-            // the slow-path `i_op->lookup`/`d_add`, and the lexical checks all
-            // take `&str`, so the walk needs no owned copy. The borrow ends
-            // before the symlink branch's `core::mem::take(&mut queue)` (NLL:
-            // `comp`'s last use precedes the queue mutation), so following a
-            // link can still swap the active frame. Only the LOOKUP_PARENT leaf
-            // (returned to the caller) is materialised to an owned `String`.
-            let comp: &str = &queue[idx];
-            idx += 1;
+            // fresh `String` every iteration. The component is a slice of the
+            // single frame buffer; only a returned LOOKUP_PARENT leaf is
+            // materialised to an owned `String`.
+            let comp: &str = &frame.path[start..end];
             // Final component of the WHOLE resolution: the active frame is
             // exhausted AND no suspended remainder follows (Linux: last component
             // with `nd->depth == 0`). A non-empty `saved` means more path follows
             // a symlink, so this component is not the trailing one.
-            let is_final = idx >= queue.len() && saved.is_empty();
+            let is_final = !frame.has_next() && saved.is_empty();
 
             // ENOTDIR: `comp` (a name OR `..`) is resolved WITHIN `cur_inode`,
             // so `cur_inode` must be a directory — including the PARENT of a
@@ -157,7 +156,7 @@ impl Nameidata {
                 if let Err(e) = may_lookup(&self.cur_inode, &self.cred, self.rcu) {
                     if self.rcu && matches!(e, VfsError::Echild | VfsError::Eagain) {
                         self.rcu = false;
-                        idx -= 1;
+                        frame.rewind(component_start);
                         continue;
                     }
                     return Err(e);
@@ -190,7 +189,7 @@ impl Nameidata {
             if let Err(e) = may_lookup(&self.cur_inode, &self.cred, self.rcu) {
                 if self.rcu && matches!(e, VfsError::Echild | VfsError::Eagain) {
                     self.rcu = false;
-                    idx -= 1;
+                    frame.rewind(component_start);
                     continue;
                 }
                 return Err(e);
@@ -297,8 +296,8 @@ impl Nameidata {
                         // resumed (Linux `put_link`) when the target is consumed. Skip the
                         // push when nothing remains, so an exhausted frame is never stacked
                         // — keeping the resume loop and `is_final` exact.
-                        if idx < queue.len() {
-                            saved.push((core::mem::take(&mut queue), idx));
+                        if frame.has_next() {
+                            saved.push(frame);
                             // Linux `nd->depth++` — one more suspended link frame is
                             // live. Cap the NESTING separately from the total count: a
                             // pathologically deep stack of pending remainders is ELOOP
@@ -308,9 +307,9 @@ impl Nameidata {
                             self.depth += 1;
                             if self.depth > MAX_NESTED_LINKS { return Err(VfsError::Eloop); }
                         }
-                        queue = components(&target);
-                        idx = 0;
-                        if target.as_bytes().first() == Some(&b'/') {
+                        let absolute = target.as_bytes().first() == Some(&b'/');
+                        frame = WalkFrame::owned(target);
+                        if absolute {
                             // RESOLVE_BENEATH (`beneath_exdev`): an absolute symlink
                             // target escapes above the scoped dirfd → EXDEV (Linux),
                             // checked BEFORE the jump-to-root.

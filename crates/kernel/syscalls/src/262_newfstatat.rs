@@ -62,6 +62,8 @@ pub fn sys_newfstatat(args: &SyscallArgs) -> i64 {
     // vfs_getattr → i_op->getattr: S_IF* mapping + native metadata + idmap-out.
     let idmap = vfs::mount::idmap_for(mnt_id);
     let st = vfs::vfs_getattr(&inode, &idmap);
+    #[cfg(feature = "debug-syscost")]
+    let __ph_out = crate::syscost_phase::Phase::start(crate::syscost_phase::PH_STAT_OUT);
     let dev = crate::namei_common::fsid_to_dev(st.fsid);
     let out = match new_stat_from_kstat(&st, dev) {
         Ok(o) => o,
@@ -72,5 +74,7 @@ pub fn sys_newfstatat(args: &SyscallArgs) -> i64 {
     if let Err(rv) = validate_user_buf_writable(buf, STAT_BYTES, 1) { return rv; }
 
     if let Err(rv) = write_new_stat_user(buf, &out) { return rv; }
+    #[cfg(feature = "debug-syscost")]
+    drop(__ph_out);
     0
 }
