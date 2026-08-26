@@ -271,6 +271,8 @@ fn ioctl_size_fields_match_structs() {
     assert_eq!(DRM_IOCTL_MODE_CURSOR  & 0xff, 0xa3);
     assert_eq!(ioc_size(DRM_IOCTL_MODE_CURSOR2),         size_of::<DrmModeCursor2>() as u64);
     assert_eq!(DRM_IOCTL_MODE_CURSOR2 & 0xff, 0xbb);
+    assert_eq!(ioc_size(DRM_IOCTL_MODE_LIST_LESSEES),     size_of::<DrmModeListLessees>() as u64);
+    assert_eq!(DRM_IOCTL_MODE_LIST_LESSEES & 0xff, 0xc7);
 }
 
 #[test]
@@ -284,6 +286,7 @@ fn new_kms_struct_sizes() {
     assert_eq!(size_of::<DrmModeCursor>(),               28);
     assert_eq!(size_of::<DrmModeCursor2>(),              36);
     assert_eq!(size_of::<DrmModeFbCmd>(),                28);
+    assert_eq!(size_of::<DrmModeListLessees>(),           16);
 }
 
 // ---------------------------------------------------------------------------
@@ -328,6 +331,7 @@ fn ioctl_numbers_encode_their_linux_struct_size() {
     assert_eq!(DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT,  ioc(IOC_RW, 0xCA, 48), "drm_syncobj_timeline_wait");
     assert_eq!(DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD,   ioc(IOC_RW, 0xC1, 24), "drm_syncobj_handle");
     assert_eq!(DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE,   ioc(IOC_RW, 0xC2, 24), "drm_syncobj_handle");
+    assert_eq!(DRM_IOCTL_MODE_LIST_LESSEES,       ioc(IOC_RW, 0xC7, 16), "drm_mode_list_lessees");
 }
 
 /// Each wire struct must be exactly the size its own request number claims.
