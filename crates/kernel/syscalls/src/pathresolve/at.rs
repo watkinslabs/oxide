@@ -193,11 +193,15 @@ pub fn resolve_at_lookup(dirfd: i32, path_ptr: u64, flags: vfs::LookupFlags) -> 
 
 /// # C: O(components × dir-lookup)
 pub fn resolve_at_lookup_cred(dirfd: i32, path_ptr: u64, flags: vfs::LookupFlags, cred: vfs::Cred) -> Result<vfs::VfsPath, i64> {
-    if at_path_empty(path_ptr)? {
+    // Linux `getname` returns one owned filename object, including its empty
+    // state. Read the user pathname once; the previous one-byte probe followed
+    // by `read_user_path` doubled the user-memory scan on every non-empty
+    // `*at` lookup, which is especially visible in newfstatat-heavy boots.
+    let raw = crate::namei_common::read_user_path_allow_empty(path_ptr)?;
+    if raw.is_empty() {
         if !flags.empty { return Err(-(Errno::Enoent.as_i32() as i64)); }
         return resolve_empty_at(dirfd);
     }
-    let raw = crate::namei_common::read_user_path(path_ptr)?;
     resolve_at_path_cred(dirfd, &raw, flags, cred)
 }
 
