@@ -1,0 +1,16 @@
+# Per-operation cost relative to the host kernel, as measured by
+# `make perf-report`. The gate holds each row to its value here.
+# Lower it with `perf-report.py --accept` after a run that improves one;
+# raising a number by hand is how a ratchet stops being a ratchet.
+close	5.2
+mmap	8.6
+mprotect	15.2
+munmap	64.6
+newfstatat	29.0
+openat	10.8
+read	10.8
+recvfrom	23.4
+recvmsg	13.2
+sendmmsg	66.9
+sendmsg	52.8
+write fault, page absent	17.0
