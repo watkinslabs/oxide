@@ -45,6 +45,39 @@ pub fn note_fill(ns: u64) {
 /// # C: O(1)
 pub fn stamp() -> u64 { now_ns() }
 
+static TURN_NS:  AtomicU64 = AtomicU64::new(0);
+static TURN_CNT: AtomicU64 = AtomicU64::new(0);
+static DEV_NS:   AtomicU64 = AtomicU64::new(0);
+static DEV_CNT:  AtomicU64 = AtomicU64::new(0);
+
+/// Time a block request spent waiting for its turn at a queue that admits one
+/// request at a time, separated from the device time that follows it. The two
+/// together say whether the storage path is slow or merely serialised.
+/// # C: O(1)
+#[inline]
+pub fn note_turn(ns: u64) {
+    TURN_NS.fetch_add(ns, Ordering::Relaxed);
+    TURN_CNT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Block request classes, indexed by the caller: 0 read, 1 write, 2 flush,
+/// 3 anything else.
+const BLK_KINDS: usize = 4;
+static BLK_NS:  [AtomicU64; BLK_KINDS] = [const { AtomicU64::new(0) }; BLK_KINDS];
+static BLK_CNT: [AtomicU64; BLK_KINDS] = [const { AtomicU64::new(0) }; BLK_KINDS];
+const BLK_NAME: [&[u8]; BLK_KINDS] = [b"read", b"write", b"flush", b"other"];
+
+/// Time one block request spent between doorbell and completion. # C: O(1)
+#[inline]
+pub fn note_device(ns: u64, kind: usize) {
+    DEV_NS.fetch_add(ns, Ordering::Relaxed);
+    DEV_CNT.fetch_add(1, Ordering::Relaxed);
+    if kind < BLK_KINDS {
+        BLK_NS[kind].fetch_add(ns, Ordering::Relaxed);
+        BLK_CNT[kind].fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 /// # C: O(1)
 fn now_ns() -> u64 {
     use hal::TimerOps;
@@ -93,6 +126,29 @@ fn dump() {
     klog::write_raw(b" rejected_ms=");           klog::write_dec_u64(xn / NS_PER_MS);
     klog::write_raw(b" rejected_avg_ns=");       klog::write_dec_u64(if xc > 0 { xn / xc } else { 0 });
     klog::write_raw(b"\n");
+    let tc = TURN_CNT.load(Ordering::Relaxed);
+    if tc > 0 {
+        let tns = TURN_NS.load(Ordering::Relaxed);
+        let dc = DEV_CNT.load(Ordering::Relaxed);
+        let dns = DEV_NS.load(Ordering::Relaxed);
+        klog::write_raw(b"  blk-turn cnt=");  klog::write_dec_u64(tc);
+        klog::write_raw(b" ms=");             klog::write_dec_u64(tns / NS_PER_MS);
+        klog::write_raw(b" avg_ns=");         klog::write_dec_u64(tns / tc);
+        klog::write_raw(b" | blk-dev cnt=");  klog::write_dec_u64(dc);
+        klog::write_raw(b" ms=");             klog::write_dec_u64(dns / NS_PER_MS);
+        klog::write_raw(b" avg_ns=");         klog::write_dec_u64(if dc > 0 { dns / dc } else { 0 });
+        klog::write_raw(b"\n");
+    }
+    for i in 0..BLK_KINDS {
+        let c = BLK_CNT[i].load(Ordering::Relaxed);
+        if c == 0 { continue; }
+        let n = BLK_NS[i].load(Ordering::Relaxed);
+        klog::write_raw(b"  blk-");        klog::write_raw(BLK_NAME[i]);
+        klog::write_raw(b" cnt=");         klog::write_dec_u64(c);
+        klog::write_raw(b" ms=");          klog::write_dec_u64(n / NS_PER_MS);
+        klog::write_raw(b" avg_ns=");      klog::write_dec_u64(n / c);
+        klog::write_raw(b"\n");
+    }
     let fc = FILL_CNT.load(Ordering::Relaxed);
     if fc > 0 {
         let fns = FILL_NS.load(Ordering::Relaxed);

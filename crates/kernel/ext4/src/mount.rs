@@ -119,7 +119,13 @@ pub struct MountState {
     /// cache (`sb_bread`); bypassing it made every component issue synchronous
     /// device I/O again.  `shadow` remains authoritative for an open journal
     /// transaction, so this cache contains only clean on-disk bytes.
-    pub(crate) metadata_cache: alloc::collections::BTreeMap<u64, Vec<u8>>,
+    pub(crate) metadata_cache: alloc::collections::BTreeMap<u64, alloc::sync::Arc<Vec<u8>>>,
+    /// Publication order of `metadata_cache`, so a full cache evicts its
+    /// oldest entries instead of dropping every buffer it holds. Clearing the
+    /// whole cache on overflow threw away the inode table and the extent
+    /// blocks the running workload was reading, and every reader then went
+    /// back to the device; the reference retires buffers one at a time.
+    pub(crate) metadata_order: alloc::collections::VecDeque<u64>,
     /// Cross-operation batching (Linux jbd2 running-transaction model). When
     /// set, the `shadow` PERSISTS across `run_journaled` scopes: each op joins
     /// the running transaction instead of committing its own, and the batch is

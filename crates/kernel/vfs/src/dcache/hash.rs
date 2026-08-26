@@ -12,7 +12,13 @@ use crate::dentry::Dentry;
 // `Dentry::compute_hash`, so bucketing on `hash` alone keys on (parent,name)).
 // ---------------------------------------------------------------------------
 
-const DHASH_BITS:     usize = 8;            // 256 buckets — hosted/test scale
+// Bucket count. The reference sizes this from memory in
+// `alloc_large_system_hash` — one bucket per 8 KiB of kernel memory — which on
+// a machine of this class lands between 2^16 and 2^19. It was 256 here, sized
+// "hosted/test scale": a desktop holds tens of thousands of live dentries, so
+// every bucket became a chain of hundreds and every name lookup walked it.
+// 2^16 keeps the chains at a handful of entries on that working set.
+const DHASH_BITS:     usize = 16;
 const DHASH_NBUCKETS: usize = 1 << DHASH_BITS;
 const DHASH_MASK:     u32   = (DHASH_NBUCKETS - 1) as u32;
 

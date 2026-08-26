@@ -123,7 +123,7 @@ impl Mount {
         let mut expected_depth = hdr.depth;
         let mut child_lba = self.find_child_for(i_block, &hdr, file_blk)?;
         loop {
-            let buf = self.read_metadata_block(child_lba)?;
+            let buf = self.read_metadata_block_shared(child_lba)?;
             if inode.ino != 0
                 && !crate::csum::verify_extent_block_csum(&self.sb, inode.ino, inode.generation, &buf)
             {
@@ -201,7 +201,7 @@ impl Mount {
             // raw `read_byte_range`: an in-flight journal scope keeps freshly
             // written extent blocks in `state.shadow` before they hit disk, so a
             // raw read mid-transaction would see stale bytes.
-            let buf = self.read_metadata_block(child_lba)?;
+            let buf = self.read_metadata_block_shared(child_lba)?;
             // External extent block carries an owned metadata_csum tail; verify
             // it against the per-inode seed (skip when ino unset, e.g. journal
             // inode built before stamping). No-op without the metadata_csum feat.

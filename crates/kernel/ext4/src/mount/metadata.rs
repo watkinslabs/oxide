@@ -94,12 +94,11 @@ impl Mount {
     /// # C: O(N staged blocks)
     #[inline(never)]
     pub(in crate::mount) fn cache_committed(&self, staged: &[StagedBlock]) {
-        const META_CACHE_MAX_BLOCKS: usize = 8192;
         let mut s = self.state.lock();
-        if s.metadata_cache.len().saturating_add(staged.len()) > META_CACHE_MAX_BLOCKS {
-            s.metadata_cache.clear();
+        for block in staged {
+            let buf = alloc::sync::Arc::new(block.data.clone());
+            publish_metadata(&mut s, block.target_lba, buf);
         }
-        for block in staged { s.metadata_cache.insert(block.target_lba, block.data.clone()); }
     }
 
     /// A direct data write has replaced these on-disk bytes without going
@@ -112,7 +111,11 @@ impl Mount {
         let first = byte_off / bs;
         let last = byte_off.saturating_add(len as u64).saturating_sub(1) / bs;
         let mut state = self.state.lock();
-        for lba in first..=last { state.metadata_cache.remove(&lba); }
+        for lba in first..=last {
+            if state.metadata_cache.remove(&lba).is_some() {
+                state.metadata_order.retain(|held| *held != lba);
+            }
+        }
     }
 
     /// Read one fs-block from the transaction shadow, then the clean metadata
@@ -120,12 +123,14 @@ impl Mount {
     /// of Linux's buffer-cache lookup before `sb_bread` submits I/O.
     /// # C: O(log N) cache lookup or O(1) device I/O on a cold block
     #[inline(never)]
-    pub(crate) fn read_metadata_block(&self, lba: u64) -> Result<Vec<u8>, MountError> {
+    pub(crate) fn read_metadata_block_shared(&self, lba: u64)
+        -> Result<alloc::sync::Arc<Vec<u8>>, MountError>
+    {
         let bs = self.sb.block_size as u64;
         let cached = {
             let mut s = self.state.lock();
             if let Some(buf) = s.shadow.as_ref().and_then(|m| m.get(&lba).cloned()) {
-                if buf.len() == bs as usize { return Ok(buf); }
+                if buf.len() == bs as usize { return Ok(alloc::sync::Arc::new(buf)); }
                 // A journal shadow is an in-flight full filesystem block. A
                 // short value cannot be interpreted as metadata: Linux's
                 // buffer-head/page-cache contract never publishes a partial
@@ -148,15 +153,43 @@ impl Mount {
         if let Some(buf) = cached { return Ok(buf); }
         let buf = read_byte_range(&*self.dev, lba * bs, self.sb.block_size as usize)?;
         if buf.len() != bs as usize { return Err(MountError::Inode(crate::InodeError::BadLen)); }
-        // Metadata is bounded by the mount image in the normal boot path.  A
-        // cap prevents a streaming metadata workload from pinning unlimited
-        // memory; clear only clean entries, never a live journal shadow.
+        let buf = alloc::sync::Arc::new(buf);
         let mut s = self.state.lock();
-        const META_CACHE_MAX_BLOCKS: usize = 8192;
-        if s.metadata_cache.len() >= META_CACHE_MAX_BLOCKS { s.metadata_cache.clear(); }
-        s.metadata_cache.insert(lba, buf.clone());
+        publish_metadata(&mut s, lba, alloc::sync::Arc::clone(&buf));
         Ok(buf)
     }
 
+    /// Owned copy of one metadata block, for the callers that edit the bytes
+    /// before writing them back. A reader that only inspects the block should
+    /// take [`Mount::read_metadata_block_shared`] instead: this copies the
+    /// whole filesystem block.
+    /// # C: O(block size) on top of the shared read
+    #[inline]
+    pub(crate) fn read_metadata_block(&self, lba: u64) -> Result<Vec<u8>, MountError> {
+        self.read_metadata_block_shared(lba).map(|buf| (*buf).clone())
+    }
 
+
+
+}
+
+/// Cap on clean metadata buffers held at once. Bounded so a streaming
+/// metadata workload cannot pin unlimited memory.
+const META_CACHE_MAX_BLOCKS: usize = 8192;
+
+/// Publish one clean metadata buffer, retiring the oldest when the cache is
+/// full. A full cache used to be emptied outright, which discarded the inode
+/// table and extent blocks the running workload was reading and sent every
+/// subsequent reader back to the device.
+/// # C: O(log N) amortised
+fn publish_metadata(state: &mut crate::MountState, lba: u64, buf: alloc::sync::Arc<Vec<u8>>) {
+    if state.metadata_cache.insert(lba, buf).is_none() {
+        state.metadata_order.push_back(lba);
+    }
+    while state.metadata_cache.len() > META_CACHE_MAX_BLOCKS {
+        match state.metadata_order.pop_front() {
+            Some(oldest) => { state.metadata_cache.remove(&oldest); }
+            None => break,
+        }
+    }
 }

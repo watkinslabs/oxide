@@ -217,9 +217,14 @@ impl Mount {
         // mount and bitmap reads.  Linux's buffer-cache readers copy only the
         // bytes requested by the caller; keep the same shadow/cache source
         // while avoiding that second temporary allocation.
+        //
+        // The per-block read is the SHARED one for the same reason: an inode
+        // read wants 256 bytes out of a 4 KiB block, and taking an owned copy
+        // of the block first made every inode read allocate and copy the whole
+        // block to throw all but the slot away.
         let mut out = Vec::with_capacity(len);
         for i in 0..n_blocks as u64 {
-            let block = self.read_metadata_block(first_blk + i)?;
+            let block = self.read_metadata_block_shared(first_blk + i)?;
             let start = if i == 0 { inner_off } else { 0 };
             let end = core::cmp::min(bs as usize, inner_off + len - out.len());
             out.extend_from_slice(&block[start..end]);
