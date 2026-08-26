@@ -29,37 +29,38 @@ pub(super) fn current_nonpresent_kind(va: u64) -> Option<NonpresentKind> {
     else { None }
 }
 
-/// one block leaf per huge page, and clearing it with the 4 KiB granule tears
-/// down the whole huge page while accounting a single base page — and then
-/// steps 4 KiB into the middle of a leaf that is already gone.
+/// Tear down the present leaf at `va` and return its physical address and
+/// installed granule. Combining lookup and clear avoids the old two-walk
+/// sequence (`translate_sized` followed by `unmap`) and avoids a second local
+/// TLB invalidation: `unmap_at_va` performs the clear and its architecture's
+/// local flush together, matching Linux's single zap walk under `mmu_gather`.
+///
+/// # SAFETY: the caller owns the active address space's teardown and `va` is
+/// not concurrently modified.
 /// # C: O(walk depth)
-pub(super) fn translate_leaf(va: u64) -> Option<(u64, hal::PageSize)> {
-    use hal::{MmuOps, Va};
-    #[cfg(target_arch = "x86_64")]
-    let t = <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::translate_sized(Va(va));
-    #[cfg(target_arch = "aarch64")]
-    let t = <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::translate_sized(Va(va));
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    let t: Option<(hal::Pa, hal::PageFlags, hal::PageSize)> = { let _ = va; None };
-    t.map(|(pa, _flags, size)| (pa.0, size))
-}
-
-/// Clear the leaf of `size` at `va` from the active tables.
-/// # SAFETY: `va` is aligned to `size`, the leaf is present, and the caller
-/// owns the address space's teardown.
-/// # C: O(walk depth)
-pub(super) unsafe fn clear_leaf(va: u64, size: hal::PageSize) {
-    use hal::{MmuOps, Va};
-    // SAFETY: per this function's contract — the granule comes from the very
-    // walk that found the leaf, so it matches what is installed.
-    unsafe {
+pub(super) unsafe fn unmap_leaf(va: u64) -> Option<(u64, hal::PageSize)> {
+    let hhdm = hhdm_offset();
+    let (raw, level) = unsafe {
         #[cfg(target_arch = "x86_64")]
-        <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::unmap(Va(va), size);
+        { hal::pt_walker::unmap_at_va::<hal_x86_64::vmm::PtWalkerX86>(va, hhdm)? }
         #[cfg(target_arch = "aarch64")]
-        <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::unmap(Va(va), size);
+        { hal::pt_walker::unmap_at_va::<hal_aarch64::vmm::PtWalkerArm>(va, hhdm)? }
         #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-        { let _ = (va, size); }
-    }
+        { let _ = (va, hhdm); return None; }
+    };
+    let size = match level {
+        1 => hal::PageSize::P1G,
+        2 => hal::PageSize::P2M,
+        3 => hal::PageSize::P4K,
+        _ => return None,
+    };
+    #[cfg(target_arch = "x86_64")]
+    let pa = raw & hal_x86_64::vmm::PtWalkerX86::PHYS_MASK;
+    #[cfg(target_arch = "aarch64")]
+    let pa = raw & hal_aarch64::vmm::PtWalkerArm::PHYS_MASK;
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    let pa = raw;
+    Some((pa + (va & (size.bytes() - 1)), size))
 }
 
 /// Release one mapping's reference to the frame a just-cleared leaf named.

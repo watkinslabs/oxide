@@ -4,8 +4,8 @@ use crate::munmap_range::{validate_munmap_range, MunmapRange};
 mod walk;
 use walk::{
     account_present_removed, clear_current_migration_entry, clear_current_pte_marker,
-    clear_current_swap_entry, clear_leaf, huge_split_refused, range_sealed,
-    release_leaf_frame, translate_leaf, zap_watchers, current_nonpresent_kind, NonpresentKind,
+    clear_current_swap_entry, huge_split_refused, range_sealed,
+    release_leaf_frame, unmap_leaf, zap_watchers, current_nonpresent_kind, NonpresentKind,
 };
 
 const PAGE_MASK: u64 = hal::PAGE_SIZE_BYTES - 1;
@@ -98,7 +98,7 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
         let mut step = PAGE_BYTES;
         // Granule read from the tables, never assumed: a hugetlbfs mapping
         // resolves through one block leaf per huge page.
-        let translated = translate_leaf(va);
+        let translated = unsafe { unmap_leaf(va) };
         let nonpresent = if translated.is_none() {
             current_nonpresent_kind(va)
         } else {
@@ -107,25 +107,9 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
         if let Some((pa_raw, leaf)) = translated {
             step = leaf.bytes();
             let pa = hal::Pa(pa_raw);
-            // SAFETY: page is currently mapped; unmap is the inverse of demand-page install. The dec_ref-and-maybe-free that follows handles the COW-shared case correctly (Linux: MADV_DONTNEED on a shared page just unmaps the caller's PTE, never frees the underlying frame).
-            unsafe { clear_leaf(va & !(step - 1), leaf); }
-            // `MmuOps::unmap` does NOT invalidate on either arch (both walkers
-            // just clear the leaf), so the invalidate has to happen here,
-            // BEFORE the frame is released below (Linux's invariant order:
-            // unhook -> invalidate -> free, never reordered).
-            // aarch64 needs this at least as much as x86: `tlbi vae1is` is the
-            // ONLY invalidation ARM gets, because `shootdown_others_va` is a
-            // no-op there (arm64 has no TLB IPI — the `is` suffix broadcasts in
-            // hardware instead). Gating this on x86 left every ARM munmap /
-            // MADV_DONTNEED freeing frames with a live writable translation.
-            // SAFETY: privileged TLB invalidation legal at CPL=0/EL1; dropping
-            // a stale translation is always sound.
-            unsafe {
-                #[cfg(target_arch = "x86_64")]
-                { hal_x86_64::flush_local_va(va); }
-                #[cfg(target_arch = "aarch64")]
-                { hal_aarch64::flush_local_va(va); }
-            }
+            // SAFETY: `unmap_leaf` cleared and locally invalidated the leaf;
+            // the dec_ref-and-maybe-free below therefore preserves Linux's
+            // clear -> invalidate -> release ordering.
             // SMP TLB coherence (`20§5`): invalidate this VA on every OTHER
             // online CPU BEFORE the frame is freed below — a peer thread of
             // the same mm with a stale TLB entry would otherwise touch the
@@ -255,7 +239,7 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
         // resolves through one block leaf per huge page.
         #[cfg(feature = "debug-syscost")]
         let walk_started = crate::unmapcost::now_ns();
-        let translated = translate_leaf(va);
+        let translated = unsafe { unmap_leaf(va) };
         #[cfg(feature = "debug-syscost")]
         crate::unmapcost::walk(walk_started, translated.is_some());
         // Classify all non-present software PTEs with one page-table walk.
@@ -269,8 +253,8 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
         if let Some((pa_raw, leaf)) = translated {
             step = leaf.bytes();
             let pa = hal::Pa(pa_raw);
-            // SAFETY: page is mapped; unmap + frame free are the inverse of demand-page install.
-            unsafe { clear_leaf(va & !(step - 1), leaf); }
+            // SAFETY: `unmap_leaf` cleared and locally invalidated the page;
+            // release below is the inverse of demand-page installation.
             // B47: dec_ref + maybe free. Refcount-aware: a frame
             // shared with a forked peer AS (still mapped there via
             // COW) stays alive; only the unconditional free_one_frame
@@ -279,23 +263,6 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
             // free → munmap → unmap_pte for the if_options heap was
             // freeing pages still mapped in the grandchild's AS,
             // corrupting grandchild's view of the same struct.
-            // `MmuOps::unmap` does NOT invalidate on either arch (both walkers
-            // just clear the leaf), so the invalidate has to happen here,
-            // BEFORE the frame is released below (Linux's invariant order:
-            // unhook -> invalidate -> free, never reordered).
-            // aarch64 needs this at least as much as x86: `tlbi vae1is` is the
-            // ONLY invalidation ARM gets, because `shootdown_others_va` is a
-            // no-op there (arm64 has no TLB IPI — the `is` suffix broadcasts in
-            // hardware instead). Gating this on x86 left every ARM munmap /
-            // MADV_DONTNEED freeing frames with a live writable translation.
-            // SAFETY: privileged TLB invalidation legal at CPL=0/EL1; dropping
-            // a stale translation is always sound.
-            unsafe {
-                #[cfg(target_arch = "x86_64")]
-                { hal_x86_64::flush_local_va(va); }
-                #[cfg(target_arch = "aarch64")]
-                { hal_aarch64::flush_local_va(va); }
-            }
             // SMP TLB coherence (`20§5`): flush this VA on every OTHER online
             // CPU BEFORE the frame is freed below, so a peer thread of the
             // same mm can't touch a freed+realloc'd frame through a stale TLB
