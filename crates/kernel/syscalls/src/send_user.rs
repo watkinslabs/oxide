@@ -254,6 +254,8 @@ impl socket::MessageIo for SendMsgIo<'_> {
     }
 
     fn import(&mut self, mode: socket::ImportMode) -> socket::KResult<socket::Message> {
+        #[cfg(feature = "debug-syscost")]
+        let _phase = crate::syscost_phase::Phase::start(crate::syscost_phase::PH_SEND_IMPORT);
         match mode {
             socket::ImportMode::Full => import(self.source, self.layout),
             socket::ImportMode::RawOobEnvelope => import_raw_oob(self.source, self.layout),
@@ -261,12 +263,16 @@ impl socket::MessageIo for SendMsgIo<'_> {
     }
 
     fn import_envelope(&mut self) -> socket::KResult<Option<socket::Message>> {
+        #[cfg(feature = "debug-syscost")]
+        let _phase = crate::syscost_phase::Phase::start(crate::syscost_phase::PH_SEND_IMPORT);
         let (message, meta) = import_envelope_at(self.source, self.layout).map_err(work_error)?;
         self.meta = Some(meta);
         Ok(Some(message))
     }
 
     fn import_payload(&mut self, message: &mut socket::Message) -> socket::KResult<()> {
+        #[cfg(feature = "debug-syscost")]
+        let _phase = crate::syscost_phase::Phase::start(crate::syscost_phase::PH_SEND_PAYLOAD);
         let meta = self.meta.take().ok_or(socket::Error::Eio)?;
         import_payload_from(meta, message).map_err(work_error)
     }
@@ -354,6 +360,8 @@ impl socket::BatchIo for SendBatchIo<'_> {
     }
 
     fn import(&mut self, index: u32, mode: socket::ImportMode) -> socket::KResult<socket::Message> {
+        #[cfg(feature = "debug-syscost")]
+        let _phase = crate::syscost_phase::Phase::start(crate::syscost_phase::PH_SEND_IMPORT);
         let entry = self.entry(index)?;
         match mode {
             socket::ImportMode::Full => import(entry, self.layout),
@@ -362,6 +370,8 @@ impl socket::BatchIo for SendBatchIo<'_> {
     }
 
     fn import_envelope(&mut self, index: u32) -> socket::KResult<Option<socket::Message>> {
+        #[cfg(feature = "debug-syscost")]
+        let _phase = crate::syscost_phase::Phase::start(crate::syscost_phase::PH_SEND_IMPORT);
         let entry = self.entry(index)?;
         let (message, meta) = import_envelope_at(entry, self.layout).map_err(work_error)?;
         self.meta = Some((index, meta));
@@ -371,6 +381,8 @@ impl socket::BatchIo for SendBatchIo<'_> {
     fn import_payload(&mut self, index: u32, message: &mut socket::Message)
         -> socket::KResult<()>
     {
+        #[cfg(feature = "debug-syscost")]
+        let _phase = crate::syscost_phase::Phase::start(crate::syscost_phase::PH_SEND_PAYLOAD);
         let (entry, meta) = self.meta.take().ok_or(socket::Error::Eio)?;
         if entry != index { return Err(socket::Error::Eio); }
         import_payload_from(meta, message).map_err(work_error)
