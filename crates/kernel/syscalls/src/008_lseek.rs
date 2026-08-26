@@ -24,7 +24,9 @@ pub fn sys_lseek(args: &SyscallArgs) -> i64 {
     let whence = args.a2 as i32;
     let cur = match current_task() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
-    let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
+    // Borrow current->files like Linux; the running task cannot replace this
+    // table while the syscall is executing.
+    let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.as_ref(), None => return -(Errno::Ebadf.as_i32() as i64) };
     let file = match fdt.get(fd) { Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64) };
     let from = match whence {
         0 => vfs::SeekFrom::Start,   // SEEK_SET
