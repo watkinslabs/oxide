@@ -16,6 +16,8 @@ impl Mount {
         // contents never reached the disk. The other two modes write the data
         // straight to its target and differ only in when.
         if self.behaviour().data.journals_data() { return self.metadata_write(byte_off, data); }
+        #[cfg(feature = "debug-faultcost")]
+        let _src = crate::WriteSource::data_direct();
         write_byte_range(&*self.dev, byte_off, data)?;
         // Quota files and directories use the metadata path for their blocks,
         // but a normal write may still target one of those blocks. Keep the

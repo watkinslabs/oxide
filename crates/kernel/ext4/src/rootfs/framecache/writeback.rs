@@ -99,6 +99,8 @@ impl Ext4FrameStore {
     #[inline(never)]
     fn writeback_idxs(&self, idxs: Vec<u64>) -> Result<(), ()> {
         if idxs.is_empty() { return Ok(()); }
+        #[cfg(feature = "debug-faultcost")]
+        let _src = crate::WriteSource::data_writeback();
         #[cfg(feature = "debug-fsync-latency")]
         let writeback_started_ns = crate::fsync_latency::now_ns();
         // Clamp to the authoritative in-memory size (a buffered write grows this

@@ -224,6 +224,8 @@ impl Mount {
 
     /// Write each staged block to its target LBA verbatim.
     fn apply_staged_to_target(&self, staged: &[StagedBlock]) -> Result<(), MountError> {
+        #[cfg(feature = "debug-faultcost")]
+        let _src = crate::WriteSource::checkpoint();
         let bs = self.sb.block_size as u64;
         let block_bytes = bs as usize;
         for (start_lba, run) in coalesce_target_writes(
@@ -340,6 +342,8 @@ impl<'a, 'm> JournalBodyWriter<'a, 'm> {
     fn flush(&mut self) -> Result<(), MountError> {
         let Some(at) = self.run_at.take() else { self.run.clear(); return Ok(()); };
         if self.run.is_empty() { return Ok(()); }
+        #[cfg(feature = "debug-faultcost")]
+        let _src = crate::WriteSource::journal();
         self.log.mount.write_journal_byte_range(at, &self.run)?;
         self.run.clear();
         Ok(())

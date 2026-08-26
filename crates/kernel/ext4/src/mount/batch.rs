@@ -98,6 +98,19 @@ impl Mount {
             let seq = self.commit_metadata(staged.clone())?;
             self.cache_committed(&staged);
             let mut s = self.state.lock();
+            // Retire the committed blocks from the running transaction. They
+            // are on the device and `cache_committed` has just published them
+            // to the clean buffer cache, so every reader still sees them —
+            // but leaving them staged made the NEXT commit collect and write
+            // them a second time, and the one after that a third, so a batch
+            // of N commits wrote O(N^2) blocks. Only the empty-staged path
+            // below used to reset the shadow, which is the path that never
+            // runs while a workload is dirtying metadata.
+            //
+            // Safe to reset here rather than merge: the commit runs inside the
+            // transaction gate, which excludes mutators from staging a newer
+            // version for the whole of it.
+            s.shadow = Some(alloc::collections::BTreeMap::new());
             s.committed_generation = s.running_generation;
             s.running_generation = 0;
             return Ok(seq == 0);
