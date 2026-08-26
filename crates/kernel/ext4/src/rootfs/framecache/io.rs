@@ -18,8 +18,10 @@ impl Ext4FrameStore {
             if cur >= total { break; }
             let idx = cur / PG as u64;
             let pgoff = (cur % PG as u64) as usize;
-            let pa = self.lock_cache_page(idx)?;
+            let pa = self.lock_cache_page(idx)
+                .inspect_err(|_| super::fill_err(b"lock-cache-page", self.ino, idx))?;
             let Some(base) = pmm::setup::frame_ptr(pa) else {
+                super::fill_err(b"frame-ptr-none", self.ino, idx);
                 self.unlock_cache_page(pa);
                 return Err(VfsError::Eio);
             };
