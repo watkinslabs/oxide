@@ -302,4 +302,11 @@ pub enum FileBackingError {
     Io,
     NoMem,
     OpNotSupp,
+    /// The backing could not serve this read RIGHT NOW but the condition is
+    /// transient — an eviction sweeping the same store, say. Distinct from
+    /// `Io` because the two deserve opposite answers: the reference retries a
+    /// fault whose filesystem said "again" and reports SIGBUS only for a read
+    /// that genuinely failed. Collapsing them killed processes for losing a
+    /// race.
+    Again,
 }

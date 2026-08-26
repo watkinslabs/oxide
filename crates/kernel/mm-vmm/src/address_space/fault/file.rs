@@ -274,6 +274,15 @@ impl AddressSpace {
                                     filled += n;
                                 }
                                 Err(FileBackingError::NoMem) => { no_mem = true; err = true; break; }
+                                // Transient: stop this pass WITHOUT marking the
+                                // read failed, so the attempt loop takes another
+                                // run at it. A store being evicted under a
+                                // concurrent fault answers this, and killing the
+                                // faulting process for losing that race is not
+                                // what the reference does. Still bounded — a
+                                // transient that outlives FILL_ATTEMPTS falls
+                                // through to the same short-fill verdict.
+                                Err(FileBackingError::Again) => break,
                                 Err(_) => { err = true; break; }
                             }
                         }

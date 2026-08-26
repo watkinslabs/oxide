@@ -283,6 +283,7 @@ impl FileBacking for InodeFileBacking {
             vfs::VfsError::Einval => FileBackingError::Inval,
             vfs::VfsError::Eio => FileBackingError::Io,
             vfs::VfsError::Enomem => FileBackingError::NoMem,
+            vfs::VfsError::Eagain => FileBackingError::Again,
             vfs::VfsError::Eopnotsupp => FileBackingError::OpNotSupp,
             _ => FileBackingError::Inval,
         })

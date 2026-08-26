@@ -262,7 +262,12 @@ impl AddressSpace {
                 return Err(match error {
                     FileBackingError::Acces => Error::Access.into(),
                     FileBackingError::NoMem => Error::NoMem.into(),
-                    FileBackingError::Badf | FileBackingError::Inval | FileBackingError::Io | FileBackingError::OpNotSupp => Error::Inval.into(),
+                    // `mmap_setup` runs once, at map time, with nothing to
+                    // retry into: a transient here is as unusable as an invalid
+                    // one, so it takes the same answer rather than a silent
+                    // success on a mapping that was never set up.
+                    FileBackingError::Badf | FileBackingError::Inval | FileBackingError::Io
+                    | FileBackingError::OpNotSupp | FileBackingError::Again => Error::Inval.into(),
                 });
             }
         }
