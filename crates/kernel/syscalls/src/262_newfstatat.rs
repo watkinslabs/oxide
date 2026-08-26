@@ -40,6 +40,8 @@ pub fn sys_newfstatat(args: &SyscallArgs) -> i64 {
         follow: !nofollow,
         ..Default::default()
     };
+    #[cfg(feature = "debug-syscost")]
+    let __ph_resolve = crate::syscost_phase::Phase::start(crate::syscost_phase::PH_RESOLVE);
     let (inode, mnt_id) = match crate::pathresolve::resolve_at_lookup_maybe_null(dirfd, path_ptr, lf) {
         Ok(p)  => (p.inode, p.mnt_id),
         Err(rv) => {
@@ -53,6 +55,10 @@ pub fn sys_newfstatat(args: &SyscallArgs) -> i64 {
         }
     };
 
+    #[cfg(feature = "debug-syscost")]
+    drop(__ph_resolve);
+    #[cfg(feature = "debug-syscost")]
+    let __ph_attr = crate::syscost_phase::Phase::start(crate::syscost_phase::PH_GETATTR);
     // vfs_getattr → i_op->getattr: S_IF* mapping + native metadata + idmap-out.
     let idmap = vfs::mount::idmap_for(mnt_id);
     let st = vfs::vfs_getattr(&inode, &idmap);
