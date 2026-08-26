@@ -17,7 +17,10 @@ import argparse
 import re
 import subprocess
 import sys
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))
 from pathlib import Path
+
+import chart
 
 HERE = Path(__file__).resolve().parent
 
@@ -100,6 +103,7 @@ def main() -> int:
     ap.add_argument("--log", required=True, type=Path, help="boot serial log with [SYSCOST]/[FAULTCOST]")
     ap.add_argument("--baseline", type=Path, default=Path("/tmp/oxide-linux-baseline.tsv"))
     ap.add_argument("--markdown", type=Path, help="also write the report here")
+    ap.add_argument("--html", type=Path, help="also write a self-contained chart here")
     args = ap.parse_args()
 
     if not args.log.exists():
@@ -169,6 +173,9 @@ def main() -> int:
     worst = max((r for r, *_ in rows), default=0)
     if args.markdown:
         args.markdown.write_text("\n".join(lines) + "\n")
+    if args.html:
+        args.html.write_text(chart.render(sorted(rows, reverse=True), blk, totals, args.log))
+        print(f"\nchart: {args.html}")
     return 1 if worst >= 20 else 0
 
 

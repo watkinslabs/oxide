@@ -950,4 +950,5 @@ perf-report:
 	  tools/perf/boot-until.sh "$(PERF_LOG)" 'GNOME Shell started' 180 \
 	  $(MAKE) SMP=$(SMP) qemu-x86-existing
 	python3 tools/perf/perf-report.py --log $(PERF_LOG) \
-	  --markdown $(CURDIR)/scratch/perf-report.md
+	  --markdown $(CURDIR)/scratch/perf-report.md \
+	  --html $(CURDIR)/scratch/perf-report.html
