@@ -140,12 +140,16 @@ impl InodeOps for Ext4RegInodeOps {
         let _ = query_flags; // a local filesystem's attributes are always current
         let mut k = vfs::getattr::generic_fillattr(inode, idmap);
         if let Some(d) = inode.private::<Ext4FileData>() {
-            if let Ok(i) = d.st.mount.read_inode(d.ino) {
-                k.blocks = i.i_blocks;
-                let (a, mask) = crate::inode::flags::statx_attributes(i.i_flags);
-                k.attributes |= a;
-                k.attributes_mask |= mask;
-            }
+            // `generic_fillattr` already reported `inode->i_blocks`, which this
+            // filesystem keeps current in memory, and the flags word is held
+            // beside it. `ext4_getattr` reads no block either; re-reading the
+            // inode from the device to answer a stat put a metadata-cache
+            // lookup, a 256-byte copy, a checksum verify and a parse on every
+            // `stat`, and cost several times what the whole `openat` costs.
+            let raw = d.raw_flags.load(core::sync::atomic::Ordering::Relaxed);
+            let (a, mask) = crate::inode::flags::statx_attributes(raw);
+            k.attributes |= a;
+            k.attributes_mask |= mask;
             // Request-gated, and only for a regular file: resolving the pair
             // means consulting the device, so an unasked-for stat must not pay
             // it and must not report a fabricated alignment either.
@@ -443,7 +447,7 @@ pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: 
     generation: u32, _raw_flags: u32) -> InodeRef
 {
     let frames = st.frame_store(ino, size);
-    let data = Arc::new(Ext4FileData { st, ino, size_hint: AtomicU64::new(size),
+    let data = Arc::new(Ext4FileData { st, ino, raw_flags: core::sync::atomic::AtomicU32::new(_raw_flags), size_hint: AtomicU64::new(size),
         timestamp_staged: core::sync::atomic::AtomicBool::new(false), frames,
         swap_mutations: Arc::new(AtomicU64::new(0)), swap_wait: sched::live::WaitList::new() });
     let mapping: Arc<dyn AddressSpaceOps> = Arc::new(Ext4FileMapping { data: data.clone() });
