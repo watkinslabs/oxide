@@ -45,6 +45,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
 .PHONY: all build x86 arm kpi-layout \
         build-debug x86-debug arm-debug \
         test lint lint-ratchet lint-ratchet-update audit-counts profile-policy warnings-control stats ci \
+        micro micro-arm gnome gnome-arm lite \
         qemu-x86 qemu-arm qemu-x86-virtio-gpu qemu-x86-image qemu-arm-image qemu-x86-existing qemu-arm-existing qemu-x86-debug qemu-arm-debug qemu-mcp verify-native-q35 smoke-native-pci-x86 smoke-native-pci-e1000-x86 \
         hardware-audit-image-x86 \
         boot-debug-x86 boot-debug-arm smoke-debug smoke-debug-x86 smoke-debug-arm smoke-taskdump-arm \
@@ -242,6 +243,20 @@ SMP ?= 1
 qemu-x86:
 	$(TRIM_ROOTFS_CACHE)
 	$(XTASK) grub --arch x86_64  --smp $(SMP) $(if $(QEMU_FEATURES_X86),--features "$(QEMU_FEATURES_X86)",)
+
+# One image, one command. Each profile gets its OWN build namespace, so booting
+# a desktop does not overwrite the root image the next `make qemu-x86` boots —
+# the profiles share `builds/default` otherwise, and the last one booted wins.
+micro:
+	OXIDE_QUICKBOOT_PROFILE=micro $(XTASK) grub --arch x86_64 --smp $(SMP) --id micro
+micro-arm:
+	OXIDE_QUICKBOOT_PROFILE=micro $(XTASK) grub --arch aarch64 --smp $(SMP) --id micro
+gnome:
+	OXIDE_QUICKBOOT_PROFILE=gnome $(XTASK) grub --arch x86_64 --smp $(SMP) --id gnome
+gnome-arm:
+	OXIDE_QUICKBOOT_PROFILE=gnome $(XTASK) grub --arch aarch64 --smp $(SMP) --id gnome
+lite:
+	OXIDE_QUICKBOOT_PROFILE=lite $(XTASK) grub --arch x86_64 --smp $(SMP) --id lite
 
 # The native virtio-GPU path intentionally has no firmware scanout fallback.
 # Keep it opt-in so ordinary QEMU boots immediately show the generic console.
