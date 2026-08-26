@@ -229,17 +229,30 @@ pub fn install_lockdep() {
 
 /// May the caller sleep? (Linux `in_atomic()` / the `might_sleep` predicate.)
 ///
-/// Two independent reasons it may not, and BOTH are needed:
+/// Three independent reasons it may not, and ALL are needed:
+///   * a non-zero `preempt_count()` — the caller holds a spinlock or is inside
+///     any other preempt-disabled section. This is the WHOLE of the reference's
+///     definition (`#define in_atomic() (preempt_count() != 0)`), and it was
+///     the one this function did not test. Every raised count here means some
+///     other CPU is spinning on a lock this task holds, or a critical section
+///     is relying on not being descheduled; sleeping abandons both.
 ///   * `in_interrupt()` — a hard-IRQ handler or an in-progress softirq drain.
 ///     `do_softirq` holds `SOFTIRQ_OFFSET` for the whole drain, so this stays
-///     true even though `irq_exit()` already dropped the HARDIRQ field.
+///     true even though `irq_exit()` already dropped the HARDIRQ field. The
+///     reference folds this into the count; this kernel keeps the fields
+///     separate, so it is asked separately.
 ///   * `on_irq_stack()` — SP is on the shared per-CPU hard-IRQ stack. Parking
 ///     there records an IRQ-stack address in `Context.sp`; the next IRQ on this
 ///     CPU reuses those addresses and the task resumes on overwritten frames.
 ///     Independent of the count: the IRQ entry asm switches SP without touching
 ///     `preempt_count`.
-/// # C: O(1) — one per-CPU atomic read plus one SP compare
+///
+/// Omitting the count let two allocation paths that ASK this question before
+/// sleeping — direct reclaim in `mm-pmm`'s watermark check and the OOM
+/// slowpath — answer "you may sleep" to a caller holding a spinlock.
+/// # C: O(1) — two per-CPU atomic reads plus one SP compare
 pub fn in_atomic() -> bool {
+    if preempt_count() != 0 { return true; }
     if in_interrupt() { return true; }
     on_irq_stack()
 }

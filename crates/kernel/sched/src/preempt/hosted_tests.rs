@@ -138,3 +138,22 @@ fn new_task_has_no_saved_preempt_count() {
     assert_eq!(crate::preempt::preempt_count(), 0,
         "task creation must not alter the current CPU's preempt count");
 }
+
+/// `in_atomic()` is the question a path asks before it sleeps, and holding a
+/// spinlock is the commonest reason the answer is no — it is the WHOLE of the
+/// reference's definition. Direct reclaim and the OOM slowpath both ask this
+/// before entering a path that can sleep, so answering "you may sleep" to a
+/// lock holder lets an allocation park while another CPU spins on its lock.
+#[test]
+fn in_atomic_reports_a_held_spinlock() {
+    crate::preempt::install_spinlock_gate();
+    assert!(!crate::preempt::in_atomic(), "test must start outside any atomic section");
+
+    let lk: sync::Spinlock<u32, sync::Buddy> = sync::Spinlock::new(0);
+    let g = lk.lock();
+    assert!(crate::preempt::in_atomic(),
+        "a spinlock holder is in an atomic section and must not be told it may sleep");
+    drop(g);
+
+    assert!(!crate::preempt::in_atomic(), "the section ends with the lock");
+}
