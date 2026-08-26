@@ -19,7 +19,8 @@ pub use ids::{
     DRM_PLANE_ID_BASE, DRM_PLANE_ID_END,
 };
 pub use registry::{
-    advertised_cap, alloc_handle, card, card_count, cards, default_cap, is_master_only,
+    advertised_cap, alloc_handle, card, card_count, cards, default_cap, format_depth,
+    is_master_only,
     primary_card, register, register_with_parent, unregister,
 };
 
