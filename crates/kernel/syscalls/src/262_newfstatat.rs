@@ -38,9 +38,10 @@ pub fn sys_newfstatat(args: &SyscallArgs) -> i64 {
         empty: (flags & AT_EMPTY_PATH) != 0,
         no_follow_final: nofollow,
         follow: !nofollow,
-        // Ordinary cached stats begin in the lockless dcache walk. Misses and
-        // blocking complications restart through the existing ref walk.
-        rcu: true,
+        // Keep the ref walk until the dcache has a live counted-reference
+        // handoff for RCU completion. The current Arc-backed dcache probe
+        // necessarily fails that handoff at the final component, so opting in
+        // here would walk every cached pathname twice before returning it.
         ..Default::default()
     };
     #[cfg(feature = "debug-syscost")]
