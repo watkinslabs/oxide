@@ -174,8 +174,8 @@ impl BlkState {
         // `head` came from `free_heads` (entries `slot * MAX_REQUEST_DESCRIPTORS`
         // for `slot < size / 3`), so this request exclusively owns descriptors
         // `head..head+3` until its used-ring entry retires them. `ring` is held
-        // across both writes; the Release fence orders the avail ring-entry store
-        // before the `avail.idx` publish.
+        // across both writes; cache cleaning and the Release fence must both
+        // precede the `avail.idx` publish on a non-coherent architecture.
         // SAFETY: descriptor and avail frames of this queue via HHDM, sized by
         // the `size` `program_queue` negotiated down to one frame; with
         // `descriptor_count <= MAX_REQUEST_DESCRIPTORS` and `head + 3 <= size`,
@@ -194,11 +194,11 @@ impl BlkState {
             let avail = h.wrapping_add(q.res.driver_pa) as *mut u16;
             let avail_slot = ring.avail_idx % q.res.size;
             core::ptr::write_volatile(avail.add(2 + avail_slot as usize), head);
+            clean_queue_submission(h, q);
             core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
             ring.avail_idx = ring.avail_idx.wrapping_add(1);
             core::ptr::write_volatile(avail.add(1), ring.avail_idx);
         }
-        clean_queue_submission(h, q);
         ring.pending.push(PendingRequest {
             head, bounce_pa, bounce_dma, request, completion, is_in, data_len,
             #[cfg(feature = "debug-blk-verify")]

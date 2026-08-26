@@ -90,6 +90,10 @@ impl BlkState {
                     used as u64, hal::PAGE_SIZE_BYTES as usize,
                 );
                 let used_index = unsafe { core::ptr::read_volatile(used.add(USED_IDX_OFF) as *const u16) };
+                // The device publishes used.idx after its used entry and
+                // request writes. Acquire before consuming either, matching
+                // the queue's device-to-driver DMA ordering contract.
+                core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
                 let Some(slot) = claim_next_used(&mut ring.used_seen, used_index, q.res.size) else {
                     return found;
                 };
