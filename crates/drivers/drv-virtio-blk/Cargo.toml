@@ -35,6 +35,7 @@ hal-aarch64 = { path = "../../arch/hal-aarch64" }
 drv = { path = "../drv" }
 
 [features]
+debug-faultcost = ["pmm/debug-faultcost"]  # report turnstile-wait vs device time into the [FAULTCOST] profile
 default = []
 hosted = []
 debug-boot = []

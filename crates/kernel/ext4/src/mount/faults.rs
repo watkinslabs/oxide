@@ -258,7 +258,7 @@ mod tests {
         let m = Mount::open(fresh_dev()).unwrap();
         let lba = m.group_desc(0).unwrap().inode_table as u64;
         let expected = m.read_metadata_block(lba).unwrap();
-        m.state.lock().metadata_cache.insert(lba, vec![0; expected.len() - 1]);
+        m.state.lock().metadata_cache.insert(lba, alloc::sync::Arc::new(vec![0; expected.len() - 1]));
         let actual = m.read_metadata_block(lba).unwrap();
         assert_eq!(actual, expected);
     }

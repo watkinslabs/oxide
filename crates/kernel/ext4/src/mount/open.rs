@@ -101,6 +101,7 @@ impl Mount {
             sb_free_inodes: sb.free_inodes_count,
             shadow: None,
             metadata_cache: alloc::collections::BTreeMap::new(),
+            metadata_order: alloc::collections::VecDeque::new(),
             batch: false,
             undo: Vec::new(),
             next_generation: 0,
