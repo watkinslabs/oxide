@@ -1,4 +1,33 @@
 use super::*;
+use hal::pt_walker::PtWalker;
+
+pub(super) enum NonpresentKind { Swap, Marker, Migration }
+
+/// Classify one non-present leaf after one page-table walk. # C: O(4)
+pub(super) fn current_nonpresent_kind(va: u64) -> Option<NonpresentKind> {
+    let raw = unsafe {
+        #[cfg(target_arch = "x86_64")]
+        { hal::pt_walker::raw_leaf_4k::<hal_x86_64::vmm::PtWalkerX86>(va, hhdm_offset()) }
+        #[cfg(target_arch = "aarch64")]
+        { hal::pt_walker::raw_leaf_4k::<hal_aarch64::vmm::PtWalkerArm>(va, hhdm_offset()) }
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        { let _ = va; None }
+    }?;
+    #[cfg(target_arch = "x86_64")]
+    let (swap, marker, migration) = (
+        hal_x86_64::vmm::PtWalkerX86::unpack_swap_entry(raw).is_some(),
+        hal_x86_64::vmm::PtWalkerX86::unpack_pte_marker(raw).is_some(),
+        hal_x86_64::vmm::PtWalkerX86::unpack_migration_entry(raw).is_some());
+    #[cfg(target_arch = "aarch64")]
+    let (swap, marker, migration) = (
+        hal_aarch64::vmm::PtWalkerArm::unpack_swap_entry(raw).is_some(),
+        hal_aarch64::vmm::PtWalkerArm::unpack_pte_marker(raw).is_some(),
+        hal_aarch64::vmm::PtWalkerArm::unpack_migration_entry(raw).is_some());
+    if swap { Some(NonpresentKind::Swap) }
+    else if marker { Some(NonpresentKind::Marker) }
+    else if migration { Some(NonpresentKind::Migration) }
+    else { None }
+}
 
 /// one block leaf per huge page, and clearing it with the 4 KiB granule tears
 /// down the whole huge page while accounting a single base page — and then

@@ -40,6 +40,7 @@ path = "../syscall"
 
 [features]
 debug-faultcost = []  # [FAULTCOST] page-fault path profiler: count and on-CPU cost of resolved vs unresolved user faults. The syscall profiler cannot see the fault vector, so a fault-bound boot looks idle to it.
+debug-syscost = []  # [SYSCOST] munmap stage counters, enabled with the syscall profiler
 debug-pmm = []
 debug-watchdog = []  # [REFBUG]/[FWM] free-while-referenced + dec-underflow banners and the 0xAA free-page poison/write-while-free check (`setup/{contig,frame_alloc,refs}.rs`). Was never declared here, so kmain's `debug-watchdog` forwarded to sched only and every pmm block compiled out silently.
 debug-syscall = []  # per-syscall unmap trace in `user_as/unmap.rs`; same undeclared-gate bug as debug-watchdog above.

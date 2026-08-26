@@ -41,6 +41,8 @@ extern crate std;
 
 #[cfg(feature = "debug-faultcost")]
 pub mod faultcost;
+#[cfg(feature = "debug-syscost")]
+pub mod unmapcost;
 mod buddy;
 mod irq_gate;
 pub mod dma;
