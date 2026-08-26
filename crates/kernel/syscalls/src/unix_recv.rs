@@ -26,8 +26,13 @@ fn recv_urgent(pair: &Arc<net::UnixPair>, end: net::UnixEnd, sock: &Arc<InetSock
         return err(Errno::Einval);
     };
     let copied = match user.copy_payload_at(0, &[byte]) { Ok(n) => n, Err(e) => return e };
-    let path = net::sock::unix_peer_path(sock).unwrap_or(None);
-    let sa = encoded_sockaddr_un(path.as_deref());
+    // Same rule as the ordinary stream receive: no `msg_name`, no address.
+    let sa = if user.name != 0 {
+        let path = net::sock::unix_peer_path(sock).unwrap_or(None);
+        encoded_sockaddr_un(path.as_deref())
+    } else {
+        encoded_sockaddr_un(None)
+    };
     if let Err(e) = finish(sock, user, alloc::vec::Vec::new(), None, flags,
                            net::sock::oob_class::urgent_recv_flags(), sa.as_bytes()) {
         return e;
@@ -148,8 +153,18 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
     let shutdown_generation = net::sock_recv::unix_shutdown_generation(sock);
     match target {
         Target::Stream(pair, end) => {
-            let path = net::sock::unix_peer_path(sock).unwrap_or(None);
-            let sa = encoded_sockaddr_un(path.as_deref());
+            // The reference copies the source address only when the caller
+            // supplied a `msg_name` buffer (`if (msg && msg->msg_name)` in
+            // `unix_stream_read_generic`). Building it unconditionally read the
+            // peer path under the socket-kind lock, cloned it, and encoded a
+            // `sockaddr_un` on every receive — for a value almost every stream
+            // reader discards, dbus and journald included.
+            let sa = if user.name != 0 {
+                let path = net::sock::unix_peer_path(sock).unwrap_or(None);
+                encoded_sockaddr_un(path.as_deref())
+            } else {
+                encoded_sockaddr_un(None)
+            };
             let waitall = flags & MSG_WAITALL != 0;
             let mut total = 0usize;
             let mut all_files = alloc::vec::Vec::new();
