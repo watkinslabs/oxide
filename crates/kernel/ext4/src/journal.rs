@@ -183,10 +183,17 @@ impl Mount {
         #[cfg(feature = "debug-fsync-latency")]
         let publish_started_ns = crate::fsync_latency::now_ns();
         // The journal superblock publication is the commit record's
-        // durability point. Its preflush makes the already-submitted body
-        // durable first; FUA (or the block layer's postflush fallback) makes
-        // this publication durable before any checkpoint target write.
-        log.write_journal_block_durable(0, &sb_bytes)?;
+        // durability point when barriers are enabled. Its preflush makes the
+        // already-submitted body durable first; FUA (or the block layer's
+        // postflush fallback) makes this publication durable before any
+        // checkpoint target write. `nobarrier` is Linux's explicit opt-out
+        // from those device-cache promises, so preserve ordering but do not
+        // manufacture flushes the mount asked us not to issue.
+        if self.behaviour().barrier {
+            log.write_journal_block_durable(0, &sb_bytes)?;
+        } else {
+            log.write_journal_block(0, &sb_bytes)?;
+        }
         #[cfg(feature = "debug-fsync-latency")]
         crate::fsync_latency::report(b"journal-publish", publish_started_ns, staged_blocks);
         // Journal now leads the fs; apply staged blocks to their targets.
@@ -200,7 +207,9 @@ impl Mount {
         // WAL barrier #3: the targets must be durable before the journal is
         // marked clean below, or recovery would skip a transaction whose
         // target writes are still in the device cache.
-        self.dev.flush().map_err(|_| MountError::BlockIo)?;
+        if self.behaviour().barrier {
+            self.dev.flush().map_err(|_| MountError::BlockIo)?;
+        }
         #[cfg(feature = "debug-fsync-latency")]
         crate::fsync_latency::report(b"target-flush", target_flush_started_ns, staged_blocks);
         // Checkpoint complete: mark the journal clean (s_start = 0, bump sequence).
