@@ -937,3 +937,17 @@ clean-builds:
 
 help:
 	@awk '/^# `make / { sub(/^# /,""); print }' $(firstword $(MAKEFILE_LIST))
+
+# Measure this kernel's syscall and page-fault costs against the host Linux
+# kernel and print the comparison. Both sides are measured: the guest side from
+# a real desktop boot carrying [SYSCOST]/[FAULTCOST], the host side from the
+# native benchmark in tools/perf/linux-baseline.c. Exits non-zero when any
+# operation is 20x the host or worse.
+PERF_LOG ?= $(CURDIR)/target/perf-report-$(ARCH).log
+perf-report:
+	$(MAKE) FEATURES=debug-syscost,debug-faultcost SMP=$(SMP) qemu-x86-image
+	OXIDE_QEMU_HEADLESS=1 OXIDE_SERIAL_LOG=$(PERF_LOG) \
+	  tools/perf/boot-until.sh "$(PERF_LOG)" 'GNOME Shell started' 180 \
+	  $(MAKE) SMP=$(SMP) qemu-x86-existing
+	python3 tools/perf/perf-report.py --log $(PERF_LOG) \
+	  --markdown $(CURDIR)/scratch/perf-report.md

@@ -129,6 +129,9 @@ pub(crate) fn ext4_fileattr_set(inode: &Inode, fa: &FileAttr) -> KResult<()> {
     let raw_now = vfs::inode_times::realtime_now_ns();
     let ctime = vfs::inode_times::current_time(inode, raw_now);
     st.mount.persist_inode_flags(ino, new, ctime).map_err(|_| VfsError::Eio)?;
+    // The in-memory flags word is what `stat` answers from, so it moves with
+    // the on-disk one (the reference updates `EXT4_I(inode)->i_flags` here).
+    set_cached_raw_flags(inode, new);
     vfs::inode::inode_inc_iversion(inode);
     inode.set_times(None, None, ctime)?;
     let mut s = inode.i_flags()
@@ -369,4 +372,16 @@ fn refresh_cached_usage_from_raw(
     inode.set_blocks(raw.i_blocks as u64);
     inode.set_size(raw.size);
     Ok(())
+}
+
+/// Publish a new on-disk `i_flags` value into whichever private state this
+/// inode carries, so a later `stat` reports it without a device read.
+/// # C: O(1)
+pub(crate) fn set_cached_raw_flags(inode: &Inode, flags: u32) {
+    use core::sync::atomic::Ordering;
+    if let Some(f) = inode.private::<super::data::Ext4FileData>() {
+        f.raw_flags.store(flags, Ordering::Relaxed);
+    } else if let Some(s) = inode.private::<super::data::Ext4StatData>() {
+        s.raw_flags.store(flags, Ordering::Relaxed);
+    }
 }

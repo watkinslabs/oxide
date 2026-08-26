@@ -15,6 +15,11 @@ use super::super::state::RootfsState;
 pub(crate) struct Ext4FileData {
     pub(crate) st:        Arc<RootfsState>,
     pub(crate) ino:       u32,
+    /// The on-disk `i_flags` word, held in memory the way the reference holds
+    /// `EXT4_I(inode)->i_flags`. `stat` needs it for the statx attribute bits,
+    /// and re-reading the inode from the device to answer a stat is what made
+    /// `newfstatat` cost several times an `openat`.
+    pub(crate) raw_flags: core::sync::atomic::AtomicU32,
     pub(crate) size_hint: AtomicU64,
     /// Timestamp metadata has been staged for the current write burst. Linux
     /// dirties the in-core inode on every write but does not journal the same
@@ -104,6 +109,8 @@ impl Ext4FileData {
 pub(crate) struct Ext4StatData {
     pub(crate) st:   Arc<RootfsState>,
     pub(crate) ino:  u32,
+    /// In-memory `i_flags`; see [`Ext4FileData::raw_flags`].
+    pub(crate) raw_flags: core::sync::atomic::AtomicU32,
     pub(crate) ft:   FileType,
     pub(crate) size: u64,
 }

@@ -16,6 +16,40 @@ const PAGE_BYTES: u64 = hal::PAGE_SIZE_BYTES;
 ///
 /// A zap loop must never assume the base granule: a hugetlbfs mapping installs
 
+/// Pages a range zap holds before it flushes and frees, mirroring the
+/// reference's `mmu_gather` batch. Bounded so a large unmap cannot pin an
+/// unbounded list of frames it has already unhooked.
+const TLB_GATHER_PAGES: usize = 256;
+
+/// Remote-invalidate every gathered page, then release its frame.
+///
+/// The reference's `tlb_single_page_flush_ceiling` is 33: above that many
+/// pages a range flush costs less as one full remote flush than as one
+/// invalidation per page, and here the saving is larger still because each
+/// per-page invalidation is its own IPI round-trip.
+///
+/// The flush strictly precedes every release in the batch, which is the
+/// invariant the old per-page order existed to hold: a peer CPU must not be
+/// able to reach a freed frame through a stale translation.
+/// # C: one IPI round-trip per batch, or one per page below the ceiling
+fn drain_gather(gather: &mut alloc::vec::Vec<(u64, u64, hal::PageSize)>, mask: &cpu::CpuMask) {
+    if gather.is_empty() { return; }
+    const SINGLE_PAGE_FLUSH_CEILING: usize = 33;
+    if gather.len() > SINGLE_PAGE_FLUSH_CEILING {
+        hal::tlb::shootdown_others_all(mask.as_words());
+    } else {
+        for (va, _, _) in gather.iter() { hal::tlb::shootdown_others_va(*va, mask.as_words()); }
+    }
+    for (va, pa, leaf) in gather.drain(..) {
+        // SAFETY: the leaf was cleared and every CPU invalidated above, so no
+        // translation can still reach the frame; a base page goes back through
+        // the rmap-aware path and a huge page back to the pool that owns it.
+        unsafe { release_leaf_frame(pa, leaf); }
+        account_present_removed(va);
+    }
+}
+
+
 pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
     // DIAG (debug-syscall): a MADV_DONTNEED/FREE zap of a lib-arena page while a
     // thread holds a lock there (finding #4) loses the in-flight lock/unlock
@@ -52,6 +86,8 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
     let watchers = zap_watchers(addr, addr + len_aligned, vmm::UffdEventKind::Remove);
     // mm_cpumask snapshot for flush_tlb_others (read once, not per page).
     let mask = current_mm_cpumask_full();
+    let mut gather: alloc::vec::Vec<(u64, u64, hal::PageSize)> =
+        alloc::vec::Vec::with_capacity(TLB_GATHER_PAGES.min(64));
     let mut va = addr;
     let end = addr + len_aligned;
     while va < end {
@@ -86,8 +122,8 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
             // the same mm with a stale TLB entry would otherwise touch the
             // frame after it returns to the allocator (use-after-free
             // aliasing). x86-only effect; no-op on UP / aarch64 / hosted.
-            // cpumask-targeted (only CPUs that have this mm), not all online.
-            hal::tlb::shootdown_others_va(va, mask.as_words());
+            // Remote invalidation and the release are deferred to the batch
+            // drain below (Linux `tlb_gather_mmu`).
             // debug-fwm: free-while-mapped catch on the MADV_DONTNEED path.
             #[cfg(feature = "debug-fwm")]
             {
@@ -107,9 +143,8 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
                     }
                 }
             }
-            // SAFETY: the leaf was cleared and invalidated everywhere above, so no translation can still reach the frame; a base page goes back through the rmap-aware path and a huge page back to the pool that owns it.
-            unsafe { release_leaf_frame(pa.0, leaf); }
-            account_present_removed(va);
+            gather.push((va, pa.0, leaf));
+            if gather.len() >= TLB_GATHER_PAGES { drain_gather(&mut gather, &mask); }
         } else if let Some(entry) = clear_current_swap_entry(va) {
             // Swap PTEs are non-present and therefore invisible to `translate`.
             // Clear the exact leaf before dropping its slot reference so a fault
@@ -131,6 +166,7 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
         }
         va += step;
     }
+    drain_gather(&mut gather, &mask);
     // Blocks the zapping thread on each monitor until it has read the message,
     // then releases the charge — so the range is already empty when the monitor
     // hears about it, and the monitor is accepting resolves again the moment it
@@ -187,6 +223,15 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
     let watchers = zap_watchers(range.start.as_u64(), range.end, vmm::UffdEventKind::Unmap);
     // mm_cpumask snapshot for flush_tlb_others (read once, not per page).
     let mask = current_mm_cpumask_full();
+    // Linux `tlb_gather_mmu`: a range zap batches BOTH the remote invalidation
+    // and the frame release, then flushes once and frees. Shooting down per
+    // page sent one cross-CPU IPI for every 4 KiB unmapped — a 64 KiB unmap
+    // cost sixteen IPI round-trips — and the frame could not be freed until
+    // its own shootdown had returned, so the two costs were serialised.
+    // The free still happens strictly after the flush that covers its page,
+    // which is the invariant the per-page order existed to hold.
+    let mut gather: alloc::vec::Vec<(u64, u64, hal::PageSize)> =
+        alloc::vec::Vec::with_capacity(TLB_GATHER_PAGES.min(64));
     let mut va = addr;
     let end = range.end;
     while va < end {
@@ -229,7 +274,8 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
             // same mm can't touch a freed+realloc'd frame through a stale TLB
             // entry. x86-only effect; no-op on UP / aarch64 / hosted.
             // cpumask-targeted (only CPUs that have this mm), not all online.
-            hal::tlb::shootdown_others_va(va, mask.as_words());
+            // Remote invalidation and the release are deferred to the batch
+            // drain below; see `gather` above.
             // debug-fwm: free-while-mapped catch on the MUNMAP path. This dec is
             // about to (maybe) free `pa`. If its refcount is <=1 (this dec frees
             // it) yet a PEER address space still maps this VA→pa, the refcount
@@ -277,6 +323,7 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
         }
         va += step;
     }
+    drain_gather(&mut gather, &mask);
 
     // VMA bookkeeping side. Post-execve the running CR3 targets
     // cur.mm — that's where the user's VMAs live, not the global

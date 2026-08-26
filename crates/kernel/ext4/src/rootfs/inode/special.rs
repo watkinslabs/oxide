@@ -39,12 +39,12 @@ impl InodeOps for Ext4StatInodeOps {
         let _ = (request_mask, query_flags);
         let mut k = vfs::getattr::generic_fillattr(inode, idmap);
         if let Some(d) = inode.private::<Ext4StatData>() {
-            if let Ok(i) = d.st.mount.read_inode(d.ino) {
-                k.blocks = i.i_blocks;
-                let (a, mask) = crate::inode::flags::statx_attributes(i.i_flags);
-                k.attributes |= a;
-                k.attributes_mask |= mask;
-            }
+            // Same as the regular-file arm: the block count and the flags word
+            // are in memory, and `ext4_getattr` reads no block to answer a stat.
+            let raw = d.raw_flags.load(core::sync::atomic::Ordering::Relaxed);
+            let (a, mask) = crate::inode::flags::statx_attributes(raw);
+            k.attributes |= a;
+            k.attributes_mask |= mask;
         }
         k
     }
@@ -401,7 +401,7 @@ pub(crate) fn build_stat_inode(
     uid: u32, gid: u32, projid: u32, times: crate::timestamp::InodeTimes, generation: u32,
     raw_flags: u32,
 ) -> InodeRef {
-    let data = Arc::new(Ext4StatData { st, ino, ft, size });
+    let data = Arc::new(Ext4StatData { st, ino, ft, size, raw_flags: core::sync::atomic::AtomicU32::new(raw_flags) });
     let weak_sb = data.st.sb.lock().clone();
     let xattrs = vfs::SimpleXattrs::new();
     data.st.mount.load_xattrs(ino, &xattrs);
