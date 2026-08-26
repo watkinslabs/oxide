@@ -66,7 +66,7 @@ mod namei_common {
         Err(-(syscall::errno::Errno::Efault.as_i32() as i64))
     }
     pub(crate) fn read_user_path_allow_empty(_ptr: u64) -> Result<alloc::string::String, i64> {
-        Err(-(syscall::errno::Efault.as_i32() as i64))
+        Err(-(syscall::Errno::Efault.as_i32() as i64))
     }
 }
 
