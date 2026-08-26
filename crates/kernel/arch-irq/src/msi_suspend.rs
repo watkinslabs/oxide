@@ -210,7 +210,16 @@ pub(crate) fn resume_all() {
 mod tests {
     use super::*;
     use core::sync::atomic::{AtomicU32, Ordering};
+    extern crate std;
+    use std::sync::Mutex;
 
+    // `suspend_all` and `resume_all` walk EVERY installed descriptor, which is
+    // what system suspend means — so a test that calls them owns the whole
+    // descriptor table for its duration, not just the one irq it installed.
+    // Run in parallel, one test's `resume_all` unmasks and replays the other's
+    // descriptor before that test has looked at its own counters, and the
+    // counter assertions fail on a machine under load while passing alone.
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
     static MASKS: AtomicU32 = AtomicU32::new(0);
     static REPLAYS: AtomicU32 = AtomicU32::new(0);
     fn mask(_: u64, _: u64, masked: bool) {
@@ -220,6 +229,7 @@ mod tests {
 
     #[test]
     fn suspended_msi_refuses_dispatch_and_replays_after_unmask() {
+        let _serial = TEST_LOCK.lock().unwrap();
         let irq = u32::from(hal_x86_64::VEC_MSI_POOL_FIRST + 1);
         crate::msi_context::register_x86(irq as u8, replay, 0).unwrap();
         assert!(install(irq));
@@ -237,6 +247,7 @@ mod tests {
 
     #[test]
     fn wake_depth_is_balanced_and_wake_delivery_becomes_pending() {
+        let _serial = TEST_LOCK.lock().unwrap();
         let irq = u32::from(hal_x86_64::VEC_MSI_POOL_FIRST + 2);
         assert!(install(irq));
         assert_eq!(set_wake(irq, true), Some(true));
