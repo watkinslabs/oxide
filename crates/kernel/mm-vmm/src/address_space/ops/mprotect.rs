@@ -80,9 +80,20 @@ impl AddressSpace {
         let mut cursor = addr.as_u64();
         let mut error = None;
         while cursor < end.as_u64() {
-            let Some(vma) = tree.iter().find(|vma| vma.end.as_u64() > cursor) else {
-                error = Some(Error::NoMem);
-                break;
+            // Linux's find_vma(mm, cursor) starts at the tree position for
+            // the cursor. Repeatedly scanning tree.iter() from address zero
+            // made a range crossing K VMAs cost O(K*N_vmas), even though the
+            // VMA tree already provides the predecessor/successor lookup.
+            let cursor_va = UserVirtAddr::new(cursor).expect("validated user range");
+            let vma = match tree.map.range(..=cursor_va).next_back() {
+                Some((_, vma)) if vma.end.as_u64() > cursor => vma,
+                _ => match tree.map.range(cursor_va..).next() {
+                    Some((_, vma)) => vma,
+                    None => {
+                        error = Some(Error::NoMem);
+                        break;
+                    }
+                },
             };
             if vma.start.as_u64() > cursor {
                 error = Some(Error::NoMem);
