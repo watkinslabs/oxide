@@ -350,3 +350,24 @@ fn a_native_device_that_cannot_serve_the_config_falls_back() {
     submit::submit_sync(&*dev as &dyn BlockDevice, &mut req).unwrap();
     assert_ne!(on_medium(&dev.disk, 0, 2), plain);
 }
+
+/// The async entry serves a context rather than handing it to the driver
+/// unserved — the invariant this module's doc claims, which only `submit_sync`
+/// used to hold. A read back through it returns plaintext.
+#[test]
+fn async_submit_serves_a_context_the_device_cannot() {
+    let (disk, key) = setup(Mode::Aes256Xts);
+    let ctx = Ctx::new(key, Dun::from_u64(0));
+    let plain = vec![0x5au8; BS as usize];
+    write_encrypted(&disk, 0, &plain, &ctx).expect("seed");
+
+    let read = BlockRequest::new_read(0, 1, BS).with_crypt(ctx);
+    let landed = Arc::new(Mutex::new(None));
+    let sink = Arc::clone(&landed);
+    crate::crypto::submit(&*disk as &dyn BlockDevice, read,
+        alloc::boxed::Box::new(move |req, rv| { *sink.lock().unwrap() = Some((req, rv)); }));
+    let (req, rv) = landed.lock().unwrap().take().expect("completed inline");
+    rv.expect("served");
+    assert_eq!(&req.buffer[..BS as usize], &plain[..],
+        "the async entry decrypted, so the driver never saw an unserved context");
+}
