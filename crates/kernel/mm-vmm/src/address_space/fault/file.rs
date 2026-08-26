@@ -320,6 +320,17 @@ impl AddressSpace {
                         klog::write_raw(b" off="); klog::write_hex_u64(file_off);
                         klog::write_raw(b" valid="); klog::write_hex_u64(valid as u64);
                         klog::write_raw(b" size="); klog::write_hex_u64(fsize);
+                        // The two values that separate the remaining causes:
+                        // how much the backing actually supplied, and whether it
+                        // reported an error doing so. `filled == valid` with
+                        // `err=0` cannot happen here; `filled < valid, err=0` is
+                        // a clean short read (the backing stopped early of its
+                        // own accord) and `err=1` is a failed one. Without them
+                        // the log said a fill was fatal but not which arm ruled
+                        // it so, and the two want opposite fixes.
+                        klog::write_raw(b" filled="); klog::write_hex_u64(filled as u64);
+                        klog::write_raw(b" err="); klog::write_dec_u64(read_err as u64);
+                        klog::write_raw(b" desync="); klog::write_dec_u64(desync as u64);
                         klog::write_raw(b"]\n");
                     }
                     dec_ref(pa);
