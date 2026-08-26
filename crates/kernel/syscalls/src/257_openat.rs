@@ -146,7 +146,7 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
             return -(Errno::Erofs.as_i32() as i64);
         }
         if let Err(rv) = crate::landlock::check_parent(&dir, create_op) { return rv; }
-        let display = vfs::mount::render_path_for_mount(dir.mnt_id, &dir.dentry);
+        let display = crate::open_display::render(dir.mnt_id, &dir.dentry);
         let cred = crate::pathresolve::current_cred();
         let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: umask as u16 };
         match dir.inode.tmpfile(req_mode, &ctx) {
@@ -178,7 +178,7 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
         if regular_only && vp.inode.file_type() != vfs::FileType::Regular {
             return -(Errno::Eftype.as_i32() as i64);
         }
-        let display = vfs::mount::render_path_for_mount(vp.mnt_id, &vp.dentry);
+        let display = crate::open_display::render(vp.mnt_id, &vp.dentry);
         // Device identity, not path text, selects ptmx and /dev/tty.
         if (flags & O_PATH) == 0 && is_chr_rdev(&vp.inode, DEV_PTMX_RDEV) {
             let opener = crate::pathresolve::current_cred();
@@ -273,7 +273,7 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
         // is what let a second creator publish an object without its name.
         let r = vfs::vfs_create_at(&parent, &name, final_mode, &ctx);
         match r {
-            Ok((i, d)) => (i, mnt.mnt_id, d, true, create_path),
+            Ok((i, d)) => (i, mnt.mnt_id, d, true, crate::open_display::from_string(create_path)),
             Err(e) => {
                 #[cfg(feature = "debug-eacces")]
                 if e == vfs::VfsError::Eacces {

@@ -39,6 +39,8 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
+#[cfg(feature = "debug-faultcost")]
+pub mod faultcost;
 mod buddy;
 mod irq_gate;
 pub mod dma;
