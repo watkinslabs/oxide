@@ -200,7 +200,14 @@ pub fn get_plane(card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
     if p.format_type_ptr != 0 && p.count_format_types >= fmts.len() as u32 {
         write_ids(p.format_type_ptr, &fmts, p.count_format_types);
     }
-    p.crtc_id            = info.crtc_id;
+    // Linux reports the plane's current state here, not its possible CRTC
+    // routing.  A freshly reset atomic plane has no CRTC until a commit binds
+    // it; the possible_crtcs bitmask below still advertises the routing.
+    p.crtc_id            = if card.crtc_info(0).is_some_and(|crtc| crtc.mode_valid != 0) {
+        info.crtc_id
+    } else {
+        0
+    };
     p.fb_id              = info.fb_id;
     p.possible_crtcs     = info.possible_crtcs;
     p.gamma_size         = 0;

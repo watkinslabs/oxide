@@ -91,7 +91,17 @@ mod kernel {
             // Linux advertises this exact contract through
             // DRM_CAP_DUMB_PREFER_SHADOW, which makes Xorg select its normal
             // shadow-buffer path when glamor is unavailable on llvmpipe.
-            if cap == drm::DRM_CAP_DUMB_PREFER_SHADOW { 1 } else { drm::default_cap(cap) }
+            match cap {
+                drm::DRM_CAP_DUMB_PREFER_SHADOW => 1,
+                // Xorg's modesetting driver uses these capabilities to size
+                // its software cursor BO.  Returning success with zero would
+                // make it issue CREATE_DUMB(0, 0, 32), which Linux drivers do
+                // not advertise and which the DRM dumb-buffer ABI correctly
+                // rejects.  Bochs supports the conventional 64x64 cursor
+                // resource used by this backend.
+                drm::DRM_CAP_CURSOR_WIDTH | drm::DRM_CAP_CURSOR_HEIGHT => 64,
+                _ => drm::default_cap(cap),
+            }
         }
         fn crtc_ids(&self) -> Vec<u32> { alloc::vec![drm::crtc_id_for(0)] }
         fn connector_ids(&self) -> Vec<u32> { alloc::vec![drm::connector_id_for(0)] }
