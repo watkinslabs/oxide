@@ -2,6 +2,7 @@
 
 /// Scheduler diagnostics for clone publication. The macro keeps this path
 /// feature-gated while the helper preserves the fields for future tracing.
+#[allow(unused_variables)]
 pub(super) fn log_clone(parent_tid: u64, child_tid: u64, flags: u64) {
     debug_sched! {
         klog::write_raw(b"[INFO]  sys_clone: parent_tid=");

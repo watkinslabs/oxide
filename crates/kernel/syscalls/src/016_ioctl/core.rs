@@ -319,13 +319,13 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
 fn sioc_socket_net_namespace(file: &vfs::File) -> Option<network_namespace::NetworkNamespaceRef> {
     if file.inode().file_type() != vfs::FileType::Socket { return None; }
     if let Ok(sock) = file.inode().i_private().clone().downcast::<net::sock::InetSocket>() {
-        return Some(sock.security.net_namespace.clone());
+        return Some(sock.net_namespace.clone());
     }
     if let Ok(sock) = file.inode().i_private().clone().downcast::<::netlink::NetlinkSocket>() {
         return Some(sock.net_ns.clone());
     }
     file.inode().i_private().clone().downcast::<net::vsock_socket::VsockSocket>()
-        .ok().map(|sock| sock.security.net_namespace.clone())
+        .ok().map(|sock| sock.net_namespace.clone())
 }
 
 fn sioc_socket_family(file: &vfs::File) -> u16 {

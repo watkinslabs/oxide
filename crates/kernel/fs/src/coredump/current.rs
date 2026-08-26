@@ -41,18 +41,18 @@ pub unsafe fn write_for_current(signo: i32, regs: *const crate::sig_dispatch::Us
     // process that asked not to be dumped got a full memory image on its
     // first SIGSEGV, and a setuid binary's dump was readable to whoever owned
     // the pattern's directory.
-    trace(b"entry", cx.signo as u64, cx.security.dumpable as u64);
+    trace(b"entry", cx.signo as u64, cx.dumpable as u64);
     // Linux `pidfs_coredump`: latch the verdict on the PID identity BEFORE any
     // refusal arm, so a pidfd holder asking `PIDFD_GET_INFO` can tell a process
     // that crashed and had its dump skipped from one that never crashed. The
     // identity outlives the task, which is the only reason the answer survives
     // to be read.
     cur.pid.record_coredump(sched::pid::CoredumpRecord {
-        mask:   super::dumpable::coredump_verdict_mask(cx.security.dumpable),
+        mask:   super::dumpable::coredump_verdict_mask(cx.dumpable),
         signal: cx.signo as u32,
         code:   sched::exit::status::wait_status(cur.exit_status.load(Ordering::Acquire)) as u32,
     });
-    if !dump_allowed(cx.security.dumpable) { trace(b"refused-dumpable", cx.security.dumpable as u64, 0); return; }
+    if !dump_allowed(cx.dumpable) { trace(b"refused-dumpable", cx.dumpable as u64, 0); return; }
     let raw = pattern::core_pattern();
     let kind = pattern::kind_of(trim(&raw));
     // `coredump_force_suid_safe`: a dump whose dumpability was downgraded by a
@@ -60,7 +60,7 @@ pub unsafe fn write_for_current(signo: i32, regs: *const crate::sig_dispatch::Us
     // path. A relative pattern resolves against the dying process's own cwd,
     // which an unprivileged caller controls, so honouring it would let that
     // caller choose where a root-owned memory image lands.
-    if kind == CoreKind::File && suid_safe_required(cx.security.dumpable)
+    if kind == CoreKind::File && suid_safe_required(cx.dumpable)
         && !pattern::file_path(&raw, &cx).starts_with('/') { trace(b"refused-suid-safe", 0, 0); return; }
 
     // A program collects the dump itself and is not subject to the size limit —
@@ -92,7 +92,7 @@ pub unsafe fn write_for_current(signo: i32, regs: *const crate::sig_dispatch::Us
             trace(b"image", body.len() as u64, 0);
             let n = sched::rlimit::dump::prefix_len(body.len(), cx.rlimit_core, DUMP_CHUNK);
             let ok = super::file_target::write_to_file(&pattern::file_path(&raw, &cx), &body[..n],
-                cx.uid, cx.gid, suid_safe_required(cx.security.dumpable));
+                cx.uid, cx.gid, suid_safe_required(cx.dumpable));
             trace(b"file", n as u64, u64::from(ok));
         }
         CoreKind::Socket => match super::socket_target::prepare(trim(&raw), &cx) {

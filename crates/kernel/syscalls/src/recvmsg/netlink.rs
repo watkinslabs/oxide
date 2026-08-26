@@ -53,7 +53,7 @@ pub(crate) fn recv_pinned(file: &alloc::sync::Arc<vfs::File>, file_nonblock: boo
                     &received.bytes[..core::cmp::min(user.capacity, received.bytes.len())]);
                 match copied {
                     Ok(copied) => break (received.bytes, copied, received.src_port,
-                        received.multicast_group, received.nsid, received.security.creds, received.security),
+                        received.multicast_group, received.nsid, received.creds, received.security),
                     Err(e) => return e,
                 }
             }

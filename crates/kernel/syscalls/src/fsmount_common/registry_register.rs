@@ -10,7 +10,7 @@ pub(super) fn register_filesystems() {
 
     // ext4's reports. The publisher goes in before the type is registered, and
     // publishing whatever mounted earlier is part of installing it.
-    super::fs_surfaces::install_ext4_publisher();
+    crate::fsmount_common::fs_surfaces::install_ext4_publisher();
 
     // Every registered constructor funnels its `sb_flags` word through here:
     // Linux stamps `s_flags` in `alloc_super()`, so the flags a `mount -o
@@ -174,7 +174,7 @@ pub(super) fn register_filesystems() {
         let opts = ntfs3::opts::parse(ntfs3::Options::defaults(), d)
             .map_err(ntfs3::mount::errno_to_vfs)?;
         let fs = ntfs3::NtfsFs::open_with(dev, source, write, opts)?;
-        super::fs_surfaces::ntfs3_publish_surfaces(&fs);
+        crate::fsmount_common::fs_surfaces::ntfs3_publish_surfaces(&fs);
         let sb_flags = if fs.is_writable() { sb_flags } else { sb_flags | vfs::superblock::SB_RDONLY };
         let root = fs.root_inode()?;
         let fs: Arc<dyn vfs::fs::FileSystem> = fs;
@@ -207,7 +207,7 @@ pub(super) fn register_filesystems() {
         // AND skipped the consistency pass, so a line the reference refuses
         // was accepted.
         let fs = f2fs::F2fs::open_line(dev, source, write, d)?;
-        super::fs_surfaces::f2fs_publish_surfaces(&fs);
+        crate::fsmount_common::fs_surfaces::f2fs_publish_surfaces(&fs);
         let sb_flags = if fs.is_writable() { sb_flags } else { sb_flags | vfs::superblock::SB_RDONLY };
         let root = fs.root_inode()?;
         let quota_fs = Arc::clone(&fs);
@@ -387,7 +387,7 @@ pub(super) fn register_filesystems() {
                   _p: &[vfs::fs::FsParameter]| -> R {
             let source = source.ok_or(vfs::VfsError::Enoent)?;
             let fs = ::fs::ninep_fs::mount_9p(source, d, caller_fsuid())?;
-            super::fs_surfaces::ninep_claim_subsys();
+            crate::fsmount_common::fs_surfaces::ninep_claim_subsys();
             let root = fs.root_inode();
             let fs: Arc<dyn vfs::fs::FileSystem> = fs;
             mounted(ty, fs, Some(root), source, sb_flags)

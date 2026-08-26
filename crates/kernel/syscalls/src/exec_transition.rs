@@ -217,7 +217,7 @@ pub(crate) fn commit(cur: &sched::Task, t: &ExecTransition) {
     // flags whose exec rule is architecture-specific (TSC trap, tagged-address
     // ABI). Owned by sched so the two arches cannot drift apart here.
     sched::exec_flush::flush_thread_flags(cur);
-    cur.security.dumpable.store(t.security.dumpable, Ordering::Release);
+    cur.security.dumpable.store(t.dumpable, Ordering::Release);
     // Landlock's `bprm_creds_prepare`: the layer set this EXECUTION enforced
     // is empty for a program that has just replaced the one that enforced it,
     // so its denials fall under the new-execution reporting rule rather than

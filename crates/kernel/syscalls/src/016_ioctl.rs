@@ -5,7 +5,7 @@
 // ABI constants and the generic-vs-file dispatch rule live at crate level,
 // ungated: this module is kernel-target-only, so a `#[cfg(test)]` block inside
 // it would compile away silently.
-use crate::ioctl_uapi as uapi;
+pub(crate) use crate::ioctl_uapi as uapi;
 pub(crate) use crate::ioctl_owner::{fs_unlocked_ioctl_applies, ioctl_file, ioctl_owner, IoctlOwner};
 
 #[path = "016_ioctl/autofs.rs"] mod autofs;

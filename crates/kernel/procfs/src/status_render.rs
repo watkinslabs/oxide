@@ -133,9 +133,9 @@ pub fn render(s: &Status) -> Vec<u8> {
     push(&mut o, b"\nCapEff:\t"); push_hex16(&mut o, s.cap_eff);
     push(&mut o, b"\nCapBnd:\t"); push_hex16(&mut o, s.cap_bnd);
     push(&mut o, b"\nCapAmb:\t"); push_hex16(&mut o, s.cap_amb);
-    push(&mut o, b"\nNoNewPrivs:\t"); o.push(if s.security.no_new_privs { b'1' } else { b'0' });
+    push(&mut o, b"\nNoNewPrivs:\t"); o.push(if s.no_new_privs { b'1' } else { b'0' });
     push(&mut o, b"\nSeccomp:\t"); push_dec(&mut o, s.seccomp);
-    push(&mut o, b"\nSeccomp_filters:\t"); push_dec(&mut o, s.security.seccomp_filters);
+    push(&mut o, b"\nSeccomp_filters:\t"); push_dec(&mut o, s.seccomp_filters);
     // `arch_prctl_spec_ctrl_get(PR_SPEC_STORE_BYPASS)` with no SSBD control
     // exposed, and `PR_SPEC_INDIRECT_BRANCH` likewise (Linux prints the
     // `-EINVAL` case as "unknown").

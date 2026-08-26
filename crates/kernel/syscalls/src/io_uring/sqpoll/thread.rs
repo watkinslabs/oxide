@@ -18,13 +18,13 @@ impl<'a> crate::io_uring_abi::sqpoll::thread::SqEnv for LiveEnv<'a> {
     /// # C: O(1)
     fn park_requested(&self) -> bool { self.sqd.park_pending.load(Ordering::Acquire) != 0 }
     /// # C: O(1)
-    fn now_ns(&mut self) -> u64 { super::iowq::worker::now_ns() }
+    fn now_ns(&mut self) -> u64 { crate::io_uring::iowq::worker::now_ns() }
     /// # C: O(N_parks)
     fn do_park(&mut self) { do_park(self.sqd); }
     /// # C: O(N_queued)
-    fn reap(&mut self, i: usize) { super::iopoll::drive(&self.rings[i]); }
+    fn reap(&mut self, i: usize) { crate::io_uring::iopoll::drive(&self.rings[i]); }
     /// # C: O(n)
-    fn submit(&mut self, i: usize, n: u32) { super::submit::submit_sqes(&self.rings[i], n); }
+    fn submit(&mut self, i: usize, n: u32) { crate::io_uring::submit::submit_sqes(&self.rings[i], n); }
     /// # C: O(N_waiters)
     fn wake_sq_waiters(&mut self, _i: usize) { self.sqd.sq_wait.wake_all(); }
     /// # C: O(N_rings)
@@ -55,7 +55,7 @@ fn run(sqd: &SqData) {
 /// The thread. `arg` is the `Arc<SqData>` its creator leaked for exactly this
 /// thread and nobody else.
 /// # C: unbounded
-extern "C" fn sq_thread(arg: usize) -> ! {
+pub(super) extern "C" fn sq_thread(arg: usize) -> ! {
     // SAFETY: `arg` is the one `Arc::into_raw(Arc<SqData>)` this thread's creator produced for it and handed to no other thread; reclaiming it here balances that leak exactly once.
     let sqd: Arc<SqData> = unsafe { Arc::from_raw(arg as *const SqData) };
     run(&sqd);

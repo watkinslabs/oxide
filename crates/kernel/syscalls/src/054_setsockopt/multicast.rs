@@ -229,7 +229,7 @@ pub(super) fn ipv6_anycast_membership(sock: &Arc<net::sock::InetSocket>, optval:
     // inherited an already-joined socket must be able to relinquish it.
     if join {
         let Some(current) = sched::live::current() else { return -(Errno::Eperm.as_i32() as i64); };
-        if !nscg::has_net_admin_for(current, &sock.security.net_namespace) {
+        if !nscg::has_net_admin_for(current, &sock.net_namespace) {
             return -(Errno::Eperm.as_i32() as i64);
         }
     }

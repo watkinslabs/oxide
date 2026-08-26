@@ -1,4 +1,4 @@
-use super::*;
+#[allow(unused_imports)] use super::*;
 
 #[cfg(target_os = "oxide-kernel")]
 pub(super) fn kalloc_smoke() {

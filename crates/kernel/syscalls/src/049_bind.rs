@@ -91,7 +91,7 @@ fn run_bind_hook(sock: &net::sock::InetSocket, storage: &mut net::SockaddrStorag
 
 /// Linux privileged-port admission for explicit INET binds. # C: O(1)
 fn privileged_inet_port_denied(sock: &net::sock::InetSocket, port: u16) -> bool {
-    let net_ns = &sock.security.net_namespace;
+    let net_ns = &sock.net_namespace;
     let Some(floor) = net::ephemeral::unprivileged_start_in(net_ns.id().as_u64()) else { return true; };
     if port == 0 || port >= floor { return false; }
     let transport = matches!(*sock.kind.lock(),

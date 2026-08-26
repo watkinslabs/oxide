@@ -1,3 +1,4 @@
+#[cfg(feature = "debug-sshd-detail")]
 use syscall::SyscallArgs;
 
 /// Retained executable-scoped syscall trace for the OpenSSH daemon. The

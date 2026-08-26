@@ -14,7 +14,7 @@ fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
 /// Caller's network capabilities in the socket's owning namespace. # C: O(1)
 pub(super) fn caps_for(sock: &InetSocket) -> sol::OptCaps {
     let Some(cur) = sched::live::current() else { return sol::OptCaps::default(); };
-    let namespace = &sock.security.net_namespace;
+    let namespace = &sock.net_namespace;
     sol::OptCaps {
         net_admin: nscg::has_net_admin_for(cur, namespace),
         net_raw: nscg::has_net_raw_for(cur, namespace),

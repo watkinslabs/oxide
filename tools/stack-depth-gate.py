@@ -145,12 +145,12 @@ def is_fatal(sym):
     )
 
 
-# The one scheduling point: `sched::live::schedule::switch::schedule_once`. Both
+# The one scheduling point: `sched::live::schedule::switch::round::schedule_once`. Both
 # manglings embed the path with its component lengths, so one substring finds
 # it either way. Its wrappers (`park_yield`, `tick_yield`, `sched_yield`) call
 # it directly and need no entry of their own — they are ordinary frames on the
 # way to the sink.
-SCHEDULE_POINT = "5sched4live8schedule6switch13schedule_once"
+SCHEDULE_POINT = "5sched4live8schedule6switch5round13schedule_once"
 
 
 def blocking_points(frames):
@@ -842,16 +842,16 @@ SELF_TEST_BLOCK = """
 
 0000000000402000 <waiter>:
   402000: sub    $0x10,%rsp
-  402004: call   0000000000403000 <_RNvNtNtNtCsbTQiNMbEw4o_5sched4live8schedule6switch13schedule_once>
+  402004: call   0000000000403000 <_RNvNtNtNtCsbTQiNMbEw4o_5sched4live8schedule6switch5round13schedule_once>
   402009: call   0000000000402100 <waiter2>
   40200e: ret
 
 0000000000402100 <waiter2>:
   402100: sub    $0x10,%rsp
-  402104: call   0000000000403000 <_RNvNtNtNtCsbTQiNMbEw4o_5sched4live8schedule6switch13schedule_once>
+  402104: call   0000000000403000 <_RNvNtNtNtCsbTQiNMbEw4o_5sched4live8schedule6switch5round13schedule_once>
   402109: ret
 
-0000000000403000 <_RNvNtNtNtCsbTQiNMbEw4o_5sched4live8schedule6switch13schedule_once>:
+0000000000403000 <_RNvNtNtNtCsbTQiNMbEw4o_5sched4live8schedule6switch5round13schedule_once>:
   403000: sub    $0x20,%rsp
   403004: call   0000000000404000 <switch_tail>
   403009: ret
@@ -863,7 +863,7 @@ SELF_TEST_BLOCK = """
 
 0000000000404100 <blocked_helper>:
   404100: sub    $0x40,%rsp
-  404104: call   0000000000403000 <_RNvNtNtNtCsbTQiNMbEw4o_5sched4live8schedule6switch13schedule_once>
+  404104: call   0000000000403000 <_RNvNtNtNtCsbTQiNMbEw4o_5sched4live8schedule6switch5round13schedule_once>
   404109: ret
 
 0000000000408000 <reaper>:

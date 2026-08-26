@@ -61,7 +61,7 @@ fn a_privileged_task_still_renders_its_real_root_credentials() {
     s.gid = [0, 0, 0, 0];
     s.cap_prm = 0x0000_01ff_ffff_ffff;
     s.cap_eff = 0x0000_01ff_ffff_ffff;
-    s.security.no_new_privs = false;
+    s.no_new_privs = false;
     let b = body_of(&s);
     assert_eq!(field(&b, "Uid"), "0\t0\t0\t0");
     assert_eq!(field(&b, "CapEff"), "000001ffffffffff");

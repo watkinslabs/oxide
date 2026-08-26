@@ -39,7 +39,7 @@ fn login_for(owner: &NamespaceRef, login: u32) -> u32 {
 }
 
 fn body(task: &sched::Task, owner: &NamespaceRef, kind: Kind) -> Vec<u8> {
-    let (login, session) = task.security.audit_identity();
+    let (login, session) = task.audit_identity();
     dec(match kind { Kind::LoginUid => login_for(owner, login), Kind::SessionId => session })
 }
 
@@ -69,7 +69,7 @@ where F: FnOnce(u32, u32) -> Result<u32, syscall::errno::Errno>
         user_namespace::resolve_to_host(opener.user_namespace(), IdMapKind::Uid, visible)
             .map_err(|_| VfsError::Einval)?.ok_or(VfsError::Einval)?
     };
-    let old = target.security.audit_identity().0;
+    let old = target.audit_identity().0;
     let session = set(old, login).map_err(|e| match e {
         syscall::errno::Errno::Eperm => VfsError::Eperm,
         _ => VfsError::Einval,

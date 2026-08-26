@@ -1,3 +1,4 @@
+#[cfg(feature = "debug-desktop")]
 use core::sync::atomic::{AtomicU32, Ordering};
 
 /// Emit a focused syscall ledger for the compositor while diagnosing display

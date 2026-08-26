@@ -46,7 +46,7 @@ fn tcp_urgent_tail(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSocket>,
 /// `noinline_for_stack`).
 #[cfg(target_os = "oxide-kernel")]
 #[inline(never)]
-fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<net::sock::InetSocket>,
+pub(super) fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<net::sock::InetSocket>,
     message: &Message, flags: u32, prepared: Box<InetPrepared>) -> KResult<usize>
 {
     let (dest, control, autobind) = match *prepared {
@@ -92,7 +92,7 @@ fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<net::sock::I
     let mut total = 0usize;
     loop {
         let end = if stream { body } else { message.payload.len() };
-        match net::sock::sendto(socket, &message.payload[total..end], dest.clone(), ctx.security.creds(),
+        match net::sock::sendto(socket, &message.payload[total..end], dest.clone(), ctx.creds(),
             &control, autobind.as_ref())
         {
             Ok(bytes) if stream && bytes != 0 => {

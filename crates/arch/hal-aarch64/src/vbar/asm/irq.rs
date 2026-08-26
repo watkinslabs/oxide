@@ -174,6 +174,6 @@ core::arch::global_asm!(
     "    add  sp, sp, #288",
     "    eret",
     ".size oxide_irq_resume_user, . - oxide_irq_resume_user",
-    stack_bytes = const hal::KERNEL_STACK_BYTES,    stack_bytes = const hal::KERNEL_STACK_BYTES,
+    stack_bytes = const hal::KERNEL_STACK_BYTES,
 );
 
