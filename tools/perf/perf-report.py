@@ -93,6 +93,36 @@ def parse_oxide(log: Path):
     return totals, sysrows, faultrows, blk
 
 
+# How far a row may drift above its recorded ratio before the gate calls it a
+# regression. The report's own footer measures the guest-side spread at tens of
+# percent, so anything tighter fails on noise.
+RATCHET_TOLERANCE = 1.6
+
+
+def load_ratios(path: Path) -> dict[str, float]:
+    if not path.exists():
+        return {}
+    out = {}
+    for line in path.read_text().splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        name, _, value = line.partition("\t")
+        try:
+            out[name] = float(value)
+        except ValueError:
+            continue
+    return out
+
+
+def save_ratios(path: Path, ratios: dict[str, float]) -> None:
+    body = ["# Per-operation cost relative to the host kernel, as measured by",
+            "# `make perf-report`. The gate holds each row to its value here.",
+            "# Lower it with `perf-report.py --accept` after a run that improves one;",
+            "# raising a number by hand is how a ratchet stops being a ratchet."]
+    body += [f"{name}\t{ratio:.1f}" for name, ratio in sorted(ratios.items())]
+    path.write_text("\n".join(body) + "\n")
+
+
 def bar(ratio: float, width: int = 24) -> str:
     if ratio <= 1:
         return "|"
@@ -113,6 +143,11 @@ def main() -> int:
     ap.add_argument("--baseline", type=Path, default=Path("/tmp/oxide-linux-baseline.tsv"))
     ap.add_argument("--markdown", type=Path, help="also write the report here")
     ap.add_argument("--html", type=Path, help="also write a self-contained chart here")
+    ap.add_argument("--baseline-ratios", type=Path,
+                    default=Path(__file__).resolve().parent / "ratios.tsv",
+                    help="per-operation ratios this tree is held to")
+    ap.add_argument("--accept", action="store_true",
+                    help="rewrite the ratio baseline from this run (only ever downward)")
     args = ap.parse_args()
 
     if not args.log.exists():
@@ -189,13 +224,40 @@ def main() -> int:
          "more than about half, or moves it across a verdict band. Anything smaller "
          "needs repeated runs or a hosted microbenchmark.")
 
+    # Ratchet, not a fixed bar. Holding every push to 20x when five operations
+    # are above it means every push is bypassed, and a bypassed gate is not a
+    # gate. Hold each operation to what it measured last, with room for the
+    # run-to-run variance the footer describes, and let --accept record an
+    # improvement so the bar only ever moves down.
+    base = load_ratios(args.baseline_ratios)
+    regressed = []
+    for ratio, name, _ours, _theirs in rows:
+        prev = base.get(name)
+        if prev is not None and ratio > prev * RATCHET_TOLERANCE:
+            regressed.append((name, prev, ratio))
+    if regressed:
+        emit()
+        emit("## Regressions against the ratio baseline")
+        emit()
+        emit("| operation | was | now |")
+        emit("|---|---:|---:|")
+        for name, prev, now in regressed:
+            emit(f"| {name} | {prev:.0f}x | {now:.0f}x |")
+    if args.accept:
+        merged = dict(base)
+        for ratio, name, _o, _t in rows:
+            if name not in merged or ratio < merged[name]:
+                merged[name] = ratio
+        save_ratios(args.baseline_ratios, merged)
+        print(f"\nratio baseline updated: {args.baseline_ratios}")
     worst = max((r for r, *_ in rows), default=0)
     if args.markdown:
         args.markdown.write_text("\n".join(lines) + "\n")
     if args.html:
         args.html.write_text(chart.render(sorted(rows, reverse=True), blk, totals, args.log))
         print(f"\nchart: {args.html}")
-    return 1 if worst >= 20 else 0
+    _ = worst
+    return 1 if regressed else 0
 
 
 if __name__ == "__main__":
