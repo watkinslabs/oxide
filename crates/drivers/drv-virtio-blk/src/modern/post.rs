@@ -109,6 +109,28 @@ impl BlkState {
                 request, completion, type_, sector, is_in, is_flush, data_len,
                 queued_ns: timekeeper::monotonic_ns(),
             });
+            block::RING_PENDING.store(ring.pending.len() as u64, core::sync::atomic::Ordering::Relaxed);
+            block::RING_DEFERRED.store(ring.deferred.len() as u64, core::sync::atomic::Ordering::Relaxed);
+            block::RING_FREE.store(ring.free_heads.len() as u64, core::sync::atomic::Ordering::Relaxed);
+            drop(ring);
+            // Run the queue now that this request is on it, rather than
+            // leaving dispatch entirely to the next completion.
+            //
+            // The condition that deferred it -- the turnstile holding the
+            // device turn, or a momentary shortage of descriptor chains --
+            // usually clears without producing a completion of its own. When
+            // it does, nothing restarts the queue: `deferred` is drained only
+            // from the completion softirq, the softirq runs only on a
+            // completion interrupt, and a completion needs an in-flight
+            // request. A queue that empties into `deferred` therefore stops
+            // forever, holding requests while its chains sit free -- measured
+            // here as `pending=0 deferred=5 free=85`.
+            //
+            // The reference makes dispatch edge-triggered by submission as
+            // well as completion: a request is inserted and the hardware queue
+            // is run immediately. Do the same, so the restart never depends on
+            // an event only the stalled queue could produce.
+            self.start_deferred_requests(q);
             return Ok(());
         }
         let Some(head) = ring.free_heads.pop() else {
@@ -182,6 +204,9 @@ impl BlkState {
             #[cfg(feature = "debug-blk-verify")]
             posted_ns: timekeeper::monotonic_ns(),
         });
+        block::RING_PENDING.store(ring.pending.len() as u64, core::sync::atomic::Ordering::Relaxed);
+        block::RING_DEFERRED.store(ring.deferred.len() as u64, core::sync::atomic::Ordering::Relaxed);
+        block::RING_FREE.store(ring.free_heads.len() as u64, core::sync::atomic::Ordering::Relaxed);
         drop(ring);
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
         // SAFETY: `notify_va` is this queue's doorbell in the Device-attr notify
