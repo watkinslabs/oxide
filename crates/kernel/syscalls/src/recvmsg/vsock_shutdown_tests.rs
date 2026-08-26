@@ -34,7 +34,7 @@ fn connected_recvmsg_clears_source_length_without_synthesizing_a_peer_address() 
         iov: alloc::vec![crate::recv_user::IoVec {
             base: payload.as_mut_ptr() as u64,
             len: payload.len(),
-        }],
+        }].into(),
         capacity: payload.len(),
         layout: crate::msg_layout::MsgLayout::Native,
     };
@@ -61,7 +61,7 @@ fn zerocopy_completion_uses_the_vsock_error_queue_abi() {
         name_len_ptr: 0,
         control: control.as_mut_ptr() as u64,
         controllen: control.len(),
-        iov: alloc::vec![],
+        iov: crate::recv_user::IoVecs::empty(),
         capacity: 0,
         layout: crate::msg_layout::MsgLayout::Native,
     };

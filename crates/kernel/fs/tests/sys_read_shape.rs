@@ -49,6 +49,22 @@ mod recv_user {
         pub len: usize,
     }
 
+    pub struct IoVecs(alloc::vec::Vec<IoVec>);
+
+    impl IoVecs {
+        pub fn one(base: u64, len: usize) -> Self {
+            Self(alloc::vec![IoVec { base, len }])
+        }
+
+        pub fn len(&self) -> usize { self.0.len() }
+    }
+
+    impl core::ops::Index<usize> for IoVecs {
+        type Output = IoVec;
+
+        fn index(&self, index: usize) -> &Self::Output { &self.0[index] }
+    }
+
     pub struct RecvUser {
         pub msgp: u64,
         pub name: u64,
@@ -56,7 +72,7 @@ mod recv_user {
         pub name_len_ptr: u64,
         pub control: u64,
         pub controllen: usize,
-        pub iov: alloc::vec::Vec<IoVec>,
+        pub iov: IoVecs,
         pub capacity: usize,
         pub layout: crate::msg_layout::MsgLayout,
         pub sink: Sink,
