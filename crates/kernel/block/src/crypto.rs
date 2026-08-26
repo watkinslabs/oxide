@@ -39,6 +39,7 @@ pub use dun::{Dun, DUN_LIMBS, MAX_IV_SIZE};
 pub use key::{Config, Key, KeyType, KeyTypes, MAX_HW_WRAPPED_KEY_SIZE, MAX_RAW_KEY_SIZE, SW_SECRET_SIZE};
 pub use ctx::Ctx;
 pub use profile::{LlOps, Profile, SlotRef};
+pub use submit::submit;
 pub use submit::{config_supported, config_supported_natively, derive_sw_secret,
                  evict_key, profile_supports, start_using_key, start_using_key_on,
                  submit_sync};

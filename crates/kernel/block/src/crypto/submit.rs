@@ -140,3 +140,28 @@ pub fn submit_sync(dev: &dyn BlockDevice, req: &mut BlockRequest) -> KResult<()>
         _ => Err(BlockError::Einval),
     }
 }
+
+
+/// [`submit_sync`]'s owned-request twin: submit `request` through the same one
+/// decision, completing through `completion`.
+///
+/// The sync entry has been the only choke point, which held this module's
+/// invariant only because no caller attached a context and then took the async
+/// path. A caller that did would reach the driver with the context unserved,
+/// and the driver would report success — the exact failure this module exists
+/// to make impossible. This is what such a caller submits through instead.
+///
+/// A request WITHOUT a context takes the driver's owned-request path, which is
+/// the point of having this entry at all. A request WITH one is served
+/// synchronously and completed inline: the keyslot reference must stay live
+/// for the whole transfer and it borrows the device's profile, so it cannot
+/// ride a `'static` completion, and the software fallback is synchronous
+/// anyway. Completing inline is a contract [`BlockDevice::submit`] already
+/// documents for a driver that finishes without queueing, so no caller can
+/// tell the difference.
+/// # C: O(len(buffer)) when a context is served, else the driver's cost
+pub fn submit(dev: &dyn BlockDevice, mut request: BlockRequest, completion: crate::BlockCompletion) {
+    if request.crypt.is_none() { return dev.submit(request, completion); }
+    let rv = submit_sync(dev, &mut request);
+    completion(request, rv);
+}
