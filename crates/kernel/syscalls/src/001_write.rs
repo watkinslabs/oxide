@@ -66,7 +66,9 @@ pub fn sys_write(args: &SyscallArgs) -> i64 {
     let mut cnt = args.a2 as usize;
     let cur = match current_task() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task on this CPU; preempt-off; no concurrent fd_table writer.
-    let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
+    // Borrow current->files like Linux; the running task cannot replace this
+    // table while the syscall is executing.
+    let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.as_ref(), None => return -(Errno::Ebadf.as_i32() as i64) };
     let file = match fdt.get(fd) { Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64) };
     #[cfg(feature = "debug-zram-lifecycle")]
     crate::signal_trace::zram_lifecycle_stage(b"write-file");
