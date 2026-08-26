@@ -157,6 +157,27 @@ fn one_send_asks_the_hook_exactly_once() {
 }
 
 #[test]
+fn a_batch_reuses_the_last_successful_explicit_destination_decision() {
+    let (_guard, owner, namespace) = fixture();
+    assert!(network::install(namespace, Operation::Send, |_| Verdict::Allow).is_none());
+    let task = task(708);
+    let ctx = SendContext::with_sandbox(&task, None);
+    let target = udp_target(&owner);
+    let first = message(Some(addr4(53)), 4);
+    let same = message(Some(addr4(53)), 4);
+    let other = message(Some(addr4(54)), 4);
+    let empty = crate::send::UsedAddress::empty();
+    let first_cache = crate::send::UsedAddress::from_name(first.name.as_deref());
+    assert!(crate::send::prepare_cached(&ctx, &target, &first, 0, &empty).is_ok());
+    assert!(crate::send::prepare_cached(&ctx, &target, &same, 0, &first_cache).is_ok());
+    assert!(crate::send::prepare_cached(&ctx, &target, &other, 0, &first_cache).is_ok());
+    assert_eq!(network::counters(namespace, Operation::Send), Some((2, 0)));
+    assert!(crate::send::prepare_cached(&ctx, &target, &message(None, 4), 0, &first_cache).is_ok());
+    assert_eq!(network::counters(namespace, Operation::Send), Some((3, 0)));
+    assert_eq!(network::remove_namespace(namespace), 1);
+}
+
+#[test]
 fn a_sandboxed_send_is_judged_against_the_snapshot_the_context_retained() {
     let rules = Ruleset::new(&RulesetAttr { handled_net: ACCESS_NET_CONNECT_SEND_UDP,
         ..Default::default() });
