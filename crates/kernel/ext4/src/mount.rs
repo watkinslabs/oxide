@@ -188,6 +188,14 @@ pub struct Mount {
     /// Linux's ordered-data phase completes writeback before the metadata
     /// commit, so nested `maybe_commit_batch` calls defer to this owner.
     pub(crate) committing_batch: ::core::sync::atomic::AtomicBool,
+    /// The running batch has grown past its block budget and wants a commit.
+    /// Set by the operation that filled it and cleared by the commit; the
+    /// operation does NOT commit on its own stack. Committing there put the
+    /// journal write, the ordered-data flush and the block layer underneath
+    /// whatever directory operation happened to be the one that tipped the
+    /// batch over — which is how a `rename` came to be the kernel's deepest
+    /// call path.
+    pub(crate) batch_full: ::core::sync::atomic::AtomicBool,
     /// True while a create op holds `op_lock`. The size-triggered batch commit
     /// (`maybe_commit_batch` → `dev.flush`, which SLEEPS on the virtio
     /// completion) must NOT fire while `op_lock` is held: `op_lock` is a

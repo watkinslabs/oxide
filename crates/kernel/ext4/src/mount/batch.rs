@@ -125,16 +125,36 @@ impl Mount {
 
     /// Keep the running transaction bounded at top-level operation boundaries.
     /// # C: amortized O(1); O(N) on the commit tick
+    /// The running batch has filled: ask for a commit, do not perform one.
+    ///
+    /// The reference wakes its journal thread here. An operation that tips the
+    /// batch over is simply the one that happened to be running; making it also
+    /// write the journal, flush the ordered data and drive the block layer puts
+    /// all of that under whatever it was doing, which is why a `rename` was the
+    /// kernel's deepest call path. Flagging and waking hands the work to the
+    /// periodic committer, which runs it on its own stack.
+    ///
+    /// The hard ceiling is the backpressure the reference gets from a full
+    /// journal: a batch that keeps growing while the committer has not yet run
+    /// must not grow without bound, so past a multiple of the budget the caller
+    /// does commit inline. That is the rare path, not the common one.
+    /// # C: O(1), or O(batch) on the ceiling
     pub(crate) fn maybe_commit_batch(&self) -> Result<(), MountError> {
         const BATCH_MAX_BLOCKS: usize = 512;
+        /// Growth tolerated between the flag and the committer's next visit.
+        const BATCH_CEILING_BLOCKS: usize = BATCH_MAX_BLOCKS * 4;
         if self.creating.load(::core::sync::atomic::Ordering::Acquire)
             || self.committing_batch.load(::core::sync::atomic::Ordering::Acquire)
         { return Ok(()); }
-        let over = {
+        let blocks = {
             let s = self.state.lock();
-            s.undo.is_empty() && s.shadow.as_ref().map_or(0, |m| m.len()) >= BATCH_MAX_BLOCKS
+            if s.undo.is_empty() { s.shadow.as_ref().map_or(0, |m| m.len()) } else { 0 }
         };
-        if over { self.commit_batch()?; }
+        if blocks >= BATCH_CEILING_BLOCKS { return self.commit_batch(); }
+        if blocks >= BATCH_MAX_BLOCKS {
+            self.batch_full.store(true, ::core::sync::atomic::Ordering::Release);
+            block::pagecache::wake_flusher();
+        }
         Ok(())
     }
 
