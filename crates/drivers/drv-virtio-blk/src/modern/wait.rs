@@ -27,6 +27,13 @@ impl BlkState {
             // re-polls the used ring and parks again.
             let warn_at = now_ns().saturating_add(IO_WARN_NS);
             let mut warned = false;
+            // A park returns on every completion fan-out, so a wait that is
+            // progressing normally goes round this loop thousands of times a
+            // second. Only a wait that is not progressing is worth reporting.
+            #[cfg(feature = "debug-blk-verify")]
+            let started = now_ns();
+            #[cfg(feature = "debug-blk-verify")]
+            let mut next_report = started.saturating_add(STALL_REPORT_NS);
             loop {
                 let deadline = now_ns().saturating_add(IO_TIMEOUT_NS);
                 // Linux's ordinary submit-and-wait path checks completion and
@@ -61,6 +68,24 @@ impl BlkState {
                     unsafe { core::ptr::read_volatile(used.add(1)) == target }
                 });
                 if let Some(task) = waiter { task.end_iowait(); }
+                #[cfg(feature = "debug-blk-verify")]
+                if now_ns() >= next_report {
+                    // This wait has gone a full report interval with the used
+                    // ring still short of its target. Whether the device
+                    // stopped notifying us or the softirq stopped running is
+                    // the whole question, and the counters answer it: both
+                    // climbing means neither stopped.
+                    next_report = now_ns().saturating_add(STALL_REPORT_NS);
+                    klog::write_raw(b"[BLK-STALL] waited_ms=");
+                    klog::write_dec_u64(now_ns().saturating_sub(started) / 1_000_000);
+                    klog::write_raw(b" irq=");
+                    klog::write_dec_u64(block::IRQ_RAISES.load(Ordering::Relaxed));
+                    klog::write_raw(b" bh_runs=");
+                    klog::write_dec_u64(block::BH_RUNS.load(Ordering::Relaxed));
+                    klog::write_raw(b" bh_reaped=");
+                    klog::write_dec_u64(block::BH_REAPED.load(Ordering::Relaxed));
+                    klog::write_raw(b"\n");
+                }
             }
         }
     }
