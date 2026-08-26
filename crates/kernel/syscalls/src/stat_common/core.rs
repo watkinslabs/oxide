@@ -76,45 +76,12 @@ trait StatSink {
     fn wi64(&mut self, off: u64, v: i64);
 }
 
-/// Sticky-error user sink: a copy-out that faults mid-record sets `err` and
-/// every later field write becomes a no-op, so one faulting field cannot
-/// leave a half-written record while masking the failure the syscall must
-/// report. Linux `copy_to_user` failing anywhere in `cp_new_stat` answers
-/// `-EFAULT` from the syscall; this is the same contract, decision-owned here
-/// so `write_new_stat_user`'s callers get a `Result` instead of an assumed
-/// infallible copy.
-struct UserSink { base: u64, err: bool }
-
-impl StatSink for UserSink {
-    fn zero(&mut self, bytes: u64) {
-        if self.err { return; }
-        for off in (0..bytes).step_by(8) {
-            if um::put_u64(self.base + off, 0).is_err() { self.err = true; return; }
-        }
-    }
-    fn w32(&mut self, off: u64, v: u32) {
-        if self.err { return; }
-        if um::put_u32(self.base + off, v).is_err() { self.err = true; }
-    }
-    fn w64(&mut self, off: u64, v: u64) {
-        if self.err { return; }
-        if um::put_u64(self.base + off, v).is_err() { self.err = true; }
-    }
-    #[cfg(any(test, target_arch = "aarch64"))]
-    fn wi32(&mut self, off: u64, v: i32) {
-        if self.err { return; }
-        if um::put_i32(self.base + off, v).is_err() { self.err = true; }
-    }
-    fn wi64(&mut self, off: u64, v: i64) {
-        if self.err { return; }
-        if um::put_i64(self.base + off, v).is_err() { self.err = true; }
-    }
-}
-
-#[cfg(test)]
+// Linux `cp_new_stat` builds one native struct and hands it to one
+// `copy_to_user`. Keep the same shape: scalar user writes each perform their
+// own access/exception-table setup and made every stat call do 15–18 such
+// trips before the caller even saw the record.
 struct SliceSink<'a> { out: &'a mut [u8] }
 
-#[cfg(test)]
 impl StatSink for SliceSink<'_> {
     fn zero(&mut self, bytes: u64) {
         assert!(self.out.len() >= bytes as usize);
@@ -126,6 +93,7 @@ impl StatSink for SliceSink<'_> {
     fn w64(&mut self, off: u64, v: u64) {
         self.out[off as usize..off as usize + 8].copy_from_slice(&v.to_ne_bytes());
     }
+    #[cfg(any(test, target_arch = "aarch64"))]
     fn wi32(&mut self, off: u64, v: i32) {
         self.out[off as usize..off as usize + 4].copy_from_slice(&v.to_ne_bytes());
     }
@@ -184,12 +152,18 @@ fn write_aarch64<S: StatSink>(s: &mut S, st: &NewStat) {
 /// Copy Linux `struct stat` to a validated user buffer. `Err` is the caller's
 /// `-EFAULT`: a copy-out that faulted partway through. # C: O(1)
 pub(crate) fn write_new_stat_user(buf: u64, st: &NewStat) -> Result<(), i64> {
-    let mut sink = UserSink { base: buf, err: false };
     #[cfg(target_arch = "x86_64")]
-    write_x86_64(&mut sink, st);
+    {
+        let mut bytes = [0u8; STAT_BYTES_X86_64 as usize];
+        write_x86_64(&mut SliceSink { out: &mut bytes }, st);
+        return um::put_bytes(buf, &bytes).map_err(|_| um::EFAULT);
+    }
     #[cfg(target_arch = "aarch64")]
-    write_aarch64(&mut sink, st);
-    if sink.err { Err(um::EFAULT) } else { Ok(()) }
+    {
+        let mut bytes = [0u8; STAT_BYTES_AARCH64 as usize];
+        write_aarch64(&mut SliceSink { out: &mut bytes }, st);
+        return um::put_bytes(buf, &bytes).map_err(|_| um::EFAULT);
+    }
 }
 
 /// Host-test x86_64 `struct stat` encoding. # C: O(1)
