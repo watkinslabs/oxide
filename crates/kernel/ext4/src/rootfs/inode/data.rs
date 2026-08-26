@@ -97,8 +97,7 @@ impl Ext4FileData {
     /// Re-read on-disk size and i_blocks into the VFS inode. # C: O(1)
     pub(crate) fn refresh_inode_usage(&self, inode: &Inode) {
         if let Ok(i) = self.st.mount.read_inode(self.ino) {
-            self.size_hint.store(i.size, Ordering::Release);
-            inode.set_size(i.size);
+            publish_size(inode, i.size);
             inode.set_blocks(i.i_blocks as u64);
         }
     }
@@ -208,4 +207,23 @@ pub(crate) fn remove_inode_xattr(inode: &Inode, name: &str) -> Result<(), XattrE
     persist_xattr_entries(inode, &entries)?;
     store.replace_all(&entries);
     Ok(())
+}
+
+/// Publish one file size to every reader that answers a question with it.
+///
+/// Three of these existed: the VFS inode's `i_size`, the `Ext4FileData`
+/// size hint, and the frame store's own `size`. The page-fault path computes
+/// how much of a page is file-valid from the FIRST, while `read_framed` clamps
+/// what it will supply to the THIRD and short-reads past it. Any site that
+/// moved one without the others left a window in which the fault asked for
+/// more than the backing would give — a short fill on a mid-file page, which
+/// the fault path rules fatal and reports as SIGBUS. The reference keeps one
+/// `i_size` for both the bound and the clamp; this keeps ours in step.
+/// # C: O(1)
+pub(crate) fn publish_size(inode: &Inode, size: u64) {
+    inode.set_size(size);
+    if let Some(d) = inode.private::<Ext4FileData>() {
+        d.size_hint.store(size, Ordering::Release);
+        d.frames.set_size(size);
+    }
 }
