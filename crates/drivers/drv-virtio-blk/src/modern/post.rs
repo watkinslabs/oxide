@@ -92,6 +92,8 @@ impl BlkState {
             return Err((request, completion, BlockError::Eio));
         }
         if ring.busy || ring.free_heads.is_empty() || (!deferred_head && !ring.deferred.is_empty()) {
+            #[cfg(feature = "debug-blk-verify")]
+            super::state::latency::note_deferred();
             drop(ring);
             if !iommu::unmap_dma(self.bdf, bounce_dma, BOUNCE_BYTES) {
                 return Err((request, completion, BlockError::Eio));
@@ -175,7 +177,11 @@ impl BlkState {
             core::ptr::write_volatile(avail.add(1), ring.avail_idx);
         }
         clean_queue_submission(h, q);
-        ring.pending.push(PendingRequest { head, bounce_pa, bounce_dma, request, completion, is_in, data_len });
+        ring.pending.push(PendingRequest {
+            head, bounce_pa, bounce_dma, request, completion, is_in, data_len,
+            #[cfg(feature = "debug-blk-verify")]
+            posted_ns: timekeeper::monotonic_ns(),
+        });
         drop(ring);
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
         // SAFETY: `notify_va` is this queue's doorbell in the Device-attr notify
