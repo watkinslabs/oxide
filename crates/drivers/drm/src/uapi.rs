@@ -374,6 +374,10 @@ pub struct DrmModeSetPlane {
     pub src_w:    u32,
 }
 
+/// DIRTYFB `flags`: the caller annotated its clips as source/destination copy
+/// pairs, so they must arrive in twos.
+pub const DRM_MODE_FB_DIRTY_ANNOTATE_COPY: u32 = 0x01;
+
 /// `struct drm_mode_fb_dirty_cmd` — DIRTYFB, 0xc01864b1, 24 bytes.
 #[repr(C)]
 #[derive(Copy, Clone, Default, Debug)]
