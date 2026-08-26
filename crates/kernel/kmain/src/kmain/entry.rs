@@ -40,13 +40,64 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // timestamp under the deepest firmware/PCI initialization call chain.
     console::boot_progress::publish(console::boot_progress::Phase::KernelWorkers);
     spawn_kthreads();
+    // Mount the root filesystem from a schedulable task, not from this one.
+    //
+    // The boot path becomes the idle task the moment it falls into
+    // `halt_forever`, and it is already idle-equivalent here: it is what
+    // `schedule()` returns to when nothing else is runnable. Mounting root
+    // inline therefore ran the whole mount, and every block read under it, in
+    // a context that cannot be taken off-CPU -- so a driver could not sleep
+    // waiting for a completion and had to poll, which caps every reader on the
+    // device at one outstanding request.
+    //
+    // The reference orders this the other way round: the init task is spawned
+    // first and the boot CPU only then enters the idle loop, so the root mount
+    // runs in a task that may block. Match that. `halt_forever` is this
+    // kernel's idle loop -- it schedules -- so the thread spawned here is
+    // picked as soon as the boot path falls into it.
+    if spawn_kernel_init(info).is_err() {
+        klog::kerror!("fatal: kernel_init spawn failed");
+        sched::halt_forever();
+    }
+    klog::mark_system_running();
+    sched::halt_forever()
+}
+
+/// Spawn the task that mounts the root filesystem and hands off to userspace.
+///
+/// `info` outlives every task: it is the boot information the bootloader left
+/// in memory, which is never reclaimed.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+fn spawn_kernel_init(info: &BootInfo) -> Result<(), sched::live::SpawnError> {
+    let tid = sched::live::next_tid();
+    let arg = info as *const BootInfo as usize;
+    // SAFETY: boot path after `install_default_runqueue` and the kthread
+    // spawns above; `kernel_init` is a 'static extern "C" fn; `arg` is the
+    // boot information, which lives for the machine's life.
+    let task = unsafe { sched::live::spawn_kernel_thread(tid, "kernel_init", kernel_init, arg) }?;
+    // A permanent task: it becomes userspace init and never exits, so its
+    // stack must stay mapped.
+    core::mem::forget(task);
+    Ok(())
+}
+
+/// Root mount and first-userspace handoff, in task context.
+/// # C: not measured (one-shot init)
+#[cfg(target_os = "oxide-kernel")]
+extern "C" fn kernel_init(arg: usize) -> ! {
+    // SAFETY: `arg` is the `&BootInfo` handed to `kernel_main`, whose storage
+    // the bootloader leaves live for the machine's life.
+    let info: &BootInfo = unsafe { &*(arg as *const BootInfo) };
     klog::initcall::level("rootfs");
     let t = klog::initcall::start("rootfs::init");
-    // SAFETY: forwarded boot-entry contract; the runqueue, workqueues and
-    // kthreads that `rootfs::init` mounts and execs through all exist by now.
+    // SAFETY: the runqueue, workqueues and kthreads `rootfs::init` mounts and
+    // execs through all exist by now, and this runs in task context, which is
+    // what its blocking mount path requires.
     unsafe { super::rootfs::init(info); }
     klog::initcall::finish("rootfs::init", t, 0);
-    klog::mark_system_running();
+    // The handoff normally diverges into userspace. Reaching here means it
+    // returned; there is nothing left for this task to do.
     sched::halt_forever()
 }
 
