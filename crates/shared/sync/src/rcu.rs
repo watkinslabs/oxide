@@ -296,6 +296,19 @@ fn wait_for_progress(epoch: u64) {
 // this crate — so the aliases are re-exported from `sched`, not here, to
 // avoid a dependency cycle). This module is the write/grace side.
 
+/// RCU read-side critical section. The guard disables preemption so a grace
+/// period cannot reclaim a hash node while this reader follows its links.
+pub struct RcuReadGuard { token: crate::preempt_gate::PreemptToken }
+
+impl Drop for RcuReadGuard {
+    fn drop(&mut self) { crate::preempt_gate::release_rcu(self.token); }
+}
+
+/// Enter an RCU read-side critical section. # C: O(1)
+pub fn rcu_read_lock() -> RcuReadGuard {
+    RcuReadGuard { token: crate::preempt_gate::acquire_rcu() }
+}
+
 /// Record a quiescent state for the current CPU. Hot path (ctxsw / idle /
 /// return-to-user): exactly one per-CPU atomic bump, nothing else.
 /// # C: O(1)

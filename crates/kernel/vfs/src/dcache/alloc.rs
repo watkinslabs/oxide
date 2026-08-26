@@ -108,9 +108,19 @@ pub fn d_drop_child(parent: &Arc<Dentry>, name: &str) {
 /// the ESTALE retry) re-checks a cached dentry against its backing store
 /// instead of trusting an attribute-cache timeout. # C: O(1) expected
 pub fn d_lookup_reval(parent: &Arc<Dentry>, name: &str, reval: bool) -> Option<Arc<Dentry>> {
+    d_lookup_reval_rcu(parent, name, reval, false)
+}
+
+/// `d_lookup_reval` with the Linux lazy-walk choice of RCU or ref lookup.
+/// # C: O(bucket_len)
+pub(crate) fn d_lookup_reval_rcu(parent: &Arc<Dentry>, name: &str, reval: bool, rcu: bool) -> Option<Arc<Dentry>> {
     let qhash = Dentry::compute_hash(Some(parent), name);
     let pptr = Arc::as_ptr(parent);
-    let cand = DENTRY_HASHTABLE.lookup_locked(pptr, qhash, name);
+    let cand = if rcu {
+        DENTRY_HASHTABLE.lookup_rcu(pptr, qhash, name)
+    } else {
+        DENTRY_HASHTABLE.lookup_locked(pptr, qhash, name)
+    };
     let d = cand?;
     // Linux `__d_lookup` lockref gate (`lockref_get_not_dead`): atomically
     // pin-unless-dead. `dentry_kill` stamps `LOCKREF_DEAD` BEFORE a dying dentry

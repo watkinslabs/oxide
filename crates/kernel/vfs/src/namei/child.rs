@@ -36,7 +36,7 @@ impl Nameidata {
         // mutates exclusively through the flushed create/unlink/rename syscalls.
         // On a pseudo-fs the miss propagates un-cached (re-walks next time), so a
         // dynamically-appearing entry is never masked.
-        match crate::dcache::d_lookup_reval(&self.cur_dentry, comp, self.flags.reval) {
+        match crate::dcache::d_lookup_reval_rcu(&self.cur_dentry, comp, self.flags.reval, self.rcu) {
             Some(d) if !d.is_negative() => return Ok(ChildLookup::Found(d)),
             Some(_) => return Ok(ChildLookup::Missing), // cached negative (definitive)
             // RESOLVE_CACHED: a dcache miss would take the (possibly blocking)
