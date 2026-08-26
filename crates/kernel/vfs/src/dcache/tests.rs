@@ -1,6 +1,6 @@
 extern crate alloc;
 use super::*;
-use super::hash::{DENTRY_HASHTABLE, RcuProbe};
+use super::hash::DENTRY_HASHTABLE;
 use alloc::sync::Arc;
 use crate::dentry::{Dentry, DentryOps, D_HASHED, D_NEGATIVE, D_OP_WEAK_REVALIDATE};
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -45,20 +45,19 @@ assert!(d_lookup(&r, "absent").is_none());
 }
 
 // The locked walk and the rcu (seqcount) probe return the same dentry.
+/// The bucket probe finds every published child under a parent that fills one
+/// chain many times over, and finds the same dentry `d_lookup` hands out.
 #[test]
-fn rcu_path_agrees_with_locked() {
+fn every_published_child_is_found_by_the_bucket_walk() {
 let r = root();
 for i in 0..64u32 { d_add(&r, &format!("f{i}"), dir(200 + i as u64)); }
 for i in 0..64u32 {
         let n = format!("f{i}");
         let qhash = Dentry::compute_hash(Some(&r), &n);
         let pptr = Arc::as_ptr(&r);
-        let locked = DENTRY_HASHTABLE.lookup_locked(pptr, qhash, &n).unwrap();
-        let rcu = match DENTRY_HASHTABLE.lookup_rcu(pptr, qhash, &n) {
-            RcuProbe::Done(c) => c.unwrap(),
-            RcuProbe::Retry   => DENTRY_HASHTABLE.lookup_locked(pptr, qhash, &n).unwrap(),
-        };
-        assert!(Arc::ptr_eq(&locked, &rcu));
+        let found = DENTRY_HASHTABLE.lookup_locked(pptr, qhash, &n).expect("published child");
+        assert_eq!(found.name(), n);
+        assert!(Arc::ptr_eq(&found, &super::d_lookup(&r, &n).expect("d_lookup agrees")));
 }
 }
 

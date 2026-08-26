@@ -7,7 +7,7 @@ use crate::dentry::Dentry;
 use crate::inode::InodeRef;
 use crate::superblock::SuperBlock;
 
-use super::hash::{DENTRY_HASHTABLE, RcuProbe};
+use super::hash::DENTRY_HASHTABLE;
 use super::lifecycle::d_drop;
 
 /// Linux `anon_inodefs_dname`: render `anon_inode:<d_name>`. # C: O(name.len())
@@ -110,10 +110,7 @@ pub fn d_drop_child(parent: &Arc<Dentry>, name: &str) {
 pub fn d_lookup_reval(parent: &Arc<Dentry>, name: &str, reval: bool) -> Option<Arc<Dentry>> {
     let qhash = Dentry::compute_hash(Some(parent), name);
     let pptr = Arc::as_ptr(parent);
-    let cand = match DENTRY_HASHTABLE.lookup_rcu(pptr, qhash, name) {
-        RcuProbe::Done(c) => c,
-        RcuProbe::Retry   => DENTRY_HASHTABLE.lookup_locked(pptr, qhash, name),
-    };
+    let cand = DENTRY_HASHTABLE.lookup_locked(pptr, qhash, name);
     let d = cand?;
     // Linux `__d_lookup` lockref gate (`lockref_get_not_dead`): atomically
     // pin-unless-dead. `dentry_kill` stamps `LOCKREF_DEAD` BEFORE a dying dentry

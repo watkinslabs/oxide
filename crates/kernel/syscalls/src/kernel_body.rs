@@ -80,6 +80,7 @@ pub use time_common::init_wall_clock_from_rtc;
 mod statfs_common;
 #[path = "000_read.rs"] pub mod s000_read;
 mod open_common;
+mod open_display;
 #[path = "002_open.rs"] pub mod s002_open;
 #[path = "110_getppid.rs"] pub mod s110_getppid;
 #[path = "009_mmap.rs"] pub mod s009_mmap;
