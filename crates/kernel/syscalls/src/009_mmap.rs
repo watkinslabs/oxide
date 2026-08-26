@@ -125,8 +125,10 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
             Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
         };
         // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+        // Borrow current->files as Linux does; this task cannot replace its
+        // table while the syscall is executing.
         let fdt = match unsafe { cur.fd_table_ref() } {
-            Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
+            Some(t) => t.as_ref(), None => return -(Errno::Ebadf.as_i32() as i64),
         };
         let file = match fdt.get(fd as i32) {
             Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
