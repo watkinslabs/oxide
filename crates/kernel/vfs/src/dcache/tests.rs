@@ -57,6 +57,8 @@ for i in 0..64u32 {
         let pptr = Arc::as_ptr(&r);
         let found = DENTRY_HASHTABLE.lookup_locked(pptr, qhash, &n).expect("published child");
         assert_eq!(found.name(), n);
+        let rcu_found = DENTRY_HASHTABLE.lookup_rcu(pptr, qhash, &n).expect("rcu published child");
+        assert!(Arc::ptr_eq(&found, &rcu_found), "rcu lookup disagrees for {n}");
         assert!(Arc::ptr_eq(&found, &super::d_lookup(&r, &n).expect("d_lookup agrees")));
 }
 }
@@ -77,6 +79,7 @@ let published = DENTRY_HASHTABLE.lookup_locked(pptr, qhash, "hash-owner").expect
 assert!(weak.upgrade().is_some(), "published dentry survives external references");
 DENTRY_HASHTABLE.remove(&published);
 drop(published);
+sync::rcu_barrier();
 assert!(weak.upgrade().is_none(), "d_drop releases the hash ownership reference");
 }
 
@@ -87,7 +90,7 @@ fn lookup_is_o1_bounded_chains() {
 let r = root();
 for i in 0..256u32 { d_add_negative(&r, &format!("e{i}")); }
 let max = DENTRY_HASHTABLE.buckets.iter()
-        .map(|b| b.entries.lock().len())
+        .map(super::hash::DentryHashTable::bucket_len)
         .max().unwrap_or(0);
 assert!(max <= 12, "max chain {max} too long — not O(1)");
 }

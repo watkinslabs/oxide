@@ -38,6 +38,9 @@ pub fn sys_newfstatat(args: &SyscallArgs) -> i64 {
         empty: (flags & AT_EMPTY_PATH) != 0,
         no_follow_final: nofollow,
         follow: !nofollow,
+        // Ordinary cached stats begin in the lockless dcache walk. Misses and
+        // blocking complications restart through the existing ref walk.
+        rcu: true,
         ..Default::default()
     };
     #[cfg(feature = "debug-syscost")]

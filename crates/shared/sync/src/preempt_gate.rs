@@ -230,6 +230,32 @@ pub(crate) fn acquire(_rank: u16) -> PreemptToken {
     Some(ops.enable)
 }
 
+/// Enter an RCU read-side critical section without recording a lock class.
+/// # C: O(1)
+#[cfg(not(feature = "debug-preempt"))]
+pub(crate) fn acquire_rcu() -> PreemptToken {
+    let p = OPS.load(Ordering::Acquire);
+    if p.is_null() { return None; }
+    // SAFETY: OPS is installed only with a static PreemptOps value whose
+    // disable/enable pair remains valid for the kernel lifetime.
+    let ops = unsafe { *p };
+    (ops.disable)();
+    Some(ops.enable)
+}
+
+/// Enter an RCU read-side critical section without recording a lock class.
+/// # C: O(1)
+#[cfg(feature = "debug-preempt")]
+pub(crate) fn acquire_rcu() -> PreemptToken {
+    let p = OPS.load(Ordering::Acquire);
+    if p.is_null() { return PreemptToken { enable: None }; }
+    // SAFETY: OPS is installed only with a static PreemptOps value whose
+    // disable/enable pair remains valid for the kernel lifetime.
+    let ops = unsafe { *p };
+    (ops.disable)();
+    PreemptToken { enable: Some(ops.enable) }
+}
+
 /// Enter a diagnostic spinning-lock critical section. A regular spin guard
 /// cannot migrate while its preemption level is raised, so release reads the
 /// same current-CPU slot without enlarging every guard. # C: O(1)
@@ -288,6 +314,18 @@ pub(crate) fn acquire_trace_only(_rank: u16) -> PreemptToken { None }
 #[inline]
 pub(crate) fn release(token: PreemptToken) {
     if let Some(f) = token { f(); }
+}
+
+/// Leave the matching RCU read-side critical section. # C: O(1)
+#[cfg(not(feature = "debug-preempt"))]
+pub(crate) fn release_rcu(token: PreemptToken) {
+    if let Some(f) = token { f(); }
+}
+
+/// Leave the matching RCU read-side critical section. # C: O(1)
+#[cfg(feature = "debug-preempt")]
+pub(crate) fn release_rcu(token: PreemptToken) {
+    if let Some(f) = token.enable { f(); }
 }
 
 /// Leave a diagnostic spinning-lock critical section. # C: O(1)
