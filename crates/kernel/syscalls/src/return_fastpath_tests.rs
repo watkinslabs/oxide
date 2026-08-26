@@ -68,7 +68,9 @@ fn process_fault_stubs_inherit_saved_irq_state() {
     let mask = x86[call..].find("\"    cli\"").expect("exit IRQ mask") + call;
     assert!(vector < saved_if && saved_if < enable && enable < call && call < mask);
 
-    let arm = include_str!("../../../arch/hal-aarch64/src/vbar/asm.rs");
+    // The vector assembly is split by entry ownership; the synchronous-abort
+    // entry that classifies and re-enables owns all five markers below.
+    let arm = include_str!("../../../arch/hal-aarch64/src/vbar/asm/default.rs");
     let classify = arm.find("cmp  x9, #0x20").expect("abort classifier");
     let saved_i = arm.find("tbnz x9, #7, 9f").expect("saved DAIF.I test");
     let enable = arm[saved_i..].find("msr  daifclr, #2").expect("process IRQ enable") + saved_i;
