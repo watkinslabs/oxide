@@ -8,6 +8,7 @@ use uaccess::MAX_RW_COUNT;
 use crate::msg_layout::{MsgLayout, cmsg};
 
 const UIO_MAXIOV: usize = 1024;
+const UIO_FASTIOV: usize = 8;
 const SOCKADDR_STORAGE_LEN: usize = 128;
 /// Largest `msghdr` either ABI presents, so one stack buffer serves both.
 const MSGHDR_MAX: usize = 56;
@@ -18,8 +19,22 @@ struct IoVec {
     len: usize,
 }
 
+enum IoVecs {
+    Inline { entries: [IoVec; UIO_FASTIOV], len: usize },
+    Heap(Vec<IoVec>),
+}
+
+impl IoVecs {
+    fn as_slice(&self) -> &[IoVec] {
+        match self {
+            Self::Inline { entries, len } => &entries[..*len],
+            Self::Heap(entries) => entries,
+        }
+    }
+}
+
 struct SendMeta {
-    iov: Vec<IoVec>,
+    iov: IoVecs,
     control: u64,
     controllen: usize,
     name: Option<Vec<u8>>,
@@ -130,15 +145,31 @@ fn import_meta(msgp: u64, layout: MsgLayout) -> Result<SendMeta, i64> {
     let (name, iovlen) = import_name_and_iovlen_with(name, namelen, raw_iovlen, copy_vec)?;
     let stride = layout.iovec_size();
     let bytes_len = iovlen.checked_mul(stride).ok_or_else(|| errno(Errno::Emsgsize))?;
-    let raw = copy_vec(iovp, bytes_len)?;
-    let mut iov = Vec::with_capacity(iovlen);
-    for entry in raw.chunks_exact(stride) {
+    let mut raw_inline = [0u8; UIO_FASTIOV * 16];
+    let raw_heap = if iovlen <= UIO_FASTIOV {
+        if bytes_len != 0 {
+            uaccess::copy_from_user(&mut raw_inline[..bytes_len], iovp).map_err(errno)?;
+        }
+        None
+    } else { Some(copy_vec(iovp, bytes_len)?) };
+    let raw = match &raw_heap {
+        Some(raw) => raw.as_slice(),
+        None => &raw_inline[..bytes_len],
+    };
+    let mut inline = [IoVec { base: 0, len: 0 }; UIO_FASTIOV];
+    let mut heap = if iovlen > UIO_FASTIOV { Some(Vec::with_capacity(iovlen)) } else { None };
+    for (index, entry) in raw.chunks_exact(stride).enumerate() {
         let base = layout.word_at(entry, 0);
         let len = usize::try_from(layout.word_at(entry, layout.word()))
             .map_err(|_| errno(Errno::Einval))?;
         if len != 0 && !uaccess::access_ok(base, len) { return Err(errno(Errno::Efault)); }
-        iov.push(IoVec { base, len });
+        let iov = IoVec { base, len };
+        if let Some(entries) = heap.as_mut() { entries.push(iov); } else { inline[index] = iov; }
     }
+    let iov = match heap {
+        Some(entries) => IoVecs::Heap(entries),
+        None => IoVecs::Inline { entries: inline, len: iovlen },
+    };
     let controllen = usize::try_from(raw_controllen).map_err(|_| errno(Errno::Einval))?;
     if controllen > net::sysctl::optmem_max() { return Err(errno(Errno::Enobufs)); }
 
@@ -157,7 +188,7 @@ pub(crate) fn copy_control(layout: MsgLayout, src: u64, len: usize) -> Result<Ve
 /// Validate the send envelope and ancillary bytes without touching payload pages. # C: O(iovlen + name + control)
 pub(crate) fn import_raw_oob(msgp: u64, layout: MsgLayout) -> Result<socket::Message, i64> {
     let meta = import_meta(msgp, layout)?;
-    let requested_len = capped_total(&meta.iov);
+    let requested_len = capped_total(meta.iov.as_slice());
     let control = copy_control(layout, meta.control, meta.controllen)?;
     Ok(socket::Message { requested_len, control, name: meta.name, ..socket::Message::default() })
 }
@@ -166,8 +197,8 @@ pub(crate) fn import_raw_oob(msgp: u64, layout: MsgLayout) -> Result<socket::Mes
 /// # C: O(iovlen + bytes + faults)
 pub(crate) fn import(msgp: u64, layout: MsgLayout) -> Result<socket::Message, i64> {
     let meta = import_meta(msgp, layout)?;
-    let requested_len = capped_total(&meta.iov);
-    let (payload, payload_faulted) = match gather(&meta.iov, requested_len) {
+    let requested_len = capped_total(meta.iov.as_slice());
+    let (payload, payload_faulted) = match gather(meta.iov.as_slice(), requested_len) {
         Ok(result) => result,
         Err(error) if error == errno(Errno::Efault) => (Vec::new(), true),
         Err(error) => return Err(error),
@@ -178,14 +209,14 @@ pub(crate) fn import(msgp: u64, layout: MsgLayout) -> Result<socket::Message, i6
 
 fn import_envelope_at(msgp: u64, layout: MsgLayout) -> Result<(socket::Message, SendMeta), i64> {
     let mut meta = import_meta(msgp, layout)?;
-    let requested_len = capped_total(&meta.iov);
+    let requested_len = capped_total(meta.iov.as_slice());
     let control = copy_control(layout, meta.control, meta.controllen)?;
     let name = meta.name.take();
     Ok((socket::Message { requested_len, control, name, ..socket::Message::default() }, meta))
 }
 
 fn import_payload_from(meta: SendMeta, message: &mut socket::Message) -> Result<(), i64> {
-    match gather(&meta.iov, message.requested_len) {
+    match gather(meta.iov.as_slice(), message.requested_len) {
         Ok((payload, faulted)) => {
             message.payload = payload;
             message.payload_faulted = faulted;
