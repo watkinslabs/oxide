@@ -40,7 +40,7 @@ mod lifecycle;
 mod quota;
 mod validity;
 
-pub(crate) use io::read_byte_range_pub;
+pub(crate) use io::{read_byte_range_pub, write_durable_block};
 pub(crate) use io::write_byte_range as io_write_byte_range;
 
 /// Errors at the Mount layer.

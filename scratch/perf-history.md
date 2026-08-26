@@ -13,6 +13,7 @@ that artifact is regenerated.
 | B2699 baseline / `5ff9c0e11` | 1,170,786 | 7,318 | 6,250 | 71,407 | 28,235 | 22,519 | 338 | 2,967 | queue-depth investigation baseline |
 | B2708 / `569260958` | 1,365,729 | 7,612 | 5,574 | 21,764 | 35,112 | 21,764 | 254 | 3,185 | DMA ordering + stat-walk lane; no measured stat win |
 | B2709 / `eac588295` | 1,366,469 | 6,518 | 4,770 | 21,426 | 27,372 | 19,912 | 248 | 2,551 | combined page-table lookup/teardown |
+| B2711 / `cb057d656` | 1,366,590 | 6,796 | 4,973 | 22,230 | 27,739 | 20,345 | 219 | 2,510 | journal publication barrier; no demonstrated flush-count win |
 
 The B2709 `munmap` result is a material improvement over B2699: 71,407 ns
 to 21,426 ns (about 70% lower), and 52x to 16x the host baseline. The B2708

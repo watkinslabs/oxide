@@ -177,27 +177,16 @@ impl Mount {
         // the commit block but before the target writes finished lost the txn and
         // left the fs half-updated. Now such a crash replays [desc_at..commit].
         let mut sb_bytes = sb_bytes;
-        #[cfg(feature = "debug-fsync-latency")]
-        let flush_started_ns = crate::fsync_latency::now_ns();
-        // WAL barrier #1. A failed flush means the journal body may NOT be on
-        // stable media, so publishing `s_start` next would point recovery at a
-        // transaction that might not exist. Discarding this error (the old
-        // `let _ =`) made the write-ahead guarantee unverifiable even in
-        // principle. Linux checks the flush's return value and propagates
-        // any error from the journal commit path.
-        self.dev.flush().map_err(|_| MountError::BlockIo)?;
-        #[cfg(feature = "debug-fsync-latency")]
-        crate::fsync_latency::report(b"journal-flush", flush_started_ns, staged_blocks);
         sb_bytes[0x18..0x1C].copy_from_slice(&seq.to_be_bytes());      // s_sequence = seq
         sb_bytes[0x1C..0x20].copy_from_slice(&desc_at.to_be_bytes());  // s_start = desc_at
         if !jsb.stamp_checksum(&mut sb_bytes) { return Err(MountError::BadChecksum); }
-        log.write_journal_block(0, &sb_bytes)?;
         #[cfg(feature = "debug-fsync-latency")]
         let publish_started_ns = crate::fsync_latency::now_ns();
-        // WAL barrier #2: "recover from desc_at" must be durable BEFORE any
-        // target write, or a crash mid-checkpoint leaves the fs half-updated
-        // with no record of the transaction to replay.
-        self.dev.flush().map_err(|_| MountError::BlockIo)?;
+        // The journal superblock publication is the commit record's
+        // durability point. Its preflush makes the already-submitted body
+        // durable first; FUA (or the block layer's postflush fallback) makes
+        // this publication durable before any checkpoint target write.
+        log.write_journal_block_durable(0, &sb_bytes)?;
         #[cfg(feature = "debug-fsync-latency")]
         crate::fsync_latency::report(b"journal-publish", publish_started_ns, staged_blocks);
         // Journal now leads the fs; apply staged blocks to their targets.
@@ -402,6 +391,14 @@ impl<'m> ExtentLogReader<'m> {
         // way the option reaches the queue that orders these writes against
         // everything else the device has in flight.
         self.mount.write_journal_byte_range(lba * bs, data)
+    }
+
+    fn write_journal_block_durable(&self, jblk: u32, data: &[u8]) -> Result<(), MountError> {
+        let lba = self.map(jblk).ok_or(MountError::NotFound)?;
+        let bs = self.mount.sb.block_size as u64;
+        crate::mount::write_durable_block(
+            &*self.mount.dev, lba * bs, data, self.mount.journal_request_ioprio(),
+        )
     }
 }
 
