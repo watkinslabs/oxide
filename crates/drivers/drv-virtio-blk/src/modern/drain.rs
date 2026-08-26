@@ -24,6 +24,20 @@ pub(super) const fn used_entry_id_off(slot: usize) -> usize {
     USED_RING_OFF + slot * USED_ELEM_BYTES
 }
 
+/// Byte offset of a used entry's `len` — how many bytes the device says it
+/// wrote into the chain (Virtio 1.2 §2.7.8). # C: O(1)
+pub(super) const fn used_entry_len_off(slot: usize) -> usize {
+    used_entry_id_off(slot) + core::mem::size_of::<u32>()
+}
+
+/// The `len` a completed request should carry: the status byte the device
+/// always writes, plus the data it wrote for a device-to-driver transfer.
+/// A driver-to-device write has only the status byte written back.
+/// # C: O(1)
+pub(super) const fn expected_used_len(is_in: bool, data_len: u32, in_len: u32) -> u32 {
+    if is_in { data_len + in_len } else { in_len }
+}
+
 /// Whether a drain may read this queue's used ring at all. A queue whose rings
 /// were never programmed, or a device with no HHDM window, has no ring to walk;
 /// `busy` means a SYNCHRONOUS owner holds the engine turn and is watching
@@ -87,6 +101,33 @@ impl BlkState {
                     self.poisoned.store(true, core::sync::atomic::Ordering::Release);
                     continue;
                 };
+                // Completion cross-check (`debug-blk-verify`). The engine's own
+                // documentation says it has one owner at a time and is not yet
+                // safe for several outstanding chains, and routing filesystem
+                // reads onto it produced SIGBUS inside userspace libraries —
+                // a read that returned the wrong bytes. Nothing checked the
+                // device's own account of what it wrote, so a mismatched
+                // completion looked exactly like a correct one.
+                #[cfg(feature = "debug-blk-verify")]
+                {
+                    // SAFETY: same used frame and published slot as the `id`
+                    // load above; `len` is the adjacent in-bounds u32.
+                    let len = unsafe {
+                        core::ptr::read_volatile(used.add(used_entry_len_off(slot)) as *const u32)
+                    };
+                    let want = expected_used_len(
+                        ring.pending[position].is_in,
+                        ring.pending[position].data_len,
+                        virtio::blk::zoned::in_header_bytes(blk::VIRTIO_BLK_T_IN) as u32);
+                    if len != want {
+                        klog::write_raw(b"[BLK-VERIFY] used len mismatch head=");
+                        klog::write_dec_u64(head as u64);
+                        klog::write_raw(b" got=");  klog::write_dec_u64(len as u64);
+                        klog::write_raw(b" want="); klog::write_dec_u64(want as u64);
+                        klog::write_raw(b" inflight="); klog::write_dec_u64(ring.pending.len() as u64);
+                        klog::write_raw(b"\n");
+                    }
+                }
                 ring.free_heads.push(head);
                 ring.pending.remove(position)
             };

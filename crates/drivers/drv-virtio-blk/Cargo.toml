@@ -35,6 +35,7 @@ hal-aarch64 = { path = "../../arch/hal-aarch64" }
 drv = { path = "../drv" }
 
 [features]
+debug-blk-verify = []  # [BLK-VERIFY] cross-check each completion against the device's own used-ring `len`, and report how many chains were outstanding — the detector for the owned-request corruption
 debug-faultcost = ["pmm/debug-faultcost"]  # report turnstile-wait vs device time into the [FAULTCOST] profile
 default = []
 hosted = []
