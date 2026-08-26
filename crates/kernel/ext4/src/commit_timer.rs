@@ -57,7 +57,22 @@ struct ItableProgress {
 
 /// Register `mount`'s journal for periodic commits. Idempotent per mount.
 /// # C: O(N_mounts)
+/// Drive the periodic commit from the flusher's pass.
+///
+/// Registered with the block layer at mount, alongside the page-cache flush.
+/// Until this existed `tick` had no caller outside its own tests: the registry
+/// filled up at mount and nothing ever walked it, so the `commit=` interval
+/// committed nothing and the only commits were the ones an operation performed
+/// on its own stack.
+/// # C: O(N_mounts) + O(dirty) per due mount
+pub fn flush_pass() { tick(timekeeper::monotonic_ns()); }
+
+/// Register a mount with the periodic committer, and make sure the flusher
+/// knows to visit it. Idempotent on both halves: a mount already registered is
+/// skipped, and the block layer keeps one entry per flusher.
+/// # C: O(N_mounts)
 pub fn register(mount: &Arc<Mount>) {
+    block::pagecache::register_fs_flusher(flush_pass);
     let mut g = MOUNTS.lock();
     if g.iter().any(|r| Weak::as_ptr(&r.mount) == Arc::as_ptr(mount)) { return; }
     g.push(Registered { mount: Arc::downgrade(mount), last_ns: None,
@@ -81,6 +96,12 @@ pub fn tick(now_ns: u64) {
                 // First sighting: start this mount's interval now rather than
                 // committing a transaction whose age is unknown.
                 None => r.last_ns = Some(now_ns),
+                // A batch that filled asked for this commit; its age has not
+                // run out yet but its block budget has.
+                Some(_) if m.batch_full.load(core::sync::atomic::Ordering::Acquire) => {
+                    r.last_ns = Some(now_ns);
+                    due.push(m);
+                }
                 Some(last) if due::is_due(last, now_ns, m.behaviour().commit_secs) => {
                     // Stamped whether or not the commit below succeeds: a
                     // persistently failing device would otherwise turn every
@@ -96,7 +117,13 @@ pub fn tick(now_ns: u64) {
     // Outside the registry lock: a commit sleeps on device I/O, and holding a
     // spinlock across that would park every other mount's registration behind
     // this one's disk.
-    for m in due { let _ = m.commit_batch(); }
+    for m in due {
+        // Cleared before the attempt: a commit that fails must not leave the
+        // request latched, or a persistently failing device turns every visit
+        // into another commit of the same batch.
+        m.batch_full.store(false, core::sync::atomic::Ordering::Release);
+        let _ = m.commit_batch();
+    }
     run_itable_init(now_ns);
 }
 
