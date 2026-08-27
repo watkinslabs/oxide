@@ -64,7 +64,7 @@ fn dirfd_base(dirfd: i32, op: &'static [u8], raw: &str, ignore_if_absolute: bool
     }
     let cur = current_task().ok_or(ebadf)?;
     if dirfd == AT_FDCWD {
-        if let Some(p) = cur.fs_context_snapshot().cwd_vfs() {
+        if let Some(p) = cur.fs_cwd_vfs() {
             if p.mnt_id != vfs::mount::MNT_ID_NONE { return Ok((p.mnt_id, p.dentry)); }
         }
         let root = resolution_root_vfs().ok_or(ebadf)?.0;
@@ -178,7 +178,7 @@ fn resolve_empty_at(dirfd: i32) -> Result<vfs::VfsPath, i64> {
     let ebadf = -(Errno::Ebadf.as_i32() as i64);
     if dirfd == AT_FDCWD {
         let cur = current_task().ok_or(ebadf)?;
-        if let Some(p) = cur.fs_context_snapshot().cwd_vfs() {
+        if let Some(p) = cur.fs_cwd_vfs() {
             if p.mnt_id != vfs::mount::MNT_ID_NONE { return Ok(p); }
         }
         return Ok(resolution_root_vfs().ok_or(ebadf)?.0);

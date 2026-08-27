@@ -53,7 +53,7 @@ fn raw_lookup_base() -> Result<(vfs::VfsPath, vfs::VfsPath, bool), vfs::VfsError
     let (root, beneath) = resolution_root_vfs().ok_or(vfs::VfsError::Enoent)?;
     let start = match sched::live::current() {
         Some(cur) => {
-            cur.fs_context_snapshot().cwd_vfs()
+            cur.fs_cwd_vfs()
                 .filter(|p| p.mnt_id != vfs::mount::MNT_ID_NONE)
                 .unwrap_or_else(|| root.clone())
         }
