@@ -31,6 +31,17 @@ pub mod node;
 pub mod ops;
 pub mod sb;
 
+/// May the caller park rather than spin?
+///
+/// Mirrors the block layer's own guard: a sleeping acquire needs a task to
+/// park, and the idle task reads blocks. # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+fn can_sleep() -> bool { sched::current().is_some() && !sched::preempt::in_atomic() }
+
+/// Hosted, every caller is an ordinary test thread. # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+fn can_sleep() -> bool { true }
+
 /// The one name this filesystem is registered under.
 pub const SQUASHFS_NAME: &str = "squashfs";
 
@@ -83,14 +94,22 @@ impl SquashFs {
 
     /// The mounted volume, for this crate's operations.
     ///
-    /// # SAFETY: every caller is a VFS operation or a mount-time step running
-    /// in process context and holding no spinlock, which is what a sleeping
-    /// lock requires; this filesystem takes no other lock.
+    /// Parks when the caller may sleep and spins on `try_lock` when it may
+    /// not. A filesystem read reaches this from process context nearly always,
+    /// but not only: the idle task reads blocks, and parking there has no task
+    /// to park. `try_lock` is the one form legal without a sleepable context,
+    /// so the rare caller that cannot sleep waits without one.
     /// # C: O(1) uncontended
     pub(crate) fn volume(&self) -> sched::live::MutexGuard<'_, Volume<BlockSource>> {
-        // SAFETY: process context, no spinlock held — see the method contract
-        // above, which every call site in this crate satisfies.
-        unsafe { self.volume.lock() }
+        if can_sleep() {
+            // SAFETY: process context with no spinlock held, which is what the
+            // sleeping acquire requires and what `can_sleep` has just checked.
+            return unsafe { self.volume.lock() };
+        }
+        loop {
+            if let Some(g) = self.volume.try_lock() { return g; }
+            sync::relax();
+        }
     }
 
     /// Always false: the format records no way to change an image in place.
