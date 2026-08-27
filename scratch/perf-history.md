@@ -19,6 +19,8 @@ that artifact is regenerated.
 | B2759-r2 / `9a3e02e98` | 1,366,360 | 6,522 | 4,773 | 22,355 | 26,728 | 19,753 | 178 | 2,035 | repeat; GNOME marker complete |
 | B2765-r1 / working tree | 1,365,468 | 6,076 | 4,450 | 20,904 | 14,957 | 19,960 | 199 | 2,167 | owned AF_UNIX stream payload; GNOME marker complete |
 | B2765-r2 / working tree | 1,366,067 | 6,052 | 4,430 | 21,115 | 14,979 | 20,100 | 219 | 2,203 | repeat; GNOME marker complete |
+| perf01-r1 / working tree | 1,365,658 | 5,956 | 4,361 | 21,180 | — | 20,118 | 201 | 3,048 | readahead cache-first admission; GNOME marker complete |
+| perf01-r2 / working tree | 1,365,492 | 5,998 | 4,393 | 20,858 | — | 20,068 | 169 | 2,249 | repeat; readahead cache-first admission; GNOME marker complete |
 
 The B2709 `munmap` result is a material improvement over B2699: 71,407 ns
 to 21,426 ns (about 70% lower), and 52x to 16x the host baseline. The B2708

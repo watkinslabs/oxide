@@ -256,11 +256,20 @@ impl Ext4FrameStore {
     /// # C: O(nr_pages / window) device reads
     pub fn readahead(&self, start: u64, nr_pages: u64) {
         if nr_pages == 0 { return; }
-        let Ok(dinode) = self.st.mount.read_inode(self.ino) else { return };
-        if !dinode.is_reg() { return; }
         let total = self.size.load(Ordering::Acquire);
         let last_page = (total + PG as u64 - 1) / PG as u64;
         let end = (start + nr_pages).min(last_page);
+        if start >= end { return; }
+        // Linux page-cache readahead first tests the mapping for a useful
+        // resident range. Do not fetch the inode table merely to discover
+        // that every requested page is already present.
+        let has_miss = {
+            let pages = self.pages.lock();
+            (start..end).any(|idx| !pages.contains_key(&idx))
+        };
+        if !has_miss { return; }
+        let Ok(dinode) = self.st.mount.read_inode(self.ino) else { return };
+        if !dinode.is_reg() { return; }
         let mut idx = start;
         while idx < end {
             if self.pages.lock().contains_key(&idx) { idx += 1; continue; }
