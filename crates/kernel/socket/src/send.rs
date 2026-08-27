@@ -359,7 +359,7 @@ pub(crate) fn send_prepared(ctx: &SendContext<'_>, target: &SendFile, message: M
                     | net::sock::SockKind::Raw6(_)))
             { return Err(Error::Efault); }
             #[cfg(target_os = "oxide-kernel")]
-            { send_inet(ctx, target, socket, &message, flags, Box::new(prepared)) }
+            { send_inet(ctx, target, socket, message, flags, Box::new(prepared)) }
             #[cfg(not(target_os = "oxide-kernel"))]
             {
                 match prepared {

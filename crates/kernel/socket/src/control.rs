@@ -38,6 +38,14 @@ pub(crate) enum UnixScm {
     Stream { scm: Scm, target: StreamTarget },
 }
 
+/// Whether a prepared stream carries no SCM record. # C: O(1)
+pub(crate) fn unix_stream_control_free(scm: &UnixScm) -> bool {
+    match scm {
+        UnixScm::Stream { scm, .. } => scm.files.is_empty() && scm.creds.is_none(),
+        UnixScm::Datagram { .. } => false,
+    }
+}
+
 fn i32_at(bytes: &[u8], offset: usize) -> i32 {
     i32::from_ne_bytes(bytes[offset..offset + 4].try_into().unwrap())
 }

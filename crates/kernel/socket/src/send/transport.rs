@@ -47,7 +47,7 @@ fn tcp_urgent_tail(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSocket>,
 #[cfg(target_os = "oxide-kernel")]
 #[inline(never)]
 pub(super) fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<net::sock::InetSocket>,
-    message: &Message, flags: u32, prepared: Box<InetPrepared>) -> KResult<usize>
+    message: Message, flags: u32, prepared: Box<InetPrepared>) -> KResult<usize>
 {
     let (dest, control, autobind) = match *prepared {
         InetPrepared::Packet =>
@@ -87,7 +87,7 @@ pub(super) fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<n
     if plan == crate::oob::OobPlan::Unsupported { return Ok(0); }
     let body = crate::oob::plan_body(plan, message.payload.len());
     if stream && body == 0 && matches!(plan, crate::oob::OobPlan::Split { .. }) {
-        return tcp_urgent_tail(ctx, socket, message, 0, signals_pipe, flags);
+        return tcp_urgent_tail(ctx, socket, &message, 0, signals_pipe, flags);
     }
     let mut total = 0usize;
     loop {
@@ -98,7 +98,7 @@ pub(super) fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<n
             Ok(bytes) if stream && bytes != 0 => {
                 total += bytes;
                 if total >= body {
-                    return tcp_urgent_tail(ctx, socket, message, total, signals_pipe, flags);
+                    return tcp_urgent_tail(ctx, socket, &message, total, signals_pipe, flags);
                 }
             }
             Ok(bytes) => return Ok(total.saturating_add(bytes)),
@@ -131,7 +131,7 @@ pub(super) fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<n
 #[cfg(target_os = "oxide-kernel")]
 #[inline(never)]
 fn send_unix_prepared(ctx: &SendContext<'_>, target: &SendFile,
-    socket: &Arc<net::sock::InetSocket>, message: &Message, flags: u32,
+    socket: &Arc<net::sock::InetSocket>, message: Message, flags: u32,
     scm: Box<crate::control::UnixScm>) -> KResult<usize>
 {
     send_unix_blocking(ctx, target, socket, message, flags, *scm)
@@ -139,7 +139,7 @@ fn send_unix_prepared(ctx: &SendContext<'_>, target: &SendFile,
 
 #[cfg(target_os = "oxide-kernel")]
 fn send_unix_blocking(ctx: &SendContext<'_>, target: &SendFile,
-    socket: &Arc<net::sock::InetSocket>, message: &Message, flags: u32,
+    socket: &Arc<net::sock::InetSocket>, mut message: Message, flags: u32,
     scm: crate::control::UnixScm) -> KResult<usize>
 {
     let nonblock = target.nonblock() || flags as u64 & net::uapi::MSG_DONTWAIT != 0;
@@ -164,9 +164,36 @@ fn send_unix_blocking(ctx: &SendContext<'_>, target: &SendFile,
     let body = crate::oob::plan_body(plan, message.payload.len());
     let requested = if matches!(plan, crate::oob::OobPlan::Split { .. }) { body + 1 } else { body };
     let mut total = 0usize;
+
+    // Linux's ordinary stream send allocates one queue record and copies the
+    // user iterator into it. This is the equivalent fast path for an imported
+    // Rust Vec: transfer it only for a complete, control-free, in-band write.
+    // If the queue cannot accept the whole record, retain the Vec and use the
+    // existing partial-send loop so backpressure and retry ordering are exact.
+    if stream && !matches!(plan, crate::oob::OobPlan::Split { .. })
+        && message.payload.len() <= cap
+    {
+        if crate::control::unix_stream_control_free(&scm) {
+            if let crate::control::UnixScm::Stream { target:
+            crate::control::StreamTarget::Stream(pair, end), .. } = &scm
+            {
+                let payload = core::mem::take(&mut message.payload);
+                match pair.write_owned(*end, payload, cap) {
+                    Ok(n) => return Ok(n),
+                    Err((net::unix_sock::UnixStreamSendError::PeerClosed, payload)) => {
+                        message.payload = payload;
+                        return Err(Error::Epipe);
+                    }
+                    Err((net::unix_sock::UnixStreamSendError::WouldBlock, payload)) => {
+                        message.payload = payload;
+                    }
+                }
+            }
+        }
+    }
     loop {
         let tail = crate::oob::owes_oob(plan, total);
-        match crate::control::send_unix_once(ctx, socket, message, &scm, cap, total, body, tail) {
+        match crate::control::send_unix_once(ctx, socket, &message, &scm, cap, total, body, tail) {
             Ok(n) if stream && n != 0 => {
                 total += n;
                 if total >= requested { return Ok(total); }

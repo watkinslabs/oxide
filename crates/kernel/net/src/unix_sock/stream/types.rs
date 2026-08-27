@@ -73,6 +73,11 @@ pub struct UnixPair {
 /// Linux `unix_stream_read_generic` where an skb's `fp` fds ride that
 /// skb's first byte. `produced`/`consumed` are monotonic byte counters.
 pub struct UnixRing {
+    /// Owned payload chunks are the Rust equivalent of Linux receive-queue
+    /// skbs. They precede the legacy byte buffer and avoid a second payload
+    /// copy when the imported allocation can be transferred wholesale.
+    pub owned: VecDeque<Vec<u8>>,
+    pub owned_len: usize,
     pub buf: VecDeque<u8>,
     pub closed_writer: bool,
     pub reader_shutdown: bool,
@@ -97,6 +102,8 @@ impl UnixRing {
     /// # C: O(1)
     pub(super) fn new() -> Self {
         Self {
+            owned: VecDeque::new(),
+            owned_len: 0,
             buf: VecDeque::new(),
             closed_writer: false,
             reader_shutdown: false,
@@ -111,5 +118,63 @@ impl UnixRing {
     /// Bytes a receive may still take. A spent out-of-band record occupies a
     /// queue slot but delivers nothing, so `SIOCINQ`/`FIONREAD` and every
     /// other queued-byte report discount it. # C: O(1)
-    pub fn readable_len(&self) -> usize { self.buf.len().saturating_sub(self.oob_marks.len()) }
+    pub fn queued_len(&self) -> usize { self.owned_len + self.buf.len() }
+
+    /// Bytes a receive may still take after the spent OOB marks are removed.
+    /// # C: O(1)
+    pub fn readable_len(&self) -> usize { self.queued_len().saturating_sub(self.oob_marks.len()) }
+
+    /// Transfer an already-imported payload into the receive queue. The
+    /// compatibility buffer must be empty, making FIFO order unambiguous.
+    /// # C: O(1) amortized
+    pub fn append_owned(&mut self, data: Vec<u8>) {
+        debug_assert!(self.buf.is_empty());
+        self.owned_len += data.len();
+        self.owned.push_back(data);
+    }
+
+    /// # C: O(data.len())
+    pub fn append_borrowed(&mut self, data: &[u8]) { self.buf.extend(data.iter().copied()); }
+
+    /// Copy a logical queue range into `out`. # C: O(offset + len)
+    pub fn copy_range(&self, mut offset: usize, len: usize, out: &mut Vec<u8>) {
+        let mut left = len;
+        for chunk in &self.owned {
+            if left == 0 { return; }
+            if offset >= chunk.len() { offset -= chunk.len(); continue; }
+            let take = core::cmp::min(left, chunk.len() - offset);
+            out.extend_from_slice(&chunk[offset..offset + take]);
+            left -= take;
+            offset = 0;
+        }
+        if left != 0 { out.extend(self.buf.iter().skip(offset).take(left).copied()); }
+    }
+
+    /// Remove the logical prefix of the queue. # C: O(number of chunks + len)
+    pub fn consume(&mut self, mut count: usize) {
+        while count != 0 {
+            let Some(front) = self.owned.front_mut() else { break };
+            let take = core::cmp::min(count, front.len());
+            if take == front.len() { self.owned.pop_front(); }
+            else { front.drain(..take); }
+            self.owned_len -= take;
+            count -= take;
+        }
+        while count != 0 && !self.buf.is_empty() {
+            self.buf.pop_front();
+            count -= 1;
+        }
+    }
+
+    /// # C: O(number of chunks)
+    pub fn clear_data(&mut self) { self.owned.clear(); self.owned_len = 0; self.buf.clear(); }
+
+    /// # C: O(number of chunks)
+    pub fn byte_at(&self, mut index: usize) -> Option<u8> {
+        for chunk in &self.owned {
+            if index < chunk.len() { return Some(chunk[index]); }
+            index -= chunk.len();
+        }
+        self.buf.get(index).copied()
+    }
 }

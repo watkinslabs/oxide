@@ -22,7 +22,7 @@ impl UnixPair {
         if self.peer_gone(end) || g.closed_writer || g.reader_shutdown {
             return ArmStreamWrite::PeerClosed;
         }
-        if g.buf.len() < cap { return ArmStreamWrite::Retry; }
+        if g.queued_len() < cap { return ArmStreamWrite::Retry; }
         // SAFETY: writer registration occurs under the outgoing-ring lock also
         // held by receive-side capacity publication before waking writers.
         unsafe { self.writer_waiters(end).prepare_to_wait_interruptible_with_deadline(deadline_ns); }
@@ -48,7 +48,7 @@ impl UnixPair {
         } else {
             g.ancillary.iter().any(|(off, _, _)| *off <= logical && *off > g.consumed)
         };
-        if g.buf.len() > offset || ancillary_ready { return ArmStreamRead::Retry; }
+        if g.queued_len() > offset || ancillary_ready { return ArmStreamRead::Retry; }
         if self.reset_pending(end) { return ArmStreamRead::Reset; }
         if g.closed_writer || g.reader_shutdown { return ArmStreamRead::Eof; }
         // SAFETY: caller is a running syscall task; registration occurs under
@@ -130,8 +130,8 @@ impl UnixPair {
         let incoming = match end { UnixEnd::A => &self.b_to_a, UnixEnd::B => &self.a_to_b };
         let (unread, fds): (bool, Vec<(u64, GcRights, crate::unix_sock::MsgCred)>) = {
             let mut g = incoming.lock();
-            let unread = !g.buf.is_empty() || !g.ancillary.is_empty();
-            g.buf.clear();
+            let unread = g.queued_len() != 0 || !g.ancillary.is_empty();
+            g.clear_data();
             g.consumed = g.produced;
             g.reader_shutdown = true;
             (unread, g.ancillary.drain(..).collect())
@@ -170,7 +170,7 @@ impl UnixPair {
     /// # C: O(1)
     pub fn is_eof(&self, end: UnixEnd) -> bool {
         let g = match end { UnixEnd::A => self.b_to_a.lock(), UnixEnd::B => self.a_to_b.lock() };
-        (g.closed_writer || g.reader_shutdown) && g.buf.is_empty() && !self.reset_pending(end)
+        (g.closed_writer || g.reader_shutdown) && g.queued_len() == 0 && !self.reset_pending(end)
     }
 
     /// Stream-end readiness:
@@ -184,11 +184,11 @@ impl UnixPair {
     pub fn poll_mask(&self, end: UnixEnd, sndbuf_cap: usize) -> u32 {
         let (has_data, peer_send_shut, local_recv_shut) = {
             let g = match end { UnixEnd::A => self.b_to_a.lock(), UnixEnd::B => self.a_to_b.lock() };
-            (!g.buf.is_empty(), g.closed_writer, g.reader_shutdown)
+            (g.queued_len() != 0, g.closed_writer, g.reader_shutdown)
         };
         let (local_send_shut, peer_recv_shut, queued) = {
             let g = match end { UnixEnd::A => self.a_to_b.lock(), UnixEnd::B => self.b_to_a.lock() };
-            (g.closed_writer, g.reader_shutdown, g.buf.len())
+            (g.closed_writer, g.reader_shutdown, g.queued_len())
         };
         let gone = self.peer_gone(end);
         let reset = self.reset_pending(end);
@@ -221,7 +221,7 @@ impl UnixPair {
         }
         let fds = {
             let mut outgoing = self.b_to_a.lock();
-            outgoing.buf.clear();
+            outgoing.clear_data();
             core::mem::take(&mut outgoing.ancillary)
         };
         drop(fds);

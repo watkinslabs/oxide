@@ -17,7 +17,22 @@ impl UnixPair {
 
     /// Append as many bytes as fit under the sender's queue cap. # C: O(data.len())
     pub fn write_bounded(&self, end: UnixEnd, data: &[u8], cap: usize) -> Result<usize, UnixStreamSendError> {
-        self.write_inner(end, data, GcRights::from_files(Vec::new()), None, cap, false)
+        self.write_inner(end, data, GcRights::from_files(Vec::new()), None, cap, false, None)
+    }
+
+    /// Enqueue an already-imported payload by transferring its allocation into
+    /// the receive queue. Callers use this only when the whole payload fits.
+    /// # C: O(1) amortized
+    pub fn write_owned(&self, end: UnixEnd, data: Vec<u8>, cap: usize)
+        -> Result<usize, (UnixStreamSendError, Vec<u8>)> {
+        let len = data.len();
+        let mut owned = Some(data);
+        let result = self.write_inner(end, &[], GcRights::from_files(Vec::new()),
+            None, cap, false, Some(&mut owned));
+        match result {
+            Ok(_) => Ok(len),
+            Err(e) => Err((e, owned.take().unwrap())),
+        }
     }
 
     /// Append `data` plus a SCM_RIGHTS burst, tagging the fds to the
@@ -31,30 +46,33 @@ impl UnixPair {
 
     /// Enqueue a classified canonical SCM_RIGHTS batch. # C: O(data.len() + rights)
     pub fn write_with_rights(&self, end: UnixEnd, data: &[u8], rights: GcRights) -> Result<usize, UnixStreamError> {
-        self.write_inner(end, data, rights, None, usize::MAX, false).map_err(|_| UnixStreamError::PeerClosed)
+        self.write_inner(end, data, rights, None, usize::MAX, false, None).map_err(|_| UnixStreamError::PeerClosed)
     }
 
     /// Enqueue one rights-bearing stream segment under a byte cap. # C: O(data.len() + rights)
     pub fn write_with_rights_bounded(&self, end: UnixEnd, data: &[u8], rights: GcRights,
         cap: usize) -> Result<usize, UnixStreamSendError>
-    { self.write_inner(end, data, rights, None, cap, false) }
+    { self.write_inner(end, data, rights, None, cap, false, None) }
 
     /// Enqueue rights with an explicitly validated SCM_CREDENTIALS record. # C: O(data.len() + rights)
     pub fn write_with_rights_and_creds(&self, end: UnixEnd, data: &[u8], rights: GcRights, creds: (u32, u32, u32)) -> Result<usize, UnixStreamError> {
-        self.write_inner(end, data, rights, Some(creds), usize::MAX, false).map_err(|_| UnixStreamError::PeerClosed)
+        self.write_inner(end, data, rights, Some(creds), usize::MAX, false, None).map_err(|_| UnixStreamError::PeerClosed)
     }
 
     /// Enqueue one credential-bearing stream segment under a byte cap. # C: O(data.len() + rights)
     pub fn write_with_rights_and_creds_bounded(&self, end: UnixEnd, data: &[u8], rights: GcRights,
         creds: (u32, u32, u32), cap: usize) -> Result<usize, UnixStreamSendError>
-    { self.write_inner(end, data, rights, Some(creds), cap, false) }
+    { self.write_inner(end, data, rights, Some(creds), cap, false, None) }
 
     /// `oob` marks the byte as the one awaiting `recv(MSG_OOB)`; its offset is
     /// recorded under the same ring lock that queues it, so no concurrent
     /// in-band write can be mistaken for it. # C: O(data.len() + rights)
     pub(super) fn write_inner(&self, end: UnixEnd, data: &[u8], rights: GcRights,
-        supplied_creds: Option<(u32, u32, u32)>, cap: usize, oob: bool) -> Result<usize, UnixStreamSendError> {
-        if data.is_empty() { return Ok(0); }
+        supplied_creds: Option<(u32, u32, u32)>, cap: usize, oob: bool,
+        owned: Option<&mut Option<Vec<u8>>>) -> Result<usize, UnixStreamSendError> {
+        let owned_data = owned.as_ref().and_then(|slot| slot.as_ref()).map(Vec::as_slice);
+        let data_len = owned_data.map_or(data.len(), |payload| payload.len());
+        if data_len == 0 { return Ok(0); }
         // DIAG (debug-dbus): dump AF_UNIX SOCK_STREAM messages that mention the
         // login1 session interface or carry a D-Bus error reply. dbus-broker
         // relays every method call/reply through these streams, so this captures
@@ -65,7 +83,7 @@ impl UnixPair {
         // pinning why mutter's get_session_proxy() returns NULL ("no matching
         // session"). Default-off; zero bytes on the hot path.
         #[cfg(feature = "debug-dbus")]
-        trace_dbus_stream(data);
+        trace_dbus_stream(owned_data.unwrap_or(data));
         let stable_cred = match end { UnixEnd::A => self.cred_a.get(), UnixEnd::B => self.cred_b.get() }.ids();
         let sender_cred = match supplied_creds {
             Some(ids) => crate::unix_sock::MsgCred::from_supplied(ids),
@@ -82,8 +100,14 @@ impl UnixPair {
         if self.peer_gone(end) || g.closed_writer || g.reader_shutdown {
             return Err(UnixStreamSendError::PeerClosed);
         }
-        let take = core::cmp::min(data.len(), cap.saturating_sub(g.buf.len()));
+        let take = core::cmp::min(data_len, cap.saturating_sub(g.queued_len()));
         if take == 0 { return Err(UnixStreamSendError::WouldBlock); }
+        // Do not publish ancillary state until ownership is certain. A queued
+        // owned record must be all-or-nothing; the caller retries it through
+        // the borrowed path when the existing queue prevents transfer.
+        if owned.is_some() && (take != data_len || !g.buf.is_empty()) {
+            return Err(UnixStreamSendError::WouldBlock);
+        }
         // Tag the burst to the offset of the first byte of THIS write so a
         // reader delivers it with (never before) that byte.
         if !rights.is_empty() {
@@ -104,12 +128,18 @@ impl UnixPair {
                 klog::write_raw(b"]\n");
             }
         }
-        if !data.is_empty() || !rights.is_empty() {
+        if data_len != 0 || !rights.is_empty() {
             let off = g.produced;
             g.ancillary.push_back((off, rights, sender_cred));
         }
         if oob { g.oob = Some(g.produced); }
-        g.buf.extend(data[..take].iter().copied());
+        if let Some(payload) = owned {
+            debug_assert_eq!(take, data_len);
+            debug_assert!(g.buf.is_empty());
+            g.append_owned(payload.take().unwrap());
+        } else {
+            g.append_borrowed(&data[..take]);
+        }
         let n = take;
         g.produced += n as u64;
         drop(g);

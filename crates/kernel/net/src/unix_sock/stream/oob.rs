@@ -132,7 +132,7 @@ impl UnixRing {
                     if !peek {
                         if self.oob == Some(head) { self.oob = None; }
                         if self.oob_marks.front() == Some(&head) { self.oob_marks.pop_front(); }
-                        self.buf.pop_front();
+                        self.consume(1);
                         self.consumed += 1;
                     }
                     head += 1;
@@ -157,7 +157,7 @@ impl UnixPair {
     /// # C: O(rights)
     pub fn write_oob(&self, end: UnixEnd, byte: u8, rights: GcRights,
         creds: Option<(u32, u32, u32)>, cap: usize) -> Result<usize, UnixStreamSendError>
-    { self.write_inner(end, &[byte], rights, creds, cap, true) }
+    { self.write_inner(end, &[byte], rights, creds, cap, true, None) }
 
     /// Whether a byte awaits `recv(MSG_OOB)` on the ring `end` reads. # C: O(1)
     pub fn has_oob(&self, end: UnixEnd) -> bool { self.recv_ring(end).lock().oob.is_some() }
@@ -166,7 +166,7 @@ impl UnixPair {
     pub fn at_oob_mark(&self, end: UnixEnd) -> bool {
         let g = self.recv_ring(end).lock();
         let head = g.consumed;
-        at_mark(head, g.oob, g.next_mark(head), !g.buf.is_empty())
+        at_mark(head, g.oob, g.next_mark(head), g.queued_len() != 0)
     }
 
     /// Queued bytes a receive may still take on the ring `end` reads. # C: O(1)
@@ -187,7 +187,7 @@ impl UnixPair {
         let mut g = self.recv_ring(end).lock();
         let at = g.oob?;
         let index = at.checked_sub(g.consumed)? as usize;
-        let byte = *g.buf.get(index)?;
+        let byte = g.byte_at(index)?;
         if !peek {
             g.oob = None;
             g.oob_marks.push_back(at);
