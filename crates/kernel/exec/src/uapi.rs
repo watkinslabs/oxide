@@ -25,3 +25,7 @@ pub(crate) const AT_SYSINFO_EHDR: u64 = 33;
 /// with the frozen `MINSIGSTKSZ`; glibc 2.34+ answers
 /// `sysconf(_SC_MINSIGSTKSZ)` from it.
 pub(crate) const AT_MINSIGSTKSZ: u64 = 51;
+
+/// `BINPRM_BUF_SIZE` — how much of an executable's head the format probes look
+/// at, and therefore the longest `#!` line that can be trusted whole.
+pub const BINPRM_BUF_SIZE: usize = 256;

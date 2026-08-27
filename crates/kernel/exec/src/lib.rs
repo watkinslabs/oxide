@@ -42,8 +42,9 @@ mod brk;
 mod layout;
 mod load;
 pub mod persona;
+pub mod shebang;
 mod place;
-mod uapi;
+pub mod uapi;
 
 #[cfg(test)]
 mod tests;

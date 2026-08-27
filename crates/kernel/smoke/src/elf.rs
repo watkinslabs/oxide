@@ -120,7 +120,34 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     }
     hal::kassert!(init_blob_opt.is_some(),
         "no /lib/systemd/systemd, /sbin/init or /init in rootfs (51§2 invariant 1)");
-    let init_blob = init_blob_opt.unwrap_or(b"");
+    let mut init_blob = init_blob_opt.unwrap_or(b"");
+    // `#!`: init may be a script, exactly as any other executable may. Linux
+    // reaches this through `search_binary_handler`, which tries every format in
+    // turn for PID 1 too; here the ELF loader is the only other one, so the
+    // script case is resolved before it. argv follows `load_script`: the
+    // interpreter, its optional argument, then the script's own path.
+    let mut argv: [&[u8]; 3] = [init_path, b"", b""];
+    let mut argc = 1usize;
+    if let Some(sb) = elf_load::shebang::parse(init_blob) {
+        match lookup_blob_by_path(sb.interp) {
+            Some(interp_blob) => {
+                argv[0] = sb.interp;
+                argc = 1;
+                if let Some(a) = sb.arg { argv[argc] = a; argc += 1; }
+                argv[argc] = init_path; argc += 1;
+                init_blob = interp_blob;
+            }
+            // Naming an interpreter that is not there is fatal for init, and
+            // saying which one is the whole diagnosis.
+            None => {
+                klog::write_raw(b"[INIT] script interpreter not found: ");
+                klog::write_raw(sb.interp);
+                klog::write_raw(b"\n");
+                hal::kassert!(false, "init script names an interpreter that is not in the rootfs");
+            }
+        }
+    }
+    let init_argv = &argv[..argc];
     #[cfg(feature = "debug-boot")]
     {
         klog::write_raw(b"[INFO]  init: selected ");
@@ -134,7 +161,7 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
         spawn_user_blob_with_vpid(
             init_blob, "init",
             0xC0DE_0002, /* vtgid */ 1, /* vtid */ 1,
-            &[init_path],
+            init_argv,
         );
     }
     // PID 1 is now fully formed (fd table installed). Enable IRQs: the
