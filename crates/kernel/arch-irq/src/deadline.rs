@@ -24,12 +24,22 @@ fn program(deadline_ns: u64) -> bool {
         let raw = raw_deadline(deadline_ns, monotonic_now, raw_now);
         if hal_x86_64::X86TimerOps::freq_khz() == 0 { return false; }
         // SAFETY: LAPIC timer vector is installed and this CPU owns its local timer/MSR.
-        unsafe {
-            if crate::lapic::timer_deadline_mode() {
-                return hal_x86_64::X86TimerOps::set_oneshot(Nanos(raw));
-            }
+        // Entering deadline mode and writing the compare are one hardware
+        // transaction from the scheduler's point of view.  If either half
+        // fails, the LVT may already have left periodic mode.  Restore a
+        // periodic safety tick so the failed arm cannot strand an idle CPU
+        // waiting for an interrupt that the LAPIC will never deliver; the
+        // next tick retries the one-shot transition.
+        let armed = unsafe {
+            crate::lapic::timer_deadline_mode()
+                && hal_x86_64::X86TimerOps::set_oneshot(Nanos(raw))
+        };
+        if !armed {
+            // SAFETY: this CPU owns its local LAPIC timer.  The fallback is
+            // deliberately periodic and therefore guarantees a retry path.
+            unsafe { let _ = crate::lapic::timer_periodic(1_000_000); }
         }
-        return false;
+        return armed;
     }
     #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
     {
@@ -38,7 +48,13 @@ fn program(deadline_ns: u64) -> bool {
         let raw = raw_deadline(deadline_ns, monotonic_now, raw_now);
         if hal_aarch64::ArmTimerOps::freq_khz() == 0 { return false; }
         // SAFETY: this CPU owns CNTV_CVAL/CTL and INTID 27 is enabled during timer bring-up.
-        unsafe { return hal_aarch64::ArmTimerOps::set_oneshot(Nanos(raw)); }
+        let armed = unsafe { hal_aarch64::ArmTimerOps::set_oneshot(Nanos(raw)) };
+        if !armed {
+            // SAFETY: this PE owns its virtual timer.  Keep a periodic retry
+            // source if the one-shot compare could not be enabled.
+            unsafe { hal_aarch64::timer::timer_periodic(1_000_000); }
+        }
+        return armed;
     }
     #[cfg(not(target_os = "oxide-kernel"))]
     { let _ = deadline_ns; return false; }
