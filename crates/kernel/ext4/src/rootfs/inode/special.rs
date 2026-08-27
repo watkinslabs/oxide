@@ -26,11 +26,19 @@ impl InodeOps for Ext4StatInodeOps {
     fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
         let d = Self::data(inode)?;
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
-        let raw = *d.raw.lock();
-        let child = if raw.size == inode.size() && raw.i_flags == d.raw_flags.load(core::sync::atomic::Ordering::Relaxed) {
+        let raw = d.raw.lock().clone();
+        let cached = d.raw_valid.load(core::sync::atomic::Ordering::Acquire)
+            && raw.size == inode.size()
+            && raw.i_flags == d.raw_flags.load(core::sync::atomic::Ordering::Relaxed);
+        let child = if cached {
             d.st.mount.lookup_in_dir(&raw, name.as_bytes())
         } else {
-            d.st.lookup_child_ino_result(d.ino, name)
+            let (fresh, child) = d.st.lookup_child_ino_with_inode(d.ino, name)
+                .map_err(|e| if matches!(e, crate::MountError::NotFound) {
+                    VfsError::Enoent
+                } else { super::regular::vfs_error_from_mount(e) })?;
+            d.publish_raw(fresh);
+            Ok(child)
         }.map_err(|e| if matches!(e, crate::MountError::NotFound) {
             VfsError::Enoent
         } else { super::regular::vfs_error_from_mount(e) })?;
@@ -124,7 +132,7 @@ impl InodeOps for Ext4StatInodeOps {
             }
         };
         d.st.forget_created_ino(ino);
-        d.refresh_raw();
+        d.invalidate_raw();
         Ok(d.st.wrap_created_any(ino, &node))
     }
 
@@ -150,7 +158,7 @@ impl InodeOps for Ext4StatInodeOps {
             if let Some(victim) = sb.ilookup(ext4_wrap_ino(target)) { victim.set_nlink(0); }
         }
         inode.drop_nlink();
-        d.refresh_raw();
+        d.invalidate_raw();
         Ok(())
     }
 
@@ -171,7 +179,7 @@ impl InodeOps for Ext4StatInodeOps {
             }
         };
         d.st.forget_created_ino(ino);
-        d.refresh_raw();
+        d.invalidate_raw();
         Ok(d.st.wrap_created_file(ino, &node))
     }
 
@@ -210,7 +218,7 @@ impl InodeOps for Ext4StatInodeOps {
         let out = mount.run_journaled(|m| m.unlink(d.ino, name.as_bytes()))
             .map_err(super::regular::vfs_error_from_mount)?;
         d.st.after_unlink(out)?;
-        d.refresh_raw();
+        d.invalidate_raw();
         Ok(())
     }
 
@@ -242,7 +250,7 @@ impl InodeOps for Ext4StatInodeOps {
         }).map_err(super::regular::vfs_error_from_mount)?;
         d.st.orphan_remove(ino);
         target.inc_nlink();
-        d.refresh_raw();
+        d.invalidate_raw();
         Ok(())
     }
 
@@ -261,7 +269,7 @@ impl InodeOps for Ext4StatInodeOps {
             }
         };
         d.st.forget_created_ino(ino);
-        d.refresh_raw();
+        d.invalidate_raw();
         Ok(())
     }
 
@@ -281,7 +289,7 @@ impl InodeOps for Ext4StatInodeOps {
             }
         };
         d.st.forget_created_ino(ino);
-        d.refresh_raw();
+        d.invalidate_raw();
         Ok(())
     }
 
@@ -414,11 +422,12 @@ impl FileOps for Ext4StatFileOps {
 pub(crate) fn build_stat_inode(
     st: Arc<RootfsState>, ino: u32, ft: FileType, perm: u16, size: u64, nlink: u32, rdev: u32,
     uid: u32, gid: u32, projid: u32, times: crate::timestamp::InodeTimes, generation: u32,
-    raw_flags: u32, raw: crate::inode::Inode,
+    raw_flags: u32, raw: Arc<crate::inode::Inode>,
 ) -> InodeRef {
     let data = Arc::new(Ext4StatData { st, ino, ft, size,
         raw_flags: core::sync::atomic::AtomicU32::new(raw_flags),
-        raw: ::sync::Spinlock::new(raw), });
+        raw: ::sync::Spinlock::new(raw),
+        raw_valid: core::sync::atomic::AtomicBool::new(true), });
     let weak_sb = data.st.sb.lock().clone();
     let xattrs = vfs::SimpleXattrs::new();
     data.st.mount.load_xattrs(ino, &xattrs);

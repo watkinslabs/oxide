@@ -233,6 +233,15 @@ impl RootfsState {
         self.mount.lookup_in_dir(&dir, name.as_bytes())
     }
 
+    /// Resolve a child and return the authoritative parent image used. # C: O(1) I/O + O(N_entries)
+    pub fn lookup_child_ino_with_inode(&self, dir_ino: u32, name: &str)
+        -> Result<(crate::inode::Inode, u32), crate::MountError>
+    {
+        let dir = self.mount.read_inode(dir_ino)?;
+        let child = self.mount.lookup_in_dir(&dir, name.as_bytes())?;
+        Ok((dir, child))
+    }
+
     /// Iterate dir entries at `path`, calling `f(name, file_type)`.
     /// # C: O(N entries)
     pub fn read_dir<F: FnMut(&[u8], u8)>(&self, path: &[u8], mut f: F) -> Option<()> {
