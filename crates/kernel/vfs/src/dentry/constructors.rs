@@ -34,11 +34,16 @@ impl Dentry {
     }
 
     /// Shared builder. # C: O(name.len())
-    pub(super) fn build(parent: Option<Arc<Dentry>>, name: &str, inode: Option<InodeRef>, sb: Weak<SuperBlock>, d_op: Option<&'static DentryOps>, mut flags: u32) -> Arc<Self> {
+    pub(super) fn build(parent: Option<Arc<Dentry>>, name: &str, inode: Option<InodeRef>, sb: Weak<SuperBlock>, d_op: Option<&'static DentryOps>, flags: u32) -> Arc<Self> {
+        Self::build_with_hash(parent, name, inode, sb, d_op, flags, None)
+    }
+
+    /// Shared builder with a caller-supplied Linux `qstr.hash`. # C: O(name.len())
+    pub(super) fn build_with_hash(parent: Option<Arc<Dentry>>, name: &str, inode: Option<InodeRef>, sb: Weak<SuperBlock>, d_op: Option<&'static DentryOps>, mut flags: u32, hash: Option<u32>) -> Arc<Self> {
         if inode.is_none() { flags |= D_NEGATIVE; }
         flags = (flags & !D_TYPE_MASK) | type_bits_for(&inode);
         flags = (flags & !D_OP_MASK) | op_flags_for(d_op);
-        let qname = QStr::new(parent.as_ref(), name);
+        let qname = hash.map_or_else(|| QStr::new(parent.as_ref(), name), |h| QStr::with_hash(h, name));
         let d = Arc::new(Self {
             parent,
             name: qname,
@@ -82,6 +87,15 @@ impl Dentry {
             .and_then(|i| i.i_op().child_d_op(&i, name))
             .or(parent.d_op);
         Self::build(Some(parent.clone()), name, inode, parent.sb.clone(), d_op, 0)
+    }
+
+    /// Child constructor when the pathname walker already calculated qstr.hash.
+    /// # C: O(name.len())
+    pub(crate) fn new_child_with_hash(parent: &Arc<Dentry>, name: &str, inode: Option<InodeRef>, hash: u32) -> Arc<Self> {
+        let d_op = parent.inode()
+            .and_then(|i| i.i_op().child_d_op(&i, name))
+            .or(parent.d_op);
+        Self::build_with_hash(Some(parent.clone()), name, inode, parent.sb.clone(), d_op, 0, Some(hash))
     }
 
     /// Construct a superblock root dentry. # C: O(1)

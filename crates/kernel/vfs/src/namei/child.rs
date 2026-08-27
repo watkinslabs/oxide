@@ -38,6 +38,9 @@ impl Nameidata {
         // mutates exclusively through the flushed create/unlink/rename syscalls.
         // On a pseudo-fs the miss propagates un-cached (re-walks next time), so a
         // dynamically-appearing entry is never masked.
+        // Linux computes qstr.hash while parsing the component and carries it
+        // through both the fast probe and any slow dentry allocation.
+        let hash = Dentry::compute_hash(Some(&self.cur_dentry), comp);
         match crate::dcache::d_lookup_reval_rcu(&self.cur_dentry, comp, self.flags.reval, self.rcu) {
             Some(d) if !d.is_negative() => return Ok(ChildLookup::Found(d)),
             Some(_) => return Ok(ChildLookup::Missing), // cached negative (definitive)
@@ -73,7 +76,7 @@ impl Nameidata {
                 // `d_add` consumes the caller's iget ref). iput AFTER the grab →
                 // never evicts a live inode; on the race-loser path the dentry
                 // already counts its inode, so this drops the redundant build.
-                let child = crate::dcache::d_add(&self.cur_dentry, comp, ci.clone());
+                let child = crate::dcache::d_add_with_hash(&self.cur_dentry, comp, ci.clone(), hash);
                 crate::file::iput(ci);
                 Ok(ChildLookup::Found(child))
             }
@@ -82,7 +85,7 @@ impl Nameidata {
                 // create syscalls flush this leaf negative by resolved parent
                 // dentry/name, so a subsequently-created file is never masked.
                 if super::neg_cache_ok(&self.cur_inode) {
-                    crate::dcache::d_add_negative(&self.cur_dentry, comp);
+                    crate::dcache::d_add_negative_with_hash(&self.cur_dentry, comp, hash);
                 }
                 Ok(ChildLookup::Missing)
             }

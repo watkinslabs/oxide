@@ -22,7 +22,7 @@ mod rename;
 
 pub use alias::{d_obtain_alias, d_splice_alias};
 pub use alloc::{ANON_INODE_OPS, d_add, d_add_negative, d_alloc, d_alloc_pseudo, d_drop_child, d_instantiate, d_lookup, d_lookup_reval, d_make_root, d_make_root_ops, d_weak_revalidate};
-pub(crate) use alloc::d_lookup_reval_rcu;
+pub(crate) use alloc::{d_add_negative_with_hash, d_add_with_hash, d_lookup_reval_rcu};
 pub use invalidate::d_invalidate;
 pub use lifecycle::{d_delete, d_drop, d_unlink, dget, dput};
 pub use parallel::{d_alloc_parallel, d_lookup_done, DParLookup};
