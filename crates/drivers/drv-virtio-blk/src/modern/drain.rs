@@ -77,10 +77,20 @@ impl BlkState {
     pub(super) fn drain_owned_completions(&self, q: &BlkQueue) -> usize {
         let mut found = 0usize;
         let h = hhdm();
-        if !drain_admitted(q.lock().busy, h, q.res.device_pa, q.res.size) { return found; }
+        if !drain_admitted(false, h, q.res.device_pa, q.res.size) { return found; }
         loop {
             let pending = {
                 let mut ring = q.lock();
+                // `busy` is the synchronous submitter's ownership of this
+                // queue. Re-check it while holding the same lock used by
+                // `acquire_turn`: the old outer check left a window in which
+                // a synchronous owner could acquire the turn before this
+                // drainer claimed its used entry. That entry is not in
+                // `pending`; treating it as an unknown head poisoned the
+                // device and stranded the owner. Linux's blk-mq completion
+                // path does not consume a queue while its synchronous owner
+                // holds that ownership.
+                if ring.busy { return found; }
                 let used = h.wrapping_add(q.res.device_pa) as *const u8;
                 // SAFETY: `device_pa` is this queue's used frame via HHDM,
                 // non-zero per the guard above. Virtio 1.2 §2.7.8 puts `idx` at
