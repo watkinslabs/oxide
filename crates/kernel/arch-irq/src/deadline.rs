@@ -16,29 +16,34 @@ fn raw_deadline(deadline_ns: u64, monotonic_now_ns: u64, raw_now_ns: u64) -> u64
     raw_now_ns.saturating_add(deadline_ns.saturating_sub(monotonic_now_ns))
 }
 
-fn program(deadline_ns: u64) {
+fn program(deadline_ns: u64) -> bool {
     #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
     {
         let monotonic_now = timekeeper::monotonic_ns();
         let raw_now = hal_x86_64::X86TimerOps::monotonic_ns().0;
         let raw = raw_deadline(deadline_ns, monotonic_now, raw_now);
+        if hal_x86_64::X86TimerOps::freq_khz() == 0 { return false; }
         // SAFETY: LAPIC timer vector is installed and this CPU owns its local timer/MSR.
         unsafe {
             if crate::lapic::timer_deadline_mode() {
                 hal_x86_64::X86TimerOps::set_oneshot(Nanos(raw));
+                return true;
             }
         }
+        return false;
     }
     #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
     {
         let monotonic_now = timekeeper::monotonic_ns();
         let raw_now = hal_aarch64::ArmTimerOps::monotonic_ns().0;
         let raw = raw_deadline(deadline_ns, monotonic_now, raw_now);
+        if hal_aarch64::ArmTimerOps::freq_khz() == 0 { return false; }
         // SAFETY: this CPU owns CNTV_CVAL/CTL and INTID 27 is enabled during timer bring-up.
         unsafe { hal_aarch64::ArmTimerOps::set_oneshot(Nanos(raw)); }
+        return true;
     }
     #[cfg(not(target_os = "oxide-kernel"))]
-    let _ = deadline_ns;
+    { let _ = deadline_ns; return false; }
 }
 
 /// Connect scheduler deadline ownership to this CPU's timer hardware. # C: O(1)

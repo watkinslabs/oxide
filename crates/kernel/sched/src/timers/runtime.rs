@@ -6,11 +6,15 @@ use crate::{SigInfo, Task};
 
 use super::{backend, clock};
 
+#[cfg(test)]
+mod tests;
+
 /// One owner for the tick period: `clock_getres` reports it for the COARSE
 /// clocks, so the two can never disagree.
 pub const ACCOUNTING_TICK_NS: u64 = crate::posix_clock::TICK_NSEC;
 
-type ProgramDeadline = fn(u64);
+/// Architecture timer arm result. `true` means the compare reached hardware.
+type ProgramDeadline = fn(u64) -> bool;
 type ClockWasSetHook = fn(u64);
 
 static EARLIEST_WALL_NS: AtomicU64 = AtomicU64::new(u64::MAX);
@@ -234,10 +238,16 @@ fn program(deadline_ns: u64) {
     let slot = &ARMED_NS[crate::cpustat::this_cpu()];
     if slot.load(Ordering::Relaxed) == deadline_ns
         && deadline_ns > clock::monotonic_now_ns() { return; }
-    slot.store(deadline_ns, Ordering::Relaxed);
     // SAFETY: install_deadline_programmer stores only a ProgramDeadline function pointer.
     let f: ProgramDeadline = unsafe { core::mem::transmute(raw) };
-    f(deadline_ns);
+    // Publish the cache only after the architecture confirms that it armed the
+    // local device. A failed arm must leave the cache invalid so a later
+    // reprogram retries instead of waiting for an interrupt that cannot arrive.
+    if f(deadline_ns) {
+        slot.store(deadline_ns, Ordering::Release);
+    } else {
+        slot.store(0, Ordering::Release);
+    }
 }
 
 fn publish_earliest(deadline_ns: u64) {
@@ -245,7 +255,7 @@ fn publish_earliest(deadline_ns: u64) {
 }
 
 /// Install architecture-local one-shot programming. # C: O(1)
-pub fn install_deadline_programmer(f: fn(u64)) {
+pub fn install_deadline_programmer(f: fn(u64) -> bool) {
     PROGRAM_DEADLINE.store(f as *const () as *mut (), Ordering::Release);
 }
 
