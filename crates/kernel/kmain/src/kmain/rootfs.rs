@@ -127,20 +127,21 @@ fn mount_boot_filesystems(root: super::root_mount::MountedRoot) {
     // Every outcome is reported. A root that is silently not grafted produces
     // a boot in which nothing resolves and no line says why — which is how
     // this landed the first time.
-    klog::write_raw(b"[ROOT] grafting ");
-    klog::write_raw(root.fstype.as_bytes());
-    klog::write_raw(b" at /: ");
-    match vfs::fs::get_fs_type(root.fstype) {
-        None => klog::write_raw(b"no registered filesystem type\n"),
+    let outcome: &[u8] = match vfs::fs::get_fs_type(root.fstype) {
+        None => b"no registered filesystem type",
         Some(ty) => match vfs::mount::register_typed(ty, None, root.fs) {
-            Ok(()) => klog::write_raw(b"ok\n"),
-            Err(e) => {
-                klog::write_raw(b"errno=");
-                klog::write_dec_u64(e as u64);
-                klog::write_raw(b"\n");
-            }
+            Ok(()) => b"ok",
+            Err(_) => b"refused",
         },
+    };
+    let mut line = [0u8; 96];
+    let mut n = 0;
+    for part in [&b"[ROOT] "[..], root.fstype.as_bytes(), b" at /: ", outcome, b"\n"] {
+        let take = core::cmp::min(part.len(), line.len().saturating_sub(n));
+        line[n..n + take].copy_from_slice(&part[..take]);
+        n += take;
     }
+    klog::write_raw(&line[..n]);
     boot_register("devtmpfs", "/dev",  Arc::new(::devfs::DevfsFs));
     boot_register("proc",     "/proc", Arc::new(procfs::fs_impl::ProcfsFs::default()));
     boot_register("sysfs",    "/sys",  Arc::new(crate::sysfs::SysfsFs));

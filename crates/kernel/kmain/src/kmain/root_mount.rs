@@ -29,34 +29,41 @@ use crate::kmain::entry::step;
 /// # C: O(disks + partitions)
 #[cfg(target_os = "oxide-kernel")]
 pub fn log_available_roots(spec: &[u8]) {
-    klog::write_raw(b"[ROOT] cannot resolve root=");
-    klog::write_raw(spec);
-    klog::write_raw(b"; available block devices:\n");
+    use block::registry::rootreport as rr;
+    // The whole listing is rendered before ANY of it is emitted. It prints
+    // while a boot is already failing, and a report several CPUs interleave a
+    // field at a time is not a report.
+    let mut buf = [0u8; LISTING_MAX];
+    let mut n = 0;
+    let mut put = |src: &[u8], n: &mut usize| {
+        let take = core::cmp::min(src.len(), buf.len().saturating_sub(*n));
+        buf[*n..*n + take].copy_from_slice(&src[..take]);
+        *n += take;
+    };
+    put(b"[ROOT] cannot resolve root=", &mut n);
+    put(spec, &mut n);
+    put(b"; available block devices:\n", &mut n);
     for disk in block::registry::snapshot() {
-        klog::write_raw(b"[ROOT]   ");
-        klog::write_raw(disk.name.as_bytes());
-        klog::write_raw(b" sectors=");
-        klog::write_dec_u64(block::registry::size_512_sectors(disk.dev.capacity_blocks(), disk.dev.block_size()));
-        if let Some(serial) = disk.serial.as_deref() {
-            klog::write_raw(b" serial=");
-            klog::write_raw(serial.as_bytes());
-        }
-        klog::write_raw(b"\n");
+        let mut line = [0u8; rr::PART_LINE_MAX];
+        let w = rr::write_disk_line(&mut line, disk.name.as_bytes(),
+            block::registry::size_512_sectors(disk.dev.capacity_blocks(), disk.dev.block_size()),
+            disk.serial.as_deref().map(str::as_bytes));
+        put(&line[..w], &mut n);
         for part in disk.partitions() {
-            klog::write_raw(b"[ROOT]     ");
-            klog::write_raw(part.name.as_bytes());
-            klog::write_raw(b" start=");
-            klog::write_dec_u64(part.start_lba);
-            klog::write_raw(b" sectors=");
-            klog::write_dec_u64(part.sectors);
-            klog::write_raw(b" label=");
-            klog::write_raw(part.label.as_deref().unwrap_or("-").as_bytes());
-            klog::write_raw(b" uuid=");
-            klog::write_raw(part.uuid.as_deref().unwrap_or("-").as_bytes());
-            klog::write_raw(b"\n");
+            let w = rr::write_partition_line(&mut line, part.name.as_bytes(),
+                part.start_lba, part.sectors,
+                part.label.as_deref().map(str::as_bytes),
+                part.uuid.as_deref().map(str::as_bytes));
+            put(&line[..w], &mut n);
         }
     }
+    klog::write_raw(&buf[..n]);
 }
+
+/// Ceiling on the rendered listing. A machine with more block devices than
+/// this describes has its listing truncated rather than its boot delayed.
+#[cfg(target_os = "oxide-kernel")]
+const LISTING_MAX: usize = 4096;
 
 /// The mounted root: the filesystem to graft at `/` and the registered type
 /// name to graft it under.
@@ -145,10 +152,12 @@ fn volatile_over(root: &MountedRoot) -> Option<MountedRoot> {
 unsafe fn try_mount_as(ty: &[u8], spec: &[u8], dev: &Arc<dyn block::BlockDevice>) -> Option<MountedRoot> {
     match ty {
         EXT4 => {
-            // SAFETY: forwarded boot-entry contract, which is what the ext4
-            // root publisher requires: single CPU, nothing has seen ROOT.
-            let opened = step("ext4::rootfs::init_from_dev",
-                || unsafe { ext4::rootfs::init_from_dev(dev.clone()) });
+            let opened = step("ext4::rootfs::init_from_dev", || {
+                // SAFETY: forwarded boot-entry contract, which is exactly what
+                // the ext4 root publisher requires — single CPU, and nothing
+                // has yet observed ROOT, so no reader can see a half-publish.
+                unsafe { ext4::rootfs::init_from_dev(dev.clone()) }
+            });
             match opened {
                 Ok(()) => Some(MountedRoot { fs: Arc::new(ext4::rootfs::Ext4RootfsFs), fstype: "ext4" }),
                 Err(_) => None,

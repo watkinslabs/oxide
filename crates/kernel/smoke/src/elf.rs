@@ -140,9 +140,14 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
             // Naming an interpreter that is not there is fatal for init, and
             // saying which one is the whole diagnosis.
             None => {
-                klog::write_raw(b"[INIT] script interpreter not found: ");
-                klog::write_raw(sb.interp);
-                klog::write_raw(b"\n");
+                let mut line = [0u8; 128];
+                let mut n = 0;
+                for part in [&b"[INIT] script interpreter not found: "[..], sb.interp, b"\n"] {
+                    let take = core::cmp::min(part.len(), line.len().saturating_sub(n));
+                    line[n..n + take].copy_from_slice(&part[..take]);
+                    n += take;
+                }
+                klog::write_raw(&line[..n]);
                 hal::kassert!(false, "init script names an interpreter that is not in the rootfs");
             }
         }

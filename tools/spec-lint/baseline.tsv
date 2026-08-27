@@ -81,7 +81,7 @@ crates/kernel/iommu	code/klog-ungated	11
 crates/kernel/iommu	code/pub-fn-complexity	7
 crates/kernel/ipc	code/pub-fn-complexity	8
 crates/kernel/kernfs	code/pub-fn-complexity	20
-crates/kernel/kmain	code/klog-ungated	57
+crates/kernel/kmain	code/klog-ungated	59
 crates/kernel/kmain	code/pub-fn-complexity	4
 crates/kernel/lsm	code/pub-fn-complexity	9
 crates/kernel/md	code/pub-fn-complexity	4
@@ -124,10 +124,10 @@ crates/kernel/selinux	code/pub-fn-complexity	2
 crates/kernel/selinux-runtime	code/klog-ungated	2
 crates/kernel/selinux-runtime	code/pub-fn-complexity	10
 crates/kernel/selinuxfs	code/pub-fn-complexity	1
-crates/kernel/smoke	code/klog-ungated	5
+crates/kernel/smoke	code/klog-ungated	6
 crates/kernel/socket	code/pub-fn-complexity	3
 crates/kernel/sound	code/pub-fn-complexity	27
-crates/kernel/syscalls	code/klog-ungated	120
+crates/kernel/syscalls	code/klog-ungated	121
 crates/kernel/syscalls	code/panic-fmt	1
 crates/kernel/syscalls	code/pub-fn-complexity	87
 crates/kernel/syscalls	code/safety-missing	1

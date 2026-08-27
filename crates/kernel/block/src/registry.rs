@@ -7,6 +7,7 @@ mod core;
 mod gate;
 mod partition;
 mod root;
+pub mod rootreport;
 mod scsi;
 #[cfg(test)] mod tests;
 
