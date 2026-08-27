@@ -23,6 +23,8 @@ pub enum AmdViIoapic { Direct, Remapped { index: u8 }, Failed }
 struct AmdViGroup { domain_id: u16, requesters: Vec<Bdf>, domain: AmdViDomain }
 struct AmdViBootUnit { unit: IommuUnit, bootstrap: AmdViBootstrap, groups: Vec<AmdViGroup> }
 static MANAGER: Spinlock<Vec<AmdViBootUnit>, Devices> = Spinlock::new(Vec::new());
+/// Lock-free publication bit for the established backend selection.
+static ACTIVE: AtomicBool = AtomicBool::new(false);
 static EVENT_RECORDS: AtomicU64 = AtomicU64::new(0);
 static X2APIC_CAPABLE: AtomicBool = AtomicBool::new(false);
 
@@ -33,6 +35,7 @@ static X2APIC_CAPABLE: AtomicBool = AtomicBool::new(false);
 /// # C: O(units + requesters + RAM leaves)
 #[inline(never)]
 pub unsafe fn activate_amd_vi(requesters: &[Bdf], aliases: &pci::DmaAliases, hhdm_offset: u64, regions: &[pmm::UsableRegion]) -> AmdViActivation {
+    ACTIVE.store(false, Ordering::Release);
     X2APIC_CAPABLE.store(false, Ordering::Release);
     let mut units = Vec::new();
     for index in 0..firmware::acpi::iommu_unit_count() {
@@ -75,6 +78,7 @@ pub unsafe fn activate_amd_vi(requesters: &[Bdf], aliases: &pci::DmaAliases, hhd
 
     let x2apic_capable = manager.iter().all(|entry| entry.bootstrap.x2apic_capable());
     *MANAGER.lock() = manager;
+    ACTIVE.store(true, Ordering::Release);
     X2APIC_CAPABLE.store(x2apic_capable, Ordering::Release);
     AmdViActivation::Enabled
 }
@@ -101,6 +105,7 @@ fn map_ivmd_regions(domain: &mut AmdViDomain, unit: IommuUnit, requesters: &[Bdf
 fn activation_failed(manager: &mut [AmdViBootUnit]) -> AmdViActivation {
     for entry in manager.iter_mut() { let _ = entry.bootstrap.disable(); }
     MANAGER.lock().clear();
+    ACTIVE.store(false, Ordering::Release);
     X2APIC_CAPABLE.store(false, Ordering::Release);
     AmdViActivation::Failed
 }
@@ -116,6 +121,7 @@ pub fn deactivate_amd_vi() -> bool {
     for entry in manager.iter_mut() { complete &= entry.bootstrap.disable(); }
     if !complete { return false; }
     manager.clear();
+    ACTIVE.store(false, Ordering::Release);
     X2APIC_CAPABLE.store(false, Ordering::Release);
     true
 }
@@ -125,7 +131,7 @@ pub fn owns(requester: Bdf) -> bool {
     MANAGER.lock().iter().any(|entry| entry.groups.iter().any(|group| group.requesters.iter().any(|candidate| *candidate == requester)))
 }
 
-pub(crate) fn active() -> bool { !MANAGER.lock().is_empty() }
+pub(crate) fn active() -> bool { ACTIVE.load(Ordering::Acquire) }
 /// Return whether every active AMD-Vi unit can remap to a 32-bit x2APIC destination. # C: O(1)
 pub fn amd_vi_x2apic_capable() -> bool { X2APIC_CAPABLE.load(Ordering::Acquire) }
 /// Drain all currently pending AMD-Vi fault and hardware events. # C: O(units + events)
