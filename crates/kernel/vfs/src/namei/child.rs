@@ -41,7 +41,13 @@ impl Nameidata {
         // Linux computes qstr.hash while parsing the component and carries it
         // through both the fast probe and any slow dentry allocation.
         let hash = Dentry::compute_hash(Some(&self.cur_dentry), comp);
-        match crate::dcache::d_lookup_reval_rcu(&self.cur_dentry, comp, self.flags.reval, self.rcu) {
+        match crate::dcache::d_lookup_reval_rcu_with_hash(
+            &self.cur_dentry,
+            comp,
+            self.flags.reval,
+            self.rcu,
+            hash,
+        ) {
             Some(d) if !d.is_negative() => return Ok(ChildLookup::Found(d)),
             Some(_) => return Ok(ChildLookup::Missing), // cached negative (definitive)
             // RESOLVE_CACHED: a dcache miss would take the (possibly blocking)

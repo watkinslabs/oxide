@@ -114,7 +114,18 @@ pub fn d_lookup_reval(parent: &Arc<Dentry>, name: &str, reval: bool) -> Option<A
 /// `d_lookup_reval` with the Linux lazy-walk choice of RCU or ref lookup.
 /// # C: O(bucket_len)
 pub(crate) fn d_lookup_reval_rcu(parent: &Arc<Dentry>, name: &str, reval: bool, rcu: bool) -> Option<Arc<Dentry>> {
-    let qhash = Dentry::compute_hash(Some(parent), name);
+    d_lookup_reval_rcu_with_hash(parent, name, reval, rcu, Dentry::compute_hash(Some(parent), name))
+}
+
+/// Hash-aware variant used by pathname walking, where Linux's parsed qstr
+/// already carries the component hash into the dcache probe.
+pub(crate) fn d_lookup_reval_rcu_with_hash(
+    parent: &Arc<Dentry>,
+    name: &str,
+    reval: bool,
+    rcu: bool,
+    qhash: u32,
+) -> Option<Arc<Dentry>> {
     let pptr = Arc::as_ptr(parent);
     let cand = if rcu {
         DENTRY_HASHTABLE.lookup_rcu(pptr, qhash, name)
