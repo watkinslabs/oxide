@@ -130,10 +130,13 @@ fn link_target_strict(attrs: &[u8]) -> Result<Option<i32>, Errno> {
         if len < 4 || len > attrs.len() - off { return Err(Errno::Einval); }
         let next = (len + 3) & !3;
         if next > attrs.len() - off { return Err(Errno::Einval); }
-        if ty != super::uapi::ifla::IFLA_TARGET_NETNSID || len != 8 || target.is_some() {
+        let allowed = (ty == super::uapi::ifla::IFLA_TARGET_NETNSID || ty == super::uapi::ifla::IFLA_EXT_MASK) && len == 8;
+        if !allowed || (ty == super::uapi::ifla::IFLA_TARGET_NETNSID && target.is_some()) {
             return Err(Errno::Einval);
         }
-        target = Some(i32::from_ne_bytes(attrs[off + 4..off + 8].try_into().unwrap()));
+        if ty == super::uapi::ifla::IFLA_TARGET_NETNSID {
+            target = Some(i32::from_ne_bytes(attrs[off + 4..off + 8].try_into().unwrap()));
+        }
         off = next;
     }
     Ok(target)
@@ -218,6 +221,13 @@ mod tests {
     fn a_clean_strict_request_dumps_everything() {
         assert_eq!(validate_link_dump(true, &msg(&ifinfo(0, 0, 0, 0))), LinkDump::All);
         assert_eq!(validate_addr_dump(true, &msg(&ifaddr(0, 0, 0, 0))), AddrDump::All);
+    }
+
+    #[test]
+    fn a_strict_link_dump_accepts_the_linux_extended_filter_mask() {
+        let mut body = ifinfo(0, 0, 0, 0);
+        body.extend_from_slice(&attr(ifla::IFLA_EXT_MASK, &9u32.to_ne_bytes()));
+        assert_eq!(validate_link_dump(true, &msg(&body)), LinkDump::All);
     }
 
     #[test]
