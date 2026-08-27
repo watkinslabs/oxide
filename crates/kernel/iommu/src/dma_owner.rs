@@ -23,9 +23,9 @@ pub fn map_dma(requester: Bdf, pa: u64, len: usize) -> Option<u64> {
 pub fn map_dma_below(requester: Bdf, pa: u64, len: usize, mask: u64) -> Option<u64> {
     if len == 0 || !super::bus_master_admitted(requester) { return None; }
     let _ = pa.checked_add(len as u64 - 1)?;
-    let iova = if super::amd_vi_manager::owns(requester) {
+    let iova = if super::amd_vi_manager::active() {
         super::amd_vi_manager::map_dma_below(requester, pa, len, mask)?
-    } else if super::vtd_manager::owns(requester) {
+    } else if super::vtd_manager::active() {
         super::vtd_manager::map_dma_below(requester, pa, len, mask)?
     } else if pa.checked_add(len as u64 - 1)? <= mask { pa } else { return None };
     let mapping = Mapping { requester, iova, pa, len };
@@ -42,8 +42,8 @@ pub fn unmap_dma(requester: Bdf, iova: u64, len: usize) -> bool {
         mappings.iter().copied().find(|mapping| mapping.requester == requester && mapping.iova == iova && mapping.len == len)
     };
     let Some(mapping) = mapping else { return false; };
-    if super::amd_vi_manager::owns(requester) && !super::amd_vi_manager::unmap_dma(requester, iova, len) { return false; }
-    if super::vtd_manager::owns(requester) && !super::vtd_manager::unmap_dma(requester, iova, len) { return false; }
+    if super::amd_vi_manager::active() && !super::amd_vi_manager::unmap_dma(requester, iova, len) { return false; }
+    if super::vtd_manager::active() && !super::vtd_manager::unmap_dma(requester, iova, len) { return false; }
     let mut mappings = MAPPINGS.lock();
     let Some(index) = mappings.iter().position(|candidate| *candidate == mapping) else { return false; };
     mappings.swap_remove(index);

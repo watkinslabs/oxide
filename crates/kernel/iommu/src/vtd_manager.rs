@@ -24,6 +24,8 @@ pub enum VtdHpet { Direct, Remapped { address: u64, data: u32 }, Failed }
 
 struct VtdBootUnit { unit: IommuUnit, regs: VtdRegisters, requesters: Vec<Bdf>, ioapic_sources: Vec<(u8, u16)>, hpet_source: Option<u16>, tables: VtdTables, qi: Option<VtdQiQueue>, ir: Option<Box<VtdIrTable>> }
 static MANAGER: Spinlock<Vec<VtdBootUnit>, Devices> = Spinlock::new(Vec::new());
+/// Lock-free publication bit for the established backend selection.
+static ACTIVE: AtomicBool = AtomicBool::new(false);
 /// Hardware/firmware admission for EIM.  This does not enable x2APIC: the
 /// LAPIC owner must first put IOAPIC and HPET sources behind remapping too.
 static EIM_CAPABLE: AtomicBool = AtomicBool::new(false);
@@ -83,6 +85,7 @@ fn trace_dma_map(_: Bdf, _: u64, _: u64) {}
 #[inline(never)]
 pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf], aliases: &pci::DmaAliases, hhdm_offset: u64,
     regions: &[pmm::UsableRegion]) -> VtdActivation {
+    ACTIVE.store(false, Ordering::Release);
     EIM_CAPABLE.store(false, Ordering::Release);
     INTERRUPT_REMAP_ENABLED.store(false, Ordering::Release);
     FAULT_REPORTS.store(0, Ordering::Release);
@@ -173,6 +176,7 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
     trace_stage(b"ready");
     let eim_capable = !firmware::acpi::dmar_x2apic_opt_out() && all_vtd_units_support_eim();
     *MANAGER.lock() = manager;
+    ACTIVE.store(true, Ordering::Release);
     EIM_CAPABLE.store(eim_capable, Ordering::Release);
     VtdActivation::Enabled
 }
@@ -190,6 +194,7 @@ fn activation_failed(manager: &mut Vec<VtdBootUnit>) -> VtdActivation {
         let _ = entry.regs.disable_queued_invalidation();
     }
     manager.clear();
+    ACTIVE.store(false, Ordering::Release);
     EIM_CAPABLE.store(false, Ordering::Release);
     VtdActivation::Failed
 }
@@ -291,7 +296,7 @@ pub fn owns(requester: Bdf) -> bool {
     MANAGER.lock().iter().any(|entry| entry.requesters.iter().any(|candidate| *candidate == requester))
 }
 
-pub(crate) fn active() -> bool { !MANAGER.lock().is_empty() }
+pub(crate) fn active() -> bool { ACTIVE.load(Ordering::Acquire) }
 
 /// Allocate one remapped x86 MSI for a requester owned by an IR-capable VT-d unit.
 /// `None` means the unit is not using interrupt remapping, so the caller keeps
