@@ -15,6 +15,8 @@ that artifact is regenerated.
 | B2709 / `eac588295` | 1,366,469 | 6,518 | 4,770 | 21,426 | 27,372 | 19,912 | 248 | 2,551 | combined page-table lookup/teardown |
 | B2711 / `cb057d656` | 1,366,590 | 6,796 | 4,973 | 22,230 | 27,739 | 20,345 | 219 | 2,510 | journal publication barrier; no demonstrated flush-count win |
 | B2748 baseline / `900873cbc` | 1,366,478 | 6,837 | 5,003 | 22,008 | 28,509 | 20,802 | 192 | 2,430 | post-B2746 completion-drain fix; valid GNOME run |
+| B2759-r1 / `9a3e02e98` | 1,366,965 | 6,566 | 4,803 | 22,671 | 27,589 | 20,057 | 201 | 2,245 | empty AF_UNIX SCM object allocation removed; GNOME marker complete |
+| B2759-r2 / `9a3e02e98` | 1,366,360 | 6,522 | 4,773 | 22,355 | 26,728 | 19,753 | 178 | 2,035 | repeat; GNOME marker complete |
 
 The B2709 `munmap` result is a material improvement over B2699: 71,407 ns
 to 21,426 ns (about 70% lower), and 52x to 16x the host baseline. The B2708
