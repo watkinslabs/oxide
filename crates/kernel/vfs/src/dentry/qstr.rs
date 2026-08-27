@@ -24,6 +24,12 @@ impl QStr {
     /// # C: O(name.len())
     pub fn new(parent: Option<&Arc<Dentry>>, name: &str) -> Self {
         let hash = Dentry::compute_hash(parent, name);
+        Self::with_hash(hash, name)
+    }
+
+    /// Linux carries this precomputed `qstr.hash` from pathname parsing
+    /// through both the fast probe and slow dentry allocation. # C: O(name.len())
+    pub(super) fn with_hash(hash: u32, name: &str) -> Self {
         let b = name.as_bytes();
         let name = if b.len() <= DNAME_INLINE_LEN {
             let mut buf = [0u8; DNAME_INLINE_LEN];
