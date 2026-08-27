@@ -46,7 +46,7 @@ struct GcBatch {
 }
 
 /// One canonical SCM_RIGHTS control-message batch.
-pub struct GcRights(Arc<GcBatch>);
+pub struct GcRights(Option<Arc<GcBatch>>);
 
 /// Collect after a receive-side file transfer has dropped its temporary roots.
 pub struct GcTransferGuard;
@@ -111,40 +111,49 @@ impl GcRights {
     }
 
     fn new_inner(files: Vec<Arc<vfs::File>>, targets: Vec<Option<u64>>) -> Self {
+        if files.is_empty() { return Self(None); }
         let edges = targets.iter().filter(|target| target.is_some()).count();
-        Self(Arc::new(GcBatch {
+        Self(Some(Arc::new(GcBatch {
             receiver: AtomicU64::new(0), targets, edges, files: Spinlock::new(files),
             registered: AtomicBool::new(false),
-        }))
+        })))
     }
 
     /// Register this batch at exactly one receive queue. # C: O(1)
     pub(crate) fn register(&self, receiver: &GcNode) {
-        if self.0.registered.swap(true, Ordering::AcqRel) { return; }
-        self.0.receiver.store(receiver.id(), Ordering::Release);
-        if self.0.edges == 0 || self.0.files.lock().is_empty() { return; }
-        INFLIGHT.fetch_add(self.0.edges, Ordering::AcqRel);
-        GC.lock().batches.push(Arc::downgrade(&self.0));
+        let Some(batch) = self.0.as_ref() else { return; };
+        if batch.registered.swap(true, Ordering::AcqRel) { return; }
+        batch.receiver.store(receiver.id(), Ordering::Release);
+        if batch.edges == 0 || batch.files.lock().is_empty() { return; }
+        INFLIGHT.fetch_add(batch.edges, Ordering::AcqRel);
+        GC.lock().batches.push(Arc::downgrade(batch));
     }
 
     /// Move every file out of this batch as one unit. # C: O(1)
     pub fn take_files(&self) -> Vec<Arc<vfs::File>> {
+        let Some(batch) = self.0.as_ref() else { return Vec::new(); };
         let _gc = GC.lock();
-        let files = core::mem::take(&mut *self.0.files.lock());
-        if self.0.registered.load(Ordering::Acquire) && !files.is_empty() {
-            INFLIGHT.fetch_sub(self.0.edges, Ordering::AcqRel);
+        let files = core::mem::take(&mut *batch.files.lock());
+        if batch.registered.load(Ordering::Acquire) && !files.is_empty() {
+            INFLIGHT.fetch_sub(batch.edges, Ordering::AcqRel);
         }
         files
     }
 
     /// Clone file references without consuming this queued rights batch. # C: O(files)
-    pub fn clone_files(&self) -> Vec<Arc<vfs::File>> { self.0.files.lock().clone() }
+    pub fn clone_files(&self) -> Vec<Arc<vfs::File>> {
+        self.0.as_ref().map(|batch| batch.files.lock().clone()).unwrap_or_default()
+    }
 
     /// Whether this batch has already been consumed or collected. # C: O(1)
-    pub fn is_empty(&self) -> bool { self.0.files.lock().is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.0.as_ref().map(|batch| batch.files.lock().is_empty()).unwrap_or(true)
+    }
 
     /// Number of descriptors still held by this batch. # C: O(1)
-    pub fn len(&self) -> usize { self.0.files.lock().len() }
+    pub fn len(&self) -> usize {
+        self.0.as_ref().map(|batch| batch.files.lock().len()).unwrap_or(0)
+    }
 }
 
 impl Drop for GcBatch {
