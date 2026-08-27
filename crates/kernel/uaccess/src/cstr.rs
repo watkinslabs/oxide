@@ -48,6 +48,29 @@ pub fn strncpy_from_user(base: u64, count: u64) -> Result<Vec<u8>, Errno> {
     })
 }
 
+/// Copy a bounded prefix into caller-owned storage, stopping at its first NUL.
+/// The return value is the byte count before NUL, or `dst.len()` when the
+/// prefix contains no terminator. Page-sized copies preserve Linux's
+/// `strncpy_from_user` fault boundary without allocating a temporary `Vec`.
+/// # C: O(dst.len())
+pub fn strncpy_from_user_into(dst: &mut [u8], base: u64) -> Result<usize, Errno> {
+    if base >= USER_VA_END { return Err(Errno::Efault); }
+    let mut done = 0usize;
+    while done < dst.len() {
+        let cur = base.checked_add(done as u64).ok_or(Errno::Efault)?;
+        if cur >= USER_VA_END { return Err(Errno::Efault); }
+        let to_page_end = PAGE_SIZE_BYTES - (cur & (PAGE_SIZE_BYTES - 1));
+        let chunk = (dst.len() - done).min(to_page_end as usize).min((USER_VA_END - cur) as usize);
+        // SAFETY: raw_copy_from_user validates the user range and exception-table recovery protects this kernel-owned destination from user faults.
+        let left = unsafe { raw_copy_from_user(dst[done..].as_mut_ptr(), cur, chunk) };
+        let got = chunk.saturating_sub(left);
+        if let Some(i) = dst[done..done + got].iter().position(|&b| b == 0) { return Ok(done + i); }
+        if left != 0 { return Err(Errno::Efault); }
+        done += got;
+    }
+    Ok(done)
+}
+
 /// `strndup_user`: [`strncpy_from_user`] plus the length VERDICT its callers
 /// share — a string that fills `n` without terminating is `Enametoolong`, never
 /// a silent `n`-byte prefix that resolves to something else. Kept separate

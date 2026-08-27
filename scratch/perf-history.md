@@ -28,6 +28,8 @@ that artifact is regenerated.
 | B2803-r2 / working tree | 1,366,210 | 6,311 | 4,619 | 22,473 | — | 20,674 | 270 | 2,386 | repeat; carry parsed qstr hash through dcache cold allocation; GNOME marker complete |
 | B2804-r1 / working tree | 1,170,705 | 5,633 | 4,812 | 22,019 | — | 22,019 | — | — | carry parsed qstr hash through dcache lookup and fill; GNOME marker complete |
 | B2804-r2 / working tree | 1,170,339 | 6,313 | 5,394 | 22,236 | — | 22,236 | 176 | 2,058 | repeat; GNOME Shell running but marker string absent; measurement retained for variance |
+| B2805-r1 / working tree | 1,366,079 | 6,052 | 4,430 | 22,474 | — | 20,546 | 193 | 2,230 | Linux-shaped embedded short pathname buffer; GNOME marker complete |
+| B2805-r2 / working tree | 1,365,882 | 6,161 | 4,510 | 22,232 | — | 20,754 | 215 | 2,376 | repeat; embedded short pathname buffer; GNOME marker complete |
 
 The B2709 `munmap` result is a material improvement over B2699: 71,407 ns
 to 21,426 ns (about 70% lower), and 52x to 16x the host baseline. The B2708
