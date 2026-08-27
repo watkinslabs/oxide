@@ -108,19 +108,6 @@ pub(crate) fn trace_logind_dev(op: &'static [u8], path: &str, rv: i64) {
 /// per `53`); this shim only fetches the bytes and applies the gate.
 /// # C: O(strlen)
 pub(crate) fn read_user_path(ptr: u64) -> Result<String, i64> {
-    let path = read_user_path_allow_empty(ptr)?;
-    if path.is_empty() {
-        return Err(-(Errno::Enoent.as_i32() as i64));
-    }
-    Ok(path)
-}
-
-/// Read one user pathname while retaining an empty string for callers that
-/// implement Linux's `getname_maybe_null` contract (notably stat-family
-/// `AT_EMPTY_PATH`). The caller can therefore decide empty-path semantics
-/// without first probing the pointer and then copying the same string again.
-/// # C: O(strlen)
-pub(crate) fn read_user_path_allow_empty(ptr: u64) -> Result<String, i64> {
     if ptr == 0 || ptr >= USER_VA_END {
         return Err(-(Errno::Efault.as_i32() as i64));
     }
