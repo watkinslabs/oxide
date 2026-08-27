@@ -200,6 +200,8 @@ fn mac_permission(inode: &InodeRef, mask: u32) -> KResult<()> {
 /// `may_lookup` (Linux): search permission (MAY_EXEC) on a directory before
 /// resolving a component within it. # C: O(1)
 pub(crate) fn may_lookup(inode: &InodeRef, cred: &Cred, rcu: bool) -> KResult<()> {
+    #[cfg(feature = "debug-resolve-cost")]
+    let _cost = crate::resolve_cost::may_lookup();
     inode_permission(inode, MAY_EXEC | if rcu { MAY_NOT_BLOCK } else { 0 }, cred)
 }
 

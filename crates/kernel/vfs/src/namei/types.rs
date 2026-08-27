@@ -37,7 +37,7 @@ pub const S_IXGRP: u16 = 0o0010;
 pub const S_IALLUGO: u16 = 0o7777;
 
 /// Resolution modifiers (`openat2(2)` RESOLVE_* + LOOKUP_* + O_NOFOLLOW).
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 pub struct LookupFlags {
     /// O_NOFOLLOW / AT_SYMLINK_NOFOLLOW: a symlink as the FINAL component is
     /// returned as-is rather than followed.
@@ -118,18 +118,28 @@ pub struct LookupFlags {
     /// retry on a blocking path (Linux `try_to_unlazy`/`LOOKUP_CACHED` →
     /// `-EAGAIN`). A cached NEGATIVE dentry is still a definitive `ENOENT`.
     pub cached: bool,
-    /// LOOKUP_RCU — OPT-IN lock-free "lazy" walk.
-    /// DEFAULT OFF: the proven, D22-validated ref/Arc walk is the
-    /// default-correct path. When set, the walk runs in rcu (lazy) mode,
+    /// LOOKUP_RCU — lock-free "lazy" walk. DEFAULT ON: ordinary walks start
+    /// in RCU mode, as on Linux, and fall back to ref-walk at complications.
+    /// When set, the walk runs in rcu (lazy) mode,
     /// resolving components from the seqcount-gated dcache probe and only
     /// "legitimizing" (taking real references via `unlazy_walk`) at a
     /// complication point (symlink, mount crossing, the final component, a
     /// dcache miss). On ANY uncertainty it falls back to the ref/Arc walk
     /// (`unlazy_walk` failure → restart with rcu cleared), so the rcu mode can
     /// never produce a different result than the Arc walk — it is a pure
-    /// fast-path overlay. A later lane flips the default to rcu after boot +
-    /// stress; this lane lands it opt-in with the mandatory fallback.
+    /// fast-path overlay. The returned Arc is the lifetime hold for this
+    /// implementation's dcache nodes.
     pub rcu: bool,
+}
+
+impl Default for LookupFlags {
+    fn default() -> Self {
+        Self { no_follow_final: false, follow: false, empty: false,
+            no_symlinks: false, no_automount: false, beneath: false,
+            beneath_exdev: false, directory: false, parent: false, in_root: false,
+            no_magiclinks: false, no_xdev: false, reval: false, cached: false,
+            rcu: true }
+    }
 }
 
 impl LookupFlags {

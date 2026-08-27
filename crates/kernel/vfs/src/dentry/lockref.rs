@@ -47,6 +47,11 @@ impl Lockref {
 
     /// `lockref_mark_dead`: stamp the kill sentinel. # C: O(1)
     pub fn mark_dead(&self) { self.count.store(LOCKREF_DEAD, Ordering::Release); }
+    /// Claim an unused lockref for eviction, matching Linux's locked
+    /// `dentry_kill` recheck. # C: O(1) amortized
+    pub fn try_mark_dead(&self) -> bool {
+        self.count.compare_exchange(0, LOCKREF_DEAD, Ordering::AcqRel, Ordering::Acquire).is_ok()
+    }
     /// True iff the lockref is dead (`< 0`) — kill in progress. # C: O(1)
     pub fn is_dead(&self) -> bool { self.count.load(Ordering::Acquire) < 0 }
 }

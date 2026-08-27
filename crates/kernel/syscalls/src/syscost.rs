@@ -126,6 +126,7 @@ fn dump() {
         if t > val[min_j] { val[min_j] = t; idx[min_j] = i; }
     }
     crate::syscost_phase::dump();
+    vfs::resolve_cost::dump_resolve_cost();
     pmm::unmapcost::dump();
     for _ in 0..TOP_N {
         let mut best = 0;

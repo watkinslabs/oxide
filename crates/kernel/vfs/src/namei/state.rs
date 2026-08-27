@@ -156,30 +156,18 @@ impl Nameidata {
     /// at a point that must block or take a lock (symlink `get_link`, mount
     /// crossing, the final component, a blocking permission check, or a dcache
     /// miss that needs `i_op->lookup` under `i_rwsem`). LEGITIMIZE the freshly
-    /// resolved `child`: pin it (`inc_count_not_zero`) THEN re-validate the
-    /// per-dentry (`cseq`) and global (`m_seq`) rename seqcounts — the
-    /// reference-BEFORE-recheck order. On success drop rcu mode and continue as
-    /// a ref/Arc walk (the `Arc` is the durable hold; the transient pin was
-    /// only the not-zero legitimize test, released here). On ANY failure return
-    /// `false` so the caller restarts the walk in ref mode (`self.rcu` is left
-    /// cleared). In this lane's Arc-walk substrate the dcache `d_count` is
-    /// DORMANT (an unheld cache dentry rests at 0 — the dput/dget lockref
-    /// lifecycle is built-but-unwired, dcache D11), so `inc_count_not_zero`
-    /// conservatively fails and rcu mode legitimizes by FALLING BACK to the
-    /// proven ref walk at the first complication — provably == the Arc walk.
+    /// resolved `child`: the dcache probe already returned an owning `Arc`, so
+    /// it supplies the lifetime hold that Linux's raw-pointer d_count would
+    /// provide. Re-validate the per-dentry (`cseq`) and global (`m_seq`) rename
+    /// seqcounts before continuing. On success drop RCU mode and continue as a
+    /// ref/Arc walk; on failure return `false` so the caller restarts.
     /// # C: O(1)
     pub(super) fn unlazy_walk(&mut self, child: &Arc<Dentry>, cseq: u32, m_seq: u32) -> bool {
         if !self.rcu { return true; }
-        // EVERY failure path leaves LOOKUP_RCU (the fallback IS dropping rcu),
-        // so the caller's restart re-walks as a plain ref walk and can never
-        // re-enter rcu to fail again — the termination guarantee of the
-        // fast-path overlay (a missed `self.rcu` clear here is an infinite
-        // restart). The legitimize succeeds only when the pin AND both
-        // seqcounts hold; otherwise fall back.
+        // Clear RCU before consuming the validation result. A raced dentry
+        // restarts from the saved root in the ordinary reference walk.
         self.rcu = false;
-        if !child.inc_count_not_zero() { return false; }
         let raced = child.read_seqretry(cseq) || crate::dcache::rename_lock_retry(m_seq);
-        child.dec_count(); // Arc pins; the bump was only the not-zero legitimize test
         !raced
     }
 
