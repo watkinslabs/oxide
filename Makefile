@@ -50,7 +50,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         hardware-audit-image-x86 \
         boot-debug-x86 boot-debug-arm smoke-debug smoke-debug-x86 smoke-debug-arm smoke-taskdump-arm \
         qemu-x86-grub qemu-x86-uefi smoke-uefi-x86 \
-        smoke-up smoke-up-x86 smoke-up-arm \
+        smoke-up smoke-up-x86 smoke-up-arm smoke-symlink-x86 \
         smoke-cmdline-x86 smoke-cmdline-arm smoke-cmdline \
         smoke-devpts-x86 smoke-devpts-arm smoke-devpts \
         smoke-af-packet-diff-x86 smoke-af-packet-diff-arm smoke-af-packet-diff \
@@ -434,6 +434,16 @@ smoke:
 # separate target from `smoke`, and the two arches inside it — which share
 # nothing — are the only things that run concurrently.
 smoke-up-x86: x86
+	OXIDE_SMP=1 ./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT)
+
+# Full userspace symlink regression gate.  The normal smoke accepts
+# basic.target or a debug-shell answer; that is intentionally early and can
+# miss systemd failing while it resolves the symlinked default target and
+# related unit links.  Require the desktop handoff and fail on the diagnostic
+# that exposed B2747's pathname regression.
+smoke-symlink-x86: x86
+	SMOKE_MARKER='GNOME Shell started' SMOKE_ALIVE_PROBE='' \
+	SMOKE_FAIL_MARKER='Failed to resolve symlink' OXIDE_SMOKE_ATTEMPTS=1 \
 	OXIDE_SMP=1 ./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT)
 
 smoke-up-arm: arm

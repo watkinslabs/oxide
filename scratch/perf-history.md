@@ -14,6 +14,7 @@ that artifact is regenerated.
 | B2708 / `569260958` | 1,365,729 | 7,612 | 5,574 | 21,764 | 35,112 | 21,764 | 254 | 3,185 | DMA ordering + stat-walk lane; no measured stat win |
 | B2709 / `eac588295` | 1,366,469 | 6,518 | 4,770 | 21,426 | 27,372 | 19,912 | 248 | 2,551 | combined page-table lookup/teardown |
 | B2711 / `cb057d656` | 1,366,590 | 6,796 | 4,973 | 22,230 | 27,739 | 20,345 | 219 | 2,510 | journal publication barrier; no demonstrated flush-count win |
+| B2748 baseline / `900873cbc` | 1,366,478 | 6,837 | 5,003 | 22,008 | 28,509 | 20,802 | 192 | 2,430 | post-B2746 completion-drain fix; valid GNOME run |
 
 The B2709 `munmap` result is a material improvement over B2699: 71,407 ns
 to 21,426 ns (about 70% lower), and 52x to 16x the host baseline. The B2708
