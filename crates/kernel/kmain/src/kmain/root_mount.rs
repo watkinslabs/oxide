@@ -19,6 +19,45 @@ use alloc::sync::Arc;
 
 use crate::kmain::entry::step;
 
+/// Report every block device the root could have been, then say the boot line
+/// named none of them.
+///
+/// A bare "not found" leaves the reader unable to tell an unscanned partition
+/// table from a misspelled label from a disk that never registered, and the
+/// information to tell them apart is in the registry at exactly this moment.
+/// Linux prints the same listing before it gives up on `root=`.
+/// # C: O(disks + partitions)
+#[cfg(target_os = "oxide-kernel")]
+pub fn log_available_roots(spec: &[u8]) {
+    klog::write_raw(b"[ROOT] cannot resolve root=");
+    klog::write_raw(spec);
+    klog::write_raw(b"; available block devices:\n");
+    for disk in block::registry::snapshot() {
+        klog::write_raw(b"[ROOT]   ");
+        klog::write_raw(disk.name.as_bytes());
+        klog::write_raw(b" sectors=");
+        klog::write_dec_u64(block::registry::size_512_sectors(disk.dev.capacity_blocks(), disk.dev.block_size()));
+        if let Some(serial) = disk.serial.as_deref() {
+            klog::write_raw(b" serial=");
+            klog::write_raw(serial.as_bytes());
+        }
+        klog::write_raw(b"\n");
+        for part in disk.partitions() {
+            klog::write_raw(b"[ROOT]     ");
+            klog::write_raw(part.name.as_bytes());
+            klog::write_raw(b" start=");
+            klog::write_dec_u64(part.start_lba);
+            klog::write_raw(b" sectors=");
+            klog::write_dec_u64(part.sectors);
+            klog::write_raw(b" label=");
+            klog::write_raw(part.label.as_deref().unwrap_or("-").as_bytes());
+            klog::write_raw(b" uuid=");
+            klog::write_raw(part.uuid.as_deref().unwrap_or("-").as_bytes());
+            klog::write_raw(b"\n");
+        }
+    }
+}
+
 /// The mounted root: the filesystem to graft at `/` and the registered type
 /// name to graft it under.
 pub struct MountedRoot {

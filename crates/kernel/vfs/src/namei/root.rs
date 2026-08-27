@@ -17,6 +17,29 @@ pub fn resolve_abs(path: &str) -> KResult<InodeRef> {
     Ok(p.inode)
 }
 
+/// Read the whole of the regular file at absolute `path`.
+///
+/// The ONE way the boot path reads a file before there is a task to open one
+/// with — init, and the dynamic linker init names in `PT_INTERP`. It goes
+/// through the name walk, so it follows the symlinks a merged-`/usr`
+/// distribution makes of `/lib` and `/lib64`, and it reads whatever filesystem
+/// is mounted rather than one particular filesystem's own reader.
+/// # C: O(file bytes)
+pub fn read_abs(path: &str) -> KResult<alloc::vec::Vec<u8>> {
+    let inode = resolve_abs(path)?;
+    if inode.file_type() != crate::types::FileType::Regular { return Err(VfsError::Einval); }
+    let size = usize::try_from(inode.size()).map_err(|_| VfsError::Einval)?;
+    let mut bytes = alloc::vec![0u8; size];
+    let mut done = 0usize;
+    while done < size {
+        match inode.i_fop().read(&inode, done as u64, &mut bytes[done..])? {
+            0 => return Err(VfsError::Eio),
+            n => done += n,
+        }
+    }
+    Ok(bytes)
+}
+
 /// Resolve absolute `path` to its canonical DENTRY (parent chain intact) by
 /// the per-component walk from the global root. Used by open-path tests to
 /// obtain the real parent dentry for an opened file. `None` if the root dentry

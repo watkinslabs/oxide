@@ -42,6 +42,19 @@ pub use meta::Cursor;
 /// entry cannot exist and eviction order buys nothing.
 const META_CACHE_BLOCKS: usize = 64;
 
+/// How many bytes of decompressed DATA blocks one volume keeps.
+///
+/// A page fault fills 4 KiB, and without this every one of them decompresses
+/// the whole block containing it — thirty-two codec runs per block at the
+/// tool's default block size, and two hundred and fifty-six at the format's
+/// maximum. A boot reads the same few blocks of the same few libraries over
+/// and over, so a small cache removes nearly all of that work.
+///
+/// Cleared wholesale when it fills, for the reason the metadata cache is: a
+/// mounted image never changes, so no entry can be stale and eviction order
+/// buys nothing over the cost of tracking it.
+const DATA_CACHE_BYTES: usize = 8 * 1024 * 1024;
+
 /// A mounted squashfs volume.
 pub struct Volume<S: SectorSource> {
     src: S,
@@ -61,6 +74,10 @@ pub struct Volume<S: SectorSource> {
     /// How many xattr identifiers the table describes.
     xattr_ids: u32,
     cache: sync::Spinlock<BTreeMap<u64, (Vec<u8>, u64)>, sync::TaskList>,
+    /// Decompressed data and fragment blocks, keyed by the medium address the
+    /// block was read from — unique per block in an immutable image — with the
+    /// running byte total the clear threshold is measured against.
+    data_cache: sync::Spinlock<(BTreeMap<u64, alloc::sync::Arc<Vec<u8>>>, usize), sync::TaskList>,
 }
 
 /// Why a volume did not mount.
@@ -126,6 +143,7 @@ impl<S: SectorSource> Volume<S> {
             xattr_table: INVALID_BLK,
             xattr_ids: 0,
             cache: sync::Spinlock::new(BTreeMap::new()),
+            data_cache: sync::Spinlock::new((BTreeMap::new(), 0)),
         };
         v.read_index_tables()?;
         Ok(v)
@@ -144,6 +162,18 @@ impl<S: SectorSource> Volume<S> {
     pub fn has_xattrs(&self) -> bool { self.xattr_ids != 0 }
 
     /// # C: O(1)
+    /// A decompressed data block already read from `at`. # C: O(log N)
+    pub(super) fn data_cache_get(&self, at: u64) -> Option<alloc::sync::Arc<Vec<u8>>> {
+        self.data_cache.lock().0.get(&at).cloned()
+    }
+
+    /// Keep a decompressed data block read from `at`. # C: O(log N)
+    pub(super) fn data_cache_put(&self, at: u64, bytes: &alloc::sync::Arc<Vec<u8>>) {
+        let mut g = self.data_cache.lock();
+        if g.1 >= DATA_CACHE_BYTES { g.0.clear(); g.1 = 0; }
+        if g.0.insert(at, bytes.clone()).is_none() { g.1 += bytes.len(); }
+    }
+
     fn meta_cache_get(&self, block: u64) -> Option<meta::MetaBlock> {
         let cache = self.cache.lock();
         cache.get(&block).map(|(data, next)| meta::MetaBlock { data: data.clone(), next: *next })

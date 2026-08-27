@@ -79,3 +79,35 @@ fn a_name_longer_than_the_format_allows_is_refused_without_touching_the_medium()
     let long = "x".repeat(crate::limits::NAME_LEN + 1);
     assert_eq!(vol.lookup(&root, &long).err(), Some(Errno::Enametoolong));
 }
+
+/// An EMPTY directory stores size 3 — the count of the two names it does not
+/// store, plus one. Its listing occupies no bytes, so the walk must not read a
+/// single header: in a real image the bytes at its listing position belong to
+/// the NEXT directory in the shared metadata stream, and reading them lists
+/// another directory's names under this one.
+///
+/// Built by pointing an inode of size 3 at a listing that DOES have content —
+/// the fixture's root — which is exactly the situation an empty directory is
+/// in, and the strongest form of the case: anything the walk reads is visibly
+/// wrong. Observed as a boot in which systemd ran fifteen unit generators as
+/// environment generators, `system-environment-generators` being empty.
+#[test]
+fn an_empty_directory_lists_nothing_of_its_neighbour() {
+    let (vol, root) = mounted();
+    let mut empty = root.clone();
+    empty.size = crate::volume::dir::SYNTHETIC_ENTRIES;
+    assert!(!vol.read_dir(&root).unwrap().is_empty(), "the fixture's root has entries to spill");
+    assert_eq!(vol.read_dir(&empty).unwrap(), Vec::new(),
+        "an empty directory read its neighbour's listing");
+}
+
+/// The same bound seen from the other side: a directory's walk stops at its
+/// own last entry rather than three bytes into what follows.
+#[test]
+fn a_listing_stops_at_the_size_the_directory_stores() {
+    let (vol, root) = mounted();
+    let all = vol.read_dir(&root).unwrap();
+    let last = all.last().expect("entries");
+    assert_eq!(last.next_pos, root.size,
+        "the last entry must end exactly at the directory's stored size");
+}

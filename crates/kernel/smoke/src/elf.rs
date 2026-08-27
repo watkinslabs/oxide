@@ -17,12 +17,19 @@ use elf_load::load_static_blob;
 pub fn lookup_blob_by_path(path: &[u8]) -> Option<&'static [u8]> {
     #[cfg(target_os = "oxide-kernel")]
     {
-        if let Some(bytes) = ext4::rootfs::read_file(path) {
-            let leaked: &'static [u8] = alloc::boxed::Box::leak(bytes.into_boxed_slice());
-            return Some(leaked);
-        }
+        // Through the VFS, not through one filesystem's own reader: the root
+        // is whatever `rootfstype=` mounted, and reaching past the mount to a
+        // particular filesystem's API finds init on exactly one of them. It
+        // also resolves the symlinks a distribution's `/lib` and `/sbin` are.
+        let bytes = vfs::read_abs(core::str::from_utf8(path).ok()?).ok()?;
+        let leaked: &'static [u8] = alloc::boxed::Box::leak(bytes.into_boxed_slice());
+        return Some(leaked);
     }
-    None
+    #[cfg(not(target_os = "oxide-kernel"))]
+    {
+        let _ = path;
+        None
+    }
 }
 
 /// User stack length for boot-spawned user blobs. 64 KiB matches

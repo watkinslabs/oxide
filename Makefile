@@ -39,13 +39,17 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
 # <arch>-latest.log pointing at the newest. OXIDE_SERIAL_LOG=<path> names one;
 # OXIDE_SERIAL_LOG=0 declines.
 # `make qemu-mcp`        — print the MCP tool list (interactive QEMU debug).
+# `make live`            — ONE bootable file: GRUB + stripped kernel + squashfs
+#                          root, volatile writes. `LIVE_PROFILE=` picks the
+#                          profile; pack it first in the images repo with
+#                          ./pack-squashfs.sh <profile> <arch>.
 # `make artifacts`       — export stable packaging artifacts to target/artifacts.
 # `make clean`           — `cargo clean`.
 
 .PHONY: all build x86 arm kpi-layout \
         build-debug x86-debug arm-debug \
         test lint lint-ratchet lint-ratchet-update audit-counts profile-policy warnings-control stats ci \
-        micro micro-arm gnome gnome-arm lite \
+        micro micro-arm gnome gnome-arm lite live live-x86 live-arm \
         qemu-x86 qemu-arm qemu-x86-virtio-gpu qemu-x86-image qemu-arm-image qemu-x86-existing qemu-arm-existing qemu-x86-debug qemu-arm-debug qemu-mcp verify-native-q35 smoke-native-pci-x86 smoke-native-pci-e1000-x86 \
         hardware-audit-image-x86 \
         boot-debug-x86 boot-debug-arm smoke-debug smoke-debug-x86 smoke-debug-arm smoke-taskdump-arm \
@@ -249,6 +253,21 @@ qemu-x86:
 # the profiles share `builds/default` otherwise, and the last one booted wins.
 micro:
 	OXIDE_QUICKBOOT_PROFILE=micro $(XTASK) grub --arch x86_64 --smp $(SMP) --id micro
+
+# One file to hand somebody: GRUB, a stripped kernel and an immutable squashfs
+# root in a single bootable image, with every write going to memory. The
+# squashfs is packed by the images repo, which owns userspace composition.
+# LIVE_PROFILE selects which profile is packed into it.
+LIVE_PROFILE ?= micro
+live: live-x86
+live-x86:
+	$(XTASK) kernel --arch x86_64 $(if $(FEATURES),--features "$(FEATURES)",)
+	$(XTASK) artifacts --arch x86_64
+	./tools/live-image.sh $(LIVE_PROFILE) x86_64
+live-arm:
+	$(XTASK) kernel --arch aarch64 $(if $(FEATURES),--features "$(FEATURES)",)
+	$(XTASK) artifacts --arch aarch64
+	./tools/live-image.sh $(LIVE_PROFILE) aarch64
 micro-arm:
 	OXIDE_QUICKBOOT_PROFILE=micro $(XTASK) grub --arch aarch64 --smp $(SMP) --id micro
 gnome:

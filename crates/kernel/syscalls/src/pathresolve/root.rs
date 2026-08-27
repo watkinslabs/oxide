@@ -5,13 +5,24 @@ use sync::{MountTable as RootClass, Spinlock};
 
 static ROOT_DENTRY: Spinlock<Option<Arc<vfs::Dentry>>, RootClass> = Spinlock::new(None);
 
+/// The global resolution root: the root mount's own root dentry.
+///
+/// Linux takes it from the mounted root — `d_make_root` builds the superblock's
+/// `s_root` and `init_mount_tree` makes that the initial `fs_struct` root. It
+/// was taken from ext4's private rootfs API here instead, which meant the whole
+/// namespace resolved only while ext4 was the root filesystem: mount a squashfs
+/// root and every path, `/dev` included, answered ENOENT with the mount grafted
+/// and nothing to say why.
+///
+/// Cached after the first answer: the root mount does not change, and the
+/// dentry's identity is what the dcache keys on.
+/// # C: O(1) after the first call
 pub fn root_dentry() -> Option<Arc<vfs::Dentry>> {
     {
         let g = ROOT_DENTRY.lock();
         if let Some(d) = g.as_ref() { return Some(d.clone()); }
     }
-    let root_inode = ext4::rootfs::lookup_inode_any(b"/")?;
-    let d = vfs::Dentry::new_root(root_inode);
+    let d = vfs::mount::root_path_for_ns(vfs::mount::current_ns()).map(|p| p.dentry)?;
     let mut g = ROOT_DENTRY.lock();
     Some(g.get_or_insert(d).clone())
 }

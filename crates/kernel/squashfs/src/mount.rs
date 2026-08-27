@@ -43,7 +43,13 @@ const VOLUME_SECTOR: u32 = 1;
 pub struct SquashFs {
     /// One lock: the metadata cache is shared, and a decompression under it is
     /// what every reader is waiting for.
-    pub(crate) volume: sync::Spinlock<Volume<BlockSource>, sync::TaskList>,
+    ///
+    /// SLEEPING, not a spinlock. Every read through it reaches the block layer
+    /// and parks until the device completes, and a spinlock disables preemption
+    /// — so a spinlock here made every single lookup and every page fill sleep
+    /// in atomic context. Linux's squashfs holds a mutex across exactly the
+    /// same work, for exactly this reason.
+    volume: sched::live::Mutex<Volume<BlockSource>>,
     source: String,
     /// Held so the superblock operations can reach the filesystem they belong
     /// to, which the `&self` those operations are asked for cannot.
@@ -69,10 +75,22 @@ impl SquashFs {
         let volume = Volume::mount_with(src, opts).map_err(mount_to_vfs)?;
         let source = source.to_string();
         Ok(Arc::new_cyclic(|me| Self {
-            volume: sync::Spinlock::new(volume),
+            volume: sched::live::Mutex::new(volume),
             source,
             me: me.clone(),
         }))
+    }
+
+    /// The mounted volume, for this crate's operations.
+    ///
+    /// # SAFETY: every caller is a VFS operation or a mount-time step running
+    /// in process context and holding no spinlock, which is what a sleeping
+    /// lock requires; this filesystem takes no other lock.
+    /// # C: O(1) uncontended
+    pub(crate) fn volume(&self) -> sched::live::MutexGuard<'_, Volume<BlockSource>> {
+        // SAFETY: process context, no spinlock held — see the method contract
+        // above, which every call site in this crate satisfies.
+        unsafe { self.volume.lock() }
     }
 
     /// Always false: the format records no way to change an image in place.
@@ -81,12 +99,12 @@ impl SquashFs {
 
     /// The root inode. # C: O(root inode bytes)
     pub fn root_inode(self: &Arc<Self>) -> KResult<InodeRef> {
-        let reference = self.volume.lock().root_reference();
+        let reference = self.volume().root_reference();
         node::inode_for(self, reference)
     }
 
     /// This mount's option set. # C: O(1)
-    pub fn options(&self) -> Options { *self.volume.lock().options() }
+    pub fn options(&self) -> Options { *self.volume().options() }
 
     /// The device this filesystem was mounted from. # C: O(1)
     pub fn source(&self) -> &str { &self.source }
@@ -123,14 +141,14 @@ impl vfs::fs::FileSystem for SquashFs {
     fn name(&self) -> &str { SQUASHFS_NAME }
     fn magic(&self) -> u64 { crate::uapi::SQUASHFS_SUPER_MAGIC }
     fn fs_flags(&self) -> vfs::fs::FsFlags { vfs::fs::FsFlags::FS_REQUIRES_DEV }
-    fn block_size(&self) -> u32 { self.volume.lock().superblock().block_size }
+    fn block_size(&self) -> u32 { self.volume().superblock().block_size }
     /// The root directory, for a caller that grafts this filesystem without
     /// having resolved a root of its own — which is what mounting an image AS
     /// the root does. Without it such a mount has no tree to walk at all.
     fn root(&self) -> Option<InodeRef> {
         self.me.upgrade().and_then(|fs| fs.root_inode().ok())
     }
-    fn show_options(&self) -> String { crate::opts::show(*self.volume.lock().options()) }
+    fn show_options(&self) -> String { crate::opts::show(*self.volume().options()) }
     fn super_ops(&self) -> Option<Arc<dyn vfs::superblock::SuperOps>> {
         self.me.upgrade()
             .map(|fs| Arc::new(sb::SquashSuperOps { fs }) as Arc<dyn vfs::superblock::SuperOps>)
@@ -140,7 +158,7 @@ impl vfs::fs::FileSystem for SquashFs {
 /// Read the whole of `path` from a mounted image. Exists for a boot-time
 /// caller that wants one file without a mount point. # C: O(file bytes)
 pub fn read_path(fs: &SquashFs, path: &str) -> KResult<alloc::vec::Vec<u8>> {
-    let v = fs.volume.lock();
+    let v = fs.volume();
     let mut node = v.read_inode(v.root_reference()).map_err(errno_to_vfs)?;
     for part in path.split('/') {
         if part.is_empty() || part == "." { continue; }

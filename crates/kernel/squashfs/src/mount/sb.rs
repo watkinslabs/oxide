@@ -20,7 +20,7 @@ impl SuperOps for SquashSuperOps {
     /// as it is, and reporting a free count would tell a caller it could write
     /// where no write can land.
     fn statfs(&self) -> KResult<SbStatFs> {
-        let v = self.fs.volume.lock();
+        let v = self.fs.volume();
         let sb = v.superblock();
         Ok(SbStatFs {
             f_type: crate::uapi::SQUASHFS_SUPER_MAGIC,
@@ -39,7 +39,7 @@ impl SuperOps for SquashSuperOps {
         })
     }
 
-    fn show_options(&self) -> String { crate::opts::show(*self.fs.volume.lock().options()) }
+    fn show_options(&self) -> String { crate::opts::show(*self.fs.volume().options()) }
 
     /// Nothing to push: an image nothing writes to has no dirty state.
     fn sync_fs(&self, _wait: bool) -> KResult<()> { Ok(()) }

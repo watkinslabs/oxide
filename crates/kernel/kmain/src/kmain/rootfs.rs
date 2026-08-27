@@ -78,8 +78,14 @@ unsafe fn mount_root() -> super::root_mount::MountedRoot {
         }
         let root_spec = crate::boot_cmdline::parameter_value(b"root")
             .expect("boot command line has no root=");
-        let root_dev = block::registry::resolve_root_spec(root_spec)
-            .expect("requested root block device not found");
+        let root_dev = match block::registry::resolve_root_spec(root_spec) {
+            Some(dev) => dev,
+            None => {
+                super::root_mount::log_available_roots(root_spec);
+                hal::kassert!(false, "requested root block device not found");
+                unreachable!()
+            }
+        };
         // Runs under this function's forwarded boot-entry contract, which is
         // what each candidate's publisher requires: single CPU, nothing has
         // yet observed a root.
@@ -117,8 +123,23 @@ fn mount_boot_filesystems(root: super::root_mount::MountedRoot) {
     // The root grafts at `/` through the same registered type every other
     // mount uses, so `/proc/mounts` names the filesystem that is actually
     // mounted rather than a type assumed at build time.
-    if let Some(ty) = vfs::fs::get_fs_type(root.fstype) {
-        let _ = vfs::mount::register_typed(ty, None, root.fs);
+    //
+    // Every outcome is reported. A root that is silently not grafted produces
+    // a boot in which nothing resolves and no line says why — which is how
+    // this landed the first time.
+    klog::write_raw(b"[ROOT] grafting ");
+    klog::write_raw(root.fstype.as_bytes());
+    klog::write_raw(b" at /: ");
+    match vfs::fs::get_fs_type(root.fstype) {
+        None => klog::write_raw(b"no registered filesystem type\n"),
+        Some(ty) => match vfs::mount::register_typed(ty, None, root.fs) {
+            Ok(()) => klog::write_raw(b"ok\n"),
+            Err(e) => {
+                klog::write_raw(b"errno=");
+                klog::write_dec_u64(e as u64);
+                klog::write_raw(b"\n");
+            }
+        },
     }
     boot_register("devtmpfs", "/dev",  Arc::new(::devfs::DevfsFs));
     boot_register("proc",     "/proc", Arc::new(procfs::fs_impl::ProcfsFs::default()));

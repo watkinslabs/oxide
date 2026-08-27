@@ -311,8 +311,12 @@ fn spawn_init_from_rootfs_arm() {
     ];
     let mut init_path: &[u8] = b"/init";
     let mut init_blob_opt = None;
+    // Through the VFS, so init is found on whatever filesystem `rootfstype=`
+    // mounted and through the symlinks `/lib` and `/sbin` are — same reader
+    // the x86 path uses.
     for path in init_candidates {
-        if let Some(bytes) = ext4::rootfs::read_file(path) {
+        let Ok(p) = core::str::from_utf8(path) else { continue };
+        if let Ok(bytes) = vfs::read_abs(p) {
             init_path = path;
             init_blob_opt = Some(bytes);
             break;

@@ -975,6 +975,7 @@ dependencies = [
  "klog",
  "syscall",
  "uaccess",
+ "vfs",
  "vmm",
 ]
 
@@ -2640,6 +2641,7 @@ dependencies = [
  "lz4_flex",
  "lzo1x",
  "miniz_oxide",
+ "sched",
  "sectors",
  "sync",
  "syscall",
