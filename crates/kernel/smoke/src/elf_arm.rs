@@ -301,7 +301,7 @@ pub unsafe fn run() -> ! {
 /// runqueue. Returns when the spawn machinery is done; the task
 /// runs on the next schedule().
 fn spawn_init_from_rootfs_arm() {
-    use vmm::{AddressSpace, VmaBacking, VmaFlags, VmaProt};
+    use vmm::{AddressSpace, VmaBacking, VmaProt};
     use hal::{MmuOps, UserVirtAddr};
 
     let init_candidates: &[&[u8]] = &[
@@ -370,18 +370,6 @@ fn spawn_init_from_rootfs_arm() {
     }
     mm.set_mmap_layout(rnd.mmap_base(INIT_STACK_LEN), true);
 
-    let img = match elf_load::load_static_blob(init_blob, &mm, &rnd) {
-        Ok(i)  => i,
-        Err(_) => { debug_irq! { klog::kerror!("init-arm: load_static_blob failed"); } return; }
-    };
-
-    // F153-1: build a real SysV initial stack with argv[0]=selected init.
-    // Same shape and init selection order as the x86 PID1 path.
-    // Linux `create_elf_tables`: 16 `get_random_bytes()` bytes. Replaces the
-    // clock-derived fill — the `F768` bug still live in the PID 1 path — which
-    // handed init a guessable glibc stack canary and pointer guard.
-    let mut random16 = [0u8; 16];
-    crng::fill(&mut random16);
     // `#!`: init may be a script here too, resolved the same way and with the
     // same argv shape as the x86 path — one decision, one parser.
     let mut argv: [&[u8]; 3] = [init_path, b"", b""];
@@ -401,6 +389,19 @@ fn spawn_init_from_rootfs_arm() {
             }
         }
     }
+
+    let img = match elf_load::load_static_blob(init_blob, &mm, &rnd) {
+        Ok(i)  => i,
+        Err(_) => { debug_irq! { klog::kerror!("init-arm: load_static_blob failed"); } return; }
+    };
+
+    // F153-1: build a real SysV initial stack with argv[0]=selected init.
+    // Same shape and init selection order as the x86 PID1 path.
+    // Linux `create_elf_tables`: 16 `get_random_bytes()` bytes. Replaces the
+    // clock-derived fill — the `F768` bug still live in the PID 1 path — which
+    // handed init a guessable glibc stack canary and pointer guard.
+    let mut random16 = [0u8; 16];
+    crng::fill(&mut random16);
     let argv0: &[&[u8]] = &argv[..argc];
     let stack_plan = match elf_load::stack::plan_initial_stack(
         stack_top, INIT_STACK_LEN, argv0, &[b"TERM=vt100" as &[u8]], &rnd,

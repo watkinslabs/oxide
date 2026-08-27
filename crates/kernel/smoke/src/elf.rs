@@ -214,7 +214,7 @@ unsafe fn spawn_user_blob_with_vpid(
     vpid_tid:  u32,
     argv:      &[&[u8]],
 ) {
-    use vmm::{AddressSpace, VmaBacking, VmaFlags, VmaProt};
+    use vmm::{AddressSpace, VmaBacking, VmaProt};
     use hal::{MmuOps, UserVirtAddr};
 
     // Fresh per-task AS so back-to-back smokes don't overlap PIE
