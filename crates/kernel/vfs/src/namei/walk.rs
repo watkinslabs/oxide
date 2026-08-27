@@ -221,6 +221,8 @@ impl Nameidata {
             // Symlink handling — use the child's OWN inode (a mountpoint is a
             // directory, never a symlink, so this precedes mount crossing).
             if matches!(child.inode().map(|i| i.file_type()), Some(FileType::Symlink)) {
+                #[cfg(feature = "debug-resolve-cost")]
+                let _cost = crate::resolve_cost::symlink();
                 // O_NOFOLLOW / AT_SYMLINK_NOFOLLOW: the FINAL symlink is returned
                 // UNFOLLOWED (Linux `step_into` with LOOKUP_FOLLOW clear). The link
                 // is NOT resolved, so RESOLVE_NO_SYMLINKS does not apply to it —

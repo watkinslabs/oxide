@@ -291,6 +291,9 @@ impl Dentry {
     /// `inc_count_not_zero` can resurrect the dentry. # C: O(1)
     pub fn mark_dead(&self) { self.d_count.mark_dead(); }
 
+    /// Atomically claim an unused dentry for eviction. # C: O(1) amortized
+    pub fn try_mark_dead(&self) -> bool { self.d_count.try_mark_dead() }
+
     /// True iff this dentry's lockref is dead — a kill is in progress. # C: O(1)
     pub fn is_dead(&self) -> bool { self.d_count.is_dead() }
 

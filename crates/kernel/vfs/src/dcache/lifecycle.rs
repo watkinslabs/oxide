@@ -49,15 +49,19 @@ pub fn dput(d: Arc<Dentry>) {
 /// keep the bare `d_drop`: `d_move` rehomes a live dentry, `d_invalidate`
 /// disconnects a subtree whose nodes may still be in use, and a stale
 /// `d_revalidate` miss re-walks without a refcount kill. # C: O(d_drop)
-pub(super) fn dentry_kill(d: &Arc<Dentry>) {
+pub(super) fn dentry_kill(d: &Arc<Dentry>) -> bool {
+    // The count check and dead transition must be one atomic operation: a
+    // lookup may acquire d_count after a shrinker observes zero. Linux holds
+    // d_lock across this recheck; the lockref CAS is the equivalent here.
+    if !d.try_mark_dead() { return false; }
     // Fire the pruning hook (gated by the presence bit) BEFORE unhashing, so
     // the fs can drop cache bookkeeping while
     // the dentry's name/parent binding is still intact.
     if d.d_has_op_prune() {
         if let Some(f) = d.d_op().and_then(|o| o.d_prune) { f(d); }
     }
-    d.mark_dead();
     d_drop(d);
+    true
 }
 
 /// Unhash `d` from the global table and its parent's child list: a stale

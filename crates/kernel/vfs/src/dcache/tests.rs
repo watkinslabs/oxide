@@ -145,6 +145,15 @@ assert_eq!(c.d_count(), 0);
 assert!(c.is_on_lru(), "unused dentry must be on the LRU");
 }
 
+#[test]
+fn eviction_claim_is_atomic_and_single_use() {
+    let r = root();
+    let c = Dentry::new_child(&r, "evict-claim", None);
+    assert!(c.try_mark_dead());
+    assert!(!c.try_mark_dead());
+    assert!(c.is_dead());
+}
+
 // shrink_dcache evicts unused negatives; referenced/in-use survive.
 #[test]
 fn shrink_evicts_unused_negatives() {

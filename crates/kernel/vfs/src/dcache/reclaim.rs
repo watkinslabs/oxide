@@ -59,8 +59,7 @@ pub fn shrink_dcache(target: usize) -> usize {
             continue;
         }
         d.set_on_lru(false);
-        dentry_kill(&d);
-        freed += 1;
+        if dentry_kill(&d) { freed += 1; }
     }
     freed
 }
@@ -84,8 +83,7 @@ pub fn shrink_dcache_sb(sb: &Arc<SuperBlock>) -> usize {
         let ours = d.d_sb().map(|s| Arc::ptr_eq(&s, sb)).unwrap_or(false);
         if ours && d.d_count() == 0 {
             d.set_on_lru(false);
-            dentry_kill(&d);
-            freed += 1;
+            if dentry_kill(&d) { freed += 1; }
         } else {
             DENTRY_LRU.lock().push_back(Arc::downgrade(&d)); // not ours / in use
         }
@@ -119,8 +117,7 @@ pub fn shrink_dcache_parent(parent: &Arc<Dentry>) -> usize {
     let mut freed = 0;
     for d in order.iter().rev() {
         if d.d_count() == 0 && d.children_snapshot().is_empty() {
-            dentry_kill(d);
-            freed += 1;
+            if dentry_kill(d) { freed += 1; }
         }
     }
     freed
@@ -179,7 +176,7 @@ pub fn d_prune_aliases(inode: &InodeRef) -> usize {
     let sb = match inode.i_sb() { Some(sb) => sb, None => return 0 };
     let mut freed = 0;
     for alias in sb.i_aliases(inode.ino()) {
-        if alias.d_count() == 0 { dentry_kill(&alias); freed += 1; }
+        if alias.d_count() == 0 && dentry_kill(&alias) { freed += 1; }
     }
     freed
 }

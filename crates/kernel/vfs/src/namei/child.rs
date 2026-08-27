@@ -29,6 +29,8 @@ pub(crate) enum ChildLookup {
 impl Nameidata {
     /// Resolve `comp` within the current directory. # C: O(1) cached, O(dir-lookup) cold
     pub(crate) fn lookup_child(&mut self, comp: &str) -> KResult<ChildLookup> {
+        #[cfg(feature = "debug-resolve-cost")]
+        let _cost = crate::resolve_cost::child_lookup();
         // Fast path `d_lookup` (parent,name)-keyed. D5/D6: a confirmed MISS is
         // cached as a NEGATIVE dentry (so a repeated lookup/stat of the same name
         // is served from the dcache WITHOUT re-walking the blocking slow path),

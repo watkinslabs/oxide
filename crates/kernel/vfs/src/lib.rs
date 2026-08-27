@@ -46,6 +46,8 @@ pub mod mapping;
 pub mod memory_accounting;
 pub mod setattr;
 pub mod namei;
+#[cfg(feature = "debug-resolve-cost")]
+pub mod resolve_cost;
 pub mod path;
 pub mod fs;
 pub mod mount;
