@@ -100,6 +100,8 @@ pub(crate) fn ext4_rename2(
         if dest_victim.is_some() { inode.drop_nlink(); }
         else if from_p != to_p { inode.drop_nlink(); new_dir.inc_nlink(); }
     }
+    d.refresh_raw();
+    if !core::ptr::eq(inode, new_dir) { nd.refresh_raw(); }
     Ok(())
 }
 

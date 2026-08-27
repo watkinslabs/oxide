@@ -21,6 +21,9 @@ that artifact is regenerated.
 | B2765-r2 / working tree | 1,366,067 | 6,052 | 4,430 | 21,115 | 14,979 | 20,100 | 219 | 2,203 | repeat; GNOME marker complete |
 | perf01-r1 / working tree | 1,365,658 | 5,956 | 4,361 | 21,180 | — | 20,118 | 201 | 3,048 | readahead cache-first admission; GNOME marker complete |
 | perf01-r2 / working tree | 1,365,492 | 5,998 | 4,393 | 20,858 | — | 20,068 | 169 | 2,249 | repeat; readahead cache-first admission; GNOME marker complete |
+| B2799 baseline / `378f3cb61` | 1,366,410 | 6,680 | 4,889 | 23,189 |  — | 21,065 | 535 | 2,257 | fresh-main control; GNOME marker complete |
+| B2799-r1 / working tree | 1,364,901 | 6,599 | 4,835 | 22,388 | — | 21,059 | 255 | 2,686 | synchronized ext4 directory inode image; GNOME marker complete |
+| B2799-r2 / working tree | 1,365,403 | 6,453 | 4,726 | 22,014 | — | 20,879 | 226 | 2,261 | repeat; synchronized ext4 directory inode image; GNOME marker complete |
 
 The B2709 `munmap` result is a material improvement over B2699: 71,407 ns
 to 21,426 ns (about 70% lower), and 52x to 16x the host baseline. The B2708
