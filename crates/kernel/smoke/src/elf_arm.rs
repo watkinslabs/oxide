@@ -356,10 +356,12 @@ fn spawn_init_from_rootfs_arm() {
         Some(u) => u,
         None    => { debug_irq! { klog::kerror!("init-arm: bad stack VA"); } return; }
     };
+    // The same flag set `execve` installs; see the x86 path for what a stack
+    // without GROWSDOWN costs.
     if mm.mmap(
         Some(stack_hint), INIT_STACK_LEN as usize,
         VmaProt::READ | VmaProt::WRITE,
-        VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
+        vmm::EXEC_STACK_VMA_FLAGS,
         VmaBacking::Anonymous,
         true,
     ).is_err() {

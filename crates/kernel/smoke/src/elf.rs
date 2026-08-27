@@ -233,10 +233,17 @@ unsafe fn spawn_user_blob_with_vpid(
     let img = match (|| -> Result<_, elf_load::LoadError> {
         let stack_hint = UserVirtAddr::new(stack_va)
             .ok_or(elf_load::LoadError::Einval)?;
+        // The same flag set `execve` installs. Without GROWSDOWN the initial
+        // frame is ALL the stack PID 1 will ever have: the fault handler's
+        // auto-extend refuses to grow a VMA that is not marked, and the first
+        // program to need more than the initial reservation dies writing at
+        // its own stack pointer. Observed as `init[1]: segfault at <sp> ...
+        // error 0x6 in libtinfo.so`, and as an intermittent early death of
+        // systemd, whose stack use varies with what it finds on the root.
         mm.mmap(
             Some(stack_hint), USER_STACK_LEN as usize,
             VmaProt::READ | VmaProt::WRITE,
-            VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
+            vmm::EXEC_STACK_VMA_FLAGS,
             VmaBacking::Anonymous,
             true,
         ).map_err(|_| elf_load::LoadError::Enomem)?;
