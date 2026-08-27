@@ -27,10 +27,13 @@ pub const PH_SEND_IMPORT: usize = 6;
 pub const PH_SEND_PREPARE: usize = 7;
 pub const PH_SEND_PAYLOAD: usize = 8;
 pub const PH_SEND_TRANSPORT: usize = 9;
-const PHASES: usize = 10;
+pub const PH_READ_BACKEND: usize = 10;
+pub const PH_READ_COPYOUT: usize = 11;
+const PHASES: usize = 12;
 const NAME: [&[u8]; PHASES] =
     [b"getname", b"resolve", b"open", b"install-fd", b"getattr", b"stat-writeback",
-     b"send-import", b"send-prepare", b"send-payload", b"send-transport"];
+     b"send-import", b"send-prepare", b"send-payload", b"send-transport",
+     b"read-backend", b"read-copyout"];
 
 static NS:  [AtomicU64; PHASES] = [const { AtomicU64::new(0) }; PHASES];
 static CNT: [AtomicU64; PHASES] = [const { AtomicU64::new(0) }; PHASES];

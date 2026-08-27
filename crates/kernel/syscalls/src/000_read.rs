@@ -56,10 +56,22 @@ pub fn sys_read(args: &SyscallArgs) -> i64 {
     // concurrent unmap cannot turn a VFS read into an unrecoverable CPL0
     // store; publish the result through the exception-table usercopy.
     let mut bounce = alloc::vec![0u8; cnt];
-    let ret = match file.read(&mut bounce) {
-        Ok(n) => match uaccess::copy_to_user(buf, &bounce[..n]) {
-            Ok(()) => n as i64,
-            Err(_) => -(Errno::Efault.as_i32() as i64),
+    #[cfg(feature = "debug-syscost")]
+    let __ph_read = crate::syscost_phase::Phase::start(crate::syscost_phase::PH_READ_BACKEND);
+    let read_result = file.read(&mut bounce);
+    #[cfg(feature = "debug-syscost")]
+    drop(__ph_read);
+    let ret = match read_result {
+        Ok(n) => {
+            #[cfg(feature = "debug-syscost")]
+            let __ph_copy = crate::syscost_phase::Phase::start(crate::syscost_phase::PH_READ_COPYOUT);
+            let copied = uaccess::copy_to_user(buf, &bounce[..n]);
+            #[cfg(feature = "debug-syscost")]
+            drop(__ph_copy);
+            match copied {
+                Ok(()) => n as i64,
+                Err(_) => -(Errno::Efault.as_i32() as i64),
+            }
         },
         Err(e) => -(e as i64),
     };
