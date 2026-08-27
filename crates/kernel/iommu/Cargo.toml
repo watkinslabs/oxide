@@ -14,6 +14,8 @@ firmware = { path = "../firmware" }
 pmm = { path = "../mm-pmm" }
 sync = { path = "../../shared/sync" }
 klog = { path = "../../shared/klog" }
+hal-x86_64 = { path = "../../arch/hal-x86_64" }
+hal-aarch64 = { path = "../../arch/hal-aarch64" }
 
 [features]
 debug-boot = []

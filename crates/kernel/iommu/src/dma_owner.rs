@@ -3,6 +3,38 @@ use alloc::vec::Vec;
 use pci::Bdf;
 use sync::{Devices, Spinlock};
 
+#[cfg(target_os = "oxide-kernel")]
+struct IommuIrq;
+
+#[cfg(target_os = "oxide-kernel")]
+impl sync::IrqGate for IommuIrq {
+    unsafe fn save_disable() -> u64 {
+        #[cfg(target_arch = "x86_64")]
+        { return hal_x86_64::X86IrqGate::save_disable(); }
+        #[cfg(target_arch = "aarch64")]
+        { return hal_aarch64::ArmIrqGate::save_disable(); }
+        #[allow(unreachable_code)]
+        0
+    }
+    unsafe fn save_enable() -> u64 {
+        #[cfg(target_arch = "x86_64")]
+        { return hal_x86_64::X86IrqGate::save_enable(); }
+        #[cfg(target_arch = "aarch64")]
+        { return hal_aarch64::ArmIrqGate::save_enable(); }
+        #[allow(unreachable_code)]
+        0
+    }
+    unsafe fn restore(flags: u64) {
+        #[cfg(target_arch = "x86_64")]
+        { hal_x86_64::X86IrqGate::restore(flags); }
+        #[cfg(target_arch = "aarch64")]
+        { hal_aarch64::ArmIrqGate::restore(flags); }
+    }
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+type IommuIrq = sync::NoopIrq;
+
 /// One live DMA mapping owned by the requester and selected IOMMU backend.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 struct Mapping { requester: Bdf, iova: u64, pa: u64, len: usize }
@@ -29,7 +61,7 @@ pub fn map_dma_below(requester: Bdf, pa: u64, len: usize, mask: u64) -> Option<u
         super::vtd_manager::map_dma_below(requester, pa, len, mask)?
     } else if pa.checked_add(len as u64 - 1)? <= mask { pa } else { return None };
     let mapping = Mapping { requester, iova, pa, len };
-    MAPPINGS.lock().push(mapping);
+    MAPPINGS.lock_irqsave::<IommuIrq>().push(mapping);
     Some(mapping.iova)
 }
 
@@ -38,13 +70,13 @@ pub fn map_dma_below(requester: Bdf, pa: u64, len: usize, mask: u64) -> Option<u
 pub fn unmap_dma(requester: Bdf, iova: u64, len: usize) -> bool {
     if len == 0 { return false; }
     let mapping = {
-        let mappings = MAPPINGS.lock();
+        let mappings = MAPPINGS.lock_irqsave::<IommuIrq>();
         mappings.iter().copied().find(|mapping| mapping.requester == requester && mapping.iova == iova && mapping.len == len)
     };
     let Some(mapping) = mapping else { return false; };
     if super::amd_vi_manager::active() && !super::amd_vi_manager::unmap_dma(requester, iova, len) { return false; }
     if super::vtd_manager::active() && !super::vtd_manager::unmap_dma(requester, iova, len) { return false; }
-    let mut mappings = MAPPINGS.lock();
+    let mut mappings = MAPPINGS.lock_irqsave::<IommuIrq>();
     let Some(index) = mappings.iter().position(|candidate| *candidate == mapping) else { return false; };
     mappings.swap_remove(index);
     true
