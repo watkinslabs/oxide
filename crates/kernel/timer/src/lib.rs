@@ -117,10 +117,7 @@ pub fn register_oneshot(deadline_ns: u64, arg: usize, f: OneShotFn) -> TimerId {
     let node = Box::new(OneShotNode { timer: OneShot {
         id, deadline_ns, arg, f: Some(f), owned_f: None, owned_drop: None,
     }, next: None });
-    let mut g = ONESHOTS.lock();
-    let mut node = node;
-    node.next = g.head.take();
-    g.head = Some(node);
+    insert_oneshot(node);
     id
 }
 
@@ -135,10 +132,7 @@ pub fn register_oneshot_owned(deadline_ns: u64, arg: usize, f: OwnedOneShotFn,
     let node = Box::new(OneShotNode { timer: OneShot {
         id, deadline_ns, arg, f: None, owned_f: Some(f), owned_drop: Some(drop_arg),
     }, next: None });
-    let mut g = ONESHOTS.lock();
-    let mut node = node;
-    node.next = g.head.take();
-    g.head = Some(node);
+    insert_oneshot(node);
     id
 }
 
@@ -203,6 +197,24 @@ pub use dispatch::{next_deadline_ns, run_due, run_due_budgeted, run_state};
 fn next_id() -> TimerId {
     let raw = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     TimerId(if raw == 0 { NEXT_ID.fetch_add(1, Ordering::Relaxed) } else { raw })
+}
+
+/// Keep one-shots in expiry order, matching the timerqueue ordering used by
+/// high-resolution timers. Equal deadlines use the monotonically increasing
+/// id as a stable tie-breaker, so the queue head is always the next timer.
+/// # C: O(N armed)
+fn insert_oneshot(node: Box<OneShotNode>) {
+    let mut g = ONESHOTS.lock();
+    let key = (node.timer.deadline_ns, node.timer.id.raw());
+    let mut link = &mut g.head;
+    while let Some(current) = link.as_ref() {
+        let current_key = (current.timer.deadline_ns, current.timer.id.raw());
+        if key < current_key { break; }
+        link = &mut link.as_mut().expect("one-shot link disappeared").next;
+    }
+    let mut node = node;
+    node.next = link.take();
+    *link = Some(node);
 }
 
 #[cfg(test)]
@@ -344,6 +356,18 @@ mod tests {
         assert_eq!(A.load(Ordering::Relaxed), 3);
         assert_eq!(B.load(Ordering::Relaxed), 0);
         assert!(!unregister_oneshot(a));
+    }
+
+    #[test]
+    fn oneshots_keep_the_earliest_deadline_at_the_head() {
+        let _wheel = claim_wheel();
+        register_oneshot(30, 1, |_| {});
+        register_oneshot(10, 2, |_| {});
+        register_oneshot(20, 3, |_| {});
+
+        assert_eq!(next_deadline_ns(0), Some(10));
+        run_due_budgeted(10, 1);
+        assert_eq!(next_deadline_ns(10), Some(20));
     }
 
     #[test]
