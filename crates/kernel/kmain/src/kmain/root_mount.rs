@@ -30,40 +30,32 @@ use crate::kmain::entry::step;
 #[cfg(target_os = "oxide-kernel")]
 pub fn log_available_roots(spec: &[u8]) {
     use block::registry::rootreport as rr;
-    // The whole listing is rendered before ANY of it is emitted. It prints
-    // while a boot is already failing, and a report several CPUs interleave a
-    // field at a time is not a report.
-    let mut buf = [0u8; LISTING_MAX];
+    // One LINE at a time, each rendered whole before it is emitted. Whole-line
+    // emission is what keeps a report readable when more than one CPU is
+    // writing; a buffer for the whole listing would be kilobytes of a 16 KiB
+    // kernel stack, on a path that is already deep enough to be gated.
+    let mut line = [0u8; rr::PART_LINE_MAX];
     let mut n = 0;
-    let mut put = |src: &[u8], n: &mut usize| {
-        let take = core::cmp::min(src.len(), buf.len().saturating_sub(*n));
-        buf[*n..*n + take].copy_from_slice(&src[..take]);
-        *n += take;
-    };
-    put(b"[ROOT] cannot resolve root=", &mut n);
-    put(spec, &mut n);
-    put(b"; available block devices:\n", &mut n);
+    for part in [&b"[ROOT] cannot resolve root="[..], spec, b"; available block devices:\n"] {
+        let take = core::cmp::min(part.len(), line.len().saturating_sub(n));
+        line[n..n + take].copy_from_slice(&part[..take]);
+        n += take;
+    }
+    klog::write_raw(&line[..n]);
     for disk in block::registry::snapshot() {
-        let mut line = [0u8; rr::PART_LINE_MAX];
-        let w = rr::write_disk_line(&mut line, disk.name.as_bytes(),
+        let n = rr::write_disk_line(&mut line, disk.name.as_bytes(),
             block::registry::size_512_sectors(disk.dev.capacity_blocks(), disk.dev.block_size()),
             disk.serial.as_deref().map(str::as_bytes));
-        put(&line[..w], &mut n);
+        klog::write_raw(&line[..n]);
         for part in disk.partitions() {
-            let w = rr::write_partition_line(&mut line, part.name.as_bytes(),
+            let n = rr::write_partition_line(&mut line, part.name.as_bytes(),
                 part.start_lba, part.sectors,
                 part.label.as_deref().map(str::as_bytes),
                 part.uuid.as_deref().map(str::as_bytes));
-            put(&line[..w], &mut n);
+            klog::write_raw(&line[..n]);
         }
     }
-    klog::write_raw(&buf[..n]);
 }
-
-/// Ceiling on the rendered listing. A machine with more block devices than
-/// this describes has its listing truncated rather than its boot delayed.
-#[cfg(target_os = "oxide-kernel")]
-const LISTING_MAX: usize = 4096;
 
 /// The mounted root: the filesystem to graft at `/` and the registered type
 /// name to graft it under.

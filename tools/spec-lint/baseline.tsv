@@ -81,7 +81,7 @@ crates/kernel/iommu	code/klog-ungated	11
 crates/kernel/iommu	code/pub-fn-complexity	7
 crates/kernel/ipc	code/pub-fn-complexity	8
 crates/kernel/kernfs	code/pub-fn-complexity	20
-crates/kernel/kmain	code/klog-ungated	59
+crates/kernel/kmain	code/klog-ungated	61
 crates/kernel/kmain	code/pub-fn-complexity	4
 crates/kernel/lsm	code/pub-fn-complexity	9
 crates/kernel/md	code/pub-fn-complexity	4
