@@ -84,12 +84,20 @@ def parse_oxide(log: Path):
         totals["calls"], totals["total_ms"], totals["avg_ns"] = (int(g) for g in m.groups())
     for m in re.finditer(r"nr=(\d+) cpu_cnt=(\d+) cpu_ms=(\d+) cpu_avg_ns=(\d+)", text):
         nr, cnt, ms, avg = (int(g) for g in m.groups())
-        sysrows[nr] = (cnt, ms, avg)
+        # The kernel emits cumulative checkpoints and only prints the current
+        # top rows. Keep the newest cumulative sample seen for each syscall so
+        # a row that falls out of the final top-N dump is not lost.
+        if nr not in sysrows or cnt >= sysrows[nr][0]:
+            sysrows[nr] = (cnt, ms, avg)
     for m in re.finditer(r"  (rd-absent|wr-absent|rd-prot|wr-prot) cnt=(\d+) ms=(\d+) avg_ns=(\d+)", text):
-        faultrows[m.group(1)] = (int(m.group(2)), int(m.group(3)), int(m.group(4)))
+        key = m.group(1)
+        row = (int(m.group(2)), int(m.group(3)), int(m.group(4)))
+        if key not in faultrows or row[0] >= faultrows[key][0]: faultrows[key] = row
     blk = {}
     for m in re.finditer(r"  blk-(read|write|flush|other) cnt=(\d+) ms=(\d+) avg_ns=(\d+)", text):
-        blk[m.group(1)] = (int(m.group(2)), int(m.group(3)), int(m.group(4)))
+        key = m.group(1)
+        row = (int(m.group(2)), int(m.group(3)), int(m.group(4)))
+        if key not in blk or row[0] >= blk[key][0]: blk[key] = row
     return totals, sysrows, faultrows, blk
 
 
