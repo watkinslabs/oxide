@@ -5,6 +5,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use vfs::{FileType, Inode};
 use vfs::xattr::XattrError;
 use sched::live::WaitList;
+use ::sync as sync;
 
 use super::super::state::RootfsState;
 
@@ -112,6 +113,23 @@ pub(crate) struct Ext4StatData {
     pub(crate) raw_flags: core::sync::atomic::AtomicU32,
     pub(crate) ft:   FileType,
     pub(crate) size: u64,
+    /// The ext4 inode image used by directory lookup. Mutations refresh this
+    /// same object after their journal transaction commits, matching Linux's
+    /// single in-core inode rather than maintaining a name-side cache.
+    pub(crate) raw: sync::Spinlock<Arc<crate::inode::Inode>, sync::Inode>,
+    pub(crate) raw_valid: AtomicBool,
+}
+
+impl Ext4StatData {
+    /// Invalidate the cached directory image after a namespace mutation. # C: O(1)
+    pub(crate) fn invalidate_raw(&self) { self.raw_valid.store(false, Ordering::Release); }
+
+    /// Publish the parent image obtained by the next authoritative lookup. # C: O(1)
+    pub(crate) fn publish_raw(&self, raw: crate::inode::Inode) {
+        self.raw_flags.store(raw.i_flags, Ordering::Release);
+        *self.raw.lock() = Arc::new(raw);
+        self.raw_valid.store(true, Ordering::Release);
+    }
 }
 
 /// Recover `(owning mount state, ext4 ino)` from a concrete inode's
