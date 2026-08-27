@@ -171,9 +171,9 @@ impl TimerOps for X86TimerOps {
     /// # SAFETY: writes `IA32_TSC_DEADLINE` MSR via `wrmsr`; caller
     /// owns LVT timer setup per `23§4` (one-shot, vector pre-bound).
     /// # C: O(1)
-    unsafe fn set_oneshot(deadline_ns: Nanos) {
+    unsafe fn set_oneshot(deadline_ns: Nanos) -> bool {
         let khz = TSC_KHZ.load(Ordering::Relaxed);
-        if khz == 0 { return; }
+        if khz == 0 { return false; }
         #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
         {
         let cycles = ((deadline_ns.0 as u128).saturating_mul(khz as u128)
@@ -187,9 +187,10 @@ impl TimerOps for X86TimerOps {
                 in("eax") lo, in("edx") hi,
                 options(nomem, nostack, preserves_flags));
         }
+        true
         }
         #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
-        let _ = deadline_ns;
+        { let _ = deadline_ns; true }
     }
 
     /// # C: O(1)

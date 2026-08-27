@@ -52,7 +52,14 @@ pub unsafe fn timer_deadline_mode() -> bool {
     // Linux writes LVTT first when entering deadline mode.  TMICT is ignored
     // in this mode and must not be touched again after the transition.
     // SAFETY: caller owns this enabled LAPIC timer register transition.
-    unsafe { write_register(REG_LVT_TIMER, TIMER_VECTOR | LVT_MODE_DEADLINE) }
+    if !unsafe { write_register(REG_LVT_TIMER, TIMER_VECTOR | LVT_MODE_DEADLINE) } { return false; }
+    // A successful MMIO/MSR instruction is not sufficient evidence that the
+    // local APIC accepted the transition. Linux keeps the clockevent state
+    // authoritative only after the device programming path succeeds; verify
+    // the LVT before allowing the scheduler to publish its deadline.
+    // SAFETY: this CPU owns the enabled LAPIC timer register transition.
+    matches!(unsafe { read_register(REG_LVT_TIMER) },
+        Some(v) if v & (0xff | LVT_MODE_DEADLINE) == TIMER_VECTOR | LVT_MODE_DEADLINE)
 }
 
 /// Configure the LAPIC timer in one-shot mode, masked (no IRQ
