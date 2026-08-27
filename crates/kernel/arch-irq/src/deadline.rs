@@ -26,8 +26,7 @@ fn program(deadline_ns: u64) -> bool {
         // SAFETY: LAPIC timer vector is installed and this CPU owns its local timer/MSR.
         unsafe {
             if crate::lapic::timer_deadline_mode() {
-                hal_x86_64::X86TimerOps::set_oneshot(Nanos(raw));
-                return true;
+                return hal_x86_64::X86TimerOps::set_oneshot(Nanos(raw));
             }
         }
         return false;
@@ -39,8 +38,7 @@ fn program(deadline_ns: u64) -> bool {
         let raw = raw_deadline(deadline_ns, monotonic_now, raw_now);
         if hal_aarch64::ArmTimerOps::freq_khz() == 0 { return false; }
         // SAFETY: this CPU owns CNTV_CVAL/CTL and INTID 27 is enabled during timer bring-up.
-        unsafe { hal_aarch64::ArmTimerOps::set_oneshot(Nanos(raw)); }
-        return true;
+        unsafe { return hal_aarch64::ArmTimerOps::set_oneshot(Nanos(raw)); }
     }
     #[cfg(not(target_os = "oxide-kernel"))]
     { let _ = deadline_ns; return false; }

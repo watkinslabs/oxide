@@ -110,6 +110,11 @@ impl FsContext {
         self.state.lock().snapshot(umask)
     }
 
+    /// Read the live `fs_struct.pwd` path without cloning the diagnostic cwd
+    /// and root strings that a full snapshot carries for proc/getcwd users.
+    /// # C: O(1)
+    pub fn cwd_vfs(&self) -> Option<VfsPath> { self.state.lock().cwd_vfs.clone() }
+
     /// `umask(2)`: install `mask & S_IRWXUGO` and return
     /// the PREVIOUS mask. # C: O(1)
     pub fn swap_umask(&self, mask: u32) -> u32 {
@@ -151,6 +156,10 @@ impl FsContext {
 impl super::Task {
     /// Obtain the shared Linux-style filesystem owner. # C: O(1)
     pub fn fs_context(&self) -> Arc<FsContext> { self.fs_context.lock().clone() }
+
+    /// Read the current working `struct path` directly from the shared
+    /// filesystem owner. # C: O(1)
+    pub fn fs_cwd_vfs(&self) -> Option<VfsPath> { self.fs_context().cwd_vfs() }
 
     /// Clone a coherent root/pwd state without exposing task storage. # C: O(1)
     pub fn fs_context_snapshot(&self) -> FsContextSnapshot { self.fs_context().snapshot() }

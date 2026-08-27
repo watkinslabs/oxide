@@ -376,13 +376,15 @@ pub trait TimerOps {
     /// # C: O(1) (single TSC/CNTV read)
     fn monotonic_ns() -> Nanos;
 
-    /// Arm a one-shot timer to fire at `deadline_ns`.
+    /// Arm the local one-shot for an absolute deadline in the timer's
+    /// monotonic-nanosecond domain. Returns false when the device cannot be
+    /// armed, so callers do not publish a scheduler deadline that hardware
+    /// will never deliver.
     /// # SAFETY: caller manages the LVT/CNTV registers per 23.
     /// # C: O(1)
-    unsafe fn set_oneshot(deadline_ns: Nanos);
+    unsafe fn set_oneshot(deadline_ns: Nanos) -> bool;
 
     /// Counter frequency in kHz (cached at boot).
     /// # C: O(1)
     fn freq_khz() -> u32;
 }
-
