@@ -1529,6 +1529,7 @@ dependencies = [
  "netfilter",
  "netlink",
  "nscg",
+ "overlayfs",
  "pci",
  "pci-boot",
  "pmm",

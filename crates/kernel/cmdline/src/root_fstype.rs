@@ -1,4 +1,6 @@
-// `rootfstype=`: which filesystem types the root mount may be tried as.
+// The root mount's own boot parameters: which filesystem types it may be tried
+// as, whether it is mounted read-only, and whether a volatile writable layer is
+// composed over it.
 //
 // Linux's `mount_block_root` walks a candidate list and mounts the root as the
 // first type that accepts the device. `rootfstype=` narrows that list to the
@@ -50,6 +52,30 @@ pub fn root_readonly_in(line: &[u8]) -> bool {
         match tok { b"ro" => ro = true, b"rw" => ro = false, _ => {} }
     }
     ro
+}
+
+/// Where a volatile root's writes go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RootOverlay {
+    /// An in-memory upper layer: the image stays immutable and every write is
+    /// discarded at power-off.
+    Tmpfs,
+}
+
+/// `rootovl=<tmpfs|none>` — compose a writable layer over the root.
+///
+/// An immutable root (a squashfs image) cannot carry the writable `/etc` and
+/// `/var` an init system needs, so a live image pairs it with an in-memory
+/// upper layer. Linux composes that in the initramfs rather than in the
+/// kernel and so has no parameter of its own for it; this one exists because
+/// there is no initramfs to carry the decision. Absent or `none`, the root is
+/// mounted as it is.
+/// # C: O(line length)
+pub fn root_overlay_in(line: &[u8]) -> Option<RootOverlay> {
+    match value(line, b"rootovl")? {
+        b"tmpfs" => Some(RootOverlay::Tmpfs),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -125,6 +151,25 @@ mod tests {
     fn the_last_of_ro_and_rw_wins() {
         assert!(!root_readonly_in(b"ro root=/dev/vda rw"));
         assert!(root_readonly_in(b"rw root=/dev/vda ro"));
+    }
+
+    #[test]
+    fn a_volatile_root_is_asked_for_by_name() {
+        assert_eq!(root_overlay_in(b"root=/dev/vda2 rootfstype=squashfs rootovl=tmpfs"),
+            Some(RootOverlay::Tmpfs));
+    }
+
+    #[test]
+    fn no_volatile_layer_is_composed_unless_the_line_asks() {
+        assert_eq!(root_overlay_in(b"root=/dev/vda rw"), None);
+        assert_eq!(root_overlay_in(b"root=/dev/vda rootovl=none"), None);
+        assert_eq!(root_overlay_in(b"root=/dev/vda rootovl="), None);
+    }
+
+    #[test]
+    fn an_unknown_upper_layer_kind_composes_nothing() {
+        assert_eq!(root_overlay_in(b"rootovl=disk"), None);
+        assert_eq!(root_overlay_in(b"myrootovl=tmpfs"), None);
     }
 
     #[test]

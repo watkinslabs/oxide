@@ -14,6 +14,7 @@
 // the VFS filesystem. A squashfs root publishes nothing: it is immutable, so
 // there is no journal to commit and no writable state to reach.
 
+use alloc::string::String;
 use alloc::sync::Arc;
 
 use crate::kmain::entry::step;
@@ -25,9 +26,22 @@ pub struct MountedRoot {
     pub fstype: &'static str,
 }
 
+/// The filesystem holding a volatile root's upper and work directories, kept
+/// for the life of the kernel. The overlay's layer stack holds inodes of this
+/// filesystem, not the filesystem itself, and the root is never unmounted.
+#[cfg(target_os = "oxide-kernel")]
+static ROOT_UPPER: sync::Spinlock<Option<Arc<fs::tmpfs::TmpfsFs>>, sync::TaskList> =
+    sync::Spinlock::new(None);
+
 /// Root filesystem types this kernel can mount a block root as.
 const EXT4: &[u8] = b"ext4";
 const SQUASHFS: &[u8] = b"squashfs";
+
+/// Mode of a volatile root's upper and work directories. They are the overlay's
+/// private roots, not paths anything else walks, so they carry the directory
+/// mode a filesystem root carries.
+#[cfg(target_os = "oxide-kernel")]
+const UPPER_MODE: u32 = 0o755;
 
 /// Mount `dev` as the first candidate type that accepts it.
 ///
@@ -50,9 +64,38 @@ pub unsafe fn mount_root_device(spec: &[u8], dev: Arc<dyn block::BlockDevice>) -
     for ty in candidates {
         // SAFETY: forwarded boot-entry contract — each attempt runs before the
         // root is published, so a candidate that fails leaves nothing visible.
-        if let Some(root) = unsafe { try_mount_as(ty, spec, &dev) } { return Some(root); }
+        let Some(root) = (unsafe { try_mount_as(ty, spec, &dev) }) else { continue };
+        return Some(match cmdline::root_fstype::root_overlay_in(line) {
+            Some(cmdline::root_fstype::RootOverlay::Tmpfs) =>
+                step("rootovl::volatile", || volatile_over(&root)).unwrap_or(root),
+            None => root,
+        });
     }
     None
+}
+
+/// Compose an in-memory writable layer over the mounted root.
+///
+/// An immutable root carries no writable `/etc` or `/var`, which an init
+/// system needs before it starts anything, so a live image pairs the image
+/// with a tmpfs and mounts the overlay of the two. Linux does this in the
+/// initramfs; there is none here, so the boot path does it.
+///
+/// A composition that fails leaves the root as it was rather than failing the
+/// boot: an image mounted read-only reaches a shell, and an unbootable kernel
+/// does not.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+fn volatile_over(root: &MountedRoot) -> Option<MountedRoot> {
+    let lower = vfs::fs::FileSystem::root(&*root.fs)?;
+    let upper_fs = fs::tmpfs::TmpfsFs::new(String::from("rootovl"));
+    let base = upper_fs.root_inode();
+    let ctx = vfs::inode_ops::CreateCtx::root();
+    let upper = base.i_op().mkdir(&base, "upper", UPPER_MODE, &ctx).ok()?;
+    let work = base.i_op().mkdir(&base, "work", UPPER_MODE, &ctx).ok()?;
+    let ovl = overlayfs::volatile_over(lower, upper, work).ok()?;
+    *ROOT_UPPER.lock() = Some(upper_fs);
+    Some(MountedRoot { fs: ovl, fstype: overlayfs::FS_NAME })
 }
 
 /// One candidate attempt. `None` when this kernel has no such root filesystem

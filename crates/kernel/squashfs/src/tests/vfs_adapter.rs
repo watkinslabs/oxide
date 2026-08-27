@@ -49,6 +49,18 @@ fn a_mounted_image_has_a_root_directory_inode() {
     assert_eq!(root.file_type(), FileType::Directory);
 }
 
+/// What a mount that grafts this filesystem without resolving a root of its
+/// own — mounting an image AS the root — depends on. A filesystem that leaves
+/// this at its default answers `None`, and such a mount has no tree to walk.
+#[test]
+fn the_filesystem_reports_its_root_to_a_mount() {
+    use vfs::fs::FileSystem;
+    let fs = fixture();
+    let root = FileSystem::root(&*fs).expect("the filesystem reports a root");
+    assert_eq!(root.file_type(), FileType::Directory);
+    assert_eq!(root.ino(), fs.root_inode().unwrap().ino());
+}
+
 #[test]
 fn a_stored_name_resolves_under_the_root() {
     let fs = fixture();

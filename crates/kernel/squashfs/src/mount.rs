@@ -124,6 +124,12 @@ impl vfs::fs::FileSystem for SquashFs {
     fn magic(&self) -> u64 { crate::uapi::SQUASHFS_SUPER_MAGIC }
     fn fs_flags(&self) -> vfs::fs::FsFlags { vfs::fs::FsFlags::FS_REQUIRES_DEV }
     fn block_size(&self) -> u32 { self.volume.lock().superblock().block_size }
+    /// The root directory, for a caller that grafts this filesystem without
+    /// having resolved a root of its own — which is what mounting an image AS
+    /// the root does. Without it such a mount has no tree to walk at all.
+    fn root(&self) -> Option<InodeRef> {
+        self.me.upgrade().and_then(|fs| fs.root_inode().ok())
+    }
     fn show_options(&self) -> String { crate::opts::show(*self.volume.lock().options()) }
     fn super_ops(&self) -> Option<Arc<dyn vfs::superblock::SuperOps>> {
         self.me.upgrade()

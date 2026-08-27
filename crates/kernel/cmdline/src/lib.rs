@@ -19,7 +19,7 @@
 // - `init_path`: `init=` / `rdinit=`.
 // - `memory`: `kernelcore=` / `movablecore=` request grammar.
 // - `hibernate`: ordered resume/disable boot-option decisions.
-// - `root_fstype`: `rootfstype=` candidate order and the `ro`/`rw` answer.
+// - `root_fstype`: the root mount's parameters — `rootfstype=`, `ro`/`rw`, `rootovl=`.
 // - `tests`: parser contract tests.
 
 pub mod token;
@@ -43,7 +43,7 @@ pub use console::{active_consoles, active_consoles_in, console_classes, console_
 pub use earlycon::{earlycon_request, keep_bootcon, ArchDefaults, Driver, EarlyconSpec, IoType};
 pub use init_path::{init_path, init_path_in};
 pub use sysrq::{sysrq_always_enabled, sysrq_always_enabled_in};
-pub use root_fstype::{root_fstypes_in, root_readonly_in, DEFAULT_CANDIDATES};
+pub use root_fstype::{root_fstypes_in, root_overlay_in, root_readonly_in, RootOverlay, DEFAULT_CANDIDATES};
 
 /// Value of the last exact `name=value` boot parameter.
 /// # C: O(cmdline length)
