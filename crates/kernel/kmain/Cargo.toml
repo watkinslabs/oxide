@@ -36,6 +36,7 @@ modules = { path = "../modules" }
 pci     = { path = "../../drivers/pci" }
 virtio  = { path = "../../drivers/virtio" }
 ext4    = { path = "../ext4" }
+squashfs = { path = "../squashfs" }
 hal     = { path = "../../arch/hal" }
 klog    = { path = "../../shared/klog" }
 console   = { path = "../console" }

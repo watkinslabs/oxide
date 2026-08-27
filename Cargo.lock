@@ -1542,6 +1542,7 @@ dependencies = [
  "smoke",
  "softirq",
  "sound",
+ "squashfs",
  "sync",
  "syscall",
  "syscalls",
