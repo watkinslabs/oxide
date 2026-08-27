@@ -50,11 +50,10 @@ impl UnixPair {
                     off: *off, has_rights: !rights.is_empty(), cred,
                 }), g.consumed, g.produced, passcred);
             let allowed = core::cmp::min(stop, window.stop).saturating_sub(g.consumed) as usize;
-            let take = core::cmp::min(core::cmp::min(max, allowed), g.buf.len());
+            let take = core::cmp::min(core::cmp::min(max, allowed), g.queued_len());
             let mut out = Vec::with_capacity(take);
-            for _ in 0..take {
-                out.push(g.buf.pop_front().unwrap());
-            }
+            g.copy_range(0, take, &mut out);
+            g.consume(take);
             g.consumed += take as u64;
             // A segment gives up its descriptors as soon as ANY of its bytes
             // has been handed over without a cmsg, and is retired once its
@@ -106,7 +105,7 @@ impl UnixPair {
             UnixEnd::B => &self.a_to_b,
         };
         let g = read_ring.lock();
-        if !g.buf.is_empty() {
+        if g.queued_len() != 0 {
             drop(g);
             return ReadOutcome::Data(self.read_passcred(end, max, passcred, inline));
         }
@@ -141,8 +140,10 @@ impl UnixPair {
         let head = g.consumed;
         let window = g.oob_window(head, true, inline);
         let start = window.head.saturating_sub(g.consumed) as usize;
-        let end_index = core::cmp::min(window.stop.saturating_sub(g.consumed) as usize, g.buf.len());
+        let end_index = core::cmp::min(window.stop.saturating_sub(g.consumed) as usize, g.queued_len());
         let take = core::cmp::min(max, end_index.saturating_sub(start));
-        g.buf.iter().skip(start).take(take).copied().collect()
+        let mut out = Vec::with_capacity(take);
+        g.copy_range(start, take, &mut out);
+        out
     }
 }

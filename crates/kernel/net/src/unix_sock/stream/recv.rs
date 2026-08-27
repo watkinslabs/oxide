@@ -121,7 +121,7 @@ impl UnixPair {
         let stop = core::cmp::min(run.stop, window.stop);
         let cap = core::cmp::min(ring_off.saturating_add(max),
             stop.saturating_sub(g.consumed) as usize);
-        let data_end = core::cmp::min(cap, g.buf.len());
+        let data_end = core::cmp::min(cap, g.queued_len());
         let take = core::cmp::min(max, data_end.saturating_sub(ring_off));
         // Ancillary data belongs to the segments the copied bytes reach; a peek
         // continuation must not report what its earlier step already did.
@@ -141,7 +141,7 @@ impl UnixPair {
         // caller ends its receive instead of sleeping on data it may not glue.
         let ended_at_cursor = run.cause == StopCause::Sender && run.stop <= window.head;
         if ring_off >= data_end && report_count == 0 && !ended_at_cursor { return Ok(None); }
-        out.extend(g.buf.iter().skip(ring_off).take(take).copied());
+        g.copy_range(ring_off, take, &mut out);
         // Do not invoke the usercopy while the receive-ring Spinlock is held:
         // a demand fault can enter inode_wait and schedule here.
         drop(g);
@@ -163,7 +163,7 @@ impl UnixPair {
             }
             return Ok(Some((copied, StreamFiles::with_sender(files, cred_stop, oob_stop, sender), cred_out)));
         }
-        for _ in 0..commit { g.buf.pop_front(); }
+        g.consume(commit);
         g.consumed += commit as u64;
         // A segment is retired once its last byte is gone; a segment only
         // partly drained keeps its record so the bytes still queued name their

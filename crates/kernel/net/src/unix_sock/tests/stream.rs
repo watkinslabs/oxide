@@ -13,6 +13,22 @@ fn round_trip() {
 }
 
 #[test]
+fn owned_payload_round_trip_preserves_fifo_and_releases_chunk() {
+    let _serial = test_guard();
+    let p = UnixPair::new();
+    p.write_owned(UnixEnd::A, b"moved-payload".to_vec(), 64).unwrap();
+    {
+        let g = p.a_to_b.lock();
+        assert_eq!(g.owned_len, 13);
+        assert!(g.buf.is_empty());
+    }
+    assert_eq!(p.read(UnixEnd::B, 64), b"moved-payload");
+    let g = p.a_to_b.lock();
+    assert_eq!(g.owned_len, 0);
+    assert!(g.owned.is_empty());
+}
+
+#[test]
 fn stream_usercopy_runs_without_receive_spinlock() {
     let _serial = test_guard();
     let p = UnixPair::new();
