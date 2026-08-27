@@ -111,6 +111,15 @@ pub(crate) fn read_user_path(ptr: u64) -> Result<String, i64> {
     if ptr == 0 || ptr >= USER_VA_END {
         return Err(-(Errno::Efault.as_i32() as i64));
     }
+    const EMBEDDED_NAME_MAX: usize = 32;
+    let mut embedded = [0u8; EMBEDDED_NAME_MAX];
+    let inline_len = uaccess::strncpy_from_user_into(&mut embedded, ptr)
+        .map_err(|e| -(e.as_i32() as i64))?;
+    if inline_len < EMBEDDED_NAME_MAX {
+        let path = vfs::path_from_bytes(&embedded[..inline_len]);
+        vfs::path::check_path_len(&path).map_err(errno_from_vfs)?;
+        return Ok(path);
+    }
     let bytes = devfs::read_user_cstr(ptr, vfs::path::PATH_MAX)
         .ok_or(-(Errno::Efault.as_i32() as i64))?;
     if bytes.is_empty() {
