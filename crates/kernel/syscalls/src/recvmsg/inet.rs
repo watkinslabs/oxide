@@ -313,13 +313,14 @@ fn recv_pathmtu(sock: &Arc<InetSocket>, user: &RecvUser, flags: u64) -> Option<i
 }
 
 /// Internet and packet recvmsg copyout. # C: O(payload + control)
-pub(crate) fn recv_pinned(sock: &Arc<InetSocket>, file_nonblock: bool, user: &RecvUser, flags: u64) -> i64 {
+pub(crate) fn recv_pinned(sock: &Arc<InetSocket>, kind: super::dispatch::InetRecvKind,
+    file_nonblock: bool, user: &RecvUser, flags: u64) -> i64 {
     // AF_PACKET screens the whole flag word first, before the error queue and
     // before any state is consulted.
-    if matches!(*sock.kind.lock(), SockKind::Packet { .. })
+    if matches!(kind, super::dispatch::InetRecvKind::Packet)
         && !net::sock::packet_recv_flags_allowed(flags)
     { return err(Errno::Einval); }
-    let tcp = matches!(*sock.kind.lock(), SockKind::TcpConn(_));
+    let tcp = matches!(kind, super::dispatch::InetRecvKind::Tcp);
     if let Some(e) = oob_error(sock, flags) { return err(e); }
     if let Some(answer) = recv_pathmtu(sock, user, flags) { return answer; }
     if tcp {

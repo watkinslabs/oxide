@@ -29,11 +29,16 @@ pub const PH_SEND_PAYLOAD: usize = 8;
 pub const PH_SEND_TRANSPORT: usize = 9;
 pub const PH_READ_BACKEND: usize = 10;
 pub const PH_READ_COPYOUT: usize = 11;
-const PHASES: usize = 12;
+pub const PH_RECV_IMPORT: usize = 12;
+pub const PH_RECV_LOOKUP: usize = 13;
+pub const PH_RECV_ADMIT: usize = 14;
+pub const PH_RECV_BACKEND: usize = 15;
+const PHASES: usize = 16;
 const NAME: [&[u8]; PHASES] =
     [b"getname", b"resolve", b"open", b"install-fd", b"getattr", b"stat-writeback",
      b"send-import", b"send-prepare", b"send-payload", b"send-transport",
-     b"read-backend", b"read-copyout"];
+     b"read-backend", b"read-copyout", b"recv-import", b"recv-lookup",
+     b"recv-admit", b"recv-backend"];
 
 static NS:  [AtomicU64; PHASES] = [const { AtomicU64::new(0) }; PHASES];
 static CNT: [AtomicU64; PHASES] = [const { AtomicU64::new(0) }; PHASES];
