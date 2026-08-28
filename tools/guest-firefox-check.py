@@ -12,6 +12,7 @@ import json
 import os
 import re
 import select
+import shlex
 import signal
 import socket
 import subprocess
@@ -42,6 +43,7 @@ FIREFOX_ENV = (
 )
 PROFILE = os.environ.get("OXIDE_FIREFOX_PROFILE") == "1"
 PROFILE_LOG = f"/tmp/oxide-firefox-profile-{RUN_ID}.txt"
+FIREFOX_URL = os.environ.get("OXIDE_FIREFOX_URL", "https://one.one.one.one")
 
 
 env = dict(
@@ -49,6 +51,10 @@ env = dict(
     OXIDE_QEMU_UART_SOCK=UART_SOCK,
     OXIDE_QEMU_QMP_SOCK=QMP_SOCK,
     OXIDE_QEMU_HEADLESS="1",
+    # The probe drives PID 1's serial debug shell. Without this boot-line
+    # switch the UART remains a login prompt and every probe command is
+    # consumed as a username, so no Firefox result is observable.
+    OXIDE_SERIAL_SHELL="1",
 )
 uart_log = open(UART_LOG, "wb", buffering=0)
 qemu_log = open(QEMU_LOG, "wb")
@@ -419,7 +425,7 @@ try:
         "runuser -u oxide -- mkdir -p /tmp/oxide-firefox-test-profile; "
         f"runuser -u oxide -- env {FIREFOX_ENV} firefox --new-instance "
         "--profile /tmp/oxide-firefox-test-profile --new-window "
-        "https://one.one.one.one >/tmp/oxide-firefox.log 2>&1 & true",
+        f"{shlex.quote(FIREFOX_URL)} >/tmp/oxide-firefox.log 2>&1 & true",
     )
     if not rc(launch):
         ok = False

@@ -7,8 +7,23 @@ use crate::inode::flags::EXT4_CASEFOLD_FL;
 
 use super::{Mount, MountError};
 
+/// How a directory's entry names are compared, decided by its inode flags
+/// alone. Ungated so the dispatch is testable without a mounted volume.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum NameEq { Bytes, Casefold }
+
+/// Linux compares ordinary ext4 names with `memcmp` and reaches the Unicode
+/// tables only for a casefolded directory. # C: O(1)
+pub(crate) fn name_eq_mode(i_flags: u32) -> NameEq {
+    if i_flags & EXT4_CASEFOLD_FL != 0 { NameEq::Casefold } else { NameEq::Bytes }
+}
+
 impl Mount {
     pub(crate) fn names_equal(&self, dir: &Inode, a: &[u8], b: &[u8]) -> bool {
+        // A byte compare needs no superblock. Upgrading the quota `Weak` under
+        // its lock for every entry of a linear directory scan bought nothing:
+        // `names_eq_bytes` answers `a == b` for a non-casefolded directory.
+        if name_eq_mode(dir.i_flags) == NameEq::Bytes { return a == b; }
         let folded = dir.i_flags & EXT4_CASEFOLD_FL != 0;
         self.vfs_superblock().map_or(a == b, |sb|
             vfs::dentry::casefold::names_eq_bytes(&sb, folded, a, b))
@@ -275,5 +290,23 @@ impl Mount {
         let blk = self.read_file_block_meta(inode, 0)?;
         let n = (inode.size as usize).min(blk.len());
         Ok(blk[..n].to_vec())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{name_eq_mode, NameEq};
+    use crate::inode::flags::EXT4_CASEFOLD_FL;
+
+    #[test]
+    fn a_plain_directory_compares_names_as_bytes() {
+        assert_eq!(name_eq_mode(0), NameEq::Bytes);
+        assert_eq!(name_eq_mode(crate::htree::EXT4_INDEX_FL), NameEq::Bytes);
+    }
+
+    #[test]
+    fn only_the_casefold_flag_selects_unicode_comparison() {
+        assert_eq!(name_eq_mode(EXT4_CASEFOLD_FL), NameEq::Casefold);
+        assert_eq!(name_eq_mode(EXT4_CASEFOLD_FL | crate::htree::EXT4_INDEX_FL), NameEq::Casefold);
     }
 }
