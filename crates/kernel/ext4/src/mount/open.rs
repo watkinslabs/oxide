@@ -119,6 +119,7 @@ impl Mount {
                        txn_wait: sched::live::WaitList::new(),
                        committing_batch: ::core::sync::atomic::AtomicBool::new(false),
                        batch_full: ::core::sync::atomic::AtomicBool::new(false),
+                       batch_wait: sched::live::WaitList::new(),
                        creating: ::core::sync::atomic::AtomicBool::new(false),
                        opts: sync::Spinlock::new(crate::mount_opts::Ext4SbOpts {
                            behaviour, ..Default::default() }),

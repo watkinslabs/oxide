@@ -51,7 +51,14 @@ impl Mount {
         #[cfg(feature = "debug-fsync-latency")]
         crate::fsync_latency::report(b"batch-commit", commit_ns, staged_blocks);
         self.txn_release();
-        let direct = result?;
+        let direct = match result {
+            Ok(direct) => direct,
+            Err(err) => {
+                self.batch_wait.wake_all();
+                return Err(err);
+            }
+        };
+        self.batch_wait.wake_all();
         let generation = self.state.lock().committed_generation;
         let barrier_needed = direct && self.behaviour().barrier && {
             let s = self.state.lock();
@@ -150,7 +157,19 @@ impl Mount {
             let s = self.state.lock();
             if s.undo.is_empty() { s.shadow.as_ref().map_or(0, |m| m.len()) } else { 0 }
         };
-        if blocks >= BATCH_CEILING_BLOCKS { return self.commit_batch(); }
+        if blocks >= BATCH_CEILING_BLOCKS {
+            self.batch_full.store(true, ::core::sync::atomic::Ordering::Release);
+            block::pagecache::wake_flusher();
+            // Linux's full-transaction path waits for the journal owner to
+            // switch and commit. It never makes the operation that exhausted
+            // the credits perform the journal I/O on its own stack.
+            // SAFETY: this process-context waiter owns no transaction or
+            // mount-state lock; the flusher wakes it after the commit.
+            let _ = unsafe { sched::live::wait_event_uninterruptible(&self.batch_wait, || {
+                let s = self.state.lock();
+                s.shadow.as_ref().map_or(true, |shadow| shadow.len() < BATCH_CEILING_BLOCKS)
+            }) };
+        }
         if blocks >= BATCH_MAX_BLOCKS {
             self.batch_full.store(true, ::core::sync::atomic::Ordering::Release);
             block::pagecache::wake_flusher();

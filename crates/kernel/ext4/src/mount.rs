@@ -196,6 +196,9 @@ pub struct Mount {
     /// batch over — which is how a `rename` came to be the kernel's deepest
     /// call path.
     pub(crate) batch_full: ::core::sync::atomic::AtomicBool,
+    /// Waiters blocked by the running transaction's hard credit ceiling.
+    /// The periodic committer wakes them after retiring the transaction.
+    pub(crate) batch_wait: sched::live::WaitList,
     /// True while a create op holds `op_lock`. The size-triggered batch commit
     /// (`maybe_commit_batch` → `dev.flush`, which SLEEPS on the virtio
     /// completion) must NOT fire while `op_lock` is held: `op_lock` is a
