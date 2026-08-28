@@ -1,36 +1,35 @@
 # Syscall and fault cost vs the host Linux kernel
 
-oxide: /home/nd/oxide/kernel-B2699/target/perf-report-x86_64.log
-boot totals: 1170786 syscalls, 7318 ms on CPU, 6250 ns average
+oxide: /tmp/B2812-perf.log
+boot totals: 4963524 syscalls, 9758 ms on CPU, 1966 ns average
 
 | operation | oxide ns | linux ns | ratio | | verdict |
 |---|---:|---:|---:|---|---|
-| munmap | 71,407 | 1,382 | 52x | ############ | SEVERE |
-| sendmsg | 28,235 | 776 | 36x | ######### | SEVERE |
-| newfstatat | 22,519 | 788 | 29x | ####### | SEVERE |
-| recvfrom | 19,691 | 776 | 25x | ###### | SEVERE |
-| recvmsg | 10,888 | 776 | 14x | ### | BAD |
-| write fault, page absent | 16,639 | 1,227 | 14x | ### | BAD |
-| read | 5,381 | 518 | 10x | ## | BAD |
+| newfstatat | 21,205 | 788 | 27x | ###### | SEVERE |
+| recvfrom | 16,175 | 776 | 21x | ##### | SEVERE |
+| munmap | 25,944 | 1,382 | 19x | ##### | BAD |
+| mprotect | 22,123 | 1,180 | 19x | #### | BAD |
+| write fault, page absent | 14,703 | 1,227 | 12x | ### | BAD |
 | openat | 9,855 | 994 | 10x | ## | BAD |
-| mmap | 10,365 | 1,382 | 8x | ## | BAD |
-| close | 4,471 | 628 | 7x | ## | BAD |
-| mprotect | 7,635 | 1,180 | 6x | ## | BAD |
+| read | 4,696 | 518 | 9x | ## | BAD |
+| recvmsg | 6,265 | 776 | 8x | ## | BAD |
+| mmap | 9,659 | 1,382 | 7x | ## | BAD |
+| close | 3,259 | 628 | 5x | # | BAD |
 
 ## Measured, not compared
 
 | operation | oxide ns | why no ratio |
 |---|---:|---|
-| writev | 1,877,782 | console output; fbcon scrolls the framebuffer, host baseline writes to /dev/null |
+| writev | 1,341,093 | console output; fbcon scrolls the framebuffer, host baseline writes to /dev/null |
 
 ## Block device
 
 | op | count | total ms | avg |
 |---|---:|---:|---:|
-| read | 526 | 338 | 643.9 us |
-| write | 7,745 | 2,967 | 383.2 us |
-| flush | 22 | 182 | 8307.9 us |
-| other | 2 | 0 | 32.0 us |
+| read | 526 | 488 | 929.3 us |
+| write | 7,900 | 2,035 | 257.7 us |
+| flush | 26 | 140 | 5396.1 us |
+| other | 2 | 0 | 9.3 us |
 
 Both sides are measured. The host figure is a tight loop over one shape of the call; the oxide figure is the average over every such call a real desktop boot made. Read a ratio as an order of magnitude, not a score.
 
