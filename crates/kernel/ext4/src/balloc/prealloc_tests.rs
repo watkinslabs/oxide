@@ -16,13 +16,19 @@ fn inode_pa_stops_at_a_consumed_block() {
 }
 
 #[test]
-fn locality_pa_list_keeps_the_eight_largest_reservations() {
-    let mut entries = (1..=9).map(|blocks| GroupPrealloc {
+fn locality_pa_list_grows_to_eight_then_trims_to_five_largest() {
+    let mut entries = (1..=8).map(|blocks| GroupPrealloc {
         blocks: vec![0; blocks],
     }).collect();
     trim_group_preallocations(&mut entries);
     assert_eq!(entries.len(), 8);
-    assert!(!entries.iter().any(|pa| pa.blocks.len() == 1));
+
+    let mut entries = (1..=9).map(|blocks| GroupPrealloc {
+        blocks: vec![0; blocks],
+    }).collect();
+    trim_group_preallocations(&mut entries);
+    assert_eq!(entries.len(), 5);
+    assert!(!entries.iter().any(|pa| pa.blocks.len() <= 4));
     assert!(entries.iter().any(|pa| pa.blocks.len() == 9));
 }
 
