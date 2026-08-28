@@ -317,12 +317,12 @@ The authoritative dependency-ordered ext4 inventory and execution plan is [`scra
 | E4-03 | OPEN | Intermittent ext4-backed dconf reads can return EIO and surface as SIGBUS; failing owner is not proven. | Provenance, focused reproducer, correction, and live GNOME verification. |
 | E4-04 | OPEN | GNOME dconf writes on the small ext4 `/home` image can return EIO. | Allocation/writeback/journal diagnosis, persistence after remount, and live verification. |
 | E4-05 | OPEN | Journal checkpointing is still a conservative one-transaction handoff with remaining write amplification. | Full checkpoint-list accounting, crash matrix, and measured improvement. |
-| E4-06 | OPEN | `journal_async_commit` is admitted but not a live JBD2 mode. | Feature, ordering, validation, and replay implementation. |
+| E4-06 | DONE | `journal_async_commit` has live option validation, on-disk feature transition, and async JBD2 commit ordering. Shared crash/replay coverage remains under E4-05. | E4-05 crash/replay matrix. |
 | E4-07 | OPEN | Multiblock allocator scan heuristics and complete locality-PA lifecycle still differ from Linux. | Fragmentation, ENOSPC, rollback, migration, remount, and e2fsck-clean coverage. |
 | E4-08 | OPEN | Htree selection improved, but aggregate `newfstatat` remains far slower than local Linux. | Phase attribution and controlled repeated comparison. |
-| E4-09 | OPEN | `inode_readahead_blks` is admitted without a live asynchronous inode-table consumer. | Lifetime-safe cache warmup and cold-lookup measurements. |
+| E4-09 | DONE | `inode_readahead_blks` now warms a bounded inode-table window through the canonical metadata cache. Async ownership/performance comparison remain under E4-01/E4-02/E4-15. | Async ownership integration and cold-lookup/perf evidence. |
 | E4-10 | DONE | `dioread_nolock`/`dioread_lock` now refuse mounts because this tree has no O_DIRECT consumer whose unwritten-extent protocol they could control. | Add a complete O_DIRECT path before reconsidering support. |
-| E4-11 | IN PROGRESS | `prefetch_block_bitmaps` now eagerly validates and publishes all allocation bitmaps; `nombcache` remains explicitly refused until an mbcache owner exists. | Add mbcache with xattr/quota consumers, or retain refusal. |
+| E4-11 | DONE | `prefetch_block_bitmaps` eagerly validates and publishes allocation bitmaps; `nombcache` is explicitly refused because no mbcache owner exists. | Add mbcache before changing the refusal. |
 | E4-12 | DONE | Every known admitted ext4 option without a live consumer now refuses explicitly; generic VFS mount tokens remain pass-through. | Add a real owner before admitting any refused filesystem option. |
 | E4-13 | OPEN | Parallel ext4 image tests share mutable fixtures and can fail falsely. | Isolated fixture ownership and agreeing parallel/serial results. |
 | E4-14 | OPEN | One ARM sysinit EIO/SIGBUS event is unconfirmed. | Controlled reproduction or evidence-backed closure. |
