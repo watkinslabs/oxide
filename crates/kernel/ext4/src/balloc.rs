@@ -187,6 +187,17 @@ impl Mount {
     /// the descriptor count remains the fallback authority.
     fn group_for_request(&self, groups: u32, count: u32, hint: u32) -> Option<u32> {
         if count == 0 { return None; }
+        if count.is_power_of_two() && count > 1 {
+            let wanted = count.ilog2() as u8;
+            let s = self.state.lock();
+            for (_, candidates) in s.group_free_order_index.range(wanted..) {
+                if let Some(group) = candidates.range(hint..groups).next()
+                    .or_else(|| candidates.iter().next()) {
+                    return Some(*group);
+                }
+            }
+            return None;
+        }
         let wanted = count.ilog2().saturating_sub(1) as u8;
         let s = self.state.lock();
         for (_, candidates) in s.group_avg_fragment_index.range(wanted..) {
@@ -386,7 +397,8 @@ impl Mount {
         let avg = scan::average_fragment_order(&bitmap, self.blocks_in_group(group));
         let mut s = self.state.lock();
         s.block_bitmap_cache.insert(byte_off, bitmap);
-        s.group_free_order.insert(group, order.unwrap_or(0));
+        let old_order = s.group_free_order.insert(group, order.unwrap_or(0));
+        scan::replace_order_index(&mut s.group_free_order_index, group, old_order, order);
         if order.is_none() { s.group_free_order.remove(&group); }
         let old_avg = s.group_avg_fragment_order.insert(group, avg.unwrap_or(0));
         scan::replace_order_index(&mut s.group_avg_fragment_index, group, old_avg, avg);

@@ -108,6 +108,7 @@ impl Mount {
             metadata_order: alloc::collections::VecDeque::new(),
             block_bitmap_cache: alloc::collections::BTreeMap::new(),
             group_free_order: alloc::collections::BTreeMap::new(),
+            group_free_order_index: alloc::collections::BTreeMap::new(),
             group_avg_fragment_order: alloc::collections::BTreeMap::new(),
             group_avg_fragment_index: alloc::collections::BTreeMap::new(),
             group_prealloc: alloc::collections::BTreeMap::new(),

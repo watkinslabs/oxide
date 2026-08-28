@@ -109,8 +109,9 @@ impl Mount {
                 bitmap[bit as usize >> 3] &= !(1 << (bit & 7));
                 let order = super::scan::largest_free_order(bitmap, self.blocks_in_group(group));
                 let avg = super::scan::average_fragment_order(bitmap, self.blocks_in_group(group));
-                if let Some(order) = order { s.group_free_order.insert(group, order); }
-                else { s.group_free_order.remove(&group); }
+                let old_order = s.group_free_order.insert(group, order.unwrap_or(0));
+                super::scan::replace_order_index(&mut s.group_free_order_index, group, old_order, order);
+                if order.is_none() { s.group_free_order.remove(&group); }
                 let old_avg = s.group_avg_fragment_order.insert(group, avg.unwrap_or(0));
                 super::scan::replace_order_index(&mut s.group_avg_fragment_index, group, old_avg, avg);
                 if avg.is_none() { s.group_avg_fragment_order.remove(&group); }
@@ -146,8 +147,9 @@ impl Mount {
                         bitmap[bit as usize >> 3] &= !(1 << (bit & 7));
                         let order = super::scan::largest_free_order(bitmap, self.blocks_in_group(group));
                         let avg = super::scan::average_fragment_order(bitmap, self.blocks_in_group(group));
-                        if let Some(order) = order { s.group_free_order.insert(group, order); }
-                        else { s.group_free_order.remove(&group); }
+                        let old_order = s.group_free_order.insert(group, order.unwrap_or(0));
+                        super::scan::replace_order_index(&mut s.group_free_order_index, group, old_order, order);
+                        if order.is_none() { s.group_free_order.remove(&group); }
                         let old_avg = s.group_avg_fragment_order.insert(group, avg.unwrap_or(0));
                         super::scan::replace_order_index(&mut s.group_avg_fragment_index, group, old_avg, avg);
                         if avg.is_none() { s.group_avg_fragment_order.remove(&group); }
