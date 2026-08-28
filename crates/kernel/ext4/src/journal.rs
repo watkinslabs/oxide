@@ -208,6 +208,11 @@ impl Mount {
             TransactionError::Emit(_) => MountError::NoSpace,
             TransactionError::Write(e) => e,
         })?;
+        // The transaction just emitted used `seq`; the next retained
+        // transaction must carry the next JBD2 sequence number. Leaving the
+        // cursor unchanged makes multiple pending transactions
+        // indistinguishable during recovery and breaks checkpoint ordering.
+        cursor.bump_seq();
         // The whole body reaches the device before the barrier below, exactly
         // as it did when each block was its own request.
         body.flush()?;

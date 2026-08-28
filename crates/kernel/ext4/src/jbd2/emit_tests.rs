@@ -141,6 +141,13 @@ fn log_cursor_wraps_to_superblock_first_not_one() {
 }
 
 #[test]
+fn log_cursor_advances_sequence_after_a_committed_transaction() {
+    let mut c = LogCursor::new(1, 1, 8, u32::MAX);
+    c.bump_seq();
+    assert_eq!(c.seq, 0, "JBD2 sequence numbers wrap at u32::MAX");
+}
+
+#[test]
 fn descriptor_data_commit_replays() {
     use super::super::replay::{replay, JournalLogReader, ReplayError};
     use sync::TaskList;
