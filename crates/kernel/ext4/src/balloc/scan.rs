@@ -28,6 +28,28 @@ pub fn largest_free_order(bitmap: &[u8], max_bits: u32) -> Option<u8> {
     Some((u32::BITS - 1 - best.leading_zeros()) as u8)
 }
 
+/// Return Linux mballoc's order for the average free-fragment size.
+/// `bb_free / bb_fragments` is classified into `[2^order, 2^(order+1))`;
+/// groups with no free fragment have no entry. # C: O(max_bits)
+pub fn average_fragment_order(bitmap: &[u8], max_bits: u32) -> Option<u8> {
+    let mut free = 0u32;
+    let mut fragments = 0u32;
+    let mut in_free = false;
+    for bit in 0..max_bits {
+        let clear = bitmap[bit as usize >> 3] & (1u8 << (bit & 7)) == 0;
+        if clear {
+            free += 1;
+            if !in_free { fragments += 1; in_free = true; }
+        } else {
+            in_free = false;
+        }
+    }
+    if fragments == 0 { return None; }
+    let average = free / fragments;
+    let log2 = u32::BITS - 1 - average.leading_zeros();
+    Some(log2.saturating_sub(1) as u8)
+}
+
 /// The group the scan STARTS at.
 ///
 /// The plain order starts at the caller's locality hint and walks forward, so
@@ -102,5 +124,13 @@ mod tests {
         assert_eq!(largest_free_order(&[0b1111_0000], 8), Some(2));
         assert_eq!(largest_free_order(&[0b1111_1111], 8), None);
         assert_eq!(largest_free_order(&[0], 3), Some(1));
+    }
+
+    #[test]
+    fn average_fragment_order_matches_linux_buckets() {
+        assert_eq!(average_fragment_order(&[0], 8), Some(2));
+        assert_eq!(average_fragment_order(&[0b1111_0000], 8), Some(1));
+        assert_eq!(average_fragment_order(&[0b1010_1010], 8), Some(0));
+        assert_eq!(average_fragment_order(&[0xff], 8), None);
     }
 }

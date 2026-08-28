@@ -108,8 +108,11 @@ impl Mount {
             if let Some(bitmap) = s.block_bitmap_cache.get_mut(&off) {
                 bitmap[bit as usize >> 3] &= !(1 << (bit & 7));
                 let order = super::scan::largest_free_order(bitmap, self.blocks_in_group(group));
+                let avg = super::scan::average_fragment_order(bitmap, self.blocks_in_group(group));
                 if let Some(order) = order { s.group_free_order.insert(group, order); }
                 else { s.group_free_order.remove(&group); }
+                if let Some(avg) = avg { s.group_avg_fragment_order.insert(group, avg); }
+                else { s.group_avg_fragment_order.remove(&group); }
             }
         }
         Ok(())
@@ -141,8 +144,11 @@ impl Mount {
                     if let Some(bitmap) = s.block_bitmap_cache.get_mut(&off) {
                         bitmap[bit as usize >> 3] &= !(1 << (bit & 7));
                         let order = super::scan::largest_free_order(bitmap, self.blocks_in_group(group));
+                        let avg = super::scan::average_fragment_order(bitmap, self.blocks_in_group(group));
                         if let Some(order) = order { s.group_free_order.insert(group, order); }
                         else { s.group_free_order.remove(&group); }
+                        if let Some(avg) = avg { s.group_avg_fragment_order.insert(group, avg); }
+                        else { s.group_avg_fragment_order.remove(&group); }
                     }
                 }
             }

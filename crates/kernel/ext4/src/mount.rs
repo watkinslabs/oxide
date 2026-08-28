@@ -137,6 +137,10 @@ pub struct MountState {
     /// Largest free buddy order known for each group. A missing entry means
     /// that group has not yet had its bitmap scanned by this mount.
     pub(crate) group_free_order: alloc::collections::BTreeMap<u32, u8>,
+    /// Average free-fragment order known for each loaded group. Linux uses
+    /// this second index to avoid probing groups whose average fragment is
+    /// smaller than a multiblock request.
+    pub(crate) group_avg_fragment_order: alloc::collections::BTreeMap<u32, u8>,
     /// Reusable locality-group data preallocation tails. The blocks remain
     /// free on disk and are masked from every in-memory bitmap scan.
     pub(crate) group_prealloc: alloc::collections::BTreeMap<u32, Vec<crate::balloc::prealloc::GroupPrealloc>>,
