@@ -145,6 +145,13 @@ impl Mount {
         !s.inode_prealloc.is_empty() || !s.group_prealloc.is_empty()
     }
 
+    /// Count unconsumed inode-PA blocks available for discard. # C: O(N PA blocks)
+    pub(crate) fn inode_prealloc_free_blocks(&self) -> u32 {
+        self.state.lock().inode_prealloc.values().flat_map(|pas| pas.iter())
+            .map(|pa| pa.used.iter().filter(|used| !**used).count() as u32)
+            .sum()
+    }
+
     /// Whether any locality-group PA is currently available. # C: O(1)
     /// Release all unconsumed inode PAs through the normal bitmap owner. # C: O(N PA blocks)
     pub(crate) fn release_inode_prealloc(&self, ino: u32) -> Result<(), MountError> {
@@ -214,6 +221,49 @@ impl Mount {
             }
         }
         Ok(())
+    }
+
+    /// Discard complete locality PAs until at least `needed` blocks are
+    /// reclaimable. Linux discards whole PAs, so the result may exceed the
+    /// request but never splits a reservation.
+    /// # C: O(N PA blocks)
+    pub(crate) fn discard_group_preallocations(&self, needed: u32) -> Result<u32, MountError> {
+        if needed == 0 { return Ok(0); }
+        let mut released = Vec::new();
+        let mut remaining = alloc::collections::BTreeMap::new();
+        let mut free = 0u32;
+        let pas = core::mem::take(&mut self.state.lock().group_prealloc);
+        for (key, entries) in pas {
+            let mut keep = Vec::new();
+            for pa in entries {
+                if free < needed {
+                    free = free.saturating_add(pa.blocks.len() as u32);
+                    released.extend(pa.blocks);
+                } else {
+                    keep.push(pa);
+                }
+            }
+            if !keep.is_empty() { remaining.insert(key, keep); }
+        }
+        self.state.lock().group_prealloc = remaining;
+        let mut s = self.state.lock();
+        for block in released {
+            let Ok((group, bit)) = self.locate_block(block) else { continue };
+            let Ok(gd) = gdt::parse_descriptor(&s.gdt_buf, group, &self.sb) else { continue };
+            let off = gd.block_bitmap * self.sb.block_size as u64;
+            if let Some(bitmap) = s.block_bitmap_cache.get_mut(&off) {
+                bitmap[bit as usize >> 3] &= !(1 << (bit & 7));
+                let order = super::scan::largest_free_order(bitmap, self.blocks_in_group(group));
+                let avg = super::scan::average_fragment_order(bitmap, self.blocks_in_group(group));
+                let old_order = s.group_free_order.insert(group, order.unwrap_or(0));
+                super::scan::replace_order_index(&mut s.group_free_order_index, group, old_order, order);
+                if order.is_none() { s.group_free_order.remove(&group); }
+                let old_avg = s.group_avg_fragment_order.insert(group, avg.unwrap_or(0));
+                super::scan::replace_order_index(&mut s.group_avg_fragment_index, group, old_avg, avg);
+                if avg.is_none() { s.group_avg_fragment_order.remove(&group); }
+            }
+        }
+        Ok(free)
     }
 
     /// Hide inode-PA tails from an in-memory allocation bitmap.  The disk

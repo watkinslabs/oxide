@@ -70,7 +70,7 @@ impl Mount {
             if !reserve::has_free_blocks(free, u64::from(count), m.sb.r_blocks_count, may_dip) {
                 return Err(MountError::NoSpace);
             }
-            let mut discarded = false;
+            let mut retries = 0u8;
             loop {
                 let freest = if optimize { m.freest_group(groups) } else { None };
                 let stream = ino.and_then(|ino| m.stream_goal_group(ino, groups));
@@ -83,13 +83,16 @@ impl Mount {
                         return Ok(run);
                     }
                 }
-                // Linux drops unused inode/locality PAs after a failed mballoc
-                // scan: their bits are free on disk but hidden in the in-core
-                // buddy view. Retry once so those blocks become allocatable.
-                if discarded || !m.has_prealloc() { return Err(MountError::NoSpace); }
-                m.release_all_inode_prealloc()?;
-                m.release_all_group_prealloc()?;
-                discarded = true;
+                // Linux discards reclaimable locality PAs after a failed
+                // mballoc scan and retries only when blocks were freed.
+                if retries == 3 || !m.has_prealloc() { return Err(MountError::NoSpace); }
+                let mut freed = m.discard_group_preallocations(count)?;
+                if freed == 0 {
+                    freed = m.inode_prealloc_free_blocks();
+                    if freed == 0 { return Err(MountError::NoSpace); }
+                    m.release_all_inode_prealloc()?;
+                }
+                retries += 1;
                 if !reserve::has_free_blocks(
                     m.state.lock().sb_free_blocks, u64::from(count),
                     m.sb.r_blocks_count, may_dip) {
