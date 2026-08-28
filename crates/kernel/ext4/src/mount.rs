@@ -153,7 +153,7 @@ pub struct MountState {
     pub(crate) group_avg_fragment_index: alloc::collections::BTreeMap<u8, alloc::collections::BTreeSet<u32>>,
     /// Reusable locality-group data preallocation tails. The blocks remain
     /// free on disk and are masked from every in-memory bitmap scan.
-    pub(crate) group_prealloc: alloc::collections::BTreeMap<(usize, u32), Vec<crate::balloc::prealloc::GroupPrealloc>>,
+    pub(crate) group_prealloc: alloc::collections::BTreeMap<(usize, u32, u8), Vec<crate::balloc::prealloc::GroupPrealloc>>,
     /// Last successful stream-allocation group, keyed by the Linux-style
     /// inode hash slot. The allocator uses this as the next stream goal.
     pub(crate) stream_last_groups: alloc::collections::BTreeMap<u32, u32>,

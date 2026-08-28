@@ -1,4 +1,4 @@
-use super::{inode_pa_blocks, trim_group_preallocations, GroupPrealloc, InodePrealloc};
+use super::{group_prealloc_order, inode_pa_blocks, trim_group_preallocations, GroupPrealloc, InodePrealloc};
 use alloc::vec;
 
 #[test]
@@ -24,4 +24,15 @@ fn locality_pa_list_keeps_the_eight_largest_reservations() {
     assert_eq!(entries.len(), 8);
     assert!(!entries.iter().any(|pa| pa.blocks.len() == 1));
     assert!(entries.iter().any(|pa| pa.blocks.len() == 9));
+}
+
+#[test]
+fn locality_pa_order_matches_linux_fls_buckets() {
+    assert_eq!(group_prealloc_order(0), 0);
+    assert_eq!(group_prealloc_order(1), 0);
+    assert_eq!(group_prealloc_order(2), 1);
+    assert_eq!(group_prealloc_order(3), 1);
+    assert_eq!(group_prealloc_order(4), 2);
+    assert_eq!(group_prealloc_order(1023), 9);
+    assert_eq!(group_prealloc_order(u32::MAX), 9);
 }

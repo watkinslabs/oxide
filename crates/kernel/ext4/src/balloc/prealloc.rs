@@ -43,12 +43,20 @@ pub(crate) struct GroupPrealloc {
 }
 
 const GROUP_PREALLOC_LIST_LIMIT: usize = 8;
+const GROUP_PREALLOC_ORDER_BUCKETS: u8 = 10;
+
+/// Linux indexes locality PAs by `fls(request_len) - 1`, then searches that
+/// bucket and larger buckets. Keep the same bounded order domain rather than
+/// merging unrelated request sizes into one list.
+fn group_prealloc_order(blocks: u32) -> u8 {
+    if blocks <= 1 { return 0; }
+    (u32::BITS - 1 - blocks.leading_zeros())
+        .min(u32::from(GROUP_PREALLOC_ORDER_BUCKETS - 1)) as u8
+}
 
 /// Keep the locality PA list bounded like Linux's per-order list, which is
 /// trimmed back to eight entries after a new reservation is added.  This
-/// representation groups by CPU and filesystem group rather than retaining
-/// Linux's separate order buckets, so retain the eight largest reservations
-/// in the combined list. # C: O(N)
+/// Each order bucket is trimmed to Linux's eight-entry retention limit. # C: O(N)
 fn trim_group_preallocations(entries: &mut Vec<GroupPrealloc>) {
     while entries.len() > GROUP_PREALLOC_LIST_LIMIT {
         let Some((smallest, _)) = entries.iter().enumerate()
@@ -108,33 +116,43 @@ impl Mount {
     {
         let cpu = locality_cpu();
         if want == 0 { return Some((cpu, Vec::new())); }
+        let first_order = group_prealloc_order(want);
         let s = self.state.lock();
-        s.group_prealloc.get(&(cpu, group))?.iter().find_map(|pa| {
-            if pa.blocks.len() < want as usize { return None; }
-            Some((cpu, pa.blocks[..want as usize].to_vec()))
-        })
+        for order in first_order..GROUP_PREALLOC_ORDER_BUCKETS {
+            if let Some(pas) = s.group_prealloc.get(&(cpu, group, order)) {
+                if let Some(pa) = pas.iter().find(|pa| pa.blocks.len() >= want as usize) {
+                    return Some((cpu, pa.blocks[..want as usize].to_vec()));
+                }
+            }
+        }
+        None
     }
 
     /// Retire a PA prefix from the CPU list selected by the allocation. # C: O(N PAs)
     pub(crate) fn consume_group_prealloc_on_cpu(&self, cpu: usize, group: u32, count: u32) -> bool {
         let mut s = self.state.lock();
-        let key = (cpu, group);
-        let Some(pas) = s.group_prealloc.get_mut(&key) else { return false; };
-        let Some(idx) = pas.iter().position(|pa| pa.blocks.len() >= count as usize) else { return false; };
-        pas[idx].blocks.drain(..count as usize);
-        if pas[idx].blocks.is_empty() { pas.remove(idx); }
-        if pas.is_empty() { s.group_prealloc.remove(&key); }
-        true
+        let first_order = group_prealloc_order(count);
+        for order in first_order..GROUP_PREALLOC_ORDER_BUCKETS {
+            let key = (cpu, group, order);
+            let Some(pas) = s.group_prealloc.get_mut(&key) else { continue; };
+            let Some(idx) = pas.iter().position(|pa| pa.blocks.len() >= count as usize) else { continue; };
+            pas[idx].blocks.drain(..count as usize);
+            if pas[idx].blocks.is_empty() { pas.remove(idx); }
+            if pas.is_empty() { s.group_prealloc.remove(&key); }
+            return true;
+        }
+        false
     }
 
     /// Keep a locality tail on the CPU-local list selected by the allocation
     /// context.  The caller must pass the CPU sampled before a blocking
     /// allocation, matching Linux's `raw_cpu_ptr(s_locality_groups)` lifetime.
     /// # C: O(N)
-    pub(crate) fn add_group_prealloc_on_cpu(&self, cpu: usize, group: u32, blocks: Vec<u64>) {
+    pub(crate) fn add_group_prealloc_on_cpu(&self, cpu: usize, group: u32, request: u32, blocks: Vec<u64>) {
         if blocks.is_empty() { return; }
         let mut s = self.state.lock();
-        let entries = s.group_prealloc.entry((cpu, group)).or_default();
+        let order = group_prealloc_order(request);
+        let entries = s.group_prealloc.entry((cpu, group, order)).or_default();
         entries.push(GroupPrealloc { blocks });
         trim_group_preallocations(entries);
     }
@@ -200,7 +218,7 @@ impl Mount {
     pub(crate) fn release_all_group_prealloc(&self) -> Result<(), MountError> {
         let pas = core::mem::take(&mut self.state.lock().group_prealloc);
         let mut s = self.state.lock();
-        for (_, entries) in pas {
+        for ((_, _, _), entries) in pas {
             for pa in entries {
                 for block in pa.blocks {
                     let Ok((group, bit)) = self.locate_block(block) else { continue };
