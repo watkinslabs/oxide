@@ -27,7 +27,7 @@ const GROUP_PREALLOC_BLOCKS: u32 = 512;
 /// An existing extent terminates a request; physical contiguity must never be
 /// claimed across a mapped logical block. # C: O(N_extents + N_hole_runs)
 fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino: u32,
-    preallocate: bool) -> Result<Vec<ReservedRun>, MountError>
+    current_size: u64, preallocate: bool) -> Result<Vec<ReservedRun>, MountError>
 {
     let mut runs = Vec::new();
     let mut cursor = first as u64;
@@ -78,7 +78,7 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
         let reserve_count = if preallocate {
             count.saturating_add(if count <= GROUP_PREALLOC_MAX_REQUEST {
                 GROUP_PREALLOC_BLOCKS
-            } else { prealloc_tail(count) })
+            } else { prealloc_tail(m.sb.block_size as u64, current_size, start as u32, count) })
         } else { count };
         let flags = m.data_reserve_flags(ino);
         let allocated = match m.alloc_blocks_flags(hint, reserve_count, flags) {
@@ -130,10 +130,18 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
 /// powers of two before larger files use bounded multi-megabyte windows. Keep
 /// the same small-file shape while limiting the tail to one request-sized
 /// quantum in this block-granular implementation. # C: O(1)
-fn prealloc_tail(count: u32) -> u32 {
-    let want = count.max(SMALL_FILE_MIN_PREALLOC_BLOCKS);
-    want.checked_next_power_of_two().unwrap_or(u32::MAX)
-        .saturating_sub(count).min(MAX_PREALLOC_TAIL_BLOCKS)
+fn prealloc_tail(block_size: u64, current_size: u64, logical_start: u32, count: u32) -> u32 {
+    let request_end = u64::from(logical_start).saturating_add(u64::from(count));
+    let file_blocks = current_size.saturating_add(block_size.saturating_sub(1)) / block_size;
+    let end_blocks = file_blocks.max(request_end);
+    let bytes = end_blocks.saturating_mul(block_size);
+    let target = if bytes <= 1024 * 1024 {
+        let min_blocks = (16 * 1024 / block_size).max(u64::from(SMALL_FILE_MIN_PREALLOC_BLOCKS));
+        end_blocks.max(min_blocks).next_power_of_two()
+    } else {
+        end_blocks.saturating_add(u64::from(MAX_PREALLOC_TAIL_BLOCKS))
+    };
+    target.saturating_sub(request_end).min(u64::from(MAX_PREALLOC_TAIL_BLOCKS)) as u32
 }
 
 fn take_reserved(runs: &[ReservedRun], offsets: &mut [usize], lb: u32) -> Option<(u64, bool, bool)> {
@@ -295,7 +303,7 @@ impl Mount {
             // turn a partial range back into one bitmap scan per hole.
             let initial = m.read_inode(ino)?;
             let extents = m.collect_phys_extents(&initial.i_block)?;
-            let reserved = reserve_hole_runs(m, first_lb, last_lb, &extents, ino, false)?;
+            let reserved = reserve_hole_runs(m, first_lb, last_lb, &extents, ino, old_size, false)?;
             let mut reserved_at = vec![0usize; reserved.len()];
             for lb in first_lb..=last_lb {
                 let inode = m.read_inode(ino)?;
@@ -390,7 +398,7 @@ impl Mount {
         // data PA that a later file could consume.
         let allow_prealloc = inode.is_reg() && u64::from(first_lb) <= cur_blocks;
         let reserved = reserve_hole_runs(
-            self, first_lb, last_lb, &initial_extents, ino, allow_prealloc)?;
+            self, first_lb, last_lb, &initial_extents, ino, cur_size, allow_prealloc)?;
         let mut reserved_at = vec![0usize; reserved.len()];
         let mut written = 0usize;
         for lb in first_lb..=last_lb {
