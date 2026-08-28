@@ -502,7 +502,7 @@ impl Mount {
                         if from_inode_pa { let _ = self.consume_inode_prealloc(ino, lb); }
                         if from_group_pa {
                             let cpu = group_cpu.unwrap_or_else(crate::balloc::prealloc::locality_cpu);
-                            let _ = self.consume_group_prealloc_on_cpu(cpu, self.group_of_block(block), 1);
+                            let _ = self.consume_group_prealloc_on_cpu(cpu, self.group_of_block(block), block);
                         }
                     }
                     if let Err(rb) = self.rollback_allocated_logical_blocks(ino, cur_size, &allocated) { return Err(rb); }
@@ -518,7 +518,7 @@ impl Mount {
                     if from_inode_pa { let _ = self.consume_inode_prealloc(ino, lb); }
                     if from_group_pa {
                         let cpu = group_cpu.unwrap_or_else(crate::balloc::prealloc::locality_cpu);
-                        let _ = self.consume_group_prealloc_on_cpu(cpu, self.group_of_block(block), 1);
+                        let _ = self.consume_group_prealloc_on_cpu(cpu, self.group_of_block(block), block);
                     }
                 }
                 allocated.push(lb);

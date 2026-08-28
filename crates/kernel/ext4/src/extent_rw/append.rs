@@ -35,7 +35,7 @@ impl Mount {
                     match source {
                         AppendPrealloc::Inode => { self.consume_inode_prealloc(ino, new_logical); }
                         AppendPrealloc::Group(cpu, group) => {
-                            self.consume_group_prealloc_on_cpu(cpu, group, 1);
+                            self.consume_group_prealloc_on_cpu(cpu, group, physical);
                         }
                     }
                 }
