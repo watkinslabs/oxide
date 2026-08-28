@@ -195,17 +195,17 @@ fn kernel_wait_path_parks_without_driver_owned_polling() {
     assert!(!state.contains("static BLK_TURN"), "turn waits must not cross devices");
 }
 
-/// A non-coherent device must observe the available-ring index itself, not
-/// merely the descriptor and ring entry. Cleaning before the idx store leaves
-/// that publication in the CPU cache and can strand the request on ARM.
+/// A non-coherent device must observe the descriptor and available-ring entry
+/// before it observes the available-ring index. Publishing the index first
+/// lets an ARM device consume stale descriptors or a stale ring head.
 #[test]
-fn queue_publication_cleans_after_available_index() {
+fn queue_publication_cleans_before_available_index() {
     let engine = include_str!("../modern/engine.rs");
     let post = include_str!("../modern/post.rs");
     for source in [engine, post] {
         let idx = source.find("write_volatile(avail.add(1)").expect("avail.idx write");
         let clean = source.find("clean_queue_submission").expect("queue cache clean");
-        assert!(clean > idx, "queue cache clean must follow avail.idx publication");
+        assert!(clean < idx, "queue cache clean must precede avail.idx publication");
     }
 }
 
