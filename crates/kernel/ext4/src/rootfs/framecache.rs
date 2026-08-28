@@ -24,6 +24,8 @@ use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::{KResult, VfsError};
 use sched::live::WaitList;
 
+mod readahead;
+
 use super::state::RootfsState;
 
 mod cachestat;
@@ -108,6 +110,8 @@ pub(crate) struct Ext4FrameStore {
     /// the real on-disk size. Kept in step with `Ext4FileData.size_hint` /
     /// `inode.i_size` by write/truncate/fallocate.
     size: AtomicU64,
+    /// Prevent duplicate asynchronous readahead jobs for one inode store.
+    readahead_queued: AtomicBool,
     /// Parsed on-disk inode reused by page-cache fills. Linux keeps this
     /// metadata in the inode cache; re-reading the inode-table slot for every
     /// frame miss adds an uncached metadata I/O to each fill window.
@@ -174,6 +178,7 @@ impl Ext4FrameStore {
         let s = Arc::new(Ext4FrameStore {
             st, ino,
             size: AtomicU64::new(size),
+            readahead_queued: AtomicBool::new(false),
             disk_inode: Spinlock::new(None),
             pages: Spinlock::new(BTreeMap::new()),
             dirty: Spinlock::new(BTreeSet::new()),
@@ -215,6 +220,10 @@ impl Ext4FrameStore {
         if self.active_fills.fetch_sub(1, Ordering::AcqRel) == 1 {
             self.fill_wait.wake_all();
         }
+    }
+
+    fn self_arc(&self) -> Arc<Ext4FrameStore> {
+        self.me.lock().upgrade().expect("live frame store")
     }
 
     /// Admit one cache fill unless final eviction has started. The second
@@ -276,6 +285,12 @@ impl Ext4FrameStore {
     /// failure stops the fill and leaves the demand fault to report it.
     /// # C: O(nr_pages / window) device reads
     pub fn readahead(&self, start: u64, nr_pages: u64) {
+        readahead::schedule(self, start, nr_pages);
+    }
+
+    /// Synchronous worker body for readahead. The public entry queues this
+    /// after the foreground read, matching Linux's page-cache workers.
+    pub(super) fn readahead_sync(&self, start: u64, nr_pages: u64) {
         if nr_pages == 0 { return; }
         let total = self.size.load(Ordering::Acquire);
         let last_page = (total + PG as u64 - 1) / PG as u64;

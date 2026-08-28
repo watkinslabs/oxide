@@ -80,20 +80,16 @@ impl File {
         // cursor (Linux `__fdget_pos`). `None` for non-seekable files.
         let pos_guard = if self.atomic_pos() { Some(self.f_pos_lock.lock()) } else { None };
         let pos = self.pos.load(Ordering::Acquire);
-        // Advance the per-open readahead window AND SUBMIT it (Linux
-        // `page_cache_sync_readahead` -> `page_cache_ra_unbounded`). Regular
-        // files only. Discarding the window — which is what this did — is why
-        // `posix_fadvise(SEQUENTIAL)` and `(RANDOM)` had no I/O effect at all:
-        // `ra_pages` was faithfully maintained and nothing ever read it into a
-        // fill. The byte count returned is still bounded by `buf`, so submitting
-        // the window cannot over-read past EOF into the caller.
+        // D2: dispatch through the cached `file->f_op` (snapshotted at open).
+        let n = self.dispatch_read(pos, buf, f.contains(OpenFlags::O_NONBLOCK))?;
+        // Linux queues speculative page-cache I/O after the foreground read has
+        // secured the caller's bytes. The worker may run concurrently, but a
+        // slow readahead can never delay this read syscall.
         if !f.contains(OpenFlags::O_NONBLOCK) && matches!(self.inode.file_type(), FileType::Regular) {
             let index = pos / PAGE_SIZE;
             let req = (((buf.len() as u64) + PAGE_SIZE - 1) / PAGE_SIZE).max(1) as u32;
             self.submit_readahead(index, req);
         }
-        // D2: dispatch through the cached `file->f_op` (snapshotted at open).
-        let n = self.dispatch_read(pos, buf, f.contains(OpenFlags::O_NONBLOCK))?;
         self.pos.store(pos + n as u64, Ordering::Release);
         drop(pos_guard); // release before the (possibly lock-taking) inotify hook
         // `file_accessed` — the atime bump the
@@ -343,15 +339,6 @@ impl File {
         // `__fdget_pos`), so the cursor advances atomically over all buffers.
         let pos_guard = if self.atomic_pos() { Some(self.f_pos_lock.lock()) } else { None };
         let pos = self.pos.load(Ordering::Acquire);
-        // Advance and SUBMIT the readahead window once for the whole vectored
-        // read (Linux `page_cache_sync_readahead`). Regular files only; the
-        // request size is the grand total of the destination buffers.
-        if !nonblock && matches!(self.inode.file_type(), FileType::Regular) {
-            let bytes: u64 = bufs.iter().map(|b| b.len() as u64).sum();
-            let index = pos / PAGE_SIZE;
-            let req = ((bytes + PAGE_SIZE - 1) / PAGE_SIZE).max(1) as u32;
-            self.submit_readahead(index, req);
-        }
         let mut total: u64 = 0;
         for buf in bufs.iter_mut() {
             if buf.is_empty() { continue; }
@@ -365,6 +352,12 @@ impl File {
                 Err(e) if total == 0 => return Err(e),
                 Err(_)               => break,                   // partial progress: keep it
             }
+        }
+        if !nonblock && matches!(self.inode.file_type(), FileType::Regular) {
+            let bytes: u64 = bufs.iter().map(|b| b.len() as u64).sum();
+            let index = pos / PAGE_SIZE;
+            let req = ((bytes + PAGE_SIZE - 1) / PAGE_SIZE).max(1) as u32;
+            self.submit_readahead(index, req);
         }
         self.pos.store(pos + total, Ordering::Release);
         drop(pos_guard); // release before the (possibly lock-taking) inotify hook
