@@ -55,6 +55,7 @@ impl Mount {
         {
             let mut s = self.state.lock();
             if s.shadow.is_some() {
+                s.metadata_epoch = s.metadata_epoch.wrapping_add(1);
                 // Batch mode: record each LBA's pre-op shadow value into the
                 // current op's undo frame BEFORE overwriting, so op failure can
                 // restore the shared running transaction. No frame => no undo
@@ -98,6 +99,7 @@ impl Mount {
     #[inline(never)]
     pub(in crate::mount) fn cache_committed(&self, staged: &[StagedBlock]) {
         let mut s = self.state.lock();
+        s.metadata_epoch = s.metadata_epoch.wrapping_add(1);
         for block in staged {
             let buf = alloc::sync::Arc::new(block.data.clone());
             publish_metadata(&mut s, block.target_lba, buf);
@@ -114,6 +116,7 @@ impl Mount {
         let first = byte_off / bs;
         let last = byte_off.saturating_add(len as u64).saturating_sub(1) / bs;
         let mut state = self.state.lock();
+        state.metadata_epoch = state.metadata_epoch.wrapping_add(1);
         for lba in first..=last {
             if state.metadata_cache.remove(&lba).is_some() {
                 state.metadata_order.retain(|held| *held != lba);
@@ -130,7 +133,7 @@ impl Mount {
         -> Result<alloc::sync::Arc<Vec<u8>>, MountError>
     {
         let bs = self.sb.block_size as u64;
-        let (cached, owner, created) = {
+        let (cached, owner, created, epoch) = {
             let mut s = self.state.lock();
             if let Some(buf) = s.shadow.as_ref().and_then(|m| m.get(&lba).cloned()) {
                 if buf.len() == bs as usize { return Ok(alloc::sync::Arc::new(buf)); }
@@ -152,12 +155,12 @@ impl Mount {
                 }
                 None => None,
             };
-            if cached.is_some() { (cached, None, false) }
-            else if let Some(read) = s.metadata_reads.get(&lba).cloned() { (None, Some(read), false) }
+            if cached.is_some() { (cached, None, false, s.metadata_epoch) }
+            else if let Some(read) = s.metadata_reads.get(&lba).cloned() { (None, Some(read), false, s.metadata_epoch) }
             else {
                 let read = Arc::new(MetadataRead::new());
                 s.metadata_reads.insert(lba, Arc::clone(&read));
-                (None, Some(read), true)
+                (None, Some(read), true, s.metadata_epoch)
             }
         };
         if let Some(buf) = cached { return Ok(buf); }
@@ -165,7 +168,9 @@ impl Mount {
         // If another reader owns this LBA, wait for its single completion.
         // Only the creator recorded by `created` performs the device read.
         if !created {
-            return wait_metadata_read(owner.unwrap());
+            let (read_epoch, result) = wait_metadata_read(owner.unwrap());
+            if read_epoch == epoch { return result; }
+            return self.read_metadata_block_shared(lba);
         }
         let result = match read_byte_range(&*self.dev, lba * bs, self.sb.block_size as usize) {
             Err(error) => Err(error),
@@ -174,7 +179,7 @@ impl Mount {
             Ok(buf) => {
                 let buf = Arc::new(buf);
                 let mut s = self.state.lock();
-                publish_metadata(&mut s, lba, Arc::clone(&buf));
+                if s.metadata_epoch == epoch { publish_metadata(&mut s, lba, Arc::clone(&buf)); }
                 Ok(buf)
             }
         };
@@ -183,7 +188,8 @@ impl Mount {
         let mut s = self.state.lock();
         s.metadata_reads.remove(&lba);
         drop(s);
-        read.complete(result);
+        read.complete(epoch, result);
+        if self.state.lock().metadata_epoch != epoch { return self.read_metadata_block_shared(lba); }
         returned
     }
 
@@ -201,7 +207,7 @@ impl Mount {
 
 }
 
-fn wait_metadata_read(read: Arc<MetadataRead>) -> Result<Arc<Vec<u8>>, MountError> {
+fn wait_metadata_read(read: Arc<MetadataRead>) -> (u64, Result<Arc<Vec<u8>>, MountError>) {
     #[cfg(target_os = "oxide-kernel")]
     if sched::current().is_some() && !sched::preempt::in_atomic() {
         let _ = unsafe { sched::live::wait_event_uninterruptible(&read.wait, || {
@@ -272,18 +278,18 @@ mod tests {
     #[test]
     fn metadata_read_publishes_error_after_done() {
         let read = Arc::new(MetadataRead::new());
-        read.complete(Err(MountError::BlockIo));
+        read.complete(7, Err(MountError::BlockIo));
         assert!(read.done.load(Ordering::Acquire));
-        assert_eq!(read.result.lock().as_ref().cloned(), Some(Err(MountError::BlockIo)));
+        assert_eq!(read.result.lock().as_ref().cloned(), Some((7, Err(MountError::BlockIo))));
     }
 
     #[test]
     fn metadata_read_publishes_owned_buffer_after_done() {
         let read = Arc::new(MetadataRead::new());
         let bytes = Arc::new(vec![0x5a; 4096]);
-        read.complete(Ok(Arc::clone(&bytes)));
+        read.complete(9, Ok(Arc::clone(&bytes)));
         assert!(read.done.load(Ordering::Acquire));
-        assert_eq!(read.result.lock().as_ref().unwrap().as_ref().unwrap().as_slice(), bytes.as_slice());
+        assert_eq!(read.result.lock().as_ref().unwrap().1.as_ref().unwrap().as_slice(), bytes.as_slice());
     }
 
     #[test]
