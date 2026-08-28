@@ -146,6 +146,15 @@ fn plain_rename(s: &RenameSides<'_>, from_name: &[u8], to_name: &[u8], whiteout:
         }
     }
 
+    // Linux's auto_da_alloc flushes delayed data before a rename replaces an
+    // existing name. The flush belongs after both directory lookups and
+    // before the rename transaction, so recovery cannot publish the new name
+    // while the source inode's data is still only in the page cache.
+    if s.dest_victim.is_some() && mount.behaviour().auto_da_alloc
+        && crate::rootfs::framecache::writeback_inode(mount, s.target).is_err() {
+        return Err(VfsError::Eio);
+    }
+
     // A whiteout is a freshly allocated character device in the source
     // directory, so it receives that directory's default ACL before the
     // rename transaction links the marker at the vacated name.

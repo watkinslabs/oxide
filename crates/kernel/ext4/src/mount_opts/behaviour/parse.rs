@@ -38,6 +38,8 @@ pub const OPT_JOURNAL_CHECKSUM: &str = "journal_checksum";
 pub const OPT_NOJOURNAL_CHECKSUM: &str = "nojournal_checksum";
 pub const OPT_ACL: &str = "acl";
 pub const OPT_USER_XATTR: &str = "user_xattr";
+pub const OPT_AUTO_DA_ALLOC: &str = "auto_da_alloc";
+pub const OPT_NOAUTO_DA_ALLOC: &str = "noauto_da_alloc";
 
 /// `mb_optimize_scan=` takes exactly these two values.
 const MB_OPTIMIZE_OFF: u32 = 0;
@@ -88,6 +90,11 @@ impl Ext4Behaviour {
             OPT_NOJOURNAL_CHECKSUM => { flag(val)?; self.journal_checksum = Some(false); }
             OPT_ACL => { flag(val)?; self.posix_acl = true; }
             OPT_USER_XATTR => { flag(val)?; self.user_xattr = true; }
+            OPT_AUTO_DA_ALLOC => self.auto_da_alloc = match val {
+                None => true,
+                Some(v) => number(v)? != 0,
+            },
+            OPT_NOAUTO_DA_ALLOC => { flag(val)?; self.auto_da_alloc = false; }
             OPT_STRIPE => self.stripe = number(value(val)?)?,
             OPT_RESUID => self.resuid = number(value(val)?)?,
             OPT_RESGID => self.resgid = number(value(val)?)?,
