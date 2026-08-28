@@ -975,6 +975,7 @@ dependencies = [
  "klog",
  "syscall",
  "uaccess",
+ "vfs",
  "vmm",
 ]
 
@@ -1529,6 +1530,7 @@ dependencies = [
  "netfilter",
  "netlink",
  "nscg",
+ "overlayfs",
  "pci",
  "pci-boot",
  "pmm",
@@ -1542,6 +1544,7 @@ dependencies = [
  "smoke",
  "softirq",
  "sound",
+ "squashfs",
  "sync",
  "syscall",
  "syscalls",
@@ -2638,6 +2641,7 @@ dependencies = [
  "lz4_flex",
  "lzo1x",
  "miniz_oxide",
+ "sched",
  "sectors",
  "sync",
  "syscall",

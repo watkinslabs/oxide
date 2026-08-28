@@ -325,7 +325,24 @@ fn init_exit_check(task: &sched::Task) {
             // namespace down.
             let _ = sched::live::apply_pid_namespace_reboot_status(task);
         }
-        InitExit::PanicMachine => panic!("Attempted to kill init!"),
+        InitExit::PanicMachine => {
+            // The reference panics with the exit status in the message —
+            // `panic("Attempted to kill init! exitcode=0x%08x\n", ...)` — and
+            // that number is the whole diagnosis: it names the signal that
+            // killed init, or the code it exited with. Written before the
+            // panic because a panic message here may only be a literal.
+            let mut line = [0u8; 64];
+            let head = b"[INIT] Attempted to kill init! exitcode=0x";
+            line[..head.len()].copy_from_slice(head);
+            let v = task.exit_status.load(Ordering::Acquire) as u64;
+            for i in 0..8 {
+                let nib = ((v >> ((7 - i) * 4)) & 0xf) as u8;
+                line[head.len() + i] = if nib < 10 { b'0' + nib } else { b'a' + (nib - 10) };
+            }
+            line[head.len() + 8] = b'\n';
+            klog::write_raw(&line[..head.len() + 9]);
+            panic!("Attempted to kill init!")
+        }
     }
 }
 

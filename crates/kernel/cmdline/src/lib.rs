@@ -19,6 +19,7 @@
 // - `init_path`: `init=` / `rdinit=`.
 // - `memory`: `kernelcore=` / `movablecore=` request grammar.
 // - `hibernate`: ordered resume/disable boot-option decisions.
+// - `root_fstype`: the root mount's parameters — `rootfstype=`, `ro`/`rw`, `rootovl=`.
 // - `tests`: parser contract tests.
 
 pub mod token;
@@ -33,6 +34,7 @@ pub mod memory;
 pub mod hugepages;
 pub mod hibernate;
 pub mod sysrq;
+pub mod root_fstype;
 
 pub use slot::{get, install_arch_default, is_set, set};
 pub use console::{active_consoles, active_consoles_in, console_classes, console_classes_in,
@@ -41,6 +43,7 @@ pub use console::{active_consoles, active_consoles_in, console_classes, console_
 pub use earlycon::{earlycon_request, keep_bootcon, ArchDefaults, Driver, EarlyconSpec, IoType};
 pub use init_path::{init_path, init_path_in};
 pub use sysrq::{sysrq_always_enabled, sysrq_always_enabled_in};
+pub use root_fstype::{root_fstypes_in, root_overlay_in, root_readonly_in, RootOverlay, DEFAULT_CANDIDATES};
 
 /// Value of the last exact `name=value` boot parameter.
 /// # C: O(cmdline length)

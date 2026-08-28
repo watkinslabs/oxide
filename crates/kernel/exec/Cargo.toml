@@ -8,6 +8,7 @@ license = "MPL-2.0"
 [dependencies]
 aslr = { path = "../aslr" }
 ext4 = { path = "../ext4" }
+vfs  = { path = "../vfs" }
 elf      = { path = "../../shared/elf" }
 hal      = { path = "../../arch/hal" }
 klog     = { path = "../../shared/klog" }

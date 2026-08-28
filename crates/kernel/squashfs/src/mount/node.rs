@@ -57,7 +57,7 @@ pub fn blocks_of(size: u64) -> u64 { size.div_ceil(512) }
 
 /// Build the VFS inode for one parsed inode. # C: O(1)
 pub(crate) fn inode_for(fs: &Arc<SquashFs>, reference: u64) -> KResult<InodeRef> {
-    let node = fs.volume.lock().read_inode(reference).map_err(errno_to_vfs)?;
+    let node = fs.volume().read_inode(reference).map_err(errno_to_vfs)?;
     build(fs, node)
 }
 

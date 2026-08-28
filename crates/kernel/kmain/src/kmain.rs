@@ -72,6 +72,7 @@ mod kmain {
     pub mod early;
     pub mod hooks;
     pub mod rootfs;
+    pub mod root_mount;
     pub mod runtime;
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
     pub mod acpi_sci;

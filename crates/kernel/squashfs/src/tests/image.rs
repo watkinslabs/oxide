@@ -23,6 +23,10 @@ use crate::uapi::{comp, flags, itype, size, INVALID_BLK, INVALID_FRAG, INVALID_X
 /// The root directory's inode number. Every fixture's root is this.
 pub const ROOT_INO: u32 = 1;
 
+/// What a directory's stored size carries beyond its listing bytes: the two
+/// names the format does not store, plus one.
+const SYNTHETIC_SIZE: u32 = 3;
+
 /// A root-level entry's payload.
 enum Data {
     Reg(Vec<u8>),
@@ -151,7 +155,12 @@ impl Builder {
         put_u32(&mut inode_payload, 8, 0); // mtime
         put_u32(&mut inode_payload, 12, ROOT_INO);
         put_u32(&mut inode_payload, 16, sorted.len() as u32 + 2); // nlink
-        put_u32(&mut inode_payload, 20, listing_len); // size
+        // A directory's stored size counts the two names the format does not
+        // store, plus one — `mksquashfs` writes listing bytes + 3, and a
+        // reader's walk position starts at 3 so the two meet. Writing the bare
+        // byte count made every fixture disagree with a real image by exactly
+        // that, and hid a walk that overran its directory into the next one.
+        put_u32(&mut inode_payload, 20, listing_len + SYNTHETIC_SIZE); // size
         put_u32(&mut inode_payload, 24, 0); // start_block (dir table, single block)
         put_u32(&mut inode_payload, 28, ROOT_INO); // parent: root is its own parent
         put_u16(&mut inode_payload, 32, index_count as u16);

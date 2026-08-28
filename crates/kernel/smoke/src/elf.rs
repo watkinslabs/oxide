@@ -17,12 +17,19 @@ use elf_load::load_static_blob;
 pub fn lookup_blob_by_path(path: &[u8]) -> Option<&'static [u8]> {
     #[cfg(target_os = "oxide-kernel")]
     {
-        if let Some(bytes) = ext4::rootfs::read_file(path) {
-            let leaked: &'static [u8] = alloc::boxed::Box::leak(bytes.into_boxed_slice());
-            return Some(leaked);
-        }
+        // Through the VFS, not through one filesystem's own reader: the root
+        // is whatever `rootfstype=` mounted, and reaching past the mount to a
+        // particular filesystem's API finds init on exactly one of them. It
+        // also resolves the symlinks a distribution's `/lib` and `/sbin` are.
+        let bytes = vfs::read_abs(core::str::from_utf8(path).ok()?).ok()?;
+        let leaked: &'static [u8] = alloc::boxed::Box::leak(bytes.into_boxed_slice());
+        return Some(leaked);
     }
-    None
+    #[cfg(not(target_os = "oxide-kernel"))]
+    {
+        let _ = path;
+        None
+    }
 }
 
 /// User stack length for boot-spawned user blobs. 64 KiB matches
@@ -113,7 +120,39 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     }
     hal::kassert!(init_blob_opt.is_some(),
         "no /lib/systemd/systemd, /sbin/init or /init in rootfs (51§2 invariant 1)");
-    let init_blob = init_blob_opt.unwrap_or(b"");
+    let mut init_blob = init_blob_opt.unwrap_or(b"");
+    // `#!`: init may be a script, exactly as any other executable may. Linux
+    // reaches this through `search_binary_handler`, which tries every format in
+    // turn for PID 1 too; here the ELF loader is the only other one, so the
+    // script case is resolved before it. argv follows `load_script`: the
+    // interpreter, its optional argument, then the script's own path.
+    let mut argv: [&[u8]; 3] = [init_path, b"", b""];
+    let mut argc = 1usize;
+    if let Some(sb) = elf_load::shebang::parse(init_blob) {
+        match lookup_blob_by_path(sb.interp) {
+            Some(interp_blob) => {
+                argv[0] = sb.interp;
+                argc = 1;
+                if let Some(a) = sb.arg { argv[argc] = a; argc += 1; }
+                argv[argc] = init_path; argc += 1;
+                init_blob = interp_blob;
+            }
+            // Naming an interpreter that is not there is fatal for init, and
+            // saying which one is the whole diagnosis.
+            None => {
+                let mut line = [0u8; 128];
+                let mut n = 0;
+                for part in [&b"[INIT] script interpreter not found: "[..], sb.interp, b"\n"] {
+                    let take = core::cmp::min(part.len(), line.len().saturating_sub(n));
+                    line[n..n + take].copy_from_slice(&part[..take]);
+                    n += take;
+                }
+                klog::write_raw(&line[..n]);
+                hal::kassert!(false, "init script names an interpreter that is not in the rootfs");
+            }
+        }
+    }
+    let init_argv = &argv[..argc];
     #[cfg(feature = "debug-boot")]
     {
         klog::write_raw(b"[INFO]  init: selected ");
@@ -127,7 +166,7 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
         spawn_user_blob_with_vpid(
             init_blob, "init",
             0xC0DE_0002, /* vtgid */ 1, /* vtid */ 1,
-            &[init_path],
+            init_argv,
         );
     }
     // PID 1 is now fully formed (fd table installed). Enable IRQs: the
@@ -175,7 +214,7 @@ unsafe fn spawn_user_blob_with_vpid(
     vpid_tid:  u32,
     argv:      &[&[u8]],
 ) {
-    use vmm::{AddressSpace, VmaBacking, VmaFlags, VmaProt};
+    use vmm::{AddressSpace, VmaBacking, VmaProt};
     use hal::{MmuOps, UserVirtAddr};
 
     // Fresh per-task AS so back-to-back smokes don't overlap PIE
@@ -226,10 +265,17 @@ unsafe fn spawn_user_blob_with_vpid(
     let img = match (|| -> Result<_, elf_load::LoadError> {
         let stack_hint = UserVirtAddr::new(stack_va)
             .ok_or(elf_load::LoadError::Einval)?;
+        // The same flag set `execve` installs. Without GROWSDOWN the initial
+        // frame is ALL the stack PID 1 will ever have: the fault handler's
+        // auto-extend refuses to grow a VMA that is not marked, and the first
+        // program to need more than the initial reservation dies writing at
+        // its own stack pointer. Observed as `init[1]: segfault at <sp> ...
+        // error 0x6 in libtinfo.so`, and as an intermittent early death of
+        // systemd, whose stack use varies with what it finds on the root.
         mm.mmap(
             Some(stack_hint), USER_STACK_LEN as usize,
             VmaProt::READ | VmaProt::WRITE,
-            VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
+            vmm::EXEC_STACK_VMA_FLAGS,
             VmaBacking::Anonymous,
             true,
         ).map_err(|_| elf_load::LoadError::Enomem)?;

@@ -42,8 +42,9 @@ mod brk;
 mod layout;
 mod load;
 pub mod persona;
+pub mod shebang;
 mod place;
-mod uapi;
+pub mod uapi;
 
 #[cfg(test)]
 mod tests;
@@ -126,34 +127,21 @@ impl LoadedImage {
     }
 }
 
-/// Read the dynamic-linker (PT_INTERP) file from the rootfs and
-/// return an owned `Vec<u8>`. Caller drops it after `place_image`
-/// has copied the segment bytes into AS-owned staging buffers
-/// (per B22) — no per-exec leak.
-/// # SAFETY: caller is the ELF loader; ext4 mount has been brought
-/// up by `kernel_main` before any execve runs.
-/// # C: O(file size) — one ext4 read.
+/// Read the dynamic-linker (PT_INTERP) file and return an owned `Vec<u8>`.
+/// Caller drops it after `place_image` has copied the segment bytes into
+/// AS-owned staging buffers (per B22) — no per-exec leak.
+///
+/// Through the VFS, which reads whatever filesystem is mounted and follows the
+/// symlinks a merged-`/usr` distribution makes of `/lib` and `/lib64`. It read
+/// through ext4's own rootfs helper before, which found the linker on exactly
+/// one filesystem and needed two hardcoded `/lib*` rewrites to stand in for the
+/// symlink resolution it could not do.
+/// # SAFETY: caller is the ELF loader; the root is mounted by `kernel_main`
+/// before any execve runs.
+/// # C: O(file size)
 #[cfg(target_os = "oxide-kernel")]
 fn read_interp_blob(path: &[u8]) -> Option<alloc::vec::Vec<u8>> {
-    if let Some(blob) = ext4::rootfs::read_file(path) {
-        return Some(blob);
-    }
-    // The early interpreter reader still uses the raw ext4 rootfs helper,
-    // which does not follow intermediate symlinks. Fedora-style merged-/usr
-    // roots commonly expose `/lib` and `/lib64` as symlinks into `/usr`.
-    if let Some(rest) = path.strip_prefix(b"/lib64/") {
-        let mut p = alloc::vec::Vec::with_capacity(b"/usr/lib64/".len() + rest.len());
-        p.extend_from_slice(b"/usr/lib64/");
-        p.extend_from_slice(rest);
-        return ext4::rootfs::read_file(&p);
-    }
-    if let Some(rest) = path.strip_prefix(b"/lib/") {
-        let mut p = alloc::vec::Vec::with_capacity(b"/usr/lib/".len() + rest.len());
-        p.extend_from_slice(b"/usr/lib/");
-        p.extend_from_slice(rest);
-        return ext4::rootfs::read_file(&p);
-    }
-    None
+    vfs::read_abs(core::str::from_utf8(path).ok()?).ok()
 }
 
 #[cfg(not(target_os = "oxide-kernel"))]

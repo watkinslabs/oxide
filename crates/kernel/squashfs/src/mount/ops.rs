@@ -34,16 +34,16 @@ impl InodeOps for SquashOps {
     fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
         let n = Self::node(inode)?;
         let hit = {
-            let v = n.fs.volume.lock();
+            let v = n.fs.volume();
             v.lookup(&n.node, name).map_err(errno_to_vfs)?
         };
-        let child = n.fs.volume.lock().read_inode(hit.reference).map_err(errno_to_vfs)?;
+        let child = n.fs.volume().read_inode(hit.reference).map_err(errno_to_vfs)?;
         build(&n.fs, child)
     }
 
     fn dir_is_empty(&self, inode: &Inode) -> bool {
         let Ok(n) = Self::node(inode) else { return true };
-        let v = n.fs.volume.lock();
+        let v = n.fs.volume();
         v.read_dir(&n.node).map(|e| e.is_empty()).unwrap_or(false)
     }
 
@@ -57,7 +57,7 @@ impl InodeOps for SquashOps {
 
     fn getxattr(&self, inode: &Inode, name: &str) -> Result<Vec<u8>, XattrError> {
         let n = Self::node(inode).map_err(XattrError::Fs)?;
-        let v = n.fs.volume.lock();
+        let v = n.fs.volume();
         if !v.has_xattrs() { return Err(XattrError::NotSup); }
         let attrs = v.read_xattrs(n.node.xattr)
             .map_err(|e| XattrError::Fs(errno_to_vfs(e)))?;
@@ -66,7 +66,7 @@ impl InodeOps for SquashOps {
 
     fn listxattr(&self, inode: &Inode) -> Result<Vec<String>, XattrError> {
         let n = Self::node(inode).map_err(XattrError::Fs)?;
-        let v = n.fs.volume.lock();
+        let v = n.fs.volume();
         if !v.has_xattrs() { return Err(XattrError::NotSup); }
         let attrs = v.read_xattrs(n.node.xattr)
             .map_err(|e| XattrError::Fs(errno_to_vfs(e)))?;
@@ -77,7 +77,7 @@ impl InodeOps for SquashOps {
 impl FileOps for SquashOps {
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let n = SquashOps::node(inode)?;
-        n.fs.volume.lock().read_file(&n.node, off, buf).map_err(errno_to_vfs)
+        n.fs.volume().read_file(&n.node, off, buf).map_err(errno_to_vfs)
     }
 
     /// The two names a listing does not store are emitted first, which is why
@@ -97,7 +97,7 @@ impl FileOps for SquashOps {
             return Ok(());
         }
         let entries = {
-            let v = n.fs.volume.lock();
+            let v = n.fs.volume();
             v.read_dir_from(&n.node, ctx.pos).map_err(errno_to_vfs)?
         };
         for entry in entries {

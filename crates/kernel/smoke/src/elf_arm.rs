@@ -301,7 +301,7 @@ pub unsafe fn run() -> ! {
 /// runqueue. Returns when the spawn machinery is done; the task
 /// runs on the next schedule().
 fn spawn_init_from_rootfs_arm() {
-    use vmm::{AddressSpace, VmaBacking, VmaFlags, VmaProt};
+    use vmm::{AddressSpace, VmaBacking, VmaProt};
     use hal::{MmuOps, UserVirtAddr};
 
     let init_candidates: &[&[u8]] = &[
@@ -311,14 +311,18 @@ fn spawn_init_from_rootfs_arm() {
     ];
     let mut init_path: &[u8] = b"/init";
     let mut init_blob_opt = None;
+    // Through the VFS, so init is found on whatever filesystem `rootfstype=`
+    // mounted and through the symlinks `/lib` and `/sbin` are — same reader
+    // the x86 path uses.
     for path in init_candidates {
-        if let Some(bytes) = ext4::rootfs::read_file(path) {
+        let Ok(p) = core::str::from_utf8(path) else { continue };
+        if let Ok(bytes) = vfs::read_abs(p) {
             init_path = path;
             init_blob_opt = Some(bytes);
             break;
         }
     }
-    let init_blob: &'static [u8] = match init_blob_opt {
+    let mut init_blob: &'static [u8] = match init_blob_opt {
         Some(b) => alloc::boxed::Box::leak(b.into_boxed_slice()),
         None => {
             debug_irq! { klog::kinfo!("elf-smoke-arm: no /init, /lib/systemd/systemd or /sbin/init in rootfs; halting"); }
@@ -352,10 +356,12 @@ fn spawn_init_from_rootfs_arm() {
         Some(u) => u,
         None    => { debug_irq! { klog::kerror!("init-arm: bad stack VA"); } return; }
     };
+    // The same flag set `execve` installs; see the x86 path for what a stack
+    // without GROWSDOWN costs.
     if mm.mmap(
         Some(stack_hint), INIT_STACK_LEN as usize,
         VmaProt::READ | VmaProt::WRITE,
-        VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
+        vmm::EXEC_STACK_VMA_FLAGS,
         VmaBacking::Anonymous,
         true,
     ).is_err() {
@@ -363,6 +369,26 @@ fn spawn_init_from_rootfs_arm() {
         return;
     }
     mm.set_mmap_layout(rnd.mmap_base(INIT_STACK_LEN), true);
+
+    // `#!`: init may be a script here too, resolved the same way and with the
+    // same argv shape as the x86 path — one decision, one parser.
+    let mut argv: [&[u8]; 3] = [init_path, b"", b""];
+    let mut argc = 1usize;
+    if let Some(sb) = elf_load::shebang::parse(init_blob) {
+        let interp = core::str::from_utf8(sb.interp).ok().and_then(|p| vfs::read_abs(p).ok());
+        match interp {
+            Some(bytes) => {
+                argv[0] = sb.interp;
+                if let Some(a) = sb.arg { argv[argc] = a; argc += 1; }
+                argv[argc] = init_path; argc += 1;
+                init_blob = alloc::boxed::Box::leak(bytes.into_boxed_slice());
+            }
+            None => {
+                debug_irq! { klog::kinfo!("elf-smoke-arm: init script interpreter not in rootfs; halting"); }
+                return;
+            }
+        }
+    }
 
     let img = match elf_load::load_static_blob(init_blob, &mm, &rnd) {
         Ok(i)  => i,
@@ -376,7 +402,7 @@ fn spawn_init_from_rootfs_arm() {
     // handed init a guessable glibc stack canary and pointer guard.
     let mut random16 = [0u8; 16];
     crng::fill(&mut random16);
-    let argv0: &[&[u8]] = &[init_path];
+    let argv0: &[&[u8]] = &argv[..argc];
     let stack_plan = match elf_load::stack::plan_initial_stack(
         stack_top, INIT_STACK_LEN, argv0, &[b"TERM=vt100" as &[u8]], &rnd,
     ) {

@@ -9,6 +9,7 @@
 //! A block whose on-disk length is zero is a HOLE: it occupies nothing and
 //! reads as zeroes. Fetching it would read whatever the next block is.
 
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use sectors::SectorSource;
@@ -63,16 +64,20 @@ impl<S: SectorSource> Volume<S> {
     /// that many zero bytes and is never fetched.
     /// # C: O(block bytes)
     fn read_data_block(&self, node: &Inode, index: u64, expected: usize)
-        -> Result<Vec<u8>, Errno> {
+        -> Result<Arc<Vec<u8>>, Errno> {
         let (at, len) = self.block_location(node, index)?;
-        if len.is_sparse() { return Ok(alloc::vec![0u8; expected]); }
+        if len.is_sparse() { return Ok(Arc::new(alloc::vec![0u8; expected])); }
+        if let Some(hit) = self.data_cache_get(at) { return Ok(hit); }
         let mut raw = alloc::vec![0u8; len.on_disk];
         self.read_at(at, &mut raw)?;
-        if !len.compressed {
+        let out = if len.compressed {
+            Arc::new(self.read_result(self.sb.codec.decompress_exact(&raw, expected))?)
+        } else {
             if raw.len() != expected { return Err(Errno::Eio); }
-            return Ok(raw);
-        }
-        self.read_result(self.sb.codec.decompress_exact(&raw, expected))
+            Arc::new(raw)
+        };
+        self.data_cache_put(at, &out);
+        Ok(out)
     }
 
     /// The decompressed contents of a fragment block, whole.
@@ -81,13 +86,20 @@ impl<S: SectorSource> Volume<S> {
     /// fragment block holds several files' tails, and this file's begins part
     /// way in.
     /// # C: O(block bytes)
-    pub fn read_fragment_block(&self, frag: &Fragment) -> Result<Vec<u8>, Errno> {
+    pub fn read_fragment_block(&self, frag: &Fragment) -> Result<Arc<Vec<u8>>, Errno> {
         let len = self.read_result(data_length(frag.size_word))?;
         if len.is_sparse() { return Err(Errno::Eio); }
+        if let Some(hit) = self.data_cache_get(frag.block) { return Ok(hit); }
         let mut raw = alloc::vec![0u8; len.on_disk];
         self.read_at(frag.block, &mut raw)?;
-        if !len.compressed { return Ok(raw); }
-        self.read_result(self.sb.codec.decompress_bounded(&raw, self.sb.block_size as usize))
+        let out = if len.compressed {
+            Arc::new(self.read_result(
+                self.sb.codec.decompress_bounded(&raw, self.sb.block_size as usize))?)
+        } else {
+            Arc::new(raw)
+        };
+        self.data_cache_put(frag.block, &out);
+        Ok(out)
     }
 
     /// Read `buf.len()` bytes of a file starting at `off`, returning how many
@@ -104,14 +116,17 @@ impl<S: SectorSource> Volume<S> {
             let at = off + done as u64;
             let index = at / bs;
             let within = usize::try_from(at % bs).map_err(|_| Errno::Eio)?;
-            let chunk = if index == last && fragment.is_some() {
+            // The cached block, plus the window of it this file owns. A
+            // fragment block holds several files' tails, so the window is not
+            // the whole block; a data block's window is all of it.
+            let (chunk, base, end) = if index == last && fragment.is_some() {
                 let frag = fragment.as_ref().ok_or(Errno::Eio)?;
                 let whole = self.read_fragment_block(frag)?;
                 let tail = usize::try_from(node.size % bs).map_err(|_| Errno::Eio)?;
                 let base = frag.offset as usize;
                 let end = base.checked_add(tail).ok_or(Errno::Eio)?;
                 if end > whole.len() { return Err(Errno::Eio); }
-                whole[base..end].to_vec()
+                (whole, base, end)
             } else {
                 let expected = if index == last {
                     usize::try_from(node.size % bs).map_err(|_| Errno::Eio)?
@@ -119,11 +134,14 @@ impl<S: SectorSource> Volume<S> {
                     self.sb.block_size as usize
                 };
                 if expected == 0 { return Err(Errno::Eio); }
-                self.read_data_block(node, index, expected)?
+                let whole = self.read_data_block(node, index, expected)?;
+                let end = whole.len();
+                (whole, 0, end)
             };
-            if within >= chunk.len() { return Err(Errno::Eio); }
-            let take = core::cmp::min(want - done, chunk.len() - within);
-            buf[done..done + take].copy_from_slice(&chunk[within..within + take]);
+            let window = &chunk[base..end];
+            if within >= window.len() { return Err(Errno::Eio); }
+            let take = core::cmp::min(want - done, window.len() - within);
+            buf[done..done + take].copy_from_slice(&window[within..within + take]);
             done += take;
         }
         Ok(done)

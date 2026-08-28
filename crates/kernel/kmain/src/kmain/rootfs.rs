@@ -26,8 +26,8 @@ pub unsafe fn init(info: &BootInfo) {
     unsafe { hal_x86_64::mmu_ops::resync_kernel_master(); }
     // SAFETY: forwarded boot-entry contract, which is what each phase requires;
     // each returns before the next is entered.
-    unsafe { mount_root(); }
-    mount_boot_filesystems();
+    let root = unsafe { mount_root() };
+    mount_boot_filesystems(root);
     log_dev_null_owner();
     debug_boot_rootfs();
     step("load_keymap", load_keymap);
@@ -41,7 +41,7 @@ pub unsafe fn init(info: &BootInfo) {
 /// # C: not measured (one-shot init)
 #[cfg(target_os = "oxide-kernel")]
 #[inline(never)]
-unsafe fn mount_root() {
+unsafe fn mount_root() -> super::root_mount::MountedRoot {
     // SAFETY: forwarded boot-entry contract; these one-shot hook installs run
     // before the first mount, so nothing can observe a half-installed hook.
     unsafe {
@@ -78,10 +78,19 @@ unsafe fn mount_root() {
         }
         let root_spec = crate::boot_cmdline::parameter_value(b"root")
             .expect("boot command line has no root=");
-        let root_dev = block::registry::resolve_root_spec(root_spec)
-            .expect("requested root block device not found");
-        step("ext4::rootfs::init_from_dev", || ext4::rootfs::init_from_dev(root_dev))
-            .expect("ext4 root mount failed to open");
+        let root_dev = match block::registry::resolve_root_spec(root_spec) {
+            Some(dev) => dev,
+            None => {
+                super::root_mount::log_available_roots(root_spec);
+                hal::kassert!(false, "requested root block device not found");
+                unreachable!()
+            }
+        };
+        // Runs under this function's forwarded boot-entry contract, which is
+        // what each candidate's publisher requires: single CPU, nothing has
+        // yet observed a root.
+        let root = super::root_mount::mount_root_device(root_spec, root_dev)
+            .expect("root device carries no filesystem this kernel can mount");
         step("pci_boot::retry_firmware_gated_drivers", pci_boot::retry_firmware_gated_drivers);
         net::sock::init();
         // Generic netlink: the nlctrl controller plus every in-kernel family
@@ -101,6 +110,7 @@ unsafe fn mount_root() {
         crate::syscalls::mount::install_vfs_hooks();
         vmm::set_mmap_event_hook(crate::syscalls::perf_sideband::note_vma_mmap);
         crate::syscalls::ensure_mount_filesystems_registered();
+        root
     }
 }
 
@@ -109,10 +119,29 @@ unsafe fn mount_root() {
 /// # C: not measured (one-shot init)
 #[cfg(target_os = "oxide-kernel")]
 #[inline(never)]
-fn mount_boot_filesystems() {
-    if let Some(ext4_ty) = vfs::fs::get_fs_type("ext4") {
-        let _ = vfs::mount::register_typed(ext4_ty, None, Arc::new(ext4::rootfs::Ext4RootfsFs));
+fn mount_boot_filesystems(root: super::root_mount::MountedRoot) {
+    // The root grafts at `/` through the same registered type every other
+    // mount uses, so `/proc/mounts` names the filesystem that is actually
+    // mounted rather than a type assumed at build time.
+    //
+    // Every outcome is reported. A root that is silently not grafted produces
+    // a boot in which nothing resolves and no line says why — which is how
+    // this landed the first time.
+    let outcome: &[u8] = match vfs::fs::get_fs_type(root.fstype) {
+        None => b"no registered filesystem type",
+        Some(ty) => match vfs::mount::register_typed(ty, None, root.fs) {
+            Ok(()) => b"ok",
+            Err(_) => b"refused",
+        },
+    };
+    let mut line = [0u8; 96];
+    let mut n = 0;
+    for part in [&b"[ROOT] "[..], root.fstype.as_bytes(), b" at /: ", outcome, b"\n"] {
+        let take = core::cmp::min(part.len(), line.len().saturating_sub(n));
+        line[n..n + take].copy_from_slice(&part[..take]);
+        n += take;
     }
+    klog::write_raw(&line[..n]);
     boot_register("devtmpfs", "/dev",  Arc::new(::devfs::DevfsFs));
     boot_register("proc",     "/proc", Arc::new(procfs::fs_impl::ProcfsFs::default()));
     boot_register("sysfs",    "/sys",  Arc::new(crate::sysfs::SysfsFs));

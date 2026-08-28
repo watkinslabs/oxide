@@ -25,6 +25,14 @@ use super::meta::Cursor;
 use super::{Inode, Volume};
 
 /// The two names a listing does not store, which the reader supplies.
+///
+/// A directory's stored size counts these three, so the walk's byte position
+/// must count them too or the bound it is compared against is three bytes too
+/// generous. An EMPTY directory stores size 3: a walk starting from zero
+/// enters the loop, reads a header that belongs to the NEXT directory in the
+/// shared metadata stream, and lists another directory's names. Observed as
+/// systemd running the fifteen unit generators as environment generators,
+/// because `system-environment-generators` is empty and lists its neighbour.
 pub const SYNTHETIC_ENTRIES: u64 = 3;
 
 /// One name in a directory.
@@ -139,7 +147,7 @@ impl<S: SectorSource> Volume<S> {
     /// `name`, and say how many listing bytes were skipped.
     fn index_by_name(&self, start: Cursor, loc: Option<DirIndexLoc>, name: &[u8])
         -> (Cursor, u64) {
-        let Some(loc) = loc else { return (start, 0) };
+        let Some(loc) = loc else { return (start, SYNTHETIC_ENTRIES) };
         let mut cur = loc.cursor;
         let mut block = start.block;
         let mut length = 0u32;
@@ -157,7 +165,7 @@ impl<S: SectorSource> Volume<S> {
             block = self.sb.directory_table_start + u64::from(u32_at(&b, 4));
         }
         let offset = (length as usize + start.offset) % METADATA_SIZE;
-        (Cursor::new(block, offset), u64::from(length))
+        (Cursor::new(block, offset), u64::from(length) + SYNTHETIC_ENTRIES)
     }
 
     /// Where in a listing a given caller position starts, and the on-disk
@@ -172,9 +180,9 @@ impl<S: SectorSource> Volume<S> {
         // the synthetic entries occupy no listing bytes, so any position at or
         // below them resumes at zero. Returning `pos` here would push every
         // entry's reported position three too high on an ordinary full walk.
-        if pos <= SYNTHETIC_ENTRIES { return Ok((start, 0)); }
+        if pos <= SYNTHETIC_ENTRIES { return Ok((start, SYNTHETIC_ENTRIES)); }
         let want = pos - SYNTHETIC_ENTRIES;
-        let Kind::Dir { index: Some(loc), .. } = &node.kind else { return Ok((start, 0)) };
+        let Kind::Dir { index: Some(loc), .. } = &node.kind else { return Ok((start, SYNTHETIC_ENTRIES)) };
         let mut cur = loc.cursor;
         let mut block = start.block;
         let mut length = 0u32;
@@ -188,7 +196,7 @@ impl<S: SectorSource> Volume<S> {
             block = self.sb.directory_table_start + u64::from(u32_at(&b, 4));
         }
         let offset = (length as usize + start.offset) % METADATA_SIZE;
-        Ok((Cursor::new(block, offset), u64::from(length)))
+        Ok((Cursor::new(block, offset), u64::from(length) + SYNTHETIC_ENTRIES))
     }
 
     /// One header: the inode-number base, the metadata block its entries live
@@ -218,7 +226,7 @@ impl<S: SectorSource> Volume<S> {
             reference: make_reference(u64::from(block), u64::from(u16_at(&b, 0))),
             ino: apply_delta(base_ino, u16_at(&b, 2)),
             type_word,
-            next_pos: *length + SYNTHETIC_ENTRIES,
+            next_pos: *length,
         })
     }
 }
