@@ -300,6 +300,7 @@ fn vfs_error(e: vfs::VfsError) -> FileBackingError {
         vfs::VfsError::Eacces => FileBackingError::Acces,
         vfs::VfsError::Ebadf => FileBackingError::Badf,
         vfs::VfsError::Einval => FileBackingError::Inval,
+        vfs::VfsError::Eagain => FileBackingError::Again,
         vfs::VfsError::Eopnotsupp => FileBackingError::OpNotSupp,
         _ => FileBackingError::Io,
     }

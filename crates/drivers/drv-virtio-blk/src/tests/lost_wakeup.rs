@@ -263,3 +263,19 @@ fn completion_softirq_dispatches_deferred_without_a_new_used_entry() {
     assert!(drain < dispatch && dispatch < wake,
         "drain completions, dispatch deferred requests, then wake turn waiters");
 }
+
+/// Linux's virtio completion handler drains the used ring as one batch and
+/// restarts stopped hardware queues once. Re-dispatching from every completion
+/// changes the completion order and needlessly re-enters queue allocation.
+#[test]
+fn completion_drain_dispatches_deferred_once_after_the_used_batch() {
+    let source = include_str!("../modern/drain.rs");
+    assert_eq!(source.matches("self.start_deferred_requests(q)").count(), 1,
+        "deferred dispatch belongs to the completion batch, not each entry");
+    let loop_end = source.find("\n        }\n        // Linux's virtio completion handler")
+        .expect("completion loop must end before the batch dispatch");
+    let dispatch = source.find("self.start_deferred_requests(q)")
+        .expect("completion drain must restart deferred hardware work");
+    assert!(loop_end < dispatch,
+        "drain all used entries before restarting stopped hardware queues");
+}
