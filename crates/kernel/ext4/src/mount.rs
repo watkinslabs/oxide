@@ -137,6 +137,8 @@ pub struct MountState {
     /// Largest free buddy order known for each group. A missing entry means
     /// that group has not yet had its bitmap scanned by this mount.
     pub(crate) group_free_order: alloc::collections::BTreeMap<u32, u8>,
+    /// Linux's largest-free-order xarrays, represented by order-indexed sets.
+    pub(crate) group_free_order_index: alloc::collections::BTreeMap<u8, alloc::collections::BTreeSet<u32>>,
     /// Average free-fragment order known for each loaded group. Linux uses
     /// this second index to avoid probing groups whose average fragment is
     /// smaller than a multiblock request.
