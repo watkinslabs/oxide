@@ -14,7 +14,9 @@ pub fn sys_close(args: &SyscallArgs) -> i64 {
     let fd = args.a0 as i32;
     let cur = match current_task() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task on this CPU; preempt-off; no concurrent fd_table writer.
-    let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
+    // Borrow the current table like Linux close_fd borrows current->files; the
+    // running task cannot replace this slot until the syscall returns.
+    let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.as_ref(), None => return -(Errno::Ebadf.as_i32() as i64) };
     let rv = match fdt.close(fd) {
         Ok(())  => 0,
         Err(e)  => -(e as i64),
