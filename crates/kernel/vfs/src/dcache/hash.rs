@@ -164,10 +164,12 @@ impl DentryHashTable {
         None
     }
 
-    /// RCU dentry probe for the lazy pathname walk. The returned Arc is
-    /// cloned before the guard leaves, so the caller owns the dentry after the
-    /// hash node becomes eligible for retirement. # C: O(bucket_len)
-    pub(super) fn lookup_rcu(&self, parent: *const Dentry, qhash: u32, name: &str) -> Option<Arc<Dentry>> {
+    /// Lockless dentry probe for both ordinary and lazy pathname walks. The
+    /// hash chain is RCU protected, while the hash-owned Arc keeps each
+    /// candidate alive until the read-side critical section ends. A concurrent
+    /// unhash can therefore cause a false negative, which callers handle by
+    /// taking the normal filesystem lookup path. # C: O(bucket_len)
+    pub(super) fn lookup_unlocked(&self, parent: *const Dentry, qhash: u32, name: &str) -> Option<Arc<Dentry>> {
         let _rcu = sync::rcu_read_lock();
         let b = self.bucket(qhash);
         let mut node = b.head.load(core::sync::atomic::Ordering::Acquire);
@@ -190,6 +192,12 @@ impl DentryHashTable {
             node = unsafe { (*node).next.load(core::sync::atomic::Ordering::Acquire) };
         }
         None
+    }
+
+    /// RCU dentry probe retained as the explicit lazy-walk spelling.
+    /// # C: O(bucket_len)
+    pub(super) fn lookup_rcu(&self, parent: *const Dentry, qhash: u32, name: &str) -> Option<Arc<Dentry>> {
+        self.lookup_unlocked(parent, qhash, name)
     }
 
 }

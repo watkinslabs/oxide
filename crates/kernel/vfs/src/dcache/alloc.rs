@@ -129,10 +129,16 @@ pub(crate) fn d_lookup_reval_rcu_with_hash(
     let pptr = Arc::as_ptr(parent);
     #[cfg(feature = "debug-resolve-cost")]
     let _hash_cost = crate::resolve_cost::hash_walk();
+    // Linux's ordinary __d_lookup() is already an RCU chain walk; the
+    // bucket lock belongs to writers, not to the common cached-hit reader.
+    // A concurrent rename/unhash may produce a false negative, which is safe:
+    // the caller falls through to the serialized filesystem lookup. Keep the
+    // explicit RCU argument for the walk's other semantics, but use the same
+    // lockless dcache probe for both modes.
     let cand = if rcu {
         DENTRY_HASHTABLE.lookup_rcu(pptr, qhash, name)
     } else {
-        DENTRY_HASHTABLE.lookup_locked(pptr, qhash, name)
+        DENTRY_HASHTABLE.lookup_unlocked(pptr, qhash, name)
     };
     let d = cand?;
     // Linux `__d_lookup` lockref gate (`lockref_get_not_dead`): atomically
