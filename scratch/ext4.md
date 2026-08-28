@@ -57,7 +57,15 @@ The target is every useful ext4 mode that this kernel can support honestly. A mo
 3. Add a failure-injection matrix for metadata reads, data reads, owned completions, extent reads, allocation, journal writes, flushes, and remounts.
 4. Close or update stale ledger evidence only after the current commands reproduce it.
 
-Exit: E4-13 and E4-16 are resolved; all later measurements identify the commit, image, architecture, SMP setting, and harness mode.
+Initial evidence: `cargo test -p ext4 --tests --no-fail-fast --quiet --
+--test-threads=4` passed all 353 ext4 tests on 2026-08-28. This supersedes the
+old 62-failure count as a current result, but does not close fixture isolation:
+the command exercises the package in parallel only, not a workspace-wide run
+with every consumer of the shared generated images.
+
+Exit: the controlled baseline is committed, every mutable fixture has one
+owner, E4-13 and E4-16 are resolved, and all later measurements identify the
+commit, image, architecture, SMP setting, and harness mode.
 
 ### 4.2 E4-02: establish the ext4 I/O and cache ownership model
 
