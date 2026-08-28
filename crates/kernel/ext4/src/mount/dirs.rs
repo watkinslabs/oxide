@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
 use crate::dir;
-use crate::htree::EXT4_INDEX_FL;
+use crate::htree::{EXT4_INDEX_FL, HtreeLookup};
 use crate::inode::Inode;
 use crate::inode::flags::EXT4_CASEFOLD_FL;
 
@@ -191,8 +191,10 @@ impl Mount {
         // the ordinary directory parser instead of turning a miss into false
         // ENOENT.
         if dir_inode.i_flags & EXT4_INDEX_FL != 0 {
-            if let Some(ino) = self.htree_lookup_in_dir(dir_inode, name)? {
-                return Ok(ino);
+            match self.htree_lookup_in_dir(dir_inode, name)? {
+                HtreeLookup::Found(ino) => return Ok(ino),
+                HtreeLookup::Miss => return Err(MountError::NotFound),
+                HtreeLookup::Fallback => {}
             }
         }
         // Linear dirs carry an `ext4_dir_entry_tail` metadata_csum on every

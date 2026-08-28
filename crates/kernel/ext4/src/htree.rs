@@ -22,6 +22,14 @@ use hash::dirhash_major;
 /// `EXT4_INDEX_FL` in `i_flags` — directory uses an htree index.
 pub const EXT4_INDEX_FL: u32 = 0x1000;
 
+pub(crate) enum HtreeLookup {
+    Found(u32),
+    Miss,
+    /// The index cannot be trusted as a complete lookup answer; callers may
+    /// use the ordinary directory scan as the corruption-tolerant fallback.
+    Fallback,
+}
+
 impl Mount {
     /// Look up one name through an indexed directory's dx tree. The selected
     /// leaf is the normal Linux `ext4_dx_find_entry` path; callers may retain
@@ -29,27 +37,37 @@ impl Mount {
     /// the requested leaf. # C: O(index depth + leaf entries)
     pub(crate) fn htree_lookup_in_dir(
         &self, dir_node: &Inode, name: &[u8],
-    ) -> Result<Option<u32>, MountError> {
-        if dir_node.i_flags & EXT4_INDEX_FL == 0 { return Ok(None); }
+    ) -> Result<HtreeLookup, MountError> {
+        if dir_node.i_flags & EXT4_INDEX_FL == 0 { return Ok(HtreeLookup::Fallback); }
         let root = self.read_file_block_meta(dir_node, 0)?;
-        if root.len() < 0x28 { return Ok(None); }
+        if root.len() < 0x28 { return Ok(HtreeLookup::Fallback); }
         let hash_version = root[0x1C];
         let hash = dirhash_major(name, hash_version, &self.sb.hash_seed);
         let indirect = root[0x1E];
-        let leaf_lblk = if indirect >= 1 {
+        let (leaf_lblk, collision_lblk) = if indirect >= 1 {
             let node_lblk = self.dx_find_leaf(&root, 0x20, hash)?;
             let node = self.read_file_block_meta(dir_node, node_lblk)?;
-            if node.len() < 0x10 { return Ok(None); }
-            self.dx_find_leaf(&node, 0x08, hash)?
+            if node.len() < 0x10 { return Ok(HtreeLookup::Fallback); }
+            self.dx_find_leaf_with_collision(&node, 0x08, hash)?
         } else {
-            self.dx_find_leaf(&root, 0x20, hash)?
+            self.dx_find_leaf_with_collision(&root, 0x20, hash)?
         };
         let leaf = self.read_file_block_meta(dir_node, leaf_lblk)?;
         let usable = crate::csum::dir_usable_len(&self.sb, self.sb.block_size as usize);
-        let end = usable.min(leaf.len());
-        Ok(dir::lookup_matching(&leaf[..end], |entry| {
+        if leaf.len() < usable { return Ok(HtreeLookup::Fallback); }
+        let found = dir::lookup_matching(&leaf[..usable], |entry| {
             self.names_equal(dir_node, entry, name)
-        })?.map(|entry| entry.inode))
+        })?.map(|entry| entry.inode);
+        if let Some(ino) = found { return Ok(HtreeLookup::Found(ino)); }
+        if let Some(next_lblk) = collision_lblk {
+            let next = self.read_file_block_meta(dir_node, next_lblk)?;
+            if next.len() < usable { return Ok(HtreeLookup::Fallback); }
+            let found = dir::lookup_matching(&next[..usable], |entry| {
+                self.names_equal(dir_node, entry, name)
+            })?.map(|entry| entry.inode);
+            if let Some(ino) = found { return Ok(HtreeLookup::Found(ino)); }
+        }
+        Ok(HtreeLookup::Miss)
     }
 
     /// Insert `(name → child_ino)` into an htree directory by hashing
@@ -384,19 +402,35 @@ impl Mount {
     fn dx_find_leaf(&self, node: &[u8], entries_off: usize, hash: u32)
         -> Result<u32, MountError>
     {
+        Ok(self.dx_find_leaf_with_collision(node, entries_off, hash)?.0)
+    }
+
+    fn dx_find_leaf_with_collision(&self, node: &[u8], entries_off: usize, hash: u32)
+        -> Result<(u32, Option<u32>), MountError>
+    {
         let count = u16::from_le_bytes([node[entries_off + 2], node[entries_off + 3]]) as usize;
         if count == 0 { return Err(MountError::NotFound); }
         // entry 0: implicit hash 0, block @ entries_off+4.
         let mut chosen = u32::from_le_bytes([
             node[entries_off + 4], node[entries_off + 5],
             node[entries_off + 6], node[entries_off + 7]]);
+        let mut chosen_hash = 0;
+        let mut chosen_idx = 0;
         for i in 1..count {
             let eo = entries_off + i * 8;
             let ehash = u32::from_le_bytes([node[eo], node[eo + 1], node[eo + 2], node[eo + 3]]);
             if hash < ehash { break; }
             chosen = u32::from_le_bytes([node[eo + 4], node[eo + 5], node[eo + 6], node[eo + 7]]);
+            chosen_hash = ehash;
+            chosen_idx = i;
         }
-        Ok(chosen)
+        let collision = if chosen_idx + 1 < count {
+            let eo = entries_off + (chosen_idx + 1) * 8;
+            let ehash = u32::from_le_bytes([node[eo], node[eo + 1], node[eo + 2], node[eo + 3]]);
+            (ehash == chosen_hash).then(|| u32::from_le_bytes([
+                node[eo + 4], node[eo + 5], node[eo + 6], node[eo + 7]]))
+        } else { None };
+        Ok((chosen, collision))
     }
 }
 
