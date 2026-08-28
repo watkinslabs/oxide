@@ -249,3 +249,30 @@ pub(crate) fn publish_size(inode: &Inode, size: u64) {
         d.frames.set_size(size);
     }
 }
+
+/// Publish a buffered-write growth without allowing a concurrent writer to
+/// publish an older size afterward. The size hint is the monotonic admission
+/// point; the VFS inode and frame store are the two readers that receive the
+/// resulting value. Shrink/setattr paths use `publish_size` because they have
+/// already serialized the new on-disk size under their metadata owner.
+/// # C: O(1)
+pub(crate) fn publish_size_max(inode: &Inode, size: u64) {
+    let Some(d) = inode.private::<Ext4FileData>() else {
+        inode.i_size_fetch_max(size);
+        return;
+    };
+    #[cfg_attr(not(feature = "debug-wakelat"), allow(unused_variables))]
+    let previous = d.size_hint.fetch_max(size, Ordering::AcqRel);
+    let published = previous.max(size);
+    // DIAG (debug-wakelat): a buffered file whose size climbs past ~16MB is the
+    // systemd-hwdb unbounded/circular-trie signature (hwdb.bin should be ~13.5MB).
+    // Keep this diagnostic at the same canonical size publication boundary.
+    #[cfg(feature = "debug-wakelat")]
+    if published >> 23 != previous >> 23 {
+        klog::write_raw(b"[FCSIZE ino="); klog::write_dec_u64(d.ino as u64);
+        klog::write_raw(b" size="); klog::write_dec_u64(published);
+        klog::write_raw(b"]\n");
+    }
+    inode.i_size_fetch_max(published);
+    d.frames.set_size(published);
+}
