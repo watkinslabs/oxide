@@ -42,6 +42,21 @@ pub(crate) struct GroupPrealloc {
     pub(crate) blocks: Vec<u64>,
 }
 
+const GROUP_PREALLOC_LIST_LIMIT: usize = 8;
+
+/// Keep the locality PA list bounded like Linux's per-order list, which is
+/// trimmed back to eight entries after a new reservation is added.  This
+/// representation groups by CPU and filesystem group rather than retaining
+/// Linux's separate order buckets, so retain the eight largest reservations
+/// in the combined list. # C: O(N)
+fn trim_group_preallocations(entries: &mut Vec<GroupPrealloc>) {
+    while entries.len() > GROUP_PREALLOC_LIST_LIMIT {
+        let Some((smallest, _)) = entries.iter().enumerate()
+            .min_by_key(|(_, pa)| pa.blocks.len()) else { break };
+        entries.remove(smallest);
+    }
+}
+
 fn inode_pa_blocks(pa: &InodePrealloc, logical: u32, want: u32) -> Option<Vec<u64>> {
     let offset = logical.checked_sub(pa.logical_start)? as usize;
     if offset >= pa.blocks.len() || pa.used[offset] { return None; }
@@ -115,8 +130,10 @@ impl Mount {
     /// Keep a locality tail for another small-file allocation. # C: O(1)
     pub(crate) fn add_group_prealloc(&self, group: u32, blocks: Vec<u64>) {
         if blocks.is_empty() { return; }
-        self.state.lock().group_prealloc.entry((locality_cpu(), group)).or_default()
-            .push(GroupPrealloc { blocks });
+        let mut s = self.state.lock();
+        let entries = s.group_prealloc.entry((locality_cpu(), group)).or_default();
+        entries.push(GroupPrealloc { blocks });
+        trim_group_preallocations(entries);
     }
 
     /// Whether an in-memory PA can hide free blocks from a new allocation. # C: O(1)
