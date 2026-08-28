@@ -79,19 +79,24 @@ pub fn register(mount: &Arc<Mount>) {
                         itable: ItableProgress::default() });
 }
 
-/// Commit every registered journal whose `commit=` interval has elapsed.
+/// Checkpoint retained transactions, then commit every registered journal whose
+/// `commit=` interval has elapsed. The two operations intentionally belong to
+/// adjacent passes: a newly published commit remains replayable until the next
+/// background checkpoint owner runs.
 ///
 /// `now_ns` is the timer subsystem's own monotonic time, which is why this
 /// takes it rather than reading a clock: it is the same time base every other
 /// periodic in the kernel is paced by.
 /// # C: O(N_mounts) + O(dirty) per due mount
 pub fn tick(now_ns: u64) {
-    let due: Vec<Arc<Mount>> = {
+    let (mounts, due): (Vec<Arc<Mount>>, Vec<Arc<Mount>>) = {
         let mut g = MOUNTS.lock();
         g.retain(|r| r.mount.strong_count() > 0);
+        let mut mounts = Vec::new();
         let mut due = Vec::new();
         for r in g.iter_mut() {
             let Some(m) = r.mount.upgrade() else { continue };
+            mounts.push(Arc::clone(&m));
             match r.last_ns {
                 // First sighting: start this mount's interval now rather than
                 // committing a transaction whose age is unknown.
@@ -112,8 +117,13 @@ pub fn tick(now_ns: u64) {
                 Some(_) => {}
             }
         }
-        due
+        (mounts, due)
     };
+    // A journal commit and its checkpoint are separate owners. Complete work
+    // retained by the previous pass before publishing any new commit, but do
+    // not immediately checkpoint a transaction this pass just committed.
+    // This keeps home-block writeback off the timer's commit critical path.
+    for m in &mounts { let _ = m.checkpoint_pending_background(); }
     // Outside the registry lock: a commit sleeps on device I/O, and holding a
     // spinlock across that would park every other mount's registration behind
     // this one's disk.
@@ -123,10 +133,6 @@ pub fn tick(now_ns: u64) {
         // into another commit of the same batch.
         m.batch_full.store(false, core::sync::atomic::Ordering::Release);
         let _ = m.commit_batch_background();
-        // The commit owner only made the log record durable. Home-block
-        // writeback belongs to this periodic owner, on its own stack and
-        // outside the mutating operation that happened to fill the batch.
-        let _ = m.checkpoint_pending_background();
     }
     run_itable_init(now_ns);
 }
