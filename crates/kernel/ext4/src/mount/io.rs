@@ -132,8 +132,15 @@ pub(super) fn read_byte_range(dev: &dyn BlockDevice, byte_off: u64, len: usize)
     let (req, result) = block::submit_wait::submit_and_wait(dev, req);
     result.map_err(|_| MountError::BlockIo)?;
     let inner_off = (byte_off - first_blk * bs) as usize;
+    let end = inner_off.checked_add(len).ok_or(MountError::BlockIo)?;
+    if end > req.buffer.len() {
+        // A successful completion must still return the complete block window
+        // requested by the filesystem. Treat a short payload as I/O failure;
+        // never let a malformed completion become an out-of-bounds slice.
+        return Err(MountError::BlockIo);
+    }
     let mut out = Vec::with_capacity(len);
-    out.extend_from_slice(&req.buffer[inner_off .. inner_off + len]);
+    out.extend_from_slice(&req.buffer[inner_off .. end]);
     Ok(out)
 }
 
@@ -152,9 +159,22 @@ mod tests {
     use block::BlockDevice;
     use block::{BlockError, BlockOp, BlockRequest, KResult, QueueFeatures, QueueLimits};
     use std::sync::Mutex;
-    use super::write_durable_block;
+    use super::{read_byte_range, write_durable_block};
 
     struct TraceDisk(Mutex<Vec<&'static str>>);
+
+    struct ShortReadDisk;
+
+    impl BlockDevice for ShortReadDisk {
+        fn block_size(&self) -> u32 { 512 }
+        fn capacity_blocks(&self) -> u64 { 8 }
+        fn submit(&self, mut request: BlockRequest, completion: block::BlockCompletion) {
+            request.buffer.truncate(request.buffer.len().saturating_sub(1));
+            completion(request, Ok(()));
+        }
+        fn submit_sync(&self, _request: &mut BlockRequest) -> KResult<()> { Ok(()) }
+        fn flush(&self) -> KResult<()> { Ok(()) }
+    }
 
     impl BlockDevice for TraceDisk {
         fn block_size(&self) -> u32 { 512 }
@@ -183,6 +203,11 @@ mod tests {
                    Err(crate::MountError::BlockIo));
         assert_eq!(write_durable_block(&*disk, 0, &[0; 511], sched::ioprio::DEFAULT),
                    Err(crate::MountError::BlockIo));
+    }
+
+    #[test]
+    fn short_successful_read_is_an_io_error_not_a_slice_panic() {
+        assert_eq!(read_byte_range(&ShortReadDisk, 0, 512), Err(crate::MountError::BlockIo));
     }
 
     #[test]
