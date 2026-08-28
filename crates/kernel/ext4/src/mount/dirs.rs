@@ -8,7 +8,7 @@ use crate::inode::flags::EXT4_CASEFOLD_FL;
 use super::{Mount, MountError};
 
 impl Mount {
-    fn names_equal(&self, dir: &Inode, a: &[u8], b: &[u8]) -> bool {
+    pub(crate) fn names_equal(&self, dir: &Inode, a: &[u8], b: &[u8]) -> bool {
         let folded = dir.i_flags & EXT4_CASEFOLD_FL != 0;
         self.vfs_superblock().map_or(a == b, |sb|
             vfs::dentry::casefold::names_eq_bytes(&sb, folded, a, b))
@@ -184,6 +184,17 @@ impl Mount {
         let block_size = self.sb.block_size as u64;
         let total = dir_inode.size;
         let nblocks = ((total + block_size - 1) / block_size) as u32;
+        // Linux ext4_dx_find_entry descends the directory's hash index and
+        // reads one leaf in the common case. Keep the linear walk below as a
+        // correctness fallback: an equal-hash collision can continue into the
+        // next leaf, and it also lets a damaged/partial index be diagnosed by
+        // the ordinary directory parser instead of turning a miss into false
+        // ENOENT.
+        if dir_inode.i_flags & EXT4_INDEX_FL != 0 {
+            if let Some(ino) = self.htree_lookup_in_dir(dir_inode, name)? {
+                return Ok(ino);
+            }
+        }
         // Linear dirs carry an `ext4_dir_entry_tail` metadata_csum on every
         // block (Linux ext4_dirblock_csum_verify → EFSBADCRC). htree dirs are
         // skipped here: their block 0 is a `dx_root` with a `dx_tail`, not a

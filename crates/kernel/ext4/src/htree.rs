@@ -23,6 +23,35 @@ use hash::dirhash_major;
 pub const EXT4_INDEX_FL: u32 = 0x1000;
 
 impl Mount {
+    /// Look up one name through an indexed directory's dx tree. The selected
+    /// leaf is the normal Linux `ext4_dx_find_entry` path; callers may retain
+    /// a linear fallback for collision runs or an index that cannot describe
+    /// the requested leaf. # C: O(index depth + leaf entries)
+    pub(crate) fn htree_lookup_in_dir(
+        &self, dir_node: &Inode, name: &[u8],
+    ) -> Result<Option<u32>, MountError> {
+        if dir_node.i_flags & EXT4_INDEX_FL == 0 { return Ok(None); }
+        let root = self.read_file_block_meta(dir_node, 0)?;
+        if root.len() < 0x28 { return Ok(None); }
+        let hash_version = root[0x1C];
+        let hash = dirhash_major(name, hash_version, &self.sb.hash_seed);
+        let indirect = root[0x1E];
+        let leaf_lblk = if indirect >= 1 {
+            let node_lblk = self.dx_find_leaf(&root, 0x20, hash)?;
+            let node = self.read_file_block_meta(dir_node, node_lblk)?;
+            if node.len() < 0x10 { return Ok(None); }
+            self.dx_find_leaf(&node, 0x08, hash)?
+        } else {
+            self.dx_find_leaf(&root, 0x20, hash)?
+        };
+        let leaf = self.read_file_block_meta(dir_node, leaf_lblk)?;
+        let usable = crate::csum::dir_usable_len(&self.sb, self.sb.block_size as usize);
+        let end = usable.min(leaf.len());
+        Ok(dir::lookup_matching(&leaf[..end], |entry| {
+            self.names_equal(dir_node, entry, name)
+        })?.map(|entry| entry.inode))
+    }
+
     /// Insert `(name → child_ino)` into an htree directory by hashing
     /// the name and descending the dx index to the covering leaf. The
     /// index itself is left untouched (only leaf contents change), so
