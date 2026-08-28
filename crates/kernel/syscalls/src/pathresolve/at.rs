@@ -71,7 +71,10 @@ fn dirfd_base(dirfd: i32, op: &'static [u8], raw: &str, ignore_if_absolute: bool
         return Ok((root.mnt_id, root.dentry));
     }
     // SAFETY: running task on this CPU; sole reader of its fd_table slot.
-    let fdt = unsafe { cur.fd_table_ref() }.ok_or(ebadf)?.clone();
+    // Linux's path_init takes the current task's files reference for the
+    // lookup and pins only the selected file; the resolver does not need an
+    // owned clone of the whole descriptor table.
+    let fdt = unsafe { cur.fd_table_ref() }.ok_or(ebadf)?.as_ref();
     let f = fdt.get(dirfd).map_err(|_| ebadf)?;
     if f.inode().file_type() != vfs::FileType::Directory {
         trace_enotdir(op, dirfd, raw, b"dirfd-base", Some(f.inode().file_type()), f.mnt_id(), f.dentry().absolute_path().as_slice());
@@ -168,7 +171,9 @@ pub(crate) fn resolve_fd_at(dirfd: i32) -> Result<vfs::VfsPath, i64> {
     let ebadf = -(Errno::Ebadf.as_i32() as i64);
     let cur = current_task().ok_or(ebadf)?;
     // SAFETY: running task on this CPU; sole reader of its fd_table slot.
-    let fdt = unsafe { cur.fd_table_ref() }.ok_or(ebadf)?.clone();
+    // Borrow current->files like Linux fdget(); `get` returns the file pin
+    // needed after this table lookup, so cloning the table is unnecessary.
+    let fdt = unsafe { cur.fd_table_ref() }.ok_or(ebadf)?.as_ref();
     let f = fdt.get(dirfd).map_err(|_| ebadf)?;
     Ok(vfs::VfsPath { mnt_id: f.mnt_id(), dentry: f.dentry().clone(), inode: f.inode().clone(), last_component: None })
 }
