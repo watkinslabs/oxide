@@ -81,19 +81,20 @@ impl Mount {
             ReplayError::BlockIo | ReplayError::Corrupt => MountError::BlockIo,
         })?;
         if stats.txns_replayed > 0 {
-            self.mark_journal_clean(&log, &jsb)?;
+            let last_seq = jsb.sequence.wrapping_add(stats.txns_replayed - 1);
+            self.mark_journal_clean_seq(&log, &jsb, last_seq)?;
         }
         Ok(Some(stats))
     }
 
     /// Set `s_start = 0` (and bump sequence) in the journal SB
     /// to mark it clean.
-    fn mark_journal_clean(&self, log: &ExtentLogReader, jsb: &JournalSuperblock)
-        -> Result<(), MountError>
+    pub(crate) fn mark_journal_clean_seq(&self, log: &ExtentLogReader, jsb: &JournalSuperblock,
+                                         last_seq: u32) -> Result<(), MountError>
     {
         let mut sb_bytes = log.read_journal_block(0).map_err(|_| MountError::BlockIo)?;
         if sb_bytes.len() < 0x20 { return Ok(()); }
-        sb_bytes[0x18..0x1C].copy_from_slice(&jsb.sequence.wrapping_add(1).to_be_bytes());
+        sb_bytes[0x18..0x1C].copy_from_slice(&last_seq.wrapping_add(1).to_be_bytes());
         sb_bytes[0x1C..0x20].copy_from_slice(&0u32.to_be_bytes());
         if !jsb.stamp_checksum(&mut sb_bytes) { return Err(MountError::BadChecksum); }
         log.write_journal_block(0, &sb_bytes)
@@ -127,11 +128,6 @@ impl Mount {
     /// # C: O(N staged) journal I/O; checkpoint I/O is owner-dependent
     pub(crate) fn commit_metadata_deferred(&self, staged: Vec<StagedBlock>) -> Result<u32, MountError> {
         if staged.is_empty() { return Ok(0); }
-        // A single retained transaction is the conservative journal-space
-        // owner. The background checkpoint pass normally clears it; a caller
-        // that reaches the next commit first completes it before reusing the
-        // journal, so the log never has two untracked owners.
-        self.checkpoint_pending()?;
         #[cfg(feature = "debug-fsync-latency")]
         let staged_blocks = staged.len() as u64;
         if (self.sb.feature_incompat & crate::superblock::INCOMPAT_RECOVER) == 0
@@ -173,8 +169,14 @@ impl Mount {
         }
         let transaction_blocks = transaction_block_count_for(staged.len(), bs, bit64, checksum_mode)
             .map_err(|_| MountError::NoSpace)?;
-        let mut cursor = LogCursor::new(jsb.start, jsb.first, jsb.maxlen, jsb.sequence);
-        if transaction_blocks as u32 > cursor.usable() { return Err(MountError::NoSpace); }
+        let (mut cursor, first_pending, used) = {
+            let state = self.state.lock();
+            (state.journal_cursor.unwrap_or_else(|| LogCursor::new(jsb.start, jsb.first, jsb.maxlen, jsb.sequence)),
+             state.pending_checkpoints.is_empty(), state.journal_used)
+        };
+        if transaction_blocks as u32 > cursor.usable().saturating_sub(used) {
+            return Err(MountError::NoSpace);
+        }
         let desc_at = cursor.head;
         let seq = cursor.seq;
         #[cfg(feature = "debug-fsync-latency")]
@@ -205,17 +207,23 @@ impl Mount {
         if !jsb.stamp_checksum(&mut sb_bytes) { return Err(MountError::BadChecksum); }
         #[cfg(feature = "debug-fsync-latency")]
         let publish_started_ns = crate::fsync_latency::now_ns();
-        // The journal superblock publication is the commit record's
+        // The first transaction's journal superblock publication is the
         // durability point when barriers are enabled. Its preflush makes the
         // already-submitted body durable first; FUA (or the block layer's
         // postflush fallback) makes this publication durable before any
         // checkpoint target write. `nobarrier` is Linux's explicit opt-out
         // from those device-cache promises, so preserve ordering but do not
         // manufacture flushes the mount asked us not to issue.
-        if self.behaviour().barrier {
-            log.write_journal_block_durable(0, &sb_bytes)?;
+        if first_pending {
+            if self.behaviour().barrier {
+                log.write_journal_block_durable(0, &sb_bytes)?;
+            } else {
+                log.write_journal_block(0, &sb_bytes)?;
+            }
         } else {
-            log.write_journal_block(0, &sb_bytes)?;
+            // The oldest pending transaction remains the recovery anchor. The
+            // later commit record is made durable without moving that anchor.
+            if self.behaviour().barrier { self.dev.flush().map_err(|_| MountError::BlockIo)?; }
         }
         #[cfg(feature = "debug-fsync-latency")]
         crate::fsync_latency::report(b"journal-publish", publish_started_ns, staged_blocks);
@@ -223,7 +231,10 @@ impl Mount {
         // the checkpoint pass. Keeping s_start non-zero is intentional: if a
         // crash happens before home writeback, recovery replays this record.
         // The clean-superblock write is made only after the target flush.
-        self.state.lock().pending_checkpoint = Some(PendingCheckpoint { staged });
+        let mut state = self.state.lock();
+        state.pending_checkpoints.push(PendingCheckpoint { staged, seq });
+        state.journal_cursor = Some(cursor);
+        state.journal_used = state.journal_used.saturating_add(transaction_blocks as u32);
         Ok(seq)
     }
 
