@@ -9,6 +9,16 @@ use super::super::MetadataRead;
 use super::super::io::read_byte_range;
 
 impl Mount {
+    /// Drop clean metadata published before journal replay changed home blocks.
+    /// Replay writes the device directly, so retaining those buffers would let
+    /// post-recovery quota/inode reads observe pre-crash bytes.
+    pub(crate) fn invalidate_all_metadata_cache(&self) {
+        let mut state = self.state.lock();
+        state.metadata_epoch = state.metadata_epoch.wrapping_add(1);
+        state.metadata_cache.clear();
+        state.metadata_order.clear();
+    }
+
     /// Byte offset of the GDT on disk. Block 2 for 1 KiB-block
     /// images (block 0 = boot, block 1 = sb), block 1 otherwise
     /// (block 0 contains pad + sb at offset 1024).

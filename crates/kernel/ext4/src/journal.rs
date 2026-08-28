@@ -89,6 +89,11 @@ impl Mount {
             ReplayError::BlockIo | ReplayError::Corrupt => MountError::BlockIo,
         })?;
         if stats.txns_replayed > 0 {
+            // Replay bypasses Mount's normal metadata publication path. Drop
+            // every pre-replay clean buffer and rebuild the GDT/counter mirror
+            // before quota activation or allocation can inspect it.
+            self.invalidate_all_metadata_cache();
+            self.refresh_cached_meta();
             let last_seq = jsb.sequence.wrapping_add(stats.txns_replayed - 1);
             self.mark_journal_clean_seq(&log, &jsb, last_seq)?;
         }
