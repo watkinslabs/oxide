@@ -376,7 +376,7 @@ fn inline_write_alloc_failure_rolls_project_quota_back() {
     let before_q = vfs::quota_getquota(&sb, qid).expect("quota before alloc failure");
 
     m.state().mount.fail_next_alloc_block_for_tests();
-    let err = m.state().mount.write_at(ino, 0, &vec![0x8e; bs as usize]).expect_err("injected alloc failure");
+    let err = m.state().mount.write_at(ino, bs * 1024, &vec![0x8e; bs as usize]).expect_err("injected alloc failure");
 
     assert_eq!(err, ext4::MountError::BlockIo);
     let after_raw = m.state().mount.read_inode(ino).expect("raw after alloc failure");

@@ -85,6 +85,23 @@ fn sequential_regular_writes_reuse_inode_preallocation() {
 }
 
 #[test]
+fn small_files_reuse_locality_preallocation() {
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk).unwrap();
+    let first = m.create_file(2, b"locality-a.bin", 0o644, 0, 0).unwrap();
+    let second = m.create_file(2, b"locality-b.bin", 0o644, 0, 0).unwrap();
+    let bs = m.sb.block_size as usize;
+
+    m.write_at(first, 0, &std::vec![0x31; bs]).unwrap();
+    let first_phys = m.extent_map(first).unwrap()[0].1;
+    m.write_at(second, 0, &std::vec![0x32; bs]).unwrap();
+    let second_phys = m.extent_map(second).unwrap()[0].1;
+
+    assert_eq!(second_phys, first_phys + 1,
+        "a small file consumes the reusable locality tail before a fresh scan");
+}
+
+#[test]
 fn fallocate_extends_size_and_allocates_zeroed_blocks() {
     let disk = build_disk();
     let m = ext4::Mount::open(disk).unwrap();

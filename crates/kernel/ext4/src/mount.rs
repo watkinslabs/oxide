@@ -137,6 +137,9 @@ pub struct MountState {
     /// Largest free buddy order known for each group. A missing entry means
     /// that group has not yet had its bitmap scanned by this mount.
     pub(crate) group_free_order: alloc::collections::BTreeMap<u32, u8>,
+    /// Reusable locality-group data preallocation tails. The blocks remain
+    /// free on disk and are masked from every in-memory bitmap scan.
+    pub(crate) group_prealloc: alloc::collections::BTreeMap<u32, Vec<crate::balloc::prealloc::GroupPrealloc>>,
     /// Per-inode data preallocation tails. The bitmap owns these blocks on
     /// disk, while this table owns their not-yet-mapped logical range.
     pub(crate) inode_prealloc: alloc::collections::BTreeMap<u32, Vec<crate::balloc::prealloc::InodePrealloc>>,
@@ -244,6 +247,7 @@ impl Drop for Mount {
         // Linux drops inode preallocation while the superblock is being put;
         // otherwise bitmap-reserved tails would outlive their in-memory owner.
         let _ = self.release_all_inode_prealloc();
+        let _ = self.release_all_group_prealloc();
         let _ = self.commit_batch();
     }
 }
