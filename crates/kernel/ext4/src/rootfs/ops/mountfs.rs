@@ -476,6 +476,43 @@ mod tests {
             "explicit durability adds the retained home-block barrier");
     }
 
+    /// Linux jbd2 keeps every committed-but-not-checkpointed transaction on
+    /// the checkpoint list.  Two periodic commits must therefore both reach
+    /// home blocks when one later synchronous pass drains the list; retaining
+    /// only the newest transaction would lose the first directory entry.
+    #[test]
+    fn multiple_background_commits_checkpoint_in_order() {
+        let dev = fresh_dev();
+        let m = Ext4Mount::open(dev.clone() as Arc<dyn BlockDevice>).unwrap();
+        let root = m.st.mount.lookup_path(b"/").expect("root");
+        dev.flushes.store(0, Ordering::SeqCst);
+
+        m.st.mount.begin_batch();
+        m.st.mount.create_file(root, b"checkpoint-first", 0o644, 0, 0)
+            .expect("first create");
+        m.st.mount.commit_batch_background().expect("first background commit");
+        assert_eq!(dev.flushes.load(Ordering::SeqCst), 0,
+            "the first background commit needs no explicit device flush on MemDisk");
+
+        m.st.mount.begin_batch();
+        m.st.mount.create_file(root, b"checkpoint-second", 0o644, 0, 0)
+            .expect("second create");
+        m.st.mount.commit_batch_background().expect("second background commit");
+        assert_eq!(dev.flushes.load(Ordering::SeqCst), 1,
+            "the later background commit makes its publication durable without checkpointing homes");
+
+        m.st.mount.commit_batch().expect("checkpoint all background commits");
+        assert_eq!(dev.flushes.load(Ordering::SeqCst), 2,
+            "one explicit checkpoint drains the whole pending list");
+        drop(m);
+
+        let reopened = Ext4Mount::open(dev as Arc<dyn BlockDevice>).expect("reopen");
+        assert!(reopened.st.mount.lookup_path(b"/checkpoint-first").is_ok(),
+            "the oldest pending transaction reached its home directory block");
+        assert!(reopened.st.mount.lookup_path(b"/checkpoint-second").is_ok(),
+            "the newest pending transaction reached its home directory block");
+    }
+
     /// The barrier decision itself, stated once: the waiting pass and only it,
     /// and only on a mount that did not ask for the flush to be dropped.
     #[test]
