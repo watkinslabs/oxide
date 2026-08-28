@@ -79,13 +79,13 @@ impl Mount {
         let sb_bytes = log.read_journal_block(0).map_err(|_| MountError::BlockIo)?;
         let jsb = super::JournalSuperblock::parse(&sb_bytes)
             .map_err(super::map_journal_superblock_error)?;
-        // The publication request may have completed at the transport while
-        // power failed before its bytes reached media. In that case the
-        // surviving superblock is still clean: there is no committed log
-        // record for this owner to checkpoint, so discard the in-memory
-        // pending value and let the interrupted operation's caller observe
-        // the power-cut outcome through the device contract.
-        if !jsb.needs_recovery() { return Ok(()); }
+        // A pending in-memory transaction is only eligible for checkpoint
+        // after its dirty journal superblock is visible. A clean superblock
+        // here means the journal publication and the in-memory handoff have
+        // diverged; silently returning success would make checkpoint_pending
+        // discard the only remaining home-block copy. Preserve the pending
+        // value and surface the invariant violation instead.
+        ensure_checkpoint_recorded(jsb.needs_recovery())?;
 
         #[cfg(feature = "debug-fsync-latency")]
         let started_ns = crate::fsync_latency::now_ns();
@@ -108,6 +108,12 @@ impl Mount {
             pending.iter().map(|p| p.staged.len() as u64).sum());
         Ok(())
     }
+}
+
+/// The checkpoint owner must never retire an in-memory transaction whose
+/// journal record is not present on the device. # C: O(1)
+fn ensure_checkpoint_recorded(needs_recovery: bool) -> Result<(), MountError> {
+    if needs_recovery { Ok(()) } else { Err(MountError::BlockIo) }
 }
 
 /// Keep only the newest home-image for each target block across committed
@@ -150,5 +156,11 @@ mod tests {
     #[test]
     fn checkpoint_empty_input_stays_empty() {
         assert!(coalesce_checkpoint_blocks(&[]).is_empty());
+    }
+
+    #[test]
+    fn clean_journal_cannot_retire_a_pending_checkpoint() {
+        assert_eq!(ensure_checkpoint_recorded(false), Err(MountError::BlockIo));
+        assert_eq!(ensure_checkpoint_recorded(true), Ok(()));
     }
 }
