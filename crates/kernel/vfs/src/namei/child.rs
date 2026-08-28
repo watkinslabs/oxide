@@ -111,7 +111,7 @@ impl Nameidata {
                 // D5/D6 negative-on-miss, gated for safety (see `neg_cache_ok`):
                 // create syscalls flush this leaf negative by resolved parent
                 // dentry/name, so a subsequently-created file is never masked.
-                if super::neg_cache_ok(&self.cur_inode) {
+                if super::neg_cache_ok(&self.cur_inode, comp) {
                     crate::dcache::d_add_negative_with_hash(&self.cur_dentry, comp, hash);
                 }
                 Ok(ChildLookup::Missing)

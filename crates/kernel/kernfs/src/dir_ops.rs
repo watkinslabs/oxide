@@ -51,6 +51,10 @@ impl InodeOps for PseudoDirOps {
         pdir(inode)?.op_lookup(name)
     }
 
+    /// kernfs revalidates negative dentries against the live child set, so a
+    /// miss may be cached without hiding a later publication. # C: O(1)
+    fn negative_dentry_ok(&self, _inode: &Inode, _name: &str) -> bool { true }
+
     /// Linux `kernfs_dops`: every cached child of a pseudo-fs directory carries
     /// the revalidating vector, so a node the tree removed or republished stops
     /// resolving to the previous object. # C: O(1)
