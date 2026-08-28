@@ -304,3 +304,27 @@
 <!-- B2861-ext4-auto-da-alloc: auto_da_alloc/noauto_da_alloc now has one live mount-policy owner and replacing renames flush the source inode's dirty data before the namespace transaction; 352 ext4 tests and both architecture checks pass. -->
 <!-- B2863-ext4-journal-external-extents: the journal inode now uses the canonical validated depth-0/1/2 extent walker instead of rejecting external extent trees; 352 ext4 tests and both architecture checks pass. -->
 <!-- B2864-ext4-pa-order-buckets: locality-group preallocations now retain Linux's separate fls(request_len)-1 order buckets and search the requested bucket upward, with eight-entry trimming per bucket; 353 ext4 tests and both architecture checks pass. -->
+
+## Ext4 master program
+
+The authoritative dependency-ordered ext4 inventory and execution plan is [`scratch/ext4.md`](ext4.md). The older ext4 rows above retain historical measurements and are mapped to the IDs below; they are not a second completion list.
+
+| ID | Status | Remaining issue | Evidence / closure requirement |
+|---|---|---|---|
+| E4-00 | OPEN | Baseline and shared image-fixture isolation are not frozen. | Current suite counts, controlled perf baseline, isolated parallel fixtures, and stale-row cleanup. |
+| E4-01 | OPEN | Owned concurrent block reads were reverted after boot-time SIGBUS/data failures; ext4 still relies on the serialized compatibility path. | Correct concurrent completions, byte identity, read stress, and both-arch boot. |
+| E4-02 | OPEN | Ext4 metadata/frame-cache/request lifetime ownership is not yet a complete asynchronous model. | One canonical request/cache owner plus completion, error, short-fill, invalid-frame, and unmount tests. |
+| E4-03 | OPEN | Intermittent ext4-backed dconf reads can return EIO and surface as SIGBUS; failing owner is not proven. | Provenance, focused reproducer, correction, and live GNOME verification. |
+| E4-04 | OPEN | GNOME dconf writes on the small ext4 `/home` image can return EIO. | Allocation/writeback/journal diagnosis, persistence after remount, and live verification. |
+| E4-05 | OPEN | Journal checkpointing is still a conservative one-transaction handoff with remaining write amplification. | Full checkpoint-list accounting, crash matrix, and measured improvement. |
+| E4-06 | OPEN | `journal_async_commit` is admitted but not a live JBD2 mode. | Feature, ordering, validation, and replay implementation. |
+| E4-07 | OPEN | Multiblock allocator scan heuristics and complete locality-PA lifecycle still differ from Linux. | Fragmentation, ENOSPC, rollback, migration, remount, and e2fsck-clean coverage. |
+| E4-08 | OPEN | Htree selection improved, but aggregate `newfstatat` remains far slower than local Linux. | Phase attribution and controlled repeated comparison. |
+| E4-09 | OPEN | `inode_readahead_blks` is admitted without a live asynchronous inode-table consumer. | Lifetime-safe cache warmup and cold-lookup measurements. |
+| E4-10 | OPEN | Direct-I/O mount options are admitted without direct-I/O semantics. | Implement the owner or explicitly refuse unsupported use. |
+| E4-11 | OPEN | mbcache and bitmap-prefetch options lack complete allocator-cache consumers. | Each option changes one canonical cache policy. |
+| E4-12 | OPEN | Remaining legacy/obsolete option spellings lack an explicit implemented/refused/no-op disposition. | Per-option audit and tests. |
+| E4-13 | OPEN | Parallel ext4 image tests share mutable fixtures and can fail falsely. | Isolated fixture ownership and agreeing parallel/serial results. |
+| E4-14 | OPEN | One ARM sysinit EIO/SIGBUS event is unconfirmed. | Controlled reproduction or evidence-backed closure. |
+| E4-15 | OPEN | Ext4 performance claims lack a current repeatable baseline series. | Frozen baseline, phase metrics, repeated before/after runs. |
+| E4-16 | OPEN | Historical ext4 ledger rows include stale status/count claims. | Correct, map, or close each historical row from current evidence. |
