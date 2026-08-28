@@ -177,7 +177,9 @@ impl Mount {
         for g in 0..groups {
             let Ok(d) = gdt::parse_descriptor(&s.gdt_buf, g, &self.sb) else { continue };
             let free = d.free_blocks_count as u64;
-            if best.is_none_or(|(_, b)| free > b) { best = Some((g, free)); }
+            let score = s.group_free_order.get(&g).copied()
+                .map(|order| 1u64 << u32::from(order)).unwrap_or(free);
+            if best.is_none_or(|(_, b)| score > b) { best = Some((g, score)); }
         }
         best
     }
@@ -231,7 +233,7 @@ impl Mount {
         // Force commit so the next alloc_block within the same
         // outer scope reads the updated bitmap from disk.
         self.flush_pending_tx()?;
-        self.state.lock().block_bitmap_cache.insert(bbm_byte_off, bitmap);
+        self.publish_group_bitmap(group, bbm_byte_off, bitmap);
         let phys = group_first_block(&self.sb, group) + bit as u64;
         Ok(Some(phys))
     }
@@ -286,7 +288,7 @@ impl Mount {
         self.persist_gdt_slot_meta(group)?;
         self.persist_sb_free_blocks_meta()?;
         self.flush_pending_tx()?;
-        self.state.lock().block_bitmap_cache.insert(bbm_byte_off, bitmap);
+        self.publish_group_bitmap(group, bbm_byte_off, bitmap);
         Ok(Some((0..count).map(|n| first_phys + u64::from(start + n)).collect()))
     }
 
@@ -347,6 +349,20 @@ impl Mount {
         sb_buf[SB_OFF_FREE_BLOCKS_HI..SB_OFF_FREE_BLOCKS_HI+4].copy_from_slice(&hi_v.to_le_bytes());
         crate::csum::stamp_superblock_csum(&self.sb, &mut sb_buf);
         self.metadata_write(crate::superblock::SUPERBLOCK_OFFSET, &sb_buf)
+    }
+}
+
+impl Mount {
+    /// Publish the validated bitmap and its largest free buddy order only
+    /// after the metadata transaction is durable. The summary is advisory;
+    /// the bitmap remains the allocation authority.
+    /// # C: O(block_size)
+    fn publish_group_bitmap(&self, group: u32, byte_off: u64, bitmap: Vec<u8>) {
+        let order = scan::largest_free_order(&bitmap, self.blocks_in_group(group));
+        let mut s = self.state.lock();
+        s.block_bitmap_cache.insert(byte_off, bitmap);
+        if let Some(order) = order { s.group_free_order.insert(group, order); }
+        else { s.group_free_order.remove(&group); }
     }
 }
 

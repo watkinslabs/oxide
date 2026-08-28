@@ -134,6 +134,9 @@ pub struct MountState {
     /// Linux keeps bitmap/buddy state resident after a group is loaded; this
     /// map is the bitmap half of that ownership boundary.
     pub(crate) block_bitmap_cache: alloc::collections::BTreeMap<u64, Vec<u8>>,
+    /// Largest free buddy order known for each group. A missing entry means
+    /// that group has not yet had its bitmap scanned by this mount.
+    pub(crate) group_free_order: alloc::collections::BTreeMap<u32, u8>,
     /// Cross-operation batching (Linux jbd2 running-transaction model). When
     /// set, the `shadow` PERSISTS across `run_journaled` scopes: each op joins
     /// the running transaction instead of committing its own, and the batch is

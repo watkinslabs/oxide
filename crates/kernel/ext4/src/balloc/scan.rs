@@ -13,6 +13,21 @@ pub const LINEAR_SCAN_THRESHOLD: u32 = 16;
 /// mount named no preference. # C: O(1)
 pub fn optimize_scan_default(groups: u32) -> bool { groups >= LINEAR_SCAN_THRESHOLD }
 
+/// Return the largest power-of-two free order represented by a bitmap.
+/// The summary is advisory; the bitmap remains the allocation authority.
+/// # C: O(max_bits)
+pub fn largest_free_order(bitmap: &[u8], max_bits: u32) -> Option<u8> {
+    let mut best = 0u32;
+    let mut run = 0u32;
+    for bit in 0..max_bits {
+        if bitmap[bit as usize >> 3] & (1u8 << (bit & 7)) == 0 { run += 1; }
+        else { best = best.max(run); run = 0; }
+    }
+    best = best.max(run);
+    if best == 0 { return None; }
+    Some((u32::BITS - 1 - best.leading_zeros()) as u8)
+}
+
 /// The group the scan STARTS at.
 ///
 /// The plain order starts at the caller's locality hint and walks forward, so
@@ -80,5 +95,12 @@ mod tests {
     fn a_group_outside_the_filesystem_is_not_a_start() {
         assert_eq!(scan_start(3, 8, true, Some((9, 5000))), 3);
         assert_eq!(scan_start(3, 0, true, Some((0, 5000))), 0);
+    }
+
+    #[test]
+    fn largest_free_order_tracks_the_buddy_summary() {
+        assert_eq!(largest_free_order(&[0b1111_0000], 8), Some(2));
+        assert_eq!(largest_free_order(&[0b1111_1111], 8), None);
+        assert_eq!(largest_free_order(&[0], 3), Some(1));
     }
 }
