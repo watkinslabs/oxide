@@ -121,17 +121,16 @@ fn deep_extent_tree_file_is_e2fsck_clean() {
         let m = ext4::Mount::open(disk.clone()).unwrap();
         let bs = m.sb.block_size as usize;
         let n = m.create_file(2, b"deep.bin", 0o644, 0, 0).unwrap();
-        // A spacer held allocated between appends breaks contiguity → many
-        // separate extents → inline root (4) overflows → promote to depth 1.
-        let mut spacers = std::vec::Vec::new();
+        // Explicit logical holes force separate extent records. A physical
+        // spacer does not: Linux may retain an inode PA and keep appends
+        // contiguous despite another allocation request.
         for i in 0..6u8 {
-            spacers.push(m.alloc_block(0).unwrap());
-            m.append_block(n, &std::vec![i; bs]).unwrap();
+            let logical = u64::from(i) * 2;
+            m.write_at(n, logical * bs as u64, &std::vec![i; bs]).unwrap();
         }
         let inode = m.read_inode(n).unwrap();
         assert!(ext4::parse_extent_header(&inode.i_block).unwrap().depth >= 1,
                 "test must build an external extent tree");
-        for s in spacers { m.free_block(s).unwrap(); }
     }
     let bytes = dump_disk(&disk, cap);
     match e2fsck_clean(&bytes) {

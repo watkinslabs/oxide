@@ -171,23 +171,22 @@ fn shifting_a_deep_extent_tree_keeps_every_block_readable() {
     let m = ext4::Mount::open(disk).unwrap();
     let bs = m.sb.block_size as usize;
     let n = m.create_file(2, b"deepshift.bin", 0o644, 0, 0).unwrap();
-    // A spacer held allocated between appends breaks contiguity, so the inline
-    // root (4 records) overflows and the file gets an external extent tree —
-    // the case where a shift must rebuild metadata nodes, not just edit i_block.
-    let mut spacers = std::vec::Vec::new();
+    // Explicit logical holes force separate extent records. A physical spacer
+    // does not: Linux may retain an inode PA and keep appends contiguous.
     let deep_blocks = 6u8;
     for i in 0..deep_blocks {
-        spacers.push(m.alloc_block(0).unwrap());
-        m.append_block(n, &std::vec![i; bs]).unwrap();
+        let logical = u64::from(i) * 2;
+        m.write_at(n, logical * bs as u64, &std::vec![i; bs]).unwrap();
     }
     assert!(m.extent_map(n).unwrap().len() > 4, "fixture really has an external tree");
-    for b in spacers { m.free_block(b).unwrap(); }
     m.insert_range_inode(n, bs as u64, bs as u64).unwrap();
-    assert_eq!(block_tags(&m, n, deep_blocks as u32 + 1), std::vec![0, 0, 1, 2, 3, 4, 5]);
+    assert_eq!(block_tags(&m, n, deep_blocks as u32 * 2),
+        std::vec![0, 0, 0, 1, 0, 2, 0, 3, 0, 4, 0, 5]);
 
     m.collapse_range_inode(n, bs as u64, bs as u64).unwrap();
-    assert_eq!(block_tags(&m, n, deep_blocks as u32), std::vec![0, 1, 2, 3, 4, 5]);
-    assert_eq!(m.read_inode(n).unwrap().size, deep_blocks as u64 * bs as u64);
+    assert_eq!(block_tags(&m, n, deep_blocks as u32 * 2 - 1),
+        std::vec![0, 0, 1, 0, 2, 0, 3, 0, 4, 0, 5]);
+    assert_eq!(m.read_inode(n).unwrap().size, (deep_blocks as u64 * 2 - 1) * bs as u64);
 }
 
 #[test]

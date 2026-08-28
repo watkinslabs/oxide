@@ -260,10 +260,14 @@ fn merging_append_onto_a_full_extent_leaf_succeeds() {
             let bs = m.sb.block_size as usize;
             let a = m.create_file(ROOT_INO, b"leaf_a.bin", 0o644, 0, 0).unwrap();
             let b = m.create_file(ROOT_INO, b"leaf_b.bin", 0o644, 0, 0).unwrap();
-            for _ in 0..frag {
+            // Explicit logical holes force separate extents. A physical
+            // spacer does not: inode data preallocation keeps each file's
+            // sequential appends contiguous under Linux semantics.
+            for i in 0..frag {
+                let logical = i as u64 * 2;
                 for ino in [a, b] {
-                    m.append_block(ino, &std::vec![0x33; bs])
-                        .unwrap_or_else(|e| panic!("fragmenting append (frag={frag}): {e:?}"));
+                    m.write_at(ino, logical * bs as u64, &std::vec![0x33; bs])
+                        .unwrap_or_else(|e| panic!("fragmenting write (frag={frag}): {e:?}"));
                 }
             }
             for k in 0..60 {

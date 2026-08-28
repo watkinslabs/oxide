@@ -110,8 +110,8 @@ fn deep_tree_extents_map_all_blocks_ascending() {
     let n = m.create_file(2, b"deepmap.bin", 0o644, 0, 0).unwrap();
     let bs = m.sb.block_size as usize;
     for i in 0..6u8 {
-        let _spacer = m.alloc_block(0).unwrap();
-        m.append_block(n, &std::vec![i; bs]).unwrap();
+        let logical = u64::from(i) * 2;
+        m.write_at(n, logical * bs as u64, &std::vec![i; bs]).unwrap();
     }
     assert!(ext4::parse_extent_header(&m.read_inode(n).unwrap().i_block).unwrap().depth >= 1,
         "test needs a depth>=1 tree");
@@ -119,6 +119,6 @@ fn deep_tree_extents_map_all_blocks_ascending() {
     let runs = m.extent_map(n).unwrap();
     assert_eq!(mapped_blocks(&runs), 6, "all 6 fragmented blocks mapped");
     let logicals: std::vec::Vec<u32> = runs.iter().map(|r| r.0).collect();
-    assert_eq!(logicals, std::vec![0, 1, 2, 3, 4, 5], "every logical block reported, ascending");
+    assert_eq!(logicals, std::vec![0, 2, 4, 6, 8, 10], "every mapped logical block reported, ascending");
     for r in &runs { assert!(!r.3, "written blocks not unwritten"); }
 }
