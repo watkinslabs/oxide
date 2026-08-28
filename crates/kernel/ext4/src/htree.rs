@@ -43,47 +43,19 @@ impl Mount {
         if root.len() < 0x28 { return Ok(HtreeLookup::Fallback); }
         let hash_version = root[0x1C];
         let hash = dirhash_major(name, hash_version, &self.sb.hash_seed);
-        let indirect = root[0x1E];
         if !self.dx_block_valid(&root, 0x20) {
             return Ok(HtreeLookup::Fallback);
         }
-        // This reader currently has the same one-interior-node shape as the
-        // writer. A deeper on-disk tree must use the ordinary scan fallback;
-        // treating its first interior block as a leaf would return a false
-        // miss rather than the Linux corruption-tolerant answer.
-        if indirect > 1 { return Ok(HtreeLookup::Fallback); }
-        let (leaf_lblk, collision_lblk) = if indirect >= 1 {
-            // The root's continuation entries name further interior nodes,
-            // not leaves. Linux ext4_htree_next_block() walks those parent
-            // entries when an equal-hash run crosses a node boundary.
-            let (node_lblk, collision_nodes) =
-                self.dx_find_leaf_with_collision(&root, 0x20, hash)?;
-            let node = self.read_file_block_meta_shared(dir_node, node_lblk)?;
-            if !self.dx_block_valid(&node, 0x08) { return Ok(HtreeLookup::Fallback); }
-            let (leaf, mut collisions) = self.dx_find_leaf_with_collision(&node, 0x08, hash)?;
-            for next_node_lblk in collision_nodes {
-                let next_node = self.read_file_block_meta_shared(dir_node, next_node_lblk)?;
-                if !self.dx_block_valid(&next_node, 0x08) { return Ok(HtreeLookup::Fallback); }
-                let (next_leaf, next_collisions) =
-                    self.dx_find_leaf_with_collision(&next_node, 0x08, hash)?;
-                collisions.push(next_leaf);
-                collisions.extend(next_collisions);
-            }
-            (leaf, collisions)
-        } else {
-            self.dx_find_leaf_with_collision(&root, 0x20, hash)?
-        };
-        let leaf = self.read_file_block_meta_shared(dir_node, leaf_lblk)?;
         let usable = crate::csum::dir_usable_len(&self.sb, self.sb.block_size as usize);
-        if leaf.len() < usable { return Ok(HtreeLookup::Fallback); }
-        let found = dir::lookup_matching(&leaf[..usable], |entry| {
-            self.names_equal(dir_node, entry, name)
-        })?.map(|entry| entry.inode);
-        if let Some(ino) = found { return Ok(HtreeLookup::Found(ino)); }
-        for next_lblk in collision_lblk {
-            let next = self.read_file_block_meta_shared(dir_node, next_lblk)?;
-            if next.len() < usable { return Ok(HtreeLookup::Fallback); }
-            let found = dir::lookup_matching(&next[..usable], |entry| {
+        let mut leaves = alloc::vec::Vec::new();
+        let levels = root[0x1E] as usize;
+        if !self.collect_htree_leaves(dir_node, &root, 0x20, levels, hash, &mut leaves)? {
+            return Ok(HtreeLookup::Fallback);
+        }
+        for leaf_lblk in leaves {
+            let leaf = self.read_file_block_meta_shared(dir_node, leaf_lblk)?;
+            if leaf.len() < usable { return Ok(HtreeLookup::Fallback); }
+            let found = dir::lookup_matching(&leaf[..usable], |entry| {
                 self.names_equal(dir_node, entry, name)
             })?.map(|entry| entry.inode);
             if let Some(ino) = found { return Ok(HtreeLookup::Found(ino)); }
@@ -442,6 +414,57 @@ impl Mount {
             && count != 0
             && count <= limit
             && entries_off.saturating_add(count.saturating_mul(8)) <= node.len()
+    }
+
+    /// Descend the selected dx entry and every equal-hash continuation entry.
+    /// This is the read-side shape of Linux `dx_probe()` followed by
+    /// `ext4_htree_next_block()`: `levels` counts interior nodes below this
+    /// block, so zero means that its entries directly name directory leaves.
+    /// The output stays bounded by the collision run in the index; ordinary
+    /// lookups therefore still read exactly one leaf.
+    fn collect_htree_leaves(
+        &self, dir_inode: &Inode, node: &[u8], entries_off: usize,
+        levels: usize, hash: u32, leaves: &mut alloc::vec::Vec<u32>,
+    ) -> Result<bool, MountError> {
+        if !self.dx_block_valid(node, entries_off) { return Ok(false); }
+        let count = u16::from_le_bytes([node[entries_off + 2], node[entries_off + 3]]) as usize;
+        let mut chosen_idx = 0usize;
+        let mut chosen_hash = 0u32;
+        let mut chosen_block = u32::from_le_bytes([
+            node[entries_off + 4], node[entries_off + 5],
+            node[entries_off + 6], node[entries_off + 7]]);
+        for i in 1..count {
+            let eo = entries_off + i * 8;
+            let ehash = u32::from_le_bytes([node[eo], node[eo + 1], node[eo + 2], node[eo + 3]]);
+            if hash < ehash { break; }
+            chosen_idx = i;
+            chosen_hash = ehash & !1;
+            chosen_block = u32::from_le_bytes([
+                node[eo + 4], node[eo + 5], node[eo + 6], node[eo + 7]]);
+        }
+        // Entry zero is the implicit lower bound. Its continuation range is
+        // the actual requested hash, not the synthetic zero hash.
+        let continuation_hash = if chosen_idx == 0 { hash } else { chosen_hash };
+        for i in chosen_idx..count {
+            let eo = entries_off + i * 8;
+            let ehash = if i == 0 { 0 } else {
+                u32::from_le_bytes([node[eo], node[eo + 1], node[eo + 2], node[eo + 3]]) & !1
+            };
+            if i != chosen_idx && ehash != continuation_hash { break; }
+            let child = if i == chosen_idx { chosen_block } else {
+                u32::from_le_bytes([node[eo + 4], node[eo + 5], node[eo + 6], node[eo + 7]])
+            };
+            if levels == 0 {
+                leaves.push(child);
+            } else {
+                let child_node = self.read_file_block_meta_shared(dir_inode, child)?;
+                if !self.collect_htree_leaves(dir_inode, &child_node, 0x08,
+                                               levels - 1, hash, leaves)? {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(!leaves.is_empty())
     }
 
     fn dx_find_leaf_with_collision(&self, node: &[u8], entries_off: usize, hash: u32)
