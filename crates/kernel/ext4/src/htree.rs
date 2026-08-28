@@ -59,7 +59,7 @@ impl Mount {
             self.names_equal(dir_node, entry, name)
         })?.map(|entry| entry.inode);
         if let Some(ino) = found { return Ok(HtreeLookup::Found(ino)); }
-        if let Some(next_lblk) = collision_lblk {
+        for next_lblk in collision_lblk {
             let next = self.read_file_block_meta_shared(dir_node, next_lblk)?;
             if next.len() < usable { return Ok(HtreeLookup::Fallback); }
             let found = dir::lookup_matching(&next[..usable], |entry| {
@@ -406,7 +406,7 @@ impl Mount {
     }
 
     fn dx_find_leaf_with_collision(&self, node: &[u8], entries_off: usize, hash: u32)
-        -> Result<(u32, Option<u32>), MountError>
+        -> Result<(u32, alloc::vec::Vec<u32>), MountError>
     {
         let count = u16::from_le_bytes([node[entries_off + 2], node[entries_off + 3]]) as usize;
         if count == 0 { return Err(MountError::NotFound); }
@@ -424,13 +424,20 @@ impl Mount {
             chosen_hash = ehash;
             chosen_idx = i;
         }
-        let collision = if chosen_idx + 1 < count {
-            let eo = entries_off + (chosen_idx + 1) * 8;
+        // Linux ext4_htree_next_block() advances until the next hash range
+        // changes. A collision run may span more than two leaves; checking
+        // only one continuation leaf makes valid entries disappear as ENOENT.
+        // The low bit is the htree continuation marker and is ignored by the
+        // Linux comparison ((bhash & ~1) != hash).
+        let mut collisions = alloc::vec::Vec::new();
+        for i in (chosen_idx + 1)..count {
+            let eo = entries_off + i * 8;
             let ehash = u32::from_le_bytes([node[eo], node[eo + 1], node[eo + 2], node[eo + 3]]);
-            (ehash == chosen_hash).then(|| u32::from_le_bytes([
-                node[eo + 4], node[eo + 5], node[eo + 6], node[eo + 7]]))
-        } else { None };
-        Ok((chosen, collision))
+            if (ehash & !1) != chosen_hash { break; }
+            collisions.push(u32::from_le_bytes([
+                node[eo + 4], node[eo + 5], node[eo + 6], node[eo + 7]]));
+        }
+        Ok((chosen, collisions))
     }
 }
 
