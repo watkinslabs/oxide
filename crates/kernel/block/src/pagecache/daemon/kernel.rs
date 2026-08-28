@@ -41,6 +41,11 @@ pub fn spawn_daemons() -> Result<(), sched::live::SpawnError> {
 }
 
 extern "C" fn kflushd(_arg: usize) -> ! {
+    if let Some(task) = sched::live::current() {
+        // The same Linux task flag prevents reclaim from recursing into IO and
+        // identifies the callback owner to filesystem backpressure paths.
+        task.security.io_flusher.set(true);
+    }
     loop {
         park();
         flush_pass(now_ns());

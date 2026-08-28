@@ -67,4 +67,5 @@ pub use page::CachedPage;
 pub use query::PageState;
 pub use radix::RadixTree;
 pub use store::{frames_available, install_frame_provider, FrameProvider, PageBuf};
-pub use writeback::{flush_pass, reclaimable_pages, register_fs_flusher, shrink, DevWriteback, Sink};
+pub use writeback::{flush_pass, in_flusher_context, reclaimable_pages, register_fs_flusher, shrink,
+                    DevWriteback, Sink};

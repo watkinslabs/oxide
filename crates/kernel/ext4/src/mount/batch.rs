@@ -143,9 +143,10 @@ impl Mount {
     ///
     /// The hard ceiling is the backpressure the reference gets from a full
     /// journal: a batch that keeps growing while the committer has not yet run
-    /// must not grow without bound, so past a multiple of the budget the caller
-    /// does commit inline. That is the rare path, not the common one.
-    /// # C: O(1), or O(batch) on the ceiling
+    /// must not grow without bound, so a normal caller waits for the periodic
+    /// committer. The flusher callback cannot wait on itself and hands control
+    /// back to the enclosing pass instead.
+    /// # C: O(1), or waits at the ceiling
     pub(crate) fn maybe_commit_batch(&self) -> Result<(), MountError> {
         const BATCH_MAX_BLOCKS: usize = 512;
         /// Growth tolerated between the flag and the committer's next visit.
@@ -160,15 +161,17 @@ impl Mount {
         if blocks >= BATCH_CEILING_BLOCKS {
             self.batch_full.store(true, ::core::sync::atomic::Ordering::Release);
             block::pagecache::wake_flusher();
-            // Linux's full-transaction path waits for the journal owner to
-            // switch and commit. It never makes the operation that exhausted
-            // the credits perform the journal I/O on its own stack.
-            // SAFETY: this process-context waiter owns no transaction or
-            // mount-state lock; the flusher wakes it after the commit.
-            let _ = unsafe { sched::live::wait_event_uninterruptible(&self.batch_wait, || {
-                let s = self.state.lock();
-                s.shadow.as_ref().map_or(true, |shadow| shadow.len() < BATCH_CEILING_BLOCKS)
-            }) };
+            // The flusher owns the callback stack and its later commit pass.
+            // Waiting here would wait for this same thread to return, so the
+            // callback must hand the commit back to its caller.
+            if !block::pagecache::in_flusher_context() {
+                // SAFETY: this process-context waiter owns no transaction or
+                // mount-state lock; the flusher wakes it after the commit.
+                let _ = unsafe { sched::live::wait_event_uninterruptible(&self.batch_wait, || {
+                    let s = self.state.lock();
+                    s.shadow.as_ref().map_or(true, |shadow| shadow.len() < BATCH_CEILING_BLOCKS)
+                }) };
+            }
         }
         if blocks >= BATCH_MAX_BLOCKS {
             self.batch_full.store(true, ::core::sync::atomic::Ordering::Release);
