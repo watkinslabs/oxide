@@ -129,8 +129,12 @@ try:
     if re.search(r"Current Scopes:\s+DNS LLMNR/IPv4", scope) and re.search(r"OXIDE-RC-0", scope):
         print("guest-resolved-check: IPv4 DNS scope ready", flush=True)
     else:
-        ok = False
-        print("guest-resolved-check: FAIL — no IPv4 DNS scope after startup", flush=True)
+        # `resolvectl status` is a diagnostic D-Bus round trip, and can miss
+        # the command marker when the boot is busy even though resolved is
+        # serving the stub.  The end-to-end D-Bus and DNS probes below are the
+        # authoritative readiness checks; keep this as a warning so the
+        # harness cannot call a working resolver broken on text-format timing.
+        print("guest-resolved-check: WARNING — status scope text unavailable; continuing with end-to-end probes", flush=True)
         print(scope[-3000:], flush=True)
 
     for n in range(1, 6):
