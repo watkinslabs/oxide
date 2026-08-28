@@ -1,34 +1,34 @@
 # Syscall and fault cost vs the host Linux kernel
 
-oxide: /tmp/oxide-perf-b2812-deferred.log
-boot totals: 1365854 syscalls, 6521 ms on CPU, 4774 ns average
+oxide: /tmp/oxide-perf-b2812-current.log
+boot totals: 1365332 syscalls, 6385 ms on CPU, 4676 ns average
 
 | operation | oxide ns | linux ns | ratio | | verdict |
 |---|---:|---:|---:|---|---|
-| newfstatat | 21,128 | 788 | 27x | ###### | SEVERE |
-| recvfrom | 13,696 | 776 | 18x | #### | BAD |
-| munmap | 22,629 | 1,382 | 16x | #### | BAD |
-| write fault, page absent | 14,606 | 1,227 | 12x | ### | BAD |
-| recvmsg | 7,301 | 776 | 9x | ## | BAD |
-| read | 4,782 | 518 | 9x | ## | BAD |
-| openat | 8,718 | 994 | 9x | ## | BAD |
-| mprotect | 8,254 | 1,180 | 7x | ## | BAD |
-| mmap | 8,836 | 1,382 | 6x | ## | BAD |
-| close | 3,698 | 628 | 6x | # | BAD |
+| newfstatat | 20,856 | 788 | 26x | ###### | SEVERE |
+| munmap | 22,944 | 1,382 | 17x | #### | BAD |
+| recvfrom | 12,860 | 776 | 17x | #### | BAD |
+| write fault, page absent | 14,603 | 1,227 | 12x | ### | BAD |
+| read | 4,715 | 518 | 9x | ## | BAD |
+| openat | 8,837 | 994 | 9x | ## | BAD |
+| recvmsg | 6,165 | 776 | 8x | ## | BAD |
+| mprotect | 8,316 | 1,180 | 7x | ## | BAD |
+| mmap | 8,773 | 1,382 | 6x | ## | BAD |
+| close | 3,350 | 628 | 5x | # | BAD |
 
 ## Measured, not compared
 
 | operation | oxide ns | why no ratio |
 |---|---:|---|
-| writev | 1,713,962 | console output; fbcon scrolls the framebuffer, host baseline writes to /dev/null |
+| writev | 1,711,199 | console output; fbcon scrolls the framebuffer, host baseline writes to /dev/null |
 
 ## Block device
 
 | op | count | total ms | avg |
 |---|---:|---:|---:|
-| read | 526 | 366 | 696.9 us |
-| write | 8,269 | 3,098 | 374.8 us |
-| other | 2 | 0 | 29.1 us |
+| read | 526 | 266 | 506.7 us |
+| write | 8,218 | 2,822 | 343.4 us |
+| other | 2 | 0 | 9.9 us |
 
 Both sides are measured. The host figure is a tight loop over one shape of the call; the oxide figure is the average over every such call a real desktop boot made. Read a ratio as an order of magnitude, not a score.
 
