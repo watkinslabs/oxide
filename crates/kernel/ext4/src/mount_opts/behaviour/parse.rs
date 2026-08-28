@@ -45,6 +45,10 @@ pub const OPT_INODE_READAHEAD_BLKS: &str = "inode_readahead_blks";
 pub const OPT_DIOREAD_NOLOCK: &str = "dioread_nolock";
 pub const OPT_DIOREAD_LOCK: &str = "dioread_lock";
 pub const OPT_NODIOREAD_NOLOCK: &str = "nodioread_nolock";
+pub const OPT_PREFETCH_BLOCK_BITMAPS: &str = "prefetch_block_bitmaps";
+pub const OPT_NO_PREFETCH_BLOCK_BITMAPS: &str = "no_prefetch_block_bitmaps";
+pub const OPT_NOMBCACHE: &str = "nombcache";
+pub const OPT_NO_MBCACHE: &str = "no_mbcache";
 
 /// `mb_optimize_scan=` takes exactly these two values.
 const MB_OPTIMIZE_OFF: u32 = 0;
@@ -115,6 +119,12 @@ impl Ext4Behaviour {
             OPT_DIOREAD_NOLOCK | OPT_DIOREAD_LOCK | OPT_NODIOREAD_NOLOCK => {
                 return Err(VfsError::Einval);
             }
+            OPT_PREFETCH_BLOCK_BITMAPS => { flag(val)?; self.prefetch_block_bitmaps = true; }
+            OPT_NO_PREFETCH_BLOCK_BITMAPS => { flag(val)?; self.prefetch_block_bitmaps = false; }
+            // mbcache backs xattr/quota metadata in Linux. Oxide has no such
+            // cache owner yet, so accepting a switch that cannot affect I/O
+            // would be an accept-and-drop mount bug.
+            OPT_NOMBCACHE | OPT_NO_MBCACHE => return Err(VfsError::Einval),
             OPT_STRIPE => self.stripe = number(value(val)?)?,
             OPT_RESUID => self.resuid = number(value(val)?)?,
             OPT_RESGID => self.resgid = number(value(val)?)?,

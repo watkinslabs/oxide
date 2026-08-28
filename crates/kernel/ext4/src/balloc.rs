@@ -26,6 +26,35 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 impl Mount {
+    /// Eagerly load every allocation bitmap requested by the Linux-compatible
+    /// `prefetch_block_bitmaps` option. The normal lazy path and this path
+    /// publish through the same bitmap cache and summaries.
+    pub(crate) fn prefetch_block_bitmaps(&self) -> Result<(), MountError> {
+        for group in 0..self.sb.group_count() {
+            let gd = {
+                let s = self.state.lock();
+                gdt::parse_descriptor(&s.gdt_buf, group, &self.sb)?
+            };
+            let byte_off = gd.block_bitmap * self.sb.block_size as u64;
+            if self.state.lock().block_bitmap_cache.contains_key(&byte_off) { continue; }
+            let uninit = { let s = self.state.lock(); gdt::block_uninit(&s.gdt_buf, group, &self.sb) };
+            let bitmap = if uninit {
+                let s = self.state.lock();
+                init_block_bitmap_for_group(&self.sb, &s.gdt_buf, group)?
+            } else {
+                let bitmap = self.read_meta_byte_range(byte_off, self.sb.block_size as usize)?;
+                if !crate::csum::verify_block_bitmap_csum_at(
+                    &self.sb, &self.state.lock().gdt_buf, group, &bitmap) {
+                    crate::mount::first_csum_failure(b"block-bitmap-prefetch", group as u64, byte_off);
+                    return Err(MountError::BadChecksum);
+                }
+                bitmap
+            };
+            self.publish_group_bitmap(group, byte_off, bitmap);
+        }
+        Ok(())
+    }
+
     /// Allocate a contiguous run of previously-free filesystem blocks.
     ///
     /// This is the small request-shaped part of Linux ext4's multiblock

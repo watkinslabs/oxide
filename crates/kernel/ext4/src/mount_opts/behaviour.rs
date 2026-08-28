@@ -22,7 +22,9 @@ pub use parse::{OPT_BARRIER, OPT_BLOCK_VALIDITY, OPT_COMMIT, OPT_DATA, OPT_DAX, 
                 OPT_NOBLOCK_VALIDITY, OPT_NODELALLOC, OPT_NODISCARD, OPT_NOINIT_ITABLE,
                 OPT_NOLOAD, OPT_NORECOVERY, OPT_NOWARN_ON_ERROR, OPT_RESGID, OPT_RESUID,
                 OPT_STRIPE, OPT_WARN_ON_ERROR, OPT_INODE_READAHEAD_BLKS,
-                OPT_DIOREAD_NOLOCK, OPT_DIOREAD_LOCK, OPT_NODIOREAD_NOLOCK};
+                OPT_DIOREAD_NOLOCK, OPT_DIOREAD_LOCK, OPT_NODIOREAD_NOLOCK,
+                OPT_PREFETCH_BLOCK_BITMAPS, OPT_NO_PREFETCH_BLOCK_BITMAPS,
+                OPT_NOMBCACHE, OPT_NO_MBCACHE};
 
 /// What the filesystem does when it finds its own on-disk state wrong.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -211,6 +213,9 @@ pub struct Ext4Behaviour {
     /// `inode_readahead_blks` — power-of-two metadata blocks to warm around
     /// an inode-table read; zero disables the window.
     pub inode_readahead_blks: u32,
+    /// `prefetch_block_bitmaps` — load and validate all allocation bitmaps
+    /// during mount instead of on the first allocation in each group.
+    pub prefetch_block_bitmaps: bool,
 }
 
 impl Default for Ext4Behaviour {
@@ -239,6 +244,7 @@ impl Default for Ext4Behaviour {
             user_xattr: true,
             auto_da_alloc: true,
             inode_readahead_blks: DEFAULT_INODE_READAHEAD_BLKS,
+            prefetch_block_bitmaps: false,
         }
     }
 }

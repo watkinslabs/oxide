@@ -163,6 +163,7 @@ impl Mount {
             Ok(crate::mount_opts::JournalRecovery::Replay) => { m.recover_journal()?; }
             Ok(crate::mount_opts::JournalRecovery::Skip) => {}
         }
+        if behaviour.prefetch_block_bitmaps { m.prefetch_block_bitmaps()?; }
         m.configure_journal_checksum()?;
         if cleanup_orphans { let _ = m.orphan_cleanup(); }
         Ok(m)

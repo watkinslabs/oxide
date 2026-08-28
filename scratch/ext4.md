@@ -22,7 +22,7 @@ No item closes on a parser change alone. Each closes only when the Linux-shaped 
 | E4-08 | medium | Indexed-directory lookup has improved htree selection but `newfstatat` remains far slower than host Linux. | E4-01, E4-02 | phase profile names remaining owner; repeated controlled comparison closes the ratio |
 | E4-09 | medium | `inode_readahead_blks` is admitted but has no live consumer. | E4-01, E4-02 | asynchronous inode-table cache warmup, cold-lookup test, boot/perf comparison |
 | E4-10 | medium | `dioread_nolock`, `nodioread_nolock`, and `dioread_lock` need a direct-I/O data path. | E4-01, E4-02 | Complete O_DIRECT semantics later, or keep the explicit capability refusal |
-| E4-11 | low | `nombcache`/`no_mbcache` and bitmap-prefetch options are admitted without complete cache-policy consumers. | E4-02, E4-07 | policy tests show each spelling changes the canonical cache owner |
+| E4-11 | low | `nombcache` needs an mbcache owner; bitmap prefetch needs eager allocator-cache publication. | E4-02, E4-07 | bitmap prefetch is wired; add mbcache with consumers or retain explicit refusal |
 | E4-12 | low | Obsolete/legacy accepted options have no documented per-option disposition. | baseline only | each option is implemented, explicitly refused, or marked intentional Linux-compatible no-op |
 | E4-13 | medium | The ext4 integration suite has shared-image races under parallel execution, producing false failures. | baseline only | isolated fixture ownership; parallel and serial suites agree |
 | E4-14 | medium | One ARM sysinit boot produced ext4-shaped EIO/SIGBUS symptoms without a controlled reproduction. | E4-02, E4-03 | repeated controlled ARM reproduction or evidence-backed closure as host contention |
