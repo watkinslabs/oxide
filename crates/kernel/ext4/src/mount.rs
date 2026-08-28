@@ -14,6 +14,7 @@
 
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
+use ::core::sync::atomic::{AtomicBool, Ordering};
 
 use block::BlockDevice;
 use sync::{Guard, Spinlock, Superblock as SuperblockLockClass};
@@ -91,6 +92,28 @@ pub enum MountError {
     Quota(vfs::VfsError),
 }
 
+/// One owner for a cold metadata read.  The request buffer and result belong
+/// to this object until publication; other readers wait on the same result
+/// instead of issuing duplicate device I/O or observing a half-published
+/// cache entry.  This is the small equivalent of Linux's locked buffer head.
+pub(crate) struct MetadataRead {
+    pub(crate) done: AtomicBool,
+    pub(crate) result: Spinlock<Option<Result<Arc<Vec<u8>>, MountError>>, SuperblockLockClass>,
+    pub(crate) wait: sched::live::WaitList,
+}
+
+impl MetadataRead {
+    pub(crate) fn new() -> Self {
+        Self { done: AtomicBool::new(false), result: Spinlock::new(None), wait: sched::live::WaitList::new() }
+    }
+
+    pub(crate) fn complete(&self, result: Result<Arc<Vec<u8>>, MountError>) {
+        *self.result.lock() = Some(result);
+        self.done.store(true, Ordering::Release);
+        self.wait.wake_all();
+    }
+}
+
 impl From<SuperblockError> for MountError { fn from(e: SuperblockError) -> Self { MountError::Superblock(e) } }
 impl From<GdtError>        for MountError { fn from(e: GdtError)        -> Self { MountError::Gdt(e) } }
 impl From<InodeError>      for MountError { fn from(e: InodeError)      -> Self { MountError::Inode(e) } }
@@ -136,6 +159,9 @@ pub struct MountState {
     /// blocks the running workload was reading, and every reader then went
     /// back to the device; the reference retires buffers one at a time.
     pub(crate) metadata_order: alloc::collections::VecDeque<u64>,
+    /// One in-flight owner per cold metadata LBA. Waiters share its completed
+    /// result, matching the reference buffer-cache lock/completion protocol.
+    pub(crate) metadata_reads: alloc::collections::BTreeMap<u64, alloc::sync::Arc<MetadataRead>>,
     /// Validated block bitmaps retained for repeated mballoc group scans.
     /// Linux keeps bitmap/buddy state resident after a group is loaded; this
     /// map is the bitmap half of that ownership boundary.

@@ -1,8 +1,11 @@
+use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::Ordering;
 use crate::gdt;
 use crate::jbd2::StagedBlock;
 use super::gdt_byte_offset_for;
 use super::super::{GroupDesc, Mount, MountError};
+use super::super::MetadataRead;
 use super::super::io::read_byte_range;
 
 impl Mount {
@@ -127,7 +130,7 @@ impl Mount {
         -> Result<alloc::sync::Arc<Vec<u8>>, MountError>
     {
         let bs = self.sb.block_size as u64;
-        let cached = {
+        let (cached, owner, created) = {
             let mut s = self.state.lock();
             if let Some(buf) = s.shadow.as_ref().and_then(|m| m.get(&lba).cloned()) {
                 if buf.len() == bs as usize { return Ok(alloc::sync::Arc::new(buf)); }
@@ -137,7 +140,7 @@ impl Mount {
                 // block as a readable buffer.
                 return Err(MountError::Inode(crate::InodeError::BadLen));
             }
-            match s.metadata_cache.get(&lba).cloned() {
+            let cached = match s.metadata_cache.get(&lba).cloned() {
                 Some(buf) if buf.len() == bs as usize => Some(buf),
                 Some(_) => {
                     // Clean cache entries are replaceable. Drop a malformed
@@ -148,15 +151,40 @@ impl Mount {
                     None
                 }
                 None => None,
+            };
+            if cached.is_some() { (cached, None, false) }
+            else if let Some(read) = s.metadata_reads.get(&lba).cloned() { (None, Some(read), false) }
+            else {
+                let read = Arc::new(MetadataRead::new());
+                s.metadata_reads.insert(lba, Arc::clone(&read));
+                (None, Some(read), true)
             }
         };
         if let Some(buf) = cached { return Ok(buf); }
-        let buf = read_byte_range(&*self.dev, lba * bs, self.sb.block_size as usize)?;
-        if buf.len() != bs as usize { return Err(MountError::Inode(crate::InodeError::BadLen)); }
-        let buf = alloc::sync::Arc::new(buf);
+
+        // If another reader owns this LBA, wait for its single completion.
+        // Only the creator recorded by `created` performs the device read.
+        if !created {
+            return wait_metadata_read(owner.unwrap());
+        }
+        let result = match read_byte_range(&*self.dev, lba * bs, self.sb.block_size as usize) {
+            Err(error) => Err(error),
+            Ok(buf) if buf.len() != bs as usize =>
+                Err(MountError::Inode(crate::InodeError::BadLen)),
+            Ok(buf) => {
+                let buf = Arc::new(buf);
+                let mut s = self.state.lock();
+                publish_metadata(&mut s, lba, Arc::clone(&buf));
+                Ok(buf)
+            }
+        };
+        let read = owner.unwrap();
+        let returned = result.clone();
         let mut s = self.state.lock();
-        publish_metadata(&mut s, lba, alloc::sync::Arc::clone(&buf));
-        Ok(buf)
+        s.metadata_reads.remove(&lba);
+        drop(s);
+        read.complete(result);
+        returned
     }
 
     /// Owned copy of one metadata block, for the callers that edit the bytes
@@ -171,6 +199,20 @@ impl Mount {
 
 
 
+}
+
+fn wait_metadata_read(read: Arc<MetadataRead>) -> Result<Arc<Vec<u8>>, MountError> {
+    #[cfg(target_os = "oxide-kernel")]
+    if sched::current().is_some() && !sched::preempt::in_atomic() {
+        let _ = unsafe { sched::live::wait_event_uninterruptible(&read.wait, || {
+            read.done.load(Ordering::Acquire)
+        }) };
+    } else {
+        while !read.done.load(Ordering::Acquire) { core::hint::spin_loop(); }
+    }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    while !read.done.load(Ordering::Acquire) { core::hint::spin_loop(); }
+    read.result.lock().as_ref().cloned().expect("metadata read completion publishes a result")
 }
 
 /// Cap on clean metadata buffers held at once. Bounded so a streaming
@@ -191,5 +233,82 @@ fn publish_metadata(state: &mut crate::MountState, lba: u64, buf: alloc::sync::A
             Some(oldest) => { state.metadata_cache.remove(&oldest); }
             None => break,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec;
+    use block::{BlockDevice, BlockOp, BlockRequest, MemDisk};
+    use core::sync::atomic::{AtomicU64, AtomicU32};
+    use std::sync::Mutex;
+    use std::thread;
+
+    struct DelayedDisk {
+        inner: Arc<MemDisk<sync::TaskList>>,
+        target: AtomicU64,
+        reads: AtomicU32,
+        delay_lock: Mutex<()>,
+    }
+
+    impl BlockDevice for DelayedDisk {
+        fn block_size(&self) -> u32 { self.inner.block_size() }
+        fn capacity_blocks(&self) -> u64 { self.inner.capacity_blocks() }
+        fn submit(&self, request: BlockRequest, completion: block::BlockCompletion) {
+            if request.op == BlockOp::Read && request.start_block == self.target.load(Ordering::Acquire) {
+                self.reads.fetch_add(1, Ordering::AcqRel);
+                let _guard = self.delay_lock.lock().unwrap();
+                thread::sleep(std::time::Duration::from_millis(40));
+            }
+            self.inner.submit(request, completion);
+        }
+        fn submit_sync(&self, request: &mut BlockRequest) -> block::KResult<()> {
+            self.inner.submit_sync(request)
+        }
+        fn flush(&self) -> block::KResult<()> { self.inner.flush() }
+    }
+
+    #[test]
+    fn metadata_read_publishes_error_after_done() {
+        let read = Arc::new(MetadataRead::new());
+        read.complete(Err(MountError::BlockIo));
+        assert!(read.done.load(Ordering::Acquire));
+        assert_eq!(read.result.lock().as_ref().cloned(), Some(Err(MountError::BlockIo)));
+    }
+
+    #[test]
+    fn metadata_read_publishes_owned_buffer_after_done() {
+        let read = Arc::new(MetadataRead::new());
+        let bytes = Arc::new(vec![0x5a; 4096]);
+        read.complete(Ok(Arc::clone(&bytes)));
+        assert!(read.done.load(Ordering::Acquire));
+        assert_eq!(read.result.lock().as_ref().unwrap().as_ref().unwrap().as_slice(), bytes.as_slice());
+    }
+
+    #[test]
+    fn concurrent_cold_metadata_read_has_one_device_owner() {
+        let image = include_bytes!("../../tests/mini-j.img");
+        let sectors = image.len() as u64 / 512;
+        let inner = MemDisk::<sync::TaskList>::new(512, sectors);
+        let mut request = BlockRequest::new_write(0, sectors as u32, image.to_vec());
+        inner.submit_sync(&mut request).unwrap();
+        let disk = Arc::new(DelayedDisk {
+            inner,
+            target: AtomicU64::new(u64::MAX),
+            reads: AtomicU32::new(0),
+            delay_lock: Mutex::new(()),
+        });
+        let mount = Arc::new(Mount::open(Arc::clone(&disk) as Arc<dyn BlockDevice>).unwrap());
+        let lba = mount.group_desc(0).unwrap().inode_table as u64;
+        mount.state.lock().metadata_cache.clear();
+        disk.target.store(lba * u64::from(mount.sb.block_size) / 512, Ordering::Release);
+        let a = Arc::clone(&mount);
+        let b = Arc::clone(&mount);
+        let left = thread::spawn(move || a.read_metadata_block(lba).unwrap());
+        thread::sleep(std::time::Duration::from_millis(5));
+        let right = thread::spawn(move || b.read_metadata_block(lba).unwrap());
+        assert_eq!(left.join().unwrap(), right.join().unwrap());
+        assert_eq!(disk.reads.load(Ordering::Acquire), 1);
     }
 }
