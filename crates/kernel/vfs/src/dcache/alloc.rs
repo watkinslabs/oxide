@@ -127,6 +127,8 @@ pub(crate) fn d_lookup_reval_rcu_with_hash(
     qhash: u32,
 ) -> Option<Arc<Dentry>> {
     let pptr = Arc::as_ptr(parent);
+    #[cfg(feature = "debug-resolve-cost")]
+    let _hash_cost = crate::resolve_cost::hash_walk();
     let cand = if rcu {
         DENTRY_HASHTABLE.lookup_rcu(pptr, qhash, name)
     } else {
@@ -142,7 +144,11 @@ pub(crate) fn d_lookup_reval_rcu_with_hash(
     // RCU grace period), not a counted dput-owed reference, so the bump is
     // purely the not-dead test; its `set_referenced` side effect doubles as the
     // two-hand-clock access stamp the shrinker honors.
+    #[cfg(feature = "debug-resolve-cost")]
+    let _pin_cost = crate::resolve_cost::ref_pin();
     if !d.inc_count_not_dead() { return None; }
+    #[cfg(feature = "debug-resolve-cost")]
+    let _revalidate_cost = crate::resolve_cost::revalidate();
     if let Some(rev) = d.d_op().and_then(|o| o.d_revalidate) {
         if !rev(&d, reval) { d.dec_count(); d_drop(&d); return None; }
     }

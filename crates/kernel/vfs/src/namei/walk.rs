@@ -222,6 +222,8 @@ impl Nameidata {
             // carries the inode pointer directly; retaining this Arc gives the
             // same one-read shape while the dentry's seqcount validates its
             // name/inode binding before the walk commits the child.
+            #[cfg(feature = "debug-resolve-cost")]
+            let _inode_cost = crate::resolve_cost::inode_snapshot();
             let child_inode = child.inode().ok_or(VfsError::Enoent)?;
 
             // Symlink handling — use the child's OWN inode (a mountpoint is a
