@@ -65,7 +65,13 @@ pub fn submit_and_wait<D: BlockDevice + ?Sized>(dev: &D, request: BlockRequest)
     dev.submit(request, alloc::boxed::Box::new(move |request, result| {
         signal.complete(request, result);
     }));
+    #[cfg(target_os = "oxide-kernel")]
+    let waiter = sched::current();
+    #[cfg(target_os = "oxide-kernel")]
+    if let Some(task) = waiter { task.begin_iowait(); }
     wait_done(&state);
+    #[cfg(target_os = "oxide-kernel")]
+    if let Some(task) = waiter { task.end_iowait(); }
     #[cfg(target_os = "oxide-kernel")]
     note_resume_delay(sched::deadline::clock::now_ns().saturating_sub(
         state.completed_ns.load(Ordering::Relaxed)));
