@@ -1,5 +1,7 @@
 use crate::inode::{self, I_BLOCK_LEN};
 use crate::mount::{Mount, MountError};
+use alloc::vec;
+use alloc::vec::Vec;
 
 use super::EXT4_MAX_EXTENT_DEPTH;
 
@@ -21,7 +23,11 @@ impl Mount {
         let new_logical = ((cur_size + bs as u64 - 1) / bs as u64) as u32;
         let new_size = cur_size + bs as u64;
         let regular = inode::Inode::parse(&ino_bytes, &self.sb)?.is_reg();
-        if regular {
+        // Linux's regular-file allocator consumes an existing PA before making
+        // a fresh request. Keep the block-oriented append path for partial
+        // EOFs and non-regular inodes, whose metadata allocation must never
+        // seed or consume regular-file data preallocation.
+        if regular && cur_size % bs as u64 == 0 {
             if let Some((physical, source)) = self.append_preallocated_block(ino, new_logical)? {
                 let result = self.insert_logical_block_with_inode_bytes(
                     ino, &mut ino_bytes, ino_byte_off, new_logical, data, new_size,
@@ -34,15 +40,37 @@ impl Mount {
                 }
                 return result;
             }
+            let hint = self.append_hint_group(ino, new_logical)?;
+            let (physical, tail) = self.fresh_append_allocation(ino, hint)?;
+            let result = self.insert_logical_block_with_inode_bytes(
+                ino, &mut ino_bytes, ino_byte_off, new_logical, data, new_size,
+                false, false, Some(physical));
+            if result.is_ok() {
+                self.add_inode_prealloc(ino, new_logical.saturating_add(1), tail);
+            } else {
+                for block in tail { let _ = self.free_block(block); }
+            }
+            return result;
         }
         self.insert_logical_block_with_inode_bytes(
             ino, &mut ino_bytes, ino_byte_off, new_logical, data, new_size,
             false, false, None)
     }
 
-    /// Consume an existing Linux-shaped inode or locality-group PA for a
-    /// one-block append. Fresh allocation remains in the ordinary insertion
-    /// path, which owns its quota and rollback transaction in one place.
+    /// Locate the same physical locality goal used by Linux's regular-file
+    /// allocation context, using the last neighbouring extent when present.
+    /// # C: O(N_extents)
+    fn append_hint_group(&self, ino: u32, logical: u32) -> Result<u32, MountError> {
+        let extents = self.extent_map(ino)?;
+        Ok(extents.iter().rev()
+            .find(|(start, _, _, _)| *start <= logical)
+            .or_else(|| extents.first())
+            .map(|(_, phys, _, _)| self.group_of_block(*phys))
+            .unwrap_or(0))
+    }
+
+    /// Consume one existing data PA, preferring inode ownership over the
+    /// reusable locality-group pool as Linux does. # C: O(N PAs + N_extents)
     fn append_preallocated_block(&self, ino: u32, logical: u32)
         -> Result<Option<(u64, AppendPrealloc)>, MountError>
     {
@@ -52,14 +80,7 @@ impl Mount {
                 return Ok(Some((block, AppendPrealloc::Inode)));
             }
         }
-
-        if !self.has_group_prealloc() { return Ok(None); }
-        let extents = self.extent_map(ino)?;
-        let hint = extents.iter().rev()
-            .find(|(start, _, _, _)| *start <= logical)
-            .or_else(|| extents.first())
-            .map(|(_, phys, _, _)| self.group_of_block(*phys))
-            .unwrap_or(0);
+        let hint = self.append_hint_group(ino, logical)?;
         if let Some(blocks) = self.peek_group_prealloc(hint, 1) {
             if let Some(&block) = blocks.first() {
                 self.claim_prealloc_block(block)?;
@@ -67,6 +88,35 @@ impl Mount {
             }
         }
         Ok(None)
+    }
+
+    /// Make the fresh one-block append request and retain its unused tail as
+    /// an inode PA. The ordinary allocator remains the owner of all bitmap,
+    /// quota, and rollback state; only the unconsumed data tail becomes PA
+    /// ownership after its blocks are returned to the free bitmap.
+    /// # C: O(N_groups * block_size * request)
+    fn fresh_append_allocation(&self, ino: u32, hint: u32) -> Result<(u64, Vec<u64>), MountError> {
+        const APPEND_PREALLOC_BLOCKS: u32 = 8;
+        let want = APPEND_PREALLOC_BLOCKS + 1;
+        let flags = self.data_reserve_flags(ino);
+        let blocks = match self.alloc_blocks_flags(hint, want, flags) {
+            Ok(blocks) => blocks,
+            Err(MountError::NoSpace) => vec![self.alloc_block_flags(hint, flags)?],
+            Err(e) => return Err(e),
+        };
+        let physical = blocks[0];
+        let mut tail = blocks[1..].to_vec();
+        let mut freed = 0usize;
+        while freed < tail.len() {
+            if let Err(e) = self.free_block(tail[freed]) {
+                for &block in tail.iter().skip(freed + 1) { let _ = self.free_block(block); }
+                let _ = self.free_block(physical);
+                return Err(e);
+            }
+            freed += 1;
+        }
+        tail.shrink_to_fit();
+        Ok((physical, tail))
     }
 
     /// Map `logical` as a preallocated UNWRITTEN block (no data I/O) — the

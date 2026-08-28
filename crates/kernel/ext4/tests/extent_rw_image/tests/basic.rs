@@ -85,6 +85,30 @@ fn sequential_regular_writes_reuse_inode_preallocation() {
 }
 
 #[test]
+fn fresh_appends_create_and_reuse_locality_preallocation() {
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk).unwrap();
+    let n = m.create_file(2, b"append-fresh-pa.bin", 0o644, 0, 0).unwrap();
+    let bs = m.sb.block_size as usize;
+    let before = m.state_free_blocks();
+
+    m.append_block(n, &std::vec![0x51; bs]).unwrap();
+    let after_first = m.state_free_blocks();
+    let first_phys = m.extent_map(n).unwrap()[0].1;
+    m.append_block(n, &std::vec![0x52; bs]).unwrap();
+    let after_second = m.state_free_blocks();
+    let map = m.extent_map(n).unwrap();
+
+    assert_eq!(before - after_first, 1,
+        "fresh append persists only its data block; the PA tail remains free on disk");
+    assert_eq!(after_first - after_second, 1,
+        "the next append consumes one block from the fresh PA");
+    assert_eq!(map[0].1, first_phys, "fresh appends preserve the physical start");
+    assert_eq!(map[0].2, 2, "fresh appends remain one contiguous extent");
+    assert_eq!(m.read_file_block(&m.read_inode(n).unwrap(), 1).unwrap()[0], 0x52);
+}
+
+#[test]
 fn small_files_reuse_locality_preallocation() {
     let disk = build_disk();
     let m = ext4::Mount::open(disk).unwrap();

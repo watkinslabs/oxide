@@ -90,10 +90,6 @@ impl Mount {
     }
 
     /// Whether any locality-group PA is currently available. # C: O(1)
-    pub(crate) fn has_group_prealloc(&self) -> bool {
-        !self.state.lock().group_prealloc.is_empty()
-    }
-
     /// Release all unconsumed inode PAs through the normal bitmap owner. # C: O(N PA blocks)
     pub(crate) fn release_inode_prealloc(&self, ino: u32) -> Result<(), MountError> {
         // Like Linux's inode preallocation list, these blocks are free in the
@@ -222,17 +218,17 @@ impl Mount {
                 gdt::parse_descriptor(&s.gdt_buf, group, &m.sb)?
             };
             let off = gd_orig.block_bitmap * m.sb.block_size as u64;
-            let cached = m.state.lock().block_bitmap_cache.get(&off).cloned();
-            let mut disk = match cached {
-                Some(mut bitmap) => {
-                    m.clear_group_prealloc(group, &mut bitmap);
-                    bitmap
-                }
-                None => m.read_meta_byte_range(off, m.sb.block_size as usize)?,
-            };
+            // The block-bitmap cache is the masked in-memory buddy view. PA
+            // ownership is not on disk, so reversing that mask is not an
+            // authoritative disk image once another allocator operation has
+            // changed the bitmap. Read the shadow/cache-backed metadata view
+            // directly, as Linux keeps the on-disk bitmap separate from its
+            // PA-generated buddy state.
+            let mut disk = m.read_meta_byte_range(off, m.sb.block_size as usize)?;
             if !crate::csum::verify_block_bitmap_csum_at(
                 &m.sb, &m.state.lock().gdt_buf, group, &disk)
             {
+                crate::mount::first_csum_failure(b"block-bitmap-claim", group as u64, off);
                 return Err(MountError::BadChecksum);
             }
             let idx = bit as usize;
