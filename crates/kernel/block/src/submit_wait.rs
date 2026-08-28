@@ -64,7 +64,12 @@ impl IoWait {
     /// Publish the result, then the flag. The submitter loads the flag with
     /// `Acquire`, so a task that observes it set also observes the slot.
     fn complete(&self, request: BlockRequest, result: KResult<()>) {
-        *self.slot.lock() = Some((request, result));
+        let mut slot = self.slot.lock();
+        // Completion is a one-shot ownership transfer. Retain the first
+        // result if a broken driver invokes its callback twice.
+        if slot.is_some() { return; }
+        *slot = Some((request, result));
+        drop(slot);
         #[cfg(target_os = "oxide-kernel")]
         self.completed_ns.store(sched::deadline::clock::now_ns(), Ordering::Relaxed);
         self.done.store(true, Ordering::Release);
@@ -178,4 +183,23 @@ fn can_sleep() -> bool { sched::current().is_some() && !sched::preempt::in_atomi
 #[cfg(not(target_os = "oxide-kernel"))]
 fn wait_done(state: &Arc<IoWait>) {
     while !state.done.load(Ordering::Acquire) { core::hint::spin_loop(); }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BlockRequest, IoWait};
+    use crate::{BlockError, BlockOp};
+    use core::sync::atomic::Ordering;
+
+    #[test]
+    fn duplicate_completion_preserves_first_owned_result() {
+        let state = IoWait::new();
+        state.complete(BlockRequest::new_read(0, 1, 512), Ok(()));
+        state.complete(BlockRequest {
+            op: BlockOp::Read, ..BlockRequest::new_read(1, 1, 512)
+        }, Err(BlockError::Eio));
+        assert!(state.done.load(Ordering::Acquire));
+        let (_, result) = state.slot.lock().take().expect("first completion retained");
+        assert_eq!(result, Ok(()));
+    }
 }
