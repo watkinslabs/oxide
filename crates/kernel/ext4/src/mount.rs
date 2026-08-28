@@ -98,7 +98,7 @@ pub enum MountError {
 /// cache entry.  This is the small equivalent of Linux's locked buffer head.
 pub(crate) struct MetadataRead {
     pub(crate) done: AtomicBool,
-    pub(crate) result: Spinlock<Option<Result<Arc<Vec<u8>>, MountError>>, SuperblockLockClass>,
+    pub(crate) result: Spinlock<Option<(u64, Result<Arc<Vec<u8>>, MountError>)>, SuperblockLockClass>,
     pub(crate) wait: sched::live::WaitList,
 }
 
@@ -107,8 +107,8 @@ impl MetadataRead {
         Self { done: AtomicBool::new(false), result: Spinlock::new(None), wait: sched::live::WaitList::new() }
     }
 
-    pub(crate) fn complete(&self, result: Result<Arc<Vec<u8>>, MountError>) {
-        *self.result.lock() = Some(result);
+    pub(crate) fn complete(&self, epoch: u64, result: Result<Arc<Vec<u8>>, MountError>) {
+        *self.result.lock() = Some((epoch, result));
         self.done.store(true, Ordering::Release);
         self.wait.wake_all();
     }
@@ -159,6 +159,9 @@ pub struct MountState {
     /// blocks the running workload was reading, and every reader then went
     /// back to the device; the reference retires buffers one at a time.
     pub(crate) metadata_order: alloc::collections::VecDeque<u64>,
+    /// Monotonic invalidation generation for clean metadata bytes. An
+    /// in-flight read may only publish into the generation it started in.
+    pub(crate) metadata_epoch: u64,
     /// One in-flight owner per cold metadata LBA. Waiters share its completed
     /// result, matching the reference buffer-cache lock/completion protocol.
     pub(crate) metadata_reads: alloc::collections::BTreeMap<u64, alloc::sync::Arc<MetadataRead>>,

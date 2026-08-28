@@ -225,7 +225,9 @@ impl Mount {
     /// serving the pre-poke bytes and the test's fault injection is racing
     /// state the mount never actually re-read. # C: O(1)
     pub fn drop_metadata_cache_for_tests(&self) {
-        self.state.lock().metadata_cache.clear();
+        let mut state = self.state.lock();
+        state.metadata_epoch = state.metadata_epoch.wrapping_add(1);
+        state.metadata_cache.clear();
     }
 }
 

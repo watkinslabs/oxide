@@ -108,6 +108,7 @@ impl Mount {
             journal_used: 0,
             metadata_cache: alloc::collections::BTreeMap::new(),
             metadata_order: alloc::collections::VecDeque::new(),
+            metadata_epoch: 0,
             metadata_reads: alloc::collections::BTreeMap::new(),
             block_bitmap_cache: alloc::collections::BTreeMap::new(),
             group_free_order: alloc::collections::BTreeMap::new(),
