@@ -236,7 +236,7 @@ const META_CACHE_MAX_BLOCKS: usize = 8192;
 /// table and extent blocks the running workload was reading and sent every
 /// subsequent reader back to the device.
 /// # C: O(log N) amortised
-fn publish_metadata(state: &mut crate::MountState, lba: u64, buf: alloc::sync::Arc<Vec<u8>>) {
+pub(super) fn publish_metadata(state: &mut crate::MountState, lba: u64, buf: alloc::sync::Arc<Vec<u8>>) {
     if state.metadata_cache.insert(lba, buf).is_none() {
         state.metadata_order.push_back(lba);
     }

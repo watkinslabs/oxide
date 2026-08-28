@@ -20,6 +20,25 @@ impl Mount {
         };
         let off_in_table = (idx as u64) * (self.sb.inode_size as u64);
         let byte_off = gd.inode_table * (self.sb.block_size as u64) + off_in_table;
+        let ra = self.behaviour().inode_readahead_blks;
+        if ra != 0 {
+            let bs = self.sb.block_size as u64;
+            let table_blocks = (u64::from(self.sb.inodes_per_group)
+                .saturating_mul(u64::from(self.sb.inode_size))
+                .saturating_add(bs - 1)) / bs;
+            let target = off_in_table / bs;
+            let aligned = target & !(u64::from(ra) - 1);
+            let start = gd.inode_table.saturating_add(aligned);
+            let end = core::cmp::min(start.saturating_add(u64::from(ra)),
+                                     gd.inode_table.saturating_add(table_blocks));
+            if end > start {
+                let target_cached = self.state.lock().metadata_cache.contains_key(
+                    &(gd.inode_table + target));
+                if !target_cached {
+                    let _ = self.prefetch_metadata_blocks(start, (end - start) as u32);
+                }
+            }
+        }
         let buf = self.read_meta_byte_range(byte_off, self.sb.inode_size as usize)?;
         // metadata_csum verify on read (Linux ext4_inode_csum_verify → EFSBADCRC):
         // refuse a slot whose stored i_checksum does not match a recompute rather

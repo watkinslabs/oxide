@@ -41,6 +41,7 @@ pub const OPT_ACL: &str = "acl";
 pub const OPT_USER_XATTR: &str = "user_xattr";
 pub const OPT_AUTO_DA_ALLOC: &str = "auto_da_alloc";
 pub const OPT_NOAUTO_DA_ALLOC: &str = "noauto_da_alloc";
+pub const OPT_INODE_READAHEAD_BLKS: &str = "inode_readahead_blks";
 
 /// `mb_optimize_scan=` takes exactly these two values.
 const MB_OPTIMIZE_OFF: u32 = 0;
@@ -97,6 +98,14 @@ impl Ext4Behaviour {
                 Some(v) => number(v)? != 0,
             },
             OPT_NOAUTO_DA_ALLOC => { flag(val)?; self.auto_da_alloc = false; }
+            OPT_INODE_READAHEAD_BLKS => {
+                let n = number(value(val)?)?;
+                // Linux accepts zero or a power of two below 2^31.
+                if n != 0 && (n >= (1u32 << 31) || !n.is_power_of_two()) {
+                    return Err(VfsError::Einval);
+                }
+                self.inode_readahead_blks = n;
+            }
             OPT_STRIPE => self.stripe = number(value(val)?)?,
             OPT_RESUID => self.resuid = number(value(val)?)?,
             OPT_RESGID => self.resgid = number(value(val)?)?,
