@@ -130,6 +130,10 @@ pub struct MountState {
     /// blocks the running workload was reading, and every reader then went
     /// back to the device; the reference retires buffers one at a time.
     pub(crate) metadata_order: alloc::collections::VecDeque<u64>,
+    /// Validated block bitmaps retained for repeated mballoc group scans.
+    /// Linux keeps bitmap/buddy state resident after a group is loaded; this
+    /// map is the bitmap half of that ownership boundary.
+    pub(crate) block_bitmap_cache: alloc::collections::BTreeMap<u64, Vec<u8>>,
     /// Cross-operation batching (Linux jbd2 running-transaction model). When
     /// set, the `shadow` PERSISTS across `run_journaled` scopes: each op joins
     /// the running transaction instead of committing its own, and the batch is

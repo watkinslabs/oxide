@@ -106,6 +106,7 @@ impl Mount {
             pending_checkpoint: None,
             metadata_cache: alloc::collections::BTreeMap::new(),
             metadata_order: alloc::collections::VecDeque::new(),
+            block_bitmap_cache: alloc::collections::BTreeMap::new(),
             batch: false,
             undo: Vec::new(),
             next_generation: 0,

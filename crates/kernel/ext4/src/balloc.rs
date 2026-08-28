@@ -195,7 +195,10 @@ impl Mount {
         if gd_orig.free_blocks_count == 0 { return Ok(None); }
         let bbm_byte_off = gd_orig.block_bitmap * (self.sb.block_size as u64);
         let uninit = { let s = self.state.lock(); gdt::block_uninit(&s.gdt_buf, group, &self.sb) };
-        let mut bitmap = if uninit {
+        let cached = { self.state.lock().block_bitmap_cache.get(&bbm_byte_off).cloned() };
+        let mut bitmap = if let Some(bitmap) = cached {
+            bitmap
+        } else if uninit {
             let s = self.state.lock();
             init_block_bitmap_for_group(&self.sb, &s.gdt_buf, group)?
         } else {
@@ -228,6 +231,7 @@ impl Mount {
         // Force commit so the next alloc_block within the same
         // outer scope reads the updated bitmap from disk.
         self.flush_pending_tx()?;
+        self.state.lock().block_bitmap_cache.insert(bbm_byte_off, bitmap);
         let phys = group_first_block(&self.sb, group) + bit as u64;
         Ok(Some(phys))
     }
@@ -245,7 +249,10 @@ impl Mount {
         if u32::from(gd_orig.free_blocks_count) < count { return Ok(None); }
         let bbm_byte_off = gd_orig.block_bitmap * (self.sb.block_size as u64);
         let uninit = { let s = self.state.lock(); gdt::block_uninit(&s.gdt_buf, group, &self.sb) };
-        let mut bitmap = if uninit {
+        let cached = { self.state.lock().block_bitmap_cache.get(&bbm_byte_off).cloned() };
+        let mut bitmap = if let Some(bitmap) = cached {
+            bitmap
+        } else if uninit {
             let s = self.state.lock();
             init_block_bitmap_for_group(&self.sb, &s.gdt_buf, group)?
         } else {
@@ -279,6 +286,7 @@ impl Mount {
         self.persist_gdt_slot_meta(group)?;
         self.persist_sb_free_blocks_meta()?;
         self.flush_pending_tx()?;
+        self.state.lock().block_bitmap_cache.insert(bbm_byte_off, bitmap);
         Ok(Some((0..count).map(|n| first_phys + u64::from(start + n)).collect()))
     }
 
