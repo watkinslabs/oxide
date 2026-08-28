@@ -5,6 +5,7 @@
 
 use crate::inode::{self, Extent, I_BLOCK_LEN};
 use crate::mount::{Mount, MountError};
+use crate::balloc::reserve::ReserveFlags;
 use alloc::vec::Vec;
 
 use super::records::extent_run as mk_extent;
@@ -136,16 +137,15 @@ impl Mount {
             let root_hdr = inode::ExtentHeader {
                 magic: inode::EXT4_EXT_MAGIC, entries: nleaves as u16, max: 4, depth: 1, generation: 0,
             };
-            let mut new_meta = Vec::new();
-            for (li, chunk) in extents.chunks(leaf_max).enumerate() {
-                let leaf_lba = match self.alloc_block_nofail(hint) {
-                    Ok(lba) => lba,
-                    Err(e) => {
-                        self.free_allocated_blocks(&new_meta);
-                        return Err(e);
-                    }
-                };
-                new_meta.push(leaf_lba);
+            let new_meta = match self.alloc_blocks_flags(hint, nleaves as u32, ReserveFlags::METADATA_NOFAIL) {
+                Ok(meta) if meta.len() == nleaves => meta,
+                Ok(meta) => {
+                    self.free_allocated_blocks(&meta);
+                    return Err(MountError::NoSpace);
+                }
+                Err(e) => return Err(e),
+            };
+            for (li, (chunk, &leaf_lba)) in extents.chunks(leaf_max).zip(new_meta.iter()).enumerate() {
                 let mut leaf_buf = alloc::vec![0u8; bs];
                 let lhdr = inode::ExtentHeader {
                     magic: inode::EXT4_EXT_MAGIC, entries: chunk.len() as u16,
