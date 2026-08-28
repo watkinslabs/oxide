@@ -191,6 +191,10 @@ pub struct Ext4Behaviour {
     /// Explicit journal checksum policy. `None` preserves the journal's
     /// existing JBD2 format; an explicit value is applied after recovery.
     pub journal_checksum: Option<bool>,
+    /// `journal_async_commit` — submit the commit record before waiting for
+    /// the preceding journal I/O. The journal path must opt into this
+    /// explicitly; it is not inferred from the on-disk feature bit.
+    pub journal_async_commit: bool,
     /// `acl` — whether the superblock advertises and consults POSIX ACLs.
     pub posix_acl: bool,
     /// `user_xattr` — ext4's user.* xattr handler is enabled.
@@ -224,6 +228,7 @@ impl Default for Ext4Behaviour {
             noload: false,
             warn_on_error: false,
             journal_checksum: None,
+            journal_async_commit: false,
             posix_acl: true,
             user_xattr: true,
             auto_da_alloc: true,

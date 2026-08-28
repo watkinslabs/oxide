@@ -45,6 +45,7 @@ pub fn parse_data(data: &str, behaviour: Ext4Behaviour)
 {
     let mut ctx = alloc::boxed::Box::new(Ext4MountOpts::parse_from(data, behaviour)?);
     ctx.validate()?;
+    ctx.validate_journal_mode()?;
     Ok(ctx)
 }
 

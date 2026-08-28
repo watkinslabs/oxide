@@ -59,6 +59,19 @@ impl Ext4MountOpts {
     pub fn qf_name(&self, slot: usize) -> Option<&str> { self.qf_names[slot].as_deref() }
     /// True when this data string named (or un-named) `slot`'s quota file. # C: O(1)
     pub fn names_slot(&self, slot: usize) -> bool { self.qname_spec & (1 << slot) != 0 }
+
+    /// Linux refuses asynchronous journal commits with ordered data: the
+    /// ordered-data dependency is itself completed by the normal commit
+    /// ordering, and moving the commit record ahead of it would violate the
+    /// mode's guarantee. Keep this check beside the parsed option state so a
+    /// first mount and a remount share one verdict.
+    pub fn validate_journal_mode(&self) -> vfs::KResult<()> {
+        if self.behaviour.journal_async_commit
+            && self.behaviour.data == super::behaviour::DataMode::Ordered {
+            return Err(vfs::VfsError::Einval);
+        }
+        Ok(())
+    }
 }
 
 /// Live quota option state of a mounted ext4 superblock.
