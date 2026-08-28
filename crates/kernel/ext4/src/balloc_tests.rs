@@ -70,6 +70,13 @@ fn first_clear_zero_max() {
 }
 
 #[test]
+fn stream_goal_hash_uses_linux_slot_geometry() {
+    assert_eq!(stream_goal_slot_with_slots(17, 1), 0);
+    assert_eq!(stream_goal_slot_with_slots(17, 4), 1);
+    assert_eq!(stream_goal_slot_with_slots(17, 0), 0);
+}
+
+#[test]
 fn block_uninit_bitmap_marks_backup_and_flex_metadata() {
     let sb = test_sb(16_384, 8192, 64, 2);
     let first1 = group_first_block(&sb, 1) as u32;
@@ -100,4 +107,3 @@ fn block_uninit_bitmap_marks_last_group_tail_used() {
     assert!(bit_set(&bm, 101), "tail bit past group end must be used");
     assert_eq!(find_first_clear(&bm, sb.blocks_per_group), Some(2));
 }
-

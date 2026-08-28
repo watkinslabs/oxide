@@ -1,6 +1,5 @@
 use crate::inode::{self, I_BLOCK_LEN};
 use crate::mount::{Mount, MountError};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use super::EXT4_MAX_EXTENT_DEPTH;
@@ -102,9 +101,11 @@ impl Mount {
     {
         let want = super::prealloc::tail_blocks(self.sb.block_size as u64, current_size, logical, 1) + 1;
         let flags = self.data_reserve_flags(ino);
-        let blocks = match self.alloc_blocks_flags(hint, want, flags) {
+        let stream_ino = (current_size.saturating_add(self.sb.block_size as u64 - 1)
+            / self.sb.block_size as u64 > 16).then_some(ino);
+        let blocks = match self.alloc_blocks_for_inode(stream_ino, hint, want, flags) {
             Ok(blocks) => blocks,
-            Err(MountError::NoSpace) => vec![self.alloc_block_flags(hint, flags)?],
+            Err(MountError::NoSpace) => self.alloc_blocks_for_inode(stream_ino, hint, 1, flags)?,
             Err(e) => return Err(e),
         };
         let physical = blocks[0];
