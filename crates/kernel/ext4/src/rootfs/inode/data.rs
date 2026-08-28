@@ -93,6 +93,7 @@ impl Ext4FileData {
     pub(crate) fn refresh_size(&self) {
         if let Ok(i) = self.st.mount.read_inode(self.ino) {
             self.size_hint.store(i.size, Ordering::Release);
+            self.frames.refresh_inode_cache(i);
         }
     }
     /// Re-read on-disk size and i_blocks into the VFS inode. # C: O(1)
@@ -100,6 +101,7 @@ impl Ext4FileData {
         if let Ok(i) = self.st.mount.read_inode(self.ino) {
             publish_size(inode, i.size);
             inode.set_blocks(i.i_blocks as u64);
+            self.frames.refresh_inode_cache(i);
         }
     }
 }

@@ -328,6 +328,7 @@ fn size_setattr_meta(
 
 fn refresh_after_size_setattr(inode: &Inode, _ino: u32, new_size: u64) {
     if let Some(d) = inode.private::<Ext4FileData>() {
+        d.frames.invalidate_inode_cache();
         d.frames.invalidate_range(new_size & !(4095u64), u64::MAX);
         d.frames.set_size(new_size);
         d.refresh_inode_usage(inode);

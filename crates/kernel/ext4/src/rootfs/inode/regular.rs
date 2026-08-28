@@ -106,6 +106,7 @@ impl InodeOps for Ext4RegInodeOps {
     fn truncate(&self, inode: &Inode, len: u64) -> KResult<()> {
         let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
         let _mutation = d.begin_swap_mutation(inode)?;
+        d.frames.invalidate_inode_cache();
         d.st.mount.truncate_inode(d.ino, len).map_err(|e| fs_err(&d.st, e))?;
         d.frames.invalidate_range(len & !(4095u64), u64::MAX);
         d.frames.set_size(len);
@@ -315,6 +316,7 @@ impl FileOps for Ext4RegFileOps {
     fn write(&self, inode: &Inode, off: u64, buf: &[u8]) -> KResult<usize> {
         let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
         let _mutation = d.begin_swap_mutation(inode)?;
+        d.frames.invalidate_inode_cache();
         let behaviour = d.st.mount.behaviour();
         if !behaviour.delalloc || behaviour.data == crate::mount_opts::DataMode::Journal {
             d.st.mount.prepare_nodelalloc(d.ino, off, buf.len()).map_err(|e| fs_err(&d.st, e))?;
@@ -325,7 +327,11 @@ impl FileOps for Ext4RegFileOps {
         let end = off.saturating_add(buf.len() as u64);
         d.size_hint.fetch_max(end, Ordering::AcqRel);
         inode.i_size_fetch_max(end);
-        if let Ok(i) = d.st.mount.read_inode(d.ino) { inode.set_blocks(i.i_blocks as u64); }
+        if let Ok(mut i) = d.st.mount.read_inode(d.ino) {
+            i.size = i.size.max(end);
+            d.frames.refresh_inode_cache(i);
+            inode.set_blocks(i.i_blocks as u64);
+        }
         Ok(buf.len())
     }
 
