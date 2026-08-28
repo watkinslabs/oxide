@@ -169,7 +169,7 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
                 if group_prealloc && !tail.is_empty() {
                     m.add_group_prealloc_on_cpu(
                         group_owner.unwrap_or_else(crate::balloc::prealloc::locality_cpu),
-                        m.group_of_block(tail[0]), tail);
+                        m.group_of_block(tail[0]), count, tail);
                 }
             }
             Err(e) => {
