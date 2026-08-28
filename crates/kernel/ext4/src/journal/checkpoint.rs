@@ -15,6 +15,7 @@ use crate::mount::{Mount, MountError};
 /// written and the journal superblock can be advanced past it.
 pub(crate) struct PendingCheckpoint {
     pub(crate) staged: Vec<StagedBlock>,
+    pub(crate) seq: u32,
 }
 
 impl Mount {
@@ -26,12 +27,27 @@ impl Mount {
     pub(crate) fn checkpoint_pending(&self) -> Result<(), MountError> {
         let pending = {
             let mut s = self.state.lock();
-            s.pending_checkpoint.take()
+            if s.pending_checkpoints.is_empty() { return Ok(()); }
+            core::mem::take(&mut s.pending_checkpoints)
         };
-        let Some(pending) = pending else { return Ok(()); };
-        let result = self.checkpoint_staged(&pending.staged);
+        let last_seq = pending.last().map(|p| p.seq).unwrap_or(0);
+        let result = self.checkpoint_staged(&pending).and_then(|_| {
+            let jinode = self.read_inode(self.sb.journal_inum)?;
+            let log = super::ExtentLogReader::build(self, &jinode)?;
+            let sb_bytes = log.read_journal_block(0).map_err(|_| MountError::BlockIo)?;
+            let jsb = super::JournalSuperblock::parse(&sb_bytes)
+                .map_err(super::map_journal_superblock_error)?;
+            self.mark_journal_clean_seq(&log, &jsb, last_seq)
+        });
         if result.is_err() {
-            self.state.lock().pending_checkpoint = Some(pending);
+            let mut state = self.state.lock();
+            state.pending_checkpoints = pending;
+        } else {
+            {
+                let mut state = self.state.lock();
+                state.journal_cursor = None;
+                state.journal_used = 0;
+            }
         }
         result
     }
@@ -56,7 +72,7 @@ impl Mount {
         result
     }
 
-    fn checkpoint_staged(&self, staged: &[StagedBlock]) -> Result<(), MountError> {
+    fn checkpoint_staged(&self, pending: &[PendingCheckpoint]) -> Result<(), MountError> {
         let jinode = self.read_inode(self.sb.journal_inum)?;
         let log = super::ExtentLogReader::build(self, &jinode)?;
         let sb_bytes = log.read_journal_block(0).map_err(|_| MountError::BlockIo)?;
@@ -72,9 +88,10 @@ impl Mount {
 
         #[cfg(feature = "debug-fsync-latency")]
         let started_ns = crate::fsync_latency::now_ns();
-        self.apply_staged_to_target(staged)?;
+        for transaction in pending { self.apply_staged_to_target(&transaction.staged)?; }
         #[cfg(feature = "debug-fsync-latency")]
-        crate::fsync_latency::report(b"target-write", started_ns, staged.len() as u64);
+        crate::fsync_latency::report(b"target-write", started_ns,
+            pending.iter().map(|p| p.staged.len() as u64).sum());
 
         #[cfg(feature = "debug-fsync-latency")]
         let flush_started_ns = crate::fsync_latency::now_ns();
@@ -85,7 +102,8 @@ impl Mount {
             self.dev.flush().map_err(|_| MountError::BlockIo)?;
         }
         #[cfg(feature = "debug-fsync-latency")]
-        crate::fsync_latency::report(b"target-flush", flush_started_ns, staged.len() as u64);
-        self.mark_journal_clean(&log, &jsb)
+        crate::fsync_latency::report(b"target-flush", flush_started_ns,
+            pending.iter().map(|p| p.staged.len() as u64).sum());
+        Ok(())
     }
 }

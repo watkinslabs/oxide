@@ -113,10 +113,16 @@ pub struct MountState {
     /// subsequent ops within the same scope. Drained at scope
     /// close + committed as one JBD2 transaction.
     pub(crate) shadow: Option<alloc::collections::BTreeMap<u64, Vec<u8>>>,
-    /// The one committed transaction retained until its filesystem home
-    /// blocks are checkpointed. The journal superblock remains dirty while
-    /// this is present, so recovery owns the same bytes if power is lost.
-    pub(crate) pending_checkpoint: Option<crate::journal::PendingCheckpoint>,
+    /// Committed transactions retained until their filesystem home blocks are
+    /// checkpointed in order. The journal superblock remains dirty while this
+    /// list is non-empty, so recovery owns the same bytes if power is lost.
+    pub(crate) pending_checkpoints: Vec<crate::journal::PendingCheckpoint>,
+    /// Next free journal slot and number of occupied slots after the oldest
+    /// uncheckpointed transaction. This is the in-memory equivalent of JBD2's
+    /// running log head; it prevents a second commit from overwriting a list
+    /// entry before the checkpoint owner advances the on-disk tail.
+    pub(crate) journal_cursor: Option<crate::jbd2::LogCursor>,
+    pub(crate) journal_used: u32,
     /// Clean metadata buffers keyed by filesystem LBA.  The VFS dcache avoids
     /// repeating name walks, but a cold dentry miss still needs the ext4 inode
     /// table and directory blocks.  Linux serves those from the buffer/page
