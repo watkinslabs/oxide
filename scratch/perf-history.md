@@ -31,6 +31,7 @@ that artifact is regenerated.
 | B2805-r1 / working tree | 1,366,079 | 6,052 | 4,430 | 22,474 | — | 20,546 | 193 | 2,230 | Linux-shaped embedded short pathname buffer; GNOME marker complete |
 | B2805-r2 / working tree | 1,365,882 | 6,161 | 4,510 | 22,232 | — | 20,754 | 215 | 2,376 | repeat; embedded short pathname buffer; GNOME marker complete |
 | E4-05 perf / `75ac00b53` | 1,367,540 | 6,968 | 5,095 | 24,327 | — | 20,128 | 915 | 2,848 | current main after owned-read/frame-cache completion fixes; GNOME Shell marker complete; SMP=1 |
+| E4-03 size-publish / `5d15845be` | 1,367,309 | 6,938 | 5,074 | 24,398 | — | 20,150 | 368 | 2,807 | buffered size publication cleanup; GNOME Shell marker complete; SMP=1 |
 
 The B2709 `munmap` result is a material improvement over B2699: 71,407 ns
 to 21,426 ns (about 70% lower), and 52x to 16x the host baseline. The B2708
