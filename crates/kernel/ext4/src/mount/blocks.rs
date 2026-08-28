@@ -35,7 +35,7 @@ impl Mount {
                 let target_cached = self.state.lock().metadata_cache.contains_key(
                     &(gd.inode_table + target));
                 if !target_cached {
-                    let _ = self.prefetch_metadata_blocks(start, (end - start) as u32);
+                    self.prefetch_metadata_blocks_async(start, (end - start) as u32);
                 }
             }
         }

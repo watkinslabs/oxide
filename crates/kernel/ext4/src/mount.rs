@@ -165,6 +165,10 @@ pub struct MountState {
     /// One in-flight owner per cold metadata LBA. Waiters share its completed
     /// result, matching the reference buffer-cache lock/completion protocol.
     pub(crate) metadata_reads: alloc::collections::BTreeMap<u64, alloc::sync::Arc<MetadataRead>>,
+    /// Inode-table windows already queued for asynchronous warming. The
+    /// metadata cache remains the byte owner; this set only suppresses
+    /// duplicate work items until their owner completes.
+    pub(crate) metadata_prefetches: alloc::collections::BTreeSet<u64>,
     /// Validated block bitmaps retained for repeated mballoc group scans.
     /// Linux keeps bitmap/buddy state resident after a group is loaded; this
     /// map is the bitmap half of that ownership boundary.
@@ -218,6 +222,11 @@ pub type MountStateGuard<'a> = Guard<'a, MountState, SuperblockLockClass>;
 /// Mounted ext4 filesystem.
 pub struct Mount {
     pub(crate) dev: Arc<dyn BlockDevice>,
+    /// Weak self-reference used only to hand deferred metadata work a
+    /// lifetime-owned mount without creating a reference cycle. It is
+    /// installed when the VFS-facing `RootfsState` takes ownership of the
+    /// freshly opened mount; standalone hosted Mount users remain synchronous.
+    pub(crate) self_ref: Spinlock<Weak<Mount>, SuperblockLockClass>,
     pub sb: Superblock,
     pub(crate) system_zones: Vec<(u64, u64)>,
     pub(crate) state: Spinlock<MountState, SuperblockLockClass>,
@@ -299,6 +308,12 @@ impl Drop for Mount {
 }
 
 impl Mount {
+    /// Back-stamp the mount after it has been placed in its owning `Arc`.
+    /// # C: O(1)
+    pub(crate) fn install_self(&self, owner: &Arc<Self>) {
+        *self.self_ref.lock() = Arc::downgrade(owner);
+    }
+
     /// Snapshot of the options in force on this mount. # C: O(MAXQUOTAS)
     pub fn opts(&self) -> crate::mount_opts::Ext4SbOpts { self.opts.lock().clone() }
 

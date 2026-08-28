@@ -110,6 +110,7 @@ impl Mount {
             metadata_order: alloc::collections::VecDeque::new(),
             metadata_epoch: 0,
             metadata_reads: alloc::collections::BTreeMap::new(),
+            metadata_prefetches: alloc::collections::BTreeSet::new(),
             block_bitmap_cache: alloc::collections::BTreeMap::new(),
             group_free_order: alloc::collections::BTreeMap::new(),
             group_free_order_index: alloc::collections::BTreeMap::new(),
@@ -127,7 +128,7 @@ impl Mount {
             inode_generations: alloc::collections::BTreeMap::new(),
         };
         let err = sync::Spinlock::new(crate::errstat::ErrRecord::parse(&sb_bytes));
-        let mut m = Self { dev, sb, system_zones, state: sync::Spinlock::new(state), quota_sb: sync::Spinlock::new(alloc::sync::Weak::new()), err,
+        let mut m = Self { dev, self_ref: sync::Spinlock::new(alloc::sync::Weak::new()), sb, system_zones, state: sync::Spinlock::new(state), quota_sb: sync::Spinlock::new(alloc::sync::Weak::new()), err,
                        #[cfg(not(target_os = "oxide-kernel"))]
                        faults: super::super::faults::HostedFaults::new(),
                        txn_owner: ::core::sync::atomic::AtomicU64::new(0),

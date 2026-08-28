@@ -1,3 +1,5 @@
+use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use crate::jbd2::StagedBlock;
 use super::gdt_byte_offset_for;
@@ -6,7 +8,55 @@ use super::ctx_id;
 use super::super::io::read_byte_range;
 use super::metadata::publish_metadata;
 
+struct MetadataPrefetchJob {
+    mount: Arc<Mount>,
+    first_lba: u64,
+    blocks: u32,
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn run_metadata_prefetch(raw: usize) {
+    // SAFETY: the raw pointer is created by Box::into_raw below and queued at
+    // most once; the worker takes ownership before running the I/O.
+    let job = unsafe { Box::from_raw(raw as *mut MetadataPrefetchJob) };
+    let _ = job.mount.prefetch_metadata_blocks(job.first_lba, job.blocks);
+    job.mount.finish_metadata_prefetch(job.first_lba);
+}
+
 impl Mount {
+    /// Queue an inode-table window for asynchronous cache warming. The mount
+    /// owns the job through its Arc; a Weak self-reference means the queued
+    /// work cannot keep an otherwise-unmounted volume alive indefinitely.
+    /// # C: O(1) enqueue + O(window) worker I/O
+    pub(crate) fn prefetch_metadata_blocks_async(&self, first_lba: u64, blocks: u32) {
+        if blocks == 0 { return; }
+        let should_queue = {
+            let mut state = self.state.lock();
+            state.metadata_prefetches.insert(first_lba)
+        };
+        if !should_queue { return; }
+        let Some(owner) = self.self_ref.lock().upgrade() else {
+            // Standalone hosted Mount values are not Arc-owned. Preserve the
+            // deterministic hosted behavior while the real mount path uses
+            // the asynchronous worker below.
+            let _ = self.prefetch_metadata_blocks(first_lba, blocks);
+            self.finish_metadata_prefetch(first_lba);
+            return;
+        };
+        let raw = Box::into_raw(Box::new(MetadataPrefetchJob { mount: owner, first_lba, blocks }));
+        #[cfg(target_os = "oxide-kernel")]
+        if sched::live::workqueue::queue_work(run_metadata_prefetch, raw as usize) { return; }
+        // Hosted tests have no worker thread. If queue_work refuses on target,
+        // reclaim and run synchronously rather than leaking the job.
+        let job = unsafe { Box::from_raw(raw) };
+        let _ = job.mount.prefetch_metadata_blocks(job.first_lba, job.blocks);
+        job.mount.finish_metadata_prefetch(job.first_lba);
+    }
+
+    fn finish_metadata_prefetch(&self, first_lba: u64) {
+        self.state.lock().metadata_prefetches.remove(&first_lba);
+    }
+
     /// Warm a contiguous inode-table window into the canonical metadata cache.
     /// The read is one owned block-device operation, while publication remains
     /// per filesystem block so ordinary metadata readers and invalidation use
