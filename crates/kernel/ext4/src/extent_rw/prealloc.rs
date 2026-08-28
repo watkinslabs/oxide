@@ -2,6 +2,7 @@ const SMALL_FILE_MIN_PREALLOC_BLOCKS: u32 = 4;
 const MAX_PREALLOC_TAIL_BLOCKS: u32 = 1024;
 const GROUP_PREALLOC_TARGET_BYTES: u64 = 2 * 1024 * 1024;
 const GROUP_PREALLOC_MIN_BLOCKS: u64 = 32;
+const GROUP_PREALLOC_STREAM_BLOCKS: u64 = 16;
 
 /// Size the shared locality reservation from the filesystem geometry. Linux
 /// targets 2 MiB, keeps at least 32 allocation units, and rounds to a RAID
@@ -14,6 +15,17 @@ pub(super) fn group_prealloc_blocks(block_size: u64, stripe: u32) -> u32 {
         base.saturating_add(stripe - 1) / stripe * stripe
     } else { base };
     rounded.min(u64::from(u32::MAX)) as u32
+}
+
+/// Select locality preallocation only while the resulting file remains in
+/// Linux's small-file stream window. # C: O(1)
+pub(super) fn group_prealloc_eligible(
+    block_size: u64, current_size: u64, logical_start: u32, count: u32,
+) -> bool {
+    if block_size == 0 || count == 0 { return false; }
+    let current_blocks = current_size.saturating_add(block_size - 1) / block_size;
+    let request_end = u64::from(logical_start).saturating_add(u64::from(count));
+    current_blocks.max(request_end) <= GROUP_PREALLOC_STREAM_BLOCKS
 }
 
 /// Size a regular-file data reservation using Linux's file-size windows.
@@ -39,7 +51,7 @@ pub(super) fn tail_blocks(block_size: u64, current_size: u64, logical_start: u32
 
 #[cfg(test)]
 mod tests {
-    use super::{group_prealloc_blocks, tail_blocks};
+    use super::{group_prealloc_blocks, group_prealloc_eligible, tail_blocks};
 
     #[test]
     fn group_preallocation_uses_geometry_and_stripe() {
@@ -47,6 +59,14 @@ mod tests {
         assert_eq!(group_prealloc_blocks(2048, 0), 1024);
         assert_eq!(group_prealloc_blocks(4096, 768), 768);
         assert_eq!(group_prealloc_blocks(65536, 0), 32);
+    }
+
+    #[test]
+    fn group_preallocation_stops_after_the_small_file_window() {
+        assert!(group_prealloc_eligible(4096, 0, 0, 16));
+        assert!(!group_prealloc_eligible(4096, 0, 0, 17));
+        assert!(!group_prealloc_eligible(4096, 16 * 4096, 16, 1));
+        assert!(!group_prealloc_eligible(4096, 0, 32, 1));
     }
 
     #[test]

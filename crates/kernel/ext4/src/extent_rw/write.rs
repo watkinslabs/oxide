@@ -63,13 +63,10 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
             .or_else(|| extents.first())
             .map(|r| m.group_of_block(r.phys))
             .unwrap_or(0);
-        // Keep the locality PA policy tied to the request shape here.  The
-        // allocator may split one write into several hole runs, so applying a
-        // file-size cutoff to this local `count` would make an existing group
-        // PA disappear between adjacent writes.  Linux makes this decision
-        // in the shared allocation context before the split; this path's
-        // equivalent is the small-request window.
-        let group_prealloc = preallocate && count <= GROUP_PREALLOC_MAX_REQUEST;
+        let group_prealloc = preallocate
+            && count <= GROUP_PREALLOC_MAX_REQUEST
+            && super::prealloc::group_prealloc_eligible(
+                m.sb.block_size as u64, current_size, start as u32, count);
         if group_prealloc {
             if let Some(blocks) = m.peek_group_prealloc(hint, count) {
                 runs.push(ReservedRun { logical_start: start as u32, blocks,
