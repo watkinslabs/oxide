@@ -69,6 +69,10 @@ pub fn submit_and_wait<D: BlockDevice + ?Sized>(dev: &D, request: BlockRequest)
     let waiter = sched::current();
     #[cfg(target_os = "oxide-kernel")]
     if let Some(task) = waiter { task.begin_iowait(); }
+    #[cfg(all(target_os = "oxide-kernel", feature = "debug-wakelat"))]
+    if let Some(task) = waiter {
+        sched::live::wakelat::note_wait(task.tid, sched::live::wakelat::KIND_OTHER);
+    }
     wait_done(&state);
     #[cfg(target_os = "oxide-kernel")]
     if let Some(task) = waiter { task.end_iowait(); }

@@ -128,10 +128,10 @@ fn force_defer_never_takes_the_local_runqueue_lock() {
     assert_eq!(deferred[0].tid, 2006);
 }
 
-/// Ordinary WaitList wakes are used by both process and softirq callers. The
-/// public `try_to_wake_up` entry must recognize the latter and select the same
-/// deferred path as an explicit timer wake; otherwise block-completion softirq
-/// can interrupt a process holding `rq.inner` and spin on that same lock.
+/// Ordinary WaitList wakes from hard IRQ use the deferred path, while the
+/// softirq tail may take the local rq lock with IRQs saved. This is the Linux
+/// `irq_exit` distinction: block completion delivery happens after the
+/// hard-IRQ field has been dropped, so it must not pay an extra wake-list hop.
 #[test]
 fn interrupt_context_requires_deferred_wake_placement() {
     crate::preempt::_test_reset();
@@ -139,12 +139,12 @@ fn interrupt_context_requires_deferred_wake_placement() {
 
     crate::preempt::irq_enter();
     assert!(wake_context_requires_defer(),
-        "hardirq/softirq wake must use the lock-free wake list");
+        "hardirq wake must use the lock-free wake list");
     crate::preempt::irq_exit();
 
     crate::preempt::preempt_count_add(crate::preempt::SOFTIRQ_OFFSET);
-    assert!(wake_context_requires_defer(),
-        "softirq wake must use the lock-free wake list");
+    assert!(!wake_context_requires_defer(),
+        "softirq wake may use the local rq lock after irq_exit");
     crate::preempt::preempt_count_sub(crate::preempt::SOFTIRQ_OFFSET);
     crate::preempt::_test_reset();
 }

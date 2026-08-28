@@ -331,7 +331,12 @@ pub unsafe fn try_to_wake_up(task: Arc<Task>) -> bool {
 
 #[inline]
 fn wake_context_requires_defer() -> bool {
-    crate::preempt::in_interrupt() || crate::preempt::on_irq_stack()
+    // Linux softirq handlers may take the local rq lock with IRQs saved. The
+    // hard-IRQ handler cannot: it may have interrupted the owner while that
+    // owner held rq->lock with interrupts disabled. Block completions are
+    // delivered from the softirq tail after irq_exit has dropped the hardirq
+    // field, so deferring them adds a wake-list round trip to every read.
+    crate::preempt::hardirq_count() != 0
 }
 
 /// Timer-ISR / IRQ-context wake (Linux ttwu via `wake_list`, always deferred):

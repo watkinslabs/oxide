@@ -35,6 +35,7 @@ adiantum = { path = "../../shared/adiantum" }
 [features]
 default = []
 hosted  = ["sched/hosted"]
+debug-wakelat = ["sched/debug-wakelat"]
 
 # Non-kernel builds exercise the same sleeping lifecycle lock as the running
 # kernel.  Registry publication and VFS open/close are process-context work;
