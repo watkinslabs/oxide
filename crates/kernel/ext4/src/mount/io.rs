@@ -174,14 +174,48 @@ pub(crate) fn read_byte_range_pub(dev: &dyn BlockDevice, byte_off: u64, len: usi
 #[cfg(test)]
 mod tests {
     use alloc::vec::Vec;
+    use alloc::vec;
     use block::BlockDevice;
     use block::{BlockError, BlockOp, BlockRequest, KResult, QueueFeatures, QueueLimits};
-    use std::sync::Mutex;
+    use core::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::Duration;
     use super::{read_byte_range, write_durable_block};
 
     struct TraceDisk(Mutex<Vec<&'static str>>);
 
     struct ShortReadDisk;
+
+    struct ConcurrentReadDisk {
+        inner: Arc<block::MemDisk<sync::TaskList>>,
+        active: AtomicU32,
+        max_active: AtomicU32,
+    }
+
+    impl BlockDevice for ConcurrentReadDisk {
+        fn block_size(&self) -> u32 { 512 }
+        fn capacity_blocks(&self) -> u64 { 4 }
+        fn submit(&self, request: BlockRequest, completion: block::BlockCompletion) {
+            let active = self.active.fetch_add(1, Ordering::AcqRel) + 1;
+            let mut old = self.max_active.load(Ordering::Acquire);
+            while active > old {
+                match self.max_active.compare_exchange_weak(
+                    old, active, Ordering::AcqRel, Ordering::Acquire,
+                ) {
+                    Ok(_) => break,
+                    Err(observed) => old = observed,
+                }
+            }
+            thread::sleep(Duration::from_millis(20));
+            self.inner.submit(request, completion);
+            self.active.fetch_sub(1, Ordering::AcqRel);
+        }
+        fn submit_sync(&self, _request: &mut BlockRequest) -> KResult<()> {
+            Err(BlockError::Eio)
+        }
+        fn flush(&self) -> KResult<()> { Ok(()) }
+    }
 
     impl BlockDevice for ShortReadDisk {
         fn block_size(&self) -> u32 { 512 }
@@ -226,6 +260,27 @@ mod tests {
     #[test]
     fn short_successful_read_is_an_io_error_not_a_slice_panic() {
         assert_eq!(read_byte_range(&ShortReadDisk, 0, 512), Err(crate::MountError::BlockIo));
+    }
+
+    #[test]
+    fn cold_reads_keep_owned_requests_in_flight_concurrently() {
+        let inner = block::MemDisk::<sync::TaskList>::new(512, 4);
+        let mut left = BlockRequest::new_write(0, 1, vec![0x11; 512]);
+        let mut right = BlockRequest::new_write(1, 1, vec![0x22; 512]);
+        inner.submit_sync(&mut left).unwrap();
+        inner.submit_sync(&mut right).unwrap();
+        let disk = Arc::new(ConcurrentReadDisk {
+            inner,
+            active: AtomicU32::new(0),
+            max_active: AtomicU32::new(0),
+        });
+        let a = Arc::clone(&disk);
+        let b = Arc::clone(&disk);
+        let first = thread::spawn(move || read_byte_range(&*a, 0, 512).unwrap());
+        let second = thread::spawn(move || read_byte_range(&*b, 512, 512).unwrap());
+        assert_eq!(first.join().unwrap(), vec![0x11; 512]);
+        assert_eq!(second.join().unwrap(), vec![0x22; 512]);
+        assert_eq!(disk.max_active.load(Ordering::Acquire), 2);
     }
 
     #[test]
