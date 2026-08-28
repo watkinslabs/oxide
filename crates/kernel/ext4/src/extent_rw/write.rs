@@ -72,6 +72,10 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
             && count <= GROUP_PREALLOC_MAX_REQUEST
             && super::prealloc::group_prealloc_eligible(
                 m.sb.block_size as u64, current_size, start as u32, count);
+        // Linux captures the locality-group pointer before mballoc can block;
+        // retain that owner for a fresh PA tail even if this task migrates
+        // before the reservation is published.
+        let group_owner = group_prealloc.then(crate::balloc::prealloc::locality_cpu);
         if group_prealloc {
             if let Some((group_cpu, blocks)) = m.peek_group_prealloc_owner(hint, count) {
                 runs.push(ReservedRun { logical_start: start as u32, blocks,
@@ -165,7 +169,9 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
                         Vec::new()
                     } else { tail.clone() } });
                 if group_prealloc && !tail.is_empty() {
-                    m.add_group_prealloc(m.group_of_block(tail[0]), tail);
+                    m.add_group_prealloc_on_cpu(
+                        group_owner.unwrap_or_else(crate::balloc::prealloc::locality_cpu),
+                        m.group_of_block(tail[0]), tail);
                 }
             }
             Err(e) => {

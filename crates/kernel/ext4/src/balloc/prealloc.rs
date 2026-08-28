@@ -127,11 +127,14 @@ impl Mount {
         true
     }
 
-    /// Keep a locality tail for another small-file allocation. # C: O(1)
-    pub(crate) fn add_group_prealloc(&self, group: u32, blocks: Vec<u64>) {
+    /// Keep a locality tail on the CPU-local list selected by the allocation
+    /// context.  The caller must pass the CPU sampled before a blocking
+    /// allocation, matching Linux's `raw_cpu_ptr(s_locality_groups)` lifetime.
+    /// # C: O(N)
+    pub(crate) fn add_group_prealloc_on_cpu(&self, cpu: usize, group: u32, blocks: Vec<u64>) {
         if blocks.is_empty() { return; }
         let mut s = self.state.lock();
-        let entries = s.group_prealloc.entry((locality_cpu(), group)).or_default();
+        let entries = s.group_prealloc.entry((cpu, group)).or_default();
         entries.push(GroupPrealloc { blocks });
         trim_group_preallocations(entries);
     }
