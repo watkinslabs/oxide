@@ -31,27 +31,64 @@ pub(super) fn group_prealloc_eligible(
 /// Size a regular-file data reservation using Linux's file-size windows.
 /// # C: O(1)
 pub(super) fn tail_blocks(block_size: u64, current_size: u64, logical_start: u32, count: u32) -> u32 {
+    if block_size == 0 || count == 0 { return 0; }
     let request_end = u64::from(logical_start).saturating_add(u64::from(count));
-    let file_blocks = current_size.saturating_add(block_size.saturating_sub(1)) / block_size;
-    let end_blocks = file_blocks.max(request_end);
-    let bytes = end_blocks.saturating_mul(block_size);
+    let file_blocks = current_size.saturating_add(block_size - 1) / block_size;
+    let bytes = file_blocks.max(request_end).saturating_mul(block_size);
     let target = if bytes <= 1024 * 1024 {
-        let min_blocks = (16 * 1024 / block_size).max(u64::from(SMALL_FILE_MIN_PREALLOC_BLOCKS));
-        end_blocks.max(min_blocks).next_power_of_two()
+        let min_blocks = (16_u64 * 1024).div_ceil(block_size)
+            .max(u64::from(SMALL_FILE_MIN_PREALLOC_BLOCKS));
+        file_blocks.max(request_end).max(min_blocks).next_power_of_two()
     } else if bytes <= 4 * 1024 * 1024 {
-        2 * 1024 * 1024 / block_size
+        (2_u64 * 1024 * 1024).div_ceil(block_size)
     } else if bytes <= 8 * 1024 * 1024 {
-        4 * 1024 * 1024 / block_size
+        (4_u64 * 1024 * 1024).div_ceil(block_size)
     } else {
-        8 * 1024 * 1024 / block_size
+        (8_u64 * 1024 * 1024).div_ceil(block_size)
     };
     target.max(request_end).saturating_sub(request_end)
         .min(u64::from(MAX_PREALLOC_TAIL_BLOCKS)) as u32
 }
 
+/// Normalize a regular-file allocation to the reference's size windows. The
+/// returned half-open logical range contains the request and may start before
+/// it, allowing the PA search to consume an interior block. # C: O(1)
+pub(super) fn normalized_range(
+    block_size: u64, current_size: u64, logical_start: u32, count: u32,
+) -> (u64, u64) {
+    if block_size == 0 || count == 0 {
+        return (u64::from(logical_start), u64::from(logical_start) + u64::from(count));
+    }
+    let request_end = u64::from(logical_start).saturating_add(u64::from(count));
+    let file_blocks = current_size.saturating_add(block_size.saturating_sub(1)) / block_size;
+    let end_blocks = file_blocks.max(request_end);
+    let bytes = end_blocks.saturating_mul(block_size);
+    let request_bytes = u64::from(count).saturating_mul(block_size);
+    let max_chunk = 2 * block_size;
+    let (mut start, target) = if bytes <= 1024 * 1024 {
+        let min_blocks = (16_u64 * 1024).div_ceil(block_size)
+            .max(u64::from(SMALL_FILE_MIN_PREALLOC_BLOCKS));
+        (0, end_blocks.max(min_blocks).next_power_of_two())
+    } else if bytes <= 4 * 1024 * 1024 || max_chunk <= 2 * 1024 {
+        let window = (2_u64 * 1024 * 1024).div_ceil(block_size).max(1);
+        (u64::from(logical_start) / window * window, window)
+    } else if bytes <= 8 * 1024 * 1024 || max_chunk <= 4 * 1024 {
+        let window = (4_u64 * 1024 * 1024).div_ceil(block_size).max(1);
+        (u64::from(logical_start) / window * window, window)
+    } else if request_bytes <= 8 * 1024 * 1024 || max_chunk <= 8 * 1024 {
+        let window = (8_u64 * 1024 * 1024).div_ceil(block_size).max(1);
+        (u64::from(logical_start) / window * window, window)
+    } else {
+        (u64::from(logical_start), u64::from(count))
+    };
+    if start > u64::from(logical_start) { start = u64::from(logical_start); }
+    let end = start.saturating_add(target).max(request_end);
+    (start, end)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{group_prealloc_blocks, group_prealloc_eligible, tail_blocks};
+    use super::{group_prealloc_blocks, group_prealloc_eligible, normalized_range, tail_blocks};
 
     #[test]
     fn group_preallocation_uses_geometry_and_stripe() {
@@ -76,5 +113,12 @@ mod tests {
         assert_eq!(tail_blocks(4096, 1024 * 1024, 256, 1), 255);
         assert_eq!(tail_blocks(4096, 2 * 1024 * 1024, 512, 1), 0);
         assert_eq!(tail_blocks(4096, 5 * 1024 * 1024, 1280, 1), 0);
+    }
+
+    #[test]
+    fn larger_files_use_aligned_reference_windows() {
+        assert_eq!(normalized_range(4096, 100 * 4096, 100, 1), (0, 128));
+        assert_eq!(normalized_range(4096, 2 * 1024 * 1024, 512, 1), (512, 1024));
+        assert_eq!(normalized_range(4096, 5 * 1024 * 1024, 1280, 1), (1024, 2048));
     }
 }
