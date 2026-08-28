@@ -5,6 +5,7 @@
 //! explicit prevents directory and metadata allocation from seeing a data PA
 //! as an extent, while still letting the same inode reuse its next blocks.
 
+use alloc::vec;
 use alloc::vec::Vec;
 
 pub(crate) fn locality_cpu() -> usize {
@@ -32,7 +33,7 @@ use super::super::{Mount, MountError};
 pub(crate) struct InodePrealloc {
     pub(crate) logical_start: u32,
     pub(crate) blocks: Vec<u64>,
-    pub(crate) used: u32,
+    pub(crate) used: Vec<bool>,
 }
 
 /// One contiguous tail reserved for any small regular-file allocation in a
@@ -41,33 +42,40 @@ pub(crate) struct GroupPrealloc {
     pub(crate) blocks: Vec<u64>,
 }
 
+fn inode_pa_blocks(pa: &InodePrealloc, logical: u32, want: u32) -> Option<Vec<u64>> {
+    let offset = logical.checked_sub(pa.logical_start)? as usize;
+    if offset >= pa.blocks.len() || pa.used[offset] { return None; }
+    let mut blocks = Vec::new();
+    for n in offset..pa.blocks.len() {
+        if pa.used[n] || blocks.len() == want as usize { break; }
+        blocks.push(pa.blocks[n]);
+    }
+    (!blocks.is_empty()).then_some(blocks)
+}
+
 impl Mount {
-    /// Return the next physical blocks of an inode PA when the write begins
-    /// exactly at its next logical block. # C: O(N PAs)
+    /// Return contiguous free physical blocks from an overlapping inode PA.
+    /// Linux permits a request to consume an interior PA block, not only its
+    /// sequential head. # C: O(N PAs + request)
     pub(crate) fn peek_inode_prealloc(&self, ino: u32, logical: u32, want: u32)
         -> Option<Vec<u64>>
     {
         if want == 0 { return Some(Vec::new()); }
         let s = self.state.lock();
         let pas = s.inode_prealloc.get(&ino)?;
-        pas.iter().find_map(|pa| {
-            let next = pa.logical_start.checked_add(pa.used)?;
-            if next != logical { return None; }
-            let available = (pa.blocks.len() as u32).saturating_sub(pa.used);
-            let take = core::cmp::min(want, available) as usize;
-            Some(pa.blocks[pa.used as usize .. pa.used as usize + take].to_vec())
-        })
+        pas.iter().find_map(|pa| inode_pa_blocks(pa, logical, want))
     }
 
     /// Retire one block from an inode PA after its extent was published. # C: O(N PAs)
     pub(crate) fn consume_inode_prealloc(&self, ino: u32, logical: u32) -> bool {
         let mut s = self.state.lock();
         let Some(pas) = s.inode_prealloc.get_mut(&ino) else { return false; };
-        let Some(idx) = pas.iter().position(|pa| {
-            pa.logical_start.checked_add(pa.used) == Some(logical)
+        let Some((idx, offset)) = pas.iter().enumerate().find_map(|(idx, pa)| {
+            let offset = logical.checked_sub(pa.logical_start)? as usize;
+            (offset < pa.blocks.len() && !pa.used[offset]).then_some((idx, offset))
         }) else { return false; };
-        pas[idx].used += 1;
-        if pas[idx].used as usize == pas[idx].blocks.len() { pas.remove(idx); }
+        pas[idx].used[offset] = true;
+        if pas[idx].used.iter().all(|used| *used) { pas.remove(idx); }
         if pas.is_empty() { s.inode_prealloc.remove(&ino); }
         true
     }
@@ -76,7 +84,7 @@ impl Mount {
     pub(crate) fn add_inode_prealloc(&self, ino: u32, logical_start: u32, blocks: Vec<u64>) {
         if blocks.is_empty() { return; }
         self.state.lock().inode_prealloc.entry(ino).or_default()
-            .push(InodePrealloc { logical_start, blocks, used: 0 });
+            .push(InodePrealloc { logical_start, used: vec![false; blocks.len()], blocks });
     }
 
     /// Return a locality PA and the CPU list that owns it. # C: O(N PAs)
@@ -126,7 +134,7 @@ impl Mount {
         let pas = self.state.lock().inode_prealloc.remove(&ino).unwrap_or_default();
         let mut released = Vec::new();
         for pa in pas {
-            released.extend(pa.blocks.into_iter().skip(pa.used as usize));
+            released.extend(pa.blocks.into_iter().zip(pa.used).filter_map(|(block, used)| (!used).then_some(block)));
         }
         let mut s = self.state.lock();
         for block in released {
@@ -196,7 +204,8 @@ impl Mount {
         let s = self.state.lock();
         for pas in s.inode_prealloc.values() {
             for pa in pas {
-                for &block in pa.blocks.iter().skip(pa.used as usize) {
+                for (&block, &used) in pa.blocks.iter().zip(&pa.used) {
+                    if used { continue; }
                     if let Some(bit) = block.checked_sub(first) {
                         if bit < u64::from(self.blocks_in_group(group)) {
                             bitmap[bit as usize >> 3] |= 1 << (bit & 7);
@@ -224,7 +233,8 @@ impl Mount {
         let s = self.state.lock();
         for pas in s.inode_prealloc.values() {
             for pa in pas {
-                for &block in pa.blocks.iter().skip(pa.used as usize) {
+                for (&block, &used) in pa.blocks.iter().zip(&pa.used) {
+                    if used { continue; }
                     if let Some(bit) = block.checked_sub(first) {
                         if bit < u64::from(self.blocks_in_group(group)) {
                             bitmap[bit as usize >> 3] &= !(1 << (bit & 7));
@@ -294,3 +304,7 @@ impl Mount {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "prealloc_tests.rs"]
+mod tests;
