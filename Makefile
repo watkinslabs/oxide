@@ -43,13 +43,15 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
 #                          root, volatile writes. `LIVE_PROFILE=` picks the
 #                          profile; pack it first in the images repo with
 #                          ./pack-squashfs.sh <profile> <arch>.
+# `make nano`            — boot the smallest profile: text login, basic tools,
+#                          network. No desktop, no browser, no package manager.
 # `make artifacts`       — export stable packaging artifacts to target/artifacts.
 # `make clean`           — `cargo clean`.
 
 .PHONY: all build x86 arm kpi-layout \
         build-debug x86-debug arm-debug \
         test lint lint-ratchet lint-ratchet-update audit-counts profile-policy warnings-control stats ci \
-        micro micro-arm gnome gnome-arm lite live live-x86 live-arm \
+        nano nano-arm micro micro-arm gnome gnome-arm lite live live-x86 live-arm \
         qemu-x86 qemu-arm qemu-x86-virtio-gpu qemu-x86-image qemu-arm-image qemu-x86-existing qemu-arm-existing qemu-x86-debug qemu-arm-debug qemu-mcp verify-native-q35 smoke-native-pci-x86 smoke-native-pci-e1000-x86 \
         hardware-audit-image-x86 \
         boot-debug-x86 boot-debug-arm smoke-debug smoke-debug-x86 smoke-debug-arm smoke-taskdump-arm \
@@ -254,6 +256,11 @@ qemu-x86:
 micro:
 	OXIDE_QUICKBOOT_PROFILE=micro $(XTASK) grub --arch x86_64 --smp $(SMP) --id micro
 
+# The smallest useful system: a text login, the basic tools and a network.
+# No Xorg, no desktop, no browser, no package manager.
+nano:
+	OXIDE_QUICKBOOT_PROFILE=nano $(XTASK) grub --arch x86_64 --smp $(SMP) --id nano
+
 # One file to hand somebody: GRUB, a stripped kernel and an immutable squashfs
 # root in a single bootable image, with every write going to memory. The
 # squashfs is packed by the images repo, which owns userspace composition.
@@ -270,6 +277,8 @@ live-arm:
 	./tools/live-image.sh $(LIVE_PROFILE) aarch64
 micro-arm:
 	OXIDE_QUICKBOOT_PROFILE=micro $(XTASK) grub --arch aarch64 --smp $(SMP) --id micro
+nano-arm:
+	OXIDE_QUICKBOOT_PROFILE=nano $(XTASK) grub --arch aarch64 --smp $(SMP) --id nano
 gnome:
 	OXIDE_QUICKBOOT_PROFILE=gnome $(XTASK) grub --arch x86_64 --smp $(SMP) --id gnome
 gnome-arm:
