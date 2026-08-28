@@ -138,10 +138,29 @@ fn prealloc_tail(block_size: u64, current_size: u64, logical_start: u32, count: 
     let target = if bytes <= 1024 * 1024 {
         let min_blocks = (16 * 1024 / block_size).max(u64::from(SMALL_FILE_MIN_PREALLOC_BLOCKS));
         end_blocks.max(min_blocks).next_power_of_two()
+    } else if bytes <= 4 * 1024 * 1024 {
+        2 * 1024 * 1024 / block_size
+    } else if bytes <= 8 * 1024 * 1024 {
+        4 * 1024 * 1024 / block_size
     } else {
-        end_blocks.saturating_add(u64::from(MAX_PREALLOC_TAIL_BLOCKS))
+        8 * 1024 * 1024 / block_size
     };
-    target.saturating_sub(request_end).min(u64::from(MAX_PREALLOC_TAIL_BLOCKS)) as u32
+    target.max(request_end).saturating_sub(request_end)
+        .min(u64::from(MAX_PREALLOC_TAIL_BLOCKS)) as u32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prealloc_tail;
+
+    #[test]
+    fn preallocation_follows_linux_size_windows() {
+        assert_eq!(prealloc_tail(4096, 0, 0, 1), 3);
+        assert_eq!(prealloc_tail(4096, 16 * 1024, 4, 1), 3);
+        assert_eq!(prealloc_tail(4096, 1024 * 1024, 256, 1), 255);
+        assert_eq!(prealloc_tail(4096, 2 * 1024 * 1024, 512, 1), 0);
+        assert_eq!(prealloc_tail(4096, 5 * 1024 * 1024, 1280, 1), 0);
+    }
 }
 
 fn take_reserved(runs: &[ReservedRun], offsets: &mut [usize], lb: u32) -> Option<(u64, bool, bool)> {
