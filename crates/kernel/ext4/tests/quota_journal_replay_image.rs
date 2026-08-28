@@ -201,7 +201,10 @@ fn crash_during_quota_update(point: CrashPoint, id: u32) -> (alloc::vec::Vec<u8>
 
     disk.arm(jsb_sector, point);
     let want = MemDqblk { dqb_bhardlimit: CRASH_BHARD, dqb_bsoftlimit: CRASH_BSOFT, ..before };
-    vfs::quota_setquota(&sb, qid, want).expect("setquota");
+    // Once the simulated power cut occurs, the in-flight syscall may report
+    // EIO even though the media snapshot is valid for the recovery assertion.
+    let result = vfs::quota_setquota(&sb, qid, want);
+    assert!(result.is_ok() || disk.crashed(), "unexpected pre-crash quota error: {result:?}");
     let _ = vfs::quota_sync(&sb, QuotaType::User);
     assert!(disk.crashed(), "power was actually cut during the quota update");
 
