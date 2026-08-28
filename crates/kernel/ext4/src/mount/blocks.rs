@@ -365,6 +365,18 @@ impl Mount {
         self.read_metadata_block(phys)
     }
 
+    /// Shared-buffer companion for metadata readers that only inspect a file
+    /// block. This preserves the Linux buffer-head shape: `sb_bread()` returns
+    /// the cached block to the parser, rather than copying a full filesystem
+    /// block into a temporary `Vec` for every lookup.
+    /// # C: O(N_extents) extent walk + 1 shared cache lookup
+    pub(crate) fn read_file_block_meta_shared(&self, inode: &Inode, file_blk: u32)
+        -> Result<alloc::sync::Arc<Vec<u8>>, MountError>
+    {
+        let phys = self.resolve_pblock(inode, file_blk)?;
+        self.read_metadata_block_shared(phys)
+    }
+
     /// Like `write_file_block` but routes through `metadata_write`
     /// — the block being written is part of a metadata-fs structure
     /// (e.g. a directory's data block) and must be journaled when

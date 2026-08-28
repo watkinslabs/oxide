@@ -255,7 +255,10 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
     // drains + enqueues it once its own switch has settled (`schedule()` →
     // `wake_list_drain`), so a task is never run on two CPUs and a waker never
     // blocks IF=0 on a peer's rq lock.
-    if force_defer || target != me || task.on_cpu.load(Ordering::Acquire) {
+    let target_idle = get_rq(target).is_some_and(|rq|
+        rq.nr_running.load(Ordering::Acquire) == 0);
+    let softirq_idle_wake = crate::preempt::in_serving_softirq() && target_idle;
+    if force_defer || target != me || task.on_cpu.load(Ordering::Acquire) || softirq_idle_wake {
         // Pick a real, installed CPU to own the deferred task; fall back to local.
         let tcpu = if get_rq(target).is_some() { target }
                    else if get_rq(me).is_some() { me }
@@ -331,11 +334,9 @@ pub unsafe fn try_to_wake_up(task: Arc<Task>) -> bool {
 
 #[inline]
 fn wake_context_requires_defer() -> bool {
-    // Linux softirq handlers may take the local rq lock with IRQs saved. The
-    // hard-IRQ handler cannot: it may have interrupted the owner while that
-    // owner held rq->lock with interrupts disabled. Block completions are
-    // delivered from the softirq tail after irq_exit has dropped the hardirq
-    // field, so deferring them adds a wake-list round trip to every read.
+    // Hard IRQs cannot take a runqueue lock that they may have interrupted.
+    // Softirq completion runs after the hard-IRQ field is dropped and follows
+    // Linux's target-specific `ttwu_queue_cond` decision in placement.
     crate::preempt::hardirq_count() != 0
 }
 

@@ -39,20 +39,20 @@ impl Mount {
         &self, dir_node: &Inode, name: &[u8],
     ) -> Result<HtreeLookup, MountError> {
         if dir_node.i_flags & EXT4_INDEX_FL == 0 { return Ok(HtreeLookup::Fallback); }
-        let root = self.read_file_block_meta(dir_node, 0)?;
+        let root = self.read_file_block_meta_shared(dir_node, 0)?;
         if root.len() < 0x28 { return Ok(HtreeLookup::Fallback); }
         let hash_version = root[0x1C];
         let hash = dirhash_major(name, hash_version, &self.sb.hash_seed);
         let indirect = root[0x1E];
         let (leaf_lblk, collision_lblk) = if indirect >= 1 {
             let node_lblk = self.dx_find_leaf(&root, 0x20, hash)?;
-            let node = self.read_file_block_meta(dir_node, node_lblk)?;
+            let node = self.read_file_block_meta_shared(dir_node, node_lblk)?;
             if node.len() < 0x10 { return Ok(HtreeLookup::Fallback); }
             self.dx_find_leaf_with_collision(&node, 0x08, hash)?
         } else {
             self.dx_find_leaf_with_collision(&root, 0x20, hash)?
         };
-        let leaf = self.read_file_block_meta(dir_node, leaf_lblk)?;
+        let leaf = self.read_file_block_meta_shared(dir_node, leaf_lblk)?;
         let usable = crate::csum::dir_usable_len(&self.sb, self.sb.block_size as usize);
         if leaf.len() < usable { return Ok(HtreeLookup::Fallback); }
         let found = dir::lookup_matching(&leaf[..usable], |entry| {
@@ -60,7 +60,7 @@ impl Mount {
         })?.map(|entry| entry.inode);
         if let Some(ino) = found { return Ok(HtreeLookup::Found(ino)); }
         if let Some(next_lblk) = collision_lblk {
-            let next = self.read_file_block_meta(dir_node, next_lblk)?;
+            let next = self.read_file_block_meta_shared(dir_node, next_lblk)?;
             if next.len() < usable { return Ok(HtreeLookup::Fallback); }
             let found = dir::lookup_matching(&next[..usable], |entry| {
                 self.names_equal(dir_node, entry, name)
