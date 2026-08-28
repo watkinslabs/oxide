@@ -168,6 +168,12 @@ impl Mount {
             let mut s = self.state.lock();
             s.sb_free_blocks = (fb_hi << 32) | fb_lo;
             s.sb_free_inodes = fi;
+            // A failed batched operation may have restored bitmap bytes in
+            // the shadow after the allocator published a cache entry. Drop
+            // all bitmap snapshots so the next group scan revalidates against
+            // the restored transaction view instead of reusing stale buddy
+            // state.
+            s.block_bitmap_cache.clear();
         }
     }
 
