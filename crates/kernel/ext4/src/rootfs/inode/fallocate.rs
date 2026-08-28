@@ -37,6 +37,7 @@ pub(crate) fn ext4_fallocate(inode: &Inode, mode: u32, off: u64, len: u64) -> KR
     if mode & !EXT4_SUPPORTED_MODES != 0 { return Err(VfsError::Eopnotsupp); }
     let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
     let _mutation = d.begin_swap_mutation(inode)?;
+    d.frames.invalidate_inode_cache();
     let keep_size = mode & FALLOC_FL_KEEP_SIZE != 0;
     // A range shift moves every byte from `off` to EOF, so the cached tail is
     // stale everywhere past `off`, not just across the request.

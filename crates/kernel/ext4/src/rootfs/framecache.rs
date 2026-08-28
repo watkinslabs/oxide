@@ -108,6 +108,10 @@ pub(crate) struct Ext4FrameStore {
     /// the real on-disk size. Kept in step with `Ext4FileData.size_hint` /
     /// `inode.i_size` by write/truncate/fallocate.
     size: AtomicU64,
+    /// Parsed on-disk inode reused by page-cache fills. Linux keeps this
+    /// metadata in the inode cache; re-reading the inode-table slot for every
+    /// frame miss adds an uncached metadata I/O to each fill window.
+    disk_inode: Spinlock<Option<crate::Inode>, TaskListClass>,
     /// `page_idx -> frame pa`. Sparse: an absent page is filled from disk on
     /// first touch (a hole reads as zero).
     pages: Spinlock<BTreeMap<u64, FileCachePage>, TaskListClass>,
@@ -170,6 +174,7 @@ impl Ext4FrameStore {
         let s = Arc::new(Ext4FrameStore {
             st, ino,
             size: AtomicU64::new(size),
+            disk_inode: Spinlock::new(None),
             pages: Spinlock::new(BTreeMap::new()),
             dirty: Spinlock::new(BTreeSet::new()),
             writeback: Spinlock::new(BTreeMap::new()),
@@ -188,6 +193,22 @@ impl Ext4FrameStore {
         *s.me.lock() = Arc::downgrade(&s);
         dirty::register_store(&s);
         s
+    }
+
+    /// Return the cached parsed inode, loading it once on the first fill. # C: O(1) hit + one inode read
+    fn inode_for_fill(&self) -> Result<crate::Inode, crate::MountError> {
+        if let Some(inode) = self.disk_inode.lock().as_ref().copied() { return Ok(inode); }
+        let inode = self.st.mount.read_inode(self.ino)?;
+        *self.disk_inode.lock() = Some(inode);
+        Ok(inode)
+    }
+
+    /// Invalidate the fill snapshot before an extent or inode mutation. # C: O(1)
+    pub(crate) fn invalidate_inode_cache(&self) { *self.disk_inode.lock() = None; }
+
+    /// Publish a post-mutation inode snapshot for subsequent fills. # C: O(1)
+    pub(crate) fn refresh_inode_cache(&self, inode: crate::Inode) {
+        *self.disk_inode.lock() = Some(inode);
     }
 
     fn finish_fill(&self) {
@@ -224,7 +245,7 @@ impl Ext4FrameStore {
         // nothing is wrong with the file. Reported as a transient so a fault
         // retries rather than taking it for an I/O error and dying.
         let Some(_active_fill) = self.begin_fill() else { return Err(VfsError::Eagain); };
-        let dinode = self.st.mount.read_inode(self.ino).map_err(|_e| {
+        let dinode = self.inode_for_fill().map_err(|_e| {
             // DIAG (debug-fillverify): inode-table errors otherwise collapse
             // to EIO before the range-read diagnostic can identify them.
             #[cfg(feature = "debug-fillverify")]
@@ -268,7 +289,7 @@ impl Ext4FrameStore {
             (start..end).any(|idx| !pages.contains_key(&idx))
         };
         if !has_miss { return; }
-        let Ok(dinode) = self.st.mount.read_inode(self.ino) else { return };
+        let Ok(dinode) = self.inode_for_fill() else { return };
         if !dinode.is_reg() { return; }
         let mut idx = start;
         while idx < end {
