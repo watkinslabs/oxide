@@ -149,10 +149,11 @@ impl Mount {
             // No journal — fall back to direct writes.
             return self.apply_staged_to_target(&staged).map(|_| 0);
         }
-        let jinode = match self.read_inode(self.sb.journal_inum) {
-            Ok(i)  => i,
-            Err(_) => return self.apply_staged_to_target(&staged).map(|_| 0),
-        };
+        // A journal advertised by the superblock is a correctness owner, not
+        // an optional optimization.  If its inode cannot be read, propagate
+        // the failure; writing the homes directly would bypass JBD2's
+        // write-ahead contract and could expose a partially applied update.
+        let jinode = self.read_inode(self.sb.journal_inum)?;
         let log = ExtentLogReader::build(self, &jinode)?;
         let mut sb_bytes = log.read_journal_block(0).map_err(|_| MountError::BlockIo)?;
         let mut jsb = match JournalSuperblock::parse(&sb_bytes) {

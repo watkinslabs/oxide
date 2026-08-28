@@ -147,6 +147,23 @@ fn commit_metadata_routes_through_journal() {
 }
 
 #[test]
+fn journal_inode_failure_does_not_bypass_write_ahead_logging() {
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk.clone()).unwrap();
+    let bs = m.sb.block_size as usize;
+    let target_lba = 101u64;
+    let before = read_fs_block(&disk, target_lba, bs);
+    m.fail_next_inode_read_for_tests();
+    let result = m.commit_metadata(vec![ext4::StagedBlock {
+        target_lba,
+        data: vec![0x5C; bs],
+    }]);
+    assert!(result.is_err(), "a journal read failure must reach the caller");
+    assert_eq!(read_fs_block(&disk, target_lba, bs), before,
+        "failed journal setup must not write metadata directly home");
+}
+
+#[test]
 fn checksum_v2_v3_journals_do_not_bypass_the_log() {
     use ext4::jbd2::checksum::{self, ChecksumMode};
     use ext4::jbd2::descriptor::DescriptorIter;
