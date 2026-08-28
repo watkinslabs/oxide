@@ -54,15 +54,15 @@ fn group_prealloc_order(blocks: u32) -> u8 {
         .min(u32::from(GROUP_PREALLOC_ORDER_BUCKETS - 1)) as u8
 }
 
-/// Keep the locality PA list bounded like Linux's per-order list, which is
-/// trimmed back to eight entries after a new reservation is added.  This
-/// Each order bucket is trimmed to Linux's eight-entry retention limit. # C: O(N)
+/// Keep the locality PA list bounded like Linux's per-order list. It is
+/// allowed to grow to eight entries; the ninth insertion trims the bucket
+/// back to five, retaining the largest free reservations. This hysteresis is
+/// deliberate: trimming on every insertion would make the list churn, while
+/// retaining eight after overflow would change Linux's reclaim pressure. # C: O(N log N)
 fn trim_group_preallocations(entries: &mut Vec<GroupPrealloc>) {
-    while entries.len() > GROUP_PREALLOC_LIST_LIMIT {
-        let Some((smallest, _)) = entries.iter().enumerate()
-            .min_by_key(|(_, pa)| pa.blocks.len()) else { break };
-        entries.remove(smallest);
-    }
+    if entries.len() <= GROUP_PREALLOC_LIST_LIMIT { return; }
+    entries.sort_unstable_by(|left, right| right.blocks.len().cmp(&left.blocks.len()));
+    entries.truncate(5);
 }
 
 fn inode_pa_blocks(pa: &InodePrealloc, logical: u32, want: u32) -> Option<Vec<u64>> {
