@@ -52,6 +52,7 @@ impl RootfsState {
     /// Build state around an opened `Mount`.
     /// # C: O(1)
     pub fn new(mount: Arc<Mount>) -> Arc<Self> {
+        mount.install_self(&mount);
         let wr_start = crate::sysfs::disk::sectors_written(&mount);
         let st = Arc::new(Self {
             mount,
