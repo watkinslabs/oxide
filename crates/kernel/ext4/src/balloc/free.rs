@@ -65,27 +65,30 @@ impl Mount {
             let bbm_byte_off = gd_orig.block_bitmap * (m.sb.block_size as u64);
             let cached = { m.state.lock().block_bitmap_cache.get(&bbm_byte_off).cloned() };
             let mut bitmap = cached.unwrap_or(m.read_meta_byte_range(bbm_byte_off, m.sb.block_size as usize)?);
-            if !crate::csum::verify_block_bitmap_csum_at(&m.sb, &m.state.lock().gdt_buf, group, &bitmap) {
+            let mut disk_bitmap = bitmap.clone();
+            m.clear_group_prealloc(group, &mut disk_bitmap);
+            if !crate::csum::verify_block_bitmap_csum_at(&m.sb, &m.state.lock().gdt_buf, group, &disk_bitmap) {
                 crate::mount::first_csum_failure(b"block-bitmap-free", group as u64, bbm_byte_off);
                 return Err(MountError::BadChecksum);
             }
             let bidx = bit as usize;
             let mask = 1u8 << (bidx & 7);
-            if (bitmap[bidx >> 3] & mask) == 0 {
+            if (disk_bitmap[bidx >> 3] & mask) == 0 {
                 return Err(MountError::DoubleFree);
             }
             bitmap[bidx >> 3] &= !mask;
+            disk_bitmap[bidx >> 3] &= !mask;
             // Update cached state (gdt_buf + sb_free_blocks).
             let mut gd = gd_orig;
             gd.free_blocks_count = gd.free_blocks_count.saturating_add(1);
             {
                 let mut s = m.state.lock();
                 gdt::write_descriptor_counters(&mut s.gdt_buf, group, &m.sb, &gd)?;
-                crate::csum::set_block_bitmap_csum(&m.sb, &mut s.gdt_buf, group, &bitmap);
+                crate::csum::set_block_bitmap_csum(&m.sb, &mut s.gdt_buf, group, &disk_bitmap);
                 crate::csum::stamp_group_desc_csum(&m.sb, &mut s.gdt_buf, group);
                 s.sb_free_blocks = s.sb_free_blocks.saturating_add(1);
             }
-            m.metadata_write(bbm_byte_off, &bitmap)?;
+            m.metadata_write(bbm_byte_off, &disk_bitmap)?;
             m.persist_gdt_slot_meta(group)?;
             m.persist_sb_free_blocks_meta()?;
             m.flush_pending_tx()?;

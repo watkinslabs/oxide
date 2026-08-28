@@ -99,7 +99,10 @@ impl Mount {
         // charges its own via the same path).
         let prev_i_blocks = u32::from_le_bytes([ino_bytes[0x1C], ino_bytes[0x1D], ino_bytes[0x1E], ino_bytes[0x1F]]);
         let data_charged = prev_i_blocks.saturating_add(spb);
-        self.account_i_blocks_delta(ino, prev_i_blocks, data_charged)?;
+        if let Err(e) = self.account_i_blocks_delta(ino, prev_i_blocks, data_charged) {
+            if let Some(phys) = physical { let _ = self.free_block(phys); }
+            return Err(e);
+        }
 
         let phys = match physical {
             Some(phys) => phys,

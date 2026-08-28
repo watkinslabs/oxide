@@ -35,6 +35,9 @@ impl Mount {
             let z = [0u8; 1];
             return self.write_at_inner(ino, new_len - 1, &z, meta);
         }
+        // A shrink invalidates every logical PA tail at and beyond the old
+        // EOF. Linux discards inode preallocation before truncating.
+        if new_len < cur_size { self.release_inode_prealloc(ino)?; }
         // Shrink path. Free every data block at logical index >= blocks_keep
         // and reclaim any extent-tree metadata block that becomes orphaned.
         let blocks_keep = (new_len + bs - 1) / bs;

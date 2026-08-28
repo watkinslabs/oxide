@@ -64,6 +64,27 @@ fn write_at_extends_and_round_trips() {
 }
 
 #[test]
+fn sequential_regular_writes_reuse_inode_preallocation() {
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk).unwrap();
+    let n = m.create_file(2, b"pa.bin", 0o644, 0, 0).unwrap();
+    let bs = m.sb.block_size as usize;
+    let before = m.state_free_blocks();
+
+    m.write_at(n, 0, &std::vec![0x11; bs]).unwrap();
+    let after_first = m.state_free_blocks();
+    m.write_at(n, bs as u64, &std::vec![0x22; bs]).unwrap();
+    let after_second = m.state_free_blocks();
+
+    assert_eq!(before - after_first, 1,
+        "the first stream write durably allocates only its written block");
+    assert_eq!(after_first - after_second, 1,
+        "consuming the inode PA durably claims exactly one more block");
+    let map = m.extent_map(n).unwrap();
+    assert_eq!(map[0].2, 2, "the two writes remain one physical extent");
+}
+
+#[test]
 fn fallocate_extends_size_and_allocates_zeroed_blocks() {
     let disk = build_disk();
     let m = ext4::Mount::open(disk).unwrap();
@@ -96,5 +117,3 @@ fn fallocate_keep_size_allocates_without_extending_size() {
         assert!(blk.iter().all(|&b| b == 0), "keep-size block {} is allocated and zeroed", lb);
     }
 }
-
-

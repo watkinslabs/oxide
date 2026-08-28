@@ -333,6 +333,10 @@ impl core::ops::Drop for Ext4Mount {
                 }
             }
         }
+        // Drop regular-file inode PAs before marking the superblock clean;
+        // their bitmap reservations are mount-owned metadata, not live file
+        // extents, and must be returned during put_super.
+        let _ = self.st.mount.release_all_inode_prealloc();
         // ext4_put_super: orphans reaped and no writers remain — mark the fs
         // cleanly unmounted. Best-effort on teardown.
         let _ = self.st.mount.mark_state_clean();
