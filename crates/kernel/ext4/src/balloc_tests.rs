@@ -57,11 +57,19 @@ fn first_clear_respects_max_bits_tail() {
 #[test]
 fn contiguous_run_requires_every_bit_and_stays_in_the_bitmap() {
     let bitmap = [0b0000_0011, 0b0001_0000];
-    assert_eq!(find_contiguous_run(&bitmap, 16, 3, 0, None), Some(2));
+    assert_eq!(find_contiguous_run(&bitmap, 16, 3, 0, None), Some(13));
     assert_eq!(find_contiguous_run(&bitmap, 8, 7, 0, None), None,
                "a used bit breaks the requested run");
     assert_eq!(find_contiguous_run(&bitmap, 16, 17, 0, None), None,
                "a request past the bitmap is not free");
+}
+
+#[test]
+fn contiguous_run_prefers_the_smallest_sufficient_free_extent() {
+    // Free runs are [2, 6) and [7, 10). For a three-block request Linux's
+    // best-found policy chooses the exact-sized second run, not first-fit.
+    let bitmap = [0b0100_0011, 0b0000_0000];
+    assert_eq!(find_contiguous_run(&bitmap, 10, 3, 0, None), Some(7));
 }
 
 #[test]
