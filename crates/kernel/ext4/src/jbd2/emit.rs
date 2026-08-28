@@ -17,6 +17,7 @@ pub use descriptor::{
 };
 pub use transaction::{
     build_commit_block, build_commit_block_for, emit_transaction, emit_transaction_for,
+    emit_transaction_split,
     transaction_block_count, transaction_block_count_for,
 };
 pub use cursor::LogCursor;

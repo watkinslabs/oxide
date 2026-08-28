@@ -42,5 +42,6 @@ pub use emit::{
     transaction_block_count, transaction_block_count_for,
     build_descriptor_block, build_descriptor_block_for,
     emit_transaction, emit_transaction_for,
+    emit_transaction_split,
     build_commit_block, build_commit_block_for, escape_journal_payload,
 };

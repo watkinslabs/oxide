@@ -75,6 +75,21 @@ fn commit_block_parses() {
 }
 
 #[test]
+fn split_emission_marks_commit_after_every_body_block() {
+    let bs = 1024;
+    let staged = [s(7, 0xAA, bs), s(8, 0xBB, bs)];
+    let mut parts = std::vec::Vec::new();
+    emit_transaction_split(9, &staged, bs, false, &UUID, ChecksumMode::None,
+        |commit, block| {
+            parts.push((commit, BlockHeader::parse(block).ok().map(|h| h.block_type)));
+            Ok::<(), ()>(())
+        }).unwrap();
+    assert!(parts.iter().all(|(commit, kind)| !*commit || *kind == Some(BlockType::Commit)));
+    assert_eq!(parts.first().unwrap(), &(false, Some(BlockType::Descriptor)));
+    assert_eq!(parts.last().unwrap(), &(true, Some(BlockType::Commit)));
+}
+
+#[test]
 fn checksum_transactions_replay_and_reject_corruption() {
     use super::super::replay::{replay, JournalLogReader, ReplayError};
     use super::super::superblock::{JBD2_COMPAT_CHECKSUM, JBD2_INCOMPAT_CSUM_V2,

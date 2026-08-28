@@ -36,7 +36,25 @@ impl Mount {
     pub(crate) fn write_journal_byte_range(&self, byte_off: u64, data: &[u8])
         -> Result<(), MountError>
     {
-        write_byte_range_prio(&*self.dev, byte_off, data, self.journal_request_ioprio())
+        let mut req = self.journal_write_request(byte_off, data)?;
+        self.dev.submit_sync(&mut req).map_err(|_| MountError::BlockIo)
+    }
+
+    /// Build one aligned journal write without submitting it. JBD2's async
+    /// commit path uses this to post body and commit requests independently.
+    pub(crate) fn journal_write_request(&self, byte_off: u64, data: &[u8])
+        -> Result<BlockRequest, MountError>
+    {
+        let bs = self.dev.block_size() as u64;
+        if bs == 0 || byte_off % bs != 0 || data.is_empty()
+            || data.len() as u64 % bs != 0 {
+            return Err(MountError::BlockIo);
+        }
+        let blocks = data.len() as u64 / bs;
+        if blocks > u32::MAX as u64 { return Err(MountError::BlockIo); }
+        let mut req = BlockRequest::new_write(byte_off / bs, blocks as u32, data.to_vec());
+        req.ioprio = self.journal_request_ioprio();
+        Ok(req)
     }
 
     /// This mount's journal I/O priority in the packed request encoding. The
