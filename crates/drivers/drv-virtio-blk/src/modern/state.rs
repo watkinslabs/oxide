@@ -544,7 +544,7 @@ pub(super) mod latency {
         DEEPEST.fetch_max(inflight as u64, Ordering::Relaxed);
         // Report on a cadence rather than needing a caller: the question this
         // answers is about a boot that may never reach a reporting point.
-        const DUMP_EVERY: u64 = 20_000;
+        const DUMP_EVERY: u64 = 1_000;
         if SINCE.fetch_add(1, Ordering::Relaxed) + 1 >= DUMP_EVERY {
             SINCE.store(0, Ordering::Relaxed);
             dump();

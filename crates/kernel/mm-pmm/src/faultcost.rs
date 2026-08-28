@@ -31,6 +31,10 @@ const CLASS_NAME: [&[u8]; CLASSES] = [b"rd-absent", b"wr-absent", b"rd-prot", b"
 
 static FILL_NS:  AtomicU64 = AtomicU64::new(0);
 static FILL_CNT: AtomicU64 = AtomicU64::new(0);
+static FILL_READ_NS: AtomicU64 = AtomicU64::new(0);
+static FILL_PUBLISH_NS: AtomicU64 = AtomicU64::new(0);
+static FILL_EXTENT_NS: AtomicU64 = AtomicU64::new(0);
+static FILL_DATAIO_NS: AtomicU64 = AtomicU64::new(0);
 
 /// Record one filesystem page-cache fill (the coalesced device read a fault
 /// miss triggers). Called by the filesystem so the fault profile can separate
@@ -40,6 +44,22 @@ static FILL_CNT: AtomicU64 = AtomicU64::new(0);
 pub fn note_fill(ns: u64) {
     FILL_NS.fetch_add(ns, Ordering::Relaxed);
     FILL_CNT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Split one fill into its backing-range read/extent phase and its page-cache
+/// publication phase. Aggregate-only so diagnostics add no per-page history.
+/// # C: O(1)
+#[inline]
+pub fn note_fill_parts(read_ns: u64, publish_ns: u64) {
+    FILL_READ_NS.fetch_add(read_ns, Ordering::Relaxed);
+    FILL_PUBLISH_NS.fetch_add(publish_ns, Ordering::Relaxed);
+}
+
+/// Attribute the range-read phase without retaining per-fill records. # C: O(1)
+#[inline]
+pub fn note_fill_read_parts(extent_ns: u64, dataio_ns: u64) {
+    FILL_EXTENT_NS.fetch_add(extent_ns, Ordering::Relaxed);
+    FILL_DATAIO_NS.fetch_add(dataio_ns, Ordering::Relaxed);
 }
 
 /// # C: O(1)
@@ -235,6 +255,18 @@ fn dump() {
         klog::write_raw(b"  fs-fill cnt=");   klog::write_dec_u64(fc);
         klog::write_raw(b" ms=");             klog::write_dec_u64(fns / NS_PER_MS);
         klog::write_raw(b" avg_ns=");         klog::write_dec_u64(fns / fc);
+        klog::write_raw(b"\n");
+        let fr = FILL_READ_NS.load(Ordering::Relaxed);
+        let fp = FILL_PUBLISH_NS.load(Ordering::Relaxed);
+        klog::write_raw(b"  fs-fill-parts read_ms=");
+        klog::write_dec_u64(fr / NS_PER_MS);
+        klog::write_raw(b" publish_ms=");
+        klog::write_dec_u64(fp / NS_PER_MS);
+        klog::write_raw(b"\n");
+        klog::write_raw(b"  fs-fill-read-parts extent_ms=");
+        klog::write_dec_u64(FILL_EXTENT_NS.load(Ordering::Relaxed) / NS_PER_MS);
+        klog::write_raw(b" dataio_ms=");
+        klog::write_dec_u64(FILL_DATAIO_NS.load(Ordering::Relaxed) / NS_PER_MS);
         klog::write_raw(b"\n");
     }
     for i in 0..CLASSES {

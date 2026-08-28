@@ -270,3 +270,4 @@
 <!-- B2711-ext4-checkpoint-order claims the ext4 checkpoint-ordering defect. -->
 <!-- B2711 result: the durable publication ordering is corrected, but the matched perf run reached the marker with 32 flushes/206 ms; no speedup is claimed. -->
 <!-- B2812-ext4-async-checkpoint: batched journal publication and home-block checkpointing now have separate owners; explicit sync drains the retained transaction. -->
+<!-- B2813-block-completion-attribution: the owned virtio completions are mostly <1 ms (deepest in-flight 8); the remaining page-fill cost is scheduler resume latency after the completion wakes the faulting task, averaging 1.45 ms and reaching 7–10 ms under load. The new debug-faultcost split reports extent resolution, device-wait, and publication separately; no behavior fix is claimed yet. -->

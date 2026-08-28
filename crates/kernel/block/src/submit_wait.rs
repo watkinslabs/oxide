@@ -17,6 +17,8 @@ use crate::{BlockDevice, BlockRequest, KResult};
 /// hand back, and the flag it publishes when it has.
 struct IoWait {
     done:   AtomicBool,
+    #[cfg(target_os = "oxide-kernel")]
+    completed_ns: core::sync::atomic::AtomicU64,
     slot:   sync::Spinlock<Option<(BlockRequest, KResult<()>)>, sync::TaskList>,
     #[cfg(target_os = "oxide-kernel")]
     wait:   sched::live::WaitList,
@@ -26,6 +28,8 @@ impl IoWait {
     fn new() -> Self {
         Self {
             done: AtomicBool::new(false),
+            #[cfg(target_os = "oxide-kernel")]
+            completed_ns: core::sync::atomic::AtomicU64::new(0),
             slot: sync::Spinlock::new(None),
             #[cfg(target_os = "oxide-kernel")]
             wait: sched::live::WaitList::new(),
@@ -36,6 +40,8 @@ impl IoWait {
     /// `Acquire`, so a task that observes it set also observes the slot.
     fn complete(&self, request: BlockRequest, result: KResult<()>) {
         *self.slot.lock() = Some((request, result));
+        #[cfg(target_os = "oxide-kernel")]
+        self.completed_ns.store(sched::deadline::clock::now_ns(), Ordering::Relaxed);
         self.done.store(true, Ordering::Release);
         #[cfg(target_os = "oxide-kernel")]
         self.wait.wake_all();
@@ -60,10 +66,31 @@ pub fn submit_and_wait<D: BlockDevice + ?Sized>(dev: &D, request: BlockRequest)
         signal.complete(request, result);
     }));
     wait_done(&state);
+    #[cfg(target_os = "oxide-kernel")]
+    note_resume_delay(sched::deadline::clock::now_ns().saturating_sub(
+        state.completed_ns.load(Ordering::Relaxed)));
     // The completion has published the slot and the flag; nothing else takes
     // this slot, so a request that completed always leaves one here.
     let taken = state.slot.lock().take();
     taken.expect("completed request leaves its result")
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn note_resume_delay(ns: u64) {
+    use core::sync::atomic::AtomicU64;
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    static TOTAL_NS: AtomicU64 = AtomicU64::new(0);
+    let count = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    TOTAL_NS.fetch_add(ns, Ordering::Relaxed);
+    if count % 1_000 == 0 {
+        klog::write_raw(b"[BLK-RESUME] cnt=");
+        klog::write_dec_u64(count);
+        klog::write_raw(b" avg_ns=");
+        klog::write_dec_u64(TOTAL_NS.load(Ordering::Relaxed) / count);
+        klog::write_raw(b" last_ns=");
+        klog::write_dec_u64(ns);
+        klog::write_raw(b"\n");
+    }
 }
 
 /// Park until the completion lands, reporting a transfer that is taking an
