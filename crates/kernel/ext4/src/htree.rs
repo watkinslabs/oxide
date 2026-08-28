@@ -44,11 +44,29 @@ impl Mount {
         let hash_version = root[0x1C];
         let hash = dirhash_major(name, hash_version, &self.sb.hash_seed);
         let indirect = root[0x1E];
+        // This reader currently has the same one-interior-node shape as the
+        // writer. A deeper on-disk tree must use the ordinary scan fallback;
+        // treating its first interior block as a leaf would return a false
+        // miss rather than the Linux corruption-tolerant answer.
+        if indirect > 1 { return Ok(HtreeLookup::Fallback); }
         let (leaf_lblk, collision_lblk) = if indirect >= 1 {
-            let node_lblk = self.dx_find_leaf(&root, 0x20, hash)?;
+            // The root's continuation entries name further interior nodes,
+            // not leaves. Linux ext4_htree_next_block() walks those parent
+            // entries when an equal-hash run crosses a node boundary.
+            let (node_lblk, collision_nodes) =
+                self.dx_find_leaf_with_collision(&root, 0x20, hash)?;
             let node = self.read_file_block_meta_shared(dir_node, node_lblk)?;
             if node.len() < 0x10 { return Ok(HtreeLookup::Fallback); }
-            self.dx_find_leaf_with_collision(&node, 0x08, hash)?
+            let (leaf, mut collisions) = self.dx_find_leaf_with_collision(&node, 0x08, hash)?;
+            for next_node_lblk in collision_nodes {
+                let next_node = self.read_file_block_meta_shared(dir_node, next_node_lblk)?;
+                if next_node.len() < 0x10 { return Ok(HtreeLookup::Fallback); }
+                let (next_leaf, next_collisions) =
+                    self.dx_find_leaf_with_collision(&next_node, 0x08, hash)?;
+                collisions.push(next_leaf);
+                collisions.extend(next_collisions);
+            }
+            (leaf, collisions)
         } else {
             self.dx_find_leaf_with_collision(&root, 0x20, hash)?
         };
@@ -424,6 +442,11 @@ impl Mount {
             chosen_hash = ehash;
             chosen_idx = i;
         }
+        // Entry zero is the implicit lower bound of this node. For a node
+        // reached through a nonzero root boundary, its stored hash may be the
+        // boundary but Linux still compares continuation against the lookup
+        // hash, not against the synthetic zero lower bound.
+        let collision_hash = if chosen_idx == 0 { hash } else { chosen_hash & !1 };
         // Linux ext4_htree_next_block() advances until the next hash range
         // changes. A collision run may span more than two leaves; checking
         // only one continuation leaf makes valid entries disappear as ENOENT.
@@ -433,7 +456,7 @@ impl Mount {
         for i in (chosen_idx + 1)..count {
             let eo = entries_off + i * 8;
             let ehash = u32::from_le_bytes([node[eo], node[eo + 1], node[eo + 2], node[eo + 3]]);
-            if (ehash & !1) != chosen_hash { break; }
+            if (ehash & !1) != collision_hash { break; }
             collisions.push(u32::from_le_bytes([
                 node[eo + 4], node[eo + 5], node[eo + 6], node[eo + 7]]));
         }
