@@ -64,7 +64,11 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
             .or_else(|| extents.first())
             .map(|r| m.group_of_block(r.phys))
             .unwrap_or(0);
-        if preallocate && count <= GROUP_PREALLOC_MAX_REQUEST {
+        let group_prealloc = preallocate
+            && count <= GROUP_PREALLOC_MAX_REQUEST
+            && super::prealloc::group_prealloc_eligible(
+                m.sb.block_size as u64, current_size, start as u32, count);
+        if group_prealloc {
             if let Some(blocks) = m.peek_group_prealloc(hint, count) {
                 runs.push(ReservedRun { logical_start: start as u32, blocks,
                     from_inode_pa: false, from_group_pa: true,
@@ -74,7 +78,7 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
             }
         }
         let reserve_count = if preallocate {
-            count.saturating_add(if count <= GROUP_PREALLOC_MAX_REQUEST {
+            count.saturating_add(if group_prealloc {
                 GROUP_PREALLOC_BLOCKS
             } else { super::prealloc::tail_blocks(m.sb.block_size as u64, current_size, start as u32, count) })
         } else { count };
@@ -100,12 +104,12 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
                 runs.push(ReservedRun { logical_start: start as u32,
                     blocks: blocks[..requested].to_vec(), from_inode_pa: false,
                     from_group_pa: false,
-                    tail_start: if tail.is_empty() || (preallocate && count <= GROUP_PREALLOC_MAX_REQUEST) { None } else {
+                    tail_start: if tail.is_empty() || group_prealloc { None } else {
                         Some(start.saturating_add(u64::from(count)) as u32)
-                    }, tail_blocks: if preallocate && count <= GROUP_PREALLOC_MAX_REQUEST {
+                    }, tail_blocks: if group_prealloc {
                         Vec::new()
                     } else { tail.clone() } });
-                if preallocate && count <= GROUP_PREALLOC_MAX_REQUEST && !tail.is_empty() {
+                if group_prealloc && !tail.is_empty() {
                     m.add_group_prealloc(m.group_of_block(tail[0]), tail);
                 }
             }
