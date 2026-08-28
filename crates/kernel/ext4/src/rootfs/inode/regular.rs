@@ -252,6 +252,16 @@ impl InodeOps for Ext4RegInodeOps {
 pub(crate) struct Ext4RegFileOps;
 
 impl FileOps for Ext4RegFileOps {
+    /// Linux drops unused inode preallocation when the final writable file
+    /// description closes. `File::Drop` calls this before releasing its own
+    /// write reference, so `i_writecount == 1` identifies the last writer.
+    /// # C: O(PA blocks)
+    fn on_release_file(&self, file: &vfs::File) {
+        if !file.holds_write_ref() || file.inode().writecount() != 1 { return; }
+        let Some(d) = file.inode().private::<Ext4FileData>() else { return; };
+        let _ = d.st.mount.release_inode_prealloc(d.ino);
+    }
+
     /// `ext4_sync_file` — the `f_op->fsync` slot.
     /// Commits the journal transaction carrying THIS inode and flushes the
     /// owning mount's device, so the file's data and the metadata reaching it
