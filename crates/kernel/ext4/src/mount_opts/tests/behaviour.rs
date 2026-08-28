@@ -41,6 +41,13 @@ fn inode_table_readahead_matches_linux_value_contract() {
 }
 
 #[test]
+fn direct_io_read_modes_are_refused_without_a_direct_io_consumer() {
+    assert!(refused("dioread_nolock"));
+    assert!(refused("dioread_lock"));
+    assert!(refused("nodioread_nolock"));
+}
+
+#[test]
 fn the_error_policy_names_are_the_three_the_filesystem_has() {
     assert_eq!(b("errors=continue").unwrap().errors, ErrorsPolicy::Continue);
     assert_eq!(b("errors=panic").unwrap().errors, ErrorsPolicy::Panic);

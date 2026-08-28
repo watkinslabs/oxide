@@ -321,7 +321,7 @@ The authoritative dependency-ordered ext4 inventory and execution plan is [`scra
 | E4-07 | OPEN | Multiblock allocator scan heuristics and complete locality-PA lifecycle still differ from Linux. | Fragmentation, ENOSPC, rollback, migration, remount, and e2fsck-clean coverage. |
 | E4-08 | OPEN | Htree selection improved, but aggregate `newfstatat` remains far slower than local Linux. | Phase attribution and controlled repeated comparison. |
 | E4-09 | OPEN | `inode_readahead_blks` is admitted without a live asynchronous inode-table consumer. | Lifetime-safe cache warmup and cold-lookup measurements. |
-| E4-10 | OPEN | Direct-I/O mount options are admitted without direct-I/O semantics. | Implement the owner or explicitly refuse unsupported use. |
+| E4-10 | DONE | `dioread_nolock`/`dioread_lock` now refuse mounts because this tree has no O_DIRECT consumer whose unwritten-extent protocol they could control. | Add a complete O_DIRECT path before reconsidering support. |
 | E4-11 | OPEN | mbcache and bitmap-prefetch options lack complete allocator-cache consumers. | Each option changes one canonical cache policy. |
 | E4-12 | OPEN | Remaining legacy/obsolete option spellings lack an explicit implemented/refused/no-op disposition. | Per-option audit and tests. |
 | E4-13 | OPEN | Parallel ext4 image tests share mutable fixtures and can fail falsely. | Isolated fixture ownership and agreeing parallel/serial results. |

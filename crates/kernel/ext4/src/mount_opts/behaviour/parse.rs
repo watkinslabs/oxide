@@ -42,6 +42,9 @@ pub const OPT_USER_XATTR: &str = "user_xattr";
 pub const OPT_AUTO_DA_ALLOC: &str = "auto_da_alloc";
 pub const OPT_NOAUTO_DA_ALLOC: &str = "noauto_da_alloc";
 pub const OPT_INODE_READAHEAD_BLKS: &str = "inode_readahead_blks";
+pub const OPT_DIOREAD_NOLOCK: &str = "dioread_nolock";
+pub const OPT_DIOREAD_LOCK: &str = "dioread_lock";
+pub const OPT_NODIOREAD_NOLOCK: &str = "nodioread_nolock";
 
 /// `mb_optimize_scan=` takes exactly these two values.
 const MB_OPTIMIZE_OFF: u32 = 0;
@@ -105,6 +108,12 @@ impl Ext4Behaviour {
                     return Err(VfsError::Einval);
                 }
                 self.inode_readahead_blks = n;
+            }
+            // This tree has no O_DIRECT data path. Linux's dioread_nolock
+            // changes the extent/unwritten-extent protocol of that path, so
+            // accepting the option here would falsely promise its semantics.
+            OPT_DIOREAD_NOLOCK | OPT_DIOREAD_LOCK | OPT_NODIOREAD_NOLOCK => {
+                return Err(VfsError::Einval);
             }
             OPT_STRIPE => self.stripe = number(value(val)?)?,
             OPT_RESUID => self.resuid = number(value(val)?)?,
