@@ -91,6 +91,22 @@ fn wrap_of_a_created_inode_reads_nothing() {
     }
 }
 
+/// A dcache miss into a regular file performs one type/metadata read, then
+/// constructs the shared VFS inode from that same image.  The old
+/// `wrap_any_ino -> wrap_file` path performed two reads for the same inode.
+#[test]
+fn regular_lookup_wrap_reuses_type_probe() {
+    let (m, _sb) = mount_mini();
+    let st = m.state();
+    let (ino, _node) = st.mount.create_file_inode(2, b"lookup-owner.dat", 0o640, 0, 0)
+        .expect("create_file_inode");
+    st.mount.reset_inode_read_count_for_tests();
+    let wrapped = st.wrap_any_ino(ino).expect("wrap regular inode");
+    assert!(matches!(wrapped.file_type(), vfs::FileType::Regular));
+    assert_eq!(st.mount.inode_read_count_for_tests(), 1,
+        "regular lookup must reuse the type-probe inode image");
+}
+
 /// `mkdir` shared the read-back — it was the boot's other journald symptom,
 /// `mkdir /var/log/journal/<id> err=5`.
 #[test]
