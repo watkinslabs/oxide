@@ -12,6 +12,7 @@
 // - collect: extent leaf collection for SEEK_HOLE/SEEK_DATA.
 // - convert: unwritten -> written conversion on the write path (split vs zero).
 // - write: random writes, fallocate, and direct inode size updates.
+// - prealloc: Linux-shaped regular-file reservation sizing.
 // - limits: bounded writeback-cluster sizing shared with the frame cache.
 // - truncate: extent-tree truncation, subtree freeing, and i_blocks accounting.
 // - nlink: link-count mutation helper.
@@ -30,6 +31,7 @@ mod records;
 mod shift;
 mod truncate;
 mod write;
+mod prealloc;
 mod limits;
 
 pub(crate) use limits::DATA_WRITE_CLUSTER_BYTES;
