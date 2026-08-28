@@ -86,7 +86,8 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
             } else { super::prealloc::tail_blocks(m.sb.block_size as u64, current_size, start as u32, count) })
         } else { count };
         let flags = m.data_reserve_flags(ino);
-        let mut allocated = m.alloc_blocks_flags(hint, reserve_count, flags);
+        let stream_ino = if preallocate && !group_prealloc { Some(ino) } else { None };
+        let mut allocated = m.alloc_blocks_for_inode(stream_ino, hint, reserve_count, flags);
         if matches!(&allocated, Err(MountError::NoSpace)) && group_prealloc {
             // A stripe-rounded locality request is a preference. Retry with
             // progressively smaller group PAs before accepting an exact run;
@@ -96,13 +97,13 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
                 m.sb.block_size as u64, 0) / 2;
             while tail >= 32 {
                 let candidate = count.saturating_add(tail);
-                allocated = m.alloc_blocks_flags(hint, candidate, flags);
+                allocated = m.alloc_blocks_for_inode(stream_ino, hint, candidate, flags);
                 if allocated.is_ok() { break; }
                 tail /= 2;
             }
         }
         if matches!(&allocated, Err(MountError::NoSpace)) && reserve_count != count {
-            allocated = m.alloc_blocks_flags(hint, count, flags);
+            allocated = m.alloc_blocks_for_inode(stream_ino, hint, count, flags);
         }
         match allocated {
             Ok(blocks) => {

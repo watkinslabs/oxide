@@ -16,6 +16,15 @@ pub(crate) fn locality_cpu() -> usize {
     { 0 }
 }
 
+pub(crate) fn locality_cpu_count() -> u32 {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    { use hal::CpuOps; return hal_x86_64::X86CpuOps::cpu_count(); }
+    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+    { use hal::CpuOps; return hal_aarch64::ArmCpuOps::cpu_count(); }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { 1 }
+}
+
 use crate::gdt;
 use super::super::{Mount, MountError};
 

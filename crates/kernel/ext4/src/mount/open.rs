@@ -114,6 +114,7 @@ impl Mount {
             group_avg_fragment_order: alloc::collections::BTreeMap::new(),
             group_avg_fragment_index: alloc::collections::BTreeMap::new(),
             group_prealloc: alloc::collections::BTreeMap::new(),
+            stream_last_groups: alloc::collections::BTreeMap::new(),
             inode_prealloc: alloc::collections::BTreeMap::new(),
             batch: false,
             undo: Vec::new(),

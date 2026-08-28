@@ -37,6 +37,13 @@ impl Mount {
     pub(crate) fn alloc_blocks_flags(&self, hint: u32, count: u32, flags: ReserveFlags)
         -> Result<Vec<u64>, MountError>
     {
+        self.alloc_blocks_for_inode(None, hint, count, flags)
+    }
+
+    /// Allocate data blocks with Linux's per-inode stream goal. # C: O(N_groups * block_size * count)
+    pub(crate) fn alloc_blocks_for_inode(&self, ino: Option<u32>, hint: u32, count: u32, flags: ReserveFlags)
+        -> Result<Vec<u64>, MountError>
+    {
         if count == 0 { return Ok(Vec::new()); }
         #[cfg(not(target_os = "oxide-kernel"))]
         if self.faults.next_alloc_block.swap(false, Ordering::AcqRel) { return Err(MountError::BlockIo); }
@@ -66,11 +73,13 @@ impl Mount {
             let mut discarded = false;
             loop {
                 let freest = if optimize { m.freest_group(groups) } else { None };
+                let stream = ino.and_then(|ino| m.stream_goal_group(ino, groups));
                 let preferred = if optimize { m.group_for_request(groups, count, hint) } else { None };
-                let start = preferred.unwrap_or_else(|| scan::scan_start(hint, groups, optimize, freest));
+                let start = stream.or(preferred).unwrap_or_else(|| scan::scan_start(hint, groups, optimize, freest));
                 for off in 0..groups {
                     let group = (start + off) % groups;
                     if let Some(run) = m.try_alloc_run_in_group(group, count)? {
+                        if let Some(ino) = ino { m.record_stream_goal(ino, group, groups); }
                         return Ok(run);
                     }
                 }
@@ -88,6 +97,16 @@ impl Mount {
                 }
             }
         })
+    }
+
+    fn stream_goal_group(&self, ino: u32, groups: u32) -> Option<u32> {
+        if groups == 0 { return None; }
+        let slot = stream_goal_slot(ino, groups);
+        self.state.lock().stream_last_groups.get(&slot).copied()
+    }
+
+    fn record_stream_goal(&self, ino: u32, group: u32, groups: u32) {
+        self.state.lock().stream_last_groups.insert(stream_goal_slot(ino, groups), group);
     }
 
     /// Allocate one previously-free filesystem block for file data. Wraps in a
@@ -399,6 +418,15 @@ impl Mount {
         crate::csum::stamp_superblock_csum(&self.sb, &mut sb_buf);
         self.metadata_write(crate::superblock::SUPERBLOCK_OFFSET, &sb_buf)
     }
+}
+
+fn stream_goal_slot(ino: u32, groups: u32) -> u32 {
+    let slots = prealloc::locality_cpu_count().min(groups.div_ceil(4)).max(1);
+    stream_goal_slot_with_slots(ino, slots)
+}
+
+fn stream_goal_slot_with_slots(ino: u32, slots: u32) -> u32 {
+    ino % slots.max(1)
 }
 
 impl Mount {

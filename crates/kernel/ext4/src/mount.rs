@@ -154,6 +154,9 @@ pub struct MountState {
     /// Reusable locality-group data preallocation tails. The blocks remain
     /// free on disk and are masked from every in-memory bitmap scan.
     pub(crate) group_prealloc: alloc::collections::BTreeMap<(usize, u32), Vec<crate::balloc::prealloc::GroupPrealloc>>,
+    /// Last successful stream-allocation group, keyed by the Linux-style
+    /// inode hash slot. The allocator uses this as the next stream goal.
+    pub(crate) stream_last_groups: alloc::collections::BTreeMap<u32, u32>,
     /// Per-inode data preallocation tails. The bitmap owns these blocks on
     /// disk, while this table owns their not-yet-mapped logical range.
     pub(crate) inode_prealloc: alloc::collections::BTreeMap<u32, Vec<crate::balloc::prealloc::InodePrealloc>>,
