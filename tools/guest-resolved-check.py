@@ -32,7 +32,11 @@ KERNEL_FAULT = re.compile(
 )
 
 
-env = dict(os.environ, OXIDE_QEMU_UART_SOCK=SOCK, OXIDE_QEMU_HEADLESS="1")
+# The probe drives the systemd debug shell over UART.  Without this boot-line
+# selection, serial-getty owns ttyS0 and the commands below are interpreted as
+# login names, producing a false resolver failure.
+env = dict(os.environ, OXIDE_QEMU_UART_SOCK=SOCK, OXIDE_QEMU_HEADLESS="1",
+           OXIDE_SERIAL_SHELL="1")
 log = open(LOG, "wb")
 print(f"guest-resolved-check: arch={ARCH} uart={SOCK} log={LOG}", flush=True)
 qemu = subprocess.Popen(

@@ -72,7 +72,11 @@ def pump(conn, buf, serial, seconds):
 
 def main():
     LOG.parent.mkdir(parents=True, exist_ok=True)
-    env = dict(os.environ, OXIDE_QEMU_HEADLESS="1", OXIDE_QEMU_UART_SOCK=SOCK)
+    # This probe types commands into the serial debug shell.  Keep the shell
+    # on ttyS0 and mask serial-getty, otherwise its commands become login names
+    # and a healthy NIC is reported as broken.
+    env = dict(os.environ, OXIDE_QEMU_HEADLESS="1", OXIDE_QEMU_UART_SOCK=SOCK,
+               OXIDE_SERIAL_SHELL="1")
     print("guest-network-check: staging fresh x86 image", flush=True)
     if subprocess.run(["make", "qemu-x86-image"], cwd=ROOT, env=env).returncode:
         die("image preparation failed")
