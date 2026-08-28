@@ -109,9 +109,6 @@ impl InodeOps for Ext4RegInodeOps {
         d.frames.invalidate_inode_cache();
         d.st.mount.truncate_inode(d.ino, len).map_err(|e| fs_err(&d.st, e))?;
         d.frames.invalidate_range(len & !(4095u64), u64::MAX);
-        d.frames.set_size(len);
-        d.refresh_size();
-        inode.set_size(d.size_hint.load(Ordering::Acquire));
         d.refresh_inode_usage(inode);
         Ok(())
     }

@@ -82,10 +82,7 @@ pub(crate) fn ext4_fallocate(inode: &Inode, mode: u32, off: u64, len: u64) -> KR
     }
     let invalidate_end = if invalidate_to_eof { Some(u64::MAX) } else { off.checked_add(len) };
     if let Some(end) = invalidate_end { d.frames.invalidate_range(off & PAGE_MASK, end); }
-    d.refresh_size();
-    inode.set_size(d.size_hint.load(Ordering::Acquire));
     d.refresh_inode_usage(inode);
-    d.frames.set_size(d.size_hint.load(Ordering::Acquire));
     Ok(())
 }
 
