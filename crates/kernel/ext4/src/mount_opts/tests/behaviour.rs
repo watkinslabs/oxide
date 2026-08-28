@@ -118,6 +118,16 @@ fn journal_checksum_pair_is_explicit_and_last_one_wins() {
 }
 
 #[test]
+fn async_commit_is_stateful_and_ordered_data_refuses_it() {
+    assert!(b("journal_async_commit").unwrap().journal_async_commit);
+    assert!(refused("journal_async_commit=1"));
+    assert!(crate::mount_opts::parse_data("journal_async_commit", Default::default()).is_err());
+    let writeback = crate::mount_opts::parse_data(
+        "data=writeback,journal_async_commit", Default::default()).unwrap();
+    assert!(writeback.behaviour.journal_async_commit);
+}
+
+#[test]
 fn acl_is_a_live_linux_superblock_policy() {
     assert!(b("").unwrap().posix_acl);
     assert!(b("acl").unwrap().posix_acl);

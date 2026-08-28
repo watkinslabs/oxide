@@ -36,6 +36,7 @@ pub const OPT_NOINIT_ITABLE: &str = "noinit_itable";
 pub const OPT_MB_OPTIMIZE_SCAN: &str = "mb_optimize_scan";
 pub const OPT_JOURNAL_CHECKSUM: &str = "journal_checksum";
 pub const OPT_NOJOURNAL_CHECKSUM: &str = "nojournal_checksum";
+pub const OPT_JOURNAL_ASYNC_COMMIT: &str = "journal_async_commit";
 pub const OPT_ACL: &str = "acl";
 pub const OPT_USER_XATTR: &str = "user_xattr";
 pub const OPT_AUTO_DA_ALLOC: &str = "auto_da_alloc";
@@ -88,6 +89,7 @@ impl Ext4Behaviour {
             OPT_NOWARN_ON_ERROR => { flag(val)?; self.warn_on_error = false; }
             OPT_JOURNAL_CHECKSUM => { flag(val)?; self.journal_checksum = Some(true); }
             OPT_NOJOURNAL_CHECKSUM => { flag(val)?; self.journal_checksum = Some(false); }
+            OPT_JOURNAL_ASYNC_COMMIT => { flag(val)?; self.journal_async_commit = true; }
             OPT_ACL => { flag(val)?; self.posix_acl = true; }
             OPT_USER_XATTR => { flag(val)?; self.user_xattr = true; }
             OPT_AUTO_DA_ALLOC => self.auto_da_alloc = match val {
