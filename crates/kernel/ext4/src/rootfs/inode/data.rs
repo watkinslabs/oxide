@@ -88,14 +88,6 @@ impl Ext4FileData {
             || self.swap_mutations.load(Ordering::Acquire) == 0) };
         Ok(())
     }
-    /// Re-read just the on-disk size into the hint after a mutating op
-    /// (write/truncate/fallocate) — O(1), no file body load. # C: O(1)
-    pub(crate) fn refresh_size(&self) {
-        if let Ok(i) = self.st.mount.read_inode(self.ino) {
-            self.size_hint.store(i.size, Ordering::Release);
-            self.frames.refresh_inode_cache(i);
-        }
-    }
     /// Re-read on-disk size and i_blocks into the VFS inode. # C: O(1)
     pub(crate) fn refresh_inode_usage(&self, inode: &Inode) {
         if let Ok(i) = self.st.mount.read_inode(self.ino) {
