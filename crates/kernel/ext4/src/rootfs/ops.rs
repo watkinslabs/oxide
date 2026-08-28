@@ -65,6 +65,16 @@ impl RootfsState {
     /// through this mount.
     /// # C: O(1) inode read
     pub fn wrap_any_ino(self: &Arc<Self>, ino: u32) -> Option<vfs::InodeRef> {
+        // Linux's iget fast path finds an already resident inode before
+        // touching the inode table.  Preserve that ordering here: the VFS
+        // inode cache is the identity owner, so a live hit is already the
+        // authoritative object and its type is already known.
+        if let Some(sb) = self.i_sb() {
+            if let Some(cached) = sb.ilookup(ext4_wrap_ino(ino)) {
+                cached.igrab();
+                return Some(cached);
+            }
+        }
         let inode = self.mount.read_inode(ino).ok()?;
         // The type probe already fetched the authoritative inode image.  Keep
         // that image as the constructor input; routing regular files through
@@ -168,6 +178,13 @@ impl RootfsState {
     /// Wrap regular-file `ino` in a deferred-bytes file inode.
     /// # C: O(1) inode read
     pub fn wrap_file(self: &Arc<Self>, ino: u32) -> Option<vfs::InodeRef> {
+        if let Some(sb) = self.i_sb() {
+            if let Some(cached) = sb.ilookup(ext4_wrap_ino(ino)) {
+                if !matches!(cached.file_type(), vfs::FileType::Regular) { return None; }
+                cached.igrab();
+                return Some(cached);
+            }
+        }
         let inode = self.mount.read_inode(ino).ok()?;
         if !inode.is_reg() { return None; }
         Some(self.wrap_file_from_inode(ino, &inode))

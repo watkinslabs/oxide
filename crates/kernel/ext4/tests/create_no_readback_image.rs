@@ -84,11 +84,29 @@ fn wrap_of_a_created_inode_reads_nothing() {
         let wrapped = st.wrap_created_file(ino, &node);
         assert_eq!(st.mount.inode_read_count_for_tests(), 0, "{label}: wrap must not read the inode table");
         assert_eq!(wrapped.i_mode() & 0o7777, node.mode & 0o7777, "{label}: mode from the written struct");
+        drop(wrapped);
         // Same measurement for the read-back wrapper proves the counter works.
         st.mount.reset_inode_read_count_for_tests();
         let _ = st.wrap_file(ino);
         assert_eq!(st.mount.inode_read_count_for_tests(), 1, "{label}: control — wrap_file does read");
     }
+}
+
+/// Once the VFS inode is resident, a later iget must return it without
+/// rereading the ext4 inode table, matching Linux's inode-cache fast path.
+#[test]
+fn resident_inode_iget_skips_raw_read() {
+    let (m, _sb) = mount_mini();
+    let st = m.state();
+    let (ino, node) = st.mount.create_file_inode(2, b"iget-fast.dat", 0o640, 0, 0)
+        .expect("create_file_inode");
+    let first = st.wrap_created_file(ino, &node);
+    st.mount.reset_inode_read_count_for_tests();
+    let second = st.wrap_any_ino(ino).expect("cached inode");
+    assert_eq!(st.mount.inode_read_count_for_tests(), 0,
+        "resident iget must not reread the inode table");
+    assert!(matches!(second.file_type(), vfs::FileType::Regular));
+    assert!(alloc::sync::Arc::ptr_eq(&first, &second), "iget must preserve identity");
 }
 
 /// A dcache miss into a regular file performs one type/metadata read, then
