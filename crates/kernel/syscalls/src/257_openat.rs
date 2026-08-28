@@ -387,8 +387,10 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+    // Borrow current->files like Linux; install_open_at mutates the table under
+    // its own lock and does not require an owned table reference.
     let fdt = match unsafe { cur.fd_table_ref() } {
-        Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
+        Some(t) => t.as_ref(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // fifo(7): opening a named-pipe (S_IFIFO) inode binds the shared pipe ring
     // to the inode and runs the reader/writer rendezvous (Linux
