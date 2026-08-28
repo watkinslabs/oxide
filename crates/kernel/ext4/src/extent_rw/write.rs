@@ -64,10 +64,10 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
         // Linux derives the allocation context's goal from the inode's
         // neighbouring extent, so a fallocate on an existing file stays near
         // that file instead of restarting every multiblock request at group 0.
-        let hint = extents.iter().rev().find(|r| u64::from(r.logical) <= start)
+        let goal_phys = extents.iter().rev().find(|r| u64::from(r.logical) <= start)
             .or_else(|| extents.first())
-            .map(|r| m.group_of_block(r.phys))
-            .unwrap_or(0);
+            .map(|r| r.phys);
+        let hint = goal_phys.map(|phys| m.group_of_block(phys)).unwrap_or(0);
         let group_prealloc = preallocate
             && count <= GROUP_PREALLOC_MAX_REQUEST
             && super::prealloc::group_prealloc_eligible(
@@ -77,7 +77,8 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
         // before the reservation is published.
         let group_owner = group_prealloc.then(crate::balloc::prealloc::locality_cpu);
         if group_prealloc {
-            if let Some((group_cpu, blocks)) = m.peek_group_prealloc_owner(hint, count) {
+            if let Some((group_cpu, blocks)) = m.peek_group_prealloc_owner(
+                hint, count, goal_phys.unwrap_or_else(|| crate::balloc::group_first_block(&m.sb, hint))) {
                 runs.push(ReservedRun { logical_start: start as u32, blocks,
                     from_inode_pa: false, from_group_pa: true,
                     group_cpu: Some(group_cpu),

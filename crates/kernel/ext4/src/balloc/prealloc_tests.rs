@@ -1,4 +1,5 @@
-use super::{group_prealloc_order, inode_pa_blocks, trim_group_preallocations, GroupPrealloc, InodePrealloc};
+use super::{group_prealloc_order, inode_pa_blocks, select_group_pa, trim_group_preallocations,
+            GroupPrealloc, InodePrealloc};
 use alloc::vec;
 
 #[test]
@@ -41,4 +42,15 @@ fn locality_pa_order_matches_linux_fls_buckets() {
     assert_eq!(group_prealloc_order(4), 2);
     assert_eq!(group_prealloc_order(1023), 9);
     assert_eq!(group_prealloc_order(u32::MAX), 9);
+}
+
+#[test]
+fn locality_pa_selection_uses_the_closest_physical_goal() {
+    let entries = [
+        GroupPrealloc { blocks: vec![100, 101, 102] },
+        GroupPrealloc { blocks: vec![180, 181, 182] },
+        GroupPrealloc { blocks: vec![140] },
+    ];
+    assert_eq!(select_group_pa(&entries, 2, 171).unwrap().blocks[0], 180);
+    assert!(select_group_pa(&entries, 4, 171).is_none());
 }
