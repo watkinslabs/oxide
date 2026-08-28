@@ -1,4 +1,4 @@
-use super::{group_prealloc_order, inode_pa_blocks, select_group_pa, trim_group_preallocations,
+use super::{consume_group_prealloc_block, group_prealloc_order, inode_pa_blocks, select_group_pa, trim_group_preallocations,
             GroupPrealloc, InodePrealloc};
 use alloc::vec;
 
@@ -53,4 +53,16 @@ fn locality_pa_selection_uses_the_closest_physical_goal() {
     ];
     assert_eq!(select_group_pa(&entries, 2, 171).unwrap().blocks[0], 180);
     assert!(select_group_pa(&entries, 4, 171).is_none());
+}
+
+#[test]
+fn locality_pa_consumption_removes_the_selected_physical_block() {
+    let mut entries = vec![
+        GroupPrealloc { blocks: vec![100, 101, 102] },
+        GroupPrealloc { blocks: vec![200, 201, 202] },
+    ];
+    assert!(consume_group_prealloc_block(&mut entries, 201));
+    assert_eq!(entries[0].blocks, vec![100, 101, 102]);
+    assert_eq!(entries[1].blocks, vec![200, 202]);
+    assert!(!consume_group_prealloc_block(&mut entries, 999));
 }

@@ -84,6 +84,19 @@ fn select_group_pa<'a>(entries: &'a [GroupPrealloc], want: u32, goal: u64)
         .min_by_key(|pa| pa.blocks[0].abs_diff(goal))
 }
 
+/// Remove one exact physical block from a locality bucket. Kept as a small
+/// pure helper so the ownership invariant is testable without constructing a
+/// mounted device.
+fn consume_group_prealloc_block(entries: &mut Vec<GroupPrealloc>, phys: u64) -> bool {
+    let Some(pa_idx) = entries.iter().position(|pa| pa.blocks.iter().any(|&block| block == phys)) else {
+        return false;
+    };
+    let block_idx = entries[pa_idx].blocks.iter().position(|&block| block == phys).unwrap();
+    entries[pa_idx].blocks.remove(block_idx);
+    if entries[pa_idx].blocks.is_empty() { entries.remove(pa_idx); }
+    true
+}
+
 impl Mount {
     /// Return contiguous free physical blocks from an overlapping inode PA.
     /// Linux permits a request to consume an interior PA block, not only its
@@ -136,16 +149,17 @@ impl Mount {
         None
     }
 
-    /// Retire a PA prefix from the CPU list selected by the allocation. # C: O(N PAs)
-    pub(crate) fn consume_group_prealloc_on_cpu(&self, cpu: usize, group: u32, count: u32) -> bool {
+    /// Retire the exact physical block selected from the CPU-local PA list.
+    /// Selection may choose the closest of several reservations, so removing
+    /// an arbitrary eligible prefix would leave the claimed block reserved in
+    /// memory and retire a different block that was never consumed.
+    /// # C: O(N PAs)
+    pub(crate) fn consume_group_prealloc_on_cpu(&self, cpu: usize, group: u32, phys: u64) -> bool {
         let mut s = self.state.lock();
-        let first_order = group_prealloc_order(count);
-        for order in first_order..GROUP_PREALLOC_ORDER_BUCKETS {
+        for order in 0..GROUP_PREALLOC_ORDER_BUCKETS {
             let key = (cpu, group, order);
             let Some(pas) = s.group_prealloc.get_mut(&key) else { continue; };
-            let Some(idx) = pas.iter().position(|pa| pa.blocks.len() >= count as usize) else { continue; };
-            pas[idx].blocks.drain(..count as usize);
-            if pas[idx].blocks.is_empty() { pas.remove(idx); }
+            if !consume_group_prealloc_block(pas, phys) { continue; }
             if pas.is_empty() { s.group_prealloc.remove(&key); }
             return true;
         }
