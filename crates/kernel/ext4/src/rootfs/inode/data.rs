@@ -109,6 +109,8 @@ impl Ext4FileData {
 pub(crate) struct Ext4StatData {
     pub(crate) st:   Arc<RootfsState>,
     pub(crate) ino:  u32,
+    /// Directory snapshots are reusable only for a mounted canonical inode.
+    pub(crate) canonical: bool,
     /// In-memory `i_flags`; see [`Ext4FileData::raw_flags`].
     pub(crate) raw_flags: core::sync::atomic::AtomicU32,
     pub(crate) ft:   FileType,
