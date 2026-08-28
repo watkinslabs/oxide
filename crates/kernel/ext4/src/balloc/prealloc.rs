@@ -89,6 +89,12 @@ impl Mount {
             .push(GroupPrealloc { blocks });
     }
 
+    /// Whether an in-memory PA can hide free blocks from a new allocation. # C: O(1)
+    pub(crate) fn has_prealloc(&self) -> bool {
+        let s = self.state.lock();
+        !s.inode_prealloc.is_empty() || !s.group_prealloc.is_empty()
+    }
+
     /// Whether any locality-group PA is currently available. # C: O(1)
     /// Release all unconsumed inode PAs through the normal bitmap owner. # C: O(N PA blocks)
     pub(crate) fn release_inode_prealloc(&self, ino: u32) -> Result<(), MountError> {

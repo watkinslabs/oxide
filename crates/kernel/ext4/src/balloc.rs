@@ -63,16 +63,30 @@ impl Mount {
             if !reserve::has_free_blocks(free, u64::from(count), m.sb.r_blocks_count, may_dip) {
                 return Err(MountError::NoSpace);
             }
-            let freest = if optimize { m.freest_group(groups) } else { None };
-            let preferred = if optimize { m.group_for_request(groups, count, hint) } else { None };
-            let start = preferred.unwrap_or_else(|| scan::scan_start(hint, groups, optimize, freest));
-            for off in 0..groups {
-                let group = (start + off) % groups;
-                if let Some(run) = m.try_alloc_run_in_group(group, count)? {
-                    return Ok(run);
+            let mut discarded = false;
+            loop {
+                let freest = if optimize { m.freest_group(groups) } else { None };
+                let preferred = if optimize { m.group_for_request(groups, count, hint) } else { None };
+                let start = preferred.unwrap_or_else(|| scan::scan_start(hint, groups, optimize, freest));
+                for off in 0..groups {
+                    let group = (start + off) % groups;
+                    if let Some(run) = m.try_alloc_run_in_group(group, count)? {
+                        return Ok(run);
+                    }
+                }
+                // Linux drops unused inode/locality PAs after a failed mballoc
+                // scan: their bits are free on disk but hidden in the in-core
+                // buddy view. Retry once so those blocks become allocatable.
+                if discarded || !m.has_prealloc() { return Err(MountError::NoSpace); }
+                m.release_all_inode_prealloc()?;
+                m.release_all_group_prealloc()?;
+                discarded = true;
+                if !reserve::has_free_blocks(
+                    m.state.lock().sb_free_blocks, u64::from(count),
+                    m.sb.r_blocks_count, may_dip) {
+                    return Err(MountError::NoSpace);
                 }
             }
-            Err(MountError::NoSpace)
         })
     }
 
