@@ -235,7 +235,12 @@ extern "C" fn async_worker_entry(_arg: usize) -> ! {
         while drain_async_once() {}
         // SAFETY: worker has no locks held; the async list is mutated before
         // its wake and the generic loop closes the arrival edge.
-        let _ = unsafe { sched::live::wait_event_uninterruptible(&ASYNC_WAIT,
+        // Linux firmware async work is a worker-queue sleep, not a device
+        // transaction that must be uninterruptible.  Use the interruptible
+        // wait state so an idle worker is not reported as a hung task while
+        // it waits for the next request (the reference worker has the same
+        // schedulable idle semantics).
+        let _ = unsafe { sched::live::wait_event_interruptible(&ASYNC_WAIT,
             || !ASYNC.lock().is_empty()) };
     }
 }
