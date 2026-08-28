@@ -132,6 +132,11 @@ impl Mount {
     pub(crate) fn read_metadata_block_shared(&self, lba: u64)
         -> Result<alloc::sync::Arc<Vec<u8>>, MountError>
     {
+        // An invalidation can race the completion of the device read. Retry
+        // from the top until one generation is observed consistently; this is
+        // a state transition loop, not recursive re-entry that can grow the
+        // call stack under sustained journal traffic.
+        loop {
         let bs = self.sb.block_size as u64;
         let (cached, owner, created, epoch) = {
             let mut s = self.state.lock();
@@ -170,7 +175,7 @@ impl Mount {
         if !created {
             let (read_epoch, result) = wait_metadata_read(owner.unwrap());
             if read_epoch == epoch { return result; }
-            return self.read_metadata_block_shared(lba);
+            continue;
         }
         let result = match read_byte_range(&*self.dev, lba * bs, self.sb.block_size as usize) {
             Err(error) => Err(error),
@@ -189,8 +194,9 @@ impl Mount {
         s.metadata_reads.remove(&lba);
         drop(s);
         read.complete(epoch, result);
-        if self.state.lock().metadata_epoch != epoch { return self.read_metadata_block_shared(lba); }
-        returned
+        if self.state.lock().metadata_epoch != epoch { continue; }
+        break returned;
+        }
     }
 
     /// Owned copy of one metadata block, for the callers that edit the bytes
