@@ -102,6 +102,28 @@ fn small_files_reuse_locality_preallocation() {
 }
 
 #[test]
+fn sequential_appends_reuse_preallocation() {
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk).unwrap();
+    let n = m.create_file(2, b"append-pa.bin", 0o644, 0, 0).unwrap();
+    let bs = m.sb.block_size as usize;
+    let before = m.state_free_blocks();
+
+    m.write_at(n, 0, &std::vec![0x41; bs]).unwrap();
+    let after_first = m.state_free_blocks();
+    let first_phys = m.extent_map(n).unwrap()[0].1;
+    m.append_block(n, &std::vec![0x42; bs]).unwrap();
+    let after_second = m.state_free_blocks();
+    let map = m.extent_map(n).unwrap();
+
+    assert_eq!(before - after_first, 1, "preallocation tail stays free on disk");
+    assert_eq!(after_first - after_second, 1, "append claims one PA block");
+    assert_eq!(map[0].1, first_phys, "first physical block is stable");
+    assert_eq!(map[0].2, 2, "appends merge into one contiguous extent");
+    assert_eq!(m.read_file_block(&m.read_inode(n).unwrap(), 1).unwrap()[0], 0x42);
+}
+
+#[test]
 fn fallocate_extends_size_and_allocates_zeroed_blocks() {
     let disk = build_disk();
     let m = ext4::Mount::open(disk).unwrap();

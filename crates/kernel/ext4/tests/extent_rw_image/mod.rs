@@ -23,6 +23,24 @@ fn build_disk() -> Arc<dyn BlockDevice> {
     disk
 }
 
+/// Build a deliberately fragmented logical layout without relying on the
+/// allocator defeating regular-file preallocation.  Linux is allowed to keep
+/// sequential appends contiguous, so tests that need a deep extent tree must
+/// introduce logical holes explicitly.
+fn fragmented_file(m: &ext4::Mount, ino: u32, bs: usize, logicals: &[u32])
+    -> std::vec::Vec<std::vec::Vec<u8>>
+{
+    for &logical in logicals {
+        m.fallocate_inode(ino, logical as u64 * bs as u64, bs as u64, false).unwrap();
+    }
+    let payloads: std::vec::Vec<std::vec::Vec<u8>> = logicals.iter()
+        .enumerate().map(|(i, _)| std::vec![i as u8; bs]).collect();
+    for (&logical, payload) in logicals.iter().zip(payloads.iter()) {
+        m.write_at(ino, logical as u64 * bs as u64, payload).unwrap();
+    }
+    payloads
+}
+
 fn read_fs_block(disk: &Arc<dyn BlockDevice>, fs_lba: u64, fs_bs: u32) -> std::vec::Vec<u8> {
     let sectors = fs_bs / SECTOR;
     let mut req = BlockRequest {
@@ -117,4 +135,3 @@ mod lifecycle;
 mod integrity;
 #[path = "tests/remount.rs"]
 mod remount;
-

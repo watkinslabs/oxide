@@ -89,6 +89,11 @@ impl Mount {
             .push(GroupPrealloc { blocks });
     }
 
+    /// Whether any locality-group PA is currently available. # C: O(1)
+    pub(crate) fn has_group_prealloc(&self) -> bool {
+        !self.state.lock().group_prealloc.is_empty()
+    }
+
     /// Release all unconsumed inode PAs through the normal bitmap owner. # C: O(N PA blocks)
     pub(crate) fn release_inode_prealloc(&self, ino: u32) -> Result<(), MountError> {
         // Like Linux's inode preallocation list, these blocks are free in the

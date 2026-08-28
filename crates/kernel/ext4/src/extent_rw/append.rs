@@ -20,7 +20,53 @@ impl Mount {
             | ((u32::from_le_bytes([ino_bytes[0x6C], ino_bytes[0x6D], ino_bytes[0x6E], ino_bytes[0x6F]]) as u64) << 32);
         let new_logical = ((cur_size + bs as u64 - 1) / bs as u64) as u32;
         let new_size = cur_size + bs as u64;
-        self.insert_logical_block_with_inode_bytes(ino, &mut ino_bytes, ino_byte_off, new_logical, data, new_size, false, false, None)
+        let regular = inode::Inode::parse(&ino_bytes, &self.sb)?.is_reg();
+        if regular {
+            if let Some((physical, source)) = self.append_preallocated_block(ino, new_logical)? {
+                let result = self.insert_logical_block_with_inode_bytes(
+                    ino, &mut ino_bytes, ino_byte_off, new_logical, data, new_size,
+                    false, false, Some(physical));
+                if result.is_ok() {
+                    match source {
+                        AppendPrealloc::Inode => { self.consume_inode_prealloc(ino, new_logical); }
+                        AppendPrealloc::Group(group) => { self.consume_group_prealloc(group, 1); }
+                    }
+                }
+                return result;
+            }
+        }
+        self.insert_logical_block_with_inode_bytes(
+            ino, &mut ino_bytes, ino_byte_off, new_logical, data, new_size,
+            false, false, None)
+    }
+
+    /// Consume an existing Linux-shaped inode or locality-group PA for a
+    /// one-block append. Fresh allocation remains in the ordinary insertion
+    /// path, which owns its quota and rollback transaction in one place.
+    fn append_preallocated_block(&self, ino: u32, logical: u32)
+        -> Result<Option<(u64, AppendPrealloc)>, MountError>
+    {
+        if let Some(blocks) = self.peek_inode_prealloc(ino, logical, 1) {
+            if let Some(&block) = blocks.first() {
+                self.claim_prealloc_block(block)?;
+                return Ok(Some((block, AppendPrealloc::Inode)));
+            }
+        }
+
+        if !self.has_group_prealloc() { return Ok(None); }
+        let extents = self.extent_map(ino)?;
+        let hint = extents.iter().rev()
+            .find(|(start, _, _, _)| *start <= logical)
+            .or_else(|| extents.first())
+            .map(|(_, phys, _, _)| self.group_of_block(*phys))
+            .unwrap_or(0);
+        if let Some(blocks) = self.peek_group_prealloc(hint, 1) {
+            if let Some(&block) = blocks.first() {
+                self.claim_prealloc_block(block)?;
+                return Ok(Some((block, AppendPrealloc::Group(hint))));
+            }
+        }
+        Ok(None)
     }
 
     /// Map `logical` as a preallocated UNWRITTEN block (no data I/O) — the
@@ -161,4 +207,9 @@ impl Mount {
         Ok(logical)
     }
 
+}
+
+enum AppendPrealloc {
+    Inode,
+    Group(u32),
 }

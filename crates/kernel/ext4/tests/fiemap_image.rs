@@ -110,7 +110,7 @@ fn deep_tree_extents_map_all_blocks_ascending() {
     let n = m.create_file(2, b"deepmap.bin", 0o644, 0, 0).unwrap();
     let bs = m.sb.block_size as usize;
     for i in 0..6u8 {
-        let _spacer = m.alloc_block(0).unwrap(); // break contiguity
+        let _spacer = m.alloc_block(0).unwrap();
         m.append_block(n, &std::vec![i; bs]).unwrap();
     }
     assert!(ext4::parse_extent_header(&m.read_inode(n).unwrap().i_block).unwrap().depth >= 1,

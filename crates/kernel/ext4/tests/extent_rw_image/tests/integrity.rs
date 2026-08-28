@@ -10,11 +10,7 @@ fn corrupt_external_extent_block_tail_is_rejected() {
     if !m.sb.has_metadata_csum() { return; } // no-op on non-csum images
     let n = m.create_file(2, b"corrupt.bin", 0o644, 0, 0).unwrap();
     let bs = m.sb.block_size as usize;
-    let payloads: std::vec::Vec<std::vec::Vec<u8>> = (0..5).map(|i| std::vec![i as u8; bs]).collect();
-    for i in 0..5 {
-        let _spacer = m.alloc_block(0).unwrap();
-        m.append_block(n, &payloads[i]).unwrap();
-    }
+    let _payloads = fragmented_file(&m, n, bs, &[0, 2, 4, 6, 8]);
     let inode = m.read_inode(n).unwrap();
     assert!(ext4::parse_extent_header(&inode.i_block).unwrap().depth >= 1);
 
@@ -43,11 +39,9 @@ fn truncate_depth1_frees_tail_and_keeps_head() {
     let m = ext4::Mount::open(disk).unwrap();
     let n = m.create_file(2, b"trunc_deep.bin", 0o644, 0, 0).unwrap();
     let bs = m.sb.block_size as usize;
-    // Force depth>=1 with 6 non-contiguous extents (spacer breaks contiguity).
-    for i in 0..6u8 {
-        let _spacer = m.alloc_block(0).unwrap();
-        m.append_block(n, &std::vec![i; bs]).unwrap();
-    }
+    // Force depth>=1 with six explicit logical gaps.  A spacer allocation is
+    // no longer sufficient now that regular appends correctly consume PAs.
+    let _payloads = fragmented_file(&m, n, bs, &[0, 1, 3, 5, 7, 9]);
     let inode = m.read_inode(n).unwrap();
     let hdr = ext4::parse_extent_header(&inode.i_block).unwrap();
     assert!(hdr.depth >= 1, "test needs a depth>=1 tree");
@@ -74,10 +68,7 @@ fn truncate_depth1_to_zero_resets_to_empty() {
     let m = ext4::Mount::open(disk).unwrap();
     let n = m.create_file(2, b"trunc_zero.bin", 0o644, 0, 0).unwrap();
     let bs = m.sb.block_size as usize;
-    for i in 0..6u8 {
-        let _spacer = m.alloc_block(0).unwrap();
-        m.append_block(n, &std::vec![i; bs]).unwrap();
-    }
+    let _payloads = fragmented_file(&m, n, bs, &[0, 1, 3, 5, 7, 9]);
     assert!(ext4::parse_extent_header(&m.read_inode(n).unwrap().i_block).unwrap().depth >= 1);
     m.truncate_inode(n, 0).unwrap();
     let inode = m.read_inode(n).unwrap();
@@ -101,11 +92,8 @@ fn rmw_write_and_read_into_depth1_file() {
     let m = ext4::Mount::open(disk).unwrap();
     let n = m.create_file(2, b"deeprmw.bin", 0o644, 0, 0).unwrap();
     let bs = m.sb.block_size as usize;
-    // Force depth>=1 with 5 non-contiguous extents (spacer breaks contiguity).
-    for i in 0..5u8 {
-        let _spacer = m.alloc_block(0).unwrap();
-        m.append_block(n, &std::vec![i; bs]).unwrap();
-    }
+    // Force depth>=1 with five explicit logical gaps.
+    let _payloads = fragmented_file(&m, n, bs, &[0, 1, 3, 5, 7, 9]);
     let inode = m.read_inode(n).unwrap();
     let hdr = ext4::parse_extent_header(&inode.i_block).unwrap();
     assert!(hdr.depth >= 1, "test needs a depth>=1 tree to exercise the deep walk");
@@ -121,9 +109,7 @@ fn rmw_write_and_read_into_depth1_file() {
     let inode2 = m.read_inode(n).unwrap();
     let blk3 = m.read_file_block(&inode2, 3).unwrap();
     assert_eq!(&blk3[10..10 + payload.len()], &payload[..], "RMW bytes round-trip at depth>=1");
-    // Untouched logical block 4 still reads its original append content.
-    let blk4 = m.read_file_block(&inode2, 4).unwrap();
-    assert_eq!(blk4[0], 4u8, "neighbouring deep block intact");
+    // Untouched logical block 5 still reads its original sparse content.
+    let blk5 = m.read_file_block(&inode2, 5).unwrap();
+    assert_eq!(blk5[0], 3u8, "neighbouring deep block intact");
 }
-
-
