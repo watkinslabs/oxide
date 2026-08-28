@@ -153,7 +153,7 @@ pub struct MountState {
     pub(crate) group_avg_fragment_index: alloc::collections::BTreeMap<u8, alloc::collections::BTreeSet<u32>>,
     /// Reusable locality-group data preallocation tails. The blocks remain
     /// free on disk and are masked from every in-memory bitmap scan.
-    pub(crate) group_prealloc: alloc::collections::BTreeMap<u32, Vec<crate::balloc::prealloc::GroupPrealloc>>,
+    pub(crate) group_prealloc: alloc::collections::BTreeMap<(usize, u32), Vec<crate::balloc::prealloc::GroupPrealloc>>,
     /// Per-inode data preallocation tails. The bitmap owns these blocks on
     /// disk, while this table owns their not-yet-mapped logical range.
     pub(crate) inode_prealloc: alloc::collections::BTreeMap<u32, Vec<crate::balloc::prealloc::InodePrealloc>>,

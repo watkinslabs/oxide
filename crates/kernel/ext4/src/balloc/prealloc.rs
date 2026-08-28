@@ -7,6 +7,15 @@
 
 use alloc::vec::Vec;
 
+pub(crate) fn locality_cpu() -> usize {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    { use hal::CpuOps; return hal_x86_64::X86CpuOps::current_cpu() as usize; }
+    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+    { use hal::CpuOps; return hal_aarch64::ArmCpuOps::current_cpu() as usize; }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { 0 }
+}
+
 use crate::gdt;
 use super::super::{Mount, MountError};
 
@@ -61,31 +70,35 @@ impl Mount {
             .push(InodePrealloc { logical_start, blocks, used: 0 });
     }
 
-    /// Return a reusable locality PA from the hinted group. # C: O(N PAs)
-    pub(crate) fn peek_group_prealloc(&self, group: u32, want: u32) -> Option<Vec<u64>> {
-        if want == 0 { return Some(Vec::new()); }
+    /// Return a locality PA and the CPU list that owns it. # C: O(N PAs)
+    pub(crate) fn peek_group_prealloc_owner(&self, group: u32, want: u32)
+        -> Option<(usize, Vec<u64>)>
+    {
+        let cpu = locality_cpu();
+        if want == 0 { return Some((cpu, Vec::new())); }
         let s = self.state.lock();
-        s.group_prealloc.get(&group)?.iter().find_map(|pa| {
+        s.group_prealloc.get(&(cpu, group))?.iter().find_map(|pa| {
             if pa.blocks.len() < want as usize { return None; }
-            Some(pa.blocks[..want as usize].to_vec())
+            Some((cpu, pa.blocks[..want as usize].to_vec()))
         })
     }
 
-    /// Retire the prefix of a reusable locality PA after mapping it. # C: O(N PAs)
-    pub(crate) fn consume_group_prealloc(&self, group: u32, count: u32) -> bool {
+    /// Retire a PA prefix from the CPU list selected by the allocation. # C: O(N PAs)
+    pub(crate) fn consume_group_prealloc_on_cpu(&self, cpu: usize, group: u32, count: u32) -> bool {
         let mut s = self.state.lock();
-        let Some(pas) = s.group_prealloc.get_mut(&group) else { return false; };
+        let key = (cpu, group);
+        let Some(pas) = s.group_prealloc.get_mut(&key) else { return false; };
         let Some(idx) = pas.iter().position(|pa| pa.blocks.len() >= count as usize) else { return false; };
         pas[idx].blocks.drain(..count as usize);
         if pas[idx].blocks.is_empty() { pas.remove(idx); }
-        if pas.is_empty() { s.group_prealloc.remove(&group); }
+        if pas.is_empty() { s.group_prealloc.remove(&key); }
         true
     }
 
     /// Keep a locality tail for another small-file allocation. # C: O(1)
     pub(crate) fn add_group_prealloc(&self, group: u32, blocks: Vec<u64>) {
         if blocks.is_empty() { return; }
-        self.state.lock().group_prealloc.entry(group).or_default()
+        self.state.lock().group_prealloc.entry((locality_cpu(), group)).or_default()
             .push(GroupPrealloc { blocks });
     }
 

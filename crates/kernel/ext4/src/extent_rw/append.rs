@@ -35,7 +35,9 @@ impl Mount {
                 if result.is_ok() {
                     match source {
                         AppendPrealloc::Inode => { self.consume_inode_prealloc(ino, new_logical); }
-                        AppendPrealloc::Group(group) => { self.consume_group_prealloc(group, 1); }
+                        AppendPrealloc::Group(cpu, group) => {
+                            self.consume_group_prealloc_on_cpu(cpu, group, 1);
+                        }
                     }
                 }
                 return result;
@@ -81,10 +83,10 @@ impl Mount {
             }
         }
         let hint = self.append_hint_group(ino, logical)?;
-        if let Some(blocks) = self.peek_group_prealloc(hint, 1) {
+        if let Some((cpu, blocks)) = self.peek_group_prealloc_owner(hint, 1) {
             if let Some(&block) = blocks.first() {
                 self.claim_prealloc_block(block)?;
-                return Ok(Some((block, AppendPrealloc::Group(hint))));
+                return Ok(Some((block, AppendPrealloc::Group(cpu, hint))));
             }
         }
         Ok(None)
@@ -262,5 +264,5 @@ impl Mount {
 
 enum AppendPrealloc {
     Inode,
-    Group(u32),
+    Group(usize, u32),
 }
