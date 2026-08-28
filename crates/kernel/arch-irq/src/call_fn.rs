@@ -68,6 +68,19 @@ fn exec(kind: u32, arg: u64) {
                 }
             }
         }
+        Some(CallKind::TlbFlushRange) => {
+            // SAFETY: the range was encoded by hal::tlb from aligned user
+            // addresses and remains inside the bounded gather payload.
+            if let Some((start, end)) = hal::tlb::decode_range(arg) {
+                let mut va = start;
+                while va < end {
+                    // SAFETY: each address is page-aligned and was encoded
+                    // from the bounded user range by hal::tlb.
+                    unsafe { <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::flush_va(Va(va)); }
+                    va += hal::PAGE_SIZE_BYTES;
+                }
+            }
+        }
         Some(CallKind::LdtReload) => sched::ldt::flush_ldt_remote(arg),
         Some(CallKind::MembarrierGlobalMb) => sched::membarrier::service_global(),
         Some(CallKind::MembarrierPrivateMb) => sched::membarrier::service_private_mb(arg),

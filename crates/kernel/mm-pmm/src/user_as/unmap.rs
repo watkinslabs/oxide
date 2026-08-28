@@ -37,6 +37,10 @@ fn drain_gather(gather: &mut alloc::vec::Vec<(u64, u64, hal::PageSize)>, mask: &
     const SINGLE_PAGE_FLUSH_CEILING: usize = 33;
     if gather.len() > SINGLE_PAGE_FLUSH_CEILING {
         hal::tlb::shootdown_others_all(mask.as_words());
+    } else if gather.len() > 1 {
+        let start = gather.first().map(|(va, _, _)| *va).unwrap_or(0);
+        let end = gather.last().map(|(va, _, leaf)| va.saturating_add(leaf.bytes())).unwrap_or(start);
+        hal::tlb::shootdown_others_range(start, end, mask.as_words());
     } else {
         for (va, _, _) in gather.iter() { hal::tlb::shootdown_others_va(*va, mask.as_words()); }
     }
