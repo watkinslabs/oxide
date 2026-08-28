@@ -113,6 +113,10 @@ pub struct MountState {
     /// subsequent ops within the same scope. Drained at scope
     /// close + committed as one JBD2 transaction.
     pub(crate) shadow: Option<alloc::collections::BTreeMap<u64, Vec<u8>>>,
+    /// The one committed transaction retained until its filesystem home
+    /// blocks are checkpointed. The journal superblock remains dirty while
+    /// this is present, so recovery owns the same bytes if power is lost.
+    pub(crate) pending_checkpoint: Option<crate::journal::PendingCheckpoint>,
     /// Clean metadata buffers keyed by filesystem LBA.  The VFS dcache avoids
     /// repeating name walks, but a cold dentry miss still needs the ext4 inode
     /// table and directory blocks.  Linux serves those from the buffer/page
@@ -131,7 +135,7 @@ pub struct MountState {
     /// the running transaction instead of committing its own, and the batch is
     /// drained by `commit_batch` on a trigger (size threshold / fsync / sync /
     /// unmount). Committing per-op (the default) makes every fs-heavy service
-    /// pay a full commit + 3 device flushes per operation — the systematic
+    /// pay a full journal commit and checkpoint per operation — the systematic
     /// sysinit slowness. Opt-in per mount (rootfs enables it).
     pub(crate) batch: bool,
     /// Per-op undo stack (batch mode only). Each `run_journaled` op that joins
@@ -196,6 +200,9 @@ pub struct Mount {
     /// batch over — which is how a `rename` came to be the kernel's deepest
     /// call path.
     pub(crate) batch_full: ::core::sync::atomic::AtomicBool,
+    /// Waiters blocked by the running transaction's hard credit ceiling.
+    /// The periodic committer wakes them after retiring the transaction.
+    pub(crate) batch_wait: sched::live::WaitList,
     /// True while a create op holds `op_lock`. The size-triggered batch commit
     /// (`maybe_commit_batch` → `dev.flush`, which SLEEPS on the virtio
     /// completion) must NOT fire while `op_lock` is held: `op_lock` is a

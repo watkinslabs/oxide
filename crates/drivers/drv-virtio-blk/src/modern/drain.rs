@@ -79,7 +79,7 @@ impl BlkState {
         let h = hhdm();
         if !drain_admitted(false, h, q.res.device_pa, q.res.size) { return found; }
         loop {
-            let pending = {
+            let Some(pending) = ({
                 let mut ring = q.lock();
                 // `busy` is the synchronous submitter's ownership of this
                 // queue. Re-check it while holding the same lock used by
@@ -105,7 +105,7 @@ impl BlkState {
                 // the queue's device-to-driver DMA ordering contract.
                 core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
                 let Some(slot) = claim_next_used(&mut ring.used_seen, used_index, q.res.size) else {
-                    return found;
+                    break;
                 };
                 // SAFETY: same used frame; `slot < size` and `size` is capped to
                 // one frame, so the entry's `id` is an in-bounds, u32-aligned
@@ -152,8 +152,8 @@ impl BlkState {
                         timekeeper::monotonic_ns().saturating_sub(posted), depth);
                 }
                 ring.free_heads.push(head);
-                ring.pending.remove(position)
-            };
+                Some(ring.pending.remove(position))
+            }) else { break };
             let mut request = pending.request;
             let bounce = h.wrapping_add(pending.bounce_pa) as *const u8;
             // SAFETY: the per-request `alloc_contig(BOUNCE_ORDER)` block, still
@@ -204,8 +204,13 @@ impl BlkState {
             // a poll loop it made progress it did not make.
             found += 1;
             (pending.completion)(request, result);
-            self.start_deferred_requests(q);
         }
+        // Linux's virtio completion handler drains the used ring first and
+        // restarts stopped hardware queues once, after the batch. Re-entering
+        // dispatch after every completion needlessly allocates/locks between
+        // used entries and lets a completion continuation perturb the walk.
+        self.start_deferred_requests(q);
+        found
     }
 }
 

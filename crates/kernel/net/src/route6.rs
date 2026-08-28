@@ -13,6 +13,7 @@ pub const IP6_RT_PRIO_ADDRCONF: u32 = 256;
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Route6Origin {
     Static,
+    StaticMetric { metric: u32 },
     AddressPrefix { metric: u32, valid_until_ns: u64 },
     RouterAdvertisementDefault { router: Ipv6Addr, valid_until_ns: u64 },
     RouterAdvertisementPrefix { valid_until_ns: u64 },
@@ -21,7 +22,7 @@ pub enum Route6Origin {
 impl Route6Origin {
     pub(crate) fn ra_router(self) -> Option<Ipv6Addr> {
         match self {
-            Self::Static | Self::AddressPrefix { .. } => None,
+            Self::Static | Self::StaticMetric { .. } | Self::AddressPrefix { .. } => None,
             Self::RouterAdvertisementDefault { router, .. } => Some(router),
             Self::RouterAdvertisementPrefix { .. } => None,
         }
@@ -33,7 +34,10 @@ impl Route6Origin {
 
     /// Metric carried by an address-created prefix route. # C: O(1)
     pub fn metric(self) -> u32 {
-        match self { Self::AddressPrefix { metric, .. } => metric, _ => 0 }
+        match self {
+            Self::StaticMetric { metric } | Self::AddressPrefix { metric, .. } => metric,
+            _ => 0,
+        }
     }
 
     pub(crate) fn is_address_prefix(self) -> bool {
@@ -42,7 +46,7 @@ impl Route6Origin {
 
     fn live_at(self, now_ns: u64) -> bool {
         match self {
-            Self::Static => true,
+            Self::Static | Self::StaticMetric { .. } => true,
             Self::AddressPrefix { valid_until_ns, .. }
             | Self::RouterAdvertisementDefault { valid_until_ns, .. }
             | Self::RouterAdvertisementPrefix { valid_until_ns } => valid_until_ns > now_ns,
@@ -224,7 +228,7 @@ impl Route6Table {
     }
 
     /// Atomically replace routes and return removed canonical rows. # C: O(N + R)
-    pub(crate) fn replace_in_changes<F: FnMut(&Route6Entry) -> bool>(&self, net_ns: u64,
+    pub fn replace_in_changes<F: FnMut(&Route6Entry) -> bool>(&self, net_ns: u64,
         mut remove: F, replacements: Vec<Route6Entry>) -> Vec<Route6Entry>
     {
         let mut all = self.inner.lock();

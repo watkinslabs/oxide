@@ -81,7 +81,7 @@ pub unsafe fn init_from_dev(dev: Arc<dyn BlockDevice>) -> Result<(), block::type
     let st = RootfsState::open(dev)?;
     // Cross-operation journal batching (Linux jbd2 running-transaction model):
     // metadata ops join ONE running transaction drained on fsync/sync/msync/
-    // threshold, instead of a full commit + 3 device flushes per operation. That
+    // threshold, instead of a full journal commit + checkpoint per operation. That
     // per-op tax made every fs-heavy sysinit service (tmpfiles, hwdb, …) 20-90×
     // too slow. File data still writes through (data=writeback); only metadata
     // batches. Root fs only — fixture mounts keep per-op commits.
@@ -96,7 +96,7 @@ pub unsafe fn init_from_dev(dev: Arc<dyn BlockDevice>) -> Result<(), block::type
 
 /// Commit the root fs running journal transaction (durability trigger for
 /// `fsync`/`fdatasync`). No-op when batching is off or the batch is empty.
-/// # C: O(N staged blocks) — one commit + 3 flushes for the whole batch
+/// # C: O(N staged blocks) — one journal commit + checkpoint for the batch
 pub fn commit_rootfs_journal() -> Result<(), ()> {
     match root() { Some(st) => st.mount.commit_batch().map_err(|_| ()), None => Ok(()) }
 }

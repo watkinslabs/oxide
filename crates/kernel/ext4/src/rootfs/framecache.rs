@@ -36,7 +36,7 @@ mod verify;
 mod read;
 mod release;
 mod writeback;
-pub use dirty::{flush_all_dirty, flush_dirty, flush_pass, writeback_dirty, writeback_inode};
+pub use dirty::{flush_all_dirty, flush_dirty, flush_dirty_nowait, flush_pass, writeback_dirty, writeback_inode};
 #[cfg(test)]
 mod tests;
 
@@ -296,6 +296,8 @@ impl Ext4FrameStore {
         let window = Self::READAHEAD_WINDOW_PAGES.min(last_page.saturating_sub(start_idx)).max(1);
         let first_blk = start_idx.saturating_mul(bpp) as u32;
         let n_blks = window.saturating_mul(bpp) as u32;
+        #[cfg(feature = "debug-faultcost")]
+        let __fill_read_t0 = pmm::faultcost::stamp();
         let mut buf = self.st.mount.read_file_range(dinode, first_blk, n_blks).map_err(|_e| {
             // DIAG (debug-fillverify): the fill failure collapses to EIO here, so
             // the class that produced it is only recoverable at this one point.
@@ -310,6 +312,10 @@ impl Ext4FrameStore {
             }
             VfsError::Eio
         })?;
+        #[cfg(feature = "debug-faultcost")]
+        let __fill_read_ns = pmm::faultcost::stamp().saturating_sub(__fill_read_t0);
+        #[cfg(feature = "debug-faultcost")]
+        let __fill_publish_t0 = pmm::faultcost::stamp();
         // Zero the window past EOF: the last mapped block extends beyond i_size
         // and its tail is stale disk garbage a MAP_SHARED mapper must read as zero
         // (Linux page-cache EOF zeroing — matches the old fill_page tail-zero).
@@ -332,6 +338,11 @@ impl Ext4FrameStore {
                 Err(e) => { if idx == start_idx { return Err(e); } break; }
             }
         }
+        #[cfg(feature = "debug-faultcost")]
+        pmm::faultcost::note_fill_parts(
+            __fill_read_ns,
+            pmm::faultcost::stamp().saturating_sub(__fill_publish_t0),
+        );
         target_pa.ok_or(VfsError::Eio)
     }
 

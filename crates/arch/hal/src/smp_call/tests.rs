@@ -8,6 +8,7 @@ use super::*;
 fn every_kind_round_trips_through_its_wire_value() {
     for k in [
         CallKind::TlbFlush,
+        CallKind::TlbFlushRange,
         CallKind::LdtReload,
         CallKind::Stop,
         CallKind::MembarrierGlobalMb,

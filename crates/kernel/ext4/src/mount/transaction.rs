@@ -51,7 +51,7 @@ impl Mount {
     /// # Ctx: process
     /// # Sleeps: yes on contention
     /// # C: O(N wakeups)
-    pub(in crate::mount) fn txn_acquire(&self) {
+    pub(crate) fn txn_acquire(&self) {
         let me = ctx_id();
         if self.try_txn_acquire(me) { return; }
         // SAFETY: this process-context waiter holds neither the transaction
@@ -63,7 +63,7 @@ impl Mount {
 
     /// Release one level of the transaction gate; frees it at depth 0.
     /// # C: O(1)
-    pub(in crate::mount) fn txn_release(&self) {
+    pub(crate) fn txn_release(&self) {
         use ::core::sync::atomic::Ordering;
         if self.txn_depth.fetch_sub(1, Ordering::AcqRel) == 1 {
             self.txn_owner.store(0, Ordering::Release);

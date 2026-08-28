@@ -89,12 +89,14 @@ impl AddressSpace {
                         match backing.page_mkwrite(file_off) {
                             Ok(()) => {}
                             Err(FileBackingError::NoMem) => return Err(Error::NoMem),
+                            Err(FileBackingError::Again) => return Err(Error::Again),
                             Err(_) => return Err(Error::Io),
                         }
                     }
                     match backing.shared_frame(file_off) {
                         Ok(frame) => frame.map(|frame| (frame.pa, frame.map_ref_held)),
                         Err(FileBackingError::NoMem) => return Err(Error::NoMem),
+                        Err(FileBackingError::Again) => return Err(Error::Again),
                         Err(_) => return Err(Error::Io),
                     }
                 } else { None };
@@ -240,6 +242,7 @@ impl AddressSpace {
                 let valid0 = valid;
                 let mut read_err = false;
                 let mut no_mem = false;
+                let mut transient = false;
                 let mut filled = 0usize;
                 for attempt in 0..FILL_ATTEMPTS {
                     if attempt > 0 {
@@ -282,7 +285,7 @@ impl AddressSpace {
                                 // what the reference does. Still bounded — a
                                 // transient that outlives FILL_ATTEMPTS falls
                                 // through to the same short-fill verdict.
-                                Err(FileBackingError::Again) => break,
+                                Err(FileBackingError::Again) => { transient = true; break; }
                                 Err(_) => { err = true; break; }
                             }
                         }
@@ -294,6 +297,13 @@ impl AddressSpace {
                     // the extent is done; anything else that did not gets the
                     // single re-read.
                     if read_err || filled >= valid { break; }
+                }
+                if transient && !read_err && filled < valid {
+                    // Linux's filemap_fault retries a page whose cache
+                    // operation was interrupted by a concurrent invalidate;
+                    // it does not turn that transient into VM_FAULT_SIGBUS.
+                    dec_ref(pa);
+                    return Err(Error::Again);
                 }
                 // A desync-recovered fill legitimately stops at the BACKING's own
                 // EOF mid-page (the zeroed tail is real bss).

@@ -10,6 +10,9 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
+mod checkpoint;
+pub(crate) use checkpoint::PendingCheckpoint;
+
 use crate::jbd2::{
     JournalSuperblock,
     JournalSuperblockError,
@@ -97,18 +100,38 @@ impl Mount {
     }
 
     /// Commit a transaction: write descriptor + N data blocks +
-    /// commit to the journal, then write the same data to its
-    /// target LBAs. Returns the journal sequence used. Bumps the
-    /// journal SB's `s_sequence` + `s_start` on success.
+    /// commit to the journal and make its commit record durable. The staged
+    /// target blocks are retained for the checkpoint owner, which later writes
+    /// them home and advances the journal SB to clean. Returns the sequence.
     ///
     /// Caller staged the metadata writes by reading-modifying-
     /// writing fs blocks and calling this before any direct
     /// `write_byte_range` to those targets. Failure modes:
     /// - `NoSpace` if the staged set exceeds journal capacity
     /// - `BlockIo` propagated from device errors
-    /// # C: O(N staged) journal I/O + N target I/O
+    /// # C: O(N staged) journal I/O; checkpoint I/O is owner-dependent
     pub fn commit_metadata(&self, staged: Vec<StagedBlock>) -> Result<u32, MountError> {
+        self.txn_acquire();
+        let result = match self.commit_metadata_deferred(staged) {
+            Ok(seq) => self.checkpoint_pending().map(|_| seq),
+            Err(error) => Err(error),
+        };
+        self.txn_release();
+        result
+    }
+
+    /// Write and durably publish a transaction while retaining its home
+    /// blocks for the periodic checkpoint owner. Only the cross-operation
+    /// batch commit path uses this entry; public direct commits retain their
+    /// historical synchronous checkpoint contract above.
+    /// # C: O(N staged) journal I/O; checkpoint I/O is owner-dependent
+    pub(crate) fn commit_metadata_deferred(&self, staged: Vec<StagedBlock>) -> Result<u32, MountError> {
         if staged.is_empty() { return Ok(0); }
+        // A single retained transaction is the conservative journal-space
+        // owner. The background checkpoint pass normally clears it; a caller
+        // that reaches the next commit first completes it before reusing the
+        // journal, so the log never has two untracked owners.
+        self.checkpoint_pending()?;
         #[cfg(feature = "debug-fsync-latency")]
         let staged_blocks = staged.len() as u64;
         if (self.sb.feature_incompat & crate::superblock::INCOMPAT_RECOVER) == 0
@@ -196,27 +219,11 @@ impl Mount {
         }
         #[cfg(feature = "debug-fsync-latency")]
         crate::fsync_latency::report(b"journal-publish", publish_started_ns, staged_blocks);
-        // Journal now leads the fs; apply staged blocks to their targets.
-        #[cfg(feature = "debug-fsync-latency")]
-        let target_started_ns = crate::fsync_latency::now_ns();
-        self.apply_staged_to_target(&staged)?;
-        #[cfg(feature = "debug-fsync-latency")]
-        crate::fsync_latency::report(b"target-write", target_started_ns, staged_blocks);
-        #[cfg(feature = "debug-fsync-latency")]
-        let target_flush_started_ns = crate::fsync_latency::now_ns();
-        // WAL barrier #3: the targets must be durable before the journal is
-        // marked clean below, or recovery would skip a transaction whose
-        // target writes are still in the device cache.
-        if self.behaviour().barrier {
-            self.dev.flush().map_err(|_| MountError::BlockIo)?;
-        }
-        #[cfg(feature = "debug-fsync-latency")]
-        crate::fsync_latency::report(b"target-flush", target_flush_started_ns, staged_blocks);
-        // Checkpoint complete: mark the journal clean (s_start = 0, bump sequence).
-        sb_bytes[0x18..0x1C].copy_from_slice(&seq.wrapping_add(1).to_be_bytes());
-        sb_bytes[0x1C..0x20].copy_from_slice(&0u32.to_be_bytes());
-        if !jsb.stamp_checksum(&mut sb_bytes) { return Err(MountError::BadChecksum); }
-        log.write_journal_block(0, &sb_bytes)?;
+        // The commit record is durable and the transaction is now owned by
+        // the checkpoint pass. Keeping s_start non-zero is intentional: if a
+        // crash happens before home writeback, recovery replays this record.
+        // The clean-superblock write is made only after the target flush.
+        self.state.lock().pending_checkpoint = Some(PendingCheckpoint { staged });
         Ok(seq)
     }
 

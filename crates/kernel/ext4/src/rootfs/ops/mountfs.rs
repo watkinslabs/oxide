@@ -134,8 +134,12 @@ impl vfs::SuperOps for Ext4SuperOps {
         // whole-fs pass.
         // Scoped to THIS mount: `syncfs(2)` syncs the filesystem containing the
         // fd, never a peer ext4 mount the caller did not name.
-        crate::rootfs::framecache::flush_dirty(Some(&self.st.mount))
-            .map_err(|_| vfs::VfsError::Eio)?;
+        let flush = if wait {
+            crate::rootfs::framecache::flush_dirty(Some(&self.st.mount))
+        } else {
+            crate::rootfs::framecache::flush_dirty_nowait(Some(&self.st.mount))
+        };
+        flush.map_err(|_| vfs::VfsError::Eio)?;
         // Drain the running batched transaction (Linux `sync_fs` IS the
         // per-superblock durability point). `flush_pending_tx` is a no-op —
         // under cross-op batching the metadata sits in `MountState.shadow`
@@ -143,7 +147,11 @@ impl vfs::SuperOps for Ext4SuperOps {
         // return success with metadata not yet on disk. This makes `sync_fs`
         // authoritative for EVERY ext4 mount (incl. non-root `/home`), not
         // just the root helper `commit_rootfs_journal`.
-        self.st.mount.commit_batch().map_err(|_| vfs::VfsError::Eio)?;
+        if wait {
+            self.st.mount.commit_batch().map_err(|_| vfs::VfsError::Eio)?;
+        } else {
+            self.st.mount.commit_batch_background().map_err(|_| vfs::VfsError::Eio)?;
+        }
         if sync_fs_needs_barrier(wait, self.st.opts().behaviour.barrier) {
             self.st.mount.dev.flush().map_err(|_| vfs::VfsError::Eio)?;
         }
@@ -420,6 +428,47 @@ mod tests {
         ops.sync_fs(true).expect("waiting pass");
         assert_eq!(dev.flushes.load(Ordering::SeqCst), 1,
             "one whole-filesystem sync, one device barrier");
+    }
+
+    /// A completed batched commit already flushed its checkpoint targets
+    /// before publishing the clean journal superblock.  The batch owner must
+    /// not add another device barrier after that ordered publication.
+    #[test]
+    fn batched_commit_does_not_repeat_the_checkpoint_barrier() {
+        let dev = fresh_dev();
+        let m = Ext4Mount::open(dev.clone() as Arc<dyn BlockDevice>).unwrap();
+        m.st.mount.begin_batch();
+        let root = m.st.mount.lookup_path(b"/").expect("root");
+        dev.flushes.store(0, Ordering::SeqCst);
+
+        m.st.mount.create_file(root, b"barrier-once", 0o644, 0, 0)
+            .expect("create");
+        m.st.mount.commit_batch().expect("commit");
+
+        assert_eq!(dev.flushes.load(Ordering::SeqCst), 1,
+            "checkpoint target durability is fenced once");
+    }
+
+    /// The periodic owner may finish the journal commit without waiting for
+    /// home-block writeback; an explicit owner must then drain that retained
+    /// transaction before returning.
+    #[test]
+    fn background_commit_defers_home_checkpoint_until_explicit_wait() {
+        let dev = fresh_dev();
+        let m = Ext4Mount::open(dev.clone() as Arc<dyn BlockDevice>).unwrap();
+        m.st.mount.begin_batch();
+        let root = m.st.mount.lookup_path(b"/").expect("root");
+        dev.flushes.store(0, Ordering::SeqCst);
+
+        m.st.mount.create_file(root, b"checkpoint-later", 0o644, 0, 0)
+            .expect("create");
+        m.st.mount.commit_batch_background().expect("background commit");
+        assert_eq!(dev.flushes.load(Ordering::SeqCst), 0,
+            "write-through publication needs no device barrier");
+
+        m.st.mount.commit_batch().expect("explicit checkpoint");
+        assert_eq!(dev.flushes.load(Ordering::SeqCst), 1,
+            "explicit durability adds the retained home-block barrier");
     }
 
     /// The barrier decision itself, stated once: the waiting pass and only it,

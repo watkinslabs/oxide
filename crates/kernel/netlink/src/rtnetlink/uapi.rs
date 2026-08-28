@@ -71,6 +71,8 @@ pub mod ifla {
     pub const IFLA_LINKMODE:  u16 = 17;
     pub const IFLA_STATS64:   u16 = 23;
     pub const IFLA_GROUP:     u16 = 27;
+    /// Extended dump filter mask accepted by strict RTM_GETLINK requests.
+    pub const IFLA_EXT_MASK:  u16 = 29;
     pub const IFLA_CARRIER:   u16 = 33;
     /// Caller-local peer-network-namespace ID for `RTM_GETLINK`.
     pub const IFLA_TARGET_NETNSID: u16 = 46;

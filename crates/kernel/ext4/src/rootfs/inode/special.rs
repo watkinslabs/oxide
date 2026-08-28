@@ -27,7 +27,12 @@ impl InodeOps for Ext4StatInodeOps {
         let d = Self::data(inode)?;
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         let raw = d.raw.lock().clone();
-        let cached = d.raw_valid.load(core::sync::atomic::Ordering::Acquire)
+        // The snapshot belongs to the mounted inode identity. Standalone
+        // path-helper users can run before VFS publishes a superblock, when
+        // each wrapper is necessarily a fresh object and its snapshot cannot
+        // be invalidated by another wrapper's namespace mutation.
+        let cached = d.canonical
+            && d.raw_valid.load(core::sync::atomic::Ordering::Acquire)
             && raw.size == inode.size()
             && raw.i_flags == d.raw_flags.load(core::sync::atomic::Ordering::Relaxed);
         let child = if cached {
@@ -424,7 +429,8 @@ pub(crate) fn build_stat_inode(
     uid: u32, gid: u32, projid: u32, times: crate::timestamp::InodeTimes, generation: u32,
     raw_flags: u32, raw: Arc<crate::inode::Inode>,
 ) -> InodeRef {
-    let data = Arc::new(Ext4StatData { st, ino, ft, size,
+    let canonical = st.i_sb().is_some();
+    let data = Arc::new(Ext4StatData { st, ino, ft, size, canonical,
         raw_flags: core::sync::atomic::AtomicU32::new(raw_flags),
         raw: ::sync::Spinlock::new(raw),
         raw_valid: core::sync::atomic::AtomicBool::new(true), });

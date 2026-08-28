@@ -137,24 +137,24 @@ impl DentryHashTable {
             // this locked compatibility path.
             let e = unsafe { &(*node).dentry };
             if e.key_matches(parent, qhash, name) {
-                // Corruption-hunt guard (state.md): a live sample this session
-                // found Arc::clone's own internal refcount-overflow abort()
-                // firing here with zero diagnostic output — the strong count
-                // had been corrupted (most likely to a small negative value,
-                // by something entirely outside dcache) before Rust's std
-                // trapped on it. Check first so a corrupted count prints the
-                // dentry's address and the bad count before panicking, instead
-                // of an opaque ud2. One atomic load; negligible cost on the
-                // hit path.
-                let sc = Arc::strong_count(e);
-                if sc < 1 || sc >= (1 << 32) {
-                    klog::write_raw(b"[DENTRY-REFCOUNT] corrupted strong_count dentry=0x");
-                    klog::write_hex_u64(Arc::as_ptr(e) as u64);
-                    klog::write_raw(b" strong_count=0x");
-                    klog::write_hex_u64(sc as u64);
-                    klog::write_raw(b"\n");
+                // Corruption-hunt guard (state.md): the strong-count probe is
+                // diagnostic-only. Linux lookup_fast() does not load or assert
+                // an object reference count on every cached hit; production
+                // dcache lookup must stay on that lockless/short path. The
+                // debug feature retains the address-and-count evidence before
+                // Arc::clone can turn corruption into an opaque trap.
+                #[cfg(feature = "debug-heappoison")]
+                {
+                    let sc = Arc::strong_count(e);
+                    if sc < 1 || sc >= (1 << 32) {
+                        klog::write_raw(b"[DENTRY-REFCOUNT] corrupted strong_count dentry=0x");
+                        klog::write_hex_u64(Arc::as_ptr(e) as u64);
+                        klog::write_raw(b" strong_count=0x");
+                        klog::write_hex_u64(sc as u64);
+                        klog::write_raw(b"\n");
+                    }
+                    hal::kassert!(sc >= 1 && sc < (1 << 32), "dcache: corrupted Arc strong count on lookup hit");
                 }
-                hal::kassert!(sc >= 1 && sc < (1 << 32), "dcache: corrupted Arc strong count on lookup hit");
                 return Some(Arc::clone(e));
             }
             // SAFETY: the writer lock keeps this node allocated while its
@@ -164,10 +164,12 @@ impl DentryHashTable {
         None
     }
 
-    /// RCU dentry probe for the lazy pathname walk. The returned Arc is
-    /// cloned before the guard leaves, so the caller owns the dentry after the
-    /// hash node becomes eligible for retirement. # C: O(bucket_len)
-    pub(super) fn lookup_rcu(&self, parent: *const Dentry, qhash: u32, name: &str) -> Option<Arc<Dentry>> {
+    /// Lockless dentry probe for both ordinary and lazy pathname walks. The
+    /// hash chain is RCU protected, while the hash-owned Arc keeps each
+    /// candidate alive until the read-side critical section ends. A concurrent
+    /// unhash can therefore cause a false negative, which callers handle by
+    /// taking the normal filesystem lookup path. # C: O(bucket_len)
+    pub(super) fn lookup_unlocked(&self, parent: *const Dentry, qhash: u32, name: &str) -> Option<Arc<Dentry>> {
         let _rcu = sync::rcu_read_lock();
         let b = self.bucket(qhash);
         let mut node = b.head.load(core::sync::atomic::Ordering::Acquire);
@@ -190,6 +192,12 @@ impl DentryHashTable {
             node = unsafe { (*node).next.load(core::sync::atomic::Ordering::Acquire) };
         }
         None
+    }
+
+    /// RCU dentry probe retained as the explicit lazy-walk spelling.
+    /// # C: O(bucket_len)
+    pub(super) fn lookup_rcu(&self, parent: *const Dentry, qhash: u32, name: &str) -> Option<Arc<Dentry>> {
+        self.lookup_unlocked(parent, qhash, name)
     }
 
 }

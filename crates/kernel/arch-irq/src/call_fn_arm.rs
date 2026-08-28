@@ -19,7 +19,7 @@ fn this_cpu() -> usize { (hal_aarch64::ArmCpuOps::current_cpu() as usize).min(cp
 fn exec(kind: u32, arg: u64) {
     match CallKind::from_u32(kind) {
         // Broadcast TLBI is already complete when the initiating CPU returns.
-        Some(CallKind::TlbFlush) | Some(CallKind::LdtReload) => {}
+        Some(CallKind::TlbFlush) | Some(CallKind::TlbFlushRange) | Some(CallKind::LdtReload) => {}
         Some(CallKind::MembarrierGlobalMb) => sched::membarrier::service_global(),
         Some(CallKind::MembarrierPrivateMb) => sched::membarrier::service_private_mb(arg),
         Some(CallKind::MembarrierPrivateSyncCore) => sched::membarrier::service_private_sync_core(arg),
@@ -112,7 +112,8 @@ unsafe fn send_ipi(logical_cpu: u32) -> bool {
 }
 
 fn call_function_many(mask: &[u64], kind: u32, arg: u64, wait: bool) {
-    if kind == CallKind::TlbFlush.as_u32() || cpu::smp::online_count() <= 1 { return; }
+    if (kind == CallKind::TlbFlush.as_u32() || kind == CallKind::TlbFlushRange.as_u32())
+        || cpu::smp::online_count() <= 1 { return; }
     let me = this_cpu();
     let targets = targets_for(cpu::CpuMask::from_words(mask), cpu::smp::online_cpumask(), me);
     if targets.is_empty() { return; }

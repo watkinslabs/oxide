@@ -14,6 +14,13 @@ enum RecvKind {
     Vsock(Arc<net::vsock_socket::VsockSocket>),
 }
 
+/// The protocol implementation shape already selected while the pinned file
+/// was classified. Linux's `sock_recvmsg()` receives the protocol-owned
+/// socket directly; it does not rediscover packet/TCP state in the copyout
+/// path.
+#[derive(Copy, Clone)]
+pub(crate) enum InetRecvKind { Other, Packet, Tcp }
+
 /// One fget-style pin and concrete socket classification reused for a receive batch.
 pub(crate) struct RecvTarget {
     file: Arc<vfs::File>,
@@ -43,11 +50,17 @@ pub(crate) fn from_file(file: Arc<vfs::File>) -> Result<RecvTarget, i64> {
 
 /// Route one imported receive destination to its protocol owner. # C: O(1)
 pub(crate) fn recv(target: &RecvTarget, user: &RecvUser, flags: u64) -> i64 {
+    #[cfg(feature = "debug-syscost")]
+    let _phase_admit = crate::syscost_phase::Phase::start(crate::syscost_phase::PH_RECV_ADMIT);
     // The one receive-side security decision, and the only source of a route:
     // no protocol owner can be reached without it.
     let (sock, family) = target.identity();
     let route = match crate::recv_admit::admit_and_route(sock, family, flags)
     { Ok(route) => route, Err(error) => return error };
+    #[cfg(feature = "debug-syscost")]
+    drop(_phase_admit);
+    #[cfg(feature = "debug-syscost")]
+    let _phase_backend = crate::syscost_phase::Phase::start(crate::syscost_phase::PH_RECV_BACKEND);
     let nonblock = target.file.flags().contains(OpenFlags::O_NONBLOCK);
     match (route, &target.kind) {
         (RecvRoute::Netlink, _) =>
@@ -59,12 +72,21 @@ pub(crate) fn recv(target: &RecvTarget, user: &RecvUser, flags: u64) -> i64 {
         (RecvRoute::InetErrqueue, RecvKind::Inet(sock)) =>
             super::inet::recv_error(sock, user, flags),
         (RecvRoute::Inet, RecvKind::Inet(sock)) =>
-            super::inet::recv_pinned(sock, nonblock, user, flags),
+            super::inet::recv_pinned(sock, target.inet_kind(), nonblock, user, flags),
         _ => err(Errno::Enotsock),
     }
 }
 
 impl RecvTarget {
+    fn inet_kind(&self) -> InetRecvKind {
+        let RecvKind::Inet(sock) = &self.kind else { return InetRecvKind::Other; };
+        match &*sock.kind.lock() {
+            net::sock::SockKind::Packet { .. } => InetRecvKind::Packet,
+            net::sock::SockKind::TcpConn(_) => InetRecvKind::Tcp,
+            _ => InetRecvKind::Other,
+        }
+    }
+
     /// Snapshot the policy identity and route family together. Linux selects
     /// one socket operation after its receive security hook; taking the
     /// mutable kind lock separately for each decision made every recvmsg do

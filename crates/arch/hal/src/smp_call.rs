@@ -35,6 +35,10 @@ pub enum CallKind {
     /// Invalidate `arg` in the local TLB, or the whole local TLB when
     /// `arg == ALL`. The reference's `flush_tlb_func`.
     TlbFlush = 1,
+    /// Invalidate the encoded page range in the local TLB. The range payload
+    /// is decoded by the architecture owner so one call-function request can
+    /// cover a small gathered unmap.
+    TlbFlushRange = 10,
     /// Reload LDTR from the address space whose page-table root is `arg`,
     /// but only if this CPU currently has that address space loaded. The
     /// reference's `flush_ldt`.
@@ -79,6 +83,7 @@ impl CallKind {
     pub const fn from_u32(v: u32) -> Option<CallKind> {
         match v {
             1 => Some(CallKind::TlbFlush),
+            10 => Some(CallKind::TlbFlushRange),
             2 => Some(CallKind::LdtReload),
             3 => Some(CallKind::Stop),
             4 => Some(CallKind::MembarrierGlobalMb),

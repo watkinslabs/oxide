@@ -93,29 +93,63 @@ impl Mount {
         let mut out = alloc::vec![0u8; (n_blks as usize) * bs]; // holes stay zero
         let end = first_blk.saturating_add(n_blks);
         let mut blk = first_blk;
+        #[cfg(feature = "debug-faultcost")]
+        let mut extent_ns = 0u64;
+        #[cfg(feature = "debug-faultcost")]
+        let mut dataio_ns = 0u64;
         while blk < end {
+            #[cfg(feature = "debug-faultcost")]
+            let resolve_t0 = pmm::faultcost::stamp();
             match self.resolve_pblock_run(inode, blk) {
                 Ok((phys, run)) => {
+                    #[cfg(feature = "debug-faultcost")]
+                    { extent_ns = extent_ns.saturating_add(pmm::faultcost::stamp().saturating_sub(resolve_t0)); }
                     let run = run.min(end - blk).max(1);
                     // The two sources of BlockIo here answer to different
                     // subsystems — the extent tree and the device — and the
                     // caller collapses both into one label, so each says which
                     // it was.
-                    let data = read_byte_range(&*self.dev, phys * bs as u64, run as usize * bs)
+                    #[cfg(feature = "debug-faultcost")]
+                    let data_t0 = pmm::faultcost::stamp();
+                    let data = match read_byte_range(&*self.dev, phys * bs as u64, run as usize * bs)
                         .inspect_err(|_| super::super::rootfs::framecache::fill_err(
-                            b"run-read", inode.ino, blk as u64))?;
+                            b"run-read", inode.ino, blk as u64))
+                    {
+                        Ok(data) => data,
+                        Err(error) => {
+                            #[cfg(feature = "debug-faultcost")]
+                            pmm::faultcost::note_fill_read_parts(
+                                extent_ns.saturating_add(pmm::faultcost::stamp().saturating_sub(resolve_t0)),
+                                dataio_ns.saturating_add(pmm::faultcost::stamp().saturating_sub(data_t0)),
+                            );
+                            return Err(error);
+                        }
+                    };
+                    #[cfg(feature = "debug-faultcost")]
+                    { dataio_ns = dataio_ns.saturating_add(pmm::faultcost::stamp().saturating_sub(data_t0)); }
                     let dst = (blk - first_blk) as usize * bs;
                     let n = data.len().min(out.len() - dst);
                     out[dst..dst + n].copy_from_slice(&data[..n]);
                     blk += run;
                 }
-                Err(MountError::NotFound) => { blk += 1; } // hole/unwritten → stays zero
+                Err(MountError::NotFound) => {
+                    #[cfg(feature = "debug-faultcost")]
+                    { extent_ns = extent_ns.saturating_add(pmm::faultcost::stamp().saturating_sub(resolve_t0)); }
+                    blk += 1;
+                } // hole/unwritten → stays zero
                 Err(e) => {
+                    #[cfg(feature = "debug-faultcost")]
+                    pmm::faultcost::note_fill_read_parts(
+                        extent_ns.saturating_add(pmm::faultcost::stamp().saturating_sub(resolve_t0)),
+                        dataio_ns,
+                    );
                     super::super::rootfs::framecache::fill_err(b"extent-resolve", inode.ino, blk as u64);
                     return Err(e);
                 }
             }
         }
+        #[cfg(feature = "debug-faultcost")]
+        pmm::faultcost::note_fill_read_parts(extent_ns, dataio_ns);
         Ok(out)
     }
 
@@ -329,6 +363,18 @@ impl Mount {
     {
         let phys = self.resolve_pblock(inode, file_blk)?;
         self.read_metadata_block(phys)
+    }
+
+    /// Shared-buffer companion for metadata readers that only inspect a file
+    /// block. This preserves the Linux buffer-head shape: `sb_bread()` returns
+    /// the cached block to the parser, rather than copying a full filesystem
+    /// block into a temporary `Vec` for every lookup.
+    /// # C: O(N_extents) extent walk + 1 shared cache lookup
+    pub(crate) fn read_file_block_meta_shared(&self, inode: &Inode, file_blk: u32)
+        -> Result<alloc::sync::Arc<Vec<u8>>, MountError>
+    {
+        let phys = self.resolve_pblock(inode, file_blk)?;
+        self.read_metadata_block_shared(phys)
     }
 
     /// Like `write_file_block` but routes through `metadata_write`

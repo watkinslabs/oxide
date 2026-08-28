@@ -10,11 +10,10 @@ use crate::types::{KResult, VfsError};
 
 /// Negative-dentry caching safety gate for filesystem-backed directories.
 /// # C: O(1)
-pub(crate) fn neg_cache_ok(dir: &InodeRef) -> bool {
-    match dir.i_sb() {
-        Some(sb) => matches!(sb.s_type.name(), "ext4" | "tmpfs" | "ramfs"),
-        None => false,
-    }
+pub(crate) fn neg_cache_ok(dir: &InodeRef, name: &str) -> bool {
+    let filesystem_allows = dir.i_sb().is_some_and(|sb|
+        matches!(sb.s_type.name(), "ext4" | "tmpfs" | "ramfs"));
+    filesystem_allows || dir.i_op().negative_dentry_ok(dir, name)
 }
 
 /// Follow stacked mountpoints DOWN from `d`: while `d` is a mountpoint, switch

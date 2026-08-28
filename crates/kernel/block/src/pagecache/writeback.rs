@@ -14,6 +14,8 @@ extern crate alloc;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+#[cfg(not(target_os = "oxide-kernel"))]
+use core::sync::atomic::AtomicBool;
 use core::sync::atomic::Ordering;
 
 use crate::blockdev::{BlockDevice, BlockRequest};
@@ -21,6 +23,19 @@ use crate::types::{BlockError, InodeId, KResult, PageFlags, PAGE_BYTES};
 
 use super::global;
 use super::mapping::{Mapping, PageOut, Writeback};
+
+#[cfg(not(target_os = "oxide-kernel"))]
+static IN_FLUSHER: AtomicBool = AtomicBool::new(false);
+
+/// True while the serialized filesystem callbacks run as part of a flusher
+/// pass. A filesystem must not wait here for a commit that this pass can only
+/// perform after its callback returns.
+pub fn in_flusher_context() -> bool {
+    #[cfg(target_os = "oxide-kernel")]
+    { sched::live::current().is_some_and(|task| task.security.io_flusher.get()) }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { IN_FLUSHER.load(Ordering::Acquire) }
+}
 
 /// Writeback straight to a block device, file offset taken as device offset.
 /// What a `PageCache` used over a raw device gets; a filesystem that
@@ -210,6 +225,8 @@ fn fs_flushers() -> alloc::vec::Vec<fn()> { FS_FLUSHERS.lock().clone() }
 /// Ungated and driven by its arguments, so what the daemon does is checkable
 /// without a daemon. # Ctx: process # Sleeps: y # C: O(pages written)
 pub fn flush_pass(now: u64) -> usize {
+    #[cfg(not(target_os = "oxide-kernel"))]
+    IN_FLUSHER.store(true, Ordering::Release);
     let background = global::background_threshold();
     let mut over = background > 0 && global::nr_dirty() > background;
     let mut written = 0usize;
@@ -228,6 +245,8 @@ pub fn flush_pass(now: u64) -> usize {
     // reference being dropped, which put a journal commit on whatever stack
     // happened to release it.
     for flush in fs_flushers() { flush(); }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    IN_FLUSHER.store(false, Ordering::Release);
     written
 }
 

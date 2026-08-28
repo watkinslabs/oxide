@@ -91,6 +91,12 @@ pub trait InodeOps: Send + Sync {
     /// forever. # C: O(1)
     fn child_d_op(&self, _inode: &Inode, _name: &str) -> Option<&'static DentryOps> { None }
 
+    /// Whether a failed lookup may be published as a negative dentry for this
+    /// parent/name. Dynamic filesystems must opt in only when their dentry
+    /// revalidation hook can validate an absent name and invalidate it when
+    /// the name appears (Linux kernfs does this for negative dentries). # C: O(1)
+    fn negative_dentry_ok(&self, _inode: &Inode, _name: &str) -> bool { false }
+
     /// Has this directory no children (`simple_empty`)? The casefold attribute
     /// may only be turned on or off while it is empty, because every name
     /// already inside was hashed by the rule that is changing. A backend that

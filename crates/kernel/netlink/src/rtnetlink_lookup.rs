@@ -52,9 +52,9 @@ fn build_dump_row(req: &Nlmsghdr, rows: &[RouteRow]) -> Vec<u8> {
     out
 }
 
-fn route_dump(net_ns: u64, req: &Nlmsghdr) -> Vec<u8> {
+fn route_dump(net_ns: u64, req: &Nlmsghdr, family: u8) -> Vec<u8> {
     let mut reply: Vec<u8> = Vec::with_capacity(256);
-    let rows = rt::route_snapshot_ns(net_ns);
+    let rows = if family == rt::AF_INET6 { Vec::new() } else { rt::route_snapshot_ns(net_ns) };
     let mut used = alloc::vec![false; rows.len()];
     for i in 0..rows.len() {
         if used[i] { continue; }
@@ -69,13 +69,36 @@ fn route_dump(net_ns: u64, req: &Nlmsghdr) -> Vec<u8> {
         }
         reply.extend_from_slice(&build_dump_row(req, &group));
     }
+    if family != rt::AF_INET {
+        for row in net::global_stack().routes6.snapshot_in(net_ns) {
+            reply.extend_from_slice(&rt::build_newroute6_reply(req.nlmsg_seq, req.nlmsg_pid, row, true));
+        }
+    }
     reply.extend_from_slice(&rt::done_multi(req.nlmsg_seq, req.nlmsg_pid));
     reply
 }
 
-fn parse_lookup(msg: &[u8]) -> Option<([u8; 4], u8)> {
+enum LookupDestination { V4([u8; 4], u8), V6(net::Ipv6Addr, u8) }
+
+fn parse_lookup(msg: &[u8]) -> Option<LookupDestination> {
     let off = Nlmsghdr::SIZE;
     if msg.len() < off + Rtmsg::SIZE { return None; }
+    if msg[off] == rt::AF_INET6 {
+        let prefix = msg[off + 1];
+        if prefix > 128 { return None; }
+        let mut p = off + Rtmsg::SIZE;
+        while p + 4 <= msg.len() {
+            let len = u16::from_ne_bytes([msg[p], msg[p + 1]]) as usize;
+            let kind = u16::from_ne_bytes([msg[p + 2], msg[p + 3]]) & 0x3fff;
+            if len < 4 || p + len > msg.len() { break; }
+            if kind == rt::rta::RTA_DST && len == 20 {
+                return Some(LookupDestination::V6(net::Ipv6Addr(
+                    msg[p + 4..p + 20].try_into().ok()?), prefix));
+            }
+            p += nlmsg_align(len);
+        }
+        return Some(LookupDestination::V6(net::Ipv6Addr::ANY, 0));
+    }
     if msg[off] != rt::AF_INET { return None; }
     let dst_len = msg[off + 1];
     if dst_len > 32 { return None; }
@@ -86,25 +109,38 @@ fn parse_lookup(msg: &[u8]) -> Option<([u8; 4], u8)> {
         if nla_len < 4 || p + nla_len > msg.len() { break; }
         if nla_type == rt::rta::RTA_DST && nla_len == 8 {
             let q = &msg[p + 4..p + 8];
-            return Some(([q[0], q[1], q[2], q[3]], dst_len));
+            return Some(LookupDestination::V4([q[0], q[1], q[2], q[3]], dst_len));
         }
         p += nlmsg_align(nla_len);
     }
-    Some(([0, 0, 0, 0], 0))
+    Some(LookupDestination::V4([0, 0, 0, 0], 0))
 }
 
 /// RTM_GETROUTE supports both dump requests and one-shot FIB lookup requests.
 /// # C: O(N routes + N attrs)
 pub fn handle_getroute(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
-    if req.nlmsg_flags & flags::NLM_F_DUMP != 0 { return route_dump(net_ns, req); }
-    let Some((dst, len)) = parse_lookup(full_msg) else { return rt::nlmsg_ack_pub(req, -22); };
-    let Some(r) = rt::route_lookup_ns(net_ns, dst) else {
-        return rt::nlmsg_ack_pub(req, -101);
-    };
-    let reply_dst = if r.dst.is_some() { r.dst } else { Some((dst, len)) };
-    let mut reply = r;
-    reply.dst = reply_dst;
-    rt::build_newroute_row_reply(req.nlmsg_seq, req.nlmsg_pid, reply, false)
+    if req.nlmsg_flags & flags::NLM_F_DUMP != 0 {
+        let family = full_msg.get(Nlmsghdr::SIZE).copied().unwrap_or(0);
+        return route_dump(net_ns, req, family);
+    }
+    let Some(destination) = parse_lookup(full_msg) else { return rt::nlmsg_ack_pub(req, -22); };
+    match destination {
+        LookupDestination::V4(dst, len) => {
+            let Some(r) = rt::route_lookup_ns(net_ns, dst) else { return rt::nlmsg_ack_pub(req, -101); };
+            let reply_dst = if r.dst.is_some() { r.dst } else { Some((dst, len)) };
+            let mut reply = r;
+            reply.dst = reply_dst;
+            rt::build_newroute_row_reply(req.nlmsg_seq, req.nlmsg_pid, reply, false)
+        }
+        LookupDestination::V6(dst, len) => {
+            let Some(r) = net::global_stack().routes6.lookup_in(net_ns, dst) else {
+                return rt::nlmsg_ack_pub(req, -101);
+            };
+            let mut reply = r;
+            if reply.prefix_len == 0 { reply.dst = dst; reply.prefix_len = len; }
+            rt::build_newroute6_reply(req.nlmsg_seq, req.nlmsg_pid, reply, false)
+        }
+    }
 }
 
 #[cfg(test)]

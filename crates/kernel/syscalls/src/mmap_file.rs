@@ -35,12 +35,14 @@ pub struct InodeFileBacking {
 impl InodeFileBacking {
     /// # C: O(1)
     pub fn new(inode: InodeRef) -> Arc<Self> {
+        inode.igrab();
         Arc::new(Self { inode, cache: PageCache::new(), path: alloc::vec::Vec::new(), noreuse: false })
     }
 
     /// Same, naming the path the mapping was established from.
     /// # C: O(path)
     pub fn new_named(inode: InodeRef, path: alloc::vec::Vec<u8>) -> Arc<Self> {
+        inode.igrab();
         Arc::new(Self { inode, cache: PageCache::new(), path, noreuse: false })
     }
 
@@ -48,7 +50,18 @@ impl InodeFileBacking {
     /// (`vfs::Fmode::NOREUSE`) forward into the backing so the fault path's
     /// `vma_has_recency` predicate can read it back. # C: O(path)
     pub fn new_named_from_file(inode: InodeRef, path: alloc::vec::Vec<u8>, noreuse: bool) -> Arc<Self> {
+        inode.igrab();
         Arc::new(Self { inode, cache: PageCache::new(), path, noreuse })
+    }
+}
+
+impl Drop for InodeFileBacking {
+    fn drop(&mut self) {
+        // Linux's VMA retains its vm_file after the establishing fd closes;
+        // this counted inode hold is the equivalent in the backing bridge.
+        // Release it while this backing still owns the inode, so ext4
+        // eviction cannot race a final file-backed fault through this object.
+        vfs::file::iput(self.inode.clone());
     }
 }
 
@@ -300,6 +313,7 @@ fn vfs_error(e: vfs::VfsError) -> FileBackingError {
         vfs::VfsError::Eacces => FileBackingError::Acces,
         vfs::VfsError::Ebadf => FileBackingError::Badf,
         vfs::VfsError::Einval => FileBackingError::Inval,
+        vfs::VfsError::Eagain => FileBackingError::Again,
         vfs::VfsError::Eopnotsupp => FileBackingError::OpNotSupp,
         _ => FileBackingError::Io,
     }

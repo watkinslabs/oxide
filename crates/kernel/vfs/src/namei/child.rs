@@ -41,15 +41,31 @@ impl Nameidata {
         // Linux computes qstr.hash while parsing the component and carries it
         // through both the fast probe and any slow dentry allocation.
         let hash = Dentry::compute_hash(Some(&self.cur_dentry), comp);
-        match crate::dcache::d_lookup_reval_rcu_with_hash(
-            &self.cur_dentry,
-            comp,
-            self.flags.reval,
-            self.rcu,
-            hash,
-        ) {
-            Some(d) if !d.is_negative() => return Ok(ChildLookup::Found(d)),
-            Some(_) => return Ok(ChildLookup::Missing), // cached negative (definitive)
+        let cached = {
+            #[cfg(feature = "debug-resolve-cost")]
+            let _probe_cost = crate::resolve_cost::dcache_probe();
+            crate::dcache::d_lookup_reval_rcu_with_hash(
+                &self.cur_dentry,
+                comp,
+                self.flags.reval,
+                self.rcu,
+                hash,
+            )
+        };
+        match cached {
+            // Linux's `d_is_positive()` reads the dentry's cached entry type;
+            // do not take the inode lock merely to rediscover the negative
+            // bit before the walker takes the one inode snapshot it needs.
+            Some(d) if d.d_is_positive() => {
+                #[cfg(feature = "debug-resolve-cost")]
+                crate::resolve_cost::dcache_hit();
+                return Ok(ChildLookup::Found(d));
+            }
+            Some(_) => {
+                #[cfg(feature = "debug-resolve-cost")]
+                crate::resolve_cost::dcache_negative();
+                return Ok(ChildLookup::Missing);
+            } // cached negative (definitive)
             // RESOLVE_CACHED: a dcache miss would take the (possibly blocking)
             // `i_op->lookup` slow path — refuse with EAGAIN instead (Linux
             // `LOOKUP_CACHED`).
@@ -59,7 +75,10 @@ impl Nameidata {
             // not hold — leave LOOKUP_RCU and restart the walk in ref mode (Linux
             // `lookup_slow` is reached only after `try_to_unlazy`).
             None if self.rcu => { self.rcu = false; return Ok(ChildLookup::Restart); }
-            None => {}
+            None => {
+                #[cfg(feature = "debug-resolve-cost")]
+                crate::resolve_cost::dcache_miss();
+            }
         }
         // `lookup_slow`: take the PARENT directory's
         // `i_rwsem` SHARED across the blocking `i_op->lookup` + dcache install, so
@@ -72,6 +91,8 @@ impl Nameidata {
         // lock, always acquired after (never before) this one. Rank: `i_rwsem`
         // (40) is below the dcache Dentry (50)/Superblock (60) locks `d_add`
         // takes, so the chain is ascending.
+        #[cfg(feature = "debug-resolve-cost")]
+        let _slow_cost = crate::resolve_cost::slow_lookup();
         let _dir_lk = self.cur_inode.inode_lock_shared();
         match self.cur_inode.lookup(comp) {
             Ok(ci) => {
@@ -90,7 +111,7 @@ impl Nameidata {
                 // D5/D6 negative-on-miss, gated for safety (see `neg_cache_ok`):
                 // create syscalls flush this leaf negative by resolved parent
                 // dentry/name, so a subsequently-created file is never masked.
-                if super::neg_cache_ok(&self.cur_inode) {
+                if super::neg_cache_ok(&self.cur_inode, comp) {
                     crate::dcache::d_add_negative_with_hash(&self.cur_dentry, comp, hash);
                 }
                 Ok(ChildLookup::Missing)

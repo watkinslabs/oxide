@@ -27,12 +27,56 @@ pub struct RouteAttrs {
     pub multipath: Vec<RouteNexthop>,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct Route6Attrs {
+    pub dst: Option<net::Ipv6Addr>,
+    pub gateway: Option<net::Ipv6Addr>,
+    pub oif: Option<u32>,
+    pub prefsrc: Option<net::Ipv6Addr>,
+    pub table: Option<u32>,
+    pub metric: Option<u32>,
+}
+
 // Route-metric lock-mask conversion.
 const RTAX_MTU_MAX: u32 = u16::MAX as u32 - 15;
 const RTAX_ADVMSS_MAX: u32 = u16::MAX as u32 - 40;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum RouteAttrError { Invalid, Unsupported }
+
+/// Parse the AF_INET6 route attributes accepted by the IPv6 rtnetlink path.
+/// The kernel's IPv6 policy requires full in6_addr payloads for gateway and
+/// preferred source; destination prefixes are canonicalized by the caller.
+pub fn parse_route6_attrs(attrs: &[u8]) -> Result<Route6Attrs, RouteAttrError> {
+    let mut out = Route6Attrs { dst: None, gateway: None, oif: None,
+        prefsrc: None, table: None, metric: None };
+    let mut off = 0;
+    while off + 4 <= attrs.len() {
+        let len = u16::from_ne_bytes([attrs[off], attrs[off + 1]]) as usize;
+        let kind = u16::from_ne_bytes([attrs[off + 2], attrs[off + 3]]) & 0x3fff;
+        if len < 4 || off + len > attrs.len() { return Err(RouteAttrError::Invalid); }
+        let payload = &attrs[off + 4..off + len];
+        match kind {
+            rta::RTA_DST if payload.len() == 16 => out.dst = Some(net::Ipv6Addr(payload.try_into().unwrap())),
+            rta::RTA_GATEWAY if payload.len() == 16 => {
+                let address = net::Ipv6Addr(payload.try_into().unwrap());
+                if address != net::Ipv6Addr::ANY { out.gateway = Some(address); }
+            }
+            rta::RTA_PREFSRC if payload.len() == 16 => out.prefsrc = Some(net::Ipv6Addr(payload.try_into().unwrap())),
+            rta::RTA_OIF if payload.len() == 4 => out.oif = Some(u32::from_ne_bytes(payload.try_into().unwrap())),
+            rta::RTA_TABLE if payload.len() == 4 => out.table = Some(u32::from_ne_bytes(payload.try_into().unwrap())),
+            rta::RTA_PRIORITY if payload.len() == 4 => out.metric = Some(u32::from_ne_bytes(payload.try_into().unwrap())),
+            rta::RTA_SRC | rta::RTA_IIF => return Err(RouteAttrError::Unsupported),
+            rta::RTA_DST | rta::RTA_GATEWAY | rta::RTA_PREFSRC | rta::RTA_OIF
+                | rta::RTA_TABLE | rta::RTA_PRIORITY => return Err(RouteAttrError::Invalid),
+            rta::RTA_METRICS | rta::RTA_MULTIPATH => return Err(RouteAttrError::Unsupported),
+            _ => {}
+        }
+        off += nlmsg_align(len);
+    }
+    if attrs[off..].iter().any(|byte| *byte != 0) { return Err(RouteAttrError::Invalid); }
+    Ok(out)
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RouteMetricFilter {

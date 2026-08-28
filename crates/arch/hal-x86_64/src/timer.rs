@@ -176,9 +176,14 @@ impl TimerOps for X86TimerOps {
         if khz == 0 { return false; }
         #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
         {
-        let cycles = ((deadline_ns.0 as u128).saturating_mul(khz as u128)
+        // The API is CLOCK_MONOTONIC absolute time, but the MSR is an
+        // absolute TSC compare. Convert the remaining interval and add it to
+        // the current TSC, as Linux's clockevent path does. Direct conversion
+        // loses the TSC boot offset and can arm an already-expired deadline.
+        let delta_ns = deadline_ns.0.saturating_sub(Self::monotonic_ns().0);
+        let cycles = ((delta_ns as u128).saturating_mul(khz as u128)
             / 1_000_000).min(u64::MAX as u128) as u64;
-        let target = cycles.max(rdtsc().saturating_add(1));
+        let target = rdtsc().saturating_add(cycles.max(1));
         let lo = target as u32;
         let hi = (target >> 32) as u32;
         // SAFETY: IA32_TSC_DEADLINE is valid after LAPIC LVT enters deadline mode.

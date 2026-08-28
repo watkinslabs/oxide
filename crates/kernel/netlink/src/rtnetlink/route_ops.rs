@@ -1,6 +1,6 @@
 extern crate alloc;
 
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 
 use crate::{flags, Nlmsghdr};
 
@@ -8,7 +8,7 @@ use super::ack::build_ack;
 use super::attrs::{put_nlattr, put_nlattr_u32};
 use super::route_state::{route_change, route_take_lowest, RouteRow};
 use super::rtnetlink_route::{
-    parse_route_attrs, parse_route_attrs_for_delete, put_metrics_attr, put_multipath_attr,
+    parse_route6_attrs, parse_route_attrs, parse_route_attrs_for_delete, put_metrics_attr, put_multipath_attr,
     route_metrics_match, RouteAttrError, RouteNexthop,
 };
 use super::uapi::{
@@ -117,7 +117,7 @@ pub(crate) fn build_newroute6_reply(seq: u32, pid: u32, row: net::Route6Entry,
                                     multi: bool) -> Vec<u8> {
     let is_local = row.dst.is_loopback() && row.prefix_len == 128 && row.gateway.is_none();
     let protocol = match row.origin {
-        net::Route6Origin::Static => RTPROT_STATIC,
+        net::Route6Origin::Static | net::Route6Origin::StaticMetric { .. } => RTPROT_STATIC,
         net::Route6Origin::AddressPrefix { .. } => super::uapi::RTPROT_KERNEL,
         net::Route6Origin::RouterAdvertisementDefault { .. }
         | net::Route6Origin::RouterAdvertisementPrefix { .. } => RTPROT_RA,
@@ -227,6 +227,7 @@ pub fn handle_newroute_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u
     let rtm_off = Nlmsghdr::SIZE;
     if full_msg.len() < rtm_off + Rtmsg::SIZE { return build_errno_ack(req, Errno::Einval); }
     let family = full_msg[rtm_off];
+    if family == AF_INET6 { return handle_newroute6_in(net_ns, req, full_msg); }
     let dst_len = full_msg[rtm_off + 1];
     let src_len = full_msg[rtm_off + 2];
     let tos = full_msg[rtm_off + 3];
@@ -326,6 +327,98 @@ pub fn handle_newroute_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u
     build_ack(req, 0)
 }
 
+/// Handle an IPv6 RTM_NEWROUTE through the stack-owned IPv6 FIB.
+/// # C: O(N routes + attrs)
+fn handle_newroute6_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
+    let off = Nlmsghdr::SIZE;
+    let dst_len = full_msg[off + 1];
+    let src_len = full_msg[off + 2];
+    let tos = full_msg[off + 3];
+    let header_table = full_msg[off + 4] as u32;
+    let protocol = full_msg[off + 5];
+    let scope = full_msg[off + 6];
+    let kind = full_msg[off + 7];
+    let flags = u32::from_ne_bytes(full_msg[off + 8..off + 12].try_into().unwrap());
+    if dst_len > 128 || src_len != 0 || tos != 0 || flags != 0
+        || kind != RTN_UNICAST || protocol == 0 {
+        return build_errno_ack(req, Errno::Eopnotsupp);
+    }
+    let mut attrs = match parse_route6_attrs(&full_msg[off + Rtmsg::SIZE..]) {
+        Ok(attrs) => attrs,
+        Err(RouteAttrError::Invalid) => return build_errno_ack(req, Errno::Einval),
+        Err(RouteAttrError::Unsupported) => return build_errno_ack(req, Errno::Eopnotsupp),
+    };
+    let stack = net::global_stack();
+    let Some(oif) = attrs.oif.take() else { return build_errno_ack(req, Errno::Einval) };
+    let Some(iface) = resolve_oif(stack, net_ns, oif).map(net::NetIfaceId::from_raw) else {
+        return build_errno_ack(req, Errno::Enodev);
+    };
+    let table = attrs.table.unwrap_or(header_table);
+    if table == 0 || (dst_len != 0 && attrs.dst.is_none()) { return build_errno_ack(req, Errno::Einval); }
+    let dst = attrs.dst.unwrap_or(net::Ipv6Addr::ANY);
+    let gateway = attrs.gateway;
+    let route = net::Route6Entry { table, dst: canonical_v6(dst, dst_len), prefix_len: dst_len,
+        iface, gateway, src_hint: attrs.prefsrc,
+        origin: net::Route6Origin::StaticMetric { metric: attrs.metric.unwrap_or(0) } };
+    let create = req.nlmsg_flags & flags::NLM_F_CREATE != 0;
+    let exclusive = req.nlmsg_flags & flags::NLM_F_EXCL != 0;
+    let replace = req.nlmsg_flags & flags::NLM_F_REPLACE != 0;
+    if (exclusive && replace) || req.nlmsg_flags & flags::NLM_F_APPEND != 0 {
+        return build_errno_ack(req, Errno::Einval);
+    }
+    let Some(lease) = stack.ifaces.acquire_ingress(iface) else {
+        return build_errno_ack(req, Errno::Enodev);
+    };
+    if lease.net_ns() != net_ns { return build_errno_ack(req, Errno::Enodev); }
+    let ticket = {
+        let rtnl = stack.rtnl_lock();
+        if stack.ifaces.control_ready_in_ns(&rtnl, iface, net_ns).is_none() {
+            return build_errno_ack(req, Errno::Enodev);
+        }
+        let same = |old: &net::Route6Entry| old.table == route.table && old.dst == route.dst
+            && old.prefix_len == route.prefix_len && old.iface == route.iface
+            && old.gateway == route.gateway;
+        let existing: Vec<_> = stack.routes6.snapshot_in(net_ns).into_iter().filter(same).collect();
+        if !existing.is_empty() && exclusive { return build_errno_ack(req, Errno::Eexist); }
+        if existing.is_empty() && !create { return build_errno_ack(req, Errno::Enoent); }
+        let removed = if replace { stack.routes6.replace_in_changes(net_ns, same, vec![route]) }
+            else { stack.routes6.add_in(net_ns, route); Vec::new() };
+        let owner = net::control_event::IfaceOwner { iface, generation: lease.generation() };
+        let namespace = network_namespace::lookup_u64(net_ns)
+            .unwrap_or_else(network_namespace::initial);
+        let mut tickets = Vec::new();
+        if !removed.is_empty() {
+            tickets.push(net::control_event::stage(&rtnl,
+                net::control_event::ControlEvent::Route6(net::control_event::Route6Event {
+                    kind: net::control_event::EventKind::Delete,
+                    namespace: net::control_event::NamespaceOwner::Live(namespace.clone()),
+                    owners: alloc::vec![owner], rows: removed,
+                })));
+        }
+        tickets.push(net::control_event::stage(&rtnl,
+            net::control_event::ControlEvent::Route6(net::control_event::Route6Event {
+                kind: net::control_event::EventKind::New,
+                namespace: net::control_event::NamespaceOwner::Live(namespace),
+                owners: alloc::vec![owner], rows: alloc::vec![route],
+            })));
+        *tickets.last().unwrap()
+    };
+    net::control_event::publish(ticket);
+    let _ = (protocol, scope, attrs.metric);
+    build_ack(req, 0)
+}
+
+fn canonical_v6(mut address: net::Ipv6Addr, prefix_len: u8) -> net::Ipv6Addr {
+    let full = (prefix_len / 8) as usize;
+    let rem = prefix_len % 8;
+    if full < 16 {
+        if rem != 0 { address.0[full] &= !0u8 << (8 - rem); }
+        let start = if rem == 0 { full } else { full + 1 };
+        for byte in &mut address.0[start..] { *byte = 0; }
+    }
+    address
+}
+
 /// Handle RTM_DELROUTE.
 /// # C: O(N attrs + route table)
 pub fn handle_delroute(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
@@ -336,6 +429,7 @@ pub fn handle_delroute(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
 pub fn handle_delroute_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     let rtm_off = Nlmsghdr::SIZE;
     if full_msg.len() < rtm_off + Rtmsg::SIZE { return build_errno_ack(req, Errno::Einval); }
+    if full_msg[rtm_off] == AF_INET6 { return handle_delroute6_in(net_ns, req, full_msg); }
     let dst_len = full_msg[rtm_off + 1];
     let src_len = full_msg[rtm_off + 2];
     let tos = full_msg[rtm_off + 3];
@@ -404,6 +498,67 @@ pub fn handle_delroute_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u
         let removed = route_take_lowest(&rtnl, net_ns, |record| matches(record));
         queue_route(&rtnl, true, removed.into_iter()
             .map(super::route_state::to_record).collect(), owners)
+    };
+    net::control_event::publish(ticket);
+    build_ack(req, 0)
+}
+
+/// Handle an IPv6 RTM_DELROUTE through the stack-owned IPv6 FIB.
+/// # C: O(N routes + attrs)
+fn handle_delroute6_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
+    let off = Nlmsghdr::SIZE;
+    let dst_len = full_msg[off + 1];
+    let src_len = full_msg[off + 2];
+    let tos = full_msg[off + 3];
+    let header_table = full_msg[off + 4] as u32;
+    let protocol = full_msg[off + 5];
+    let scope = full_msg[off + 6];
+    let kind = full_msg[off + 7];
+    if dst_len > 128 || src_len != 0 || tos != 0 { return build_errno_ack(req, Errno::Eopnotsupp); }
+    let mut attrs = match parse_route6_attrs(&full_msg[off + Rtmsg::SIZE..]) {
+        Ok(attrs) => attrs,
+        Err(RouteAttrError::Invalid) => return build_errno_ack(req, Errno::Einval),
+        Err(RouteAttrError::Unsupported) => return build_errno_ack(req, Errno::Eopnotsupp),
+    };
+    let stack = net::global_stack();
+    if let Some(oif) = attrs.oif.take() {
+        attrs.oif = Some(match resolve_oif(stack, net_ns, oif) {
+            Some(oif) => oif,
+            None => return build_errno_ack(req, Errno::Esrch),
+        });
+    }
+    let table = attrs.table.unwrap_or(header_table);
+    let dst = canonical_v6(attrs.dst.unwrap_or(net::Ipv6Addr::ANY), dst_len);
+    let selected: Vec<_> = stack.routes6.snapshot_in(net_ns).into_iter().filter(|route| {
+        (table == 0 || route.table == table) && route.dst == dst && route.prefix_len == dst_len
+            && attrs.oif.is_none_or(|oif| route.iface.raw() == oif)
+            && attrs.gateway.is_none_or(|gateway| route.gateway == Some(gateway))
+            && attrs.prefsrc.is_none_or(|source| route.src_hint == Some(source))
+            && attrs.metric.is_none_or(|metric| route.origin.metric() == metric)
+            && (protocol == 0 || protocol == super::uapi::RTPROT_STATIC)
+            && (scope == 0 || scope == RT_SCOPE_LINK || scope == RT_SCOPE_UNIVERSE)
+            && (kind == 0 || kind == RTN_UNICAST)
+    }).collect();
+    let Some(route) = selected.first().copied() else { return build_errno_ack(req, Errno::Esrch); };
+    let Some(lease) = stack.ifaces.acquire_ingress(route.iface) else {
+        return build_errno_ack(req, Errno::Enodev);
+    };
+    if lease.net_ns() != net_ns { return build_errno_ack(req, Errno::Enodev); }
+    let ticket = {
+        let rtnl = stack.rtnl_lock();
+        let current = stack.routes6.snapshot_in(net_ns).into_iter().find(|candidate| *candidate == route);
+        if current.is_none() || stack.ifaces.control_ready_in_ns(&rtnl, route.iface, net_ns).is_none() {
+            return build_errno_ack(req, Errno::Enodev);
+        }
+        let removed = stack.routes6.replace_in_changes(net_ns, |candidate| *candidate == route, Vec::new());
+        let owner = net::control_event::IfaceOwner { iface: route.iface, generation: lease.generation() };
+        let namespace = network_namespace::lookup_u64(net_ns).unwrap_or_else(network_namespace::initial);
+        net::control_event::stage(&rtnl,
+            net::control_event::ControlEvent::Route6(net::control_event::Route6Event {
+                kind: net::control_event::EventKind::Delete,
+                namespace: net::control_event::NamespaceOwner::Live(namespace),
+                owners: alloc::vec![owner], rows: removed,
+            }))
     };
     net::control_event::publish(ticket);
     build_ack(req, 0)
@@ -485,5 +640,41 @@ mod tests {
         let attrs = &msg[Nlmsghdr::SIZE + Rtmsg::SIZE..];
         let parsed = parse_route_attrs(attrs).unwrap();
         assert_eq!((parsed.table, parsed.metric, parsed.metrics.mtu), (Some(1001), Some(99), 1400));
+    }
+
+    #[test]
+    fn ipv6_new_and_delroute_mutate_the_route6_table() {
+        let domain = net::hosted_fixture::init_net_domain();
+        domain.set_notifier(crate::mcast::notify_control_event);
+        let namespace = crate::netlink_tests::test_namespace();
+        let ns = namespace.id().as_u64();
+        let stack = net::global_stack();
+        let iface = stack.ifaces.register_in_ns(alloc::sync::Arc::new(net::LoopbackDev::new()), ns);
+        let ifindex = stack.ifaces.ifindex_in_ns(iface, ns).unwrap();
+        let mut body = alloc::vec![0u8; Rtmsg::SIZE];
+        Rtmsg { rtm_family: AF_INET6, rtm_dst_len: 64, rtm_table: super::super::uapi::RT_TABLE_MAIN,
+            rtm_protocol: RTPROT_STATIC, rtm_scope: RT_SCOPE_UNIVERSE, rtm_type: RTN_UNICAST,
+            ..Rtmsg::default() }.write_to(&mut body);
+        put_nlattr(&mut body, rta::RTA_DST, &[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]);
+        put_nlattr_u32(&mut body, rta::RTA_OIF, ifindex);
+        put_nlattr_u32(&mut body, rta::RTA_PRIORITY, 77);
+        let mut msg = alloc::vec![0u8; Nlmsghdr::SIZE];
+        msg.extend_from_slice(&body);
+        let req = Nlmsghdr { nlmsg_len: msg.len() as u32, nlmsg_type: RTM_NEWROUTE,
+            nlmsg_flags: flags::NLM_F_REQUEST | flags::NLM_F_CREATE | flags::NLM_F_EXCL,
+            nlmsg_seq: 7, nlmsg_pid: 9 };
+        req.write_to(&mut msg[..Nlmsghdr::SIZE]);
+        assert_eq!(ack_errno(&handle_newroute_in(ns, &req, &msg)), 0);
+        let route = stack.routes6.snapshot_in(ns);
+        assert_eq!(route.len(), 1);
+        assert_eq!(route[0].origin.metric(), 77);
+        let mut del = msg.clone();
+        del[Nlmsghdr::SIZE + 1] = 64;
+        let del_req = Nlmsghdr { nlmsg_len: del.len() as u32, nlmsg_type: super::super::uapi::RTM_DELROUTE,
+            nlmsg_flags: flags::NLM_F_REQUEST, nlmsg_seq: 8, nlmsg_pid: 9 };
+        del_req.write_to(&mut del[..Nlmsghdr::SIZE]);
+        assert_eq!(ack_errno(&handle_delroute_in(ns, &del_req, &del)), 0);
+        assert!(stack.routes6.snapshot_in(ns).is_empty());
+        let _ = stack.ifaces.unregister(iface);
     }
 }

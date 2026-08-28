@@ -20,10 +20,18 @@ impl Mount {
     /// mutators from the shadow-drain through the final target-device write.
     /// # C: O(N shadow blocks) + one journal commit
     pub fn commit_batch(&self) -> Result<(), MountError> {
-        self.commit_batch_for(None).map(|_| ())
+        self.commit_batch_for(None, true).map(|_| ())
     }
 
-    pub(crate) fn commit_batch_for(&self, inode: Option<(u32, bool)>) -> Result<bool, MountError> {
+    /// Commit the running transaction from the periodic journal owner. The
+    /// commit record is made durable, but its home blocks remain for the
+    /// checkpoint pass instead of extending this timer's critical section.
+    /// # C: O(N shadow blocks) journal I/O; home writeback is asynchronous
+    pub(crate) fn commit_batch_background(&self) -> Result<(), MountError> {
+        self.commit_batch_for(None, false).map(|_| ())
+    }
+
+    pub(crate) fn commit_batch_for(&self, inode: Option<(u32, bool)>, wait_checkpoint: bool) -> Result<bool, MountError> {
         if self.committing_batch.swap(true, core::sync::atomic::Ordering::AcqRel) {
             // A writeback operation can reach this method through a nested
             // journaled write. The outer commit owns the ordering/commit
@@ -51,14 +59,28 @@ impl Mount {
         #[cfg(feature = "debug-fsync-latency")]
         crate::fsync_latency::report(b"batch-commit", commit_ns, staged_blocks);
         self.txn_release();
-        let direct = result?;
+        let direct = match result {
+            Ok(direct) => direct,
+            Err(err) => {
+                self.batch_wait.wake_all();
+                return Err(err);
+            }
+        };
+        self.batch_wait.wake_all();
         let generation = self.state.lock().committed_generation;
         let barrier_needed = direct && self.behaviour().barrier && {
             let s = self.state.lock();
             generation > s.barrier_generation
         };
-        if !needed || !barrier_needed { return Ok(false); }
-        self.dev.flush().map_err(|_| MountError::BlockIo)?;
+        if wait_checkpoint { self.checkpoint_pending_sync()?; }
+        if !needed || !barrier_needed {
+            return Ok(false);
+        }
+        // `checkpoint_pending_sync` has flushed the checkpoint targets before
+        // writing the clean journal superblock. A crash that leaves that final
+        // ordinary superblock write unwritten merely leaves `s_start` non-zero,
+        // so recovery safely replays an already-checkpointed transaction.
+        // Flushing again here therefore buys no durability.
         self.mark_generation_barriered(generation);
         Ok(true)
     }
@@ -95,7 +117,7 @@ impl Mount {
                 .collect()
         };
         if !staged.is_empty() {
-            let seq = self.commit_metadata(staged.clone())?;
+            let seq = self.commit_metadata_deferred(staged.clone())?;
             self.cache_committed(&staged);
             let mut s = self.state.lock();
             // Retire the committed blocks from the running transaction. They
@@ -136,9 +158,10 @@ impl Mount {
     ///
     /// The hard ceiling is the backpressure the reference gets from a full
     /// journal: a batch that keeps growing while the committer has not yet run
-    /// must not grow without bound, so past a multiple of the budget the caller
-    /// does commit inline. That is the rare path, not the common one.
-    /// # C: O(1), or O(batch) on the ceiling
+    /// must not grow without bound, so a normal caller waits for the periodic
+    /// committer. The flusher callback cannot wait on itself and hands control
+    /// back to the enclosing pass instead.
+    /// # C: O(1), or waits at the ceiling
     pub(crate) fn maybe_commit_batch(&self) -> Result<(), MountError> {
         const BATCH_MAX_BLOCKS: usize = 512;
         /// Growth tolerated between the flag and the committer's next visit.
@@ -150,7 +173,21 @@ impl Mount {
             let s = self.state.lock();
             if s.undo.is_empty() { s.shadow.as_ref().map_or(0, |m| m.len()) } else { 0 }
         };
-        if blocks >= BATCH_CEILING_BLOCKS { return self.commit_batch(); }
+        if blocks >= BATCH_CEILING_BLOCKS {
+            self.batch_full.store(true, ::core::sync::atomic::Ordering::Release);
+            block::pagecache::wake_flusher();
+            // The flusher owns the callback stack and its later commit pass.
+            // Waiting here would wait for this same thread to return, so the
+            // callback must hand the commit back to its caller.
+            if !block::pagecache::in_flusher_context() {
+                // SAFETY: this process-context waiter owns no transaction or
+                // mount-state lock; the flusher wakes it after the commit.
+                let _ = unsafe { sched::live::wait_event_uninterruptible(&self.batch_wait, || {
+                    let s = self.state.lock();
+                    s.shadow.as_ref().map_or(true, |shadow| shadow.len() < BATCH_CEILING_BLOCKS)
+                }) };
+            }
+        }
         if blocks >= BATCH_MAX_BLOCKS {
             self.batch_full.store(true, ::core::sync::atomic::Ordering::Release);
             block::pagecache::wake_flusher();
