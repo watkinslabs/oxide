@@ -316,9 +316,14 @@ impl FileOps for Ext4RegFileOps {
     fn write(&self, inode: &Inode, off: u64, buf: &[u8]) -> KResult<usize> {
         let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
         let _mutation = d.begin_swap_mutation(inode)?;
-        d.frames.invalidate_inode_cache();
         let behaviour = d.st.mount.behaviour();
         if !behaviour.delalloc || behaviour.data == crate::mount_opts::DataMode::Journal {
+            // Nodelalloc and data=journal can change the on-disk extent tree
+            // before the buffered bytes land. Invalidate that fill snapshot
+            // at the mutation boundary. Plain delayed allocation changes
+            // only the in-core page cache and keeps the cached inode valid,
+            // matching Linux's single in-core inode authority.
+            d.frames.invalidate_inode_cache();
             d.st.mount.prepare_nodelalloc(d.ino, off, buf.len()).map_err(|e| fs_err(&d.st, e))?;
         }
         // Linux buffered write: land bytes in the one inode frame store and
