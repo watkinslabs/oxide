@@ -82,19 +82,19 @@ impl BlkState {
         let target = {
             let mut g = self.requestq.lock();
             let slot = g.avail_idx % qsz;
-            // `inflight` is held. The cache clean must follow the `idx` store:
-            // on a non-coherent architecture the device cannot see the
-            // publication until the cache line containing idx reaches PoC.
+            // `inflight` is held. The descriptor and avail-ring stores must be
+            // clean before the index is published: Linux's virtio_wmb() gives
+            // the device a complete chain before it is allowed to consume it.
             // SAFETY: `driver_pa` is the queue's own avail frame via HHDM, whose
             // u16 layout is flags, idx, ring[qsz] (Virtio 1.2 §2.7.6); `slot` is
             // reduced mod `qsz` and `qsz` is capped at one frame's worth of
             // descriptors, so `2 + slot` is an in-bounds aligned u16 index.
             unsafe {
                 core::ptr::write_volatile(avail.add(2 + slot as usize), 0u16);
+                clean_queue_submission(h, &self.requestq);
                 core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
                 g.avail_idx = g.avail_idx.wrapping_add(1);
                 core::ptr::write_volatile(avail.add(1), g.avail_idx);
-                clean_queue_submission(h, &self.requestq);
             }
             g.avail_idx
         };
