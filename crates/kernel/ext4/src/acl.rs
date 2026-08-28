@@ -19,6 +19,13 @@ pub(crate) struct Inherited {
 /// A malformed parent ACL aborts the create rather than changing the requested
 /// permissions by silently falling back to the umask. # C: O(N_entries)
 pub(crate) fn inherit(parent: &Inode, mode: u16, umask: u16, kind: NewKind) -> KResult<Inherited> {
+    // Linux posix_acl_create() returns no ACL when the superblock does not
+    // advertise POSIX ACL support, and applies only the caller's umask. The
+    // VFS ACL accessor reports EOPNOTSUPP for that same state; it is not a
+    // create failure.
+    if parent.i_sb().is_some_and(|sb| !sb.is_posixacl()) {
+        return Ok(Inherited { mode: mode & !umask, access: None, default: None });
+    }
     let parent_default = match kind {
         NewKind::Symlink => None,
         _ => parent.get_inode_acl(AclType::Default)?,
