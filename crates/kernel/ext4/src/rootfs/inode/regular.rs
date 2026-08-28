@@ -340,10 +340,9 @@ impl FileOps for Ext4RegFileOps {
         // return; disk I/O is deferred to writeback (fsync/msync/sync/drop).
         d.frames.write_buffered(off, buf)?;
         let end = off.saturating_add(buf.len() as u64);
-        d.size_hint.fetch_max(end, Ordering::AcqRel);
-        inode.i_size_fetch_max(end);
+        super::data::publish_size_max(inode, end);
         if let Ok(mut i) = d.st.mount.read_inode(d.ino) {
-            i.size = i.size.max(end);
+            i.size = i.size.max(d.size_hint.load(Ordering::Acquire));
             d.frames.refresh_inode_cache(i);
             inode.set_blocks(i.i_blocks as u64);
         }
