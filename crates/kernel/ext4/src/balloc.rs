@@ -64,7 +64,7 @@ impl Mount {
                 return Err(MountError::NoSpace);
             }
             let freest = if optimize { m.freest_group(groups) } else { None };
-            let preferred = if optimize { m.group_for_request(groups, count) } else { None };
+            let preferred = if optimize { m.group_for_request(groups, count, hint) } else { None };
             let start = preferred.unwrap_or_else(|| scan::scan_start(hint, groups, optimize, freest));
             for off in 0..groups {
                 let group = (start + off) % groups;
@@ -142,7 +142,7 @@ impl Mount {
             // group, so the answer never changes — only how many full groups
             // are read before it is reached.
             let freest = if optimize { m.freest_group(groups) } else { None };
-            let preferred = if optimize { m.group_for_request(groups, 1) } else { None };
+            let preferred = if optimize { m.group_for_request(groups, 1, hint) } else { None };
             let start = preferred.unwrap_or_else(|| scan::scan_start(hint, groups, optimize, freest));
             for off in 0..groups {
                 let g = (start + off) % groups;
@@ -185,11 +185,17 @@ impl Mount {
     /// fragment can satisfy the request, then falls back to the normal scan.
     /// Unknown groups are deliberately omitted until their bitmap is loaded;
     /// the descriptor count remains the fallback authority.
-    fn group_for_request(&self, groups: u32, count: u32) -> Option<u32> {
+    fn group_for_request(&self, groups: u32, count: u32, hint: u32) -> Option<u32> {
         if count == 0 { return None; }
         let wanted = count.ilog2().saturating_sub(1) as u8;
         let s = self.state.lock();
-        (0..groups).find(|g| s.group_avg_fragment_order.get(g).is_some_and(|o| *o >= wanted))
+        for (_, candidates) in s.group_avg_fragment_index.range(wanted..) {
+            if let Some(group) = candidates.range(hint..groups).next()
+                .or_else(|| candidates.iter().next()) {
+                return Some(*group);
+            }
+        }
+        None
     }
 
     /// Try to find a free bit in `group`. Returns Ok(Some(phys))
@@ -380,10 +386,11 @@ impl Mount {
         let avg = scan::average_fragment_order(&bitmap, self.blocks_in_group(group));
         let mut s = self.state.lock();
         s.block_bitmap_cache.insert(byte_off, bitmap);
-        if let Some(order) = order { s.group_free_order.insert(group, order); }
-        else { s.group_free_order.remove(&group); }
-        if let Some(avg) = avg { s.group_avg_fragment_order.insert(group, avg); }
-        else { s.group_avg_fragment_order.remove(&group); }
+        s.group_free_order.insert(group, order.unwrap_or(0));
+        if order.is_none() { s.group_free_order.remove(&group); }
+        let old_avg = s.group_avg_fragment_order.insert(group, avg.unwrap_or(0));
+        scan::replace_order_index(&mut s.group_avg_fragment_index, group, old_avg, avg);
+        if avg.is_none() { s.group_avg_fragment_order.remove(&group); }
     }
 }
 

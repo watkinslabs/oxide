@@ -141,6 +141,8 @@ pub struct MountState {
     /// this second index to avoid probing groups whose average fragment is
     /// smaller than a multiblock request.
     pub(crate) group_avg_fragment_order: alloc::collections::BTreeMap<u32, u8>,
+    /// Linux's average-fragment xarrays, represented by order-indexed sets.
+    pub(crate) group_avg_fragment_index: alloc::collections::BTreeMap<u8, alloc::collections::BTreeSet<u32>>,
     /// Reusable locality-group data preallocation tails. The blocks remain
     /// free on disk and are masked from every in-memory bitmap scan.
     pub(crate) group_prealloc: alloc::collections::BTreeMap<u32, Vec<crate::balloc::prealloc::GroupPrealloc>>,
