@@ -70,7 +70,23 @@ mkdir -p "$work/stage/boot/grub"
 # flat PE that never had any.
 if [ "$arch" = x86_64 ]; then
   strip -o "$work/stage/boot/$boot_name" "$kernel"
-  echo "==> kernel $(du -h "$kernel" | cut -f1) → stripped $(du -h "$work/stage/boot/$boot_name" | cut -f1)"
+  stripped="$(du -h "$work/stage/boot/$boot_name" | cut -f1)"
+  # Linux does not ship a raw kernel either: a bzImage is a compressed vmlinux
+  # with a decompressor in front. GRUB does the same job here — it opens a
+  # multiboot2 kernel through its file layer, which applies the gzip filter
+  # transparently, so the image on disk is compressed and the image GRUB hands
+  # multiboot2 is not. Nearly all of the file is `.text`, which is why this is
+  # worth more than half the kernel's bytes.
+  #
+  # OXIDE_LIVE_RAW_KERNEL=1 declines, for bisecting a boot failure against an
+  # uncompressed image.
+  if [ -z "${OXIDE_LIVE_RAW_KERNEL:-}" ] && command -v gzip >/dev/null; then
+    gzip -9 -c "$work/stage/boot/$boot_name" > "$work/stage/boot/$boot_name.gz"
+    mv "$work/stage/boot/$boot_name.gz" "$work/stage/boot/$boot_name"
+    echo "==> kernel $(du -h "$kernel" | cut -f1) → stripped $stripped → gzip $(du -h "$work/stage/boot/$boot_name" | cut -f1)"
+  else
+    echo "==> kernel $(du -h "$kernel" | cut -f1) → stripped $stripped"
+  fi
 else
   cp "$kernel" "$work/stage/boot/$boot_name"
   echo "==> kernel $(du -h "$kernel" | cut -f1)"
@@ -116,7 +132,7 @@ fi
 
 # Only the modules this configuration reaches. The default copies every module
 # GRUB has for every platform it can build, which is more bytes than the kernel.
-MODULES="part_gpt part_msdos fat iso9660 ${boot_cmd} normal configfile echo
+MODULES="part_gpt part_msdos fat iso9660 ${boot_cmd} normal configfile echo gzio
          serial terminal gfxterm all_video search search_fs_uuid"
 rm -f "$out.new"
 grub2-mkrescue ${grub_dir:+-d "$grub_dir"} \
