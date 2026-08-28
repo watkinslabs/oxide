@@ -298,3 +298,4 @@
 <!-- B2853-ext4-inode-pa-overlap: inode preallocation can now satisfy interior logical overlaps and tracks each PA block's consumption; 348 ext4 tests and both architecture checks pass. -->
 <!-- B2856-ext4-pa-normalization: regular-file allocation windows follow ext4_mb_normalize_request() for large initial writes, retaining aligned prefix/suffix blocks as inode PAs; 349 ext4 tests and both architecture checks pass. -->
 <!-- B2857-ext4-pa-lifecycle: locality-group preallocation lists are bounded to the eight largest reservations, matching ext4_mb_add_n_trim()'s retention limit; 350 ext4 tests and both architecture checks pass. -->
+<!-- B2858-ext4-pa-owner: fresh locality-group tails retain the CPU sampled before allocation can block, matching Linux's allocation-context locality-group ownership; 350 ext4 tests and both architecture checks pass. -->
