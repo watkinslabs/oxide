@@ -7,6 +7,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
+use alloc::collections::BTreeMap;
 
 use crate::jbd2::{JournalLogReader, StagedBlock};
 use crate::mount::{Mount, MountError};
@@ -88,7 +89,8 @@ impl Mount {
 
         #[cfg(feature = "debug-fsync-latency")]
         let started_ns = crate::fsync_latency::now_ns();
-        for transaction in pending { self.apply_staged_to_target(&transaction.staged)?; }
+        let staged = coalesce_checkpoint_blocks(&pending);
+        self.apply_staged_to_target(&staged)?;
         #[cfg(feature = "debug-fsync-latency")]
         crate::fsync_latency::report(b"target-write", started_ns,
             pending.iter().map(|p| p.staged.len() as u64).sum());
@@ -105,5 +107,48 @@ impl Mount {
         crate::fsync_latency::report(b"target-flush", flush_started_ns,
             pending.iter().map(|p| p.staged.len() as u64).sum());
         Ok(())
+    }
+}
+
+/// Keep only the newest home-image for each target block across committed
+/// transactions. The journal retains transaction order for recovery, but the
+/// checkpoint owner has the same single-buffer ownership Linux uses: once a
+/// block is dirtied again, an older checkpoint copy must not be written home
+/// separately. Sorting by target also lets the device writer coalesce adjacent
+/// home blocks into larger requests.
+fn coalesce_checkpoint_blocks(pending: &[PendingCheckpoint]) -> Vec<StagedBlock> {
+    let mut latest = BTreeMap::new();
+    for transaction in pending {
+        for block in &transaction.staged {
+            latest.insert(block.target_lba, block.clone());
+        }
+    }
+    latest.into_values().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn block(target_lba: u64, byte: u8) -> StagedBlock {
+        StagedBlock { target_lba, data: alloc::vec![byte; 4] }
+    }
+
+    #[test]
+    fn checkpoint_keeps_newest_image_for_repeated_home_block() {
+        let pending = [
+            PendingCheckpoint { staged: alloc::vec![block(20, 1), block(22, 3)], seq: 1 },
+            PendingCheckpoint { staged: alloc::vec![block(20, 2), block(21, 4)], seq: 2 },
+        ];
+        let staged = coalesce_checkpoint_blocks(&pending);
+        assert_eq!(staged.iter().map(|b| b.target_lba).collect::<Vec<_>>(), [20, 21, 22]);
+        assert_eq!(staged[0].data, alloc::vec![2; 4]);
+        assert_eq!(staged[1].data, alloc::vec![4; 4]);
+        assert_eq!(staged[2].data, alloc::vec![3; 4]);
+    }
+
+    #[test]
+    fn checkpoint_empty_input_stays_empty() {
+        assert!(coalesce_checkpoint_blocks(&[]).is_empty());
     }
 }
