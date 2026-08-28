@@ -17,7 +17,9 @@ pub fn sys_read(args: &SyscallArgs) -> i64 {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: we are the running task on this CPU; preempt-off; no concurrent fd_table writer.
-    let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
+    // Borrow current->files like Linux; the running task cannot replace this
+    // table while the syscall is executing.
+    let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.as_ref(), None => return -(Errno::Ebadf.as_i32() as i64) };
     let file = match fdt.get(fd) { Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64) };
     if !file.f_mode().contains(vfs::Fmode::READ) { return -(Errno::Ebadf.as_i32() as i64); }
     // fanotify FAN_ACCESS_PERM: blocks until a daemon allows/denies (fast
