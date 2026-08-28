@@ -68,6 +68,44 @@ where F: FnMut(&[u8]) -> Result<(), E> {
     write(&commit).map_err(TransactionError::Write)
 }
 
+/// Emit the body and commit record through one sink. The boolean is false for
+/// descriptor/data body blocks and true for the terminal commit block. The
+/// split is intentional: Linux can post the commit record after posting all
+/// body I/O, but before waiting for those body requests to finish.
+pub fn emit_transaction_split<E, F>(
+    seq: u32, staged: &[StagedBlock], block_size: usize, bit64: bool,
+    uuid: &[u8; 16], checksum_mode: ChecksumMode, mut write: F,
+) -> Result<(), TransactionError<E>>
+where
+    F: FnMut(bool, &[u8]) -> Result<(), E>,
+{
+    transaction_block_count_for(staged.len(), block_size, bit64, checksum_mode)
+        .map_err(TransactionError::Emit)?;
+    let cap = descriptor_capacity_for(block_size, bit64, checksum_mode);
+    let checksum_seed = checksum::checksum_seed(uuid);
+    let mut transaction_csum = 0xFFFF_FFFF;
+    for group in staged.chunks(cap) {
+        let descriptor = build_descriptor_block_for(
+            seq, group, block_size, bit64, uuid, checksum_mode, checksum_seed,
+        ).map_err(TransactionError::Emit)?;
+        if checksum_mode == ChecksumMode::V1 {
+            transaction_csum = checksum::transaction_checksum_update(transaction_csum, &descriptor);
+        }
+        write(false, &descriptor).map_err(TransactionError::Write)?;
+        for s in group {
+            let mut data = s.data.clone();
+            if data.len() != block_size { data.resize(block_size, 0); }
+            escape_journal_payload(&mut data);
+            if checksum_mode == ChecksumMode::V1 {
+                transaction_csum = checksum::transaction_checksum_update(transaction_csum, &data);
+            }
+            write(false, &data).map_err(TransactionError::Write)?;
+        }
+    }
+    let commit = build_commit_block_for(seq, block_size, checksum_mode, checksum_seed, transaction_csum);
+    write(true, &commit).map_err(TransactionError::Write)
+}
+
 /// Build an unchecksummed commit block.
 /// # C: O(1)
 pub fn build_commit_block(seq: u32, block_size: usize) -> Vec<u8> {

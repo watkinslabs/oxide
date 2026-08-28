@@ -24,6 +24,31 @@ struct IoWait {
     wait:   sched::live::WaitList,
 }
 
+/// An owned request submitted without waiting. The caller may post several
+/// requests, then wait on their completions in the ordering required by its
+/// protocol (JBD2 uses this for async commit).
+pub struct SubmittedIo {
+    state: Arc<IoWait>,
+}
+
+impl SubmittedIo {
+    /// Wait for this request and recover its completed request/result.
+    /// # C: one device round-trip
+    pub fn wait(self) -> (BlockRequest, KResult<()>) {
+        #[cfg(target_os = "oxide-kernel")]
+        let waiter = sched::current();
+        #[cfg(target_os = "oxide-kernel")]
+        if let Some(task) = waiter { task.begin_iowait(); }
+        wait_done(&self.state);
+        #[cfg(target_os = "oxide-kernel")]
+        if let Some(task) = waiter { task.end_iowait(); }
+        #[cfg(target_os = "oxide-kernel")]
+        note_resume_delay(sched::deadline::clock::now_ns().saturating_sub(
+            self.state.completed_ns.load(Ordering::Relaxed)));
+        self.state.slot.lock().take().expect("completed request leaves its result")
+    }
+}
+
 impl IoWait {
     fn new() -> Self {
         Self {
@@ -60,29 +85,19 @@ impl IoWait {
 pub fn submit_and_wait<D: BlockDevice + ?Sized>(dev: &D, request: BlockRequest)
     -> (BlockRequest, KResult<()>)
 {
+    submit_async(dev, request).wait()
+}
+
+/// Submit one owned request and return its completion handle without waiting.
+/// The request buffer remains owned by the block layer until `wait` returns.
+/// # C: O(1) submission plus driver cost
+pub fn submit_async<D: BlockDevice + ?Sized>(dev: &D, request: BlockRequest) -> SubmittedIo {
     let state = Arc::new(IoWait::new());
     let signal = state.clone();
     dev.submit(request, alloc::boxed::Box::new(move |request, result| {
         signal.complete(request, result);
     }));
-    #[cfg(target_os = "oxide-kernel")]
-    let waiter = sched::current();
-    #[cfg(target_os = "oxide-kernel")]
-    if let Some(task) = waiter { task.begin_iowait(); }
-    #[cfg(all(target_os = "oxide-kernel", feature = "debug-wakelat"))]
-    if let Some(task) = waiter {
-        sched::live::wakelat::note_wait(task.tid, sched::live::wakelat::KIND_OTHER);
-    }
-    wait_done(&state);
-    #[cfg(target_os = "oxide-kernel")]
-    if let Some(task) = waiter { task.end_iowait(); }
-    #[cfg(target_os = "oxide-kernel")]
-    note_resume_delay(sched::deadline::clock::now_ns().saturating_sub(
-        state.completed_ns.load(Ordering::Relaxed)));
-    // The completion has published the slot and the flag; nothing else takes
-    // this slot, so a request that completed always leaves one here.
-    let taken = state.slot.lock().take();
-    taken.expect("completed request leaves its result")
+    SubmittedIo { state }
 }
 
 #[cfg(target_os = "oxide-kernel")]

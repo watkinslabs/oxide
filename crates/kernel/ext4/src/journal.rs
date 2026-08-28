@@ -35,7 +35,9 @@ impl Mount {
     /// the existing feature words are the authority for reading an old log.
     /// # C: O(1) journal-superblock I/O
     pub fn configure_journal_checksum(&self) -> Result<(), MountError> {
-        let Some(enabled) = self.opts().behaviour.journal_checksum else { return Ok(()); };
+        let behaviour = self.opts().behaviour;
+        let enabled = behaviour.journal_checksum.unwrap_or(false) || behaviour.journal_async_commit;
+        if behaviour.journal_checksum.is_none() && !behaviour.journal_async_commit { return Ok(()); }
         if self.sb.journal_inum == 0 { return Ok(()); }
         let jinode = self.read_inode(self.sb.journal_inum)?;
         let log = ExtentLogReader::build(self, &jinode)?;
@@ -45,12 +47,18 @@ impl Mount {
         let desired = if enabled {
             if self.sb.has_metadata_csum() { ChecksumMode::V3 } else { ChecksumMode::V1 }
         } else { ChecksumMode::None };
-        if jsb.checksum_mode() == desired { return Ok(()); }
+        let async_bit = crate::jbd2::superblock::JBD2_INCOMPAT_ASYNC_COMMIT;
+        if jsb.checksum_mode() == desired
+            && (jsb.feature_incompat & async_bit != 0) == behaviour.journal_async_commit {
+            return Ok(());
+        }
         // JBD2's v1 superblock has no feature words. Linux only changes the
         // checksum feature set on the v2 superblock format; refusing here is
         // safer than writing bytes that replay will never read.
         if jsb.block_type != 4 { return Err(MountError::UnsupportedFeature); }
         jsb.set_checksum_mode(desired);
+        if behaviour.journal_async_commit { jsb.feature_incompat |= async_bit; }
+        else { jsb.feature_incompat &= !async_bit; }
         let mut bytes = old;
         bytes[0x24..0x28].copy_from_slice(&jsb.feature_compat.to_be_bytes());
         bytes[0x28..0x2C].copy_from_slice(&jsb.feature_incompat.to_be_bytes());
@@ -148,11 +156,16 @@ impl Mount {
         };
         let bs = jsb.block_size as usize;
         let bit64 = jsb.feature_incompat & crate::jbd2::superblock::JBD2_INCOMPAT_64BIT != 0;
-        let checksum_mode = self.opts().behaviour.journal_checksum.map(|enabled| {
-            if enabled {
-                if self.sb.has_metadata_csum() { ChecksumMode::V3 } else { ChecksumMode::V1 }
-            } else { ChecksumMode::None }
-        }).unwrap_or_else(|| jsb.checksum_mode());
+        let behaviour = self.opts().behaviour;
+        let checksum_mode = if behaviour.journal_async_commit || behaviour.journal_checksum == Some(true) {
+            if self.sb.has_metadata_csum() { ChecksumMode::V3 } else { ChecksumMode::V1 }
+        } else {
+            behaviour.journal_checksum.map(|enabled| {
+                if enabled {
+                    if self.sb.has_metadata_csum() { ChecksumMode::V3 } else { ChecksumMode::V1 }
+                } else { ChecksumMode::None }
+            }).unwrap_or_else(|| jsb.checksum_mode())
+        };
         // A remount may have changed an explicit checksum option. The mount
         // path applies it eagerly; this branch keeps the same invariant for a
         // live remount before the first subsequent transaction.
@@ -199,11 +212,30 @@ impl Mount {
         let seq = cursor.seq;
         #[cfg(feature = "debug-fsync-latency")]
         let journal_started_ns = crate::fsync_latency::now_ns();
-        let mut body = JournalBodyWriter::new(&log, bs);
-        emit_transaction_for(seq, &staged, bs, bit64, &jsb.uuid, checksum_mode, |block| {
-            let at = cursor.reserve(1);
-            body.push(at, block)
-        }).map_err(|e| match e {
+        let mut body = JournalBodyWriter::new(&log, bs, self.opts().behaviour.journal_async_commit);
+        let async_commit = self.opts().behaviour.journal_async_commit;
+        let emit_result = if async_commit {
+            crate::jbd2::emit_transaction_split(seq, &staged, bs, bit64, &jsb.uuid, checksum_mode,
+                |is_commit, block| {
+                    if is_commit {
+                        // All body runs have been posted before the commit
+                        // record is posted, but neither side is waited yet.
+                        body.flush()?;
+                        let at = cursor.reserve(1);
+                        body.submit(at, block)
+                    } else {
+                        let at = cursor.reserve(1);
+                        body.push(at, block)
+                    }
+                })
+        } else {
+            emit_transaction_for(seq, &staged, bs, bit64, &jsb.uuid, checksum_mode, |block| {
+                let at = cursor.reserve(1);
+                body.push(at, block)
+            })
+        };
+        emit_result
+        .map_err(|e| match e {
             TransactionError::Emit(crate::jbd2::EmitError::BlockNumber) => MountError::BadBlock,
             TransactionError::Emit(_) => MountError::NoSpace,
             TransactionError::Write(e) => e,
@@ -216,6 +248,7 @@ impl Mount {
         // The whole body reaches the device before the barrier below, exactly
         // as it did when each block was its own request.
         body.flush()?;
+        body.wait()?;
         #[cfg(feature = "debug-fsync-latency")]
         crate::fsync_latency::report(b"journal-body", journal_started_ns, staged_blocks);
         // WAL barrier (jbd2 write-ahead, ext4fix §6.1): make the journal body
@@ -354,11 +387,14 @@ struct JournalBodyWriter<'a, 'm> {
     /// Device byte offset the next block must land at to extend the run.
     next_at:   u64,
     run:       Vec<u8>,
+    async_io:  bool,
+    pending:   Vec<block::submit_wait::SubmittedIo>,
 }
 
 impl<'a, 'm> JournalBodyWriter<'a, 'm> {
-    fn new(log: &'a ExtentLogReader<'m>, block_len: usize) -> Self {
-        Self { log, block_len, run_at: None, next_at: 0, run: Vec::new() }
+    fn new(log: &'a ExtentLogReader<'m>, block_len: usize, async_io: bool) -> Self {
+        Self { log, block_len, run_at: None, next_at: 0, run: Vec::new(),
+               async_io, pending: Vec::new() }
     }
 
     /// Buffer one journal block, flushing first when it does not extend the
@@ -383,8 +419,33 @@ impl<'a, 'm> JournalBodyWriter<'a, 'm> {
         if self.run.is_empty() { return Ok(()); }
         #[cfg(feature = "debug-faultcost")]
         let _src = crate::WriteSource::journal();
-        self.log.mount.write_journal_byte_range(at, &self.run)?;
+        if self.async_io {
+            let req = self.log.mount.journal_write_request(at, &self.run)?;
+            self.pending.push(block::submit_wait::submit_async(&*self.log.mount.dev, req));
+        } else {
+            self.log.mount.write_journal_byte_range(at, &self.run)?;
+        }
         self.run.clear();
+        Ok(())
+    }
+
+    /// Post a commit record after the body runs have been posted.
+    fn submit(&mut self, jblk: u32, data: &[u8]) -> Result<(), MountError> {
+        if !self.async_io { return Err(MountError::UnsupportedFeature); }
+        if data.len() != self.block_len { return Err(MountError::BlockIo); }
+        self.flush()?;
+        let bs = self.log.mount.sb.block_size as u64;
+        let at = self.log.map(jblk).ok_or(MountError::NotFound)? * bs;
+        let req = self.log.mount.journal_write_request(at, data)?;
+        self.pending.push(block::submit_wait::submit_async(&*self.log.mount.dev, req));
+        Ok(())
+    }
+
+    fn wait(&mut self) -> Result<(), MountError> {
+        for io in self.pending.drain(..) {
+            let (_, result) = io.wait();
+            result.map_err(|_| MountError::BlockIo)?;
+        }
         Ok(())
     }
 }

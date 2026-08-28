@@ -52,14 +52,6 @@ impl Mount {
         cleanup_orphans: bool,
         behaviour: crate::mount_opts::Ext4Behaviour,
     ) -> Result<Self, MountError> {
-        // The parser owns the option state, but the asynchronous commit
-        // submission path is not wired yet. Refuse it here rather than
-        // accepting a mode whose on-disk ordering would still be synchronous.
-        // E4-06 will remove this guard when the commit-record completion
-        // handle lands.
-        if behaviour.journal_async_commit {
-            return Err(MountError::UnsupportedFeature);
-        }
         let sb_bytes = read_byte_range(&*dev, SUPERBLOCK_OFFSET, SUPERBLOCK_LEN)?;
         let sb = Superblock::parse(&sb_bytes)?;
         // Feature gating (Linux EXT4_FEATURE_{INCOMPAT,RO_COMPAT}_SUPP): refuse a
