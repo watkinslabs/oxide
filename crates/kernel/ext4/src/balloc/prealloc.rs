@@ -76,6 +76,14 @@ fn inode_pa_blocks(pa: &InodePrealloc, logical: u32, want: u32) -> Option<Vec<u6
     (!blocks.is_empty()).then_some(blocks)
 }
 
+fn select_group_pa<'a>(entries: &'a [GroupPrealloc], want: u32, goal: u64)
+    -> Option<&'a GroupPrealloc>
+{
+    entries.iter()
+        .filter(|pa| pa.blocks.len() >= want as usize && !pa.blocks.is_empty())
+        .min_by_key(|pa| pa.blocks[0].abs_diff(goal))
+}
+
 impl Mount {
     /// Return contiguous free physical blocks from an overlapping inode PA.
     /// Linux permits a request to consume an interior PA block, not only its
@@ -111,7 +119,7 @@ impl Mount {
     }
 
     /// Return a locality PA and the CPU list that owns it. # C: O(N PAs)
-    pub(crate) fn peek_group_prealloc_owner(&self, group: u32, want: u32)
+    pub(crate) fn peek_group_prealloc_owner(&self, group: u32, want: u32, goal: u64)
         -> Option<(usize, Vec<u64>)>
     {
         let cpu = locality_cpu();
@@ -120,7 +128,7 @@ impl Mount {
         let s = self.state.lock();
         for order in first_order..GROUP_PREALLOC_ORDER_BUCKETS {
             if let Some(pas) = s.group_prealloc.get(&(cpu, group, order)) {
-                if let Some(pa) = pas.iter().find(|pa| pa.blocks.len() >= want as usize) {
+                if let Some(pa) = select_group_pa(pas, want, goal) {
                     return Some((cpu, pa.blocks[..want as usize].to_vec()));
                 }
             }

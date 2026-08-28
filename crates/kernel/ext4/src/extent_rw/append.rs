@@ -81,8 +81,14 @@ impl Mount {
                 return Ok(Some((block, AppendPrealloc::Inode)));
             }
         }
-        let hint = self.append_hint_group(ino, logical)?;
-        if let Some((cpu, blocks)) = self.peek_group_prealloc_owner(hint, 1) {
+        let extents = self.extent_map(ino)?;
+        let goal = extents.iter().rev()
+            .find(|(start, _, _, _)| *start <= logical)
+            .or_else(|| extents.first())
+            .map(|(_, phys, _, _)| *phys)
+            .unwrap_or_else(|| crate::balloc::group_first_block(&self.sb, 0));
+        let hint = self.group_of_block(goal);
+        if let Some((cpu, blocks)) = self.peek_group_prealloc_owner(hint, 1, goal) {
             if let Some(&block) = blocks.first() {
                 self.claim_prealloc_block(block)?;
                 return Ok(Some((block, AppendPrealloc::Group(cpu, hint))));
