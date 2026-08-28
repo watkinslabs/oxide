@@ -2,18 +2,25 @@
 // Split out of `address_space.rs` per `docs/08§7` (file-length cap).
 
 use hal::UserVirtAddr;
+use core::ops::Bound;
 
 use crate::address_space::{MIN_USER_VA, MMAP_TOP};
 use crate::tree::VmaTree;
 
 /// True iff `[start, end)` overlaps no existing VMA.
-/// # C: O(N)
+/// # C: O(log N)
 pub(crate) fn hole_clear(tree: &VmaTree, start: UserVirtAddr, end: UserVirtAddr) -> bool {
     let s = start.as_u64();
     let e = end.as_u64();
-    for v in tree.iter() {
-        if v.start.as_u64() >= e { break; }
-        if v.end.as_u64()   >  s { return false; }
+    // Only the VMA immediately before the range and the one immediately
+    // after it can overlap. Scanning from the bottom of the tree made every
+    // hinted mmap and MAP_FIXED_NOREPLACE pay O(N_vmas), unlike Linux's
+    // find_vma() adjacency check.
+    if let Some((_, v)) = tree.map.range(..=start).next_back() {
+        if v.end.as_u64() > s { return false; }
+    }
+    if let Some((_, v)) = tree.map.range((Bound::Excluded(start), Bound::Unbounded)).next() {
+        if v.start.as_u64() < e { return false; }
     }
     true
 }
