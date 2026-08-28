@@ -48,6 +48,17 @@ fn direct_io_read_modes_are_refused_without_a_direct_io_consumer() {
 }
 
 #[test]
+fn bitmap_prefetch_is_stateful_and_mbcache_is_refused_without_a_consumer() {
+    assert!(!b("").unwrap().prefetch_block_bitmaps);
+    assert!(b("prefetch_block_bitmaps").unwrap().prefetch_block_bitmaps);
+    assert!(!b("prefetch_block_bitmaps,no_prefetch_block_bitmaps").unwrap()
+        .prefetch_block_bitmaps);
+    assert!(refused("prefetch_block_bitmaps=1"));
+    assert!(refused("nombcache"));
+    assert!(refused("no_mbcache"));
+}
+
+#[test]
 fn the_error_policy_names_are_the_three_the_filesystem_has() {
     assert_eq!(b("errors=continue").unwrap().errors, ErrorsPolicy::Continue);
     assert_eq!(b("errors=panic").unwrap().errors, ErrorsPolicy::Panic);
