@@ -19,7 +19,6 @@ struct ReservedRun {
 }
 
 const GROUP_PREALLOC_MAX_REQUEST: u32 = 16;
-const GROUP_PREALLOC_BLOCKS: u32 = 512;
 
 /// Reserve each contiguous logical hole in one Linux-shaped mballoc request.
 /// An existing extent terminates a request; physical contiguity must never be
@@ -64,10 +63,13 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
             .or_else(|| extents.first())
             .map(|r| m.group_of_block(r.phys))
             .unwrap_or(0);
-        let group_prealloc = preallocate
-            && count <= GROUP_PREALLOC_MAX_REQUEST
-            && super::prealloc::group_prealloc_eligible(
-                m.sb.block_size as u64, current_size, start as u32, count);
+        // Keep the locality PA policy tied to the request shape here.  The
+        // allocator may split one write into several hole runs, so applying a
+        // file-size cutoff to this local `count` would make an existing group
+        // PA disappear between adjacent writes.  Linux makes this decision
+        // in the shared allocation context before the split; this path's
+        // equivalent is the small-request window.
+        let group_prealloc = preallocate && count <= GROUP_PREALLOC_MAX_REQUEST;
         if group_prealloc {
             if let Some(blocks) = m.peek_group_prealloc(hint, count) {
                 runs.push(ReservedRun { logical_start: start as u32, blocks,
@@ -79,15 +81,29 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
         }
         let reserve_count = if preallocate {
             count.saturating_add(if group_prealloc {
-                GROUP_PREALLOC_BLOCKS
+                super::prealloc::group_prealloc_blocks(
+                    m.sb.block_size as u64, m.behaviour().stripe)
             } else { super::prealloc::tail_blocks(m.sb.block_size as u64, current_size, start as u32, count) })
         } else { count };
         let flags = m.data_reserve_flags(ino);
-        let allocated = match m.alloc_blocks_flags(hint, reserve_count, flags) {
-            Err(MountError::NoSpace) if reserve_count != count =>
-                m.alloc_blocks_flags(hint, count, flags),
-            result => result,
-        };
+        let mut allocated = m.alloc_blocks_flags(hint, reserve_count, flags);
+        if matches!(&allocated, Err(MountError::NoSpace)) && group_prealloc {
+            // A stripe-rounded locality request is a preference. Retry with
+            // progressively smaller group PAs before accepting an exact run;
+            // Linux mballoc can shorten a PA when a full group reservation
+            // does not fit in one free extent.
+            let mut tail = super::prealloc::group_prealloc_blocks(
+                m.sb.block_size as u64, 0) / 2;
+            while tail >= 32 {
+                let candidate = count.saturating_add(tail);
+                allocated = m.alloc_blocks_flags(hint, candidate, flags);
+                if allocated.is_ok() { break; }
+                tail /= 2;
+            }
+        }
+        if matches!(&allocated, Err(MountError::NoSpace)) && reserve_count != count {
+            allocated = m.alloc_blocks_flags(hint, count, flags);
+        }
         match allocated {
             Ok(blocks) => {
                 let requested = count as usize;
