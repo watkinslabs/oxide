@@ -174,7 +174,25 @@ impl Mount {
             (state.journal_cursor.unwrap_or_else(|| LogCursor::new(jsb.start, jsb.first, jsb.maxlen, jsb.sequence)),
              state.pending_checkpoints.is_empty(), state.journal_used)
         };
-        if transaction_blocks as u32 > cursor.usable().saturating_sub(used) {
+        let transaction_blocks = transaction_blocks as u32;
+        if transaction_blocks > cursor.usable() {
+            // A single transaction larger than the journal can never be made
+            // to fit. This is the permanent ENOSPC case; checkpointing cannot
+            // create log slots inside a transaction that exceeds the log.
+            return Err(MountError::NoSpace);
+        }
+        if transaction_blocks > cursor.usable().saturating_sub(used) {
+            // JBD2 waits for/checkpoints the oldest committed transactions
+            // before rejecting a new transaction for lack of log space. The
+            // pending list is the equivalent ownership boundary here: its
+            // home blocks are durable journal state and may be checkpointed
+            // before this transaction reserves any slots. Re-enter after the
+            // checkpoint so the journal superblock and cursor are re-read.
+            let has_pending = !self.state.lock().pending_checkpoints.is_empty();
+            if has_pending {
+                self.checkpoint_pending()?;
+                return self.commit_metadata_deferred(staged);
+            }
             return Err(MountError::NoSpace);
         }
         let desc_at = cursor.head;
