@@ -21,7 +21,7 @@ pub use parse::{OPT_BARRIER, OPT_BLOCK_VALIDITY, OPT_COMMIT, OPT_DATA, OPT_DAX, 
                 OPT_MB_OPTIMIZE_SCAN, OPT_NOBARRIER,
                 OPT_NOBLOCK_VALIDITY, OPT_NODELALLOC, OPT_NODISCARD, OPT_NOINIT_ITABLE,
                 OPT_NOLOAD, OPT_NORECOVERY, OPT_NOWARN_ON_ERROR, OPT_RESGID, OPT_RESUID,
-                OPT_STRIPE, OPT_WARN_ON_ERROR};
+                OPT_STRIPE, OPT_WARN_ON_ERROR, OPT_INODE_READAHEAD_BLKS};
 
 /// What the filesystem does when it finds its own on-disk state wrong.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -88,6 +88,8 @@ pub const DEFAULT_RESGID: u32 = 0;
 
 /// `stripe=0` means the allocator aligns to nothing.
 pub const NO_STRIPE: u32 = 0;
+/// Linux's default inode-table read-ahead window, in filesystem blocks.
+pub const DEFAULT_INODE_READAHEAD_BLKS: u32 = 32;
 
 impl ErrorsPolicy {
     /// Written `errors=` value → policy. # C: O(1)
@@ -205,6 +207,9 @@ pub struct Ext4Behaviour {
     pub user_xattr: bool,
     /// `auto_da_alloc` — flush delayed data before replacing an existing name.
     pub auto_da_alloc: bool,
+    /// `inode_readahead_blks` — power-of-two metadata blocks to warm around
+    /// an inode-table read; zero disables the window.
+    pub inode_readahead_blks: u32,
 }
 
 impl Default for Ext4Behaviour {
@@ -232,6 +237,7 @@ impl Default for Ext4Behaviour {
             posix_acl: true,
             user_xattr: true,
             auto_da_alloc: true,
+            inode_readahead_blks: DEFAULT_INODE_READAHEAD_BLKS,
         }
     }
 }

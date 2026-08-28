@@ -3,8 +3,36 @@ use crate::jbd2::StagedBlock;
 use super::gdt_byte_offset_for;
 use super::super::{Mount, MountError};
 use super::ctx_id;
+use super::super::io::read_byte_range;
+use super::metadata::publish_metadata;
 
 impl Mount {
+    /// Warm a contiguous inode-table window into the canonical metadata cache.
+    /// The read is one owned block-device operation, while publication remains
+    /// per filesystem block so ordinary metadata readers and invalidation use
+    /// the same source of truth. # C: O(window) cache publication + 1 I/O
+    pub(crate) fn prefetch_metadata_blocks(&self, first_lba: u64, blocks: u32)
+        -> Result<(), MountError>
+    {
+        if blocks == 0 { return Ok(()); }
+        let bs = self.sb.block_size as u64;
+        let bytes = read_byte_range(&*self.dev, first_lba * bs, blocks as usize * bs as usize)?;
+        if bytes.len() != blocks as usize * bs as usize { return Err(MountError::BlockIo); }
+        let epoch = self.state.lock().metadata_epoch;
+        let mut state = self.state.lock();
+        if state.metadata_epoch != epoch { return Ok(()); }
+        for i in 0..blocks as u64 {
+            let start = i as usize * bs as usize;
+            let end = start + bs as usize;
+            if state.shadow.as_ref().is_some_and(|shadow| shadow.contains_key(&(first_lba + i))) {
+                continue;
+            }
+            publish_metadata(&mut state, first_lba + i,
+                             alloc::sync::Arc::new(bytes[start..end].to_vec()));
+        }
+        Ok(())
+    }
+
     /// Open a shadow scope: every `metadata_write` inside `f`
     /// populates `state.shadow` with the new fs-block bytes;
     /// shadow-aware reads (`read_metadata_block`, `read_meta_byte_range`)

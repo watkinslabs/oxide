@@ -26,6 +26,18 @@ fn the_defaults_are_the_ones_a_root_filesystem_expects() {
     assert!(!d.discard);
     assert!(!d.noload);
     assert!(!d.warn_on_error);
+    assert_eq!(d.inode_readahead_blks, DEFAULT_INODE_READAHEAD_BLKS);
+}
+
+#[test]
+fn inode_table_readahead_matches_linux_value_contract() {
+    assert_eq!(b("inode_readahead_blks=0").unwrap().inode_readahead_blks, 0);
+    assert_eq!(b("inode_readahead_blks=1").unwrap().inode_readahead_blks, 1);
+    assert_eq!(b("inode_readahead_blks=32").unwrap().inode_readahead_blks, 32);
+    assert_eq!(b("inode_readahead_blks=1073741824").unwrap().inode_readahead_blks, 1 << 30);
+    assert!(refused("inode_readahead_blks=3"));
+    assert!(refused("inode_readahead_blks=2147483648"));
+    assert!(refused("inode_readahead_blks"));
 }
 
 #[test]
