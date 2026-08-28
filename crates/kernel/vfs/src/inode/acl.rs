@@ -190,6 +190,10 @@ impl Inode {
     /// granting exactly what it granted before, so the tightening the caller
     /// asked for would not happen. # C: O(N_entries)
     pub fn posix_acl_chmod(&self, mode: u16) -> KResult<Option<Vec<AclEntry>>> {
+        // Linux posix_acl_chmod() is a no-op when the superblock does not
+        // advertise POSIX ACL support. The accessor's EOPNOTSUPP is a
+        // capability answer, not a chmod failure.
+        if self.i_sb().is_some_and(|sb| !sb.is_posixacl()) { return Ok(None); }
         let Some(acl) = self.get_inode_acl(AclType::Access)? else { return Ok(None); };
         let mut entries = acl.to_vec();
         crate::posix_acl::chmod_masq(&mut entries, mode).map_err(|_| VfsError::Eio)?;

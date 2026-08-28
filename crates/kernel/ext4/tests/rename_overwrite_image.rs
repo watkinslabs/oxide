@@ -136,6 +136,8 @@ fn tmpfile_publish_over_existing_destination() {
         mode: 0o444,
         ..Default::default()
     }).expect("chmod anonymous hwdb");
+    // Mount::write_at intentionally bypasses the VFS page cache, so verify
+    // this low-level fixture write through the matching low-level read below.
     m.state().mount.write_at(tmp_ino as u32, 0, b"oxide-hwdb").expect("write anonymous hwdb");
 
     root.link_child(&tmp, ".#hwdb.tmp", &CreateCtx::root()).expect("publish temporary link");
@@ -146,7 +148,9 @@ fn tmpfile_publish_over_existing_destination() {
     assert_eq!(tmp.nlink(), 1, "published hwdb retains one link");
     assert_eq!(root.lookup("hwdb.bin").expect("new hwdb lookup").ino(), tmp_ino);
     assert!(matches!(root.lookup(".#hwdb.tmp"), Err(vfs::VfsError::Enoent)));
-    assert_eq!(m.state().read_file(b"/hwdb.bin").expect("read new hwdb"), b"oxide-hwdb");
+    let published = m.state().mount.read_inode(tmp_ino as u32).expect("read published hwdb inode");
+    let block = m.state().mount.read_file_block(&published, 0).expect("read published hwdb");
+    assert_eq!(&block[..b"oxide-hwdb".len()], b"oxide-hwdb");
 }
 
 #[test]

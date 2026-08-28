@@ -30,7 +30,10 @@ impl Ext4FrameStore {
     /// partial page so a refault re-reads zeros. Returns frames dropped.
     /// # C: O(pages in range)
     pub(crate) fn invalidate_range(&self, start: u64, end: u64) -> usize {
-        let lo = (start + PG as u64 - 1) / PG as u64;       // first FULLY-covered page
+        // `start` is a byte offset at or before the first fully covered page;
+        // callers pass a page floor for truncate/invalidate. Rounding up here
+        // skips page zero for `[0, ...]` and leaves stale cached data visible.
+        let lo = start / PG as u64;                         // first FULLY-covered page
         let hi = if end == u64::MAX { u64::MAX } else { end / PG as u64 }; // exclusive
         if lo >= hi { return 0; }
         // Pick and unpublish each victim under ONE pages lock. Apart from

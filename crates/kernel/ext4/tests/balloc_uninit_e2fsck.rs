@@ -17,7 +17,8 @@ use std::sync::{atomic::{AtomicU32, Ordering}, Mutex};
 use block::{BlockDevice, BlockRequest, BlockOp, KResult};
 
 const CLEAN: &str = "/home/nd/oxide/images/out/gnome-x86_64-root.img";
-const ARM_ROOT: &str = "/home/nd/oxide/kernel/target/builds/default/root-aarch64.img";
+const ARM_ROOT: &str = "/home/nd/oxide/images/out/gnome-aarch64-root.img";
+const IMAGE_TMP_DIR: &str = "/home/nd/oxide/kernel/target/ext4-test-images";
 const SECTOR: u32 = 512;
 
 struct RwFileDisk { f: Mutex<File>, cap: u64 }
@@ -47,7 +48,8 @@ impl TempImage {
     fn path_for(tag: &str) -> std::path::PathBuf {
         static SEQ: AtomicU32 = AtomicU32::new(0);
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir()
+        std::fs::create_dir_all(IMAGE_TMP_DIR).expect("create ext4 image test directory");
+        std::path::Path::new(IMAGE_TMP_DIR)
             .join(std::format!("oxide-ext4-{tag}-{}-{seq}.img", std::process::id()))
     }
 }
