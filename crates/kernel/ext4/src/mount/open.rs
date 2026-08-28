@@ -108,6 +108,7 @@ impl Mount {
             metadata_order: alloc::collections::VecDeque::new(),
             block_bitmap_cache: alloc::collections::BTreeMap::new(),
             group_free_order: alloc::collections::BTreeMap::new(),
+            inode_prealloc: alloc::collections::BTreeMap::new(),
             batch: false,
             undo: Vec::new(),
             next_generation: 0,

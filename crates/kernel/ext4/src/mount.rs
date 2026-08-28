@@ -137,6 +137,9 @@ pub struct MountState {
     /// Largest free buddy order known for each group. A missing entry means
     /// that group has not yet had its bitmap scanned by this mount.
     pub(crate) group_free_order: alloc::collections::BTreeMap<u32, u8>,
+    /// Per-inode data preallocation tails. The bitmap owns these blocks on
+    /// disk, while this table owns their not-yet-mapped logical range.
+    pub(crate) inode_prealloc: alloc::collections::BTreeMap<u32, Vec<crate::balloc::prealloc::InodePrealloc>>,
     /// Cross-operation batching (Linux jbd2 running-transaction model). When
     /// set, the `shadow` PERSISTS across `run_journaled` scopes: each op joins
     /// the running transaction instead of committing its own, and the batch is
@@ -234,6 +237,15 @@ pub struct Mount {
     /// # Lk: leaf.
     #[cfg(not(target_os = "oxide-kernel"))]
     pub(crate) test_cred: Spinlock<Option<crate::balloc::reserve::AllocCred>, SuperblockLockClass>,
+}
+
+impl Drop for Mount {
+    fn drop(&mut self) {
+        // Linux drops inode preallocation while the superblock is being put;
+        // otherwise bitmap-reserved tails would outlive their in-memory owner.
+        let _ = self.release_all_inode_prealloc();
+        let _ = self.commit_batch();
+    }
 }
 
 impl Mount {

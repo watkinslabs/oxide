@@ -8,11 +8,23 @@ use crate::mount::{Mount, MountError};
 
 use super::collect::PhysRun;
 
+struct ReservedRun {
+    logical_start: u32,
+    blocks: Vec<u64>,
+    from_inode_pa: bool,
+    /// Fresh data reservation beyond this operation's requested range.
+    tail_start: Option<u32>,
+    tail_blocks: Vec<u64>,
+}
+
+const SMALL_FILE_MIN_PREALLOC_BLOCKS: u32 = 4;
+const MAX_PREALLOC_TAIL_BLOCKS: u32 = 1024;
+
 /// Reserve each contiguous logical hole in one Linux-shaped mballoc request.
 /// An existing extent terminates a request; physical contiguity must never be
 /// claimed across a mapped logical block. # C: O(N_extents + N_hole_runs)
-fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino: u32)
-    -> Result<Vec<(u32, Vec<u64>)>, MountError>
+fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino: u32,
+    preallocate: bool) -> Result<Vec<ReservedRun>, MountError>
 {
     let mut runs = Vec::new();
     let mut cursor = first as u64;
@@ -32,6 +44,17 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
         let start = cursor;
         while cursor <= end && !is_mapped(cursor as u32) { cursor += 1; }
         let count = (cursor - start) as u32;
+        if preallocate {
+            if let Some(blocks) = m.peek_inode_prealloc(ino, start as u32, count) {
+                if !blocks.is_empty() {
+                    let used = blocks.len() as u32;
+                    runs.push(ReservedRun { logical_start: start as u32, blocks,
+                        from_inode_pa: true, tail_start: None, tail_blocks: Vec::new() });
+                    cursor = start + u64::from(used);
+                    continue;
+                }
+            }
+        }
         // Linux derives the allocation context's goal from the inode's
         // neighbouring extent, so a fallocate on an existing file stays near
         // that file instead of restarting every multiblock request at group 0.
@@ -39,11 +62,35 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
             .or_else(|| extents.first())
             .map(|r| m.group_of_block(r.phys))
             .unwrap_or(0);
-        match m.alloc_blocks_flags(hint, count, m.data_reserve_flags(ino)) {
-            Ok(blocks) => runs.push((start as u32, blocks)),
+        let reserve_count = if preallocate {
+            count.saturating_add(prealloc_tail(count))
+        } else { count };
+        match m.alloc_blocks_flags(hint, reserve_count, m.data_reserve_flags(ino)) {
+            Ok(blocks) => {
+                let requested = count as usize;
+                let tail = blocks[requested..].to_vec();
+                // Linux keeps an inode PA tail free on disk and masks it only
+                // in the in-memory buddy bitmap.
+                for (n, &block) in tail.iter().enumerate() {
+                    if let Err(e) = m.free_block(block) {
+                        for &rollback in &blocks[..requested] { let _ = m.free_block(rollback); }
+                        for &rollback in tail.iter().skip(n + 1) { let _ = m.free_block(rollback); }
+                        return Err(e);
+                    }
+                }
+                runs.push(ReservedRun { logical_start: start as u32,
+                    blocks: blocks[..requested].to_vec(), from_inode_pa: false,
+                    tail_start: if tail.is_empty() { None } else {
+                        Some(start.saturating_add(u64::from(count)) as u32)
+                    }, tail_blocks: tail });
+            }
             Err(e) => {
-                for (_, blocks) in &runs {
-                    for &block in blocks { let _ = m.free_block(block); }
+                for run in &runs {
+                    if !run.from_inode_pa {
+                        for &block in &run.blocks {
+                            let _ = m.free_block(block);
+                        }
+                    }
                 }
                 return Err(e);
             }
@@ -52,14 +99,24 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
     Ok(runs)
 }
 
-fn take_reserved(runs: &[(u32, Vec<u64>)], offsets: &mut [usize], lb: u32) -> Option<u64> {
-    for (idx, (start, blocks)) in runs.iter().enumerate() {
-        if lb < *start { break; }
-        let at = (lb - *start) as usize;
-        if at < blocks.len() {
+/// Linux's small-file normalizer starts at a 16 KiB allocation and grows by
+/// powers of two before larger files use bounded multi-megabyte windows. Keep
+/// the same small-file shape while limiting the tail to one request-sized
+/// quantum in this block-granular implementation. # C: O(1)
+fn prealloc_tail(count: u32) -> u32 {
+    let want = count.max(SMALL_FILE_MIN_PREALLOC_BLOCKS);
+    want.checked_next_power_of_two().unwrap_or(u32::MAX)
+        .saturating_sub(count).min(MAX_PREALLOC_TAIL_BLOCKS)
+}
+
+fn take_reserved(runs: &[ReservedRun], offsets: &mut [usize], lb: u32) -> Option<(u64, bool)> {
+    for (idx, run) in runs.iter().enumerate() {
+        if lb < run.logical_start { break; }
+        let at = (lb - run.logical_start) as usize;
+        if at < run.blocks.len() {
             if offsets[idx] != at { return None; }
             offsets[idx] += 1;
-            return Some(blocks[at]);
+            return Some((run.blocks[at], run.from_inode_pa));
         }
     }
     None
@@ -211,7 +268,7 @@ impl Mount {
             // turn a partial range back into one bitmap scan per hole.
             let initial = m.read_inode(ino)?;
             let extents = m.collect_phys_extents(&initial.i_block)?;
-            let reserved = reserve_hole_runs(m, first_lb, last_lb, &extents, ino)?;
+            let reserved = reserve_hole_runs(m, first_lb, last_lb, &extents, ino, false)?;
             let mut reserved_at = vec![0usize; reserved.len()];
             for lb in first_lb..=last_lb {
                 let inode = m.read_inode(ino)?;
@@ -220,12 +277,12 @@ impl Mount {
                     .any(|r| lb >= r.logical && lb < r.logical + r.len);
                 let visible_size = core::cmp::max(inode.size, (lb as u64 + 1) * bs);
                 let physical = if was_mapped { None } else {
-                    take_reserved(&reserved, &mut reserved_at, lb)
+                    take_reserved(&reserved, &mut reserved_at, lb).map(|(block, _)| block)
                 };
                 if let Err(e) = m.map_unwritten_block_inner_with_physical(ino, lb, visible_size, physical) {
                     let _ = m.rollback_allocated_logical_blocks(ino, old_size, &allocated);
-                    for (idx, (_, run)) in reserved.iter().enumerate() {
-                        for &block in run.iter().skip(reserved_at[idx]) {
+                    for (idx, run) in reserved.iter().enumerate() {
+                        for &block in run.blocks.iter().skip(reserved_at[idx]) {
                             let _ = m.free_block(block);
                         }
                     }
@@ -298,7 +355,12 @@ impl Mount {
         let mut allocated = alloc::vec::Vec::new();
         let initial = self.read_inode(ino)?;
         let initial_extents = self.collect_phys_extents(&initial.i_block)?;
-        let reserved = reserve_hole_runs(self, first_lb, last_lb, &initial_extents, ino)?;
+        // A write that starts beyond the current EOF is a sparse write, not a
+        // stream allocation. Linux leaves that gap unallocated; inode PA is
+        // eligible only when the request reaches the current file tail.
+        let allow_prealloc = u64::from(first_lb) <= cur_blocks;
+        let reserved = reserve_hole_runs(
+            self, first_lb, last_lb, &initial_extents, ino, allow_prealloc)?;
         let mut reserved_at = vec![0usize; reserved.len()];
         let mut written = 0usize;
         for lb in first_lb..=last_lb {
@@ -341,14 +403,30 @@ impl Mount {
                 let physical = if mapped { None } else {
                     take_reserved(&reserved, &mut reserved_at, lb)
                 };
-                if let Err(e) = self.alloc_written_block_defer_with_physical(ino, &mut ib, ioff, lb, vis, physical) {
+                let pa_phys = physical.and_then(|(block, from_pa)| from_pa.then_some(block));
+                if let Some(block) = pa_phys {
+                    if let Err(e) = self.claim_inode_prealloc_block(block) {
+                        if let Err(rb) = self.rollback_allocated_logical_blocks(ino, cur_size, &allocated) { return Err(rb); }
+                        return Err(e);
+                    }
+                }
+                if let Err(e) = self.alloc_written_block_defer_with_physical(
+                    ino, &mut ib, ioff, lb, vis, physical.map(|(block, _)| block)) {
+                    if let Some(_block) = pa_phys {
+                        // The extent inserter owns cleanup of the claimed
+                        // physical block on every post-selection error.
+                        let _ = self.consume_inode_prealloc(ino, lb);
+                    }
                     if let Err(rb) = self.rollback_allocated_logical_blocks(ino, cur_size, &allocated) { return Err(rb); }
-                    for (idx, (_, run)) in reserved.iter().enumerate() {
-                        for &block in run.iter().skip(reserved_at[idx]) { let _ = self.free_block(block); }
+                    for (idx, run) in reserved.iter().enumerate() {
+                        for &block in run.blocks.iter().skip(reserved_at[idx]) {
+                            if !run.from_inode_pa { let _ = self.free_block(block); }
+                        }
                     }
                     return Err(e);
                 }
                 let inode3 = self.read_inode(ino)?;
+                if pa_phys.is_some() { let _ = self.consume_inode_prealloc(ino, lb); }
                 allocated.push(lb);
                 self.resolve_pblock(&inode3, lb)?
             };
@@ -363,6 +441,11 @@ impl Mount {
         if let Err(e) = self.set_inode_size_with_meta(ino, new_size, meta) {
             if let Err(rb) = self.rollback_allocated_logical_blocks(ino, cur_size, &allocated) { return Err(rb); }
             return Err(e);
+        }
+        for run in &reserved {
+            if let Some(start) = run.tail_start {
+                self.add_inode_prealloc(ino, start, run.tail_blocks.clone());
+            }
         }
         Ok(())
     }

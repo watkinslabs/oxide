@@ -66,6 +66,7 @@ impl Mount {
     fn collapse_range_inner(&self, ino: u32, offset: u64, len: u64) -> Result<(), MountError> {
         let size = self.read_inode(ino)?.size;
         let new_size = size.checked_sub(len).ok_or(MountError::Inode(inode::InodeError::BadLen))?;
+        self.release_inode_prealloc(ino)?;
         let (start, shift) = self.shift_units(offset, len)?;
         let mut input = self.shift_input(ino)?;
         let (extents, data_to_free) = plan::plan_collapse(&input.runs, start, shift);
@@ -84,6 +85,7 @@ impl Mount {
         let size = self.read_inode(ino)?.size;
         let new_size = size.checked_add(len).ok_or(MountError::Inode(inode::InodeError::BadLen))?;
         let (start, shift) = self.shift_units(offset, len)?;
+        self.release_inode_prealloc(ino)?;
         // The file is grown BEFORE the extents move: a failure part-way leaves a
         // file that is too long rather than one whose tail blocks sit past EOF
         // and are therefore unreachable.

@@ -7,19 +7,14 @@
 // physical block belonging to the group. Group N's first physical
 // block = `sb.first_data_block + N * sb.blocks_per_group`.
 //
-// Caller acquires `Mount::state` lock; this module only performs
-// disk RMW and counter updates.
-//
-// Module manifest:
-// - scan: where a group walk starts, and whether it walks in free-space order.
-// - reserve: who may consume the superblock's reserved blocks (`resuid=`,
-//   `resgid=`, and the allocations that carry a claim of their own).
-// - free: releasing a block, and `-o discard` handing it back to the device.
+// The allocator owns bitmap RMW and counter updates inside the mount
+// operation transaction.
 
 use crate::gdt;
 
 pub mod scan;
 pub mod reserve;
+pub(crate) mod prealloc;
 mod free;
 use reserve::ReserveFlags;
 use crate::mount::{Mount, MountError};
@@ -211,23 +206,27 @@ impl Mount {
             }
             bitmap
         };
+        let mut disk_bitmap = bitmap.clone();
+        self.clear_group_prealloc(group, &mut disk_bitmap);
+        self.mask_group_prealloc(group, &mut bitmap);
         let blocks_in_group = self.blocks_in_group(group);
         let bit = match find_first_clear(&bitmap, blocks_in_group) {
             Some(b) => b,
             None    => return Ok(None),
         };
         bitmap[bit >> 3] |= 1u8 << (bit & 7);
+        disk_bitmap[bit >> 3] |= 1u8 << (bit & 7);
         let mut gd = gd_orig;
         gd.free_blocks_count = gd.free_blocks_count.saturating_sub(1);
         {
             let mut s = self.state.lock();
             gdt::write_descriptor_counters(&mut s.gdt_buf, group, &self.sb, &gd)?;
-            crate::csum::set_block_bitmap_csum(&self.sb, &mut s.gdt_buf, group, &bitmap);
+            crate::csum::set_block_bitmap_csum(&self.sb, &mut s.gdt_buf, group, &disk_bitmap);
             gdt::on_block_allocated(&mut s.gdt_buf, group, &self.sb);
             crate::csum::stamp_group_desc_csum(&self.sb, &mut s.gdt_buf, group);
             s.sb_free_blocks = s.sb_free_blocks.saturating_sub(1);
         }
-        self.metadata_write(bbm_byte_off, &bitmap)?;
+        self.metadata_write(bbm_byte_off, &disk_bitmap)?;
         self.persist_gdt_slot_meta(group)?;
         self.persist_sb_free_blocks_meta()?;
         // Force commit so the next alloc_block within the same
@@ -265,6 +264,9 @@ impl Mount {
             }
             bitmap
         };
+        let mut disk_bitmap = bitmap.clone();
+        self.clear_group_prealloc(group, &mut disk_bitmap);
+        self.mask_group_prealloc(group, &mut bitmap);
         let blocks = self.blocks_in_group(group);
         let stripe = self.behaviour().stripe;
         let first_phys = group_first_block(&self.sb, group);
@@ -273,18 +275,21 @@ impl Mount {
         } else { None };
         let start = aligned.or_else(|| find_contiguous_run(&bitmap, blocks, count, first_phys, None));
         let Some(start) = start else { return Ok(None) };
-        for bit in start..start + count { bitmap[bit as usize >> 3] |= 1u8 << (bit & 7); }
+        for bit in start..start + count {
+            bitmap[bit as usize >> 3] |= 1u8 << (bit & 7);
+            disk_bitmap[bit as usize >> 3] |= 1u8 << (bit & 7);
+        }
         let mut gd = gd_orig;
         gd.free_blocks_count = gd.free_blocks_count.saturating_sub(count);
         {
             let mut s = self.state.lock();
             gdt::write_descriptor_counters(&mut s.gdt_buf, group, &self.sb, &gd)?;
-            crate::csum::set_block_bitmap_csum(&self.sb, &mut s.gdt_buf, group, &bitmap);
+            crate::csum::set_block_bitmap_csum(&self.sb, &mut s.gdt_buf, group, &disk_bitmap);
             gdt::on_block_allocated(&mut s.gdt_buf, group, &self.sb);
             crate::csum::stamp_group_desc_csum(&self.sb, &mut s.gdt_buf, group);
             s.sb_free_blocks = s.sb_free_blocks.saturating_sub(u64::from(count));
         }
-        self.metadata_write(bbm_byte_off, &bitmap)?;
+        self.metadata_write(bbm_byte_off, &disk_bitmap)?;
         self.persist_gdt_slot_meta(group)?;
         self.persist_sb_free_blocks_meta()?;
         self.flush_pending_tx()?;
@@ -487,8 +492,7 @@ pub fn find_first_clear(bitmap: &[u8], max_bits: u32) -> Option<usize> {
     None
 }
 
-// Re-export the guard type for the helper signatures. Defined in
-// `mount` to keep the lock layout co-located with the struct.
+// Re-export the guard type for helper signatures.
 pub use crate::mount::MountStateGuard;
 
 #[cfg(test)]
