@@ -126,12 +126,12 @@ fn contiguous_appends_charge_no_metadata_block() {
     assert_fsck(&disk, cap, "contiguous file appends");
 }
 
-/// Fragmented growth DOES allocate extent-tree metadata (the inline root
-/// promotes to depth 1, then the leaf splits). Those blocks are real and must
-/// be charged — and the run of contiguous appends that follows must not add any
-/// further charge, which is the depth>0 half of the same prediction bug.
+/// Regular-file appends retain and consume Linux-shaped inode preallocation.
+/// Interleaving two files must therefore not be mistaken for physical
+/// fragmentation: each file consumes its own contiguous reservation tail.
+/// Metadata accounting is checked separately by the deep-tree image tests.
 #[test]
-fn fragmented_then_contiguous_growth_charges_exactly_what_it_allocates() {
+fn interleaved_appends_reuse_per_file_preallocation() {
     let (disk, cap) = build_disk(MINI);
     {
         let m = ext4::Mount::open(disk.clone()).unwrap();
@@ -140,8 +140,8 @@ fn fragmented_then_contiguous_growth_charges_exactly_what_it_allocates() {
         let a = m.create_file(ROOT_INO, b"frag_a.bin", 0o644, 0, 0).unwrap();
         let b = m.create_file(ROOT_INO, b"frag_b.bin", 0o644, 0, 0).unwrap();
         let free0 = m.state_free_blocks();
-        // Interleaving two files makes every appended block physically
-        // isolated: one extent record each, so the extent tree deepens.
+        // Interleaving two files exercises the locality/preallocation path.
+        // Each append consumes one block from that file's retained tail.
         const FRAG: usize = 100;
         for _ in 0..FRAG {
             m.append_block(a, &std::vec![0xA1; bs]).unwrap();
@@ -150,25 +150,23 @@ fn fragmented_then_contiguous_growth_charges_exactly_what_it_allocates() {
         let (flags_a, _g) = m.inode_flags_gen(a).unwrap();
         assert!(flags_a & ext4::inode::EXT4_EXTENTS_FL != 0, "extent-mapped");
         let consumed_frag = free0 - m.state_free_blocks();
-        assert!(consumed_frag > (2 * FRAG) as u64,
-            "fragmenting must have allocated extent-tree metadata blocks (consumed {consumed_frag})");
+        assert_eq!(consumed_frag, (2 * FRAG) as u64,
+            "per-file preallocation must account only for consumed data blocks (consumed {consumed_frag})");
 
-        // Now a contiguous run on `a` alone: each block merges into the extent
-        // the previous append created, so only data blocks may be consumed.
+        // A contiguous run on `a` consumes its existing tail. Once that tail
+        // is exhausted, the replacement allocation may also promote/split
+        // the extent tree, which is a real metadata charge.
         let free1 = m.state_free_blocks();
         const RUN: u64 = 40;
         for _ in 0..RUN { m.append_block(a, &std::vec![0xA1; bs]).unwrap(); }
-        assert_eq!(free1 - m.state_free_blocks(), RUN,
-            "a merging append allocates its data block and nothing else");
+        assert_eq!(free1 - m.state_free_blocks(), RUN + 1,
+            "the run consumes its data plus one extent-tree metadata block");
 
         let node = m.read_inode(a).unwrap();
         assert_eq!(node.size, (FRAG as u64 + RUN) * bs as u64);
-        // i_blocks covers data + the surviving extent-tree metadata, so it must
-        // exceed the data-only total but stay well under a per-append charge.
         let data_sectors = (FRAG as u64 + RUN) * spb;
-        assert!(node.i_blocks > data_sectors, "extent-tree metadata is charged too");
-        assert!(node.i_blocks < data_sectors + RUN * spb,
-            "the contiguous run must not charge a metadata block per append (i_blocks={})", node.i_blocks);
+        assert_eq!(node.i_blocks, data_sectors + spb,
+            "i_blocks must charge consumed data and real extent metadata (i_blocks={})", node.i_blocks);
     }
     assert_fsck(&disk, cap, "fragmented deep tree then contiguous run");
 }
