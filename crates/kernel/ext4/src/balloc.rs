@@ -523,27 +523,45 @@ fn set_bit(bitmap: &mut [u8], bit: usize) {
 fn find_contiguous_run(bitmap: &[u8], max_bits: u32, count: u32, first_phys: u64,
                        stripe: Option<u32>) -> Option<u32> {
     if count == 0 || count > max_bits { return None; }
+    let mut best_aligned: Option<(u32, u32)> = None;
+    let mut best_any: Option<(u32, u32)> = None;
     let mut run_start = 0;
     let mut run_len = 0;
-    for bit in 0..max_bits {
-        if bitmap[bit as usize >> 3] & (1u8 << (bit & 7)) != 0 {
-            run_len = 0;
+    let mut consider = |start: u32, len: u32| {
+        if len < count { return; }
+        let candidate = start;
+        let replace = |best: &mut Option<(u32, u32)>| {
+            if best.is_none_or(|(old_len, old_start)|
+                len < old_len || (len == old_len && candidate < old_start)) {
+                *best = Some((len, candidate));
+            }
+        };
+        replace(&mut best_any);
+        if let Some(width) = stripe.filter(|width| *width > 1) {
+            let misalignment = (first_phys + u64::from(start)) % u64::from(width);
+            let aligned = start + if misalignment == 0 { 0 } else {
+                width - misalignment as u32
+            };
+            if aligned.saturating_add(count) <= start.saturating_add(len) {
+                let aligned_len = len - (aligned - start);
+                if best_aligned.is_none_or(|(old_len, old_start)|
+                    aligned_len < old_len || (aligned_len == old_len && aligned < old_start)) {
+                    best_aligned = Some((aligned_len, aligned));
+                }
+            }
+        }
+    };
+    for bit in 0..=max_bits {
+        if bit < max_bits && bitmap[bit as usize >> 3] & (1u8 << (bit & 7)) == 0 {
+            if run_len == 0 { run_start = bit; }
+            run_len += 1;
             continue;
         }
-        if run_len == 0 { run_start = bit; }
-        run_len += 1;
-        if run_len < count { continue; }
-        let run_end = bit + 1;
-        let candidate = match stripe {
-            Some(width) => {
-                let misalignment = (first_phys + u64::from(run_start)) % u64::from(width);
-                run_start + if misalignment == 0 { 0 } else { width - misalignment as u32 }
-            }
-            None => run_end - count,
-        };
-        if candidate + count <= run_end { return Some(candidate); }
+        if run_len != 0 { consider(run_start, run_len); }
+        run_len = 0;
     }
-    None
+    if let Some((_, start)) = best_aligned { return Some(start); }
+    best_any.map(|(_, start)| start)
 }
 
 /// Scan `bitmap` for the first 0 bit in `[0, max_bits)`. Returns
