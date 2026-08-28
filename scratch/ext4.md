@@ -19,14 +19,14 @@ No item closes on a parser change alone. Each closes only when the Linux-shaped 
 | E4-05 | high | Retained pending checkpoint images, coalescing, journal-space accounting, and clean-publication state are implemented; the shared crash/replay and write-amplification evidence remains. | E4-01, E4-02 | crash/replay matrix, checkpoint-list tests, repeated boot/perf evidence |
 | E4-06 | medium | Async journal commit option and JBD2 ordering owner are implemented; crash/replay coverage remains part of E4-05. | E4-01, E4-05 | option validation and async commit ordering complete; finish shared crash/replay matrix |
 | E4-07 | medium | Multiblock allocation still differs from Linux in scan heuristics and the complete locality preallocation lifecycle. | E4-01, E4-02, E4-05 | allocator model tests, fragmentation/failure tests, e2fsck-clean images, measured workload |
-| E4-08 | medium | Indexed-directory lookup has improved htree selection but `newfstatat` remains far slower than host Linux. | E4-01, E4-02 | phase profile names remaining owner; repeated controlled comparison closes the ratio |
+| E4-08 | medium | Indexed-directory lookup and inode construction now reuse the type-probe image and resident VFS inode identity, but `newfstatat` remains far slower than host Linux. | E4-01, E4-02 | phase profile names remaining owner; repeated controlled comparison closes the ratio |
 | E4-09 | medium | `inode_readahead_blks` warms a bounded inode-table window through the canonical metadata cache; architecture and performance comparison remain with E4-01/E4-02/E4-15. | E4-01, E4-02 | cold-lookup/image coverage, async ownership integration, boot/perf comparison |
 | E4-10 | medium | `dioread_nolock`, `nodioread_nolock`, and `dioread_lock` need a direct-I/O data path. | E4-01, E4-02 | Complete O_DIRECT semantics later, or keep the explicit capability refusal |
 | E4-11 | low | Bitmap prefetch is wired; `nombcache` is explicitly refused because its mbcache owner is absent. | E4-02, E4-07 | bitmap-prefetch coverage complete; add mbcache before changing refusal |
 | E4-12 | low | Legacy options without consumers must not be silently accepted. | baseline only | complete: known unowned ext4 options refuse; generic VFS tokens remain pass-through |
 | E4-13 | medium | The ext4 integration suite has shared-image races under parallel execution, producing false failures. | baseline only | isolated fixture ownership; parallel and serial suites agree |
 | E4-14 | medium | One ARM sysinit boot produced ext4-shaped EIO/SIGBUS symptoms without a controlled reproduction. | E4-02, E4-03 | repeated controlled ARM reproduction or evidence-backed closure as host contention |
-| E4-15 | medium | A current GNOME/SMP=1 phase report and history row now exist; a frozen same-workload baseline series and repeatability comparison remain. | E4-01 through E4-05 | saved baseline, phase metrics, repeated runs, comparison report |
+| E4-15 | medium | Repeated GNOME/SMP=1 reports are preserved, including the post-lookup-cache run; the result remains within harness variance and is not credited as a whole-boot gain. | E4-01 through E4-05 | saved baseline, phase metrics, repeated runs, comparison report |
 | E4-16 | documentation | Historical ext4 rows contain stale claims, including old image-test failure counts. | baseline only | every historical row is corrected, linked to an E4 item, or closed with evidence |
 
 ## 3 — supported mode contract
@@ -136,6 +136,22 @@ Exit: no useful mode is accept-and-drop; no absent owner is represented as suppo
 5. Record distributions and regressions, not a single favorable run.
 
 Exit: each claimed gain has a reproducible before/after measurement; no correctness regression is traded for speed.
+
+### 4.9 preserved performance history
+
+The rows below are intentionally kept as a comparison series. They are not
+interchangeable workloads: each is a real GNOME boot with `SMP=1`, and normal
+desktop and socket variance is expected.
+
+| revision | syscalls | CPU ms | average ns | `newfstatat` | block reads / ms | block writes / ms | result |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `5d15845be` | 1,367,309 | 6,938 | 5,074 | 20,150 | 526 / 368 | 8,027 / 2,807 | GNOME Shell marker reached |
+| `baf0ad839` | 1,367,913 | 7,043 | 5,148 | 20,921 | 526 / 333 | 8,300 / 2,878 | GNOME Shell marker reached |
+
+The second row includes the merged inode-image and inode-cache lookup changes.
+It does not demonstrate a whole-boot gain: the aggregate and `newfstatat`
+values are within the harness's documented run-to-run variance. The lookup
+phase remains the next measurement target.
 
 ## 5 — phase gate
 
