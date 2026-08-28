@@ -41,7 +41,7 @@ impl Mount {
                 return result;
             }
             let hint = self.append_hint_group(ino, new_logical)?;
-            let (physical, tail) = self.fresh_append_allocation(ino, hint)?;
+            let (physical, tail) = self.fresh_append_allocation(ino, hint, cur_size, new_logical)?;
             let result = self.insert_logical_block_with_inode_bytes(
                 ino, &mut ino_bytes, ino_byte_off, new_logical, data, new_size,
                 false, false, Some(physical));
@@ -95,9 +95,10 @@ impl Mount {
     /// quota, and rollback state; only the unconsumed data tail becomes PA
     /// ownership after its blocks are returned to the free bitmap.
     /// # C: O(N_groups * block_size * request)
-    fn fresh_append_allocation(&self, ino: u32, hint: u32) -> Result<(u64, Vec<u64>), MountError> {
-        const APPEND_PREALLOC_BLOCKS: u32 = 8;
-        let want = APPEND_PREALLOC_BLOCKS + 1;
+    fn fresh_append_allocation(&self, ino: u32, hint: u32, current_size: u64, logical: u32)
+        -> Result<(u64, Vec<u64>), MountError>
+    {
+        let want = super::prealloc::tail_blocks(self.sb.block_size as u64, current_size, logical, 1) + 1;
         let flags = self.data_reserve_flags(ino);
         let blocks = match self.alloc_blocks_flags(hint, want, flags) {
             Ok(blocks) => blocks,
