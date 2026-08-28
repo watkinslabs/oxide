@@ -178,6 +178,19 @@ fn mixing_a_quota_file_with_the_other_class_plain_option_is_einval() {
 }
 
 #[test]
+fn known_unowned_ext4_options_are_refused_instead_of_collected() {
+    for token in [
+        "bsddf", "grpid", "oldalloc", "orlov", "bh", "min_batch_time=1",
+        "journal_dev=1", "journal_path=/dev/sda", "data_err=abort", "abort",
+        "i_version", "mblk_io_submit", "test_dummy_encryption", "inlinecrypt",
+        "check=none", "reservation", "journal=1",
+    ] {
+        assert_eq!(Ext4MountOpts::parse(token).err(), Some(VfsError::Einval), "{token}");
+    }
+    assert_eq!(Ext4MountOpts::parse("rw,relatime").unwrap().other, ["rw", "relatime"]);
+}
+
+#[test]
 fn note_qf_name_is_slot_addressed_by_quota_class() {
     let mut o = Ext4MountOpts::default();
     o.note_qf_name(QuotaType::Group, "aquota.group").expect("group name");

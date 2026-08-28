@@ -41,6 +41,7 @@ impl Ext4MountOpts {
             // A behavioural option is acted on, not collected: a key that
             // reaches `other` is a key nothing in this filesystem reads.
             if o.behaviour.parse_one(key, val)? { continue; }
+            if unsupported_ext4_option(key) { return Err(VfsError::Einval); }
             o.other.push(tok.to_string());
         }
         Ok(o)
@@ -118,4 +119,18 @@ impl Ext4MountOpts {
         }
         Ok(())
     }
+}
+
+/// Known ext4 options whose Linux behavior has no owner in this tree. Generic
+/// VFS tokens (`rw`, `relatime`, …) remain in `other`; these are refused so a
+/// caller cannot mistake admission for an applied filesystem policy.
+fn unsupported_ext4_option(key: &str) -> bool {
+    matches!(key,
+        "bsddf" | "minixdf" | "grpid" | "bsdgroups" | "nogrpid" | "sysvgroups" |
+        "sb" | "nouid32" | "debug" | "oldalloc" | "orlov" | "bh" | "nobh" |
+        "min_batch_time" | "max_batch_time" | "journal_dev" | "journal_path" |
+        "data_err" | "abort" | "i_version" | "debug_want_extra_isize" |
+        "mblk_io_submit" | "nomblk_io_submit" | "test_dummy_encryption" |
+        "inlinecrypt" | "check" | "nocheck" | "reservation" | "noreservation" |
+        "journal")
 }
