@@ -32,7 +32,14 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
         let start = cursor;
         while cursor <= end && !is_mapped(cursor as u32) { cursor += 1; }
         let count = (cursor - start) as u32;
-        match m.alloc_blocks_flags(0, count, m.data_reserve_flags(ino)) {
+        // Linux derives the allocation context's goal from the inode's
+        // neighbouring extent, so a fallocate on an existing file stays near
+        // that file instead of restarting every multiblock request at group 0.
+        let hint = extents.iter().rev().find(|r| u64::from(r.logical) <= start)
+            .or_else(|| extents.first())
+            .map(|r| m.group_of_block(r.phys))
+            .unwrap_or(0);
+        match m.alloc_blocks_flags(hint, count, m.data_reserve_flags(ino)) {
             Ok(blocks) => runs.push((start as u32, blocks)),
             Err(e) => {
                 for (_, blocks) in &runs {
