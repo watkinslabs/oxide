@@ -111,8 +111,9 @@ impl Mount {
                 let avg = super::scan::average_fragment_order(bitmap, self.blocks_in_group(group));
                 if let Some(order) = order { s.group_free_order.insert(group, order); }
                 else { s.group_free_order.remove(&group); }
-                if let Some(avg) = avg { s.group_avg_fragment_order.insert(group, avg); }
-                else { s.group_avg_fragment_order.remove(&group); }
+                let old_avg = s.group_avg_fragment_order.insert(group, avg.unwrap_or(0));
+                super::scan::replace_order_index(&mut s.group_avg_fragment_index, group, old_avg, avg);
+                if avg.is_none() { s.group_avg_fragment_order.remove(&group); }
             }
         }
         Ok(())
@@ -147,8 +148,9 @@ impl Mount {
                         let avg = super::scan::average_fragment_order(bitmap, self.blocks_in_group(group));
                         if let Some(order) = order { s.group_free_order.insert(group, order); }
                         else { s.group_free_order.remove(&group); }
-                        if let Some(avg) = avg { s.group_avg_fragment_order.insert(group, avg); }
-                        else { s.group_avg_fragment_order.remove(&group); }
+                        let old_avg = s.group_avg_fragment_order.insert(group, avg.unwrap_or(0));
+                        super::scan::replace_order_index(&mut s.group_avg_fragment_index, group, old_avg, avg);
+                        if avg.is_none() { s.group_avg_fragment_order.remove(&group); }
                     }
                 }
             }

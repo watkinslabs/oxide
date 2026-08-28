@@ -109,6 +109,7 @@ impl Mount {
             block_bitmap_cache: alloc::collections::BTreeMap::new(),
             group_free_order: alloc::collections::BTreeMap::new(),
             group_avg_fragment_order: alloc::collections::BTreeMap::new(),
+            group_avg_fragment_index: alloc::collections::BTreeMap::new(),
             group_prealloc: alloc::collections::BTreeMap::new(),
             inode_prealloc: alloc::collections::BTreeMap::new(),
             batch: false,

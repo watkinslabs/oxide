@@ -50,6 +50,26 @@ pub fn average_fragment_order(bitmap: &[u8], max_bits: u32) -> Option<u8> {
     Some(log2.saturating_sub(1) as u8)
 }
 
+/// Replace one group's membership in an order-indexed summary. This is the
+/// BTree equivalent of Linux's xarray erase/insert update.
+pub fn replace_order_index(
+    index: &mut alloc::collections::BTreeMap<u8, alloc::collections::BTreeSet<u32>>,
+    group: u32,
+    old: Option<u8>,
+    new: Option<u8>,
+) {
+    if let Some(order) = old {
+        let empty = if let Some(groups) = index.get_mut(&order) {
+            groups.remove(&group);
+            groups.is_empty()
+        } else { false };
+        if empty { index.remove(&order); }
+    }
+    if let Some(order) = new {
+        index.entry(order).or_default().insert(group);
+    }
+}
+
 /// The group the scan STARTS at.
 ///
 /// The plain order starts at the caller's locality hint and walks forward, so
@@ -132,5 +152,16 @@ mod tests {
         assert_eq!(average_fragment_order(&[0b1111_0000], 8), Some(1));
         assert_eq!(average_fragment_order(&[0b1010_1010], 8), Some(0));
         assert_eq!(average_fragment_order(&[0xff], 8), None);
+    }
+
+    #[test]
+    fn replacing_an_order_removes_stale_membership() {
+        let mut index = alloc::collections::BTreeMap::new();
+        replace_order_index(&mut index, 3, None, Some(1));
+        replace_order_index(&mut index, 3, Some(1), Some(4));
+        assert!(!index.get(&1).is_some_and(|groups| groups.contains(&3)));
+        assert_eq!(index.get(&4).map(|groups| groups.iter().copied().collect::<alloc::vec::Vec<_>>()), Some(alloc::vec![3]));
+        replace_order_index(&mut index, 3, Some(4), None);
+        assert!(index.is_empty());
     }
 }
