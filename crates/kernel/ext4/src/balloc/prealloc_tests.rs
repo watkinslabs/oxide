@@ -1,4 +1,4 @@
-use super::{inode_pa_blocks, InodePrealloc};
+use super::{inode_pa_blocks, trim_group_preallocations, GroupPrealloc, InodePrealloc};
 use alloc::vec;
 
 #[test]
@@ -13,4 +13,15 @@ fn inode_pa_stops_at_a_consumed_block() {
     assert_eq!(inode_pa_blocks(&pa, 100, 3), Some(vec![40]));
     assert_eq!(inode_pa_blocks(&pa, 101, 1), None);
     assert_eq!(inode_pa_blocks(&pa, 102, 1), Some(vec![42]));
+}
+
+#[test]
+fn locality_pa_list_keeps_the_eight_largest_reservations() {
+    let mut entries = (1..=9).map(|blocks| GroupPrealloc {
+        blocks: vec![0; blocks],
+    }).collect();
+    trim_group_preallocations(&mut entries);
+    assert_eq!(entries.len(), 8);
+    assert!(!entries.iter().any(|pa| pa.blocks.len() == 1));
+    assert!(entries.iter().any(|pa| pa.blocks.len() == 9));
 }
