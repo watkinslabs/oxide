@@ -131,8 +131,6 @@ fn deep_extent_tree_file_is_e2fsck_clean() {
         let inode = m.read_inode(n).unwrap();
         assert!(ext4::parse_extent_header(&inode.i_block).unwrap().depth >= 1,
                 "test must build an external extent tree");
-        // Release the spacers so the bitmap has no leaked (unreferenced)
-        // blocks — the fragmented extent layout is already locked in.
         for s in spacers { m.free_block(s).unwrap(); }
     }
     let bytes = dump_disk(&disk, cap);

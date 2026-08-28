@@ -182,7 +182,6 @@ fn shifting_a_deep_extent_tree_keeps_every_block_readable() {
     }
     assert!(m.extent_map(n).unwrap().len() > 4, "fixture really has an external tree");
     for b in spacers { m.free_block(b).unwrap(); }
-
     m.insert_range_inode(n, bs as u64, bs as u64).unwrap();
     assert_eq!(block_tags(&m, n, deep_blocks as u32 + 1), std::vec![0, 0, 1, 2, 3, 4, 5]);
 
