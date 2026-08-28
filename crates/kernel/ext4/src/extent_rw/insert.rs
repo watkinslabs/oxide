@@ -1,5 +1,6 @@
 use crate::inode::{self, Extent, I_BLOCK_LEN};
 use crate::mount::{Mount, MountError};
+use crate::balloc::reserve::ReserveFlags;
 use alloc::vec::Vec;
 
 use super::{EXT4_MAX_EXTENT_DEPTH, ExtentInsertResult};
@@ -46,21 +47,23 @@ impl Mount {
             return Err(MountError::ExtentTreeFull);
         }
 
-        let left_lba = match self.alloc_block_nofail(hint_group) {
-            Ok(lba) => lba,
+        // Linux's extent split asks mballoc for the metadata run as one
+        // request.  Keep the pair atomic so a second node is not needlessly
+        // selected from another group after the first allocation succeeds.
+        let meta = match self.alloc_blocks_flags(hint_group, 2, ReserveFlags::METADATA_NOFAIL) {
+            Ok(meta) if meta.len() == 2 => meta,
+            Ok(meta) => {
+                self.free_allocated_blocks(&meta);
+                self.free_allocated_blocks(&child.allocated_meta_blocks);
+                return Err(MountError::NoSpace);
+            }
             Err(e) => {
                 self.free_allocated_blocks(&child.allocated_meta_blocks);
                 return Err(e);
             }
         };
-        let right_lba = match self.alloc_block_nofail(hint_group) {
-            Ok(lba) => lba,
-            Err(e) => {
-                let _ = self.free_block(left_lba);
-                self.free_allocated_blocks(&child.allocated_meta_blocks);
-                return Err(e);
-            }
-        };
+        let left_lba = meta[0];
+        let right_lba = meta[1];
         extra_meta_sectors += spb * 2;
 
         let mut left_buf = alloc::vec![0u8; bs];
