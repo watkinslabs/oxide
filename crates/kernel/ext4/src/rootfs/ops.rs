@@ -66,7 +66,12 @@ impl RootfsState {
     /// # C: O(1) inode read
     pub fn wrap_any_ino(self: &Arc<Self>, ino: u32) -> Option<vfs::InodeRef> {
         let inode = self.mount.read_inode(ino).ok()?;
-        if inode.is_reg() { return self.wrap_file(ino); }
+        // The type probe already fetched the authoritative inode image.  Keep
+        // that image as the constructor input; routing regular files through
+        // `wrap_file` here would read the same inode-table slot a second time
+        // on every dcache miss.  Linux's ext4_lookup/iget path initializes the
+        // cached inode from the one image it loaded for the lookup.
+        if inode.is_reg() { return Some(self.wrap_file_from_inode(ino, &inode)); }
         // Map every ext4 `S_IFMT` type to its VFS `FileType` (not just
         // dir/link → Regular): a char/block node must surface as CharDev/
         // BlockDev so `getattr` reports `st_rdev`, and FIFO/SOCK so stat's
@@ -165,6 +170,14 @@ impl RootfsState {
     pub fn wrap_file(self: &Arc<Self>, ino: u32) -> Option<vfs::InodeRef> {
         let inode = self.mount.read_inode(ino).ok()?;
         if !inode.is_reg() { return None; }
+        Some(self.wrap_file_from_inode(ino, &inode))
+    }
+
+    /// Build a regular-file VFS inode from an already-read ext4 inode image.
+    /// Keeping this separate makes callers that have already performed the
+    /// type probe share that image instead of issuing another metadata read.
+    /// # C: O(1), no I/O
+    fn wrap_file_from_inode(self: &Arc<Self>, ino: u32, inode: &crate::inode::Inode) -> vfs::InodeRef {
         let size = inode.size;
         let mode = inode.mode;
         let (uid, gid, projid) = (inode.uid, inode.gid, inode.i_projid);
@@ -176,10 +189,10 @@ impl RootfsState {
         let st = self.clone();
         let build = move || build_file_inode(st, ino, mode, size, nlink, uid, gid, projid, times, blocks, generation, raw_flags);
         // Shared identity via the SB inode cache (Linux `iget`).
-        Some(match self.i_sb() {
+        match self.i_sb() {
             Some(sb) => sb.iget(ext4_wrap_ino(ino), build),
             None => build(),
-        })
+        }
     }
 
     /// Resolve `path` to a stat tuple for any file type.
