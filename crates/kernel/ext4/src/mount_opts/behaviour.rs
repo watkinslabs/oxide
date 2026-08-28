@@ -21,7 +21,8 @@ pub use parse::{OPT_BARRIER, OPT_BLOCK_VALIDITY, OPT_COMMIT, OPT_DATA, OPT_DAX, 
                 OPT_MB_OPTIMIZE_SCAN, OPT_NOBARRIER,
                 OPT_NOBLOCK_VALIDITY, OPT_NODELALLOC, OPT_NODISCARD, OPT_NOINIT_ITABLE,
                 OPT_NOLOAD, OPT_NORECOVERY, OPT_NOWARN_ON_ERROR, OPT_RESGID, OPT_RESUID,
-                OPT_STRIPE, OPT_WARN_ON_ERROR, OPT_INODE_READAHEAD_BLKS};
+                OPT_STRIPE, OPT_WARN_ON_ERROR, OPT_INODE_READAHEAD_BLKS,
+                OPT_DIOREAD_NOLOCK, OPT_DIOREAD_LOCK, OPT_NODIOREAD_NOLOCK};
 
 /// What the filesystem does when it finds its own on-disk state wrong.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
