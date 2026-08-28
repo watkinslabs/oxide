@@ -91,8 +91,6 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
             let (normalized_start, normalized_end) = super::prealloc::normalized_range(
                 m.sb.block_size as u64, current_size, start as u32, count);
             let normalized_clear = count > GROUP_PREALLOC_MAX_REQUEST
-                && current_size == 0
-                && extents.is_empty()
                 && normalized_start <= start
                 && normalized_end >= start + u64::from(count)
                 && !extents.iter().any(|r| {
