@@ -218,9 +218,15 @@ impl Nameidata {
             // rehomed it under us, so the result would be torn: restart the walk.
             let cseq = child.read_seqbegin();
 
+            // Snapshot the child inode once for this component. Linux's dentry
+            // carries the inode pointer directly; retaining this Arc gives the
+            // same one-read shape while the dentry's seqcount validates its
+            // name/inode binding before the walk commits the child.
+            let child_inode = child.inode().ok_or(VfsError::Enoent)?;
+
             // Symlink handling — use the child's OWN inode (a mountpoint is a
             // directory, never a symlink, so this precedes mount crossing).
-            if matches!(child.inode().map(|i| i.file_type()), Some(FileType::Symlink)) {
+            if child_inode.file_type() == FileType::Symlink {
                 #[cfg(feature = "debug-resolve-cost")]
                 let _cost = crate::resolve_cost::symlink();
                 // O_NOFOLLOW / AT_SYMLINK_NOFOLLOW: the FINAL symlink is returned
@@ -241,8 +247,7 @@ impl Nameidata {
                     // validate the rename seqcounts before returning the link.
                     if !self.unlazy_walk(&child, cseq, m_seq) { return Ok(WalkOutcome::Restart); }
                     if renamed(&child, cseq) { return Ok(WalkOutcome::Restart); }
-                    let inode = child.inode().ok_or(VfsError::Enoent)?;
-                    return Ok(WalkOutcome::Done(VfsPath { mnt_id: self.cur_mnt_id, dentry: child, inode, last_component: None }));
+                    return Ok(WalkOutcome::Done(VfsPath { mnt_id: self.cur_mnt_id, dentry: child, inode: child_inode, last_component: None }));
                 }
                 // About to FOLLOW the link (a blocking `get_link` + jump): leave
                 // LOOKUP_RCU first (Linux `try_to_unlazy` before `get_link`).
@@ -267,9 +272,8 @@ impl Nameidata {
                 // A symlink traversed by the walk
                 // has ITS atime bumped before the body is read, so `relatime`
                 // sees a followed symlink as an access.
-                let link_inode = child.inode().ok_or(VfsError::Enoent)?;
-                crate::atime::touch_atime(self.cur_mnt_id, &link_inode);
-                match link_inode.follow_link()? {
+                crate::atime::touch_atime(self.cur_mnt_id, &child_inode);
+                match child_inode.follow_link()? {
                     LinkTarget::Jump(vp) => {
                         // RESOLVE_NO_MAGICLINKS (Linux `nd_jump_link` under
                         // LOOKUP_NO_MAGICLINKS): a magic link followed in the
@@ -346,8 +350,6 @@ impl Nameidata {
                 last_component = Some(name);
                 break;
             }
-
-            let child_inode = child.inode().ok_or(VfsError::Enoent)?;
 
             // Automount triggers run before ordinary mount crossing. The hook
             // may graft a mount onto `child`, after which `follow_mount_down`

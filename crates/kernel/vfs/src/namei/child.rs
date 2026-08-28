@@ -48,7 +48,10 @@ impl Nameidata {
             self.rcu,
             hash,
         ) {
-            Some(d) if !d.is_negative() => return Ok(ChildLookup::Found(d)),
+            // Linux's `d_is_positive()` reads the dentry's cached entry type;
+            // do not take the inode lock merely to rediscover the negative
+            // bit before the walker takes the one inode snapshot it needs.
+            Some(d) if d.d_is_positive() => return Ok(ChildLookup::Found(d)),
             Some(_) => return Ok(ChildLookup::Missing), // cached negative (definitive)
             // RESOLVE_CACHED: a dcache miss would take the (possibly blocking)
             // `i_op->lookup` slow path — refuse with EAGAIN instead (Linux

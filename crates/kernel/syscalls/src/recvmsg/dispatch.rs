@@ -50,13 +50,16 @@ pub(crate) fn from_file(file: Arc<vfs::File>) -> Result<RecvTarget, i64> {
 
 /// Route one imported receive destination to its protocol owner. # C: O(1)
 pub(crate) fn recv(target: &RecvTarget, user: &RecvUser, flags: u64) -> i64 {
+    #[cfg(feature = "debug-syscost")]
     let _phase_admit = crate::syscost_phase::Phase::start(crate::syscost_phase::PH_RECV_ADMIT);
     // The one receive-side security decision, and the only source of a route:
     // no protocol owner can be reached without it.
     let (sock, family) = target.identity();
     let route = match crate::recv_admit::admit_and_route(sock, family, flags)
     { Ok(route) => route, Err(error) => return error };
+    #[cfg(feature = "debug-syscost")]
     drop(_phase_admit);
+    #[cfg(feature = "debug-syscost")]
     let _phase_backend = crate::syscost_phase::Phase::start(crate::syscost_phase::PH_RECV_BACKEND);
     let nonblock = target.file.flags().contains(OpenFlags::O_NONBLOCK);
     match (route, &target.kind) {
