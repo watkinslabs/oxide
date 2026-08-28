@@ -302,3 +302,4 @@
 <!-- B2859-ext4-best-fit: contiguous group allocation now retains Linux's exact-size/best-found selection instead of accepting the first sufficient run; 351 ext4 tests and both architecture checks pass. -->
 <!-- B2860-ext4-targeted-pa-discard: failed mballoc scans now discard complete locality PAs only until the request is reclaimable, then retry with a bounded progress-based loop; inode PAs are released only when no locality PA made progress. 351 ext4 tests and both architecture checks pass. -->
 <!-- B2861-ext4-auto-da-alloc: auto_da_alloc/noauto_da_alloc now has one live mount-policy owner and replacing renames flush the source inode's dirty data before the namespace transaction; 352 ext4 tests and both architecture checks pass. -->
+<!-- B2863-ext4-journal-external-extents: the journal inode now uses the canonical validated depth-0/1/2 extent walker instead of rejecting external extent trees; 352 ext4 tests and both architecture checks pass. -->

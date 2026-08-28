@@ -4,8 +4,8 @@
 // device, then mark the journal clean.
 //
 // The journal inode is a regular ext4 inode whose data extents
-// are the journal device blocks. v1 supports inline (depth-0)
-// extent trees; deeper trees would require external index nodes.
+// are the journal device blocks. Its extent mapping uses the same
+// validated depth-0/1/2 walker as ordinary regular files.
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -23,7 +23,7 @@ use crate::jbd2::{
 };
 use crate::jbd2::checksum::ChecksumMode;
 
-use crate::inode::{self, Inode};
+use crate::inode::Inode;
 use crate::mount::{Mount, MountError, read_byte_range_pub};
 use crate::superblock::INCOMPAT_RECOVER;
 
@@ -408,14 +408,8 @@ pub struct ExtentLogReader<'m> {
 
 impl<'m> ExtentLogReader<'m> {
     fn build(mount: &'m Mount, jinode: &Inode) -> Result<Self, MountError> {
-        let hdr = inode::parse_extent_header(&jinode.i_block)?;
-        if hdr.depth != 0 { return Err(MountError::DepthUnsupported); }
-        let mut ext = Vec::new();
-        for i in 0..hdr.entries {
-            if let Some(e) = inode::parse_inline_extent(&jinode.i_block, &hdr, i) {
-                ext.push((e.block, e.start_lba(), e.len as u32));
-            }
-        }
+        let mut ext = mount.extent_map(jinode.ino)?
+            .into_iter().map(|(block, lba, len, _)| (block, lba, len)).collect::<Vec<_>>();
         ext.sort_unstable_by_key(|&(lb, _, _)| lb);
         Ok(Self { mount, extents: ext })
     }
