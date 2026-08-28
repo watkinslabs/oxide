@@ -12,6 +12,7 @@ struct ReservedRun {
     logical_start: u32,
     blocks: Vec<u64>,
     from_inode_pa: bool,
+    from_group_pa: bool,
     /// Fresh data reservation beyond this operation's requested range.
     tail_start: Option<u32>,
     tail_blocks: Vec<u64>,
@@ -19,6 +20,8 @@ struct ReservedRun {
 
 const SMALL_FILE_MIN_PREALLOC_BLOCKS: u32 = 4;
 const MAX_PREALLOC_TAIL_BLOCKS: u32 = 1024;
+const GROUP_PREALLOC_MAX_REQUEST: u32 = 16;
+const GROUP_PREALLOC_BLOCKS: u32 = 512;
 
 /// Reserve each contiguous logical hole in one Linux-shaped mballoc request.
 /// An existing extent terminates a request; physical contiguity must never be
@@ -49,7 +52,8 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
                 if !blocks.is_empty() {
                     let used = blocks.len() as u32;
                     runs.push(ReservedRun { logical_start: start as u32, blocks,
-                        from_inode_pa: true, tail_start: None, tail_blocks: Vec::new() });
+                        from_inode_pa: true, from_group_pa: false,
+                        tail_start: None, tail_blocks: Vec::new() });
                     cursor = start + u64::from(used);
                     continue;
                 }
@@ -62,10 +66,27 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
             .or_else(|| extents.first())
             .map(|r| m.group_of_block(r.phys))
             .unwrap_or(0);
+        if preallocate && count <= GROUP_PREALLOC_MAX_REQUEST {
+            if let Some(blocks) = m.peek_group_prealloc(hint, count) {
+                runs.push(ReservedRun { logical_start: start as u32, blocks,
+                    from_inode_pa: false, from_group_pa: true,
+                    tail_start: None, tail_blocks: Vec::new() });
+                cursor = start + u64::from(count);
+                continue;
+            }
+        }
         let reserve_count = if preallocate {
-            count.saturating_add(prealloc_tail(count))
+            count.saturating_add(if count <= GROUP_PREALLOC_MAX_REQUEST {
+                GROUP_PREALLOC_BLOCKS
+            } else { prealloc_tail(count) })
         } else { count };
-        match m.alloc_blocks_flags(hint, reserve_count, m.data_reserve_flags(ino)) {
+        let flags = m.data_reserve_flags(ino);
+        let allocated = match m.alloc_blocks_flags(hint, reserve_count, flags) {
+            Err(MountError::NoSpace) if reserve_count != count =>
+                m.alloc_blocks_flags(hint, count, flags),
+            result => result,
+        };
+        match allocated {
             Ok(blocks) => {
                 let requested = count as usize;
                 let tail = blocks[requested..].to_vec();
@@ -80,13 +101,19 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
                 }
                 runs.push(ReservedRun { logical_start: start as u32,
                     blocks: blocks[..requested].to_vec(), from_inode_pa: false,
-                    tail_start: if tail.is_empty() { None } else {
+                    from_group_pa: false,
+                    tail_start: if tail.is_empty() || (preallocate && count <= GROUP_PREALLOC_MAX_REQUEST) { None } else {
                         Some(start.saturating_add(u64::from(count)) as u32)
-                    }, tail_blocks: tail });
+                    }, tail_blocks: if preallocate && count <= GROUP_PREALLOC_MAX_REQUEST {
+                        Vec::new()
+                    } else { tail.clone() } });
+                if preallocate && count <= GROUP_PREALLOC_MAX_REQUEST && !tail.is_empty() {
+                    m.add_group_prealloc(m.group_of_block(tail[0]), tail);
+                }
             }
             Err(e) => {
                 for run in &runs {
-                    if !run.from_inode_pa {
+                    if !run.from_inode_pa && !run.from_group_pa {
                         for &block in &run.blocks {
                             let _ = m.free_block(block);
                         }
@@ -109,14 +136,14 @@ fn prealloc_tail(count: u32) -> u32 {
         .saturating_sub(count).min(MAX_PREALLOC_TAIL_BLOCKS)
 }
 
-fn take_reserved(runs: &[ReservedRun], offsets: &mut [usize], lb: u32) -> Option<(u64, bool)> {
+fn take_reserved(runs: &[ReservedRun], offsets: &mut [usize], lb: u32) -> Option<(u64, bool, bool)> {
     for (idx, run) in runs.iter().enumerate() {
         if lb < run.logical_start { break; }
         let at = (lb - run.logical_start) as usize;
         if at < run.blocks.len() {
             if offsets[idx] != at { return None; }
             offsets[idx] += 1;
-            return Some((run.blocks[at], run.from_inode_pa));
+            return Some((run.blocks[at], run.from_inode_pa, run.from_group_pa));
         }
     }
     None
@@ -277,7 +304,7 @@ impl Mount {
                     .any(|r| lb >= r.logical && lb < r.logical + r.len);
                 let visible_size = core::cmp::max(inode.size, (lb as u64 + 1) * bs);
                 let physical = if was_mapped { None } else {
-                    take_reserved(&reserved, &mut reserved_at, lb).map(|(block, _)| block)
+                    take_reserved(&reserved, &mut reserved_at, lb).map(|(block, _, _)| block)
                 };
                 if let Err(e) = m.map_unwritten_block_inner_with_physical(ino, lb, visible_size, physical) {
                     let _ = m.rollback_allocated_logical_blocks(ino, old_size, &allocated);
@@ -358,7 +385,10 @@ impl Mount {
         // A write that starts beyond the current EOF is a sparse write, not a
         // stream allocation. Linux leaves that gap unallocated; inode PA is
         // eligible only when the request reaches the current file tail.
-        let allow_prealloc = u64::from(first_lb) <= cur_blocks;
+        // Linux data PAs belong to regular-file allocation contexts. Directory
+        // block writes use ordinary metadata allocation and must never seed a
+        // data PA that a later file could consume.
+        let allow_prealloc = inode.is_reg() && u64::from(first_lb) <= cur_blocks;
         let reserved = reserve_hole_runs(
             self, first_lb, last_lb, &initial_extents, ino, allow_prealloc)?;
         let mut reserved_at = vec![0usize; reserved.len()];
@@ -403,30 +433,35 @@ impl Mount {
                 let physical = if mapped { None } else {
                     take_reserved(&reserved, &mut reserved_at, lb)
                 };
-                let pa_phys = physical.and_then(|(block, from_pa)| from_pa.then_some(block));
-                if let Some(block) = pa_phys {
-                    if let Err(e) = self.claim_inode_prealloc_block(block) {
+                let pa_phys = physical.and_then(|(block, from_inode_pa, from_group_pa)|
+                    (from_inode_pa || from_group_pa).then_some((block, from_inode_pa, from_group_pa)));
+                if let Some((block, _, _)) = pa_phys {
+                    if let Err(e) = self.claim_prealloc_block(block) {
                         if let Err(rb) = self.rollback_allocated_logical_blocks(ino, cur_size, &allocated) { return Err(rb); }
                         return Err(e);
                     }
                 }
                 if let Err(e) = self.alloc_written_block_defer_with_physical(
-                    ino, &mut ib, ioff, lb, vis, physical.map(|(block, _)| block)) {
-                    if let Some(_block) = pa_phys {
+                    ino, &mut ib, ioff, lb, vis, physical.map(|(block, _, _)| block)) {
+                    if let Some((block, from_inode_pa, from_group_pa)) = pa_phys {
                         // The extent inserter owns cleanup of the claimed
                         // physical block on every post-selection error.
-                        let _ = self.consume_inode_prealloc(ino, lb);
+                        if from_inode_pa { let _ = self.consume_inode_prealloc(ino, lb); }
+                        if from_group_pa { let _ = self.consume_group_prealloc(self.group_of_block(block), 1); }
                     }
                     if let Err(rb) = self.rollback_allocated_logical_blocks(ino, cur_size, &allocated) { return Err(rb); }
                     for (idx, run) in reserved.iter().enumerate() {
                         for &block in run.blocks.iter().skip(reserved_at[idx]) {
-                            if !run.from_inode_pa { let _ = self.free_block(block); }
+                            if !run.from_inode_pa && !run.from_group_pa { let _ = self.free_block(block); }
                         }
                     }
                     return Err(e);
                 }
                 let inode3 = self.read_inode(ino)?;
-                if pa_phys.is_some() { let _ = self.consume_inode_prealloc(ino, lb); }
+                if let Some((block, from_inode_pa, from_group_pa)) = pa_phys {
+                    if from_inode_pa { let _ = self.consume_inode_prealloc(ino, lb); }
+                    if from_group_pa { let _ = self.consume_group_prealloc(self.group_of_block(block), 1); }
+                }
                 allocated.push(lb);
                 self.resolve_pblock(&inode3, lb)?
             };
