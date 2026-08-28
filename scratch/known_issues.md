@@ -301,3 +301,4 @@
 <!-- B2858-ext4-pa-owner: fresh locality-group tails retain the CPU sampled before allocation can block, matching Linux's allocation-context locality-group ownership; 350 ext4 tests and both architecture checks pass. -->
 <!-- B2859-ext4-best-fit: contiguous group allocation now retains Linux's exact-size/best-found selection instead of accepting the first sufficient run; 351 ext4 tests and both architecture checks pass. -->
 <!-- B2860-ext4-targeted-pa-discard: failed mballoc scans now discard complete locality PAs only until the request is reclaimable, then retry with a bounded progress-based loop; inode PAs are released only when no locality PA made progress. 351 ext4 tests and both architecture checks pass. -->
+<!-- B2861-ext4-auto-da-alloc: auto_da_alloc/noauto_da_alloc now has one live mount-policy owner and replacing renames flush the source inode's dirty data before the namespace transaction; 352 ext4 tests and both architecture checks pass. -->

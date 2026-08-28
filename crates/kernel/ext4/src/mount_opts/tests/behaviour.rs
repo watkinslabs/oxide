@@ -146,3 +146,12 @@ fn user_xattr_is_a_live_linux_mount_policy() {
     assert!(o.behaviour.user_xattr);
     assert!(o.other.is_empty());
 }
+
+#[test]
+fn auto_da_alloc_is_live_and_can_be_disabled() {
+    assert!(b("").unwrap().auto_da_alloc);
+    assert!(b("auto_da_alloc").unwrap().auto_da_alloc);
+    assert!(!b("noauto_da_alloc").unwrap().auto_da_alloc);
+    assert!(!b("auto_da_alloc=0").unwrap().auto_da_alloc);
+    assert!(b("auto_da_alloc=1").unwrap().auto_da_alloc);
+}

@@ -16,7 +16,8 @@ pub use parse::{OPT_BARRIER, OPT_BLOCK_VALIDITY, OPT_COMMIT, OPT_DATA, OPT_DAX, 
                 OPT_ACL,
                 OPT_USER_XATTR,
                 OPT_DISCARD, OPT_ERRORS, OPT_INIT_ITABLE, OPT_JOURNAL_IOPRIO,
-                OPT_JOURNAL_CHECKSUM, OPT_NOJOURNAL_CHECKSUM, OPT_MAX_DIR_SIZE_KB,
+                OPT_AUTO_DA_ALLOC, OPT_NOAUTO_DA_ALLOC, OPT_JOURNAL_CHECKSUM,
+                OPT_NOJOURNAL_CHECKSUM, OPT_MAX_DIR_SIZE_KB,
                 OPT_MB_OPTIMIZE_SCAN, OPT_NOBARRIER,
                 OPT_NOBLOCK_VALIDITY, OPT_NODELALLOC, OPT_NODISCARD, OPT_NOINIT_ITABLE,
                 OPT_NOLOAD, OPT_NORECOVERY, OPT_NOWARN_ON_ERROR, OPT_RESGID, OPT_RESUID,
@@ -198,6 +199,8 @@ pub struct Ext4Behaviour {
     /// explicit policy value so the accepted option has the same owner as
     /// the xattr namespace it exposes.
     pub user_xattr: bool,
+    /// `auto_da_alloc` — flush delayed data before replacing an existing name.
+    pub auto_da_alloc: bool,
 }
 
 impl Default for Ext4Behaviour {
@@ -223,6 +226,7 @@ impl Default for Ext4Behaviour {
             journal_checksum: None,
             posix_acl: true,
             user_xattr: true,
+            auto_da_alloc: true,
         }
     }
 }
