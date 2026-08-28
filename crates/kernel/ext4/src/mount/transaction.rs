@@ -173,7 +173,8 @@ impl Mount {
             // all bitmap snapshots so the next group scan revalidates against
             // the restored transaction view instead of reusing stale buddy
             // state.
-            s.block_bitmap_cache.clear();
+        s.block_bitmap_cache.clear();
+        s.group_free_order.clear();
         }
     }
 

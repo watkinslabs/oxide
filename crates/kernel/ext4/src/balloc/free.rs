@@ -89,7 +89,7 @@ impl Mount {
             m.persist_gdt_slot_meta(group)?;
             m.persist_sb_free_blocks_meta()?;
             m.flush_pending_tx()?;
-            m.state.lock().block_bitmap_cache.insert(bbm_byte_off, bitmap);
+            m.publish_group_bitmap(group, bbm_byte_off, bitmap);
             Ok(())
         })
     }
