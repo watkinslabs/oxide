@@ -143,14 +143,16 @@ impl Mount {
                        #[cfg(not(target_os = "oxide-kernel"))]
                        test_cred: sync::Spinlock::new(None) };
         if m.sb.journal_inum != 0 {
-            if let Ok(journal) = m.read_inode(m.sb.journal_inum) {
-                if let Ok(runs) = m.collect_phys_extents(&journal.i_block) {
-                    for run in runs {
-                        m.system_zones.push((run.phys, run.phys.saturating_add(u64::from(run.len))));
-                    }
-                    m.system_zones.sort_unstable_by_key(|zone| zone.0);
-                }
+            // The advertised journal is a required metadata owner. Ignoring a
+            // failed read/map here would omit its blocks from system_zones and
+            // allow the allocator to hand journal storage to ordinary data.
+            // Linux rejects the mount when the journal inode cannot be loaded.
+            let journal = m.read_inode(m.sb.journal_inum)?;
+            let runs = m.collect_phys_extents(&journal.i_block)?;
+            for run in runs {
+                m.system_zones.push((run.phys, run.phys.saturating_add(u64::from(run.len))));
             }
+            m.system_zones.sort_unstable_by_key(|zone| zone.0);
         }
         // `noload`/`norecovery` decides this, and it decides it BEFORE the
         // replay rather than after. Every mount this code opens is writable, so
