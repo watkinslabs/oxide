@@ -168,6 +168,10 @@ impl RootfsState {
 
     /// Open `dev` as a fresh ext4 mount + state.
     /// # C: O(N_groups + 1024)
+    // Keep mount construction in its own frame: the rootfs boot phase has a
+    // deliberately bounded kernel stack, and the MountState working set must
+    // not be retained underneath the caller's boot locals.
+    #[inline(never)]
     pub fn open(dev: Arc<dyn BlockDevice>) -> KResult<Arc<Self>> {
         let mount = Mount::open_with_orphan_cleanup(dev, false).map_err(|_| BlockError::Eio)?;
         Ok(Self::new(Arc::new(mount)))

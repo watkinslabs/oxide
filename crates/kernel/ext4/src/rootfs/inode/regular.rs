@@ -36,7 +36,7 @@ pub(crate) fn ext4_sync_file(inode: &Inode, datasync: bool) -> KResult<()> {
             inode.ctime().unwrap_or(vfs::Timespec64::ZERO),
         ).map_err(|e| fs_err(&d.st, e))?;
     }
-    let _ = st.mount.commit_batch_for(Some((_ino, datasync))).map_err(|e| fs_err(&st, e))?;
+    let _ = st.mount.commit_batch_for(Some((_ino, datasync)), true).map_err(|e| fs_err(&st, e))?;
     if let Some(d) = inode.private::<Ext4FileData>() {
         d.timestamp_staged.store(false, core::sync::atomic::Ordering::Release);
     }
@@ -410,7 +410,7 @@ impl AddressSpaceOps for Ext4FileMapping {
     /// `ext4_sync_file` performs for `f_op->fsync`, so the two routes to
     /// durability cannot diverge. # C: O(journal tx)
     fn sync_backing(&self) -> Result<(), ()> {
-        self.data.st.mount.commit_batch_for(Some((self.data.ino, true)))
+        self.data.st.mount.commit_batch_for(Some((self.data.ino, true)), true)
             .map(|_| ()).map_err(|_| ())
     }
 

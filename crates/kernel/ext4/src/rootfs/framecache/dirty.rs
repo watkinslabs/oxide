@@ -118,6 +118,17 @@ pub fn flush_dirty(only: Option<&alloc::sync::Arc<crate::Mount>>) -> Result<(), 
     if failed { Err(()) } else { Ok(()) }
 }
 
+/// Flush dirty file data and start each affected mount's journal commit
+/// without waiting for its home-block checkpoint. This is the non-waiting
+/// half of Linux's two-pass whole-filesystem sync; the waiting pass below
+/// drains the retained checkpoints and supplies the durability completion.
+/// # C: O(N_stores · N_dirty) + O(N_mounts)
+pub fn flush_dirty_nowait(only: Option<&alloc::sync::Arc<crate::Mount>>) -> Result<(), ()> {
+    let (mut failed, mounts) = writeback_dirty_inner(only.map(|m| &**m));
+    for m in &mounts { if m.commit_batch_background().is_err() { failed = true; } }
+    if failed { Err(()) } else { Ok(()) }
+}
+
 /// The data half of [`flush_dirty`] with no commit behind it: get every dirty
 /// page of these mounts onto the device and stop there.
 ///

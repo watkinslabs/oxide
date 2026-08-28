@@ -122,7 +122,11 @@ pub fn tick(now_ns: u64) {
         // request latched, or a persistently failing device turns every visit
         // into another commit of the same batch.
         m.batch_full.store(false, core::sync::atomic::Ordering::Release);
-        let _ = m.commit_batch();
+        let _ = m.commit_batch_background();
+        // The commit owner only made the log record durable. Home-block
+        // writeback belongs to this periodic owner, on its own stack and
+        // outside the mutating operation that happened to fill the batch.
+        let _ = m.checkpoint_pending_background();
     }
     run_itable_init(now_ns);
 }

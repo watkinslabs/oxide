@@ -20,10 +20,18 @@ impl Mount {
     /// mutators from the shadow-drain through the final target-device write.
     /// # C: O(N shadow blocks) + one journal commit
     pub fn commit_batch(&self) -> Result<(), MountError> {
-        self.commit_batch_for(None).map(|_| ())
+        self.commit_batch_for(None, true).map(|_| ())
     }
 
-    pub(crate) fn commit_batch_for(&self, inode: Option<(u32, bool)>) -> Result<bool, MountError> {
+    /// Commit the running transaction from the periodic journal owner. The
+    /// commit record is made durable, but its home blocks remain for the
+    /// checkpoint pass instead of extending this timer's critical section.
+    /// # C: O(N shadow blocks) journal I/O; home writeback is asynchronous
+    pub(crate) fn commit_batch_background(&self) -> Result<(), MountError> {
+        self.commit_batch_for(None, false).map(|_| ())
+    }
+
+    pub(crate) fn commit_batch_for(&self, inode: Option<(u32, bool)>, wait_checkpoint: bool) -> Result<bool, MountError> {
         if self.committing_batch.swap(true, core::sync::atomic::Ordering::AcqRel) {
             // A writeback operation can reach this method through a nested
             // journaled write. The outer commit owns the ordering/commit
@@ -64,15 +72,15 @@ impl Mount {
             let s = self.state.lock();
             generation > s.barrier_generation
         };
-        if !needed || !barrier_needed { return Ok(false); }
-        // `commit_metadata` has already flushed the checkpoint targets before
-        // writing the clean journal superblock.  A crash that leaves that
-        // final ordinary superblock write unwritten merely leaves `s_start`
-        // non-zero, so recovery safely replays an already-checkpointed
-        // transaction.  Flushing again here therefore buys no durability and
-        // charged every batched commit a redundant device barrier.  The
-        // explicit sync/fsync owners still issue their own barrier after this
-        // method when their API contract requires one.
+        if wait_checkpoint { self.checkpoint_pending_sync()?; }
+        if !needed || !barrier_needed {
+            return Ok(false);
+        }
+        // `checkpoint_pending_sync` has flushed the checkpoint targets before
+        // writing the clean journal superblock. A crash that leaves that final
+        // ordinary superblock write unwritten merely leaves `s_start` non-zero,
+        // so recovery safely replays an already-checkpointed transaction.
+        // Flushing again here therefore buys no durability.
         self.mark_generation_barriered(generation);
         Ok(true)
     }
@@ -109,7 +117,7 @@ impl Mount {
                 .collect()
         };
         if !staged.is_empty() {
-            let seq = self.commit_metadata(staged.clone())?;
+            let seq = self.commit_metadata_deferred(staged.clone())?;
             self.cache_committed(&staged);
             let mut s = self.state.lock();
             // Retire the committed blocks from the running transaction. They

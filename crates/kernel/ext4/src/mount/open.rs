@@ -44,6 +44,9 @@ impl Mount {
     /// already replayed the log by the time it read the option asking it not
     /// to, which is why the option is passed in rather than looked up.
     /// # C: O(N_groups * desc_size + 1024)
+    // Linux keeps the mount construction phase out of its caller's stack
+    // frame; this path builds the complete per-mount state and journal view.
+    #[inline(never)]
     pub(crate) fn open_with_behaviour(
         dev: alloc::sync::Arc<dyn block::BlockDevice>,
         cleanup_orphans: bool,
@@ -100,6 +103,7 @@ impl Mount {
             sb_free_blocks: sb.free_blocks_count,
             sb_free_inodes: sb.free_inodes_count,
             shadow: None,
+            pending_checkpoint: None,
             metadata_cache: alloc::collections::BTreeMap::new(),
             metadata_order: alloc::collections::VecDeque::new(),
             batch: false,
