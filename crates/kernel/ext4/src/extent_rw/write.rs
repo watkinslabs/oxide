@@ -15,6 +15,8 @@ struct ReservedRun {
     from_group_pa: bool,
     group_cpu: Option<usize>,
     /// Fresh data reservation beyond this operation's requested range.
+    prefix_start: Option<u32>,
+    prefix_blocks: Vec<u64>,
     tail_start: Option<u32>,
     tail_blocks: Vec<u64>,
 }
@@ -52,6 +54,7 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
                     runs.push(ReservedRun { logical_start: start as u32, blocks,
                         from_inode_pa: true, from_group_pa: false,
                         group_cpu: None,
+                        prefix_start: None, prefix_blocks: Vec::new(),
                         tail_start: None, tail_blocks: Vec::new() });
                     cursor = start + u64::from(used);
                     continue;
@@ -74,17 +77,41 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
                 runs.push(ReservedRun { logical_start: start as u32, blocks,
                     from_inode_pa: false, from_group_pa: true,
                     group_cpu: Some(group_cpu),
+                    prefix_start: None, prefix_blocks: Vec::new(),
                     tail_start: None, tail_blocks: Vec::new() });
                 cursor = start + u64::from(count);
                 continue;
             }
         }
-        let reserve_count = if preallocate {
+        let (allocation_start, reserve_count, mut normalized) = if preallocate {
+            let (normalized_start, normalized_end) = super::prealloc::normalized_range(
+                m.sb.block_size as u64, current_size, start as u32, count);
+            let normalized_clear = count > GROUP_PREALLOC_MAX_REQUEST
+                && current_size == 0
+                && extents.is_empty()
+                && normalized_start <= start
+                && normalized_end >= start + u64::from(count)
+                && !extents.iter().any(|r| {
+                    let extent_start = u64::from(r.logical);
+                    let extent_end = extent_start + u64::from(r.len);
+                    extent_start < normalized_end && normalized_start < extent_end
+                });
+            if normalized_clear {
+                (normalized_start, normalized_end.saturating_sub(normalized_start)
+                    .min(u64::from(u32::MAX)) as u32, true)
+            } else {
+                (start, count, false)
+            }
+        } else { (start, count, false) };
+        let mut reserve_count = if normalized {
+            reserve_count
+        } else if preallocate {
             count.saturating_add(if group_prealloc {
                 super::prealloc::group_prealloc_blocks(
                     m.sb.block_size as u64, m.behaviour().stripe)
             } else { super::prealloc::tail_blocks(m.sb.block_size as u64, current_size, start as u32, count) })
         } else { count };
+        let normalized_prefix = start.saturating_sub(allocation_start) as usize;
         let flags = m.data_reserve_flags(ino);
         let stream_ino = if preallocate && !group_prealloc { Some(ino) } else { None };
         let mut allocated = m.alloc_blocks_for_inode(stream_ino, hint, reserve_count, flags);
@@ -103,25 +130,35 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
             }
         }
         if matches!(&allocated, Err(MountError::NoSpace)) && reserve_count != count {
+            normalized = false;
+            reserve_count = count;
             allocated = m.alloc_blocks_for_inode(stream_ino, hint, count, flags);
         }
         match allocated {
             Ok(blocks) => {
                 let requested = count as usize;
-                let tail = blocks[requested..].to_vec();
+                let prefix_len = if normalized { normalized_prefix } else { 0 };
+                let request_end = prefix_len + requested;
+                let prefix = if normalized { blocks[..prefix_len].to_vec() } else { Vec::new() };
+                let tail = if normalized { blocks[request_end..].to_vec() } else {
+                    blocks[requested..].to_vec()
+                };
                 // Linux keeps an inode PA tail free on disk and masks it only
                 // in the in-memory buddy bitmap.
-                for (n, &block) in tail.iter().enumerate() {
+                for (n, &block) in prefix.iter().chain(tail.iter()).enumerate() {
                     if let Err(e) = m.free_block(block) {
-                        for &rollback in &blocks[..requested] { let _ = m.free_block(rollback); }
-                        for &rollback in tail.iter().skip(n + 1) { let _ = m.free_block(rollback); }
+                        for &rollback in &blocks[normalized_prefix..request_end] { let _ = m.free_block(rollback); }
+                        for &rollback in prefix.iter().chain(tail.iter()).skip(n + 1) { let _ = m.free_block(rollback); }
                         return Err(e);
                     }
                 }
                 runs.push(ReservedRun { logical_start: start as u32,
-                    blocks: blocks[..requested].to_vec(), from_inode_pa: false,
+                    blocks: blocks[normalized_prefix..request_end].to_vec(), from_inode_pa: false,
                     from_group_pa: false,
                     group_cpu: None,
+                    prefix_start: if prefix.is_empty() || group_prealloc { None } else {
+                        Some(allocation_start as u32)
+                    }, prefix_blocks: if group_prealloc { Vec::new() } else { prefix },
                     tail_start: if tail.is_empty() || group_prealloc { None } else {
                         Some(start.saturating_add(u64::from(count)) as u32)
                     }, tail_blocks: if group_prealloc {
@@ -495,6 +532,9 @@ impl Mount {
             return Err(e);
         }
         for run in &reserved {
+            if let Some(start) = run.prefix_start {
+                self.add_inode_prealloc(ino, start, run.prefix_blocks.clone());
+            }
             if let Some(start) = run.tail_start {
                 self.add_inode_prealloc(ino, start, run.tail_blocks.clone());
             }
