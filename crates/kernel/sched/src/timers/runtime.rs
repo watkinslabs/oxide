@@ -404,4 +404,11 @@ pub fn next_interrupt_deadline() -> u64 {
 /// common case for a park behind an already-earlier timer.
 /// # C: O(SLOTS * N_threads)
 /// # Ctx: process
-pub fn reprogram_local() { program(next_interrupt_deadline()); }
+pub fn reprogram_local() {
+    // Idle entry is the recovery boundary for a hardware/software split: the
+    // LAPIC may have fallen back to periodic mode or lost its compare while
+    // ARMED_NS still names a future expiry. Do not let the cache turn this
+    // Linux-style clockevent reprogram into a no-op.
+    ARMED_NS[crate::cpustat::this_cpu()].store(0, Ordering::Release);
+    program(next_interrupt_deadline());
+}

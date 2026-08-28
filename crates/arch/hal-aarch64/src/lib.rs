@@ -380,9 +380,13 @@ impl TimerOps for ArmTimerOps {
         if khz == 0 { return false; }
         #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
         {
-        let cycles = ((deadline_ns.0 as u128).saturating_mul(khz as u128)
+        // CNTV_CVAL is an absolute counter compare, while the API receives
+        // CLOCK_MONOTONIC absolute time. Convert the remaining interval and
+        // add it to the current counter, as Linux's clockevent layer does.
+        let delta_ns = deadline_ns.0.saturating_sub(Self::monotonic_ns().0);
+        let cycles = ((delta_ns as u128).saturating_mul(khz as u128)
             / 1_000_000).min(u64::MAX as u128) as u64;
-        let target = cycles.max(read_cntvct().saturating_add(1));
+        let target = read_cntvct().saturating_add(cycles.max(1));
         crate::timer::set_period(0);
         // SAFETY: this PE owns CNTV_CVAL/CTL and its virtual timer PPI is enabled.
         unsafe {

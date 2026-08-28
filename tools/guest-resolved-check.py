@@ -23,6 +23,7 @@ if ARCH not in ("x86", "arm"):
     raise SystemExit("usage: guest-resolved-check.py <x86|arm> [boot_timeout_s]")
 BOOT_TIMEOUT = int(sys.argv[2]) if len(sys.argv) > 2 else 600
 COMMAND_TIMEOUT = 35
+RESOLVER_READY_TIMEOUT = 60
 SOCK = f"/tmp/oxide-resolved-uart-{ARCH}-{os.getpid()}.sock"
 LOG = f"/tmp/oxide-resolved-uart-{ARCH}-{os.getpid()}.log"
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -110,15 +111,26 @@ try:
             break
     else:
         raise RuntimeError("serial debug shell did not answer")
+    # The debug shell is intentionally available before the normal boot target.
+    # Give NetworkManager and resolved time to finish link discovery before
+    # asking for the scope; this is a readiness check, not a boot-speed check.
+    run(conn, buf, "sleep 20", settle=30)
 
-    unit = run(conn, buf, "systemctl is-active systemd-resolved; pidof systemd-resolved")
+    ready_deadline = time.time() + RESOLVER_READY_TIMEOUT
+    scope = ""
+    while time.time() < ready_deadline:
+        unit = run(conn, buf, "systemctl is-active systemd-resolved; pidof systemd-resolved")
+        if re.search(r"^active\s*$", unit, re.MULTILINE) and re.search(r"[0-9]+", unit):
+            scope = run(conn, buf, "resolvectl status")
+            if re.search(r"Current Scopes:\s+DNS LLMNR/IPv4", scope) and re.search(r"OXIDE-RC-0", scope):
+                break
+        time.sleep(1)
     print("guest-resolved-check: resolved unit probe:\n" + unit[-1200:], flush=True)
-    scope = run(conn, buf, "resolvectl status")
     if re.search(r"Current Scopes:\s+DNS LLMNR/IPv4", scope) and re.search(r"OXIDE-RC-0", scope):
-        print("guest-resolved-check: startup scope OK", flush=True)
+        print("guest-resolved-check: IPv4 DNS scope ready", flush=True)
     else:
         ok = False
-        print("guest-resolved-check: FAIL — no IPv4 DNS scope at boot", flush=True)
+        print("guest-resolved-check: FAIL — no IPv4 DNS scope after startup", flush=True)
         print(scope[-3000:], flush=True)
 
     for n in range(1, 6):

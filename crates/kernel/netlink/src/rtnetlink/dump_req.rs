@@ -167,6 +167,7 @@ pub fn validate_addr_dump(strict: bool, full_msg: &[u8]) -> AddrDump {
 mod tests {
     extern crate alloc;
     use super::*;
+    use super::super::uapi::ifla;
 
     fn msg(body: &[u8]) -> alloc::vec::Vec<u8> {
         let mut m = alloc::vec![0u8; Nlmsghdr::SIZE];

@@ -328,6 +328,11 @@ pub fn halt_forever() -> ! {
                 continue; // pulled work — loop back so schedule() runs it
             }
         }
+        // Linux's tick_nohz_idle_stop_tick re-evaluates the local clockevent
+        // immediately before parking an idle CPU. A failed arm or a deadline
+        // changed by the last context switch must not leave HLT with stale
+        // scheduler state and no hardware wakeup.
+        timers::reprogram_local();
         // An idle CPU is not inside a hard IRQ and is not serving a bottom
         // half, so a non-zero HARDIRQ/SOFTIRQ field HERE is a leak that has
         // already happened — and a fatal one, because `should_resched()` gates
