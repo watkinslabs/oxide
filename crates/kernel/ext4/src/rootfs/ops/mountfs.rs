@@ -422,6 +422,25 @@ mod tests {
             "one whole-filesystem sync, one device barrier");
     }
 
+    /// A completed batched commit already flushed its checkpoint targets
+    /// before publishing the clean journal superblock.  The batch owner must
+    /// not add another device barrier after that ordered publication.
+    #[test]
+    fn batched_commit_does_not_repeat_the_checkpoint_barrier() {
+        let dev = fresh_dev();
+        let m = Ext4Mount::open(dev.clone() as Arc<dyn BlockDevice>).unwrap();
+        m.st.mount.begin_batch();
+        let root = m.st.mount.lookup_path(b"/").expect("root");
+        dev.flushes.store(0, Ordering::SeqCst);
+
+        m.st.mount.create_file(root, b"barrier-once", 0o644, 0, 0)
+            .expect("create");
+        m.st.mount.commit_batch().expect("commit");
+
+        assert_eq!(dev.flushes.load(Ordering::SeqCst), 1,
+            "checkpoint target durability is fenced once");
+    }
+
     /// The barrier decision itself, stated once: the waiting pass and only it,
     /// and only on a mount that did not ask for the flush to be dropped.
     #[test]

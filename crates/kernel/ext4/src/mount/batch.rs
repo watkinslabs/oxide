@@ -65,7 +65,14 @@ impl Mount {
             generation > s.barrier_generation
         };
         if !needed || !barrier_needed { return Ok(false); }
-        self.dev.flush().map_err(|_| MountError::BlockIo)?;
+        // `commit_metadata` has already flushed the checkpoint targets before
+        // writing the clean journal superblock.  A crash that leaves that
+        // final ordinary superblock write unwritten merely leaves `s_start`
+        // non-zero, so recovery safely replays an already-checkpointed
+        // transaction.  Flushing again here therefore buys no durability and
+        // charged every batched commit a redundant device barrier.  The
+        // explicit sync/fsync owners still issue their own barrier after this
+        // method when their API contract requires one.
         self.mark_generation_barriered(generation);
         Ok(true)
     }
