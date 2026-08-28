@@ -175,6 +175,7 @@ impl Mount {
             // state.
         s.block_bitmap_cache.clear();
         s.group_free_order.clear();
+        s.group_avg_fragment_order.clear();
         }
     }
 

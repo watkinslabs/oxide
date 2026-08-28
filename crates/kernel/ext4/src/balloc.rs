@@ -64,7 +64,8 @@ impl Mount {
                 return Err(MountError::NoSpace);
             }
             let freest = if optimize { m.freest_group(groups) } else { None };
-            let start = scan::scan_start(hint, groups, optimize, freest);
+            let preferred = if optimize { m.group_for_request(groups, count) } else { None };
+            let start = preferred.unwrap_or_else(|| scan::scan_start(hint, groups, optimize, freest));
             for off in 0..groups {
                 let group = (start + off) % groups;
                 if let Some(run) = m.try_alloc_run_in_group(group, count)? {
@@ -141,7 +142,8 @@ impl Mount {
             // group, so the answer never changes — only how many full groups
             // are read before it is reached.
             let freest = if optimize { m.freest_group(groups) } else { None };
-            let start = scan::scan_start(hint, groups, optimize, freest);
+            let preferred = if optimize { m.group_for_request(groups, 1) } else { None };
+            let start = preferred.unwrap_or_else(|| scan::scan_start(hint, groups, optimize, freest));
             for off in 0..groups {
                 let g = (start + off) % groups;
                 if let Some(blk) = m.try_alloc_in_group(g)? {
@@ -177,6 +179,17 @@ impl Mount {
             if best.is_none_or(|(_, b)| score > b) { best = Some((g, score)); }
         }
         best
+    }
+
+    /// Linux's CR_GOAL_LEN_FAST starts with groups whose average free
+    /// fragment can satisfy the request, then falls back to the normal scan.
+    /// Unknown groups are deliberately omitted until their bitmap is loaded;
+    /// the descriptor count remains the fallback authority.
+    fn group_for_request(&self, groups: u32, count: u32) -> Option<u32> {
+        if count == 0 { return None; }
+        let wanted = count.ilog2().saturating_sub(1) as u8;
+        let s = self.state.lock();
+        (0..groups).find(|g| s.group_avg_fragment_order.get(g).is_some_and(|o| *o >= wanted))
     }
 
     /// Try to find a free bit in `group`. Returns Ok(Some(phys))
@@ -358,16 +371,19 @@ impl Mount {
 }
 
 impl Mount {
-    /// Publish the validated bitmap and its largest free buddy order only
+    /// Publish the validated bitmap and its free-space summaries only
     /// after the metadata transaction is durable. The summary is advisory;
     /// the bitmap remains the allocation authority.
     /// # C: O(block_size)
     fn publish_group_bitmap(&self, group: u32, byte_off: u64, bitmap: Vec<u8>) {
         let order = scan::largest_free_order(&bitmap, self.blocks_in_group(group));
+        let avg = scan::average_fragment_order(&bitmap, self.blocks_in_group(group));
         let mut s = self.state.lock();
         s.block_bitmap_cache.insert(byte_off, bitmap);
         if let Some(order) = order { s.group_free_order.insert(group, order); }
         else { s.group_free_order.remove(&group); }
+        if let Some(avg) = avg { s.group_avg_fragment_order.insert(group, avg); }
+        else { s.group_avg_fragment_order.remove(&group); }
     }
 }
 
