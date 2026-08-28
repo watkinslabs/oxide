@@ -44,6 +44,9 @@ impl Mount {
         let hash_version = root[0x1C];
         let hash = dirhash_major(name, hash_version, &self.sb.hash_seed);
         let indirect = root[0x1E];
+        if !self.dx_block_valid(&root, 0x20) {
+            return Ok(HtreeLookup::Fallback);
+        }
         // This reader currently has the same one-interior-node shape as the
         // writer. A deeper on-disk tree must use the ordinary scan fallback;
         // treating its first interior block as a leaf would return a false
@@ -56,11 +59,11 @@ impl Mount {
             let (node_lblk, collision_nodes) =
                 self.dx_find_leaf_with_collision(&root, 0x20, hash)?;
             let node = self.read_file_block_meta_shared(dir_node, node_lblk)?;
-            if node.len() < 0x10 { return Ok(HtreeLookup::Fallback); }
+            if !self.dx_block_valid(&node, 0x08) { return Ok(HtreeLookup::Fallback); }
             let (leaf, mut collisions) = self.dx_find_leaf_with_collision(&node, 0x08, hash)?;
             for next_node_lblk in collision_nodes {
                 let next_node = self.read_file_block_meta_shared(dir_node, next_node_lblk)?;
-                if next_node.len() < 0x10 { return Ok(HtreeLookup::Fallback); }
+                if !self.dx_block_valid(&next_node, 0x08) { return Ok(HtreeLookup::Fallback); }
                 let (next_leaf, next_collisions) =
                     self.dx_find_leaf_with_collision(&next_node, 0x08, hash)?;
                 collisions.push(next_leaf);
@@ -421,6 +424,24 @@ impl Mount {
         -> Result<u32, MountError>
     {
         Ok(self.dx_find_leaf_with_collision(node, entries_off, hash)?.0)
+    }
+
+    /// Linux `dx_probe` rejects an index whose count/limit range is malformed
+    /// before binary-searching it. Keep the caller's corruption-tolerant
+    /// fallback contract: a bad dx block is not a false `ENOENT`, and it must
+    /// never become an out-of-bounds slice in this parser.
+    fn dx_block_valid(&self, node: &[u8], entries_off: usize) -> bool {
+        let tail = if self.sb.has_metadata_csum() { 8 } else { 0 };
+        if entries_off.checked_add(8).is_none()
+            || entries_off + 8 > node.len()
+            || node.len() < entries_off + tail { return false; }
+        let limit = crate::csum::dx_entry_limit(&self.sb, node.len(), entries_off) as usize;
+        let stored_limit = u16::from_le_bytes([node[entries_off], node[entries_off + 1]]) as usize;
+        let count = u16::from_le_bytes([node[entries_off + 2], node[entries_off + 3]]) as usize;
+        stored_limit == limit
+            && count != 0
+            && count <= limit
+            && entries_off.saturating_add(count.saturating_mul(8)) <= node.len()
     }
 
     fn dx_find_leaf_with_collision(&self, node: &[u8], entries_off: usize, hash: u32)
