@@ -107,6 +107,13 @@ pub(crate) struct MetadataBuffer {
     pub(crate) write_wait: sched::live::WaitList,
 }
 
+/// The in-memory equivalent of Linux's `handle_t`. The handle owns operation
+/// frames; metadata buffers remain the authoritative per-block ownership
+/// objects shared by the running transaction.
+pub(crate) struct JournalHandle {
+    pub(crate) frames: Vec<alloc::collections::BTreeMap<u64, Option<Vec<u8>>>>,
+}
+
 impl MetadataBuffer {
     pub(crate) fn new() -> Self {
         Self { done: AtomicBool::new(false), result: Spinlock::new(None), wait: sched::live::WaitList::new(),
@@ -216,13 +223,11 @@ pub struct MountState {
     /// pay a full journal commit and checkpoint per operation — the systematic
     /// sysinit slowness. Opt-in per mount (rootfs enables it).
     pub(crate) batch: bool,
-    /// Per-handle undo stacks (batch mode only). Each op that joins the running
-    /// transaction pushes a frame recording the pre-op shadow value of every
-    /// LBA it stages; a handle failure restores only its own frames.
-    /// Keyed by LBA (BTreeMap) so recording is O(log n) per staged block and
-    /// auto-dedups to the EARLIEST pre-op value — a Vec + linear dedup scan was
-    /// O(n²) per op and stalled the state lock for seconds on a large writeback.
-    pub(crate) undo: alloc::collections::BTreeMap<u64, Vec<alloc::collections::BTreeMap<u64, Option<Vec<u8>>>>>,
+    /// Active journal handles (batch mode only), keyed by execution context.
+    /// Each handle owns operation frames recording the pre-op shadow value of
+    /// every LBA it stages; a failed handle restores only its own frames.
+    /// Keyed by LBA (BTreeMap), recording remains O(log n) per staged block.
+    pub(crate) handles: alloc::collections::BTreeMap<u64, JournalHandle>,
     pub(crate) next_generation: u64,
     pub(crate) running_generation: u64,
     pub(crate) committed_generation: u64,
