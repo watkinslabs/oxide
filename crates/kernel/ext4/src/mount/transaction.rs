@@ -2,7 +2,6 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use crate::jbd2::StagedBlock;
-use super::gdt_byte_offset_for;
 use super::super::{JournalHandle, Mount, MountError};
 use super::ctx_id;
 use super::super::io::read_byte_range;
@@ -211,7 +210,7 @@ impl Mount {
             if !batch { return f(self); }
             // Batch mode: this op JOINS the running transaction. Push an undo
             // frame so a failure rolls back only THIS op's staged blocks (and
-            // its gdt_buf/counter mutations, refreshed from the restored shadow)
+            // its metadata-buffer mutations, refreshed from the restored shadow)
             // without discarding prior batched ops. Success merges the frame up
             // (or drops it at top level, leaving the writes in the running txn).
             let id = crate::mount::core::ctx_id();
@@ -309,16 +308,9 @@ impl Mount {
         Ok(v)
     }
 
-    /// Reload the in-memory `gdt_buf` + free counters from the (shadow-aware)
-    /// current metadata, used after a batch op rollback: those mirrors are
-    /// mutated in place by alloc/free and persisted to the shadow, so restoring
-    /// the shadow requires re-reading them to stay in step. # C: O(gdt size) I/O
+    /// Drop allocator summaries after a failed operation restores the
+    /// shadow-aware metadata image. # C: O(1)
     pub(crate) fn refresh_cached_meta(&self) {
-        let gdt_off = gdt_byte_offset_for(&self.sb);
-        let gdt_len = self.state.lock().gdt_buf.len();
-        if let Ok(bytes) = self.read_meta_byte_range(gdt_off, gdt_len) {
-            self.state.lock().gdt_buf = bytes;
-        }
         // A failed batched operation may have restored bitmap bytes in the
         // shadow after the allocator published a cache entry. Drop all bitmap
         // snapshots so the next group scan revalidates against that view.
@@ -337,21 +329,8 @@ impl Mount {
     pub(crate) fn refresh_cached_meta_for(&self, affected: &[u64]) {
         let bs = self.sb.block_size as u64;
         if bs == 0 || affected.is_empty() { return; }
-        let gdt_off = gdt_byte_offset_for(&self.sb);
-        let gdt_len = self.state.lock().gdt_buf.len() as u64;
-        let gdt_first = gdt_off / bs;
-        let gdt_last = (gdt_off.saturating_add(gdt_len).saturating_add(bs - 1) / bs).saturating_sub(1);
-        let gdt_touched = affected.iter().any(|lba| *lba >= gdt_first && *lba <= gdt_last);
-        let mut guarded = alloc::vec::Vec::new();
-        if gdt_touched { guarded.extend(gdt_first..=gdt_last); }
-        guarded.sort_unstable();
-        guarded.dedup();
-        let _guards = self.metadata_write_guards_for_lbas(&guarded);
-        let gdt = if gdt_touched {
-            self.read_meta_byte_range(gdt_off, gdt_len as usize).ok()
-        } else { None };
+        let _ = bs;
         let mut s = self.state.lock();
-        if let Some(gdt) = gdt { s.gdt_buf = gdt; }
         s.block_bitmap_cache.clear();
         s.group_free_order.clear();
         s.group_free_order_index.clear();
