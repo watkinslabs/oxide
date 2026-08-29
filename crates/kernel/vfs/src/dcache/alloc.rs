@@ -126,6 +126,21 @@ pub(crate) fn d_lookup_reval_rcu_with_hash(
     rcu: bool,
     qhash: u32,
 ) -> Option<Arc<Dentry>> {
+    d_lookup_reval_rcu_with_hash_and_inode(parent, name, reval, rcu, qhash)
+        .map(|(d, _)| d)
+}
+
+/// Hash lookup variant that returns the inode snapshot while the existing
+/// dcache RCU section is still active. The pathname walker needs both objects;
+/// taking the inode after this function returned would add a second RCU/lock
+/// boundary to every cached hit. # C: O(bucket_len)
+pub(crate) fn d_lookup_reval_rcu_with_hash_and_inode(
+    parent: &Arc<Dentry>,
+    name: &str,
+    reval: bool,
+    rcu: bool,
+    qhash: u32,
+) -> Option<(Arc<Dentry>, Option<crate::inode::InodeRef>)> {
     let pptr = Arc::as_ptr(parent);
     #[cfg(feature = "debug-resolve-cost")]
     let _hash_cost = crate::resolve_cost::hash_walk();
@@ -151,15 +166,18 @@ pub(crate) fn d_lookup_reval_rcu_with_hash(
     // purely the not-dead test; its `set_referenced` side effect doubles as the
     // two-hand-clock access stamp the shrinker honors.
     #[cfg(feature = "debug-resolve-cost")]
-    let _pin_cost = crate::resolve_cost::ref_pin();
-    if !d.inc_count_not_dead() { return None; }
+    let _pin_cost = if rcu { None } else { Some(crate::resolve_cost::ref_pin()) };
+    if !rcu && !d.inc_count_not_dead() { return None; }
     #[cfg(feature = "debug-resolve-cost")]
     let _revalidate_cost = crate::resolve_cost::revalidate();
     if let Some(rev) = d.d_op().and_then(|o| o.d_revalidate) {
-        if !rev(&d, reval) { d.dec_count(); d_drop(&d); return None; }
+        if !rev(&d, reval) { if !rcu { d.dec_count(); } d_drop(&d); return None; }
     }
-    d.dec_count();
-    Some(d)
+    if !rcu { d.dec_count(); }
+    #[cfg(feature = "debug-resolve-cost")]
+    let _inode_cost = crate::resolve_cost::inode_snapshot();
+    let inode = if rcu { d.inode_rcu_held() } else { d.inode() };
+    Some((d, inode))
 }
 
 /// One-shot WEAK revalidation of an already-resolved final dentry (Linux

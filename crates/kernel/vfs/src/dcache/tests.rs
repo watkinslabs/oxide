@@ -83,6 +83,21 @@ sync::rcu_barrier();
 assert!(weak.upgrade().is_none(), "d_drop releases the hash ownership reference");
 }
 
+// The dentry's lockless inode snapshot must remain a valid Arc when a writer
+// replaces the inode before the RCU reader leaves its section.  This is the
+// lifetime edge that the direct Linux d_inode_rcu() shape depends on.
+#[test]
+fn rcu_inode_snapshot_survives_replacement() {
+    let first = dir(11);
+    let second = dir(12);
+    let d = Dentry::new(None, String::from("rcu-inode"), Arc::clone(&first));
+    let _rcu = sync::rcu_read_lock();
+    let snapshot = d.inode_rcu_held().expect("positive dentry has an inode");
+    d.set_inode(Some(Arc::clone(&second)));
+    assert!(Arc::ptr_eq(&snapshot, &first), "RCU reader saw a torn replacement");
+    assert!(Arc::ptr_eq(&d.inode().unwrap(), &second), "writer publication was lost");
+}
+
 // O(1): with 256 buckets and 256 random keys, no bucket should hold more
 // than a small constant chain (uniform hash ⇒ bounded chain length).
 #[test]

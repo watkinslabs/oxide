@@ -31,6 +31,8 @@ pub fn root_dentry() -> Option<Arc<vfs::Dentry>> {
 /// equivalent; dropping its `mnt_id` and re-deriving from the dentry is wrong
 /// after bind/pivot clones that share one superblock root.
 pub(super) fn resolution_root_vfs() -> Option<(vfs::VfsPath, bool)> {
+    #[cfg(feature = "debug-syscost")]
+    let _cost = vfs::resolve_cost::root_state();
     let global = root_dentry()?;
     let ns = vfs::mount::current_ns();
     let namespace_root = || -> Option<vfs::VfsPath> { vfs::mount::root_path_for_ns(ns) };
@@ -39,14 +41,17 @@ pub(super) fn resolution_root_vfs() -> Option<(vfs::VfsPath, bool)> {
         let inode = global.inode()?;
         return Some((vfs::VfsPath { mnt_id: vfs::mount::MNT_ID_NONE, dentry: global, inode, last_component: None }, false));
     };
-    let snapshot = cur.fs_context_snapshot();
-    if let Some(p) = snapshot.root_vfs() {
+    if let Some(p) = cur.fs_root_vfs() {
         if p.mnt_id == vfs::mount::MNT_ID_NONE {
             if let Some(p) = namespace_root() { return Some((p, false)); }
         } else {
             return Some((p, true));
         }
     }
+    // Pre-mount or legacy contexts may carry only a rendered root. This is
+    // outside the steady-state lookup path; retain the full snapshot fallback
+    // so early boot and an explicitly staged root keep their old semantics.
+    let snapshot = cur.fs_context_snapshot();
     let rp = snapshot.root();
     if rp == "/" {
         if let Some(p) = namespace_root() { return Some((p, false)); }

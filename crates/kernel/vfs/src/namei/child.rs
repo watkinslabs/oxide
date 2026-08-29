@@ -19,7 +19,7 @@ use super::state::Nameidata;
 /// the name is not there — which the ordinary walk reports as `ENOENT` and a
 /// create's trailing component treats as the name it is about to create.
 pub(crate) enum ChildLookup {
-    Found(Arc<Dentry>),
+    Found(Arc<Dentry>, crate::inode::InodeRef),
     Missing,
     /// rcu (lazy) walk hit a dcache miss: the blocking slow path may not run
     /// under an rcu read-side, so the walk restarts in ref mode.
@@ -44,7 +44,7 @@ impl Nameidata {
         let cached = {
             #[cfg(feature = "debug-resolve-cost")]
             let _probe_cost = crate::resolve_cost::dcache_probe();
-            crate::dcache::d_lookup_reval_rcu_with_hash(
+            crate::dcache::d_lookup_reval_rcu_with_hash_and_inode(
                 &self.cur_dentry,
                 comp,
                 self.flags.reval,
@@ -52,34 +52,30 @@ impl Nameidata {
                 hash,
             )
         };
-        match cached {
-            // Linux's `d_is_positive()` reads the dentry's cached entry type;
-            // do not take the inode lock merely to rediscover the negative
-            // bit before the walker takes the one inode snapshot it needs.
-            Some(d) if d.d_is_positive() => {
-                #[cfg(feature = "debug-resolve-cost")]
-                crate::resolve_cost::dcache_hit();
-                return Ok(ChildLookup::Found(d));
-            }
-            Some(_) => {
+        if let Some((d, inode)) = cached {
+            if !d.d_is_positive() {
                 #[cfg(feature = "debug-resolve-cost")]
                 crate::resolve_cost::dcache_negative();
                 return Ok(ChildLookup::Missing);
-            } // cached negative (definitive)
-            // RESOLVE_CACHED: a dcache miss would take the (possibly blocking)
-            // `i_op->lookup` slow path — refuse with EAGAIN instead (Linux
-            // `LOOKUP_CACHED`).
-            None if self.flags.cached => return Err(VfsError::Eagain),
-            // rcu (lazy) walk: a dcache MISS must take the blocking
-            // `i_op->lookup` slow path under `i_rwsem`, which an rcu read-side may
-            // not hold — leave LOOKUP_RCU and restart the walk in ref mode (Linux
-            // `lookup_slow` is reached only after `try_to_unlazy`).
-            None if self.rcu => { self.rcu = false; return Ok(ChildLookup::Restart); }
-            None => {
-                #[cfg(feature = "debug-resolve-cost")]
-                crate::resolve_cost::dcache_miss();
             }
+            if let Some(inode) = inode {
+                #[cfg(feature = "debug-resolve-cost")]
+                crate::resolve_cost::dcache_hit();
+                return Ok(ChildLookup::Found(d, inode));
+            }
+            self.rcu = false;
+            return Ok(ChildLookup::Restart);
         }
+        // RESOLVE_CACHED: a dcache miss would take the (possibly blocking)
+        // `i_op->lookup` slow path — refuse with EAGAIN instead (Linux
+        // `LOOKUP_CACHED`).
+        if self.flags.cached { return Err(VfsError::Eagain); }
+        // rcu (lazy) walk: a dcache MISS must take the blocking
+        // `i_op->lookup` slow path under an i_rwsem, so leave LOOKUP_RCU and
+        // restart the walk in ref mode (Linux `try_to_unlazy`).
+        if self.rcu { self.rcu = false; return Ok(ChildLookup::Restart); }
+        #[cfg(feature = "debug-resolve-cost")]
+        crate::resolve_cost::dcache_miss();
         // `lookup_slow`: take the PARENT directory's
         // `i_rwsem` SHARED across the blocking `i_op->lookup` + dcache install, so
         // the (parent,name) resolution is consistent against a concurrent mutator
@@ -113,9 +109,10 @@ impl Nameidata {
                 // `d_add` consumes the caller's iget ref). iput AFTER the grab →
                 // never evicts a live inode; on the race-loser path the dentry
                 // already counts its inode, so this drops the redundant build.
+                let child_inode = ci.clone();
                 let child = crate::dcache::d_add_with_hash(&self.cur_dentry, comp, ci.clone(), hash);
                 crate::file::iput(ci);
-                Ok(ChildLookup::Found(child))
+                Ok(ChildLookup::Found(child, child_inode))
             }
             Err(VfsError::Enoent) => {
                 // D5/D6 negative-on-miss, gated for safety (see `neg_cache_ok`):

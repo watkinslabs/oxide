@@ -13,6 +13,10 @@ pub struct Nameidata {
     pub cur_inode: InodeRef,
     pub root_mnt_id: u64,
     pub root_dentry: Arc<Dentry>,
+    /// Inode paired with `root_dentry`, matching Linux's `nd->root` path
+    /// snapshot. Absolute walks reuse it instead of taking the dentry inode
+    /// lock a second time at the root jump.
+    pub root_inode: InodeRef,
     /// Linux `nd->depth` — symlink NESTING depth: the count of suspended
     /// link-remainder frames currently on the resume stack (rises on a frame
     /// push, falls on `put_link` resume). Capped at [`MAX_NESTED_LINKS`].
@@ -65,7 +69,7 @@ impl Nameidata {
                 (root, mnt_id)
             }
         };
-        let (mut root_dentry, _ri, mut root_mnt_id) = follow_mount_down(root, root_base)?;
+        let (mut root_dentry, ri, mut root_mnt_id) = follow_mount_down(root, root_base)?;
         let (start, start_base) = match crate::mount::namespace_root_path(ns, &start) {
             Some((mnt_id, dentry)) => (dentry, mnt_id),
             None => {
@@ -80,9 +84,11 @@ impl Nameidata {
         // `root` (Linux sets `nd->root = nd->path` for LOOKUP_IS_SCOPED+IN_ROOT).
         // RESOLVE_BENEATH (`beneath_exdev`) likewise scopes resolution to the
         // dirfd, but ERRORS on escape (handled in `walk`) instead of clamping.
-        if flags.in_root || flags.beneath_exdev { root_dentry = cur_dentry.clone(); root_mnt_id = cur_mnt_id; }
+        let root_inode = if flags.in_root || flags.beneath_exdev {
+            root_dentry = cur_dentry.clone(); root_mnt_id = cur_mnt_id; cur_inode.clone()
+        } else { ri };
         let rcu = flags.rcu;
-        Ok(Nameidata { cur_mnt_id, cur_dentry, cur_inode, root_mnt_id, root_dentry, depth: 0, total_link_count: 0, flags, cred, rcu })
+        Ok(Nameidata { cur_mnt_id, cur_dentry, cur_inode, root_mnt_id, root_dentry, root_inode, depth: 0, total_link_count: 0, flags, cred, rcu })
     }
 
     /// Build the walk state for an `*at` resolution whose `start`/`root` arrive
@@ -110,11 +116,18 @@ impl Nameidata {
         let cur_dentry = start;
         let cur_inode = cur_dentry.inode().ok_or(VfsError::Enoent)?;
         let cur_mnt_id = start_mnt_id;
+        let mut root_inode = if Arc::ptr_eq(&cur_dentry, &root_dentry) {
+            cur_inode.clone()
+        } else {
+            root_dentry.inode().ok_or(VfsError::Enoent)?
+        };
         // RESOLVE_IN_ROOT / RESOLVE_BENEATH: the dirfd (START) IS the resolution
         // root (same override as `new`).
-        if flags.in_root || flags.beneath_exdev { root_dentry = cur_dentry.clone(); root_mnt_id = cur_mnt_id; }
+        if flags.in_root || flags.beneath_exdev {
+            root_dentry = cur_dentry.clone(); root_mnt_id = cur_mnt_id; root_inode = cur_inode.clone();
+        }
         let rcu = flags.rcu;
-        Ok(Nameidata { cur_mnt_id, cur_dentry, cur_inode, root_mnt_id, root_dentry, depth: 0, total_link_count: 0, flags, cred, rcu })
+        Ok(Nameidata { cur_mnt_id, cur_dentry, cur_inode, root_mnt_id, root_dentry, root_inode, depth: 0, total_link_count: 0, flags, cred, rcu })
     }
 
     /// Reset the current position to the resolution root (absolute path /
@@ -122,7 +135,7 @@ impl Nameidata {
     pub(super) fn to_root(&mut self) -> KResult<()> {
         self.cur_dentry = self.root_dentry.clone();
         self.cur_mnt_id = self.root_mnt_id;
-        self.cur_inode = self.cur_dentry.inode().ok_or(VfsError::Enoent)?;
+        self.cur_inode = self.root_inode.clone();
         Ok(())
     }
 

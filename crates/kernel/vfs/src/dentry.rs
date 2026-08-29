@@ -13,14 +13,15 @@
 
 extern crate alloc;
 use alloc::collections::BTreeMap;
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
 use sync::{Dentry as DentryClass, Inode as InodeClass, RwLock};
 
-use crate::inode::InodeRef;
+use crate::inode::{Inode, InodeRef};
 use crate::superblock::SuperBlock;
 use crate::types::FileType;
 
@@ -81,6 +82,9 @@ pub struct Dentry {
     name:   QStr,
     /// `d_inode`. None = NEGATIVE dentry (`16§4`).
     inode:  RwLock<Option<InodeRef>, InodeClass>,
+    /// RCU-readable mirror of `d_inode`; replaced owners are retained through
+    /// a grace period while lockless walkers take an Arc reference.
+    inode_ptr: AtomicPtr<Inode>,
     /// `d_sb` — owning superblock backref. NON-owning `Weak`: the SB owns
     /// `s_root` (strong) and outlives every dentry; making this strong
     /// would form an Arc cycle that leaks the tree at umount. Default
@@ -404,6 +408,20 @@ impl Dentry {
     /// Cached inode, if positive. Read-locks the slot. # C: O(1)
     pub fn inode(&self) -> Option<InodeRef> { self.inode.read().clone() }
 
+    /// Clone the RCU-readable inode while the caller's existing RCU read-side
+    /// section is active. The dcache probe owns that section, so callers do not
+    /// pay a second preemption gate merely to obtain the inode Arc. # C: O(1)
+    pub(crate) fn inode_rcu_held(&self) -> Option<InodeRef> {
+        let ptr = self.inode_ptr.load(Ordering::Acquire);
+        if ptr.is_null() { return None; }
+        // SAFETY: the caller holds the dcache RCU section, and every replaced
+        // inode owner remains alive through that grace period before release.
+        unsafe {
+            Arc::increment_strong_count(ptr);
+            Some(Arc::from_raw(ptr))
+        }
+    }
+
     /// True iff this is a negative dentry (cached "not found"). # C: O(1)
     pub fn is_negative(&self) -> bool { self.inode.read().is_none() }
 
@@ -413,7 +431,13 @@ impl Dentry {
     pub fn set_inode(&self, inode: Option<InodeRef>) {
         let neg = inode.is_none();
         let type_bits = type_bits_for(&inode);
-        let old = { let mut g = self.inode.write(); core::mem::replace(&mut *g, inode) };
+        let old = {
+            let mut g = self.inode.write();
+            let old = core::mem::replace(&mut *g, inode);
+            let ptr = g.as_ref().map_or(core::ptr::null_mut(), |i| Arc::as_ptr(i) as *mut Inode);
+            self.inode_ptr.store(ptr, Ordering::Release);
+            old
+        };
         if let Some(ref old_inode) = old {
             if let Some(f) = self.d_op.and_then(|o| o.d_iput) { f(self, old_inode.clone()); }
         }
@@ -426,7 +450,9 @@ impl Dentry {
         // Done AFTER the inode write lock is dropped above, and `igrab`/`iput`
         // take no lock below the icache (rank 60) — ascending order, no deadlock.
         if let Some(old_inode) = old {
+            let rcu_owner = Arc::clone(&old_inode);
             if self.counted.swap(false, Ordering::AcqRel) { dentry_iput(old_inode); }
+            sync::call_rcu(Box::new(move || drop(rcu_owner)));
         }
     }
 

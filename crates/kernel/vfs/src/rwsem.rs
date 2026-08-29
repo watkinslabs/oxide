@@ -75,6 +75,27 @@ impl<C: LockClass> VfsRwsem<C> {
     /// Acquire shared, parking behind an active or queued writer. # C: O(contention)
     pub fn read(&self) -> VfsRwsemReadGuard<'_, C> {
         loop {
+            // Linux's rwsem takes the ordinary reader path by atomically
+            // adding the reader bias.  The wait lock is only needed once the
+            // count says that a writer is active/queued or the count is at
+            // its limit.  Keeping that lock out of the uncontended path is
+            // important for ext4 lookup_slow, whose parent i_rwsem is shared
+            // for every blocking directory lookup.
+            let state = self.state.load(Ordering::Acquire);
+            if state & WRITER == 0
+                && state & READERS != READERS
+                && self.writers_waiting.load(Ordering::Acquire) == 0
+            {
+                if self.state.compare_exchange_weak(
+                    state,
+                    state + 1,
+                    Ordering::Acquire,
+                    Ordering::Relaxed,
+                ).is_ok() {
+                    return VfsRwsemReadGuard { lock: self };
+                }
+                continue;
+            }
             let gate = self.wait_lock.lock();
             let state = self.state.load(Ordering::Relaxed);
             if state & WRITER == 0
@@ -119,11 +140,16 @@ impl<C: LockClass> VfsRwsem<C> {
     }
 
     fn read_unlock(&self) {
-        let gate = self.wait_lock.lock();
-        let state = self.state.load(Ordering::Relaxed);
-        self.state.store(state - 1, Ordering::Release);
-        if state == 1 { self.wake(); }
-        drop(gate);
+        // Readers do not serialize with one another on release.  Only the
+        // final reader needs the wait lock to publish a wakeup to a queued
+        // writer; this is the same split as Linux's atomic rwsem count plus
+        // wait-queue handoff.
+        let state = self.state.fetch_sub(1, Ordering::AcqRel);
+        if state == 1 {
+            let gate = self.wait_lock.lock();
+            self.wake();
+            drop(gate);
+        }
     }
 
     fn write_unlock(&self) {
