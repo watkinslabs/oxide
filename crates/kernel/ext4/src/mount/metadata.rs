@@ -92,13 +92,12 @@ impl Mount {
 
     /// Read the group-descriptor table from the canonical metadata-buffer
     /// source. The transaction shadow wins over clean cache bytes, exactly as
-    /// a JBD2-attached buffer head does; `MountState::gdt_buf` is only a
-    /// mutation workspace for legacy writers being migrated.
+    /// a JBD2-attached buffer head does.
     /// # C: O(GDT blocks)
     pub(crate) fn read_gdt_bytes(&self) -> Result<Vec<u8>, MountError> {
         let len = {
             let s = self.state.lock();
-            s.gdt_buf.len()
+            s.gdt_len
         };
         self.read_meta_byte_range(gdt_byte_offset_for(&self.sb), len)
     }
