@@ -103,7 +103,20 @@ impl Mount {
     where F: FnOnce(&Self) -> Result<R, MountError>
     {
         self.txn_acquire();
-        let r = self.run_journaled_inner(f);
+        let r = self.run_journaled_inner(f, false);
+        self.txn_release();
+        r
+    }
+
+    /// Run a metadata transaction whose durable journal commit is returned to
+    /// the caller, while home-block checkpointing remains with the background
+    /// checkpoint owner. Create operations use this Linux-shaped boundary so
+    /// VFS inode locks do not cover unrelated home writeback. # C: O(N staged) journal I/O
+    pub(crate) fn run_journaled_deferred<R, F>(&self, f: F) -> Result<R, MountError>
+    where F: FnOnce(&Self) -> Result<R, MountError>
+    {
+        self.txn_acquire();
+        let r = self.run_journaled_inner(f, true);
         self.txn_release();
         r
     }
@@ -149,7 +162,7 @@ impl Mount {
         }
     }
 
-    fn run_journaled_inner<R, F>(&self, f: F) -> Result<R, MountError>
+    fn run_journaled_inner<R, F>(&self, f: F, defer_checkpoint: bool) -> Result<R, MountError>
     where F: FnOnce(&Self) -> Result<R, MountError>
     {
         let (already_open, batch) = { let s = self.state.lock(); (s.shadow.is_some(), s.batch) };
@@ -176,7 +189,11 @@ impl Mount {
                         let staged: Vec<StagedBlock> = shadow.into_iter()
                             .map(|(target_lba, data)| StagedBlock { target_lba, data })
                             .collect();
-                        self.commit_metadata(staged.clone())?;
+                        if defer_checkpoint {
+                            self.commit_metadata_deferred(staged.clone())?;
+                        } else {
+                            self.commit_metadata(staged.clone())?;
+                        }
                         self.cache_committed(&staged);
                         let mut s = self.state.lock();
                         s.committed_generation = s.running_generation;
@@ -205,7 +222,7 @@ impl Mount {
     {
         let r = {
             self.creating.store(true, ::core::sync::atomic::Ordering::Release);
-            let r = self.run_journaled(f);
+            let r = self.run_journaled_deferred(f);
             self.creating.store(false, ::core::sync::atomic::Ordering::Release);
             r
         };
