@@ -57,8 +57,8 @@ The target is every useful ext4 mode that this kernel can support honestly. A mo
 3. Add a failure-injection matrix for metadata reads, data reads, owned completions, extent reads, allocation, journal writes, flushes, and remounts.
 4. Close or update stale ledger evidence only after the current commands reproduce it.
 
-Initial evidence: `cargo test -p ext4 --tests --no-fail-fast --quiet --
---test-threads=4` passed all 353 ext4 tests on 2026-08-28. This supersedes the
+Initial evidence: `TMPDIR=/home/nd/oxide/ext4-test-tmp cargo test -p ext4
+--all-targets --no-fail-fast` passed all 372 ext4 tests on 2026-08-28. This supersedes the
 old 62-failure count as a current result, but does not close fixture isolation:
 the command exercises the package in parallel only, not a workspace-wide run
 with every consumer of the shared generated images.
