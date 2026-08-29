@@ -338,10 +338,18 @@ impl FileOps for Ext4RegFileOps {
         d.frames.write_buffered(off, buf)?;
         let end = off.saturating_add(buf.len() as u64);
         super::data::publish_size_max(inode, end);
-        if let Ok(mut i) = d.st.mount.read_inode(d.ino) {
-            i.size = i.size.max(d.size_hint.load(Ordering::Acquire));
-            d.frames.refresh_inode_cache(i);
-            inode.set_blocks(i.i_blocks as u64);
+        // Delayed-allocation buffered writes change the in-core page cache and
+        // i_size only. Linux's ext4 buffered path does not reread the inode
+        // table before returning; writeback owns the later extent publication.
+        // Keep the refresh for modes that allocate/modify extents before the
+        // data page is written, where i_blocks and the fill snapshot really do
+        // change during this call.
+        if !behaviour.delalloc || behaviour.data == crate::mount_opts::DataMode::Journal {
+            if let Ok(mut i) = d.st.mount.read_inode(d.ino) {
+                i.size = i.size.max(d.size_hint.load(Ordering::Acquire));
+                d.frames.refresh_inode_cache(i);
+                inode.set_blocks(i.i_blocks as u64);
+            }
         }
         Ok(buf.len())
     }
