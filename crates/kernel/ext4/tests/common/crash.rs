@@ -45,6 +45,9 @@ pub enum CrashPoint {
     /// The JBD2 commit record reaches media, but the journal superblock
     /// publish does not. This is the commit/publish ordering boundary.
     AfterCommit,
+    /// The first 1024-byte journal block of the commit record reaches media,
+    /// then power fails before the rest of that record is durable.
+    AfterFirstCommitBlock,
     /// Power fails before the journal descriptor/data body request reaches
     /// media. No transaction body is durable at this boundary.
     BeforeDescriptor,
@@ -72,6 +75,7 @@ const POINT_AFTER_CHECKPOINT: u64 = 3;
 const POINT_AFTER_FIRST_HOME: u64 = 4;
 const POINT_BEFORE_COMMIT: u64 = 5;
 const POINT_AFTER_COMMIT: u64 = 6;
+const POINT_AFTER_FIRST_COMMIT_BLOCK: u64 = 10;
 const POINT_BEFORE_DESCRIPTOR: u64 = 7;
 const POINT_AFTER_FIRST_DESCRIPTOR_BLOCK: u64 = 8;
 const POINT_AFTER_FIRST_JOURNAL_DATA_BLOCK: u64 = 9;
@@ -108,6 +112,7 @@ impl CrashDisk {
             CrashPoint::AfterFirstHome => POINT_AFTER_FIRST_HOME,
             CrashPoint::BeforeCommit => POINT_BEFORE_COMMIT,
             CrashPoint::AfterCommit => POINT_AFTER_COMMIT,
+            CrashPoint::AfterFirstCommitBlock => POINT_AFTER_FIRST_COMMIT_BLOCK,
             CrashPoint::BeforeDescriptor => POINT_BEFORE_DESCRIPTOR,
             CrashPoint::AfterFirstDescriptorBlock => POINT_AFTER_FIRST_DESCRIPTOR_BLOCK,
             CrashPoint::AfterFirstJournalDataBlock => POINT_AFTER_FIRST_JOURNAL_DATA_BLOCK,
@@ -228,6 +233,11 @@ impl BlockDevice for CrashDisk {
                 }
                 POINT_AFTER_COMMIT => {
                     let r = self.inner.submit_sync(req);
+                    self.crashed.store(true, Ordering::Release);
+                    return r;
+                }
+                POINT_AFTER_FIRST_COMMIT_BLOCK => {
+                    let r = self.write_journal_prefix(req, 1);
                     self.crashed.store(true, Ordering::Release);
                     return r;
                 }

@@ -102,7 +102,7 @@ Exit: no unexplained EIO/SIGBUS remains in the controlled matrix; E4-14 is eithe
 2. Replace the one-entry pending handoff with a retained checkpoint list and exact journal-space accounting.
 3. Keep data ordering, journal ordering, target writeback, and clean-superblock publication in separate owned phases.
 4. Add `journal_async_commit` as a real policy: validate incompatible data modes, set/read the on-disk feature, submit the commit record with the correct durability contract, and wait at the checkpoint boundary.
-5. Add crash points before/after descriptor, data, commit, journal-superblock, home-write, and clean-publication operations. Commit-boundary coverage is now present; descriptor/data request classification remains.
+5. Add crash points before/after descriptor, data, commit, journal-superblock, home-write, and clean-publication operations. The harness now covers torn commit-record publication as well as partial descriptor/data bodies; broader crash/replay and write-amplification evidence remains.
 
 Exit: all three data modes, barriers, checksums, recovery, and async commit have positive and negative tests; no mode is admitted while its ordering owner is absent.
 
