@@ -311,7 +311,7 @@ impl InodeOps for Ext4StatInodeOps {
         let ftype = super::super::ops::dirent_dt(&src);
         let name_b = name.as_bytes();
         d.st.mount.run_journaled_deferred(|m| {
-            m.dir_link(d.ino, name_b, ino, ftype)?;
+            m.dir_link_in_transaction(d.ino, name_b, ino, ftype)?;
             m.adjust_nlink(ino, 1)?;
             m.orphan_del(ino)?;
             Ok(())

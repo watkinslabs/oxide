@@ -76,7 +76,7 @@ impl Mount {
             let new_ino = m.alloc_inode(parent_group)?;
             let node = m.init_inode(parent_ino, new_ino, S_IFREG | (mode_perm & 0x0FFF), 1, uid, gid)?;
             if let Some(acl) = acl { acl.store(m, new_ino)?; }
-            m.dir_link(parent_ino, name, new_ino, dir::DT_REG)?;
+            m.dir_link_in_transaction(parent_ino, name, new_ino, dir::DT_REG)?;
             Ok((new_ino, node))
         })
     }
@@ -165,7 +165,7 @@ impl Mount {
             m.set_inode_size(new_ino, bs as u64)?;
             node.size = bs as u64;
             if let Some(acl) = acl { acl.store(m, new_ino)?; }
-            m.dir_link(parent_ino, name, new_ino, dir::DT_DIR)?;
+            m.dir_link_in_transaction(parent_ino, name, new_ino, dir::DT_DIR)?;
             let ng = (new_ino - 1) / m.sb.inodes_per_group;
             {
                 let mut s = m.state.lock();
@@ -221,7 +221,7 @@ impl Mount {
                 m.append_block(new_ino, &buf)?;
                 m.set_inode_size(new_ino, target.len() as u64)?;
             }
-            m.dir_link(parent_ino, name, new_ino, dir::DT_LNK)?;
+            m.dir_link_in_transaction(parent_ino, name, new_ino, dir::DT_LNK)?;
             Ok(new_ino)
         })
     }
@@ -294,7 +294,7 @@ impl Mount {
             }
             m.write_inode_bytes(new_ino, &bytes)?;
             if let Some(acl) = acl { acl.store(m, new_ino)?; }
-            m.dir_link(parent_ino, name, new_ino, dirent_dt)?;
+            m.dir_link_in_transaction(parent_ino, name, new_ino, dirent_dt)?;
             Ok(new_ino)
         })
     }

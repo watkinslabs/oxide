@@ -83,6 +83,17 @@ impl Mount {
         self.run_journaled(|m| m.dir_link_inner(dir_ino, name, child_ino, file_type))
     }
 
+    /// Link a directory entry inside an already-open journal transaction.
+    /// Linux's ext4 namespace callbacks share their caller's `handle_t`; they
+    /// do not open a second transaction for the directory leaf update.
+    /// # C: O(N entries) + O(1) block I/O
+    pub(crate) fn dir_link_in_transaction(&self, dir_ino: u32, name: &[u8],
+                                          child_ino: u32, file_type: u8)
+        -> Result<(), MountError>
+    {
+        self.dir_link_inner(dir_ino, name, child_ino, file_type)
+    }
+
     fn dir_link_inner(&self, dir_ino: u32, name: &[u8], child_ino: u32, file_type: u8)
         -> Result<(), MountError>
     {
