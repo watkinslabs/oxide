@@ -33,6 +33,7 @@ that artifact is regenerated.
 | E4-05 perf / `75ac00b53` | 1,367,540 | 6,968 | 5,095 | 24,327 | — | 20,128 | 915 | 2,848 | current main after owned-read/frame-cache completion fixes; GNOME Shell marker complete; SMP=1 |
 | E4-03 size-publish / `5d15845be` | 1,367,309 | 6,938 | 5,074 | 24,398 | — | 20,150 | 368 | 2,807 | buffered size publication cleanup; GNOME Shell marker complete; SMP=1 |
 | E4-05 journal-body / `3822365da` | 1,367,839 | 6,548 | 4,787 | 23,728 | — | 19,470 | 387 | 2,694 | merged-main control after journal body crash-boundary coverage; GNOME Shell marker complete; SMP=1 |
+| E4-05 journal-body-r2 / `14853c87f` | 1,368,031 | 6,380 | 4,663 | 23,376 | — | 19,814 | 246 | 2,870 | repeat merged-main control; GNOME Shell marker complete; SMP=1 |
 
 The B2709 `munmap` result is a material improvement over B2699: 71,407 ns
 to 21,426 ns (about 70% lower), and 52x to 16x the host baseline. The B2708
