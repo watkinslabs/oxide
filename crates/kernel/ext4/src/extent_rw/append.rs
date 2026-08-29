@@ -155,7 +155,20 @@ impl Mount {
         &self, ino: u32, logical: u32, new_size: u64, physical: Option<u64>,
     ) -> Result<u32, MountError> {
         let (mut ino_bytes, ino_byte_off) = self.read_inode_bytes(ino)?;
-        self.insert_logical_block_with_inode_bytes(ino, &mut ino_bytes, ino_byte_off, logical, &[], new_size, true, false, physical)
+        self.map_unwritten_block_inner_with_inode_bytes(
+            ino, &mut ino_bytes, ino_byte_off, logical, new_size, physical)
+    }
+
+    /// Map one unwritten block using an inode image already carried by the
+    /// caller. The image is updated by `persist_inode_after_append`, so a
+    /// multi-block fallocate request does not reread the inode table for every
+    /// logical block. # C: O(extents) + one metadata publication
+    pub(super) fn map_unwritten_block_inner_with_inode_bytes(
+        &self, ino: u32, ino_bytes: &mut alloc::vec::Vec<u8>, ino_byte_off: u64,
+        logical: u32, new_size: u64, physical: Option<u64>,
+    ) -> Result<u32, MountError> {
+        self.insert_logical_block_with_inode_bytes(
+            ino, ino_bytes, ino_byte_off, logical, &[], new_size, true, false, physical)
     }
 
     /// Allocate + map `logical` as a WRITTEN extent WITHOUT writing `data` now:

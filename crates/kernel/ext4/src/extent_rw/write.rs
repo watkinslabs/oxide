@@ -346,12 +346,17 @@ impl Mount {
             // One fallocate request can contain both mapped and hole blocks.
             // Linux mballoc reserves the missing part as one request; do not
             // turn a partial range back into one bitmap scan per hole.
-            let initial = m.read_inode(ino)?;
+            let (mut inode_bytes, inode_byte_off) = m.read_inode_bytes(ino)?;
+            let initial = inode::Inode::parse(&inode_bytes, &m.sb)?;
             let extents = m.collect_phys_extents(&initial.i_block)?;
             let reserved = reserve_hole_runs(m, first_lb, last_lb, &extents, ino, old_size, false)?;
             let mut reserved_at = vec![0usize; reserved.len()];
             for lb in first_lb..=last_lb {
-                let inode = m.read_inode(ino)?;
+                // `insert_logical_block_with_inode_bytes` updates this image
+                // after each successful mapping. Keep extent membership local
+                // to the request instead of issuing one inode-table read per
+                // block (the old loop made fallocate O(N) metadata reads).
+                let inode = inode::Inode::parse(&inode_bytes, &m.sb)?;
                 let was_mapped = m.collect_phys_extents(&inode.i_block)?
                     .iter()
                     .any(|r| lb >= r.logical && lb < r.logical + r.len);
@@ -359,7 +364,8 @@ impl Mount {
                 let physical = if was_mapped { None } else {
                     take_reserved(&reserved, &mut reserved_at, lb).map(|(block, _, _, _)| block)
                 };
-                if let Err(e) = m.map_unwritten_block_inner_with_physical(ino, lb, visible_size, physical) {
+                if let Err(e) = m.map_unwritten_block_inner_with_inode_bytes(
+                    ino, &mut inode_bytes, inode_byte_off, lb, visible_size, physical) {
                     let _ = m.rollback_allocated_logical_blocks(ino, old_size, &allocated);
                     for (idx, run) in reserved.iter().enumerate() {
                         for &block in run.blocks.iter().skip(reserved_at[idx]) {
