@@ -81,8 +81,16 @@ impl Ext4StatInodeOps {
             0o1777, vfs::types::S_IFDIR, ctx.cred, 0);
         let acl = crate::acl::inherit(inode, m, ctx.umask, vfs::posix_acl::NewKind::Dir)?;
         super::super::quota::charge_new_inode(&d.st, d.ino, acl.mode, uid, gid)?;
-        let (ino, node) = match d.st.mount.create_dir_inode_with_acl(
-            d.ino, name.as_bytes(), acl.mode & 0o7777, uid, gid, &acl) {
+        let parent_raw = if d.canonical
+            && d.raw_valid.load(core::sync::atomic::Ordering::Acquire)
+        { Some(d.raw.lock().clone()) } else { None };
+        let created = match parent_raw.as_ref() {
+            Some(parent) => d.st.mount.create_dir_inode_with_acl_parent(
+                parent, name.as_bytes(), acl.mode & 0o7777, uid, gid, &acl),
+            None => d.st.mount.create_dir_inode_with_acl(
+                d.ino, name.as_bytes(), acl.mode & 0o7777, uid, gid, &acl),
+        };
+        let (ino, node) = match created {
             Ok(v) => v,
             Err(e) => {
                 let _ = super::super::quota::rollback_new_inode_charge(&d.st, d.ino, acl.mode, uid, gid);
@@ -341,7 +349,15 @@ impl InodeOps for Ext4StatInodeOps {
         let (uid, gid) = vfs::prepare_symlink_owner(ctx.idmap, inode, ctx.cred);
         let mode = vfs::types::S_IFLNK | 0o777;
         super::super::quota::charge_new_inode(&d.st, d.ino, mode, uid, gid)?;
-        let ino = match d.st.mount.create_symlink(d.ino, name.as_bytes(), target, uid, gid) {
+        let parent_raw = if d.canonical
+            && d.raw_valid.load(core::sync::atomic::Ordering::Acquire)
+        { Some(d.raw.lock().clone()) } else { None };
+        let created = match parent_raw.as_ref() {
+            Some(parent) => d.st.mount.create_symlink_with_parent(
+                parent, name.as_bytes(), target, uid, gid),
+            None => d.st.mount.create_symlink(d.ino, name.as_bytes(), target, uid, gid),
+        };
+        let ino = match created {
             Ok(ino) => ino,
             Err(e) => {
                 let _ = super::super::quota::rollback_new_inode_charge(&d.st, d.ino, mode, uid, gid);
@@ -361,7 +377,16 @@ impl InodeOps for Ext4StatInodeOps {
             mode, mode, ctx.cred, 0);
         let acl = crate::acl::inherit(inode, m, ctx.umask, vfs::posix_acl::NewKind::Other)?;
         super::super::quota::charge_new_inode(&d.st, d.ino, acl.mode, uid, gid)?;
-        let ino = match d.st.mount.create_mknod_with_acl(d.ino, name.as_bytes(), acl.mode, rdev, uid, gid, &acl) {
+        let parent_raw = if d.canonical
+            && d.raw_valid.load(core::sync::atomic::Ordering::Acquire)
+        { Some(d.raw.lock().clone()) } else { None };
+        let created = match parent_raw.as_ref() {
+            Some(parent) => d.st.mount.create_mknod_with_acl_parent(
+                parent, name.as_bytes(), acl.mode, rdev, uid, gid, &acl),
+            None => d.st.mount.create_mknod_with_acl(
+                d.ino, name.as_bytes(), acl.mode, rdev, uid, gid, &acl),
+        };
+        let ino = match created {
             Ok(ino) => ino,
             Err(e) => {
                 let _ = super::super::quota::rollback_new_inode_charge(&d.st, d.ino, acl.mode, uid, gid);

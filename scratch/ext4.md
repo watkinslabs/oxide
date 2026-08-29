@@ -156,6 +156,12 @@ boot EIOs and orphan/bitmap damage on a freshly repaired disposable image; it
 was reverted in PR #6497. The planner remains unchanged until a harness covers
 that real-root allocation shape.
 
+The canonical VFS create paths now carry the already-resolved parent inode image
+through regular-file create, mkdir, symlink, and mknod. This is a correctness and
+ownership change shaped after Linux's in-core namespace operation; the existing
+fallback remains for noncanonical/test callers. Focused create/ACL, real-root,
+unit, and e2fsck harnesses are green; no aggregate speed gain is claimed.
+
 Exit: each claimed gain has a reproducible before/after measurement; no correctness regression is traded for speed.
 
 ### 4.9 preserved performance history
