@@ -537,7 +537,11 @@ impl Mount {
                     }
                     return Err(e);
                 }
-                current_inode = self.read_inode(ino)?;
+                // The inserter updates `ib` through the same journal-visible
+                // inode image it publishes. Re-parse that image directly;
+                // rereading the inode table here duplicated one metadata read
+                // for every newly mapped block in a clustered writeback.
+                current_inode = inode::Inode::parse(&ib, &self.sb)?;
                 if let Some((block, from_inode_pa, from_group_pa, group_cpu)) = pa_phys {
                     if from_inode_pa { let _ = self.consume_inode_prealloc(ino, lb); }
                     if from_group_pa {
