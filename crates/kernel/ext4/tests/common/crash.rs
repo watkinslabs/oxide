@@ -14,6 +14,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use block::types::KResult;
 use block::{BlockDevice, BlockOp, BlockRequest, MemDisk};
 use sync::TaskList;
+use ext4::jbd2::{BlockHeader, BlockType};
 
 /// Byte offset of `s_start` inside a JBD2 journal superblock block. A write
 /// carrying a non-zero value here is the write-ahead publish: "recovery must
@@ -38,6 +39,12 @@ pub enum CrashPoint {
     /// The first filesystem home block was written, then power failed before
     /// the rest of the checkpoint and clean marker reached media.
     AfterFirstHome,
+    /// Power fails immediately before the separately submitted JBD2 commit
+    /// record. The journal body is present, but no commit record is durable.
+    BeforeCommit,
+    /// The JBD2 commit record reaches media, but the journal superblock
+    /// publish does not. This is the commit/publish ordering boundary.
+    AfterCommit,
 }
 
 pub struct CrashDisk {
@@ -54,6 +61,8 @@ const POINT_BEFORE: u64 = 0;
 const POINT_AFTER: u64 = 1;
 const POINT_AFTER_CHECKPOINT: u64 = 3;
 const POINT_AFTER_FIRST_HOME: u64 = 4;
+const POINT_BEFORE_COMMIT: u64 = 5;
+const POINT_AFTER_COMMIT: u64 = 6;
 /// Watch-only: count publishes, never cut power.
 const POINT_NEVER: u64 = 2;
 
@@ -85,6 +94,8 @@ impl CrashDisk {
             CrashPoint::AfterPublish => POINT_AFTER,
             CrashPoint::AfterCheckpoint => POINT_AFTER_CHECKPOINT,
             CrashPoint::AfterFirstHome => POINT_AFTER_FIRST_HOME,
+            CrashPoint::BeforeCommit => POINT_BEFORE_COMMIT,
+            CrashPoint::AfterCommit => POINT_AFTER_COMMIT,
         }, Ordering::Release);
         self.jsb_sector.store(jsb_sector, Ordering::Release);
     }
@@ -132,6 +143,15 @@ impl CrashDisk {
             req.buffer[JSB_OFF_START + 2], req.buffer[JSB_OFF_START + 3],
         ]) == 0
     }
+
+    /// The commit phase is a standalone request after journal emission. A
+    /// request may contain several 512-byte sectors, but the JBD2 header is
+    /// always at the beginning of its first 1024-byte journal block.
+    fn is_commit_record(&self, req: &BlockRequest) -> bool {
+        BlockHeader::parse(&req.buffer)
+            .map(|h| h.block_type == BlockType::Commit)
+            .unwrap_or(false)
+    }
 }
 
 impl BlockDevice for CrashDisk {
@@ -143,6 +163,20 @@ impl BlockDevice for CrashDisk {
     fn submit_sync(&self, req: &mut BlockRequest) -> KResult<()> {
         if req.op == BlockOp::Read { return self.inner.submit_sync(req); }
         if self.crashed() { return Ok(()); }
+        if self.is_commit_record(req) {
+            match self.point.load(Ordering::Acquire) {
+                POINT_BEFORE_COMMIT => {
+                    self.crashed.store(true, Ordering::Release);
+                    return Ok(());
+                }
+                POINT_AFTER_COMMIT => {
+                    let r = self.inner.submit_sync(req);
+                    self.crashed.store(true, Ordering::Release);
+                    return r;
+                }
+                _ => {}
+            }
+        }
         if self.is_publish(req) {
             self.publishes.fetch_add(1, Ordering::AcqRel);
             match self.point.load(Ordering::Acquire) {
