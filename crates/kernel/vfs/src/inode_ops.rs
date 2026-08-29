@@ -135,6 +135,13 @@ pub trait InodeOps: Send + Sync {
         Err(VfsError::Eperm)
     }
 
+    /// `i_op->mkdir` after the VFS has resolved the negative final dentry and
+    /// holds the parent directory exclusive. Direct backend helpers keep
+    /// using `mkdir`, which retains their own existence check.
+    fn mkdir_unchecked(&self, inode: &Inode, name: &str, mode: u32, ctx: &CreateCtx) -> KResult<InodeRef> {
+        self.mkdir(inode, name, mode, ctx)
+    }
+
     /// `i_op->rmdir` — remove the empty child directory `name`. Default `Eperm`
     /// (see `create`). # C: backend-dependent
     fn rmdir(&self, _inode: &Inode, _name: &str) -> KResult<()> { Err(VfsError::Eperm) }

@@ -30,6 +30,9 @@ impl Inode {
     pub fn create_child_unchecked(&self, name: &str, mode: u32, ctx: &CreateCtx) -> KResult<InodeRef> { self.i_op.create_unchecked(self, name, mode, ctx) }
     /// `i_op->mkdir`. # C: backend-dependent
     pub fn mkdir(&self, name: &str, mode: u32, ctx: &CreateCtx) -> KResult<InodeRef> { self.i_op.mkdir(self, name, mode, ctx) }
+    /// `i_op->mkdir` with the VFS negative-dentry proof already established.
+    /// # C: backend-dependent
+    pub fn mkdir_unchecked(&self, name: &str, mode: u32, ctx: &CreateCtx) -> KResult<InodeRef> { self.i_op.mkdir_unchecked(self, name, mode, ctx) }
     /// `i_op->rmdir`. # C: backend-dependent
     pub fn rmdir(&self, name: &str) -> KResult<()> { self.i_op.rmdir(self, name) }
     pub fn rmdir_with_ctx(&self, name: &str, ctx: &CreateCtx) -> KResult<()> {
