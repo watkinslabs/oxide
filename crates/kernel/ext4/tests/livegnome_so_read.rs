@@ -109,6 +109,29 @@ fn configured_root_dconf_databases_read_through_framecache() {
     }
 }
 
+/// The ext4 address space must execute a readahead hint against the real
+/// backing image, not only expose the generic VFS method. Hosted execution
+/// runs the queued job inline, which makes the resulting resident pages
+/// observable without a long guest boot.
+#[test]
+fn configured_root_regular_file_readahead_populates_frames() {
+    let Some(path) = std::env::var_os("OXIDE_ROOTFS_IMG") else {
+        eprintln!("SKIP: set OXIDE_ROOTFS_IMG to a Fedora root image");
+        return;
+    };
+    let file = File::open(&path).expect("open configured root image");
+    let cap = file.metadata().expect("stat configured root image").len() / SECTOR as u64;
+    let disk: Arc<dyn BlockDevice> = Arc::new(FileDisk { f: RefCell::new(file), cap });
+    common::boot_hosted_pmm();
+    let mount = ext4::rootfs::Ext4Mount::open(disk).expect("mount configured root image");
+    let inode = mount.state().lookup_inode_any(b"/usr/lib/systemd/systemd")
+        .expect("resolve a regular systemd file");
+    let mapping = inode.i_mapping().expect("systemd inode frame mapping");
+    mapping.readahead(0, 16);
+    assert!(mapping.mincore_page(0), "readahead must populate the first file page");
+    assert!(mapping.mincore_page(4096), "readahead must populate a later file page");
+}
+
 #[test]
 fn livegnome_failing_libs_match_disk() {
     let f = match File::open(IMG) { Ok(f) => f, Err(_) => { eprintln!("SKIP: no image"); return; } };
