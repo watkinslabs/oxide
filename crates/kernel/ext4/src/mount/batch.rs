@@ -171,7 +171,7 @@ impl Mount {
         { return Ok(()); }
         let blocks = {
             let s = self.state.lock();
-            if s.undo.is_empty() { s.shadow.as_ref().map_or(0, |m| m.len()) } else { 0 }
+            if s.undo.values().any(|frames| !frames.is_empty()) { 0 } else { s.shadow.as_ref().map_or(0, |m| m.len()) }
         };
         if blocks >= BATCH_CEILING_BLOCKS {
             self.batch_full.store(true, ::core::sync::atomic::Ordering::Release);
@@ -197,14 +197,24 @@ impl Mount {
 
     pub(super) fn batch_frame_commit(&self) {
         let mut s = self.state.lock();
-        let frame = match s.undo.pop() { Some(f) => f, None => return };
-        if let Some(parent) = s.undo.last_mut() {
+        let id = crate::mount::core::ctx_id();
+        let frames = match s.undo.get_mut(&id) { Some(frames) => frames, None => return };
+        let frame = match frames.pop() { Some(f) => f, None => return };
+        if let Some(parent) = frames.last_mut() {
             for (lba, prev) in frame { parent.entry(lba).or_insert(prev); }
         }
+        if frames.is_empty() { s.undo.remove(&id); }
     }
 
     pub(super) fn batch_frame_rollback(&self) {
-        let frame = { self.state.lock().undo.pop().unwrap_or_default() };
+        let id = crate::mount::core::ctx_id();
+        let frame = {
+            let mut s = self.state.lock();
+            let Some(frames) = s.undo.get_mut(&id) else { return; };
+            let frame = frames.pop().unwrap_or_default();
+            if frames.is_empty() { s.undo.remove(&id); }
+            frame
+        };
         {
             let mut s = self.state.lock();
             if let Some(shadow) = s.shadow.as_mut() {

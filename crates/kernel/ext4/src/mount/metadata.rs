@@ -118,7 +118,8 @@ impl Mount {
                 // current op's undo frame BEFORE overwriting, so op failure can
                 // restore the shared running transaction. No frame => no undo
                 // (non-batch nested scope keeps the original commit-or-drop-all).
-                let record = s.batch && !s.undo.is_empty();
+                let id = crate::mount::core::ctx_id();
+                let record = s.batch && s.undo.get(&id).is_some_and(|frames| !frames.is_empty());
                 for i in 0..n_blocks as u64 {
                     let lba = first_blk + i;
                     let lo = (i * bs) as usize;
@@ -126,9 +127,9 @@ impl Mount {
                     if record {
                         // O(log n) keyed record; keep only the EARLIEST pre-value
                         // per LBA in this frame (contains_key guards the clone).
-                        if !s.undo.last().unwrap().contains_key(&lba) {
+                        if !s.undo.get(&id).unwrap().last().unwrap().contains_key(&lba) {
                             let prev = s.shadow.as_ref().unwrap().get(&lba).cloned();
-                            s.undo.last_mut().unwrap().insert(lba, prev);
+                            s.undo.get_mut(&id).unwrap().last_mut().unwrap().insert(lba, prev);
                         }
                     }
                     s.shadow.as_mut().unwrap().insert(lba, full_buf[lo..hi].to_vec());

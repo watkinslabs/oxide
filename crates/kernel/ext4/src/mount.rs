@@ -214,15 +214,13 @@ pub struct MountState {
     /// pay a full journal commit and checkpoint per operation — the systematic
     /// sysinit slowness. Opt-in per mount (rootfs enables it).
     pub(crate) batch: bool,
-    /// Per-op undo stack (batch mode only). Each `run_journaled` op that joins
-    /// the running transaction pushes a frame recording the pre-op shadow value
-    /// of every LBA it stages; on op failure the frame is replayed to restore
-    /// the shared shadow (so ONE op's failure never corrupts prior batched ops),
-    /// on success it merges into the parent frame (or is dropped at top level).
+    /// Per-handle undo stacks (batch mode only). Each op that joins the running
+    /// transaction pushes a frame recording the pre-op shadow value of every
+    /// LBA it stages; a handle failure restores only its own frames.
     /// Keyed by LBA (BTreeMap) so recording is O(log n) per staged block and
     /// auto-dedups to the EARLIEST pre-op value — a Vec + linear dedup scan was
     /// O(n²) per op and stalled the state lock for seconds on a large writeback.
-    pub(crate) undo: Vec<alloc::collections::BTreeMap<u64, Option<Vec<u8>>>>,
+    pub(crate) undo: alloc::collections::BTreeMap<u64, Vec<alloc::collections::BTreeMap<u64, Option<Vec<u8>>>>>,
     pub(crate) next_generation: u64,
     pub(crate) running_generation: u64,
     pub(crate) committed_generation: u64,

@@ -31,7 +31,7 @@ pub(super) fn ctx_id() -> u64 {
 /// Host builds: a unique nonzero id per thread (thread-local, stable) so the
 /// concurrent-churn tests exercise real cross-context serialization.
 #[cfg(not(target_os = "oxide-kernel"))]
-fn ctx_id() -> u64 {
+pub(super) fn ctx_id() -> u64 {
     std::thread_local!(static ID: u64 = {
         static NEXT: ::core::sync::atomic::AtomicU64 = ::core::sync::atomic::AtomicU64::new(2);
         NEXT.fetch_add(1, ::core::sync::atomic::Ordering::Relaxed)

@@ -121,7 +121,7 @@ impl Mount {
             stream_last_groups: alloc::collections::BTreeMap::new(),
             inode_prealloc: alloc::collections::BTreeMap::new(),
             batch: false,
-            undo: Vec::new(),
+            undo: alloc::collections::BTreeMap::new(),
             next_generation: 0,
             running_generation: 0,
             committed_generation: 0,
