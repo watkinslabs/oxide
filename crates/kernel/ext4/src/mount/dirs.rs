@@ -149,6 +149,14 @@ impl Mount {
         self.run_journaled(|m| m.dir_unlink_inner(dir_ino, name))
     }
 
+    /// Remove a directory entry inside an already-open journal transaction.
+    /// # C: O(N entries) + 2 block I/Os
+    pub(crate) fn dir_unlink_in_transaction(&self, dir_ino: u32, name: &[u8])
+        -> Result<u32, MountError>
+    {
+        self.dir_unlink_inner(dir_ino, name)
+    }
+
     fn dir_unlink_inner(&self, dir_ino: u32, name: &[u8]) -> Result<u32, MountError> {
         let dir_node = self.read_inode(dir_ino)?;
         if !dir_node.is_dir() { return Err(MountError::NotDir); }
@@ -178,6 +186,14 @@ impl Mount {
     /// Journaled. # C: O(entries in block 0) + 2 block I/Os
     pub fn set_dotdot(&self, dir_ino: u32, new_parent: u32) -> Result<(), MountError> {
         self.run_journaled(|m| m.set_dotdot_inner(dir_ino, new_parent))
+    }
+
+    /// Rewrite `..` inside an already-open journal transaction.
+    /// # C: O(entries in block 0) + 2 block I/Os
+    pub(crate) fn set_dotdot_in_transaction(&self, dir_ino: u32, new_parent: u32)
+        -> Result<(), MountError>
+    {
+        self.set_dotdot_inner(dir_ino, new_parent)
     }
 
     fn set_dotdot_inner(&self, dir_ino: u32, new_parent: u32) -> Result<(), MountError> {

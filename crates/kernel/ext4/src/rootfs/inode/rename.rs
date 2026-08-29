@@ -195,23 +195,23 @@ fn plain_rename(s: &RenameSides<'_>, from_name: &[u8], to_name: &[u8], whiteout:
             // departing `..`, which is why the moved directory's arrival is
             // accounted separately below. A non-directory victim is unlinked,
             // which orphans it rather than freeing it (see `Mount::unlink`).
-            if dest_is_dir { m.rmdir(s.to_p, to_name)?; } else { dest_out = Some(m.unlink(s.to_p, to_name)?); }
+            if dest_is_dir { m.rmdir_in_transaction(s.to_p, to_name)?; } else { dest_out = Some(m.unlink_in_transaction(s.to_p, to_name)?); }
         }
         m.dir_link_in_transaction(s.to_p, to_name, s.target, ftype)?;
-        m.dir_unlink(s.from_p, from_name)?;
+        m.dir_unlink_in_transaction(s.from_p, from_name)?;
         if let Some(acl) = whiteout_acl.as_ref() {
-            m.create_mknod_with_acl(s.from_p, from_name, acl.mode, 0, 0, 0, acl)?;
+            m.create_mknod_in_transaction(s.from_p, from_name, acl.mode, 0, 0, 0, Some(acl))?;
         }
         if cross_dir_move {
             // `ext4_rename_dir_prepare`/`_finish` + `ext4_dec_count(old.dir)` /
             // `ext4_inc_count(new.dir)`: the moved directory's `..` follows it.
-            m.set_dotdot(s.target, s.to_p)?;
-            m.adjust_nlink(s.from_p, -1)?;
-            m.adjust_nlink(s.to_p, 1)?;
+            m.set_dotdot_in_transaction(s.target, s.to_p)?;
+            m.adjust_nlink_in_transaction(s.from_p, -1)?;
+            m.adjust_nlink_in_transaction(s.to_p, 1)?;
         }
-        m.touch_inode_ctime(s.target, now)?;
-        m.touch_inode_mtime_ctime(s.from_p, now)?;
-        if s.from_p != s.to_p { m.touch_inode_mtime_ctime(s.to_p, now)?; }
+        m.touch_inode_ctime_in_transaction(s.target, now)?;
+        m.touch_inode_mtime_ctime_in_transaction(s.from_p, now)?;
+        if s.from_p != s.to_p { m.touch_inode_mtime_ctime_in_transaction(s.to_p, now)?; }
         Ok(())
     });
     if let Err(e) = rename {
@@ -259,22 +259,22 @@ fn cross_rename(s: &RenameSides<'_>, from_name: &[u8], to_name: &[u8]) -> KResul
     let now = vfs::Timespec64::from_clock_ns(vfs::inode_times::realtime_now_ns());
     let cross = s.from_p != s.to_p;
     mount.run_journaled_deferred(|m| {
-        m.dir_unlink(s.from_p, from_name)?;
-        m.dir_unlink(s.to_p, to_name)?;
+        m.dir_unlink_in_transaction(s.from_p, from_name)?;
+        m.dir_unlink_in_transaction(s.to_p, to_name)?;
         m.dir_link_in_transaction(s.from_p, from_name, bino, dirent_dt(&dst))?;
         m.dir_link_in_transaction(s.to_p, to_name, s.target, dirent_dt(&src))?;
         if cross {
-            if src_is_dir { m.set_dotdot(s.target, s.to_p)?; }
-            if dst_is_dir { m.set_dotdot(bino, s.from_p)?; }
+            if src_is_dir { m.set_dotdot_in_transaction(s.target, s.to_p)?; }
+            if dst_is_dir { m.set_dotdot_in_transaction(bino, s.from_p)?; }
             // `ext4_update_dir_count`: a delta only exists when the pair is
             // mixed — swapping two directories leaves both counts intact.
-            if src_is_dir && !dst_is_dir { m.adjust_nlink(s.from_p, -1)?; m.adjust_nlink(s.to_p, 1)?; }
-            if !src_is_dir && dst_is_dir { m.adjust_nlink(s.from_p, 1)?; m.adjust_nlink(s.to_p, -1)?; }
+            if src_is_dir && !dst_is_dir { m.adjust_nlink_in_transaction(s.from_p, -1)?; m.adjust_nlink_in_transaction(s.to_p, 1)?; }
+            if !src_is_dir && dst_is_dir { m.adjust_nlink_in_transaction(s.from_p, 1)?; m.adjust_nlink_in_transaction(s.to_p, -1)?; }
         }
-        m.touch_inode_ctime(s.target, now)?;
-        m.touch_inode_ctime(bino, now)?;
-        m.touch_inode_mtime_ctime(s.from_p, now)?;
-        if cross { m.touch_inode_mtime_ctime(s.to_p, now)?; }
+        m.touch_inode_ctime_in_transaction(s.target, now)?;
+        m.touch_inode_ctime_in_transaction(bino, now)?;
+        m.touch_inode_mtime_ctime_in_transaction(s.from_p, now)?;
+        if cross { m.touch_inode_mtime_ctime_in_transaction(s.to_p, now)?; }
         Ok(())
     }).map_err(|_| VfsError::Eio)
 }
