@@ -172,6 +172,14 @@ The mkdir path also publishes `i_nlink` to the live VFS parent and updates the
 cached ext4 image from that same locked parent state. The serialized field and
 the in-memory field now advance together as in Linux `ext4_mkdir`/`inc_nlink`.
 
+The writeback path now waits for the per-page lock instead of converting
+transient page-lock contention into `EIO`, matching Linux page writeback;
+invalid frames and real device-write failures remain errors. Both the current
+GNOME control and the immediate pre-B2925 control reproduced the old userspace
+EIO before this fix. The post-fix harness reaches GNOME Shell at 33.57s with
+that early EIO cascade gone. A later colord database disk-I/O error remains a
+separate owner to investigate; it is not attributed to this page-lock change.
+
 Exit: each claimed gain has a reproducible before/after measurement; no correctness regression is traded for speed.
 
 ### 4.9 preserved performance history
