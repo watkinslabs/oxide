@@ -44,10 +44,12 @@ impl Dentry {
         flags = (flags & !D_TYPE_MASK) | type_bits_for(&inode);
         flags = (flags & !D_OP_MASK) | op_flags_for(d_op);
         let qname = hash.map_or_else(|| QStr::new(parent.as_ref(), name), |h| QStr::with_hash(h, name));
+        let inode_ptr = inode.as_ref().map_or(core::ptr::null_mut(), |i| Arc::as_ptr(i) as *mut crate::inode::Inode);
         let d = Arc::new(Self {
             parent,
             name: qname,
             inode: RwLock::new(inode),
+            inode_ptr: core::sync::atomic::AtomicPtr::new(inode_ptr),
             sb,
             d_op,
             d_count: Lockref::new(),

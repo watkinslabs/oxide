@@ -198,8 +198,8 @@ impl Nameidata {
             // Resolve the named child (`child.rs`: dcache fast path, `i_op->lookup`
             // slow path, negative caching). One owner, so the trailing component
             // of a followed create is resolved by the same code as every other.
-            let child = match self.lookup_child(comp)? {
-                super::child::ChildLookup::Found(d) => d,
+            let (child, child_inode) = match self.lookup_child(comp)? {
+                super::child::ChildLookup::Found(d, i) => (d, i),
                 super::child::ChildLookup::Restart => return Ok(WalkOutcome::Restart),
                 // A leaf that is not there is the ORDINARY create case: the walk
                 // stops with the parent it reached and the name the caller is
@@ -218,13 +218,9 @@ impl Nameidata {
             // rehomed it under us, so the result would be torn: restart the walk.
             let cseq = child.read_seqbegin();
 
-            // Snapshot the child inode once for this component. Linux's dentry
-            // carries the inode pointer directly; retaining this Arc gives the
-            // same one-read shape while the dentry's seqcount validates its
-            // name/inode binding before the walk commits the child.
-            #[cfg(feature = "debug-resolve-cost")]
-            let _inode_cost = crate::resolve_cost::inode_snapshot();
-            let child_inode = child.inode().ok_or(VfsError::Enoent)?;
+            // The dcache probe returned the owned inode snapshot alongside the
+            // dentry while its existing RCU read-side section was active,
+            // matching Linux's direct `d_inode_rcu()` read.
 
             // Symlink handling — use the child's OWN inode (a mountpoint is a
             // directory, never a symlink, so this precedes mount crossing).

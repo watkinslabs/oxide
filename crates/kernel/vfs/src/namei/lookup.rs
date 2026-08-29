@@ -83,7 +83,13 @@ pub fn path_lookup_at_root_cred(
     flags: LookupFlags,
     cred: Cred,
 ) -> KResult<VfsPath> {
+    #[cfg(feature = "debug-resolve-cost")]
+    let _init_cost = crate::resolve_cost::namei_init();
     let mut nd = Nameidata::new_at(start, start_mnt_id, root, root_mnt_id, flags, cred)?;
+    #[cfg(feature = "debug-resolve-cost")]
+    drop(_init_cost);
+    #[cfg(feature = "debug-resolve-cost")]
+    let _walk_cost = crate::resolve_cost::walk_body();
     nd.walk(path)
 }
 

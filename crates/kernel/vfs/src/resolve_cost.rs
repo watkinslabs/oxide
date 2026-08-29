@@ -20,7 +20,10 @@ const DENTRY_INSTALL: usize = 10;
 const PARENT_LOCK: usize = 11;
 const WRITER_LOCK: usize = 12;
 const WRITER_HOLD: usize = 13;
-const N: usize = 14;
+const ROOT_STATE: usize = 14;
+const NAMEI_INIT: usize = 15;
+const WALK_BODY: usize = 16;
+const N: usize = 17;
 static NS: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
 static CNT: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
 static DCACHE_HIT: AtomicU64 = AtomicU64::new(0);
@@ -30,6 +33,7 @@ static NAME: [&[u8]; N] = [
     b"may-lookup", b"child-lookup", b"symlink", b"dcache-probe", b"inode-snapshot",
     b"hash-walk", b"ref-pin", b"revalidate", b"slow-lookup",
     b"backend-lookup", b"dentry-install", b"parent-lock", b"writer-lock", b"writer-hold",
+    b"root-state", b"namei-init", b"walk-body",
 ];
 
 fn now_ns() -> u64 {
@@ -38,7 +42,7 @@ fn now_ns() -> u64 {
     #[cfg(target_arch = "aarch64")] { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
 }
 
-pub(crate) struct Span(usize, u64);
+pub struct Span(usize, u64);
 
 impl Span {
     #[inline]
@@ -67,6 +71,9 @@ pub(crate) fn dentry_install() -> Span { Span::start(DENTRY_INSTALL) }
 pub(crate) fn parent_lock() -> Span { Span::start(PARENT_LOCK) }
 pub(crate) fn writer_lock() -> Span { Span::start(WRITER_LOCK) }
 pub(crate) fn writer_hold() -> Span { Span::start(WRITER_HOLD) }
+pub fn root_state() -> Span { Span::start(ROOT_STATE) }
+pub(crate) fn namei_init() -> Span { Span::start(NAMEI_INIT) }
+pub(crate) fn walk_body() -> Span { Span::start(WALK_BODY) }
 
 pub(crate) fn dcache_hit() { DCACHE_HIT.fetch_add(1, Ordering::Relaxed); }
 pub(crate) fn dcache_negative() { DCACHE_NEGATIVE.fetch_add(1, Ordering::Relaxed); }

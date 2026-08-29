@@ -103,11 +103,18 @@ pub fn resolve_at_path_cred(dirfd: i32, raw: &str, flags: vfs::LookupFlags, cred
 
 /// # C: O(components × dir-lookup) + O(symlinks)
 fn resolve_at_path_cred_once(dirfd: i32, raw: &str, mut flags: vfs::LookupFlags, cred: vfs::Cred) -> Result<vfs::VfsPath, i64> {
-    // `true`: the plain `*at` family ignores dirfd entirely for an absolute
-    // pathname (Linux `path_init`), so an open non-directory or a
-    // closed/invalid dirfd must not error here.
-    let (mid, base) = dirfd_base(dirfd, b"resolve_at_path", raw, true)?;
+    // Linux `path_init` acquires the resolution root once and uses that same
+    // path for an absolute pathname; it does not fetch or validate dirfd.
+    // Keeping the root pair here also avoids the old absolute-path double
+    // call through `dirfd_base`.
     let (root, beneath) = resolution_root_vfs().ok_or(-(Errno::Enoent.as_i32() as i64))?;
+    let (mid, base) = if raw.as_bytes().first() == Some(&b'/') {
+        (root.mnt_id, root.dentry.clone())
+    } else {
+        // `true`: the plain `*at` family ignores dirfd for absolute paths;
+        // relative paths still validate and use the caller's dirfd.
+        dirfd_base(dirfd, b"resolve_at_path", raw, true)?
+    };
     flags.beneath = flags.beneath || beneath;
     vfs::path_lookup_at_root_cred(base, mid, root.dentry, root.mnt_id, raw, flags, cred)
         .map_err(|e| {
