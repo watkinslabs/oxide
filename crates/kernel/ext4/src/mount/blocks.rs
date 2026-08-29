@@ -23,7 +23,14 @@ impl Mount {
         let ra = self.behaviour().inode_readahead_blks;
         if ra != 0 {
             let bs = self.sb.block_size as u64;
-            let table_blocks = (u64::from(self.sb.inodes_per_group)
+            // Linux ext4_iget does not readahead inode-table blocks belonging
+            // only to the never-used tail (`bg_itable_unused`).  On lazy
+            // initialized groups those blocks are deliberately not valid
+            // inode contents yet, so warming them wastes I/O and cache space.
+            let itable_unused = u64::from(gdt::itable_unused(&self.state.lock().gdt_buf, group, &self.sb))
+                .min(u64::from(self.sb.inodes_per_group));
+            let live_inodes = u64::from(self.sb.inodes_per_group).saturating_sub(itable_unused);
+            let table_blocks = (live_inodes
                 .saturating_mul(u64::from(self.sb.inode_size))
                 .saturating_add(bs - 1)) / bs;
             let target = off_in_table / bs;
