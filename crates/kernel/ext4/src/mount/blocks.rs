@@ -14,10 +14,8 @@ impl Mount {
         #[cfg(not(target_os = "oxide-kernel"))]
         if self.should_fail_inode_read_for_tests() { return Err(MountError::BlockIo); }
         let (group, idx) = gdt::locate_inode(&self.sb, ino)?;
-        let gd = {
-            let g = self.state.lock();
-            gdt::parse_descriptor(&g.gdt_buf, group, &self.sb)?
-        };
+        let gdt_bytes = self.read_gdt_bytes()?;
+        let gd = gdt::parse_descriptor(&gdt_bytes, group, &self.sb)?;
         let off_in_table = (idx as u64) * (self.sb.inode_size as u64);
         let byte_off = gd.inode_table * (self.sb.block_size as u64) + off_in_table;
         let ra = self.behaviour().inode_readahead_blks;
@@ -27,7 +25,8 @@ impl Mount {
             // only to the never-used tail (`bg_itable_unused`).  On lazy
             // initialized groups those blocks are deliberately not valid
             // inode contents yet, so warming them wastes I/O and cache space.
-            let itable_unused = u64::from(gdt::itable_unused(&self.state.lock().gdt_buf, group, &self.sb))
+            let gdt_bytes = self.read_gdt_bytes()?;
+            let itable_unused = u64::from(gdt::itable_unused(&gdt_bytes, group, &self.sb))
                 .min(u64::from(self.sb.inodes_per_group));
             let live_inodes = u64::from(self.sb.inodes_per_group).saturating_sub(itable_unused);
             let table_blocks = (live_inodes
