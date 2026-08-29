@@ -178,6 +178,17 @@ fn extent_backed_60_byte_symlink_is_not_fast() {
 }
 
 #[test]
+fn inline_data_symlink_is_not_fast() {
+    let sb = fake_sb_inode_size(256);
+    let mut buf = make_inode_buf(256, S_IFLNK | 0o777, 5, 0, [0; I_BLOCK_LEN]);
+    buf[0x20..0x24].copy_from_slice(&EXT4_INLINE_DATA_FL.to_le_bytes());
+    buf[0x28..0x2D].copy_from_slice(b"wrong");
+    let ino = Inode::parse(&buf, &sb).expect("parse");
+    assert!(ino.is_link());
+    assert!(ino.fast_symlink_target().is_none());
+}
+
+#[test]
 fn extent_child_depth_bounds_descent() {
     // Valid step: child exactly one level shallower.
     assert!(extent_child_depth_ok(5, 4));

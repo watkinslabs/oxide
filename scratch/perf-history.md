@@ -71,6 +71,9 @@ that artifact is regenerated.
 | E4-08 current-main rerun / `bddf678a4` | 1,367,367 | 5,606 | 4,099 | 21,548 | — | 11,007 | 287 | 2,716 | GNOME Shell marker complete at 30s; SMP=1; successful repeat after one non-reproducible EIO boot; no new code change or gain claimed |
 | E4-08 parent-image create / `1f6f40eca` | 1,368,039 | 5,604 | 4,096 | 21,115 | — | 11,017 | 288 | 3,138 | GNOME Shell marker complete at 30s; SMP=1; canonical VFS regular-file create reuses the locked parent image; correctness lane, no aggregate gain claimed |
 
+| B2927 merged-main control / `cce11f519` | 1,368,738 | 6,478 | 4,733 | 23,846 | — | 11,365 | 317 | 4,394 | fresh merged-main control after htree owner fix; GNOME Shell marker complete at 37.2s; colord SQLite disk-I/O error still reproduced; no whole-boot gain attributed to B2927 |
+| B2929 fast-symlink guarded / working tree | 1,368,794 | 6,004 | 4,386 | 22,572 | — | 10,972 | 264 | 3,601 | Linux i_link cache with EXT4_INLINE_DATA_FL guard; GNOME Shell marker complete at 33.6s; symlink phase 2,197ms -> 2,080ms; colord SQLite disk-I/O error still reproduced; no whole-boot gain claimed |
+
 The B2709 `munmap` result is a material improvement over B2699: 71,407 ns
 to 21,426 ns (about 70% lower), and 52x to 16x the host baseline. The B2708
 row is retained even though its `newfstatat` change stayed within harness
