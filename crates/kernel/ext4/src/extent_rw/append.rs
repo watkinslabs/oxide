@@ -144,21 +144,6 @@ impl Mount {
         Ok((physical, tail))
     }
 
-    /// Map `logical` as a preallocated UNWRITTEN block (no data I/O) — the
-    /// O(1)-write fallocate path. If the block is already mapped this is a no-op.
-    /// # C: O(N_extents) + 1 alloc
-    pub(super) fn map_unwritten_block_inner(&self, ino: u32, logical: u32, new_size: u64) -> Result<u32, MountError> {
-        self.map_unwritten_block_inner_with_physical(ino, logical, new_size, None)
-    }
-
-    pub(super) fn map_unwritten_block_inner_with_physical(
-        &self, ino: u32, logical: u32, new_size: u64, physical: Option<u64>,
-    ) -> Result<u32, MountError> {
-        let (mut ino_bytes, ino_byte_off) = self.read_inode_bytes(ino)?;
-        self.map_unwritten_block_inner_with_inode_bytes(
-            ino, &mut ino_bytes, ino_byte_off, logical, new_size, physical)
-    }
-
     /// Map one unwritten block using an inode image already carried by the
     /// caller. The image is updated by `persist_inode_after_append`, so a
     /// multi-block fallocate request does not reread the inode table for every
