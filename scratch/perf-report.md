@@ -1,34 +1,34 @@
 # Syscall and fault cost vs the host Linux kernel
 
 oxide: /home/nd/oxide/kernel/target/perf-report-x86_64.log
-boot totals: 1367140 syscalls, 6653 ms on CPU, 4866 ns average
+boot totals: 1368243 syscalls, 6485 ms on CPU, 4739 ns average
 
 | operation | oxide ns | linux ns | ratio | | verdict |
 |---|---:|---:|---:|---|---|
-| newfstatat | 19,635 | 788 | 25x | ###### | SEVERE |
-| recvfrom | 15,098 | 776 | 19x | ##### | BAD |
-| munmap | 23,709 | 1,382 | 17x | #### | BAD |
-| recvmsg | 10,945 | 776 | 14x | ### | BAD |
-| write fault, page absent | 15,893 | 1,227 | 13x | ### | BAD |
-| read | 4,738 | 518 | 9x | ## | BAD |
-| openat | 8,588 | 994 | 9x | ## | BAD |
-| close | 4,575 | 628 | 7x | ## | BAD |
-| mprotect | 8,242 | 1,180 | 7x | ## | BAD |
-| mmap | 5,985 | 1,382 | 4x | # | slow |
+| newfstatat | 19,479 | 788 | 25x | ###### | SEVERE |
+| recvfrom | 13,453 | 776 | 17x | #### | BAD |
+| munmap | 23,780 | 1,382 | 17x | #### | BAD |
+| write fault, page absent | 14,748 | 1,227 | 12x | ### | BAD |
+| recvmsg | 8,451 | 776 | 11x | ### | BAD |
+| read | 4,956 | 518 | 10x | ## | BAD |
+| openat | 8,697 | 994 | 9x | ## | BAD |
+| mprotect | 8,577 | 1,180 | 7x | ## | BAD |
+| close | 4,291 | 628 | 7x | ## | BAD |
+| mmap | 5,993 | 1,382 | 4x | # | slow |
 
 ## Measured, not compared
 
 | operation | oxide ns | why no ratio |
 |---|---:|---|
-| writev | 2,070,449 | console output; fbcon scrolls the framebuffer, host baseline writes to /dev/null |
+| writev | 2,060,240 | console output; fbcon scrolls the framebuffer, host baseline writes to /dev/null |
 
 ## Block device
 
 | op | count | total ms | avg |
 |---|---:|---:|---:|
-| read | 526 | 262 | 499.5 us |
-| write | 8,096 | 3,075 | 379.8 us |
-| other | 2 | 0 | 32.3 us |
+| read | 526 | 272 | 517.8 us |
+| write | 8,071 | 3,456 | 428.3 us |
+| other | 2 | 0 | 19.9 us |
 
 Both sides are measured. The host figure is a tight loop over one shape of the call; the oxide figure is the average over every such call a real desktop boot made. Read a ratio as an order of magnitude, not a score.
 
