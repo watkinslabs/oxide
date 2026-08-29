@@ -1,4 +1,5 @@
-use super::{consume_group_prealloc_block, group_prealloc_order, inode_pa_blocks, select_group_pa, trim_group_preallocations,
+use super::{consume_group_prealloc_block, group_prealloc_order, inode_pa_blocks, reinsert_group_preallocs,
+            select_group_pa, trim_group_preallocations,
             GroupPrealloc, InodePrealloc};
 use alloc::vec;
 
@@ -66,4 +67,14 @@ fn locality_pa_consumption_preserves_contiguous_remaining_segments() {
     assert_eq!(entries[1].blocks, vec![200]);
     assert_eq!(entries[2].blocks, vec![202]);
     assert!(!consume_group_prealloc_block(&mut entries, 999));
+}
+
+#[test]
+fn locality_pa_tail_is_rebucketed_after_consumption() {
+    let mut source = vec![GroupPrealloc { blocks: (100..116).collect() }];
+    assert!(consume_group_prealloc_block(&mut source, 100));
+    let mut map = alloc::collections::BTreeMap::new();
+    reinsert_group_preallocs(&mut map, 0, 7, source);
+    assert!(map.get(&(0, 7, 4)).is_none());
+    assert_eq!(map.get(&(0, 7, 3)).unwrap()[0].blocks.len(), 15);
 }
