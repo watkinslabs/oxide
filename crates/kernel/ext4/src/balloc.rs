@@ -574,12 +574,20 @@ fn set_bit(bitmap: &mut [u8], bit: usize) {
 fn find_contiguous_run(bitmap: &[u8], max_bits: u32, count: u32, first_phys: u64,
                        stripe: Option<u32>) -> Option<u32> {
     if count == 0 || count > max_bits { return None; }
+    // ext4_mb_measure_extent() does not scan an unbounded number of free
+    // extents.  Linux accepts the best candidate after these limits: larger
+    // candidates need fewer samples, while unsatisfied candidates get more
+    // chances to find a run that can satisfy the request.
+    const MAX_TO_SCAN: u32 = 200;
+    const MIN_TO_SCAN: u32 = 10;
     let mut best_aligned: Option<(u32, u32)> = None;
     let mut best_any: Option<(u32, u32)> = None;
+    let mut found = 0u32;
     let mut run_start = 0;
     let mut run_len = 0;
-    let mut consider = |start: u32, len: u32| {
-        if len < count { return; }
+    let mut consider = |start: u32, len: u32| -> bool {
+        if len < count { return false; }
+        found += 1;
         let candidate = start;
         let replace = |best: &mut Option<(u32, u32)>| {
             if best.is_none_or(|(old_len, old_start)|
@@ -601,6 +609,17 @@ fn find_contiguous_run(bitmap: &[u8], max_bits: u32, count: u32, first_phys: u64
                 }
             }
         }
+        // An exact extent is Linux's immediate winner.  For an aligned
+        // request, an exactly-sized aligned subrange is equally definitive.
+        let aligned_exact = best_aligned.is_some_and(|(aligned_len, _)| aligned_len == count);
+        if len == count || aligned_exact {
+            return true;
+        }
+        let satisfied = best_aligned.map_or(len >= count, |(available, _)| available >= count);
+        if (satisfied && found >= MIN_TO_SCAN) || (!satisfied && found >= MAX_TO_SCAN) {
+            return true;
+        }
+        false
     };
     for bit in 0..=max_bits {
         if bit < max_bits && bitmap[bit as usize >> 3] & (1u8 << (bit & 7)) == 0 {
@@ -608,8 +627,9 @@ fn find_contiguous_run(bitmap: &[u8], max_bits: u32, count: u32, first_phys: u64
             run_len += 1;
             continue;
         }
-        if run_len != 0 { consider(run_start, run_len); }
+        let should_stop = if run_len != 0 { consider(run_start, run_len) } else { false };
         run_len = 0;
+        if should_stop { break; }
     }
     if let Some((_, start)) = best_aligned { return Some(start); }
     best_any.map(|(_, start)| start)
