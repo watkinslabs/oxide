@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use vfs::{FileType, Inode};
 use vfs::xattr::XattrError;
@@ -114,6 +114,10 @@ pub(crate) struct Ext4StatData {
     /// single in-core inode rather than maintaining a name-side cache.
     pub(crate) raw: sync::Spinlock<Arc<crate::inode::Inode>, sync::Inode>,
     pub(crate) raw_valid: AtomicBool,
+    /// Last successful linear-directory block. Linux's ext4 inode keeps this
+    /// hint so repeated namespace walks do not rescan a multi-block directory
+    /// from block zero every time.
+    pub(crate) dir_start_lookup: AtomicU32,
 }
 
 impl Ext4StatData {

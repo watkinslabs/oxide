@@ -89,7 +89,12 @@ impl InodeOps for Ext4StatInodeOps {
         #[cfg(feature = "debug-resolve-cost")]
         let _dir_lookup_cost = vfs::resolve_cost::ext4_dir_lookup();
         let child = if cached {
-            d.st.mount.lookup_in_dir(&raw, name.as_bytes())
+            let start = d.dir_start_lookup.load(core::sync::atomic::Ordering::Relaxed);
+            let found = d.st.mount.lookup_in_dir_hint(&raw, name.as_bytes(), start);
+            if let Ok((_, block)) = found {
+                d.dir_start_lookup.store(block, core::sync::atomic::Ordering::Relaxed);
+            }
+            found.map(|(ino, _)| ino)
         } else {
             let (fresh, child) = d.st.lookup_child_ino_with_inode(d.ino, name)
                 .map_err(|e| if matches!(e, crate::MountError::NotFound) {
@@ -454,7 +459,8 @@ pub(crate) fn build_stat_inode(
     let data = Arc::new(Ext4StatData { st, ino, ft, size, canonical,
         raw_flags: core::sync::atomic::AtomicU32::new(raw_flags),
         raw: ::sync::Spinlock::new(raw),
-        raw_valid: core::sync::atomic::AtomicBool::new(true), });
+        raw_valid: core::sync::atomic::AtomicBool::new(true),
+        dir_start_lookup: core::sync::atomic::AtomicU32::new(0), });
     let weak_sb = data.st.sb.lock().clone();
     let xattrs = vfs::SimpleXattrs::new();
     data.st.mount.load_xattrs(ino, &xattrs);
