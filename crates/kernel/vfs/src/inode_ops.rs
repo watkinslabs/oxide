@@ -120,6 +120,14 @@ pub trait InodeOps: Send + Sync {
         Err(VfsError::Eperm)
     }
 
+    /// `i_op->create` after the VFS has already resolved the negative dentry
+    /// and holds the parent directory exclusive. Linux passes that proof to
+    /// the filesystem callback; backends that need a direct, unlocked helper
+    /// keep using `create` with their own existence check.
+    fn create_unchecked(&self, inode: &Inode, name: &str, mode: u32, ctx: &CreateCtx) -> KResult<InodeRef> {
+        self.create(inode, name, mode, ctx)
+    }
+
     /// `i_op->mkdir` — create a child directory `name`. `ctx` carries the mount
     /// idmap + caller cred + umask. Default `Eperm` (see `create`).
     /// # C: backend-dependent
