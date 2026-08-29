@@ -281,12 +281,16 @@ impl Mount {
         self.create_op(|m| {
             let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
             let new_ino = m.alloc_inode_in_transaction(parent_group)?;
-            match parent {
-                Some(parent) => m.init_inode_with_parent(parent, new_ino, S_IFLNK | 0o777, 1, uid, gid)?,
-                None => m.init_inode(parent_ino, new_ino, S_IFLNK | 0o777, 1, uid, gid)?,
+            let mut bytes = match parent {
+                Some(parent) => m.init_inode_with_parent_bytes(parent, new_ino, S_IFLNK | 0o777, 1, uid, gid)?.1,
+                None => {
+                    // Unchecked VFS callers always provide the parent image;
+                    // retain the checked helper for direct mount callers.
+                    let parent = m.read_inode(parent_ino)?;
+                    m.init_inode_with_parent_bytes(&parent, new_ino, S_IFLNK | 0o777, 1, uid, gid)?.1
+                }
             };
             if target.len() <= I_BLOCK_LEN {
-                let (mut bytes, _off) = m.read_inode_bytes(new_ino)?;
                 for b in &mut bytes[0x28..0x28 + I_BLOCK_LEN] {
                     *b = 0;
                 }
@@ -296,10 +300,9 @@ impl Mount {
                 bytes[0x6C..0x70].copy_from_slice(&((n >> 32) as u32).to_le_bytes());
                 m.write_inode_bytes(new_ino, &bytes)?;
             } else {
-                let (mut b, _o) = m.read_inode_bytes(new_ino)?;
-                let fl = u32::from_le_bytes([b[0x20], b[0x21], b[0x22], b[0x23]]) | 0x0008_0000;
-                b[0x20..0x24].copy_from_slice(&fl.to_le_bytes());
-                m.write_inode_bytes(new_ino, &b)?;
+                let fl = u32::from_le_bytes([bytes[0x20], bytes[0x21], bytes[0x22], bytes[0x23]]) | 0x0008_0000;
+                bytes[0x20..0x24].copy_from_slice(&fl.to_le_bytes());
+                m.write_inode_bytes(new_ino, &bytes)?;
                 let mut buf = vec![0u8; bs];
                 buf[..target.len()].copy_from_slice(target);
                 m.append_block(new_ino, &buf)?;

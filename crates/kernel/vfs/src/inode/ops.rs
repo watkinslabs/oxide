@@ -53,8 +53,12 @@ impl Inode {
     }
     /// `i_op->symlink`. # C: backend-dependent
     pub fn symlink_child(&self, name: &str, target: &[u8], ctx: &CreateCtx) -> KResult<()> { self.i_op.symlink(self, name, target, ctx) }
+    /// `i_op->symlink` after negative-dentry resolution and parent locking.
+    pub fn symlink_child_unchecked(&self, name: &str, target: &[u8], ctx: &CreateCtx) -> KResult<()> { self.i_op.symlink_unchecked(self, name, target, ctx) }
     /// `i_op->mknod`. # C: backend-dependent
     pub fn mknod_child(&self, name: &str, mode: u16, rdev: u32, ctx: &CreateCtx) -> KResult<()> { self.i_op.mknod(self, name, mode, rdev, ctx) }
+    /// `i_op->mknod` after negative-dentry resolution and parent locking.
+    pub fn mknod_child_unchecked(&self, name: &str, mode: u16, rdev: u32, ctx: &CreateCtx) -> KResult<()> { self.i_op.mknod_unchecked(self, name, mode, rdev, ctx) }
     /// `i_op->link`. # C: backend-dependent
     pub fn link_child(&self, target: &InodeRef, name: &str, ctx: &CreateCtx) -> KResult<()> { self.i_op.link(self, target, name, ctx) }
     /// `i_op->rename`. # C: backend-dependent

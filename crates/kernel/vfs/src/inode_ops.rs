@@ -167,11 +167,25 @@ pub trait InodeOps: Send + Sync {
         Err(VfsError::Eperm)
     }
 
+    /// `mknod` after the VFS has resolved the negative final dentry and holds
+    /// the parent directory exclusive. Linux passes that proof to the
+    /// filesystem instead of re-walking the name under the lock.
+    fn mknod_unchecked(&self, inode: &Inode, name: &str, mode: u16, rdev: u32, ctx: &CreateCtx) -> KResult<()> {
+        self.mknod(inode, name, mode, rdev, ctx)
+    }
+
     /// `i_op->symlink` — create a symlink child `name` with body `target`.
     /// `ctx` carries the mount idmap + caller cred (symlinks ignore umask).
     /// Default `Eperm` (see `create`). # C: backend-dependent
     fn symlink(&self, _inode: &Inode, _name: &str, _target: &[u8], _ctx: &CreateCtx) -> KResult<()> {
         Err(VfsError::Eperm)
+    }
+
+    /// `symlink` after the VFS has resolved the negative final dentry and
+    /// holds the parent directory exclusive. Direct backend callers retain
+    /// the checked `symlink` entry point.
+    fn symlink_unchecked(&self, inode: &Inode, name: &str, target: &[u8], ctx: &CreateCtx) -> KResult<()> {
+        self.symlink(inode, name, target, ctx)
     }
 
     /// `i_op->link` — hard-link `target` into this directory as `name`. `ctx`

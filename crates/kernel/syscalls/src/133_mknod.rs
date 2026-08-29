@@ -97,9 +97,9 @@ pub(crate) fn mknod_impl(dirfd: i32, raw: String, mode: u16, dev: u32) -> i64 {
         let _g = parent.inode.inode_lock();
         if ntype == NodeType::Reg {
             // POSIX-compat: mknod-with-regular-type = open(O_CREAT) equivalent.
-            parent.inode.create_child(&name, perm as u32, &ctx).map(|_| ())
+            parent.inode.create_child_unchecked(&name, perm as u32, &ctx).map(|_| ())
         } else {
-            parent.inode.mknod_child(&name, ntype.ifmt() | perm, ntype.node_dev(dev), &ctx)
+            parent.inode.mknod_child_unchecked(&name, ntype.ifmt() | perm, ntype.node_dev(dev), &ctx)
         }
     };
     match r {

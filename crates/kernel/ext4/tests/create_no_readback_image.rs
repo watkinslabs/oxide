@@ -59,6 +59,7 @@ fn create_survives_failing_inode_readback() {
     let st = m.state();
     let dir = st.lookup_inode_any(b"/").expect("root inode");
     let ctx = vfs::CreateCtx::root();
+    st.mount.reset_inode_read_count_for_tests();
     st.mount.fail_next_inode_read_for_tests();
     let created = dir.create_child("user-1000.journal", 0o640, &ctx)
         .expect("create must not depend on reading the inode back");
