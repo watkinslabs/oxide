@@ -102,6 +102,11 @@ pub(crate) fn ext4_rename2(
     }
     d.invalidate_raw();
     if !core::ptr::eq(inode, new_dir) { nd.invalidate_raw(); }
+    // A rename can append a destination leaf (or a whiteout can append in the
+    // source directory). Keep the live VFS directory sizes aligned with the
+    // journaled ext4 inode images, as ext4_append() does for Linux inodes.
+    d.refresh_namespace_size(inode);
+    if !core::ptr::eq(inode, new_dir) { nd.refresh_namespace_size(new_dir); }
     Ok(())
 }
 

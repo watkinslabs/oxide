@@ -162,6 +162,12 @@ ownership change shaped after Linux's in-core namespace operation; the existing
 fallback remains for noncanonical/test callers. Focused create/ACL, real-root,
 unit, and e2fsck harnesses are green; no aggregate speed gain is claimed.
 
+The initial directory-block append now publishes the updated extent image into
+the live newly-created directory inode. Hardlink and rename paths also publish
+directory `i_size` after a possible append, so the VFS inode and ext4 image do
+not diverge after namespace growth. The inode-reuse regression and complete
+ext4 suite are green; this is a correctness closure, not a measured speed claim.
+
 The mkdir path also publishes `i_nlink` to the live VFS parent and updates the
 cached ext4 image from that same locked parent state. The serialized field and
 the in-memory field now advance together as in Linux `ext4_mkdir`/`inc_nlink`.
