@@ -276,6 +276,35 @@ fn concurrent_batched_handles_keep_fsck_clean() {
     assert!(ok1, "POST concurrent batched image is CORRUPT:\n{log1}");
 }
 
+/// A failed handle must roll back only its own frame while retaining an
+/// earlier successful handle in the same running transaction. This is the
+/// JBD2 buffer ownership failure case: the failed handle may not restore an
+/// older full inode-table/GDT image over the successful handle's bytes.
+#[test]
+fn failed_batched_handle_preserves_prior_handle() {
+    if File::open(CLEAN).is_err() { eprintln!("SKIP: no clean image"); return; }
+    if Command::new("e2fsck").arg("-V").output().is_err() { eprintln!("SKIP: no e2fsck"); return; }
+    let tmp = TempImage::new_large("balloc-batched-failure");
+    std::fs::copy(CLEAN, &tmp).expect("copy image");
+    let (ok0, log0) = e2fsck_clean(&tmp);
+    assert!(ok0, "PRE image dirty:\n{log0}");
+    {
+        let f = OpenOptions::new().read(true).write(true).open(&tmp).unwrap();
+        let cap = f.metadata().unwrap().len() / SECTOR as u64;
+        let disk: Arc<dyn BlockDevice> = Arc::new(RwFileDisk { f: Mutex::new(f), cap });
+        let m = ext4::Mount::open(disk).expect("mount");
+        let dir = m.create_dir(2, b"batch-failure", 0o755, 0, 0).expect("mkdir");
+        m.begin_batch();
+        let first = m.create_file(dir, b"kept", 0o644, 0, 0).expect("first create");
+        m.fail_next_inode_write_for_tests();
+        assert!(m.create_file(dir, b"rolled-back", 0o644, 0, 0).is_err());
+        m.commit_batch().expect("commit batch");
+        assert_ne!(m.read_inode(first).expect("kept inode").mode, 0);
+    }
+    let (ok1, log1) = e2fsck_clean(&tmp);
+    assert!(ok1, "POST failed-batched image is CORRUPT:\n{log1}");
+}
+
 #[test]
 fn arm_hwdb_rewrite_and_replacement_keep_fsck_clean() {
     let root = configured_root(ARM_ROOT);
