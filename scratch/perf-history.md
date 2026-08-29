@@ -55,6 +55,8 @@ that artifact is regenerated.
 | E4-08 special inode blocks reread / working tree | 1,367,244 | 6,219 | 4,549 | 23,563 | — | 11,546 | 526 | 3,219 | special inode construction reuses parsed `i_blocks` instead of rereading the inode table; GNOME Shell marker complete; aggregate within variance, attribution-only |
 | E4-08 htree byte matcher / working tree | 1,368,367 | 6,377 | 4,660 | 23,331 | — | 18,414 | 526 | 3,457 | indexed-leaf ordinary-name lookup now uses the direct byte matcher; GNOME image has no indexed dirs (htree phase count 0), so no aggregate gain claimed; targeted htree image suite 3/3 |
 | E4-08 lazy xattr / working tree | 1,368,308 | 6,048 | 4,420 | 24,210 | — | 11,500 | 526 | 2,987 | inode xattrs load on first xattr/ACL/list operation through a sleeping per-inode owner; GNOME Shell marker complete; within variance, no aggregate gain claimed; SMP=1 |
+| E4-08 mutation inode image-r1 / `114daebf0` | 1,368,126 | 5,971 | 4,365 | 23,284 | — | 11,509 | 526 | 3,282 | reuse parsed directory `i_flags`/generation instead of a second inode-table read; GNOME Shell marker complete; SMP=1; no aggregate gain claimed |
+| E4-08 mutation inode image-r2 / `114daebf0` | 1,368,055 | 6,013 | 4,395 | 23,369 | — | 11,667 | 526 | 3,219 | repeat; GNOME Shell marker complete; SMP=1; no aggregate gain claimed |
 
 The B2709 `munmap` result is a material improvement over B2699: 71,407 ns
 to 21,426 ns (about 70% lower), and 52x to 16x the host baseline. The B2708
