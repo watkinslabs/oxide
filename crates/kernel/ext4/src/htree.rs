@@ -55,10 +55,16 @@ impl Mount {
         for leaf_lblk in leaves {
             let leaf = self.read_file_block_meta_shared(dir_node, leaf_lblk)?;
             if leaf.len() < usable { return Ok(HtreeLookup::Fallback); }
-            let found = dir::lookup_matching(&leaf[..usable], |entry| {
-                self.names_equal(dir_node, entry, name)
-            })?.map(|entry| entry.inode);
-            if let Some(ino) = found { return Ok(HtreeLookup::Found(ino)); }
+            if dir_node.i_flags & crate::inode::flags::EXT4_CASEFOLD_FL == 0 {
+                if let Some(ino) = dir::lookup_bytes(&leaf[..usable], name)? {
+                    return Ok(HtreeLookup::Found(ino));
+                }
+            } else {
+                let found = dir::lookup_matching(&leaf[..usable], |entry| {
+                    self.names_equal(dir_node, entry, name)
+                })?.map(|entry| entry.inode);
+                if let Some(ino) = found { return Ok(HtreeLookup::Found(ino)); }
+            }
         }
         Ok(HtreeLookup::Miss)
     }
