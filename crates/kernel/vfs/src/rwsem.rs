@@ -102,7 +102,11 @@ impl<C: LockClass> VfsRwsem<C> {
                 self.writers_waiting.fetch_sub(1, Ordering::Relaxed);
                 self.state.store(WRITER, Ordering::Release);
                 drop(gate);
-                return VfsRwsemWriteGuard { lock: self };
+                return VfsRwsemWriteGuard {
+                    lock: self,
+                    #[cfg(feature = "debug-resolve-cost")]
+                    _hold_cost: crate::resolve_cost::writer_hold(),
+                };
             }
             self.park(gate, true);
         }
@@ -147,7 +151,11 @@ impl<C: LockClass> core::ops::Deref for VfsRwsemReadGuard<'_, C> {
     }
 }
 
-pub struct VfsRwsemWriteGuard<'a, C: LockClass> { lock: &'a VfsRwsem<C> }
+pub struct VfsRwsemWriteGuard<'a, C: LockClass> {
+    lock: &'a VfsRwsem<C>,
+    #[cfg(feature = "debug-resolve-cost")]
+    _hold_cost: crate::resolve_cost::Span,
+}
 impl<C: LockClass> Drop for VfsRwsemWriteGuard<'_, C> { fn drop(&mut self) { self.lock.write_unlock(); } }
 impl<C: LockClass> core::ops::Deref for VfsRwsemWriteGuard<'_, C> {
     type Target = ();

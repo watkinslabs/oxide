@@ -997,8 +997,9 @@ help:
 # native benchmark in tools/perf/linux-baseline.c. Exits non-zero when any
 # operation is 20x the host or worse.
 PERF_LOG ?= $(CURDIR)/target/perf-report-$(ARCH).log
+PERF_FEATURES ?= debug-syscost,debug-faultcost
 perf-report:
-	$(MAKE) FEATURES=debug-syscost,debug-faultcost SMP=$(SMP) qemu-x86-image
+	$(MAKE) FEATURES=$(PERF_FEATURES) SMP=$(SMP) qemu-x86-image
 	OXIDE_QEMU_HEADLESS=1 OXIDE_SERIAL_LOG=$(PERF_LOG) \
 	  tools/perf/boot-until.sh "$(PERF_LOG)" 'GNOME Shell started' 180 \
 	  $(MAKE) SMP=$(SMP) qemu-x86-existing

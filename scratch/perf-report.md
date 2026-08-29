@@ -1,34 +1,34 @@
 # Syscall and fault cost vs the host Linux kernel
 
 oxide: /home/nd/oxide/kernel/target/perf-report-x86_64.log
-boot totals: 1368031 syscalls, 6380 ms on CPU, 4663 ns average
+boot totals: 1367140 syscalls, 6653 ms on CPU, 4866 ns average
 
 | operation | oxide ns | linux ns | ratio | | verdict |
 |---|---:|---:|---:|---|---|
-| newfstatat | 19,814 | 788 | 25x | ###### | SEVERE |
-| recvfrom | 14,054 | 776 | 18x | #### | BAD |
-| munmap | 23,376 | 1,382 | 17x | #### | BAD |
-| write fault, page absent | 14,577 | 1,227 | 12x | ### | BAD |
-| recvmsg | 8,534 | 776 | 11x | ### | BAD |
-| read | 5,004 | 518 | 10x | ## | BAD |
-| openat | 8,918 | 994 | 9x | ## | BAD |
-| mprotect | 8,031 | 1,180 | 7x | ## | BAD |
-| close | 3,805 | 628 | 6x | # | BAD |
-| mmap | 5,923 | 1,382 | 4x | # | slow |
+| newfstatat | 19,635 | 788 | 25x | ###### | SEVERE |
+| recvfrom | 15,098 | 776 | 19x | ##### | BAD |
+| munmap | 23,709 | 1,382 | 17x | #### | BAD |
+| recvmsg | 10,945 | 776 | 14x | ### | BAD |
+| write fault, page absent | 15,893 | 1,227 | 13x | ### | BAD |
+| read | 4,738 | 518 | 9x | ## | BAD |
+| openat | 8,588 | 994 | 9x | ## | BAD |
+| close | 4,575 | 628 | 7x | ## | BAD |
+| mprotect | 8,242 | 1,180 | 7x | ## | BAD |
+| mmap | 5,985 | 1,382 | 4x | # | slow |
 
 ## Measured, not compared
 
 | operation | oxide ns | why no ratio |
 |---|---:|---|
-| writev | 2,043,500 | console output; fbcon scrolls the framebuffer, host baseline writes to /dev/null |
+| writev | 2,070,449 | console output; fbcon scrolls the framebuffer, host baseline writes to /dev/null |
 
 ## Block device
 
 | op | count | total ms | avg |
 |---|---:|---:|---:|
-| read | 526 | 246 | 468.8 us |
-| write | 8,152 | 2,870 | 352.2 us |
-| other | 2 | 0 | 23.8 us |
+| read | 526 | 262 | 499.5 us |
+| write | 8,096 | 3,075 | 379.8 us |
+| other | 2 | 0 | 32.3 us |
 
 Both sides are measured. The host figure is a tight loop over one shape of the call; the oxide figure is the average over every such call a real desktop boot made. Read a ratio as an order of magnitude, not a score.
 
