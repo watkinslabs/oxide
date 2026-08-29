@@ -297,8 +297,9 @@ impl Mount {
     /// on success, Ok(None) if the group is full per its descriptor.
     /// # C: O(block_size)
     fn try_alloc_in_group(&self, group: u32) -> Result<Option<u64>, MountError> {
-        // NB: serialized by the caller holding `op_lock` across the whole create
-        // operation (see create.rs) — concurrent creates can't pick same block.
+        let group_lock = self.group_lock(group);
+        // SAFETY: process context, with no spinlock held.
+        let _group_guard = unsafe { group_lock.lock() };
         let gd_orig = {
             let s = self.state.lock();
             gdt::parse_descriptor(&s.gdt_buf, group, &self.sb)?
@@ -357,6 +358,9 @@ impl Mount {
     fn try_alloc_run_in_group(&self, group: u32, count: u32)
         -> Result<Option<Vec<u64>>, MountError>
     {
+        let group_lock = self.group_lock(group);
+        // SAFETY: process context, with no spinlock held.
+        let _group_guard = unsafe { group_lock.lock() };
         let gd_orig = {
             let s = self.state.lock();
             gdt::parse_descriptor(&s.gdt_buf, group, &self.sb)?

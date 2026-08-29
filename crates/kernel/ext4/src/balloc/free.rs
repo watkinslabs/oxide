@@ -58,6 +58,9 @@ impl Mount {
     fn free_block_inner(&self, phys_blk: u64) -> Result<(), MountError> {
         self.run_journaled(|m| {
             let (group, bit) = m.locate_block(phys_blk)?;
+            let group_lock = m.group_lock(group);
+            // SAFETY: process context, with no spinlock held.
+            let _group_guard = unsafe { group_lock.lock() };
             let gd_orig = {
                 let s = m.state.lock();
                 gdt::parse_descriptor(&s.gdt_buf, group, &m.sb)?
