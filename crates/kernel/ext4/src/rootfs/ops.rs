@@ -284,7 +284,7 @@ impl RootfsState {
         if self.mount.lookup_path(link_path).is_ok() { return Err(vfs::VfsError::Eexist); }
         project_inherit_allows_child(&self.mount, parent_ino, ino)?;
         let name: alloc::vec::Vec<u8> = name_owned.to_vec();
-        self.mount.run_journaled(|m| {
+        self.mount.run_journaled_deferred(|m| {
             m.dir_link(parent_ino, &name, ino, ftype)?;
             m.adjust_nlink(ino, 1)?;
             // The inode now has a name → off the on-disk orphan list
@@ -306,7 +306,7 @@ impl RootfsState {
         let inode = self.mount.read_inode(target).map_err(|_| vfs::VfsError::Eio)?;
         if inode.is_dir() { return Err(vfs::VfsError::Eisdir); }
         let name = name.to_vec();
-        let out = self.mount.run_journaled(|m| m.unlink(pino, &name)).map_err(namei_error_from_mount)?;
+        let out = self.mount.run_journaled_deferred(|m| m.unlink(pino, &name)).map_err(namei_error_from_mount)?;
         self.after_unlink(out)
     }
 
@@ -339,7 +339,7 @@ impl RootfsState {
         let (pino, name) = self.parent_inode(path).ok_or(vfs::VfsError::Enoent)?;
         super::quota::release_existing_inode_usage(self, &inode)?;
         let name = name.to_vec();
-        if let Err(e) = self.mount.run_journaled(|m| m.rmdir(pino, &name)) {
+        if let Err(e) = self.mount.run_journaled_deferred(|m| m.rmdir(pino, &name)) {
             let _ = super::quota::rollback_existing_inode_release(self, &inode);
             return Err(namei_error_from_mount(e));
         }
@@ -358,7 +358,7 @@ impl RootfsState {
         project_inherit_allows_child(&self.mount, parent_ino, target)?;
         let name: alloc::vec::Vec<u8> = name_owned.to_vec();
         let ftype = dirent_dt(&inode);
-        self.mount.run_journaled(|m| {
+        self.mount.run_journaled_deferred(|m| {
             m.dir_link(parent_ino, &name, target, ftype)?;
             m.adjust_nlink(target, 1)?;
             Ok(())

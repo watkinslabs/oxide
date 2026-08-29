@@ -198,7 +198,7 @@ impl InodeOps for Ext4StatInodeOps {
         // dirent-remove + inode-bit-free that leaked the dir's data blocks and
         // never persisted the parent nlink drop.
         super::super::quota::release_existing_inode_usage(&d.st, &i)?;
-        if let Err(e) = mount.run_journaled(|m| m.rmdir(d.ino, name.as_bytes())) {
+        if let Err(e) = mount.run_journaled_deferred(|m| m.rmdir(d.ino, name.as_bytes())) {
             let _ = super::super::quota::rollback_existing_inode_release(&d.st, &i);
             return Err(super::regular::vfs_error_from_mount(e));
         }
@@ -251,7 +251,7 @@ impl InodeOps for Ext4StatInodeOps {
         // released by `evict_orphan`, not here — Linux keeps the inode
         // charged until `ext4_free_inode`/`ext4_truncate` run inside
         // `ext4_evict_inode`.
-        let out = mount.run_journaled(|m| m.unlink(d.ino, name.as_bytes()))
+        let out = mount.run_journaled_deferred(|m| m.unlink(d.ino, name.as_bytes()))
             .map_err(super::regular::vfs_error_from_mount)?;
         d.st.after_unlink(out)?;
         d.invalidate_raw();
@@ -278,7 +278,7 @@ impl InodeOps for Ext4StatInodeOps {
         // a blanket DT_REG that is then wrong on disk forever.
         let ftype = super::super::ops::dirent_dt(&src);
         let name_b = name.as_bytes();
-        d.st.mount.run_journaled(|m| {
+        d.st.mount.run_journaled_deferred(|m| {
             m.dir_link(d.ino, name_b, ino, ftype)?;
             m.adjust_nlink(ino, 1)?;
             m.orphan_del(ino)?;
