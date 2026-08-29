@@ -449,14 +449,20 @@ impl Mount {
         let reserved = reserve_hole_runs(
             self, first_lb, last_lb, &initial_extents, ino, cur_size, allow_prealloc)?;
         let mut reserved_at = vec![0usize; reserved.len()];
+        // Keep the inode/extent snapshot in-core for the common mapped-block
+        // path. Linux writeback carries one inode context through the extent
+        // walk; rereading the inode-table block for every logical block turns
+        // a clustered writeback BIO into serialized metadata I/O. Refresh it
+        // only after an operation that actually changes the extent state.
+        let mut current_inode = inode;
         let mut written = 0usize;
         for lb in first_lb..=last_lb {
             // An UNWRITTEN (fallocate-preallocated) extent must be converted to a
             // written extent before write_file_block (else it rejects with
             // NotFound). No-op for a written extent or a hole.
-            let inode2 = self.read_inode(ino)?;
-            let converted = self.convert_unwritten_at_cached(ino, lb, &inode2)?;
-            let inode2 = if converted { self.read_inode(ino)? } else { inode2 };
+            let converted = self.convert_unwritten_at_cached(ino, lb, &current_inode)?;
+            if converted { current_inode = self.read_inode(ino)?; }
+            let inode2 = current_inode;
             let blk_start_byte = (lb as u64) * bs;
             let in_blk_off = if blk_start_byte >= off { 0usize }
                              else { (off - blk_start_byte) as usize };
@@ -525,7 +531,7 @@ impl Mount {
                     }
                     return Err(e);
                 }
-                let inode3 = self.read_inode(ino)?;
+                current_inode = self.read_inode(ino)?;
                 if let Some((block, from_inode_pa, from_group_pa, group_cpu)) = pa_phys {
                     if from_inode_pa { let _ = self.consume_inode_prealloc(ino, lb); }
                     if from_group_pa {
@@ -534,7 +540,7 @@ impl Mount {
                     }
                 }
                 allocated.push(lb);
-                self.resolve_pblock(&inode3, lb)?
+                self.resolve_pblock(&current_inode, lb)?
             };
             pending.push((phys, blk));
             written += copy_len;
