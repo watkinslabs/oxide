@@ -67,7 +67,18 @@ impl File {
         let f = self.flags();
         let pos = if iocb.append { self.inode.size() } else { off as u64 };
         let buf = &buf[..self.write_limit(pos, buf.len())?];
-        let n = if f.contains(OpenFlags::O_NONBLOCK) || iocb.nowait {
+        let n = if f.contains(OpenFlags::O_DIRECT)
+            && matches!(self.inode.file_type(), FileType::Regular)
+        {
+            match self.f_op.direct_write_file(self, pos, buf) {
+                Some(result) => result?,
+                None => if f.contains(OpenFlags::O_NONBLOCK) || iocb.nowait {
+                    self.f_op.write_nonblock(&self.inode, pos, buf)?
+                } else {
+                    self.f_op.write(&self.inode, pos, buf)?
+                },
+            }
+        } else if f.contains(OpenFlags::O_NONBLOCK) || iocb.nowait {
             self.f_op.write_nonblock(&self.inode, pos, buf)?
         } else {
             self.f_op.write(&self.inode, pos, buf)?
@@ -135,7 +146,16 @@ impl File {
         let buf = &buf[..self.write_limit(off, buf.len())?];
         // D2: dispatch through the cached `file->f_op` (snapshotted at open).
         let nonblock = f.contains(OpenFlags::O_NONBLOCK) || iocb.nowait;
-        let n = self.f_op.write_more_file(self, off, buf, nonblock, iocb.more)?;
+        let n = if f.contains(OpenFlags::O_DIRECT)
+            && matches!(self.inode.file_type(), FileType::Regular)
+        {
+            match self.f_op.direct_write_file(self, off, buf) {
+                Some(result) => result?,
+                None => self.f_op.write_more_file(self, off, buf, nonblock, iocb.more)?,
+            }
+        } else {
+            self.f_op.write_more_file(self, off, buf, nonblock, iocb.more)?
+        };
         #[cfg(feature = "debug-zram-lifecycle")]
         klog::write_raw(b"[ZRAM-TEST] vfs-write-fop\n");
         // A backend that owns its own cursor (a transaction file, whose answer

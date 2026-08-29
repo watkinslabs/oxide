@@ -46,7 +46,18 @@ impl File {
     /// partial transcript, which is worse than none.
     /// # C: backend-dependent
     fn dispatch_read(&self, off: u64, buf: &mut [u8], nonblock: bool) -> KResult<usize> {
-        let n = if nonblock {
+        let n = if self.flags().contains(OpenFlags::O_DIRECT)
+            && matches!(self.inode.file_type(), FileType::Regular)
+        {
+            match self.f_op.direct_read_file(self, off, buf) {
+                Some(result) => result?,
+                None => if nonblock {
+                    self.f_op.read_nonblock_file(self, off, buf)?
+                } else {
+                    self.f_op.read_file(self, off, buf)?
+                },
+            }
+        } else if nonblock {
             self.f_op.read_nonblock_file(self, off, buf)?
         } else {
             self.f_op.read_file(self, off, buf)?
@@ -256,7 +267,18 @@ impl File {
         }
         let f = self.flags();
         // D2: dispatch through the cached `file->f_op` (snapshotted at open).
-        let n = if f.contains(OpenFlags::O_NONBLOCK) {
+        let n = if f.contains(OpenFlags::O_DIRECT)
+            && matches!(self.inode.file_type(), FileType::Regular)
+        {
+            match self.f_op.direct_read_file(self, off as u64, buf) {
+                Some(result) => result?,
+                None => if f.contains(OpenFlags::O_NONBLOCK) {
+                    self.f_op.read_nonblock(&self.inode, off as u64, buf)?
+                } else {
+                    self.f_op.read(&self.inode, off as u64, buf)?
+                },
+            }
+        } else if f.contains(OpenFlags::O_NONBLOCK) {
             self.f_op.read_nonblock(&self.inode, off as u64, buf)?
         } else {
             self.f_op.read(&self.inode, off as u64, buf)?

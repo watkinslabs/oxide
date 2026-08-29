@@ -33,6 +33,7 @@ mod csum_trace;
 pub use core::set_ctx_id_hook;
 pub(crate) use csum_trace::first_csum_failure;
 mod dirs;
+mod direct;
 mod errors;
 #[cfg(not(target_os = "oxide-kernel"))]
 mod faults;

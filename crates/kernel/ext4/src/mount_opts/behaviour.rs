@@ -213,6 +213,9 @@ pub struct Ext4Behaviour {
     /// `inode_readahead_blks` — power-of-two metadata blocks to warm around
     /// an inode-table read; zero disables the window.
     pub inode_readahead_blks: u32,
+    /// `dioread_nolock` selects ext4's lockless direct-read protocol. Linux
+    /// disables its effective use for `data=journal` mounts.
+    pub dio_read_nolock: bool,
     /// `prefetch_block_bitmaps` — load and validate all allocation bitmaps
     /// during mount instead of on the first allocation in each group.
     pub prefetch_block_bitmaps: bool,
@@ -244,6 +247,7 @@ impl Default for Ext4Behaviour {
             user_xattr: true,
             auto_da_alloc: true,
             inode_readahead_blks: DEFAULT_INODE_READAHEAD_BLKS,
+            dio_read_nolock: false,
             prefetch_block_bitmaps: false,
         }
     }
@@ -271,6 +275,11 @@ impl Ext4Behaviour {
     pub fn dir_may_grow(&self, size: u64) -> bool {
         if self.max_dir_size_kb == NO_DIR_SIZE_LIMIT { return true; }
         (size >> KB_SHIFT) < self.max_dir_size_kb as u64
+    }
+
+    /// # C: O(1)
+    pub fn dio_read_nolock_enabled(&self) -> bool {
+        self.dio_read_nolock && self.data != DataMode::Journal
     }
 
     /// Whether `uid`/`gids` may consume the superblock's reserved blocks.
