@@ -136,6 +136,12 @@ impl Mount {
         true
     }
 
+    /// Try the transaction gate for an asynchronous owner without sleeping.
+    /// # C: O(1)
+    pub(crate) fn try_txn_acquire_current(&self) -> bool {
+        self.try_txn_acquire(ctx_id())
+    }
+
     /// Reentrant transaction-gate acquire keyed on `ctx_id()`. A contender
     /// publishes on the mount's wait queue, rechecks the atomic claim, then
     /// sleeps until the releasing owner wakes it.
