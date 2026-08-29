@@ -73,7 +73,7 @@ impl Mount {
         // `create_op` holds `op_lock` for the op and defers the batch commit.
         self.create_op(|m| {
             let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
-            let new_ino = m.alloc_inode(parent_group)?;
+            let new_ino = m.alloc_inode_in_transaction(parent_group)?;
             let node = m.init_inode(parent_ino, new_ino, S_IFREG | (mode_perm & 0x0FFF), 1, uid, gid)?;
             if let Some(acl) = acl { acl.store(m, new_ino)?; }
             m.dir_link_in_transaction(parent_ino, name, new_ino, dir::DT_REG)?;
@@ -142,7 +142,7 @@ impl Mount {
         self.create_op(|m| {
             let bs = m.sb.block_size as usize;
             let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
-            let new_ino = m.alloc_inode(parent_group)?;
+            let new_ino = m.alloc_inode_in_transaction(parent_group)?;
             let mut node = m.init_inode(parent_ino, new_ino, S_IFDIR | (mode_perm & 0x0FFF), 2, uid, gid)?;
             let usable = crate::csum::dir_usable_len(&m.sb, bs);
             let mut blk = alloc::vec![0u8; bs];
@@ -199,7 +199,7 @@ impl Mount {
         }
         self.create_op(|m| {
             let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
-            let new_ino = m.alloc_inode(parent_group)?;
+            let new_ino = m.alloc_inode_in_transaction(parent_group)?;
             m.init_inode(parent_ino, new_ino, S_IFLNK | 0o777, 1, uid, gid)?;
             if target.len() <= I_BLOCK_LEN {
                 let (mut bytes, _off) = m.read_inode_bytes(new_ino)?;
@@ -287,7 +287,7 @@ impl Mount {
             _ => return Err(MountError::Inode(inode::InodeError::BadLen)),
         };
         let parent_group = (parent_ino - 1) / self.sb.inodes_per_group;
-            let new_ino = self.alloc_inode(parent_group)?;
+            let new_ino = self.alloc_inode_in_transaction(parent_group)?;
             let mut bytes = vec![0u8; self.sb.inode_size as usize];
             bytes[0x00..0x02].copy_from_slice(&mode.to_le_bytes());
             bytes[0x1A..0x1C].copy_from_slice(&1u16.to_le_bytes());
