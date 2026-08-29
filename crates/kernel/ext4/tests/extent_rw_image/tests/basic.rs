@@ -102,6 +102,20 @@ fn freeing_an_orphan_releases_its_unused_inode_preallocation() {
 }
 
 #[test]
+fn punching_a_range_releases_its_unused_inode_preallocation() {
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk).unwrap();
+    let n = m.create_file(2, b"punch-pa.bin", 0o644, 0, 0).unwrap();
+    let bs = m.sb.block_size as u64;
+
+    m.append_block(n, &vec![0x44; bs as usize]).unwrap();
+    assert!(m.inode_prealloc_free_blocks() > 0, "append retains an inode PA tail");
+    m.punch_hole_inode(n, 0, bs).unwrap();
+    assert_eq!(m.inode_prealloc_free_blocks(), 0,
+        "punch-hole must discard the inode PA before rebuilding extents");
+}
+
+#[test]
 fn fresh_appends_create_and_reuse_locality_preallocation() {
     let disk = build_disk();
     let m = ext4::Mount::open(disk).unwrap();
