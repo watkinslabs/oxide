@@ -565,6 +565,7 @@ pub(crate) fn build_stat_inode(
     raw_flags: u32, blocks: u64, raw: Arc<crate::inode::Inode>,
 ) -> InodeRef {
     let canonical = st.i_sb().is_some();
+    let fast_link = raw.fast_symlink_target().map(|link| link.to_vec().into_boxed_slice());
     let data = Arc::new(Ext4StatData { st, ino, ft, size, canonical,
         raw_flags: core::sync::atomic::AtomicU32::new(raw_flags),
         raw: ::sync::Spinlock::new(raw),
@@ -586,6 +587,10 @@ pub(crate) fn build_stat_inode(
         && raw_flags & crate::inode::flags::EXT4_CASEFOLD_FL != 0
     { b = b.i_flags(vfs::inode::S_CASEFOLD); }
     if vfs::special_inode_needs_poll_subs(ft) { b = b.poll_subs(vfs::PollSubscribers::new()); }
+    // Linux publishes a valid fast symlink body as inode->i_link. Keep the
+    // immutable inline bytes on the VFS inode, but only after the ext4 layout
+    // predicate has excluded inline-data inodes.
+    if let Some(link) = fast_link { b = b.link(link); }
     b = b
         .sb(weak_sb)
         .size(size)

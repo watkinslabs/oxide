@@ -187,6 +187,12 @@ full ext4 suite, directory image tests, and htree/e2fsck image matrix pass; the
 standard GNOME image has no indexed directories, so no whole-boot gain is
 claimed from this lane.
 
+Fast symlink follows are now eligible for the Linux `i_link` inline cache, but
+only after `fast_symlink_target()` excludes `EXT4_INLINE_DATA_FL`, as Linux's
+`ext4_inode_is_fast_symlink()` does. The prior unguarded cache attempt caused
+early GNOME I/O failures and was removed; this guarded version requires a fresh
+harness boot before any performance claim.
+
 Exit: each claimed gain has a reproducible before/after measurement; no correctness regression is traded for speed.
 
 ### 4.9 preserved performance history
