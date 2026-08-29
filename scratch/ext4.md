@@ -180,6 +180,13 @@ EIO before this fix. The post-fix harness reaches GNOME Shell at 33.57s with
 that early EIO cascade gone. A later colord database disk-I/O error remains a
 separate owner to investigate; it is not attributed to this page-lock change.
 
+Indexed-directory lookup now visits selected htree leaves directly rather than
+allocating a heap vector per lookup. This matches Linux's bounded `dx_frame`
+traversal while preserving collision continuation and corruption fallback. The
+full ext4 suite, directory image tests, and htree/e2fsck image matrix pass; the
+standard GNOME image has no indexed directories, so no whole-boot gain is
+claimed from this lane.
+
 Exit: each claimed gain has a reproducible before/after measurement; no correctness regression is traded for speed.
 
 ### 4.9 preserved performance history

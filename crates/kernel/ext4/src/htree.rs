@@ -47,26 +47,24 @@ impl Mount {
             return Ok(HtreeLookup::Fallback);
         }
         let usable = crate::csum::dir_usable_len(&self.sb, self.sb.block_size as usize);
-        let mut leaves = alloc::vec::Vec::new();
         let levels = root[0x1E] as usize;
-        if !self.collect_htree_leaves(dir_node, &root, 0x20, levels, hash, &mut leaves)? {
-            return Ok(HtreeLookup::Fallback);
-        }
-        for leaf_lblk in leaves {
+        let mut found = None;
+        let mut scan_leaf = |leaf_lblk| {
             let leaf = self.read_file_block_meta_shared(dir_node, leaf_lblk)?;
-            if leaf.len() < usable { return Ok(HtreeLookup::Fallback); }
+            if leaf.len() < usable { return Ok(false); }
             if dir_node.i_flags & crate::inode::flags::EXT4_CASEFOLD_FL == 0 {
-                if let Some(ino) = dir::lookup_bytes(&leaf[..usable], name)? {
-                    return Ok(HtreeLookup::Found(ino));
-                }
+                if let Some(ino) = dir::lookup_bytes(&leaf[..usable], name)? { found = Some(ino); }
             } else {
-                let found = dir::lookup_matching(&leaf[..usable], |entry| {
+                found = dir::lookup_matching(&leaf[..usable], |entry| {
                     self.names_equal(dir_node, entry, name)
                 })?.map(|entry| entry.inode);
-                if let Some(ino) = found { return Ok(HtreeLookup::Found(ino)); }
             }
+            Ok(found.is_some())
+        };
+        if !self.collect_htree_leaves(dir_node, &root, 0x20, levels, hash, &mut scan_leaf)? {
+            return Ok(HtreeLookup::Fallback);
         }
-        Ok(HtreeLookup::Miss)
+        Ok(found.map_or(HtreeLookup::Miss, HtreeLookup::Found))
     }
 
     /// Insert `(name → child_ino)` into an htree directory by hashing
@@ -430,7 +428,7 @@ impl Mount {
     /// lookups therefore still read exactly one leaf.
     fn collect_htree_leaves(
         &self, dir_inode: &Inode, node: &[u8], entries_off: usize,
-        levels: usize, hash: u32, leaves: &mut alloc::vec::Vec<u32>,
+        levels: usize, hash: u32, visit: &mut dyn FnMut(u32) -> Result<bool, MountError>,
     ) -> Result<bool, MountError> {
         if !self.dx_block_valid(node, entries_off) { return Ok(false); }
         let count = u16::from_le_bytes([node[entries_off + 2], node[entries_off + 3]]) as usize;
@@ -461,16 +459,16 @@ impl Mount {
                 u32::from_le_bytes([node[eo + 4], node[eo + 5], node[eo + 6], node[eo + 7]])
             };
             if levels == 0 {
-                leaves.push(child);
+                if visit(child)? { return Ok(true); }
             } else {
                 let child_node = self.read_file_block_meta_shared(dir_inode, child)?;
                 if !self.collect_htree_leaves(dir_inode, &child_node, 0x08,
-                                               levels - 1, hash, leaves)? {
+                                               levels - 1, hash, visit)? {
                     return Ok(false);
                 }
             }
         }
-        Ok(!leaves.is_empty())
+        Ok(true)
     }
 
     fn dx_find_leaf_with_collision(&self, node: &[u8], entries_off: usize, hash: u32)
