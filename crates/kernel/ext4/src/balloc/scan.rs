@@ -36,6 +36,18 @@ pub fn fragment_order_for_len(len: u32) -> u8 {
     (u32::BITS - 1 - len.leading_zeros()).saturating_sub(1) as u8
 }
 
+/// Return Linux mballoc's progressively trimmed goal length for the
+/// `CR_BEST_AVAIL_LEN` fallback. The caller supplies a one-based trim order:
+/// trim 1 halves the original power-of-two goal, trim 2 quarters it, and so
+/// on. The real request is never changed; this is only the fragment-size
+/// threshold used to choose a candidate group. # C: O(1)
+pub fn best_available_goal_len(len: u32, trim_order: u8) -> Option<u32> {
+    if len == 0 { return None; }
+    let order = (u32::BITS - 1 - len.leading_zeros()) as u8;
+    if trim_order > order { return Some(1); }
+    Some(1u32 << u32::from(order - trim_order))
+}
+
 /// Return Linux mballoc's order for the average free-fragment size.
 /// `bb_free / bb_fragments` is classified by the same `fls(len) - 2`
 /// function used by the reference implementation; groups with no free
@@ -171,6 +183,15 @@ mod tests {
         assert_eq!(fragment_order_for_len(4), 1);
         assert_eq!(fragment_order_for_len(7), 1);
         assert_eq!(fragment_order_for_len(8), 2);
+    }
+
+    #[test]
+    fn best_available_trims_only_the_scan_goal() {
+        assert_eq!(best_available_goal_len(100, 1), Some(32));
+        assert_eq!(best_available_goal_len(100, 2), Some(16));
+        assert_eq!(best_available_goal_len(100, 3), Some(8));
+        assert_eq!(best_available_goal_len(3, 1), Some(1));
+        assert_eq!(best_available_goal_len(0, 1), None);
     }
 
     #[test]
