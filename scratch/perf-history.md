@@ -46,6 +46,9 @@ that artifact is regenerated.
 | E4-08 rwsem reader fastpath / working tree | 1,367,912 | 6,681 | 4,884 | 23,921 | — | 18,903 | 411 | 3,146 | Linux-shaped atomic shared-reader acquisition; GNOME Shell marker complete; SMP=1; 526 block reads and 8,321 block writes; parent-lock phase remained ~522 us; no whole-boot gain claimed |
 | E4-08 rwsem reader fastpath-r2 / working tree | 1,367,452 | 6,576 | 4,809 | 24,903 | — | 18,627 | 380 | 3,448 | repeat; GNOME Shell marker complete; SMP=1; 526 block reads and 8,202 block writes; parent-lock phase ~406 us and writer hold ~180 us; end-to-end remains within variance |
 | E4-08 buffered-write inode reread / working tree | 1,367,536 | 6,619 | 4,840 | 25,002 | — | 18,734 | 448 | 2,694 | skip the delayed-allocation buffered-write inode-table reread; GNOME Shell marker complete; SMP=1; parent-lock ~331 us and writer hold ~157 us; phase win, aggregate remains within variance |
+| E4-08 linear shared buffer / working tree | 1,368,062 | 6,615 | 4,835 | 24,987 | — | 18,291 | 303 | 3,129 | linear directory lookup borrows the shared metadata block; GNOME Shell marker complete; SMP=1; ext4 linear phase ~161 us; aggregate remains within variance |
+| E4-08 linear fast match / working tree | 1,368,054 | 6,487 | 4,742 | 23,515 | — | 18,622 | 383 | 2,968 | direct Linux-shaped byte-name match avoids per-entry DirEntry/closure work; GNOME Shell marker complete; SMP=1; ext4 linear phase ~161 us |
+| E4-08 linear fast match repeat / working tree | 1,367,794 | 6,863 | 5,017 | 24,873 | — | 18,188 | 536 | 2,872 | repeat; GNOME Shell marker complete; SMP=1; ext4 linear phase ~163 us; aggregate remains within variance |
 
 The B2709 `munmap` result is a material improvement over B2699: 71,407 ns
 to 21,426 ns (about 70% lower), and 52x to 16x the host baseline. The B2708

@@ -23,7 +23,11 @@ const WRITER_HOLD: usize = 13;
 const ROOT_STATE: usize = 14;
 const NAMEI_INIT: usize = 15;
 const WALK_BODY: usize = 16;
-const N: usize = 17;
+const EXT4_DIR_LOOKUP: usize = 17;
+const EXT4_INODE_WRAP: usize = 18;
+const EXT4_HTREE_LOOKUP: usize = 19;
+const EXT4_LINEAR_LOOKUP: usize = 20;
+const N: usize = 21;
 static NS: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
 static CNT: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
 static DCACHE_HIT: AtomicU64 = AtomicU64::new(0);
@@ -33,7 +37,8 @@ static NAME: [&[u8]; N] = [
     b"may-lookup", b"child-lookup", b"symlink", b"dcache-probe", b"inode-snapshot",
     b"hash-walk", b"ref-pin", b"revalidate", b"slow-lookup",
     b"backend-lookup", b"dentry-install", b"parent-lock", b"writer-lock", b"writer-hold",
-    b"root-state", b"namei-init", b"walk-body",
+    b"root-state", b"namei-init", b"walk-body", b"ext4-dir-lookup", b"ext4-inode-wrap",
+    b"ext4-htree-lookup", b"ext4-linear-lookup",
 ];
 
 fn now_ns() -> u64 {
@@ -74,6 +79,10 @@ pub(crate) fn writer_hold() -> Span { Span::start(WRITER_HOLD) }
 pub fn root_state() -> Span { Span::start(ROOT_STATE) }
 pub(crate) fn namei_init() -> Span { Span::start(NAMEI_INIT) }
 pub(crate) fn walk_body() -> Span { Span::start(WALK_BODY) }
+pub fn ext4_dir_lookup() -> Span { Span::start(EXT4_DIR_LOOKUP) }
+pub fn ext4_inode_wrap() -> Span { Span::start(EXT4_INODE_WRAP) }
+pub fn ext4_htree_lookup() -> Span { Span::start(EXT4_HTREE_LOOKUP) }
+pub fn ext4_linear_lookup() -> Span { Span::start(EXT4_LINEAR_LOOKUP) }
 
 pub(crate) fn dcache_hit() { DCACHE_HIT.fetch_add(1, Ordering::Relaxed); }
 pub(crate) fn dcache_negative() { DCACHE_NEGATIVE.fetch_add(1, Ordering::Relaxed); }

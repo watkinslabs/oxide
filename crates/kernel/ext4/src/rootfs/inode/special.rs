@@ -86,6 +86,8 @@ impl InodeOps for Ext4StatInodeOps {
             && d.raw_valid.load(core::sync::atomic::Ordering::Acquire)
             && raw.size == inode.size()
             && raw.i_flags == d.raw_flags.load(core::sync::atomic::Ordering::Relaxed);
+        #[cfg(feature = "debug-resolve-cost")]
+        let _dir_lookup_cost = vfs::resolve_cost::ext4_dir_lookup();
         let child = if cached {
             d.st.mount.lookup_in_dir(&raw, name.as_bytes())
         } else {
@@ -98,7 +100,14 @@ impl InodeOps for Ext4StatInodeOps {
         }.map_err(|e| if matches!(e, crate::MountError::NotFound) {
             VfsError::Enoent
         } else { super::regular::vfs_error_from_mount(e) })?;
-        d.st.wrap_any_ino(child).ok_or(VfsError::Enoent)
+        #[cfg(feature = "debug-resolve-cost")]
+        drop(_dir_lookup_cost);
+        #[cfg(feature = "debug-resolve-cost")]
+        let _inode_wrap_cost = vfs::resolve_cost::ext4_inode_wrap();
+        let result = d.st.wrap_any_ino(child).ok_or(VfsError::Enoent);
+        #[cfg(feature = "debug-resolve-cost")]
+        drop(_inode_wrap_cost);
+        result
     }
 
     /// `ext4_getattr` for the non-regular inodes (directories, symlinks, device

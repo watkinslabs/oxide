@@ -240,6 +240,31 @@ pub fn lookup<'a>(buf: &'a [u8], name: &[u8]) -> Result<Option<DirEntry<'a>>, Di
     lookup_matching(buf, |entry| entry == name)
 }
 
+/// Fast byte-name lookup for ordinary ext4 directories. The common ext4
+/// match contract compares the stored name length before touching the name
+/// bytes and returns the inode number directly; it does not construct a
+/// temporary `DirEntry` or call a comparison closure for every record.
+/// # C: O(N entries)
+pub fn lookup_bytes(buf: &[u8], name: &[u8]) -> Result<Option<u32>, DirError> {
+    let mut off = 0usize;
+    while off < buf.len() {
+        if off + 8 > buf.len() { return Err(DirError::Short); }
+        let inode = u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
+        let rec_len = u16::from_le_bytes([buf[off + 4], buf[off + 5]]) as usize;
+        let name_len = buf[off + 6] as usize;
+        if rec_len < 8 || (rec_len & 3) != 0 { return Err(DirError::BadRecLen); }
+        if off + rec_len > buf.len() { return Err(DirError::Overrun); }
+        if name_len > rec_len - 8 { return Err(DirError::BadNameLen); }
+        if inode != 0 && name_len == name.len()
+            && &buf[off + 8 .. off + 8 + name_len] == name
+        {
+            return Ok(Some(inode));
+        }
+        off += rec_len;
+    }
+    Ok(None)
+}
+
 /// Look up an entry using a filesystem-owned name equivalence predicate.
 /// # C: O(N entries)
 pub fn lookup_matching<'a, F>(buf: &'a [u8], mut matches: F) -> Result<Option<DirEntry<'a>>, DirError>
@@ -332,6 +357,16 @@ mod tests {
         let mut b = std::vec::Vec::new();
         put(&mut b, 12, DT_REG, b"foo", 0);
         assert!(lookup(&b, b"bar").unwrap().is_none());
+    }
+
+    #[test]
+    fn lookup_bytes_matches_existing_and_skips_deleted() {
+        let mut b = std::vec::Vec::new();
+        put(&mut b, 0, DT_REG, b"gone", 0);
+        put(&mut b, 12, DT_REG, b"foo", 0);
+        assert_eq!(lookup_bytes(&b, b"foo"), Ok(Some(12)));
+        assert_eq!(lookup_bytes(&b, b"gone"), Ok(None));
+        assert_eq!(lookup_bytes(&b, b"bar"), Ok(None));
     }
 
     #[test]
