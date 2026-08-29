@@ -32,40 +32,20 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
     let mut runs = Vec::new();
     let mut cursor = first as u64;
     let end = last as u64;
-    // `collect_phys_extents` returns logical order. Keep one cursor into that
-    // list while walking the requested range; rescanning every extent for
-    // every logical block made sparse fallocate/writeback O(N_blocks*N_extents)
-    // and defeated the multiblock reservation below.
-    let mut extent_idx = 0usize;
+    let is_mapped = |lb: u32| {
+        extents.iter().any(|r| {
+            let start = r.logical as u64;
+            lb as u64 >= start && (lb as u64) < start + r.len as u64
+        })
+    };
     while cursor <= end {
-        while extent_idx < extents.len() {
-            let extent_end = u64::from(extents[extent_idx].logical)
-                .saturating_add(u64::from(extents[extent_idx].len));
-            if extent_end <= cursor { extent_idx += 1; } else { break; }
-        }
-        if extent_idx < extents.len()
-            && cursor >= u64::from(extents[extent_idx].logical)
-            && cursor < u64::from(extents[extent_idx].logical)
-                .saturating_add(u64::from(extents[extent_idx].len))
-        {
-            cursor = u64::from(extents[extent_idx].logical)
-                .saturating_add(u64::from(extents[extent_idx].len));
+        let lb = cursor as u32;
+        if is_mapped(lb) {
+            cursor += 1;
             continue;
         }
         let start = cursor;
-        while cursor <= end {
-            while extent_idx < extents.len() {
-                let extent_end = u64::from(extents[extent_idx].logical)
-                    .saturating_add(u64::from(extents[extent_idx].len));
-                if extent_end <= cursor { extent_idx += 1; } else { break; }
-            }
-            if extent_idx < extents.len()
-                && cursor >= u64::from(extents[extent_idx].logical)
-                && cursor < u64::from(extents[extent_idx].logical)
-                    .saturating_add(u64::from(extents[extent_idx].len))
-            { break; }
-            cursor += 1;
-        }
+        while cursor <= end && !is_mapped(cursor as u32) { cursor += 1; }
         let count = (cursor - start) as u32;
         if preallocate {
             if let Some(blocks) = m.peek_inode_prealloc(ino, start as u32, count) {
