@@ -109,6 +109,27 @@ fn fresh_appends_create_and_reuse_locality_preallocation() {
 }
 
 #[test]
+fn failed_append_rolls_back_fresh_primary_and_pa_claims() {
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk).unwrap();
+    let bs = m.sb.block_size as usize;
+    let fresh = m.create_file(2, b"append-failure-fresh.bin", 0o644, 0, 0).unwrap();
+    let before = m.state_free_blocks();
+    m.fail_next_inode_write_for_tests();
+    assert!(m.append_block(fresh, &vec![0x61; bs]).is_err());
+    assert_eq!(m.state_free_blocks(), before, "failed fresh append returns its primary block");
+    m.append_block(fresh, &vec![0x62; bs]).unwrap();
+
+    let pa = m.create_file(2, b"append-failure-pa.bin", 0o644, 0, 0).unwrap();
+    m.append_block(pa, &vec![0x71; bs]).unwrap();
+    let before_retry = m.state_free_blocks();
+    m.fail_next_inode_write_for_tests();
+    assert!(m.append_block(pa, &vec![0x72; bs]).is_err());
+    assert_eq!(m.state_free_blocks(), before_retry, "failed PA append returns its claimed block");
+    m.append_block(pa, &vec![0x73; bs]).unwrap();
+}
+
+#[test]
 fn small_files_reuse_locality_preallocation() {
     let disk = build_disk();
     let m = ext4::Mount::open(disk).unwrap();

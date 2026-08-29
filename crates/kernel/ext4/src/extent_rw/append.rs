@@ -38,6 +38,12 @@ impl Mount {
                             self.consume_group_prealloc_on_cpu(cpu, group, physical);
                         }
                     }
+                } else {
+                    // Claiming a PA makes the block durable before the
+                    // extent mutation. If that mutation fails, return the
+                    // claim to the bitmap; leave the PA reservation itself
+                    // intact so a later retry can reuse it.
+                    let _ = self.free_block(physical);
                 }
                 return result;
             }
@@ -49,6 +55,9 @@ impl Mount {
             if result.is_ok() {
                 self.add_inode_prealloc(ino, new_logical.saturating_add(1), tail);
             } else {
+                // The primary block was allocated separately from the PA
+                // tail. Roll it back too when extent publication fails.
+                let _ = self.free_block(physical);
                 for block in tail { let _ = self.free_block(block); }
             }
             return result;
