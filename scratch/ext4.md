@@ -133,22 +133,24 @@ Exit: no useful mode is accept-and-drop; no absent owner is represented as suppo
 1. Re-run the syscall/function-time harness only after correctness work is green.
 2. Attribute `newfstatat`, metadata reads, journal commits, allocations, and page fills to named phases.
 3. Complete the transaction ownership dependency chain:
-   - add per-metadata-block ownership for read-modify-write and shadow publication;
-   - add per-operation running-transaction handles and rollback frames keyed by the handle;
-   - protect allocation-group bitmap/GDT decisions with group ownership while unrelated handles run;
+   - [DONE] add per-metadata-block ownership for read-modify-write and shadow publication;
+   - [DONE] add per-operation running-transaction handles and rollback frames keyed by the handle;
+   - [DONE] protect allocation-group bitmap/GDT decisions with group ownership while unrelated handles run;
    - make handle stop release credits without holding the parent inode lock across unrelated journal work;
    - retain checkpoint ordering, ordered-data rules, replay visibility, and failure rollback.
 4. Fix htree downstream cost at its actual owner; do not optimize the already-fast index selection based on the aggregate ratio.
 5. Compare against the frozen local-Linux baseline with the same userspace, image, SMP, workload, and measurement window.
 6. Record distributions and regressions, not a single favorable run.
 
-Current E4-08 transaction measurement: three GNOME/SMP=1 diagnostic runs reached
-the GNOME marker. Create preparation and quota were below 1 ms aggregate; the
-ext4 create backend ranged from 1,604–2,596 ms; the post-operation batch path
-was below 1 ms; transaction-gate time reached 2,142 ms cumulative across all
-mutators. The measured owner is the mount-wide gate held across the complete
-transaction body. No optimization is credited until the ownership chain above
-exists and the ext4 crash/replay and both-arch boot checks pass.
+Current E4-08 transaction status: per-metadata-block writer ownership, per-handle
+rollback frames, and allocation-group ownership are implemented and merged in
+PRs #6490–#6493. The ext4 suite is 378/378; hosted/test-build/feature checks
+pass on x86_64 and AArch64. The SMP=2 harness reaches GNOME Shell, and replayed
+checks on disposable images found no multiply-claimed blocks. The remaining
+ownership item is Linux-shaped handle-stop credit release without retaining the
+parent inode lock across unrelated journal work. The current SMP=1 and SMP=2
+whole-boot reports are noisy and show no reproducible aggregate speed gain yet;
+no performance improvement is credited.
 
 Exit: each claimed gain has a reproducible before/after measurement; no correctness regression is traded for speed.
 
