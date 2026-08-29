@@ -58,7 +58,7 @@ The target is every useful ext4 mode that this kernel can support honestly. A mo
 4. Close or update stale ledger evidence only after the current commands reproduce it.
 
 Initial evidence: `TMPDIR=/home/nd/oxide/ext4-test-tmp cargo test -p ext4
---all-targets --no-fail-fast` passed all 373 ext4 unit tests plus the full image suite on 2026-08-28. This supersedes the
+--all-targets --no-fail-fast` passed all 375 ext4 unit tests plus the full image suite on 2026-08-28. This supersedes the
 old 62-failure count as a current result, but does not close fixture isolation:
 the command exercises the package in parallel only, not a workspace-wide run
 with every consumer of the shared generated images.
