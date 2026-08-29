@@ -49,6 +49,7 @@ that artifact is regenerated.
 | E4-08 linear shared buffer / working tree | 1,368,062 | 6,615 | 4,835 | 24,987 | — | 18,291 | 303 | 3,129 | linear directory lookup borrows the shared metadata block; GNOME Shell marker complete; SMP=1; ext4 linear phase ~161 us; aggregate remains within variance |
 | E4-08 linear fast match / working tree | 1,368,054 | 6,487 | 4,742 | 23,515 | — | 18,622 | 383 | 2,968 | direct Linux-shaped byte-name match avoids per-entry DirEntry/closure work; GNOME Shell marker complete; SMP=1; ext4 linear phase ~161 us |
 | E4-08 linear fast match repeat / working tree | 1,367,794 | 6,863 | 5,017 | 24,873 | — | 18,188 | 536 | 2,872 | repeat; GNOME Shell marker complete; SMP=1; ext4 linear phase ~163 us; aggregate remains within variance |
+| E4-08 inode-writer attribution / working tree | 1,368,001 | 6,244 | 4,565 | 23,925 | — | 18,710 | 526 | 2,682 | GNOME Shell marker complete; SMP=1; actual inode mutation writer hold 2,096 ms across 3,010 locks (~696 us each), distinct from generic file-position writer holds; attribution only |
 
 The B2709 `munmap` result is a material improvement over B2699: 71,407 ns
 to 21,426 ns (about 70% lower), and 52x to 16x the host baseline. The B2708
