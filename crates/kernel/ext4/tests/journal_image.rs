@@ -278,3 +278,25 @@ fn checkpoint_reaches_home_before_clean_marker() {
     let recovered = reopened.read_meta_byte_range(target_lba * bs as u64, bs).unwrap();
     assert_eq!(recovered, payload, "recovery preserves the already-checkpointed home image");
 }
+
+#[test]
+fn partial_checkpoint_replays_all_home_blocks() {
+    let disk = CrashDisk::new(IMAGE, SECTOR);
+    let dev: Arc<dyn BlockDevice> = disk.clone();
+    let m = ext4::Mount::open(dev).unwrap();
+    let bs = m.sb.block_size as usize;
+    let jsb_sector = 32 * (bs as u64) / u64::from(SECTOR);
+    let first = 100u64;
+    let one = alloc::vec![0xB1; bs];
+    let two = alloc::vec![0xB2; bs];
+    disk.arm(jsb_sector, CrashPoint::AfterFirstHome);
+    let result = m.commit_metadata(alloc::vec![
+        ext4::StagedBlock { target_lba: first, data: one.clone() },
+        ext4::StagedBlock { target_lba: first + 1, data: two.clone() },
+    ]);
+    assert!(result.is_ok(), "checkpoint interruption is not a transaction error: {result:?}");
+    assert!(disk.crashed(), "power cut must occur during the home checkpoint");
+    let reopened = ext4::Mount::open(disk).unwrap();
+    assert_eq!(reopened.read_meta_byte_range(first * bs as u64, bs).unwrap(), one);
+    assert_eq!(reopened.read_meta_byte_range((first + 1) * bs as u64, bs).unwrap(), two);
+}

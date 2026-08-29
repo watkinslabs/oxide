@@ -35,6 +35,9 @@ pub enum CrashPoint {
     /// not reach media. Recovery must replay the already-checkpointed record
     /// idempotently.
     AfterCheckpoint,
+    /// The first filesystem home block was written, then power failed before
+    /// the rest of the checkpoint and clean marker reached media.
+    AfterFirstHome,
 }
 
 pub struct CrashDisk {
@@ -50,6 +53,7 @@ const UNARMED: u64 = u64::MAX;
 const POINT_BEFORE: u64 = 0;
 const POINT_AFTER: u64 = 1;
 const POINT_AFTER_CHECKPOINT: u64 = 3;
+const POINT_AFTER_FIRST_HOME: u64 = 4;
 /// Watch-only: count publishes, never cut power.
 const POINT_NEVER: u64 = 2;
 
@@ -80,6 +84,7 @@ impl CrashDisk {
             CrashPoint::BeforePublish => POINT_BEFORE,
             CrashPoint::AfterPublish => POINT_AFTER,
             CrashPoint::AfterCheckpoint => POINT_AFTER_CHECKPOINT,
+            CrashPoint::AfterFirstHome => POINT_AFTER_FIRST_HOME,
         }, Ordering::Release);
         self.jsb_sector.store(jsb_sector, Ordering::Release);
     }
@@ -149,8 +154,17 @@ impl BlockDevice for CrashDisk {
                     return r;
                 }
                 POINT_AFTER_CHECKPOINT => return self.inner.submit_sync(req),
+                POINT_AFTER_FIRST_HOME => return self.inner.submit_sync(req),
                 _ => return self.inner.submit_sync(req),
             }
+        }
+        if self.point.load(Ordering::Acquire) == POINT_AFTER_FIRST_HOME
+            && self.publishes() != 0
+            && !self.is_clean_marker(req)
+        {
+            let r = self.inner.submit_sync(req);
+            self.crashed.store(true, Ordering::Release);
+            return r;
         }
         if self.point.load(Ordering::Acquire) == POINT_AFTER_CHECKPOINT
             && self.is_clean_marker(req)
