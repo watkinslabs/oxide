@@ -31,6 +31,10 @@ pub enum CrashPoint {
     /// committed and recovery MUST replay it, even though not one of its target
     /// blocks was checkpointed.
     AfterPublish,
+    /// The target home blocks were written, but the journal clean marker did
+    /// not reach media. Recovery must replay the already-checkpointed record
+    /// idempotently.
+    AfterCheckpoint,
 }
 
 pub struct CrashDisk {
@@ -45,6 +49,7 @@ pub struct CrashDisk {
 const UNARMED: u64 = u64::MAX;
 const POINT_BEFORE: u64 = 0;
 const POINT_AFTER: u64 = 1;
+const POINT_AFTER_CHECKPOINT: u64 = 3;
 /// Watch-only: count publishes, never cut power.
 const POINT_NEVER: u64 = 2;
 
@@ -74,6 +79,7 @@ impl CrashDisk {
         self.point.store(match point {
             CrashPoint::BeforePublish => POINT_BEFORE,
             CrashPoint::AfterPublish => POINT_AFTER,
+            CrashPoint::AfterCheckpoint => POINT_AFTER_CHECKPOINT,
         }, Ordering::Release);
         self.jsb_sector.store(jsb_sector, Ordering::Release);
     }
@@ -111,6 +117,16 @@ impl CrashDisk {
             req.buffer[JSB_OFF_START + 2], req.buffer[JSB_OFF_START + 3]]);
         start != 0
     }
+
+    fn is_clean_marker(&self, req: &BlockRequest) -> bool {
+        let armed = self.jsb_sector.load(Ordering::Acquire);
+        if armed == UNARMED || req.start_block != armed { return false; }
+        if req.buffer.len() < JSB_OFF_START + 4 { return false; }
+        u32::from_be_bytes([
+            req.buffer[JSB_OFF_START], req.buffer[JSB_OFF_START + 1],
+            req.buffer[JSB_OFF_START + 2], req.buffer[JSB_OFF_START + 3],
+        ]) == 0
+    }
 }
 
 impl BlockDevice for CrashDisk {
@@ -127,12 +143,21 @@ impl BlockDevice for CrashDisk {
             match self.point.load(Ordering::Acquire) {
                 POINT_NEVER => return self.inner.submit_sync(req),
                 POINT_BEFORE => { self.crashed.store(true, Ordering::Release); return Ok(()); }
-                _ => {
+                POINT_AFTER => {
                     let r = self.inner.submit_sync(req);
                     self.crashed.store(true, Ordering::Release);
                     return r;
                 }
+                POINT_AFTER_CHECKPOINT => return self.inner.submit_sync(req),
+                _ => return self.inner.submit_sync(req),
             }
+        }
+        if self.point.load(Ordering::Acquire) == POINT_AFTER_CHECKPOINT
+            && self.is_clean_marker(req)
+        {
+            let r = self.inner.submit_sync(req);
+            self.crashed.store(true, Ordering::Release);
+            return r;
         }
         self.inner.submit_sync(req)
     }

@@ -5,10 +5,12 @@
 //! through the journal inode's extents.
 
 extern crate alloc;
+mod common;
 use alloc::sync::Arc;
 
 use block::{BlockDevice, BlockOp, BlockRequest, MemDisk};
 use sync::TaskList;
+use common::crash::{CrashDisk, CrashPoint};
 
 const IMAGE: &[u8] = include_bytes!("mini-j.img");
 const SECTOR: u32 = 512;
@@ -252,4 +254,27 @@ fn journaled_image_supports_writes() {
     assert_eq!(inode.size, bs as u64);
     let blk = m.read_file_block(&inode, 0).unwrap();
     assert_eq!(blk, std::vec![0xEE; bs]);
+}
+
+#[test]
+fn checkpoint_reaches_home_before_clean_marker() {
+    let disk = CrashDisk::new(IMAGE, SECTOR);
+    let dev: Arc<dyn BlockDevice> = disk.clone();
+    let m = ext4::Mount::open(dev).unwrap();
+    let bs = m.sb.block_size as usize;
+    let jsb_sector = 32 * (bs as u64) / u64::from(SECTOR);
+    let target_lba = 100u64;
+    let payload = alloc::vec![0xA7; bs];
+    disk.arm(jsb_sector, CrashPoint::AfterCheckpoint);
+    let result = m.commit_metadata(alloc::vec![ext4::StagedBlock {
+        target_lba, data: payload.clone(),
+    }]);
+    assert!(result.is_ok(), "clean-marker loss is not a transaction failure: {result:?}");
+    assert!(disk.crashed(), "power cut must occur at the clean marker");
+    let crashed = disk.snapshot();
+    let off = target_lba as usize * bs;
+    assert_eq!(&crashed[off..off + bs], &payload[..], "home write precedes clean marker");
+    let reopened = ext4::Mount::open(disk).unwrap();
+    let recovered = reopened.read_meta_byte_range(target_lba * bs as u64, bs).unwrap();
+    assert_eq!(recovered, payload, "recovery preserves the already-checkpointed home image");
 }
