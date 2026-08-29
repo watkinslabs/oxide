@@ -1,10 +1,8 @@
-//! Cross-operation journal-commit cost. Creating N files issues N independent
-//! journal commits today (each `create_file` = one `run_journaled` scope =
-//! commit_metadata + 3 dev.flush()). This is the systematic sysinit slowness
-//! (tmpfiles, hwdb, …): every metadata op commits+flushes separately, vs Linux
-//! jbd2 batching many ops into one running transaction. Measures block-write
-//! ops over N create_file calls on the journaled image via StatsDev, and shows
-//! an explicit batch (one run_journaled around all N) collapses to ~1 commit.
+//! Cross-operation journal-commit cost. Linux keeps independent metadata
+//! operations in one running transaction when space and the commit boundary
+//! allow it; an explicit batch makes that boundary unambiguous. Measure
+//! block-write operations over N `create_file` calls via StatsDev and compare
+//! them with one explicit `run_journaled` scope around all N operations.
 
 extern crate alloc;
 mod common;
@@ -27,8 +25,9 @@ fn fresh_disk() -> Arc<MemDisk<TaskList>> {
     disk
 }
 
-/// Baseline: N independent create_file calls. Each is its own committed
-/// transaction — write-ops scale with N.
+/// Baseline: N independent create_file calls. They may join the mount's
+/// running transaction, but their write work must still scale with N rather
+/// than disappearing through a broken accounting path.
 #[test]
 fn per_op_create_scales_with_count() {
     common::boot_hosted_pmm();
@@ -47,7 +46,8 @@ fn per_op_create_scales_with_count() {
     let (_, _, w1, _, _) = stats.snapshot();
     let per_op = (w1 - w0) as f64 / N as f64;
     eprintln!("per-op create: {} write-ops for {} files ({:.1}/file)", w1 - w0, N, per_op);
-    assert!(per_op > 4.0, "each create should be its own commit (sanity)");
+    assert!(w1 - w0 >= N as u64,
+        "independent creates must retain per-operation journal work (sanity)");
 }
 
 /// Batched: the SAME N creates wrapped in one `run_journaled` commit once.
