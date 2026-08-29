@@ -221,7 +221,10 @@ impl Mount {
             gdt::adjust_used_dirs(&mut gdt_bytes, ng, &m.sb, 1)?;
             m.persist_gdt_slot_bytes_meta(ng, &gdt_bytes)?;
             let (mut pb, _poff) = m.read_inode_bytes(parent_ino)?;
-            let pl = u16::from_le_bytes([pb[0x1A], pb[0x1B]]).saturating_add(1);
+            let pl = match parent {
+                Some(parent) => parent.links_count.saturating_add(1),
+                None => u16::from_le_bytes([pb[0x1A], pb[0x1B]]).saturating_add(1),
+            };
             pb[0x1A..0x1C].copy_from_slice(&pl.to_le_bytes());
             m.write_inode_bytes(parent_ino, &pb)?;
             Ok((new_ino, node))
