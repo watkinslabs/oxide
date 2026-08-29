@@ -206,6 +206,8 @@ impl Mount {
         // the ordinary directory parser instead of turning a miss into false
         // ENOENT.
         if dir_inode.i_flags & EXT4_INDEX_FL != 0 {
+            #[cfg(feature = "debug-resolve-cost")]
+            let _htree_cost = vfs::resolve_cost::ext4_htree_lookup();
             match self.htree_lookup_in_dir(dir_inode, name)? {
                 HtreeLookup::Found(ino) => return Ok(ino),
                 HtreeLookup::Miss => return Err(MountError::NotFound),
@@ -218,6 +220,8 @@ impl Mount {
         // dirent tail, so verifying it against the dirent seed would false-
         // reject. htree dx-block verify is a separate item. No-op w/o csum.
         let verify_tail = (dir_inode.i_flags & EXT4_INDEX_FL) == 0 && dir_inode.ino != 0;
+        #[cfg(feature = "debug-resolve-cost")]
+        let _linear_cost = vfs::resolve_cost::ext4_linear_lookup();
         for fb in 0..nblocks {
             // Shadow-aware read (read-your-writes): under cross-op batching a dir
             // block just written by `dir_link` lives in `MountState.shadow` until
@@ -225,16 +229,20 @@ impl Mount {
             // stale on-disk block, so a lookup of an entry created earlier in the
             // SAME batch missed it — Linux sees a transaction's own metadata
             // writes through the buffer cache; our shadow is that buffer.
-            let blk = self.read_file_block_meta(dir_inode, fb)?;
+            // The directory parser only borrows these bytes. Keep the Linux
+            // buffer-cache ownership through the scan instead of cloning a
+            // full filesystem block for every linear lookup.
+            let blk = self.read_file_block_meta_shared(dir_inode, fb)?;
             if verify_tail
                 && !crate::csum::verify_dirent_tail(&self.sb, dir_inode.ino, dir_inode.generation, &blk)
             {
                 super::first_csum_failure(b"directory", dir_inode.ino as u64, fb as u64);
                 return Err(MountError::BadChecksum);
             }
-            match dir::lookup_matching(&blk, |entry| self.names_equal(dir_inode, entry, name))? {
-                Some(e) => return Ok(e.inode),
-                None    => continue,
+            if name_eq_mode(dir_inode.i_flags) == NameEq::Bytes {
+                if let Some(ino) = dir::lookup_bytes(&blk, name)? { return Ok(ino); }
+            } else if let Some(e) = dir::lookup_matching(&blk, |entry| self.names_equal(dir_inode, entry, name))? {
+                return Ok(e.inode);
             }
         }
         Err(MountError::NotFound)

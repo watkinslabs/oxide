@@ -37,6 +37,7 @@ debug-csum-origin = []  # one-shot first metadata-checksum mismatch origin
 debug-fsync-latency = []  # [EXT4-FSYNC] durability-boundary latency: page writeback, JBD2 journal body/barriers, and target checkpoint
 debug-getdents = ["vfs/debug-getdents"]
 debug-getdents-detail = ["debug-getdents", "vfs/debug-getdents-detail"]
+debug-resolve-cost = ["vfs/debug-resolve-cost"]
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../../arch/hal-x86_64" }
