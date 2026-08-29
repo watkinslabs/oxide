@@ -285,7 +285,7 @@ impl RootfsState {
         project_inherit_allows_child(&self.mount, parent_ino, ino)?;
         let name: alloc::vec::Vec<u8> = name_owned.to_vec();
         self.mount.run_journaled_deferred(|m| {
-            m.dir_link(parent_ino, &name, ino, ftype)?;
+            m.dir_link_in_transaction(parent_ino, &name, ino, ftype)?;
             m.adjust_nlink(ino, 1)?;
             // The inode now has a name → off the on-disk orphan list
             // (Linux `ext4_orphan_del` in `ext4_link`/`ext4_tmpfile` linkat).
@@ -359,7 +359,7 @@ impl RootfsState {
         let name: alloc::vec::Vec<u8> = name_owned.to_vec();
         let ftype = dirent_dt(&inode);
         self.mount.run_journaled_deferred(|m| {
-            m.dir_link(parent_ino, &name, target, ftype)?;
+            m.dir_link_in_transaction(parent_ino, &name, target, ftype)?;
             m.adjust_nlink(target, 1)?;
             Ok(())
         }).map_err(namei_error_from_mount)

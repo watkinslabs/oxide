@@ -197,7 +197,7 @@ fn plain_rename(s: &RenameSides<'_>, from_name: &[u8], to_name: &[u8], whiteout:
             // which orphans it rather than freeing it (see `Mount::unlink`).
             if dest_is_dir { m.rmdir(s.to_p, to_name)?; } else { dest_out = Some(m.unlink(s.to_p, to_name)?); }
         }
-        m.dir_link(s.to_p, to_name, s.target, ftype)?;
+        m.dir_link_in_transaction(s.to_p, to_name, s.target, ftype)?;
         m.dir_unlink(s.from_p, from_name)?;
         if let Some(acl) = whiteout_acl.as_ref() {
             m.create_mknod_with_acl(s.from_p, from_name, acl.mode, 0, 0, 0, acl)?;
@@ -261,8 +261,8 @@ fn cross_rename(s: &RenameSides<'_>, from_name: &[u8], to_name: &[u8]) -> KResul
     mount.run_journaled_deferred(|m| {
         m.dir_unlink(s.from_p, from_name)?;
         m.dir_unlink(s.to_p, to_name)?;
-        m.dir_link(s.from_p, from_name, bino, dirent_dt(&dst))?;
-        m.dir_link(s.to_p, to_name, s.target, dirent_dt(&src))?;
+        m.dir_link_in_transaction(s.from_p, from_name, bino, dirent_dt(&dst))?;
+        m.dir_link_in_transaction(s.to_p, to_name, s.target, dirent_dt(&src))?;
         if cross {
             if src_is_dir { m.set_dotdot(s.target, s.to_p)?; }
             if dst_is_dir { m.set_dotdot(bino, s.from_p)?; }
