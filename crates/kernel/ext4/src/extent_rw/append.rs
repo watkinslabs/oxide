@@ -43,7 +43,14 @@ impl Mount {
                     // extent mutation. If that mutation fails, return the
                     // claim to the bitmap; leave the PA reservation itself
                     // intact so a later retry can reuse it.
-                    let _ = self.free_block(physical);
+                    match source {
+                        AppendPrealloc::Inode => {
+                            let _ = self.rollback_inode_prealloc_claim(ino, new_logical, physical);
+                        }
+                        AppendPrealloc::Group(cpu, group) => {
+                            let _ = self.rollback_group_prealloc_claim(cpu, group, physical);
+                        }
+                    }
                 }
                 return result;
             }

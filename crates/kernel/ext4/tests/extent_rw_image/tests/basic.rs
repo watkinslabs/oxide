@@ -122,11 +122,15 @@ fn failed_append_rolls_back_fresh_primary_and_pa_claims() {
 
     let pa = m.create_file(2, b"append-failure-pa.bin", 0o644, 0, 0).unwrap();
     m.append_block(pa, &vec![0x71; bs]).unwrap();
+    let pa_phys = m.extent_map(pa).unwrap()[0].1 + 1;
     let before_retry = m.state_free_blocks();
     m.fail_next_inode_write_for_tests();
     assert!(m.append_block(pa, &vec![0x72; bs]).is_err());
     assert_eq!(m.state_free_blocks(), before_retry, "failed PA append returns its claimed block");
     m.append_block(pa, &vec![0x73; bs]).unwrap();
+    let retry_map = m.extent_map(pa).unwrap();
+    assert_eq!(retry_map[0].1 + 1, pa_phys,
+        "failed PA append restores the exact reusable physical block");
 }
 
 #[test]

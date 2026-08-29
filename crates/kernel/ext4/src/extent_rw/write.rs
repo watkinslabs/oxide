@@ -499,10 +499,12 @@ impl Mount {
                     if let Some((block, from_inode_pa, from_group_pa, group_cpu)) = pa_phys {
                         // The extent inserter owns cleanup of the claimed
                         // physical block on every post-selection error.
-                        if from_inode_pa { let _ = self.consume_inode_prealloc(ino, lb); }
+                        if from_inode_pa {
+                            let _ = self.rollback_inode_prealloc_claim(ino, lb, block);
+                        }
                         if from_group_pa {
                             let cpu = group_cpu.unwrap_or_else(crate::balloc::prealloc::locality_cpu);
-                            let _ = self.consume_group_prealloc_on_cpu(cpu, self.group_of_block(block), block);
+                            let _ = self.rollback_group_prealloc_claim(cpu, self.group_of_block(block), block);
                         }
                     }
                     if let Err(rb) = self.rollback_allocated_logical_blocks(ino, cur_size, &allocated) { return Err(rb); }

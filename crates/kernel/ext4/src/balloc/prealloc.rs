@@ -129,6 +129,21 @@ impl Mount {
         true
     }
 
+    /// Undo a durable claim made from an inode PA after extent publication
+    /// fails. Remove the claim before freeing the bitmap bit, because the
+    /// bitmap owner masks still-reserved PA blocks.
+    pub(crate) fn rollback_inode_prealloc_claim(&self, ino: u32, logical: u32, phys: u64)
+        -> Result<(), MountError>
+    {
+        let _ = self.consume_inode_prealloc(ino, logical);
+        if let Err(error) = self.free_block(phys) {
+            self.add_inode_prealloc(ino, logical, vec![phys]);
+            return Err(error);
+        }
+        self.add_inode_prealloc(ino, logical, vec![phys]);
+        Ok(())
+    }
+
     /// Keep an unconsumed tail for this inode's next sequential write. # C: O(1)
     pub(crate) fn add_inode_prealloc(&self, ino: u32, logical_start: u32, blocks: Vec<u64>) {
         if blocks.is_empty() { return; }
@@ -178,6 +193,20 @@ impl Mount {
             return true;
         }
         false
+    }
+
+    /// Undo a durable claim made from a locality PA, preserving the PA as a
+    /// reusable one-block reservation after the bitmap bit is freed.
+    pub(crate) fn rollback_group_prealloc_claim(&self, cpu: usize, group: u32, phys: u64)
+        -> Result<(), MountError>
+    {
+        let _ = self.consume_group_prealloc_on_cpu(cpu, group, phys);
+        if let Err(error) = self.free_block(phys) {
+            self.add_group_prealloc_on_cpu(cpu, group, 1, vec![phys]);
+            return Err(error);
+        }
+        self.add_group_prealloc_on_cpu(cpu, group, 1, vec![phys]);
+        Ok(())
     }
 
     /// Keep a locality tail on the CPU-local list selected by the allocation
