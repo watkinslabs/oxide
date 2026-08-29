@@ -84,24 +84,30 @@ impl Mount {
     /// directory it edited (Linux `add_dirent_to_buf`, `ext4_rename`).
     /// # C: O(1) I/O, 1 txn
     pub fn touch_inode_mtime_ctime(&self, ino: u32, now: Timespec64) -> Result<(), MountError> {
+        self.run_journaled(|m| m.touch_inode_mtime_ctime_in_transaction(ino, now))
+    }
+
+    /// Stamp directory mtime and ctime inside an existing transaction. # C: O(1) I/O
+    pub(crate) fn touch_inode_mtime_ctime_in_transaction(&self, ino: u32, now: Timespec64) -> Result<(), MountError> {
         let isize = self.sb.inode_size as usize;
-        self.run_journaled(|m| {
-            let (mut b, _off) = m.read_inode_bytes(ino)?;
-            set_xtime(&mut b, isize, I_CTIME, I_CTIME_EXTRA, now);
-            set_xtime(&mut b, isize, I_MTIME, I_MTIME_EXTRA, now);
-            m.write_inode_bytes(ino, &b)
-        })
+        let (mut b, _off) = self.read_inode_bytes(ino)?;
+        set_xtime(&mut b, isize, I_CTIME, I_CTIME_EXTRA, now);
+        set_xtime(&mut b, isize, I_MTIME, I_MTIME_EXTRA, now);
+        self.write_inode_bytes(ino, &b)
     }
 
     /// `inode_set_ctime_current(inode)` — the change-time stamp a renamed or
     /// link-count-adjusted inode gets (Linux `ext4_rename`). # C: O(1) I/O, 1 txn
     pub fn touch_inode_ctime(&self, ino: u32, now: Timespec64) -> Result<(), MountError> {
+        self.run_journaled(|m| m.touch_inode_ctime_in_transaction(ino, now))
+    }
+
+    /// Stamp inode ctime inside an existing transaction. # C: O(1) I/O
+    pub(crate) fn touch_inode_ctime_in_transaction(&self, ino: u32, now: Timespec64) -> Result<(), MountError> {
         let isize = self.sb.inode_size as usize;
-        self.run_journaled(|m| {
-            let (mut b, _off) = m.read_inode_bytes(ino)?;
-            set_xtime(&mut b, isize, I_CTIME, I_CTIME_EXTRA, now);
-            m.write_inode_bytes(ino, &b)
-        })
+        let (mut b, _off) = self.read_inode_bytes(ino)?;
+        set_xtime(&mut b, isize, I_CTIME, I_CTIME_EXTRA, now);
+        self.write_inode_bytes(ino, &b)
     }
 
     /// Persist `i_projid` (@0x9C) to `ino`'s on-disk inode, journaled. Linux

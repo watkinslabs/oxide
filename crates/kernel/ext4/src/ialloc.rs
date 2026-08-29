@@ -273,17 +273,23 @@ impl Mount {
     /// crash before eviction is recovered by `orphan_cleanup` at next mount.
     /// # C: O(N parent entries) + 1 inode write (+1 SB/inode write when orphaned)
     pub fn unlink(&self, parent_ino: u32, name: &[u8]) -> Result<UnlinkOutcome, MountError> {
-        self.run_journaled(|m| {
-            let ino = m.dir_unlink(parent_ino, name)?;
-            let (mut bytes, _off) = m.read_inode_bytes(ino)?;
-            let mut links = u16::from_le_bytes([bytes[0x1A], bytes[0x1B]]);
-            links = links.saturating_sub(1);
-            bytes[0x1A..0x1C].copy_from_slice(&links.to_le_bytes());
-            m.write_inode_bytes(ino, &bytes)?;
-            // `orphan_add` re-reads the slot, so it must follow the nlink write.
-            if links == 0 { m.orphan_add(ino)?; }
-            Ok(UnlinkOutcome { ino, links })
-        })
+        self.run_journaled(|m| m.unlink_in_transaction(parent_ino, name))
+    }
+
+    /// Complete unlink while the caller owns the journal transaction.
+    /// # C: O(N parent entries) + 1 inode write (+1 SB/inode write when orphaned)
+    pub(crate) fn unlink_in_transaction(&self, parent_ino: u32, name: &[u8])
+        -> Result<UnlinkOutcome, MountError>
+    {
+        let ino = self.dir_unlink_in_transaction(parent_ino, name)?;
+        let (mut bytes, _off) = self.read_inode_bytes(ino)?;
+        let mut links = u16::from_le_bytes([bytes[0x1A], bytes[0x1B]]);
+        links = links.saturating_sub(1);
+        bytes[0x1A..0x1C].copy_from_slice(&links.to_le_bytes());
+        self.write_inode_bytes(ino, &bytes)?;
+        // `orphan_add` re-reads the slot, so it must follow the nlink write.
+        if links == 0 { self.orphan_add(ino)?; }
+        Ok(UnlinkOutcome { ino, links })
     }
 
     /// `ext4_rmdir`: remove the (caller-verified-empty) directory `name` from
@@ -295,28 +301,34 @@ impl Mount {
     /// victim's `..` back-link is gone). One atomic (re-entrant) journal scope.
     /// Returns the freed inode number. # C: O(parent entries + victim blocks)
     pub fn rmdir(&self, parent_ino: u32, name: &[u8]) -> Result<u32, MountError> {
-        self.run_journaled(|m| {
-            let target = m.dir_unlink(parent_ino, name)?;
-            // Free every data block of the directory (all extents, any depth).
-            m.truncate_inode_for_deletion(target)?;
-            m.free_external_xattr_for_deletion(target)?;
-            // No longer a directory in its block group.
-            let g = (target - 1) / m.sb.inodes_per_group;
-            { let mut s = m.state.lock(); gdt::adjust_used_dirs(&mut s.gdt_buf, g, &m.sb, -1)?; }
-            m.persist_gdt_slot_meta(g)?;
-            // Clear the victim inode: links=0 + deletion time.
-            let (mut b, _) = m.read_inode_bytes(target)?;
-            b[0x1A..0x1C].copy_from_slice(&0u16.to_le_bytes());
-            b[0x14..0x18].copy_from_slice(&DELETED_DTIME.to_le_bytes());
-            m.write_inode_bytes(target, &b)?;
-            m.free_inode(target)?;
-            // Parent loses the child's `..` back-reference.
-            let (mut pb, _) = m.read_inode_bytes(parent_ino)?;
-            let pl = u16::from_le_bytes([pb[0x1A], pb[0x1B]]).saturating_sub(1);
-            pb[0x1A..0x1C].copy_from_slice(&pl.to_le_bytes());
-            m.write_inode_bytes(parent_ino, &pb)?;
-            Ok(target)
-        })
+        self.run_journaled(|m| m.rmdir_in_transaction(parent_ino, name))
+    }
+
+    /// Complete directory removal while the caller owns the journal transaction.
+    /// # C: O(parent entries + victim blocks)
+    pub(crate) fn rmdir_in_transaction(&self, parent_ino: u32, name: &[u8])
+        -> Result<u32, MountError>
+    {
+        let target = self.dir_unlink_in_transaction(parent_ino, name)?;
+        // Free every data block of the directory (all extents, any depth).
+        self.truncate_inode_for_deletion(target)?;
+        self.free_external_xattr_for_deletion(target)?;
+        // No longer a directory in its block group.
+        let g = (target - 1) / self.sb.inodes_per_group;
+        { let mut s = self.state.lock(); gdt::adjust_used_dirs(&mut s.gdt_buf, g, &self.sb, -1)?; }
+        self.persist_gdt_slot_meta(g)?;
+        // Clear the victim inode: links=0 + deletion time.
+        let (mut b, _) = self.read_inode_bytes(target)?;
+        b[0x1A..0x1C].copy_from_slice(&0u16.to_le_bytes());
+        b[0x14..0x18].copy_from_slice(&DELETED_DTIME.to_le_bytes());
+        self.write_inode_bytes(target, &b)?;
+        self.free_inode(target)?;
+        // Parent loses the child's `..` back-reference.
+        let (mut pb, _) = self.read_inode_bytes(parent_ino)?;
+        let pl = u16::from_le_bytes([pb[0x1A], pb[0x1B]]).saturating_sub(1);
+        pb[0x1A..0x1C].copy_from_slice(&pl.to_le_bytes());
+        self.write_inode_bytes(parent_ino, &pb)?;
+        Ok(target)
     }
 
     /// Write a fresh inode struct (mode + nlink + owner + empty extent

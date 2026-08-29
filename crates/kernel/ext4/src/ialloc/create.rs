@@ -269,6 +269,15 @@ impl Mount {
         gid: u32,
         acl: Option<&crate::acl::Inherited>,
     ) -> Result<u32, MountError> {
+        self.create_op(|m| m.create_mknod_in_transaction(parent_ino, name, mode, rdev, uid, gid, acl))
+    }
+
+    /// Create a special inode while the caller owns the journal transaction.
+    /// # C: O(parent entries) + 1 inode allocation + 2 block I/Os
+    pub(crate) fn create_mknod_in_transaction(
+        &self, parent_ino: u32, name: &[u8], mode: u16, rdev: u32, uid: u32, gid: u32,
+        acl: Option<&crate::acl::Inherited>,
+    ) -> Result<u32, MountError> {
         let ftype = mode & S_IFMT;
         let dirent_dt = match ftype {
             S_IFCHR => dir::DT_CHR,
@@ -277,25 +286,23 @@ impl Mount {
             S_IFSOCK => dir::DT_SOCK,
             _ => return Err(MountError::Inode(inode::InodeError::BadLen)),
         };
-        self.create_op(|m| {
-            let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
-            let new_ino = m.alloc_inode(parent_group)?;
-            let mut bytes = vec![0u8; m.sb.inode_size as usize];
+        let parent_group = (parent_ino - 1) / self.sb.inodes_per_group;
+            let new_ino = self.alloc_inode(parent_group)?;
+            let mut bytes = vec![0u8; self.sb.inode_size as usize];
             bytes[0x00..0x02].copy_from_slice(&mode.to_le_bytes());
             bytes[0x1A..0x1C].copy_from_slice(&1u16.to_le_bytes());
             stamp_owner(&mut bytes, uid, gid);
-            if m.sb.inode_size as usize > crate::csum::EXT4_GOOD_OLD_INODE_SIZE {
+            if self.sb.inode_size as usize > crate::csum::EXT4_GOOD_OLD_INODE_SIZE {
                 bytes[0x80..0x82].copy_from_slice(&32u16.to_le_bytes());
             }
             super::stamp_new_inode_generation(&mut bytes);
-            m.inherit_inode_flags_project(parent_ino, mode, &mut bytes)?;
+            self.inherit_inode_flags_project(parent_ino, mode, &mut bytes)?;
             if matches!(ftype, S_IFCHR | S_IFBLK) {
                 bytes[0x28..0x2C].copy_from_slice(&rdev.to_le_bytes());
             }
-            m.write_inode_bytes(new_ino, &bytes)?;
-            if let Some(acl) = acl { acl.store(m, new_ino)?; }
-            m.dir_link_in_transaction(parent_ino, name, new_ino, dirent_dt)?;
+            self.write_inode_bytes(new_ino, &bytes)?;
+            if let Some(acl) = acl { acl.store(self, new_ino)?; }
+            self.dir_link_in_transaction(parent_ino, name, new_ino, dirent_dt)?;
             Ok(new_ino)
-        })
     }
 }
