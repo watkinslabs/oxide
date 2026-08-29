@@ -132,9 +132,9 @@ impl Mount {
     }
 
     fn try_alloc_inode_in_group(&self, group: u32) -> Result<Option<u32>, MountError> {
-        // NB: the bitmap read-modify-write is serialized by the caller holding
-        // `op_lock` across the whole create operation (see create.rs) — two
-        // concurrent creates cannot pick the same free bit.
+        let group_lock = self.group_lock(group);
+        // SAFETY: process context, with no spinlock held.
+        let _group_guard = unsafe { group_lock.lock() };
         let gd_orig = {
             let s = self.state.lock();
             gdt::parse_descriptor(&s.gdt_buf, group, &self.sb)?
@@ -218,6 +218,9 @@ impl Mount {
         self.run_journaled(|m| {
             let group = (ino - 1) / m.sb.inodes_per_group;
             let bit   = (ino - 1) % m.sb.inodes_per_group;
+            let group_lock = m.group_lock(group);
+            // SAFETY: process context, with no spinlock held.
+            let _group_guard = unsafe { group_lock.lock() };
             let gd_orig = {
                 let s = m.state.lock();
                 gdt::parse_descriptor(&s.gdt_buf, group, &m.sb)?

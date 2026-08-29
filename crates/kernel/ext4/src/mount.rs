@@ -38,6 +38,7 @@ mod errors;
 mod faults;
 mod io;
 mod lifecycle;
+mod ownership;
 mod quota;
 mod validity;
 
@@ -241,6 +242,11 @@ pub struct Mount {
     pub sb: Superblock,
     pub(crate) system_zones: Vec<(u64, u64)>,
     pub(crate) state: Spinlock<MountState, SuperblockLockClass>,
+    /// Sleepable ownership locks for allocation groups. Linux's
+    /// `ext4_lock_group()` protects one group's bitmap and descriptor while
+    /// unrelated groups continue concurrently.
+    /// # Lk: leaf — taken before `state` or metadata writer locks.
+    pub(crate) group_locks: Spinlock<alloc::collections::BTreeMap<u32, Arc<sched::live::Mutex<()>>>, SuperblockLockClass>,
     pub(crate) quota_sb: Spinlock<Weak<vfs::SuperBlock>, SuperblockLockClass>,
     /// This volume's error history, seeded at open from the superblock and
     /// extended by every filesystem error this mount finds. Lives on the mount
