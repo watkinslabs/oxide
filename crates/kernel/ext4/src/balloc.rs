@@ -103,7 +103,9 @@ impl Mount {
             loop {
                 let freest = if optimize { m.freest_group(groups) } else { None };
                 let stream = ino.and_then(|ino| m.stream_goal_group(ino, groups));
-                let preferred = if optimize { m.group_for_request(groups, count, hint) } else { None };
+                let preferred = if optimize {
+                    m.group_for_request(groups, count, hint, !flags.use_reserved)
+                } else { None };
                 let start = stream.or(preferred).unwrap_or_else(|| scan::scan_start(hint, groups, optimize, freest));
                 for off in 0..groups {
                     let group = (start + off) % groups;
@@ -207,7 +209,9 @@ impl Mount {
             // group, so the answer never changes — only how many full groups
             // are read before it is reached.
             let freest = if optimize { m.freest_group(groups) } else { None };
-            let preferred = if optimize { m.group_for_request(groups, 1, hint) } else { None };
+            let preferred = if optimize {
+                m.group_for_request(groups, 1, hint, !flags.use_reserved)
+            } else { None };
             let start = preferred.unwrap_or_else(|| scan::scan_start(hint, groups, optimize, freest));
             for off in 0..groups {
                 let g = (start + off) % groups;
@@ -250,7 +254,7 @@ impl Mount {
     /// fragment can satisfy the request, then falls back to the normal scan.
     /// Unknown groups are deliberately omitted until their bitmap is loaded;
     /// the descriptor count remains the fallback authority.
-    fn group_for_request(&self, groups: u32, count: u32, hint: u32) -> Option<u32> {
+    fn group_for_request(&self, groups: u32, count: u32, hint: u32, best_avail: bool) -> Option<u32> {
         if count == 0 { return None; }
         if count.is_power_of_two() && count > 1 {
             let wanted = count.ilog2() as u8;
@@ -270,9 +274,11 @@ impl Mount {
         let s = self.state.lock();
         let mut goals = alloc::vec::Vec::new();
         goals.push(count);
-        for trim in 1..=3 {
-            if let Some(goal) = scan::best_available_goal_len(count, trim) {
-                if !goals.contains(&goal) { goals.push(goal); }
+        if best_avail {
+            for trim in 1..=3 {
+                if let Some(goal) = scan::best_available_goal_len(count, trim) {
+                    if !goals.contains(&goal) { goals.push(goal); }
+                }
             }
         }
         for goal in goals {
