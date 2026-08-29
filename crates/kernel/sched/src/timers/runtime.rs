@@ -225,29 +225,15 @@ pub fn account_cpu_tick(current: &Task) {
     }
 }
 
-/// Last deadline handed to the hardware per CPU, so a reprogram that resolves
-/// to the already-armed expiry skips the LVT + MSR writes. A cached deadline
-/// that `now` has passed is re-armed regardless —
-/// the hardware disarms itself once it fires, so a stale cache must not be
-/// mistaken for an armed timer.
-static ARMED_NS: [AtomicU64; cpu::MAX_CPUS] = [const { AtomicU64::new(0) }; cpu::MAX_CPUS];
-
 fn program(deadline_ns: u64) {
     let raw = PROGRAM_DEADLINE.load(Ordering::Acquire);
     if raw.is_null() { return; }
-    let slot = &ARMED_NS[crate::cpustat::this_cpu()];
-    if slot.load(Ordering::Relaxed) == deadline_ns
-        && deadline_ns > clock::monotonic_now_ns() { return; }
     // SAFETY: install_deadline_programmer stores only a ProgramDeadline function pointer.
     let f: ProgramDeadline = unsafe { core::mem::transmute(raw) };
-    // Publish the cache only after the architecture confirms that it armed the
-    // local device. A failed arm must leave the cache invalid so a later
-    // reprogram retries instead of waiting for an interrupt that cannot arrive.
-    if f(deadline_ns) {
-        slot.store(deadline_ns, Ordering::Release);
-    } else {
-        slot.store(0, Ordering::Release);
-    }
+    // The architecture clockevent is the sole owner of armed state. Do not
+    // cache a second software copy: a deadline may be consumed, lost, or
+    // replaced by the device while the scheduler is idle.
+    let _ = f(deadline_ns);
 }
 
 fn publish_earliest(deadline_ns: u64) {
@@ -399,16 +385,10 @@ pub fn next_interrupt_deadline() -> u64 {
 }
 
 /// Re-arm this CPU's one-shot after a wait expiry was armed or cancelled in
-/// process context — Linux `hrtimer_reprogram`. `program`'s `ARMED_NS` cache
-/// makes it a no-op when the resolved deadline is unchanged, which is the
-/// common case for a park behind an already-earlier timer.
+/// process context — Linux `hrtimer_reprogram`. The architecture clockevent
+/// owns whether the deadline is currently armed; submit every local expiry.
 /// # C: O(SLOTS * N_threads)
 /// # Ctx: process
 pub fn reprogram_local() {
-    // Idle entry is the recovery boundary for a hardware/software split: the
-    // LAPIC may have fallen back to periodic mode or lost its compare while
-    // ARMED_NS still names a future expiry. Do not let the cache turn this
-    // Linux-style clockevent reprogram into a no-op.
-    ARMED_NS[crate::cpustat::this_cpu()].store(0, Ordering::Release);
     program(next_interrupt_deadline());
 }
