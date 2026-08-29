@@ -28,6 +28,11 @@ impl Mount {
         );
         if offset >= end { return Ok(()); }
 
+        // Linux ext4_punch_hole discards inode-local preallocation before it
+        // changes the extent layout.  Otherwise a retained tail can remain
+        // masked in the allocator after the punched range has been rebuilt.
+        self.release_inode_prealloc(ino)?;
+
         // Zero the partial-block edges in place (keeps the edge blocks allocated;
         // only WHOLE blocks fully inside the range are deallocated).
         let first_full = offset.div_ceil(bs);
