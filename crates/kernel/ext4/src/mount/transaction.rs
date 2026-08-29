@@ -128,9 +128,13 @@ impl Mount {
         s.batch && s.shadow.is_some()
     }
 
-    /// Run one handle in the running batch. The transaction gate protects
-    /// admission and retirement only; metadata and allocation ownership
-    /// protect the operation body, as in jbd2's per-handle model.
+    /// Run one handle in the running batch while retaining the transaction
+    /// gate across the operation body. Shadow bytes, allocator mirrors,
+    /// GDT/SB counters, and rollback frames form one coupled ownership unit;
+    /// per-LBA locks cannot make concurrent updates to that unit atomic.
+    /// Releasing the gate here allowed live root handles to publish a bitmap/
+    /// GDT combination that belonged to neither operation. This preserves
+    /// cross-operation journal batching with the safe running-owner boundary.
     /// # C: O(1) admission/finalization + F
     fn run_batch_handle<R, F>(&self, f: F) -> Result<R, MountError>
     where F: FnOnce(&Self) -> Result<R, MountError>
@@ -144,9 +148,7 @@ impl Mount {
         let id = crate::mount::core::ctx_id();
         self.state.lock().undo.entry(id).or_default()
             .push(alloc::collections::BTreeMap::new());
-        self.txn_release();
         let r = f(self);
-        self.txn_acquire();
         let result = match r {
             Ok(v) => { self.batch_frame_commit(); Ok(v) }
             Err(e) => { self.batch_frame_rollback(); Err(e) }
