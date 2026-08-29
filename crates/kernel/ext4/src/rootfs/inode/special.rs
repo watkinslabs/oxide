@@ -59,7 +59,7 @@ impl Ext4StatInodeOps {
             }
         };
         d.st.forget_created_ino(ino);
-        d.invalidate_raw();
+        d.refresh_namespace_size(inode);
         Ok(d.st.wrap_created_file(ino, &node))
     }
 
@@ -104,6 +104,7 @@ impl Ext4StatInodeOps {
         } else {
             d.invalidate_raw();
         }
+        d.refresh_namespace_size(inode);
         d.st.forget_created_ino(ino);
         Ok(d.st.wrap_created_any(ino, &node))
     }
@@ -399,7 +400,7 @@ impl Ext4StatInodeOps {
             }
         };
         d.st.forget_created_ino(ino);
-        d.invalidate_raw();
+        d.refresh_namespace_size(inode);
         Ok(())
     }
 
@@ -427,7 +428,7 @@ impl Ext4StatInodeOps {
             }
         };
         d.st.forget_created_ino(ino);
-        d.invalidate_raw();
+        d.refresh_namespace_size(inode);
         Ok(())
     }
 }

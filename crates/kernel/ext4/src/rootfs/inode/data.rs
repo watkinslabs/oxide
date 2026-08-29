@@ -187,6 +187,23 @@ impl Ext4StatData {
         Some(raw)
     }
 
+    /// Publish only the directory geometry changed by `ext4_append()`. The
+    /// namespace transaction owns `i_size`; VFS-owned flags, project ID, and
+    /// link-count updates have separate owners and must not be overwritten by
+    /// this publication. # C: 1 inode read
+    pub(crate) fn refresh_namespace_size(&self, inode: &Inode) {
+        match self.st.mount.read_inode(self.ino) {
+            Ok(raw) => {
+                if raw.size == inode.size() { return; }
+                inode.set_size(raw.size);
+                let mut cached = (*self.raw.lock()).as_ref().clone();
+                cached.size = raw.size;
+                self.publish_raw(cached);
+            }
+            Err(_) => self.invalidate_raw(),
+        }
+    }
+
 }
 
 /// Recover `(owning mount state, ext4 ino)` from a concrete inode's
