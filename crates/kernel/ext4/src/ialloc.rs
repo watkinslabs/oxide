@@ -354,6 +354,17 @@ impl Mount {
     pub fn init_inode(&self, parent_ino: u32, ino: u32, mode: u16, nlink: u16, uid: u32, gid: u32)
         -> Result<Inode, MountError>
     {
+        let parent = self.read_inode(parent_ino)?;
+        self.init_inode_with_parent(&parent, ino, mode, nlink, uid, gid)
+    }
+
+    /// Initialize an inode using the caller's already-resolved parent image.
+    /// The VFS create path holds that parent exclusively, matching Linux's
+    /// `ext4_new_inode` contract; do not issue a second inode-table read.
+    /// # C: O(1) I/O
+    pub(crate) fn init_inode_with_parent(
+        &self, parent: &Inode, ino: u32, mode: u16, nlink: u16, uid: u32, gid: u32,
+    ) -> Result<Inode, MountError> {
         let mut bytes = vec![0u8; self.sb.inode_size as usize];
         bytes[0x00..0x02].copy_from_slice(&mode.to_le_bytes());
         bytes[0x1A..0x1C].copy_from_slice(&nlink.to_le_bytes());
@@ -374,7 +385,7 @@ impl Mount {
             bytes[0x20..0x24].copy_from_slice(&0x0008_0000u32.to_le_bytes());
         }
         stamp_new_inode_generation(&mut bytes);
-        self.inherit_inode_flags_project(parent_ino, mode, &mut bytes)?;
+        self.inherit_inode_flags_project_from(parent, mode, &mut bytes)?;
         let hdr = ExtentHeader { magic: EXT4_EXT_MAGIC, entries: 0, max: 4, depth: 0, generation: 0 };
         let mut i_block = [0u8; I_BLOCK_LEN];
         inode::write_extent_header(&mut i_block, &hdr);

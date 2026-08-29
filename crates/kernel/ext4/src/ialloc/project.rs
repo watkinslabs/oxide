@@ -23,6 +23,20 @@ impl Mount {
         bytes: &mut [u8],
     ) -> Result<(), MountError> {
         let parent = self.read_inode(parent_ino)?;
+        self.inherit_inode_flags_project_from(&parent, mode, bytes)
+    }
+
+    /// Apply the same inheritance rule from a parent inode the caller already
+    /// owns. Linux's create path has the parent inode in hand under its
+    /// directory lock; re-reading its table slot here would add a second
+    /// metadata I/O to every create and could disagree with that owner.
+    /// # C: O(1)
+    pub(crate) fn inherit_inode_flags_project_from(
+        &self,
+        parent: &crate::inode::Inode,
+        mode: u16,
+        bytes: &mut [u8],
+    ) -> Result<(), MountError> {
         let inherited = ext4_mask_flags(mode, parent.i_flags & EXT4_FL_INHERITED);
         let cur = u32::from_le_bytes(bytes[OFF_FLAGS..OFF_FLAGS + 4].try_into()
             .map_err(|_| MountError::Inode(InodeError::BadLen))?);

@@ -69,6 +69,7 @@ that artifact is regenerated.
 | E4-08 fresh-main control / `6a60cafaf` | 1,367,668 | 6,748 | 4,934 | 23,845 | — | 12,212 | 752 | 3,026 | unmodified main control; GNOME Shell marker complete; SMP=1; parent-lock 9,877 ms, writer-hold 11,813 ms, inode-writer-hold 4,073 ms; retained for variance, no gain claimed |
 | E4-08 fallocate inode image / `9b657b2b0` | 1,366,388 | 5,649 | 4,134 | 26,194 | — | 8,889 | 314 | 3,140 | diagnostic `debug-syscost` run after repairing the disposable root image; GNOME Shell at 28.7s; not directly comparable to standard rows and no whole-boot gain claimed |
 | E4-08 current-main rerun / `bddf678a4` | 1,367,367 | 5,606 | 4,099 | 21,548 | — | 11,007 | 287 | 2,716 | GNOME Shell marker complete at 30s; SMP=1; successful repeat after one non-reproducible EIO boot; no new code change or gain claimed |
+| E4-08 parent-image create / `1f6f40eca` | 1,368,039 | 5,604 | 4,096 | 21,115 | — | 11,017 | 288 | 3,138 | GNOME Shell marker complete at 30s; SMP=1; canonical VFS regular-file create reuses the locked parent image; correctness lane, no aggregate gain claimed |
 
 The B2709 `munmap` result is a material improvement over B2699: 71,407 ns
 to 21,426 ns (about 70% lower), and 52x to 16x the host baseline. The B2708

@@ -94,14 +94,30 @@ impl Mount {
         self.dir_link_inner(dir_ino, name, child_ino, file_type)
     }
 
+    /// Link using the parent inode image already held by the VFS mutation
+    /// owner. Linux carries the same in-core parent through its namespace
+    /// operation; re-reading the parent table slot here adds avoidable I/O.
+    pub(crate) fn dir_link_in_transaction_with_inode(
+        &self, dir_node: &Inode, name: &[u8], child_ino: u32, file_type: u8,
+    ) -> Result<(), MountError> {
+        self.dir_link_inner_with_inode(dir_node, name, child_ino, file_type)
+    }
+
     fn dir_link_inner(&self, dir_ino: u32, name: &[u8], child_ino: u32, file_type: u8)
         -> Result<(), MountError>
     {
         let dir_node = self.read_inode(dir_ino)?;
+        self.dir_link_inner_with_inode(&dir_node, name, child_ino, file_type)
+    }
+
+    fn dir_link_inner_with_inode(&self, dir_node: &Inode, name: &[u8],
+                                 child_ino: u32, file_type: u8) -> Result<(), MountError>
+    {
         if !dir_node.is_dir() { return Err(MountError::NotDir); }
         if !self.strict_name_valid(&dir_node, name) {
             return Err(MountError::Dir(dir::DirError::BadNameLen));
         }
+        let dir_ino = dir_node.ino;
         let flags = dir_node.i_flags;
         let gen = dir_node.generation;
         let bs = self.sb.block_size as usize;

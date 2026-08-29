@@ -40,8 +40,20 @@ impl Ext4StatInodeOps {
             0o7777, vfs::types::S_IFREG, ctx.cred, 0);
         let acl = crate::acl::inherit(inode, m, ctx.umask, vfs::posix_acl::NewKind::Other)?;
         super::super::quota::charge_new_inode(&d.st, d.ino, acl.mode, uid, gid)?;
-        let (ino, node) = match d.st.mount.create_file_inode_with_acl(
-            d.ino, name.as_bytes(), acl.mode & 0o7777, uid, gid, &acl) {
+        // The canonical VFS inode is the same parent image that lookup used.
+        // Pass it through the Linux-shaped create owner when available; a
+        // non-canonical helper inode has no safe lifetime/invalidator and uses
+        // the ordinary mount entry point instead.
+        let parent_raw = if d.canonical
+            && d.raw_valid.load(core::sync::atomic::Ordering::Acquire)
+        { Some(d.raw.lock().clone()) } else { None };
+        let created = match parent_raw.as_ref() {
+            Some(parent) => d.st.mount.create_file_inode_with_acl_parent(
+                parent, name.as_bytes(), acl.mode & 0o7777, uid, gid, &acl),
+            None => d.st.mount.create_file_inode_with_acl(
+                d.ino, name.as_bytes(), acl.mode & 0o7777, uid, gid, &acl),
+        };
+        let (ino, node) = match created {
             Ok(v) => v,
             Err(e) => {
                 let _ = super::super::quota::rollback_new_inode_charge(&d.st, d.ino, acl.mode, uid, gid);

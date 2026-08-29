@@ -59,6 +59,30 @@ impl Mount {
         self.create_file_inode_inner(parent_ino, name, mode_perm, uid, gid, Some(acl))
     }
 
+    /// VFS create variant using the already-resolved parent inode image. The
+    /// parent is the canonical lock owner, so both inheritance and directory
+    /// insertion consume it rather than re-reading the inode table.
+    pub(crate) fn create_file_inode_with_acl_parent(
+        &self,
+        parent: &inode::Inode,
+        name: &[u8],
+        mode_perm: u16,
+        uid: u32,
+        gid: u32,
+        acl: &crate::acl::Inherited,
+    ) -> Result<(u32, inode::Inode), MountError> {
+        let parent_ino = parent.ino;
+        self.create_op(|m| {
+            let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
+            let new_ino = m.alloc_inode_in_transaction(parent_group)?;
+            let node = m.init_inode_with_parent(parent, new_ino,
+                S_IFREG | (mode_perm & 0x0FFF), 1, uid, gid)?;
+            acl.store(m, new_ino)?;
+            m.dir_link_in_transaction_with_inode(parent, name, new_ino, dir::DT_REG)?;
+            Ok((new_ino, node))
+        })
+    }
+
     fn create_file_inode_inner(
         &self,
         parent_ino: u32,
