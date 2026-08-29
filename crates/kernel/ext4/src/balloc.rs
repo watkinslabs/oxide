@@ -37,8 +37,7 @@ impl Mount {
             if self.state.lock().block_bitmap_cache.contains_key(&byte_off) { continue; }
             let uninit = gdt::block_uninit(&gdt_bytes, group, &self.sb);
             let bitmap = if uninit {
-                let s = self.state.lock();
-                init_block_bitmap_for_group(&self.sb, &s.gdt_buf, group)?
+                init_block_bitmap_for_group(&self.sb, &gdt_bytes, group)?
             } else {
                 let bitmap = self.read_meta_byte_range(byte_off, self.sb.block_size as usize)?;
                 if !crate::csum::verify_block_bitmap_csum_at(
@@ -431,26 +430,6 @@ impl Mount {
         let first = self.sb.first_data_block as u64 + group as u64 * bpg;
         let end   = core::cmp::min(first + bpg, total);
         end.saturating_sub(first) as u32
-    }
-
-    /// Persist one GDT slot to disk through `metadata_write` (so
-    /// it's journaled when a scope is open). Briefly locks state
-    /// to copy the slot's containing fs-block bytes; releases the
-    /// lock before the write.
-    /// # C: O(block_size)
-    pub(crate) fn persist_gdt_slot_meta(&self, group: u32) -> Result<(), MountError> {
-        let dsize = gdt::desc_size_for(&self.sb) as usize;
-        let slot_byte = (group as usize) * dsize;
-        let bs = self.sb.block_size as usize;
-        let blk_idx = slot_byte / bs;
-        let byte_off = self.gdt_byte_offset() + (blk_idx * bs) as u64;
-        let payload = {
-            let s = self.state.lock();
-            let lo = blk_idx * bs;
-            let hi = core::cmp::min(lo + bs, s.gdt_buf.len());
-            s.gdt_buf[lo..hi].to_vec()
-        };
-        self.metadata_write(byte_off, &payload)
     }
 
     /// Stage a descriptor's containing filesystem block from the canonical

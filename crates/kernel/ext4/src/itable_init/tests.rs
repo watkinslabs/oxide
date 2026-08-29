@@ -47,7 +47,7 @@ fn mount(data: &str) -> Arc<crate::Mount> {
 /// that never-used tail so there is something for the initialiser to remove.
 /// Answers where the tail is and how long it is.
 pub(crate) fn dirty_the_table(m: &Arc<crate::Mount>, n: u32) -> (u64, usize) {
-    let (tail_off, tail_len) = {
+    let (tail_off, tail_len, gdt_bytes) = {
         let mut s = m.state.lock();
         let dsize = gdt::desc_size_for(&m.sb) as usize;
         let base = (n as usize) * dsize;
@@ -66,9 +66,11 @@ pub(crate) fn dirty_the_table(m: &Arc<crate::Mount>, n: u32) -> (u64, usize) {
         let used = super::decide::used_itable_blocks(&geom, half, false).unwrap();
         let bs = m.sb.block_size as u64;
         ((d.inode_table + used as u64) * bs,
-         ((geom.blocks_per_table - used) as u64 * bs) as usize)
+         ((geom.blocks_per_table - used) as u64 * bs) as usize,
+         s.gdt_buf.clone())
     };
     assert!(tail_len != 0, "the image left no never-used inodes to zero");
+    m.persist_gdt_slot_bytes_meta(n, &gdt_bytes).unwrap();
     crate::mount::io_write_byte_range(&*m.dev, tail_off, &alloc::vec![GARBAGE; tail_len]).unwrap();
     (tail_off, tail_len)
 }
@@ -90,7 +92,7 @@ fn an_uninitialised_table_is_zeroed_and_flagged() {
     assert_eq!(m.init_inode_table(FIRST_GROUP), Ok(true));
     assert!(read_back(&m, off, len).iter().all(|b| *b == 0),
         "the never-used part of the table is zeroed");
-    assert!(gdt::inode_zeroed(&m.state.lock().gdt_buf, FIRST_GROUP, &m.sb),
+    assert!(gdt::inode_zeroed(&m.read_gdt_bytes().unwrap(), FIRST_GROUP, &m.sb),
         "and the group says so");
 }
 
@@ -127,7 +129,7 @@ fn an_impossible_unused_count_refuses_rather_than_zeroing() {
     let _no_walk = no_walk();
     let m = mount("");
     dirty_the_table(&m, FIRST_GROUP);
-    {
+    let gdt_bytes = {
         let mut s = m.state.lock();
         let dsize = gdt::desc_size_for(&m.sb) as usize;
         let off = (FIRST_GROUP as usize) * dsize;
@@ -140,7 +142,9 @@ fn an_impossible_unused_count_refuses_rather_than_zeroing() {
         let uoff = off + gdt::GD_OFF_ITABLE_UNUSED_LO;
         s.gdt_buf[uoff..uoff + 2].copy_from_slice(&u16::MAX.to_le_bytes());
         crate::csum::stamp_group_desc_csum(&m.sb, &mut s.gdt_buf, FIRST_GROUP);
-    }
+        s.gdt_buf.clone()
+    };
+    m.persist_gdt_slot_bytes_meta(FIRST_GROUP, &gdt_bytes).unwrap();
     assert_eq!(m.init_inode_table(FIRST_GROUP),
         Err(crate::MountError::Gdt(gdt::GdtError::BadItableUnused)));
 }

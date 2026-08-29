@@ -35,12 +35,10 @@ impl Mount {
     /// says the work finished is the only part that is journalled.
     /// # C: O(itable bytes) I/O
     pub fn init_inode_table(&self, n: u32) -> Result<bool, MountError> {
-        let (zeroed, unused, uninit) = {
-            let s = self.state.lock();
-            (gdt::inode_zeroed(&s.gdt_buf, n, &self.sb),
-             gdt::itable_unused(&s.gdt_buf, n, &self.sb),
-             gdt::inode_uninit(&s.gdt_buf, n, &self.sb))
-        };
+        let gdt_bytes = self.read_gdt_bytes()?;
+        let zeroed = gdt::inode_zeroed(&gdt_bytes, n, &self.sb);
+        let unused = gdt::itable_unused(&gdt_bytes, n, &self.sb);
+        let uninit = gdt::inode_uninit(&gdt_bytes, n, &self.sb);
         if zeroed { return Ok(false); }
         let geom = decide::TableGeometry::new(self.sb.inodes_per_group, self.sb.block_size,
                                               self.sb.inode_size);
@@ -49,10 +47,7 @@ impl Mount {
             // Refuse rather than zero a range that may hold live inodes.
             return Err(MountError::Gdt(gdt::GdtError::BadItableUnused));
         };
-        let table = {
-            let s = self.state.lock();
-            gdt::parse_descriptor(&s.gdt_buf, n, &self.sb)?.inode_table
-        };
+        let table = gdt::parse_descriptor(&gdt_bytes, n, &self.sb)?.inode_table;
         let bs = self.sb.block_size as u64;
         let to_zero = geom.blocks_per_table.saturating_sub(used_blocks);
         if to_zero != 0 {
@@ -66,8 +61,9 @@ impl Mount {
         self.run_journaled(|m| {
             // SAFETY: process context, with no spinlock held.
             let _gdt_guard = unsafe { m.gdt_lock.lock() };
-            { let mut s = m.state.lock(); gdt::set_inode_zeroed(&mut s.gdt_buf, n, &m.sb); }
-            m.persist_gdt_slot_meta(n)?;
+            let mut current = m.read_gdt_bytes()?;
+            gdt::set_inode_zeroed(&mut current, n, &m.sb);
+            m.persist_gdt_slot_bytes_meta(n, &current)?;
             m.flush_pending_tx()
         })?;
         Ok(true)
@@ -79,11 +75,9 @@ impl Mount {
     /// # C: O(N_groups) + O(itable bytes) I/O
     pub fn init_next_inode_table(&self, from: u32) -> Result<Option<u32>, MountError> {
         let groups = self.sb.group_count();
-        let next = {
-            let s = self.state.lock();
-            decide::next_unzeroed_group(from, groups,
-                |g| gdt::inode_zeroed(&s.gdt_buf, g, &self.sb))
-        };
+        let gdt_bytes = self.read_gdt_bytes()?;
+        let next = decide::next_unzeroed_group(from, groups,
+            |g| gdt::inode_zeroed(&gdt_bytes, g, &self.sb));
         let Some(n) = next else { return Ok(None) };
         self.init_inode_table(n)?;
         Ok(Some(n))

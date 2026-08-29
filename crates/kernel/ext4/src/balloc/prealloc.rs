@@ -264,6 +264,7 @@ impl Mount {
         // Like Linux's inode preallocation list, these blocks are free in the
         // on-disk bitmap and reserved only in the in-memory buddy view.  Drop
         // the reservation; there is no bitmap transaction to perform here.
+        let gdt_bytes = self.read_gdt_bytes()?;
         let pas = self.state.lock().inode_prealloc.remove(&ino).unwrap_or_default();
         let mut released = Vec::new();
         for pa in pas {
@@ -272,7 +273,7 @@ impl Mount {
         let mut s = self.state.lock();
         for block in released {
             let Ok((group, bit)) = self.locate_block(block) else { continue };
-            let Ok(gd) = gdt::parse_descriptor(&s.gdt_buf, group, &self.sb) else { continue };
+            let Ok(gd) = gdt::parse_descriptor(&gdt_bytes, group, &self.sb) else { continue };
             let off = gd.block_bitmap * self.sb.block_size as u64;
             if let Some(bitmap) = s.block_bitmap_cache.get_mut(&off) {
                 bitmap[bit as usize >> 3] &= !(1 << (bit & 7));
@@ -304,13 +305,14 @@ impl Mount {
     /// Release all reusable locality PAs by removing only their in-memory
     /// masks; the disk bitmap already records these blocks as free. # C: O(N PA blocks)
     pub(crate) fn release_all_group_prealloc(&self) -> Result<(), MountError> {
+        let gdt_bytes = self.read_gdt_bytes()?;
         let pas = core::mem::take(&mut self.state.lock().group_prealloc);
         let mut s = self.state.lock();
         for ((_, _, _), entries) in pas {
             for pa in entries {
                 for block in pa.blocks {
                     let Ok((group, bit)) = self.locate_block(block) else { continue };
-                    let Ok(gd) = gdt::parse_descriptor(&s.gdt_buf, group, &self.sb) else { continue };
+                    let Ok(gd) = gdt::parse_descriptor(&gdt_bytes, group, &self.sb) else { continue };
                     let off = gd.block_bitmap * self.sb.block_size as u64;
                     if let Some(bitmap) = s.block_bitmap_cache.get_mut(&off) {
                         bitmap[bit as usize >> 3] &= !(1 << (bit & 7));
@@ -338,6 +340,7 @@ impl Mount {
         let mut released = Vec::new();
         let mut remaining = alloc::collections::BTreeMap::new();
         let mut free = 0u32;
+        let gdt_bytes = self.read_gdt_bytes()?;
         let pas = core::mem::take(&mut self.state.lock().group_prealloc);
         for (key, entries) in pas {
             let mut keep = Vec::new();
@@ -355,7 +358,7 @@ impl Mount {
         let mut s = self.state.lock();
         for block in released {
             let Ok((group, bit)) = self.locate_block(block) else { continue };
-            let Ok(gd) = gdt::parse_descriptor(&s.gdt_buf, group, &self.sb) else { continue };
+            let Ok(gd) = gdt::parse_descriptor(&gdt_bytes, group, &self.sb) else { continue };
             let off = gd.block_bitmap * self.sb.block_size as u64;
             if let Some(bitmap) = s.block_bitmap_cache.get_mut(&off) {
                 bitmap[bit as usize >> 3] &= !(1 << (bit & 7));
