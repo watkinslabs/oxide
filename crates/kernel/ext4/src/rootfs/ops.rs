@@ -104,9 +104,10 @@ impl RootfsState {
         let times = inode.times();
         let generation = inode.generation;
         let raw_flags = inode.i_flags;
+        let blocks = inode.i_blocks;
         let raw = Arc::new(inode);
         let st = self.clone();
-        let build = move || build_stat_inode(st, ino, ft, perm, size, nlink, rdev, uid, gid, projid, times, generation, raw_flags, raw);
+        let build = move || build_stat_inode(st, ino, ft, perm, size, nlink, rdev, uid, gid, projid, times, generation, raw_flags, blocks, raw);
         // Route through the SB inode cache so a repeated lookup of the same ino
         // returns the SAME `Arc` (shared inode identity, Linux `iget`). Before
         // the SB is back-stamped (during `fs.root()`) build directly.
@@ -166,9 +167,10 @@ impl RootfsState {
                                           inode.links_count as u32, inode.times());
         let generation = inode.generation;
         let raw_flags = inode.i_flags;
+        let blocks = inode.i_blocks;
         let raw = Arc::new(*inode);
         let st = self.clone();
-        let build = move || build_stat_inode(st, ino, ft, perm, size, nlink, rdev, uid, gid, projid, times, generation, raw_flags, raw);
+        let build = move || build_stat_inode(st, ino, ft, perm, size, nlink, rdev, uid, gid, projid, times, generation, raw_flags, blocks, raw);
         match self.i_sb() {
             Some(sb) => sb.iget(ext4_wrap_ino(ino), build),
             None => build(),
