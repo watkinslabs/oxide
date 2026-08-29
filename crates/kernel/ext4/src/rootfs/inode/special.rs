@@ -102,7 +102,10 @@ impl Ext4StatInodeOps {
             if let Some(victim) = sb.ilookup(ext4_wrap_ino(target)) { victim.set_nlink(0); }
         }
         inode.drop_nlink();
-        d.invalidate_raw();
+        // Unlinking a child does not change this directory's lookup geometry:
+        // i_size, i_flags, and the inode generation remain valid. Keep the
+        // Linux-shaped in-core directory image; the changed dir block is read
+        // from the metadata cache/shadow on the next lookup.
         Ok(())
     }
 
@@ -118,7 +121,10 @@ impl Ext4StatInodeOps {
         let out = mount.run_journaled_deferred(|m| m.unlink(d.ino, name.as_bytes()))
             .map_err(super::regular::vfs_error_from_mount)?;
         d.st.after_unlink(out)?;
-        d.invalidate_raw();
+        // Removing a name changes contents, not the directory inode fields
+        // used to select and verify its lookup blocks. Retain the parsed
+        // in-core image as Linux does; the metadata block itself is coherent
+        // through the mount cache/shadow owner.
         Ok(())
     }
 }
