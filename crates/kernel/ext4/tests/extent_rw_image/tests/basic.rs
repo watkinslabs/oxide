@@ -134,6 +134,27 @@ fn failed_append_rolls_back_fresh_primary_and_pa_claims() {
 }
 
 #[test]
+fn failed_write_rolls_back_preallocated_claim() {
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk).unwrap();
+    let bs = m.sb.block_size as usize;
+    let ino = m.create_file(2, b"write-failure-pa.bin", 0o644, 0, 0).unwrap();
+
+    m.write_at(ino, 0, &vec![0x81; bs]).unwrap();
+    let first_phys = m.extent_map(ino).unwrap()[0].1;
+    let before_retry = m.state_free_blocks();
+    m.fail_next_inode_write_for_tests();
+    assert!(m.write_at(ino, bs as u64, &vec![0x82; bs]).is_err());
+    assert_eq!(m.state_free_blocks(), before_retry,
+        "failed write returns its claimed preallocated block");
+
+    m.write_at(ino, bs as u64, &vec![0x83; bs]).unwrap();
+    let map = m.extent_map(ino).unwrap();
+    assert_eq!(map[0].1, first_phys);
+    assert_eq!(map[0].2, 2, "retry reuses the restored contiguous PA block");
+}
+
+#[test]
 fn small_files_reuse_locality_preallocation() {
     let disk = build_disk();
     let m = ext4::Mount::open(disk).unwrap();
