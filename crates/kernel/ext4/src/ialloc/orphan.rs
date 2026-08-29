@@ -117,8 +117,9 @@ impl Mount {
                 {
                     // SAFETY: process context, with no spinlock held.
                     let _gdt_guard = unsafe { m.gdt_lock.lock() };
-                    { let mut state = m.state.lock(); gdt::adjust_used_dirs(&mut state.gdt_buf, group, &m.sb, -1)?; }
-                    m.persist_gdt_slot_meta(group)?;
+                    let mut gdt_bytes = m.read_gdt_bytes()?;
+                    gdt::adjust_used_dirs(&mut gdt_bytes, group, &m.sb, -1)?;
+                    m.persist_gdt_slot_bytes_meta(group, &gdt_bytes)?;
                 }
             }
             m.truncate_inode_for_deletion(ino)?;

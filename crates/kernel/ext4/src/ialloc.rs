@@ -137,7 +137,7 @@ impl Mount {
         let _group_guard = unsafe { group_lock.lock() };
         // SAFETY: the GDT owner is a sleepable leaf and no spinlock is held.
         let _gdt_guard = unsafe { self.gdt_lock.lock() };
-        let gdt_bytes = self.read_gdt_bytes()?;
+        let mut gdt_bytes = self.read_gdt_bytes()?;
         let gd_orig = gdt::parse_descriptor(&gdt_bytes, group, &self.sb)?;
         if gd_orig.free_inodes_count == 0 { return Ok(None); }
         let ibm_byte_off = gd_orig.inode_bitmap * (self.sb.block_size as u64);
@@ -190,17 +190,14 @@ impl Mount {
         for byte in bitmap[(ipg + 7) / 8..].iter_mut() { *byte = 0xFF; }
         let mut gd = gd_orig;
         gd.free_inodes_count = gd.free_inodes_count.saturating_sub(1);
-        {
-            let mut s = self.state.lock();
-            gdt::write_descriptor_counters(&mut s.gdt_buf, group, &self.sb, &gd)?;
-            crate::csum::set_inode_bitmap_csum(&self.sb, &mut s.gdt_buf, group, &bitmap);
-            // Maintain bg_itable_unused (clamp to the new high-water) and
-            // clear EXT4_BG_INODE_UNINIT — exactly as Linux ext4_new_inode.
-            gdt::on_inode_allocated(&mut s.gdt_buf, group, &self.sb, final_bit as u32);
-            crate::csum::stamp_group_desc_csum(&self.sb, &mut s.gdt_buf, group);
-        }
+        gdt::write_descriptor_counters(&mut gdt_bytes, group, &self.sb, &gd)?;
+        crate::csum::set_inode_bitmap_csum(&self.sb, &mut gdt_bytes, group, &bitmap);
+        // Maintain bg_itable_unused (clamp to the new high-water) and
+        // clear EXT4_BG_INODE_UNINIT — exactly as Linux ext4_new_inode.
+        gdt::on_inode_allocated(&mut gdt_bytes, group, &self.sb, final_bit as u32);
+        crate::csum::stamp_group_desc_csum(&self.sb, &mut gdt_bytes, group);
         self.metadata_write(ibm_byte_off, &bitmap)?;
-        self.persist_gdt_slot_meta(group)?;
+        self.persist_gdt_slot_bytes_meta(group, &gdt_bytes)?;
         self.persist_sb_free_inodes_meta(-1)?;
         self.flush_pending_tx()?;
         let ino = group * self.sb.inodes_per_group + final_bit as u32 + 1;
@@ -222,7 +219,7 @@ impl Mount {
             let _group_guard = unsafe { group_lock.lock() };
             // SAFETY: the GDT owner is a sleepable leaf and no spinlock is held.
             let _gdt_guard = unsafe { m.gdt_lock.lock() };
-            let gdt_bytes = m.read_gdt_bytes()?;
+            let mut gdt_bytes = m.read_gdt_bytes()?;
             let gd_orig = gdt::parse_descriptor(&gdt_bytes, group, &m.sb)?;
             let ibm_byte_off = gd_orig.inode_bitmap * (m.sb.block_size as u64);
             let mut bitmap = m.read_meta_byte_range(ibm_byte_off, m.sb.block_size as usize)?;
@@ -236,14 +233,11 @@ impl Mount {
             bitmap[bidx >> 3] &= !mask;
             let mut gd = gd_orig;
             gd.free_inodes_count = gd.free_inodes_count.saturating_add(1);
-            {
-                let mut s = m.state.lock();
-                gdt::write_descriptor_counters(&mut s.gdt_buf, group, &m.sb, &gd)?;
-                crate::csum::set_inode_bitmap_csum(&m.sb, &mut s.gdt_buf, group, &bitmap);
-                crate::csum::stamp_group_desc_csum(&m.sb, &mut s.gdt_buf, group);
-            }
+            gdt::write_descriptor_counters(&mut gdt_bytes, group, &m.sb, &gd)?;
+            crate::csum::set_inode_bitmap_csum(&m.sb, &mut gdt_bytes, group, &bitmap);
+            crate::csum::stamp_group_desc_csum(&m.sb, &mut gdt_bytes, group);
             m.metadata_write(ibm_byte_off, &bitmap)?;
-            m.persist_gdt_slot_meta(group)?;
+            m.persist_gdt_slot_bytes_meta(group, &gdt_bytes)?;
             m.persist_sb_free_inodes_meta(1)?;
             m.flush_pending_tx()?;
             Ok(())
@@ -327,8 +321,9 @@ impl Mount {
         {
             // SAFETY: process context, with no spinlock held.
             let _gdt_guard = unsafe { self.gdt_lock.lock() };
-            { let mut s = self.state.lock(); gdt::adjust_used_dirs(&mut s.gdt_buf, g, &self.sb, -1)?; }
-            self.persist_gdt_slot_meta(g)?;
+            let mut gdt_bytes = self.read_gdt_bytes()?;
+            gdt::adjust_used_dirs(&mut gdt_bytes, g, &self.sb, -1)?;
+            self.persist_gdt_slot_bytes_meta(g, &gdt_bytes)?;
         }
         // Clear the victim inode: links=0 + deletion time.
         let (mut b, _) = self.read_inode_bytes(target)?;

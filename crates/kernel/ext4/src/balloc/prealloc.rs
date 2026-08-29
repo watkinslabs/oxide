@@ -444,7 +444,7 @@ impl Mount {
             // SAFETY: process context, with no spinlock held; retain the GDT
             // owner while taking the canonical descriptor image.
             let _gdt_guard = unsafe { m.gdt_lock.lock() };
-            let gdt_bytes = m.read_gdt_bytes()?;
+            let mut gdt_bytes = m.read_gdt_bytes()?;
             let gd_orig = {
                 gdt::parse_descriptor(&gdt_bytes, group, &m.sb)?
             };
@@ -470,15 +470,12 @@ impl Mount {
             m.mask_group_prealloc(group, &mut cache);
             let mut gd = gd_orig;
             gd.free_blocks_count = gd.free_blocks_count.saturating_sub(1);
-            {
-                let mut s = m.state.lock();
-                gdt::write_descriptor_counters(&mut s.gdt_buf, group, &m.sb, &gd)?;
-                crate::csum::set_block_bitmap_csum(&m.sb, &mut s.gdt_buf, group, &disk);
-                gdt::on_block_allocated(&mut s.gdt_buf, group, &m.sb);
-                crate::csum::stamp_group_desc_csum(&m.sb, &mut s.gdt_buf, group);
-            }
+            gdt::write_descriptor_counters(&mut gdt_bytes, group, &m.sb, &gd)?;
+            crate::csum::set_block_bitmap_csum(&m.sb, &mut gdt_bytes, group, &disk);
+            gdt::on_block_allocated(&mut gdt_bytes, group, &m.sb);
+            crate::csum::stamp_group_desc_csum(&m.sb, &mut gdt_bytes, group);
             m.metadata_write(off, &disk)?;
-            m.persist_gdt_slot_meta(group)?;
+            m.persist_gdt_slot_bytes_meta(group, &gdt_bytes)?;
             m.persist_sb_free_blocks_meta(-1)?;
             m.flush_pending_tx()?;
             // Keep the unmasked disk image in the metadata cache. `cache` is

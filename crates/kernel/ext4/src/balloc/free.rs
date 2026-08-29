@@ -63,7 +63,7 @@ impl Mount {
             let _group_guard = unsafe { group_lock.lock() };
             // SAFETY: the GDT owner is a sleepable leaf and no spinlock is held.
             let _gdt_guard = unsafe { m.gdt_lock.lock() };
-            let gdt_bytes = m.read_gdt_bytes()?;
+            let mut gdt_bytes = m.read_gdt_bytes()?;
             let gd_orig = gdt::parse_descriptor(&gdt_bytes, group, &m.sb)?;
             let bbm_byte_off = gd_orig.block_bitmap * (m.sb.block_size as u64);
             let cached = m.cached_group_bitmap(bbm_byte_off);
@@ -88,14 +88,11 @@ impl Mount {
             // from its authoritative metadata buffer below.
             let mut gd = gd_orig;
             gd.free_blocks_count = gd.free_blocks_count.saturating_add(1);
-            {
-                let mut s = m.state.lock();
-                gdt::write_descriptor_counters(&mut s.gdt_buf, group, &m.sb, &gd)?;
-                crate::csum::set_block_bitmap_csum(&m.sb, &mut s.gdt_buf, group, &disk_bitmap);
-                crate::csum::stamp_group_desc_csum(&m.sb, &mut s.gdt_buf, group);
-            }
+            gdt::write_descriptor_counters(&mut gdt_bytes, group, &m.sb, &gd)?;
+            crate::csum::set_block_bitmap_csum(&m.sb, &mut gdt_bytes, group, &disk_bitmap);
+            crate::csum::stamp_group_desc_csum(&m.sb, &mut gdt_bytes, group);
             m.metadata_write(bbm_byte_off, &disk_bitmap)?;
-            m.persist_gdt_slot_meta(group)?;
+            m.persist_gdt_slot_bytes_meta(group, &gdt_bytes)?;
             m.persist_sb_free_blocks_meta(1)?;
             m.flush_pending_tx()?;
             m.publish_group_bitmap(group, bbm_byte_off, bitmap);
