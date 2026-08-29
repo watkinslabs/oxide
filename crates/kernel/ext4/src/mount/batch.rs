@@ -124,6 +124,14 @@ impl Mount {
             let seq = self.commit_metadata_deferred(staged.clone())?;
             self.cache_committed(&staged);
             let mut s = self.state.lock();
+            for buffer in s.metadata_buffers.values() {
+                buffer.transaction_owner.store(0, core::sync::atomic::Ordering::Release);
+            }
+            s.block_bitmap_cache.clear();
+            s.group_free_order.clear();
+            s.group_free_order_index.clear();
+            s.group_avg_fragment_order.clear();
+            s.group_avg_fragment_index.clear();
             // Retire the committed blocks from the running transaction. They
             // are on the device and `cache_committed` has just published them
             // to the clean buffer cache, so every reader still sees them —
@@ -220,26 +228,37 @@ impl Mount {
             frame
         };
         let affected: alloc::vec::Vec<u64> = frame.keys().copied().collect();
+        // Keep the same ownership order as allocator updates: the cached GDT
+        // image is protected before any metadata-buffer ownership is taken.
+        // Reversing this order lets an allocator hold GDT while waiting for a
+        // buffer that rollback holds while refreshing GDT.
+        // SAFETY: process context, with no spinlock held.
+        let _gdt_guard = unsafe { self.gdt_lock.lock() };
         // The shadow restore is itself a metadata write. Keep every block in
         // the frame exclusively owned from before the restore through mirror
         // refresh; otherwise another handle can RMW a block between those
         // two steps and resurrect bytes this rollback just removed.
         let _rollback_guards = self.metadata_write_guards_for_lbas(&affected);
+        let mut restored = alloc::vec::Vec::new();
         {
             let mut s = self.state.lock();
-            if let Some(shadow) = s.shadow.as_mut() {
-                for (lba, prev) in frame {
+            for (lba, prev) in frame {
+                let owned = s.metadata_buffers.get(&lba)
+                    .is_some_and(|buffer| buffer.transaction_owner.load(core::sync::atomic::Ordering::Acquire) == id);
+                if !owned { continue; }
+                if let Some(shadow) = s.shadow.as_mut() {
                     match prev {
                         Some(bytes) => { shadow.insert(lba, bytes); }
                         None => { shadow.remove(&lba); }
                     }
+                    restored.push(lba);
                 }
             }
         }
         // Rebuild only mirrors whose metadata blocks this handle restored.
         // A whole-mount refresh could overwrite a concurrent handle's newer
         // descriptor/counter state once handles share the running batch.
-        self.refresh_cached_meta_for(&affected);
+        self.refresh_cached_meta_for(&restored);
     }
 }
 

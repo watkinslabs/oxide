@@ -102,6 +102,10 @@ pub(crate) struct MetadataBuffer {
     pub(crate) result: Spinlock<Option<(u64, Result<Arc<Vec<u8>>, MountError>)>, SuperblockLockClass>,
     pub(crate) wait: sched::live::WaitList,
     pub(crate) read_active: ::core::sync::atomic::AtomicBool,
+    /// Context that most recently dirtied this buffer in the running
+    /// transaction. This is JBD2 buffer membership, not a second byte image;
+    /// rollback uses it to avoid restoring an older handle over a newer one.
+    pub(crate) transaction_owner: ::core::sync::atomic::AtomicU64,
     pub(crate) write_owner: ::core::sync::atomic::AtomicU64,
     pub(crate) write_depth: ::core::sync::atomic::AtomicU32,
     pub(crate) write_wait: sched::live::WaitList,
@@ -118,6 +122,7 @@ impl MetadataBuffer {
     pub(crate) fn new() -> Self {
         Self { done: AtomicBool::new(false), result: Spinlock::new(None), wait: sched::live::WaitList::new(),
                read_active: ::core::sync::atomic::AtomicBool::new(false),
+               transaction_owner: ::core::sync::atomic::AtomicU64::new(0),
                write_owner: ::core::sync::atomic::AtomicU64::new(0),
                write_depth: ::core::sync::atomic::AtomicU32::new(0),
                write_wait: sched::live::WaitList::new() }
@@ -249,6 +254,10 @@ pub struct Mount {
     /// unrelated groups continue concurrently.
     /// # Lk: leaf — taken before `state` or metadata writer locks.
     pub(crate) group_locks: Spinlock<alloc::collections::BTreeMap<u32, Arc<sched::live::Mutex<()>>>, SuperblockLockClass>,
+    /// Owner for the cached group-descriptor buffer. Multiple groups can
+    /// share one filesystem GDT block; this leaf prevents a concurrent RMW
+    /// from publishing a descriptor image assembled from stale bytes.
+    pub(crate) gdt_lock: sched::live::Mutex<()>,
     pub(crate) quota_sb: Spinlock<Weak<vfs::SuperBlock>, SuperblockLockClass>,
     /// This volume's error history, seeded at open from the superblock and
     /// extended by every filesystem error this mount finds. Lives on the mount

@@ -116,11 +116,15 @@ impl Mount {
                 }
                 // Linux discards reclaimable locality PAs after a failed
                 // mballoc scan and retries only when blocks were freed.
-                if retries == 3 || !m.has_prealloc() { return Err(MountError::NoSpace); }
+                if retries == 3 || !m.has_prealloc() {
+                    return Err(MountError::NoSpace);
+                }
                 let mut freed = m.discard_group_preallocations(count)?;
                 if freed == 0 {
                     freed = m.inode_prealloc_free_blocks();
-                    if freed == 0 { return Err(MountError::NoSpace); }
+                    if freed == 0 {
+                        return Err(MountError::NoSpace);
+                    }
                     m.release_all_inode_prealloc()?;
                 }
                 retries += 1;
@@ -300,6 +304,8 @@ impl Mount {
         let group_lock = self.group_lock(group);
         // SAFETY: process context, with no spinlock held.
         let _group_guard = unsafe { group_lock.lock() };
+        // SAFETY: the GDT owner is a sleepable leaf and no spinlock is held.
+        let _gdt_guard = unsafe { self.gdt_lock.lock() };
         let gd_orig = {
             let s = self.state.lock();
             gdt::parse_descriptor(&s.gdt_buf, group, &self.sb)?
@@ -307,7 +313,7 @@ impl Mount {
         if gd_orig.free_blocks_count == 0 { return Ok(None); }
         let bbm_byte_off = gd_orig.block_bitmap * (self.sb.block_size as u64);
         let uninit = { let s = self.state.lock(); gdt::block_uninit(&s.gdt_buf, group, &self.sb) };
-        let cached = { self.state.lock().block_bitmap_cache.get(&bbm_byte_off).cloned() };
+        let cached = self.cached_group_bitmap(bbm_byte_off);
         let mut bitmap = if let Some(bitmap) = cached {
             bitmap
         } else if uninit {
@@ -346,7 +352,9 @@ impl Mount {
         // Force commit so the next alloc_block within the same
         // outer scope reads the updated bitmap from disk.
         self.flush_pending_tx()?;
-        self.publish_group_bitmap(group, bbm_byte_off, bitmap);
+        // Cache the authoritative on-disk image; the preallocation-masked
+        // `bitmap` is only the allocator's visible scan view.
+        self.publish_group_bitmap(group, bbm_byte_off, disk_bitmap);
         let phys = group_first_block(&self.sb, group) + bit as u64;
         Ok(Some(phys))
     }
@@ -360,6 +368,8 @@ impl Mount {
         let group_lock = self.group_lock(group);
         // SAFETY: process context, with no spinlock held.
         let _group_guard = unsafe { group_lock.lock() };
+        // SAFETY: the GDT owner is a sleepable leaf and no spinlock is held.
+        let _gdt_guard = unsafe { self.gdt_lock.lock() };
         let gd_orig = {
             let s = self.state.lock();
             gdt::parse_descriptor(&s.gdt_buf, group, &self.sb)?
@@ -367,7 +377,7 @@ impl Mount {
         if u32::from(gd_orig.free_blocks_count) < count { return Ok(None); }
         let bbm_byte_off = gd_orig.block_bitmap * (self.sb.block_size as u64);
         let uninit = { let s = self.state.lock(); gdt::block_uninit(&s.gdt_buf, group, &self.sb) };
-        let cached = { self.state.lock().block_bitmap_cache.get(&bbm_byte_off).cloned() };
+        let cached = self.cached_group_bitmap(bbm_byte_off);
         let mut bitmap = if let Some(bitmap) = cached {
             bitmap
         } else if uninit {
@@ -409,7 +419,9 @@ impl Mount {
         self.persist_gdt_slot_meta(group)?;
         self.persist_sb_free_blocks_meta(-i64::from(count))?;
         self.flush_pending_tx()?;
-        self.publish_group_bitmap(group, bbm_byte_off, bitmap);
+        // Cache the authoritative on-disk image; the preallocation-masked
+        // `bitmap` is only the allocator's visible scan view.
+        self.publish_group_bitmap(group, bbm_byte_off, disk_bitmap);
         Ok(Some((0..count).map(|n| first_phys + u64::from(start + n)).collect()))
     }
 
@@ -489,8 +501,14 @@ impl Mount {
     /// the bitmap remains the allocation authority.
     /// # C: O(block_size)
     fn publish_group_bitmap(&self, group: u32, byte_off: u64, bitmap: Vec<u8>) {
-        let order = scan::largest_free_order(&bitmap, self.blocks_in_group(group));
-        let avg = scan::average_fragment_order(&bitmap, self.blocks_in_group(group));
+        // A running JBD2 transaction owns the shadow image. A per-operation
+        // bitmap result may be older than another handle's staged bytes, so
+        // never publish it into the clean/advisory cache before commit.
+        if self.state.lock().shadow.is_some() { return; }
+        let mut visible = bitmap.clone();
+        self.mask_group_prealloc(group, &mut visible);
+        let order = scan::largest_free_order(&visible, self.blocks_in_group(group));
+        let avg = scan::average_fragment_order(&visible, self.blocks_in_group(group));
         let mut s = self.state.lock();
         s.block_bitmap_cache.insert(byte_off, bitmap);
         let old_order = s.group_free_order.insert(group, order.unwrap_or(0));
@@ -499,6 +517,14 @@ impl Mount {
         let old_avg = s.group_avg_fragment_order.insert(group, avg.unwrap_or(0));
         scan::replace_order_index(&mut s.group_avg_fragment_index, group, old_avg, avg);
         if avg.is_none() { s.group_avg_fragment_order.remove(&group); }
+    }
+
+    fn cached_group_bitmap(&self, byte_off: u64) -> Option<Vec<u8>> {
+        let s = self.state.lock();
+        // Dirty shadow bytes are the sole transaction image; a clean cached
+        // bitmap is not eligible while that LBA is staged.
+        if s.shadow.as_ref().is_some_and(|shadow| shadow.contains_key(&byte_off)) { return None; }
+        s.block_bitmap_cache.get(&byte_off).cloned()
     }
 }
 

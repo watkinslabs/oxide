@@ -144,6 +144,9 @@ impl Mount {
                         }
                     }
                     s.shadow.as_mut().unwrap().insert(lba, full_buf[lo..hi].to_vec());
+                    if let Some(buffer) = s.metadata_buffers.get(&lba) {
+                        buffer.transaction_owner.store(id, Ordering::Release);
+                    }
                 }
                 return Ok(());
             }

@@ -466,6 +466,10 @@ impl Mount {
             let mut cache = disk.clone();
             m.mask_group_prealloc(group, &mut cache);
             let mut gd = gd_orig;
+            // SAFETY: process context, with no spinlock held; retain the GDT
+            // owner through the bitmap/GDT transaction so its cached image is
+            // not assembled from a concurrent descriptor update.
+            let _gdt_guard = unsafe { m.gdt_lock.lock() };
             gd.free_blocks_count = gd.free_blocks_count.saturating_sub(1);
             {
                 let mut s = m.state.lock();
@@ -478,7 +482,9 @@ impl Mount {
             m.persist_gdt_slot_meta(group)?;
             m.persist_sb_free_blocks_meta(-1)?;
             m.flush_pending_tx()?;
-            m.publish_group_bitmap(group, off, cache);
+            // Keep the unmasked disk image in the metadata cache. `cache` is
+            // only the locality-preallocation view used for allocator scans.
+            m.publish_group_bitmap(group, off, disk);
             Ok(())
         })
     }

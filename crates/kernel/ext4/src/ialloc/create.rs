@@ -167,6 +167,8 @@ impl Mount {
             if let Some(acl) = acl { acl.store(m, new_ino)?; }
             m.dir_link_in_transaction(parent_ino, name, new_ino, dir::DT_DIR)?;
             let ng = (new_ino - 1) / m.sb.inodes_per_group;
+            // SAFETY: process context, with no spinlock held.
+            let _gdt_guard = unsafe { m.gdt_lock.lock() };
             {
                 let mut s = m.state.lock();
                 gdt::adjust_used_dirs(&mut s.gdt_buf, ng, &m.sb, 1)?;

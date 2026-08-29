@@ -135,6 +135,8 @@ impl Mount {
         let group_lock = self.group_lock(group);
         // SAFETY: process context, with no spinlock held.
         let _group_guard = unsafe { group_lock.lock() };
+        // SAFETY: the GDT owner is a sleepable leaf and no spinlock is held.
+        let _gdt_guard = unsafe { self.gdt_lock.lock() };
         let gd_orig = {
             let s = self.state.lock();
             gdt::parse_descriptor(&s.gdt_buf, group, &self.sb)?
@@ -220,6 +222,8 @@ impl Mount {
             let group_lock = m.group_lock(group);
             // SAFETY: process context, with no spinlock held.
             let _group_guard = unsafe { group_lock.lock() };
+            // SAFETY: the GDT owner is a sleepable leaf and no spinlock is held.
+            let _gdt_guard = unsafe { m.gdt_lock.lock() };
             let gd_orig = {
                 let s = m.state.lock();
                 gdt::parse_descriptor(&s.gdt_buf, group, &m.sb)?
@@ -324,8 +328,12 @@ impl Mount {
         self.free_external_xattr_for_deletion(target)?;
         // No longer a directory in its block group.
         let g = (target - 1) / self.sb.inodes_per_group;
-        { let mut s = self.state.lock(); gdt::adjust_used_dirs(&mut s.gdt_buf, g, &self.sb, -1)?; }
-        self.persist_gdt_slot_meta(g)?;
+        {
+            // SAFETY: process context, with no spinlock held.
+            let _gdt_guard = unsafe { self.gdt_lock.lock() };
+            { let mut s = self.state.lock(); gdt::adjust_used_dirs(&mut s.gdt_buf, g, &self.sb, -1)?; }
+            self.persist_gdt_slot_meta(g)?;
+        }
         // Clear the victim inode: links=0 + deletion time.
         let (mut b, _) = self.read_inode_bytes(target)?;
         b[0x1A..0x1C].copy_from_slice(&0u16.to_le_bytes());
