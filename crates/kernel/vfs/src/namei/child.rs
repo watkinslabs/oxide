@@ -93,9 +93,19 @@ impl Nameidata {
         // takes, so the chain is ascending.
         #[cfg(feature = "debug-resolve-cost")]
         let _slow_cost = crate::resolve_cost::slow_lookup();
+        #[cfg(feature = "debug-resolve-cost")]
+        let _parent_lock_cost = crate::resolve_cost::parent_lock();
         let _dir_lk = self.cur_inode.inode_lock_shared();
+        #[cfg(feature = "debug-resolve-cost")]
+        drop(_parent_lock_cost);
+        #[cfg(feature = "debug-resolve-cost")]
+        let _backend_cost = crate::resolve_cost::backend_lookup();
         match self.cur_inode.lookup(comp) {
             Ok(ci) => {
+                #[cfg(feature = "debug-resolve-cost")]
+                drop(_backend_cost);
+                #[cfg(feature = "debug-resolve-cost")]
+                let _install_cost = crate::resolve_cost::dentry_install();
                 // D3/D37: `lookup` returned `ci` carrying the iget/build hold;
                 // `d_add` takes the dentry's OWN counted hold (`grab_inode_hold`).
                 // Release the walk's temporary so `i_count` tracks (aliases + open

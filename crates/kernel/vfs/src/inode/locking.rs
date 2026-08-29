@@ -3,7 +3,14 @@ use super::rwsem::{InodeRwsem, InodeRwsemReadGuard, InodeRwsemWriteGuard};
 
 impl Inode {
     /// `inode_lock`. # C: O(contention)
-    pub fn inode_lock(&self) -> InodeRwsemWriteGuard<'_> { self.i_rwsem.write() }
+    pub fn inode_lock(&self) -> InodeRwsemWriteGuard<'_> {
+        #[cfg(feature = "debug-resolve-cost")]
+        let _cost = crate::resolve_cost::writer_lock();
+        let guard = self.i_rwsem.write();
+        #[cfg(feature = "debug-resolve-cost")]
+        drop(_cost);
+        guard
+    }
     /// `inode_lock_shared`. # C: O(contention)
     pub fn inode_lock_shared(&self) -> InodeRwsemReadGuard<'_> { self.i_rwsem.read() }
     /// Raw `i_rwsem` handle, for the `lock_rename` ordering helper. # C: O(1)
