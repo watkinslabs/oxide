@@ -85,6 +85,23 @@ fn sequential_regular_writes_reuse_inode_preallocation() {
 }
 
 #[test]
+fn freeing_an_orphan_releases_its_unused_inode_preallocation() {
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk).unwrap();
+    let n = m.create_file(2, b"orphan-pa.bin", 0o644, 0, 0).unwrap();
+    let bs = m.sb.block_size as usize;
+
+    m.append_block(n, &vec![0x33; bs]).unwrap();
+    assert!(m.inode_prealloc_free_blocks() > 0, "append retains an inode PA tail");
+    let out = m.unlink(2, b"orphan-pa.bin").unwrap();
+    assert!(out.orphaned(), "last link must place the inode on the orphan path");
+
+    m.free_orphan_inode(out.ino).unwrap();
+    assert_eq!(m.inode_prealloc_free_blocks(), 0,
+        "orphan eviction must release every unused inode PA block");
+}
+
+#[test]
 fn fresh_appends_create_and_reuse_locality_preallocation() {
     let disk = build_disk();
     let m = ext4::Mount::open(disk).unwrap();

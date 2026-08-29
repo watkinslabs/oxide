@@ -250,8 +250,9 @@ impl Mount {
         !s.inode_prealloc.is_empty() || !s.group_prealloc.is_empty()
     }
 
-    /// Count unconsumed inode-PA blocks available for discard. # C: O(N PA blocks)
-    pub(crate) fn inode_prealloc_free_blocks(&self) -> u32 {
+    /// Count unused blocks retained by inode-local preallocation. # C: O(N PA blocks)
+    /// # C: O(N PA blocks)
+    pub fn inode_prealloc_free_blocks(&self) -> u32 {
         self.state.lock().inode_prealloc.values().flat_map(|pas| pas.iter())
             .map(|pa| pa.used.iter().filter(|used| !**used).count() as u32)
             .sum()
