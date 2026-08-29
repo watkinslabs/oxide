@@ -84,15 +84,20 @@ fn select_group_pa<'a>(entries: &'a [GroupPrealloc], want: u32, goal: u64)
         .min_by_key(|pa| pa.blocks[0].abs_diff(goal))
 }
 
-/// Remove one exact physical block from a locality bucket. Kept as a small
-/// pure helper so the ownership invariant is testable without constructing a
-/// mounted device.
+/// Remove one exact physical block from a locality bucket while preserving
+/// contiguity of every remaining reservation. Group PAs normally consume from
+/// the front like Linux; splitting also keeps the ownership invariant safe if
+/// a caller presents an interior block. Kept pure for focused tests.
 fn consume_group_prealloc_block(entries: &mut Vec<GroupPrealloc>, phys: u64) -> bool {
     let Some(pa_idx) = entries.iter().position(|pa| pa.blocks.iter().any(|&block| block == phys)) else {
         return false;
     };
     let block_idx = entries[pa_idx].blocks.iter().position(|&block| block == phys).unwrap();
-    entries[pa_idx].blocks.remove(block_idx);
+    let suffix = entries[pa_idx].blocks.split_off(block_idx + 1);
+    entries[pa_idx].blocks.pop();
+    if !suffix.is_empty() {
+        entries.insert(pa_idx + 1, GroupPrealloc { blocks: suffix });
+    }
     if entries[pa_idx].blocks.is_empty() { entries.remove(pa_idx); }
     true
 }

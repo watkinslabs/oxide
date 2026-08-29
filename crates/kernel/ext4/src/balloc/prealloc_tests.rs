@@ -56,13 +56,14 @@ fn locality_pa_selection_uses_the_closest_physical_goal() {
 }
 
 #[test]
-fn locality_pa_consumption_removes_the_selected_physical_block() {
+fn locality_pa_consumption_preserves_contiguous_remaining_segments() {
     let mut entries = vec![
         GroupPrealloc { blocks: vec![100, 101, 102] },
         GroupPrealloc { blocks: vec![200, 201, 202] },
     ];
     assert!(consume_group_prealloc_block(&mut entries, 201));
     assert_eq!(entries[0].blocks, vec![100, 101, 102]);
-    assert_eq!(entries[1].blocks, vec![200, 202]);
+    assert_eq!(entries[1].blocks, vec![200]);
+    assert_eq!(entries[2].blocks, vec![202]);
     assert!(!consume_group_prealloc_block(&mut entries, 999));
 }
