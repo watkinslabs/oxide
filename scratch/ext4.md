@@ -162,6 +162,10 @@ ownership change shaped after Linux's in-core namespace operation; the existing
 fallback remains for noncanonical/test callers. Focused create/ACL, real-root,
 unit, and e2fsck harnesses are green; no aggregate speed gain is claimed.
 
+The mkdir path also publishes `i_nlink` to the live VFS parent and updates the
+cached ext4 image from that same locked parent state. The serialized field and
+the in-memory field now advance together as in Linux `ext4_mkdir`/`inc_nlink`.
+
 Exit: each claimed gain has a reproducible before/after measurement; no correctness regression is traded for speed.
 
 ### 4.9 preserved performance history
