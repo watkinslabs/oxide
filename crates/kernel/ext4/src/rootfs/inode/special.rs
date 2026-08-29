@@ -116,8 +116,14 @@ impl Ext4StatInodeOps {
         let target = victim.and_then(|v| Self::victim_ino(d, v))
             .or_else(|| d.st.lookup_child_ino(d.ino, name))
             .ok_or(VfsError::Enoent)?;
-        let i = mount.read_inode(target).map_err(|_| VfsError::Eio)?;
-        if i.is_dir() { return Err(VfsError::Eisdir); }
+        if let Some(victim) = victim {
+            // `vfs_unlink` already resolved this inode and ran the type gate;
+            // Linux ext4 does not reread it merely to rediscover S_ISDIR.
+            if victim.file_type() == FileType::Directory { return Err(VfsError::Eisdir); }
+        } else if mount.read_inode(target).map_err(|_| VfsError::Eio)?.is_dir() {
+            // Direct name-only callers have no resolved victim to trust.
+            return Err(VfsError::Eisdir);
+        }
         let out = mount.run_journaled_deferred(|m| m.unlink(d.ino, name.as_bytes()))
             .map_err(super::regular::vfs_error_from_mount)?;
         d.st.after_unlink(out)?;

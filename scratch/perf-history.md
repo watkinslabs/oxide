@@ -62,6 +62,7 @@ that artifact is regenerated.
 | E4-08 VFS deferred checkpoint / working tree | 1,367,701 | 6,313 | 4,616 | — | — | 11,305 | 526 | 428 | ordinary VFS unlink/rmdir/link/rename/writeback mutations leave home checkpointing to the journal owner; GNOME Shell marker complete; SMP=1; no stable aggregate gain claimed |
 | E4-08 victim identity reuse / working tree | 1,368,030 | 6,422 | 4,694 | — | — | 11,389 | 526 | 350 | victim-aware VFS unlink/rmdir now reuse the already-resolved same-mount inode identity instead of rescanning the parent; GNOME Shell marker complete; SMP=1; no stable aggregate gain claimed |
 | E4-08 retain directory image / working tree | 1,367,168 | 6,397 | 4,679 | — | — | 11,805 | 526 | 411 | unlink/rmdir retain the cached directory lookup image because contents change without changing lookup geometry; GNOME Shell marker complete; SMP=1; no stable aggregate gain claimed |
+| E4-08 victim type reuse / working tree | 1,367,918 | 6,281 | 4,591 | — | — | 11,663 | 526 | 404 | victim-aware unlink reuses the VFS inode type and avoids a duplicate pre-transaction inode read; GNOME Shell marker complete; parent-lock ~320 us and inode-writer hold ~936 us; aggregate remains within variance; SMP=1 |
 
 The B2709 `munmap` result is a material improvement over B2699: 71,407 ns
 to 21,426 ns (about 70% lower), and 52x to 16x the host baseline. The B2708
