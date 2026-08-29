@@ -305,7 +305,7 @@ impl Mount {
         let _group_guard = unsafe { group_lock.lock() };
         // SAFETY: the GDT owner is a sleepable leaf and no spinlock is held.
         let _gdt_guard = unsafe { self.gdt_lock.lock() };
-        let gdt_bytes = self.read_gdt_bytes()?;
+        let mut gdt_bytes = self.read_gdt_bytes()?;
         let gd_orig = gdt::parse_descriptor(&gdt_bytes, group, &self.sb)?;
         if gd_orig.free_blocks_count == 0 { return Ok(None); }
         let bbm_byte_off = gd_orig.block_bitmap * (self.sb.block_size as u64);
@@ -335,15 +335,12 @@ impl Mount {
         disk_bitmap[bit >> 3] |= 1u8 << (bit & 7);
         let mut gd = gd_orig;
         gd.free_blocks_count = gd.free_blocks_count.saturating_sub(1);
-        {
-            let mut s = self.state.lock();
-            gdt::write_descriptor_counters(&mut s.gdt_buf, group, &self.sb, &gd)?;
-            crate::csum::set_block_bitmap_csum(&self.sb, &mut s.gdt_buf, group, &disk_bitmap);
-            gdt::on_block_allocated(&mut s.gdt_buf, group, &self.sb);
-            crate::csum::stamp_group_desc_csum(&self.sb, &mut s.gdt_buf, group);
-        }
+        gdt::write_descriptor_counters(&mut gdt_bytes, group, &self.sb, &gd)?;
+        crate::csum::set_block_bitmap_csum(&self.sb, &mut gdt_bytes, group, &disk_bitmap);
+        gdt::on_block_allocated(&mut gdt_bytes, group, &self.sb);
+        crate::csum::stamp_group_desc_csum(&self.sb, &mut gdt_bytes, group);
         self.metadata_write(bbm_byte_off, &disk_bitmap)?;
-        self.persist_gdt_slot_meta(group)?;
+        self.persist_gdt_slot_bytes_meta(group, &gdt_bytes)?;
         self.persist_sb_free_blocks_meta(-1)?;
         // Force commit so the next alloc_block within the same
         // outer scope reads the updated bitmap from disk.
@@ -366,7 +363,7 @@ impl Mount {
         let _group_guard = unsafe { group_lock.lock() };
         // SAFETY: the GDT owner is a sleepable leaf and no spinlock is held.
         let _gdt_guard = unsafe { self.gdt_lock.lock() };
-        let gdt_bytes = self.read_gdt_bytes()?;
+        let mut gdt_bytes = self.read_gdt_bytes()?;
         let gd_orig = gdt::parse_descriptor(&gdt_bytes, group, &self.sb)?;
         if u32::from(gd_orig.free_blocks_count) < count { return Ok(None); }
         let bbm_byte_off = gd_orig.block_bitmap * (self.sb.block_size as u64);
@@ -401,15 +398,12 @@ impl Mount {
         }
         let mut gd = gd_orig;
         gd.free_blocks_count = gd.free_blocks_count.saturating_sub(count);
-        {
-            let mut s = self.state.lock();
-            gdt::write_descriptor_counters(&mut s.gdt_buf, group, &self.sb, &gd)?;
-            crate::csum::set_block_bitmap_csum(&self.sb, &mut s.gdt_buf, group, &disk_bitmap);
-            gdt::on_block_allocated(&mut s.gdt_buf, group, &self.sb);
-            crate::csum::stamp_group_desc_csum(&self.sb, &mut s.gdt_buf, group);
-        }
+        gdt::write_descriptor_counters(&mut gdt_bytes, group, &self.sb, &gd)?;
+        crate::csum::set_block_bitmap_csum(&self.sb, &mut gdt_bytes, group, &disk_bitmap);
+        gdt::on_block_allocated(&mut gdt_bytes, group, &self.sb);
+        crate::csum::stamp_group_desc_csum(&self.sb, &mut gdt_bytes, group);
         self.metadata_write(bbm_byte_off, &disk_bitmap)?;
-        self.persist_gdt_slot_meta(group)?;
+        self.persist_gdt_slot_bytes_meta(group, &gdt_bytes)?;
         self.persist_sb_free_blocks_meta(-i64::from(count))?;
         self.flush_pending_tx()?;
         // Cache the authoritative on-disk image; the preallocation-masked
@@ -457,6 +451,20 @@ impl Mount {
             s.gdt_buf[lo..hi].to_vec()
         };
         self.metadata_write(byte_off, &payload)
+    }
+
+    /// Stage a descriptor's containing filesystem block from the canonical
+    /// metadata image. Callers must hold the relevant group/GDT ownership.
+    /// # C: O(block_size)
+    pub(crate) fn persist_gdt_slot_bytes_meta(&self, group: u32, gdt: &[u8]) -> Result<(), MountError> {
+        let dsize = gdt::desc_size_for(&self.sb) as usize;
+        let slot_byte = (group as usize) * dsize;
+        let bs = self.sb.block_size as usize;
+        let blk_idx = slot_byte / bs;
+        let byte_off = self.gdt_byte_offset() + (blk_idx * bs) as u64;
+        let lo = blk_idx * bs;
+        let hi = core::cmp::min(lo + bs, gdt.len());
+        self.metadata_write(byte_off, &gdt[lo..hi])
     }
 
     /// Apply a free-block counter delta to the authoritative superblock

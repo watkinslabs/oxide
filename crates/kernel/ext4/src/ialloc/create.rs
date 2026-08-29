@@ -169,11 +169,9 @@ impl Mount {
             let ng = (new_ino - 1) / m.sb.inodes_per_group;
             // SAFETY: process context, with no spinlock held.
             let _gdt_guard = unsafe { m.gdt_lock.lock() };
-            {
-                let mut s = m.state.lock();
-                gdt::adjust_used_dirs(&mut s.gdt_buf, ng, &m.sb, 1)?;
-            }
-            m.persist_gdt_slot_meta(ng)?;
+            let mut gdt_bytes = m.read_gdt_bytes()?;
+            gdt::adjust_used_dirs(&mut gdt_bytes, ng, &m.sb, 1)?;
+            m.persist_gdt_slot_bytes_meta(ng, &gdt_bytes)?;
             let (mut pb, _poff) = m.read_inode_bytes(parent_ino)?;
             let pl = u16::from_le_bytes([pb[0x1A], pb[0x1B]]).saturating_add(1);
             pb[0x1A..0x1C].copy_from_slice(&pl.to_le_bytes());
