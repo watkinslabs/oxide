@@ -127,10 +127,9 @@ impl Mount {
         s.batch && s.shadow.is_some()
     }
 
-    /// Run one handle in the running batch while retaining the transaction
-    /// gate across the operation body. The shadow, allocator mirrors, and
-    /// rollback frame are one coupled ownership unit until their buffer-head
-    /// equivalent is complete.
+    /// Run one handle in the running batch. The handle frame owns rollback
+    /// state while the transaction gate is released for the operation body;
+    /// metadata-buffer ownership serializes each Linux buffer-head equivalent.
     /// # C: O(1) admission/finalization + F
     fn run_batch_handle<R, F>(&self, f: F) -> Result<R, MountError>
     where F: FnOnce(&Self) -> Result<R, MountError>
@@ -145,7 +144,12 @@ impl Mount {
         self.state.lock().handles.entry(id)
             .or_insert_with(|| JournalHandle { frames: alloc::vec::Vec::new() })
             .frames.push(alloc::collections::BTreeMap::new());
+        // Linux journal handles do not hold a superblock-wide mutex while
+        // unrelated inode work runs. The frame remains registered, while
+        // metadata_write() owns individual buffer heads and their undo image.
+        self.txn_release();
         let r = f(self);
+        self.txn_acquire();
         let result = match r {
             Ok(v) => { self.batch_frame_commit(); Ok(v) }
             Err(e) => { self.batch_frame_rollback(); Err(e) }

@@ -175,21 +175,41 @@ impl Mount {
         let cpu = locality_cpu();
         if want == 0 { return Some((cpu, 0, Vec::new())); }
         let first_order = group_prealloc_order(want);
-        let s = self.state.lock();
-        let mut best: Option<(u64, u32, Vec<u64>)> = None;
+        let mut s = self.state.lock();
+        let mut best: Option<(u64, u32, u8, Vec<u64>)> = None;
         for order in first_order..GROUP_PREALLOC_ORDER_BUCKETS {
             for (&(_, group, _), pas) in s.group_prealloc.iter()
                 .filter(|(&(owner, _, bucket), _)| owner == cpu && bucket == order)
             {
                 if let Some(pa) = select_group_pa(pas, want, goal) {
                     let distance = pa.blocks[0].abs_diff(goal);
-                    if best.as_ref().is_none_or(|(old, _, _)| distance < *old) {
-                        best = Some((distance, group, pa.blocks[..want as usize].to_vec()));
+                    if best.as_ref().is_none_or(|(old, _, _, _)| distance < *old) {
+                        best = Some((distance, group, order, pa.blocks[..want as usize].to_vec()));
                     }
                 }
             }
         }
-        best.map(|(_, group, blocks)| (cpu, group, blocks))
+        let Some((_, group, order, blocks)) = best else { return None; };
+
+        // Selection and retirement are one ownership transition.  Keeping
+        // this under the state lock is the same invariant as Linux's
+        // ext4_mb_release_group_pa(): a second handle cannot observe the
+        // prefix after this handle has claimed it but before the bitmap claim
+        // reaches the journal.
+        let key = (cpu, group, order);
+        let mut entries = s.group_prealloc.remove(&key).unwrap_or_default();
+        if let Some(index) = entries.iter().position(|pa| pa.blocks.starts_with(&blocks)) {
+            let mut pa = entries.remove(index);
+            let tail = pa.blocks.split_off(blocks.len());
+            if !tail.is_empty() { entries.push(GroupPrealloc { blocks: tail }); }
+            reinsert_group_preallocs(&mut s.group_prealloc, cpu, group, entries);
+            return Some((cpu, group, blocks));
+        }
+        // The selected PA disappeared only if the in-memory reservation was
+        // malformed. Restore the bucket and make the caller fall back to a
+        // fresh bitmap allocation rather than handing out an unowned block.
+        reinsert_group_preallocs(&mut s.group_prealloc, cpu, group, entries);
+        None
     }
 
     /// Retire the exact physical block selected from the CPU-local PA list.
