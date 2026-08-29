@@ -464,14 +464,21 @@ impl Mount {
                                   else { (end - blk_start_byte) as usize };
             let copy_len = copy_end_in_blk - in_blk_off;
             let full_block = in_blk_off == 0 && copy_len == bs_us;
-            // Is this logical block already mapped to a real (written) block?
-            let mapped = self.resolve_pblock(&inode2, lb).is_ok();
+            // Resolve once and retain the physical result.  The old path
+            // walked the same extent tree again after assembling the block,
+            // and worse, collapsed every lookup error into "hole".  A real
+            // corrupt-tree/I/O error must not turn into a fresh allocation.
+            let mapped_phys = match self.resolve_pblock(&inode2, lb) {
+                Ok(phys) => Some(phys),
+                Err(MountError::NotFound) => None,
+                Err(error) => return Err(error),
+            };
             // Base contents: the existing block if mapped, else zeros (a hole /
             // partial-block write starts from zeros — Linux sparse semantics).
             // A full-block write fully specifies the block, so skip the read.
             let mut blk = if full_block {
                 alloc::vec![0u8; bs_us]
-            } else if mapped {
+            } else if mapped_phys.is_some() {
                 self.read_file_block(&inode2, lb)?
             } else {
                 alloc::vec![0u8; bs_us]
@@ -479,17 +486,15 @@ impl Mount {
             if blk.len() < bs_us { blk.resize(bs_us, 0); }
             blk[in_blk_off..in_blk_off + copy_len]
                 .copy_from_slice(&data[written .. written + copy_len]);
-            let phys = if mapped {
-                self.resolve_pblock(&inode2, lb)?
+            let phys = if let Some(mapped_phys) = mapped_phys {
+                mapped_phys
             } else {
                 // Allocate + map THIS logical block as a WRITTEN extent (leaving
                 // the gap holes) WITHOUT writing the data now — deferred to the
                 // coalesced flush below. `extent_vec_contains` guards a re-map.
                 let vis = core::cmp::max(inode2.size, blk_end_byte);
                 let (mut ib, ioff) = self.read_inode_bytes(ino)?;
-                let physical = if mapped { None } else {
-                    take_reserved(&reserved, &mut reserved_at, lb)
-                };
+                let physical = take_reserved(&reserved, &mut reserved_at, lb);
                 let pa_phys = physical.and_then(|(block, from_inode_pa, from_group_pa, group_cpu)|
                     (from_inode_pa || from_group_pa).then_some((block, from_inode_pa, from_group_pa, group_cpu)));
                 if let Some((block, _, _, _)) = pa_phys {
