@@ -20,6 +20,28 @@ impl Ext4StatInodeOps {
     fn data(inode: &Inode) -> KResult<&Ext4StatData> {
         inode.private::<Ext4StatData>().ok_or(VfsError::Eio)
     }
+
+    fn create_impl(&self, inode: &Inode, name: &str, mode: u32, ctx: &vfs::CreateCtx,
+                   check_existing: bool) -> KResult<InodeRef> {
+        let d = Self::data(inode)?;
+        if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
+        if check_existing && d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
+        let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode as u16,
+            0o7777, vfs::types::S_IFREG, ctx.cred, 0);
+        let acl = crate::acl::inherit(inode, m, ctx.umask, vfs::posix_acl::NewKind::Other)?;
+        super::super::quota::charge_new_inode(&d.st, d.ino, acl.mode, uid, gid)?;
+        let (ino, node) = match d.st.mount.create_file_inode_with_acl(
+            d.ino, name.as_bytes(), acl.mode & 0o7777, uid, gid, &acl) {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = super::super::quota::rollback_new_inode_charge(&d.st, d.ino, acl.mode, uid, gid);
+                return Err(super::regular::fs_err(&d.st, e));
+            }
+        };
+        d.st.forget_created_ino(ino);
+        d.invalidate_raw();
+        Ok(d.st.wrap_created_file(ino, &node))
+    }
 }
 
 impl InodeOps for Ext4StatInodeOps {
@@ -168,24 +190,11 @@ impl InodeOps for Ext4StatInodeOps {
     }
 
     fn create(&self, inode: &Inode, name: &str, mode: u32, ctx: &vfs::CreateCtx) -> KResult<InodeRef> {
-        let d = Self::data(inode)?;
-        if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
-        if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
-        let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode as u16,
-            0o7777, vfs::types::S_IFREG, ctx.cred, 0);
-        let acl = crate::acl::inherit(inode, m, ctx.umask, vfs::posix_acl::NewKind::Other)?;
-        super::super::quota::charge_new_inode(&d.st, d.ino, acl.mode, uid, gid)?;
-        let (ino, node) = match d.st.mount.create_file_inode_with_acl(
-            d.ino, name.as_bytes(), acl.mode & 0o7777, uid, gid, &acl) {
-            Ok(v) => v,
-            Err(e) => {
-                let _ = super::super::quota::rollback_new_inode_charge(&d.st, d.ino, acl.mode, uid, gid);
-                return Err(super::regular::fs_err(&d.st, e));
-            }
-        };
-        d.st.forget_created_ino(ino);
-        d.invalidate_raw();
-        Ok(d.st.wrap_created_file(ino, &node))
+        self.create_impl(inode, name, mode, ctx, true)
+    }
+
+    fn create_unchecked(&self, inode: &Inode, name: &str, mode: u32, ctx: &vfs::CreateCtx) -> KResult<InodeRef> {
+        self.create_impl(inode, name, mode, ctx, false)
     }
 
     fn tmpfile(&self, inode: &Inode, mode: u32, ctx: &vfs::CreateCtx) -> KResult<InodeRef> {
