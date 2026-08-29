@@ -35,6 +35,7 @@ that artifact is regenerated.
 | E4-05 journal-body / `3822365da` | 1,367,839 | 6,548 | 4,787 | 23,728 | — | 19,470 | 387 | 2,694 | merged-main control after journal body crash-boundary coverage; GNOME Shell marker complete; SMP=1 |
 | E4-05 journal-body-r2 / `14853c87f` | 1,368,031 | 6,380 | 4,663 | 23,376 | — | 19,814 | 246 | 2,870 | repeat merged-main control; GNOME Shell marker complete; SMP=1 |
 | E4-07 write-path control / `54d716155` | 1,368,243 | 6,485 | 4,739 | 23,780 | — | 19,479 | 272 | 3,456 | duplicate inode/mapping-read reductions; no demonstrated whole-boot gain; GNOME Shell marker complete; SMP=1 |
+| E4-07 inode-snapshot / `ded4d7e5c` | 1,368,040 | 6,504 | 4,754 | 23,843 | — | 19,437 | 285 | 2,795 | writeback inode snapshot reuse; GNOME Shell marker complete; SMP=1; no whole-boot gain claimed |
 
 The B2709 `munmap` result is a material improvement over B2699: 71,407 ns
 to 21,426 ns (about 70% lower), and 52x to 16x the host baseline. The B2708
