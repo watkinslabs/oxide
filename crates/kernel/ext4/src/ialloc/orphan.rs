@@ -101,6 +101,13 @@ impl Mount {
     /// Free an unlinked orphan after it leaves the persistent list.
     /// # C: O(N_extents) block frees + metadata transaction
     pub fn free_orphan_inode(&self, ino: u32) -> Result<(), MountError> {
+        // Linux ext4 evicts the inode's unused preallocation before reclaiming
+        // the orphan.  Keep this at the filesystem deletion boundary so mount
+        // recovery and direct Mount callers cannot leave an inode PA masked in
+        // the allocator after the inode itself has been freed.
+        let (bytes, _) = self.read_inode_bytes(ino)?;
+        if u16::from_le_bytes([bytes[0x1A], bytes[0x1B]]) != 0 { return Ok(()); }
+        self.release_inode_prealloc(ino)?;
         self.run_journaled(|m| {
             let (bytes, _off) = m.read_inode_bytes(ino)?;
             if u16::from_le_bytes([bytes[0x1A], bytes[0x1B]]) != 0 { return Ok(()); }
