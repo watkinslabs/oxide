@@ -91,7 +91,8 @@ impl Mount {
         if !self.strict_name_valid(&dir_node, name) {
             return Err(MountError::Dir(dir::DirError::BadNameLen));
         }
-        let (flags, gen) = self.inode_flags_gen(dir_ino)?;
+        let flags = dir_node.i_flags;
+        let gen = dir_node.generation;
         let bs = self.sb.block_size as usize;
         let usable = crate::csum::dir_usable_len(&self.sb, bs);
 
@@ -141,7 +142,7 @@ impl Mount {
         let dir_node = self.read_inode(dir_ino)?;
         if !dir_node.is_dir() { return Err(MountError::NotDir); }
         if !self.strict_name_valid(&dir_node, name) { return Err(MountError::Dir(dir::DirError::BadNameLen)); }
-        let (_flags, gen) = self.inode_flags_gen(dir_ino)?;
+        let gen = dir_node.generation;
         let bs = self.sb.block_size as u64;
         let total = dir_node.size;
         let nblocks = ((total + bs - 1) / bs) as u32;
@@ -171,7 +172,7 @@ impl Mount {
     fn set_dotdot_inner(&self, dir_ino: u32, new_parent: u32) -> Result<(), MountError> {
         let dir_node = self.read_inode(dir_ino)?;
         if !dir_node.is_dir() { return Err(MountError::NotDir); }
-        let (_flags, gen) = self.inode_flags_gen(dir_ino)?;
+        let gen = dir_node.generation;
         let bs = self.sb.block_size as usize;
         let mut blk = self.read_file_block_meta(&dir_node, 0)?;
         if blk.len() < bs { blk.resize(bs, 0); }
