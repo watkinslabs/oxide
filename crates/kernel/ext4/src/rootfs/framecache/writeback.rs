@@ -129,7 +129,7 @@ impl Ext4FrameStore {
         // I/O for systemd-hwdb. Linux writeback constructs bounded contiguous
         // BIOs from adjacent dirty cache pages; our byte-oriented block API
         // uses this temporary cluster buffer for the same ownership and order.
-        let rv = self.st.mount.run_journaled(|_m| {
+        let rv = self.st.mount.run_journaled_deferred(|_m| {
             let mut cursor = 0usize;
             while cursor < plan.len() {
                 if cursor != 0 && (cursor & 0x0f) == 0 {

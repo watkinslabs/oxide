@@ -189,7 +189,7 @@ fn plain_rename(s: &RenameSides<'_>, from_name: &[u8], to_name: &[u8], whiteout:
     let now = vfs::Timespec64::from_clock_ns(vfs::inode_times::realtime_now_ns());
     let cross_dir_move = src_is_dir && s.from_p != s.to_p;
     let mut dest_out = None;
-    let rename = mount.run_journaled(|m| {
+    let rename = mount.run_journaled_deferred(|m| {
         if s.dest_victim.is_some() {
             // `Mount::rmdir` also drops `to_p`'s link count for the victim's
             // departing `..`, which is why the moved directory's arrival is
@@ -258,7 +258,7 @@ fn cross_rename(s: &RenameSides<'_>, from_name: &[u8], to_name: &[u8]) -> KResul
     let (src_is_dir, dst_is_dir) = (src.is_dir(), dst.is_dir());
     let now = vfs::Timespec64::from_clock_ns(vfs::inode_times::realtime_now_ns());
     let cross = s.from_p != s.to_p;
-    mount.run_journaled(|m| {
+    mount.run_journaled_deferred(|m| {
         m.dir_unlink(s.from_p, from_name)?;
         m.dir_unlink(s.to_p, to_name)?;
         m.dir_link(s.from_p, from_name, bino, dirent_dt(&dst))?;
