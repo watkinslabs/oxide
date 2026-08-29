@@ -263,7 +263,7 @@ impl Mount {
             }
             return None;
         }
-        let wanted = count.ilog2().saturating_sub(1) as u8;
+        let wanted = scan::ceil_log2(count);
         let s = self.state.lock();
         for (_, candidates) in s.group_avg_fragment_index.range(wanted..) {
             if let Some(group) = candidates.range(hint..groups).next()
