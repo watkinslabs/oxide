@@ -58,7 +58,11 @@ impl Mount {
     /// can modify the same filesystem block.
     /// # C: O(N staged) target I/O + one barrier
     pub(crate) fn checkpoint_pending_background(&self) -> Result<(), MountError> {
-        self.txn_acquire();
+        // The periodic owner must not sleep behind a mutator's transaction.
+        // Linux's checkpoint worker yields to active buffer owners and is
+        // called again on the next pass; sleeping here turns home writeback
+        // into a mount-wide stop-the-world pause.
+        if !self.try_txn_acquire_current() { return Ok(()); }
         let result = self.checkpoint_pending();
         self.txn_release();
         result

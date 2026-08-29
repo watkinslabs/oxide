@@ -57,6 +57,8 @@ that artifact is regenerated.
 | E4-08 lazy xattr / working tree | 1,368,308 | 6,048 | 4,420 | 24,210 | — | 11,500 | 526 | 2,987 | inode xattrs load on first xattr/ACL/list operation through a sleeping per-inode owner; GNOME Shell marker complete; within variance, no aggregate gain claimed; SMP=1 |
 | E4-08 mutation inode image-r1 / `114daebf0` | 1,368,126 | 5,971 | 4,365 | 23,284 | — | 11,509 | 526 | 3,282 | reuse parsed directory `i_flags`/generation instead of a second inode-table read; GNOME Shell marker complete; SMP=1; no aggregate gain claimed |
 | E4-08 mutation inode image-r2 / `114daebf0` | 1,368,055 | 6,013 | 4,395 | 23,369 | — | 11,667 | 526 | 3,219 | repeat; GNOME Shell marker complete; SMP=1; no aggregate gain claimed |
+| E4-08 checkpoint backpressure-r1 / working tree | 1,367,105 | 6,406 | 4,686 | 22,838 | — | 11,669 | 526 | 3,191 | periodic checkpoint owner skips a busy transaction gate and retries next tick; GNOME Shell marker complete; SMP=1 |
+| E4-08 checkpoint backpressure-r2 / working tree | 1,366,041 | 6,039 | 4,421 | — | — | 9,353 | 526 | 637 | repeat; GNOME Shell marker complete; SMP=1; deferred checkpoint drained fewer writes before measurement ended |
 
 The B2709 `munmap` result is a material improvement over B2699: 71,407 ns
 to 21,426 ns (about 70% lower), and 52x to 16x the host baseline. The B2708
