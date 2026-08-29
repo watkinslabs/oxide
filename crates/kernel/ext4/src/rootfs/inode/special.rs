@@ -453,7 +453,7 @@ impl FileOps for Ext4StatFileOps {
 pub(crate) fn build_stat_inode(
     st: Arc<RootfsState>, ino: u32, ft: FileType, perm: u16, size: u64, nlink: u32, rdev: u32,
     uid: u32, gid: u32, projid: u32, times: crate::timestamp::InodeTimes, generation: u32,
-    raw_flags: u32, raw: Arc<crate::inode::Inode>,
+    raw_flags: u32, blocks: u64, raw: Arc<crate::inode::Inode>,
 ) -> InodeRef {
     let canonical = st.i_sb().is_some();
     let data = Arc::new(Ext4StatData { st, ino, ft, size, canonical,
@@ -464,7 +464,6 @@ pub(crate) fn build_stat_inode(
     let weak_sb = data.st.sb.lock().clone();
     let xattrs = vfs::SimpleXattrs::new();
     data.st.mount.load_xattrs(ino, &xattrs);
-    let blocks = data.st.mount.read_inode(ino).map(|i| i.i_blocks as u64).unwrap_or(0);
     // Linux `init_special_inode` gives an on-disk `S_IFIFO` the pipe fops, and
     // `fifo_open` attaches an `i_pipe` whose `rd_wait`/`wr_wait` are the poll
     // queues — independent of the backing filesystem. A FIFO
