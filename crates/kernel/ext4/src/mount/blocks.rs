@@ -91,6 +91,11 @@ impl Mount {
     /// + leaves); deeper trees surface DepthUnsupported.
     /// # C: O(depth × log N) — small constant in practice
     pub fn read_file_block(&self, inode: &Inode, file_blk: u32) -> Result<Vec<u8>, MountError> {
+        // Directory blocks are journaled metadata. Linux readers observe the
+        // buffer-cache/shadow copy immediately after a namespace transaction;
+        // bypassing it and reading the device directly exposes the old `..`
+        // entry until checkpoint, which is incorrect for same-mount callers.
+        if inode.is_dir() { return self.read_file_block_meta(inode, file_blk); }
         match self.resolve_pblock(inode, file_blk) {
             Ok(phys) => {
                 let byte_off = phys * (self.sb.block_size as u64);

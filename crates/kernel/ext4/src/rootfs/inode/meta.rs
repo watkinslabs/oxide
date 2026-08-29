@@ -189,6 +189,9 @@ fn ext4_fileattr_setproject(
         inode.set_projid(raw.i_projid);
         return Err(VfsError::Eio);
     }
+    if let Some(s) = inode.private::<super::data::Ext4StatData>() {
+        s.publish_project_id(projid);
+    }
     inode.set_times(None, None, ctime)
 }
 
@@ -382,6 +385,6 @@ pub(crate) fn set_cached_raw_flags(inode: &Inode, flags: u32) {
     if let Some(f) = inode.private::<super::data::Ext4FileData>() {
         f.raw_flags.store(flags, Ordering::Relaxed);
     } else if let Some(s) = inode.private::<super::data::Ext4StatData>() {
-        s.raw_flags.store(flags, Ordering::Relaxed);
+        s.publish_flags(flags);
     }
 }
