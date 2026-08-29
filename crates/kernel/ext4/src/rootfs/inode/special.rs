@@ -353,14 +353,38 @@ impl InodeOps for Ext4StatInodeOps {
     }
 
     fn symlink(&self, inode: &Inode, name: &str, target: &[u8], ctx: &vfs::CreateCtx) -> KResult<()> {
+        self.symlink_impl(inode, name, target, ctx, true)
+    }
+
+    fn symlink_unchecked(&self, inode: &Inode, name: &str, target: &[u8], ctx: &vfs::CreateCtx) -> KResult<()> {
+        self.symlink_impl(inode, name, target, ctx, false)
+    }
+
+    fn mknod(&self, inode: &Inode, name: &str, mode: u16, rdev: u32, ctx: &vfs::CreateCtx) -> KResult<()> {
+        self.mknod_impl(inode, name, mode, rdev, ctx, true)
+    }
+
+    fn mknod_unchecked(&self, inode: &Inode, name: &str, mode: u16, rdev: u32, ctx: &vfs::CreateCtx) -> KResult<()> {
+        self.mknod_impl(inode, name, mode, rdev, ctx, false)
+    }
+
+    fn rename(&self, inode: &Inode, old_name: &str, new_dir: &Inode, new_name: &str, flags: u32, _ctx: &vfs::CreateCtx)
+        -> KResult<()>
+    {
+        super::rename::ext4_rename2(inode, old_name, new_dir, new_name, flags)
+    }
+}
+
+impl Ext4StatInodeOps {
+    fn symlink_impl(&self, inode: &Inode, name: &str, target: &[u8], ctx: &vfs::CreateCtx,
+                    check_existing: bool) -> KResult<()> {
         let d = Self::data(inode)?;
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
-        if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
+        if check_existing && d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
         let (uid, gid) = vfs::prepare_symlink_owner(ctx.idmap, inode, ctx.cred);
         let mode = vfs::types::S_IFLNK | 0o777;
         super::super::quota::charge_new_inode(&d.st, d.ino, mode, uid, gid)?;
-        let parent_raw = if d.canonical
-            && d.raw_valid.load(core::sync::atomic::Ordering::Acquire)
+        let parent_raw = if d.raw_valid.load(core::sync::atomic::Ordering::Acquire)
         { Some(d.raw.lock().clone()) } else { None };
         let created = match parent_raw.as_ref() {
             Some(parent) => d.st.mount.create_symlink_with_parent(
@@ -379,16 +403,16 @@ impl InodeOps for Ext4StatInodeOps {
         Ok(())
     }
 
-    fn mknod(&self, inode: &Inode, name: &str, mode: u16, rdev: u32, ctx: &vfs::CreateCtx) -> KResult<()> {
+    fn mknod_impl(&self, inode: &Inode, name: &str, mode: u16, rdev: u32, ctx: &vfs::CreateCtx,
+                  check_existing: bool) -> KResult<()> {
         let d = Self::data(inode)?;
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
-        if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
+        if check_existing && d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
         let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode,
             mode, mode, ctx.cred, 0);
         let acl = crate::acl::inherit(inode, m, ctx.umask, vfs::posix_acl::NewKind::Other)?;
         super::super::quota::charge_new_inode(&d.st, d.ino, acl.mode, uid, gid)?;
-        let parent_raw = if d.canonical
-            && d.raw_valid.load(core::sync::atomic::Ordering::Acquire)
+        let parent_raw = if d.raw_valid.load(core::sync::atomic::Ordering::Acquire)
         { Some(d.raw.lock().clone()) } else { None };
         let created = match parent_raw.as_ref() {
             Some(parent) => d.st.mount.create_mknod_with_acl_parent(
@@ -406,12 +430,6 @@ impl InodeOps for Ext4StatInodeOps {
         d.st.forget_created_ino(ino);
         d.invalidate_raw();
         Ok(())
-    }
-
-    fn rename(&self, inode: &Inode, old_name: &str, new_dir: &Inode, new_name: &str, flags: u32, _ctx: &vfs::CreateCtx)
-        -> KResult<()>
-    {
-        super::rename::ext4_rename2(inode, old_name, new_dir, new_name, flags)
     }
 }
 

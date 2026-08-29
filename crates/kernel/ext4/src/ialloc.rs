@@ -7,6 +7,8 @@
 // target inode's extent tree and frees each data block first
 // (caller is `unlink` after nlink → 0).
 
+use alloc::vec::Vec;
+
 use crate::balloc::find_first_clear;
 use crate::gdt;
 use crate::inode::{
@@ -365,6 +367,17 @@ impl Mount {
     pub(crate) fn init_inode_with_parent(
         &self, parent: &Inode, ino: u32, mode: u16, nlink: u16, uid: u32, gid: u32,
     ) -> Result<Inode, MountError> {
+        self.init_inode_with_parent_bytes(parent, ino, mode, nlink, uid, gid)
+            .map(|(node, _)| node)
+    }
+
+    /// Initialize an inode and retain the exact serialized image for callers
+    /// that must make one more field update before publishing it. This is the
+    /// ext4 equivalent of Linux carrying the live `struct inode` through
+    /// `ext4_symlink`; it avoids rereading the inode table just written.
+    pub(crate) fn init_inode_with_parent_bytes(
+        &self, parent: &Inode, ino: u32, mode: u16, nlink: u16, uid: u32, gid: u32,
+    ) -> Result<(Inode, Vec<u8>), MountError> {
         let mut bytes = vec![0u8; self.sb.inode_size as usize];
         bytes[0x00..0x02].copy_from_slice(&mode.to_le_bytes());
         bytes[0x1A..0x1C].copy_from_slice(&nlink.to_le_bytes());
@@ -398,7 +411,7 @@ impl Mount {
         self.write_inode_bytes(ino, &bytes)?;
         let mut node = Inode::parse(&bytes, &self.sb)?;
         node.ino = ino; // stamp so dir/extent-block verify can key the inode seed
-        Ok(node)
+        Ok((node, bytes))
     }
 
 }

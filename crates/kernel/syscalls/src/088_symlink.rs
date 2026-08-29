@@ -47,7 +47,7 @@ pub(crate) fn symlink_impl(dirfd: i32, target: Vec<u8>, link: String) -> i64 {
     let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: 0 };
     // D29: parent dir `i_rwsem` EXCLUSIVE across the backend symlink (Linux
     // `filename_create` → `->symlink`); dropped before the dcache update below.
-    let r = { let _g = parent.inode.inode_lock(); parent.inode.symlink_child(&name, &target, &ctx) };
+    let r = { let _g = parent.inode.inode_lock(); parent.inode.symlink_child_unchecked(&name, &target, &ctx) };
     match r {
         Ok(())  => {
             drop_child_cache(&parent, &name);
