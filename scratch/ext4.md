@@ -150,7 +150,11 @@ checks on disposable images found no multiply-claimed blocks. The remaining
 ownership item is Linux-shaped handle-stop credit release without retaining the
 parent inode lock across unrelated journal work. The current SMP=1 and SMP=2
 whole-boot reports are noisy and show no reproducible aggregate speed gain yet;
-no performance improvement is credited.
+no performance improvement is credited. A single-extent-cursor planner
+experiment (PR #6496) passed hosted/image fixtures but produced early GNOME
+boot EIOs and orphan/bitmap damage on a freshly repaired disposable image; it
+was reverted in PR #6497. The planner remains unchanged until a harness covers
+that real-root allocation shape.
 
 Exit: each claimed gain has a reproducible before/after measurement; no correctness regression is traded for speed.
 
