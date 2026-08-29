@@ -261,14 +261,27 @@ impl Mount {
                     return Some(*group);
                 }
             }
-            return None;
+            // The power-of-two buddy criterion has no candidate. Linux then
+            // enters CR_BEST_AVAIL_LEN for regular data and progressively
+            // lowers the fragment-size goal by at most three orders before
+            // falling through to the ordinary scan. Keep `count` unchanged:
+            // this chooses a scan candidate, never a short allocation.
         }
-        let wanted = scan::fragment_order_for_len(count);
         let s = self.state.lock();
-        for (_, candidates) in s.group_avg_fragment_index.range(wanted..) {
-            if let Some(group) = candidates.range(hint..groups).next()
-                .or_else(|| candidates.iter().next()) {
-                return Some(*group);
+        let mut goals = alloc::vec::Vec::new();
+        goals.push(count);
+        for trim in 1..=3 {
+            if let Some(goal) = scan::best_available_goal_len(count, trim) {
+                if !goals.contains(&goal) { goals.push(goal); }
+            }
+        }
+        for goal in goals {
+            let wanted = scan::fragment_order_for_len(goal);
+            for (_, candidates) in s.group_avg_fragment_index.range(wanted..) {
+                if let Some(group) = candidates.range(hint..groups).next()
+                    .or_else(|| candidates.iter().next()) {
+                    return Some(*group);
+                }
             }
         }
         None
