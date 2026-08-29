@@ -31,20 +31,18 @@ impl Mount {
     /// publish through the same bitmap cache and summaries.
     pub(crate) fn prefetch_block_bitmaps(&self) -> Result<(), MountError> {
         for group in 0..self.sb.group_count() {
-            let gd = {
-                let s = self.state.lock();
-                gdt::parse_descriptor(&s.gdt_buf, group, &self.sb)?
-            };
+            let gdt_bytes = self.read_gdt_bytes()?;
+            let gd = gdt::parse_descriptor(&gdt_bytes, group, &self.sb)?;
             let byte_off = gd.block_bitmap * self.sb.block_size as u64;
             if self.state.lock().block_bitmap_cache.contains_key(&byte_off) { continue; }
-            let uninit = { let s = self.state.lock(); gdt::block_uninit(&s.gdt_buf, group, &self.sb) };
+            let uninit = gdt::block_uninit(&gdt_bytes, group, &self.sb);
             let bitmap = if uninit {
                 let s = self.state.lock();
                 init_block_bitmap_for_group(&self.sb, &s.gdt_buf, group)?
             } else {
                 let bitmap = self.read_meta_byte_range(byte_off, self.sb.block_size as usize)?;
                 if !crate::csum::verify_block_bitmap_csum_at(
-                    &self.sb, &self.state.lock().gdt_buf, group, &bitmap) {
+                    &self.sb, &gdt_bytes, group, &bitmap) {
                     crate::mount::first_csum_failure(b"block-bitmap-prefetch", group as u64, byte_off);
                     return Err(MountError::BadChecksum);
                 }
@@ -242,10 +240,11 @@ impl Mount {
     /// of this same truth, free to disagree with it after any allocation.
     /// # C: O(N_groups)
     fn freest_group(&self, groups: u32) -> Option<(u32, u64)> {
+        let gdt = self.read_gdt_bytes().ok()?;
         let s = self.state.lock();
         let mut best: Option<(u32, u64)> = None;
         for g in 0..groups {
-            let Ok(d) = gdt::parse_descriptor(&s.gdt_buf, g, &self.sb) else { continue };
+            let Ok(d) = gdt::parse_descriptor(&gdt, g, &self.sb) else { continue };
             let free = d.free_blocks_count as u64;
             let score = s.group_free_order.get(&g).copied()
                 .map(|order| 1u64 << u32::from(order)).unwrap_or(free);
@@ -306,22 +305,19 @@ impl Mount {
         let _group_guard = unsafe { group_lock.lock() };
         // SAFETY: the GDT owner is a sleepable leaf and no spinlock is held.
         let _gdt_guard = unsafe { self.gdt_lock.lock() };
-        let gd_orig = {
-            let s = self.state.lock();
-            gdt::parse_descriptor(&s.gdt_buf, group, &self.sb)?
-        };
+        let gdt_bytes = self.read_gdt_bytes()?;
+        let gd_orig = gdt::parse_descriptor(&gdt_bytes, group, &self.sb)?;
         if gd_orig.free_blocks_count == 0 { return Ok(None); }
         let bbm_byte_off = gd_orig.block_bitmap * (self.sb.block_size as u64);
-        let uninit = { let s = self.state.lock(); gdt::block_uninit(&s.gdt_buf, group, &self.sb) };
+        let uninit = gdt::block_uninit(&gdt_bytes, group, &self.sb);
         let cached = self.cached_group_bitmap(bbm_byte_off);
         let mut bitmap = if let Some(bitmap) = cached {
             bitmap
         } else if uninit {
-            let s = self.state.lock();
-            init_block_bitmap_for_group(&self.sb, &s.gdt_buf, group)?
+            init_block_bitmap_for_group(&self.sb, &gdt_bytes, group)?
         } else {
             let bitmap = self.read_meta_byte_range(bbm_byte_off, self.sb.block_size as usize)?;
-            if !crate::csum::verify_block_bitmap_csum_at(&self.sb, &self.state.lock().gdt_buf, group, &bitmap) {
+            if !crate::csum::verify_block_bitmap_csum_at(&self.sb, &gdt_bytes, group, &bitmap) {
                 crate::mount::first_csum_failure(b"block-bitmap-alloc", group as u64, bbm_byte_off);
                 return Err(MountError::BadChecksum);
             }
@@ -370,22 +366,19 @@ impl Mount {
         let _group_guard = unsafe { group_lock.lock() };
         // SAFETY: the GDT owner is a sleepable leaf and no spinlock is held.
         let _gdt_guard = unsafe { self.gdt_lock.lock() };
-        let gd_orig = {
-            let s = self.state.lock();
-            gdt::parse_descriptor(&s.gdt_buf, group, &self.sb)?
-        };
+        let gdt_bytes = self.read_gdt_bytes()?;
+        let gd_orig = gdt::parse_descriptor(&gdt_bytes, group, &self.sb)?;
         if u32::from(gd_orig.free_blocks_count) < count { return Ok(None); }
         let bbm_byte_off = gd_orig.block_bitmap * (self.sb.block_size as u64);
-        let uninit = { let s = self.state.lock(); gdt::block_uninit(&s.gdt_buf, group, &self.sb) };
+        let uninit = gdt::block_uninit(&gdt_bytes, group, &self.sb);
         let cached = self.cached_group_bitmap(bbm_byte_off);
         let mut bitmap = if let Some(bitmap) = cached {
             bitmap
         } else if uninit {
-            let s = self.state.lock();
-            init_block_bitmap_for_group(&self.sb, &s.gdt_buf, group)?
+            init_block_bitmap_for_group(&self.sb, &gdt_bytes, group)?
         } else {
             let bitmap = self.read_meta_byte_range(bbm_byte_off, self.sb.block_size as usize)?;
-            if !crate::csum::verify_block_bitmap_csum_at(&self.sb, &self.state.lock().gdt_buf, group, &bitmap) {
+            if !crate::csum::verify_block_bitmap_csum_at(&self.sb, &gdt_bytes, group, &bitmap) {
                 crate::mount::first_csum_failure(b"block-bitmap-alloc-run", group as u64, bbm_byte_off);
                 return Err(MountError::BadChecksum);
             }

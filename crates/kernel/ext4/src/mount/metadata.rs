@@ -86,8 +86,21 @@ impl Mount {
     /// Look up the `n`-th group descriptor.
     /// # C: O(1)
     pub fn group_desc(&self, n: u32) -> Result<GroupDesc, MountError> {
-        let g = self.state.lock();
-        Ok(gdt::parse_descriptor(&g.gdt_buf, n, &self.sb)?)
+        let gdt = self.read_gdt_bytes()?;
+        Ok(gdt::parse_descriptor(&gdt, n, &self.sb)?)
+    }
+
+    /// Read the group-descriptor table from the canonical metadata-buffer
+    /// source. The transaction shadow wins over clean cache bytes, exactly as
+    /// a JBD2-attached buffer head does; `MountState::gdt_buf` is only a
+    /// mutation workspace for legacy writers being migrated.
+    /// # C: O(GDT blocks)
+    pub(crate) fn read_gdt_bytes(&self) -> Result<Vec<u8>, MountError> {
+        let len = {
+            let s = self.state.lock();
+            s.gdt_buf.len()
+        };
+        self.read_meta_byte_range(gdt_byte_offset_for(&self.sb), len)
     }
 
     /// Metadata write: RMWs the affected fs block(s). Inside a
