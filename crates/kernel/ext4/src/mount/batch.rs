@@ -57,7 +57,7 @@ impl Mount {
         let commit_ns = crate::fsync_latency::now_ns();
         let active_handles = {
             let s = self.state.lock();
-            s.undo.values().any(|frames| !frames.is_empty())
+            s.handles.values().any(|handle| !handle.frames.is_empty())
         };
         let result = if active_handles || !needed { Ok(false) } else { self.commit_batch_inner() };
         #[cfg(feature = "debug-fsync-latency")]
@@ -175,7 +175,7 @@ impl Mount {
         { return Ok(()); }
         let blocks = {
             let s = self.state.lock();
-            if s.undo.values().any(|frames| !frames.is_empty()) { 0 } else { s.shadow.as_ref().map_or(0, |m| m.len()) }
+            if s.handles.values().any(|handle| !handle.frames.is_empty()) { 0 } else { s.shadow.as_ref().map_or(0, |m| m.len()) }
         };
         if blocks >= BATCH_CEILING_BLOCKS {
             self.batch_full.store(true, ::core::sync::atomic::Ordering::Release);
@@ -202,21 +202,21 @@ impl Mount {
     pub(super) fn batch_frame_commit(&self) {
         let mut s = self.state.lock();
         let id = crate::mount::core::ctx_id();
-        let frames = match s.undo.get_mut(&id) { Some(frames) => frames, None => return };
-        let frame = match frames.pop() { Some(f) => f, None => return };
-        if let Some(parent) = frames.last_mut() {
+        let handle = match s.handles.get_mut(&id) { Some(handle) => handle, None => return };
+        let frame = match handle.frames.pop() { Some(f) => f, None => return };
+        if let Some(parent) = handle.frames.last_mut() {
             for (lba, prev) in frame { parent.entry(lba).or_insert(prev); }
         }
-        if frames.is_empty() { s.undo.remove(&id); }
+        if handle.frames.is_empty() { s.handles.remove(&id); }
     }
 
     pub(super) fn batch_frame_rollback(&self) {
         let id = crate::mount::core::ctx_id();
         let frame = {
             let mut s = self.state.lock();
-            let Some(frames) = s.undo.get_mut(&id) else { return; };
-            let frame = frames.pop().unwrap_or_default();
-            if frames.is_empty() { s.undo.remove(&id); }
+            let Some(handle) = s.handles.get_mut(&id) else { return; };
+            let frame = handle.frames.pop().unwrap_or_default();
+            if handle.frames.is_empty() { s.handles.remove(&id); }
             frame
         };
         let affected: alloc::vec::Vec<u64> = frame.keys().copied().collect();

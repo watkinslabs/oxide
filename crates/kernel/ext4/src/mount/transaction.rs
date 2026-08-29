@@ -3,7 +3,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use crate::jbd2::StagedBlock;
 use super::gdt_byte_offset_for;
-use super::super::{Mount, MountError};
+use super::super::{JournalHandle, Mount, MountError};
 use super::ctx_id;
 use super::super::io::read_byte_range;
 use super::metadata::publish_metadata;
@@ -146,8 +146,9 @@ impl Mount {
             return r;
         }
         let id = crate::mount::core::ctx_id();
-        self.state.lock().undo.entry(id).or_default()
-            .push(alloc::collections::BTreeMap::new());
+        self.state.lock().handles.entry(id)
+            .or_insert_with(|| JournalHandle { frames: alloc::vec::Vec::new() })
+            .frames.push(alloc::collections::BTreeMap::new());
         let r = f(self);
         let result = match r {
             Ok(v) => { self.batch_frame_commit(); Ok(v) }
@@ -217,7 +218,9 @@ impl Mount {
             // without discarding prior batched ops. Success merges the frame up
             // (or drops it at top level, leaving the writes in the running txn).
             let id = crate::mount::core::ctx_id();
-            self.state.lock().undo.entry(id).or_default().push(alloc::collections::BTreeMap::new());
+            self.state.lock().handles.entry(id)
+                .or_insert_with(|| JournalHandle { frames: alloc::vec::Vec::new() })
+                .frames.push(alloc::collections::BTreeMap::new());
             let r = f(self);
             match r {
                 Ok(v) => { self.batch_frame_commit(); self.maybe_commit_batch()?; Ok(v) }
@@ -264,7 +267,9 @@ impl Mount {
         let batch = { let s = self.state.lock(); s.shadow.is_some() && s.batch };
         if !batch { return f(self); }
         let id = crate::mount::core::ctx_id();
-        self.state.lock().undo.entry(id).or_default().push(alloc::collections::BTreeMap::new());
+        self.state.lock().handles.entry(id)
+            .or_insert_with(|| JournalHandle { frames: alloc::vec::Vec::new() })
+            .frames.push(alloc::collections::BTreeMap::new());
         match f(self) {
             Ok(v) => { self.batch_frame_commit(); Ok(v) }
             Err(e) => { self.batch_frame_rollback(); Err(e) }
