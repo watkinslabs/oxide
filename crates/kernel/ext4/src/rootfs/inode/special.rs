@@ -351,6 +351,10 @@ impl InodeOps for Ext4StatInodeOps {
         d.st.orphan_remove(ino);
         target.inc_nlink();
         d.invalidate_raw();
+        // `ext4_append()` may have grown this directory. Publish the live
+        // VFS i_size as well as invalidating the lookup image; Linux updates
+        // both fields on the same in-core directory inode.
+        d.refresh_namespace_size(inode);
         Ok(())
     }
 
