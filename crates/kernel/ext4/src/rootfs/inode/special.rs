@@ -261,7 +261,12 @@ impl InodeOps for Ext4StatInodeOps {
         let d = Self::data(inode)?;
         if !matches!(d.ft, FileType::Symlink) { return Err(VfsError::Einval); }
         let mount = &d.st.mount;
-        let i = mount.read_inode(d.ino).map_err(|_| VfsError::Eio)?;
+        let cached = d.raw_valid.load(core::sync::atomic::Ordering::Acquire);
+        let i = if cached {
+            d.raw.lock().clone()
+        } else {
+            Arc::new(mount.read_inode(d.ino).map_err(|_| VfsError::Eio)?)
+        };
         if let Some(b) = i.fast_symlink_target() { return Ok(b.to_vec()); }
         let blk = mount.read_file_block(&i, 0).map_err(|_| VfsError::Eio)?;
         let n = (d.size as usize).min(blk.len());
@@ -494,7 +499,11 @@ impl FileOps for Ext4StatFileOps {
         let d = inode.private::<Ext4StatData>().ok_or(VfsError::Eio)?;
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         let mount = &d.st.mount;
-        let dir_inode = mount.read_inode(d.ino).map_err(|_| VfsError::Eio)?;
+        let dir_inode = if d.raw_valid.load(core::sync::atomic::Ordering::Acquire) {
+            d.raw.lock().as_ref().clone()
+        } else {
+            mount.read_inode(d.ino).map_err(|_| VfsError::Eio)?
+        };
         let bs = mount.sb.block_size as u64;
         // `EXT4_FEATURE_INCOMPAT_FILETYPE` is what makes byte 7 of a directory
         // record a `d_type`. On an ext2-style image without it that byte is the
