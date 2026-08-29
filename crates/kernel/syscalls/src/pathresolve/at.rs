@@ -198,11 +198,11 @@ pub fn resolve_at_lookup(dirfd: i32, path_ptr: u64, flags: vfs::LookupFlags) -> 
 
 /// # C: O(components × dir-lookup)
 pub fn resolve_at_lookup_cred(dirfd: i32, path_ptr: u64, flags: vfs::LookupFlags, cred: vfs::Cred) -> Result<vfs::VfsPath, i64> {
-    if at_path_empty(path_ptr)? {
+    let raw = crate::namei_common::read_user_path_allow_empty(path_ptr)?;
+    if raw.is_empty() {
         if !flags.empty { return Err(-(Errno::Enoent.as_i32() as i64)); }
         return resolve_empty_at(dirfd);
     }
-    let raw = crate::namei_common::read_user_path(path_ptr)?;
     resolve_at_path_cred(dirfd, &raw, flags, cred)
 }
 

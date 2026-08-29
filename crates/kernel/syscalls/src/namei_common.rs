@@ -95,19 +95,12 @@ pub(crate) fn trace_logind_dev(op: &'static [u8], path: &str, rv: i64) {
     klog::write_raw(b"]\n");
 }
 
-/// Read a user-space pathname with the full Linux errno contract:
-///   * NULL / out-of-range ptr  → **EFAULT**
-///   * empty string (`""`)      → **ENOENT** (callers without AT_EMPTY_PATH)
-///   * pathname ≥ PATH_MAX bytes → **ENAMETOOLONG** (`vfs::path::check_path_len`)
-///   * non-UTF-8 bytes          → byte-preserved (Linux paths are opaque
-///     byte strings, `path_resolution(7)`); decoded via
-///     `vfs::path_from_bytes` so a non-UTF-8 component still resolves.
-/// Returns `Ok(empty)` is impossible — empty maps to ENOENT here; callers
-/// that allow AT_EMPTY_PATH must probe emptiness before calling. The
-/// total-length limit + its gate are owned by `vfs::path` (the work-fn crate
-/// per `53`); this shim only fetches the bytes and applies the gate.
+/// Read a user-space pathname, allowing the empty C string for callers that
+/// implement an `AT_EMPTY_PATH`-style decision after acquisition. This mirrors
+/// Linux `getname`: the user pathname is acquired once, and the caller derives
+/// whether it names the empty path from the returned buffer.
 /// # C: O(strlen)
-pub(crate) fn read_user_path(ptr: u64) -> Result<String, i64> {
+pub(crate) fn read_user_path_allow_empty(ptr: u64) -> Result<String, i64> {
     if ptr == 0 || ptr >= USER_VA_END {
         return Err(-(Errno::Efault.as_i32() as i64));
     }
@@ -122,12 +115,27 @@ pub(crate) fn read_user_path(ptr: u64) -> Result<String, i64> {
     }
     let bytes = devfs::read_user_cstr(ptr, vfs::path::PATH_MAX)
         .ok_or(-(Errno::Efault.as_i32() as i64))?;
-    if bytes.is_empty() {
-        return Err(-(Errno::Enoent.as_i32() as i64));
-    }
     let path = vfs::path_from_bytes(&bytes);
     // No NUL within PATH_MAX bytes → pathname too long (Linux ENAMETOOLONG).
     vfs::path::check_path_len(&path).map_err(errno_from_vfs)?;
+    Ok(path)
+}
+
+/// Read a user-space pathname with the full Linux errno contract:
+///   * NULL / out-of-range ptr  → **EFAULT**
+///   * empty string (`""`)      → **ENOENT** (callers without AT_EMPTY_PATH)
+///   * pathname ≥ PATH_MAX bytes → **ENAMETOOLONG** (`vfs::path::check_path_len`)
+///   * non-UTF-8 bytes          → byte-preserved (Linux paths are opaque
+///     byte strings, `path_resolution(7)`); decoded via
+///     `vfs::path_from_bytes` so a non-UTF-8 component still resolves.
+/// Returns `Ok(empty)` is impossible — empty maps to ENOENT here; callers
+/// that allow AT_EMPTY_PATH must probe emptiness before calling. The
+/// total-length limit + its gate are owned by `vfs::path` (the work-fn crate
+/// per `53`); this shim only fetches the bytes and applies the gate.
+/// # C: O(strlen)
+pub(crate) fn read_user_path(ptr: u64) -> Result<String, i64> {
+    let path = read_user_path_allow_empty(ptr)?;
+    if path.is_empty() { return Err(-(Errno::Enoent.as_i32() as i64)); }
     Ok(path)
 }
 
