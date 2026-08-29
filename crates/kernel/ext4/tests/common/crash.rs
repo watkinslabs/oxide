@@ -45,6 +45,9 @@ pub enum CrashPoint {
     /// The JBD2 commit record reaches media, but the journal superblock
     /// publish does not. This is the commit/publish ordering boundary.
     AfterCommit,
+    /// Power fails before the journal descriptor/data body request reaches
+    /// media. No transaction body is durable at this boundary.
+    BeforeDescriptor,
 }
 
 pub struct CrashDisk {
@@ -63,6 +66,7 @@ const POINT_AFTER_CHECKPOINT: u64 = 3;
 const POINT_AFTER_FIRST_HOME: u64 = 4;
 const POINT_BEFORE_COMMIT: u64 = 5;
 const POINT_AFTER_COMMIT: u64 = 6;
+const POINT_BEFORE_DESCRIPTOR: u64 = 7;
 /// Watch-only: count publishes, never cut power.
 const POINT_NEVER: u64 = 2;
 
@@ -96,6 +100,7 @@ impl CrashDisk {
             CrashPoint::AfterFirstHome => POINT_AFTER_FIRST_HOME,
             CrashPoint::BeforeCommit => POINT_BEFORE_COMMIT,
             CrashPoint::AfterCommit => POINT_AFTER_COMMIT,
+            CrashPoint::BeforeDescriptor => POINT_BEFORE_DESCRIPTOR,
         }, Ordering::Release);
         self.jsb_sector.store(jsb_sector, Ordering::Release);
     }
@@ -152,6 +157,12 @@ impl CrashDisk {
             .map(|h| h.block_type == BlockType::Commit)
             .unwrap_or(false)
     }
+
+    fn is_descriptor_record(&self, req: &BlockRequest) -> bool {
+        BlockHeader::parse(&req.buffer)
+            .map(|h| h.block_type == BlockType::Descriptor)
+            .unwrap_or(false)
+    }
 }
 
 impl BlockDevice for CrashDisk {
@@ -163,6 +174,12 @@ impl BlockDevice for CrashDisk {
     fn submit_sync(&self, req: &mut BlockRequest) -> KResult<()> {
         if req.op == BlockOp::Read { return self.inner.submit_sync(req); }
         if self.crashed() { return Ok(()); }
+        if self.point.load(Ordering::Acquire) == POINT_BEFORE_DESCRIPTOR
+            && self.is_descriptor_record(req)
+        {
+            self.crashed.store(true, Ordering::Release);
+            return Ok(());
+        }
         if self.is_commit_record(req) {
             match self.point.load(Ordering::Acquire) {
                 POINT_BEFORE_COMMIT => {
