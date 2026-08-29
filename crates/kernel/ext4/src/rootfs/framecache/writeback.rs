@@ -108,16 +108,16 @@ impl Ext4FrameStore {
         // store that predates any buffered write still flushes its full extent.
         let disk = self.st.mount.read_inode(self.ino).map(|i| i.size).unwrap_or(0);
         let size = self.size.load(Ordering::Acquire).max(disk);
-        // Plan under the lock: (idx, page_start, len, pa). No I/O here.
-        let mut plan: Vec<(u64, u64, usize, u64)> = Vec::new();
+        // Plan under the lock: (idx, page_start, len). No I/O here.
+        let mut plan: Vec<(u64, u64, usize)> = Vec::new();
         {
             let g = self.pages.lock();
             for idx in &idxs {
-                if let Some(page) = g.get(idx) {
+                if g.contains_key(idx) {
                     let page_start = *idx * PG as u64;
                     if page_start >= size { continue; }
                     let len = ((size - page_start) as usize).min(PG);
-                    plan.push((*idx, page_start, len, page.pa));
+                    plan.push((*idx, page_start, len));
                 }
             }
         }
@@ -138,52 +138,46 @@ impl Ext4FrameStore {
                     // hundreds of dirty pages from one address_space.
                     let _ = sched::live::cond_resched();
                 }
-                let (_, page_start, _, _) = plan[cursor];
+                let (_, page_start, _) = plan[cursor];
                 let mut cluster = Vec::with_capacity(crate::extent_rw::DATA_WRITE_CLUSTER_BYTES);
                 let mut next_start = page_start;
                 let mut next = cursor;
                 while next < plan.len() {
-                    let (_, candidate_start, len, pa) = plan[next];
+                    let (_, candidate_start, len) = plan[next];
                     if candidate_start != next_start
                         || (!cluster.is_empty()
                             && cluster.len().saturating_add(len) > crate::extent_rw::DATA_WRITE_CLUSTER_BYTES)
                     {
                         break;
                     }
-                    // `pa` was captured in `plan` above under the `pages` lock,
-                    // which has since been dropped. The PMM shrinker
-                    // (scan_clean_pages) can legitimately evict+free this exact
-                    // frame in the gap (it only requires "not dirty,
-                    // mapcount==0", both true for a page mid-writeback after its
-                    // dirty tag cleared but before I/O completes). Wait for the
-                    // page lock, as Linux writeback does: the page is already
-                    // marked writeback and excluded from the shrinker, so
-                    // transient lock contention must not become userspace EIO.
-                    if !pmm::setup::lock_page(pa) { failed = true; break; }
+                    // Resolve, pin, and lock at point of use. Linux writeback
+                    // retains its page-cache reference before locking; holding
+                    // only a raw frame address across planning lets reclaim
+                    // turn a transient race into userspace EIO.
+                    let pa = match self.lock_cache_page(plan[next].0) {
+                        Ok(pa) => pa,
+                        Err(_) => { failed = true; break; }
+                    };
                     let base = match pmm::setup::frame_ptr(pa) {
                         Some(base) => base,
-                        None => { pmm::setup::unlock_page(pa); failed = true; break; }
+                        None => { self.unlock_cache_page(pa); failed = true; break; }
                     };
-                    // DIAG (debug-framecache-verify, B1257 hunt): kept as a
-                    // belt-and-suspenders check even with the pin above -- PMM
-                    // exposes no per-frame owner/generation id, only a bare
-                    // refcount, so this still can't catch a frame freed AND
-                    // already reallocated to a new owner before the pin (should
-                    // no longer be reachable now that the pin excludes the
-                    // shrinker specifically, but leaves the check in place for
-                    // any other freeing path this pin doesn't cover).
+                    // Verify the live frame while the store pin and page lock
+                    // are held when the optional reclaim diagnostic is armed.
                     #[cfg(feature = "debug-framecache-verify")]
                     super::verify::verify_pa_live(self.ino, plan[next].0, pa, "writeback_idxs");
-                    // SAFETY: pa is an inode-owned resident frame; [0, len) ⊆ [0, PG);
-                    // lock_page above pins it against the shrinker for this read.
+                    // SAFETY: pa is pinned and page-locked by lock_cache_page;
+                    // [0, len) is within the page.
                     let slice = unsafe { core::slice::from_raw_parts(base, len) };
                     cluster.extend_from_slice(slice);
-                    pmm::setup::unlock_page(pa);
+                    self.unlock_cache_page(pa);
                     next_start += len as u64;
                     next += 1;
                 }
-                if !cluster.is_empty() && self.st.mount.write_at(self.ino, page_start, &cluster).is_err() {
-                    failed = true;
+                if !cluster.is_empty() {
+                    if self.st.mount.write_at(self.ino, page_start, &cluster).is_err() {
+                        failed = true;
+                    }
                 }
                 cursor = if next == cursor { cursor + 1 } else { next };
             }
@@ -192,7 +186,7 @@ impl Ext4FrameStore {
         let mut redirtied = 0u64;
         if failed || rv.is_err() {
             let mut d = self.dirty.lock();
-            for (idx, _, _, _) in &plan {
+            for (idx, _, _) in &plan {
                 if d.insert(*idx) { redirtied += 1; }
             }
         }
