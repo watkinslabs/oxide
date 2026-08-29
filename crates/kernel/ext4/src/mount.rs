@@ -100,11 +100,17 @@ pub(crate) struct MetadataRead {
     pub(crate) done: AtomicBool,
     pub(crate) result: Spinlock<Option<(u64, Result<Arc<Vec<u8>>, MountError>)>, SuperblockLockClass>,
     pub(crate) wait: sched::live::WaitList,
+    pub(crate) write_owner: ::core::sync::atomic::AtomicU64,
+    pub(crate) write_depth: ::core::sync::atomic::AtomicU32,
+    pub(crate) write_wait: sched::live::WaitList,
 }
 
 impl MetadataRead {
     pub(crate) fn new() -> Self {
-        Self { done: AtomicBool::new(false), result: Spinlock::new(None), wait: sched::live::WaitList::new() }
+        Self { done: AtomicBool::new(false), result: Spinlock::new(None), wait: sched::live::WaitList::new(),
+               write_owner: ::core::sync::atomic::AtomicU64::new(0),
+               write_depth: ::core::sync::atomic::AtomicU32::new(0),
+               write_wait: sched::live::WaitList::new() }
     }
 
     pub(crate) fn complete(&self, epoch: u64, result: Result<Arc<Vec<u8>>, MountError>) {
@@ -170,6 +176,8 @@ pub struct MountState {
     /// One in-flight owner per cold metadata LBA. Waiters share its completed
     /// result, matching the reference buffer-cache lock/completion protocol.
     pub(crate) metadata_reads: alloc::collections::BTreeMap<u64, alloc::sync::Arc<MetadataRead>>,
+    /// Per-LBA read-modify-write owners for the running transaction.
+    pub(crate) metadata_writers: alloc::collections::BTreeMap<u64, alloc::sync::Arc<MetadataRead>>,
     /// Inode-table windows already queued for asynchronous warming. The
     /// metadata cache remains the byte owner; this set only suppresses
     /// duplicate work items until their owner completes.
