@@ -111,17 +111,24 @@ impl Mount {
     /// the on-disk bitmap + counters mutated.
     /// # C: O(N_groups * block_size) worst-case
     pub fn alloc_inode(&self, hint: u32) -> Result<u32, MountError> {
-        self.run_journaled(|m| {
-            let groups = m.sb.group_count();
-            if groups == 0 { return Err(MountError::NoSpace); }
-            for off in 0..groups {
-                let g = (hint + off) % groups;
-                if let Some(ino) = m.try_alloc_inode_in_group(g)? {
-                    return Ok(ino);
-                }
+        self.run_journaled(|m| m.alloc_inode_inner(hint))
+    }
+
+    /// Allocate an inode while the caller owns the journal transaction. # C: O(N_groups * block_size)
+    pub(crate) fn alloc_inode_in_transaction(&self, hint: u32) -> Result<u32, MountError> {
+        self.run_journaled_joined(|m| m.alloc_inode_inner(hint))
+    }
+
+    fn alloc_inode_inner(&self, hint: u32) -> Result<u32, MountError> {
+        let groups = self.sb.group_count();
+        if groups == 0 { return Err(MountError::NoSpace); }
+        for off in 0..groups {
+            let g = (hint + off) % groups;
+            if let Some(ino) = self.try_alloc_inode_in_group(g)? {
+                return Ok(ino);
             }
-            Err(MountError::NoSpace)
-        })
+        }
+        Err(MountError::NoSpace)
     }
 
     fn try_alloc_inode_in_group(&self, group: u32) -> Result<Option<u32>, MountError> {

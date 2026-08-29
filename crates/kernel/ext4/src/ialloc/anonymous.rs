@@ -48,7 +48,7 @@ impl Mount {
     ) -> Result<(u32, Inode), MountError> {
         self.create_op(|m| {
             let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
-            let new_ino = m.alloc_inode(parent_group)?;
+            let new_ino = m.alloc_inode_in_transaction(parent_group)?;
             let node = m.init_inode(parent_ino, new_ino, S_IFREG | (mode_perm & 0x0FFF), 0, uid, gid)?;
             if let Some(acl) = acl { acl.store(m, new_ino)?; }
             m.orphan_add(new_ino)?;

@@ -215,6 +215,23 @@ impl Mount {
         }
     }
 
+    /// Join the current batch with an undo frame, without re-entering the
+    /// transaction gate or asking the batch owner to consider a commit. The
+    /// caller must already own the outer transaction; this is the Linux-shaped
+    /// equivalent of a helper receiving the caller's existing journal handle.
+    /// # C: O(1) frame setup + F
+    pub(crate) fn run_journaled_joined<R, F>(&self, f: F) -> Result<R, MountError>
+    where F: FnOnce(&Self) -> Result<R, MountError>
+    {
+        let batch = { let s = self.state.lock(); s.shadow.is_some() && s.batch };
+        if !batch { return f(self); }
+        self.state.lock().undo.push(alloc::collections::BTreeMap::new());
+        match f(self) {
+            Ok(v) => { self.batch_frame_commit(); Ok(v) }
+            Err(e) => { self.batch_frame_rollback(); Err(e) }
+        }
+    }
+
     /// Run a top-level create op with `creating` set (which defers the
     /// size-triggered batch commit until AFTER the transaction gate is released:
     /// the batch commit's `dev.flush` SLEEPS on the virtio completion, and
