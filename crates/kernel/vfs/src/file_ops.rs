@@ -447,6 +447,20 @@ pub trait FileOps: Send + Sync {
     /// answer `true` because bypassing the cache is vacuous there. # C: O(1)
     fn can_odirect(&self, _inode: &Inode) -> bool { false }
 
+    /// Synchronous direct read for `O_DIRECT` regular-file I/O.  This is the
+    /// ordinary `read_iter` direct arm, distinct from `submit_direct`, which
+    /// is only the queued `IOCB_HIPRI`/io_uring path.  `None` means that this
+    /// backend has no synchronous owner and lets the caller use its normal
+    /// path; `Some` is the backend's final result, including `EINVAL` for an
+    /// unsupported alignment. # C: backend-dependent
+    fn direct_read_file(&self, _file: &File, _off: u64, _buf: &mut [u8])
+        -> Option<KResult<usize>> { None }
+
+    /// Synchronous direct write for `O_DIRECT` regular-file I/O.  See
+    /// [`Self::direct_read_file`] for the ownership contract. # C: backend-dependent
+    fn direct_write_file(&self, _file: &File, _off: u64, _buf: &[u8])
+        -> Option<KResult<usize>> { None }
+
     /// `f_op->llseek` SEEK_HOLE/SEEK_DATA core (Linux `generic_file_llseek` →
     /// `*_seek_hole_data`): map the starting byte `offset` to the next data byte
     /// (`HoleOrData::Data`) or the next hole (`HoleOrData::Hole`) and return the

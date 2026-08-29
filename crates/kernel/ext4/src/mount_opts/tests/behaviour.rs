@@ -41,10 +41,11 @@ fn inode_table_readahead_matches_linux_value_contract() {
 }
 
 #[test]
-fn direct_io_read_modes_are_refused_without_a_direct_io_consumer() {
-    assert!(refused("dioread_nolock"));
-    assert!(refused("dioread_lock"));
-    assert!(refused("nodioread_nolock"));
+fn direct_io_read_modes_select_the_linux_locking_policy() {
+    assert!(b("dioread_nolock").unwrap().dio_read_nolock);
+    assert!(!b("dioread_lock").unwrap().dio_read_nolock);
+    assert!(!b("dioread_nolock,data=journal").unwrap().dio_read_nolock_enabled());
+    assert!(refused("dioread_nolock=1"));
 }
 
 #[test]

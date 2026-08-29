@@ -254,6 +254,71 @@ impl InodeOps for Ext4RegInodeOps {
 pub(crate) struct Ext4RegFileOps;
 
 impl FileOps for Ext4RegFileOps {
+    /// `FMODE_CAN_ODIRECT`: only extent-backed, non-journal-data regular files
+    /// have a real synchronous direct-I/O owner in this tree.
+    fn can_odirect(&self, inode: &Inode) -> bool {
+        inode.private::<Ext4FileData>().is_some_and(|d| {
+            let flags = d.raw_flags.load(Ordering::Acquire);
+            flags & (crate::inode::EXT4_EXTENTS_FL | crate::inode::EXT4_INLINE_DATA_FL)
+                == crate::inode::EXT4_EXTENTS_FL
+                && d.st.mount.behaviour().data != crate::mount_opts::DataMode::Journal
+        })
+    }
+
+    /// Extent/device direct read, after draining overlapping buffered writes.
+    fn direct_read_file(&self, file: &vfs::File, off: u64, buf: &mut [u8])
+        -> Option<KResult<usize>>
+    {
+        let d = file.inode().private::<Ext4FileData>()?;
+        let end = match off.checked_add(buf.len() as u64) {
+            Some(end) => end,
+            None => return Some(Err(VfsError::Einval)),
+        };
+        if d.frames.writeback_range(off, end).is_err() {
+            return Some(Err(VfsError::Eio));
+        }
+        let _inode_lock = if d.st.mount.behaviour().dio_read_nolock_enabled() {
+            None
+        } else {
+            Some(file.inode().inode_lock_shared())
+        };
+        let inode = match d.st.mount.read_inode(d.ino) {
+            Ok(inode) => inode,
+            Err(e) => return Some(Err(fs_err(&d.st, e))),
+        };
+        Some(d.st.mount.direct_read(&inode, off, buf).map_err(|e| fs_err(&d.st, e)))
+    }
+
+    /// Flush buffered data, write through ext4 allocation/device ownership,
+    /// then invalidate the covered page-cache range.
+    fn direct_write_file(&self, file: &vfs::File, off: u64, buf: &[u8])
+        -> Option<KResult<usize>>
+    {
+        let d = file.inode().private::<Ext4FileData>()?;
+        let _mutation = match d.begin_swap_mutation(file.inode()) {
+            Ok(m) => m,
+            Err(e) => return Some(Err(e)),
+        };
+        let _inode_lock = file.inode().inode_lock();
+        let end = match off.checked_add(buf.len() as u64) {
+            Some(end) => end,
+            None => return Some(Err(VfsError::Einval)),
+        };
+        if d.frames.writeback_range(off, end).is_err() {
+            return Some(Err(VfsError::Eio));
+        }
+        let result = d.st.mount.direct_write(d.ino, off, buf)
+            .map_err(|e| fs_err(&d.st, e));
+        if result.is_ok() {
+            let page_start = off & !(hal::PAGE_SIZE_BYTES - 1);
+            let page_end = end.saturating_add(hal::PAGE_SIZE_BYTES - 1)
+                & !(hal::PAGE_SIZE_BYTES - 1);
+            d.frames.invalidate_range(page_start, page_end);
+            d.refresh_inode_usage(file.inode());
+        }
+        Some(result)
+    }
+
     /// Linux drops unused inode preallocation when the final writable file
     /// description closes. `File::Drop` calls this before releasing its own
     /// write reference, so `i_writecount == 1` identifies the last writer.

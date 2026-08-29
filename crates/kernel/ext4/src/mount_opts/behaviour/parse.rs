@@ -113,11 +113,9 @@ impl Ext4Behaviour {
                 }
                 self.inode_readahead_blks = n;
             }
-            // This tree has no O_DIRECT data path. Linux's dioread_nolock
-            // changes the extent/unwritten-extent protocol of that path, so
-            // accepting the option here would falsely promise its semantics.
-            OPT_DIOREAD_NOLOCK | OPT_DIOREAD_LOCK | OPT_NODIOREAD_NOLOCK => {
-                return Err(VfsError::Einval);
+            OPT_DIOREAD_NOLOCK => { flag(val)?; self.dio_read_nolock = true; }
+            OPT_DIOREAD_LOCK | OPT_NODIOREAD_NOLOCK => {
+                flag(val)?; self.dio_read_nolock = false;
             }
             OPT_PREFETCH_BLOCK_BITMAPS => { flag(val)?; self.prefetch_block_bitmaps = true; }
             OPT_NO_PREFETCH_BLOCK_BITMAPS => { flag(val)?; self.prefetch_block_bitmaps = false; }
