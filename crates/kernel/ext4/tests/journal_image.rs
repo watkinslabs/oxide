@@ -405,3 +405,28 @@ fn before_descriptor_does_not_publish_a_transaction_body() {
     assert_eq!(reopened.read_meta_byte_range(target * bs as u64, bs).unwrap(), before,
         "a transaction with no durable descriptor cannot be replayed");
 }
+
+#[test]
+fn partial_descriptor_body_without_commit_is_not_replayed() {
+    let disk = CrashDisk::new(IMAGE, SECTOR);
+    let dev: Arc<dyn BlockDevice> = disk.clone();
+    let m = ext4::Mount::open(dev.clone()).unwrap();
+    let bs = m.sb.block_size as usize;
+    let jsb_sector = 32 * (bs as u64) / u64::from(SECTOR);
+    let target = 106u64;
+    let before = read_fs_block(&dev, target, bs);
+
+    disk.arm(jsb_sector, CrashPoint::AfterFirstDescriptorBlock);
+    let result = m.commit_metadata(alloc::vec![ext4::StagedBlock {
+        target_lba: target,
+        data: alloc::vec![0xF6; bs],
+    }]);
+    assert!(result.is_ok() || disk.crashed(),
+        "partial journal-body interruption may surface as the interrupted transaction: {result:?}");
+    assert!(disk.crashed(), "power cut must occur after the first journal block");
+    drop(m);
+
+    let reopened = ext4::Mount::open(disk).unwrap();
+    assert_eq!(reopened.read_meta_byte_range(target * bs as u64, bs).unwrap(), before,
+        "a partial body without a durable commit record is not replayable");
+}
