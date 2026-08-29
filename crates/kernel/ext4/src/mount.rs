@@ -145,10 +145,6 @@ pub struct MountState {
     /// Cached GDT bytes (mirrors disk; updated on every counter
     /// edit + flushed back to the device).
     pub(crate) gdt_buf: Vec<u8>,
-    /// Live free-blocks counter; mirrors `s_free_blocks_count`.
-    pub(crate) sb_free_blocks: u64,
-    /// Live free-inodes counter; mirrors `s_free_inodes_count`.
-    pub(crate) sb_free_inodes: u32,
     /// In-memory shadow buffer used during a `run_journaled`
     /// scope: keyed by target fs LBA, value = the new contents
     /// of that fs-block. `metadata_write` populates this; reads

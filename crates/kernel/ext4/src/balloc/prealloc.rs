@@ -473,11 +473,10 @@ impl Mount {
                 crate::csum::set_block_bitmap_csum(&m.sb, &mut s.gdt_buf, group, &disk);
                 gdt::on_block_allocated(&mut s.gdt_buf, group, &m.sb);
                 crate::csum::stamp_group_desc_csum(&m.sb, &mut s.gdt_buf, group);
-                s.sb_free_blocks = s.sb_free_blocks.saturating_sub(1);
             }
             m.metadata_write(off, &disk)?;
             m.persist_gdt_slot_meta(group)?;
-            m.persist_sb_free_blocks_meta()?;
+            m.persist_sb_free_blocks_meta(-1)?;
             m.flush_pending_tx()?;
             m.publish_group_bitmap(group, off, cache);
             Ok(())

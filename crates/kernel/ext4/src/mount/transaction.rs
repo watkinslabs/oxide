@@ -309,38 +309,20 @@ impl Mount {
     /// mutated in place by alloc/free and persisted to the shadow, so restoring
     /// the shadow requires re-reading them to stay in step. # C: O(gdt size) I/O
     pub(crate) fn refresh_cached_meta(&self) {
-        // ext4 superblock field offsets (bytes into the 1024-byte SB @ byte 1024).
-        const SB_BYTE_OFF: u64 = 1024;
-        const SB_FREE_BLOCKS_LO: usize = 0x0C;
-        const SB_FREE_INODES:    usize = 0x10;
-        const SB_FREE_BLOCKS_HI: usize = 0x158;
-        const SB_READ_LEN: usize = SB_FREE_BLOCKS_HI + 4;
         let gdt_off = gdt_byte_offset_for(&self.sb);
         let gdt_len = self.state.lock().gdt_buf.len();
         if let Ok(bytes) = self.read_meta_byte_range(gdt_off, gdt_len) {
             self.state.lock().gdt_buf = bytes;
         }
-        if let Ok(sbb) = self.read_meta_byte_range(SB_BYTE_OFF, SB_READ_LEN) {
-            let fb_lo = u32::from_le_bytes([sbb[SB_FREE_BLOCKS_LO], sbb[SB_FREE_BLOCKS_LO+1],
-                                            sbb[SB_FREE_BLOCKS_LO+2], sbb[SB_FREE_BLOCKS_LO+3]]) as u64;
-            let fb_hi = u32::from_le_bytes([sbb[SB_FREE_BLOCKS_HI], sbb[SB_FREE_BLOCKS_HI+1],
-                                            sbb[SB_FREE_BLOCKS_HI+2], sbb[SB_FREE_BLOCKS_HI+3]]) as u64;
-            let fi = u32::from_le_bytes([sbb[SB_FREE_INODES], sbb[SB_FREE_INODES+1],
-                                         sbb[SB_FREE_INODES+2], sbb[SB_FREE_INODES+3]]);
-            let mut s = self.state.lock();
-            s.sb_free_blocks = (fb_hi << 32) | fb_lo;
-            s.sb_free_inodes = fi;
-            // A failed batched operation may have restored bitmap bytes in
-            // the shadow after the allocator published a cache entry. Drop
-            // all bitmap snapshots so the next group scan revalidates against
-            // the restored transaction view instead of reusing stale buddy
-            // state.
+        // A failed batched operation may have restored bitmap bytes in the
+        // shadow after the allocator published a cache entry. Drop all bitmap
+        // snapshots so the next group scan revalidates against that view.
+        let mut s = self.state.lock();
         s.block_bitmap_cache.clear();
         s.group_free_order.clear();
         s.group_free_order_index.clear();
         s.group_avg_fragment_order.clear();
         s.group_avg_fragment_index.clear();
-        }
     }
 
     /// Refresh allocator mirrors after one handle rolls back. Only reload the
@@ -354,33 +336,17 @@ impl Mount {
         let gdt_len = self.state.lock().gdt_buf.len() as u64;
         let gdt_first = gdt_off / bs;
         let gdt_last = (gdt_off.saturating_add(gdt_len).saturating_add(bs - 1) / bs).saturating_sub(1);
-        let sb_first = 1024 / bs;
-        let sb_last = (1024u64.saturating_add(0x15c).saturating_add(bs - 1) / bs).saturating_sub(1);
         let gdt_touched = affected.iter().any(|lba| *lba >= gdt_first && *lba <= gdt_last);
-        let sb_touched = affected.iter().any(|lba| *lba >= sb_first && *lba <= sb_last);
         let mut guarded = alloc::vec::Vec::new();
         if gdt_touched { guarded.extend(gdt_first..=gdt_last); }
-        if sb_touched { guarded.extend(sb_first..=sb_last); }
         guarded.sort_unstable();
         guarded.dedup();
         let _guards = self.metadata_write_guards_for_lbas(&guarded);
         let gdt = if gdt_touched {
             self.read_meta_byte_range(gdt_off, gdt_len as usize).ok()
         } else { None };
-        let sb = if sb_touched {
-            self.read_meta_byte_range(1024, 0x15c).ok()
-        } else { None };
         let mut s = self.state.lock();
         if let Some(gdt) = gdt { s.gdt_buf = gdt; }
-        if let Some(sb) = sb {
-            if sb.len() >= 0x15c {
-                let fb_lo = u32::from_le_bytes([sb[0x0c], sb[0x0d], sb[0x0e], sb[0x0f]]) as u64;
-                let fi = u32::from_le_bytes([sb[0x10], sb[0x11], sb[0x12], sb[0x13]]);
-                let fb_hi = u32::from_le_bytes([sb[0x158], sb[0x159], sb[0x15a], sb[0x15b]]) as u64;
-                s.sb_free_blocks = (fb_hi << 32) | fb_lo;
-                s.sb_free_inodes = fi;
-            }
-        }
         s.block_bitmap_cache.clear();
         s.group_free_order.clear();
         s.group_free_order_index.clear();
@@ -450,11 +416,25 @@ impl Mount {
         Ok(out)
     }
 
-    /// Live free-blocks counter (mirrors `s_free_blocks_count`).
-    /// # C: O(1)
-    pub fn state_free_blocks(&self) -> u64 { self.state.lock().sb_free_blocks }
+    /// Read the authoritative free-blocks counter from the shadow/cache-backed
+    /// superblock buffer, as Linux reads `s_free_blocks_count` from its cached
+    /// superblock rather than maintaining a second mutable counter.
+    /// # C: O(1) cached metadata read
+    pub fn state_free_blocks(&self) -> u64 {
+        let Ok(sb) = self.read_meta_byte_range(
+            crate::superblock::SUPERBLOCK_OFFSET,
+            crate::superblock::SUPERBLOCK_LEN) else { return self.sb.free_blocks_count; };
+        let lo = u32::from_le_bytes(sb[crate::superblock::SB_OFF_FREE_BLOCKS_LO..crate::superblock::SB_OFF_FREE_BLOCKS_LO + 4].try_into().unwrap()) as u64;
+        let hi = u32::from_le_bytes(sb[crate::superblock::SB_OFF_FREE_BLOCKS_HI..crate::superblock::SB_OFF_FREE_BLOCKS_HI + 4].try_into().unwrap()) as u64;
+        (hi << 32) | lo
+    }
 
-    /// Live free-inodes counter.
-    /// # C: O(1)
-    pub fn state_free_inodes(&self) -> u32 { self.state.lock().sb_free_inodes }
+    /// Read the authoritative free-inodes counter from the superblock buffer.
+    /// # C: O(1) cached metadata read
+    pub fn state_free_inodes(&self) -> u32 {
+        let Ok(sb) = self.read_meta_byte_range(
+            crate::superblock::SUPERBLOCK_OFFSET,
+            crate::superblock::SUPERBLOCK_LEN) else { return self.sb.free_inodes_count; };
+        u32::from_le_bytes(sb[crate::superblock::SB_OFF_FREE_INODES..crate::superblock::SB_OFF_FREE_INODES + 4].try_into().unwrap())
+    }
 }

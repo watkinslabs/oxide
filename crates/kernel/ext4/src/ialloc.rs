@@ -198,11 +198,10 @@ impl Mount {
             // clear EXT4_BG_INODE_UNINIT — exactly as Linux ext4_new_inode.
             gdt::on_inode_allocated(&mut s.gdt_buf, group, &self.sb, final_bit as u32);
             crate::csum::stamp_group_desc_csum(&self.sb, &mut s.gdt_buf, group);
-            s.sb_free_inodes = s.sb_free_inodes.saturating_sub(1);
         }
         self.metadata_write(ibm_byte_off, &bitmap)?;
         self.persist_gdt_slot_meta(group)?;
-        self.persist_sb_free_inodes_meta()?;
+        self.persist_sb_free_inodes_meta(-1)?;
         self.flush_pending_tx()?;
         let ino = group * self.sb.inodes_per_group + final_bit as u32 + 1;
         Ok(Some(ino))
@@ -242,25 +241,25 @@ impl Mount {
                 gdt::write_descriptor_counters(&mut s.gdt_buf, group, &m.sb, &gd)?;
                 crate::csum::set_inode_bitmap_csum(&m.sb, &mut s.gdt_buf, group, &bitmap);
                 crate::csum::stamp_group_desc_csum(&m.sb, &mut s.gdt_buf, group);
-                s.sb_free_inodes = s.sb_free_inodes.saturating_add(1);
             }
             m.metadata_write(ibm_byte_off, &bitmap)?;
             m.persist_gdt_slot_meta(group)?;
-            m.persist_sb_free_inodes_meta()?;
+            m.persist_sb_free_inodes_meta(1)?;
             m.flush_pending_tx()?;
             Ok(())
         })
     }
 
     /// # C: O(1)
-    pub(crate) fn persist_sb_free_inodes_meta(&self) -> Result<(), MountError> {
-        let count = self.state.lock().sb_free_inodes;
+    pub(crate) fn persist_sb_free_inodes_meta(&self, delta: i64) -> Result<(), MountError> {
         let mut sb_buf = self.read_meta_byte_range(
             crate::superblock::SUPERBLOCK_OFFSET,
             crate::superblock::SUPERBLOCK_LEN,
         )?;
+        let old = u32::from_le_bytes(sb_buf[SB_OFF_FREE_INODES..SB_OFF_FREE_INODES+4].try_into().unwrap());
+        let next = if delta >= 0 { old.saturating_add(delta as u32) } else { old.saturating_sub(delta.unsigned_abs() as u32) };
         sb_buf[SB_OFF_FREE_INODES..SB_OFF_FREE_INODES+4]
-            .copy_from_slice(&count.to_le_bytes());
+            .copy_from_slice(&next.to_le_bytes());
         crate::csum::stamp_superblock_csum(&self.sb, &mut sb_buf);
         self.metadata_write(crate::superblock::SUPERBLOCK_OFFSET, &sb_buf)
     }

@@ -95,7 +95,7 @@ impl Mount {
         self.run_journaled(|m| {
             let groups = m.sb.group_count();
             if groups == 0 { return Err(MountError::NoSpace); }
-            let free = m.state.lock().sb_free_blocks;
+            let free = m.state_free_blocks();
             if !reserve::has_free_blocks(free, u64::from(count), m.sb.r_blocks_count, may_dip) {
                 return Err(MountError::NoSpace);
             }
@@ -125,7 +125,7 @@ impl Mount {
                 }
                 retries += 1;
                 if !reserve::has_free_blocks(
-                    m.state.lock().sb_free_blocks, u64::from(count),
+                    m.state_free_blocks(), u64::from(count),
                     m.sb.r_blocks_count, may_dip) {
                     return Err(MountError::NoSpace);
                 }
@@ -200,7 +200,7 @@ impl Mount {
             // The reserve gate, before any group is scanned: a caller with no
             // claim on the reserved blocks is out of space while they are all
             // that is left, exactly as if the bitmaps were full.
-            let free = m.state.lock().sb_free_blocks;
+            let free = m.state_free_blocks();
             const ONE_BLOCK: u64 = 1;
             if !reserve::has_free_blocks(free, ONE_BLOCK, m.sb.r_blocks_count, may_dip) {
                 return Err(MountError::NoSpace);
@@ -339,11 +339,10 @@ impl Mount {
             crate::csum::set_block_bitmap_csum(&self.sb, &mut s.gdt_buf, group, &disk_bitmap);
             gdt::on_block_allocated(&mut s.gdt_buf, group, &self.sb);
             crate::csum::stamp_group_desc_csum(&self.sb, &mut s.gdt_buf, group);
-            s.sb_free_blocks = s.sb_free_blocks.saturating_sub(1);
         }
         self.metadata_write(bbm_byte_off, &disk_bitmap)?;
         self.persist_gdt_slot_meta(group)?;
-        self.persist_sb_free_blocks_meta()?;
+        self.persist_sb_free_blocks_meta(-1)?;
         // Force commit so the next alloc_block within the same
         // outer scope reads the updated bitmap from disk.
         self.flush_pending_tx()?;
@@ -405,11 +404,10 @@ impl Mount {
             crate::csum::set_block_bitmap_csum(&self.sb, &mut s.gdt_buf, group, &disk_bitmap);
             gdt::on_block_allocated(&mut s.gdt_buf, group, &self.sb);
             crate::csum::stamp_group_desc_csum(&self.sb, &mut s.gdt_buf, group);
-            s.sb_free_blocks = s.sb_free_blocks.saturating_sub(u64::from(count));
         }
         self.metadata_write(bbm_byte_off, &disk_bitmap)?;
         self.persist_gdt_slot_meta(group)?;
-        self.persist_sb_free_blocks_meta()?;
+        self.persist_sb_free_blocks_meta(-i64::from(count))?;
         self.flush_pending_tx()?;
         self.publish_group_bitmap(group, bbm_byte_off, bitmap);
         Ok(Some((0..count).map(|n| first_phys + u64::from(start + n)).collect()))
@@ -456,20 +454,21 @@ impl Mount {
         self.metadata_write(byte_off, &payload)
     }
 
-    /// Persist `sb_free_blocks` to the on-disk superblock through
+    /// Apply a free-block counter delta to the authoritative superblock
+    /// buffer and journal it through `metadata_write`.
     /// `metadata_write`.
     /// # C: O(SB read + 1 block write)
-    pub(crate) fn persist_sb_free_blocks_meta(&self) -> Result<(), MountError> {
-        let (lo_v, hi_v) = {
-            let s = self.state.lock();
-            ((s.sb_free_blocks & 0xFFFF_FFFF) as u32, (s.sb_free_blocks >> 32) as u32)
-        };
+    pub(crate) fn persist_sb_free_blocks_meta(&self, delta: i64) -> Result<(), MountError> {
         let mut sb_buf = self.read_meta_byte_range(
             crate::superblock::SUPERBLOCK_OFFSET,
             crate::superblock::SUPERBLOCK_LEN,
         )?;
-        sb_buf[SB_OFF_FREE_BLOCKS_LO..SB_OFF_FREE_BLOCKS_LO+4].copy_from_slice(&lo_v.to_le_bytes());
-        sb_buf[SB_OFF_FREE_BLOCKS_HI..SB_OFF_FREE_BLOCKS_HI+4].copy_from_slice(&hi_v.to_le_bytes());
+        let lo = u32::from_le_bytes(sb_buf[SB_OFF_FREE_BLOCKS_LO..SB_OFF_FREE_BLOCKS_LO+4].try_into().unwrap()) as u64;
+        let hi = u32::from_le_bytes(sb_buf[SB_OFF_FREE_BLOCKS_HI..SB_OFF_FREE_BLOCKS_HI+4].try_into().unwrap()) as u64;
+        let old = lo | (hi << 32);
+        let next = if delta >= 0 { old.saturating_add(delta as u64) } else { old.saturating_sub(delta.unsigned_abs()) };
+        sb_buf[SB_OFF_FREE_BLOCKS_LO..SB_OFF_FREE_BLOCKS_LO+4].copy_from_slice(&(next as u32).to_le_bytes());
+        sb_buf[SB_OFF_FREE_BLOCKS_HI..SB_OFF_FREE_BLOCKS_HI+4].copy_from_slice(&((next >> 32) as u32).to_le_bytes());
         crate::csum::stamp_superblock_csum(&self.sb, &mut sb_buf);
         self.metadata_write(crate::superblock::SUPERBLOCK_OFFSET, &sb_buf)
     }

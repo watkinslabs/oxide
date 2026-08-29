@@ -100,8 +100,6 @@ impl Mount {
         let system_zones = super::super::validity::build_system_zones(&sb, &gdt_buf);
         let state = MountState {
             gdt_buf,
-            sb_free_blocks: sb.free_blocks_count,
-            sb_free_inodes: sb.free_inodes_count,
             shadow: None,
             pending_checkpoints: Vec::new(),
             journal_cursor: None,
