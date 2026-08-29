@@ -200,10 +200,17 @@ impl Mount {
         };
         let read = owner.unwrap();
         let returned = result.clone();
+        // Publish the one-shot result before removing the in-flight owner.
+        // In particular, an error has no clean-cache entry for a later reader
+        // to find: removing the map entry first opens a window in which that
+        // reader starts a duplicate device request while the original owner
+        // has not yet woken its waiters. Linux unlocks/completes the buffer
+        // before the lookup can be retried, so the failed request remains the
+        // single source of truth for every waiter already admitted to it.
+        read.complete(epoch, result);
         let mut s = self.state.lock();
         s.metadata_reads.remove(&lba);
         drop(s);
-        read.complete(epoch, result);
         if self.state.lock().metadata_epoch != epoch { continue; }
         break returned;
         }
@@ -281,6 +288,14 @@ mod tests {
         reads: AtomicU32,
     }
 
+    struct DelayedFailDisk {
+        inner: Arc<MemDisk<sync::TaskList>>,
+        target: AtomicU64,
+        failed: core::sync::atomic::AtomicBool,
+        started: core::sync::atomic::AtomicBool,
+        reads: AtomicU32,
+    }
+
     impl BlockDevice for FailOnceDisk {
         fn block_size(&self) -> u32 { self.inner.block_size() }
         fn capacity_blocks(&self) -> u64 { self.inner.capacity_blocks() }
@@ -289,6 +304,29 @@ mod tests {
                 && request.start_block == self.target.load(Ordering::Acquire)
             {
                 self.reads.fetch_add(1, Ordering::AcqRel);
+                if self.failed.swap(false, Ordering::AcqRel) {
+                    completion(request, Err(BlockError::Eio));
+                    return;
+                }
+            }
+            self.inner.submit(request, completion);
+        }
+        fn submit_sync(&self, request: &mut BlockRequest) -> block::KResult<()> {
+            self.inner.submit_sync(request)
+        }
+        fn flush(&self) -> block::KResult<()> { self.inner.flush() }
+    }
+
+    impl BlockDevice for DelayedFailDisk {
+        fn block_size(&self) -> u32 { self.inner.block_size() }
+        fn capacity_blocks(&self) -> u64 { self.inner.capacity_blocks() }
+        fn submit(&self, request: BlockRequest, completion: block::BlockCompletion) {
+            if request.op == BlockOp::Read
+                && request.start_block == self.target.load(Ordering::Acquire)
+            {
+                self.reads.fetch_add(1, Ordering::AcqRel);
+                self.started.store(true, Ordering::Release);
+                thread::sleep(std::time::Duration::from_millis(40));
                 if self.failed.swap(false, Ordering::AcqRel) {
                     completion(request, Err(BlockError::Eio));
                     return;
@@ -395,6 +433,39 @@ mod tests {
                 "a failed owner must not strand a waiter entry");
         assert!(mount.read_metadata_block(lba).is_ok(),
                 "a later reader must be able to retry after the failed completion");
+        assert_eq!(disk.reads.load(Ordering::Acquire), 2);
+    }
+
+    #[test]
+    fn concurrent_failed_metadata_read_shares_one_error_before_retry() {
+        let image = include_bytes!("../../tests/mini-j.img");
+        let sectors = image.len() as u64 / 512;
+        let inner = MemDisk::<sync::TaskList>::new(512, sectors);
+        let mut request = BlockRequest::new_write(0, sectors as u32, image.to_vec());
+        inner.submit_sync(&mut request).unwrap();
+        let disk = Arc::new(DelayedFailDisk {
+            inner,
+            target: AtomicU64::new(u64::MAX),
+            failed: core::sync::atomic::AtomicBool::new(false),
+            started: core::sync::atomic::AtomicBool::new(false),
+            reads: AtomicU32::new(0),
+        });
+        let mount = Arc::new(Mount::open(Arc::clone(&disk) as Arc<dyn BlockDevice>).unwrap());
+        let lba = mount.group_desc(0).unwrap().inode_table as u64;
+        mount.state.lock().metadata_cache.clear();
+        disk.target.store(lba * u64::from(mount.sb.block_size) / 512, Ordering::Release);
+        disk.failed.store(true, Ordering::Release);
+
+        let a = Arc::clone(&mount);
+        let left = thread::spawn(move || a.read_metadata_block(lba));
+        while !disk.started.load(Ordering::Acquire) { thread::yield_now(); }
+        let b = Arc::clone(&mount);
+        let right = thread::spawn(move || b.read_metadata_block(lba));
+        assert_eq!(left.join().unwrap(), Err(MountError::BlockIo));
+        assert_eq!(right.join().unwrap(), Err(MountError::BlockIo));
+        assert_eq!(disk.reads.load(Ordering::Acquire), 1,
+                   "a waiter must not start a second request before the failed owner publishes");
+        assert!(mount.read_metadata_block(lba).is_ok(), "the next reader retries after publication");
         assert_eq!(disk.reads.load(Ordering::Acquire), 2);
     }
 }
