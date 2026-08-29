@@ -300,3 +300,33 @@ fn partial_checkpoint_replays_all_home_blocks() {
     assert_eq!(reopened.read_meta_byte_range(first * bs as u64, bs).unwrap(), one);
     assert_eq!(reopened.read_meta_byte_range((first + 1) * bs as u64, bs).unwrap(), two);
 }
+
+#[test]
+fn before_publish_does_not_leave_replayable_metadata() {
+    let disk = CrashDisk::new(IMAGE, SECTOR);
+    let dev: Arc<dyn BlockDevice> = disk.clone();
+    let m = ext4::Mount::open(dev.clone()).unwrap();
+    let bs = m.sb.block_size as usize;
+    let jsb_sector = 32 * (bs as u64) / u64::from(SECTOR);
+    let target = 102u64;
+    let before = read_fs_block(&dev, target, bs);
+
+    disk.arm(jsb_sector, CrashPoint::BeforePublish);
+    let result = m.commit_metadata(alloc::vec![ext4::StagedBlock {
+        target_lba: target,
+        data: alloc::vec![0xC9; bs],
+    }]);
+    assert!(result.is_ok() || disk.crashed(),
+        "pre-publish power cut may surface as the interrupted transaction: {result:?}");
+    assert!(disk.crashed(), "power cut must occur at the publish boundary");
+
+    let crashed = disk.snapshot();
+    let off = target as usize * bs;
+    assert_eq!(&crashed[off..off + bs], &before[..],
+        "an unpublished transaction never reaches its home block");
+    drop(m);
+
+    let reopened = ext4::Mount::open(disk).unwrap();
+    assert_eq!(reopened.read_meta_byte_range(target * bs as u64, bs).unwrap(), before,
+        "remount does not replay an unpublished transaction");
+}
