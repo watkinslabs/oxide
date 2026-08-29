@@ -17,7 +17,7 @@ pub fn set_ctx_id_hook(f: fn() -> u64) {
 
 /// Unique-per-concurrent-context id for the transaction gate.
 #[cfg(target_os = "oxide-kernel")]
-fn ctx_id() -> u64 {
+pub(super) fn ctx_id() -> u64 {
     let raw = CTX_ID_HOOK.load(::core::sync::atomic::Ordering::Acquire);
     if raw == 0 { return 1; } // pre-registration: boot is single-threaded
     // SAFETY: `raw` is a `fn() -> u64` pointer stored only by set_ctx_id_hook.

@@ -8,7 +8,54 @@ use super::super::{GroupDesc, Mount, MountError};
 use super::super::MetadataRead;
 use super::super::io::read_byte_range;
 
+pub(crate) struct MetadataWriteGuard {
+    owner: Arc<MetadataRead>,
+}
+
+impl MetadataRead {
+    fn write_lock(self: Arc<Self>, id: u64) -> MetadataWriteGuard {
+        if self.write_owner.load(Ordering::Acquire) == id {
+            self.write_depth.fetch_add(1, Ordering::Relaxed);
+        } else if self.write_owner.compare_exchange(0, id, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+            self.write_depth.store(1, Ordering::Release);
+        } else {
+            // SAFETY: this waiter owns no metadata writer; release publishes
+            // owner=0 before waking all contenders to retry the predicate.
+            let _ = unsafe { sched::live::wait_event_uninterruptible(&self.write_wait, || {
+                if self.write_owner.load(Ordering::Acquire) == id {
+                    self.write_depth.fetch_add(1, Ordering::Relaxed);
+                    true
+                } else if self.write_owner.compare_exchange(0, id, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+                    self.write_depth.store(1, Ordering::Release);
+                    true
+                } else { false }
+            }) };
+        }
+        MetadataWriteGuard { owner: self }
+    }
+}
+
+impl Drop for MetadataWriteGuard {
+    fn drop(&mut self) {
+        if self.owner.write_depth.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.owner.write_owner.store(0, Ordering::Release);
+            self.owner.write_wait.wake_all();
+        }
+    }
+}
+
 impl Mount {
+    fn metadata_write_guards(&self, first: u64, count: u64) -> Vec<MetadataWriteGuard> {
+        let id = crate::mount::core::ctx_id();
+        let owners: Vec<Arc<MetadataRead>> = {
+            let mut s = self.state.lock();
+            (0..count).map(|i| {
+                Arc::clone(s.metadata_writers.entry(first + i).or_insert_with(|| Arc::new(MetadataRead::new())))
+            }).collect()
+        };
+        owners.into_iter().map(|owner| owner.write_lock(id)).collect()
+    }
+
     /// Drop clean metadata published before journal replay changed home blocks.
     /// Replay writes the device directly, so retaining those buffers would let
     /// post-recovery quota/inode reads observe pre-crash bytes.
@@ -55,6 +102,7 @@ impl Mount {
         let last_blk_excl = (last_byte + bs - 1) / bs;
         let n_blocks = (last_blk_excl - first_blk) as u32;
         let inner_off = (byte_off - first_blk * bs) as usize;
+        let _write_guards = self.metadata_write_guards(first_blk, u64::from(n_blocks));
         let mut full_buf: Vec<u8> = Vec::with_capacity((n_blocks as usize) * bs as usize);
         for i in 0..n_blocks as u64 {
             let lba = first_blk + i;
@@ -273,6 +321,37 @@ mod tests {
     use core::sync::atomic::{AtomicU64, AtomicU32};
     use std::sync::Mutex;
     use std::thread;
+
+    #[test]
+    fn metadata_writer_is_reentrant_for_one_transaction_handle() {
+        let read = Arc::new(MetadataRead::new());
+        let first = Arc::clone(&read).write_lock(41);
+        let second = Arc::clone(&read).write_lock(41);
+        assert_eq!(read.write_owner.load(Ordering::Acquire), 41);
+        assert_eq!(read.write_depth.load(Ordering::Acquire), 2);
+        drop(second);
+        assert_eq!(read.write_owner.load(Ordering::Acquire), 41);
+        assert_eq!(read.write_depth.load(Ordering::Acquire), 1);
+        drop(first);
+        assert_eq!(read.write_owner.load(Ordering::Acquire), 0);
+        assert_eq!(read.write_depth.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn metadata_writer_wakes_a_different_transaction_handle() {
+        let read = Arc::new(MetadataRead::new());
+        let first = Arc::clone(&read).write_lock(41);
+        let waiting = Arc::clone(&read);
+        let joined = thread::spawn(move || {
+            let _second = Arc::clone(&waiting).write_lock(42);
+            waiting.write_owner.load(Ordering::Acquire)
+        });
+        thread::sleep(std::time::Duration::from_millis(2));
+        assert_eq!(read.write_owner.load(Ordering::Acquire), 41);
+        drop(first);
+        assert_eq!(joined.join().unwrap(), 42);
+        assert_eq!(read.write_owner.load(Ordering::Acquire), 0);
+    }
 
     struct DelayedDisk {
         inner: Arc<MemDisk<sync::TaskList>>,
