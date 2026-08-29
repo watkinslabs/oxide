@@ -157,8 +157,10 @@ impl Mount {
             blk[19] = dir::DT_DIR;
             blk[20] = b'.';
             blk[21] = b'.';
-            let (_pf, ngen) = m.inode_flags_gen(new_ino)?;
-            crate::csum::stamp_dirent_tail(&m.sb, new_ino, ngen, &mut blk);
+            // `init_inode` returns the live inode that ext4_new_inode would
+            // hand to ext4_mkdir. Reuse its generation instead of rereading
+            // the inode-table slot we just initialized.
+            crate::csum::stamp_dirent_tail(&m.sb, new_ino, node.generation, &mut blk);
             m.append_block(new_ino, &blk)?;
             m.set_inode_size(new_ino, bs as u64)?;
             node.size = bs as u64;
