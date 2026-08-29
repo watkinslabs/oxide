@@ -28,9 +28,18 @@ pub fn largest_free_order(bitmap: &[u8], max_bits: u32) -> Option<u8> {
     Some((u32::BITS - 1 - best.leading_zeros()) as u8)
 }
 
+/// Return Linux mballoc's average-fragment xarray order for `len`.
+/// This mirrors `mb_avg_fragment_size_order()`: `fls(len) - 2`, with
+/// one-block fragments in order zero. # C: O(1)
+pub fn fragment_order_for_len(len: u32) -> u8 {
+    if len <= 1 { return 0; }
+    (u32::BITS - 1 - len.leading_zeros()).saturating_sub(1) as u8
+}
+
 /// Return Linux mballoc's order for the average free-fragment size.
-/// `bb_free / bb_fragments` is classified into `[2^order, 2^(order+1))`;
-/// groups with no free fragment have no entry. # C: O(max_bits)
+/// `bb_free / bb_fragments` is classified by the same `fls(len) - 2`
+/// function used by the reference implementation; groups with no free
+/// fragment have no entry. # C: O(max_bits)
 pub fn average_fragment_order(bitmap: &[u8], max_bits: u32) -> Option<u8> {
     let mut free = 0u32;
     let mut fragments = 0u32;
@@ -46,16 +55,7 @@ pub fn average_fragment_order(bitmap: &[u8], max_bits: u32) -> Option<u8> {
     }
     if fragments == 0 { return None; }
     let average = free / fragments;
-    let log2 = u32::BITS - 1 - average.leading_zeros();
-    Some(log2 as u8)
-}
-
-/// Smallest order whose lower bound can hold `blocks` blocks. This is the
-/// lookup key for Linux's average-fragment xarrays: a group in bucket `n`
-/// has an average fragment of at least `2^n`, so a request of three blocks
-/// must begin at bucket two rather than accepting bucket one.
-pub fn ceil_log2(blocks: u32) -> u8 {
-    if blocks <= 1 { 0 } else { (u32::BITS - (blocks - 1).leading_zeros()) as u8 }
+    Some(fragment_order_for_len(average))
 }
 
 /// Replace one group's membership in an order-indexed summary. This is the
@@ -156,20 +156,21 @@ mod tests {
 
     #[test]
     fn average_fragment_order_matches_linux_buckets() {
-        assert_eq!(average_fragment_order(&[0], 8), Some(3));
-        assert_eq!(average_fragment_order(&[0b1111_0000], 8), Some(2));
+        assert_eq!(average_fragment_order(&[0], 8), Some(2));
+        assert_eq!(average_fragment_order(&[0b1111_0000], 8), Some(1));
         assert_eq!(average_fragment_order(&[0b1010_1010], 8), Some(0));
         assert_eq!(average_fragment_order(&[0xff], 8), None);
     }
 
     #[test]
-    fn ceil_log2_is_the_first_sufficient_fragment_bucket() {
-        assert_eq!(ceil_log2(0), 0);
-        assert_eq!(ceil_log2(1), 0);
-        assert_eq!(ceil_log2(2), 1);
-        assert_eq!(ceil_log2(3), 2);
-        assert_eq!(ceil_log2(4), 2);
-        assert_eq!(ceil_log2(5), 3);
+    fn fragment_order_matches_reference_fls_minus_two() {
+        assert_eq!(fragment_order_for_len(0), 0);
+        assert_eq!(fragment_order_for_len(1), 0);
+        assert_eq!(fragment_order_for_len(2), 0);
+        assert_eq!(fragment_order_for_len(3), 0);
+        assert_eq!(fragment_order_for_len(4), 1);
+        assert_eq!(fragment_order_for_len(7), 1);
+        assert_eq!(fragment_order_for_len(8), 2);
     }
 
     #[test]

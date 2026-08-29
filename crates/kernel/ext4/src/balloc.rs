@@ -263,7 +263,7 @@ impl Mount {
             }
             return None;
         }
-        let wanted = scan::ceil_log2(count);
+        let wanted = scan::fragment_order_for_len(count);
         let s = self.state.lock();
         for (_, candidates) in s.group_avg_fragment_index.range(wanted..) {
             if let Some(group) = candidates.range(hint..groups).next()
