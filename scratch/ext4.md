@@ -12,9 +12,10 @@ No item closes on a parser change alone. Each closes only when the Linux-shaped 
 
 | ID | Priority | Current gap | Depends on | Exit evidence |
 |---|---|---|---|---|
+| E4-00 | DONE | The ext4 baseline and fixture ownership are frozen. The package suite passes in parallel, all workspace test targets build independently, and the real-root workloads use the caller-selected image without shared mutable fixtures. | baseline | 375 unit tests plus image suite; 177 isolated workspace test-target builds; serial real-root workload on both GNOME images |
 | E4-01 | DONE | Owned concurrent block reads are the ordinary ext4 file-read path. The focused concurrency harness, byte-for-byte real-image reads, serial 7/7 real-root workloads on both arches, target checks, and current boot smokes are green. | E4-02 | concurrent read stress, serial 7/7 real-root workload on both arches, byte-for-byte image validation, no boot regression |
 | E4-02 | DONE | Metadata/frame ownership has canonical shared reads, generation fencing, frame-identity retry, failed-owner retry, and first-completion retention. The synchronous metadata-read contract has no cancellation point: the owner waits for completion, publishes the result, then removes in-flight ownership. | baseline only | one cache/request ownership model, injected completion/error tests, no stale-frame publication; cancellation is not part of this synchronous contract |
-| E4-03 | high | Canonical size publication and short-fill retry handling are in place. The complete ignored real-root harness passes serially on both GNOME root images, including VFS journald writes and remount checks; repeated full GNOME/SMP boot evidence remains. | E4-02 | serial 7/7 real-root workload on both arches; provenance identifies the failing boundary; live GNOME read survives |
+| E4-03 | DONE | Canonical size publication and short-fill retry handling are in place. The complete ignored real-root harness passes serially on both GNOME root images, including VFS journald writes, merged-usr symlink walks, metadata churn, and remount checks; x86 full GNOME/Firefox and ARM SMP=2 graphical resolver checks pass. | E4-02 | serial 7/7 real-root workload on both arches; provenance identifies the failing boundary; live GNOME read survives |
 | E4-04 | DONE | Journal replay stale-cache `EIO` is fixed and quota replay coverage is present. The complete ignored real-root harness passes serially on both GNOME root images, including batched journald persistence, writeback, and remount checks. A real dconf database overwrite and a newly allocated dconf database both survive frame-cache writeback, journal flush, and remount. | E4-02, E4-05 | serial 7/7 real-root journal workload on both arches, crash/replay matrix, real dconf allocation/write/persistence |
 | E4-05 | DONE | Retained pending checkpoint images, coalescing, journal-space accounting, and clean-publication state are implemented. Journal commit records use a distinct device-write phase. The crash/replay matrix covers torn commit, descriptor, data, publish, and checkpoint boundaries; quota replay and write-amplification coverage are green. | E4-01, E4-02 | 18 journal image tests, 5 quota replay tests, 40-page writeback at 0.25 device writes/page, batched-create accounting, repeated boot/perf evidence |
 | E4-06 | DONE | Async journal commit option and JBD2 ordering owner are implemented and validated. Shared crash/replay coverage is tracked under E4-05. | E4-01, E4-05 | option validation and async commit ordering complete; shared crash/replay matrix under E4-05 |
@@ -57,15 +58,15 @@ The target is every useful ext4 mode that this kernel can support honestly. A mo
 3. Add a failure-injection matrix for metadata reads, data reads, owned completions, extent reads, allocation, journal writes, flushes, and remounts.
 4. Close or update stale ledger evidence only after the current commands reproduce it.
 
-Initial evidence: `TMPDIR=/home/nd/oxide/ext4-test-tmp cargo test -p ext4
---all-targets --no-fail-fast` passed all 375 ext4 unit tests plus the full image suite on 2026-08-28. This supersedes the
-old 62-failure count as a current result, but does not close fixture isolation:
-the command exercises the package in parallel only, not a workspace-wide run
-with every consumer of the shared generated images.
+Evidence: `TMPDIR=/home/nd/oxide/ext4-test-tmp cargo test -p ext4 --all-targets
+--no-fail-fast -- --test-threads=4` passed 375 unit tests plus the image suite;
+`tools/test-build-check.sh` passed all 177 workspace test-target builds in
+isolation; the complete ignored real-root workload passed serially on both
+GNOME images. The former 62-failure result is historical only.
 
-Exit: the controlled baseline is committed, every mutable fixture has one
-owner, E4-13 and E4-16 are resolved, and all later measurements identify the
-commit, image, architecture, SMP setting, and harness mode.
+Exit: COMPLETE. The controlled baseline is committed, every mutable fixture
+has one owner, E4-13 and E4-16 are resolved, and later measurements identify
+the commit, image, architecture, SMP setting, and harness mode.
 
 ### 4.2 E4-02: establish the ext4 I/O and cache ownership model
 
