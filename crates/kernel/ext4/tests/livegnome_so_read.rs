@@ -9,7 +9,8 @@ use std::cell::RefCell;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 
-use block::{BlockDevice, BlockRequest, BlockOp, KResult};
+use block::{BlockDevice, BlockRequest, BlockOp, KResult, MemDisk};
+use sync::TaskList;
 
 const IMG: &str = "/home/nd/oxide/oxide-images/output/live-gnome-x86_64-root.img";
 const LIB: &str = "/home/nd/oxide/oxide-images/work/root-live-gnome-x86_64/usr/lib64/libcap-ng.so.0.0.0";
@@ -130,6 +131,55 @@ fn configured_root_regular_file_readahead_populates_frames() {
     mapping.readahead(0, 16);
     assert!(mapping.mincore_page(0), "readahead must populate the first file page");
     assert!(mapping.mincore_page(4096), "readahead must populate a later file page");
+}
+
+/// A dconf database write must travel through the regular-file frame store,
+/// reach ext4 writeback and survive a remount of the same medium. This is the
+/// live mutable-database boundary that the read-only dconf test cannot cover.
+#[test]
+fn configured_root_dconf_write_survives_remount() {
+    let Some(path) = std::env::var_os("OXIDE_ROOTFS_IMG") else {
+        eprintln!("SKIP: set OXIDE_ROOTFS_IMG to a Fedora root image");
+        return;
+    };
+    let bytes = std::fs::read(&path).expect("read configured root image");
+    let cap = bytes.len() as u64 / SECTOR as u64;
+    let disk: Arc<MemDisk<TaskList>> = MemDisk::new(SECTOR, cap);
+    let mut req = BlockRequest {
+        op: BlockOp::Write, start_block: 0, len_blocks: cap as u32,
+        buffer: bytes, ..Default::default()
+    };
+    disk.submit_sync(&mut req).expect("seed writable root image");
+    common::boot_hosted_pmm();
+    let mount = ext4::rootfs::Ext4Mount::open(disk.clone()).expect("mount configured root image");
+    let state = mount.state();
+    let path = b"/etc/dconf/db/local";
+    let inode = state.lookup_inode_any(path).expect("resolve dconf database");
+    let before = state.read_file(path).expect("read dconf database");
+    assert!(!before.is_empty(), "dconf database must contain data");
+    let dentry = vfs::Dentry::new(None, String::from("local"), inode.clone());
+    let file = vfs::File::new(inode, dentry, vfs::OpenFlags::O_WRONLY);
+    let changed = before[0] ^ 0x01;
+    assert_eq!(file.write(&[changed]).expect("write dconf database"), 1);
+
+    let new_path = b"/etc/dconf/db/oxide-ext4-test";
+    let new_inode = state.create_at(new_path, 0o644).expect("allocate dconf database");
+    let new_name = String::from("oxide-ext4-test");
+    let new_dentry = vfs::Dentry::new(None, new_name, new_inode.clone());
+    let new_file = vfs::File::new(new_inode, new_dentry, vfs::OpenFlags::O_WRONLY);
+    let payload = b"GVariant\0oxide-ext4";
+    assert_eq!(new_file.write(payload).expect("write allocated dconf database"), payload.len());
+    ext4::rootfs::flush_all_dirty().expect("flush dconf database");
+    drop(file);
+    drop(new_file);
+    drop(mount);
+
+    let remount = ext4::rootfs::Ext4Mount::open(disk).expect("remount configured root image");
+    let after = remount.state().read_file(path).expect("read dconf after remount");
+    assert_eq!(after.len(), before.len(), "dconf size changed across remount");
+    assert_eq!(after[0], changed, "dconf write did not survive remount");
+    assert_eq!(remount.state().read_file(new_path).as_deref(), Some(&payload[..]),
+        "allocated dconf database did not survive remount");
 }
 
 #[test]
