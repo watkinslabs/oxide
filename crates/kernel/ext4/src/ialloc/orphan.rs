@@ -114,8 +114,12 @@ impl Mount {
             m.orphan_del(ino)?;
             if (u16::from_le_bytes([bytes[0x00], bytes[0x01]]) & S_IFMT) == S_IFDIR {
                 let group = (ino - 1) / m.sb.inodes_per_group;
-                { let mut state = m.state.lock(); gdt::adjust_used_dirs(&mut state.gdt_buf, group, &m.sb, -1)?; }
-                m.persist_gdt_slot_meta(group)?;
+                {
+                    // SAFETY: process context, with no spinlock held.
+                    let _gdt_guard = unsafe { m.gdt_lock.lock() };
+                    { let mut state = m.state.lock(); gdt::adjust_used_dirs(&mut state.gdt_buf, group, &m.sb, -1)?; }
+                    m.persist_gdt_slot_meta(group)?;
+                }
             }
             m.truncate_inode_for_deletion(ino)?;
             m.free_external_xattr_for_deletion(ino)?;

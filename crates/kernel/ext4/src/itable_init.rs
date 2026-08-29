@@ -64,6 +64,8 @@ impl Mount {
             if self.behaviour().barrier { let _ = self.dev.flush(); }
         }
         self.run_journaled(|m| {
+            // SAFETY: process context, with no spinlock held.
+            let _gdt_guard = unsafe { m.gdt_lock.lock() };
             { let mut s = m.state.lock(); gdt::set_inode_zeroed(&mut s.gdt_buf, n, &m.sb); }
             m.persist_gdt_slot_meta(n)?;
             m.flush_pending_tx()

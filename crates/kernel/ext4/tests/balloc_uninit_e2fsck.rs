@@ -233,6 +233,49 @@ fn concurrent_churn_keeps_fsck_clean() {
     assert!(ok1, "POST concurrent churn image is CORRUPT (SMP ext4 race reproduced):\n{log1}");
 }
 
+/// The normal concurrent case above gives every operation its own transaction.
+/// This is the JBD2 case that matters for the handle path: several contexts
+/// join one running transaction while touching different allocation groups.
+/// The mount must commit one coherent GDT/bitmap/superblock image.
+#[test]
+fn concurrent_batched_handles_keep_fsck_clean() {
+    if File::open(CLEAN).is_err() { eprintln!("SKIP: no clean image"); return; }
+    if Command::new("e2fsck").arg("-V").output().is_err() { eprintln!("SKIP: no e2fsck"); return; }
+    let tmp = TempImage::new_large("balloc-batched-concurrent");
+    std::fs::copy(CLEAN, &tmp).expect("copy image");
+    let (ok0, log0) = e2fsck_clean(&tmp);
+    assert!(ok0, "PRE image dirty:\n{log0}");
+    {
+        let f = OpenOptions::new().read(true).write(true).open(&tmp).unwrap();
+        let cap = f.metadata().unwrap().len() / SECTOR as u64;
+        let disk: Arc<dyn BlockDevice> = Arc::new(RwFileDisk { f: Mutex::new(f), cap });
+        let m = Arc::new(ext4::Mount::open(disk).expect("mount"));
+        let mut dirs = std::vec::Vec::new();
+        for t in 0..4u32 {
+            dirs.push(m.create_dir(2, std::format!("b{t}").as_bytes(), 0o755, 0, 0).expect("mkdir"));
+        }
+        m.begin_batch();
+        let mut hs = std::vec::Vec::new();
+        for (t, dir) in dirs.into_iter().enumerate() {
+            let m = m.clone();
+            hs.push(std::thread::spawn(move || {
+                let payload = std::vec![t as u8; 4096];
+                for i in 0..40u32 {
+                    let name = std::format!("f{i:03}");
+                    let ino = m.create_file(dir, name.as_bytes(), 0o644, 0, 0).expect("create");
+                    let created = m.read_inode(ino).expect("read created inode");
+                    assert_ne!(created.mode, 0, "created inode {ino} is empty");
+                    m.write_at(ino, 0, &payload).expect("write");
+                }
+            }));
+        }
+        for h in hs { h.join().expect("batched worker"); }
+        m.commit_batch().expect("commit batch");
+    }
+    let (ok1, log1) = e2fsck_clean(&tmp);
+    assert!(ok1, "POST concurrent batched image is CORRUPT:\n{log1}");
+}
+
 #[test]
 fn arm_hwdb_rewrite_and_replacement_keep_fsck_clean() {
     let root = configured_root(ARM_ROOT);

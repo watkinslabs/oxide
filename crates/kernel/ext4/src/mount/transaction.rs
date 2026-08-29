@@ -129,12 +129,9 @@ impl Mount {
     }
 
     /// Run one handle in the running batch while retaining the transaction
-    /// gate across the operation body. Shadow bytes, allocator mirrors,
-    /// GDT/SB counters, and rollback frames form one coupled ownership unit;
-    /// per-LBA locks cannot make concurrent updates to that unit atomic.
-    /// Releasing the gate here allowed live root handles to publish a bitmap/
-    /// GDT combination that belonged to neither operation. This preserves
-    /// cross-operation journal batching with the safe running-owner boundary.
+    /// gate across the operation body. The shadow, allocator mirrors, and
+    /// rollback frame are one coupled ownership unit until their buffer-head
+    /// equivalent is complete.
     /// # C: O(1) admission/finalization + F
     fn run_batch_handle<R, F>(&self, f: F) -> Result<R, MountError>
     where F: FnOnce(&Self) -> Result<R, MountError>
@@ -243,6 +240,14 @@ impl Mount {
                         }
                         self.cache_committed(&staged);
                         let mut s = self.state.lock();
+                        for buffer in s.metadata_buffers.values() {
+                            buffer.transaction_owner.store(0, ::core::sync::atomic::Ordering::Release);
+                        }
+                        s.block_bitmap_cache.clear();
+                        s.group_free_order.clear();
+                        s.group_free_order_index.clear();
+                        s.group_avg_fragment_order.clear();
+                        s.group_avg_fragment_index.clear();
                         s.committed_generation = s.running_generation;
                         s.running_generation = 0;
                     }

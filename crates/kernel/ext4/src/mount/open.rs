@@ -127,6 +127,7 @@ impl Mount {
         };
         let err = sync::Spinlock::new(crate::errstat::ErrRecord::parse(&sb_bytes));
         let mut m = Self { dev, self_ref: sync::Spinlock::new(alloc::sync::Weak::new()), sb, system_zones, state: sync::Spinlock::new(state), group_locks: sync::Spinlock::new(alloc::collections::BTreeMap::new()), quota_sb: sync::Spinlock::new(alloc::sync::Weak::new()), err,
+                       gdt_lock: sched::live::Mutex::new(()),
                        #[cfg(not(target_os = "oxide-kernel"))]
                        faults: super::super::faults::HostedFaults::new(),
                        txn_owner: ::core::sync::atomic::AtomicU64::new(0),
