@@ -137,7 +137,7 @@ impl Mount {
         uid: u32,
         gid: u32,
     ) -> Result<(u32, inode::Inode), MountError> {
-        self.create_dir_inode_inner(parent_ino, name, mode_perm, uid, gid, None)
+        self.create_dir_inode_inner(parent_ino, name, mode_perm, uid, gid, None, None)
     }
 
     /// Create a directory and persist its inherited ACLs before publishing the
@@ -151,7 +151,22 @@ impl Mount {
         gid: u32,
         acl: &crate::acl::Inherited,
     ) -> Result<(u32, inode::Inode), MountError> {
-        self.create_dir_inode_inner(parent_ino, name, mode_perm, uid, gid, Some(acl))
+        self.create_dir_inode_inner(parent_ino, name, mode_perm, uid, gid, Some(acl), None)
+    }
+
+    /// VFS mkdir variant using the locked parent inode image for inheritance
+    /// and directory insertion. The parent link-count update still uses the
+    /// inode-byte owner below, because that is the serialized on-disk field.
+    pub(crate) fn create_dir_inode_with_acl_parent(
+        &self,
+        parent: &inode::Inode,
+        name: &[u8],
+        mode_perm: u16,
+        uid: u32,
+        gid: u32,
+        acl: &crate::acl::Inherited,
+    ) -> Result<(u32, inode::Inode), MountError> {
+        self.create_dir_inode_inner(parent.ino, name, mode_perm, uid, gid, Some(acl), Some(parent))
     }
 
     fn create_dir_inode_inner(
@@ -162,12 +177,18 @@ impl Mount {
         uid: u32,
         gid: u32,
         acl: Option<&crate::acl::Inherited>,
+        parent: Option<&inode::Inode>,
     ) -> Result<(u32, inode::Inode), MountError> {
         self.create_op(|m| {
             let bs = m.sb.block_size as usize;
             let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
             let new_ino = m.alloc_inode_in_transaction(parent_group)?;
-            let mut node = m.init_inode(parent_ino, new_ino, S_IFDIR | (mode_perm & 0x0FFF), 2, uid, gid)?;
+            let mut node = match parent {
+                Some(parent) => m.init_inode_with_parent(parent, new_ino,
+                    S_IFDIR | (mode_perm & 0x0FFF), 2, uid, gid)?,
+                None => m.init_inode(parent_ino, new_ino,
+                    S_IFDIR | (mode_perm & 0x0FFF), 2, uid, gid)?,
+            };
             let usable = crate::csum::dir_usable_len(&m.sb, bs);
             let mut blk = alloc::vec![0u8; bs];
             blk[0..4].copy_from_slice(&new_ino.to_le_bytes());
@@ -189,7 +210,10 @@ impl Mount {
             m.set_inode_size(new_ino, bs as u64)?;
             node.size = bs as u64;
             if let Some(acl) = acl { acl.store(m, new_ino)?; }
-            m.dir_link_in_transaction(parent_ino, name, new_ino, dir::DT_DIR)?;
+            match parent {
+                Some(parent) => m.dir_link_in_transaction_with_inode(parent, name, new_ino, dir::DT_DIR)?,
+                None => m.dir_link_in_transaction(parent_ino, name, new_ino, dir::DT_DIR)?,
+            }
             let ng = (new_ino - 1) / m.sb.inodes_per_group;
             // SAFETY: process context, with no spinlock held.
             let _gdt_guard = unsafe { m.gdt_lock.lock() };
@@ -221,10 +245,43 @@ impl Mount {
         if target.is_empty() || target.len() > bs {
             return Err(MountError::Inode(inode::InodeError::BadLen));
         }
+        self.create_symlink_inner(None, parent_ino, name, target, uid, gid)
+    }
+
+    /// VFS symlink variant using the caller's locked parent inode image for
+    /// inheritance and directory insertion.
+    pub(crate) fn create_symlink_with_parent(
+        &self,
+        parent: &inode::Inode,
+        name: &[u8],
+        target: &[u8],
+        uid: u32,
+        gid: u32,
+    ) -> Result<u32, MountError> {
+        let bs = self.sb.block_size as usize;
+        if target.is_empty() || target.len() > bs {
+            return Err(MountError::Inode(inode::InodeError::BadLen));
+        }
+        self.create_symlink_inner(Some(parent), parent.ino, name, target, uid, gid)
+    }
+
+    fn create_symlink_inner(
+        &self,
+        parent: Option<&inode::Inode>,
+        parent_ino: u32,
+        name: &[u8],
+        target: &[u8],
+        uid: u32,
+        gid: u32,
+    ) -> Result<u32, MountError> {
+        let bs = self.sb.block_size as usize;
         self.create_op(|m| {
             let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
             let new_ino = m.alloc_inode_in_transaction(parent_group)?;
-            m.init_inode(parent_ino, new_ino, S_IFLNK | 0o777, 1, uid, gid)?;
+            match parent {
+                Some(parent) => m.init_inode_with_parent(parent, new_ino, S_IFLNK | 0o777, 1, uid, gid)?,
+                None => m.init_inode(parent_ino, new_ino, S_IFLNK | 0o777, 1, uid, gid)?,
+            };
             if target.len() <= I_BLOCK_LEN {
                 let (mut bytes, _off) = m.read_inode_bytes(new_ino)?;
                 for b in &mut bytes[0x28..0x28 + I_BLOCK_LEN] {
@@ -245,7 +302,10 @@ impl Mount {
                 m.append_block(new_ino, &buf)?;
                 m.set_inode_size(new_ino, target.len() as u64)?;
             }
-            m.dir_link_in_transaction(parent_ino, name, new_ino, dir::DT_LNK)?;
+            match parent {
+                Some(parent) => m.dir_link_in_transaction_with_inode(parent, name, new_ino, dir::DT_LNK)?,
+                None => m.dir_link_in_transaction(parent_ino, name, new_ino, dir::DT_LNK)?,
+            }
             Ok(new_ino)
         })
     }
@@ -283,6 +343,22 @@ impl Mount {
         self.create_mknod_inner(parent_ino, name, mode, rdev, uid, gid, Some(acl))
     }
 
+    /// VFS mknod variant using the caller's locked parent inode image for
+    /// inheritance and directory insertion.
+    pub(crate) fn create_mknod_with_acl_parent(
+        &self,
+        parent: &inode::Inode,
+        name: &[u8],
+        mode: u16,
+        rdev: u32,
+        uid: u32,
+        gid: u32,
+        acl: &crate::acl::Inherited,
+    ) -> Result<u32, MountError> {
+        self.create_op(|m| m.create_mknod_in_transaction_with_parent(
+            Some(parent), parent.ino, name, mode, rdev, uid, gid, Some(acl)))
+    }
+
     fn create_mknod_inner(
         &self,
         parent_ino: u32,
@@ -300,6 +376,20 @@ impl Mount {
     /// # C: O(parent entries) + 1 inode allocation + 2 block I/Os
     pub(crate) fn create_mknod_in_transaction(
         &self, parent_ino: u32, name: &[u8], mode: u16, rdev: u32, uid: u32, gid: u32,
+        acl: Option<&crate::acl::Inherited>,
+    ) -> Result<u32, MountError> {
+        self.create_mknod_in_transaction_with_parent(None, parent_ino, name, mode, rdev, uid, gid, acl)
+    }
+
+    fn create_mknod_in_transaction_with_parent(
+        &self,
+        parent: Option<&inode::Inode>,
+        parent_ino: u32,
+        name: &[u8],
+        mode: u16,
+        rdev: u32,
+        uid: u32,
+        gid: u32,
         acl: Option<&crate::acl::Inherited>,
     ) -> Result<u32, MountError> {
         let ftype = mode & S_IFMT;
@@ -320,13 +410,19 @@ impl Mount {
                 bytes[0x80..0x82].copy_from_slice(&32u16.to_le_bytes());
             }
             super::stamp_new_inode_generation(&mut bytes);
-            self.inherit_inode_flags_project(parent_ino, mode, &mut bytes)?;
+            match parent {
+                Some(parent) => self.inherit_inode_flags_project_from(parent, mode, &mut bytes)?,
+                None => self.inherit_inode_flags_project(parent_ino, mode, &mut bytes)?,
+            }
             if matches!(ftype, S_IFCHR | S_IFBLK) {
                 bytes[0x28..0x2C].copy_from_slice(&rdev.to_le_bytes());
             }
             self.write_inode_bytes(new_ino, &bytes)?;
             if let Some(acl) = acl { acl.store(self, new_ino)?; }
-            self.dir_link_in_transaction(parent_ino, name, new_ino, dirent_dt)?;
+            match parent {
+                Some(parent) => self.dir_link_in_transaction_with_inode(parent, name, new_ino, dirent_dt)?,
+                None => self.dir_link_in_transaction(parent_ino, name, new_ino, dirent_dt)?,
+            }
             Ok(new_ino)
     }
 }
