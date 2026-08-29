@@ -51,6 +51,9 @@ pub enum CrashPoint {
     /// The first 1024-byte journal block of the descriptor/data body reaches
     /// media, then power fails before the rest of the request.
     AfterFirstDescriptorBlock,
+    /// The descriptor and first journal data block reach media, then power
+    /// fails before the rest of the body request.
+    AfterFirstJournalDataBlock,
 }
 
 pub struct CrashDisk {
@@ -71,6 +74,7 @@ const POINT_BEFORE_COMMIT: u64 = 5;
 const POINT_AFTER_COMMIT: u64 = 6;
 const POINT_BEFORE_DESCRIPTOR: u64 = 7;
 const POINT_AFTER_FIRST_DESCRIPTOR_BLOCK: u64 = 8;
+const POINT_AFTER_FIRST_JOURNAL_DATA_BLOCK: u64 = 9;
 /// Watch-only: count publishes, never cut power.
 const POINT_NEVER: u64 = 2;
 
@@ -106,6 +110,7 @@ impl CrashDisk {
             CrashPoint::AfterCommit => POINT_AFTER_COMMIT,
             CrashPoint::BeforeDescriptor => POINT_BEFORE_DESCRIPTOR,
             CrashPoint::AfterFirstDescriptorBlock => POINT_AFTER_FIRST_DESCRIPTOR_BLOCK,
+            CrashPoint::AfterFirstJournalDataBlock => POINT_AFTER_FIRST_JOURNAL_DATA_BLOCK,
         }, Ordering::Release);
         self.jsb_sector.store(jsb_sector, Ordering::Release);
     }
@@ -169,17 +174,17 @@ impl CrashDisk {
             .unwrap_or(false)
     }
 
-    fn write_first_journal_block(&self, req: &BlockRequest) -> KResult<()> {
-        const JOURNAL_BLOCK_SECTORS: usize = 2;
+    fn write_journal_prefix(&self, req: &BlockRequest, journal_blocks: usize) -> KResult<()> {
         const SECTOR_BYTES: usize = 512;
-        if req.buffer.len() < JOURNAL_BLOCK_SECTORS * SECTOR_BYTES {
+        let sectors = journal_blocks * 2;
+        if req.buffer.len() < sectors * SECTOR_BYTES {
             return Ok(());
         }
         let mut first = BlockRequest {
             op: BlockOp::Write,
             start_block: req.start_block,
-            len_blocks: JOURNAL_BLOCK_SECTORS as u32,
-            buffer: req.buffer[..JOURNAL_BLOCK_SECTORS * SECTOR_BYTES].to_vec(),
+            len_blocks: sectors as u32,
+            buffer: req.buffer[..sectors * SECTOR_BYTES].to_vec(),
             ..Default::default()
         };
         self.inner.submit_sync(&mut first)
@@ -204,7 +209,14 @@ impl BlockDevice for CrashDisk {
         if self.point.load(Ordering::Acquire) == POINT_AFTER_FIRST_DESCRIPTOR_BLOCK
             && self.is_descriptor_record(req)
         {
-            let r = self.write_first_journal_block(req);
+            let r = self.write_journal_prefix(req, 1);
+            self.crashed.store(true, Ordering::Release);
+            return r;
+        }
+        if self.point.load(Ordering::Acquire) == POINT_AFTER_FIRST_JOURNAL_DATA_BLOCK
+            && self.is_descriptor_record(req)
+        {
+            let r = self.write_journal_prefix(req, 2);
             self.crashed.store(true, Ordering::Release);
             return r;
         }
