@@ -19,7 +19,7 @@ use crate::jbd2::{
     JournalLogReader, ReplayError, ReplayStats,
     replay,
     StagedBlock, LogCursor, TransactionError,
-    transaction_block_count_for, emit_transaction_for,
+    transaction_block_count_for,
 };
 use crate::jbd2::checksum::ChecksumMode;
 
@@ -220,26 +220,26 @@ impl Mount {
         let journal_started_ns = crate::fsync_latency::now_ns();
         let mut body = JournalBodyWriter::new(&log, bs, self.opts().behaviour.journal_async_commit);
         let async_commit = self.opts().behaviour.journal_async_commit;
-        let emit_result = if async_commit {
-            crate::jbd2::emit_transaction_split(seq, &staged, bs, bit64, &jsb.uuid, checksum_mode,
-                |is_commit, block| {
-                    if is_commit {
-                        // All body runs have been posted before the commit
-                        // record is posted, but neither side is waited yet.
-                        body.flush()?;
-                        let at = cursor.reserve(1);
-                        body.submit(at, block)
-                    } else {
-                        let at = cursor.reserve(1);
-                        body.push(at, block)
-                    }
-                })
-        } else {
-            emit_transaction_for(seq, &staged, bs, bit64, &jsb.uuid, checksum_mode, |block| {
+        // Keep the commit record in its own device write. Linux's JBD2
+        // commit phase is distinct from the descriptor/data body even when
+        // the body itself was coalesced into a large BIO. Async commit still
+        // posts this record before waiting for the body; synchronous commit
+        // waits for the body first via JournalBodyWriter::flush.
+        let emit_result = crate::jbd2::emit_transaction_split(
+            seq, &staged, bs, bit64, &jsb.uuid, checksum_mode,
+            |is_commit, block| {
                 let at = cursor.reserve(1);
-                body.push(at, block)
-            })
-        };
+                if is_commit {
+                    // All body runs have been posted before the commit
+                    // record is posted, but neither side is waited yet.
+                    body.flush()?;
+                    if async_commit { body.submit(at, block) }
+                    else { body.push(at, block) }
+                } else {
+                    body.push(at, block)
+                }
+            },
+        );
         emit_result
         .map_err(|e| match e {
             TransactionError::Emit(crate::jbd2::EmitError::BlockNumber) => MountError::BadBlock,
