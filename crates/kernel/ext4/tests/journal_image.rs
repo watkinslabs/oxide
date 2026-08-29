@@ -330,3 +330,53 @@ fn before_publish_does_not_leave_replayable_metadata() {
     assert_eq!(reopened.read_meta_byte_range(target * bs as u64, bs).unwrap(), before,
         "remount does not replay an unpublished transaction");
 }
+
+#[test]
+fn before_commit_does_not_publish_an_uncommitted_body() {
+    let disk = CrashDisk::new(IMAGE, SECTOR);
+    let dev: Arc<dyn BlockDevice> = disk.clone();
+    let m = ext4::Mount::open(dev.clone()).unwrap();
+    let bs = m.sb.block_size as usize;
+    let jsb_sector = 32 * (bs as u64) / u64::from(SECTOR);
+    let target = 103u64;
+    let before = read_fs_block(&dev, target, bs);
+
+    disk.arm(jsb_sector, CrashPoint::BeforeCommit);
+    let result = m.commit_metadata(alloc::vec![ext4::StagedBlock {
+        target_lba: target,
+        data: alloc::vec![0xD7; bs],
+    }]);
+    assert!(result.is_ok() || disk.crashed(),
+        "commit interruption may surface as the interrupted transaction: {result:?}");
+    assert!(disk.crashed(), "power cut must occur at the commit request");
+    drop(m);
+
+    let reopened = ext4::Mount::open(disk).unwrap();
+    assert_eq!(reopened.read_meta_byte_range(target * bs as u64, bs).unwrap(), before,
+        "a body without a durable commit record is not replayable");
+}
+
+#[test]
+fn after_commit_before_publish_is_not_replayed() {
+    let disk = CrashDisk::new(IMAGE, SECTOR);
+    let dev: Arc<dyn BlockDevice> = disk.clone();
+    let m = ext4::Mount::open(dev.clone()).unwrap();
+    let bs = m.sb.block_size as usize;
+    let jsb_sector = 32 * (bs as u64) / u64::from(SECTOR);
+    let target = 104u64;
+    let before = read_fs_block(&dev, target, bs);
+
+    disk.arm(jsb_sector, CrashPoint::AfterCommit);
+    let result = m.commit_metadata(alloc::vec![ext4::StagedBlock {
+        target_lba: target,
+        data: alloc::vec![0xE8; bs],
+    }]);
+    assert!(result.is_ok() || disk.crashed(),
+        "commit interruption may surface as the interrupted transaction: {result:?}");
+    assert!(disk.crashed(), "power cut must occur after the commit request");
+    drop(m);
+
+    let reopened = ext4::Mount::open(disk).unwrap();
+    assert_eq!(reopened.read_meta_byte_range(target * bs as u64, bs).unwrap(), before,
+        "a committed but unpublished transaction is not replayable");
+}
