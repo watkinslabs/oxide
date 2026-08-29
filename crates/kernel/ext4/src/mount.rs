@@ -93,22 +93,24 @@ pub enum MountError {
     Quota(vfs::VfsError),
 }
 
-/// One owner for a cold metadata read.  The request buffer and result belong
-/// to this object until publication; other readers wait on the same result
-/// instead of issuing duplicate device I/O or observing a half-published
-/// cache entry.  This is the small equivalent of Linux's locked buffer head.
-pub(crate) struct MetadataRead {
+/// One persistent owner for a filesystem metadata block.  The clean bytes
+/// live in `metadata_cache`; this object is the synchronization identity, just
+/// as Linux keeps lock/completion and JBD2 membership on the buffer head
+/// rather than creating separate read and write owners.
+pub(crate) struct MetadataBuffer {
     pub(crate) done: AtomicBool,
     pub(crate) result: Spinlock<Option<(u64, Result<Arc<Vec<u8>>, MountError>)>, SuperblockLockClass>,
     pub(crate) wait: sched::live::WaitList,
+    pub(crate) read_active: ::core::sync::atomic::AtomicBool,
     pub(crate) write_owner: ::core::sync::atomic::AtomicU64,
     pub(crate) write_depth: ::core::sync::atomic::AtomicU32,
     pub(crate) write_wait: sched::live::WaitList,
 }
 
-impl MetadataRead {
+impl MetadataBuffer {
     pub(crate) fn new() -> Self {
         Self { done: AtomicBool::new(false), result: Spinlock::new(None), wait: sched::live::WaitList::new(),
+               read_active: ::core::sync::atomic::AtomicBool::new(false),
                write_owner: ::core::sync::atomic::AtomicU64::new(0),
                write_depth: ::core::sync::atomic::AtomicU32::new(0),
                write_wait: sched::live::WaitList::new() }
@@ -174,11 +176,10 @@ pub struct MountState {
     /// Monotonic invalidation generation for clean metadata bytes. An
     /// in-flight read may only publish into the generation it started in.
     pub(crate) metadata_epoch: u64,
-    /// One in-flight owner per cold metadata LBA. Waiters share its completed
-    /// result, matching the reference buffer-cache lock/completion protocol.
-    pub(crate) metadata_reads: alloc::collections::BTreeMap<u64, alloc::sync::Arc<MetadataRead>>,
-    /// Per-LBA read-modify-write owners for the running transaction.
-    pub(crate) metadata_writers: alloc::collections::BTreeMap<u64, alloc::sync::Arc<MetadataRead>>,
+    /// One persistent buffer identity per metadata LBA. Read completion and
+    /// journal write ownership both use this object, matching Linux's
+    /// buffer_head/JBD2 ownership boundary.
+    pub(crate) metadata_buffers: alloc::collections::BTreeMap<u64, alloc::sync::Arc<MetadataBuffer>>,
     /// Inode-table windows already queued for asynchronous warming. The
     /// metadata cache remains the byte owner; this set only suppresses
     /// duplicate work items until their owner completes.

@@ -5,14 +5,14 @@ use crate::gdt;
 use crate::jbd2::StagedBlock;
 use super::gdt_byte_offset_for;
 use super::super::{GroupDesc, Mount, MountError};
-use super::super::MetadataRead;
+use super::super::MetadataBuffer;
 use super::super::io::read_byte_range;
 
 pub(crate) struct MetadataWriteGuard {
-    owner: Arc<MetadataRead>,
+    owner: Arc<MetadataBuffer>,
 }
 
-impl MetadataRead {
+impl MetadataBuffer {
     fn write_lock(self: Arc<Self>, id: u64) -> MetadataWriteGuard {
         if self.write_owner.load(Ordering::Acquire) == id {
             self.write_depth.fetch_add(1, Ordering::Relaxed);
@@ -47,10 +47,10 @@ impl Drop for MetadataWriteGuard {
 impl Mount {
     fn metadata_write_guards(&self, first: u64, count: u64) -> Vec<MetadataWriteGuard> {
         let id = crate::mount::core::ctx_id();
-        let owners: Vec<Arc<MetadataRead>> = {
+        let owners: Vec<Arc<MetadataBuffer>> = {
             let mut s = self.state.lock();
             (0..count).map(|i| {
-                Arc::clone(s.metadata_writers.entry(first + i).or_insert_with(|| Arc::new(MetadataRead::new())))
+                Arc::clone(s.metadata_buffers.entry(first + i).or_insert_with(|| Arc::new(MetadataBuffer::new())))
             }).collect()
         };
         owners.into_iter().map(|owner| owner.write_lock(id)).collect()
@@ -58,10 +58,10 @@ impl Mount {
 
     pub(crate) fn metadata_write_guards_for_lbas(&self, lbas: &[u64]) -> Vec<MetadataWriteGuard> {
         let id = crate::mount::core::ctx_id();
-        let owners: Vec<Arc<MetadataRead>> = {
+        let owners: Vec<Arc<MetadataBuffer>> = {
             let mut s = self.state.lock();
             lbas.iter().map(|lba| {
-                Arc::clone(s.metadata_writers.entry(*lba).or_insert_with(|| Arc::new(MetadataRead::new())))
+                Arc::clone(s.metadata_buffers.entry(*lba).or_insert_with(|| Arc::new(MetadataBuffer::new())))
             }).collect()
         };
         owners.into_iter().map(|owner| owner.write_lock(id)).collect()
@@ -231,11 +231,15 @@ impl Mount {
                 None => None,
             };
             if cached.is_some() { (cached, None, false, s.metadata_epoch) }
-            else if let Some(read) = s.metadata_reads.get(&lba).cloned() { (None, Some(read), false, s.metadata_epoch) }
             else {
-                let read = Arc::new(MetadataRead::new());
-                s.metadata_reads.insert(lba, Arc::clone(&read));
-                (None, Some(read), true, s.metadata_epoch)
+                let buffer = Arc::clone(s.metadata_buffers.entry(lba)
+                    .or_insert_with(|| Arc::new(MetadataBuffer::new())));
+                let created = !buffer.read_active.swap(true, Ordering::AcqRel);
+                if created {
+                    buffer.done.store(false, Ordering::Relaxed);
+                    *buffer.result.lock() = None;
+                }
+                (None, Some(buffer), created, s.metadata_epoch)
             }
         };
         if let Some(buf) = cached { return Ok(buf); }
@@ -258,19 +262,17 @@ impl Mount {
                 Ok(buf)
             }
         };
-        let read = owner.unwrap();
+        let read = owner.as_ref().unwrap();
         let returned = result.clone();
-        // Publish the one-shot result before removing the in-flight owner.
+        // Publish the result before releasing the buffer's read ownership.
         // In particular, an error has no clean-cache entry for a later reader
         // to find: removing the map entry first opens a window in which that
         // reader starts a duplicate device request while the original owner
-        // has not yet woken its waiters. Linux unlocks/completes the buffer
+        // has not yet woken its waiters. Linux completes/unlocks the buffer
         // before the lookup can be retried, so the failed request remains the
-        // single source of truth for every waiter already admitted to it.
+        // source of truth for every waiter already admitted to it.
         read.complete(epoch, result);
-        let mut s = self.state.lock();
-        s.metadata_reads.remove(&lba);
-        drop(s);
+        owner.as_ref().unwrap().read_active.store(false, Ordering::Release);
         if self.state.lock().metadata_epoch != epoch { continue; }
         break returned;
         }
@@ -290,7 +292,7 @@ impl Mount {
 
 }
 
-fn wait_metadata_read(read: Arc<MetadataRead>) -> (u64, Result<Arc<Vec<u8>>, MountError>) {
+fn wait_metadata_read(read: Arc<MetadataBuffer>) -> (u64, Result<Arc<Vec<u8>>, MountError>) {
     #[cfg(target_os = "oxide-kernel")]
     if sched::current().is_some() && !sched::preempt::in_atomic() {
         let _ = unsafe { sched::live::wait_event_uninterruptible(&read.wait, || {
@@ -336,7 +338,7 @@ mod tests {
 
     #[test]
     fn metadata_writer_is_reentrant_for_one_transaction_handle() {
-        let read = Arc::new(MetadataRead::new());
+        let read = Arc::new(MetadataBuffer::new());
         let first = Arc::clone(&read).write_lock(41);
         let second = Arc::clone(&read).write_lock(41);
         assert_eq!(read.write_owner.load(Ordering::Acquire), 41);
@@ -351,7 +353,7 @@ mod tests {
 
     #[test]
     fn metadata_writer_wakes_a_different_transaction_handle() {
-        let read = Arc::new(MetadataRead::new());
+        let read = Arc::new(MetadataBuffer::new());
         let first = Arc::clone(&read).write_lock(41);
         let waiting = Arc::clone(&read);
         let joined = thread::spawn(move || {
@@ -450,7 +452,7 @@ mod tests {
 
     #[test]
     fn metadata_read_publishes_error_after_done() {
-        let read = Arc::new(MetadataRead::new());
+        let read = Arc::new(MetadataBuffer::new());
         read.complete(7, Err(MountError::BlockIo));
         assert!(read.done.load(Ordering::Acquire));
         assert_eq!(read.result.lock().as_ref().cloned(), Some((7, Err(MountError::BlockIo))));
@@ -458,7 +460,7 @@ mod tests {
 
     #[test]
     fn metadata_read_publishes_owned_buffer_after_done() {
-        let read = Arc::new(MetadataRead::new());
+        let read = Arc::new(MetadataBuffer::new());
         let bytes = Arc::new(vec![0x5a; 4096]);
         read.complete(9, Ok(Arc::clone(&bytes)));
         assert!(read.done.load(Ordering::Acquire));
@@ -467,7 +469,7 @@ mod tests {
 
     #[test]
     fn duplicate_metadata_completion_preserves_the_first_result() {
-        let read = Arc::new(MetadataRead::new());
+        let read = Arc::new(MetadataBuffer::new());
         let bytes = Arc::new(vec![0x5a; 4096]);
         read.complete(9, Ok(Arc::clone(&bytes)));
         read.complete(10, Err(MountError::BlockIo));
@@ -520,8 +522,9 @@ mod tests {
         disk.failed.store(true, Ordering::Release);
 
         assert_eq!(mount.read_metadata_block(lba), Err(MountError::BlockIo));
-        assert!(mount.state.lock().metadata_reads.is_empty(),
-                "a failed owner must not strand a waiter entry");
+        let buffer = mount.state.lock().metadata_buffers.get(&lba).cloned().unwrap();
+        assert!(!buffer.read_active.load(Ordering::Acquire),
+                "a failed owner must leave the buffer available for retry");
         assert!(mount.read_metadata_block(lba).is_ok(),
                 "a later reader must be able to retry after the failed completion");
         assert_eq!(disk.reads.load(Ordering::Acquire), 2);
