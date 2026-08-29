@@ -132,12 +132,15 @@ fn mkdir_survives_failing_inode_readback() {
     let (m, _sb) = mount_mini();
     let st = m.state();
     let dir = st.lookup_inode_any(b"/").expect("root inode");
+    let parent_links = dir.nlink();
     st.mount.fail_next_inode_read_for_tests();
     let made = dir.mkdir("journal", 0o755, &vfs::CreateCtx::root())
         .expect("mkdir must not depend on reading the inode back");
     assert!(matches!(made.file_type(), vfs::FileType::Directory), "S_IFDIR from init_inode");
     assert_eq!(made.nlink(), 2, "a fresh directory has `.` plus its parent entry");
     assert!(made.size() > 0, "size is the `.`/`..` block create_dir wrote, not 0");
+    assert_eq!(dir.nlink(), parent_links + 1,
+        "mkdir must publish the parent's live link count like ext4_mkdir");
 }
 
 /// `O_TMPFILE` end to end: the anonymous inode surfaces with the mode and

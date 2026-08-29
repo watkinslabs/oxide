@@ -97,8 +97,18 @@ impl Ext4StatInodeOps {
                 return Err(super::regular::fs_err(&d.st, e));
             }
         };
+        // Linux ext4_mkdir increments both the serialized parent and the live
+        // VFS inode while the parent's exclusive i_rwsem is held. Keep the
+        // parsed ext4 image used by later creates/lookups in step as well.
+        inode.inc_nlink();
+        if let Some(parent) = parent_raw.as_ref() {
+            let mut current = (**parent).clone();
+            current.links_count = current.links_count.saturating_add(1);
+            d.publish_raw(current);
+        } else {
+            d.invalidate_raw();
+        }
         d.st.forget_created_ino(ino);
-        d.invalidate_raw();
         Ok(d.st.wrap_created_any(ino, &node))
     }
 
