@@ -39,6 +39,7 @@ that artifact is regenerated.
 | E4-08 negative-dentry / `6df8e522c` | 1,367,109 | 6,840 | 5,003 | 23,169 | — | 19,887 | 288 | 2,811 | Linux negative-dentry create handoff; GNOME Shell marker complete; SMP=1; no whole-boot gain claimed |
 | E4-09 readahead-bound / `17c6bff7e` | 1,368,495 | 6,647 | 4,857 | 23,722 | — | 19,897 | 304 | 3,007 | exclude `bg_itable_unused` from inode-table readahead; GNOME Shell marker complete; SMP=1; no whole-boot gain claimed |
 | E4-08 single-path-acquire / `6da0ed7c0` | 1,367,899 | 6,572 | 4,804 | 23,637 | — | 19,467 | 323 | 3,914 | acquire ordinary *at pathname once like Linux getname; GNOME Shell marker complete; SMP=1; no whole-boot gain claimed |
+| E4-15 perf-r1 / `549c8a25c` | 1,368,375 | 6,428 | 4,697 | 23,623 | — | 19,417 | 313 | 3,317 | fresh-main control after metadata-owner fixes; GNOME Shell marker complete; SMP=1; no whole-boot gain claimed |
 
 The B2709 `munmap` result is a material improvement over B2699: 71,407 ns
 to 21,426 ns (about 70% lower), and 52x to 16x the host baseline. The B2708
