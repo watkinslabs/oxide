@@ -454,8 +454,9 @@ impl Mount {
             // An UNWRITTEN (fallocate-preallocated) extent must be converted to a
             // written extent before write_file_block (else it rejects with
             // NotFound). No-op for a written extent or a hole.
-            self.convert_unwritten_at(ino, lb)?;
             let inode2 = self.read_inode(ino)?;
+            let converted = self.convert_unwritten_at_cached(ino, lb, &inode2)?;
+            let inode2 = if converted { self.read_inode(ino)? } else { inode2 };
             let blk_start_byte = (lb as u64) * bs;
             let in_blk_off = if blk_start_byte >= off { 0usize }
                              else { (off - blk_start_byte) as usize };

@@ -7,7 +7,7 @@
 
 use alloc::vec::Vec;
 
-use crate::inode::{Extent, I_BLOCK_LEN};
+use crate::inode::Extent;
 use crate::mount::{Mount, MountError};
 
 use super::records::extent_run as mk_extent;
@@ -43,15 +43,18 @@ impl Mount {
     /// stages in the shadow and commits atomically, while the zeroing is direct
     /// data I/O sequenced before that commit.
     /// # C: O(1) metadata + O(converted blocks) zero I/O
-    pub(crate) fn convert_unwritten_at(&self, ino: u32, file_blk: u32) -> Result<(), MountError> {
-        let (mut ibytes, _off) = self.read_inode_bytes(ino)?;
-        let mut i_block = [0u8; I_BLOCK_LEN];
-        i_block.copy_from_slice(&ibytes[0x28..0x28 + I_BLOCK_LEN]);
-
-        let runs = self.collect_phys_extents(&i_block)?;
+    /// Check the already-loaded extent snapshot before touching the inode
+    /// table again. Returns whether conversion changed the extent tree; the
+    /// caller can refresh its snapshot only in that case. # C: O(1) when written/hole
+    pub(crate) fn convert_unwritten_at_cached(
+        &self, ino: u32, file_blk: u32, inode: &crate::inode::Inode,
+    ) -> Result<bool, MountError> {
+        let runs = self.collect_phys_extents(&inode.i_block)?;
         let Some(hit) = runs.iter().position(|r|
             r.unwritten && file_blk >= r.logical && file_blk < r.logical + r.len)
-        else { return Ok(()); };                       // written extent, or a hole
+        else { return Ok(false); };                     // written extent, or a hole
+
+        let (mut ibytes, _off) = self.read_inode_bytes(ino)?;
 
         let r = &runs[hit];
         let (es, phys, len) = (r.logical, r.phys, r.len);
@@ -89,7 +92,7 @@ impl Mount {
         if let Err(e) = self.write_inode_bytes_data(ino, &ibytes) {
             return Err(self.rollback_i_blocks_delta(ino, sectors, old_sectors, e));
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Zero `len` filesystem blocks starting at physical LBA `start_lba` —
