@@ -55,7 +55,11 @@ impl Mount {
         let staged_blocks = self.state.lock().shadow.as_ref().map_or(0, |s| s.len() as u64);
         #[cfg(feature = "debug-fsync-latency")]
         let commit_ns = crate::fsync_latency::now_ns();
-        let result = if needed { self.commit_batch_inner() } else { Ok(false) };
+        let active_handles = {
+            let s = self.state.lock();
+            s.undo.values().any(|frames| !frames.is_empty())
+        };
+        let result = if active_handles || !needed { Ok(false) } else { self.commit_batch_inner() };
         #[cfg(feature = "debug-fsync-latency")]
         crate::fsync_latency::report(b"batch-commit", commit_ns, staged_blocks);
         self.txn_release();
@@ -215,6 +219,12 @@ impl Mount {
             if frames.is_empty() { s.undo.remove(&id); }
             frame
         };
+        let affected: alloc::vec::Vec<u64> = frame.keys().copied().collect();
+        // The shadow restore is itself a metadata write. Keep every block in
+        // the frame exclusively owned from before the restore through mirror
+        // refresh; otherwise another handle can RMW a block between those
+        // two steps and resurrect bytes this rollback just removed.
+        let _rollback_guards = self.metadata_write_guards_for_lbas(&affected);
         {
             let mut s = self.state.lock();
             if let Some(shadow) = s.shadow.as_mut() {
@@ -226,7 +236,10 @@ impl Mount {
                 }
             }
         }
-        self.refresh_cached_meta();
+        // Rebuild only mirrors whose metadata blocks this handle restored.
+        // A whole-mount refresh could overwrite a concurrent handle's newer
+        // descriptor/counter state once handles share the running batch.
+        self.refresh_cached_meta_for(&affected);
     }
 }
 
