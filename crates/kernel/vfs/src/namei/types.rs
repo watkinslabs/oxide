@@ -118,9 +118,8 @@ pub struct LookupFlags {
     /// retry on a blocking path (Linux `try_to_unlazy`/`LOOKUP_CACHED` →
     /// `-EAGAIN`). A cached NEGATIVE dentry is still a definitive `ENOENT`.
     pub cached: bool,
-    /// LOOKUP_RCU — lock-free "lazy" walk. DEFAULT OFF: ordinary walks use
-    /// the proven reference walk; callers may opt into RCU after validating
-    /// the complete target path and its symlink/mount behavior.
+    /// LOOKUP_RCU — lock-free "lazy" walk. Ordinary pathname lookup starts in
+    /// RCU mode and falls back to the reference walk at a blocking boundary.
     /// When set, the walk runs in rcu (lazy) mode,
     /// resolving components from the seqcount-gated dcache probe and only
     /// "legitimizing" (taking real references via `unlazy_walk`) at a
@@ -139,7 +138,7 @@ impl Default for LookupFlags {
             no_symlinks: false, no_automount: false, beneath: false,
             beneath_exdev: false, directory: false, parent: false, in_root: false,
             no_magiclinks: false, no_xdev: false, reval: false, cached: false,
-            rcu: false }
+            rcu: true }
     }
 }
 

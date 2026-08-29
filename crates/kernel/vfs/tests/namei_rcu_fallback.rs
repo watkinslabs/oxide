@@ -49,7 +49,7 @@ fn sym(ino: u64, t: &str) -> InodeRef {
     InodeBuilder::new(ino, mk_mode(FileType::Symlink, 0o777), default_inode_ops(), default_file_ops())
         .size(t.len() as u64).link(t.as_bytes().to_vec().into_boxed_slice()).build()
 }
-fn rcu() -> LookupFlags { let mut f = LookupFlags::default(); f.rcu = true; f }
+fn rcu() -> LookupFlags { LookupFlags::default() }
 
 struct TestMountFs;
 impl FileSystem for TestMountFs { fn name(&self) -> &str { "testfs" } }

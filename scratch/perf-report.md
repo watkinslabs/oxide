@@ -1,34 +1,34 @@
 # Syscall and fault cost vs the host Linux kernel
 
-oxide: /home/nd/oxide/kernel/target/perf-report-x86_64.log
-boot totals: 1368362 syscalls, 6915 ms on CPU, 5053 ns average
+oxide: /home/nd/oxide/kernel/target/perf-report-e4-08-rcu.log
+boot totals: 1367073 syscalls, 6564 ms on CPU, 4802 ns average
 
 | operation | oxide ns | linux ns | ratio | | verdict |
 |---|---:|---:|---:|---|---|
-| newfstatat | 20,005 | 788 | 25x | ###### | SEVERE |
-| munmap | 24,232 | 1,382 | 18x | #### | BAD |
-| recvfrom | 11,628 | 776 | 15x | #### | BAD |
-| recvmsg | 8,687 | 776 | 11x | ### | BAD |
-| write fault, page absent | 12,872 | 1,227 | 10x | ### | BAD |
-| read | 5,176 | 518 | 10x | ## | BAD |
-| openat | 9,188 | 994 | 9x | ## | BAD |
-| mprotect | 8,687 | 1,180 | 7x | ## | BAD |
-| close | 4,003 | 628 | 6x | ## | BAD |
-| mmap | 6,220 | 1,382 | 5x | # | slow |
+| newfstatat | 19,311 | 788 | 25x | ###### | SEVERE |
+| recvfrom | 13,246 | 776 | 17x | #### | BAD |
+| munmap | 23,087 | 1,382 | 17x | #### | BAD |
+| recvmsg | 12,104 | 776 | 16x | #### | BAD |
+| write fault, page absent | 15,636 | 1,227 | 13x | ### | BAD |
+| read | 4,915 | 518 | 9x | ## | BAD |
+| openat | 8,837 | 994 | 9x | ## | BAD |
+| mprotect | 8,321 | 1,180 | 7x | ## | BAD |
+| close | 4,290 | 628 | 7x | ## | BAD |
+| mmap | 5,968 | 1,382 | 4x | # | slow |
 
 ## Measured, not compared
 
 | operation | oxide ns | why no ratio |
 |---|---:|---|
-| writev | 2,176,833 | console output; fbcon scrolls the framebuffer, host baseline writes to /dev/null |
+| writev | 2,140,607 | console output; fbcon scrolls the framebuffer, host baseline writes to /dev/null |
 
 ## Block device
 
 | op | count | total ms | avg |
 |---|---:|---:|---:|
-| read | 526 | 299 | 569.9 us |
-| write | 7,991 | 4,141 | 518.3 us |
-| other | 2 | 0 | 123.4 us |
+| read | 526 | 301 | 572.4 us |
+| write | 8,422 | 2,942 | 349.4 us |
+| other | 2 | 0 | 28.7 us |
 
 Both sides are measured. The host figure is a tight loop over one shape of the call; the oxide figure is the average over every such call a real desktop boot made. Read a ratio as an order of magnitude, not a score.
 
