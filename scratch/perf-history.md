@@ -42,6 +42,7 @@ that artifact is regenerated.
 | E4-15 perf-r1 / `549c8a25c` | 1,368,375 | 6,428 | 4,697 | 23,623 | — | 19,417 | 313 | 3,317 | fresh-main control after metadata-owner fixes; GNOME Shell marker complete; SMP=1; no whole-boot gain claimed |
 | E4-15 perf-r2 / `3b84d222e` | 1,368,362 | 6,915 | 5,053 | 24,232 | — | 20,005 | 299 | 4,141 | fresh-main repeat; GNOME Shell marker complete; SMP=1; parent-lock contention remains; no whole-boot gain claimed |
 | E4-08 RCU default / `de4eb1bf9` | 1,367,073 | 6,564 | 4,802 | 23,087 | — | 19,311 | 301 | 2,942 | Linux RCU default; parent-lock phase 11,438 ms -> 5,146 ms (~55% lower); end-to-end row within variance; GNOME Shell marker complete; SMP=1 |
+| E4-08 mkdir proof / working tree | 1,367,508 | 6,768 | 4,949 | 23,568 | — | 19,314 | 493 | 3,387 | VFS-proven mkdir dispatch skips the backend duplicate lookup; no whole-boot gain claimed; GNOME Shell marker complete; SMP=1 |
 
 The B2709 `munmap` result is a material improvement over B2699: 71,407 ns
 to 21,426 ns (about 70% lower), and 52x to 16x the host baseline. The B2708

@@ -88,7 +88,7 @@ pub fn sys_mkdir(args: &SyscallArgs) -> i64 {
     // D29: hold the parent dir's `i_rwsem` EXCLUSIVE across the backend mkdir
     // (Linux `filename_create` → `->mkdir`). Scope is just the op; the rank-40
     // i_rwsem is dropped before the rank-50/60 object-cache drop below.
-    let r = { let _g = parent.inode.inode_lock(); parent.inode.mkdir(&name, mode, &ctx) };
+    let r = { let _g = parent.inode.inode_lock(); parent.inode.mkdir_unchecked(&name, mode, &ctx) };
     match r {
         Ok(_) => {
             #[cfg(feature = "debug-udevdb")]

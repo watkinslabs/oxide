@@ -42,6 +42,35 @@ impl Ext4StatInodeOps {
         d.invalidate_raw();
         Ok(d.st.wrap_created_file(ino, &node))
     }
+
+    fn mkdir_impl(&self, inode: &Inode, name: &str, mode: u32, ctx: &vfs::CreateCtx,
+                  check_existing: bool) -> KResult<InodeRef> {
+        let d = Self::data(inode)?;
+        if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
+        if !super::links::dir_link_headroom(inode.nlink()) {
+            let pdir = d.st.mount.read_inode(d.ino).map_err(super::regular::vfs_error_from_mount)?;
+            if super::links::dir_link_max_reached(
+                pdir.links_count, pdir.i_flags, d.st.mount.sb.feature_ro_compat) {
+                return Err(VfsError::Emlink);
+            }
+        }
+        if check_existing && d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
+        let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode as u16,
+            0o1777, vfs::types::S_IFDIR, ctx.cred, 0);
+        let acl = crate::acl::inherit(inode, m, ctx.umask, vfs::posix_acl::NewKind::Dir)?;
+        super::super::quota::charge_new_inode(&d.st, d.ino, acl.mode, uid, gid)?;
+        let (ino, node) = match d.st.mount.create_dir_inode_with_acl(
+            d.ino, name.as_bytes(), acl.mode & 0o7777, uid, gid, &acl) {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = super::super::quota::rollback_new_inode_charge(&d.st, d.ino, acl.mode, uid, gid);
+                return Err(super::regular::fs_err(&d.st, e));
+            }
+        };
+        d.st.forget_created_ino(ino);
+        d.invalidate_raw();
+        Ok(d.st.wrap_created_any(ino, &node))
+    }
 }
 
 impl InodeOps for Ext4StatInodeOps {
@@ -130,37 +159,11 @@ impl InodeOps for Ext4StatInodeOps {
     }
 
     fn mkdir(&self, inode: &Inode, name: &str, mode: u32, ctx: &vfs::CreateCtx) -> KResult<InodeRef> {
-        let d = Self::data(inode)?;
-        if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
-        // `ext4_mkdir` opens with the subdirectory ceiling, ahead of the
-        // existence test: a full parent reports EMLINK even for a name that is
-        // already taken. The in-core link count answers it for every ordinary
-        // directory; only one at the ceiling needs the on-disk flags, which
-        // decide whether this filesystem lets a large htree directory stop
-        // counting subdirectories and so has no ceiling at all.
-        if !super::links::dir_link_headroom(inode.nlink()) {
-            let pdir = d.st.mount.read_inode(d.ino).map_err(super::regular::vfs_error_from_mount)?;
-            if super::links::dir_link_max_reached(
-                pdir.links_count, pdir.i_flags, d.st.mount.sb.feature_ro_compat) {
-                return Err(VfsError::Emlink);
-            }
-        }
-        if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
-        let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode as u16,
-            0o1777, vfs::types::S_IFDIR, ctx.cred, 0);
-        let acl = crate::acl::inherit(inode, m, ctx.umask, vfs::posix_acl::NewKind::Dir)?;
-        super::super::quota::charge_new_inode(&d.st, d.ino, acl.mode, uid, gid)?;
-        let (ino, node) = match d.st.mount.create_dir_inode_with_acl(
-            d.ino, name.as_bytes(), acl.mode & 0o7777, uid, gid, &acl) {
-            Ok(v) => v,
-            Err(e) => {
-                let _ = super::super::quota::rollback_new_inode_charge(&d.st, d.ino, acl.mode, uid, gid);
-                return Err(super::regular::fs_err(&d.st, e));
-            }
-        };
-        d.st.forget_created_ino(ino);
-        d.invalidate_raw();
-        Ok(d.st.wrap_created_any(ino, &node))
+        self.mkdir_impl(inode, name, mode, ctx, true)
+    }
+
+    fn mkdir_unchecked(&self, inode: &Inode, name: &str, mode: u32, ctx: &vfs::CreateCtx) -> KResult<InodeRef> {
+        self.mkdir_impl(inode, name, mode, ctx, false)
     }
 
     fn rmdir(&self, inode: &Inode, name: &str) -> KResult<()> {

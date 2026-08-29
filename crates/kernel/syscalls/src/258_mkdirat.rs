@@ -96,7 +96,7 @@ pub fn sys_mkdirat(args: &SyscallArgs) -> i64 {
     let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: umask as u16 };
     // D29: parent dir `i_rwsem` EXCLUSIVE across the backend mkdir (Linux
     // `filename_create` → `->mkdir`); dropped before the dcache update below.
-    let r = { let _g = parent.inode.inode_lock(); parent.inode.mkdir(&name, mode, &ctx) };
+    let r = { let _g = parent.inode.inode_lock(); parent.inode.mkdir_unchecked(&name, mode, &ctx) };
     match r {
         Ok(_) => {
             #[cfg(feature = "debug-udevdb")]
