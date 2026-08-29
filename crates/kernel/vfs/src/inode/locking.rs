@@ -1,15 +1,41 @@
 use super::model::Inode;
 use super::rwsem::{InodeRwsem, InodeRwsemReadGuard, InodeRwsemWriteGuard};
 
+/// Exclusive `i_rwsem` ownership for one inode mutation. The wrapper keeps
+/// the generic rwsem guard's semantics while allowing the profiler to measure
+/// only the Linux `inode_lock()` owner, separate from `file->f_pos_lock`.
+pub struct InodeWriteGuard<'a> {
+    inner: InodeRwsemWriteGuard<'a>,
+    #[cfg(feature = "debug-resolve-cost")]
+    _hold_cost: crate::resolve_cost::Span,
+}
+
+impl core::ops::Deref for InodeWriteGuard<'_> {
+    type Target = ();
+    fn deref(&self) -> &Self::Target { &self.inner }
+}
+
+impl core::ops::DerefMut for InodeWriteGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.inner }
+}
+
+impl Drop for InodeWriteGuard<'_> {
+    fn drop(&mut self) {}
+}
+
 impl Inode {
     /// `inode_lock`. # C: O(contention)
-    pub fn inode_lock(&self) -> InodeRwsemWriteGuard<'_> {
+    pub fn inode_lock(&self) -> InodeWriteGuard<'_> {
         #[cfg(feature = "debug-resolve-cost")]
         let _cost = crate::resolve_cost::writer_lock();
         let guard = self.i_rwsem.write();
         #[cfg(feature = "debug-resolve-cost")]
         drop(_cost);
-        guard
+        InodeWriteGuard {
+            inner: guard,
+            #[cfg(feature = "debug-resolve-cost")]
+            _hold_cost: crate::resolve_cost::inode_writer_hold(),
+        }
     }
     /// `inode_lock_shared`. # C: O(contention)
     pub fn inode_lock_shared(&self) -> InodeRwsemReadGuard<'_> { self.i_rwsem.read() }
