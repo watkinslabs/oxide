@@ -8,10 +8,22 @@ impl Mount {
     /// Append one filesystem block to `ino` through the journaled extent path.
     /// # C: O(N_extents) + 1 alloc + 2 block I/Os
     pub fn append_block(&self, ino: u32, data: &[u8]) -> Result<u32, MountError> {
-        self.run_journaled(|m| m.append_block_inner(ino, data))
+        self.run_journaled(|m| m.append_block_inner(ino, data, None))
     }
 
-    pub(super) fn append_block_inner(&self, ino: u32, data: &[u8]) -> Result<u32, MountError> {
+    /// Append a block and publish the updated inode image already held by the
+    /// caller. Linux keeps this live mapping in `struct inode` across
+    /// `ext4_mkdir`; requiring a reread after the append leaves a newly created
+    /// directory with an empty extent tree and makes its first child fail.
+    pub(crate) fn append_block_with_inode(
+        &self, ino: u32, data: &[u8], live: &mut inode::Inode,
+    ) -> Result<u32, MountError> {
+        self.run_journaled(|m| m.append_block_inner(ino, data, Some(live)))
+    }
+
+    pub(super) fn append_block_inner(
+        &self, ino: u32, data: &[u8], mut live: Option<&mut inode::Inode>,
+    ) -> Result<u32, MountError> {
         let bs = self.sb.block_size as usize;
         if data.len() != bs {
             return Err(MountError::Inode(inode::InodeError::BadLen));
@@ -52,6 +64,7 @@ impl Mount {
                         }
                     }
                 }
+                if result.is_ok() { self.publish_appended_inode(&mut live, ino, &ino_bytes)?; }
                 return result;
             }
             let hint = self.append_hint_group(ino, new_logical)?;
@@ -67,11 +80,25 @@ impl Mount {
                 let _ = self.free_block(physical);
                 for block in tail { let _ = self.free_block(block); }
             }
+            if result.is_ok() { self.publish_appended_inode(&mut live, ino, &ino_bytes)?; }
             return result;
         }
-        self.insert_logical_block_with_inode_bytes(
+        let result = self.insert_logical_block_with_inode_bytes(
             ino, &mut ino_bytes, ino_byte_off, new_logical, data, new_size,
-            false, false, None)
+            false, false, None);
+        if result.is_ok() { self.publish_appended_inode(&mut live, ino, &ino_bytes)?; }
+        result
+    }
+
+    fn publish_appended_inode(
+        &self,
+        live: &mut Option<&mut inode::Inode>, ino: u32, bytes: &[u8],
+    ) -> Result<(), MountError> {
+        let Some(live) = live.as_deref_mut() else { return Ok(()); };
+        let mut updated = inode::Inode::parse(bytes, &self.sb)?;
+        updated.ino = ino;
+        *live = updated;
+        Ok(())
     }
 
     /// Locate the same physical locality goal used by Linux's regular-file

@@ -206,7 +206,7 @@ impl Mount {
             // hand to ext4_mkdir. Reuse its generation instead of rereading
             // the inode-table slot we just initialized.
             crate::csum::stamp_dirent_tail(&m.sb, new_ino, node.generation, &mut blk);
-            m.append_block(new_ino, &blk)?;
+            m.append_block_with_inode(new_ino, &blk, &mut node)?;
             m.set_inode_size(new_ino, bs as u64)?;
             node.size = bs as u64;
             if let Some(acl) = acl { acl.store(m, new_ino)?; }
