@@ -117,6 +117,10 @@ fn copy_checked(src: &str, tag: &str) -> Option<TempImage> {
     Some(tmp)
 }
 
+fn configured_root(default: &str) -> String {
+    std::env::var("OXIDE_EXT4_TEST_ROOT").unwrap_or_else(|_| default.into())
+}
+
 fn open_rw(path: impl AsRef<std::path::Path>) -> (Arc<dyn BlockDevice>, ext4::Mount) {
     let f = OpenOptions::new().read(true).write(true).open(path).unwrap();
     let cap = f.metadata().unwrap().len() / SECTOR as u64;
@@ -231,7 +235,8 @@ fn concurrent_churn_keeps_fsck_clean() {
 
 #[test]
 fn arm_hwdb_rewrite_and_replacement_keep_fsck_clean() {
-    let Some(tmp) = copy_checked(ARM_ROOT, "arm-hwdb-rewrite") else { return; };
+    let root = configured_root(ARM_ROOT);
+    let Some(tmp) = copy_checked(&root, "configured-hwdb-rewrite") else { return; };
     {
         let (disk, m) = open_rw(&tmp);
         let udev = m.lookup_path(b"/etc/udev").expect("/etc/udev");
@@ -259,7 +264,8 @@ fn arm_hwdb_rewrite_and_replacement_keep_fsck_clean() {
 #[test]
 fn arm_hwdb_batched_framecache_rewrite_keeps_fsck_clean() {
     common::boot_hosted_pmm();
-    let Some(tmp) = copy_checked(ARM_ROOT, "arm-hwdb-framecache") else { return; };
+    let root = configured_root(ARM_ROOT);
+    let Some(tmp) = copy_checked(&root, "configured-hwdb-framecache") else { return; };
     {
         let (disk, raw) = open_rw(&tmp);
         let m = Arc::new(raw);
