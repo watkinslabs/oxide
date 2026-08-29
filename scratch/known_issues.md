@@ -324,7 +324,7 @@ The authoritative dependency-ordered ext4 inventory and execution plan is [`scra
 | E4-10 | DONE | `dioread_nolock`/`dioread_lock` now refuse mounts because this tree has no O_DIRECT consumer whose unwritten-extent protocol they could control. | Add a complete O_DIRECT path before reconsidering support. |
 | E4-11 | DONE | `prefetch_block_bitmaps` eagerly validates and publishes allocation bitmaps; `nombcache` is explicitly refused because no mbcache owner exists. | Add mbcache before changing the refusal. |
 | E4-12 | DONE | Every known admitted ext4 option without a live consumer now refuses explicitly; generic VFS mount tokens remain pass-through. | Add a real owner before admitting any refused filesystem option. |
-| E4-13 | OPEN | The package-wide ext4 suite currently passes with parallel test threads, but shared mutable fixture ownership is not independently proven. | Isolated fixture ownership and agreeing parallel/serial results. |
+| E4-13 | IN-PROGRESS | The large e2fsck allocator harness now uses a per-process temporary directory, and its serial/parallel runs agree. The remaining image fixtures still need a workspace-wide ownership audit. | Isolated fixture ownership and agreeing parallel/serial results. |
 | E4-14 | OPEN | One ARM sysinit EIO/SIGBUS event is unconfirmed. | Controlled reproduction or evidence-backed closure. |
 | E4-15 | IN-PROGRESS | Current GNOME/SMP=1 phase metrics and a history row are recorded; repeated same-workload comparison against a frozen baseline remains. | `scratch/perf-history.md`, `scratch/perf-report.md`; repeatability runs. |
 | E4-16 | OPEN | Historical ext4 ledger rows include stale status/count claims. | Correct, map, or close each historical row from current evidence. |
