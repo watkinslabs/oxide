@@ -433,8 +433,12 @@ impl Mount {
         // (phys_block, assembled block bytes) in logical order.
         let mut pending: alloc::vec::Vec<(u64, alloc::vec::Vec<u8>)> = alloc::vec::Vec::new();
         let mut allocated = alloc::vec::Vec::new();
-        let initial = self.read_inode(ino)?;
-        let initial_extents = self.collect_phys_extents(&initial.i_block)?;
+        // `inode` is the live snapshot read at the top of this operation.  It
+        // is still the authoritative extent tree here; no metadata mutation
+        // occurs before the reservation plan is built.  Re-reading the same
+        // inode added one serialized metadata lookup to every writeback
+        // cluster and kept the caller's inode lock held across it.
+        let initial_extents = self.collect_phys_extents(&inode.i_block)?;
         // A write that starts beyond the current EOF is a sparse write, not a
         // stream allocation. Linux leaves that gap unallocated; inode PA is
         // eligible only when the request reaches the current file tail.
