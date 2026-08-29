@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
@@ -41,6 +42,31 @@ pub(crate) struct Ext4FileData {
     pub(crate) swap_mutations: Arc<AtomicU64>,
     /// Waiters for every mutation admitted before swapfile activation.
     pub(crate) swap_wait: WaitList,
+    /// Xattrs are loaded on first xattr/ACL access, not during pathname lookup.
+    pub(crate) xattrs: Ext4XattrState,
+}
+
+/// Serializes the one lazy load for an inode. Holding this lock across the
+/// load prevents readers from observing a partially populated store and
+/// prevents duplicate inode-table/xattr-block reads.
+pub(crate) struct Ext4XattrState {
+    loaded: sched::live::Mutex<bool>,
+}
+
+impl Ext4XattrState {
+    pub(crate) const fn new() -> Self { Self { loaded: sched::live::Mutex::new(false) } }
+
+    pub(crate) fn ensure_loaded(&self, inode: &Inode, st: &RootfsState, ino: u32) {
+        // Xattr and ACL hooks run in process context. The load can block on
+        // the inode table or external xattr block, so this must be a sleeping
+        // mutex rather than a spinlock held across I/O.
+        let mut loaded = unsafe { self.loaded.lock() };
+        if *loaded { return; }
+        if let Some(store) = inode.simple_xattrs() {
+            st.mount.load_xattrs(ino, store);
+        }
+        *loaded = true;
+    }
 }
 
 /// A mutation admitted before swap activation. Dropping it makes a pending
@@ -118,6 +144,8 @@ pub(crate) struct Ext4StatData {
     /// hint so repeated namespace walks do not rescan a multi-block directory
     /// from block zero every time.
     pub(crate) dir_start_lookup: AtomicU32,
+    /// See [`Ext4XattrState`].
+    pub(crate) xattrs: Ext4XattrState,
 }
 
 impl Ext4StatData {
@@ -139,6 +167,18 @@ pub(crate) fn ext4_state_of(inode: &Inode) -> Option<(Arc<RootfsState>, u32)> {
     if let Some(f) = inode.private::<Ext4FileData>() { return Some((f.st.clone(), f.ino)); }
     if let Some(s) = inode.private::<Ext4StatData>() { return Some((s.st.clone(), s.ino)); }
     None
+}
+
+fn ensure_xattrs(inode: &Inode) -> Result<(), XattrError> {
+    if let Some(f) = inode.private::<Ext4FileData>() {
+        f.xattrs.ensure_loaded(inode, &f.st, f.ino);
+        return Ok(());
+    }
+    if let Some(s) = inode.private::<Ext4StatData>() {
+        s.xattrs.ensure_loaded(inode, &s.st, s.ino);
+        return Ok(());
+    }
+    Err(XattrError::NotSup)
 }
 
 /// Recover the raw ext4 inode number of a REGULAR-file inode (linkat
@@ -179,6 +219,7 @@ fn user_xattr_allowed(inode: &Inode, name: &str) -> Result<(), XattrError> {
 /// # C: O(log N_xattr)
 pub(crate) fn get_inode_xattr(inode: &Inode, name: &str) -> Result<Vec<u8>, XattrError> {
     user_xattr_allowed(inode, name)?;
+    ensure_xattrs(inode)?;
     let store = inode.simple_xattrs().ok_or(XattrError::NotSup)?;
     let stored = store.get(name).ok_or(XattrError::NotFound)?;
     if vfs::posix_acl::AclType::from_xattr_name(name).is_some() {
@@ -193,6 +234,7 @@ pub(crate) fn set_inode_xattr(inode: &Inode, name: &str, value: Vec<u8>, create:
     -> Result<(), XattrError>
 {
     user_xattr_allowed(inode, name)?;
+    ensure_xattrs(inode)?;
     let value = if vfs::posix_acl::AclType::from_xattr_name(name).is_some() {
         vfs::posix_acl::disk::disk_from_xattr(&value).map_err(vfs::posix_acl::disk::xattr_error)?
     } else {
@@ -216,6 +258,7 @@ pub(crate) fn set_inode_xattr(inode: &Inode, name: &str, value: Vec<u8>, create:
 /// # C: O(N_xattr)+journal I/O
 pub(crate) fn remove_inode_xattr(inode: &Inode, name: &str) -> Result<(), XattrError> {
     user_xattr_allowed(inode, name)?;
+    ensure_xattrs(inode)?;
     let store = inode.simple_xattrs().ok_or(XattrError::NotSup)?;
     let mut entries = store.entries();
     let Some(pos) = entries.iter().position(|(n, _)| n == name) else {
@@ -225,6 +268,11 @@ pub(crate) fn remove_inode_xattr(inode: &Inode, name: &str) -> Result<(), XattrE
     persist_xattr_entries(inode, &entries)?;
     store.replace_all(&entries);
     Ok(())
+}
+
+pub(crate) fn list_inode_xattrs(inode: &Inode) -> Result<Vec<String>, XattrError> {
+    ensure_xattrs(inode)?;
+    inode.simple_xattrs().map(|store| store.list_names()).ok_or(XattrError::NotSup)
 }
 
 /// Publish one file size to every reader that answers a question with it.

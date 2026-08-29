@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use vfs::file_ops::{FileIoctlCmd, FileIoctlReply, FileOps};
@@ -159,6 +160,10 @@ impl InodeOps for Ext4StatInodeOps {
 
     fn removexattr(&self, inode: &Inode, name: &str) -> Result<(), vfs::XattrError> {
         remove_inode_xattr(inode, name)
+    }
+
+    fn listxattr(&self, inode: &Inode) -> Result<Vec<String>, vfs::XattrError> {
+        super::data::list_inode_xattrs(inode)
     }
 
     fn readlink(&self, inode: &Inode) -> KResult<Vec<u8>> {
@@ -460,10 +465,10 @@ pub(crate) fn build_stat_inode(
         raw_flags: core::sync::atomic::AtomicU32::new(raw_flags),
         raw: ::sync::Spinlock::new(raw),
         raw_valid: core::sync::atomic::AtomicBool::new(true),
-        dir_start_lookup: core::sync::atomic::AtomicU32::new(0), });
+        dir_start_lookup: core::sync::atomic::AtomicU32::new(0),
+        xattrs: super::data::Ext4XattrState::new(), });
     let weak_sb = data.st.sb.lock().clone();
     let xattrs = vfs::SimpleXattrs::new();
-    data.st.mount.load_xattrs(ino, &xattrs);
     // Linux `init_special_inode` gives an on-disk `S_IFIFO` the pipe fops, and
     // `fifo_open` attaches an `i_pipe` whose `rd_wait`/`wr_wait` are the poll
     // queues — independent of the backing filesystem. A FIFO

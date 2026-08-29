@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -242,6 +243,10 @@ impl InodeOps for Ext4RegInodeOps {
     fn removexattr(&self, inode: &Inode, name: &str) -> Result<(), vfs::XattrError> {
         remove_inode_xattr(inode, name)
     }
+
+    fn listxattr(&self, inode: &Inode) -> Result<Vec<String>, vfs::XattrError> {
+        super::data::list_inode_xattrs(inode)
+    }
 }
 
 /// `file_operations` for a regular ext4 file: read/write through the
@@ -474,11 +479,11 @@ pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: 
     let frames = st.frame_store(ino, size);
     let data = Arc::new(Ext4FileData { st, ino, raw_flags: core::sync::atomic::AtomicU32::new(_raw_flags), size_hint: AtomicU64::new(size),
         timestamp_staged: core::sync::atomic::AtomicBool::new(false), frames,
-        swap_mutations: Arc::new(AtomicU64::new(0)), swap_wait: sched::live::WaitList::new() });
+        swap_mutations: Arc::new(AtomicU64::new(0)), swap_wait: sched::live::WaitList::new(),
+        xattrs: super::data::Ext4XattrState::new() });
     let mapping: Arc<dyn AddressSpaceOps> = Arc::new(Ext4FileMapping { data: data.clone() });
     let weak_sb = data.st.sb.lock().clone();
     let xattrs = vfs::SimpleXattrs::new();
-    data.st.mount.load_xattrs(ino, &xattrs);
     let mut b = InodeBuilder::new(ext4_wrap_ino(ino), mk_mode(FileType::Regular, mode & 0o7777),
                       Arc::new(Ext4RegInodeOps), Arc::new(Ext4RegFileOps))
         .sb(weak_sb)
