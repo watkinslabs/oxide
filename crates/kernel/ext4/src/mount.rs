@@ -108,7 +108,12 @@ impl MetadataRead {
     }
 
     pub(crate) fn complete(&self, epoch: u64, result: Result<Arc<Vec<u8>>, MountError>) {
-        *self.result.lock() = Some((epoch, result));
+        let mut slot = self.result.lock();
+        // Completion is a one-shot ownership transfer. A broken lower layer
+        // must not overwrite the result a waiter has already been promised.
+        if slot.is_some() { return; }
+        *slot = Some((epoch, result));
+        drop(slot);
         self.done.store(true, Ordering::Release);
         self.wait.wake_all();
     }
