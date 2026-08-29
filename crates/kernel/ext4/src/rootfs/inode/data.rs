@@ -158,6 +158,35 @@ impl Ext4StatData {
         *self.raw.lock() = Arc::new(raw);
         self.raw_valid.store(true, Ordering::Release);
     }
+
+    /// Keep the cached ext4 inode image aligned with a VFS project-id update.
+    /// Project inheritance reads this image while creating the child.
+    pub(crate) fn publish_project_id(&self, projid: u32) {
+        let mut raw = (*self.raw.lock()).as_ref().clone();
+        raw.i_flags = self.raw_flags.load(Ordering::Acquire);
+        raw.i_projid = projid;
+        self.publish_raw(raw);
+    }
+
+    /// Publish the ext4 flag word into both cache views after FS_IOC_SETFLAGS.
+    pub(crate) fn publish_flags(&self, flags: u32) {
+        self.raw_flags.store(flags, Ordering::Release);
+        let mut raw = (*self.raw.lock()).as_ref().clone();
+        raw.i_flags = flags;
+        self.publish_raw(raw);
+    }
+
+    /// Return the cached parent image with fields owned by the live VFS inode
+    /// overlaid. Namespace creation consumes this as Linux consumes its live
+    /// `struct inode`, so an ioctl update cannot be lost to an older image.
+    pub(crate) fn mutation_parent(&self, inode: &Inode) -> Option<crate::inode::Inode> {
+        if !self.raw_valid.load(Ordering::Acquire) { return None; }
+        let mut raw = (*self.raw.lock()).as_ref().clone();
+        raw.i_flags = self.raw_flags.load(Ordering::Acquire);
+        raw.i_projid = inode.projid();
+        Some(raw)
+    }
+
 }
 
 /// Recover `(owning mount state, ext4 ino)` from a concrete inode's
