@@ -499,11 +499,10 @@ impl FileOps for Ext4StatFileOps {
         let d = inode.private::<Ext4StatData>().ok_or(VfsError::Eio)?;
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         let mount = &d.st.mount;
-        let dir_inode = if d.raw_valid.load(core::sync::atomic::Ordering::Acquire) {
-            d.raw.lock().as_ref().clone()
-        } else {
-            mount.read_inode(d.ino).map_err(|_| VfsError::Eio)?
-        };
+        // Directory size can grow during namespace mutation; until the
+        // mutation owner publishes that size into the cached image, re-read
+        // it so readdir cannot omit a newly allocated directory block.
+        let dir_inode = mount.read_inode(d.ino).map_err(|_| VfsError::Eio)?;
         let bs = mount.sb.block_size as u64;
         // `EXT4_FEATURE_INCOMPAT_FILETYPE` is what makes byte 7 of a directory
         // record a `d_type`. On an ext2-style image without it that byte is the
