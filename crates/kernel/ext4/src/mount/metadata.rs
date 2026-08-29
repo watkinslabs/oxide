@@ -337,6 +337,15 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_metadata_completion_preserves_the_first_result() {
+        let read = Arc::new(MetadataRead::new());
+        let bytes = Arc::new(vec![0x5a; 4096]);
+        read.complete(9, Ok(Arc::clone(&bytes)));
+        read.complete(10, Err(MountError::BlockIo));
+        assert_eq!(read.result.lock().as_ref().cloned(), Some((9, Ok(bytes))));
+    }
+
+    #[test]
     fn concurrent_cold_metadata_read_has_one_device_owner() {
         let image = include_bytes!("../../tests/mini-j.img");
         let sectors = image.len() as u64 / 512;
