@@ -437,6 +437,10 @@ impl Mount {
     pub(crate) fn claim_prealloc_block(&self, phys: u64) -> Result<(), MountError> {
         self.run_journaled(|m| {
             let (group, bit) = m.locate_block(phys)?;
+            let group_lock = m.group_lock(group);
+            // SAFETY: PA claims run in process context and hold no spinlock
+            // while acquiring this sleepable allocation-group owner.
+            let _group_guard = unsafe { group_lock.lock() };
             let gd_orig = {
                 let s = m.state.lock();
                 gdt::parse_descriptor(&s.gdt_buf, group, &m.sb)?

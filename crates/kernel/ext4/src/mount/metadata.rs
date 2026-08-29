@@ -56,6 +56,17 @@ impl Mount {
         owners.into_iter().map(|owner| owner.write_lock(id)).collect()
     }
 
+    pub(crate) fn metadata_write_guards_for_lbas(&self, lbas: &[u64]) -> Vec<MetadataWriteGuard> {
+        let id = crate::mount::core::ctx_id();
+        let owners: Vec<Arc<MetadataRead>> = {
+            let mut s = self.state.lock();
+            lbas.iter().map(|lba| {
+                Arc::clone(s.metadata_writers.entry(*lba).or_insert_with(|| Arc::new(MetadataRead::new())))
+            }).collect()
+        };
+        owners.into_iter().map(|owner| owner.write_lock(id)).collect()
+    }
+
     /// Drop clean metadata published before journal replay changed home blocks.
     /// Replay writes the device directly, so retaining those buffers would let
     /// post-recovery quota/inode reads observe pre-crash bytes.

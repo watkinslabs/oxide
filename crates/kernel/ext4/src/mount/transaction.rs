@@ -102,6 +102,7 @@ impl Mount {
     pub fn run_journaled<R, F>(&self, f: F) -> Result<R, MountError>
     where F: FnOnce(&Self) -> Result<R, MountError>
     {
+        if self.batch_is_running() { return self.run_batch_handle(f); }
         self.txn_acquire();
         let r = self.run_journaled_inner(f, false);
         self.txn_release();
@@ -115,10 +116,44 @@ impl Mount {
     pub(crate) fn run_journaled_deferred<R, F>(&self, f: F) -> Result<R, MountError>
     where F: FnOnce(&Self) -> Result<R, MountError>
     {
+        if self.batch_is_running() { return self.run_batch_handle(f); }
         self.txn_acquire();
         let r = self.run_journaled_inner(f, true);
         self.txn_release();
         r
+    }
+
+    fn batch_is_running(&self) -> bool {
+        let s = self.state.lock();
+        s.batch && s.shadow.is_some()
+    }
+
+    /// Run one handle in the running batch. The transaction gate protects
+    /// admission and retirement only; metadata and allocation ownership
+    /// protect the operation body, as in jbd2's per-handle model.
+    /// # C: O(1) admission/finalization + F
+    fn run_batch_handle<R, F>(&self, f: F) -> Result<R, MountError>
+    where F: FnOnce(&Self) -> Result<R, MountError>
+    {
+        self.txn_acquire();
+        if !self.batch_is_running() {
+            let r = self.run_journaled_inner(f, false);
+            self.txn_release();
+            return r;
+        }
+        let id = crate::mount::core::ctx_id();
+        self.state.lock().undo.entry(id).or_default()
+            .push(alloc::collections::BTreeMap::new());
+        self.txn_release();
+        let r = f(self);
+        self.txn_acquire();
+        let result = match r {
+            Ok(v) => { self.batch_frame_commit(); Ok(v) }
+            Err(e) => { self.batch_frame_rollback(); Err(e) }
+        };
+        self.txn_release();
+        if result.is_ok() { self.maybe_commit_batch()?; }
+        result
     }
 
     /// Try to claim the transaction gate, retaining same-context reentrancy.
@@ -299,6 +334,51 @@ impl Mount {
         s.group_avg_fragment_order.clear();
         s.group_avg_fragment_index.clear();
         }
+    }
+
+    /// Refresh allocator mirrors after one handle rolls back. Only reload the
+    /// GDT/SB blocks touched by that handle, while holding metadata ownership
+    /// for those blocks so another handle's update cannot be lost.
+    /// # C: O(N touched metadata blocks + GDT bytes)
+    pub(crate) fn refresh_cached_meta_for(&self, affected: &[u64]) {
+        let bs = self.sb.block_size as u64;
+        if bs == 0 || affected.is_empty() { return; }
+        let gdt_off = gdt_byte_offset_for(&self.sb);
+        let gdt_len = self.state.lock().gdt_buf.len() as u64;
+        let gdt_first = gdt_off / bs;
+        let gdt_last = (gdt_off.saturating_add(gdt_len).saturating_add(bs - 1) / bs).saturating_sub(1);
+        let sb_first = 1024 / bs;
+        let sb_last = (1024u64.saturating_add(0x15c).saturating_add(bs - 1) / bs).saturating_sub(1);
+        let gdt_touched = affected.iter().any(|lba| *lba >= gdt_first && *lba <= gdt_last);
+        let sb_touched = affected.iter().any(|lba| *lba >= sb_first && *lba <= sb_last);
+        let mut guarded = alloc::vec::Vec::new();
+        if gdt_touched { guarded.extend(gdt_first..=gdt_last); }
+        if sb_touched { guarded.extend(sb_first..=sb_last); }
+        guarded.sort_unstable();
+        guarded.dedup();
+        let _guards = self.metadata_write_guards_for_lbas(&guarded);
+        let gdt = if gdt_touched {
+            self.read_meta_byte_range(gdt_off, gdt_len as usize).ok()
+        } else { None };
+        let sb = if sb_touched {
+            self.read_meta_byte_range(1024, 0x15c).ok()
+        } else { None };
+        let mut s = self.state.lock();
+        if let Some(gdt) = gdt { s.gdt_buf = gdt; }
+        if let Some(sb) = sb {
+            if sb.len() >= 0x15c {
+                let fb_lo = u32::from_le_bytes([sb[0x0c], sb[0x0d], sb[0x0e], sb[0x0f]]) as u64;
+                let fi = u32::from_le_bytes([sb[0x10], sb[0x11], sb[0x12], sb[0x13]]);
+                let fb_hi = u32::from_le_bytes([sb[0x158], sb[0x159], sb[0x15a], sb[0x15b]]) as u64;
+                s.sb_free_blocks = (fb_hi << 32) | fb_lo;
+                s.sb_free_inodes = fi;
+            }
+        }
+        s.block_bitmap_cache.clear();
+        s.group_free_order.clear();
+        s.group_free_order_index.clear();
+        s.group_avg_fragment_order.clear();
+        s.group_avg_fragment_index.clear();
     }
 
     /// No-op alias kept for legacy call sites. The shadow
