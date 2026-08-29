@@ -22,6 +22,15 @@ impl Ext4StatInodeOps {
         inode.private::<Ext4StatData>().ok_or(VfsError::Eio)
     }
 
+    /// The VFS delete path has already resolved the victim under the parent's
+    /// exclusive i_rwsem. Reuse that identity when it belongs to this mount,
+    /// just as ext4's `->unlink`/`->rmdir` receives the dentry-selected inode.
+    /// Name-only callers retain the authoritative directory lookup fallback.
+    fn victim_ino(d: &Ext4StatData, victim: &InodeRef) -> Option<u32> {
+        let (st, ino) = super::data::ext4_state_of(victim)?;
+        Arc::ptr_eq(&st.mount, &d.st.mount).then_some(ino)
+    }
+
     fn create_impl(&self, inode: &Inode, name: &str, mode: u32, ctx: &vfs::CreateCtx,
                    check_existing: bool) -> KResult<InodeRef> {
         let d = Self::data(inode)?;
@@ -71,6 +80,46 @@ impl Ext4StatInodeOps {
         d.st.forget_created_ino(ino);
         d.invalidate_raw();
         Ok(d.st.wrap_created_any(ino, &node))
+    }
+
+    fn rmdir_impl(&self, inode: &Inode, name: &str, victim: Option<&InodeRef>) -> KResult<()> {
+        let d = Self::data(inode)?;
+        if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
+        let mount = &d.st.mount;
+        let target = victim.and_then(|v| Self::victim_ino(d, v))
+            .or_else(|| d.st.lookup_child_ino(d.ino, name))
+            .ok_or(VfsError::Enoent)?;
+        let i = mount.read_inode(target).map_err(|_| VfsError::Eio)?;
+        if !i.is_dir() { return Err(VfsError::Enotdir); }
+        if !super::rename::ext4_empty_dir(mount, &i) { return Err(VfsError::Enotempty); }
+        super::super::quota::release_existing_inode_usage(&d.st, &i)?;
+        if let Err(e) = mount.run_journaled_deferred(|m| m.rmdir(d.ino, name.as_bytes())) {
+            let _ = super::super::quota::rollback_existing_inode_release(&d.st, &i);
+            return Err(super::regular::vfs_error_from_mount(e));
+        }
+        super::super::quota::drop_existing_inode_dquots(&d.st, target);
+        if let Some(sb) = d.st.i_sb() {
+            if let Some(victim) = sb.ilookup(ext4_wrap_ino(target)) { victim.set_nlink(0); }
+        }
+        inode.drop_nlink();
+        d.invalidate_raw();
+        Ok(())
+    }
+
+    fn unlink_impl(&self, inode: &Inode, name: &str, victim: Option<&InodeRef>) -> KResult<()> {
+        let d = Self::data(inode)?;
+        if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
+        let mount = &d.st.mount;
+        let target = victim.and_then(|v| Self::victim_ino(d, v))
+            .or_else(|| d.st.lookup_child_ino(d.ino, name))
+            .ok_or(VfsError::Enoent)?;
+        let i = mount.read_inode(target).map_err(|_| VfsError::Eio)?;
+        if i.is_dir() { return Err(VfsError::Eisdir); }
+        let out = mount.run_journaled_deferred(|m| m.unlink(d.ino, name.as_bytes()))
+            .map_err(super::regular::vfs_error_from_mount)?;
+        d.st.after_unlink(out)?;
+        d.invalidate_raw();
+        Ok(())
     }
 }
 
@@ -186,29 +235,11 @@ impl InodeOps for Ext4StatInodeOps {
     }
 
     fn rmdir(&self, inode: &Inode, name: &str) -> KResult<()> {
-        let d = Self::data(inode)?;
-        if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
-        let mount = &d.st.mount;
-        let target = d.st.lookup_child_ino(d.ino, name).ok_or(VfsError::Enoent)?;
-        let i = mount.read_inode(target).map_err(|_| VfsError::Eio)?;
-        if !i.is_dir() { return Err(VfsError::Enotdir); }
-        if !super::rename::ext4_empty_dir(mount, &i) { return Err(VfsError::Enotempty); }
-        // On-disk: free the victim's blocks, clear its inode, drop used-dirs,
-        // and decrement the parent's link count (ext4_rmdir). Replaces the old
-        // dirent-remove + inode-bit-free that leaked the dir's data blocks and
-        // never persisted the parent nlink drop.
-        super::super::quota::release_existing_inode_usage(&d.st, &i)?;
-        if let Err(e) = mount.run_journaled_deferred(|m| m.rmdir(d.ino, name.as_bytes())) {
-            let _ = super::super::quota::rollback_existing_inode_release(&d.st, &i);
-            return Err(super::regular::vfs_error_from_mount(e));
-        }
-        super::super::quota::drop_existing_inode_dquots(&d.st, target);
-        if let Some(sb) = d.st.i_sb() {
-            if let Some(victim) = sb.ilookup(ext4_wrap_ino(target)) { victim.set_nlink(0); }
-        }
-        inode.drop_nlink();
-        d.invalidate_raw();
-        Ok(())
+        self.rmdir_impl(inode, name, None)
+    }
+
+    fn rmdir_with_victim(&self, inode: &Inode, name: &str, victim: &InodeRef) -> KResult<()> {
+        self.rmdir_impl(inode, name, Some(victim))
     }
 
     fn create(&self, inode: &Inode, name: &str, mode: u32, ctx: &vfs::CreateCtx) -> KResult<InodeRef> {
@@ -240,22 +271,11 @@ impl InodeOps for Ext4StatInodeOps {
     }
 
     fn unlink(&self, inode: &Inode, name: &str) -> KResult<()> {
-        let d = Self::data(inode)?;
-        if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
-        let mount = &d.st.mount;
-        let target = d.st.lookup_child_ino(d.ino, name).ok_or(VfsError::Enoent)?;
-        let i = mount.read_inode(target).map_err(|_| VfsError::Eio)?;
-        if i.is_dir() { return Err(VfsError::Eisdir); }
-        // Quota charge and page cache both follow the BLOCKS, and the blocks
-        // outlive the name for as long as an fd holds the inode. Both are
-        // released by `evict_orphan`, not here — Linux keeps the inode
-        // charged until `ext4_free_inode`/`ext4_truncate` run inside
-        // `ext4_evict_inode`.
-        let out = mount.run_journaled_deferred(|m| m.unlink(d.ino, name.as_bytes()))
-            .map_err(super::regular::vfs_error_from_mount)?;
-        d.st.after_unlink(out)?;
-        d.invalidate_raw();
-        Ok(())
+        self.unlink_impl(inode, name, None)
+    }
+
+    fn unlink_with_victim(&self, inode: &Inode, name: &str, victim: &InodeRef) -> KResult<()> {
+        self.unlink_impl(inode, name, Some(victim))
     }
 
     fn link(&self, inode: &Inode, target: &InodeRef, name: &str, _ctx: &vfs::CreateCtx) -> KResult<()> {
