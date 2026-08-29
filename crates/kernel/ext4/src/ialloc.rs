@@ -137,10 +137,8 @@ impl Mount {
         let _group_guard = unsafe { group_lock.lock() };
         // SAFETY: the GDT owner is a sleepable leaf and no spinlock is held.
         let _gdt_guard = unsafe { self.gdt_lock.lock() };
-        let gd_orig = {
-            let s = self.state.lock();
-            gdt::parse_descriptor(&s.gdt_buf, group, &self.sb)?
-        };
+        let gdt_bytes = self.read_gdt_bytes()?;
+        let gd_orig = gdt::parse_descriptor(&gdt_bytes, group, &self.sb)?;
         if gd_orig.free_inodes_count == 0 { return Ok(None); }
         let ibm_byte_off = gd_orig.inode_bitmap * (self.sb.block_size as u64);
         // EXT4_BG_INODE_UNINIT groups (mkfs's lazy bitmap init on large images)
@@ -151,12 +149,12 @@ impl Mount {
         // inode-alloc fallback into an UNINIT high group failed the bitmap csum →
         // MountError::BadChecksum → EIO, which blocked every PrivateTmp service
         // (dbus-broker/logind/…) mkdir once the low groups filled up.
-        let uninit = { let s = self.state.lock(); gdt::inode_uninit(&s.gdt_buf, group, &self.sb) };
+        let uninit = gdt::inode_uninit(&gdt_bytes, group, &self.sb);
         let mut bitmap = if uninit {
             alloc::vec![0u8; self.sb.block_size as usize]
         } else {
             let bm = self.read_meta_byte_range(ibm_byte_off, self.sb.block_size as usize)?;
-            if !crate::csum::verify_inode_bitmap_csum_at(&self.sb, &self.state.lock().gdt_buf, group, &bm) {
+            if !crate::csum::verify_inode_bitmap_csum_at(&self.sb, &gdt_bytes, group, &bm) {
                 crate::mount::first_csum_failure(b"inode-bitmap-alloc", group as u64, ibm_byte_off);
                 return Err(MountError::BadChecksum);
             }
@@ -224,13 +222,11 @@ impl Mount {
             let _group_guard = unsafe { group_lock.lock() };
             // SAFETY: the GDT owner is a sleepable leaf and no spinlock is held.
             let _gdt_guard = unsafe { m.gdt_lock.lock() };
-            let gd_orig = {
-                let s = m.state.lock();
-                gdt::parse_descriptor(&s.gdt_buf, group, &m.sb)?
-            };
+            let gdt_bytes = m.read_gdt_bytes()?;
+            let gd_orig = gdt::parse_descriptor(&gdt_bytes, group, &m.sb)?;
             let ibm_byte_off = gd_orig.inode_bitmap * (m.sb.block_size as u64);
             let mut bitmap = m.read_meta_byte_range(ibm_byte_off, m.sb.block_size as usize)?;
-            if !crate::csum::verify_inode_bitmap_csum_at(&m.sb, &m.state.lock().gdt_buf, group, &bitmap) {
+            if !crate::csum::verify_inode_bitmap_csum_at(&m.sb, &gdt_bytes, group, &bitmap) {
                 crate::mount::first_csum_failure(b"inode-bitmap-free", group as u64, ibm_byte_off);
                 return Err(MountError::BadChecksum);
             }

@@ -441,9 +441,12 @@ impl Mount {
             // SAFETY: PA claims run in process context and hold no spinlock
             // while acquiring this sleepable allocation-group owner.
             let _group_guard = unsafe { group_lock.lock() };
+            // SAFETY: process context, with no spinlock held; retain the GDT
+            // owner while taking the canonical descriptor image.
+            let _gdt_guard = unsafe { m.gdt_lock.lock() };
+            let gdt_bytes = m.read_gdt_bytes()?;
             let gd_orig = {
-                let s = m.state.lock();
-                gdt::parse_descriptor(&s.gdt_buf, group, &m.sb)?
+                gdt::parse_descriptor(&gdt_bytes, group, &m.sb)?
             };
             let off = gd_orig.block_bitmap * m.sb.block_size as u64;
             // The block-bitmap cache is the masked in-memory buddy view. PA
@@ -454,7 +457,7 @@ impl Mount {
             // PA-generated buddy state.
             let mut disk = m.read_meta_byte_range(off, m.sb.block_size as usize)?;
             if !crate::csum::verify_block_bitmap_csum_at(
-                &m.sb, &m.state.lock().gdt_buf, group, &disk)
+                &m.sb, &gdt_bytes, group, &disk)
             {
                 crate::mount::first_csum_failure(b"block-bitmap-claim", group as u64, off);
                 return Err(MountError::BadChecksum);
@@ -466,10 +469,6 @@ impl Mount {
             let mut cache = disk.clone();
             m.mask_group_prealloc(group, &mut cache);
             let mut gd = gd_orig;
-            // SAFETY: process context, with no spinlock held; retain the GDT
-            // owner through the bitmap/GDT transaction so its cached image is
-            // not assembled from a concurrent descriptor update.
-            let _gdt_guard = unsafe { m.gdt_lock.lock() };
             gd.free_blocks_count = gd.free_blocks_count.saturating_sub(1);
             {
                 let mut s = m.state.lock();

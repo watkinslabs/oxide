@@ -63,10 +63,8 @@ impl Mount {
             let _group_guard = unsafe { group_lock.lock() };
             // SAFETY: the GDT owner is a sleepable leaf and no spinlock is held.
             let _gdt_guard = unsafe { m.gdt_lock.lock() };
-            let gd_orig = {
-                let s = m.state.lock();
-                gdt::parse_descriptor(&s.gdt_buf, group, &m.sb)?
-            };
+            let gdt_bytes = m.read_gdt_bytes()?;
+            let gd_orig = gdt::parse_descriptor(&gdt_bytes, group, &m.sb)?;
             let bbm_byte_off = gd_orig.block_bitmap * (m.sb.block_size as u64);
             let cached = m.cached_group_bitmap(bbm_byte_off);
             // The metadata cache stores the authoritative disk image. PA
@@ -75,7 +73,7 @@ impl Mount {
             // before verifying the on-disk checksum.
             let mut bitmap = cached.unwrap_or(m.read_meta_byte_range(bbm_byte_off, m.sb.block_size as usize)?);
             let mut disk_bitmap = bitmap.clone();
-            if !crate::csum::verify_block_bitmap_csum_at(&m.sb, &m.state.lock().gdt_buf, group, &disk_bitmap) {
+            if !crate::csum::verify_block_bitmap_csum_at(&m.sb, &gdt_bytes, group, &disk_bitmap) {
                 crate::mount::first_csum_failure(b"block-bitmap-free", group as u64, bbm_byte_off);
                 return Err(MountError::BadChecksum);
             }
