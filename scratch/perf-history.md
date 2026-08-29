@@ -66,6 +66,7 @@ that artifact is regenerated.
 | E4-08 rename transaction flatten / working tree | 1,368,035 | 6,520 | 4,766 | — | — | 11,803 | 526 | 2,698 | rename reuses the outer journal transaction for delete, rmdir, link-count, timestamp, dotdot, and whiteout operations; GNOME Shell marker complete; parent-lock 5,393 ms, writer-hold 9,424 ms, inode-writer-hold 3,100 ms; SMP=1 |
 | E4-08 joined create frame-r1 / working tree | 1,367,540 | 6,225 | 4,552 | — | — | 11,349 | 526 | 2,719 | create/allocation helpers retain the per-operation undo frame while avoiding nested transaction-gate reacquisition; GNOME Shell marker complete; parent-lock 5,465 ms, writer-hold 8,505 ms, inode-writer-hold 2,486 ms; SMP=1 |
 | E4-08 joined create frame-r2 / working tree | 1,367,349 | 6,385 | 4,669 | — | — | 11,581 | 526 | 2,731 | repeat; GNOME Shell marker complete; parent-lock 4,137 ms, writer-hold 10,114 ms, inode-writer-hold 3,450 ms; SMP=1 |
+| E4-08 fresh-main control / `6a60cafaf` | 1,367,668 | 6,748 | 4,934 | 23,845 | — | 12,212 | 752 | 3,026 | unmodified main control; GNOME Shell marker complete; SMP=1; parent-lock 9,877 ms, writer-hold 11,813 ms, inode-writer-hold 4,073 ms; retained for variance, no gain claimed |
 
 The B2709 `munmap` result is a material improvement over B2699: 71,407 ns
 to 21,426 ns (about 70% lower), and 52x to 16x the host baseline. The B2708
