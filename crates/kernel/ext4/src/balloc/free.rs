@@ -81,7 +81,8 @@ impl Mount {
             }
             bitmap[bidx >> 3] &= !mask;
             disk_bitmap[bidx >> 3] &= !mask;
-            // Update cached state (gdt_buf + sb_free_blocks).
+            // Update the cached GDT image; the superblock counter is updated
+            // from its authoritative metadata buffer below.
             let mut gd = gd_orig;
             gd.free_blocks_count = gd.free_blocks_count.saturating_add(1);
             {
@@ -89,11 +90,10 @@ impl Mount {
                 gdt::write_descriptor_counters(&mut s.gdt_buf, group, &m.sb, &gd)?;
                 crate::csum::set_block_bitmap_csum(&m.sb, &mut s.gdt_buf, group, &disk_bitmap);
                 crate::csum::stamp_group_desc_csum(&m.sb, &mut s.gdt_buf, group);
-                s.sb_free_blocks = s.sb_free_blocks.saturating_add(1);
             }
             m.metadata_write(bbm_byte_off, &disk_bitmap)?;
             m.persist_gdt_slot_meta(group)?;
-            m.persist_sb_free_blocks_meta()?;
+            m.persist_sb_free_blocks_meta(1)?;
             m.flush_pending_tx()?;
             m.publish_group_bitmap(group, bbm_byte_off, bitmap);
             Ok(())
