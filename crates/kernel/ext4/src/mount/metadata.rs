@@ -262,7 +262,7 @@ pub(super) fn publish_metadata(state: &mut crate::MountState, lba: u64, buf: all
 mod tests {
     use super::*;
     use alloc::vec;
-    use block::{BlockDevice, BlockOp, BlockRequest, MemDisk};
+    use block::{BlockDevice, BlockError, BlockOp, BlockRequest, MemDisk};
     use core::sync::atomic::{AtomicU64, AtomicU32};
     use std::sync::Mutex;
     use std::thread;
@@ -272,6 +272,34 @@ mod tests {
         target: AtomicU64,
         reads: AtomicU32,
         delay_lock: Mutex<()>,
+    }
+
+    struct FailOnceDisk {
+        inner: Arc<MemDisk<sync::TaskList>>,
+        target: AtomicU64,
+        failed: core::sync::atomic::AtomicBool,
+        reads: AtomicU32,
+    }
+
+    impl BlockDevice for FailOnceDisk {
+        fn block_size(&self) -> u32 { self.inner.block_size() }
+        fn capacity_blocks(&self) -> u64 { self.inner.capacity_blocks() }
+        fn submit(&self, request: BlockRequest, completion: block::BlockCompletion) {
+            if request.op == BlockOp::Read
+                && request.start_block == self.target.load(Ordering::Acquire)
+            {
+                self.reads.fetch_add(1, Ordering::AcqRel);
+                if self.failed.swap(false, Ordering::AcqRel) {
+                    completion(request, Err(BlockError::Eio));
+                    return;
+                }
+            }
+            self.inner.submit(request, completion);
+        }
+        fn submit_sync(&self, request: &mut BlockRequest) -> block::KResult<()> {
+            self.inner.submit_sync(request)
+        }
+        fn flush(&self) -> block::KResult<()> { self.inner.flush() }
     }
 
     impl BlockDevice for DelayedDisk {
@@ -332,5 +360,32 @@ mod tests {
         let right = thread::spawn(move || b.read_metadata_block(lba).unwrap());
         assert_eq!(left.join().unwrap(), right.join().unwrap());
         assert_eq!(disk.reads.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn failed_metadata_owner_is_removed_and_the_next_reader_retries() {
+        let image = include_bytes!("../../tests/mini-j.img");
+        let sectors = image.len() as u64 / 512;
+        let inner = MemDisk::<sync::TaskList>::new(512, sectors);
+        let mut request = BlockRequest::new_write(0, sectors as u32, image.to_vec());
+        inner.submit_sync(&mut request).unwrap();
+        let disk = Arc::new(FailOnceDisk {
+            inner,
+            target: AtomicU64::new(u64::MAX),
+            failed: core::sync::atomic::AtomicBool::new(false),
+            reads: AtomicU32::new(0),
+        });
+        let mount = Arc::new(Mount::open(Arc::clone(&disk) as Arc<dyn BlockDevice>).unwrap());
+        let lba = mount.group_desc(0).unwrap().inode_table as u64;
+        mount.state.lock().metadata_cache.clear();
+        disk.target.store(lba * u64::from(mount.sb.block_size) / 512, Ordering::Release);
+        disk.failed.store(true, Ordering::Release);
+
+        assert_eq!(mount.read_metadata_block(lba), Err(MountError::BlockIo));
+        assert!(mount.state.lock().metadata_reads.is_empty(),
+                "a failed owner must not strand a waiter entry");
+        assert!(mount.read_metadata_block(lba).is_ok(),
+                "a later reader must be able to retry after the failed completion");
+        assert_eq!(disk.reads.load(Ordering::Acquire), 2);
     }
 }
