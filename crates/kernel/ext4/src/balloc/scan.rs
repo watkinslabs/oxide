@@ -47,7 +47,15 @@ pub fn average_fragment_order(bitmap: &[u8], max_bits: u32) -> Option<u8> {
     if fragments == 0 { return None; }
     let average = free / fragments;
     let log2 = u32::BITS - 1 - average.leading_zeros();
-    Some(log2.saturating_sub(1) as u8)
+    Some(log2 as u8)
+}
+
+/// Smallest order whose lower bound can hold `blocks` blocks. This is the
+/// lookup key for Linux's average-fragment xarrays: a group in bucket `n`
+/// has an average fragment of at least `2^n`, so a request of three blocks
+/// must begin at bucket two rather than accepting bucket one.
+pub fn ceil_log2(blocks: u32) -> u8 {
+    if blocks <= 1 { 0 } else { (u32::BITS - (blocks - 1).leading_zeros()) as u8 }
 }
 
 /// Replace one group's membership in an order-indexed summary. This is the
@@ -148,10 +156,20 @@ mod tests {
 
     #[test]
     fn average_fragment_order_matches_linux_buckets() {
-        assert_eq!(average_fragment_order(&[0], 8), Some(2));
-        assert_eq!(average_fragment_order(&[0b1111_0000], 8), Some(1));
+        assert_eq!(average_fragment_order(&[0], 8), Some(3));
+        assert_eq!(average_fragment_order(&[0b1111_0000], 8), Some(2));
         assert_eq!(average_fragment_order(&[0b1010_1010], 8), Some(0));
         assert_eq!(average_fragment_order(&[0xff], 8), None);
+    }
+
+    #[test]
+    fn ceil_log2_is_the_first_sufficient_fragment_bucket() {
+        assert_eq!(ceil_log2(0), 0);
+        assert_eq!(ceil_log2(1), 0);
+        assert_eq!(ceil_log2(2), 1);
+        assert_eq!(ceil_log2(3), 2);
+        assert_eq!(ceil_log2(4), 2);
+        assert_eq!(ceil_log2(5), 3);
     }
 
     #[test]
