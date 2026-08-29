@@ -73,6 +73,21 @@ fn contiguous_run_prefers_the_smallest_sufficient_free_extent() {
 }
 
 #[test]
+fn contiguous_run_honors_linux_satisfied_scan_limit() {
+    // Linux accepts a satisfied candidate after ten extents. A later,
+    // smaller extent must not turn this into an unbounded best-fit search.
+    let mut bitmap = alloc::vec![0xffu8; 512];
+    let mut cursor = 0usize;
+    for len in 4..=14 {
+        for bit in cursor..cursor + len { bitmap[bit >> 3] &= !(1 << (bit & 7)); }
+        cursor += len + 1;
+    }
+    // Eleventh extent: smaller than every extent considered by the limit.
+    for bit in cursor..cursor + 3 { bitmap[bit >> 3] &= !(1 << (bit & 7)); }
+    assert_eq!(find_contiguous_run(&bitmap, (cursor + 3) as u32, 2, 0, None), Some(0));
+}
+
+#[test]
 fn first_clear_zero_max() {
     assert_eq!(find_first_clear(&[0x00; 4], 0), None);
 }
