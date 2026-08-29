@@ -131,22 +131,31 @@ impl Mount {
             .push(InodePrealloc { logical_start, used: vec![false; blocks.len()], blocks });
     }
 
-    /// Return a locality PA and the CPU list that owns it. # C: O(N PAs)
-    pub(crate) fn peek_group_prealloc_owner(&self, group: u32, want: u32, goal: u64)
-        -> Option<(usize, Vec<u64>)>
+    /// Return the nearest usable locality PA and its actual group owner.
+    /// Linux searches every PA in the current CPU's locality lists; the goal
+    /// only ranks candidates and must not restrict the search to one hinted
+    /// group. # C: O(N PAs)
+    pub(crate) fn peek_group_prealloc_owner(&self, want: u32, goal: u64)
+        -> Option<(usize, u32, Vec<u64>)>
     {
         let cpu = locality_cpu();
-        if want == 0 { return Some((cpu, Vec::new())); }
+        if want == 0 { return Some((cpu, 0, Vec::new())); }
         let first_order = group_prealloc_order(want);
         let s = self.state.lock();
+        let mut best: Option<(u64, u32, Vec<u64>)> = None;
         for order in first_order..GROUP_PREALLOC_ORDER_BUCKETS {
-            if let Some(pas) = s.group_prealloc.get(&(cpu, group, order)) {
+            for (&(_, group, _), pas) in s.group_prealloc.iter()
+                .filter(|(&(owner, _, bucket), _)| owner == cpu && bucket == order)
+            {
                 if let Some(pa) = select_group_pa(pas, want, goal) {
-                    return Some((cpu, pa.blocks[..want as usize].to_vec()));
+                    let distance = pa.blocks[0].abs_diff(goal);
+                    if best.as_ref().is_none_or(|(old, _, _)| distance < *old) {
+                        best = Some((distance, group, pa.blocks[..want as usize].to_vec()));
+                    }
                 }
             }
         }
-        None
+        best.map(|(_, group, blocks)| (cpu, group, blocks))
     }
 
     /// Retire the exact physical block selected from the CPU-local PA list.

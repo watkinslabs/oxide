@@ -96,11 +96,10 @@ impl Mount {
             .or_else(|| extents.first())
             .map(|(_, phys, _, _)| *phys)
             .unwrap_or_else(|| crate::balloc::group_first_block(&self.sb, 0));
-        let hint = self.group_of_block(goal);
-        if let Some((cpu, blocks)) = self.peek_group_prealloc_owner(hint, 1, goal) {
+        if let Some((cpu, pa_group, blocks)) = self.peek_group_prealloc_owner(1, goal) {
             if let Some(&block) = blocks.first() {
                 self.claim_prealloc_block(block)?;
-                return Ok(Some((block, AppendPrealloc::Group(cpu, hint))));
+                return Ok(Some((block, AppendPrealloc::Group(cpu, pa_group))));
             }
         }
         Ok(None)

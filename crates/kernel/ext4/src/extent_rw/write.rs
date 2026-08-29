@@ -77,8 +77,8 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
         // before the reservation is published.
         let group_owner = group_prealloc.then(crate::balloc::prealloc::locality_cpu);
         if group_prealloc {
-            if let Some((group_cpu, blocks)) = m.peek_group_prealloc_owner(
-                hint, count, goal_phys.unwrap_or_else(|| crate::balloc::group_first_block(&m.sb, hint))) {
+            if let Some((group_cpu, _pa_group, blocks)) = m.peek_group_prealloc_owner(
+                count, goal_phys.unwrap_or_else(|| crate::balloc::group_first_block(&m.sb, hint))) {
                 runs.push(ReservedRun { logical_start: start as u32, blocks,
                     from_inode_pa: false, from_group_pa: true,
                     group_cpu: Some(group_cpu),
