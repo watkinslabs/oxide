@@ -194,6 +194,15 @@ impl Mount {
     /// more than ~25 hardlinks alongside the coreutils binaries.
     /// # C: O(N_entries)
     pub fn lookup_in_dir(&self, dir_inode: &Inode, name: &[u8]) -> Result<u32, MountError> {
+        self.lookup_in_dir_hint(dir_inode, name, 0).map(|(ino, _)| ino)
+    }
+
+    /// Lookup with the Linux per-directory starting-block hint. The returned
+    /// block is meaningful for a linear directory and is fed back into the
+    /// in-core inode owner after a successful match. # C: O(N_entries)
+    pub(crate) fn lookup_in_dir_hint(&self, dir_inode: &Inode, name: &[u8], start: u32)
+        -> Result<(u32, u32), MountError>
+    {
         if !dir_inode.is_dir() { return Err(MountError::NotDir); }
         if !self.strict_name_valid(dir_inode, name) { return Err(MountError::Dir(dir::DirError::BadNameLen)); }
         let block_size = self.sb.block_size as u64;
@@ -209,7 +218,7 @@ impl Mount {
             #[cfg(feature = "debug-resolve-cost")]
             let _htree_cost = vfs::resolve_cost::ext4_htree_lookup();
             match self.htree_lookup_in_dir(dir_inode, name)? {
-                HtreeLookup::Found(ino) => return Ok(ino),
+                HtreeLookup::Found(ino) => return Ok((ino, 0)),
                 HtreeLookup::Miss => return Err(MountError::NotFound),
                 HtreeLookup::Fallback => {}
             }
@@ -222,7 +231,9 @@ impl Mount {
         let verify_tail = (dir_inode.i_flags & EXT4_INDEX_FL) == 0 && dir_inode.ino != 0;
         #[cfg(feature = "debug-resolve-cost")]
         let _linear_cost = vfs::resolve_cost::ext4_linear_lookup();
-        for fb in 0..nblocks {
+        let start = if nblocks == 0 { 0 } else { start % nblocks };
+        for step in 0..nblocks {
+            let fb = (start + step) % nblocks;
             // Shadow-aware read (read-your-writes): under cross-op batching a dir
             // block just written by `dir_link` lives in `MountState.shadow` until
             // `commit_batch`. Reading via the plain `read_file_block` returned the
@@ -240,9 +251,9 @@ impl Mount {
                 return Err(MountError::BadChecksum);
             }
             if name_eq_mode(dir_inode.i_flags) == NameEq::Bytes {
-                if let Some(ino) = dir::lookup_bytes(&blk, name)? { return Ok(ino); }
+                if let Some(ino) = dir::lookup_bytes(&blk, name)? { return Ok((ino, fb)); }
             } else if let Some(e) = dir::lookup_matching(&blk, |entry| self.names_equal(dir_inode, entry, name))? {
-                return Ok(e.inode);
+                return Ok((e.inode, fb));
             }
         }
         Err(MountError::NotFound)

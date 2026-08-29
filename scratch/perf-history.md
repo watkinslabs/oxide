@@ -50,6 +50,7 @@ that artifact is regenerated.
 | E4-08 linear fast match / working tree | 1,368,054 | 6,487 | 4,742 | 23,515 | — | 18,622 | 383 | 2,968 | direct Linux-shaped byte-name match avoids per-entry DirEntry/closure work; GNOME Shell marker complete; SMP=1; ext4 linear phase ~161 us |
 | E4-08 linear fast match repeat / working tree | 1,367,794 | 6,863 | 5,017 | 24,873 | — | 18,188 | 536 | 2,872 | repeat; GNOME Shell marker complete; SMP=1; ext4 linear phase ~163 us; aggregate remains within variance |
 | E4-08 inode-writer attribution / working tree | 1,368,001 | 6,244 | 4,565 | 23,925 | — | 18,710 | 526 | 2,682 | GNOME Shell marker complete; SMP=1; actual inode mutation writer hold 2,096 ms across 3,010 locks (~696 us each), distinct from generic file-position writer holds; attribution only |
+| E4-08 directory start hint / working tree | 1,367,917 | 6,377/6,448 | 4,662/4,714 | 23,382/23,184 | — | 11,743/11,393 | 526 | 3,187/3,189 | Linux per-directory last-successful-block hint for linear scans; two GNOME/SMP=1 runs reached GNOME Shell; 14–15x host, aggregate gain retained |
 | E4-08 htree byte matcher / working tree | 1,368,367 | 6,377 | 4,660 | 23,331 | — | 18,414 | 526 | 3,457 | indexed-leaf ordinary-name lookup now uses the direct byte matcher; GNOME image has no indexed dirs (htree phase count 0), so no aggregate gain claimed; targeted htree image suite 3/3 |
 
 The B2709 `munmap` result is a material improvement over B2699: 71,407 ns
