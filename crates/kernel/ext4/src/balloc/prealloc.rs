@@ -65,6 +65,20 @@ fn trim_group_preallocations(entries: &mut Vec<GroupPrealloc>) {
     entries.truncate(5);
 }
 
+fn reinsert_group_preallocs(
+    map: &mut alloc::collections::BTreeMap<(usize, u32, u8), Vec<GroupPrealloc>>,
+    cpu: usize,
+    group: u32,
+    pas: Vec<GroupPrealloc>,
+) {
+    for pa in pas {
+        let new_order = group_prealloc_order(pa.blocks.len() as u32);
+        let entries = map.entry((cpu, group, new_order)).or_default();
+        entries.push(pa);
+        trim_group_preallocations(entries);
+    }
+}
+
 fn inode_pa_blocks(pa: &InodePrealloc, logical: u32, want: u32) -> Option<Vec<u64>> {
     let offset = logical.checked_sub(pa.logical_start)? as usize;
     if offset >= pa.blocks.len() || pa.used[offset] { return None; }
@@ -187,9 +201,17 @@ impl Mount {
         let mut s = self.state.lock();
         for order in 0..GROUP_PREALLOC_ORDER_BUCKETS {
             let key = (cpu, group, order);
-            let Some(pas) = s.group_prealloc.get_mut(&key) else { continue; };
-            if !consume_group_prealloc_block(pas, phys) { continue; }
-            if pas.is_empty() { s.group_prealloc.remove(&key); }
+            let Some(mut pas) = s.group_prealloc.remove(&key) else { continue; };
+            if !consume_group_prealloc_block(&mut pas, phys) {
+                s.group_prealloc.insert(key, pas);
+                continue;
+            }
+            // Linux's ext4_mb_release_context() removes a consumed group PA
+            // from its old free-length list and inserts every surviving tail
+            // into the bucket for its current pa_free length. Keeping a tail
+            // under the original request bucket makes the locality index lie
+            // about its size and defeats the bounded-list trim policy.
+            reinsert_group_preallocs(&mut s.group_prealloc, cpu, group, pas);
             return true;
         }
         false
