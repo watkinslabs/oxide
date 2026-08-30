@@ -58,7 +58,7 @@ durability after device success, with sync errors carried into the CQE. E4-10
 The scalar io_uring read/write dispatch now carries `sqe.rw_flags` through the
 same shared RWF admission and VFS owners as vectored I/O, including cursor
 NOWAIT reads and per-operation append/sync behavior. E4-10
-stays IN-PROGRESS pending the remaining inline-data, journal-data, and DAX owners. Focused io_uring
+stays IN-PROGRESS pending final boot closure; inline-data and legacy-indirect mutation are covered, while journal-data remains on its synchronous owner and DAX is explicitly refused. Focused io_uring
 timestamp/RWF-sync image coverage passes on both architectures. The per-operation sync mode now travels with
 the owned DIO transfer through the filesystem and block completion owners;
 `dio_polled_image` pins deferred success/error, hole allocation, unwritten
