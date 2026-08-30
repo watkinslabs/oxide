@@ -6,6 +6,7 @@
 //! transfer hidden behind the polled interface.
 
 use alloc::sync::Arc;
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -27,12 +28,16 @@ pub(crate) struct DioState {
     token: Spinlock<Option<DioToken>, InodeLockClass>,
     remaining: AtomicU32,
     result_len: usize,
+    write: bool,
+    invalidate_start: u64,
+    invalidate_end: u64,
 }
 
 impl DioState {
     /// # C: O(1)
     fn new(data: Arc<Ext4FileData>, io: DirectIo, token: DioToken, requests: u32,
-           result_len: usize) -> Arc<Self>
+           result_len: usize, write: bool, invalidate_start: u64,
+           invalidate_end: u64) -> Arc<Self>
     {
         Arc::new(Self {
             data,
@@ -42,6 +47,9 @@ impl DioState {
             token: Spinlock::new(Some(token)),
             remaining: AtomicU32::new(requests),
             result_len,
+            write,
+            invalidate_start,
+            invalidate_end,
         })
     }
 
@@ -60,10 +68,18 @@ impl DioState {
         if self.remaining.fetch_sub(1, Ordering::AcqRel) == 1 { self.finish(); }
     }
 
-    /// Publish the one completion after all device requests and release the
-    /// inode-DIO lifetime before user-visible completion. # C: O(len) copy is
-    /// deferred to the io_uring reaper's existing callback owner.
-    fn finish(&self) {
+    /// Finish filesystem work in process context, after the device has
+    /// completed. Linux's iomap DIO completion cannot invalidate mapped cache
+    /// pages or do other sleepable work from a block completion callback.
+    /// # C: O(pages in range) plus the completion callback
+    fn finish_process(&self) {
+        if self.write {
+            let _invalidate = unsafe { self.data.invalidate_lock.write() };
+            let first = self.invalidate_start / hal::PAGE_SIZE_BYTES;
+            let last = self.invalidate_end.saturating_add(hal::PAGE_SIZE_BYTES - 1)
+                / hal::PAGE_SIZE_BYTES;
+            if first < last { self.data.frames.try_invalidate_pages(first, last - 1); }
+        }
         self.data.dio_queue.lock().retain(|q| !core::ptr::eq(&**q, self));
         self.token.lock().take();
         let result = self.error.lock().take()
@@ -71,6 +87,28 @@ impl DioState {
         let buf = core::mem::take(&mut *self.buf.lock());
         if let Some(done) = self.done.lock().take() { done(buf, result); }
     }
+
+    /// Device callbacks may run in interrupt/softirq context. Defer the
+    /// filesystem completion half to the kernel workqueue; hosted tests run it
+    /// inline because they have no worker. # C: O(1)
+    fn finish(self: &Arc<Self>) {
+        if !self.write { self.finish_process(); return; }
+        let raw = Box::into_raw(Box::new(FinishJob { state: self.clone() })) as usize;
+        #[cfg(target_os = "oxide-kernel")]
+        if sched::live::workqueue::queue_work(run_finish, raw) { return; }
+        // SAFETY: queue_work returned false, so ownership remains here.
+        let job = unsafe { Box::from_raw(raw as *mut FinishJob) };
+        job.state.finish_process();
+    }
+}
+
+struct FinishJob { state: Arc<DioState> }
+
+#[cfg(target_os = "oxide-kernel")]
+fn run_finish(raw: usize) {
+    // SAFETY: raw is owned by this one queued work item.
+    let job = unsafe { Box::from_raw(raw as *mut FinishJob) };
+    job.state.finish_process();
 }
 
 /// Poll the filesystem's underlying block completion queue. The aggregate
@@ -89,15 +127,17 @@ pub(crate) fn can_poll(file: &File) -> bool {
         .is_some_and(|d| d.st.mount.dev.can_poll())
 }
 
-/// Submit one extent-mapped direct read as owned block requests. Direct writes
-/// are returned to the synchronous ext4 path until allocation and journal
-/// publication can be separated from data submission without losing ordering.
+/// Submit one extent-mapped direct transfer as owned block requests. Writes
+/// are admitted only for initialized, in-place extent overwrites: allocation,
+/// unwritten conversion, inode extension, and journal-data ordering remain in
+/// the synchronous Linux-shaped owner until they have a process-context
+/// completion owner of their own.
 /// # C: O(extents) planning plus O(requests) submission
 pub(crate) fn submit(file: &File, io: DirectIo) -> DirectSubmit {
     let Some(data) = file.inode().private_arc::<Ext4FileData>() else {
         return DirectSubmit::Unsupported(io);
     };
-    if io.write || !can_poll(file) {
+    if !can_poll(file) {
         return DirectSubmit::Unsupported(io);
     }
     let bs = data.st.mount.sb.block_size as u64;
@@ -114,6 +154,10 @@ pub(crate) fn submit(file: &File, io: DirectIo) -> DirectSubmit {
         Some(v) => v,
         None => return DirectSubmit::Failed(VfsError::Einval),
     };
+    // Extending and partial-tail writes need ext4 allocation/size publication
+    // and therefore stay on the synchronous owner, just as Linux's iomap
+    // write path does when it cannot finish metadata in the poll context.
+    if io.write && end > inode.size { return DirectSubmit::Unsupported(io); }
     let result_len = if io.off >= inode.size {
         0
     } else {
@@ -134,7 +178,7 @@ pub(crate) fn submit(file: &File, io: DirectIo) -> DirectSubmit {
     if data.frames.writeback_range(io.off, end).is_err() {
         return DirectSubmit::Failed(VfsError::Eio);
     }
-    let _inode_lock = if data.st.mount.behaviour().dio_read_nolock_enabled() {
+    let _inode_lock = if io.write || data.st.mount.behaviour().dio_read_nolock_enabled() {
         None
     } else {
         Some(file.inode().inode_lock_shared())
@@ -144,13 +188,19 @@ pub(crate) fn submit(file: &File, io: DirectIo) -> DirectSubmit {
         Err(_) => return DirectSubmit::Failed(VfsError::Eio),
     };
     let mut plans: Vec<(usize, u64, usize)> = Vec::new();
+    let mut covered = io.off;
     if request_end > io.off {
         for run in extents {
             let run_start = u64::from(run.logical) * bs;
             let run_end = run_start.saturating_add(u64::from(run.len) * bs);
             let start = core::cmp::max(io.off, run_start);
             let finish = core::cmp::min(request_end, run_end);
-            if start >= finish || run.unwritten { continue; }
+            if start >= finish { continue; }
+            if io.write && (run.unwritten || start != covered) {
+                return DirectSubmit::Unsupported(io);
+            }
+            if io.write { covered = finish; }
+            if run.unwritten { continue; }
             let logical_blocks = (start - run_start) / bs;
             let bytes = (finish - start) as usize;
             let phys = run.phys.saturating_add(logical_blocks);
@@ -158,8 +208,12 @@ pub(crate) fn submit(file: &File, io: DirectIo) -> DirectSubmit {
             plans.push((at, phys, bytes));
         }
     }
+    if io.write && covered != request_end { return DirectSubmit::Unsupported(io); }
+    let write = io.write;
+    let off = io.off;
+    if write { file.file_update_time(); }
     let state = DioState::new(data.clone(), io, token, plans.len() as u32,
-                              result_len);
+                              result_len, write, off, request_end);
     data.dio_queue.lock().push(state.clone());
     if plans.is_empty() {
         state.remaining.store(1, Ordering::Release);
@@ -175,11 +229,14 @@ pub(crate) fn submit(file: &File, io: DirectIo) -> DirectSubmit {
             state.complete(at, BlockRequest::default(), Err(block::BlockError::Einval));
             continue;
         }
+        let write = state.write;
         let request = BlockRequest {
-            op: BlockOp::Read,
+            op: if write { BlockOp::Write } else { BlockOp::Read },
             start_block: start,
             len_blocks: n as u32,
-            buffer: alloc::vec![0u8; bytes],
+            buffer: if write {
+                state.buf.lock()[at..at + bytes].to_vec()
+            } else { alloc::vec![0u8; bytes] },
             polled: true,
             ..BlockRequest::default()
         };
