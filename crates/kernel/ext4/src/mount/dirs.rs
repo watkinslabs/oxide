@@ -321,11 +321,6 @@ impl Mount {
         let start = if nblocks == 0 { 0 } else { start % nblocks };
         for step in 0..nblocks {
             let fb = (start + step) % nblocks;
-            if step % DIR_LOOKUP_READAHEAD_BLOCKS == 0 {
-                let remaining = nblocks - step;
-                self.prefetch_file_blocks_async(
-                    dir_inode, fb, remaining.min(DIR_LOOKUP_READAHEAD_BLOCKS));
-            }
             // Shadow-aware read (read-your-writes): under cross-op batching a dir
             // block just written by `dir_link` lives in `MountState.shadow` until
             // `commit_batch`. Reading via the plain `read_file_block` returned the
@@ -336,6 +331,16 @@ impl Mount {
             // buffer-cache ownership through the scan instead of cloning a
             // full filesystem block for every linear lookup.
             let blk = self.read_file_block_meta_shared(dir_inode, fb)?;
+            // Linux batches future directory buffers while consuming the
+            // current buffer once. Queue only the following window here: the
+            // old ordering resolved `fb` for readahead and then resolved it
+            // again for the synchronous read, doubling the extent walk on
+            // every linear-directory probe.
+            if step % DIR_LOOKUP_READAHEAD_BLOCKS == 0 && fb + 1 < nblocks {
+                let remaining = nblocks - step - 1;
+                self.prefetch_file_blocks_async(
+                    dir_inode, fb + 1, remaining.min(DIR_LOOKUP_READAHEAD_BLOCKS));
+            }
             if verify_tail
                 && !crate::csum::verify_dirent_tail(&self.sb, dir_inode.ino, dir_inode.generation, &blk)
             {
