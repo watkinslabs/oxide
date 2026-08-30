@@ -94,10 +94,13 @@ pub fn encode_block_with_ea(entries: &[(String, Vec<u8>)], ea: &[(String, u32, u
         let elen = xattr_entry_len(name_len);
         let vsize = if ea_inode.is_some() { 0 } else { xattr_value_size(val.len()) };
         if value_end < BLOCK_HDR_LEN + vsize { return Err(()); }
-        let value_pos = value_end - vsize;
+        // Linux does not use e_value_offs when e_value_inum is set. Keep the
+        // unused field zero; an offset at the block end makes fsck treat the
+        // EA inode's data blocks as if they belonged to the parent inode.
+        let value_pos = if ea_inode.is_some() { 0 } else { value_end - vsize };
         // Entry headers (up) + the 4-byte terminator must not overrun the
         // values (down).
-        if entry_ptr + elen + 4 > value_pos { return Err(()); }
+        if ea_inode.is_none() && entry_ptr + elen + 4 > value_pos { return Err(()); }
         // e_value_offs is relative to the block start (base_off = 0).
         if ea_inode.is_none() { blk[value_pos..value_pos + val.len()].copy_from_slice(val); }
         blk[entry_ptr] = name_len as u8;
@@ -115,7 +118,7 @@ pub fn encode_block_with_ea(entries: &[(String, Vec<u8>)], ea: &[(String, u32, u
         blk[entry_ptr + ENTRY_HDR_LEN..entry_ptr + ENTRY_HDR_LEN + name_len]
             .copy_from_slice(name_bytes);
         entry_ptr += elen;
-        value_end = value_pos;
+        if ea_inode.is_none() { value_end = value_pos; }
     }
     let hh = block_hash(&e_hashes);
     blk[12..16].copy_from_slice(&hh.to_le_bytes());

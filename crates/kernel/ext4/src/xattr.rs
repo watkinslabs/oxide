@@ -346,6 +346,7 @@ impl Mount {
             let old_image = if old_facl == 0 { None } else {
                 Some(m.read_metadata_block(old_facl)?)
             };
+            let original_sectors = Self::i_blocks_of(&bytes);
             let mut old_ea = Vec::new();
             collect_ea_inode_refs(&bytes, hdr_off + 4, isize, &mut old_ea);
             if let Some(image) = old_image.as_ref() {
@@ -354,15 +355,15 @@ impl Mount {
             // Try IBODY-only. Encode into the live buffer; on overflow the buffer
             // is discarded (re-read) before the external path.
             if encode_ibody(&mut bytes, hdr_off, isize, entries).is_ok() {
-                let old_sectors = Self::i_blocks_of(&bytes);
                 if old_facl != 0 { Self::detach_external_block(&mut bytes, bs); }
-                let new_sectors = Self::i_blocks_of(&bytes);
-                if old_facl != 0 {
-                    m.account_i_blocks_delta(ino, old_sectors, new_sectors)?;
-                }
+                let current_sectors = Self::i_blocks_of(&bytes);
+                let old_ea_sectors = old_ea.iter().try_fold(0u32, |sum, ea_ino|
+                    Ok::<u32, MountError>(sum.saturating_add(m.ea_inode_sectors(*ea_ino)?)))?;
+                let new_sectors = current_sectors.saturating_sub(old_ea_sectors);
+                m.account_i_blocks_delta(ino, original_sectors, new_sectors)?;
+                bytes[0x1C..0x20].copy_from_slice(&new_sectors.to_le_bytes());
                 if let Err(e) = m.write_inode_bytes(ino, &bytes) {
-                    if old_facl != 0 { return Err(m.rollback_i_blocks_delta(ino, new_sectors, old_sectors, e)); }
-                    return Err(e)
+                    return Err(m.rollback_i_blocks_delta(ino, new_sectors, original_sectors, e));
                 }
                 if old_facl != 0 {
                     let old_image = m.read_metadata_block(old_facl)?;
@@ -370,7 +371,7 @@ impl Mount {
                     if last {
                         m.xattr_cache_remove(old_facl, &old_image);
                         if let Err(e) = m.free_block(old_facl) {
-                            return Err(m.rollback_i_blocks_delta(ino, new_sectors, old_sectors, e));
+                            return Err(m.rollback_i_blocks_delta(ino, new_sectors, original_sectors, e));
                         }
                     }
                 }
@@ -381,6 +382,7 @@ impl Mount {
             let (mut bytes, _off) = m.read_inode_bytes(ino)?;
             encode_ibody(&mut bytes, hdr_off, isize, &[]).map_err(|_| MountError::NoSpace)?;
             let mut ea = Vec::new();
+            let mut new_ea_sectors = 0u32;
             for (name, value) in entries {
                 if value.len() > bs {
                     if m.sb.feature_incompat & crate::superblock::INCOMPAT_EA_INODE == 0 {
@@ -389,6 +391,8 @@ impl Mount {
                     let (ea_ino, _) = m.lookup_create_ea_inode(ino, value)?;
                     let hash = m.ea_value_hash(value);
                     ea.push((name.clone(), ea_ino, hash));
+                    new_ea_sectors = new_ea_sectors.saturating_add(
+                        (value.len().div_ceil(bs) as u32).saturating_mul(m.sb.sectors_per_block()));
                 }
             }
             let mut blk = external::encode_block_with_ea(entries, &ea, bs)
@@ -442,7 +446,18 @@ impl Mount {
                 }
                 return if old_facl == 0 {
                     Err(m.rollback_i_blocks_delta(ino, charged_sectors, old_sectors, e))
-                } else { Err(e) };
+                    } else { Err(e) };
+            }
+            let old_ea_sectors = old_ea.iter().try_fold(0u32, |sum, ea_ino|
+                Ok::<u32, MountError>(sum.saturating_add(m.ea_inode_sectors(*ea_ino)?)))?;
+            let current_sectors = Self::i_blocks_of(&bytes);
+            let new_sectors = original_sectors.saturating_sub(old_ea_sectors)
+                .saturating_add(new_ea_sectors)
+                .saturating_add(if old_facl == 0 { m.sb.sectors_per_block() } else { 0 });
+            if current_sectors != new_sectors {
+                m.account_i_blocks_delta(ino, current_sectors, new_sectors)?;
+                bytes[0x1C..0x20].copy_from_slice(&new_sectors.to_le_bytes());
+                m.write_inode_bytes(ino, &bytes)?;
             }
             if old_facl != 0 && block_nr != old_facl {
                 if m.xattr_block_put(old_facl)? {

@@ -205,7 +205,10 @@ fn ea_inode_value_round_trips_from_linux_layout() {
     let xattr_block = read_fs_block(&disk.0, block, m.sb.block_size);
     let ea_ino = u32::from_le_bytes([xattr_block[36], xattr_block[37], xattr_block[38], xattr_block[39]]);
     assert_ne!(ea_ino, 0, "large value uses e_value_inum");
+    assert_eq!(&xattr_block[34..36], &[0, 0], "EA inode entries leave e_value_offs unused");
     let ea = m.read_inode(ea_ino).unwrap();
+    assert_eq!(m.read_inode(n).unwrap().i_blocks, 12,
+        "parent i_blocks includes referenced EA inode value blocks");
     assert_ne!(ea.i_flags & 0x0020_0000, 0, "EA inode flag is persisted");
     assert_eq!(ea.size, value.len() as u64);
     let mut got = std::vec::Vec::new();
@@ -214,10 +217,20 @@ fn ea_inode_value_round_trips_from_linux_layout() {
     }
     got.truncate(value.len());
     assert_eq!(got, value, "EA inode extent data round-trips");
+    match e2fsck_clean(&dump_disk(&disk.0, disk.1)) {
+        Some(true) => {}
+        Some(false) => panic!("e2fsck flagged the Linux EA-inode layout"),
+        None => eprintln!("e2fsck not available — skipped EA-inode fsck assertion"),
+    }
     let free_with_ea = m.state_free_inodes();
     m.store_xattrs(n, &[entry("user.small", b"x")]).unwrap();
     assert_eq!(m.state_free_inodes(), free_with_ea + 1,
         "replacing the large xattr releases its hidden EA inode");
+    match e2fsck_clean(&dump_disk(&disk.0, disk.1)) {
+        Some(true) => {}
+        Some(false) => panic!("e2fsck flagged EA-inode release"),
+        None => eprintln!("e2fsck not available — skipped EA-inode release assertion"),
+    }
 }
 
 #[test]
@@ -249,4 +262,9 @@ fn identical_large_xattrs_share_one_ea_inode_and_release_last_reference() {
 
     m.store_xattrs(n, &[entry("user.small", b"x")]).unwrap();
     assert_eq!(m.state_free_inodes(), free_before, "last parent reference releases the EA inode");
+    match e2fsck_clean(&dump_disk(&disk.0, disk.1)) {
+        Some(true) => {}
+        Some(false) => panic!("e2fsck flagged shared EA-inode release"),
+        None => eprintln!("e2fsck not available — skipped shared EA-inode release assertion"),
+    }
 }

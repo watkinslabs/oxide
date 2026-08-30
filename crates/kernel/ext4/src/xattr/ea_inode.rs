@@ -61,7 +61,11 @@ impl Mount {
         -> Result<(u32, bool), MountError>
     {
         let hash = self.ea_value_hash(value);
-        let candidates = self.state.lock().ea_inode_cache.get(&hash).cloned().unwrap_or_default();
+        let candidates = if self.behaviour().mbcache {
+            self.state.lock().ea_inode_cache.get(&hash).cloned().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         for ino in candidates {
             let Ok(node) = self.read_inode(ino) else { continue };
             if node.size != value.len() as u64 || node.i_flags & EXT4_EA_INODE_FL == 0 { continue; }
@@ -72,7 +76,7 @@ impl Mount {
             }
         }
         let ino = self.create_ea_inode_in_transaction(parent_ino, value)?;
-        self.ea_inode_cache_insert(hash, ino);
+        if self.behaviour().mbcache { self.ea_inode_cache_insert(hash, ino); }
         Ok((ino, true))
     }
 
@@ -98,6 +102,16 @@ impl Mount {
         }
     }
 
+    /// Count the filesystem sectors charged to one EA value reference.
+    /// Linux accounts the rounded value size against each referencing inode.
+    /// # C: O(1) inode read
+    pub(crate) fn ea_inode_sectors(&self, ino: u32) -> Result<u32, MountError> {
+        let size = self.read_inode(ino)?.size;
+        let blocks = size.div_ceil(self.sb.block_size as u64);
+        Ok(blocks.saturating_mul(self.sb.sectors_per_block() as u64)
+            .min(u32::MAX as u64) as u32)
+    }
+
     /// Drop one parent xattr reference. The final reference owns all extent
     /// blocks and the hidden inode slot, so both are reclaimed atomically.
     /// # C: O(extent tree) + O(1) inode teardown
@@ -111,9 +125,15 @@ impl Mount {
                 return m.write_inode_bytes(ino, &raw);
             }
             let hash = m.ea_inode_hash(&raw);
+            // Linux makes the unlinked EA inode crash-recoverable before
+            // truncating its extents.  Keep the same orphan ordering here:
+            // nlink=0, orphan_add, truncate, orphan_del, final free.
+            raw[0x1A..0x1C].copy_from_slice(&0u16.to_le_bytes());
+            m.write_inode_bytes(ino, &raw)?;
+            m.orphan_add(ino)?;
             m.truncate_inode_for_deletion(ino)?;
+            m.orphan_del(ino)?;
             let (mut dead, _) = m.read_inode_bytes(ino)?;
-            dead[0x1A..0x1C].copy_from_slice(&0u16.to_le_bytes());
             dead[0x14..0x18].copy_from_slice(&EA_DELETED_DTIME.to_le_bytes());
             m.write_inode_bytes(ino, &dead)?;
             m.free_inode(ino)?;
