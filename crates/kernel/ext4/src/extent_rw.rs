@@ -35,6 +35,7 @@ mod prealloc;
 mod limits;
 
 pub(crate) use limits::DATA_WRITE_CLUSTER_BYTES;
+pub(crate) use collect::PhysRun;
 
 pub(crate) use crate::inode::EXT4_MAX_EXTENT_DEPTH;
 
