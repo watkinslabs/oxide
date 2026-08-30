@@ -7,6 +7,30 @@ use crate::mount::{Mount, MountError};
 const DIRECT_BLOCKS: u32 = 12;
 
 impl Mount {
+    pub(crate) fn fallocate_legacy_inode_inner(
+        &self, ino: u32, offset: u64, len: u64, keep_size: bool,
+    ) -> Result<(), MountError> {
+        if len == 0 { return Ok(()); }
+        let bs = self.sb.block_size as u64;
+        let old_size = self.read_inode(ino)?.size;
+        let end = offset.checked_add(len)
+            .ok_or(MountError::Inode(inode::InodeError::BadLen))?;
+        let first = offset / bs;
+        let last = end.saturating_add(bs - 1) / bs;
+        let zero = vec![0u8; bs as usize];
+        for logical in first..last {
+            let current = self.read_inode(ino)?;
+            match self.resolve_pblock(&current, logical as u32) {
+                Ok(_) => {}
+                Err(MountError::NotFound) => self.write_at_inner(ino, logical * bs, &zero, None)?,
+                Err(error) => return Err(error),
+            }
+        }
+        let final_size = if keep_size { old_size } else { core::cmp::max(old_size, end) };
+        self.set_inode_size(ino, final_size)?;
+        Ok(())
+    }
+
     pub(crate) fn punch_legacy_inode_inner(
         &self, ino: u32, offset: u64, len: u64,
     ) -> Result<(), MountError> {

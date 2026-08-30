@@ -331,6 +331,9 @@ impl Mount {
     pub fn fallocate_inode(&self, ino: u32, offset: u64, len: u64, keep_size: bool) -> Result<(), MountError> {
         let end = offset.checked_add(len).ok_or(MountError::Inode(inode::InodeError::BadLen))?;
         if len == 0 { return Ok(()); }
+        if self.read_inode(ino)?.i_flags & inode::EXT4_EXTENTS_FL == 0 {
+            return self.run_journaled(|m| m.fallocate_legacy_inode_inner(ino, offset, len, keep_size));
+        }
         self.run_journaled(|m| {
             let old_size = m.read_inode(ino)?.size;
             let bs = m.sb.block_size as u64;

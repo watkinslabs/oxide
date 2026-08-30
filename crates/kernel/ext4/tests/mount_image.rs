@@ -191,6 +191,10 @@ fn generated_legacy_inode_reads_single_indirect_block() {
     assert_eq!(punched.size, 13 * 1024);
     assert!(m.read_file_block(&punched, 1).unwrap().iter().all(|&b| b == 0));
     assert_eq!(&m.read_file_block(&punched, 2).unwrap()[..], &payload[2 * 1024..3 * 1024]);
+    m.fallocate_inode(ino, 13 * 1024, 2 * 1024, true).expect("fallocate legacy holes");
+    let preallocated = m.read_inode(ino).expect("read preallocated legacy inode");
+    assert_eq!(preallocated.size, 13 * 1024);
+    assert!(m.read_file_block(&preallocated, 13).unwrap().iter().all(|&b| b == 0));
     let _ = std::fs::remove_file(&image);
     let _ = std::fs::remove_file(&source);
 }
