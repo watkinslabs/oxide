@@ -4,6 +4,30 @@ use crate::gdt;
 use crate::mount::{Mount, MountError};
 
 impl Mount {
+    /// Recompute the advisory free-space indexes after a PA ownership change.
+    /// The cached bitmap is the durable image; current PA masks are applied
+    /// only to the derived summary, matching buddy generation from PA lists.
+    /// # C: O(block_size + N_group_PAs)
+    pub(crate) fn refresh_prealloc_summary(&self, group: u32) -> Result<(), MountError> {
+        let gdt_bytes = self.read_gdt_bytes()?;
+        let gd = gdt::parse_descriptor(&gdt_bytes, group, &self.sb)?;
+        let off = gd.block_bitmap * self.sb.block_size as u64;
+        let Some(mut visible) = self.state.lock().block_bitmap_cache.get(&off).cloned() else {
+            return Ok(());
+        };
+        self.mask_group_prealloc(group, &mut visible);
+        let order = super::super::scan::largest_free_order(&visible, self.blocks_in_group(group));
+        let avg = super::super::scan::average_fragment_order(&visible, self.blocks_in_group(group));
+        let mut s = self.state.lock();
+        let old_order = s.group_free_order.insert(group, order.unwrap_or(0));
+        super::super::scan::replace_order_index(&mut s.group_free_order_index, group, old_order, order);
+        if order.is_none() { s.group_free_order.remove(&group); }
+        let old_avg = s.group_avg_fragment_order.insert(group, avg.unwrap_or(0));
+        super::super::scan::replace_order_index(&mut s.group_avg_fragment_index, group, old_avg, avg);
+        if avg.is_none() { s.group_avg_fragment_order.remove(&group); }
+        Ok(())
+    }
+
     /// Reclaim complete inode preallocations in filesystem group order. Linux
     /// discards the group PA list before retrying allocation; inode PAs are
     /// members of that same lifecycle even though this port stores them under
