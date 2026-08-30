@@ -42,6 +42,10 @@ pub(crate) struct InodePrealloc {
 /// block group. Unlike an inode PA it has no logical owner. # C: O(1)
 pub(crate) struct GroupPrealloc {
     pub(crate) blocks: Vec<u64>,
+    /// Prefix owned by an allocation context until its bitmap claim settles.
+    /// Linux keeps the PA indexed during that interval and adjusts its free
+    /// count from ext4_mb_release_context().
+    pub(crate) reserved: u32,
 }
 
 const GROUP_PREALLOC_LIST_LIMIT: usize = 8;
@@ -63,8 +67,15 @@ fn group_prealloc_order(blocks: u32) -> u8 {
 /// retaining eight after overflow would change Linux's reclaim pressure. # C: O(N log N)
 fn trim_group_preallocations(entries: &mut Vec<GroupPrealloc>) {
     if entries.len() <= GROUP_PREALLOC_LIST_LIMIT { return; }
-    entries.sort_unstable_by(|left, right| right.blocks.len().cmp(&left.blocks.len()));
-    entries.truncate(5);
+    let mut busy = Vec::new();
+    let mut free = Vec::new();
+    for pa in entries.drain(..) {
+        if pa.reserved != 0 { busy.push(pa); } else { free.push(pa); }
+    }
+    free.sort_unstable_by(|left, right| right.blocks.len().cmp(&left.blocks.len()));
+    free.truncate(5usize.saturating_sub(busy.len()));
+    entries.extend(busy);
+    entries.extend(free);
 }
 
 fn reinsert_group_preallocs(
@@ -74,7 +85,8 @@ fn reinsert_group_preallocs(
     pas: Vec<GroupPrealloc>,
 ) {
     for pa in pas {
-        let new_order = group_prealloc_order(pa.blocks.len() as u32);
+        let available = pa.blocks.len().saturating_sub(pa.reserved as usize) as u32;
+        let new_order = group_prealloc_order(available);
         let entries = map.entry((cpu, group, new_order)).or_default();
         entries.push(pa);
         trim_group_preallocations(entries);
@@ -96,8 +108,9 @@ fn select_group_pa<'a>(entries: &'a [GroupPrealloc], want: u32, goal: u64)
     -> Option<&'a GroupPrealloc>
 {
     entries.iter()
-        .filter(|pa| pa.blocks.len() >= want as usize && !pa.blocks.is_empty())
-        .min_by_key(|pa| pa.blocks[0].abs_diff(goal))
+        .filter(|pa| pa.blocks.len().saturating_sub(pa.reserved as usize) >= want as usize
+            && !pa.blocks.is_empty())
+        .min_by_key(|pa| pa.blocks[pa.reserved as usize].abs_diff(goal))
 }
 
 /// Remove one exact physical block from a locality bucket while preserving
@@ -109,12 +122,37 @@ fn consume_group_prealloc_block(entries: &mut Vec<GroupPrealloc>, phys: u64) -> 
         return false;
     };
     let block_idx = entries[pa_idx].blocks.iter().position(|&block| block == phys).unwrap();
+    let old_reserved = entries[pa_idx].reserved as usize;
+    if old_reserved != 0 && block_idx >= old_reserved {
+        return false;
+    }
     let suffix = entries[pa_idx].blocks.split_off(block_idx + 1);
     entries[pa_idx].blocks.pop();
+    let remaining_reserved = old_reserved.saturating_sub(1);
+    let prefix_reserved = remaining_reserved.min(block_idx);
+    entries[pa_idx].reserved = prefix_reserved as u32;
     if !suffix.is_empty() {
-        entries.insert(pa_idx + 1, GroupPrealloc { blocks: suffix });
+        entries.insert(pa_idx + 1, GroupPrealloc {
+            blocks: suffix,
+            reserved: remaining_reserved.saturating_sub(prefix_reserved) as u32,
+        });
     }
     if entries[pa_idx].blocks.is_empty() { entries.remove(pa_idx); }
+    true
+}
+
+fn release_group_prealloc_reservation(entries: &mut Vec<GroupPrealloc>, phys: u64) -> bool {
+    let Some(pa_idx) = entries.iter().position(|pa| pa.blocks.iter().any(|&block| block == phys)) else {
+        return false;
+    };
+    let block_idx = entries[pa_idx].blocks.iter().position(|&block| block == phys).unwrap();
+    if entries[pa_idx].reserved == 0 || block_idx >= entries[pa_idx].reserved as usize {
+        return false;
+    }
+    // Aborting a claim releases ownership, it does not consume the block.
+    // The vector remains the canonical PA and only its busy-prefix count
+    // changes, exactly like Linux's pa_free/pa_len transition.
+    entries[pa_idx].reserved -= 1;
     true
 }
 
@@ -186,26 +224,28 @@ impl Mount {
                 .filter(|(&(owner, _, bucket), _)| owner == cpu && bucket == order)
             {
                 if let Some(pa) = select_group_pa(pas, want, goal) {
-                    let distance = pa.blocks[0].abs_diff(goal);
+                    let distance = pa.blocks[pa.reserved as usize].abs_diff(goal);
                     if best.as_ref().is_none_or(|(old, _, _, _)| distance < *old) {
-                        best = Some((distance, group, order, pa.blocks[..want as usize].to_vec()));
+                        let start = pa.reserved as usize;
+                        best = Some((distance, group, order,
+                            pa.blocks[start..start + want as usize].to_vec()));
                     }
                 }
             }
         }
         let Some((_, group, order, blocks)) = best else { return None; };
 
-        // Selection and retirement are one ownership transition.  Keeping
-        // this under the state lock is the same invariant as Linux's
-        // ext4_mb_release_group_pa(): a second handle cannot observe the
-        // prefix after this handle has claimed it but before the bitmap claim
-        // reaches the journal.
+        // Keep the PA indexed while the durable bitmap claim is in flight.
+        // This is Linux's ext4_mb_use_group_pa()/ext4_mb_release_context()
+        // lifetime: only the free count changes after the claim result.
         let key = (cpu, group, order);
         let mut entries = s.group_prealloc.remove(&key).unwrap_or_default();
-        if let Some(index) = entries.iter().position(|pa| pa.blocks.starts_with(&blocks)) {
-            let mut pa = entries.remove(index);
-            let tail = pa.blocks.split_off(blocks.len());
-            if !tail.is_empty() { entries.push(GroupPrealloc { blocks: tail }); }
+        if let Some(index) = entries.iter().position(|pa| {
+            let start = pa.reserved as usize;
+            pa.blocks.get(start..start + blocks.len()) == Some(blocks.as_slice())
+        }) {
+            entries[index].reserved = entries[index].reserved
+                .saturating_add(blocks.len() as u32);
             reinsert_group_preallocs(&mut s.group_prealloc, cpu, group, entries);
             return Some((cpu, group, blocks));
         }
@@ -264,7 +304,7 @@ impl Mount {
         let mut s = self.state.lock();
         let order = group_prealloc_order(request);
         let entries = s.group_prealloc.entry((cpu, group, order)).or_default();
-        entries.push(GroupPrealloc { blocks });
+        entries.push(GroupPrealloc { blocks, reserved: 0 });
         trim_group_preallocations(entries);
         drop(s);
         let _ = self.refresh_prealloc_summary(group);
@@ -277,7 +317,28 @@ impl Mount {
     pub(crate) fn restore_group_prealloc_on_cpu(
         &self, cpu: usize, group: u32, blocks: Vec<u64>,
     ) {
-        self.add_group_prealloc_on_cpu(cpu, group, blocks.len() as u32, blocks);
+        if blocks.is_empty() { return; }
+        let mut remaining = blocks;
+        let mut s = self.state.lock();
+        for order in 0..GROUP_PREALLOC_ORDER_BUCKETS {
+            let key = (cpu, group, order);
+            let Some(mut pas) = s.group_prealloc.remove(&key) else { continue; };
+            let mut missing = Vec::new();
+            for block in remaining {
+                if !release_group_prealloc_reservation(&mut pas, block) {
+                    missing.push(block);
+                }
+            }
+            reinsert_group_preallocs(&mut s.group_prealloc, cpu, group, pas);
+            remaining = missing;
+            if remaining.is_empty() { break; }
+        }
+        drop(s);
+        if !remaining.is_empty() {
+            // A block already consumed from a PA was returned to the bitmap
+            // by the transaction rollback; restore it as a new PA object.
+            self.add_group_prealloc_on_cpu(cpu, group, remaining.len() as u32, remaining);
+        }
     }
 
     /// Whether an in-memory PA can hide free blocks from a new allocation. # C: O(1)
