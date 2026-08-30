@@ -4,11 +4,23 @@ use super::{Mount, MountError};
 impl Mount {
     /// Resolve a legacy ext2/3-style inode's direct, single-, double-, or
     /// triple-indirect block pointer. Linux keeps this path for ext4 inodes
-    /// that predate extent conversion; it is a read owner only here because
-    /// allocation, truncate, and metadata publication still belong to the
-    /// extent writer. Inline-data inodes are rejected before this decoder so
-    /// their payload is never mistaken for block numbers. # C: O(depth)
+    /// that predate extent conversion. Existing mappings use this resolver;
+    /// allocation remains a separate indirect-tree owner. Inline-data inodes
+    /// are rejected before this decoder so their payload is never mistaken for
+    /// block numbers. # C: O(depth)
     pub(super) fn resolve_indirect_pblock(&self, inode: &Inode, file_blk: u32)
+        -> Result<u64, MountError>
+    {
+        self.resolve_indirect_pblock_inner(inode, file_blk, true)
+    }
+
+    pub(crate) fn resolve_indirect_pblock_for_journal(&self, inode: &Inode, file_blk: u32)
+        -> Result<u64, MountError>
+    {
+        self.resolve_indirect_pblock_inner(inode, file_blk, false)
+    }
+
+    fn resolve_indirect_pblock_inner(&self, inode: &Inode, file_blk: u32, validate: bool)
         -> Result<u64, MountError>
     {
         if inode.i_flags & inode::EXT4_INLINE_DATA_FL != 0 {
@@ -41,7 +53,7 @@ impl Mount {
             }
         };
         if root == 0 { return Err(MountError::NotFound); }
-        self.check_inode_blocks(root as u64, 1)?;
+        if validate { self.check_inode_blocks(root as u64, 1)?; }
         let mut block = root as u64;
         for index in indexes {
             if index == u64::MAX { return Ok(block); }
@@ -52,7 +64,7 @@ impl Mount {
             }
             block = u32::from_le_bytes([table[off], table[off + 1], table[off + 2], table[off + 3]]) as u64;
             if block == 0 { return Err(MountError::NotFound); }
-            self.check_inode_blocks(block, 1)?;
+            if validate { self.check_inode_blocks(block, 1)?; }
         }
         Ok(block)
     }

@@ -188,6 +188,12 @@ impl Mount {
     pub(crate) fn convert_unwritten_at_cached(
         &self, ino: u32, file_blk: u32, inode: &crate::inode::Inode,
     ) -> Result<bool, MountError> {
+        // Legacy indirect mappings have no extent records to convert.  Their
+        // initialized/uninitialized state is represented by the pointer tree,
+        // and the indirect mapper is the owner of that format.
+        if inode.i_flags & crate::inode::EXT4_EXTENTS_FL == 0 {
+            return Ok(false);
+        }
         let runs = self.collect_phys_extents(&inode.i_block)?;
         let Some(hit) = runs.iter().position(|r|
             r.unwritten && file_blk >= r.logical && file_blk < r.logical + r.len)

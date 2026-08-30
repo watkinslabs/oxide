@@ -453,7 +453,12 @@ impl Mount {
         // occurs before the reservation plan is built.  Re-reading the same
         // inode added one serialized metadata lookup to every writeback
         // cluster and kept the caller's inode lock held across it.
-        let initial_extents = self.collect_phys_extents(&inode.i_block)?;
+        // The write path also serves legacy indirect inodes.  Linux resolves
+        // their mapping through ext4_ind_map_blocks; do not parse the legacy
+        // i_block pointer array as an extent root here.  The collected runs
+        // are only the reservation snapshot, while the per-block resolver
+        // below remains the authoritative mapping owner.
+        let initial_extents = self.collect_inode_phys_extents(&inode)?;
         // A write that starts beyond the current EOF is a sparse write, not a
         // stream allocation. Linux leaves that gap unallocated; inode PA is
         // eligible only when the request reaches the current file tail.
@@ -462,7 +467,8 @@ impl Mount {
         // data PA that a later file could consume.
         let allow_prealloc = inode.is_reg() && u64::from(first_lb) <= cur_blocks;
         let reserved = reserve_hole_runs(
-            self, first_lb, last_lb, &initial_extents, ino, cur_size, allow_prealloc)?;
+            self, first_lb, last_lb, &initial_extents, ino, cur_size, allow_prealloc
+        )?;
         let mut reserved_at = vec![0usize; reserved.len()];
         // Keep the inode/extent snapshot in-core for the common mapped-block
         // path. Linux writeback carries one inode context through the extent
