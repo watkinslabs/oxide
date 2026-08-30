@@ -85,7 +85,10 @@ pub(crate) fn write_inline_data(
     raw[0x6C..0x70].copy_from_slice(&0u32.to_le_bytes());
     let isize = mount.sb.inode_size as usize;
     let extra = ibody_extra_isize(&raw, isize);
-    if extra == 0 && new_size > I_BLOCK_LEN { return Err(MountError::NotExtents); }
+    if extra == 0 && new_size > I_BLOCK_LEN {
+        return mount.convert_inline_data(ino, inode, off as u64, data)
+            .map(|()| true);
+    }
     if extra != 0 {
         let hdr = crate::csum::EXT4_GOOD_OLD_INODE_SIZE + extra;
         let mut entries = crate::xattr::decode_ibody(&raw, hdr, isize);
@@ -93,8 +96,9 @@ pub(crate) fn write_inline_data(
         if new_size > I_BLOCK_LEN {
             entries.push((String::from("system.data"), body[I_BLOCK_LEN..].to_vec()));
         }
-        crate::xattr::encode_ibody(&mut raw, hdr, isize, &entries)
-            .map_err(|_| MountError::NotExtents)?;
+        if crate::xattr::encode_ibody(&mut raw, hdr, isize, &entries).is_err() {
+            return mount.convert_inline_data(ino, inode, off as u64, data).map(|()| true);
+        }
     }
     mount.write_inode_bytes(ino, &raw)?;
     Ok(true)
