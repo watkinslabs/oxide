@@ -75,6 +75,7 @@ that artifact is regenerated.
 | B2929 fast-symlink guarded / working tree | 1,368,794 | 6,004 | 4,386 | 22,572 | — | 10,972 | 264 | 3,601 | Linux i_link cache with EXT4_INLINE_DATA_FL guard; GNOME Shell marker complete at 33.6s; symlink phase 2,197ms -> 2,080ms; colord SQLite disk-I/O error still reproduced; no whole-boot gain claimed |
 | B2938 merged-main / `4abcffe39` | 1,368,365/1,369,505 | 5,826/5,623 | 4,258/4,106 | 21,718/21,349 | — | 12,439/12,700 | 252/335 | 3,036/3,155 | bounded Linux-shaped linear-directory readahead through the canonical metadata cache; two GNOME/SMP=1 runs reached GNOME Shell at 31.9/30.9s; ext4 linear phase 119,790/118,892 ns, no aggregate gain claimed |
 | B2940 merged-main / `0f4e9b9a6` | 1,368,199 | 6,449 | 4,713 | 23,189 | — | 13,081 | 386 | 3,575 | exclusive transaction-gate release now wakes one waiter, matching mutex-like Linux admission; GNOME Shell marker complete at 33.5s; ext4 linear phase 149,389 ns; one run, no aggregate gain claimed |
+| B2972 merged-main control / `ba668fe1c` | 1,564,301 | 6,695 | 4,280 | 21,623 | 12,121 | 238 | 3,660 | fresh `make perf-report SMP=1`; GNOME Shell marker at 32.5s; 526 block reads, 7,668 writes, 24 flushes; phase attribution remains parent-lock/slow-lookup dominated; no code change or gain claimed |
 
 The B2709 `munmap` result is a material improvement over B2699: 71,407 ns
 to 21,426 ns (about 70% lower), and 52x to 16x the host baseline. The B2708
