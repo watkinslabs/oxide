@@ -843,9 +843,12 @@ dependencies = [
  "block",
  "drv",
  "hal",
+ "hal-aarch64",
+ "hal-x86_64",
  "iommu",
  "pci",
  "pmm",
+ "sched",
  "sync",
  "virtio",
 ]

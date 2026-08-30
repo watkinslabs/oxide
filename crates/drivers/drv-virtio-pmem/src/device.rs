@@ -1,6 +1,8 @@
 use alloc::sync::Arc;
 use alloc::{string::String, vec::Vec};
 use block::{BlockDevice, BlockError, BlockRequest, BlockOp, DaxRegion, KResult, QueueLimits};
+#[cfg(target_os = "oxide-kernel")]
+use core::sync::atomic::{AtomicBool, Ordering};
 use sync::{Spinlock, TaskList as DriverLockClass};
 
 pub const VIRTIO_ID_PMEM: u16 = 27;
@@ -15,7 +17,11 @@ const PMEM_RESPONSE_BYTES: usize = 4;
 const PMEM_BOUNCE_BYTES: usize = PMEM_REQUEST_BYTES + PMEM_RESPONSE_BYTES;
 
 pub const fn transport_profile() -> virtio::VirtioTransportProfile {
-    virtio::VirtioTransportProfile::q0_device_cfg(VIRTIO_PMEM_F_SHMEM_REGION, None)
+    #[cfg(target_os = "oxide-kernel")]
+    let completion_irq = Some(wake_completions as fn());
+    #[cfg(not(target_os = "oxide-kernel"))]
+    let completion_irq = None;
+    virtio::VirtioTransportProfile::q0_device_cfg(VIRTIO_PMEM_F_SHMEM_REGION, completion_irq)
 }
 
 struct PmemInner {
@@ -30,6 +36,8 @@ struct PmemDevice {
     region: DaxRegion,
     cfg_va: u64,
     inner: Spinlock<PmemInner, DriverLockClass>,
+    #[cfg(target_os = "oxide-kernel")]
+    completion: AtomicBool,
 }
 
 struct PmemRecord {
@@ -40,6 +48,25 @@ struct PmemRecord {
 
 #[cfg(target_os = "oxide-kernel")]
 static PMEMS: Spinlock<Vec<PmemRecord>, DriverLockClass> = Spinlock::new(Vec::new());
+
+#[cfg(target_os = "oxide-kernel")]
+static PMEM_COMPLETIONS: sched::live::WaitList = sched::live::WaitList::new();
+
+/// Retire virtio-pmem completions from the queue interrupt and wake process
+/// waiters; the response bytes remain owned by the submitting process path.
+/// # C: O(N_devices * queue_reaps)
+#[cfg(target_os = "oxide-kernel")]
+fn wake_completions() {
+    let records = PMEMS.lock();
+    for record in records.iter() {
+        let mut inner = record.device.inner.lock();
+        if inner.queue.pop_used().ok().flatten().is_some() {
+            record.device.completion.store(true, Ordering::Release);
+        }
+    }
+    PMEM_COMPLETIONS.wake_all();
+    block::completion::raise();
+}
 
 impl PmemDevice {
     #[cfg(target_os = "oxide-kernel")]
@@ -62,7 +89,7 @@ impl PmemDevice {
     }
 
     #[cfg(target_os = "oxide-kernel")]
-    fn flush_inner(&self, inner: &mut PmemInner) -> KResult<()> {
+    fn submit_flush(&self, inner: &mut PmemInner) -> KResult<()> {
         let va = inner.hhdm.wrapping_add(inner.bounce_pa);
         // SAFETY: bounce_pa is this device's private mapped frame and both
         // protocol words are inside the fixed two-word request allocation.
@@ -76,17 +103,73 @@ impl PmemDevice {
             virtio::SplitQueueSeg { dma: inner.bounce_dma + PMEM_REQUEST_BYTES as u64,
                 len: PMEM_RESPONSE_BYTES as u32, device_writes: true },
         ]).map_err(|_| BlockError::Eio)?;
-        for _ in 0..PMEM_FLUSH_POLL_BUDGET {
-            if inner.queue.pop_used().map_err(|_| BlockError::Eio)?.is_some() {
-                virtio::dma::invalidate_from_device(va, PMEM_BOUNCE_BYTES);
-                // SAFETY: completion retired the descriptor chain and the
-                // response word is the device-owned four-byte result field.
-                let ret = unsafe { core::ptr::read_volatile((va + PMEM_REQUEST_BYTES as u64) as *const u32) };
-                return if ret == 0 { Ok(()) } else { Err(BlockError::Eio) };
+        Ok(())
+    }
+
+    #[cfg(target_os = "oxide-kernel")]
+    fn complete_flush(&self, inner: &mut PmemInner) -> KResult<()> {
+        let va = inner.hhdm.wrapping_add(inner.bounce_pa);
+        virtio::dma::invalidate_from_device(va, PMEM_BOUNCE_BYTES);
+        // SAFETY: the interrupt or polling path retired this descriptor chain;
+        // the response word is the device-owned four-byte result field.
+        let ret = unsafe { core::ptr::read_volatile((va + PMEM_REQUEST_BYTES as u64) as *const u32) };
+        if ret == 0 { Ok(()) } else { Err(BlockError::Eio) }
+    }
+
+    #[cfg(target_os = "oxide-kernel")]
+    fn flush_inner(&self) -> KResult<()> {
+        self.completion.store(false, Ordering::Release);
+        {
+            let mut inner = self.inner.lock();
+            self.submit_flush(&mut inner)?;
+        }
+        if can_sleep() {
+            let deadline = now_ns().saturating_add(PMEM_FLUSH_TIMEOUT_NS);
+            // SAFETY: this is process context, no device lock is held, and the
+            // interrupt owner publishes completion before waking this wait list.
+            unsafe {
+                let _ = sched::live::wait_event_uninterruptible_until(
+                    &PMEM_COMPLETIONS, deadline, now_ns,
+                    || self.completion.load(Ordering::Acquire));
             }
+            if !self.completion.load(Ordering::Acquire) { return Err(BlockError::Eio); }
+            return self.complete_flush(&mut self.inner.lock());
+        }
+        for _ in 0..PMEM_FLUSH_POLL_BUDGET {
+            let mut inner = self.inner.lock();
+            if inner.queue.pop_used().map_err(|_| BlockError::Eio)?.is_some() {
+                self.completion.store(true, Ordering::Release);
+                return self.complete_flush(&mut inner);
+            }
+            drop(inner);
             core::hint::spin_loop();
         }
         Err(BlockError::Eio)
+    }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+const PMEM_FLUSH_TIMEOUT_NS: u64 = 5_000_000_000;
+
+#[cfg(target_os = "oxide-kernel")]
+fn now_ns() -> u64 {
+    use hal::TimerOps;
+    #[cfg(target_arch = "x86_64")]
+    { hal_x86_64::X86TimerOps::monotonic_ns().0 }
+    #[cfg(target_arch = "aarch64")]
+    { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn can_sleep() -> bool {
+    if sched::live::global().is_none() { return false; }
+    #[cfg(target_arch = "x86_64")]
+    if hal_x86_64::on_irq_stack() { return false; }
+    #[cfg(target_arch = "aarch64")]
+    if hal_aarch64::on_irq_stack() { return false; }
+    match sched::live::current() {
+        Some(task) => !matches!(task.sched_class(), sched::SchedClass::Idle),
+        None => false,
     }
 }
 
@@ -140,7 +223,7 @@ impl BlockDevice for PmemDevice {
 
     fn flush(&self) -> KResult<()> {
         #[cfg(target_os = "oxide-kernel")]
-        { self.flush_inner(&mut self.inner.lock()) }
+        { self.flush_inner() }
         #[cfg(not(target_os = "oxide-kernel"))]
         { Err(BlockError::Eio) }
     }
@@ -189,6 +272,7 @@ pub fn install(device_key: virtio::VirtioChildDeviceKey, bdf: pci::Bdf, resource
         region,
         cfg_va: resources.cfg_va,
         inner: Spinlock::new(inner),
+        completion: AtomicBool::new(false),
     });
     let name = alloc::format!("pmem{}", device_key.raw());
     let published: Arc<dyn BlockDevice> = dev.clone();
