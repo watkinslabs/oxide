@@ -113,6 +113,22 @@ pub fn scan_start(hint: u32, groups: u32, optimize: bool, freest: Option<(u32, u
     hint % groups
 }
 
+/// Select a group from the maintained largest-free-order index. Linux's
+/// optimized mballoc scan walks its group-order xarray rather than rebuilding
+/// a free-space ranking from every descriptor for each request. The bitmap
+/// remains the allocation authority; this is only a starting-point hint.
+/// # C: O(log N_groups)
+pub fn indexed_freest_group(
+    index: &alloc::collections::BTreeMap<u8, alloc::collections::BTreeSet<u32>>,
+    groups: u32,
+) -> Option<(u32, u64)> {
+    if groups == 0 { return None; }
+    index.iter().rev().find_map(|(&order, candidates)| {
+        candidates.iter().find(|&&group| group < groups)
+            .map(|&group| (group, 1u64 << u32::from(order)))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,6 +173,16 @@ mod tests {
     fn a_group_outside_the_filesystem_is_not_a_start() {
         assert_eq!(scan_start(3, 8, true, Some((9, 5000))), 3);
         assert_eq!(scan_start(3, 0, true, Some((0, 5000))), 0);
+    }
+
+    #[test]
+    fn indexed_freest_group_uses_the_largest_available_order() {
+        let mut index = alloc::collections::BTreeMap::new();
+        index.insert(2, alloc::collections::BTreeSet::from([1, 7]));
+        index.insert(4, alloc::collections::BTreeSet::from([9, 3]));
+        assert_eq!(indexed_freest_group(&index, 8), Some((3, 16)));
+        assert_eq!(indexed_freest_group(&index, 3), Some((1, 4)));
+        assert_eq!(indexed_freest_group(&index, 0), None);
     }
 
     #[test]
