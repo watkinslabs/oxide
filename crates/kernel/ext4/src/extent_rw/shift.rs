@@ -64,7 +64,15 @@ impl Mount {
     }
 
     fn collapse_range_inner(&self, ino: u32, offset: u64, len: u64) -> Result<(), MountError> {
-        let size = self.read_inode(ino)?.size;
+        let inode = self.read_inode(ino)?;
+        // Linux ext4_collapse_range is deliberately extent-only.  The
+        // operation re-indexes every mapping after the removed range; an
+        // indirect inode has no equivalent tree-rebuild owner here and must
+        // not be passed to the extent serializer.
+        if inode.i_flags & inode::EXT4_EXTENTS_FL == 0 {
+            return Err(MountError::NotExtents);
+        }
+        let size = inode.size;
         let new_size = size.checked_sub(len).ok_or(MountError::Inode(inode::InodeError::BadLen))?;
         self.release_inode_prealloc(ino)?;
         let (start, shift) = self.shift_units(offset, len)?;
@@ -82,7 +90,14 @@ impl Mount {
     }
 
     fn insert_range_inner(&self, ino: u32, offset: u64, len: u64) -> Result<(), MountError> {
-        let size = self.read_inode(ino)?.size;
+        let inode = self.read_inode(ino)?;
+        // Linux ext4_insert_range has the same extent-only contract as
+        // collapse.  Keep the format owner singular rather than attempting
+        // to reinterpret indirect pointers as extent records.
+        if inode.i_flags & inode::EXT4_EXTENTS_FL == 0 {
+            return Err(MountError::NotExtents);
+        }
+        let size = inode.size;
         let new_size = size.checked_add(len).ok_or(MountError::Inode(inode::InodeError::BadLen))?;
         let (start, shift) = self.shift_units(offset, len)?;
         self.release_inode_prealloc(ino)?;

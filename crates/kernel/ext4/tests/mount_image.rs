@@ -141,6 +141,37 @@ fn legacy_inode_direct_block_reads_through_same_mount_owner() {
 }
 
 #[test]
+fn legacy_inode_triple_indirect_read_uses_same_mapper() {
+    let m = ext4::Mount::open(build_disk()).expect("mount");
+    let block_size = m.sb.block_size as u64;
+    let ptrs = block_size / 4;
+    let logical = 12 + ptrs + ptrs * ptrs;
+    let level2 = m.alloc_block(0).expect("allocate triple root child");
+    let level1 = m.alloc_block(0).expect("allocate triple middle child");
+    let leaf = m.alloc_block(0).expect("allocate triple leaf");
+    let data = m.alloc_block(0).expect("allocate triple data");
+    let table = |child: u64, slot: u64| {
+        let mut bytes = vec![0u8; block_size as usize];
+        let off = (slot * 4) as usize;
+        bytes[off..off + 4].copy_from_slice(&(child as u32).to_le_bytes());
+        bytes
+    };
+    m.metadata_write(level2 * block_size, &table(level1, 0)).expect("write triple root child");
+    m.metadata_write(level1 * block_size, &table(leaf, 0)).expect("write triple middle child");
+    m.metadata_write(leaf * block_size, &table(data, 0)).expect("write triple leaf");
+    let payload = vec![0xA5u8; block_size as usize];
+    m.metadata_write(data * block_size, &payload).expect("write triple data");
+
+    let mut inode = m.read_inode(2).expect("read root");
+    inode.i_flags &= !ext4::inode::EXT4_EXTENTS_FL;
+    inode.i_block = [0; ext4::inode::I_BLOCK_LEN];
+    inode.i_block[56..60].copy_from_slice(&(level2 as u32).to_le_bytes());
+    inode.size = (logical + 1) * block_size;
+    let got = m.read_file_block(&inode, logical as u32).expect("read triple data");
+    assert_eq!(got, payload);
+}
+
+#[test]
 fn generated_legacy_inode_reads_single_indirect_block() {
     use std::process::Command;
 

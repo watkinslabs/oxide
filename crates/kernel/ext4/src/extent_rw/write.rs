@@ -302,7 +302,15 @@ impl Mount {
     /// inode table once per block. # C: O(N_blocks × N_extents) + 1 inode read
     pub(crate) fn prepare_nodelalloc(&self, ino: u32, off: u64, len: usize) -> Result<(), MountError> {
         if len == 0 { return Ok(()); }
-        if self.read_inode(ino)?.i_flags & inode::EXT4_INLINE_DATA_FL != 0 { return Ok(()); }
+        let flags = self.read_inode(ino)?.i_flags;
+        if flags & (inode::EXT4_INLINE_DATA_FL | inode::EXT4_EXTENTS_FL) == 0 {
+            // Legacy indirect writeback owns allocation at write time through
+            // `write_legacy_at_inner`; it has no unwritten-extent state to
+            // pre-install here. Do not send its pointer array to the extent
+            // parser merely because nodelalloc is enabled.
+            return Ok(());
+        }
+        if flags & inode::EXT4_INLINE_DATA_FL != 0 { return Ok(()); }
         let bs = self.sb.block_size as u64;
         let end = off.checked_add(len as u64).ok_or(MountError::Inode(inode::InodeError::BadLen))?;
         let first = off / bs;
