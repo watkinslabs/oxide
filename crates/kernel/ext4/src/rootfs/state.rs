@@ -84,7 +84,14 @@ impl RootfsState {
         -> Arc<super::framecache::Ext4FrameStore>
     {
         let mut stores = self.frame_stores.lock();
-        if let Some(store) = stores.get(&ino).and_then(Weak::upgrade) { return store; }
+        if let Some(store) = stores.get(&ino).and_then(Weak::upgrade) {
+            // The canonical inode supplies the current size. A store can
+            // predate a size publication, but must never remain below the
+            // inode bound used by a page fault; otherwise a valid mid-file
+            // fill is misreported as a short read and becomes SIGBUS.
+            store.set_size_max(size);
+            return store;
+        }
         let store = super::framecache::Ext4FrameStore::new(self.clone(), ino, size);
         stores.insert(ino, Arc::downgrade(&store));
         store

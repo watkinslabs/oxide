@@ -482,6 +482,12 @@ impl Ext4FrameStore {
     /// change is on disk, keep the writeback clamp in step). # C: O(1)
     pub(crate) fn set_size(&self, size: u64) { self.size.store(size, Ordering::Release); }
 
+    /// Admit a newer canonical inode size when an existing store is found
+    /// during inode construction. Growth is monotonic here: truncation owns
+    /// the explicit shrinking `set_size` publication under the inode path.
+    /// # C: O(1)
+    pub(crate) fn set_size_max(&self, size: u64) { self.size.fetch_max(size, Ordering::AcqRel); }
+
     // Range eviction — truncate's unconditional drop (`invalidate_range`) and
     // the DONTNEED hint's best-effort one (`try_invalidate_pages`) — lives in
     // the `invalidate` child module.
