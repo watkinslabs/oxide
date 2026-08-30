@@ -4,7 +4,10 @@
 //! queued polled-transfer API.  Keep this owner beside the mount's extent and
 //! block I/O code so it cannot accidentally become a second page-cache path.
 
+use alloc::vec::Vec;
+
 use crate::inode::{self, InodeError};
+use crate::extent_rw::PhysRun;
 
 use super::{Mount, MountError};
 
@@ -47,11 +50,61 @@ impl Mount {
         if dev_bs == 0 || off % dev_bs != 0 || (src.len() as u64) % dev_bs != 0 {
             return Err(MountError::Inode(InodeError::BadLen));
         }
-        off.checked_add(src.len() as u64)
+        let end = off.checked_add(src.len() as u64)
             .ok_or(MountError::Inode(InodeError::BadLen))?;
+        let inode = self.read_inode(ino)?;
+        let fs_bs = self.sb.block_size as u64;
+        // Linux's iomap DIO overwrite path does not start a transaction for
+        // an initialized, in-file range: the extent map is already stable and
+        // the device owns the data transfer. Keep the allocation/journal
+        // fallback below for holes, unwritten extents, extension, partial
+        // filesystem blocks, and inline files, where metadata really changes.
+        let runs = match self.collect_inode_phys_extents(&inode) {
+            Ok(runs) => runs,
+            Err(MountError::NotExtents) => Vec::new(),
+            Err(error) => return Err(error),
+        };
+        if let Some(plan) = direct_overwrite_plan(&runs, off, end, inode.size, fs_bs)
+        {
+            for (source, physical, length) in plan {
+                let byte_off = physical.checked_mul(fs_bs)
+                    .ok_or(MountError::Inode(InodeError::BadLen))?;
+                self.write_data_byte_range(byte_off, &src[source .. source + length])?;
+            }
+            return Ok(src.len());
+        }
         self.write_at(ino, off, src)?;
         Ok(src.len())
     }
+}
+
+/// Build the no-metadata-change DIO overwrite plan. Every byte in the request
+/// must be covered by initialized physical runs, and the request must cover
+/// complete filesystem blocks. The returned source offsets remain in logical
+/// request order, while each device span follows the inode's physical extent
+/// geometry. # C: O(N_extents)
+fn direct_overwrite_plan(runs: &[PhysRun], off: u64, end: u64, size: u64, bs: u64)
+    -> Option<Vec<(usize, u64, usize)>>
+{
+    if bs == 0 || off % bs != 0 || end % bs != 0 || end > size { return None; }
+    let mut covered = off;
+    let mut plan = Vec::new();
+    for run in runs {
+        if run.unwritten { continue; }
+        let run_start = u64::from(run.logical).checked_mul(bs)?;
+        let run_end = run_start.checked_add(u64::from(run.len).checked_mul(bs)?)?;
+        let start = core::cmp::max(off, run_start);
+        let finish = core::cmp::min(end, run_end);
+        if start >= finish { continue; }
+        if start != covered || start % bs != 0 || finish % bs != 0 { return None; }
+        let logical_blocks = (start - run_start) / bs;
+        let physical = run.phys.checked_add(logical_blocks)?;
+        let length = usize::try_from(finish - start).ok()?;
+        plan.push(((start - off) as usize, physical, length));
+        covered = finish;
+        if covered == end { break; }
+    }
+    (covered == end).then_some(plan)
 }
 
 #[cfg(test)]
@@ -174,5 +227,25 @@ mod tests {
         let mut got = vec![0; bs];
         assert_eq!(m.direct_read(&inode, (2 * bs) as u64, &mut got).unwrap(), bs);
         assert_eq!(got, data, "a direct write converts the unwritten range");
+    }
+
+    #[test]
+    fn overwrite_plan_only_accepts_initialized_full_filesystem_blocks() {
+        let runs = vec![PhysRun { logical: 4, phys: 100, len: 3, unwritten: false }];
+        assert_eq!(direct_overwrite_plan(&runs, 4 * 4096, 6 * 4096, 7 * 4096, 4096),
+            Some(vec![(0, 100, 2 * 4096)]));
+        assert_eq!(direct_overwrite_plan(&runs, 4 * 4096 + 512, 6 * 4096, 7 * 4096, 4096), None);
+        assert_eq!(direct_overwrite_plan(&runs, 4 * 4096, 8 * 4096, 7 * 4096, 4096), None);
+    }
+
+    #[test]
+    fn overwrite_plan_defers_unwritten_and_hole_ranges_to_mapping_owner() {
+        let unwritten = vec![PhysRun { logical: 0, phys: 100, len: 2, unwritten: true }];
+        assert_eq!(direct_overwrite_plan(&unwritten, 0, 4096, 8192, 4096), None);
+        let split = vec![
+            PhysRun { logical: 0, phys: 100, len: 1, unwritten: false },
+            PhysRun { logical: 2, phys: 102, len: 1, unwritten: false },
+        ];
+        assert_eq!(direct_overwrite_plan(&split, 0, 3 * 4096, 3 * 4096, 4096), None);
     }
 }
