@@ -27,6 +27,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "io_uring_ext4"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "support",
+]
+
+[[package]]
 name = "ldt_probe"
 version = "0.1.0"
 dependencies = [
