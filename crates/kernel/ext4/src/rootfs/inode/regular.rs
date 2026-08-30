@@ -270,7 +270,7 @@ impl FileOps for Ext4RegFileOps {
     fn can_odirect(&self, inode: &Inode) -> bool {
         inode.private::<Ext4FileData>().is_some_and(|d| {
             let flags = d.raw_flags.load(Ordering::Acquire);
-            flags & crate::inode::EXT4_INLINE_DATA_FL == 0
+            dio_inode_supported(flags)
                 && d.st.mount.behaviour().data != crate::mount_opts::DataMode::Journal
         })
     }
@@ -466,6 +466,17 @@ impl FileOps for Ext4RegFileOps {
         let runs = d.st.mount.collect_leaf_extents(&i.i_block).map_err(|_| VfsError::Eio)?;
         seek_in_runs(&runs, bs, size, offset, which)
     }
+}
+
+/// Linux falls back from DIO for layouts whose bytes need a transform or a
+/// verification layer. Ordinary extent and indirect mappings have no such
+/// transform; inline, encrypted, and fs-verity data do not have owners here.
+/// Keep this predicate separate from the mount policy so the format admission
+/// cannot accidentally drift from the DIO mapping owner.
+fn dio_inode_supported(flags: u32) -> bool {
+    flags & (crate::inode::EXT4_INLINE_DATA_FL
+        | crate::inode::flags::EXT4_ENCRYPT_FL
+        | crate::inode::flags::EXT4_VERITY_FL) == 0
 }
 
 /// Pure SEEK_HOLE/SEEK_DATA boundary resolver over a file's data runs.
