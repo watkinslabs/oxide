@@ -60,6 +60,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         smoke-cmdline-x86 smoke-cmdline-arm smoke-cmdline \
         smoke-devpts-x86 smoke-devpts-arm smoke-devpts \
         smoke-af-packet-diff-x86 smoke-af-packet-diff-arm smoke-af-packet-diff \
+        smoke-network-appliance-x86 \
         smoke-wait-diff-x86 smoke-wait-diff-arm smoke-wait-diff wait-diff-selftest \
         smoke-sockopt-diff-x86 smoke-sockopt-diff-arm smoke-sockopt-diff \
         smoke-io-uring-ext4-x86 smoke-io-uring-ext4-arm smoke-io-uring-ext4 \
@@ -928,6 +929,15 @@ smoke-login: smoke-login-x86 smoke-login-arm
 NETWORK_SMOKE_TIMEOUT ?= 600
 smoke-network-native-pci-x86:
 	OXIDE_QEMU_PROFILE=native-pci python3 tools/guest-network-check.py x86 $(NETWORK_SMOKE_TIMEOUT)
+
+# Appliance-profile network gate. micro/nano carry no NetworkManager: the
+# manager is systemd-networkd, selected by a preset the compose applies. This
+# asks the guest whether that whole chain produced a lease, a route, a
+# nameserver and an answer -- an image missing any of it looks like a broken
+# kernel from userspace.
+APPLIANCE_NETWORK_TIMEOUT ?= 900
+smoke-network-appliance-x86:
+	python3 tools/guest-appliance-network-check.py $(LIVE_PROFILE) $(APPLIANCE_NETWORK_TIMEOUT)
 
 # F210 end-to-end ssh smoke. Boots qemu, waits for sshd Server
 # listening line + oxide login, then runs N back-to-back ssh
