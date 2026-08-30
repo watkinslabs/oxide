@@ -358,21 +358,32 @@ impl Mount {
     pub(crate) fn discard_group_preallocations(&self, needed: u32) -> Result<u32, MountError> {
         if needed == 0 { return Ok(0); }
         let mut released = Vec::new();
-        let mut remaining = alloc::collections::BTreeMap::new();
         let mut free = 0u32;
         let gdt_bytes = self.read_gdt_bytes()?;
-        let pas = core::mem::take(&mut self.state.lock().group_prealloc);
-        for (key, entries) in pas {
-            let mut keep = Vec::new();
-            for pa in entries {
-                if free < needed {
-                    free = free.saturating_add(pa.blocks.len() as u32);
-                    released.extend(pa.blocks);
-                } else {
-                    keep.push(pa);
+        let mut pending: Vec<_> = core::mem::take(&mut self.state.lock().group_prealloc)
+            .into_iter().collect();
+        // Linux walks block groups in filesystem order. The map is keyed by
+        // CPU first, so iterating it directly would make reclaim order depend
+        // on locality ownership rather than the canonical group lifecycle.
+        for group in 0..self.sb.group_count() {
+            if free >= needed { break; }
+            for (key, entries) in &mut pending {
+                if key.1 != group || free >= needed { continue; }
+                let mut keep = Vec::new();
+                for pa in core::mem::take(entries) {
+                    if free < needed {
+                        free = free.saturating_add(pa.blocks.len() as u32);
+                        released.extend(pa.blocks);
+                    } else {
+                        keep.push(pa);
+                    }
                 }
+                *entries = keep;
             }
-            if !keep.is_empty() { remaining.insert(key, keep); }
+        }
+        let mut remaining = alloc::collections::BTreeMap::new();
+        for (key, entries) in pending {
+            if !entries.is_empty() { remaining.insert(key, entries); }
         }
         self.state.lock().group_prealloc = remaining;
         let mut s = self.state.lock();
