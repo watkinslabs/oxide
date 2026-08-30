@@ -37,6 +37,13 @@ pub(crate) fn ext4_sync_file(inode: &Inode, datasync: bool) -> KResult<()> {
         ).map_err(|e| fs_err(&d.st, e))?;
     }
     let _ = st.mount.commit_batch_for(Some((_ino, datasync)), true).map_err(|e| fs_err(&st, e))?;
+    // The no-journal reference path writes the inode table directly and then
+    // requests the block-device barrier itself. `commit_batch_for` has no
+    // journal transaction to retire in this mode, so its journal barrier
+    // result cannot represent this durability point.
+    if st.mount.sb.journal_inum == 0 && st.mount.behaviour().barrier {
+        st.mount.dev.flush().map_err(|_| VfsError::Eio)?;
+    }
     if let Some(d) = inode.private::<Ext4FileData>() {
         d.timestamp_staged.store(false, core::sync::atomic::Ordering::Release);
     }

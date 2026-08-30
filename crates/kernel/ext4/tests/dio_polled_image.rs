@@ -6,7 +6,7 @@ mod common;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use block::{BlockCompletion, BlockDevice, BlockError, BlockOp, BlockRequest, MemDisk};
 use sync::{Spinlock, TaskList};
@@ -21,6 +21,7 @@ struct PollDisk {
     inner: Arc<MemDisk<TaskList>>,
     parked: Spinlock<Vec<(BlockRequest, BlockCompletion)>, TaskList>,
     fail: AtomicBool,
+    flushes: AtomicU32,
 }
 
 impl PollDisk {
@@ -32,10 +33,12 @@ impl PollDisk {
             buffer: IMAGE.to_vec(), ..Default::default()
         };
         inner.submit_sync(&mut seed).expect("seed poll disk");
-        Arc::new(Self { inner, parked: Spinlock::new(Vec::new()), fail: AtomicBool::new(false) })
+        Arc::new(Self { inner, parked: Spinlock::new(Vec::new()), fail: AtomicBool::new(false), flushes: AtomicU32::new(0) })
     }
 
     fn fail_next(&self) { self.fail.store(true, Ordering::Release); }
+
+    fn flush_count(&self) -> u32 { self.flushes.load(Ordering::Acquire) }
 }
 
 impl BlockDevice for PollDisk {
@@ -53,7 +56,10 @@ impl BlockDevice for PollDisk {
     fn submit_sync(&self, request: &mut BlockRequest) -> Result<(), BlockError> {
         self.inner.submit_sync(request)
     }
-    fn flush(&self) -> Result<(), BlockError> { self.inner.flush() }
+    fn flush(&self) -> Result<(), BlockError> {
+        self.flushes.fetch_add(1, Ordering::AcqRel);
+        self.inner.flush()
+    }
     fn can_poll(&self) -> bool { true }
     fn poll_completions(&self) -> usize {
         let parked = core::mem::take(&mut *self.parked.lock());
@@ -125,22 +131,71 @@ fn polled_write_completes_only_after_device_poll_and_invalidates_cache() {
     let result = Arc::new(Spinlock::<Option<(Vec<u8>, Result<usize, VfsError>, SyncMode)>, TaskList>::new(None));
     let slot = result.clone();
     let direct = File::new(inode.inode().clone(), Dentry::new_root(inode.inode().clone()), OpenFlags::O_RDWR | OpenFlags::O_DIRECT);
+    let completion_file = direct.clone();
     let replacement = alloc::vec![0xE7u8; bs];
     assert!(matches!(direct.submit_direct(DirectIo {
         write: true, off: 0, buf: replacement.clone(),
         sync_mode: SyncMode { dsync: true, sync: false },
-        done: alloc::boxed::Box::new(move |buf, res, sync| { *slot.lock() = Some((buf, res, sync)); }),
+        done: alloc::boxed::Box::new(move |buf, res, sync| {
+            let res = match res {
+                Ok(n) => completion_file.complete_direct_write(0, n, sync).map(|()| n),
+                Err(e) => Err(e),
+            };
+            *slot.lock() = Some((buf, res, sync));
+        }),
     }), DirectSubmit::Queued));
     assert!(result.lock().is_none(), "device completion is deferred until poll");
     assert_eq!(direct.iopoll(), Some(1));
     assert_eq!(result.lock().as_ref().expect("completion").1, Ok(bs));
     assert_eq!(result.lock().as_ref().expect("completion").2,
         SyncMode { dsync: true, sync: false });
+    assert!(disk.flush_count() > 0, "RWF_DSYNC completion must flush the device");
 
     inode.set_pos(0);
     let mut got = alloc::vec![0u8; bs];
     inode.read(&mut got).expect("read after polled write");
     assert_eq!(got, replacement, "polled DIO invalidates the resident cache");
+}
+
+#[test]
+fn polled_write_persists_completion_timestamp_across_remount() {
+    let disk = PollDisk::from_image();
+    let (m, sb) = mount(disk.clone());
+    let bs = m.state().mount.sb.block_size as usize;
+    let file = seeded_file(&m, bs);
+    let inode = file.inode().clone();
+    let before_mtime = inode.mtime().expect("initial mtime");
+    let before_ctime = inode.ctime().expect("initial ctime");
+    let result = Arc::new(Spinlock::<Option<Result<usize, VfsError>>, TaskList>::new(None));
+    let slot = result.clone();
+    let completion_file = file.clone();
+    assert!(matches!(file.submit_direct(DirectIo {
+        write: true, off: 0, buf: alloc::vec![0xA9u8; bs],
+        sync_mode: SyncMode { dsync: true, sync: true },
+        done: alloc::boxed::Box::new(move |_buf, res, sync| {
+            let res = match res {
+                Ok(n) => completion_file.complete_direct_write(0, n, sync).map(|()| n),
+                Err(e) => Err(e),
+            };
+            *slot.lock() = Some(res);
+        }),
+    }), DirectSubmit::Queued));
+    assert!(result.lock().is_none());
+    assert_eq!(file.iopoll(), Some(1));
+    assert_eq!(*result.lock().as_ref().expect("completion"), Ok(bs));
+    assert!(disk.flush_count() > 0, "RWF_SYNC completion must flush the device");
+    let after_mtime = inode.mtime().expect("completed mtime");
+    let after_ctime = inode.ctime().expect("completed ctime");
+    assert!(after_mtime >= before_mtime, "direct write must not move mtime backwards");
+    assert!(after_ctime >= before_ctime, "direct write must not move ctime backwards");
+    let ino = inode.ino() as u32;
+    drop(file);
+    drop(sb);
+    drop(m);
+    let (m2, _sb2) = mount(disk);
+    let persisted = m2.state().mount.read_inode(ino).expect("inode after remount");
+    assert_eq!(persisted.mtime, after_mtime, "direct-write mtime survives remount");
+    assert_eq!(persisted.ctime, after_ctime, "direct-write ctime survives remount");
 }
 
 #[test]
