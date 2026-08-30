@@ -107,13 +107,21 @@ pub(crate) fn read(_inode: &Inode, _off: u64, _buf: &mut [u8]) -> vfs::KResult<u
 #[cfg(target_os = "oxide-kernel")]
 pub(crate) fn write(inode: &Inode, off: u64, buf: &[u8]) -> vfs::KResult<usize> {
     let d = inode.private::<Ext4FileData>().ok_or(vfs::VfsError::Eio)?;
+    if buf.is_empty() { return Ok(0); }
     let end = off.checked_add(buf.len() as u64).ok_or(vfs::VfsError::Einval)?;
     let _mutation = d.begin_swap_mutation(inode)?;
     let _inode_lock = inode.inode_lock();
     // SAFETY: process-context DAX writes exclusively hold extent invalidation
     // while allocation, conversion, and persistent CPU stores are performed.
     let _invalidate = unsafe { d.invalidate_lock.write() };
-    if end > inode.size() {
+    let extending = end > inode.size();
+    if extending {
+        // Linux ext4_dax_write_iter puts an extending write on the orphan
+        // list before allocation.  Recovery can then truncate blocks and
+        // restore the inode if power is lost between allocation and the final
+        // inode-size update.
+        d.st.mount.orphan_add(d.ino)
+            .map_err(|e| crate::rootfs::fserror::report(&d.st, e))?;
         d.st.mount.fallocate_inode(d.ino, off, end - off, false)
             .map_err(|e| crate::rootfs::fserror::report(&d.st, e))?;
         d.refresh_inode_usage(inode);
@@ -128,6 +136,10 @@ pub(crate) fn write(inode: &Inode, off: u64, buf: &[u8]) -> vfs::KResult<usize> 
         let pa = physical_at(d, pos).ok_or(vfs::VfsError::Eio)?;
         copy_to_pmem(&buf[done..done + chunk], pa);
         done += chunk;
+    }
+    if extending {
+        d.st.mount.orphan_del(d.ino)
+            .map_err(|e| crate::rootfs::fserror::report(&d.st, e))?;
     }
     Ok(done)
 }
