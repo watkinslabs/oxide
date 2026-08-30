@@ -163,8 +163,10 @@ impl Mount {
     /// Keep an unconsumed tail for this inode's next sequential write. # C: O(1)
     pub(crate) fn add_inode_prealloc(&self, ino: u32, logical_start: u32, blocks: Vec<u64>) {
         if blocks.is_empty() { return; }
+        let group = self.group_of_block(blocks[0]);
         self.state.lock().inode_prealloc.entry(ino).or_default()
             .push(InodePrealloc { logical_start, used: vec![false; blocks.len()], blocks });
+        let _ = self.refresh_prealloc_summary(group);
     }
 
     /// Return the nearest usable locality PA and its actual group owner.
@@ -264,6 +266,8 @@ impl Mount {
         let entries = s.group_prealloc.entry((cpu, group, order)).or_default();
         entries.push(GroupPrealloc { blocks });
         trim_group_preallocations(entries);
+        drop(s);
+        let _ = self.refresh_prealloc_summary(group);
     }
 
     /// Whether an in-memory PA can hide free blocks from a new allocation. # C: O(1)
