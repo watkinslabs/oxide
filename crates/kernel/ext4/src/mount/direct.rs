@@ -93,6 +93,41 @@ mod tests {
     }
 
     #[test]
+    fn direct_read_uses_legacy_indirect_mapping() {
+        let m = Mount::open(disk()).unwrap();
+        let extent_inode = m.read_inode(m.lookup_path(b"/hello.txt").unwrap()).unwrap();
+        let extent = inode::parse_inline_extent(&extent_inode.i_block,
+            &inode::parse_extent_header(&extent_inode.i_block).unwrap(), 0).unwrap();
+        let mut legacy = extent_inode;
+        legacy.i_flags &= !inode::EXT4_EXTENTS_FL;
+        legacy.i_block = [0; inode::I_BLOCK_LEN];
+        legacy.i_block[..4].copy_from_slice(&(extent.start_lba() as u32).to_le_bytes());
+        legacy.size = m.sb.block_size as u64;
+        let mut got = vec![0; m.sb.block_size as usize];
+        assert_eq!(m.direct_read(&legacy, 0, &mut got).unwrap(), got.len());
+        assert_eq!(got, m.read_file_block(&legacy, 0).unwrap());
+    }
+
+    #[test]
+    fn direct_write_uses_legacy_indirect_mapping() {
+        let m = Mount::open(disk()).unwrap();
+        let ino = m.lookup_path(b"/hello.txt").unwrap();
+        let (mut raw, _) = m.read_inode_bytes(ino).unwrap();
+        raw[0x20..0x24].copy_from_slice(&0u32.to_le_bytes());
+        let first = m.read_inode(ino).unwrap().i_block;
+        raw[0x28..0x28 + inode::I_BLOCK_LEN].fill(0);
+        raw[0x28..0x2c].copy_from_slice(&inode::parse_inline_extent(
+            &first, &inode::parse_extent_header(&first).unwrap(), 0).unwrap()
+            .start_lba().to_le_bytes()[..4]);
+        m.write_inode_bytes_data(ino, &raw).unwrap();
+        let data = vec![0xC3u8; 1024];
+        assert_eq!(m.direct_write(ino, 0, &data).unwrap(), data.len());
+        let mut got = vec![0u8; 1024];
+        assert_eq!(m.direct_read(&m.read_inode(ino).unwrap(), 0, &mut got).unwrap(), got.len());
+        assert_eq!(got, data);
+    }
+
+    #[test]
     fn direct_write_survives_remount() {
         let disk = disk();
         let ino;

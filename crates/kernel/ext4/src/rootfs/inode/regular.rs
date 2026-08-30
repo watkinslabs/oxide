@@ -264,13 +264,13 @@ impl InodeOps for Ext4RegInodeOps {
 pub(crate) struct Ext4RegFileOps;
 
 impl FileOps for Ext4RegFileOps {
-    /// `FMODE_CAN_ODIRECT`: only extent-backed, non-journal-data regular files
-    /// have a real synchronous direct-I/O owner in this tree.
+    /// `FMODE_CAN_ODIRECT`: ordinary extent and legacy-indirect regular files
+    /// share the synchronous mapping owner. Inline data and journal-data files
+    /// remain excluded, matching Linux's `ext4_dio_alignment()` contract.
     fn can_odirect(&self, inode: &Inode) -> bool {
         inode.private::<Ext4FileData>().is_some_and(|d| {
             let flags = d.raw_flags.load(Ordering::Acquire);
-            flags & (crate::inode::EXT4_EXTENTS_FL | crate::inode::EXT4_INLINE_DATA_FL)
-                == crate::inode::EXT4_EXTENTS_FL
+            flags & crate::inode::EXT4_INLINE_DATA_FL == 0
                 && d.st.mount.behaviour().data != crate::mount_opts::DataMode::Journal
         })
     }
