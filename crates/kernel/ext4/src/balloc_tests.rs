@@ -96,6 +96,8 @@ fn goal_run_is_used_only_when_the_requested_extent_is_free() {
     assert_eq!(find_goal_run(&bitmap, 16, 3, 0, 4, 4), Some(4));
     assert_eq!(find_goal_run(&bitmap, 16, 8, 0, 4, 8), None,
         "a stripe-sized request keeps its physical alignment");
+    assert_eq!(find_goal_run(&bitmap, 16, 9, 0, 4, 8), Some(4),
+        "larger requests may use an exact free goal without stripe alignment");
 }
 
 #[test]
