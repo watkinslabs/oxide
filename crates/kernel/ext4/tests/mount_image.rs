@@ -81,6 +81,45 @@ fn read_file_block_returns_payload() {
 }
 
 #[test]
+fn inline_file_converts_to_extents_when_it_outgrows_ibody() {
+    let m = ext4::Mount::open(build_disk()).expect("mount");
+    let ino = m.create_file(2, b"inline-convert", 0o644, 0, 0).expect("create");
+    let mut raw = m.read_inode_bytes(ino).expect("read raw inode").0;
+    let first = [0x41u8; ext4::inode::I_BLOCK_LEN];
+    raw[0x20..0x24].copy_from_slice(&ext4::inode::EXT4_INLINE_DATA_FL.to_le_bytes());
+    raw[0x28..0x28 + ext4::inode::I_BLOCK_LEN].copy_from_slice(&first);
+    raw[0x04..0x08].copy_from_slice(&70u32.to_le_bytes());
+    raw[0x6C..0x70].copy_from_slice(&0u32.to_le_bytes());
+    raw[0x1C..0x20].copy_from_slice(&0u32.to_le_bytes());
+    let extra = u16::from_le_bytes([raw[0x80], raw[0x81]]) as usize;
+    let hdr = ext4::csum::EXT4_GOOD_OLD_INODE_SIZE + extra;
+    ext4::xattr::encode_ibody(
+        &mut raw,
+        hdr,
+        m.sb.inode_size as usize,
+        &[("system.data".into(), vec![0x42u8; 10])],
+    ).expect("encode inline tail");
+    m.write_inode_bytes(ino, &raw).expect("publish inline inode");
+
+    let inline = m.read_inode(ino).expect("read inline inode");
+    assert_ne!(inline.i_flags & ext4::inode::EXT4_INLINE_DATA_FL, 0);
+    assert_eq!(inline.size, 60 + 10);
+    assert_eq!(&m.read_file_block(&inline, 0).expect("read inline")[..70],
+        &[0x41u8; 60].iter().chain([0x42u8; 10].iter()).copied().collect::<Vec<_>>()[..]);
+
+    let bs = m.sb.block_size as u64;
+    m.write_at(ino, bs - 1, &[0xEF]).expect("convert and write");
+    let converted = m.read_inode(ino).expect("read converted inode");
+    assert_eq!(converted.i_flags & ext4::inode::EXT4_INLINE_DATA_FL, 0);
+    assert_ne!(converted.i_flags & ext4::inode::EXT4_EXTENTS_FL, 0);
+    assert_eq!(converted.size, bs);
+    let block = m.read_file_block(&converted, 0).expect("read converted block");
+    assert_eq!(&block[..60], &[0x41u8; 60]);
+    assert_eq!(&block[60..70], &[0x42u8; 10]);
+    assert_eq!(block[bs as usize - 1], 0xEF);
+}
+
+#[test]
 fn legacy_inode_direct_block_reads_through_same_mount_owner() {
     let m = ext4::Mount::open(build_disk()).expect("mount");
     let extent_inode = m.read_inode(2).expect("read root");

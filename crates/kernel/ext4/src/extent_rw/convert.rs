@@ -24,6 +24,51 @@ use super::records::extent_run as mk_extent;
 pub(crate) const MAX_ZEROOUT_KB: u32 = 32;
 
 impl Mount {
+    /// Convert an inline regular file to a one-block extent file and apply the
+    /// pending write. The caller is already inside the journal transaction
+    /// opened by `write_at`; allocation and inode publication stay in the
+    /// canonical extent inserter below, exactly as for an ordinary hole.
+    /// # C: O(1) inline read + one extent allocation
+    pub(crate) fn convert_inline_data(
+        &self, ino: u32, inode: &crate::inode::Inode, off: u64, data: &[u8],
+    ) -> Result<(), MountError> {
+        let bs = self.sb.block_size as usize;
+        let off = usize::try_from(off).map_err(|_| MountError::BlockIo)?;
+        let end = off.checked_add(data.len()).ok_or(MountError::BlockIo)?;
+        if end > bs { return Err(MountError::NotExtents); }
+        let old_len = usize::try_from(inode.size).unwrap_or(bs).min(bs);
+        let mut block = alloc::vec![0u8; bs];
+        if old_len != 0 {
+            let old = crate::mount::inline::read_inline_data(self, inode, 0, old_len)?;
+            block[..old.len()].copy_from_slice(&old);
+        }
+        block[off..end].copy_from_slice(data);
+        let new_size = inode.size.max(end as u64);
+        let (mut bytes, inode_byte_off) = self.read_inode_bytes(ino)?;
+        let isize = self.sb.inode_size as usize;
+        let extra = ibody_extra_isize(&bytes, isize);
+        if extra != 0 {
+            let hdr = crate::csum::EXT4_GOOD_OLD_INODE_SIZE + extra;
+            let mut entries = crate::xattr::decode_ibody(&bytes, hdr, isize);
+            entries.retain(|(name, _)| name != "system.data");
+            crate::xattr::encode_ibody(&mut bytes, hdr, isize, &entries)
+                .map_err(|_| MountError::NotExtents)?;
+        }
+        let flags = u32::from_le_bytes([bytes[0x20], bytes[0x21], bytes[0x22], bytes[0x23]]);
+        let flags = (flags | crate::inode::EXT4_EXTENTS_FL)
+            & !crate::inode::EXT4_INLINE_DATA_FL;
+        bytes[0x20..0x24].copy_from_slice(&flags.to_le_bytes());
+        let mut root = [0u8; crate::inode::I_BLOCK_LEN];
+        crate::inode::write_extent_header(&mut root, &crate::inode::ExtentHeader {
+            magic: crate::inode::EXT4_EXT_MAGIC, entries: 0, max: 4, depth: 0, generation: 0,
+        });
+        bytes[0x28..0x28 + crate::inode::I_BLOCK_LEN].copy_from_slice(&root);
+        self.insert_logical_block_with_inode_bytes(
+            ino, &mut bytes, inode_byte_off, 0, &block, new_size, false, false, None,
+        )?;
+        Ok(())
+    }
+
     /// Convert completed direct-I/O blocks from unwritten to initialized
     /// without zeroing them. The caller has already written every block in
     /// `ranges`; this is the metadata half of Linux's DIO `end_io` owner.
@@ -162,4 +207,10 @@ impl Mount {
         }
         Ok(())
     }
+}
+
+fn ibody_extra_isize(raw: &[u8], inode_size: usize) -> usize {
+    if inode_size <= crate::csum::EXT4_GOOD_OLD_INODE_SIZE { return 0; }
+    let extra = u16::from_le_bytes([raw[0x80], raw[0x81]]) as usize;
+    if crate::csum::EXT4_GOOD_OLD_INODE_SIZE + extra + 4 > inode_size { 0 } else { extra }
 }
