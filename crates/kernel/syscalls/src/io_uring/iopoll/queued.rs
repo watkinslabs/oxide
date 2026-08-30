@@ -39,6 +39,7 @@ use vfs::File;
 
 use sync::{Spinlock, TaskList as QueuedLockClass};
 
+use crate::io_uring_abi::recvsend::fixed::window;
 use crate::io_uring_abi::iopoll::{admit_rw, is_write, RwTarget};
 use crate::io_uring_abi::iopoll::seq::{reap_pass, ReapSet, Taken};
 
@@ -53,6 +54,8 @@ enum Sink {
     /// A window inside a registered buffer. Kernel memory, pinned at
     /// registration, so it needs no address space at all.
     Fixed { buf: Arc<super::super::pin::PinnedRange>, off: u64 },
+    /// Windows inside one registered buffer named by a fixed iovec array.
+    FixedVec(Vec<(Arc<super::super::pin::PinnedRange>, u64, usize)>),
 }
 
 /// One transfer the backend owns.
@@ -123,6 +126,34 @@ fn sink_of(req: &Arc<IoReq>) -> Result<(Sink, usize), Errno> {
             let off = sqe.addr.checked_sub(buf.base).ok_or(Errno::Efault)?;
             Ok((Sink::Fixed { buf, off }, sqe.len as usize))
         }
+        IORING_OP_READV_FIXED | IORING_OP_WRITEV_FIXED => {
+            let buf = {
+                let g = req.ring.reg.lock();
+                let bufs = g.buffers.as_ref().ok_or(Errno::Efault)?;
+                let slot = bufs.get(sqe.buf_index as usize).ok_or(Errno::Efault)?;
+                Arc::clone(&slot.buf)
+            };
+            let count = sqe.len as u64;
+            let bytes = count.checked_mul(16).ok_or(Errno::Efault)?;
+            let bytes_usize = usize::try_from(bytes).map_err(|_| Errno::Efault)?;
+            if !uaccess::access_ok(sqe.addr, bytes_usize) { return Err(Errno::Efault); }
+            let mut segs = Vec::new();
+            let mut total = 0usize;
+            for i in 0..count {
+                let mut wire = [0u8; 16];
+                let addr = sqe.addr.checked_add(i * 16).ok_or(Errno::Efault)?;
+                uaccess::copy_from_user(&mut wire, addr)
+                    .map_err(|_| Errno::Efault)?;
+                let base = u64::from_le_bytes(wire[0..8].try_into().unwrap());
+                let n = u64::from_le_bytes(wire[8..16].try_into().unwrap());
+                if n > u32::MAX as u64 { return Err(Errno::Einval); }
+                let w = window(buf.base, buf.len, base, n as u32)?;
+                let n = w.len as usize;
+                total = total.checked_add(n).ok_or(Errno::Eoverflow)?;
+                segs.push((Arc::clone(&buf), w.off, n));
+            }
+            Ok((Sink::FixedVec(segs), total))
+        }
         _ => Err(Errno::Einval),
     }
 }
@@ -147,6 +178,13 @@ fn gather(sink: &Sink, len: usize) -> Result<Vec<u8>, Errno> {
         }
         Sink::Fixed { buf, off } => {
             buf.read_at(*off, &mut out[..]).map_err(|_| Errno::Efault)?;
+        }
+        Sink::FixedVec(segs) => {
+            let mut at = 0usize;
+            for (buf, off, n) in segs {
+                buf.read_at(*off, &mut out[at..at + *n]).map_err(|_| Errno::Efault)?;
+                at += *n;
+            }
         }
     }
     Ok(out)
@@ -175,6 +213,21 @@ fn scatter(sink: &Sink, root_pa: u64, src: &[u8]) -> usize {
                 at += n;
                 Some(n)
             }).ok();
+            at
+        }
+        Sink::FixedVec(segs) => {
+            let mut at = 0usize;
+            for (buf, off, n) in segs {
+                let take = core::cmp::min(*n, src.len().saturating_sub(at));
+                if take == 0 { break; }
+                if buf.for_each_chunk(*off, take as u64, |chunk| {
+                    let n = core::cmp::min(chunk.len(), take.saturating_sub(at));
+                    if n == 0 { return None; }
+                    chunk[..n].copy_from_slice(&src[at..at + n]);
+                    at += n;
+                    Some(n)
+                }).is_err() { break; }
+            }
             at
         }
     }
@@ -218,6 +271,33 @@ pub fn prepare(req: &Arc<IoReq>) -> Result<(), Errno> {
 fn try_prepare(req: &Arc<IoReq>) -> Result<(), Errno> {
     let file = resolve(req.sqe.fd)?;
     let (sink, len) = sink_of(req)?;
+    if file.flags().contains(vfs::OpenFlags::O_DIRECT)
+        && matches!(file.inode().file_type(), vfs::FileType::Regular) {
+        let mut off = if req.sqe.off == u64::MAX { file.pos() } else { req.sqe.off };
+        if (off as i64) < 0 { return Err(Errno::Einval); }
+        match &sink {
+            Sink::User(segs) => {
+                for &(addr, n) in segs {
+                    file.check_direct_io_alignment(addr, off, n)
+                        .map_err(|_| Errno::Einval)?;
+                    off = off.saturating_add(n as u64);
+                }
+            }
+            Sink::Fixed { buf, off: at } => {
+                let addr = buf.base.checked_add(*at).ok_or(Errno::Efault)?;
+                file.check_direct_io_alignment(addr, off, len)
+                    .map_err(|_| Errno::Einval)?;
+            }
+            Sink::FixedVec(segs) => {
+                for (buf, at, n) in segs {
+                    let addr = buf.base.checked_add(*at).ok_or(Errno::Efault)?;
+                    file.check_direct_io_alignment(addr, off, *n)
+                        .map_err(|_| Errno::Einval)?;
+                    off = off.saturating_add(*n as u64);
+                }
+            }
+        }
+    }
     let buf = if is_write(req.sqe.opcode) { gather(&sink, len)? } else {
         let mut v: Vec<u8> = Vec::new();
         v.try_reserve(len).map_err(|_| Errno::Enomem)?;
@@ -254,9 +334,10 @@ pub fn issue(req: &Arc<IoReq>) -> Result<bool, Errno> {
     };
     let sink = Arc::clone(&q);
     q.issued_at.store(timekeeper::monotonic_ns(), Ordering::Release);
+    let off = if req.sqe.off == u64::MAX { file.pos() } else { req.sqe.off };
     let io = DirectIo {
         write: is_write(req.sqe.opcode),
-        off: req.sqe.off,
+        off,
         buf,
         done: alloc::boxed::Box::new(move |buf, res| {
             *sink.slot.lock() = Some((buf, res));
@@ -346,7 +427,7 @@ impl<'a> ReapSet for LiveSet<'a> {
         let src = &self.buf[..core::cmp::min(delivered, self.buf.len())];
         let root = r.owner.mm.as_ref().map(|m| m.root_pa());
         match (&q.sink, root) {
-            (Sink::Fixed { .. }, _) => scatter(&q.sink, 0, src),
+            (Sink::Fixed { .. } | Sink::FixedVec(_), _) => scatter(&q.sink, 0, src),
             (Sink::User(_), Some(root)) => scatter(&q.sink, root, src),
             // No address space to write into: the submitter is gone, so the
             // bytes have nowhere to land.

@@ -106,6 +106,7 @@ impl InodeOps for Ext4RegInodeOps {
     fn truncate(&self, inode: &Inode, len: u64) -> KResult<()> {
         let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
         let _mutation = d.begin_swap_mutation(inode)?;
+        d.wait_dio();
         // SAFETY: truncate runs in process context and holds no spinlock; the
         // invalidate semaphore may sleep while an mmap/cache reader drains.
         let _invalidate = unsafe { d.invalidate_lock.write() };
@@ -275,7 +276,8 @@ impl FileOps for Ext4RegFileOps {
     fn direct_read_file(&self, file: &vfs::File, off: u64, buf: &mut [u8])
         -> Option<KResult<usize>>
     {
-        let d = file.inode().private::<Ext4FileData>()?;
+        let d = file.inode().private_arc::<Ext4FileData>()?;
+        let _dio = d.begin_dio();
         // SAFETY: direct read runs in process context and holds no spinlock;
         // the Linux-shaped invalidate semaphore may sleep under contention.
         let _invalidate = unsafe { d.invalidate_lock.read() };
@@ -303,11 +305,13 @@ impl FileOps for Ext4RegFileOps {
     fn direct_write_file(&self, file: &vfs::File, off: u64, buf: &[u8])
         -> Option<KResult<usize>>
     {
-        let d = file.inode().private::<Ext4FileData>()?;
+        let d = file.inode().private_arc::<Ext4FileData>()?;
         let _mutation = match d.begin_swap_mutation(file.inode()) {
             Ok(m) => m,
             Err(e) => return Some(Err(e)),
         };
+        d.wait_dio();
+        let _dio = d.begin_dio();
         let _inode_lock = file.inode().inode_lock();
         // SAFETY: direct write runs in process context and holds no spinlock;
         // the Linux-shaped invalidate semaphore may sleep under contention.
@@ -358,6 +362,14 @@ impl FileOps for Ext4RegFileOps {
     fn fsync(&self, file: &vfs::File, datasync: bool) -> KResult<()> {
         ext4_sync_file(file.inode(), datasync)
     }
+
+    fn iopoll(&self, file: &vfs::File) -> Option<usize> { super::dio::poll(file) }
+
+    fn can_iopoll(&self, file: &vfs::File) -> bool { super::dio::can_poll(file) }
+
+    fn submit_direct(&self, file: &vfs::File, io: vfs::file_ops::DirectIo)
+        -> vfs::file_ops::DirectSubmit
+    { super::dio::submit(file, io) }
 
     fn unlocked_ioctl(
         &self,
@@ -578,6 +590,8 @@ pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: 
         raw_flags: core::sync::atomic::AtomicU32::new(_raw_flags), size_hint: AtomicU64::new(size),
         timestamp_staged: core::sync::atomic::AtomicBool::new(false), frames,
         swap_mutations: Arc::new(AtomicU64::new(0)), swap_wait: sched::live::WaitList::new(),
+        dio_count: AtomicU64::new(0), dio_wait: sched::live::WaitList::new(),
+        dio_queue: sync::Spinlock::new(Vec::new()),
         xattrs: super::data::Ext4XattrState::new() });
     let mapping: Arc<dyn AddressSpaceOps> = Arc::new(Ext4FileMapping { data: data.clone() });
     let weak_sb = data.st.sb.lock().clone();

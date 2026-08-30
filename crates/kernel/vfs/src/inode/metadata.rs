@@ -239,6 +239,12 @@ impl Inode {
     pub fn i_private(&self) -> &Arc<dyn Any + Send + Sync> { &self.i_private }
     /// Downcast `i_private` to a concrete backend state type. # C: O(1)
     pub fn private<T: Any + Send + Sync>(&self) -> Option<&T> { self.i_private.downcast_ref::<T>() }
+    /// Clone the canonical `i_private` owner for work that outlives the
+    /// current inode operation, such as an asynchronous filesystem I/O.
+    /// # C: O(1)
+    pub fn private_arc<T: Any + Send + Sync>(&self) -> Option<Arc<T>> {
+        self.i_private.clone().downcast::<T>().ok()
+    }
     /// Per-inode epoll subscribers. # C: O(1)
     pub fn poll_subscribers(&self) -> Option<&PollSubscribers> { self.poll_subs.as_deref() }
     /// Clone the `Arc` backing the per-inode epoll subscriber set — a backend

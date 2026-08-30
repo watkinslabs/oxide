@@ -46,6 +46,15 @@ pub(crate) struct Ext4FileData {
     pub(crate) swap_mutations: Arc<AtomicU64>,
     /// Waiters for every mutation admitted before swapfile activation.
     pub(crate) swap_wait: WaitList,
+    /// Linux `inode->i_dio_count`: extent-remapping operations wait for every
+    /// asynchronous direct transfer to retire before changing the mapping.
+    /// The count is lifetime state, not another mapping or cache.
+    pub(crate) dio_count: AtomicU64,
+    pub(crate) dio_wait: WaitList,
+    /// One canonical completion list for this inode's polled direct reads.
+    /// The block device owns request completion; this list only lets the
+    /// filesystem's `iopoll` find its completed transfer.
+    pub(crate) dio_queue: sync::Spinlock<Vec<Arc<super::dio::DioState>>, sync::Inode>,
     /// Xattrs are loaded on first xattr/ACL access, not during pathname lookup.
     pub(crate) xattrs: Ext4XattrState,
 }
@@ -77,11 +86,38 @@ impl Ext4XattrState {
 /// activation observe that the operation has completed.
 pub(crate) struct SwapMutation<'a> { file: &'a Ext4FileData }
 
+/// Lifetime token for one direct transfer. Async ext4 I/O keeps this token in
+/// its completion owner; synchronous I/O drops it on return. # C: O(1)
+pub(crate) struct DioToken { file: Arc<Ext4FileData> }
+
+impl Drop for DioToken {
+    fn drop(&mut self) {
+        if self.file.dio_count.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.file.dio_wait.wake_all();
+        }
+    }
+}
+
 impl Drop for SwapMutation<'_> {
     fn drop(&mut self) { self.file.finish_swap_mutation(); }
 }
 
 impl Ext4FileData {
+    /// Begin one direct transfer before its extent snapshot is taken. # C: O(1)
+    pub(crate) fn begin_dio(self: &Arc<Self>) -> DioToken {
+        self.dio_count.fetch_add(1, Ordering::AcqRel);
+        DioToken { file: self.clone() }
+    }
+
+    /// Wait until all direct transfers have released their extent snapshots.
+    /// # C: O(in-flight waiters)
+    pub(crate) fn wait_dio(&self) {
+        // SAFETY: truncate runs in process context; the predicate is the sole
+        // atomic state changed by DioToken::drop, and no lock is held here.
+        let _ = unsafe { sched::live::wait_event_uninterruptible(&self.dio_wait,
+            || self.dio_count.load(Ordering::Acquire) == 0) };
+    }
+
     fn finish_swap_mutation(&self) {
         if self.swap_mutations.fetch_sub(1, Ordering::AcqRel) == 1 {
             self.swap_wait.wake_all();

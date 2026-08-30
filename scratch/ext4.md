@@ -28,6 +28,17 @@ No item closes on a parser change alone. Each closes only when the Linux-shaped 
 | E4-13 | DONE | All ext4 e2fsck image fixtures use PID/sequence-unique temporary paths and clean up after each run; the large allocator harness uses a per-process directory, and serial/parallel runs agree. | baseline only | isolated fixture ownership; parallel and serial suites agree |
 | E4-14 | DONE | The previously reported ARM sysinit EIO/SIGBUS event did not reproduce in the controlled ARM boot-smoke run; userspace answered the systemd probe and the serial RX probe passed in 22 seconds. | E4-02, E4-03 | controlled ARM boot-smoke evidence; retain broader ARM desktop validation under E4-03 |
 | E4-15 | DONE | Controlled GNOME/SMP=1 comparison, phase attribution, and repeatability evidence are recorded. The result remains within harness variance and is not credited as a whole-boot gain; the dominant remaining resolution cost is parent-lock contention. | E4-01 through E4-05 | saved baseline, phase metrics, repeated runs, comparison report |
+
+E4-10 current implementation evidence: ext4 regular files now expose one
+filesystem-owned `submit_direct`/`iopoll` path for extent-backed polled reads.
+It takes the Linux-shaped invalidate/read-side preparation, writes device-owned
+polled block requests, represents holes and unwritten extents as zero-filled
+aggregate regions, and completes through one inode DIO lifetime owner. Scalar,
+vectored, fixed-buffer, and fixed-vector io_uring operands all use the same
+filesystem alignment contract. Polled writes remain intentionally on the
+synchronous allocation/journal path until their allocation and publication
+phases can be separated without weakening ordering; mapped-page coherency and
+that write path remain open work, so E4-10 stays IN-PROGRESS.
 | E4-16 | DONE | Historical ext4 rows are explicitly historical, mapped to the E4 inventory, and no longer carry stale pending SHAs or old current-suite counts. | baseline only | corrected rows map to an E4 item or retain explicit evidence |
 
 ## 3 — supported mode contract
