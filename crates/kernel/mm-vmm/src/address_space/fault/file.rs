@@ -78,6 +78,18 @@ impl AddressSpace {
                 let direct = if let Some(pa) = backing.direct_frame(file_off) {
                     Some((pa, false))
                 } else if vma.flags.contains(VmaFlags::SHARED) {
+                    // A DAX frame is already the persistent object, so it has
+                    // no cache lookup below to trigger page_mkwrite. Run the
+                    // write-fault owner before choosing either direct storage
+                    // or a shared page-cache frame.
+                    if matches!(access, FaultAccess::Write) {
+                        match backing.page_mkwrite(file_off) {
+                            Ok(()) => {}
+                            Err(FileBackingError::NoMem) => return Err(Error::NoMem),
+                            Err(FileBackingError::Again) => return Err(Error::Again),
+                            Err(_) => return Err(Error::Io),
+                        }
+                    }
                     if let Some(pa) = backing.dax_frame(file_off) {
                         Some((pa, false))
                     } else if !cfg!(feature = "debug-no-shmem") {
@@ -88,15 +100,7 @@ impl AddressSpace {
                     // decided while the fault can still report them, and the
                     // page is dirtied by the one event the filesystem sees for a
                     // mapped write. A read fault reserves nothing.
-                    if matches!(access, FaultAccess::Write) {
-                        match backing.page_mkwrite(file_off) {
-                            Ok(()) => {}
-                            Err(FileBackingError::NoMem) => return Err(Error::NoMem),
-                            Err(FileBackingError::Again) => return Err(Error::Again),
-                            Err(_) => return Err(Error::Io),
-                        }
-                    }
-                        match backing.shared_frame(file_off) {
+                    match backing.shared_frame(file_off) {
                             Ok(frame) => frame.map(|frame| (frame.pa, frame.map_ref_held)),
                             Err(FileBackingError::NoMem) => return Err(Error::NoMem),
                             Err(FileBackingError::Again) => return Err(Error::Again),

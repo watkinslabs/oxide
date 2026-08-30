@@ -267,6 +267,13 @@ impl FileOps for Ext4RegFileOps {
     fn mmap_dax_frame(&self, inode: &Inode, off: u64) -> Option<u64> {
         super::dax::mmap_frame(inode, off)
     }
+
+    fn mmap_page_mkwrite(&self, inode: &Inode, off: u64) -> KResult<()> {
+        if inode.i_flags() & vfs::inode::S_DAX != 0 {
+            return super::dax::page_mkwrite(inode, off);
+        }
+        inode.i_mapping().map_or(Ok(()), |m| m.page_mkwrite(off))
+    }
     /// `FMODE_CAN_ODIRECT`: ordinary extent and legacy-indirect regular files
     /// share the synchronous mapping owner. Inline data and journal-data files
     /// remain excluded, matching Linux's `ext4_dio_alignment()` contract.
