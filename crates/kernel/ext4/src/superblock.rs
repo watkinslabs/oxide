@@ -20,6 +20,9 @@ pub const INCOMPAT_RECOVER:  u32 = 0x0004;
 pub const INCOMPAT_EXTENTS:  u32 = 0x0040;
 pub const INCOMPAT_64BIT:    u32 = 0x0080;
 pub const INCOMPAT_FLEX_BG:  u32 = 0x0200;
+/// Inline file and directory data lives in the inode and `system.data` ibody
+/// xattr. The inline owner handles regular files, directories, and symlinks.
+pub const INCOMPAT_INLINE_DATA: u32 = 0x8000;
 /// `s_feature_incompat` CSUM_SEED — `s_checksum_seed` overrides the UUID seed.
 pub const INCOMPAT_CSUM_SEED: u32 = 0x2000;
 /// Filename casefolding; the superblock also carries the Unicode encoding.
@@ -43,7 +46,7 @@ pub const RO_COMPAT_PROJECT:       u32 = 0x2000;
 /// misread → refuse the mount (Linux `EXT4_FEATURE_INCOMPAT_SUPP`).
 pub const SUPPORTED_INCOMPAT: u32 =
     INCOMPAT_FILETYPE | INCOMPAT_RECOVER | INCOMPAT_EXTENTS | INCOMPAT_64BIT
-    | INCOMPAT_FLEX_BG | INCOMPAT_CSUM_SEED | INCOMPAT_CASEFOLD;
+    | INCOMPAT_FLEX_BG | INCOMPAT_CSUM_SEED | INCOMPAT_CASEFOLD | INCOMPAT_INLINE_DATA;
 
 /// RO_COMPAT features this driver can safely WRITE. A bit outside this set
 /// (notably BIGALLOC=0x200, whose cluster bitmap we'd misread as per-block, or

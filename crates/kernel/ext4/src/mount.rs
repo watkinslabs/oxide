@@ -5,8 +5,8 @@
 // - csum_trace: one-shot debug origin record for a rejected metadata checksum.
 // - blocks: inode reads, extent walks, file-block I/O, and inode flag helpers.
 // - indirect: legacy direct/indirect block mapping for read-side consumers.
-// - inline: Linux inline-data byte reads shared by regular files, directories,
-//   and symlinks; mutation remains owned by the future conversion path.
+// - inline: Linux inline-data reads, directory mutation, and regular-file
+//   mutation/conversion; all inline consumers share this layout owner.
 // - dirs: directory mutation, directory lookup, and absolute path walk.
 // - errors: the volume's error history — recording an event, reading it back.
 // - io: raw byte-range block-device helpers shared by sibling modules.

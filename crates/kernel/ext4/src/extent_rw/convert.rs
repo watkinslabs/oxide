@@ -24,26 +24,39 @@ use super::records::extent_run as mk_extent;
 pub(crate) const MAX_ZEROOUT_KB: u32 = 32;
 
 impl Mount {
-    /// Convert an inline regular file to a one-block extent file and apply the
+    /// Convert inline data to an extent file and apply the
     /// pending write. The caller is already inside the journal transaction
     /// opened by `write_at`; allocation and inode publication stay in the
     /// canonical extent inserter below, exactly as for an ordinary hole.
-    /// # C: O(1) inline read + one extent allocation
+    /// # C: O(inline bytes + N extent allocations)
     pub(crate) fn convert_inline_data(
         &self, ino: u32, inode: &crate::inode::Inode, off: u64, data: &[u8],
     ) -> Result<(), MountError> {
         let bs = self.sb.block_size as usize;
         let off = usize::try_from(off).map_err(|_| MountError::BlockIo)?;
         let end = off.checked_add(data.len()).ok_or(MountError::BlockIo)?;
-        if end > bs { return Err(MountError::NotExtents); }
         let old_len = usize::try_from(inode.size).unwrap_or(bs).min(bs);
         let mut block = alloc::vec![0u8; bs];
-        if old_len != 0 {
-            let old = crate::mount::inline::read_inline_data(self, inode, 0, old_len)?;
-            block[..old.len()].copy_from_slice(&old);
-        }
-        block[off..end].copy_from_slice(data);
-        let new_size = inode.size.max(end as u64);
+        let old = if old_len != 0 {
+            crate::mount::inline::read_inline_data(self, inode, 0, old_len)?
+        } else { alloc::vec::Vec::new() };
+        let new_size = if inode.is_dir() {
+            let parent = if old.len() >= 4 {
+                u32::from_le_bytes([old[0], old[1], old[2], old[3]])
+            } else { return Err(MountError::BlockIo); };
+            let mut entries = alloc::vec::Vec::new();
+            entries.push((inode.ino, crate::dir::DT_DIR, b".".to_vec()));
+            entries.push((parent, crate::dir::DT_DIR, b"..".to_vec()));
+            let first_end = old.len().min(crate::inode::I_BLOCK_LEN);
+            collect_inline_dirents(&old[4..first_end], &mut entries)?;
+            if old.len() > crate::inode::I_BLOCK_LEN {
+                collect_inline_dirents(&old[crate::inode::I_BLOCK_LEN..], &mut entries)?;
+            }
+            let usable = crate::csum::dir_usable_len(&self.sb, bs);
+            write_dir_entries(&entries, &mut block, usable)?;
+            crate::csum::stamp_dirent_tail(&self.sb, ino, inode.generation, &mut block);
+            bs as u64
+        } else { inode.size.max(end as u64) };
         let (mut bytes, inode_byte_off) = self.read_inode_bytes(ino)?;
         let isize = self.sb.inode_size as usize;
         let extra = ibody_extra_isize(&bytes, isize);
@@ -63,9 +76,34 @@ impl Mount {
             magic: crate::inode::EXT4_EXT_MAGIC, entries: 0, max: 4, depth: 0, generation: 0,
         });
         bytes[0x28..0x28 + crate::inode::I_BLOCK_LEN].copy_from_slice(&root);
-        self.insert_logical_block_with_inode_bytes(
-            ino, &mut bytes, inode_byte_off, 0, &block, new_size, false, false, None,
-        )?;
+        if inode.is_dir() {
+            self.insert_logical_block_with_inode_bytes(
+                ino, &mut bytes, inode_byte_off, 0, &block, new_size, false, false, None,
+            )?;
+        } else {
+            let blocks = (new_size.saturating_add(bs as u64 - 1) / bs as u64) as usize;
+            for logical in 0..blocks {
+                let block_start = logical * bs;
+                let block_end = block_start.saturating_add(bs);
+                let mut data_block = alloc::vec![0u8; bs];
+                let old_start = block_start.min(old.len());
+                let old_end = block_end.min(old.len());
+                if old_end > old_start {
+                    data_block[old_start - block_start..old_end - block_start]
+                        .copy_from_slice(&old[old_start..old_end]);
+                }
+                let write_start = off.max(block_start);
+                let write_end = end.min(block_end);
+                if write_end > write_start {
+                    data_block[write_start - block_start..write_end - block_start]
+                        .copy_from_slice(&data[write_start - off..write_end - off]);
+                }
+                self.insert_logical_block_with_inode_bytes(
+                    ino, &mut bytes, inode_byte_off, logical as u32, &data_block,
+                    new_size, false, false, None,
+                )?;
+            }
+        }
         Ok(())
     }
 
@@ -207,6 +245,41 @@ impl Mount {
         }
         Ok(())
     }
+}
+
+fn collect_inline_dirents(
+    bytes: &[u8], out: &mut alloc::vec::Vec<(u32, u8, alloc::vec::Vec<u8>)>,
+) -> Result<(), MountError> {
+    let mut off = 0usize;
+    while off < bytes.len() {
+        let (entry, next) = crate::dir::next_entry(bytes, off).map_err(MountError::Dir)?;
+        if entry.inode != 0 {
+            out.push((entry.inode, entry.file_type, entry.name.to_vec()));
+        }
+        off = next;
+    }
+    Ok(())
+}
+
+fn write_dir_entries(
+    entries: &[(u32, u8, alloc::vec::Vec<u8>)], block: &mut [u8], usable: usize,
+) -> Result<(), MountError> {
+    let mut off = 0usize;
+    for (idx, (ino, file_type, name)) in entries.iter().enumerate() {
+        let actual = crate::dir::entry_actual_len(name.len() as u8);
+        let rec_len = if idx + 1 == entries.len() { usable - off } else { actual };
+        if name.len() > 255 || rec_len < actual || rec_len > u16::MAX as usize {
+            return Err(MountError::Dir(crate::dir::DirError::BadNameLen));
+        }
+        block[off..off + 4].copy_from_slice(&ino.to_le_bytes());
+        block[off + 4..off + 6].copy_from_slice(&(rec_len as u16).to_le_bytes());
+        block[off + 6] = name.len() as u8;
+        block[off + 7] = *file_type;
+        block[off + 8..off + 8 + name.len()].copy_from_slice(name);
+        off += rec_len;
+    }
+    if off != usable { return Err(MountError::Dir(crate::dir::DirError::Overrun)); }
+    Ok(())
 }
 
 fn ibody_extra_isize(raw: &[u8], inode_size: usize) -> usize {
