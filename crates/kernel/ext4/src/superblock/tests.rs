@@ -40,6 +40,11 @@
     }
 
     #[test]
+    fn indexed_directories_are_a_supported_writable_layout() {
+        assert_ne!(SUPPORTED_RO_COMPAT & RO_COMPAT_BTREE_DIR, 0);
+    }
+
+    #[test]
     fn parses_hidden_quota_inode_numbers() {
         let mut b = make_sb(
             1024, 8192, 2,
