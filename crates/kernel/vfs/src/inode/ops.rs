@@ -180,6 +180,9 @@ impl Inode {
     pub fn poll_file(&self, pos: u64) -> u32 { self.i_fop.poll_file(self, pos) }
     /// `MAP_SHARED` cache frame. # C: O(log N_pages)
     pub fn mmap_shared_frame(&self, off: u64) -> KResult<Option<crate::SharedFrame>> { self.i_fop.mmap_shared_frame(self, off) }
+    /// Physical frame for a DAX file page, or `None` for page-cache storage.
+    /// # C: O(1) or filesystem mapping
+    pub fn mmap_dax_frame(&self, off: u64) -> Option<u64> { self.i_fop.mmap_dax_frame(self, off) }
     /// A shared mapping is about to write this page (`page_mkwrite`).
     /// # Ctx: process # Sleeps: y # C: O(indirection depth) blocks
     pub fn mmap_page_mkwrite(&self, off: u64) -> KResult<()> { self.i_fop.mmap_page_mkwrite(self, off) }

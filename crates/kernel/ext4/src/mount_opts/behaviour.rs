@@ -56,6 +56,18 @@ const DATA_JOURNAL: &str = "journal";
 const DATA_ORDERED: &str = "ordered";
 const DATA_WRITEBACK: &str = "writeback";
 
+/// DAX policy selected for one ext4 superblock.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DaxMode { Inode, Always, Never }
+
+impl DaxMode {
+    /// Linux mount spelling to policy.
+    /// # C: O(1)
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name { "always" => Some(Self::Always), "inode" => Some(Self::Inode), "never" => Some(Self::Never), _ => None }
+    }
+}
+
 /// On-disk `s_errors` values.
 pub const SB_ERRORS_CONTINUE: u16 = 1;
 pub const SB_ERRORS_RO: u16 = 2;
@@ -219,6 +231,9 @@ pub struct Ext4Behaviour {
     /// `prefetch_block_bitmaps` — load and validate all allocation bitmaps
     /// during mount instead of on the first allocation in each group.
     pub prefetch_block_bitmaps: bool,
+    /// `dax`, `dax=always|inode|never` policy. The device capability remains
+    /// owned by the block device; this field is only the superblock policy.
+    pub dax: DaxMode,
 }
 
 impl Default for Ext4Behaviour {
@@ -249,6 +264,7 @@ impl Default for Ext4Behaviour {
             inode_readahead_blks: DEFAULT_INODE_READAHEAD_BLKS,
             dio_read_nolock: false,
             prefetch_block_bitmaps: false,
+            dax: DaxMode::Inode,
         }
     }
 }

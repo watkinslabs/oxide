@@ -264,6 +264,9 @@ impl InodeOps for Ext4RegInodeOps {
 pub(crate) struct Ext4RegFileOps;
 
 impl FileOps for Ext4RegFileOps {
+    fn mmap_dax_frame(&self, inode: &Inode, off: u64) -> Option<u64> {
+        super::dax::mmap_frame(inode, off)
+    }
     /// `FMODE_CAN_ODIRECT`: ordinary extent and legacy-indirect regular files
     /// share the synchronous mapping owner. Inline data and journal-data files
     /// remain excluded, matching Linux's `ext4_dio_alignment()` contract.
@@ -602,6 +605,7 @@ pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: 
     uid: u32, gid: u32, projid: u32, times: crate::timestamp::InodeTimes, blocks: u64,
     generation: u32, _raw_flags: u32) -> InodeRef
 {
+    let dax = st.mount.inode_dax_enabled(mode, _raw_flags);
     let frames = st.frame_store(ino, size);
     let data = Arc::new(Ext4FileData { st, ino,
         invalidate_lock: sched::rwsem::RwSem::new(()),
@@ -622,6 +626,7 @@ pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: 
         .nlink(nlink)
         .owner(uid, gid)
         .projid(projid)
+        .i_flags(if dax { vfs::inode::S_DAX } else { 0 })
         .generation(generation)
         .times(times.atime, times.mtime, times.ctime)
         .mapping(mapping)

@@ -14,6 +14,29 @@ use sync::{LockClass, Spinlock};
 use crate::queue_limits::QueueLimits;
 use crate::types::{BlockError, BlockOp, KResult};
 
+/// A byte-addressable persistent-memory aperture exposed by a block device.
+/// The physical range is the device's DAX owner: filesystems may map only
+/// bytes inside it, and must add their partition offset before installing a
+/// user PTE. Ordinary block devices return `None` from `BlockDevice::dax_region`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DaxRegion {
+    pub base_pa: u64,
+    pub size_bytes: u64,
+    pub partition_offset: u64,
+    pub synchronous: bool,
+}
+
+impl DaxRegion {
+    /// Translate a device byte offset into the physical address owned by the
+    /// persistent-memory provider. Bounds are checked before addition.
+    /// # C: O(1)
+    pub fn physical_address(self, byte_off: u64, len: u64) -> Option<u64> {
+        let end = byte_off.checked_add(len)?;
+        if end > self.size_bytes { return None; }
+        self.base_pa.checked_add(byte_off)
+    }
+}
+
 /// In-flight I/O block-list. v1 uses a single Vec for the entire
 /// transfer; the spec's `SmallVec<[BufferRef; 4]>` scatter-gather
 /// shape lands once io_uring fixed buffers do.
@@ -168,6 +191,13 @@ pub trait BlockDevice: Send + Sync {
     /// Sector size in bytes — 512 or 4096.
     /// # C: O(1)
     fn block_size(&self) -> u32;
+
+    /// Linux `fs_dax_get_by_bdev`: the device's byte-addressable persistent
+    /// memory aperture, if it has one. A block queue without a direct-memory
+    /// owner must return `None`; ext4 then refuses `dax=always` instead of
+    /// pretending buffered I/O is DAX.
+    /// # C: O(1)
+    fn dax_region(&self) -> Option<DaxRegion> { None }
 
     /// Canonical queue topology exposed to userspace. Existing devices which
     /// only know their logical addressing size use a truthful conservative

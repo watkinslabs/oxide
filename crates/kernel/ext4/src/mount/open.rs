@@ -54,6 +54,12 @@ impl Mount {
     ) -> Result<Self, MountError> {
         let sb_bytes = read_byte_range(&*dev, SUPERBLOCK_OFFSET, SUPERBLOCK_LEN)?;
         let sb = Superblock::parse(&sb_bytes)?;
+        if behaviour.dax == crate::mount_opts::DaxMode::Always
+            && mappable_dax_region(&*dev).is_none()
+        { return Err(MountError::UnsupportedFeature); }
+        if behaviour.dax == crate::mount_opts::DaxMode::Always
+            && behaviour.data == crate::mount_opts::DataMode::Journal
+        { return Err(MountError::UnsupportedFeature); }
         // Feature gating (Linux EXT4_FEATURE_{INCOMPAT,RO_COMPAT}_SUPP): refuse a
         // fs whose INCOMPAT bits we don't implement (layout would be misread) or
         // whose RO_COMPAT bits we can't safely write (no RO-mount path yet).
@@ -172,6 +178,9 @@ impl Mount {
         if cleanup_orphans { let _ = m.orphan_cleanup(); }
         Ok(m)
     }
+}
 
-
+fn mappable_dax_region(dev: &dyn block::BlockDevice) -> Option<block::DaxRegion> {
+    let region = dev.dax_region()?;
+    (region.size_bytes != 0 && region.base_pa % hal::PAGE_SIZE_BYTES == 0).then_some(region)
 }

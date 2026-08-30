@@ -7,7 +7,7 @@
 
 use vfs::{KResult, VfsError};
 
-use super::{DataMode, ErrorsPolicy, Ext4Behaviour, DEFAULT_COMMIT_SECS, DEFAULT_LI_WAIT_MULT,
+use super::{DataMode, DaxMode, ErrorsPolicy, Ext4Behaviour, DEFAULT_COMMIT_SECS, DEFAULT_LI_WAIT_MULT,
             MAX_COMMIT_SECS, MAX_JOURNAL_IOPRIO};
 
 pub const OPT_ERRORS: &str = "errors";
@@ -138,11 +138,13 @@ impl Ext4Behaviour {
                 MB_OPTIMIZE_ON => true,
                 _ => return Err(VfsError::Einval),
             }),
-            // Direct-access mappings require a block device that can be mapped
-            // without a page cache. There is no such device class here, and the
-            // build that has none refuses the option rather than mounting a
-            // filesystem whose files would silently not be DAX.
-            OPT_DAX => return Err(VfsError::Einval),
+            // The parser records policy; the mount owner validates the device
+            // capability after it has opened the superblock. This is Linux's
+            // separation between `s_mount_opt` and `fs_dax_get_by_bdev`.
+            OPT_DAX => self.dax = match val {
+                None => DaxMode::Always,
+                Some(v) => DaxMode::from_name(v).ok_or(VfsError::Einval)?,
+            },
             _ => return Ok(false),
         }
         Ok(true)

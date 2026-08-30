@@ -348,17 +348,17 @@ fn ext4_rejects_extent_layout_toggle_without_corruption() {
 }
 
 #[test]
-fn ext4_rejects_unsupported_dax_flag_without_corruption() {
+fn ext4_persists_dax_flag_without_enabling_non_dax_storage() {
     let disk = shared_disk();
     let (m, _sb) = mount(disk);
     let inode = m.state().create_at(b"/dax.txt", 0o644).expect("create");
     let ino = m.state().mount.lookup_path(b"/dax.txt").expect("lookup");
     let flags = inode.fileattr_get().unwrap().flags;
 
-    assert_eq!(inode.fileattr_set(&FileAttr { flags: flags | FS_DAX_FL, ..Default::default() }),
-        Err(VfsError::Eopnotsupp));
-    assert_eq!(m.state().mount.read_inode(ino).unwrap().i_flags & FS_DAX_FL, 0);
-    assert_eq!(inode.fileattr_get().unwrap().flags & FS_DAX_FL, 0);
+    inode.fileattr_set(&FileAttr { flags: flags | FS_DAX_FL, ..Default::default() }).unwrap();
+    assert_ne!(m.state().mount.read_inode(ino).unwrap().i_flags & FS_DAX_FL, 0);
+    assert_ne!(inode.fileattr_get().unwrap().flags & FS_DAX_FL, 0);
+    assert_eq!(inode.i_flags() & vfs::inode::S_DAX, 0);
 }
 
 #[test]

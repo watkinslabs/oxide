@@ -358,6 +358,23 @@ impl Mount {
     /// lock while acting on the answer. # C: O(1)
     pub fn behaviour(&self) -> crate::mount_opts::Ext4Behaviour { self.opts.lock().behaviour }
 
+    /// Persistent-memory aperture owned by the mounted block device.
+    /// # C: O(1)
+    pub(crate) fn dax_region(&self) -> Option<block::DaxRegion> { self.dev.dax_region() }
+
+    /// Linux `ext4_should_enable_dax`: DAX is an inode policy only when the
+    /// block device owns a byte-addressable aperture and the layout can be
+    /// represented by the direct-access path.
+    /// # C: O(1)
+    pub(crate) fn inode_dax_enabled(&self, mode: u16, flags: u32) -> bool {
+        let regular = u32::from(mode) & u32::from(crate::inode::S_IFMT) == u32::from(crate::inode::S_IFREG);
+        regular && self.dax_region().is_some()
+            && self.behaviour().dax != crate::mount_opts::DaxMode::Never
+            && self.behaviour().data != crate::mount_opts::DataMode::Journal
+            && (self.behaviour().dax == crate::mount_opts::DaxMode::Always
+                || flags & vfs::inode::FS_DAX_FL != 0)
+    }
+
     /// Replace the option state wholesale. Only the option path calls this,
     /// and only with a context that has already been accepted in full.
     /// # C: O(MAXQUOTAS)
