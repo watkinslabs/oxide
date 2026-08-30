@@ -290,6 +290,12 @@ value. Two valid GNOME/SMP=1 runs reduced the symlink phase from the prior
 within variance, so this is recorded as a phase win only. Blocking lookup and
 inode-mutation attribution remain open under E4-08.
 
+B2998 runtime evidence: the merged `main` tree reached GNOME Shell in a fresh
+`make perf-report SMP=1` run at 32 seconds. It measured 1,369,358 syscalls,
+5,633 ms CPU, and 4,114 ns average; the cumulative symlink phase was 380 ms.
+This is a third valid post-cache sample, but the aggregate remains within
+harness variance, so E4-08 and E4-10 are not closed by this measurement.
+
 ## 5 — phase gate
 
 Every execution item must pass:
