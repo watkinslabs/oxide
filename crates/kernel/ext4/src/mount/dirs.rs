@@ -286,6 +286,7 @@ impl Mount {
         // next leaf, and it also lets a damaged/partial index be diagnosed by
         // the ordinary directory parser instead of turning a miss into false
         // ENOENT.
+        if name == b"." { return Ok((dir_inode.ino, 0)); }
         if dir_inode.i_flags & EXT4_INDEX_FL != 0 {
             #[cfg(feature = "debug-resolve-cost")]
             let _htree_cost = vfs::resolve_cost::ext4_htree_lookup();
@@ -301,6 +302,20 @@ impl Mount {
         // dirent tail, so verifying it against the dirent seed would false-
         // reject. htree dx-block verify is a separate item. No-op w/o csum.
         let verify_tail = (dir_inode.i_flags & EXT4_INDEX_FL) == 0 && dir_inode.ino != 0;
+        // Linux's lookup path never scans a directory for `.` and only reads
+        // block zero for `..`. Keep that same constant-time/one-block owner;
+        // the general linear walk is for actual names.
+        if name == b".." {
+            let blk = self.read_file_block_meta_shared(dir_inode, 0)?;
+            if verify_tail
+                && !crate::csum::verify_dirent_tail(&self.sb, dir_inode.ino, dir_inode.generation, &blk)
+            {
+                super::first_csum_failure(b"directory", dir_inode.ino as u64, 0);
+                return Err(MountError::BadChecksum);
+            }
+            let ino = dir::lookup_bytes(&blk, name)?.ok_or(MountError::NotFound)?;
+            return Ok((ino, 0));
+        }
         #[cfg(feature = "debug-resolve-cost")]
         let _linear_cost = vfs::resolve_cost::ext4_linear_lookup();
         let start = if nblocks == 0 { 0 } else { start % nblocks };
