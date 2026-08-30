@@ -97,6 +97,9 @@ impl StatsDev {
 
 impl BlockDevice for StatsDev {
     fn block_size(&self) -> u32 { self.inner.block_size() }
+    /// Preserve the provider's byte-addressable DAX ownership through the
+    /// accounting decorator; capability discovery must not stop at stats.
+    fn dax_region(&self) -> Option<crate::DaxRegion> { self.inner.dax_region() }
     fn queue_limits(&self) -> KResult<QueueLimits> { self.inner.queue_limits() }
     fn supports_discard(&self) -> bool { self.inner.supports_discard() }
     fn capacity_blocks(&self) -> u64 { self.inner.capacity_blocks() }

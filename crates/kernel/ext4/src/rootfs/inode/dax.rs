@@ -125,6 +125,12 @@ pub(crate) fn write(inode: &Inode, off: u64, buf: &[u8]) -> vfs::KResult<usize> 
         d.st.mount.fallocate_inode(d.ino, off, end - off, false)
             .map_err(|e| crate::rootfs::fserror::report(&d.st, e))?;
         d.refresh_inode_usage(inode);
+        // `ext4_fallocate` with KEEP_SIZE clear allocates the blocks but the
+        // extent owner does not publish i_size until the data is persistent.
+        // The DAX fault preparation still needs the new logical EOF to admit
+        // the page, so publish the in-core size at the same boundary Linux's
+        // iomap actor uses for an extending write.
+        super::data::publish_size_max(inode, end);
     }
     let mut done = 0usize;
     while done < buf.len() {
@@ -138,6 +144,8 @@ pub(crate) fn write(inode: &Inode, off: u64, buf: &[u8]) -> vfs::KResult<usize> 
         done += chunk;
     }
     if extending {
+        d.st.mount.set_inode_size(d.ino, end)
+            .map_err(|e| crate::rootfs::fserror::report(&d.st, e))?;
         d.st.mount.orphan_del(d.ino)
             .map_err(|e| crate::rootfs::fserror::report(&d.st, e))?;
     }
