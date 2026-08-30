@@ -132,6 +132,7 @@ pub fn sys_write(args: &SyscallArgs) -> i64 {
             Ok(n)  => n,
             Err(e) => return e,
         };
+        if let Err(e) = file.check_direct_io_alignment(buf, pos, cnt) { return -(e as i64); }
         let mut bytes = alloc::vec![0u8; cnt];
         if uaccess::copy_from_user(&mut bytes, buf).is_err() {
             return -(Errno::Efault.as_i32() as i64);

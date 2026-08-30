@@ -60,6 +60,7 @@ pub fn sys_read(args: &SyscallArgs) -> i64 {
     }
     if let Err(rv) = crate::userbuf::validate_user_buf_writable(buf, cnt as u64, 1) { return rv; }
     cnt = crate::userbuf::clamp_rw_count(cnt);
+    if let Err(e) = file.check_direct_io_alignment(buf, file.pos(), cnt) { return -(e as i64); }
     // The range check is only admission. Read into kernel-owned storage so a
     // concurrent unmap cannot turn a VFS read into an unrecoverable CPL0
     // store; publish the result through the exception-table usercopy.

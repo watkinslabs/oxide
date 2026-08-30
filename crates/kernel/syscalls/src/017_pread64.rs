@@ -50,6 +50,7 @@ pub fn sys_pread64(args: &SyscallArgs) -> i64 {
     }
     if let Err(rv) = crate::userbuf::validate_user_buf_writable(buf, cnt as u64, 1) { return rv; }
     cnt = crate::userbuf::clamp_rw_count(cnt);
+    if let Err(e) = file.check_direct_io_alignment(buf, off as u64, cnt) { return -(e as i64); }
     // The range check is admission only. Keep the VFS call on kernel-owned
     // storage, then publish through exception-table-backed usercopy.
     let mut bounce = vec![0u8; cnt];

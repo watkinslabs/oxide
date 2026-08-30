@@ -461,6 +461,10 @@ pub trait FileOps: Send + Sync {
     fn direct_write_file(&self, _file: &File, _off: u64, _buf: &[u8])
         -> Option<KResult<usize>> { None }
 
+    /// Alignment required by the synchronous direct-I/O owner.  Zero means
+    /// the owner has no userspace alignment restriction. # C: O(1)
+    fn direct_io_alignment(&self, _file: &File) -> usize { 0 }
+
     /// `f_op->llseek` SEEK_HOLE/SEEK_DATA core (Linux `generic_file_llseek` →
     /// `*_seek_hole_data`): map the starting byte `offset` to the next data byte
     /// (`HoleOrData::Data`) or the next hole (`HoleOrData::Hole`) and return the

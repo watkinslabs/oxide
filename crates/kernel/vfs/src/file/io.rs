@@ -10,6 +10,19 @@ use crate::types::{FileType, KResult, OpenFlags, VfsError};
 use super::{fire_read_hook, fire_write_hook, File, Fmode, SeekFrom, PAGE_SIZE};
 
 impl File {
+    /// Validate the userspace portion of an `O_DIRECT` request before the
+    /// syscall copies through kernel-owned storage.  The direct backend owns
+    /// the alignment value; the bounce buffer must never be inspected because
+    /// its allocator address is unrelated to the caller's iov. # C: O(1)
+    pub fn check_direct_io_alignment(&self, user_addr: u64, off: u64, len: usize) -> KResult<()> {
+        if !self.flags().contains(OpenFlags::O_DIRECT)
+            || !matches!(self.inode.file_type(), FileType::Regular) { return Ok(()); }
+        let align = self.f_op.direct_io_alignment(self);
+        if align > 1 && ((user_addr as usize) % align != 0 || off % align as u64 != 0
+            || len % align != 0) { return Err(VfsError::Einval); }
+        Ok(())
+    }
+
     /// Debug trace for a write refused by a read-only mount: names the op, the
     /// mount and namespace ids, the mount and superblock read-only state, and
     /// the resolved path. # C: O(path_len)

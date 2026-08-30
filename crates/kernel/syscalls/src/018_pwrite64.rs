@@ -48,6 +48,7 @@ pub fn sys_pwrite64(args: &SyscallArgs) -> i64 {
         Ok(n)  => n,
         Err(e) => return e,
     };
+    if let Err(e) = file.check_direct_io_alignment(buf, pos, cnt) { return -(e as i64); }
     // Read the faultable source before entering VFS. A range check alone does
     // not recover a concurrent unmap; `copy_from_user` does.
     let mut bounce = vec![0u8; cnt];
