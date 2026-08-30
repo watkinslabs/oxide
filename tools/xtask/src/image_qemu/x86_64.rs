@@ -254,7 +254,7 @@ pub(super) fn qemu_run_grub_x86_64(
     let memory = if pmem_args.is_empty() {
         base_memory
     } else {
-        format!("{},maxmem=8G", base_memory)
+        format!("{},slots=1,maxmem=8G", base_memory)
     };
     let hibernate_args = super::common::hibernate_disk_args()?;
     // vhost-vsock guest CID is a HOST-GLOBAL kernel resource: only one qemu on

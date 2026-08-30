@@ -165,7 +165,7 @@ pub(super) fn qemu_run_aarch64_grub(
     let memory = if pmem_args.is_empty() {
         base_memory
     } else {
-        format!("{},maxmem=8G", base_memory)
+        format!("{},slots=1,maxmem=8G", base_memory)
     };
     let hibernate_args = super::common::hibernate_disk_args()?;
     // Per-launch vhost-vsock guest CID (host-global — see qemu_vsock_cid), so
