@@ -56,6 +56,18 @@ ext4 filesystem, and reaches network-online.target. Real PMEM image mounts
 with both `dax=inode` and `dax=always` pass on SMP=1; final SMP=2 runtime
 evidence remains a scheduler-lane issue.
 
+E4-10 identity update (current branch): a fresh instrumented SMP=2 GNOME boot
+reproduced the page-cache failure as `[FILL-ERR lock-cache-page ino=89925
+page=0]` after an inode slot had been recycled. The canonical frame-store index
+was keyed only by raw inode number, so a still-live old page store could be
+returned to a new inode incarnation. Linux binds `address_space` to the
+in-core inode; the owner now keys the store by `(ino, i_generation)`. The
+hosted regression proves same-generation reuse and cross-generation
+separation. A fresh fixed SMP=2 debug boot reached GNOME Shell at 18.094s;
+`colord` and `fwupd` started successfully, with no fill diagnostics or early
+EIO cascade. Remaining E4-10 closure is the final DAX/runtime matrix and
+AArch64 graphical evidence.
+
 E4-10/E4-08 status update (B3016): the shared page-cache owner now follows
 Linux's `page_mkwrite` dirtying boundary. Read-side `shared_frame` lookup no
 longer marks clean pages dirty; shared-write admission does. Frame-coherency

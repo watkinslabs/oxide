@@ -26,11 +26,12 @@ pub struct RootfsState {
     /// derives from the per-instance `sb.s_dev` (Linux `st_dev`), not a
     /// hardcoded constant. PER MOUNT.
     pub sb: sync::Spinlock<Weak<vfs::SuperBlock>, sync::Inode>,
-    /// Canonical regular-file data stores keyed by raw ext4 inode. The weak
-    /// registry lets path helpers acquire the same store as the VFS inode;
-    /// it is an index, not a second data cache.
+    /// Canonical regular-file data stores keyed by `(ino, generation)`. Linux
+    /// binds an address_space to the in-core inode identity, not to a recycled
+    /// inode number; the generation prevents a stale store from being reused
+    /// by a later incarnation of the same on-disk slot.
     pub(crate) frame_stores: sync::Spinlock<
-        BTreeMap<u32, Weak<super::framecache::Ext4FrameStore>>, sync::Inode>,
+        BTreeMap<(u32, u32), Weak<super::framecache::Ext4FrameStore>>, sync::Inode>,
     /// O_TMPFILE orphan inodes pending cleanup. `create_anonymous`
     /// inserts; `link_inode` removes; the close-path frees only if the
     /// closed inode is in this set. PER MOUNT.
@@ -80,11 +81,11 @@ impl RootfsState {
 
     /// Return the one data store for `ino`, creating it before an inode is
     /// published when a path helper reaches the file first. # C: O(log N)
-    pub(crate) fn frame_store(self: &Arc<Self>, ino: u32, size: u64)
+    pub(crate) fn frame_store(self: &Arc<Self>, ino: u32, generation: u32, size: u64)
         -> Arc<super::framecache::Ext4FrameStore>
     {
         let mut stores = self.frame_stores.lock();
-        if let Some(store) = stores.get(&ino).and_then(Weak::upgrade) {
+        if let Some(store) = stores.get(&(ino, generation)).and_then(Weak::upgrade) {
             // The canonical inode supplies the current size. A store can
             // predate a size publication, but must never remain below the
             // inode bound used by a page fault; otherwise a valid mid-file
@@ -93,7 +94,7 @@ impl RootfsState {
             return store;
         }
         let store = super::framecache::Ext4FrameStore::new(self.clone(), ino, size);
-        stores.insert(ino, Arc::downgrade(&store));
+        stores.insert((ino, generation), Arc::downgrade(&store));
         store
     }
 
@@ -278,7 +279,7 @@ impl RootfsState {
         let total = inode.size as usize;
         let mut out = alloc::vec![0u8; total];
         let file = self.wrap_file(ino)?;
-        let store = self.frame_store(ino, inode.size);
+        let store = self.frame_store(ino, inode.generation, inode.size);
         let was_resident = store.mincore_page(0);
         file.read(0, &mut out).ok()?;
         if was_resident { self.cache_hits.fetch_add(1, Ordering::Relaxed); }
@@ -335,7 +336,7 @@ impl RootfsState {
         let inode = self.mount.read_inode(ino).map_err(|_| ())?;
         if !inode.is_reg() { return Err(()); }
         let file = self.wrap_file(ino).ok_or(())?;
-        let store = self.frame_store(ino, inode.size);
+        let store = self.frame_store(ino, inode.generation, inode.size);
         let was_resident = store.mincore_page(off);
         let n = file.read(off, dst).map_err(|_| ())?;
         if was_resident { self.cache_hits.fetch_add(1, Ordering::Relaxed); }
@@ -355,7 +356,50 @@ impl RootfsState {
         if blk.len() < bs { blk.resize(bs, 0); }
         blk[..data.len()].copy_from_slice(data);
         self.mount.write_file_block(&inode, 0, &blk).ok()?;
-        self.frame_store(ino, inode.size).invalidate_range(0, u64::MAX);
+        self.frame_store(ino, inode.generation, inode.size).invalidate_range(0, u64::MAX);
         Some(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate alloc;
+
+    use alloc::sync::Arc;
+
+    use block::{BlockDevice, BlockOp, BlockRequest, MemDisk};
+    use sync::TaskList;
+
+    use super::RootfsState;
+
+    const IMAGE: &[u8] = include_bytes!("../../tests/mini.img");
+    const SECTOR: u32 = 512;
+
+    fn mount() -> Arc<crate::Mount> {
+        let capacity = (IMAGE.len() as u64) / SECTOR as u64;
+        let disk: Arc<MemDisk<TaskList>> = MemDisk::new(SECTOR, capacity);
+        let mut request = BlockRequest {
+            op: BlockOp::Write,
+            start_block: 0,
+            len_blocks: capacity as u32,
+            buffer: IMAGE.to_vec(),
+            ..Default::default()
+        };
+        disk.submit_sync(&mut request).expect("seed ext4 image");
+        let device: Arc<dyn BlockDevice> = disk;
+        Arc::new(crate::Mount::open(device).expect("open ext4 image"))
+    }
+
+    #[test]
+    fn frame_store_identity_includes_inode_generation() {
+        let state = RootfsState::new(mount());
+        let first = state.frame_store(17, 0x1000, 4096);
+        let same_inode = state.frame_store(17, 0x1000, 8192);
+        let reincarnated_inode = state.frame_store(17, 0x1001, 4096);
+
+        assert!(Arc::ptr_eq(&first, &same_inode),
+            "one inode incarnation must retain one canonical address_space");
+        assert!(!Arc::ptr_eq(&first, &reincarnated_inode),
+            "a recycled inode number must not inherit the old page cache");
     }
 }

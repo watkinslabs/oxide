@@ -623,7 +623,7 @@ pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: 
     generation: u32, _raw_flags: u32) -> InodeRef
 {
     let dax = st.mount.inode_dax_enabled(mode, _raw_flags);
-    let frames = st.frame_store(ino, size);
+    let frames = st.frame_store(ino, generation, size);
     let data = Arc::new(Ext4FileData { st, ino,
         invalidate_lock: sched::rwsem::RwSem::new(()),
         raw_flags: core::sync::atomic::AtomicU32::new(_raw_flags), size_hint: AtomicU64::new(size),
