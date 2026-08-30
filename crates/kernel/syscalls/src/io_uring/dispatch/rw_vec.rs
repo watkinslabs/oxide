@@ -62,6 +62,14 @@ pub fn vec_fixed(op: &Op) -> i64 {
             Ok(w) => w,
             Err(e) => return if moved > 0 { moved as i64 } else { err(e) },
         };
+        let direct_off = match pos {
+            Some(p) => p as u64,
+            None => file.pos(),
+        };
+        if let Err(e) = file.check_direct_io_alignment(seg.base, direct_off, w.len as usize) {
+            let code = crate::namei_common::errno_from_vfs(e);
+            return if moved > 0 { moved as i64 } else { code };
+        }
         let (n, failed) = run_window(&file, &buf, w.off, w.len, &mut pos, v.write);
         moved += n;
         if failed != 0 { return if moved > 0 { moved as i64 } else { failed }; }
