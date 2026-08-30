@@ -57,7 +57,7 @@ impl Mount {
         let commit_ns = crate::fsync_latency::now_ns();
         let active_handles = {
             let s = self.state.lock();
-            s.handles.values().any(|handle| !handle.frames.is_empty())
+            s.active_handles != 0
         };
         let result = if active_handles || !needed { Ok(false) } else { self.commit_batch_inner() };
         #[cfg(feature = "debug-fsync-latency")]
@@ -183,7 +183,7 @@ impl Mount {
         { return Ok(()); }
         let blocks = {
             let s = self.state.lock();
-            if s.handles.values().any(|handle| !handle.frames.is_empty()) { 0 } else { s.shadow.as_ref().map_or(0, |m| m.len()) }
+            if s.active_handles != 0 { 0 } else { s.shadow.as_ref().map_or(0, |m| m.len()) }
         };
         if blocks >= BATCH_CEILING_BLOCKS {
             self.batch_full.store(true, ::core::sync::atomic::Ordering::Release);
@@ -215,7 +215,11 @@ impl Mount {
         if let Some(parent) = handle.frames.last_mut() {
             for (lba, prev) in frame { parent.entry(lba).or_insert(prev); }
         }
-        if handle.frames.is_empty() { s.handles.remove(&id); }
+        if handle.frames.is_empty() {
+            s.handles.remove(&id);
+            debug_assert!(s.active_handles != 0);
+            s.active_handles -= 1;
+        }
     }
 
     pub(super) fn batch_frame_rollback(&self) {
@@ -224,7 +228,11 @@ impl Mount {
             let mut s = self.state.lock();
             let Some(handle) = s.handles.get_mut(&id) else { return; };
             let frame = handle.frames.pop().unwrap_or_default();
-            if handle.frames.is_empty() { s.handles.remove(&id); }
+            if handle.frames.is_empty() {
+                s.handles.remove(&id);
+                debug_assert!(s.active_handles != 0);
+                s.active_handles -= 1;
+            }
             frame
         };
         let affected: alloc::vec::Vec<u64> = frame.keys().copied().collect();
