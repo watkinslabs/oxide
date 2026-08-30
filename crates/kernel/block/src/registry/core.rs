@@ -22,6 +22,12 @@ pub const DYNAMIC_MAJOR_LAST: u32 = 254;
 /// Whole disks reserve the Linux-compatible first partition-minor range.
 pub const PARTITION_MINOR_COUNT: u32 = 16;
 
+// Fixed block majors are reserved even before their driver happens to probe.
+// Otherwise an earlier dynamic block driver can claim a fixed major and make
+// the later fixed owner fail nondeterministically (Linux's major allocator
+// has the same global namespace rule).
+const RESERVED_FIXED_MAJORS: [u32; 1] = [crate::uapi::VIRTIO_BLK_MAJOR];
+
 /// A driver's request for a block major. Fixed majors are Linux UAPI values
 /// owned by the respective driver; dynamic majors are allocated once per
 /// driver name by this registry (Linux `register_blkdev(0, name)`).
@@ -167,7 +173,10 @@ pub fn register_with_driver_at(driver: BlockDriver, name: &str, node_name: &str,
                                serial: Option<&str>, requested_minor: Option<u32>,
                                dev: Arc<dyn BlockDevice>) -> u32 {
     if let Some(disk) = by_name(name) { return disk.index; }
-    let number = match allocate_number_at(driver, requested_minor) { Some(n) => n, None => return 0 };
+    let number = match allocate_number_at(driver, requested_minor) {
+        Some(n) => n,
+        None => return 0,
+    };
     let base_limits = match dev.queue_limits() {
         Ok(limits) => limits,
         Err(_) => { release_number(driver, number); return 0; }
@@ -283,7 +292,8 @@ pub(crate) fn allocate_number_at(driver: BlockDriver, requested_minor: Option<u3
                     major
                 }
                 MajorRequest::Dynamic => (DYNAMIC_MAJOR_FIRST..=DYNAMIC_MAJOR_LAST)
-                    .rev().find(|major| !ds.iter().any(|d| d.major == *major))?,
+                    .rev().find(|major| !RESERVED_FIXED_MAJORS.contains(major)
+                        && !ds.iter().any(|d| d.major == *major))?,
             };
             ds.push(DriverState { driver, major, allocated_minors: Vec::new() });
             ds.len() - 1

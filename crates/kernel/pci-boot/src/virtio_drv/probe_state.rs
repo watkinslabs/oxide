@@ -192,6 +192,20 @@ impl VirtioProbeState {
         bars: &[pci::Bar; 6],
         profile: &virtio::VirtioTransportProfile,
     ) -> Option<(u16, u16, [Option<virtio::VirtioQueuePlan>; virtio::MAX_RESOURCE_QUEUES])> {
+        // A queue-only profile is an explicit polling contract.  It must not
+        // be rejected merely because this device has no usable MSI-X/INTx
+        // binding; the queue still needs to be programmed and handed off.
+        if profile.q0_handler.is_none()
+            && profile.config_handler.is_none()
+            && profile.queue_plans.iter().all(|plan|
+                plan.map(|plan| plan.msix_handler.is_none()).unwrap_or(true))
+        {
+            let mut queues = profile.queue_plans;
+            for plan in queues.iter_mut().flatten() {
+                *plan = plan.with_msix_vec(virtio::VIRTIO_MSI_NO_VECTOR);
+            }
+            return Some((virtio::VIRTIO_MSI_NO_VECTOR, virtio::VIRTIO_MSI_NO_VECTOR, queues));
+        }
         let config = match self.bind_optional_msix(d, caps, bars, profile.config_handler) {
             Some(config) => config,
             None => {
