@@ -414,6 +414,7 @@ impl Mount {
         let s = self.state.lock();
         for pas in s.inode_prealloc.values() {
             for pa in pas {
+                if pa.blocks.first().map(|&block| self.group_of_block(block)) != Some(group) { continue; }
                 for (&block, &used) in pa.blocks.iter().zip(&pa.used) {
                     if used { continue; }
                     if let Some(bit) = block.checked_sub(first) {
@@ -424,7 +425,8 @@ impl Mount {
                 }
             }
         }
-        for pas in s.group_prealloc.values() {
+        for ((_, pa_group, _), pas) in &s.group_prealloc {
+            if *pa_group != group { continue; }
             for pa in pas {
                 for &block in &pa.blocks {
                     if let Some(bit) = block.checked_sub(first) {
@@ -443,6 +445,7 @@ impl Mount {
         let s = self.state.lock();
         for pas in s.inode_prealloc.values() {
             for pa in pas {
+                if pa.blocks.first().map(|&block| self.group_of_block(block)) != Some(group) { continue; }
                 for (&block, &used) in pa.blocks.iter().zip(&pa.used) {
                     if used { continue; }
                     if let Some(bit) = block.checked_sub(first) {
@@ -453,7 +456,8 @@ impl Mount {
                 }
             }
         }
-        for pas in s.group_prealloc.values() {
+        for ((_, pa_group, _), pas) in &s.group_prealloc {
+            if *pa_group != group { continue; }
             for pa in pas {
                 for &block in &pa.blocks {
                     if let Some(bit) = block.checked_sub(first) {
