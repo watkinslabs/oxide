@@ -19,6 +19,8 @@ mod wait_diff;
 mod request_key;
 // - swapfile: Linux swapfile activation smoke over the mounted ext4 root.
 mod swapfile;
+// - io_uring_ext4: scalar RWF_SYNC/RWF_DSYNC durability over ext4.
+mod io_uring_ext4;
 // - ata_identity: live `HDIO_GET_IDENTITY` probe against the AHCI disk.
 mod ata_identity;
 // - ata_sat: live SG_IO ATA PASS-THROUGH(16)/(32) probe against the AHCI disk.
@@ -149,6 +151,9 @@ fn build_root(
     }
     if std::env::var_os("OXIDE_SWAPFILE_SMOKE").is_some() {
         swapfile::inject(&root_img, arch)?;
+    }
+    if std::env::var_os("OXIDE_IO_URING_EXT4_SMOKE").is_some() {
+        io_uring_ext4::inject(&root_img, arch)?;
     }
     if std::env::var_os("OXIDE_ATA_IDENTITY_SMOKE").is_some() {
         ata_identity::inject(&root_img, arch)?;

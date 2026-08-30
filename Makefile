@@ -62,6 +62,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         smoke-af-packet-diff-x86 smoke-af-packet-diff-arm smoke-af-packet-diff \
         smoke-wait-diff-x86 smoke-wait-diff-arm smoke-wait-diff wait-diff-selftest \
         smoke-sockopt-diff-x86 smoke-sockopt-diff-arm smoke-sockopt-diff \
+        smoke-io-uring-ext4-x86 smoke-io-uring-ext4-arm smoke-io-uring-ext4 \
         frame-gate frame-gate-x86 frame-gate-arm s3-resume-gate-x86 accept-s3-resume-x86 \
         uaccess-extable-gate uaccess-extable-gate-x86 uaccess-extable-gate-arm \
         stack-gate stack-gate-x86 stack-gate-arm \
@@ -896,6 +897,14 @@ smoke-swapfile-x86: x86
 smoke-swapfile-arm: arm
 	OXIDE_SWAPFILE_SMOKE=1 SMOKE_ALIVE_PROBE= SMOKE_MARKER='swapfile_probe: PASS' ./tools/boot-smoke.sh arm $(SWAPFILE_SMOKE_TIMEOUT)
 smoke-swapfile: smoke-swapfile-x86 smoke-swapfile-arm
+
+# Scalar io_uring RWF_SYNC/RWF_DSYNC durability over a real ext4 file.
+IO_URING_EXT4_SMOKE_TIMEOUT ?= 1200
+smoke-io-uring-ext4-x86: x86
+	OXIDE_IO_URING_EXT4_SMOKE=1 SMOKE_ALIVE_PROBE= SMOKE_MARKER='io_uring_ext4_probe: PASS' ./tools/boot-smoke.sh x86 $(IO_URING_EXT4_SMOKE_TIMEOUT)
+smoke-io-uring-ext4-arm: arm
+	OXIDE_IO_URING_EXT4_SMOKE=1 SMOKE_ALIVE_PROBE= SMOKE_MARKER='io_uring_ext4_probe: PASS' ./tools/boot-smoke.sh arm $(IO_URING_EXT4_SMOKE_TIMEOUT)
+smoke-io-uring-ext4: smoke-io-uring-ext4-x86 smoke-io-uring-ext4-arm
 
 # GNOME input classification smoke. Its injected script reports a single
 # tagged PASS/FAIL line; require the passing verdict from the boot log.

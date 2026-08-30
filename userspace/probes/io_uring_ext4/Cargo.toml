@@ -1,0 +1,9 @@
+[package]
+name = "io_uring_ext4"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+libc.workspace = true
+support.workspace = true
