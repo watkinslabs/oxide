@@ -268,6 +268,14 @@ impl Mount {
         Ok(image)
     }
 
+    /// Read an external xattr block's Linux reference count before deciding
+    /// whether an update may modify it in place. # C: O(block)
+    fn xattr_block_refcount(&self, block: u64) -> Result<u32, MountError> {
+        let image = self.read_metadata_block(block)?;
+        if image.len() < BLOCK_HDR_LEN { return Err(MountError::BadBlock); }
+        Ok(u32::from_le_bytes([image[4], image[5], image[6], image[7]]))
+    }
+
     /// Drop one external xattr reference, returning true when its block is
     /// now unreferenced and must be freed. # C: O(block)
     fn xattr_block_put(&self, block: u64) -> Result<bool, MountError> {
@@ -373,6 +381,9 @@ impl Mount {
             }
             let hdr_off = EXT4_GOOD_OLD_INODE_SIZE + extra;
             let old_facl = Self::file_acl_of(&bytes);
+            let old_image = if old_facl == 0 { None } else {
+                Some(m.read_metadata_block(old_facl)?)
+            };
             // Try IBODY-only. Encode into the live buffer; on overflow the buffer
             // is discarded (re-read) before the external path.
             if encode_ibody(&mut bytes, hdr_off, isize, entries).is_ok() {
@@ -404,8 +415,17 @@ impl Mount {
             let mut blk = encode_block(entries, bs).map_err(|_| MountError::NoSpace)?;
             let old_sectors = Self::i_blocks_of(&bytes);
             let mut charged_sectors = old_sectors;
-            let shared = if old_facl == 0 { m.xattr_cache_find(&blk) } else { None };
-            let block_nr = if old_facl != 0 { old_facl } else if let Some(existing) = shared {
+            let old_refs = if old_facl == 0 { 0 } else { m.xattr_block_refcount(old_facl)? };
+            let cached = m.xattr_cache_find(&blk);
+            let shared = cached.filter(|block| *block != old_facl);
+            let same_old = cached == Some(old_facl);
+            let mut allocated = false;
+            let block_nr = if old_facl != 0 && (old_refs <= 1 || same_old) {
+                // An unshared block is the inode's private xattr storage and
+                // may be rewritten in place. Byte-identical shared storage
+                // needs no mutation and remains attached as-is.
+                old_facl
+            } else if let Some(existing) = shared {
                 // Linux mbcache shares the existing physical block, but the
                 // inode still owns one i_blocks charge for its reference.
                 blk = m.xattr_block_get(existing)?;
@@ -420,29 +440,44 @@ impl Mount {
                         return Err(m.rollback_i_blocks_delta(ino, charged_sectors, old_sectors, e));
                     }
                 };
+                allocated = true;
                 Self::attach_external_block(&mut bytes, b, bs);
                 b
             };
-            if shared.is_none() {
+            let rewrite = !same_old && shared.is_none();
+            if rewrite {
                 crate::csum::stamp_xattr_block_csum(&m.sb, block_nr, &mut blk);
             }
-            if let Err(e) = if shared.is_some() { Ok(()) } else {
-                m.metadata_write(block_nr * bs as u64, &blk)
-            } {
-                if old_facl == 0 {
-                    let _ = m.free_block(block_nr);
-                    return Err(m.rollback_i_blocks_delta(ino, charged_sectors, old_sectors, e));
+            if rewrite {
+                if let Err(e) = m.metadata_write(block_nr * bs as u64, &blk) {
+                    if allocated { let _ = m.free_block(block_nr); }
+                    return if old_facl == 0 {
+                        Err(m.rollback_i_blocks_delta(ino, charged_sectors, old_sectors, e))
+                    } else { Err(e) };
                 }
-                return Err(e);
             }
             if let Err(e) = m.write_inode_bytes(ino, &bytes) {
-                if old_facl == 0 {
+                if allocated {
                     let _ = m.free_block(block_nr);
-                    return Err(m.rollback_i_blocks_delta(ino, charged_sectors, old_sectors, e));
                 }
-                return Err(e);
+                return if old_facl == 0 {
+                    Err(m.rollback_i_blocks_delta(ino, charged_sectors, old_sectors, e))
+                } else { Err(e) };
             }
-            m.xattr_cache_insert(block_nr, &blk);
+            if old_facl != 0 && block_nr != old_facl {
+                if m.xattr_block_put(old_facl)? {
+                    m.xattr_cache_remove(old_facl, old_image.as_ref().expect("old xattr image"));
+                    m.free_block(old_facl)?;
+                }
+            }
+            if rewrite {
+                if block_nr != old_facl {
+                    m.xattr_cache_insert(block_nr, &blk);
+                } else {
+                    m.xattr_cache_remove(old_facl, old_image.as_ref().expect("old xattr image"));
+                    m.xattr_cache_insert(block_nr, &blk);
+                }
+            }
             Ok(())
         })
     }
