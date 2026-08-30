@@ -38,8 +38,10 @@ inode DIO lifetime owner. Polled write completion that can invalidate the
 canonical frame cache is handed to process-context work; allocation,
 unwritten conversion, extension, and journal-data completion remain on their
 synchronous owners. Scalar, vectored, fixed-buffer, and fixed-vector io_uring
-operands all use the same filesystem alignment contract. E4-10 stays
-IN-PROGRESS pending focused polled-write/error/timestamp and mapped-page
+operands all use the same filesystem alignment contract. The shared VFS
+completion owner now runs queued-write notification and `O_SYNC`/`O_DSYNC`
+durability after device success, with sync errors carried into the CQE. E4-10
+stays IN-PROGRESS pending focused polled-write/error/timestamp and mapped-page
 coherency coverage, plus the remaining layout-specific owners.
 | E4-16 | DONE | Historical ext4 rows are explicitly historical, mapped to the E4 inventory, and no longer carry stale pending SHAs or old current-suite counts. | baseline only | corrected rows map to an E4 item or retain explicit evidence |
 

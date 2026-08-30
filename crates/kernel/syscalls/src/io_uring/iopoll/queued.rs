@@ -333,13 +333,23 @@ pub fn issue(req: &Arc<IoReq>) -> Result<bool, Errno> {
         (file, buf, q)
     };
     let sink = Arc::clone(&q);
-    q.issued_at.store(timekeeper::monotonic_ns(), Ordering::Release);
     let off = if req.sqe.off == u64::MAX { file.pos() } else { req.sqe.off };
+    let completion_file = Arc::clone(&file);
+    let completion_off = off;
+    let completion_write = is_write(req.sqe.opcode);
+    q.issued_at.store(timekeeper::monotonic_ns(), Ordering::Release);
     let io = DirectIo {
-        write: is_write(req.sqe.opcode),
+        write: completion_write,
         off,
         buf,
         done: alloc::boxed::Box::new(move |buf, res| {
+            let res = if completion_write {
+                match res {
+                    Ok(n) => completion_file.complete_direct_write(completion_off, n)
+                        .map(|()| n),
+                    Err(e) => Err(e),
+                }
+            } else { res };
             *sink.slot.lock() = Some((buf, res));
             // Published last: a reaper that saw the flag must see the slot.
             sink.ready.store(true, Ordering::Release);

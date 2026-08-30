@@ -10,6 +10,16 @@ use crate::types::{FileType, KResult, OpenFlags, VfsError};
 use super::{fire_read_hook, fire_write_hook, File, Fmode, SeekFrom, PAGE_SIZE};
 
 impl File {
+    /// Finish the common VFS half of a queued direct write after the backend
+    /// has reported success. Linux's asynchronous direct-I/O completion runs
+    /// the write notification and `generic_write_sync` after the bytes land,
+    /// not when the request is merely admitted. # C: O(1) or O(dirty range)
+    pub fn complete_direct_write(&self, off: u64, count: usize) -> KResult<()> {
+        if count == 0 { return Ok(()); }
+        super::fire_write_hook(&self.inode, &self.dentry);
+        self.generic_write_sync(off + count as u64, count, crate::file::SyncMode::default())
+    }
+
     /// Validate the userspace portion of an `O_DIRECT` request before the
     /// syscall copies through kernel-owned storage.  The direct backend owns
     /// the alignment value; the bounce buffer must never be inspected because
