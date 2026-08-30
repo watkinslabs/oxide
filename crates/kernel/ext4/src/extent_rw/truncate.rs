@@ -28,8 +28,14 @@ impl Mount {
         -> Result<(), MountError>
     {
         let bs = self.sb.block_size as u64;
-        let inode = self.read_inode(ino)?;
+        let mut inode = self.read_inode(ino)?;
         let cur_size = inode.size;
+        // Inline payload bytes must be converted before truncate chooses an
+        // extent or legacy pointer-tree owner; they are never indirect roots.
+        if inode.i_flags & inode::EXT4_INLINE_DATA_FL != 0 {
+            self.convert_inline_data(ino, &inode, 0, &[])?;
+            inode = self.read_inode(ino)?;
+        }
         if inode.i_flags & inode::EXT4_EXTENTS_FL == 0 {
             return self.truncate_legacy_inode_inner(ino, new_len, meta, account_quota);
         }

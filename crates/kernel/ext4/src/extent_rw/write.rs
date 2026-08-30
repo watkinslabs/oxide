@@ -339,11 +339,18 @@ impl Mount {
     pub fn fallocate_inode(&self, ino: u32, offset: u64, len: u64, keep_size: bool) -> Result<(), MountError> {
         let end = offset.checked_add(len).ok_or(MountError::Inode(inode::InodeError::BadLen))?;
         if len == 0 { return Ok(()); }
-        if self.read_inode(ino)?.i_flags & inode::EXT4_EXTENTS_FL == 0 {
-            return self.run_journaled(|m| m.fallocate_legacy_inode_inner(ino, offset, len, keep_size));
-        }
         self.run_journaled(|m| {
-            let old_size = m.read_inode(ino)?.size;
+            let mut current = m.read_inode(ino)?;
+            // Linux ext4 converts inline data before entering any fallocate
+            // mode. Inline payload bytes are not an indirect pointer tree.
+            if current.i_flags & inode::EXT4_INLINE_DATA_FL != 0 {
+                m.convert_inline_data(ino, &current, 0, &[])?;
+                current = m.read_inode(ino)?;
+            }
+            if current.i_flags & inode::EXT4_EXTENTS_FL == 0 {
+                return m.fallocate_legacy_inode_inner(ino, offset, len, keep_size);
+            }
+            let old_size = current.size;
             let bs = m.sb.block_size as u64;
             let first_lb64 = offset / bs;
             let last_lb64 = (end - 1) / bs;

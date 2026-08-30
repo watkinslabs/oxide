@@ -21,7 +21,13 @@ impl Mount {
     fn punch_hole_inner(&self, ino: u32, offset: u64, len: u64) -> Result<(), MountError> {
         if len == 0 { return Ok(()); }
         let bs = self.sb.block_size as u64;
-        let inode = self.read_inode(ino)?;
+        let mut inode = self.read_inode(ino)?;
+        // Linux converts inline data before punch-hole. Falling through to
+        // the legacy owner would interpret payload bytes as block pointers.
+        if inode.i_flags & inode::EXT4_INLINE_DATA_FL != 0 {
+            self.convert_inline_data(ino, &inode, 0, &[])?;
+            inode = self.read_inode(ino)?;
+        }
         if inode.i_flags & inode::EXT4_EXTENTS_FL == 0 {
             return self.punch_legacy_inode_inner(ino, offset, len);
         }

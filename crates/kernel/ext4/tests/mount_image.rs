@@ -108,6 +108,16 @@ fn inline_file_converts_to_extents_when_it_outgrows_ibody() {
         &[0x41u8; 60].iter().chain([0x42u8; 10].iter()).copied().collect::<Vec<_>>()[..]);
 
     let bs = m.sb.block_size as u64;
+    // Linux ext4 converts inline data before fallocate.  This must not enter
+    // the legacy indirect owner, which would interpret the payload as block
+    // pointers and corrupt the file.
+    m.fallocate_inode(ino, bs, bs, true).expect("fallocate converts inline data");
+    let preallocated = m.read_inode(ino).expect("read preallocated inode");
+    assert_eq!(preallocated.i_flags & ext4::inode::EXT4_INLINE_DATA_FL, 0);
+    assert_ne!(preallocated.i_flags & ext4::inode::EXT4_EXTENTS_FL, 0);
+    assert_eq!(&m.read_file_block(&preallocated, 0).expect("read after fallocate")[..70],
+        &[0x41u8; 60].iter().chain([0x42u8; 10].iter()).copied().collect::<Vec<_>>()[..]);
+
     m.write_at(ino, bs * 2 + 7, &[0xEF]).expect("convert and write");
     let converted = m.read_inode(ino).expect("read converted inode");
     assert_eq!(converted.i_flags & ext4::inode::EXT4_INLINE_DATA_FL, 0);
