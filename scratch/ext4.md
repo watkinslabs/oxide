@@ -31,13 +31,12 @@ writes, direct/single/double/triple branch geometry, direct/single/double
 allocation, truncate, punch-hole, and keep-size fallocate; a mounted-image
 triple-indirect chain is also read through the same mapper. DIO now uses the
 same inode-aware mapping and zero-prepares legacy holes, and nodelalloc no
-longer rejects legacy inodes before writeback. DAX is now in implementation; its
-provider and byte-I/O owners remain open.
+longer rejects legacy inodes before writeback. DAX provider and byte-I/O owners
+are implemented; real-image validation remains open.
 This correction supersedes the stale E4-10 wording in the inventory row above:
 multi-block inline conversion and legacy-indirect mutation are covered by
 canonical owners. Collapse/insert range remains extent-only, matching Linux;
-the remaining E4-10 closure item includes the DAX provider, byte-I/O owner,
-and final boot evidence.
+the remaining E4-10 closure item is DAX real-image and final boot evidence.
 
 E4-10 status update (B3015): DAX is no longer parser-only refusal. The block
 device owns a bounded persistent-memory aperture, partition devices preserve
