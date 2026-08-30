@@ -432,20 +432,20 @@ impl Mount {
     ) -> Result<bool, MountError> {
         if !self.dx_block_valid(node, entries_off) { return Ok(false); }
         let count = u16::from_le_bytes([node[entries_off + 2], node[entries_off + 3]]) as usize;
-        let mut chosen_idx = 0usize;
-        let mut chosen_hash = 0u32;
-        let mut chosen_block = u32::from_le_bytes([
-            node[entries_off + 4], node[entries_off + 5],
-            node[entries_off + 6], node[entries_off + 7]]);
-        for i in 1..count {
-            let eo = entries_off + i * 8;
-            let ehash = u32::from_le_bytes([node[eo], node[eo + 1], node[eo + 2], node[eo + 3]]);
-            if hash < ehash { break; }
-            chosen_idx = i;
-            chosen_hash = ehash & !1;
-            chosen_block = u32::from_le_bytes([
-                node[eo + 4], node[eo + 5], node[eo + 6], node[eo + 7]]);
-        }
+        // Linux's dx_probe uses an upper-bound binary search over the sorted
+        // entries.  The old linear walk made every htree lookup inspect half
+        // the index on average, turning a directory lookup back into O(index
+        // entries) even though the format is explicitly a tree.
+        let chosen_idx = dx_upper_bound(node, entries_off, count, hash);
+        let chosen_off = entries_off + chosen_idx * 8;
+        let chosen_hash = if chosen_idx == 0 { hash } else {
+            u32::from_le_bytes([
+                node[chosen_off], node[chosen_off + 1],
+                node[chosen_off + 2], node[chosen_off + 3]]) & !1
+        };
+        let chosen_block = u32::from_le_bytes([
+            node[chosen_off + 4], node[chosen_off + 5],
+            node[chosen_off + 6], node[chosen_off + 7]]) & 0x0fff_ffff;
         // Entry zero is the implicit lower bound. Its continuation range is
         // the actual requested hash, not the synthetic zero hash.
         let continuation_hash = if chosen_idx == 0 { hash } else { chosen_hash };
@@ -457,6 +457,7 @@ impl Mount {
             if i != chosen_idx && ehash != continuation_hash { break; }
             let child = if i == chosen_idx { chosen_block } else {
                 u32::from_le_bytes([node[eo + 4], node[eo + 5], node[eo + 6], node[eo + 7]])
+                    & 0x0fff_ffff
             };
             if levels == 0 {
                 if visit(child)? { return Ok(true); }
@@ -477,19 +478,15 @@ impl Mount {
         let count = u16::from_le_bytes([node[entries_off + 2], node[entries_off + 3]]) as usize;
         if count == 0 { return Err(MountError::NotFound); }
         // entry 0: implicit hash 0, block @ entries_off+4.
-        let mut chosen = u32::from_le_bytes([
-            node[entries_off + 4], node[entries_off + 5],
-            node[entries_off + 6], node[entries_off + 7]]);
-        let mut chosen_hash = 0;
-        let mut chosen_idx = 0;
-        for i in 1..count {
-            let eo = entries_off + i * 8;
-            let ehash = u32::from_le_bytes([node[eo], node[eo + 1], node[eo + 2], node[eo + 3]]);
-            if hash < ehash { break; }
-            chosen = u32::from_le_bytes([node[eo + 4], node[eo + 5], node[eo + 6], node[eo + 7]]);
-            chosen_hash = ehash;
-            chosen_idx = i;
-        }
+        let chosen_idx = dx_upper_bound(node, entries_off, count, hash);
+        let chosen_off = entries_off + chosen_idx * 8;
+        let chosen = u32::from_le_bytes([
+            node[chosen_off + 4], node[chosen_off + 5],
+            node[chosen_off + 6], node[chosen_off + 7]]) & 0x0fff_ffff;
+        let chosen_hash = if chosen_idx == 0 { 0 } else {
+            let eo = entries_off + chosen_idx * 8;
+            u32::from_le_bytes([node[eo], node[eo + 1], node[eo + 2], node[eo + 3]])
+        };
         // Entry zero is the implicit lower bound of this node. For a node
         // reached through a nonzero root boundary, its stored hash may be the
         // boundary but Linux still compares continuation against the lookup
@@ -510,6 +507,23 @@ impl Mount {
         }
         Ok((chosen, collisions))
     }
+}
+
+/// Return the last dx entry whose stored hash is no greater than `hash`.
+/// Entry zero is the implicit lower-bound entry and is never compared.
+/// This is the `p = upper_bound(hash); at = p - 1` part of Linux's
+/// `dx_probe`. # C: O(log index entries)
+fn dx_upper_bound(node: &[u8], entries_off: usize, count: usize, hash: u32) -> usize {
+    let mut lo = 1usize;
+    let mut hi = count;
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        let eo = entries_off + mid * 8;
+        let ehash = u32::from_le_bytes([
+            node[eo], node[eo + 1], node[eo + 2], node[eo + 3]]);
+        if ehash <= hash { lo = mid + 1; } else { hi = mid; }
+    }
+    lo - 1
 }
 
 /// Re-export for the superblock-less hash callers / tests.
@@ -533,5 +547,21 @@ mod tests {
     #[test]
     fn hash_low_bit_cleared() {
         assert_eq!(dirhash_major(b"anything", 1, &SEED) & 1, 0);
+    }
+
+    #[test]
+    fn dx_upper_bound_matches_linux_probe_boundaries() {
+        // countlimit entry 0 is the implicit hash-0 lower bound.  The
+        // remaining entries are sorted exactly as ext4 stores them.
+        let mut node = [0u8; 8 * 5];
+        for (i, hash) in [0u32, 0x20, 0x40, 0x80, 0xc0].into_iter().enumerate() {
+            let off = i * 8;
+            node[off..off + 4].copy_from_slice(&hash.to_le_bytes());
+        }
+        assert_eq!(dx_upper_bound(&node, 0, 5, 0x00), 0);
+        assert_eq!(dx_upper_bound(&node, 0, 5, 0x1f), 0);
+        assert_eq!(dx_upper_bound(&node, 0, 5, 0x20), 1);
+        assert_eq!(dx_upper_bound(&node, 0, 5, 0x7f), 2);
+        assert_eq!(dx_upper_bound(&node, 0, 5, 0xff), 4);
     }
 }
