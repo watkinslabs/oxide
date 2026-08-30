@@ -78,6 +78,16 @@ fn do_preadv(args: &SyscallArgs, v2: bool) -> i64 {
     // `if (!tot_len) goto out;` returns 0 BEFORE the flag admission, so a
     // zero-length preadv2 with an unsupported RWF bit still returns 0.
     if ranges.is_empty() { cur.account_read_result(0); return 0; }
+    let mut direct_off = off;
+    for &(base, len) in &ranges {
+        if let Err(e) = file.check_direct_io_alignment(base, direct_off, len) {
+            let r = errno_vfs(e); cur.account_read_result(r); return r;
+        }
+        direct_off = match direct_off.checked_add(len as u64) {
+            Some(v) => v,
+            None => { let r = errno(Errno::Einval); cur.account_read_result(r); return r; }
+        };
+    }
     let want: u64 = ranges.iter().map(|(_, l)| *l as u64).sum();
     if let Err(e) = ::fs::inotify::check_file_area_perm(&file.inode(), false, Some(off), want) {
         let r = errno(e); cur.account_read_result(r); return r;
