@@ -253,14 +253,14 @@ Exit: each claimed gain has a reproducible before/after measurement; no correctn
 ### 4.9 E4-17: finish the remaining mballoc lifecycle
 
 The current allocator has the right ownership boundary and several Linux
-selection summaries, but `alloc_blocks_for_inode` still performs a full
-group walk and `try_alloc_run_in_group` still scans a raw bitmap for every
-candidate. Extend the existing summary owner in dependency order: first
-bounded group-candidate selection, then buddy/bitmap lifecycle transitions
-for inode and locality preallocations, then discard/reclaim ordering and
-the remaining Linux request normalization. The on-disk bitmap remains the
-authority; summaries are rebuilt or invalidated at every transaction
-boundary and never become a second allocation truth.
+selection summaries. B3004 adds a bounded indexed candidate pass before the
+bitmap fallback; B3005 preserves physical-goal-first ordering; B3006 makes
+locality-PA reclaim follow filesystem group order; B3007 filters PA masking to
+the target group. Remaining work is buddy/bitmap lifecycle transitions for
+inode and locality preallocations and the remaining Linux request
+normalization. The on-disk bitmap remains the authority; summaries are rebuilt
+or invalidated at every transaction boundary and never become a second
+allocation truth.
 
 Exit: focused allocator state-machine tests, fragmentation/ENOSPC and
 e2fsck-clean image coverage, both architecture checks, and both-arch smoke.
