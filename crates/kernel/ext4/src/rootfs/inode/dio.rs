@@ -221,7 +221,6 @@ pub(crate) fn submit(file: &File, io: DirectIo) -> DirectSubmit {
         core::cmp::min(end, io.off.saturating_add(
             ((result_len as u64 + bs - 1) / bs) * bs))
     };
-    let token = data.begin_dio();
     // Linux drains dirty cache pages before handing an extent snapshot to the
     // device. The shared invalidate lock keeps truncate/remap from changing
     // that snapshot while it is assembled; `DioToken` carries the lifetime
@@ -235,15 +234,55 @@ pub(crate) fn submit(file: &File, io: DirectIo) -> DirectSubmit {
     } else {
         Some(file.inode().inode_lock_shared())
     };
-    let extents = match data.st.mount.collect_phys_extents(&inode.i_block) {
+    let mut extents = match data.st.mount.collect_phys_extents(&inode.i_block) {
         Ok(v) => v,
         Err(_) => return DirectSubmit::Failed(VfsError::Eio),
     };
     let (plans, unwritten) = if io.write {
-        match dio_write_plan(&extents, io.off, request_end, bs) {
-            Some(plan) => (plan.requests, plan.unwritten),
-            None => return DirectSubmit::Unsupported(io),
-        }
+        let plan = dio_write_plan(&extents, io.off, request_end, bs);
+        let plan = match plan {
+            Some(plan) => plan,
+            None => {
+                // Linux's iomap write path maps an in-file hole as an
+                // unwritten extent before handing the data to the device.
+                // Keep that allocation in the process-context preparation
+                // owner; the completion owner below converts only bytes the
+                // device actually completed.
+                drop(_inode_lock);
+                drop(_invalidate);
+                data.wait_dio();
+                let _mutation = match data.begin_swap_mutation(file.inode()) {
+                    Ok(m) => m,
+                    Err(e) => return DirectSubmit::Failed(e),
+                };
+                data.wait_dio();
+                let _inode_lock = file.inode().inode_lock();
+                // SAFETY: preparation is process context, no spinlock is
+                // held, and this is the canonical extent/cache gate.
+                let _invalidate = unsafe { data.invalidate_lock.write() };
+                if data.frames.writeback_range(io.off, end).is_err() {
+                    return DirectSubmit::Failed(VfsError::Eio);
+                }
+                if data.st.mount.fallocate_inode(data.ino, io.off,
+                        request_end.saturating_sub(io.off), true).is_err() {
+                    return DirectSubmit::Failed(VfsError::Eio);
+                }
+                data.refresh_inode_usage(file.inode());
+                let refreshed = match data.st.mount.read_inode(data.ino) {
+                    Ok(i) => i,
+                    Err(_) => return DirectSubmit::Failed(VfsError::Eio),
+                };
+                extents = match data.st.mount.collect_phys_extents(&refreshed.i_block) {
+                    Ok(v) => v,
+                    Err(_) => return DirectSubmit::Failed(VfsError::Eio),
+                };
+                match dio_write_plan(&extents, io.off, request_end, bs) {
+                    Some(plan) => plan,
+                    None => return DirectSubmit::Unsupported(io),
+                }
+            }
+        };
+        (plan.requests, plan.unwritten)
     } else {
         let mut plans: Vec<(usize, u64, usize)> = Vec::new();
         for run in extents {
@@ -261,6 +300,7 @@ pub(crate) fn submit(file: &File, io: DirectIo) -> DirectSubmit {
         }
         (plans, Vec::new())
     };
+    let token = data.begin_dio();
     let write = io.write;
     let off = io.off;
     if write { file.file_update_time(); }

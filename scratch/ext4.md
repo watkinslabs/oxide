@@ -31,7 +31,8 @@ No item closes on a parser change alone. Each closes only when the Linux-shaped 
 
 E4-10 current implementation evidence: ext4 regular files expose one
 filesystem-owned `submit_direct`/`iopoll` path for extent-backed polled reads
-and the safe subset of writes. It takes the Linux-shaped invalidate/read-side
+and the safe subset of writes. In-file holes are journal-mapped as unwritten
+before a queued write, then converted only after device completion. It takes the Linux-shaped invalidate/read-side
 preparation, writes device-owned polled block requests, represents holes and
 unwritten extents as zero-filled aggregate regions, and completes through one
 inode DIO lifetime owner. Polled write completion that can invalidate the
@@ -44,8 +45,9 @@ durability after device success, with sync errors carried into the CQE. E4-10
 stays IN-PROGRESS pending focused io_uring timestamp/RWF-sync coverage and the
 remaining layout-specific owners. The per-operation sync mode now travels with
 the owned DIO transfer through the filesystem and block completion owners;
-`dio_polled_image` pins that transport, while `frame_coherency_image` proves
-mapped-page invalidation.
+`dio_polled_image` pins deferred success/error, hole allocation, unwritten
+conversion, and that transport, while `frame_coherency_image` proves mapped-page
+invalidation.
 | E4-16 | DONE | Historical ext4 rows are explicitly historical, mapped to the E4 inventory, and no longer carry stale pending SHAs or old current-suite counts. | baseline only | corrected rows map to an E4 item or retain explicit evidence |
 
 ## 3 — supported mode contract

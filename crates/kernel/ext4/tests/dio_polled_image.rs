@@ -96,6 +96,23 @@ fn preallocated_file(m: &Arc<ext4::rootfs::Ext4Mount>, bs: usize, blocks: usize)
     (File::new(inode.clone(), Dentry::new_root(inode), OpenFlags::O_RDWR), ino)
 }
 
+fn hole_file(m: &Arc<ext4::rootfs::Ext4Mount>, bs: usize) -> (Arc<File>, u32) {
+    let st = m.state();
+    let root = st.lookup_path(b"/").expect("root");
+    let ino = st.mount.create_file(root, b"polled-hole.bin", 0o644, 0, 0).expect("create");
+    st.mount.set_inode_size(ino, (3 * bs) as u64).expect("size");
+    let inode = st.wrap_file(ino).expect("wrap file");
+    let file = File::new(inode.clone(), Dentry::new_root(inode),
+                         OpenFlags::O_RDWR | OpenFlags::O_DIRECT);
+    for block in [0, 2] {
+        st.mount.fallocate_inode(ino, (block * bs) as u64, bs as u64, true)
+            .expect("preallocate mapped block");
+        file.pwrite(&vec![0x11; bs], (block * bs) as i64)
+            .expect("initialize mapped block");
+    }
+    (file, ino)
+}
+
 #[test]
 fn polled_write_completes_only_after_device_poll_and_invalidates_cache() {
     let disk = PollDisk::from_image();
@@ -169,4 +186,29 @@ fn polled_write_converts_only_the_completed_unwritten_range() {
         logical == 1 && len >= 1 && !unwritten));
     assert!(runs.iter().any(|&(logical, _phys, len, unwritten)|
         logical == 2 && len >= 1 && unwritten));
+}
+
+#[test]
+fn polled_write_allocates_and_converts_an_in_file_hole() {
+    let disk = PollDisk::from_image();
+    let (m, _sb) = mount(disk.clone());
+    let bs = m.state().mount.sb.block_size as usize;
+    let (file, ino) = hole_file(&m, bs);
+    let result = Arc::new(Spinlock::<Option<Result<usize, VfsError>>, TaskList>::new(None));
+    let slot = result.clone();
+    assert!(matches!(file.submit_direct(DirectIo {
+        write: true, off: bs as u64, buf: alloc::vec![0xC7u8; bs],
+        sync_mode: SyncMode::default(),
+        done: alloc::boxed::Box::new(move |_buf, res, _sync| { *slot.lock() = Some(res); }),
+    }), DirectSubmit::Queued));
+    assert!(result.lock().is_none());
+    assert_eq!(file.iopoll(), Some(1));
+    assert_eq!(*result.lock().as_ref().expect("completion"), Ok(bs));
+    let runs = m.state().mount.extent_map(ino).expect("extent map");
+    assert!(runs.iter().any(|&(logical, _phys, len, unwritten)|
+        logical == 0 && len >= 1 && !unwritten));
+    assert!(runs.iter().any(|&(logical, _phys, len, unwritten)|
+        logical == 1 && len >= 1 && !unwritten));
+    assert!(runs.iter().any(|&(logical, _phys, len, unwritten)|
+        logical == 2 && len >= 1 && !unwritten));
 }
