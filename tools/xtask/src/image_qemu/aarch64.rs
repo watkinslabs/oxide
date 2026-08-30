@@ -160,6 +160,11 @@ pub(super) fn qemu_run_aarch64_grub(
     let pcap_args = super::common::pcap_filter_args();
     let share_args = super::common::host_share_args();
     let pmem_args = super::common::virtio_pmem_args();
+    let machine = if pmem_args.is_empty() {
+        "virt,gic-version=3,its=on".to_string()
+    } else {
+        "virt,gic-version=3,its=on,maxmem=8G".to_string()
+    };
     let memory = super::common::qemu_memory(DEFAULT_MEMORY)?;
     let hibernate_args = super::common::hibernate_disk_args()?;
     // Per-launch vhost-vsock guest CID (host-global — see qemu_vsock_cid), so
@@ -198,7 +203,7 @@ pub(super) fn qemu_run_aarch64_grub(
     c.args(&share_args);
     c.args(&pmem_args);
     c.args([
-        "-machine", "virt,gic-version=3,its=on",
+        "-machine", machine.as_str(),
         "-cpu", "cortex-a72",
         "-smp", &smp_str,
         "-m", memory.as_str(),
