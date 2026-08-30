@@ -42,6 +42,11 @@ E4-10 status update (B2989): inline data is also converted before fallocate,
 punch-hole, and truncate, so those operations cannot dispatch inline payload
 bytes to the indirect-pointer owner. The focused inline-image operation test
 and the full ext4 suite pass on merged main.
+
+E4-10 status update (B2990): polled DIO now admits device-aligned offsets and
+lengths, translates sub-filesystem-block ranges to the correct device sectors,
+and delegates partial writes into unwritten extents to the synchronous RMW
+owner. Deferred-device image coverage and the full ext4 suite pass.
 | E4-12 | DONE | Legacy options without consumers are refused explicitly; generic VFS tokens remain pass-through. | baseline only | known unowned ext4 options refuse |
 | E4-13 | DONE | All ext4 e2fsck image fixtures use PID/sequence-unique temporary paths and clean up after each run; the large allocator harness uses a per-process directory, and serial/parallel runs agree. | baseline only | isolated fixture ownership; parallel and serial suites agree |
 | E4-14 | DONE | The previously reported ARM sysinit EIO/SIGBUS event did not reproduce in the controlled ARM boot-smoke run; userspace answered the systemd probe and the serial RX probe passed in 22 seconds. | E4-02, E4-03 | controlled ARM boot-smoke evidence; retain broader ARM desktop validation under E4-03 |
