@@ -338,8 +338,10 @@ The authoritative dependency-ordered ext4 inventory and execution plan is [`scra
 E4-10 status correction (B2979): multi-block inline regular-file conversion is
 covered. Legacy indirect inodes preserve the legacy pointer tree for mapped
 writes, direct/single/double/triple branch geometry, direct/single/double
-allocation, truncate, and punch-hole mutation; triple-indirect image coverage
-remains open. DAX remains explicitly refused.
+allocation, truncate, punch-hole, and keep-size fallocate; legacy
+triple-indirect image coverage remains open. DIO now uses the same
+inode-aware mapping and zero-prepares legacy holes. DAX remains explicitly
+refused.
 | E4-12 | DONE | Every known admitted ext4 option without a live consumer now refuses explicitly; generic VFS mount tokens remain pass-through. | Add a real owner before admitting any refused filesystem option. |
 | E4-13 | DONE | All ext4 e2fsck image fixtures use PID/sequence-unique temporary paths and clean up after each run; the large allocator harness uses a per-process directory, and serial/parallel runs agree. | Workspace-wide fixture audit plus serial and four-thread harness runs. |
 | E4-14 | DONE | The previously reported ARM sysinit EIO/SIGBUS event did not reproduce in the controlled ARM boot-smoke run; userspace answered the systemd probe and the serial RX probe passed in 22 seconds. | Controlled ARM boot-smoke evidence; retain broader ARM desktop validation under E4-03. |

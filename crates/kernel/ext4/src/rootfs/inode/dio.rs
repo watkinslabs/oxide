@@ -234,7 +234,8 @@ pub(crate) fn submit(file: &File, io: DirectIo) -> DirectSubmit {
     } else {
         Some(file.inode().inode_lock_shared())
     };
-    let mut extents = match data.st.mount.collect_phys_extents(&inode.i_block) {
+    let legacy = inode.i_flags & crate::inode::EXT4_EXTENTS_FL == 0;
+    let mut extents = match data.st.mount.collect_inode_phys_extents(&inode) {
         Ok(v) => v,
         Err(_) => return DirectSubmit::Failed(VfsError::Eio),
     };
@@ -263,7 +264,22 @@ pub(crate) fn submit(file: &File, io: DirectIo) -> DirectSubmit {
                 if data.frames.writeback_range(io.off, end).is_err() {
                     return DirectSubmit::Failed(VfsError::Eio);
                 }
-                if data.st.mount.fallocate_inode(data.ino, io.off,
+                if legacy {
+                    // Legacy indirect inodes have no unwritten-extent bit.
+                    // Materialize in-file holes as zeroed initialized blocks
+                    // through the canonical indirect writer before handing
+                    // the mapping to the device, which is the safe Linux
+                    // ordering for a non-extent map.
+                    let zero = alloc::vec![0u8; bs as usize];
+                    let first = io.off / bs;
+                    let last = request_end.saturating_add(bs - 1) / bs;
+                    for logical in first..last {
+                        if data.st.mount.resolve_pblock(&inode, logical as u32).is_err()
+                            && data.st.mount.write_at(data.ino, logical * bs, &zero).is_err() {
+                            return DirectSubmit::Failed(VfsError::Eio);
+                        }
+                    }
+                } else if data.st.mount.fallocate_inode(data.ino, io.off,
                         request_end.saturating_sub(io.off), true).is_err() {
                     return DirectSubmit::Failed(VfsError::Eio);
                 }
@@ -272,7 +288,7 @@ pub(crate) fn submit(file: &File, io: DirectIo) -> DirectSubmit {
                     Ok(i) => i,
                     Err(_) => return DirectSubmit::Failed(VfsError::Eio),
                 };
-                extents = match data.st.mount.collect_phys_extents(&refreshed.i_block) {
+                extents = match data.st.mount.collect_inode_phys_extents(&refreshed) {
                     Ok(v) => v,
                     Err(_) => return DirectSubmit::Failed(VfsError::Eio),
                 };
