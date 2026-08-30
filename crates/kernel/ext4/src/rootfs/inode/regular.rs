@@ -8,8 +8,6 @@ use vfs::inode::InodeBuilder;
 use vfs::inode_ops::{InodeOps, mk_mode};
 use vfs::mapping::AddressSpaceOps;
 use vfs::{FileType, Inode, InodeRef, KResult, VfsError};
-use ::sync as sync;
-
 use super::data::{Ext4FileData, get_inode_xattr, remove_inode_xattr, set_inode_xattr};
 use super::ids::ext4_wrap_ino;
 use super::super::state::RootfsState;
@@ -108,7 +106,9 @@ impl InodeOps for Ext4RegInodeOps {
     fn truncate(&self, inode: &Inode, len: u64) -> KResult<()> {
         let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
         let _mutation = d.begin_swap_mutation(inode)?;
-        let _invalidate = d.invalidate_lock.write();
+        // SAFETY: truncate runs in process context and holds no spinlock; the
+        // invalidate semaphore may sleep while an mmap/cache reader drains.
+        let _invalidate = unsafe { d.invalidate_lock.write() };
         d.frames.invalidate_inode_cache();
         d.st.mount.truncate_inode(d.ino, len).map_err(|e| fs_err(&d.st, e))?;
         d.frames.invalidate_range(len & !(4095u64), u64::MAX);
@@ -276,7 +276,9 @@ impl FileOps for Ext4RegFileOps {
         -> Option<KResult<usize>>
     {
         let d = file.inode().private::<Ext4FileData>()?;
-        let _invalidate = d.invalidate_lock.read();
+        // SAFETY: direct read runs in process context and holds no spinlock;
+        // the Linux-shaped invalidate semaphore may sleep under contention.
+        let _invalidate = unsafe { d.invalidate_lock.read() };
         let end = match off.checked_add(buf.len() as u64) {
             Some(end) => end,
             None => return Some(Err(VfsError::Einval)),
@@ -307,7 +309,9 @@ impl FileOps for Ext4RegFileOps {
             Err(e) => return Some(Err(e)),
         };
         let _inode_lock = file.inode().inode_lock();
-        let _invalidate = d.invalidate_lock.write();
+        // SAFETY: direct write runs in process context and holds no spinlock;
+        // the Linux-shaped invalidate semaphore may sleep under contention.
+        let _invalidate = unsafe { d.invalidate_lock.write() };
         let end = match off.checked_add(buf.len() as u64) {
             Some(end) => end,
             None => return Some(Err(VfsError::Einval)),
@@ -493,17 +497,23 @@ pub(crate) struct Ext4FileMapping { pub(crate) data: Arc<Ext4FileData> }
 
 impl AddressSpaceOps for Ext4FileMapping {
     fn shared_frame(&self, off: u64) -> KResult<Option<vfs::SharedFrame>> {
-        let _invalidate = self.data.invalidate_lock.read();
+        // SAFETY: mmap fault handling runs in process context and holds no
+        // spinlock while acquiring the sleeping invalidate semaphore.
+        let _invalidate = unsafe { self.data.invalidate_lock.read() };
         self.data.frames.shared_frame(off)
     }
 
     fn fault_around_frame(&self, off: u64) -> KResult<Option<vfs::SharedFrame>> {
-        let _invalidate = self.data.invalidate_lock.read();
+        // SAFETY: fault-around runs in process context and holds no spinlock;
+        // this acquire may sleep behind an extent invalidation.
+        let _invalidate = unsafe { self.data.invalidate_lock.read() };
         self.data.frames.fault_around_frame(off)
     }
 
     fn read_at(&self, off: u64, dst: &mut [u8]) -> KResult<usize> {
-        let _invalidate = self.data.invalidate_lock.read();
+        // SAFETY: buffered file reads run in process context and hold no
+        // spinlock while acquiring the sleeping invalidate semaphore.
+        let _invalidate = unsafe { self.data.invalidate_lock.read() };
         self.data.frames.read_framed(off, dst)
     }
 
@@ -532,12 +542,16 @@ impl AddressSpaceOps for Ext4FileMapping {
     /// page-at-a-time loop: a contiguous file maps to one physical run, so the
     /// caller's whole readahead window is a single block request.
     fn readahead(&self, start: u64, nr_pages: u64) {
-        let _invalidate = self.data.invalidate_lock.read();
+        // SAFETY: readahead runs in process context and holds no spinlock;
+        // the shared invalidate acquire may sleep under DIO contention.
+        let _invalidate = unsafe { self.data.invalidate_lock.read() };
         self.data.frames.readahead(start, nr_pages);
     }
 
     fn invalidate_range(&self, start: u64, end: u64) -> usize {
-        let _invalidate = self.data.invalidate_lock.write();
+        // SAFETY: truncate invalidation runs in process context and holds no
+        // spinlock while taking the sleeping exclusive semaphore.
+        let _invalidate = unsafe { self.data.invalidate_lock.write() };
         self.data.frames.invalidate_range(start, end)
     }
 
@@ -560,7 +574,7 @@ pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: 
 {
     let frames = st.frame_store(ino, size);
     let data = Arc::new(Ext4FileData { st, ino,
-        invalidate_lock: sync::RwLock::new(()),
+        invalidate_lock: sched::rwsem::RwSem::new(()),
         raw_flags: core::sync::atomic::AtomicU32::new(_raw_flags), size_hint: AtomicU64::new(size),
         timestamp_staged: core::sync::atomic::AtomicBool::new(false), frames,
         swap_mutations: Arc::new(AtomicU64::new(0)), swap_wait: sched::live::WaitList::new(),
