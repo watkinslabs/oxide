@@ -1,22 +1,11 @@
-// Two on-disk homes for an inode's xattrs:
-//   * IN-INODE (ibody): the space between the inode's `i_extra_isize` end and
-//     the inode record end holds `ext4_xattr_ibody_header` (4-byte magic
-//     0xEA020000) + a sorted `ext4_xattr_entry[]` (entries grow UP from
-//     `IFIRST`) + the value bytes (grow DOWN from the inode-record end).
-//   * EXTERNAL block (`i_file_acl`): a single fs-block beginning with the
-//     32-byte `ext4_xattr_header`, then the same entry+value layout keyed to
-//     the block start.
-//
-// This module is the bridge between that disk format and the in-core
-// `vfs::SimpleXattrs` store attached to every ext4 inode (D45). IBODY and the
-// single EXTERNAL block are both read on load and rewritten by `store_xattrs`.
-//
+// Module manifest: xattr disk codec, placement, external blocks, EA inodes,
+// and final-release lifecycle share the ext4 xattr ownership boundary.
 extern crate alloc;
 mod lifecycle;
+mod ea_inode;
+mod placement;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-
-use vfs::SimpleXattrs;
 
 use crate::csum::EXT4_GOOD_OLD_INODE_SIZE;
 use crate::mount::{Mount, MountError};
@@ -90,7 +79,7 @@ pub(super) fn xattr_suffix_bytes(name: &str) -> Vec<u8> {
 /// with `e_value_inum != 0` stores its value in a separate inode — skipped).
 /// # C: O(N_entries)
 fn decode_entries(buf: &[u8], first_off: usize, base_off: usize, end_off: usize,
-                  out: &mut Vec<(String, Vec<u8>)>)
+                  ea_mount: Option<&Mount>, out: &mut Vec<(String, Vec<u8>)>)
 {
     let mut p = first_off;
     loop {
@@ -107,14 +96,19 @@ fn decode_entries(buf: &[u8], first_off: usize, base_off: usize, end_off: usize,
         let name_end   = name_start + name_len;
         if name_end > end_off { break; }
         let next = p + xattr_entry_len(name_len);
-        // Inline values only; external-value-inode entries are skipped.
-        if value_inum == 0 {
+        let value = if value_inum == 0 {
             let v_start = base_off + value_offs;
-            let v_end   = v_start + value_size;
-            if v_end <= end_off {
-                let name = xattr_suffix_from_bytes(&buf[name_start..name_end]);
-                if let Some(full) = join_name(name_index, &name) {
-                    out.push((full, buf[v_start..v_end].to_vec()));
+            let v_end = v_start + value_size;
+            (v_end <= end_off).then(|| buf[v_start..v_end].to_vec())
+        } else {
+            ea_mount.and_then(|mount| mount.read_ea_inode_value(value_inum, value_size).ok())
+        };
+        if let Some(value) = value {
+            let name = xattr_suffix_from_bytes(&buf[name_start..name_end]);
+            if let Some(full) = join_name(name_index, &name) {
+                if value_inum == 0 || external::entry_hash(name.as_bytes(), &value)
+                    == u32::from_le_bytes([buf[p + 12], buf[p + 13], buf[p + 14], buf[p + 15]]) {
+                    out.push((full, value));
                 }
             }
         }
@@ -123,16 +117,36 @@ fn decode_entries(buf: &[u8], first_off: usize, base_off: usize, end_off: usize,
     }
 }
 
+fn collect_ea_inode_refs(buf: &[u8], first_off: usize, end_off: usize, out: &mut Vec<u32>) {
+    let mut p = first_off;
+    while p + 4 <= end_off {
+        if buf[p] == 0 && buf[p + 1] == 0 && buf[p + 2] == 0 && buf[p + 3] == 0 { break; }
+        if p + ENTRY_HDR_LEN > end_off { break; }
+        let name_len = buf[p] as usize;
+        let next = p.checked_add(xattr_entry_len(name_len)).unwrap_or(end_off + 1);
+        if next > end_off { break; }
+        let ino = u32::from_le_bytes([buf[p + 4], buf[p + 5], buf[p + 6], buf[p + 7]]);
+        if ino != 0 { out.push(ino); }
+        if next <= p { break; }
+        p = next;
+    }
+}
+
 /// Decode the IBODY xattr area of a raw inode (`hdr_off` = `128 + i_extra_isize`).
 /// Empty when the magic is absent. # C: O(N_entries)
 pub fn decode_ibody(ino_bytes: &[u8], hdr_off: usize, isize: usize) -> Vec<(String, Vec<u8>)> {
+    decode_ibody_with_mount(ino_bytes, hdr_off, isize, None)
+}
+
+fn decode_ibody_with_mount(ino_bytes: &[u8], hdr_off: usize, isize: usize,
+                           ea_mount: Option<&Mount>) -> Vec<(String, Vec<u8>)> {
     let mut out = Vec::new();
     if hdr_off + 4 > isize { return out; }
     let magic = u32::from_le_bytes([ino_bytes[hdr_off], ino_bytes[hdr_off + 1],
                                     ino_bytes[hdr_off + 2], ino_bytes[hdr_off + 3]]);
     if magic != EXT4_XATTR_MAGIC { return out; }
     let base = hdr_off + 4; // IFIRST — value offsets are relative to this
-    decode_entries(ino_bytes, base, base, isize, &mut out);
+    decode_entries(ino_bytes, base, base, isize, ea_mount, &mut out);
     out
 }
 
@@ -143,7 +157,7 @@ pub fn decode_block(blk: &[u8]) -> Vec<(String, Vec<u8>)> {
     if blk.len() < BLOCK_HDR_LEN + 4 { return out; }
     let magic = u32::from_le_bytes([blk[0], blk[1], blk[2], blk[3]]);
     if magic != EXT4_XATTR_MAGIC { return out; }
-    decode_entries(blk, BLOCK_HDR_LEN, 0, blk.len(), &mut out);
+    decode_entries(blk, BLOCK_HDR_LEN, 0, blk.len(), None, &mut out);
     out
 }
 
@@ -306,58 +320,6 @@ impl Mount {
         lo | (hi << 32)
     }
 
-    /// Populate `store` (the inode's in-core `SimpleXattrs`) from disk: the
-    /// EXTERNAL block first, then the IBODY area (ibody wins on a name clash).
-    /// Called at `iget`/build so xattrs survive eviction + remount. Read-only —
-    /// never rewrites the inode, so no-xattr inodes are untouched. # C: O(N)
-    pub fn load_xattrs(&self, ino: u32, store: &SimpleXattrs) {
-        let isize = self.sb.inode_size as usize;
-        let (bytes, _off) = match self.read_inode_bytes(ino) { Ok(x) => x, Err(_) => return };
-        let facl = Self::file_acl_of(&bytes);
-        if facl != 0 {
-            if let Ok(blk) = self.read_metadata_block(facl) {
-                self.xattr_cache_insert(facl, &blk);
-                for (n, v) in decode_block(&blk) { let _ = store.set(&n, v, false, false); }
-            }
-        }
-        let extra = Self::extra_isize_of(&bytes, isize);
-        if extra != 0 {
-            for (n, v) in decode_ibody(&bytes, EXT4_GOOD_OLD_INODE_SIZE + extra, isize) {
-                let _ = store.set(&n, v, false, false);
-            }
-        }
-    }
-
-    /// Re-encode the full xattr set into the inode's IBODY area and write the
-    /// inode back (journaled). `NoSpace` if the entries do not fit ibody; callers
-    /// needing Linux placement should use `store_xattrs`. # C: O(N) encode +
-    /// O(1) journaled I/O
-    pub fn store_ibody_xattrs(&self, ino: u32, entries: &[(String, Vec<u8>)]) -> Result<(), MountError> {
-        let isize = self.sb.inode_size as usize;
-        if isize <= EXT4_GOOD_OLD_INODE_SIZE { return Err(MountError::NoSpace); }
-        self.run_journaled(|m| {
-            let (mut bytes, _off) = m.read_inode_bytes(ino)?;
-            // Use the on-disk i_extra_isize; if absent but the fs has the space,
-            // stamp the standard 32 (matches `init_inode`) before placing xattrs.
-            let mut extra = Self::extra_isize_of(&bytes, isize);
-            if extra == 0 {
-                if EXT4_GOOD_OLD_INODE_SIZE + DEFAULT_EXTRA_ISIZE + 4 > isize {
-                    return Err(MountError::NoSpace);
-                }
-                if !entries.is_empty() {
-                    bytes[0x80..0x82].copy_from_slice(&(DEFAULT_EXTRA_ISIZE as u16).to_le_bytes());
-                    extra = DEFAULT_EXTRA_ISIZE;
-                } else {
-                    return Ok(()); // nothing to write, no extra area — leave inode as-is
-                }
-            }
-            let hdr_off = EXT4_GOOD_OLD_INODE_SIZE + extra;
-            encode_ibody(&mut bytes, hdr_off, isize, entries).map_err(|_| MountError::NoSpace)?;
-            m.write_inode_bytes(ino, &bytes)?;
-            Ok(())
-        })
-    }
-
     /// Persist the full xattr set (Linux `ext4_xattr_set_handle` placement): try
     /// the IBODY first; on overflow spill ALL on-disk entries to the EXTERNAL
     /// block (`i_file_acl`), allocating one if needed and stamping its
@@ -384,6 +346,11 @@ impl Mount {
             let old_image = if old_facl == 0 { None } else {
                 Some(m.read_metadata_block(old_facl)?)
             };
+            let mut old_ea = Vec::new();
+            collect_ea_inode_refs(&bytes, hdr_off + 4, isize, &mut old_ea);
+            if let Some(image) = old_image.as_ref() {
+                collect_ea_inode_refs(image, BLOCK_HDR_LEN, image.len(), &mut old_ea);
+            }
             // Try IBODY-only. Encode into the live buffer; on overflow the buffer
             // is discarded (re-read) before the external path.
             if encode_ibody(&mut bytes, hdr_off, isize, entries).is_ok() {
@@ -407,12 +374,25 @@ impl Mount {
                         }
                     }
                 }
+                for ea_ino in old_ea { m.put_ea_inode(ea_ino)?; }
                 return Ok(());
             }
             // IBODY overflow → external block. Re-read to drop the partial encode.
             let (mut bytes, _off) = m.read_inode_bytes(ino)?;
             encode_ibody(&mut bytes, hdr_off, isize, &[]).map_err(|_| MountError::NoSpace)?;
-            let mut blk = encode_block(entries, bs).map_err(|_| MountError::NoSpace)?;
+            let mut ea = Vec::new();
+            for (name, value) in entries {
+                if value.len() > bs {
+                    if m.sb.feature_incompat & crate::superblock::INCOMPAT_EA_INODE == 0 {
+                        return Err(MountError::NoSpace);
+                    }
+                    let (ea_ino, _) = m.lookup_create_ea_inode(ino, value)?;
+                    let hash = m.ea_value_hash(value);
+                    ea.push((name.clone(), ea_ino, hash));
+                }
+            }
+            let mut blk = external::encode_block_with_ea(entries, &ea, bs)
+                .map_err(|_| MountError::NoSpace)?;
             let old_sectors = Self::i_blocks_of(&bytes);
             let mut charged_sectors = old_sectors;
             let old_refs = if old_facl == 0 { 0 } else { m.xattr_block_refcount(old_facl)? };
@@ -478,6 +458,7 @@ impl Mount {
                     m.xattr_cache_insert(block_nr, &blk);
                 }
             }
+            for ea_ino in old_ea { m.put_ea_inode(ea_ino)?; }
             Ok(())
         })
     }

@@ -227,6 +227,9 @@ pub struct MountState {
     /// numbers. The block bytes remain owned by metadata_cache; this index is
     /// only a lookup accelerator and never a second xattr representation.
     pub(crate) xattr_block_cache: alloc::collections::BTreeMap<u32, Vec<u64>>,
+    /// Linux EA-inode mbcache index: value hash -> hidden inode numbers. The
+    /// inode bytes remain canonical on disk; this is only a candidate index.
+    pub(crate) ea_inode_cache: alloc::collections::BTreeMap<u32, Vec<u32>>,
     /// Cross-operation batching (Linux jbd2 running-transaction model). When
     /// set, the `shadow` PERSISTS across `run_journaled` scopes: each op joins
     /// the running transaction instead of committing its own, and the batch is

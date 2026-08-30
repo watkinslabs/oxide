@@ -25,6 +25,8 @@ pub const INCOMPAT_FLEX_BG:  u32 = 0x0200;
 /// Inline file and directory data lives in the inode and `system.data` ibody
 /// xattr. The inline owner handles regular files, directories, and symlinks.
 pub const INCOMPAT_INLINE_DATA: u32 = 0x8000;
+/// Large xattr values are stored in dedicated hidden inodes.
+pub const INCOMPAT_EA_INODE: u32 = 0x0400;
 /// `s_feature_incompat` CSUM_SEED — `s_checksum_seed` overrides the UUID seed.
 pub const INCOMPAT_CSUM_SEED: u32 = 0x2000;
 /// Filename casefolding; the superblock also carries the Unicode encoding.
@@ -47,12 +49,12 @@ pub const RO_COMPAT_ORPHAN_PRESENT: u32 = 0x0001_0000;
 
 /// INCOMPAT features this driver understands well enough to interpret the
 /// on-disk layout. An INCOMPAT bit OUTSIDE this set (e.g. MMP, INLINE_DATA,
-/// ENCRYPT, CASEFOLD, EA_INODE) means the layout would be
+/// ENCRYPT or CASEFOLD) means the layout would be
 /// misread → refuse the mount (Linux `EXT4_FEATURE_INCOMPAT_SUPP`).
 pub const SUPPORTED_INCOMPAT: u32 =
     INCOMPAT_FILETYPE | INCOMPAT_RECOVER | INCOMPAT_META_BG | INCOMPAT_EXTENTS | INCOMPAT_64BIT
     | INCOMPAT_FLEX_BG | INCOMPAT_LARGEDIR | INCOMPAT_CSUM_SEED | INCOMPAT_CASEFOLD
-    | INCOMPAT_INLINE_DATA;
+    | INCOMPAT_INLINE_DATA | INCOMPAT_EA_INODE;
 
 /// RO_COMPAT features this driver can safely WRITE. A bit outside this set
 /// (notably BIGALLOC=0x200, whose cluster bitmap we'd misread as per-block, or
