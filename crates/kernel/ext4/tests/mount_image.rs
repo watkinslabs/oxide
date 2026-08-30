@@ -108,15 +108,17 @@ fn inline_file_converts_to_extents_when_it_outgrows_ibody() {
         &[0x41u8; 60].iter().chain([0x42u8; 10].iter()).copied().collect::<Vec<_>>()[..]);
 
     let bs = m.sb.block_size as u64;
-    m.write_at(ino, bs - 1, &[0xEF]).expect("convert and write");
+    m.write_at(ino, bs * 2 + 7, &[0xEF]).expect("convert and write");
     let converted = m.read_inode(ino).expect("read converted inode");
     assert_eq!(converted.i_flags & ext4::inode::EXT4_INLINE_DATA_FL, 0);
     assert_ne!(converted.i_flags & ext4::inode::EXT4_EXTENTS_FL, 0);
-    assert_eq!(converted.size, bs);
+    assert_eq!(converted.size, bs * 2 + 8);
     let block = m.read_file_block(&converted, 0).expect("read converted block");
     assert_eq!(&block[..60], &[0x41u8; 60]);
     assert_eq!(&block[60..70], &[0x42u8; 10]);
-    assert_eq!(block[bs as usize - 1], 0xEF);
+    assert!(m.read_file_block(&converted, 1).unwrap().iter().all(|b| *b == 0));
+    let last = m.read_file_block(&converted, 2).expect("read converted tail block");
+    assert_eq!(last[7], 0xEF);
 }
 
 #[test]
@@ -205,11 +207,10 @@ fn lookup_in_dir_missing_returns_notfound() {
 
 #[test]
 fn open_refuses_unsupported_incompat_feature() {
-    // Set INCOMPAT_INLINE_DATA (0x8000) in the SB — a layout we do not
-    // implement. The feature gate must refuse the mount rather than
-    // misinterpret it (Linux EXT4_FEATURE_INCOMPAT_SUPP).
+    // Set an unknown INCOMPAT bit in the SB. The feature gate must refuse the
+    // mount rather than misinterpret it (Linux EXT4_FEATURE_INCOMPAT_SUPP).
     let mut img = IMAGE.to_vec();
-    img[1024 + 0x60 + 1] |= 0x80; // s_feature_incompat |= 0x8000
+    img[1024 + 0x60 + 1] |= 0x40; // s_feature_incompat |= 0x4000
     let cap = (img.len() as u64) / (BLOCK_SIZE as u64);
     let disk: Arc<MemDisk<TaskList>> = MemDisk::new(BLOCK_SIZE, cap);
     let mut req = BlockRequest { op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: img, ..Default::default() };
@@ -217,6 +218,49 @@ fn open_refuses_unsupported_incompat_feature() {
     let disk: Arc<dyn BlockDevice> = disk;
     assert!(matches!(ext4::Mount::open(disk), Err(ext4::MountError::UnsupportedFeature)),
         "unsupported INCOMPAT feature must refuse the mount");
+}
+
+#[test]
+fn generated_inline_directory_mounts_and_mutates() {
+    use std::process::Command;
+
+    let stem = format!("oxide-ext4-inline-{}", std::process::id());
+    let image = std::env::temp_dir().join(format!("{stem}.img"));
+    let _ = std::fs::remove_file(&image);
+    let status = Command::new("truncate").args(["-s", "32M", image.to_str().unwrap()]).status().unwrap();
+    assert!(status.success(), "truncate failed");
+    let status = Command::new("mkfs.ext4").args(["-q", "-F", "-O", "inline_data,^64bit", image.to_str().unwrap()]).status().unwrap();
+    assert!(status.success(), "mkfs failed");
+    let status = Command::new("debugfs").args(["-w", "-R", "mkdir /inline", image.to_str().unwrap()]).status().unwrap();
+    assert!(status.success(), "debugfs mkdir failed");
+
+    let bytes = std::fs::read(&image).expect("read image");
+    let cap = (bytes.len() / BLOCK_SIZE as usize) as u64;
+    let disk: Arc<MemDisk<TaskList>> = MemDisk::new(BLOCK_SIZE, cap);
+    let mut req = BlockRequest { op: BlockOp::Write, start_block: 0, len_blocks: cap as u32,
+        buffer: bytes, ..Default::default() };
+    disk.submit_sync(&mut req).expect("load image");
+    let m = ext4::Mount::open(disk).expect("mount inline image");
+    let dir = m.lookup_path(b"/inline").expect("lookup inline directory");
+    let dir_inode = m.read_inode(dir).expect("read inline directory");
+    assert_ne!(dir_inode.i_flags & ext4::inode::EXT4_INLINE_DATA_FL, 0);
+    assert_eq!(m.lookup_in_dir(&dir_inode, b".").expect("dot"), dir);
+    assert_eq!(m.lookup_in_dir(&dir_inode, b"..").expect("dotdot"), 2);
+
+    let child = m.create_file(dir, b"child", 0o644, 0, 0).expect("create in inline directory");
+    assert_eq!(m.lookup_in_dir(&m.read_inode(dir).unwrap(), b"child").unwrap(), child);
+    let mut last = child;
+    for n in 0..24 {
+        let name = std::format!("entry-{n:02}-inline-directory-growth");
+        last = m.create_file(dir, name.as_bytes(), 0o644, 0, 0)
+            .unwrap_or_else(|e| panic!("grow inline directory {n}: {e:?}"));
+    }
+    let converted = m.read_inode(dir).expect("read grown directory");
+    assert_eq!(converted.i_flags & ext4::inode::EXT4_INLINE_DATA_FL, 0);
+    assert_eq!(m.lookup_in_dir(&converted, b"entry-23-inline-directory-growth").unwrap(), last);
+    assert_eq!(m.dir_unlink(dir, b"child").unwrap(), child);
+    assert_eq!(m.lookup_path(b"/inline/child"), Err(ext4::MountError::NotFound));
+    let _ = std::fs::remove_file(&image);
 }
 
 #[test]

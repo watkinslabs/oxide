@@ -57,8 +57,9 @@ impl Mount {
         // Feature gating (Linux EXT4_FEATURE_{INCOMPAT,RO_COMPAT}_SUPP): refuse a
         // fs whose INCOMPAT bits we don't implement (layout would be misread) or
         // whose RO_COMPAT bits we can't safely write (no RO-mount path yet).
-        // Catches bigalloc/meta_bg/inline_data/encrypt/… instead of silently
-        // misinterpreting them.
+        // Catches bigalloc/meta_bg/encrypt/… instead of silently misinterpreting
+        // them; inline_data is admitted only because mount::inline owns its
+        // regular-file, directory, and symlink layout.
         if (sb.feature_incompat & !crate::superblock::SUPPORTED_INCOMPAT) != 0
             || (sb.feature_ro_compat & !crate::superblock::SUPPORTED_RO_COMPAT) != 0
         {

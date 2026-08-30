@@ -128,6 +128,19 @@ impl Mount {
         let bs = self.sb.block_size as usize;
         let usable = crate::csum::dir_usable_len(&self.sb, bs);
 
+        if flags & crate::inode::EXT4_INLINE_DATA_FL != 0 {
+            match super::inline::insert_inline_dir(self, dir_node, child_ino, file_type, name) {
+                Ok(true) => return Ok(()),
+                Ok(false) => {}
+                Err(MountError::NotExtents) => {
+                    self.convert_inline_data(dir_ino, dir_node, 0, &[])?;
+                    let converted = self.read_inode(dir_ino)?;
+                    return self.dir_link_inner_with_inode(&converted, name, child_ino, file_type);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
         if (flags & EXT4_INDEX_FL) != 0 {
             return self.htree_insert(&dir_node, dir_ino, gen, name, child_ino, file_type);
         }
@@ -182,6 +195,11 @@ impl Mount {
         let dir_node = self.read_inode(dir_ino)?;
         if !dir_node.is_dir() { return Err(MountError::NotDir); }
         if !self.strict_name_valid(&dir_node, name) { return Err(MountError::Dir(dir::DirError::BadNameLen)); }
+        if dir_node.i_flags & crate::inode::EXT4_INLINE_DATA_FL != 0 {
+            return super::inline::remove_inline_dir(self, &dir_node, name)?
+                .filter(|ino| *ino != 0)
+                .ok_or(MountError::NotFound);
+        }
         let gen = dir_node.generation;
         let bs = self.sb.block_size as u64;
         let total = dir_node.size;
@@ -220,6 +238,7 @@ impl Mount {
     fn set_dotdot_inner(&self, dir_ino: u32, new_parent: u32) -> Result<(), MountError> {
         let dir_node = self.read_inode(dir_ino)?;
         if !dir_node.is_dir() { return Err(MountError::NotDir); }
+        if super::inline::set_dotdot_inline(self, &dir_node, new_parent)? { return Ok(()); }
         let gen = dir_node.generation;
         let bs = self.sb.block_size as usize;
         let mut blk = self.read_file_block_meta(&dir_node, 0)?;
@@ -254,6 +273,10 @@ impl Mount {
     {
         if !dir_inode.is_dir() { return Err(MountError::NotDir); }
         if !self.strict_name_valid(dir_inode, name) { return Err(MountError::Dir(dir::DirError::BadNameLen)); }
+        if dir_inode.i_flags & crate::inode::EXT4_INLINE_DATA_FL != 0 {
+            return super::inline::lookup_inline_dir(self, dir_inode, name)?
+                .map(|ino| (ino, 0)).ok_or(MountError::NotFound);
+        }
         let block_size = self.sb.block_size as u64;
         let total = dir_inode.size;
         let nblocks = ((total + block_size - 1) / block_size) as u32;

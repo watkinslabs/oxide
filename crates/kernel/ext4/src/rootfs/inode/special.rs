@@ -507,6 +507,22 @@ impl FileOps for Ext4StatFileOps {
         // mutation owner publishes that size into the cached image, re-read
         // it so readdir cannot omit a newly allocated directory block.
         let dir_inode = mount.read_inode(d.ino).map_err(|_| VfsError::Eio)?;
+        if dir_inode.i_flags & crate::inode::EXT4_INLINE_DATA_FL != 0 {
+            let entries = crate::mount::inline::read_inline_dir_entries(mount, &dir_inode)
+                .map_err(|_| VfsError::Eio)?;
+            for (ino, file_type, name, cookie) in entries {
+                if cookie <= ctx.pos { continue; }
+                let dt = crate::dir::dirent_dtype(
+                    (mount.sb.feature_incompat & crate::superblock::INCOMPAT_FILETYPE) != 0,
+                    file_type,
+                );
+                if !ctx.emit_dt(&ext4_dirent_name(&name), super::ids::ext4_wrap_ino(ino), dt, cookie) {
+                    return Ok(());
+                }
+                ctx.pos = cookie;
+            }
+            return Ok(());
+        }
         let bs = mount.sb.block_size as u64;
         // `EXT4_FEATURE_INCOMPAT_FILETYPE` is what makes byte 7 of a directory
         // record a `d_type`. On an ext2-style image without it that byte is the
