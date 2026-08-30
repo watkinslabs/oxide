@@ -42,7 +42,10 @@ synchronous owners. Scalar, vectored, fixed-buffer, and fixed-vector io_uring
 operands all use the same filesystem alignment contract. The shared VFS
 completion owner now runs queued-write notification and `O_SYNC`/`O_DSYNC`
 durability after device success, with sync errors carried into the CQE. E4-10
-stays IN-PROGRESS pending focused io_uring timestamp/RWF-sync coverage and the
+The scalar io_uring read/write dispatch now carries `sqe.rw_flags` through the
+same shared RWF admission and VFS owners as vectored I/O, including cursor
+NOWAIT reads and per-operation append/sync behavior. E4-10
+stays IN-PROGRESS pending focused io_uring timestamp/RWF-sync image coverage and the
 remaining layout-specific owners. The per-operation sync mode now travels with
 the owned DIO transfer through the filesystem and block completion owners;
 `dio_polled_image` pins deferred success/error, hole allocation, unwritten
