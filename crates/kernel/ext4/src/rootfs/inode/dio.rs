@@ -16,6 +16,7 @@ use vfs::file_ops::{DirectIo, DirectSubmit};
 use vfs::{File, VfsError};
 
 use super::data::{DioToken, Ext4FileData};
+use crate::extent_rw::PhysRun;
 
 /// One extent-backed request aggregate. The block layer invokes the request
 /// callbacks; the io_uring completion is invoked only after every request has
@@ -31,6 +32,30 @@ pub(crate) struct DioState {
     write: bool,
     invalidate_start: u64,
     invalidate_end: u64,
+}
+
+/// Plan only the DIO write shape that can complete without allocation or
+/// unwritten-extent conversion. This is deliberately ungated so the Linux
+/// admission boundary is tested without a device or a boot. # C: O(extents)
+fn in_place_write_plan(extents: &[PhysRun], off: u64, end: u64, bs: u64)
+    -> Option<Vec<(usize, u64, usize)>>
+{
+    let mut covered = off;
+    let mut plans = Vec::new();
+    for run in extents {
+        let run_start = u64::from(run.logical) * bs;
+        let run_end = run_start.saturating_add(u64::from(run.len) * bs);
+        let start = core::cmp::max(off, run_start);
+        let finish = core::cmp::min(end, run_end);
+        if start >= finish { continue; }
+        if run.unwritten || start != covered { return None; }
+        covered = finish;
+        let logical_blocks = (start - run_start) / bs;
+        plans.push(((start - off) as usize,
+                    run.phys.saturating_add(logical_blocks),
+                    (finish - start) as usize));
+    }
+    (covered == end).then_some(plans)
 }
 
 impl DioState {
@@ -187,19 +212,19 @@ pub(crate) fn submit(file: &File, io: DirectIo) -> DirectSubmit {
         Ok(v) => v,
         Err(_) => return DirectSubmit::Failed(VfsError::Eio),
     };
-    let mut plans: Vec<(usize, u64, usize)> = Vec::new();
-    let mut covered = io.off;
-    if request_end > io.off {
+    let plans = if io.write {
+        match in_place_write_plan(&extents, io.off, request_end, bs) {
+            Some(plans) => plans,
+            None => return DirectSubmit::Unsupported(io),
+        }
+    } else {
+        let mut plans: Vec<(usize, u64, usize)> = Vec::new();
         for run in extents {
             let run_start = u64::from(run.logical) * bs;
             let run_end = run_start.saturating_add(u64::from(run.len) * bs);
             let start = core::cmp::max(io.off, run_start);
             let finish = core::cmp::min(request_end, run_end);
             if start >= finish { continue; }
-            if io.write && (run.unwritten || start != covered) {
-                return DirectSubmit::Unsupported(io);
-            }
-            if io.write { covered = finish; }
             if run.unwritten { continue; }
             let logical_blocks = (start - run_start) / bs;
             let bytes = (finish - start) as usize;
@@ -207,8 +232,8 @@ pub(crate) fn submit(file: &File, io: DirectIo) -> DirectSubmit {
             let at = (start - io.off) as usize;
             plans.push((at, phys, bytes));
         }
-    }
-    if io.write && covered != request_end { return DirectSubmit::Unsupported(io); }
+        plans
+    };
     let write = io.write;
     let off = io.off;
     if write { file.file_update_time(); }
@@ -246,4 +271,38 @@ pub(crate) fn submit(file: &File, io: DirectIo) -> DirectSubmit {
         }));
     }
     DirectSubmit::Queued
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+    use super::*;
+
+    fn run(logical: u32, phys: u64, len: u32, unwritten: bool) -> PhysRun {
+        PhysRun { logical, phys, len, unwritten }
+    }
+
+    #[test]
+    fn in_place_plan_covers_adjacent_initialized_runs() {
+        let extents = [run(0, 100, 2, false), run(2, 900, 2, false)];
+        assert_eq!(in_place_write_plan(&extents, 0, 4 * 4096, 4096),
+            Some(vec![(0, 100, 2 * 4096), (2 * 4096, 900, 2 * 4096)]));
+    }
+
+    #[test]
+    fn in_place_plan_refuses_a_logical_hole() {
+        let extents = [run(0, 100, 1, false), run(2, 102, 1, false)];
+        assert!(in_place_write_plan(&extents, 0, 3 * 4096, 4096).is_none());
+    }
+
+    #[test]
+    fn in_place_plan_refuses_unwritten_storage() {
+        let extents = [run(0, 100, 2, true)];
+        assert!(in_place_write_plan(&extents, 0, 4096, 4096).is_none());
+    }
+
+    #[test]
+    fn in_place_plan_accepts_an_empty_range_without_extents() {
+        assert_eq!(in_place_write_plan(&[], 4096, 4096, 4096), Some(Vec::new()));
+    }
 }
