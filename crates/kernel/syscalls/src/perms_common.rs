@@ -128,7 +128,11 @@ pub(crate) fn notify_change(inode: &InodeRef, mnt_id: u64, mut ia: vfs::Iattr) -
     let cred = crate::pathresolve::current_cred();
     match vfs::notify_change_mnt(inode, mnt_id, &mut ia, &cred, now_ns()) {
         Ok(())  => 0,
-        Err(e)  => -(e as i64),
+        Err(e)  => {
+            #[cfg(feature = "debug-fsync-latency")]
+            { klog::write_raw(b"[SETATTR-ERR] errno="); klog::write_dec_u64(e as u64); klog::write_raw(b"\n"); }
+            -(e as i64)
+        },
     }
 }
 

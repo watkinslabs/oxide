@@ -30,7 +30,9 @@ pub fn sys_fsmount(args: &SyscallArgs) -> i64 {
     // The superblock was realized at `fsconfig(FSCONFIG_CMD_CREATE)`. The
     // context MUST be `AwaitingMount` with a pinned root; the ladder below is
     // the reference's, in its order.
-    let mut g = ctx.fc.lock();
+    // SAFETY: fsmount runs in process context and may materialize filesystem
+    // state that sleeps; this is the Linux fs_context mutex contract.
+    let mut g = unsafe { ctx.fc.lock() };
     let Some(fc) = g.as_mut() else { return -(Errno::Einval.as_i32() as i64) };
     // No realized root → EINVAL. Too-revealing → EPERM. Wrong phase → EBUSY.
     // The phase rung is LAST and it is EBUSY, not EINVAL — "the context exists

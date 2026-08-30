@@ -2,12 +2,12 @@ use alloc::sync::Arc;
 use alloc::string::String;
 #[cfg(target_os = "oxide-kernel")]
 use alloc::vec::Vec;
-#[cfg(target_os = "oxide-kernel")]
-use core::sync::atomic::{AtomicBool, Ordering};
 use block::{BlockDevice, BlockError, BlockRequest, BlockOp, DaxRegion, KResult, QueueLimits};
 use sync::{Spinlock, TaskList as DriverLockClass};
 #[cfg(target_os = "oxide-kernel")]
 use sched::live::Mutex;
+#[cfg(feature = "debug-pmem")]
+use klog;
 
 pub const VIRTIO_ID_PMEM: u16 = 27;
 pub const DRIVER_ID: virtio::VirtioChildDriverId =
@@ -20,16 +20,22 @@ const PMEM_REQUEST_BYTES: usize = 4;
 const PMEM_RESPONSE_BYTES: usize = 4;
 const PMEM_BOUNCE_BYTES: usize = PMEM_REQUEST_BYTES + PMEM_RESPONSE_BYTES;
 
+#[cfg(feature = "debug-pmem")]
+fn pmem_diag(message: &[u8]) { klog::write_raw(b"[PMEM-IO] "); klog::write_raw(message); }
+
+#[cfg(not(feature = "debug-pmem"))]
+fn pmem_diag(_message: &[u8]) {}
+
 pub const fn transport_profile() -> virtio::VirtioTransportProfile {
     // virtio-pmem's normal aperture is the shared-memory capability.  The
     // legacy config-space start/size fields are only a fallback, so do not
     // reject a valid shared-memory device merely because it omits a device
     // config capability.
-    #[cfg(target_os = "oxide-kernel")]
-    let completion_irq = Some(wake_completions as fn());
-    #[cfg(not(target_os = "oxide-kernel"))]
-    let completion_irq = None;
-    virtio::VirtioTransportProfile::q0_device_cfg(VIRTIO_PMEM_F_SHMEM_REGION, completion_irq)
+    // The shared-memory aperture is independent of device config. QEMU's
+    // virtio-pmem function exposes queue 0 without a usable MSI-X completion
+    // vector, so its owner retires this tiny synchronous request by polling
+    // the used ring until the bounded request deadline.
+    virtio::VirtioTransportProfile::q0(VIRTIO_PMEM_F_SHMEM_REGION, None)
 }
 
 fn region_from_geometry(base_pa: u64, size_bytes: u64) -> Option<DaxRegion> {
@@ -51,8 +57,6 @@ struct PmemDevice {
     inner: Spinlock<PmemInner, DriverLockClass>,
     #[cfg(target_os = "oxide-kernel")]
     flush_lock: Mutex<()>,
-    #[cfg(target_os = "oxide-kernel")]
-    completion: AtomicBool,
 }
 
 struct PmemRecord {
@@ -63,22 +67,6 @@ struct PmemRecord {
 
 #[cfg(target_os = "oxide-kernel")]
 static PMEMS: Spinlock<Vec<PmemRecord>, DriverLockClass> = Spinlock::new(Vec::new());
-
-#[cfg(target_os = "oxide-kernel")]
-static PMEM_COMPLETIONS: sched::live::WaitList = sched::live::WaitList::new();
-
-#[cfg(target_os = "oxide-kernel")]
-fn wake_completions() {
-    let records = PMEMS.lock();
-    for record in records.iter() {
-        let mut inner = record.device.inner.lock();
-        if inner.queue.pop_used().ok().flatten().is_some() {
-            record.device.completion.store(true, Ordering::Release);
-        }
-    }
-    PMEM_COMPLETIONS.wake_all();
-    block::completion::raise();
-}
 
 impl PmemDevice {
     #[cfg(target_os = "oxide-kernel")]
@@ -109,11 +97,14 @@ impl PmemDevice {
             core::ptr::write_volatile((va + PMEM_REQUEST_BYTES as u64) as *mut u32, u32::MAX);
         }
         virtio::dma::clean_to_device(va, PMEM_BOUNCE_BYTES);
-        inner.queue.submit(&[
+        inner.queue.submit_no_kick(&[
             virtio::SplitQueueSeg { dma: inner.bounce_dma, len: PMEM_REQUEST_BYTES as u32, device_writes: false },
             virtio::SplitQueueSeg { dma: inner.bounce_dma + PMEM_REQUEST_BYTES as u64,
                 len: PMEM_RESPONSE_BYTES as u32, device_writes: true },
         ]).map_err(|_| BlockError::Eio)?;
+        let _kicked = inner.queue.kick();
+        #[cfg(feature = "debug-pmem")]
+        { klog::write_raw(b"[PMEM-FLUSH] kick="); klog::write_dec_u64(_kicked as u64); klog::write_raw(b"\n"); }
         Ok(())
     }
 
@@ -124,11 +115,15 @@ impl PmemDevice {
         // SAFETY: the interrupt or polling path retired this descriptor chain;
         // the response word is the device-owned four-byte result field.
         let ret = unsafe { core::ptr::read_volatile((va + PMEM_REQUEST_BYTES as u64) as *const u32) };
+        #[cfg(feature = "debug-pmem")]
+        { klog::write_raw(b"[PMEM-FLUSH] ret="); klog::write_dec_u64(ret as u64); klog::write_raw(b"\n"); }
         if ret == 0 { Ok(()) } else { Err(BlockError::Eio) }
     }
 
     #[cfg(target_os = "oxide-kernel")]
     fn flush_inner(&self) -> KResult<()> {
+        #[cfg(feature = "debug-pmem")]
+        klog::write_raw(b"[PMEM-FLUSH] begin\n");
         // Linux's virtio-pmem driver holds a mutex across the complete
         // request/response lifecycle.  The request buffer and completion bit
         // are per-device state, so allowing concurrent flushes would let the
@@ -143,22 +138,26 @@ impl PmemDevice {
             self.flush_lock.try_lock()
         };
         if _flush_guard.is_none() { return Err(BlockError::Eio); }
-        self.completion.store(false, Ordering::Release);
         {
             let mut inner = self.inner.lock();
             self.submit_flush(&mut inner)?;
         }
         if can_sleep() {
             let deadline = now_ns().saturating_add(PMEM_FLUSH_TIMEOUT_NS);
-            // SAFETY: process context owns no queue lock while sleeping; the
-            // interrupt owner publishes completion before waking this list.
-            unsafe {
-                let _ = sched::live::wait_event_uninterruptible_until(
-                    &PMEM_COMPLETIONS, deadline, now_ns,
-                    || self.completion.load(Ordering::Acquire));
+            // No completion vector is available for this QEMU topology. Poll
+            // the device-owned used index in process context, retaining a hard
+            // deadline for a dead device.
+            while now_ns() < deadline {
+                let mut inner = self.inner.lock();
+                if inner.queue.pop_used().map_err(|_| BlockError::Eio)?.is_some() {
+                    return self.complete_flush(&mut inner);
+                }
+                drop(inner);
+                core::hint::spin_loop();
             }
-            if !self.completion.load(Ordering::Acquire) { return Err(BlockError::Eio); }
-            return self.complete_flush(&mut self.inner.lock());
+            #[cfg(feature = "debug-pmem")]
+            klog::write_raw(b"[PMEM-FLUSH] timeout\n");
+            return Err(BlockError::Eio);
         }
         for _ in 0..PMEM_FLUSH_POLL_BUDGET {
             let mut inner = self.inner.lock();
@@ -210,10 +209,15 @@ impl BlockDevice for PmemDevice {
 
     fn submit_sync(&self, req: &mut BlockRequest) -> KResult<()> {
         let bytes = u64::from(req.len_blocks).checked_mul(u64::from(PMEM_BLOCK_BYTES))
-            .ok_or(BlockError::Einval)?;
+            .ok_or_else(|| { pmem_diag(b"length-overflow\n"); BlockError::Einval })?;
         let off = req.start_block.checked_mul(u64::from(PMEM_BLOCK_BYTES))
-            .ok_or(BlockError::Einval)?;
-        if off.checked_add(bytes).ok_or(BlockError::Einval)? > self.region.size_bytes {
+            .ok_or_else(|| { pmem_diag(b"offset-overflow\n"); BlockError::Einval })?;
+        if off.checked_add(bytes).ok_or_else(|| { pmem_diag(b"end-overflow\n"); BlockError::Einval })?
+            > self.region.size_bytes {
+            #[cfg(feature = "debug-pmem")]
+            { klog::write_raw(b"[PMEM-IO] bounds off="); klog::write_dec_u64(off);
+              klog::write_raw(b" bytes="); klog::write_dec_u64(bytes);
+              klog::write_raw(b" size="); klog::write_dec_u64(self.region.size_bytes); klog::write_raw(b"\n"); }
             return Err(BlockError::Enxio);
         }
         match req.op {
@@ -222,7 +226,10 @@ impl BlockDevice for PmemDevice {
                 let n = bytes as usize;
                 if req.op == BlockOp::Read {
                     if req.buffer.len() < n { req.buffer.resize(n, 0); }
-                } else if req.buffer.len() < n { return Err(BlockError::Einval); }
+                } else if req.buffer.len() < n {
+                    pmem_diag(b"short-write-buffer\n");
+                    return Err(BlockError::Einval);
+                }
                 #[cfg(target_os = "oxide-kernel")]
                 {
                     let pa = self.region.physical_address(off, bytes).ok_or(BlockError::Enxio)?;
@@ -281,6 +288,19 @@ pub fn install(device_key: virtio::VirtioChildDeviceKey, bdf: pci::Bdf, resource
     } else { None };
     let region = shared_region.or_else(|| PmemDevice::config_region(resources.device_cfg_va))?;
     let q = resources.require_queue(0)?;
+    #[cfg(feature = "debug-pmem")]
+    {
+        klog::write_raw(b"[PMEM-QUEUE] q="); klog::write_dec_u64(q.index as u64);
+        klog::write_raw(b" size="); klog::write_dec_u64(q.size as u64);
+        klog::write_raw(b" desc="); klog::write_hex_u64(q.desc_pa);
+        klog::write_raw(b" driver="); klog::write_hex_u64(q.driver_pa);
+        klog::write_raw(b" device="); klog::write_hex_u64(q.device_pa);
+        klog::write_raw(b" notify="); klog::write_hex_u64(q.notify_va);
+        klog::write_raw(b" off="); klog::write_dec_u64(q.notify_off as u64);
+        klog::write_raw(b" hhdm="); klog::write_hex_u64(resources.hhdm);
+        klog::write_raw(b" features="); klog::write_hex_u64(resources.drv_features);
+        klog::write_raw(b"\n");
+    }
     let queue = virtio::VirtioSplitQueue::new_with_features(q, resources.hhdm, resources.drv_features).ok()?;
     let bounce_pa = pmm::setup::alloc_raw_frame()?;
     let Some(bounce_dma) = iommu::map_dma(bdf, bounce_pa, PMEM_BOUNCE_BYTES) else {
@@ -289,13 +309,18 @@ pub fn install(device_key: virtio::VirtioChildDeviceKey, bdf: pci::Bdf, resource
         unsafe { pmm::setup::free_one_frame(bounce_pa); }
         return None;
     };
+    #[cfg(feature = "debug-pmem")]
+    {
+        klog::write_raw(b"[PMEM-QUEUE] bounce_pa="); klog::write_hex_u64(bounce_pa);
+        klog::write_raw(b" bounce_dma="); klog::write_hex_u64(bounce_dma);
+        klog::write_raw(b"\n");
+    }
     let inner = PmemInner { queue, bounce_pa, bounce_dma, hhdm: resources.hhdm, bdf };
     let dev = Arc::new(PmemDevice {
         region,
         cfg_va: resources.cfg_va,
         inner: Spinlock::new(inner),
         flush_lock: Mutex::new(()),
-        completion: AtomicBool::new(false),
     });
     let name = alloc::format!("pmem{}", device_key.raw());
     let published: Arc<dyn BlockDevice> = dev.clone();

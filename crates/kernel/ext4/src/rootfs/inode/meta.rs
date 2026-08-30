@@ -213,6 +213,10 @@ fn ext4_fileattr_setproject(
 /// `persist_inode_xattrs` writeback the xattr ops use. # C: O(1) + 1 journaled
 /// inode write
 pub(crate) fn ext4_setattr(inode: &Inode, idmap: &Idmap, ia: &Iattr) -> KResult<()> {
+    #[cfg(feature = "debug-fsync-latency")]
+    { klog::write_raw(b"[EXT4-META] setattr ino=");
+      klog::write_dec_u64(ext4_state_of(inode).map(|(_, ino)| ino as u64).unwrap_or(0));
+      klog::write_raw(b" valid="); klog::write_dec_u64(ia.valid as u64); klog::write_raw(b"\n"); }
     if ia.valid & vfs::ATTR_SIZE != 0 {
         return ext4_setattr_size(inode, idmap, ia);
     }
@@ -225,7 +229,11 @@ pub(crate) fn ext4_setattr(inode: &Inode, idmap: &Idmap, ia: &Iattr) -> KResult<
     if ia.valid & (vfs::ATTR_UID | vfs::ATTR_GID) != 0 {
         if let Some((st, ino)) = ext4_state_of(inode) { refresh_cached_usage_from_raw(inode, &st, ino)?; }
     }
-    vfs::simple_setattr(inode, idmap, ia)?;
+    if let Err(e) = vfs::simple_setattr(inode, idmap, ia) {
+        #[cfg(feature = "debug-fsync-latency")]
+        { klog::write_raw(b"[EXT4-META] simple-setattr err\n"); }
+        return Err(e);
+    }
     if let Some((st, ino)) = ext4_state_of(inode) {
         if st.mount.persist_inode_meta(
             ino,

@@ -22,7 +22,7 @@ No item closes on a parser change alone. Each closes only when the Linux-shaped 
 | E4-07 | DONE | Exact physical preallocation ownership, failed-claim rollback, contiguous locality-tail consumption with Linux-style size re-bucketing, Linux's `fls(len)-2` average-fragment buckets, the bounded three-order best-available scan fallback, bounded multiblock extent selection, and inode-PA release on truncate, punch-hole, range shifts, final orphan eviction, last-writer release, ENOSPC discard, and mount teardown are covered. | E4-01, E4-02, E4-05 | allocator model tests, fragmentation/failure tests, e2fsck-clean images, full ext4 matrix |
 | E4-08 | medium | Indexed-directory lookup and inode construction reuse the type-probe image and resident VFS inode identity; special inode construction and directory mutation now reuse parsed inode fields instead of rereading the inode table. Ordinary pathname walks start in Linux RCU mode and fall back at blocking boundaries. The Linux-shaped rwsem reader fast path removes the wait-lock round trip for uncontended shared readers, delayed-allocation buffered writes no longer reread the inode table before returning, and linear-directory byte matching now avoids per-entry object and closure work while borrowing the shared metadata block. Linear scans now retain Linux's per-directory last-successful-block hint and issue a bounded readahead window through the canonical metadata cache, matching the reference's batched lookup reads without adding a second cache owner. Canonical VFS regular-file creates now pass their already-resolved parent inode through inheritance and directory insertion, matching Linux's in-core parent ownership; the controlled run was performance-neutral, so no whole-boot gain is claimed. Create/mkdir/symlink/mknod and ordinary VFS unlink/rmdir/link/rename/writeback transactions now durably publish journal records before returning and defer home-block checkpointing to the background owner, matching the reference journal-handle boundary and shortening the VFS inode-lock hold. Ext4 inode xattrs now load lazily behind a sleepable per-inode owner on the first xattr, ACL, or list operation, matching Linux's on-demand path. The checkpoint owner skips a busy mutation gate and retries asynchronously. Batched handles now release the mount transaction gate while unrelated operation bodies run; locality preallocation selection retires its claimed prefix atomically, preserving Linux's reservation ownership under concurrent handles. The latest valid aggregate measurements remain within harness variance, so whole-boot closure is not credited. Aggregate closure is still open at ~12–15x host; the remaining owners are the blocking ext4 lookup path, residual mutation work, and repeatable controlled performance evidence. | E4-01, E4-02 | named phase owner; repeated controlled comparison closes the ratio |
 | E4-09 | DONE | `inode_readahead_blks` warms a Linux-bounded inode-table window through the canonical metadata cache and excludes each group's `bg_itable_unused` tail. The ext4 address-space readahead worker is exercised against both real GNOME root images and publishes multiple resident file pages. | E4-01, E4-02 | cold-lookup/image coverage, async ownership integration, both-arch target checks, boot-smoke and perf comparison |
-| E4-10 | IN-PROGRESS | Ext4 owns synchronous `O_DIRECT` and polled io_uring I/O through canonical extent/indirect mapping, allocation, cache invalidation, and durability owners. Inline-data and legacy-indirect mutation are covered. DAX now has Linux-shaped mount policy, shared-only mmap/page-mkwrite, direct byte I/O, virtio shared-memory transport handoff, and a kernel-target virtio-pmem block/DAX provider with config fallback and probe-failure cleanup. Provider tests, both-arch checks, and real PMEM image mounts with `dax=inode` and `dax=always` pass on SMP=1. Final SMP=2 GNOME/runtime evidence remains blocked by the independent scheduler idle-timer wedge. | E4-01, E4-02 | SMP=2 scheduler/runtime closure and final boot evidence |
+| E4-10 | IN-PROGRESS | Ext4 owns synchronous `O_DIRECT` and polled io_uring I/O through canonical extent/indirect mapping, allocation, cache invalidation, and durability owners. Inline-data and legacy-indirect mutation are covered. DAX now has Linux-shaped mount policy, shared-only mmap/page-mkwrite, direct byte I/O, virtio shared-memory transport handoff, and a kernel-target virtio-pmem block/DAX provider with config fallback and probe-failure cleanup. Provider tests, both-arch checks, and real PMEM image mounts with `dax=inode` and `dax=always` pass on SMP=1; strict harness runs now also prove DAX writes and PMEM flush completion. Final SMP=2 GNOME/runtime evidence remains blocked by the independent scheduler idle-timer wedge. | E4-01, E4-02 | SMP=2 scheduler/runtime closure and final boot evidence |
 | E4-11 | DONE | Bitmap prefetch, ext4 external-xattr mbcache sharing/refcounting, Linux EA-inode values with reusable hash-indexed hidden inodes, and Linux orphan-file slots are wired and covered; `nombcache`/`no_mbcache` disables external-block sharing. | E4-02, E4-07 | EA-inode image round-trip/sharing and full ext4 matrix pass; real Linux-image compatibility remains in runtime closure |
 
 E4-10 status correction (B2979): multi-block inline regular-file conversion is
@@ -67,6 +67,25 @@ separation. A fresh fixed SMP=2 debug boot reached GNOME Shell at 18.094s;
 `colord` and `fwupd` started successfully, with no fill diagnostics or early
 EIO cascade. Remaining E4-10 closure is the final DAX/runtime matrix and
 AArch64 graphical evidence.
+
+E4-10 PMEM transport update (current branch): the PCI handoff no longer
+notifies an empty request queue. Linux's child driver owns the first
+notification together with its published descriptor; virtio-pmem/QEMU treats
+an empty notification as a malformed flush request and marks the device
+broken. The strict x86_64 SMP=1 harness now proves `/dev/pmem1`, `dax=inode`,
+`dax=always`, DAX writes, and successful PMEM flush completions (`ret=0`).
+The hosted ext4 suite remains 407/407. Final SMP=2 and AArch64 graphical
+evidence remain open.
+
+E4-10 runtime probe (2026-08-30): a clean x86_64 SMP=1 PMEM boot reached
+GNOME Shell, reported an active IPv4 DNS scope, passed five D-Bus
+`resolve1` Pings, and passed positive and negative DNS queries. In that boot,
+`systemd-oomd` received a transient `EIO` on its first spawn and systemd
+retried it successfully; this is retained as runtime reliability evidence,
+not clean-boot closure. A separately instrumented writeback run reproduced
+D-Bus timeouts while serial fsync/block diagnostics were enabled; those
+diagnostics are not production behavior but remain useful for the outstanding
+scheduler/writeback stress audit.
 
 E4-10/E4-08 status update (B3016): the shared page-cache owner now follows
 Linux's `page_mkwrite` dirtying boundary. Read-side `shared_frame` lookup no
@@ -119,7 +138,7 @@ durability after device success, with sync errors carried into the CQE. E4-10
 The scalar io_uring read/write dispatch now carries `sqe.rw_flags` through the
 same shared RWF admission and VFS owners as vectored I/O, including cursor
 NOWAIT reads and per-operation append/sync behavior. E4-10
-stays IN-PROGRESS pending final boot closure; inline-data and legacy-indirect mutation are covered, while journal-data remains on its synchronous owner. DAX provider completion is implemented but still needs real-image evidence. Focused io_uring
+stays IN-PROGRESS pending final boot closure; inline-data and legacy-indirect mutation are covered, while journal-data remains on its synchronous owner. DAX provider completion is implemented and real-image evidence now covers x86_64 SMP=1. Focused io_uring
 timestamp/RWF-sync image coverage passes on both architectures. The per-operation sync mode now travels with
 the owned DIO transfer through the filesystem and block completion owners;
 `dio_polled_image` pins deferred success/error, hole allocation, unwritten
@@ -145,7 +164,7 @@ The target is every useful ext4 mode that this kernel can support honestly. A mo
 | journal recovery, `noload`, `norecovery`, error policies | Linux ordering and error result |
 | direct I/O options | implement when the direct-I/O owner is present; otherwise refuse rather than silently ignore |
 | Inline data (regular files, directories, symlinks) | live through the shared inline-data owner, including multi-block regular-file conversion |
-| DAX | live owner exists; final virtio-pmem flush/image evidence remains |
+| DAX | live owner exists; x86_64 SMP=1 virtio-pmem image mounts, writes, and flushes pass; final SMP=2/AArch64 runtime evidence remains |
 | encryption, bigalloc, verity, and other absent device/layout owners | explicit refusal is correct until the required owner exists |
 | obsolete compatibility spellings | preserve Linux-compatible no-op behavior only where that is the reference behavior; document each one |
 

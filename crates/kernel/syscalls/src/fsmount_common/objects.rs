@@ -3,6 +3,7 @@
 use alloc::string::String;
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
+use sched::live::Mutex;
 use sync::{Spinlock, TaskList as LockClass};
 use vfs::{Dentry, FileType, InodeBuilder, InodeRef, default_file_ops, default_inode_ops, mk_mode};
 
@@ -10,7 +11,9 @@ use super::registry::NEXT_FSCTX_INO;
 
 pub struct FsContextInode {
     pub fstype: String,
-    pub fc: Spinlock<Option<vfs::fs::FsContext>, LockClass>,
+    /// Linux's `struct fs_context` is mutex-protected because filesystem
+    /// parameter parsing and creation may sleep while holding the context.
+    pub fc: Mutex<Option<vfs::fs::FsContext>>,
 }
 
 impl FsContextInode {
@@ -39,7 +42,7 @@ impl FsContextInode {
         let ino = NEXT_FSCTX_INO.fetch_add(1, Ordering::Relaxed);
         InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o600), default_inode_ops(),
             super::fscontext_ops::fscontext_file_ops())
-            .private(Arc::new(Self { fstype, fc: Spinlock::new(fc) }))
+            .private(Arc::new(Self { fstype, fc: Mutex::new(fc) }))
             .build()
     }
 }

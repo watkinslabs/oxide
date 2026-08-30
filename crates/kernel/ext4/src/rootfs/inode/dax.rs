@@ -11,7 +11,7 @@ fn physical_at(d: &Ext4FileData, off: u64) -> Option<u64> {
             && logical < u64::from(l) + u64::from(n))?;
     if unwritten { return None; }
     let byte = phys.checked_add(logical - u64::from(start))?.checked_mul(bs)?
-        .checked_add(off % bs)?.checked_add(d.st.mount.dax_region()?.partition_offset)?;
+        .checked_add(off % bs)?;
     d.st.mount.dax_region()?.physical_address(byte, 1)
 }
 
@@ -55,7 +55,7 @@ pub(crate) fn mmap_frame(inode: &Inode, off: u64) -> Option<u64> {
         else if pa != first_phys? + i { return None; }
         let _ = run_len;
     }
-    let byte = first_phys?.checked_mul(bs)?.checked_add(region.partition_offset)?;
+    let byte = first_phys?.checked_mul(bs)?;
     region.physical_address(byte, hal::PAGE_SIZE_BYTES)
 }
 

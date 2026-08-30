@@ -17,6 +17,7 @@ pmm = { path = "../../kernel/mm-pmm" }
 sched = { path = "../../kernel/sched" }
 sync = { path = "../../shared/sync" }
 virtio = { path = "../virtio" }
+klog = { path = "../../shared/klog", optional = true }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../../arch/hal-x86_64" }
@@ -26,6 +27,7 @@ hal-aarch64 = { path = "../../arch/hal-aarch64" }
 
 [features]
 default = []
+debug-pmem = ["dep:klog"]
 
 [lints]
 workspace = true

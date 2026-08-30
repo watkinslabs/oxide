@@ -298,16 +298,3 @@ impl TransportMappings {
         self.map_page(page_pa) + page_off
     }
 }
-
-pub(super) fn kick_queue_notify(notify_va: u64, queue_index: u16) -> bool {
-    if notify_va == 0 {
-        return false;
-    }
-    // SAFETY: notify_va is a Device-attr virtio notify location decoded from
-    // the transport NOTIFY cap. Modern virtio-pci notify stores are u16 queue
-    // indexes at the per-queue notify address.
-    unsafe {
-        core::ptr::write_volatile(notify_va as *mut u16, queue_index);
-    }
-    true
-}
