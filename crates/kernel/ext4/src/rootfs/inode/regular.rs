@@ -552,6 +552,14 @@ impl AddressSpaceOps for Ext4FileMapping {
         self.data.frames.fault_around_frame(off)
     }
 
+    fn page_mkwrite(&self, off: u64) -> KResult<()> {
+        // Linux dirties a medium-backed page in page_mkwrite, not in the
+        // read-side shared-frame lookup. This is the sole owner for a
+        // buffered MAP_SHARED write fault.
+        let _invalidate = unsafe { self.data.invalidate_lock.read() };
+        self.data.frames.page_mkwrite(off)
+    }
+
     fn read_at(&self, off: u64, dst: &mut [u8]) -> KResult<usize> {
         // SAFETY: buffered file reads run in process context and hold no
         // spinlock while acquiring the sleeping invalidate semaphore.
