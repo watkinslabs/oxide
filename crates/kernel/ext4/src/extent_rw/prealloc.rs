@@ -55,11 +55,18 @@ pub(super) fn tail_blocks(block_size: u64, current_size: u64, logical_start: u32
 /// it, allowing the PA search to consume an interior block. # C: O(1)
 pub(super) fn normalized_range(
     block_size: u64, current_size: u64, logical_start: u32, count: u32,
+    blocks_per_group: u32,
 ) -> (u64, u64) {
     if block_size == 0 || count == 0 {
         return (u64::from(logical_start), u64::from(logical_start) + u64::from(count));
     }
     let request_end = u64::from(logical_start).saturating_add(u64::from(count));
+    if blocks_per_group != 0 {
+        let group_offset = u64::from(logical_start) % u64::from(blocks_per_group);
+        if group_offset.saturating_add(u64::from(count)) > u64::from(blocks_per_group) {
+            return (u64::from(logical_start), request_end);
+        }
+    }
     let file_blocks = current_size.saturating_add(block_size.saturating_sub(1)) / block_size;
     let end_blocks = file_blocks.max(request_end);
     let bytes = end_blocks.saturating_mul(block_size);
@@ -82,7 +89,13 @@ pub(super) fn normalized_range(
         (u64::from(logical_start), u64::from(count))
     };
     if start > u64::from(logical_start) { start = u64::from(logical_start); }
-    let end = start.saturating_add(target).max(request_end);
+    let mut end = start.saturating_add(target).max(request_end);
+    if blocks_per_group != 0 {
+        let group_end = (u64::from(logical_start) / u64::from(blocks_per_group) + 1)
+            .saturating_mul(u64::from(blocks_per_group));
+        start = start.max(group_end.saturating_sub(u64::from(blocks_per_group)));
+        end = end.min(group_end).max(request_end);
+    }
     (start, end)
 }
 
@@ -117,8 +130,14 @@ mod tests {
 
     #[test]
     fn larger_files_use_aligned_reference_windows() {
-        assert_eq!(normalized_range(4096, 100 * 4096, 100, 1), (0, 128));
-        assert_eq!(normalized_range(4096, 2 * 1024 * 1024, 512, 1), (512, 1024));
-        assert_eq!(normalized_range(4096, 5 * 1024 * 1024, 1280, 1), (1024, 2048));
+        assert_eq!(normalized_range(4096, 100 * 4096, 100, 1, 0), (0, 128));
+        assert_eq!(normalized_range(4096, 2 * 1024 * 1024, 512, 1, 0), (512, 1024));
+        assert_eq!(normalized_range(4096, 5 * 1024 * 1024, 1280, 1, 0), (1024, 2048));
+    }
+
+    #[test]
+    fn normalization_does_not_cross_a_block_group() {
+        assert_eq!(normalized_range(4096, 0, 14, 4, 16), (14, 18));
+        assert_eq!(normalized_range(4096, 0, 12, 4, 16), (0, 16));
     }
 }
