@@ -25,7 +25,6 @@ impl Mount {
             // only to the never-used tail (`bg_itable_unused`).  On lazy
             // initialized groups those blocks are deliberately not valid
             // inode contents yet, so warming them wastes I/O and cache space.
-            let gdt_bytes = self.read_gdt_bytes()?;
             let itable_unused = u64::from(gdt::itable_unused(&gdt_bytes, group, &self.sb))
                 .min(u64::from(self.sb.inodes_per_group));
             let live_inodes = u64::from(self.sb.inodes_per_group).saturating_sub(itable_unused);
