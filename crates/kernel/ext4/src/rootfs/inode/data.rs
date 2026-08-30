@@ -180,6 +180,11 @@ pub(crate) struct Ext4StatData {
     /// single in-core inode rather than maintaining a name-side cache.
     pub(crate) raw: sync::Spinlock<Arc<crate::inode::Inode>, sync::Inode>,
     pub(crate) raw_valid: AtomicBool,
+    /// Cached body for a slow symlink. Linux's `page_get_link` keeps the link
+    /// body in the inode page cache after the first read; symlink contents are
+    /// immutable, so this is a cache of the device-owned value, not a second
+    /// mutation source.
+    pub(crate) link_target: sync::Spinlock<Option<Vec<u8>>, sync::Inode>,
     /// Last successful linear-directory block. Linux's ext4 inode keeps this
     /// hint so repeated namespace walks do not rescan a multi-block directory
     /// from block zero every time.

@@ -282,6 +282,14 @@ known dbus/GDM resources/EIO failure before the marker, so it is retained as
 non-comparable; no whole-boot gain is claimed until successful repeats are
 available.
 
+B2997 status: slow symlink bodies now use one per-inode cache, matching Linux's
+`page_get_link` page-cache ownership. Fast symlinks remain owned by the VFS
+`i_link` cache, and immutable on-disk symlink contents are the only source
+value. Two valid GNOME/SMP=1 runs reduced the symlink phase from the prior
+~2.1 seconds to 322 ms and 271 ms. The aggregate syscall workload remains
+within variance, so this is recorded as a phase win only. Blocking lookup and
+inode-mutation attribution remain open under E4-08.
+
 ## 5 — phase gate
 
 Every execution item must pass:

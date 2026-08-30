@@ -265,14 +265,18 @@ impl InodeOps for Ext4StatInodeOps {
             Arc::new(mount.read_inode(d.ino).map_err(|_| VfsError::Eio)?)
         };
         if let Some(b) = i.fast_symlink_target() { return Ok(b.to_vec()); }
-        if i.i_flags & crate::inode::EXT4_INLINE_DATA_FL != 0 {
-            return super::super::super::mount::inline::read_inline_data(
+        if let Some(target) = d.link_target.lock().as_ref().cloned() { return Ok(target); }
+        let target = if i.i_flags & crate::inode::EXT4_INLINE_DATA_FL != 0 {
+            super::super::super::mount::inline::read_inline_data(
                 mount, &i, 0, d.size as usize,
-            ).map_err(|_| VfsError::Eio);
-        }
-        let blk = mount.read_file_block(&i, 0).map_err(|_| VfsError::Eio)?;
-        let n = (d.size as usize).min(blk.len());
-        Ok(blk[..n].to_vec())
+            ).map_err(|_| VfsError::Eio)?
+        } else {
+            let blk = mount.read_file_block(&i, 0).map_err(|_| VfsError::Eio)?;
+            let n = (d.size as usize).min(blk.len());
+            blk[..n].to_vec()
+        };
+        *d.link_target.lock() = Some(target.clone());
+        Ok(target)
     }
 
     fn mkdir(&self, inode: &Inode, name: &str, mode: u32, ctx: &vfs::CreateCtx) -> KResult<InodeRef> {
@@ -591,6 +595,7 @@ pub(crate) fn build_stat_inode(
         raw_flags: core::sync::atomic::AtomicU32::new(raw_flags),
         raw: ::sync::Spinlock::new(raw),
         raw_valid: core::sync::atomic::AtomicBool::new(true),
+        link_target: ::sync::Spinlock::new(None),
         dir_start_lookup: core::sync::atomic::AtomicU32::new(0),
         xattrs: super::data::Ext4XattrState::new(), });
     let weak_sb = data.st.sb.lock().clone();
