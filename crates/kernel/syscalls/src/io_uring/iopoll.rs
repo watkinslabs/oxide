@@ -53,7 +53,8 @@ pub fn outstanding_file(inode: &IoUringInode, sqe: &crate::io_uring_sqe::Sqe)
     if !polled(inode) { return None; }
     if !matches!(sqe.opcode,
         IORING_OP_READ | IORING_OP_WRITE | IORING_OP_READV | IORING_OP_WRITEV
-        | IORING_OP_READ_FIXED | IORING_OP_WRITE_FIXED) { return None; }
+        | IORING_OP_READ_FIXED | IORING_OP_WRITE_FIXED
+        | IORING_OP_READV_FIXED | IORING_OP_WRITEV_FIXED) { return None; }
     let cur = sched::live::current()?;
     // SAFETY: running task on this CPU in the submission path; sole reader of the fd_table slot, which is not mutated across this read.
     let fdt = unsafe { cur.fd_table_ref() }?;

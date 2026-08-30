@@ -216,12 +216,14 @@ pub fn defers_to_backend(ring_iopoll: bool, opcode: u8, off: u64) -> bool {
     matches!(opcode,
         IORING_OP_READ | IORING_OP_WRITE
         | IORING_OP_READV | IORING_OP_WRITEV
-        | IORING_OP_READ_FIXED | IORING_OP_WRITE_FIXED)
+        | IORING_OP_READ_FIXED | IORING_OP_WRITE_FIXED
+        | IORING_OP_READV_FIXED | IORING_OP_WRITEV_FIXED)
 }
 
 /// Whether this opcode moves bytes OUT of the caller's buffer. # C: O(1)
 pub fn is_write(opcode: u8) -> bool {
-    matches!(opcode, IORING_OP_WRITE | IORING_OP_WRITEV | IORING_OP_WRITE_FIXED)
+    matches!(opcode, IORING_OP_WRITE | IORING_OP_WRITEV | IORING_OP_WRITE_FIXED
+        | IORING_OP_WRITEV_FIXED)
 }
 
 /// The result a completed transfer's CQE carries.
