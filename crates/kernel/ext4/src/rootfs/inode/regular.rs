@@ -276,7 +276,7 @@ impl FileOps for Ext4RegFileOps {
     }
 
     fn direct_io_alignment(&self, file: &vfs::File) -> usize {
-        file.inode().private::<Ext4FileData>().map_or(0, |d| d.st.mount.sb.block_size as usize)
+        file.inode().private::<Ext4FileData>().map_or(0, |d| d.st.mount.dev.block_size() as usize)
     }
 
     /// Extent/device direct read, after draining overlapping buffered writes.

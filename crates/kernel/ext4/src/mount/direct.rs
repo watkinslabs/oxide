@@ -9,40 +9,42 @@ use crate::inode::{self, InodeError};
 use super::{Mount, MountError};
 
 impl Mount {
-    /// Read file data directly from mapped extents, serving holes and
-    /// unwritten extents as zeroes.  The caller has already selected the
-    /// synchronous `O_DIRECT` operation; this function therefore rejects a
-    /// misaligned request instead of silently falling back to the page cache,
-    /// matching ext4's `iomap_dio_rw` alignment contract.
+    /// Read file data directly from mapped blocks, serving holes and unwritten
+    /// extents as zeroes. The caller has already selected synchronous
+    /// `O_DIRECT`; requests must satisfy the device alignment contract, while
+    /// the block mapper handles sub-filesystem-block offsets like Linux iomap.
     /// # C: O(extents in range) + O(device requests)
     pub(crate) fn direct_read(&self, inode: &inode::Inode, off: u64, dst: &mut [u8])
         -> Result<usize, MountError>
     {
         if dst.is_empty() { return Ok(0); }
         let bs = self.sb.block_size as u64;
-        if bs == 0 || off % bs != 0 || (dst.len() as u64) % bs != 0 {
+        let dev_bs = self.dev.block_size() as u64;
+        if bs == 0 || dev_bs == 0 || off % dev_bs != 0 || (dst.len() as u64) % dev_bs != 0 {
             return Err(MountError::Inode(InodeError::BadLen));
         }
         let size = inode.size;
         if off >= size { return Ok(0); }
         let count = core::cmp::min(dst.len() as u64, size - off) as usize;
-        let blocks = (count as u64).saturating_add(bs - 1) / bs;
+        let start_in_block = off % bs;
+        let blocks = (start_in_block + count as u64).saturating_add(bs - 1) / bs;
         if blocks > u32::MAX as u64 { return Err(MountError::Inode(InodeError::BadLen)); }
         let data = self.read_file_range(inode, (off / bs) as u32, blocks as u32)?;
-        dst[..count].copy_from_slice(&data[..count]);
+        let start = start_in_block as usize;
+        dst[..count].copy_from_slice(&data[start..start + count]);
         Ok(count)
     }
 
-    /// Write file data directly through ext4's extent allocator and the
-    /// block device.  Allocation and size publication remain journal-owned by
-    /// `write_at`; no page-cache frame is used for the data transfer.
+    /// Write file data directly through ext4's mapper and the block device.
+    /// Allocation and size publication remain journal-owned by `write_at`; no
+    /// page-cache frame is used for the data transfer.
     /// # C: O(extents + allocation) + O(device requests)
     pub(crate) fn direct_write(&self, ino: u32, off: u64, src: &[u8])
         -> Result<usize, MountError>
     {
         if src.is_empty() { return Ok(0); }
-        let bs = self.sb.block_size as u64;
-        if bs == 0 || off % bs != 0 || (src.len() as u64) % bs != 0 {
+        let dev_bs = self.dev.block_size() as u64;
+        if dev_bs == 0 || off % dev_bs != 0 || (src.len() as u64) % dev_bs != 0 {
             return Err(MountError::Inode(InodeError::BadLen));
         }
         off.checked_add(src.len() as u64)
@@ -106,6 +108,9 @@ mod tests {
         let mut got = vec![0; m.sb.block_size as usize];
         assert_eq!(m.direct_read(&legacy, 0, &mut got).unwrap(), got.len());
         assert_eq!(got, m.read_file_block(&legacy, 0).unwrap());
+        let mut partial = vec![0; 512];
+        assert_eq!(m.direct_read(&legacy, 512, &mut partial).unwrap(), partial.len());
+        assert_eq!(partial, got[512..1024].to_vec());
     }
 
     #[test]
@@ -132,19 +137,25 @@ mod tests {
         let disk = disk();
         let ino;
         let bs;
+        let expected;
         {
             let m = Mount::open(disk.clone()).unwrap();
             ino = m.lookup_path(b"/hello.txt").unwrap();
             bs = m.sb.block_size as usize;
-            let data = vec![0xD3; bs];
-            assert_eq!(m.direct_write(ino, 0, &data).unwrap(), bs);
-            assert_eq!(m.read_file_block(&m.read_inode(ino).unwrap(), 0).unwrap(), data);
+        let data = vec![0xD3; bs];
+        assert_eq!(m.direct_write(ino, 0, &data).unwrap(), bs);
+        let partial = vec![0xAA; 512];
+        assert_eq!(m.direct_write(ino, 512, &partial).unwrap(), partial.len());
+        let mut final_data = data;
+        final_data[512..1024].copy_from_slice(&partial);
+        expected = final_data;
+        assert_eq!(m.read_file_block(&m.read_inode(ino).unwrap(), 0).unwrap(), expected);
             assert_eq!(m.direct_write(ino, 1, &[0xAA; 1]),
                 Err(MountError::Inode(InodeError::BadLen)));
         }
         let m = Mount::open(disk).unwrap();
         let inode = m.read_inode(ino).unwrap();
-        assert_eq!(m.read_file_block(&inode, 0).unwrap(), vec![0xD3; bs]);
+        assert_eq!(m.read_file_block(&inode, 0).unwrap(), expected);
     }
 
     #[test]
