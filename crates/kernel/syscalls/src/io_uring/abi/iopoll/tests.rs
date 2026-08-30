@@ -18,7 +18,8 @@ fn an_ordinary_ring_admits_every_opcode_the_polled_one_refuses() {
 #[test]
 fn a_polled_ring_admits_the_transfer_opcodes() {
     for op in [IORING_OP_READ, IORING_OP_WRITE, IORING_OP_READV, IORING_OP_WRITEV,
-               IORING_OP_READ_FIXED, IORING_OP_WRITE_FIXED] {
+               IORING_OP_READ_FIXED, IORING_OP_WRITE_FIXED,
+               IORING_OP_READV_FIXED, IORING_OP_WRITEV_FIXED] {
         assert_eq!(admit_opcode(true, op), Ok(()), "op {op}");
         assert!(opcode_pollable(op), "op {op}");
     }
@@ -175,7 +176,8 @@ fn a_zero_count_wait_stops_after_its_single_look() {
 #[test]
 fn only_transfers_on_a_polled_ring_take_the_submit_then_poll_path() {
     for op in [IORING_OP_READ, IORING_OP_WRITE, IORING_OP_READV, IORING_OP_WRITEV,
-               IORING_OP_READ_FIXED, IORING_OP_WRITE_FIXED] {
+               IORING_OP_READ_FIXED, IORING_OP_WRITE_FIXED,
+               IORING_OP_READV_FIXED, IORING_OP_WRITEV_FIXED] {
         assert!(defers_to_backend(true, op, 0), "op {op} is a transfer");
         assert!(!defers_to_backend(false, op, 0), "an ordinary ring polls for nothing");
     }
@@ -232,10 +234,12 @@ fn a_refused_direct_submission_reports_its_own_reason() {
 // submission time, so a mislabelled opcode moves the wrong bytes.
 #[test]
 fn the_write_half_of_the_transfer_family_is_named_exactly() {
-    for op in [IORING_OP_WRITE, IORING_OP_WRITEV, IORING_OP_WRITE_FIXED] {
+    for op in [IORING_OP_WRITE, IORING_OP_WRITEV, IORING_OP_WRITE_FIXED,
+               IORING_OP_WRITEV_FIXED] {
         assert!(is_write(op));
     }
-    for op in [IORING_OP_READ, IORING_OP_READV, IORING_OP_READ_FIXED, IORING_OP_NOP] {
+    for op in [IORING_OP_READ, IORING_OP_READV, IORING_OP_READ_FIXED,
+               IORING_OP_READV_FIXED, IORING_OP_NOP] {
         assert!(!is_write(op));
     }
 }
