@@ -170,6 +170,12 @@ fn generated_legacy_inode_reads_single_indirect_block() {
     assert_eq!(inode.i_flags & ext4::inode::EXT4_EXTENTS_FL, 0);
     assert_eq!(&m.read_file_block(&inode, 0).unwrap()[..], &payload[..1024]);
     assert_eq!(&m.read_file_block(&inode, 12).unwrap()[..], &payload[12 * 1024..13 * 1024]);
+    m.write_at(ino, 0, b"LEG!").expect("write existing legacy block");
+    let rewritten = m.read_inode(ino).expect("read rewritten legacy inode");
+    assert_eq!(rewritten.i_flags & ext4::inode::EXT4_EXTENTS_FL, 0);
+    let first = m.read_file_block(&rewritten, 0).expect("read rewritten block");
+    assert_eq!(&first[..4], b"LEG!");
+    assert_eq!(&first[4..], &payload[4..1024]);
     let _ = std::fs::remove_file(&image);
     let _ = std::fs::remove_file(&source);
 }

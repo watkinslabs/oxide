@@ -88,9 +88,9 @@ impl Mount {
     }
 
     /// Collect mapped blocks from either an extent inode or a legacy indirect
-    /// inode. The latter is assembled into physical runs only for read-side
-    /// consumers; mutation owners still require `EXT4_EXTENTS_FL` before
-    /// rewriting inode metadata. # C: O(file blocks × indirect depth)
+    /// inode. Legacy runs are also used by mutation callers to distinguish
+    /// mapped blocks from holes; pointer-tree publication remains owned by
+    /// the indirect mapper. # C: O(file blocks × indirect depth)
     pub(crate) fn collect_inode_phys_extents(&self, inode: &inode::Inode)
         -> Result<Vec<PhysRun>, MountError>
     {
@@ -105,7 +105,11 @@ impl Mount {
         let mut out: Vec<PhysRun> = Vec::new();
         for logical in 0..blocks {
             let logical = u32::try_from(logical).map_err(|_| MountError::BadBlock)?;
-            let phys = match self.resolve_pblock(inode, logical) {
+            let phys = match if inode.ino == self.sb.journal_inum {
+                self.resolve_indirect_pblock_for_journal(inode, logical)
+            } else {
+                self.resolve_pblock(inode, logical)
+            } {
                 Ok(phys) => phys,
                 Err(MountError::NotFound) => continue,
                 Err(error) => return Err(error),
