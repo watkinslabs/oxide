@@ -17,6 +17,7 @@ pub const SUPERBLOCK_LEN: usize = 1024;
 /// `s_feature_incompat` bits per `ext4.h`.
 pub const INCOMPAT_FILETYPE: u32 = 0x0002;
 pub const INCOMPAT_RECOVER:  u32 = 0x0004;
+pub const INCOMPAT_META_BG:   u32 = 0x0010;
 pub const INCOMPAT_EXTENTS:  u32 = 0x0040;
 pub const INCOMPAT_64BIT:    u32 = 0x0080;
 pub const INCOMPAT_FLEX_BG:  u32 = 0x0200;
@@ -45,7 +46,7 @@ pub const RO_COMPAT_PROJECT:       u32 = 0x2000;
 /// DATA, ENCRYPT, CASEFOLD, LARGEDIR, EA_INODE) means the layout would be
 /// misread → refuse the mount (Linux `EXT4_FEATURE_INCOMPAT_SUPP`).
 pub const SUPPORTED_INCOMPAT: u32 =
-    INCOMPAT_FILETYPE | INCOMPAT_RECOVER | INCOMPAT_EXTENTS | INCOMPAT_64BIT
+    INCOMPAT_FILETYPE | INCOMPAT_RECOVER | INCOMPAT_META_BG | INCOMPAT_EXTENTS | INCOMPAT_64BIT
     | INCOMPAT_FLEX_BG | INCOMPAT_CSUM_SEED | INCOMPAT_CASEFOLD | INCOMPAT_INLINE_DATA;
 
 /// RO_COMPAT features this driver can safely WRITE. A bit outside this set
@@ -114,6 +115,10 @@ pub struct Superblock {
     /// `s_desc_size` (0xFE) — on-disk group-descriptor size for a 64bit fs (>=64,
     /// may exceed 64 on future layouts); 32 without 64bit. Read instead of derived.
     pub desc_size: u16,
+    /// `s_first_meta_bg` (0x104) — first descriptor group using the META_BG
+    /// placement. Zero is also the valid value for a filesystem whose first
+    /// descriptor group is in the meta layout.
+    pub first_meta_bg: u32,
     /// Filesystem block size in bytes. Computed from
     /// `1024 << s_log_block_size`.
     pub block_size:      u32,
@@ -265,6 +270,7 @@ impl Superblock {
                 | if is_64bit { (rd_u32(buf, SB_OFF_R_BLOCKS_HI) as u64) << 32 } else { 0 },
             first_ino,
             desc_size,
+            first_meta_bg: rd_u32(buf, 0x104),
             block_size,
             blocks_per_group:  rd_u32(buf, 0x20),
             inodes_per_group:  rd_u32(buf, 0x28),

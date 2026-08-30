@@ -1,9 +1,10 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use alloc::vec;
 use core::sync::atomic::Ordering;
 use crate::gdt;
 use crate::jbd2::StagedBlock;
-use super::gdt_byte_offset_for;
+use super::{gdt_block_byte_offset_for, gdt_byte_offset_for};
 use super::super::{GroupDesc, Mount, MountError};
 use super::super::MetadataBuffer;
 use super::super::io::read_byte_range;
@@ -99,7 +100,20 @@ impl Mount {
             let s = self.state.lock();
             s.gdt_len
         };
-        self.read_meta_byte_range(gdt_byte_offset_for(&self.sb), len)
+        let bs = u64::from(self.sb.block_size);
+        let blocks = (len as u64).div_ceil(bs);
+        if self.sb.feature_incompat & crate::superblock::INCOMPAT_META_BG == 0 {
+            return self.read_meta_byte_range(gdt_byte_offset_for(&self.sb), len);
+        }
+        let mut out = vec![0u8; len];
+        for block in 0..blocks {
+            let off = gdt_block_byte_offset_for(&self.sb, block as u32);
+            let bytes = self.read_meta_byte_range(off, bs as usize)?;
+            let lo = (block * bs) as usize;
+            let hi = core::cmp::min(lo + bs as usize, len);
+            out[lo..hi].copy_from_slice(&bytes[..hi - lo]);
+        }
+        Ok(out)
     }
 
     /// Metadata write: RMWs the affected fs block(s). Inside a

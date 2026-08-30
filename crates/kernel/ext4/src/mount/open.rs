@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use crate::gdt;
 use crate::superblock::{SUPERBLOCK_LEN, SUPERBLOCK_OFFSET, Superblock};
-use super::gdt_byte_offset_for;
+use super::{gdt_block_byte_offset_for, gdt_byte_offset_for};
 use super::super::{Mount, MountError, MountState};
 use super::super::io::read_byte_range;
 
@@ -90,7 +90,21 @@ impl Mount {
         let dsize = gdt::desc_size_for(&sb) as usize;
         let gdt_byte_offset = gdt_byte_offset_for(&sb);
         let gdt_len = groups * dsize;
-        let gdt_buf = read_byte_range(&*dev, gdt_byte_offset, gdt_len)?;
+        let gdt_buf = if sb.feature_incompat & crate::superblock::INCOMPAT_META_BG == 0 {
+            read_byte_range(&*dev, gdt_byte_offset, gdt_len)?
+        } else {
+            let bs = u64::from(sb.block_size);
+            let blocks = (gdt_len as u64).div_ceil(bs);
+            let mut packed = alloc::vec![0u8; gdt_len];
+            for block in 0..blocks {
+                let off = gdt_block_byte_offset_for(&sb, block as u32);
+                let bytes = read_byte_range(&*dev, off, bs as usize)?;
+                let lo = (block * bs) as usize;
+                let hi = core::cmp::min(lo + bs as usize, gdt_len);
+                packed[lo..hi].copy_from_slice(&bytes[..hi - lo]);
+            }
+            packed
+        };
         // Verify every group descriptor's bg_checksum (Linux
         // ext4_group_desc_csum_verify). A corrupt GDT slot is refused rather
         // than misinterpreted (wrong bitmap/inode-table blocks).
@@ -99,7 +113,9 @@ impl Mount {
                 let off = n * dsize;
                 if off + dsize > gdt_buf.len()
                     || !crate::csum::verify_group_desc_csum(&sb, n as u32, &gdt_buf[off..off + dsize]) {
-                    super::super::first_csum_failure(b"group-desc", n as u64, gdt_byte_offset + off as u64);
+                    let desc_block = (off / sb.block_size as usize) as u32;
+                    let desc_off = gdt_block_byte_offset_for(&sb, desc_block);
+                    super::super::first_csum_failure(b"group-desc", n as u64, desc_off);
                     return Err(MountError::BadChecksum);
                 }
             }

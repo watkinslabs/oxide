@@ -30,6 +30,7 @@ use crate::superblock::{Superblock, SuperblockError};
 mod blocks;
 mod batch;
 mod core;
+pub(crate) use core::gdt_block_byte_offset_for;
 mod csum_trace;
 /// Register the current-context id source for the transaction gate (kernel).
 #[cfg(target_os = "oxide-kernel")]

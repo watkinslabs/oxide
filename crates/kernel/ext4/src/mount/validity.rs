@@ -14,15 +14,25 @@ pub(crate) fn build_system_zones(sb: &Superblock, gdt_buf: &[u8]) -> Vec<(u64, u
     add(0, sb.first_data_block as u64);
     let bs = u64::from(sb.block_size);
     add(1024 / bs, 1);
-    let gdt_start = if sb.block_size == 1024 { 2 } else { 1 };
-    add(gdt_start, (gdt_buf.len() as u64 + bs - 1) / bs);
+    let gdt_blocks = (gdt_buf.len() as u64 + bs - 1) / bs;
+    if sb.feature_incompat & crate::superblock::INCOMPAT_META_BG == 0 {
+        let gdt_start = if sb.block_size == 1024 { 2 } else { 1 };
+        add(gdt_start, gdt_blocks);
+    } else {
+        for block in 0..gdt_blocks {
+            let byte = crate::mount::gdt_block_byte_offset_for(sb, block as u32);
+            add(byte / bs, 1);
+        }
+    }
     let inode_blocks = (u64::from(sb.inodes_per_group) * u64::from(sb.inode_size) + bs - 1) / bs;
     for group in 0..sb.group_count() {
         let first = u64::from(sb.first_data_block) + u64::from(group) * u64::from(sb.blocks_per_group);
         let has_super = !sb.has_sparse_super() || group == 0 || group == 1 || is_power_of(group, 3) || is_power_of(group, 5) || is_power_of(group, 7);
         if has_super {
             add(first, 1);
-            add(first + 1, (gdt_buf.len() as u64 + bs - 1) / bs);
+            if sb.feature_incompat & crate::superblock::INCOMPAT_META_BG == 0 {
+                add(first + 1, gdt_blocks);
+            }
         }
         let Ok(desc) = gdt::parse_descriptor(gdt_buf, group, sb) else { continue; };
         add(desc.block_bitmap, 1);
@@ -60,6 +70,23 @@ fn range_allowed(zones: &[(u64, u64)], total: u64, enabled: bool, start: u64, le
 #[cfg(test)]
 mod tests {
     use super::range_allowed;
+    use crate::superblock::{Superblock, EXT4_SUPER_MAGIC, INCOMPAT_64BIT, INCOMPAT_META_BG};
+
+    fn meta_sb() -> Superblock {
+        let mut bytes = [0u8; crate::superblock::SUPERBLOCK_LEN];
+        bytes[0x04..0x08].copy_from_slice(&65536u32.to_le_bytes());
+        bytes[0x14..0x18].copy_from_slice(&0u32.to_le_bytes());
+        bytes[0x18..0x1c].copy_from_slice(&2u32.to_le_bytes());
+        bytes[0x20..0x24].copy_from_slice(&32768u32.to_le_bytes());
+        bytes[0x28..0x2c].copy_from_slice(&1024u32.to_le_bytes());
+        bytes[0x38..0x3a].copy_from_slice(&EXT4_SUPER_MAGIC.to_le_bytes());
+        bytes[0x58..0x5a].copy_from_slice(&256u16.to_le_bytes());
+        bytes[0x60..0x64].copy_from_slice(&(INCOMPAT_64BIT | INCOMPAT_META_BG).to_le_bytes());
+        bytes[0x64..0x68].copy_from_slice(&crate::superblock::RO_COMPAT_SPARSE_SUPER.to_le_bytes());
+        bytes[0xfe..0x100].copy_from_slice(&64u16.to_le_bytes());
+        bytes[0x104..0x108].copy_from_slice(&1u32.to_le_bytes());
+        Superblock::parse(&bytes).expect("meta_bg superblock")
+    }
 
     #[test]
     fn block_validity_rejects_reserved_and_out_of_range_runs() {
@@ -70,5 +97,12 @@ mod tests {
         assert!(!range_allowed(&zones, 32, true, u64::MAX, 1));
         assert!(range_allowed(&zones, 32, true, 2, 6));
         assert!(range_allowed(&zones, 32, false, 1, 1));
+    }
+
+    #[test]
+    fn meta_bg_descriptor_blocks_follow_their_group_geometry() {
+        let sb = meta_sb();
+        assert_eq!(crate::mount::gdt_block_byte_offset_for(&sb, 0), 4096);
+        assert_eq!(crate::mount::gdt_block_byte_offset_for(&sb, 1), 32768u64 * 64 * 4096);
     }
 }
