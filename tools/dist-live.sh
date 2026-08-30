@@ -3,22 +3,23 @@
 #
 #   tools/dist-live.sh [profile ...]
 #
-# Each profile produces ONE bootable file (GRUB BIOS + UEFI, the stripped
-# kernel, an immutable squashfs root with volatile writes), which is what a
-# download has to be: nothing to assemble, nothing to pair with a separate
-# kernel, writable to a USB stick byte for byte.
+# Each profile produces ONE bootable ISO -- an isohybrid, so the same file
+# boots a CD, a USB stick written with dd, and a VM, on BIOS or UEFI. That is
+# what a download has to be: nothing to assemble and nothing to pair with a
+# separate kernel.
 #
 # The image is what gets served. Compressing it is nearly pointless and was
 # measured rather than assumed: the payload is an already-zstd-19 squashfs, so
 # 7z finds only the sparse GRUB/GPT regions and the gzipped kernel -- 15% off
-# nano, 4% off micro. A raw .img is already one file, and it is directly
+# nano, 4% off micro. The ISO is already one file, and it is directly
 # dd-able to a USB stick, so a 4% saving does not earn a decompression step.
 # ARCHIVE=1 stages a .7z alongside it for anyone who wants one.
 #
 # Env:
 #   ARCHES     space-separated, default the host arch
-#   DIST       output directory, default dist/
-#   VERSION    stamped into the file names, default the git describe/date
+#   DIST       output directory, default <images repo>/dist
+#   VERSION    override the release number the image reports about itself
+#   COMPOSE    override the compose id (default <UTC date>.<respin>)
 #   ARCHIVE    1 to also stage a .7z beside each image (default 0)
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
@@ -28,7 +29,9 @@ PROFILES=("$@")
 [ ${#PROFILES[@]} -gt 0 ] || PROFILES=(micro nano)
 host_arch="$(uname -m)"
 read -r -a ARCHES <<<"${ARCHES:-$host_arch}"
-DIST="${DIST:-$HERE/dist}"
+# The images belong to the images repo: it owns userspace composition, and the
+# kernel repo is not where build output of somebody else lives.
+DIST="${DIST:-${OXIDE_IMAGES_DIR:-$HERE/../images}/dist}"
 ARCHIVE="${ARCHIVE:-0}"
 IMAGES="${OXIDE_IMAGES_DIR:-$HERE/../images}"
 
@@ -45,19 +48,45 @@ command -v sha256sum >/dev/null || die "need sha256sum (coreutils)"
 # A downloadable file has to say which build it is, and a date alone cannot
 # distinguish two builds in one day. Prefer git's answer; fall back to a
 # timestamp outside a checkout.
-# A tag is the right answer when one exists. Without one, a bare SHA tells a
-# person downloading it nothing about which build is newer, so lead with the
-# date and keep the SHA as the exact identity.
-if [ -z "${VERSION:-}" ]; then
-  VERSION="$(git -C "$HERE" describe --tags --exact-match 2>/dev/null || true)"
-  if [ -z "$VERSION" ]; then
-    sha="$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-    VERSION="$(date -u +%Y%m%d)-$sha"
-    git -C "$HERE" diff --quiet 2>/dev/null || VERSION="$VERSION-dirty"
-  fi
-fi
+# The release number is NOT kept here. oxide-release owns it -- it renders
+# /usr/lib/os-release, and VERSION_ID is what the running system reports about
+# itself -- so the image is asked what it is rather than a second copy of the
+# number being maintained alongside it. Fedora works the same way, with
+# fedora-release owning the number its media are named after.
+#
+# The compose id distinguishes two BUILDS of one release -- the job Fedora
+# gives the trailing 1.6 in Fedora-Workstation-Live-x86_64-42-1.6.iso, and the
+# .n.0 in a nightly's Fedora-42-20260830.n.0. A release number alone cannot
+# say which build a file is, so rebuilding on one day would either overwrite
+# yesterday's answer or silently ship two different files under one name.
+# The respin is derived from what is already staged, so a rebuild is a new
+# build number without anyone having to remember to bump one.
+COMPOSE_DATE="${COMPOSE_DATE:-$(date -u +%Y%m%d)}"
+command -v unsquashfs >/dev/null || die "need unsquashfs (squashfs-tools) to read the image version"
+
+release_of() {  # <squashfs> -> VERSION_ID
+  local v
+  v="$(unsquashfs -cat "$1" usr/lib/os-release 2>/dev/null \
+       | sed -n 's/^VERSION_ID=//p' | tr -d '"' | head -1)"
+  [ -n "$v" ] || die "no VERSION_ID in $1 — is oxide-release installed in that profile?"
+  printf '%s' "$v"
+}
 
 mkdir -p "$DIST"
+
+# Highest respin already staged for today, plus one; 0 when today has none.
+if [ -z "${COMPOSE:-}" ]; then
+  respin=0
+  for f in "$DIST"/Oxide-*-"${COMPOSE_DATE}".*.iso; do
+    [ -e "$f" ] || continue
+    n="${f%.iso}"; n="${n##*.}"
+    case "$n" in ''|*[!0-9]*) continue ;; esac
+    [ "$n" -ge "$respin" ] && respin=$((n + 1))
+  done
+  COMPOSE="${COMPOSE_DATE}.${respin}"
+fi
+echo "dist-live: compose $COMPOSE"
+
 staged=()
 
 for arch in "${ARCHES[@]}"; do
@@ -68,6 +97,11 @@ for arch in "${ARCHES[@]}"; do
     sqfs="$IMAGES/out/${profile}-${arch}-root-slim.squashfs"
     [ -f "$sqfs" ] || sqfs="$IMAGES/out/${profile}-${arch}-root.squashfs"
     [ -f "$sqfs" ] || die "no packed root for $tag — run: (cd $IMAGES && make ${profile}-${arch})"
+    # aarch64 boots as an EFI application, so GRUB's arm64-efi module set has
+    # to be vendored. Checked here rather than after a two-minute kernel build
+    # that would be thrown away.
+    [ "$arch" != aarch64 ] || [ -d "$HERE/vendor/grub/arm64-efi" ] \
+      || die "no vendored arm64-efi GRUB modules — run: ./tools/fetch-vendor.sh"
 
     # The same two steps `make live-x86` runs. Building without exporting
     # boots a STALE kernel from target/artifacts, which live-image.sh reads --
@@ -77,11 +111,16 @@ for arch in "${ARCHES[@]}"; do
     cargo run --quiet -p xtask -- artifacts --arch "$arch"
 
     echo "==> $tag: live image"
-    img="$HERE/target/oxide-live-${tag}.img"
+    img="$HERE/target/oxide-live-${tag}.iso"
     OXIDE_LIVE_IMG="$img" ./tools/live-image.sh "$profile" "$arch"
     [ -f "$img" ] || die "live-image.sh produced no $img"
 
-    out="$DIST/oxide-live-${tag}-${VERSION}.img"
+    # Oxide-Micro-Live-x86_64-0.1-20260830.0.iso, which is the shape Fedora
+    # names media with: product, edition, media type, arch, release, compose --
+    # the compose being the build number, as in Fedora-...-42-1.6.iso.
+    rel="${VERSION:-$(release_of "$sqfs")}"
+    edition="$(printf '%s' "${profile:0:1}" | tr a-z A-Z)${profile:1}"
+    out="$DIST/Oxide-${edition}-Live-${arch}-${rel}-${COMPOSE}.iso"
     mv -f "$img" "$out"
 
     staged+=("$(basename "$out")")
@@ -106,15 +145,14 @@ done
 # how a page ends up advertising a file that is no longer there, so it is
 # derived from the files actually staged, in the same run that stages them.
 {
-  printf '{\n  "version": "%s",\n  "built": "%s",\n  "files": [\n' \
-    "$VERSION" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf '{\n  "compose": "%s",\n  "built": "%s",\n  "files": [\n' \
+    "$COMPOSE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   sep=""
   for f in "${staged[@]}"; do
     name="$(basename "$f")"
-    prof="${name#oxide-live-}"; prof="${prof%%-*}"
-    a="${name#oxide-live-${prof}-}"; a="${a%%-*}"
-    printf '%s    {"file": "%s", "profile": "%s", "arch": "%s", "bytes": %s, "sha256": "%s"}' \
-      "$sep" "$name" "$prof" "$a" \
+    IFS=- read -r _ ed _ a rel _ <<<"${name%.iso*}"
+    printf '%s    {"file": "%s", "edition": "%s", "arch": "%s", "release": "%s", "bytes": %s, "sha256": "%s"}' \
+      "$sep" "$name" "$ed" "$a" "$rel" \
       "$(stat -c %s "$DIST/$name")" "$(sha256sum "$DIST/$name" | cut -d" " -f1)"
     sep=$',\n'
   done
