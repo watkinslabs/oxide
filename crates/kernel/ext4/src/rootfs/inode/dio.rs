@@ -69,6 +69,22 @@ fn dio_write_plan(extents: &[PhysRun], off: u64, end: u64, bs: u64)
     (covered == end).then_some(WritePlan { requests: plans, unwritten })
 }
 
+/// Translate an extent-relative byte range to device blocks. Linux iomap keeps
+/// DIO offsets at the block-device alignment, not the filesystem block
+/// alignment; a 512-byte request in a 4 KiB ext4 block therefore starts at
+/// the corresponding device sector rather than at the filesystem block head.
+/// # C: O(1)
+fn dio_device_range(phys_fs_block: u64, within_fs_block: u64, bytes: u64,
+                    fs_bs: u64, dev_bs: u64) -> Option<(u64, u64)> {
+    if fs_bs == 0 || dev_bs == 0 || fs_bs % dev_bs != 0
+        || within_fs_block % dev_bs != 0 || bytes % dev_bs != 0 {
+        return None;
+    }
+    let start = phys_fs_block.checked_mul(fs_bs / dev_bs)?
+        .checked_add(within_fs_block / dev_bs)?;
+    Some((start, bytes / dev_bs))
+}
+
 impl DioState {
     /// # C: O(1)
     fn new(data: Arc<Ext4FileData>, io: DirectIo, token: DioToken, requests: u32,
@@ -195,7 +211,7 @@ pub(crate) fn submit(file: &File, io: DirectIo) -> DirectSubmit {
     let bs = data.st.mount.sb.block_size as u64;
     let dev_bs = data.st.mount.dev.block_size() as u64;
     if bs == 0 || dev_bs == 0 || bs % dev_bs != 0
-        || io.off % bs != 0 || (io.len() as u64) % bs != 0 {
+        || io.off % dev_bs != 0 || (io.len() as u64) % dev_bs != 0 {
         return DirectSubmit::Failed(VfsError::Einval);
     }
     let inode = match data.st.mount.read_inode(data.ino) {
@@ -240,6 +256,19 @@ pub(crate) fn submit(file: &File, io: DirectIo) -> DirectSubmit {
         Err(_) => return DirectSubmit::Failed(VfsError::Eio),
     };
     let (plans, unwritten) = if io.write {
+        // A partial write into an unwritten filesystem block needs the
+        // synchronous read/zero/modify path: converting the whole unwritten
+        // block after writing only one device sector would expose stale
+        // sectors. Linux's iomap preparation owns that RMW boundary.
+        if extents.iter().any(|run| {
+            if !run.unwritten { return false; }
+            let start = core::cmp::max(io.off, u64::from(run.logical) * bs);
+            let finish = core::cmp::min(request_end,
+                u64::from(run.logical.saturating_add(run.len)) * bs);
+            start < finish && (start % bs != 0 || finish % bs != 0)
+        }) {
+            return DirectSubmit::Unsupported(io);
+        }
         let plan = dio_write_plan(&extents, io.off, request_end, bs);
         let plan = match plan {
             Some(plan) => plan,
@@ -330,10 +359,14 @@ pub(crate) fn submit(file: &File, io: DirectIo) -> DirectSubmit {
     }
     state.remaining.store(plans.len() as u32, Ordering::Release);
     for (at, phys, bytes) in plans {
-        let blocks = bytes as u64 / bs;
-        let start = phys.saturating_mul(bs) / dev_bs;
-        let n = blocks.saturating_mul(bs / dev_bs);
-        if n > u32::MAX as u64 {
+        let within = (off + at as u64) % bs;
+        let request_bytes = bytes as u64;
+        let Some((start, n)) = dio_device_range(phys, within, request_bytes, bs, dev_bs)
+            else {
+            state.complete(at, BlockRequest::default(), Err(block::BlockError::Einval));
+            continue;
+        };
+        if n == 0 || n > u32::MAX as u64 {
             state.complete(at, BlockRequest::default(), Err(block::BlockError::Einval));
             continue;
         }
@@ -392,5 +425,12 @@ mod tests {
         let plan = dio_write_plan(&[], 4096, 4096, 4096).unwrap();
         assert!(plan.requests.is_empty());
         assert!(plan.unwritten.is_empty());
+    }
+
+    #[test]
+    fn device_range_preserves_sub_filesystem_block_offset() {
+        assert_eq!(dio_device_range(100, 512, 512, 4096, 512), Some((801, 1)));
+        assert_eq!(dio_device_range(100, 0, 4096, 4096, 512), Some((800, 8)));
+        assert_eq!(dio_device_range(100, 256, 512, 4096, 512), None);
     }
 }

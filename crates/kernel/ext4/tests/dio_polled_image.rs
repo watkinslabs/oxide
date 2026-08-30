@@ -158,6 +158,40 @@ fn polled_write_completes_only_after_device_poll_and_invalidates_cache() {
 }
 
 #[test]
+fn polled_write_honors_device_aligned_subfilesystem_offset() {
+    let disk = PollDisk::from_image();
+    let (m, _sb) = mount(disk.clone());
+    let bs = m.state().mount.sb.block_size as usize;
+    let file = seeded_file(&m, bs);
+    let direct = File::new(file.inode().clone(), Dentry::new_root(file.inode().clone()),
+                           OpenFlags::O_RDWR | OpenFlags::O_DIRECT);
+    let replacement = alloc::vec![0xD4u8; 512];
+    let result = Arc::new(Spinlock::<Option<Result<usize, VfsError>>, TaskList>::new(None));
+    let slot = result.clone();
+    let completion_file = direct.clone();
+    assert!(matches!(direct.submit_direct(DirectIo {
+        write: true, off: 512, buf: replacement,
+        sync_mode: SyncMode::default(),
+        done: alloc::boxed::Box::new(move |_buf, res, sync| {
+            let res = match res {
+                Ok(n) => completion_file.complete_direct_write(512, n, sync).map(|()| n),
+                Err(e) => Err(e),
+            };
+            *slot.lock() = Some(res);
+        }),
+    }), DirectSubmit::Queued));
+    assert_eq!(direct.iopoll(), Some(1));
+    assert_eq!(*result.lock().as_ref().expect("partial completion"), Ok(512));
+
+    direct.set_pos(0);
+    let mut got = alloc::vec![0u8; bs];
+    direct.inode().read(0, &mut got).expect("read partial result");
+    assert!(got[..512].iter().all(|&b| b == 0x31));
+    assert!(got[512..1024].iter().all(|&b| b == 0xD4));
+    assert!(got[1024..].iter().all(|&b| b == 0x31));
+}
+
+#[test]
 fn polled_write_persists_completion_timestamp_across_remount() {
     let disk = PollDisk::from_image();
     let (m, sb) = mount(disk.clone());
