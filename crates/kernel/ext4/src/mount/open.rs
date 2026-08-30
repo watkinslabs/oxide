@@ -63,7 +63,9 @@ impl Mount {
         let sb_bytes = read_byte_range(&*dev, SUPERBLOCK_OFFSET, SUPERBLOCK_LEN)?;
         let sb = Superblock::parse(&sb_bytes)?;
         if behaviour.dax == crate::mount_opts::DaxMode::Always
-            && mappable_dax_region(&*dev).is_none()
+            && (sb.feature_incompat & crate::superblock::INCOMPAT_INLINE_DATA != 0
+                || sb.block_size as u64 != hal::PAGE_SIZE_BYTES
+                || mappable_dax_region(&*dev).is_none())
         { return Err(MountError::UnsupportedFeature); }
         if behaviour.dax == crate::mount_opts::DaxMode::Always
             && behaviour.data == crate::mount_opts::DataMode::Journal

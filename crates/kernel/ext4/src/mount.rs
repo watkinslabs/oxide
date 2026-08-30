@@ -368,7 +368,9 @@ impl Mount {
 
     /// Persistent-memory aperture owned by the mounted block device.
     /// # C: O(1)
-    pub(crate) fn dax_region(&self) -> Option<block::DaxRegion> { self.dev.dax_region() }
+    pub(crate) fn dax_region(&self) -> Option<block::DaxRegion> {
+        (self.sb.block_size as u64 == hal::PAGE_SIZE_BYTES).then(|| self.dev.dax_region()).flatten()
+    }
 
     /// Linux `ext4_should_enable_dax`: DAX is an inode policy only when the
     /// block device owns a byte-addressable aperture and the layout can be
@@ -376,7 +378,7 @@ impl Mount {
     /// # C: O(1)
     pub(crate) fn inode_dax_enabled(&self, mode: u16, flags: u32) -> bool {
         let regular = u32::from(mode) & u32::from(crate::inode::S_IFMT) == u32::from(crate::inode::S_IFREG);
-        regular && self.dax_region().is_some()
+        regular && dax_layout_supported(flags) && self.dax_region().is_some()
             && self.behaviour().dax != crate::mount_opts::DaxMode::Never
             && self.behaviour().data != crate::mount_opts::DataMode::Journal
             && (self.behaviour().dax == crate::mount_opts::DaxMode::Always
@@ -393,5 +395,30 @@ impl Mount {
         #[cfg(not(target_os = "oxide-kernel"))]
         if let Some(c) = self.test_cred.lock().clone() { return c; }
         crate::balloc::reserve::current_alloc_cred()
+    }
+}
+
+/// Linux `ext4_should_enable_dax` refuses layouts whose bytes have another
+/// owner or transform. Inline data, encryption, and fs-verity must remain on
+/// their respective buffered/verification paths; DAX cannot bypass them.
+/// # C: O(1)
+fn dax_layout_supported(flags: u32) -> bool {
+    flags & (crate::inode::EXT4_INLINE_DATA_FL
+        | crate::inode::flags::EXT4_ENCRYPT_FL
+        | crate::inode::flags::EXT4_VERITY_FL) == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dax_layout_supported;
+    use crate::inode::flags::{EXT4_ENCRYPT_FL, EXT4_VERITY_FL};
+    use crate::inode::EXT4_INLINE_DATA_FL;
+
+    #[test]
+    fn dax_refuses_inline_encrypted_and_verified_layouts() {
+        assert!(dax_layout_supported(0));
+        for flags in [EXT4_INLINE_DATA_FL, EXT4_ENCRYPT_FL, EXT4_VERITY_FL] {
+            assert!(!dax_layout_supported(flags));
+        }
     }
 }
