@@ -8,6 +8,10 @@
 # what a download has to be: nothing to assemble and nothing to pair with a
 # separate kernel.
 #
+# Names and tree follow ../images/docs/media-naming.md, which is the contract:
+# both formulas, where each field comes from, and the mirror they were checked
+# against. Change that document and this script in the same pass.
+#
 # The image is what gets served. Compressing it is nearly pointless and was
 # measured rather than assumed: the payload is an already-zstd-19 squashfs, so
 # 7z finds only the sparse GRUB/GPT regions and the gzipped kernel -- 15% off
@@ -77,12 +81,12 @@ mkdir -p "$DIST"
 # Highest respin already staged for today, plus one; 0 when today has none.
 if [ -z "${COMPOSE:-}" ]; then
   respin=0
-  for f in "$DIST"/Oxide-*-"${COMPOSE_DATE}".*.iso; do
-    [ -e "$f" ] || continue
-    n="${f%.iso}"; n="${n##*.}"
+  # <date>.<respin> sits before the .<arch>.iso suffix, so strip two extensions.
+  while IFS= read -r f; do
+    n="${f%.iso}"; n="${n%.*}"; n="${n##*.}"
     case "$n" in ''|*[!0-9]*) continue ;; esac
     [ "$n" -ge "$respin" ] && respin=$((n + 1))
-  done
+  done < <(find "$DIST" -name "Oxide-*-${COMPOSE_DATE}.*.iso" 2>/dev/null)
   COMPOSE="${COMPOSE_DATE}.${respin}"
 fi
 echo "dist-live: compose $COMPOSE"
@@ -115,51 +119,71 @@ for arch in "${ARCHES[@]}"; do
     OXIDE_LIVE_IMG="$img" ./tools/live-image.sh "$profile" "$arch"
     [ -f "$img" ] || die "live-image.sh produced no $img"
 
-    # Oxide-Micro-Live-x86_64-0.1-20260830.0.iso, which is the shape Fedora
-    # names media with: product, edition, media type, arch, release, compose --
-    # the compose being the build number, as in Fedora-...-42-1.6.iso.
+    # ../images/docs/media-naming.md:
+    #   <Product>-<Edition>-<Media>-<Release>-<Compose>.<Arch>.iso
+    #   dist/releases/<Release>/<Edition>/<Arch>/iso/
+    # Arch is LAST and dot-separated: Fedora moved it there, and a name that
+    # matches what mirroring tools and visitors already parse is worth more
+    # than one we invented.
     rel="${VERSION:-$(release_of "$sqfs")}"
     edition="$(printf '%s' "${profile:0:1}" | tr a-z A-Z)${profile:1}"
-    out="$DIST/Oxide-${edition}-Live-${arch}-${rel}-${COMPOSE}.iso"
+    leaf="$DIST/releases/$rel/$edition/$arch/iso"
+    mkdir -p "$leaf"
+    base="Oxide-${edition}-Live-${rel}-${COMPOSE}.${arch}"
+    out="$leaf/${base}.iso"
     mv -f "$img" "$out"
 
-    staged+=("$(basename "$out")")
-    printf '    %-46s %s\n' "$(basename "$out")" "$(du -h "$out" | cut -f1)"
+    # Fedora puts the checksum beside the image, one per edition and arch,
+    # so a visitor who downloaded one file can verify it without fetching an
+    # index covering media they did not want.
+    ( cd "$leaf" && sha256sum "${base}.iso" \
+        > "Oxide-${edition}-${rel}-${COMPOSE}-${arch}-CHECKSUM" )
+
+    staged+=("releases/$rel/$edition/$arch/iso/${base}.iso"
+             "releases/$rel/$edition/$arch/iso/Oxide-${edition}-${rel}-${COMPOSE}-${arch}-CHECKSUM")
+    printf '    %-52s %s\n' "${base}.iso" "$(du -h "$out" | cut -f1)"
 
     if [ "$ARCHIVE" = "1" ]; then
       echo "==> $tag: archive"
       rm -f "$out.7z"
       "$SEVENZ" a -bso0 -bsp0 -t7z -mx=9 "$out.7z" "$out" >/dev/null
       [ -f "$out.7z" ] || die "7-Zip produced no $out.7z"
-      staged+=("$(basename "$out.7z")")
-      printf '    %-46s %s\n' "$(basename "$out.7z")" "$(du -h "$out.7z" | cut -f1)"
+      staged+=("releases/$rel/$edition/$arch/iso/${base}.iso.7z")
+      printf '    %-52s %s\n' "${base}.iso.7z" "$(du -h "$out.7z" | cut -f1)"
     fi
   done
 done
 
-# Checksums over exactly what is being published, regenerated whole so a
-# stale line cannot survive a rebuild.
-( cd "$DIST" && sha256sum "${staged[@]}" > SHA256SUMS )
-
-# The index a download page is generated from. Hand-maintaining that list is
-# how a page ends up advertising a file that is no longer there, so it is
-# derived from the files actually staged, in the same run that stages them.
+# The index a download page is generated from, at the ROOT of the tree because
+# it indexes ACROSS releases -- a page should not have to walk a directory tree
+# to find out what exists.
+#
+# Built by WALKING THE TREE, not from this run's output. A run that builds one
+# arch, or one profile, would otherwise rewrite the index with only what it
+# just made and silently un-publish everything else. The files on disk are the
+# truth; this only reports them.
 {
   printf '{\n  "compose": "%s",\n  "built": "%s",\n  "files": [\n' \
     "$COMPOSE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   sep=""
-  for f in "${staged[@]}"; do
-    name="$(basename "$f")"
-    IFS=- read -r _ ed _ a rel _ <<<"${name%.iso*}"
-    printf '%s    {"file": "%s", "edition": "%s", "arch": "%s", "release": "%s", "bytes": %s, "sha256": "%s"}' \
-      "$sep" "$name" "$ed" "$a" "$rel" \
-      "$(stat -c %s "$DIST/$name")" "$(sha256sum "$DIST/$name" | cut -d" " -f1)"
+  while IFS= read -r iso; do
+    name="$(basename "$iso")"
+    relpath="${iso#$DIST/}"
+    # releases/<release>/<Edition>/<arch>/iso/<file>
+    IFS=/ read -r _ m_rel m_ed m_arch _ _ <<<"$relpath"
+    # <Product>-<Edition>-Live-<release>-<compose>.<arch>.iso
+    m_compose="${name%.*.iso}"; m_compose="${m_compose##*-}"
+    sum="$(dirname "$iso")/Oxide-${m_ed}-${m_rel}-${m_compose}-${m_arch}-CHECKSUM"
+    [ -f "$sum" ] || die "no CHECKSUM beside $relpath"
+    printf '%s    {"path": "%s", "edition": "%s", "arch": "%s", "release": "%s", "compose": "%s", "bytes": %s, "sha256": "%s"}' \
+      "$sep" "$relpath" "$m_ed" "$m_arch" "$m_rel" "$m_compose" \
+      "$(stat -c %s "$iso")" "$(cut -d' ' -f1 < "$sum")"
     sep=$',\n'
-  done
+  done < <(find "$DIST/releases" -name '*.iso' | sort)
   printf '\n  ]\n}\n'
 } > "$DIST/manifest.json"
 python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$DIST/manifest.json" \
   || die "manifest.json is not valid JSON"
-staged+=("SHA256SUMS" "manifest.json")
+staged+=("manifest.json")
 echo "dist-live: staged ${#staged[@]} file(s) in $DIST"
-( cd "$DIST" && ls -la "${staged[@]}" )
+( cd "$DIST" && ls -l "${staged[@]}" )
