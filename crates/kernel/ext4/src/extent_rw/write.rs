@@ -400,6 +400,9 @@ impl Mount {
         if super::super::mount::inline::write_inline_data(self, ino, &inode, off, data)? {
             return Ok(());
         }
+        if inode.i_flags & inode::EXT4_EXTENTS_FL == 0 {
+            return self.write_legacy_at_inner(ino, off, data, meta);
+        }
         let cur_size = inode.size;
         let end = off + data.len() as u64;
         let new_size = core::cmp::max(cur_size, end);
