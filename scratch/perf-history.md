@@ -77,6 +77,7 @@ that artifact is regenerated.
 | B2940 merged-main / `0f4e9b9a6` | 1,368,199 | 6,449 | 4,713 | 23,189 | — | 13,081 | 386 | 3,575 | exclusive transaction-gate release now wakes one waiter, matching mutex-like Linux admission; GNOME Shell marker complete at 33.5s; ext4 linear phase 149,389 ns; one run, no aggregate gain claimed |
 | B2972 merged-main control / `ba668fe1c` | 1,564,301 | 6,695 | 4,280 | 21,623 | 12,121 | 238 | 3,660 | fresh `make perf-report SMP=1`; GNOME Shell marker at 32.5s; 526 block reads, 7,668 writes, 24 flushes; phase attribution remains parent-lock/slow-lookup dominated; no code change or gain claimed |
 | B2987 merged-main control / `1fdf4f337` | 1,368,457 | 5,986 | 4,374 | 22,469 | — | 12,255 | 412 | 2,852 | fresh `make perf-report SMP=1`; GNOME Shell marker complete; 526 block reads, 8,059 writes, 53 flushes; aggregate remains within documented workload variance; no whole-boot gain claimed |
+| B2995 merged-main / `ffec55912` | 1,368,741 | 5,706 | 4,169 | 12,255 | — | 8,039 | 249 | 2,723 | valid `make perf-report SMP=1`; GNOME Shell marker at 32s; 526 block reads, 53 flushes; one successful sample after B2994 directory lookup ordering; no whole-boot gain claimed until a repeat succeeds |
 
 The B2709 `munmap` result is a material improvement over B2699: 71,407 ns
 to 21,426 ns (about 70% lower), and 52x to 16x the host baseline. The B2708
