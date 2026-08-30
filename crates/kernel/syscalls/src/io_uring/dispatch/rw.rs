@@ -143,14 +143,20 @@ fn fixed(op: &Op, write: bool) -> i64 {
         Ok(w) => w, Err(e) => return err(e),
     };
     let off_in_buf = w.off;
-    let mut pos = op.sqe.off as i64;
-    if pos < 0 && op.sqe.off != CUR_POS { return err(Errno::Einval); }
+    let current = op.sqe.off == CUR_POS;
+    let mut pos = if current { file.pos() } else { op.sqe.off };
+    if !current && (pos as i64) < 0 { return err(Errno::Einval); }
+    if let Err(e) = file.check_direct_io_alignment(op.addr, pos, w.len as usize) {
+        return crate::namei_common::errno_from_vfs(e);
+    }
     let mut failed: i64 = 0;
     let walked = buf.for_each_chunk(off_in_buf, w.len, |chunk| {
-        let r = if write { file.pwrite(chunk, pos) } else { file.pread(chunk, pos) };
+        let r = if current {
+            if write { file.write(chunk) } else { file.read(chunk) }
+        } else if write { file.pwrite(chunk, pos as i64) } else { file.pread(chunk, pos as i64) };
         match r {
             Ok(0) => None,
-            Ok(n) => { pos += n as i64; Some(n) }
+            Ok(n) => { if !current { pos += n as u64; } Some(n) }
             Err(e) => { failed = crate::namei_common::errno_from_vfs(e); None }
         }
     });
