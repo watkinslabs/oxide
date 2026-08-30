@@ -33,6 +33,14 @@ impl Mount {
     {
         let sb_bytes = read_byte_range(dev, SUPERBLOCK_OFFSET, SUPERBLOCK_LEN)?;
         let sb = Superblock::parse(&sb_bytes)?;
+        if sb.feature_compat & crate::superblock::COMPAT_ORPHAN_FILE != 0
+            && sb.orphan_file_inum == 0 {
+            return Err(MountError::UnsupportedFeature);
+        }
+        if sb.feature_ro_compat & crate::superblock::RO_COMPAT_ORPHAN_PRESENT != 0
+            && sb.feature_compat & crate::superblock::COMPAT_ORPHAN_FILE == 0 {
+            return Err(MountError::UnsupportedFeature);
+        }
         Ok(crate::mount_opts::Ext4Behaviour::for_sb_errors(sb.errors))
     }
 

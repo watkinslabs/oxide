@@ -31,6 +31,7 @@ pub const INCOMPAT_CSUM_SEED: u32 = 0x2000;
 pub const INCOMPAT_CASEFOLD: u32 = 0x20000;
 /// `s_feature_compat` HAS_JOURNAL bit.
 pub const COMPAT_HAS_JOURNAL: u32 = 0x0004;
+pub const COMPAT_ORPHAN_FILE: u32 = 0x1000;
 /// `s_feature_ro_compat` METADATA_CSUM bit.
 pub const RO_COMPAT_METADATA_CSUM: u32 = 0x0400;
 pub const RO_COMPAT_GDT_CSUM:      u32 = 0x0010;
@@ -42,6 +43,7 @@ pub const RO_COMPAT_DIR_NLINK:     u32 = 0x0020;
 pub const RO_COMPAT_EXTRA_ISIZE:   u32 = 0x0040;
 pub const RO_COMPAT_QUOTA:         u32 = 0x0100;
 pub const RO_COMPAT_PROJECT:       u32 = 0x2000;
+pub const RO_COMPAT_ORPHAN_PRESENT: u32 = 0x0001_0000;
 
 /// INCOMPAT features this driver understands well enough to interpret the
 /// on-disk layout. An INCOMPAT bit OUTSIDE this set (e.g. MMP, INLINE_DATA,
@@ -61,7 +63,7 @@ pub const SUPPORTED_RO_COMPAT: u32 =
     RO_COMPAT_METADATA_CSUM | RO_COMPAT_GDT_CSUM | RO_COMPAT_SPARSE_SUPER
     | RO_COMPAT_LARGE_FILE | RO_COMPAT_BTREE_DIR | RO_COMPAT_HUGE_FILE | RO_COMPAT_DIR_NLINK
     | RO_COMPAT_EXTRA_ISIZE | RO_COMPAT_QUOTA | RO_COMPAT_PROJECT
-    | RO_COMPAT_METADATA_CSUM_SEED;
+    | RO_COMPAT_METADATA_CSUM_SEED | RO_COMPAT_ORPHAN_PRESENT;
 
 /// Errors decoded from `parse`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -89,8 +91,9 @@ pub const SB_OFF_PRJ_QUOTA_INUM: usize = 0x26C;
 /// `s_checksum_seed` byte offset (when METADATA_CSUM_SEED feature on).
 pub const SB_OFF_CHECKSUM_SEED:  usize = 0x270;
 /// `s_encoding` / `s_encoding_flags` used when INCOMPAT_CASEFOLD is set.
-pub const SB_OFF_ENCODING:       usize = 0x274;
-pub const SB_OFF_ENCODING_FLAGS: usize = 0x276;
+pub const SB_OFF_ENCODING:       usize = 0x27C;
+pub const SB_OFF_ENCODING_FLAGS: usize = 0x27E;
+pub const SB_OFF_ORPHAN_FILE_INUM: usize = 0x280;
 /// `s_kbytes_written` byte offset — lifetime kilobytes written to the volume.
 pub const SB_OFF_KBYTES_WRITTEN: usize = 0x178;
 /// `s_reserved_gdt_blocks` byte offset.
@@ -160,6 +163,7 @@ pub struct Superblock {
     pub encoding: u16,
     /// ext4 casefold encoding flags (`s_encoding_flags`).
     pub encoding_flags: u16,
+    pub orphan_file_inum: u32,
     /// `s_hash_seed[4]` (htree directory hash seed). Read as 4 le32
     /// words from offset 0xEC. All-zero ⇒ use the built-in default.
     pub hash_seed: [u32; 4],
@@ -303,6 +307,7 @@ impl Superblock {
             stored_csum_seed:  rd_u32(buf, SB_OFF_CHECKSUM_SEED),
             encoding:          rd_u16(buf, SB_OFF_ENCODING),
             encoding_flags:    rd_u16(buf, SB_OFF_ENCODING_FLAGS),
+            orphan_file_inum:  rd_u32(buf, SB_OFF_ORPHAN_FILE_INUM),
             hash_seed: [
                 rd_u32(buf, 0xEC), rd_u32(buf, 0xF0),
                 rd_u32(buf, 0xF4), rd_u32(buf, 0xF8),
