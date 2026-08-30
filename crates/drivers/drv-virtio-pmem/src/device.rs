@@ -24,6 +24,11 @@ pub const fn transport_profile() -> virtio::VirtioTransportProfile {
     virtio::VirtioTransportProfile::q0_device_cfg(VIRTIO_PMEM_F_SHMEM_REGION, completion_irq)
 }
 
+fn region_from_geometry(base_pa: u64, size_bytes: u64) -> Option<DaxRegion> {
+    if size_bytes == 0 || base_pa.checked_add(size_bytes).is_none() { return None; }
+    Some(DaxRegion { base_pa, size_bytes, partition_offset: 0, synchronous: false })
+}
+
 struct PmemInner {
     queue: virtio::VirtioSplitQueue,
     bounce_pa: u64,
@@ -84,8 +89,7 @@ impl PmemDevice {
         }
         let base_pa = u64::from_le_bytes(start);
         let size_bytes = u64::from_le_bytes(size);
-        if size_bytes == 0 || base_pa.checked_add(size_bytes).is_none() { return None; }
-        Some(DaxRegion { base_pa, size_bytes, partition_offset: 0, synchronous: false })
+        region_from_geometry(base_pa, size_bytes)
     }
 
     #[cfg(target_os = "oxide-kernel")]
@@ -250,11 +254,7 @@ pub fn install(device_key: virtio::VirtioChildDeviceKey, bdf: pci::Bdf, resource
     let region = match resources.shared_memory {
         Some(region) if region.id == VIRTIO_PMEM_REGION_ID
             && resources.drv_features & VIRTIO_PMEM_F_SHMEM_REGION != 0
-            && region.size_bytes != 0
-            && region.base_pa.checked_add(region.size_bytes).is_some() => DaxRegion {
-                base_pa: region.base_pa, size_bytes: region.size_bytes,
-                partition_offset: 0, synchronous: false,
-            },
+            => region_from_geometry(region.base_pa, region.size_bytes)?,
         Some(_) => return None,
         None => PmemDevice::config_region(resources.device_cfg_va)?,
     };
@@ -306,3 +306,23 @@ pub fn remove(device_key: virtio::VirtioChildDeviceKey) -> bool {
 pub fn remove(_device_key: virtio::VirtioChildDeviceKey) -> bool { false }
 
 pub fn shutdown(device_key: virtio::VirtioChildDeviceKey) -> bool { remove(device_key) }
+
+#[cfg(test)]
+mod tests {
+    use super::region_from_geometry;
+
+    #[test]
+    fn region_geometry_rejects_empty_and_wrapping_ranges() {
+        assert!(region_from_geometry(0x1000, 0).is_none());
+        assert!(region_from_geometry(u64::MAX - 7, 8).is_none());
+    }
+
+    #[test]
+    fn region_geometry_preserves_the_provider_aperture() {
+        let region = region_from_geometry(0x4000, 0x8000).expect("valid aperture");
+        assert_eq!(region.base_pa, 0x4000);
+        assert_eq!(region.size_bytes, 0x8000);
+        assert_eq!(region.partition_offset, 0);
+        assert!(!region.synchronous);
+    }
+}
