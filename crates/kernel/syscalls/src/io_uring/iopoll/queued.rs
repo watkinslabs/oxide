@@ -61,6 +61,10 @@ enum Sink {
 /// One transfer the backend owns.
 pub struct Queued {
     sink: Sink,
+    /// Offset captured when the current-position request was issued. The
+    /// completion must not reread a cursor that another request may have
+    /// changed meanwhile.
+    off: u64,
     /// Filled once, by the backend's completion. `None` until then.
     slot: Spinlock<Option<(Vec<u8>, Result<usize, vfs::VfsError>)>, QueuedLockClass>,
     /// Published by the completion AFTER the slot, read before it.
@@ -78,9 +82,10 @@ pub struct Queued {
 
 impl Queued {
     /// # C: O(1)
-    fn new(sink: Sink) -> Arc<Self> {
+    fn new(sink: Sink, off: u64) -> Arc<Self> {
         Arc::new(Self {
             sink,
+            off,
             slot: Spinlock::new(None),
             ready: AtomicBool::new(false),
             issued_at: AtomicU64::new(0),
@@ -304,7 +309,7 @@ fn try_prepare(req: &Arc<IoReq>) -> Result<(), Errno> {
         v.resize(len, 0);
         v
     };
-    let q = Queued::new(sink);
+    let q = Queued::new(sink, if req.sqe.off == u64::MAX { file.pos() } else { req.sqe.off });
     let mut g = req.inner.lock();
     g.iopoll_file = Some(file);
     g.iopoll_buf = Some(buf);
@@ -454,6 +459,13 @@ impl<'a> ReapSet for LiveSet<'a> {
 
     /// # C: O(1)
     fn post(&mut self, r: &Arc<IoReq>, res: i64) {
+        if res >= 0 && r.sqe.off == u64::MAX {
+            let file = { let g = r.inner.lock(); g.iopoll_file.clone() };
+            let q = { let g = r.inner.lock(); g.iopoll_io.clone() };
+            if let (Some(file), Some(q)) = (file, q) {
+                file.set_pos(q.off.saturating_add(res as u64));
+            }
+        }
         super::super::iowq::run::complete(r, res, 0);
     }
 }
