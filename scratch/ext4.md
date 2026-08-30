@@ -32,6 +32,11 @@ allocation, truncate, punch-hole, and keep-size fallocate; a mounted-image
 triple-indirect chain is also read through the same mapper. DIO now uses the
 same inode-aware mapping and zero-prepares legacy holes, and nodelalloc no
 longer rejects legacy inodes before writeback. DAX remains explicitly refused.
+This correction supersedes the stale E4-10 wording in the inventory row above:
+multi-block inline conversion and legacy-indirect mutation are covered by
+canonical owners. Collapse/insert range remains extent-only, matching Linux;
+the remaining E4-10 closure item is final boot evidence, while DAX stays an
+explicit refusal without a persistent-memory mapping owner.
 | E4-12 | DONE | Legacy options without consumers are refused explicitly; generic VFS tokens remain pass-through. | baseline only | known unowned ext4 options refuse |
 | E4-13 | DONE | All ext4 e2fsck image fixtures use PID/sequence-unique temporary paths and clean up after each run; the large allocator harness uses a per-process directory, and serial/parallel runs agree. | baseline only | isolated fixture ownership; parallel and serial suites agree |
 | E4-14 | DONE | The previously reported ARM sysinit EIO/SIGBUS event did not reproduce in the controlled ARM boot-smoke run; userspace answered the systemd probe and the serial RX probe passed in 22 seconds. | E4-02, E4-03 | controlled ARM boot-smoke evidence; retain broader ARM desktop validation under E4-03 |
