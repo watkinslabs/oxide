@@ -265,6 +265,11 @@ impl InodeOps for Ext4StatInodeOps {
             Arc::new(mount.read_inode(d.ino).map_err(|_| VfsError::Eio)?)
         };
         if let Some(b) = i.fast_symlink_target() { return Ok(b.to_vec()); }
+        if i.i_flags & crate::inode::EXT4_INLINE_DATA_FL != 0 {
+            return super::super::super::mount::inline::read_inline_data(
+                mount, &i, 0, d.size as usize,
+            ).map_err(|_| VfsError::Eio);
+        }
         let blk = mount.read_file_block(&i, 0).map_err(|_| VfsError::Eio)?;
         let n = (d.size as usize).min(blk.len());
         Ok(blk[..n].to_vec())

@@ -91,6 +91,14 @@ impl Mount {
     /// + leaves); deeper trees surface DepthUnsupported.
     /// # C: O(depth × log N) — small constant in practice
     pub fn read_file_block(&self, inode: &Inode, file_blk: u32) -> Result<Vec<u8>, MountError> {
+        if inode.i_flags & inode::EXT4_INLINE_DATA_FL != 0 {
+            let bs = self.sb.block_size as usize;
+            let mut block = alloc::vec![0u8; bs];
+            let off = file_blk as usize * bs;
+            let data = super::inline::read_inline_data(self, inode, off, bs)?;
+            block[..data.len()].copy_from_slice(&data);
+            return Ok(block);
+        }
         // Directory blocks are journaled metadata. Linux readers observe the
         // buffer-cache/shadow copy immediately after a namespace transaction;
         // bypassing it and reading the device directly exposes the old `..`
@@ -120,6 +128,15 @@ impl Mount {
         -> Result<Vec<u8>, MountError>
     {
         let bs = self.sb.block_size as usize;
+        if inode.i_flags & inode::EXT4_INLINE_DATA_FL != 0 {
+            let len = (n_blks as usize).checked_mul(bs).ok_or(MountError::BlockIo)?;
+            let mut out = alloc::vec![0u8; len];
+            let data = super::inline::read_inline_data(
+                self, inode, (first_blk as usize).checked_mul(bs).ok_or(MountError::BlockIo)?, len,
+            )?;
+            out[..data.len()].copy_from_slice(&data);
+            return Ok(out);
+        }
         let mut out = alloc::vec![0u8; (n_blks as usize) * bs]; // holes stay zero
         let end = first_blk.saturating_add(n_blks);
         let mut blk = first_blk;
