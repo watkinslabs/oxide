@@ -29,6 +29,8 @@ pub(crate) fn locality_cpu_count() -> u32 {
 use crate::gdt;
 use super::super::{Mount, MountError};
 
+mod reclaim;
+
 /// One contiguous tail reserved for regular-file data.
 pub(crate) struct InodePrealloc {
     pub(crate) logical_start: u32,
