@@ -30,6 +30,7 @@ pub(crate) struct DioState {
     remaining: AtomicU32,
     result_len: usize,
     write: bool,
+    sync_mode: vfs::SyncMode,
     invalidate_start: u64,
     invalidate_end: u64,
 }
@@ -64,6 +65,7 @@ impl DioState {
            result_len: usize, write: bool, invalidate_start: u64,
            invalidate_end: u64) -> Arc<Self>
     {
+        let sync_mode = io.sync_mode;
         Arc::new(Self {
             data,
             buf: Spinlock::new(io.buf),
@@ -73,6 +75,7 @@ impl DioState {
             remaining: AtomicU32::new(requests),
             result_len,
             write,
+            sync_mode,
             invalidate_start,
             invalidate_end,
         })
@@ -110,7 +113,9 @@ impl DioState {
         let result = self.error.lock().take()
             .map_or(Ok(self.result_len), Err);
         let buf = core::mem::take(&mut *self.buf.lock());
-        if let Some(done) = self.done.lock().take() { done(buf, result); }
+        if let Some(done) = self.done.lock().take() {
+            done(buf, result, self.sync_mode);
+        }
     }
 
     /// Device callbacks may run in interrupt/softirq context. Defer the

@@ -173,7 +173,7 @@ fn direct_probe() -> (Arc<sync::Spinlock<Option<(Vec<u8>, KResult<usize>)>, sync
     let slot: Arc<sync::Spinlock<Option<(Vec<u8>, KResult<usize>)>, sync::Inode>> =
         Arc::new(sync::Spinlock::new(None));
     let w = Arc::clone(&slot);
-    (slot, alloc::boxed::Box::new(move |buf, res| {
+    (slot, alloc::boxed::Box::new(move |buf, res, _sync| {
         let mut g = w.lock();
         assert!(g.is_none(), "a queued transfer completes exactly once");
         *g = Some((buf, res));
@@ -192,7 +192,7 @@ fn a_queued_direct_read_returns_without_completing() {
     let ops = vfs::lookup_blkdev(devt).unwrap();
     let (slot, done) = direct_probe();
     let r = ops.submit_direct(devt, vfs::file_ops::DirectIo {
-        write: false, off: 0, buf: vec![0u8; 512], done,
+        write: false, off: 0, buf: vec![0u8; 512], sync_mode: vfs::SyncMode::default(), done,
     });
     assert!(r.is_queued(), "the backend took the transfer");
     assert!(slot.lock().is_none(), "NOT completed by the submitting call");
@@ -218,7 +218,7 @@ fn a_queued_direct_write_lands_and_a_later_read_sees_it() {
     let ops = vfs::lookup_blkdev(devt).unwrap();
     let (wslot, done) = direct_probe();
     assert!(ops.submit_direct(devt, vfs::file_ops::DirectIo {
-        write: true, off: 512, buf: vec![0xA7u8; 512], done,
+        write: true, off: 512, buf: vec![0xA7u8; 512], sync_mode: vfs::SyncMode::default(), done,
     }).is_queued());
     assert!(wslot.lock().is_none());
     assert_eq!(ops.iopoll(devt), Some(1));
@@ -226,7 +226,7 @@ fn a_queued_direct_write_lands_and_a_later_read_sees_it() {
 
     let (rslot, done) = direct_probe();
     assert!(ops.submit_direct(devt, vfs::file_ops::DirectIo {
-        write: false, off: 512, buf: vec![0u8; 512], done,
+        write: false, off: 512, buf: vec![0u8; 512], sync_mode: vfs::SyncMode::default(), done,
     }).is_queued());
     assert_eq!(ops.iopoll(devt), Some(1));
     let g = rslot.lock();
@@ -245,7 +245,7 @@ fn a_refused_direct_transfer_queues_nothing() {
     let ops = vfs::lookup_blkdev(devt).unwrap();
     let (slot, done) = direct_probe();
     let r = ops.submit_direct(devt, vfs::file_ops::DirectIo {
-        write: false, off: 1, buf: vec![0u8; 512], done,
+        write: false, off: 1, buf: vec![0u8; 512], sync_mode: vfs::SyncMode::default(), done,
     });
     assert!(matches!(r, vfs::file_ops::DirectSubmit::Failed(vfs::types::VfsError::Einval)));
     assert!(slot.lock().is_none(), "a refusal does not run the completion");
@@ -264,7 +264,7 @@ fn an_unpollable_backend_hands_the_direct_request_back() {
     let ops = vfs::lookup_blkdev(devt).unwrap();
     let (slot, done) = direct_probe();
     let r = ops.submit_direct(devt, vfs::file_ops::DirectIo {
-        write: false, off: 0, buf: vec![0u8; 512], done,
+        write: false, off: 0, buf: vec![0u8; 512], sync_mode: vfs::SyncMode::default(), done,
     });
     match r {
         vfs::file_ops::DirectSubmit::Unsupported(io) => assert_eq!(io.len(), 512),
@@ -289,7 +289,7 @@ fn f_op_submit_direct_on_an_open_block_description_reaches_the_driver() {
     file.open_hook().expect("block description opens");
     let (slot, done) = direct_probe();
     assert!(file.submit_direct(vfs::file_ops::DirectIo {
-        write: false, off: 0, buf: vec![0u8; 1024], done,
+        write: false, off: 0, buf: vec![0u8; 1024], sync_mode: vfs::SyncMode::default(), done,
     }).is_queued(), "f_op->submit_direct reaches the driver's queue");
     assert!(slot.lock().is_none(), "still outstanding after the submitting call");
     assert_eq!(file.iopoll(), Some(1));
@@ -356,7 +356,7 @@ fn a_direct_transfer_tells_the_driver_a_poller_will_reap_it() {
     let (_slot, done) = direct_probe();
 
     assert!(ops.submit_direct(devt, vfs::file_ops::DirectIo {
-        write: false, off: 0, buf: vec![0u8; 512], done,
+        write: false, off: 0, buf: vec![0u8; 512], sync_mode: vfs::SyncMode::default(), done,
     }).is_queued());
 
     assert!(dev.all_marked_polled(), "the direct path marks its transfer polled");

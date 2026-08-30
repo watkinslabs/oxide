@@ -12,7 +12,7 @@ use block::{BlockCompletion, BlockDevice, BlockError, BlockOp, BlockRequest, Mem
 use sync::{Spinlock, TaskList};
 use vfs::fs::FileSystem;
 use vfs::file_ops::{DirectIo, DirectSubmit};
-use vfs::{Dentry, File, OpenFlags, SuperBlock, VfsError};
+use vfs::{Dentry, File, OpenFlags, SuperBlock, SyncMode, VfsError};
 
 const IMAGE: &[u8] = include_bytes!("mini.img");
 const SECTOR: u32 = 512;
@@ -95,17 +95,20 @@ fn polled_write_completes_only_after_device_poll_and_invalidates_cache() {
     let mut cached = alloc::vec![0u8; bs];
     inode.read(&mut cached).expect("fault cache");
 
-    let result = Arc::new(Spinlock::<Option<(Vec<u8>, Result<usize, VfsError>)>, TaskList>::new(None));
+    let result = Arc::new(Spinlock::<Option<(Vec<u8>, Result<usize, VfsError>, SyncMode)>, TaskList>::new(None));
     let slot = result.clone();
     let direct = File::new(inode.inode().clone(), Dentry::new_root(inode.inode().clone()), OpenFlags::O_RDWR | OpenFlags::O_DIRECT);
     let replacement = alloc::vec![0xE7u8; bs];
     assert!(matches!(direct.submit_direct(DirectIo {
         write: true, off: 0, buf: replacement.clone(),
-        done: alloc::boxed::Box::new(move |buf, res| { *slot.lock() = Some((buf, res)); }),
+        sync_mode: SyncMode { dsync: true, sync: false },
+        done: alloc::boxed::Box::new(move |buf, res, sync| { *slot.lock() = Some((buf, res, sync)); }),
     }), DirectSubmit::Queued));
     assert!(result.lock().is_none(), "device completion is deferred until poll");
     assert_eq!(direct.iopoll(), Some(1));
     assert_eq!(result.lock().as_ref().expect("completion").1, Ok(bs));
+    assert_eq!(result.lock().as_ref().expect("completion").2,
+        SyncMode { dsync: true, sync: false });
 
     inode.set_pos(0);
     let mut got = alloc::vec![0u8; bs];
@@ -125,7 +128,8 @@ fn polled_write_error_reaches_the_completion_owner() {
     disk.fail_next();
     assert!(matches!(direct.submit_direct(DirectIo {
         write: true, off: 0, buf: alloc::vec![0xF4u8; bs],
-        done: alloc::boxed::Box::new(move |_buf, res| { *slot.lock() = Some(res); }),
+        sync_mode: SyncMode::default(),
+        done: alloc::boxed::Box::new(move |_buf, res, _sync| { *slot.lock() = Some(res); }),
     }), DirectSubmit::Queued));
     assert!(result.lock().is_none());
     assert_eq!(direct.iopoll(), Some(1));

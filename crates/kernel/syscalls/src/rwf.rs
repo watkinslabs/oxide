@@ -74,6 +74,20 @@ pub struct RwEffect {
     pub sync: bool,
 }
 
+/// Resolve one io_uring or vectored-I/O flag word against the open
+/// description's actual capabilities. This is the single admission owner for
+/// `RWF_*`; callers must carry the returned effect into asynchronous completion
+/// instead of reconstructing it from the file later. # C: O(1)
+pub fn rwf_effect(file: &vfs::File, flags: u64, dir: RwDir) -> Result<RwEffect, Errno> {
+    let caps = RwCaps {
+        nowait: file.f_mode().contains(vfs::Fmode::NOWAIT),
+        o_append: file.flags().contains(vfs::OpenFlags::O_APPEND),
+        inode_append_only: vfs::inode::is_append(file.inode()),
+        ..RwCaps::default()
+    };
+    kiocb_set_rw_flags(flags, dir, &caps)
+}
+
 /// `kiocb_set_rw_flags()` in Linux's exact
 /// order. Every rejection is `EOPNOTSUPP` except the APPEND/NOAPPEND conflict
 /// (`EINVAL`) and the append-only-inode override (`EPERM`).

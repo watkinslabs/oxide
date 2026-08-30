@@ -239,9 +239,9 @@ impl BlockDevOps for DiskBlkOps {
             Ok(p) => p,
             Err(e) => return DirectSubmit::Failed(e),
         };
-        let vfs::file_ops::DirectIo { write, buf, done, .. } = io;
+        let vfs::file_ops::DirectIo { write, buf, done, sync_mode, .. } = io;
         let (start_block, len_blocks, bytes) = match plan {
-            crate::direct::Plan::Done(n) => { done(buf, Ok(n)); return DirectSubmit::Queued; }
+            crate::direct::Plan::Done(n) => { done(buf, Ok(n), sync_mode); return DirectSubmit::Queued; }
             crate::direct::Plan::Io { start_block, len_blocks, bytes } => (start_block, len_blocks, bytes),
         };
         let mut request = BlockRequest {
@@ -260,7 +260,7 @@ impl BlockDevOps for DiskBlkOps {
         request.buffer.truncate(bytes);
         if !write && request.buffer.len() < bytes { request.buffer.resize(bytes, 0); }
         self.disk.dev.submit(request, alloc::boxed::Box::new(move |req: BlockRequest, res: BlockResult<()>| {
-            done(req.buffer, res.map(|()| bytes).map_err(block_err));
+            done(req.buffer, res.map(|()| bytes).map_err(block_err), sync_mode);
         }));
         DirectSubmit::Queued
     }

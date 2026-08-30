@@ -41,10 +41,11 @@ synchronous owners. Scalar, vectored, fixed-buffer, and fixed-vector io_uring
 operands all use the same filesystem alignment contract. The shared VFS
 completion owner now runs queued-write notification and `O_SYNC`/`O_DSYNC`
 durability after device success, with sync errors carried into the CQE. E4-10
-stays IN-PROGRESS pending timestamp/RWF-sync coverage and the remaining
-layout-specific owners. The real-image `dio_polled_image` harness now proves
-that a genuinely deferred device completion reaches both the success and
-error owners, while `frame_coherency_image` proves mapped-page invalidation.
+stays IN-PROGRESS pending focused io_uring timestamp/RWF-sync coverage and the
+remaining layout-specific owners. The per-operation sync mode now travels with
+the owned DIO transfer through the filesystem and block completion owners;
+`dio_polled_image` pins that transport, while `frame_coherency_image` proves
+mapped-page invalidation.
 | E4-16 | DONE | Historical ext4 rows are explicitly historical, mapped to the E4 inventory, and no longer carry stale pending SHAs or old current-suite counts. | baseline only | corrected rows map to an E4 item or retain explicit evidence |
 
 ## 3 — supported mode contract
