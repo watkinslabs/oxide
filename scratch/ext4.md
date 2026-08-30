@@ -274,6 +274,14 @@ shape. Focused mount-image coverage, the full ext4 matrix, and both architecture
 checks pass. The GNOME-marker harness did not reach a valid desktop sample, so
 no aggregate speed gain is claimed yet.
 
+B2995 runtime/perf evidence: the merged tree passes GNOME userspace probes on
+both x86_64 and AArch64 SMP=1. One standard instrumented x86_64 run reached
+the GNOME marker at 32 seconds and measured 1,368,741 syscalls, 5,706 ms CPU,
+4,169 ns average, and `newfstatat` at 12,255 ns (16x host). Its repeat hit the
+known dbus/GDM resources/EIO failure before the marker, so it is retained as
+non-comparable; no whole-boot gain is claimed until successful repeats are
+available.
+
 ## 5 — phase gate
 
 Every execution item must pass:
