@@ -272,6 +272,14 @@ fn lookup_in_dir_missing_returns_notfound() {
 }
 
 #[test]
+fn dot_lookup_does_not_scan_the_directory() {
+    let m = ext4::Mount::open(build_disk()).expect("mount");
+    let root = m.read_inode(2).expect("read root");
+    assert_eq!(m.lookup_in_dir(&root, b"."), Ok(2));
+    assert_eq!(m.lookup_in_dir(&root, b".."), Ok(2));
+}
+
+#[test]
 fn open_refuses_unsupported_incompat_feature() {
     // Set an unknown INCOMPAT bit in the SB. The feature gate must refuse the
     // mount rather than misinterpret it (Linux EXT4_FEATURE_INCOMPAT_SUPP).
