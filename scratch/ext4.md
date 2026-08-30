@@ -82,7 +82,7 @@ the owned DIO transfer through the filesystem and block completion owners;
 conversion, and that transport, while `frame_coherency_image` proves mapped-page
 invalidation.
 | E4-16 | DONE | Historical ext4 rows are explicitly historical, mapped to the E4 inventory, and no longer carry stale pending SHAs or old current-suite counts. | baseline only | corrected rows map to an E4 item or retain explicit evidence |
-| E4-17 | OPEN | The multiblock allocator has the canonical bitmap, free-order, fragment-order, locality-PA, inode-PA, stream-goal, and bounded candidate owners, but it does not yet cover the remaining Linux mballoc scan/preallocation lifecycle and heuristics. The current bitmap remains authoritative; no parallel allocator state may be introduced. | E4-07 | Reference-shaped scan/preallocation lifecycle tests, fragmentation and ENOSPC matrix, e2fsck-clean images, and both-arch smoke/perf evidence |
+| E4-17 | DONE | The multiblock allocator now keeps the canonical bitmap, free-order, fragment-order, locality-PA, inode-PA, stream-goal, and bounded candidate owners. Locality PAs retain a Linux-shaped busy/reserved prefix through durable claim, partial consumption, rebucketing, and abort; the on-disk bitmap remains authoritative and no parallel allocator state was introduced. | E4-07 | 401 unit tests, complete ext4 image matrix, fragmentation/ENOSPC and e2fsck coverage, both-architecture checks, and both-arch smoke |
 
 ## 3 — supported mode contract
 
@@ -257,10 +257,13 @@ selection summaries. B3004 adds a bounded indexed candidate pass before the
 bitmap fallback; B3005 preserves physical-goal-first ordering; B3006 makes
 locality-PA reclaim follow filesystem group order; B3007 filters PA masking to
 the target group; B3010 makes inode-PA reclaim follow the same group order.
-Remaining work is the remaining Linux request normalization and buddy/bitmap
-state-transition fidelity for partial PA consumption. The on-disk bitmap
-remains the authority; summaries are rebuilt or invalidated at every
-transaction boundary and never become a second allocation truth.
+The Linux request normalization and partial-PA state-transition gap is closed.
+Locality PAs retain their canonical object while a request is in flight, expose
+only their unreserved suffix to competing requests, decrement busy ownership
+after a successful claim, and release ownership without consuming blocks on
+abort. The on-disk bitmap remains the authority; summaries are rebuilt or
+invalidated at every transaction boundary and never become a second allocation
+truth. B3014 adds the state-machine and full image evidence.
 
 Exit: focused allocator state-machine tests, fragmentation/ENOSPC and
 e2fsck-clean image coverage, both architecture checks, and both-arch smoke.
