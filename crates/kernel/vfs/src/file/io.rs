@@ -14,10 +14,11 @@ impl File {
     /// has reported success. Linux's asynchronous direct-I/O completion runs
     /// the write notification and `generic_write_sync` after the bytes land,
     /// not when the request is merely admitted. # C: O(1) or O(dirty range)
-    pub fn complete_direct_write(&self, off: u64, count: usize) -> KResult<()> {
+    pub fn complete_direct_write(&self, off: u64, count: usize, extra: crate::file::SyncMode)
+        -> KResult<()> {
         if count == 0 { return Ok(()); }
         super::fire_write_hook(&self.inode, &self.dentry);
-        self.generic_write_sync(off + count as u64, count, crate::file::SyncMode::default())
+        self.generic_write_sync(off + count as u64, count, extra)
     }
 
     /// Validate the userspace portion of an `O_DIRECT` request before the

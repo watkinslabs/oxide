@@ -9,8 +9,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
 use crate::iov::{import_iovec, IovDir};
-use crate::rwf::{kiocb_set_rw_flags, pos_from_hilo, preadv_pos, PreadvPos, RwCaps, RwDir,
-    RwEffect, UIO_MAXIOV};
+use crate::rwf::{pos_from_hilo, preadv_pos, rwf_effect, PreadvPos, RwDir, UIO_MAXIOV};
 
 fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
 fn errno_vfs(e: vfs::VfsError) -> i64 { -(e as i64) }
@@ -104,9 +103,9 @@ fn positional_pwritev(args: &SyscallArgs, mut off: u64, flags: u64) -> i64 {
             None => { let r = errno(Errno::Einval); cur.account_write_result(r); return r; }
         };
     }
-    let eff = match rwf_effect(&file, flags) {
+    let eff = match rwf_effect(&file, flags, RwDir::Write) {
         Ok(e)  => e,
-        Err(e) => { cur.account_write_result(e); return e; }
+        Err(e) => { let r = errno(e); cur.account_write_result(r); return r; }
     };
     let want: u64 = ranges.iter().map(|(_, l)| *l as u64).sum();
     if let Err(e) = ::fs::inotify::check_file_area_perm(&file.inode(), true, Some(off), want) {
@@ -170,7 +169,10 @@ fn current_offset_writev(args: &SyscallArgs, flags: u64) -> i64 {
     let Some(fdt) = (unsafe { cur.fd_table_ref() }) else { return errno(Errno::Ebadf) };
     let fdt = fdt.as_ref();
     let Ok(file) = fdt.get(args.a0 as i32) else { return errno(Errno::Ebadf) };
-    let eff = match rwf_effect(&file, flags) { Ok(e) => e, Err(e) => return e };
+    let eff = match rwf_effect(&file, flags, RwDir::Write) {
+        Ok(e) => e,
+        Err(e) => return errno(e),
+    };
     let n = crate::s020_writev::sys_writev(args);
     if n <= 0 || !eff.dsync { return n; }
     // The bytes ended at the description's post-write cursor.
@@ -193,16 +195,4 @@ fn rwf_write_sync(file: &vfs::File, end_pos: u64, written: u64, extra: vfs::Sync
     -> Result<(), i64>
 {
     file.generic_write_sync(end_pos, written as usize, extra).map_err(|e| -(e as i64))
-}
-
-/// Run the write-side `kiocb_set_rw_flags` ladder against the description's
-/// real capabilities. Returns `Err(-errno)` on rejection. # C: O(1)
-fn rwf_effect(file: &vfs::File, flags: u64) -> Result<RwEffect, i64> {
-    let caps = RwCaps {
-        nowait: file.f_mode().contains(vfs::Fmode::NOWAIT),
-        o_append: file.flags().contains(vfs::OpenFlags::O_APPEND),
-        inode_append_only: vfs::inode::is_append(file.inode()),
-        ..RwCaps::default()
-    };
-    kiocb_set_rw_flags(flags, RwDir::Write, &caps).map_err(|e| errno(e))
 }

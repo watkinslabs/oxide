@@ -42,6 +42,7 @@ use sync::{Spinlock, TaskList as QueuedLockClass};
 use crate::io_uring_abi::recvsend::fixed::window;
 use crate::io_uring_abi::iopoll::{admit_rw, is_write, RwTarget};
 use crate::io_uring_abi::iopoll::seq::{reap_pass, ReapSet, Taken};
+use crate::rwf::{rwf_effect, RwDir};
 
 use super::super::req::IoReq;
 
@@ -275,10 +276,14 @@ pub fn prepare(req: &Arc<IoReq>) -> Result<(), Errno> {
 /// # C: O(len)
 fn try_prepare(req: &Arc<IoReq>) -> Result<(), Errno> {
     let file = resolve(req.sqe.fd)?;
+    let write = is_write(req.sqe.opcode);
+    let effect = rwf_effect(&file, req.sqe.op_flags as u64,
+        if write { RwDir::Write } else { RwDir::Read })?;
     let (sink, len) = sink_of(req)?;
     if file.flags().contains(vfs::OpenFlags::O_DIRECT)
         && matches!(file.inode().file_type(), vfs::FileType::Regular) {
-        let mut off = if req.sqe.off == u64::MAX { file.pos() } else { req.sqe.off };
+        let mut off = if effect.append { file.inode().size() }
+            else if req.sqe.off == u64::MAX { file.pos() } else { req.sqe.off };
         if (off as i64) < 0 { return Err(Errno::Einval); }
         match &sink {
             Sink::User(segs) => {
@@ -303,13 +308,15 @@ fn try_prepare(req: &Arc<IoReq>) -> Result<(), Errno> {
             }
         }
     }
-    let buf = if is_write(req.sqe.opcode) { gather(&sink, len)? } else {
+    let buf = if write { gather(&sink, len)? } else {
         let mut v: Vec<u8> = Vec::new();
         v.try_reserve(len).map_err(|_| Errno::Enomem)?;
         v.resize(len, 0);
         v
     };
-    let q = Queued::new(sink, if req.sqe.off == u64::MAX { file.pos() } else { req.sqe.off });
+    let off = if effect.append { file.inode().size() }
+        else if req.sqe.off == u64::MAX { file.pos() } else { req.sqe.off };
+    let q = Queued::new(sink, off);
     let mut g = req.inner.lock();
     g.iopoll_file = Some(file);
     g.iopoll_buf = Some(buf);
@@ -338,19 +345,24 @@ pub fn issue(req: &Arc<IoReq>) -> Result<bool, Errno> {
         (file, buf, q)
     };
     let sink = Arc::clone(&q);
-    let off = if req.sqe.off == u64::MAX { file.pos() } else { req.sqe.off };
+    let completion_write = is_write(req.sqe.opcode);
+    let effect = rwf_effect(&file, req.sqe.op_flags as u64, if completion_write {
+        RwDir::Write
+    } else { RwDir::Read })?;
+    let off = if effect.append { file.inode().size() }
+        else if req.sqe.off == u64::MAX { file.pos() } else { req.sqe.off };
     let completion_file = Arc::clone(&file);
     let completion_off = off;
-    let completion_write = is_write(req.sqe.opcode);
     q.issued_at.store(timekeeper::monotonic_ns(), Ordering::Release);
     let io = DirectIo {
         write: completion_write,
         off,
         buf,
-        done: alloc::boxed::Box::new(move |buf, res| {
+        sync_mode: vfs::SyncMode { dsync: effect.dsync, sync: effect.sync },
+        done: alloc::boxed::Box::new(move |buf, res, sync_mode| {
             let res = if completion_write {
                 match res {
-                    Ok(n) => completion_file.complete_direct_write(completion_off, n)
+                    Ok(n) => completion_file.complete_direct_write(completion_off, n, sync_mode)
                         .map(|()| n),
                     Err(e) => Err(e),
                 }

@@ -16,14 +16,15 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
+use crate::file::SyncMode;
 use crate::types::VfsError;
 
-/// What runs when a queued direct transfer finishes: the buffer it owned, and
-/// how many bytes moved (or why none did).
+/// What runs when a queued direct transfer finishes: the buffer it owned, how
+/// many bytes moved (or why none did), and the per-operation sync mode.
 ///
 /// `Send` because it runs from wherever the backend's completion path runs —
 /// a driver's used-ring drain, a softirq, or the poll that reaped it.
-pub type DirectDone = Box<dyn FnOnce(Vec<u8>, Result<usize, VfsError>) + Send>;
+pub type DirectDone = Box<dyn FnOnce(Vec<u8>, Result<usize, VfsError>, SyncMode) + Send>;
 
 /// One direct transfer to queue.
 pub struct DirectIo {
@@ -34,6 +35,10 @@ pub struct DirectIo {
     /// The write payload, or the landing zone a read fills. Its length is the
     /// transfer length; a backend never resizes it.
     pub buf: Vec<u8>,
+    /// Per-operation durability requested by the caller. This is carried
+    /// with the owned transfer until completion, matching the kiocb flags
+    /// Linux retains across asynchronous direct I/O.
+    pub sync_mode: SyncMode,
     /// Runs exactly once, unless the submission was refused.
     pub done: DirectDone,
 }
