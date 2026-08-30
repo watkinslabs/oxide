@@ -81,6 +81,7 @@ that artifact is regenerated.
 | B2997 slow-link cache-r1 / working tree | 1,174,453 | 5,129 | 4,367 | 12,854 | — | 7,880 | 329 | 3,335 | valid GNOME Shell marker; Linux-shaped slow-symlink body cache; symlink phase 2,136 ms -> 322 ms; workload had fewer syscalls, so no aggregate gain claimed |
 | B2997 slow-link cache-r2 / working tree | 1,369,009 | 5,733 | 4,187 | 11,833 | — | 8,020 | 284 | 3,539 | valid GNOME Shell marker; same cache; symlink phase 2,136 ms -> 271 ms; aggregate remains within variance, no whole-boot gain claimed |
 | B2998 merged-main / `ab4e7942b` | 1,369,358 | 5,633 | 4,114 | 12,173 | — | 8,120 | 255 | 3,156 | fresh merged-main `make perf-report SMP=1`; GNOME Shell marker at 32s; symlink phase 380 ms; aggregate remains within variance, no whole-boot gain claimed |
+| B3000 merged-main audit / `f6d89eca1` | 1,174,464 | 5,166 | 4,398 | 12,492 | — | 8,100 | 238 | 2,814 | fresh `make perf-report SMP=1`; GNOME Shell marker complete at 28s; 53 flushes; workload had fewer syscalls, so no aggregate gain claimed; `newfstatat` remains the leading measured syscall |
 
 The B2709 `munmap` result is a material improvement over B2699: 71,407 ns
 to 21,426 ns (about 70% lower), and 52x to 16x the host baseline. The B2708
