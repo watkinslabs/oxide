@@ -82,6 +82,7 @@ the owned DIO transfer through the filesystem and block completion owners;
 conversion, and that transport, while `frame_coherency_image` proves mapped-page
 invalidation.
 | E4-16 | DONE | Historical ext4 rows are explicitly historical, mapped to the E4 inventory, and no longer carry stale pending SHAs or old current-suite counts. | baseline only | corrected rows map to an E4 item or retain explicit evidence |
+| E4-17 | OPEN | The multiblock allocator has the canonical bitmap, free-order, fragment-order, locality-PA, inode-PA, stream-goal, and bounded candidate owners, but it does not yet cover the remaining Linux mballoc scan/preallocation lifecycle and heuristics. The current bitmap remains authoritative; no parallel allocator state may be introduced. | E4-07 | Reference-shaped scan/preallocation lifecycle tests, fragmentation and ENOSPC matrix, e2fsck-clean images, and both-arch smoke/perf evidence |
 
 ## 3 — supported mode contract
 
@@ -249,7 +250,22 @@ harness boot before any performance claim.
 
 Exit: each claimed gain has a reproducible before/after measurement; no correctness regression is traded for speed.
 
-### 4.9 preserved performance history
+### 4.9 E4-17: finish the remaining mballoc lifecycle
+
+The current allocator has the right ownership boundary and several Linux
+selection summaries, but `alloc_blocks_for_inode` still performs a full
+group walk and `try_alloc_run_in_group` still scans a raw bitmap for every
+candidate. Extend the existing summary owner in dependency order: first
+bounded group-candidate selection, then buddy/bitmap lifecycle transitions
+for inode and locality preallocations, then discard/reclaim ordering and
+the remaining Linux request normalization. The on-disk bitmap remains the
+authority; summaries are rebuilt or invalidated at every transaction
+boundary and never become a second allocation truth.
+
+Exit: focused allocator state-machine tests, fragmentation/ENOSPC and
+e2fsck-clean image coverage, both architecture checks, and both-arch smoke.
+
+### 4.10 preserved performance history
 
 The rows below are intentionally kept as a comparison series. They are not
 interchangeable workloads: each is a real GNOME boot with `SMP=1`, and normal

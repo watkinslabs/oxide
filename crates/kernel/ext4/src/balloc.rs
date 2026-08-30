@@ -239,6 +239,18 @@ impl Mount {
     /// of this same truth, free to disagree with it after any allocation.
     /// # C: O(N_groups)
     fn freest_group(&self, groups: u32) -> Option<(u32, u64)> {
+        // The optimized mballoc path maintains this order index as bitmap
+        // ownership changes. Consult it first, matching Linux's xarray scan;
+        // rebuilding a ranking from every descriptor here made each
+        // allocation O(N_groups) even after the mount had loaded summaries.
+        if let Some(best) = {
+            let s = self.state.lock();
+            scan::indexed_freest_group(&s.group_free_order_index, groups)
+        } {
+            return Some(best);
+        }
+        // Before the first bitmap summary is published, retain the descriptor
+        // fallback so optimized scan still has a useful start group.
         let gdt = self.read_gdt_bytes().ok()?;
         let s = self.state.lock();
         let mut best: Option<(u32, u64)> = None;
