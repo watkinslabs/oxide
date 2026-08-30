@@ -388,6 +388,17 @@ B2998 runtime evidence: the merged `main` tree reached GNOME Shell in a fresh
 This is a third valid post-cache sample, but the aggregate remains within
 harness variance, so E4-08 and E4-10 are not closed by this measurement.
 
+Current controlled perf sample (2026-08-30): `make perf-report SMP=1` reached
+GNOME Shell in 36 seconds and measured 1,368,471 syscalls, 6,386 ms CPU, and
+4,667 ns average. The largest compared ratios were `recvfrom` 20x,
+`newfstatat` 16x, `munmap` 16x, `recvmsg` 13x, and absent-page write faults
+13x. Ext4/VFS phase attribution names the remaining filesystem-side owner:
+contended parent `i_rwsem` acquisition averaged 293 us on slow lookups,
+exclusive inode hold averaged 698 us, ext4 linear lookup averaged 124 us, and
+the backend lookup averaged 67 us. This is the input for the next
+dependency-ordered mutation critical-section audit; it is not a whole-boot
+gain claim.
+
 ## 5 — phase gate
 
 Every execution item must pass:
