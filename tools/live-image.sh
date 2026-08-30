@@ -97,6 +97,13 @@ fi
 # overlay above it is what a remount touches.
 cmdline="BOOT_IMAGE=/boot/${boot_name} root=PARTLABEL=${ROOT_LABEL}"
 cmdline="$cmdline rootfstype=squashfs rootovl=tmpfs rw"
+# Run the real init system. The slim squashfs carries a bash /init that starts
+# X and loops a shell, and the kernel prefers /init when one exists -- so a
+# live boot ran no init system at all: no networkd, no resolved, no DHCP, no
+# name resolution, and none of the service enablement the image was composed
+# with. A distributable image has to be the same system the disk image is.
+# OXIDE_LIVE_MINIMAL_INIT=1 selects the bash session instead.
+[ -n "${OXIDE_LIVE_MINIMAL_INIT:-}" ] || cmdline="$cmdline init=/lib/systemd/systemd"
 cmdline="$cmdline earlycon printk.time=1"
 cmdline="$cmdline systemd.log_target=kmsg systemd.journald.forward_to_kmsg=1"
 cmdline="$cmdline sysctl.kernel.sysrq=1 sysrq_always_enabled enforcing=0"
@@ -152,4 +159,22 @@ sgdisk -i "$ROOT_PART" "$out.new" | grep -q "name: '${ROOT_LABEL}'" \
 
 mv -f "$out.new" "$out"
 echo "==> done: $out ($(du -h "$out" | cut -f1))"
-echo "    boot it:  qemu-system-x86_64 -m 2048 -drive file=$out,format=raw,if=virtio"
+# The hint has to be a command that WORKS. `-drive if=virtio` on QEMU's default
+# `pc` machine builds a LEGACY virtio-blk the kernel does not bind, so the guest
+# reaches "requested root block device not found" and panics -- which reads as a
+# broken image to anyone who downloaded it and ran the line we printed.
+if [ "$arch" = x86_64 ]; then
+  cat <<HINT
+    boot it:  qemu-system-x86_64 -enable-kvm -machine q35 -m 2048 \\
+                -drive file=$out,format=raw,if=none,id=root \\
+                -device virtio-blk-pci,drive=root,bus=pcie.0,disable-legacy=on \\
+                -netdev user,id=n0 -device virtio-net-pci,netdev=n0,bus=pcie.0,disable-legacy=on
+HINT
+else
+  cat <<HINT
+    boot it:  qemu-system-aarch64 -machine virt -cpu max -m 2048 \\
+                -drive file=$out,format=raw,if=none,id=root \\
+                -device virtio-blk-pci,drive=root,disable-legacy=on \\
+                -netdev user,id=n0 -device virtio-net-pci,netdev=n0,disable-legacy=on
+HINT
+fi

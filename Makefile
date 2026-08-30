@@ -51,7 +51,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
 .PHONY: all build x86 arm kpi-layout \
         build-debug x86-debug arm-debug \
         test lint lint-ratchet lint-ratchet-update audit-counts profile-policy warnings-control stats ci \
-        nano nano-arm micro micro-arm gnome gnome-arm lite live live-x86 live-arm \
+        nano nano-arm micro micro-arm gnome gnome-arm lite live live-x86 live-arm dist \
         qemu-x86 qemu-arm qemu-x86-virtio-gpu qemu-x86-image qemu-arm-image qemu-x86-existing qemu-arm-existing qemu-x86-debug qemu-arm-debug qemu-mcp verify-native-q35 smoke-native-pci-x86 smoke-native-pci-e1000-x86 \
         hardware-audit-image-x86 \
         boot-debug-x86 boot-debug-arm smoke-debug smoke-debug-x86 smoke-debug-arm smoke-taskdump-arm \
@@ -277,6 +277,13 @@ live-arm:
 	$(XTASK) kernel --arch aarch64 $(if $(FEATURES),--features "$(FEATURES)",)
 	$(XTASK) artifacts --arch aarch64
 	./tools/live-image.sh $(LIVE_PROFILE) aarch64
+# Downloadable images: one bootable file per profile, 7z'd into dist/ with
+# checksums, which is what a web repo serves. `make dist PROFILES="micro nano"
+# ARCHES="x86_64 aarch64"`; both the archive and the raw image are staged.
+PROFILES ?= micro nano
+dist:
+	ARCHES="$(ARCHES)" DIST="$(DIST)" VERSION="$(VERSION)" ./tools/dist-live.sh $(PROFILES)
+
 micro-arm:
 	OXIDE_QUICKBOOT_PROFILE=micro $(XTASK) grub --arch aarch64 --smp $(SMP) --id micro
 nano-arm:
