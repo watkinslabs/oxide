@@ -73,7 +73,7 @@ that artifact is regenerated.
 
 | B2927 merged-main control / `cce11f519` | 1,368,738 | 6,478 | 4,733 | 23,846 | — | 11,365 | 317 | 4,394 | fresh merged-main control after htree owner fix; GNOME Shell marker complete at 37.2s; colord SQLite disk-I/O error still reproduced; no whole-boot gain attributed to B2927 |
 | B2929 fast-symlink guarded / working tree | 1,368,794 | 6,004 | 4,386 | 22,572 | — | 10,972 | 264 | 3,601 | Linux i_link cache with EXT4_INLINE_DATA_FL guard; GNOME Shell marker complete at 33.6s; symlink phase 2,197ms -> 2,080ms; colord SQLite disk-I/O error still reproduced; no whole-boot gain claimed |
-| B2938 merged-main / `4abcffe39` | 1,368,365 | 5,826 | 4,258 | 21,718 | — | 12,439 | 252 | 3,036 | bounded Linux-shaped linear-directory readahead through the canonical metadata cache; GNOME Shell marker complete at 31.9s; one run only, no aggregate gain claimed |
+| B2938 merged-main / `4abcffe39` | 1,368,365/1,369,505 | 5,826/5,623 | 4,258/4,106 | 21,718/21,349 | — | 12,439/12,700 | 252/335 | 3,036/3,155 | bounded Linux-shaped linear-directory readahead through the canonical metadata cache; two GNOME/SMP=1 runs reached GNOME Shell at 31.9/30.9s; ext4 linear phase 119,790/118,892 ns, no aggregate gain claimed |
 
 The B2709 `munmap` result is a material improvement over B2699: 71,407 ns
 to 21,426 ns (about 70% lower), and 52x to 16x the host baseline. The B2708
