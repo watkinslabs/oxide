@@ -88,6 +88,17 @@ fn contiguous_run_honors_linux_satisfied_scan_limit() {
 }
 
 #[test]
+fn goal_run_is_used_only_when_the_requested_extent_is_free() {
+    let bitmap = [0b0000_0011, 0b0000_0000];
+    assert_eq!(find_goal_run(&bitmap, 16, 3, 0, 4, 0), Some(4));
+    assert_eq!(find_goal_run(&bitmap, 16, 3, 0, 1, 0), None,
+        "a used goal cannot bypass the normal scan");
+    assert_eq!(find_goal_run(&bitmap, 16, 3, 0, 4, 4), Some(4));
+    assert_eq!(find_goal_run(&bitmap, 16, 8, 0, 4, 8), None,
+        "a stripe-sized request keeps its physical alignment");
+}
+
+#[test]
 fn first_clear_zero_max() {
     assert_eq!(find_first_clear(&[0x00; 4], 0), None);
 }
