@@ -5,6 +5,7 @@
 // socket, where a positional read has no meaning.
 
 use alloc::sync::Arc;
+use alloc::vec;
 
 use syscall::errno::Errno;
 use vfs::File;
@@ -89,6 +90,7 @@ fn hipri_of(op: &Op) -> bool {
 pub fn read(op: &Op) -> i64 {
     if let Err(e) = attr_admission(op) { return e; }
     if let Err(e) = polled_admission(op, false) { return e; }
+    if op.sqe.op_flags != 0 { return scalar_with_rwf(op, false); }
     if op.sqe.off == CUR_POS {
         call(crate::s000_read::sys_read, [op.fd as u64, op.addr, op.len as u64, 0, 0, 0])
     } else {
@@ -101,11 +103,73 @@ pub fn read(op: &Op) -> i64 {
 pub fn write(op: &Op) -> i64 {
     if let Err(e) = attr_admission(op) { return e; }
     if let Err(e) = polled_admission(op, false) { return e; }
+    if op.sqe.op_flags != 0 { return scalar_with_rwf(op, true); }
     if op.sqe.off == CUR_POS {
         call(crate::s001_write::sys_write, [op.fd as u64, op.addr, op.len as u64, 0, 0, 0])
     } else {
         call(crate::s018_pwrite64::sys_pwrite64, [op.fd as u64, op.addr, op.len as u64, op.sqe.off, 0, 0])
     }
+}
+
+/// Scalar io_uring reads and writes carry the same `rw_flags` word as the
+/// vectored operations.  Keep their execution on the same VFS/RWF owner as
+/// `preadv2`/`pwritev2`; routing a non-zero word through plain read/pwrite
+/// silently discarded NOWAIT, APPEND and per-operation durability.
+fn scalar_with_rwf(op: &Op, write: bool) -> i64 {
+    let file = match file_of(op.fd) { Ok(f) => f, Err(e) => return e };
+    let dir = if write { crate::rwf::RwDir::Write } else { crate::rwf::RwDir::Read };
+    let effect = match crate::rwf::rwf_effect(&file, op.sqe.op_flags as u64, dir) {
+        Ok(v) => v,
+        Err(e) => return err(e),
+    };
+    let mut len = op.sqe.len as usize;
+    if len == 0 { return 0; }
+    if write {
+        if !file.f_mode().contains(vfs::Fmode::WRITE) { return err(Errno::Ebadf); }
+        if let Err(e) = crate::userbuf::validate_user_buf_readable(op.addr, len as u64, 1) {
+            return e;
+        }
+    } else {
+        if !file.f_mode().contains(vfs::Fmode::READ) { return err(Errno::Ebadf); }
+        if let Err(e) = crate::userbuf::validate_user_buf_writable(op.addr, len as u64, 1) {
+            return e;
+        }
+    }
+    len = crate::userbuf::clamp_rw_count(len);
+    let current = op.sqe.off == CUR_POS;
+    let requested = if current { file.pos() } else { op.sqe.off };
+    if !current && (requested as i64) < 0 { return err(Errno::Einval); }
+    if let Err(e) = file.check_direct_io_alignment(op.addr, requested, len) {
+        return crate::namei_common::errno_from_vfs(e);
+    }
+    let mut bounce = vec![0u8; len];
+    if write && uaccess::copy_from_user(&mut bounce, op.addr).is_err() {
+        return err(Errno::Efault);
+    }
+    let result = if write {
+        let iocb = vfs::WriteIocb { append: effect.append, nowait: effect.nowait, more: false };
+        if current { file.write_iocb(&bounce, iocb) } else { file.pwrite_iocb(&bounce, requested as i64, iocb) }
+    } else if current {
+        file.read_iocb(&mut bounce, effect.nowait)
+    } else if effect.nowait {
+        file.pread_nowait(&mut bounce, requested as i64)
+    } else {
+        file.pread(&mut bounce, requested as i64)
+    };
+    let n = match result {
+        Ok(n) => n,
+        Err(e) => return crate::namei_common::errno_from_vfs(e),
+    };
+    if !write && uaccess::copy_to_user(op.addr, &bounce[..n]).is_err() {
+        return err(Errno::Efault);
+    }
+    if write && n > 0 && effect.dsync {
+        let end = if current { file.pos() } else { requested.saturating_add(n as u64) };
+        if let Err(e) = file.generic_write_sync(end, n, vfs::SyncMode { dsync: effect.dsync, sync: effect.sync }) {
+            return crate::namei_common::errno_from_vfs(e);
+        }
+    }
+    n as i64
 }
 
 /// The vectored forms carry their offset the same way, and the positional
