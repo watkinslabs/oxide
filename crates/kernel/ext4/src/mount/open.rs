@@ -148,7 +148,7 @@ impl Mount {
             // allow the allocator to hand journal storage to ordinary data.
             // Linux rejects the mount when the journal inode cannot be loaded.
             let journal = m.read_inode(m.sb.journal_inum)?;
-            let runs = m.collect_phys_extents(&journal.i_block)?;
+            let runs = m.collect_inode_phys_extents(&journal)?;
             for run in runs {
                 m.system_zones.push((run.phys, run.phys.saturating_add(u64::from(run.len))));
             }

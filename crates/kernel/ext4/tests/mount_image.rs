@@ -81,6 +81,59 @@ fn read_file_block_returns_payload() {
 }
 
 #[test]
+fn legacy_inode_direct_block_reads_through_same_mount_owner() {
+    let m = ext4::Mount::open(build_disk()).expect("mount");
+    let extent_inode = m.read_inode(2).expect("read root");
+    let header = ext4::inode::parse_extent_header(&extent_inode.i_block).expect("extent root");
+    let extent = ext4::inode::parse_inline_extent(&extent_inode.i_block, &header, 0)
+        .expect("root extent");
+    let expected = m.read_file_block(&extent_inode, 0).expect("extent data");
+
+    // A real ext4 volume may contain legacy inodes even when the filesystem
+    // advertises INCOMPAT_EXTENTS. Clear only the per-inode layout flag and
+    // point its first direct slot at the same already-valid data block.
+    let mut legacy = extent_inode;
+    legacy.i_flags &= !ext4::inode::EXT4_EXTENTS_FL;
+    legacy.i_block = [0; ext4::inode::I_BLOCK_LEN];
+    legacy.i_block[..4].copy_from_slice(&(extent.start_lba() as u32).to_le_bytes());
+    assert_eq!(m.read_file_block(&legacy, 0).expect("legacy data"), expected);
+}
+
+#[test]
+fn generated_legacy_inode_reads_single_indirect_block() {
+    use std::process::Command;
+
+    let stem = format!("oxide-ext4-legacy-{}", std::process::id());
+    let image = std::env::temp_dir().join(format!("{stem}.img"));
+    let source = std::env::temp_dir().join(format!("{stem}.data"));
+    let payload: Vec<u8> = (0..(14 * 1024)).map(|n| (n as u8).wrapping_mul(37)).collect();
+    std::fs::write(&source, &payload).expect("write source");
+    let _ = std::fs::remove_file(&image);
+    let status = Command::new("truncate").args(["-s", "32M", image.to_str().unwrap()]).status().unwrap();
+    assert!(status.success(), "truncate failed");
+    let status = Command::new("mkfs.ext4").args(["-q", "-F", "-O", "^extent,^64bit", image.to_str().unwrap()]).status().unwrap();
+    assert!(status.success(), "mkfs failed");
+    let request = format!("write {} /legacy", source.display());
+    let status = Command::new("debugfs").args(["-w", "-R", &request, image.to_str().unwrap()]).status().unwrap();
+    assert!(status.success(), "debugfs write failed");
+
+    let bytes = std::fs::read(&image).expect("read generated image");
+    let cap = (bytes.len() / BLOCK_SIZE as usize) as u64;
+    let disk: Arc<MemDisk<TaskList>> = MemDisk::new(BLOCK_SIZE, cap);
+    let mut req = BlockRequest { op: BlockOp::Write, start_block: 0, len_blocks: cap as u32,
+        buffer: bytes, ..Default::default() };
+    disk.submit_sync(&mut req).expect("load generated image");
+    let m = ext4::Mount::open(disk).expect("mount generated image");
+    let ino = m.lookup_path(b"/legacy").expect("lookup legacy file");
+    let inode = m.read_inode(ino).expect("read legacy inode");
+    assert_eq!(inode.i_flags & ext4::inode::EXT4_EXTENTS_FL, 0);
+    assert_eq!(&m.read_file_block(&inode, 0).unwrap()[..], &payload[..1024]);
+    assert_eq!(&m.read_file_block(&inode, 12).unwrap()[..], &payload[12 * 1024..13 * 1024]);
+    let _ = std::fs::remove_file(&image);
+    let _ = std::fs::remove_file(&source);
+}
+
+#[test]
 fn lookup_path_missing_returns_notfound() {
     let disk = build_disk();
     let m = ext4::Mount::open(disk).expect("mount");

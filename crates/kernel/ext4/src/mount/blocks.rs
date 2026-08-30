@@ -189,6 +189,9 @@ impl Mount {
     pub(crate) fn resolve_pblock_run(&self, inode: &Inode, file_blk: u32)
         -> Result<(u64, u32), MountError>
     {
+        if inode.i_flags & inode::EXT4_EXTENTS_FL == 0 {
+            return self.resolve_indirect_pblock(inode, file_blk).map(|p| (p, 1));
+        }
         let i_block = &inode.i_block;
         let hdr = inode::parse_extent_header(i_block)?;
         if hdr.depth == 0 { return self.leaf_pblock_run_inline(i_block, &hdr, file_blk); }
@@ -255,6 +258,9 @@ impl Mount {
     pub(crate) fn resolve_pblock(&self, inode: &Inode, file_blk: u32)
         -> Result<u64, MountError>
     {
+        if inode.i_flags & inode::EXT4_EXTENTS_FL == 0 {
+            return self.resolve_indirect_pblock(inode, file_blk);
+        }
         let i_block = &inode.i_block;
         let hdr = inode::parse_extent_header(i_block)?;
         if hdr.depth == 0 {
@@ -379,6 +385,9 @@ impl Mount {
         if data.len() != self.sb.block_size as usize {
             return Err(MountError::Inode(InodeError::BadLen));
         }
+        if inode.i_flags & inode::EXT4_EXTENTS_FL == 0 {
+            return Err(MountError::NotExtents);
+        }
         let phys = self.resolve_pblock(inode, file_blk)?;
         let byte_off = phys * (self.sb.block_size as u64);
         self.write_data_byte_range(byte_off, data)
@@ -479,9 +488,8 @@ impl Mount {
     /// scope (write_at does): the flag-clear stages in the shadow and commits
     /// atomically; block zeroing is direct data I/O sequenced before the commit.
     /// # C: O(real_len) zero I/O + O(depth) walk + O(1) metadata persist
-     /// Read `(i_flags, i_generation)` for `ino` from its raw slot.
-    /// `i_flags` drives the htree (`EXT4_INDEX_FL`) branch; the
-    /// generation keys the dir-block metadata_csum.
+    /// Read `(i_flags, i_generation)` for `ino`; `i_flags` drives the htree
+    /// (`EXT4_INDEX_FL`) branch; the generation keys the dir-block metadata_csum.
     /// # C: O(1) I/O
     pub fn inode_flags_gen(&self, ino: u32) -> Result<(u32, u32), MountError> {
         let (raw, _) = self.read_inode_bytes(ino)?;

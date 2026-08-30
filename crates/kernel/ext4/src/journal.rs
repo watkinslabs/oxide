@@ -480,8 +480,8 @@ pub struct ExtentLogReader<'m> {
 
 impl<'m> ExtentLogReader<'m> {
     fn build(mount: &'m Mount, jinode: &Inode) -> Result<Self, MountError> {
-        let mut ext = mount.extent_map(jinode.ino)?
-            .into_iter().map(|(block, lba, len, _)| (block, lba, len)).collect::<Vec<_>>();
+        let mut ext = mount.collect_inode_phys_extents(jinode)?
+            .into_iter().map(|run| (run.logical, run.phys, run.len)).collect::<Vec<_>>();
         ext.sort_unstable_by_key(|&(lb, _, _)| lb);
         Ok(Self { mount, extents: ext })
     }
