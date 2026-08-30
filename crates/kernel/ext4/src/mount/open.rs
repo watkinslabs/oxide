@@ -119,6 +119,7 @@ impl Mount {
             inode_prealloc: alloc::collections::BTreeMap::new(),
             batch: false,
             handles: alloc::collections::BTreeMap::new(),
+            active_handles: 0,
             next_generation: 0,
             running_generation: 0,
             committed_generation: 0,

@@ -230,6 +230,9 @@ pub struct MountState {
     /// every LBA it stages; a failed handle restores only its own frames.
     /// Keyed by LBA (BTreeMap), recording remains O(log n) per staged block.
     pub(crate) handles: alloc::collections::BTreeMap<u64, JournalHandle>,
+    /// Number of contexts with at least one live batch frame. Maintained with
+    /// `handles` under `state`; the running-update predicate stays O(1).
+    pub(crate) active_handles: usize,
     pub(crate) next_generation: u64,
     pub(crate) running_generation: u64,
     pub(crate) committed_generation: u64,

@@ -140,10 +140,7 @@ impl Mount {
             self.txn_release();
             return r;
         }
-        let id = crate::mount::core::ctx_id();
-        self.state.lock().handles.entry(id)
-            .or_insert_with(|| JournalHandle { frames: alloc::vec::Vec::new() })
-            .frames.push(alloc::collections::BTreeMap::new());
+        self.batch_frame_push();
         // Linux journal handles do not hold a superblock-wide mutex while
         // unrelated inode work runs. The frame remains registered, while
         // metadata_write() owns individual buffer heads and their undo image.
@@ -210,6 +207,19 @@ impl Mount {
         }
     }
 
+    /// Add one operation frame and maintain the O(1) running-handle count.
+    /// `handles` removes an entry exactly when its last frame retires, so a
+    /// newly inserted context is the one transition that increments it.
+    /// # C: O(log N) map admission + O(1) count update
+    fn batch_frame_push(&self) {
+        let id = crate::mount::core::ctx_id();
+        let mut s = self.state.lock();
+        if !s.handles.contains_key(&id) { s.active_handles += 1; }
+        s.handles.entry(id)
+            .or_insert_with(|| JournalHandle { frames: alloc::vec::Vec::new() })
+            .frames.push(alloc::collections::BTreeMap::new());
+    }
+
     fn run_journaled_inner<R, F>(&self, f: F, defer_checkpoint: bool) -> Result<R, MountError>
     where F: FnOnce(&Self) -> Result<R, MountError>
     {
@@ -221,10 +231,7 @@ impl Mount {
             // its metadata-buffer mutations, refreshed from the restored shadow)
             // without discarding prior batched ops. Success merges the frame up
             // (or drops it at top level, leaving the writes in the running txn).
-            let id = crate::mount::core::ctx_id();
-            self.state.lock().handles.entry(id)
-                .or_insert_with(|| JournalHandle { frames: alloc::vec::Vec::new() })
-                .frames.push(alloc::collections::BTreeMap::new());
+            self.batch_frame_push();
             let r = f(self);
             match r {
                 Ok(v) => { self.batch_frame_commit(); self.maybe_commit_batch()?; Ok(v) }
@@ -278,10 +285,7 @@ impl Mount {
     {
         let batch = { let s = self.state.lock(); s.shadow.is_some() && s.batch };
         if !batch { return f(self); }
-        let id = crate::mount::core::ctx_id();
-        self.state.lock().handles.entry(id)
-            .or_insert_with(|| JournalHandle { frames: alloc::vec::Vec::new() })
-            .frames.push(alloc::collections::BTreeMap::new());
+        self.batch_frame_push();
         match f(self) {
             Ok(v) => { self.batch_frame_commit(); Ok(v) }
             Err(e) => { self.batch_frame_rollback(); Err(e) }
