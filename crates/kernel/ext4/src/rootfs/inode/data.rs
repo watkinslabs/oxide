@@ -17,6 +17,10 @@ use super::super::state::RootfsState;
 pub(crate) struct Ext4FileData {
     pub(crate) st:        Arc<RootfsState>,
     pub(crate) ino:       u32,
+    /// Linux `address_space->invalidate_lock`: shared page-cache/mmap access
+    /// is excluded from exclusive DIO, truncate, and extent remapping. The
+    /// frame store and the extent map therefore have one coherency owner.
+    pub(crate) invalidate_lock: sync::RwLock<(), sync::AddressSpace>,
     /// The on-disk `i_flags` word, held in memory the way the reference holds
     /// `EXT4_I(inode)->i_flags`. `stat` needs it for the statx attribute bits,
     /// and re-reading the inode from the device to answer a stat is what made
