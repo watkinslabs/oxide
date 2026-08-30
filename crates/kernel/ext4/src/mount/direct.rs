@@ -51,3 +51,82 @@ impl Mount {
         Ok(src.len())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use alloc::sync::Arc;
+    use alloc::vec;
+    use block::{BlockDevice, BlockOp, BlockRequest, MemDisk};
+    use sync::TaskList;
+
+    use super::*;
+
+    const IMAGE: &[u8] = include_bytes!("../../tests/mini.img");
+    const SECTOR: u32 = 512;
+
+    fn disk() -> Arc<MemDisk<TaskList>> {
+        let cap = IMAGE.len() as u64 / SECTOR as u64;
+        let disk = MemDisk::new(SECTOR, cap);
+        let mut req = BlockRequest {
+            op: BlockOp::Write,
+            start_block: 0,
+            len_blocks: cap as u32,
+            buffer: IMAGE.to_vec(),
+            ..Default::default()
+        };
+        disk.submit_sync(&mut req).unwrap();
+        disk
+    }
+
+    #[test]
+    fn direct_read_uses_extent_data_and_rejects_unaligned_requests() {
+        let m = Mount::open(disk()).unwrap();
+        let ino = m.lookup_path(b"/hello.txt").unwrap();
+        let inode = m.read_inode(ino).unwrap();
+        let bs = m.sb.block_size as usize;
+        let mut got = vec![0; bs];
+        let n = m.direct_read(&inode, 0, &mut got).unwrap();
+        assert_eq!(n, inode.size as usize);
+        assert_eq!(&got[..n], &m.read_file_block(&inode, 0).unwrap()[..n]);
+        assert_eq!(m.direct_read(&inode, 1, &mut got),
+            Err(MountError::Inode(InodeError::BadLen)));
+    }
+
+    #[test]
+    fn direct_write_survives_remount() {
+        let disk = disk();
+        let ino;
+        let bs;
+        {
+            let m = Mount::open(disk.clone()).unwrap();
+            ino = m.lookup_path(b"/hello.txt").unwrap();
+            bs = m.sb.block_size as usize;
+            let data = vec![0xD3; bs];
+            assert_eq!(m.direct_write(ino, 0, &data).unwrap(), bs);
+            assert_eq!(m.read_file_block(&m.read_inode(ino).unwrap(), 0).unwrap(), data);
+            assert_eq!(m.direct_write(ino, 1, &[0xAA; 1]),
+                Err(MountError::Inode(InodeError::BadLen)));
+        }
+        let m = Mount::open(disk).unwrap();
+        let inode = m.read_inode(ino).unwrap();
+        assert_eq!(m.read_file_block(&inode, 0).unwrap(), vec![0xD3; bs]);
+    }
+
+    #[test]
+    fn direct_read_treats_unwritten_extent_as_zero_until_written() {
+        let m = Mount::open(disk()).unwrap();
+        let ino = m.lookup_path(b"/hello.txt").unwrap();
+        let bs = m.sb.block_size as usize;
+        m.fallocate_inode(ino, (2 * bs) as u64, bs as u64, false).unwrap();
+        let inode = m.read_inode(ino).unwrap();
+        let mut got = vec![0xFF; bs];
+        assert_eq!(m.direct_read(&inode, (2 * bs) as u64, &mut got).unwrap(), bs);
+        assert_eq!(got, vec![0; bs], "unwritten extents must read as zero");
+        let data = vec![0x5A; bs];
+        assert_eq!(m.direct_write(ino, (2 * bs) as u64, &data).unwrap(), bs);
+        let inode = m.read_inode(ino).unwrap();
+        let mut got = vec![0; bs];
+        assert_eq!(m.direct_read(&inode, (2 * bs) as u64, &mut got).unwrap(), bs);
+        assert_eq!(got, data, "a direct write converts the unwritten range");
+    }
+}
