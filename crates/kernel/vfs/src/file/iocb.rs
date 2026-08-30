@@ -31,6 +31,20 @@ pub struct WriteIocb {
 }
 
 impl File {
+    /// Cursor-advancing read with the per-operation `IOCB_NOWAIT` modifier.
+    /// The cursor update stays here with the VFS read owner so io_uring does
+    /// not invent a second current-position protocol in its dispatcher.
+    pub fn read_iocb(&self, buf: &mut [u8], nowait: bool) -> KResult<usize> {
+        if !nowait { return self.read(buf); }
+        if !self.f_mode.contains(Fmode::READ) { return Err(VfsError::Ebadf); }
+        let pos_guard = if self.atomic_pos() { Some(self.f_pos_lock.lock()) } else { None };
+        let pos = self.pos.load(Ordering::Acquire);
+        let n = self.pread_nowait(buf, pos as i64)?;
+        self.pos.store(pos.saturating_add(n as u64), Ordering::Release);
+        drop(pos_guard);
+        Ok(n)
+    }
+
     /// `pwrite` with per-operation modifiers. `pwrite` itself is this with the
     /// description's own `O_APPEND` and no nowait, which is why it delegates
     /// here rather than keeping a second copy of the gate ladder.
