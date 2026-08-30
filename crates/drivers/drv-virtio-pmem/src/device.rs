@@ -8,9 +8,7 @@ use sync::{Spinlock, TaskList as DriverLockClass};
 pub const VIRTIO_ID_PMEM: u16 = 27;
 pub const DRIVER_ID: virtio::VirtioChildDriverId =
     virtio::VirtioChildDriverId::new("virtio-pmem", VIRTIO_ID_PMEM);
-// Linux VIRTIO_PMEM_F_SHMEM_REGION is feature bit 0. This transport API uses
-// the negotiated feature mask, so expose that bit as a mask (1 << 0).
-pub const VIRTIO_PMEM_F_SHMEM_REGION: u64 = 1 << 0;
+pub use virtio::VIRTIO_PMEM_F_SHMEM_REGION;
 pub const VIRTIO_PMEM_REGION_ID: u32 = 0;
 const PMEM_BLOCK_BYTES: u32 = 512;
 const PMEM_FLUSH_POLL_BUDGET: u32 = 2_000_000;
@@ -313,7 +311,7 @@ pub fn shutdown(device_key: virtio::VirtioChildDeviceKey) -> bool { remove(devic
 
 #[cfg(test)]
 mod tests {
-    use super::region_from_geometry;
+    use super::{region_from_geometry, transport_profile, VIRTIO_PMEM_F_SHMEM_REGION};
 
     #[test]
     fn region_geometry_rejects_empty_and_wrapping_ranges() {

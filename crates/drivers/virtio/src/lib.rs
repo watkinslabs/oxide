@@ -92,6 +92,9 @@ pub const VIRTIO_DEV_CONSOLE: u16 = 3;
 pub const VIRTIO_DEV_RNG:     u16 = 4;
 pub const VIRTIO_DEV_SCSI:    u16 = 8;
 pub const VIRTIO_DEV_PMEM:    u16 = 27;
+// Linux's VIRTIO_PMEM_F_SHMEM_REGION is feature bit 0. The Oxide transport
+// API carries negotiated features as a mask, so this is the corresponding
+// mask rather than the raw bit position.
 pub const VIRTIO_PMEM_F_SHMEM_REGION: u64 = 1;
 
 /// Status register bits per spec §2.1.
