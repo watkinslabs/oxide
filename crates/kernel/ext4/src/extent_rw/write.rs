@@ -302,6 +302,7 @@ impl Mount {
     /// inode table once per block. # C: O(N_blocks × N_extents) + 1 inode read
     pub(crate) fn prepare_nodelalloc(&self, ino: u32, off: u64, len: usize) -> Result<(), MountError> {
         if len == 0 { return Ok(()); }
+        if self.read_inode(ino)?.i_flags & inode::EXT4_INLINE_DATA_FL != 0 { return Ok(()); }
         let bs = self.sb.block_size as u64;
         let end = off.checked_add(len as u64).ok_or(MountError::Inode(inode::InodeError::BadLen))?;
         let first = off / bs;
@@ -396,6 +397,9 @@ impl Mount {
         let bs_us = bs as usize;
         if data.is_empty() { return Ok(()); }
         let inode = self.read_inode(ino)?;
+        if super::super::mount::inline::write_inline_data(self, ino, &inode, off, data)? {
+            return Ok(());
+        }
         let cur_size = inode.size;
         let end = off + data.len() as u64;
         let new_size = core::cmp::max(cur_size, end);

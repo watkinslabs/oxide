@@ -54,6 +54,46 @@ pub(crate) fn read_inline_data(
     Ok(out)
 }
 
+/// Update an inline inode while it still fits in `i_block`.
+///
+/// This is the first mutation leg of Linux `ext4_write_inline_data`: the
+/// inode bytes and the inline payload are journaled together. Growth beyond
+/// 60 bytes is deliberately refused until the ext4 inline-to-extent
+/// conversion owner exists; callers must not reinterpret the inline inode as
+/// an extent root.
+pub(crate) fn write_inline_data(
+    mount: &Mount, ino: u32, inode: &Inode, off: u64, data: &[u8],
+) -> Result<bool, MountError> {
+    if inode.i_flags & EXT4_INLINE_DATA_FL == 0 { return Ok(false); }
+    let off = usize::try_from(off).map_err(|_| MountError::BlockIo)?;
+    let end = off.checked_add(data.len()).ok_or(MountError::BlockIo)?;
+    if end > I_BLOCK_LEN { return Err(MountError::NotExtents); }
+    let size = usize::try_from(inode.size).unwrap_or(I_BLOCK_LEN).min(I_BLOCK_LEN);
+    let new_size = size.max(end);
+    let mut body = alloc::vec![0u8; new_size];
+    if size != 0 {
+        let old = read_inline_data(mount, inode, 0, size)?;
+        body[..old.len()].copy_from_slice(&old);
+    }
+    body[off..end].copy_from_slice(data);
+    let (mut raw, _) = mount.read_inode_bytes(ino)?;
+    raw[0x28..0x28 + I_BLOCK_LEN].fill(0);
+    raw[0x28..0x28 + body.len()].copy_from_slice(&body);
+    raw[0x04..0x08].copy_from_slice(&(new_size as u32).to_le_bytes());
+    raw[0x6C..0x70].copy_from_slice(&0u32.to_le_bytes());
+    let isize = mount.sb.inode_size as usize;
+    let extra = ibody_extra_isize(&raw, isize);
+    if extra != 0 {
+        let hdr = crate::csum::EXT4_GOOD_OLD_INODE_SIZE + extra;
+        let mut entries = crate::xattr::decode_ibody(&raw, hdr, isize);
+        entries.retain(|(name, _)| name != "system.data");
+        crate::xattr::encode_ibody(&mut raw, hdr, isize, &entries)
+            .map_err(|_| MountError::NoSpace)?;
+    }
+    mount.write_inode_bytes(ino, &raw)?;
+    Ok(true)
+}
+
 fn ibody_extra_isize(raw: &[u8], inode_size: usize) -> usize {
     if inode_size <= crate::csum::EXT4_GOOD_OLD_INODE_SIZE { return 0; }
     let extra = u16::from_le_bytes([raw[0x80], raw[0x81]]) as usize;
