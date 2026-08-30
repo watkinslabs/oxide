@@ -8,7 +8,9 @@ use sync::{Spinlock, TaskList as DriverLockClass};
 pub const VIRTIO_ID_PMEM: u16 = 27;
 pub const DRIVER_ID: virtio::VirtioChildDriverId =
     virtio::VirtioChildDriverId::new("virtio-pmem", VIRTIO_ID_PMEM);
-pub const VIRTIO_PMEM_F_SHMEM_REGION: u64 = 1;
+// Linux VIRTIO_PMEM_F_SHMEM_REGION is feature bit 0. This transport API uses
+// the negotiated feature mask, so expose that bit as a mask (1 << 0).
+pub const VIRTIO_PMEM_F_SHMEM_REGION: u64 = 1 << 0;
 pub const VIRTIO_PMEM_REGION_ID: u32 = 0;
 const PMEM_BLOCK_BYTES: u32 = 512;
 const PMEM_FLUSH_POLL_BUDGET: u32 = 2_000_000;
@@ -251,13 +253,15 @@ impl Drop for PmemDevice {
 #[cfg(target_os = "oxide-kernel")]
 pub fn install(device_key: virtio::VirtioChildDeviceKey, bdf: pci::Bdf, resources: virtio::VirtioResources) -> Option<u32> {
     if PMEMS.lock().iter().any(|record| record.key == device_key) { return None; }
-    let region = match resources.shared_memory {
-        Some(region) if region.id == VIRTIO_PMEM_REGION_ID
-            && resources.drv_features & VIRTIO_PMEM_F_SHMEM_REGION != 0
-            => region_from_geometry(region.base_pa, region.size_bytes)?,
-        Some(_) => return None,
-        None => PmemDevice::config_region(resources.device_cfg_va)?,
-    };
+    // Linux's validate hook clears the negotiated shared-memory feature when
+    // the region is absent or malformed, then probe falls back to the legacy
+    // config-space start/size aperture. Do the same instead of refusing a
+    // device that has a usable config fallback.
+    let shared_region = if resources.drv_features & VIRTIO_PMEM_F_SHMEM_REGION != 0 {
+        resources.shared_memory.filter(|region| region.id == VIRTIO_PMEM_REGION_ID)
+            .and_then(|region| region_from_geometry(region.base_pa, region.size_bytes))
+    } else { None };
+    let region = shared_region.or_else(|| PmemDevice::config_region(resources.device_cfg_va))?;
     let q = resources.require_queue(0)?;
     let queue = virtio::VirtioSplitQueue::new_with_features(q, resources.hhdm, resources.drv_features).ok()?;
     let bounce_pa = pmm::setup::alloc_raw_frame()?;
@@ -324,5 +328,11 @@ mod tests {
         assert_eq!(region.size_bytes, 0x8000);
         assert_eq!(region.partition_offset, 0);
         assert!(!region.synchronous);
+    }
+
+    #[test]
+    fn shmem_region_uses_linux_feature_bit_zero_mask() {
+        assert_eq!(VIRTIO_PMEM_F_SHMEM_REGION, 1);
+        assert_eq!(transport_profile().drv_features & VIRTIO_PMEM_F_SHMEM_REGION, 1);
     }
 }
