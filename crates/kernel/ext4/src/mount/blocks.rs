@@ -407,6 +407,37 @@ impl Mount {
         self.read_metadata_block_shared(phys)
     }
 
+    /// Warm a bounded logical file-block window through the canonical metadata
+    /// cache. Only physically contiguous written runs are submitted, so a
+    /// sparse or fragmented directory never causes unrelated blocks to enter
+    /// the cache. This is the directory equivalent of Linux's bounded lookup
+    /// readahead: lookup still reads and validates each block synchronously,
+    /// while the next blocks can arrive through the existing cache owner.
+    /// # C: O(extent depth + window) enqueue + O(window) worker I/O
+    pub(crate) fn prefetch_file_blocks_async(&self, inode: &Inode, first_blk: u32, n_blks: u32) {
+        let end = first_blk.saturating_add(n_blks);
+        let mut blk = first_blk;
+        while blk < end {
+            let span = match self.resolve_pblock_run(inode, blk) {
+                Ok((phys, run)) => {
+                    let run = run.min(end - blk).max(1);
+                    let all_cached = {
+                        let state = self.state.lock();
+                        (0..run).all(|i| state.metadata_cache.contains_key(&(phys + u64::from(i))))
+                    };
+                    if !all_cached { self.prefetch_metadata_blocks_async(phys, run); }
+                    run
+                }
+                // Holes and unwritten extents read as zero and have no device
+                // bytes to warm. Advance one block and preserve the caller's
+                // ordinary read semantics.
+                Err(MountError::NotFound) => 1,
+                Err(_) => 1,
+            };
+            blk = blk.saturating_add(span);
+        }
+    }
+
     /// Like `write_file_block` but routes through `metadata_write`
     /// — the block being written is part of a metadata-fs structure
     /// (e.g. a directory's data block) and must be journaled when

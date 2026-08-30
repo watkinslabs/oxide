@@ -12,6 +12,11 @@ use super::{Mount, MountError};
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum NameEq { Bytes, Casefold }
 
+/// Linux bounds directory lookup readahead to a small fixed block window.
+/// Keep this separate from file-data readahead policy: directory metadata is
+/// consumed by the namespace walk, not by a file's `file_ra_state`.
+const DIR_LOOKUP_READAHEAD_BLOCKS: u32 = 4;
+
 /// Linux compares ordinary ext4 names with `memcmp` and reaches the Unicode
 /// tables only for a casefolded directory. # C: O(1)
 pub(crate) fn name_eq_mode(i_flags: u32) -> NameEq {
@@ -278,6 +283,11 @@ impl Mount {
         let start = if nblocks == 0 { 0 } else { start % nblocks };
         for step in 0..nblocks {
             let fb = (start + step) % nblocks;
+            if step % DIR_LOOKUP_READAHEAD_BLOCKS == 0 {
+                let remaining = nblocks - step;
+                self.prefetch_file_blocks_async(
+                    dir_inode, fb, remaining.min(DIR_LOOKUP_READAHEAD_BLOCKS));
+            }
             // Shadow-aware read (read-your-writes): under cross-op batching a dir
             // block just written by `dir_link` lives in `MountState.shadow` until
             // `commit_batch`. Reading via the plain `read_file_block` returned the
