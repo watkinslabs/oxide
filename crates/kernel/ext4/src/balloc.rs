@@ -63,12 +63,24 @@ impl Mount {
     pub(crate) fn alloc_blocks_flags(&self, hint: u32, count: u32, flags: ReserveFlags)
         -> Result<Vec<u64>, MountError>
     {
-        self.alloc_blocks_for_inode(None, hint, count, flags)
+        self.alloc_blocks_for_inode_goal(None, hint, count, flags, None)
     }
 
     /// Allocate data blocks with Linux's per-inode stream goal. # C: O(N_groups * block_size * count)
     pub(crate) fn alloc_blocks_for_inode(&self, ino: Option<u32>, hint: u32, count: u32, flags: ReserveFlags)
         -> Result<Vec<u64>, MountError>
+    {
+        self.alloc_blocks_for_inode_goal(ino, hint, count, flags, None)
+    }
+
+    /// Allocate with the physical neighbour carried by the inode mapping
+    /// owner. Linux's mballoc tries this goal in the selected group before
+    /// entering the broader buddy/bitmap criteria; `None` preserves callers
+    /// that have no physical locality fact.
+    pub(crate) fn alloc_blocks_for_inode_goal(
+        &self, ino: Option<u32>, hint: u32, count: u32, flags: ReserveFlags,
+        goal_phys: Option<u64>,
+    ) -> Result<Vec<u64>, MountError>
     {
         if count == 0 { return Ok(Vec::new()); }
         #[cfg(not(target_os = "oxide-kernel"))]
@@ -106,7 +118,7 @@ impl Mount {
                 let start = stream.or(preferred).unwrap_or_else(|| scan::scan_start(hint, groups, optimize, freest));
                 for off in 0..groups {
                     let group = (start + off) % groups;
-                    if let Some(run) = m.try_alloc_run_in_group(group, count)? {
+                    if let Some(run) = m.try_alloc_run_in_group(group, count, goal_phys)? {
                         if let Some(ino) = ino { m.record_stream_goal(ino, group, groups); }
                         return Ok(run);
                     }
@@ -366,7 +378,7 @@ impl Mount {
     /// Reserve one contiguous run in a group and persist its bitmap/counters.
     /// The stripe-aligned candidate is tried first for a request at least as
     /// wide as the configured stripe; otherwise the first run wins.
-    fn try_alloc_run_in_group(&self, group: u32, count: u32)
+    fn try_alloc_run_in_group(&self, group: u32, count: u32, goal_phys: Option<u64>)
         -> Result<Option<Vec<u64>>, MountError>
     {
         let group_lock = self.group_lock(group);
@@ -398,10 +410,16 @@ impl Mount {
         let blocks = self.blocks_in_group(group);
         let stripe = self.behaviour().stripe;
         let first_phys = group_first_block(&self.sb, group);
-        let aligned = if count >= stripe && stripe > 1 {
+        let goal_bit = goal_phys.and_then(|phys| {
+            let bit = phys.checked_sub(first_phys)?;
+            (bit < u64::from(blocks)).then_some(bit as u32)
+        });
+        let goal = goal_bit.and_then(|bit| find_goal_run(
+            &bitmap, blocks, count, first_phys, bit, stripe));
+        let aligned = if goal.is_none() && count >= stripe && stripe > 1 {
             find_contiguous_run(&bitmap, blocks, count, first_phys, Some(stripe))
         } else { None };
-        let start = aligned.or_else(|| find_contiguous_run(&bitmap, blocks, count, first_phys, None));
+        let start = goal.or(aligned).or_else(|| find_contiguous_run(&bitmap, blocks, count, first_phys, None));
         let Some(start) = start else { return Ok(None) };
         for bit in start..start + count {
             bitmap[bit as usize >> 3] |= 1u8 << (bit & 7);
@@ -654,6 +672,20 @@ fn find_contiguous_run(bitmap: &[u8], max_bits: u32, count: u32, first_phys: u64
     }
     if let Some((_, start)) = best_aligned { return Some(start); }
     best_any.map(|(_, start)| start)
+}
+
+/// Fast Linux `TRY_GOAL` check: accept the exact physical goal when the
+/// complete request is free there; otherwise the caller falls through to the
+/// normal bounded candidate scan. # C: O(request)
+fn find_goal_run(bitmap: &[u8], max_bits: u32, count: u32, first_phys: u64,
+                 goal: u32, stripe: u32) -> Option<u32> {
+    if count == 0 || goal.checked_add(count)? > max_bits { return None; }
+    if count >= stripe && stripe > 1
+        && (first_phys + u64::from(goal)) % u64::from(stripe) != 0 { return None; }
+    for bit in goal..goal + count {
+        if bitmap[bit as usize >> 3] & (1u8 << (bit & 7)) != 0 { return None; }
+    }
+    Some(goal)
 }
 
 /// Scan `bitmap` for the first 0 bit in `[0, max_bits)`. Returns

@@ -65,8 +65,8 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
         // neighbouring extent, so a fallocate on an existing file stays near
         // that file instead of restarting every multiblock request at group 0.
         let goal_phys = extents.iter().rev().find(|r| u64::from(r.logical) <= start)
-            .or_else(|| extents.first())
-            .map(|r| r.phys);
+            .and_then(|r| r.phys.checked_add(u64::from(r.len)))
+            .or_else(|| extents.first().map(|r| r.phys));
         let hint = goal_phys.map(|phys| m.group_of_block(phys)).unwrap_or(0);
         let group_prealloc = preallocate
             && count <= GROUP_PREALLOC_MAX_REQUEST
@@ -117,7 +117,7 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
         let normalized_prefix = start.saturating_sub(allocation_start) as usize;
         let flags = m.data_reserve_flags(ino);
         let stream_ino = if preallocate && !group_prealloc { Some(ino) } else { None };
-        let mut allocated = m.alloc_blocks_for_inode(stream_ino, hint, reserve_count, flags);
+        let mut allocated = m.alloc_blocks_for_inode_goal(stream_ino, hint, reserve_count, flags, goal_phys);
         if matches!(&allocated, Err(MountError::NoSpace)) && group_prealloc {
             // A stripe-rounded locality request is a preference. Retry with
             // progressively smaller group PAs before accepting an exact run;
@@ -127,7 +127,7 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
                 m.sb.block_size as u64, 0) / 2;
             while tail >= 32 {
                 let candidate = count.saturating_add(tail);
-                allocated = m.alloc_blocks_for_inode(stream_ino, hint, candidate, flags);
+                allocated = m.alloc_blocks_for_inode_goal(stream_ino, hint, candidate, flags, goal_phys);
                 if allocated.is_ok() { break; }
                 tail /= 2;
             }
@@ -135,7 +135,7 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
         if matches!(&allocated, Err(MountError::NoSpace)) && reserve_count != count {
             normalized = false;
             reserve_count = count;
-            allocated = m.alloc_blocks_for_inode(stream_ino, hint, count, flags);
+            allocated = m.alloc_blocks_for_inode_goal(stream_ino, hint, count, flags, goal_phys);
         }
         match allocated {
             Ok(blocks) => {
