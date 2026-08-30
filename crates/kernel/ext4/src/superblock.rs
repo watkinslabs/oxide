@@ -18,6 +18,7 @@ pub const SUPERBLOCK_LEN: usize = 1024;
 pub const INCOMPAT_FILETYPE: u32 = 0x0002;
 pub const INCOMPAT_RECOVER:  u32 = 0x0004;
 pub const INCOMPAT_META_BG:   u32 = 0x0010;
+pub const INCOMPAT_LARGEDIR:  u32 = 0x4000;
 pub const INCOMPAT_EXTENTS:  u32 = 0x0040;
 pub const INCOMPAT_64BIT:    u32 = 0x0080;
 pub const INCOMPAT_FLEX_BG:  u32 = 0x0200;
@@ -43,12 +44,13 @@ pub const RO_COMPAT_QUOTA:         u32 = 0x0100;
 pub const RO_COMPAT_PROJECT:       u32 = 0x2000;
 
 /// INCOMPAT features this driver understands well enough to interpret the
-/// on-disk layout. An INCOMPAT bit OUTSIDE this set (e.g. META_BG, MMP, INLINE_
-/// DATA, ENCRYPT, CASEFOLD, LARGEDIR, EA_INODE) means the layout would be
+/// on-disk layout. An INCOMPAT bit OUTSIDE this set (e.g. MMP, INLINE_DATA,
+/// ENCRYPT, CASEFOLD, EA_INODE) means the layout would be
 /// misread → refuse the mount (Linux `EXT4_FEATURE_INCOMPAT_SUPP`).
 pub const SUPPORTED_INCOMPAT: u32 =
     INCOMPAT_FILETYPE | INCOMPAT_RECOVER | INCOMPAT_META_BG | INCOMPAT_EXTENTS | INCOMPAT_64BIT
-    | INCOMPAT_FLEX_BG | INCOMPAT_CSUM_SEED | INCOMPAT_CASEFOLD | INCOMPAT_INLINE_DATA;
+    | INCOMPAT_FLEX_BG | INCOMPAT_LARGEDIR | INCOMPAT_CSUM_SEED | INCOMPAT_CASEFOLD
+    | INCOMPAT_INLINE_DATA;
 
 /// RO_COMPAT features this driver can safely WRITE. A bit outside this set
 /// (notably BIGALLOC=0x200, whose cluster bitmap we'd misread as per-block, or

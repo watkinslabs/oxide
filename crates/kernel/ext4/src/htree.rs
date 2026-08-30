@@ -3,10 +3,9 @@
 // linear leaf scan in `lookup_in_dir` (leaf blocks are ordinary
 // `ext4_dir_entry_2` blocks). For WRITE we must place a new name in
 // the leaf block whose hash range covers `hash(name)`, so Linux's own
-// hash lookup finds it. We descend the dx index (no rebalance) and
-// insert into the covering leaf; a full leaf surfaces `DirFull` rather
-// than splitting (a correct split/index-grow is a larger follow-up,
-// noted in the module audit) — never corrupting the index.
+// hash lookup finds it. We descend and rebalance the dx index through the
+// supported two interior levels; a full third-level root remains a bounded
+// `DirFull` rather than corrupting the index.
 
 use crate::dir;
 use crate::inode::Inode;
@@ -89,13 +88,21 @@ impl Mount {
         // it (and where its dx_countlimit lives) — that's where a leaf split
         // inserts the new dx_entry. dx_root: dot(12)+dotdot(12)+info(8) → entries
         // at 0x20. dx_node: 8-byte fake header → entries at 0x08.
-        let (leaf_lblk, dx_lblk, count_off) = if indirect >= 1 {
-            let node_lblk = self.dx_find_leaf(&root, 0x20, hash)?;
-            let node = self.read_file_block_meta(dir_node, node_lblk)?;
-            let leaf_lblk = self.dx_find_leaf(&node, 0x08, hash)?;
-            (leaf_lblk, node_lblk, 0x08usize)
-        } else {
+        let (leaf_lblk, dx_lblk, count_off) = if indirect == 0 {
             (self.dx_find_leaf(&root, 0x20, hash)?, 0u32, 0x20usize)
+        } else {
+            // `indirect_levels` counts the interior dx nodes below the fixed
+            // root. Walk all of them; LARGEDIR raises this from one to two.
+            let mut node = root;
+            let mut entries_off = 0x20usize;
+            let mut node_lblk = 0u32;
+            for level in 0..indirect {
+                node_lblk = self.dx_find_leaf(&node, entries_off, hash)?;
+                node = self.read_file_block_meta(dir_node, node_lblk)?;
+                entries_off = 0x08;
+                if level + 1 == indirect { break; }
+            }
+            (self.dx_find_leaf(&node, entries_off, hash)?, node_lblk, entries_off)
         };
 
         let mut leaf = self.read_file_block_meta(dir_node, leaf_lblk)?;
@@ -216,11 +223,10 @@ impl Mount {
     ) -> Result<(), MountError> {
         let bs = self.sb.block_size as usize;
 
-        // Case B: a full dx_NODE at level 1. Split it (move its upper-half
-        // dx_entries to a new node) and add a dx_entry for the new node to the
-        // ROOT, then retry the original insert (re-descends into the now-roomy
-        // node). A full ROOT here would need a 3rd level (>~600K entries at
-        // 1 KiB) — that rare case surfaces as DirFull.
+        // Case B: a full dx_NODE. Split it (move its upper-half dx_entries to
+        // a new node) and add a dx_entry for the new node to the ROOT, then
+        // retry the original insert. A full root grows one additional
+        // interior level when INCOMPAT_LARGEDIR is present.
         if dx_lblk != 0 {
             let node = self.read_file_block_meta(dir_node, dx_lblk)?;
             let ncount = u16::from_le_bytes([node[count_off + 2], node[count_off + 3]]) as usize;
@@ -230,11 +236,20 @@ impl Mount {
             let so = count_off + split * 8;
             let boundary_hash = u32::from_le_bytes([node[so], node[so + 1], node[so + 2], node[so + 3]]);
 
-            // Root must have room for the new node's dx_entry.
+            // Root must have room for the new node's dx_entry. Linux's
+            // LARGEDIR path grows the fixed root by inserting one new
+            // interior node above its existing children when this happens.
             let root = self.read_file_block_meta(dir_node, 0)?;
             let root_count = u16::from_le_bytes([root[0x22], root[0x23]]) as usize;
             let root_limit = u16::from_le_bytes([root[0x20], root[0x21]]) as usize;
-            if root_count >= root_limit { return Err(MountError::DirFull); } // 3rd level unneeded in practice
+            if root_count >= root_limit {
+                if root[0x1E] >= 2 || self.sb.feature_incompat & crate::superblock::INCOMPAT_LARGEDIR == 0 {
+                    return Err(MountError::DirFull);
+                }
+                self.htree_grow_root(dir_node, dir_ino, gen)?;
+                let d2 = self.read_inode(dir_ino)?;
+                return self.htree_insert(&d2, dir_ino, gen, new_name, new_ino, new_ft);
+            }
 
             // Build the new node: fake header + upper-half entries; entry 0 is its
             // countlimit whose `block` is entries[split].block (implicit hash 0).
@@ -328,6 +343,43 @@ impl Mount {
         let d2 = self.read_inode(dir_ino)?;
         self.htree_split(&d2, dir_ino, gen, leaf_lblk, node_lblk, node_count_off,
                          hash_version, new_name, new_ino, new_ft)
+    }
+
+    /// Add one interior level below the fixed dx root. This is Linux's
+    /// `dx_grow_indirect` shape for `EXT4_FEATURE_INCOMPAT_LARGEDIR`: the old
+    /// root entries become children of one newly allocated node, while the
+    /// root retains its fixed location and now contains one entry.
+    /// # C: O(root index entries) + 2 metadata writes
+    fn htree_grow_root(&self, dir_node: &Inode, dir_ino: u32, gen: u32)
+        -> Result<(), MountError>
+    {
+        let bs = self.sb.block_size as usize;
+        let root = self.read_file_block_meta(dir_node, 0)?;
+        let root_count = u16::from_le_bytes([root[0x22], root[0x23]]) as usize;
+        let node_limit = crate::csum::dx_entry_limit(&self.sb, bs, 0x08);
+        if root_count == 0 || root_count > node_limit as usize { return Err(MountError::DirFull); }
+        let mut node = alloc::vec![0u8; bs];
+        node[4..6].copy_from_slice(&(bs as u16).to_le_bytes());
+        for k in 0..root_count {
+            let src = 0x20 + k * 8;
+            let dst = 0x08 + k * 8;
+            node[dst..dst + 8].copy_from_slice(&root[src..src + 8]);
+        }
+        node[0x08..0x0A].copy_from_slice(&node_limit.to_le_bytes());
+        node[0x0A..0x0C].copy_from_slice(&(root_count as u16).to_le_bytes());
+        self.run_journaled(|m| {
+            let node_lblk = m.append_dir_block(dir_ino, &{
+                let mut n = node.clone();
+                crate::csum::stamp_dx_tail(&self.sb, dir_ino, gen, &mut n, 0x08);
+                n
+            })?;
+            let mut r = m.read_file_block_meta(dir_node, 0)?;
+            r[0x1E] = r[0x1E].saturating_add(1);
+            r[0x22..0x24].copy_from_slice(&1u16.to_le_bytes());
+            r[0x24..0x28].copy_from_slice(&node_lblk.to_le_bytes());
+            crate::csum::stamp_dx_tail(&self.sb, dir_ino, gen, &mut r, 0x20);
+            m.write_file_block_meta(dir_node, 0, &r)
+        })
     }
 
     /// Convert a FULL single-block linear directory to an INDEXED (htree) one

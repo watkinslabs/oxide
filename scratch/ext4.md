@@ -47,6 +47,20 @@ request format, block registration, DAX region publication, and DMA/frame
 cleanup on failed probe and removal. Remaining work is completion handling and
 real-image evidence; the provider is not marked complete from compilation alone.
 
+E4-10/E4-08 status update (B3016): the shared page-cache owner now follows
+Linux's `page_mkwrite` dirtying boundary. Read-side `shared_frame` lookup no
+longer marks clean pages dirty; shared-write admission does. Frame-coherency
+image coverage is 13/13, and an instrumented GNOME x86_64 SMP=1 boot reaches
+GNOME, colord, and fwupd without fill diagnostics. The AArch64 run reached
+normal userspace services but did not reach the graphical milestone before its
+timeout; this remains runtime evidence to repeat, not a closure claim.
+
+E4-12 status update (B3016): `INCOMPAT_LARGEDIR` is now admitted and the
+existing htree owner descends and grows through the third-level layout used by
+Linux. Unknown incompatibility bits remain refused. A full third-level root
+still returns `DirFull` until the format's maximum-depth/large-directory
+stress harness is present.
+
 E4-10 status update (B2989): inline data is also converted before fallocate,
 punch-hole, and truncate, so those operations cannot dispatch inline payload
 bytes to the indirect-pointer owner. The focused inline-image operation test
