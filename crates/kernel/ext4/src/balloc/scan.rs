@@ -129,6 +129,41 @@ pub fn indexed_freest_group(
     })
 }
 
+/// Return groups selected by Linux's order indexes, starting at the locality
+/// hint and wrapping once. Duplicate groups across criteria are returned once.
+/// The indexes are only candidate summaries; callers must validate each group
+/// against the canonical bitmap before committing an allocation.
+/// # C: O(N_indexed_groups)
+pub fn indexed_candidates(
+    largest: &alloc::collections::BTreeMap<u8, alloc::collections::BTreeSet<u32>>,
+    average: &alloc::collections::BTreeMap<u8, alloc::collections::BTreeSet<u32>>,
+    groups: u32, count: u32, hint: u32, best_avail: bool,
+) -> alloc::vec::Vec<u32> {
+    if groups == 0 || count == 0 { return alloc::vec::Vec::new(); }
+    let mut out = alloc::vec::Vec::new();
+    let mut seen = alloc::collections::BTreeSet::new();
+    let mut append = |index: &alloc::collections::BTreeMap<u8, alloc::collections::BTreeSet<u32>>, min: u8| {
+        for (_, candidates) in index.range(min..) {
+            for &group in candidates.range(hint..groups).chain(candidates.range(..hint)) {
+                if seen.insert(group) { out.push(group); }
+            }
+        }
+    };
+    if count.is_power_of_two() && count > 1 {
+        append(largest, count.ilog2() as u8);
+    }
+    let mut goals = alloc::vec![count];
+    if best_avail {
+        for trim in 1..=3 {
+            if let Some(goal) = best_available_goal_len(count, trim) {
+                if !goals.contains(&goal) { goals.push(goal); }
+            }
+        }
+    }
+    for goal in goals { append(average, fragment_order_for_len(goal)); }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,5 +264,15 @@ mod tests {
         assert_eq!(index.get(&4).map(|groups| groups.iter().copied().collect::<alloc::vec::Vec<_>>()), Some(alloc::vec![3]));
         replace_order_index(&mut index, 3, Some(4), None);
         assert!(index.is_empty());
+    }
+
+    #[test]
+    fn indexed_candidates_are_locality_ordered_and_deduplicated() {
+        let mut largest = alloc::collections::BTreeMap::new();
+        largest.insert(2, alloc::collections::BTreeSet::from([1, 5]));
+        let mut average = alloc::collections::BTreeMap::new();
+        average.insert(1, alloc::collections::BTreeSet::from([2, 5, 7]));
+        assert_eq!(indexed_candidates(&largest, &average, 8, 4, 5, true),
+            alloc::vec![5, 1, 7, 2]);
     }
 }

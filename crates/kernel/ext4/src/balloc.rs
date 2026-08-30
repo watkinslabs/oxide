@@ -116,8 +116,24 @@ impl Mount {
                     m.group_for_request(groups, count, hint, !flags.use_reserved)
                 } else { None };
                 let start = stream.or(preferred).unwrap_or_else(|| scan::scan_start(hint, groups, optimize, freest));
+                let mut tried = alloc::collections::BTreeSet::new();
+                if optimize {
+                    let candidates = {
+                        let s = m.state.lock();
+                        scan::indexed_candidates(&s.group_free_order_index,
+                            &s.group_avg_fragment_index, groups, count, hint, !flags.use_reserved)
+                    };
+                    for group in candidates {
+                        tried.insert(group);
+                        if let Some(run) = m.try_alloc_run_in_group(group, count, goal_phys)? {
+                            if let Some(ino) = ino { m.record_stream_goal(ino, group, groups); }
+                            return Ok(run);
+                        }
+                    }
+                }
                 for off in 0..groups {
                     let group = (start + off) % groups;
+                    if tried.contains(&group) { continue; }
                     if let Some(run) = m.try_alloc_run_in_group(group, count, goal_phys)? {
                         if let Some(ino) = ino { m.record_stream_goal(ino, group, groups); }
                         return Ok(run);
@@ -226,8 +242,21 @@ impl Mount {
                 m.group_for_request(groups, 1, hint, !flags.use_reserved)
             } else { None };
             let start = preferred.unwrap_or_else(|| scan::scan_start(hint, groups, optimize, freest));
+            let mut tried = alloc::collections::BTreeSet::new();
+            if optimize {
+                let candidates = {
+                    let s = self.state.lock();
+                    scan::indexed_candidates(&s.group_free_order_index,
+                        &s.group_avg_fragment_index, groups, 1, hint, !flags.use_reserved)
+                };
+                for group in candidates {
+                    tried.insert(group);
+                    if let Some(blk) = m.try_alloc_in_group(group)? { return Ok(blk); }
+                }
+            }
             for off in 0..groups {
                 let g = (start + off) % groups;
+                if tried.contains(&g) { continue; }
                 if let Some(blk) = m.try_alloc_in_group(g)? {
                     return Ok(blk);
                 }
@@ -319,6 +348,7 @@ impl Mount {
         None
     }
 
+
     /// Try to find a free bit in `group`. Returns Ok(Some(phys))
     /// on success, Ok(None) if the group is full per its descriptor.
     /// # C: O(block_size)
@@ -376,8 +406,9 @@ impl Mount {
     }
 
     /// Reserve one contiguous run in a group and persist its bitmap/counters.
-    /// The stripe-aligned candidate is tried first for a request at least as
-    /// wide as the configured stripe; otherwise the first run wins.
+    /// The stripe-aligned candidate is tried first for requests at least as
+    /// wide as the configured stripe; an exact goal still follows Linux's
+    /// stricter equal-length stripe rule.
     fn try_alloc_run_in_group(&self, group: u32, count: u32, goal_phys: Option<u64>)
         -> Result<Option<Vec<u64>>, MountError>
     {
@@ -416,7 +447,7 @@ impl Mount {
         });
         let goal = goal_bit.and_then(|bit| find_goal_run(
             &bitmap, blocks, count, first_phys, bit, stripe));
-        let aligned = if goal.is_none() && count == stripe && stripe > 1 {
+        let aligned = if goal.is_none() && count >= stripe && stripe > 1 {
             find_contiguous_run(&bitmap, blocks, count, first_phys, Some(stripe))
         } else { None };
         let start = goal.or(aligned).or_else(|| find_contiguous_run(&bitmap, blocks, count, first_phys, None));
