@@ -86,6 +86,16 @@ fn seeded_file(m: &Arc<ext4::rootfs::Ext4Mount>, bs: usize) -> Arc<File> {
     File::new(inode.clone(), Dentry::new_root(inode), OpenFlags::O_RDWR)
 }
 
+fn preallocated_file(m: &Arc<ext4::rootfs::Ext4Mount>, bs: usize, blocks: usize)
+    -> (Arc<File>, u32) {
+    let st = m.state();
+    let root = st.lookup_path(b"/").expect("root");
+    let ino = st.mount.create_file(root, b"polled-prealloc.bin", 0o644, 0, 0).expect("create");
+    st.mount.fallocate_inode(ino, 0, (bs * blocks) as u64, false).expect("preallocate");
+    let inode = st.wrap_file(ino).expect("wrap file");
+    (File::new(inode.clone(), Dentry::new_root(inode), OpenFlags::O_RDWR), ino)
+}
+
 #[test]
 fn polled_write_completes_only_after_device_poll_and_invalidates_cache() {
     let disk = PollDisk::from_image();
@@ -134,4 +144,29 @@ fn polled_write_error_reaches_the_completion_owner() {
     assert!(result.lock().is_none());
     assert_eq!(direct.iopoll(), Some(1));
     assert_eq!(*result.lock().as_ref().expect("error completion"), Err(VfsError::Eio));
+}
+
+#[test]
+fn polled_write_converts_only_the_completed_unwritten_range() {
+    let disk = PollDisk::from_image();
+    let (m, _sb) = mount(disk.clone());
+    let bs = m.state().mount.sb.block_size as usize;
+    let (file, ino) = preallocated_file(&m, bs, 3);
+    let result = Arc::new(Spinlock::<Option<Result<usize, VfsError>>, TaskList>::new(None));
+    let slot = result.clone();
+    assert!(matches!(file.submit_direct(DirectIo {
+        write: true, off: bs as u64, buf: alloc::vec![0xB6u8; bs],
+        sync_mode: SyncMode::default(),
+        done: alloc::boxed::Box::new(move |_buf, res, _sync| { *slot.lock() = Some(res); }),
+    }), DirectSubmit::Queued));
+    assert!(result.lock().is_none());
+    assert_eq!(file.iopoll(), Some(1));
+    assert_eq!(*result.lock().as_ref().expect("completion"), Ok(bs));
+    let runs = m.state().mount.extent_map(ino).expect("extent map");
+    assert!(runs.iter().any(|&(logical, _phys, len, unwritten)|
+        logical == 0 && len >= 1 && unwritten));
+    assert!(runs.iter().any(|&(logical, _phys, len, unwritten)|
+        logical == 1 && len >= 1 && !unwritten));
+    assert!(runs.iter().any(|&(logical, _phys, len, unwritten)|
+        logical == 2 && len >= 1 && unwritten));
 }

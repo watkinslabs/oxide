@@ -31,6 +31,7 @@ pub(crate) struct DioState {
     result_len: usize,
     write: bool,
     sync_mode: vfs::SyncMode,
+    unwritten: Vec<(u32, u32)>,
     invalidate_start: u64,
     invalidate_end: u64,
 }
@@ -38,32 +39,41 @@ pub(crate) struct DioState {
 /// Plan only the DIO write shape that can complete without allocation or
 /// unwritten-extent conversion. This is deliberately ungated so the Linux
 /// admission boundary is tested without a device or a boot. # C: O(extents)
-fn in_place_write_plan(extents: &[PhysRun], off: u64, end: u64, bs: u64)
-    -> Option<Vec<(usize, u64, usize)>>
+struct WritePlan {
+    requests: Vec<(usize, u64, usize)>,
+    unwritten: Vec<(u32, u32)>,
+}
+
+fn dio_write_plan(extents: &[PhysRun], off: u64, end: u64, bs: u64)
+    -> Option<WritePlan>
 {
     let mut covered = off;
     let mut plans = Vec::new();
+    let mut unwritten = Vec::new();
     for run in extents {
         let run_start = u64::from(run.logical) * bs;
         let run_end = run_start.saturating_add(u64::from(run.len) * bs);
         let start = core::cmp::max(off, run_start);
         let finish = core::cmp::min(end, run_end);
         if start >= finish { continue; }
-        if run.unwritten || start != covered { return None; }
+        if start != covered { return None; }
         covered = finish;
         let logical_blocks = (start - run_start) / bs;
         plans.push(((start - off) as usize,
                     run.phys.saturating_add(logical_blocks),
                     (finish - start) as usize));
+        if run.unwritten {
+            unwritten.push(((start / bs) as u32, ((finish - start) / bs) as u32));
+        }
     }
-    (covered == end).then_some(plans)
+    (covered == end).then_some(WritePlan { requests: plans, unwritten })
 }
 
 impl DioState {
     /// # C: O(1)
     fn new(data: Arc<Ext4FileData>, io: DirectIo, token: DioToken, requests: u32,
            result_len: usize, write: bool, invalidate_start: u64,
-           invalidate_end: u64) -> Arc<Self>
+           invalidate_end: u64, unwritten: Vec<(u32, u32)>) -> Arc<Self>
     {
         let sync_mode = io.sync_mode;
         Arc::new(Self {
@@ -76,6 +86,7 @@ impl DioState {
             result_len,
             write,
             sync_mode,
+            unwritten,
             invalidate_start,
             invalidate_end,
         })
@@ -101,8 +112,21 @@ impl DioState {
     /// pages or do other sleepable work from a block completion callback.
     /// # C: O(pages in range) plus the completion callback
     fn finish_process(&self) {
+        let mut result = self.error.lock().take()
+            .map_or(Ok(self.result_len), Err);
+        // Linux converts unwritten extents in the DIO end_io owner, after the
+        // device has written the blocks and before post-DIO cache invalidation.
+        // The invalidate write lock keeps readers from observing the old
+        // unwritten interpretation while this journal transaction publishes.
         if self.write {
+            // SAFETY: completion runs in process context here; no spinlock is
+            // held, and the semaphore is the canonical cache/extent gate.
             let _invalidate = unsafe { self.data.invalidate_lock.write() };
+            if result.is_ok() && !self.unwritten.is_empty() {
+                if self.data.st.mount.convert_unwritten_range(self.data.ino, &self.unwritten).is_err() {
+                    result = Err(VfsError::Eio);
+                }
+            }
             let first = self.invalidate_start / hal::PAGE_SIZE_BYTES;
             let last = self.invalidate_end.saturating_add(hal::PAGE_SIZE_BYTES - 1)
                 / hal::PAGE_SIZE_BYTES;
@@ -110,8 +134,6 @@ impl DioState {
         }
         self.data.dio_queue.lock().retain(|q| !core::ptr::eq(&**q, self));
         self.token.lock().take();
-        let result = self.error.lock().take()
-            .map_or(Ok(self.result_len), Err);
         let buf = core::mem::take(&mut *self.buf.lock());
         if let Some(done) = self.done.lock().take() {
             done(buf, result, self.sync_mode);
@@ -217,9 +239,9 @@ pub(crate) fn submit(file: &File, io: DirectIo) -> DirectSubmit {
         Ok(v) => v,
         Err(_) => return DirectSubmit::Failed(VfsError::Eio),
     };
-    let plans = if io.write {
-        match in_place_write_plan(&extents, io.off, request_end, bs) {
-            Some(plans) => plans,
+    let (plans, unwritten) = if io.write {
+        match dio_write_plan(&extents, io.off, request_end, bs) {
+            Some(plan) => (plan.requests, plan.unwritten),
             None => return DirectSubmit::Unsupported(io),
         }
     } else {
@@ -237,13 +259,13 @@ pub(crate) fn submit(file: &File, io: DirectIo) -> DirectSubmit {
             let at = (start - io.off) as usize;
             plans.push((at, phys, bytes));
         }
-        plans
+        (plans, Vec::new())
     };
     let write = io.write;
     let off = io.off;
     if write { file.file_update_time(); }
     let state = DioState::new(data.clone(), io, token, plans.len() as u32,
-                              result_len, write, off, request_end);
+                              result_len, write, off, request_end, unwritten);
     data.dio_queue.lock().push(state.clone());
     if plans.is_empty() {
         state.remaining.store(1, Ordering::Release);
@@ -290,24 +312,29 @@ mod tests {
     #[test]
     fn in_place_plan_covers_adjacent_initialized_runs() {
         let extents = [run(0, 100, 2, false), run(2, 900, 2, false)];
-        assert_eq!(in_place_write_plan(&extents, 0, 4 * 4096, 4096),
-            Some(vec![(0, 100, 2 * 4096), (2 * 4096, 900, 2 * 4096)]));
+        let plan = dio_write_plan(&extents, 0, 4 * 4096, 4096).unwrap();
+        assert_eq!(plan.requests,
+            vec![(0, 100, 2 * 4096), (2 * 4096, 900, 2 * 4096)]);
+        assert!(plan.unwritten.is_empty());
     }
 
     #[test]
     fn in_place_plan_refuses_a_logical_hole() {
         let extents = [run(0, 100, 1, false), run(2, 102, 1, false)];
-        assert!(in_place_write_plan(&extents, 0, 3 * 4096, 4096).is_none());
+        assert!(dio_write_plan(&extents, 0, 3 * 4096, 4096).is_none());
     }
 
     #[test]
     fn in_place_plan_refuses_unwritten_storage() {
         let extents = [run(0, 100, 2, true)];
-        assert!(in_place_write_plan(&extents, 0, 4096, 4096).is_none());
+        let plan = dio_write_plan(&extents, 0, 4096, 4096).unwrap();
+        assert_eq!(plan.unwritten, vec![(0, 1)]);
     }
 
     #[test]
     fn in_place_plan_accepts_an_empty_range_without_extents() {
-        assert_eq!(in_place_write_plan(&[], 4096, 4096, 4096), Some(Vec::new()));
+        let plan = dio_write_plan(&[], 4096, 4096, 4096).unwrap();
+        assert!(plan.requests.is_empty());
+        assert!(plan.unwritten.is_empty());
     }
 }

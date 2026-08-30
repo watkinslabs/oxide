@@ -5,6 +5,7 @@
 // the media. Writing into that range has to make the written part initialized
 // WITHOUT publishing the rest, and without paying for the whole preallocation.
 
+use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::inode::Extent;
@@ -23,6 +24,61 @@ use super::records::extent_run as mk_extent;
 pub(crate) const MAX_ZEROOUT_KB: u32 = 32;
 
 impl Mount {
+    /// Convert completed direct-I/O blocks from unwritten to initialized
+    /// without zeroing them. The caller has already written every block in
+    /// `ranges`; this is the metadata half of Linux's DIO `end_io` owner.
+    /// # C: O(extents + range boundaries) + O(1) journal transaction
+    pub(crate) fn convert_unwritten_range(
+        &self, ino: u32, ranges: &[(u32, u32)],
+    ) -> Result<(), MountError> {
+        if ranges.is_empty() { return Ok(()); }
+        self.run_journaled_deferred(|m| {
+            let inode = m.read_inode(ino)?;
+            let runs = m.collect_phys_extents(&inode.i_block)?;
+            let mut out = Vec::with_capacity(runs.len() + ranges.len() * 2);
+            let mut changed = false;
+            for run in runs {
+                if !run.unwritten {
+                    out.push(mk_extent(run.logical, run.phys, run.len, false));
+                    continue;
+                }
+                let start = u64::from(run.logical);
+                let end = start + u64::from(run.len);
+                let mut points = vec![start, end];
+                for &(range_start, range_len) in ranges {
+                    let rs = u64::from(range_start);
+                    let re = rs.saturating_add(u64::from(range_len));
+                    if rs < end && re > start {
+                        points.push(core::cmp::max(rs, start));
+                        points.push(core::cmp::min(re, end));
+                    }
+                }
+                points.sort_unstable();
+                points.dedup();
+                for pair in points.windows(2) {
+                    let part_start = pair[0];
+                    let part_end = pair[1];
+                    if part_start >= part_end { continue; }
+                    let convert = ranges.iter().any(|&(range_start, range_len)| {
+                        let rs = u64::from(range_start);
+                        let re = rs.saturating_add(u64::from(range_len));
+                        part_start >= rs && part_end <= re
+                    });
+                    changed |= convert;
+                    out.push(mk_extent(
+                        part_start as u32,
+                        run.phys + part_start - start,
+                        (part_end - part_start) as u32,
+                        !convert,
+                    ));
+                }
+            }
+            if !changed { return Ok(()); }
+            let (mut bytes, _) = m.read_inode_bytes(ino)?;
+            m.write_extent_tree(ino, &mut bytes, &out).map(|_| ())
+        })
+    }
+
     /// Blocks convertible by zeroing rather than splitting, for this block size.
     /// # C: O(1)
     fn max_zeroout_blocks(&self) -> u32 {
