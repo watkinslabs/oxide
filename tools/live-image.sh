@@ -53,7 +53,11 @@ case "$arch" in
 esac
 [ -f "$kernel" ] || die "no kernel at $kernel — run: make kernel artifacts ARCH=$arch"
 
-out="${OXIDE_LIVE_IMG:-$HERE/target/oxide-live-${profile}-${arch}.img}"
+# .iso, because that is what this is: grub2-mkrescue builds an ISO 9660 with
+# El Torito and the root is appended as a GPT partition, which is the isohybrid
+# shape every live distribution ships. `file` calls it "ISO 9660 CD-ROM
+# filesystem data (DOS/MBR boot sector) ... (bootable)".
+out="${OXIDE_LIVE_IMG:-$HERE/target/oxide-live-${profile}-${arch}.iso}"
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 
 # The root is named, not numbered: the rescue image lays down partitions of
