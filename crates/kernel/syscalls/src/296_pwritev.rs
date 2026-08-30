@@ -94,6 +94,16 @@ fn positional_pwritev(args: &SyscallArgs, mut off: u64, flags: u64) -> i64 {
         Err(e) => { cur.account_write_result(e); return e; }
     };
     if ranges.is_empty() { cur.account_write_result(0); return 0; }
+    let mut direct_off = off;
+    for &(base, len) in &ranges {
+        if let Err(e) = file.check_direct_io_alignment(base, direct_off, len) {
+            let r = errno_vfs(e); cur.account_write_result(r); return r;
+        }
+        direct_off = match direct_off.checked_add(len as u64) {
+            Some(v) => v,
+            None => { let r = errno(Errno::Einval); cur.account_write_result(r); return r; }
+        };
+    }
     let eff = match rwf_effect(&file, flags) {
         Ok(e)  => e,
         Err(e) => { cur.account_write_result(e); return e; }

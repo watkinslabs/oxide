@@ -108,6 +108,16 @@ pub fn sys_readv(args: &SyscallArgs) -> i64 {
             ranges.push((base, capped));
         }
     }
+    let mut direct_off = file.pos();
+    for &(base, len) in &ranges {
+        if let Err(e) = file.check_direct_io_alignment(base, direct_off, len) {
+            let ret = -(e as i64); cur.account_read_result(ret); return ret;
+        }
+        direct_off = match direct_off.checked_add(len as u64) {
+            Some(v) => v,
+            None => { let ret = -(Errno::Einval.as_i32() as i64); cur.account_read_result(ret); return ret; }
+        };
+    }
     let mut bounce: Vec<Vec<u8>> = ranges.iter().map(|&(_, len)| vec![0u8; len]).collect();
     let mut bufs: Vec<&mut [u8]> = bounce.iter_mut().map(Vec::as_mut_slice).collect();
     let ret = match file.read_iter(&mut bufs) {
