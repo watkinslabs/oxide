@@ -7,9 +7,11 @@
 // - `meta`: shared `ext4_setattr` — in-core apply + on-disk metadata writeback.
 // - `rename`: `ext4_rename2` — plain/EXCHANGE/WHITEOUT, `..` + nlink fixups.
 // - `links`: the `i_links_count` ceilings shared by mkdir / link / rename.
+// - `dio`: extent-mapped direct-I/O submission and poll completion ownership.
 
 mod ids;
 mod data;
+mod dio;
 mod links;
 mod fallocate;
 mod meta;
