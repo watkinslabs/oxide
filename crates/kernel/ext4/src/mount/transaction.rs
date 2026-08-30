@@ -185,12 +185,12 @@ impl Mount {
     /// sleeps until the releasing owner wakes it.
     /// # Ctx: process
     /// # Sleeps: yes on contention
-    /// # C: O(N wakeups)
+    /// # C: O(1) admission; one waiter wake on contention
     pub(crate) fn txn_acquire(&self) {
         let me = ctx_id();
         if self.try_txn_acquire(me) { return; }
         // SAFETY: this process-context waiter holds neither the transaction
-        // gate nor the state lock; release publishes owner=0 before wake_all.
+        // gate nor the state lock; release publishes owner=0 before wake_one.
         let _ = unsafe {
             sched::live::wait_event_uninterruptible(&self.txn_wait, || self.try_txn_acquire(me))
         };
@@ -202,7 +202,11 @@ impl Mount {
         use ::core::sync::atomic::Ordering;
         if self.txn_depth.fetch_sub(1, Ordering::AcqRel) == 1 {
             self.txn_owner.store(0, Ordering::Release);
-            self.txn_wait.wake_all();
+            // This is an exclusive mutex-like gate. Waking every waiter makes
+            // all contenders race the same CAS and turns each release into an
+            // O(waiters) scheduler event; one waiter is enough and preserves
+            // the wait_event predicate/recheck contract.
+            self.txn_wait.wake_one();
         }
     }
 
