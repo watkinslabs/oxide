@@ -256,11 +256,11 @@ The current allocator has the right ownership boundary and several Linux
 selection summaries. B3004 adds a bounded indexed candidate pass before the
 bitmap fallback; B3005 preserves physical-goal-first ordering; B3006 makes
 locality-PA reclaim follow filesystem group order; B3007 filters PA masking to
-the target group. Remaining work is buddy/bitmap lifecycle transitions for
-inode and locality preallocations and the remaining Linux request
-normalization. The on-disk bitmap remains the authority; summaries are rebuilt
-or invalidated at every transaction boundary and never become a second
-allocation truth.
+the target group; B3010 makes inode-PA reclaim follow the same group order.
+Remaining work is the remaining Linux request normalization and buddy/bitmap
+state-transition fidelity for partial PA consumption. The on-disk bitmap
+remains the authority; summaries are rebuilt or invalidated at every
+transaction boundary and never become a second allocation truth.
 
 Exit: focused allocator state-machine tests, fragmentation/ENOSPC and
 e2fsck-clean image coverage, both architecture checks, and both-arch smoke.
