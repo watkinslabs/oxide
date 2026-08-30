@@ -270,6 +270,16 @@ impl Mount {
         let _ = self.refresh_prealloc_summary(group);
     }
 
+    /// Restore a locality PA prefix after its allocation context was aborted.
+    /// Linux keeps the PA intact until the bitmap claim succeeds; every
+    /// uncommitted block must therefore return as one canonical reservation.
+    /// # C: O(N PAs)
+    pub(crate) fn restore_group_prealloc_on_cpu(
+        &self, cpu: usize, group: u32, blocks: Vec<u64>,
+    ) {
+        self.add_group_prealloc_on_cpu(cpu, group, blocks.len() as u32, blocks);
+    }
+
     /// Whether an in-memory PA can hide free blocks from a new allocation. # C: O(1)
     pub(crate) fn has_prealloc(&self) -> bool {
         let s = self.state.lock();

@@ -132,7 +132,10 @@ impl Mount {
             .unwrap_or_else(|| crate::balloc::group_first_block(&self.sb, 0));
         if let Some((cpu, pa_group, blocks)) = self.peek_group_prealloc_owner(1, goal) {
             if let Some(&block) = blocks.first() {
-                self.claim_prealloc_block(block)?;
+                if let Err(error) = self.claim_prealloc_block(block) {
+                    self.restore_group_prealloc_on_cpu(cpu, pa_group, blocks);
+                    return Err(error);
+                }
                 return Ok(Some((block, AppendPrealloc::Group(cpu, pa_group))));
             }
         }
