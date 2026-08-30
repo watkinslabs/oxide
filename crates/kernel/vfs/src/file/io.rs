@@ -201,7 +201,7 @@ impl File {
     /// do not carry an mtime the Linux `generic_file_write_iter` path would
     /// bump. No clock installed yet (early boot) → `current_time` floors 0 and
     /// the op is skipped. # C: O(1) + one backend inode writeback
-    pub(crate) fn file_update_time(&self) {
+    pub fn file_update_time(&self) {
         if !matches!(self.inode.file_type(), FileType::Regular) { return; }
         let raw = crate::inode_times::realtime_now_ns();
         if raw == 0 { return; }
