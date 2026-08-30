@@ -1,7 +1,21 @@
-use super::{HoleOrData, seek_in_runs};
+use super::{dio_inode_supported, HoleOrData, seek_in_runs};
+use crate::inode::{self, flags};
 use vfs::VfsError;
 
 const BS: u64 = 4096;
+
+#[test]
+fn dio_admits_plain_extent_and_indirect_layouts() {
+    assert!(dio_inode_supported(0));
+    assert!(dio_inode_supported(inode::EXT4_EXTENTS_FL));
+}
+
+#[test]
+fn dio_rejects_transformed_or_inline_layouts() {
+    for flag in [inode::EXT4_INLINE_DATA_FL, flags::EXT4_ENCRYPT_FL, flags::EXT4_VERITY_FL] {
+        assert!(!dio_inode_supported(flag), "flag {flag:#x}");
+    }
+}
 
 #[test]
 fn full_file_data_and_hole() {
