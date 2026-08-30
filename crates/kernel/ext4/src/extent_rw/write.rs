@@ -182,6 +182,7 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
                         }
                     }
                 }
+                restore_group_reservations(m, &runs);
                 return Err(e);
             }
         }
@@ -201,6 +202,14 @@ fn take_reserved(runs: &[ReservedRun], offsets: &mut [usize], lb: u32)
         }
     }
     None
+}
+
+fn restore_group_reservations(m: &Mount, runs: &[ReservedRun]) {
+    for run in runs {
+        if !run.from_group_pa || run.blocks.is_empty() { continue; }
+        let cpu = run.group_cpu.unwrap_or_else(crate::balloc::prealloc::locality_cpu);
+        m.restore_group_prealloc_on_cpu(cpu, m.group_of_block(run.blocks[0]), run.blocks.clone());
+    }
 }
 
 impl Mount {
@@ -549,29 +558,32 @@ impl Mount {
                     (from_inode_pa || from_group_pa).then_some((block, from_inode_pa, from_group_pa, group_cpu)));
                 if let Some((block, _, _, _)) = pa_phys {
                     if let Err(e) = self.claim_prealloc_block(block) {
-                        if let Err(rb) = self.rollback_allocated_logical_blocks(ino, cur_size, &allocated) { return Err(rb); }
+                        let rollback = self.rollback_allocated_logical_blocks(ino, cur_size, &allocated);
+                        restore_group_reservations(self, &reserved);
+                        if let Err(rb) = rollback { return Err(rb); }
                         return Err(e);
                     }
                 }
                 if let Err(e) = self.alloc_written_block_defer_with_physical(
                     ino, &mut ib, ioff, lb, vis, physical.map(|(block, _, _, _)| block)) {
-                    if let Some((block, from_inode_pa, from_group_pa, group_cpu)) = pa_phys {
+                    if let Some((block, from_inode_pa, from_group_pa, _group_cpu)) = pa_phys {
                         // The extent inserter owns cleanup of the claimed
                         // physical block on every post-selection error.
                         if from_inode_pa {
                             let _ = self.rollback_inode_prealloc_claim(ino, lb, block);
                         }
                         if from_group_pa {
-                            let cpu = group_cpu.unwrap_or_else(crate::balloc::prealloc::locality_cpu);
-                            let _ = self.rollback_group_prealloc_claim(cpu, self.group_of_block(block), block);
+                            let _ = self.free_block(block);
                         }
                     }
-                    if let Err(rb) = self.rollback_allocated_logical_blocks(ino, cur_size, &allocated) { return Err(rb); }
+                    let rollback = self.rollback_allocated_logical_blocks(ino, cur_size, &allocated);
+                    restore_group_reservations(self, &reserved);
                     for (idx, run) in reserved.iter().enumerate() {
                         for &block in run.blocks.iter().skip(reserved_at[idx]) {
                             if !run.from_inode_pa && !run.from_group_pa { let _ = self.free_block(block); }
                         }
                     }
+                    if let Err(rb) = rollback { return Err(rb); }
                     return Err(e);
                 }
                 // The inserter updates `ib` through the same journal-visible
@@ -593,12 +605,16 @@ impl Mount {
             written += copy_len;
         }
         if let Err(e) = self.flush_pending_data_writes(pending) {
-            if let Err(rb) = self.rollback_allocated_logical_blocks(ino, cur_size, &allocated) { return Err(rb); }
+            let rollback = self.rollback_allocated_logical_blocks(ino, cur_size, &allocated);
+            restore_group_reservations(self, &reserved);
+            if let Err(rb) = rollback { return Err(rb); }
             return Err(e);
         }
         // Persist the (potentially partial-block) i_size.
         if let Err(e) = self.set_inode_size_with_meta(ino, new_size, meta) {
-            if let Err(rb) = self.rollback_allocated_logical_blocks(ino, cur_size, &allocated) { return Err(rb); }
+            let rollback = self.rollback_allocated_logical_blocks(ino, cur_size, &allocated);
+            restore_group_reservations(self, &reserved);
+            if let Err(rb) = rollback { return Err(rb); }
             return Err(e);
         }
         for run in &reserved {
