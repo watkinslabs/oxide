@@ -15,6 +15,7 @@ const CAP_TYPE_SHIFT: u32 = 24;
 const CAP_BAR_MASK: u32 = 0xFF;
 const CAP_FIELD_BYTES: u8 = 4;
 const CAP_NOTIFY_TRAILER_BYTES: u8 = 20;
+const CAP_SHARED_MEMORY_TRAILER_BYTES: u8 = 28;
 
 /// `cfg_type` values per spec §4.1.4.3.
 pub const VIRTIO_PCI_CAP_COMMON_CFG:        u8 = 1;
@@ -43,6 +44,10 @@ pub struct VirtioPciCap {
     pub length:   u32,
     /// Only meaningful for NOTIFY_CFG; trailer u32 at +16.
     pub notify_off_multiplier: u32,
+    /// High halves and shared-memory ID for `SHARED_MEMORY_CFG` caps.
+    pub offset_hi: u32,
+    pub length_hi: u32,
+    pub shared_memory_id: Option<u32>,
 }
 
 /// True iff `(vendor, device)` is a modern-only virtio-pci device.
@@ -95,6 +100,23 @@ pub fn notify_pa(cap: &VirtioPciCap, bars: &[pci::Bar; 6], notify_off: u16) -> O
     )
 }
 
+/// Return the physical range advertised by one virtio shared-memory cap. # C: O(1)
+pub fn shared_memory_pa(cap: &VirtioPciCap, bars: &[pci::Bar; 6], shm_id: u32)
+    -> Option<(u64, u64)>
+{
+    if cap.cfg_type != VIRTIO_PCI_CAP_SHARED_MEMORY_CFG
+        || cap.shared_memory_id != Some(shm_id) { return None; }
+    let bar = match bars.get(cap.bar as usize)? {
+        pci::Bar::Mem32 { base, .. } => *base as u64,
+        pci::Bar::Mem64 { base, .. } => *base,
+        _ => return None,
+    };
+    let offset = (u64::from(cap.offset_hi) << 32) | u64::from(cap.offset);
+    let length = (u64::from(cap.length_hi) << 32) | u64::from(cap.length);
+    if length == 0 { return None; }
+    Some((bar.checked_add(offset)?, length))
+}
+
 /// Decode one virtio vendor cap from config space. Returns None if the
 /// underlying cap isn't actually a virtio vendor cap.
 /// # C: O(1) — five u32 reads.
@@ -115,9 +137,19 @@ pub fn decode_one<R: ConfigSpaceReader>(r: &R, bdf: Bdf, cap: PciCap) -> Option<
     } else {
         0
     };
+    let offset_hi = if cfg_type == VIRTIO_PCI_CAP_SHARED_MEMORY_CFG && cap_len >= CAP_SHARED_MEMORY_TRAILER_BYTES {
+        r.read32(bdf, off.wrapping_add(16))
+    } else { 0 };
+    let length_hi = if cfg_type == VIRTIO_PCI_CAP_SHARED_MEMORY_CFG && cap_len >= CAP_SHARED_MEMORY_TRAILER_BYTES {
+        r.read32(bdf, off.wrapping_add(20))
+    } else { 0 };
+    let shared_memory_id = if cfg_type == VIRTIO_PCI_CAP_SHARED_MEMORY_CFG && cap_len >= CAP_SHARED_MEMORY_TRAILER_BYTES {
+        Some(r.read32(bdf, off.wrapping_add(24)))
+    } else { None };
     Some(VirtioPciCap {
         cfg_type, bar, offset, length,
         notify_off_multiplier: notify_mult,
+        offset_hi, length_hi, shared_memory_id,
     })
 }
 
@@ -137,6 +169,7 @@ pub mod heapless_v {
             Self {
                 items: [VirtioPciCap {
                     cfg_type: 0, bar: 0, offset: 0, length: 0, notify_off_multiplier: 0,
+                    offset_hi: 0, length_hi: 0, shared_memory_id: None,
                 }; MAX],
                 len: 0,
             }
@@ -242,6 +275,7 @@ mod tests {
             offset: 0x100,
             length: 0x100,
             notify_off_multiplier: 4,
+            offset_hi: 0, length_hi: 0, shared_memory_id: None,
         };
         let mut bars = [pci::Bar::None; 6];
         bars[2] = pci::Bar::Mem64 { base: 0x8000_0000, prefetch: false };
@@ -257,6 +291,7 @@ mod tests {
             offset: 0x100,
             length: 0x100,
             notify_off_multiplier: 4,
+            offset_hi: 0, length_hi: 0, shared_memory_id: None,
         };
         let bars = [pci::Bar::None; 6];
 
@@ -264,5 +299,23 @@ mod tests {
 
         let notify = VirtioPciCap { cfg_type: VIRTIO_PCI_CAP_NOTIFY_CFG, ..common };
         assert_eq!(notify_pa(&notify, &bars, 0), None);
+    }
+
+    #[test]
+    fn shared_memory_cap_carries_wide_range_and_id() {
+        let r = MapR { m: Mutex::new(HashMap::new()) };
+        let bdf = Bdf { segment: 0, bus: 0, device: 2, function: 0 };
+        r.write32(bdf, 0x40, 0x081c_0009);
+        r.write32(bdf, 0x44, 0x0000_0002);
+        r.write32(bdf, 0x48, 0x0000_1000);
+        r.write32(bdf, 0x4C, 0x0000_2000);
+        r.write32(bdf, 0x50, 0x0000_0001);
+        r.write32(bdf, 0x54, 0x0000_0001);
+        r.write32(bdf, 0x58, 0x0000_0042);
+        let cap = decode_one(&r, bdf, PciCap { id: CAP_ID_VENDOR, cfg_off: 0x40 }).unwrap();
+        let mut bars = [pci::Bar::None; 6];
+        bars[2] = pci::Bar::Mem64 { base: 0x8000_0000, prefetch: true };
+        assert_eq!(shared_memory_pa(&cap, &bars, 0x42), Some((0x1_8000_1000, 0x1_0000_2000)));
+        assert_eq!(shared_memory_pa(&cap, &bars, 0x41), None);
     }
 }
