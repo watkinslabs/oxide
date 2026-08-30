@@ -223,6 +223,10 @@ pub struct MountState {
     /// Per-inode data preallocation tails. The bitmap owns these blocks on
     /// disk, while this table owns their not-yet-mapped logical range.
     pub(crate) inode_prealloc: alloc::collections::BTreeMap<u32, Vec<crate::balloc::prealloc::InodePrealloc>>,
+    /// Linux mbcache's ext4 xattr-block index: h_hash -> candidate block
+    /// numbers. The block bytes remain owned by metadata_cache; this index is
+    /// only a lookup accelerator and never a second xattr representation.
+    pub(crate) xattr_block_cache: alloc::collections::BTreeMap<u32, Vec<u64>>,
     /// Cross-operation batching (Linux jbd2 running-transaction model). When
     /// set, the `shadow` PERSISTS across `run_journaled` scopes: each op joins
     /// the running transaction instead of committing its own, and the batch is

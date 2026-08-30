@@ -119,10 +119,7 @@ impl Ext4Behaviour {
             }
             OPT_PREFETCH_BLOCK_BITMAPS => { flag(val)?; self.prefetch_block_bitmaps = true; }
             OPT_NO_PREFETCH_BLOCK_BITMAPS => { flag(val)?; self.prefetch_block_bitmaps = false; }
-            // mbcache backs xattr/quota metadata in Linux. Oxide has no such
-            // cache owner yet, so accepting a switch that cannot affect I/O
-            // would be an accept-and-drop mount bug.
-            OPT_NOMBCACHE | OPT_NO_MBCACHE => return Err(VfsError::Einval),
+            OPT_NOMBCACHE | OPT_NO_MBCACHE => { flag(val)?; self.mbcache = false; }
             OPT_STRIPE => self.stripe = number(value(val)?)?,
             OPT_RESUID => self.resuid = number(value(val)?)?,
             OPT_RESGID => self.resgid = number(value(val)?)?,

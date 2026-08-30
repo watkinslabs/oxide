@@ -215,6 +215,73 @@ mod external;
 pub use external::encode_block;
 
 impl Mount {
+    /// Return the Linux `h_hash` key of an external xattr block. # C: O(1)
+    fn xattr_block_hash(block: &[u8]) -> u32 {
+        if block.len() < BLOCK_HDR_LEN { return 0; }
+        u32::from_le_bytes([block[12], block[13], block[14], block[15]])
+    }
+
+    /// Add one block to the mbcache index. The index contains block identities
+    /// only; callers still compare canonical decoded entries before sharing.
+    /// # C: O(log N)
+    fn xattr_cache_insert(&self, block: u64, image: &[u8]) {
+        if !self.behaviour().mbcache { return; }
+        let key = Self::xattr_block_hash(image);
+        if key == 0 { return; }
+        let mut state = self.state.lock();
+        let list = state.xattr_block_cache.entry(key).or_default();
+        if !list.contains(&block) { list.push(block); }
+    }
+
+    /// Remove a block identity after its last on-disk reference is released.
+    /// # C: O(log N)
+    fn xattr_cache_remove(&self, block: u64, image: &[u8]) {
+        let key = Self::xattr_block_hash(image);
+        let mut state = self.state.lock();
+        if let Some(list) = state.xattr_block_cache.get_mut(&key) {
+            list.retain(|b| *b != block);
+            if list.is_empty() { state.xattr_block_cache.remove(&key); }
+        }
+    }
+
+    /// Find an existing byte-identical external xattr block. A hash collision
+    /// is harmless because Linux compares the actual entries before sharing.
+    /// # C: O(candidates * block)
+    fn xattr_cache_find(&self, image: &[u8]) -> Option<u64> {
+        if !self.behaviour().mbcache { return None; }
+        let key = Self::xattr_block_hash(image);
+        let candidates = self.state.lock().xattr_block_cache.get(&key).cloned()?;
+        let wanted = decode_block(image);
+        candidates.into_iter().find(|block| {
+            self.read_metadata_block(*block).map(|old| decode_block(&old) == wanted).unwrap_or(false)
+        })
+    }
+
+    /// Increment an external xattr block's Linux `h_refcount`. # C: O(block)
+    fn xattr_block_get(&self, block: u64) -> Result<Vec<u8>, MountError> {
+        let mut image = self.read_metadata_block(block)?;
+        if image.len() < BLOCK_HDR_LEN { return Err(MountError::BadBlock); }
+        let refs = u32::from_le_bytes([image[4], image[5], image[6], image[7]]);
+        image[4..8].copy_from_slice(&refs.saturating_add(1).to_le_bytes());
+        crate::csum::stamp_xattr_block_csum(&self.sb, block, &mut image);
+        self.metadata_write(block * self.sb.block_size as u64, &image)?;
+        Ok(image)
+    }
+
+    /// Drop one external xattr reference, returning true when its block is
+    /// now unreferenced and must be freed. # C: O(block)
+    fn xattr_block_put(&self, block: u64) -> Result<bool, MountError> {
+        let mut image = self.read_metadata_block(block)?;
+        if image.len() < BLOCK_HDR_LEN { return Err(MountError::BadBlock); }
+        let refs = u32::from_le_bytes([image[4], image[5], image[6], image[7]]);
+        if refs == 0 { return Err(MountError::BadBlock); }
+        if refs == 1 { return Ok(true); }
+        image[4..8].copy_from_slice(&(refs - 1).to_le_bytes());
+        crate::csum::stamp_xattr_block_csum(&self.sb, block, &mut image);
+        self.metadata_write(block * self.sb.block_size as u64, &image)?;
+        Ok(false)
+    }
+
     /// `i_extra_isize` from a raw inode buffer, sanity-bounded so the ibody
     /// header lands inside the inode record. 0 = no ibody xattr area. # C: O(1)
     fn extra_isize_of(ino_bytes: &[u8], isize: usize) -> usize {
@@ -241,6 +308,7 @@ impl Mount {
         let facl = Self::file_acl_of(&bytes);
         if facl != 0 {
             if let Ok(blk) = self.read_metadata_block(facl) {
+                self.xattr_cache_insert(facl, &blk);
                 for (n, v) in decode_block(&blk) { let _ = store.set(&n, v, false, false); }
             }
         }
@@ -319,8 +387,13 @@ impl Mount {
                     return Err(e)
                 }
                 if old_facl != 0 {
-                    if let Err(e) = m.free_block(old_facl) {
-                        return Err(m.rollback_i_blocks_delta(ino, new_sectors, old_sectors, e));
+                    let old_image = m.read_metadata_block(old_facl)?;
+                    let last = m.xattr_block_put(old_facl)?;
+                    if last {
+                        m.xattr_cache_remove(old_facl, &old_image);
+                        if let Err(e) = m.free_block(old_facl) {
+                            return Err(m.rollback_i_blocks_delta(ino, new_sectors, old_sectors, e));
+                        }
                     }
                 }
                 return Ok(());
@@ -331,7 +404,14 @@ impl Mount {
             let mut blk = encode_block(entries, bs).map_err(|_| MountError::NoSpace)?;
             let old_sectors = Self::i_blocks_of(&bytes);
             let mut charged_sectors = old_sectors;
-            let block_nr = if old_facl != 0 { old_facl } else {
+            let shared = if old_facl == 0 { m.xattr_cache_find(&blk) } else { None };
+            let block_nr = if old_facl != 0 { old_facl } else if let Some(existing) = shared {
+                // Linux mbcache shares the existing physical block, but the
+                // inode still owns one i_blocks charge for its reference.
+                blk = m.xattr_block_get(existing)?;
+                Self::attach_external_block(&mut bytes, existing, bs);
+                existing
+            } else {
                 charged_sectors = old_sectors.saturating_add(m.sb.sectors_per_block());
                 m.account_i_blocks_delta(ino, old_sectors, charged_sectors)?;
                 let b = match m.alloc_block(0) {
@@ -343,8 +423,12 @@ impl Mount {
                 Self::attach_external_block(&mut bytes, b, bs);
                 b
             };
-            crate::csum::stamp_xattr_block_csum(&m.sb, block_nr, &mut blk);
-            if let Err(e) = m.metadata_write(block_nr * bs as u64, &blk) {
+            if shared.is_none() {
+                crate::csum::stamp_xattr_block_csum(&m.sb, block_nr, &mut blk);
+            }
+            if let Err(e) = if shared.is_some() { Ok(()) } else {
+                m.metadata_write(block_nr * bs as u64, &blk)
+            } {
                 if old_facl == 0 {
                     let _ = m.free_block(block_nr);
                     return Err(m.rollback_i_blocks_delta(ino, charged_sectors, old_sectors, e));
@@ -358,6 +442,7 @@ impl Mount {
                 }
                 return Err(e);
             }
+            m.xattr_cache_insert(block_nr, &blk);
             Ok(())
         })
     }

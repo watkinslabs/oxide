@@ -231,6 +231,9 @@ pub struct Ext4Behaviour {
     /// `prefetch_block_bitmaps` — load and validate all allocation bitmaps
     /// during mount instead of on the first allocation in each group.
     pub prefetch_block_bitmaps: bool,
+    /// `mbcache`/`nombcache` — whether identical external xattr blocks may
+    /// share one on-disk block, matching Linux's ext4 mbcache owner.
+    pub mbcache: bool,
     /// `dax`, `dax=always|inode|never` policy. The device capability remains
     /// owned by the block device; this field is only the superblock policy.
     pub dax: DaxMode,
@@ -264,6 +267,7 @@ impl Default for Ext4Behaviour {
             inode_readahead_blks: DEFAULT_INODE_READAHEAD_BLKS,
             dio_read_nolock: false,
             prefetch_block_bitmaps: false,
+            mbcache: true,
             dax: DaxMode::Inode,
         }
     }

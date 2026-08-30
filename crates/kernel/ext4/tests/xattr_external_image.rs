@@ -111,6 +111,31 @@ fn shrinking_back_to_ibody_frees_external_block() {
 }
 
 #[test]
+fn identical_external_xattrs_share_and_release_mbcache_block() {
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk.0.clone()).unwrap();
+    let a = m.create_file(2, b"share-a.bin", 0o644, 0, 0).unwrap();
+    let b = m.create_file(2, b"share-b.bin", 0o644, 0, 0).unwrap();
+    let before = m.state_free_blocks();
+    let value = std::vec![0x5Au8; 200];
+    m.store_xattrs(a, &[entry("user.same", &value)]).unwrap();
+    m.store_xattrs(b, &[entry("user.same", &value)]).unwrap();
+    let (a_raw, _) = m.read_inode_bytes(a).unwrap();
+    let (b_raw, _) = m.read_inode_bytes(b).unwrap();
+    let block = file_acl(&a_raw);
+    assert_ne!(block, 0);
+    assert_eq!(file_acl(&b_raw), block, "mbcache should reuse the physical block");
+    let shared = read_fs_block(&disk.0, block, m.sb.block_size);
+    assert_eq!(u32::from_le_bytes([shared[4], shared[5], shared[6], shared[7]]), 2);
+
+    m.store_xattrs(b, &[entry("user.small", b"x")]).unwrap();
+    let once = read_fs_block(&disk.0, block, m.sb.block_size);
+    assert_eq!(u32::from_le_bytes([once[4], once[5], once[6], once[7]]), 1);
+    m.store_xattrs(a, &[entry("user.small", b"x")]).unwrap();
+    assert_eq!(m.state_free_blocks(), before, "final mbcache put frees the block");
+}
+
+#[test]
 fn external_block_is_e2fsck_clean() {
     let (disk, cap) = build_disk();
     {

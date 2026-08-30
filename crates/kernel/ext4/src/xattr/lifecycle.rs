@@ -10,8 +10,12 @@ impl Mount {
         let block = Self::file_acl_of(&bytes);
         if block == 0 { return Ok(()); }
 
+        let image = self.read_metadata_block(block)?;
         Self::detach_external_block(&mut bytes, self.sb.block_size as usize);
         self.write_inode_bytes(ino, &bytes)?;
-        self.free_block(block)
+        if self.xattr_block_put(block)? {
+            self.xattr_cache_remove(block, &image);
+            self.free_block(block)
+        } else { Ok(()) }
     }
 }

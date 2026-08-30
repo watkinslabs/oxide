@@ -140,6 +140,7 @@ impl Mount {
             group_prealloc: alloc::collections::BTreeMap::new(),
             stream_last_groups: alloc::collections::BTreeMap::new(),
             inode_prealloc: alloc::collections::BTreeMap::new(),
+            xattr_block_cache: alloc::collections::BTreeMap::new(),
             batch: false,
             handles: alloc::collections::BTreeMap::new(),
             active_handles: 0,
