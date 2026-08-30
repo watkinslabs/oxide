@@ -357,6 +357,14 @@ E4-10 status update (B2990): polled DIO now admits device-aligned offsets and
 lengths, translates sub-filesystem-block ranges to the correct device sectors,
 and delegates partial writes into unwritten extents to the synchronous RMW
 owner. Deferred-device image coverage and the full ext4 suite pass.
+
+E4-08 status update (B2994): linear directory lookup now reads the current
+directory block through the canonical metadata owner before queuing only the
+following bounded readahead window. This removes the prior duplicate extent
+mapping walk for the current block and matches Linux's batch-read/consume
+ordering. Focused and full ext4 tests plus both architecture checks pass; the
+aggregate performance item remains open because the fresh GNOME-marker run did
+not reach a valid desktop sample.
 | E4-12 | DONE | Every known admitted ext4 option without a live consumer now refuses explicitly; generic VFS mount tokens remain pass-through. | Add a real owner before admitting any refused filesystem option. |
 | E4-13 | DONE | All ext4 e2fsck image fixtures use PID/sequence-unique temporary paths and clean up after each run; the large allocator harness uses a per-process directory, and serial/parallel runs agree. | Workspace-wide fixture audit plus serial and four-thread harness runs. |
 | E4-14 | DONE | The previously reported ARM sysinit EIO/SIGBUS event did not reproduce in the controlled ARM boot-smoke run; userspace answered the systemd probe and the serial RX probe passed in 22 seconds. | Controlled ARM boot-smoke evidence; retain broader ARM desktop validation under E4-03. |

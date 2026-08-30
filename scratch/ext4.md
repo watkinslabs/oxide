@@ -258,6 +258,15 @@ It does not demonstrate a whole-boot gain: the aggregate and `newfstatat`
 values are within the harness's documented run-to-run variance. The lookup
 phase remains the next measurement target.
 
+B2994 (`c342e465d`): linear directory lookup now consumes the current block
+through the canonical metadata owner before queuing the next bounded readahead
+window. The previous ordering resolved the current block once for asynchronous
+prefetch and again for the synchronous read, duplicating the extent walk on
+each probe. This follows Linux `__ext4_find_entry`'s batch-read-then-consume
+shape. Focused mount-image coverage, the full ext4 matrix, and both architecture
+checks pass. The GNOME-marker harness did not reach a valid desktop sample, so
+no aggregate speed gain is claimed yet.
+
 ## 5 — phase gate
 
 Every execution item must pass:
