@@ -5,6 +5,9 @@ pub struct VirtioResources {
     pub cfg_va: u64,
     pub device_cfg_va: u64,
     pub hhdm: u64,
+    /// Physical aperture owned by a virtio shared-memory provider, when the
+    /// transport advertised one to this child.
+    pub shared_memory: Option<VirtioSharedMemoryRegion>,
     /// Features accepted by the transport for this child. Queue owners use
     /// transport-ring bits here; device protocols keep their own feature use.
     pub drv_features: u64,
@@ -13,11 +16,18 @@ pub struct VirtioResources {
 
 impl VirtioResources {
     pub const fn new(cfg_va: u64, hhdm: u64) -> Self {
-        Self { cfg_va, device_cfg_va: 0, hhdm, drv_features: 0, queues: [None; MAX_RESOURCE_QUEUES] }
+        Self { cfg_va, device_cfg_va: 0, hhdm, shared_memory: None, drv_features: 0, queues: [None; MAX_RESOURCE_QUEUES] }
     }
 
     pub const fn with_device_cfg_va(mut self, device_cfg_va: u64) -> Self {
         self.device_cfg_va = device_cfg_va;
+        self
+    }
+
+    /// Attach the transport-owned shared-memory aperture to child resources.
+    /// # C: O(1)
+    pub const fn with_shared_memory(mut self, shared_memory: Option<VirtioSharedMemoryRegion>) -> Self {
+        self.shared_memory = shared_memory;
         self
     }
 
@@ -75,6 +85,14 @@ impl VirtioResources {
         }
         true
     }
+}
+
+/// Physical range belonging to one virtio shared-memory capability.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct VirtioSharedMemoryRegion {
+    pub id: u32,
+    pub base_pa: u64,
+    pub size_bytes: u64,
 }
 
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]

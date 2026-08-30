@@ -1,0 +1,24 @@
+[package]
+name = "drv-virtio-pmem"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+block = { path = "../../kernel/block" }
+drv = { path = "../drv" }
+hal = { path = "../../arch/hal" }
+iommu = { path = "../../kernel/iommu" }
+pci = { path = "../pci" }
+pmm = { path = "../../kernel/mm-pmm" }
+sync = { path = "../../shared/sync" }
+virtio = { path = "../virtio" }
+
+[features]
+default = []
+
+[lints]
+workspace = true

@@ -28,7 +28,8 @@ pub use handoff::{
 
 mod transport;
 pub use transport::{
-    VirtioNetBootPayloads, VirtioNetRxBuffer, VirtioResources, VirtioTransportLocation,
+    VirtioNetBootPayloads, VirtioNetRxBuffer, VirtioResources, VirtioSharedMemoryRegion,
+    VirtioTransportLocation,
     VIRTIO_NET_RX_BOOT_POOL,
 };
 

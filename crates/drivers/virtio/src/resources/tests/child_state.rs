@@ -69,6 +69,7 @@ fn transport_probe_result_builds_child_facts_and_frame_lists() {
         0x30,
         queues,
         VirtioNetBootPayloads::new(0x9000, 64, 0xa000),
+        None,
     );
 
     let facts = result.child_facts();
@@ -117,6 +118,7 @@ fn owned_probe_frames_drain_all_failed_probe_resources_once() {
         0x30,
         queues,
         VirtioNetBootPayloads::new(0x6000, 64, 0x8000),
+        None,
     );
     let mut owned = VirtioProbeOwnedFrames::from_probe_result(&result, None);
 
@@ -145,6 +147,7 @@ fn owned_probe_frames_publish_only_transfers_vring_frames() {
         0x30,
         queues,
         VirtioNetBootPayloads::new(0x9000, 64, 0xa000),
+        None,
     );
     let mut owned = VirtioProbeOwnedFrames::from_probe_result(&result, None);
 

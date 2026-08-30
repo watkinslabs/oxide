@@ -233,6 +233,38 @@ impl virtio::VirtioChildDriverOps<VirtioChildSession> for VirtioBlkOps {
 static VIRTIO_BLK_DRV: virtio::VirtioChildDriver<PciVirtioChildBus, VirtioBlkOps> =
     virtio::VirtioChildDriver::new();
 
+struct VirtioPmemOps;
+impl virtio::VirtioChildDriverOps<VirtioChildSession> for VirtioPmemOps {
+    const DRIVER_ID: virtio::VirtioChildDriverId = drv_virtio_pmem::DRIVER_ID;
+
+    fn profile() -> virtio::VirtioTransportProfile {
+        drv_virtio_pmem::transport_profile()
+    }
+
+    fn probe_child(
+        _parent: &alloc::sync::Arc<drv::Device>,
+        session: &mut VirtioChildSession,
+    ) -> drv::KResult<()> {
+        let Some(resources) = session.child_resources() else {
+            return Err(drv::Error::ProbeFailed);
+        };
+        if drv_virtio_pmem::install(session.device_key(), session.pci_bdf(), resources).is_none() {
+            return Err(drv::Error::ProbeFailed);
+        }
+        Ok(())
+    }
+
+    fn remove_child(device_key: virtio::VirtioChildDeviceKey) {
+        let _ = drv_virtio_pmem::remove(device_key);
+    }
+
+    fn shutdown_child(device_key: virtio::VirtioChildDeviceKey) {
+        let _ = drv_virtio_pmem::shutdown(device_key);
+    }
+}
+static VIRTIO_PMEM_DRV: virtio::VirtioChildDriver<PciVirtioChildBus, VirtioPmemOps> =
+    virtio::VirtioChildDriver::new();
+
 struct VirtioRngOps;
 impl virtio::VirtioChildDriverOps<VirtioChildSession> for VirtioRngOps {
     const DRIVER_ID: virtio::VirtioChildDriverId = drv_virtio_rng::DRIVER_ID;
@@ -461,6 +493,7 @@ static VIRTIO_FS_DRV: virtio::VirtioChildDriver<PciVirtioChildBus, VirtioFsOps> 
 pub(super) fn register_model_drivers() {
     drv::register_driver(&VIRTIO_NET_DRV);
     drv::register_driver(&VIRTIO_BLK_DRV);
+    drv::register_driver(&VIRTIO_PMEM_DRV);
     drv::register_driver(&VIRTIO_RNG_DRV);
     drv::register_driver(&VIRTIO_VSOCK_DRV);
     drv::register_driver(&VIRTIO_SND_DRV);

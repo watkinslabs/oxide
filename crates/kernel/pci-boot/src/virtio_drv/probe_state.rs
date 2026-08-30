@@ -12,6 +12,7 @@ pub(super) struct VirtioProbeState {
     mappings: TransportMappings,
     cfg_va: u64,
     device_cfg_va: u64,
+    shared_memory: Option<virtio::VirtioSharedMemoryRegion>,
     isr_va: u64,
     msix: Vec<MsixBinding>,
     legacy: Option<super::super::virtio_transport::LegacyBinding>,
@@ -19,9 +20,10 @@ pub(super) struct VirtioProbeState {
 }
 
 impl VirtioProbeState {
-    fn new(bdf: pci::Bdf, mappings: TransportMappings, cfg_va: u64, device_cfg_va: u64, isr_va: u64) -> Self {
+    fn new(bdf: pci::Bdf, mappings: TransportMappings, cfg_va: u64, device_cfg_va: u64,
+           shared_memory: Option<virtio::VirtioSharedMemoryRegion>, isr_va: u64) -> Self {
         Self {
-            bdf, mappings, cfg_va, device_cfg_va, isr_va, msix: Vec::new(), legacy: None,
+            bdf, mappings, cfg_va, device_cfg_va, shared_memory, isr_va, msix: Vec::new(), legacy: None,
             next_msix_vector: 0,
         }
     }
@@ -43,9 +45,13 @@ impl VirtioProbeState {
             .find(virtio::VIRTIO_PCI_CAP_DEVICE_CFG)
             .and_then(|devcfg| map_cap_window(&mut mappings, devcfg, bars))
             .unwrap_or(0);
+        let shared_memory = vcaps
+            .find(virtio::VIRTIO_PCI_CAP_SHARED_MEMORY_CFG)
+            .and_then(|cap| virtio::pci::shared_memory_pa(&cap, bars, 0))
+            .map(|(base_pa, size_bytes)| virtio::VirtioSharedMemoryRegion { id: 0, base_pa, size_bytes });
         let isr_va = vcaps.find(virtio::VIRTIO_PCI_CAP_ISR_CFG)
             .map(|cap| mappings.map_isr_va(Some(&cap), bars)).unwrap_or(0);
-        Some(Self::new(bdf, mappings, cfg_va, device_cfg_va, isr_va))
+        Some(Self::new(bdf, mappings, cfg_va, device_cfg_va, shared_memory, isr_va))
     }
 
     pub(super) fn cfg_va(&self) -> u64 {
@@ -54,6 +60,10 @@ impl VirtioProbeState {
 
     pub(super) fn device_cfg_va(&self) -> u64 {
         self.device_cfg_va
+    }
+
+    pub(super) fn shared_memory(&self) -> Option<virtio::VirtioSharedMemoryRegion> {
+        self.shared_memory
     }
 
     fn bind_msix_queue(

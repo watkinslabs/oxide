@@ -91,6 +91,8 @@ pub const VIRTIO_DEV_BLOCK:   u16 = 2;
 pub const VIRTIO_DEV_CONSOLE: u16 = 3;
 pub const VIRTIO_DEV_RNG:     u16 = 4;
 pub const VIRTIO_DEV_SCSI:    u16 = 8;
+pub const VIRTIO_DEV_PMEM:    u16 = 27;
+pub const VIRTIO_PMEM_F_SHMEM_REGION: u64 = 1;
 
 /// Status register bits per spec §2.1.
 pub const VIRTIO_STATUS_ACKNOWLEDGE: u8 = 1;

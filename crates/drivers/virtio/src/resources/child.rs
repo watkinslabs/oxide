@@ -8,6 +8,7 @@ pub struct VirtioChildResourceState {
     pub cfg_va: u64,
     pub device_cfg_va: u64,
     pub hhdm: u64,
+    pub shared_memory: Option<VirtioSharedMemoryRegion>,
     pub net_boot_payloads: VirtioNetBootPayloads,
     queues: [Option<VirtQueueResource>; MAX_RESOURCE_QUEUES],
 }
@@ -20,6 +21,7 @@ impl VirtioChildResourceState {
             cfg_va,
             device_cfg_va: 0,
             hhdm,
+            shared_memory: None,
             net_boot_payloads: VirtioNetBootPayloads::new(0, 0, 0),
             queues: [None; MAX_RESOURCE_QUEUES],
         }
@@ -28,6 +30,13 @@ impl VirtioChildResourceState {
     /// # C: O(1)
     pub const fn with_device_cfg_va(mut self, device_cfg_va: u64) -> Self {
         self.device_cfg_va = device_cfg_va;
+        self
+    }
+
+    /// Attach a transport-owned shared-memory aperture to child facts.
+    /// # C: O(1)
+    pub const fn with_shared_memory(mut self, region: Option<VirtioSharedMemoryRegion>) -> Self {
+        self.shared_memory = region;
         self
     }
 
@@ -89,7 +98,9 @@ impl VirtioChildResourceState {
             return None;
         }
         let mut resources =
-            VirtioResources::new(self.cfg_va, self.hhdm).with_device_cfg_va(self.device_cfg_va);
+            VirtioResources::new(self.cfg_va, self.hhdm)
+                .with_device_cfg_va(self.device_cfg_va)
+                .with_shared_memory(self.shared_memory);
         for (index, required) in requirements.required_queues.iter().copied().enumerate() {
             if required {
                 resources.set_queue(self.queue(index as u16)?);
@@ -157,6 +168,7 @@ pub struct VirtioTransportProbeResult {
     pub device_cfg_va: u64,
     pub queue_resources: [VirtQueueResource; MAX_RESOURCE_QUEUES],
     pub net_boot_payloads: VirtioNetBootPayloads,
+    pub shared_memory: Option<VirtioSharedMemoryRegion>,
 }
 
 impl VirtioTransportProbeResult {
@@ -169,6 +181,7 @@ impl VirtioTransportProbeResult {
         device_cfg_va: u64,
         queue_resources: [VirtQueueResource; MAX_RESOURCE_QUEUES],
         net_boot_payloads: VirtioNetBootPayloads,
+        shared_memory: Option<VirtioSharedMemoryRegion>,
     ) -> Self {
         Self {
             hhdm,
@@ -178,6 +191,7 @@ impl VirtioTransportProbeResult {
             device_cfg_va,
             queue_resources,
             net_boot_payloads,
+            shared_memory,
         }
     }
 
@@ -185,7 +199,8 @@ impl VirtioTransportProbeResult {
     pub fn child_facts(&self) -> VirtioChildProbeFacts {
         let mut resources = VirtioChildResourceState::new(self.final_status, self.cfg_va, self.hhdm)
             .with_device_cfg_va(self.device_cfg_va)
-            .with_net_boot_payloads(self.net_boot_payloads);
+            .with_net_boot_payloads(self.net_boot_payloads)
+            .with_shared_memory(self.shared_memory);
         for queue in self.queue_resources {
             resources.set_queue(queue);
         }
