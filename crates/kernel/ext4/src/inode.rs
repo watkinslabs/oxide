@@ -8,8 +8,8 @@
 //   - i_links_count
 //   - i_block[0..60] — extent tree root for ext4-mode files
 //
-// Indirect-block ext2 inodes are out of v1 scope; the parser
-// flags non-extent inodes via `ExtentInodeError::NotExtents`.
+// Legacy indirect inodes are decoded as metadata by the mount block-mapping
+// owner; extent-tree parsing remains a separate operation for extent writers.
 
 use vfs::Timespec64;
 

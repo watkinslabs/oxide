@@ -216,7 +216,7 @@ impl vfs::DquotOperations for Ext4QuotaOps {
     fn file_stat(&self, kind: vfs::QuotaType) -> vfs::KResult<vfs::QuotaFileStat> {
         let ino = self.file_ino(kind)?;
         let inode = read_quota_inode(&self.st.mount, ino)?;
-        let nextents = self.st.mount.collect_phys_extents(&inode.i_block).map_err(map_mount)?.len() as u32;
+        let nextents = self.st.mount.collect_inode_phys_extents(&inode).map_err(map_mount)?.len() as u32;
         Ok(vfs::QuotaFileStat { ino: ino as u64, blocks: inode.i_blocks, nextents })
     }
 

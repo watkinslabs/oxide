@@ -87,13 +87,49 @@ impl Mount {
         Ok(out)
     }
 
+    /// Collect mapped blocks from either an extent inode or a legacy indirect
+    /// inode. The latter is assembled into physical runs only for read-side
+    /// consumers; mutation owners still require `EXT4_EXTENTS_FL` before
+    /// rewriting inode metadata. # C: O(file blocks × indirect depth)
+    pub(crate) fn collect_inode_phys_extents(&self, inode: &inode::Inode)
+        -> Result<Vec<PhysRun>, MountError>
+    {
+        if inode.i_flags & inode::EXT4_EXTENTS_FL != 0 {
+            return self.collect_phys_extents(&inode.i_block);
+        }
+        if inode.i_flags & inode::EXT4_INLINE_DATA_FL != 0 {
+            return Err(MountError::NotExtents);
+        }
+        let bs = u64::from(self.sb.block_size);
+        let blocks = inode.size.saturating_add(bs - 1) / bs;
+        let mut out: Vec<PhysRun> = Vec::new();
+        for logical in 0..blocks {
+            let logical = u32::try_from(logical).map_err(|_| MountError::BadBlock)?;
+            let phys = match self.resolve_pblock(inode, logical) {
+                Ok(phys) => phys,
+                Err(MountError::NotFound) => continue,
+                Err(error) => return Err(error),
+            };
+            if let Some(last) = out.last_mut() {
+                if last.logical.saturating_add(last.len) == logical
+                    && last.phys.saturating_add(u64::from(last.len)) == phys
+                {
+                    last.len = last.len.saturating_add(1);
+                    continue;
+                }
+            }
+            out.push(PhysRun { logical, phys, len: 1, unwritten: false });
+        }
+        Ok(out)
+    }
+
     /// Public physical extent map of an inode: `(logical_block, physical_block,
     /// len_blocks, unwritten)` runs ascending by logical block — the geometry
     /// `FS_IOC_FIEMAP` reports (the VFS `fiemap` override scales these to bytes).
     /// Reads the inode, then walks its leaf extents. # C: O(N_extents) + I/O
     pub fn extent_map(&self, ino: u32) -> Result<Vec<(u32, u64, u32, bool)>, MountError> {
         let i = self.read_inode(ino)?;
-        Ok(self.collect_phys_extents(&i.i_block)?
+        Ok(self.collect_inode_phys_extents(&i)?
             .into_iter().map(|r| (r.logical, r.phys, r.len, r.unwritten)).collect())
     }
 

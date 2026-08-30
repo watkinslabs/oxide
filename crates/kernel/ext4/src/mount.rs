@@ -4,6 +4,7 @@
 // - core: mount open path, cached state, metadata shadowing, and GDT access.
 // - csum_trace: one-shot debug origin record for a rejected metadata checksum.
 // - blocks: inode reads, extent walks, file-block I/O, and inode flag helpers.
+// - indirect: legacy direct/indirect block mapping for read-side consumers.
 // - dirs: directory mutation, directory lookup, and absolute path walk.
 // - errors: the volume's error history — recording an event, reading it back.
 // - io: raw byte-range block-device helpers shared by sibling modules.
@@ -38,6 +39,7 @@ mod errors;
 #[cfg(not(target_os = "oxide-kernel"))]
 mod faults;
 mod io;
+mod indirect;
 mod lifecycle;
 mod ownership;
 mod quota;
@@ -58,7 +60,7 @@ pub enum MountError {
     NotFound,
     /// Path component was not a directory.
     NotDir,
-    /// Directory had a non-extent layout (legacy ext2 indirect blocks).
+    /// An extent-only operation was requested for a legacy or inline inode.
     NotExtents,
     /// File extent tree depth > 0; v1 supports only inline extents.
     DepthUnsupported,
