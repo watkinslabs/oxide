@@ -101,6 +101,9 @@ grep -q 'systemd\[1\]: segfault' "$RUN_LOG"
 
 # The default command must ask PID 1's manager, not merely echo from the
 # debug shell. An override remains available for profiles without systemd.
-grep -Fq 'systemctl --no-pager show --property=Version --value >/dev/null && echo OXIDE-AL"IVE"-OK' "$ROOT/tools/boot-smoke.sh"
+# The command is a shell assignment in boot-smoke.sh, so the embedded quotes
+# must be escaped in the source. Check the source spelling rather than an
+# unescaped command that cannot appear inside that assignment.
+grep -Fq 'systemctl --no-pager show --property=Version --value >/dev/null && echo OXIDE-AL\"IVE\"-OK' "$ROOT/tools/boot-smoke.sh"
 
 echo 'test-boot-smoke-runtime: PASS'
