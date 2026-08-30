@@ -4,6 +4,8 @@ use block::{BlockDevice, BlockError, BlockRequest, BlockOp, DaxRegion, KResult, 
 #[cfg(target_os = "oxide-kernel")]
 use core::sync::atomic::{AtomicBool, Ordering};
 use sync::{Spinlock, TaskList as DriverLockClass};
+#[cfg(target_os = "oxide-kernel")]
+use sched::live::Mutex;
 
 pub const VIRTIO_ID_PMEM: u16 = 27;
 pub const DRIVER_ID: virtio::VirtioChildDriverId =
@@ -41,6 +43,8 @@ struct PmemDevice {
     region: DaxRegion,
     cfg_va: u64,
     inner: Spinlock<PmemInner, DriverLockClass>,
+    #[cfg(target_os = "oxide-kernel")]
+    flush_lock: Mutex<()>,
     #[cfg(target_os = "oxide-kernel")]
     completion: AtomicBool,
 }
@@ -122,6 +126,20 @@ impl PmemDevice {
 
     #[cfg(target_os = "oxide-kernel")]
     fn flush_inner(&self) -> KResult<()> {
+        // Linux's virtio-pmem driver holds a mutex across the complete
+        // request/response lifecycle.  The request buffer and completion bit
+        // are per-device state, so allowing concurrent flushes would let the
+        // second caller overwrite the first caller's response ownership.
+        // # C: O(1) plus one device flush
+        let _flush_guard = if can_sleep() {
+            // SAFETY: flush_inner is called from process context here; no
+            // spinlock is held and the mutex may sleep while another flush
+            // owns the virtqueue.
+            Some(unsafe { self.flush_lock.lock() })
+        } else {
+            self.flush_lock.try_lock()
+        };
+        if _flush_guard.is_none() { return Err(BlockError::Eio); }
         self.completion.store(false, Ordering::Release);
         {
             let mut inner = self.inner.lock();
@@ -274,6 +292,7 @@ pub fn install(device_key: virtio::VirtioChildDeviceKey, bdf: pci::Bdf, resource
         region,
         cfg_va: resources.cfg_va,
         inner: Spinlock::new(inner),
+        flush_lock: Mutex::new(()),
         completion: AtomicBool::new(false),
     });
     let name = alloc::format!("pmem{}", device_key.raw());
