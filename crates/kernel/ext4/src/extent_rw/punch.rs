@@ -21,7 +21,11 @@ impl Mount {
     fn punch_hole_inner(&self, ino: u32, offset: u64, len: u64) -> Result<(), MountError> {
         if len == 0 { return Ok(()); }
         let bs = self.sb.block_size as u64;
-        let size = self.read_inode(ino)?.size;
+        let inode = self.read_inode(ino)?;
+        if inode.i_flags & inode::EXT4_EXTENTS_FL == 0 {
+            return self.punch_legacy_inode_inner(ino, offset, len);
+        }
+        let size = inode.size;
         let end = core::cmp::min(
             offset.checked_add(len).ok_or(MountError::Inode(inode::InodeError::BadLen))?,
             size,

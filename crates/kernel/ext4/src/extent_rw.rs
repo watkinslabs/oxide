@@ -33,6 +33,7 @@ mod truncate;
 mod write;
 mod prealloc;
 mod limits;
+mod legacy;
 
 pub(crate) use limits::DATA_WRITE_CLUSTER_BYTES;
 pub(crate) use collect::PhysRun;

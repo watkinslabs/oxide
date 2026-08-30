@@ -147,7 +147,7 @@ fn generated_legacy_inode_reads_single_indirect_block() {
     let stem = format!("oxide-ext4-legacy-{}", std::process::id());
     let image = std::env::temp_dir().join(format!("{stem}.img"));
     let source = std::env::temp_dir().join(format!("{stem}.data"));
-    let payload: Vec<u8> = (0..(14 * 1024)).map(|n| (n as u8).wrapping_mul(37)).collect();
+    let payload: Vec<u8> = (0..(300 * 1024)).map(|n| (n as u8).wrapping_mul(37)).collect();
     std::fs::write(&source, &payload).expect("write source");
     let _ = std::fs::remove_file(&image);
     let status = Command::new("truncate").args(["-s", "32M", image.to_str().unwrap()]).status().unwrap();
@@ -176,6 +176,21 @@ fn generated_legacy_inode_reads_single_indirect_block() {
     let first = m.read_file_block(&rewritten, 0).expect("read rewritten block");
     assert_eq!(&first[..4], b"LEG!");
     assert_eq!(&first[4..], &payload[4..1024]);
+    m.write_at(ino, 1300 * 1024, b"NEW!").expect("allocate legacy double-indirect block");
+    let grown = m.read_inode(ino).expect("read grown legacy inode");
+    assert_eq!(grown.i_flags & ext4::inode::EXT4_EXTENTS_FL, 0);
+    assert_eq!(&m.read_file_block(&grown, 1300).unwrap()[..4], b"NEW!");
+    m.truncate_inode(ino, 13 * 1024).expect("truncate legacy indirect tree");
+    let truncated = m.read_inode(ino).expect("read truncated legacy inode");
+    assert_eq!(truncated.i_flags & ext4::inode::EXT4_EXTENTS_FL, 0);
+    assert_eq!(truncated.size, 13 * 1024);
+    assert_eq!(&m.read_file_block(&truncated, 12).unwrap()[..], &payload[12 * 1024..13 * 1024]);
+    assert!(m.read_file_block(&truncated, 13).unwrap().iter().all(|&b| b == 0));
+    m.punch_hole_inode(ino, 1024, 1024).expect("punch legacy mapped block");
+    let punched = m.read_inode(ino).expect("read punched legacy inode");
+    assert_eq!(punched.size, 13 * 1024);
+    assert!(m.read_file_block(&punched, 1).unwrap().iter().all(|&b| b == 0));
+    assert_eq!(&m.read_file_block(&punched, 2).unwrap()[..], &payload[2 * 1024..3 * 1024]);
     let _ = std::fs::remove_file(&image);
     let _ = std::fs::remove_file(&source);
 }

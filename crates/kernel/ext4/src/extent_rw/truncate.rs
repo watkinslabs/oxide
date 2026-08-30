@@ -30,6 +30,9 @@ impl Mount {
         let bs = self.sb.block_size as u64;
         let inode = self.read_inode(ino)?;
         let cur_size = inode.size;
+        if inode.i_flags & inode::EXT4_EXTENTS_FL == 0 {
+            return self.truncate_legacy_inode_inner(ino, new_len, meta, account_quota);
+        }
         if new_len > cur_size {
             // Extend by writing 0 bytes at new_len-1 (zero-fills).
             let z = [0u8; 1];
