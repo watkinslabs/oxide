@@ -47,6 +47,13 @@ request format, block registration, DAX region publication, and DMA/frame
 cleanup on failed probe and removal. Remaining work is completion handling and
 real-image evidence; the provider is not marked complete from compilation alone.
 
+E4-10 status update (2ecc04b33): PMEM's queue-only polling profile is now
+restricted to transports with no queue-zero interrupt owner, and the block
+major allocator reserves the fixed virtio-blk major before dynamic PMEM
+registration. A PMEM-enabled SMP=2 boot publishes vda/vdb, mounts the root
+ext4 filesystem, and reaches network-online.target. DAX flush-operation and
+real-image data-path evidence remain open.
+
 E4-10/E4-08 status update (B3016): the shared page-cache owner now follows
 Linux's `page_mkwrite` dirtying boundary. Read-side `shared_frame` lookup no
 longer marks clean pages dirty; shared-write admission does. Frame-coherency
