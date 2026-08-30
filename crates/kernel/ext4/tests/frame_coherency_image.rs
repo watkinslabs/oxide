@@ -21,7 +21,7 @@ use alloc::sync::Arc;
 use block::{BlockDevice, BlockOp, BlockRequest, MemDisk};
 use sync::TaskList;
 use vfs::fs::FileSystem;
-use vfs::SuperBlock;
+use vfs::{Dentry, File, OpenFlags, SuperBlock};
 
 const IMAGE: &[u8] = include_bytes!("mini.img");
 const SECTOR: u32 = 512;
@@ -124,6 +124,34 @@ fn mmap_store_is_visible_to_read_and_shares_the_frame() {
     let mut buf = [0u8; 4];
     f.read(0, &mut buf).expect("read post");
     assert_eq!(buf, pat, "read(2) observes the MAP_SHARED store — read IS the shared frame");
+}
+
+#[test]
+fn direct_write_invalidates_a_resident_mapped_frame() {
+    // Linux's post-DIO invalidation is best-effort, but a resident clean
+    // mapping must not keep returning the bytes that a successful direct
+    // overwrite replaced on the device.
+    common::boot_hosted_pmm();
+    let (m, _sb) = open_with_sb(fresh_disk());
+    let st = m.state();
+    let root = st.lookup_path(b"/").expect("root");
+    let ino = st.mount.create_file(root, b"dio-mmap.bin", 0o644, 0, 0).expect("create");
+    let bs = st.mount.sb.block_size as usize;
+    let old = alloc::vec![0x11u8; bs];
+    st.mount.write_at(ino, 0, &old).expect("seed file");
+    let inode = st.wrap_file(ino).expect("wrap");
+    let mut cached = vec![0u8; bs];
+    assert_eq!(inode.read(0, &mut cached).expect("fault mapped page"), bs);
+    assert_eq!(cached, old, "resident mapping starts with the seeded bytes");
+
+    let direct = File::new(inode.clone(), Dentry::new_root(inode.clone()),
+        OpenFlags::O_RDWR | OpenFlags::O_DIRECT);
+    let new = alloc::vec![0xE7u8; bs];
+    assert_eq!(direct.pwrite(&new, 0).expect("direct overwrite"), bs);
+
+    let mut got = vec![0u8; bs];
+    assert_eq!(inode.read(0, &mut got).expect("read after direct overwrite"), bs);
+    assert_eq!(got, new, "buffered/mapped read sees the direct-I/O bytes");
 }
 
 #[test]
