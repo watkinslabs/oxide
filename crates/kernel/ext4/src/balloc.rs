@@ -118,11 +118,15 @@ impl Mount {
                 let start = stream.or(preferred).unwrap_or_else(|| scan::scan_start(hint, groups, optimize, freest));
                 let mut tried = alloc::collections::BTreeSet::new();
                 if optimize {
-                    let candidates = {
+                    let mut candidates = {
                         let s = m.state.lock();
                         scan::indexed_candidates(&s.group_free_order_index,
                             &s.group_avg_fragment_index, groups, count, hint, !flags.use_reserved)
                     };
+                    if let Some(goal_group) = goal_phys.map(|phys| m.group_of_block(phys)) {
+                        candidates.retain(|&group| group != goal_group);
+                        candidates.insert(0, goal_group);
+                    }
                     for group in candidates {
                         tried.insert(group);
                         if let Some(run) = m.try_alloc_run_in_group(group, count, goal_phys)? {
