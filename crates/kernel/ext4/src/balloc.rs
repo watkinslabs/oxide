@@ -150,11 +150,10 @@ impl Mount {
                 }
                 let mut freed = m.discard_group_preallocations(count)?;
                 if freed == 0 {
-                    freed = m.inode_prealloc_free_blocks();
+                    freed = m.discard_inode_preallocations(count)?;
                     if freed == 0 {
                         return Err(MountError::NoSpace);
                     }
-                    m.release_all_inode_prealloc()?;
                 }
                 retries += 1;
                 if !reserve::has_free_blocks(
