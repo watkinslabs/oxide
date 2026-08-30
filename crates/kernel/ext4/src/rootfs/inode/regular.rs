@@ -429,11 +429,13 @@ impl FileOps for Ext4RegFileOps {
     }
 
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        if inode.i_flags() & vfs::inode::S_DAX != 0 { return super::dax::read(inode, off, buf); }
         let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
         d.frames.read_framed(off, buf)
     }
 
     fn write(&self, inode: &Inode, off: u64, buf: &[u8]) -> KResult<usize> {
+        if inode.i_flags() & vfs::inode::S_DAX != 0 { return super::dax::write(inode, off, buf); }
         let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
         let _mutation = d.begin_swap_mutation(inode)?;
         let behaviour = d.st.mount.behaviour();
