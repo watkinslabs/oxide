@@ -45,9 +45,16 @@ command -v sha256sum >/dev/null || die "need sha256sum (coreutils)"
 # A downloadable file has to say which build it is, and a date alone cannot
 # distinguish two builds in one day. Prefer git's answer; fall back to a
 # timestamp outside a checkout.
+# A tag is the right answer when one exists. Without one, a bare SHA tells a
+# person downloading it nothing about which build is newer, so lead with the
+# date and keep the SHA as the exact identity.
 if [ -z "${VERSION:-}" ]; then
-  VERSION="$(git -C "$HERE" describe --tags --always --dirty 2>/dev/null || true)"
-  [ -n "$VERSION" ] || VERSION="$(date -u +%Y%m%d)"
+  VERSION="$(git -C "$HERE" describe --tags --exact-match 2>/dev/null || true)"
+  if [ -z "$VERSION" ]; then
+    sha="$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    VERSION="$(date -u +%Y%m%d)-$sha"
+    git -C "$HERE" diff --quiet 2>/dev/null || VERSION="$VERSION-dirty"
+  fi
 fi
 
 mkdir -p "$DIST"
@@ -94,5 +101,27 @@ done
 # Checksums over exactly what is being published, regenerated whole so a
 # stale line cannot survive a rebuild.
 ( cd "$DIST" && sha256sum "${staged[@]}" > SHA256SUMS )
+
+# The index a download page is generated from. Hand-maintaining that list is
+# how a page ends up advertising a file that is no longer there, so it is
+# derived from the files actually staged, in the same run that stages them.
+{
+  printf '{\n  "version": "%s",\n  "built": "%s",\n  "files": [\n' \
+    "$VERSION" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  sep=""
+  for f in "${staged[@]}"; do
+    name="$(basename "$f")"
+    prof="${name#oxide-live-}"; prof="${prof%%-*}"
+    a="${name#oxide-live-${prof}-}"; a="${a%%-*}"
+    printf '%s    {"file": "%s", "profile": "%s", "arch": "%s", "bytes": %s, "sha256": "%s"}' \
+      "$sep" "$name" "$prof" "$a" \
+      "$(stat -c %s "$DIST/$name")" "$(sha256sum "$DIST/$name" | cut -d" " -f1)"
+    sep=$',\n'
+  done
+  printf '\n  ]\n}\n'
+} > "$DIST/manifest.json"
+python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$DIST/manifest.json" \
+  || die "manifest.json is not valid JSON"
+staged+=("SHA256SUMS" "manifest.json")
 echo "dist-live: staged ${#staged[@]} file(s) in $DIST"
-( cd "$DIST" && ls -la "${staged[@]}" SHA256SUMS )
+( cd "$DIST" && ls -la "${staged[@]}" )
