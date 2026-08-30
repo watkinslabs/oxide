@@ -416,7 +416,7 @@ impl Mount {
         });
         let goal = goal_bit.and_then(|bit| find_goal_run(
             &bitmap, blocks, count, first_phys, bit, stripe));
-        let aligned = if goal.is_none() && count >= stripe && stripe > 1 {
+        let aligned = if goal.is_none() && count == stripe && stripe > 1 {
             find_contiguous_run(&bitmap, blocks, count, first_phys, Some(stripe))
         } else { None };
         let start = goal.or(aligned).or_else(|| find_contiguous_run(&bitmap, blocks, count, first_phys, None));
@@ -680,7 +680,7 @@ fn find_contiguous_run(bitmap: &[u8], max_bits: u32, count: u32, first_phys: u64
 fn find_goal_run(bitmap: &[u8], max_bits: u32, count: u32, first_phys: u64,
                  goal: u32, stripe: u32) -> Option<u32> {
     if count == 0 || goal.checked_add(count)? > max_bits { return None; }
-    if count >= stripe && stripe > 1
+    if count == stripe && stripe > 1
         && (first_phys + u64::from(goal)) % u64::from(stripe) != 0 { return None; }
     for bit in goal..goal + count {
         if bitmap[bit as usize >> 3] & (1u8 << (bit & 7)) != 0 { return None; }
