@@ -210,5 +210,6 @@ impl Mount {
 
 fn mappable_dax_region(dev: &dyn block::BlockDevice) -> Option<block::DaxRegion> {
     let region = dev.dax_region()?;
-    (region.size_bytes != 0 && region.base_pa % hal::PAGE_SIZE_BYTES == 0).then_some(region)
+    let mapped_base = region.base_pa.checked_add(region.partition_offset)?;
+    (region.size_bytes != 0 && mapped_base % hal::PAGE_SIZE_BYTES == 0).then_some(region)
 }

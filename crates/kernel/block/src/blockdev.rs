@@ -33,7 +33,24 @@ impl DaxRegion {
     pub fn physical_address(self, byte_off: u64, len: u64) -> Option<u64> {
         let end = byte_off.checked_add(len)?;
         if end > self.size_bytes { return None; }
-        self.base_pa.checked_add(byte_off)
+        self.base_pa.checked_add(self.partition_offset)?.checked_add(byte_off)
+    }
+}
+
+#[cfg(test)]
+mod dax_tests {
+    use super::DaxRegion;
+
+    #[test]
+    fn physical_address_includes_partition_offset() {
+        let region = DaxRegion {
+            base_pa: 0x1000_0000,
+            size_bytes: 0x4000,
+            partition_offset: 0x2000,
+            synchronous: false,
+        };
+        assert_eq!(region.physical_address(0x300, 0x100), Some(0x1000_2300));
+        assert_eq!(region.physical_address(0x4000, 1), None);
     }
 }
 
