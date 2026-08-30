@@ -94,6 +94,34 @@ pub(super) fn host_share_args() -> Vec<String> {
     out
 }
 
+/// Optional virtio-pmem backing for DAX validation. The file is exposed as a
+/// QEMU memory-backend and the virtio-pmem PCI function publishes its shared
+/// memory capability to the guest. It is opt-in because it adds a host-backed
+/// persistent aperture to the guest's device topology.
+/// # C: O(1) filesystem metadata operations
+pub(super) fn virtio_pmem_args() -> Vec<String> {
+    let Ok(raw) = std::env::var("OXIDE_QEMU_VIRTIO_PMEM") else { return Vec::new(); };
+    if raw.is_empty() { return Vec::new(); }
+    let path = std::path::PathBuf::from(raw);
+    let Ok(path) = std::fs::canonicalize(&path) else {
+        eprintln!("xtask qemu: OXIDE_QEMU_VIRTIO_PMEM does not name an existing file");
+        return Vec::new();
+    };
+    let Ok(meta) = std::fs::metadata(&path) else { return Vec::new(); };
+    let size = meta.len();
+    if !meta.is_file() || size == 0 || size % 4096 != 0 || path.to_string_lossy().contains(',') {
+        eprintln!("xtask qemu: virtio-pmem backing must be a nonempty 4096-byte-aligned file with no comma in its path");
+        return Vec::new();
+    }
+    eprintln!("xtask qemu: virtio-pmem backing {} ({} bytes)", path.display(), size);
+    vec![
+        "-object".to_string(),
+        format!("memory-backend-file,id=oxpmem,size={size},mem-path={},share=on", path.display()),
+        "-device".to_string(),
+        "virtio-pmem-pci,memdev=oxpmem,disable-legacy=on,bus=pcie.0".to_string(),
+    ]
+}
+
 fn parse_qemu_memory(value: &str) -> Option<String> {
     let split = value.find(|ch: char| !ch.is_ascii_digit()).unwrap_or(value.len());
     let (amount, suffix) = value.split_at(split);

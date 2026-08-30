@@ -248,6 +248,7 @@ pub(super) fn qemu_run_grub_x86_64(
     let nic_device = profile.nic_device();
     let pcap_args = super::common::pcap_filter_args();
     let share_args = super::common::host_share_args();
+    let pmem_args = super::common::virtio_pmem_args();
     let memory = super::common::qemu_memory(DEFAULT_MEMORY)?;
     let hibernate_args = super::common::hibernate_disk_args()?;
     // vhost-vsock guest CID is a HOST-GLOBAL kernel resource: only one qemu on
@@ -309,6 +310,7 @@ pub(super) fn qemu_run_grub_x86_64(
     }
     c.args(&pcap_args);
     c.args(&share_args);
+    c.args(&pmem_args);
     c.args([
         "-machine", profile.machine(),
         "-accel", accel,
