@@ -265,6 +265,10 @@ impl FileOps for Ext4RegFileOps {
         })
     }
 
+    fn direct_io_alignment(&self, file: &vfs::File) -> usize {
+        file.inode().private::<Ext4FileData>().map_or(0, |d| d.st.mount.sb.block_size as usize)
+    }
+
     /// Extent/device direct read, after draining overlapping buffered writes.
     fn direct_read_file(&self, file: &vfs::File, off: u64, buf: &mut [u8])
         -> Option<KResult<usize>>
@@ -290,7 +294,7 @@ impl FileOps for Ext4RegFileOps {
     }
 
     /// Flush buffered data, write through ext4 allocation/device ownership,
-    /// then invalidate the covered page-cache range.
+    /// then perform Linux's best-effort direct-I/O cache invalidation.
     fn direct_write_file(&self, file: &vfs::File, off: u64, buf: &[u8])
         -> Option<KResult<usize>>
     {
@@ -313,7 +317,9 @@ impl FileOps for Ext4RegFileOps {
             let page_start = off & !(hal::PAGE_SIZE_BYTES - 1);
             let page_end = end.saturating_add(hal::PAGE_SIZE_BYTES - 1)
                 & !(hal::PAGE_SIZE_BYTES - 1);
-            d.frames.invalidate_range(page_start, page_end);
+            let first = page_start / hal::PAGE_SIZE_BYTES;
+            let last = page_end.saturating_sub(1) / hal::PAGE_SIZE_BYTES;
+            if first <= last { d.frames.try_invalidate_pages(first, last); }
             d.refresh_inode_usage(file.inode());
         }
         Some(result)
