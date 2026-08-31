@@ -120,8 +120,11 @@ impl Mount {
     {
         if let Some(blocks) = self.peek_inode_prealloc(ino, logical, 1) {
             if let Some(&block) = blocks.first() {
-                self.claim_prealloc_block(block)?;
-                return Ok(Some((block, AppendPrealloc::Inode)));
+                // A stale reservation is dropped, not fatal: fall through to a
+                // normal allocation as the reference does.
+                if self.claim_prealloc_block(block)? {
+                    return Ok(Some((block, AppendPrealloc::Inode)));
+                }
             }
         }
         let extents = self.extent_map(ino)?;
@@ -132,11 +135,18 @@ impl Mount {
             .unwrap_or_else(|| crate::balloc::group_first_block(&self.sb, 0));
         if let Some((cpu, pa_group, blocks)) = self.peek_group_prealloc_owner(1, goal) {
             if let Some(&block) = blocks.first() {
-                if let Err(error) = self.claim_prealloc_block(block) {
-                    self.restore_group_prealloc_on_cpu(cpu, pa_group, blocks);
-                    return Err(error);
+                match self.claim_prealloc_block(block) {
+                    Ok(true) => return Ok(Some((block, AppendPrealloc::Group(cpu, pa_group)))),
+                    // Stale: the bitmap already owns the block, so the whole
+                    // reservation is suspect. Drop it rather than putting it
+                    // back for the next caller to trip over, and let the
+                    // ordinary allocator serve this append.
+                    Ok(false) => {}
+                    Err(error) => {
+                        self.restore_group_prealloc_on_cpu(cpu, pa_group, blocks);
+                        return Err(error);
+                    }
                 }
-                return Ok(Some((block, AppendPrealloc::Group(cpu, pa_group))));
             }
         }
         Ok(None)

@@ -548,8 +548,16 @@ impl Mount {
     }
 
     /// Convert one in-memory inode or locality PA block into a durable
-    /// allocation. # C: O(block_size)
-    pub(crate) fn claim_prealloc_block(&self, phys: u64) -> Result<(), MountError> {
+    /// allocation.
+    ///
+    /// `Ok(false)` means the reservation is stale -- the on-disk bitmap already
+    /// calls that block used, so the PA and the bitmap disagree. The caller
+    /// must drop the reservation and allocate normally. The reference does the
+    /// same: a preallocation whose blocks are gone is discarded, never treated
+    /// as the volume being full. Answering `NoSpace` here reached a writing
+    /// process as an I/O error on a filesystem with gigabytes free.
+    /// # C: O(block_size)
+    pub(crate) fn claim_prealloc_block(&self, phys: u64) -> Result<bool, MountError> {
         self.run_journaled(|m| {
             let (group, bit) = m.locate_block(phys)?;
             let group_lock = m.group_lock(group);
@@ -580,13 +588,12 @@ impl Mount {
             let idx = bit as usize;
             let mask = 1u8 << (idx & 7);
             if disk[idx >> 3] & mask != 0 {
-                // A preallocated block the on-disk bitmap already calls used:
-                // the reservation and the bitmap disagree, which is a
-                // corrupted preallocation rather than a full volume.
+                // Stale reservation: the bitmap already owns this block. Report
+                // it so the caller allocates normally instead of failing.
                 #[cfg(any(feature = "debug-boot", feature = "debug-eio"))]
                 crate::balloc::log_alloc_no_space(b"prealloc-block-already-used",
                     1, u64::from(bit), group as u64);
-                return Err(MountError::NoSpace);
+                return Ok(false);
             }
             disk[idx >> 3] |= mask;
             let mut cache = disk.clone();
@@ -604,7 +611,7 @@ impl Mount {
             // Keep the unmasked disk image in the metadata cache. `cache` is
             // only the locality-preallocation view used for allocator scans.
             m.publish_group_bitmap(group, off, disk);
-            Ok(())
+            Ok(true)
         })
     }
 }

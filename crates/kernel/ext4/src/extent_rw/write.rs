@@ -576,15 +576,23 @@ impl Mount {
                 // coalesced flush below. `extent_vec_contains` guards a re-map.
                 let vis = core::cmp::max(inode2.size, blk_end_byte);
                 let (mut ib, ioff) = self.read_inode_bytes(ino)?;
-                let physical = take_reserved(&reserved, &mut reserved_at, lb);
-                let pa_phys = physical.and_then(|(block, from_inode_pa, from_group_pa, group_cpu)|
+                let mut physical = take_reserved(&reserved, &mut reserved_at, lb);
+                let mut pa_phys = physical.and_then(|(block, from_inode_pa, from_group_pa, group_cpu)|
                     (from_inode_pa || from_group_pa).then_some((block, from_inode_pa, from_group_pa, group_cpu)));
                 if let Some((block, _, _, _)) = pa_phys {
-                    if let Err(e) = self.claim_prealloc_block(block) {
-                        let rollback = self.rollback_allocated_logical_blocks(ino, cur_size, &allocated);
-                        restore_group_reservations(self, &reserved);
-                        if let Err(rb) = rollback { return Err(rb); }
-                        return Err(e);
+                    match self.claim_prealloc_block(block) {
+                        Ok(true) => {}
+                        // The reservation is stale -- the bitmap already owns
+                        // this block. Using it anyway would hand one block to
+                        // two files, so drop the reservation and let the
+                        // ordinary allocator serve this logical block.
+                        Ok(false) => { physical = None; pa_phys = None; }
+                        Err(e) => {
+                            let rollback = self.rollback_allocated_logical_blocks(ino, cur_size, &allocated);
+                            restore_group_reservations(self, &reserved);
+                            if let Err(rb) = rollback { return Err(rb); }
+                            return Err(e);
+                        }
                     }
                 }
                 if let Err(e) = self.alloc_written_block_defer_with_physical(
