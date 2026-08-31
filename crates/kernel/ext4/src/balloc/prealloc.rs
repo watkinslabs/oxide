@@ -579,7 +579,15 @@ impl Mount {
             }
             let idx = bit as usize;
             let mask = 1u8 << (idx & 7);
-            if disk[idx >> 3] & mask != 0 { return Err(MountError::NoSpace); }
+            if disk[idx >> 3] & mask != 0 {
+                // A preallocated block the on-disk bitmap already calls used:
+                // the reservation and the bitmap disagree, which is a
+                // corrupted preallocation rather than a full volume.
+                #[cfg(any(feature = "debug-boot", feature = "debug-eio"))]
+                crate::balloc::log_alloc_no_space(b"prealloc-block-already-used",
+                    1, u64::from(bit), group as u64);
+                return Err(MountError::NoSpace);
+            }
             disk[idx >> 3] |= mask;
             let mut cache = disk.clone();
             m.mask_group_prealloc(group, &mut cache);

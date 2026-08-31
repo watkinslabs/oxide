@@ -158,6 +158,9 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
                 let requested = core::cmp::min(
                     count as usize, blocks.len().saturating_sub(prefix_len));
                 if requested == 0 {
+                    #[cfg(any(feature = "debug-boot", feature = "debug-eio"))]
+                    crate::balloc::log_alloc_no_space(b"reserve-zero-grant",
+                        u64::from(count), blocks.len() as u64, prefix_len as u64);
                     for &block in blocks.iter() { let _ = m.free_block(block); }
                     return Err(MountError::NoSpace);
                 }

@@ -34,7 +34,7 @@ use alloc::vec::Vec;
 /// scanned, using a cached free-block counter rather than the bitmaps.
 /// # C: O(1)
 #[cfg(any(feature = "debug-boot", feature = "debug-eio"))]
-fn log_alloc_no_space(site: &'static [u8], want: u64, free: u64, reserved: u64) {
+pub(crate) fn log_alloc_no_space(site: &'static [u8], want: u64, free: u64, reserved: u64) {
     klog::write_raw(b"[EXT4-NOSPACE] site=");
     klog::write_raw(site);
     klog::write_raw(b" want=");
