@@ -54,6 +54,17 @@ impl Nameidata {
         };
         if let Some((d, inode)) = cached {
             if !d.d_is_positive() {
+                // [NEG] a negative SERVED from cache: which parent identity
+                // holds it. Alternating found/ENOENT for one path means two
+                // parent identities each keeping their own child cache.
+                #[cfg(feature = "debug-neg-trace")]
+                if comp.contains("system_bus") {
+                    klog::write_raw(b"[NEG serve parent=");
+                    klog::write_hex_u64(alloc::sync::Arc::as_ptr(&self.cur_dentry) as u64);
+                    klog::write_raw(b" ino=");
+                    klog::write_hex_u64(self.cur_inode.ino());
+                    klog::write_raw(b"]\n");
+                }
                 #[cfg(feature = "debug-resolve-cost")]
                 crate::resolve_cost::dcache_negative();
                 return Ok(ChildLookup::Missing);
@@ -132,6 +143,14 @@ impl Nameidata {
                 // that beat the insert is seen by the recheck; any create that
                 // follows it must flush after it, which removes it.
                 if super::neg_cache_ok(&self.cur_inode, comp) {
+                    #[cfg(feature = "debug-neg-trace")]
+                    if comp.contains("system_bus") {
+                        klog::write_raw(b"[NEG insert parent=");
+                        klog::write_hex_u64(alloc::sync::Arc::as_ptr(&self.cur_dentry) as u64);
+                        klog::write_raw(b" ino=");
+                        klog::write_hex_u64(self.cur_inode.ino());
+                        klog::write_raw(b"]\n");
+                    }
                     let negative = crate::dcache::d_add_negative_with_hash(&self.cur_dentry, comp, hash);
                     if let Ok(ci) = self.cur_inode.lookup(comp) {
                         crate::dcache::d_drop(&negative);

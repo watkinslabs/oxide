@@ -97,6 +97,15 @@ pub fn d_lookup(parent: &Arc<Dentry>, name: &str) -> Option<Arc<Dentry>> {
 /// already hold the Linux parent path must not render a string and re-walk
 /// through a possibly different bind/root namespace. # C: O(1) expected
 pub fn d_drop_child(parent: &Arc<Dentry>, name: &str) {
+    // [NEG] which parent identity a create flushes under. A stale negative
+    // surviving a flush that ran means the flush and the serve disagree on
+    // the parent.
+    #[cfg(feature = "debug-neg-trace")]
+    if name.contains("system_bus") {
+        klog::write_raw(b"[NEG drop parent=");
+        klog::write_hex_u64(alloc::sync::Arc::as_ptr(parent) as u64);
+        klog::write_raw(b"]\n");
+    }
     match parent.cached_child(name).or_else(|| d_lookup(parent, name)) {
         Some(child) => d_drop(&child),
         None => parent.forget_child(name),
