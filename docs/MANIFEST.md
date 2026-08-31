@@ -132,6 +132,8 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `31ci-windows-nt-image-header.md` | FROZEN | 2026-08-31 | `01`,`02`,`31h`,`52`,`53` |
 | `31cj-windows-nt-critical-init.md` | FROZEN | 2026-08-31 | `01`,`02`,`31h`,`52`,`53` |
 | `31ck-windows-nt-dos83.md` | FROZEN | 2026-08-31 | `01`,`02`,`31h`,`52`,`53` |
+| `31cl-windows-nt-atom-lookup.md` | FROZEN | 2026-08-31 | `01`,`02`,`31bs`,`31h`,`52`,`53` |
+| `31cm-windows-nt-oem-unicode.md` | FROZEN | 2026-08-31 | `01`,`02`,`31bt`,`31h`,`52`,`53` |
 | `31ab-windows-runtime-launcher.md` | FROZEN | 2026-08-31 | `01`,`02`,`29a`,`31a`,`31h`,`31p`,`31y`,`52`,`53` |
 | `31ac-windows-registry-service.md` | FROZEN | 2026-08-31 | `01`,`03`,`29a`,`31ab`,`52`,`53` |
 | `32-power-reset.md` | FROZEN | 2026-08-15 | `01`,`02`,`15`,`20`,`21`,`33` |

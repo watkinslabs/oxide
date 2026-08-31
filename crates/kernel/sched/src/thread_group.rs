@@ -76,6 +76,8 @@ pub struct ThreadGroup {
     /// Process-local Windows DLL-directory override, encoded as UTF-16 bytes.
     pub nt_dll_directory: Spinlock<Vec<u8>, TaskListClass>,
     pub nt_atoms: Spinlock<Vec<Vec<u8>>, TaskListClass>, pub nt_atom_table: Spinlock<bool, TaskListClass>,
+    /// Owner and recursion depth of the process heap lock: `(tid, depth)`.
+    pub nt_heap_lock: Spinlock<Option<(u64, u32)>, TaskListClass>,
     /// Linux `signal_struct::timer_create_restore_ids`
     /// (`prctl(PR_TIMER_CREATE_RESTORE_IDS)`). While set, `timer_create(2)`
     /// reads its `timer_t __user *` OUT parameter as an IN parameter — the id
@@ -242,6 +244,7 @@ impl ThreadGroup {
             nt_peb_lock: crate::nt_object::NtMutant::new(None),
             nt_dll_directory: Spinlock::new(Vec::new()),
             nt_atoms: Spinlock::new(Vec::new()), nt_atom_table: Spinlock::new(false),
+            nt_heap_lock: Spinlock::new(None),
             timer_create_restore_ids: AtomicBool::new(false),
             session_leader: AtomicBool::new(false),
             is_child_subreaper: AtomicBool::new(false),

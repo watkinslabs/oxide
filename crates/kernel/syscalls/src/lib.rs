@@ -34,6 +34,10 @@ mod nt_path_type;
 mod nt_image;
 mod nt_dos83;
 #[cfg(target_os = "oxide-kernel")]
+mod nt_heap_lock;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_oem;
+#[cfg(target_os = "oxide-kernel")]
 mod nt_exec;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_file;

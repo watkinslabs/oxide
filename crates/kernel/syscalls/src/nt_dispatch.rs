@@ -116,6 +116,7 @@ fn resolve_thread_target(cur: &sched::Task, raw: u64,
 #[cfg(target_os = "oxide-kernel")]
 pub fn dispatch(call: NtCall) -> u64 {
     if let Some(result) = crate::nt_power::dispatch(call) { return result; }
+    if let Some(result) = crate::nt_oem::dispatch(call) { return result; }
     if let Ok(system) = nt::decode_system(call) {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
@@ -170,6 +171,7 @@ pub fn dispatch(call: NtCall) -> u64 {
     if let Some(result) = crate::nt_path_type::dispatch(call) { return result; }
     if let Some(result) = crate::nt_image::dispatch(call) { return result; }
     if let Some(result) = crate::nt_dos83::dispatch(call) { return result; }
+    if let Some(result) = crate::nt_heap_lock::dispatch(call) { return result; }
     if let Some(result) = crate::nt_object_query::dispatch(call) { return result; }
     if let Some(result) = crate::nt_sync::dispatch(call) { return result; }
     if let Some(result) = crate::nt_mutant::dispatch(call) { return result; }
