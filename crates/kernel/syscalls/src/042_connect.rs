@@ -245,6 +245,8 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
         let path = match storage.unix_path() {
             Some(p) => p, None => return -(Errno::Einval.as_i32() as i64),
         };
+        #[cfg(feature = "debug-dbus")]
+        let path_for_trace = path.clone();
         let addr = match crate::namei_common::resolve_unix_addr(path) {
             Ok(a) => a,
             Err(e) => {
@@ -260,7 +262,7 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
                         klog::write_raw(sched::Task::comm_trim(&comm).as_bytes());
                     }
                     klog::write_raw(b" path=");
-                    klog::write_raw(path.as_bytes());
+                    klog::write_raw(&path_for_trace);
                     klog::write_raw(b" resolve-err=");
                     klog::write_dec_u64((-e) as u64);
                     klog::write_raw(b"]\n");

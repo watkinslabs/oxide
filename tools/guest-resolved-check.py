@@ -197,6 +197,12 @@ try:
                     # The stub query is loopback UDP and the bus reconnect is
                     # an inet-side event too; -x is blind to both.
                     "ss -uapn 2>/dev/null | head -12",
+                    # Never-attempted vs attempted-and-stalled: does resolved
+                    # hold a connection to the bus socket at all? No kernel
+                    # connect ever fails ([UXCONNFAIL] stays silent on failing
+                    # boots), so the divergence is on resolved's side of this.
+                    "ss -xp 2>/dev/null | grep -E 'resolve|Netid' | head -8",
+                    "ls -l /proc/$(pidof systemd-resolved)/fd 2>&1 | head -14",
                     "ss -tapn 2>/dev/null | awk 'NR==1 || $2+0>0 || $3+0>0' | head -8",
                     "journalctl --no-pager 2>&1 | tail -4; ls -la /run/log/journal/ /var/log/journal/ 2>&1 | head -8",
                     # The discriminator: everyone else's early connection was
