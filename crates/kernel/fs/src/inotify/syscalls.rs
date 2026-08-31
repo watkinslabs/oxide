@@ -166,7 +166,13 @@ pub fn sys_inotify_add_watch(args: &syscall::SyscallArgs) -> i64 {
         Ok(i) => i,
         Err(rv) => {
             #[cfg(feature = "debug-inotify")]
-            { klog::write_raw(b"[INOTIFY-ENOENT path="); klog::write_raw(s.as_bytes()); klog::write_raw(b"]\n"); }
+            {
+                // The tag used to claim ENOENT for every error; the errno is
+                // the whole question when the same resolve succeeds 3ms later.
+                klog::write_raw(b"[INOTIFY-ERR path="); klog::write_raw(s.as_bytes());
+                klog::write_raw(b" err="); klog::write_dec_u64((-rv) as u64);
+                klog::write_raw(b"]\n");
+            }
             return rv;
         }
     };
