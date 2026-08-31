@@ -173,7 +173,20 @@ pub fn sys_inotify_add_watch(args: &syscall::SyscallArgs) -> i64 {
     let key = inode_key(&inode);
     let is_dir = inode.file_type() == FileType::Directory;
     match add_or_update_watch(&inotify, key, inode.fsid(), mask, is_dir, Some(&inode)) {
-        Ok(wd) => wd as i64,
+        Ok(wd) => {
+            // The other half of the lifecycle the ENOENT arm above records: a
+            // dispatch that matches nothing is only explicable next to the
+            // adds and removals that came before it.
+            #[cfg(feature = "debug-inotify")]
+            {
+                klog::write_raw(b"[INOTIFY-ADD path="); klog::write_raw(s.as_bytes());
+                klog::write_raw(b" wd="); klog::write_dec_u64(wd as u64);
+                klog::write_raw(b" key="); klog::write_hex_u64(key as u64);
+                klog::write_raw(b" mask="); klog::write_hex_u64(mask as u64);
+                klog::write_raw(b"]\n");
+            }
+            wd as i64
+        }
         Err(e) => -(e.as_i32() as i64),
     }
 }
@@ -258,7 +271,15 @@ pub fn sys_inotify_rm_watch(args: &syscall::SyscallArgs) -> i64 {
         Ok(a) => a, Err(e) => return -(e.as_i32() as i64),
     };
     match remove_watch(&inotify, wd) {
-        Ok(()) => 0,
+        Ok(()) => {
+            #[cfg(feature = "debug-inotify")]
+            {
+                klog::write_raw(b"[INOTIFY-RM wd=");
+                klog::write_dec_u64(wd as u64);
+                klog::write_raw(b"]\n");
+            }
+            0
+        }
         Err(e) => -(e.as_i32() as i64),
     }
 }
