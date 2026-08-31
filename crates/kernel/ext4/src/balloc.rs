@@ -784,7 +784,7 @@ fn find_longest_run(bitmap: &[u8], max_bits: u32, want: u32) -> Option<(u32, u32
     let mut best: Option<(u32, u32)> = None;
     let mut run_start = 0u32;
     let mut run_len = 0u32;
-    let mut close = |start: u32, len: u32, best: &mut Option<(u32, u32)>| {
+    let close = |start: u32, len: u32, best: &mut Option<(u32, u32)>| {
         if len == 0 { return; }
         let take = len.min(want);
         if best.is_none_or(|(best_len, _)| take > best_len) { *best = Some((take, start)); }
