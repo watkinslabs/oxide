@@ -179,14 +179,27 @@ fn io(cur: &sched::Task, addr: u64, write: bool) -> u64 {
         result.map(|n| n as u64)
     };
     match result {
-        Ok(bytes) => { write_io_status(request.io_status, STATUS_SUCCESS, bytes); STATUS_SUCCESS }
-        Err(_) => { write_io_status(request.io_status, STATUS_END_OF_FILE, 0); STATUS_END_OF_FILE }
+        Ok(bytes) => {
+            write_io_status(request.io_status, STATUS_SUCCESS, bytes);
+            post_completion(&object, request.io_status, STATUS_SUCCESS, bytes);
+            STATUS_SUCCESS
+        }
+        Err(_) => {
+            write_io_status(request.io_status, STATUS_END_OF_FILE, 0);
+            post_completion(&object, request.io_status, STATUS_END_OF_FILE, 0);
+            STATUS_END_OF_FILE
+        }
     }
 }
 
 fn write_io_status(addr: u64, status: u64, information: u64) {
     let _ = uaccess::put_user_u64(addr, status);
     let _ = uaccess::put_user_u64(addr + 8, information);
+}
+
+fn post_completion(object: &sched::nt_object::NtObject, overlapped: u64, status: u64, information: u64) {
+    let Some((port, key)) = object.file_completion() else { return; };
+    port.post(sched::nt_object::NtCompletionPacket { key, overlapped, status: status as u32, information });
 }
 
 fn query_information(cur: &sched::Task, addr: u64) -> u64 {

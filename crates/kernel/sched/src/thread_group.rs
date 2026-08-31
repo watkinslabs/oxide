@@ -81,6 +81,7 @@ pub struct ThreadGroup {
     /// Process-local registered NT waits: `(token, object, callback, context, timeout_ms, flags)`.
     pub nt_waits: Spinlock<Vec<(u64, u64, u64, u64, u32, u32)>, TaskListClass>,
     pub nt_wait_next: AtomicU64,
+    pub nt_io_completion: Spinlock<Option<Arc<crate::nt_object::NtCompletionPort>>, TaskListClass>,
     /// Linux `signal_struct::timer_create_restore_ids`
     /// (`prctl(PR_TIMER_CREATE_RESTORE_IDS)`). While set, `timer_create(2)`
     /// reads its `timer_t __user *` OUT parameter as an IN parameter — the id
@@ -249,6 +250,7 @@ impl ThreadGroup {
             nt_atoms: Spinlock::new(Vec::new()), nt_atom_table: Spinlock::new(false),
             nt_heap_lock: Spinlock::new(None),
             nt_waits: Spinlock::new(Vec::new()), nt_wait_next: AtomicU64::new(1),
+            nt_io_completion: Spinlock::new(None),
             timer_create_restore_ids: AtomicBool::new(false),
             session_leader: AtomicBool::new(false),
             is_child_subreaper: AtomicBool::new(false),

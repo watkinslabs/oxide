@@ -2,7 +2,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use syscall::nt::{NtCall, NtObjectCall};
+use syscall::nt::{NtCall, NtObjectCall, NtService};
 
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
@@ -14,6 +14,7 @@ const IO_COMPLETION_MODIFY_STATE: u32 = 0x0002;
 const SYNCHRONIZE: u32 = 0x0010_0000;
 
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlSetIoCompletionCallback { return Some(set_io_callback(call)); }
     let Ok(object_call) = syscall::nt::decode_object(call) else { return None; };
     let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
     if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
@@ -67,6 +68,22 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         }
         _ => None,
     }
+}
+
+fn set_io_callback(call: NtCall) -> u64 {
+    if call.args.a0 > u32::MAX as u64 || call.args.a1 == 0 || call.args.a2 != 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let handle = sched::nt_object::NtHandle::from_raw(call.args.a0 as u32);
+    let table = cur.thread_group.nt_handles();
+    let Some(file) = table.get(handle, 0) else { return STATUS_INVALID_HANDLE; };
+    if file.file().is_none() { return STATUS_INVALID_HANDLE; }
+    let port = if let Some(port) = cur.thread_group.nt_io_completion.lock().clone() { port } else {
+        let Some(port) = table.new_completion_port(0).completion() else { return STATUS_INVALID_PARAMETER; };
+        *cur.thread_group.nt_io_completion.lock() = Some(port.clone()); port
+    };
+    if !file.set_file_completion(port, call.args.a1) { return STATUS_INVALID_HANDLE; }
+    STATUS_SUCCESS
 }
 
 fn read_u32(address: u64) -> Option<u32> { uaccess::get_user_u32(address).ok() }
