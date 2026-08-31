@@ -8,7 +8,12 @@
 # because it waits out five D-Bus pings at the full 35s command timeout plus a
 # 60s resolver wait before giving up. Measuring a rate does not need the
 # repetition that diagnosing a single boot does, so the windows here are sized
-# for a verdict: one ping, short settles.
+# for a verdict: one ping instead of five. That is where the saving is (four
+# pings x 35s = 140s of the 185s). The per-command settle is NOT shortened --
+# a real DNS lookup through QEMU user networking regularly needs more than a
+# few seconds, and squeezing it turns a slow boot into a reported failure. An
+# aggressive window here produced 1/8 where the same tree scored better, with
+# the D-Bus ping passing and only the DNS query "failing".
 #
 # The disk image is NOT special-cased. `make qemu-<arch>` already restages the
 # build namespace's disks on every run -- `xtask rootfs` reflinks the pristine
@@ -45,8 +50,8 @@ for i in $(seq 1 "$RUNS"); do
   log="$LOGDIR/rate-$i.log"
   FEATURES="$FEATURES" \
   OXIDE_PROBE_PINGS="${OXIDE_PROBE_PINGS:-1}" \
-  OXIDE_PROBE_CMD_TIMEOUT="${OXIDE_PROBE_CMD_TIMEOUT:-10}" \
-  OXIDE_PROBE_RESOLVER_TIMEOUT="${OXIDE_PROBE_RESOLVER_TIMEOUT:-20}" \
+  OXIDE_PROBE_CMD_TIMEOUT="${OXIDE_PROBE_CMD_TIMEOUT:-35}" \
+  OXIDE_PROBE_RESOLVER_TIMEOUT="${OXIDE_PROBE_RESOLVER_TIMEOUT:-60}" \
     timeout $((BOOT_DEADLINE + 120)) \
     python3 tools/guest-resolved-check.py "$ARCH" "$BOOT_DEADLINE" > "$log" 2>&1
   rc=$?
