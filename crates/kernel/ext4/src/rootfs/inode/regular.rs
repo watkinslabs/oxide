@@ -73,7 +73,12 @@ pub(crate) fn vfs_error_from_mount(e: crate::MountError) -> vfs::VfsError {
         crate::MountError::BadChecksum => vfs::VfsError::Eio,
         crate::MountError::UnsupportedFeature => vfs::VfsError::Einval,
         crate::MountError::Quota(e) => e,
-        _ => vfs::VfsError::Eio,
+        other => {
+            #[cfg(feature = "debug-boot")]
+            crate::rootfs::fserror::log_eio(b"file", &other);
+            let _ = other;
+            vfs::VfsError::Eio
+        }
     }
 }
 

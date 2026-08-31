@@ -122,7 +122,7 @@ fn act_on_error(st: &RootfsState) {
 /// Stable error-only diagnostic kind; no pathname or transient allocation.
 /// # C: O(1)
 #[cfg(any(feature = "debug-boot", test))]
-fn error_kind(e: &MountError) -> &'static [u8] {
+pub(crate) fn error_kind(e: &MountError) -> &'static [u8] {
     match e {
         MountError::BlockIo => b"block-io",
         MountError::Superblock(_) => b"superblock",
@@ -148,6 +148,22 @@ fn error_kind(e: &MountError) -> &'static [u8] {
         MountError::UnsupportedFeature => b"unsupported-feature",
         MountError::Quota(_) => b"quota",
     }
+}
+
+/// Name the filesystem error behind an `Eio` a caller is about to see.
+///
+/// Every mapper funnels its unclassified errors to one errno, so the operation
+/// that failed and the reason it failed are both gone by the time userspace
+/// reports the I/O error. `op` is the mapper, not the syscall: the two mappers
+/// serve the namespace and the file paths respectively.
+/// # C: O(1)
+#[cfg(feature = "debug-boot")]
+pub(crate) fn log_eio(op: &'static [u8], e: &MountError) {
+    klog::write_raw(b"[EXT4-EIO] op=");
+    klog::write_raw(op);
+    klog::write_raw(b" kind=");
+    klog::write_raw(error_kind(e));
+    klog::write_raw(b"\n");
 }
 
 /// Emit the diagnostic-build record without changing error delivery.

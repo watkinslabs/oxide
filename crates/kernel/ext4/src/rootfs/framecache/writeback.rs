@@ -186,7 +186,9 @@ impl Ext4FrameStore {
                     next += 1;
                 }
                 if !cluster.is_empty() {
-                    if self.st.mount.write_at(self.ino, page_start, &cluster).is_err() {
+                    if let Err(_error) = self.st.mount.write_at(self.ino, page_start, &cluster) {
+                        #[cfg(feature = "debug-boot")]
+                        crate::rootfs::fserror::log_eio(b"writeback", &_error);
                         #[cfg(feature = "debug-fillverify")]
                         {
                             klog::write_raw(b"[WRITEBACK-ERR data ino=");

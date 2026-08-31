@@ -41,12 +41,13 @@ impl Mount {
         }
         let _commit_guard = BatchCommitGuard(&self.committing_batch);
         #[cfg(feature = "debug-fsync-latency")]
-        let started_ns = crate::fsync_latency::now_ns();
-        self.order_data_before_commit(inode.map(|(ino, _)| ino))?;
-        #[cfg(feature = "debug-fsync-latency")]
-        crate::fsync_latency::report(b"batch-order", started_ns, 0);
-        #[cfg(feature = "debug-fsync-latency")]
         let gate_ns = crate::fsync_latency::now_ns();
+        // A commit takes the transaction gate FIRST, and only then looks at
+        // whether any operation is still inside the running transaction. The
+        // reference locks the transaction against new handles and waits for
+        // the outstanding ones to finish before it submits the ordered data
+        // or writes anything; nothing that belongs to the commit may run while
+        // another context is still building the transaction it is committing.
         self.txn_acquire();
         #[cfg(feature = "debug-fsync-latency")]
         crate::fsync_latency::report(b"batch-gate", gate_ns, 0);
@@ -59,7 +60,22 @@ impl Mount {
             let s = self.state.lock();
             s.active_handles != 0
         };
-        let result = if active_handles || !needed { Ok(false) } else { self.commit_batch_inner() };
+        // Ordered-mode data submission is part of the commit, not a prelude to
+        // it: it allocates blocks and stages their bitmaps through the same
+        // transaction. Run outside the gate, alongside another context's
+        // writeback, two allocations read the same group bitmap and one
+        // overwrote the other -- an extent pointing at blocks the bitmap calls
+        // free, which the next allocation then hands to a second file.
+        let result = if active_handles || !needed {
+            Ok(false)
+        } else {
+            #[cfg(feature = "debug-fsync-latency")]
+            let started_ns = crate::fsync_latency::now_ns();
+            let ordered = self.order_data_before_commit(inode.map(|(ino, _)| ino));
+            #[cfg(feature = "debug-fsync-latency")]
+            crate::fsync_latency::report(b"batch-order", started_ns, 0);
+            ordered.and_then(|()| self.commit_batch_inner())
+        };
         #[cfg(feature = "debug-fsync-latency")]
         crate::fsync_latency::report(b"batch-commit", commit_ns, staged_blocks);
         self.txn_release();
