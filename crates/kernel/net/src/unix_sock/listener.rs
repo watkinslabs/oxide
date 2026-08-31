@@ -356,13 +356,25 @@ impl UnixListener {
         self.notify_subs_mask(vfs::POLL_IN);
     }
 
-    /// Wake epoll waiters for a listener-owned state transition. # C: O(N_waiters)
+    /// Wake epoll waiters for a listener-owned state transition.
+    ///
+    /// Falls back to the global epoll broadcast when this listener has no live
+    /// subscriber list, exactly as the connected-pair wake does. The slot is
+    /// filled at `listen()` and holds a `Weak`, so it is empty both before that
+    /// point and after the registering socket goes away — and a readiness event
+    /// dropped there is not recoverable: nothing re-examines an accept queue on
+    /// behalf of a task already parked in `epoll_wait`, so the accepting
+    /// service sleeps through the connection.
+    /// # C: O(N_waiters), or one broadcast when unregistered
     fn notify_subs_mask(&self, mask: u32) {
         if let Some(w) = self.subs.lock().as_ref() {
             if let Some(s) = w.upgrade() {
                 s.notify_mask(mask);
+                return;
             }
         }
+        #[cfg(target_os = "oxide-kernel")]
+        sched::live::notify_epoll_waiters();
     }
 }
 
