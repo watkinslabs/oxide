@@ -25,6 +25,27 @@ use core::sync::atomic::Ordering;
 extern crate alloc;
 use alloc::vec::Vec;
 
+/// Name which allocator refusal fired and the arithmetic behind it.
+///
+/// Every one of them becomes the same `NoSpace`, which page writeback hands a
+/// writing process as an I/O error. On a volume with space free none of them
+/// should be reachable, so each one that appears is a defect with its own
+/// numbers -- and the reserve gate in particular refuses BEFORE any group is
+/// scanned, using a cached free-block counter rather than the bitmaps.
+/// # C: O(1)
+#[cfg(any(feature = "debug-boot", feature = "debug-eio"))]
+fn log_alloc_no_space(site: &'static [u8], want: u64, free: u64, reserved: u64) {
+    klog::write_raw(b"[EXT4-NOSPACE] site=");
+    klog::write_raw(site);
+    klog::write_raw(b" want=");
+    klog::write_dec_u64(want);
+    klog::write_raw(b" free=");
+    klog::write_dec_u64(free);
+    klog::write_raw(b" reserved=");
+    klog::write_dec_u64(reserved);
+    klog::write_raw(b"\n");
+}
+
 impl Mount {
     /// Eagerly load every allocation bitmap requested by the Linux-compatible
     /// `prefetch_block_bitmaps` option. The normal lazy path and this path
@@ -82,6 +103,31 @@ impl Mount {
         goal_phys: Option<u64>,
     ) -> Result<Vec<u64>, MountError>
     {
+        self.alloc_blocks_goal_sized(ino, hint, count, flags, goal_phys, false)
+    }
+
+    /// Allocate up to `count` blocks, accepting a shorter run.
+    ///
+    /// Opt-in, and only for a caller that maps what it gets and comes back for
+    /// the rest. Most callers need the exact count and check the length they
+    /// were handed: the extent-tree split asks for its two metadata blocks as
+    /// one request and treats anything shorter as out of space, so making the
+    /// short grant the default for everyone turned a data-allocation refusal
+    /// into a metadata one and fixed nothing.
+    /// # C: as `alloc_blocks_for_inode_goal`, plus one best-effort group pass
+    pub(crate) fn alloc_data_blocks_best_effort(
+        &self, ino: Option<u32>, hint: u32, count: u32, flags: ReserveFlags,
+        goal_phys: Option<u64>,
+    ) -> Result<Vec<u64>, MountError>
+    {
+        self.alloc_blocks_goal_sized(ino, hint, count, flags, goal_phys, true)
+    }
+
+    fn alloc_blocks_goal_sized(
+        &self, ino: Option<u32>, hint: u32, count: u32, flags: ReserveFlags,
+        goal_phys: Option<u64>, best_effort: bool,
+    ) -> Result<Vec<u64>, MountError>
+    {
         if count == 0 { return Ok(Vec::new()); }
         #[cfg(not(target_os = "oxide-kernel"))]
         if self.faults.next_alloc_block.swap(false, Ordering::AcqRel) { return Err(MountError::BlockIo); }
@@ -106,6 +152,8 @@ impl Mount {
             if groups == 0 { return Err(MountError::NoSpace); }
             let free = m.state_free_blocks();
             if !reserve::has_free_blocks(free, u64::from(count), m.sb.r_blocks_count, may_dip) {
+                #[cfg(any(feature = "debug-boot", feature = "debug-eio"))]
+                log_alloc_no_space(b"run-reserve-gate", u64::from(count), free, m.sb.r_blocks_count);
                 return Err(MountError::NoSpace);
             }
             let mut retries = 0u8;
@@ -146,7 +194,9 @@ impl Mount {
                 // Linux discards reclaimable locality PAs after a failed
                 // mballoc scan and retries only when blocks were freed.
                 if retries == 3 || !m.has_prealloc() {
-                    if let Some(run) = m.alloc_best_effort_run(count)? {
+                    #[cfg(any(feature = "debug-boot", feature = "debug-eio"))]
+                    log_alloc_no_space(b"run-scan-exhausted", u64::from(count), m.state_free_blocks(), m.sb.r_blocks_count);
+                    if let Some(run) = if best_effort { m.alloc_best_effort_run(count)? } else { None } {
                         if let Some(ino) = ino { m.record_stream_goal(ino, m.group_of_block(run[0]), groups); }
                         return Ok(run);
                     }
@@ -156,7 +206,7 @@ impl Mount {
                 if freed == 0 {
                     freed = m.discard_inode_preallocations(count)?;
                     if freed == 0 {
-                        if let Some(run) = m.alloc_best_effort_run(count)? {
+                        if let Some(run) = if best_effort { m.alloc_best_effort_run(count)? } else { None } {
                             if let Some(ino) = ino { m.record_stream_goal(ino, m.group_of_block(run[0]), groups); }
                             return Ok(run);
                         }
@@ -243,6 +293,8 @@ impl Mount {
             let free = m.state_free_blocks();
             const ONE_BLOCK: u64 = 1;
             if !reserve::has_free_blocks(free, ONE_BLOCK, m.sb.r_blocks_count, may_dip) {
+                #[cfg(any(feature = "debug-boot", feature = "debug-eio"))]
+                log_alloc_no_space(b"single-reserve-gate", ONE_BLOCK, free, m.sb.r_blocks_count);
                 return Err(MountError::NoSpace);
             }
             // `mb_optimize_scan=`: where the walk STARTS. It still visits every
@@ -272,6 +324,8 @@ impl Mount {
                     return Ok(blk);
                 }
             }
+            #[cfg(any(feature = "debug-boot", feature = "debug-eio"))]
+            log_alloc_no_space(b"single-scan-exhausted", 1, m.state_free_blocks(), m.sb.r_blocks_count);
             Err(MountError::NoSpace)
         })
     }
