@@ -265,13 +265,36 @@ impl PollSubscribers {
         g.retain(|s| s.wake.upgrade().is_some());
         let always = events & ALWAYS_WAKE != 0;
         let mut woke_exclusive = false;
+        #[cfg(feature = "debug-pollnotify")]
+        let (mut woken, registered) = (0usize, g.len());
         for s in g.iter() {
             if !always && (s.mask & events) == 0 { continue; }
             if s.exclusive {
                 if woke_exclusive { continue; }
                 woke_exclusive = true;
             }
-            if let Some(a) = s.wake.upgrade() { a.notify_events(events); }
+            if let Some(a) = s.wake.upgrade() {
+                a.notify_events(events);
+                #[cfg(feature = "debug-pollnotify")]
+                { woken += 1; }
+            }
+        }
+        // A publication that reached nobody is the shape of a lost wakeup: the
+        // readiness happened, the list exists, and no waiter was told.
+        // Only the case with subscribers present is interesting: a list nobody
+        // watches is the ordinary state of most sockets, and logging it buries
+        // the signal (36k lines a boot) and slows the boot enough to change it.
+        #[cfg(feature = "debug-pollnotify")]
+        if woken == 0 && registered != 0 && events & crate::POLL_IN != 0 {
+            klog::write_raw(b"[POLLNOTIFY] list=");
+            klog::write_hex_u64(self as *const _ as u64);
+            klog::write_raw(b" ev=");
+            klog::write_hex_u64(events as u64);
+            klog::write_raw(b" registered=");
+            klog::write_dec_u64(registered as u64);
+            klog::write_raw(b" masks=");
+            for s in g.iter() { klog::write_hex_u64(s.mask as u64); klog::write_raw(b","); }
+            klog::write_raw(b"\n");
         }
         drop(g);
         self.fasync_notify(events);
