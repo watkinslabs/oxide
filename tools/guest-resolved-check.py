@@ -12,6 +12,7 @@ Usage: tools/guest-resolved-check.py <x86|arm> [boot_timeout_s]
 import os
 import re
 import select
+import shlex
 import socket
 import subprocess
 import sys
@@ -22,8 +23,18 @@ ARCH = sys.argv[1] if len(sys.argv) > 1 else "x86"
 if ARCH not in ("x86", "arm"):
     raise SystemExit("usage: guest-resolved-check.py <x86|arm> [boot_timeout_s]")
 BOOT_TIMEOUT = int(sys.argv[2]) if len(sys.argv) > 2 else 600
-COMMAND_TIMEOUT = 35
-RESOLVER_READY_TIMEOUT = 60
+# A pass/fail rate run repeats this probe dozens of times, and the settle
+# windows below are what a FAILING boot spends nearly all its wall clock in:
+# five D-Bus pings that each wait out the full command timeout. Measuring a
+# rate does not need the repetition that diagnosing one boot does, so the
+# counts and windows are settable. Defaults are the diagnostic ones.
+COMMAND_TIMEOUT = int(os.environ.get("OXIDE_PROBE_CMD_TIMEOUT", "35"))
+RESOLVER_READY_TIMEOUT = int(os.environ.get("OXIDE_PROBE_RESOLVER_TIMEOUT", "60"))
+PING_COUNT = int(os.environ.get("OXIDE_PROBE_PINGS", "5"))
+# How to bring the guest up. A rate run builds the ISO once and then launches
+# it with `--run-existing`, so the per-iteration cargo + xorriso work is not
+# repeated for a kernel nobody changed.
+LAUNCH = os.environ.get("OXIDE_PROBE_LAUNCH")
 SOCK = f"/tmp/oxide-resolved-uart-{ARCH}-{os.getpid()}.sock"
 LOG = f"/tmp/oxide-resolved-uart-{ARCH}-{os.getpid()}.log"
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -40,7 +51,8 @@ env = dict(os.environ, OXIDE_QEMU_UART_SOCK=SOCK, OXIDE_QEMU_HEADLESS="1",
 log = open(LOG, "wb")
 print(f"guest-resolved-check: arch={ARCH} uart={SOCK} log={LOG}", flush=True)
 qemu = subprocess.Popen(
-    ["make", f"qemu-{ARCH}"], env=env, stdout=log, stderr=subprocess.STDOUT,
+    shlex.split(LAUNCH) if LAUNCH else ["make", f"qemu-{ARCH}"],
+    env=env, stdout=log, stderr=subprocess.STDOUT,
     stdin=subprocess.DEVNULL, start_new_session=True,
 )
 
@@ -141,14 +153,14 @@ try:
         print("guest-resolved-check: WARNING — status scope text unavailable; continuing with end-to-end probes", flush=True)
         print(scope[-3000:], flush=True)
 
-    for n in range(1, 6):
+    for n in range(1, PING_COUNT + 1):
         out = run(conn, buf,
             "busctl --system call org.freedesktop.resolve1 /org/freedesktop/resolve1 org.freedesktop.DBus.Peer Ping")
         if re.search(r"OXIDE-RC-0", out):
-            print(f"guest-resolved-check: D-Bus Ping {n}/5 OK", flush=True)
+            print(f"guest-resolved-check: D-Bus Ping {n}/{PING_COUNT} OK", flush=True)
         else:
             ok = False
-            print(f"guest-resolved-check: FAIL — D-Bus Ping {n}/5", flush=True)
+            print(f"guest-resolved-check: FAIL — D-Bus Ping {n}/{PING_COUNT}", flush=True)
             print(out[-3000:], flush=True)
             if n == 1:
                 # The resolver can be active while its D-Bus peer or the
