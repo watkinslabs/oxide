@@ -69,6 +69,17 @@ pub(crate) fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr:
     // (`filename_parentat(olddfd…)` then `filename_parentat(newdfd…)`), so a
     // missing old parent reports ENOENT even when `to` is unreadable.
     let from_raw = match read_user_path(from_ptr) { Ok(s) => s, Err(rv) => return rv };
+    let to_raw = match read_user_path(to_ptr) { Ok(s) => s, Err(rv) => return rv };
+    rename_kernel_paths_with_dirs(from_dirfd, &from_raw, to_dirfd, &to_raw, flags)
+}
+
+/// Apply the same resolved-parent rename transaction to strings already
+/// copied by a kernel-owned NT information adapter. # C: O(tree depth)
+pub(crate) fn rename_kernel_paths(from_raw: &str, to_raw: &str, flags: u32) -> i64 {
+    rename_kernel_paths_with_dirs(AT_FDCWD, from_raw, AT_FDCWD, to_raw, flags)
+}
+
+fn rename_kernel_paths_with_dirs(from_dirfd: i32, from_raw: &str, to_dirfd: i32, to_raw: &str, flags: u32) -> i64 {
     let (old_parent, old_name, old_kind) = match resolve_rename_parent_at(from_dirfd, &from_raw) {
         Ok(x) => x, Err(rv) => {
             #[cfg(feature = "debug-udevdb")]
@@ -76,7 +87,6 @@ pub(crate) fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr:
             return rv;
         }
     };
-    let to_raw = match read_user_path(to_ptr) { Ok(s) => s, Err(rv) => return rv };
     let (new_parent, new_name, new_kind) = match resolve_rename_parent_at(to_dirfd, &to_raw) {
         Ok(x) => x, Err(rv) => {
             #[cfg(feature = "debug-udevdb")]
@@ -85,7 +95,7 @@ pub(crate) fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr:
         }
     };
     let sides = RenameSides { old_parent, old_name, old_kind, new_parent, new_name, new_kind };
-    let rv = rename_resolved(&sides, &from_raw, &to_raw, flags);
+    let rv = rename_resolved(&sides, from_raw, to_raw, flags);
     #[cfg(feature = "debug-udevdb")]
     trace_rename_udevdb(&from_raw, &to_raw, rv);
     rv

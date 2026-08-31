@@ -29,6 +29,7 @@
 // nothing is hidden: real dead code still surfaces on `xtask kernel`.
 #![cfg_attr(not(target_os = "oxide-kernel"), allow(dead_code))]
 extern crate alloc;
+#[cfg(test)] extern crate std;
 
 use elf::{parse, ElfError, ElfType};
 #[cfg(target_arch = "x86_64")]
@@ -39,11 +40,16 @@ use hal::UserVirtAddr;
 use vmm::{AddressSpace, VmaProt};
 
 mod brk;
+pub mod format;
 mod layout;
 mod load;
 pub mod persona;
 pub mod shebang;
 mod place;
+pub mod pe_loader;
+pub mod pe_init;
+pub mod process_env;
+pub mod nt_memory;
 pub mod uapi;
 
 #[cfg(test)]

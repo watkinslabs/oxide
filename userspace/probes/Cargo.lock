@@ -19,11 +19,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "bitflags"
+version = "2.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
+
+[[package]]
 name = "drm_probe"
 version = "0.1.0"
 dependencies = [
  "libc",
  "support",
+]
+
+[[package]]
+name = "hal"
+version = "0.1.0"
+dependencies = [
+ "bitflags",
+ "klog",
 ]
 
 [[package]]
@@ -33,6 +47,10 @@ dependencies = [
  "libc",
  "support",
 ]
+
+[[package]]
+name = "klog"
+version = "0.1.0"
 
 [[package]]
 name = "ldt_probe"
@@ -47,6 +65,10 @@ name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
+
+[[package]]
+name = "pe"
+version = "0.1.0"
 
 [[package]]
 name = "request_key_probe"
@@ -80,6 +102,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "syscall"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+]
+
+[[package]]
 name = "usb_scsi_probe"
 version = "0.1.0"
 dependencies = [
@@ -93,4 +123,17 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "support",
+]
+
+[[package]]
+name = "windows-registry"
+version = "0.1.0"
+
+[[package]]
+name = "windows-runtime"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "pe",
+ "syscall",
 ]

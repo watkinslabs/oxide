@@ -46,6 +46,8 @@ pub mod sysv;
 pub mod useraccess;
 pub mod sysv_shm;
 pub mod waitqueue;
+/// Win32 window handles and message queues used by the native NT GUI layer.
+pub mod win32_window;
 pub use signal::{
     SigAction, SigInfo, Signal, SignalSet, SignalState, SIG_DFL, SIG_IGN,
 };

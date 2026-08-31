@@ -27,7 +27,7 @@ use vmm::AddressSpace;
 
 use super::runqueue::RqIrq;
 
-mod inherit;
+pub(super) mod inherit;
 
 #[inline]
 fn monotonic_ns() -> u64 {

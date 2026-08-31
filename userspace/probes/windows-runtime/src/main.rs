@@ -1,0 +1,33 @@
+//! Small command-line entry point for the Windows handoff launcher.
+
+use std::env;
+use std::os::unix::ffi::OsStrExt;
+use std::path::PathBuf;
+use std::process::ExitCode;
+
+use windows_runtime::RuntimeRequest;
+
+fn main() -> ExitCode {
+    let mut args = env::args_os();
+    let _program = args.next();
+    let Some(image) = args.next() else { usage(); return ExitCode::from(2); };
+    let Some(windows_path) = args.next() else { usage(); return ExitCode::from(2); };
+    let Some(dll_dir) = args.next() else { usage(); return ExitCode::from(2); };
+    if args.next().is_some() { usage(); return ExitCode::from(2); }
+
+    let image = PathBuf::from(image);
+    let dll_dir = PathBuf::from(dll_dir);
+    let windows_path = windows_path.as_os_str().as_bytes();
+    let request = match RuntimeRequest::from_paths(&image, windows_path, &dll_dir) {
+        Ok(request) => request,
+        Err(error) => { eprintln!("cannot build Windows handoff: {error:?}"); return ExitCode::from(1); }
+    };
+    match request.execute_raw() {
+        Ok(status) => { println!("Windows image committed: NTSTATUS=0x{status:08x}"); ExitCode::SUCCESS }
+        Err(error) => { eprintln!("Windows handoff failed: {error}"); ExitCode::from(1) }
+    }
+}
+
+fn usage() {
+    eprintln!("usage: windows-runtime <linux-image-path> <windows-image-path> <dll-directory>");
+}

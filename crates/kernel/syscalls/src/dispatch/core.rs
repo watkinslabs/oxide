@@ -52,6 +52,12 @@ fn syscall_entry_work(orig_nr: u64, args: &SyscallArgs) -> (Option<u64>, u64) {
 #[inline(never)]
 fn dispatch_routed_syscall(entry: (Option<u64>, u64), nr: u64, args: &SyscallArgs) -> i64 {
     if let Some(rv) = entry.0 { return rv as i64; }
+    // A tagged NT word is consumed before the Linux number tables. The common
+    // syscall entry/return frame is retained, but no Linux handler can claim
+    // an NT service selector; the adapter separately checks NT task state.
+    if let Some(call) = crate::nt_dispatch::decode_entry(nr, *args) {
+        return crate::nt_dispatch::dispatch(call) as i64;
+    }
     if let Some(rv) = dispatch_route_a(nr, args) { return rv; }
     if let Some(rv) = dispatch_route_b(nr, args) { return rv; }
     if let Some(rv) = dispatch_route_c(nr, args) { return rv; }
@@ -101,6 +107,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     // here and which nothing else writes until the next entry.
     let a5 = unsafe { crate::syscall_a5::read() };
     let args = SyscallArgs { a0, a1, a2, a3, a4, a5 };
+    let is_nt_entry = crate::nt_dispatch::decode_entry(nr, args).is_some();
     if let Some(task) = dispatch_task {
         task.record_syscall_snapshot(sched::SyscallSnapshot {
             nr: orig_nr as u32,
@@ -109,6 +116,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
             ip: crate::arch_frame::current_user_pc(),
         });
     }
+    let entry = if is_nt_entry {
+        (None, nr)
+    } else {
     // Linux rseq syscall-entry work revokes a current slice grant before any
     // tracer, filter, or syscall body can observe this kernel entry.
     sched::rseq::slice_syscall_enter(nr);
@@ -158,7 +168,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     // Kept in its own non-inlined frame: its locals would otherwise sum into
     // this function's, which sits on the deepest aarch64 syscall chain the
     // stack gate measures. The entry work is a shallow sibling of the routes.
-    let entry = syscall_entry_work(orig_nr, &args);
+    syscall_entry_work(orig_nr, &args)
+    };
     #[cfg(target_arch = "aarch64")]
     let nr = if entry.1 == orig_nr { nr } else { syscall::arm_abi::aarch64_nr_to_x86(entry.1) };
     #[cfg(not(target_arch = "aarch64"))]
@@ -176,6 +187,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     // sentinel like -ERESTARTSYS) — the ignored-restart check below and
     // dispatch_pending() need the raw sentinel. normalize_user_return()
     // runs once, at the final return, per docs/38 restart ABI.
+    if !is_nt_entry {
     #[cfg(feature = "debug-syscall-return")]
     let return_task = sched::live::current();
     #[cfg(feature = "debug-syscall-return")]
@@ -232,6 +244,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     if let Some(task) = return_task {
         sched::diag::syscall_return_stage(task, sched::diag::SYSCALL_RETURN_STAGE_AFTER_PTRACE);
     }
+    }
     // Return-to-user work begins with IRQs masked, enables them only around a
     // work pass, then masks again before re-reading the pending-work flags.
     drop(process_irqs);
@@ -274,6 +287,24 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     // epilogue is about to resume userspace.
     sched::cpustat::user_enter();
     rv_out
+}
+
+/// Native NT personality entry. It is deliberately a separate symbol from
+/// `oxide_syscall_dispatch`: NT service words are tagged and never pass
+/// through Linux tracing, seccomp, or Linux-number routing.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_nt_syscall_dispatch(
+    entry: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64,
+    #[cfg(target_arch = "aarch64")] _entry_frame: *mut hal_aarch64::SvcFrame,
+) -> u64 {
+    // SAFETY: `syscall_a5` reads the sixth argument saved by this
+    // architecture's syscall entry stub before any nested call can replace it.
+    let a5 = unsafe { crate::syscall_a5::read() };
+    let args = SyscallArgs { a0, a1, a2, a3, a4, a5 };
+    let Some(call) = crate::nt_dispatch::decode_entry(entry, args) else {
+        return crate::nt_dispatch::STATUS_INVALID_PARAMETER;
+    };
+    crate::nt_dispatch::dispatch(call)
 }
 
 mod desktop_trace;

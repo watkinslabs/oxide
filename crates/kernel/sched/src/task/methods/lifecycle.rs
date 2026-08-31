@@ -71,6 +71,9 @@ impl Task {
                 dbg_canary_head: AtomicU64::new(task_canary_head(tid)),
                 tid,
                 tgid: AtomicU32::new(tid),
+                nt_peb: AtomicU64::new(0),
+                nt_teb: AtomicU64::new(0),
+                nt_job_id: AtomicU64::new(0),
                 pid,
                 thread_group,
                 name: Spinlock::new(Task::pack_spawn_name(name)),
@@ -221,6 +224,7 @@ impl Task {
                 // is published under REG; an unpublished task cannot enter a syscall.
                 syscall_work: AtomicU32::new(0),
                 personality:    AtomicU32::new(0),
+                nt_personality: AtomicBool::new(false),
                 net_namespace:  Spinlock::new(Some(network_namespace::initial())),
                 vtgid:          AtomicU32::new(0),
                 vtid:           AtomicU32::new(0),

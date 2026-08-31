@@ -39,6 +39,10 @@ This is not a plan to emulate Windows.
 
 Windows x86-64 machine code should execute directly on x86-64 hardware.
 
+The Windows compatibility gate is therefore x86-64-only. AArch64 checks cover
+shared kernel and ABI compilation; they do not imply ARM Wine support, ARM
+Notepad support, or a Windows workload boot on AArch64.
+
 ------------------------------------------------------------------------
 
 ## Scope

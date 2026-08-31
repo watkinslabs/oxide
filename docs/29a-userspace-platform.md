@@ -8,7 +8,7 @@ End-to-end userspace runtime story. Names the userland supplier, libc, loader, l
 
 Substrate = kernel + Fedora glibc userland (systemd, glibc, bash, coreutils, util-linux) running unmodified. Pkg mgr, GUI, distro identity, system updater land in their own phases per `00§3` (phases 28–32).
 
-## 2 Userland supplier (RESOLVED — this repo builds no userspace)
+## 2 Userland supplier (RESOLVED — this repo builds no general userspace)
 
 Userspace is **upstream Fedora**, installed from RPMs. Composition — package set, `/etc`, users, image packing — is owned by the sibling `../images` repo (`imagectl` + `dnf5`), which emits `output/<profile>-<arch>-root.img`. This repo consumes that image (`29§4.1`) and owns nothing inside it.
 
@@ -23,7 +23,7 @@ Kernel targets stay `*-unknown-oxide-kernel` per `07§3.1-3.2`.
 
 What this gives us: every Fedora binary is a conformance test, and any failure is a kernel bug with a Linux-defined correct answer.
 
-What we give up: `#[cfg(target_os="oxide")]` from userspace, and any ability to patch around a kernel gap in libc. Both intentional.
+What we give up: `#[cfg(target_os="oxide")]` from general userspace, and any ability to patch around a kernel gap in libc. The Windows launcher is a separately-targeted GNU userspace compatibility component per `31ab`; it does not replace Fedora userspace or alter Linux ABI behavior.
 
 ## 3 libc
 
@@ -57,7 +57,7 @@ Two supported routes, both outside this repo:
 
 Ad-hoc: copy a Fedora `-gnu` binary into the mounted image. No cross-compile toolchain, no sysroot, and no SDK is published from this repo; `vendor/cross` was deleted with the userspace tree.
 
-Kernel-side conformance probes (`userspace/`) are the exception: small C/Rust programs built against the host GNU toolchain to exercise one syscall contract, staged into the image for a boot test. They are tests, not userland.
+Kernel-side conformance probes (`userspace/`) are the exception: small C/Rust programs built against the host GNU toolchain to exercise one syscall contract, staged into the image for a boot test. They are tests, not general userland. The separately-targeted Windows launcher is the explicit handoff exception specified by `31ab-userspace-windows-runtime-launcher.md`.
 
 ## 6 Language runtime matrix
 

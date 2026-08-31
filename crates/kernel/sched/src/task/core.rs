@@ -11,6 +11,12 @@ pub struct TaskCore {
     /// process. `getpid()` returns this; `gettid()` returns `tid`.
     /// For non-CLONE_THREAD spawns (fork) `tgid == tid`.
     pub tgid: AtomicU32,
+    /// PEB address published by an NT PE exec, used by native process queries.
+    pub nt_peb: AtomicU64,
+    /// TEB address published by an NT PE exec for this thread.
+    pub nt_teb: AtomicU64,
+    /// Native NT job identity assigned to this process, or zero when free.
+    pub nt_job_id: AtomicU64,
     /// Canonical PID identity, retained by pidfds after `release_task`.
     pub pid: Arc<crate::pid::PidIdentity>,
     /// Stable process thread-group owner.
@@ -301,4 +307,3 @@ pub struct TaskCore {
     pub used_superpriv: AtomicBool,
 
 }
-

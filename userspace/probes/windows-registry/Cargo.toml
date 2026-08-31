@@ -1,0 +1,12 @@
+[package]
+name = "windows-registry"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "registryd"
+path = "src/main.rs"

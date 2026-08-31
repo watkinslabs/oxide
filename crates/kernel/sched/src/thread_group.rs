@@ -13,7 +13,7 @@ use crate::pid::PidIdentity;
 use crate::task::PosixTimer;
 use crate::Task;
 
-/// `SIGNAL_GROUP_EXIT` clear. Every real internal exit status is non-negative
+/// Every real internal exit status is non-negative
 /// (`crate::exit::status`), so no group death can spell this value.
 const GROUP_EXIT_UNSET: i32 = i32::MIN;
 
@@ -68,6 +68,14 @@ pub struct ThreadGroup {
     /// Spinlock-protected: `prlimit64(2)` and `sched_setattr(2)` read/write an
     /// ARBITRARY target's limits from the caller's own CPU.
     pub rlimits: Spinlock<[(u64, u64); crate::rlimit::rlim::COUNT], TaskListClass>,
+    /// Process-local NT handle table; clone-threads share it, fork creates a
+    /// fresh table through `ThreadGroup::new`, matching native process scope.
+    pub nt_handles: crate::nt_object::NtHandleTable,
+    /// Recursive process-wide lock protecting the native PEB loader state.
+    pub nt_peb_lock: crate::nt_object::NtMutant,
+    /// Process-local Windows DLL-directory override, encoded as UTF-16 bytes.
+    pub nt_dll_directory: Spinlock<Vec<u8>, TaskListClass>,
+    pub nt_atoms: Spinlock<Vec<Vec<u8>>, TaskListClass>, pub nt_atom_table: Spinlock<bool, TaskListClass>,
     /// Linux `signal_struct::timer_create_restore_ids`
     /// (`prctl(PR_TIMER_CREATE_RESTORE_IDS)`). While set, `timer_create(2)`
     /// reads its `timer_t __user *` OUT parameter as an IN parameter — the id
@@ -230,6 +238,10 @@ impl ThreadGroup {
             leader,
             posix_timers: UnsafeCell::new(alloc::vec![PosixTimer::default(); PosixTimer::SLOTS]),
             rlimits: Spinlock::new(crate::rlimit::DEFAULT_RLIMITS),
+            nt_handles: crate::nt_object::NtHandleTable::new(),
+            nt_peb_lock: crate::nt_object::NtMutant::new(None),
+            nt_dll_directory: Spinlock::new(Vec::new()),
+            nt_atoms: Spinlock::new(Vec::new()), nt_atom_table: Spinlock::new(false),
             timer_create_restore_ids: AtomicBool::new(false),
             session_leader: AtomicBool::new(false),
             is_child_subreaper: AtomicBool::new(false),
@@ -252,6 +264,9 @@ impl ThreadGroup {
             group_acct: group_acct::GroupAcct::new(),
         }
     }
+
+    /// Access this process's native object table. # C: O(1)
+    pub fn nt_handles(&self) -> &crate::nt_object::NtHandleTable { &self.nt_handles }
 
     /// The process' `signalfd` readiness source, handed to every thread's
     /// `SignalPending` so both pending sets raise edges on one list. # C: O(1)
@@ -380,7 +395,6 @@ impl ThreadGroup {
     /// last"; after retirement `0` is Linux's `thread_group_empty`.
     /// # C: O(1)
     pub fn live_count(&self) -> u32 { self.state.lock().live }
-
     /// Join the group stop in progress, initiating it when this is the first
     /// thread to arrive.
     ///
@@ -449,7 +463,6 @@ impl ThreadGroup {
         let _ = self.group_exit_code.compare_exchange(
             GROUP_EXIT_UNSET, status, Ordering::AcqRel, Ordering::Acquire);
     }
-
     /// `zap_pid_ns_processes`' closing `current->signal->group_exit_code =
     /// pid_ns->reboot` — a PLAIN store, not
     /// a latch: it deliberately overwrites the SIGKILL status the namespace
@@ -484,5 +497,4 @@ impl ThreadGroup {
     /// Process-wide scheduler runtime — what `CLOCK_PROCESS_CPUTIME_ID`
     /// samples. # C: O(1)
     pub fn sched_runtime_sample(&self) -> u64 { self.sched_runtime_ns.load(Ordering::Acquire) }
-
 }

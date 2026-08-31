@@ -23,7 +23,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
 # `make build`           — kernel libs + bin shims, both arches, default features.
 # `make x86 / arm`       — single arch.
 # `make *-debug`         — same with `--features debug-all`.
-# `make test`            — hosted unit tests (no kernel target).
+# `make test`            — hosted unit tests plus the Windows PE/runtime gate (no kernel target).
 # `make lint`            — `xtask spec-lint`.
 # `make stats`           — `xtask stats` (use `STATS_ARGS=...` for flags).
 # `make ci`              — what PR gate runs: spec-lint, test, both arches default + debug-all.
@@ -50,7 +50,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
 
 .PHONY: all build x86 arm kpi-layout \
         build-debug x86-debug arm-debug \
-        test lint lint-ratchet lint-ratchet-update audit-counts profile-policy warnings-control stats ci \
+        test windows-compat-test lint lint-ratchet lint-ratchet-update audit-counts profile-policy warnings-control stats ci \
         nano nano-arm micro micro-arm gnome gnome-arm lite live live-x86 live-arm dist \
         qemu-x86 qemu-arm qemu-x86-virtio-gpu qemu-x86-image qemu-arm-image qemu-x86-existing qemu-arm-existing qemu-x86-debug qemu-arm-debug qemu-mcp verify-native-q35 smoke-native-pci-x86 smoke-native-pci-e1000-x86 \
         hardware-audit-image-x86 \
@@ -107,8 +107,20 @@ arm-debug:
 
 # ---- checks ---------------------------------------------------------------
 
-test:
+test: windows-compat-test
 	$(WARNING_RUN) $(XTASK) test
+
+# Windows PE parser and NT process-environment tests are part of the ordinary
+# hosted debug suite. The workload is Windows x86-64 only; this gate does not
+# boot either kernel image. AArch64 remains covered by compile/ABI checks, not
+# by Windows execution or a Windows boot.
+# Keep this explicit even though the workspace test also discovers these
+# crates: it prevents a workspace-selection change from silently removing the
+# compatibility gate.
+windows-compat-test:
+	$(WARNING_RUN) $(CARGO) test -p pe -p elf-load -p syscall -p syscalls -p sched -p ipc --lib --quiet -- --test-threads=1
+	$(WARNING_RUN) $(CARGO) test --manifest-path userspace/probes/Cargo.toml -p windows-runtime --quiet
+	$(WARNING_RUN) $(CARGO) test --manifest-path userspace/probes/Cargo.toml -p windows-registry --quiet
 
 lint:
 	$(XTASK) spec-lint

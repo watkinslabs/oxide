@@ -22,8 +22,8 @@ drift between `kernel/src`, ad-hoc `crates/*`, and one-off folders.
 2. Subsystem behavior lives in domain crates under `crates/`.
 3. Arch-specific behavior lives in arch crates only.
 4. Tooling code lives under `tools/` only.
-5. Kernel smoke probes live under `userspace/`; the boot userspace image is composed by the sibling `../images` repo,
-   never in kernel subsystem crates. This repo contains no userspace runtime code — no libc, loader, NSS, PAM,
+5. Kernel smoke probes and the separately-targeted Windows launcher live under `userspace/`; the boot userspace image is composed by the sibling `../images` repo,
+   never in kernel subsystem crates. This repo contains no general userspace runtime code — no libc, loader, NSS, PAM,
    package manager, or service manager (`29a§2`).
 
 ## 4 Layout contract (target)
@@ -36,7 +36,7 @@ oxide2/
 │   ├── drivers/               # driver crates
 │   ├── arch/                  # arch + boot + kernel-bin crates
 │   └── shared/                # shared no_std libraries
-├── userspace/                 # kernel conformance probes + smoke binaries only
+├── userspace/                 # kernel probes + separately-targeted Windows launcher
 ├── tools/                     # xtask, lint, build helpers
 ├── docs/                      # specs
 ├── tests/                     # integration/hosted test harnesses
@@ -306,7 +306,7 @@ Constraints:
 2. Driver crates may depend on domain/shared/arch abstractions, not on
    unrelated high-level subsystems.
 3. `tools/*` cannot be required by runtime kernel crates.
-4. No userspace-runtime crate group exists (`crates/user/*` deleted 2026-08-01);
+4. No general userspace-runtime crate group exists (`crates/user/*` deleted 2026-08-01); the Windows launcher is the explicit exception documented in `31ab`;
    userland comes from Fedora RPMs via `../images`.
 5. `crates/kernel/network-namespace` is a leaf over shared synchronization;
    tasks, networking, nsfs, and syscall layers depend on it, never vice versa.
@@ -461,7 +461,7 @@ Temporary exceptions are allowed only with:
 - 2026-08-15: Added `crates/kernel/thermal`, `crates/kernel/cpufreq` and
   `crates/kernel/cpuidle`, the ACPI thermal provider under `firmware`, and the
   two scheduler entry points (idle-loop selection, demand signal).
-- 2026-08-01: Removed the `crates/user/*` layer — this repo builds no userspace;
+- 2026-08-01: Removed the `crates/user/*` layer — this repo builds no general userspace runtime;
   userland is Fedora RPMs composed by `../images` (`29a§2`).
 - 2026-07-29: Made `cgroup` the single owner of cgroup BPF attachment state;
   security verifies and executes immutable snapshots without a parallel

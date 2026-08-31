@@ -35,6 +35,7 @@ pub mod rq_locate;
 pub mod pi_boost;
 pub mod schedule;
 pub mod spawn;
+pub mod nt_thread;
 pub mod sched_fork;
 pub mod ttwu;
 pub mod delayed_work;
@@ -77,6 +78,7 @@ pub use schedule::{
     install_default_runqueue, runqueue_active, RunStats,
     install_sched_switch_hook, pin_current_to_cpu, unpin_current_cpu, SchedSwitchFn,
 };
+pub use nt_thread::new_nt_thread_unpublished;
 pub use spawn::{arm_user_entry, new_user_task_unpublished};
 pub use spawn::{next_tid, publish_new_task, spawn_kernel_thread, spawn_user_thread,
     spawn_user_thread_for_fork, spawn_user_thread_with_vpid, wake_new_task, SpawnError};
