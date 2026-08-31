@@ -27,6 +27,24 @@ use crate::inode::Inode;
 use crate::mount::{Mount, MountError, read_byte_range_pub};
 use crate::superblock::INCOMPAT_RECOVER;
 
+/// Name which of the two space refusals fired and the numbers behind it.
+/// Neither is reachable on a journal with room, so each one that appears is a
+/// defect with its own arithmetic. # C: O(1)
+#[cfg(any(feature = "debug-boot", feature = "debug-eio"))]
+fn log_no_space(site: &'static [u8], want: u32, usable: u32, used: u32, pending: bool) {
+    klog::write_raw(b"[EXT4-NOSPACE] site=");
+    klog::write_raw(site);
+    klog::write_raw(b" want=");
+    klog::write_dec_u64(want as u64);
+    klog::write_raw(b" usable=");
+    klog::write_dec_u64(usable as u64);
+    klog::write_raw(b" used=");
+    klog::write_dec_u64(used as u64);
+    klog::write_raw(b" pending=");
+    klog::write_raw(if pending { b"y" } else { b"n" });
+    klog::write_raw(b"\n");
+}
+
 impl Mount {
     const TARGET_WRITE_CLUSTER_BYTES: usize = 128 * 1024;
 
@@ -198,6 +216,8 @@ impl Mount {
             // A single transaction larger than the journal can never be made
             // to fit. This is the permanent ENOSPC case; checkpointing cannot
             // create log slots inside a transaction that exceeds the log.
+            #[cfg(any(feature = "debug-boot", feature = "debug-eio"))]
+            log_no_space(b"over-log", transaction_blocks, cursor.usable(), 0, false);
             return Err(MountError::NoSpace);
         }
         // How full the log is and whether anything can be checkpointed out of
@@ -206,8 +226,15 @@ impl Mount {
         // list from after: the transaction is then refused for lack of room in
         // a journal that is entirely free, and the refusal reaches a writing
         // process as an I/O error it cannot retry past.
+        // Nothing pending means the log holds nothing that has to be kept: every
+        // transaction it recorded has been written home and its tail can be
+        // advanced to its head. A non-zero occupancy in that state is stale
+        // accounting, not space in use, and believing it refuses transactions a
+        // free journal has all the room for. The reference waits for log space
+        // and never hands the caller an error; ours reached userspace as EIO.
         let (used, has_pending) = {
-            let state = self.state.lock();
+            let mut state = self.state.lock();
+            if state.pending_checkpoints.is_empty() { state.journal_used = 0; }
             (state.journal_used, !state.pending_checkpoints.is_empty())
         };
         if transaction_blocks > cursor.usable().saturating_sub(used) {
@@ -221,6 +248,8 @@ impl Mount {
                 self.checkpoint_pending()?;
                 return self.commit_metadata_deferred(staged);
             }
+            #[cfg(any(feature = "debug-boot", feature = "debug-eio"))]
+            log_no_space(b"occupancy", transaction_blocks, cursor.usable(), used, has_pending);
             return Err(MountError::NoSpace);
         }
         let desc_at = cursor.head;
