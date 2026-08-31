@@ -176,23 +176,20 @@ impl UnixPair {
                     }
                 }
             }
-            // Writer on `end` feeds the ring the OTHER end reads from.
-            let waiters = match end {
-                UnixEnd::A => &self.a_to_b_waiters,
-                UnixEnd::B => &self.b_to_a_waiters,
-            };
-            waiters.wake_all();
-            // F181a: targeted epoll wake. An out-of-band byte also raises the
-            // receiver's priority readiness, which is what a description that
-            // asked for signal-driven I/O turns into `SIGURG`.
-            let events = if oob { vfs::POLL_IN | vfs::POLL_PRI } else { vfs::POLL_IN };
-            super::super::wake_peer_subs(self, end, events);
         }
-        #[cfg(not(target_os = "oxide-kernel"))]
-        match end {
-            UnixEnd::A => self.a_to_b_waiters.wake_all(),
-            UnixEnd::B => self.b_to_a_waiters.wake_all(),
-        }
+        // Writer on `end` feeds the ring the OTHER end reads from.
+        let waiters = match end {
+            UnixEnd::A => &self.a_to_b_waiters,
+            UnixEnd::B => &self.b_to_a_waiters,
+        };
+        waiters.wake_all();
+        // Targeted epoll wake, ungated: a wake that only compiles into the
+        // kernel target is one the hosted suite can never prove fires. An
+        // out-of-band byte also raises the receiver's priority readiness,
+        // which is what a description that asked for signal-driven I/O turns
+        // into `SIGURG`.
+        let events = if oob { vfs::POLL_IN | vfs::POLL_PRI } else { vfs::POLL_IN };
+        super::super::wake_peer_subs(self, end, events);
         Ok(n)
     }
 }

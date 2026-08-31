@@ -77,16 +77,31 @@ fn abstract_names_are_byte_identity_not_utf8_strings() {
     assert_eq!(unix_path_display(raw), b"@svc\xff".to_vec());
 }
 
+
+/// Watch `listener` the way a real epoll does: through a bound socket file's
+/// inode subscriber list, the single owner of that fact. Returns the list to
+/// subscribe test wake counters on, plus the file keeping the binding alive.
+fn watch_listener(listener: &Arc<crate::unix_sock::UnixListener>)
+    -> (Arc<vfs::PollSubscribers>, Arc<vfs::File>)
+{
+    let sock = Arc::new(crate::sock::InetSocket::new_unix());
+    *sock.kind.lock() = crate::sock::SockKind::UnixListener(listener.clone());
+    let inode = crate::sock::make_inet_socket_inode(sock.clone());
+    let dentry = vfs::Dentry::new(None, alloc::string::String::from("socket"), inode.clone());
+    let file = vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDWR);
+    assert!(crate::unix_sock::bind_file(&file, &sock));
+    let subs = file.inode().poll_subscribers_arc().expect("socket inode carries its list");
+    (subs, file)
+}
 #[test]
 fn udev_control_path_connect_wakes_accept_and_round_trips() {
     let _serial = test_guard();
     let registry = UnixRegistry::new();
     let listener = registry.bind(String::from("/run/udev/control")).unwrap();
     listener.listen(128, crate::sysctl::DEFAULT_SOMAXCONN);
-    let subs = Arc::new(vfs::PollSubscribers::new());
+    let (subs, _watch_file) = watch_listener(&listener);
     let waiter = WakeCounter::new();
     subs.subscribe(1, wake_ref(&waiter));
-    listener.register_subs(&subs);
 
     let client = registry.connect("/run/udev/control").expect("connect to udev control");
     assert_eq!(hits(&waiter), 1, "connect must wake the accepting server");
@@ -109,12 +124,11 @@ fn listener_readiness_tracks_accept_queue_only() {
     let registry = UnixRegistry::new();
     let listener = registry.bind(String::from("\0listener-poll")).unwrap();
     listener.listen(128, crate::sysctl::DEFAULT_SOMAXCONN);
-    let subs = Arc::new(vfs::PollSubscribers::new());
+    let (subs, _watch_file) = watch_listener(&listener);
     let readable = WakeCounter::new();
     let writable = WakeCounter::new();
     subs.subscribe_mask(1, wake_ref(&readable), vfs::POLL_IN);
     subs.subscribe_mask(2, wake_ref(&writable), vfs::POLL_OUT);
-    listener.register_subs(&subs);
     assert_eq!(listener.poll_mask(), 0, "empty listener is not writable or readable");
 
     let client = registry.connect("\0listener-poll").expect("queued client");
@@ -188,3 +202,89 @@ fn pathname_addr_preserves_non_utf8_display_bytes() {
 }
 
 
+
+/// A stream write must wake the peer's epoll through the peer's bound file --
+/// the single owner of "who is watching this end". This is the route a real
+/// epoll takes, and until these wakes were ungated no hosted test could prove
+/// they fire at all.
+#[test]
+fn stream_write_wakes_the_peer_through_its_bound_file() {
+    let _serial = test_guard();
+    let pair = crate::unix_sock::UnixPair::new();
+    let mut socks = alloc::vec::Vec::new();
+    let mut files = alloc::vec::Vec::new();
+    for end in [UnixEnd::A, UnixEnd::B] {
+        let sock = Arc::new(crate::sock::InetSocket::new_unix_pair_end_in(
+            crate::net_ns::current_namespace(), pair.clone(), end));
+        let inode = crate::sock::make_inet_socket_inode(sock.clone());
+        let dentry = vfs::Dentry::new(None, alloc::string::String::from("socket"), inode.clone());
+        let file = vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDWR);
+        assert!(crate::unix_sock::bind_file(&file, &sock));
+        socks.push(sock);
+        files.push(file);
+    }
+    let reader = WakeCounter::new();
+    files[1].inode().poll_subscribers_arc().expect("socket inode carries its list")
+        .subscribe_mask(1, wake_ref(&reader), vfs::POLL_IN);
+    assert_eq!(pair.write(UnixEnd::A, b"ping").unwrap(), 4);
+    assert_eq!(hits(&reader), 1, "a write must wake the peer end's watcher");
+    assert_eq!(pair.read(UnixEnd::B, 16), b"ping".to_vec());
+}
+
+/// A delivered datagram must wake the receiver's epoll the same way. This is
+/// journald's ingestion path: /dev/log and the native journal socket are
+/// datagram sockets, and a lost wake here is a boot whose units log nothing.
+#[test]
+fn dgram_delivery_wakes_the_receiver_through_its_bound_file() {
+    let _serial = test_guard();
+    let sock = Arc::new(crate::sock::InetSocket::new_unix_dgram_in(
+        crate::net_ns::current_namespace()));
+    let queue = match &*sock.kind.lock() {
+        crate::sock::SockKind::UnixDgram(q) => q.clone(),
+        _ => panic!("datagram socket must own a receive queue"),
+    };
+    let inode = crate::sock::make_inet_socket_inode(sock.clone());
+    let dentry = vfs::Dentry::new(None, alloc::string::String::from("socket"), inode.clone());
+    let file = vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDWR);
+    assert!(crate::unix_sock::bind_file(&file, &sock));
+    let reader = WakeCounter::new();
+    file.inode().poll_subscribers_arc().expect("socket inode carries its list")
+        .subscribe_mask(1, wake_ref(&reader), vfs::POLL_IN);
+    queue.try_push(crate::unix_sock::UnixDgram {
+        payload: b"<6>hello".to_vec(),
+        creds: crate::unix_sock::MsgCred::default(),
+        fds: alloc::vec::Vec::new(),
+    }).expect("deliver");
+    assert_eq!(hits(&reader), 1, "a delivered datagram must wake the receiver's watcher");
+}
+
+/// The full syscall-shaped flow: socket() binds the file to the UNBOUND
+/// pair's gc node, listen() switches the kind to a listener with a DIFFERENT
+/// gc node, and only the post-listen rebind makes accept wakes reach the
+/// file. The earlier listener test manufactured the listener kind directly
+/// and never crossed that switch, which is exactly where a wake resolved
+/// through a stale node goes nowhere -- the resolver's own varlink listener
+/// takes this path on every boot.
+#[test]
+fn listen_after_bind_rebinds_the_wake_route_across_the_kind_switch() {
+    let _serial = test_guard();
+    let registry = UnixRegistry::new();
+    let sock = Arc::new(crate::sock::InetSocket::new_unix());
+    let inode = crate::sock::make_inet_socket_inode(sock.clone());
+    let dentry = vfs::Dentry::new(None, alloc::string::String::from("socket"), inode.clone());
+    let file = vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDWR);
+    // socket(2): file bound while the kind is still the unbound pair.
+    assert!(crate::unix_sock::bind_file(&file, &sock));
+    // bind(2): the registry entry the listener will be reachable through.
+    let listener = registry.bind(alloc::string::String::from("/run/probe/io.test")).unwrap();
+    *sock.unix_bound.lock() = Some(listener.clone());
+    // listen(2): the kind switch, then the syscall layer's rebind.
+    crate::sock::listen(&sock, 16).expect("listen");
+    assert!(crate::unix_sock::bind_file(&file, &sock));
+    let subs = file.inode().poll_subscribers_arc().expect("socket inode carries its list");
+    let acceptable = WakeCounter::new();
+    subs.subscribe_mask(1, wake_ref(&acceptable), vfs::POLL_IN);
+    let _client = registry.connect("/run/probe/io.test").expect("connect");
+    assert_eq!(hits(&acceptable), 1,
+        "a connection must wake the accept watcher through the file bound after listen()");
+}

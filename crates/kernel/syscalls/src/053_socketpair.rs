@@ -105,7 +105,8 @@ fn create_files(domain: u32, raw_type: u32, protocol: u32, has_net_raw: bool, cu
             p.attach_end_error(end, &s.error);
         } else if let Some(p) = &msg {
             *s.kind.lock() = SockKind::UnixMsgPair(p.clone(), end);
-            p.register_end_subs(end, &s.poll_subs);
+            // Epoll wakes resolve through the end's bound file (net::bind_file
+            // below), the single owner of that fact; the pair keeps no copy.
             p.attach_end_filter(end, &s.bpf_filter);
         }
         let inode = net::sock::make_inet_socket_inode(Arc::new(s));

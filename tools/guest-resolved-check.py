@@ -12,6 +12,7 @@ Usage: tools/guest-resolved-check.py <x86|arm> [boot_timeout_s]
 import os
 import re
 import select
+import shlex
 import socket
 import subprocess
 import sys
@@ -22,8 +23,18 @@ ARCH = sys.argv[1] if len(sys.argv) > 1 else "x86"
 if ARCH not in ("x86", "arm"):
     raise SystemExit("usage: guest-resolved-check.py <x86|arm> [boot_timeout_s]")
 BOOT_TIMEOUT = int(sys.argv[2]) if len(sys.argv) > 2 else 600
-COMMAND_TIMEOUT = 35
-RESOLVER_READY_TIMEOUT = 60
+# A pass/fail rate run repeats this probe dozens of times, and the settle
+# windows below are what a FAILING boot spends nearly all its wall clock in:
+# five D-Bus pings that each wait out the full command timeout. Measuring a
+# rate does not need the repetition that diagnosing one boot does, so the
+# counts and windows are settable. Defaults are the diagnostic ones.
+COMMAND_TIMEOUT = int(os.environ.get("OXIDE_PROBE_CMD_TIMEOUT", "35"))
+RESOLVER_READY_TIMEOUT = int(os.environ.get("OXIDE_PROBE_RESOLVER_TIMEOUT", "60"))
+PING_COUNT = int(os.environ.get("OXIDE_PROBE_PINGS", "5"))
+# How to bring the guest up. A rate run builds the ISO once and then launches
+# it with `--run-existing`, so the per-iteration cargo + xorriso work is not
+# repeated for a kernel nobody changed.
+LAUNCH = os.environ.get("OXIDE_PROBE_LAUNCH")
 SOCK = f"/tmp/oxide-resolved-uart-{ARCH}-{os.getpid()}.sock"
 LOG = f"/tmp/oxide-resolved-uart-{ARCH}-{os.getpid()}.log"
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -40,7 +51,8 @@ env = dict(os.environ, OXIDE_QEMU_UART_SOCK=SOCK, OXIDE_QEMU_HEADLESS="1",
 log = open(LOG, "wb")
 print(f"guest-resolved-check: arch={ARCH} uart={SOCK} log={LOG}", flush=True)
 qemu = subprocess.Popen(
-    ["make", f"qemu-{ARCH}"], env=env, stdout=log, stderr=subprocess.STDOUT,
+    shlex.split(LAUNCH) if LAUNCH else ["make", f"qemu-{ARCH}"],
+    env=env, stdout=log, stderr=subprocess.STDOUT,
     stdin=subprocess.DEVNULL, start_new_session=True,
 )
 
@@ -141,14 +153,14 @@ try:
         print("guest-resolved-check: WARNING — status scope text unavailable; continuing with end-to-end probes", flush=True)
         print(scope[-3000:], flush=True)
 
-    for n in range(1, 6):
+    for n in range(1, PING_COUNT + 1):
         out = run(conn, buf,
             "busctl --system call org.freedesktop.resolve1 /org/freedesktop/resolve1 org.freedesktop.DBus.Peer Ping")
         if re.search(r"OXIDE-RC-0", out):
-            print(f"guest-resolved-check: D-Bus Ping {n}/5 OK", flush=True)
+            print(f"guest-resolved-check: D-Bus Ping {n}/{PING_COUNT} OK", flush=True)
         else:
             ok = False
-            print(f"guest-resolved-check: FAIL — D-Bus Ping {n}/5", flush=True)
+            print(f"guest-resolved-check: FAIL — D-Bus Ping {n}/{PING_COUNT}", flush=True)
             print(out[-3000:], flush=True)
             if n == 1:
                 # The resolver can be active while its D-Bus peer or the
@@ -159,6 +171,61 @@ try:
                 diag = run(conn, buf,
                     "ps -eo pid,comm,state,wchan; for p in $(pidof dbus-broker systemd-resolved); do echo PID=$p; cat /proc/$p/wchan; done")
                 print("guest-resolved-check: wait diagnostics:\n" + diag[-5000:], flush=True)
+                # The guest's own account: who owns the bus name, and what the
+                # resolver and the broker last said. The kernel-side sweeps
+                # come up clean on these failures, so the explanation lives in
+                # userspace state, and this is the cheapest way to read it.
+                for cmd in (
+                    "busctl --system status org.freedesktop.resolve1 2>&1 | head -5",
+                    # The WHOLE name table: resolved connects before the broker
+                    # starts, into the socket unit's backlog. If that backlog is
+                    # what gets lost, every early-connecting peer's name is
+                    # missing together, not just resolve1.
+                    "busctl --system list --no-pager --acquired 2>&1 | head -24",
+                    "journalctl -u systemd-resolved --no-pager 2>&1 | tail -12",
+                    "journalctl -u dbus-broker --no-pager 2>&1 | tail -8",
+                    # Does journal ingestion work AT ALL right now? A tag sent
+                    # through systemd-cat exercises journald's stream listener
+                    # end to end; the failing boots show units with no entries
+                    # while journald's kmsg reader is demonstrably consuming.
+                    "echo probe-alive | systemd-cat -t oxideprobe; sleep 1; journalctl -t oxideprobe --no-pager 2>&1 | tail -2",
+                    "ls /run/systemd/journal/ 2>&1; ss -x 2>/dev/null | grep -c journal",
+                    # Any AF_UNIX socket holding undelivered bytes while every
+                    # task sleeps IS the lost delivery, named by socket and
+                    # owner. Recv-Q/Send-Q are columns 3 and 4.
+                    "ss -x -p 2>/dev/null | awk 'NR==1 || $3+0>0 || $4+0>0' | head -20",
+                    # The stub query is loopback UDP and the bus reconnect is
+                    # an inet-side event too; -x is blind to both.
+                    "ss -uapn 2>/dev/null | head -12",
+                    # Never-attempted vs attempted-and-stalled: does resolved
+                    # hold a connection to the bus socket at all? No kernel
+                    # connect ever fails ([UXCONNFAIL] stays silent on failing
+                    # boots), so the divergence is on resolved's side of this.
+                    "ss -xp 2>/dev/null | grep -E 'resolve|Netid' | head -8",
+                    "ls -l /proc/$(pidof systemd-resolved)/fd 2>&1 | head -14",
+                    "ss -tapn 2>/dev/null | awk 'NR==1 || $2+0>0 || $3+0>0' | head -8",
+                    "journalctl --no-pager 2>&1 | tail -4; ls -la /run/log/journal/ /var/log/journal/ 2>&1 | head -8",
+                    # The discriminator: everyone else's early connection was
+                    # serviced (oomd holds :1.0), only resolve1 is absent, and
+                    # resolved's own error is hidden in a journal that persists
+                    # nothing. If a plain restart heals it, the failure is one
+                    # unretried connect() at first startup, and the hunt moves
+                    # to the connect path -- not to delivery, which is proven.
+                    "systemctl restart systemd-resolved; sleep 3; busctl --system status org.freedesktop.resolve1 2>&1 | head -3",
+                    "resolvectl query one.one.one.one 2>&1 | head -3",
+                ):
+                    out2 = run(conn, buf, cmd)
+                    print(f"guest-resolved-check: [{cmd}]\n" + out2[-2500:], flush=True)
+
+    # The same account on EVERY boot, passing or failing: a symptom that is
+    # also present when the resolver works is background, not the cause, and
+    # only this control separates the two.
+    for cmd in (
+        "echo probe-alive | systemd-cat -t oxideprobe; sleep 1; journalctl -t oxideprobe --no-pager 2>&1 | tail -2",
+        "busctl --system status org.freedesktop.resolve1 2>&1 | head -3",
+    ):
+        out3 = run(conn, buf, cmd)
+        print(f"guest-resolved-check: [ctl] [{cmd}]\n" + out3[-1200:], flush=True)
 
     query = run(conn, buf, "getent ahostsv4 one.one.one.one")
     if re.search(r"1\.1\.1\.1", query) and re.search(r"OXIDE-RC-0", query):

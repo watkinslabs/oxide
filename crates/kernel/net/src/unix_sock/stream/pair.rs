@@ -2,7 +2,6 @@ use alloc::vec::Vec;
 
 use sync::Spinlock;
 
-use vfs;
 
 use super::{UnixPair, UnixRing};
 use super::super::{EndCred, GcNode, UnixEnd};
@@ -19,8 +18,6 @@ impl UnixPair {
             b_to_a_waiters: crate::sock_wait::SockWaitQueue::new(),
             a_to_b_writers: crate::sock_wait::SockWaitQueue::new(),
             b_to_a_writers: crate::sock_wait::SockWaitQueue::new(),
-            end_a_subs: Spinlock::new(None),
-            end_b_subs: Spinlock::new(None),
             error_a: Spinlock::new(alloc::sync::Arc::new(crate::SocketError::new())),
             error_b: Spinlock::new(alloc::sync::Arc::new(crate::SocketError::new())),
             peer_gone_a: core::sync::atomic::AtomicBool::new(false),
@@ -122,18 +119,6 @@ impl UnixPair {
         }
     }
 
-    /// F181a: register an end's epoll-subscriber list. Called when
-    /// an InetSocket is bound to this pair's end (socketpair,
-    /// AF_UNIX accept, AF_UNIX connect). Writes wake only the
-    /// opposite end's subscribers.
-    /// # C: O(1)
-    pub fn register_end_subs(&self, end: UnixEnd, subs: &alloc::sync::Arc<vfs::PollSubscribers>) {
-        let slot = match end {
-            UnixEnd::A => &self.end_a_subs,
-            UnixEnd::B => &self.end_b_subs,
-        };
-        *slot.lock() = Some(alloc::sync::Arc::downgrade(subs));
-    }
 
     /// Share the bound InetSocket's canonical error state with this endpoint. # C: O(1)
     pub fn attach_end_error(&self, end: UnixEnd, error: &alloc::sync::Arc<crate::SocketError>) {

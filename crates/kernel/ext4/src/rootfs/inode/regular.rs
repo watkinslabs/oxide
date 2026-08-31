@@ -69,11 +69,20 @@ pub(crate) fn vfs_error_from_mount(e: crate::MountError) -> vfs::VfsError {
         crate::MountError::NotFound => vfs::VfsError::Eopnotsupp,
         crate::MountError::DepthUnsupported | crate::MountError::ExtentTreeFull
             | crate::MountError::NotExtents => vfs::VfsError::Eopnotsupp,
-        crate::MountError::CorruptExtentTree => vfs::VfsError::Eio,
-        crate::MountError::BadChecksum => vfs::VfsError::Eio,
+        e @ (crate::MountError::CorruptExtentTree | crate::MountError::BadChecksum) => {
+            #[cfg(any(feature = "debug-boot", feature = "debug-eio"))]
+            crate::rootfs::fserror::log_eio(b"file", &e);
+            let _ = e;
+            vfs::VfsError::Eio
+        }
         crate::MountError::UnsupportedFeature => vfs::VfsError::Einval,
         crate::MountError::Quota(e) => e,
-        _ => vfs::VfsError::Eio,
+        other => {
+            #[cfg(any(feature = "debug-boot", feature = "debug-eio"))]
+            crate::rootfs::fserror::log_eio(b"file", &other);
+            let _ = other;
+            vfs::VfsError::Eio
+        }
     }
 }
 

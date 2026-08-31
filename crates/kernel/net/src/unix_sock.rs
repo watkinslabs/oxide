@@ -31,7 +31,8 @@ pub(crate) mod gc_test_support;
 #[cfg(test)]
 pub(crate) mod test_support;
 
-#[cfg(target_os = "oxide-kernel")]
+// Ungated: the wakes must be reachable from the hosted suite, or no test can
+// ever prove they fire (their internal broadcast is the only kernel-only bit).
 pub(crate) use events::{wake_msgpair_peer_subs, wake_peer_subs};
 
 pub use types::{EndCred, PeerCred, UnixEnd};

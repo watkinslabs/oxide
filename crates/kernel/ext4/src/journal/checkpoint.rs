@@ -41,8 +41,15 @@ impl Mount {
             self.mark_journal_clean_seq(&log, &jsb, last_seq)
         });
         if result.is_err() {
+            // A commit can publish a newer transaction while this pass is
+            // writing home blocks. Putting the taken list back by assignment
+            // drops that one, and the log space it accounts for is never
+            // reclaimed -- the occupancy keeps climbing until a transaction is
+            // refused for room the journal has. Restore in sequence order.
             let mut state = self.state.lock();
+            let arrived = core::mem::take(&mut state.pending_checkpoints);
             state.pending_checkpoints = pending;
+            state.pending_checkpoints.extend(arrived);
         } else {
             {
                 let mut state = self.state.lock();

@@ -9,6 +9,7 @@
 
 mod model;
 mod platform;
+pub use platform::raw_monotonic_ns;
 mod state;
 pub mod ntp;
 pub mod suspend;

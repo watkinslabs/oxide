@@ -197,6 +197,35 @@ pub fn connect_kernel_unix(addr: crate::UnixAddr) -> Result<alloc::sync::Arc<Ine
 }
 
 /// Connect after canonical generic security admission. # C: O(1) or O(wait)
+
+/// Name a failed AF_UNIX connect while the journal cannot: the resolver's
+/// startup connect fails on a third of boots and its own log line lands in a
+/// journal that persists nothing, so this is the only durable record of the
+/// errno. # C: O(1)
+#[cfg(feature = "debug-dbus")]
+fn log_unix_connect_failure(addr_display: &[u8], error: &NetError) {
+    let name: &'static [u8] = match error {
+        NetError::Enoent => b"ENOENT",
+        NetError::Econnrefused => b"ECONNREFUSED",
+        NetError::Eagain => b"EAGAIN",
+        NetError::Eperm => b"EPERM",
+        NetError::Einval => b"EINVAL",
+        NetError::Eisconn => b"EISCONN",
+        NetError::Eintr => b"EINTR",
+        _ => b"OTHER",
+    };
+    klog::write_raw(b"[UXCONNFAIL comm=");
+    if let Some(current) = sched::live::current() {
+        let comm = current.comm_bytes();
+        klog::write_raw(sched::Task::comm_trim(&comm).as_bytes());
+    }
+    klog::write_raw(b" path=");
+    klog::write_raw(addr_display);
+    klog::write_raw(b" err=");
+    klog::write_raw(name);
+    klog::write_raw(b"]\n");
+}
+
 pub fn connect_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, nonblock: bool,
                         admission: ConnectAdmission) -> Result<(), NetError> {
     match addr {
@@ -261,7 +290,14 @@ pub fn connect_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, n
                 Disc::Bad => Err(NetError::Einval),
             }
         }
-        RemoteAddr::Unix(addr) => super::unix::connect(sock, addr, nonblock),
+        RemoteAddr::Unix(addr) => {
+            #[cfg(feature = "debug-dbus")]
+            let display = addr.display.clone();
+            let result = super::unix::connect(sock, addr, nonblock);
+            #[cfg(feature = "debug-dbus")]
+            if let Err(ref error) = result { log_unix_connect_failure(&display, error); }
+            result
+        }
         RemoteAddr::Inet { ip, port } => {
             if matches!(*sock.kind.lock(), SockKind::TcpInit) {
                 crate::sock_admit::admit_port(sock, 6, port,
@@ -330,7 +366,6 @@ pub fn listen(sock: &alloc::sync::Arc<InetSocket>, backlog: i32) -> Result<(), N
                 listener
             }
         };
-        listener.register_subs(&sock.poll_subs);
         let current = sched::live::current();
         let cred = crate::PeerCred::of_current();
         let identity = current.as_ref().map(|c| c.thread_group.leader_pid());

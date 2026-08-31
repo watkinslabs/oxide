@@ -53,6 +53,8 @@ impl Mount {
         let meta = match self.alloc_blocks_flags(hint_group, 2, ReserveFlags::METADATA_NOFAIL) {
             Ok(meta) if meta.len() == 2 => meta,
             Ok(meta) => {
+                #[cfg(any(feature = "debug-boot", feature = "debug-eio"))]
+                crate::balloc::log_alloc_no_space(b"extent-split-meta", 2, meta.len() as u64, 0);
                 self.free_allocated_blocks(&meta);
                 self.free_allocated_blocks(&child.allocated_meta_blocks);
                 return Err(MountError::NoSpace);

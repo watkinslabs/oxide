@@ -25,6 +25,27 @@ use core::sync::atomic::Ordering;
 extern crate alloc;
 use alloc::vec::Vec;
 
+/// Name which allocator refusal fired and the arithmetic behind it.
+///
+/// Every one of them becomes the same `NoSpace`, which page writeback hands a
+/// writing process as an I/O error. On a volume with space free none of them
+/// should be reachable, so each one that appears is a defect with its own
+/// numbers -- and the reserve gate in particular refuses BEFORE any group is
+/// scanned, using a cached free-block counter rather than the bitmaps.
+/// # C: O(1)
+#[cfg(any(feature = "debug-boot", feature = "debug-eio"))]
+pub(crate) fn log_alloc_no_space(site: &'static [u8], want: u64, free: u64, reserved: u64) {
+    klog::write_raw(b"[EXT4-NOSPACE] site=");
+    klog::write_raw(site);
+    klog::write_raw(b" want=");
+    klog::write_dec_u64(want);
+    klog::write_raw(b" free=");
+    klog::write_dec_u64(free);
+    klog::write_raw(b" reserved=");
+    klog::write_dec_u64(reserved);
+    klog::write_raw(b"\n");
+}
+
 impl Mount {
     /// Eagerly load every allocation bitmap requested by the Linux-compatible
     /// `prefetch_block_bitmaps` option. The normal lazy path and this path
@@ -82,6 +103,31 @@ impl Mount {
         goal_phys: Option<u64>,
     ) -> Result<Vec<u64>, MountError>
     {
+        self.alloc_blocks_goal_sized(ino, hint, count, flags, goal_phys, false)
+    }
+
+    /// Allocate up to `count` blocks, accepting a shorter run.
+    ///
+    /// Opt-in, and only for a caller that maps what it gets and comes back for
+    /// the rest. Most callers need the exact count and check the length they
+    /// were handed: the extent-tree split asks for its two metadata blocks as
+    /// one request and treats anything shorter as out of space, so making the
+    /// short grant the default for everyone turned a data-allocation refusal
+    /// into a metadata one and fixed nothing.
+    /// # C: as `alloc_blocks_for_inode_goal`, plus one best-effort group pass
+    pub(crate) fn alloc_data_blocks_best_effort(
+        &self, ino: Option<u32>, hint: u32, count: u32, flags: ReserveFlags,
+        goal_phys: Option<u64>,
+    ) -> Result<Vec<u64>, MountError>
+    {
+        self.alloc_blocks_goal_sized(ino, hint, count, flags, goal_phys, true)
+    }
+
+    fn alloc_blocks_goal_sized(
+        &self, ino: Option<u32>, hint: u32, count: u32, flags: ReserveFlags,
+        goal_phys: Option<u64>, best_effort: bool,
+    ) -> Result<Vec<u64>, MountError>
+    {
         if count == 0 { return Ok(Vec::new()); }
         #[cfg(not(target_os = "oxide-kernel"))]
         if self.faults.next_alloc_block.swap(false, Ordering::AcqRel) { return Err(MountError::BlockIo); }
@@ -106,6 +152,8 @@ impl Mount {
             if groups == 0 { return Err(MountError::NoSpace); }
             let free = m.state_free_blocks();
             if !reserve::has_free_blocks(free, u64::from(count), m.sb.r_blocks_count, may_dip) {
+                #[cfg(any(feature = "debug-boot", feature = "debug-eio"))]
+                log_alloc_no_space(b"run-reserve-gate", u64::from(count), free, m.sb.r_blocks_count);
                 return Err(MountError::NoSpace);
             }
             let mut retries = 0u8;
@@ -146,12 +194,22 @@ impl Mount {
                 // Linux discards reclaimable locality PAs after a failed
                 // mballoc scan and retries only when blocks were freed.
                 if retries == 3 || !m.has_prealloc() {
+                    #[cfg(any(feature = "debug-boot", feature = "debug-eio"))]
+                    log_alloc_no_space(b"run-scan-exhausted", u64::from(count), m.state_free_blocks(), m.sb.r_blocks_count);
+                    if let Some(run) = if best_effort { m.alloc_best_effort_run(count)? } else { None } {
+                        if let Some(ino) = ino { m.record_stream_goal(ino, m.group_of_block(run[0]), groups); }
+                        return Ok(run);
+                    }
                     return Err(MountError::NoSpace);
                 }
                 let mut freed = m.discard_group_preallocations(count)?;
                 if freed == 0 {
                     freed = m.discard_inode_preallocations(count)?;
                     if freed == 0 {
+                        if let Some(run) = if best_effort { m.alloc_best_effort_run(count)? } else { None } {
+                            if let Some(ino) = ino { m.record_stream_goal(ino, m.group_of_block(run[0]), groups); }
+                            return Ok(run);
+                        }
                         return Err(MountError::NoSpace);
                     }
                 }
@@ -235,6 +293,8 @@ impl Mount {
             let free = m.state_free_blocks();
             const ONE_BLOCK: u64 = 1;
             if !reserve::has_free_blocks(free, ONE_BLOCK, m.sb.r_blocks_count, may_dip) {
+                #[cfg(any(feature = "debug-boot", feature = "debug-eio"))]
+                log_alloc_no_space(b"single-reserve-gate", ONE_BLOCK, free, m.sb.r_blocks_count);
                 return Err(MountError::NoSpace);
             }
             // `mb_optimize_scan=`: where the walk STARTS. It still visits every
@@ -264,6 +324,8 @@ impl Mount {
                     return Ok(blk);
                 }
             }
+            #[cfg(any(feature = "debug-boot", feature = "debug-eio"))]
+            log_alloc_no_space(b"single-scan-exhausted", 1, m.state_free_blocks(), m.sb.r_blocks_count);
             Err(MountError::NoSpace)
         })
     }
@@ -415,6 +477,50 @@ impl Mount {
     fn try_alloc_run_in_group(&self, group: u32, count: u32, goal_phys: Option<u64>)
         -> Result<Option<Vec<u64>>, MountError>
     {
+        self.try_alloc_run_in_group_sized(group, count, goal_phys, false)
+    }
+
+    /// Last resort before reporting the volume full: hand back the longest run
+    /// the filesystem can still offer, shorter than asked for.
+    ///
+    /// Every ordinary scan wants one run of the whole request. When the free
+    /// space is merely fragmented none exists, and refusing the write reports
+    /// ENOSPC on a volume with gigabytes free -- which page writeback delivers
+    /// to the writing process as an I/O error. The reference keeps the biggest
+    /// extent it saw and uses that.
+    ///
+    /// Groups are tried richest-first so the grant is as long as the volume can
+    /// make it: taking a short run from a nearly full group when a long one is
+    /// available elsewhere is what shatters a file into minimum-sized extents,
+    /// and the deeper extent tree then costs more than the allocation saved.
+    /// # C: O(N_groups) descriptor reads + one group scan
+    fn alloc_best_effort_run(&self, count: u32) -> Result<Option<Vec<u64>>, MountError> {
+        if count == 0 { return Ok(None); }
+        let groups = self.sb.group_count();
+        let gdt_bytes = self.read_gdt_bytes()?;
+        let mut ranked: Vec<(u32, u32)> = Vec::new();
+        for group in 0..groups {
+            let gd = gdt::parse_descriptor(&gdt_bytes, group, &self.sb)?;
+            let free = u32::from(gd.free_blocks_count);
+            if free != 0 { ranked.push((free, group)); }
+        }
+        ranked.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        for (_, group) in ranked {
+            if let Some(run) = self.try_alloc_run_in_group_sized(group, count, None, true)? {
+                return Ok(Some(run));
+            }
+        }
+        Ok(None)
+    }
+
+    /// `best_effort` takes the longest run this group can offer when none
+    /// reaches `count`, the way the reference uses the biggest extent it found
+    /// rather than reporting the volume full. The caller maps what it gets and
+    /// comes back for the rest.
+    /// # C: O(blocks in group) scan + one bitmap/GDT/SB write
+    fn try_alloc_run_in_group_sized(&self, group: u32, count: u32, goal_phys: Option<u64>,
+        best_effort: bool) -> Result<Option<Vec<u64>>, MountError>
+    {
         let group_lock = self.group_lock(group);
         // SAFETY: process context, with no spinlock held.
         let _group_guard = unsafe { group_lock.lock() };
@@ -422,7 +528,8 @@ impl Mount {
         let _gdt_guard = unsafe { self.gdt_lock.lock() };
         let mut gdt_bytes = self.read_gdt_bytes()?;
         let gd_orig = gdt::parse_descriptor(&gdt_bytes, group, &self.sb)?;
-        if u32::from(gd_orig.free_blocks_count) < count { return Ok(None); }
+        let floor = if best_effort { 1 } else { count };
+        if u32::from(gd_orig.free_blocks_count) < floor { return Ok(None); }
         let bbm_byte_off = gd_orig.block_bitmap * (self.sb.block_size as u64);
         let uninit = gdt::block_uninit(&gdt_bytes, group, &self.sb);
         let cached = self.cached_group_bitmap(bbm_byte_off);
@@ -454,7 +561,14 @@ impl Mount {
             find_contiguous_run(&bitmap, blocks, count, first_phys, Some(stripe))
         } else { None };
         let start = goal.or(aligned).or_else(|| find_contiguous_run(&bitmap, blocks, count, first_phys, None));
-        let Some(start) = start else { return Ok(None) };
+        let (start, count) = match start {
+            Some(start) => (start, count),
+            None if best_effort => match find_longest_run(&bitmap, blocks, count) {
+                Some(found) => found,
+                None => return Ok(None),
+            },
+            None => return Ok(None),
+        };
         for bit in start..start + count {
             bitmap[bit as usize >> 3] |= 1u8 << (bit & 7);
             disk_bitmap[bit as usize >> 3] |= 1u8 << (bit & 7);
@@ -706,6 +820,40 @@ fn find_contiguous_run(bitmap: &[u8], max_bits: u32, count: u32, first_phys: u64
     }
     if let Some((_, start)) = best_aligned { return Some(start); }
     best_any.map(|(_, start)| start)
+}
+
+/// Longest free run in this group, capped at `want`, for a request that no
+/// single run can satisfy.
+///
+/// The reference keeps the biggest extent it saw and uses it when nothing
+/// reaches the requested length -- "if the request isn't satisfied, any found
+/// extent larger than previous best one is better". The length asked for is a
+/// maximum; refusing the whole write because no one run reaches it reports a
+/// full filesystem while the space is merely fragmented. Taking the LARGEST
+/// available run rather than an arbitrary fraction is what keeps the resulting
+/// file from being shattered into minimum-sized extents.
+/// # C: O(max_bits)
+fn find_longest_run(bitmap: &[u8], max_bits: u32, want: u32) -> Option<(u32, u32)> {
+    if want == 0 { return None; }
+    let mut best: Option<(u32, u32)> = None;
+    let mut run_start = 0u32;
+    let mut run_len = 0u32;
+    let close = |start: u32, len: u32, best: &mut Option<(u32, u32)>| {
+        if len == 0 { return; }
+        let take = len.min(want);
+        if best.is_none_or(|(best_len, _)| take > best_len) { *best = Some((take, start)); }
+    };
+    for bit in 0..=max_bits {
+        if bit < max_bits && bitmap[bit as usize >> 3] & (1u8 << (bit & 7)) == 0 {
+            if run_len == 0 { run_start = bit; }
+            run_len += 1;
+            continue;
+        }
+        close(run_start, run_len, &mut best);
+        run_len = 0;
+        if best.is_some_and(|(len, _)| len == want) { break; }
+    }
+    best.map(|(len, start)| (start, len))
 }
 
 /// Fast Linux `TRY_GOAL` check: accept the exact physical goal when the

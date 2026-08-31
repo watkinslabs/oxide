@@ -161,7 +161,6 @@ impl InetSocket {
         let end = crate::UnixEnd::B;
         let s = Self::new_in(net_namespace, filter, error.clone(), SockKind::UnixUnbound(pair.clone(), end), SocketClass::UnixStream);
         s.family.store(AF_UNIX, core::sync::atomic::Ordering::Release);
-        pair.register_end_subs(end, &s.poll_subs);
         pair.attach_end_error(end, &error);
         s
     }
@@ -172,7 +171,6 @@ impl InetSocket {
         let error = pair.end_error(end);
         let s = Self::new_owned(owner, filter, error.clone(), SockKind::Unix(pair.clone(), end), SocketClass::UnixStream);
         s.family.store(AF_UNIX, core::sync::atomic::Ordering::Release);
-        pair.register_end_subs(end, &s.poll_subs);
         pair.attach_end_error(end, &error);
         s
     }
@@ -242,7 +240,6 @@ impl InetSocket {
         let q = crate::UnixDgramQueue::new_with_filter(filter.clone());
         let s = Self::new_in(net_namespace, filter, error, SockKind::UnixDgram(q.clone()), SocketClass::UnixDgram);
         s.family.store(AF_UNIX, core::sync::atomic::Ordering::Release);
-        q.register_subs(&s.poll_subs);
         s
     }
 

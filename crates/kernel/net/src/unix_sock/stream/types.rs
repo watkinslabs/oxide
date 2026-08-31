@@ -2,7 +2,6 @@ use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 
 use sync::{Socket as UnixLockClass, Spinlock};
 
-use vfs;
 
 use super::super::{EndCred, GcNode, GcRights};
 
@@ -35,8 +34,6 @@ pub struct UnixPair {
     /// End A's epoll subscribers (the InetSocket on end A). Wakeable
     /// when a_to_b advances? No - end A reads from b_to_a. So this
     /// is woken when end B writes (write(end=B) advances b_to_a).
-    pub end_a_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, UnixLockClass>,
-    pub end_b_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, UnixLockClass>,
     /// Canonical endpoint `sk_err`; the bound InetSocket shares this Arc.
     pub(super) error_a: Spinlock<Arc<crate::SocketError>, UnixLockClass>,
     pub(super) error_b: Spinlock<Arc<crate::SocketError>, UnixLockClass>,

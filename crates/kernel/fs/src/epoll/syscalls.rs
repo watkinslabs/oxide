@@ -325,6 +325,10 @@ fn sys_epoll_wait_timeout(args: &syscall::SyscallArgs, timeout_ns: Option<u64>) 
         loop {
             let observed_global = super::GLOBAL_EPOLL_GEN.load(Ordering::Acquire);
             let current_ns = now();
+            // Whoever is still looping names any OTHER epoll that is parked on
+            // a ready interest; the stuck one cannot report itself.
+            #[cfg(feature = "debug-epoll")]
+            super::sweep_stuck_epolls(current_ns);
             ep.queue_expired_deadlines(current_ns);
             ep.rescan_levels();
             let out2 = scan_once(&ep, evp, maxevents);

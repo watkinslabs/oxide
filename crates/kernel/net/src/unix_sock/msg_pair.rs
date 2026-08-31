@@ -4,7 +4,6 @@ use sync::{Socket as UnixLockClass, Spinlock};
 
 use vfs;
 
-#[cfg(target_os = "oxide-kernel")]
 use super::wake_msgpair_peer_subs;
 use super::{EndCred, GcNode, GcRights, UnixEnd};
 
@@ -40,9 +39,6 @@ pub struct UnixMsgPair {
     pub b_to_a_waiters: crate::sock_wait::SockWaitQueue,
     pub a_to_b_writers: crate::sock_wait::SockWaitQueue,
     pub b_to_a_writers: crate::sock_wait::SockWaitQueue,
-    /// F181a: per-end epoll subscribers — see `UnixPair`.
-    pub end_a_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, UnixLockClass>,
-    pub end_b_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, UnixLockClass>,
     error_a: Spinlock<Arc<crate::SocketError>, UnixLockClass>,
     error_b: Spinlock<Arc<crate::SocketError>, UnixLockClass>,
     filter_a: Spinlock<Arc<crate::bpf_filter::SocketFilter>, UnixLockClass>,
@@ -99,8 +95,6 @@ impl UnixMsgPair {
             b_to_a_waiters: crate::sock_wait::SockWaitQueue::new(),
             a_to_b_writers: crate::sock_wait::SockWaitQueue::new(),
             b_to_a_writers: crate::sock_wait::SockWaitQueue::new(),
-            end_a_subs: Spinlock::new(None),
-            end_b_subs: Spinlock::new(None),
             error_a: Spinlock::new(Arc::new(crate::SocketError::new())),
             error_b: Spinlock::new(Arc::new(crate::SocketError::new())),
             filter_a: Spinlock::new(Arc::new(crate::bpf_filter::SocketFilter::new())),
@@ -181,13 +175,6 @@ impl UnixMsgPair {
 
     /// F181a: register an end's subscribers (mirrors `UnixPair`).
     /// # C: O(1)
-    pub fn register_end_subs(&self, end: UnixEnd, subs: &Arc<vfs::PollSubscribers>) {
-        let slot = match end {
-            UnixEnd::A => &self.end_a_subs,
-            UnixEnd::B => &self.end_b_subs,
-        };
-        *slot.lock() = Some(Arc::downgrade(subs));
-    }
 
     /// WaitList the reader of `end` should park on.
     /// # C: O(1)
@@ -278,20 +265,13 @@ impl UnixMsgPair {
         let n = sent;
         drop(g);
         drop(transition);
-        #[cfg(target_os = "oxide-kernel")]
-        {
-            let waiters = match end {
-                UnixEnd::A => &self.a_to_b_waiters,
-                UnixEnd::B => &self.b_to_a_waiters,
-            };
-            waiters.wake_all();
-            wake_msgpair_peer_subs(self, end, vfs::POLL_IN);
-        }
-        #[cfg(not(target_os = "oxide-kernel"))]
-        match end {
-            UnixEnd::A => self.a_to_b_waiters.wake_all(),
-            UnixEnd::B => self.b_to_a_waiters.wake_all(),
-        }
+                // Ungated: the hosted suite must be able to prove this wake fires.
+        let waiters = match end {
+            UnixEnd::A => &self.a_to_b_waiters,
+            UnixEnd::B => &self.b_to_a_waiters,
+        };
+        waiters.wake_all();
+        wake_msgpair_peer_subs(self, end, vfs::POLL_IN);
         Ok(n)
     }
 

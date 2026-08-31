@@ -23,10 +23,17 @@ fn create_unix_sock_node_bytes(path: &[u8]) -> Result<Option<UnixSockNode>, i64>
         return Err(-(Errno::Erofs.as_i32() as i64));
     }
     let cred = crate::pathresolve::current_cred();
-    let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: 0 };
+    let umask = sched::live::current().map(|c| c.umask()).unwrap_or(0) as u16;
+    let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask };
+    // The node is born world-accessible less the caller's umask, exactly as
+    // the reference creates it: a socket file with no permission bits is
+    // unreachable by every other user until its owner chmods it, and the
+    // window between this create and systemd's SocketMode= chmod is where a
+    // peer's watch-install read check answered EACCES -- after which nothing
+    // retried, and the resolver never joined the bus.
     let r = {
         let _g = parent.inode.inode_lock();
-        parent.inode.mknod_child(&name, vfs::S_IFSOCK as u16, 0, &ctx)
+        parent.inode.mknod_child(&name, vfs::S_IFSOCK as u16 | (0o777 & !umask), 0, &ctx)
     };
     match r {
         Ok(()) => {
