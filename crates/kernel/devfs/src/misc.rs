@@ -100,6 +100,11 @@ pub fn make_symlink_inode(target: &'static [u8], ino: vfs::Ino) -> InodeRef {
 /// Each open's reader cursor is reset to 0 at open — repeated
 /// `cat /dev/kmsg` invocations from userspace each see the
 /// available tail of the ring.
+/// How long an appended record may wait for a parked watcher: the pacing of
+/// the deadline re-poll below, and the latency ceiling a boot-time log line
+/// pays before journald sees it.
+const KMSG_POLL_INTERVAL_NS: u64 = 100_000_000;
+
 struct KmsgFileOps;
 impl FileOps for KmsgFileOps {
     fn read(&self, _i: &Inode, off: u64, b: &mut [u8]) -> KResult<usize> {
@@ -112,6 +117,20 @@ impl FileOps for KmsgFileOps {
     /// /dev/kmsg ("Looping too fast"). # C: O(1)
     /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
+    /// `/dev/kmsg` has no notification channel yet: the log ring is appended
+    /// from IRQ context and from inside epoll's own locked paths, so waking a
+    /// subscriber list synchronously from the append would deadlock (the
+    /// reference defers printk wakeups through irq_work for the same reason).
+    /// Until a deferred wake exists, readiness is re-polled on a bounded
+    /// deadline through the machinery timer-backed files already use. Unread
+    /// bytes make the poll IN immediately at ADD/scan; the deadline only paces
+    /// the idle wait, so a record never sits unseen longer than the interval.
+    /// # C: O(1)
+    fn poll_deadline_ns(&self, _file: &vfs::File) -> Option<u64> {
+        let now = vfs::inode_times::monotonic_now_ns();
+        if now == 0 { return None; }
+        Some(now.saturating_add(KMSG_POLL_INTERVAL_NS))
+    }
     fn poll_file(&self, _i: &Inode, pos: u64) -> u32 {
         let mut mask = vfs::POLL_OUT;
         if (pos as usize) < klog::ring_total() { mask |= vfs::POLL_IN; }

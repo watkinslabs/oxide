@@ -14,6 +14,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 /// task's clock-provider lock. Zero is the pre-install sentinel.
 static REALTIME_PROVIDER: AtomicUsize = AtomicUsize::new(0);
 static TIMEZONE_PROVIDER: AtomicUsize = AtomicUsize::new(0);
+static MONOTONIC_PROVIDER: AtomicUsize = AtomicUsize::new(0);
 
 /// Install the wall-clock provider (kernel boot). Idempotent, last-writer-wins.
 /// # C: O(1)
@@ -24,6 +25,25 @@ pub fn set_realtime_provider(f: fn() -> u64) {
 /// Current `CLOCK_REALTIME` in ns since the Unix epoch via the installed
 /// provider, or 0 when none is installed yet (pre-userspace — matching a
 /// `CLOCK_REALTIME` read before `settimeofday` seeds the offset). # C: O(1)
+/// Install the canonical CLOCK_MONOTONIC reader (raw architecture counter,
+/// the same base the epoll wait loop compares poll deadlines against).
+/// # C: O(1)
+pub fn set_monotonic_provider(f: fn() -> u64) {
+    MONOTONIC_PROVIDER.store(f as usize, Ordering::Release);
+}
+
+/// Monotonic now, or 0 before a provider is installed. A caller deriving a
+/// deadline must treat 0 as "no clock yet", never as an expired deadline.
+/// # C: O(1)
+pub fn monotonic_now_ns() -> u64 {
+    let f = MONOTONIC_PROVIDER.load(Ordering::Acquire);
+    if f == 0 { return 0; }
+    // SAFETY: the word was stored from a valid `fn() -> u64` and never mutated
+    // to anything else; transmuting it back reconstructs that same function.
+    let f: fn() -> u64 = unsafe { core::mem::transmute(f) };
+    f()
+}
+
 pub fn realtime_now_ns() -> u64 {
     let raw = REALTIME_PROVIDER.load(Ordering::Acquire);
     if raw == 0 { return 0; }

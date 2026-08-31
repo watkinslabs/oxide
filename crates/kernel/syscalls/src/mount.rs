@@ -184,5 +184,9 @@ pub fn install_vfs_hooks() {
     // write-stamped mtime would
     // be frozen at the epoch.
     vfs::inode_times::set_realtime_provider(timekeeper::realtime_ns);
+    // Raw monotonic, deliberately: poll deadlines derived from this value are
+    // compared against the epoll wait loop's own HAL counter, and the
+    // suspend-adjusted clock is a different base.
+    vfs::inode_times::set_monotonic_provider(timekeeper::raw_monotonic_ns);
     vfs::inode_times::set_timezone_provider(crate::time_common::timezone_minuteswest);
 }
