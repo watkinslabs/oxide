@@ -117,9 +117,29 @@ impl Nameidata {
             Err(VfsError::Enoent) => {
                 // D5/D6 negative-on-miss, gated for safety (see `neg_cache_ok`):
                 // create syscalls flush this leaf negative by resolved parent
-                // dentry/name, so a subsequently-created file is never masked.
+                // dentry/name, so a subsequently-created file is not masked.
+                //
+                // The flush alone is not enough: it and this insert are not
+                // ordered. A create landing between the backend miss above and
+                // the insert below runs its flush FIRST, and the insert then
+                // re-caches the stale negative, masking a file that exists --
+                // measured as a bus-socket lookup answering ENOENT 25ms after
+                // bind(2) created it, which left the resolver's bus reconnect
+                // waiting forever. The reference cannot hit this because a
+                // backend lookup and the negative's insertion happen under the
+                // parent's lock that creation also takes; here the insert is
+                // published first and the backend is asked AGAIN. Any create
+                // that beat the insert is seen by the recheck; any create that
+                // follows it must flush after it, which removes it.
                 if super::neg_cache_ok(&self.cur_inode, comp) {
-                    crate::dcache::d_add_negative_with_hash(&self.cur_dentry, comp, hash);
+                    let negative = crate::dcache::d_add_negative_with_hash(&self.cur_dentry, comp, hash);
+                    if let Ok(ci) = self.cur_inode.lookup(comp) {
+                        crate::dcache::d_drop(&negative);
+                        let child_inode = ci.clone();
+                        let child = crate::dcache::d_add_with_hash(&self.cur_dentry, comp, ci.clone(), hash);
+                        crate::file::iput(ci);
+                        return Ok(ChildLookup::Found(child, child_inode));
+                    }
                 }
                 Ok(ChildLookup::Missing)
             }
