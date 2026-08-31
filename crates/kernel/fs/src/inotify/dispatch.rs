@@ -80,6 +80,14 @@ pub(crate) fn register_instance(w: Weak<InotifyData>) {
 /// # C: O(N_groups * N_watches)
 fn dispatch(inode: &InodeRef, f: &Fire<'_>) {
     if MARK_COUNT.load(Ordering::Acquire) == 0 { return; }
+    // DIAG: name the dispatch outcome for the one file the resolver's bus
+    // reconnect waits on. Its watch walks down as /run/dbus appears, so the
+    // question a failing boot has to answer is whether this event found any
+    // watch at all when the socket was finally created.
+    #[cfg(feature = "debug-epoll")]
+    let trace_bus = f.name.is_some_and(|n| n.contains("system_bus"));
+    #[cfg(feature = "debug-epoll")]
+    let mut trace_matched = 0u32;
     let key = inode_key(inode);
     let fsid = inode.fsid();
     let mut oneshot_pins: Vec<InodeRef> = Vec::new();
@@ -120,6 +128,8 @@ fn dispatch(inode: &InodeRef, f: &Fire<'_>) {
             // The directory gate is fanotify's alone — an inotify mark never
             // carries FAN_ONDIR and would be silenced on every directory event.
             if arc.fanotify && !mask_applicable(wi.mask, f.target_dir, iter) { i += 1; continue; }
+            #[cfg(feature = "debug-epoll")]
+            { if trace_bus { trace_matched += 1; } }
             let mut report = f.mask_bit;
             if arc.fanotify {
                 // A fid-reporting group is told the affected object was a
@@ -153,6 +163,16 @@ fn dispatch(inode: &InodeRef, f: &Fire<'_>) {
         }
     }
     drop(g);
+    #[cfg(feature = "debug-epoll")]
+    if trace_bus {
+        klog::write_raw(b"[FSN name=");
+        if let Some(n) = f.name { klog::write_raw(n.as_bytes()); }
+        klog::write_raw(b" mask=");
+        klog::write_hex_u64(f.mask_bit as u64);
+        klog::write_raw(b" matched=");
+        klog::write_dec_u64(trace_matched as u64);
+        klog::write_raw(b"]\n");
+    }
     crate::inotify::types::release_pins(oneshot_pins);
 }
 
