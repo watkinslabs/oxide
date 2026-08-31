@@ -269,3 +269,61 @@ fn the_periodic_owner_does_not_break_a_large_extent_write() {
     let _ = std::fs::remove_file(&path);
     outcome.unwrap_or_else(|e| panic!("large extent write under the periodic owner: {e}"));
 }
+
+/// Sustained writing against a running commit/checkpoint owner, on a
+/// filesystem with gigabytes free: no operation may be refused for space.
+///
+/// This is a load guard, not a regression test for the occupancy race it was
+/// written for. Reinstating that race (sampling the log's occupancy and its
+/// pending list at two different instants) leaves this green -- 0/10 either
+/// way -- so the timing it needs does not occur here. The evidence for that
+/// defect is a boot: `[EXT4-EIO] op=writeback kind=no-space` on a 64 MiB
+/// journal with nothing in it. Do not read a pass here as covering it.
+#[test]
+fn sustained_writing_against_the_commit_owner_is_never_refused_for_space() {
+    let Some(path) = journalled_boot_image("nospace") else { return };
+    let outcome = {
+        let m = Arc::new(open_rw(&path));
+        m.begin_batch();
+        let _ = m.mark_state_dirty();
+        assert!(m.sb.free_blocks_count > 100_000, "fixture must have ample free space");
+        ext4::commit_timer::register(&m);
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // The periodic owner, running commit and checkpoint as fast as the
+        // boot's does under sysinit.
+        let owner = {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                let mut now = 1u64;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    now = now.saturating_add(10_000_000_000);
+                    ext4::commit_timer::tick(now);
+                }
+            })
+        };
+        let dir = m.lookup_path(b"/etc/udev").expect("/etc/udev");
+        let chunk = std::vec![0x2Bu8; 128 * 1024];
+        let mut outcome = Ok(());
+        'work: for n in 0..40u32 {
+            let name = std::format!("nospace.{n}.bin");
+            let ino = match m.create_file(dir, name.as_bytes(), 0o644, 0, 0) {
+                Ok(ino) => ino,
+                Err(e) => { outcome = Err(std::format!("create {name}: {e:?}")); break },
+            };
+            let mut off = 0u64;
+            while off < 1024 * 1024 {
+                if let Err(e) = m.write_at(ino, off, &chunk) {
+                    outcome = Err(std::format!("{name} at {off}: {e:?}"));
+                    break 'work;
+                }
+                off += chunk.len() as u64;
+            }
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        owner.join().expect("periodic owner");
+        let _ = m.commit_batch();
+        outcome
+    };
+    let _ = std::fs::remove_file(&path);
+    outcome.unwrap_or_else(|e| panic!("refused on a journal with room: {e}"));
+}
