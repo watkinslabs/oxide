@@ -146,12 +146,20 @@ impl Mount {
                 // Linux discards reclaimable locality PAs after a failed
                 // mballoc scan and retries only when blocks were freed.
                 if retries == 3 || !m.has_prealloc() {
+                    if let Some(run) = m.alloc_best_effort_run(count)? {
+                        if let Some(ino) = ino { m.record_stream_goal(ino, m.group_of_block(run[0]), groups); }
+                        return Ok(run);
+                    }
                     return Err(MountError::NoSpace);
                 }
                 let mut freed = m.discard_group_preallocations(count)?;
                 if freed == 0 {
                     freed = m.discard_inode_preallocations(count)?;
                     if freed == 0 {
+                        if let Some(run) = m.alloc_best_effort_run(count)? {
+                            if let Some(ino) = ino { m.record_stream_goal(ino, m.group_of_block(run[0]), groups); }
+                            return Ok(run);
+                        }
                         return Err(MountError::NoSpace);
                     }
                 }
@@ -415,6 +423,50 @@ impl Mount {
     fn try_alloc_run_in_group(&self, group: u32, count: u32, goal_phys: Option<u64>)
         -> Result<Option<Vec<u64>>, MountError>
     {
+        self.try_alloc_run_in_group_sized(group, count, goal_phys, false)
+    }
+
+    /// Last resort before reporting the volume full: hand back the longest run
+    /// the filesystem can still offer, shorter than asked for.
+    ///
+    /// Every ordinary scan wants one run of the whole request. When the free
+    /// space is merely fragmented none exists, and refusing the write reports
+    /// ENOSPC on a volume with gigabytes free -- which page writeback delivers
+    /// to the writing process as an I/O error. The reference keeps the biggest
+    /// extent it saw and uses that.
+    ///
+    /// Groups are tried richest-first so the grant is as long as the volume can
+    /// make it: taking a short run from a nearly full group when a long one is
+    /// available elsewhere is what shatters a file into minimum-sized extents,
+    /// and the deeper extent tree then costs more than the allocation saved.
+    /// # C: O(N_groups) descriptor reads + one group scan
+    fn alloc_best_effort_run(&self, count: u32) -> Result<Option<Vec<u64>>, MountError> {
+        if count == 0 { return Ok(None); }
+        let groups = self.sb.group_count();
+        let gdt_bytes = self.read_gdt_bytes()?;
+        let mut ranked: Vec<(u32, u32)> = Vec::new();
+        for group in 0..groups {
+            let gd = gdt::parse_descriptor(&gdt_bytes, group, &self.sb)?;
+            let free = u32::from(gd.free_blocks_count);
+            if free != 0 { ranked.push((free, group)); }
+        }
+        ranked.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        for (_, group) in ranked {
+            if let Some(run) = self.try_alloc_run_in_group_sized(group, count, None, true)? {
+                return Ok(Some(run));
+            }
+        }
+        Ok(None)
+    }
+
+    /// `best_effort` takes the longest run this group can offer when none
+    /// reaches `count`, the way the reference uses the biggest extent it found
+    /// rather than reporting the volume full. The caller maps what it gets and
+    /// comes back for the rest.
+    /// # C: O(blocks in group) scan + one bitmap/GDT/SB write
+    fn try_alloc_run_in_group_sized(&self, group: u32, count: u32, goal_phys: Option<u64>,
+        best_effort: bool) -> Result<Option<Vec<u64>>, MountError>
+    {
         let group_lock = self.group_lock(group);
         // SAFETY: process context, with no spinlock held.
         let _group_guard = unsafe { group_lock.lock() };
@@ -422,7 +474,8 @@ impl Mount {
         let _gdt_guard = unsafe { self.gdt_lock.lock() };
         let mut gdt_bytes = self.read_gdt_bytes()?;
         let gd_orig = gdt::parse_descriptor(&gdt_bytes, group, &self.sb)?;
-        if u32::from(gd_orig.free_blocks_count) < count { return Ok(None); }
+        let floor = if best_effort { 1 } else { count };
+        if u32::from(gd_orig.free_blocks_count) < floor { return Ok(None); }
         let bbm_byte_off = gd_orig.block_bitmap * (self.sb.block_size as u64);
         let uninit = gdt::block_uninit(&gdt_bytes, group, &self.sb);
         let cached = self.cached_group_bitmap(bbm_byte_off);
@@ -454,7 +507,14 @@ impl Mount {
             find_contiguous_run(&bitmap, blocks, count, first_phys, Some(stripe))
         } else { None };
         let start = goal.or(aligned).or_else(|| find_contiguous_run(&bitmap, blocks, count, first_phys, None));
-        let Some(start) = start else { return Ok(None) };
+        let (start, count) = match start {
+            Some(start) => (start, count),
+            None if best_effort => match find_longest_run(&bitmap, blocks, count) {
+                Some(found) => found,
+                None => return Ok(None),
+            },
+            None => return Ok(None),
+        };
         for bit in start..start + count {
             bitmap[bit as usize >> 3] |= 1u8 << (bit & 7);
             disk_bitmap[bit as usize >> 3] |= 1u8 << (bit & 7);
@@ -706,6 +766,40 @@ fn find_contiguous_run(bitmap: &[u8], max_bits: u32, count: u32, first_phys: u64
     }
     if let Some((_, start)) = best_aligned { return Some(start); }
     best_any.map(|(_, start)| start)
+}
+
+/// Longest free run in this group, capped at `want`, for a request that no
+/// single run can satisfy.
+///
+/// The reference keeps the biggest extent it saw and uses it when nothing
+/// reaches the requested length -- "if the request isn't satisfied, any found
+/// extent larger than previous best one is better". The length asked for is a
+/// maximum; refusing the whole write because no one run reaches it reports a
+/// full filesystem while the space is merely fragmented. Taking the LARGEST
+/// available run rather than an arbitrary fraction is what keeps the resulting
+/// file from being shattered into minimum-sized extents.
+/// # C: O(max_bits)
+fn find_longest_run(bitmap: &[u8], max_bits: u32, want: u32) -> Option<(u32, u32)> {
+    if want == 0 { return None; }
+    let mut best: Option<(u32, u32)> = None;
+    let mut run_start = 0u32;
+    let mut run_len = 0u32;
+    let mut close = |start: u32, len: u32, best: &mut Option<(u32, u32)>| {
+        if len == 0 { return; }
+        let take = len.min(want);
+        if best.is_none_or(|(best_len, _)| take > best_len) { *best = Some((take, start)); }
+    };
+    for bit in 0..=max_bits {
+        if bit < max_bits && bitmap[bit as usize >> 3] & (1u8 << (bit & 7)) == 0 {
+            if run_len == 0 { run_start = bit; }
+            run_len += 1;
+            continue;
+        }
+        close(run_start, run_len, &mut best);
+        run_len = 0;
+        if best.is_some_and(|(len, _)| len == want) { break; }
+    }
+    best.map(|(len, start)| (start, len))
 }
 
 /// Fast Linux `TRY_GOAL` check: accept the exact physical goal when the
