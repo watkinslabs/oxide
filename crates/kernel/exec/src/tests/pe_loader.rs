@@ -219,7 +219,7 @@
         assert!(delete_atom >= runtime.base.as_u64() && delete_atom < runtime.base.as_u64() + runtime.bytes as u64);
         let deregister_wait = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlDeregisterWait" }).unwrap();
         assert!(deregister_wait >= runtime.base.as_u64() && deregister_wait < runtime.base.as_u64() + runtime.bytes as u64);
-        for name in [b"RtlDestroyAtomTable" as &[u8], b"RtlDestroyHeap", b"RtlDetermineDosPathNameType_U", b"RtlDosPathNameToNtPathName_U_WithStatus", b"RtlExitUserProcess", b"RtlGetProcessHeaps", b"RtlGetUserInfoHeap", b"RtlImageNtHeader", b"RtlIsNameLegalDOS8Dot3", b"RtlLockHeap", b"RtlUnlockHeap", b"RtlLookupAtomInAtomTable", b"RtlOemStringToUnicodeString", b"RtlQueryAtomInAtomTable"] {
+        for name in [b"RtlDestroyAtomTable" as &[u8], b"RtlDestroyHeap", b"RtlDetermineDosPathNameType_U", b"RtlDosPathNameToNtPathName_U_WithStatus", b"RtlExitUserProcess", b"RtlGetProcessHeaps", b"RtlGetUserInfoHeap", b"RtlImageNtHeader", b"RtlIsNameLegalDOS8Dot3", b"RtlLockHeap", b"RtlUnlockHeap", b"RtlLookupAtomInAtomTable", b"RtlOemStringToUnicodeString", b"RtlQueryAtomInAtomTable", b"RtlRegisterWait"] {
             let address = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name }).unwrap();
             assert!(address >= runtime.base.as_u64() && address < runtime.base.as_u64() + runtime.bytes as u64);
         }
