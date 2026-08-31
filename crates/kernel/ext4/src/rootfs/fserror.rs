@@ -55,7 +55,7 @@ pub(crate) fn is_inconsistency(e: &MountError) -> bool {
 /// # C: O(1) + subscribers
 pub(crate) fn report(st: &RootfsState, e: MountError) -> vfs::VfsError {
     let bad = is_inconsistency(&e);
-    #[cfg(feature = "debug-boot")]
+    #[cfg(any(feature = "debug-boot", feature = "debug-eio"))]
     if bad { log_error(&e); }
     let mapped = super::inode::regular::vfs_error_from_mount(e);
     if bad {
@@ -166,9 +166,29 @@ pub(crate) fn log_eio(op: &'static [u8], e: &MountError) {
     klog::write_raw(b"\n");
 }
 
+/// Name a writeback leg that failed with no filesystem error to report.
+///
+/// The page-resolution legs fail with nothing but a missing page, yet they
+/// abort the flush and reach userspace as the same `Eio` a real filesystem
+/// error does. Without this the log shows the errno and nothing about which
+/// leg produced it.
+/// # C: O(1)
+#[cfg(any(feature = "debug-boot", feature = "debug-eio"))]
+pub(crate) fn log_eio_leg(op: &'static [u8], leg: &'static [u8], ino: u32, idx: u64) {
+    klog::write_raw(b"[EXT4-EIO] op=");
+    klog::write_raw(op);
+    klog::write_raw(b" leg=");
+    klog::write_raw(leg);
+    klog::write_raw(b" ino=");
+    klog::write_dec_u64(ino as u64);
+    klog::write_raw(b" page=");
+    klog::write_dec_u64(idx);
+    klog::write_raw(b"\n");
+}
+
 /// Emit the diagnostic-build record without changing error delivery.
 /// # C: O(1)
-#[cfg(feature = "debug-boot")]
+#[cfg(any(feature = "debug-boot", feature = "debug-eio"))]
 fn log_error(e: &MountError) {
     klog::write_raw(b"[EXT4-ERROR] kind=");
     klog::write_raw(error_kind(e));

@@ -157,6 +157,9 @@ impl Ext4FrameStore {
                     let pa = match self.lock_cache_page(plan[next].0) {
                         Ok(pa) => pa,
                         Err(_) => {
+                            #[cfg(any(feature = "debug-boot", feature = "debug-eio"))]
+                            crate::rootfs::fserror::log_eio_leg(
+                                b"writeback", b"lock-cache-page", self.ino, plan[next].0);
                             #[cfg(feature = "debug-fillverify")]
                             {
                                 klog::write_raw(b"[WRITEBACK-ERR lock ino=");
@@ -171,7 +174,12 @@ impl Ext4FrameStore {
                     };
                     let base = match pmm::setup::frame_ptr(pa) {
                         Some(base) => base,
-                        None => { self.unlock_cache_page(pa); failed = true; break; }
+                        None => {
+                            #[cfg(any(feature = "debug-boot", feature = "debug-eio"))]
+                            crate::rootfs::fserror::log_eio_leg(
+                                b"writeback", b"frame-ptr", self.ino, plan[next].0);
+                            self.unlock_cache_page(pa); failed = true; break;
+                        }
                     };
                     // Verify the live frame while the store pin and page lock
                     // are held when the optional reclaim diagnostic is armed.
