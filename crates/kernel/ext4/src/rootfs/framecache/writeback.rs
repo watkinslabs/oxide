@@ -187,7 +187,7 @@ impl Ext4FrameStore {
                 }
                 if !cluster.is_empty() {
                     if let Err(_error) = self.st.mount.write_at(self.ino, page_start, &cluster) {
-                        #[cfg(feature = "debug-boot")]
+                        #[cfg(any(feature = "debug-boot", feature = "debug-eio"))]
                         crate::rootfs::fserror::log_eio(b"writeback", &_error);
                         #[cfg(feature = "debug-fillverify")]
                         {

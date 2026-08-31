@@ -121,7 +121,7 @@ fn act_on_error(st: &RootfsState) {
 /// is the only one whose entire observable effect is a message.
 /// Stable error-only diagnostic kind; no pathname or transient allocation.
 /// # C: O(1)
-#[cfg(any(feature = "debug-boot", test))]
+#[cfg(any(feature = "debug-boot", feature = "debug-eio", test))]
 pub(crate) fn error_kind(e: &MountError) -> &'static [u8] {
     match e {
         MountError::BlockIo => b"block-io",
@@ -157,7 +157,7 @@ pub(crate) fn error_kind(e: &MountError) -> &'static [u8] {
 /// reports the I/O error. `op` is the mapper, not the syscall: the two mappers
 /// serve the namespace and the file paths respectively.
 /// # C: O(1)
-#[cfg(feature = "debug-boot")]
+#[cfg(any(feature = "debug-boot", feature = "debug-eio"))]
 pub(crate) fn log_eio(op: &'static [u8], e: &MountError) {
     klog::write_raw(b"[EXT4-EIO] op=");
     klog::write_raw(op);

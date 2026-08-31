@@ -206,6 +206,7 @@ debug-noreclaim = ["pmm/debug-noreclaim"]  # DIAG: leak freed frames — confirm
 debug-fwm = ["pmm/debug-fwm"]  # DIAG: [FWM] pinpoint the free-while-mapped caller at as_teardown.
 debug-leak-teardown = ["pmm/debug-leak-teardown"]  # BISECT premature-free path
 debug-cow = ["pmm/debug-cow", "vmm/debug-cow"]  # runtime COW-corruption detector ([COW-CORRUPT]/[COW-LEAK]/[COW-RC]/[POISON]) — checksum RO-shared anon frames, poison freed frames, assert refcount==live-PTE
+debug-eio = ["ext4/debug-eio"]  # [EXT4-EIO] name the filesystem error behind each EIO ext4 hands a caller
 debug-fillverify = ["ext4/debug-fillverify"]  # ext4 page-cache integrity ([FILLRACE]/[FRAME-CORRUPT])
 debug-framecache-verify = ["ext4/debug-framecache-verify"]  # [FRAME-STALE-PA] B1257 hunt: verify writeback_idxs's plan-captured `pa` still has a live PMM refcount immediately before the unpinned HHDM touch
 debug-csum-origin = ["ext4/debug-csum-origin"]  # first ext4 metadata-checksum mismatch origin

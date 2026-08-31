@@ -48,7 +48,7 @@ fn namei_error_from_mount(e: crate::MountError) -> vfs::VfsError {
             | crate::MountError::UnsupportedFeature => vfs::VfsError::Einval,
         crate::MountError::Quota(e) => e,
         other => {
-            #[cfg(feature = "debug-boot")]
+            #[cfg(any(feature = "debug-boot", feature = "debug-eio"))]
             crate::rootfs::fserror::log_eio(b"namei", &other);
             let _ = other;
             vfs::VfsError::Eio

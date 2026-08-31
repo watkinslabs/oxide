@@ -29,6 +29,7 @@ fs        = { path = "../fs" }
 hosted = []
 debug-faultcost = ["pmm/debug-faultcost"]  # report each coalesced page-cache fill into the [FAULTCOST] profile
 debug-boot = []  # low-volume structural/device error source diagnostic
+debug-eio = []  # [EXT4-EIO] name the filesystem error behind each EIO handed to a caller
 debug-mount = []  # read-twice block verification (diagnose flaky block reads)
 debug-wakelat = []  # [WAEXT] write_at zero-extend span + file-size growth probe (O(n²) writeback / unbounded-trie hunt)
 debug-fillverify = []  # page-cache integrity: fill-twice compare ([FILLRACE] = block layer returned different bytes back-to-back) + fill-time checksum re-verified on every clean-page read ([FRAME-CORRUPT] = cached frame written after fill)
