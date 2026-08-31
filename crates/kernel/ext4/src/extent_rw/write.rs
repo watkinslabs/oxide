@@ -138,26 +138,46 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
             reserve_count = count;
             allocated = m.alloc_blocks_for_inode_goal(stream_ino, hint, count, flags, goal_phys);
         }
+        // An allocation request is a MAXIMUM, not a minimum. The reference's
+        // allocator returns the extent it managed to find and the caller maps
+        // that much and asks again for the rest; only finding nothing at all is
+        // out of space. Demanding one run of `count` reports a full filesystem
+        // whenever the free space is merely fragmented -- and writeback hands
+        // that refusal to a writing process as an I/O error.
+        if matches!(&allocated, Err(MountError::NoSpace)) && count > 1 {
+            normalized = false;
+            let mut shorter = count / 2;
+            loop {
+                reserve_count = shorter;
+                allocated = m.alloc_blocks_for_inode_goal(stream_ino, hint, shorter, flags, goal_phys);
+                if allocated.is_ok() || shorter == 1 { break; }
+                shorter /= 2;
+            }
+        }
         match allocated {
             Ok(blocks) => {
-                let requested = count as usize;
+                // The run's own leading blocks belong to the caller only when
+                // the request was normalized; the slice below has to use the
+                // same offset the length was measured from.
                 let prefix_len = if normalized { normalized_prefix } else { 0 };
+                // What the allocator granted, which a fragmented filesystem
+                // makes shorter than what was asked for.
+                let requested = core::cmp::min(
+                    count as usize, blocks.len().saturating_sub(prefix_len));
                 let request_end = prefix_len + requested;
-                let prefix = if normalized { blocks[..prefix_len].to_vec() } else { Vec::new() };
-                let tail = if normalized { blocks[request_end..].to_vec() } else {
-                    blocks[requested..].to_vec()
-                };
+                let prefix = blocks[..prefix_len].to_vec();
+                let tail = blocks[request_end..].to_vec();
                 // Linux keeps an inode PA tail free on disk and masks it only
                 // in the in-memory buddy bitmap.
                 for (n, &block) in prefix.iter().chain(tail.iter()).enumerate() {
                     if let Err(e) = m.free_block(block) {
-                        for &rollback in &blocks[normalized_prefix..request_end] { let _ = m.free_block(rollback); }
+                        for &rollback in &blocks[prefix_len..request_end] { let _ = m.free_block(rollback); }
                         for &rollback in prefix.iter().chain(tail.iter()).skip(n + 1) { let _ = m.free_block(rollback); }
                         return Err(e);
                     }
                 }
                 runs.push(ReservedRun { logical_start: start as u32,
-                    blocks: blocks[normalized_prefix..request_end].to_vec(), from_inode_pa: false,
+                    blocks: blocks[prefix_len..request_end].to_vec(), from_inode_pa: false,
                     from_group_pa: false,
                     group_cpu: None,
                     prefix_start: if prefix.is_empty() || group_prealloc { None } else {
@@ -173,6 +193,9 @@ fn reserve_hole_runs(m: &Mount, first: u32, last: u32, extents: &[PhysRun], ino:
                         group_owner.unwrap_or_else(crate::balloc::prealloc::locality_cpu),
                         m.group_of_block(tail[0]), count, tail);
                 }
+                // A short grant leaves the rest of this hole unmapped; come
+                // back for it rather than reporting the whole write failed.
+                if (requested as u32) < count { cursor = start + requested as u64; }
             }
             Err(e) => {
                 for run in &runs {
