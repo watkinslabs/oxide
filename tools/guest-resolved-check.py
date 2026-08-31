@@ -171,6 +171,24 @@ try:
                 diag = run(conn, buf,
                     "ps -eo pid,comm,state,wchan; for p in $(pidof dbus-broker systemd-resolved); do echo PID=$p; cat /proc/$p/wchan; done")
                 print("guest-resolved-check: wait diagnostics:\n" + diag[-5000:], flush=True)
+                # The guest's own account: who owns the bus name, and what the
+                # resolver and the broker last said. The kernel-side sweeps
+                # come up clean on these failures, so the explanation lives in
+                # userspace state, and this is the cheapest way to read it.
+                for cmd in (
+                    "busctl --system status org.freedesktop.resolve1 2>&1 | head -5",
+                    "busctl --system list --no-pager 2>&1 | grep -i resolve",
+                    "journalctl -u systemd-resolved --no-pager 2>&1 | tail -12",
+                    "journalctl -u dbus-broker --no-pager 2>&1 | tail -8",
+                    # Does journal ingestion work AT ALL right now? A tag sent
+                    # through systemd-cat exercises journald's stream listener
+                    # end to end; the failing boots show units with no entries
+                    # while journald's kmsg reader is demonstrably consuming.
+                    "echo probe-alive | systemd-cat -t oxideprobe; sleep 1; journalctl -t oxideprobe --no-pager 2>&1 | tail -2",
+                    "ls /run/systemd/journal/ 2>&1; ss -x 2>/dev/null | grep -c journal",
+                ):
+                    out2 = run(conn, buf, cmd)
+                    print(f"guest-resolved-check: [{cmd}]\n" + out2[-2500:], flush=True)
 
     query = run(conn, buf, "getent ahostsv4 one.one.one.one")
     if re.search(r"1\.1\.1\.1", query) and re.search(r"OXIDE-RC-0", query):

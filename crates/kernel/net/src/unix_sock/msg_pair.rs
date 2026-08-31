@@ -4,7 +4,6 @@ use sync::{Socket as UnixLockClass, Spinlock};
 
 use vfs;
 
-#[cfg(target_os = "oxide-kernel")]
 use super::wake_msgpair_peer_subs;
 use super::{EndCred, GcNode, GcRights, UnixEnd};
 
@@ -266,20 +265,13 @@ impl UnixMsgPair {
         let n = sent;
         drop(g);
         drop(transition);
-        #[cfg(target_os = "oxide-kernel")]
-        {
-            let waiters = match end {
-                UnixEnd::A => &self.a_to_b_waiters,
-                UnixEnd::B => &self.b_to_a_waiters,
-            };
-            waiters.wake_all();
-            wake_msgpair_peer_subs(self, end, vfs::POLL_IN);
-        }
-        #[cfg(not(target_os = "oxide-kernel"))]
-        match end {
-            UnixEnd::A => self.a_to_b_waiters.wake_all(),
-            UnixEnd::B => self.b_to_a_waiters.wake_all(),
-        }
+                // Ungated: the hosted suite must be able to prove this wake fires.
+        let waiters = match end {
+            UnixEnd::A => &self.a_to_b_waiters,
+            UnixEnd::B => &self.b_to_a_waiters,
+        };
+        waiters.wake_all();
+        wake_msgpair_peer_subs(self, end, vfs::POLL_IN);
         Ok(n)
     }
 

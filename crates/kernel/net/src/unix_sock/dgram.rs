@@ -313,16 +313,16 @@ impl UnixDgramQueue {
         self.queued_bytes.fetch_add(queued_charge, core::sync::atomic::Ordering::Relaxed);
         drop(q);
         drop(transition);
-        #[cfg(target_os = "oxide-kernel")]
+        self.waiters.wake_all();
+        // Resolve through the bound file, epoll's own route to the list; the
+        // receive queue keeps no copy of who is watching. Ungated on purpose:
+        // a wake that only compiles into the kernel target is a wake the
+        // hosted suite can never prove fires, and journald's ingestion
+        // sockets are exactly this path.
+        if let Some(subs) = self.gc_node().owner_file()
+            .and_then(|file| file.inode().poll_subscribers_arc())
         {
-            self.waiters.wake_all();
-            // Resolve through the bound file, epoll's own route to the list;
-            // the receive queue keeps no copy of who is watching.
-            if let Some(subs) = self.gc_node().owner_file()
-                .and_then(|file| file.inode().poll_subscribers_arc())
-            {
-                subs.notify_mask(vfs::POLL_IN);
-            }
+            subs.notify_mask(vfs::POLL_IN);
         }
         Ok(())
     }

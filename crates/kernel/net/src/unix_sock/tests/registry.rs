@@ -202,3 +202,58 @@ fn pathname_addr_preserves_non_utf8_display_bytes() {
 }
 
 
+
+/// A stream write must wake the peer's epoll through the peer's bound file --
+/// the single owner of "who is watching this end". This is the route a real
+/// epoll takes, and until these wakes were ungated no hosted test could prove
+/// they fire at all.
+#[test]
+fn stream_write_wakes_the_peer_through_its_bound_file() {
+    let _serial = test_guard();
+    let pair = crate::unix_sock::UnixPair::new();
+    let mut socks = alloc::vec::Vec::new();
+    let mut files = alloc::vec::Vec::new();
+    for end in [UnixEnd::A, UnixEnd::B] {
+        let sock = Arc::new(crate::sock::InetSocket::new_unix_pair_end_in(
+            crate::net_ns::current_namespace(), pair.clone(), end));
+        let inode = crate::sock::make_inet_socket_inode(sock.clone());
+        let dentry = vfs::Dentry::new(None, alloc::string::String::from("socket"), inode.clone());
+        let file = vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDWR);
+        assert!(crate::unix_sock::bind_file(&file, &sock));
+        socks.push(sock);
+        files.push(file);
+    }
+    let reader = WakeCounter::new();
+    files[1].inode().poll_subscribers_arc().expect("socket inode carries its list")
+        .subscribe_mask(1, wake_ref(&reader), vfs::POLL_IN);
+    assert_eq!(pair.write(UnixEnd::A, b"ping").unwrap(), 4);
+    assert_eq!(hits(&reader), 1, "a write must wake the peer end's watcher");
+    assert_eq!(pair.read(UnixEnd::B, 16), b"ping".to_vec());
+}
+
+/// A delivered datagram must wake the receiver's epoll the same way. This is
+/// journald's ingestion path: /dev/log and the native journal socket are
+/// datagram sockets, and a lost wake here is a boot whose units log nothing.
+#[test]
+fn dgram_delivery_wakes_the_receiver_through_its_bound_file() {
+    let _serial = test_guard();
+    let sock = Arc::new(crate::sock::InetSocket::new_unix_dgram_in(
+        crate::net_ns::current_namespace()));
+    let queue = match &*sock.kind.lock() {
+        crate::sock::SockKind::UnixDgram(q) => q.clone(),
+        _ => panic!("datagram socket must own a receive queue"),
+    };
+    let inode = crate::sock::make_inet_socket_inode(sock.clone());
+    let dentry = vfs::Dentry::new(None, alloc::string::String::from("socket"), inode.clone());
+    let file = vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDWR);
+    assert!(crate::unix_sock::bind_file(&file, &sock));
+    let reader = WakeCounter::new();
+    file.inode().poll_subscribers_arc().expect("socket inode carries its list")
+        .subscribe_mask(1, wake_ref(&reader), vfs::POLL_IN);
+    queue.try_push(crate::unix_sock::UnixDgram {
+        payload: b"<6>hello".to_vec(),
+        creds: crate::unix_sock::MsgCred::default(),
+        fds: alloc::vec::Vec::new(),
+    }).expect("deliver");
+    assert_eq!(hits(&reader), 1, "a delivered datagram must wake the receiver's watcher");
+}
