@@ -254,6 +254,12 @@ pub struct EpollData {
     /// `max_user_watches` counter on the `user_struct` captured at
     /// `epoll_create`, not on the caller of each `epoll_ctl`.
     pub owner_uid: u32,
+    /// Thread that called `epoll_create`, for diagnostics only. The shared
+    /// trace budget retires long before a late instance is created, so the
+    /// `EPADD` line that would otherwise name the owner is not there when a
+    /// stuck instance is finally reported.
+    #[cfg(feature = "debug-epoll")]
+    pub owner_pid: u32,
     /// `EPIOCSPARAMS`/`EPIOCGPARAMS` busy-poll parameters.
     pub busy_poll_usecs:  AtomicU32,
     pub busy_poll_budget: AtomicU32,
@@ -291,42 +297,25 @@ impl EpollData {
     /// They are tracked in `scratch/audit-net-sec.md`; each one wired removes a
     /// line from that list, and the fallback disappears when the list empties.
     ///
-    /// So it is deliberately restricted to interests whose ADD found NO source
-    /// (`poll_source.is_none()`). That makes it structurally incapable of
-    /// papering over a missing `notify` on a source that HAS a subscriber list
-    /// — the failure mode that hid the tty/pty/FIFO/mqueue defect — and it
-    /// costs O(N_unwired) rather than O(N_entries) per wakeup, which is zero
-    /// for the event loops (systemd, dbus-broker, gnome-shell) that watch
-    /// nothing but sockets, pipes, timerfds and signalfds.
+    /// It covers EVERY level-triggered interest, wired or not. Level-triggered
+    /// means "ready now", not "an edge arrived": the reference re-polls a level
+    /// interest and requeues it on that answer, and never treats a delivered
+    /// callback as a substitute for readiness.
+    ///
+    /// This pass used to skip interests whose ADD found a source
+    /// (`poll_source.is_some()`), so that it could not paper over a missing
+    /// `notify` on a source that has a subscriber list — the failure mode that
+    /// hid the tty/pty/FIFO/mqueue defect. That made a lost notification
+    /// permanent instead: nothing else looks at the interest again, and a task
+    /// slept on a readable fd for the rest of the boot. The diagnostic is kept
+    /// by the `EPSTUCK` sweep, which names such an interest from outside the
+    /// stuck task, where it can actually be seen.
     ///
     /// ET entries are excluded: only their own source callback creates a
     /// post-ADD edge. # C: O(N_entries) scan, O(N_unwired) polls
     pub(super) fn rescan_levels(&self) {
         let entries = self.entries.lock().clone();
         for item in entries {
-            if item.poll_source.is_some() {
-                // OBSERVE ONLY. A wired source that is ready here, on the pass
-                // immediately before this epoll parks, is a notification its
-                // subscriber list did not deliver: nothing else will look at
-                // this interest again, so the task sleeps on a readable fd.
-                // Deliberately does not queue it -- a diagnostic that repaired
-                // the state would hide the very thing it is here to name.
-                #[cfg(feature = "debug-epoll")]
-                if diag_slot() && !item.queued.load(Ordering::Acquire) {
-                    let state = item.state.lock();
-                    let lost = state.active && state.armed
-                        && state.events & EPOLLET == 0 && item.ready(state.events) != 0;
-                    drop(state);
-                    if lost {
-                        klog::write_raw(b"[EPLOST ep=");
-                        klog::write_dec_u64(self.id as u64);
-                        klog::write_raw(b" fd=");
-                        klog::write_dec_u64(item.fd as u64);
-                        klog::write_raw(b"]\n");
-                    }
-                }
-                continue;
-            }
             let state = item.state.lock();
             let queue = state.active && state.armed
                 && state.events & EPOLLET == 0 && item.ready(state.events) != 0;
@@ -334,8 +323,8 @@ impl EpollData {
             if queue {
                 #[cfg(feature = "debug-epoll")]
                 if diag_slot() {
-                    // Names an fd that is ONLY reachable through the fallback,
-                    // i.e. a source still missing its `PollSubscribers`.
+                    // Names an fd this pass had to queue, i.e. one whose
+                    // readiness no source callback had delivered.
                     klog::write_raw(b"[EPRESCAN ep="); klog::write_dec_u64(self.id as u64);
                     klog::write_raw(b" fd="); klog::write_dec_u64(item.fd as u64);
                     klog::write_raw(b"]\n");
@@ -393,6 +382,64 @@ impl EpollData {
         let ready = self.ready.lock();
         self.waiters.wake_all();
         drop(ready);
+    }
+}
+
+/// Name an epoll instance that has a task parked on it, an empty ready list,
+/// and an interest that is READY anyway.
+///
+/// This is the state a lost wakeup leaves behind, and it has to be observed
+/// from OUTSIDE the stuck task. An earlier probe checked the same condition
+/// inside `rescan_levels`, which only runs while a task is going round its wait
+/// loop -- a task parked forever never reaches it again, so that probe was
+/// structurally unable to see the very case it was written for, and its zero
+/// count was not evidence of absence. Any epoll still looping sweeps every
+/// instance, so a stuck one is named by whoever is still running.
+/// # C: O(N_epolls x N_entries), rate limited
+#[cfg(all(target_os = "oxide-kernel", feature = "debug-epoll"))]
+pub(super) fn sweep_stuck_epolls(now_ns: u64) {
+    use core::sync::atomic::AtomicU64;
+    /// One sweep a second across the machine: the state is persistent, so
+    /// catching it does not need every pass, and a per-pass walk of every
+    /// interest would itself change the timing being measured.
+    const SWEEP_INTERVAL_NS: u64 = 1_000_000_000;
+    static LAST_NS: AtomicU64 = AtomicU64::new(0);
+    let last = LAST_NS.load(Ordering::Relaxed);
+    if now_ns < last.saturating_add(SWEEP_INTERVAL_NS) { return; }
+    if LAST_NS.compare_exchange(last, now_ns, Ordering::AcqRel, Ordering::Relaxed).is_err() { return; }
+    for ep in epolls_snapshot() {
+        if !ep.waiters.has_waiters() { continue; }
+        if !ep.ready.lock().is_empty() { continue; }
+        let entries = ep.entries.lock().clone();
+        for item in entries {
+            if item.queued.load(Ordering::Acquire) { continue; }
+            let state = item.state.lock();
+            let (live, events) = (state.active && state.armed, state.events);
+            drop(state);
+            // Edge-triggered interests are SUPPOSED to sit ready and unqueued
+            // once their edge has been consumed -- only a fresh edge requeues
+            // them, exactly as `rescan_levels` treats them. Counting those read
+            // 635 hits on a boot that passed.
+            if !live || events & EPOLLET != 0 { continue; }
+            let ready = item.ready(events);
+            if ready == 0 { continue; }
+            // Report what is ready as well as that something is: an interest
+            // whose only readiness is ERR/HUP is a different claim from one
+            // whose requested mask is satisfied.
+            let requested = ready & events;
+            klog::write_raw(b"[EPSTUCK pid=");
+            klog::write_dec_u64(ep.owner_pid as u64);
+            klog::write_raw(b" ep=");
+            klog::write_dec_u64(ep.id as u64);
+            klog::write_raw(b" fd=");
+            klog::write_dec_u64(item.fd as u64);
+            klog::write_raw(b" ev=");
+            klog::write_hex_u64(events as u64);
+            klog::write_raw(b" ready=");
+            klog::write_hex_u64(ready as u64);
+            klog::write_raw(if requested != 0 { b" want-satisfied" } else { b" err-hup-only" });
+            klog::write_raw(b"]\n");
+        }
     }
 }
 
@@ -454,6 +501,8 @@ pub fn make_epoll_inode() -> InodeRef {
     let data = Arc::new(EpollData {
         id,
         owner_uid,
+        #[cfg(feature = "debug-epoll")]
+        owner_pid: sched::current().map(|c| c.tid as u32).unwrap_or(0),
         busy_poll_usecs:  AtomicU32::new(0),
         busy_poll_budget: AtomicU32::new(0),
         prefer_busy_poll: AtomicU32::new(0),
