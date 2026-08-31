@@ -435,10 +435,6 @@ pub(super) fn sweep_stuck_epolls(now_ns: u64) {
             klog::write_dec_u64(item.fd as u64);
             klog::write_raw(b" ev=");
             klog::write_hex_u64(events as u64);
-            klog::write_raw(b" ino=");
-            klog::write_hex_u64(item.file.upgrade().map(|f| f.inode().ino()).unwrap_or(0));
-            klog::write_raw(b" src=");
-            klog::write_raw(if item.poll_source.is_some() { b"wired" } else { b"none" });
             klog::write_raw(b" ready=");
             klog::write_hex_u64(ready as u64);
             klog::write_raw(if requested != 0 { b" want-satisfied" } else { b" err-hup-only" });
