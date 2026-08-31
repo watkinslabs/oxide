@@ -155,4 +155,4 @@ crates/kernel/syscalls/vdso/*.so
 
 # rustc incremental-compilation crash dumps (transient, never commit)
 rustc-ice-*.txt
-
+dist/
