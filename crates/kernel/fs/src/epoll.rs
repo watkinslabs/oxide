@@ -420,9 +420,14 @@ pub(super) fn sweep_stuck_epolls(now_ns: u64) {
             // once their edge has been consumed -- only a fresh edge requeues
             // them, exactly as `rescan_levels` treats them. Counting those read
             // 635 hits on a boot that passed.
-            if !live || events & EPOLLET != 0 { continue; }
+            if !live { continue; }
             let ready = item.ready(events);
             if ready == 0 { continue; }
+            // Edge-triggered interests sit ready-and-unqueued legitimately
+            // once their edge is consumed, so they are tagged rather than
+            // treated as level losses: only one that stays in this state
+            // across sweeps, on a consumer that always drains, is a lost edge.
+            let et = events & EPOLLET != 0;
             // Report what is ready as well as that something is: an interest
             // whose only readiness is ERR/HUP is a different claim from one
             // whose requested mask is satisfied.
@@ -443,7 +448,7 @@ pub(super) fn sweep_stuck_epolls(now_ns: u64) {
                 .map(|subs| subs.generation()).unwrap_or(0));
             klog::write_raw(b" ready=");
             klog::write_hex_u64(ready as u64);
-            klog::write_raw(if requested != 0 { b" want-satisfied" } else { b" err-hup-only" });
+            klog::write_raw(if et { b" et" } else if requested != 0 { b" want-satisfied" } else { b" err-hup-only" });
             klog::write_raw(b"]\n");
         }
     }

@@ -77,16 +77,31 @@ fn abstract_names_are_byte_identity_not_utf8_strings() {
     assert_eq!(unix_path_display(raw), b"@svc\xff".to_vec());
 }
 
+
+/// Watch `listener` the way a real epoll does: through a bound socket file's
+/// inode subscriber list, the single owner of that fact. Returns the list to
+/// subscribe test wake counters on, plus the file keeping the binding alive.
+fn watch_listener(listener: &Arc<crate::unix_sock::UnixListener>)
+    -> (Arc<vfs::PollSubscribers>, Arc<vfs::File>)
+{
+    let sock = Arc::new(crate::sock::InetSocket::new_unix());
+    *sock.kind.lock() = crate::sock::SockKind::UnixListener(listener.clone());
+    let inode = crate::sock::make_inet_socket_inode(sock.clone());
+    let dentry = vfs::Dentry::new(None, alloc::string::String::from("socket"), inode.clone());
+    let file = vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDWR);
+    assert!(crate::unix_sock::bind_file(&file, &sock));
+    let subs = file.inode().poll_subscribers_arc().expect("socket inode carries its list");
+    (subs, file)
+}
 #[test]
 fn udev_control_path_connect_wakes_accept_and_round_trips() {
     let _serial = test_guard();
     let registry = UnixRegistry::new();
     let listener = registry.bind(String::from("/run/udev/control")).unwrap();
     listener.listen(128, crate::sysctl::DEFAULT_SOMAXCONN);
-    let subs = Arc::new(vfs::PollSubscribers::new());
+    let (subs, _watch_file) = watch_listener(&listener);
     let waiter = WakeCounter::new();
     subs.subscribe(1, wake_ref(&waiter));
-    listener.register_subs(&subs);
 
     let client = registry.connect("/run/udev/control").expect("connect to udev control");
     assert_eq!(hits(&waiter), 1, "connect must wake the accepting server");
@@ -109,12 +124,11 @@ fn listener_readiness_tracks_accept_queue_only() {
     let registry = UnixRegistry::new();
     let listener = registry.bind(String::from("\0listener-poll")).unwrap();
     listener.listen(128, crate::sysctl::DEFAULT_SOMAXCONN);
-    let subs = Arc::new(vfs::PollSubscribers::new());
+    let (subs, _watch_file) = watch_listener(&listener);
     let readable = WakeCounter::new();
     let writable = WakeCounter::new();
     subs.subscribe_mask(1, wake_ref(&readable), vfs::POLL_IN);
     subs.subscribe_mask(2, wake_ref(&writable), vfs::POLL_OUT);
-    listener.register_subs(&subs);
     assert_eq!(listener.poll_mask(), 0, "empty listener is not writable or readable");
 
     let client = registry.connect("\0listener-poll").expect("queued client");

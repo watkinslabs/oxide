@@ -240,7 +240,6 @@ impl InetSocket {
         let q = crate::UnixDgramQueue::new_with_filter(filter.clone());
         let s = Self::new_in(net_namespace, filter, error, SockKind::UnixDgram(q.clone()), SocketClass::UnixDgram);
         s.family.store(AF_UNIX, core::sync::atomic::Ordering::Release);
-        q.register_subs(&s.poll_subs);
         s
     }
 

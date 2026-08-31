@@ -330,7 +330,6 @@ pub fn listen(sock: &alloc::sync::Arc<InetSocket>, backlog: i32) -> Result<(), N
                 listener
             }
         };
-        listener.register_subs(&sock.poll_subs);
         let current = sched::live::current();
         let cred = crate::PeerCred::of_current();
         let identity = current.as_ref().map(|c| c.thread_group.leader_pid());

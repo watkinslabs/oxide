@@ -13,8 +13,6 @@ pub struct UnixListener {
     state: Spinlock<UnixListenerState, UnixLockClass>,
     /// F170: per-listener sleep queue for `sys_accept`.
     pub accept_waiters: crate::sock_wait::SockWaitQueue,
-    /// The listener socket's epoll subscribers.
-    pub subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, UnixLockClass>,
     /// Bound socket owning this registry entry.  Weak prevents the registry
     /// from extending socket lifetime; its file credentials remain canonical.
     owner_socket: Spinlock<Option<alloc::sync::Weak<crate::sock::InetSocket>>, UnixLockClass>,
@@ -111,7 +109,6 @@ impl UnixListener {
                 connect_sockets: Vec::new(),
             }),
             accept_waiters: crate::sock_wait::SockWaitQueue::new(),
-            subs: Spinlock::new(None),
             owner_socket: Spinlock::new(None),
             gc: GcNode::new(),
         })
@@ -298,11 +295,6 @@ impl UnixListener {
         self.notify_subs_mask(mask);
     }
 
-    /// Register the listener socket's epoll subscribers (called at listen()).
-    /// # C: O(1)
-    pub fn register_subs(&self, subs: &Arc<vfs::PollSubscribers>) {
-        *self.subs.lock() = Some(Arc::downgrade(subs));
-    }
 
     /// Race-free accept park (Linux `prepare_to_wait`): under the `accept_q`
     /// `accept`) or arm the caller on `accept_waiters` and return `true`
@@ -356,11 +348,21 @@ impl UnixListener {
         self.notify_subs_mask(vfs::POLL_IN);
     }
 
-    /// Wake epoll waiters for a listener-owned state transition. # C: O(N_waiters)
+    /// Wake epoll waiters for a listener-owned state transition.
+    ///
+    /// The subscriber list is resolved through the listener's bound open file,
+    /// the same route `EPOLL_CTL_ADD` resolves it through, so the list
+    /// notified is by construction the one epoll subscribed to. The slot this
+    /// replaced was a second copy of that fact, registered at `listen()` --
+    /// the same mirror the connected pair kept per end, with the same failure:
+    /// stale copy, wake delivered to a list nobody watches, accepting task
+    /// asleep on a ready accept queue. No bound file means no epoll interest
+    /// can exist, and one added later re-checks readiness as it subscribes.
+    /// # C: O(N_waiters)
     fn notify_subs_mask(&self, mask: u32) {
-        if let Some(w) = self.subs.lock().as_ref() {
-            if let Some(s) = w.upgrade() {
-                s.notify_mask(mask);
+        if let Some(file) = self.gc_node().owner_file() {
+            if let Some(subs) = file.inode().poll_subscribers_arc() {
+                subs.notify_mask(mask);
             }
         }
     }

@@ -92,8 +92,6 @@ pub struct UnixDgramQueue {
     released: core::sync::atomic::AtomicBool,
     pub waiters: crate::sock_wait::SockWaitQueue,
     pub writers: crate::sock_wait::SockWaitQueue,
-    /// F181a: epoll subscribers of the owning InetSocket.
-    pub subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, UnixLockClass>,
     /// Wait queues of OTHER sockets that are connected to this
     /// one and found it full during `unix_dgram_poll`. Their `EPOLLOUT`
     /// depends on THIS queue draining, and they are subscribed to their own
@@ -142,7 +140,6 @@ impl UnixDgramQueue {
             waiters: crate::sock_wait::SockWaitQueue::new(),
             writers: crate::sock_wait::SockWaitQueue::new(),
             peer_writer_subs: Spinlock::new(Vec::new()),
-            subs: Spinlock::new(None),
             gc: GcNode::new(),
         })
     }
@@ -162,11 +159,6 @@ impl UnixDgramQueue {
         self.bound.lock().clone()
     }
 
-    /// F181a: register owning InetSocket's subscribers.
-    /// # C: O(1)
-    pub fn register_subs(&self, subs: &Arc<vfs::PollSubscribers>) {
-        *self.subs.lock() = Some(Arc::downgrade(subs));
-    }
 
     /// Store the connected datagram peer: the address it was named by and the
     /// identity of the queue that name resolved to, together.
@@ -225,9 +217,11 @@ impl UnixDgramQueue {
         #[cfg(target_os = "oxide-kernel")]
         {
             self.writers.wake_all();
-            if let Some(subs) = self.subs.lock().as_ref().and_then(|weak| weak.upgrade()) {
+            if let Some(subs) = self.gc_node().owner_file()
+                .and_then(|file| file.inode().poll_subscribers_arc())
+            {
                 subs.notify_mask(vfs::POLL_OUT | vfs::POLL_WRNORM);
-            } else { sched::live::notify_epoll_waiters(); }
+            }
         }
         #[cfg(not(target_os = "oxide-kernel"))]
         self.waiters.wake_all();
@@ -322,9 +316,13 @@ impl UnixDgramQueue {
         #[cfg(target_os = "oxide-kernel")]
         {
             self.waiters.wake_all();
-            if let Some(subs) = self.subs.lock().as_ref().and_then(|weak| weak.upgrade()) {
+            // Resolve through the bound file, epoll's own route to the list;
+            // the receive queue keeps no copy of who is watching.
+            if let Some(subs) = self.gc_node().owner_file()
+                .and_then(|file| file.inode().poll_subscribers_arc())
+            {
                 subs.notify_mask(vfs::POLL_IN);
-            } else { sched::live::notify_epoll_waiters(); }
+            }
         }
         Ok(())
     }
@@ -475,7 +473,9 @@ impl UnixDgramQueue {
     #[cfg(target_os = "oxide-kernel")]
     fn wake_writers(&self) {
         self.writers.wake_all();
-        if let Some(subs) = self.subs.lock().as_ref().and_then(|weak| weak.upgrade()) {
+        if let Some(subs) = self.gc_node().owner_file()
+            .and_then(|file| file.inode().poll_subscribers_arc())
+        {
             subs.notify_mask(vfs::POLL_OUT);
         }
         // `unix_dgram_peer_wake_relay` → `wake_up_interruptible_poll(
