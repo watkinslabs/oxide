@@ -257,3 +257,34 @@ fn dgram_delivery_wakes_the_receiver_through_its_bound_file() {
     }).expect("deliver");
     assert_eq!(hits(&reader), 1, "a delivered datagram must wake the receiver's watcher");
 }
+
+/// The full syscall-shaped flow: socket() binds the file to the UNBOUND
+/// pair's gc node, listen() switches the kind to a listener with a DIFFERENT
+/// gc node, and only the post-listen rebind makes accept wakes reach the
+/// file. The earlier listener test manufactured the listener kind directly
+/// and never crossed that switch, which is exactly where a wake resolved
+/// through a stale node goes nowhere -- the resolver's own varlink listener
+/// takes this path on every boot.
+#[test]
+fn listen_after_bind_rebinds_the_wake_route_across_the_kind_switch() {
+    let _serial = test_guard();
+    let registry = UnixRegistry::new();
+    let sock = Arc::new(crate::sock::InetSocket::new_unix());
+    let inode = crate::sock::make_inet_socket_inode(sock.clone());
+    let dentry = vfs::Dentry::new(None, alloc::string::String::from("socket"), inode.clone());
+    let file = vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDWR);
+    // socket(2): file bound while the kind is still the unbound pair.
+    assert!(crate::unix_sock::bind_file(&file, &sock));
+    // bind(2): the registry entry the listener will be reachable through.
+    let listener = registry.bind(alloc::string::String::from("/run/probe/io.test")).unwrap();
+    *sock.unix_bound.lock() = Some(listener.clone());
+    // listen(2): the kind switch, then the syscall layer's rebind.
+    crate::sock::listen(&sock, 16).expect("listen");
+    assert!(crate::unix_sock::bind_file(&file, &sock));
+    let subs = file.inode().poll_subscribers_arc().expect("socket inode carries its list");
+    let acceptable = WakeCounter::new();
+    subs.subscribe_mask(1, wake_ref(&acceptable), vfs::POLL_IN);
+    let _client = registry.connect("/run/probe/io.test").expect("connect");
+    assert_eq!(hits(&acceptable), 1,
+        "a connection must wake the accept watcher through the file bound after listen()");
+}

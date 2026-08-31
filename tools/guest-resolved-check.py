@@ -177,7 +177,11 @@ try:
                 # userspace state, and this is the cheapest way to read it.
                 for cmd in (
                     "busctl --system status org.freedesktop.resolve1 2>&1 | head -5",
-                    "busctl --system list --no-pager 2>&1 | grep -i resolve",
+                    # The WHOLE name table: resolved connects before the broker
+                    # starts, into the socket unit's backlog. If that backlog is
+                    # what gets lost, every early-connecting peer's name is
+                    # missing together, not just resolve1.
+                    "busctl --system list --no-pager --acquired 2>&1 | head -24",
                     "journalctl -u systemd-resolved --no-pager 2>&1 | tail -12",
                     "journalctl -u dbus-broker --no-pager 2>&1 | tail -8",
                     # Does journal ingestion work AT ALL right now? A tag sent
@@ -186,9 +190,36 @@ try:
                     # while journald's kmsg reader is demonstrably consuming.
                     "echo probe-alive | systemd-cat -t oxideprobe; sleep 1; journalctl -t oxideprobe --no-pager 2>&1 | tail -2",
                     "ls /run/systemd/journal/ 2>&1; ss -x 2>/dev/null | grep -c journal",
+                    # Any AF_UNIX socket holding undelivered bytes while every
+                    # task sleeps IS the lost delivery, named by socket and
+                    # owner. Recv-Q/Send-Q are columns 3 and 4.
+                    "ss -x -p 2>/dev/null | awk 'NR==1 || $3+0>0 || $4+0>0' | head -20",
+                    # The stub query is loopback UDP and the bus reconnect is
+                    # an inet-side event too; -x is blind to both.
+                    "ss -uapn 2>/dev/null | head -12",
+                    "ss -tapn 2>/dev/null | awk 'NR==1 || $2+0>0 || $3+0>0' | head -8",
+                    "journalctl --no-pager 2>&1 | tail -4; ls -la /run/log/journal/ /var/log/journal/ 2>&1 | head -8",
+                    # The discriminator: everyone else's early connection was
+                    # serviced (oomd holds :1.0), only resolve1 is absent, and
+                    # resolved's own error is hidden in a journal that persists
+                    # nothing. If a plain restart heals it, the failure is one
+                    # unretried connect() at first startup, and the hunt moves
+                    # to the connect path -- not to delivery, which is proven.
+                    "systemctl restart systemd-resolved; sleep 3; busctl --system status org.freedesktop.resolve1 2>&1 | head -3",
+                    "resolvectl query one.one.one.one 2>&1 | head -3",
                 ):
                     out2 = run(conn, buf, cmd)
                     print(f"guest-resolved-check: [{cmd}]\n" + out2[-2500:], flush=True)
+
+    # The same account on EVERY boot, passing or failing: a symptom that is
+    # also present when the resolver works is background, not the cause, and
+    # only this control separates the two.
+    for cmd in (
+        "echo probe-alive | systemd-cat -t oxideprobe; sleep 1; journalctl -t oxideprobe --no-pager 2>&1 | tail -2",
+        "busctl --system status org.freedesktop.resolve1 2>&1 | head -3",
+    ):
+        out3 = run(conn, buf, cmd)
+        print(f"guest-resolved-check: [ctl] [{cmd}]\n" + out3[-1200:], flush=True)
 
     query = run(conn, buf, "getent ahostsv4 one.one.one.one")
     if re.search(r"1\.1\.1\.1", query) and re.search(r"OXIDE-RC-0", query):
