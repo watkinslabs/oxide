@@ -3,20 +3,50 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use alloc::vec::Vec;
+use core::sync::atomic::Ordering;
 use syscall::nt::{NtCall, NtService};
 
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
+const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
 const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
 const UNICODE_STRING_BYTES: usize = 16;
+const BASE_SEARCH_PATH_ENABLE_SAFE_SEARCHMODE: u32 = 0x00001;
+const BASE_SEARCH_PATH_DISABLE_SAFE_SEARCHMODE: u32 = 0x10000;
+const BASE_SEARCH_PATH_PERMANENT: u32 = 0x08000;
+const BASE_SEARCH_PATH_ENABLE_SAFE_PERMANENT: u32 = BASE_SEARCH_PATH_ENABLE_SAFE_SEARCHMODE | BASE_SEARCH_PATH_PERMANENT;
+const SEARCH_PATH_MODE_UNSET: u32 = 0;
+const SEARCH_PATH_MODE_SAFE: u32 = 1;
+const SEARCH_PATH_MODE_PERMANENT: u32 = 2;
 
 pub fn dispatch(call: NtCall) -> Option<u64> {
     match call.service {
         NtService::RtlAcquirePebLock => Some(acquire_peb_lock()),
         NtService::RtlReleasePebLock => Some(release_peb_lock()),
+        NtService::RtlSetSearchPathMode => Some(set_search_path_mode(call.args.a0 as u32)),
         NtService::LdrGetDllDirectory => Some(get(call.args.a0)),
         NtService::LdrSetDllDirectory => Some(set(call.args.a0)),
         _ => None,
+    }
+}
+
+fn set_search_path_mode(flags: u32) -> u64 {
+    let (mode, permanent) = match flags {
+        BASE_SEARCH_PATH_ENABLE_SAFE_SEARCHMODE => (SEARCH_PATH_MODE_SAFE, false),
+        BASE_SEARCH_PATH_DISABLE_SAFE_SEARCHMODE => (SEARCH_PATH_MODE_UNSET, false),
+        BASE_SEARCH_PATH_ENABLE_SAFE_PERMANENT => (SEARCH_PATH_MODE_PERMANENT, true),
+        _ => return STATUS_INVALID_PARAMETER,
+    };
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    loop {
+        let previous = cur.thread_group.nt_search_path_mode.load(Ordering::Acquire);
+        if previous == SEARCH_PATH_MODE_PERMANENT {
+            return if permanent { STATUS_SUCCESS } else { STATUS_ACCESS_DENIED };
+        }
+        if cur.thread_group.nt_search_path_mode.compare_exchange(previous, mode, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            return STATUS_SUCCESS;
+        }
     }
 }
 

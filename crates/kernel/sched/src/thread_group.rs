@@ -3,20 +3,16 @@ use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 use sync::{Spinlock, TaskList as TaskListClass};
-
 pub mod child_acct;
 mod exec;
 pub mod group_acct;
 pub mod shared_signal;
-
 use crate::pid::PidIdentity;
 use crate::task::PosixTimer;
 use crate::Task;
-
 /// Every real internal exit status is non-negative
 /// (`crate::exit::status`), so no group death can spell this value.
 const GROUP_EXIT_UNSET: i32 = i32::MIN;
-
 /// Result of retiring one task from its thread group after context handoff.
 pub enum ExitDisposition {
     AlreadyRetired,
@@ -24,7 +20,6 @@ pub enum ExitDisposition {
     DeferredLeader,
     WaitableLeader(Arc<Task>),
 }
-
 /// Stable thread-group owner shared by all member tasks.
 pub struct ThreadGroup {
     leader: Arc<PidIdentity>,
@@ -82,6 +77,7 @@ pub struct ThreadGroup {
     pub nt_waits: Spinlock<Vec<(u64, u64, u64, u64, u32, u32)>, TaskListClass>,
     pub nt_wait_next: AtomicU64,
     pub nt_io_completion: Spinlock<Option<Arc<crate::nt_object::NtCompletionPort>>, TaskListClass>,
+    pub nt_search_path_mode: AtomicU32,
     /// Linux `signal_struct::timer_create_restore_ids`
     /// (`prctl(PR_TIMER_CREATE_RESTORE_IDS)`). While set, `timer_create(2)`
     /// reads its `timer_t __user *` OUT parameter as an IN parameter — the id
@@ -212,17 +208,14 @@ pub struct ThreadGroup {
     /// counters — the `RUSAGE_SELF` half that is not CPU time.
     group_acct: group_acct::GroupAcct,
 }
-
 struct ThreadGroupState {
     live: u32,
     pending_leader: Option<Arc<Task>>,
 }
-
 // SAFETY: the only interior-mutable field is `posix_timers`, whose every access
 // is serialized by `timers::backend`'s STATE lock — the same discipline that
 // applied when the array lived on `Task` (which is `Sync` for the same reason).
 unsafe impl Sync for ThreadGroup {}
-
 /// Hand a retiring task's reference to the deferred drainer rather than
 /// dropping it here. `finish_exit` runs on the dying task's exit path, where a
 /// drop that turned out to be the last one would run the whole teardown
@@ -234,7 +227,6 @@ unsafe impl Sync for ThreadGroup {}
 fn release_reference(task: Arc<Task>) { crate::live::zombies::reclaim::defer_release(task) }
 #[cfg(not(any(target_os = "oxide-kernel", test, feature = "hosted")))]
 fn release_reference(_task: Arc<Task>) {}
-
 impl ThreadGroup {
     /// Create a one-task group around its leader PID identity. # C: O(1)
     pub fn new(leader: Arc<PidIdentity>) -> Self {
@@ -251,6 +243,7 @@ impl ThreadGroup {
             nt_heap_lock: Spinlock::new(None),
             nt_waits: Spinlock::new(Vec::new()), nt_wait_next: AtomicU64::new(1),
             nt_io_completion: Spinlock::new(None),
+            nt_search_path_mode: AtomicU32::new(0),
             timer_create_restore_ids: AtomicBool::new(false),
             session_leader: AtomicBool::new(false),
             is_child_subreaper: AtomicBool::new(false),
@@ -273,74 +266,57 @@ impl ThreadGroup {
             group_acct: group_acct::GroupAcct::new(),
         }
     }
-
     /// Access this process's native object table. # C: O(1)
     pub fn nt_handles(&self) -> &crate::nt_object::NtHandleTable { &self.nt_handles }
-
     /// The process' `signalfd` readiness source, handed to every thread's
     /// `SignalPending` so both pending sets raise edges on one list. # C: O(1)
     pub fn signalfd_poll(&self) -> alloc::sync::Arc<vfs::PollSubscribers> {
         alloc::sync::Arc::clone(&self.signalfd_poll)
     }
-
     /// Accumulated resource use of every child this process reaped. # C: O(1)
     pub fn child_acct(&self) -> &child_acct::ChildAcct { &self.child_acct }
-
     /// This process's own fault / block-I/O / context-switch counters,
     /// covering live and already-exited threads alike. # C: O(1)
     pub fn group_acct(&self) -> &group_acct::GroupAcct { &self.group_acct }
-
     /// Linux `task_pgrp()`: the canonical PID identity naming this process
     /// group. The strong reference keeps every namespace number alive after
     /// the group leader exits. # C: O(1)
     pub fn pgrp(&self) -> Arc<PidIdentity> { Arc::clone(&self.pgrp.lock()) }
-
     /// Linux `change_pid(..., PIDTYPE_PGID, pgrp)`. # C: O(1)
     pub fn set_pgrp(&self, pgrp: Arc<PidIdentity>) { *self.pgrp.lock() = pgrp; }
-
     /// Linux `task_session()`: the canonical PID identity naming this
     /// session. # C: O(1)
     pub fn session(&self) -> Arc<PidIdentity> { Arc::clone(&self.session.lock()) }
-
     /// Linux `change_pid(..., PIDTYPE_SID, session)`. # C: O(1)
     pub fn set_session(&self, session: Arc<PidIdentity>) { *self.session.lock() = session; }
-
     /// Linux `signal_struct::leader`. # C: O(1)
     pub fn is_session_leader(&self) -> bool { self.session_leader.load(Ordering::Acquire) }
-
     /// Latch session leadership; `false` when it was already latched, which is
     /// `setsid(2)`'s EPERM. # C: O(1)
     pub fn claim_session_leader(&self) -> bool {
         !self.session_leader.swap(true, Ordering::AcqRel)
     }
-
     /// The group leader's `Task`, straight off the group's own PID identity —
     /// O(1), no registry lock and no scan. # C: O(1)
     pub fn leader_task(&self) -> Option<Arc<Task>> { self.leader.task() }
-
     /// Linux `task_tgid()`: the group's pinned pid identity, which outlives the
     /// leader `Task` and is what a peer-credential snapshot must retain to name
     /// the process after its numeric pid is recycled. # C: O(1)
     pub fn leader_pid(&self) -> Arc<PidIdentity> { self.leader.clone() }
-
     /// `prctl(PR_GET_CHILD_SUBREAPER)`. # C: O(1)
     pub fn is_child_subreaper(&self) -> bool { self.is_child_subreaper.load(Ordering::Acquire) }
-
     /// `prctl(PR_SET_CHILD_SUBREAPER, arg2)` — Linux
     /// `me->signal->is_child_subreaper = !!arg2`. # C: O(1)
     pub fn set_child_subreaper(&self, on: bool) {
         self.is_child_subreaper.store(on, Ordering::Release);
     }
-
     /// The process's controlling terminal (Linux `signal_struct::tty`).
     /// # C: O(1); # Lk: TaskList
     pub fn ctty(&self) -> Option<vfs::InodeRef> { self.ctty.lock().clone() }
-
     /// Inode number of the controlling terminal, without cloning the
     /// reference — the shape every "do I own THIS tty?" test wants.
     /// # C: O(1); # Lk: TaskList
     pub fn ctty_ino(&self) -> Option<u64> { self.ctty.lock().as_ref().map(|i| i.ino()) }
-
     /// Install or drop the process's controlling terminal. The displaced
     /// reference is released AFTER the lock, so an inode teardown never runs
     /// underneath it. # C: O(1); # Lk: TaskList
@@ -348,24 +324,20 @@ impl ThreadGroup {
         let previous = core::mem::replace(&mut *self.ctty.lock(), tty);
         drop(previous);
     }
-
     /// The foreground group saved when this session's terminal was hung up
     /// under it (Linux `signal_struct::tty_old_pgrp`), 0 when none.
     /// # C: O(1)
     pub fn tty_old_pgrp(&self) -> Option<Arc<PidIdentity>> {
         self.tty_old_pgrp.lock().as_ref().map(Arc::clone)
     }
-
     /// Record (or, with 0, forget) the saved foreground group. # C: O(1)
     pub fn set_tty_old_pgrp(&self, pgrp: Option<Arc<PidIdentity>>) {
         *self.tty_old_pgrp.lock() = pgrp;
     }
-
     /// Commit one fully initialized clone-thread member. # C: O(1)
     pub fn commit_member(&self) {
         self.state.lock().live += 1;
     }
-
     /// Try Linux `signal_struct::exec_update_lock` for writing. Landlock TSYNC
     /// restarts on contention; execve likewise retries before crossing its
     /// point of no return. The guard makes every later error path release it.
@@ -373,12 +345,10 @@ impl ThreadGroup {
     pub fn try_exec_update(&self) -> Option<crate::rwsem::RwSemWriteGuard<'_, ()>> {
         self.exec_update.try_write()
     }
-
     /// Non-blocking read side used by CLONE_THREAD publication. # C: O(1)
     pub fn try_exec_update_read(&self) -> Option<crate::rwsem::RwSemReadGuard<'_, ()>> {
         self.exec_update.try_read()
     }
-
     /// Take Linux `signal_struct::exec_update_lock` for READING
     /// (`down_read_killable`). Every caller that checks this process'
     /// credentials and then acts on the result — `pidfd_getfd`'s
@@ -395,10 +365,8 @@ impl ThreadGroup {
         // SAFETY: forwarded contract — the caller guarantees process context with no spinlock held.
         unsafe { self.exec_update.read() }
     }
-
     /// Whether exactly one live task remains in this thread group. # C: O(1)
     pub fn is_single_member(&self) -> bool { self.state.lock().live == 1 }
-
     /// Live members not yet retired by [`Self::finish_exit`]. A task inside
     /// its own `do_exit` still counts itself, so `1` there means "I am the
     /// last"; after retirement `0` is Linux's `thread_group_empty`.
@@ -424,7 +392,6 @@ impl ThreadGroup {
         if step.completed { self.stop_stopped.store(true, Ordering::Release); }
         step
     }
-
     /// A SIGCONT (or a group exit) ends the stop: the tally restarts and the
     /// `SIGNAL_STOP_STOPPED` latch drops, so the next `^Z` is a fresh group
     /// stop that reports again. # C: O(1)
@@ -432,10 +399,8 @@ impl ThreadGroup {
         self.group_stop_count.store(0, Ordering::Release);
         self.stop_stopped.store(false, Ordering::Release);
     }
-
     /// Threads of this process that still owe the group stop a stop. # C: O(1)
     pub fn group_stop_count(&self) -> u32 { self.group_stop_count.load(Ordering::Acquire) }
-
     /// Linux `wait_task_zombie`'s `(signal->flags & SIGNAL_GROUP_EXIT) ?
     /// signal->group_exit_code : ...` guard. # C: O(1)
     pub fn group_exit_status(&self) -> Option<i32> {
@@ -444,7 +409,6 @@ impl ThreadGroup {
             status           => Some(status),
         }
     }
-
     /// Linux `do_group_exit`: latch `group_exit_code` + `SIGNAL_GROUP_EXIT`,
     /// and report whether THIS caller won the latch and therefore owes
     /// `zap_other_threads`. A loser inherits the winner's status — which is
@@ -459,7 +423,6 @@ impl ThreadGroup {
             Err(winner) => crate::exit::group::arbitrate(Some(winner), requested),
         }
     }
-
     /// Linux `synchronize_group_exit`: the LAST thread of a group publishes
     /// its own status when nothing latched one first, so a plain `exit(2)` by
     /// the final thread still reaches the parent through `group_exit_code`.
@@ -481,7 +444,6 @@ impl ThreadGroup {
     pub fn force_group_exit_code(&self, status: i32) {
         self.group_exit_code.store(status, Ordering::Release);
     }
-
     /// Charge aggregate process CPU time from the per-CPU accounting tick.
     /// # C: O(1)
     /// # Ctx: timer IRQ
@@ -489,12 +451,10 @@ impl ThreadGroup {
         if user { self.user_ns.fetch_add(delta_ns, Ordering::Relaxed); }
         else { self.system_ns.fetch_add(delta_ns, Ordering::Relaxed); }
     }
-
     /// Aggregate process CPU time without walking the thread registry. # C: O(1)
     pub fn cpu_sample(&self) -> (u64, u64) {
         (self.user_ns.load(Ordering::Acquire), self.system_ns.load(Ordering::Acquire))
     }
-
     /// Charge scheduler runtime from a member leaving a CPU. Every class that
     /// charges the per-task total charges this in the same breath, so the two
     /// cannot drift.
@@ -502,7 +462,6 @@ impl ThreadGroup {
     pub fn charge_sched_runtime(&self, delta_ns: u64) {
         self.sched_runtime_ns.fetch_add(delta_ns, Ordering::Relaxed);
     }
-
     /// Process-wide scheduler runtime — what `CLOCK_PROCESS_CPUTIME_ID`
     /// samples. # C: O(1)
     pub fn sched_runtime_sample(&self) -> u64 { self.sched_runtime_ns.load(Ordering::Acquire) }
