@@ -304,7 +304,29 @@ impl EpollData {
     pub(super) fn rescan_levels(&self) {
         let entries = self.entries.lock().clone();
         for item in entries {
-            if item.poll_source.is_some() { continue; }
+            if item.poll_source.is_some() {
+                // OBSERVE ONLY. A wired source that is ready here, on the pass
+                // immediately before this epoll parks, is a notification its
+                // subscriber list did not deliver: nothing else will look at
+                // this interest again, so the task sleeps on a readable fd.
+                // Deliberately does not queue it -- a diagnostic that repaired
+                // the state would hide the very thing it is here to name.
+                #[cfg(feature = "debug-epoll")]
+                if diag_slot() && !item.queued.load(Ordering::Acquire) {
+                    let state = item.state.lock();
+                    let lost = state.active && state.armed
+                        && state.events & EPOLLET == 0 && item.ready(state.events) != 0;
+                    drop(state);
+                    if lost {
+                        klog::write_raw(b"[EPLOST ep=");
+                        klog::write_dec_u64(self.id as u64);
+                        klog::write_raw(b" fd=");
+                        klog::write_dec_u64(item.fd as u64);
+                        klog::write_raw(b"]\n");
+                    }
+                }
+                continue;
+            }
             let state = item.state.lock();
             let queue = state.active && state.armed
                 && state.events & EPOLLET == 0 && item.ready(state.events) != 0;
