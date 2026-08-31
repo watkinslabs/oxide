@@ -19,15 +19,6 @@ use super::*;
 use crate::live::runqueue::{self, Runqueue};
 use crate::task::SchedClass;
 
-/// `runqueue::GLOBALS`/`WAITERS` are process-wide statics keyed on the hosted
-/// "cpu 0" (`this_cpu()` is unconditionally 0 off-target). Serialize this
-/// module's tests so parallel `cargo test` threads can't collide installing/
-/// tearing down the same slot.
-fn test_lock() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|e| e.into_inner())
-}
-
 struct CallbackProbe(Arc<AtomicUsize>);
 impl ChildWaitCallback for CallbackProbe {
     fn wake(&self) { self.0.fetch_add(1, Ordering::Relaxed); }
@@ -35,7 +26,7 @@ impl ChildWaitCallback for CallbackProbe {
 
 #[test]
 fn child_callback_is_one_shot_and_parent_scoped() {
-    let _g = test_lock();
+    let _g = crate::tests::common::hosted_global_test_lock();
     CALLBACKS.lock().clear();
     let hit = Arc::new(AtomicUsize::new(0));
     let reg = register_child_wait(9301, Arc::new(CallbackProbe(Arc::clone(&hit))));
@@ -80,7 +71,7 @@ fn pop_to_running(parent: &Arc<Task>) {
 
 #[test]
 fn park_for_wait4_dedups_a_stale_entry_left_by_an_unrelated_wake() {
-    let _g = test_lock();
+    let _g = crate::tests::common::hosted_global_test_lock();
     WAITERS.lock().clear();
     let parent = Arc::new(Task::new(9101, "parent", SchedClass::Normal { weight: 1024 }));
     install(&parent);
@@ -112,7 +103,7 @@ fn park_for_wait4_dedups_a_stale_entry_left_by_an_unrelated_wake() {
 
 #[test]
 fn wake_wait4_parent_drops_a_stale_entry_instead_of_re_placing_a_running_task() {
-    let _g = test_lock();
+    let _g = crate::tests::common::hosted_global_test_lock();
     WAITERS.lock().clear();
     let parent = Arc::new(Task::new(9102, "parent", SchedClass::Normal { weight: 1024 }));
     install(&parent);
@@ -155,7 +146,7 @@ fn wake_wait4_parent_drops_a_stale_entry_instead_of_re_placing_a_running_task() 
 /// picks a task another CPU still owns.
 #[test]
 fn wake_wait4_parent_defers_a_parent_that_is_still_on_cpu() {
-    let _g = test_lock();
+    let _g = crate::tests::common::hosted_global_test_lock();
     WAITERS.lock().clear();
     let _ = crate::live::ttwu::wake_list_drain(0);
     let parent = Arc::new(Task::new(9103, "parent", SchedClass::Normal { weight: 1024 }));

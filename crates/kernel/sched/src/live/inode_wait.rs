@@ -71,14 +71,19 @@ mod tests {
 
     #[test]
     fn wake_prunes_an_empty_keyed_wait_list() {
-        let before = WAITERS.queue_count();
-        WAITERS.prepare((EMPTY_KEY, false));
-        wake(EMPTY_KEY);
-        assert_eq!(WAITERS.queue_count(), before);
+        let _g = crate::tests::common::hosted_global_test_lock();
+        // Other hosted tests use this process-global queue map concurrently;
+        // assert the key's lifecycle rather than a racy whole-map count.
+        let key = EMPTY_KEY - 0x1000;
+        assert!(!WAITERS.has_queue((key, false)));
+        WAITERS.prepare((key, false));
+        wake(key);
+        assert!(!WAITERS.has_queue((key, false)));
     }
 
     #[test]
     fn file_lock_park_publishes_interruptible_and_admits_a_fake_freezer_wake() {
+        let _g = crate::tests::common::hosted_global_test_lock();
         const KEY: usize = usize::MAX - 1;
         let task = Arc::new(Task::new(0x72f1, "file-lock-wait",
             SchedClass::Normal { weight: 1024 }));

@@ -78,6 +78,10 @@ impl<K: Ord + Copy> KeyedWaitQueues<K> {
     #[cfg(test)]
     pub fn queue_count(&self) -> usize { self.queues.lock().len() }
 
+    /// Whether a queue for this key is materialized. # C: O(log N)
+    #[cfg(test)]
+    pub fn has_queue(&self, key: K) -> bool { self.queues.lock().contains_key(&key) }
+
     fn prune(&self, key: K, queue: &Arc<WaitList>) {
         // Retire empty one-shot queues.  Holding the map lock makes removal
         // atomic with a new registrar selecting its queue; that registrar's

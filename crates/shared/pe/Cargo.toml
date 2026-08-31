@@ -1,0 +1,18 @@
+[package]
+name = "pe"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+hosted = []
+
+[dev-dependencies]
+proptest = "1"
+
+[lints]
+workspace = true

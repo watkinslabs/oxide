@@ -14,6 +14,7 @@ extern crate alloc;
 extern crate std;
 
 mod membarrier;
+mod pe_exec;
 mod affinity_abi;
 mod getdents_abi;
 mod net_errno;
@@ -25,6 +26,58 @@ pub mod netlink_getsockopt_policy;
 pub mod mmsg_batch;
 // The one owner of "which message ABI does this call speak" plus both shapes.
 pub mod msg_layout;
+pub mod nt_dispatch;
+pub(crate) mod nt_file_policy;
+pub(crate) mod nt_file_lock_policy;
+mod nt_path;
+mod nt_path_type;
+mod nt_image;
+mod nt_dos83;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_exec;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_file;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_file_lock;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_duplicate;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_timer;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_completion;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_signal_wait;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_token;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_heap;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_loader_dir;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_atom;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_power;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_window;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_unwind;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_rtl;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_critical;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_printf;
+#[path = "nt_security.rs"]
+mod nt_security;
+#[path = "nt_time.rs"]
+mod nt_time;
+mod nt_threadpool;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_object_query;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_sync;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_mutant;
 pub mod arch_prctl_abi;
 // `modify_ldt(2)` decision core: descriptor packing, `user_desc` decode, the
 // sub-function table and the write ladder. Ungated because the slot file is
@@ -274,13 +327,11 @@ pub mod tkill_common;
 // the dispatch selection is unit-tested without a live task.
 #[cfg(any(target_os = "oxide-kernel", test))]
 #[path = "219_restart_syscall.rs"] pub mod s219_restart_syscall;
-
 // madvise(2): compile its pure VMA/advice engine hosted so the canonical
 // PAGEOUT dispatch tests do not exist only as path-included phantom coverage.
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 #[path = "028_madvise.rs"]
 mod s028_madvise;
-
 // memfd_create (319): the `sanitize_flags` EINVAL/EACCES ladder plus the seal
 // word / inode mode `memfd_alloc_file` derives. execveat (322): the AT_* flag
 // mask, the empty-path ENOENT rule, the dirfd-base decision and the `may_open`
@@ -305,19 +356,15 @@ pub mod deleg_break;
 #[cfg(target_os = "oxide-kernel")]
 mod fcntl_lease;
 pub mod execveat_at;
-
 #[cfg(target_os = "oxide-kernel")]
 include!("kernel_body.rs");
-
 #[cfg(any(target_os = "oxide-kernel", test))]
 mod tcp_info;
-
 // `TCP_ZEROCOPY_RECEIVE`'s receive window. The window object and the socket
 // `mmap(2)` admission carry no target gate so their tests compile hosted; only
 // the option's copy-in/copy-out shim under it is kernel-only.
 #[cfg(any(target_os = "oxide-kernel", test))]
 pub mod tcp_zerocopy;
-
 // Linux `struct stat` encoder: the byte offsets and the signed `st_*time` /
 // unsigned `st_*time_nsec` split are the whole observable contract, so it
 // compiles hosted too. Declared here rather than in `kernel_body.rs` because a
@@ -325,7 +372,6 @@ pub mod tcp_zerocopy;
 // exactly what happened to its two `write_new_stat_*_bytes` helpers.
 #[cfg(any(target_os = "oxide-kernel", test))]
 mod stat_common;
-
 // io_uring(2) 425/426/427: the `struct io_uring_params` wire form, the setup
 // flag/entries ladder, the ring-region geometry and the register-opcode
 // ladder. The three slot files AND `io_uring.rs` are kernel-gated, so every

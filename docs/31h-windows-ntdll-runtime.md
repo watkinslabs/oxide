@@ -1,0 +1,45 @@
+# Windows NTDLL runtime boundary
+
+FROZEN 2026-08-31. Dep:`01`,`02`,`31a`,`31b`,`31d`,`31e`,`52`,`53`. Provides: PE import binding contract and the first NTDLL-compatible runtime seam.
+
+## 1 Contract
+
+- PE import descriptors are parsed before an NT process becomes visible.
+- Each import thunk is either a validated symbol name plus hint or a validated ordinal.
+- DLL lookup is owned by the NT runtime provider; the kernel does not search Linux library paths.
+- Import address table writes target only writable image pages and occur before the PE entry point runs.
+- Missing DLLs or symbols fail PE commit with a native failure; unresolved calls never become null callable pointers.
+- The Linux ELF loader has no dependency on the NT runtime provider or import table.
+
+## 2 Runtime provider
+
+| Responsibility | Owner |
+|---|---|
+| PE descriptor/thunk validation | `shared/pe` |
+| image relocation and writable IAT update | `exec::pe_loader` |
+| DLL search policy and module lifetime | NT userspace runtime |
+| bootstrap NTDLL syscall stubs for native NT services | `exec::pe_loader` |
+| full NTDLL API surface and Win32-facing runtime | NT userspace runtime |
+| native service implementation | NT syscall adapter |
+
+## 3 Entry state
+
+- PEB/TEB construction precedes imported DLL initialization.
+- Runtime initialization receives the mapped image base, PEB, TEB, and NT service entry selector.
+- The application entry point runs only after all required imports are resolved.
+
+## 4 Tests
+
+- malformed import descriptors, thunk overflows, unterminated lookup tables, and invalid name RVAs fail without indexing outside the image;
+- name and ordinal thunks preserve their exact values;
+- loaded module export tables resolve name and ordinal imports to base-plus-RVA addresses, with forwarders left for runtime policy;
+- the native NTDLL page owns the bootstrap module in the production catalog; a
+  Notepad graph that requires an unimplemented NTDLL export fails transactionally
+  instead of silently mapping Wine's NTDLL as a substitute;
+- the first x86-64 unary NTDLL stub preserves Windows nonvolatile `RDI`, moves `RCX` into the native first-argument register, and emits the tagged NT selector;
+- the six-argument stub translates `RCX,RDX,R8,R9,[RSP+28h],[RSP+30h]` to the native six-register order while preserving Windows nonvolatile registers;
+- a validated module set is mapped as one transaction and rolls back every prior image if a later module cannot bind;
+- module bases are reserved before binding, so inter-DLL imports resolve against actual ASLR-selected bases rather than preferred-base guesses;
+- runtime-owned module blobs provide the explicit DLL search result; the kernel receives copied bytes and never derives a search path from Linux filesystem names;
+- a missing runtime binding prevents PE commit;
+- Linux ELF process construction remains unchanged when no PE input is present.

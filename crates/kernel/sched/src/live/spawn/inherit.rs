@@ -19,7 +19,7 @@ use crate::Task;
 /// is the sole writer; `parent` is the running task on this CPU, whose fields
 /// are single-mutator per `13§5`.
 /// # C: O(N_seccomp_filters + N_landlock_rules)
-pub(super) fn inherit_from_parent(task: &mut Task) {
+pub(crate) fn inherit_from_parent(task: &mut Task) {
     let Some(parent) = crate::live::current() else { return };
     // SAFETY: parent is the running task on this CPU (single-mutator
     // invariant per `13§5`); `task` is local and not yet scheduled.

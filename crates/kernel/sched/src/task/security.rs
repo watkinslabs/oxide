@@ -240,6 +240,9 @@ pub struct TaskSecurity {
     /// Stored per-task; `personality()` returns the previous value and
     /// updates atomically when arg != 0xFFFFFFFF.
     pub personality: AtomicU32,
+    /// Native Windows/NT execution personality. Separate from Linux's
+    /// `personality(2)` word so Linux ABI flags cannot select NT routing.
+    pub nt_personality: AtomicBool,
 
 
     /// Owned network namespace membership. `None` after task exit releases

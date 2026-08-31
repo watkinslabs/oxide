@@ -5,6 +5,7 @@ use std::vec::Vec;
 /// Hosted workers must not borrow an interrupt context from another OS thread.
 #[test]
 fn hosted_threads_do_not_alias_preempt_context_after_cpu_capacity() {
+    let _g = crate::tests::common::hosted_global_test_lock();
     const WORKERS: usize = cpu::MAX_CPUS * 2;
     let entered = Arc::new(Barrier::new(WORKERS + 1));
     let release = Arc::new(Barrier::new(WORKERS + 1));
@@ -36,6 +37,7 @@ fn hosted_threads_do_not_alias_preempt_context_after_cpu_capacity() {
 /// forever with interrupts masked — no tick, no wakeup, no progress.
 #[test]
 fn preemptible_requires_zero_count_and_unmasked_interrupts() {
+    let _g = crate::tests::common::hosted_global_test_lock();
     assert!(preemptible(0, false), "count 0, IRQs on = the one schedule point");
     assert!(!preemptible(0, true), "IRQs masked is never preemptible");
     assert!(!preemptible(1, false), "a held preempt count is never preemptible");
@@ -56,6 +58,7 @@ fn preemptible_requires_zero_count_and_unmasked_interrupts() {
 /// reschedule in this file consults — must say no.
 #[test]
 fn a_reschedule_cannot_be_taken_while_a_spinlock_is_held() {
+    let _g = crate::tests::common::hosted_global_test_lock();
     crate::preempt::install_spinlock_gate();
     let base = preempt_count();
     assert!(preemptible(base, false), "test must start at a schedule point");
@@ -76,6 +79,7 @@ fn a_reschedule_cannot_be_taken_while_a_spinlock_is_held() {
 /// reschedule reached from inside the section.
 #[test]
 fn irqsave_and_rwlock_sections_are_equally_unpreemptible() {
+    let _g = crate::tests::common::hosted_global_test_lock();
     crate::preempt::install_spinlock_gate();
     let base = preempt_count();
 
@@ -99,6 +103,7 @@ fn irqsave_and_rwlock_sections_are_equally_unpreemptible() {
 /// one releases, so the section is unpreemptible until the LAST release.
 #[test]
 fn nested_spinlock_sections_stay_unpreemptible_until_the_outermost_release() {
+    let _g = crate::tests::common::hosted_global_test_lock();
     crate::preempt::install_spinlock_gate();
     let base = preempt_count();
     let outer: sync::Spinlock<u32, sync::Buddy> = sync::Spinlock::new(0);
@@ -120,6 +125,8 @@ fn nested_spinlock_sections_stay_unpreemptible_until_the_outermost_release() {
 /// the contract; this pins it.
 #[test]
 fn a_refused_preempt_check_leaves_need_resched_pending() {
+    let _g = crate::tests::common::hosted_global_test_lock();
+    crate::preempt::_test_reset();
     set_need_resched();
     // The gate says no; the flag must still be there for the next legal point.
     assert!(!preemptible(0, true));
@@ -133,6 +140,8 @@ fn a_refused_preempt_check_leaves_need_resched_pending() {
 /// IRQ/preemption nesting to inherit.
 #[test]
 fn new_task_has_no_saved_preempt_count() {
+    let _g = crate::tests::common::hosted_global_test_lock();
+    crate::preempt::_test_reset();
     let fresh = crate::Task::new(4242, "fresh", crate::SchedClass::Normal { weight: 1024 });
     let _ = fresh;
     assert_eq!(crate::preempt::preempt_count(), 0,
@@ -146,6 +155,8 @@ fn new_task_has_no_saved_preempt_count() {
 /// lock holder lets an allocation park while another CPU spins on its lock.
 #[test]
 fn in_atomic_reports_a_held_spinlock() {
+    let _g = crate::tests::common::hosted_global_test_lock();
+    crate::preempt::_test_reset();
     crate::preempt::install_spinlock_gate();
     assert!(!crate::preempt::in_atomic(), "test must start outside any atomic section");
 

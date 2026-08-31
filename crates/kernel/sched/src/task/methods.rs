@@ -11,3 +11,4 @@ pub(super) use diagnostics::{TASK_STACK_GUARD, TASK_STACK_GUARD_BYTES,
 mod lifecycle;
 mod state;
 mod accounting;
+mod personality;

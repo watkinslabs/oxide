@@ -991,6 +991,8 @@ dependencies = [
  "ext4",
  "hal",
  "klog",
+ "pe",
+ "proptest",
  "syscall",
  "uaccess",
  "vfs",
@@ -2028,6 +2030,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "pe"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
 name = "pidfd"
 version = "0.1.0"
 dependencies = [
@@ -2769,6 +2778,7 @@ dependencies = [
  "ntfs3",
  "overlayfs",
  "pci",
+ "pe",
  "pidfd",
  "pmm",
  "power",

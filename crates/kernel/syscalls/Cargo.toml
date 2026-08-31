@@ -31,6 +31,7 @@ boot-info = { path = "../../shared/boot-info" }
 cpu       = { path = "../cpu" }
 devfs     = { path = "../devfs" }
 elf-load  = { path = "../exec" }
+pe = { path = "../../shared/pe" }
 arch-irq  = { path = "../arch-irq" }
 ipc       = { path = "../ipc" }
 elf     = { path = "../../shared/elf" }

@@ -1,0 +1,287 @@
+use alloc::{string::String, vec, vec::Vec};
+use hal::UserVirtAddr;
+use pe::Error;
+use vmm::{AddressSpace, MmapPlacement, VmaBacking, VmaFlags, VmaProt};
+
+pub const X64_SHADOW_SPACE: u64 = 32;
+const PAGE: usize = 4096;
+const PEB_OFF: usize = 0x000;
+const TEB_OFF: usize = 0x100;
+const TLS_OFF: usize = 0x180;
+const PARAM_OFF: usize = 0x200;
+const LDR_OFF: usize = 0x300;
+const MOD_OFF: usize = 0x500;
+const MOD_STRIDE: usize = 0x70;
+const MAX_MODULES: usize = 64;
+const ENV_OFF: usize = 0x1000;
+const STR_OFF: usize = 0x800;
+const BLOCK_BYTES: usize = 0x4000;
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct NtProcessEnvironment {
+    pub base: UserVirtAddr,
+    pub peb: UserVirtAddr,
+    pub teb: UserVirtAddr,
+    pub process_parameters: UserVirtAddr,
+    pub loader_data: UserVirtAddr,
+    pub environment: UserVirtAddr,
+    pub tls: UserVirtAddr,
+    pub bytes: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EnvironmentInput<'a> {
+    pub image_base: u64,
+    pub image_size: u32,
+    pub image_path: &'a str,
+    pub command_line: &'a str,
+    pub environment: &'a [(&'a str, &'a str)],
+    pub process_id: u32,
+    pub thread_id: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NtModuleInput<'a> {
+    pub base: u64,
+    pub entry: u64,
+    pub size: u32,
+    pub full_name: &'a str,
+    pub base_name: &'a str,
+}
+
+/// Build and map the initial PEB/TEB/process-parameters block.
+/// # C: O(image_path + command_line + environment)
+pub fn build(input: &EnvironmentInput<'_>, as_: &AddressSpace) -> Result<NtProcessEnvironment, Error> {
+    let base_name = input.image_path.rsplit(['\\', '/']).next().unwrap_or(input.image_path);
+    let module = NtModuleInput { base: input.image_base, entry: input.image_base, size: input.image_size, full_name: input.image_path, base_name };
+    build_with_modules(input, core::slice::from_ref(&module), as_)
+}
+
+/// Allocate the first page of a thread-local NT environment for a thread
+/// created after process exec. The PEB remains process-owned; this page is
+/// thread-owned and carries the TEB self pointer, IDs, PEB pointer, and TLS.
+/// # C: O(1)
+pub fn build_thread_teb(process_id: u32, thread_id: u32, peb: u64, as_: &AddressSpace) -> Result<UserVirtAddr, Error> {
+    let reservation = as_.mmap(None, PAGE, VmaProt::READ | VmaProt::WRITE,
+        VmaFlags::PRIVATE, VmaBacking::Anonymous, false).map_err(|_| Error::Einval)?;
+    let base = reservation.as_u64();
+    let mut teb = vec![0u8; PAGE];
+    put_u64(&mut teb, 0x30, base);
+    put_u64(&mut teb, 0x60, peb);
+    put_u32(&mut teb, 0x40, process_id);
+    put_u32(&mut teb, 0x48, thread_id);
+    put_u64(&mut teb, 0x58, base + 0x180);
+    as_.munmap(reservation, PAGE).map_err(|_| Error::Einval)?;
+    let data = as_.stash_bytes(teb.into_boxed_slice());
+    if as_.mmap_with_may_at(MmapPlacement::FixedNoReplace(reservation), PAGE,
+        VmaProt::READ | VmaProt::WRITE, VmaProt::READ | VmaProt::WRITE,
+        VmaFlags::PRIVATE, VmaBacking::KernelBytes { data, off: 0 }).is_err() {
+        let _ = as_.munmap(reservation, PAGE);
+        return Err(Error::Einval);
+    }
+    Ok(reservation)
+}
+
+/// Build the initial process environment and publish the supplied loader list.
+/// # C: O(image_path + command_line + environment + N_modules)
+pub fn build_with_modules(input: &EnvironmentInput<'_>, modules: &[NtModuleInput<'_>], as_: &AddressSpace) -> Result<NtProcessEnvironment, Error> {
+    if modules.is_empty() || modules.len() > MAX_MODULES { return Err(Error::Einval); }
+    let image_path = utf16(input.image_path)?;
+    let command_line = utf16(input.command_line)?;
+    let mut env = Vec::new();
+    for &(name, value) in input.environment {
+        if name.contains('\0') || value.contains('\0') { return Err(Error::Einval); }
+        env.extend(utf16(&(String::from(name) + "=" + value))?);
+    }
+    env.push(0);
+    let mut strings = Vec::new();
+    strings.extend_from_slice(&image_path);
+    let image_path_off = STR_OFF;
+    let command_off = STR_OFF + strings.len() * 2;
+    strings.extend_from_slice(&command_line);
+    let mut module_offsets = Vec::new();
+    let mut module_text_off = command_off + command_line.len() * 2;
+    for module in modules {
+        let full = utf16(module.full_name)?;
+        let base = utf16(module.base_name)?;
+        module_offsets.push((module_text_off, full.len(), module_text_off + full.len() * 2, base.len()));
+        module_text_off = module_text_off.checked_add((full.len() + base.len()) * 2).ok_or(Error::Einval)?;
+    }
+    let env_off = ENV_OFF;
+    let total = env_off.checked_add(env.len() * 2).ok_or(Error::Einval)?;
+    if total > BLOCK_BYTES || module_text_off > ENV_OFF { return Err(Error::Einval); }
+    let reservation = as_.mmap(None, BLOCK_BYTES, VmaProt::READ | VmaProt::WRITE,
+        VmaFlags::PRIVATE, VmaBacking::Anonymous, false).map_err(|_| Error::Einval)?;
+    let base = reservation.as_u64();
+    let mut block = vec![0u8; BLOCK_BYTES];
+    put_u64(&mut block, PEB_OFF + 0x10, input.image_base);
+    put_u64(&mut block, PEB_OFF + 0x18, base + LDR_OFF as u64);
+    put_u64(&mut block, PEB_OFF + 0x20, base + PARAM_OFF as u64);
+    put_u64(&mut block, PEB_OFF + 0x30, 0);
+    put_u64(&mut block, PEB_OFF + 0x78, 0);
+    put_u64(&mut block, TEB_OFF + 0x30, base + TEB_OFF as u64);
+    put_u64(&mut block, TEB_OFF + 0x60, base + PEB_OFF as u64);
+    put_u32(&mut block, TEB_OFF + 0x40, input.process_id);
+    put_u32(&mut block, TEB_OFF + 0x48, input.thread_id);
+    put_u64(&mut block, TEB_OFF + 0x58, base + TLS_OFF as u64);
+    put_unicode(&mut block, PARAM_OFF + 0x60, &image_path, base + image_path_off as u64);
+    put_unicode(&mut block, PARAM_OFF + 0x70, &command_line, base + command_off as u64);
+    put_u64(&mut block, PARAM_OFF + 0x80, base + env_off as u64);
+    put_u32(&mut block, LDR_OFF, 0x58);
+    block[LDR_OFF + 4] = 1;
+    for (head, link) in [(0x10usize, 0usize), (0x20, 0x10), (0x30, 0x20)] {
+        let first = base + (MOD_OFF + link) as u64;
+        let last = base + (MOD_OFF + (modules.len() - 1) * MOD_STRIDE + link) as u64;
+        put_u64(&mut block, LDR_OFF + head, first); put_u64(&mut block, LDR_OFF + head + 8, last);
+        for index in 0..modules.len() {
+            let entry = MOD_OFF + index * MOD_STRIDE + link;
+            let next = if index + 1 < modules.len() { base + (entry + MOD_STRIDE) as u64 } else { base + (LDR_OFF + head) as u64 };
+            let prev = if index > 0 { base + (entry - MOD_STRIDE) as u64 } else { base + (LDR_OFF + head + 8) as u64 };
+            put_u64(&mut block, entry, next); put_u64(&mut block, entry + 8, prev);
+        }
+    }
+    for (index, module) in modules.iter().enumerate() {
+        let entry = MOD_OFF + index * MOD_STRIDE;
+        put_u64(&mut block, entry + 0x30, module.base);
+        put_u64(&mut block, entry + 0x38, module.entry);
+        put_u32(&mut block, entry + 0x40, module.size);
+        let (full_off, full_len, base_off, base_len) = module_offsets[index];
+        let full = utf16(module.full_name)?; let name = utf16(module.base_name)?;
+        put_unicode(&mut block, entry + 0x48, &full, base + full_off as u64);
+        put_unicode(&mut block, entry + 0x58, &name, base + base_off as u64);
+        copy_u16(&mut block, full_off, &full); copy_u16(&mut block, base_off, &name);
+        let _ = (full_len, base_len);
+    }
+    copy_u16(&mut block, image_path_off, &image_path);
+    copy_u16(&mut block, command_off, &command_line);
+    copy_u16(&mut block, env_off, &env);
+    as_.munmap(reservation, BLOCK_BYTES).map_err(|_| Error::Einval)?;
+    let data = as_.stash_bytes(block.into_boxed_slice());
+    if as_.mmap_with_may_at(MmapPlacement::FixedNoReplace(reservation), BLOCK_BYTES,
+        VmaProt::READ | VmaProt::WRITE, VmaProt::READ | VmaProt::WRITE,
+        VmaFlags::PRIVATE, VmaBacking::KernelBytes { data, off: 0 }).is_err() {
+        let _ = as_.munmap(reservation, BLOCK_BYTES); return Err(Error::Einval);
+    }
+    Ok(NtProcessEnvironment { base: reservation, peb: addr(base, PEB_OFF)?, teb: addr(base, TEB_OFF)?, process_parameters: addr(base, PARAM_OFF)?, loader_data: addr(base, LDR_OFF)?, environment: addr(base, ENV_OFF)?, tls: addr(base, TLS_OFF)?, bytes: BLOCK_BYTES })
+}
+
+fn utf16(s: &str) -> Result<Vec<u16>, Error> {
+    if s.contains('\0') { return Err(Error::Einval); }
+    let mut v: Vec<u16> = s.encode_utf16().collect(); v.push(0); Ok(v)
+}
+fn addr(base: u64, off: usize) -> Result<UserVirtAddr, Error> { UserVirtAddr::new(base.checked_add(off as u64).ok_or(Error::Einval)?).ok_or(Error::Einval) }
+fn put_u32(b: &mut [u8], o: usize, v: u32) { b[o..o + 4].copy_from_slice(&v.to_le_bytes()); }
+fn put_u16(b: &mut [u8], o: usize, v: u16) { b[o..o + 2].copy_from_slice(&v.to_le_bytes()); }
+fn put_u64(b: &mut [u8], o: usize, v: u64) { b[o..o + 8].copy_from_slice(&v.to_le_bytes()); }
+fn put_unicode(b: &mut [u8], o: usize, v: &[u16], ptr: u64) { let len = (v.len() - 1).saturating_mul(2) as u16; let max = v.len().saturating_mul(2) as u16; put_u16(b, o, len); put_u16(b, o + 2, max); put_u64(b, o + 8, ptr); }
+fn copy_u16(b: &mut [u8], o: usize, v: &[u16]) { for (i, x) in v.iter().enumerate() { b[o + i * 2..o + i * 2 + 2].copy_from_slice(&x.to_le_bytes()); } }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn arbitrary_ascii_process_strings_map_or_reject_without_partial_state(
+            path in "[A-Za-z0-9_./\\\\]{0,128}", command in "[A-Za-z0-9 _.-]{0,128}") {
+            let as_ = AddressSpace::new(0x40_000).unwrap();
+            let result = build(&EnvironmentInput { image_base: 0x1400_0000, image_size: 0x5000,
+                image_path: &path, command_line: &command, environment: &[("TEMP", "C:\\Temp")],
+                process_id: 1, thread_id: 1 }, &as_);
+            if let Ok(env) = result {
+                prop_assert!(env.base.as_u64() % PAGE as u64 == 0);
+                prop_assert!(env.peb.as_u64() >= env.base.as_u64());
+                prop_assert!(env.tls.as_u64() < env.base.as_u64() + env.bytes as u64);
+            } else {
+                prop_assert_eq!(as_.vma_count(), 0);
+            }
+        }
+    }
+    #[test]
+    fn maps_self_consistent_nt_environment() {
+        let as_ = AddressSpace::new(0x10_000).unwrap();
+        let e = build(&EnvironmentInput { image_base: 0x1400_0000, image_size: 0x5000, image_path: "C:\\notepad.exe", command_line: "notepad.exe file.txt", environment: &[("TEMP", "C:\\Temp"), ("PATH", "C:\\Windows")], process_id: 7, thread_id: 8 }, &as_).unwrap();
+        assert!(e.peb.as_u64() >= e.base.as_u64() && e.teb.as_u64() < e.base.as_u64() + e.bytes as u64);
+        assert_eq!(e.base.as_u64() % PAGE as u64, 0);
+    }
+
+    #[test]
+    fn encoded_x64_fields_and_utf16_buffers_match_the_published_pointers() {
+        let as_ = AddressSpace::new(0x20_000).unwrap();
+        let e = build(&EnvironmentInput { image_base: 0x1400_0000, image_size: 0x5000,
+            image_path: "C:\\Windows\\notepad.exe", command_line: "notepad.exe a.txt",
+            environment: &[("TEMP", "C:\\Temp")], process_id: 11, thread_id: 12 }, &as_).unwrap();
+        let vma = as_.find_vma(e.base).unwrap();
+        let (bytes, off) = match vma.backing { VmaBacking::KernelBytes { data, off } => (data, off), _ => panic!("environment must be immutable kernel bytes") };
+        let read64 = |o: usize| u64::from_le_bytes(bytes[o..o + 8].try_into().unwrap());
+        let read16 = |o: usize| u16::from_le_bytes(bytes[o..o + 2].try_into().unwrap());
+        let base = e.base.as_u64() as usize;
+        assert_eq!(read64(0x10), 0x1400_0000);
+        assert_eq!(read64(0x18), base as u64 + LDR_OFF as u64);
+        assert_eq!(read64(0x20), base as u64 + PARAM_OFF as u64);
+        assert_eq!(read64(TEB_OFF + 0x30), base as u64 + TEB_OFF as u64);
+        assert_eq!(read64(TEB_OFF + 0x60), base as u64);
+        assert_eq!(read64(TEB_OFF + 0x58), base as u64 + TLS_OFF as u64);
+        assert_eq!(read16(PARAM_OFF + 0x60), ("C:\\Windows\\notepad.exe".encode_utf16().count() * 2) as u16);
+        assert_eq!(read16(PARAM_OFF + 0x70), ("notepad.exe a.txt".encode_utf16().count() * 2) as u16);
+        assert_eq!(read64(PARAM_OFF + 0x80), base as u64 + ENV_OFF as u64);
+        assert_eq!(off, 0);
+    }
+
+    #[test]
+    fn loader_lists_publish_the_executable_and_ntdll_as_circular_entries() {
+        let as_ = AddressSpace::new(0x20_000).unwrap();
+        let e = build_with_modules(&EnvironmentInput { image_base: 0x1400_0000, image_size: 0x5000,
+            image_path: "C:\\Windows\\notepad.exe", command_line: "notepad.exe", environment: &[], process_id: 1, thread_id: 1 }, &[
+            NtModuleInput { base: 0x1400_0000, entry: 0x1400_1010, size: 0x5000, full_name: "C:\\Windows\\notepad.exe", base_name: "notepad.exe" },
+            NtModuleInput { base: 0x7000_0000, entry: 0, size: 0x9000, full_name: "C:\\Windows\\System32\\ntdll.dll", base_name: "ntdll.dll" },
+        ], &as_).unwrap();
+        let vma = as_.find_vma(e.base).unwrap();
+        let data = match vma.backing { VmaBacking::KernelBytes { data, .. } => data, _ => panic!("environment must be kernel-backed") };
+        let read64 = |offset: usize| u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
+        let first = e.base.as_u64() + MOD_OFF as u64;
+        let second = first + MOD_STRIDE as u64;
+        assert_eq!(read64(LDR_OFF + 0x10), first);
+        assert_eq!(read64(LDR_OFF + 0x18), second);
+        assert_eq!(read64(MOD_OFF + 0x30), 0x1400_0000);
+        assert_eq!(read64(MOD_OFF + MOD_STRIDE + 0x30), 0x7000_0000);
+        assert_eq!(read64(MOD_OFF), second);
+        assert_eq!(read64(MOD_OFF + 8), e.base.as_u64() + LDR_OFF as u64 + 0x18);
+        assert_eq!(read64(MOD_OFF + MOD_STRIDE), e.base.as_u64() + LDR_OFF as u64 + 0x10);
+        assert_eq!(read64(MOD_OFF + MOD_STRIDE + 8), first);
+    }
+    #[test]
+    fn rejects_embedded_nul_without_mapping() {
+        let as_ = AddressSpace::new(0x10_000).unwrap();
+        assert_eq!(build(&EnvironmentInput { image_base: 1, image_size: 1, image_path: "bad\0path", command_line: "", environment: &[], process_id: 1, thread_id: 1 }, &as_), Err(Error::Einval));
+        assert_eq!(as_.vma_count(), 0);
+    }
+
+    #[test]
+    fn rejects_oversized_strings_before_mapping_any_bytes() {
+        let as_ = AddressSpace::new(0x20_000).unwrap();
+        let path = "x".repeat(BLOCK_BYTES);
+        let result = build(&EnvironmentInput { image_base: 1, image_size: 1,
+            image_path: &path, command_line: "", environment: &[], process_id: 1, thread_id: 1 }, &as_);
+        assert_eq!(result, Err(Error::Einval));
+        assert_eq!(as_.vma_count(), 0);
+    }
+
+    #[test]
+    fn thread_teb_is_distinct_and_publishes_thread_identity() {
+        let as_ = AddressSpace::new(0x40_000).unwrap();
+        let first = build_thread_teb(7, 8, 0x12_000, &as_).unwrap();
+        let second = build_thread_teb(7, 9, 0x12_000, &as_).unwrap();
+        assert_ne!(first, second);
+        let vma = as_.find_vma(first).unwrap();
+        let data = match vma.backing { VmaBacking::KernelBytes { data, .. } => data, _ => panic!("TEB must be kernel-backed") };
+        assert_eq!(u64::from_le_bytes(data[0x30..0x38].try_into().unwrap()), first.as_u64());
+        assert_eq!(u64::from_le_bytes(data[0x60..0x68].try_into().unwrap()), 0x12_000);
+        assert_eq!(u32::from_le_bytes(data[0x40..0x44].try_into().unwrap()), 7);
+        assert_eq!(u32::from_le_bytes(data[0x48..0x4c].try_into().unwrap()), 8);
+        assert_eq!(u64::from_le_bytes(data[0x58..0x60].try_into().unwrap()), first.as_u64() + 0x180);
+    }
+}

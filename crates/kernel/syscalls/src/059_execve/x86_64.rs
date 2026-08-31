@@ -108,6 +108,9 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
         ext4_blob = Some(owned);
         blob = ext4_blob.as_deref().expect("just set");
     }
+    if let Some(result) = crate::pe_exec::try_commit(cur, &path_owned, blob, exec_vp.as_ref()) {
+        return match result { Ok(()) => 0, Err(rc) => rc };
+    }
     // Linux `bprm_creds_from_file` — computed on the FINAL image (the
     // interpreter for a `#!` chain, which is why a setuid script confers
     // nothing) and BEFORE the point of no return, so EPERM is still returnable.

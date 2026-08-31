@@ -1,0 +1,17 @@
+[package]
+name = "windows-runtime"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "windows-runtime"
+path = "src/main.rs"
+
+[dependencies]
+libc = { workspace = true }
+pe = { path = "../../../crates/shared/pe" }
+syscall = { path = "../../../crates/kernel/syscall" }

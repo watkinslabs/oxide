@@ -80,6 +80,7 @@ pub mod registry;
 pub mod exit;
 pub mod exec_flush;
 pub mod personality;
+pub mod nt_object;
 pub mod rlimit;
 pub mod ioport;
 pub mod ioprio;

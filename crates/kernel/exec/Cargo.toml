@@ -10,6 +10,7 @@ aslr = { path = "../aslr" }
 ext4 = { path = "../ext4" }
 vfs  = { path = "../vfs" }
 elf      = { path = "../../shared/elf" }
+pe       = { path = "../../shared/pe" }
 hal      = { path = "../../arch/hal" }
 klog     = { path = "../../shared/klog" }
 syscall  = { path = "../syscall" }
@@ -20,6 +21,9 @@ vmm      = { path = "../mm-vmm" }
 debug-boot = []
 debug-faultdiag = []  # compare exec file pages against parsed ELF bytes
 debug-execload = []  # per-exec ELF-loader trace (interp resolve/place); split from debug-boot per B1474
+
+[dev-dependencies]
+proptest = "1"
 
 [lints]
 workspace = true
