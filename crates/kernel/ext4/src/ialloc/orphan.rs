@@ -249,7 +249,6 @@ impl Mount {
         self.run_journaled(|m| {
             let (bytes, _off) = m.read_inode_bytes(ino)?;
             if u16::from_le_bytes([bytes[0x1A], bytes[0x1B]]) != 0 { return Ok(()); }
-            m.orphan_del(ino)?;
             if (u16::from_le_bytes([bytes[0x00], bytes[0x01]]) & S_IFMT) == S_IFDIR {
                 let group = (ino - 1) / m.sb.inodes_per_group;
                 {
@@ -262,6 +261,13 @@ impl Mount {
             }
             m.truncate_inode_for_deletion(ino)?;
             m.free_external_xattr_for_deletion(ino)?;
+            // The orphan record comes off only once the blocks and the xattr
+            // block are gone. It is the ONLY thing that lets a later mount
+            // finish an eviction this one does not: an inode spliced out of
+            // the list first, then interrupted, is left with no links, no
+            // dtime, its data blocks still marked in use and nothing on disk
+            // that names it, which no recovery pass can reach.
+            m.orphan_del(ino)?;
             let (mut bytes, _off) = m.read_inode_bytes(ino)?;
             bytes[0x04..0x08].copy_from_slice(&0u32.to_le_bytes());
             bytes[0x6C..0x70].copy_from_slice(&0u32.to_le_bytes());
