@@ -13,11 +13,12 @@ const TEXT_UNICODE_NOT_UNICODE_MASK: u32 = 0x0f00;
 const TEXT_UNICODE_NULL_BYTES: u32 = 0x1000;
 const TEXT_UNICODE_NOT_ASCII_MASK: u32 = 0xf000;
 const TEXT_UNICODE_ODD_LENGTH: u32 = 0x0200;
-
 /// Initialize a Windows `UNICODE_STRING` descriptor without copying its source.
 /// # C: O(min(source length, 32766)) plus usercopy
 pub fn dispatch(call: NtCall) -> Option<u64> {
     if let Some(result) = crate::nt_critical::dispatch(call) { return Some(result); }
+    if call.service == NtService::RtlSetLastWin32Error || call.service == NtService::RtlRestoreLastWin32Error { return Some(set_last_win32_error(call.args.a0)); }
+    if call.service == NtService::RtlGetLastWin32Error { return Some(get_last_win32_error()); }
     if call.service == NtService::RtlDosPathNameToNtPathNameU { return Some(dos_path_to_nt(call.args.a0, call.args.a1, call.args.a2, call.args.a3)); }
     if call.service == NtService::RtlDosPathNameToNtPathNameUWithStatus { return Some(if dos_path_to_nt(call.args.a0, call.args.a1, call.args.a2, call.args.a3) == 1 { 0 } else { STATUS_INVALID_PARAMETER }); }
     if call.service == NtService::RtlCreateUnicodeStringFromAsciiz { return Some(create_unicode_string_from_ascii(call.args.a0, call.args.a1)); }
@@ -78,7 +79,17 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if uaccess::copy_to_user(target, &descriptor).is_err() { return Some(STATUS_INVALID_PARAMETER); }
     Some(0)
 }
-
+const TEB_LAST_ERROR_OFFSET: u64 = 0x68;
+fn set_last_win32_error(error: u64) -> u64 {
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    let Some(address) = cur.nt_teb().checked_add(TEB_LAST_ERROR_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+    if uaccess::put_user_u32(address, error as u32).is_err() { STATUS_INVALID_PARAMETER } else { 0 }
+}
+fn get_last_win32_error() -> u64 {
+    let Some(cur) = sched::live::current() else { return 0; };
+    let Some(address) = cur.nt_teb().checked_add(TEB_LAST_ERROR_OFFSET) else { return 0; };
+    uaccess::get_user_u32(address).map_or(0, u64::from)
+}
 fn dos_path_to_nt(source: u64, target: u64, file_part: u64, curdir: u64) -> u64 {
     if source == 0 || target == 0 { return 0; }
     let mut input = vec![];
@@ -266,13 +277,11 @@ fn is_text_unicode(buffer: u64, length: i64, flags_ptr: u64) -> u64 {
     if flags_ptr != 0 && uaccess::copy_to_user(flags_ptr, &out.to_le_bytes()).is_err() { return 0; }
     if out & (TEXT_UNICODE_REVERSE_MASK | TEXT_UNICODE_NOT_UNICODE_MASK) != 0 || out & TEXT_UNICODE_NOT_ASCII_MASK != 0 || out & 0x000f != 0 { 1 } else { 0 }
 }
-
 fn read_byte(address: u64) -> Option<u8> {
     let mut byte = [0u8; 1];
     uaccess::copy_from_user(&mut byte, address).ok()?;
     Some(byte[0])
 }
-
 fn length_security_descriptor(descriptor: u64) -> u64 {
     if descriptor == 0 { return 0; }
     let mut head = [0u8; 20];
@@ -302,7 +311,6 @@ fn length_security_descriptor(descriptor: u64) -> u64 {
     };
     result().unwrap_or(0) as u64
 }
-
 fn make_self_relative_sd(source: u64, target: u64, length_ptr: u64) -> u64 {
     const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
     if source == 0 || length_ptr == 0 { return STATUS_INVALID_PARAMETER; }
@@ -342,21 +350,18 @@ fn make_self_relative_sd(source: u64, target: u64, length_ptr: u64) -> u64 {
     if uaccess::copy_to_user(target, &output).is_err() { return STATUS_INVALID_PARAMETER; }
     0
 }
-
 fn read_sid(address: u64) -> Option<alloc::vec::Vec<u8>> {
     let mut head = [0u8; 2]; uaccess::copy_from_user(&mut head, address).ok()?;
     if head[0] != 1 || head[1] as usize > MAX_SUBAUTHORITIES { return None; }
     let size = SID_HEADER_BYTES.checked_add(head[1] as usize * 4)?; let mut bytes = vec![0u8; size];
     uaccess::copy_from_user(&mut bytes, address).ok()?; Some(bytes)
 }
-
 fn read_acl(address: u64) -> Option<alloc::vec::Vec<u8>> {
     let mut head = [0u8; 4]; uaccess::copy_from_user(&mut head, address).ok()?;
     let size = u16::from_le_bytes([head[2], head[3]]) as usize;
     if size < ACL_HEADER_BYTES { return None; }
     let mut bytes = vec![0u8; size]; uaccess::copy_from_user(&mut bytes, address).ok()?; Some(bytes)
 }
-
 fn nt_status_to_dos_error(status: u32) -> u32 {
     if status == 0 || status & 0x2000_0000 != 0 { return status; }
     let status = if status & 0xf000_0000 == 0xd000_0000 { status & !0x1000_0000 } else { status };
@@ -375,7 +380,6 @@ fn nt_status_to_dos_error(status: u32) -> u32 {
         _ => 317,
     }
 }
-
 fn query_acl(acl: u64, info: u64, length: u32, class: u32) -> u64 {
     if acl == 0 || info == 0 { return STATUS_INVALID_PARAMETER; }
     let mut header = [0u8; ACL_HEADER_BYTES];
@@ -401,7 +405,6 @@ fn query_acl(acl: u64, info: u64, length: u32, class: u32) -> u64 {
         _ => STATUS_INVALID_PARAMETER,
     }
 }
-
 fn uniform(seed: u64) -> u64 {
     if seed == 0 { return 0; }
     let mut bytes = [0u8; 4];
@@ -411,7 +414,6 @@ fn uniform(seed: u64) -> u64 {
     if uaccess::copy_to_user(seed, &(next as u32).to_le_bytes()).is_err() { return 0; }
     next
 }
-
 fn create_security_descriptor(descriptor: u64, revision: u32) -> u64 {
     if descriptor == 0 { return STATUS_INVALID_PARAMETER; }
     if revision != 1 { return STATUS_UNKNOWN_REVISION; }
@@ -419,7 +421,6 @@ fn create_security_descriptor(descriptor: u64, revision: u32) -> u64 {
     if uaccess::copy_to_user(descriptor, &bytes).is_err() { return STATUS_INVALID_PARAMETER; }
     0
 }
-
 fn create_acl(acl: u64, size: u32, revision: u32) -> u64 {
     if acl == 0 || revision < 2 || revision > 4 { return STATUS_INVALID_PARAMETER; }
     if size < ACL_HEADER_BYTES as u32 { return 0xc000_0023; }
@@ -429,7 +430,6 @@ fn create_acl(acl: u64, size: u32, revision: u32) -> u64 {
     if uaccess::copy_to_user(acl, &header).is_err() { return STATUS_INVALID_PARAMETER; }
     0
 }
-
 fn add_aces(acl: u64, revision: u32, source: u64, source_len: u32) -> u64 {
     if acl == 0 || revision > 4 || source_len > u16::MAX as u32 || (source_len != 0 && source == 0) { return STATUS_INVALID_PARAMETER; }
     let mut header = [0u8; ACL_HEADER_BYTES];
@@ -462,7 +462,6 @@ fn add_aces(acl: u64, revision: u32, source: u64, source_len: u32) -> u64 {
     if uaccess::copy_to_user(acl, &header).is_err() { return STATUS_INVALID_PARAMETER; }
     0
 }
-
 fn add_access_ace(acl: u64, revision: u32, flags: u32, mask: u32, sid: u64, ace_type: u8) -> u64 {
     if acl == 0 || sid == 0 || revision > 4 { return STATUS_INVALID_PARAMETER; }
     let mut acl_header = [0u8; ACL_HEADER_BYTES];

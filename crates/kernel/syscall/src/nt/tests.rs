@@ -1,5 +1,4 @@
 use super::*;
-
     fn args() -> SyscallArgs { SyscallArgs { a0: u64::MAX, a1: 0x1122_3344_5566_7788, a2: 3, a3: 4, a4: 5, a5: 6 } }
 
     #[test]
@@ -106,6 +105,8 @@ use super::*;
         assert_eq!(decode(126, input).unwrap().service, NtService::RtlAnsiStringToUnicodeString);
         assert_eq!(decode(89, input).unwrap().service, NtService::RtlUniform);
         assert_eq!(decode(90, input).unwrap().service, NtService::RtlDeleteCriticalSection);
+        assert_eq!(decode(154, input).unwrap().service, NtService::RtlGetLastWin32Error);
+        assert_eq!(decode(155, input).unwrap().service, NtService::RtlRestoreLastWin32Error);
     }
 
     #[test]
