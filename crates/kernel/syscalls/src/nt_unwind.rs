@@ -14,6 +14,7 @@ const CONTEXT_FLAGS_FULL: u32 = 0x0010_000f;
 /// # C: O(1) plus one user read
 pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlCaptureContext { return Some(capture_context(call.args.a0)); }
+    if call.service == NtService::RtlRestoreContext { return Some(restore_context(call.args.a0)); }
     if call.service != NtService::RtlUnwind { return None; }
     let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
     if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
@@ -45,6 +46,29 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     }
     #[cfg(target_arch = "aarch64")]
     { let _ = cur; Some(STATUS_INVALID_PARAMETER) }
+}
+
+fn restore_context(target: u64) -> u64 {
+    if target == 0 || hal::UserVirtAddr::new(target).is_none() { return STATUS_INVALID_PARAMETER; }
+    #[cfg(target_arch = "x86_64")]
+    {
+        const RIP: u64 = 0xf8; const RSP: u64 = 0x98; const RFLAGS: u64 = 0x44;
+        let read = |offset: u64| target.checked_add(offset).and_then(|address| uaccess::get_user_u64(address).ok());
+        let Some(rip) = read(RIP) else { return STATUS_INVALID_PARAMETER; };
+        let Some(rsp) = read(RSP) else { return STATUS_INVALID_PARAMETER; };
+        if hal::UserVirtAddr::new(rip).is_none() || hal::UserVirtAddr::new(rsp).is_none() { return STATUS_INVALID_PARAMETER; }
+        let frame = hal_x86_64::current_pt_regs();
+        if frame.is_null() { return STATUS_INVALID_PARAMETER; }
+        // SAFETY: the active syscall frame belongs exclusively to this task during native dispatch.
+        let regs = unsafe { &mut *frame };
+        let pairs = [(0x80, &mut regs.rcx), (0x88, &mut regs.rdx), (0x90, &mut regs.rbx), (0xa0, &mut regs.rbp), (0xa8, &mut regs.rsi), (0xb0, &mut regs.rdi), (0xb8, &mut regs.r8), (0xc0, &mut regs.r9), (0xc8, &mut regs.r10), (0xd0, &mut regs.r11), (0xd8, &mut regs.r12), (0xe0, &mut regs.r13), (0xe8, &mut regs.r14), (0xf0, &mut regs.r15), (0x78, &mut regs.rax)];
+        for (offset, slot) in pairs { let Some(value) = read(offset) else { return STATUS_INVALID_PARAMETER; }; *slot = value; }
+        let Some(flags) = target.checked_add(RFLAGS).and_then(|address| uaccess::get_user_u32(address).ok()) else { return STATUS_INVALID_PARAMETER; };
+        regs.rip = rip; regs.rsp = rsp; regs.rflags = hal::uregs::x86_64::sigreturn_eflags(regs.rflags, flags as u64);
+        regs.rax
+    }
+    #[cfg(target_arch = "aarch64")]
+    { STATUS_INVALID_PARAMETER }
 }
 
 fn capture_context(target: u64) -> u64 {
