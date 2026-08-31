@@ -163,6 +163,7 @@ pub fn dispatch(call: NtCall) -> u64 {
     if let Some(result) = crate::nt_signal_wait::dispatch(call) { return result; }
     if let Some(result) = crate::nt_token::dispatch(call) { return result; }
     if let Some(result) = crate::nt_unwind::dispatch(call) { return result; }
+    if let Some(result) = crate::nt_exception::dispatch(call) { return result; }
     if let Some(result) = crate::nt_rtl::dispatch(call) { return result; }
     if let Some(result) = crate::nt_printf::dispatch(call) { return result; }
     if let Some(result) = crate::nt_security::dispatch(call) { return result; }

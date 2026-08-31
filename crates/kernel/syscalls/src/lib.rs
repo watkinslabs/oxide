@@ -66,6 +66,8 @@ mod nt_window;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_unwind;
 #[cfg(target_os = "oxide-kernel")]
+mod nt_exception;
+#[cfg(target_os = "oxide-kernel")]
 mod nt_rtl;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_critical;
