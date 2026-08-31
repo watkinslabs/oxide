@@ -30,6 +30,7 @@ use crate::superblock::{Superblock, SuperblockError};
 mod blocks;
 mod batch;
 mod core;
+pub(crate) use core::gdt_block_byte_offset_for;
 mod csum_trace;
 /// Register the current-context id source for the transaction gate (kernel).
 #[cfg(target_os = "oxide-kernel")]
@@ -222,6 +223,13 @@ pub struct MountState {
     /// Per-inode data preallocation tails. The bitmap owns these blocks on
     /// disk, while this table owns their not-yet-mapped logical range.
     pub(crate) inode_prealloc: alloc::collections::BTreeMap<u32, Vec<crate::balloc::prealloc::InodePrealloc>>,
+    /// Linux mbcache's ext4 xattr-block index: h_hash -> candidate block
+    /// numbers. The block bytes remain owned by metadata_cache; this index is
+    /// only a lookup accelerator and never a second xattr representation.
+    pub(crate) xattr_block_cache: alloc::collections::BTreeMap<u32, Vec<u64>>,
+    /// Linux EA-inode mbcache index: value hash -> hidden inode numbers. The
+    /// inode bytes remain canonical on disk; this is only a candidate index.
+    pub(crate) ea_inode_cache: alloc::collections::BTreeMap<u32, Vec<u32>>,
     /// Cross-operation batching (Linux jbd2 running-transaction model). When
     /// set, the `shadow` PERSISTS across `run_journaled` scopes: each op joins
     /// the running transaction instead of committing its own, and the batch is
@@ -358,6 +366,25 @@ impl Mount {
     /// lock while acting on the answer. # C: O(1)
     pub fn behaviour(&self) -> crate::mount_opts::Ext4Behaviour { self.opts.lock().behaviour }
 
+    /// Persistent-memory aperture owned by the mounted block device.
+    /// # C: O(1)
+    pub(crate) fn dax_region(&self) -> Option<block::DaxRegion> {
+        (self.sb.block_size as u64 == hal::PAGE_SIZE_BYTES).then(|| self.dev.dax_region()).flatten()
+    }
+
+    /// Linux `ext4_should_enable_dax`: DAX is an inode policy only when the
+    /// block device owns a byte-addressable aperture and the layout can be
+    /// represented by the direct-access path.
+    /// # C: O(1)
+    pub(crate) fn inode_dax_enabled(&self, mode: u16, flags: u32) -> bool {
+        let regular = u32::from(mode) & u32::from(crate::inode::S_IFMT) == u32::from(crate::inode::S_IFREG);
+        regular && dax_layout_supported(flags) && self.dax_region().is_some()
+            && self.behaviour().dax != crate::mount_opts::DaxMode::Never
+            && self.behaviour().data != crate::mount_opts::DataMode::Journal
+            && (self.behaviour().dax == crate::mount_opts::DaxMode::Always
+                || flags & vfs::inode::FS_DAX_FL != 0)
+    }
+
     /// Replace the option state wholesale. Only the option path calls this,
     /// and only with a context that has already been accepted in full.
     /// # C: O(MAXQUOTAS)
@@ -368,5 +395,30 @@ impl Mount {
         #[cfg(not(target_os = "oxide-kernel"))]
         if let Some(c) = self.test_cred.lock().clone() { return c; }
         crate::balloc::reserve::current_alloc_cred()
+    }
+}
+
+/// Linux `ext4_should_enable_dax` refuses layouts whose bytes have another
+/// owner or transform. Inline data, encryption, and fs-verity must remain on
+/// their respective buffered/verification paths; DAX cannot bypass them.
+/// # C: O(1)
+fn dax_layout_supported(flags: u32) -> bool {
+    flags & (crate::inode::EXT4_INLINE_DATA_FL
+        | crate::inode::flags::EXT4_ENCRYPT_FL
+        | crate::inode::flags::EXT4_VERITY_FL) == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dax_layout_supported;
+    use crate::inode::flags::{EXT4_ENCRYPT_FL, EXT4_VERITY_FL};
+    use crate::inode::EXT4_INLINE_DATA_FL;
+
+    #[test]
+    fn dax_refuses_inline_encrypted_and_verified_layouts() {
+        assert!(dax_layout_supported(0));
+        for flags in [EXT4_INLINE_DATA_FL, EXT4_ENCRYPT_FL, EXT4_VERITY_FL] {
+            assert!(!dax_layout_supported(flags));
+        }
     }
 }

@@ -76,7 +76,7 @@ mod fsync_latency;
 pub mod quota;
 
 pub mod mount_opts;
-pub use mount_opts::{DataMode, ErrorsPolicy, Ext4Behaviour, Ext4MountOpts, FsQuotaFeatures, Ext4SbOpts};
+pub use mount_opts::{DataMode, DaxMode, ErrorsPolicy, Ext4Behaviour, Ext4MountOpts, FsQuotaFeatures, Ext4SbOpts};
 
 // Host-compilable so the verify-left resolution harness
 // (tests/walk_image.rs) can drive the real ext4 Inode impls via

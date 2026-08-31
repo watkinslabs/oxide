@@ -20,6 +20,26 @@ fn build_disk() -> Arc<dyn BlockDevice> {
     disk
 }
 
+fn build_orphan_file_disk() -> Arc<dyn BlockDevice> {
+    let mut path = std::env::temp_dir();
+    path.push(std::format!("oxide-orphan-file-{}.img", std::process::id()));
+    let file = std::fs::File::create(&path).unwrap();
+    file.set_len(32 * 1024 * 1024).unwrap();
+    let status = std::process::Command::new("mkfs.ext4")
+        .args(["-F", "-q", "-b", "1024", "-O", "orphan_file"])
+        .arg(&path).status().unwrap();
+    assert!(status.success(), "mkfs.ext4 orphan_file failed");
+    let image = std::fs::read(&path).unwrap();
+    let cap = (image.len() as u64) / (SECTOR as u64);
+    let disk: Arc<MemDisk<TaskList>> = MemDisk::new(SECTOR, cap);
+    let mut req = BlockRequest {
+        op: BlockOp::Write, start_block: 0, len_blocks: cap as u32,
+        buffer: image, ..Default::default()
+    };
+    disk.submit_sync(&mut req).unwrap();
+    disk
+}
+
 // i_dtime / NEXT_ORPHAN offset within an inode slot.
 const I_OFF_DTIME: usize = 0x14;
 
@@ -108,4 +128,21 @@ fn mount_time_cleanup_reclaims_leaked_orphan() {
     let m2 = ext4::Mount::open(disk).unwrap();
     assert_eq!(m2.read_sb_last_orphan().unwrap(), 0, "cleanup emptied the list");
     assert_eq!(m2.state_free_inodes(), pre_inodes, "leaked inode reclaimed");
+}
+
+#[test]
+fn orphan_file_feature_uses_slots_instead_of_legacy_superblock_chain() {
+    let disk = build_orphan_file_disk();
+    let pre_inodes;
+    {
+        let m = ext4::Mount::open(disk.clone()).unwrap();
+        assert_ne!(m.sb.orphan_file_inum, 0);
+        assert_eq!(m.read_sb_last_orphan().unwrap(), 0);
+        pre_inodes = m.state_free_inodes();
+        let ino = m.create_anonymous(2, 0o600).unwrap();
+        assert_eq!(m.read_sb_last_orphan().unwrap(), 0, "orphan-file mount must not use legacy head");
+        assert_ne!(ino, 0);
+    }
+    let m2 = ext4::Mount::open(disk).unwrap();
+    assert_eq!(m2.state_free_inodes(), pre_inodes, "mount recovery reclaims orphan-file slot");
 }

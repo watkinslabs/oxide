@@ -82,7 +82,13 @@ debug-netlink = ["kmain/debug-netlink"]
 debug-armctx = ["kmain/debug-armctx"]
 debug-cputime = ["kmain/debug-cputime"]
 debug-wakelat = ["kmain/debug-wakelat"]
+debug-dbus-verbose = ["kmain/debug-dbus-verbose"]
+debug-syscost-trace = ["kmain/debug-syscost-trace"]
+debug-epoll = ["kmain/debug-epoll"]
+debug-desktop = ["kmain/debug-desktop"]
 debug-udevdb = ["kmain/debug-udevdb"]  # [UDEVDB] sysfs uevent-store + udev-db trace
+debug-fsync-latency = ["kmain/debug-fsync-latency"]  # [EXT4-FSYNC] durability-boundary trace
+debug-blk-verify = ["kmain/debug-blk-verify"]  # [BLK-VERIFY] virtio completion checks
 # Executable-scoped OpenSSH lifecycle markers; avoids global serial tracing.
 debug-sshd = ["kmain/debug-sshd"]
 debug-sshd-detail = ["kmain/debug-sshd-detail"]

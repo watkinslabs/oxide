@@ -87,6 +87,7 @@ mac80211          = { path = "../mac80211" }
 drv-mac80211-hwsim = { path = "../../drivers/drv-mac80211-hwsim" }
 drv-virtio-vsock  = { path = "../../drivers/drv-virtio-vsock" }
 drv-virtio-snd    = { path = "../../drivers/drv-virtio-snd" }
+drv-virtio-pmem   = { path = "../../drivers/drv-virtio-pmem" }
 sound             = { path = "../sound" }
 drv-serial        = { path = "../../drivers/drv-serial" }
 drv-ps2-keyboard  = { path = "../../drivers/drv-ps2-keyboard" }
@@ -153,7 +154,8 @@ debug-armctx = ["sched/debug-armctx"]
 debug-cputime = ["sched/debug-cputime"]  # [CPUT] process-CPU-clock accounting trace (sibling-burn cpu=0 hunt)
 debug-lockdep = ["sched/debug-lockdep"]  # lockdep IRQ-state usage bits (06§3.1); boot both arches to enumerate violations  # aarch64 fatal-fault register-corruption post-mortem: kstack-slot owner + arch_ctx + ctx save/restore ring ([ARMCTX])
 debug-wakelat = ["sched/debug-wakelat", "arch-irq/debug-wakelat", "block/debug-wakelat", "fs/debug-wakelat", "syscalls/debug-wakelat", "ext4/debug-wakelat"]  # wake→run latency + LAPIC tick-period probe ([WLLAT]/[WLBLK]/[WLTICK]/[WLTICKGAP]/[WLSCANGAP]) — gnome desktop wakeup-latency hunt
-debug-fsync-latency = ["ext4/debug-fsync-latency"]  # [EXT4-FSYNC] systemd-hwdb durability-path latency probe
+debug-fsync-latency = ["ext4/debug-fsync-latency", "syscalls/debug-fsync-latency"]  # [EXT4-FSYNC] systemd-hwdb durability-path latency probe
+debug-pmem = ["drv-virtio-pmem/debug-pmem"]  # [PMEM] virtio-pmem flush diagnostics
 debug-mntcost = ["procfs/debug-mntcost"]  # [MNTBUILD] /proc mountinfo render-cost census (per-field split)
 debug-heapwalk = ["kalloc/debug-heapwalk"]  # [HEAPWALK] sorted-hole-list walk-step + hole-count census (is the O(N) kernel heap the boot-slowness floor?)
 debug-heappoison = ["kalloc/debug-heappoison", "syscalls/debug-heappoison", "pmm/debug-heappoison", "vfs/debug-heappoison"]  # poison+quarantine freed heap blocks; #UD/oops handler prints [UAF] reg/base/size — localizes the gnome refcount-corruption UAF; per-execve free-list bisection checkpoint; pmm/debug-heappoison wires the corruption-probe hook (struct-page metadata for a corrupted free-list node's frame)

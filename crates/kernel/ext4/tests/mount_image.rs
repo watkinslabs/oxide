@@ -284,7 +284,7 @@ fn open_refuses_unsupported_incompat_feature() {
     // Set an unknown INCOMPAT bit in the SB. The feature gate must refuse the
     // mount rather than misinterpret it (Linux EXT4_FEATURE_INCOMPAT_SUPP).
     let mut img = IMAGE.to_vec();
-    img[1024 + 0x60 + 1] |= 0x40; // s_feature_incompat |= 0x4000
+    img[1024 + 0x60 + 3] |= 0x80; // s_feature_incompat |= 0x80000000
     let cap = (img.len() as u64) / (BLOCK_SIZE as u64);
     let disk: Arc<MemDisk<TaskList>> = MemDisk::new(BLOCK_SIZE, cap);
     let mut req = BlockRequest { op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: img, ..Default::default() };

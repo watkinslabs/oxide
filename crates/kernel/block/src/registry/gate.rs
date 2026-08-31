@@ -243,6 +243,9 @@ impl AdmissionDev {
 }
 impl BlockDevice for AdmissionDev {
     fn block_size(&self) -> u32 { self.inner.block_size() }
+    /// Admission/lifecycle gates decorate I/O only; Linux's DAX provider
+    /// remains the underlying block device and must stay discoverable.
+    fn dax_region(&self) -> Option<crate::DaxRegion> { self.inner.dax_region() }
     fn queue_limits(&self) -> KResult<QueueLimits> {
         let mut limits = self.inner.queue_limits()?;
         if self.cache_disabled.load(Ordering::Acquire) {

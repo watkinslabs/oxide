@@ -25,7 +25,9 @@ impl FileOps for FsContextFileOps {
     /// it. # C: O(len msg)
     fn read(&self, inode: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> {
         let ctx = inode.private::<FsContextInode>().ok_or(VfsError::Einval)?;
-        let mut g = ctx.fc.lock();
+        // SAFETY: file reads run in process context; the fs_context mutex may
+        // sleep when contended, as it does in Linux.
+        let mut g = unsafe { ctx.fc.lock() };
         g.as_mut().ok_or(VfsError::Einval)?.read_message(buf)
     }
 }

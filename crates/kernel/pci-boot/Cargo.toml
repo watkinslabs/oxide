@@ -35,6 +35,7 @@ drv-virtio-9p    = { path = "../../drivers/drv-virtio-9p" }
 drv-virtio-fs    = { path = "../../drivers/drv-virtio-fs" }
 fuse-transport   = { path = "../../shared/fuse-transport" }
 drv-virtio-vsock = { path = "../../drivers/drv-virtio-vsock" }
+drv-virtio-pmem = { path = "../../drivers/drv-virtio-pmem" }
 drv-virtio-snd   = { path = "../../drivers/drv-virtio-snd" }
 drv-nvme         = { path = "../../drivers/drv-nvme" }
 drv-ahci         = { path = "../../drivers/drv-ahci" }

@@ -17,36 +17,44 @@ pub const SUPERBLOCK_LEN: usize = 1024;
 /// `s_feature_incompat` bits per `ext4.h`.
 pub const INCOMPAT_FILETYPE: u32 = 0x0002;
 pub const INCOMPAT_RECOVER:  u32 = 0x0004;
+pub const INCOMPAT_META_BG:   u32 = 0x0010;
+pub const INCOMPAT_LARGEDIR:  u32 = 0x4000;
 pub const INCOMPAT_EXTENTS:  u32 = 0x0040;
 pub const INCOMPAT_64BIT:    u32 = 0x0080;
 pub const INCOMPAT_FLEX_BG:  u32 = 0x0200;
 /// Inline file and directory data lives in the inode and `system.data` ibody
 /// xattr. The inline owner handles regular files, directories, and symlinks.
 pub const INCOMPAT_INLINE_DATA: u32 = 0x8000;
+/// Large xattr values are stored in dedicated hidden inodes.
+pub const INCOMPAT_EA_INODE: u32 = 0x0400;
 /// `s_feature_incompat` CSUM_SEED — `s_checksum_seed` overrides the UUID seed.
 pub const INCOMPAT_CSUM_SEED: u32 = 0x2000;
 /// Filename casefolding; the superblock also carries the Unicode encoding.
 pub const INCOMPAT_CASEFOLD: u32 = 0x20000;
 /// `s_feature_compat` HAS_JOURNAL bit.
 pub const COMPAT_HAS_JOURNAL: u32 = 0x0004;
+pub const COMPAT_ORPHAN_FILE: u32 = 0x1000;
 /// `s_feature_ro_compat` METADATA_CSUM bit.
 pub const RO_COMPAT_METADATA_CSUM: u32 = 0x0400;
 pub const RO_COMPAT_GDT_CSUM:      u32 = 0x0010;
 pub const RO_COMPAT_SPARSE_SUPER:  u32 = 0x0001;
 pub const RO_COMPAT_LARGE_FILE:    u32 = 0x0002;
+pub const RO_COMPAT_BTREE_DIR:     u32 = 0x0004;
 pub const RO_COMPAT_HUGE_FILE:     u32 = 0x0008;
 pub const RO_COMPAT_DIR_NLINK:     u32 = 0x0020;
 pub const RO_COMPAT_EXTRA_ISIZE:   u32 = 0x0040;
 pub const RO_COMPAT_QUOTA:         u32 = 0x0100;
 pub const RO_COMPAT_PROJECT:       u32 = 0x2000;
+pub const RO_COMPAT_ORPHAN_PRESENT: u32 = 0x0001_0000;
 
 /// INCOMPAT features this driver understands well enough to interpret the
-/// on-disk layout. An INCOMPAT bit OUTSIDE this set (e.g. META_BG, MMP, INLINE_
-/// DATA, ENCRYPT, CASEFOLD, LARGEDIR, EA_INODE) means the layout would be
+/// on-disk layout. An INCOMPAT bit OUTSIDE this set (e.g. MMP, INLINE_DATA,
+/// ENCRYPT or CASEFOLD) means the layout would be
 /// misread → refuse the mount (Linux `EXT4_FEATURE_INCOMPAT_SUPP`).
 pub const SUPPORTED_INCOMPAT: u32 =
-    INCOMPAT_FILETYPE | INCOMPAT_RECOVER | INCOMPAT_EXTENTS | INCOMPAT_64BIT
-    | INCOMPAT_FLEX_BG | INCOMPAT_CSUM_SEED | INCOMPAT_CASEFOLD | INCOMPAT_INLINE_DATA;
+    INCOMPAT_FILETYPE | INCOMPAT_RECOVER | INCOMPAT_META_BG | INCOMPAT_EXTENTS | INCOMPAT_64BIT
+    | INCOMPAT_FLEX_BG | INCOMPAT_LARGEDIR | INCOMPAT_CSUM_SEED | INCOMPAT_CASEFOLD
+    | INCOMPAT_INLINE_DATA | INCOMPAT_EA_INODE;
 
 /// RO_COMPAT features this driver can safely WRITE. A bit outside this set
 /// (notably BIGALLOC=0x200, whose cluster bitmap we'd misread as per-block, or
@@ -55,9 +63,9 @@ pub const SUPPORTED_INCOMPAT: u32 =
 /// an unknown RO_COMPAT bit refuses the mount rather than risk write corruption.
 pub const SUPPORTED_RO_COMPAT: u32 =
     RO_COMPAT_METADATA_CSUM | RO_COMPAT_GDT_CSUM | RO_COMPAT_SPARSE_SUPER
-    | RO_COMPAT_LARGE_FILE | RO_COMPAT_HUGE_FILE | RO_COMPAT_DIR_NLINK
+    | RO_COMPAT_LARGE_FILE | RO_COMPAT_BTREE_DIR | RO_COMPAT_HUGE_FILE | RO_COMPAT_DIR_NLINK
     | RO_COMPAT_EXTRA_ISIZE | RO_COMPAT_QUOTA | RO_COMPAT_PROJECT
-    | RO_COMPAT_METADATA_CSUM_SEED;
+    | RO_COMPAT_METADATA_CSUM_SEED | RO_COMPAT_ORPHAN_PRESENT;
 
 /// Errors decoded from `parse`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -85,8 +93,9 @@ pub const SB_OFF_PRJ_QUOTA_INUM: usize = 0x26C;
 /// `s_checksum_seed` byte offset (when METADATA_CSUM_SEED feature on).
 pub const SB_OFF_CHECKSUM_SEED:  usize = 0x270;
 /// `s_encoding` / `s_encoding_flags` used when INCOMPAT_CASEFOLD is set.
-pub const SB_OFF_ENCODING:       usize = 0x274;
-pub const SB_OFF_ENCODING_FLAGS: usize = 0x276;
+pub const SB_OFF_ENCODING:       usize = 0x27C;
+pub const SB_OFF_ENCODING_FLAGS: usize = 0x27E;
+pub const SB_OFF_ORPHAN_FILE_INUM: usize = 0x280;
 /// `s_kbytes_written` byte offset — lifetime kilobytes written to the volume.
 pub const SB_OFF_KBYTES_WRITTEN: usize = 0x178;
 /// `s_reserved_gdt_blocks` byte offset.
@@ -114,6 +123,10 @@ pub struct Superblock {
     /// `s_desc_size` (0xFE) — on-disk group-descriptor size for a 64bit fs (>=64,
     /// may exceed 64 on future layouts); 32 without 64bit. Read instead of derived.
     pub desc_size: u16,
+    /// `s_first_meta_bg` (0x104) — first descriptor group using the META_BG
+    /// placement. Zero is also the valid value for a filesystem whose first
+    /// descriptor group is in the meta layout.
+    pub first_meta_bg: u32,
     /// Filesystem block size in bytes. Computed from
     /// `1024 << s_log_block_size`.
     pub block_size:      u32,
@@ -152,6 +165,7 @@ pub struct Superblock {
     pub encoding: u16,
     /// ext4 casefold encoding flags (`s_encoding_flags`).
     pub encoding_flags: u16,
+    pub orphan_file_inum: u32,
     /// `s_hash_seed[4]` (htree directory hash seed). Read as 4 le32
     /// words from offset 0xEC. All-zero ⇒ use the built-in default.
     pub hash_seed: [u32; 4],
@@ -265,6 +279,7 @@ impl Superblock {
                 | if is_64bit { (rd_u32(buf, SB_OFF_R_BLOCKS_HI) as u64) << 32 } else { 0 },
             first_ino,
             desc_size,
+            first_meta_bg: rd_u32(buf, 0x104),
             block_size,
             blocks_per_group:  rd_u32(buf, 0x20),
             inodes_per_group:  rd_u32(buf, 0x28),
@@ -294,6 +309,7 @@ impl Superblock {
             stored_csum_seed:  rd_u32(buf, SB_OFF_CHECKSUM_SEED),
             encoding:          rd_u16(buf, SB_OFF_ENCODING),
             encoding_flags:    rd_u16(buf, SB_OFF_ENCODING_FLAGS),
+            orphan_file_inum:  rd_u32(buf, SB_OFF_ORPHAN_FILE_INUM),
             hash_seed: [
                 rd_u32(buf, 0xEC), rd_u32(buf, 0xF0),
                 rd_u32(buf, 0xF4), rd_u32(buf, 0xF8),

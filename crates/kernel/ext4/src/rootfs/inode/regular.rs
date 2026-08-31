@@ -264,6 +264,16 @@ impl InodeOps for Ext4RegInodeOps {
 pub(crate) struct Ext4RegFileOps;
 
 impl FileOps for Ext4RegFileOps {
+    fn mmap_dax_frame(&self, inode: &Inode, off: u64) -> Option<u64> {
+        super::dax::mmap_frame(inode, off)
+    }
+
+    fn mmap_page_mkwrite(&self, inode: &Inode, off: u64) -> KResult<()> {
+        if inode.i_flags() & vfs::inode::S_DAX != 0 {
+            return super::dax::page_mkwrite(inode, off);
+        }
+        inode.i_mapping().map_or(Ok(()), |m| m.page_mkwrite(off))
+    }
     /// `FMODE_CAN_ODIRECT`: ordinary extent and legacy-indirect regular files
     /// share the synchronous mapping owner. Inline data and journal-data files
     /// remain excluded, matching Linux's `ext4_dio_alignment()` contract.
@@ -419,11 +429,13 @@ impl FileOps for Ext4RegFileOps {
     }
 
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        if inode.i_flags() & vfs::inode::S_DAX != 0 { return super::dax::read(inode, off, buf); }
         let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
         d.frames.read_framed(off, buf)
     }
 
     fn write(&self, inode: &Inode, off: u64, buf: &[u8]) -> KResult<usize> {
+        if inode.i_flags() & vfs::inode::S_DAX != 0 { return super::dax::write(inode, off, buf); }
         let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
         let _mutation = d.begin_swap_mutation(inode)?;
         let behaviour = d.st.mount.behaviour();
@@ -540,6 +552,14 @@ impl AddressSpaceOps for Ext4FileMapping {
         self.data.frames.fault_around_frame(off)
     }
 
+    fn page_mkwrite(&self, off: u64) -> KResult<()> {
+        // Linux dirties a medium-backed page in page_mkwrite, not in the
+        // read-side shared-frame lookup. This is the sole owner for a
+        // buffered MAP_SHARED write fault.
+        let _invalidate = unsafe { self.data.invalidate_lock.read() };
+        self.data.frames.page_mkwrite(off)
+    }
+
     fn read_at(&self, off: u64, dst: &mut [u8]) -> KResult<usize> {
         // SAFETY: buffered file reads run in process context and hold no
         // spinlock while acquiring the sleeping invalidate semaphore.
@@ -602,7 +622,8 @@ pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: 
     uid: u32, gid: u32, projid: u32, times: crate::timestamp::InodeTimes, blocks: u64,
     generation: u32, _raw_flags: u32) -> InodeRef
 {
-    let frames = st.frame_store(ino, size);
+    let dax = st.mount.inode_dax_enabled(mode, _raw_flags);
+    let frames = st.frame_store(ino, generation, size);
     let data = Arc::new(Ext4FileData { st, ino,
         invalidate_lock: sched::rwsem::RwSem::new(()),
         raw_flags: core::sync::atomic::AtomicU32::new(_raw_flags), size_hint: AtomicU64::new(size),
@@ -622,6 +643,7 @@ pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: 
         .nlink(nlink)
         .owner(uid, gid)
         .projid(projid)
+        .i_flags(if dax { vfs::inode::S_DAX } else { 0 })
         .generation(generation)
         .times(times.atime, times.mtime, times.ctime)
         .mapping(mapping)

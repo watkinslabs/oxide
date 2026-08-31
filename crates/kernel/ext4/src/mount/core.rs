@@ -54,3 +54,24 @@ fn gdt_byte_offset_for(sb: &Superblock) -> u64 {
         sb.block_size as u64
     }
 }
+
+pub(crate) fn gdt_block_byte_offset_for(sb: &Superblock, desc_block: u32) -> u64 {
+    if sb.feature_incompat & crate::superblock::INCOMPAT_META_BG == 0
+        || desc_block < sb.first_meta_bg
+    { return gdt_byte_offset_for(sb) + u64::from(desc_block) * u64::from(sb.block_size); }
+    let desc_per_block = u64::from(sb.block_size) / u64::from(sb.desc_size);
+    if desc_per_block == 0 { return u64::MAX; }
+    let group = u64::from(desc_block) * desc_per_block;
+    let first = u64::from(sb.first_data_block)
+        .saturating_add(group.saturating_mul(u64::from(sb.blocks_per_group)));
+    let mut has_super = !sb.has_sparse_super()
+        || group == 0 || is_power_of(group, 3) || is_power_of(group, 5) || is_power_of(group, 7);
+    if sb.block_size == 1024 && desc_block == 0 && sb.first_data_block == 0 { has_super = true; }
+    first.saturating_add(if has_super { 1 } else { 0 }) * u64::from(sb.block_size)
+}
+
+fn is_power_of(mut n: u64, base: u64) -> bool {
+    if n == 0 { return false; }
+    while n % base == 0 { n /= base; }
+    n == 1
+}

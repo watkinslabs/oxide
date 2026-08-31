@@ -299,6 +299,12 @@ pub trait FileOps: Send + Sync {
         inode.i_mapping().map_or(Ok(None), |m| m.shared_frame(off))
     }
 
+    /// `->dax_direct_access`: physical frame for a byte-addressable file
+    /// page. `None` means this inode is page-cache backed; a returned address
+    /// is device memory and carries no PMM reference.
+    /// # C: O(1) or filesystem mapping
+    fn mmap_dax_frame(&self, _inode: &Inode, _off: u64) -> Option<u64> { None }
+
     /// A shared mapping is about to write the page at page-aligned `off`
     /// (`vm_operations_struct.page_mkwrite`). Default forwards through the
     /// inode's `i_mapping`, whose own default is a no-op — see

@@ -66,6 +66,24 @@ fn one_inode_two_handles_share_frame_store() {
 }
 
 #[test]
+fn a_read_mapping_does_not_dirty_until_page_mkwrite() {
+    common::boot_hosted_pmm();
+    let (m, _sb) = open_with_sb(fresh_disk());
+    let ino = m.state().lookup_path(b"/hello.txt").expect("hello.txt");
+    let f = m.state().wrap_file(ino).expect("wrap");
+    let mapping = f.i_mapping().expect("mapping");
+    let range = vfs::CachestatRange { first: 0, last: 0 };
+
+    let _frame = mapping.shared_frame(0).expect("read mapping frame").expect("frame");
+    assert_eq!(mapping.cachestat(range).nr_dirty, 0,
+        "read-side shared-frame lookup must leave a clean page clean");
+
+    f.mmap_page_mkwrite(0).expect("shared write fault admission");
+    assert_eq!(mapping.cachestat(range).nr_dirty, 1,
+        "page_mkwrite is the Linux dirtying boundary");
+}
+
+#[test]
 fn write_is_visible_to_read() {
     common::boot_hosted_pmm();
     let (m, _sb) = open_with_sb(fresh_disk());
@@ -297,6 +315,7 @@ fn writeback_persists_across_remount() {
         // Mutate via the MAP_SHARED frame (no write(2) write-through), then flush.
         let pa = f.i_mapping().unwrap().shared_frame(0).expect("shared frame").expect("shared frame present").pa;
         let base = pmm::setup::frame_ptr(pa).expect("frame_ptr");
+        f.mmap_page_mkwrite(0).expect("shared write fault admission");
         // SAFETY: pa is the inode's resident page-0 frame; write in-bounds.
         unsafe { core::ptr::copy_nonoverlapping(pat.as_ptr(), base, pat.len()); }
         f.i_mapping().unwrap().writeback().expect("writeback");
@@ -338,6 +357,8 @@ fn shared_mapping_after_truncate_persists_across_batched_remount() {
         let pa1 = f.i_mapping().unwrap().shared_frame(PG as u64).expect("map page one").expect("map page one present");
         let base0 = pmm::setup::frame_ptr(pa0.pa).expect("page zero pointer");
         let base1 = pmm::setup::frame_ptr(pa1.pa).expect("page one pointer");
+        f.mmap_page_mkwrite(0).expect("page zero write fault admission");
+        f.mmap_page_mkwrite(PG as u64).expect("page one write fault admission");
         // Linux ftruncate growth is zero-filled even when the final logical
         // page gets a real ext4 block. A freed block's former directory bytes
         // must never become visible merely because it was selected for EOF.
@@ -392,6 +413,8 @@ fn shared_mapping_over_unwritten_extent_persists_across_batched_remount() {
         let pa1 = f.i_mapping().unwrap().shared_frame(PG as u64).expect("map page one").expect("map page one present");
         let base0 = pmm::setup::frame_ptr(pa0.pa).expect("page zero pointer");
         let base1 = pmm::setup::frame_ptr(pa1.pa).expect("page one pointer");
+        f.mmap_page_mkwrite(0).expect("page zero write fault admission");
+        f.mmap_page_mkwrite(PG as u64).expect("page one write fault admission");
         // SAFETY: both are inode-owned MAP_SHARED frames and the writes stay
         // within their 4 KiB page bounds.
         unsafe {

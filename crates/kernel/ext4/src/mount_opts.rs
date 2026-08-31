@@ -26,7 +26,7 @@ mod tests;
 pub use flags::{EXT4_MOUNT_GRPQUOTA, EXT4_MOUNT_PRJQUOTA, EXT4_MOUNT_QUOTA,
                 EXT4_MOUNT_QUOTA_MASK, EXT4_MOUNT_USRQUOTA, jqfmt_from_name, jqfmt_name,
                 limit_bit};
-pub use behaviour::{DataMode, ErrorsPolicy, Ext4Behaviour};
+pub use behaviour::{DataMode, DaxMode, ErrorsPolicy, Ext4Behaviour};
 pub use ctx::{Ext4MountOpts, FsQuotaFeatures, Ext4SbOpts};
 pub use consistency::check_quota_consistency;
 pub use apply::apply_quota_options;

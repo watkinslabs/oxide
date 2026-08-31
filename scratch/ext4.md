@@ -22,8 +22,8 @@ No item closes on a parser change alone. Each closes only when the Linux-shaped 
 | E4-07 | DONE | Exact physical preallocation ownership, failed-claim rollback, contiguous locality-tail consumption with Linux-style size re-bucketing, Linux's `fls(len)-2` average-fragment buckets, the bounded three-order best-available scan fallback, bounded multiblock extent selection, and inode-PA release on truncate, punch-hole, range shifts, final orphan eviction, last-writer release, ENOSPC discard, and mount teardown are covered. | E4-01, E4-02, E4-05 | allocator model tests, fragmentation/failure tests, e2fsck-clean images, full ext4 matrix |
 | E4-08 | medium | Indexed-directory lookup and inode construction reuse the type-probe image and resident VFS inode identity; special inode construction and directory mutation now reuse parsed inode fields instead of rereading the inode table. Ordinary pathname walks start in Linux RCU mode and fall back at blocking boundaries. The Linux-shaped rwsem reader fast path removes the wait-lock round trip for uncontended shared readers, delayed-allocation buffered writes no longer reread the inode table before returning, and linear-directory byte matching now avoids per-entry object and closure work while borrowing the shared metadata block. Linear scans now retain Linux's per-directory last-successful-block hint and issue a bounded readahead window through the canonical metadata cache, matching the reference's batched lookup reads without adding a second cache owner. Canonical VFS regular-file creates now pass their already-resolved parent inode through inheritance and directory insertion, matching Linux's in-core parent ownership; the controlled run was performance-neutral, so no whole-boot gain is claimed. Create/mkdir/symlink/mknod and ordinary VFS unlink/rmdir/link/rename/writeback transactions now durably publish journal records before returning and defer home-block checkpointing to the background owner, matching the reference journal-handle boundary and shortening the VFS inode-lock hold. Ext4 inode xattrs now load lazily behind a sleepable per-inode owner on the first xattr, ACL, or list operation, matching Linux's on-demand path. The checkpoint owner skips a busy mutation gate and retries asynchronously. Batched handles now release the mount transaction gate while unrelated operation bodies run; locality preallocation selection retires its claimed prefix atomically, preserving Linux's reservation ownership under concurrent handles. The latest valid aggregate measurements remain within harness variance, so whole-boot closure is not credited. Aggregate closure is still open at ~12–15x host; the remaining owners are the blocking ext4 lookup path, residual mutation work, and repeatable controlled performance evidence. | E4-01, E4-02 | named phase owner; repeated controlled comparison closes the ratio |
 | E4-09 | DONE | `inode_readahead_blks` warms a Linux-bounded inode-table window through the canonical metadata cache and excludes each group's `bg_itable_unused` tail. The ext4 address-space readahead worker is exercised against both real GNOME root images and publishes multiple resident file pages. | E4-01, E4-02 | cold-lookup/image coverage, async ownership integration, both-arch target checks, boot-smoke and perf comparison |
-| E4-10 | IN-PROGRESS | Ext4 now owns synchronous `O_DIRECT` reads/writes through extent mapping and the block device, with alignment errors, buffered-write drain, journaled allocation/size publication, and Linux-shaped `dioread_nolock`/`dioread_lock` policy. Scalar and vectored read/write/pread64/pwrite64 paths now validate the actual userspace iov addresses and running file offsets through the filesystem-owned alignment contract before syscall bounce buffers. Post-DIO cleanup uses best-effort cache invalidation, preserving mapped, dirty, and in-flight pages. The ext4 address space now has one Linux-shaped invalidate lock: buffered/cache/mmap reads and readahead take it shared; DIO and truncate take it exclusive, so extent remapping cannot race a cache handoff. Reusing a frame store now admits a newer canonical inode size monotonically, preventing the documented mid-file short-fill/SIGBUS desynchronization. `data=journal` disables the lockless mode and O_DIRECT admission, matching Linux; its target-block ordering is covered by the image harness. The real `mini.img` harness covers direct extent reads, alignment rejection, remount persistence, and unwritten-extent zero/convert behavior. Polled io_uring DIO now has a process-context completion owner: in-file holes are journal-mapped as unwritten before queueing, initialized and preallocated ranges can invalidate the canonical page cache after device completion, and completed unwritten ranges are converted to initialized extents in that owner; the same real-image harness now verifies the completion owner's `RWF_DSYNC`/`RWF_SYNC` device barrier and mtime/ctime remount persistence. A glibc-ABI userspace probe now submits scalar io_uring writes with both RWF flags against an ext4 file and passes in image boots on x86_64 and aarch64. Legacy indirect inodes now resolve direct, single-, double-, and triple-indirect read mappings through the canonical block owner; journal mapping, physical extent reporting, and legacy mutation use that same inode-aware mapping owner. Inline-data is now admitted through the canonical owner for regular files, directories, and symlinks: a generated `mkfs.ext4 -O inline_data` image mounts, resolves synthetic `.`/`..`, creates/looks up/unlinks a child, and regular-file inline growth preserves the ibody `system.data` tail while converting through the extent allocator. Multi-block inline regular-file growth and legacy-indirect mutation are covered by the generated and mounted-image harnesses; DAX remains explicitly refused because this kernel has no persistent-memory mapping owner. | E4-01, E4-02 | Final GNOME/runtime and repeatable performance closure; retain DAX refusal until a persistent-memory mapping owner exists |
-| E4-11 | DONE | Bitmap prefetch is wired and covered; `nombcache` is explicitly refused because its mbcache owner is absent. | E4-02, E4-07 | Add mbcache before changing the refusal |
+| E4-10 | IN-PROGRESS | Ext4 owns synchronous `O_DIRECT` and polled io_uring I/O through canonical extent/indirect mapping, allocation, cache invalidation, and durability owners. Inline-data and legacy-indirect mutation are covered. DAX now has Linux-shaped mount policy, shared-only mmap/page-mkwrite, direct byte I/O, virtio shared-memory transport handoff, and a kernel-target virtio-pmem block/DAX provider with config fallback and probe-failure cleanup. Provider tests, both-arch checks, and real PMEM image mounts with `dax=inode` and `dax=always` pass on SMP=1; strict harness runs now also prove DAX writes and PMEM flush completion. Final SMP=2 GNOME/runtime and AArch64 graphical evidence remain open. | E4-01, E4-02 | final SMP=2/AArch64 runtime closure and boot evidence |
+| E4-11 | DONE | Bitmap prefetch, ext4 external-xattr mbcache sharing/refcounting, Linux EA-inode values with reusable hash-indexed hidden inodes, and Linux orphan-file slots are wired and covered; `nombcache`/`no_mbcache` disables external-block sharing. | E4-02, E4-07 | EA-inode image round-trip/sharing and full ext4 matrix pass; real Linux-image compatibility remains in runtime closure |
 
 E4-10 status correction (B2979): multi-block inline regular-file conversion is
 covered. Legacy indirect inodes preserve the legacy pointer tree for mapped
@@ -31,12 +31,84 @@ writes, direct/single/double/triple branch geometry, direct/single/double
 allocation, truncate, punch-hole, and keep-size fallocate; a mounted-image
 triple-indirect chain is also read through the same mapper. DIO now uses the
 same inode-aware mapping and zero-prepares legacy holes, and nodelalloc no
-longer rejects legacy inodes before writeback. DAX remains explicitly refused.
+longer rejects legacy inodes before writeback. DAX provider and byte-I/O owners
+are implemented; real-image validation remains open.
 This correction supersedes the stale E4-10 wording in the inventory row above:
 multi-block inline conversion and legacy-indirect mutation are covered by
 canonical owners. Collapse/insert range remains extent-only, matching Linux;
-the remaining E4-10 closure item is final boot evidence, while DAX stays an
-explicit refusal without a persistent-memory mapping owner.
+the remaining E4-10 closure item is DAX real-image and final boot evidence.
+
+E4-10 status update (B3015): DAX is no longer parser-only refusal. The block
+device owns a bounded persistent-memory aperture, partition devices preserve
+its offset, ext4 persists and exposes the inode DAX flag, and the VMM has a
+shared-only DAX frame hook so private mappings retain copy-on-write semantics.
+Virtio-pmem now owns the Linux virtio-pmem region/config discovery, flush
+request format, block registration, DAX region publication, bounded polled
+completion, and DMA/frame cleanup on failed probe and removal. Real PMEM image
+mounts with both `dax=inode` and `dax=always` pass on SMP=1; final SMP=2
+runtime evidence remains a scheduler-lane issue.
+
+E4-10 status update (2ecc04b33): PMEM's queue-only polling profile is now
+restricted to transports with no queue-zero interrupt owner, and the block
+major allocator reserves the fixed virtio-blk major before dynamic PMEM
+registration. A PMEM-enabled SMP=2 boot publishes vda/vdb, mounts the root
+ext4 filesystem, and reaches network-online.target. Real PMEM image mounts
+with both `dax=inode` and `dax=always` pass on SMP=1; final SMP=2 runtime
+evidence remains a scheduler-lane issue.
+
+E4-10 identity update (current branch): a fresh instrumented SMP=2 GNOME boot
+reproduced the page-cache failure as `[FILL-ERR lock-cache-page ino=89925
+page=0]` after an inode slot had been recycled. The canonical frame-store index
+was keyed only by raw inode number, so a still-live old page store could be
+returned to a new inode incarnation. Linux binds `address_space` to the
+in-core inode; the owner now keys the store by `(ino, i_generation)`. The
+hosted regression proves same-generation reuse and cross-generation
+separation. A fresh fixed SMP=2 debug boot reached GNOME Shell at 18.094s;
+`colord` and `fwupd` started successfully, with no fill diagnostics or early
+EIO cascade. Remaining E4-10 closure is the final DAX/runtime matrix and
+AArch64 graphical evidence.
+
+E4-10 PMEM transport update (current branch): the PCI handoff no longer
+notifies an empty request queue. Linux's child driver owns the first
+notification together with its published descriptor; virtio-pmem/QEMU treats
+an empty notification as a malformed flush request and marks the device
+broken. The strict x86_64 SMP=1 harness now proves `/dev/pmem1`, `dax=inode`,
+`dax=always`, DAX writes, and successful PMEM flush completions (`ret=0`).
+The hosted ext4 suite remains 407/407. Final SMP=2 and AArch64 graphical
+evidence remain open.
+
+E4-10 runtime probe (2026-08-30): a clean x86_64 SMP=1 PMEM boot reached
+GNOME Shell, reported an active IPv4 DNS scope, passed five D-Bus
+`resolve1` Pings, and passed positive and negative DNS queries. In that boot,
+`systemd-oomd` received a transient `EIO` on its first spawn and systemd
+retried it successfully; this is retained as runtime reliability evidence,
+not clean-boot closure. A separately instrumented writeback run reproduced
+D-Bus timeouts while serial fsync/block diagnostics were enabled; those
+diagnostics are not production behavior but remain useful for the outstanding
+scheduler/writeback stress audit.
+
+Real-root ext4 workload evidence (2026-08-30): the ignored seven-test
+workload passed against both `gnome-x86_64-root.img` and
+`gnome-aarch64-root.img`. Each run covered batched journal creation, a
+1,200-directory/15,600-operation metadata churn phase, remount persistence,
+merged-usr systemd symlink walks, VFS-path journald writes, frame-cache
+coherency, and udev directory creation. This closes the real-image ext4
+workload evidence gap; it does not close E4-08 performance or E4-10 DAX
+SMP/runtime evidence.
+
+E4-10/E4-08 status update (B3016): the shared page-cache owner now follows
+Linux's `page_mkwrite` dirtying boundary. Read-side `shared_frame` lookup no
+longer marks clean pages dirty; shared-write admission does. Frame-coherency
+image coverage is 13/13, and an instrumented GNOME x86_64 SMP=1 boot reaches
+GNOME, colord, and fwupd without fill diagnostics. The AArch64 run reached
+normal userspace services but did not reach the graphical milestone before its
+timeout; this remains runtime evidence to repeat, not a closure claim.
+
+E4-12 status update (B3016): `INCOMPAT_LARGEDIR` is now admitted and the
+existing htree owner descends and grows through the third-level layout used by
+Linux. Unknown incompatibility bits remain refused. A full third-level root
+still returns `DirFull` until the format's maximum-depth/large-directory
+stress harness is present.
 
 E4-10 status update (B2989): inline data is also converted before fallocate,
 punch-hole, and truncate, so those operations cannot dispatch inline payload
@@ -75,7 +147,7 @@ durability after device success, with sync errors carried into the CQE. E4-10
 The scalar io_uring read/write dispatch now carries `sqe.rw_flags` through the
 same shared RWF admission and VFS owners as vectored I/O, including cursor
 NOWAIT reads and per-operation append/sync behavior. E4-10
-stays IN-PROGRESS pending final boot closure; inline-data and legacy-indirect mutation are covered, while journal-data remains on its synchronous owner and DAX is explicitly refused. Focused io_uring
+stays IN-PROGRESS pending final boot closure; inline-data and legacy-indirect mutation are covered, while journal-data remains on its synchronous owner. DAX provider completion is implemented and real-image evidence now covers x86_64 SMP=1. Focused io_uring
 timestamp/RWF-sync image coverage passes on both architectures. The per-operation sync mode now travels with
 the owned DIO transfer through the filesystem and block completion owners;
 `dio_polled_image` pins deferred success/error, hole allocation, unwritten
@@ -101,7 +173,8 @@ The target is every useful ext4 mode that this kernel can support honestly. A mo
 | journal recovery, `noload`, `norecovery`, error policies | Linux ordering and error result |
 | direct I/O options | implement when the direct-I/O owner is present; otherwise refuse rather than silently ignore |
 | Inline data (regular files, directories, symlinks) | live through the shared inline-data owner, including multi-block regular-file conversion |
-| DAX, encryption, bigalloc, verity, and other absent device/layout owners | explicit refusal is correct until the required owner exists |
+| DAX | live owner exists; x86_64 SMP=1 virtio-pmem image mounts, writes, and flushes pass; final SMP=2/AArch64 runtime evidence remains |
+| encryption, bigalloc, verity, and other absent device/layout owners | explicit refusal is correct until the required owner exists |
 | obsolete compatibility spellings | preserve Linux-compatible no-op behavior only where that is the reference behavior; document each one |
 
 ## 4 — dependency-ordered execution
@@ -314,6 +387,17 @@ B2998 runtime evidence: the merged `main` tree reached GNOME Shell in a fresh
 5,633 ms CPU, and 4,114 ns average; the cumulative symlink phase was 380 ms.
 This is a third valid post-cache sample, but the aggregate remains within
 harness variance, so E4-08 and E4-10 are not closed by this measurement.
+
+Current controlled perf sample (2026-08-30): `make perf-report SMP=1` reached
+GNOME Shell in 36 seconds and measured 1,368,471 syscalls, 6,386 ms CPU, and
+4,667 ns average. The largest compared ratios were `recvfrom` 20x,
+`newfstatat` 16x, `munmap` 16x, `recvmsg` 13x, and absent-page write faults
+13x. Ext4/VFS phase attribution names the remaining filesystem-side owner:
+contended parent `i_rwsem` acquisition averaged 293 us on slow lookups,
+exclusive inode hold averaged 698 us, ext4 linear lookup averaged 124 us, and
+the backend lookup averaged 67 us. This is the input for the next
+dependency-ordered mutation critical-section audit; it is not a whole-boot
+gain claim.
 
 ## 5 — phase gate
 

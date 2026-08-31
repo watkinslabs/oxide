@@ -174,9 +174,21 @@ impl Mount {
         atime: Timespec64, mtime: Timespec64, ctime: Timespec64) -> Result<(), MountError>
     {
         self.run_journaled(|m| {
-            let (mut b, _off) = m.read_inode_bytes(ino)?;
+            let (mut b, _off) = match m.read_inode_bytes(ino) {
+                Ok(v) => v,
+                Err(e) => {
+                    #[cfg(feature = "debug-fsync-latency")]
+                    { klog::write_raw(b"[EXT4-META] read ino="); klog::write_dec_u64(ino as u64); klog::write_raw(b" err\n"); }
+                    return Err(e);
+                }
+            };
             m.stamp_inode_meta_fields(&mut b, InodeMetaUpdate { mode, uid, gid, atime, mtime, ctime });
-            m.write_inode_bytes(ino, &b)
+            let result = m.write_inode_bytes(ino, &b);
+            #[cfg(feature = "debug-fsync-latency")]
+            if result.is_err() {
+                klog::write_raw(b"[EXT4-META] write ino="); klog::write_dec_u64(ino as u64); klog::write_raw(b" err\n");
+            }
+            result
         })
     }
 }

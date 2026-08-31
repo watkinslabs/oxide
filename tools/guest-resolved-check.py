@@ -150,6 +150,15 @@ try:
             ok = False
             print(f"guest-resolved-check: FAIL — D-Bus Ping {n}/5", flush=True)
             print(out[-3000:], flush=True)
+            if n == 1:
+                # The resolver can be active while its D-Bus peer or the
+                # broker is parked forever.  Capture the kernel-visible wait
+                # owner at the first failure; this is the useful distinction
+                # between a network configuration problem and a scheduler/
+                # IPC wait regression.
+                diag = run(conn, buf,
+                    "ps -eo pid,comm,state,wchan; for p in $(pidof dbus-broker systemd-resolved); do echo PID=$p; cat /proc/$p/wchan; done")
+                print("guest-resolved-check: wait diagnostics:\n" + diag[-5000:], flush=True)
 
     query = run(conn, buf, "getent ahostsv4 one.one.one.one")
     if re.search(r"1\.1\.1\.1", query) and re.search(r"OXIDE-RC-0", query):
@@ -179,6 +188,15 @@ finally:
         conn.close()
     try:
         os.killpg(os.getpgid(qemu.pid), 9)
+    except OSError:
+        pass
+    # QEMU's UART is routed through the Unix socket, so it is not present in
+    # the build log opened above.  Preserve the captured guest transcript in
+    # the advertised log before closing it; otherwise a failed resolver probe
+    # prints evidence that disappears with the process.
+    try:
+        with open(LOG, "ab") as uart_log:
+            uart_log.write(buf)
     except OSError:
         pass
     log.close()

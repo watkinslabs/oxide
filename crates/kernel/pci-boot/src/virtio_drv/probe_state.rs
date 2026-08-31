@@ -1,6 +1,6 @@
 use super::runtime::VirtioPciRuntime;
 use super::{
-    bind_legacy_intx, bind_msix_vector, bind_shared_msix_vector, kick_queue_notify, release_msix_bindings,
+    bind_legacy_intx, bind_msix_vector, bind_shared_msix_vector, release_msix_bindings,
     restore_pci_command, unmask_msix_bindings, MsixBinding,
     NetRxBootBuffer, ProgrammedQueues, TransportMappings, VirtioProbeDevres, Vec,
     VIRTIO_PCI_PAGE_BASE_MASK,
@@ -12,6 +12,7 @@ pub(super) struct VirtioProbeState {
     mappings: TransportMappings,
     cfg_va: u64,
     device_cfg_va: u64,
+    shared_memory: Option<virtio::VirtioSharedMemoryRegion>,
     isr_va: u64,
     msix: Vec<MsixBinding>,
     legacy: Option<super::super::virtio_transport::LegacyBinding>,
@@ -19,9 +20,10 @@ pub(super) struct VirtioProbeState {
 }
 
 impl VirtioProbeState {
-    fn new(bdf: pci::Bdf, mappings: TransportMappings, cfg_va: u64, device_cfg_va: u64, isr_va: u64) -> Self {
+    fn new(bdf: pci::Bdf, mappings: TransportMappings, cfg_va: u64, device_cfg_va: u64,
+           shared_memory: Option<virtio::VirtioSharedMemoryRegion>, isr_va: u64) -> Self {
         Self {
-            bdf, mappings, cfg_va, device_cfg_va, isr_va, msix: Vec::new(), legacy: None,
+            bdf, mappings, cfg_va, device_cfg_va, shared_memory, isr_va, msix: Vec::new(), legacy: None,
             next_msix_vector: 0,
         }
     }
@@ -43,9 +45,13 @@ impl VirtioProbeState {
             .find(virtio::VIRTIO_PCI_CAP_DEVICE_CFG)
             .and_then(|devcfg| map_cap_window(&mut mappings, devcfg, bars))
             .unwrap_or(0);
+        let shared_memory = vcaps
+            .find(virtio::VIRTIO_PCI_CAP_SHARED_MEMORY_CFG)
+            .and_then(|cap| virtio::pci::shared_memory_pa(&cap, bars, 0))
+            .map(|(base_pa, size_bytes)| virtio::VirtioSharedMemoryRegion { id: 0, base_pa, size_bytes });
         let isr_va = vcaps.find(virtio::VIRTIO_PCI_CAP_ISR_CFG)
             .map(|cap| mappings.map_isr_va(Some(&cap), bars)).unwrap_or(0);
-        Some(Self::new(bdf, mappings, cfg_va, device_cfg_va, isr_va))
+        Some(Self::new(bdf, mappings, cfg_va, device_cfg_va, shared_memory, isr_va))
     }
 
     pub(super) fn cfg_va(&self) -> u64 {
@@ -54,6 +60,10 @@ impl VirtioProbeState {
 
     pub(super) fn device_cfg_va(&self) -> u64 {
         self.device_cfg_va
+    }
+
+    pub(super) fn shared_memory(&self) -> Option<virtio::VirtioSharedMemoryRegion> {
+        self.shared_memory
     }
 
     fn bind_msix_queue(
@@ -182,6 +192,20 @@ impl VirtioProbeState {
         bars: &[pci::Bar; 6],
         profile: &virtio::VirtioTransportProfile,
     ) -> Option<(u16, u16, [Option<virtio::VirtioQueuePlan>; virtio::MAX_RESOURCE_QUEUES])> {
+        // A queue-only profile is an explicit polling contract.  It must not
+        // be rejected merely because this device has no usable MSI-X/INTx
+        // binding; the queue still needs to be programmed and handed off.
+        if profile.q0_handler.is_none()
+            && profile.config_handler.is_none()
+            && profile.queue_plans.iter().all(|plan|
+                plan.map(|plan| plan.msix_handler.is_none()).unwrap_or(true))
+        {
+            let mut queues = profile.queue_plans;
+            for plan in queues.iter_mut().flatten() {
+                *plan = plan.with_msix_vec(virtio::VIRTIO_MSI_NO_VECTOR);
+            }
+            return Some((virtio::VIRTIO_MSI_NO_VECTOR, virtio::VIRTIO_MSI_NO_VECTOR, queues));
+        }
         let config = match self.bind_optional_msix(d, caps, bars, profile.config_handler) {
             Some(config) => config,
             None => {
@@ -225,7 +249,13 @@ impl VirtioProbeState {
         profile: virtio::VirtioTransportProfile,
         runtime: VirtioPciRuntime,
     ) -> virtio::CommonCfgBringup<ProgrammedQueues> {
-        let bringup = virtio::bring_up_common_cfg_with_wait(self.cfg_va, profile.drv_features, wait_one_ms, || {
+        // This PCI binding is the modern-only virtio transport. Linux's
+        // modern transport always negotiates VERSION_1 before enabling a
+        // queue; leaving it to each child profile permits a queue to be
+        // programmed with legacy semantics even though the device exposes
+        // only the modern common configuration.
+        let wanted_features = profile.drv_features | virtio::VIRTIO_F_VERSION_1;
+        let bringup = virtio::bring_up_common_cfg_with_wait(self.cfg_va, wanted_features, wait_one_ms, || {
             let (config_msix_vec, q0_msix_vec, queue_plans) = self.resolve_msix(d, caps, bars, &profile)?;
             if virtio::set_config_msix_vector(self.cfg_va, config_msix_vec) != config_msix_vec {
                 return None;
@@ -246,39 +276,6 @@ impl VirtioProbeState {
     ) -> u64 {
         self.mappings
             .map_queue_notify_va(notify_cap, bars, notify_off)
-    }
-
-    fn kick_queue(
-        &mut self,
-        notify_cap: Option<&virtio::VirtioPciCap>,
-        bars: &[pci::Bar; 6],
-        notify_off: u16,
-        queue_index: u16,
-    ) -> u64 {
-        let notify_va = self.map_notify(notify_cap, bars, notify_off);
-        if kick_queue_notify(notify_va, queue_index) {
-            notify_va
-        } else {
-            0
-        }
-    }
-
-    fn kick_queue_and_observe_status(
-        &mut self,
-        notify_cap: Option<&virtio::VirtioPciCap>,
-        bars: &[pci::Bar; 6],
-        notify_off: u16,
-        queue_index: u16,
-        fallback_status: u8,
-    ) -> (u64, u8) {
-        let kick_va = self.kick_queue(notify_cap, bars, notify_off, queue_index);
-        if kick_va == 0 {
-            return (0, fallback_status);
-        }
-        // The notify only publishes queue ownership; no status transition is
-        // promised by it. Read the common status directly instead of imposing
-        // an arbitrary delay on every live virtio function.
-        (kick_va, virtio::read_status(self.cfg_va))
     }
 
     fn read_isr_status(
@@ -319,13 +316,21 @@ impl VirtioProbeState {
             NetRxBootBuffer::default()
         };
 
-        let (q0_notify_va, post_notify_status) = if final_status & virtio::VIRTIO_STATUS_FAILED == 0
+        // Do not probe a request queue by notifying it while it is empty.
+        // A queue notification is a device operation, not a harmless status
+        // read: virtio-pmem's queue handler calls virtqueue_pop() immediately
+        // and marks the device broken when no request exists.  Linux only
+        // kicks after its child has published a descriptor.  The transport
+        // still hands the child its notification address; the child owns the
+        // first kick together with the request it owns.
+        let q0_notify_va = if final_status & virtio::VIRTIO_STATUS_FAILED == 0
             && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
         {
-            self.kick_queue_and_observe_status(notify_cap, bars, q0_notify_off, 0, final_status)
+            self.map_notify(notify_cap, bars, q0_notify_off)
         } else {
-            (0u64, final_status)
+            0
         };
+        let post_notify_status = final_status;
 
         let q1_notify_va = if (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {
             planned_notify_mappings.get(1)

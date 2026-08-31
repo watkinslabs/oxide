@@ -74,6 +74,8 @@ impl CoherentDev {
 
 impl BlockDevice for CoherentDev {
     fn block_size(&self) -> u32 { self.inner.block_size() }
+    /// Cache-coherence wrapping does not change the DAX owner or its aperture.
+    fn dax_region(&self) -> Option<crate::DaxRegion> { self.inner.dax_region() }
     fn queue_limits(&self) -> KResult<QueueLimits> { self.inner.queue_limits() }
     fn supports_discard(&self) -> bool { self.inner.supports_discard() }
     fn capacity_blocks(&self) -> u64 { self.inner.capacity_blocks() }

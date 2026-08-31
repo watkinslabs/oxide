@@ -61,7 +61,7 @@ pub mod uapi;
 pub mod zoned;
 
 pub use bdev::{sync_bdevs, BdevMapping};
-pub use blockdev::{BlockCompletion, BlockDevice, BlockRequest, MemDisk};
+pub use blockdev::{BlockCompletion, BlockDevice, BlockRequest, DaxRegion, MemDisk};
 pub use durability::Durability;
 pub use flags::RequestFlags;
 pub use pagecache::{CachedPage, PageCache};

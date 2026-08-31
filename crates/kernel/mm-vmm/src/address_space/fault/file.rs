@@ -77,14 +77,11 @@ impl AddressSpace {
                 // file mappings retain the read-copy COW path below.
                 let direct = if let Some(pa) = backing.direct_frame(file_off) {
                     Some((pa, false))
-                } else if vma.flags.contains(VmaFlags::SHARED) && !cfg!(feature = "debug-no-shmem") {
-                    // A WRITE fault on a shared mapping tells the object so
-                    // before the frame is asked for, because for a file on a
-                    // medium that call is what reserves the block the frame will
-                    // hold — so a hole becomes storage, ENOSPC and quota are
-                    // decided while the fault can still report them, and the
-                    // page is dirtied by the one event the filesystem sees for a
-                    // mapped write. A read fault reserves nothing.
+                } else if vma.flags.contains(VmaFlags::SHARED) {
+                    // A DAX frame is already the persistent object, so it has
+                    // no cache lookup below to trigger page_mkwrite. Run the
+                    // write-fault owner before choosing either direct storage
+                    // or a shared page-cache frame.
                     if matches!(access, FaultAccess::Write) {
                         match backing.page_mkwrite(file_off) {
                             Ok(()) => {}
@@ -93,12 +90,23 @@ impl AddressSpace {
                             Err(_) => return Err(Error::Io),
                         }
                     }
+                    if let Some(pa) = backing.dax_frame(file_off) {
+                        Some((pa, false))
+                    } else if !cfg!(feature = "debug-no-shmem") {
+                    // A WRITE fault on a shared mapping tells the object so
+                    // before the frame is asked for, because for a file on a
+                    // medium that call is what reserves the block the frame will
+                    // hold — so a hole becomes storage, ENOSPC and quota are
+                    // decided while the fault can still report them, and the
+                    // page is dirtied by the one event the filesystem sees for a
+                    // mapped write. A read fault reserves nothing.
                     match backing.shared_frame(file_off) {
-                        Ok(frame) => frame.map(|frame| (frame.pa, frame.map_ref_held)),
-                        Err(FileBackingError::NoMem) => return Err(Error::NoMem),
-                        Err(FileBackingError::Again) => return Err(Error::Again),
-                        Err(_) => return Err(Error::Io),
-                    }
+                            Ok(frame) => frame.map(|frame| (frame.pa, frame.map_ref_held)),
+                            Err(FileBackingError::NoMem) => return Err(Error::NoMem),
+                            Err(FileBackingError::Again) => return Err(Error::Again),
+                            Err(_) => return Err(Error::Io),
+                        }
+                    } else { None }
                 } else { None };
                 if let Some((spa, map_ref_held)) = direct {
                     #[cfg(feature = "debug-faultdiag")]

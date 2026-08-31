@@ -106,6 +106,7 @@ net = { path = "../net", features = ["hosted"] }
 sched = { path = "../sched", features = ["hosted"] }
 
 [features]
+debug-fsync-latency = []  # [EXT4-FSYNC] syscall return diagnostics for filesystem setattr
 debug-eager-fork = []  # TEST: eager-copy fork instead of COW
 debug-tcprx = []  # [TCPRX] shim receive-loop enter/park/wake trace for restarted recv(2)
 debug-boot = ["kmacros/debug-boot", "net/debug-boot", "drm/debug-boot"]

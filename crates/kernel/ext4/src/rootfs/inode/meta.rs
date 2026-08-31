@@ -10,12 +10,16 @@ use crate::superblock::{EXT4_LABEL_MAX, SB_OFF_VOLUME_NAME, SUPERBLOCK_OFFSET};
 use crate::inode::flags::{EXT4_APPEND_FL, EXT4_IMMUTABLE_FL, EXT4_NOATIME_FL, EXT4_SYNC_FL};
 const EXT4_JOURNAL_DATA_FL: u32 = 0x0000_4000;
 const EXT4_EXTENTS_FL:   u32 = 0x0008_0000;
+const EXT4_ENCRYPT_FL:   u32 = 0x0000_0800;
+const EXT4_VERITY_FL:    u32 = 0x0010_0000;
+const EXT4_INLINE_DATA_FL: u32 = 0x1000_0000;
+const EXT4_DAX_FL:       u32 = vfs::inode::FS_DAX_FL;
 const EXT4_PROJINHERIT_FL: u32 = FS_PROJINHERIT_FL;
 /// `lsattr`-visible ext4 flags (Linux `EXT4_FL_USER_VISIBLE` subset this
 /// backend can report without advertising unsupported layouts).
-const FS_FL_USER_VISIBLE:    u32 = 0x0003_DFFF | EXT4_EXTENTS_FL | EXT4_PROJINHERIT_FL;
+const FS_FL_USER_VISIBLE:    u32 = 0x0003_DFFF | EXT4_EXTENTS_FL | EXT4_PROJINHERIT_FL | EXT4_DAX_FL;
 /// `chattr`-settable ext4 flags (Linux `EXT4_FL_USER_MODIFIABLE` subset).
-const FS_FL_USER_MODIFIABLE: u32 = 0x0003_80FF | EXT4_EXTENTS_FL | EXT4_PROJINHERIT_FL;
+const FS_FL_USER_MODIFIABLE: u32 = 0x0003_80FF | EXT4_EXTENTS_FL | EXT4_PROJINHERIT_FL | EXT4_DAX_FL;
 
 /// `ext4_fileattr_get` — the `FS_IOC_GETFLAGS` backend: the inode's on-disk
 /// `i_flags` masked to the user-visible set. # C: O(1) inode read
@@ -122,6 +126,9 @@ pub(crate) fn ext4_fileattr_set(inode: &Inode, fa: &FileAttr) -> KResult<()> {
         return Err(VfsError::Eopnotsupp);
     }
     let new = (cur & !FS_FL_USER_MODIFIABLE) | (fa.flags & FS_FL_USER_MODIFIABLE);
+    if new & EXT4_DAX_FL != 0
+        && (new & (EXT4_VERITY_FL | EXT4_ENCRYPT_FL | EXT4_JOURNAL_DATA_FL | EXT4_INLINE_DATA_FL)) != 0
+    { return Err(VfsError::Eopnotsupp); }
     ext4_ioctl_check_immutable(&st, ino, cur, fa.fsx_projid, new)?;
     if (cur ^ new) & EXT4_EXTENTS_FL != 0 {
         return Err(VfsError::Eopnotsupp);
@@ -135,11 +142,12 @@ pub(crate) fn ext4_fileattr_set(inode: &Inode, fa: &FileAttr) -> KResult<()> {
     vfs::inode::inode_inc_iversion(inode);
     inode.set_times(None, None, ctime)?;
     let mut s = inode.i_flags()
-        & !(vfs::S_IMMUTABLE | vfs::S_APPEND | vfs::S_NOATIME | vfs::S_SYNC);
+        & !(vfs::S_IMMUTABLE | vfs::S_APPEND | vfs::S_NOATIME | vfs::S_SYNC | vfs::inode::S_DAX);
     if new & EXT4_IMMUTABLE_FL != 0 { s |= vfs::S_IMMUTABLE; }
     if new & EXT4_APPEND_FL    != 0 { s |= vfs::S_APPEND; }
     if new & EXT4_NOATIME_FL   != 0 { s |= vfs::S_NOATIME; }
     if new & EXT4_SYNC_FL      != 0 { s |= vfs::S_SYNC; }
+    if st.mount.inode_dax_enabled(inode.i_mode(), new) { s |= vfs::inode::S_DAX; }
     inode.set_i_flags(s);
     ext4_fileattr_setproject(&st, inode, ino, fa.fsx_projid)?;
     Ok(())
@@ -205,6 +213,10 @@ fn ext4_fileattr_setproject(
 /// `persist_inode_xattrs` writeback the xattr ops use. # C: O(1) + 1 journaled
 /// inode write
 pub(crate) fn ext4_setattr(inode: &Inode, idmap: &Idmap, ia: &Iattr) -> KResult<()> {
+    #[cfg(feature = "debug-fsync-latency")]
+    { klog::write_raw(b"[EXT4-META] setattr ino=");
+      klog::write_dec_u64(ext4_state_of(inode).map(|(_, ino)| ino as u64).unwrap_or(0));
+      klog::write_raw(b" valid="); klog::write_dec_u64(ia.valid as u64); klog::write_raw(b"\n"); }
     if ia.valid & vfs::ATTR_SIZE != 0 {
         return ext4_setattr_size(inode, idmap, ia);
     }
@@ -217,7 +229,11 @@ pub(crate) fn ext4_setattr(inode: &Inode, idmap: &Idmap, ia: &Iattr) -> KResult<
     if ia.valid & (vfs::ATTR_UID | vfs::ATTR_GID) != 0 {
         if let Some((st, ino)) = ext4_state_of(inode) { refresh_cached_usage_from_raw(inode, &st, ino)?; }
     }
-    vfs::simple_setattr(inode, idmap, ia)?;
+    if let Err(e) = vfs::simple_setattr(inode, idmap, ia) {
+        #[cfg(feature = "debug-fsync-latency")]
+        { klog::write_raw(b"[EXT4-META] simple-setattr err\n"); }
+        return Err(e);
+    }
     if let Some((st, ino)) = ext4_state_of(inode) {
         if st.mount.persist_inode_meta(
             ino,

@@ -56,7 +56,9 @@ pub fn sys_fsconfig(args: &SyscallArgs) -> i64 {
 
     let key = &fetched.key;
     let value = &fetched.value;
-    let mut g = ctx.fc.lock();
+    // SAFETY: fsconfig runs in process context and the filesystem parser may
+    // sleep; this is the Linux fs_context mutex contract.
+    let mut g = unsafe { ctx.fc.lock() };
     let Some(fc) = g.as_mut() else { return -(Errno::Einval.as_i32() as i64) };
     // `finish_clean_context(fc)` heads every command.
     if let Err(e) = vfs::fs::finish_clean_context(fc) {

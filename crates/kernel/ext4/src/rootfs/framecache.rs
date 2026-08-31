@@ -11,10 +11,9 @@
 // `Mount::write_at` path; a `MAP_SHARED` writable mmap mutates the frame
 // directly (no syscall), so its dirty data only reaches disk at an explicit
 // flush — `writeback`/`writeback_range`, driven by `fsync`/`msync` and the
-// inode `Drop`. Dirty tracking is PESSIMISTIC: any frame ever handed out via
-// `shared_frame` is marked dirty (a shared mapping may write it), so writeback
-// re-persists it. Over-flushing an unmodified shared page is correct (writes
-// identical bytes), just not minimal.
+// inode `Drop`. Dirty tracking follows Linux's page_mkwrite boundary: a frame
+// handed out by `shared_frame` remains clean until a shared write fault is
+// admitted.
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::sync::{Arc, Weak};
@@ -119,9 +118,9 @@ pub(crate) struct Ext4FrameStore {
     /// `page_idx -> frame pa`. Sparse: an absent page is filled from disk on
     /// first touch (a hole reads as zero).
     pages: Spinlock<BTreeMap<u64, FileCachePage>, TaskListClass>,
-    /// Dirty page indices (Linux `PAGECACHE_TAG_DIRTY`). Pessimistic: a page
-    /// handed out via `shared_frame` is tagged dirty; `writeback` flushes +
-    /// clears.
+    /// Dirty page indices (Linux `PAGECACHE_TAG_DIRTY`). Pages are tagged by
+    /// `page_mkwrite` immediately before a shared mapping becomes writable;
+    /// read-side frame lookup remains clean.
     dirty: Spinlock<BTreeSet<u64>, TaskListClass>,
     /// Per-index writeback references. A page can be dirtied and queued again
     /// while an earlier flush is still copying it, so this is a count rather
@@ -487,6 +486,18 @@ impl Ext4FrameStore {
     /// the explicit shrinking `set_size` publication under the inode path.
     /// # C: O(1)
     pub(crate) fn set_size_max(&self, size: u64) { self.size.fetch_max(size, Ordering::AcqRel); }
+
+    /// Prepare a buffered shared-mapping write at `off`. Linux's
+    /// `page_mkwrite` dirties the page before the PTE becomes writable; a
+    /// clean mapping fault must remain clean until this hook is reached.
+    /// # C: O(PG/bs) on miss, O(log N) on hit
+    pub(crate) fn page_mkwrite(&self, off: u64) -> KResult<()> {
+        let idx = off / PG as u64;
+        let pa = self.lock_cache_page(idx)?;
+        self.mark_dirty(idx);
+        self.unlock_cache_page(pa);
+        Ok(())
+    }
 
     // Range eviction — truncate's unconditional drop (`invalidate_range`) and
     // the DONTNEED hint's best-effort one (`try_invalidate_pages`) — lives in

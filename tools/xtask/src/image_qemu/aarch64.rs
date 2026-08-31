@@ -159,7 +159,14 @@ pub(super) fn qemu_run_aarch64_grub(
     let netdev = ssh_fwd_netdev();
     let pcap_args = super::common::pcap_filter_args();
     let share_args = super::common::host_share_args();
-    let memory = super::common::qemu_memory(DEFAULT_MEMORY)?;
+    let pmem_args = super::common::virtio_pmem_args();
+    let machine = "virt,gic-version=3,its=on".to_string();
+    let base_memory = super::common::qemu_memory(DEFAULT_MEMORY)?;
+    let memory = if pmem_args.is_empty() {
+        base_memory
+    } else {
+        format!("{},slots=1,maxmem=8G", base_memory)
+    };
     let hibernate_args = super::common::hibernate_disk_args()?;
     // Per-launch vhost-vsock guest CID (host-global — see qemu_vsock_cid), so
     // concurrent worktree boots don't collide on a hardcoded CID. cid / cid+1.
@@ -195,8 +202,9 @@ pub(super) fn qemu_run_aarch64_grub(
     }
     c.args(&pcap_args);
     c.args(&share_args);
+    c.args(&pmem_args);
     c.args([
-        "-machine", "virt,gic-version=3,its=on",
+        "-machine", machine.as_str(),
         "-cpu", "cortex-a72",
         "-smp", &smp_str,
         "-m", memory.as_str(),

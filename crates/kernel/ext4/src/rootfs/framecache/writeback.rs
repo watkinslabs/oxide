@@ -156,7 +156,18 @@ impl Ext4FrameStore {
                     // turn a transient race into userspace EIO.
                     let pa = match self.lock_cache_page(plan[next].0) {
                         Ok(pa) => pa,
-                        Err(_) => { failed = true; break; }
+                        Err(_) => {
+                            #[cfg(feature = "debug-fillverify")]
+                            {
+                                klog::write_raw(b"[WRITEBACK-ERR lock ino=");
+                                klog::write_dec_u64(self.ino as u64);
+                                klog::write_raw(b" page=");
+                                klog::write_dec_u64(plan[next].0);
+                                klog::write_raw(b"]\n");
+                            }
+                            failed = true;
+                            break;
+                        }
                     };
                     let base = match pmm::setup::frame_ptr(pa) {
                         Some(base) => base,
@@ -176,6 +187,16 @@ impl Ext4FrameStore {
                 }
                 if !cluster.is_empty() {
                     if self.st.mount.write_at(self.ino, page_start, &cluster).is_err() {
+                        #[cfg(feature = "debug-fillverify")]
+                        {
+                            klog::write_raw(b"[WRITEBACK-ERR data ino=");
+                            klog::write_dec_u64(self.ino as u64);
+                            klog::write_raw(b" off=");
+                            klog::write_dec_u64(page_start);
+                            klog::write_raw(b" bytes=");
+                            klog::write_dec_u64(cluster.len() as u64);
+                            klog::write_raw(b"]\n");
+                        }
                         failed = true;
                     }
                 }

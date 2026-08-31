@@ -49,14 +49,15 @@ fn direct_io_read_modes_select_the_linux_locking_policy() {
 }
 
 #[test]
-fn bitmap_prefetch_is_stateful_and_mbcache_is_refused_without_a_consumer() {
+fn bitmap_prefetch_and_mbcache_are_stateful() {
     assert!(!b("").unwrap().prefetch_block_bitmaps);
     assert!(b("prefetch_block_bitmaps").unwrap().prefetch_block_bitmaps);
     assert!(!b("prefetch_block_bitmaps,no_prefetch_block_bitmaps").unwrap()
         .prefetch_block_bitmaps);
     assert!(refused("prefetch_block_bitmaps=1"));
-    assert!(refused("nombcache"));
-    assert!(refused("no_mbcache"));
+    assert!(b("").unwrap().mbcache);
+    assert!(!b("nombcache").unwrap().mbcache);
+    assert!(!b("no_mbcache").unwrap().mbcache);
 }
 
 #[test]

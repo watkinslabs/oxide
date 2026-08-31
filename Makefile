@@ -1028,7 +1028,9 @@ perf-report:
 	$(MAKE) FEATURES=$(PERF_FEATURES) SMP=$(SMP) qemu-x86-image
 	OXIDE_QEMU_HEADLESS=1 OXIDE_SERIAL_LOG=$(PERF_LOG) \
 	  tools/perf/boot-until.sh "$(PERF_LOG)" 'GNOME Shell started' 180 \
-	  $(MAKE) SMP=$(SMP) qemu-x86-existing
+	  $(MAKE) SMP=$(SMP) qemu-x86-existing || { \
+	    rc=$$?; echo "perf-report: boot did not reach GNOME marker; no comparison generated" >&2; exit $$rc; \
+	  }
 	python3 tools/perf/perf-report.py --log $(PERF_LOG) \
 	  --markdown $(CURDIR)/scratch/perf-report.md \
 	  --html $(CURDIR)/scratch/perf-report.html

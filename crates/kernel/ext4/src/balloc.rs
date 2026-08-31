@@ -504,7 +504,7 @@ impl Mount {
         let slot_byte = (group as usize) * dsize;
         let bs = self.sb.block_size as usize;
         let blk_idx = slot_byte / bs;
-        let byte_off = self.gdt_byte_offset() + (blk_idx * bs) as u64;
+        let byte_off = crate::mount::gdt_block_byte_offset_for(&self.sb, blk_idx as u32);
         let lo = blk_idx * bs;
         let hi = core::cmp::min(lo + bs, gdt.len());
         self.metadata_write(byte_off, &gdt[lo..hi])

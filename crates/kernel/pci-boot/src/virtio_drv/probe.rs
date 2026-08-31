@@ -93,6 +93,7 @@ impl VirtioPciAcquisition {
             state.device_cfg_va(),
             handoff.queue_resources,
             handoff.net_boot_payloads,
+            state.shared_memory(),
         );
         #[cfg(feature = "debug-boot")]
         let trace = VirtioPciProbeTrace {

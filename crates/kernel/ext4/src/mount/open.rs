@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use crate::gdt;
 use crate::superblock::{SUPERBLOCK_LEN, SUPERBLOCK_OFFSET, Superblock};
-use super::gdt_byte_offset_for;
+use super::{gdt_block_byte_offset_for, gdt_byte_offset_for};
 use super::super::{Mount, MountError, MountState};
 use super::super::io::read_byte_range;
 
@@ -33,6 +33,14 @@ impl Mount {
     {
         let sb_bytes = read_byte_range(dev, SUPERBLOCK_OFFSET, SUPERBLOCK_LEN)?;
         let sb = Superblock::parse(&sb_bytes)?;
+        if sb.feature_compat & crate::superblock::COMPAT_ORPHAN_FILE != 0
+            && sb.orphan_file_inum == 0 {
+            return Err(MountError::UnsupportedFeature);
+        }
+        if sb.feature_ro_compat & crate::superblock::RO_COMPAT_ORPHAN_PRESENT != 0
+            && sb.feature_compat & crate::superblock::COMPAT_ORPHAN_FILE == 0 {
+            return Err(MountError::UnsupportedFeature);
+        }
         Ok(crate::mount_opts::Ext4Behaviour::for_sb_errors(sb.errors))
     }
 
@@ -54,6 +62,14 @@ impl Mount {
     ) -> Result<Self, MountError> {
         let sb_bytes = read_byte_range(&*dev, SUPERBLOCK_OFFSET, SUPERBLOCK_LEN)?;
         let sb = Superblock::parse(&sb_bytes)?;
+        if behaviour.dax == crate::mount_opts::DaxMode::Always
+            && (sb.feature_incompat & crate::superblock::INCOMPAT_INLINE_DATA != 0
+                || sb.block_size as u64 != hal::PAGE_SIZE_BYTES
+                || mappable_dax_region(&*dev).is_none())
+        { return Err(MountError::UnsupportedFeature); }
+        if behaviour.dax == crate::mount_opts::DaxMode::Always
+            && behaviour.data == crate::mount_opts::DataMode::Journal
+        { return Err(MountError::UnsupportedFeature); }
         // Feature gating (Linux EXT4_FEATURE_{INCOMPAT,RO_COMPAT}_SUPP): refuse a
         // fs whose INCOMPAT bits we don't implement (layout would be misread) or
         // whose RO_COMPAT bits we can't safely write (no RO-mount path yet).
@@ -84,7 +100,21 @@ impl Mount {
         let dsize = gdt::desc_size_for(&sb) as usize;
         let gdt_byte_offset = gdt_byte_offset_for(&sb);
         let gdt_len = groups * dsize;
-        let gdt_buf = read_byte_range(&*dev, gdt_byte_offset, gdt_len)?;
+        let gdt_buf = if sb.feature_incompat & crate::superblock::INCOMPAT_META_BG == 0 {
+            read_byte_range(&*dev, gdt_byte_offset, gdt_len)?
+        } else {
+            let bs = u64::from(sb.block_size);
+            let blocks = (gdt_len as u64).div_ceil(bs);
+            let mut packed = alloc::vec![0u8; gdt_len];
+            for block in 0..blocks {
+                let off = gdt_block_byte_offset_for(&sb, block as u32);
+                let bytes = read_byte_range(&*dev, off, bs as usize)?;
+                let lo = (block * bs) as usize;
+                let hi = core::cmp::min(lo + bs as usize, gdt_len);
+                packed[lo..hi].copy_from_slice(&bytes[..hi - lo]);
+            }
+            packed
+        };
         // Verify every group descriptor's bg_checksum (Linux
         // ext4_group_desc_csum_verify). A corrupt GDT slot is refused rather
         // than misinterpreted (wrong bitmap/inode-table blocks).
@@ -93,7 +123,9 @@ impl Mount {
                 let off = n * dsize;
                 if off + dsize > gdt_buf.len()
                     || !crate::csum::verify_group_desc_csum(&sb, n as u32, &gdt_buf[off..off + dsize]) {
-                    super::super::first_csum_failure(b"group-desc", n as u64, gdt_byte_offset + off as u64);
+                    let desc_block = (off / sb.block_size as usize) as u32;
+                    let desc_off = gdt_block_byte_offset_for(&sb, desc_block);
+                    super::super::first_csum_failure(b"group-desc", n as u64, desc_off);
                     return Err(MountError::BadChecksum);
                 }
             }
@@ -118,6 +150,8 @@ impl Mount {
             group_prealloc: alloc::collections::BTreeMap::new(),
             stream_last_groups: alloc::collections::BTreeMap::new(),
             inode_prealloc: alloc::collections::BTreeMap::new(),
+            xattr_block_cache: alloc::collections::BTreeMap::new(),
+            ea_inode_cache: alloc::collections::BTreeMap::new(),
             batch: false,
             handles: alloc::collections::BTreeMap::new(),
             active_handles: 0,
@@ -172,6 +206,10 @@ impl Mount {
         if cleanup_orphans { let _ = m.orphan_cleanup(); }
         Ok(m)
     }
+}
 
-
+fn mappable_dax_region(dev: &dyn block::BlockDevice) -> Option<block::DaxRegion> {
+    let region = dev.dax_region()?;
+    let mapped_base = region.base_pa.checked_add(region.partition_offset)?;
+    (region.size_bytes != 0 && mapped_base % hal::PAGE_SIZE_BYTES == 0).then_some(region)
 }

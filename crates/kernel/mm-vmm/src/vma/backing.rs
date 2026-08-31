@@ -169,6 +169,10 @@ pub trait FileBacking: Send + Sync {
     /// Device-owned frame installed directly for either mapping type. # C: O(1)
     fn direct_frame(&self, _off: u64) -> Option<u64> { None }
 
+    /// DAX frame for a shared mapping of persistent filesystem storage. Private
+    /// mappings must use the ordinary read-and-COW path instead. # C: O(log N)
+    fn dax_frame(&self, _off: u64) -> Option<u64> { None }
+
     /// `FMODE_NOREUSE` on the open file this mapping was established from
     /// (`POSIX_FADV_NOREUSE`, `fadvise64(2)`) — read by
     /// [`crate::recency::vma_has_recency`] to suppress LRU promotion on

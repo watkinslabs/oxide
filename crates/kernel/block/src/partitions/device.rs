@@ -29,6 +29,19 @@ impl PartitionDevice {
 
 impl BlockDevice for PartitionDevice {
     fn block_size(&self) -> u32 { self.parent.block_size() }
+    fn dax_region(&self) -> Option<crate::DaxRegion> {
+        let parent = self.parent.dax_region()?;
+        let start = self.start_block.checked_mul(u64::from(self.block_size()))?;
+        let size = self.capacity_blocks.checked_mul(u64::from(self.block_size()))?;
+        let end = start.checked_add(size)?;
+        if end > parent.size_bytes { return None; }
+        Some(crate::DaxRegion {
+            base_pa: parent.base_pa,
+            size_bytes: size,
+            partition_offset: parent.partition_offset.checked_add(start)?,
+            synchronous: parent.synchronous,
+        })
+    }
     fn queue_limits(&self) -> KResult<QueueLimits> { self.parent.queue_limits() }
     fn supports_discard(&self) -> bool { self.parent.supports_discard() }
     fn capacity_blocks(&self) -> u64 { self.capacity_blocks }

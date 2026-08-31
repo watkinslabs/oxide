@@ -13,7 +13,7 @@ use super::{BLOCK_HDR_LEN, ENTRY_HDR_LEN, EXT4_XATTR_MAGIC, split_name, xattr_su
 /// `ext4_xattr_hash_entry`: name-then-value rolling hash for `e_hash`. Value is
 /// hashed as 4-byte little-endian words over the padded (`EXT4_XATTR_SIZE`)
 /// value length — the trailing pad bytes are zero. # C: O(name + value)
-fn entry_hash(name: &[u8], value: &[u8]) -> u32 {
+pub(super) fn entry_hash(name: &[u8], value: &[u8]) -> u32 {
     const NAME_SHIFT: u32 = 5;
     const VALUE_SHIFT: u32 = 16;
     let mut hash: u32 = 0;
@@ -56,13 +56,24 @@ fn block_hash(entry_hashes: &[u32]) -> u32 {
 /// are none (caller frees the block instead). The `h_checksum` is stamped
 /// separately (needs the block address). # C: O(N log N)
 pub fn encode_block(entries: &[(String, Vec<u8>)], bs: usize) -> Result<Vec<u8>, ()> {
+    encode_block_with_ea(entries, &[], bs)
+}
+
+/// Encode an external xattr block with selected values stored in EA inodes.
+/// Each tuple maps the full xattr name to its hidden inode and content hash.
+/// # C: O(N² + N log N)
+pub fn encode_block_with_ea(entries: &[(String, Vec<u8>)], ea: &[(String, u32, u32)], bs: usize)
+    -> Result<Vec<u8>, ()>
+{
     if bs < BLOCK_HDR_LEN + 4 { return Err(()); }
-    let mut sorted: Vec<(u8, Vec<u8>, &[u8])> = Vec::with_capacity(entries.len());
+    let mut sorted: Vec<(u8, Vec<u8>, &[u8], Option<(u32, u32)>)> = Vec::with_capacity(entries.len());
     for (full, val) in entries {
         if let Some((idx, suffix)) = split_name(full) {
             let name = xattr_suffix_bytes(suffix);
             if name.len() > u8::MAX as usize { return Err(()); }
-            sorted.push((idx, name, val.as_slice()));
+            let inode = ea.iter().find(|(name, _, _)| name == full)
+                .map(|(_, ino, hash)| (*ino, *hash));
+            sorted.push((idx, name, val.as_slice(), inode));
         }
     }
     if sorted.is_empty() { return Err(()); }
@@ -77,30 +88,37 @@ pub fn encode_block(entries: &[(String, Vec<u8>)], bs: usize) -> Result<Vec<u8>,
     let mut entry_ptr = BLOCK_HDR_LEN;
     let mut value_end = bs;
     let mut e_hashes: Vec<u32> = Vec::with_capacity(sorted.len());
-    for (idx, suffix, val) in &sorted {
+    for (idx, suffix, val, ea_inode) in &sorted {
         let name_bytes = suffix.as_slice();
         let name_len = name_bytes.len();
         let elen = xattr_entry_len(name_len);
-        let vsize = xattr_value_size(val.len());
+        let vsize = if ea_inode.is_some() { 0 } else { xattr_value_size(val.len()) };
         if value_end < BLOCK_HDR_LEN + vsize { return Err(()); }
-        let value_pos = value_end - vsize;
+        // Linux does not use e_value_offs when e_value_inum is set. Keep the
+        // unused field zero; an offset at the block end makes fsck treat the
+        // EA inode's data blocks as if they belonged to the parent inode.
+        let value_pos = if ea_inode.is_some() { 0 } else { value_end - vsize };
         // Entry headers (up) + the 4-byte terminator must not overrun the
         // values (down).
-        if entry_ptr + elen + 4 > value_pos { return Err(()); }
+        if ea_inode.is_none() && entry_ptr + elen + 4 > value_pos { return Err(()); }
         // e_value_offs is relative to the block start (base_off = 0).
-        blk[value_pos..value_pos + val.len()].copy_from_slice(val);
+        if ea_inode.is_none() { blk[value_pos..value_pos + val.len()].copy_from_slice(val); }
         blk[entry_ptr] = name_len as u8;
         blk[entry_ptr + 1] = *idx;
         blk[entry_ptr + 2..entry_ptr + 4].copy_from_slice(&(value_pos as u16).to_le_bytes());
-        // e_value_inum = 0 (inline) — zeroed region.
+        if let Some((ea_ino, _)) = ea_inode {
+            blk[entry_ptr + 4..entry_ptr + 8].copy_from_slice(&ea_ino.to_le_bytes());
+        }
         blk[entry_ptr + 8..entry_ptr + 12].copy_from_slice(&(val.len() as u32).to_le_bytes());
-        let eh = entry_hash(name_bytes, val);
+        let eh = if let Some((_, hash)) = ea_inode {
+            entry_hash(name_bytes, &hash.to_le_bytes())
+        } else { entry_hash(name_bytes, val) };
         blk[entry_ptr + 12..entry_ptr + 16].copy_from_slice(&eh.to_le_bytes());
         e_hashes.push(eh);
         blk[entry_ptr + ENTRY_HDR_LEN..entry_ptr + ENTRY_HDR_LEN + name_len]
             .copy_from_slice(name_bytes);
         entry_ptr += elen;
-        value_end = value_pos;
+        if ea_inode.is_none() { value_end = value_pos; }
     }
     let hh = block_hash(&e_hashes);
     blk[12..16].copy_from_slice(&hh.to_le_bytes());

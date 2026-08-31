@@ -7,7 +7,7 @@
 
 use vfs::{KResult, VfsError};
 
-use super::{DataMode, ErrorsPolicy, Ext4Behaviour, DEFAULT_COMMIT_SECS, DEFAULT_LI_WAIT_MULT,
+use super::{DataMode, DaxMode, ErrorsPolicy, Ext4Behaviour, DEFAULT_COMMIT_SECS, DEFAULT_LI_WAIT_MULT,
             MAX_COMMIT_SECS, MAX_JOURNAL_IOPRIO};
 
 pub const OPT_ERRORS: &str = "errors";
@@ -119,10 +119,7 @@ impl Ext4Behaviour {
             }
             OPT_PREFETCH_BLOCK_BITMAPS => { flag(val)?; self.prefetch_block_bitmaps = true; }
             OPT_NO_PREFETCH_BLOCK_BITMAPS => { flag(val)?; self.prefetch_block_bitmaps = false; }
-            // mbcache backs xattr/quota metadata in Linux. Oxide has no such
-            // cache owner yet, so accepting a switch that cannot affect I/O
-            // would be an accept-and-drop mount bug.
-            OPT_NOMBCACHE | OPT_NO_MBCACHE => return Err(VfsError::Einval),
+            OPT_NOMBCACHE | OPT_NO_MBCACHE => { flag(val)?; self.mbcache = false; }
             OPT_STRIPE => self.stripe = number(value(val)?)?,
             OPT_RESUID => self.resuid = number(value(val)?)?,
             OPT_RESGID => self.resgid = number(value(val)?)?,
@@ -138,11 +135,13 @@ impl Ext4Behaviour {
                 MB_OPTIMIZE_ON => true,
                 _ => return Err(VfsError::Einval),
             }),
-            // Direct-access mappings require a block device that can be mapped
-            // without a page cache. There is no such device class here, and the
-            // build that has none refuses the option rather than mounting a
-            // filesystem whose files would silently not be DAX.
-            OPT_DAX => return Err(VfsError::Einval),
+            // The parser records policy; the mount owner validates the device
+            // capability after it has opened the superblock. This is Linux's
+            // separation between `s_mount_opt` and `fs_dax_get_by_bdev`.
+            OPT_DAX => self.dax = match val {
+                None => DaxMode::Always,
+                Some(v) => DaxMode::from_name(v).ok_or(VfsError::Einval)?,
+            },
             _ => return Ok(false),
         }
         Ok(true)

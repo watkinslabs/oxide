@@ -54,7 +54,6 @@ impl Ext4FrameStore {
             // until this matching PTE reference has been added.
             unsafe { pmm::setup::inc_ref(pa); }
             drop(g);
-            self.mark_dirty(idx);
             return Ok(Some(vfs::SharedFrame { pa, map_ref_held: true }));
         }
     }

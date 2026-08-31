@@ -30,7 +30,7 @@ pub use resources::{
     VirtioNetBootPayloads, VirtioNetRxBuffer, VirtioProbeFrameSet, VirtioProbeLease, VirtioProbeOwnedFrames,
     VirtioQueueIrq, VirtioQueueNotifyMappings, VirtioQueuePlan, VirtioResources, VirtioRuntimeHandoff,
     VirtioRuntimeHandoffInput, VirtioTransportLocation, VirtioTransportProbeResult,
-    VirtioTransportProfile, VirtQueueResource, MAX_RESOURCE_QUEUES, VIRTIO_CHILD_BUS,
+    VirtioTransportProfile, VirtioSharedMemoryRegion, VirtQueueResource, MAX_RESOURCE_QUEUES, VIRTIO_CHILD_BUS,
     VIRTIO_CHILD_CLASS, VIRTIO_MSI_NO_VECTOR, VIRTIO_NET_RX_BOOT_POOL, VIRTIO_VENDOR_ID,
     POLL_QUEUE_INDEX,
     build_queue_resources, build_runtime_handoff, push_unique_frame, virtio_child_addr,
@@ -91,6 +91,11 @@ pub const VIRTIO_DEV_BLOCK:   u16 = 2;
 pub const VIRTIO_DEV_CONSOLE: u16 = 3;
 pub const VIRTIO_DEV_RNG:     u16 = 4;
 pub const VIRTIO_DEV_SCSI:    u16 = 8;
+pub const VIRTIO_DEV_PMEM:    u16 = 27;
+// Linux's VIRTIO_PMEM_F_SHMEM_REGION is feature bit 0. The Oxide transport
+// API carries negotiated features as a mask, so this is the corresponding
+// mask rather than the raw bit position.
+pub const VIRTIO_PMEM_F_SHMEM_REGION: u64 = 1;
 
 /// Status register bits per spec §2.1.
 pub const VIRTIO_STATUS_ACKNOWLEDGE: u8 = 1;

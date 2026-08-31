@@ -8,10 +8,12 @@
 // - `rename`: `ext4_rename2` — plain/EXCHANGE/WHITEOUT, `..` + nlink fixups.
 // - `links`: the `i_links_count` ceilings shared by mkdir / link / rename.
 // - `dio`: extent-mapped direct-I/O submission and poll completion ownership.
+// - `dax`: persistent-memory extent translation for shared mappings.
 
 mod ids;
 mod data;
 mod dio;
+mod dax;
 mod links;
 mod fallocate;
 mod meta;

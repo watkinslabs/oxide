@@ -31,6 +31,14 @@ fn read_fs_block(disk: &Arc<dyn BlockDevice>, fs_lba: u64, fs_bs: u32) -> std::v
     req.buffer
 }
 
+fn write_fs_block(disk: &Arc<dyn BlockDevice>, fs_lba: u64, fs_bs: u32, buffer: std::vec::Vec<u8>) {
+    let sectors = fs_bs / SECTOR;
+    let mut req = BlockRequest {
+        op: BlockOp::Write, start_block: fs_lba * sectors as u64, len_blocks: sectors,
+        buffer, ..Default::default() };
+    disk.submit_sync(&mut req).unwrap();
+}
+
 fn dump_disk(disk: &Arc<dyn BlockDevice>, cap: u64) -> std::vec::Vec<u8> {
     let mut req = BlockRequest::new_read(0, cap as u32, SECTOR);
     disk.submit_sync(&mut req).unwrap();
@@ -111,6 +119,39 @@ fn shrinking_back_to_ibody_frees_external_block() {
 }
 
 #[test]
+fn identical_external_xattrs_share_and_release_mbcache_block() {
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk.0.clone()).unwrap();
+    let a = m.create_file(2, b"share-a.bin", 0o644, 0, 0).unwrap();
+    let b = m.create_file(2, b"share-b.bin", 0o644, 0, 0).unwrap();
+    let before = m.state_free_blocks();
+    let value = std::vec![0x5Au8; 200];
+    m.store_xattrs(a, &[entry("user.same", &value)]).unwrap();
+    m.store_xattrs(b, &[entry("user.same", &value)]).unwrap();
+    let (a_raw, _) = m.read_inode_bytes(a).unwrap();
+    let (b_raw, _) = m.read_inode_bytes(b).unwrap();
+    let block = file_acl(&a_raw);
+    assert_ne!(block, 0);
+    assert_eq!(file_acl(&b_raw), block, "mbcache should reuse the physical block");
+    let shared = read_fs_block(&disk.0, block, m.sb.block_size);
+    assert_eq!(u32::from_le_bytes([shared[4], shared[5], shared[6], shared[7]]), 2);
+
+    let changed = std::vec![0x33u8; 200];
+    m.store_xattrs(b, &[entry("user.changed", &changed)]).unwrap();
+    let (a_after, _) = m.read_inode_bytes(a).unwrap();
+    assert_eq!(file_acl(&a_after), block, "the unchanged inode keeps the shared block");
+    let once = read_fs_block(&disk.0, block, m.sb.block_size);
+    let decoded = ext4::xattr::decode_block(&once);
+    assert_eq!(decoded.iter().find(|(k, _)| k == "user.same").map(|(_, v)| v), Some(&value),
+        "copy-on-write preserves the other inode's physical xattrs");
+    assert_eq!(u32::from_le_bytes([once[4], once[5], once[6], once[7]]), 1);
+    m.store_xattrs(a, &[entry("user.small", b"x")]).unwrap();
+    assert_eq!(m.state_free_blocks(), before - 1, "the changed inode still owns its replacement block");
+    m.store_xattrs(b, &[entry("user.small", b"x")]).unwrap();
+    assert_eq!(m.state_free_blocks(), before, "final mbcache put frees the block");
+}
+
+#[test]
 fn external_block_is_e2fsck_clean() {
     let (disk, cap) = build_disk();
     {
@@ -143,4 +184,87 @@ fn value_too_big_for_one_block_is_nospace() {
     let huge = std::vec![0xCDu8; 2048];
     assert!(m.store_xattrs(n, &[entry("user.huge", &huge)]).is_err(),
         "a value larger than one xattr block is rejected, not silently dropped");
+}
+
+#[test]
+fn ea_inode_value_round_trips_from_linux_layout() {
+    let disk = build_disk();
+    let mut sb_block = read_fs_block(&disk.0, 1, 1024);
+    let mut sb = ext4::Superblock::parse(&sb_block).unwrap();
+    sb_block[0x60..0x64].copy_from_slice(&(sb.feature_incompat | 0x0400).to_le_bytes());
+    sb = ext4::Superblock::parse(&sb_block).unwrap();
+    ext4::csum::stamp_superblock_csum(&sb, &mut sb_block);
+    write_fs_block(&disk.0, 1, 1024, sb_block);
+
+    let m = ext4::Mount::open(disk.0.clone()).unwrap();
+    let n = m.create_file(2, b"ea-inode.bin", 0o644, 0, 0).unwrap();
+    let value: std::vec::Vec<u8> = (0..5000u32).map(|i| (i.wrapping_mul(13) & 0xff) as u8).collect();
+    m.store_xattrs(n, &[entry("user.large", &value)]).unwrap();
+    let (raw, _) = m.read_inode_bytes(n).unwrap();
+    let block = file_acl(&raw);
+    let xattr_block = read_fs_block(&disk.0, block, m.sb.block_size);
+    let ea_ino = u32::from_le_bytes([xattr_block[36], xattr_block[37], xattr_block[38], xattr_block[39]]);
+    assert_ne!(ea_ino, 0, "large value uses e_value_inum");
+    assert_eq!(&xattr_block[34..36], &[0, 0], "EA inode entries leave e_value_offs unused");
+    let ea = m.read_inode(ea_ino).unwrap();
+    assert_eq!(m.read_inode(n).unwrap().i_blocks, 12,
+        "parent i_blocks includes referenced EA inode value blocks");
+    assert_ne!(ea.i_flags & 0x0020_0000, 0, "EA inode flag is persisted");
+    assert_eq!(ea.size, value.len() as u64);
+    let mut got = std::vec::Vec::new();
+    for logical in 0..ea.size.div_ceil(m.sb.block_size as u64) as u32 {
+        got.extend_from_slice(&m.read_file_block(&ea, logical).unwrap());
+    }
+    got.truncate(value.len());
+    assert_eq!(got, value, "EA inode extent data round-trips");
+    match e2fsck_clean(&dump_disk(&disk.0, disk.1)) {
+        Some(true) => {}
+        Some(false) => panic!("e2fsck flagged the Linux EA-inode layout"),
+        None => eprintln!("e2fsck not available — skipped EA-inode fsck assertion"),
+    }
+    let free_with_ea = m.state_free_inodes();
+    m.store_xattrs(n, &[entry("user.small", b"x")]).unwrap();
+    assert_eq!(m.state_free_inodes(), free_with_ea + 1,
+        "replacing the large xattr releases its hidden EA inode");
+    match e2fsck_clean(&dump_disk(&disk.0, disk.1)) {
+        Some(true) => {}
+        Some(false) => panic!("e2fsck flagged EA-inode release"),
+        None => eprintln!("e2fsck not available — skipped EA-inode release assertion"),
+    }
+}
+
+#[test]
+fn identical_large_xattrs_share_one_ea_inode_and_release_last_reference() {
+    let disk = build_disk();
+    let mut sb_block = read_fs_block(&disk.0, 1, 1024);
+    let mut sb = ext4::Superblock::parse(&sb_block).unwrap();
+    sb_block[0x60..0x64].copy_from_slice(&(sb.feature_incompat | 0x0400).to_le_bytes());
+    sb = ext4::Superblock::parse(&sb_block).unwrap();
+    ext4::csum::stamp_superblock_csum(&sb, &mut sb_block);
+    write_fs_block(&disk.0, 1, 1024, sb_block);
+
+    let m = ext4::Mount::open(disk.0.clone()).unwrap();
+    let n = m.create_file(2, b"ea-share.bin", 0o644, 0, 0).unwrap();
+    let value = std::vec![0xA5u8; 5000];
+    let free_before = m.state_free_inodes();
+    m.store_xattrs(n, &[entry("user.a", &value), entry("user.b", &value)]).unwrap();
+    assert_eq!(m.state_free_inodes(), free_before - 1, "equal values share one EA inode");
+    let (raw, _) = m.read_inode_bytes(n).unwrap();
+    let block = read_fs_block(&disk.0, file_acl(&raw), m.sb.block_size);
+    let first = u32::from_le_bytes(block[36..40].try_into().unwrap());
+    let second = u32::from_le_bytes(block[56..60].try_into().unwrap());
+    assert_ne!(first, 0);
+    assert_eq!(second, first, "both entries reference one hidden inode");
+    let ea_raw = m.read_inode_bytes(first).unwrap().0;
+    let refs = u32::from_le_bytes(ea_raw[0x24..0x28].try_into().unwrap()) as u64
+        | (u32::from_le_bytes(ea_raw[0x0C..0x10].try_into().unwrap()) as u64) << 32;
+    assert_eq!(refs, 2, "shared inode persists Linux ctime/i_version refcount");
+
+    m.store_xattrs(n, &[entry("user.small", b"x")]).unwrap();
+    assert_eq!(m.state_free_inodes(), free_before, "last parent reference releases the EA inode");
+    match e2fsck_clean(&dump_disk(&disk.0, disk.1)) {
+        Some(true) => {}
+        Some(false) => panic!("e2fsck flagged shared EA-inode release"),
+        None => eprintln!("e2fsck not available — skipped shared EA-inode release assertion"),
+    }
 }

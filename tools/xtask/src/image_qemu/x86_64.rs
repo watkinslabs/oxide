@@ -248,7 +248,14 @@ pub(super) fn qemu_run_grub_x86_64(
     let nic_device = profile.nic_device();
     let pcap_args = super::common::pcap_filter_args();
     let share_args = super::common::host_share_args();
-    let memory = super::common::qemu_memory(DEFAULT_MEMORY)?;
+    let pmem_args = super::common::virtio_pmem_args();
+    let machine = profile.machine().to_string();
+    let base_memory = super::common::qemu_memory(DEFAULT_MEMORY)?;
+    let memory = if pmem_args.is_empty() {
+        base_memory
+    } else {
+        format!("{},slots=1,maxmem=8G", base_memory)
+    };
     let hibernate_args = super::common::hibernate_disk_args()?;
     // vhost-vsock guest CID is a HOST-GLOBAL kernel resource: only one qemu on
     // the whole machine may own a given CID. Hardcoding 3 made concurrent boots
@@ -309,8 +316,9 @@ pub(super) fn qemu_run_grub_x86_64(
     }
     c.args(&pcap_args);
     c.args(&share_args);
+    c.args(&pmem_args);
     c.args([
-        "-machine", profile.machine(),
+        "-machine", machine.as_str(),
         "-accel", accel,
         "-cpu", "Haswell-v4",
         "-smp", &smp_str,

@@ -33,6 +33,8 @@ pub const EXT4_CASEFOLD_FL:   u32 = 0x4000_0000;
 pub const EXT4_ENCRYPT_FL:   u32 = 0x0000_0800;
 /// `EXT4_VERITY_FL` — file has fs-verity enabled.
 pub const EXT4_VERITY_FL:    u32 = 0x0010_0000;
+/// `EXT4_EA_INODE_FL` — inode stores one large extended-attribute value.
+pub const EXT4_EA_INODE_FL:  u32 = 0x0020_0000;
 
 /// `EXT4_FL_USER_VISIBLE` — the bits `lsattr` and the attribute report may see.
 pub const EXT4_FL_USER_VISIBLE: u32 = EXT4_SECRM_FL | EXT4_UNRM_FL | EXT4_COMPR_FL

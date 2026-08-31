@@ -78,6 +78,8 @@ fn dynamic_major_is_driver_owned_not_name_derived() {
     let an = allocate_number(a).expect("dynamic major a");
     let bn = allocate_number(b).expect("dynamic major b");
     assert_ne!(an.major, bn.major);
+    assert_ne!(an.major, crate::uapi::VIRTIO_BLK_MAJOR);
+    assert_ne!(bn.major, crate::uapi::VIRTIO_BLK_MAJOR);
     assert_eq!(an.minor, 0);
     release_number(a, an); release_number(b, bn);
 }

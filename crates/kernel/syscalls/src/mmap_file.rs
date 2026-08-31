@@ -216,6 +216,11 @@ impl FileBacking for InodeFileBacking {
             .map_err(vfs_error)
     }
 
+    /// Forward the filesystem's direct-access frame owner. DAX mappings do
+    /// not acquire a PMM reference: the block device owns the physical range.
+    /// # C: O(1) or filesystem mapping
+    fn dax_frame(&self, off: u64) -> Option<u64> { self.inode.mmap_dax_frame(off) }
+
     /// MAP_SHARED write fault: tell the inode's address space before the write
     /// is allowed to land, so the filesystem can reserve the block, refuse an
     /// unwritable object, zero a post-EOF tail and dirty the page. An inode with
