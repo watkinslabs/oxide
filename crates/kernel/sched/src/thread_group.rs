@@ -73,6 +73,7 @@ pub struct ThreadGroup {
     pub nt_atoms: Spinlock<Vec<Vec<u8>>, TaskListClass>, pub nt_atom_table: Spinlock<bool, TaskListClass>,
     /// Owner and recursion depth of the process heap lock: `(tid, depth)`.
     pub nt_heap_lock: Spinlock<Option<(u64, u32)>, TaskListClass>,
+    pub nt_heap_user_info: Spinlock<Vec<(u64, u32, u64)>, TaskListClass>,
     /// Process-local registered NT waits: `(token, object, callback, context, timeout_ms, flags)`.
     pub nt_waits: Spinlock<Vec<(u64, u64, u64, u64, u32, u32)>, TaskListClass>,
     pub nt_wait_next: AtomicU64,
@@ -242,6 +243,7 @@ impl ThreadGroup {
             nt_dll_directory: Spinlock::new(Vec::new()),
             nt_atoms: Spinlock::new(Vec::new()), nt_atom_table: Spinlock::new(false),
             nt_heap_lock: Spinlock::new(None),
+            nt_heap_user_info: Spinlock::new(Vec::new()),
             nt_waits: Spinlock::new(Vec::new()), nt_wait_next: AtomicU64::new(1),
             nt_io_completion: Spinlock::new(None),
             nt_search_path_mode: AtomicU32::new(0),
