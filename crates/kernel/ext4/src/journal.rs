@@ -188,10 +188,10 @@ impl Mount {
         }
         let transaction_blocks = transaction_block_count_for(staged.len(), bs, bit64, checksum_mode)
             .map_err(|_| MountError::NoSpace)?;
-        let (mut cursor, first_pending, used) = {
+        let (mut cursor, first_pending) = {
             let state = self.state.lock();
             (state.journal_cursor.unwrap_or_else(|| LogCursor::new(jsb.start, jsb.first, jsb.maxlen, jsb.sequence)),
-             state.pending_checkpoints.is_empty(), state.journal_used)
+             state.pending_checkpoints.is_empty())
         };
         let transaction_blocks = transaction_blocks as u32;
         if transaction_blocks > cursor.usable() {
@@ -200,6 +200,16 @@ impl Mount {
             // create log slots inside a transaction that exceeds the log.
             return Err(MountError::NoSpace);
         }
+        // How full the log is and whether anything can be checkpointed out of
+        // it are one fact, read once. Sampled apart, a checkpoint that empties
+        // the log between them leaves an occupancy from before it and a pending
+        // list from after: the transaction is then refused for lack of room in
+        // a journal that is entirely free, and the refusal reaches a writing
+        // process as an I/O error it cannot retry past.
+        let (used, has_pending) = {
+            let state = self.state.lock();
+            (state.journal_used, !state.pending_checkpoints.is_empty())
+        };
         if transaction_blocks > cursor.usable().saturating_sub(used) {
             // JBD2 waits for/checkpoints the oldest committed transactions
             // before rejecting a new transaction for lack of log space. The
@@ -207,7 +217,6 @@ impl Mount {
             // home blocks are durable journal state and may be checkpointed
             // before this transaction reserves any slots. Re-enter after the
             // checkpoint so the journal superblock and cursor are re-read.
-            let has_pending = !self.state.lock().pending_checkpoints.is_empty();
             if has_pending {
                 self.checkpoint_pending()?;
                 return self.commit_metadata_deferred(staged);
