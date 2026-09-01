@@ -127,6 +127,7 @@ use super::*;
         assert_eq!(decode(177, input).unwrap().service, NtService::Memmove);
         assert_eq!(decode(178, input).unwrap().service, NtService::Memset);
         assert_eq!(decode(179, input).unwrap().service, NtService::Strcat);
+        assert_eq!(decode(180, input).unwrap().service, NtService::Strchr);
     }
 
     #[test]
