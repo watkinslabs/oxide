@@ -24,6 +24,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::Tolower { return Some(tolower(call.args.a0)); }
     if call.service == NtService::Wcscat { return Some(wcscat(call.args.a0, call.args.a1)); }
     if call.service == NtService::Wcschr { return Some(wcschr(call.args.a0, call.args.a1)); }
+    if call.service == NtService::Wcscmp { return Some(wcscmp(call.args.a0, call.args.a1)); }
     if call.service == NtService::Isalpha { let c = call.args.a0 as i32; return Some(if c >= b'A' as i32 && c <= b'Z' as i32 { 1 } else if c >= b'a' as i32 && c <= b'z' as i32 { 2 } else { 0 }); }
     if call.service == NtService::Wcsnicmp { return Some(wcsnicmp(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Wcsicmp { return Some(wcsicmp(call.args.a0, call.args.a1)); }
@@ -181,6 +182,18 @@ fn wcschr(string: u64, value: u64) -> u64 {
         if unit == wanted { return string.checked_add((index as u64).checked_mul(2).unwrap_or(0)).unwrap_or(0); }
         if unit == 0 { return 0; }
         let Some(next) = index.checked_add(1) else { return 0; };
+        index = next;
+    }
+}
+
+fn wcscmp(first: u64, second: u64) -> u64 {
+    if first == 0 || second == 0 { return STATUS_INVALID_PARAMETER; }
+    let mut index = 0usize;
+    loop {
+        let Some(first_unit) = read_u16(first, index) else { return STATUS_INVALID_PARAMETER; };
+        let Some(second_unit) = read_u16(second, index) else { return STATUS_INVALID_PARAMETER; };
+        if first_unit == 0 || first_unit != second_unit { return (first_unit as i32 - second_unit as i32) as i64 as u64; }
+        let Some(next) = index.checked_add(1) else { return STATUS_INVALID_PARAMETER; };
         index = next;
     }
 }
