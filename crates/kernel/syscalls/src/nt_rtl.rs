@@ -18,6 +18,7 @@ const TEXT_UNICODE_ODD_LENGTH: u32 = 0x0200;
 pub fn dispatch(call: NtCall) -> Option<u64> {
     if let Some(result) = crate::nt_rtl_integer::dispatch(call) { return Some(result); }
     if let Some(result) = crate::nt_rtl_ansi::dispatch(call) { return Some(result); }
+    if let Some(result) = crate::nt_debug::dispatch(call) { return Some(result); }
     if let Some(result) = crate::nt_critical::dispatch(call) { return Some(result); }
     if call.service == NtService::RtlSetLastWin32Error || call.service == NtService::RtlRestoreLastWin32Error { return Some(set_last_win32_error(call.args.a0)); }
     if call.service == NtService::RtlGetLastWin32Error { return Some(get_last_win32_error()); }
