@@ -18,6 +18,7 @@ const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
 /// Allocate a heap-owned SID and initialize its native layout.
 /// # C: O(1) plus bounded user copies and one VMM allocation
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlEqualPrefixSid { return Some(equal_prefix_sid(call.args.a0, call.args.a1)); }
     if call.service == NtService::RtlConvertSidToUnicodeString {
         return Some(convert_to_unicode(call.args.a0, call.args.a1, call.args.a2 != 0));
     }
@@ -26,6 +27,20 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     }
     if call.service != NtService::RtlAllocateAndInitializeSid { return None; }
     Some(allocate_and_initialize(call))
+}
+
+fn equal_prefix_sid(first: u64, second: u64) -> u64 {
+    if first == 0 || second == 0 { return 0; }
+    let mut left = [0u8; SID_FIXED_BYTES + 15 * 4];
+    let mut right = [0u8; SID_FIXED_BYTES + 15 * 4];
+    if uaccess::copy_from_user(&mut left[..SID_FIXED_BYTES], first).is_err()
+        || uaccess::copy_from_user(&mut right[..SID_FIXED_BYTES], second).is_err() { return 0; }
+    if left[0] != SID_REVISION || right[0] != SID_REVISION || left[1] == 0 || left[1] != right[1] || left[1] > 15 { return 0; }
+    let size = SID_FIXED_BYTES + left[1] as usize * 4;
+    if uaccess::copy_from_user(&mut left[SID_FIXED_BYTES..size], first + SID_FIXED_BYTES as u64).is_err()
+        || uaccess::copy_from_user(&mut right[SID_FIXED_BYTES..size], second + SID_FIXED_BYTES as u64).is_err() { return 0; }
+    let prefix = SID_FIXED_BYTES + (left[1] as usize - 1) * 4;
+    u64::from(left[..prefix] == right[..prefix])
 }
 
 fn copy_sid(destination_length: u32, destination: u64, source: u64) -> u64 {
