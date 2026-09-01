@@ -662,3 +662,6 @@ protect-from-close bits still need ownership in the canonical handle table.
 `NtSetInformationToken` now owns TokenSessionId mutation in the canonical
 token object; default-DACL serialization and integrity-level SID ownership
 remain explicit gaps.
+`NtSetInformationVirtualMemory` now exposes the prefetch class boundary with
+argument validation; VMM prefetch and per-page write-watch ownership remain
+unimplemented.

@@ -309,6 +309,17 @@ pub fn dispatch(call: NtCall) -> u64 {
         // but fail closed instead of claiming that every page is clean.
         return STATUS_NOT_IMPLEMENTED;
     }
+    if call.service == syscall::nt::NtService::NtSetInformationVirtualMemory {
+        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        if !cur.is_nt_personality() || call.args.a0 != CURRENT_PROCESS { return STATUS_INVALID_PARAMETER; }
+        // VmPrefetchInformation is class zero. The range array and extended
+        // information are user buffers; validate their presence before the
+        // VMM acquires a real prefetch/write-watch owner.
+        if call.args.a1 != 0 || call.args.a2 == 0 || call.args.a3 == 0 || call.args.a4 == 0 {
+            return STATUS_INVALID_PARAMETER;
+        }
+        return STATUS_NOT_IMPLEMENTED;
+    }
     if call.service == syscall::nt::NtService::NtResetWriteWatch {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() || call.args.a0 != CURRENT_PROCESS || call.args.a1 == 0 || call.args.a2 == 0 {

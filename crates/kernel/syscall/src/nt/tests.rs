@@ -157,6 +157,7 @@ use super::*;
     assert_eq!(decode(316, input).unwrap().service, NtService::NtSetContextThread);
     assert_eq!(decode(317, input).unwrap().service, NtService::NtSetInformationObject);
     assert_eq!(decode(318, input).unwrap().service, NtService::NtSetInformationToken);
+    assert_eq!(decode(319, input).unwrap().service, NtService::NtSetInformationVirtualMemory);
     assert_eq!(decode(298, input).unwrap().service, NtService::NtQueryDirectoryObject);
     assert_eq!(decode(299, input).unwrap().service, NtService::NtQueryFullAttributesFile);
     assert_eq!(decode(293, input).unwrap().service, NtService::NtPrivilegeCheck);
