@@ -20,6 +20,7 @@ const LABEL: u32 = 0x0000_0010;
 const SECURITY_DESCRIPTOR_REVISION: u8 = 1;
 const SELF_RELATIVE: u16 = 0x8000;
 const DACL_PRESENT: u16 = 0x0004;
+const DACL_DEFAULTED: u16 = 0x0008;
 const SACL_PRESENT: u16 = 0x0010;
 const SACL_DEFAULTED: u16 = 0x0020;
 const FULL_ACCESS: u32 = 0x001f_01ff;
@@ -32,6 +33,7 @@ const SYSTEM_MANDATORY_LABEL_ACE_TYPE: u32 = 0x11;
 const SYSTEM_MANDATORY_LABEL_VALID_MASK: u32 = 0x7;
 const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
 const STATUS_UNKNOWN_REVISION: u64 = 0xc000_005a;
+const STATUS_INVALID_SECURITY_DESCR: u64 = 0xc000_0079;
 const DACL_OFFSET: u64 = 16;
 const ABSOLUTE_DACL_OFFSET: u64 = 32;
 const SACL_OFFSET: u64 = 12;
@@ -49,6 +51,9 @@ const SECURITY_CONTROL_WORD_BYTES: usize = 4;
 /// Linux credentials supply the owner/group identity; no Linux syscall path
 /// reaches this adapter. # C: O(1) plus usercopy
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == syscall::nt::NtService::RtlSetDaclSecurityDescriptor {
+        return Some(set_dacl(call.args.a0, call.args.a1 != 0, call.args.a2, call.args.a3 != 0));
+    }
     if call.service == syscall::nt::NtService::RtlSetControlSecurityDescriptor {
         return Some(set_control(call.args.a0, call.args.a1 as u32, call.args.a2 as u32));
     }
@@ -111,6 +116,24 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if descriptor.as_u64() == 0 || length < required { return Some(STATUS_BUFFER_TOO_SMALL); }
     if uaccess::copy_to_user(descriptor.as_u64(), &bytes).is_err() { return Some(STATUS_INVALID_PARAMETER); }
     Some(STATUS_SUCCESS)
+}
+
+fn set_dacl(descriptor: u64, present: bool, dacl: u64, defaulted: bool) -> u64 {
+    if descriptor == 0 { return STATUS_INVALID_PARAMETER; }
+    let mut header = [0u8; 4];
+    if uaccess::copy_from_user(&mut header, descriptor).is_err() { return STATUS_INVALID_PARAMETER; }
+    if header[0] != SECURITY_DESCRIPTOR_REVISION { return STATUS_UNKNOWN_REVISION; }
+    let control = u16::from_le_bytes([header[2], header[3]]);
+    if control & SELF_RELATIVE != 0 { return STATUS_INVALID_SECURITY_DESCR; }
+    if !present {
+        let updated = control & !DACL_PRESENT;
+        if uaccess::copy_to_user(descriptor.saturating_add(2), &updated.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
+        return STATUS_SUCCESS;
+    }
+    if uaccess::put_user_u64(descriptor.saturating_add(ABSOLUTE_DACL_OFFSET), dacl).is_err() { return STATUS_INVALID_PARAMETER; }
+    let updated = if defaulted { control | DACL_PRESENT | DACL_DEFAULTED } else { (control | DACL_PRESENT) & !DACL_DEFAULTED };
+    if uaccess::copy_to_user(descriptor.saturating_add(2), &updated.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
 }
 
 fn set_control(descriptor: u64, interest: u32, set: u32) -> u64 {
