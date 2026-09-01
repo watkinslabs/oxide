@@ -8,6 +8,7 @@ mod abi;
 mod disposition;
 mod identity;
 mod lifecycle;
+mod native;
 mod semantics;
 
 const TEST_NAME: &[u8] = b"oxide-input";

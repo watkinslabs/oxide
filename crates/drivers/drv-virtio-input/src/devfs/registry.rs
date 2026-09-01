@@ -15,7 +15,7 @@ fn dispatch_packet(id: u32, is_pointer: bool, values: &[input::InputValue]) {
     if !is_pointer {
         for value in values {
             if value.ev_type == crate::EV_KEY {
-                crate::drain::handle_key_event(value.code, value.value != 0);
+                crate::drain::handle_key_event_value(value.code, value.value);
             }
         }
     }

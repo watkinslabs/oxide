@@ -22,6 +22,7 @@ pub type RegisterEvdevFn = fn(u32) -> bool;
 pub type UnregisterEvdevFn = fn(u32) -> bool;
 pub type PushEvdevPacketFn = fn(u32, bool, &[InputValue]);
 pub type PushOutputFn = fn(virtio::VirtioChildDeviceKey, &OutputBatch);
+pub type NativeKeyHook = fn(u16, bool, bool) -> bool;
 
 /// Stable owner identity for one input device. Input devices are not all
 /// virtio children: platform controllers and transport devices share the same
@@ -188,12 +189,24 @@ impl VirtioInputDev {
 pub(crate) static DEVICES: Spinlock<Vec<Box<VirtioInputDev>>, DriverLockClass> =
     Spinlock::new(Vec::new());
 static EVDEV_HOOKS: Spinlock<EvdevHooks, DriverLockClass> = Spinlock::new(NO_EVDEV_HOOKS);
+static NATIVE_KEY_HOOK: Spinlock<Option<NativeKeyHook>, DriverLockClass> = Spinlock::new(None);
 pub(crate) static OUTPUT_HOOK: Spinlock<Option<PushOutputFn>, DriverLockClass> = Spinlock::new(None);
 static NEXT_INPUT_ID: AtomicU32 = AtomicU32::new(0);
 
 /// # C: O(1)
 pub fn set_evdev_hooks(hooks: EvdevHooks) {
     *EVDEV_HOOKS.lock() = hooks;
+}
+
+/// Install the optional NT foreground keyboard sink. # C: O(1)
+pub fn set_native_key_hook(hook: Option<NativeKeyHook>) {
+    *NATIVE_KEY_HOOK.lock() = hook;
+}
+
+/// Offer one accepted physical key transition to the native sink. # C: O(1)
+pub fn dispatch_native_key_event(key: u16, pressed: bool, repeat: bool) -> bool {
+    let hook = *NATIVE_KEY_HOOK.lock();
+    hook.is_some_and(|hook| hook(key, pressed, repeat))
 }
 
 /// Install the one device-output transport sink. The sink must take durable

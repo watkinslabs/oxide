@@ -9,7 +9,7 @@ mod queue;
 mod ring;
 mod status;
 
-pub use key_event::{handle_key_event, DRAINED_KEYS};
+pub use key_event::{handle_key_event, handle_key_event_value, DRAINED_KEYS};
 pub use queue::{install_eventq, poll_all, raise_drain, shutdown_eventq, uninstall_eventq};
 pub use ring::DRAINED_EVENTS;
 pub use status::{send_output_batch, send_status, send_status_batch, StatusError};

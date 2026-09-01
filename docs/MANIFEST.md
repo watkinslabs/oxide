@@ -252,6 +252,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `31fk-windows-gdi-text.md` | FROZEN | 2026-09-01 | `01`,`02`,`29a`,`31h`,`31fj`,`52`,`53` |
 | `31fl-windows-user32-window-state.md` | FROZEN | 2026-09-01 | `01`,`02`,`29a`,`31h`,`31fj`,`52`,`53` |
 | `31fm-windows-user32-paint-invalidation.md` | FROZEN | 2026-09-01 | `01`,`02`,`29a`,`31h`,`31fl`,`52`,`53` |
+| `31fn-windows-native-input-routing.md` | FROZEN | 2026-09-01 | `28`,`31t`,`31u`,`31fl`,`52`,`53` |
 
 ## Deleted
 

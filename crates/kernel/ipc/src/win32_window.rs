@@ -180,6 +180,11 @@ impl WindowManager {
         if record.owner_tid != tid { return Err(WindowError::WrongThread); }
         self.post_to_window(window, WinMessage { hwnd: Some(window), message: if pressed { WM_KEYDOWN } else { WM_KEYUP }, wparam: key as u64, lparam: repeat as i64 })
     }
+    /// Enqueue one hardware key transition on the focused window. # C: O(N_windows)
+    pub fn post_focused_key(&mut self, key: u16, pressed: bool, repeat: bool) -> Result<(), WindowError> {
+        let window = self.focus.ok_or(WindowError::NoFocus)?;
+        self.post_to_window(window, WinMessage { hwnd: Some(window), message: if pressed { WM_KEYDOWN } else { WM_KEYUP }, wparam: key as u64, lparam: repeat as i64 })
+    }
     pub fn peek_for_thread(&mut self, tid: u64, filter: MessageFilter, remove: bool) -> Option<WinMessage> {
         self.queues.iter_mut().find(|(owner, _)| *owner == tid).and_then(|(_, queue)| queue.peek(filter, remove).or_else(|| queue.quit_message(filter, remove)))
     }

@@ -121,10 +121,19 @@ fn handle_modifier(keycode: u16, pressed: bool) -> bool {
 /// Process one EV_KEY-equivalent key event through the shared keyboard path.
 /// # C: O(cols*rows) on a VT switch/scroll repaint, else O(1).
 pub fn handle_key_event(keycode: u16, pressed: bool) {
+    handle_key_event_value(keycode, if pressed { 1 } else { 0 });
+}
+
+/// Process one Linux EV_KEY transition through system controls, native
+/// foreground delivery, and finally the controlling terminal. # C: O(cols*rows) on a VT switch/scroll repaint, else O(1).
+pub fn handle_key_event_value(keycode: u16, value: i32) {
+    let pressed = value != 0;
+    let repeat = value == 2;
     if handle_modifier(keycode, pressed) {
     } else if handle_ctrl_alt_del(keycode, pressed) {
     } else if handle_vt_switch(keycode, pressed) {
     } else if handle_scroll(keycode, pressed) {
+    } else if input::dispatch_native_key_event(keycode, pressed, repeat) {
     } else if pressed {
         #[cfg(target_os = "oxide-kernel")]
         {
