@@ -517,3 +517,7 @@ Windows NT frontier update (2026-09-01): `NtEnumerateValueKey` now has an
 explicit native export and fail-closed `STATUS_NOT_IMPLEMENTED` boundary; NT
 registry value enumeration remains pending. The graph advances to its next
 unresolved native import, `ntdll.dll!NtFilterToken`.
+Windows NT frontier update (2026-09-01): `NtFilterToken` now has an explicit
+native export and fail-closed `STATUS_NOT_IMPLEMENTED` boundary; restricted
+token SID/privilege representation remains pending. The graph advances to
+`ntdll.dll!NtFlushBuffersFile`.
