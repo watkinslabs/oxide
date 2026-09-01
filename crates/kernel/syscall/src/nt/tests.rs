@@ -209,6 +209,7 @@ use super::*;
     assert_eq!(decode(368, input).unwrap().service, NtService::RtlDuplicateUnicodeString);
     assert_eq!(decode(369, input).unwrap().service, NtService::RtlEqualPrefixSid);
     assert_eq!(decode(372, input).unwrap().service, NtService::RtlFindActivationContextSectionGuid);
+    assert_eq!(decode(373, input).unwrap().service, NtService::RtlFindClearBitsAndSet);
     assert_eq!(decode(370, input).unwrap().service, NtService::RtlEqualSid);
     assert_eq!(decode(371, input).unwrap().service, NtService::RtlExpandEnvironmentStringsU);
     assert_eq!(decode(298, input).unwrap().service, NtService::NtQueryDirectoryObject);
