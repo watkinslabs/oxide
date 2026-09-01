@@ -282,6 +282,8 @@
         let dbg_strdup = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"__wine_dbg_strdup" }).unwrap();
         assert!(dbg_strdup >= runtime.base.as_u64() && dbg_strdup < runtime.base.as_u64() + runtime.bytes as u64);
         let guid_from_string = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlGUIDFromString" }).unwrap();
+        let random = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlRandom" }).unwrap();
+        assert!(random >= runtime.base.as_u64() && random < runtime.base.as_u64() + runtime.bytes as u64);
         assert!(guid_from_string >= runtime.base.as_u64() && guid_from_string < runtime.base.as_u64() + runtime.bytes as u64);
     }
 
