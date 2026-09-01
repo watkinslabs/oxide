@@ -331,6 +331,12 @@ pub fn dispatch(call: NtCall) -> u64 {
         // NT personality, so do not copy into an unvalidated address space.
         return STATUS_NOT_IMPLEMENTED;
     }
+    if call.service == syscall::nt::NtService::NtYieldExecution {
+        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+        let _ = crate::s024_sched_yield::sys_sched_yield(&SyscallArgs { a0: 0, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 });
+        return STATUS_SUCCESS;
+    }
     if call.service == syscall::nt::NtService::NtSetInformationVirtualMemory {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() || call.args.a0 != CURRENT_PROCESS { return STATUS_INVALID_PARAMETER; }

@@ -687,3 +687,6 @@ unimplemented.
 `NtWriteVirtualMemory` validates native process/source/count/output pointers;
 target address-space ownership and safe partial-copy reporting remain
 unimplemented.
+`NtYieldExecution` now routes through the canonical scheduler-yield owner for
+the NT personality; the precise `STATUS_NO_YIELD_PERFORMED` distinction is not
+yet surfaced.
