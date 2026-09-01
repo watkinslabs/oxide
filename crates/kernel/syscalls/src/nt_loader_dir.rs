@@ -45,6 +45,8 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         NtService::LdrAddRefDll => Some(add_ref(call.args.a0 as u32, call.args.a1)),
         NtService::LdrDisableThreadCalloutsForDll => Some(disable_thread_callouts(call.args.a0)),
         NtService::LdrGetDllHandleEx => Some(get_handle(call.args.a0 as u32, call.args.a3, call.args.a4)),
+        NtService::LdrGetDllPath => Some(get_path(call.args.a0, call.args.a2, call.args.a3)),
+        NtService::LdrGetDllPath => Some(get_path(call.args.a0, call.args.a2, call.args.a3)),
         NtService::LdrGetDllFullName => Some(full_name(call.args.a0, call.args.a1)),
         NtService::LdrLoadDll => Some(load(call.args.a2, call.args.a3)),
         NtService::LdrQueryImageFileExecutionOptions => Some(query_options(call.args.a0, call.args.a1, call.args.a4, call.args.a5)),
@@ -122,6 +124,43 @@ fn get_handle(flags: u32, name_descriptor: u64, module_output: u64) -> u64 {
         entry = read_u64(entry.saturating_add(LIST_LINK_OFFSET));
     }
     STATUS_DLL_NOT_FOUND
+}
+
+fn get_path(module: u64, path_output: u64, unknown_output: u64) -> u64 {
+    if module == 0 || path_output == 0 || unknown_output == 0 { return STATUS_INVALID_PARAMETER; }
+    if read_wide_z(module).is_none() { return STATUS_INVALID_PARAMETER; }
+    if uaccess::put_user_u64(path_output, 0).is_err() || uaccess::put_user_u64(unknown_output, 0).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
+}
+
+fn read_wide_z(address: u64) -> Option<Vec<u8>> {
+    let mut value = Vec::new();
+    for index in 0..1024u64 {
+        let offset = address.checked_add(index.checked_mul(2)?)?;
+        let mut bytes = [0u8; 2];
+        uaccess::copy_from_user(&mut bytes, offset).ok()?;
+        if bytes == [0, 0] { return Some(value); }
+        value.extend_from_slice(&bytes);
+    }
+    None
+}
+
+fn get_path(module: u64, path_output: u64, unknown_output: u64) -> u64 {
+    if module == 0 || path_output == 0 || unknown_output == 0 { return STATUS_INVALID_PARAMETER; }
+    if read_wide_z(module).is_none() { return STATUS_INVALID_PARAMETER; }
+    if uaccess::put_user_u64(path_output, 0).is_err() || uaccess::put_user_u64(unknown_output, 0).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
+}
+
+fn read_wide_z(address: u64) -> Option<Vec<u8>> {
+    let mut value = Vec::new();
+    for index in 0..1024u64 {
+        let mut bytes = [0u8; 2];
+        uaccess::copy_from_user(&mut bytes, address.checked_add(index.checked_mul(2)?)?).ok()?;
+        if bytes == [0, 0] { return Some(value); }
+        value.extend_from_slice(&bytes);
+    }
+    None
 }
 
 fn module_name_matches(wanted: &[u8], descriptor: u64) -> bool {
