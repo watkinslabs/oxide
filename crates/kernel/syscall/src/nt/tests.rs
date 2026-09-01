@@ -94,6 +94,8 @@ use super::*;
         assert_eq!(decode(249, input).unwrap().service, NtService::NtAdjustPrivilegesToken);
         assert_eq!(decode(250, input).unwrap().service, NtService::NtAllocateLocallyUniqueId);
         assert_eq!(decode(251, input).unwrap().service, NtService::NtAllocateVirtualMemoryEx);
+        assert_eq!(decode(252, input).unwrap().service, NtService::NtCancelIoFile);
+        assert_eq!(decode(253, input).unwrap().service, NtService::NtCancelIoFileEx);
         assert_eq!(decode(240, input).unwrap().service, NtService::LdrDisableThreadCalloutsForDll);
         assert_eq!(decode(99, input).unwrap().service, NtService::LdrGetDllDirectory);
         assert_eq!(decode(100, input).unwrap().service, NtService::LdrGetProcedureAddress);

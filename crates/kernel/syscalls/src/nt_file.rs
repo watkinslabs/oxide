@@ -16,6 +16,8 @@ const STATUS_OBJECT_NAME_COLLISION: u64 = 0xc000_0035;
 const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
 const STATUS_SHARING_VIOLATION: u64 = 0xc000_0043;
 const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
+const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
+const STATUS_NOT_FOUND: u64 = 0xc000_0225;
 const STATUS_END_OF_FILE: u64 = 0xc000_0011;
 const FILE_READ_DATA: u32 = 0x0001;
 const FILE_WRITE_DATA: u32 = 0x0002;
@@ -56,7 +58,19 @@ pub fn dispatch(call: NtFileCall) -> u64 {
         NtFileCall::QueryDirectory { request } => query_directory(cur, request.as_u64()),
         NtFileCall::Lock { request } => crate::nt_file_lock::dispatch(cur, request.as_u64(), false),
         NtFileCall::Unlock { request } => crate::nt_file_lock::dispatch(cur, request.as_u64(), true),
+        NtFileCall::Cancel { handle, io_status } => cancel(cur, handle, None, io_status.as_u64()),
+        NtFileCall::CancelEx { handle, io, io_status } => cancel(cur, handle, io.map(|ptr| ptr.as_u64()), io_status.as_u64()),
     }
+}
+
+fn cancel(cur: &sched::Task, handle: u32, io: Option<u64>, io_status: u64) -> u64 {
+    let table = cur.thread_group.nt_handles();
+    let native = sched::nt_object::NtHandle::from_raw(handle);
+    let Some(object) = table.get(native, 0) else { return STATUS_INVALID_HANDLE; };
+    if object.file().is_none() { return STATUS_INVALID_HANDLE; }
+    let status = if io.is_some() { STATUS_NOT_FOUND } else { STATUS_SUCCESS };
+    if uaccess::put_user_u64(io_status, status).is_err() || uaccess::put_user_u64(io_status + 8, 0).is_err() { return STATUS_ACCESS_VIOLATION; }
+    status
 }
 
 fn read_u32(addr: u64) -> Result<u32, u64> { uaccess::get_user_u32(addr).map_err(|_| STATUS_INVALID_PARAMETER) }

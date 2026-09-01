@@ -454,3 +454,9 @@ accepts the native seven-argument ABI, validates the seventh stack argument,
 and delegates zero-extended-parameter allocations to the existing VM owner;
 the graph advances to `ntdll.dll!NtCancelIoFile`. Extended parameter records
 remain unsupported until their VM semantics are implemented.
+Windows NT frontier update (2026-09-01): `NtCancelIoFile` and
+`NtCancelIoFileEx` validate NT file handles and publish IO status blocks;
+the synchronous NT file adapter has no pending request queue, so Ex-specific
+request cancellation reports `STATUS_NOT_FOUND` and synchronous-I/O
+cancellation remains open. The graph advances to
+`ntdll.dll!NtCancelSynchronousIoFile`.

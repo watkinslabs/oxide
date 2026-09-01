@@ -35,6 +35,8 @@ pub enum NtService {
     NtAdjustPrivilegesToken = 249,
     NtAllocateLocallyUniqueId = 250,
     NtAllocateVirtualMemoryEx = 251,
+    NtCancelIoFile = 252,
+    NtCancelIoFileEx = 253,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -216,6 +218,8 @@ pub enum NtFileCall {
     QueryDirectory { request: UserPtr<NtFileInformationRequest> },
     Lock { request: UserPtr<NtLockFileRequest> },
     Unlock { request: UserPtr<NtUnlockFileRequest> },
+    Cancel { handle: u32, io_status: UserPtr<u8> },
+    CancelEx { handle: u32, io: Option<UserPtr<u8>>, io_status: UserPtr<u8> },
 }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum NtTimeout {
@@ -288,6 +292,8 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 249 { return Some(NtCall { service: NtService::NtAdjustPrivilegesToken, args }); }
     if service == 250 { return Some(NtCall { service: NtService::NtAllocateLocallyUniqueId, args }); }
     if service == 251 { return Some(NtCall { service: NtService::NtAllocateVirtualMemoryEx, args }); }
+    if service == 252 { return Some(NtCall { service: NtService::NtCancelIoFile, args }); }
+    if service == 253 { return Some(NtCall { service: NtService::NtCancelIoFileEx, args }); }
     if service == 197 { return Some(NtCall { service: NtService::RtlGUIDFromString, args }); }
     if service == 195 { return Some(NtCall { service: NtService::WineDbgOutput, args }); }
     if service == 194 { return Some(NtCall { service: NtService::WineDbgHeader, args }); }
@@ -450,6 +456,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::NtAdjustGroupsToken => Err(Errno::Enosys),
         NtService::NtAdjustPrivilegesToken => Err(Errno::Enosys),
         NtService::NtAllocateLocallyUniqueId => Err(Errno::Enosys),
+        NtService::NtCancelIoFile | NtService::NtCancelIoFileEx => Err(Errno::Enosys),
     }
 }
 pub fn decode_system(call: NtCall) -> Result<NtSystemCall, Errno> {
@@ -498,6 +505,8 @@ pub fn decode_file(call: NtCall) -> Result<NtFileCall, Errno> {
         NtService::QueryDirectoryFile => Ok(NtFileCall::QueryDirectory { request: UserPtr::new(a.a0)? }),
         NtService::LockFile => Ok(NtFileCall::Lock { request: UserPtr::new(a.a0)? }),
         NtService::UnlockFile => Ok(NtFileCall::Unlock { request: UserPtr::new(a.a0)? }),
+        NtService::NtCancelIoFile => Ok(NtFileCall::Cancel { handle: a.a0 as u32, io_status: UserPtr::new(a.a1)? }),
+        NtService::NtCancelIoFileEx => Ok(NtFileCall::CancelEx { handle: a.a0 as u32, io: optional_ptr(a.a1)?, io_status: UserPtr::new(a.a2)? }),
         _ => Err(Errno::Enosys),
     }
 }
