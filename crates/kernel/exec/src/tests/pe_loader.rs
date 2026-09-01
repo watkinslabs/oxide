@@ -231,6 +231,10 @@
         assert!(upcase >= runtime.base.as_u64() && upcase < runtime.base.as_u64() + runtime.bytes as u64);
         let upper_char = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlUpperChar" }).unwrap();
         assert!(upper_char >= runtime.base.as_u64() && upper_char < runtime.base.as_u64() + runtime.bytes as u64);
+        let wcsicmp = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"_wcsicmp" }).unwrap();
+        assert!(wcsicmp >= runtime.base.as_u64() && wcsicmp < runtime.base.as_u64() + runtime.bytes as u64);
+        let wcsnicmp = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"_wcsnicmp" }).unwrap();
+        assert!(wcsnicmp >= runtime.base.as_u64() && wcsnicmp < runtime.base.as_u64() + runtime.bytes as u64);
     }
 
     #[test]

@@ -119,6 +119,8 @@ use super::*;
         assert_eq!(decode(169, input).unwrap().service, NtService::RtlUnicodeToOemN);
         assert_eq!(decode(170, input).unwrap().service, NtService::RtlUpcaseUnicodeString);
         assert_eq!(decode(171, input).unwrap().service, NtService::RtlUpperChar);
+        assert_eq!(decode(172, input).unwrap().service, NtService::Wcsicmp);
+        assert_eq!(decode(173, input).unwrap().service, NtService::Wcsnicmp);
     }
 
     #[test]

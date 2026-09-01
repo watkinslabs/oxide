@@ -13,6 +13,8 @@ const UNICODE_STRING_BYTES: usize = 16;
 /// Convert a counted UTF-16 string into the native ANSI representation.
 /// # C: O(source length) plus usercopy and optional heap allocation
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::Wcsnicmp { return Some(wcsnicmp(call.args.a0, call.args.a1, call.args.a2)); }
+    if call.service == NtService::Wcsicmp { return Some(wcsicmp(call.args.a0, call.args.a1)); }
     if call.service == NtService::RtlUpperChar { let ch = call.args.a0 as u8; return Some(if ch >= b'a' && ch <= b'z' { (ch - (b'a' - b'A')) as u64 } else { ch as u64 }); }
     if call.service == NtService::RtlUpcaseUnicodeString { return Some(upcase_unicode_string(call.args.a0, call.args.a1, call.args.a2 != 0)); }
     if call.service == NtService::RtlUnicodeToOemN { return Some(unicode_to_multibyte(call.args.a0, call.args.a1, call.args.a2, call.args.a3, call.args.a4)); }
@@ -21,6 +23,37 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlUnicodeStringToOemSize { return Some(unicode_string_to_oem_size(call.args.a0)); }
     if call.service != NtService::RtlUnicodeStringToAnsiString && call.service != NtService::RtlUnicodeStringToOemString { return None; }
     Some(unicode_string_to_ansi_string(call.args.a0, call.args.a1, call.args.a2 != 0))
+}
+
+fn wcsnicmp(first: u64, second: u64, count: u64) -> u64 {
+    if count == 0 { return 0; }
+    if first == 0 || second == 0 || count > usize::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    for index in 0..count as usize {
+        let Some(first_unit) = read_u16(first, index) else { return STATUS_INVALID_PARAMETER; };
+        let Some(second_unit) = read_u16(second, index) else { return STATUS_INVALID_PARAMETER; };
+        let first_folded = ascii_lower_utf16(first_unit);
+        let second_folded = ascii_lower_utf16(second_unit);
+        if first_folded != second_folded || first_unit == 0 { return (first_folded as i32 - second_folded as i32) as i64 as u64; }
+    }
+    0
+}
+
+fn wcsicmp(first: u64, second: u64) -> u64 {
+    if first == 0 || second == 0 { return STATUS_INVALID_PARAMETER; }
+    let mut index = 0usize;
+    loop {
+        let Some(first_unit) = read_u16(first, index) else { return STATUS_INVALID_PARAMETER; };
+        let Some(second_unit) = read_u16(second, index) else { return STATUS_INVALID_PARAMETER; };
+        let first_folded = ascii_lower_utf16(first_unit);
+        let second_folded = ascii_lower_utf16(second_unit);
+        if first_folded != second_folded || first_unit == 0 { return (first_folded as i32 - second_folded as i32) as i64 as u64; }
+        let Some(next) = index.checked_add(1) else { return STATUS_INVALID_PARAMETER; };
+        index = next;
+    }
+}
+
+fn ascii_lower_utf16(unit: u16) -> u16 {
+    if (b'A' as u16..=b'Z' as u16).contains(&unit) { unit + (b'a' as u16 - b'A' as u16) } else { unit }
 }
 
 fn upcase_unicode_string(target: u64, source: u64, allocate: bool) -> u64 {
