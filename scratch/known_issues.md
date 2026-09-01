@@ -608,3 +608,6 @@ require the typed registry namespace owner.
 The graph now reaches `ntdll.dll!NtOpenMutant`; named mutant lookup remains an
 explicit `STATUS_NOT_IMPLEMENTED` boundary until the NT object namespace is
 implemented.
+`NtQueryFullAttributesFile` now translates the Wine-shaped network-open
+information record from canonical VFS metadata, including timestamps, size,
+and regular-file or directory attributes.

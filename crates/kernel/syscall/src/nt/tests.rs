@@ -139,6 +139,7 @@ use super::*;
     assert_eq!(decode(296, input).unwrap().service, NtService::NtQueryDefaultLocale);
     assert_eq!(decode(297, input).unwrap().service, NtService::NtQueryDefaultUILanguage);
     assert_eq!(decode(298, input).unwrap().service, NtService::NtQueryDirectoryObject);
+    assert_eq!(decode(299, input).unwrap().service, NtService::NtQueryFullAttributesFile);
     assert_eq!(decode(293, input).unwrap().service, NtService::NtPrivilegeCheck);
         assert_eq!(decode(240, input).unwrap().service, NtService::LdrDisableThreadCalloutsForDll);
         assert_eq!(decode(99, input).unwrap().service, NtService::LdrGetDllDirectory);

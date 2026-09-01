@@ -51,6 +51,7 @@ pub fn dispatch(call: NtFileCall) -> u64 {
     if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     match call {
         NtFileCall::QueryAttributes { attributes, information } => query_attributes(attributes.as_u64(), information.as_u64()),
+        NtFileCall::QueryFullAttributes { attributes, information } => query_full_attributes(attributes.as_u64(), information.as_u64()),
         NtFileCall::Create { request } => open_create(cur, request.as_u64()),
         NtFileCall::Open { request } => open_existing(cur, request.as_u64(), false),
         NtFileCall::Read { request } => io(cur, request.as_u64(), false),
@@ -82,6 +83,26 @@ fn query_attributes(attributes: u64, information: u64) -> u64 {
     put_i64(&mut out, 24, filetime(stat.ctime));
     let file_attributes: u32 = if file_type == vfs::FileType::Directory { 0x10 } else { 0x80 };
     out[32..36].copy_from_slice(&file_attributes.to_ne_bytes());
+    if uaccess::copy_to_user(information, &out).is_err() { STATUS_ACCESS_VIOLATION } else { STATUS_SUCCESS }
+}
+
+fn query_full_attributes(attributes: u64, information: u64) -> u64 {
+    if attributes == 0 || information == 0 { return STATUS_ACCESS_VIOLATION; }
+    let Some(path) = object_path(attributes) else { return STATUS_INVALID_PARAMETER; };
+    let lookup = crate::pathresolve::resolve_at_path(crate::pathresolve::AT_FDCWD, &path, vfs::LookupFlags::default());
+    let Ok(vp) = lookup else { return STATUS_OBJECT_NAME_NOT_FOUND; };
+    let file_type = vp.inode.file_type();
+    if file_type != vfs::FileType::Regular && file_type != vfs::FileType::Directory { return STATUS_INVALID_INFO_CLASS; }
+    let stat = vfs::generic_fillattr(vp.inode.as_ref(), &vfs::IDENTITY);
+    let mut out = [0u8; 56];
+    put_i64(&mut out, 0, filetime(stat.btime.unwrap_or(stat.ctime)));
+    put_i64(&mut out, 8, filetime(stat.atime));
+    put_i64(&mut out, 16, filetime(stat.mtime));
+    put_i64(&mut out, 24, filetime(stat.ctime));
+    put_i64(&mut out, 32, stat.size as i64);
+    put_i64(&mut out, 40, stat.size as i64);
+    let file_attributes: u32 = if file_type == vfs::FileType::Directory { 0x10 } else { 0x80 };
+    out[48..52].copy_from_slice(&file_attributes.to_ne_bytes());
     if uaccess::copy_to_user(information, &out).is_err() { STATUS_ACCESS_VIOLATION } else { STATUS_SUCCESS }
 }
 
