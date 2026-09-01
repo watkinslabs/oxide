@@ -18,6 +18,7 @@ const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
 /// Allocate a heap-owned SID and initialize its native layout.
 /// # C: O(1) plus bounded user copies and one VMM allocation
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlIdentifierAuthoritySid { return Some(identifier_authority_sid(call.args.a0)); }
     if call.service == NtService::RtlFreeSid { return Some(free_sid(call.args.a0)); }
     if call.service == NtService::RtlEqualPrefixSid { return Some(equal_prefix_sid(call.args.a0, call.args.a1)); }
     if call.service == NtService::RtlEqualSid { return Some(equal_sid(call.args.a0, call.args.a1)); }
@@ -30,6 +31,8 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service != NtService::RtlAllocateAndInitializeSid { return None; }
     Some(allocate_and_initialize(call))
 }
+
+fn identifier_authority_sid(sid: u64) -> u64 { sid.checked_add(2).unwrap_or(0) }
 
 fn free_sid(sid: u64) -> u64 {
     if sid == 0 { return STATUS_SUCCESS; }
