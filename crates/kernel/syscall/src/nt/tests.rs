@@ -255,6 +255,7 @@ use super::*;
     assert_eq!(decode(416, input).unwrap().service, NtService::RtlInitCodePageTable);
     assert_eq!(decode(417, input).unwrap().service, NtService::RtlInitializeExtendedContext2);
     assert_eq!(decode(418, input).unwrap().service, NtService::RtlInitializeSid);
+    assert_eq!(decode(419, input).unwrap().service, NtService::RtlIsDosDeviceNameU);
     assert_eq!(decode(370, input).unwrap().service, NtService::RtlEqualSid);
     assert_eq!(decode(371, input).unwrap().service, NtService::RtlExpandEnvironmentStringsU);
     assert_eq!(decode(298, input).unwrap().service, NtService::NtQueryDirectoryObject);
