@@ -25,7 +25,7 @@ pub(crate) fn stack_argument(index: usize) -> Option<u64> {
 #[cfg(target_os = "oxide-kernel")]
 const CURRENT_PROCESS: u64 = u64::MAX;
 #[cfg(target_os = "oxide-kernel")]
-const CURRENT_THREAD: u64 = u64::MAX;
+const CURRENT_THREAD: u64 = u64::MAX - 1;
 #[cfg(target_os = "oxide-kernel")]
 const MEM_RESERVE: u32 = 0x2000;
 #[cfg(target_os = "oxide-kernel")]
@@ -48,6 +48,8 @@ const STATUS_MEMORY_NOT_ALLOCATED: u64 = 0xc000_00a0;
 const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
 #[cfg(target_os = "oxide-kernel")]
 const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
+#[cfg(target_os = "oxide-kernel")]
+const STATUS_NOT_SAME_OBJECT: u64 = 0xc000_01ac;
 const STATUS_INFO_LENGTH_MISMATCH: u64 = 0xc000_0004;
 const STATUS_INVALID_INFO_CLASS: u64 = 0xc000_0003;
 const STATUS_NO_CALLBACK_ACTIVE: u64 = 0xc000_0258;
@@ -123,6 +125,42 @@ fn resolve_thread_target(cur: &sched::Task, raw: u64,
     };
     if object.kind() != sched::nt_object::NtObjectType::Thread { return Err(STATUS_INVALID_HANDLE); }
     object.task().ok_or(STATUS_INVALID_HANDLE)
+}
+#[cfg(target_os = "oxide-kernel")]
+fn compare_objects(cur: &sched::Task, first: u64, second: u64) -> u64 {
+    let pseudo_kind = |raw| {
+        if raw == CURRENT_PROCESS { Some(sched::nt_object::NtObjectType::Process) }
+        else if raw == CURRENT_THREAD { Some(sched::nt_object::NtObjectType::Thread) }
+        else { None }
+    };
+    if let (Some(first_kind), Some(second_kind)) = (pseudo_kind(first), pseudo_kind(second)) {
+        return if first_kind == second_kind { STATUS_SUCCESS } else { STATUS_NOT_SAME_OBJECT };
+    }
+    let table = cur.thread_group.nt_handles();
+    let resolve = |raw| {
+        if let Some(kind) = pseudo_kind(raw) { return Ok((kind, None)); }
+        if raw > u32::MAX as u64 { return Err(STATUS_INVALID_HANDLE); }
+        let handle = sched::nt_object::NtHandle::from_raw(raw as u32);
+        table.get(handle, 0).map(|object| (object.kind(), Some(object)))
+            .ok_or(STATUS_INVALID_HANDLE)
+    };
+    let (first_kind, first_object) = match resolve(first) { Ok(value) => value, Err(status) => return status };
+    let (second_kind, second_object) = match resolve(second) { Ok(value) => value, Err(status) => return status };
+    let first_is_pseudo = first_object.is_none();
+    match (first_object, second_object) {
+        (Some(first), Some(second)) => if alloc::sync::Arc::ptr_eq(&first, &second) { STATUS_SUCCESS } else { STATUS_NOT_SAME_OBJECT },
+        (None, Some(object)) | (Some(object), None) => {
+            let pseudo = if first_is_pseudo { first_kind } else { second_kind };
+            let Some(task) = object.task() else { return STATUS_NOT_SAME_OBJECT; };
+            let same = match pseudo {
+                sched::nt_object::NtObjectType::Process => object.kind() == pseudo && task.tgid.load(core::sync::atomic::Ordering::Acquire) == cur.tgid.load(core::sync::atomic::Ordering::Acquire),
+                sched::nt_object::NtObjectType::Thread => object.kind() == pseudo && task.tid == cur.tid,
+                _ => false,
+            };
+            if same { STATUS_SUCCESS } else { STATUS_NOT_SAME_OBJECT }
+        }
+        (None, None) => STATUS_NOT_SAME_OBJECT,
+    }
 }
 /// Enter the native NT memory adapter from the tagged personality path.
 /// Pointer values are copied only after the ABI shape has been validated;
@@ -242,6 +280,7 @@ pub fn dispatch(call: NtCall) -> u64 {
         if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
         let table = cur.thread_group.nt_handles();
         return match object_call {
+            NtObjectCall::CompareObjects { first, second } => compare_objects(&cur, first, second),
             NtObjectCall::CreateJob { handle, desired_access, attributes: _ } => {
                 if desired_access & !JOB_OBJECT_ALL_ACCESS != 0 { return STATUS_INVALID_PARAMETER; }
                 let object = table.new_object(sched::nt_object::NtObjectType::Job);

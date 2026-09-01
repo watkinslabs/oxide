@@ -464,3 +464,7 @@ Windows NT frontier update (2026-09-01): `NtCancelSynchronousIoFile` now
 validates current/real NT thread handles and publishes the reference
 `STATUS_NOT_FOUND` result when no synchronous request is pending; the graph
 advances to `ntdll.dll!NtCompareObjects`.
+Windows NT frontier update (2026-09-01): `NtCompareObjects` now distinguishes
+current-process/current-thread pseudo handles, validates process-local handles,
+and compares duplicated handles by canonical NT object identity; the graph
+advances to `ntdll.dll!NtConvertBetweenAuxiliaryCounterAndPerformanceCounter`.

@@ -38,6 +38,7 @@ pub enum NtService {
     NtCancelIoFile = 252,
     NtCancelIoFileEx = 253,
     NtCancelSynchronousIoFile = 254,
+    NtCompareObjects = 255,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -113,6 +114,7 @@ pub enum NtObjectCall {
     QueryObject { handle: u32, class: u32, info: UserPtr<u8>, length: u32, return_length: Option<UserPtr<u32>> },
     QuerySecurity { handle: u32, security_information: u32, descriptor: UserPtr<u8>, length: u32, return_length: Option<UserPtr<u32>> },
     SetSecurity { handle: u32, security_information: u32, descriptor: UserPtr<u8> },
+    CompareObjects { first: u64, second: u64 },
 }
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -297,6 +299,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 252 { return Some(NtCall { service: NtService::NtCancelIoFile, args }); }
     if service == 253 { return Some(NtCall { service: NtService::NtCancelIoFileEx, args }); }
     if service == 254 { return Some(NtCall { service: NtService::NtCancelSynchronousIoFile, args }); }
+    if service == 255 { return Some(NtCall { service: NtService::NtCompareObjects, args }); }
     if service == 197 { return Some(NtCall { service: NtService::RtlGUIDFromString, args }); }
     if service == 195 { return Some(NtCall { service: NtService::WineDbgOutput, args }); }
     if service == 194 { return Some(NtCall { service: NtService::WineDbgHeader, args }); }
@@ -460,7 +463,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::NtAdjustPrivilegesToken => Err(Errno::Enosys),
         NtService::NtAllocateLocallyUniqueId => Err(Errno::Enosys),
         NtService::NtCancelIoFile | NtService::NtCancelIoFileEx => Err(Errno::Enosys),
-        NtService::NtCancelSynchronousIoFile => Err(Errno::Enosys),
+        NtService::NtCancelSynchronousIoFile | NtService::NtCompareObjects => Err(Errno::Enosys),
     }
 }
 pub fn decode_system(call: NtCall) -> Result<NtSystemCall, Errno> {
@@ -591,6 +594,7 @@ pub fn decode_object(call: NtCall) -> Result<NtObjectCall, Errno> {
         NtService::QueryObject => Ok(NtObjectCall::QueryObject { handle: a.a0 as u32, class: a.a1 as u32, info: UserPtr::new(a.a2)?, length: a.a3 as u32, return_length: optional_ptr(a.a4)? }),
         NtService::QuerySecurityObject => Ok(NtObjectCall::QuerySecurity { handle: a.a0 as u32, security_information: a.a1 as u32, descriptor: UserPtr::new(a.a2)?, length: a.a3 as u32, return_length: optional_ptr(a.a4)? }),
         NtService::SetSecurityObject => Ok(NtObjectCall::SetSecurity { handle: a.a0 as u32, security_information: a.a1 as u32, descriptor: UserPtr::new(a.a2)? }),
+        NtService::NtCompareObjects => Ok(NtObjectCall::CompareObjects { first: a.a0, second: a.a1 }),
         _ => Err(Errno::Enosys),
     }
 }
