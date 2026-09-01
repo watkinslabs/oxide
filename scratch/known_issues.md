@@ -637,3 +637,5 @@ handles, special APC flags, and callback delivery require that same owner.
 `NtRaiseException` is exposed at the exception boundary; complete behavior
 requires a canonical exception-record dispatcher and resumable x86-64 user
 context owner, still absent from the current exception module.
+`NtReadFileScatter` is exposed at the file boundary; segmented user-buffer
+validation and completion require a scatter-read owner in the NT file adapter.
