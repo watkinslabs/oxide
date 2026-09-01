@@ -36,6 +36,8 @@ const LOAD_LIBRARY_SEARCH_APPLICATION_DIR: u32 = 0x0000_0200;
 const LOAD_LIBRARY_SEARCH_USER_DIRS: u32 = 0x0000_0400;
 const LOAD_LIBRARY_SEARCH_SYSTEM32: u32 = 0x0000_0800;
 const LOAD_LIBRARY_SEARCH_DEFAULT_DIRS: u32 = 0x0000_1000;
+const LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR: u32 = 0x0000_0100;
+const LOAD_WITH_ALTERED_SEARCH_PATH: u32 = 0x0000_0008;
 const DEFAULT_DLL_SEARCH_FLAGS: u32 = LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_USER_DIRS | LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
 
 pub fn dispatch(call: NtCall) -> Option<u64> {
@@ -50,7 +52,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         NtService::LdrAddRefDll => Some(add_ref(call.args.a0 as u32, call.args.a1)),
         NtService::LdrDisableThreadCalloutsForDll => Some(disable_thread_callouts(call.args.a0)),
         NtService::LdrGetDllHandleEx => Some(get_handle(call.args.a0 as u32, call.args.a3, call.args.a4)),
-        NtService::LdrGetDllPath => Some(get_path(call.args.a0, call.args.a2, call.args.a3)),
+        NtService::LdrGetDllPath => Some(get_path(call.args.a0, call.args.a1 as u32, call.args.a2, call.args.a3)),
         NtService::LdrSetDefaultDllDirectories => Some(set_default_dll_directories(call.args.a0 as u32)),
         NtService::LdrUnloadDll => Some(unload(call.args.a0)),
         NtService::LdrGetDllFullName => Some(full_name(call.args.a0, call.args.a1)),
@@ -132,11 +134,80 @@ fn get_handle(flags: u32, name_descriptor: u64, module_output: u64) -> u64 {
     STATUS_DLL_NOT_FOUND
 }
 
-fn get_path(module: u64, path_output: u64, unknown_output: u64) -> u64 {
+fn get_path(module: u64, flags: u32, path_output: u64, unknown_output: u64) -> u64 {
     if module == 0 || path_output == 0 || unknown_output == 0 { return STATUS_INVALID_PARAMETER; }
-    if read_wide_z(module).is_none() { return STATUS_INVALID_PARAMETER; }
-    if uaccess::put_user_u64(path_output, 0).is_err() || uaccess::put_user_u64(unknown_output, 0).is_err() { return STATUS_INVALID_PARAMETER; }
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let Some(module_name) = read_wide_z(module) else { return STATUS_INVALID_PARAMETER; };
+    let valid_flags = LOAD_WITH_ALTERED_SEARCH_PATH | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | DEFAULT_DLL_SEARCH_FLAGS;
+    if flags & !valid_flags != 0 || flags & LOAD_WITH_ALTERED_SEARCH_PATH != 0 && flags & DEFAULT_DLL_SEARCH_FLAGS != 0 { return STATUS_INVALID_PARAMETER; }
+    let search_flags = if flags & (LOAD_WITH_ALTERED_SEARCH_PATH | DEFAULT_DLL_SEARCH_FLAGS) == 0 {
+        cur.thread_group.nt_default_dll_search_flags.load(Ordering::Acquire)
+    } else { flags };
+    let mut path = Vec::new();
+    if flags & LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR != 0 || flags & LOAD_WITH_ALTERED_SEARCH_PATH != 0 {
+        append_directory(&mut path, directory_of(&module_name));
+    }
+    if search_flags & LOAD_LIBRARY_SEARCH_APPLICATION_DIR != 0 {
+        let peb = read_u64(cur.nt_teb().saturating_add(TEB_PEB_OFFSET));
+        let parameters = read_u64(peb.saturating_add(PEB_IMAGE_BASE_OFFSET + 0x10));
+        if parameters != 0 {
+            let image = read_unicode(parameters.saturating_add(0x60)).unwrap_or_default();
+            append_directory(&mut path, directory_of(&image));
+        }
+    }
+    if search_flags & LOAD_LIBRARY_SEARCH_USER_DIRS != 0 {
+        let dirs = cur.thread_group.nt_dll_directories.lock();
+        for (_, directory) in dirs.iter() { append_directory(&mut path, directory); }
+    }
+    if search_flags & (LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS) != 0 {
+        append_directory(&mut path, &utf16_bytes_const(b"C:\\Windows\\System32"));
+    }
+    if path.is_empty() { append_directory(&mut path, &utf16_bytes_const(b"C:\\Windows")); }
+    if uaccess::put_user_u64(unknown_output, 0).is_err() { return STATUS_INVALID_PARAMETER; }
+    let Some(buffer) = allocate_utf16(&path) else { return STATUS_DLL_NOT_FOUND; };
+    if uaccess::put_user_u64(path_output, buffer).is_err() {
+        free_user_buffer(buffer);
+        return STATUS_INVALID_PARAMETER;
+    }
     STATUS_SUCCESS
+}
+
+fn append_directory(path: &mut Vec<u8>, directory: &[u8]) {
+    if directory.is_empty() || path.windows(directory.len()).any(|window| window == directory) { return; }
+    if !path.is_empty() { path.extend_from_slice(&[b';', 0]); }
+    path.extend_from_slice(directory);
+}
+
+fn directory_of(path: &[u8]) -> &[u8] {
+    let mut index = path.len();
+    while index >= 2 {
+        index -= 2;
+        if path[index] == b'\\' || path[index] == b'/' { return &path[..index]; }
+    }
+    &[]
+}
+
+fn utf16_bytes_const(value: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(value.len() * 2);
+    for byte in value { out.extend_from_slice(&[*byte, 0]); }
+    out
+}
+
+fn allocate_utf16(path: &[u8]) -> Option<u64> {
+    let size = path.len().checked_add(2)? as u64;
+    let call = NtCall { service: NtService::AllocateHeap, args: syscall::SyscallArgs { a0: 0, a1: 0, a2: size, a3: 0, a4: 0, a5: 0 } };
+    let buffer = crate::nt_heap::dispatch(call)?;
+    if buffer == 0 { return None; }
+    let mut value = path.to_vec();
+    value.extend_from_slice(&[0, 0]);
+    if uaccess::copy_to_user(buffer, &value).is_err() { free_user_buffer(buffer); return None; }
+    Some(buffer)
+}
+
+fn free_user_buffer(buffer: u64) {
+    let call = NtCall { service: NtService::FreeHeap, args: syscall::SyscallArgs { a0: 0, a1: 0, a2: buffer, a3: 0, a4: 0, a5: 0 } };
+    let _ = crate::nt_heap::dispatch(call);
 }
 
 fn set_default_dll_directories(flags: u32) -> u64 {
@@ -408,3 +479,7 @@ fn set(descriptor: u64) -> u64 {
     *cur.thread_group.nt_dll_directory.lock() = value;
     STATUS_SUCCESS
 }
+
+#[cfg(test)]
+#[path = "tests/nt_loader_dir.rs"]
+mod tests;
