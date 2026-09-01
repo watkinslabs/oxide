@@ -37,11 +37,51 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         NtService::RtlSetSearchPathMode => Some(set_search_path_mode(call.args.a0 as u32)),
         NtService::LdrGetDllDirectory => Some(get(call.args.a0)),
         NtService::LdrSetDllDirectory => Some(set(call.args.a0)),
+        NtService::LdrAddDllDirectory => Some(add(call.args.a0, call.args.a1)),
+        NtService::LdrRemoveDllDirectory => Some(remove(call.args.a0)),
         NtService::LdrGetDllFullName => Some(full_name(call.args.a0, call.args.a1)),
         NtService::LdrLoadDll => Some(load(call.args.a2, call.args.a3)),
         NtService::LdrQueryImageFileExecutionOptions => Some(query_options(call.args.a0, call.args.a1, call.args.a4, call.args.a5)),
         _ => None,
     }
+}
+
+fn add(descriptor: u64, cookie_output: u64) -> u64 {
+    if descriptor == 0 || cookie_output == 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let Some(path) = read_unicode(descriptor) else { return STATUS_INVALID_PARAMETER; };
+    if path.is_empty() || !absolute_path(&path) { return STATUS_INVALID_PARAMETER; }
+    let cookie = cur.thread_group.nt_dll_directory_next.fetch_add(1, Ordering::AcqRel).max(1);
+    cur.thread_group.nt_dll_directories.lock().push((cookie, path));
+    if uaccess::put_user_u64(cookie_output, cookie).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
+}
+
+fn remove(cookie: u64) -> u64 {
+    if cookie == 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let mut dirs = cur.thread_group.nt_dll_directories.lock();
+    let before = dirs.len();
+    dirs.retain(|(known, _)| *known != cookie);
+    if dirs.len() == before { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
+}
+
+fn read_unicode(descriptor: u64) -> Option<Vec<u8>> {
+    let mut raw = [0u8; UNICODE_STRING_BYTES];
+    uaccess::copy_from_user(&mut raw, descriptor).ok()?;
+    let length = u16::from_le_bytes([raw[0], raw[1]]) as usize;
+    let maximum = u16::from_le_bytes([raw[2], raw[3]]) as usize;
+    let buffer = u64::from_le_bytes(raw[8..16].try_into().ok()?);
+    if length == 0 || length > maximum || length & 1 != 0 || length > 32 * 1024 || buffer == 0 { return None; }
+    let mut value = vec![0u8; length];
+    uaccess::copy_from_user(&mut value, buffer).ok()?;
+    Some(value)
+}
+
+fn absolute_path(path: &[u8]) -> bool {
+    path.len() >= 2 && ((path[0] == b'\\' && path[1] == 0) || (path.len() >= 4 && path[1] == 0 && path[2] == b':' && path[3] == 0))
 }
 
 fn query_options(key: u64, value: u64, data_size: u64, result_size: u64) -> u64 {

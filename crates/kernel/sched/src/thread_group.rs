@@ -70,6 +70,9 @@ pub struct ThreadGroup {
     pub nt_peb_lock: crate::nt_object::NtMutant,
     /// Process-local Windows DLL-directory override, encoded as UTF-16 bytes.
     pub nt_dll_directory: Spinlock<Vec<u8>, TaskListClass>,
+    /// Process-local `LdrAddDllDirectory` entries as `(cookie, UTF-16 path)`.
+    pub nt_dll_directories: Spinlock<Vec<(u64, Vec<u8>)>, TaskListClass>,
+    pub nt_dll_directory_next: AtomicU64,
     pub nt_atoms: Spinlock<Vec<Vec<u8>>, TaskListClass>, pub nt_atom_table: Spinlock<bool, TaskListClass>,
     /// Owner and recursion depth of the process heap lock: `(tid, depth)`.
     pub nt_heap_lock: Spinlock<Option<(u64, u32)>, TaskListClass>,
@@ -241,6 +244,7 @@ impl ThreadGroup {
             nt_handles: crate::nt_object::NtHandleTable::new(),
             nt_peb_lock: crate::nt_object::NtMutant::new(None),
             nt_dll_directory: Spinlock::new(Vec::new()),
+            nt_dll_directories: Spinlock::new(Vec::new()), nt_dll_directory_next: AtomicU64::new(1),
             nt_atoms: Spinlock::new(Vec::new()), nt_atom_table: Spinlock::new(false),
             nt_heap_lock: Spinlock::new(None),
             nt_heap_user_info: Spinlock::new(Vec::new()),
