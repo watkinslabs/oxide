@@ -96,6 +96,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlGetProductInfo { return Some(get_product_info(call)); }
     if call.service == NtService::RtlGetProcessPreferredUILanguages { return Some(get_process_preferred_ui_languages(call)); }
     if call.service == NtService::RtlGetSearchPath { return Some(get_search_path(call.args.a0)); }
+    if call.service == NtService::RtlReleasePath { return Some(release_path(call.args.a0)); }
     if call.service == NtService::RtlGetSystemPreferredUILanguages { return Some(get_system_preferred_ui_languages(call)); }
     if call.service == NtService::RtlGetThreadErrorMode { return Some(get_thread_error_mode()); }
     if call.service == NtService::RtlGetThreadPreferredUILanguages { return Some(get_thread_preferred_ui_languages(call)); }
@@ -386,6 +387,14 @@ fn get_search_path(result: u64) -> u64 {
     for (index, value) in path.iter().enumerate() { encoded[index * 2..index * 2 + 2].copy_from_slice(&value.to_le_bytes()); }
     if uaccess::copy_to_user(buffer, &encoded).is_err() || uaccess::copy_to_user(result, &buffer.to_le_bytes()).is_err() { free_rtl_buffer(buffer); return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
+}
+
+fn release_path(path: u64) -> u64 {
+    let Some(task) = sched::live::current() else { return 0; };
+    if !task.is_nt_personality() || path == 0 { return 0; }
+    let free = NtCall { service: NtService::FreeHeap, args: syscall::SyscallArgs { a0: 1, a1: 0, a2: path, a3: 0, a4: 0, a5: 0 } };
+    let _ = crate::nt_heap::dispatch(free);
+    0
 }
 
 fn append_path_component(target: &mut alloc::vec::Vec<u16>, value: &[u16]) { target.extend_from_slice(value); target.push(b';' as u16); }
