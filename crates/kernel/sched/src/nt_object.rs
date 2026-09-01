@@ -49,6 +49,7 @@ pub enum NtObjectType {
     Timer,
     CompletionPort,
     Token,
+    Key,
     Job,
 }
 /// Stable identity and type of one native object.
@@ -395,6 +396,11 @@ impl NtHandleTable {
     pub fn new_token(&self, uid: u32, gid: u32) -> Arc<NtObject> {
         let id = self.next_object_id.fetch_add(1, Ordering::Relaxed);
         NtObject::new_token(id, uid, gid)
+    }
+
+    /// Allocate a registry-key object identity for the NT registry owner. # C: O(1)
+    pub fn new_key(&self) -> Arc<NtObject> {
+        self.new_object(NtObjectType::Key)
     }
     pub fn duplicate_token(&self, token: Arc<NtToken>) -> Arc<NtObject> {
         let id = self.next_object_id.fetch_add(1, Ordering::Relaxed);

@@ -644,6 +644,7 @@ pub fn dispatch(call: NtCall) -> u64 {
     if let Some(result) = crate::nt_unwind::dispatch(call) { return result; }
     if let Some(result) = crate::nt_exception::dispatch(call) { return result; }
     if let Some(result) = crate::nt_time::dispatch(call) { return result; }
+    if let Some(result) = crate::nt_registry::dispatch(call) { return result; }
     if let Some(result) = crate::nt_rtl::dispatch(call) { return result; }
     if let Some(result) = crate::nt_bitmap::dispatch(call) { return result; }
     if let Some(result) = crate::nt_unicode::dispatch(call) { return result; }
