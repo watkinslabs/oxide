@@ -18,6 +18,8 @@ const DACL: u32 = 0x0000_0004;
 const SACL: u32 = 0x0000_0008;
 const LABEL: u32 = 0x0000_0010;
 const SECURITY_DESCRIPTOR_REVISION: u8 = 1;
+const SID_REVISION: u8 = 1;
+const SID_MAX_SUB_AUTHORITIES: u8 = 15;
 const SELF_RELATIVE: u16 = 0x8000;
 const DACL_PRESENT: u16 = 0x0004;
 const DACL_DEFAULTED: u16 = 0x0008;
@@ -51,6 +53,9 @@ const SECURITY_CONTROL_WORD_BYTES: usize = 4;
 /// Linux credentials supply the owner/group identity; no Linux syscall path
 /// reaches this adapter. # C: O(1) plus usercopy
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == syscall::nt::NtService::RtlValidSid {
+        return Some(valid_sid(call.args.a0));
+    }
     if call.service == syscall::nt::NtService::RtlValidSecurityDescriptor {
         return Some(valid_security_descriptor(call.args.a0));
     }
@@ -128,6 +133,13 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if descriptor.as_u64() == 0 || length < required { return Some(STATUS_BUFFER_TOO_SMALL); }
     if uaccess::copy_to_user(descriptor.as_u64(), &bytes).is_err() { return Some(STATUS_INVALID_PARAMETER); }
     Some(STATUS_SUCCESS)
+}
+
+fn valid_sid(sid: u64) -> u64 {
+    if sid == 0 { return 0; }
+    let mut header = [0u8; 2];
+    if uaccess::copy_from_user(&mut header, sid).is_err() { return 0; }
+    (header[0] == SID_REVISION && header[1] <= SID_MAX_SUB_AUTHORITIES) as u64
 }
 
 fn valid_security_descriptor(descriptor: u64) -> u64 {
