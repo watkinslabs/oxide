@@ -46,6 +46,9 @@ const GROUP_DEFAULTED: u16 = 0x0002;
 /// Linux credentials supply the owner/group identity; no Linux syscall path
 /// reaches this adapter. # C: O(1) plus usercopy
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == syscall::nt::NtService::RtlMapGenericMask {
+        return Some(map_generic_mask(call.args.a0, call.args.a1));
+    }
     if call.service == syscall::nt::NtService::RtlGetDaclSecurityDescriptor {
         return Some(get_dacl(call.args.a0, call.args.a1, call.args.a2, call.args.a3));
     }
@@ -204,6 +207,14 @@ fn map_generic(mut desired: u32, mapping: [u32; 4]) -> u32 {
     if desired & GENERIC_EXECUTE != 0 { desired = desired & !GENERIC_EXECUTE | mapping[2]; }
     if desired & GENERIC_ALL != 0 { desired = desired & !GENERIC_ALL | mapping[3]; }
     desired
+}
+
+fn map_generic_mask(mask: u64, mapping: u64) -> u64 {
+    if mask == 0 || mapping == 0 { return STATUS_INVALID_PARAMETER; }
+    let Ok(mut value) = uaccess::get_user_u32(mask) else { return STATUS_INVALID_PARAMETER; };
+    let Some(mapping) = read_mapping(mapping) else { return STATUS_INVALID_PARAMETER; };
+    value = map_generic(value, mapping);
+    if uaccess::put_user_u32(mask, value).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
 }
 
 fn acl_access(sd: u64, offset: u32, desired: u32, uid: u32, gid: u32) -> u32 {
