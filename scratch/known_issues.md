@@ -712,3 +712,5 @@ writes the native SID layout; SID validation/free-lifetime edge cases remain.
 RTL owner; generic-access mapping remains the caller's responsibility.
 `RtlAreAnyAccessesGranted` implements the companion reference bitmask
 predicate; generic-access mapping remains the caller's responsibility.
+`RtlBarrier` remains an explicit unsupported userspace synchronization boundary;
+wait-on-address ownership and safe caller-memory barrier state are not present.

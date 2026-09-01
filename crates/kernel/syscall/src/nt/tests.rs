@@ -178,6 +178,7 @@ use super::*;
     assert_eq!(decode(337, input).unwrap().service, NtService::RtlAllocateAndInitializeSid);
     assert_eq!(decode(338, input).unwrap().service, NtService::RtlAreAllAccessesGranted);
     assert_eq!(decode(339, input).unwrap().service, NtService::RtlAreAnyAccessesGranted);
+    assert_eq!(decode(340, input).unwrap().service, NtService::RtlBarrier);
     assert_eq!(decode(298, input).unwrap().service, NtService::NtQueryDirectoryObject);
     assert_eq!(decode(299, input).unwrap().service, NtService::NtQueryFullAttributesFile);
     assert_eq!(decode(293, input).unwrap().service, NtService::NtPrivilegeCheck);
