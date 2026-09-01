@@ -80,6 +80,7 @@ mod nt_nls;
 mod nt_memory_lock;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_rtl;
+mod nt_sid;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_rtl_ansi;
 #[cfg(target_os = "oxide-kernel")]

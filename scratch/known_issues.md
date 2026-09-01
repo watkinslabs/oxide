@@ -706,3 +706,5 @@ explicit unsupported result; canonical ACL mutation remains unimplemented.
 the NT security owner; self-relative ACL insertion remains unimplemented.
 `RtlAddRefActivationContext` is cataloged as a void native boundary; the
 activation-context object and its reference-count owner remain in userspace.
+`RtlAllocateAndInitializeSid` allocates through the canonical NT heap owner and
+writes the native SID layout; SID validation/free-lifetime edge cases remain.
