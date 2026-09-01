@@ -9,6 +9,7 @@ const STATUS_INVALID_INFO_CLASS: u64 = 0xc000_0003;
 const STATUS_UNSUCCESSFUL: u64 = 0xc000_0001;
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_NO_MEMORY: u64 = 0xc000_0017;
+const STATUS_NO_MORE_ENTRIES: u64 = 0x8000_001a;
 const HEAP_ADD_USER_INFO: u64 = 0x0000_0100;
 const HEAP_COMPATIBILITY_INFORMATION: u64 = 0;
 
@@ -16,6 +17,7 @@ const HEAP_COMPATIBILITY_INFORMATION: u64 = 0;
 /// # C: O(log N_vmas)
 pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == nt::NtService::RtlValidateHeap { return Some(validate_heap(call)); }
+    if call.service == nt::NtService::RtlWalkHeap { return Some(walk_heap(call)); }
     if call.service == nt::NtService::RtlFreeUserStack {
         if call.args.a0 == 0 { return Some(0); }
         let heap_call = NtCall { service: nt::NtService::FreeHeap, args: syscall::SyscallArgs { a0: 0, a1: 0, a2: call.args.a0, a3: 0, a4: 0, a5: 0 } };
@@ -46,7 +48,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
             match elf_load::nt_memory::allocate(&mm, None, size, vmm::VmaProt::READ | vmm::VmaProt::WRITE) {
                 Ok(allocation) => {
                     let base = allocation.base.as_u64();
-                    if flags & HEAP_ADD_USER_INFO != 0 { cur.thread_group.nt_heap_user_info.lock().push((base, flags as u32, 0)); }
+                    cur.thread_group.nt_heap_user_info.lock().push((base, flags as u32, 0));
                     base
                 }
                 Err(elf_load::nt_memory::NtStatus::NoMemory) => STATUS_NO_MEMORY,
@@ -83,6 +85,30 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
             match elf_load::nt_memory::query(&mm, base) { Ok(info) => info.size as u64, Err(_) => u64::MAX }
         }
     })
+}
+
+fn walk_heap(call: NtCall) -> u64 {
+    const ENTRY_BYTES: usize = 40;
+    const ENTRY_BUSY: u16 = 0x0001;
+    const ENTRY_BLOCK: u16 = 0x0010;
+    const ENTRY_COMMITTED: u16 = 0x4000;
+    if call.args.a0 != 1 || call.args.a1 == 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let mut entry = [0u8; ENTRY_BYTES];
+    if uaccess::copy_from_user(&mut entry, call.args.a1).is_err() { return STATUS_INVALID_PARAMETER; }
+    let cursor = u64::from_le_bytes(entry[0..8].try_into().unwrap());
+    let Some(mm) = (unsafe { cur.mm_ref() }).map(|mm| mm.clone()) else { return STATUS_INVALID_PARAMETER; };
+    let Some((base, _flags, _value)) = cur.thread_group.nt_heap_user_info.lock().iter()
+        .copied().filter(|(base, _, _)| *base > cursor).min_by_key(|(base, _, _)| *base) else { return STATUS_NO_MORE_ENTRIES; };
+    let Some(address) = hal::UserVirtAddr::new(base) else { return STATUS_NO_MORE_ENTRIES; };
+    let Ok(info) = elf_load::nt_memory::query(&mm, address) else { return STATUS_NO_MORE_ENTRIES; };
+    entry = [0; ENTRY_BYTES];
+    entry[0..8].copy_from_slice(&base.to_le_bytes());
+    entry[8..16].copy_from_slice(&(info.size as u64).to_le_bytes());
+    entry[18..20].copy_from_slice(&(ENTRY_BUSY | ENTRY_BLOCK | ENTRY_COMMITTED).to_le_bytes());
+    if uaccess::copy_to_user(call.args.a1, &entry).is_err() { return STATUS_INVALID_PARAMETER; }
+    0
 }
 
 fn validate_heap(call: NtCall) -> u64 {
