@@ -56,6 +56,7 @@ fn guid_from_string(descriptor: u64, target: u64) -> u64 {
 /// Initialize a Windows `UNICODE_STRING` descriptor without copying its source.
 /// # C: O(min(source length, 32766)) plus usercopy
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlDeleteBarrier { return Some(0); }
     if let Some(result) = crate::nt_rtl_integer::dispatch(call) { return Some(result); }
     if let Some(result) = crate::nt_rtl_ansi::dispatch(call) { return Some(result); }
     if let Some(result) = crate::nt_debug::dispatch(call) { return Some(result); }

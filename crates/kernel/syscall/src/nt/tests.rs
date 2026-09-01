@@ -195,6 +195,7 @@ use super::*;
     assert_eq!(decode(354, input).unwrap().service, NtService::RtlDeactivateActivationContext);
     assert_eq!(decode(355, input).unwrap().service, NtService::RtlReleaseActivationContext);
     assert_eq!(decode(356, input).unwrap().service, NtService::RtlDeleteAce);
+    assert_eq!(decode(357, input).unwrap().service, NtService::RtlDeleteBarrier);
     assert_eq!(decode(298, input).unwrap().service, NtService::NtQueryDirectoryObject);
     assert_eq!(decode(299, input).unwrap().service, NtService::NtQueryFullAttributesFile);
     assert_eq!(decode(293, input).unwrap().service, NtService::NtPrivilegeCheck);

@@ -675,6 +675,8 @@ their opaque handles/cookies; activation-frame and reference-count ownership
 remain unimplemented.
 `RtlDeleteAce` validates and compacts variable-sized caller-owned ACL entries;
 concurrent ACL mutation remains outside the current native ownership model.
+`RtlDeleteBarrier` preserves the reference no-op destruction boundary; barrier
+waiter state and cancellation ownership remain unimplemented.
 `RtlCreateProcessParametersEx` validates its result-pointer boundary; native
 string capture, environment ownership, normalization, and destruction remain
 unimplemented.
