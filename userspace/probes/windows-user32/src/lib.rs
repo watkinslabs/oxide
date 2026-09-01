@@ -102,6 +102,34 @@ impl User32 {
     pub fn set_window_rect(&self, hwnd: u64, rect: &NtWindowRect) -> Result<(), WindowError> {
         invoke(NtService::SetWindowRect, [hwnd, (rect as *const NtWindowRect) as u64, 0, 0, 0, 0]).map(|_| ())
     }
+
+    /// Read one window's UTF-16 title/control text. # C: O(N_text) plus usercopy
+    pub fn get_window_text(&self, hwnd: u64, text: &mut [u16]) -> Result<usize, WindowError> {
+        invoke(NtService::GetWindowText, [hwnd, text.as_mut_ptr() as u64, text.len() as u64, 0, 0, 0]).map(|length| length as usize)
+    }
+
+    /// Replace one window's UTF-16 title/control text. # C: O(N_text) plus usercopy
+    pub fn set_window_text(&self, hwnd: u64, text: &[u16]) -> Result<(), WindowError> {
+        let mut value = text.iter().copied().take_while(|unit| *unit != 0).collect::<Vec<_>>();
+        value.push(0);
+        invoke(NtService::SetWindowText, [hwnd, value.as_ptr() as u64, 0, 0, 0, 0]).map(|_| ())
+    }
+
+    /// Read the client rectangle in client coordinates. # C: O(N_windows) plus usercopy
+    pub fn get_client_rect(&self, hwnd: u64) -> Result<NtWindowRect, WindowError> {
+        let mut rect = NtWindowRect { left: 0, top: 0, right: 0, bottom: 0 };
+        invoke(NtService::GetClientRect, [hwnd, (&mut rect as *mut NtWindowRect) as u64, 0, 0, 0, 0]).map(|_| rect)
+    }
+
+    /// Return the native parent HWND, or zero for a top-level window. # C: O(N_windows)
+    pub fn get_parent(&self, hwnd: u64) -> Result<u64, WindowError> {
+        invoke(NtService::GetParent, [hwnd, 0, 0, 0, 0, 0])
+    }
+
+    /// Apply a Win32 show command and return the previous visibility state. # C: O(N_windows)
+    pub fn show_window(&self, hwnd: u64, command: u32) -> Result<bool, WindowError> {
+        invoke(NtService::ShowWindow, [hwnd, command as u64, 0, 0, 0, 0]).map(|previous| previous != 0)
+    }
 }
 
 fn invoke(service: NtService, args: [u64; 6]) -> Result<u64, WindowError> {
@@ -144,6 +172,8 @@ mod tests {
     fn geometry_selectors_are_stable_tagged_entries() {
         assert_eq!(NtService::GetWindowRect.entry(), 0x4e54_0000_0000_01ff);
         assert_eq!(NtService::SetWindowRect.entry(), 0x4e54_0000_0000_0200);
+        assert_eq!(NtService::GetWindowText.entry(), 0x4e54_0000_0000_0207);
+        assert_eq!(NtService::ShowWindow.entry(), 0x4e54_0000_0000_020b);
     }
 
     #[test]

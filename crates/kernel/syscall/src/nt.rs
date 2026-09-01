@@ -292,6 +292,11 @@ pub enum NtService {
     SelectGdiFont = 516,
     GetGdiTextMetrics = 517,
     GetGdiTextExtent = 518,
+    GetWindowText = 519,
+    SetWindowText = 520,
+    GetClientRect = 521,
+    GetParent = 522,
+    ShowWindow = 523,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -350,6 +355,11 @@ pub enum NtWindowCall {
     DefaultProc { hwnd: u64, message: u32, wparam: u64, lparam: i64 },
     GetRect { hwnd: u64, rect: UserPtr<NtWindowRect> },
     SetRect { hwnd: u64, rect: UserPtr<NtWindowRect> },
+    GetText { hwnd: u64, text: UserPtr<u16>, count: u32 },
+    SetText { hwnd: u64, text: UserPtr<u16> },
+    GetClientRect { hwnd: u64, rect: UserPtr<NtWindowRect> },
+    GetParent { hwnd: u64 },
+    Show { hwnd: u64, command: u32 },
 }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum NtGdiCall {
@@ -710,6 +720,11 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 516 { return Some(NtCall { service: NtService::SelectGdiFont, args }); }
     if service == 517 { return Some(NtCall { service: NtService::GetGdiTextMetrics, args }); }
     if service == 518 { return Some(NtCall { service: NtService::GetGdiTextExtent, args }); }
+    if service == 519 { return Some(NtCall { service: NtService::GetWindowText, args }); }
+    if service == 520 { return Some(NtCall { service: NtService::SetWindowText, args }); }
+    if service == 521 { return Some(NtCall { service: NtService::GetClientRect, args }); }
+    if service == 522 { return Some(NtCall { service: NtService::GetParent, args }); }
+    if service == 523 { return Some(NtCall { service: NtService::ShowWindow, args }); }
     if service == 229 { return Some(NtCall { service: NtService::DbgUiConnectToDbg, args }); }
     if service == 230 { return Some(NtCall { service: NtService::DbgUiContinue, args }); }
     if service == 231 { return Some(NtCall { service: NtService::DbgUiRemoteBreakin, args }); }
@@ -1137,7 +1152,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::NtAdjustPrivilegesToken => Err(Errno::Enosys),
         NtService::NtAllocateLocallyUniqueId => Err(Errno::Enosys),
         NtService::NtCancelIoFile | NtService::NtCancelIoFileEx => Err(Errno::Enosys),
-        NtService::NtCancelSynchronousIoFile | NtService::NtCompareObjects | NtService::NtConvertBetweenAuxiliaryCounterAndPerformanceCounter | NtService::NtCreateNamedPipeFile | NtService::NtCreateSectionEx | NtService::NtCreateSymbolicLinkObject | NtService::NtCreateUserProcess | NtService::NtDelayExecution | NtService::NtDeleteKey | NtService::NtDeleteValueKey | NtService::NtDuplicateToken | NtService::NtEnumerateKey | NtService::NtEnumerateValueKey | NtService::NtFilterToken | NtService::NtFlushBuffersFile | NtService::NtFlushInstructionCache | NtService::NtFlushKey | NtService::NtMakeTemporaryObject | NtService::NtMapViewOfSectionEx | NtService::NtNotifyChangeDirectoryFile | NtService::NtNotifyChangeKey | NtService::NtOpenEvent | NtService::NtOpenKeyEx | NtService::NtOpenMutant | NtService::NtOpenProcess | NtService::NtOpenSection | NtService::NtOpenSemaphore | NtService::NtOpenSymbolicLinkObject | NtService::NtOpenThread | NtService::NtOpenTimer | NtService::NtPrivilegeCheck | NtService::NtPulseEvent | NtService::NtQueryAttributesFile | NtService::NtQueryDefaultLocale | NtService::NtQueryDefaultUILanguage | NtService::NtQueryDirectoryObject | NtService::NtQueryFullAttributesFile | NtService::NtQueryInstallUILanguage | NtService::NtQueryKey | NtService::NtQuerySymbolicLinkObject | NtService::NtUnmapViewOfSectionEx | NtService::NtWriteFileGather | NtService::GetWindowRect | NtService::SetWindowRect | NtService::CreateCompatibleDc | NtService::DeleteGdiObject | NtService::CreateFontIndirect | NtService::SelectGdiFont | NtService::GetGdiTextMetrics | NtService::GetGdiTextExtent => Err(Errno::Enosys),
+        NtService::NtCancelSynchronousIoFile | NtService::NtCompareObjects | NtService::NtConvertBetweenAuxiliaryCounterAndPerformanceCounter | NtService::NtCreateNamedPipeFile | NtService::NtCreateSectionEx | NtService::NtCreateSymbolicLinkObject | NtService::NtCreateUserProcess | NtService::NtDelayExecution | NtService::NtDeleteKey | NtService::NtDeleteValueKey | NtService::NtDuplicateToken | NtService::NtEnumerateKey | NtService::NtEnumerateValueKey | NtService::NtFilterToken | NtService::NtFlushBuffersFile | NtService::NtFlushInstructionCache | NtService::NtFlushKey | NtService::NtMakeTemporaryObject | NtService::NtMapViewOfSectionEx | NtService::NtNotifyChangeDirectoryFile | NtService::NtNotifyChangeKey | NtService::NtOpenEvent | NtService::NtOpenKeyEx | NtService::NtOpenMutant | NtService::NtOpenProcess | NtService::NtOpenSection | NtService::NtOpenSemaphore | NtService::NtOpenSymbolicLinkObject | NtService::NtOpenThread | NtService::NtOpenTimer | NtService::NtPrivilegeCheck | NtService::NtPulseEvent | NtService::NtQueryAttributesFile | NtService::NtQueryDefaultLocale | NtService::NtQueryDefaultUILanguage | NtService::NtQueryDirectoryObject | NtService::NtQueryFullAttributesFile | NtService::NtQueryInstallUILanguage | NtService::NtQueryKey | NtService::NtQuerySymbolicLinkObject | NtService::NtUnmapViewOfSectionEx | NtService::NtWriteFileGather | NtService::GetWindowRect | NtService::SetWindowRect | NtService::CreateCompatibleDc | NtService::DeleteGdiObject | NtService::CreateFontIndirect | NtService::SelectGdiFont | NtService::GetGdiTextMetrics | NtService::GetGdiTextExtent | NtService::GetWindowText | NtService::SetWindowText | NtService::GetClientRect | NtService::GetParent | NtService::ShowWindow => Err(Errno::Enosys),
     }
 }
 /// Decode thread context calls after validating their output pointer.
@@ -1192,6 +1207,11 @@ pub fn decode_window(call: NtCall) -> Result<NtWindowCall, Errno> {
         NtService::DefaultWindowProc => Ok(NtWindowCall::DefaultProc { hwnd: a.a0, message: a.a1 as u32, wparam: a.a2, lparam: a.a3 as i64 }),
         NtService::GetWindowRect => Ok(NtWindowCall::GetRect { hwnd: a.a0, rect: UserPtr::new(a.a1)? }),
         NtService::SetWindowRect => Ok(NtWindowCall::SetRect { hwnd: a.a0, rect: UserPtr::new(a.a1)? }),
+        NtService::GetWindowText => Ok(NtWindowCall::GetText { hwnd: a.a0, text: UserPtr::new(a.a1)?, count: a.a2 as u32 }),
+        NtService::SetWindowText => Ok(NtWindowCall::SetText { hwnd: a.a0, text: UserPtr::new(a.a1)? }),
+        NtService::GetClientRect => Ok(NtWindowCall::GetClientRect { hwnd: a.a0, rect: UserPtr::new(a.a1)? }),
+        NtService::GetParent => Ok(NtWindowCall::GetParent { hwnd: a.a0 }),
+        NtService::ShowWindow => Ok(NtWindowCall::Show { hwnd: a.a0, command: a.a1 as u32 }),
         _ => Err(Errno::Enosys),
     }
 }

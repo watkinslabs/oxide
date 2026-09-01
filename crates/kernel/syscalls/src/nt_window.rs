@@ -103,6 +103,51 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
                     let value = ipc::win32_window::WindowRect { left: field(0), top: field(1), right: field(2), bottom: field(3) };
                     (Some(match state.set_rect(window, value) { Ok(()) => STATUS_SUCCESS, Err(_) => STATUS_INVALID_HANDLE }), None, None)
                 }
+                NtWindowCall::GetText { hwnd, text, count } => {
+                    let Some(window) = valid_window(hwnd) else { return Some(STATUS_INVALID_HANDLE); };
+                    let Some(value) = state.text(window) else { return Some(STATUS_INVALID_HANDLE); };
+                    let limit = count.saturating_sub(1) as usize;
+                    let copied = value.len().min(limit);
+                    for (index, unit) in value.iter().take(copied).enumerate() {
+                        let bytes = unit.to_le_bytes();
+                        let Some(address) = text.as_u64().checked_add(index as u64 * 2) else { return Some(STATUS_INVALID_PARAMETER); };
+                        if uaccess::copy_to_user(address, &bytes).is_err() { return Some(STATUS_INVALID_PARAMETER); }
+                    }
+                    if count != 0 {
+                        let address = text.as_u64().checked_add(copied as u64 * 2).unwrap_or(0);
+                        if address == 0 || uaccess::copy_to_user(address, &[0, 0]).is_err() { return Some(STATUS_INVALID_PARAMETER); }
+                    }
+                    (Some(copied as u64), None, None)
+                }
+                NtWindowCall::SetText { hwnd, text } => {
+                    let Some(window) = valid_window(hwnd) else { return Some(STATUS_INVALID_HANDLE); };
+                    let mut value = alloc::vec::Vec::new();
+                    let mut terminated = false;
+                    for index in 0..=u16::MAX as usize {
+                        let Some(address) = text.as_u64().checked_add(index as u64 * 2) else { return Some(STATUS_INVALID_PARAMETER); };
+                        let mut bytes = [0u8; 2];
+                        if uaccess::copy_from_user(&mut bytes, address).is_err() { return Some(STATUS_INVALID_PARAMETER); }
+                        let unit = u16::from_le_bytes(bytes);
+                        if unit == 0 { terminated = true; break; }
+                        value.push(unit);
+                    }
+                    if !terminated || state.set_text(window, &value).is_err() { return Some(STATUS_INVALID_PARAMETER); }
+                    (Some(STATUS_SUCCESS), None, None)
+                }
+                NtWindowCall::GetClientRect { hwnd, rect } => {
+                    let Some(window) = valid_window(hwnd) else { return Some(STATUS_INVALID_HANDLE); };
+                    let Some(value) = state.client_rect(window) else { return Some(STATUS_INVALID_HANDLE); };
+                    (Some(copy_rect(rect, value)), None, None)
+                }
+                NtWindowCall::GetParent { hwnd } => {
+                    let Some(window) = valid_window(hwnd) else { return Some(STATUS_INVALID_HANDLE); };
+                    let Some(record) = state.get(window) else { return Some(STATUS_INVALID_HANDLE); };
+                    (Some(record.parent.map(|parent| parent.raw() as u64).unwrap_or(0)), None, None)
+                }
+                NtWindowCall::Show { hwnd, command } => {
+                    let Some(window) = valid_window(hwnd) else { return Some(STATUS_INVALID_HANDLE); };
+                    (Some(match state.show(window, command != ipc::win32_window::SW_HIDE) { Ok(previous) => previous as u64, Err(_) => STATUS_INVALID_HANDLE }), None, None)
+                }
             }
         };
         if let Some(wait) = wake { wait.wake_all(); }
@@ -125,4 +170,15 @@ fn copy_message(destination: syscall::UserPtr<NtWindowMessage>, message: ipc::wi
     bytes[16..24].copy_from_slice(&message.wparam.to_le_bytes());
     bytes[24..32].copy_from_slice(&(message.lparam as u64).to_le_bytes());
     uaccess::copy_to_user(destination.as_u64(), &bytes)
+}
+
+fn valid_window(hwnd: u64) -> Option<ipc::win32_window::WindowId> {
+    (hwnd <= u32::MAX as u64).then(|| ipc::win32_window::WindowId::from_raw(hwnd as u32)).flatten()
+}
+
+fn copy_rect(destination: syscall::UserPtr<syscall::nt::NtWindowRect>, value: ipc::win32_window::WindowRect) -> u64 {
+    let fields = [value.left.to_le_bytes(), value.top.to_le_bytes(), value.right.to_le_bytes(), value.bottom.to_le_bytes()];
+    let mut bytes = [0u8; 16];
+    for (index, field) in fields.iter().enumerate() { bytes[index * 4..index * 4 + 4].copy_from_slice(field); }
+    if uaccess::copy_to_user(destination.as_u64(), &bytes).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
 }
