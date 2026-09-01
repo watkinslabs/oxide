@@ -109,6 +109,7 @@ use super::*;
         assert_eq!(decode(155, input).unwrap().service, NtService::RtlRestoreLastWin32Error);
         assert_eq!(decode(160, input).unwrap().service, NtService::RtlTimeFieldsToTime);
         assert_eq!(decode(161, input).unwrap().service, NtService::RtlTimeToTimeFields);
+        assert_eq!(decode(162, input).unwrap().service, NtService::RtlUnicodeStringToAnsiSize);
     }
 
     #[test]

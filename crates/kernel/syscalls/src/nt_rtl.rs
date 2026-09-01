@@ -24,6 +24,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlCreateUnicodeStringFromAsciiz { return Some(create_unicode_string_from_ascii(call.args.a0, call.args.a1)); }
     if call.service == NtService::RtlCreateUnicodeString { return Some(create_unicode_string(call.args.a0, call.args.a1)); }
     if call.service == NtService::RtlAnsiStringToUnicodeString { return Some(ansi_to_unicode_string(call.args.a0, call.args.a1, call.args.a2)); }
+    if call.service == NtService::RtlUnicodeStringToAnsiSize { return Some(unicode_string_to_ansi_size(call.args.a0)); }
     if call.service == NtService::RtlCharToInteger { return Some(char_to_integer(call.args.a0, call.args.a1 as u32, call.args.a2)); }
     if call.service == NtService::RtlFreeUnicodeString { return Some(free_unicode_string(call.args.a0)); }
     if call.service == NtService::RtlGetAce { return Some(get_ace(call.args.a0, call.args.a1 as u32, call.args.a2)); }
@@ -208,6 +209,32 @@ fn free_unicode_string(descriptor: u64) -> u64 {
     if buffer != 0 { free_rtl_buffer(buffer); }
     let _ = uaccess::copy_to_user(descriptor, &[0u8; UNICODE_STRING_BYTES]);
     0
+}
+fn unicode_string_to_ansi_size(descriptor: u64) -> u64 {
+    if descriptor == 0 { return 0; }
+    let mut header = [0u8; UNICODE_STRING_BYTES];
+    if uaccess::copy_from_user(&mut header, descriptor).is_err() { return 0; }
+    let length = u16::from_le_bytes([header[0], header[1]]) as usize;
+    let buffer = u64::from_le_bytes(header[8..16].try_into().unwrap());
+    if length == 0 { return 1; }
+    if buffer == 0 || length % 2 != 0 { return 0; }
+    let mut size = 0usize;
+    let mut index = 0usize;
+    while index < length / 2 {
+        let Some(address) = buffer.checked_add((index * 2) as u64) else { return 0; };
+        let mut bytes = [0u8; 2];
+        if uaccess::copy_from_user(&mut bytes, address).is_err() { return 0; }
+        let unit = u16::from_le_bytes(bytes);
+        let width = if (0xd800..=0xdbff).contains(&unit) && index + 1 < length / 2 {
+            let Some(next_address) = buffer.checked_add(((index + 1) * 2) as u64) else { return 0; };
+            let mut next_bytes = [0u8; 2];
+            if uaccess::copy_from_user(&mut next_bytes, next_address).is_err() { return 0; }
+            if (0xdc00..=0xdfff).contains(&u16::from_le_bytes(next_bytes)) { index += 1; 4 } else { 3 }
+        } else if unit <= 0x7f { 1 } else if unit <= 0x7ff { 2 } else if (0xdc00..=0xdfff).contains(&unit) { 3 } else { 3 };
+        size = match size.checked_add(width) { Some(value) => value, None => return 0 };
+        index += 1;
+    }
+    size.checked_add(1).map_or(0, |value| value as u64)
 }
 fn get_ace(acl: u64, index: u32, output: u64) -> u64 {
     if acl == 0 || output == 0 { return STATUS_INVALID_PARAMETER; }
