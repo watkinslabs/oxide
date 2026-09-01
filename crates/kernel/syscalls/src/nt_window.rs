@@ -91,14 +91,21 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
                 NtWindowCall::Get { message, hwnd, first, last } => {
                     if hwnd > u32::MAX as u64 { return Some(STATUS_INVALID_HANDLE); }
                     let filter = ipc::win32_window::MessageFilter { hwnd: ipc::win32_window::WindowId::from_raw(hwnd as u32), first, last };
-                    match state.peek_for_thread(cur.tid as u64, filter, false) {
-                        Some(found) => {
+                    match state.take_for_thread(cur.tid as u64, filter) {
+                        ipc::win32_window::QueueResult::Message(found) => {
                             if copy_message(message, found).is_err() { return Some(STATUS_INVALID_PARAMETER); }
-                            let _ = state.peek_for_thread(cur.tid as u64, filter, true);
                             (Some(STATUS_SUCCESS), None, None)
                         }
-                        None => (None, None, Some((wait, filter))),
+                        ipc::win32_window::QueueResult::Quit(code) => {
+                            if copy_message(message, ipc::win32_window::WinMessage { hwnd: None, message: ipc::win32_window::WM_QUIT, wparam: code as u64, lparam: 0 }).is_err() { return Some(STATUS_INVALID_PARAMETER); }
+                            (Some(0), None, None)
+                        }
+                        ipc::win32_window::QueueResult::Empty => (None, None, Some((wait, filter))),
                     }
+                }
+                NtWindowCall::PostQuit { code } => {
+                    state.post_quit(cur.tid as u64, code);
+                    (Some(STATUS_SUCCESS), Some(wait), None)
                 }
                 NtWindowCall::GetRect { hwnd, rect } => {
                     let Some(window) = ipc::win32_window::WindowId::from_raw(hwnd as u32) else { return Some(STATUS_INVALID_HANDLE); };
@@ -186,7 +193,10 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
             let mut entries = GUI.lock();
             entries.retain(|entry| entry.group.upgrade().is_some());
             entries.iter_mut().find(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))
-                .and_then(|entry| entry.state.peek_for_thread(cur.tid as u64, filter, false)).is_some()
+                .and_then(|entry| {
+                    entry.state.peek_for_thread(cur.tid as u64, filter, false)
+                        .or_else(|| entry.state.quit_pending(cur.tid as u64).then_some(ipc::win32_window::WinMessage { hwnd: None, message: ipc::win32_window::WM_QUIT, wparam: 0, lparam: 0 }))
+                }).is_some()
         }) };
         if outcome != sched::task::WaitOutcome::Ready { return Some(STATUS_ALERTED); }
     }

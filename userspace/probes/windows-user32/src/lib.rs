@@ -74,6 +74,11 @@ impl User32 {
         invoke(NtService::PostMessage, [hwnd, message as u64, wparam, lparam as u64, 0, 0]).map(|_| ())
     }
 
+    /// End the current thread's GetMessage loop with the supplied exit code. # C: O(1) plus kernel service
+    pub fn post_quit_message(&self, exit_code: i32) -> Result<(), WindowError> {
+        invoke(NtService::PostQuitMessage, [exit_code as u64, 0, 0, 0, 0, 0]).map(|_| ())
+    }
+
     /// Inspect one queued message, optionally removing it. # C: O(1) plus usercopy
     pub fn peek_message(&self, hwnd: u64, first: u32, last: u32, remove: bool) -> Result<Option<NtWindowMessage>, WindowError> {
         let mut message = NtWindowMessage { hwnd: 0, message: 0, padding: 0, wparam: 0, lparam: 0 };
@@ -176,6 +181,7 @@ mod tests {
     fn selectors_remain_outside_linux_syscall_namespace() {
         assert_eq!(NtService::CreateWindow.entry(), 0x4e54_0000_0000_001b);
         assert_eq!(NtService::GetMessage.entry(), 0x4e54_0000_0000_001f);
+        assert_eq!(NtService::PostQuitMessage.entry(), 0x4e54_0000_0000_0213);
     }
 
     #[test]

@@ -7,6 +7,7 @@ pub const WM_CLOSE: u32 = 0x0010;
 pub const WM_DESTROY: u32 = 0x0002;
 pub const WM_NCHITTEST: u32 = 0x0084;
 pub const WM_PAINT: u32 = 0x000f;
+pub const WM_QUIT: u32 = 0x0012;
 pub const HTCLIENT: i64 = 1;
 pub const SW_HIDE: u32 = 0;
 
@@ -41,7 +42,7 @@ pub enum QueueError { Full }
 const MESSAGE_QUEUE_LIMIT: usize = 10_000;
 
 #[derive(Default)]
-pub struct MessageQueue { messages: VecDeque<WinMessage> }
+pub struct MessageQueue { messages: VecDeque<WinMessage>, quit: Option<i32> }
 
 impl MessageQueue {
     pub fn post(&mut self, message: WinMessage) -> Result<(), QueueError> {
@@ -54,6 +55,16 @@ impl MessageQueue {
         if remove { self.messages.remove(index) } else { self.messages.get(index).copied() }
     }
     pub fn len(&self) -> usize { self.messages.len() }
+    pub fn post_quit(&mut self, code: i32) { self.quit = Some(code); }
+    fn take_quit(&mut self) -> Option<i32> { self.quit.take() }
+    fn quit_pending(&self) -> bool { self.quit.is_some() }
+    fn quit_message(&mut self, filter: MessageFilter, remove: bool) -> Option<WinMessage> {
+        let code = self.quit?;
+        let message = WinMessage { hwnd: None, message: WM_QUIT, wparam: code as u64, lparam: 0 };
+        if !filter.matches(message) { return None; }
+        if remove { self.quit = None; }
+        Some(message)
+    }
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -66,6 +77,9 @@ pub struct WindowRect { pub left: i32, pub top: i32, pub right: i32, pub bottom:
 pub enum WindowError { NoSuchWindow, InvalidParent, QueueFull }
 
 pub struct WindowManager { next: u32, windows: Vec<(WindowId, WindowRecord)>, rects: Vec<(WindowId, WindowRect)>, texts: Vec<(WindowId, Vec<u16>)>, dirty: Vec<(WindowId, WindowRect)>, queues: Vec<(u64, MessageQueue)> }
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum QueueResult { Message(WinMessage), Quit(i32), Empty }
 
 impl Default for WindowManager { fn default() -> Self { Self::new() } }
 
@@ -145,8 +159,19 @@ impl WindowManager {
         queue.post(message).map_err(|_| WindowError::QueueFull)
     }
     pub fn peek_for_thread(&mut self, tid: u64, filter: MessageFilter, remove: bool) -> Option<WinMessage> {
-        self.queues.iter_mut().find(|(owner, _)| *owner == tid).and_then(|(_, queue)| queue.peek(filter, remove))
+        self.queues.iter_mut().find(|(owner, _)| *owner == tid).and_then(|(_, queue)| queue.peek(filter, remove).or_else(|| queue.quit_message(filter, remove)))
     }
+    pub fn post_quit(&mut self, tid: u64, code: i32) {
+        if let Some((_, queue)) = self.queues.iter_mut().find(|(owner, _)| *owner == tid) { queue.post_quit(code); }
+        else { let mut queue = MessageQueue::default(); queue.post_quit(code); self.queues.push((tid, queue)); }
+    }
+    pub fn take_for_thread(&mut self, tid: u64, filter: MessageFilter) -> QueueResult {
+        let Some((_, queue)) = self.queues.iter_mut().find(|(owner, _)| *owner == tid) else { return QueueResult::Empty; };
+        if let Some(message) = queue.peek(filter, true) { QueueResult::Message(message) }
+        else if let Some(code) = queue.take_quit() { QueueResult::Quit(code) }
+        else { QueueResult::Empty }
+    }
+    pub fn quit_pending(&self, tid: u64) -> bool { self.queues.iter().find(|(owner, _)| *owner == tid).is_some_and(|(_, queue)| queue.quit_pending()) }
     pub fn len(&self) -> usize { self.windows.len() }
 }
 
@@ -175,6 +200,22 @@ mod tests {
         assert_eq!(queue.peek(filter, true), Some(message(Some(window), 2)));
         assert_eq!(queue.peek(MessageFilter { hwnd: None, first: 0, last: u32::MAX }, true), Some(message(None, 1)));
         assert_eq!(queue.len(), 1);
+    }
+
+    #[test]
+    fn quit_is_thread_owned_and_is_consumed_after_queued_messages() {
+        let mut manager = WindowManager::new();
+        let window = manager.create(9, None, 0).unwrap();
+        manager.post_to_window(window, message(Some(window), WM_CLOSE)).unwrap();
+        manager.post_quit(9, 37);
+        let filter = MessageFilter { hwnd: None, first: 0, last: u32::MAX };
+        assert!(matches!(manager.take_for_thread(9, filter), QueueResult::Message(_)));
+        assert_eq!(manager.take_for_thread(9, filter), QueueResult::Quit(37));
+        assert_eq!(manager.take_for_thread(8, filter), QueueResult::Empty);
+        manager.post_quit(9, 41);
+        assert_eq!(manager.peek_for_thread(9, filter, false).map(|value| value.message), Some(WM_QUIT));
+        assert_eq!(manager.peek_for_thread(9, filter, true).map(|value| value.wparam), Some(41));
+        assert_eq!(manager.peek_for_thread(9, filter, false), None);
     }
 
     #[test]
