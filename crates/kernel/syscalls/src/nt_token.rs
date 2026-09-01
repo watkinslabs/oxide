@@ -2,6 +2,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
+use alloc::vec::Vec;
 use syscall::nt::{NtCall, NtObjectCall};
 
 const STATUS_SUCCESS: u64 = 0;
@@ -9,6 +10,7 @@ const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
 const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
 const TOKEN_QUERY: u32 = 0x0008;
+const TOKEN_ADJUST_GROUPS: u32 = 0x0040;
 const TOKEN_ALL_ACCESS: u32 = 0x000f_01ff;
 const CURRENT_PROCESS: u64 = u64::MAX;
 const CURRENT_THREAD: u64 = u64::MAX;
@@ -16,6 +18,7 @@ const TOKEN_BASIC_INFORMATION: u32 = 0;
 const TOKEN_TYPE_INFORMATION: u32 = 8;
 
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == syscall::nt::NtService::NtAdjustGroupsToken { return Some(adjust_groups(call)); }
     let Ok(object_call) = syscall::nt::decode_object(call) else { return None; };
     let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
     if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
@@ -45,6 +48,45 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         }
         _ => None,
     }
+}
+
+fn adjust_groups(call: NtCall) -> u64 {
+    if call.args.a0 > u32::MAX as u64 || call.args.a1 > 1 || call.args.a4 != 0 || call.args.a5 != 0 { return STATUS_INVALID_PARAMETER; }
+    if call.args.a1 == 0 && (call.args.a2 == 0 || call.args.a3 < 8) { return STATUS_INVALID_PARAMETER; }
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let table = cur.thread_group.nt_handles();
+    let handle = sched::nt_object::NtHandle::from_raw(call.args.a0 as u32);
+    let Some(object) = table.get(handle, TOKEN_ADJUST_GROUPS) else { return if table.contains(handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }; };
+    let Some(token) = object.token() else { return STATUS_INVALID_HANDLE; };
+    if call.args.a1 != 0 { token.replace_groups(default_groups(token.gid())); }
+    else {
+        let Some(groups) = read_groups(call.args.a2, call.args.a3) else { return STATUS_INVALID_PARAMETER; };
+        token.replace_groups(groups);
+    }
+    STATUS_SUCCESS
+}
+
+fn read_groups(address: u64, length: u64) -> Option<Vec<sched::nt_object::NtTokenGroup>> {
+    let count = uaccess::get_user_u32(address).ok()?;
+    if count > 64 || 8u64.checked_add((count as u64).checked_mul(16)?)? > length { return None; }
+    let mut groups = Vec::new();
+    for index in 0..count as u64 {
+        let entry = address.checked_add(8)?.checked_add(index.checked_mul(16)?)?;
+        let sid_address = uaccess::get_user_u64(entry).ok()?;
+        let attributes = uaccess::get_user_u32(entry.checked_add(8)?).ok()?;
+        let mut sid = [0u8; 16];
+        if sid_address == 0 || uaccess::copy_from_user(&mut sid, sid_address).is_err() || sid[0] != 1 || sid[1] > 2 { return None; }
+        groups.push(sched::nt_object::NtTokenGroup { sid, attributes });
+    }
+    Some(groups)
+}
+
+fn default_groups(gid: u32) -> Vec<sched::nt_object::NtTokenGroup> {
+    let mut sid = [0u8; 16]; sid[0] = 1; sid[1] = 2;
+    let authority = 5u64.to_be_bytes();
+    sid[2..8].copy_from_slice(&authority[2..]); sid[8..12].copy_from_slice(&21u32.to_le_bytes()); sid[12..16].copy_from_slice(&gid.to_le_bytes());
+    alloc::vec![sched::nt_object::NtTokenGroup { sid, attributes: 4 }]
 }
 
 fn insert_token(cur: &sched::Task, access: u32, output: syscall::UserPtr<u32>, table: &sched::nt_object::NtHandleTable) -> Option<u64> {

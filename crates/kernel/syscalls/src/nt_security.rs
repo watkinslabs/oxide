@@ -141,7 +141,8 @@ fn sid_matches(address: u64, uid: u32, gid: u32) -> bool {
 
 fn sid(authority: u64, subauthority: u32) -> [u8; 16] {
     let mut out = [0u8; 16]; out[0] = 1; out[1] = 2;
-    out[2..8].copy_from_slice(&authority.to_be_bytes());
+    let authority = authority.to_be_bytes();
+    out[2..8].copy_from_slice(&authority[2..]);
     out[8..12].copy_from_slice(&21u32.to_le_bytes()); out[12..16].copy_from_slice(&subauthority.to_le_bytes()); out
 }
 

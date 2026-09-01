@@ -439,3 +439,7 @@ not reach a valid desktop sample.
 | E4-14 | DONE | The previously reported ARM sysinit EIO/SIGBUS event did not reproduce in the controlled ARM boot-smoke run; userspace answered the systemd probe and the serial RX probe passed in 22 seconds. | Controlled ARM boot-smoke evidence; retain broader ARM desktop validation under E4-03. |
 | E4-15 | DONE | The controlled GNOME/SMP=1 comparison and phase attribution are recorded. The result does not claim a whole-boot gain: the current run remains within the documented workload variance and attributes the dominant resolution cost to parent-lock waits, not inode-table lookup selection. | `scratch/perf-history.md` E4-15 perf-r1 and perf-r2; `target/perf-report-x86_64.log`; fresh-main repeatability run. |
 | E4-16 | DONE | Historical ext4 ledger rows are explicitly historical, mapped to the E4 inventory, and no longer carry the stale pending SHA or old current-suite count. | `scratch/perf-history.md` E4-08 maps to merged `6da0ed7c0`; the superseded 62-failure row records the current 373-unit/full-image harness result. |
+
+Windows NT frontier update: the Notepad import graph now resolves through
+`NtAdjustGroupsToken`; its bounded replacement/reset path is implemented, while
+previous-state/return-length buffers and `NtAdjustPrivilegesToken` remain open.
