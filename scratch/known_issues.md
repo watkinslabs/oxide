@@ -481,3 +481,7 @@ Windows NT frontier update (2026-09-01): `NtCreateNamedPipeFile` now has an
 explicit native export and an explicit `STATUS_NOT_IMPLEMENTED` boundary;
 named-pipe object and connection semantics remain pending. The graph advances
 to `ntdll.dll!NtCreateSectionEx`.
+Windows NT frontier update (2026-09-01): `NtCreateSectionEx` now has an
+explicit native export and a fail-closed `STATUS_NOT_IMPLEMENTED` boundary;
+extended section parameter records remain pending. The graph advances to its
+`ntdll.dll!NtCreateSymbolicLinkObject`.
