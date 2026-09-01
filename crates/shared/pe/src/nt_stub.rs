@@ -3,6 +3,29 @@ pub const X64_UNARY_STUB_BYTES: usize = 18;
 pub const X64_SIX_ARG_STUB_BYTES: usize = 39;
 pub const X64_BREAKPOINT_STUB_BYTES: usize = 2;
 
+/// Encode the user continuation used by `RtlRunOnceExecuteOnce`. It receives
+/// the initializer's BOOL in EAX, calls the native completion selector, and
+/// jumps to the post-syscall ntdll epilogue saved in R14/R15.
+pub fn encode_x64_run_once_continuation(selector: u64) -> Vec<u8> {
+    let mut code = Vec::new();
+    code.extend_from_slice(&[0x85, 0xc0, 0x0f, 0x85, 0, 0, 0, 0]);
+    code.extend_from_slice(&[0x4c, 0x89, 0xe7, 0xbe, 0x04, 0, 0, 0, 0, 0x31, 0xd2, 0x48, 0xb8]);
+    code.extend_from_slice(&selector.to_le_bytes());
+    code.extend_from_slice(&[0x0f, 0x05, 0xb8, 0x01, 0x00, 0x00, 0xc0, 0x4c, 0x89, 0xfc, 0x41, 0xff, 0xe6]);
+    let success = code.len();
+    let displacement = (success as i64 - 8) as i32;
+    code[4..8].copy_from_slice(&displacement.to_le_bytes());
+    code.extend_from_slice(&[0x4c, 0x89, 0xe7, 0x31, 0xf6, 0x4d, 0x85, 0xed, 0x74, 0]);
+    code.extend_from_slice(&[0x49, 0x8b, 0x55, 0x00]);
+    let no_context = code.len();
+    let short = (no_context as i64 - (success as i64 + 10)) as i8;
+    code[success + 9] = short as u8;
+    code.extend_from_slice(&[0x48, 0xb8]);
+    code.extend_from_slice(&selector.to_le_bytes());
+    code.extend_from_slice(&[0x0f, 0x05, 0x4c, 0x89, 0xfc, 0x41, 0xff, 0xe6]);
+    code
+}
+
 /// Encode Wine's x86-64 debugger breakpoint entry. The trap is intentional:
 /// Windows exception dispatch, rather than the NT syscall adapter, owns the
 /// observable result when a process executes this export.
@@ -75,3 +98,4 @@ mod tests {
         assert_eq!(encode_x64_breakpoint_stub(), [0xcc, 0xc3]);
     }
 }
+use alloc::vec::Vec;

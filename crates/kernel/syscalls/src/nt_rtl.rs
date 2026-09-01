@@ -100,6 +100,12 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlReleasePath { return Some(release_path(call.args.a0)); }
     if call.service == NtService::RtlRunOnceBeginInitialize { return Some(run_once_begin_initialize(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::RtlRunOnceComplete { return Some(run_once_complete(call.args.a0, call.args.a1, call.args.a2)); }
+    if call.service == NtService::RtlRunOnceExecuteOnce {
+        #[cfg(target_arch = "x86_64")]
+        { return Some(run_once_execute_once_x86(call.args.a0, call.args.a1, call.args.a2, call.args.a3)); }
+        #[cfg(target_arch = "aarch64")]
+        { return Some(STATUS_NOT_SUPPORTED); }
+    }
     if call.service == NtService::RtlGetSystemPreferredUILanguages { return Some(get_system_preferred_ui_languages(call)); }
     if call.service == NtService::RtlGetThreadErrorMode { return Some(get_thread_error_mode()); }
     if call.service == NtService::RtlGetThreadPreferredUILanguages { return Some(get_thread_preferred_ui_languages(call)); }
@@ -450,6 +456,48 @@ fn run_once_complete(once: u64, flags: u64, context: u64) -> u64 {
             Err(_) => return STATUS_INVALID_PARAMETER,
         }
     }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn run_once_execute_once_x86(once: u64, func: u64, param: u64, context: u64) -> u64 {
+    const TEB_PEB: u64 = 0x60;
+    const PEB_LDR: u64 = 0x18;
+    const LDR_LOAD_LIST: u64 = 0x10;
+    const MODULE_BASE: u64 = 0x30;
+    const CALLBACK_SHADOW_BYTES: u64 = 32;
+    const CALLBACK_FRAME_BYTES: u64 = 48;
+    if once == 0 || func == 0 || !uaccess::access_ok(func, 1) || (context != 0 && !uaccess::access_ok(context, 8)) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let Some(task) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !task.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let peb = uaccess::get_user_u64(task.nt_teb().saturating_add(TEB_PEB)).ok().unwrap_or(0);
+    let ldr = uaccess::get_user_u64(peb.saturating_add(PEB_LDR)).ok().unwrap_or(0);
+    let head = ldr.saturating_add(LDR_LOAD_LIST);
+    let first = uaccess::get_user_u64(head).ok().unwrap_or(0);
+    let ntdll = uaccess::get_user_u64(first).ok().and_then(|entry| uaccess::get_user_u64(entry.saturating_add(MODULE_BASE)).ok()).unwrap_or(0);
+    let Some(continuation) = elf_load::pe_loader::resolve_nt_runtime_run_once_continuation(ntdll) else { return STATUS_INVALID_PARAMETER; };
+    let regs = hal_x86_64::current_pt_regs();
+    if regs.is_null() { return STATUS_INVALID_PARAMETER; }
+    let frame = unsafe { &mut *regs };
+    let callback_rsp = frame.rsp.checked_sub(CALLBACK_FRAME_BYTES).unwrap_or(0);
+    if callback_rsp == 0 || callback_rsp & 0xf != 8 { return STATUS_INVALID_PARAMETER; }
+    let post_syscall_rip = frame.rip;
+    let post_syscall_rsp = frame.rsp;
+    for slot in 0..(CALLBACK_SHADOW_BYTES / 8) { if uaccess::put_user_u64(callback_rsp + 8 + slot * 8, 0).is_err() { return STATUS_INVALID_PARAMETER; } }
+    if uaccess::put_user_u64(callback_rsp, continuation).is_err() { return STATUS_INVALID_PARAMETER; }
+    let begin = run_once_begin_initialize(once, 0, context);
+    if begin != STATUS_PENDING { return begin; }
+    frame.rip = func;
+    frame.rsp = callback_rsp;
+    frame.rcx = once;
+    frame.rdx = param;
+    frame.r8 = context;
+    frame.r12 = once;
+    frame.r13 = context;
+    frame.r14 = post_syscall_rip;
+    frame.r15 = post_syscall_rsp;
+    STATUS_PENDING
 }
 
 fn append_path_component(target: &mut alloc::vec::Vec<u16>, value: &[u16]) { target.extend_from_slice(value); target.push(b';' as u16); }
