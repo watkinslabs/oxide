@@ -206,6 +206,7 @@ pub enum NtService {
     RtlNormalizeProcessParams = 430,
     RtlNormalizeString = 431,
     RtlOpenCurrentUser = 432,
+    RtlProcessFlsData = 433,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -517,6 +518,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 430 { return Some(NtCall { service: NtService::RtlNormalizeProcessParams, args }); }
     if service == 431 { return Some(NtCall { service: NtService::RtlNormalizeString, args }); }
     if service == 432 { return Some(NtCall { service: NtService::RtlOpenCurrentUser, args }); }
+    if service == 433 { return Some(NtCall { service: NtService::RtlProcessFlsData, args }); }
     if service == 229 { return Some(NtCall { service: NtService::DbgUiConnectToDbg, args }); }
     if service == 230 { return Some(NtCall { service: NtService::DbgUiContinue, args }); }
     if service == 231 { return Some(NtCall { service: NtService::DbgUiRemoteBreakin, args }); }
@@ -861,6 +863,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::RtlFlsFree => Err(Errno::Enosys),
         NtService::RtlFlsGetValue => Err(Errno::Enosys),
         NtService::RtlFlsSetValue => Err(Errno::Enosys),
+        NtService::RtlProcessFlsData => Err(Errno::Enosys),
         NtService::RtlFormatMessage => Err(Errno::Enosys),
         NtService::RtlFormatMessageEx => Err(Errno::Enosys),
         NtService::RtlFreeThreadActivationContextStack => Err(Errno::Enosys),
