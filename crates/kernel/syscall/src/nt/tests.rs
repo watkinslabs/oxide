@@ -678,6 +678,12 @@ use super::*;
     }
 
     #[test]
+    fn rtl_sub_authority_count_sid_keeps_native_abi_selector() {
+        let call = decode(463, args()).unwrap();
+        assert_eq!(call.service, NtService::RtlSubAuthorityCountSid);
+    }
+
+    #[test]
     fn file_services_validate_the_outer_request_pointer() {
         let call = decode(10, SyscallArgs { a0: 0x1000, ..args() }).unwrap();
         assert!(matches!(decode_file(call), Ok(NtFileCall::Create { .. })));

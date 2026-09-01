@@ -236,6 +236,7 @@ pub enum NtService {
     RtlSetTimeZoneInformation = 460,
     RtlSleepConditionVariableCS = 461,
     RtlSleepConditionVariableSRW = 462,
+    RtlSubAuthorityCountSid = 463,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -577,6 +578,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 460 { return Some(NtCall { service: NtService::RtlSetTimeZoneInformation, args }); }
     if service == 461 { return Some(NtCall { service: NtService::RtlSleepConditionVariableCS, args }); }
     if service == 462 { return Some(NtCall { service: NtService::RtlSleepConditionVariableSRW, args }); }
+    if service == 463 { return Some(NtCall { service: NtService::RtlSubAuthorityCountSid, args }); }
     if service == 229 { return Some(NtCall { service: NtService::DbgUiConnectToDbg, args }); }
     if service == 230 { return Some(NtCall { service: NtService::DbgUiContinue, args }); }
     if service == 231 { return Some(NtCall { service: NtService::DbgUiRemoteBreakin, args }); }
@@ -902,6 +904,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::RtlSetTimeZoneInformation => Err(Errno::Enosys),
         NtService::RtlSleepConditionVariableCS => Err(Errno::Enosys),
         NtService::RtlSleepConditionVariableSRW => Err(Errno::Enosys),
+        NtService::RtlSubAuthorityCountSid => Err(Errno::Enosys),
         NtService::RtlAddAccessAllowedObjectAce => Err(Errno::Enosys),
         NtService::RtlAddAccessDeniedObjectAce => Err(Errno::Enosys),
         NtService::RtlAddAuditAccessObjectAce => Err(Errno::Enosys),
