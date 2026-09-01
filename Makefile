@@ -75,7 +75,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         smoke-ata-sat smoke-ata-sat-x86 smoke-ata-sat-arm \
         smoke-usb-scsi smoke-usb-scsi-x86 smoke-usb-scsi-arm \
         hosted-gate test-build-gate test-build-check-selftest \
-        smoke-hostshare smoke-hostshare-x86 smoke-hostshare-arm \
+        smoke-hostshare smoke-hostshare-x86 smoke-hostshare-arm smoke-windows-notepad-x86 \
         smoke-ping smoke-ping-x86 smoke-ping-arm smoke-network-native-pci-x86 \
         stack-gate-baseline-x86 stack-gate-baseline-arm stack-report \
         clean clean-builds help
@@ -894,6 +894,16 @@ smoke-hostshare-x86: x86
 smoke-hostshare-arm: arm
 	./tools/boot-smoke-hostshare.sh arm $(FS_SMOKE_TIMEOUT)
 smoke-hostshare: smoke-hostshare-x86 smoke-hostshare-arm
+
+# Native x86_64 PE handoff smoke. Wine's Windows directory remains a host
+# fixture exported over virtio-9p; only the launcher enters the root image.
+WINDOWS_NOTEPAD_SMOKE_TIMEOUT ?= 900
+smoke-windows-notepad-x86:
+	OXIDE_WINDOWS_NOTEPAD_SMOKE=1 OXIDE_QEMU_9P_SHARE=/usr/lib64/wine/x86_64-windows OXIDE_QEMU_9P_TAG=windowswine \
+	SMOKE_MARKER='[WINDOWS-PE-COMMIT] success' SMOKE_ALIVE_MARKER='[WINDOWS-PE-COMMIT] success' \
+	SMOKE_ALIVE_READY_MARKER='sh-5.2#' SMOKE_KEEP_LOG_DIR=target/windows-smoke-logs \
+	SMOKE_ALIVE_CMD=/usr/local/bin/windows-notepad-smoke \
+	SMOKE_RX_MARKER= ./tools/boot-smoke.sh x86 $(WINDOWS_NOTEPAD_SMOKE_TIMEOUT)
 
 KBD_LOGIN_SMOKE_TIMEOUT ?= 600
 smoke-kbd-login-x86: x86

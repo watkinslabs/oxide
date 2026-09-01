@@ -30,15 +30,14 @@ pub fn try_commit_with_catalog(cur: &sched::Task, path: &[u8], blob: &[u8], cata
 fn commit_x86(cur: &sched::Task, path: &[u8], blob: &[u8], exec_vp: Option<&vfs::VfsPath>, catalog: Option<&pe::catalog::ModuleCatalog>) -> Result<(), i64> {
     use vmm::{AddressSpace, VmaBacking, VmaProt};
     const STACK_BYTES: usize = 64 * 1024;
-    let enomem = || -(syscall::errno::Errno::Enomem.as_i32() as i64);
     let enoexec = || -(syscall::errno::Errno::Enoexec.as_i32() as i64);
-    let root = unsafe { hal_x86_64::mmu_ops::new_user_pml4() }.ok_or_else(enomem)?;
+    let root = unsafe { hal_x86_64::mmu_ops::new_user_pml4() }.ok_or_else(|| nomem(b"[WINDOWS-PE-NOMEM] pml4\n"))?;
     let old = unsafe { cur.mm_ref() }.cloned();
     let as_ = match old.as_ref() { Some(old) => AddressSpace::new_for_exec(root, old), None => AddressSpace::new(root) }
-        .map_err(|_| enomem())?;
+        .map_err(|_| nomem(b"[WINDOWS-PE-NOMEM] address-space\n"))?;
     let stack = as_.mmap(None, STACK_BYTES, VmaProt::READ | VmaProt::WRITE,
-        vmm::EXEC_STACK_VMA_FLAGS, VmaBacking::Anonymous, true).map_err(|_| enomem())?;
-    let stack_top = stack.as_u64().checked_add(STACK_BYTES as u64).ok_or_else(enomem)?;
+        vmm::EXEC_STACK_VMA_FLAGS, VmaBacking::Anonymous, true).map_err(|_| nomem(b"[WINDOWS-PE-NOMEM] stack\n"))?;
+    let stack_top = stack.as_u64().checked_add(STACK_BYTES as u64).ok_or_else(|| nomem(b"[WINDOWS-PE-NOMEM] stack-overflow\n"))?;
     let path = core::str::from_utf8(path).map_err(|_| enoexec())?;
     let mut creds = crate::exec_transition::decide(cur, exec_vp).map_err(|e| -(e.as_i32() as i64))?;
     let selinux = crate::exec_transition::selinux_decide(cur, exec_vp).map_err(|e| -(e.as_i32() as i64))?;
@@ -66,7 +65,7 @@ fn commit_x86(cur: &sched::Task, path: &[u8], blob: &[u8], exec_vp: Option<&vfs:
     // publishing the replacement address space. A missing frame is a failed
     // commit, so the caller must retain its Linux mm and personality.
     let regs = hal_x86_64::current_pt_regs();
-    if regs.is_null() { return Err(enomem()); }
+    if regs.is_null() { return Err(nomem(b"[WINDOWS-PE-NOMEM] regs\n")); }
     let cpu = (hal_x86_64::X86CpuOps::current_cpu() as usize).min(cpu::MAX_CPUS - 1);
     as_.mark_cpu(cpu);
     // SAFETY: root belongs to this freshly-built address space and activation
@@ -96,5 +95,12 @@ fn commit_x86(cur: &sched::Task, path: &[u8], blob: &[u8], exec_vp: Option<&vfs:
     let frame = unsafe { &mut *regs };
     *frame = hal_x86_64::PtRegs { rip: process.entry.rip.as_u64(), rsp: process.entry.rsp.as_u64(), rflags: 0x202, cs: frame.cs, ss: frame.ss, vector: frame.vector, error: frame.error, ..Default::default() };
     sched::live::vfork_done(cur);
+    klog::write_raw(b"[WINDOWS-PE-COMMIT] success\n");
     Ok(())
+}
+
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+fn nomem(message: &'static [u8]) -> i64 {
+    klog::write_raw(message);
+    -(syscall::errno::Errno::Enomem.as_i32() as i64)
 }
