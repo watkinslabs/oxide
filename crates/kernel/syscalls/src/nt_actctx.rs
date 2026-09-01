@@ -6,6 +6,7 @@ use alloc::vec::Vec;
 use syscall::nt::{NtCall, NtService};
 
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
+const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
 const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
 const ACTCTX_FLAGS_ALL: u32 = 0xff;
 const ACTCTX_MIN_BYTES: u32 = 16;
@@ -24,6 +25,9 @@ const WINDOWS_SETTINGS_2020: &[u8] = b"http://schemas.microsoft.com/SMI/2020/Win
 /// Validate the Wine/Windows string-section query and report no active context.
 /// # C: O(1) plus bounded user copies
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlQueryInformationActivationContext {
+        return Some(query_information(call));
+    }
     if call.service == NtService::RtlQueryActivationContextApplicationSettings {
         return Some(query_application_settings(call));
     }
@@ -151,6 +155,29 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     // Process/thread activation contexts are not installed yet. This is the
     // same result Wine returns after searching both context scopes.
     Some(STATUS_SXS_KEY_NOT_FOUND)
+}
+
+fn query_information(call: NtCall) -> u64 {
+    // Native signature: flags, activation context, sub-instance, class,
+    // buffer, buffer size, return length. The current NT entry frame carries
+    // the first six words; the seventh stack word is not exposed yet.
+    const ACTIVATION_CONTEXT_BASIC_INFORMATION: u64 = 1;
+    const BASIC_INFORMATION_BYTES: u64 = 16;
+    if call.args.a0 != 0 || call.args.a3 != ACTIVATION_CONTEXT_BASIC_INFORMATION {
+        return STATUS_NOT_IMPLEMENTED;
+    }
+    if call.args.a5 < BASIC_INFORMATION_BYTES || call.args.a4 == 0 {
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+    // No process/thread activation-context object is installed yet. Wine's
+    // basic query still succeeds for the empty context and reports a null
+    // handle with zero flags.
+    if uaccess::put_user_u64(call.args.a4, 0).is_err()
+        || uaccess::put_user_u64(call.args.a4.saturating_add(8), 0).is_err()
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    0
 }
 
 fn query_application_settings(call: NtCall) -> u64 {
