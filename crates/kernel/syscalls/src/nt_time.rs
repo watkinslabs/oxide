@@ -32,6 +32,7 @@ const MONTH_FORMULA_SCALE: i64 = 1_959;
 const PERMANENT_EPOCH_DAY: i64 = 584_817;
 
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlLocalTimeToSystemTime { return Some(local_time_to_system_time(call.args.a0, call.args.a1)); }
     if call.service == NtService::NtQueryDefaultLocale {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
         if !cur.is_nt_personality() || call.args.a0 > 1 || call.args.a1 == 0 { return Some(STATUS_INVALID_PARAMETER); }
@@ -122,6 +123,15 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     let value = if call.service == NtService::RtlQueryPerformanceCounter { timekeeper::monotonic_ns() / 100 } else { QPC_FREQUENCY };
     if uaccess::put_user_u64(call.args.a0, value).is_err() { return Some(STATUS_INVALID_PARAMETER); }
     Some(STATUS_SUCCESS)
+}
+
+fn local_time_to_system_time(local: u64, system: u64) -> u64 {
+    if local == 0 || system == 0 { return STATUS_INVALID_PARAMETER; }
+    let Ok(value) = uaccess::get_user_u64(local) else { return STATUS_INVALID_PARAMETER; };
+    let bias_ticks = (crate::time_common::timezone_minuteswest() as i64)
+        .saturating_mul(60).saturating_mul(TICKS_PER_SECOND);
+    let result = (value as i64).wrapping_add(bias_ticks) as u64;
+    if uaccess::put_user_u64(system, result).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
 }
 
 fn read_i16(address: u64, offset: u64) -> Option<i16> {
