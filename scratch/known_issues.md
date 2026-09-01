@@ -509,3 +509,7 @@ Windows NT frontier update (2026-09-01): `NtDuplicateToken` now validates
 token-handle access, requested access, token type, and output memory, then
 returns a new process-local handle retaining the token state. The graph
 advances to `ntdll.dll!NtEnumerateKey`.
+Windows NT frontier update (2026-09-01): `NtEnumerateKey` now has an explicit
+native export and fail-closed `STATUS_NOT_IMPLEMENTED` boundary; NT registry
+key enumeration remains pending. The graph advances to its next unresolved
+native import, `ntdll.dll!NtEnumerateValueKey`.
