@@ -554,3 +554,8 @@ the graph advances to `ntdll.dll!NtLoadKey`. Its ABI/export are exposed, but
 hive loading remains `STATUS_NOT_IMPLEMENTED` until the userspace registry
 owner gains a typed load transaction. The graph advances to
 `ntdll.dll!NtLockVirtualMemory`.
+`NtLockVirtualMemory` now follows Wine’s current-process path: it rounds and
+publishes the range, applies the VMM-owned locked VMA state, and populates
+resident pages through the PMM path. Remote-process locking remains an
+explicit `STATUS_INVALID_PARAMETER` boundary until the NT APC/process-memory
+owner exists. The graph advances to the next unimplemented NT export.

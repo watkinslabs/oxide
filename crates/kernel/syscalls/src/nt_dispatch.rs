@@ -708,7 +708,7 @@ pub fn dispatch(call: NtCall) -> u64 {
     let process = match &call {
         NtMemoryCall::Allocate { process, .. } | NtMemoryCall::Free { process, .. }
         | NtMemoryCall::Protect { process, .. } | NtMemoryCall::Query { process, .. }
-        | NtMemoryCall::Flush { process, .. } => *process,
+        | NtMemoryCall::Flush { process, .. } | NtMemoryCall::Lock { process, .. } => *process,
     };
     if process != CURRENT_PROCESS { return STATUS_INVALID_PARAMETER; }
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
@@ -785,6 +785,7 @@ pub fn dispatch(call: NtCall) -> u64 {
             let _ = io;
             STATUS_SUCCESS
         }
+        NtMemoryCall::Lock { address, size, unknown: _, .. } => crate::nt_memory_lock::dispatch(&mm, address, size),
     }
 }
 #[cfg(target_os = "oxide-kernel")]

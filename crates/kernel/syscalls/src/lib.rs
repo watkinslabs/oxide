@@ -77,6 +77,8 @@ mod nt_unwind;
 mod nt_exception;
 mod nt_nls;
 #[cfg(target_os = "oxide-kernel")]
+mod nt_memory_lock;
+#[cfg(target_os = "oxide-kernel")]
 mod nt_rtl;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_rtl_ansi;

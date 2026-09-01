@@ -62,6 +62,7 @@ pub enum NtService {
     NtImpersonateAnonymousToken = 276,
     NtIsProcessInJob = 277,
     NtLoadKey = 278,
+    NtLockVirtualMemory = 279,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -77,6 +78,7 @@ pub enum NtMemoryCall {
     Protect { process: u64, base: UserPtr<u64>, size: UserPtr<u64>, protect: u32, old_protect: UserPtr<u32> },
     Query { process: u64, address: u64, info_class: u32, info: UserPtr<u8>, info_size: u64, return_length: UserPtr<u64> },
     Flush { process: u64, address: UserPtr<u64>, size: UserPtr<u64>, io: Option<UserPtr<u8>> },
+    Lock { process: u64, address: UserPtr<u64>, size: UserPtr<u64>, unknown: u32 },
 }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum NtThreadCall {
@@ -354,6 +356,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 276 { return Some(NtCall { service: NtService::NtImpersonateAnonymousToken, args }); }
     if service == 277 { return Some(NtCall { service: NtService::NtIsProcessInJob, args }); }
     if service == 278 { return Some(NtCall { service: NtService::NtLoadKey, args }); }
+    if service == 279 { return Some(NtCall { service: NtService::NtLockVirtualMemory, args }); }
     if service == 197 { return Some(NtCall { service: NtService::RtlGUIDFromString, args }); }
     if service == 195 { return Some(NtCall { service: NtService::WineDbgOutput, args }); }
     if service == 194 { return Some(NtCall { service: NtService::WineDbgHeader, args }); }
@@ -483,6 +486,9 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         }),
         NtService::NtFlushVirtualMemory => Ok(NtMemoryCall::Flush {
             process: a.a0, address: UserPtr::new(a.a1)?, size: UserPtr::new(a.a2)?, io: optional_ptr(a.a3)?,
+        }),
+        NtService::NtLockVirtualMemory => Ok(NtMemoryCall::Lock {
+            process: a.a0, address: UserPtr::new(a.a1)?, size: UserPtr::new(a.a2)?, unknown: a.a3 as u32,
         }),
         NtService::NtGetContextThread => Err(Errno::Enosys),
         NtService::NtGetNlsSectionPtr => Err(Errno::Enosys),
