@@ -143,6 +143,7 @@ use super::*;
         assert_eq!(decode(193, input).unwrap().service, NtService::Wcstoul);
         assert_eq!(decode(194, input).unwrap().service, NtService::WineDbgHeader);
         assert_eq!(decode(195, input).unwrap().service, NtService::WineDbgOutput);
+        assert_eq!(decode(196, input).unwrap().service, NtService::WineDbgStrdup);
     }
 
     #[test]

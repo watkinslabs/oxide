@@ -4,7 +4,10 @@ use pe::Error;
 use vmm::{AddressSpace, MmapPlacement, VmaBacking, VmaFlags, VmaProt};
 
 pub const X64_SHADOW_SPACE: u64 = 32;
+#[cfg(test)]
 const PAGE: usize = 4096;
+const THREAD_TEB_BYTES: usize = 0x4000;
+pub const NT_DEBUG_INFO_OFFSET: u64 = 0x2f00;
 const PEB_OFF: usize = 0x000;
 const TEB_OFF: usize = 0x100;
 const TLS_OFF: usize = 0x180;
@@ -62,21 +65,21 @@ pub fn build(input: &EnvironmentInput<'_>, as_: &AddressSpace) -> Result<NtProce
 /// thread-owned and carries the TEB self pointer, IDs, PEB pointer, and TLS.
 /// # C: O(1)
 pub fn build_thread_teb(process_id: u32, thread_id: u32, peb: u64, as_: &AddressSpace) -> Result<UserVirtAddr, Error> {
-    let reservation = as_.mmap(None, PAGE, VmaProt::READ | VmaProt::WRITE,
+    let reservation = as_.mmap(None, THREAD_TEB_BYTES, VmaProt::READ | VmaProt::WRITE,
         VmaFlags::PRIVATE, VmaBacking::Anonymous, false).map_err(|_| Error::Einval)?;
     let base = reservation.as_u64();
-    let mut teb = vec![0u8; PAGE];
+    let mut teb = vec![0u8; THREAD_TEB_BYTES];
     put_u64(&mut teb, 0x30, base);
     put_u64(&mut teb, 0x60, peb);
     put_u32(&mut teb, 0x40, process_id);
     put_u32(&mut teb, 0x48, thread_id);
     put_u64(&mut teb, 0x58, base + 0x180);
-    as_.munmap(reservation, PAGE).map_err(|_| Error::Einval)?;
+    as_.munmap(reservation, THREAD_TEB_BYTES).map_err(|_| Error::Einval)?;
     let data = as_.stash_bytes(teb.into_boxed_slice());
-    if as_.mmap_with_may_at(MmapPlacement::FixedNoReplace(reservation), PAGE,
+    if as_.mmap_with_may_at(MmapPlacement::FixedNoReplace(reservation), THREAD_TEB_BYTES,
         VmaProt::READ | VmaProt::WRITE, VmaProt::READ | VmaProt::WRITE,
         VmaFlags::PRIVATE, VmaBacking::KernelBytes { data, off: 0 }).is_err() {
-        let _ = as_.munmap(reservation, PAGE);
+        let _ = as_.munmap(reservation, THREAD_TEB_BYTES);
         return Err(Error::Einval);
     }
     Ok(reservation)
