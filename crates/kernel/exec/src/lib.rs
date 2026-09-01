@@ -47,6 +47,7 @@ pub mod persona;
 pub mod shebang;
 mod place;
 pub mod pe_loader;
+pub mod pe_modules;
 pub mod pe_init;
 pub mod process_env;
 pub mod nt_memory;

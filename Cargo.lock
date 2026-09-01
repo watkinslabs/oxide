@@ -993,6 +993,7 @@ dependencies = [
  "klog",
  "pe",
  "proptest",
+ "sync",
  "syscall",
  "uaccess",
  "vfs",

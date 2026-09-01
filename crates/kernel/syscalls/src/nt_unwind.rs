@@ -3,6 +3,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::nt::{NtCall, NtService};
+use elf_load::pe_modules;
 
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 #[cfg(target_arch = "x86_64")]
@@ -15,7 +16,8 @@ const CONTEXT_FLAGS_FULL: u32 = 0x0010_000f;
 pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlCaptureContext { return Some(capture_context(call.args.a0)); }
     if call.service == NtService::RtlRestoreContext { return Some(restore_context(call.args.a0)); }
-    if call.service == NtService::RtlLookupFunctionEntry { return Some(lookup_function_entry(call.args.a1)); }
+    if call.service == NtService::RtlLookupFunctionEntry { return Some(lookup_function_entry(call.args.a0, call.args.a1)); }
+    if call.service == NtService::RtlPcToFileHeader { return Some(pc_to_file_header(call.args.a0, call.args.a1)); }
     if call.service != NtService::RtlUnwind { return None; }
     let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
     if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
@@ -49,10 +51,35 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     { let _ = cur; Some(STATUS_INVALID_PARAMETER) }
 }
 
-fn lookup_function_entry(base: u64) -> u64 {
+fn lookup_function_entry(pc: u64, base: u64) -> u64 {
     if base == 0 { return STATUS_INVALID_PARAMETER; }
     if uaccess::put_user_u64(base, 0).is_err() { return STATUS_INVALID_PARAMETER; }
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let Some(module) = cur.clone_mm().and_then(|mm| pe_modules::find(mm.root_pa(), pc)) else { return 0; };
+    if uaccess::put_user_u64(base, module.base).is_err() { return STATUS_INVALID_PARAMETER; }
+    let Some(rva) = pc.checked_sub(module.base) else { return 0; };
+    let Some(table) = module.base.checked_add(module.exception_rva as u64) else { return 0; };
+    let count = module.exception_size / 12;
+    for index in 0..count {
+        let Some(entry) = table.checked_add(index as u64 * 12) else { return 0; };
+        let mut bytes = [0u8; 12];
+        if uaccess::copy_from_user(&mut bytes, entry).is_err() { return 0; }
+        let begin = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as u64;
+        let end = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as u64;
+        if begin <= rva && rva < end { return entry; }
+    }
     0
+}
+
+fn pc_to_file_header(pc: u64, address: u64) -> u64 {
+    if address == 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let module = cur.clone_mm().and_then(|mm| pe_modules::find(mm.root_pa(), pc));
+    let file_header = module.map_or(0, |module| module.base);
+    if uaccess::put_user_u64(address, file_header).is_err() { return STATUS_INVALID_PARAMETER; }
+    file_header
 }
 
 fn restore_context(target: u64) -> u64 {

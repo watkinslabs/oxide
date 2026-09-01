@@ -231,6 +231,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `31ef-windows-nt-bitmap-set.md` | FROZEN | 2026-08-31 | `01`,`02`,`31ee`,`52`,`53` |
 | `31f0-windows-nt-bitmap-init.md` | FROZEN | 2026-08-31 | `01`,`02`,`31ef`,`52`,`53` |
 | `31f1-windows-nt-function-lookup.md` | FROZEN | 2026-08-31 | `01`,`02`,`31f0`,`52`,`53` |
+| `31f2-windows-nt-module-registry.md` | FROZEN | 2026-08-31 | `01`,`02`,`31f1`,`52`,`53` |
 
 ## Deleted
 
