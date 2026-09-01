@@ -67,6 +67,14 @@ impl Gdi {
     pub fn fill_rect(&self, dc: u64, rect: Rect, color: u32) -> Result<(), GdiError> {
         invoke(NtService::FillGdiRect, [dc, rect.left as u64, rect.top as u64, rect.right as u64, rect.bottom as u64, color as u64]).map(|_| ())
     }
+
+    /// Upload a row-major XRGB raster into a device context. # C: O(width*height) plus kernel service
+    pub fn blit_surface(&self, dc: u64, x: i32, y: i32, width: u32, height: u32, stride: u32, pixels: &[u32]) -> Result<(), GdiError> {
+        let Some(words) = (height as usize).checked_mul(stride as usize) else { return Err(GdiError::Host(io::Error::from_raw_os_error(libc::EINVAL))); };
+        if width == 0 || height == 0 || stride < width || pixels.len() < words { return Err(GdiError::Host(io::Error::from_raw_os_error(libc::EINVAL))); }
+        let packed = (x as u64 & 0xffff_ffff) | ((y as u64 & 0xffff_ffff) << 32);
+        invoke(NtService::BlitGdiSurface, [dc, pixels.as_ptr() as u64, width as u64, height as u64, stride as u64, packed]).map(|_| ())
+    }
 }
 
 fn invoke(service: NtService, args: [u64; 6]) -> Result<u64, GdiError> {

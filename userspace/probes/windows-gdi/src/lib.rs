@@ -20,5 +20,6 @@ mod tests {
         assert_eq!(syscall::nt::NtService::CreateCompatibleDc.entry(), 0x4e54_0000_0000_0201);
         assert_eq!(syscall::nt::NtService::GetGdiTextExtent.entry(), 0x4e54_0000_0000_0206);
         assert_eq!(syscall::nt::NtService::FillGdiRect.entry(), 0x4e54_0000_0000_020f);
+        assert_eq!(syscall::nt::NtService::BlitGdiSurface.entry(), 0x4e54_0000_0000_0210);
     }
 }
