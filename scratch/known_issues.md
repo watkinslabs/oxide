@@ -493,3 +493,7 @@ Windows NT frontier update (2026-09-01): `NtCreateUserProcess` now has an
 explicit native export and fail-closed `STATUS_NOT_IMPLEMENTED` boundary;
 the process-parameter/create-info adapter remains pending. The graph advances
 to `ntdll.dll!NtDelayExecution`.
+Windows NT frontier update (2026-09-01): `NtDelayExecution` now uses the
+existing scheduler interruptible wait path with native relative/absolute
+100-ns timeout conversion and alertable-result mapping; the graph advances to
+`ntdll.dll!NtDeleteKey`.

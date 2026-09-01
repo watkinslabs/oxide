@@ -103,6 +103,7 @@ use super::*;
         assert_eq!(decode(258, input).unwrap().service, NtService::NtCreateSectionEx);
         assert_eq!(decode(259, input).unwrap().service, NtService::NtCreateSymbolicLinkObject);
         assert_eq!(decode(260, input).unwrap().service, NtService::NtCreateUserProcess);
+        assert_eq!(decode(261, input).unwrap().service, NtService::NtDelayExecution);
         assert_eq!(decode(240, input).unwrap().service, NtService::LdrDisableThreadCalloutsForDll);
         assert_eq!(decode(99, input).unwrap().service, NtService::LdrGetDllDirectory);
         assert_eq!(decode(100, input).unwrap().service, NtService::LdrGetProcedureAddress);

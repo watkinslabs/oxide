@@ -9,6 +9,9 @@ const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
 const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
 const STATUS_NOT_SUPPORTED: u64 = 0xc000_00bb;
+const STATUS_TIMEOUT: u64 = 0x0000_0102;
+const STATUS_ALERTED: u64 = 0x0000_0101;
+const STATUS_USER_APC: u64 = 0x0000_00c0;
 const QPC_FREQUENCY: u64 = 10_000_000;
 const NT_EPOCH_100NS: u64 = 116_444_736_000_000_000;
 const FALSE: u64 = 0;
@@ -30,6 +33,23 @@ const MONTH_FORMULA_SCALE: i64 = 1_959;
 const PERMANENT_EPOCH_DAY: i64 = 584_817;
 
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::NtDelayExecution {
+        let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+        if !cur.is_nt_personality() || call.args.a0 > 1 { return Some(STATUS_INVALID_PARAMETER); }
+        let timeout = if call.args.a1 == 0 { None } else {
+            match syscall::UserPtr::<i64>::new(call.args.a1) { Ok(pointer) => Some(pointer), Err(_) => return Some(STATUS_INVALID_PARAMETER) }
+        };
+        let table = cur.thread_group.nt_handles();
+        let outcome = match crate::nt_dispatch::wait_deadline(timeout) {
+            Ok(0) => unsafe { sched::live::wait_event_interruptible(table.waiters(), || false) },
+            Ok(deadline) => unsafe { sched::live::wait_event_interruptible_until(table.waiters(), deadline, timekeeper::monotonic_ns, || false) },
+            Err(status) => return Some(status),
+        };
+        return Some(match outcome {
+            sched::WaitOutcome::Ready | sched::WaitOutcome::TimedOut => STATUS_SUCCESS,
+            sched::WaitOutcome::Interrupted => if call.args.a0 != 0 { STATUS_USER_APC } else { STATUS_ALERTED },
+        });
+    }
     if call.service == NtService::NtConvertBetweenAuxiliaryCounterAndPerformanceCounter {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
         if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
