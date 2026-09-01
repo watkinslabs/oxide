@@ -24,6 +24,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlInitializeSid { return Some(initialize_sid(call.args.a0, call.args.a1, call.args.a2 & 0xff)); }
     if call.service == NtService::RtlIdentifierAuthoritySid { return Some(identifier_authority_sid(call.args.a0)); }
     if call.service == NtService::RtlSubAuthorityCountSid { return Some(subauthority_count_sid(call.args.a0)); }
+    if call.service == NtService::RtlSubAuthoritySid { return Some(subauthority_sid(call.args.a0, call.args.a1 as u32)); }
     if call.service == NtService::RtlFreeSid { return Some(free_sid(call.args.a0)); }
     if call.service == NtService::RtlEqualPrefixSid { return Some(equal_prefix_sid(call.args.a0, call.args.a1)); }
     if call.service == NtService::RtlEqualSid { return Some(equal_sid(call.args.a0, call.args.a1)); }
@@ -71,6 +72,11 @@ fn initialize_sid(sid: u64, authority: u64, count: u64) -> u64 {
 fn identifier_authority_sid(sid: u64) -> u64 { sid.checked_add(2).unwrap_or(0) }
 
 fn subauthority_count_sid(sid: u64) -> u64 { sid.checked_add(1).unwrap_or(0) }
+
+fn subauthority_sid(sid: u64, index: u32) -> u64 {
+    let offset = (index as u64).checked_mul(core::mem::size_of::<u32>() as u64);
+    sid.checked_add(SID_FIXED_BYTES as u64).and_then(|base| offset.and_then(|value| base.checked_add(value))).unwrap_or(0)
+}
 
 fn free_sid(sid: u64) -> u64 {
     if sid == 0 { return STATUS_SUCCESS; }
