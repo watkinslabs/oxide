@@ -36,7 +36,7 @@ fn commit_x86(cur: &sched::Task, path: &[u8], blob: &[u8], exec_vp: Option<&vfs:
     let as_ = match old.as_ref() { Some(old) => AddressSpace::new_for_exec(root, old), None => AddressSpace::new(root) }
         .map_err(|_| nomem(b"[WINDOWS-PE-NOMEM] address-space\n"))?;
     let stack = as_.mmap(None, STACK_BYTES, VmaProt::READ | VmaProt::WRITE,
-        vmm::EXEC_STACK_VMA_FLAGS, VmaBacking::Anonymous, true).map_err(|_| nomem(b"[WINDOWS-PE-NOMEM] stack\n"))?;
+        vmm::EXEC_STACK_VMA_FLAGS, VmaBacking::Anonymous, false).map_err(|_| nomem(b"[WINDOWS-PE-NOMEM] stack\n"))?;
     let stack_top = stack.as_u64().checked_add(STACK_BYTES as u64).ok_or_else(|| nomem(b"[WINDOWS-PE-NOMEM] stack-overflow\n"))?;
     let path = core::str::from_utf8(path).map_err(|_| enoexec())?;
     let mut creds = crate::exec_transition::decide(cur, exec_vp).map_err(|e| -(e.as_i32() as i64))?;
