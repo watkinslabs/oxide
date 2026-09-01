@@ -721,3 +721,6 @@ the canonical NT heap has no compaction operation to expose.
 `RtlCompareUnicodeStrings` compares bounded UTF-16 code units with the
 reference ASCII fallback for case-insensitive calls; full NLS case mapping is
 not yet connected.
+`RtlConvertToAutoInheritSecurityObject` preserves the reference implementation's
+explicit `STATUS_NOT_IMPLEMENTED` result; auto-inheritance descriptor ownership
+remains unimplemented.
