@@ -261,6 +261,7 @@ use super::*;
     assert_eq!(decode(422, input).unwrap().service, NtService::RtlLengthRequiredSid);
     assert_eq!(decode(423, input).unwrap().service, NtService::RtlLengthSid);
     assert_eq!(decode(424, input).unwrap().service, NtService::RtlLocalTimeToSystemTime);
+    assert_eq!(decode(425, input).unwrap().service, NtService::RtlLocateExtendedFeature);
     assert_eq!(decode(370, input).unwrap().service, NtService::RtlEqualSid);
     assert_eq!(decode(371, input).unwrap().service, NtService::RtlExpandEnvironmentStringsU);
     assert_eq!(decode(298, input).unwrap().service, NtService::NtQueryDirectoryObject);

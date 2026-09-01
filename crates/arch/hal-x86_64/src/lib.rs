@@ -68,6 +68,8 @@ pub use fpu::{
     seed_initial_pkru, xsave_active, xsave_area_bytes, xsave_xcr0, xstate_init,
     FpuStateX86_64, FPU_OWNER, FPU_STATE_BYTES,
 };
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub use fpu::xstate_component_layout;
 pub use gdt::{install_kernel_gdt, load_kernel_gdt_for_ap, GdtPointer, GDT_LEN, KERNEL_DS,
     USER_CS, USER_CS_SELECTOR, USER_DS, USER_SS_SELECTOR};
 pub use idt::{

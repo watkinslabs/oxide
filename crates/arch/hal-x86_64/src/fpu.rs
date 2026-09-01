@@ -103,6 +103,19 @@ pub fn xsave_active() -> bool { XSAVE_ENABLED.load(Ordering::Acquire) }
 /// Active XSAVE area size (0 when on the FXSAVE fallback). # C: O(1)
 pub fn xsave_area_bytes() -> usize { XSAVE_AREA_BYTES.load(Ordering::Acquire) }
 
+/// Return the standard-format offset and size for one enabled user xstate
+/// component, using the same CPUID.0Dh table that initializes the save area.
+/// # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub fn xstate_component_layout(feature: u32) -> Option<(usize, usize)> {
+    if feature < 2 || feature >= 64 || !xsave_active() { return None; }
+    // SAFETY: CPUID leaf 0Dh is queried only after xstate initialization
+    // enabled XSAVE; it has no memory effects or privilege requirement.
+    let (size, offset, _, _) = unsafe { cpuid_count(0x0d, feature) };
+    if size == 0 || offset < FPU_STATE_BYTES as u32 { return None; }
+    Some((offset as usize, size as usize))
+}
+
 /// Put the restrictive initial PKRU value in an otherwise fresh standard
 /// XSAVE image. `XRSTOR` treats a clear PKRU XSTATE_BV bit as architectural
 /// zero, which would make every future key accessible, so PKRU must be an
