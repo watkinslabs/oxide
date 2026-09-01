@@ -17,4 +17,4 @@ units, and Linux dispatch is unchanged.
 The selector and native NTDLL export are appended without renumbering existing
 services. Decoder tests, export resolution, shared descriptor coverage, and
 the installed Wine Notepad graph census cover the ABI wiring. The current
-graph frontier is `RtlUpperChar`.
+graph frontier is `_wcsicmp`.

@@ -229,6 +229,8 @@
         assert!(oem >= runtime.base.as_u64() && oem < runtime.base.as_u64() + runtime.bytes as u64);
         let upcase = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlUpcaseUnicodeString" }).unwrap();
         assert!(upcase >= runtime.base.as_u64() && upcase < runtime.base.as_u64() + runtime.bytes as u64);
+        let upper_char = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlUpperChar" }).unwrap();
+        assert!(upper_char >= runtime.base.as_u64() && upper_char < runtime.base.as_u64() + runtime.bytes as u64);
     }
 
     #[test]

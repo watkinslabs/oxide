@@ -13,6 +13,7 @@ const UNICODE_STRING_BYTES: usize = 16;
 /// Convert a counted UTF-16 string into the native ANSI representation.
 /// # C: O(source length) plus usercopy and optional heap allocation
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlUpperChar { let ch = call.args.a0 as u8; return Some(if ch >= b'a' && ch <= b'z' { (ch - (b'a' - b'A')) as u64 } else { ch as u64 }); }
     if call.service == NtService::RtlUpcaseUnicodeString { return Some(upcase_unicode_string(call.args.a0, call.args.a1, call.args.a2 != 0)); }
     if call.service == NtService::RtlUnicodeToOemN { return Some(unicode_to_multibyte(call.args.a0, call.args.a1, call.args.a2, call.args.a3, call.args.a4)); }
     if call.service == NtService::RtlUnicodeToMultiByteSize { return Some(unicode_to_multibyte_size(call.args.a0, call.args.a1, call.args.a2)); }
