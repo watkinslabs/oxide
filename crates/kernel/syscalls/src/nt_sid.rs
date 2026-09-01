@@ -14,10 +14,12 @@ const SID_FIXED_BYTES: usize = 8;
 const MAX_SUBAUTHORITIES: u64 = 8;
 const STATUS_BUFFER_OVERFLOW: u64 = 0x8000_0005;
 const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
+const SID_MAX_SUB_AUTHORITIES: u64 = 15;
 
 /// Allocate a heap-owned SID and initialize its native layout.
 /// # C: O(1) plus bounded user copies and one VMM allocation
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlInitializeSid { return Some(initialize_sid(call.args.a0, call.args.a1, call.args.a2 & 0xff)); }
     if call.service == NtService::RtlIdentifierAuthoritySid { return Some(identifier_authority_sid(call.args.a0)); }
     if call.service == NtService::RtlFreeSid { return Some(free_sid(call.args.a0)); }
     if call.service == NtService::RtlEqualPrefixSid { return Some(equal_prefix_sid(call.args.a0, call.args.a1)); }
@@ -30,6 +32,25 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     }
     if call.service != NtService::RtlAllocateAndInitializeSid { return None; }
     Some(allocate_and_initialize(call))
+}
+
+fn initialize_sid(sid: u64, authority: u64, count: u64) -> u64 {
+    if sid == 0 { return STATUS_INVALID_PARAMETER; }
+    if count > SID_MAX_SUB_AUTHORITIES { return STATUS_INVALID_PARAMETER; }
+    let mut header = [0u8; SID_FIXED_BYTES];
+    header[0] = SID_REVISION;
+    header[1] = count as u8;
+    if authority != 0 {
+        let mut identifier = [0u8; SID_IDENTIFIER_AUTHORITY_BYTES];
+        if uaccess::copy_from_user(&mut identifier, authority).is_err() { return STATUS_INVALID_PARAMETER; }
+        header[2..8].copy_from_slice(&identifier);
+    }
+    if uaccess::copy_to_user(sid, &header).is_err() { return STATUS_INVALID_PARAMETER; }
+    let zeros = [0u8; 15 * core::mem::size_of::<u32>()];
+    if count != 0 && uaccess::copy_to_user(sid + SID_FIXED_BYTES as u64, &zeros[..count as usize * 4]).is_err() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    STATUS_SUCCESS
 }
 
 fn identifier_authority_sid(sid: u64) -> u64 { sid.checked_add(2).unwrap_or(0) }
