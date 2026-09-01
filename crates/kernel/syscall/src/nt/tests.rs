@@ -136,6 +136,7 @@ use super::*;
         assert_eq!(decode(186, input).unwrap().service, NtService::Wcscat);
         assert_eq!(decode(187, input).unwrap().service, NtService::Wcschr);
         assert_eq!(decode(188, input).unwrap().service, NtService::Wcscmp);
+        assert_eq!(decode(189, input).unwrap().service, NtService::Wcscpy);
     }
 
     #[test]

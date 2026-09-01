@@ -25,6 +25,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::Wcscat { return Some(wcscat(call.args.a0, call.args.a1)); }
     if call.service == NtService::Wcschr { return Some(wcschr(call.args.a0, call.args.a1)); }
     if call.service == NtService::Wcscmp { return Some(wcscmp(call.args.a0, call.args.a1)); }
+    if call.service == NtService::Wcscpy { return Some(wcscpy(call.args.a0, call.args.a1)); }
     if call.service == NtService::Isalpha { let c = call.args.a0 as i32; return Some(if c >= b'A' as i32 && c <= b'Z' as i32 { 1 } else if c >= b'a' as i32 && c <= b'z' as i32 { 2 } else { 0 }); }
     if call.service == NtService::Wcsnicmp { return Some(wcsnicmp(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Wcsicmp { return Some(wcsicmp(call.args.a0, call.args.a1)); }
@@ -196,6 +197,21 @@ fn wcscmp(first: u64, second: u64) -> u64 {
         let Some(next) = index.checked_add(1) else { return STATUS_INVALID_PARAMETER; };
         index = next;
     }
+}
+
+fn wcscpy(destination: u64, source: u64) -> u64 {
+    if destination == 0 || source == 0 { return STATUS_INVALID_PARAMETER; }
+    let mut output = alloc::vec::Vec::new();
+    let mut index = 0usize;
+    loop {
+        let Some(unit) = read_u16(source, index) else { return STATUS_INVALID_PARAMETER; };
+        output.extend_from_slice(&unit.to_le_bytes());
+        if unit == 0 { break; }
+        let Some(next) = index.checked_add(1) else { return STATUS_INVALID_PARAMETER; };
+        index = next;
+    }
+    if uaccess::copy_to_user(destination, &output).is_err() { return STATUS_INVALID_PARAMETER; }
+    destination
 }
 
 fn wcsnicmp(first: u64, second: u64, count: u64) -> u64 {

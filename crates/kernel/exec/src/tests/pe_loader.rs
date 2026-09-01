@@ -265,6 +265,8 @@
         assert!(wcschr >= runtime.base.as_u64() && wcschr < runtime.base.as_u64() + runtime.bytes as u64);
         let wcscmp = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"wcscmp" }).unwrap();
         assert!(wcscmp >= runtime.base.as_u64() && wcscmp < runtime.base.as_u64() + runtime.bytes as u64);
+        let wcscpy = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"wcscpy" }).unwrap();
+        assert!(wcscpy >= runtime.base.as_u64() && wcscpy < runtime.base.as_u64() + runtime.bytes as u64);
     }
 
     #[test]
