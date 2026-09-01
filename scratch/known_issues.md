@@ -501,3 +501,7 @@ Windows NT frontier update (2026-09-01): `NtDeleteKey` now has an explicit
 native export and fail-closed `STATUS_NOT_IMPLEMENTED` boundary; registry key
 deletion semantics remain pending. The graph advances to its next unresolved
 native import, `ntdll.dll!NtDeleteValueKey`.
+Windows NT frontier update (2026-09-01): `NtDeleteValueKey` now has an
+explicit native export and fail-closed `STATUS_NOT_IMPLEMENTED` boundary;
+registry value deletion semantics remain pending. The graph advances to its
+next unresolved native import, `ntdll.dll!NtDuplicateToken`.
