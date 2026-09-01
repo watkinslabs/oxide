@@ -13,6 +13,7 @@ const SID_IDENTIFIER_AUTHORITY_BYTES: usize = 6;
 const SID_FIXED_BYTES: usize = 8;
 const MAX_SUBAUTHORITIES: u64 = 8;
 const STATUS_BUFFER_OVERFLOW: u64 = 0x8000_0005;
+const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
 
 /// Allocate a heap-owned SID and initialize its native layout.
 /// # C: O(1) plus bounded user copies and one VMM allocation
@@ -20,8 +21,22 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlConvertSidToUnicodeString {
         return Some(convert_to_unicode(call.args.a0, call.args.a1, call.args.a2 != 0));
     }
+    if call.service == NtService::RtlCopySid {
+        return Some(copy_sid(call.args.a0 as u32, call.args.a1, call.args.a2));
+    }
     if call.service != NtService::RtlAllocateAndInitializeSid { return None; }
     Some(allocate_and_initialize(call))
+}
+
+fn copy_sid(destination_length: u32, destination: u64, source: u64) -> u64 {
+    if destination == 0 || source == 0 { return STATUS_INVALID_PARAMETER; }
+    let mut header = [0u8; SID_FIXED_BYTES];
+    if uaccess::copy_from_user(&mut header, source).is_err() || header[0] != SID_REVISION || header[1] as u64 > MAX_SUBAUTHORITIES { return STATUS_INVALID_SID; }
+    let size = SID_FIXED_BYTES + header[1] as usize * core::mem::size_of::<u32>();
+    if destination_length < size as u32 { return STATUS_BUFFER_TOO_SMALL; }
+    let mut sid = [0u8; SID_FIXED_BYTES + 8 * core::mem::size_of::<u32>()];
+    if uaccess::copy_from_user(&mut sid[..size], source).is_err() || uaccess::copy_to_user(destination, &sid[..size]).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
 }
 
 fn convert_to_unicode(string: u64, sid: u64, allocate: bool) -> u64 {
