@@ -12,10 +12,26 @@ const STATUS_SXS_KEY_NOT_FOUND: u64 = 0xc015_0008;
 const FIND_ACTCTX_SECTION_KEY_RETURN_HACTCTX: u64 = 1;
 const UNICODE_STRING_BYTES: usize = 16;
 const ACTCTX_SECTION_KEYED_DATA_ROSTER_OFFSET: u32 = 64;
+const TEB_ACTIVATION_CONTEXT_STACK_OFFSET: u64 = 0x2c8;
 
 /// Validate the Wine/Windows string-section query and report no active context.
 /// # C: O(1) plus bounded user copies
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlFreeThreadActivationContextStack {
+        let Some(task) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+        let teb = task.nt_teb();
+        if teb == 0 { return Some(STATUS_INVALID_PARAMETER); }
+        let Some(stack) = teb.checked_add(TEB_ACTIVATION_CONTEXT_STACK_OFFSET) else {
+            return Some(STATUS_INVALID_PARAMETER);
+        };
+        // The current TEB initializes this pointer to NULL.  An allocated
+        // frame cannot be safely reclaimed until activation-context object
+        // ownership is installed; preserve the honest boundary in that case.
+        if uaccess::get_user_u64(stack).ok().unwrap_or(0) != 0 {
+            return Some(STATUS_NOT_IMPLEMENTED);
+        }
+        return Some(0);
+    }
     if call.service == NtService::RtlFindActivationContextSectionGuid {
         let flags = call.args.a0;
         if flags & !FIND_ACTCTX_SECTION_KEY_RETURN_HACTCTX != 0 || call.args.a1 != 0 || call.args.a3 == 0 || call.args.a4 == 0 {
