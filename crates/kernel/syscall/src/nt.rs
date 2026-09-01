@@ -224,6 +224,7 @@ pub enum NtService {
     RtlSetCurrentDirectoryU = 448,
     RtlSetCurrentEnvironment = 449,
     RtlSetDaclSecurityDescriptor = 450,
+    RtlSetEnvironmentVariable = 451,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -553,6 +554,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 448 { return Some(NtCall { service: NtService::RtlSetCurrentDirectoryU, args }); }
     if service == 449 { return Some(NtCall { service: NtService::RtlSetCurrentEnvironment, args }); }
     if service == 450 { return Some(NtCall { service: NtService::RtlSetDaclSecurityDescriptor, args }); }
+    if service == 451 { return Some(NtCall { service: NtService::RtlSetEnvironmentVariable, args }); }
     if service == 229 { return Some(NtCall { service: NtService::DbgUiConnectToDbg, args }); }
     if service == 230 { return Some(NtCall { service: NtService::DbgUiContinue, args }); }
     if service == 231 { return Some(NtCall { service: NtService::DbgUiRemoteBreakin, args }); }
@@ -866,6 +868,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::RtlSetCurrentDirectoryU => Err(Errno::Enosys),
         NtService::RtlSetCurrentEnvironment => Err(Errno::Enosys),
         NtService::RtlSetDaclSecurityDescriptor => Err(Errno::Enosys),
+        NtService::RtlSetEnvironmentVariable => Err(Errno::Enosys),
         NtService::RtlAddAccessAllowedObjectAce => Err(Errno::Enosys),
         NtService::RtlAddAccessDeniedObjectAce => Err(Errno::Enosys),
         NtService::RtlAddAuditAccessObjectAce => Err(Errno::Enosys),
