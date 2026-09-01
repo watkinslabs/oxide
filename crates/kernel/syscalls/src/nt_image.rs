@@ -98,7 +98,8 @@ fn resource_root(module: u64) -> Option<u64> {
     module.checked_add(rva as u64)
 }
 
-fn read_u16(address: u64) -> Option<u16> { uaccess::get_user_u16(address).ok() }
+fn read_u16(address: u64) -> Option<u16> { uaccess::get_user_u32(address).ok().map(|value| value as u16) }
+fn read_u64(address: u64) -> Option<u64> { uaccess::get_user_u64(address).ok() }
 
 fn raw_rva(module: u64, rva: u32) -> Option<u64> {
     let e_lfanew = read_u32(module.checked_add(0x3c)?)? as u64;
