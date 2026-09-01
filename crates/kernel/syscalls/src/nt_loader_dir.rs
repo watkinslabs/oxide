@@ -30,6 +30,8 @@ const MODULE_FULL_NAME_OFFSET: u64 = 0x48;
 const MODULE_BASE_NAME_OFFSET: u64 = 0x58;
 const MAX_MODULE_SCAN: usize = 64;
 const LDR_ADDREF_DLL_PIN: u32 = 1;
+const LDR_GET_HANDLE_UNCHANGED_REFCOUNT: u32 = 1;
+const LDR_GET_HANDLE_PIN: u32 = 2;
 
 pub fn dispatch(call: NtCall) -> Option<u64> {
     match call.service {
@@ -42,6 +44,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         NtService::LdrRemoveDllDirectory => Some(remove(call.args.a0)),
         NtService::LdrAddRefDll => Some(add_ref(call.args.a0 as u32, call.args.a1)),
         NtService::LdrDisableThreadCalloutsForDll => Some(disable_thread_callouts(call.args.a0)),
+        NtService::LdrGetDllHandleEx => Some(get_handle(call.args.a0 as u32, call.args.a3, call.args.a4)),
         NtService::LdrGetDllFullName => Some(full_name(call.args.a0, call.args.a1)),
         NtService::LdrLoadDll => Some(load(call.args.a2, call.args.a3)),
         NtService::LdrQueryImageFileExecutionOptions => Some(query_options(call.args.a0, call.args.a1, call.args.a4, call.args.a5)),
@@ -92,6 +95,41 @@ fn disable_thread_callouts(module: u64) -> u64 {
         entry = read_u64(entry.saturating_add(LIST_LINK_OFFSET));
     }
     STATUS_DLL_NOT_FOUND
+}
+
+fn get_handle(flags: u32, name_descriptor: u64, module_output: u64) -> u64 {
+    let valid = LDR_GET_HANDLE_UNCHANGED_REFCOUNT | LDR_GET_HANDLE_PIN | 4;
+    if name_descriptor == 0 || module_output == 0 || flags & !valid != 0 { return STATUS_INVALID_PARAMETER; }
+    if flags & (LDR_GET_HANDLE_UNCHANGED_REFCOUNT | LDR_GET_HANDLE_PIN)
+        == (LDR_GET_HANDLE_UNCHANGED_REFCOUNT | LDR_GET_HANDLE_PIN) { return STATUS_INVALID_PARAMETER; }
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let Some(wanted) = read_unicode(name_descriptor) else { return STATUS_INVALID_PARAMETER; };
+    let peb = read_u64(cur.nt_teb().saturating_add(TEB_PEB_OFFSET));
+    let ldr = read_u64(peb.saturating_add(PEB_LDR_OFFSET));
+    if peb == 0 || ldr == 0 { return STATUS_INVALID_PARAMETER; }
+    let head = ldr.saturating_add(LDR_LOAD_LIST_OFFSET);
+    let mut entry = read_u64(head);
+    for _ in 0..MAX_MODULE_SCAN {
+        if entry == 0 || entry == head { break; }
+        if module_name_matches(&wanted, entry.saturating_add(MODULE_BASE_NAME_OFFSET)) {
+            let module = read_u64(entry.saturating_add(MODULE_BASE_OFFSET));
+            if uaccess::put_user_u64(module_output, module).is_err() { return STATUS_INVALID_PARAMETER; }
+            if flags & LDR_GET_HANDLE_PIN != 0 { return add_ref(LDR_ADDREF_DLL_PIN, module); }
+            if flags & LDR_GET_HANDLE_UNCHANGED_REFCOUNT == 0 { return add_ref(0, module); }
+            return STATUS_SUCCESS;
+        }
+        entry = read_u64(entry.saturating_add(LIST_LINK_OFFSET));
+    }
+    STATUS_DLL_NOT_FOUND
+}
+
+fn module_name_matches(wanted: &[u8], descriptor: u64) -> bool {
+    let current = read_module_name(descriptor);
+    if wanted.eq_ignore_ascii_case(&current) { return true; }
+    if wanted.len() + 8 == current.len() && current[..wanted.len()].eq_ignore_ascii_case(wanted)
+        && current[wanted.len()..].eq_ignore_ascii_case(&[b'.', 0, b'd', 0, b'l', 0, b'l', 0]) { return true; }
+    false
 }
 
 fn add(descriptor: u64, cookie_output: u64) -> u64 {
