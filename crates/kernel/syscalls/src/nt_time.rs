@@ -7,6 +7,8 @@ use syscall::nt::{NtCall, NtService};
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
+const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
+const STATUS_NOT_SUPPORTED: u64 = 0xc000_00bb;
 const QPC_FREQUENCY: u64 = 10_000_000;
 const NT_EPOCH_100NS: u64 = 116_444_736_000_000_000;
 const FALSE: u64 = 0;
@@ -28,6 +30,11 @@ const MONTH_FORMULA_SCALE: i64 = 1_959;
 const PERMANENT_EPOCH_DAY: i64 = 584_817;
 
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::NtConvertBetweenAuxiliaryCounterAndPerformanceCounter {
+        let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+        if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
+        return Some(if call.args.a1 == 0 { STATUS_ACCESS_VIOLATION } else { STATUS_NOT_SUPPORTED });
+    }
     if call.service == NtService::QuerySystemTime {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
         if !cur.is_nt_personality() || call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }

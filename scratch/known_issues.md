@@ -468,3 +468,8 @@ Windows NT frontier update (2026-09-01): `NtCompareObjects` now distinguishes
 current-process/current-thread pseudo handles, validates process-local handles,
 and compares duplicated handles by canonical NT object identity; the graph
 advances to `ntdll.dll!NtConvertBetweenAuxiliaryCounterAndPerformanceCounter`.
+Windows NT frontier update (2026-09-01):
+`NtConvertBetweenAuxiliaryCounterAndPerformanceCounter` now exposes the native
+four-argument ABI and the Wine-compatible unsupported-counter result (including
+the required null-input access violation); the graph advances to
+`ntdll.dll!NtCreateKey`.
