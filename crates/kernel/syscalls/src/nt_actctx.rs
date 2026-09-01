@@ -2,6 +2,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
+use alloc::vec::Vec;
 use syscall::nt::{NtCall, NtService};
 
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
@@ -13,10 +14,19 @@ const FIND_ACTCTX_SECTION_KEY_RETURN_HACTCTX: u64 = 1;
 const UNICODE_STRING_BYTES: usize = 16;
 const ACTCTX_SECTION_KEYED_DATA_ROSTER_OFFSET: u32 = 64;
 const TEB_ACTIVATION_CONTEXT_STACK_OFFSET: u64 = 0x2c8;
+const WINDOWS_SETTINGS_2005: &[u8] = b"http://schemas.microsoft.com/SMI/2005/WindowsSettings";
+const WINDOWS_SETTINGS_2011: &[u8] = b"http://schemas.microsoft.com/SMI/2011/WindowsSettings";
+const WINDOWS_SETTINGS_2016: &[u8] = b"http://schemas.microsoft.com/SMI/2016/WindowsSettings";
+const WINDOWS_SETTINGS_2017: &[u8] = b"http://schemas.microsoft.com/SMI/2017/WindowsSettings";
+const WINDOWS_SETTINGS_2019: &[u8] = b"http://schemas.microsoft.com/SMI/2019/WindowsSettings";
+const WINDOWS_SETTINGS_2020: &[u8] = b"http://schemas.microsoft.com/SMI/2020/WindowsSettings";
 
 /// Validate the Wine/Windows string-section query and report no active context.
 /// # C: O(1) plus bounded user copies
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlQueryActivationContextApplicationSettings {
+        return Some(query_application_settings(call));
+    }
     if call.service == NtService::RtlGetActiveActivationContext {
         if call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
         let Some(task) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
@@ -141,4 +151,37 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     // Process/thread activation contexts are not installed yet. This is the
     // same result Wine returns after searching both context scopes.
     Some(STATUS_SXS_KEY_NOT_FOUND)
+}
+
+fn query_application_settings(call: NtCall) -> u64 {
+    if call.args.a0 != 0 || call.args.a3 == 0 || call.args.a1 != 0 {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if read_wide_z(call.args.a3).is_none() { return STATUS_INVALID_PARAMETER; }
+    if call.args.a2 != 0 {
+        let Some(namespace) = read_wide_z(call.args.a2) else { return STATUS_INVALID_PARAMETER; };
+        if ![WINDOWS_SETTINGS_2005, WINDOWS_SETTINGS_2011, WINDOWS_SETTINGS_2016,
+            WINDOWS_SETTINGS_2017, WINDOWS_SETTINGS_2019, WINDOWS_SETTINGS_2020]
+            .iter().any(|candidate| namespace.len() == candidate.len()
+                && namespace.iter().zip(candidate.iter()).all(|(left, right)| *left == *right as u16)) {
+            return STATUS_INVALID_PARAMETER;
+        }
+    }
+    // The activation-context object/parser is not installed yet. Preserve
+    // the reference result for a valid query instead of copying settings from
+    // a Linux configuration source or claiming a buffer was populated.
+    STATUS_SXS_KEY_NOT_FOUND
+}
+
+fn read_wide_z(address: u64) -> Option<Vec<u16>> {
+    if address == 0 { return None; }
+    let mut output = Vec::new();
+    for index in 0..0x8000usize {
+        let mut bytes = [0u8; 2];
+        uaccess::copy_from_user(&mut bytes, address.checked_add((index * 2) as u64)?).ok()?;
+        let value = u16::from_le_bytes(bytes);
+        if value == 0 { return Some(output); }
+        output.push(value);
+    }
+    None
 }
