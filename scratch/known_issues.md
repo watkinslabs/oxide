@@ -644,3 +644,6 @@ space copying and partial-copy accounting require an address-space-aware owner.
 `NtRemoveIoCompletionEx` now removes multiple packets through the canonical NT
 completion-port queue; APC interruption remains dependent on the future APC
 delivery owner.
+`NtResetWriteWatch` now validates the current-process range before exposing the
+ honest `STATUS_NOT_IMPLEMENTED` result; per-page dirty/write-protect ownership
+ remains a VMM task shared by both architectures.

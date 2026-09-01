@@ -254,6 +254,22 @@ pub fn dispatch(call: NtCall) -> u64 {
         // but fail closed instead of claiming that every page is clean.
         return STATUS_NOT_IMPLEMENTED;
     }
+    if call.service == syscall::nt::NtService::NtResetWriteWatch {
+        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        if !cur.is_nt_personality() || call.args.a0 != CURRENT_PROCESS || call.args.a1 == 0 || call.args.a2 == 0 {
+            return STATUS_INVALID_PARAMETER;
+        }
+        let Some(end) = call.args.a1.checked_add(call.args.a2) else { return STATUS_INVALID_PARAMETER; };
+        // SAFETY: this syscall runs on the current task; cloning its mm pins
+        // the VMA tree for the duration of the read-only validation.
+        let Some(mm) = (unsafe { cur.mm_ref() }).map(|mm| mm.clone()) else { return STATUS_INVALID_PARAMETER; };
+        let Some(base) = hal::UserVirtAddr::new(call.args.a1) else { return STATUS_INVALID_PARAMETER; };
+        let Some(vma) = mm.find_vma(base) else { return STATUS_MEMORY_NOT_ALLOCATED; };
+        if end > vma.end.as_u64() { return STATUS_INVALID_PARAMETER; }
+        // The VMM has not yet acquired a per-page write-watch owner. Do not
+        // report success for an operation that would leave dirty state intact.
+        return STATUS_NOT_IMPLEMENTED;
+    }
     if call.service == syscall::nt::NtService::NtImpersonateAnonymousToken {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
