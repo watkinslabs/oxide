@@ -17,6 +17,26 @@ const TEB_ACTIVATION_CONTEXT_STACK_OFFSET: u64 = 0x2c8;
 /// Validate the Wine/Windows string-section query and report no active context.
 /// # C: O(1) plus bounded user copies
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlGetActiveActivationContext {
+        if call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
+        let Some(task) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+        let teb = task.nt_teb();
+        let Some(pointer) = teb.checked_add(TEB_ACTIVATION_CONTEXT_STACK_OFFSET) else {
+            return Some(STATUS_INVALID_PARAMETER);
+        };
+        let stack = uaccess::get_user_u64(pointer).ok().unwrap_or(0);
+        let active = if stack == 0 { 0 } else {
+            uaccess::get_user_u64(stack).ok().unwrap_or(0)
+        };
+        let context = if active == 0 { 0 } else {
+            uaccess::get_user_u64(active.saturating_add(8)).ok().unwrap_or(0)
+        };
+        if context != 0 { return Some(STATUS_NOT_IMPLEMENTED); }
+        if uaccess::put_user_u64(call.args.a0, 0).is_err() {
+            return Some(STATUS_INVALID_PARAMETER);
+        }
+        return Some(0);
+    }
     if call.service == NtService::RtlFreeActivationContextStack {
         if call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
         // ACTIVATION_CONTEXT_STACK.ActiveFrame is the first pointer. An
