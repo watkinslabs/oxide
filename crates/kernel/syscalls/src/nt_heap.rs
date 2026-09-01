@@ -9,6 +9,12 @@ const HEAP_ADD_USER_INFO: u64 = 0x0000_0100;
 /// Dispatch the heap subset, returning `None` for every other NT service.
 /// # C: O(log N_vmas)
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == nt::NtService::RtlFreeUserStack {
+        if call.args.a0 == 0 { return Some(0); }
+        let heap_call = NtCall { service: nt::NtService::FreeHeap, args: syscall::SyscallArgs { a0: 0, a1: 0, a2: call.args.a0, a3: 0, a4: 0, a5: 0 } };
+        let _ = dispatch(heap_call);
+        return Some(0);
+    }
     if call.service == nt::NtService::RtlCompactHeap { return Some(0); }
     if call.service == nt::NtService::RtlCreateHeap { return Some(create_heap(call)); }
     if call.service == nt::NtService::RtlDestroyHeap { return Some(destroy_heap(call)); }
