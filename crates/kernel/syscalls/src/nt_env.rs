@@ -1,5 +1,5 @@
 //! Native environment block boundary for the Windows personality.
-use syscall::nt::{NtCall, NtService};
+use syscall::{nt::{NtCall, NtService}, SyscallArgs};
 
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
@@ -7,6 +7,13 @@ const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
 /// Validate the output boundary before the process-environment owner exists.
 /// # C: O(1)
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlDestroyEnvironment {
+        if call.args.a0 != 0 {
+            let _ = crate::nt_heap::dispatch(NtCall { service: NtService::FreeHeap,
+                args: SyscallArgs { a0: 1, a1: 0, a2: call.args.a0, a3: 0, a4: 0, a5: 0 } });
+        }
+        return Some(0);
+    }
     if call.service == NtService::RtlCreateProcessParametersEx {
         if call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
         // The ten pointer arguments describe strings and an environment block;

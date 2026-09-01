@@ -685,6 +685,8 @@ callback completion and timer-queue ownership remain unimplemented.
 signaling remains unimplemented when a non-null event is supplied.
 `RtlDeriveCapabilitySidsFromName` derives the reference UTF-16/SHA-256 SID
 layouts for ASCII case folding; full Unicode uppercase mapping remains absent.
+`RtlDestroyEnvironment` releases the environment block through the canonical
+NT heap owner; invalid foreign allocations are not yet reported natively.
 `RtlCreateProcessParametersEx` validates its result-pointer boundary; native
 string capture, environment ownership, normalization, and destruction remain
 unimplemented.
