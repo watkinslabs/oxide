@@ -1,4 +1,5 @@
 //! Native environment block boundary for the Windows personality.
+use alloc::{vec, vec::Vec};
 use syscall::{nt::{NtCall, NtService}, SyscallArgs};
 
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
@@ -7,6 +8,9 @@ const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
 /// Validate the output boundary before the process-environment owner exists.
 /// # C: O(1)
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlExpandEnvironmentStringsU {
+        return Some(expand_environment_strings(call));
+    }
     if call.service == NtService::RtlDestroyProcessParameters {
         if call.args.a0 != 0 {
             let _ = crate::nt_heap::dispatch(NtCall { service: NtService::FreeHeap,
@@ -35,3 +39,70 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     // not yet expose a mutable NT environment allocation/lifetime interface.
     Some(STATUS_NOT_IMPLEMENTED)
 }
+
+fn expand_environment_strings(call: NtCall) -> u64 {
+    const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
+    const STATUS_SUCCESS: u64 = 0;
+    if call.args.a1 == 0 || call.args.a2 == 0 { return STATUS_INVALID_PARAMETER; }
+    let source = match read_unicode_descriptor(call.args.a1) { Some(value) => value, None => return STATUS_INVALID_PARAMETER };
+    let (destination, maximum) = match read_unicode_target(call.args.a2) { Some(value) => value, None => return STATUS_INVALID_PARAMETER };
+    let environment = if call.args.a0 != 0 { call.args.a0 } else {
+        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        let Some(peb) = uaccess::get_user_u64(cur.nt_teb().checked_add(0x60).unwrap_or(0)).ok() else { return STATUS_INVALID_PARAMETER; };
+        let Some(params) = uaccess::get_user_u64(peb.checked_add(0x20).unwrap_or(0)).ok() else { return STATUS_INVALID_PARAMETER; };
+        uaccess::get_user_u64(params.checked_add(0x80).unwrap_or(0)).unwrap_or(0)
+    };
+    if environment == 0 { return STATUS_INVALID_PARAMETER; }
+    let mut expanded = Vec::new();
+    let mut index = 0;
+    while index < source.len() {
+        if source[index] != b'%' as u16 { expanded.push(source[index]); index += 1; continue; }
+        let Some(end) = source[index + 1..].iter().position(|unit| *unit == b'%' as u16).map(|offset| index + 1 + offset) else { expanded.push(source[index]); index += 1; continue; };
+        let name = &source[index + 1..end];
+        if let Some(value) = environment_value(environment, name) { expanded.extend_from_slice(&value); }
+        else { expanded.extend_from_slice(&source[index..=end]); }
+        index = end + 1;
+    }
+    let required = (expanded.len() + 1) * 2;
+    if call.args.a3 != 0 && uaccess::put_user_u32(call.args.a3, required as u32).is_err() { return STATUS_INVALID_PARAMETER; }
+    if required > maximum || destination == 0 { return STATUS_BUFFER_TOO_SMALL; }
+    let mut bytes = vec![0u8; required];
+    for (index, unit) in expanded.iter().chain(core::iter::once(&0)).enumerate() { bytes[index * 2..index * 2 + 2].copy_from_slice(&unit.to_le_bytes()); }
+    if uaccess::copy_to_user(destination, &bytes).is_err() { return STATUS_INVALID_PARAMETER; }
+    if uaccess::copy_to_user(call.args.a2, &((expanded.len() * 2) as u16).to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
+    let _ = STATUS_SUCCESS;
+    STATUS_SUCCESS
+}
+
+fn read_unicode_descriptor(address: u64) -> Option<Vec<u16>> {
+    let mut descriptor = [0u8; 16]; uaccess::copy_from_user(&mut descriptor, address).ok()?;
+    let length = u16::from_le_bytes([descriptor[0], descriptor[1]]) as usize;
+    let buffer = u64::from_le_bytes(descriptor[8..16].try_into().ok()?);
+    if length & 1 != 0 || (length != 0 && buffer == 0) { return None; }
+    let mut bytes = vec![0u8; length]; if length != 0 { uaccess::copy_from_user(&mut bytes, buffer).ok()?; }
+    Some(bytes.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect())
+}
+
+fn read_unicode_target(address: u64) -> Option<(u64, usize)> {
+    let mut descriptor = [0u8; 16]; uaccess::copy_from_user(&mut descriptor, address).ok()?;
+    Some((u64::from_le_bytes(descriptor[8..16].try_into().ok()?), u16::from_le_bytes([descriptor[2], descriptor[3]]) as usize))
+}
+
+fn environment_value(environment: u64, name: &[u16]) -> Option<Vec<u16>> {
+    let mut entry = Vec::new();
+    for index in 0..65536usize {
+        let address = environment.checked_add((index * 2) as u64)?;
+        let mut bytes = [0u8; 2]; uaccess::copy_from_user(&mut bytes, address).ok()?;
+        let unit = u16::from_le_bytes(bytes);
+        if unit == 0 {
+            if entry.is_empty() { return None; }
+            if let Some(equal) = entry.iter().position(|unit| *unit == b'=' as u16) {
+                if equal == name.len() && entry[..equal].iter().zip(name).all(|(left, right)| ascii_fold(*left) == ascii_fold(*right)) { return Some(entry[equal + 1..].to_vec()); }
+            }
+            entry.clear();
+        } else { entry.push(unit); }
+    }
+    None
+}
+
+fn ascii_fold(unit: u16) -> u16 { if (b'A' as u16..=b'Z' as u16).contains(&unit) { unit + 32 } else { unit } }
