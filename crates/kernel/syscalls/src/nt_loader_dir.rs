@@ -52,6 +52,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         NtService::LdrGetDllHandleEx => Some(get_handle(call.args.a0 as u32, call.args.a3, call.args.a4)),
         NtService::LdrGetDllPath => Some(get_path(call.args.a0, call.args.a2, call.args.a3)),
         NtService::LdrSetDefaultDllDirectories => Some(set_default_dll_directories(call.args.a0 as u32)),
+        NtService::LdrUnloadDll => Some(unload(call.args.a0)),
         NtService::LdrGetDllFullName => Some(full_name(call.args.a0, call.args.a1)),
         NtService::LdrLoadDll => Some(load(call.args.a2, call.args.a3)),
         NtService::LdrQueryImageFileExecutionOptions => Some(query_options(call.args.a0, call.args.a1, call.args.a4, call.args.a5)),
@@ -143,6 +144,31 @@ fn set_default_dll_directories(flags: u32) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     cur.thread_group.nt_default_dll_search_flags.store(flags, Ordering::Release);
+    STATUS_SUCCESS
+}
+
+fn unload(module: u64) -> u64 {
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() || module == 0 { return STATUS_INVALID_PARAMETER; }
+    let peb = read_u64(cur.nt_teb().saturating_add(TEB_PEB_OFFSET));
+    let ldr = read_u64(peb.saturating_add(PEB_LDR_OFFSET));
+    if peb == 0 || ldr == 0 { return STATUS_INVALID_PARAMETER; }
+    let head = ldr.saturating_add(LDR_LOAD_LIST_OFFSET);
+    let mut entry = read_u64(head);
+    let mut loaded = false;
+    for _ in 0..MAX_MODULE_SCAN {
+        if entry == 0 || entry == head { break; }
+        if read_u64(entry.saturating_add(MODULE_BASE_OFFSET)) == module { loaded = true; break; }
+        entry = read_u64(entry.saturating_add(LIST_LINK_OFFSET));
+    }
+    if !loaded { return STATUS_DLL_NOT_FOUND; }
+    let mut refs = cur.thread_group.nt_module_refs.lock();
+    if let Some(index) = refs.iter().position(|(base, _)| *base == module) {
+        if refs[index].1 == -1 { return STATUS_SUCCESS; }
+        if refs[index].1 > 1 { refs[index].1 -= 1; } else { refs[index].1 = 0; }
+    } else {
+        refs.push((module, 0));
+    }
     STATUS_SUCCESS
 }
 

@@ -29,6 +29,7 @@ pub enum NtService {
     RtlCaptureContext = 127, RtlCharToInteger = 128, RtlCreateAtomTable = 129, RtlCreateHeap = 130, RtlCreateUnicodeString = 131, RtlDeleteAtomFromAtomTable = 132, RtlDeregisterWait = 133, RtlDestroyAtomTable = 134, RtlDestroyHeap = 135, RtlDetermineDosPathNameTypeU = 136, RtlDosPathNameToNtPathNameUWithStatus = 137, RtlExitUserProcess = 138, RtlGetProcessHeaps = 139, RtlGetUserInfoHeap = 140, RtlImageNtHeader = 141, RtlInitializeCriticalSection = 142, RtlInitializeCriticalSectionAndSpinCount = 143, RtlIsNameLegalDOS8Dot3 = 145, RtlLockHeap = 146, RtlUnlockHeap = 147, RtlLookupAtomInAtomTable = 148, RtlOemStringToUnicodeString = 149, RtlQueryAtomInAtomTable = 150, RtlRegisterWait = 151, RtlRestoreContext = 152, RtlSetIoCompletionCallback = 153, RtlGetLastWin32Error = 154, RtlRestoreLastWin32Error = 155, RtlSetLastWin32Error = 156, RtlSetSearchPathMode = 157, RtlSetUnhandledExceptionFilter = 158, RtlSetUserValueHeap = 159, RtlTimeFieldsToTime = 160, RtlTimeToTimeFields = 161, RtlUnicodeStringToAnsiSize = 162, RtlUnicodeStringToAnsiString = 163, RtlUnicodeStringToInteger = 164, RtlUnicodeStringToOemSize = 165, RtlUnicodeStringToOemString = 166, RtlUnicodeToMultiByteN = 167, RtlUnicodeToMultiByteSize = 168, RtlUnicodeToOemN = 169, RtlUpcaseUnicodeString = 170, RtlUpperChar = 171, Wcsicmp = 172, Wcsnicmp = 173, Isalpha = 174, Islower = 175, Memcpy = 176, Memmove = 177, Memset = 178, Strcat = 179, Strchr = 180, Strcpy = 181, Strlen = 182, Strpbrk = 183, Strrchr = 184, Tolower = 185, Wcscat = 186, Wcschr = 187, Wcscmp = 188, Wcscpy = 189, Wcslen = 190, Wcsncmp = 191, Wcsrchr = 192, Wcstoul = 193, WineDbgHeader = 194, WineDbgOutput = 195, WineDbgStrdup = 196, RtlGUIDFromString = 197, RtlRandom = 198, DbgUiConnectToDbg = 229, DbgUiContinue = 230, DbgUiRemoteBreakin = 231, DbgUiStopDebugging = 232, DbgUiWaitStateChange = 233, DbgUiConvertStateChangeStructure = 234, DbgUiDebugActiveProcess = 235, LdrAccessResource = 236, LdrAddDllDirectory = 237, LdrRemoveDllDirectory = 238, LdrAddRefDll = 239, LdrDisableThreadCalloutsForDll = 240, LdrFindResourceDirectory = 241, LdrFindResource = 242, LdrGetDllHandleEx = 243, LdrGetDllPath = 244,
     RtlInitializeCriticalSectionEx = 144,
     LdrSetDefaultDllDirectories = 245,
+    LdrUnloadDll = 246,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -276,6 +277,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 243 { return Some(NtCall { service: NtService::LdrGetDllHandleEx, args }); }
     if service == 244 { return Some(NtCall { service: NtService::LdrGetDllPath, args }); }
     if service == 245 { return Some(NtCall { service: NtService::LdrSetDefaultDllDirectories, args }); }
+    if service == 246 { return Some(NtCall { service: NtService::LdrUnloadDll, args }); }
     if service == 197 { return Some(NtCall { service: NtService::RtlGUIDFromString, args }); }
     if service == 195 { return Some(NtCall { service: NtService::WineDbgOutput, args }); }
     if service == 194 { return Some(NtCall { service: NtService::WineDbgHeader, args }); }
@@ -429,6 +431,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         | NtService::SignalAndWait | NtService::OpenProcessToken | NtService::OpenThreadToken | NtService::QueryToken | NtService::RtlInitUnicodeString | NtService::RtlInitUnicodeStringEx | NtService::QueryObject | NtService::RtlInitAnsiString | NtService::RtlInitAnsiStringEx | NtService::QuerySecurityObject | NtService::RtlQueryPerformanceCounter | NtService::RtlQueryPerformanceFrequency | NtService::RenameKey | NtService::SetSecurityObject => Err(Errno::Enosys),
         NtService::LdrGetDllPath => Err(Errno::Enosys),
         NtService::LdrSetDefaultDllDirectories => Err(Errno::Enosys),
+        NtService::LdrUnloadDll => Err(Errno::Enosys),
     }
 }
 pub fn decode_system(call: NtCall) -> Result<NtSystemCall, Errno> {
