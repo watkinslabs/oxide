@@ -13,12 +13,50 @@ const UNICODE_STRING_BYTES: usize = 16;
 /// Convert a counted UTF-16 string into the native ANSI representation.
 /// # C: O(source length) plus usercopy and optional heap allocation
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlUpcaseUnicodeString { return Some(upcase_unicode_string(call.args.a0, call.args.a1, call.args.a2 != 0)); }
     if call.service == NtService::RtlUnicodeToOemN { return Some(unicode_to_multibyte(call.args.a0, call.args.a1, call.args.a2, call.args.a3, call.args.a4)); }
     if call.service == NtService::RtlUnicodeToMultiByteSize { return Some(unicode_to_multibyte_size(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::RtlUnicodeToMultiByteN { return Some(unicode_to_multibyte(call.args.a0, call.args.a1, call.args.a2, call.args.a3, call.args.a4)); }
     if call.service == NtService::RtlUnicodeStringToOemSize { return Some(unicode_string_to_oem_size(call.args.a0)); }
     if call.service != NtService::RtlUnicodeStringToAnsiString && call.service != NtService::RtlUnicodeStringToOemString { return None; }
     Some(unicode_string_to_ansi_string(call.args.a0, call.args.a1, call.args.a2 != 0))
+}
+
+fn upcase_unicode_string(target: u64, source: u64, allocate: bool) -> u64 {
+    if target == 0 || source == 0 { return STATUS_INVALID_PARAMETER; }
+    let mut source_descriptor = [0u8; UNICODE_STRING_BYTES];
+    let mut target_descriptor = [0u8; UNICODE_STRING_BYTES];
+    if uaccess::copy_from_user(&mut source_descriptor, source).is_err() || uaccess::copy_from_user(&mut target_descriptor, target).is_err() { return STATUS_INVALID_PARAMETER; }
+    let length = u16::from_le_bytes([source_descriptor[0], source_descriptor[1]]) as usize;
+    let source_buffer = u64::from_le_bytes(source_descriptor[8..16].try_into().unwrap());
+    if length != 0 && (length % 2 != 0 || source_buffer == 0) { return STATUS_INVALID_PARAMETER; }
+    let mut output = alloc::vec![0u8; length];
+    for index in 0..length / 2 {
+        let Some(mut unit) = read_u16(source_buffer, index) else { return STATUS_INVALID_PARAMETER; };
+        if (b'a' as u16..=b'z' as u16).contains(&unit) { unit -= b'a' as u16 - b'A' as u16; }
+        output[index * 2..index * 2 + 2].copy_from_slice(&unit.to_le_bytes());
+    }
+    let target_maximum = u16::from_le_bytes([target_descriptor[2], target_descriptor[3]]) as usize;
+    if !allocate && length > target_maximum { return STATUS_BUFFER_OVERFLOW; }
+    let mut destination = u64::from_le_bytes(target_descriptor[8..16].try_into().unwrap());
+    if allocate {
+        let call = NtCall { service: NtService::AllocateHeap, args: syscall::SyscallArgs { a0: 0, a1: 0, a2: length as u64, a3: 0, a4: 0, a5: 0 } };
+        let Some(buffer) = crate::nt_heap::dispatch(call).filter(|value| *value != 0) else { return STATUS_NO_MEMORY; };
+        destination = buffer;
+    }
+    if length != 0 && (destination == 0 || uaccess::copy_to_user(destination, &output).is_err()) {
+        if allocate && destination != 0 { free_buffer(destination); }
+        return STATUS_INVALID_PARAMETER;
+    }
+    let mut descriptor = [0u8; UNICODE_STRING_BYTES];
+    descriptor[0..2].copy_from_slice(&(length as u16).to_le_bytes());
+    descriptor[2..4].copy_from_slice(&(length as u16).to_le_bytes());
+    descriptor[8..16].copy_from_slice(&destination.to_le_bytes());
+    if uaccess::copy_to_user(target, &descriptor).is_err() {
+        if allocate && destination != 0 { free_buffer(destination); }
+        return STATUS_INVALID_PARAMETER;
+    }
+    STATUS_SUCCESS
 }
 
 fn unicode_to_multibyte_size(result: u64, source: u64, source_length: u64) -> u64 {
