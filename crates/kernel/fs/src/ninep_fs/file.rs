@@ -40,13 +40,21 @@ static OPEN_FILES: Spinlock<BTreeMap<usize, OpenFile>, NpClass> = Spinlock::new(
 
 fn key(file: &File) -> usize { file as *const File as usize }
 
-fn trace_io_error(file: &File, op: &[u8], err: VfsError) {
+fn trace_io_error(file: &File, op: &[u8], err: VfsError, off: u64, len: usize, iounit: u32, msize: u32) {
     klog::write_raw(b"[9P-IO-ERROR] op=");
     klog::write_raw(op);
     klog::write_raw(b" errno=");
     klog::write_dec_u64(err as i64 as u64);
     klog::write_raw(b" flags=0x");
     klog::write_hex_u64(file.flags().bits() as u64);
+    klog::write_raw(b" off=");
+    klog::write_dec_u64(off);
+    klog::write_raw(b" len=");
+    klog::write_dec_u64(len as u64);
+    klog::write_raw(b" iounit=");
+    klog::write_dec_u64(iounit as u64);
+    klog::write_raw(b" msize=");
+    klog::write_dec_u64(msize as u64);
     klog::write_raw(b" path=");
     klog::write_raw(&file.dentry().absolute_path());
     klog::write_raw(b"\n");
@@ -73,7 +81,7 @@ fn ensure_open(file: &File) -> KResult<FidRef> {
     flags &= !(dotl::CREATE | dotl::EXCL | dotl::TRUNC);
     if let Err(error) = d.mount.client.lopen(&handle, flags) {
         let error = VfsError::from(error);
-        trace_io_error(file, b"lopen", error);
+        trace_io_error(file, b"lopen", error, 0, 0, handle.iounit(), d.mount.client.msize());
         return Err(error);
     }
     let mut g = OPEN_FILES.lock();
@@ -85,6 +93,12 @@ fn ensure_open(file: &File) -> KResult<FidRef> {
 pub struct NinepFileOps;
 
 impl FileOps for NinepFileOps {
+    /// Drop the per-description server handle before the `File` address can be
+    /// reused. Keeping an entry here would let a later open inherit a stale
+    /// fid when the allocator reuses the same `File` address.
+    /// # C: O(log N) + one clunk
+    fn on_release_file(&self, file: &File) { release(file); }
+
     /// `Tread`, split across as many messages as the frame size needs.
     /// # C: RPC per frame
     fn read_file(&self, file: &File, off: u64, buf: &mut [u8]) -> KResult<usize> {
@@ -94,7 +108,7 @@ impl FileOps for NinepFileOps {
             Ok(n) => Ok(n),
             Err(error) => {
                 let error = VfsError::from(error);
-                trace_io_error(file, b"read", error);
+                trace_io_error(file, b"read", error, off, buf.len(), fid.iounit(), d.mount.client.msize());
                 Err(error)
             }
         }
@@ -145,8 +159,15 @@ impl FileOps for NinepFileOps {
             e.dir_cookie
         };
         loop {
-            let bytes = d.mount.client.readdir(&fid, cookie, READDIR_CHUNK)
-                .map_err(VfsError::from)?;
+            let bytes = match d.mount.client.readdir(&fid, cookie, READDIR_CHUNK) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    let error = VfsError::from(error);
+                    trace_io_error(file, b"readdir", error, cookie, READDIR_CHUNK,
+                        fid.iounit(), d.mount.client.msize());
+                    return Err(error);
+                }
+            };
             if bytes.is_empty() { break; }
             let mut advanced = false;
             for ent in ninep::codec::DirEntries::new(&bytes) {
@@ -185,7 +206,13 @@ impl FileOps for NinepFileOps {
 /// Release this description's server handle. The handle is clunked when the
 /// last reference to it goes; the entry must be removed on close or every
 /// opened file leaks a server handle for the life of the mount. # C: O(log N)
-pub fn release(file: &File) { OPEN_FILES.lock().remove(&key(file)); }
+pub fn release(file: &File) {
+    // Removing while locked is necessary for address-key correctness, but the
+    // fid's Drop sends Tclunk and may sleep. Move it out before destruction so
+    // no RPC runs in the spinlock's atomic section.
+    let open = { OPEN_FILES.lock().remove(&key(file)) };
+    drop(open);
+}
 
 /// `Tfsync` on this description's handle. `datasync` asks the server to skip
 /// the metadata flush. # C: RPC

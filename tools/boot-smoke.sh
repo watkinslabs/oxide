@@ -115,7 +115,7 @@ ALIVE_READY_MARKER="${SMOKE_ALIVE_READY_MARKER:-sh-5.2#}"
 #              that is never acceptable, and the report names the sleep site
 #              (`wchan=<file>:<line>`), so failing here hands over the
 #              diagnosis rather than a timeout. Nothing else emits this line.
-FAIL_MARKER="${SMOKE_FAIL_MARKER-\[FAULT\]|\[BADSTACK\]|\[BUG\]|systemd\[1\]: segfault|Attempted to kill init|INFO: task .* blocked for more than}"
+FAIL_MARKER="${SMOKE_FAIL_MARKER-\[FAULT\]|\[BADSTACK\]|\[BUG\]|segfault at|systemd\[1\]: segfault|Attempted to kill init|INFO: task .* blocked for more than}"
 
 # Bounded retry. SMP=2 boot has a known intermittent late-boot timing
 # race (~25%: reaches deep into rcS but the getty/login prompt doesn't
