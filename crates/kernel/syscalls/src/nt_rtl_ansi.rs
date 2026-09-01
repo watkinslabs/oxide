@@ -49,6 +49,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::Wcspbrk { return Some(wcspbrk(call.args.a0, call.args.a1)); }
     if call.service == NtService::Wcsspn { return Some(wcsspn(call.args.a0, call.args.a1)); }
     if call.service == NtService::Wcsstr { return Some(wcsstr(call.args.a0, call.args.a1)); }
+    if call.service == NtService::Wcstol { return Some(wcstol(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Wcsnicmp { return Some(wcsnicmp(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Wcsicmp { return Some(wcsicmp(call.args.a0, call.args.a1)); }
     if call.service == NtService::Strnicmp { return Some(strnicmp(call.args.a0, call.args.a1, call.args.a2)); }
@@ -515,6 +516,47 @@ fn wcsstr(string: u64, needle: u64) -> u64 {
         let Some(next) = string_index.checked_add(1) else { return 0; };
         string_index = next;
     }
+}
+
+fn wcstol(string: u64, end: u64, base: u64) -> u64 {
+    if string == 0 || base == 1 || base > 36 { return 0; }
+    let original = string;
+    let mut index = 0usize;
+    while let Some(unit) = read_u16(string, index) {
+        if !is_wide_space(unit) { break; }
+        let Some(next) = index.checked_add(1) else { return 0; };
+        index = next;
+    }
+    let mut negative = false;
+    if let Some(unit) = read_u16(string, index) {
+        if unit == b'-' as u16 { negative = true; index = index.saturating_add(1); }
+        else if unit == b'+' as u16 { index = index.saturating_add(1); }
+    }
+    let first = read_u16(string, index).unwrap_or(0);
+    let second = read_u16(string, index.saturating_add(1)).unwrap_or(0);
+    if (base == 0 || base == 16) && first == b'0' as u16 && (second == b'x' as u16 || second == b'X' as u16) { index = index.saturating_add(2); }
+    let actual_base = if base == 0 { if first == b'0' as u16 { 8 } else { 10 } } else { base as u32 };
+    let limit = if negative { 2_147_483_648u64 } else { 2_147_483_647u64 };
+    let mut value = 0u64;
+    let mut consumed = false;
+    let mut overflow = false;
+    loop {
+        let Some(unit) = read_u16(string, index) else { return 0; };
+        let Some(digit) = wide_digit(unit) else { break; };
+        if digit >= actual_base { break; }
+        consumed = true;
+        if value > (limit.saturating_sub(digit as u64)) / actual_base as u64 { overflow = true; }
+        else { value = value * actual_base as u64 + digit as u64; }
+        let Some(next) = index.checked_add(1) else { return 0; };
+        index = next;
+    }
+    if end != 0 {
+        let pointer = if consumed { string.checked_add((index as u64).checked_mul(2).unwrap_or(0)).unwrap_or(0) } else { original };
+        if uaccess::put_user_u64(end, pointer).is_err() { return 0; }
+    }
+    if !consumed { return 0; }
+    if overflow { return if negative { i32::MIN as i64 as u64 } else { i32::MAX as i64 as u64 }; }
+    if negative { (-(value as i64) as i32 as i64) as u64 } else { (value as i32 as i64) as u64 }
 }
 
 fn is_ascii_space(byte: u8) -> bool { matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c) }
