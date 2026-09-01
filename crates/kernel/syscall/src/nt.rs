@@ -228,6 +228,7 @@ pub enum NtService {
     RtlSetExtendedFeaturesMask = 452,
     RtlSetGroupSecurityDescriptor = 453,
     RtlSetOwnerSecurityDescriptor = 454,
+    RtlSetHeapInformation = 455,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -561,6 +562,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 452 { return Some(NtCall { service: NtService::RtlSetExtendedFeaturesMask, args }); }
     if service == 453 { return Some(NtCall { service: NtService::RtlSetGroupSecurityDescriptor, args }); }
     if service == 454 { return Some(NtCall { service: NtService::RtlSetOwnerSecurityDescriptor, args }); }
+    if service == 455 { return Some(NtCall { service: NtService::RtlSetHeapInformation, args }); }
     if service == 229 { return Some(NtCall { service: NtService::DbgUiConnectToDbg, args }); }
     if service == 230 { return Some(NtCall { service: NtService::DbgUiContinue, args }); }
     if service == 231 { return Some(NtCall { service: NtService::DbgUiRemoteBreakin, args }); }
@@ -878,6 +880,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::RtlSetExtendedFeaturesMask => Err(Errno::Enosys),
         NtService::RtlSetGroupSecurityDescriptor => Err(Errno::Enosys),
         NtService::RtlSetOwnerSecurityDescriptor => Err(Errno::Enosys),
+        NtService::RtlSetHeapInformation => Err(Errno::Enosys),
         NtService::RtlAddAccessAllowedObjectAce => Err(Errno::Enosys),
         NtService::RtlAddAccessDeniedObjectAce => Err(Errno::Enosys),
         NtService::RtlAddAuditAccessObjectAce => Err(Errno::Enosys),

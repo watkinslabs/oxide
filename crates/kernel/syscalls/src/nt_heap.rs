@@ -6,6 +6,8 @@ const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
 const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
 const STATUS_INVALID_INFO_CLASS: u64 = 0xc000_0003;
+const STATUS_UNSUCCESSFUL: u64 = 0xc000_0001;
+const STATUS_SUCCESS: u64 = 0;
 const STATUS_NO_MEMORY: u64 = 0xc000_0017;
 const HEAP_ADD_USER_INFO: u64 = 0x0000_0100;
 const HEAP_COMPATIBILITY_INFORMATION: u64 = 0;
@@ -26,6 +28,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == nt::NtService::RtlGetUserInfoHeap { return Some(get_user_info(call)); }
     if call.service == nt::NtService::RtlSetUserValueHeap { return Some(set_user_value(call)); }
     if call.service == nt::NtService::RtlQueryHeapInformation { return Some(query_heap_information(call)); }
+    if call.service == nt::NtService::RtlSetHeapInformation { return Some(set_heap_information(call)); }
     let heap_call = nt::decode_heap(call).ok()?;
     let cur = sched::live::current()?;
     if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
@@ -79,6 +82,20 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
             match elf_load::nt_memory::query(&mm, base) { Ok(info) => info.size as u64, Err(_) => u64::MAX }
         }
     })
+}
+
+fn set_heap_information(call: NtCall) -> u64 {
+    if call.args.a0 != 1 { return 0xc000_0008; }
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    if call.args.a1 != HEAP_COMPATIBILITY_INFORMATION { return STATUS_SUCCESS; }
+    if call.args.a3 < core::mem::size_of::<u32>() as u64 { return STATUS_BUFFER_TOO_SMALL; }
+    if call.args.a2 == 0 { return STATUS_ACCESS_VIOLATION; }
+    let mut value = [0u8; 4];
+    if uaccess::copy_from_user(&mut value, call.args.a2).is_err() { return STATUS_ACCESS_VIOLATION; }
+    let compatibility = u32::from_le_bytes(value);
+    if compatibility != 0 && compatibility != 2 { return STATUS_UNSUCCESSFUL; }
+    STATUS_SUCCESS
 }
 
 fn query_heap_information(call: NtCall) -> u64 {
