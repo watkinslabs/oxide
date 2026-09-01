@@ -5,6 +5,7 @@ use syscall::nt::{NtCall, NtService};
 /// Return the NT header address when a user image has valid PE signatures.
 /// # C: O(1) plus three fault-recovering user reads
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::LdrAccessResource { return Some(access_resource(call)); }
     if call.service == NtService::RtlImageDirectoryEntryToData { return Some(directory_entry(call)); }
     if call.service == NtService::RtlImageRvaToVa { return Some(rva_to_va(call)); }
     if call.service != NtService::RtlImageNtHeader { return None; }
@@ -15,6 +16,39 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     let header = base.checked_add(offset)?;
     if !matches!(uaccess::get_user_u32(header), Ok(0x0000_4550)) { return Some(0); }
     Some(header)
+}
+
+const STATUS_SUCCESS: u64 = 0;
+const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
+
+fn access_resource(call: NtCall) -> u64 {
+    if call.args.a0 == 0 || call.args.a1 == 0 || call.args.a2 == 0 { return STATUS_INVALID_PARAMETER; }
+    let module = call.args.a0 & !3;
+    let offset = match read_u32(call.args.a1) { Some(value) => value, None => return STATUS_INVALID_PARAMETER };
+    let size = match read_u32(call.args.a1 + 4) { Some(value) => value, None => return STATUS_INVALID_PARAMETER };
+    let address = if call.args.a0 & 1 == 0 {
+        module.checked_add(offset as u64).unwrap_or(0)
+    } else { raw_rva(module, offset).unwrap_or(0) };
+    if address == 0 || uaccess::put_user_u64(call.args.a2, address).is_err() { return STATUS_INVALID_PARAMETER; }
+    if call.args.a3 != 0 && uaccess::put_user_u32(call.args.a3, size).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
+}
+
+fn raw_rva(module: u64, rva: u32) -> Option<u64> {
+    let e_lfanew = read_u32(module.checked_add(0x3c)?)? as u64;
+    let nt = module.checked_add(e_lfanew)?;
+    if read_u32(nt)? != PE_MAGIC { return None; }
+    let section_count = read_u32(nt.checked_add(6)?)?.min(96);
+    let optional_size = read_u32(nt.checked_add(OPTIONAL_HEADER_SIZE_OFFSET)?)? as u64;
+    let sections = nt.checked_add(24)?.checked_add(optional_size)?;
+    for index in 0..section_count {
+        let section = sections.checked_add((index as u64) * SECTION_HEADER_BYTES)?;
+        let va = read_u32(section.checked_add(12)?)?;
+        let raw_size = read_u32(section.checked_add(16)?)?;
+        if rva < va || rva - va >= raw_size { continue; }
+        return module.checked_add(read_u32(section.checked_add(20)?)? as u64)?.checked_add((rva - va) as u64);
+    }
+    None
 }
 
 const PE_MAGIC: u32 = 0x0000_4550;
