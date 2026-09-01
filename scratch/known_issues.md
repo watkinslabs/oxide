@@ -574,6 +574,9 @@ service has an NT-owned async watch protocol.
 The graph now reaches `ntdll.dll!NtOpenEvent`; opening named events remains an
 explicit `STATUS_NOT_IMPLEMENTED` boundary until the NT object namespace is
 implemented.
+`NtQueryAttributesFile` is implemented through the canonical VFS resolver and
+inode metadata owner, with Windows `FILE_BASIC_INFORMATION` time and type
+translation.
 The graph now reaches `ntdll.dll!NtOpenProcess`; process-handle acquisition
 remains an explicit `STATUS_NOT_IMPLEMENTED` boundary pending the typed NT
 CLIENT_ID and access-check owner.
