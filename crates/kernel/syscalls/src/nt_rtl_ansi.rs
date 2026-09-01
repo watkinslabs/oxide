@@ -13,9 +13,20 @@ const UNICODE_STRING_BYTES: usize = 16;
 /// Convert a counted UTF-16 string into the native ANSI representation.
 /// # C: O(source length) plus usercopy and optional heap allocation
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlUnicodeToMultiByteN { return Some(unicode_to_multibyte(call.args.a0, call.args.a1, call.args.a2, call.args.a3, call.args.a4)); }
     if call.service == NtService::RtlUnicodeStringToOemSize { return Some(unicode_string_to_oem_size(call.args.a0)); }
     if call.service != NtService::RtlUnicodeStringToAnsiString && call.service != NtService::RtlUnicodeStringToOemString { return None; }
     Some(unicode_string_to_ansi_string(call.args.a0, call.args.a1, call.args.a2 != 0))
+}
+
+fn unicode_to_multibyte(destination: u64, destination_length: u64, result_length: u64, source: u64, source_length: u64) -> u64 {
+    if source_length > usize::MAX as u64 || destination_length > usize::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    let converted = match convert_utf16(source, source_length as usize) { Some(value) => value, None => return STATUS_INVALID_PARAMETER };
+    let count = converted.len().min(destination_length as usize);
+    if count != 0 && destination == 0 { return STATUS_INVALID_PARAMETER; }
+    if count != 0 && uaccess::copy_to_user(destination, &converted[..count]).is_err() { return STATUS_INVALID_PARAMETER; }
+    if result_length != 0 && uaccess::put_user_u32(result_length, count as u32).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
 }
 
 fn unicode_string_to_oem_size(descriptor: u64) -> u64 {

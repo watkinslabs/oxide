@@ -22,4 +22,4 @@ personality dispatch is unchanged.
 The selector and native NTDLL export are appended without renumbering existing
 services. Decoder tests, export resolution, and the installed Wine Notepad
 graph census cover the ABI wiring. The current graph frontier is
-`RtlUnicodeToMultiByteN`.
+`RtlUnicodeToMultiByteSize`.
