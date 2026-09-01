@@ -539,4 +539,6 @@ publishes the adjusted address/size. `NtGetContextThread` now exposes the
 current x86_64 task's integer/control context from the canonical `PtRegs`
 owner; remote, debug, floating-point, segment, and XSTATE context remain
 explicitly unsupported. The graph advances to
-`ntdll.dll!NtGetNlsSectionPtr`.
+`ntdll.dll!NtGetNlsSectionPtr`, which now resolves Wine-compatible NLS data
+files from `/usr/share/wine/nls` through the normal read-only file-backed VMA
+path. The graph advances to `ntdll.dll!NtGetTickCount`.

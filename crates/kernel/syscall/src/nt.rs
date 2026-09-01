@@ -56,6 +56,7 @@ pub enum NtService {
     NtFlushKey = 270,
     NtFlushVirtualMemory = 271,
     NtGetContextThread = 272,
+    NtGetNlsSectionPtr = 273,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -75,6 +76,7 @@ pub enum NtMemoryCall {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum NtThreadCall {
     GetContext { thread: u64, context: UserPtr<u8> },
+    GetNlsSection { section: u32, id: u32, unknown: u64, pointer: UserPtr<u64>, size: UserPtr<u64> },
 }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum NtHeapCall {
@@ -341,6 +343,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 270 { return Some(NtCall { service: NtService::NtFlushKey, args }); }
     if service == 271 { return Some(NtCall { service: NtService::NtFlushVirtualMemory, args }); }
     if service == 272 { return Some(NtCall { service: NtService::NtGetContextThread, args }); }
+    if service == 273 { return Some(NtCall { service: NtService::NtGetNlsSectionPtr, args }); }
     if service == 197 { return Some(NtCall { service: NtService::RtlGUIDFromString, args }); }
     if service == 195 { return Some(NtCall { service: NtService::WineDbgOutput, args }); }
     if service == 194 { return Some(NtCall { service: NtService::WineDbgHeader, args }); }
@@ -472,6 +475,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
             process: a.a0, address: UserPtr::new(a.a1)?, size: UserPtr::new(a.a2)?, io: optional_ptr(a.a3)?,
         }),
         NtService::NtGetContextThread => Err(Errno::Enosys),
+        NtService::NtGetNlsSectionPtr => Err(Errno::Enosys),
         NtService::TerminateProcess => Err(Errno::Enosys),
         NtService::Wcscat => Err(Errno::Enosys),
         NtService::Wcschr => Err(Errno::Enosys),
@@ -516,6 +520,10 @@ pub fn decode_thread(call: NtCall) -> Result<NtThreadCall, Errno> {
     match call.service {
         NtService::NtGetContextThread => Ok(NtThreadCall::GetContext {
             thread: call.args.a0, context: UserPtr::new(call.args.a1)?,
+        }),
+        NtService::NtGetNlsSectionPtr => Ok(NtThreadCall::GetNlsSection {
+            section: call.args.a0 as u32, id: call.args.a1 as u32, unknown: call.args.a2,
+            pointer: UserPtr::new(call.args.a3)?, size: UserPtr::new(call.args.a4)?,
         }),
         _ => Err(Errno::Enosys),
     }
