@@ -757,6 +757,11 @@ use super::*;
     }
 
     #[test]
+    fn rtl_wow64_process_machines_keeps_native_abi_selector() {
+        assert_eq!(decode(479, args()).unwrap().service, NtService::RtlWow64GetProcessMachines);
+    }
+
+    #[test]
     fn file_services_validate_the_outer_request_pointer() {
         let call = decode(10, SyscallArgs { a0: 0x1000, ..args() }).unwrap();
         assert!(matches!(decode_file(call), Ok(NtFileCall::Create { .. })));
