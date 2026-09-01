@@ -10,6 +10,7 @@ const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
 const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
 const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
+const STATUS_NO_MEMORY: u64 = 0xc000_0017;
 const READ_CONTROL: u32 = 0x0002_0000;
 const OWNER: u32 = 0x0000_0001;
 const GROUP: u32 = 0x0000_0002;
@@ -46,6 +47,9 @@ const GROUP_DEFAULTED: u16 = 0x0002;
 /// Linux credentials supply the owner/group identity; no Linux syscall path
 /// reaches this adapter. # C: O(1) plus usercopy
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == syscall::nt::NtService::RtlNewSecurityObject {
+        return Some(new_security_object(call.args.a2));
+    }
     if call.service == syscall::nt::NtService::RtlMapGenericMask {
         return Some(map_generic_mask(call.args.a0, call.args.a1));
     }
@@ -96,6 +100,24 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if descriptor.as_u64() == 0 || length < required { return Some(STATUS_BUFFER_TOO_SMALL); }
     if uaccess::copy_to_user(descriptor.as_u64(), &bytes).is_err() { return Some(STATUS_INVALID_PARAMETER); }
     Some(STATUS_SUCCESS)
+}
+
+fn new_security_object(output: u64) -> u64 {
+    if output == 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let uid = cur.security.creds.euid.load(core::sync::atomic::Ordering::Acquire);
+    let gid = cur.security.creds.egid.load(core::sync::atomic::Ordering::Acquire);
+    let bytes = descriptor_bytes(OWNER | GROUP | DACL, uid, gid);
+    let allocation = crate::nt_heap::dispatch(NtCall { service: syscall::nt::NtService::AllocateHeap,
+        args: SyscallArgs { a0: 1, a1: 0, a2: bytes.len() as u64, a3: 0, a4: 0, a5: 0 } });
+    let Some(descriptor) = allocation.filter(|address| *address != 0) else { return STATUS_NO_MEMORY; };
+    if uaccess::copy_to_user(descriptor, &bytes).is_err() || uaccess::put_user_u64(output, descriptor).is_err() {
+        let _ = crate::nt_heap::dispatch(NtCall { service: syscall::nt::NtService::FreeHeap,
+            args: SyscallArgs { a0: 1, a1: 0, a2: descriptor, a3: 0, a4: 0, a5: 0 } });
+        return STATUS_INVALID_PARAMETER;
+    }
+    STATUS_SUCCESS
 }
 
 fn get_group(descriptor: u64, target_group: u64, defaulted: u64) -> u64 {
