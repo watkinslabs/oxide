@@ -1,6 +1,7 @@
 //! Snapshot-backed NT primary token with mutable group membership.
 
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU32, Ordering};
 use sync::{Spinlock, TaskList as TaskListClass};
 
 /// One Windows SID and its TOKEN_GROUPS attribute mask.
@@ -23,13 +24,14 @@ pub struct NtToken {
     gid: u32,
     groups: Spinlock<Vec<NtTokenGroup>, TaskListClass>,
     privileges: Spinlock<Vec<NtTokenPrivilege>, TaskListClass>,
+    session_id: AtomicU32,
 }
 
 impl NtToken {
     pub fn new(uid: u32, gid: u32) -> Self {
         let mut groups = Vec::new();
         groups.push(NtTokenGroup { sid: sid(5, gid), attributes: 4 });
-        Self { uid, gid, groups: Spinlock::new(groups), privileges: Spinlock::new(Vec::new()) }
+        Self { uid, gid, groups: Spinlock::new(groups), privileges: Spinlock::new(Vec::new()), session_id: AtomicU32::new(0) }
     }
     pub const fn uid(&self) -> u32 { self.uid }
     pub const fn gid(&self) -> u32 { self.gid }
@@ -56,6 +58,8 @@ impl NtToken {
         (previous, all_assigned)
     }
     pub fn privileges(&self) -> Vec<NtTokenPrivilege> { self.privileges.lock().clone() }
+    pub fn session_id(&self) -> u32 { self.session_id.load(Ordering::Acquire) }
+    pub fn set_session_id(&self, value: u32) { self.session_id.store(value, Ordering::Release); }
 }
 
 fn sid(authority: u64, subauthority: u32) -> [u8; 16] {

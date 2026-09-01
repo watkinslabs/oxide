@@ -659,3 +659,6 @@ snapshots and non-x86 context owners remain unimplemented.
 `NtSetInformationObject` now validates the implemented handle-flag class and
 input structure before returning `STATUS_NOT_IMPLEMENTED`; inherit and
 protect-from-close bits still need ownership in the canonical handle table.
+`NtSetInformationToken` now owns TokenSessionId mutation in the canonical
+token object; default-DACL serialization and integrity-level SID ownership
+remain explicit gaps.

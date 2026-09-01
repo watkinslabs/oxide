@@ -12,9 +12,11 @@ const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
 const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
 const STATUS_NOT_ALL_ASSIGNED: u64 = 0x0000_0106;
 const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
+const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
 const TOKEN_QUERY: u32 = 0x0008;
 const TOKEN_ADJUST_GROUPS: u32 = 0x0040;
 const TOKEN_ADJUST_PRIVILEGES: u32 = 0x0020;
+const TOKEN_ADJUST_DEFAULT: u32 = 0x0080;
 const TOKEN_ALL_ACCESS: u32 = 0x000f_01ff;
 const CURRENT_PROCESS: u64 = u64::MAX;
 const CURRENT_THREAD: u64 = u64::MAX;
@@ -29,6 +31,7 @@ const STATUS_LUIDS_EXHAUSTED: u64 = 0xc000_0075;
 static NEXT_NT_LUID: AtomicU64 = AtomicU64::new(1000);
 
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == syscall::nt::NtService::NtSetInformationToken { return Some(set_information(call)); }
     if call.service == syscall::nt::NtService::NtPrivilegeCheck { return Some(privilege_check(call)); }
     if call.service == syscall::nt::NtService::NtAdjustGroupsToken { return Some(adjust_groups(call)); }
     if call.service == syscall::nt::NtService::NtAdjustPrivilegesToken { return Some(adjust_privileges(call)); }
@@ -76,6 +79,35 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
             Some(STATUS_SUCCESS)
         }
         _ => None,
+    }
+}
+
+fn set_information(call: NtCall) -> u64 {
+    const TOKEN_DEFAULT_DACL: u32 = 6;
+    const TOKEN_SESSION_ID: u32 = 12;
+    const TOKEN_INTEGRITY_LEVEL: u32 = 25;
+    if call.args.a0 > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    let class = call.args.a1 as u32;
+    let required = match class { TOKEN_DEFAULT_DACL => 8, TOKEN_SESSION_ID => 4, TOKEN_INTEGRITY_LEVEL => 0, _ => return STATUS_NOT_IMPLEMENTED };
+    if call.args.a3 < required { return STATUS_BUFFER_TOO_SMALL; }
+    if required != 0 && call.args.a2 == 0 { return STATUS_ACCESS_VIOLATION; }
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let table = cur.thread_group.nt_handles();
+    let handle = sched::nt_object::NtHandle::from_raw(call.args.a0 as u32);
+    let Some(object) = table.get(handle, if class == TOKEN_SESSION_ID { TOKEN_ADJUST_DEFAULT } else { 0 }) else {
+        return if table.contains(handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE };
+    };
+    let Some(token) = object.token() else { return STATUS_INVALID_HANDLE; };
+    match class {
+        TOKEN_SESSION_ID => {
+            let value = match uaccess::get_user_u32(call.args.a2) { Ok(value) => value, Err(_) => return STATUS_ACCESS_VIOLATION };
+            token.set_session_id(value);
+            STATUS_SUCCESS
+        }
+        TOKEN_INTEGRITY_LEVEL => STATUS_NOT_IMPLEMENTED,
+        TOKEN_DEFAULT_DACL => STATUS_NOT_IMPLEMENTED,
+        _ => STATUS_NOT_IMPLEMENTED,
     }
 }
 
