@@ -82,6 +82,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlRandom { return Some(random(call.args.a0)); }
     if call.service == NtService::WineGetHostVersion { return Some(host_version(call.args.a0, call.args.a1)); }
     if call.service == NtService::RtlInterlockedFlushSList { return Some(flush_slist(call.args.a0)); }
+    if call.service == NtService::RtlInterlockedPushEntrySList { return Some(push_slist(call.args.a0, call.args.a1)); }
     if call.service == NtService::RtlCreateSecurityDescriptor { return Some(create_security_descriptor(call.args.a0, call.args.a1 as u32)); }
     if call.service == NtService::RtlCreateAcl { return Some(create_acl(call.args.a0, call.args.a1 as u32, call.args.a2 as u32)); }
     if call.service == NtService::RtlAddAce { return Some(add_aces(call.args.a0, call.args.a1 as u32, call.args.a3, call.args.a4 as u32)); }
@@ -542,6 +543,21 @@ fn flush_slist(list: u64) -> u64 {
     let Some(region) = list.checked_add(8) else { return 0; };
     if uaccess::copy_to_user(list, &[0u8; 8]).is_err() || uaccess::copy_to_user(region, &1u64.to_le_bytes()).is_err() { return 0; }
     next
+}
+fn push_slist(list: u64, entry: u64) -> u64 {
+    if list == 0 || entry == 0 || entry & 0xf != 0 { return 0; }
+    let Some(list_tail) = list.checked_add(8) else { return 0; };
+    let mut header = [0u8; 16];
+    if uaccess::copy_from_user(&mut header, list).is_err() { return 0; }
+    let old_head = u64::from_le_bytes(header[8..16].try_into().unwrap()) & !0xf;
+    let first = u64::from_le_bytes(header[0..8].try_into().unwrap());
+    let depth = (first as u16).wrapping_add(1);
+    let sequence = (((first >> 16) & 0x0000_ffff_ffff_ffff).wrapping_add(1)) & 0x0000_ffff_ffff_ffff;
+    if uaccess::put_user_u64(entry, old_head).is_err() { return 0; }
+    let new_first = depth as u64 | (sequence << 16);
+    let new_second = (entry & !0xf) | (u64::from_le_bytes(header[8..16].try_into().unwrap()) & 0xf);
+    if uaccess::copy_to_user(list, &new_first.to_le_bytes()).is_err() || uaccess::copy_to_user(list_tail, &new_second.to_le_bytes()).is_err() { return 0; }
+    old_head
 }
 fn create_security_descriptor(descriptor: u64, revision: u32) -> u64 {
     if descriptor == 0 { return STATUS_INVALID_PARAMETER; }

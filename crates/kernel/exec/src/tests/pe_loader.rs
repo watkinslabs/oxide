@@ -288,6 +288,10 @@
         assert!(host_version >= runtime.base.as_u64() && host_version < runtime.base.as_u64() + runtime.bytes as u64);
         let flush_slist = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlInterlockedFlushSList" }).unwrap();
         assert!(flush_slist >= runtime.base.as_u64() && flush_slist < runtime.base.as_u64() + runtime.bytes as u64);
+        let push_slist = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlInterlockedPushEntrySList" }).unwrap();
+        assert!(push_slist >= runtime.base.as_u64() && push_slist < runtime.base.as_u64() + runtime.bytes as u64);
+        let try_enter = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlTryEnterCriticalSection" }).unwrap();
+        assert!(try_enter >= runtime.base.as_u64() && try_enter < runtime.base.as_u64() + runtime.bytes as u64);
         assert!(guid_from_string >= runtime.base.as_u64() && guid_from_string < runtime.base.as_u64() + runtime.bytes as u64);
     }
 

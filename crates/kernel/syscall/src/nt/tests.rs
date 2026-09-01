@@ -148,6 +148,8 @@ use super::*;
         assert_eq!(decode(198, input).unwrap().service, NtService::RtlRandom);
         assert_eq!(decode(199, input).unwrap().service, NtService::WineGetHostVersion);
         assert_eq!(decode(200, input).unwrap().service, NtService::RtlInterlockedFlushSList);
+        assert_eq!(decode(201, input).unwrap().service, NtService::RtlInterlockedPushEntrySList);
+        assert_eq!(decode(202, input).unwrap().service, NtService::RtlTryEnterCriticalSection);
     }
 
     #[test]
