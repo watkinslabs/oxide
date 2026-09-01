@@ -700,3 +700,5 @@ remain unimplemented.
 explicit unsupported result; canonical ACL mutation remains unimplemented.
 `RtlAddAccessDeniedObjectAce` is cataloged with the reference implementation's
 explicit unsupported result; canonical ACL mutation remains unimplemented.
+`RtlAddAuditAccessObjectAce` is cataloged with the reference implementation's
+explicit unsupported result; canonical ACL mutation remains unimplemented.
