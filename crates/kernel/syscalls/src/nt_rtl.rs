@@ -14,6 +14,8 @@ const TEXT_UNICODE_NULL_BYTES: u32 = 0x1000;
 const TEXT_UNICODE_NOT_ASCII_MASK: u32 = 0xf000;
 const TEXT_UNICODE_ODD_LENGTH: u32 = 0x0200;
 const STATUS_SUCCESS: u64 = 0;
+const PRODUCT_UNDEFINED: u32 = 0;
+const PRODUCT_ULTIMATE_N: u32 = 0x1c;
 const GUID_STRING_BYTES: usize = 76;
 const TEB_PEB_OFFSET: u64 = 0x60;
 const PEB_PROCESS_PARAMETERS_OFFSET: u64 = 0x20;
@@ -75,6 +77,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlGetExtendedContextLength2 { return Some(get_extended_context_length(call.args.a0 as u32, call.args.a1, call.args.a2)); }
     if call.service == NtService::RtlGetExtendedFeaturesMask { return Some(get_extended_features_mask(call.args.a0)); }
     if call.service == NtService::RtlGetFullPathNameU { return Some(get_full_path(call.args.a0, call.args.a1, call.args.a2, call.args.a3)); }
+    if call.service == NtService::RtlGetProductInfo { return Some(get_product_info(call)); }
     if call.service == NtService::RtlGetEnabledExtendedFeatures {
         const LEGACY_XSTATE: u64 = 0x3;
         #[cfg(target_arch = "x86_64")]
@@ -738,6 +741,15 @@ fn random(seed: u64) -> u64 {
     if uaccess::copy_to_user(seed, &(next as u32).to_le_bytes()).is_err() { return 0; }
     result as u64
 }
+fn get_product_info(call: NtCall) -> u64 {
+    if call.args.a4 == 0 { return 0; }
+    if call.args.a0 < 6 {
+        return if uaccess::put_user_u32(call.args.a4, PRODUCT_UNDEFINED).is_ok() { 0 } else { 0 };
+    }
+    if uaccess::put_user_u32(call.args.a4, PRODUCT_ULTIMATE_N).is_err() { return 0; }
+    1
+}
+
 fn host_version(sysname: u64, release: u64) -> u64 {
     let write = |out: u64, text: &[u8]| -> Option<u64> {
         if out == 0 { return Some(0); }
