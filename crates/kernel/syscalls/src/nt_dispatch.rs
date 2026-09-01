@@ -361,6 +361,24 @@ pub fn dispatch(call: NtCall) -> u64 {
         // handle can be interpreted safely by the current NT object layer.
         return STATUS_NOT_IMPLEMENTED;
     }
+    if call.service == syscall::nt::NtService::NtSetInformationObject {
+        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        if !cur.is_nt_personality() || call.args.a0 > u32::MAX as u64 || call.args.a2 == 0 {
+            return STATUS_INVALID_PARAMETER;
+        }
+        let table = cur.thread_group.nt_handles();
+        let handle = sched::nt_object::NtHandle::from_raw(call.args.a0 as u32);
+        if table.get(handle, 0).is_none() { return STATUS_INVALID_HANDLE; }
+        // Wine's implemented class is ObjectHandleFlagInformation (4), whose
+        // two ULONG fields control inherit/protect-from-close. The handle
+        // table currently has no owner for those flags, so reject other
+        // classes and avoid reporting a mutation that is not retained.
+        if call.args.a1 != 4 || call.args.a3 < 8 { return STATUS_INVALID_PARAMETER; }
+        if uaccess::get_user_u32(call.args.a2).is_err() || uaccess::get_user_u32(call.args.a2 + 4).is_err() {
+            return STATUS_INVALID_PARAMETER;
+        }
+        return STATUS_NOT_IMPLEMENTED;
+    }
     if call.service == syscall::nt::NtService::NtMakeTemporaryObject {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }

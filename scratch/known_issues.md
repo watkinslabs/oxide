@@ -656,3 +656,6 @@ hive serializer over the VFS are still required.
 `NtSetContextThread` now mutates the current x86_64 task's canonical syscall
 frame for validated integer/control context fields; remote stopped-register
 snapshots and non-x86 context owners remain unimplemented.
+`NtSetInformationObject` now validates the implemented handle-flag class and
+input structure before returning `STATUS_NOT_IMPLEMENTED`; inherit and
+protect-from-close bits still need ownership in the canonical handle table.
