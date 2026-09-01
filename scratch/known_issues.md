@@ -618,3 +618,6 @@ the planned userspace registry service, as required by the Windows architecture
 plan, rather than being duplicated inside the kernel.
 `NtQueryPerformanceCounter` now shares the monotonic counter and 10 MHz
 frequency owner used by the existing RTL performance-counter implementation.
+`NtQuerySymbolicLinkObject` is exposed at the object-manager boundary; its
+target data must come from the canonical NT symbolic-link namespace, not a
+second interpretation of VFS symlinks.
