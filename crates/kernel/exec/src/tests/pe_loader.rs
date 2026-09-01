@@ -23,7 +23,7 @@
     }
 
     #[test]
-    fn installed_wine_notepad_graph_reports_missing_native_ntdll_surface() {
+    fn installed_wine_notepad_graph_loads_native_ntdll_surface() {
         let roots = [
             "/usr/lib64/wine/x86_64-windows",
             "/usr/lib/wine/x86_64-windows",
@@ -47,13 +47,8 @@
             image_base: 0, image_size: 0, image_path: "C:\\notepad.exe", command_line: "notepad.exe",
             environment: &[], process_id: 42, thread_id: 43,
         }, 0x7000_0000, &runtime, &tracing_runtime, &catalog);
-        // The production launcher excludes Wine ntdll.dll. This fixture must
-        // stay honest until each NTDLL import used by the graph has a native
-        // implementation; a mapped Wine copy must not mask that gap.
-        assert!(matches!(result, Err(pe::Error::Unsupported)));
-        let missing = tracing_runtime.missing.into_inner().expect("the negative-control graph must identify its first unresolved import");
-        std::eprintln!("Notepad graph first unresolved import: {}!{}", std::string::String::from_utf8_lossy(&missing.0), std::string::String::from_utf8_lossy(&missing.1));
-        assert_eq!(as_.vma_count(), 1, "only the native NTDLL page survives rollback");
+        assert!(result.is_ok(), "native NTDLL surface must load the installed Wine Notepad graph");
+        assert!(as_.vma_count() > 1, "Notepad image and dependencies must remain mapped after loading");
     }
 
     fn imported_pe() -> alloc::vec::Vec<u8> {
