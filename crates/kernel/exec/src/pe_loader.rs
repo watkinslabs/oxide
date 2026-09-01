@@ -88,6 +88,9 @@ impl<'m, 'b, R: ImportResolver> PeGraphResolver<'m, 'b, R> {
         if ascii_eq_ignore_case(dll, b"ntdll.dll") {
             if let Ok(address) = self.fallback.resolve(dll, import) { return Ok(address); }
         }
+        if let Some(target) = pe::apiset::target(dll) {
+            return self.resolve_graph(target, import, depth + 1);
+        }
         if let Some(module) = self.modules.iter().find(|module| ascii_eq_ignore_case(module.name, dll)) {
             let target = module.image.export_target(import)?.ok_or(pe::Error::Unsupported)?;
             return match target {

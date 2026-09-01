@@ -6,4 +6,5 @@ mod parser;
 pub use parser::*;
 pub mod nt_stub;
 pub mod catalog;
+pub mod apiset;
 #[cfg(test)] mod tests;
