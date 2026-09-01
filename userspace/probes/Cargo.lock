@@ -126,6 +126,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "windows-gdi"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "syscall",
+]
+
+[[package]]
 name = "windows-registry"
 version = "0.1.0"
 

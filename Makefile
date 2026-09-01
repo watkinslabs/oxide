@@ -122,6 +122,7 @@ windows-compat-test:
 	$(WARNING_RUN) $(CARGO) test --manifest-path userspace/probes/Cargo.toml -p windows-runtime --quiet
 	$(WARNING_RUN) $(CARGO) test --manifest-path userspace/probes/Cargo.toml -p windows-registry --quiet
 	$(WARNING_RUN) $(CARGO) test --manifest-path userspace/probes/Cargo.toml -p windows-user32 --quiet
+	$(WARNING_RUN) $(CARGO) test --manifest-path userspace/probes/Cargo.toml -p windows-gdi --quiet
 
 lint:
 	$(XTASK) spec-lint

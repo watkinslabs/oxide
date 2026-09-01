@@ -48,6 +48,8 @@ pub mod sysv_shm;
 pub mod waitqueue;
 /// Win32 window handles and message queues used by the native NT GUI layer.
 pub mod win32_window;
+/// Win32 GDI device-context and font state used by the native NT GUI layer.
+pub mod win32_gdi;
 pub use signal::{
     SigAction, SigInfo, Signal, SignalSet, SignalState, SIG_DFL, SIG_IGN,
 };
