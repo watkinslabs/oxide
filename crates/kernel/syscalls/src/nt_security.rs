@@ -33,6 +33,9 @@ const DACL_OFFSET: u64 = 16;
 const ABSOLUTE_DACL_OFFSET: u64 = 32;
 const ABSOLUTE_GROUP_OFFSET: u64 = 16;
 const RELATIVE_GROUP_OFFSET: u64 = 8;
+const ABSOLUTE_OWNER_OFFSET: u64 = 4;
+const RELATIVE_OWNER_OFFSET: u64 = 4;
+const OWNER_DEFAULTED: u16 = 0x0001;
 const GROUP_DEFAULTED: u16 = 0x0002;
 
 /// Query the stable baseline descriptor attached to an NT object handle.
@@ -44,6 +47,9 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     }
     if call.service == syscall::nt::NtService::RtlGetGroupSecurityDescriptor {
         return Some(get_group(call.args.a0, call.args.a1, call.args.a2));
+    }
+    if call.service == syscall::nt::NtService::RtlGetOwnerSecurityDescriptor {
+        return Some(get_owner(call.args.a0, call.args.a1, call.args.a2));
     }
     if call.service == syscall::nt::NtService::RtlDeleteSecurityObject {
         if call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
@@ -92,6 +98,20 @@ fn get_group(descriptor: u64, target_group: u64, defaulted: u64) -> u64 {
         if offset == 0 { 0 } else { descriptor.saturating_add(offset as u64) }
     } else { uaccess::get_user_u64(descriptor.saturating_add(ABSOLUTE_GROUP_OFFSET)).ok().unwrap_or(0) };
     if uaccess::put_user_u64(target_group, group_ptr).is_err() || uaccess::copy_to_user(defaulted, &[(control & GROUP_DEFAULTED != 0) as u8]).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
+}
+
+fn get_owner(descriptor: u64, target_owner: u64, defaulted: u64) -> u64 {
+    if descriptor == 0 || target_owner == 0 || defaulted == 0 { return STATUS_INVALID_PARAMETER; }
+    let mut header = [0u8; 4];
+    if uaccess::copy_from_user(&mut header, descriptor).is_err() { return STATUS_INVALID_PARAMETER; }
+    let control = u16::from_le_bytes([header[2], header[3]]);
+    let owner = if control & SELF_RELATIVE != 0 {
+        let Some(offset) = uaccess::get_user_u32(descriptor.saturating_add(RELATIVE_OWNER_OFFSET)).ok() else { return STATUS_INVALID_PARAMETER; };
+        if offset == 0 { 0 } else { descriptor.saturating_add(offset as u64) }
+    } else { uaccess::get_user_u64(descriptor.saturating_add(ABSOLUTE_OWNER_OFFSET)).ok().unwrap_or(0) };
+    if uaccess::put_user_u64(target_owner, owner).is_err()
+        || uaccess::copy_to_user(defaulted, &[(control & OWNER_DEFAULTED != 0) as u8]).is_err() { return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
 }
 
