@@ -7,7 +7,6 @@ use core::sync::atomic::Ordering;
 use syscall::nt::{NtCall, NtService};
 
 const STATUS_SUCCESS: u64 = 0;
-const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
 const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
@@ -54,7 +53,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         NtService::LdrDisableThreadCalloutsForDll => Some(disable_thread_callouts(call.args.a0)),
         NtService::LdrGetDllHandleEx => Some(get_handle(call.args.a0 as u32, call.args.a3, call.args.a4)),
         NtService::LdrGetDllHandle => Some(get_handle(1, call.args.a2, call.args.a3)),
-        NtService::RtlFindExportedRoutineByName => Some(STATUS_NOT_IMPLEMENTED),
+        NtService::RtlFindExportedRoutineByName => Some(crate::nt_export::find_exported_routine(call.args.a0, call.args.a1)),
         NtService::LdrGetDllPath => Some(get_path(call.args.a0, call.args.a1 as u32, call.args.a2, call.args.a3)),
         NtService::LdrSetDefaultDllDirectories => Some(set_default_dll_directories(call.args.a0 as u32)),
         NtService::LdrUnloadDll => Some(unload(call.args.a0)),
