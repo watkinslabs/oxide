@@ -53,6 +53,9 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == syscall::nt::NtService::RtlNewSecurityObjectEx {
         return Some(new_security_object(call.args.a2));
     }
+    if call.service == syscall::nt::NtService::RtlNewSecurityObjectWithMultipleInheritance {
+        return Some(new_security_object(call.args.a2));
+    }
     if call.service == syscall::nt::NtService::RtlMapGenericMask {
         return Some(map_generic_mask(call.args.a0, call.args.a1));
     }
