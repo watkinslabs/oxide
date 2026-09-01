@@ -99,6 +99,22 @@ impl GdiManager {
         Ok(())
     }
 
+    /// Copy a row-major XRGB raster into a clipped device-context surface. # C: O(width*height)
+    pub fn blit_pixels(&mut self, dc: u32, x: i32, y: i32, width: i32, height: i32, stride: i32, pixels: &[u32]) -> Result<(), GdiError> {
+        if width <= 0 || height <= 0 || stride < width || pixels.len() < (height as usize).checked_mul(stride as usize).ok_or(GdiError::InvalidDimensions)? { return Err(GdiError::InvalidDimensions); }
+        let Some((_, state)) = self.dcs.iter_mut().find(|(candidate, _)| *candidate == dc) else { return Err(GdiError::NoSuchObject); };
+        for source_y in 0..height {
+            let dest_y = y.saturating_add(source_y);
+            if dest_y < 0 || dest_y >= state.height { continue; }
+            for source_x in 0..width {
+                let dest_x = x.saturating_add(source_x);
+                if dest_x < 0 || dest_x >= state.width { continue; }
+                state.pixels[dest_y as usize * state.width as usize + dest_x as usize] = pixels[source_y as usize * stride as usize + source_x as usize];
+            }
+        }
+        Ok(())
+    }
+
     /// Read the rendered row-major XRGB surface for one device context. # C: O(1)
     pub fn pixels(&self, dc: u32) -> Option<&[u32]> { self.dcs.iter().find(|(candidate, _)| *candidate == dc).map(|(_, state)| state.pixels.as_slice()) }
 
@@ -154,5 +170,14 @@ mod tests {
         assert_eq!(px[4], 0x0011_2233);
         assert_eq!(px[10], 0x0011_2233);
         assert_eq!(px[11], 0);
+    }
+
+    #[test]
+    fn blit_pixels_clips_source_raster_without_aliasing_surface_state() {
+        let mut gdi = GdiManager::new();
+        let dc = gdi.create_dc(3, 2).unwrap();
+        let source = [0x11, 0x22, 0x33, 0xaa, 0xbb, 0xcc];
+        gdi.blit_pixels(dc, -1, 0, 3, 2, 3, &source).unwrap();
+        assert_eq!(gdi.pixels(dc).unwrap(), &[0x22, 0x33, 0, 0xbb, 0xcc, 0]);
     }
 }

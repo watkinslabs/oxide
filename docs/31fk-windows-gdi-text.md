@@ -20,6 +20,8 @@ owner. The adapter does not maintain a second GDI object table.
   of the caller buffer.
 - Each memory device context owns a bounded row-major XRGB pixel surface.
 - `FillRect` clips to that surface before writing pixels.
+- Userspace may upload a validated row-major XRGB raster into a DC; the native
+  owner clips the upload before writing the surface.
 - `DeleteObject` removes device contexts and fonts and clears deleted fonts
   from every context in the process.
 - Tagged NT selectors carry the ABI; Linux syscall numbers are not used for

@@ -37,7 +37,19 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         NtGdiCall::GetTextMetrics { dc, metrics } => Some(get_metrics(state, dc, metrics)),
         NtGdiCall::GetTextExtent { dc, count, text, extent } => Some(get_extent(state, dc, count, text, extent)),
         NtGdiCall::FillRect { dc, left, top, right, bottom, color } => Some(match state.fill_rect(dc, ipc::win32_gdi::Rect { left, top, right, bottom }, color) { Ok(()) => STATUS_SUCCESS, Err(_) => STATUS_INVALID_HANDLE }),
+        NtGdiCall::BlitSurface { dc, pixels, x, y, width, height, stride } => Some(blit_surface(state, dc, pixels, x, y, width, height, stride)),
     }
+}
+
+fn blit_surface(state: &mut ipc::win32_gdi::GdiManager, dc: u32, pixels: syscall::UserPtr<u8>, x: i32, y: i32, width: u32, height: u32, stride: u32) -> u64 {
+    let Some(words) = (height as usize).checked_mul(stride as usize) else { return STATUS_INVALID_PARAMETER; };
+    if width == 0 || height == 0 || stride < width || words > 16 * 1024 * 1024 { return STATUS_INVALID_PARAMETER; }
+    let Some(bytes_len) = words.checked_mul(core::mem::size_of::<u32>()) else { return STATUS_INVALID_PARAMETER; };
+    let mut bytes = alloc::vec![0u8; bytes_len];
+    if uaccess::copy_from_user(&mut bytes, pixels.as_u64()).is_err() { return STATUS_INVALID_PARAMETER; }
+    let mut values = alloc::vec![0u32; words];
+    for (index, value) in values.iter_mut().enumerate() { let offset = index * 4; *value = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()); }
+    match state.blit_pixels(dc, x, y, width as i32, height as i32, stride as i32, &values) { Ok(()) => STATUS_SUCCESS, Err(_) => STATUS_INVALID_HANDLE }
 }
 
 fn create_font(state: &mut ipc::win32_gdi::GdiManager, pointer: syscall::UserPtr<NtGdiFont>) -> u64 {
