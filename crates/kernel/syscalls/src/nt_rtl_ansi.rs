@@ -19,6 +19,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::Strchr { return Some(strchr(call.args.a0, call.args.a1)); }
     if call.service == NtService::Strcpy { return Some(strcpy(call.args.a0, call.args.a1)); }
     if call.service == NtService::Strlen { return Some(strlen(call.args.a0)); }
+    if call.service == NtService::Strpbrk { return Some(strpbrk(call.args.a0, call.args.a1)); }
     if call.service == NtService::Isalpha { let c = call.args.a0 as i32; return Some(if c >= b'A' as i32 && c <= b'Z' as i32 { 1 } else if c >= b'a' as i32 && c <= b'z' as i32 { 2 } else { 0 }); }
     if call.service == NtService::Wcsnicmp { return Some(wcsnicmp(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Wcsicmp { return Some(wcsicmp(call.args.a0, call.args.a1)); }
@@ -106,6 +107,18 @@ fn strlen(string: u64) -> u64 {
     loop {
         let Some(byte) = read_u8(string, index) else { return 0; };
         if byte == 0 { return index as u64; }
+        let Some(next) = index.checked_add(1) else { return 0; };
+        index = next;
+    }
+}
+
+fn strpbrk(string: u64, accept: u64) -> u64 {
+    if string == 0 || accept == 0 { return 0; }
+    let mut index = 0usize;
+    loop {
+        let Some(byte) = read_u8(string, index) else { return 0; };
+        if byte == 0 { return 0; }
+        if strchr(accept, byte as u64) != 0 { return string.checked_add(index as u64).unwrap_or(0); }
         let Some(next) = index.checked_add(1) else { return 0; };
         index = next;
     }

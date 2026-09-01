@@ -253,6 +253,8 @@
         assert!(strcpy >= runtime.base.as_u64() && strcpy < runtime.base.as_u64() + runtime.bytes as u64);
         let strlen = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"strlen" }).unwrap();
         assert!(strlen >= runtime.base.as_u64() && strlen < runtime.base.as_u64() + runtime.bytes as u64);
+        let strpbrk = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"strpbrk" }).unwrap();
+        assert!(strpbrk >= runtime.base.as_u64() && strpbrk < runtime.base.as_u64() + runtime.bytes as u64);
     }
 
     #[test]
