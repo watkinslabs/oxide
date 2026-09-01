@@ -249,6 +249,7 @@ pub enum NtService {
     RtlWaitOnAddress = 473,
     RtlWakeAddressAll = 474,
     RtlWakeAddressSingle = 475,
+    RtlWalkHeap = 476,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -603,6 +604,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 473 { return Some(NtCall { service: NtService::RtlWaitOnAddress, args }); }
     if service == 474 { return Some(NtCall { service: NtService::RtlWakeAddressAll, args }); }
     if service == 475 { return Some(NtCall { service: NtService::RtlWakeAddressSingle, args }); }
+    if service == 476 { return Some(NtCall { service: NtService::RtlWalkHeap, args }); }
     if service == 229 { return Some(NtCall { service: NtService::DbgUiConnectToDbg, args }); }
     if service == 230 { return Some(NtCall { service: NtService::DbgUiContinue, args }); }
     if service == 231 { return Some(NtCall { service: NtService::DbgUiRemoteBreakin, args }); }
@@ -939,6 +941,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::RtlValidSid => Err(Errno::Enosys),
         NtService::RtlValidateHeap => Err(Errno::Enosys),
         NtService::RtlWaitOnAddress | NtService::RtlWakeAddressAll | NtService::RtlWakeAddressSingle => Err(Errno::Enosys),
+        NtService::RtlWalkHeap => Err(Errno::Enosys),
         NtService::RtlAddAccessAllowedObjectAce => Err(Errno::Enosys),
         NtService::RtlAddAccessDeniedObjectAce => Err(Errno::Enosys),
         NtService::RtlAddAuditAccessObjectAce => Err(Errno::Enosys),
