@@ -297,6 +297,16 @@ pub fn dispatch(call: NtCall) -> u64 {
         // discard the hive, so fail closed until that owner is added.
         return STATUS_NOT_IMPLEMENTED;
     }
+    if call.service == syscall::nt::NtService::NtSaveKey {
+        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a1 == 0 {
+            return STATUS_INVALID_PARAMETER;
+        }
+        // A successful save requires the canonical registry-key owner to
+        // serialize its hive into the caller's writable VFS file. Neither
+        // handle can be interpreted safely by the current NT object layer.
+        return STATUS_NOT_IMPLEMENTED;
+    }
     if call.service == syscall::nt::NtService::NtMakeTemporaryObject {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }

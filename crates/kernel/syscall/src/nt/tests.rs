@@ -153,6 +153,7 @@ use super::*;
     assert_eq!(decode(312, input).unwrap().service, NtService::NtRemoveIoCompletionEx);
     assert_eq!(decode(313, input).unwrap().service, NtService::NtResetWriteWatch);
     assert_eq!(decode(314, input).unwrap().service, NtService::NtResumeThread);
+    assert_eq!(decode(315, input).unwrap().service, NtService::NtSaveKey);
     assert_eq!(decode(298, input).unwrap().service, NtService::NtQueryDirectoryObject);
     assert_eq!(decode(299, input).unwrap().service, NtService::NtQueryFullAttributesFile);
     assert_eq!(decode(293, input).unwrap().service, NtService::NtPrivilegeCheck);

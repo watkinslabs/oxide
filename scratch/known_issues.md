@@ -650,3 +650,6 @@ remains a VMM task shared by both architectures.
 `NtResumeThread` now uses a task-owned saturating NT suspend-depth transition
 and encodes the prior depth; scheduler safe-point consumption and the matching
 `NtSuspendThread` increment path remain to be wired to the same owner.
+`NtSaveKey` now validates the NT personality and non-null key/file handles
+before returning `STATUS_NOT_IMPLEMENTED`; a canonical registry-key object and
+hive serializer over the VFS are still required.
