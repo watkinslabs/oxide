@@ -52,6 +52,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         NtService::LdrAddRefDll => Some(add_ref(call.args.a0 as u32, call.args.a1)),
         NtService::LdrDisableThreadCalloutsForDll => Some(disable_thread_callouts(call.args.a0)),
         NtService::LdrGetDllHandleEx => Some(get_handle(call.args.a0 as u32, call.args.a3, call.args.a4)),
+        NtService::LdrGetDllHandle => Some(get_handle(1, call.args.a2, call.args.a3)),
         NtService::LdrGetDllPath => Some(get_path(call.args.a0, call.args.a1 as u32, call.args.a2, call.args.a3)),
         NtService::LdrSetDefaultDllDirectories => Some(set_default_dll_directories(call.args.a0 as u32)),
         NtService::LdrUnloadDll => Some(unload(call.args.a0)),
