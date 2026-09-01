@@ -5,6 +5,7 @@
 use syscall::nt::{NtCall, NtService};
 
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
+const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
 const STATUS_SXS_KEY_NOT_FOUND: u64 = 0xc015_0008;
 const FIND_ACTCTX_SECTION_KEY_RETURN_HACTCTX: u64 = 1;
 const UNICODE_STRING_BYTES: usize = 16;
@@ -13,6 +14,16 @@ const ACTCTX_SECTION_KEYED_DATA_ROSTER_OFFSET: u32 = 64;
 /// Validate the Wine/Windows string-section query and report no active context.
 /// # C: O(1) plus bounded user copies
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlActivateActivationContext {
+        // Native ABI: ULONG flags, HANDLE/PACTIVATION_CONTEXT context,
+        // ULONG_PTR *cookie. The context is opaque to the kernel boundary.
+        if call.args.a0 != 0 || call.args.a1 == 0 || call.args.a2 == 0 {
+            return Some(STATUS_INVALID_PARAMETER);
+        }
+        // The per-thread activation-context stack and cookie ownership are
+        // not installed yet, so do not report success without an owner.
+        return Some(STATUS_NOT_IMPLEMENTED);
+    }
     if call.service != NtService::RtlFindActivationContextSectionString { return None; }
     let flags = call.args.a0;
     if flags & !FIND_ACTCTX_SECTION_KEY_RETURN_HACTCTX != 0 || call.args.a1 != 0 {
