@@ -624,3 +624,5 @@ second interpretation of VFS symlinks.
 `NtQuerySystemInformationEx` implements Wine's x86-64 supported-architecture
 query with the native AMD64 record; other information classes remain explicit
 until their owning kernel data source is available.
+`NtQueryValueKey` is exposed for the userspace registry-service owner; the
+kernel does not duplicate registry values or persistence state.
