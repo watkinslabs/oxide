@@ -18,6 +18,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlRestoreContext { return Some(restore_context(call.args.a0)); }
     if call.service == NtService::RtlLookupFunctionEntry { return Some(lookup_function_entry(call.args.a0, call.args.a1)); }
     if call.service == NtService::RtlPcToFileHeader { return Some(pc_to_file_header(call.args.a0, call.args.a1)); }
+    if call.service == NtService::Setjmp { return Some(setjmp(call.args.a0, call.args.a1)); }
     if call.service != NtService::RtlUnwind && call.service != NtService::RtlUnwindEx { return None; }
     let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
     if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
@@ -80,6 +81,29 @@ fn pc_to_file_header(pc: u64, address: u64) -> u64 {
     let file_header = module.map_or(0, |module| module.base);
     if uaccess::put_user_u64(address, file_header).is_err() { return STATUS_INVALID_PARAMETER; }
     file_header
+}
+
+fn setjmp(buffer: u64, frame: u64) -> u64 {
+    if buffer == 0 || hal::UserVirtAddr::new(buffer).is_none() { return STATUS_INVALID_PARAMETER; }
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    #[cfg(target_arch = "x86_64")]
+    {
+        let regs = hal_x86_64::current_pt_regs();
+        if regs.is_null() { return STATUS_INVALID_PARAMETER; }
+        // SAFETY: current_pt_regs is the active task frame and is exclusively read during dispatch.
+        let regs = unsafe { &*regs };
+        let mut jump = [0u8; 0x100];
+        let put = |offset: usize, value: u64, out: &mut [u8; 0x100]| { out[offset..offset + 8].copy_from_slice(&value.to_le_bytes()); };
+        put(0x00, frame, &mut jump); put(0x08, regs.rbx, &mut jump); put(0x10, regs.rsp, &mut jump);
+        put(0x18, regs.rbp, &mut jump); put(0x20, regs.rsi, &mut jump); put(0x28, regs.rdi, &mut jump);
+        put(0x30, regs.r12, &mut jump); put(0x38, regs.r13, &mut jump); put(0x40, regs.r14, &mut jump);
+        put(0x48, regs.r15, &mut jump); put(0x50, regs.rip, &mut jump);
+        if uaccess::copy_to_user(buffer, &jump).is_err() { return STATUS_INVALID_PARAMETER; }
+        return 0;
+    }
+    #[cfg(target_arch = "aarch64")]
+    { let _ = frame; STATUS_INVALID_PARAMETER }
 }
 
 fn restore_context(target: u64) -> u64 {
