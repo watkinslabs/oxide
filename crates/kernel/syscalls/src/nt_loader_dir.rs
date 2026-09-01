@@ -29,6 +29,7 @@ const MODULE_BASE_OFFSET: u64 = 0x30;
 const MODULE_FULL_NAME_OFFSET: u64 = 0x48;
 const MODULE_BASE_NAME_OFFSET: u64 = 0x58;
 const MAX_MODULE_SCAN: usize = 64;
+const LDR_ADDREF_DLL_PIN: u32 = 1;
 
 pub fn dispatch(call: NtCall) -> Option<u64> {
     match call.service {
@@ -39,11 +40,37 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         NtService::LdrSetDllDirectory => Some(set(call.args.a0)),
         NtService::LdrAddDllDirectory => Some(add(call.args.a0, call.args.a1)),
         NtService::LdrRemoveDllDirectory => Some(remove(call.args.a0)),
+        NtService::LdrAddRefDll => Some(add_ref(call.args.a0 as u32, call.args.a1)),
         NtService::LdrGetDllFullName => Some(full_name(call.args.a0, call.args.a1)),
         NtService::LdrLoadDll => Some(load(call.args.a2, call.args.a3)),
         NtService::LdrQueryImageFileExecutionOptions => Some(query_options(call.args.a0, call.args.a1, call.args.a4, call.args.a5)),
         _ => None,
     }
+}
+
+fn add_ref(flags: u32, module: u64) -> u64 {
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() || module == 0 { return STATUS_INVALID_PARAMETER; }
+    let peb = read_u64(cur.nt_teb().saturating_add(TEB_PEB_OFFSET));
+    let ldr = read_u64(peb.saturating_add(PEB_LDR_OFFSET));
+    if peb == 0 || ldr == 0 { return STATUS_INVALID_PARAMETER; }
+    let head = ldr.saturating_add(LDR_LOAD_LIST_OFFSET);
+    let mut entry = read_u64(head);
+    let mut loaded = false;
+    for _ in 0..MAX_MODULE_SCAN {
+        if entry == 0 || entry == head { break; }
+        if read_u64(entry.saturating_add(MODULE_BASE_OFFSET)) == module { loaded = true; break; }
+        entry = read_u64(entry.saturating_add(LIST_LINK_OFFSET));
+    }
+    if !loaded { return STATUS_INVALID_PARAMETER; }
+    let mut refs = cur.thread_group.nt_module_refs.lock();
+    if flags & !LDR_ADDREF_DLL_PIN != 0 { /* Wine accepts this with a FIXME. */ }
+    if let Some((_, count)) = refs.iter_mut().find(|(base, _)| *base == module) {
+        if flags & LDR_ADDREF_DLL_PIN != 0 { *count = -1; } else if *count != -1 { *count = count.saturating_add(1); }
+    } else {
+        refs.push((module, if flags & LDR_ADDREF_DLL_PIN != 0 { -1 } else { 2 }));
+    }
+    STATUS_SUCCESS
 }
 
 fn add(descriptor: u64, cookie_output: u64) -> u64 {
