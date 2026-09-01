@@ -59,6 +59,14 @@ fn guid_from_string(descriptor: u64, target: u64) -> u64 {
 /// Initialize a Windows `UNICODE_STRING` descriptor without copying its source.
 /// # C: O(min(source length, 32766)) plus usercopy
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlGetEnabledExtendedFeatures {
+        const LEGACY_XSTATE: u64 = 0x3;
+        #[cfg(target_arch = "x86_64")]
+        let enabled = LEGACY_XSTATE | hal_x86_64::xsave_xcr0();
+        #[cfg(not(target_arch = "x86_64"))]
+        let enabled = LEGACY_XSTATE;
+        return Some(enabled & call.args.a0);
+    }
     if call.service == NtService::RtlGetCurrentPeb {
         let Some(task) = sched::live::current() else { return Some(0); };
         if !task.is_nt_personality() { return Some(0); }
