@@ -35,7 +35,6 @@ Windows frontier update (2026-09-01): `LdrGetDllHandleEx` now validates flags, r
 Windows frontier update (2026-09-01): `LdrGetDllPath` now validates its module string and output pointers and publishes empty optional-path outputs; native search-path allocation and directory ordering remain open, and the graph advances to `ntdll.dll!LdrSetDefaultDllDirectories`.
 Windows frontier update (2026-09-01): `LdrSetDefaultDllDirectories` now validates the documented default-directory mask and stores process-wide loader policy; wiring that policy into path construction remains open, and the graph advances to `ntdll.dll!LdrUnloadDll`.
 Windows frontier update (2026-09-01): `LdrUnloadDll` now validates PEB loader membership and decrements or preserves process-local reference state for ordinary and pinned modules; detach callbacks, VMA teardown, and loader-list removal remain open, and the graph advances to `ntdll.dll!NtAccessCheck`.
-Windows frontier update (2026-09-01): `NtAccessCheck` now validates self-relative descriptors, handles absent/null DACLs, scans bounded allow ACE masks, and reports granted access/status through the native ABI; SID/token membership, deny ordering, generic mapping, and privilege use remain open, and the graph advances to `ntdll.dll!NtAdjustGroupsToken`.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|

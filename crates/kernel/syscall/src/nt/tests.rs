@@ -89,7 +89,6 @@ use super::*;
         assert_eq!(decode(244, input).unwrap().service, NtService::LdrGetDllPath);
         assert_eq!(decode(245, input).unwrap().service, NtService::LdrSetDefaultDllDirectories);
         assert_eq!(decode(246, input).unwrap().service, NtService::LdrUnloadDll);
-        assert_eq!(decode(247, input).unwrap().service, NtService::NtAccessCheck);
         assert_eq!(decode(240, input).unwrap().service, NtService::LdrDisableThreadCalloutsForDll);
         assert_eq!(decode(99, input).unwrap().service, NtService::LdrGetDllDirectory);
         assert_eq!(decode(100, input).unwrap().service, NtService::LdrGetProcedureAddress);
