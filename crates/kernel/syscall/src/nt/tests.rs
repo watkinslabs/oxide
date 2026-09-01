@@ -80,6 +80,7 @@ use super::*;
         assert_eq!(decode(231, input).unwrap().service, NtService::DbgUiRemoteBreakin);
         assert_eq!(decode(232, input).unwrap().service, NtService::DbgUiStopDebugging);
         assert_eq!(decode(233, input).unwrap().service, NtService::DbgUiWaitStateChange);
+        assert_eq!(decode(234, input).unwrap().service, NtService::DbgUiConvertStateChangeStructure);
         assert_eq!(decode(99, input).unwrap().service, NtService::LdrGetDllDirectory);
         assert_eq!(decode(100, input).unwrap().service, NtService::LdrGetProcedureAddress);
         assert_eq!(decode(101, input).unwrap().service, NtService::LdrSetDllDirectory);
