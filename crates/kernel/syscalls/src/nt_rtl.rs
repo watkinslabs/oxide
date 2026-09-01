@@ -82,6 +82,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlGetFullPathNameU { return Some(get_full_path(call.args.a0, call.args.a1, call.args.a2, call.args.a3)); }
     if call.service == NtService::RtlGetProductInfo { return Some(get_product_info(call)); }
     if call.service == NtService::RtlGetProcessPreferredUILanguages { return Some(get_process_preferred_ui_languages(call)); }
+    if call.service == NtService::RtlGetSearchPath { return Some(get_search_path(call.args.a0)); }
     if call.service == NtService::RtlGetEnabledExtendedFeatures {
         const LEGACY_XSTATE: u64 = 0x3;
         #[cfg(target_arch = "x86_64")]
@@ -289,6 +290,39 @@ fn get_exe_path(name: u64, result: u64) -> u64 {
     if uaccess::copy_to_user(buffer, &encoded).is_err() || uaccess::copy_to_user(result, &buffer.to_le_bytes()).is_err() { free_rtl_buffer(buffer); return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
 }
+
+fn get_search_path(result: u64) -> u64 {
+    if result == 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(task) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !task.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let teb = task.nt_teb();
+    let peb = uaccess::get_user_u64(teb.saturating_add(TEB_PEB_OFFSET)).ok().unwrap_or(0);
+    let params = uaccess::get_user_u64(peb.saturating_add(PEB_PROCESS_PARAMETERS_OFFSET)).ok().unwrap_or(0);
+    if params == 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(image) = read_nt_unicode(params.saturating_add(PARAM_IMAGE_PATH_OFFSET)) else { return STATUS_INVALID_PARAMETER; };
+    let mut path = alloc::vec::Vec::new();
+    let mut end = image.len();
+    for index in (0..image.len()).rev() {
+        if image[index] == b'\\' as u16 || image[index] == b'/' as u16 { end = index; break; }
+        if index == 0 { end = 0; }
+    }
+    append_path_component(&mut path, &image[..end]);
+    let safe = task.thread_group.nt_search_path_mode.load(core::sync::atomic::Ordering::Acquire) != 0;
+    if !safe { append_path_component(&mut path, &wide(b".")); }
+    append_path_component(&mut path, &wide(b"C:\\windows\\system32;C:\\windows\\system;C:\\windows"));
+    if safe { append_path_component(&mut path, &wide(b".")); }
+    if let Some(value) = env_value(params.saturating_add(PARAM_ENVIRONMENT_OFFSET), b"PATH") { append_path_component(&mut path, &value); }
+    path.push(0);
+    let bytes = match path.len().checked_mul(2) { Some(value) => value, None => return STATUS_NO_MEMORY };
+    let allocation = NtCall { service: NtService::AllocateHeap, args: SyscallArgs { a0: 0, a1: 0, a2: bytes as u64, a3: 0, a4: 0, a5: 0 } };
+    let Some(buffer) = crate::nt_heap::dispatch(allocation).filter(|&value| value != 0) else { return STATUS_NO_MEMORY; };
+    let mut encoded = alloc::vec![0u8; bytes];
+    for (index, value) in path.iter().enumerate() { encoded[index * 2..index * 2 + 2].copy_from_slice(&value.to_le_bytes()); }
+    if uaccess::copy_to_user(buffer, &encoded).is_err() || uaccess::copy_to_user(result, &buffer.to_le_bytes()).is_err() { free_rtl_buffer(buffer); return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
+}
+
+fn append_path_component(target: &mut alloc::vec::Vec<u16>, value: &[u16]) { target.extend_from_slice(value); target.push(b';' as u16); }
 
 fn wide(bytes: &[u8]) -> alloc::vec::Vec<u16> { bytes.iter().map(|&value| value as u16).collect() }
 fn append_wide(target: &mut alloc::vec::Vec<u16>, value: &[u16]) { if !target.is_empty() { target.push(b';' as u16); } target.extend_from_slice(value); }
