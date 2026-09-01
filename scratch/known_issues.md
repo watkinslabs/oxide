@@ -708,3 +708,7 @@ the NT security owner; self-relative ACL insertion remains unimplemented.
 activation-context object and its reference-count owner remain in userspace.
 `RtlAllocateAndInitializeSid` allocates through the canonical NT heap owner and
 writes the native SID layout; SID validation/free-lifetime edge cases remain.
+`RtlAreAllAccessesGranted` implements the reference bitmask predicate in the
+RTL owner; generic-access mapping remains the caller's responsibility.
+`RtlAreAnyAccessesGranted` implements the companion reference bitmask
+predicate; generic-access mapping remains the caller's responsibility.

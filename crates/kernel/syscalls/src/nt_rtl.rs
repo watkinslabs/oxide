@@ -89,6 +89,8 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlInterlockedPushEntrySList { return Some(push_slist(call.args.a0, call.args.a1)); }
     if call.service == NtService::RtlCreateSecurityDescriptor { return Some(create_security_descriptor(call.args.a0, call.args.a1 as u32)); }
     if call.service == NtService::RtlCreateAcl { return Some(create_acl(call.args.a0, call.args.a1 as u32, call.args.a2 as u32)); }
+    if call.service == NtService::RtlAreAllAccessesGranted { return Some(((call.args.a0 as u32 & call.args.a1 as u32) == call.args.a1 as u32) as u64); }
+    if call.service == NtService::RtlAreAnyAccessesGranted { return Some(((call.args.a0 as u32 & call.args.a1 as u32) != 0) as u64); }
     if call.service == NtService::RtlAddAce { return Some(add_aces(call.args.a0, call.args.a1 as u32, call.args.a3, call.args.a4 as u32)); }
     if matches!(call.service, NtService::RtlAddAccessAllowedAce | NtService::RtlAddAccessAllowedAceEx | NtService::RtlAddAccessDeniedAce | NtService::RtlAddAccessDeniedAceEx) {
         let (acl, revision, flags, mask, sid) = if matches!(call.service, NtService::RtlAddAccessAllowedAce | NtService::RtlAddAccessDeniedAce) {
