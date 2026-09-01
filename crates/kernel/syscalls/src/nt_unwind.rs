@@ -19,6 +19,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlLookupFunctionEntry { return Some(lookup_function_entry(call.args.a0, call.args.a1)); }
     if call.service == NtService::RtlPcToFileHeader { return Some(pc_to_file_header(call.args.a0, call.args.a1)); }
     if call.service == NtService::Setjmp || call.service == NtService::Setjmpex { return Some(setjmp(call.args.a0, call.args.a1)); }
+    if call.service == NtService::Longjmp { return Some(longjmp(call.args.a0, call.args.a1 as u32)); }
     if call.service != NtService::RtlUnwind && call.service != NtService::RtlUnwindEx { return None; }
     let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
     if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
@@ -104,6 +105,30 @@ fn setjmp(buffer: u64, frame: u64) -> u64 {
     }
     #[cfg(target_arch = "aarch64")]
     { let _ = frame; STATUS_INVALID_PARAMETER }
+}
+
+fn longjmp(buffer: u64, value: u32) -> u64 {
+    if buffer == 0 || hal::UserVirtAddr::new(buffer).is_none() { return STATUS_INVALID_PARAMETER; }
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    #[cfg(target_arch = "x86_64")]
+    {
+        let mut jump = [0u8; 0x100];
+        if uaccess::copy_from_user(&mut jump, buffer).is_err() { return STATUS_INVALID_PARAMETER; }
+        let read = |offset: usize| u64::from_le_bytes(jump[offset..offset + 8].try_into().unwrap());
+        let rsp = read(0x10); let rip = read(0x50);
+        if hal::UserVirtAddr::new(rsp).is_none() || hal::UserVirtAddr::new(rip).is_none() { return STATUS_INVALID_PARAMETER; }
+        let regs = hal_x86_64::current_pt_regs();
+        if regs.is_null() { return STATUS_INVALID_PARAMETER; }
+        // SAFETY: current_pt_regs is the active task frame and is exclusively rewritten during this native dispatch transfer.
+        let regs = unsafe { &mut *regs };
+        regs.rbx = read(0x08); regs.rbp = read(0x18); regs.rsi = read(0x20); regs.rdi = read(0x28);
+        regs.r12 = read(0x30); regs.r13 = read(0x38); regs.r14 = read(0x40); regs.r15 = read(0x48);
+        regs.rsp = rsp; regs.rip = rip; regs.rax = if value == 0 { 1 } else { value as u64 };
+        return regs.rax;
+    }
+    #[cfg(target_arch = "aarch64")]
+    { let _ = value; STATUS_INVALID_PARAMETER }
 }
 
 fn restore_context(target: u64) -> u64 {
