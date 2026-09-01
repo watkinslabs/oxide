@@ -74,6 +74,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlGetExePath { return Some(get_exe_path(call.args.a0, call.args.a1)); }
     if call.service == NtService::RtlGetExtendedContextLength2 { return Some(get_extended_context_length(call.args.a0 as u32, call.args.a1, call.args.a2)); }
     if call.service == NtService::RtlGetExtendedFeaturesMask { return Some(get_extended_features_mask(call.args.a0)); }
+    if call.service == NtService::RtlGetFullPathNameU { return Some(get_full_path(call.args.a0, call.args.a1, call.args.a2, call.args.a3)); }
     if call.service == NtService::RtlGetEnabledExtendedFeatures {
         const LEGACY_XSTATE: u64 = 0x3;
         #[cfg(target_arch = "x86_64")]
@@ -170,6 +171,55 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if uaccess::copy_to_user(target, &descriptor).is_err() { return Some(STATUS_INVALID_PARAMETER); }
     Some(0)
 }
+
+fn get_full_path(name: u64, size: u64, buffer: u64, file_part: u64) -> u64 {
+    if name == 0 { return 0; }
+    let Some(input) = read_wide_z(name) else { return 0; };
+    if input.is_empty() || input.iter().all(|&value| value == b' ' as u16) { return 0; }
+    let Some(task) = sched::live::current() else { return 0; };
+    if !task.is_nt_personality() { return 0; }
+    let teb = task.nt_teb(); let peb = uaccess::get_user_u64(teb.saturating_add(TEB_PEB_OFFSET)).ok().unwrap_or(0);
+    let params = uaccess::get_user_u64(peb.saturating_add(PEB_PROCESS_PARAMETERS_OFFSET)).ok().unwrap_or(0);
+    let Some(current) = read_nt_unicode(params.saturating_add(PARAM_CURRENT_DIRECTORY_OFFSET)) else { return 0; };
+    let mut path = absolute_path(&input, &current);
+    collapse_path(&mut path);
+    let required = match path.len().checked_add(1).and_then(|len| len.checked_mul(2)) { Some(value) => value, None => return 0 };
+    if required > size as usize { return required as u64; }
+    if buffer == 0 || uaccess::copy_to_user(buffer, &wide_bytes(&path)).is_err() || uaccess::copy_to_user(buffer + (path.len() * 2) as u64, &[0, 0]).is_err() { return 0; }
+    if file_part != 0 {
+        let mut start = 0usize; for (index, &value) in path.iter().enumerate() { if value == b'\\' as u16 { start = index + 1; } }
+        if uaccess::copy_to_user(file_part, &(buffer + (start * 2) as u64).to_le_bytes()).is_err() { return 0; }
+    }
+    (path.len() * 2) as u64
+}
+fn absolute_path(input: &[u16], current: &[u16]) -> alloc::vec::Vec<u16> {
+    let slash = |value: u16| value == b'\\' as u16 || value == b'/' as u16;
+    let mut path = alloc::vec::Vec::new();
+    if input.len() >= 2 && slash(input[0]) && slash(input[1]) { path.extend_from_slice(input); }
+    else if input.len() >= 3 && input[1] == b':' as u16 && slash(input[2]) { path.extend_from_slice(input); }
+    else if input.first().is_some_and(|&value| slash(value)) { path.extend_from_slice(&current[..core::cmp::min(2, current.len())]); path.extend_from_slice(input); }
+    else if input.len() >= 2 && input[1] == b':' as u16 {
+        if current.len() >= 2 && ascii_lower(current[0]) == ascii_lower(input[0]) { path.extend_from_slice(current); if path.last().is_some_and(|&value| !slash(value)) { path.push(b'\\' as u16); } path.extend_from_slice(&input[2..]); }
+        else { path.extend_from_slice(&input[..2]); path.push(b'\\' as u16); path.extend_from_slice(&input[2..]); }
+    } else { path.extend_from_slice(current); if path.last().is_some_and(|&value| !slash(value)) { path.push(b'\\' as u16); } path.extend_from_slice(input); }
+    path
+}
+fn ascii_lower(value: u16) -> u16 { if (b'A' as u16..=b'Z' as u16).contains(&value) { value + (b'a' - b'A') as u16 } else { value } }
+fn collapse_path(path: &mut alloc::vec::Vec<u16>) {
+    for value in path.iter_mut() { if *value == b'/' as u16 { *value = b'\\' as u16; } }
+    let root = if path.len() >= 2 && path[1] == b':' as u16 { 3 } else if path.len() >= 2 && path[0] == b'\\' as u16 && path[1] == b'\\' as u16 { 2 } else { 0 };
+    let mut output = alloc::vec::Vec::new(); let mut index = 0usize;
+    while index < path.len() {
+        while index < path.len() && path[index] == b'\\' as u16 { if output.last() != Some(&(b'\\' as u16)) { output.push(path[index]); } index += 1; }
+        let start = index; while index < path.len() && path[index] != b'\\' as u16 { index += 1; }
+        let component = &path[start..index];
+        if component == [b'.' as u16] { continue; }
+        if component == [b'.' as u16, b'.' as u16] && output.len() > root { while output.len() > root && output.pop() != Some(b'\\' as u16) {} continue; }
+        if !component.is_empty() { if !output.is_empty() && output.last() != Some(&(b'\\' as u16)) { output.push(b'\\' as u16); } output.extend_from_slice(component); }
+    }
+    *path = output;
+}
+fn wide_bytes(value: &[u16]) -> alloc::vec::Vec<u8> { let mut output = alloc::vec![0u8; value.len() * 2]; for (index, unit) in value.iter().enumerate() { output[index * 2..index * 2 + 2].copy_from_slice(&unit.to_le_bytes()); } output }
 
 fn get_extended_features_mask(context_ex: u64) -> u64 {
     if context_ex == 0 { return 0; }
