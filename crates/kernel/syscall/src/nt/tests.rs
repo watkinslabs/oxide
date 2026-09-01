@@ -135,6 +135,7 @@ use super::*;
     assert_eq!(decode(292, input).unwrap().service, NtService::NtOpenTimer);
     assert_eq!(decode(293, input).unwrap().service, NtService::NtPrivilegeCheck);
     assert_eq!(decode(294, input).unwrap().service, NtService::NtPulseEvent);
+    assert_eq!(decode(295, input).unwrap().service, NtService::NtQueryAttributesFile);
     assert_eq!(decode(293, input).unwrap().service, NtService::NtPrivilegeCheck);
         assert_eq!(decode(240, input).unwrap().service, NtService::LdrDisableThreadCalloutsForDll);
         assert_eq!(decode(99, input).unwrap().service, NtService::LdrGetDllDirectory);

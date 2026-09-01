@@ -43,12 +43,14 @@ const DELETE_ACCESS: u32 = 0x0001_0000;
 const FILE_NAMES_INFORMATION: u32 = 12;
 const NT_FILETIME_EPOCH_SECONDS: i64 = 11_644_473_600;
 const STATUS_NO_MORE_FILES: u64 = 0x8000_0006;
+const STATUS_INVALID_INFO_CLASS: u64 = 0xc000_0003;
 
 /// Dispatch the implemented synchronous NT file operations. # C: O(path) + O(bytes)
 pub fn dispatch(call: NtFileCall) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     match call {
+        NtFileCall::QueryAttributes { attributes, information } => query_attributes(attributes.as_u64(), information.as_u64()),
         NtFileCall::Create { request } => open_create(cur, request.as_u64()),
         NtFileCall::Open { request } => open_existing(cur, request.as_u64(), false),
         NtFileCall::Read { request } => io(cur, request.as_u64(), false),
@@ -63,6 +65,24 @@ pub fn dispatch(call: NtFileCall) -> u64 {
         NtFileCall::CancelSynchronous { handle, io, io_status } => cancel_synchronous(cur, handle, io.map(|ptr| ptr.as_u64()), io_status.as_u64()),
         NtFileCall::Flush { handle, io_status } => flush(cur, handle, io_status.as_u64()),
     }
+}
+
+fn query_attributes(attributes: u64, information: u64) -> u64 {
+    if attributes == 0 || information == 0 { return STATUS_ACCESS_VIOLATION; }
+    let Some(path) = object_path(attributes) else { return STATUS_INVALID_PARAMETER; };
+    let lookup = crate::pathresolve::resolve_at_path(crate::pathresolve::AT_FDCWD, &path, vfs::LookupFlags::default());
+    let Ok(vp) = lookup else { return STATUS_OBJECT_NAME_NOT_FOUND; };
+    let file_type = vp.inode.file_type();
+    if file_type != vfs::FileType::Regular && file_type != vfs::FileType::Directory { return STATUS_INVALID_INFO_CLASS; }
+    let stat = vfs::generic_fillattr(vp.inode.as_ref(), &vfs::IDENTITY);
+    let mut out = [0u8; 40];
+    put_i64(&mut out, 0, filetime(stat.btime.unwrap_or(stat.ctime)));
+    put_i64(&mut out, 8, filetime(stat.atime));
+    put_i64(&mut out, 16, filetime(stat.mtime));
+    put_i64(&mut out, 24, filetime(stat.ctime));
+    let file_attributes: u32 = if file_type == vfs::FileType::Directory { 0x10 } else { 0x80 };
+    out[32..36].copy_from_slice(&file_attributes.to_ne_bytes());
+    if uaccess::copy_to_user(information, &out).is_err() { STATUS_ACCESS_VIOLATION } else { STATUS_SUCCESS }
 }
 
 fn flush(cur: &sched::Task, handle: u32, io_status: u64) -> u64 {
