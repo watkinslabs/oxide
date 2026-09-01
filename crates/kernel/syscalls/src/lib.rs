@@ -66,6 +66,9 @@ mod nt_actctx;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_env;
 #[cfg(target_os = "oxide-kernel")]
+#[cfg(target_os = "oxide-kernel")]
+mod nt_threadpool;
+#[cfg(target_os = "oxide-kernel")]
 mod nt_apiset;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_atom;
@@ -100,7 +103,6 @@ mod nt_printf;
 mod nt_security;
 #[path = "nt_time.rs"]
 mod nt_time;
-mod nt_threadpool;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_object_query;
 #[cfg(target_os = "oxide-kernel")]

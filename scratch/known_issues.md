@@ -665,6 +665,9 @@ remain explicit gaps.
 `NtSetInformationVirtualMemory` now exposes the prefetch class boundary with
 argument validation; VMM prefetch and per-page write-watch ownership remain
 unimplemented.
+`RtlCreateTimer` and `RtlCreateTimerQueue` validate output and callback
+boundaries; callback dispatch, cancellation, and queue lifetime remain
+unimplemented.
 `RtlCreateProcessParametersEx` validates its result-pointer boundary; native
 string capture, environment ownership, normalization, and destruction remain
 unimplemented.
