@@ -235,6 +235,8 @@
         assert!(wcsicmp >= runtime.base.as_u64() && wcsicmp < runtime.base.as_u64() + runtime.bytes as u64);
         let wcsnicmp = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"_wcsnicmp" }).unwrap();
         assert!(wcsnicmp >= runtime.base.as_u64() && wcsnicmp < runtime.base.as_u64() + runtime.bytes as u64);
+        let isalpha = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"isalpha" }).unwrap();
+        assert!(isalpha >= runtime.base.as_u64() && isalpha < runtime.base.as_u64() + runtime.bytes as u64);
     }
 
     #[test]
