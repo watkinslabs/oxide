@@ -59,6 +59,11 @@ fn guid_from_string(descriptor: u64, target: u64) -> u64 {
 /// Initialize a Windows `UNICODE_STRING` descriptor without copying its source.
 /// # C: O(min(source length, 32766)) plus usercopy
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlGetCurrentPeb {
+        let Some(task) = sched::live::current() else { return Some(0); };
+        if !task.is_nt_personality() { return Some(0); }
+        return Some(uaccess::get_user_u64(task.nt_teb().saturating_add(TEB_PEB_OFFSET)).ok().unwrap_or(0));
+    }
     if call.service == NtService::RtlGetCurrentDirectoryU {
         return Some(get_current_directory(call.args.a0, call.args.a1));
     }

@@ -225,6 +225,7 @@ use super::*;
     assert_eq!(decode(386, input).unwrap().service, NtService::RtlFreeUserStack);
     assert_eq!(decode(387, input).unwrap().service, NtService::RtlGetActiveActivationContext);
     assert_eq!(decode(388, input).unwrap().service, NtService::RtlGetCurrentDirectoryU);
+    assert_eq!(decode(389, input).unwrap().service, NtService::RtlGetCurrentPeb);
     assert_eq!(decode(370, input).unwrap().service, NtService::RtlEqualSid);
     assert_eq!(decode(371, input).unwrap().service, NtService::RtlExpandEnvironmentStringsU);
     assert_eq!(decode(298, input).unwrap().service, NtService::NtQueryDirectoryObject);
