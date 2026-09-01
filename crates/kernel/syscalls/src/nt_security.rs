@@ -60,6 +60,9 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == syscall::nt::NtService::RtlSetDaclSecurityDescriptor {
         return Some(set_dacl(call.args.a0, call.args.a1 != 0, call.args.a2, call.args.a3 != 0));
     }
+    if call.service == syscall::nt::NtService::RtlSetSaclSecurityDescriptor {
+        return Some(set_sacl(call.args.a0, call.args.a1 != 0, call.args.a2, call.args.a3 != 0));
+    }
     if call.service == syscall::nt::NtService::RtlSetControlSecurityDescriptor {
         return Some(set_control(call.args.a0, call.args.a1 as u32, call.args.a2 as u32));
     }
@@ -164,6 +167,24 @@ fn set_dacl(descriptor: u64, present: bool, dacl: u64, defaulted: bool) -> u64 {
     }
     if uaccess::put_user_u64(descriptor.saturating_add(ABSOLUTE_DACL_OFFSET), dacl).is_err() { return STATUS_INVALID_PARAMETER; }
     let updated = if defaulted { control | DACL_PRESENT | DACL_DEFAULTED } else { (control | DACL_PRESENT) & !DACL_DEFAULTED };
+    if uaccess::copy_to_user(descriptor.saturating_add(2), &updated.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
+}
+
+fn set_sacl(descriptor: u64, present: bool, sacl: u64, defaulted: bool) -> u64 {
+    if descriptor == 0 { return STATUS_INVALID_PARAMETER; }
+    let mut header = [0u8; 4];
+    if uaccess::copy_from_user(&mut header, descriptor).is_err() { return STATUS_INVALID_PARAMETER; }
+    if header[0] != SECURITY_DESCRIPTOR_REVISION { return STATUS_UNKNOWN_REVISION; }
+    let control = u16::from_le_bytes([header[2], header[3]]);
+    if control & SELF_RELATIVE != 0 { return STATUS_INVALID_SECURITY_DESCR; }
+    if !present {
+        let updated = control & !SACL_PRESENT;
+        if uaccess::copy_to_user(descriptor.saturating_add(2), &updated.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
+        return STATUS_SUCCESS;
+    }
+    if uaccess::put_user_u64(descriptor.saturating_add(ABSOLUTE_SACL_OFFSET), sacl).is_err() { return STATUS_INVALID_PARAMETER; }
+    let updated = if defaulted { control | SACL_PRESENT | SACL_DEFAULTED } else { (control | SACL_PRESENT) & !SACL_DEFAULTED };
     if uaccess::copy_to_user(descriptor.saturating_add(2), &updated.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
 }
