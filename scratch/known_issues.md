@@ -689,6 +689,8 @@ layouts for ASCII case folding; full Unicode uppercase mapping remains absent.
 NT heap owner; invalid foreign allocations are not yet reported natively.
 `RtlDestroyProcessParameters` releases the process-parameter block through the
 canonical NT heap owner; parameter-record validation remains absent.
+`RtlDoesFileExists_U` performs bounded UTF-16 conversion and queries the
+canonical VFS resolver; full Windows path-device translation remains absent.
 `RtlCreateProcessParametersEx` validates its result-pointer boundary; native
 string capture, environment ownership, normalization, and destruction remain
 unimplemented.

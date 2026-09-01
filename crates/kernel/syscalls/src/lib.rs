@@ -72,6 +72,8 @@ mod nt_user_stack;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_capability;
 #[cfg(target_os = "oxide-kernel")]
+mod nt_exists;
+#[cfg(target_os = "oxide-kernel")]
 mod nt_acl;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_apiset;
