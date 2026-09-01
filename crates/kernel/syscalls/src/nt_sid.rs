@@ -18,6 +18,7 @@ const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
 /// Allocate a heap-owned SID and initialize its native layout.
 /// # C: O(1) plus bounded user copies and one VMM allocation
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlFreeSid { return Some(free_sid(call.args.a0)); }
     if call.service == NtService::RtlEqualPrefixSid { return Some(equal_prefix_sid(call.args.a0, call.args.a1)); }
     if call.service == NtService::RtlEqualSid { return Some(equal_sid(call.args.a0, call.args.a1)); }
     if call.service == NtService::RtlConvertSidToUnicodeString {
@@ -28,6 +29,13 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     }
     if call.service != NtService::RtlAllocateAndInitializeSid { return None; }
     Some(allocate_and_initialize(call))
+}
+
+fn free_sid(sid: u64) -> u64 {
+    if sid == 0 { return STATUS_SUCCESS; }
+    let call = NtCall { service: NtService::FreeHeap, args: SyscallArgs { a0: 0, a1: 0, a2: sid, a3: 0, a4: 0, a5: 0 } };
+    let _ = crate::nt_heap::dispatch(call);
+    STATUS_SUCCESS
 }
 
 fn equal_prefix_sid(first: u64, second: u64) -> u64 {
