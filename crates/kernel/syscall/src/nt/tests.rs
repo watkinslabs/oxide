@@ -528,6 +528,12 @@ use super::*;
     }
 
     #[test]
+    fn rtl_query_environment_variable_keeps_native_abi_selector() {
+        let call = decode(436, args()).unwrap();
+        assert_eq!(call.service, NtService::RtlQueryEnvironmentVariableU);
+    }
+
+    #[test]
     fn file_services_validate_the_outer_request_pointer() {
         let call = decode(10, SyscallArgs { a0: 0x1000, ..args() }).unwrap();
         assert!(matches!(decode_file(call), Ok(NtFileCall::Create { .. })));

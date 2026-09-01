@@ -4,10 +4,16 @@ use syscall::{nt::{NtCall, NtService}, SyscallArgs};
 
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
+const STATUS_SUCCESS: u64 = 0;
+const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
+const STATUS_VARIABLE_NOT_FOUND: u64 = 0xc000_0100;
 
 /// Validate the output boundary before the process-environment owner exists.
 /// # C: O(1)
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlQueryEnvironmentVariableU {
+        return Some(query_environment_variable(call));
+    }
     if call.service == NtService::RtlNormalizeProcessParams {
         return Some(normalize_process_params(call.args.a0));
     }
@@ -41,6 +47,81 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     // allocates an empty double-NUL-terminated block. Oxide's PEB owner does
     // not yet expose a mutable NT environment allocation/lifetime interface.
     Some(STATUS_NOT_IMPLEMENTED)
+}
+
+fn query_environment_variable(call: NtCall) -> u64 {
+    if call.args.a1 == 0 || call.args.a2 == 0 { return STATUS_INVALID_PARAMETER; }
+    let (name, _) = match read_unicode_descriptor_parts(call.args.a1) { Some(value) => value, None => return STATUS_INVALID_PARAMETER };
+    if name.is_empty() { return STATUS_VARIABLE_NOT_FOUND; }
+    let value_descriptor = call.args.a2;
+    if put_user_u16(value_descriptor, 0).is_err() { return STATUS_INVALID_PARAMETER; }
+    let environment = if call.args.a0 != 0 { call.args.a0 } else {
+        let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        if !current.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+        let Some(peb) = uaccess::get_user_u64(current.nt_teb().checked_add(0x60).unwrap_or(0)).ok() else { return STATUS_INVALID_PARAMETER; };
+        let Some(params) = uaccess::get_user_u64(peb.checked_add(0x20).unwrap_or(0)).ok() else { return STATUS_INVALID_PARAMETER; };
+        uaccess::get_user_u64(params.checked_add(0x80).unwrap_or(0)).unwrap_or(0)
+    };
+    if environment == 0 { return STATUS_VARIABLE_NOT_FOUND; }
+    let Some(value) = find_environment_value(environment, &name) else { return STATUS_VARIABLE_NOT_FOUND; };
+    let max_length = match get_user_u16(value_descriptor + 2) { Ok(value) => value as usize, Err(_) => return STATUS_INVALID_PARAMETER };
+    let output = match uaccess::get_user_u64(value_descriptor + 8) { Ok(value) => value, Err(_) => return STATUS_INVALID_PARAMETER };
+    let value_bytes = value.len() * 2;
+    if value_bytes <= max_length {
+        if value_bytes != 0 && (output == 0 || copy_units(output, &value).is_err()) { return STATUS_INVALID_PARAMETER; }
+        if max_length >= value_bytes + 2 && output != 0 && put_user_u16(output + value_bytes as u64, 0).is_err() { return STATUS_INVALID_PARAMETER; }
+        if put_user_u16(value_descriptor, value_bytes as u16).is_err() { return STATUS_INVALID_PARAMETER; }
+        return STATUS_SUCCESS;
+    }
+    STATUS_BUFFER_TOO_SMALL
+}
+
+fn read_unicode_descriptor_parts(address: u64) -> Option<(Vec<u16>, u16)> {
+    let mut descriptor = [0u8; 16];
+    uaccess::copy_from_user(&mut descriptor, address).ok()?;
+    let length = u16::from_le_bytes([descriptor[0], descriptor[1]]);
+    let maximum = u16::from_le_bytes([descriptor[2], descriptor[3]]);
+    let buffer = u64::from_le_bytes(descriptor[8..16].try_into().ok()?);
+    if length & 1 != 0 || (length != 0 && buffer == 0) { return None; }
+    let mut bytes = vec![0u8; length as usize];
+    if !bytes.is_empty() { uaccess::copy_from_user(&mut bytes, buffer).ok()?; }
+    Some((bytes.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect(), maximum))
+}
+
+fn find_environment_value(environment: u64, name: &[u16]) -> Option<Vec<u16>> {
+    let mut entry = Vec::new();
+    for index in 0..65536usize {
+        let address = environment.checked_add((index * 2) as u64)?;
+        let mut bytes = [0u8; 2];
+        uaccess::copy_from_user(&mut bytes, address).ok()?;
+        let unit = u16::from_le_bytes(bytes);
+        if unit == 0 {
+            if entry.is_empty() { return None; }
+            if let Some(equal) = entry.iter().position(|unit| *unit == b'=' as u16) {
+                if equal == name.len() && entry[..equal].iter().zip(name).all(|(left, right)| ascii_fold(*left) == ascii_fold(*right)) {
+                    return Some(entry[equal + 1..].to_vec());
+                }
+            }
+            entry.clear();
+        } else { entry.push(unit); }
+    }
+    None
+}
+
+fn copy_units(target: u64, values: &[u16]) -> Result<(), ()> {
+    let mut bytes = Vec::with_capacity(values.len() * 2);
+    for value in values { bytes.extend_from_slice(&value.to_le_bytes()); }
+    uaccess::copy_to_user(target, &bytes).map_err(|_| ())
+}
+
+fn get_user_u16(address: u64) -> Result<u16, ()> {
+    let mut bytes = [0u8; 2];
+    uaccess::copy_from_user(&mut bytes, address).map_err(|_| ())?;
+    Ok(u16::from_le_bytes(bytes))
+}
+
+fn put_user_u16(address: u64, value: u16) -> Result<(), ()> {
+    uaccess::copy_to_user(address, &value.to_le_bytes()).map_err(|_| ())
 }
 
 fn normalize_process_params(params: u64) -> u64 {
