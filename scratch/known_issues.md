@@ -665,3 +665,6 @@ remain explicit gaps.
 `NtSetInformationVirtualMemory` now exposes the prefetch class boundary with
 argument validation; VMM prefetch and per-page write-watch ownership remain
 unimplemented.
+`NtSetSystemInformation` accepts the Wine-compatible time-adjustment shape as
+an explicit no-op; host clock ownership and privilege enforcement remain in
+the kernel timekeeper/security layers.

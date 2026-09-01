@@ -103,6 +103,7 @@ pub enum NtService {
     NtSetInformationObject = 317,
     NtSetInformationToken = 318,
     NtSetInformationVirtualMemory = 319,
+    NtSetSystemInformation = 320,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -441,6 +442,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 317 { return Some(NtCall { service: NtService::NtSetInformationObject, args }); }
     if service == 318 { return Some(NtCall { service: NtService::NtSetInformationToken, args }); }
     if service == 319 { return Some(NtCall { service: NtService::NtSetInformationVirtualMemory, args }); }
+    if service == 320 { return Some(NtCall { service: NtService::NtSetSystemInformation, args }); }
     if service == 197 { return Some(NtCall { service: NtService::RtlGUIDFromString, args }); }
     if service == 195 { return Some(NtCall { service: NtService::WineDbgOutput, args }); }
     if service == 194 { return Some(NtCall { service: NtService::WineDbgHeader, args }); }
@@ -609,7 +611,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         | NtService::CreateTimer | NtService::SetTimer | NtService::CancelTimer
         | NtService::CreateIoCompletion | NtService::SetIoCompletion | NtService::RemoveIoCompletion
         | NtService::SignalAndWait | NtService::OpenProcessToken | NtService::OpenThreadToken | NtService::QueryToken | NtService::RtlInitUnicodeString | NtService::RtlInitUnicodeStringEx | NtService::QueryObject | NtService::RtlInitAnsiString | NtService::RtlInitAnsiStringEx | NtService::QuerySecurityObject | NtService::RtlQueryPerformanceCounter | NtService::RtlQueryPerformanceFrequency | NtService::NtQueryPerformanceCounter | NtService::NtQuerySystemInformationEx | NtService::RenameKey | NtService::SetSecurityObject => Err(Errno::Enosys),
-        NtService::NtQueryValueKey | NtService::NtQueryVolumeInformationFile | NtService::NtQueueApcThread | NtService::NtQueueApcThreadEx2 | NtService::NtRaiseException | NtService::NtReadFileScatter | NtService::NtReadVirtualMemory | NtService::NtRemoveIoCompletionEx | NtService::NtResetWriteWatch | NtService::NtResumeThread | NtService::NtSaveKey | NtService::NtSetContextThread | NtService::NtSetInformationObject | NtService::NtSetInformationToken | NtService::NtSetInformationVirtualMemory => Err(Errno::Enosys),
+        NtService::NtQueryValueKey | NtService::NtQueryVolumeInformationFile | NtService::NtQueueApcThread | NtService::NtQueueApcThreadEx2 | NtService::NtRaiseException | NtService::NtReadFileScatter | NtService::NtReadVirtualMemory | NtService::NtRemoveIoCompletionEx | NtService::NtResetWriteWatch | NtService::NtResumeThread | NtService::NtSaveKey | NtService::NtSetContextThread | NtService::NtSetInformationObject | NtService::NtSetInformationToken | NtService::NtSetInformationVirtualMemory | NtService::NtSetSystemInformation => Err(Errno::Enosys),
         NtService::LdrGetDllPath => Err(Errno::Enosys),
         NtService::LdrSetDefaultDllDirectories => Err(Errno::Enosys),
         NtService::LdrUnloadDll => Err(Errno::Enosys),

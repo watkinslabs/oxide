@@ -320,6 +320,15 @@ pub fn dispatch(call: NtCall) -> u64 {
         }
         return STATUS_NOT_IMPLEMENTED;
     }
+    if call.service == syscall::nt::NtService::NtSetSystemInformation {
+        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        if !cur.is_nt_personality() || call.args.a0 != 28 || call.args.a1 == 0 || call.args.a2 != 8 {
+            return STATUS_INVALID_PARAMETER;
+        }
+        // Wine treats this as a compatibility no-op. The real clock/time
+        // adjustment owner remains the kernel timekeeper and privilege layer.
+        return STATUS_SUCCESS;
+    }
     if call.service == syscall::nt::NtService::NtResetWriteWatch {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() || call.args.a0 != CURRENT_PROCESS || call.args.a1 == 0 || call.args.a2 == 0 {
