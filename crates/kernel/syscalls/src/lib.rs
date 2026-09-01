@@ -94,6 +94,8 @@ mod nt_format;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_window;
 #[cfg(target_os = "oxide-kernel")]
+mod nt_gdi;
+#[cfg(target_os = "oxide-kernel")]
 mod nt_unwind;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_exception;

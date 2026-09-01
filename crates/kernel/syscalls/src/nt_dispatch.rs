@@ -666,6 +666,7 @@ pub fn dispatch(call: NtCall) -> u64 {
     }
     if let Some(result) = crate::nt_heap::dispatch(call) { return result; }
     if let Some(result) = crate::nt_window::dispatch(call) { return result; }
+    if let Some(result) = crate::nt_gdi::dispatch(call) { return result; }
     if call.service == nt::NtService::TerminateProcess {
         let (process, status) = match nt::decode_terminate(call) {
             Ok(values) => values,
