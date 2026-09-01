@@ -1,6 +1,6 @@
 //! Native RTL string operations used by the Windows personality.
 #![cfg(target_os = "oxide-kernel")]
-use syscall::{nt::{NtCall, NtService}, SyscallArgs}; use alloc::vec;
+use syscall::{nt::{NtCall, NtService}, SyscallArgs}; use alloc::vec; use sync::{Modules as ModulesLockClass, Spinlock};
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d; const STATUS_BUFFER_OVERFLOW: u64 = 0x8000_0005; const STATUS_INVALID_PARAMETER_2: u64 = 0xc000_00f0; const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
 const STATUS_NAME_TOO_LONG: u64 = 0xc000_0106; const UNICODE_STRING_BYTES: usize = 16; const UNICODE_STRING_MAX: u32 = 0xfffc; const ANSI_STRING_MAX: u32 = 0xfffe;
 const STATUS_INVALID_SID: u64 = 0xc000_0078; const STATUS_INVALID_ACL: u64 = 0xc000_0077; const STATUS_REVISION_MISMATCH: u64 = 0xc000_0059; const STATUS_ALLOTTED_SPACE_EXCEEDED: u64 = 0xc000_0099;
@@ -486,7 +486,7 @@ fn uniform(seed: u64) -> u64 {
     if uaccess::copy_to_user(seed, &(next as u32).to_le_bytes()).is_err() { return 0; }
     next
 }
-static mut RANDOM_SAVED: [u32; 128] = [
+static RANDOM_SAVED: Spinlock<[u32; 128], ModulesLockClass> = Spinlock::new([
     0x4c8bc0aa,0x4c022957,0x2232827a,0x2f1e7626,0x7f8bdafb,0x5c37d02a,0x0ab48f72,0x2f0c4ffa,
     0x290e1954,0x6b635f23,0x5d3885c0,0x74b49ff8,0x5155fa54,0x6214ad3f,0x111e9c29,0x242a3a09,
     0x75932ae1,0x40ac432e,0x54f7ba7a,0x585ccbd5,0x6df5c727,0x0374dad1,0x7112b3f1,0x735fc311,
@@ -503,7 +503,7 @@ static mut RANDOM_SAVED: [u32; 128] = [
     0x06bc5c62,0x3115e3fc,0x09101613,0x47af2515,0x4f11ec54,0x78b99911,0x3db8dd44,0x1ec10b9b,
     0x5b5506ca,0x773ce092,0x567be81a,0x5475b975,0x7a2cde1a,0x494536f5,0x34737bb4,0x76d9750b,
     0x2a1f6232,0x2e49644d,0x7dddcbe7,0x500cebdb,0x619dab9e,0x48c626fe,0x1cda3193,0x52dabe9d,
-];
+]);
 fn random(seed: u64) -> u64 {
     if seed == 0 { return 0; }
     let mut bytes = [0u8; 4];
@@ -512,11 +512,9 @@ fn random(seed: u64) -> u64 {
     let rand = (value * 0x7fff_ffed + 0x7fff_ffc3) % 0x7fff_ffff;
     let next = (rand * 0x7fff_ffed + 0x7fff_ffc3) % 0x7fff_ffff;
     let position = (next as usize) & 0x7f;
-    let result = unsafe {
-        let result = RANDOM_SAVED[position];
-        RANDOM_SAVED[position] = rand as u32;
-        result
-    };
+    let mut saved = RANDOM_SAVED.lock();
+    let result = saved[position];
+    saved[position] = rand as u32;
     if uaccess::copy_to_user(seed, &(next as u32).to_le_bytes()).is_err() { return 0; }
     result as u64
 }
