@@ -473,3 +473,7 @@ Windows NT frontier update (2026-09-01):
 four-argument ABI and the Wine-compatible unsupported-counter result (including
 the required null-input access violation); the graph advances to
 `ntdll.dll!NtCreateKey`.
+Windows NT frontier update (2026-09-01): the existing `CreateKey` service is
+now reachable from the synthetic NTDLL export page as `NtCreateKey`; registry
+key object semantics are not yet implemented, and the graph advances to
+`ntdll.dll!NtCreateNamedPipeFile`.
