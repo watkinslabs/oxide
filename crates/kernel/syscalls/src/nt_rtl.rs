@@ -87,6 +87,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlGetSearchPath { return Some(get_search_path(call.args.a0)); }
     if call.service == NtService::RtlGetSystemPreferredUILanguages { return Some(get_system_preferred_ui_languages(call)); }
     if call.service == NtService::RtlGetThreadErrorMode { return Some(get_thread_error_mode()); }
+    if call.service == NtService::RtlGetThreadPreferredUILanguages { return Some(get_thread_preferred_ui_languages(call)); }
     if call.service == NtService::RtlGetEnabledExtendedFeatures {
         const LEGACY_XSTATE: u64 = 0x3;
         #[cfg(target_arch = "x86_64")]
@@ -807,6 +808,13 @@ fn get_system_preferred_ui_languages(call: NtCall) -> u64 {
     if flags & !(MUI_LANGUAGE_NAME | MUI_LANGUAGE_ID | MUI_MACHINE_LANGUAGE_SETTINGS) != 0
         || flags & MUI_LANGUAGE_NAME != 0 && flags & MUI_LANGUAGE_ID != 0 { return STATUS_INVALID_PARAMETER; }
     get_preferred_ui_languages(flags, call.args.a2, call.args.a3, call.args.a4)
+}
+
+fn get_thread_preferred_ui_languages(call: NtCall) -> u64 {
+    let flags = call.args.a0 as u32;
+    if flags & !(MUI_LANGUAGE_NAME | MUI_LANGUAGE_ID) != 0
+        || flags & MUI_LANGUAGE_NAME != 0 && flags & MUI_LANGUAGE_ID != 0 { return STATUS_INVALID_PARAMETER; }
+    get_preferred_ui_languages(flags, call.args.a1, call.args.a2, call.args.a3)
 }
 
 fn get_preferred_ui_languages(flags: u32, count: u64, buffer: u64, size: u64) -> u64 {
