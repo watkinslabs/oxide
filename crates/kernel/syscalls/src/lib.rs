@@ -72,6 +72,8 @@ mod nt_rtl;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_rtl_ansi;
 #[cfg(target_os = "oxide-kernel")]
+mod nt_rtl_integer;
+#[cfg(target_os = "oxide-kernel")]
 mod nt_critical;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_printf;
