@@ -30,6 +30,7 @@ Windows frontier update (2026-09-01): the DLL-directory implementation now compi
 
 Windows frontier update (2026-09-01): `LdrAddRefDll` now validates canonical PEB loader membership and tracks incremented or pinned process-local module counts; the graph advances to `ntdll.dll!LdrDisableThreadCalloutsForDll`.
 Windows frontier update (2026-09-01): `LdrDisableThreadCalloutsForDll` now validates canonical PEB loader membership and records process-local callback suppression; native TLS-index flags remain open, and the graph advances to `ntdll.dll!LdrEnumerateLoadedModules`.
+Windows frontier update (2026-09-01): resource directory and data-entry lookup now walk bounded PE32+ resource trees for numeric type/name/language identifiers; named resource ordering and locale fallback remain open, and the graph advances to `ntdll.dll!LdrGetDllHandleEx`.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|

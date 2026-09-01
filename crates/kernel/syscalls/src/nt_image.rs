@@ -6,6 +6,7 @@ use syscall::nt::{NtCall, NtService};
 /// # C: O(1) plus three fault-recovering user reads
 pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::LdrFindResourceDirectory { return Some(find_resource_directory(call)); }
+    if call.service == NtService::LdrFindResource { return Some(find_resource(call)); }
     if call.service == NtService::LdrAccessResource { return Some(access_resource(call)); }
     if call.service == NtService::RtlImageDirectoryEntryToData { return Some(directory_entry(call)); }
     if call.service == NtService::RtlImageRvaToVa { return Some(rva_to_va(call)); }
@@ -59,6 +60,19 @@ fn find_resource_directory(call: NtCall) -> u64 {
     let language_key = read_u32(call.args.a1 + 16).unwrap_or(0) as u64;
     let Some(language_dir) = resource_child(name_dir, language_key, true) else { return STATUS_RESOURCE_LANG_NOT_FOUND; };
     write_resource_result(call.args.a3, language_dir)
+}
+
+fn find_resource(call: NtCall) -> u64 {
+    if call.args.a0 == 0 || call.args.a1 == 0 || call.args.a3 == 0 || call.args.a2 != 3 { return STATUS_INVALID_PARAMETER; }
+    let module = call.args.a0 & !3;
+    let Some(root) = resource_root(module) else { return STATUS_RESOURCE_DATA_NOT_FOUND; };
+    let type_key = read_u64(call.args.a1).unwrap_or(0);
+    let Some(type_dir) = resource_child(root, type_key, true) else { return STATUS_RESOURCE_TYPE_NOT_FOUND; };
+    let name_key = read_u64(call.args.a1 + 8).unwrap_or(0);
+    let Some(name_dir) = resource_child(type_dir, name_key, true) else { return STATUS_RESOURCE_NAME_NOT_FOUND; };
+    let language_key = read_u32(call.args.a1 + 16).unwrap_or(0) as u64;
+    let Some(entry) = resource_child(name_dir, language_key, false) else { return STATUS_RESOURCE_LANG_NOT_FOUND; };
+    if uaccess::put_user_u64(call.args.a3, entry).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
 }
 
 fn write_resource_result(output: u64, directory: u64) -> u64 {
