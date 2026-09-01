@@ -118,6 +118,7 @@ use super::*;
     assert_eq!(decode(274, input).unwrap().service, NtService::NtGetTickCount);
     assert_eq!(decode(275, input).unwrap().service, NtService::NtGetWriteWatch);
     assert_eq!(decode(276, input).unwrap().service, NtService::NtImpersonateAnonymousToken);
+    assert_eq!(decode(277, input).unwrap().service, NtService::NtIsProcessInJob);
         assert_eq!(decode(240, input).unwrap().service, NtService::LdrDisableThreadCalloutsForDll);
         assert_eq!(decode(99, input).unwrap().service, NtService::LdrGetDllDirectory);
         assert_eq!(decode(100, input).unwrap().service, NtService::LdrGetProcedureAddress);

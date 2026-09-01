@@ -259,6 +259,19 @@ pub fn dispatch(call: NtCall) -> u64 {
         if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
         return STATUS_NOT_IMPLEMENTED;
     }
+    if call.service == syscall::nt::NtService::NtIsProcessInJob {
+        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        if !cur.is_nt_personality() || call.args.a0 != CURRENT_PROCESS || call.args.a1 > u32::MAX as u64 {
+            return STATUS_INVALID_PARAMETER;
+        }
+        let table = cur.thread_group.nt_handles();
+        let job = sched::nt_object::NtHandle::from_raw(call.args.a1 as u32);
+        let Some(object) = table.get(job, 0) else {
+            return if table.contains(job) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE };
+        };
+        if object.kind() != sched::nt_object::NtObjectType::Job { return STATUS_INVALID_HANDLE; }
+        return if cur.nt_job_id() == object.id() { 0x0000_0124 } else { 0x0000_0123 };
+    }
     if matches!(call.service, syscall::nt::NtService::NtCreateNamedPipeFile | syscall::nt::NtService::NtCreateSectionEx | syscall::nt::NtService::NtCreateSymbolicLinkObject | syscall::nt::NtService::NtCreateUserProcess | syscall::nt::NtService::NtDeleteKey | syscall::nt::NtService::NtDeleteValueKey | syscall::nt::NtService::NtEnumerateKey | syscall::nt::NtService::NtEnumerateValueKey | syscall::nt::NtService::NtFilterToken | syscall::nt::NtService::NtFlushKey) { return 0xc000_0002; }
     if let Some(result) = crate::nt_power::dispatch(call) { return result; }
     if let Some(result) = crate::nt_oem::dispatch(call) { return result; }

@@ -548,4 +548,6 @@ current-process validation but remains `STATUS_NOT_IMPLEMENTED` until VMA
 and page-fault dirty tracking has a dedicated owner; the graph advances to
 `ntdll.dll!NtImpersonateAnonymousToken`. Wine’s own implementation is a
 `STATUS_NOT_IMPLEMENTED` stub, so Oxide exposes the same explicit boundary;
-the graph advances to `ntdll.dll!NtIsProcessInJob`.
+the graph advances to `ntdll.dll!NtIsProcessInJob`. That call now consults
+the existing NT job association and returns Wine-compatible in-job status;
+the graph advances to `ntdll.dll!NtLoadKey`.
