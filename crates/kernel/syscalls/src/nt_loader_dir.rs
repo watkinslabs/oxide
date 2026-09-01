@@ -32,6 +32,11 @@ const MAX_MODULE_SCAN: usize = 64;
 const LDR_ADDREF_DLL_PIN: u32 = 1;
 const LDR_GET_HANDLE_UNCHANGED_REFCOUNT: u32 = 1;
 const LDR_GET_HANDLE_PIN: u32 = 2;
+const LOAD_LIBRARY_SEARCH_APPLICATION_DIR: u32 = 0x0000_0200;
+const LOAD_LIBRARY_SEARCH_USER_DIRS: u32 = 0x0000_0400;
+const LOAD_LIBRARY_SEARCH_SYSTEM32: u32 = 0x0000_0800;
+const LOAD_LIBRARY_SEARCH_DEFAULT_DIRS: u32 = 0x0000_1000;
+const DEFAULT_DLL_SEARCH_FLAGS: u32 = LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_USER_DIRS | LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
 
 pub fn dispatch(call: NtCall) -> Option<u64> {
     match call.service {
@@ -46,6 +51,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         NtService::LdrDisableThreadCalloutsForDll => Some(disable_thread_callouts(call.args.a0)),
         NtService::LdrGetDllHandleEx => Some(get_handle(call.args.a0 as u32, call.args.a3, call.args.a4)),
         NtService::LdrGetDllPath => Some(get_path(call.args.a0, call.args.a2, call.args.a3)),
+        NtService::LdrSetDefaultDllDirectories => Some(set_default_dll_directories(call.args.a0 as u32)),
         NtService::LdrGetDllFullName => Some(full_name(call.args.a0, call.args.a1)),
         NtService::LdrLoadDll => Some(load(call.args.a2, call.args.a3)),
         NtService::LdrQueryImageFileExecutionOptions => Some(query_options(call.args.a0, call.args.a1, call.args.a4, call.args.a5)),
@@ -129,6 +135,14 @@ fn get_path(module: u64, path_output: u64, unknown_output: u64) -> u64 {
     if module == 0 || path_output == 0 || unknown_output == 0 { return STATUS_INVALID_PARAMETER; }
     if read_wide_z(module).is_none() { return STATUS_INVALID_PARAMETER; }
     if uaccess::put_user_u64(path_output, 0).is_err() || uaccess::put_user_u64(unknown_output, 0).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
+}
+
+fn set_default_dll_directories(flags: u32) -> u64 {
+    if flags == 0 || flags & !DEFAULT_DLL_SEARCH_FLAGS != 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    cur.thread_group.nt_default_dll_search_flags.store(flags, Ordering::Release);
     STATUS_SUCCESS
 }
 

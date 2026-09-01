@@ -33,6 +33,7 @@ Windows frontier update (2026-09-01): `LdrDisableThreadCalloutsForDll` now valid
 Windows frontier update (2026-09-01): resource directory and data-entry lookup now walk bounded PE32+ resource trees for numeric type/name/language identifiers; named resource ordering and locale fallback remain open, and the graph advances to `ntdll.dll!LdrGetDllHandleEx`.
 Windows frontier update (2026-09-01): `LdrGetDllHandleEx` now validates flags, resolves loaded modules through the canonical PEB loader list, supports implicit `.dll`, and applies unchanged/refcount/pin behavior; path-based DLL discovery remains open, and the graph advances to `ntdll.dll!LdrGetDllPath`.
 Windows frontier update (2026-09-01): `LdrGetDllPath` now validates its module string and output pointers and publishes empty optional-path outputs; native search-path allocation and directory ordering remain open, and the graph advances to `ntdll.dll!LdrSetDefaultDllDirectories`.
+Windows frontier update (2026-09-01): `LdrSetDefaultDllDirectories` now validates the documented default-directory mask and stores process-wide loader policy; wiring that policy into path construction remains open, and the graph advances to `ntdll.dll!LdrUnloadDll`.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
