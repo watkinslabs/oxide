@@ -66,7 +66,6 @@ mod nt_actctx;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_env;
 #[cfg(target_os = "oxide-kernel")]
-#[cfg(target_os = "oxide-kernel")]
 mod nt_threadpool;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_apiset;
