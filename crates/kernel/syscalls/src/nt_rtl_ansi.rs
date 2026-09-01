@@ -13,6 +13,7 @@ const UNICODE_STRING_BYTES: usize = 16;
 /// Convert a counted UTF-16 string into the native ANSI representation.
 /// # C: O(source length) plus usercopy and optional heap allocation
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::Memcpy { return Some(memcpy(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Isalpha { let c = call.args.a0 as i32; return Some(if c >= b'A' as i32 && c <= b'Z' as i32 { 1 } else if c >= b'a' as i32 && c <= b'z' as i32 { 2 } else { 0 }); }
     if call.service == NtService::Wcsnicmp { return Some(wcsnicmp(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Wcsicmp { return Some(wcsicmp(call.args.a0, call.args.a1)); }
@@ -24,6 +25,14 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlUnicodeStringToOemSize { return Some(unicode_string_to_oem_size(call.args.a0)); }
     if call.service != NtService::RtlUnicodeStringToAnsiString && call.service != NtService::RtlUnicodeStringToOemString { return None; }
     Some(unicode_string_to_ansi_string(call.args.a0, call.args.a1, call.args.a2 != 0))
+}
+
+fn memcpy(destination: u64, source: u64, length: u64) -> u64 {
+    if length == 0 { return destination; }
+    if destination == 0 || source == 0 || length > usize::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    let mut bytes = alloc::vec![0u8; length as usize];
+    if uaccess::copy_from_user(&mut bytes, source).is_err() || uaccess::copy_to_user(destination, &bytes).is_err() { return STATUS_INVALID_PARAMETER; }
+    destination
 }
 
 fn wcsnicmp(first: u64, second: u64, count: u64) -> u64 {
