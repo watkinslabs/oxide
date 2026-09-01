@@ -648,6 +648,20 @@ pub fn dispatch(call: NtCall) -> u64 {
         sched::live::force_sig_info_to_task(&target, info, sched::sigsend::ForceMode::Exit);
         return STATUS_SUCCESS;
     }
+    if call.service == nt::NtService::NtSuspendThread {
+        let Ok(NtObjectCall::SuspendThread { thread, count }) = nt::decode_object(call) else { return STATUS_INVALID_PARAMETER; };
+        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+        let table = cur.thread_group.nt_handles();
+        let target = match resolve_thread_target(&cur, thread, &table, THREAD_SUSPEND_RESUME) {
+            Ok(target) => target, Err(error) => return error,
+        };
+        let previous = target.nt_suspend();
+        if let Some(count) = count {
+            if uaccess::put_user_u32(count.as_u64(), previous).is_err() { return STATUS_INVALID_PARAMETER; }
+        }
+        return STATUS_SUCCESS;
+    }
     if call.service == nt::NtService::NtResumeThread {
         let Ok(NtObjectCall::ResumeThread { thread, count }) = nt::decode_object(call) else { return STATUS_INVALID_PARAMETER; };
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
@@ -978,7 +992,7 @@ pub fn dispatch(call: NtCall) -> u64 {
             | NtObjectCall::CreateMutant { .. } | NtObjectCall::ReleaseMutant { .. }
             | NtObjectCall::QueryMutant { .. } | NtObjectCall::QueryObject { .. }
             | NtObjectCall::QuerySecurity { .. } | NtObjectCall::SetSecurity { .. }
-            | NtObjectCall::ResumeThread { .. } => STATUS_INVALID_PARAMETER,
+            | NtObjectCall::ResumeThread { .. } | NtObjectCall::SuspendThread { .. } => STATUS_INVALID_PARAMETER,
         };
     }
     if call.service == nt::NtService::NtAllocateVirtualMemoryEx {
