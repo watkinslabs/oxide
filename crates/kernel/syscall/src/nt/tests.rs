@@ -159,6 +159,7 @@ use super::*;
         assert_eq!(decode(209, input).unwrap().service, NtService::RtlTimeToSecondsSince1970);
         assert_eq!(decode(210, input).unwrap().service, NtService::RtlUnwindEx);
         assert_eq!(decode(211, input).unwrap().service, NtService::Setjmp);
+        assert_eq!(decode(212, input).unwrap().service, NtService::Setjmpex);
     }
 
     #[test]

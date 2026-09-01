@@ -236,6 +236,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `31f4-windows-nt-time-seconds.md` | FROZEN | 2026-08-31 | `01`,`02`,`31f3`,`52`,`53` |
 | `31f5-windows-nt-unwind-ex.md` | FROZEN | 2026-08-31 | `01`,`02`,`31f4`,`52`,`53` |
 | `31f6-windows-nt-setjmp.md` | FROZEN | 2026-08-31 | `01`,`02`,`31f5`,`52`,`53` |
+| `31f7-windows-nt-setjmpex.md` | FROZEN | 2026-08-31 | `01`,`02`,`31f6`,`52`,`53` |
 
 ## Deleted
 
