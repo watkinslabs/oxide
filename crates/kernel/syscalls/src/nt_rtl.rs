@@ -16,6 +16,9 @@ const TEXT_UNICODE_ODD_LENGTH: u32 = 0x0200;
 const STATUS_SUCCESS: u64 = 0;
 const PRODUCT_UNDEFINED: u32 = 0;
 const PRODUCT_ULTIMATE_N: u32 = 0x1c;
+const MUI_LANGUAGE_ID: u32 = 0x04;
+const UI_LANGUAGE_NAME_U16: [u16; 7] = [b'e' as u16, b'n' as u16, b'-' as u16, b'U' as u16, b'S' as u16, 0, 0];
+const UI_LANGUAGE_ID_U16: [u16; 6] = [b'0' as u16, b'4' as u16, b'0' as u16, b'9' as u16, 0, 0];
 const GUID_STRING_BYTES: usize = 76;
 const TEB_PEB_OFFSET: u64 = 0x60;
 const PEB_PROCESS_PARAMETERS_OFFSET: u64 = 0x20;
@@ -78,6 +81,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlGetExtendedFeaturesMask { return Some(get_extended_features_mask(call.args.a0)); }
     if call.service == NtService::RtlGetFullPathNameU { return Some(get_full_path(call.args.a0, call.args.a1, call.args.a2, call.args.a3)); }
     if call.service == NtService::RtlGetProductInfo { return Some(get_product_info(call)); }
+    if call.service == NtService::RtlGetProcessPreferredUILanguages { return Some(get_process_preferred_ui_languages(call)); }
     if call.service == NtService::RtlGetEnabledExtendedFeatures {
         const LEGACY_XSTATE: u64 = 0x3;
         #[cfg(target_arch = "x86_64")]
@@ -748,6 +752,25 @@ fn get_product_info(call: NtCall) -> u64 {
     }
     if uaccess::put_user_u32(call.args.a4, PRODUCT_ULTIMATE_N).is_err() { return 0; }
     1
+}
+
+fn get_process_preferred_ui_languages(call: NtCall) -> u64 {
+    const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
+    if call.args.a3 == 0 { return STATUS_INVALID_PARAMETER; }
+    let required = if call.args.a0 as u32 & MUI_LANGUAGE_ID != 0 { UI_LANGUAGE_ID_U16.len() as u32 } else { UI_LANGUAGE_NAME_U16.len() as u32 };
+    let capacity = match uaccess::get_user_u32(call.args.a3) { Ok(value) => value, Err(_) => return STATUS_INVALID_PARAMETER };
+    if capacity != 0 && call.args.a2 == 0 { return STATUS_INVALID_PARAMETER; }
+    if capacity < required {
+        if uaccess::put_user_u32(call.args.a3, required).is_err() { return STATUS_INVALID_PARAMETER; }
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+    if call.args.a1 != 0 && uaccess::put_user_u32(call.args.a1, 1).is_err() { return STATUS_INVALID_PARAMETER; }
+    if uaccess::put_user_u32(call.args.a3, required).is_err() { return STATUS_INVALID_PARAMETER; }
+    let words: &[u16] = if call.args.a0 as u32 & MUI_LANGUAGE_ID != 0 { &UI_LANGUAGE_ID_U16 } else { &UI_LANGUAGE_NAME_U16 };
+    let mut bytes = [0u8; 14];
+    for (index, word) in words.iter().enumerate() { bytes[index * 2..index * 2 + 2].copy_from_slice(&word.to_le_bytes()); }
+    if uaccess::copy_to_user(call.args.a2, &bytes[..words.len() * 2]).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
 }
 
 fn host_version(sysname: u64, release: u64) -> u64 {
