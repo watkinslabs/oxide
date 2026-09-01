@@ -162,6 +162,7 @@ use super::*;
         assert_eq!(decode(212, input).unwrap().service, NtService::Setjmpex);
         assert_eq!(decode(213, input).unwrap().service, NtService::Longjmp);
         assert_eq!(decode(214, input).unwrap().service, NtService::WineDbgGetChannelFlags);
+        assert_eq!(decode(215, input).unwrap().service, NtService::LdrGetDllFullName);
     }
 
     #[test]

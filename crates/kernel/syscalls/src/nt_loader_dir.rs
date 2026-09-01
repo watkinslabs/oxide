@@ -18,6 +18,15 @@ const BASE_SEARCH_PATH_ENABLE_SAFE_PERMANENT: u32 = BASE_SEARCH_PATH_ENABLE_SAFE
 const SEARCH_PATH_MODE_UNSET: u32 = 0;
 const SEARCH_PATH_MODE_SAFE: u32 = 1;
 const SEARCH_PATH_MODE_PERMANENT: u32 = 2;
+const STATUS_DLL_NOT_FOUND: u64 = 0xc000_0135;
+const PEB_IMAGE_BASE_OFFSET: u64 = 0x10;
+const PEB_LDR_OFFSET: u64 = 0x18;
+const TEB_PEB_OFFSET: u64 = 0x60;
+const LDR_LOAD_LIST_OFFSET: u64 = 0x10;
+const LIST_LINK_OFFSET: u64 = 0;
+const MODULE_BASE_OFFSET: u64 = 0x30;
+const MODULE_FULL_NAME_OFFSET: u64 = 0x48;
+const MAX_MODULE_SCAN: usize = 64;
 
 pub fn dispatch(call: NtCall) -> Option<u64> {
     match call.service {
@@ -26,8 +35,56 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         NtService::RtlSetSearchPathMode => Some(set_search_path_mode(call.args.a0 as u32)),
         NtService::LdrGetDllDirectory => Some(get(call.args.a0)),
         NtService::LdrSetDllDirectory => Some(set(call.args.a0)),
+        NtService::LdrGetDllFullName => Some(full_name(call.args.a0, call.args.a1)),
         _ => None,
     }
+}
+
+fn full_name(module: u64, descriptor: u64) -> u64 {
+    if descriptor == 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let teb = cur.nt_teb();
+    let peb = read_u64(teb.saturating_add(TEB_PEB_OFFSET));
+    if peb == 0 { return STATUS_INVALID_PARAMETER; }
+    let module = if module == 0 { read_u64(peb.saturating_add(PEB_IMAGE_BASE_OFFSET)) } else { module };
+    let ldr = read_u64(peb.saturating_add(PEB_LDR_OFFSET));
+    if module == 0 || ldr == 0 { return STATUS_DLL_NOT_FOUND; }
+    let head = ldr.saturating_add(LDR_LOAD_LIST_OFFSET);
+    let mut entry = read_u64(head);
+    for _ in 0..MAX_MODULE_SCAN {
+        if entry == 0 || entry == head { break; }
+        if read_u64(entry.saturating_add(MODULE_BASE_OFFSET)) == module {
+            return copy_full_name(entry.saturating_add(MODULE_FULL_NAME_OFFSET), descriptor);
+        }
+        entry = read_u64(entry.saturating_add(LIST_LINK_OFFSET));
+    }
+    STATUS_DLL_NOT_FOUND
+}
+
+fn copy_full_name(source_descriptor: u64, destination: u64) -> u64 {
+    let mut source = [0u8; UNICODE_STRING_BYTES];
+    let mut target = [0u8; UNICODE_STRING_BYTES];
+    if uaccess::copy_from_user(&mut source, source_descriptor).is_err() || uaccess::copy_from_user(&mut target, destination).is_err() { return STATUS_INVALID_PARAMETER; }
+    let source_len = u16::from_le_bytes([source[0], source[1]]) as usize;
+    let source_buffer = u64::from_le_bytes(source[8..16].try_into().unwrap());
+    let maximum = u16::from_le_bytes([target[2], target[3]]) as usize;
+    let target_buffer = u64::from_le_bytes(target[8..16].try_into().unwrap());
+    if source_len & 1 != 0 || source_len != 0 && source_buffer == 0 { return STATUS_INVALID_PARAMETER; }
+    let copied = core::cmp::min(source_len, maximum);
+    if copied != 0 {
+        let mut bytes = Vec::new();
+        bytes.resize(copied, 0);
+        if uaccess::copy_from_user(&mut bytes, source_buffer).is_err() || target_buffer == 0 || uaccess::copy_to_user(target_buffer, &bytes).is_err() { return STATUS_INVALID_PARAMETER; }
+    }
+    if copied < maximum && maximum >= copied.saturating_add(2) && target_buffer != 0 && uaccess::copy_to_user(target_buffer.saturating_add(copied as u64), &[0, 0]).is_err() { return STATUS_INVALID_PARAMETER; }
+    if uaccess::copy_to_user(destination, &(copied as u16).to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
+    if maximum < source_len { STATUS_BUFFER_TOO_SMALL } else { STATUS_SUCCESS }
+}
+
+fn read_u64(address: u64) -> u64 {
+    let mut raw = [0u8; 8];
+    if uaccess::copy_from_user(&mut raw, address).is_err() { 0 } else { u64::from_le_bytes(raw) }
 }
 
 fn set_search_path_mode(flags: u32) -> u64 {
