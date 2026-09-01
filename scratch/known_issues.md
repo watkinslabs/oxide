@@ -671,3 +671,6 @@ the kernel timekeeper/security layers.
 `NtSetSystemTime` validates the NT personality and input pointers before an
 explicit unsupported result; realtime offset ownership and privilege mapping
 still need to be connected to the canonical timekeeper.
+`NtSetValueKey` now exposes and validates the native six-argument ABI without
+confusing it with the internal registry request record; canonical key/value
+storage and VFS persistence remain unimplemented.
