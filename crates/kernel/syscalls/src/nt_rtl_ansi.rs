@@ -42,6 +42,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::Memcmp { return Some(memcmp(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Strcmp { return Some(strcmp(call.args.a0, call.args.a1)); }
     if call.service == NtService::Strncmp { return Some(strncmp(call.args.a0, call.args.a1, call.args.a2)); }
+    if call.service == NtService::Strtol { return Some(strtol(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Wcsnicmp { return Some(wcsnicmp(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Wcsicmp { return Some(wcsicmp(call.args.a0, call.args.a1)); }
     if call.service == NtService::Strnicmp { return Some(strnicmp(call.args.a0, call.args.a1, call.args.a2)); }
@@ -373,6 +374,56 @@ fn strncmp(first: u64, second: u64, count: u64) -> u64 {
         if first_byte != second_byte || first_byte == 0 { return if first_byte > second_byte { 1 } else { (-1i64) as u64 }; }
     }
     0
+}
+
+fn strtol(string: u64, end: u64, base: u64) -> u64 {
+    if string == 0 || base == 1 || base > 36 { return 0; }
+    let original = string;
+    let mut index = 0usize;
+    while let Some(byte) = read_u8(string, index) {
+        if !is_ascii_space(byte) { break; }
+        let Some(next) = index.checked_add(1) else { return 0; };
+        index = next;
+    }
+    let mut negative = false;
+    if let Some(byte) = read_u8(string, index) {
+        if byte == b'-' { negative = true; index = index.saturating_add(1); }
+        else if byte == b'+' { index = index.saturating_add(1); }
+    }
+    let first = read_u8(string, index).unwrap_or(0);
+    let second = read_u8(string, index.saturating_add(1)).unwrap_or(0);
+    if (base == 0 || base == 16) && first == b'0' && (second == b'x' || second == b'X') { index = index.saturating_add(2); }
+    let actual_base = if base == 0 { if first == b'0' { 8 } else { 10 } } else { base as u32 };
+    let limit = if negative { 2_147_483_648u64 } else { 2_147_483_647u64 };
+    let mut value = 0u64;
+    let mut consumed = false;
+    let mut overflow = false;
+    loop {
+        let Some(byte) = read_u8(string, index) else { return 0; };
+        let Some(digit) = ascii_digit(byte) else { break; };
+        if digit >= actual_base { break; }
+        consumed = true;
+        if value > (limit.saturating_sub(digit as u64)) / actual_base as u64 { overflow = true; }
+        else { value = value * actual_base as u64 + digit as u64; }
+        let Some(next) = index.checked_add(1) else { return 0; };
+        index = next;
+    }
+    if end != 0 {
+        let pointer = if consumed { string.checked_add(index as u64).unwrap_or(0) } else { original };
+        if uaccess::put_user_u64(end, pointer).is_err() { return 0; }
+    }
+    if !consumed { return 0; }
+    if overflow { return if negative { i32::MIN as i64 as u64 } else { i32::MAX as i64 as u64 }; }
+    if negative { (-(value as i64) as i32 as i64) as u64 } else { (value as i32 as i64) as u64 }
+}
+
+fn is_ascii_space(byte: u8) -> bool { matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c) }
+
+fn ascii_digit(byte: u8) -> Option<u32> {
+    if byte.is_ascii_digit() { Some((byte - b'0') as u32) }
+    else if byte.is_ascii_lowercase() { Some((byte - b'a' + 10) as u32) }
+    else if byte.is_ascii_uppercase() { Some((byte - b'A' + 10) as u32) }
+    else { None }
 }
 
 fn wcsicmp(first: u64, second: u64) -> u64 {
