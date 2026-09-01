@@ -485,3 +485,7 @@ Windows NT frontier update (2026-09-01): `NtCreateSectionEx` now has an
 explicit native export and a fail-closed `STATUS_NOT_IMPLEMENTED` boundary;
 extended section parameter records remain pending. The graph advances to its
 `ntdll.dll!NtCreateSymbolicLinkObject`.
+Windows NT frontier update (2026-09-01): `NtCreateSymbolicLinkObject` now has
+an explicit native export and fail-closed `STATUS_NOT_IMPLEMENTED` boundary;
+symbolic-link object semantics remain pending. The graph advances to its next
+unresolved native import, `ntdll.dll!NtCreateUserProcess`.
