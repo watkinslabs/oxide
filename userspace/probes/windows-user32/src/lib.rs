@@ -6,6 +6,13 @@ use syscall::nt::{NtService, NtWindowMessage, NtWindowRect};
 
 const STATUS_NO_MORE_ENTRIES: u64 = 0x8000_001a;
 const STATUS_FAILURE_MASK: u64 = 0x8000_0000;
+pub const WM_KEYDOWN: u32 = 0x0100;
+pub const WM_KEYUP: u32 = 0x0101;
+pub const WM_CHAR: u32 = 0x0102;
+pub const VK_BACK: u16 = 0x08;
+pub const VK_TAB: u16 = 0x09;
+pub const VK_RETURN: u16 = 0x0d;
+pub const VK_SPACE: u16 = 0x20;
 
 #[derive(Debug)]
 pub enum WindowError { Status(u64), Host(io::Error) }
@@ -77,6 +84,14 @@ impl User32 {
     /// End the current thread's GetMessage loop with the supplied exit code. # C: O(1) plus kernel service
     pub fn post_quit_message(&self, exit_code: i32) -> Result<(), WindowError> {
         invoke(NtService::PostQuitMessage, [exit_code as u64, 0, 0, 0, 0, 0]).map(|_| ())
+    }
+
+    /// Convert a key-down message into the corresponding Unicode character message. # C: O(1) plus kernel service
+    pub fn translate_message(&self, message: &NtWindowMessage, shift: bool, caps_lock: bool) -> Result<bool, WindowError> {
+        if message.message != WM_KEYDOWN { return Ok(false); }
+        let Some(character) = translate_virtual_key(message.wparam as u16, shift, caps_lock) else { return Ok(false); };
+        self.post_message(message.hwnd, WM_CHAR, character as u64, message.lparam)?;
+        Ok(true)
     }
 
     /// Inspect one queued message, optionally removing it. # C: O(1) plus usercopy
@@ -153,6 +168,19 @@ impl User32 {
     }
 }
 
+fn translate_virtual_key(key: u16, shift: bool, caps_lock: bool) -> Option<u16> {
+    let character = match key {
+        VK_BACK | VK_TAB | VK_RETURN | VK_SPACE => Some(key),
+        0x30..=0x39 => if shift { Some(match key { 0x30 => b')', 0x31 => b'!', 0x32 => b'@', 0x33 => b'#', 0x34 => b'$', 0x35 => b'%', 0x36 => b'^', 0x37 => b'&', 0x38 => b'*', 0x39 => b'(', _ => unreachable!() } as u16) } else { Some(key) },
+        0x41..=0x5a => {
+            let upper = shift ^ caps_lock;
+            if upper { Some(key) } else { Some(key + (b'a' as u16 - b'A' as u16)) }
+        }
+        _ => None,
+    };
+    character
+}
+
 fn invoke(service: NtService, args: [u64; 6]) -> Result<u64, WindowError> {
     let result = unsafe { libc::syscall(service.entry() as libc::c_long, args[0], args[1], args[2], args[3], args[4], args[5]) };
     if result == -1 { return Err(WindowError::Host(io::Error::last_os_error())); }
@@ -188,6 +216,15 @@ mod tests {
     fn no_message_status_is_not_a_transport_failure() {
         assert_eq!(STATUS_NO_MORE_ENTRIES & STATUS_FAILURE_MASK, STATUS_FAILURE_MASK);
         assert!(matches!(WindowError::Status(STATUS_NO_MORE_ENTRIES), WindowError::Status(value) if value == STATUS_NO_MORE_ENTRIES));
+    }
+
+    #[test]
+    fn virtual_key_translation_obeys_shift_and_caps_state() {
+        assert_eq!(translate_virtual_key(0x41, false, false), Some(b'a' as u16));
+        assert_eq!(translate_virtual_key(0x41, true, false), Some(b'A' as u16));
+        assert_eq!(translate_virtual_key(0x41, false, true), Some(b'A' as u16));
+        assert_eq!(translate_virtual_key(VK_RETURN, false, false), Some(VK_RETURN));
+        assert_eq!(translate_virtual_key(0x70, false, false), None);
     }
 
     #[test]
