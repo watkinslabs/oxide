@@ -25,6 +25,7 @@ const FULL_ACCESS: u32 = 0x001f_01ff;
 /// Linux credentials supply the owner/group identity; no Linux syscall path
 /// reaches this adapter. # C: O(1) plus usercopy
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == syscall::nt::NtService::NtAccessCheck { return Some(access_check(call)); }
     let Ok(NtObjectCall::QuerySecurity { handle, security_information, descriptor, length, return_length }) = syscall::nt::decode_object(call) else { return None; };
     let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
     if !cur.is_nt_personality() || security_information == 0 || security_information & !(OWNER | GROUP | DACL | SACL | LABEL) != 0 { return Some(STATUS_INVALID_PARAMETER); }
@@ -40,6 +41,50 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if descriptor.as_u64() == 0 || length < required { return Some(STATUS_BUFFER_TOO_SMALL); }
     if uaccess::copy_to_user(descriptor.as_u64(), &bytes).is_err() { return Some(STATUS_INVALID_PARAMETER); }
     Some(STATUS_SUCCESS)
+}
+
+fn access_check(call: NtCall) -> u64 {
+    const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
+    const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
+    const ACCESS_DENIED: u64 = 0xc000_0022;
+    const PRIVILEGE_SET_BYTES: u32 = 20;
+    const SELF_RELATIVE: u16 = 0x8000;
+    const DACL_PRESENT: u16 = 0x0004;
+    if call.args.a0 == 0 || call.args.a1 == 0 || call.args.a3 == 0 || call.args.a4 == 0 || call.args.a5 == 0 || call.args.a6 == 0 || call.args.a7 == 0 { return STATUS_ACCESS_VIOLATION; }
+    let mut sd = [0u8; 20];
+    if uaccess::copy_from_user(&mut sd, call.args.a0).is_err() || sd[0] != SECURITY_DESCRIPTOR_REVISION || u16::from_le_bytes([sd[2], sd[3]]) & SELF_RELATIVE == 0 { return STATUS_ACCESS_VIOLATION; }
+    let capacity = uaccess::get_user_u32(call.args.a5).unwrap_or(0);
+    if uaccess::put_user_u32(call.args.a5, PRIVILEGE_SET_BYTES).is_err() { return STATUS_ACCESS_VIOLATION; }
+    if capacity < PRIVILEGE_SET_BYTES { return STATUS_BUFFER_TOO_SMALL; }
+    if uaccess::copy_to_user(call.args.a4, &[0u8; PRIVILEGE_SET_BYTES as usize]).is_err() { return STATUS_ACCESS_VIOLATION; }
+    let desired = call.args.a2 as u32;
+    let control = u16::from_le_bytes([sd[2], sd[3]]);
+    let dacl = u32::from_le_bytes(sd[16..20].try_into().unwrap());
+    let allowed = if control & DACL_PRESENT == 0 || dacl == 0 { desired } else { acl_allows(call.args.a0, dacl, desired) };
+    if uaccess::put_user_u32(call.args.a6, allowed).is_err() { return STATUS_ACCESS_VIOLATION; }
+    if uaccess::put_user_u32(call.args.a7, if allowed == desired { STATUS_SUCCESS as u32 } else { ACCESS_DENIED as u32 }).is_err() { return STATUS_ACCESS_VIOLATION; }
+    STATUS_SUCCESS
+}
+
+fn acl_allows(sd: u64, offset: u32, desired: u32) -> u32 {
+    let acl = match sd.checked_add(offset as u64) { Some(value) => value, None => return 0 };
+    let mut header = [0u8; 8];
+    if uaccess::copy_from_user(&mut header, acl).is_err() { return 0; }
+    let size = u16::from_le_bytes([header[2], header[3]]) as u32;
+    let count = u16::from_le_bytes([header[4], header[5]]).min(256);
+    let mut cursor = acl + 8;
+    for _ in 0..count {
+        let mut ace = [0u8; 8];
+        if uaccess::copy_from_user(&mut ace, cursor).is_err() { return 0; }
+        let ace_size = u16::from_le_bytes([ace[2], ace[3]]) as u64;
+        if ace_size < 8 || cursor.saturating_sub(acl) + ace_size > size as u64 { return 0; }
+        if ace[0] == 0 {
+            let mask = u32::from_le_bytes(ace[4..8].try_into().unwrap());
+            if mask & desired == desired { return desired; }
+        }
+        cursor = match cursor.checked_add(ace_size) { Some(value) => value, None => return 0 };
+    }
+    0
 }
 
 fn sid(authority: u64, subauthority: u32) -> [u8; 16] {
