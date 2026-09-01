@@ -76,6 +76,7 @@ pub enum Request {
     EnumKeys { key: KeyHandle },
     EnumValues { key: KeyHandle },
     Close { key: KeyHandle },
+    Flush { key: KeyHandle },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -115,6 +116,10 @@ impl RegistryStore {
             Request::EnumKeys { key } => self.registry.subkeys_handle(key).map_or_else(Response::Failure, Response::Keys),
             Request::EnumValues { key } => self.registry.values_handle(key).map_or_else(Response::Failure, Response::Values),
             Request::Close { key } => self.registry.close_handle(key).map_or_else(Response::Failure, |_| Response::Success),
+            Request::Flush { key } => {
+                if !self.registry.handles.contains_key(&key) { return Response::Failure(Error::MissingKey); }
+                self.flush().map_or_else(|error| Response::Failure(error), |_| Response::Success)
+            }
         }
     }
 }
@@ -148,6 +153,7 @@ fn decode_request(frame: &[u8]) -> Result<Request, Error> {
         5 => Request::Close { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
         6 => Request::EnumKeys { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
         7 => Request::EnumValues { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
+        11 => Request::Flush { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
         _ => return Err(Error::InvalidFile),
     };
     if at == frame.len() { Ok(request) } else { Err(Error::InvalidFile) }
