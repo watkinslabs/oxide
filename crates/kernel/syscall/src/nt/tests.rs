@@ -174,6 +174,7 @@ use super::*;
     assert_eq!(decode(333, input).unwrap().service, NtService::RtlAddAccessDeniedObjectAce);
     assert_eq!(decode(334, input).unwrap().service, NtService::RtlAddAuditAccessObjectAce);
     assert_eq!(decode(335, input).unwrap().service, NtService::RtlAddMandatoryAce);
+    assert_eq!(decode(336, input).unwrap().service, NtService::RtlAddRefActivationContext);
     assert_eq!(decode(298, input).unwrap().service, NtService::NtQueryDirectoryObject);
     assert_eq!(decode(299, input).unwrap().service, NtService::NtQueryFullAttributesFile);
     assert_eq!(decode(293, input).unwrap().service, NtService::NtPrivilegeCheck);

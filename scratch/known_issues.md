@@ -704,3 +704,5 @@ explicit unsupported result; canonical ACL mutation remains unimplemented.
 explicit unsupported result; canonical ACL mutation remains unimplemented.
 `RtlAddMandatoryAce` validates the mandatory-label ACE type and flag mask at
 the NT security owner; self-relative ACL insertion remains unimplemented.
+`RtlAddRefActivationContext` is cataloged as a void native boundary; the
+activation-context object and its reference-count owner remain in userspace.
