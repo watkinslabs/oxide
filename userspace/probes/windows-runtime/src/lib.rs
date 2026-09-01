@@ -51,14 +51,22 @@ impl RuntimeRequest {
     /// # C: O(root + DLL directory bytes)
     pub fn from_paths(image_path: &Path, windows_path: &[u8], dll_dir: &Path) -> Result<Self, BuildError> {
         if windows_path.is_empty() || windows_path.len() > u32::MAX as usize || windows_path.contains(&0) { return Err(BuildError::InvalidUtf8Path); }
-        let image = fs::read(image_path)?;
+        let image = fs::read(image_path).map_err(|error| {
+            eprintln!("windows-runtime: read image {}: {error}", image_path.display()); BuildError::Io(error)
+        })?;
         validate_size(image.len() as u64)?;
         let root = pe::parse(&image).map_err(BuildError::InvalidRoot)?;
         let mut catalog = ModuleCatalog::new();
         let mut modules = Vec::new();
         let mut available = HashMap::new();
-        for entry in fs::read_dir(dll_dir)? {
-            let path = entry?.path();
+        let entries = fs::read_dir(dll_dir).map_err(|error| {
+            eprintln!("windows-runtime: read_dir {}: {error}", dll_dir.display()); BuildError::Io(error)
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                eprintln!("windows-runtime: directory entry {}: {error}", dll_dir.display()); BuildError::Io(error)
+            })?;
+            let path = entry.path();
             if !is_dll(&path) { continue; }
             let name = path.file_name().ok_or(BuildError::InvalidUtf8Path)?.as_bytes();
             if name.eq_ignore_ascii_case(b"ntdll.dll") { continue; }
@@ -70,7 +78,9 @@ impl RuntimeRequest {
         while let Some(name) = pending.pop() {
             if name.eq_ignore_ascii_case(b"ntdll.dll") || !seen.insert(name.clone()) { continue; }
             let path = available.get(&name).ok_or_else(|| BuildError::MissingModule { name: name.clone() })?;
-            let blob = fs::read(path)?;
+            let blob = fs::read(&path).map_err(|error| {
+                eprintln!("windows-runtime: read {}: {error}", path.display()); BuildError::Io(error)
+            })?;
             validate_size(blob.len() as u64)?;
             let dependency = pe::parse(&blob).map_err(|error| BuildError::InvalidModule { path: path.clone(), error })?;
             pending.extend(dependency.imports().map_err(|error| BuildError::InvalidModule { path: path.clone(), error })?
