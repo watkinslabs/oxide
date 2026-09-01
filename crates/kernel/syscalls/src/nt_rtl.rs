@@ -81,6 +81,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlUniform { return Some(uniform(call.args.a0)); }
     if call.service == NtService::RtlRandom { return Some(random(call.args.a0)); }
     if call.service == NtService::WineGetHostVersion { return Some(host_version(call.args.a0, call.args.a1)); }
+    if call.service == NtService::RtlInterlockedFlushSList { return Some(flush_slist(call.args.a0)); }
     if call.service == NtService::RtlCreateSecurityDescriptor { return Some(create_security_descriptor(call.args.a0, call.args.a1 as u32)); }
     if call.service == NtService::RtlCreateAcl { return Some(create_acl(call.args.a0, call.args.a1 as u32, call.args.a2 as u32)); }
     if call.service == NtService::RtlAddAce { return Some(add_aces(call.args.a0, call.args.a1 as u32, call.args.a3, call.args.a4 as u32)); }
@@ -531,6 +532,16 @@ fn host_version(sysname: u64, release: u64) -> u64 {
     let _ = write(sysname, syscall::uts::UTS_SYSNAME.as_bytes());
     let _ = write(release, syscall::uts::UTS_RELEASE.as_bytes());
     0
+}
+fn flush_slist(list: u64) -> u64 {
+    if list == 0 { return 0; }
+    let mut header = [0u8; 16];
+    if uaccess::copy_from_user(&mut header, list).is_err() { return 0; }
+    let next = u64::from_le_bytes(header[8..16].try_into().unwrap()) & !0xf;
+    if next == 0 { return 0; }
+    let Some(region) = list.checked_add(8) else { return 0; };
+    if uaccess::copy_to_user(list, &[0u8; 8]).is_err() || uaccess::copy_to_user(region, &1u64.to_le_bytes()).is_err() { return 0; }
+    next
 }
 fn create_security_descriptor(descriptor: u64, revision: u32) -> u64 {
     if descriptor == 0 { return STATUS_INVALID_PARAMETER; }

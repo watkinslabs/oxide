@@ -224,6 +224,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `31dy-windows-nt-guid-from-string.md` | FROZEN | 2026-08-31 | `01`,`02`,`31dx`,`52`,`53` |
 | `31dz-windows-nt-random.md` | FROZEN | 2026-08-31 | `01`,`02`,`31dy`,`52`,`53` |
 | `31ea-windows-nt-host-version.md` | FROZEN | 2026-08-31 | `01`,`02`,`31dz`,`52`,`53` |
+| `31eb-windows-nt-slist-flush.md` | FROZEN | 2026-08-31 | `01`,`02`,`31ea`,`52`,`53` |
 
 ## Deleted
 
