@@ -716,3 +716,5 @@ predicate; generic-access mapping remains the caller's responsibility.
 wait-on-address ownership and safe caller-memory barrier state are not present.
 `RtlClearBits` mutates the caller-owned RTL bitmap with reference-compatible
 range no-op behavior; atomicity across concurrent bitmap users remains absent.
+`RtlCompactHeap` preserves the reference's harmless zero-byte compaction stub;
+the canonical NT heap has no compaction operation to expose.

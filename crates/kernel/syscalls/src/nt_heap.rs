@@ -9,6 +9,7 @@ const HEAP_ADD_USER_INFO: u64 = 0x0000_0100;
 /// Dispatch the heap subset, returning `None` for every other NT service.
 /// # C: O(log N_vmas)
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == nt::NtService::RtlCompactHeap { return Some(0); }
     if call.service == nt::NtService::RtlCreateHeap { return Some(create_heap(call)); }
     if call.service == nt::NtService::RtlDestroyHeap { return Some(destroy_heap(call)); }
     if call.service == nt::NtService::RtlGetProcessHeaps { return Some(get_process_heaps(call)); }
