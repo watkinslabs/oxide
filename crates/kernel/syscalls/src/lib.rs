@@ -42,6 +42,8 @@ mod nt_exec;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_file;
 #[cfg(target_os = "oxide-kernel")]
+mod nt_file_volume;
+#[cfg(target_os = "oxide-kernel")]
 mod nt_file_lock;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_duplicate;

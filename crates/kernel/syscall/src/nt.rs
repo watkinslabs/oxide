@@ -477,6 +477,7 @@ pub enum NtFileCall {
     Read { request: UserPtr<NtFileIoRequest> },
     Write { request: UserPtr<NtFileIoRequest> },
     QueryInformation { request: UserPtr<NtFileInformationRequest> },
+    QueryVolumeInformation { handle: u32, io_status: UserPtr<u8>, information: UserPtr<u8>, length: u32, information_class: u32 },
     SetInformation { request: UserPtr<NtFileInformationRequest> },
     QueryDirectory { request: UserPtr<NtFileInformationRequest> },
     Lock { request: UserPtr<NtLockFileRequest> },
@@ -1172,6 +1173,10 @@ pub fn decode_file(call: NtCall) -> Result<NtFileCall, Errno> {
         NtService::ReadFile => Ok(NtFileCall::Read { request: UserPtr::new(a.a0)? }),
         NtService::WriteFile => Ok(NtFileCall::Write { request: UserPtr::new(a.a0)? }),
         NtService::QueryInformationFile => Ok(NtFileCall::QueryInformation { request: UserPtr::new(a.a0)? }),
+        NtService::NtQueryVolumeInformationFile => Ok(NtFileCall::QueryVolumeInformation {
+            handle: a.a0 as u32, io_status: UserPtr::new(a.a1)?, information: UserPtr::new(a.a2)?,
+            length: a.a3 as u32, information_class: a.a4 as u32,
+        }),
         NtService::SetInformationFile => Ok(NtFileCall::SetInformation { request: UserPtr::new(a.a0)? }),
         NtService::QueryDirectoryFile => Ok(NtFileCall::QueryDirectory { request: UserPtr::new(a.a0)? }),
         NtService::LockFile => Ok(NtFileCall::Lock { request: UserPtr::new(a.a0)? }),

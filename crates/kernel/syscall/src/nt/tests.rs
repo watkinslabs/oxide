@@ -926,6 +926,15 @@ use super::*;
     }
 
     #[test]
+    fn volume_information_preserves_direct_nt_arguments() {
+        let call = decode(306, SyscallArgs { a0: 7, a1: 0x1000, a2: 0x2000, a3: 24, a4: 3, ..args() }).unwrap();
+        assert_eq!(decode_file(call), Ok(NtFileCall::QueryVolumeInformation {
+            handle: 7, io_status: UserPtr::new(0x1000).unwrap(), information: UserPtr::new(0x2000).unwrap(),
+            length: 24, information_class: 3,
+        }));
+    }
+
+    #[test]
     fn file_request_records_keep_the_x64_wire_layout() {
         assert_eq!(core::mem::size_of::<NtCreateFileRequest>(), 48);
         assert_eq!(core::mem::size_of::<NtOpenFileRequest>(), 32);
