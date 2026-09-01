@@ -20,8 +20,21 @@ const NLS_NORMALIZE: u32 = 12;
 /// pointer is valid after this adapter returns and shares the normal page
 /// cache/fault path with every other file mapping.
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == syscall::nt::NtService::RtlGetLocaleFileMappingAddress {
+        return Some(get_locale_mapping(call));
+    }
     if call.service != syscall::nt::NtService::NtGetNlsSectionPtr { return None; }
     Some(get_section(call))
+}
+
+fn get_locale_mapping(call: NtCall) -> u64 {
+    if call.args.a0 == 0 || call.args.a1 == 0 || call.args.a2 == 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let status = map_named(cur, "locale".into(), call.args.a0, call.args.a2);
+    if status != STATUS_SUCCESS { return status; }
+    if uaccess::put_user_u32(call.args.a1, 0x0409).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
 }
 
 fn get_section(call: NtCall) -> u64 {
