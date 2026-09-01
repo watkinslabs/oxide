@@ -250,6 +250,7 @@ use super::*;
     assert_eq!(decode(411, input).unwrap().service, NtService::RtlIdnToAscii);
     assert_eq!(decode(412, input).unwrap().service, NtService::RtlIdnToNameprepUnicode);
     assert_eq!(decode(413, input).unwrap().service, NtService::RtlIdnToUnicode);
+    assert_eq!(decode(414, input).unwrap().service, NtService::RtlImpersonateSelf);
     assert_eq!(decode(370, input).unwrap().service, NtService::RtlEqualSid);
     assert_eq!(decode(371, input).unwrap().service, NtService::RtlExpandEnvironmentStringsU);
     assert_eq!(decode(298, input).unwrap().service, NtService::NtQueryDirectoryObject);
