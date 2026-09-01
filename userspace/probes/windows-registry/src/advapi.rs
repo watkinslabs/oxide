@@ -17,6 +17,12 @@ impl Advapi {
     /// Attach the Win32 adapter to one registryd Unix endpoint. # C: O(1)
     pub fn connect(path: &std::path::Path) -> std::io::Result<Self> { Ok(Self { client: Client::connect(path)? }) }
 
+    /// Implement the legacy `RegOpenKeyW` entry point through the same
+    /// canonical operation as `RegOpenKeyExW`. # C: O(name length)
+    pub fn reg_open_key_w(&mut self, parent: u64, name: Option<&[u16]>) -> (u32, Option<u64>) {
+        self.reg_open_key_ex_w(parent, name, 0, 0)
+    }
+
     /// Implement the observable `RegOpenKeyExW` contract for safe Rust callers. # C: O(name length)
     pub fn reg_open_key_ex_w(&mut self, parent: u64, name: Option<&[u16]>, options: u32, _access: u32) -> (u32, Option<u64>) {
         if options != 0 { return (ERROR_INVALID_PARAMETER, None); }
@@ -148,6 +154,7 @@ mod tests {
         let server = thread::spawn(move || { let (mut stream, _) = listener.accept().unwrap(); let mut store = crate::RegistryStore::open(&server_database).unwrap(); crate::serve_connection(&mut stream, &mut store).unwrap(); });
         let mut api = Advapi::connect(&socket).unwrap(); let key_name: Vec<u16> = "Software\\Oxide".encode_utf16().chain([0]).collect();
         let (created, key) = api.reg_create_key_ex_w(HKEY_CURRENT_USER, Some(&key_name), 0, 0, 0); let key = key.unwrap(); assert_eq!(created, ERROR_SUCCESS);
+        let (opened, opened_key) = api.reg_open_key_w(HKEY_CURRENT_USER, Some(&key_name)); assert_eq!(opened, ERROR_SUCCESS); assert!(opened_key.is_some());
         let data = b"oxide"; assert_eq!(api.reg_set_value_ex_w(key, None, 0, ValueType::String as u32, Some(data), data.len() as u32), ERROR_SUCCESS);
         let mut kind = None; let mut count = 0; assert_eq!(api.reg_query_value_ex_w(key, None, 0, &mut kind, None, &mut count), ERROR_SUCCESS); assert_eq!((kind, count), (Some(ValueType::String as u32), 5));
         let mut short = [0u8; 2]; assert_eq!(api.reg_query_value_ex_w(key, None, 0, &mut kind, Some(&mut short), &mut 2), ERROR_MORE_DATA);
