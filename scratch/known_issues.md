@@ -626,3 +626,6 @@ query with the native AMD64 record; other information classes remain explicit
 until their owning kernel data source is available.
 `NtQueryValueKey` is exposed for the userspace registry-service owner; the
 kernel does not duplicate registry values or persistence state.
+`NtQueryVolumeInformationFile` is exposed at the typed file boundary; its
+implementation is pending a public VFS file-to-superblock accessor for the
+canonical `statfs` owner.
