@@ -11,6 +11,7 @@ const ACE_HEADER_BYTES: usize = 4;
 /// Delete one variable-sized ACE while preserving the caller-owned ACL.
 /// # C: O(acl bytes)
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlValidAcl { return Some(valid_acl(call.args.a0)); }
     if call.service == NtService::RtlFirstFreeAce {
         return Some(first_free_ace(call.args.a0, call.args.a1));
     }
@@ -46,6 +47,29 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     header[4..6].copy_from_slice(&((ace_count - 1) as u16).to_le_bytes());
     if uaccess::copy_to_user(call.args.a0, &header).is_err() { return Some(STATUS_INVALID_PARAMETER); }
     Some(STATUS_SUCCESS)
+}
+
+fn valid_acl(acl: u64) -> u64 {
+    if acl == 0 { return 0; }
+    let mut header = [0u8; ACL_HEADER_BYTES];
+    if uaccess::copy_from_user(&mut header, acl).is_err() { return 0; }
+    if !(2..=4).contains(&header[0]) { return 0; }
+    let size = u16::from_le_bytes([header[2], header[3]]) as u64;
+    let count = u16::from_le_bytes([header[4], header[5]]) as usize;
+    let Some(end) = acl.checked_add(size) else { return 0; };
+    let Some(mut ace) = acl.checked_add(ACL_HEADER_BYTES as u64) else { return 0; };
+    for index in 0..=count {
+        if ace > end { return 0; }
+        if index == count { break; }
+        if ace.checked_add(ACE_HEADER_BYTES as u64).is_none_or(|next| next > end) { return 0; }
+        let mut ace_header = [0u8; ACE_HEADER_BYTES];
+        if uaccess::copy_from_user(&mut ace_header, ace).is_err() { return 0; }
+        let ace_size = u16::from_le_bytes([ace_header[2], ace_header[3]]) as u64;
+        let Some(next) = ace.checked_add(ace_size) else { return 0; };
+        if next > end { return 0; }
+        ace = next;
+    }
+    1
 }
 
 fn first_free_ace(acl: u64, output: u64) -> u64 {
