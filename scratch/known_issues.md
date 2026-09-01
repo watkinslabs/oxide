@@ -679,6 +679,8 @@ concurrent ACL mutation remains outside the current native ownership model.
 waiter state and cancellation ownership remain unimplemented.
 `RtlDeleteSecurityObject` releases descriptors through the canonical NT heap
 owner; invalid foreign allocations are not yet reported with native fidelity.
+`RtlDeleteTimer` and `RtlDeleteTimerQueueEx` validate queue/timer boundaries;
+callback completion and timer-queue ownership remain unimplemented.
 `RtlCreateProcessParametersEx` validates its result-pointer boundary; native
 string capture, environment ownership, normalization, and destruction remain
 unimplemented.
