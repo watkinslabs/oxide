@@ -645,5 +645,8 @@ space copying and partial-copy accounting require an address-space-aware owner.
 completion-port queue; APC interruption remains dependent on the future APC
 delivery owner.
 `NtResetWriteWatch` now validates the current-process range before exposing the
- honest `STATUS_NOT_IMPLEMENTED` result; per-page dirty/write-protect ownership
- remains a VMM task shared by both architectures.
+honest `STATUS_NOT_IMPLEMENTED` result; per-page dirty/write-protect ownership
+remains a VMM task shared by both architectures.
+`NtResumeThread` now uses a task-owned saturating NT suspend-depth transition
+and encodes the prior depth; scheduler safe-point consumption and the matching
+`NtSuspendThread` increment path remain to be wired to the same owner.

@@ -94,6 +94,7 @@ const GENERIC_READ: u32 = 0x8000_0000;
 const FILE_GENERIC_READ: u32 = 0x0012_0089;
 const THREAD_ALL_ACCESS: u32 = 0x001f_03ff;
 const THREAD_TERMINATE: u32 = 0x0001;
+const THREAD_SUSPEND_RESUME: u32 = 0x0002;
 const THREAD_QUERY_INFORMATION: u32 = 0x0040;
 const NT_THREAD_DEFAULT_STACK: u64 = 1 << 20;
 const NT_THREAD_MAX_STACK: u64 = 64 << 20;
@@ -521,6 +522,20 @@ pub fn dispatch(call: NtCall) -> u64 {
         sched::live::force_sig_info_to_task(&target, info, sched::sigsend::ForceMode::Exit);
         return STATUS_SUCCESS;
     }
+    if call.service == nt::NtService::NtResumeThread {
+        let Ok(NtObjectCall::ResumeThread { thread, count }) = nt::decode_object(call) else { return STATUS_INVALID_PARAMETER; };
+        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+        let table = cur.thread_group.nt_handles();
+        let target = match resolve_thread_target(&cur, thread, &table, THREAD_SUSPEND_RESUME) {
+            Ok(target) => target, Err(error) => return error,
+        };
+        let previous = target.nt_resume();
+        if let Some(count) = count {
+            if uaccess::put_user_u32(count.as_u64(), previous).is_err() { return STATUS_INVALID_PARAMETER; }
+        }
+        return STATUS_SUCCESS;
+    }
     if call.service == nt::NtService::RtlExitUserThread {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
@@ -836,7 +851,8 @@ pub fn dispatch(call: NtCall) -> u64 {
             NtObjectCall::CreateSemaphore { .. } | NtObjectCall::ReleaseSemaphore { .. }
             | NtObjectCall::CreateMutant { .. } | NtObjectCall::ReleaseMutant { .. }
             | NtObjectCall::QueryMutant { .. } | NtObjectCall::QueryObject { .. }
-            | NtObjectCall::QuerySecurity { .. } | NtObjectCall::SetSecurity { .. } => STATUS_INVALID_PARAMETER,
+            | NtObjectCall::QuerySecurity { .. } | NtObjectCall::SetSecurity { .. }
+            | NtObjectCall::ResumeThread { .. } => STATUS_INVALID_PARAMETER,
         };
     }
     if call.service == nt::NtService::NtAllocateVirtualMemoryEx {

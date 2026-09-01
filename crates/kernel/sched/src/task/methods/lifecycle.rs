@@ -87,6 +87,7 @@ impl Task {
                 // set_freezable(); userspace is freezable by default.
                 nofreeze: AtomicBool::new(!starts_in_user),
                 suspend_task: AtomicBool::new(false),
+                nt_suspend_count: AtomicU32::new(0),
                 yield_pending: AtomicBool::new(false),
                 kthread_stop: AtomicBool::new(false),
                 kthread_park: AtomicBool::new(false),

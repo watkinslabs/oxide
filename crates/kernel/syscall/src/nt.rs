@@ -97,6 +97,7 @@ pub enum NtService {
     NtReadVirtualMemory = 311,
     NtRemoveIoCompletionEx = 312,
     NtResetWriteWatch = 313,
+    NtResumeThread = 314,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -164,6 +165,7 @@ pub enum NtObjectCall {
     QueryProcess { process: u64, class: u32, info: UserPtr<u8>, length: u32, return_length: Option<UserPtr<u32>> },
     CreateThreadEx { handle: UserPtr<u32>, process: u64, start: u64, parameter: u64, stack_size: u64, flags: u32 },
     TerminateThread { thread: u64, status: u64 },
+    ResumeThread { thread: u64, count: Option<UserPtr<u32>> },
     QueryThread { thread: u64, class: u32, info: UserPtr<u8>, length: u32, return_length: Option<UserPtr<u32>> },
     DuplicateObject { request: UserPtr<NtDuplicateObjectRequest> },
     DuplicateToken { token: u32, access: u32, attributes: u64, effective_only: u32, token_type: u32, handle: UserPtr<u32> },
@@ -427,6 +429,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 311 { return Some(NtCall { service: NtService::NtReadVirtualMemory, args }); }
     if service == 312 { return Some(NtCall { service: NtService::NtRemoveIoCompletionEx, args }); }
     if service == 313 { return Some(NtCall { service: NtService::NtResetWriteWatch, args }); }
+    if service == 314 { return Some(NtCall { service: NtService::NtResumeThread, args }); }
     if service == 197 { return Some(NtCall { service: NtService::RtlGUIDFromString, args }); }
     if service == 195 { return Some(NtCall { service: NtService::WineDbgOutput, args }); }
     if service == 194 { return Some(NtCall { service: NtService::WineDbgHeader, args }); }
@@ -595,7 +598,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         | NtService::CreateTimer | NtService::SetTimer | NtService::CancelTimer
         | NtService::CreateIoCompletion | NtService::SetIoCompletion | NtService::RemoveIoCompletion
         | NtService::SignalAndWait | NtService::OpenProcessToken | NtService::OpenThreadToken | NtService::QueryToken | NtService::RtlInitUnicodeString | NtService::RtlInitUnicodeStringEx | NtService::QueryObject | NtService::RtlInitAnsiString | NtService::RtlInitAnsiStringEx | NtService::QuerySecurityObject | NtService::RtlQueryPerformanceCounter | NtService::RtlQueryPerformanceFrequency | NtService::NtQueryPerformanceCounter | NtService::NtQuerySystemInformationEx | NtService::RenameKey | NtService::SetSecurityObject => Err(Errno::Enosys),
-        NtService::NtQueryValueKey | NtService::NtQueryVolumeInformationFile | NtService::NtQueueApcThread | NtService::NtQueueApcThreadEx2 | NtService::NtRaiseException | NtService::NtReadFileScatter | NtService::NtReadVirtualMemory | NtService::NtRemoveIoCompletionEx | NtService::NtResetWriteWatch => Err(Errno::Enosys),
+        NtService::NtQueryValueKey | NtService::NtQueryVolumeInformationFile | NtService::NtQueueApcThread | NtService::NtQueueApcThreadEx2 | NtService::NtRaiseException | NtService::NtReadFileScatter | NtService::NtReadVirtualMemory | NtService::NtRemoveIoCompletionEx | NtService::NtResetWriteWatch | NtService::NtResumeThread => Err(Errno::Enosys),
         NtService::LdrGetDllPath => Err(Errno::Enosys),
         NtService::LdrSetDefaultDllDirectories => Err(Errno::Enosys),
         NtService::LdrUnloadDll => Err(Errno::Enosys),
@@ -742,6 +745,7 @@ pub fn decode_object(call: NtCall) -> Result<NtObjectCall, Errno> {
             stack_size: a.a4, flags: a.a5 as u32,
         }),
         NtService::TerminateThread => Ok(NtObjectCall::TerminateThread { thread: a.a0, status: a.a1 }),
+        NtService::NtResumeThread => Ok(NtObjectCall::ResumeThread { thread: a.a0, count: optional_ptr(a.a1)? }),
         NtService::QueryInformationThread => Ok(NtObjectCall::QueryThread {
             thread: a.a0, class: a.a1 as u32, info: UserPtr::new(a.a2)?, length: a.a3 as u32,
             return_length: optional_ptr(a.a4)?,

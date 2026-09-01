@@ -12,3 +12,4 @@ mod lifecycle;
 mod state;
 mod accounting;
 mod personality;
+mod nt_suspend;
