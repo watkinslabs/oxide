@@ -537,7 +537,7 @@ pub fn dispatch(call: NtCall) -> u64 {
                 STATUS_SUCCESS
             }
             NtObjectCall::TerminateThread { .. } => STATUS_INVALID_PARAMETER,
-            NtObjectCall::DuplicateObject { .. } => STATUS_INVALID_PARAMETER,
+            NtObjectCall::DuplicateObject { .. } | NtObjectCall::DuplicateToken { .. } => STATUS_INVALID_PARAMETER,
             NtObjectCall::CreateTimer { .. } | NtObjectCall::SetTimer { .. } | NtObjectCall::CancelTimer { .. } => STATUS_INVALID_PARAMETER,
             NtObjectCall::CreateIoCompletion { .. } | NtObjectCall::SetIoCompletion { .. } | NtObjectCall::RemoveIoCompletion { .. } | NtObjectCall::SignalAndWait { .. } => STATUS_INVALID_PARAMETER,
             NtObjectCall::OpenProcessToken { .. } | NtObjectCall::OpenThreadToken { .. } | NtObjectCall::QueryToken { .. } => STATUS_INVALID_PARAMETER,
