@@ -668,3 +668,6 @@ unimplemented.
 `NtSetSystemInformation` accepts the Wine-compatible time-adjustment shape as
 an explicit no-op; host clock ownership and privilege enforcement remain in
 the kernel timekeeper/security layers.
+`NtSetSystemTime` validates the NT personality and input pointers before an
+explicit unsupported result; realtime offset ownership and privilege mapping
+still need to be connected to the canonical timekeeper.

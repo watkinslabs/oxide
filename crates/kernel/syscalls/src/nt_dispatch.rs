@@ -329,6 +329,16 @@ pub fn dispatch(call: NtCall) -> u64 {
         // adjustment owner remains the kernel timekeeper and privilege layer.
         return STATUS_SUCCESS;
     }
+    if call.service == syscall::nt::NtService::NtSetSystemTime {
+        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a1 > u64::MAX - 8 {
+            return STATUS_INVALID_PARAMETER;
+        }
+        // Wine only permits changes within half a second and reports larger
+        // changes as STATUS_PRIVILEGE_NOT_HELD. The canonical timekeeper
+        // owner is not yet exposed to the NT personality, so fail closed.
+        return STATUS_NOT_IMPLEMENTED;
+    }
     if call.service == syscall::nt::NtService::NtResetWriteWatch {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() || call.args.a0 != CURRENT_PROCESS || call.args.a1 == 0 || call.args.a2 == 0 {
