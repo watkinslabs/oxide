@@ -574,3 +574,5 @@ service has an NT-owned async watch protocol.
 The graph now reaches `ntdll.dll!NtOpenEvent`; opening named events remains an
 explicit `STATUS_NOT_IMPLEMENTED` boundary until the NT object namespace is
 implemented.
+The graph now reaches `ntdll.dll!NtOpenKey`; its registry namespace and typed
+key-handle owner remain an explicit `STATUS_NOT_IMPLEMENTED` boundary.
