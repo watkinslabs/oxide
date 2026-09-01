@@ -272,6 +272,14 @@ pub fn dispatch(call: NtCall) -> u64 {
         if object.kind() != sched::nt_object::NtObjectType::Job { return STATUS_INVALID_HANDLE; }
         return if cur.nt_job_id() == object.id() { 0x0000_0124 } else { 0x0000_0123 };
     }
+    if call.service == syscall::nt::NtService::NtLoadKey {
+        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+        // Registry hive loading needs a typed request in the userspace
+        // registry owner; accepting the ABI without that transaction would
+        // discard the hive, so fail closed until that owner is added.
+        return STATUS_NOT_IMPLEMENTED;
+    }
     if matches!(call.service, syscall::nt::NtService::NtCreateNamedPipeFile | syscall::nt::NtService::NtCreateSectionEx | syscall::nt::NtService::NtCreateSymbolicLinkObject | syscall::nt::NtService::NtCreateUserProcess | syscall::nt::NtService::NtDeleteKey | syscall::nt::NtService::NtDeleteValueKey | syscall::nt::NtService::NtEnumerateKey | syscall::nt::NtService::NtEnumerateValueKey | syscall::nt::NtService::NtFilterToken | syscall::nt::NtService::NtFlushKey) { return 0xc000_0002; }
     if let Some(result) = crate::nt_power::dispatch(call) { return result; }
     if let Some(result) = crate::nt_oem::dispatch(call) { return result; }

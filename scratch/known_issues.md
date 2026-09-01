@@ -550,4 +550,7 @@ and page-fault dirty tracking has a dedicated owner; the graph advances to
 `STATUS_NOT_IMPLEMENTED` stub, so Oxide exposes the same explicit boundary;
 the graph advances to `ntdll.dll!NtIsProcessInJob`. That call now consults
 the existing NT job association and returns Wine-compatible in-job status;
-the graph advances to `ntdll.dll!NtLoadKey`.
+the graph advances to `ntdll.dll!NtLoadKey`. Its ABI/export are exposed, but
+hive loading remains `STATUS_NOT_IMPLEMENTED` until the userspace registry
+owner gains a typed load transaction. The graph advances to
+`ntdll.dll!NtLockVirtualMemory`.

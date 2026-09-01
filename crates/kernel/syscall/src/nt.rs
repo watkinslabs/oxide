@@ -61,6 +61,7 @@ pub enum NtService {
     NtGetWriteWatch = 275,
     NtImpersonateAnonymousToken = 276,
     NtIsProcessInJob = 277,
+    NtLoadKey = 278,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -352,6 +353,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 275 { return Some(NtCall { service: NtService::NtGetWriteWatch, args }); }
     if service == 276 { return Some(NtCall { service: NtService::NtImpersonateAnonymousToken, args }); }
     if service == 277 { return Some(NtCall { service: NtService::NtIsProcessInJob, args }); }
+    if service == 278 { return Some(NtCall { service: NtService::NtLoadKey, args }); }
     if service == 197 { return Some(NtCall { service: NtService::RtlGUIDFromString, args }); }
     if service == 195 { return Some(NtCall { service: NtService::WineDbgOutput, args }); }
     if service == 194 { return Some(NtCall { service: NtService::WineDbgHeader, args }); }
@@ -488,6 +490,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::NtGetWriteWatch => Err(Errno::Enosys),
         NtService::NtImpersonateAnonymousToken => Err(Errno::Enosys),
         NtService::NtIsProcessInJob => Err(Errno::Enosys),
+        NtService::NtLoadKey => Err(Errno::Enosys),
         NtService::TerminateProcess => Err(Errno::Enosys),
         NtService::Wcscat => Err(Errno::Enosys),
         NtService::Wcschr => Err(Errno::Enosys),
