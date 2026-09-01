@@ -115,6 +115,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     }
     if call.service == NtService::RtlGetSystemPreferredUILanguages { return Some(get_system_preferred_ui_languages(call)); }
     if call.service == NtService::RtlSetThreadErrorMode { return Some(set_thread_error_mode(call.args.a0 as u32, call.args.a1)); }
+    if call.service == NtService::RtlSetThreadPreferredUILanguages { return Some(set_thread_preferred_ui_languages(call)); }
     if call.service == NtService::RtlGetThreadErrorMode { return Some(get_thread_error_mode()); }
     if call.service == NtService::RtlGetThreadPreferredUILanguages { return Some(get_thread_preferred_ui_languages(call)); }
     if call.service == NtService::RtlGetUserPreferredUILanguages { return Some(get_user_preferred_ui_languages(call)); }
@@ -644,6 +645,31 @@ fn get_thread_error_mode() -> u64 {
     let Some(cur) = sched::live::current() else { return 0; };
     if !cur.is_nt_personality() { return 0; }
     uaccess::get_user_u32(cur.nt_teb().saturating_add(TEB_HARD_ERROR_MODE_OFFSET)).map_or(0, u64::from)
+}
+
+fn set_thread_preferred_ui_languages(call: NtCall) -> u64 {
+    let flags = call.args.a0 as u32;
+    if call.args.a1 == 0 { return STATUS_SUCCESS; }
+    let mut words = Vec::new();
+    let mut languages = 0u32;
+    for index in 0..1024u64 {
+        let address = match call.args.a1.checked_add(index * 2) { Some(value) => value, None => return STATUS_INVALID_PARAMETER };
+        let mut pair = [0u8; 2];
+        if uaccess::copy_from_user(&mut pair, address).is_err() { return STATUS_INVALID_PARAMETER; }
+        let word = u16::from_le_bytes(pair);
+        words.push(word);
+        if word == 0 {
+            if index == 0 { return STATUS_UNSUCCESSFUL; }
+            if words.len() >= 2 && words[words.len() - 2] == 0 { break; }
+            languages += 1;
+        }
+    }
+    if words.last().copied() != Some(0) || languages == 0 { return STATUS_UNSUCCESSFUL; }
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    cur.nt_thread_ui_languages().lock().clone_from(&(flags, words));
+    if call.args.a2 != 0 && uaccess::put_user_u32(call.args.a2, languages).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
 }
 fn set_last_win32_error(error: u64) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };

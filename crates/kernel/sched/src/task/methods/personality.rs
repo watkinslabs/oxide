@@ -1,4 +1,5 @@
 use core::sync::atomic::Ordering;
+use sync::{Spinlock, TaskList as TaskListClass};
 
 use crate::Task;
 
@@ -26,6 +27,9 @@ impl Task {
 
     /// Read the task-owned TEB address for native thread queries. # C: O(1)
     pub fn nt_teb(&self) -> u64 { self.core.nt_teb.load(Ordering::Acquire) }
+
+    /// Access thread-local Windows preferred UI-language state. # C: O(1)
+    pub fn nt_thread_ui_languages(&self) -> &Spinlock<(u32, alloc::vec::Vec<u16>), TaskListClass> { &self.core.nt_thread_ui_languages }
 
     /// Read the canonical NT job identity for this process. # C: O(1)
     pub fn nt_job_id(&self) -> u64 { self.core.nt_job_id.load(Ordering::Acquire) }
