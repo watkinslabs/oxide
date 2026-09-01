@@ -29,6 +29,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::Wcslen { return Some(wcslen(call.args.a0)); }
     if call.service == NtService::Wcsncmp { return Some(wcsncmp(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Wcsrchr { return Some(wcsrchr(call.args.a0, call.args.a1)); }
+    if call.service == NtService::Wcstoul { return Some(wcstoul(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Isalpha { let c = call.args.a0 as i32; return Some(if c >= b'A' as i32 && c <= b'Z' as i32 { 1 } else if c >= b'a' as i32 && c <= b'z' as i32 { 2 } else { 0 }); }
     if call.service == NtService::Wcsnicmp { return Some(wcsnicmp(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Wcsicmp { return Some(wcsicmp(call.args.a0, call.args.a1)); }
@@ -254,6 +255,50 @@ fn wcsrchr(string: u64, value: u64) -> u64 {
         let Some(next) = index.checked_add(1) else { return 0; };
         index = next;
     }
+}
+
+fn wcstoul(string: u64, end: u64, base: u64) -> u64 {
+    if string == 0 || base > 36 || base == 1 { return 0; }
+    if end != 0 && uaccess::put_user_u64(end, string).is_err() { return 0; }
+    let mut index = 0usize;
+    while let Some(unit) = read_u16(string, index) {
+        if !is_wide_space(unit) { break; }
+        let Some(next) = index.checked_add(1) else { return 0; };
+        index = next;
+    }
+    let mut negative = false;
+    if let Some(unit) = read_u16(string, index) {
+        if unit == b'-' as u16 { negative = true; index = index.saturating_add(1); }
+        else if unit == b'+' as u16 { index = index.saturating_add(1); }
+    }
+    let first = read_u16(string, index).unwrap_or(0);
+    let second = read_u16(string, index.saturating_add(1)).unwrap_or(0);
+    if (base == 0 || base == 16) && first == b'0' as u16 && (second == b'x' as u16 || second == b'X' as u16) {
+        index = index.saturating_add(2);
+    }
+    let actual_base = if base == 0 { if wide_digit(first).is_some_and(|value| value != 0) { 10 } else { 8 } } else { base as u32 };
+    let mut value = 0u32;
+    let mut consumed = false;
+    loop {
+        let Some(unit) = read_u16(string, index) else { return 0; };
+        let Some(digit) = wide_digit(unit) else { break; };
+        if digit >= actual_base { break; }
+        consumed = true;
+        value = value.saturating_mul(actual_base).saturating_add(digit).min(u32::MAX);
+        let Some(next) = index.checked_add(1) else { return 0; };
+        index = next;
+    }
+    if consumed && end != 0 { let _ = uaccess::put_user_u64(end, string.checked_add((index as u64).checked_mul(2).unwrap_or(0)).unwrap_or(0)); }
+    if negative { (0u32.wrapping_sub(value)) as u64 } else { value as u64 }
+}
+
+fn is_wide_space(unit: u16) -> bool { unit == b' ' as u16 || unit == b'\t' as u16 || unit == b'\n' as u16 || unit == b'\r' as u16 || unit == 0x000b || unit == 0x000c }
+
+fn wide_digit(unit: u16) -> Option<u32> {
+    if (b'0' as u16..=b'9' as u16).contains(&unit) { Some((unit - b'0' as u16) as u32) }
+    else if (b'A' as u16..=b'Z' as u16).contains(&unit) { Some((unit - b'A' as u16 + 10) as u32) }
+    else if (b'a' as u16..=b'z' as u16).contains(&unit) { Some((unit - b'a' as u16 + 10) as u32) }
+    else { None }
 }
 
 fn wcsnicmp(first: u64, second: u64, count: u64) -> u64 {
