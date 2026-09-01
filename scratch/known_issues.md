@@ -691,6 +691,9 @@ NT heap owner; invalid foreign allocations are not yet reported natively.
 canonical NT heap owner; parameter-record validation remains absent.
 `RtlDoesFileExists_U` performs bounded UTF-16 conversion and queries the
 canonical VFS resolver; full Windows path-device translation remains absent.
+`RtlDosSearchPath_U` searches semicolon-separated paths through the canonical
+VFS resolver and writes bounded UTF-16 output; full DOS search/current-directory
+semantics remain absent.
 `RtlCreateProcessParametersEx` validates its result-pointer boundary; native
 string capture, environment ownership, normalization, and destruction remain
 unimplemented.

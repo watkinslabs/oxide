@@ -19,9 +19,9 @@ pub struct PeModuleBase<'a> {
 pub struct NtRuntime {
     pub base: UserVirtAddr,
     pub bytes: usize,
-    addresses: [u64; 360],
+    addresses: [u64; 361],
 }
-const NTDLL_EXPORTS: [&[u8]; 360] = [
+const NTDLL_EXPORTS: [&[u8]; 361] = [
     b"NtAllocateVirtualMemory", b"NtFreeVirtualMemory", b"NtProtectVirtualMemory", b"NtQueryVirtualMemory",
     b"NtTerminateProcess", b"NtCreateEvent", b"NtClose", b"NtSetEvent", b"NtResetEvent", b"NtWaitForSingleObject",
     b"NtCreateFile", b"NtOpenFile", b"NtReadFile", b"NtWriteFile", b"NtQueryInformationFile", b"NtSetInformationFile", b"NtQueryDirectoryFile", b"NtWaitForMultipleObjects",
@@ -137,6 +137,7 @@ const NTDLL_EXPORTS: [&[u8]; 360] = [
     b"RtlDestroyEnvironment",
     b"RtlDestroyProcessParameters",
     b"RtlDoesFileExists_U",
+    b"RtlDosSearchPath_U",
 ];
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct PeEntryState {
@@ -254,9 +255,9 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
     let code_bytes = (NTDLL_EXPORTS.len() - 1) * pe::nt_stub::X64_SIX_ARG_STUB_BYTES + pe::nt_stub::X64_BREAKPOINT_STUB_BYTES;
     let mapped_bytes = (code_bytes + page - 1) / page * page;
     let mut code = alloc::vec![0u8; mapped_bytes];
-    let mut addresses = [0u64; 360];
+    let mut addresses = [0u64; 361];
     let mut offset = 0usize;
-    for index in 0..360 {
+    for index in 0..361 {
         let selector = match index {
             2 => syscall::nt::NtService::ProtectVirtualMemory,
             3 => syscall::nt::NtService::QueryVirtualMemory,
@@ -568,6 +569,7 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
             357 => syscall::nt::NtService::RtlDestroyEnvironment,
             358 => syscall::nt::NtService::RtlDestroyProcessParameters,
             359 => syscall::nt::NtService::RtlDoesFileExistsU,
+            360 => syscall::nt::NtService::RtlDosSearchPathU,
             _ => syscall::nt::NtService::FreeHeap,
         };
         let bytes = if index == 220 { pe::nt_stub::encode_x64_breakpoint_stub().to_vec() }
