@@ -324,6 +324,8 @@
         assert!(query_options >= runtime.base.as_u64() && query_options < runtime.base.as_u64() + runtime.bytes as u64);
         let callback_return = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"NtCallbackReturn" }).unwrap();
         assert!(callback_return >= runtime.base.as_u64() && callback_return < runtime.base.as_u64() + runtime.bytes as u64);
+        let open_directory = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"NtOpenDirectoryObject" }).unwrap();
+        assert!(open_directory >= runtime.base.as_u64() && open_directory < runtime.base.as_u64() + runtime.bytes as u64);
         assert!(guid_from_string >= runtime.base.as_u64() && guid_from_string < runtime.base.as_u64() + runtime.bytes as u64);
     }
 
