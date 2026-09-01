@@ -15,6 +15,20 @@ const STATUS_ALERTED: u64 = 0x0000_0101;
 struct GuiEntry { group: Weak<sched::thread_group::ThreadGroup>, state: ipc::win32_window::WindowManager, wait: Arc<sched::live::WaitList> }
 static GUI: Spinlock<Vec<GuiEntry>, GuiLockClass> = Spinlock::new(Vec::new());
 
+/// Resolve a visible window rectangle from the current NT process's canonical HWND state. # C: O(N_process_gui_states + N_windows)
+pub fn window_rect_for_current(hwnd: u32) -> Option<(ipc::win32_window::WindowRect, bool)> {
+    let cur = sched::live::current()?;
+    if !cur.is_nt_personality() { return None; }
+    let group = Arc::clone(&cur.thread_group);
+    let window = ipc::win32_window::WindowId::from_raw(hwnd)?;
+    let mut entries = GUI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))?;
+    let state = &entries[index].state;
+    let record = state.get(window)?;
+    Some((state.rect(window)?, record.visible))
+}
+
 /// Dispatch one GUI call against the current NT process. `None` means this is
 /// not a window service and lets the main NT dispatcher continue its ladder.
 /// # C: O(N_process_gui_states + N_windows + N_wakeups)

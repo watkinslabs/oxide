@@ -86,6 +86,11 @@ impl Gdi {
         invoke(NtService::PresentGdiSurface, [dc, x as u64, y as u64, 0, 0, 0]).map(|_| ())
     }
 
+    /// Present a visible HWND's selected native surface at its canonical window rectangle. # C: O(width*height) plus kernel service
+    pub fn present_window(&self, hwnd: u64, dc: u64) -> Result<(), GdiError> {
+        invoke(NtService::PresentGdiWindow, [hwnd, dc, 0, 0, 0, 0]).map(|_| ())
+    }
+
     /// Submit only the intersection of a raster tile and an `ETO_CLIPPED` rectangle. # C: O(width*height) plus kernel service
     pub fn draw_raster_clipped(&self, dc: u64, x: i32, y: i32, surface: &crate::RasterSurface, clip: Rect) -> Result<(), GdiError> {
         let left = clip.left.max(x).min(x.saturating_add(surface.width as i32));
