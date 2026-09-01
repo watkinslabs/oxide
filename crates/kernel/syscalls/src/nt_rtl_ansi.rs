@@ -17,6 +17,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         let character = call.args.a0 as u16;
         return Some(if (b'A' as u16..=b'Z' as u16).contains(&character) { (character + 32) as u64 } else { character as u64 });
     }
+    if call.service == NtService::RtlDuplicateUnicodeString { return Some(duplicate_unicode_string(call.args.a0 as i32, call.args.a1, call.args.a2)); }
     if call.service == NtService::Memcpy || call.service == NtService::Memmove { return Some(memcpy(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Memset { return Some(memset(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Strcat { return Some(strcat(call.args.a0, call.args.a1)); }
@@ -336,6 +337,37 @@ fn wcsicmp(first: u64, second: u64) -> u64 {
 
 fn ascii_lower_utf16(unit: u16) -> u16 {
     if (b'A' as u16..=b'Z' as u16).contains(&unit) { unit + (b'a' as u16 - b'A' as u16) } else { unit }
+}
+
+fn duplicate_unicode_string(add_nul: i32, source: u64, destination: u64) -> u64 {
+    if source == 0 || destination == 0 || !(0..=3).contains(&add_nul) || add_nul == 2 { return STATUS_INVALID_PARAMETER; }
+    let mut source_descriptor = [0u8; UNICODE_STRING_BYTES];
+    if uaccess::copy_from_user(&mut source_descriptor, source).is_err() { return STATUS_INVALID_PARAMETER; }
+    let length = u16::from_le_bytes([source_descriptor[0], source_descriptor[1]]) as usize;
+    let maximum = u16::from_le_bytes([source_descriptor[2], source_descriptor[3]]) as usize;
+    let buffer = u64::from_le_bytes(source_descriptor[8..16].try_into().unwrap());
+    if length > maximum || (length == 0 && maximum > 0 && buffer == 0) || length & 1 != 0 { return STATUS_INVALID_PARAMETER; }
+    if length == 0 && add_nul != 3 {
+        let descriptor = [0u8; UNICODE_STRING_BYTES];
+        if uaccess::copy_to_user(destination, &descriptor).is_err() { return STATUS_INVALID_PARAMETER; }
+        return STATUS_SUCCESS;
+    }
+    let allocation = length + if add_nul != 0 { 2 } else { 0 };
+    let call = NtCall { service: NtService::AllocateHeap, args: syscall::SyscallArgs { a0: 0, a1: 0, a2: allocation as u64, a3: 0, a4: 0, a5: 0 } };
+    let Some(output) = crate::nt_heap::dispatch(call).filter(|value| *value != 0) else { return STATUS_NO_MEMORY; };
+    let mut bytes = alloc::vec![0u8; allocation];
+    if length != 0 && uaccess::copy_from_user(&mut bytes[..length], buffer).is_err() {
+        free_buffer(output); return STATUS_INVALID_PARAMETER;
+    }
+    if uaccess::copy_to_user(output, &bytes).is_err() {
+        free_buffer(output); return STATUS_INVALID_PARAMETER;
+    }
+    let mut descriptor = [0u8; UNICODE_STRING_BYTES];
+    descriptor[0..2].copy_from_slice(&(length as u16).to_le_bytes());
+    descriptor[2..4].copy_from_slice(&(allocation as u16).to_le_bytes());
+    descriptor[8..16].copy_from_slice(&output.to_le_bytes());
+    if uaccess::copy_to_user(destination, &descriptor).is_err() { free_buffer(output); return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
 }
 
 fn upcase_unicode_string(target: u64, source: u64, allocate: bool) -> u64 {
