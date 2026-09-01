@@ -61,6 +61,9 @@ impl Client {
 
     /// Enumerate typed values through a Windows-compatible session. # C: O(response bytes)
     pub fn enum_values(&mut self, key: KeyHandle) -> io::Result<Response> { self.execute(Request::EnumValues { key }) }
+
+    /// Flush one open key through the canonical registry session. # C: O(1)
+    pub fn flush(&mut self, key: KeyHandle) -> io::Result<Response> { self.execute(Request::Flush { key }) }
 }
 
 fn invalid_input(_: Error) -> io::Error { io::Error::new(io::ErrorKind::InvalidInput, "invalid UTF-16 registry name") }
@@ -83,6 +86,7 @@ fn encode_request(request: &Request) -> Result<Vec<u8>, Error> {
         Request::Close { key } => { out.push(5); put_u64(&mut out, key.raw()); }
         Request::EnumKeys { key } => { out.push(6); put_u64(&mut out, key.raw()); }
         Request::EnumValues { key } => { out.push(7); put_u64(&mut out, key.raw()); }
+        Request::Flush { key } => { out.push(11); put_u64(&mut out, key.raw()); }
     } Ok(out)
 }
 
@@ -129,6 +133,7 @@ mod tests {
         assert_eq!(client.execute(Request::Query { key, name: "build".into() }).unwrap(), Response::Value(Value { kind: ValueType::Dword, data: vec![7, 0, 0, 0] }));
         assert_eq!(client.enum_values(key).unwrap(), Response::Values(vec![("Build".into(), Value { kind: ValueType::Dword, data: vec![7, 0, 0, 0] })]));
         assert_eq!(client.enum_keys(key).unwrap(), Response::Keys(Vec::new()));
+        assert_eq!(client.flush(key).unwrap(), Response::Success);
         let child_name: Vec<u16> = "Child".encode_utf16().chain([0]).collect();
         let child = match client.create_relative_utf16(key, &child_name).unwrap() { Response::Handle(child) => child, response => panic!("unexpected response: {response:?}") };
         assert_eq!(client.open_relative_utf16(key, &child_name).unwrap(), Response::Handle(KeyHandle(child.raw() + 1)));

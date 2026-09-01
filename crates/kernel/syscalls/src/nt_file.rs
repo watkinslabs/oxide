@@ -16,6 +16,8 @@ const STATUS_OBJECT_NAME_COLLISION: u64 = 0xc000_0035;
 const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
 const STATUS_SHARING_VIOLATION: u64 = 0xc000_0043;
 const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
+const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
+const STATUS_NOT_FOUND: u64 = 0xc000_0225;
 const STATUS_END_OF_FILE: u64 = 0xc000_0011;
 const FILE_READ_DATA: u32 = 0x0001;
 const FILE_WRITE_DATA: u32 = 0x0002;
@@ -41,12 +43,15 @@ const DELETE_ACCESS: u32 = 0x0001_0000;
 const FILE_NAMES_INFORMATION: u32 = 12;
 const NT_FILETIME_EPOCH_SECONDS: i64 = 11_644_473_600;
 const STATUS_NO_MORE_FILES: u64 = 0x8000_0006;
+const STATUS_INVALID_INFO_CLASS: u64 = 0xc000_0003;
 
 /// Dispatch the implemented synchronous NT file operations. # C: O(path) + O(bytes)
 pub fn dispatch(call: NtFileCall) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     match call {
+        NtFileCall::QueryAttributes { attributes, information } => query_attributes(attributes.as_u64(), information.as_u64()),
+        NtFileCall::QueryFullAttributes { attributes, information } => query_full_attributes(attributes.as_u64(), information.as_u64()),
         NtFileCall::Create { request } => open_create(cur, request.as_u64()),
         NtFileCall::Open { request } => open_existing(cur, request.as_u64(), false),
         NtFileCall::Read { request } => io(cur, request.as_u64(), false),
@@ -56,7 +61,94 @@ pub fn dispatch(call: NtFileCall) -> u64 {
         NtFileCall::QueryDirectory { request } => query_directory(cur, request.as_u64()),
         NtFileCall::Lock { request } => crate::nt_file_lock::dispatch(cur, request.as_u64(), false),
         NtFileCall::Unlock { request } => crate::nt_file_lock::dispatch(cur, request.as_u64(), true),
+        NtFileCall::Cancel { handle, io_status } => cancel(cur, handle, None, io_status.as_u64()),
+        NtFileCall::CancelEx { handle, io, io_status } => cancel(cur, handle, io.map(|ptr| ptr.as_u64()), io_status.as_u64()),
+        NtFileCall::CancelSynchronous { handle, io, io_status } => cancel_synchronous(cur, handle, io.map(|ptr| ptr.as_u64()), io_status.as_u64()),
+        NtFileCall::Flush { handle, io_status } => flush(cur, handle, io_status.as_u64()),
     }
+}
+
+fn query_attributes(attributes: u64, information: u64) -> u64 {
+    if attributes == 0 || information == 0 { return STATUS_ACCESS_VIOLATION; }
+    let Some(path) = object_path(attributes) else { return STATUS_INVALID_PARAMETER; };
+    let lookup = crate::pathresolve::resolve_at_path(crate::pathresolve::AT_FDCWD, &path, vfs::LookupFlags::default());
+    let Ok(vp) = lookup else { return STATUS_OBJECT_NAME_NOT_FOUND; };
+    let file_type = vp.inode.file_type();
+    if file_type != vfs::FileType::Regular && file_type != vfs::FileType::Directory { return STATUS_INVALID_INFO_CLASS; }
+    let stat = vfs::generic_fillattr(vp.inode.as_ref(), &vfs::IDENTITY);
+    let mut out = [0u8; 40];
+    put_i64(&mut out, 0, filetime(stat.btime.unwrap_or(stat.ctime)));
+    put_i64(&mut out, 8, filetime(stat.atime));
+    put_i64(&mut out, 16, filetime(stat.mtime));
+    put_i64(&mut out, 24, filetime(stat.ctime));
+    let file_attributes: u32 = if file_type == vfs::FileType::Directory { 0x10 } else { 0x80 };
+    out[32..36].copy_from_slice(&file_attributes.to_ne_bytes());
+    if uaccess::copy_to_user(information, &out).is_err() { STATUS_ACCESS_VIOLATION } else { STATUS_SUCCESS }
+}
+
+fn query_full_attributes(attributes: u64, information: u64) -> u64 {
+    if attributes == 0 || information == 0 { return STATUS_ACCESS_VIOLATION; }
+    let Some(path) = object_path(attributes) else { return STATUS_INVALID_PARAMETER; };
+    let lookup = crate::pathresolve::resolve_at_path(crate::pathresolve::AT_FDCWD, &path, vfs::LookupFlags::default());
+    let Ok(vp) = lookup else { return STATUS_OBJECT_NAME_NOT_FOUND; };
+    let file_type = vp.inode.file_type();
+    if file_type != vfs::FileType::Regular && file_type != vfs::FileType::Directory { return STATUS_INVALID_INFO_CLASS; }
+    let stat = vfs::generic_fillattr(vp.inode.as_ref(), &vfs::IDENTITY);
+    let mut out = [0u8; 56];
+    put_i64(&mut out, 0, filetime(stat.btime.unwrap_or(stat.ctime)));
+    put_i64(&mut out, 8, filetime(stat.atime));
+    put_i64(&mut out, 16, filetime(stat.mtime));
+    put_i64(&mut out, 24, filetime(stat.ctime));
+    put_i64(&mut out, 32, stat.size as i64);
+    put_i64(&mut out, 40, stat.size as i64);
+    let file_attributes: u32 = if file_type == vfs::FileType::Directory { 0x10 } else { 0x80 };
+    out[48..52].copy_from_slice(&file_attributes.to_ne_bytes());
+    if uaccess::copy_to_user(information, &out).is_err() { STATUS_ACCESS_VIOLATION } else { STATUS_SUCCESS }
+}
+
+fn flush(cur: &sched::Task, handle: u32, io_status: u64) -> u64 {
+    if io_status == 0 { return STATUS_ACCESS_VIOLATION; }
+    let table = cur.thread_group.nt_handles();
+    let native = sched::nt_object::NtHandle::from_raw(handle);
+    // Wine accepts either write or append access for NtFlushBuffersFile.
+    let Some(object) = table.get(native, FILE_WRITE_DATA)
+        .or_else(|| table.get(native, FILE_APPEND_DATA)) else {
+        return if table.contains(native) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE };
+    };
+    let Some(file) = object.file() else { return STATUS_INVALID_HANDLE; };
+    let status = match file.vfs_fsync(false) {
+        Ok(()) => STATUS_SUCCESS,
+        Err(error) => nt_status_from_errno(-(error as i64)),
+    };
+    if uaccess::put_user_u64(io_status, status).is_err()
+        || uaccess::put_user_u64(io_status + 8, 0).is_err() {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    status
+}
+
+fn cancel(cur: &sched::Task, handle: u32, io: Option<u64>, io_status: u64) -> u64 {
+    let table = cur.thread_group.nt_handles();
+    let native = sched::nt_object::NtHandle::from_raw(handle);
+    let Some(object) = table.get(native, 0) else { return STATUS_INVALID_HANDLE; };
+    if object.file().is_none() { return STATUS_INVALID_HANDLE; }
+    let status = if io.is_some() { STATUS_NOT_FOUND } else { STATUS_SUCCESS };
+    if uaccess::put_user_u64(io_status, status).is_err() || uaccess::put_user_u64(io_status + 8, 0).is_err() { return STATUS_ACCESS_VIOLATION; }
+    status
+}
+
+fn cancel_synchronous(cur: &sched::Task, handle: u64, _io: Option<u64>, io_status: u64) -> u64 {
+    if io_status == 0 { return STATUS_ACCESS_VIOLATION; }
+    let table = cur.thread_group.nt_handles();
+    let valid = if handle == u64::MAX - 1 {
+        true
+    } else if handle <= u32::MAX as u64 {
+        let native = sched::nt_object::NtHandle::from_raw(handle as u32);
+        table.get(native, 0).map(|object| object.kind() == sched::nt_object::NtObjectType::Thread).unwrap_or(false)
+    } else { false };
+    if !valid { return STATUS_INVALID_HANDLE; }
+    if uaccess::put_user_u64(io_status, STATUS_NOT_FOUND).is_err() || uaccess::put_user_u64(io_status + 8, 0).is_err() { return STATUS_ACCESS_VIOLATION; }
+    STATUS_NOT_FOUND
 }
 
 fn read_u32(addr: u64) -> Result<u32, u64> { uaccess::get_user_u32(addr).map_err(|_| STATUS_INVALID_PARAMETER) }
@@ -179,14 +271,27 @@ fn io(cur: &sched::Task, addr: u64, write: bool) -> u64 {
         result.map(|n| n as u64)
     };
     match result {
-        Ok(bytes) => { write_io_status(request.io_status, STATUS_SUCCESS, bytes); STATUS_SUCCESS }
-        Err(_) => { write_io_status(request.io_status, STATUS_END_OF_FILE, 0); STATUS_END_OF_FILE }
+        Ok(bytes) => {
+            write_io_status(request.io_status, STATUS_SUCCESS, bytes);
+            post_completion(&object, request.io_status, STATUS_SUCCESS, bytes);
+            STATUS_SUCCESS
+        }
+        Err(_) => {
+            write_io_status(request.io_status, STATUS_END_OF_FILE, 0);
+            post_completion(&object, request.io_status, STATUS_END_OF_FILE, 0);
+            STATUS_END_OF_FILE
+        }
     }
 }
 
 fn write_io_status(addr: u64, status: u64, information: u64) {
     let _ = uaccess::put_user_u64(addr, status);
     let _ = uaccess::put_user_u64(addr + 8, information);
+}
+
+fn post_completion(object: &sched::nt_object::NtObject, overlapped: u64, status: u64, information: u64) {
+    let Some((port, key)) = object.file_completion() else { return; };
+    port.post(sched::nt_object::NtCompletionPacket { key, overlapped, status: status as u32, information });
 }
 
 fn query_information(cur: &sched::Task, addr: u64) -> u64 {

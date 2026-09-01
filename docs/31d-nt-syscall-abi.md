@@ -77,4 +77,8 @@ FROZEN 2026-08-31. Dep:`01`,`02`,`15`,`31c`,`53`. Provides: oxide-owned NT servi
   publication, same-access, and close-source options before changing the
   process-local NT handle table;
 - Linux syscall ABI tests remain unchanged.
+- `NtAccessCheck` is the one Windows-x64 service with more than six parameters:
+  the six-register thunk supplies arguments 0..5 through this ABI, while the
+  adapter reads arguments 6 and 7 from the preserved caller stack in the
+  x86-64 entry frame. No global `SyscallArgs` or Linux entry layout changes.
 - Registry records use fixed x86-64 layouts for `UNICODE_STRING`, `OBJECT_ATTRIBUTES`, and the four key/value requests; nested buffers are validated by the registry owner after the outer record is copied.

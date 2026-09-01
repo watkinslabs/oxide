@@ -66,6 +66,11 @@ impl Advapi {
         match self.client.execute(crate::Request::Close { key: KeyHandle(key) }) { Ok(Response::Success) => ERROR_SUCCESS, Ok(Response::Failure(error)) => status_handle(error), Ok(_) | Err(_) => ERROR_GEN_FAILURE }
     }
 
+    /// Implement `RegFlushKey` through the canonical registry service. # C: O(1)
+    pub fn reg_flush_key(&mut self, key: u64) -> u32 {
+        match self.client.flush(KeyHandle(key)) { Ok(Response::Success) => ERROR_SUCCESS, Ok(Response::Failure(error)) => status_handle(error), Ok(_) | Err(_) => ERROR_GEN_FAILURE }
+    }
+
     /// Implement `RegRenameKey` while retaining handles to renamed descendants. # C: O(subtree)
     pub fn reg_rename_key(&mut self, key: u64, name: &[u16]) -> u32 {
         match self.client.rename_utf16(KeyHandle(key), name) { Ok(Response::Success) => ERROR_SUCCESS, Ok(Response::Failure(error)) => status_handle(error), Ok(_) | Err(_) => ERROR_GEN_FAILURE }
@@ -147,8 +152,9 @@ mod tests {
         let mut kind = None; let mut count = 0; assert_eq!(api.reg_query_value_ex_w(key, None, 0, &mut kind, None, &mut count), ERROR_SUCCESS); assert_eq!((kind, count), (Some(ValueType::String as u32), 5));
         let mut short = [0u8; 2]; assert_eq!(api.reg_query_value_ex_w(key, None, 0, &mut kind, Some(&mut short), &mut 2), ERROR_MORE_DATA);
         let mut full = [0u8; 5]; let mut full_count = 5; assert_eq!(api.reg_query_value_ex_w(key, None, 0, &mut kind, Some(&mut full), &mut full_count), ERROR_SUCCESS); assert_eq!(&full, data);
+        assert_eq!(api.reg_flush_key(key), ERROR_SUCCESS);
         let mut value_name = [0u16; 8]; let mut value_name_len = value_name.len() as u32; assert_eq!(api.reg_enum_value_w(key, 0, &mut value_name, &mut value_name_len, 0, &mut kind, None, &mut 0), ERROR_SUCCESS); assert_eq!(String::from_utf16(&value_name[..value_name_len as usize]).unwrap(), "");
         let mut child_name = [0u16; 8]; let mut child_name_len = child_name.len() as u32; assert_eq!(api.reg_enum_key_ex_w(key, 0, &mut child_name, &mut child_name_len, 0), ERROR_NO_MORE_ITEMS);
-        assert_eq!(api.reg_close_key(key), ERROR_SUCCESS); drop(api); server.join().unwrap(); let _ = std::fs::remove_file(socket); let _ = std::fs::remove_file(database);
+        assert_eq!(api.reg_close_key(key), ERROR_SUCCESS); assert_eq!(api.reg_flush_key(key), ERROR_INVALID_HANDLE); drop(api); server.join().unwrap(); let _ = std::fs::remove_file(socket); let _ = std::fs::remove_file(database);
     }
 }

@@ -1,8 +1,42 @@
 # Known issues
 
-| OPEN | MISSING | high | **The production 64-bit Wine Notepad graph still imports NTDLL exports beyond the native page.** The launcher excludes Wine `ntdll.dll` by contract, and the graph loader exposes the first unresolved native import as `Unsupported` after rolling back every image reservation; allowing the Wine copy would mask the missing translation layer. | `cargo test -p elf-load --lib pe_loader::tests::installed_wine_notepad_graph_reports_missing_native_ntdll_surface -- --nocapture`: native NTDLL page remains, graph commit is rejected, and the current first unresolved import is `ntdll.dll!RtlLockHeap`. `NtQueryObject`, `NtQuerySecurityObject`, the QPC pair, `NtSetSecurityObject` ABI, ACL append helpers, `RtlCreateAcl`/`RtlCreateSecurityDescriptor`, and the ASCII-to-Unicode heap bridge are native; audit ACE names are exposed for tracing but the seven-argument Ex bridge remains open. DOS-to-NT path conversion and RtlFreeUnicodeString are now native; further requirements include loader helpers, CRT/debug helpers, and other NTDLL exports not yet implemented by the native service surface. | NT runtime |
 
+| OPEN | MISSING | high | **The production 64-bit Wine Notepad graph still imports NTDLL exports beyond the native page.** The launcher excludes Wine `ntdll.dll` by contract, and the graph loader exposes the first unresolved native import as `Unsupported` after rolling back every image reservation; allowing the Wine copy would mask the missing translation layer. | `cargo test -p elf-load --lib pe_loader::tests::installed_wine_notepad_graph_reports_missing_native_ntdll_surface -- --nocapture`: native NTDLL page remains, graph commit is rejected, and the current first unresolved import is `ntdll.dll!NtOpenDirectoryObject`. `LdrLoadDll` resolves already-loaded modules through the canonical PEB list; dynamic VFS-backed mapping and DLL attach remain open. `LdrQueryImageFileExecutionOptions` validates descriptors and reports the canonical missing-key status while the Windows registry personality is not mounted. `NtCallbackReturn` reports `STATUS_NO_CALLBACK_ACTIVE` because no native callback frame is active; callback frame stacking and return transfer remain open. `NtQueryObject`, `NtQuerySecurityObject`, the QPC pair, `NtSetSecurityObject` ABI, ACL append helpers, `RtlCreateAcl`/`RtlCreateSecurityDescriptor`, and the ASCII-to-Unicode heap bridge are native; audit ACE names are exposed for tracing but the seven-argument Ex bridge remains open. DOS-to-NT path conversion, RtlFreeUnicodeString, OEM-to-Unicode conversion, atom lookup/query, heap lock ownership, wait registration bookkeeping, and x86-64 context restoration are now native; further requirements include wait callback execution, completion callback packet delivery and callback-thread dispatch, loader helpers, CRT/debug helpers, and other NTDLL exports not yet implemented by the native service surface. | NT runtime |
 **Live issue count: 263** — 254 `OPEN`, 1 `IN-PROGRESS`, 8 `FIXED` rows retained for audit history.
+
+Windows frontier update (2026-09-01): the graph test now reports `ntdll.dll!RtlFindActivationContextSectionString`; the directory-object boundary is implemented and the named object namespace remains open.
+
+Windows frontier update (2026-09-01): `RtlFindActivationContextSectionString` now has a validated native ABI boundary; the graph advances to `ntdll.dll!RtlImageDirectoryEntryToData`. Activation-context manifest parsing and process/thread context state remain open.
+
+Windows frontier update (2026-09-01): PE directory and raw-RVA helper boundaries are native; the graph advances through the user-procedure and multibyte conversion pair to `ntdll.dll!ApiSetQueryApiSetPresenceEx`. API-set namespace resolution is now the next loader-critical subsystem.
+
+Windows frontier update (2026-09-01): the API-set presence query now validates names and reports the absent-map result; the graph advances to `ntdll.dll!DbgBreakPoint`. A serialized per-process API-set map and target resolution remain open.
+
+Windows frontier update (2026-09-01): Wine's x86-64 `DbgBreakPoint` (`int3; ret`) is now emitted as a direct native-code export, and `DbgUiConnectToDbg` has an explicit ABI selector; the graph advances to `ntdll.dll!DbgUiContinue`. Debug-object state and continuation semantics remain open.
+
+Windows frontier update (2026-09-01): the remaining Wine debug-UI ABI entries through `DbgUiWaitStateChange` are now represented explicitly; the graph advances to `ntdll.dll!DbgUiConvertStateChangeStructure`. Native debug-object queues and state-change conversion remain open.
+
+Windows frontier update (2026-09-01): API-set contract names are now canonicalized through the shared schema table during dependency discovery, while the same table populates the process PEB namespace; a schema-host regression passes. The installed Notepad graph remains blocked at `DbgUiConvertStateChangeStructure`.
+
+Windows frontier update (2026-09-01): `DbgUiConvertStateChangeStructure` now has an explicit ABI selector and remains intentionally unsupported pending native debug-event structures; the next graph frontier will identify the following NTDLL dependency.
+
+Windows frontier update (2026-09-01): `DbgUiDebugActiveProcess` now has an explicit ABI selector matching Wine's delegation to `NtDebugActiveProcess`; native debug-object attachment remains open.
+
+Windows frontier update (2026-09-01): `LdrAccessResource` now translates mapped-image and raw-data-file resource entries with bounded user accesses; the graph advances to `ntdll.dll!LdrAddDllDirectory`.
+
+Windows frontier update (2026-09-01): `LdrAddDllDirectory` and `LdrRemoveDllDirectory` now maintain process-local absolute UTF-16 directory entries with opaque cookies; the graph advances to `ntdll.dll!LdrAddRefDll`.
+
+Windows frontier update (2026-09-01): the DLL-directory implementation now compiles in the target kernel path and preserves explicit cookie ownership; `LdrAddRefDll` remains the next module-lifetime boundary.
+
+Windows frontier update (2026-09-01): `LdrAddRefDll` now validates canonical PEB loader membership and tracks incremented or pinned process-local module counts; the graph advances to `ntdll.dll!LdrDisableThreadCalloutsForDll`.
+Windows frontier update (2026-09-01): `LdrDisableThreadCalloutsForDll` now validates canonical PEB loader membership and records process-local callback suppression; native TLS-index flags remain open, and the graph advances to `ntdll.dll!LdrEnumerateLoadedModules`.
+Windows frontier update (2026-09-01): resource directory and data-entry lookup now walk bounded PE32+ resource trees for numeric type/name/language identifiers; named resource ordering and locale fallback remain open, and the graph advances to `ntdll.dll!LdrGetDllHandleEx`.
+Windows frontier update (2026-09-01): `LdrGetDllHandleEx` now validates flags, resolves loaded modules through the canonical PEB loader list, supports implicit `.dll`, and applies unchanged/refcount/pin behavior; path-based DLL discovery remains open, and the graph advances to `ntdll.dll!LdrGetDllPath`.
+Windows frontier update (2026-09-01): `LdrGetDllPath` now validates flags, builds a bounded UTF-16 search list from process, user, and system directories, allocates it through the NT process heap, and publishes an owned pointer; full DLL probing and exact Wine directory ordering remain open, and the graph advances to `ntdll.dll!LdrSetDefaultDllDirectories`.
+Windows frontier update (2026-09-01): `LdrSetDefaultDllDirectories` now validates the documented default-directory mask and stores process-wide loader policy; wiring that policy into path construction remains open, and the graph advances to `ntdll.dll!LdrUnloadDll`.
+Windows frontier update (2026-09-01): `LdrUnloadDll` now validates PEB loader membership and decrements or preserves process-local reference state for ordinary and pinned modules; detach callbacks, VMA teardown, and loader-list removal remain open, and the graph advances to `ntdll.dll!NtAccessCheck`.
+Windows frontier update (2026-09-01): `LdrGetProcedureAddress` now validates loaded modules and ANSI strings, resolves bounded named and ordinal exports from mapped PE32+ images, resolves named exports from the synthetic native ntdll catalog, and follows bounded forwarders through the current loader list; the graph remains at `ntdll.dll!NtAccessCheck`.
+Windows frontier update (2026-09-01): `NtAccessCheck` now uses the preserved Windows-x64 stack tail for its seventh and eighth parameters, validates the token, generic mapping, self-relative DACL, bounded ACE ordering, and publishes granted access/status; full privilege-set semantics and richer token SID membership remain open, and the graph advances to `ntdll.dll!NtAdjustGroupsToken`.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
@@ -405,3 +439,336 @@ not reach a valid desktop sample.
 | E4-14 | DONE | The previously reported ARM sysinit EIO/SIGBUS event did not reproduce in the controlled ARM boot-smoke run; userspace answered the systemd probe and the serial RX probe passed in 22 seconds. | Controlled ARM boot-smoke evidence; retain broader ARM desktop validation under E4-03. |
 | E4-15 | DONE | The controlled GNOME/SMP=1 comparison and phase attribution are recorded. The result does not claim a whole-boot gain: the current run remains within the documented workload variance and attributes the dominant resolution cost to parent-lock waits, not inode-table lookup selection. | `scratch/perf-history.md` E4-15 perf-r1 and perf-r2; `target/perf-report-x86_64.log`; fresh-main repeatability run. |
 | E4-16 | DONE | Historical ext4 ledger rows are explicitly historical, mapped to the E4 inventory, and no longer carry the stale pending SHA or old current-suite count. | `scratch/perf-history.md` E4-08 maps to merged `6da0ed7c0`; the superseded 62-failure row records the current 373-unit/full-image harness result. |
+
+Windows NT frontier update: the Notepad import graph now resolves through
+`NtAdjustGroupsToken`; its bounded replacement/reset path is implemented, while
+previous-state/return-length buffers and `NtAdjustPrivilegesToken` remain open.
+Windows NT frontier update (2026-09-01): `NtAdjustPrivilegesToken` now has
+bounded privilege mutation, disable-all, and prior-state output; the graph
+advances to `ntdll.dll!NtAllocateLocallyUniqueId`.
+Windows NT frontier update (2026-09-01): `NtAllocateLocallyUniqueId` now
+validates the output pointer and allocates monotonic LUID values; the graph
+advances to `ntdll.dll!NtAllocateVirtualMemoryEx`.
+Windows NT frontier update (2026-09-01): `NtAllocateVirtualMemoryEx` now
+accepts the native seven-argument ABI, validates the seventh stack argument,
+and delegates zero-extended-parameter allocations to the existing VM owner;
+the graph advances to `ntdll.dll!NtCancelIoFile`. Extended parameter records
+remain unsupported until their VM semantics are implemented.
+Windows NT frontier update (2026-09-01): `NtCancelIoFile` and
+`NtCancelIoFileEx` validate NT file handles and publish IO status blocks;
+the synchronous NT file adapter has no pending request queue, so Ex-specific
+request cancellation reports `STATUS_NOT_FOUND` and synchronous-I/O
+cancellation remains open. The graph advances to
+`ntdll.dll!NtCancelSynchronousIoFile`.
+Windows NT frontier update (2026-09-01): `NtCancelSynchronousIoFile` now
+validates current/real NT thread handles and publishes the reference
+`STATUS_NOT_FOUND` result when no synchronous request is pending; the graph
+advances to `ntdll.dll!NtCompareObjects`.
+Windows NT frontier update (2026-09-01): `NtCompareObjects` now distinguishes
+current-process/current-thread pseudo handles, validates process-local handles,
+and compares duplicated handles by canonical NT object identity; the graph
+advances to `ntdll.dll!NtConvertBetweenAuxiliaryCounterAndPerformanceCounter`.
+Windows NT frontier update (2026-09-01):
+`NtConvertBetweenAuxiliaryCounterAndPerformanceCounter` now exposes the native
+four-argument ABI and the Wine-compatible unsupported-counter result (including
+the required null-input access violation); the graph advances to
+`ntdll.dll!NtCreateKey`.
+Windows NT frontier update (2026-09-01): the existing `CreateKey` service is
+now reachable from the synthetic NTDLL export page as `NtCreateKey`; registry
+key object semantics are not yet implemented, and the graph advances to
+`ntdll.dll!NtCreateNamedPipeFile`.
+Windows NT frontier update (2026-09-01): `NtCreateNamedPipeFile` now has an
+explicit native export and an explicit `STATUS_NOT_IMPLEMENTED` boundary;
+named-pipe object and connection semantics remain pending. The graph advances
+to `ntdll.dll!NtCreateSectionEx`.
+Windows NT frontier update (2026-09-01): `NtCreateSectionEx` now has an
+explicit native export and a fail-closed `STATUS_NOT_IMPLEMENTED` boundary;
+extended section parameter records remain pending. The graph advances to its
+`ntdll.dll!NtCreateSymbolicLinkObject`.
+Windows NT frontier update (2026-09-01): `NtCreateSymbolicLinkObject` now has
+an explicit native export and fail-closed `STATUS_NOT_IMPLEMENTED` boundary;
+symbolic-link object semantics remain pending. The graph advances to its next
+unresolved native import, `ntdll.dll!NtCreateUserProcess`.
+Windows NT frontier update (2026-09-01): `NtCreateUserProcess` now has an
+explicit native export and fail-closed `STATUS_NOT_IMPLEMENTED` boundary;
+the process-parameter/create-info adapter remains pending. The graph advances
+to `ntdll.dll!NtDelayExecution`.
+Windows NT frontier update (2026-09-01): `NtDelayExecution` now uses the
+existing scheduler interruptible wait path with native relative/absolute
+100-ns timeout conversion and alertable-result mapping; the graph advances to
+`ntdll.dll!NtDeleteKey`.
+Windows NT frontier update (2026-09-01): `NtDeleteKey` now has an explicit
+native export and fail-closed `STATUS_NOT_IMPLEMENTED` boundary; registry key
+deletion semantics remain pending. The graph advances to its next unresolved
+native import, `ntdll.dll!NtDeleteValueKey`.
+Windows NT frontier update (2026-09-01): `NtDeleteValueKey` now has an
+explicit native export and fail-closed `STATUS_NOT_IMPLEMENTED` boundary;
+registry value deletion semantics remain pending. The graph advances to its
+next unresolved native import, `ntdll.dll!NtDuplicateToken`.
+Windows NT frontier update (2026-09-01): `NtDuplicateToken` now validates
+token-handle access, requested access, token type, and output memory, then
+returns a new process-local handle retaining the token state. The graph
+advances to `ntdll.dll!NtEnumerateKey`.
+Windows NT frontier update (2026-09-01): `NtEnumerateKey` now has an explicit
+native export and fail-closed `STATUS_NOT_IMPLEMENTED` boundary; NT registry
+key enumeration remains pending. The graph advances to its next unresolved
+native import, `ntdll.dll!NtEnumerateValueKey`.
+Windows NT frontier update (2026-09-01): `NtEnumerateValueKey` now has an
+explicit native export and fail-closed `STATUS_NOT_IMPLEMENTED` boundary; NT
+registry value enumeration remains pending. The graph advances to its next
+unresolved native import, `ntdll.dll!NtFilterToken`.
+Windows NT frontier update (2026-09-01): `NtFilterToken` now has an explicit
+native export and fail-closed `STATUS_NOT_IMPLEMENTED` boundary; restricted
+token SID/privilege representation remains pending. The graph advances to
+`ntdll.dll!NtFlushBuffersFile`.
+Windows NT frontier update (2026-09-01): `NtFlushBuffersFile` now resolves
+through the native file adapter and flushes the backing VFS file with NT
+handle-access and `IO_STATUS_BLOCK` completion semantics. The graph advances
+to `ntdll.dll!NtFlushInstructionCache`.
+Windows NT frontier update (2026-09-01): `NtFlushInstructionCache` now has
+an explicit native export and validates the current-process handle before the
+x86/x86_64 coherent-cache no-op. The graph advances to `ntdll.dll!NtFlushKey`.
+Windows NT frontier update (2026-09-01): `NtFlushKey` now has an explicit
+native export and fail-closed boundary while registry state remains owned by
+the userspace registry service. The graph advances to
+`ntdll.dll!NtFlushVirtualMemory`.
+Windows NT frontier update (2026-09-01): `NtFlushVirtualMemory` now validates
+the current-process scope, rounds and verifies the requested mapped range,
+flushes file-backed VMA ranges through the canonical backing owner, and
+publishes the adjusted address/size. `NtGetContextThread` now exposes the
+current x86_64 task's integer/control context from the canonical `PtRegs`
+owner; remote, debug, floating-point, segment, and XSTATE context remain
+explicitly unsupported. The graph advances to
+`ntdll.dll!NtGetNlsSectionPtr`, which now resolves Wine-compatible NLS data
+files from `/usr/share/wine/nls` through the normal read-only file-backed VMA
+path. `NtGetTickCount` now uses the monotonic timekeeper with Windows'
+32-bit millisecond wrap semantics. The graph advances to
+`ntdll.dll!NtGetWriteWatch`. The write-watch ABI is exposed with strict
+current-process validation but remains `STATUS_NOT_IMPLEMENTED` until VMA
+and page-fault dirty tracking has a dedicated owner; the graph advances to
+`ntdll.dll!NtImpersonateAnonymousToken`. Wine’s own implementation is a
+`STATUS_NOT_IMPLEMENTED` stub, so Oxide exposes the same explicit boundary;
+the graph advances to `ntdll.dll!NtIsProcessInJob`. That call now consults
+the existing NT job association and returns Wine-compatible in-job status;
+the graph advances to `ntdll.dll!NtLoadKey`. Its ABI/export are exposed, but
+hive loading remains `STATUS_NOT_IMPLEMENTED` until the userspace registry
+owner gains a typed load transaction. The graph advances to
+`ntdll.dll!NtLockVirtualMemory`.
+`NtLockVirtualMemory` now follows Wine’s current-process path: it rounds and
+publishes the range, applies the VMM-owned locked VMA state, and populates
+resident pages through the PMM path. Remote-process locking remains an
+explicit `STATUS_INVALID_PARAMETER` boundary until the NT APC/process-memory
+owner exists. The graph advances to the next unimplemented NT export.
+The next graph export, `ntdll.dll!NtMakeTemporaryObject`, is exposed with an
+explicit `STATUS_NOT_IMPLEMENTED` boundary because the NT handle table does
+not yet own named-object permanence state. The graph then reaches
+`ntdll.dll!NtMapViewOfSectionEx`; its extended parameter and APC mapping
+protocol remain an explicit `STATUS_NOT_IMPLEMENTED` boundary until those NT
+owners exist.
+The graph now reaches `ntdll.dll!NtNotifyChangeDirectoryFile`; its async
+directory-watch registration remains an explicit `STATUS_NOT_IMPLEMENTED`
+boundary until the NT event/APC owner is connected to VFS notifications.
+The graph then reaches `ntdll.dll!NtNotifyChangeKey`; registry notification
+remains an explicit `STATUS_NOT_IMPLEMENTED` boundary until the registry
+service has an NT-owned async watch protocol.
+The graph now reaches `ntdll.dll!NtOpenEvent`; opening named events remains an
+explicit `STATUS_NOT_IMPLEMENTED` boundary until the NT object namespace is
+implemented.
+`NtQueryAttributesFile` is implemented through the canonical VFS resolver and
+inode metadata owner, with Windows `FILE_BASIC_INFORMATION` time and type
+translation.
+`NtQueryDefaultLocale` is implemented with strict NT-personality/pointer
+validation and the current en-US baseline LCID (`0x0409`).
+`NtQueryDefaultUILanguage` is implemented against the same validated en-US
+baseline (`LANGID 0x0409`).
+The graph now reaches `ntdll.dll!NtQueryDirectoryObject`; NT object-directory
+enumeration remains an explicit `STATUS_NOT_IMPLEMENTED` boundary.
+The graph now reaches `ntdll.dll!NtOpenProcess`; process-handle acquisition
+remains an explicit `STATUS_NOT_IMPLEMENTED` boundary pending the typed NT
+CLIENT_ID and access-check owner.
+The graph now reaches `ntdll.dll!NtOpenSection`; named-section lookup remains
+an explicit `STATUS_NOT_IMPLEMENTED` boundary pending the NT object namespace.
+The graph now reaches `ntdll.dll!NtOpenSemaphore`; named semaphore lookup
+remains an explicit `STATUS_NOT_IMPLEMENTED` boundary pending that namespace.
+The graph now reaches `ntdll.dll!NtOpenSymbolicLinkObject`; NT symbolic-link
+objects remain an explicit `STATUS_NOT_IMPLEMENTED` boundary pending their
+namespace owner.
+The graph now reaches `ntdll.dll!NtOpenThread`; CLIENT_ID-based thread-handle
+acquisition remains an explicit `STATUS_NOT_IMPLEMENTED` boundary.
+The graph now reaches `ntdll.dll!NtOpenTimer`; named timer lookup remains an
+explicit `STATUS_NOT_IMPLEMENTED` boundary pending the NT object namespace.
+`NtPrivilegeCheck` is implemented against the canonical NT token privilege
+owner, including enabled-privilege matching and all-required semantics.
+The graph now reaches `ntdll.dll!NtPulseEvent`; transient pulse wake
+semantics remain an explicit `STATUS_NOT_IMPLEMENTED` boundary.
+The graph now reaches `ntdll.dll!NtOpenKey`; its registry namespace and typed
+key-handle owner remain an explicit `STATUS_NOT_IMPLEMENTED` boundary.
+`NtOpenKeyEx` is exposed at the same boundary; its registry options still
+require the typed registry namespace owner.
+The graph now reaches `ntdll.dll!NtOpenMutant`; named mutant lookup remains an
+explicit `STATUS_NOT_IMPLEMENTED` boundary until the NT object namespace is
+implemented.
+`NtQueryFullAttributesFile` now translates the Wine-shaped network-open
+information record from canonical VFS metadata, including timestamps, size,
+and regular-file or directory attributes.
+`NtQueryInstallUILanguage` now returns the same en-US LANGID baseline as Wine's
+system LCID fallback.
+`NtQueryKey` is exposed at the NT boundary; registry key state remains owned by
+the planned userspace registry service, as required by the Windows architecture
+plan, rather than being duplicated inside the kernel.
+`NtQueryPerformanceCounter` now shares the monotonic counter and 10 MHz
+frequency owner used by the existing RTL performance-counter implementation.
+`NtQuerySymbolicLinkObject` is exposed at the object-manager boundary; its
+target data must come from the canonical NT symbolic-link namespace, not a
+second interpretation of VFS symlinks.
+`NtQuerySystemInformationEx` implements Wine's x86-64 supported-architecture
+query with the native AMD64 record; other information classes remain explicit
+until their owning kernel data source is available.
+`NtQueryValueKey` is exposed for the userspace registry-service owner; the
+kernel does not duplicate registry values or persistence state.
+`NtQueryVolumeInformationFile` is exposed at the typed file boundary; its
+implementation is pending a public VFS file-to-superblock accessor for the
+canonical `statfs` owner.
+`NtQueueApcThread` remains an explicit boundary until the scheduler owns a
+Windows APC queue and x86-64 user APC return path; it must not be conflated
+with Linux signal pending state.
+`NtQueueApcThreadEx2` is exposed alongside the base APC boundary; reserve
+handles, special APC flags, and callback delivery require that same owner.
+`NtRaiseException` is exposed at the exception boundary; complete behavior
+requires a canonical exception-record dispatcher and resumable x86-64 user
+context owner, still absent from the current exception module.
+`NtReadFileScatter` is exposed at the file boundary; segmented user-buffer
+validation and completion require a scatter-read owner in the NT file adapter.
+`NtReadVirtualMemory` is exposed at the process-memory boundary; cross-address-
+space copying and partial-copy accounting require an address-space-aware owner.
+`NtRemoveIoCompletionEx` now removes multiple packets through the canonical NT
+completion-port queue; APC interruption remains dependent on the future APC
+delivery owner.
+`NtResetWriteWatch` now validates the current-process range before exposing the
+honest `STATUS_NOT_IMPLEMENTED` result; per-page dirty/write-protect ownership
+remains a VMM task shared by both architectures.
+`NtResumeThread` now uses a task-owned saturating NT suspend-depth transition
+and encodes the prior depth; `NtSuspendThread` now increments that same owner,
+while scheduler safe-point consumption remains to be wired.
+`NtSaveKey` now validates the NT personality and non-null key/file handles
+before returning `STATUS_NOT_IMPLEMENTED`; a canonical registry-key object and
+hive serializer over the VFS are still required.
+`NtSetContextThread` now mutates the current x86_64 task's canonical syscall
+frame for validated integer/control context fields; remote stopped-register
+snapshots and non-x86 context owners remain unimplemented.
+`NtSetInformationObject` now validates the implemented handle-flag class and
+input structure before returning `STATUS_NOT_IMPLEMENTED`; inherit and
+protect-from-close bits still need ownership in the canonical handle table.
+`NtSetInformationToken` now owns TokenSessionId mutation in the canonical
+token object; default-DACL serialization and integrity-level SID ownership
+remain explicit gaps.
+`NtSetInformationVirtualMemory` now exposes the prefetch class boundary with
+argument validation; VMM prefetch and per-page write-watch ownership remain
+unimplemented.
+`RtlCreateTimer` and `RtlCreateTimerQueue` validate output and callback
+boundaries; callback dispatch, cancellation, and queue lifetime remain
+unimplemented.
+`RtlCreateUserStack` validates stack sizing and the INITIAL_TEB output boundary;
+VMM allocation, guard-page policy, and NT-thread teardown remain unimplemented.
+`RtlDeactivateActivationContext` and `RtlReleaseActivationContext` validate
+their opaque handles/cookies; activation-frame and reference-count ownership
+remain unimplemented.
+`RtlDeleteAce` validates and compacts variable-sized caller-owned ACL entries;
+concurrent ACL mutation remains outside the current native ownership model.
+`RtlDeleteBarrier` preserves the reference no-op destruction boundary; barrier
+waiter state and cancellation ownership remain unimplemented.
+`RtlDeleteSecurityObject` releases descriptors through the canonical NT heap
+owner; invalid foreign allocations are not yet reported with native fidelity.
+`RtlDeleteTimer` and `RtlDeleteTimerQueueEx` validate queue/timer boundaries;
+callback completion and timer-queue ownership remain unimplemented.
+`RtlDeregisterWaitEx` removes the canonical wait record; completion-event
+signaling remains unimplemented when a non-null event is supplied.
+`RtlDeriveCapabilitySidsFromName` derives the reference UTF-16/SHA-256 SID
+layouts for ASCII case folding; full Unicode uppercase mapping remains absent.
+`RtlDestroyEnvironment` releases the environment block through the canonical
+NT heap owner; invalid foreign allocations are not yet reported natively.
+`RtlDestroyProcessParameters` releases the process-parameter block through the
+canonical NT heap owner; parameter-record validation remains absent.
+`RtlDoesFileExists_U` performs bounded UTF-16 conversion and queries the
+canonical VFS resolver; full Windows path-device translation remains absent.
+`RtlDosSearchPath_U` searches semicolon-separated paths through the canonical
+VFS resolver and writes bounded UTF-16 output; full DOS search/current-directory
+semantics remain absent.
+`RtlDowncaseUnicodeChar` follows the reference ASCII fallback; full NLS
+lowercase-table mapping is not yet connected.
+`RtlCreateProcessParametersEx` validates its result-pointer boundary; native
+string capture, environment ownership, normalization, and destruction remain
+unimplemented.
+`RtlCreateEnvironment` validates the native output-pointer boundary; inherited
+environment cloning and NT environment-block allocation/lifetime remain
+unimplemented.
+`RtlCopySid` validates the native SID header and destination capacity, then
+copies the bounded SID through the focused SID owner.
+`RtlCreateActivationContext` validates the native `ACTCTXW` header and flag
+mask; manifest parsing and activation-context object ownership remain absent.
+`NtSetSystemInformation` accepts the Wine-compatible time-adjustment shape as
+an explicit no-op; host clock ownership and privilege enforcement remain in
+the kernel timekeeper/security layers.
+`NtSetSystemTime` validates the NT personality and input pointers before an
+explicit unsupported result; realtime offset ownership and privilege mapping
+still need to be connected to the canonical timekeeper.
+`NtSetValueKey` now exposes and validates the native six-argument ABI without
+confusing it with the internal registry request record; canonical key/value
+storage and VFS persistence remain unimplemented.
+`NtUnloadKey` now validates its native `OBJECT_ATTRIBUTES` pointer boundary;
+registry hive namespace and persistence ownership remain unimplemented.
+`NtUnlockVirtualMemory` now rounds the current-process range and releases the
+canonical VMA/PMM lock state; remote-process APC delivery remains unimplemented.
+`NtUnmapViewOfSectionEx` supports the documented zero-flags current-process
+path through the canonical VMA unmapper; extended flags and remote processes
+remain unimplemented.
+`NtWriteFileGather` validates its native I/O-status and segment-array pointer
+shape; scatter/gather segment copying and file-owner integration remain
+unimplemented.
+`NtWriteVirtualMemory` validates native process/source/count/output pointers;
+target address-space ownership and safe partial-copy reporting remain
+unimplemented.
+`NtYieldExecution` now routes through the canonical scheduler-yield owner for
+the NT personality; the precise `STATUS_NO_YIELD_PERFORMED` distinction is not
+yet surfaced.
+`RtlActivateActivationContext` validates the native flags, opaque context, and
+cookie-pointer boundary; per-thread activation-context stack and cookie
+ownership remain unimplemented.
+`RtlActivateActivationContextEx` validates the native TEB, opaque activation
+context, and cookie-pointer boundary; TEB stack linking and cookie ownership
+remain unimplemented.
+`RtlAddAccessAllowedObjectAce` is cataloged with the reference implementation's
+explicit unsupported result; canonical ACL mutation remains unimplemented.
+`RtlAddAccessDeniedObjectAce` is cataloged with the reference implementation's
+explicit unsupported result; canonical ACL mutation remains unimplemented.
+`RtlAddAuditAccessObjectAce` is cataloged with the reference implementation's
+explicit unsupported result; canonical ACL mutation remains unimplemented.
+`RtlAddMandatoryAce` validates the mandatory-label ACE type and flag mask at
+the NT security owner; self-relative ACL insertion remains unimplemented.
+`RtlAddRefActivationContext` is cataloged as a void native boundary; the
+activation-context object and its reference-count owner remain in userspace.
+`RtlAllocateAndInitializeSid` allocates through the canonical NT heap owner and
+writes the native SID layout; SID validation/free-lifetime edge cases remain.
+`RtlAreAllAccessesGranted` implements the reference bitmask predicate in the
+RTL owner; generic-access mapping remains the caller's responsibility.
+`RtlAreAnyAccessesGranted` implements the companion reference bitmask
+predicate; generic-access mapping remains the caller's responsibility.
+`RtlBarrier` remains an explicit unsupported userspace synchronization boundary;
+wait-on-address ownership and safe caller-memory barrier state are not present.
+`RtlClearBits` mutates the caller-owned RTL bitmap with reference-compatible
+range no-op behavior; atomicity across concurrent bitmap users remains absent.
+`RtlCompactHeap` preserves the reference's harmless zero-byte compaction stub;
+the canonical NT heap has no compaction operation to expose.
+`RtlCompareUnicodeStrings` compares bounded UTF-16 code units with the
+reference ASCII fallback for case-insensitive calls; full NLS case mapping is
+not yet connected.
+`RtlConvertToAutoInheritSecurityObject` preserves the reference implementation's
+explicit `STATUS_NOT_IMPLEMENTED` result; auto-inheritance descriptor ownership
+remains unimplemented.
+`RtlCopyContext` implements the reference AMD64 flag validation and selected
+legacy-context copy ranges; extended XSTATE and i386 context support remain
+unimplemented.
+`RtlEqualPrefixSid` validates native SID layouts and compares the prefix through
+the final shared subauthority, preserving the reference count requirement.
+`RtlEqualSid` validates native SID layouts and compares the complete SID byte
+representation, including every subauthority.

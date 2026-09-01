@@ -60,9 +60,10 @@ pub fn discover_modules<'a, S: ModuleSource<'a>>(root_name: &'a [u8], root_blob:
     while index < modules.len() {
         let dependencies = modules[index].image.dependencies()?;
         for dependency in dependencies {
-            if modules.iter().any(|module| ascii_eq_ignore_case(module.name, dependency)) { continue; }
-            let blob = source.load(dependency).ok_or(Error::Unsupported)?;
-            modules.push(Module { name: dependency, image: parse(blob)? });
+            let resolved = crate::apiset::target(dependency).unwrap_or(dependency);
+            if modules.iter().any(|module| ascii_eq_ignore_case(module.name, resolved)) { continue; }
+            let blob = source.load(resolved).ok_or(Error::Unsupported)?;
+            modules.push(Module { name: resolved, image: parse(blob)? });
         }
         index += 1;
     }
@@ -88,10 +89,11 @@ pub fn discover_owned_modules_with_builtins<'a, S: ModuleSource<'a>, F: Fn(&[u8]
     while index < modules.len() {
         let dependencies: Vec<Vec<u8>> = { let image = parse(&modules[index].blob)?; image.dependencies()?.into_iter().map(|name| name.to_vec()).collect() };
         for dependency in dependencies {
-            if is_builtin(&dependency) { continue; }
-            if modules.iter().any(|module| ascii_eq_ignore_case(&module.name, &dependency)) { continue; }
-            let blob = source.load(&dependency).ok_or(Error::Unsupported)?;
-            modules.push(OwnedModule { name: dependency, blob: blob.to_vec() });
+            let resolved = crate::apiset::target(&dependency).unwrap_or(&dependency);
+            if is_builtin(resolved) { continue; }
+            if modules.iter().any(|module| ascii_eq_ignore_case(&module.name, resolved)) { continue; }
+            let blob = source.load(resolved).ok_or(Error::Unsupported)?;
+            modules.push(OwnedModule { name: resolved.to_vec(), blob: blob.to_vec() });
         }
         index += 1;
     }

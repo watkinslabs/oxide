@@ -71,6 +71,16 @@ fn discovers_transitive_modules_once_and_accepts_cycles() {
 }
 
 #[test]
+fn api_set_dependencies_are_loaded_by_their_schema_host() {
+    let root = imports_image(b"api-ms-win-core-file-l1-2-0.dll");
+    let host = image();
+    let source = OneModule { name: b"kernelbase.dll", blob: &host };
+    let modules = discover_modules(b"root.exe", &root, &source).unwrap();
+    assert_eq!(modules.len(), 2);
+    assert_eq!(modules[1].name, b"kernelbase.dll");
+}
+
+#[test]
 fn missing_dependency_fails_before_module_mapping() {
     let root = imports_image(b"missing.dll");
     let source = OneModule { name: b"other.dll", blob: &root };

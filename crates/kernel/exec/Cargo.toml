@@ -16,6 +16,7 @@ klog     = { path = "../../shared/klog" }
 syscall  = { path = "../syscall" }
 uaccess  = { path = "../uaccess" }
 vmm      = { path = "../mm-vmm" }
+sync     = { path = "../../shared/sync" }
 
 [features]
 debug-boot = []

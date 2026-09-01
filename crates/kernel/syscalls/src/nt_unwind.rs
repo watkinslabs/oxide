@@ -3,6 +3,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::nt::{NtCall, NtService};
+use elf_load::pe_modules;
 
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 #[cfg(target_arch = "x86_64")]
@@ -14,7 +15,12 @@ const CONTEXT_FLAGS_FULL: u32 = 0x0010_000f;
 /// # C: O(1) plus one user read
 pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlCaptureContext { return Some(capture_context(call.args.a0)); }
-    if call.service != NtService::RtlUnwind { return None; }
+    if call.service == NtService::RtlRestoreContext { return Some(restore_context(call.args.a0)); }
+    if call.service == NtService::RtlLookupFunctionEntry { return Some(lookup_function_entry(call.args.a0, call.args.a1)); }
+    if call.service == NtService::RtlPcToFileHeader { return Some(pc_to_file_header(call.args.a0, call.args.a1)); }
+    if call.service == NtService::Setjmp || call.service == NtService::Setjmpex { return Some(setjmp(call.args.a0, call.args.a1)); }
+    if call.service == NtService::Longjmp { return Some(longjmp(call.args.a0, call.args.a1 as u32)); }
+    if call.service != NtService::RtlUnwind && call.service != NtService::RtlUnwindEx { return None; }
     let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
     if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
     #[cfg(target_arch = "x86_64")]
@@ -45,6 +51,107 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     }
     #[cfg(target_arch = "aarch64")]
     { let _ = cur; Some(STATUS_INVALID_PARAMETER) }
+}
+
+fn lookup_function_entry(pc: u64, base: u64) -> u64 {
+    if base == 0 { return STATUS_INVALID_PARAMETER; }
+    if uaccess::put_user_u64(base, 0).is_err() { return STATUS_INVALID_PARAMETER; }
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let Some(module) = cur.clone_mm().and_then(|mm| pe_modules::find(mm.root_pa(), pc)) else { return 0; };
+    if uaccess::put_user_u64(base, module.base).is_err() { return STATUS_INVALID_PARAMETER; }
+    let Some(rva) = pc.checked_sub(module.base) else { return 0; };
+    let Some(table) = module.base.checked_add(module.exception_rva as u64) else { return 0; };
+    let count = module.exception_size / 12;
+    for index in 0..count {
+        let Some(entry) = table.checked_add(index as u64 * 12) else { return 0; };
+        let mut bytes = [0u8; 12];
+        if uaccess::copy_from_user(&mut bytes, entry).is_err() { return 0; }
+        let begin = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as u64;
+        let end = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as u64;
+        if begin <= rva && rva < end { return entry; }
+    }
+    0
+}
+
+fn pc_to_file_header(pc: u64, address: u64) -> u64 {
+    if address == 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let module = cur.clone_mm().and_then(|mm| pe_modules::find(mm.root_pa(), pc));
+    let file_header = module.map_or(0, |module| module.base);
+    if uaccess::put_user_u64(address, file_header).is_err() { return STATUS_INVALID_PARAMETER; }
+    file_header
+}
+
+fn setjmp(buffer: u64, frame: u64) -> u64 {
+    if buffer == 0 || hal::UserVirtAddr::new(buffer).is_none() { return STATUS_INVALID_PARAMETER; }
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    #[cfg(target_arch = "x86_64")]
+    {
+        let regs = hal_x86_64::current_pt_regs();
+        if regs.is_null() { return STATUS_INVALID_PARAMETER; }
+        // SAFETY: current_pt_regs is the active task frame and is exclusively read during dispatch.
+        let regs = unsafe { &*regs };
+        let mut jump = [0u8; 0x100];
+        let put = |offset: usize, value: u64, out: &mut [u8; 0x100]| { out[offset..offset + 8].copy_from_slice(&value.to_le_bytes()); };
+        put(0x00, frame, &mut jump); put(0x08, regs.rbx, &mut jump); put(0x10, regs.rsp, &mut jump);
+        put(0x18, regs.rbp, &mut jump); put(0x20, regs.rsi, &mut jump); put(0x28, regs.rdi, &mut jump);
+        put(0x30, regs.r12, &mut jump); put(0x38, regs.r13, &mut jump); put(0x40, regs.r14, &mut jump);
+        put(0x48, regs.r15, &mut jump); put(0x50, regs.rip, &mut jump);
+        if uaccess::copy_to_user(buffer, &jump).is_err() { return STATUS_INVALID_PARAMETER; }
+        return 0;
+    }
+    #[cfg(target_arch = "aarch64")]
+    { let _ = frame; STATUS_INVALID_PARAMETER }
+}
+
+fn longjmp(buffer: u64, value: u32) -> u64 {
+    if buffer == 0 || hal::UserVirtAddr::new(buffer).is_none() { return STATUS_INVALID_PARAMETER; }
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    #[cfg(target_arch = "x86_64")]
+    {
+        let mut jump = [0u8; 0x100];
+        if uaccess::copy_from_user(&mut jump, buffer).is_err() { return STATUS_INVALID_PARAMETER; }
+        let read = |offset: usize| u64::from_le_bytes(jump[offset..offset + 8].try_into().unwrap());
+        let rsp = read(0x10); let rip = read(0x50);
+        if hal::UserVirtAddr::new(rsp).is_none() || hal::UserVirtAddr::new(rip).is_none() { return STATUS_INVALID_PARAMETER; }
+        let regs = hal_x86_64::current_pt_regs();
+        if regs.is_null() { return STATUS_INVALID_PARAMETER; }
+        // SAFETY: current_pt_regs is the active task frame and is exclusively rewritten during this native dispatch transfer.
+        let regs = unsafe { &mut *regs };
+        regs.rbx = read(0x08); regs.rbp = read(0x18); regs.rsi = read(0x20); regs.rdi = read(0x28);
+        regs.r12 = read(0x30); regs.r13 = read(0x38); regs.r14 = read(0x40); regs.r15 = read(0x48);
+        regs.rsp = rsp; regs.rip = rip; regs.rax = if value == 0 { 1 } else { value as u64 };
+        return regs.rax;
+    }
+    #[cfg(target_arch = "aarch64")]
+    { let _ = value; STATUS_INVALID_PARAMETER }
+}
+
+fn restore_context(target: u64) -> u64 {
+    if target == 0 || hal::UserVirtAddr::new(target).is_none() { return STATUS_INVALID_PARAMETER; }
+    #[cfg(target_arch = "x86_64")]
+    {
+        const RIP: u64 = 0xf8; const RSP: u64 = 0x98; const RFLAGS: u64 = 0x44;
+        let read = |offset: u64| target.checked_add(offset).and_then(|address| uaccess::get_user_u64(address).ok());
+        let Some(rip) = read(RIP) else { return STATUS_INVALID_PARAMETER; };
+        let Some(rsp) = read(RSP) else { return STATUS_INVALID_PARAMETER; };
+        if hal::UserVirtAddr::new(rip).is_none() || hal::UserVirtAddr::new(rsp).is_none() { return STATUS_INVALID_PARAMETER; }
+        let frame = hal_x86_64::current_pt_regs();
+        if frame.is_null() { return STATUS_INVALID_PARAMETER; }
+        // SAFETY: the active syscall frame belongs exclusively to this task during native dispatch.
+        let regs = unsafe { &mut *frame };
+        let pairs = [(0x80, &mut regs.rcx), (0x88, &mut regs.rdx), (0x90, &mut regs.rbx), (0xa0, &mut regs.rbp), (0xa8, &mut regs.rsi), (0xb0, &mut regs.rdi), (0xb8, &mut regs.r8), (0xc0, &mut regs.r9), (0xc8, &mut regs.r10), (0xd0, &mut regs.r11), (0xd8, &mut regs.r12), (0xe0, &mut regs.r13), (0xe8, &mut regs.r14), (0xf0, &mut regs.r15), (0x78, &mut regs.rax)];
+        for (offset, slot) in pairs { let Some(value) = read(offset) else { return STATUS_INVALID_PARAMETER; }; *slot = value; }
+        let Some(flags) = target.checked_add(RFLAGS).and_then(|address| uaccess::get_user_u32(address).ok()) else { return STATUS_INVALID_PARAMETER; };
+        regs.rip = rip; regs.rsp = rsp; regs.rflags = hal::uregs::x86_64::sigreturn_eflags(regs.rflags, flags as u64);
+        regs.rax
+    }
+    #[cfg(target_arch = "aarch64")]
+    { STATUS_INVALID_PARAMETER }
 }
 
 fn capture_context(target: u64) -> u64 {

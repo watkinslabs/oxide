@@ -64,6 +64,9 @@ pub struct TaskCore {
     /// Linux `PF_SUSPEND_TASK`: this task asked for the suspend. Freezing it
     /// would deadlock the machine against itself.
     pub suspend_task: AtomicBool,
+    /// NT per-thread suspend depth, owned by the task rather than an NT-side
+    /// shadow table so all thread-control paths observe one counter.
+    pub nt_suspend_count: AtomicU32,
     /// Linux `sched_yield`: consumed by `schedule()` before re-enqueueing current.
     pub yield_pending: AtomicBool,
     /// Linux `kthread_should_stop`: set by `kthread_stop`, polled by the thread's

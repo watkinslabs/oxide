@@ -90,6 +90,38 @@ impl AddressSpace {
         g.find_containing(va).cloned()
     }
 
+    /// Flush dirty file-backed pages overlapping one fully mapped range and
+    /// return the page-aligned range actually processed. Anonymous mappings
+    /// are valid and require no backing-store operation. # C: O(N_vma + dirty pages)
+    pub fn flush_virtual_range(&self, address: u64, size: u64) -> KResult<(u64, u64)> {
+        let page = hal::PAGE_SIZE_BYTES as u64;
+        let start = address & !(page - 1);
+        let requested_end = if size == 0 { None } else { Some(address.checked_add(size).ok_or(Error::Inval)?) };
+        let end = match requested_end {
+            Some(raw) => raw.checked_add(page - 1).map(|value| value & !(page - 1)).ok_or(Error::Inval)?,
+            None => {
+                let va = UserVirtAddr::new(start).ok_or(Error::Inval)?;
+                self.vmas.read().find_containing(va).map(|v| v.end.as_u64()).ok_or(Error::Inval)?
+            }
+        };
+        if start >= end || UserVirtAddr::new(start).is_none() || UserVirtAddr::new(end - 1).is_none() { return Err(Error::Inval); }
+        let tree = self.vmas.read();
+        let mut cursor = start;
+        for vma in tree.iter() {
+            if vma.end.as_u64() <= cursor { continue; }
+            if vma.start.as_u64() > cursor || vma.start.as_u64() >= end { return Err(Error::Inval); }
+            let overlap_end = vma.end.as_u64().min(end);
+            if let VmaBacking::File { backing, off } = &vma.backing {
+                let file_start = off.checked_add(cursor - vma.start.as_u64()).ok_or(Error::Inval)?;
+                let file_end = off.checked_add(overlap_end - vma.start.as_u64()).ok_or(Error::Inval)?;
+                backing.fsync_range(file_start, file_end).map_err(|_| Error::Io)?;
+            }
+            cursor = overlap_end;
+            if cursor >= end { return Ok((start, end - start)); }
+        }
+        Err(Error::Inval)
+    }
+
     /// Tear a leaf only while `va` still belongs to the named file page.
     /// Caller holds the page-table lock before entering, preserving lock order.
     /// # C: O(log N)

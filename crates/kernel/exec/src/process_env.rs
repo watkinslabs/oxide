@@ -4,7 +4,10 @@ use pe::Error;
 use vmm::{AddressSpace, MmapPlacement, VmaBacking, VmaFlags, VmaProt};
 
 pub const X64_SHADOW_SPACE: u64 = 32;
+#[cfg(test)]
 const PAGE: usize = 4096;
+const THREAD_TEB_BYTES: usize = 0x4000;
+pub const NT_DEBUG_INFO_OFFSET: u64 = 0x2f00;
 const PEB_OFF: usize = 0x000;
 const TEB_OFF: usize = 0x100;
 const TLS_OFF: usize = 0x180;
@@ -15,6 +18,7 @@ const MOD_STRIDE: usize = 0x70;
 const MAX_MODULES: usize = 64;
 const ENV_OFF: usize = 0x1000;
 const STR_OFF: usize = 0x800;
+const API_SET_OFF: usize = 0x2800;
 const BLOCK_BYTES: usize = 0x4000;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -26,6 +30,7 @@ pub struct NtProcessEnvironment {
     pub loader_data: UserVirtAddr,
     pub environment: UserVirtAddr,
     pub tls: UserVirtAddr,
+    pub api_set_map: UserVirtAddr,
     pub bytes: usize,
 }
 
@@ -62,21 +67,21 @@ pub fn build(input: &EnvironmentInput<'_>, as_: &AddressSpace) -> Result<NtProce
 /// thread-owned and carries the TEB self pointer, IDs, PEB pointer, and TLS.
 /// # C: O(1)
 pub fn build_thread_teb(process_id: u32, thread_id: u32, peb: u64, as_: &AddressSpace) -> Result<UserVirtAddr, Error> {
-    let reservation = as_.mmap(None, PAGE, VmaProt::READ | VmaProt::WRITE,
+    let reservation = as_.mmap(None, THREAD_TEB_BYTES, VmaProt::READ | VmaProt::WRITE,
         VmaFlags::PRIVATE, VmaBacking::Anonymous, false).map_err(|_| Error::Einval)?;
     let base = reservation.as_u64();
-    let mut teb = vec![0u8; PAGE];
+    let mut teb = vec![0u8; THREAD_TEB_BYTES];
     put_u64(&mut teb, 0x30, base);
     put_u64(&mut teb, 0x60, peb);
     put_u32(&mut teb, 0x40, process_id);
     put_u32(&mut teb, 0x48, thread_id);
     put_u64(&mut teb, 0x58, base + 0x180);
-    as_.munmap(reservation, PAGE).map_err(|_| Error::Einval)?;
+    as_.munmap(reservation, THREAD_TEB_BYTES).map_err(|_| Error::Einval)?;
     let data = as_.stash_bytes(teb.into_boxed_slice());
-    if as_.mmap_with_may_at(MmapPlacement::FixedNoReplace(reservation), PAGE,
+    if as_.mmap_with_may_at(MmapPlacement::FixedNoReplace(reservation), THREAD_TEB_BYTES,
         VmaProt::READ | VmaProt::WRITE, VmaProt::READ | VmaProt::WRITE,
         VmaFlags::PRIVATE, VmaBacking::KernelBytes { data, off: 0 }).is_err() {
-        let _ = as_.munmap(reservation, PAGE);
+        let _ = as_.munmap(reservation, THREAD_TEB_BYTES);
         return Err(Error::Einval);
     }
     Ok(reservation)
@@ -109,7 +114,7 @@ pub fn build_with_modules(input: &EnvironmentInput<'_>, modules: &[NtModuleInput
     }
     let env_off = ENV_OFF;
     let total = env_off.checked_add(env.len() * 2).ok_or(Error::Einval)?;
-    if total > BLOCK_BYTES || module_text_off > ENV_OFF { return Err(Error::Einval); }
+    if total > API_SET_OFF || module_text_off > ENV_OFF { return Err(Error::Einval); }
     let reservation = as_.mmap(None, BLOCK_BYTES, VmaProt::READ | VmaProt::WRITE,
         VmaFlags::PRIVATE, VmaBacking::Anonymous, false).map_err(|_| Error::Einval)?;
     let base = reservation.as_u64();
@@ -118,6 +123,7 @@ pub fn build_with_modules(input: &EnvironmentInput<'_>, modules: &[NtModuleInput
     put_u64(&mut block, PEB_OFF + 0x18, base + LDR_OFF as u64);
     put_u64(&mut block, PEB_OFF + 0x20, base + PARAM_OFF as u64);
     put_u64(&mut block, PEB_OFF + 0x30, 0);
+    put_u64(&mut block, PEB_OFF + 0x68, base + API_SET_OFF as u64);
     put_u64(&mut block, PEB_OFF + 0x78, 0);
     put_u64(&mut block, TEB_OFF + 0x30, base + TEB_OFF as u64);
     put_u64(&mut block, TEB_OFF + 0x60, base + PEB_OFF as u64);
@@ -155,6 +161,7 @@ pub fn build_with_modules(input: &EnvironmentInput<'_>, modules: &[NtModuleInput
     copy_u16(&mut block, image_path_off, &image_path);
     copy_u16(&mut block, command_off, &command_line);
     copy_u16(&mut block, env_off, &env);
+    put_api_set_map(&mut block, API_SET_OFF)?;
     as_.munmap(reservation, BLOCK_BYTES).map_err(|_| Error::Einval)?;
     let data = as_.stash_bytes(block.into_boxed_slice());
     if as_.mmap_with_may_at(MmapPlacement::FixedNoReplace(reservation), BLOCK_BYTES,
@@ -162,12 +169,56 @@ pub fn build_with_modules(input: &EnvironmentInput<'_>, modules: &[NtModuleInput
         VmaFlags::PRIVATE, VmaBacking::KernelBytes { data, off: 0 }).is_err() {
         let _ = as_.munmap(reservation, BLOCK_BYTES); return Err(Error::Einval);
     }
-    Ok(NtProcessEnvironment { base: reservation, peb: addr(base, PEB_OFF)?, teb: addr(base, TEB_OFF)?, process_parameters: addr(base, PARAM_OFF)?, loader_data: addr(base, LDR_OFF)?, environment: addr(base, ENV_OFF)?, tls: addr(base, TLS_OFF)?, bytes: BLOCK_BYTES })
+    Ok(NtProcessEnvironment { base: reservation, peb: addr(base, PEB_OFF)?, teb: addr(base, TEB_OFF)?, process_parameters: addr(base, PARAM_OFF)?, loader_data: addr(base, LDR_OFF)?, environment: addr(base, ENV_OFF)?, tls: addr(base, TLS_OFF)?, api_set_map: addr(base, API_SET_OFF)?, bytes: BLOCK_BYTES })
 }
+
+fn put_api_set_map(block: &mut [u8], off: usize) -> Result<(), Error> {
+    const HEADER: usize = 28;
+    const HASH: usize = 8;
+    const ENTRY: usize = 24;
+    const VALUE: usize = 20;
+    let count = pe::apiset::entries().len();
+    let hash_off = off + HEADER;
+    let entry_off = hash_off + count * HASH;
+    let value_off = entry_off + count * ENTRY;
+    let mut text_off = value_off + count * VALUE;
+    let mut names = Vec::new();
+    for (index, &(name, target)) in pe::apiset::entries().iter().enumerate() {
+        let name = utf16_bytes(name)?;
+        let target = utf16_bytes(target)?;
+        let name_at = text_off + names.len() * 2;
+        names.extend_from_slice(&name[..name.len() - 1]);
+        let target_at = text_off + names.len() * 2;
+        names.extend_from_slice(&target[..target.len() - 1]);
+        put_u32(block, entry_off + index * ENTRY + 4, (name_at - off) as u32);
+        put_u32(block, entry_off + index * ENTRY + 8, ((name.len() - 1) * 2) as u32);
+        put_u32(block, entry_off + index * ENTRY + 12, ((name.len() - 1) * 2) as u32);
+        put_u32(block, entry_off + index * ENTRY + 16, (value_off + index * VALUE - off) as u32);
+        put_u32(block, entry_off + index * ENTRY + 20, 1);
+        put_u32(block, value_off + index * VALUE + 12, (target_at - off) as u32);
+        put_u32(block, value_off + index * VALUE + 16, ((target.len() - 1) * 2) as u32);
+    }
+    text_off = text_off.checked_add(names.len() * 2).ok_or(Error::Einval)?;
+    if text_off > block.len() { return Err(Error::Einval); }
+    copy_u16(block, value_off + count * VALUE, &names);
+    put_u32(block, off, 6);
+    put_u32(block, off + 4, (text_off - off) as u32);
+    put_u32(block, off + 12, count as u32);
+    put_u32(block, off + 16, (entry_off - off) as u32);
+    put_u32(block, off + 20, (hash_off - off) as u32);
+    put_u32(block, off + 24, 31);
+    for index in 0..count { put_u32(block, hash_off + index * HASH + 4, index as u32); }
+    Ok(())
+}
+
 
 fn utf16(s: &str) -> Result<Vec<u16>, Error> {
     if s.contains('\0') { return Err(Error::Einval); }
     let mut v: Vec<u16> = s.encode_utf16().collect(); v.push(0); Ok(v)
+}
+fn utf16_bytes(s: &[u8]) -> Result<Vec<u16>, Error> {
+    let text = core::str::from_utf8(s).map_err(|_| Error::Einval)?;
+    utf16(text)
 }
 fn addr(base: u64, off: usize) -> Result<UserVirtAddr, Error> { UserVirtAddr::new(base.checked_add(off as u64).ok_or(Error::Einval)?).ok_or(Error::Einval) }
 fn put_u32(b: &mut [u8], o: usize, v: u32) { b[o..o + 4].copy_from_slice(&v.to_le_bytes()); }
@@ -228,6 +279,9 @@ mod tests {
         assert_eq!(read16(PARAM_OFF + 0x60), ("C:\\Windows\\notepad.exe".encode_utf16().count() * 2) as u16);
         assert_eq!(read16(PARAM_OFF + 0x70), ("notepad.exe a.txt".encode_utf16().count() * 2) as u16);
         assert_eq!(read64(PARAM_OFF + 0x80), base as u64 + ENV_OFF as u64);
+        assert_eq!(read64(PEB_OFF + 0x68), base as u64 + API_SET_OFF as u64);
+        assert_eq!(u32::from_le_bytes(bytes[API_SET_OFF..API_SET_OFF + 4].try_into().unwrap()), 6);
+        assert_eq!(u32::from_le_bytes(bytes[API_SET_OFF + 12..API_SET_OFF + 16].try_into().unwrap()), pe::apiset::entries().len() as u32);
         assert_eq!(off, 0);
     }
 

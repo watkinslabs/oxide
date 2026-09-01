@@ -34,6 +34,10 @@ mod nt_path_type;
 mod nt_image;
 mod nt_dos83;
 #[cfg(target_os = "oxide-kernel")]
+mod nt_heap_lock;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_oem;
+#[cfg(target_os = "oxide-kernel")]
 mod nt_exec;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_file;
@@ -54,6 +58,28 @@ mod nt_heap;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_loader_dir;
 #[cfg(target_os = "oxide-kernel")]
+mod nt_loader_proc;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_directory;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_actctx;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_env;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_threadpool;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_user_stack;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_capability;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_exists;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_search_path;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_acl;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_apiset;
+#[cfg(target_os = "oxide-kernel")]
 mod nt_atom;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_power;
@@ -62,7 +88,22 @@ mod nt_window;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_unwind;
 #[cfg(target_os = "oxide-kernel")]
+mod nt_exception;
+mod nt_nls;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_memory_lock;
+#[cfg(target_os = "oxide-kernel")]
 mod nt_rtl;
+mod nt_bitmap;
+mod nt_unicode;
+mod nt_context;
+mod nt_sid;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_rtl_ansi;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_debug;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_rtl_integer;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_critical;
 #[cfg(target_os = "oxide-kernel")]
@@ -71,7 +112,6 @@ mod nt_printf;
 mod nt_security;
 #[path = "nt_time.rs"]
 mod nt_time;
-mod nt_threadpool;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_object_query;
 #[cfg(target_os = "oxide-kernel")]

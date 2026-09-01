@@ -23,6 +23,8 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         NtService::RtlDestroyAtomTable => Some(destroy_table(call.args.a0)),
         NtService::RtlDeleteAtomFromAtomTable => Some(rtl_delete(call.args.a0, call.args.a1 as u16)),
         NtService::RtlAddAtomToAtomTable => Some(rtl_add(call.args.a0, call.args.a1, call.args.a2)),
+        NtService::RtlLookupAtomInAtomTable => Some(rtl_lookup(call.args.a0, call.args.a1, call.args.a2)),
+        NtService::RtlQueryAtomInAtomTable => Some(rtl_query(call.args.a0, call.args.a1 as u16, call.args.a2, call.args.a3, call.args.a4, call.args.a5)),
         NtService::DeleteAtom => Some(delete(call.args.a0 as u16)),
         NtService::FindAtom => Some(find(call.args.a0, call.args.a1 as usize, call.args.a2)),
         NtService::QueryInformationAtom => Some(query(call.args.a0 as u16, call.args.a1 as u32,
@@ -103,6 +105,55 @@ fn atom_name_eq(left: &[u8], right: &[u8]) -> bool {
         let right = u16::from_le_bytes([b[0], b[1]]);
         left == right || left <= 0x7f && right <= 0x7f && fold_ascii(left) == fold_ascii(right)
     })
+}
+
+fn rtl_lookup(table: u64, name: u64, output: u64) -> u64 {
+    if table == 0 || name == 0 || output == 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    if name <= u16::MAX as u64 {
+        return if uaccess::copy_to_user(output, &(name as u16).to_le_bytes()).is_ok() { STATUS_SUCCESS } else { STATUS_INVALID_PARAMETER };
+    }
+    let mut value = Vec::new();
+    for index in 0..255usize {
+        let address = match name.checked_add((index * 2) as u64) { Some(value) => value, None => return STATUS_INVALID_PARAMETER };
+        let mut pair = [0u8; 2];
+        if uaccess::copy_from_user(&mut pair, address).is_err() { return STATUS_INVALID_PARAMETER; }
+        if pair == [0, 0] { break; }
+        value.extend_from_slice(&pair);
+        if index == 254 { return STATUS_INVALID_PARAMETER; }
+    }
+    if value.is_empty() { return STATUS_INVALID_PARAMETER; }
+    let atoms = cur.thread_group.nt_atoms.lock();
+    let Some(index) = atoms.iter().position(|entry| atom_name_eq(entry, &value)) else { return STATUS_OBJECT_NAME_NOT_FOUND; };
+    let Some(atom) = FIRST_STRING_ATOM.checked_add(index as u16) else { return STATUS_OBJECT_NAME_NOT_FOUND; };
+    if uaccess::copy_to_user(output, &atom.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
+}
+
+fn rtl_query(table: u64, atom: u16, reference: u64, pin: u64, name: u64, length: u64) -> u64 {
+    if table == 0 || atom == 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    if reference != 0 && uaccess::put_user_u32(reference, 1).is_err() { return STATUS_INVALID_PARAMETER; }
+    if pin != 0 && uaccess::put_user_u32(pin, 1).is_err() { return STATUS_INVALID_PARAMETER; }
+    let mut value = if atom < FIRST_STRING_ATOM {
+        let mut digits = [0u8; 5]; let mut number = atom as u32; let mut end = digits.len();
+        while number != 0 { end -= 1; digits[end] = b'0' + (number % 10) as u8; number /= 10; }
+        let mut result = Vec::with_capacity(digits.len() - end + 2); result.extend_from_slice(&(b'#' as u16).to_le_bytes());
+        for byte in &digits[end..] { result.extend_from_slice(&(*byte as u16).to_le_bytes()); } result
+    } else {
+        let index = (atom - FIRST_STRING_ATOM) as usize; let atoms = cur.thread_group.nt_atoms.lock();
+        let Some(entry) = atoms.get(index).filter(|entry| !entry.is_empty()) else { return STATUS_INVALID_HANDLE; }; entry.clone()
+    };
+    let required = value.len() as u32;
+    let capacity = if length == 0 { 0 } else { match uaccess::get_user_u32(length) { Ok(value) => value as usize, Err(_) => return STATUS_INVALID_PARAMETER } };
+    if length != 0 && uaccess::put_user_u32(length, required).is_err() { return STATUS_INVALID_PARAMETER; }
+    if name == 0 { return if length == 0 { STATUS_SUCCESS } else { STATUS_BUFFER_TOO_SMALL }; }
+    if length == 0 { return STATUS_BUFFER_TOO_SMALL; }
+    let copy = core::cmp::min(capacity.saturating_sub(2), value.len()); value.truncate(copy);
+    if uaccess::copy_to_user(name, &value).is_err() || uaccess::copy_to_user(name + copy as u64, &[0, 0]).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
 }
 
 fn fold_ascii(value: u16) -> u16 { if value >= b'A' as u16 && value <= b'Z' as u16 { value + (b'a' - b'A') as u16 } else { value } }

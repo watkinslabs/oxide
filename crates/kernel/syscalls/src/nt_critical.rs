@@ -17,6 +17,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         NtService::RtlInitializeCriticalSectionEx => Some(initialize(call.args.a0, call.args.a1 as u32)),
         NtService::RtlDeleteCriticalSection => Some(delete(call.args.a0)),
         NtService::RtlEnterCriticalSection => Some(enter(call.args.a0)),
+        NtService::RtlTryEnterCriticalSection => Some(try_enter(call.args.a0)),
         NtService::RtlLeaveCriticalSection => Some(leave(call.args.a0)),
         _ => None,
     }
@@ -77,6 +78,28 @@ fn enter(critical: u64) -> u64 {
     if outcome != sched::WaitOutcome::Ready { return STATUS_ALERTED; }
     if uaccess::put_user_u64(owner_address, cur.tid as u64).is_err() || uaccess::put_user_u32(recursion_address, 1).is_err() { return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
+}
+
+fn try_enter(critical: u64) -> u64 {
+    const LOCK: u64 = 8; const RECURSION: u64 = 12; const OWNER: u64 = 16;
+    if critical == 0 { return 0; }
+    let Some(cur) = sched::live::current() else { return 0; };
+    if !cur.is_nt_personality() || cur.tid == 0 { return 0; }
+    let Some(lock) = critical.checked_add(LOCK) else { return 0; };
+    let Some(owner_address) = critical.checked_add(OWNER) else { return 0; };
+    let Some(recursion_address) = critical.checked_add(RECURSION) else { return 0; };
+    let seen = match uaccess::cmpxchg_user_u32(lock, u32::MAX, 0) { Ok(value) => value, Err(_) => return 0 };
+    if seen == u32::MAX {
+        if uaccess::put_user_u64(owner_address, cur.tid as u64).is_err() || uaccess::put_user_u32(recursion_address, 1).is_err() { return 0; }
+        return 1;
+    }
+    let Ok(owner) = uaccess::get_user_u64(owner_address) else { return 0; };
+    if owner != cur.tid as u64 { return 0; }
+    let Some(next) = seen.checked_add(1) else { return 0; };
+    if next == u32::MAX || uaccess::cmpxchg_user_u32(lock, seen, next).ok() != Some(seen) { return 0; }
+    let Ok(recursion) = uaccess::get_user_u32(recursion_address) else { return 0; };
+    if uaccess::put_user_u32(recursion_address, recursion.saturating_add(1)).is_err() { return 0; }
+    1
 }
 
 fn leave(critical: u64) -> u64 {
