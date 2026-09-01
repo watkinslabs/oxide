@@ -1,7 +1,9 @@
 //! Native userspace gdi32 façade over the tagged NT GDI ABI.
 
 mod client;
+mod raster;
 pub use client::{Gdi, GdiError, Font, Rect, TextExtent, TextMetrics};
+pub use raster::{RasterError, RasterFont, RasterSurface};
 
 #[cfg(test)]
 mod tests {

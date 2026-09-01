@@ -75,6 +75,11 @@ impl Gdi {
         let packed = (x as u64 & 0xffff_ffff) | ((y as u64 & 0xffff_ffff) << 32);
         invoke(NtService::BlitGdiSurface, [dc, pixels.as_ptr() as u64, width as u64, height as u64, stride as u64, packed]).map(|_| ())
     }
+
+    /// Submit one userspace-rasterized text tile to its native device context. # C: O(width*height) plus kernel service
+    pub fn draw_raster(&self, dc: u64, x: i32, y: i32, surface: &crate::RasterSurface) -> Result<(), GdiError> {
+        self.blit_surface(dc, x, y, surface.width, surface.height, surface.width, &surface.pixels)
+    }
 }
 
 fn invoke(service: NtService, args: [u64; 6]) -> Result<u64, GdiError> {
