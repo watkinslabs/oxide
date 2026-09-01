@@ -19,6 +19,13 @@ const LIST_LINK_OFFSET: u64 = 0;
 const MAX_MODULE_SCAN: usize = 64;
 
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlFindMessage {
+        if call.args.a0 == 0 || call.args.a4 == 0 { return Some(0xc000_000d); }
+        // Wine resolves the message-table resource and returns an entry
+        // through LdrFindResource_U/LdrAccessResource. The PE resource owner
+        // is not installed yet, so do not fabricate a returned entry.
+        return Some(0xc000_0002);
+    }
     if call.service != NtService::LdrGetProcedureAddress { return None; }
     Some(get_procedure(call))
 }
