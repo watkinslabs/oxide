@@ -19,6 +19,7 @@ const SID_MAX_SUB_AUTHORITIES: u64 = 15;
 /// Allocate a heap-owned SID and initialize its native layout.
 /// # C: O(1) plus bounded user copies and one VMM allocation
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlLengthRequiredSid { return Some(length_required_sid(call.args.a0 as u32)); }
     if call.service == NtService::RtlInitializeSid { return Some(initialize_sid(call.args.a0, call.args.a1, call.args.a2 & 0xff)); }
     if call.service == NtService::RtlIdentifierAuthoritySid { return Some(identifier_authority_sid(call.args.a0)); }
     if call.service == NtService::RtlFreeSid { return Some(free_sid(call.args.a0)); }
@@ -32,6 +33,10 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     }
     if call.service != NtService::RtlAllocateAndInitializeSid { return None; }
     Some(allocate_and_initialize(call))
+}
+
+fn length_required_sid(subauthorities: u32) -> u64 {
+    ((subauthorities.wrapping_sub(1)).wrapping_mul(4).wrapping_add(12)) as u64
 }
 
 fn initialize_sid(sid: u64, authority: u64, count: u64) -> u64 {

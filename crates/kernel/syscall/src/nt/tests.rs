@@ -258,6 +258,7 @@ use super::*;
     assert_eq!(decode(419, input).unwrap().service, NtService::RtlIsDosDeviceNameU);
     assert_eq!(decode(420, input).unwrap().service, NtService::RtlIsNormalizedString);
     assert_eq!(decode(421, input).unwrap().service, NtService::RtlIsProcessorFeaturePresent);
+    assert_eq!(decode(422, input).unwrap().service, NtService::RtlLengthRequiredSid);
     assert_eq!(decode(370, input).unwrap().service, NtService::RtlEqualSid);
     assert_eq!(decode(371, input).unwrap().service, NtService::RtlExpandEnvironmentStringsU);
     assert_eq!(decode(298, input).unwrap().service, NtService::NtQueryDirectoryObject);
