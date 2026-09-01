@@ -7,11 +7,41 @@ use syscall::nt::{NtCall, NtService};
 /// Compare caller-owned UTF-16 strings using native RTL ordering.
 /// # C: O(min(len1, len2)) plus bounded user copies
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlIsNormalizedString { return Some(is_normalized_string(call)); }
     if call.service == NtService::RtlIdnToAscii { return Some(idn_to_ascii(call)); }
     if call.service == NtService::RtlIdnToNameprepUnicode { return Some(idn_to_nameprep(call)); }
     if call.service == NtService::RtlIdnToUnicode { return Some(idn_to_unicode(call)); }
     if call.service != NtService::RtlCompareUnicodeStrings { return None; }
     Some(compare(call.args.a0, call.args.a1, call.args.a2, call.args.a3, call.args.a4 != 0) as i32 as u64)
+}
+
+fn is_normalized_string(call: NtCall) -> u64 {
+    const STATUS_NO_UNICODE_TRANSLATION: u64 = 0xc000_0169;
+    const STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xc000_0034;
+    if call.args.a0 == 0 || call.args.a1 == 0 || call.args.a3 == 0 { return STATUS_INVALID_PARAMETER; }
+    if !matches!(call.args.a0 as u32, 1 | 2 | 3 | 4 | 13) { return STATUS_OBJECT_NAME_NOT_FOUND; }
+    let requested = call.args.a2 as i32;
+    if requested < -1 || requested > 65536 { return STATUS_INVALID_PARAMETER; }
+    let mut length = requested as usize;
+    if requested == -1 {
+        length = 0;
+        while length < 65536 {
+            let Some(unit) = read_unit(call.args.a1, length as u64) else { return STATUS_INVALID_PARAMETER; };
+            if unit == 0 { break; }
+            length += 1;
+        }
+        if length == 65536 { return STATUS_INVALID_PARAMETER; }
+    }
+    for index in 0..length {
+        let Some(unit) = read_unit(call.args.a1, index as u64) else { return STATUS_INVALID_PARAMETER; };
+        if (0xd800..=0xdfff).contains(&unit) {
+            if !(0xd800..=0xdbff).contains(&unit) || index + 1 >= length { return STATUS_NO_UNICODE_TRANSLATION; }
+            let Some(next) = read_unit(call.args.a1, (index + 1) as u64) else { return STATUS_INVALID_PARAMETER; };
+            if !(0xdc00..=0xdfff).contains(&next) { return STATUS_NO_UNICODE_TRANSLATION; }
+        }
+    }
+    if uaccess::copy_to_user(call.args.a3, &[1u8]).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
 }
 
 fn idn_to_nameprep(call: NtCall) -> u64 {
