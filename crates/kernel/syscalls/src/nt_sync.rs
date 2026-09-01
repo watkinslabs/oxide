@@ -24,6 +24,9 @@ const FUTEX_WAKE_CMD: u32 = 1;
 /// Dispatch semaphore creation and release; waits share the NT object adapter.
 /// # C: O(1)
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlWaitOnAddress { return Some(wait_on_address(call)); }
+    if call.service == NtService::RtlWakeAddressAll { return Some(wake_address(call.args.a0, u32::MAX)); }
+    if call.service == NtService::RtlWakeAddressSingle { return Some(wake_address(call.args.a0, 1)); }
     if call.service == NtService::RtlSleepConditionVariableCS {
         return Some(sleep_condition_variable_cs(call));
     }
@@ -64,6 +67,42 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         }
         _ => return None,
     })
+}
+
+fn wait_on_address(call: NtCall) -> u64 {
+    const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
+    const STATUS_TIMEOUT: u64 = 0x0000_0102;
+    let address = call.args.a0;
+    let compare = call.args.a1;
+    let size = call.args.a2 as usize;
+    if address == 0 || compare == 0 || !matches!(size, 1 | 2 | 4 | 8) { return STATUS_INVALID_PARAMETER; }
+    let Some(end) = address.checked_add(size as u64) else { return STATUS_ACCESS_VIOLATION; };
+    if end >= hal::USER_VA_END { return STATUS_ACCESS_VIOLATION; }
+    let mut expected = [0u8; 8];
+    if uaccess::copy_from_user(&mut expected[..size], compare).is_err() { return STATUS_ACCESS_VIOLATION; }
+    let timeout = if call.args.a3 == 0 { None } else {
+        match syscall::UserPtr::<i64>::new(call.args.a3) { Ok(pointer) => Some(pointer), Err(_) => return STATUS_INVALID_PARAMETER }
+    };
+    let deadline = match crate::nt_dispatch::wait_deadline(timeout) { Ok(value) => value, Err(status) => return status };
+    let base = address & !3;
+    loop {
+        let mut actual = [0u8; 8];
+        if uaccess::copy_from_user(&mut actual[..size], address).is_err() { return STATUS_ACCESS_VIOLATION; }
+        if actual[..size] != expected[..size] { return 0; }
+        let word = match uaccess::get_user_u32(base) { Ok(value) => value, Err(_) => return STATUS_ACCESS_VIOLATION };
+        let wait = futex::dispatch_timed(base, FUTEX_WAIT_CMD | futex::FUTEX_PRIVATE_FLAG,
+                                          word, futex::FUTEX_BITSET_MATCH_ANY, deadline);
+        if wait == -(syscall::errno::Errno::Etimedout.as_i32() as i64) { return STATUS_TIMEOUT; }
+        if wait != 0 && wait != -(syscall::errno::Errno::Eagain.as_i32() as i64) { return STATUS_ACCESS_VIOLATION; }
+    }
+}
+
+fn wake_address(address: u64, count: u32) -> u64 {
+    if address == 0 { return 0; }
+    let base = address & !3;
+    let _ = futex::dispatch_timed(base, FUTEX_WAKE_CMD | futex::FUTEX_PRIVATE_FLAG,
+                                  count, futex::FUTEX_BITSET_MATCH_ANY, 0);
+    0
 }
 
 /// Release a critical section, wait on the condition-variable word, then
