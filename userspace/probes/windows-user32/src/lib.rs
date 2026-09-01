@@ -1,6 +1,7 @@
 //! Native userspace user32 façade over the tagged NT window ABI.
 
 use std::io;
+use std::collections::BTreeMap;
 use syscall::nt::{NtService, NtWindowMessage};
 
 const STATUS_NO_MORE_ENTRIES: u64 = 0x8000_001a;
@@ -11,6 +12,48 @@ pub enum WindowError { Status(u64), Host(io::Error) }
 
 /// User32-shaped client whose state remains owned by the native NT window service.
 pub struct User32;
+
+#[derive(Debug)]
+pub enum ClassError { EmptyName, UnterminatedName, DuplicateName, UnknownClass, Service(WindowError) }
+
+/// Userspace class metadata; HWND and message queues remain native-service state.
+pub struct ClassRegistry { next_atom: u16, classes: BTreeMap<Vec<u16>, RegisteredClass> }
+
+struct RegisteredClass { atom: u16, wndproc: u64 }
+
+impl ClassRegistry {
+    /// Construct an empty process-local class registry. # C: O(1)
+    pub fn new() -> Self { Self { next_atom: 1, classes: BTreeMap::new() } }
+
+    /// Register one UTF-16 window class and return its atom. # C: O(log N_classes)
+    pub fn register_class_ex_w(&mut self, name: &[u16], wndproc: u64) -> Result<u16, ClassError> {
+        let name = class_name(name)?;
+        if self.classes.contains_key(name) { return Err(ClassError::DuplicateName); }
+        let atom = self.next_atom;
+        self.next_atom = self.next_atom.checked_add(1).ok_or(ClassError::DuplicateName)?;
+        self.classes.insert(name.to_vec(), RegisteredClass { atom, wndproc });
+        Ok(atom)
+    }
+
+    /// Remove one class by its UTF-16 name. # C: O(log N_classes)
+    pub fn unregister_class_w(&mut self, name: &[u16]) -> Result<(), ClassError> {
+        let name = class_name(name)?;
+        if self.classes.remove(name).is_some() { Ok(()) } else { Err(ClassError::UnknownClass) }
+    }
+
+    /// Create a native window using the registered class procedure. # C: O(log N_classes) plus kernel service
+    pub fn create_window_ex_w(&self, user32: &User32, name: &[u16], parent: u64) -> Result<u64, ClassError> {
+        let name = class_name(name)?;
+        let class = self.classes.get(name).ok_or(ClassError::UnknownClass)?;
+        user32.create_window(parent, class.wndproc).map_err(ClassError::Service)
+    }
+
+    /// Return the stable atom assigned to a registered class. # C: O(log N_classes)
+    pub fn atom(&self, name: &[u16]) -> Result<u16, ClassError> {
+        let name = class_name(name)?;
+        self.classes.get(name).map(|class| class.atom).ok_or(ClassError::UnknownClass)
+    }
+}
 
 impl User32 {
     /// Construct a stateless façade over the current NT process. # C: O(1)
@@ -57,6 +100,12 @@ fn invoke(service: NtService, args: [u64; 6]) -> Result<u64, WindowError> {
     if result & STATUS_FAILURE_MASK != 0 { Err(WindowError::Status(result)) } else { Ok(result) }
 }
 
+fn class_name(name: &[u16]) -> Result<&[u16], ClassError> {
+    let end = name.iter().position(|unit| *unit == 0).ok_or(ClassError::UnterminatedName)?;
+    if end == 0 || name[end + 1..].iter().any(|unit| *unit != 0) { return Err(ClassError::EmptyName); }
+    Ok(&name[..end])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,5 +126,16 @@ mod tests {
     fn no_message_status_is_not_a_transport_failure() {
         assert_eq!(STATUS_NO_MORE_ENTRIES & STATUS_FAILURE_MASK, STATUS_FAILURE_MASK);
         assert!(matches!(WindowError::Status(STATUS_NO_MORE_ENTRIES), WindowError::Status(value) if value == STATUS_NO_MORE_ENTRIES));
+    }
+
+    #[test]
+    fn classes_bind_procedures_without_duplicating_native_windows() {
+        let mut classes = ClassRegistry::new();
+        let name: Vec<u16> = "Notepad".encode_utf16().chain([0]).collect();
+        let atom = classes.register_class_ex_w(&name, 0x1400).unwrap();
+        assert!(matches!(classes.atom(&name), Ok(value) if value == atom));
+        assert!(matches!(classes.register_class_ex_w(&name, 0x1500), Err(ClassError::DuplicateName)));
+        assert!(classes.unregister_class_w(&name).is_ok());
+        assert!(matches!(classes.atom(&name), Err(ClassError::UnknownClass)));
     }
 }
