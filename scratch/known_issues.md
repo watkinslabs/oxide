@@ -576,3 +576,5 @@ explicit `STATUS_NOT_IMPLEMENTED` boundary until the NT object namespace is
 implemented.
 The graph now reaches `ntdll.dll!NtOpenKey`; its registry namespace and typed
 key-handle owner remain an explicit `STATUS_NOT_IMPLEMENTED` boundary.
+`NtOpenKeyEx` is exposed at the same boundary; its registry options still
+require the typed registry namespace owner.
