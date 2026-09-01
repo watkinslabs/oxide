@@ -668,6 +668,8 @@ unimplemented.
 `RtlCreateTimer` and `RtlCreateTimerQueue` validate output and callback
 boundaries; callback dispatch, cancellation, and queue lifetime remain
 unimplemented.
+`RtlCreateUserStack` validates stack sizing and the INITIAL_TEB output boundary;
+VMM allocation, guard-page policy, and NT-thread teardown remain unimplemented.
 `RtlCreateProcessParametersEx` validates its result-pointer boundary; native
 string capture, environment ownership, normalization, and destruction remain
 unimplemented.

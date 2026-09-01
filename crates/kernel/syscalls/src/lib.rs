@@ -68,6 +68,8 @@ mod nt_env;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_threadpool;
 #[cfg(target_os = "oxide-kernel")]
+mod nt_user_stack;
+#[cfg(target_os = "oxide-kernel")]
 mod nt_apiset;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_atom;
