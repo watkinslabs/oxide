@@ -29,7 +29,8 @@ pub use registry::{
     device, devices_snapshot, disconnect_device, evdev_id_for_device,
     install, install_and_publish,
     name_of, publish_evdev, push_evdev_event, remove_device,
-    set_evdev_hooks, set_output_hook, unpublish_evdev, CapBitmap, EvdevHooks,
+    set_evdev_hooks, set_native_key_hook, dispatch_native_key_event, set_output_hook,
+    unpublish_evdev, CapBitmap, EvdevHooks, NativeKeyHook,
     InputDeviceKey, VirtioInputDev,
 };
 pub use query::{abs_snapshot_by_identity, apply_output_by_identity, inhibited_by_identity,

@@ -12,7 +12,7 @@ const STATUS_NO_MORE_ENTRIES: u64 = 0x8000_001a;
 const STATUS_QUOTA_EXCEEDED: u64 = 0xc000_0044;
 const STATUS_ALERTED: u64 = 0x0000_0101;
 
-struct GuiEntry { group: Weak<sched::thread_group::ThreadGroup>, state: ipc::win32_window::WindowManager, wait: Arc<sched::live::WaitList> }
+struct GuiEntry { group: Weak<sched::thread_group::ThreadGroup>, state: ipc::win32_window::WindowManager, wait: Arc<sched::live::WaitList>, foreground: bool }
 static GUI: Spinlock<Vec<GuiEntry>, GuiLockClass> = Spinlock::new(Vec::new());
 
 /// Resolve a visible window rectangle from the current NT process's canonical HWND state. # C: O(N_process_gui_states + N_windows)
@@ -29,6 +29,21 @@ pub fn window_rect_for_current(hwnd: u32) -> Option<(ipc::win32_window::WindowRe
     Some((state.rect(window)?, record.visible))
 }
 
+/// Route one accepted physical key transition to the desktop foreground NT window. # C: O(N_nt_processes + N_windows)
+pub fn route_hardware_key(key: u16, pressed: bool, repeat: bool) -> bool {
+    let mut entries = GUI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    let Some(entry) = entries.iter_mut().find(|entry| entry.foreground) else { return false; };
+    match entry.state.post_focused_key(key, pressed, repeat) {
+        Ok(()) => { entry.wait.wake_all(); true }
+        Err(ipc::win32_window::WindowError::QueueFull) => {
+            klog::kwarn!("nt input: foreground window queue full");
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 /// Dispatch one GUI call against the current NT process. `None` means this is
 /// not a window service and lets the main NT dispatcher continue its ladder.
 /// # C: O(N_process_gui_states + N_windows + N_wakeups)
@@ -36,6 +51,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     let operation = nt::decode_window(call).ok()?;
     let cur = sched::live::current()?;
     if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
+    input::set_native_key_hook(Some(route_hardware_key));
     let group = Arc::clone(&cur.thread_group);
     loop {
         let (result, wake, sleep) = {
@@ -43,7 +59,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
             entries.retain(|entry| entry.group.upgrade().is_some());
             let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)));
             let index = index.unwrap_or_else(|| {
-                entries.push(GuiEntry { group: Arc::downgrade(&group), state: ipc::win32_window::WindowManager::new(), wait: Arc::new(sched::live::WaitList::new()) });
+                entries.push(GuiEntry { group: Arc::downgrade(&group), state: ipc::win32_window::WindowManager::new(), wait: Arc::new(sched::live::WaitList::new()), foreground: false });
                 entries.len() - 1
             });
             let wait = Arc::clone(&entries[index].wait);
@@ -118,6 +134,9 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
                         Err(ipc::win32_window::WindowError::WrongThread) => STATUS_INVALID_PARAMETER,
                         Err(_) => STATUS_INVALID_HANDLE,
                     };
+                    if result != STATUS_INVALID_HANDLE && result != STATUS_INVALID_PARAMETER {
+                        for (entry_index, entry) in entries.iter_mut().enumerate() { entry.foreground = entry_index == index && window.is_some(); }
+                    }
                     (Some(result), None, None)
                 }
                 NtWindowCall::InjectKey { key, pressed, repeat } => {
