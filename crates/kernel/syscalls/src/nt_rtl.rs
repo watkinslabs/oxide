@@ -76,6 +76,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlUnicodeStringToAnsiSize { return Some(unicode_string_to_ansi_size(call.args.a0)); }
     if call.service == NtService::RtlCharToInteger { return Some(char_to_integer(call.args.a0, call.args.a1 as u32, call.args.a2)); }
     if call.service == NtService::RtlFreeUnicodeString { return Some(free_unicode_string(call.args.a0)); }
+    if call.service == NtService::RtlFreeAnsiString { return Some(free_ansi_string(call.args.a0)); }
     if call.service == NtService::RtlGetAce { return Some(get_ace(call.args.a0, call.args.a1 as u32, call.args.a2)); }
     if call.service == NtService::RtlGetControlSecurityDescriptor { return Some(get_security_control(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::RtlIsTextUnicode { return Some(is_text_unicode(call.args.a0, call.args.a1 as i64, call.args.a2)); }
@@ -257,6 +258,15 @@ fn char_to_integer(source: u64, requested_base: u32, target: u64) -> u64 {
     if uaccess::put_user_u32(target, value).is_err() { return STATUS_INVALID_PARAMETER; } 0
 }
 fn free_unicode_string(descriptor: u64) -> u64 {
+    if descriptor == 0 { return 0; }
+    let mut bytes = [0u8; UNICODE_STRING_BYTES];
+    if uaccess::copy_from_user(&mut bytes, descriptor).is_err() { return 0; }
+    let buffer = u64::from_le_bytes(bytes[8..16].try_into().unwrap());
+    if buffer != 0 { free_rtl_buffer(buffer); }
+    let _ = uaccess::copy_to_user(descriptor, &[0u8; UNICODE_STRING_BYTES]);
+    0
+}
+fn free_ansi_string(descriptor: u64) -> u64 {
     if descriptor == 0 { return 0; }
     let mut bytes = [0u8; UNICODE_STRING_BYTES];
     if uaccess::copy_from_user(&mut bytes, descriptor).is_err() { return 0; }
