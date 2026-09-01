@@ -559,3 +559,6 @@ publishes the range, applies the VMM-owned locked VMA state, and populates
 resident pages through the PMM path. Remote-process locking remains an
 explicit `STATUS_INVALID_PARAMETER` boundary until the NT APC/process-memory
 owner exists. The graph advances to the next unimplemented NT export.
+The next graph export, `ntdll.dll!NtMakeTemporaryObject`, is exposed with an
+explicit `STATUS_NOT_IMPLEMENTED` boundary because the NT handle table does
+not yet own named-object permanence state.
