@@ -18,25 +18,27 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     let Ok(NtLoaderCall::ExecuteWithCatalog { request }) = syscall::nt::decode_loader(call) else { return None; };
     let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
     let base = request.as_u64();
-    let image_ptr = read_u64(base)?;
-    let image_len = read_u64(base + 8)?;
-    let path_ptr = read_u64(base + 16)?;
-    let path_len = read_u32(base + 24)? as u64;
-    let modules_ptr = read_u64(base + 32)?;
-    let module_count = read_u32(base + 40)?;
+    let Some(image_ptr) = read_u64(base) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(image_len) = read_u64(base.checked_add(8).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(path_ptr) = read_u64(base.checked_add(16).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(path_len) = read_u32(base.checked_add(24).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(modules_ptr) = read_u64(base.checked_add(32).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(module_count) = read_u32(base.checked_add(40).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
     if image_len == 0 || image_len > MAX_IMAGE_BYTES || path_len == 0 || path_len > 32 * 1024
         || module_count > MAX_MODULES || (module_count != 0 && modules_ptr == 0) { return Some(STATUS_INVALID_PARAMETER); }
-    let image = copy_bytes(image_ptr, image_len).ok()??;
-    let path_bytes = copy_bytes(path_ptr, path_len).ok()??;
-    let path = String::from_utf8(path_bytes).ok()?;
+    let Some(image) = copy_bytes(image_ptr, image_len).ok().flatten() else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(path_bytes) = copy_bytes(path_ptr, path_len as u64).ok().flatten() else { return Some(STATUS_INVALID_PARAMETER); };
+    let Ok(path) = String::from_utf8(path_bytes) else { return Some(STATUS_INVALID_PARAMETER); };
     let mut catalog = pe::catalog::ModuleCatalog::new();
     for index in 0..module_count as u64 {
-        let record = modules_ptr.checked_add(index.checked_mul(32)?)?;
-        let name_len = read_u32(record + 8)? as u64;
-        let blob_len = read_u64(record + 24)?;
+        let Some(record) = modules_ptr.checked_add(index.checked_mul(32).unwrap_or(u64::MAX)) else { return Some(STATUS_INVALID_PARAMETER); };
+        let Some(name_len) = read_u32(record.checked_add(8).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
+        let Some(blob_len) = read_u64(record.checked_add(24).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
         if name_len == 0 || name_len > 512 || blob_len == 0 || blob_len > MAX_IMAGE_BYTES { return Some(STATUS_INVALID_PARAMETER); }
-        let name = copy_bytes(read_u64(record)?, name_len).ok()??;
-        let blob = copy_bytes(read_u64(record + 16)?, blob_len).ok()??;
+        let Some(name_ptr) = read_u64(record) else { return Some(STATUS_INVALID_PARAMETER); };
+        let Some(blob_ptr) = read_u64(record.checked_add(16).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
+        let Some(name) = copy_bytes(name_ptr, name_len as u64).ok().flatten() else { return Some(STATUS_INVALID_PARAMETER); };
+        let Some(blob) = copy_bytes(blob_ptr, blob_len).ok().flatten() else { return Some(STATUS_INVALID_PARAMETER); };
         if catalog.add(&name, &blob).is_err() { return Some(STATUS_INVALID_PARAMETER); }
     }
     match crate::pe_exec::try_commit_with_catalog(cur, path.as_bytes(), &image, &catalog) {
