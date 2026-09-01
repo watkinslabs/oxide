@@ -8,8 +8,28 @@ use syscall::nt::{NtCall, NtService};
 /// # C: O(min(len1, len2)) plus bounded user copies
 pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlIdnToAscii { return Some(idn_to_ascii(call)); }
+    if call.service == NtService::RtlIdnToNameprepUnicode { return Some(idn_to_nameprep(call)); }
     if call.service != NtService::RtlCompareUnicodeStrings { return None; }
     Some(compare(call.args.a0, call.args.a1, call.args.a2, call.args.a3, call.args.a4 != 0) as i32 as u64)
+}
+
+fn idn_to_nameprep(call: NtCall) -> u64 {
+    let flags = call.args.a0 as u32;
+    if flags & !(0x1 | IDN_USE_STD3_ASCII_RULES) != 0 || call.args.a1 == 0 || call.args.a4 == 0 { return STATUS_INVALID_PARAMETER; }
+    let source_len = call.args.a2 as i64;
+    if source_len < 0 || source_len > 256 { return STATUS_INVALID_PARAMETER; }
+    let mut output = alloc::vec::Vec::with_capacity(source_len as usize);
+    for index in 0..source_len as u64 {
+        let Some(unit) = read_unit(call.args.a1, index) else { return STATUS_INVALID_PARAMETER; };
+        if (0xd800..=0xdfff).contains(&unit) { return STATUS_INVALID_IDN; }
+        if unit == 0 || unit < 0x20 || (flags & IDN_USE_STD3_ASCII_RULES != 0 && unit != b'.' as u16 && unit != b'-' as u16 && !(b'A' as u16..=b'Z' as u16).contains(&unit) && !(b'a' as u16..=b'z' as u16).contains(&unit) && !(b'0' as u16..=b'9' as u16).contains(&unit)) { return STATUS_INVALID_IDN; }
+        output.push(unit);
+    }
+    let capacity = match uaccess::get_user_u32(call.args.a4) { Ok(value) => value as usize, Err(_) => return STATUS_INVALID_PARAMETER };
+    if uaccess::put_user_u32(call.args.a4, output.len() as u32).is_err() { return STATUS_INVALID_PARAMETER; }
+    if capacity < output.len() { return STATUS_BUFFER_TOO_SMALL; }
+    if call.args.a3 == 0 || copy_wide(call.args.a3, &output).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
 }
 
 const STATUS_SUCCESS: u64 = 0;
