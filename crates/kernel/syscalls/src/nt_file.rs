@@ -60,6 +60,7 @@ pub fn dispatch(call: NtFileCall) -> u64 {
         NtFileCall::Unlock { request } => crate::nt_file_lock::dispatch(cur, request.as_u64(), true),
         NtFileCall::Cancel { handle, io_status } => cancel(cur, handle, None, io_status.as_u64()),
         NtFileCall::CancelEx { handle, io, io_status } => cancel(cur, handle, io.map(|ptr| ptr.as_u64()), io_status.as_u64()),
+        NtFileCall::CancelSynchronous { handle, io, io_status } => cancel_synchronous(cur, handle, io.map(|ptr| ptr.as_u64()), io_status.as_u64()),
     }
 }
 
@@ -71,6 +72,20 @@ fn cancel(cur: &sched::Task, handle: u32, io: Option<u64>, io_status: u64) -> u6
     let status = if io.is_some() { STATUS_NOT_FOUND } else { STATUS_SUCCESS };
     if uaccess::put_user_u64(io_status, status).is_err() || uaccess::put_user_u64(io_status + 8, 0).is_err() { return STATUS_ACCESS_VIOLATION; }
     status
+}
+
+fn cancel_synchronous(cur: &sched::Task, handle: u64, _io: Option<u64>, io_status: u64) -> u64 {
+    if io_status == 0 { return STATUS_ACCESS_VIOLATION; }
+    let table = cur.thread_group.nt_handles();
+    let valid = if handle == u64::MAX - 1 {
+        true
+    } else if handle <= u32::MAX as u64 {
+        let native = sched::nt_object::NtHandle::from_raw(handle as u32);
+        table.get(native, 0).map(|object| object.kind() == sched::nt_object::NtObjectType::Thread).unwrap_or(false)
+    } else { false };
+    if !valid { return STATUS_INVALID_HANDLE; }
+    if uaccess::put_user_u64(io_status, STATUS_NOT_FOUND).is_err() || uaccess::put_user_u64(io_status + 8, 0).is_err() { return STATUS_ACCESS_VIOLATION; }
+    STATUS_NOT_FOUND
 }
 
 fn read_u32(addr: u64) -> Result<u32, u64> { uaccess::get_user_u32(addr).map_err(|_| STATUS_INVALID_PARAMETER) }

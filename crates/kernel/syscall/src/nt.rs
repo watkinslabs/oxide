@@ -37,6 +37,7 @@ pub enum NtService {
     NtAllocateVirtualMemoryEx = 251,
     NtCancelIoFile = 252,
     NtCancelIoFileEx = 253,
+    NtCancelSynchronousIoFile = 254,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -220,6 +221,7 @@ pub enum NtFileCall {
     Unlock { request: UserPtr<NtUnlockFileRequest> },
     Cancel { handle: u32, io_status: UserPtr<u8> },
     CancelEx { handle: u32, io: Option<UserPtr<u8>>, io_status: UserPtr<u8> },
+    CancelSynchronous { handle: u64, io: Option<UserPtr<u8>>, io_status: UserPtr<u8> },
 }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum NtTimeout {
@@ -294,6 +296,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 251 { return Some(NtCall { service: NtService::NtAllocateVirtualMemoryEx, args }); }
     if service == 252 { return Some(NtCall { service: NtService::NtCancelIoFile, args }); }
     if service == 253 { return Some(NtCall { service: NtService::NtCancelIoFileEx, args }); }
+    if service == 254 { return Some(NtCall { service: NtService::NtCancelSynchronousIoFile, args }); }
     if service == 197 { return Some(NtCall { service: NtService::RtlGUIDFromString, args }); }
     if service == 195 { return Some(NtCall { service: NtService::WineDbgOutput, args }); }
     if service == 194 { return Some(NtCall { service: NtService::WineDbgHeader, args }); }
@@ -457,6 +460,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::NtAdjustPrivilegesToken => Err(Errno::Enosys),
         NtService::NtAllocateLocallyUniqueId => Err(Errno::Enosys),
         NtService::NtCancelIoFile | NtService::NtCancelIoFileEx => Err(Errno::Enosys),
+        NtService::NtCancelSynchronousIoFile => Err(Errno::Enosys),
     }
 }
 pub fn decode_system(call: NtCall) -> Result<NtSystemCall, Errno> {
@@ -507,6 +511,7 @@ pub fn decode_file(call: NtCall) -> Result<NtFileCall, Errno> {
         NtService::UnlockFile => Ok(NtFileCall::Unlock { request: UserPtr::new(a.a0)? }),
         NtService::NtCancelIoFile => Ok(NtFileCall::Cancel { handle: a.a0 as u32, io_status: UserPtr::new(a.a1)? }),
         NtService::NtCancelIoFileEx => Ok(NtFileCall::CancelEx { handle: a.a0 as u32, io: optional_ptr(a.a1)?, io_status: UserPtr::new(a.a2)? }),
+        NtService::NtCancelSynchronousIoFile => Ok(NtFileCall::CancelSynchronous { handle: a.a0, io: optional_ptr(a.a1)?, io_status: UserPtr::new(a.a2)? }),
         _ => Err(Errno::Enosys),
     }
 }

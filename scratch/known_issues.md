@@ -460,3 +460,7 @@ the synchronous NT file adapter has no pending request queue, so Ex-specific
 request cancellation reports `STATUS_NOT_FOUND` and synchronous-I/O
 cancellation remains open. The graph advances to
 `ntdll.dll!NtCancelSynchronousIoFile`.
+Windows NT frontier update (2026-09-01): `NtCancelSynchronousIoFile` now
+validates current/real NT thread handles and publishes the reference
+`STATUS_NOT_FOUND` result when no synchronous request is pending; the graph
+advances to `ntdll.dll!NtCompareObjects`.
