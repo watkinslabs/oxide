@@ -294,6 +294,20 @@ pub fn dispatch(call: NtCall) -> u64 {
         // request decoder; the ordinary section mapper cannot safely stand in.
         return STATUS_NOT_IMPLEMENTED;
     }
+    if call.service == syscall::nt::NtService::NtNotifyChangeDirectoryFile {
+        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+        // Directory change delivery needs an NT async/event registration
+        // owner over the VFS notification stream; do not fake completion.
+        return STATUS_NOT_IMPLEMENTED;
+    }
+    if call.service == syscall::nt::NtService::NtNotifyChangeKey {
+        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+        // Registry change delivery needs an NT async/event registration owner
+        // over the userspace registry service; do not fake completion.
+        return STATUS_NOT_IMPLEMENTED;
+    }
     if matches!(call.service, syscall::nt::NtService::NtCreateNamedPipeFile | syscall::nt::NtService::NtCreateSectionEx | syscall::nt::NtService::NtCreateSymbolicLinkObject | syscall::nt::NtService::NtCreateUserProcess | syscall::nt::NtService::NtDeleteKey | syscall::nt::NtService::NtDeleteValueKey | syscall::nt::NtService::NtEnumerateKey | syscall::nt::NtService::NtEnumerateValueKey | syscall::nt::NtService::NtFilterToken | syscall::nt::NtService::NtFlushKey) { return 0xc000_0002; }
     if let Some(result) = crate::nt_power::dispatch(call) { return result; }
     if let Some(result) = crate::nt_oem::dispatch(call) { return result; }

@@ -123,6 +123,8 @@ use super::*;
     assert_eq!(decode(279, input).unwrap().service, NtService::NtLockVirtualMemory);
     assert_eq!(decode(280, input).unwrap().service, NtService::NtMakeTemporaryObject);
     assert_eq!(decode(281, input).unwrap().service, NtService::NtMapViewOfSectionEx);
+    assert_eq!(decode(282, input).unwrap().service, NtService::NtNotifyChangeDirectoryFile);
+    assert_eq!(decode(283, input).unwrap().service, NtService::NtNotifyChangeKey);
         assert_eq!(decode(240, input).unwrap().service, NtService::LdrDisableThreadCalloutsForDll);
         assert_eq!(decode(99, input).unwrap().service, NtService::LdrGetDllDirectory);
         assert_eq!(decode(100, input).unwrap().service, NtService::LdrGetProcedureAddress);

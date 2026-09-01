@@ -565,3 +565,9 @@ not yet own named-object permanence state. The graph then reaches
 `ntdll.dll!NtMapViewOfSectionEx`; its extended parameter and APC mapping
 protocol remain an explicit `STATUS_NOT_IMPLEMENTED` boundary until those NT
 owners exist.
+The graph now reaches `ntdll.dll!NtNotifyChangeDirectoryFile`; its async
+directory-watch registration remains an explicit `STATUS_NOT_IMPLEMENTED`
+boundary until the NT event/APC owner is connected to VFS notifications.
+The graph then reaches `ntdll.dll!NtNotifyChangeKey`; registry notification
+remains an explicit `STATUS_NOT_IMPLEMENTED` boundary until the registry
+service has an NT-owned async watch protocol.
