@@ -15,6 +15,7 @@ const HEAP_COMPATIBILITY_INFORMATION: u64 = 0;
 /// Dispatch the heap subset, returning `None` for every other NT service.
 /// # C: O(log N_vmas)
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == nt::NtService::RtlValidateHeap { return Some(validate_heap(call)); }
     if call.service == nt::NtService::RtlFreeUserStack {
         if call.args.a0 == 0 { return Some(0); }
         let heap_call = NtCall { service: nt::NtService::FreeHeap, args: syscall::SyscallArgs { a0: 0, a1: 0, a2: call.args.a0, a3: 0, a4: 0, a5: 0 } };
@@ -82,6 +83,16 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
             match elf_load::nt_memory::query(&mm, base) { Ok(info) => info.size as u64, Err(_) => u64::MAX }
         }
     })
+}
+
+fn validate_heap(call: NtCall) -> u64 {
+    if call.args.a0 != 1 { return 0; }
+    let Some(cur) = sched::live::current() else { return 0; };
+    if !cur.is_nt_personality() { return 0; }
+    if call.args.a2 == 0 { return 1; }
+    let Some(ptr) = hal::UserVirtAddr::new(call.args.a2) else { return 0; };
+    let Some(mm) = (unsafe { cur.mm_ref() }).map(|mm| mm.clone()) else { return 0; };
+    elf_load::nt_memory::query(&mm, ptr).is_ok() as u64
 }
 
 fn set_heap_information(call: NtCall) -> u64 {
