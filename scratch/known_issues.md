@@ -693,3 +693,6 @@ yet surfaced.
 `RtlActivateActivationContext` validates the native flags, opaque context, and
 cookie-pointer boundary; per-thread activation-context stack and cookie
 ownership remain unimplemented.
+`RtlActivateActivationContextEx` validates the native TEB, opaque activation
+context, and cookie-pointer boundary; TEB stack linking and cookie ownership
+remain unimplemented.

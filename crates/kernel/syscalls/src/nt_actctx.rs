@@ -14,6 +14,13 @@ const ACTCTX_SECTION_KEYED_DATA_ROSTER_OFFSET: u32 = 64;
 /// Validate the Wine/Windows string-section query and report no active context.
 /// # C: O(1) plus bounded user copies
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlActivateActivationContextEx {
+        // Native ABI: ULONG flags, TEB*, activation context, ULONG_PTR *cookie.
+        if call.args.a0 != 0 || call.args.a1 == 0 || call.args.a2 == 0 || call.args.a3 == 0 {
+            return Some(STATUS_INVALID_PARAMETER);
+        }
+        return Some(STATUS_NOT_IMPLEMENTED);
+    }
     if call.service == NtService::RtlActivateActivationContext {
         // Native ABI: ULONG flags, HANDLE/PACTIVATION_CONTEXT context,
         // ULONG_PTR *cookie. The context is opaque to the kernel boundary.
