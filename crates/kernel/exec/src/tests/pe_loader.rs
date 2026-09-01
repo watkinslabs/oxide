@@ -294,6 +294,8 @@
         assert!(try_enter >= runtime.base.as_u64() && try_enter < runtime.base.as_u64() + runtime.bytes as u64);
         let are_bits_clear = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlAreBitsClear" }).unwrap();
         assert!(are_bits_clear >= runtime.base.as_u64() && are_bits_clear < runtime.base.as_u64() + runtime.bytes as u64);
+        let are_bits_set = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlAreBitsSet" }).unwrap();
+        assert!(are_bits_set >= runtime.base.as_u64() && are_bits_set < runtime.base.as_u64() + runtime.bytes as u64);
         assert!(guid_from_string >= runtime.base.as_u64() && guid_from_string < runtime.base.as_u64() + runtime.bytes as u64);
     }
 
