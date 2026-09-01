@@ -30,8 +30,10 @@ const YEAR_BASE_OFFSET: i64 = 28_188;
 const YEAR_FORMULA_OFFSET: i64 = 2_442;
 const MONTH_FORMULA_SCALE: i64 = 1_959;
 const PERMANENT_EPOCH_DAY: i64 = 584_817;
+const DYNAMIC_TIME_ZONE_INFORMATION_BYTES: usize = 429;
 
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlQueryDynamicTimeZoneInformation { return Some(query_dynamic_time_zone_information(call.args.a0)); }
     if call.service == NtService::RtlLocalTimeToSystemTime { return Some(local_time_to_system_time(call.args.a0, call.args.a1)); }
     if call.service == NtService::NtQueryDefaultLocale {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
@@ -123,6 +125,15 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     let value = if call.service == NtService::RtlQueryPerformanceCounter { timekeeper::monotonic_ns() / 100 } else { QPC_FREQUENCY };
     if uaccess::put_user_u64(call.args.a0, value).is_err() { return Some(STATUS_INVALID_PARAMETER); }
     Some(STATUS_SUCCESS)
+}
+
+fn query_dynamic_time_zone_information(output: u64) -> u64 {
+    let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !current.is_nt_personality() || output == 0 { return STATUS_INVALID_PARAMETER; }
+    let mut data = [0u8; DYNAMIC_TIME_ZONE_INFORMATION_BYTES];
+    data[0..4].copy_from_slice(&crate::time_common::timezone_minuteswest().to_le_bytes());
+    if uaccess::copy_to_user(output, &data).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
 }
 
 fn local_time_to_system_time(local: u64, system: u64) -> u64 {
