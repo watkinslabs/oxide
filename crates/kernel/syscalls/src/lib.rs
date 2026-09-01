@@ -84,6 +84,8 @@ mod nt_atom;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_power;
 #[cfg(target_os = "oxide-kernel")]
+mod nt_fls;
+#[cfg(target_os = "oxide-kernel")]
 mod nt_window;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_unwind;
