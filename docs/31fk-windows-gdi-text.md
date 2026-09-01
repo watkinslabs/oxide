@@ -28,6 +28,8 @@ owner. The adapter does not maintain a second GDI object table.
   clipping, per-code-unit advances, and native tile submission in userspace.
 - A native `PresentGdiSurface` submission copies a DC into the primary scanout;
   the display driver owns scanout clipping and transfer/flush ordering.
+- `PresentGdiWindow` resolves the visible HWND's canonical screen rectangle and
+  presents its process-local DC without a second geometry registry.
 - `DeleteObject` removes device contexts and fonts and clears deleted fonts
   from every context in the process.
 - Tagged NT selectors carry the ABI; Linux syscall numbers are not used for
@@ -46,6 +48,8 @@ owner. The adapter does not maintain a second GDI object table.
   rectangle.
 - Presentation rejects absent/quiesced scanouts and never writes outside the
   driver-owned framebuffer backing.
+- Hidden, zero-sized, unknown, or cross-process HWND/DC combinations do not
+  present.
 - Window scanout remains separate display-driver work; GDI owns the raster
   surface and its drawing operations.
 

@@ -303,6 +303,7 @@ pub enum NtService {
     FillGdiRect = 527,
     BlitGdiSurface = 528,
     PresentGdiSurface = 529,
+    PresentGdiWindow = 530,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -378,6 +379,7 @@ pub enum NtGdiCall {
     FillRect { dc: u32, left: i32, top: i32, right: i32, bottom: i32, color: u32 },
     BlitSurface { dc: u32, pixels: UserPtr<u8>, x: i32, y: i32, width: u32, height: u32, stride: u32 },
     PresentSurface { dc: u32, x: i32, y: i32 },
+    PresentWindow { hwnd: u32, dc: u32 },
 }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum NtLoaderCall { ResolveDelayLoadedApi { args: [u64; 6] }, ExecuteWithCatalog { request: UserPtr<crate::nt_exec::NtExecRequest> } }
@@ -743,6 +745,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 527 { return Some(NtCall { service: NtService::FillGdiRect, args }); }
     if service == 528 { return Some(NtCall { service: NtService::BlitGdiSurface, args }); }
     if service == 529 { return Some(NtCall { service: NtService::PresentGdiSurface, args }); }
+    if service == 530 { return Some(NtCall { service: NtService::PresentGdiWindow, args }); }
     if service == 229 { return Some(NtCall { service: NtService::DbgUiConnectToDbg, args }); }
     if service == 230 { return Some(NtCall { service: NtService::DbgUiContinue, args }); }
     if service == 231 { return Some(NtCall { service: NtService::DbgUiRemoteBreakin, args }); }
@@ -1170,7 +1173,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::NtAdjustPrivilegesToken => Err(Errno::Enosys),
         NtService::NtAllocateLocallyUniqueId => Err(Errno::Enosys),
         NtService::NtCancelIoFile | NtService::NtCancelIoFileEx => Err(Errno::Enosys),
-        NtService::NtCancelSynchronousIoFile | NtService::NtCompareObjects | NtService::NtConvertBetweenAuxiliaryCounterAndPerformanceCounter | NtService::NtCreateNamedPipeFile | NtService::NtCreateSectionEx | NtService::NtCreateSymbolicLinkObject | NtService::NtCreateUserProcess | NtService::NtDelayExecution | NtService::NtDeleteKey | NtService::NtDeleteValueKey | NtService::NtDuplicateToken | NtService::NtEnumerateKey | NtService::NtEnumerateValueKey | NtService::NtFilterToken | NtService::NtFlushBuffersFile | NtService::NtFlushInstructionCache | NtService::NtFlushKey | NtService::NtMakeTemporaryObject | NtService::NtMapViewOfSectionEx | NtService::NtNotifyChangeDirectoryFile | NtService::NtNotifyChangeKey | NtService::NtOpenEvent | NtService::NtOpenKeyEx | NtService::NtOpenMutant | NtService::NtOpenProcess | NtService::NtOpenSection | NtService::NtOpenSemaphore | NtService::NtOpenSymbolicLinkObject | NtService::NtOpenThread | NtService::NtOpenTimer | NtService::NtPrivilegeCheck | NtService::NtPulseEvent | NtService::NtQueryAttributesFile | NtService::NtQueryDefaultLocale | NtService::NtQueryDefaultUILanguage | NtService::NtQueryDirectoryObject | NtService::NtQueryFullAttributesFile | NtService::NtQueryInstallUILanguage | NtService::NtQueryKey | NtService::NtQuerySymbolicLinkObject | NtService::NtUnmapViewOfSectionEx | NtService::NtWriteFileGather | NtService::GetWindowRect | NtService::SetWindowRect | NtService::CreateCompatibleDc | NtService::DeleteGdiObject | NtService::CreateFontIndirect | NtService::SelectGdiFont | NtService::GetGdiTextMetrics | NtService::GetGdiTextExtent | NtService::GetWindowText | NtService::SetWindowText | NtService::GetClientRect | NtService::GetParent | NtService::ShowWindow | NtService::InvalidateWindow | NtService::BeginWindowPaint | NtService::EndWindowPaint | NtService::FillGdiRect | NtService::BlitGdiSurface | NtService::PresentGdiSurface => Err(Errno::Enosys),
+        NtService::NtCancelSynchronousIoFile | NtService::NtCompareObjects | NtService::NtConvertBetweenAuxiliaryCounterAndPerformanceCounter | NtService::NtCreateNamedPipeFile | NtService::NtCreateSectionEx | NtService::NtCreateSymbolicLinkObject | NtService::NtCreateUserProcess | NtService::NtDelayExecution | NtService::NtDeleteKey | NtService::NtDeleteValueKey | NtService::NtDuplicateToken | NtService::NtEnumerateKey | NtService::NtEnumerateValueKey | NtService::NtFilterToken | NtService::NtFlushBuffersFile | NtService::NtFlushInstructionCache | NtService::NtFlushKey | NtService::NtMakeTemporaryObject | NtService::NtMapViewOfSectionEx | NtService::NtNotifyChangeDirectoryFile | NtService::NtNotifyChangeKey | NtService::NtOpenEvent | NtService::NtOpenKeyEx | NtService::NtOpenMutant | NtService::NtOpenProcess | NtService::NtOpenSection | NtService::NtOpenSemaphore | NtService::NtOpenSymbolicLinkObject | NtService::NtOpenThread | NtService::NtOpenTimer | NtService::NtPrivilegeCheck | NtService::NtPulseEvent | NtService::NtQueryAttributesFile | NtService::NtQueryDefaultLocale | NtService::NtQueryDefaultUILanguage | NtService::NtQueryDirectoryObject | NtService::NtQueryFullAttributesFile | NtService::NtQueryInstallUILanguage | NtService::NtQueryKey | NtService::NtQuerySymbolicLinkObject | NtService::NtUnmapViewOfSectionEx | NtService::NtWriteFileGather | NtService::GetWindowRect | NtService::SetWindowRect | NtService::CreateCompatibleDc | NtService::DeleteGdiObject | NtService::CreateFontIndirect | NtService::SelectGdiFont | NtService::GetGdiTextMetrics | NtService::GetGdiTextExtent | NtService::GetWindowText | NtService::SetWindowText | NtService::GetClientRect | NtService::GetParent | NtService::ShowWindow | NtService::InvalidateWindow | NtService::BeginWindowPaint | NtService::EndWindowPaint | NtService::FillGdiRect | NtService::BlitGdiSurface | NtService::PresentGdiSurface | NtService::PresentGdiWindow => Err(Errno::Enosys),
     }
 }
 /// Decode thread context calls after validating their output pointer.
@@ -1248,6 +1251,7 @@ pub fn decode_gdi(call: NtCall) -> Result<NtGdiCall, Errno> {
         NtService::FillGdiRect => Ok(NtGdiCall::FillRect { dc: a.a0 as u32, left: a.a1 as i32, top: a.a2 as i32, right: a.a3 as i32, bottom: a.a4 as i32, color: a.a5 as u32 }),
         NtService::BlitGdiSurface => Ok(NtGdiCall::BlitSurface { dc: a.a0 as u32, pixels: UserPtr::new(a.a1)?, x: a.a5 as i32, y: (a.a5 >> 32) as i32, width: a.a2 as u32, height: a.a3 as u32, stride: a.a4 as u32 }),
         NtService::PresentGdiSurface => Ok(NtGdiCall::PresentSurface { dc: a.a0 as u32, x: a.a1 as i32, y: a.a2 as i32 }),
+        NtService::PresentGdiWindow => Ok(NtGdiCall::PresentWindow { hwnd: a.a0 as u32, dc: a.a1 as u32 }),
         _ => Err(Errno::Enosys),
     }
 }
