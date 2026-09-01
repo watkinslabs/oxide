@@ -46,6 +46,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::Towupper { return Some(towupper(call.args.a0)); }
     if call.service == NtService::Wcscspn { return Some(wcscspn(call.args.a0, call.args.a1)); }
     if call.service == NtService::Wcsnlen { return Some(wcsnlen(call.args.a0, call.args.a1)); }
+    if call.service == NtService::Wcspbrk { return Some(wcspbrk(call.args.a0, call.args.a1)); }
     if call.service == NtService::Wcsnicmp { return Some(wcsnicmp(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Wcsicmp { return Some(wcsicmp(call.args.a0, call.args.a1)); }
     if call.service == NtService::Strnicmp { return Some(strnicmp(call.args.a0, call.args.a1, call.args.a2)); }
@@ -451,6 +452,25 @@ fn wcsnlen(string: u64, max: u64) -> u64 {
         if character == 0 { return index as u64; }
     }
     max
+}
+
+fn wcspbrk(string: u64, accept: u64) -> u64 {
+    if string == 0 || accept == 0 { return 0; }
+    let mut index = 0usize;
+    loop {
+        let Some(character) = read_u16(string, index) else { return 0; };
+        if character == 0 { return 0; }
+        let mut accept_index = 0usize;
+        loop {
+            let Some(candidate) = read_u16(accept, accept_index) else { return 0; };
+            if candidate == 0 { break; }
+            if candidate == character { return string.checked_add((index as u64).checked_mul(2).unwrap_or(0)).unwrap_or(0); }
+            let Some(next) = accept_index.checked_add(1) else { return 0; };
+            accept_index = next;
+        }
+        let Some(next) = index.checked_add(1) else { return 0; };
+        index = next;
+    }
 }
 
 fn is_ascii_space(byte: u8) -> bool { matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c) }
