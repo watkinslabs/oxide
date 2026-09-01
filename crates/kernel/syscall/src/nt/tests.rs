@@ -155,6 +155,7 @@ use super::*;
         assert_eq!(decode(205, input).unwrap().service, NtService::RtlInitializeBitMap);
         assert_eq!(decode(206, input).unwrap().service, NtService::RtlLookupFunctionEntry);
         assert_eq!(decode(207, input).unwrap().service, NtService::RtlPcToFileHeader);
+        assert_eq!(decode(208, input).unwrap().service, NtService::RtlSetBits);
     }
 
     #[test]
