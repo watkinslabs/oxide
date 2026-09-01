@@ -165,6 +165,7 @@ use super::*;
         assert_eq!(decode(215, input).unwrap().service, NtService::LdrGetDllFullName);
         assert_eq!(decode(216, input).unwrap().service, NtService::LdrLoadDll);
         assert_eq!(decode(217, input).unwrap().service, NtService::LdrQueryImageFileExecutionOptions);
+        assert_eq!(decode(218, input).unwrap().service, NtService::CallbackReturn);
     }
 
     #[test]

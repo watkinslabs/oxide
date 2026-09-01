@@ -242,6 +242,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `31fa-windows-nt-loader-full-name.md` | FROZEN | 2026-08-31 | `01`,`02`,`31f9`,`52`,`53` |
 | `31fb-windows-nt-loader-loaded-module.md` | FROZEN | 2026-08-31 | `01`,`02`,`31fa`,`52`,`53` |
 | `31fc-windows-nt-image-options.md` | FROZEN | 2026-08-31 | `01`,`02`,`31fb`,`52`,`53` |
+| `31fd-windows-nt-callback-return.md` | FROZEN | 2026-09-01 | `01`,`02`,`31fc`,`52`,`53` |
 
 ## Deleted
 

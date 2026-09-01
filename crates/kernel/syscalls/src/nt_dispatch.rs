@@ -36,6 +36,7 @@ const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
 const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
 const STATUS_INFO_LENGTH_MISMATCH: u64 = 0xc000_0004;
 const STATUS_INVALID_INFO_CLASS: u64 = 0xc000_0003;
+const STATUS_NO_CALLBACK_ACTIVE: u64 = 0xc000_0258;
 #[cfg(target_os = "oxide-kernel")]
 const EVENT_ALL_ACCESS: u32 = 0x001f_0003;
 #[cfg(target_os = "oxide-kernel")]
@@ -115,6 +116,7 @@ fn resolve_thread_target(cur: &sched::Task, raw: u64,
 /// # C: O(log N_vmas) plus usercopy
 #[cfg(target_os = "oxide-kernel")]
 pub fn dispatch(call: NtCall) -> u64 {
+    if call.service == syscall::nt::NtService::CallbackReturn { return STATUS_NO_CALLBACK_ACTIVE; }
     if let Some(result) = crate::nt_power::dispatch(call) { return result; }
     if let Some(result) = crate::nt_oem::dispatch(call) { return result; }
     if let Ok(system) = nt::decode_system(call) {

@@ -322,6 +322,8 @@
         assert!(load_dll >= runtime.base.as_u64() && load_dll < runtime.base.as_u64() + runtime.bytes as u64);
         let query_options = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"LdrQueryImageFileExecutionOptions" }).unwrap();
         assert!(query_options >= runtime.base.as_u64() && query_options < runtime.base.as_u64() + runtime.bytes as u64);
+        let callback_return = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"NtCallbackReturn" }).unwrap();
+        assert!(callback_return >= runtime.base.as_u64() && callback_return < runtime.base.as_u64() + runtime.bytes as u64);
         assert!(guid_from_string >= runtime.base.as_u64() && guid_from_string < runtime.base.as_u64() + runtime.bytes as u64);
     }
 
