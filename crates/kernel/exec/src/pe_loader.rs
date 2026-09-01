@@ -19,9 +19,9 @@ pub struct PeModuleBase<'a> {
 pub struct NtRuntime {
     pub base: UserVirtAddr,
     pub bytes: usize,
-    addresses: [u64; 440],
+    addresses: [u64; 441],
 }
-const NTDLL_EXPORTS: [&[u8]; 440] = [
+const NTDLL_EXPORTS: [&[u8]; 441] = [
     b"NtAllocateVirtualMemory", b"NtFreeVirtualMemory", b"NtProtectVirtualMemory", b"NtQueryVirtualMemory",
     b"NtTerminateProcess", b"NtCreateEvent", b"NtClose", b"NtSetEvent", b"NtResetEvent", b"NtWaitForSingleObject",
     b"NtCreateFile", b"NtOpenFile", b"NtReadFile", b"NtWriteFile", b"NtQueryInformationFile", b"NtSetInformationFile", b"NtQueryDirectoryFile", b"NtWaitForMultipleObjects",
@@ -217,6 +217,7 @@ const NTDLL_EXPORTS: [&[u8]; 440] = [
     b"RtlReleasePath",
     b"RtlRunOnceBeginInitialize",
     b"RtlRunOnceComplete",
+    b"RtlRunOnceExecuteOnce",
 ];
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct PeEntryState {
@@ -331,12 +332,13 @@ pub fn resolve_nt_runtime_export(base: u64, name: &[u8]) -> Option<u64> {
 }
 pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
     let page = hal::PAGE_SIZE_BYTES as usize;
-    let code_bytes = (NTDLL_EXPORTS.len() - 1) * pe::nt_stub::X64_SIX_ARG_STUB_BYTES + pe::nt_stub::X64_BREAKPOINT_STUB_BYTES;
+    let continuation = pe::nt_stub::encode_x64_run_once_continuation(syscall::nt::NtService::RtlRunOnceComplete.entry());
+    let code_bytes = (NTDLL_EXPORTS.len() - 1) * pe::nt_stub::X64_SIX_ARG_STUB_BYTES + pe::nt_stub::X64_BREAKPOINT_STUB_BYTES + continuation.len();
     let mapped_bytes = (code_bytes + page - 1) / page * page;
     let mut code = alloc::vec![0u8; mapped_bytes];
-    let mut addresses = [0u64; 440];
+    let mut addresses = [0u64; 441];
     let mut offset = 0usize;
-    for index in 0..440 {
+    for index in 0..441 {
         let selector = match index {
             2 => syscall::nt::NtService::ProtectVirtualMemory,
             3 => syscall::nt::NtService::QueryVirtualMemory,
@@ -728,6 +730,7 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
             437 => syscall::nt::NtService::RtlReleasePath,
             438 => syscall::nt::NtService::RtlRunOnceBeginInitialize,
             439 => syscall::nt::NtService::RtlRunOnceComplete,
+            440 => syscall::nt::NtService::RtlRunOnceExecuteOnce,
             _ => syscall::nt::NtService::FreeHeap,
         };
         let bytes = if index == 220 { pe::nt_stub::encode_x64_breakpoint_stub().to_vec() }
@@ -738,11 +741,22 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
         addresses[index] = offset as u64;
         offset += bytes.len();
     }
+    code[offset..offset + continuation.len()].copy_from_slice(&continuation);
     let data = as_.stash_bytes(code.into_boxed_slice());
     let base = as_.mmap(None, mapped_bytes, VmaProt::READ | VmaProt::EXEC, VmaFlags::PRIVATE,
         VmaBacking::KernelBytes { data, off: 0 }, false).map_err(|_| pe::Error::Einval)?;
     for address in &mut addresses { *address = base.as_u64().checked_add(*address).ok_or(pe::Error::Einval)?; }
     Ok(NtRuntime { base, bytes: mapped_bytes, addresses })
+}
+
+/// Resolve the private run-once callback continuation in the synthetic ntdll page.
+pub fn resolve_nt_runtime_run_once_continuation(base: u64) -> Option<u64> {
+    let mut offset = 0u64;
+    for (index, _) in NTDLL_EXPORTS.iter().enumerate() {
+        let stub_bytes = if index == 220 { pe::nt_stub::X64_BREAKPOINT_STUB_BYTES } else if index == 6 || index == 88 { pe::nt_stub::X64_UNARY_STUB_BYTES } else { pe::nt_stub::X64_SIX_ARG_STUB_BYTES };
+        offset = offset.checked_add(stub_bytes as u64)?;
+    }
+    base.checked_add(offset)
 }
 fn ascii_eq_ignore_case(left: &[u8], right: &[u8]) -> bool {
     left.len() == right.len() && left.iter().zip(right).all(|(a, b)| a.to_ascii_lowercase() == b.to_ascii_lowercase())
