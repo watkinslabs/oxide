@@ -1,0 +1,12 @@
+[package]
+name = "windows-user32"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+libc = { workspace = true }
+syscall = { path = "../../../crates/kernel/syscall" }
