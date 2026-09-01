@@ -22,6 +22,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::Strpbrk { return Some(strpbrk(call.args.a0, call.args.a1)); }
     if call.service == NtService::Strrchr { return Some(strrchr(call.args.a0, call.args.a1)); }
     if call.service == NtService::Tolower { return Some(tolower(call.args.a0)); }
+    if call.service == NtService::Wcscat { return Some(wcscat(call.args.a0, call.args.a1)); }
     if call.service == NtService::Isalpha { let c = call.args.a0 as i32; return Some(if c >= b'A' as i32 && c <= b'Z' as i32 { 1 } else if c >= b'a' as i32 && c <= b'z' as i32 { 2 } else { 0 }); }
     if call.service == NtService::Wcsnicmp { return Some(wcsnicmp(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Wcsicmp { return Some(wcsicmp(call.args.a0, call.args.a1)); }
@@ -145,6 +146,29 @@ fn tolower(value: u64) -> u64 {
     let byte = value as i8;
     let result = if byte >= b'A' as i8 && byte <= b'Z' as i8 { value - b'A' as i32 + b'a' as i32 } else { value };
     result as i64 as u64
+}
+
+fn wcscat(destination: u64, source: u64) -> u64 {
+    if destination == 0 || source == 0 { return STATUS_INVALID_PARAMETER; }
+    let mut output = alloc::vec::Vec::new();
+    let mut index = 0usize;
+    loop {
+        let Some(unit) = read_u16(destination, index) else { return STATUS_INVALID_PARAMETER; };
+        if unit == 0 { break; }
+        output.extend_from_slice(&unit.to_le_bytes());
+        let Some(next) = index.checked_add(1) else { return STATUS_INVALID_PARAMETER; };
+        index = next;
+    }
+    index = 0;
+    loop {
+        let Some(unit) = read_u16(source, index) else { return STATUS_INVALID_PARAMETER; };
+        output.extend_from_slice(&unit.to_le_bytes());
+        if unit == 0 { break; }
+        let Some(next) = index.checked_add(1) else { return STATUS_INVALID_PARAMETER; };
+        index = next;
+    }
+    if uaccess::copy_to_user(destination, &output).is_err() { return STATUS_INVALID_PARAMETER; }
+    destination
 }
 
 fn wcsnicmp(first: u64, second: u64, count: u64) -> u64 {
