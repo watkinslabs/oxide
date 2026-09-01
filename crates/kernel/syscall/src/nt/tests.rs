@@ -162,6 +162,7 @@ use super::*;
     assert_eq!(decode(321, input).unwrap().service, NtService::NtSetSystemTime);
     assert_eq!(decode(322, input).unwrap().service, NtService::NtSetValueKey);
     assert_eq!(decode(323, input).unwrap().service, NtService::NtSuspendThread);
+    assert_eq!(decode(324, input).unwrap().service, NtService::NtUnloadKey);
     assert_eq!(decode(298, input).unwrap().service, NtService::NtQueryDirectoryObject);
     assert_eq!(decode(299, input).unwrap().service, NtService::NtQueryFullAttributesFile);
     assert_eq!(decode(293, input).unwrap().service, NtService::NtPrivilegeCheck);

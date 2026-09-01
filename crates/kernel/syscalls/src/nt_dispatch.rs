@@ -353,6 +353,14 @@ pub fn dispatch(call: NtCall) -> u64 {
         // persistence are still required before mutation is safe.
         return STATUS_NOT_IMPLEMENTED;
     }
+    if call.service == syscall::nt::NtService::NtUnloadKey {
+        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        if !cur.is_nt_personality() || call.args.a0 == 0 { return STATUS_INVALID_PARAMETER; }
+        // Unloading a registry hive requires the same canonical registry
+        // namespace and persistence owner as NtLoadKey; it must not become a
+        // synonym for Linux filesystem unmount.
+        return STATUS_NOT_IMPLEMENTED;
+    }
     if call.service == syscall::nt::NtService::NtResetWriteWatch {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() || call.args.a0 != CURRENT_PROCESS || call.args.a1 == 0 || call.args.a2 == 0 {

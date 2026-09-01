@@ -674,3 +674,5 @@ still need to be connected to the canonical timekeeper.
 `NtSetValueKey` now exposes and validates the native six-argument ABI without
 confusing it with the internal registry request record; canonical key/value
 storage and VFS persistence remain unimplemented.
+`NtUnloadKey` now validates its native `OBJECT_ATTRIBUTES` pointer boundary;
+registry hive namespace and persistence ownership remain unimplemented.
