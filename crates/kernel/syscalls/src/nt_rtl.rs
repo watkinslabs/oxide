@@ -98,6 +98,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlGetExtendedContextLength2 { return Some(get_extended_context_length(call.args.a0 as u32, call.args.a1, call.args.a2)); }
     if call.service == NtService::RtlInitializeExtendedContext2 { return Some(initialize_extended_context(call.args.a0, call.args.a1 as u32, call.args.a2, call.args.a3)); }
     if call.service == NtService::RtlGetExtendedFeaturesMask { return Some(get_extended_features_mask(call.args.a0)); }
+    if call.service == NtService::RtlSetExtendedFeaturesMask { return Some(set_extended_features_mask(call.args.a0, call.args.a1)); }
     if call.service == NtService::RtlGetFullPathNameU { return Some(get_full_path(call.args.a0, call.args.a1, call.args.a2, call.args.a3)); }
     if call.service == NtService::RtlGetProductInfo { return Some(get_product_info(call)); }
     if call.service == NtService::RtlGetProcessPreferredUILanguages { return Some(get_process_preferred_ui_languages(call)); }
@@ -300,6 +301,21 @@ fn get_extended_features_mask(context_ex: u64) -> u64 {
     let mut mask = [0u8; 8];
     if uaccess::copy_from_user(&mut mask, xstate).is_err() { return 0; }
     u64::from_le_bytes(mask) & !3
+}
+
+fn set_extended_features_mask(context_ex: u64, feature_mask: u64) -> u64 {
+    if context_ex == 0 { return STATUS_INVALID_PARAMETER; }
+    let mut descriptor = [0u8; 4];
+    if uaccess::copy_from_user(&mut descriptor, context_ex.saturating_add(16)).is_err() { return STATUS_INVALID_PARAMETER; }
+    let offset = i32::from_le_bytes(descriptor) as i64;
+    if offset < 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(xstate) = context_ex.checked_add(offset as u64) else { return STATUS_INVALID_PARAMETER; };
+    #[cfg(target_arch = "x86_64")]
+    let enabled = hal_x86_64::xsave_xcr0();
+    #[cfg(not(target_arch = "x86_64"))]
+    let enabled = 0;
+    if uaccess::put_user_u64(xstate, enabled & feature_mask & !3).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
 }
 
 fn get_extended_context_length(flags: u32, length: u64, compaction_mask: u64) -> u64 {
