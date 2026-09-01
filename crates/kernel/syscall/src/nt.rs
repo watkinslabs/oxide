@@ -49,6 +49,7 @@ pub enum NtService {
     NtDeleteValueKey = 263,
     NtDuplicateToken = 264,
     NtEnumerateKey = 265,
+    NtEnumerateValueKey = 266,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -321,6 +322,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 263 { return Some(NtCall { service: NtService::NtDeleteValueKey, args }); }
     if service == 264 { return Some(NtCall { service: NtService::NtDuplicateToken, args }); }
     if service == 265 { return Some(NtCall { service: NtService::NtEnumerateKey, args }); }
+    if service == 266 { return Some(NtCall { service: NtService::NtEnumerateValueKey, args }); }
     if service == 197 { return Some(NtCall { service: NtService::RtlGUIDFromString, args }); }
     if service == 195 { return Some(NtCall { service: NtService::WineDbgOutput, args }); }
     if service == 194 { return Some(NtCall { service: NtService::WineDbgHeader, args }); }
@@ -484,7 +486,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::NtAdjustPrivilegesToken => Err(Errno::Enosys),
         NtService::NtAllocateLocallyUniqueId => Err(Errno::Enosys),
         NtService::NtCancelIoFile | NtService::NtCancelIoFileEx => Err(Errno::Enosys),
-        NtService::NtCancelSynchronousIoFile | NtService::NtCompareObjects | NtService::NtConvertBetweenAuxiliaryCounterAndPerformanceCounter | NtService::NtCreateNamedPipeFile | NtService::NtCreateSectionEx | NtService::NtCreateSymbolicLinkObject | NtService::NtCreateUserProcess | NtService::NtDelayExecution | NtService::NtDeleteKey | NtService::NtDeleteValueKey | NtService::NtDuplicateToken | NtService::NtEnumerateKey => Err(Errno::Enosys),
+        NtService::NtCancelSynchronousIoFile | NtService::NtCompareObjects | NtService::NtConvertBetweenAuxiliaryCounterAndPerformanceCounter | NtService::NtCreateNamedPipeFile | NtService::NtCreateSectionEx | NtService::NtCreateSymbolicLinkObject | NtService::NtCreateUserProcess | NtService::NtDelayExecution | NtService::NtDeleteKey | NtService::NtDeleteValueKey | NtService::NtDuplicateToken | NtService::NtEnumerateKey | NtService::NtEnumerateValueKey => Err(Errno::Enosys),
     }
 }
 pub fn decode_system(call: NtCall) -> Result<NtSystemCall, Errno> {

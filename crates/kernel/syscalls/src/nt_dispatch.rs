@@ -172,7 +172,7 @@ pub fn dispatch(call: NtCall) -> u64 {
     if let Some(result) = crate::nt_actctx::dispatch(call) { return result; }
     if let Some(result) = crate::nt_directory::dispatch(call) { return result; }
     if call.service == syscall::nt::NtService::CallbackReturn { return STATUS_NO_CALLBACK_ACTIVE; }
-    if matches!(call.service, syscall::nt::NtService::NtCreateNamedPipeFile | syscall::nt::NtService::NtCreateSectionEx | syscall::nt::NtService::NtCreateSymbolicLinkObject | syscall::nt::NtService::NtCreateUserProcess | syscall::nt::NtService::NtDeleteKey | syscall::nt::NtService::NtDeleteValueKey | syscall::nt::NtService::NtEnumerateKey) { return 0xc000_0002; }
+    if matches!(call.service, syscall::nt::NtService::NtCreateNamedPipeFile | syscall::nt::NtService::NtCreateSectionEx | syscall::nt::NtService::NtCreateSymbolicLinkObject | syscall::nt::NtService::NtCreateUserProcess | syscall::nt::NtService::NtDeleteKey | syscall::nt::NtService::NtDeleteValueKey | syscall::nt::NtService::NtEnumerateKey | syscall::nt::NtService::NtEnumerateValueKey) { return 0xc000_0002; }
     if let Some(result) = crate::nt_power::dispatch(call) { return result; }
     if let Some(result) = crate::nt_oem::dispatch(call) { return result; }
     if let Ok(system) = nt::decode_system(call) {

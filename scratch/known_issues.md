@@ -513,3 +513,7 @@ Windows NT frontier update (2026-09-01): `NtEnumerateKey` now has an explicit
 native export and fail-closed `STATUS_NOT_IMPLEMENTED` boundary; NT registry
 key enumeration remains pending. The graph advances to its next unresolved
 native import, `ntdll.dll!NtEnumerateValueKey`.
+Windows NT frontier update (2026-09-01): `NtEnumerateValueKey` now has an
+explicit native export and fail-closed `STATUS_NOT_IMPLEMENTED` boundary; NT
+registry value enumeration remains pending. The graph advances to its next
+unresolved native import, `ntdll.dll!NtFilterToken`.
