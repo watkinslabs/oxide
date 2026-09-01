@@ -36,6 +36,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         NtGdiCall::SelectFont { dc, font } => Some(match state.select_font(dc, font) { Ok(previous) => previous as u64, Err(_) => STATUS_INVALID_HANDLE }),
         NtGdiCall::GetTextMetrics { dc, metrics } => Some(get_metrics(state, dc, metrics)),
         NtGdiCall::GetTextExtent { dc, count, text, extent } => Some(get_extent(state, dc, count, text, extent)),
+        NtGdiCall::FillRect { dc, left, top, right, bottom, color } => Some(match state.fill_rect(dc, ipc::win32_gdi::Rect { left, top, right, bottom }, color) { Ok(()) => STATUS_SUCCESS, Err(_) => STATUS_INVALID_HANDLE }),
     }
 }
 
