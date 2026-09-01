@@ -118,6 +118,11 @@ impl GdiManager {
     /// Read the rendered row-major XRGB surface for one device context. # C: O(1)
     pub fn pixels(&self, dc: u32) -> Option<&[u32]> { self.dcs.iter().find(|(candidate, _)| *candidate == dc).map(|(_, state)| state.pixels.as_slice()) }
 
+    /// Return one DC's dimensions and canonical raster for the display owner. # C: O(N_objects)
+    pub fn surface(&self, dc: u32) -> Option<(i32, i32, &[u32])> {
+        self.dcs.iter().find(|(candidate, _)| *candidate == dc).map(|(_, state)| (state.width, state.height, state.pixels.as_slice()))
+    }
+
     fn font_for(&self, dc: u32) -> Result<Option<Font>, GdiError> {
         let Some((_, state)) = self.dcs.iter().find(|(candidate, _)| *candidate == dc) else { return Err(GdiError::NoSuchObject); };
         Ok(state.font.and_then(|handle| self.fonts.iter().find(|(candidate, _)| *candidate == handle).map(|(_, font)| *font)))

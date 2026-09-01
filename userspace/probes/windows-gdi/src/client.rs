@@ -81,6 +81,11 @@ impl Gdi {
         self.blit_surface(dc, x, y, surface.width, surface.height, surface.width, &surface.pixels)
     }
 
+    /// Present a device context at screen coordinates through the native display owner. # C: O(width*height) plus kernel service
+    pub fn present(&self, dc: u64, x: i32, y: i32) -> Result<(), GdiError> {
+        invoke(NtService::PresentGdiSurface, [dc, x as u64, y as u64, 0, 0, 0]).map(|_| ())
+    }
+
     /// Submit only the intersection of a raster tile and an `ETO_CLIPPED` rectangle. # C: O(width*height) plus kernel service
     pub fn draw_raster_clipped(&self, dc: u64, x: i32, y: i32, surface: &crate::RasterSurface, clip: Rect) -> Result<(), GdiError> {
         let left = clip.left.max(x).min(x.saturating_add(surface.width as i32));

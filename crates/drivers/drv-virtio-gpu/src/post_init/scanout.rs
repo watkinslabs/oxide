@@ -8,7 +8,7 @@ fn key_from_fb_driver(driver_key: fbdev::FbDriverKey) -> virtio::VirtioChildDevi
     key_from_raw(driver_key.raw())
 }
 
-pub(super) fn console_owner_key() -> Option<virtio::VirtioChildDeviceKey> {
+pub(crate) fn console_owner_key() -> Option<virtio::VirtioChildDeviceKey> {
     match CONSOLE_OWNER_KEY.load(Ordering::Acquire) {
         NO_CONSOLE_OWNER_KEY => None,
         raw => Some(key_from_raw(raw)),

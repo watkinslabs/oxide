@@ -186,10 +186,13 @@ pub use scanout::{
     uninstall_scanout_after_failed_probe,
     unpublish_console_scanout,
 };
+pub(crate) use scanout::console_owner_key;
 use scanout::install_scanout_ctx;
 
 mod runtime;
 mod runtime_queue;
+mod window_present;
+pub use window_present::present_window_pixels;
 pub use runtime::{
     boot_scanout_res_id_for_key,
     create_scanout_from_pa_for_key,
