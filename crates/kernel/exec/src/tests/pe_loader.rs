@@ -48,6 +48,9 @@
             environment: &[], process_id: 42, thread_id: 43,
         }, 0x7000_0000, &runtime, &tracing_runtime, &catalog);
         assert!(result.is_ok(), "native NTDLL surface must load the installed Wine Notepad graph");
+        let process = result.unwrap();
+        assert!(process.initializer_trampoline.is_some(), "Notepad must enter through the PE startup continuation");
+        assert_ne!(process.entry.rip, process.image.entry, "catalog PE entry must not fall through without a return path");
         assert!(as_.vma_count() > 1, "Notepad image and dependencies must remain mapped after loading");
     }
 
