@@ -205,6 +205,7 @@ use super::*;
     assert_eq!(decode(364, input).unwrap().service, NtService::RtlDestroyProcessParameters);
     assert_eq!(decode(365, input).unwrap().service, NtService::RtlDoesFileExistsU);
     assert_eq!(decode(366, input).unwrap().service, NtService::RtlDosSearchPathU);
+    assert_eq!(decode(367, input).unwrap().service, NtService::RtlDowncaseUnicodeChar);
     assert_eq!(decode(298, input).unwrap().service, NtService::NtQueryDirectoryObject);
     assert_eq!(decode(299, input).unwrap().service, NtService::NtQueryFullAttributesFile);
     assert_eq!(decode(293, input).unwrap().service, NtService::NtPrivilegeCheck);
