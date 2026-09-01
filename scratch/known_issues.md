@@ -446,3 +446,6 @@ previous-state/return-length buffers and `NtAdjustPrivilegesToken` remain open.
 Windows NT frontier update (2026-09-01): `NtAdjustPrivilegesToken` now has
 bounded privilege mutation, disable-all, and prior-state output; the graph
 advances to `ntdll.dll!NtAllocateLocallyUniqueId`.
+Windows NT frontier update (2026-09-01): `NtAllocateLocallyUniqueId` now
+validates the output pointer and allocates monotonic LUID values; the graph
+advances to `ntdll.dll!NtAllocateVirtualMemoryEx`.

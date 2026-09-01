@@ -3,6 +3,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 use syscall::nt::{NtCall, NtObjectCall};
 
 const STATUS_SUCCESS: u64 = 0;
@@ -20,10 +21,14 @@ const CURRENT_THREAD: u64 = u64::MAX;
 const TOKEN_BASIC_INFORMATION: u32 = 0;
 const TOKEN_TYPE_INFORMATION: u32 = 8;
 const SE_PRIVILEGE_VALID_ATTRIBUTES: u32 = 0x8000_0007;
+const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
+const STATUS_LUIDS_EXHAUSTED: u64 = 0xc000_0075;
+static NEXT_NT_LUID: AtomicU64 = AtomicU64::new(1000);
 
 pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == syscall::nt::NtService::NtAdjustGroupsToken { return Some(adjust_groups(call)); }
     if call.service == syscall::nt::NtService::NtAdjustPrivilegesToken { return Some(adjust_privileges(call)); }
+    if call.service == syscall::nt::NtService::NtAllocateLocallyUniqueId { return Some(allocate_luid(call)); }
     let Ok(object_call) = syscall::nt::decode_object(call) else { return None; };
     let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
     if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
@@ -138,6 +143,13 @@ fn write_privileges(address: u64, privileges: &[sched::nt_object::NtTokenPrivile
         uaccess::put_user_u32(entry + 8, privilege.attributes).map_err(|_| ())?;
     }
     Ok(())
+}
+
+fn allocate_luid(call: NtCall) -> u64 {
+    if call.args.a0 == 0 { return STATUS_ACCESS_VIOLATION; }
+    let luid = NEXT_NT_LUID.fetch_add(1, Ordering::Relaxed);
+    if luid == u64::MAX { return STATUS_LUIDS_EXHAUSTED; }
+    if uaccess::put_user_u64(call.args.a0, luid).is_err() { STATUS_ACCESS_VIOLATION } else { STATUS_SUCCESS }
 }
 
 fn insert_token(cur: &sched::Task, access: u32, output: syscall::UserPtr<u32>, table: &sched::nt_object::NtHandleTable) -> Option<u64> {
