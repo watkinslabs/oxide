@@ -238,6 +238,7 @@ use super::*;
     assert_eq!(decode(399, input).unwrap().service, NtService::RtlGetOwnerSecurityDescriptor);
     assert_eq!(decode(400, input).unwrap().service, NtService::RtlGetProductInfo);
     assert_eq!(decode(401, input).unwrap().service, NtService::RtlGetProcessPreferredUILanguages);
+    assert_eq!(decode(402, input).unwrap().service, NtService::RtlGetSaclSecurityDescriptor);
     assert_eq!(decode(370, input).unwrap().service, NtService::RtlEqualSid);
     assert_eq!(decode(371, input).unwrap().service, NtService::RtlExpandEnvironmentStringsU);
     assert_eq!(decode(298, input).unwrap().service, NtService::NtQueryDirectoryObject);
