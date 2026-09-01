@@ -702,3 +702,5 @@ explicit unsupported result; canonical ACL mutation remains unimplemented.
 explicit unsupported result; canonical ACL mutation remains unimplemented.
 `RtlAddAuditAccessObjectAce` is cataloged with the reference implementation's
 explicit unsupported result; canonical ACL mutation remains unimplemented.
+`RtlAddMandatoryAce` validates the mandatory-label ACE type and flag mask at
+the NT security owner; self-relative ACL insertion remains unimplemented.

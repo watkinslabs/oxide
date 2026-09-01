@@ -25,11 +25,24 @@ const GENERIC_READ: u32 = 0x8000_0000;
 const GENERIC_WRITE: u32 = 0x4000_0000;
 const GENERIC_EXECUTE: u32 = 0x2000_0000;
 const GENERIC_ALL: u32 = 0x1000_0000;
+const SYSTEM_MANDATORY_LABEL_ACE_TYPE: u32 = 0x11;
+const SYSTEM_MANDATORY_LABEL_VALID_MASK: u32 = 0x7;
+const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
 
 /// Query the stable baseline descriptor attached to an NT object handle.
 /// Linux credentials supply the owner/group identity; no Linux syscall path
 /// reaches this adapter. # C: O(1) plus usercopy
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == syscall::nt::NtService::RtlAddMandatoryAce {
+        if call.args.a0 == 0 || call.args.a5 == 0 { return Some(STATUS_INVALID_PARAMETER); }
+        if call.args.a4 as u32 != SYSTEM_MANDATORY_LABEL_ACE_TYPE
+            || (call.args.a3 as u32 & !SYSTEM_MANDATORY_LABEL_VALID_MASK) != 0 {
+            return Some(STATUS_INVALID_PARAMETER);
+        }
+        // The security descriptor owner is not yet an NT self-relative ACL
+        // mutator, so do not claim insertion succeeded.
+        return Some(STATUS_NOT_IMPLEMENTED);
+    }
     if call.service == syscall::nt::NtService::NtAccessCheck { return Some(access_check(call)); }
     let Ok(NtObjectCall::QuerySecurity { handle, security_information, descriptor, length, return_length }) = syscall::nt::decode_object(call) else { return None; };
     let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
