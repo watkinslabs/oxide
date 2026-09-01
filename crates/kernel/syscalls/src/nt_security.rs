@@ -28,11 +28,17 @@ const GENERIC_ALL: u32 = 0x1000_0000;
 const SYSTEM_MANDATORY_LABEL_ACE_TYPE: u32 = 0x11;
 const SYSTEM_MANDATORY_LABEL_VALID_MASK: u32 = 0x7;
 const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
+const STATUS_UNKNOWN_REVISION: u64 = 0xc000_005a;
+const DACL_OFFSET: u64 = 16;
+const ABSOLUTE_DACL_OFFSET: u64 = 32;
 
 /// Query the stable baseline descriptor attached to an NT object handle.
 /// Linux credentials supply the owner/group identity; no Linux syscall path
 /// reaches this adapter. # C: O(1) plus usercopy
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == syscall::nt::NtService::RtlGetDaclSecurityDescriptor {
+        return Some(get_dacl(call.args.a0, call.args.a1, call.args.a2, call.args.a3));
+    }
     if call.service == syscall::nt::NtService::RtlDeleteSecurityObject {
         if call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
         let descriptor = uaccess::get_user_u64(call.args.a0).unwrap_or(0);
@@ -68,6 +74,29 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if descriptor.as_u64() == 0 || length < required { return Some(STATUS_BUFFER_TOO_SMALL); }
     if uaccess::copy_to_user(descriptor.as_u64(), &bytes).is_err() { return Some(STATUS_INVALID_PARAMETER); }
     Some(STATUS_SUCCESS)
+}
+
+fn get_dacl(descriptor: u64, present: u64, dacl: u64, defaulted: u64) -> u64 {
+    if descriptor == 0 || present == 0 || dacl == 0 || defaulted == 0 { return STATUS_INVALID_PARAMETER; }
+    let mut header = [0u8; 4];
+    if uaccess::copy_from_user(&mut header, descriptor).is_err() { return STATUS_INVALID_PARAMETER; }
+    if header[0] != SECURITY_DESCRIPTOR_REVISION { return STATUS_UNKNOWN_REVISION; }
+    let control = u16::from_le_bytes([header[2], header[3]]);
+    let (is_present, acl) = if control & SELF_RELATIVE != 0 {
+        let mut offset = [0u8; 4];
+        if uaccess::copy_from_user(&mut offset, descriptor.saturating_add(DACL_OFFSET)).is_err() { return STATUS_INVALID_PARAMETER; }
+        let offset = u32::from_le_bytes(offset) as u64;
+        (control & DACL_PRESENT != 0, if offset == 0 { 0 } else { descriptor.saturating_add(offset) })
+    } else {
+        let mut pointer = [0u8; 8];
+        if uaccess::copy_from_user(&mut pointer, descriptor.saturating_add(ABSOLUTE_DACL_OFFSET)).is_err() { return STATUS_INVALID_PARAMETER; }
+        (control & DACL_PRESENT != 0, u64::from_le_bytes(pointer))
+    };
+    let defaulted_value = is_present && control & 0x0400 != 0;
+    if uaccess::copy_to_user(present, &[is_present as u8]).is_err()
+        || uaccess::put_user_u64(dacl, acl).is_err()
+        || uaccess::copy_to_user(defaulted, &[defaulted_value as u8]).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
 }
 
 fn access_check(call: NtCall) -> u64 {
