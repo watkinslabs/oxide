@@ -86,6 +86,16 @@ impl User32 {
         invoke(NtService::PostQuitMessage, [exit_code as u64, 0, 0, 0, 0, 0]).map(|_| ())
     }
 
+    /// Set the current thread's focus window and return the previous HWND. # C: O(1) plus kernel service
+    pub fn set_focus(&self, hwnd: u64) -> Result<u64, WindowError> {
+        invoke(NtService::SetFocusWindow, [hwnd, 0, 0, 0, 0, 0])
+    }
+
+    /// Inject one native key transition into the focused window's queue. # C: O(1) plus kernel service
+    pub fn inject_key(&self, key: u16, pressed: bool, repeat: bool) -> Result<(), WindowError> {
+        invoke(NtService::InjectKey, [key as u64, pressed as u64, repeat as u64, 0, 0, 0]).map(|_| ())
+    }
+
     /// Convert a key-down message into the corresponding Unicode character message. # C: O(1) plus kernel service
     pub fn translate_message(&self, message: &NtWindowMessage, shift: bool, caps_lock: bool) -> Result<bool, WindowError> {
         if message.message != WM_KEYDOWN { return Ok(false); }
@@ -210,6 +220,8 @@ mod tests {
         assert_eq!(NtService::CreateWindow.entry(), 0x4e54_0000_0000_001b);
         assert_eq!(NtService::GetMessage.entry(), 0x4e54_0000_0000_001f);
         assert_eq!(NtService::PostQuitMessage.entry(), 0x4e54_0000_0000_0213);
+        assert_eq!(NtService::SetFocusWindow.entry(), 0x4e54_0000_0000_0214);
+        assert_eq!(NtService::InjectKey.entry(), 0x4e54_0000_0000_0215);
     }
 
     #[test]
