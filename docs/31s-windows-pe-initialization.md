@@ -17,7 +17,9 @@ Wine's `user32` startup patches selected NTDLL-forwarded exports such as `DefWin
 ## 3 Tests
 
 - the catalog loader returns dependency-first initializer addresses;
-- the initialization trampoline emits Windows x64 process-attach calls and then jumps to the relocated application entry;
+- the initialization trampoline emits Windows x64 process-attach calls and then transfers to the relocated application entry;
+- catalog-backed process startup reserves the Windows x64 home space, calls the application entry, and routes a returned status to the native `RtlExitUserProcess` entry;
+- the startup continuation ends in an architectural trap if the process-termination entry unexpectedly returns, so a PE task cannot fall through into adjacent mapped bytes;
 - runtime-only NTDLL is excluded;
 - malformed environment construction still rolls back mapped images and produces no process plan;
 - Linux ELF execution remains on its existing path.

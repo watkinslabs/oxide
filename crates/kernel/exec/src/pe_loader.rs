@@ -965,8 +965,14 @@ fn load_pe_process_with_catalog_with_fallback<R: ImportResolver>(blob: &[u8], as
         Ok(initializers) => initializers,
         Err(error) => { let _ = as_.munmap(environment.base, environment.bytes); unmap_loaded_modules(as_, &loaded); return Err(error); }
     };
-    let initializer_trampoline = match pe_init::map(as_, entry.rip, &initializers) {
-        Ok(trampoline) => trampoline,
+    let exit_entry = match resolve_nt_runtime_export(runtime.base.as_u64(), b"RtlExitUserProcess")
+        .and_then(UserVirtAddr::new) { Some(entry) => entry, None => {
+            let _ = as_.munmap(environment.base, environment.bytes);
+            unmap_loaded_modules(as_, &loaded);
+            return Err(pe::Error::Unsupported);
+        }};
+    let initializer_trampoline = match pe_init::map_with_exit(as_, entry.rip, &initializers, exit_entry) {
+        Ok(trampoline) => Some(trampoline),
         Err(error) => { let _ = as_.munmap(environment.base, environment.bytes); unmap_loaded_modules(as_, &loaded); return Err(error); }
     };
     if let Some(trampoline) = initializer_trampoline { entry.rip = trampoline.entry; }
