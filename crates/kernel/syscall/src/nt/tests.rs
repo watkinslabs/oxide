@@ -175,6 +175,7 @@ use super::*;
         assert_eq!(decode(225, input).unwrap().service, NtService::RtlMultiByteToUnicodeSize);
         assert_eq!(decode(226, input).unwrap().service, NtService::RtlRetrieveNtUserPfn);
         assert_eq!(decode(227, input).unwrap().service, NtService::RtlResetNtUserPfn);
+        assert_eq!(decode(228, input).unwrap().service, NtService::ApiSetQueryApiSetPresenceEx);
     }
 
     #[test]

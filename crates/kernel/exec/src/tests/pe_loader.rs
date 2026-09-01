@@ -342,6 +342,8 @@
             let address = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name }).unwrap();
             assert!(address >= runtime.base.as_u64() && address < runtime.base.as_u64() + runtime.bytes as u64);
         }
+        let api_set = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"ApiSetQueryApiSetPresenceEx" }).unwrap();
+        assert!(api_set >= runtime.base.as_u64() && api_set < runtime.base.as_u64() + runtime.bytes as u64);
         assert!(guid_from_string >= runtime.base.as_u64() && guid_from_string < runtime.base.as_u64() + runtime.bytes as u64);
     }
 

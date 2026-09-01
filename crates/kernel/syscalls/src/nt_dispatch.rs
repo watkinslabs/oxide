@@ -116,6 +116,7 @@ fn resolve_thread_target(cur: &sched::Task, raw: u64,
 /// # C: O(log N_vmas) plus usercopy
 #[cfg(target_os = "oxide-kernel")]
 pub fn dispatch(call: NtCall) -> u64 {
+    if let Some(result) = crate::nt_apiset::dispatch(call) { return result; }
     if let Some(result) = crate::nt_actctx::dispatch(call) { return result; }
     if let Some(result) = crate::nt_directory::dispatch(call) { return result; }
     if call.service == syscall::nt::NtService::CallbackReturn { return STATUS_NO_CALLBACK_ACTIVE; }

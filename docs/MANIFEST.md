@@ -246,6 +246,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `31fe-windows-nt-directory-open.md` | FROZEN | 2026-09-01 | `01`,`02`,`31fd`,`52`,`53` |
 | `31ff-windows-nt-activation-context-string.md` | FROZEN | 2026-09-01 | `01`,`02`,`31fe`,`52`,`53` |
 | `31fg-windows-nt-pe-image-helpers.md` | FROZEN | 2026-09-01 | `01`,`02`,`31ff`,`52`,`53` |
+| `31fh-windows-nt-apiset-query.md` | FROZEN | 2026-09-01 | `01`,`02`,`31fg`,`52`,`53` |
 
 ## Deleted
 
