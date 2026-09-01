@@ -632,3 +632,5 @@ canonical `statfs` owner.
 `NtQueueApcThread` remains an explicit boundary until the scheduler owns a
 Windows APC queue and x86-64 user APC return path; it must not be conflated
 with Linux signal pending state.
+`NtQueueApcThreadEx2` is exposed alongside the base APC boundary; reserve
+handles, special APC flags, and callback delivery require that same owner.

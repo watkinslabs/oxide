@@ -146,6 +146,7 @@ use super::*;
     assert_eq!(decode(305, input).unwrap().service, NtService::NtQueryValueKey);
     assert_eq!(decode(306, input).unwrap().service, NtService::NtQueryVolumeInformationFile);
     assert_eq!(decode(307, input).unwrap().service, NtService::NtQueueApcThread);
+    assert_eq!(decode(308, input).unwrap().service, NtService::NtQueueApcThreadEx2);
     assert_eq!(decode(298, input).unwrap().service, NtService::NtQueryDirectoryObject);
     assert_eq!(decode(299, input).unwrap().service, NtService::NtQueryFullAttributesFile);
     assert_eq!(decode(293, input).unwrap().service, NtService::NtPrivilegeCheck);

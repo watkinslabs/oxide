@@ -91,6 +91,7 @@ pub enum NtService {
     NtQueryValueKey = 305,
     NtQueryVolumeInformationFile = 306,
     NtQueueApcThread = 307,
+    NtQueueApcThreadEx2 = 308,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -415,6 +416,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 305 { return Some(NtCall { service: NtService::NtQueryValueKey, args }); }
     if service == 306 { return Some(NtCall { service: NtService::NtQueryVolumeInformationFile, args }); }
     if service == 307 { return Some(NtCall { service: NtService::NtQueueApcThread, args }); }
+    if service == 308 { return Some(NtCall { service: NtService::NtQueueApcThreadEx2, args }); }
     if service == 197 { return Some(NtCall { service: NtService::RtlGUIDFromString, args }); }
     if service == 195 { return Some(NtCall { service: NtService::WineDbgOutput, args }); }
     if service == 194 { return Some(NtCall { service: NtService::WineDbgHeader, args }); }
@@ -583,7 +585,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         | NtService::CreateTimer | NtService::SetTimer | NtService::CancelTimer
         | NtService::CreateIoCompletion | NtService::SetIoCompletion | NtService::RemoveIoCompletion
         | NtService::SignalAndWait | NtService::OpenProcessToken | NtService::OpenThreadToken | NtService::QueryToken | NtService::RtlInitUnicodeString | NtService::RtlInitUnicodeStringEx | NtService::QueryObject | NtService::RtlInitAnsiString | NtService::RtlInitAnsiStringEx | NtService::QuerySecurityObject | NtService::RtlQueryPerformanceCounter | NtService::RtlQueryPerformanceFrequency | NtService::NtQueryPerformanceCounter | NtService::NtQuerySystemInformationEx | NtService::RenameKey | NtService::SetSecurityObject => Err(Errno::Enosys),
-        NtService::NtQueryValueKey | NtService::NtQueryVolumeInformationFile | NtService::NtQueueApcThread => Err(Errno::Enosys),
+        NtService::NtQueryValueKey | NtService::NtQueryVolumeInformationFile | NtService::NtQueueApcThread | NtService::NtQueueApcThreadEx2 => Err(Errno::Enosys),
         NtService::LdrGetDllPath => Err(Errno::Enosys),
         NtService::LdrSetDefaultDllDirectories => Err(Errno::Enosys),
         NtService::LdrUnloadDll => Err(Errno::Enosys),
