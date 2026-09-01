@@ -243,6 +243,8 @@
         assert!(memcpy >= runtime.base.as_u64() && memcpy < runtime.base.as_u64() + runtime.bytes as u64);
         let memmove = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"memmove" }).unwrap();
         assert!(memmove >= runtime.base.as_u64() && memmove < runtime.base.as_u64() + runtime.bytes as u64);
+        let memset = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"memset" }).unwrap();
+        assert!(memset >= runtime.base.as_u64() && memset < runtime.base.as_u64() + runtime.bytes as u64);
     }
 
     #[test]

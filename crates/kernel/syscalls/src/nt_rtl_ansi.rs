@@ -14,6 +14,7 @@ const UNICODE_STRING_BYTES: usize = 16;
 /// # C: O(source length) plus usercopy and optional heap allocation
 pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::Memcpy || call.service == NtService::Memmove { return Some(memcpy(call.args.a0, call.args.a1, call.args.a2)); }
+    if call.service == NtService::Memset { return Some(memset(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Isalpha { let c = call.args.a0 as i32; return Some(if c >= b'A' as i32 && c <= b'Z' as i32 { 1 } else if c >= b'a' as i32 && c <= b'z' as i32 { 2 } else { 0 }); }
     if call.service == NtService::Wcsnicmp { return Some(wcsnicmp(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Wcsicmp { return Some(wcsicmp(call.args.a0, call.args.a1)); }
@@ -32,6 +33,14 @@ fn memcpy(destination: u64, source: u64, length: u64) -> u64 {
     if destination == 0 || source == 0 || length > usize::MAX as u64 { return STATUS_INVALID_PARAMETER; }
     let mut bytes = alloc::vec![0u8; length as usize];
     if uaccess::copy_from_user(&mut bytes, source).is_err() || uaccess::copy_to_user(destination, &bytes).is_err() { return STATUS_INVALID_PARAMETER; }
+    destination
+}
+
+fn memset(destination: u64, value: u64, length: u64) -> u64 {
+    if length == 0 { return destination; }
+    if destination == 0 || length > usize::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    let bytes = alloc::vec![value as u8; length as usize];
+    if uaccess::copy_to_user(destination, &bytes).is_err() { return STATUS_INVALID_PARAMETER; }
     destination
 }
 
