@@ -19,9 +19,9 @@ pub struct PeModuleBase<'a> {
 pub struct NtRuntime {
     pub base: UserVirtAddr,
     pub bytes: usize,
-    addresses: [u64; 285],
+    addresses: [u64; 286],
 }
-const NTDLL_EXPORTS: [&[u8]; 285] = [
+const NTDLL_EXPORTS: [&[u8]; 286] = [
     b"NtAllocateVirtualMemory", b"NtFreeVirtualMemory", b"NtProtectVirtualMemory", b"NtQueryVirtualMemory",
     b"NtTerminateProcess", b"NtCreateEvent", b"NtClose", b"NtSetEvent", b"NtResetEvent", b"NtWaitForSingleObject",
     b"NtCreateFile", b"NtOpenFile", b"NtReadFile", b"NtWriteFile", b"NtQueryInformationFile", b"NtSetInformationFile", b"NtQueryDirectoryFile", b"NtWaitForMultipleObjects",
@@ -62,6 +62,7 @@ const NTDLL_EXPORTS: [&[u8]; 285] = [
     b"NtOpenSection",
     b"NtOpenSemaphore",
     b"NtOpenSymbolicLinkObject",
+    b"NtOpenThread",
 ];
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct PeEntryState {
@@ -179,9 +180,9 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
     let code_bytes = (NTDLL_EXPORTS.len() - 1) * pe::nt_stub::X64_SIX_ARG_STUB_BYTES + pe::nt_stub::X64_BREAKPOINT_STUB_BYTES;
     let mapped_bytes = (code_bytes + page - 1) / page * page;
     let mut code = alloc::vec![0u8; mapped_bytes];
-    let mut addresses = [0u64; 285];
+    let mut addresses = [0u64; 286];
     let mut offset = 0usize;
-    for index in 0..285 {
+    for index in 0..286 {
         let selector = match index {
             2 => syscall::nt::NtService::ProtectVirtualMemory,
             3 => syscall::nt::NtService::QueryVirtualMemory,
@@ -418,6 +419,7 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
             282 => syscall::nt::NtService::NtOpenSection,
             283 => syscall::nt::NtService::NtOpenSemaphore,
             284 => syscall::nt::NtService::NtOpenSymbolicLinkObject,
+            285 => syscall::nt::NtService::NtOpenThread,
             _ => syscall::nt::NtService::FreeHeap,
         };
         let bytes = if index == 220 { pe::nt_stub::encode_x64_breakpoint_stub().to_vec() }
