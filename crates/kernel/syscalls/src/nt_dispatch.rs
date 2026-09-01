@@ -181,6 +181,11 @@ fn compare_objects(cur: &sched::Task, first: u64, second: u64) -> u64 {
 /// # C: O(log N_vmas) plus usercopy
 #[cfg(target_os = "oxide-kernel")]
 pub fn dispatch(call: NtCall) -> u64 {
+    if call.service == syscall::nt::NtService::RtlGetNativeSystemInformation {
+        let mut query = call;
+        query.service = syscall::nt::NtService::QuerySystemInformation;
+        return dispatch(query);
+    }
     if let Some(result) = crate::nt_apiset::dispatch(call) { return result; }
     if let Some(result) = crate::nt_actctx::dispatch(call) { return result; }
     if let Some(result) = crate::nt_env::dispatch(call) { return result; }
