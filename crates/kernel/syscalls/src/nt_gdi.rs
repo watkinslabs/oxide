@@ -38,6 +38,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         NtGdiCall::GetTextExtent { dc, count, text, extent } => Some(get_extent(state, dc, count, text, extent)),
         NtGdiCall::FillRect { dc, left, top, right, bottom, color } => Some(match state.fill_rect(dc, ipc::win32_gdi::Rect { left, top, right, bottom }, color) { Ok(()) => STATUS_SUCCESS, Err(_) => STATUS_INVALID_HANDLE }),
         NtGdiCall::BlitSurface { dc, pixels, x, y, width, height, stride } => Some(blit_surface(state, dc, pixels, x, y, width, height, stride)),
+        NtGdiCall::PresentSurface { dc, x, y } => Some(present_surface(state, dc, x, y)),
     }
 }
 
@@ -50,6 +51,11 @@ fn blit_surface(state: &mut ipc::win32_gdi::GdiManager, dc: u32, pixels: syscall
     let mut values = alloc::vec![0u32; words];
     for (index, value) in values.iter_mut().enumerate() { let offset = index * 4; *value = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()); }
     match state.blit_pixels(dc, x, y, width as i32, height as i32, stride as i32, &values) { Ok(()) => STATUS_SUCCESS, Err(_) => STATUS_INVALID_HANDLE }
+}
+
+fn present_surface(state: &ipc::win32_gdi::GdiManager, dc: u32, x: i32, y: i32) -> u64 {
+    let Some((width, height, pixels)) = state.surface(dc) else { return STATUS_INVALID_HANDLE; };
+    if drv_virtio_gpu::post_init::present_window_pixels(pixels, width as u32, height as u32, x, y) { STATUS_SUCCESS } else { STATUS_INVALID_PARAMETER }
 }
 
 fn create_font(state: &mut ipc::win32_gdi::GdiManager, pointer: syscall::UserPtr<NtGdiFont>) -> u64 {

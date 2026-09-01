@@ -26,6 +26,8 @@ owner. The adapter does not maintain a second GDI object table.
   decoding and glyph advances, before uploading an XRGB text tile.
 - `ExtTextOutW` performs optional opaque background fill, optional rectangle
   clipping, per-code-unit advances, and native tile submission in userspace.
+- A native `PresentGdiSurface` submission copies a DC into the primary scanout;
+  the display driver owns scanout clipping and transfer/flush ordering.
 - `DeleteObject` removes device contexts and fonts and clears deleted fonts
   from every context in the process.
 - Tagged NT selectors carry the ABI; Linux syscall numbers are not used for
@@ -42,6 +44,8 @@ owner. The adapter does not maintain a second GDI object table.
   sizes, invalid dimensions, and short source buffers fail before upload.
 - Empty text does not upload pixels; opaque empty text still fills its requested
   rectangle.
+- Presentation rejects absent/quiesced scanouts and never writes outside the
+  driver-owned framebuffer backing.
 - Window scanout remains separate display-driver work; GDI owns the raster
   surface and its drawing operations.
 
