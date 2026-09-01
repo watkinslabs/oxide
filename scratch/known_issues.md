@@ -714,3 +714,5 @@ RTL owner; generic-access mapping remains the caller's responsibility.
 predicate; generic-access mapping remains the caller's responsibility.
 `RtlBarrier` remains an explicit unsupported userspace synchronization boundary;
 wait-on-address ownership and safe caller-memory barrier state are not present.
+`RtlClearBits` mutates the caller-owned RTL bitmap with reference-compatible
+range no-op behavior; atomicity across concurrent bitmap users remains absent.
