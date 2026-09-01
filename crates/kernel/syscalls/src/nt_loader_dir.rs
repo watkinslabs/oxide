@@ -2,7 +2,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 use core::sync::atomic::Ordering;
 use syscall::nt::{NtCall, NtService};
 
