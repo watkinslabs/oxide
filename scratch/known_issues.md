@@ -521,3 +521,7 @@ Windows NT frontier update (2026-09-01): `NtFilterToken` now has an explicit
 native export and fail-closed `STATUS_NOT_IMPLEMENTED` boundary; restricted
 token SID/privilege representation remains pending. The graph advances to
 `ntdll.dll!NtFlushBuffersFile`.
+Windows NT frontier update (2026-09-01): `NtFlushBuffersFile` now resolves
+through the native file adapter and flushes the backing VFS file with NT
+handle-access and `IO_STATUS_BLOCK` completion semantics. The graph advances
+to `ntdll.dll!NtFlushInstructionCache`.

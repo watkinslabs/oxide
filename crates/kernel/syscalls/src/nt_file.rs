@@ -61,7 +61,29 @@ pub fn dispatch(call: NtFileCall) -> u64 {
         NtFileCall::Cancel { handle, io_status } => cancel(cur, handle, None, io_status.as_u64()),
         NtFileCall::CancelEx { handle, io, io_status } => cancel(cur, handle, io.map(|ptr| ptr.as_u64()), io_status.as_u64()),
         NtFileCall::CancelSynchronous { handle, io, io_status } => cancel_synchronous(cur, handle, io.map(|ptr| ptr.as_u64()), io_status.as_u64()),
+        NtFileCall::Flush { handle, io_status } => flush(cur, handle, io_status.as_u64()),
     }
+}
+
+fn flush(cur: &sched::Task, handle: u32, io_status: u64) -> u64 {
+    if io_status == 0 { return STATUS_ACCESS_VIOLATION; }
+    let table = cur.thread_group.nt_handles();
+    let native = sched::nt_object::NtHandle::from_raw(handle);
+    // Wine accepts either write or append access for NtFlushBuffersFile.
+    let Some(object) = table.get(native, FILE_WRITE_DATA)
+        .or_else(|| table.get(native, FILE_APPEND_DATA)) else {
+        return if table.contains(native) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE };
+    };
+    let Some(file) = object.file() else { return STATUS_INVALID_HANDLE; };
+    let status = match file.vfs_fsync(false) {
+        Ok(()) => STATUS_SUCCESS,
+        Err(error) => nt_status_from_errno(-(error as i64)),
+    };
+    if uaccess::put_user_u64(io_status, status).is_err()
+        || uaccess::put_user_u64(io_status + 8, 0).is_err() {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    status
 }
 
 fn cancel(cur: &sched::Task, handle: u32, io: Option<u64>, io_status: u64) -> u64 {

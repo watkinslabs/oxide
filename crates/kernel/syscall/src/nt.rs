@@ -51,6 +51,7 @@ pub enum NtService {
     NtEnumerateKey = 265,
     NtEnumerateValueKey = 266,
     NtFilterToken = 267,
+    NtFlushBuffersFile = 268,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -237,6 +238,7 @@ pub enum NtFileCall {
     Cancel { handle: u32, io_status: UserPtr<u8> },
     CancelEx { handle: u32, io: Option<UserPtr<u8>>, io_status: UserPtr<u8> },
     CancelSynchronous { handle: u64, io: Option<UserPtr<u8>>, io_status: UserPtr<u8> },
+    Flush { handle: u32, io_status: UserPtr<u8> },
 }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum NtTimeout {
@@ -325,6 +327,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 265 { return Some(NtCall { service: NtService::NtEnumerateKey, args }); }
     if service == 266 { return Some(NtCall { service: NtService::NtEnumerateValueKey, args }); }
     if service == 267 { return Some(NtCall { service: NtService::NtFilterToken, args }); }
+    if service == 268 { return Some(NtCall { service: NtService::NtFlushBuffersFile, args }); }
     if service == 197 { return Some(NtCall { service: NtService::RtlGUIDFromString, args }); }
     if service == 195 { return Some(NtCall { service: NtService::WineDbgOutput, args }); }
     if service == 194 { return Some(NtCall { service: NtService::WineDbgHeader, args }); }
@@ -488,7 +491,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::NtAdjustPrivilegesToken => Err(Errno::Enosys),
         NtService::NtAllocateLocallyUniqueId => Err(Errno::Enosys),
         NtService::NtCancelIoFile | NtService::NtCancelIoFileEx => Err(Errno::Enosys),
-        NtService::NtCancelSynchronousIoFile | NtService::NtCompareObjects | NtService::NtConvertBetweenAuxiliaryCounterAndPerformanceCounter | NtService::NtCreateNamedPipeFile | NtService::NtCreateSectionEx | NtService::NtCreateSymbolicLinkObject | NtService::NtCreateUserProcess | NtService::NtDelayExecution | NtService::NtDeleteKey | NtService::NtDeleteValueKey | NtService::NtDuplicateToken | NtService::NtEnumerateKey | NtService::NtEnumerateValueKey | NtService::NtFilterToken => Err(Errno::Enosys),
+        NtService::NtCancelSynchronousIoFile | NtService::NtCompareObjects | NtService::NtConvertBetweenAuxiliaryCounterAndPerformanceCounter | NtService::NtCreateNamedPipeFile | NtService::NtCreateSectionEx | NtService::NtCreateSymbolicLinkObject | NtService::NtCreateUserProcess | NtService::NtDelayExecution | NtService::NtDeleteKey | NtService::NtDeleteValueKey | NtService::NtDuplicateToken | NtService::NtEnumerateKey | NtService::NtEnumerateValueKey | NtService::NtFilterToken | NtService::NtFlushBuffersFile => Err(Errno::Enosys),
     }
 }
 pub fn decode_system(call: NtCall) -> Result<NtSystemCall, Errno> {
@@ -540,6 +543,7 @@ pub fn decode_file(call: NtCall) -> Result<NtFileCall, Errno> {
         NtService::NtCancelIoFile => Ok(NtFileCall::Cancel { handle: a.a0 as u32, io_status: UserPtr::new(a.a1)? }),
         NtService::NtCancelIoFileEx => Ok(NtFileCall::CancelEx { handle: a.a0 as u32, io: optional_ptr(a.a1)?, io_status: UserPtr::new(a.a2)? }),
         NtService::NtCancelSynchronousIoFile => Ok(NtFileCall::CancelSynchronous { handle: a.a0, io: optional_ptr(a.a1)?, io_status: UserPtr::new(a.a2)? }),
+        NtService::NtFlushBuffersFile => Ok(NtFileCall::Flush { handle: a.a0 as u32, io_status: UserPtr::new(a.a1)? }),
         _ => Err(Errno::Enosys),
     }
 }
