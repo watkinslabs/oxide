@@ -107,6 +107,30 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
                     state.post_quit(cur.tid as u64, code);
                     (Some(STATUS_SUCCESS), Some(wait), None)
                 }
+                NtWindowCall::SetFocus { hwnd } => {
+                    if hwnd > u32::MAX as u64 { return Some(STATUS_INVALID_HANDLE); }
+                    let window = if hwnd == 0 { None } else {
+                        let Some(window) = ipc::win32_window::WindowId::from_raw(hwnd as u32) else { return Some(STATUS_INVALID_HANDLE); };
+                        Some(window)
+                    };
+                    let result = match state.set_focus(cur.tid as u64, window) {
+                        Ok(previous) => previous.map_or(0, |value| value.raw() as u64),
+                        Err(ipc::win32_window::WindowError::WrongThread) => STATUS_INVALID_PARAMETER,
+                        Err(_) => STATUS_INVALID_HANDLE,
+                    };
+                    (Some(result), None, None)
+                }
+                NtWindowCall::InjectKey { key, pressed, repeat } => {
+                    if pressed > 1 || repeat > 1 { return Some(STATUS_INVALID_PARAMETER); }
+                    let result = match state.post_key(cur.tid as u64, key, pressed != 0, repeat != 0) {
+                        Ok(()) => STATUS_SUCCESS,
+                        Err(ipc::win32_window::WindowError::NoFocus) => STATUS_INVALID_HANDLE,
+                        Err(ipc::win32_window::WindowError::WrongThread) => STATUS_INVALID_PARAMETER,
+                        Err(ipc::win32_window::WindowError::QueueFull) => STATUS_QUOTA_EXCEEDED,
+                        Err(_) => STATUS_INVALID_HANDLE,
+                    };
+                    (Some(result), Some(wait), None)
+                }
                 NtWindowCall::GetRect { hwnd, rect } => {
                     let Some(window) = ipc::win32_window::WindowId::from_raw(hwnd as u32) else { return Some(STATUS_INVALID_HANDLE); };
                     let Some(value) = state.rect(window) else { return Some(STATUS_INVALID_HANDLE); };

@@ -5,6 +5,8 @@ use alloc::vec::Vec;
 
 pub const WM_CLOSE: u32 = 0x0010;
 pub const WM_DESTROY: u32 = 0x0002;
+pub const WM_KEYDOWN: u32 = 0x0100;
+pub const WM_KEYUP: u32 = 0x0101;
 pub const WM_NCHITTEST: u32 = 0x0084;
 pub const WM_PAINT: u32 = 0x000f;
 pub const WM_QUIT: u32 = 0x0012;
@@ -74,9 +76,9 @@ pub struct WindowRecord { pub owner_tid: u64, pub parent: Option<WindowId>, pub 
 pub struct WindowRect { pub left: i32, pub top: i32, pub right: i32, pub bottom: i32 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum WindowError { NoSuchWindow, InvalidParent, QueueFull }
+pub enum WindowError { NoSuchWindow, InvalidParent, WrongThread, NoFocus, QueueFull }
 
-pub struct WindowManager { next: u32, windows: Vec<(WindowId, WindowRecord)>, rects: Vec<(WindowId, WindowRect)>, texts: Vec<(WindowId, Vec<u16>)>, dirty: Vec<(WindowId, WindowRect)>, queues: Vec<(u64, MessageQueue)> }
+pub struct WindowManager { next: u32, windows: Vec<(WindowId, WindowRecord)>, rects: Vec<(WindowId, WindowRect)>, texts: Vec<(WindowId, Vec<u16>)>, dirty: Vec<(WindowId, WindowRect)>, queues: Vec<(u64, MessageQueue)>, focus: Option<WindowId> }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum QueueResult { Message(WinMessage), Quit(i32), Empty }
@@ -84,7 +86,7 @@ pub enum QueueResult { Message(WinMessage), Quit(i32), Empty }
 impl Default for WindowManager { fn default() -> Self { Self::new() } }
 
 impl WindowManager {
-    pub fn new() -> Self { Self { next: 1, windows: Vec::new(), rects: Vec::new(), texts: Vec::new(), dirty: Vec::new(), queues: Vec::new() } }
+    pub fn new() -> Self { Self { next: 1, windows: Vec::new(), rects: Vec::new(), texts: Vec::new(), dirty: Vec::new(), queues: Vec::new(), focus: None } }
     pub fn create(&mut self, owner_tid: u64, parent: Option<WindowId>, wndproc: u64) -> Result<WindowId, WindowError> {
         if parent.is_some_and(|parent| self.get(parent).is_none()) { return Err(WindowError::InvalidParent); }
         let id = WindowId(self.next);
@@ -101,6 +103,18 @@ impl WindowManager {
         record.visible = visible;
         Ok(())
     }
+    /// Set the current thread's focus window and return the previous focus. # C: O(N_windows)
+    pub fn set_focus(&mut self, tid: u64, id: Option<WindowId>) -> Result<Option<WindowId>, WindowError> {
+        if let Some(id) = id {
+            let record = self.get(id).ok_or(WindowError::NoSuchWindow)?;
+            if record.owner_tid != tid { return Err(WindowError::WrongThread); }
+        }
+        let previous = self.focus;
+        self.focus = id;
+        Ok(previous)
+    }
+    /// Return the canonical focused window. # C: O(1)
+    pub fn focused(&self) -> Option<WindowId> { self.focus }
     /// Change visibility and return the previous state. # C: O(N_windows)
     pub fn show(&mut self, id: WindowId, visible: bool) -> Result<bool, WindowError> {
         let Some((_, record)) = self.windows.iter_mut().find(|(window, _)| *window == id) else { return Err(WindowError::NoSuchWindow); };
@@ -150,6 +164,7 @@ impl WindowManager {
         self.rects.retain(|(window, _)| *window != id);
         self.texts.retain(|(window, _)| *window != id);
         self.dirty.retain(|(window, _)| *window != id);
+        if self.focus == Some(id) { self.focus = None; }
         Ok(self.windows.remove(index).1)
     }
     pub fn post_to_window(&mut self, id: WindowId, message: WinMessage) -> Result<(), WindowError> {
@@ -157,6 +172,13 @@ impl WindowManager {
         let queue = self.queues.iter_mut().find(|(tid, _)| *tid == owner).map(|(_, queue)| queue)
             .ok_or(WindowError::NoSuchWindow)?;
         queue.post(message).map_err(|_| WindowError::QueueFull)
+    }
+    /// Enqueue one native keyboard transition on the focused window's owner queue. # C: O(N_windows)
+    pub fn post_key(&mut self, tid: u64, key: u16, pressed: bool, repeat: bool) -> Result<(), WindowError> {
+        let window = self.focus.ok_or(WindowError::NoFocus)?;
+        let record = self.get(window).ok_or(WindowError::NoSuchWindow)?;
+        if record.owner_tid != tid { return Err(WindowError::WrongThread); }
+        self.post_to_window(window, WinMessage { hwnd: Some(window), message: if pressed { WM_KEYDOWN } else { WM_KEYUP }, wparam: key as u64, lparam: repeat as i64 })
     }
     pub fn peek_for_thread(&mut self, tid: u64, filter: MessageFilter, remove: bool) -> Option<WinMessage> {
         self.queues.iter_mut().find(|(owner, _)| *owner == tid).and_then(|(_, queue)| queue.peek(filter, remove).or_else(|| queue.quit_message(filter, remove)))
@@ -245,6 +267,34 @@ mod tests {
         assert_eq!(manager.peek_for_thread(8, MessageFilter { hwnd: None, first: 0, last: u32::MAX }, false), None);
         assert_eq!(manager.destroy(window).unwrap().wndproc, 0x1234);
         assert_eq!(manager.post_to_window(window, message(None, 1)), Err(WindowError::NoSuchWindow));
+    }
+
+    #[test]
+    fn focus_returns_previous_window_and_routes_key_transitions() {
+        let mut manager = WindowManager::new();
+        let first = manager.create(9, None, 0).unwrap();
+        let second = manager.create(9, None, 0).unwrap();
+        assert_eq!(manager.set_focus(9, Some(first)), Ok(None));
+        assert_eq!(manager.set_focus(9, Some(second)), Ok(Some(first)));
+        assert_eq!(manager.focused(), Some(second));
+        manager.post_key(9, 0x41, true, false).unwrap();
+        let filter = MessageFilter { hwnd: Some(second), first: WM_KEYDOWN, last: WM_KEYDOWN };
+        assert_eq!(manager.peek_for_thread(9, filter, true), Some(WinMessage { hwnd: Some(second), message: WM_KEYDOWN, wparam: 0x41, lparam: 0 }));
+    }
+
+    #[test]
+    fn focus_rejects_other_threads_and_clears_on_destroy() {
+        let mut manager = WindowManager::new();
+        let window = manager.create(9, None, 0).unwrap();
+        assert_eq!(manager.set_focus(8, Some(window)), Err(WindowError::WrongThread));
+        assert_eq!(manager.post_key(9, 0x41, true, false), Err(WindowError::NoFocus));
+        manager.set_focus(9, Some(window)).unwrap();
+        assert_eq!(manager.set_focus(9, None), Ok(Some(window)));
+        assert_eq!(manager.focused(), None);
+        manager.set_focus(9, Some(window)).unwrap();
+        manager.destroy(window).unwrap();
+        assert_eq!(manager.focused(), None);
+        assert_eq!(manager.post_key(9, 0x41, true, false), Err(WindowError::NoFocus));
     }
 
     #[test]
