@@ -36,6 +36,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::Wcsrchr { return Some(wcsrchr(call.args.a0, call.args.a1)); }
     if call.service == NtService::Wcstoul { return Some(wcstoul(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Isalpha { let c = call.args.a0 as i32; return Some(if c >= b'A' as i32 && c <= b'Z' as i32 { 1 } else if c >= b'a' as i32 && c <= b'z' as i32 { 2 } else { 0 }); }
+    if call.service == NtService::Isalnum { let c = call.args.a0 as u8; return Some(if c.is_ascii_alphanumeric() { 1 } else { 0 }); }
     if call.service == NtService::Wcsnicmp { return Some(wcsnicmp(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Wcsicmp { return Some(wcsicmp(call.args.a0, call.args.a1)); }
     if call.service == NtService::Strnicmp { return Some(strnicmp(call.args.a0, call.args.a1, call.args.a2)); }
