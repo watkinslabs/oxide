@@ -1,9 +1,15 @@
 use fontdue::{Font as TrueTypeFont, FontSettings};
+use crate::{Gdi, GdiError, Rect};
 
 const MAX_TEXT_PIXELS: usize = 16 * 1024 * 1024;
+pub const ETO_OPAQUE: u32 = 0x0002;
+pub const ETO_CLIPPED: u32 = 0x0004;
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum RasterError { InvalidFont, InvalidSize, TooLarge }
+
+#[derive(Debug)]
+pub enum TextOutputError { Raster(RasterError), Gdi(GdiError) }
 
 pub struct RasterFont { font: TrueTypeFont, size: f32 }
 
@@ -19,17 +25,23 @@ impl RasterFont {
 
     /// Rasterize UTF-16 text into an opaque XRGB tile using native font metrics. # C: O(N_text + pixels)
     pub fn rasterize(&self, text: &[u16], foreground: u32, background: u32) -> Result<RasterSurface, RasterError> {
+        self.rasterize_with_advances(text, None, foreground, background)
+    }
+
+    /// Rasterize text with optional per-code-unit advances supplied by `lpDx`. # C: O(N_text + pixels)
+    pub fn rasterize_with_advances(&self, text: &[u16], advances: Option<&[i32]>, foreground: u32, background: u32) -> Result<RasterSurface, RasterError> {
+        if advances.is_some_and(|values| values.len() < text.len()) { return Err(RasterError::InvalidSize); }
         let mut glyphs = Vec::new();
         let mut width = 0.0f32;
         let mut top = 0i32;
         let mut bottom = self.size.ceil() as i32;
-        for decoded in char::decode_utf16(text.iter().copied()) {
+        for (index, decoded) in char::decode_utf16(text.iter().copied()).enumerate() {
             let character = decoded.unwrap_or(char::REPLACEMENT_CHARACTER);
             let (metrics, bitmap) = self.font.rasterize(character, self.size);
             let x = width.round() as i32 + metrics.xmin;
             top = top.min(metrics.ymin);
             bottom = bottom.max(metrics.ymin + metrics.height as i32);
-            width += metrics.advance_width;
+            width += advances.and_then(|values| values.get(index)).copied().map(|value| value as f32).unwrap_or(metrics.advance_width);
             glyphs.push((x, metrics.ymin, metrics.width, metrics.height, bitmap));
         }
         let tile_width = width.ceil().max(1.0) as usize;
@@ -49,6 +61,22 @@ impl RasterFont {
             } }
         }
         Ok(RasterSurface { width: tile_width as u32, height: tile_height as u32, pixels })
+    }
+
+    /// Implement the userspace portion of `ExtTextOutW`, including opaque and clipped output. # C: O(N_text + pixels) plus kernel service
+    pub fn ext_text_out(&self, gdi: &Gdi, dc: u64, x: i32, y: i32, flags: u32, rect: Option<Rect>, text: &[u16], advances: Option<&[i32]>, foreground: u32, background: u32) -> Result<(), TextOutputError> {
+        if flags & ETO_OPAQUE != 0 {
+            let Some(rect) = rect else { return Err(TextOutputError::Raster(RasterError::InvalidSize)); };
+            gdi.fill_rect(dc, rect, background).map_err(TextOutputError::Gdi)?;
+        }
+        if text.is_empty() { return Ok(()); }
+        let surface = self.rasterize_with_advances(text, advances, foreground, background).map_err(TextOutputError::Raster)?;
+        if flags & ETO_CLIPPED != 0 {
+            let Some(rect) = rect else { return Err(TextOutputError::Raster(RasterError::InvalidSize)); };
+            gdi.draw_raster_clipped(dc, x, y, &surface, rect).map_err(TextOutputError::Gdi)
+        } else {
+            gdi.draw_raster(dc, x, y, &surface).map_err(TextOutputError::Gdi)
+        }
     }
 }
 

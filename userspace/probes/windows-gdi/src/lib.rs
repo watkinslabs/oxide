@@ -3,7 +3,7 @@
 mod client;
 mod raster;
 pub use client::{Gdi, GdiError, Font, Rect, TextExtent, TextMetrics};
-pub use raster::{RasterError, RasterFont, RasterSurface};
+pub use raster::{RasterError, RasterFont, RasterSurface, TextOutputError, ETO_CLIPPED, ETO_OPAQUE};
 
 #[cfg(test)]
 mod tests {

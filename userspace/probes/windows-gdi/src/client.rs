@@ -80,6 +80,22 @@ impl Gdi {
     pub fn draw_raster(&self, dc: u64, x: i32, y: i32, surface: &crate::RasterSurface) -> Result<(), GdiError> {
         self.blit_surface(dc, x, y, surface.width, surface.height, surface.width, &surface.pixels)
     }
+
+    /// Submit only the intersection of a raster tile and an `ETO_CLIPPED` rectangle. # C: O(width*height) plus kernel service
+    pub fn draw_raster_clipped(&self, dc: u64, x: i32, y: i32, surface: &crate::RasterSurface, clip: Rect) -> Result<(), GdiError> {
+        let left = clip.left.max(x).min(x.saturating_add(surface.width as i32));
+        let top = clip.top.max(y).min(y.saturating_add(surface.height as i32));
+        let right = clip.right.max(left).min(x.saturating_add(surface.width as i32));
+        let bottom = clip.bottom.max(top).min(y.saturating_add(surface.height as i32));
+        if right <= left || bottom <= top { return Ok(()); }
+        let width = (right - left) as usize;
+        let height = (bottom - top) as usize;
+        let source_x = (left - x) as usize;
+        let source_y = (top - y) as usize;
+        let mut pixels = Vec::with_capacity(width * height);
+        for row in 0..height { pixels.extend_from_slice(&surface.pixels[(source_y + row) * surface.width as usize + source_x..(source_y + row) * surface.width as usize + source_x + width]); }
+        self.blit_surface(dc, left, top, width as u32, height as u32, width as u32, &pixels)
+    }
 }
 
 fn invoke(service: NtService, args: [u64; 6]) -> Result<u64, GdiError> {
