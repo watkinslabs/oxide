@@ -13,12 +13,53 @@ const TEXT_UNICODE_NOT_UNICODE_MASK: u32 = 0x0f00;
 const TEXT_UNICODE_NULL_BYTES: u32 = 0x1000;
 const TEXT_UNICODE_NOT_ASCII_MASK: u32 = 0xf000;
 const TEXT_UNICODE_ODD_LENGTH: u32 = 0x0200;
+const STATUS_SUCCESS: u64 = 0;
+const GUID_STRING_BYTES: usize = 76;
+
+/// Convert the fixed Windows GUID spelling into its 16-byte little-endian ABI.
+/// # C: O(1) plus bounded usercopy
+fn guid_from_string(descriptor: u64, target: u64) -> u64 {
+    if descriptor == 0 || target == 0 { return STATUS_INVALID_PARAMETER; }
+    let mut header = [0u8; UNICODE_STRING_BYTES];
+    if uaccess::copy_from_user(&mut header, descriptor).is_err() { return STATUS_INVALID_PARAMETER; }
+    let length = u16::from_le_bytes([header[0], header[1]]) as usize;
+    let buffer = u64::from_le_bytes(header[8..16].try_into().unwrap());
+    if length < GUID_STRING_BYTES || buffer == 0 { return STATUS_INVALID_PARAMETER; }
+    let mut text = [0u8; GUID_STRING_BYTES];
+    if uaccess::copy_from_user(&mut text, buffer).is_err() { return STATUS_INVALID_PARAMETER; }
+    let at = |index: usize| -> Option<u8> {
+        let value = u16::from_le_bytes([text[index * 2], text[index * 2 + 1]]);
+        (value <= 0x7f).then_some(value as u8)
+    };
+    if at(0) != Some(b'{') || at(9) != Some(b'-') || at(14) != Some(b'-') || at(19) != Some(b'-') || at(24) != Some(b'-') || at(37) != Some(b'}') {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let hex = |index: usize| -> Option<u8> {
+        match at(index)? {
+            b'0'..=b'9' => Some(at(index)? - b'0'), b'a'..=b'f' => Some(at(index)? - b'a' + 10),
+            b'A'..=b'F' => Some(at(index)? - b'A' + 10), _ => None,
+        }
+    };
+    let pair = |index: usize| -> Option<u8> { Some((hex(index)? << 4) | hex(index + 1)?) };
+    let positions = [1usize, 3, 5, 7, 10, 12, 15, 17, 20, 22, 25, 27, 29, 31, 33, 35];
+    let mut parsed = [0u8; 16];
+    for (slot, position) in positions.iter().enumerate() {
+        let Some(value) = pair(*position) else { return STATUS_INVALID_PARAMETER; };
+        parsed[slot] = value;
+    }
+    let mut guid = [0u8; 16];
+    guid[0] = parsed[3]; guid[1] = parsed[2]; guid[2] = parsed[1]; guid[3] = parsed[0];
+    guid[4] = parsed[5]; guid[5] = parsed[4]; guid[6] = parsed[7]; guid[7] = parsed[6];
+    guid[8..].copy_from_slice(&parsed[8..]);
+    if uaccess::copy_to_user(target, &guid).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
+}
 /// Initialize a Windows `UNICODE_STRING` descriptor without copying its source.
 /// # C: O(min(source length, 32766)) plus usercopy
 pub fn dispatch(call: NtCall) -> Option<u64> {
     if let Some(result) = crate::nt_rtl_integer::dispatch(call) { return Some(result); }
     if let Some(result) = crate::nt_rtl_ansi::dispatch(call) { return Some(result); }
     if let Some(result) = crate::nt_debug::dispatch(call) { return Some(result); }
+    if call.service == NtService::RtlGUIDFromString { return Some(guid_from_string(call.args.a0, call.args.a1)); }
     if let Some(result) = crate::nt_critical::dispatch(call) { return Some(result); }
     if call.service == NtService::RtlSetLastWin32Error || call.service == NtService::RtlRestoreLastWin32Error { return Some(set_last_win32_error(call.args.a0)); }
     if call.service == NtService::RtlGetLastWin32Error { return Some(get_last_win32_error()); }

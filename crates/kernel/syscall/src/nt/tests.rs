@@ -144,6 +144,7 @@ use super::*;
         assert_eq!(decode(194, input).unwrap().service, NtService::WineDbgHeader);
         assert_eq!(decode(195, input).unwrap().service, NtService::WineDbgOutput);
         assert_eq!(decode(196, input).unwrap().service, NtService::WineDbgStrdup);
+        assert_eq!(decode(197, input).unwrap().service, NtService::RtlGUIDFromString);
     }
 
     #[test]

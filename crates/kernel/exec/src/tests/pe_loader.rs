@@ -281,6 +281,8 @@
         assert!(dbg_output >= runtime.base.as_u64() && dbg_output < runtime.base.as_u64() + runtime.bytes as u64);
         let dbg_strdup = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"__wine_dbg_strdup" }).unwrap();
         assert!(dbg_strdup >= runtime.base.as_u64() && dbg_strdup < runtime.base.as_u64() + runtime.bytes as u64);
+        let guid_from_string = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlGUIDFromString" }).unwrap();
+        assert!(guid_from_string >= runtime.base.as_u64() && guid_from_string < runtime.base.as_u64() + runtime.bytes as u64);
     }
 
     #[test]
