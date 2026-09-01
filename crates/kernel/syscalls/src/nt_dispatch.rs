@@ -327,6 +327,13 @@ pub fn dispatch(call: NtCall) -> u64 {
         if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
         return STATUS_NOT_IMPLEMENTED;
     }
+    if call.service == syscall::nt::NtService::NtOpenMutant {
+        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+        // Mutant objects exist, but the named-object namespace needed by
+        // OBJECT_ATTRIBUTES is not owned by the current NT handle layer.
+        return STATUS_NOT_IMPLEMENTED;
+    }
     if matches!(call.service, syscall::nt::NtService::NtCreateNamedPipeFile | syscall::nt::NtService::NtCreateSectionEx | syscall::nt::NtService::NtCreateSymbolicLinkObject | syscall::nt::NtService::NtCreateUserProcess | syscall::nt::NtService::NtDeleteKey | syscall::nt::NtService::NtDeleteValueKey | syscall::nt::NtService::NtEnumerateKey | syscall::nt::NtService::NtEnumerateValueKey | syscall::nt::NtService::NtFilterToken | syscall::nt::NtService::NtFlushKey) { return 0xc000_0002; }
     if let Some(result) = crate::nt_power::dispatch(call) { return result; }
     if let Some(result) = crate::nt_oem::dispatch(call) { return result; }
