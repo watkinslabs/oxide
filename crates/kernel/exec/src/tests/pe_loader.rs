@@ -304,6 +304,8 @@
         assert!(pc_to_file_header >= runtime.base.as_u64() && pc_to_file_header < runtime.base.as_u64() + runtime.bytes as u64);
         let set_bits = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlSetBits" }).unwrap();
         assert!(set_bits >= runtime.base.as_u64() && set_bits < runtime.base.as_u64() + runtime.bytes as u64);
+        let time_to_seconds = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlTimeToSecondsSince1970" }).unwrap();
+        assert!(time_to_seconds >= runtime.base.as_u64() && time_to_seconds < runtime.base.as_u64() + runtime.bytes as u64);
         assert!(guid_from_string >= runtime.base.as_u64() && guid_from_string < runtime.base.as_u64() + runtime.bytes as u64);
     }
 

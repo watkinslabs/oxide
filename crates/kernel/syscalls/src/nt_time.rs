@@ -53,6 +53,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     }
     if call.service == NtService::RtlTimeFieldsToTime { return Some(time_fields_to_time(call.args.a0, call.args.a1)); }
     if call.service == NtService::RtlTimeToTimeFields { return Some(time_to_time_fields(call.args.a0, call.args.a1)); }
+    if call.service == NtService::RtlTimeToSecondsSince1970 { return Some(time_to_seconds_since_1970(call.args.a0, call.args.a1)); }
     if !matches!(call.service, NtService::RtlQueryPerformanceCounter | NtService::RtlQueryPerformanceFrequency) { return None; }
     let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
     if !cur.is_nt_personality() || call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
@@ -105,4 +106,13 @@ fn time_to_time_fields(input: u64, fields: u64) -> u64 {
     let mut output = [0u8; 16];
     for (index, value) in values.into_iter().enumerate() { let Ok(value) = i16::try_from(value) else { return FALSE; }; output[index * 2..index * 2 + 2].copy_from_slice(&value.to_ne_bytes()); }
     if uaccess::copy_to_user(fields, &output).is_err() { FALSE } else { TRUE }
+}
+
+fn time_to_seconds_since_1970(input: u64, output: u64) -> u64 {
+    if input == 0 || output == 0 { return FALSE; }
+    let Ok(ticks) = uaccess::get_user_u64(input) else { return FALSE; };
+    let seconds = ticks / TICKS_PER_SECOND as u64;
+    if seconds < NT_EPOCH_100NS / TICKS_PER_SECOND as u64 { return FALSE; }
+    let unix = seconds - NT_EPOCH_100NS / TICKS_PER_SECOND as u64;
+    if unix > u32::MAX as u64 || uaccess::put_user_u32(output, unix as u32).is_err() { FALSE } else { TRUE }
 }

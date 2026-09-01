@@ -156,6 +156,7 @@ use super::*;
         assert_eq!(decode(206, input).unwrap().service, NtService::RtlLookupFunctionEntry);
         assert_eq!(decode(207, input).unwrap().service, NtService::RtlPcToFileHeader);
         assert_eq!(decode(208, input).unwrap().service, NtService::RtlSetBits);
+        assert_eq!(decode(209, input).unwrap().service, NtService::RtlTimeToSecondsSince1970);
     }
 
     #[test]
