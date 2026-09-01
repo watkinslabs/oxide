@@ -51,6 +51,9 @@ const SECURITY_CONTROL_WORD_BYTES: usize = 4;
 /// Linux credentials supply the owner/group identity; no Linux syscall path
 /// reaches this adapter. # C: O(1) plus usercopy
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == syscall::nt::NtService::RtlValidSecurityDescriptor {
+        return Some(valid_security_descriptor(call.args.a0));
+    }
     if call.service == syscall::nt::NtService::RtlSetOwnerSecurityDescriptor {
         return Some(set_owner(call.args.a0, call.args.a1, call.args.a2 != 0));
     }
@@ -125,6 +128,13 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if descriptor.as_u64() == 0 || length < required { return Some(STATUS_BUFFER_TOO_SMALL); }
     if uaccess::copy_to_user(descriptor.as_u64(), &bytes).is_err() { return Some(STATUS_INVALID_PARAMETER); }
     Some(STATUS_SUCCESS)
+}
+
+fn valid_security_descriptor(descriptor: u64) -> u64 {
+    if descriptor == 0 { return 0; }
+    let mut header = [0u8; 1];
+    if uaccess::copy_from_user(&mut header, descriptor).is_err() { return 0; }
+    (header[0] == SECURITY_DESCRIPTOR_REVISION) as u64
 }
 
 fn set_owner(descriptor: u64, owner: u64, defaulted: bool) -> u64 {
