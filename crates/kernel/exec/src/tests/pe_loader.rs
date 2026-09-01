@@ -261,6 +261,8 @@
         assert!(tolower >= runtime.base.as_u64() && tolower < runtime.base.as_u64() + runtime.bytes as u64);
         let wcscat = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"wcscat" }).unwrap();
         assert!(wcscat >= runtime.base.as_u64() && wcscat < runtime.base.as_u64() + runtime.bytes as u64);
+        let wcschr = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"wcschr" }).unwrap();
+        assert!(wcschr >= runtime.base.as_u64() && wcschr < runtime.base.as_u64() + runtime.bytes as u64);
     }
 
     #[test]
