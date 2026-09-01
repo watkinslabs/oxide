@@ -391,6 +391,24 @@ pub fn dispatch(call: NtCall) -> u64 {
     if matches!(call.service, syscall::nt::NtService::NtCreateNamedPipeFile | syscall::nt::NtService::NtCreateSectionEx | syscall::nt::NtService::NtCreateSymbolicLinkObject | syscall::nt::NtService::NtCreateUserProcess | syscall::nt::NtService::NtDeleteKey | syscall::nt::NtService::NtDeleteValueKey | syscall::nt::NtService::NtEnumerateKey | syscall::nt::NtService::NtEnumerateValueKey | syscall::nt::NtService::NtFilterToken | syscall::nt::NtService::NtFlushKey) { return 0xc000_0002; }
     if let Some(result) = crate::nt_power::dispatch(call) { return result; }
     if let Some(result) = crate::nt_oem::dispatch(call) { return result; }
+    if let Ok(system) = nt::decode_system_information_ex(call) {
+        const SYSTEM_SUPPORTED_PROCESSOR_ARCHITECTURES: u32 = 181;
+        const ARCHITECTURE_RECORD_BYTES: u32 = 4;
+        const ARCHITECTURE_RECORDS: u32 = 2;
+        const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
+        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        if !cur.is_nt_personality() || system.class != SYSTEM_SUPPORTED_PROCESSOR_ARCHITECTURES || system.query == 0 || system.query_len < 8 { return STATUS_INVALID_PARAMETER; }
+        if uaccess::get_user_u64(system.query).is_err() { return STATUS_INVALID_PARAMETER; }
+        let required = ARCHITECTURE_RECORD_BYTES * ARCHITECTURE_RECORDS;
+        if let Some(return_length) = system.return_length {
+            if uaccess::put_user_u32(return_length.as_u64(), required).is_err() { return STATUS_INVALID_PARAMETER; }
+        }
+        if system.length < required { return STATUS_BUFFER_TOO_SMALL; }
+        let mut out = [0u8; 8];
+        out[0..4].copy_from_slice(&0x0007_8664u32.to_ne_bytes());
+        if uaccess::copy_to_user(system.info.as_u64(), &out).is_err() { return STATUS_INVALID_PARAMETER; }
+        return STATUS_SUCCESS;
+    }
     if let Ok(system) = nt::decode_system(call) {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }

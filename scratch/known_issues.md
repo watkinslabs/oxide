@@ -621,3 +621,6 @@ frequency owner used by the existing RTL performance-counter implementation.
 `NtQuerySymbolicLinkObject` is exposed at the object-manager boundary; its
 target data must come from the canonical NT symbolic-link namespace, not a
 second interpretation of VFS symlinks.
+`NtQuerySystemInformationEx` implements Wine's x86-64 supported-architecture
+query with the native AMD64 record; other information classes remain explicit
+until their owning kernel data source is available.

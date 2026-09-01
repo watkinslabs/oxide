@@ -87,6 +87,7 @@ pub enum NtService {
     NtQueryKey = 301,
     NtQueryPerformanceCounter = 302,
     NtQuerySymbolicLinkObject = 303,
+    NtQuerySystemInformationEx = 304,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -407,6 +408,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 301 { return Some(NtCall { service: NtService::NtQueryKey, args }); }
     if service == 302 { return Some(NtCall { service: NtService::NtQueryPerformanceCounter, args }); }
     if service == 303 { return Some(NtCall { service: NtService::NtQuerySymbolicLinkObject, args }); }
+    if service == 304 { return Some(NtCall { service: NtService::NtQuerySystemInformationEx, args }); }
     if service == 197 { return Some(NtCall { service: NtService::RtlGUIDFromString, args }); }
     if service == 195 { return Some(NtCall { service: NtService::WineDbgOutput, args }); }
     if service == 194 { return Some(NtCall { service: NtService::WineDbgHeader, args }); }
@@ -574,7 +576,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         | NtService::LockFile | NtService::UnlockFile | NtService::DuplicateObject
         | NtService::CreateTimer | NtService::SetTimer | NtService::CancelTimer
         | NtService::CreateIoCompletion | NtService::SetIoCompletion | NtService::RemoveIoCompletion
-        | NtService::SignalAndWait | NtService::OpenProcessToken | NtService::OpenThreadToken | NtService::QueryToken | NtService::RtlInitUnicodeString | NtService::RtlInitUnicodeStringEx | NtService::QueryObject | NtService::RtlInitAnsiString | NtService::RtlInitAnsiStringEx | NtService::QuerySecurityObject | NtService::RtlQueryPerformanceCounter | NtService::RtlQueryPerformanceFrequency | NtService::NtQueryPerformanceCounter | NtService::RenameKey | NtService::SetSecurityObject => Err(Errno::Enosys),
+        | NtService::SignalAndWait | NtService::OpenProcessToken | NtService::OpenThreadToken | NtService::QueryToken | NtService::RtlInitUnicodeString | NtService::RtlInitUnicodeStringEx | NtService::QueryObject | NtService::RtlInitAnsiString | NtService::RtlInitAnsiStringEx | NtService::QuerySecurityObject | NtService::RtlQueryPerformanceCounter | NtService::RtlQueryPerformanceFrequency | NtService::NtQueryPerformanceCounter | NtService::NtQuerySystemInformationEx | NtService::RenameKey | NtService::SetSecurityObject => Err(Errno::Enosys),
         NtService::LdrGetDllPath => Err(Errno::Enosys),
         NtService::LdrSetDefaultDllDirectories => Err(Errno::Enosys),
         NtService::LdrUnloadDll => Err(Errno::Enosys),
@@ -602,6 +604,11 @@ pub fn decode_thread(call: NtCall) -> Result<NtThreadCall, Errno> {
 pub fn decode_system(call: NtCall) -> Result<NtSystemCall, Errno> {
     if call.service != NtService::QuerySystemInformation { return Err(Errno::Enosys); }
     Ok(NtSystemCall { class: call.args.a0 as u32, info: UserPtr::new(call.args.a1)?, length: call.args.a2 as u32, return_length: optional_ptr(call.args.a3)? })
+}
+pub struct NtSystemInformationExCall { pub class: u32, pub query: u64, pub query_len: u32, pub info: UserPtr<u8>, pub length: u32, pub return_length: Option<UserPtr<u32>> }
+pub fn decode_system_information_ex(call: NtCall) -> Result<NtSystemInformationExCall, Errno> {
+    if call.service != NtService::NtQuerySystemInformationEx { return Err(Errno::Enosys); }
+    Ok(NtSystemInformationExCall { class: call.args.a0 as u32, query: call.args.a1, query_len: call.args.a2 as u32, info: UserPtr::new(call.args.a3)?, length: call.args.a4 as u32, return_length: optional_ptr(call.args.a5)? })
 }
 pub fn decode_heap(call: NtCall) -> Result<NtHeapCall, Errno> {
     match call.service {
