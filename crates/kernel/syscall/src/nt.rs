@@ -208,6 +208,7 @@ pub enum NtService {
     RtlOpenCurrentUser = 432,
     RtlProcessFlsData = 433,
     RtlQueryActivationContextApplicationSettings = 434,
+    RtlQueryDynamicTimeZoneInformation = 435,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -521,6 +522,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 432 { return Some(NtCall { service: NtService::RtlOpenCurrentUser, args }); }
     if service == 433 { return Some(NtCall { service: NtService::RtlProcessFlsData, args }); }
     if service == 434 { return Some(NtCall { service: NtService::RtlQueryActivationContextApplicationSettings, args }); }
+    if service == 435 { return Some(NtCall { service: NtService::RtlQueryDynamicTimeZoneInformation, args }); }
     if service == 229 { return Some(NtCall { service: NtService::DbgUiConnectToDbg, args }); }
     if service == 230 { return Some(NtCall { service: NtService::DbgUiContinue, args }); }
     if service == 231 { return Some(NtCall { service: NtService::DbgUiRemoteBreakin, args }); }
@@ -818,6 +820,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::Wcstoul | NtService::WineDbgHeader | NtService::WineDbgOutput | NtService::WineDbgStrdup | NtService::RtlGUIDFromString | NtService::RtlRandom | NtService::WineGetHostVersion | NtService::RtlInterlockedFlushSList | NtService::RtlInterlockedPushEntrySList | NtService::RtlTryEnterCriticalSection | NtService::RtlAreBitsClear | NtService::RtlAreBitsSet | NtService::RtlInitializeBitMap | NtService::RtlLookupFunctionEntry | NtService::RtlPcToFileHeader | NtService::RtlSetBits | NtService::RtlTimeToSecondsSince1970 | NtService::RtlUnwindEx | NtService::Setjmp | NtService::Setjmpex | NtService::Longjmp | NtService::WineDbgGetChannelFlags | NtService::LdrGetDllFullName | NtService::LdrLoadDll | NtService::LdrQueryImageFileExecutionOptions | NtService::CallbackReturn | NtService::OpenDirectoryObject | NtService::RtlFindActivationContextSectionString | NtService::RtlActivateActivationContext | NtService::RtlImageDirectoryEntryToData | NtService::RtlImageRvaToVa | NtService::RtlInitializeNtUserPfn | NtService::RtlMultiByteToUnicodeN | NtService::RtlMultiByteToUnicodeSize | NtService::RtlRetrieveNtUserPfn | NtService::RtlResetNtUserPfn | NtService::ApiSetQueryApiSetPresenceEx | NtService::DbgUiConnectToDbg | NtService::DbgUiContinue | NtService::DbgUiRemoteBreakin | NtService::DbgUiStopDebugging | NtService::DbgUiWaitStateChange | NtService::DbgUiConvertStateChangeStructure | NtService::DbgUiDebugActiveProcess | NtService::LdrAccessResource | NtService::LdrAddDllDirectory | NtService::LdrRemoveDllDirectory | NtService::LdrAddRefDll | NtService::LdrDisableThreadCalloutsForDll | NtService::LdrFindResourceDirectory | NtService::LdrFindResource | NtService::LdrGetDllHandleEx => Err(Errno::Enosys),
         NtService::RtlActivateActivationContextEx => Err(Errno::Enosys),
         NtService::RtlQueryActivationContextApplicationSettings => Err(Errno::Enosys),
+        NtService::RtlQueryDynamicTimeZoneInformation => Err(Errno::Enosys),
         NtService::RtlAddAccessAllowedObjectAce => Err(Errno::Enosys),
         NtService::RtlAddAccessDeniedObjectAce => Err(Errno::Enosys),
         NtService::RtlAddAuditAccessObjectAce => Err(Errno::Enosys),
