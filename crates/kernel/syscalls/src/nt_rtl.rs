@@ -21,6 +21,15 @@ const PARAM_CURRENT_DIRECTORY_OFFSET: u64 = 0x40;
 const PARAM_IMAGE_PATH_OFFSET: u64 = 0x60;
 const PARAM_ENVIRONMENT_OFFSET: u64 = 0x80;
 const STATUS_NO_MEMORY: u64 = 0xc000_0017;
+const STATUS_NOT_SUPPORTED: u64 = 0xc000_00bb;
+const CONTEXT_AMD64: u32 = 0x0010_0000;
+const CONTEXT_AMD64_ALL: u32 = 0x0010_001f;
+const CONTEXT_XSTATE: u32 = 0x0040;
+const CONTEXT_ALLOWED: u32 = 0xd800_0000 | CONTEXT_AMD64_ALL | CONTEXT_XSTATE;
+const AMD64_CONTEXT_BYTES: u64 = 0x4d0;
+const CONTEXT_EX_BYTES: u64 = 0x20;
+const XSTATE_LEGACY_BYTES: u64 = 512;
+const XSTATE_HEADER_BYTES: u64 = 64;
 
 /// Convert the fixed Windows GUID spelling into its 16-byte little-endian ABI.
 /// # C: O(1) plus bounded usercopy
@@ -63,6 +72,7 @@ fn guid_from_string(descriptor: u64, target: u64) -> u64 {
 /// # C: O(min(source length, 32766)) plus usercopy
 pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlGetExePath { return Some(get_exe_path(call.args.a0, call.args.a1)); }
+    if call.service == NtService::RtlGetExtendedContextLength2 { return Some(get_extended_context_length(call.args.a0 as u32, call.args.a1, call.args.a2)); }
     if call.service == NtService::RtlGetEnabledExtendedFeatures {
         const LEGACY_XSTATE: u64 = 0x3;
         #[cfg(target_arch = "x86_64")]
@@ -158,6 +168,24 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     descriptor[8..16].copy_from_slice(&source.to_le_bytes());
     if uaccess::copy_to_user(target, &descriptor).is_err() { return Some(STATUS_INVALID_PARAMETER); }
     Some(0)
+}
+
+fn get_extended_context_length(flags: u32, length: u64, compaction_mask: u64) -> u64 {
+    if length == 0 || flags & CONTEXT_AMD64 == 0 || flags & !CONTEXT_ALLOWED != 0 { return STATUS_INVALID_PARAMETER; }
+    if flags & CONTEXT_XSTATE == 0 { return if uaccess::put_user_u32(length, (AMD64_CONTEXT_BYTES + CONTEXT_EX_BYTES + 7) as u32).is_ok() { STATUS_SUCCESS } else { STATUS_INVALID_PARAMETER }; }
+    #[cfg(not(target_arch = "x86_64"))]
+    { let _ = compaction_mask; return STATUS_NOT_SUPPORTED; }
+    #[cfg(target_arch = "x86_64")]
+    {
+        let supported = hal_x86_64::xsave_xcr0();
+        if !hal_x86_64::xsave_active() || supported == 0 { return STATUS_NOT_SUPPORTED; }
+        let requested = compaction_mask & supported & !3;
+        let xsave = hal_x86_64::xsave_area_bytes() as u64;
+        let tail = if requested == 0 { XSTATE_HEADER_BYTES } else { xsave.saturating_sub(XSTATE_LEGACY_BYTES).max(XSTATE_HEADER_BYTES) };
+        let total = AMD64_CONTEXT_BYTES + CONTEXT_EX_BYTES + 63 + tail;
+        if total > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+        if uaccess::put_user_u32(length, total as u32).is_ok() { STATUS_SUCCESS } else { STATUS_INVALID_PARAMETER }
+    }
 }
 
 fn get_exe_path(name: u64, result: u64) -> u64 {
