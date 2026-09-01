@@ -66,6 +66,7 @@ syscall = { path = "../syscall" }
 crypt = { path = "../../shared/crypt" }
 timekeeper = { path = "../timekeeper" }
 uaccess = { path = "../uaccess" }
+utf8 = { path = "../../shared/utf8" }
 tty     = { path = "../tty" }
 vfs     = { path = "../vfs" }
 ninep   = { path = "../ninep" }

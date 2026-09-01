@@ -2,17 +2,107 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
+use alloc::vec::Vec;
 use syscall::nt::{NtCall, NtService};
+
+const STATUS_SUCCESS: u64 = 0;
+const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
+const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
+const STATUS_NO_UNICODE_TRANSLATION: u64 = 0xc000_0169;
 
 /// Compare caller-owned UTF-16 strings using native RTL ordering.
 /// # C: O(min(len1, len2)) plus bounded user copies
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlNormalizeString { return Some(normalize_string(call)); }
     if call.service == NtService::RtlIsNormalizedString { return Some(is_normalized_string(call)); }
     if call.service == NtService::RtlIdnToAscii { return Some(idn_to_ascii(call)); }
     if call.service == NtService::RtlIdnToNameprepUnicode { return Some(idn_to_nameprep(call)); }
     if call.service == NtService::RtlIdnToUnicode { return Some(idn_to_unicode(call)); }
     if call.service != NtService::RtlCompareUnicodeStrings { return None; }
     Some(compare(call.args.a0, call.args.a1, call.args.a2, call.args.a3, call.args.a4 != 0) as i32 as u64)
+}
+
+fn normalize_string(call: NtCall) -> u64 {
+    const STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xc000_0034;
+    if !matches!(call.args.a0 as u32, 1 | 2 | 5 | 6 | 13) || call.args.a1 == 0 || call.args.a4 == 0 {
+        return if matches!(call.args.a0 as u32, 1 | 2 | 5 | 6 | 13) { STATUS_INVALID_PARAMETER } else { STATUS_OBJECT_NAME_NOT_FOUND };
+    }
+    let requested = call.args.a2 as i32;
+    if requested < -1 || requested > 65536 { return STATUS_INVALID_PARAMETER; }
+    let source_len = if requested == -1 {
+        let mut length = 0usize;
+        while length < 65536 {
+            let Some(unit) = read_unit(call.args.a1, length as u64) else { return STATUS_INVALID_PARAMETER; };
+            length += 1;
+            if unit == 0 { break; }
+        }
+        if length == 65536 && read_unit(call.args.a1, (length - 1) as u64) != Some(0) { return STATUS_INVALID_PARAMETER; }
+        length
+    } else { requested as usize };
+    let mut source = Vec::with_capacity(source_len);
+    let mut index = 0usize;
+    while index < source_len {
+        let Some(unit) = read_unit(call.args.a1, index as u64) else { return STATUS_INVALID_PARAMETER; };
+        if (0xd800..=0xdfff).contains(&unit) {
+            if !(0xd800..=0xdbff).contains(&unit) || index + 1 >= source_len { return STATUS_NO_UNICODE_TRANSLATION; }
+            let Some(next) = read_unit(call.args.a1, (index + 1) as u64) else { return STATUS_INVALID_PARAMETER; };
+            if !(0xdc00..=0xdfff).contains(&next) { return STATUS_NO_UNICODE_TRANSLATION; }
+            source.push(unit);
+            source.push(next);
+            index += 2;
+        } else {
+            source.push(unit);
+            index += 1;
+        }
+    }
+    let output = if call.args.a0 as u32 == 2 {
+        match canonical_decompose(&source) { Ok(value) => value, Err(status) => return status }
+    } else { source };
+    let capacity = match uaccess::get_user_u32(call.args.a4) { Ok(value) => value as usize, Err(_) => return STATUS_INVALID_PARAMETER };
+    let required = output.len();
+    if capacity == 0 {
+        let estimate = core::cmp::max(64, required.saturating_add(required / 8));
+        if uaccess::put_user_u32(call.args.a4, estimate as u32).is_err() { return STATUS_INVALID_PARAMETER; }
+        return STATUS_SUCCESS;
+    }
+    if uaccess::put_user_u32(call.args.a4, required as u32).is_err() { return STATUS_INVALID_PARAMETER; }
+    if capacity < required { return STATUS_BUFFER_TOO_SMALL; }
+    if call.args.a3 == 0 || copy_wide(call.args.a3, &output).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
+}
+
+fn canonical_decompose(source: &[u16]) -> Result<Vec<u16>, u64> {
+    let mut bytes = Vec::with_capacity(source.len() * 3);
+    let mut index = 0usize;
+    while index < source.len() {
+        let unit = source[index];
+        let scalar = if (0xd800..=0xdbff).contains(&unit) {
+            if index + 1 >= source.len() { return Err(STATUS_NO_UNICODE_TRANSLATION); }
+            let next = source[index + 1];
+            if !(0xdc00..=0xdfff).contains(&next) { return Err(STATUS_NO_UNICODE_TRANSLATION); }
+            index += 1;
+            0x1_0000 + (((unit - 0xd800) as u32) << 10) + (next - 0xdc00) as u32
+        } else if (0xdc00..=0xdfff).contains(&unit) {
+            return Err(STATUS_NO_UNICODE_TRANSLATION);
+        } else {
+            unit as u32
+        };
+        if scalar < 0x80 { bytes.push(scalar as u8); }
+        else if scalar < 0x800 { bytes.extend_from_slice(&[0xc0 | (scalar >> 6) as u8, 0x80 | (scalar & 0x3f) as u8]); }
+        else if scalar < 0x10000 { bytes.extend_from_slice(&[0xe0 | (scalar >> 12) as u8, 0x80 | ((scalar >> 6) & 0x3f) as u8, 0x80 | (scalar & 0x3f) as u8]); }
+        else { bytes.extend_from_slice(&[0xf0 | (scalar >> 18) as u8, 0x80 | ((scalar >> 12) & 0x3f) as u8, 0x80 | ((scalar >> 6) & 0x3f) as u8, 0x80 | (scalar & 0x3f) as u8]); }
+        index += 1;
+    }
+    let encoding = utf8::Encoding::from_charset("utf8").map_err(|_| STATUS_INVALID_PARAMETER)?;
+    let mut cursor = encoding.cursor(utf8::Form::Nfdi, &bytes);
+    let mut output = Vec::new();
+    while let Some(scalar) = cursor.next().map_err(|_| STATUS_NO_UNICODE_TRANSLATION)? {
+        if scalar >= 0x10000 {
+            let value = scalar - 0x10000;
+            output.push(0xd800 | (value >> 10) as u16); output.push(0xdc00 | (value & 0x3ff) as u16);
+        } else { output.push(scalar as u16); }
+    }
+    Ok(output)
 }
 
 fn is_normalized_string(call: NtCall) -> u64 {
@@ -103,9 +193,6 @@ fn decode_punycode(input: &[u8]) -> Option<alloc::vec::Vec<u32>> {
 
 fn puny_digit(value: u8) -> Option<u32> { match value { b'a'..=b'z' => Some((value - b'a') as u32), b'A'..=b'Z' => Some((value - b'A') as u32), b'0'..=b'9' => Some((value - b'0' + 26) as u32), _ => None } }
 
-const STATUS_SUCCESS: u64 = 0;
-const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
-const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
 const STATUS_INVALID_IDN: u64 = 0xc000_0725;
 const IDN_USE_STD3_ASCII_RULES: u32 = 0x2;
 
