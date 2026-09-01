@@ -29,6 +29,7 @@ const STATUS_LUIDS_EXHAUSTED: u64 = 0xc000_0075;
 static NEXT_NT_LUID: AtomicU64 = AtomicU64::new(1000);
 
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == syscall::nt::NtService::NtPrivilegeCheck { return Some(privilege_check(call)); }
     if call.service == syscall::nt::NtService::NtAdjustGroupsToken { return Some(adjust_groups(call)); }
     if call.service == syscall::nt::NtService::NtAdjustPrivilegesToken { return Some(adjust_privileges(call)); }
     if call.service == syscall::nt::NtService::NtAllocateLocallyUniqueId { return Some(allocate_luid(call)); }
@@ -76,6 +77,32 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         }
         _ => None,
     }
+}
+
+fn privilege_check(call: NtCall) -> u64 {
+    const PRIVILEGE_SET_ALL_NECESSARY: u32 = 1;
+    const SE_PRIVILEGE_ENABLED: u32 = 2;
+    if call.args.a0 > u32::MAX as u64 || call.args.a1 == 0 || call.args.a2 == 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let table = cur.thread_group.nt_handles();
+    let handle = sched::nt_object::NtHandle::from_raw(call.args.a0 as u32);
+    let Some(object) = table.get(handle, TOKEN_QUERY) else { return if table.contains(handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }; };
+    let Some(token) = object.token() else { return STATUS_INVALID_HANDLE; };
+    let count = match uaccess::get_user_u32(call.args.a1) { Ok(value) if value <= 64 => value, _ => return STATUS_INVALID_PARAMETER };
+    let control_address = match call.args.a1.checked_add(4) { Some(value) => value, None => return STATUS_INVALID_PARAMETER };
+    let control = match uaccess::get_user_u32(control_address) { Ok(value) => value, Err(_) => return STATUS_INVALID_PARAMETER };
+    let privileges = token.privileges();
+    let mut matched = 0u32;
+    for index in 0..count as u64 {
+        let Some(entry) = call.args.a1.checked_add(8).and_then(|base| base.checked_add(index.checked_mul(16)?)) else { return STATUS_INVALID_PARAMETER };
+        let luid = match uaccess::get_user_u64(entry) { Ok(value) => value, Err(_) => return STATUS_INVALID_PARAMETER };
+        let Some(attributes_address) = entry.checked_add(8) else { return STATUS_INVALID_PARAMETER };
+        let attributes = match uaccess::get_user_u32(attributes_address) { Ok(value) => value, Err(_) => return STATUS_INVALID_PARAMETER };
+        if privileges.iter().any(|privilege| privilege.luid == luid && privilege.attributes & SE_PRIVILEGE_ENABLED != 0 && attributes & SE_PRIVILEGE_ENABLED != 0) { matched += 1; }
+    }
+    let has_privileges = if control & PRIVILEGE_SET_ALL_NECESSARY != 0 { matched == count } else { matched != 0 };
+    if uaccess::put_user_u32(call.args.a2, has_privileges as u32).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
 }
 
 fn adjust_groups(call: NtCall) -> u64 {

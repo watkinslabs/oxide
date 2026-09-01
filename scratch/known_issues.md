@@ -588,6 +588,8 @@ The graph now reaches `ntdll.dll!NtOpenThread`; CLIENT_ID-based thread-handle
 acquisition remains an explicit `STATUS_NOT_IMPLEMENTED` boundary.
 The graph now reaches `ntdll.dll!NtOpenTimer`; named timer lookup remains an
 explicit `STATUS_NOT_IMPLEMENTED` boundary pending the NT object namespace.
+`NtPrivilegeCheck` is implemented against the canonical NT token privilege
+owner, including enabled-privilege matching and all-required semantics.
 The graph now reaches `ntdll.dll!NtOpenKey`; its registry namespace and typed
 key-handle owner remain an explicit `STATUS_NOT_IMPLEMENTED` boundary.
 `NtOpenKeyEx` is exposed at the same boundary; its registry options still
