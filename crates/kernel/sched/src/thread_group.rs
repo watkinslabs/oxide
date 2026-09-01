@@ -75,6 +75,8 @@ pub struct ThreadGroup {
     pub nt_dll_directory_next: AtomicU64,
     /// Module base and loader reference count; `-1` is the pinned state.
     pub nt_module_refs: Spinlock<Vec<(u64, i32)>, TaskListClass>,
+    /// Modules whose `DLL_THREAD_ATTACH`/`DETACH` callbacks are disabled.
+    pub nt_module_no_thread_calls: Spinlock<Vec<u64>, TaskListClass>,
     pub nt_atoms: Spinlock<Vec<Vec<u8>>, TaskListClass>, pub nt_atom_table: Spinlock<bool, TaskListClass>,
     /// Owner and recursion depth of the process heap lock: `(tid, depth)`.
     pub nt_heap_lock: Spinlock<Option<(u64, u32)>, TaskListClass>,
@@ -248,6 +250,7 @@ impl ThreadGroup {
             nt_dll_directory: Spinlock::new(Vec::new()),
             nt_dll_directories: Spinlock::new(Vec::new()), nt_dll_directory_next: AtomicU64::new(1),
             nt_module_refs: Spinlock::new(Vec::new()),
+            nt_module_no_thread_calls: Spinlock::new(Vec::new()),
             nt_atoms: Spinlock::new(Vec::new()), nt_atom_table: Spinlock::new(false),
             nt_heap_lock: Spinlock::new(None),
             nt_heap_user_info: Spinlock::new(Vec::new()),

@@ -29,6 +29,7 @@ Windows frontier update (2026-09-01): `LdrAddDllDirectory` and `LdrRemoveDllDire
 Windows frontier update (2026-09-01): the DLL-directory implementation now compiles in the target kernel path and preserves explicit cookie ownership; `LdrAddRefDll` remains the next module-lifetime boundary.
 
 Windows frontier update (2026-09-01): `LdrAddRefDll` now validates canonical PEB loader membership and tracks incremented or pinned process-local module counts; the graph advances to `ntdll.dll!LdrDisableThreadCalloutsForDll`.
+Windows frontier update (2026-09-01): `LdrDisableThreadCalloutsForDll` now validates canonical PEB loader membership and records process-local callback suppression; native TLS-index flags remain open, and the graph advances to `ntdll.dll!LdrEnumerateLoadedModules`.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
