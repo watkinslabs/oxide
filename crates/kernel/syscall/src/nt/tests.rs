@@ -75,6 +75,7 @@ use super::*;
         assert_eq!(decode(96, input).unwrap().service, NtService::RtlQueryUnbiasedInterruptTime);
         assert_eq!(decode(97, input).unwrap().service, NtService::DbgUiGetThreadDebugObject);
         assert_eq!(decode(98, input).unwrap().service, NtService::DbgUiIssueRemoteBreakin);
+        assert_eq!(decode(229, input).unwrap().service, NtService::DbgUiConnectToDbg);
         assert_eq!(decode(99, input).unwrap().service, NtService::LdrGetDllDirectory);
         assert_eq!(decode(100, input).unwrap().service, NtService::LdrGetProcedureAddress);
         assert_eq!(decode(101, input).unwrap().service, NtService::LdrSetDllDirectory);

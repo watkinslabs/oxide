@@ -1,6 +1,14 @@
 /// Length of the x86-64 NTDLL thunk for a one-request-pointer service.
 pub const X64_UNARY_STUB_BYTES: usize = 18;
 pub const X64_SIX_ARG_STUB_BYTES: usize = 39;
+pub const X64_BREAKPOINT_STUB_BYTES: usize = 2;
+
+/// Encode Wine's x86-64 debugger breakpoint entry. The trap is intentional:
+/// Windows exception dispatch, rather than the NT syscall adapter, owns the
+/// observable result when a process executes this export.
+pub fn encode_x64_breakpoint_stub() -> [u8; X64_BREAKPOINT_STUB_BYTES] {
+    [0xcc, 0xc3]
+}
 
 /// Encode a Windows x64 ABI-preserving NTDLL entry stub. The first Windows
 /// argument arrives in RCX; the native NT entry consumes it in RDI. RDI is a
@@ -60,5 +68,10 @@ mod tests {
         assert_eq!(&bytes[19..24], &[0x4c, 0x8b, 0x4c, 0x24, 0x40]);
         assert_eq!(&bytes[24..34], &[0x48, 0xb8, 0, 0, 0, 0, 0, 0, 0x54, 0x4e]);
         assert_eq!(&bytes[34..], &[0x0f, 0x05, 0x5e, 0x5f, 0xc3]);
+    }
+
+    #[test]
+    fn breakpoint_stub_matches_wine_x64_entry() {
+        assert_eq!(encode_x64_breakpoint_stub(), [0xcc, 0xc3]);
     }
 }
