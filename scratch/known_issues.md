@@ -489,3 +489,7 @@ Windows NT frontier update (2026-09-01): `NtCreateSymbolicLinkObject` now has
 an explicit native export and fail-closed `STATUS_NOT_IMPLEMENTED` boundary;
 symbolic-link object semantics remain pending. The graph advances to its next
 unresolved native import, `ntdll.dll!NtCreateUserProcess`.
+Windows NT frontier update (2026-09-01): `NtCreateUserProcess` now has an
+explicit native export and fail-closed `STATUS_NOT_IMPLEMENTED` boundary;
+the process-parameter/create-info adapter remains pending. The graph advances
+to `ntdll.dll!NtDelayExecution`.

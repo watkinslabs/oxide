@@ -19,9 +19,9 @@ pub struct PeModuleBase<'a> {
 pub struct NtRuntime {
     pub base: UserVirtAddr,
     pub bytes: usize,
-    addresses: [u64; 253],
+    addresses: [u64; 254],
 }
-const NTDLL_EXPORTS: [&[u8]; 253] = [
+const NTDLL_EXPORTS: [&[u8]; 254] = [
     b"NtAllocateVirtualMemory", b"NtFreeVirtualMemory", b"NtProtectVirtualMemory", b"NtQueryVirtualMemory",
     b"NtTerminateProcess", b"NtCreateEvent", b"NtClose", b"NtSetEvent", b"NtResetEvent", b"NtWaitForSingleObject",
     b"NtCreateFile", b"NtOpenFile", b"NtReadFile", b"NtWriteFile", b"NtQueryInformationFile", b"NtSetInformationFile", b"NtQueryDirectoryFile", b"NtWaitForMultipleObjects",
@@ -30,6 +30,7 @@ const NTDLL_EXPORTS: [&[u8]; 253] = [
     b"RtlAnsiStringToUnicodeString", b"RtlCaptureContext", b"RtlCharToInteger", b"RtlCreateAtomTable", b"RtlCreateHeap", b"RtlCreateUnicodeString", b"RtlDeleteAtomFromAtomTable", b"RtlDeregisterWait", b"RtlDestroyAtomTable", b"RtlDestroyHeap", b"RtlDetermineDosPathNameType_U", b"RtlDosPathNameToNtPathName_U_WithStatus", b"RtlExitUserProcess", b"RtlGetProcessHeaps", b"RtlGetUserInfoHeap", b"RtlImageNtHeader", b"RtlInitializeCriticalSection", b"RtlInitializeCriticalSectionAndSpinCount", b"RtlInitializeCriticalSectionEx", b"RtlIsNameLegalDOS8Dot3", b"RtlLockHeap", b"RtlUnlockHeap", b"RtlLookupAtomInAtomTable", b"RtlOemStringToUnicodeString", b"RtlQueryAtomInAtomTable", b"RtlRegisterWait", b"RtlRestoreContext", b"RtlSetIoCompletionCallback", b"RtlGetLastWin32Error", b"RtlRestoreLastWin32Error", b"RtlSetLastWin32Error", b"RtlSetSearchPathMode", b"RtlSetUnhandledExceptionFilter", b"RtlSetUserValueHeap", b"RtlTimeFieldsToTime", b"RtlTimeToTimeFields", b"RtlTimeToSecondsSince1970", b"RtlUnicodeStringToAnsiSize", b"RtlUnicodeStringToAnsiString", b"RtlUnicodeStringToInteger", b"RtlUnicodeStringToOemSize", b"RtlUnicodeStringToOemString", b"RtlUnicodeToMultiByteN", b"RtlUnicodeToMultiByteSize", b"RtlUnicodeToOemN", b"RtlUpcaseUnicodeString", b"RtlUpperChar", b"_wcsicmp", b"_wcsnicmp", b"isalpha", b"islower", b"memcpy", b"memmove", b"memset", b"strcat", b"strchr", b"strcpy", b"strlen", b"strpbrk", b"strrchr", b"tolower", b"wcscat", b"wcschr", b"wcscmp", b"wcscpy", b"wcslen", b"wcsncmp", b"wcsrchr", b"wcstoul", b"__wine_dbg_header", b"__wine_dbg_output", b"__wine_dbg_strdup", b"RtlGUIDFromString", b"RtlRandom", b"wine_get_host_version", b"RtlInterlockedFlushSList", b"RtlInterlockedPushEntrySList", b"RtlTryEnterCriticalSection", b"RtlAreBitsClear", b"RtlAreBitsSet", b"RtlInitializeBitMap", b"RtlLookupFunctionEntry", b"RtlPcToFileHeader", b"RtlSetBits", b"RtlUnwindEx", b"_setjmp", b"_setjmpex", b"longjmp", b"__wine_dbg_get_channel_flags", b"LdrGetDllFullName", b"LdrLoadDll", b"LdrQueryImageFileExecutionOptions", b"NtCallbackReturn", b"NtOpenDirectoryObject",
     b"RtlFindActivationContextSectionString", b"RtlImageDirectoryEntryToData", b"RtlImageRvaToVa", b"RtlInitializeNtUserPfn", b"RtlMultiByteToUnicodeN", b"RtlMultiByteToUnicodeSize", b"RtlRetrieveNtUserPfn", b"RtlResetNtUserPfn", b"ApiSetQueryApiSetPresenceEx", b"DbgBreakPoint", b"DbgUiConnectToDbg", b"DbgUiContinue", b"DbgUiRemoteBreakin", b"DbgUiStopDebugging", b"DbgUiWaitStateChange", b"DbgUiConvertStateChangeStructure", b"DbgUiDebugActiveProcess", b"LdrAccessResource", b"LdrAddDllDirectory", b"LdrRemoveDllDirectory", b"LdrAddRefDll", b"LdrDisableThreadCalloutsForDll", b"LdrFindResourceDirectory_U", b"LdrFindResource_U", b"LdrGetDllHandleEx", b"LdrGetDllPath", b"LdrSetDefaultDllDirectories", b"LdrUnloadDll", b"NtAccessCheck", b"NtAdjustGroupsToken", b"NtAdjustPrivilegesToken", b"NtAllocateLocallyUniqueId", b"NtAllocateVirtualMemoryEx", b"NtCancelIoFile", b"NtCancelIoFileEx", b"NtCancelSynchronousIoFile", b"NtCompareObjects", b"NtConvertBetweenAuxiliaryCounterAndPerformanceCounter", b"NtCreateKey", b"NtCreateNamedPipeFile", b"NtCreateSectionEx",
     b"NtCreateSymbolicLinkObject",
+    b"NtCreateUserProcess",
 ];
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct PeEntryState {
@@ -147,9 +148,9 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
     let code_bytes = (NTDLL_EXPORTS.len() - 1) * pe::nt_stub::X64_SIX_ARG_STUB_BYTES + pe::nt_stub::X64_BREAKPOINT_STUB_BYTES;
     let mapped_bytes = (code_bytes + page - 1) / page * page;
     let mut code = alloc::vec![0u8; mapped_bytes];
-    let mut addresses = [0u64; 253];
+    let mut addresses = [0u64; 254];
     let mut offset = 0usize;
-    for index in 0..253 {
+    for index in 0..254 {
         let selector = match index {
             2 => syscall::nt::NtService::ProtectVirtualMemory,
             3 => syscall::nt::NtService::QueryVirtualMemory,
@@ -354,6 +355,7 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
             250 => syscall::nt::NtService::NtCreateNamedPipeFile,
             251 => syscall::nt::NtService::NtCreateSectionEx,
             252 => syscall::nt::NtService::NtCreateSymbolicLinkObject,
+            253 => syscall::nt::NtService::NtCreateUserProcess,
             _ => syscall::nt::NtService::FreeHeap,
         };
         let bytes = if index == 220 { pe::nt_stub::encode_x64_breakpoint_stub().to_vec() }
