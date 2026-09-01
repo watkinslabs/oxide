@@ -7,6 +7,10 @@ const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
 const STATUS_VARIABLE_NOT_FOUND: u64 = 0xc000_0100;
+const TEB_PEB_OFFSET: u64 = 0x60;
+const PEB_PROCESS_PARAMETERS_OFFSET: u64 = 0x20;
+const PARAM_ENVIRONMENT_OFFSET: u64 = 0x80;
+const MAX_ENVIRONMENT_UNITS: usize = 0x20000;
 
 /// Validate the output boundary before the process-environment owner exists.
 /// # C: O(1)
@@ -34,6 +38,9 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         }
         return Some(0);
     }
+    if call.service == NtService::RtlSetCurrentEnvironment {
+        return Some(set_current_environment(call.args.a0, call.args.a1));
+    }
     if call.service == NtService::RtlCreateProcessParametersEx {
         if call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
         // The ten pointer arguments describe strings and an environment block;
@@ -47,6 +54,34 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     // allocates an empty double-NUL-terminated block. Oxide's PEB owner does
     // not yet expose a mutable NT environment allocation/lifetime interface.
     Some(STATUS_NOT_IMPLEMENTED)
+}
+
+fn set_current_environment(new_environment: u64, old_environment: u64) -> u64 {
+    if new_environment != 0 && !valid_environment_block(new_environment) { return STATUS_INVALID_PARAMETER; }
+    let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !current.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let Some(peb) = uaccess::get_user_u64(current.nt_teb().saturating_add(TEB_PEB_OFFSET)).ok() else { return STATUS_INVALID_PARAMETER; };
+    let Some(params) = uaccess::get_user_u64(peb.saturating_add(PEB_PROCESS_PARAMETERS_OFFSET)).ok() else { return STATUS_INVALID_PARAMETER; };
+    let environment_field = params.saturating_add(PARAM_ENVIRONMENT_OFFSET);
+    let previous = match uaccess::get_user_u64(environment_field) { Ok(value) => value, Err(_) => return STATUS_INVALID_PARAMETER };
+    if uaccess::put_user_u64(environment_field, new_environment).is_err() { return STATUS_INVALID_PARAMETER; }
+    if old_environment != 0 && uaccess::put_user_u64(old_environment, previous).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
+}
+
+fn valid_environment_block(environment: u64) -> bool {
+    let mut previous_zero = false;
+    for index in 0..MAX_ENVIRONMENT_UNITS {
+        let Some(address) = environment.checked_add((index * 2) as u64) else { return false; };
+        let mut bytes = [0u8; 2];
+        if uaccess::copy_from_user(&mut bytes, address).is_err() { return false; }
+        let unit = u16::from_le_bytes(bytes);
+        if unit == 0 {
+            if previous_zero { return true; }
+            previous_zero = true;
+        } else { previous_zero = false; }
+    }
+    false
 }
 
 fn query_environment_variable(call: NtCall) -> u64 {
