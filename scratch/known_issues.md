@@ -683,6 +683,8 @@ owner; invalid foreign allocations are not yet reported with native fidelity.
 callback completion and timer-queue ownership remain unimplemented.
 `RtlDeregisterWaitEx` removes the canonical wait record; completion-event
 signaling remains unimplemented when a non-null event is supplied.
+`RtlDeriveCapabilitySidsFromName` derives the reference UTF-16/SHA-256 SID
+layouts for ASCII case folding; full Unicode uppercase mapping remains absent.
 `RtlCreateProcessParametersEx` validates its result-pointer boundary; native
 string capture, environment ownership, normalization, and destruction remain
 unimplemented.

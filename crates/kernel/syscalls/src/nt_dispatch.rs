@@ -186,6 +186,7 @@ pub fn dispatch(call: NtCall) -> u64 {
     if let Some(result) = crate::nt_env::dispatch(call) { return result; }
     if let Some(result) = crate::nt_threadpool::dispatch(call) { return result; }
     if let Some(result) = crate::nt_user_stack::dispatch(call) { return result; }
+    if let Some(result) = crate::nt_capability::dispatch(call) { return result; }
     if let Some(result) = crate::nt_acl::dispatch(call) { return result; }
     if let Some(result) = crate::nt_directory::dispatch(call) { return result; }
     if let Some(result) = crate::nt_nls::dispatch(call) { return result; }
