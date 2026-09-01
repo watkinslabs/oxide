@@ -718,3 +718,6 @@ wait-on-address ownership and safe caller-memory barrier state are not present.
 range no-op behavior; atomicity across concurrent bitmap users remains absent.
 `RtlCompactHeap` preserves the reference's harmless zero-byte compaction stub;
 the canonical NT heap has no compaction operation to expose.
+`RtlCompareUnicodeStrings` compares bounded UTF-16 code units with the
+reference ASCII fallback for case-insensitive calls; full NLS case mapping is
+not yet connected.
