@@ -199,6 +199,7 @@ use super::*;
     assert_eq!(decode(358, input).unwrap().service, NtService::RtlDeleteSecurityObject);
     assert_eq!(decode(359, input).unwrap().service, NtService::RtlDeleteTimer);
     assert_eq!(decode(360, input).unwrap().service, NtService::RtlDeleteTimerQueueEx);
+    assert_eq!(decode(361, input).unwrap().service, NtService::RtlDeregisterWaitEx);
     assert_eq!(decode(298, input).unwrap().service, NtService::NtQueryDirectoryObject);
     assert_eq!(decode(299, input).unwrap().service, NtService::NtQueryFullAttributesFile);
     assert_eq!(decode(293, input).unwrap().service, NtService::NtPrivilegeCheck);

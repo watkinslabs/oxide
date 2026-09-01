@@ -17,6 +17,16 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         let Some(index) = waits.iter().position(|wait| wait.0 == call.args.a0) else { return Some(STATUS_INVALID_HANDLE); };
         waits.swap_remove(index); return Some(0);
     }
+    if call.service == NtService::RtlDeregisterWaitEx {
+        let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+        if !cur.is_nt_personality() || call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
+        let mut waits = cur.thread_group.nt_waits.lock();
+        let Some(index) = waits.iter().position(|wait| wait.0 == call.args.a0) else { return Some(STATUS_INVALID_HANDLE); };
+        waits.swap_remove(index);
+        // A completion event requires signaling an NT event object, which is
+        // not part of this wait-record owner yet; null means no notification.
+        return Some(if call.args.a1 == 0 { 0 } else { STATUS_NOT_IMPLEMENTED });
+    }
     if call.service == NtService::RtlCreateTimerQueue {
         if call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
         return Some(STATUS_NOT_IMPLEMENTED);
