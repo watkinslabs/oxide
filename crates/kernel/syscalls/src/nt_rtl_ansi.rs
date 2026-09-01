@@ -43,6 +43,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::Strcmp { return Some(strcmp(call.args.a0, call.args.a1)); }
     if call.service == NtService::Strncmp { return Some(strncmp(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Strtol { return Some(strtol(call.args.a0, call.args.a1, call.args.a2)); }
+    if call.service == NtService::Towupper { return Some(towupper(call.args.a0)); }
     if call.service == NtService::Wcsnicmp { return Some(wcsnicmp(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Wcsicmp { return Some(wcsicmp(call.args.a0, call.args.a1)); }
     if call.service == NtService::Strnicmp { return Some(strnicmp(call.args.a0, call.args.a1, call.args.a2)); }
@@ -415,6 +416,11 @@ fn strtol(string: u64, end: u64, base: u64) -> u64 {
     if !consumed { return 0; }
     if overflow { return if negative { i32::MIN as i64 as u64 } else { i32::MAX as i64 as u64 }; }
     if negative { (-(value as i64) as i32 as i64) as u64 } else { (value as i32 as i64) as u64 }
+}
+
+fn towupper(character: u64) -> u64 {
+    let character = character as u32;
+    if (b'a' as u32..=b'z' as u32).contains(&character) { (character - (b'a' as u32 - b'A' as u32)) as u64 } else { character as u64 }
 }
 
 fn is_ascii_space(byte: u8) -> bool { matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c) }
