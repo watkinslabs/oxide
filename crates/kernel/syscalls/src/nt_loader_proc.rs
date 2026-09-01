@@ -30,6 +30,16 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     Some(get_procedure(call))
 }
 
+pub fn find_exported_routine(module: u64, name_address: u64) -> u64 {
+    let Some(cur) = sched::live::current() else { return 0; };
+    if !cur.is_nt_personality() || module == 0 || name_address == 0 { return 0; }
+    let Some((module_size, is_ntdll)) = module_info(&cur, module) else { return 0; };
+    let Some(name) = read_ascii_z_unbounded(name_address) else { return 0; };
+    resolve_export(&cur, module, module_size, Some(&name), 0, 0)
+        .or_else(|| is_ntdll.then(|| elf_load::pe_loader::resolve_nt_runtime_export(module, &name)).flatten())
+        .unwrap_or(0)
+}
+
 fn get_procedure(call: NtCall) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a3 == 0 { return STATUS_INVALID_PARAMETER; }
@@ -162,6 +172,17 @@ fn read_ascii_z(address: u64, module: u64, module_size: u32) -> Option<Vec<u8>> 
     if start >= module_size as u64 { return None; }
     let mut value = Vec::new();
     for index in 0..core::cmp::min(4096, module_size as u64 - start) {
+        let mut byte = [0u8; 1];
+        uaccess::copy_from_user(&mut byte, address.checked_add(index)?).ok()?;
+        if byte[0] == 0 { return Some(value); }
+        value.push(byte[0]);
+    }
+    None
+}
+
+fn read_ascii_z_unbounded(address: u64) -> Option<Vec<u8>> {
+    let mut value = Vec::new();
+    for index in 0..4096u64 {
         let mut byte = [0u8; 1];
         uaccess::copy_from_user(&mut byte, address.checked_add(index)?).ok()?;
         if byte[0] == 0 { return Some(value); }
