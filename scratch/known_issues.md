@@ -581,6 +581,8 @@ translation.
 validation and the current en-US baseline LCID (`0x0409`).
 `NtQueryDefaultUILanguage` is implemented against the same validated en-US
 baseline (`LANGID 0x0409`).
+The graph now reaches `ntdll.dll!NtQueryDirectoryObject`; NT object-directory
+enumeration remains an explicit `STATUS_NOT_IMPLEMENTED` boundary.
 The graph now reaches `ntdll.dll!NtOpenProcess`; process-handle acquisition
 remains an explicit `STATUS_NOT_IMPLEMENTED` boundary pending the typed NT
 CLIENT_ID and access-check owner.

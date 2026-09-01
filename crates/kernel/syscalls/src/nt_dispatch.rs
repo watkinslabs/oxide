@@ -374,6 +374,13 @@ pub fn dispatch(call: NtCall) -> u64 {
         // Named timer lookup requires the shared NT object namespace.
         return STATUS_NOT_IMPLEMENTED;
     }
+    if call.service == syscall::nt::NtService::NtQueryDirectoryObject {
+        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+        // NT object-directory enumeration requires the NT namespace owner;
+        // Linux VFS directory enumeration is deliberately not substituted.
+        return STATUS_NOT_IMPLEMENTED;
+    }
     if call.service == syscall::nt::NtService::NtPulseEvent {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
