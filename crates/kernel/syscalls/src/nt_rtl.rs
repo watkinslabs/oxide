@@ -80,6 +80,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlQueryInformationAcl { return Some(query_acl(call.args.a0, call.args.a1, call.args.a2 as u32, call.args.a3 as u32)); }
     if call.service == NtService::RtlUniform { return Some(uniform(call.args.a0)); }
     if call.service == NtService::RtlRandom { return Some(random(call.args.a0)); }
+    if call.service == NtService::WineGetHostVersion { return Some(host_version(call.args.a0, call.args.a1)); }
     if call.service == NtService::RtlCreateSecurityDescriptor { return Some(create_security_descriptor(call.args.a0, call.args.a1 as u32)); }
     if call.service == NtService::RtlCreateAcl { return Some(create_acl(call.args.a0, call.args.a1 as u32, call.args.a2 as u32)); }
     if call.service == NtService::RtlAddAce { return Some(add_aces(call.args.a0, call.args.a1 as u32, call.args.a3, call.args.a4 as u32)); }
@@ -517,6 +518,19 @@ fn random(seed: u64) -> u64 {
     saved[position] = rand as u32;
     if uaccess::copy_to_user(seed, &(next as u32).to_le_bytes()).is_err() { return 0; }
     result as u64
+}
+fn host_version(sysname: u64, release: u64) -> u64 {
+    let write = |out: u64, text: &[u8]| -> Option<u64> {
+        if out == 0 { return Some(0); }
+        let call = NtCall { service: NtService::AllocateHeap, args: SyscallArgs { a0: 0, a1: 0, a2: (text.len() + 1) as u64, a3: 0, a4: 0, a5: 0 } };
+        let buffer = crate::nt_heap::dispatch(call).filter(|value| *value != 0)?;
+        let mut bytes = alloc::vec::Vec::from(text); bytes.push(0);
+        if uaccess::copy_to_user(buffer, &bytes).is_err() || uaccess::put_user_u64(out, buffer).is_err() { return None; }
+        Some(0)
+    };
+    let _ = write(sysname, syscall::uts::UTS_SYSNAME.as_bytes());
+    let _ = write(release, syscall::uts::UTS_RELEASE.as_bytes());
+    0
 }
 fn create_security_descriptor(descriptor: u64, revision: u32) -> u64 {
     if descriptor == 0 { return STATUS_INVALID_PARAMETER; }
