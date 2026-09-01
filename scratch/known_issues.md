@@ -577,6 +577,8 @@ implemented.
 `NtQueryAttributesFile` is implemented through the canonical VFS resolver and
 inode metadata owner, with Windows `FILE_BASIC_INFORMATION` time and type
 translation.
+`NtQueryDefaultLocale` is implemented with strict NT-personality/pointer
+validation and the current en-US baseline LCID (`0x0409`).
 The graph now reaches `ntdll.dll!NtOpenProcess`; process-handle acquisition
 remains an explicit `STATUS_NOT_IMPLEMENTED` boundary pending the typed NT
 CLIENT_ID and access-check owner.

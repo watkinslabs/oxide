@@ -79,6 +79,7 @@ pub enum NtService {
     NtPrivilegeCheck = 293,
     NtPulseEvent = 294,
     NtQueryAttributesFile = 295,
+    NtQueryDefaultLocale = 296,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -390,6 +391,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 293 { return Some(NtCall { service: NtService::NtPrivilegeCheck, args }); }
     if service == 294 { return Some(NtCall { service: NtService::NtPulseEvent, args }); }
     if service == 295 { return Some(NtCall { service: NtService::NtQueryAttributesFile, args }); }
+    if service == 296 { return Some(NtCall { service: NtService::NtQueryDefaultLocale, args }); }
     if service == 197 { return Some(NtCall { service: NtService::RtlGUIDFromString, args }); }
     if service == 195 { return Some(NtCall { service: NtService::WineDbgOutput, args }); }
     if service == 194 { return Some(NtCall { service: NtService::WineDbgHeader, args }); }
@@ -566,7 +568,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::NtAdjustPrivilegesToken => Err(Errno::Enosys),
         NtService::NtAllocateLocallyUniqueId => Err(Errno::Enosys),
         NtService::NtCancelIoFile | NtService::NtCancelIoFileEx => Err(Errno::Enosys),
-        NtService::NtCancelSynchronousIoFile | NtService::NtCompareObjects | NtService::NtConvertBetweenAuxiliaryCounterAndPerformanceCounter | NtService::NtCreateNamedPipeFile | NtService::NtCreateSectionEx | NtService::NtCreateSymbolicLinkObject | NtService::NtCreateUserProcess | NtService::NtDelayExecution | NtService::NtDeleteKey | NtService::NtDeleteValueKey | NtService::NtDuplicateToken | NtService::NtEnumerateKey | NtService::NtEnumerateValueKey | NtService::NtFilterToken | NtService::NtFlushBuffersFile | NtService::NtFlushInstructionCache | NtService::NtFlushKey | NtService::NtMakeTemporaryObject | NtService::NtMapViewOfSectionEx | NtService::NtNotifyChangeDirectoryFile | NtService::NtNotifyChangeKey | NtService::NtOpenEvent | NtService::NtOpenKeyEx | NtService::NtOpenMutant | NtService::NtOpenProcess | NtService::NtOpenSection | NtService::NtOpenSemaphore | NtService::NtOpenSymbolicLinkObject | NtService::NtOpenThread | NtService::NtOpenTimer | NtService::NtPrivilegeCheck | NtService::NtPulseEvent | NtService::NtQueryAttributesFile => Err(Errno::Enosys),
+        NtService::NtCancelSynchronousIoFile | NtService::NtCompareObjects | NtService::NtConvertBetweenAuxiliaryCounterAndPerformanceCounter | NtService::NtCreateNamedPipeFile | NtService::NtCreateSectionEx | NtService::NtCreateSymbolicLinkObject | NtService::NtCreateUserProcess | NtService::NtDelayExecution | NtService::NtDeleteKey | NtService::NtDeleteValueKey | NtService::NtDuplicateToken | NtService::NtEnumerateKey | NtService::NtEnumerateValueKey | NtService::NtFilterToken | NtService::NtFlushBuffersFile | NtService::NtFlushInstructionCache | NtService::NtFlushKey | NtService::NtMakeTemporaryObject | NtService::NtMapViewOfSectionEx | NtService::NtNotifyChangeDirectoryFile | NtService::NtNotifyChangeKey | NtService::NtOpenEvent | NtService::NtOpenKeyEx | NtService::NtOpenMutant | NtService::NtOpenProcess | NtService::NtOpenSection | NtService::NtOpenSemaphore | NtService::NtOpenSymbolicLinkObject | NtService::NtOpenThread | NtService::NtOpenTimer | NtService::NtPrivilegeCheck | NtService::NtPulseEvent | NtService::NtQueryAttributesFile | NtService::NtQueryDefaultLocale => Err(Errno::Enosys),
     }
 }
 /// Decode thread context calls after validating their output pointer.

@@ -32,6 +32,14 @@ const MONTH_FORMULA_SCALE: i64 = 1_959;
 const PERMANENT_EPOCH_DAY: i64 = 584_817;
 
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::NtQueryDefaultLocale {
+        let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+        if !cur.is_nt_personality() || call.args.a0 > 1 || call.args.a1 == 0 { return Some(STATUS_INVALID_PARAMETER); }
+        // The current NT personality is initialized from the en-US baseline;
+        // the locale/NLS service can replace this once per-user LCID state is
+        // owned by the environment layer.
+        return Some(if uaccess::put_user_u32(call.args.a1, 0x0409).is_ok() { STATUS_SUCCESS } else { STATUS_INVALID_PARAMETER });
+    }
     if call.service == NtService::NtGetTickCount {
         let Some(cur) = sched::live::current() else { return Some(0); };
         if !cur.is_nt_personality() { return Some(0); }
