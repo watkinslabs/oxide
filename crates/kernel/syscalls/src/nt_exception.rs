@@ -9,6 +9,14 @@ const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
 
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlRaiseStatus {
+        let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+        if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
+        // Wine turns this status into a noncontinuable EXCEPTION_RECORD and
+        // enters RtlRaiseException. That SEH context handoff is not owned by
+        // the kernel boundary yet.
+        return Some(STATUS_NOT_IMPLEMENTED);
+    }
     if call.service == NtService::RtlRaiseException {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
         if !cur.is_nt_personality() || call.args.a0 == 0 {
