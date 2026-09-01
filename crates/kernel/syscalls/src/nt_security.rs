@@ -51,6 +51,9 @@ const SECURITY_CONTROL_WORD_BYTES: usize = 4;
 /// Linux credentials supply the owner/group identity; no Linux syscall path
 /// reaches this adapter. # C: O(1) plus usercopy
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == syscall::nt::NtService::RtlSetOwnerSecurityDescriptor {
+        return Some(set_owner(call.args.a0, call.args.a1, call.args.a2 != 0));
+    }
     if call.service == syscall::nt::NtService::RtlSetGroupSecurityDescriptor {
         return Some(set_group(call.args.a0, call.args.a1, call.args.a2 != 0));
     }
@@ -119,6 +122,19 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if descriptor.as_u64() == 0 || length < required { return Some(STATUS_BUFFER_TOO_SMALL); }
     if uaccess::copy_to_user(descriptor.as_u64(), &bytes).is_err() { return Some(STATUS_INVALID_PARAMETER); }
     Some(STATUS_SUCCESS)
+}
+
+fn set_owner(descriptor: u64, owner: u64, defaulted: bool) -> u64 {
+    if descriptor == 0 { return STATUS_INVALID_PARAMETER; }
+    let mut header = [0u8; 4];
+    if uaccess::copy_from_user(&mut header, descriptor).is_err() { return STATUS_INVALID_PARAMETER; }
+    if header[0] != SECURITY_DESCRIPTOR_REVISION { return STATUS_UNKNOWN_REVISION; }
+    let control = u16::from_le_bytes([header[2], header[3]]);
+    if control & SELF_RELATIVE != 0 { return STATUS_INVALID_SECURITY_DESCR; }
+    if uaccess::put_user_u64(descriptor.saturating_add(ABSOLUTE_OWNER_OFFSET), owner).is_err() { return STATUS_INVALID_PARAMETER; }
+    let updated = if defaulted { control | OWNER_DEFAULTED } else { control & !OWNER_DEFAULTED };
+    if uaccess::copy_to_user(descriptor.saturating_add(2), &updated.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
 }
 
 fn set_group(descriptor: u64, group: u64, defaulted: bool) -> u64 {
