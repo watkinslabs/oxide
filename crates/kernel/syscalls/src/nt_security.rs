@@ -20,11 +20,17 @@ const SECURITY_DESCRIPTOR_REVISION: u8 = 1;
 const SELF_RELATIVE: u16 = 0x8000;
 const DACL_PRESENT: u16 = 0x0004;
 const FULL_ACCESS: u32 = 0x001f_01ff;
+const TOKEN_QUERY: u32 = 0x0008;
+const GENERIC_READ: u32 = 0x8000_0000;
+const GENERIC_WRITE: u32 = 0x4000_0000;
+const GENERIC_EXECUTE: u32 = 0x2000_0000;
+const GENERIC_ALL: u32 = 0x1000_0000;
 
 /// Query the stable baseline descriptor attached to an NT object handle.
 /// Linux credentials supply the owner/group identity; no Linux syscall path
 /// reaches this adapter. # C: O(1) plus usercopy
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == syscall::nt::NtService::NtAccessCheck { return Some(access_check(call)); }
     let Ok(NtObjectCall::QuerySecurity { handle, security_information, descriptor, length, return_length }) = syscall::nt::decode_object(call) else { return None; };
     let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
     if !cur.is_nt_personality() || security_information == 0 || security_information & !(OWNER | GROUP | DACL | SACL | LABEL) != 0 { return Some(STATUS_INVALID_PARAMETER); }
@@ -40,6 +46,97 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if descriptor.as_u64() == 0 || length < required { return Some(STATUS_BUFFER_TOO_SMALL); }
     if uaccess::copy_to_user(descriptor.as_u64(), &bytes).is_err() { return Some(STATUS_INVALID_PARAMETER); }
     Some(STATUS_SUCCESS)
+}
+
+fn access_check(call: NtCall) -> u64 {
+    const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
+    const PRIVILEGE_SET_BYTES: u32 = 20;
+    if call.args.a0 == 0 || call.args.a1 == 0 || call.args.a3 == 0 || call.args.a4 == 0 || call.args.a5 == 0 { return STATUS_ACCESS_VIOLATION; }
+    let Some(granted) = stack_argument(6) else { return STATUS_INVALID_PARAMETER; };
+    let Some(access_status) = stack_argument(7) else { return STATUS_INVALID_PARAMETER; };
+    if granted == 0 || access_status == 0 { return STATUS_ACCESS_VIOLATION; }
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let table = cur.thread_group.nt_handles();
+    let token_handle = sched::nt_object::NtHandle::from_raw(call.args.a1 as u32);
+    let Some(token_object) = table.get(token_handle, TOKEN_QUERY) else { return if table.contains(token_handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }; };
+    let Some(token) = token_object.token() else { return STATUS_INVALID_HANDLE; };
+    let mut descriptor = [0u8; 20];
+    if uaccess::copy_from_user(&mut descriptor, call.args.a0).is_err() || descriptor[0] != SECURITY_DESCRIPTOR_REVISION { return STATUS_ACCESS_VIOLATION; }
+    let control = u16::from_le_bytes([descriptor[2], descriptor[3]]);
+    if control & SELF_RELATIVE == 0 { return STATUS_ACCESS_VIOLATION; }
+    let capacity = uaccess::get_user_u32(call.args.a5).unwrap_or(0);
+    if uaccess::put_user_u32(call.args.a5, PRIVILEGE_SET_BYTES).is_err() { return STATUS_ACCESS_VIOLATION; }
+    if capacity < PRIVILEGE_SET_BYTES { return 0xc000_0023; }
+    if uaccess::copy_to_user(call.args.a4, &[0u8; PRIVILEGE_SET_BYTES as usize]).is_err() { return STATUS_ACCESS_VIOLATION; }
+    let mut desired = call.args.a2 as u32;
+    let Some(mapping) = read_mapping(call.args.a3) else { return STATUS_ACCESS_VIOLATION; };
+    desired = map_generic(desired, mapping);
+    let dacl = u32::from_le_bytes(descriptor[16..20].try_into().unwrap());
+    let allowed = if control & DACL_PRESENT == 0 || dacl == 0 { desired } else { acl_access(call.args.a0, dacl, desired, token.uid(), token.gid()) };
+    if uaccess::put_user_u32(granted, allowed).is_err() || uaccess::put_user_u32(access_status, if allowed == desired { STATUS_SUCCESS as u32 } else { STATUS_ACCESS_DENIED as u32 }).is_err() { return STATUS_ACCESS_VIOLATION; }
+    STATUS_SUCCESS
+}
+
+fn stack_argument(index: usize) -> Option<u64> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let frame = hal_x86_64::current_pt_regs();
+        if frame.is_null() { return None; }
+        // SAFETY: the NT dispatcher is executing on the active task's syscall
+        // stack; current_pt_regs returns the entry frame published by the
+        // x86_64 trampoline, and its rsp is the caller's readable user stack.
+        let rsp = unsafe { (*frame).rsp };
+        let offset = 0x28u64.checked_add((index.checked_sub(4)? as u64).checked_mul(8)?)?;
+        uaccess::get_user_u64(rsp.checked_add(offset)?).ok()
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    { let _ = index; None }
+}
+
+fn read_mapping(address: u64) -> Option<[u32; 4]> {
+    let mut bytes = [0u8; 16];
+    uaccess::copy_from_user(&mut bytes, address).ok()?;
+    Some(core::array::from_fn(|index| u32::from_le_bytes(bytes[index * 4..index * 4 + 4].try_into().unwrap())))
+}
+
+fn map_generic(mut desired: u32, mapping: [u32; 4]) -> u32 {
+    if desired & GENERIC_READ != 0 { desired = desired & !GENERIC_READ | mapping[0]; }
+    if desired & GENERIC_WRITE != 0 { desired = desired & !GENERIC_WRITE | mapping[1]; }
+    if desired & GENERIC_EXECUTE != 0 { desired = desired & !GENERIC_EXECUTE | mapping[2]; }
+    if desired & GENERIC_ALL != 0 { desired = desired & !GENERIC_ALL | mapping[3]; }
+    desired
+}
+
+fn acl_access(sd: u64, offset: u32, desired: u32, uid: u32, gid: u32) -> u32 {
+    let acl = match sd.checked_add(offset as u64) { Some(value) => value, None => return 0 };
+    let mut header = [0u8; 8];
+    if uaccess::copy_from_user(&mut header, acl).is_err() { return 0; }
+    let size = u16::from_le_bytes([header[2], header[3]]) as u64;
+    let count = u16::from_le_bytes([header[4], header[5]]).min(256);
+    if size < 8 { return 0; }
+    let mut granted = 0;
+    let mut cursor = acl + 8;
+    for _ in 0..count {
+        let mut ace = [0u8; 8];
+        if cursor.saturating_sub(acl) + 8 > size || uaccess::copy_from_user(&mut ace, cursor).is_err() { return 0; }
+        let ace_size = u16::from_le_bytes([ace[2], ace[3]]) as u64;
+        if ace_size < 20 || cursor.saturating_sub(acl) + ace_size > size { return 0; }
+        let matches = sid_matches(cursor + 8, uid, gid);
+        let mask = u32::from_le_bytes(ace[4..8].try_into().unwrap());
+        if matches && ace[0] == 1 && mask & desired != 0 { return 0; }
+        if matches && ace[0] == 0 { granted |= mask & desired; if granted == desired { return granted; } }
+        cursor = match cursor.checked_add(ace_size) { Some(value) => value, None => return 0 };
+    }
+    granted
+}
+
+fn sid_matches(address: u64, uid: u32, gid: u32) -> bool {
+    let mut sid = [0u8; 16];
+    if uaccess::copy_from_user(&mut sid, address).is_err() || sid[0] != 1 || sid[1] != 2 { return false; }
+    let authority = u64::from_be_bytes([0, 0, sid[2], sid[3], sid[4], sid[5], sid[6], sid[7]]);
+    let subauthority = u32::from_le_bytes(sid[12..16].try_into().unwrap());
+    (authority == 5 && (subauthority == uid || subauthority == gid)) || (authority == 1 && subauthority == 0)
 }
 
 fn sid(authority: u64, subauthority: u32) -> [u8; 16] {

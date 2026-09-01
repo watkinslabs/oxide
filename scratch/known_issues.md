@@ -36,6 +36,7 @@ Windows frontier update (2026-09-01): `LdrGetDllPath` now validates flags, build
 Windows frontier update (2026-09-01): `LdrSetDefaultDllDirectories` now validates the documented default-directory mask and stores process-wide loader policy; wiring that policy into path construction remains open, and the graph advances to `ntdll.dll!LdrUnloadDll`.
 Windows frontier update (2026-09-01): `LdrUnloadDll` now validates PEB loader membership and decrements or preserves process-local reference state for ordinary and pinned modules; detach callbacks, VMA teardown, and loader-list removal remain open, and the graph advances to `ntdll.dll!NtAccessCheck`.
 Windows frontier update (2026-09-01): `LdrGetProcedureAddress` now validates loaded modules and ANSI strings, resolves bounded named and ordinal exports from mapped PE32+ images, resolves named exports from the synthetic native ntdll catalog, and follows bounded forwarders through the current loader list; the graph remains at `ntdll.dll!NtAccessCheck`.
+Windows frontier update (2026-09-01): `NtAccessCheck` now uses the preserved Windows-x64 stack tail for its seventh and eighth parameters, validates the token, generic mapping, self-relative DACL, bounded ACE ordering, and publishes granted access/status; full privilege-set semantics and richer token SID membership remain open, and the graph advances to `ntdll.dll!NtAdjustGroupsToken`.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
