@@ -15,6 +15,7 @@ const UNICODE_STRING_BYTES: usize = 16;
 pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::Memcpy || call.service == NtService::Memmove { return Some(memcpy(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Memset { return Some(memset(call.args.a0, call.args.a1, call.args.a2)); }
+    if call.service == NtService::Strcat { return Some(strcat(call.args.a0, call.args.a1)); }
     if call.service == NtService::Isalpha { let c = call.args.a0 as i32; return Some(if c >= b'A' as i32 && c <= b'Z' as i32 { 1 } else if c >= b'a' as i32 && c <= b'z' as i32 { 2 } else { 0 }); }
     if call.service == NtService::Wcsnicmp { return Some(wcsnicmp(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Wcsicmp { return Some(wcsicmp(call.args.a0, call.args.a1)); }
@@ -41,6 +42,30 @@ fn memset(destination: u64, value: u64, length: u64) -> u64 {
     if destination == 0 || length > usize::MAX as u64 { return STATUS_INVALID_PARAMETER; }
     let bytes = alloc::vec![value as u8; length as usize];
     if uaccess::copy_to_user(destination, &bytes).is_err() { return STATUS_INVALID_PARAMETER; }
+    destination
+}
+
+fn strcat(destination: u64, source: u64) -> u64 {
+    if destination == 0 || source == 0 { return STATUS_INVALID_PARAMETER; }
+    let mut output = alloc::vec::Vec::new();
+    let mut index = 0usize;
+    loop {
+        let Some(byte) = read_u8(destination, index) else { return STATUS_INVALID_PARAMETER; };
+        output.push(byte);
+        if byte == 0 { break; }
+        let Some(next) = index.checked_add(1) else { return STATUS_INVALID_PARAMETER; };
+        index = next;
+    }
+    output.pop();
+    index = 0;
+    loop {
+        let Some(byte) = read_u8(source, index) else { return STATUS_INVALID_PARAMETER; };
+        output.push(byte);
+        if byte == 0 { break; }
+        let Some(next) = index.checked_add(1) else { return STATUS_INVALID_PARAMETER; };
+        index = next;
+    }
+    if uaccess::copy_to_user(destination, &output).is_err() { return STATUS_INVALID_PARAMETER; }
     destination
 }
 
@@ -203,6 +228,13 @@ fn read_u16(buffer: u64, index: usize) -> Option<u16> {
     let mut bytes = [0u8; 2];
     uaccess::copy_from_user(&mut bytes, address).ok()?;
     Some(u16::from_le_bytes(bytes))
+}
+
+fn read_u8(buffer: u64, index: usize) -> Option<u8> {
+    let address = buffer.checked_add(index as u64)?;
+    let mut byte = [0u8; 1];
+    uaccess::copy_from_user(&mut byte, address).ok()?;
+    Some(byte[0])
 }
 
 fn free_buffer(buffer: u64) {
