@@ -15,6 +15,7 @@ const TEXT_UNICODE_NULL_BYTES: u32 = 0x1000;
 const TEXT_UNICODE_NOT_ASCII_MASK: u32 = 0xf000;
 const TEXT_UNICODE_ODD_LENGTH: u32 = 0x0200;
 const STATUS_SUCCESS: u64 = 0;
+const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
 const IMAGE_FILE_MACHINE_AMD64: u16 = 0x8664;
 const PRODUCT_UNDEFINED: u32 = 0;
 const PRODUCT_ULTIMATE_N: u32 = 0x1c;
@@ -108,6 +109,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     }
     if call.service == NtService::RtlWow64GetThreadContext { return Some(STATUS_INVALID_PARAMETER); }
     if call.service == NtService::RtlWow64SetThreadContext { return Some(STATUS_INVALID_PARAMETER); }
+    if call.service == NtService::RtlZombifyActivationContext { return Some(STATUS_NOT_IMPLEMENTED); }
     if call.service == NtService::RtlGetExtendedContextLength2 { return Some(get_extended_context_length(call.args.a0 as u32, call.args.a1, call.args.a2)); }
     if call.service == NtService::RtlInitializeExtendedContext2 { return Some(initialize_extended_context(call.args.a0, call.args.a1 as u32, call.args.a2, call.args.a3)); }
     if call.service == NtService::RtlGetExtendedFeaturesMask { return Some(get_extended_features_mask(call.args.a0)); }
