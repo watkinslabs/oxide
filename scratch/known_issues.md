@@ -449,3 +449,8 @@ advances to `ntdll.dll!NtAllocateLocallyUniqueId`.
 Windows NT frontier update (2026-09-01): `NtAllocateLocallyUniqueId` now
 validates the output pointer and allocates monotonic LUID values; the graph
 advances to `ntdll.dll!NtAllocateVirtualMemoryEx`.
+Windows NT frontier update (2026-09-01): `NtAllocateVirtualMemoryEx` now
+accepts the native seven-argument ABI, validates the seventh stack argument,
+and delegates zero-extended-parameter allocations to the existing VM owner;
+the graph advances to `ntdll.dll!NtCancelIoFile`. Extended parameter records
+remain unsupported until their VM semantics are implemented.

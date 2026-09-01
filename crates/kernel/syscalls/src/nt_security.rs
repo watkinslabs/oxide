@@ -52,8 +52,8 @@ fn access_check(call: NtCall) -> u64 {
     const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
     const PRIVILEGE_SET_BYTES: u32 = 20;
     if call.args.a0 == 0 || call.args.a1 == 0 || call.args.a3 == 0 || call.args.a4 == 0 || call.args.a5 == 0 { return STATUS_ACCESS_VIOLATION; }
-    let Some(granted) = stack_argument(6) else { return STATUS_INVALID_PARAMETER; };
-    let Some(access_status) = stack_argument(7) else { return STATUS_INVALID_PARAMETER; };
+    let Some(granted) = crate::nt_dispatch::stack_argument(6) else { return STATUS_INVALID_PARAMETER; };
+    let Some(access_status) = crate::nt_dispatch::stack_argument(7) else { return STATUS_INVALID_PARAMETER; };
     if granted == 0 || access_status == 0 { return STATUS_ACCESS_VIOLATION; }
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
@@ -76,22 +76,6 @@ fn access_check(call: NtCall) -> u64 {
     let allowed = if control & DACL_PRESENT == 0 || dacl == 0 { desired } else { acl_access(call.args.a0, dacl, desired, token.uid(), token.gid()) };
     if uaccess::put_user_u32(granted, allowed).is_err() || uaccess::put_user_u32(access_status, if allowed == desired { STATUS_SUCCESS as u32 } else { STATUS_ACCESS_DENIED as u32 }).is_err() { return STATUS_ACCESS_VIOLATION; }
     STATUS_SUCCESS
-}
-
-fn stack_argument(index: usize) -> Option<u64> {
-    #[cfg(target_arch = "x86_64")]
-    {
-        let frame = hal_x86_64::current_pt_regs();
-        if frame.is_null() { return None; }
-        // SAFETY: the NT dispatcher is executing on the active task's syscall
-        // stack; current_pt_regs returns the entry frame published by the
-        // x86_64 trampoline, and its rsp is the caller's readable user stack.
-        let rsp = unsafe { (*frame).rsp };
-        let offset = 0x28u64.checked_add((index.checked_sub(4)? as u64).checked_mul(8)?)?;
-        uaccess::get_user_u64(rsp.checked_add(offset)?).ok()
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    { let _ = index; None }
 }
 
 fn read_mapping(address: u64) -> Option<[u32; 4]> {

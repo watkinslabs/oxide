@@ -34,6 +34,7 @@ pub enum NtService {
     NtAdjustGroupsToken = 248,
     NtAdjustPrivilegesToken = 249,
     NtAllocateLocallyUniqueId = 250,
+    NtAllocateVirtualMemoryEx = 251,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -286,6 +287,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 248 { return Some(NtCall { service: NtService::NtAdjustGroupsToken, args }); }
     if service == 249 { return Some(NtCall { service: NtService::NtAdjustPrivilegesToken, args }); }
     if service == 250 { return Some(NtCall { service: NtService::NtAllocateLocallyUniqueId, args }); }
+    if service == 251 { return Some(NtCall { service: NtService::NtAllocateVirtualMemoryEx, args }); }
     if service == 197 { return Some(NtCall { service: NtService::RtlGUIDFromString, args }); }
     if service == 195 { return Some(NtCall { service: NtService::WineDbgOutput, args }); }
     if service == 194 { return Some(NtCall { service: NtService::WineDbgHeader, args }); }
@@ -397,6 +399,10 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::AllocateVirtualMemory => Ok(NtMemoryCall::Allocate {
             process: a.a0, base: UserPtr::new(a.a1)?, zero_bits: a.a2,
             size: UserPtr::new(a.a3)?, allocation_type: a.a4 as u32, protect: a.a5 as u32,
+        }),
+        NtService::NtAllocateVirtualMemoryEx => Ok(NtMemoryCall::Allocate {
+            process: a.a0, base: UserPtr::new(a.a1)?, zero_bits: 0,
+            size: UserPtr::new(a.a2)?, allocation_type: a.a3 as u32, protect: a.a4 as u32,
         }),
         NtService::FreeVirtualMemory => Ok(NtMemoryCall::Free {
             process: a.a0, base: UserPtr::new(a.a1)?, size: UserPtr::new(a.a2)?, free_type: a.a3 as u32,

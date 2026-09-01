@@ -9,6 +9,20 @@ pub fn decode_entry(entry: u64, args: SyscallArgs) -> Option<NtCall> {
     nt::decode_entry(entry, args)
 }
 #[cfg(target_os = "oxide-kernel")]
+pub(crate) fn stack_argument(index: usize) -> Option<u64> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let frame = hal_x86_64::current_pt_regs();
+        if frame.is_null() { return None; }
+        // SAFETY: this is the active task's syscall frame and rsp names its readable user stack.
+        let rsp = unsafe { (*frame).rsp };
+        let offset = 0x28u64.checked_add((index.checked_sub(4)? as u64).checked_mul(8)?)?;
+        uaccess::get_user_u64(rsp.checked_add(offset)?).ok()
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    { let _ = index; None }
+}
+#[cfg(target_os = "oxide-kernel")]
 const CURRENT_PROCESS: u64 = u64::MAX;
 #[cfg(target_os = "oxide-kernel")]
 const CURRENT_THREAD: u64 = u64::MAX;
@@ -534,6 +548,10 @@ pub fn dispatch(call: NtCall) -> u64 {
             | NtObjectCall::QueryMutant { .. } | NtObjectCall::QueryObject { .. }
             | NtObjectCall::QuerySecurity { .. } | NtObjectCall::SetSecurity { .. } => STATUS_INVALID_PARAMETER,
         };
+    }
+    if call.service == nt::NtService::NtAllocateVirtualMemoryEx {
+        let Some(parameter_count) = stack_argument(6) else { return STATUS_INVALID_PARAMETER; };
+        if call.args.a5 != 0 || parameter_count != 0 { return STATUS_INVALID_PARAMETER; }
     }
     let call = match nt::decode_memory(call) {
         Ok(call) => call,
