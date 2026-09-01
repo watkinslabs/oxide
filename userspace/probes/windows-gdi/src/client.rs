@@ -18,6 +18,10 @@ pub struct TextMetrics { pub height: i32, pub ascent: i32, pub descent: i32, pub
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct TextExtent { pub width: i32, pub height: i32 }
 
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct Rect { pub left: i32, pub top: i32, pub right: i32, pub bottom: i32 }
+
 pub struct Gdi;
 
 impl Gdi {
@@ -57,6 +61,11 @@ impl Gdi {
         let mut native = NtGdiTextExtent { width: 0, height: 0 };
         invoke(NtService::GetGdiTextExtent, [dc, text.as_ptr() as u64, text.len() as u64, (&mut native as *mut NtGdiTextExtent) as u64, 0, 0])?;
         Ok(TextExtent { width: native.width, height: native.height })
+    }
+
+    /// Fill a clipped device-context rectangle with one XRGB color. # C: O(width*height) plus kernel service
+    pub fn fill_rect(&self, dc: u64, rect: Rect, color: u32) -> Result<(), GdiError> {
+        invoke(NtService::FillGdiRect, [dc, rect.left as u64, rect.top as u64, rect.right as u64, rect.bottom as u64, color as u64]).map(|_| ())
     }
 }
 

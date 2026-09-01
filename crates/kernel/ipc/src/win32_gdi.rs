@@ -6,6 +6,7 @@ pub const MM_TEXT: u32 = 1;
 const DEFAULT_HEIGHT: i32 = 16;
 const DEFAULT_DESCENT: i32 = 4;
 const DEFAULT_WIDTH: i32 = 8;
+const MAX_SURFACE_PIXELS: usize = 16 * 1024 * 1024;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Font { pub height: i32, pub width: i32, pub weight: i32, pub italic: bool }
@@ -17,10 +18,13 @@ pub struct TextMetrics { pub height: i32, pub ascent: i32, pub descent: i32, pub
 pub struct TextExtent { pub width: i32, pub height: i32 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum GdiError { NoSuchObject, InvalidDimensions, InvalidText }
+pub struct Rect { pub left: i32, pub top: i32, pub right: i32, pub bottom: i32 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-struct DeviceContext { width: i32, height: i32, map_mode: u32, font: Option<u32> }
+pub enum GdiError { NoSuchObject, InvalidDimensions, InvalidText }
+
+#[derive(Debug, Eq, PartialEq)]
+struct DeviceContext { width: i32, height: i32, map_mode: u32, font: Option<u32>, pixels: Vec<u32> }
 
 pub struct GdiManager { next: u32, dcs: Vec<(u32, DeviceContext)>, fonts: Vec<(u32, Font)> }
 
@@ -32,9 +36,9 @@ impl GdiManager {
 
     /// Create a memory device context with bounded positive dimensions. # C: O(1)
     pub fn create_dc(&mut self, width: i32, height: i32) -> Result<u32, GdiError> {
-        if width <= 0 || height <= 0 { return Err(GdiError::InvalidDimensions); }
+        if width <= 0 || height <= 0 || (width as usize).checked_mul(height as usize).is_none_or(|pixels| pixels > MAX_SURFACE_PIXELS) { return Err(GdiError::InvalidDimensions); }
         let handle = self.allocate();
-        self.dcs.push((handle, DeviceContext { width, height, map_mode: MM_TEXT, font: None }));
+        self.dcs.push((handle, DeviceContext { width, height, map_mode: MM_TEXT, font: None, pixels: alloc::vec![0; (width as usize) * (height as usize)] }));
         Ok(handle)
     }
 
@@ -83,6 +87,21 @@ impl GdiManager {
         Ok(TextExtent { width, height })
     }
 
+    /// Fill a clipped device-context rectangle with one XRGB color. # C: O(width*height)
+    pub fn fill_rect(&mut self, dc: u32, rect: Rect, color: u32) -> Result<(), GdiError> {
+        let Some((_, state)) = self.dcs.iter_mut().find(|(candidate, _)| *candidate == dc) else { return Err(GdiError::NoSuchObject); };
+        let left = rect.left.max(0).min(state.width) as usize;
+        let top = rect.top.max(0).min(state.height) as usize;
+        let right = rect.right.max(0).min(state.width) as usize;
+        let bottom = rect.bottom.max(0).min(state.height) as usize;
+        if right <= left || bottom <= top { return Ok(()); }
+        for y in top..bottom { for x in left..right { state.pixels[y * state.width as usize + x] = color; } }
+        Ok(())
+    }
+
+    /// Read the rendered row-major XRGB surface for one device context. # C: O(1)
+    pub fn pixels(&self, dc: u32) -> Option<&[u32]> { self.dcs.iter().find(|(candidate, _)| *candidate == dc).map(|(_, state)| state.pixels.as_slice()) }
+
     fn font_for(&self, dc: u32) -> Result<Option<Font>, GdiError> {
         let Some((_, state)) = self.dcs.iter().find(|(candidate, _)| *candidate == dc) else { return Err(GdiError::NoSuchObject); };
         Ok(state.font.and_then(|handle| self.fonts.iter().find(|(candidate, _)| *candidate == handle).map(|(_, font)| *font)))
@@ -123,5 +142,17 @@ mod tests {
         let mut gdi = GdiManager::new();
         assert_eq!(gdi.create_dc(0, 10), Err(GdiError::InvalidDimensions));
         assert_eq!(gdi.delete_object(99), Err(GdiError::NoSuchObject));
+    }
+
+    #[test]
+    fn fill_rect_clips_to_the_native_surface() {
+        let mut gdi = GdiManager::new();
+        let dc = gdi.create_dc(4, 3).unwrap();
+        gdi.fill_rect(dc, Rect { left: -1, top: 1, right: 3, bottom: 4 }, 0x0011_2233).unwrap();
+        let px = gdi.pixels(dc).unwrap();
+        assert_eq!(px[0], 0);
+        assert_eq!(px[4], 0x0011_2233);
+        assert_eq!(px[10], 0x0011_2233);
+        assert_eq!(px[11], 0);
     }
 }

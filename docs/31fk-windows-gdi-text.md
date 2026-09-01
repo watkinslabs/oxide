@@ -18,6 +18,8 @@ owner. The adapter does not maintain a second GDI object table.
   width, and character width from the selected font or stock font.
 - `GetTextExtentPoint32W` measures UTF-16 code units without taking ownership
   of the caller buffer.
+- Each memory device context owns a bounded row-major XRGB pixel surface.
+- `FillRect` clips to that surface before writing pixels.
 - `DeleteObject` removes device contexts and fonts and clears deleted fonts
   from every context in the process.
 - Tagged NT selectors carry the ABI; Linux syscall numbers are not used for
@@ -28,8 +30,10 @@ owner. The adapter does not maintain a second GDI object table.
 - Handles are process-local and invalid after deletion.
 - Dimensions and font values reject integer-minimum overflow inputs.
 - Text buffers are copied and validated before the extent result is written.
-- Rasterization and scanout remain separate display-driver work; this contract
-  owns object lifetime and metrics only.
+- Surface dimensions are bounded before allocation; rectangle writes never
+  address pixels outside the owning device context.
+- Window scanout remains separate display-driver work; GDI owns the raster
+  surface and its drawing operations.
 
 ## 3
 
