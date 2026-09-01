@@ -32,6 +32,11 @@ const MONTH_FORMULA_SCALE: i64 = 1_959;
 const PERMANENT_EPOCH_DAY: i64 = 584_817;
 
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::NtGetTickCount {
+        let Some(cur) = sched::live::current() else { return Some(0); };
+        if !cur.is_nt_personality() { return Some(0); }
+        return Some((timekeeper::monotonic_ns() / 1_000_000) as u32 as u64);
+    }
     if call.service == NtService::NtDelayExecution {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
         if !cur.is_nt_personality() || call.args.a0 > 1 { return Some(STATUS_INVALID_PARAMETER); }

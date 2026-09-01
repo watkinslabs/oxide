@@ -541,4 +541,6 @@ owner; remote, debug, floating-point, segment, and XSTATE context remain
 explicitly unsupported. The graph advances to
 `ntdll.dll!NtGetNlsSectionPtr`, which now resolves Wine-compatible NLS data
 files from `/usr/share/wine/nls` through the normal read-only file-backed VMA
-path. The graph advances to `ntdll.dll!NtGetTickCount`.
+path. `NtGetTickCount` now uses the monotonic timekeeper with Windows'
+32-bit millisecond wrap semantics. The graph advances to
+`ntdll.dll!NtGetWriteWatch`.

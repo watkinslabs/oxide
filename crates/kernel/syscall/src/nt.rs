@@ -57,6 +57,7 @@ pub enum NtService {
     NtFlushVirtualMemory = 271,
     NtGetContextThread = 272,
     NtGetNlsSectionPtr = 273,
+    NtGetTickCount = 274,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -344,6 +345,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 271 { return Some(NtCall { service: NtService::NtFlushVirtualMemory, args }); }
     if service == 272 { return Some(NtCall { service: NtService::NtGetContextThread, args }); }
     if service == 273 { return Some(NtCall { service: NtService::NtGetNlsSectionPtr, args }); }
+    if service == 274 { return Some(NtCall { service: NtService::NtGetTickCount, args }); }
     if service == 197 { return Some(NtCall { service: NtService::RtlGUIDFromString, args }); }
     if service == 195 { return Some(NtCall { service: NtService::WineDbgOutput, args }); }
     if service == 194 { return Some(NtCall { service: NtService::WineDbgHeader, args }); }
@@ -476,6 +478,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         }),
         NtService::NtGetContextThread => Err(Errno::Enosys),
         NtService::NtGetNlsSectionPtr => Err(Errno::Enosys),
+        NtService::NtGetTickCount => Err(Errno::Enosys),
         NtService::TerminateProcess => Err(Errno::Enosys),
         NtService::Wcscat => Err(Errno::Enosys),
         NtService::Wcschr => Err(Errno::Enosys),
