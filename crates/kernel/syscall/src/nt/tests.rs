@@ -211,6 +211,7 @@ use super::*;
     assert_eq!(decode(372, input).unwrap().service, NtService::RtlFindActivationContextSectionGuid);
     assert_eq!(decode(373, input).unwrap().service, NtService::RtlFindClearBitsAndSet);
     assert_eq!(decode(374, input).unwrap().service, NtService::RtlFindMessage);
+    assert_eq!(decode(375, input).unwrap().service, NtService::RtlFirstFreeAce);
     assert_eq!(decode(370, input).unwrap().service, NtService::RtlEqualSid);
     assert_eq!(decode(371, input).unwrap().service, NtService::RtlExpandEnvironmentStringsU);
     assert_eq!(decode(298, input).unwrap().service, NtService::NtQueryDirectoryObject);
