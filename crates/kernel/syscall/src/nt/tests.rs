@@ -220,6 +220,7 @@ use super::*;
     assert_eq!(decode(381, input).unwrap().service, NtService::RtlFormatMessageEx);
     assert_eq!(decode(382, input).unwrap().service, NtService::RtlFreeThreadActivationContextStack);
     assert_eq!(decode(383, input).unwrap().service, NtService::RtlFreeActivationContextStack);
+    assert_eq!(decode(384, input).unwrap().service, NtService::RtlFreeAnsiString);
     assert_eq!(decode(370, input).unwrap().service, NtService::RtlEqualSid);
     assert_eq!(decode(371, input).unwrap().service, NtService::RtlExpandEnvironmentStringsU);
     assert_eq!(decode(298, input).unwrap().service, NtService::NtQueryDirectoryObject);
