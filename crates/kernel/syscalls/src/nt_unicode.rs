@@ -10,6 +10,7 @@ const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
 const STATUS_NO_UNICODE_TRANSLATION: u64 = 0xc000_0169;
 const STATUS_INVALID_PARAMETER_4: u64 = 0xc000_00f2;
+const STATUS_INVALID_PARAMETER_5: u64 = 0xc000_00f3;
 const STATUS_SOME_NOT_MAPPED: u64 = 0x0000_0107;
 
 /// Compare caller-owned UTF-16 strings using native RTL ordering.
@@ -21,6 +22,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlIdnToNameprepUnicode { return Some(idn_to_nameprep(call)); }
     if call.service == NtService::RtlIdnToUnicode { return Some(idn_to_unicode(call)); }
     if call.service == NtService::RtlUTF8ToUnicodeN { return Some(utf8_to_unicode_n(call)); }
+    if call.service == NtService::RtlUnicodeToUTF8N { return Some(unicode_to_utf8_n(call)); }
     if call.service != NtService::RtlCompareUnicodeStrings { return None; }
     Some(compare(call.args.a0, call.args.a1, call.args.a2, call.args.a3, call.args.a4 != 0) as i32 as u64)
 }
@@ -109,6 +111,82 @@ fn read_byte(source: u64, index: usize) -> Option<u8> {
     let mut byte = [0u8; 1];
     uaccess::copy_from_user(&mut byte, address).ok()?;
     Some(byte[0])
+}
+
+fn unicode_to_utf8_n(call: NtCall) -> u64 {
+    let destination = call.args.a0;
+    let destination_bytes = call.args.a1 as usize;
+    let result_length = call.args.a2;
+    let source = call.args.a3;
+    let source_bytes = call.args.a4 as usize;
+    if source == 0 { return STATUS_INVALID_PARAMETER_4; }
+    if result_length == 0 { return STATUS_INVALID_PARAMETER; }
+    if destination != 0 && source_bytes & 1 != 0 { return STATUS_INVALID_PARAMETER_5; }
+    let source_units = source_bytes / 2;
+    let (required, conversion_status) = match utf16_measure(source, source_units) {
+        Some(value) => value, None => return STATUS_INVALID_PARAMETER,
+    };
+    if destination == 0 {
+        if uaccess::put_user_u32(result_length, required as u32).is_err() { return STATUS_INVALID_PARAMETER; }
+        return conversion_status;
+    }
+    let (written, write_status) = match utf16_write(destination, destination_bytes, source, source_units) {
+        Ok(value) => value, Err(()) => return STATUS_INVALID_PARAMETER,
+    };
+    if uaccess::put_user_u32(result_length, written as u32).is_err() { return STATUS_INVALID_PARAMETER; }
+    if written < required { STATUS_BUFFER_TOO_SMALL } else { write_status }
+}
+
+fn utf16_scalar(source: u64, units: usize, index: usize) -> Option<(u32, usize, bool)> {
+    let first = read_unit(source, index as u64)?;
+    if (0xd800..=0xdbff).contains(&first) {
+        if index + 1 < units {
+            let next = read_unit(source, (index + 1) as u64)?;
+            if (0xdc00..=0xdfff).contains(&next) {
+                return Some((0x1_0000 + (((first - 0xd800) as u32) << 10) + (next - 0xdc00) as u32, 2, true));
+            }
+        }
+        return Some((0xfffd, 1, false));
+    }
+    if (0xdc00..=0xdfff).contains(&first) { Some((0xfffd, 1, false)) } else { Some((first as u32, 1, true)) }
+}
+
+fn utf16_measure(source: u64, units: usize) -> Option<(usize, u64)> {
+    let mut index = 0usize;
+    let mut bytes = 0usize;
+    let mut status = STATUS_SUCCESS;
+    while index < units {
+        let (scalar, consumed, mapped) = utf16_scalar(source, units, index)?;
+        if !mapped { status = STATUS_SOME_NOT_MAPPED; }
+        bytes = bytes.checked_add(if scalar < 0x80 { 1 } else if scalar < 0x800 { 2 } else if scalar < 0x10000 { 3 } else { 4 })?;
+        index += consumed;
+    }
+    Some((bytes, status))
+}
+
+fn utf16_write(destination: u64, capacity: usize, source: u64, units: usize) -> Result<(usize, u64), ()> {
+    let mut index = 0usize;
+    let mut written = 0usize;
+    let mut status = STATUS_SUCCESS;
+    while index < units {
+        let (scalar, consumed, mapped) = utf16_scalar(source, units, index).ok_or(())?;
+        if !mapped { status = STATUS_SOME_NOT_MAPPED; }
+        let mut encoded = [0u8; 4];
+        let count = encode_utf8(scalar, &mut encoded);
+        if written.checked_add(count).ok_or(())? > capacity { break; }
+        let address = destination.checked_add(written as u64).ok_or(())?;
+        uaccess::copy_to_user(address, &encoded[..count]).map_err(|_| ())?;
+        written += count;
+        index += consumed;
+    }
+    Ok((written, status))
+}
+
+fn encode_utf8(scalar: u32, output: &mut [u8; 4]) -> usize {
+    if scalar < 0x80 { output[0] = scalar as u8; 1 }
+    else if scalar < 0x800 { output[0] = 0xc0 | (scalar >> 6) as u8; output[1] = 0x80 | (scalar & 0x3f) as u8; 2 }
+    else if scalar < 0x10000 { output[0] = 0xe0 | (scalar >> 12) as u8; output[1] = 0x80 | ((scalar >> 6) & 0x3f) as u8; output[2] = 0x80 | (scalar & 0x3f) as u8; 3 }
+    else { output[0] = 0xf0 | (scalar >> 18) as u8; output[1] = 0x80 | ((scalar >> 12) & 0x3f) as u8; output[2] = 0x80 | ((scalar >> 6) & 0x3f) as u8; output[3] = 0x80 | (scalar & 0x3f) as u8; 4 }
 }
 
 fn normalize_string(call: NtCall) -> u64 {
