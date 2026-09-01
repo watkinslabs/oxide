@@ -561,4 +561,7 @@ explicit `STATUS_INVALID_PARAMETER` boundary until the NT APC/process-memory
 owner exists. The graph advances to the next unimplemented NT export.
 The next graph export, `ntdll.dll!NtMakeTemporaryObject`, is exposed with an
 explicit `STATUS_NOT_IMPLEMENTED` boundary because the NT handle table does
-not yet own named-object permanence state.
+not yet own named-object permanence state. The graph then reaches
+`ntdll.dll!NtMapViewOfSectionEx`; its extended parameter and APC mapping
+protocol remain an explicit `STATUS_NOT_IMPLEMENTED` boundary until those NT
+owners exist.
