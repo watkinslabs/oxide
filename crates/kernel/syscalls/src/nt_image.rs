@@ -5,6 +5,7 @@ use syscall::nt::{NtCall, NtService};
 /// Return the NT header address when a user image has valid PE signatures.
 /// # C: O(1) plus three fault-recovering user reads
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::LdrFindResourceDirectory { return Some(find_resource_directory(call)); }
     if call.service == NtService::LdrAccessResource { return Some(access_resource(call)); }
     if call.service == NtService::RtlImageDirectoryEntryToData { return Some(directory_entry(call)); }
     if call.service == NtService::RtlImageRvaToVa { return Some(rva_to_va(call)); }
@@ -20,6 +21,13 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
 
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
+const STATUS_RESOURCE_DATA_NOT_FOUND: u64 = 0xc000_008b;
+const STATUS_RESOURCE_TYPE_NOT_FOUND: u64 = 0xc000_008d;
+const STATUS_RESOURCE_NAME_NOT_FOUND: u64 = 0xc000_008f;
+const STATUS_RESOURCE_LANG_NOT_FOUND: u64 = 0xc000_0090;
+const RESOURCE_DIRECTORY_BYTES: u64 = 16;
+const RESOURCE_ENTRY_BYTES: u64 = 8;
+const RESOURCE_MAX_ENTRIES: u16 = 4096;
 
 fn access_resource(call: NtCall) -> u64 {
     if call.args.a0 == 0 || call.args.a1 == 0 || call.args.a2 == 0 { return STATUS_INVALID_PARAMETER; }
@@ -33,6 +41,64 @@ fn access_resource(call: NtCall) -> u64 {
     if call.args.a3 != 0 && uaccess::put_user_u32(call.args.a3, size).is_err() { return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
 }
+
+fn find_resource_directory(call: NtCall) -> u64 {
+    if call.args.a0 == 0 || call.args.a3 == 0 || call.args.a2 > 3 { return STATUS_INVALID_PARAMETER; }
+    let module = call.args.a0 & !3;
+    let Some(root) = resource_root(module) else { return STATUS_RESOURCE_DATA_NOT_FOUND; };
+    if call.args.a2 == 0 {
+        return write_resource_result(call.args.a3, root);
+    }
+    if call.args.a1 == 0 { return STATUS_INVALID_PARAMETER; }
+    let type_key = read_u64(call.args.a1).unwrap_or(0);
+    let Some(type_dir) = resource_child(root, type_key, true) else { return STATUS_RESOURCE_TYPE_NOT_FOUND; };
+    if call.args.a2 == 1 { return write_resource_result(call.args.a3, type_dir); }
+    let name_key = read_u64(call.args.a1 + 8).unwrap_or(0);
+    let Some(name_dir) = resource_child(type_dir, name_key, true) else { return STATUS_RESOURCE_NAME_NOT_FOUND; };
+    if call.args.a2 == 2 { return write_resource_result(call.args.a3, name_dir); }
+    let language_key = read_u32(call.args.a1 + 16).unwrap_or(0) as u64;
+    let Some(language_dir) = resource_child(name_dir, language_key, true) else { return STATUS_RESOURCE_LANG_NOT_FOUND; };
+    write_resource_result(call.args.a3, language_dir)
+}
+
+fn write_resource_result(output: u64, directory: u64) -> u64 {
+    if uaccess::put_user_u64(output, directory).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
+}
+
+fn resource_child(directory: u64, key: u64, want_directory: bool) -> Option<u64> {
+    let named = read_u16(directory.checked_add(12)?)?;
+    let ids = read_u16(directory.checked_add(14)?)?;
+    let count = named.checked_add(ids)?;
+    if count > RESOURCE_MAX_ENTRIES { return None; }
+    let entries = directory.checked_add(RESOURCE_DIRECTORY_BYTES)?;
+    for index in 0..count {
+        let entry = entries.checked_add((index as u64) * RESOURCE_ENTRY_BYTES)?;
+        let name = read_u32(entry)?;
+        if name & 0x8000_0000 != 0 { continue; }
+        if name as u64 != key { continue; }
+        let offset = read_u32(entry.checked_add(4)?)?;
+        let is_directory = offset & 0x8000_0000 != 0;
+        if is_directory != want_directory { return None; }
+        return directory.checked_add((offset & 0x7fff_ffff) as u64);
+    }
+    None
+}
+
+fn resource_root(module: u64) -> Option<u64> {
+    let e_lfanew = read_u32(module.checked_add(0x3c)?)? as u64;
+    let nt = module.checked_add(e_lfanew)?;
+    if read_u32(nt)? != PE_MAGIC { return None; }
+    let optional = nt.checked_add(24)?;
+    if read_u32(optional)? & 0xffff != OPTIONAL_MAGIC_PE32_PLUS { return None; }
+    let directories = read_u32(optional.checked_add(OPTIONAL_HEADER_NUMBER_DIRECTORIES_OFFSET)?)?.min(DIRECTORY_COUNT);
+    if directories <= 2 { return None; }
+    let entry = optional.checked_add(OPTIONAL_HEADER_BYTES_BEFORE_DIRECTORIES + 2 * DIRECTORY_BYTES)?;
+    let rva = read_u32(entry)?;
+    if rva == 0 { return None; }
+    module.checked_add(rva as u64)
+}
+
+fn read_u16(address: u64) -> Option<u16> { uaccess::get_user_u16(address).ok() }
 
 fn raw_rva(module: u64, rva: u32) -> Option<u64> {
     let e_lfanew = read_u32(module.checked_add(0x3c)?)? as u64;
