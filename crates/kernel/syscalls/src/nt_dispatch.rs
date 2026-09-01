@@ -311,6 +311,16 @@ pub fn dispatch(call: NtCall) -> u64 {
         // but fail closed instead of claiming that every page is clean.
         return STATUS_NOT_IMPLEMENTED;
     }
+    if call.service == syscall::nt::NtService::NtWriteFileGather {
+        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a4 == 0 || call.args.a5 == 0 {
+            return STATUS_INVALID_PARAMETER;
+        }
+        // The trailing length/offset/key arguments live on the x86_64 user
+        // stack. Keep this native ABI separate from the ordinary NtWriteFile
+        // request until a canonical segment-array/file owner exists.
+        return STATUS_NOT_IMPLEMENTED;
+    }
     if call.service == syscall::nt::NtService::NtSetInformationVirtualMemory {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() || call.args.a0 != CURRENT_PROCESS { return STATUS_INVALID_PARAMETER; }

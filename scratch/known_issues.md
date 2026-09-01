@@ -681,3 +681,6 @@ canonical VMA/PMM lock state; remote-process APC delivery remains unimplemented.
 `NtUnmapViewOfSectionEx` supports the documented zero-flags current-process
 path through the canonical VMA unmapper; extended flags and remote processes
 remain unimplemented.
+`NtWriteFileGather` validates its native I/O-status and segment-array pointer
+shape; scatter/gather segment copying and file-owner integration remain
+unimplemented.

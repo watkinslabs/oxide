@@ -165,6 +165,7 @@ use super::*;
     assert_eq!(decode(324, input).unwrap().service, NtService::NtUnloadKey);
     assert_eq!(decode(325, input).unwrap().service, NtService::NtUnlockVirtualMemory);
     assert_eq!(decode(326, input).unwrap().service, NtService::NtUnmapViewOfSectionEx);
+    assert_eq!(decode(327, input).unwrap().service, NtService::NtWriteFileGather);
     assert_eq!(decode(298, input).unwrap().service, NtService::NtQueryDirectoryObject);
     assert_eq!(decode(299, input).unwrap().service, NtService::NtQueryFullAttributesFile);
     assert_eq!(decode(293, input).unwrap().service, NtService::NtPrivilegeCheck);
