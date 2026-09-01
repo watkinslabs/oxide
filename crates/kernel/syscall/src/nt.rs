@@ -231,6 +231,7 @@ pub enum NtService {
     RtlSetHeapInformation = 455,
     RtlSetProcessPreferredUILanguages = 456,
     RtlSetSaclSecurityDescriptor = 457,
+    RtlSetThreadErrorMode = 458,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -567,6 +568,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 455 { return Some(NtCall { service: NtService::RtlSetHeapInformation, args }); }
     if service == 456 { return Some(NtCall { service: NtService::RtlSetProcessPreferredUILanguages, args }); }
     if service == 457 { return Some(NtCall { service: NtService::RtlSetSaclSecurityDescriptor, args }); }
+    if service == 458 { return Some(NtCall { service: NtService::RtlSetThreadErrorMode, args }); }
     if service == 229 { return Some(NtCall { service: NtService::DbgUiConnectToDbg, args }); }
     if service == 230 { return Some(NtCall { service: NtService::DbgUiContinue, args }); }
     if service == 231 { return Some(NtCall { service: NtService::DbgUiRemoteBreakin, args }); }
@@ -887,6 +889,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::RtlSetHeapInformation => Err(Errno::Enosys),
         NtService::RtlSetProcessPreferredUILanguages => Err(Errno::Enosys),
         NtService::RtlSetSaclSecurityDescriptor => Err(Errno::Enosys),
+        NtService::RtlSetThreadErrorMode => Err(Errno::Enosys),
         NtService::RtlAddAccessAllowedObjectAce => Err(Errno::Enosys),
         NtService::RtlAddAccessDeniedObjectAce => Err(Errno::Enosys),
         NtService::RtlAddAuditAccessObjectAce => Err(Errno::Enosys),
