@@ -86,6 +86,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlGetProcessPreferredUILanguages { return Some(get_process_preferred_ui_languages(call)); }
     if call.service == NtService::RtlGetSearchPath { return Some(get_search_path(call.args.a0)); }
     if call.service == NtService::RtlGetSystemPreferredUILanguages { return Some(get_system_preferred_ui_languages(call)); }
+    if call.service == NtService::RtlGetThreadErrorMode { return Some(get_thread_error_mode()); }
     if call.service == NtService::RtlGetEnabledExtendedFeatures {
         const LEGACY_XSTATE: u64 = 0x3;
         #[cfg(target_arch = "x86_64")]
@@ -381,6 +382,12 @@ fn get_current_directory(buffer_length: u64, buffer: u64) -> u64 {
     (length * 2) as u64
 }
 const TEB_LAST_ERROR_OFFSET: u64 = 0x68;
+const TEB_HARD_ERROR_MODE_OFFSET: u64 = 0x16b0;
+fn get_thread_error_mode() -> u64 {
+    let Some(cur) = sched::live::current() else { return 0; };
+    if !cur.is_nt_personality() { return 0; }
+    uaccess::get_user_u32(cur.nt_teb().saturating_add(TEB_HARD_ERROR_MODE_OFFSET)).map_or(0, u64::from)
+}
 fn set_last_win32_error(error: u64) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     let Some(address) = cur.nt_teb().checked_add(TEB_LAST_ERROR_OFFSET) else { return STATUS_INVALID_PARAMETER; };
