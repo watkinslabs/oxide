@@ -8,6 +8,14 @@ const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
 /// Validate NT callback lifecycle boundaries owned by the current thread group.
 /// # C: O(1)
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlQueueWorkItem {
+        let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+        if !cur.is_nt_personality() || call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
+        // The scheduler workqueue executes kernel WorkFn values. A Windows
+        // callback is a user instruction pointer and needs a user-thread
+        // callback trampoline/ownership path before it can be queued safely.
+        return Some(STATUS_NOT_IMPLEMENTED);
+    }
     if call.service == NtService::RtlRegisterWait { return Some(register(call)); }
     if call.service == NtService::RtlDeregisterWait {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
