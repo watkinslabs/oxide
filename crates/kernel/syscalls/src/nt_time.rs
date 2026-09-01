@@ -92,6 +92,11 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         if uaccess::put_user_u64(call.args.a0, value).is_err() { return Some(STATUS_INVALID_PARAMETER); }
         return Some(STATUS_SUCCESS);
     }
+    if call.service == NtService::RtlGetSystemTimePrecise {
+        let Some(cur) = sched::live::current() else { return Some(0); };
+        if !cur.is_nt_personality() { return Some(0); }
+        return Some(NT_EPOCH_100NS.saturating_add(timekeeper::realtime_ns() / 100));
+    }
     if call.service == NtService::DbgUiGetThreadDebugObject {
         let Some(cur) = sched::live::current() else { return Some(0); };
         if !cur.is_nt_personality() { return Some(0); }
