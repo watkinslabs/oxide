@@ -179,7 +179,7 @@ pub fn dispatch(call: NtCall) -> u64 {
         // this operation as a successful no-op on x86/x86_64.
         return STATUS_SUCCESS;
     }
-    if matches!(call.service, syscall::nt::NtService::NtCreateNamedPipeFile | syscall::nt::NtService::NtCreateSectionEx | syscall::nt::NtService::NtCreateSymbolicLinkObject | syscall::nt::NtService::NtCreateUserProcess | syscall::nt::NtService::NtDeleteKey | syscall::nt::NtService::NtDeleteValueKey | syscall::nt::NtService::NtEnumerateKey | syscall::nt::NtService::NtEnumerateValueKey | syscall::nt::NtService::NtFilterToken) { return 0xc000_0002; }
+    if matches!(call.service, syscall::nt::NtService::NtCreateNamedPipeFile | syscall::nt::NtService::NtCreateSectionEx | syscall::nt::NtService::NtCreateSymbolicLinkObject | syscall::nt::NtService::NtCreateUserProcess | syscall::nt::NtService::NtDeleteKey | syscall::nt::NtService::NtDeleteValueKey | syscall::nt::NtService::NtEnumerateKey | syscall::nt::NtService::NtEnumerateValueKey | syscall::nt::NtService::NtFilterToken | syscall::nt::NtService::NtFlushKey) { return 0xc000_0002; }
     if let Some(result) = crate::nt_power::dispatch(call) { return result; }
     if let Some(result) = crate::nt_oem::dispatch(call) { return result; }
     if let Ok(system) = nt::decode_system(call) {

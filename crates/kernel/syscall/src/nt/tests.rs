@@ -112,6 +112,7 @@ use super::*;
         assert_eq!(decode(267, input).unwrap().service, NtService::NtFilterToken);
         assert_eq!(decode(268, input).unwrap().service, NtService::NtFlushBuffersFile);
         assert_eq!(decode(269, input).unwrap().service, NtService::NtFlushInstructionCache);
+        assert_eq!(decode(270, input).unwrap().service, NtService::NtFlushKey);
         assert_eq!(decode(240, input).unwrap().service, NtService::LdrDisableThreadCalloutsForDll);
         assert_eq!(decode(99, input).unwrap().service, NtService::LdrGetDllDirectory);
         assert_eq!(decode(100, input).unwrap().service, NtService::LdrGetProcedureAddress);

@@ -528,3 +528,7 @@ to `ntdll.dll!NtFlushInstructionCache`.
 Windows NT frontier update (2026-09-01): `NtFlushInstructionCache` now has
 an explicit native export and validates the current-process handle before the
 x86/x86_64 coherent-cache no-op. The graph advances to `ntdll.dll!NtFlushKey`.
+Windows NT frontier update (2026-09-01): `NtFlushKey` now has an explicit
+native export and fail-closed boundary while registry state remains owned by
+the userspace registry service. The graph advances to
+`ntdll.dll!NtFlushVirtualMemory`.
