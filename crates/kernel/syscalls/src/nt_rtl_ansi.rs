@@ -21,6 +21,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::Strlen { return Some(strlen(call.args.a0)); }
     if call.service == NtService::Strpbrk { return Some(strpbrk(call.args.a0, call.args.a1)); }
     if call.service == NtService::Strrchr { return Some(strrchr(call.args.a0, call.args.a1)); }
+    if call.service == NtService::Tolower { return Some(tolower(call.args.a0)); }
     if call.service == NtService::Isalpha { let c = call.args.a0 as i32; return Some(if c >= b'A' as i32 && c <= b'Z' as i32 { 1 } else if c >= b'a' as i32 && c <= b'z' as i32 { 2 } else { 0 }); }
     if call.service == NtService::Wcsnicmp { return Some(wcsnicmp(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Wcsicmp { return Some(wcsicmp(call.args.a0, call.args.a1)); }
@@ -137,6 +138,13 @@ fn strrchr(string: u64, value: u64) -> u64 {
         let Some(next) = index.checked_add(1) else { return 0; };
         index = next;
     }
+}
+
+fn tolower(value: u64) -> u64 {
+    let value = value as i32;
+    let byte = value as i8;
+    let result = if byte >= b'A' as i8 && byte <= b'Z' as i8 { value - b'A' as i32 + b'a' as i32 } else { value };
+    result as i64 as u64
 }
 
 fn wcsnicmp(first: u64, second: u64, count: u64) -> u64 {
