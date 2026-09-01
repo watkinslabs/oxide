@@ -9,6 +9,7 @@ use syscall::nt::{NtCall, NtService};
 pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlIdnToAscii { return Some(idn_to_ascii(call)); }
     if call.service == NtService::RtlIdnToNameprepUnicode { return Some(idn_to_nameprep(call)); }
+    if call.service == NtService::RtlIdnToUnicode { return Some(idn_to_unicode(call)); }
     if call.service != NtService::RtlCompareUnicodeStrings { return None; }
     Some(compare(call.args.a0, call.args.a1, call.args.a2, call.args.a3, call.args.a4 != 0) as i32 as u64)
 }
@@ -31,6 +32,46 @@ fn idn_to_nameprep(call: NtCall) -> u64 {
     if call.args.a3 == 0 || copy_wide(call.args.a3, &output).is_err() { return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
 }
+
+fn idn_to_unicode(call: NtCall) -> u64 {
+    let flags = call.args.a0 as u32;
+    if flags & !IDN_USE_STD3_ASCII_RULES != 0 || call.args.a1 == 0 || call.args.a4 == 0 { return STATUS_INVALID_PARAMETER; }
+    let source_len = call.args.a2 as i64;
+    if source_len < 0 || source_len > 256 { return STATUS_INVALID_PARAMETER; }
+    let mut source = alloc::vec::Vec::with_capacity(source_len as usize);
+    for index in 0..source_len as u64 { let Some(unit) = read_unit(call.args.a1, index) else { return STATUS_INVALID_PARAMETER; }; if unit > 0x7f || unit == 0 { return STATUS_INVALID_IDN; } source.push(unit as u8); }
+    let mut output = alloc::vec::Vec::new(); let mut label = alloc::vec::Vec::new();
+    for value in source.iter().copied().chain(core::iter::once(b'.')) {
+        if value != b'.' { label.push(value); continue; }
+        if label.is_empty() || label.len() > 63 { return STATUS_INVALID_IDN; }
+        let decoded = if label.len() >= 4 && label[0].eq_ignore_ascii_case(&b'x') && label[1].eq_ignore_ascii_case(&b'n') && label[2] == b'-' && label[3] == b'-' { match decode_punycode(&label[4..]) { Some(value) => value, None => return STATUS_INVALID_IDN } } else { label.iter().map(|value| *value as u32).collect() };
+        if flags & IDN_USE_STD3_ASCII_RULES != 0 && (label[0] == b'-' || label[label.len() - 1] == b'-') { return STATUS_INVALID_IDN; }
+        for value in decoded { if value > 0xffff { let scalar = value - 0x1_0000; output.push(0xd800 | ((scalar >> 10) as u16)); output.push(0xdc00 | ((scalar & 0x3ff) as u16)); } else { output.push(value as u16); } }
+        output.push(b'.' as u16); label.clear();
+    }
+    output.pop();
+    let capacity = match uaccess::get_user_u32(call.args.a4) { Ok(value) => value as usize, Err(_) => return STATUS_INVALID_PARAMETER };
+    if uaccess::put_user_u32(call.args.a4, output.len() as u32).is_err() { return STATUS_INVALID_PARAMETER; }
+    if capacity < output.len() { return STATUS_BUFFER_TOO_SMALL; }
+    if call.args.a3 == 0 || copy_wide(call.args.a3, &output).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
+}
+
+fn decode_punycode(input: &[u8]) -> Option<alloc::vec::Vec<u32>> {
+    let mut output = alloc::vec::Vec::new(); let delimiter = input.iter().rposition(|value| *value == b'-');
+    let (basic, start) = delimiter.map_or((&[][..], 0), |index| (&input[..index], index + 1));
+    for value in basic { if *value >= 0x80 { return None; } output.push(*value as u32); }
+    let mut n = 128u32; let mut i = 0u32; let mut bias = 72u32; let mut cursor = start;
+    while cursor < input.len() {
+        let old = i; let mut weight = 1u32; let mut k = 36u32;
+        loop { let digit = puny_digit(input.get(cursor).copied()?)?; cursor += 1; i = i.checked_add(digit.checked_mul(weight)?)?; let threshold = if k <= bias { 1 } else if k >= bias + 26 { 26 } else { k - bias }; if digit < threshold { break; } weight = weight.checked_mul(36 - threshold)?; k += 36; }
+        let count = output.len() as u32 + 1; let delta = (i - old) / if old == 0 { 700 } else { 2 }; let delta = delta + delta / count; let mut next_bias = 0; let mut reduced = delta; while reduced > ((36 - 1) * 26) / 2 { reduced /= 36 - 1; next_bias += 36; } bias = next_bias + ((36 - 1 + 1) * delta) / (delta + 38); n = n.checked_add(i / count)?; i %= count; output.insert(i as usize, n); i += 1;
+        if output.len() > 63 || n > 0x10ffff { return None; }
+    }
+    Some(output)
+}
+
+fn puny_digit(value: u8) -> Option<u32> { match value { b'a'..=b'z' => Some((value - b'a') as u32), b'A'..=b'Z' => Some((value - b'A') as u32), b'0'..=b'9' => Some((value - b'0' + 26) as u32), _ => None } }
 
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
