@@ -19,6 +19,7 @@ const MAX_MODULES: usize = 64;
 const ENV_OFF: usize = 0x1000;
 const STR_OFF: usize = 0x800;
 const CURRENT_DIR: &str = "C:\\Windows";
+const CURRENT_DIR_STORAGE: usize = 0x400;
 const API_SET_OFF: usize = 0x2800;
 const BLOCK_BYTES: usize = 0x4000;
 
@@ -109,7 +110,7 @@ pub fn build_with_modules(input: &EnvironmentInput<'_>, modules: &[NtModuleInput
     let current_dir_off = STR_OFF + strings.len() * 2;
     strings.extend_from_slice(&current_dir);
     let mut module_offsets = Vec::new();
-    let mut module_text_off = current_dir_off + current_dir.len() * 2;
+    let mut module_text_off = current_dir_off + CURRENT_DIR_STORAGE;
     for module in modules {
         let full = utf16(module.full_name)?;
         let base = utf16(module.base_name)?;
@@ -136,7 +137,8 @@ pub fn build_with_modules(input: &EnvironmentInput<'_>, modules: &[NtModuleInput
     put_u64(&mut block, TEB_OFF + 0x58, base + TLS_OFF as u64);
     put_unicode(&mut block, PARAM_OFF + 0x60, &image_path, base + image_path_off as u64);
     put_unicode(&mut block, PARAM_OFF + 0x70, &command_line, base + command_off as u64);
-    put_unicode(&mut block, PARAM_OFF + 0x40, &current_dir, base + current_dir_off as u64);
+    put_unicode_with_capacity(&mut block, PARAM_OFF + 0x40, &current_dir,
+        base + current_dir_off as u64, CURRENT_DIR_STORAGE);
     put_u64(&mut block, PARAM_OFF + 0x80, base + env_off as u64);
     put_u32(&mut block, LDR_OFF, 0x58);
     block[LDR_OFF + 4] = 1;
@@ -231,6 +233,10 @@ fn put_u32(b: &mut [u8], o: usize, v: u32) { b[o..o + 4].copy_from_slice(&v.to_l
 fn put_u16(b: &mut [u8], o: usize, v: u16) { b[o..o + 2].copy_from_slice(&v.to_le_bytes()); }
 fn put_u64(b: &mut [u8], o: usize, v: u64) { b[o..o + 8].copy_from_slice(&v.to_le_bytes()); }
 fn put_unicode(b: &mut [u8], o: usize, v: &[u16], ptr: u64) { let len = (v.len() - 1).saturating_mul(2) as u16; let max = v.len().saturating_mul(2) as u16; put_u16(b, o, len); put_u16(b, o + 2, max); put_u64(b, o + 8, ptr); }
+fn put_unicode_with_capacity(b: &mut [u8], o: usize, v: &[u16], ptr: u64, capacity: usize) {
+    let len = (v.len() - 1).saturating_mul(2) as u16;
+    put_u16(b, o, len); put_u16(b, o + 2, capacity as u16); put_u64(b, o + 8, ptr);
+}
 fn copy_u16(b: &mut [u8], o: usize, v: &[u16]) { for (i, x) in v.iter().enumerate() { b[o + i * 2..o + i * 2 + 2].copy_from_slice(&x.to_le_bytes()); } }
 
 #[cfg(test)]

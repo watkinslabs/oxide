@@ -1,6 +1,6 @@
 //! Native RTL string operations used by the Windows personality.
 #![cfg(target_os = "oxide-kernel")]
-use syscall::{nt::{NtCall, NtService}, SyscallArgs}; use alloc::vec; use sync::{Modules as ModulesLockClass, Spinlock};
+use syscall::{nt::{NtCall, NtService}, SyscallArgs}; use alloc::{string::String, vec, vec::Vec}; use sync::{Modules as ModulesLockClass, Spinlock};
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d; const STATUS_BUFFER_OVERFLOW: u64 = 0x8000_0005; const STATUS_INVALID_PARAMETER_2: u64 = 0xc000_00f0; const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
 const STATUS_PENDING: u64 = 0x0000_0103; const STATUS_UNSUCCESSFUL: u64 = 0xc000_0001;
 const STATUS_NAME_TOO_LONG: u64 = 0xc000_0106; const UNICODE_STRING_BYTES: usize = 16; const UNICODE_STRING_MAX: u32 = 0xfffc; const ANSI_STRING_MAX: u32 = 0xfffe;
@@ -38,6 +38,11 @@ const PARAM_IMAGE_PATH_OFFSET: u64 = 0x60;
 const PARAM_ENVIRONMENT_OFFSET: u64 = 0x80;
 const STATUS_NO_MEMORY: u64 = 0xc000_0017;
 const STATUS_NOT_SUPPORTED: u64 = 0xc000_00bb;
+const STATUS_OBJECT_NAME_INVALID: u64 = 0xc000_0033;
+const STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xc000_0034;
+const STATUS_OBJECT_PATH_NOT_FOUND: u64 = 0xc000_003a;
+const STATUS_NOT_A_DIRECTORY: u64 = 0xc000_0103;
+const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
 const CONTEXT_AMD64: u32 = 0x0010_0000;
 const CONTEXT_AMD64_ALL: u32 = 0x0010_001f;
 const CONTEXT_XSTATE: u32 = 0x0040;
@@ -128,6 +133,9 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     }
     if call.service == NtService::RtlGetCurrentDirectoryU {
         return Some(get_current_directory(call.args.a0, call.args.a1));
+    }
+    if call.service == NtService::RtlSetCurrentDirectoryU {
+        return Some(set_current_directory(call.args.a0));
     }
     if call.service == NtService::RtlDeleteBarrier { return Some(0); }
     if call.service == NtService::RtlInitBarrier { return Some(init_barrier(call.args.a0, call.args.a1 as u32, call.args.a2 as u32)); }
@@ -554,6 +562,51 @@ fn get_current_directory(buffer_length: u64, buffer: u64) -> u64 {
     let mut contents = alloc::vec![0u8; bytes];
     if uaccess::copy_from_user(&mut contents, source).is_err() || uaccess::copy_to_user(buffer, &contents).is_err() || uaccess::copy_to_user(buffer.saturating_add(bytes as u64), &[0, 0]).is_err() { return 0; }
     (length * 2) as u64
+}
+
+fn utf16_to_string(value: &[u16]) -> Option<String> {
+    let mut output = String::new();
+    for &unit in value {
+        output.push(core::char::from_u32(unit as u32)?);
+    }
+    Some(output)
+}
+
+fn set_current_directory(directory: u64) -> u64 {
+    let Some(task) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !task.is_nt_personality() || directory == 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(input) = read_nt_unicode(directory) else { return STATUS_INVALID_PARAMETER; };
+    if input.is_empty() { return STATUS_OBJECT_NAME_INVALID; }
+    let Some(mut dos_path) = utf16_to_string(&input) else { return STATUS_OBJECT_NAME_INVALID; };
+    let Some(vfs_path) = crate::nt_path::normalize_path(&dos_path) else { return STATUS_OBJECT_NAME_INVALID; };
+    let resolved = match crate::pathresolve::resolve_path_raw(&vfs_path, false) {
+        Ok(path) => path,
+        Err(error) => match crate::namei_common::errno_from_vfs(error).unsigned_abs() as i32 {
+            x if x == syscall::errno::Errno::Enotdir.as_i32() => return STATUS_NOT_A_DIRECTORY,
+            x if x == syscall::errno::Errno::Eacces.as_i32() => return STATUS_ACCESS_DENIED,
+            x if x == syscall::errno::Errno::Enoent.as_i32() => return STATUS_OBJECT_PATH_NOT_FOUND,
+            _ => return STATUS_OBJECT_NAME_NOT_FOUND,
+        },
+    };
+    let _ = resolved;
+    if !dos_path.ends_with('\\') { dos_path.push('\\'); }
+
+    let teb = task.nt_teb();
+    let peb = match uaccess::get_user_u64(teb.saturating_add(TEB_PEB_OFFSET)) { Ok(value) => value, Err(_) => return STATUS_ACCESS_VIOLATION };
+    let params = match uaccess::get_user_u64(peb.saturating_add(PEB_PROCESS_PARAMETERS_OFFSET)) { Ok(value) => value, Err(_) => return STATUS_ACCESS_VIOLATION };
+    let descriptor = params.saturating_add(PARAM_CURRENT_DIRECTORY_OFFSET);
+    let mut header = [0u8; UNICODE_STRING_BYTES];
+    if uaccess::copy_from_user(&mut header, descriptor).is_err() { return STATUS_ACCESS_VIOLATION; }
+    let maximum = u16::from_le_bytes([header[2], header[3]]) as usize;
+    let target = u64::from_le_bytes(header[8..16].try_into().unwrap());
+    let encoded: Vec<u16> = dos_path.encode_utf16().collect();
+    let bytes = encoded.len().saturating_mul(2);
+    if target == 0 || bytes.saturating_add(2) > maximum || bytes > u16::MAX as usize { return STATUS_NAME_TOO_LONG; }
+    let mut raw = vec![0u8; bytes];
+    for (index, unit) in encoded.iter().enumerate() { raw[index * 2..index * 2 + 2].copy_from_slice(&unit.to_le_bytes()); }
+    if uaccess::copy_to_user(target, &raw).is_err() || uaccess::copy_to_user(target.saturating_add(bytes as u64), &[0, 0]).is_err()
+        || uaccess::copy_to_user(descriptor, &(bytes as u16).to_le_bytes()).is_err() { return STATUS_ACCESS_VIOLATION; }
+    STATUS_SUCCESS
 }
 const TEB_LAST_ERROR_OFFSET: u64 = 0x68;
 const TEB_HARD_ERROR_MODE_OFFSET: u64 = 0x16b0;
