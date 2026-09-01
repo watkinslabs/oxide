@@ -23,6 +23,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         NtService::RtlFlsFree => Some(fls_free(call.args.a0 as u32)),
         NtService::RtlFlsGetValue => Some(fls_get(call.args.a0 as u32, call.args.a1)),
         NtService::RtlFlsSetValue => Some(fls_set(call.args.a0 as u32, call.args.a1)),
+        NtService::RtlProcessFlsData => Some(process_fls_data(call.args.a0, call.args.a1 as u32)),
         _ => None,
     }
 }
@@ -65,6 +66,25 @@ fn fls_set(index: u32, value: u64) -> u64 {
     if !valid_index(index) || !allocated(index) { return STATUS_INVALID_PARAMETER; }
     let Ok(slots) = ensure_slots() else { return STATUS_NO_MEMORY; };
     if uaccess::put_user_u64(slots + index as u64 * 8, value).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
+}
+
+fn process_fls_data(data: u64, flags: u32) -> u64 {
+    if data == 0 { return STATUS_SUCCESS; }
+    let Some(slots) = current_slots(false) else { return STATUS_SUCCESS; };
+    if data != slots { return STATUS_SUCCESS; }
+    if flags & 1 != 0 {
+        for index in 1..MAX_FLS_DATA_COUNT {
+            let _ = uaccess::put_user_u64(slots + index as u64 * 8, 0);
+        }
+    }
+    if flags & 2 != 0 {
+        let free = NtCall { service: NtService::FreeHeap, args: SyscallArgs { a0: 0, a1: 0, a2: slots, a3: 0, a4: 0, a5: 0 } };
+        let _ = crate::nt_heap::dispatch(free);
+        if let Some(task) = sched::live::current() {
+            let _ = uaccess::put_user_u64(task.nt_teb().saturating_add(TEB_FLS_SLOTS_OFFSET), 0);
+        }
+    }
     STATUS_SUCCESS
 }
 
