@@ -24,6 +24,8 @@ owner. The adapter does not maintain a second GDI object table.
   owner clips the upload before writing the surface.
 - Userspace rasterizes TrueType/OpenType glyphs, including UTF-16 surrogate
   decoding and glyph advances, before uploading an XRGB text tile.
+- `ExtTextOutW` performs optional opaque background fill, optional rectangle
+  clipping, per-code-unit advances, and native tile submission in userspace.
 - `DeleteObject` removes device contexts and fonts and clears deleted fonts
   from every context in the process.
 - Tagged NT selectors carry the ABI; Linux syscall numbers are not used for
@@ -38,6 +40,8 @@ owner. The adapter does not maintain a second GDI object table.
   address pixels outside the owning device context.
 - Raster tiles have an independent pixel bound; invalid font bytes, non-finite
   sizes, invalid dimensions, and short source buffers fail before upload.
+- Empty text does not upload pixels; opaque empty text still fills its requested
+  rectangle.
 - Window scanout remains separate display-driver work; GDI owns the raster
   surface and its drawing operations.
 
