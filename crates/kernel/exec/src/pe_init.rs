@@ -33,13 +33,20 @@ pub fn collect_root_initializers(blob: &[u8], image: &super::pe_loader::PeLoaded
 /// # C: O(N_initializers)
 pub fn map(as_: &AddressSpace, app_entry: UserVirtAddr, initializers: &[super::pe_loader::PeModuleInitializer]) -> Result<Option<PeInitTrampoline>, pe::Error> {
     if initializers.is_empty() { return Ok(None); }
-    let mut code = Vec::with_capacity(initializers.len() * 30 + 12);
+    let mut code = Vec::with_capacity(initializers.len() * 39 + 12);
     for initializer in initializers {
+        // The process entry is reached by a jump, so there is no return
+        // address on the stack yet. Preserve the one nonvolatile register
+        // Wine's x64 DLL-entry wrapper protects, then reserve 32 bytes of
+        // home space plus the alignment slot before making the call. RBX is
+        // preserved because it is nonvolatile across the Windows x64 ABI.
+        code.extend_from_slice(&[0x53, 0x48, 0x83, 0xec, 0x28]);
         code.extend_from_slice(&[0x48, 0xb9]);
         code.extend_from_slice(&initializer.base.to_le_bytes());
         code.extend_from_slice(&[0xba, 1, 0, 0, 0, 0x45, 0x31, 0xc0, 0x48, 0xb8]);
         code.extend_from_slice(&initializer.entry.as_u64().to_le_bytes());
         code.extend_from_slice(&[0xff, 0xd0]);
+        code.extend_from_slice(&[0x48, 0x83, 0xc4, 0x28, 0x5b]);
     }
     code.extend_from_slice(&[0x48, 0xb8]);
     code.extend_from_slice(&app_entry.as_u64().to_le_bytes());
@@ -67,10 +74,11 @@ mod tests {
         let trampoline = map(&as_, UserVirtAddr::new(0x6000_1010).unwrap(), &initializers).unwrap().unwrap();
         let vma = as_.find_vma(trampoline.base).unwrap();
         let data = match vma.backing { VmaBacking::KernelBytes { data, .. } => data, _ => panic!("trampoline must be kernel-backed") };
-        assert_eq!(&data[..2], &[0x48, 0xb9]);
-        assert_eq!(&data[10..15], &[0xba, 1, 0, 0, 0]);
-        assert_eq!(&data[28..30], &[0xff, 0xd0]);
-        assert_eq!(&data[30..32], &[0x48, 0xb8]);
-        assert_eq!(&data[40..42], &[0xff, 0xe0]);
+        assert_eq!(&data[..5], &[0x53, 0x48, 0x83, 0xec, 0x28]);
+        assert_eq!(&data[15..20], &[0xba, 1, 0, 0, 0]);
+        assert_eq!(&data[33..35], &[0xff, 0xd0]);
+        assert_eq!(&data[35..40], &[0x48, 0x83, 0xc4, 0x28, 0x5b]);
+        assert_eq!(&data[40..42], &[0x48, 0xb8]);
+        assert_eq!(&data[50..52], &[0xff, 0xe0]);
     }
 }
