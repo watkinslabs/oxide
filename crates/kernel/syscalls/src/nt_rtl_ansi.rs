@@ -38,6 +38,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::Isalpha { let c = call.args.a0 as i32; return Some(if c >= b'A' as i32 && c <= b'Z' as i32 { 1 } else if c >= b'a' as i32 && c <= b'z' as i32 { 2 } else { 0 }); }
     if call.service == NtService::Wcsnicmp { return Some(wcsnicmp(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Wcsicmp { return Some(wcsicmp(call.args.a0, call.args.a1)); }
+    if call.service == NtService::Strnicmp { return Some(strnicmp(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::RtlUpperChar { let ch = call.args.a0 as u8; return Some(if ch >= b'a' && ch <= b'z' { (ch - (b'a' - b'A')) as u64 } else { ch as u64 }); }
     if call.service == NtService::RtlUpcaseUnicodeString { return Some(upcase_unicode_string(call.args.a0, call.args.a1, call.args.a2 != 0)); }
     if call.service == NtService::RtlUnicodeToOemN { return Some(unicode_to_multibyte(call.args.a0, call.args.a1, call.args.a2, call.args.a3, call.args.a4)); }
@@ -321,6 +322,19 @@ fn wcsnicmp(first: u64, second: u64, count: u64) -> u64 {
     0
 }
 
+fn strnicmp(first: u64, second: u64, count: u64) -> u64 {
+    if count == 0 { return 0; }
+    if first == 0 || second == 0 || count > usize::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    for index in 0..count as usize {
+        let Some(first_byte) = read_u8(first, index) else { return STATUS_INVALID_PARAMETER; };
+        let Some(second_byte) = read_u8(second, index) else { return STATUS_INVALID_PARAMETER; };
+        let first_folded = ascii_lower(first_byte);
+        let second_folded = ascii_lower(second_byte);
+        if first_folded != second_folded || first_byte == 0 { return (first_folded as i32 - second_folded as i32) as i64 as u64; }
+    }
+    0
+}
+
 fn wcsicmp(first: u64, second: u64) -> u64 {
     if first == 0 || second == 0 { return STATUS_INVALID_PARAMETER; }
     let mut index = 0usize;
@@ -337,6 +351,10 @@ fn wcsicmp(first: u64, second: u64) -> u64 {
 
 fn ascii_lower_utf16(unit: u16) -> u16 {
     if (b'A' as u16..=b'Z' as u16).contains(&unit) { unit + (b'a' as u16 - b'A' as u16) } else { unit }
+}
+
+fn ascii_lower(byte: u8) -> u8 {
+    if (b'A'..=b'Z').contains(&byte) { byte + (b'a' - b'A') } else { byte }
 }
 
 fn duplicate_unicode_string(add_nul: i32, source: u64, destination: u64) -> u64 {
