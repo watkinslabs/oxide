@@ -241,6 +241,7 @@ pub enum NtService {
     RtlSystemTimeToLocalTime = 465,
     RtlUTF8ToUnicodeN = 466,
     RtlUnicodeToUTF8N = 467,
+    RtlUpdateTimer = 468,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -587,6 +588,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 465 { return Some(NtCall { service: NtService::RtlSystemTimeToLocalTime, args }); }
     if service == 466 { return Some(NtCall { service: NtService::RtlUTF8ToUnicodeN, args }); }
     if service == 467 { return Some(NtCall { service: NtService::RtlUnicodeToUTF8N, args }); }
+    if service == 468 { return Some(NtCall { service: NtService::RtlUpdateTimer, args }); }
     if service == 229 { return Some(NtCall { service: NtService::DbgUiConnectToDbg, args }); }
     if service == 230 { return Some(NtCall { service: NtService::DbgUiContinue, args }); }
     if service == 231 { return Some(NtCall { service: NtService::DbgUiRemoteBreakin, args }); }
@@ -917,6 +919,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::RtlSystemTimeToLocalTime => Err(Errno::Enosys),
         NtService::RtlUTF8ToUnicodeN => Err(Errno::Enosys),
         NtService::RtlUnicodeToUTF8N => Err(Errno::Enosys),
+        NtService::RtlUpdateTimer => Err(Errno::Enosys),
         NtService::RtlAddAccessAllowedObjectAce => Err(Errno::Enosys),
         NtService::RtlAddAccessDeniedObjectAce => Err(Errno::Enosys),
         NtService::RtlAddAuditAccessObjectAce => Err(Errno::Enosys),

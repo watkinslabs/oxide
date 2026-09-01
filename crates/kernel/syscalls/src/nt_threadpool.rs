@@ -47,6 +47,13 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         if call.args.a0 == 0 { return Some(STATUS_INVALID_HANDLE); }
         return Some(STATUS_NOT_IMPLEMENTED);
     }
+    if call.service == NtService::RtlUpdateTimer {
+        if call.args.a0 == 0 || call.args.a1 == 0 { return Some(STATUS_INVALID_HANDLE); }
+        // Timer-queue callback state is distinct from native waitable timers;
+        // its callback execution path must be owned before an update can
+        // mutate a live queue entry safely.
+        return Some(STATUS_NOT_IMPLEMENTED);
+    }
     if call.service != NtService::RtlCreateTimer { return None; }
     if call.args.a0 == 0 || call.args.a1 == 0 || call.args.a2 == 0 {
         return Some(STATUS_INVALID_PARAMETER);
