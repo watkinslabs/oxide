@@ -107,6 +107,8 @@ use super::*;
         assert_eq!(decode(90, input).unwrap().service, NtService::RtlDeleteCriticalSection);
         assert_eq!(decode(154, input).unwrap().service, NtService::RtlGetLastWin32Error);
         assert_eq!(decode(155, input).unwrap().service, NtService::RtlRestoreLastWin32Error);
+        assert_eq!(decode(160, input).unwrap().service, NtService::RtlTimeFieldsToTime);
+        assert_eq!(decode(161, input).unwrap().service, NtService::RtlTimeToTimeFields);
     }
 
     #[test]
