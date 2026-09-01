@@ -15,6 +15,7 @@ const TEXT_UNICODE_NULL_BYTES: u32 = 0x1000;
 const TEXT_UNICODE_NOT_ASCII_MASK: u32 = 0xf000;
 const TEXT_UNICODE_ODD_LENGTH: u32 = 0x0200;
 const STATUS_SUCCESS: u64 = 0;
+const IMAGE_FILE_MACHINE_AMD64: u16 = 0x8664;
 const PRODUCT_UNDEFINED: u32 = 0;
 const PRODUCT_ULTIMATE_N: u32 = 0x1c;
 const MUI_LANGUAGE_ID: u32 = 0x04;
@@ -98,6 +99,11 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlWow64EnableFsRedirection { return Some(STATUS_SUCCESS); }
     if call.service == NtService::RtlWow64EnableFsRedirectionEx {
         if call.args.a1 != 0 && uaccess::put_user_u32(call.args.a1, 0).is_err() { return Some(STATUS_ACCESS_VIOLATION); }
+        return Some(STATUS_SUCCESS);
+    }
+    if call.service == NtService::RtlWow64GetProcessMachines {
+        if call.args.a1 != 0 && uaccess::copy_to_user(call.args.a1, &0u16.to_le_bytes()).is_err() { return Some(STATUS_ACCESS_VIOLATION); }
+        if call.args.a2 != 0 && uaccess::copy_to_user(call.args.a2, &IMAGE_FILE_MACHINE_AMD64.to_le_bytes()).is_err() { return Some(STATUS_ACCESS_VIOLATION); }
         return Some(STATUS_SUCCESS);
     }
     if call.service == NtService::RtlGetExtendedContextLength2 { return Some(get_extended_context_length(call.args.a0 as u32, call.args.a1, call.args.a2)); }
