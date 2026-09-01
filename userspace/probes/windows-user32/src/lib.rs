@@ -130,6 +130,22 @@ impl User32 {
     pub fn show_window(&self, hwnd: u64, command: u32) -> Result<bool, WindowError> {
         invoke(NtService::ShowWindow, [hwnd, command as u64, 0, 0, 0, 0]).map(|previous| previous != 0)
     }
+
+    /// Mark a client region dirty, or the whole client when absent. # C: O(N_windows + N_dirty) plus kernel service
+    pub fn invalidate_rect(&self, hwnd: u64, rect: Option<&NtWindowRect>) -> Result<(), WindowError> {
+        invoke(NtService::InvalidateWindow, [hwnd, rect.map(|value| value as *const NtWindowRect as u64).unwrap_or(0), 0, 0, 0, 0]).map(|_| ())
+    }
+
+    /// Consume and return the current dirty client region. # C: O(N_dirty) plus usercopy
+    pub fn begin_paint(&self, hwnd: u64) -> Result<NtWindowRect, WindowError> {
+        let mut rect = NtWindowRect { left: 0, top: 0, right: 0, bottom: 0 };
+        invoke(NtService::BeginWindowPaint, [hwnd, (&mut rect as *mut NtWindowRect) as u64, 0, 0, 0, 0]).map(|_| rect)
+    }
+
+    /// Finish one native paint transaction. # C: O(N_windows) plus kernel service
+    pub fn end_paint(&self, hwnd: u64) -> Result<(), WindowError> {
+        invoke(NtService::EndWindowPaint, [hwnd, 0, 0, 0, 0, 0]).map(|_| ())
+    }
 }
 
 fn invoke(service: NtService, args: [u64; 6]) -> Result<u64, WindowError> {
@@ -174,6 +190,8 @@ mod tests {
         assert_eq!(NtService::SetWindowRect.entry(), 0x4e54_0000_0000_0200);
         assert_eq!(NtService::GetWindowText.entry(), 0x4e54_0000_0000_0207);
         assert_eq!(NtService::ShowWindow.entry(), 0x4e54_0000_0000_020b);
+        assert_eq!(NtService::InvalidateWindow.entry(), 0x4e54_0000_0000_020c);
+        assert_eq!(NtService::EndWindowPaint.entry(), 0x4e54_0000_0000_020e);
     }
 
     #[test]

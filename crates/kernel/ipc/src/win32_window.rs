@@ -6,6 +6,7 @@ use alloc::vec::Vec;
 pub const WM_CLOSE: u32 = 0x0010;
 pub const WM_DESTROY: u32 = 0x0002;
 pub const WM_NCHITTEST: u32 = 0x0084;
+pub const WM_PAINT: u32 = 0x000f;
 pub const HTCLIENT: i64 = 1;
 pub const SW_HIDE: u32 = 0;
 
@@ -64,12 +65,12 @@ pub struct WindowRect { pub left: i32, pub top: i32, pub right: i32, pub bottom:
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum WindowError { NoSuchWindow, InvalidParent, QueueFull }
 
-pub struct WindowManager { next: u32, windows: Vec<(WindowId, WindowRecord)>, rects: Vec<(WindowId, WindowRect)>, texts: Vec<(WindowId, Vec<u16>)>, queues: Vec<(u64, MessageQueue)> }
+pub struct WindowManager { next: u32, windows: Vec<(WindowId, WindowRecord)>, rects: Vec<(WindowId, WindowRect)>, texts: Vec<(WindowId, Vec<u16>)>, dirty: Vec<(WindowId, WindowRect)>, queues: Vec<(u64, MessageQueue)> }
 
 impl Default for WindowManager { fn default() -> Self { Self::new() } }
 
 impl WindowManager {
-    pub fn new() -> Self { Self { next: 1, windows: Vec::new(), rects: Vec::new(), texts: Vec::new(), queues: Vec::new() } }
+    pub fn new() -> Self { Self { next: 1, windows: Vec::new(), rects: Vec::new(), texts: Vec::new(), dirty: Vec::new(), queues: Vec::new() } }
     pub fn create(&mut self, owner_tid: u64, parent: Option<WindowId>, wndproc: u64) -> Result<WindowId, WindowError> {
         if parent.is_some_and(|parent| self.get(parent).is_none()) { return Err(WindowError::InvalidParent); }
         let id = WindowId(self.next);
@@ -103,6 +104,26 @@ impl WindowManager {
         let rect = self.rect(id)?;
         Some(WindowRect { left: 0, top: 0, right: rect.right.checked_sub(rect.left)?, bottom: rect.bottom.checked_sub(rect.top)? })
     }
+    /// Mark a window client region dirty and enqueue one paint notification. # C: O(N_windows + N_dirty)
+    pub fn invalidate(&mut self, id: WindowId, rect: Option<WindowRect>) -> Result<(), WindowError> {
+        let area = self.client_rect(id).ok_or(WindowError::NoSuchWindow)?;
+        let requested = rect.unwrap_or(area);
+        if let Some((_, current)) = self.dirty.iter_mut().find(|(window, _)| *window == id) {
+            current.left = current.left.min(requested.left); current.top = current.top.min(requested.top);
+            current.right = current.right.max(requested.right); current.bottom = current.bottom.max(requested.bottom);
+            return Ok(())
+        }
+        let owner = self.get(id).ok_or(WindowError::NoSuchWindow)?.owner_tid;
+        let queue = self.queues.iter_mut().find(|(tid, _)| *tid == owner).map(|(_, queue)| queue).ok_or(WindowError::NoSuchWindow)?;
+        queue.post(WinMessage { hwnd: Some(id), message: WM_PAINT, wparam: 0, lparam: 0 }).map_err(|_| WindowError::QueueFull)?;
+        self.dirty.push((id, requested));
+        Ok(())
+    }
+    /// Consume the current dirty region for a window. # C: O(N_dirty)
+    pub fn begin_paint(&mut self, id: WindowId) -> Result<Option<WindowRect>, WindowError> {
+        if self.get(id).is_none() { return Err(WindowError::NoSuchWindow); }
+        Ok(self.dirty.iter().position(|(window, _)| *window == id).map(|index| self.dirty.remove(index).1))
+    }
     /// Read the UTF-16 title/control text owned by one window. # C: O(N_windows)
     pub fn text(&self, id: WindowId) -> Option<&[u16]> { self.texts.iter().find(|(window, _)| *window == id).map(|(_, text)| text.as_slice()) }
     /// Replace the UTF-16 title/control text owned by one window. # C: O(N_windows + N_text)
@@ -114,6 +135,7 @@ impl WindowManager {
         let index = self.windows.iter().position(|(window, _)| *window == id).ok_or(WindowError::NoSuchWindow)?;
         self.rects.retain(|(window, _)| *window != id);
         self.texts.retain(|(window, _)| *window != id);
+        self.dirty.retain(|(window, _)| *window != id);
         Ok(self.windows.remove(index).1)
     }
     pub fn post_to_window(&mut self, id: WindowId, message: WinMessage) -> Result<(), WindowError> {
@@ -208,6 +230,18 @@ mod tests {
         assert!(manager.get(child).unwrap().visible);
         manager.destroy(child).unwrap();
         assert_eq!(manager.text(child), None);
+    }
+
+    #[test]
+    fn invalidation_coalesces_and_begin_paint_consumes_one_dirty_region() {
+        let mut manager = WindowManager::new();
+        let window = manager.create(9, None, 0).unwrap();
+        manager.set_rect(window, WindowRect { left: 10, top: 20, right: 110, bottom: 120 }).unwrap();
+        let first = WindowRect { left: 2, top: 3, right: 20, bottom: 30 };
+        manager.invalidate(window, Some(first)).unwrap();
+        manager.invalidate(window, Some(WindowRect { left: 10, top: 1, right: 40, bottom: 50 })).unwrap();
+        assert_eq!(manager.begin_paint(window), Ok(Some(WindowRect { left: 2, top: 1, right: 40, bottom: 50 })));
+        assert_eq!(manager.peek_for_thread(9, MessageFilter { hwnd: Some(window), first: WM_PAINT, last: WM_PAINT }, true).is_some(), true);
     }
 
     #[test]

@@ -148,6 +148,21 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
                     let Some(window) = valid_window(hwnd) else { return Some(STATUS_INVALID_HANDLE); };
                     (Some(match state.show(window, command != ipc::win32_window::SW_HIDE) { Ok(previous) => previous as u64, Err(_) => STATUS_INVALID_HANDLE }), None, None)
                 }
+                NtWindowCall::Invalidate { hwnd, rect } => {
+                    let Some(window) = valid_window(hwnd) else { return Some(STATUS_INVALID_HANDLE); };
+                    let requested = rect.and_then(|pointer| read_rect(pointer));
+                    if rect.is_some() && requested.is_none() { return Some(STATUS_INVALID_PARAMETER); }
+                    (Some(match state.invalidate(window, requested) { Ok(()) => STATUS_SUCCESS, Err(_) => STATUS_INVALID_HANDLE }), None, None)
+                }
+                NtWindowCall::BeginPaint { hwnd, rect } => {
+                    let Some(window) = valid_window(hwnd) else { return Some(STATUS_INVALID_HANDLE); };
+                    let Ok(Some(value)) = state.begin_paint(window) else { return Some(STATUS_INVALID_HANDLE); };
+                    (Some(copy_rect(rect, value)), None, None)
+                }
+                NtWindowCall::EndPaint { hwnd } => {
+                    let Some(window) = valid_window(hwnd) else { return Some(STATUS_INVALID_HANDLE); };
+                    (Some(if state.get(window).is_some() { STATUS_SUCCESS } else { STATUS_INVALID_HANDLE }), None, None)
+                }
             }
         };
         if let Some(wait) = wake { wait.wake_all(); }
@@ -181,4 +196,11 @@ fn copy_rect(destination: syscall::UserPtr<syscall::nt::NtWindowRect>, value: ip
     let mut bytes = [0u8; 16];
     for (index, field) in fields.iter().enumerate() { bytes[index * 4..index * 4 + 4].copy_from_slice(field); }
     if uaccess::copy_to_user(destination.as_u64(), &bytes).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
+}
+
+fn read_rect(source: syscall::UserPtr<syscall::nt::NtWindowRect>) -> Option<ipc::win32_window::WindowRect> {
+    let mut bytes = [0u8; 16];
+    uaccess::copy_from_user(&mut bytes, source.as_u64()).ok()?;
+    let field = |index: usize| i32::from_le_bytes(bytes[index * 4..index * 4 + 4].try_into().unwrap());
+    Some(ipc::win32_window::WindowRect { left: field(0), top: field(1), right: field(2), bottom: field(3) })
 }
