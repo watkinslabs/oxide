@@ -898,6 +898,14 @@ pub fn dispatch(call: NtCall) -> u64 {
                 if vma.start != base { return STATUS_INVALID_PARAMETER; }
                 if mm.munmap(vma.start, (vma.end.as_u64() - vma.start.as_u64()) as usize).is_ok() { STATUS_SUCCESS } else { STATUS_MEMORY_NOT_ALLOCATED }
             }
+            NtObjectCall::UnmapViewOfSectionEx { process, base, flags } => {
+                if process != CURRENT_PROCESS || flags != 0 { return STATUS_INVALID_PARAMETER; }
+                let Some(mm) = (unsafe { cur.mm_ref() }).map(|mm| mm.clone()) else { return STATUS_INVALID_PARAMETER; };
+                let Some(base) = hal::UserVirtAddr::new(base) else { return STATUS_INVALID_PARAMETER; };
+                let Some(vma) = mm.find_vma(base) else { return STATUS_MEMORY_NOT_ALLOCATED; };
+                if vma.start != base { return STATUS_INVALID_PARAMETER; }
+                if mm.munmap(vma.start, (vma.end.as_u64() - vma.start.as_u64()) as usize).is_ok() { STATUS_SUCCESS } else { STATUS_MEMORY_NOT_ALLOCATED }
+            }
             NtObjectCall::QuerySection { section, class, info, length, return_length } => {
                 const SECTION_BASIC_INFORMATION_BYTES: u32 = 24;
                 if class != 0 { return STATUS_INVALID_INFO_CLASS; }

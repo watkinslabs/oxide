@@ -678,3 +678,6 @@ storage and VFS persistence remain unimplemented.
 registry hive namespace and persistence ownership remain unimplemented.
 `NtUnlockVirtualMemory` now rounds the current-process range and releases the
 canonical VMA/PMM lock state; remote-process APC delivery remains unimplemented.
+`NtUnmapViewOfSectionEx` supports the documented zero-flags current-process
+path through the canonical VMA unmapper; extended flags and remote processes
+remain unimplemented.
