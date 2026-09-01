@@ -443,3 +443,6 @@ not reach a valid desktop sample.
 Windows NT frontier update: the Notepad import graph now resolves through
 `NtAdjustGroupsToken`; its bounded replacement/reset path is implemented, while
 previous-state/return-length buffers and `NtAdjustPrivilegesToken` remain open.
+Windows NT frontier update (2026-09-01): `NtAdjustPrivilegesToken` now has
+bounded privilege mutation, disable-all, and prior-state output; the graph
+advances to `ntdll.dll!NtAllocateLocallyUniqueId`.

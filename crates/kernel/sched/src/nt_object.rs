@@ -22,7 +22,7 @@ mod completion;
 pub use completion::{NtCompletionPacket, NtCompletionPort};
 #[path = "nt_object/token.rs"]
 mod token;
-pub use token::{NtToken, NtTokenGroup};
+pub use token::{NtToken, NtTokenGroup, NtTokenPrivilege};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};

@@ -32,6 +32,7 @@ pub enum NtService {
     LdrUnloadDll = 246,
     NtAccessCheck = 247,
     NtAdjustGroupsToken = 248,
+    NtAdjustPrivilegesToken = 249,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -282,6 +283,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 246 { return Some(NtCall { service: NtService::LdrUnloadDll, args }); }
     if service == 247 { return Some(NtCall { service: NtService::NtAccessCheck, args }); }
     if service == 248 { return Some(NtCall { service: NtService::NtAdjustGroupsToken, args }); }
+    if service == 249 { return Some(NtCall { service: NtService::NtAdjustPrivilegesToken, args }); }
     if service == 197 { return Some(NtCall { service: NtService::RtlGUIDFromString, args }); }
     if service == 195 { return Some(NtCall { service: NtService::WineDbgOutput, args }); }
     if service == 194 { return Some(NtCall { service: NtService::WineDbgHeader, args }); }
@@ -438,6 +440,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::LdrUnloadDll => Err(Errno::Enosys),
         NtService::NtAccessCheck => Err(Errno::Enosys),
         NtService::NtAdjustGroupsToken => Err(Errno::Enosys),
+        NtService::NtAdjustPrivilegesToken => Err(Errno::Enosys),
     }
 }
 pub fn decode_system(call: NtCall) -> Result<NtSystemCall, Errno> {

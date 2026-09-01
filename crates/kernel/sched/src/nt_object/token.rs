@@ -10,18 +10,26 @@ pub struct NtTokenGroup {
     pub attributes: u32,
 }
 
+/// One Windows LUID and privilege attribute mask.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct NtTokenPrivilege {
+    pub luid: u64,
+    pub attributes: u32,
+}
+
 /// Credentials captured when the NT token object is opened.
 pub struct NtToken {
     uid: u32,
     gid: u32,
     groups: Spinlock<Vec<NtTokenGroup>, TaskListClass>,
+    privileges: Spinlock<Vec<NtTokenPrivilege>, TaskListClass>,
 }
 
 impl NtToken {
     pub fn new(uid: u32, gid: u32) -> Self {
         let mut groups = Vec::new();
         groups.push(NtTokenGroup { sid: sid(5, gid), attributes: 4 });
-        Self { uid, gid, groups: Spinlock::new(groups) }
+        Self { uid, gid, groups: Spinlock::new(groups), privileges: Spinlock::new(Vec::new()) }
     }
     pub const fn uid(&self) -> u32 { self.uid }
     pub const fn gid(&self) -> u32 { self.gid }
@@ -29,6 +37,25 @@ impl NtToken {
     pub fn has_sid(&self, sid: &[u8; 16]) -> bool {
         self.groups.lock().iter().any(|group| group.sid == *sid && group.attributes & 4 != 0)
     }
+    pub fn adjust_privileges(&self, disable_all: bool, requested: &[NtTokenPrivilege]) -> (Vec<NtTokenPrivilege>, bool) {
+        let mut privileges = self.privileges.lock();
+        let previous = privileges.clone();
+        let mut all_assigned = true;
+        if disable_all {
+            for privilege in privileges.iter_mut() { privilege.attributes &= !2; }
+        } else {
+            for request in requested {
+                let Some(current) = privileges.iter_mut().find(|privilege| privilege.luid == request.luid) else {
+                    all_assigned = false;
+                    continue;
+                };
+                if request.attributes & 4 != 0 { current.attributes = 0; }
+                else { current.attributes = (current.attributes & 1) | (request.attributes & 2); }
+            }
+        }
+        (previous, all_assigned)
+    }
+    pub fn privileges(&self) -> Vec<NtTokenPrivilege> { self.privileges.lock().clone() }
 }
 
 fn sid(authority: u64, subauthority: u32) -> [u8; 16] {
@@ -44,7 +71,7 @@ fn sid(authority: u64, subauthority: u32) -> [u8; 16] {
 #[cfg(test)]
 mod tests {
     use alloc::vec;
-    use super::{sid, NtToken, NtTokenGroup};
+    use super::{sid, NtToken, NtTokenGroup, NtTokenPrivilege};
 
     #[test]
     fn replacing_groups_preserves_credential_snapshot() {
@@ -57,5 +84,18 @@ mod tests {
         assert_eq!(token.gid(), 1001);
         assert!(token.has_sid(&group));
         assert!(!token.has_sid(&sid(5, 1001)));
+    }
+
+    #[test]
+    fn disabling_privileges_preserves_the_previous_state() {
+        let token = NtToken::new(1000, 1001);
+        let privilege = NtTokenPrivilege { luid: 0x11, attributes: 3 };
+        token.privileges.lock().push(privilege);
+
+        let (previous, all_assigned) = token.adjust_privileges(true, &[]);
+
+        assert!(all_assigned);
+        assert_eq!(previous, vec![privilege]);
+        assert_eq!(token.privileges.lock()[0].attributes, 1);
     }
 }

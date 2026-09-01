@@ -8,7 +8,8 @@ Frozen: 2026-08-31
 - `NtOpenProcessToken` and `NtOpenThreadToken` expose current-task primary-token snapshots through process-local NT handles.
 - The token snapshots the existing task effective UID/GID; Linux credential ownership and capability checks remain in the Linux/security layers.
 - `NtAdjustGroupsToken` can replace the bounded group list or restore the default group, without mutating Linux credentials.
-- The current boundary rejects previous-state and return-length output buffers; richer privilege and SID semantics remain future work.
+- `NtAdjustPrivilegesToken` supports bounded privilege-state updates, disable-all, prior-state output, and `STATUS_NOT_ALL_ASSIGNED` for unknown LUIDs.
+- `NtAdjustGroupsToken` currently rejects previous-state and return-length output buffers; richer privilege and SID semantics remain future work.
 - `NtQueryInformationToken` supports the native basic UID/GID view and primary-token type view with exact output-length validation.
 - Token handles require `TOKEN_QUERY` for queries and retain their own access mask and generation lifetime.
 

@@ -9,16 +9,21 @@ const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
 const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
+const STATUS_NOT_ALL_ASSIGNED: u64 = 0x0000_0106;
+const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
 const TOKEN_QUERY: u32 = 0x0008;
 const TOKEN_ADJUST_GROUPS: u32 = 0x0040;
+const TOKEN_ADJUST_PRIVILEGES: u32 = 0x0020;
 const TOKEN_ALL_ACCESS: u32 = 0x000f_01ff;
 const CURRENT_PROCESS: u64 = u64::MAX;
 const CURRENT_THREAD: u64 = u64::MAX;
 const TOKEN_BASIC_INFORMATION: u32 = 0;
 const TOKEN_TYPE_INFORMATION: u32 = 8;
+const SE_PRIVILEGE_VALID_ATTRIBUTES: u32 = 0x8000_0007;
 
 pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == syscall::nt::NtService::NtAdjustGroupsToken { return Some(adjust_groups(call)); }
+    if call.service == syscall::nt::NtService::NtAdjustPrivilegesToken { return Some(adjust_privileges(call)); }
     let Ok(object_call) = syscall::nt::decode_object(call) else { return None; };
     let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
     if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
@@ -87,6 +92,52 @@ fn default_groups(gid: u32) -> Vec<sched::nt_object::NtTokenGroup> {
     let authority = 5u64.to_be_bytes();
     sid[2..8].copy_from_slice(&authority[2..]); sid[8..12].copy_from_slice(&21u32.to_le_bytes()); sid[12..16].copy_from_slice(&gid.to_le_bytes());
     alloc::vec![sched::nt_object::NtTokenGroup { sid, attributes: 4 }]
+}
+
+fn adjust_privileges(call: NtCall) -> u64 {
+    if call.args.a0 > u32::MAX as u64 || call.args.a1 > 1 || call.args.a3 > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    let disable_all = call.args.a1 != 0;
+    if !disable_all && (call.args.a2 == 0 || call.args.a3 < 4) { return STATUS_INVALID_PARAMETER; }
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let table = cur.thread_group.nt_handles();
+    let handle = sched::nt_object::NtHandle::from_raw(call.args.a0 as u32);
+    let Some(object) = table.get(handle, TOKEN_ADJUST_PRIVILEGES) else { return if table.contains(handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }; };
+    let Some(token) = object.token() else { return STATUS_INVALID_HANDLE; };
+    let requested = if disable_all { Vec::new() } else { let Some(privileges) = read_privileges(call.args.a2, call.args.a3) else { return STATUS_INVALID_PARAMETER; }; privileges };
+    let previous = token.privileges();
+    let required = 4u64.checked_add(previous.len().checked_mul(12).unwrap_or(usize::MAX) as u64).unwrap_or(u64::MAX);
+    if call.args.a4 != 0 && (call.args.a3 < required || call.args.a3 > u32::MAX as u64) { return STATUS_BUFFER_TOO_SMALL; }
+    let (_, all_assigned) = token.adjust_privileges(disable_all, &requested);
+    if call.args.a4 != 0 {
+        if write_privileges(call.args.a4, &previous).is_err() { return STATUS_INVALID_PARAMETER; }
+        if call.args.a5 != 0 && uaccess::put_user_u32(call.args.a5, required as u32).is_err() { return STATUS_INVALID_PARAMETER; }
+    }
+    if all_assigned { STATUS_SUCCESS } else { STATUS_NOT_ALL_ASSIGNED }
+}
+
+fn read_privileges(address: u64, length: u64) -> Option<Vec<sched::nt_object::NtTokenPrivilege>> {
+    let count = uaccess::get_user_u32(address).ok()?;
+    if count > 64 || 4u64.checked_add((count as u64).checked_mul(12)?)? > length { return None; }
+    let mut privileges = Vec::new();
+    for index in 0..count as u64 {
+        let entry = address.checked_add(4)?.checked_add(index.checked_mul(12)?)?;
+        let luid = uaccess::get_user_u64(entry).ok()?;
+        let attributes = uaccess::get_user_u32(entry.checked_add(8)?).ok()?;
+        if attributes & !SE_PRIVILEGE_VALID_ATTRIBUTES != 0 { return None; }
+        privileges.push(sched::nt_object::NtTokenPrivilege { luid, attributes });
+    }
+    Some(privileges)
+}
+
+fn write_privileges(address: u64, privileges: &[sched::nt_object::NtTokenPrivilege]) -> Result<(), ()> {
+    uaccess::put_user_u32(address, privileges.len() as u32).map_err(|_| ())?;
+    for (index, privilege) in privileges.iter().enumerate() {
+        let entry = address.checked_add(4).and_then(|base| base.checked_add((index as u64).checked_mul(12)?)).ok_or(())?;
+        uaccess::put_user_u64(entry, privilege.luid).map_err(|_| ())?;
+        uaccess::put_user_u32(entry + 8, privilege.attributes).map_err(|_| ())?;
+    }
+    Ok(())
 }
 
 fn insert_token(cur: &sched::Task, access: u32, output: syscall::UserPtr<u32>, table: &sched::nt_object::NtHandleTable) -> Option<u64> {
