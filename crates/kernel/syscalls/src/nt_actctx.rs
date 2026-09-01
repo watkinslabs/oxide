@@ -16,6 +16,16 @@ const ACTCTX_SECTION_KEYED_DATA_ROSTER_OFFSET: u32 = 64;
 /// Validate the Wine/Windows string-section query and report no active context.
 /// # C: O(1) plus bounded user copies
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlDeactivateActivationContext {
+        if call.args.a0 != 0 || call.args.a1 == 0 { return Some(STATUS_INVALID_PARAMETER); }
+        // Deactivation must pop the caller's activation-context frame and
+        // release its context; no kernel-owned frame stack exists yet.
+        return Some(STATUS_NOT_IMPLEMENTED);
+    }
+    if call.service == NtService::RtlReleaseActivationContext {
+        if call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
+        return Some(STATUS_NOT_IMPLEMENTED);
+    }
     if call.service == NtService::RtlCreateActivationContext {
         if call.args.a0 == 0 || call.args.a1 == 0 { return Some(STATUS_INVALID_PARAMETER); }
         let mut header = [0u8; 8];

@@ -670,6 +670,9 @@ boundaries; callback dispatch, cancellation, and queue lifetime remain
 unimplemented.
 `RtlCreateUserStack` validates stack sizing and the INITIAL_TEB output boundary;
 VMM allocation, guard-page policy, and NT-thread teardown remain unimplemented.
+`RtlDeactivateActivationContext` and `RtlReleaseActivationContext` validate
+their opaque handles/cookies; activation-frame and reference-count ownership
+remain unimplemented.
 `RtlCreateProcessParametersEx` validates its result-pointer boundary; native
 string capture, environment ownership, normalization, and destruction remain
 unimplemented.

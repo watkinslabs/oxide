@@ -192,6 +192,8 @@ use super::*;
     assert_eq!(decode(351, input).unwrap().service, NtService::RtlCreateTimer);
     assert_eq!(decode(352, input).unwrap().service, NtService::RtlCreateTimerQueue);
     assert_eq!(decode(353, input).unwrap().service, NtService::RtlCreateUserStack);
+    assert_eq!(decode(354, input).unwrap().service, NtService::RtlDeactivateActivationContext);
+    assert_eq!(decode(355, input).unwrap().service, NtService::RtlReleaseActivationContext);
     assert_eq!(decode(298, input).unwrap().service, NtService::NtQueryDirectoryObject);
     assert_eq!(decode(299, input).unwrap().service, NtService::NtQueryFullAttributesFile);
     assert_eq!(decode(293, input).unwrap().service, NtService::NtPrivilegeCheck);
