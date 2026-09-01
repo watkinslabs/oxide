@@ -19,6 +19,8 @@ const LABEL: u32 = 0x0000_0010;
 const SECURITY_DESCRIPTOR_REVISION: u8 = 1;
 const SELF_RELATIVE: u16 = 0x8000;
 const DACL_PRESENT: u16 = 0x0004;
+const SACL_PRESENT: u16 = 0x0010;
+const SACL_DEFAULTED: u16 = 0x0020;
 const FULL_ACCESS: u32 = 0x001f_01ff;
 const TOKEN_QUERY: u32 = 0x0008;
 const GENERIC_READ: u32 = 0x8000_0000;
@@ -31,6 +33,8 @@ const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
 const STATUS_UNKNOWN_REVISION: u64 = 0xc000_005a;
 const DACL_OFFSET: u64 = 16;
 const ABSOLUTE_DACL_OFFSET: u64 = 32;
+const SACL_OFFSET: u64 = 12;
+const ABSOLUTE_SACL_OFFSET: u64 = 24;
 const ABSOLUTE_GROUP_OFFSET: u64 = 16;
 const RELATIVE_GROUP_OFFSET: u64 = 8;
 const ABSOLUTE_OWNER_OFFSET: u64 = 4;
@@ -50,6 +54,9 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     }
     if call.service == syscall::nt::NtService::RtlGetOwnerSecurityDescriptor {
         return Some(get_owner(call.args.a0, call.args.a1, call.args.a2));
+    }
+    if call.service == syscall::nt::NtService::RtlGetSaclSecurityDescriptor {
+        return Some(get_sacl(call.args.a0, call.args.a1, call.args.a2, call.args.a3));
     }
     if call.service == syscall::nt::NtService::RtlDeleteSecurityObject {
         if call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
@@ -112,6 +119,23 @@ fn get_owner(descriptor: u64, target_owner: u64, defaulted: u64) -> u64 {
     } else { uaccess::get_user_u64(descriptor.saturating_add(ABSOLUTE_OWNER_OFFSET)).ok().unwrap_or(0) };
     if uaccess::put_user_u64(target_owner, owner).is_err()
         || uaccess::copy_to_user(defaulted, &[(control & OWNER_DEFAULTED != 0) as u8]).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
+}
+
+fn get_sacl(descriptor: u64, present: u64, target_sacl: u64, defaulted: u64) -> u64 {
+    if descriptor == 0 || present == 0 || target_sacl == 0 || defaulted == 0 { return STATUS_INVALID_PARAMETER; }
+    let mut header = [0u8; 4];
+    if uaccess::copy_from_user(&mut header, descriptor).is_err() || header[0] != SECURITY_DESCRIPTOR_REVISION { return STATUS_UNKNOWN_REVISION; }
+    let control = u16::from_le_bytes([header[2], header[3]]);
+    let is_present = control & SACL_PRESENT != 0;
+    if uaccess::copy_to_user(present, &[is_present as u8]).is_err() { return STATUS_INVALID_PARAMETER; }
+    if !is_present { return STATUS_SUCCESS; }
+    let sacl = if control & SELF_RELATIVE != 0 {
+        let Some(offset) = uaccess::get_user_u32(descriptor.saturating_add(SACL_OFFSET)).ok() else { return STATUS_INVALID_PARAMETER; };
+        if offset == 0 { 0 } else { descriptor.saturating_add(offset as u64) }
+    } else { uaccess::get_user_u64(descriptor.saturating_add(ABSOLUTE_SACL_OFFSET)).ok().unwrap_or(0) };
+    if uaccess::put_user_u64(target_sacl, sacl).is_err()
+        || uaccess::copy_to_user(defaulted, &[(control & SACL_DEFAULTED != 0) as u8]).is_err() { return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
 }
 
