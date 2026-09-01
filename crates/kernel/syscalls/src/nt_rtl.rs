@@ -2,6 +2,7 @@
 #![cfg(target_os = "oxide-kernel")]
 use syscall::{nt::{NtCall, NtService}, SyscallArgs}; use alloc::vec; use sync::{Modules as ModulesLockClass, Spinlock};
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d; const STATUS_BUFFER_OVERFLOW: u64 = 0x8000_0005; const STATUS_INVALID_PARAMETER_2: u64 = 0xc000_00f0; const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
+const STATUS_PENDING: u64 = 0x0000_0103; const STATUS_UNSUCCESSFUL: u64 = 0xc000_0001;
 const STATUS_NAME_TOO_LONG: u64 = 0xc000_0106; const UNICODE_STRING_BYTES: usize = 16; const UNICODE_STRING_MAX: u32 = 0xfffc; const ANSI_STRING_MAX: u32 = 0xfffe;
 const STATUS_INVALID_SID: u64 = 0xc000_0078; const STATUS_INVALID_ACL: u64 = 0xc000_0077; const STATUS_REVISION_MISMATCH: u64 = 0xc000_0059; const STATUS_ALLOTTED_SPACE_EXCEEDED: u64 = 0xc000_0099;
 const ACL_HEADER_BYTES: usize = 8; const ACE_HEADER_BYTES: usize = 4; const SID_HEADER_BYTES: usize = 8; const MAX_SUBAUTHORITIES: usize = 15; const SECURITY_DESCRIPTOR_BYTES: usize = 20; const STATUS_UNKNOWN_REVISION: u64 = 0xc000_0058;
@@ -97,6 +98,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlGetProcessPreferredUILanguages { return Some(get_process_preferred_ui_languages(call)); }
     if call.service == NtService::RtlGetSearchPath { return Some(get_search_path(call.args.a0)); }
     if call.service == NtService::RtlReleasePath { return Some(release_path(call.args.a0)); }
+    if call.service == NtService::RtlRunOnceBeginInitialize { return Some(run_once_begin_initialize(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::RtlGetSystemPreferredUILanguages { return Some(get_system_preferred_ui_languages(call)); }
     if call.service == NtService::RtlGetThreadErrorMode { return Some(get_thread_error_mode()); }
     if call.service == NtService::RtlGetThreadPreferredUILanguages { return Some(get_thread_preferred_ui_languages(call)); }
@@ -395,6 +397,35 @@ fn release_path(path: u64) -> u64 {
     let free = NtCall { service: NtService::FreeHeap, args: syscall::SyscallArgs { a0: 1, a1: 0, a2: path, a3: 0, a4: 0, a5: 0 } };
     let _ = crate::nt_heap::dispatch(free);
     0
+}
+
+fn run_once_begin_initialize(once: u64, flags: u64, context: u64) -> u64 {
+    const CHECK_ONLY: u64 = 0x1;
+    const ASYNC: u64 = 0x2;
+    if once == 0 || flags & !(CHECK_ONLY | ASYNC) != 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(task) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !task.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let Ok(value) = uaccess::get_user_u64(once) else { return STATUS_INVALID_PARAMETER; };
+    match value & 3 {
+        0 if value != 0 => STATUS_INVALID_PARAMETER,
+        0 if flags & CHECK_ONLY != 0 => STATUS_UNSUCCESSFUL,
+        0 => match uaccess::cmpxchg_user_u32(once, 0, 1) {
+            Ok(0) => STATUS_PENDING,
+            Ok(_) => run_once_begin_initialize(once, flags, context),
+            Err(_) => STATUS_INVALID_PARAMETER,
+        },
+        1 if flags & ASYNC != 0 => STATUS_INVALID_PARAMETER,
+        // Waiting on another initializer is not yet connected to the NT
+        // keyed-event owner.  Do not report ownership to a second caller.
+        1 => STATUS_UNSUCCESSFUL,
+        2 => {
+            if context != 0 && uaccess::put_user_u64(context, value & !3).is_err() { return STATUS_INVALID_PARAMETER; }
+            0
+        }
+        3 if flags & ASYNC != 0 => STATUS_PENDING,
+        3 => STATUS_INVALID_PARAMETER,
+        _ => STATUS_INVALID_PARAMETER,
+    }
 }
 
 fn append_path_component(target: &mut alloc::vec::Vec<u16>, value: &[u16]) { target.extend_from_slice(value); target.push(b';' as u16); }
