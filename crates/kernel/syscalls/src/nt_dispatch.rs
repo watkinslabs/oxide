@@ -65,6 +65,8 @@ const STATUS_TIMEOUT: u64 = 0x0000_0102;
 const STATUS_ALERTED: u64 = 0x0000_0101;
 #[cfg(target_os = "oxide-kernel")]
 const STATUS_USER_APC: u64 = 0x0000_00c0;
+#[cfg(target_os = "oxide-kernel")]
+const STATUS_NOT_MAPPED_DATA: u64 = 0xc000_001d;
 const JOB_OBJECT_ALL_ACCESS: u32 = 0x001f_001f;
 const JOB_OBJECT_ASSIGN_PROCESS: u32 = 0x0001;
 #[cfg(target_os = "oxide-kernel")]
@@ -606,7 +608,8 @@ pub fn dispatch(call: NtCall) -> u64 {
     };
     let process = match &call {
         NtMemoryCall::Allocate { process, .. } | NtMemoryCall::Free { process, .. }
-        | NtMemoryCall::Protect { process, .. } | NtMemoryCall::Query { process, .. } => *process,
+        | NtMemoryCall::Protect { process, .. } | NtMemoryCall::Query { process, .. }
+        | NtMemoryCall::Flush { process, .. } => *process,
     };
     if process != CURRENT_PROCESS { return STATUS_INVALID_PARAMETER; }
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
@@ -668,6 +671,19 @@ pub fn dispatch(call: NtCall) -> u64 {
             bytes[36..40].copy_from_slice(&windows_protection_word(memory.protection).to_ne_bytes());
             bytes[40..44].copy_from_slice(&0x20000u32.to_ne_bytes());
             if uaccess::copy_to_user(info.as_u64(), &bytes).is_err() || uaccess::put_user_u64(return_length.as_u64(), MEMORY_BASIC_INFORMATION_BYTES as u64).is_err() { return STATUS_INVALID_PARAMETER; }
+            STATUS_SUCCESS
+        }
+        NtMemoryCall::Flush { address, size, io, .. } => {
+            let address_value = match uaccess::get_user_u64(address.as_u64()) { Ok(value) => value, Err(_) => return STATUS_INVALID_PARAMETER };
+            let size_value = match uaccess::get_user_u64(size.as_u64()) { Ok(value) => value, Err(_) => return STATUS_INVALID_PARAMETER };
+            let (flushed_address, flushed_size) = match mm.flush_virtual_range(address_value, size_value) {
+                Ok(range) => range,
+                Err(vmm::Error::Io) => return STATUS_NOT_MAPPED_DATA,
+                Err(_) => return STATUS_INVALID_PARAMETER,
+            };
+            if uaccess::put_user_u64(address.as_u64(), flushed_address).is_err()
+                || uaccess::put_user_u64(size.as_u64(), flushed_size).is_err() { return STATUS_INVALID_PARAMETER; }
+            let _ = io;
             STATUS_SUCCESS
         }
     }

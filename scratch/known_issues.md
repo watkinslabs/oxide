@@ -532,3 +532,8 @@ Windows NT frontier update (2026-09-01): `NtFlushKey` now has an explicit
 native export and fail-closed boundary while registry state remains owned by
 the userspace registry service. The graph advances to
 `ntdll.dll!NtFlushVirtualMemory`.
+Windows NT frontier update (2026-09-01): `NtFlushVirtualMemory` now validates
+the current-process scope, rounds and verifies the requested mapped range,
+flushes file-backed VMA ranges through the canonical backing owner, and
+publishes the adjusted address/size. The graph advances to
+`ntdll.dll!NtGetContextThread`.

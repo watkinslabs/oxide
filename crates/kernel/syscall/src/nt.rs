@@ -54,6 +54,7 @@ pub enum NtService {
     NtFlushBuffersFile = 268,
     NtFlushInstructionCache = 269,
     NtFlushKey = 270,
+    NtFlushVirtualMemory = 271,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -68,6 +69,7 @@ pub enum NtMemoryCall {
     Free { process: u64, base: UserPtr<u64>, size: UserPtr<u64>, free_type: u32 },
     Protect { process: u64, base: UserPtr<u64>, size: UserPtr<u64>, protect: u32, old_protect: UserPtr<u32> },
     Query { process: u64, address: u64, info_class: u32, info: UserPtr<u8>, info_size: u64, return_length: UserPtr<u64> },
+    Flush { process: u64, address: UserPtr<u64>, size: UserPtr<u64>, io: Option<UserPtr<u8>> },
 }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum NtHeapCall {
@@ -332,6 +334,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 268 { return Some(NtCall { service: NtService::NtFlushBuffersFile, args }); }
     if service == 269 { return Some(NtCall { service: NtService::NtFlushInstructionCache, args }); }
     if service == 270 { return Some(NtCall { service: NtService::NtFlushKey, args }); }
+    if service == 271 { return Some(NtCall { service: NtService::NtFlushVirtualMemory, args }); }
     if service == 197 { return Some(NtCall { service: NtService::RtlGUIDFromString, args }); }
     if service == 195 { return Some(NtCall { service: NtService::WineDbgOutput, args }); }
     if service == 194 { return Some(NtCall { service: NtService::WineDbgHeader, args }); }
@@ -458,6 +461,9 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::QueryVirtualMemory => Ok(NtMemoryCall::Query {
             process: a.a0, address: a.a1, info_class: a.a2 as u32, info: UserPtr::new(a.a3)?,
             info_size: a.a4, return_length: UserPtr::new(a.a5)?,
+        }),
+        NtService::NtFlushVirtualMemory => Ok(NtMemoryCall::Flush {
+            process: a.a0, address: UserPtr::new(a.a1)?, size: UserPtr::new(a.a2)?, io: optional_ptr(a.a3)?,
         }),
         NtService::TerminateProcess => Err(Errno::Enosys),
         NtService::Wcscat => Err(Errno::Enosys),
