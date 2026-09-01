@@ -15,6 +15,7 @@ const CONTEXT_FLAGS_FULL: u32 = 0x0010_000f;
 pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlCaptureContext { return Some(capture_context(call.args.a0)); }
     if call.service == NtService::RtlRestoreContext { return Some(restore_context(call.args.a0)); }
+    if call.service == NtService::RtlLookupFunctionEntry { return Some(lookup_function_entry(call.args.a1)); }
     if call.service != NtService::RtlUnwind { return None; }
     let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
     if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
@@ -46,6 +47,12 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     }
     #[cfg(target_arch = "aarch64")]
     { let _ = cur; Some(STATUS_INVALID_PARAMETER) }
+}
+
+fn lookup_function_entry(base: u64) -> u64 {
+    if base == 0 { return STATUS_INVALID_PARAMETER; }
+    if uaccess::put_user_u64(base, 0).is_err() { return STATUS_INVALID_PARAMETER; }
+    0
 }
 
 fn restore_context(target: u64) -> u64 {

@@ -153,6 +153,7 @@ use super::*;
         assert_eq!(decode(203, input).unwrap().service, NtService::RtlAreBitsClear);
         assert_eq!(decode(204, input).unwrap().service, NtService::RtlAreBitsSet);
         assert_eq!(decode(205, input).unwrap().service, NtService::RtlInitializeBitMap);
+        assert_eq!(decode(206, input).unwrap().service, NtService::RtlLookupFunctionEntry);
     }
 
     #[test]

@@ -298,6 +298,8 @@
         assert!(are_bits_set >= runtime.base.as_u64() && are_bits_set < runtime.base.as_u64() + runtime.bytes as u64);
         let initialize_bitmap = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlInitializeBitMap" }).unwrap();
         assert!(initialize_bitmap >= runtime.base.as_u64() && initialize_bitmap < runtime.base.as_u64() + runtime.bytes as u64);
+        let lookup_function_entry = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlLookupFunctionEntry" }).unwrap();
+        assert!(lookup_function_entry >= runtime.base.as_u64() && lookup_function_entry < runtime.base.as_u64() + runtime.bytes as u64);
         assert!(guid_from_string >= runtime.base.as_u64() && guid_from_string < runtime.base.as_u64() + runtime.bytes as u64);
     }
 
