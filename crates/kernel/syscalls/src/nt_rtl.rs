@@ -88,6 +88,7 @@ fn guid_from_string(descriptor: u64, target: u64) -> u64 {
 pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlGetExePath { return Some(get_exe_path(call.args.a0, call.args.a1)); }
     if call.service == NtService::RtlGetExtendedContextLength2 { return Some(get_extended_context_length(call.args.a0 as u32, call.args.a1, call.args.a2)); }
+    if call.service == NtService::RtlInitializeExtendedContext2 { return Some(initialize_extended_context(call.args.a0, call.args.a1 as u32, call.args.a2, call.args.a3)); }
     if call.service == NtService::RtlGetExtendedFeaturesMask { return Some(get_extended_features_mask(call.args.a0)); }
     if call.service == NtService::RtlGetFullPathNameU { return Some(get_full_path(call.args.a0, call.args.a1, call.args.a2, call.args.a3)); }
     if call.service == NtService::RtlGetProductInfo { return Some(get_product_info(call)); }
@@ -274,6 +275,29 @@ fn get_extended_context_length(flags: u32, length: u64, compaction_mask: u64) ->
         if total > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
         if uaccess::put_user_u32(length, total as u32).is_ok() { STATUS_SUCCESS } else { STATUS_INVALID_PARAMETER }
     }
+}
+
+fn initialize_extended_context(context: u64, flags: u32, context_ex: u64, compaction_mask: u64) -> u64 {
+    if context == 0 || context_ex == 0 || flags & CONTEXT_AMD64 == 0 || flags & !CONTEXT_ALLOWED != 0 {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if flags & CONTEXT_XSTATE != 0 {
+        let _ = compaction_mask;
+        return STATUS_NOT_SUPPORTED;
+    }
+    let aligned = match context.checked_add(15) { Some(value) => value & !15, None => return STATUS_INVALID_PARAMETER };
+    let extended = match aligned.checked_add(AMD64_CONTEXT_BYTES) { Some(value) => value, None => return STATUS_INVALID_PARAMETER };
+    if uaccess::put_user_u32(aligned + 0x30, flags).is_err() || uaccess::put_user_u64(context_ex, extended).is_err() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let mut descriptor = [0u8; CONTEXT_EX_BYTES as usize];
+    descriptor[0..4].copy_from_slice(&(-(AMD64_CONTEXT_BYTES as i32)).to_le_bytes());
+    descriptor[4..8].copy_from_slice(&(AMD64_CONTEXT_BYTES as u32).to_le_bytes());
+    descriptor[8..12].copy_from_slice(&(-(AMD64_CONTEXT_BYTES as i32)).to_le_bytes());
+    descriptor[12..16].copy_from_slice(&(AMD64_CONTEXT_BYTES + 24).to_le_bytes());
+    descriptor[16..20].copy_from_slice(&25u32.to_le_bytes());
+    if uaccess::copy_to_user(extended, &descriptor).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
 }
 
 fn get_exe_path(name: u64, result: u64) -> u64 {
