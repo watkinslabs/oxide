@@ -48,6 +48,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::Wcsnlen { return Some(wcsnlen(call.args.a0, call.args.a1)); }
     if call.service == NtService::Wcspbrk { return Some(wcspbrk(call.args.a0, call.args.a1)); }
     if call.service == NtService::Wcsspn { return Some(wcsspn(call.args.a0, call.args.a1)); }
+    if call.service == NtService::Wcsstr { return Some(wcsstr(call.args.a0, call.args.a1)); }
     if call.service == NtService::Wcsnicmp { return Some(wcsnicmp(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Wcsicmp { return Some(wcsicmp(call.args.a0, call.args.a1)); }
     if call.service == NtService::Strnicmp { return Some(strnicmp(call.args.a0, call.args.a1, call.args.a2)); }
@@ -492,6 +493,27 @@ fn wcsspn(string: u64, accept: u64) -> u64 {
         if !matched { return index as u64; }
         let Some(next) = index.checked_add(1) else { return 0; };
         index = next;
+    }
+}
+
+fn wcsstr(string: u64, needle: u64) -> u64 {
+    if string == 0 || needle == 0 { return 0; }
+    if read_u16(needle, 0) == Some(0) { return string; }
+    let mut string_index = 0usize;
+    loop {
+        let Some(string_character) = read_u16(string, string_index) else { return 0; };
+        if string_character == 0 { return 0; }
+        let mut needle_index = 0usize;
+        loop {
+            let Some(needle_character) = read_u16(needle, needle_index) else { return 0; };
+            if needle_character == 0 { return string.checked_add((string_index as u64).checked_mul(2).unwrap_or(0)).unwrap_or(0); }
+            let Some(subject_character) = read_u16(string, string_index.saturating_add(needle_index)) else { return 0; };
+            if subject_character != needle_character { break; }
+            let Some(next) = needle_index.checked_add(1) else { return 0; };
+            needle_index = next;
+        }
+        let Some(next) = string_index.checked_add(1) else { return 0; };
+        string_index = next;
     }
 }
 
