@@ -67,6 +67,14 @@ const STATUS_ALERTED: u64 = 0x0000_0101;
 const STATUS_USER_APC: u64 = 0x0000_00c0;
 #[cfg(target_os = "oxide-kernel")]
 const STATUS_NOT_MAPPED_DATA: u64 = 0xc000_001d;
+#[cfg(target_os = "oxide-kernel")]
+const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
+#[cfg(target_os = "oxide-kernel")]
+const NT_CONTEXT_AMD64: u32 = 0x0010_0000;
+#[cfg(target_os = "oxide-kernel")]
+const NT_CONTEXT_CONTROL: u32 = 0x0000_0001;
+#[cfg(target_os = "oxide-kernel")]
+const NT_CONTEXT_INTEGER: u32 = 0x0000_0002;
 const JOB_OBJECT_ALL_ACCESS: u32 = 0x001f_001f;
 const JOB_OBJECT_ASSIGN_PROCESS: u32 = 0x0001;
 #[cfg(target_os = "oxide-kernel")]
@@ -180,6 +188,63 @@ pub fn dispatch(call: NtCall) -> u64 {
         // x86 instruction and data caches are coherent; Wine likewise treats
         // this operation as a successful no-op on x86/x86_64.
         return STATUS_SUCCESS;
+    }
+    if call.service == syscall::nt::NtService::NtGetContextThread {
+        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+        let Ok(nt::NtThreadCall::GetContext { thread, context }) = nt::decode_thread(call) else {
+            return STATUS_INVALID_PARAMETER;
+        };
+        let table = cur.thread_group.nt_handles();
+        let target = match resolve_thread_target(&cur, thread, &table, THREAD_QUERY_INFORMATION) {
+            Ok(target) => target, Err(status) => return status,
+        };
+        // The saved PtRegs is the canonical owner for the current task. A
+        // remote task needs a scheduler-safe suspended-register snapshot,
+        // which does not exist yet; do not report another task's state.
+        if target.tid != cur.tid { return STATUS_NOT_IMPLEMENTED; }
+        let flags_addr = match context.as_u64().checked_add(48) {
+            Some(address) => address,
+            None => return STATUS_INVALID_PARAMETER,
+        };
+        let flags = match uaccess::get_user_u32(flags_addr) {
+            Ok(flags) => flags,
+            Err(_) => return STATUS_INVALID_PARAMETER,
+        };
+        let supported = NT_CONTEXT_AMD64 | NT_CONTEXT_CONTROL | NT_CONTEXT_INTEGER;
+        if flags & !(supported) != 0 { return STATUS_NOT_IMPLEMENTED; }
+        #[cfg(target_arch = "x86_64")]
+        {
+            let frame = hal_x86_64::current_pt_regs();
+            if frame.is_null() { return STATUS_ACCESS_DENIED; }
+            let f = unsafe { &*frame };
+            let put = |offset: u64, value: u64| {
+                uaccess::put_user_u64(context.as_u64().checked_add(offset).ok_or(() )?, value).map_err(|_| ())
+            };
+            if flags & NT_CONTEXT_INTEGER != 0 {
+                for (offset, value) in [(160, f.rax), (168, f.rcx), (176, f.rdx), (184, f.rbx),
+                    (200, f.rbp), (208, f.rsi), (216, f.rdi), (224, f.r8), (232, f.r9),
+                    (240, f.r10), (248, f.r11), (256, f.r12), (264, f.r13), (272, f.r14),
+                    (280, f.r15)] {
+                    if put(offset, value).is_err() { return STATUS_INVALID_PARAMETER; }
+                }
+            }
+            if flags & NT_CONTEXT_CONTROL != 0 {
+                for (offset, value) in [(192, f.rsp), (288, f.rip), (104, f.rflags),
+                    (56, f.cs), (96, f.ss)] {
+                    if put(offset, value).is_err() { return STATUS_INVALID_PARAMETER; }
+                }
+            }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        { return STATUS_NOT_IMPLEMENTED; }
+        #[cfg(target_arch = "x86_64")]
+        {
+            if uaccess::put_user_u32(flags_addr, flags).is_err() {
+                return STATUS_INVALID_PARAMETER;
+            }
+            return STATUS_SUCCESS;
+        }
     }
     if matches!(call.service, syscall::nt::NtService::NtCreateNamedPipeFile | syscall::nt::NtService::NtCreateSectionEx | syscall::nt::NtService::NtCreateSymbolicLinkObject | syscall::nt::NtService::NtCreateUserProcess | syscall::nt::NtService::NtDeleteKey | syscall::nt::NtService::NtDeleteValueKey | syscall::nt::NtService::NtEnumerateKey | syscall::nt::NtService::NtEnumerateValueKey | syscall::nt::NtService::NtFilterToken | syscall::nt::NtService::NtFlushKey) { return 0xc000_0002; }
     if let Some(result) = crate::nt_power::dispatch(call) { return result; }

@@ -55,6 +55,7 @@ pub enum NtService {
     NtFlushInstructionCache = 269,
     NtFlushKey = 270,
     NtFlushVirtualMemory = 271,
+    NtGetContextThread = 272,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -70,6 +71,10 @@ pub enum NtMemoryCall {
     Protect { process: u64, base: UserPtr<u64>, size: UserPtr<u64>, protect: u32, old_protect: UserPtr<u32> },
     Query { process: u64, address: u64, info_class: u32, info: UserPtr<u8>, info_size: u64, return_length: UserPtr<u64> },
     Flush { process: u64, address: UserPtr<u64>, size: UserPtr<u64>, io: Option<UserPtr<u8>> },
+}
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum NtThreadCall {
+    GetContext { thread: u64, context: UserPtr<u8> },
 }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum NtHeapCall {
@@ -335,6 +340,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 269 { return Some(NtCall { service: NtService::NtFlushInstructionCache, args }); }
     if service == 270 { return Some(NtCall { service: NtService::NtFlushKey, args }); }
     if service == 271 { return Some(NtCall { service: NtService::NtFlushVirtualMemory, args }); }
+    if service == 272 { return Some(NtCall { service: NtService::NtGetContextThread, args }); }
     if service == 197 { return Some(NtCall { service: NtService::RtlGUIDFromString, args }); }
     if service == 195 { return Some(NtCall { service: NtService::WineDbgOutput, args }); }
     if service == 194 { return Some(NtCall { service: NtService::WineDbgHeader, args }); }
@@ -465,6 +471,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::NtFlushVirtualMemory => Ok(NtMemoryCall::Flush {
             process: a.a0, address: UserPtr::new(a.a1)?, size: UserPtr::new(a.a2)?, io: optional_ptr(a.a3)?,
         }),
+        NtService::NtGetContextThread => Err(Errno::Enosys),
         NtService::TerminateProcess => Err(Errno::Enosys),
         NtService::Wcscat => Err(Errno::Enosys),
         NtService::Wcschr => Err(Errno::Enosys),
@@ -502,6 +509,15 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::NtAllocateLocallyUniqueId => Err(Errno::Enosys),
         NtService::NtCancelIoFile | NtService::NtCancelIoFileEx => Err(Errno::Enosys),
         NtService::NtCancelSynchronousIoFile | NtService::NtCompareObjects | NtService::NtConvertBetweenAuxiliaryCounterAndPerformanceCounter | NtService::NtCreateNamedPipeFile | NtService::NtCreateSectionEx | NtService::NtCreateSymbolicLinkObject | NtService::NtCreateUserProcess | NtService::NtDelayExecution | NtService::NtDeleteKey | NtService::NtDeleteValueKey | NtService::NtDuplicateToken | NtService::NtEnumerateKey | NtService::NtEnumerateValueKey | NtService::NtFilterToken | NtService::NtFlushBuffersFile | NtService::NtFlushInstructionCache | NtService::NtFlushKey => Err(Errno::Enosys),
+    }
+}
+/// Decode thread context calls after validating their output pointer.
+pub fn decode_thread(call: NtCall) -> Result<NtThreadCall, Errno> {
+    match call.service {
+        NtService::NtGetContextThread => Ok(NtThreadCall::GetContext {
+            thread: call.args.a0, context: UserPtr::new(call.args.a1)?,
+        }),
+        _ => Err(Errno::Enosys),
     }
 }
 pub fn decode_system(call: NtCall) -> Result<NtSystemCall, Errno> {

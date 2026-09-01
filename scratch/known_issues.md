@@ -535,5 +535,8 @@ the userspace registry service. The graph advances to
 Windows NT frontier update (2026-09-01): `NtFlushVirtualMemory` now validates
 the current-process scope, rounds and verifies the requested mapped range,
 flushes file-backed VMA ranges through the canonical backing owner, and
-publishes the adjusted address/size. The graph advances to
-`ntdll.dll!NtGetContextThread`.
+publishes the adjusted address/size. `NtGetContextThread` now exposes the
+current x86_64 task's integer/control context from the canonical `PtRegs`
+owner; remote, debug, floating-point, segment, and XSTATE context remain
+explicitly unsupported. The graph advances to
+`ntdll.dll!NtGetNlsSectionPtr`.
