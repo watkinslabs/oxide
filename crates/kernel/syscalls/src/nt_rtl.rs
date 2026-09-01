@@ -86,6 +86,8 @@ fn guid_from_string(descriptor: u64, target: u64) -> u64 {
 /// Initialize a Windows `UNICODE_STRING` descriptor without copying its source.
 /// # C: O(min(source length, 32766)) plus usercopy
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(result) = crate::nt_rtl_xstate::dispatch(call) { return Some(result); }
     if call.service == NtService::RtlGetExePath { return Some(get_exe_path(call.args.a0, call.args.a1)); }
     if call.service == NtService::RtlGetExtendedContextLength2 { return Some(get_extended_context_length(call.args.a0 as u32, call.args.a1, call.args.a2)); }
     if call.service == NtService::RtlInitializeExtendedContext2 { return Some(initialize_extended_context(call.args.a0, call.args.a1 as u32, call.args.a2, call.args.a3)); }

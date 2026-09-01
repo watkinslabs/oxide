@@ -98,6 +98,8 @@ mod nt_nls;
 mod nt_memory_lock;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_rtl;
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+mod nt_rtl_xstate;
 mod nt_bitmap;
 mod nt_unicode;
 mod nt_context;
