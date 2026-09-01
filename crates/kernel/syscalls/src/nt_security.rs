@@ -42,11 +42,16 @@ const ABSOLUTE_OWNER_OFFSET: u64 = 4;
 const RELATIVE_OWNER_OFFSET: u64 = 4;
 const OWNER_DEFAULTED: u16 = 0x0001;
 const GROUP_DEFAULTED: u16 = 0x0002;
+const CONTROL_IMMUTABLE: u32 = OWNER_DEFAULTED as u32 | GROUP_DEFAULTED as u32 | DACL_PRESENT as u32 | 0x0008 | SACL_PRESENT as u32 | SACL_DEFAULTED as u32 | 0x4000 | SELF_RELATIVE as u32;
+const SECURITY_CONTROL_WORD_BYTES: usize = 4;
 
 /// Query the stable baseline descriptor attached to an NT object handle.
 /// Linux credentials supply the owner/group identity; no Linux syscall path
 /// reaches this adapter. # C: O(1) plus usercopy
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == syscall::nt::NtService::RtlSetControlSecurityDescriptor {
+        return Some(set_control(call.args.a0, call.args.a1 as u32, call.args.a2 as u32));
+    }
     if call.service == syscall::nt::NtService::RtlNewSecurityObject {
         return Some(new_security_object(call.args.a2));
     }
@@ -106,6 +111,26 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if descriptor.as_u64() == 0 || length < required { return Some(STATUS_BUFFER_TOO_SMALL); }
     if uaccess::copy_to_user(descriptor.as_u64(), &bytes).is_err() { return Some(STATUS_INVALID_PARAMETER); }
     Some(STATUS_SUCCESS)
+}
+
+fn set_control(descriptor: u64, interest: u32, set: u32) -> u64 {
+    if descriptor == 0 || !uaccess::access_ok(descriptor, SECURITY_CONTROL_WORD_BYTES) || descriptor & 3 != 0 {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (interest | set) & CONTROL_IMMUTABLE != 0 { return STATUS_INVALID_PARAMETER; }
+    loop {
+        let Ok(old) = uaccess::get_user_u32(descriptor) else { return STATUS_INVALID_PARAMETER; };
+        let control = (old >> 16) as u16;
+        let interest = interest as u16;
+        let set = set as u16;
+        let updated = (control | (interest & set)) & !(interest & !set);
+        let next = (old & 0x0000_ffff) | (updated as u32) << 16;
+        match uaccess::cmpxchg_user_u32(descriptor, old, next) {
+            Ok(seen) if seen == old => return STATUS_SUCCESS,
+            Ok(_) => continue,
+            Err(_) => return STATUS_INVALID_PARAMETER,
+        }
+    }
 }
 
 fn new_security_object(output: u64) -> u64 {
