@@ -121,6 +121,7 @@ windows-compat-test:
 	$(WARNING_RUN) $(CARGO) test -p pe -p elf-load -p syscall -p syscalls -p sched -p ipc --lib --quiet -- --test-threads=1
 	$(WARNING_RUN) $(CARGO) test --manifest-path userspace/probes/Cargo.toml -p windows-runtime --quiet
 	$(WARNING_RUN) $(CARGO) test --manifest-path userspace/probes/Cargo.toml -p windows-registry --quiet
+	$(WARNING_RUN) $(CARGO) test --manifest-path userspace/probes/Cargo.toml -p windows-user32 --quiet
 
 lint:
 	$(XTASK) spec-lint
