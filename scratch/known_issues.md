@@ -613,3 +613,8 @@ information record from canonical VFS metadata, including timestamps, size,
 and regular-file or directory attributes.
 `NtQueryInstallUILanguage` now returns the same en-US LANGID baseline as Wine's
 system LCID fallback.
+`NtQueryKey` is exposed at the NT boundary; registry key state remains owned by
+the planned userspace registry service, as required by the Windows architecture
+plan, rather than being duplicated inside the kernel.
+`NtQueryPerformanceCounter` now shares the monotonic counter and 10 MHz
+frequency owner used by the existing RTL performance-counter implementation.
