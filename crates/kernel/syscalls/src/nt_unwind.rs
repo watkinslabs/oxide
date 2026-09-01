@@ -18,7 +18,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlRestoreContext { return Some(restore_context(call.args.a0)); }
     if call.service == NtService::RtlLookupFunctionEntry { return Some(lookup_function_entry(call.args.a0, call.args.a1)); }
     if call.service == NtService::RtlPcToFileHeader { return Some(pc_to_file_header(call.args.a0, call.args.a1)); }
-    if call.service != NtService::RtlUnwind { return None; }
+    if call.service != NtService::RtlUnwind && call.service != NtService::RtlUnwindEx { return None; }
     let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
     if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
     #[cfg(target_arch = "x86_64")]
