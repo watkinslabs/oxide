@@ -250,6 +250,8 @@ pub enum NtService {
     RtlWakeAddressAll = 474,
     RtlWakeAddressSingle = 475,
     RtlWalkHeap = 476,
+    RtlWow64EnableFsRedirection = 477,
+    RtlWow64EnableFsRedirectionEx = 478,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -605,6 +607,8 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 474 { return Some(NtCall { service: NtService::RtlWakeAddressAll, args }); }
     if service == 475 { return Some(NtCall { service: NtService::RtlWakeAddressSingle, args }); }
     if service == 476 { return Some(NtCall { service: NtService::RtlWalkHeap, args }); }
+    if service == 477 { return Some(NtCall { service: NtService::RtlWow64EnableFsRedirection, args }); }
+    if service == 478 { return Some(NtCall { service: NtService::RtlWow64EnableFsRedirectionEx, args }); }
     if service == 229 { return Some(NtCall { service: NtService::DbgUiConnectToDbg, args }); }
     if service == 230 { return Some(NtCall { service: NtService::DbgUiContinue, args }); }
     if service == 231 { return Some(NtCall { service: NtService::DbgUiRemoteBreakin, args }); }
@@ -942,6 +946,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::RtlValidateHeap => Err(Errno::Enosys),
         NtService::RtlWaitOnAddress | NtService::RtlWakeAddressAll | NtService::RtlWakeAddressSingle => Err(Errno::Enosys),
         NtService::RtlWalkHeap => Err(Errno::Enosys),
+        NtService::RtlWow64EnableFsRedirection | NtService::RtlWow64EnableFsRedirectionEx => Err(Errno::Enosys),
         NtService::RtlAddAccessAllowedObjectAce => Err(Errno::Enosys),
         NtService::RtlAddAccessDeniedObjectAce => Err(Errno::Enosys),
         NtService::RtlAddAuditAccessObjectAce => Err(Errno::Enosys),

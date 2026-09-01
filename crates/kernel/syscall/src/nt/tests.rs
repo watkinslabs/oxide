@@ -751,6 +751,12 @@ use super::*;
     }
 
     #[test]
+    fn rtl_wow64_redirection_keeps_native_abi_selectors() {
+        assert_eq!(decode(477, args()).unwrap().service, NtService::RtlWow64EnableFsRedirection);
+        assert_eq!(decode(478, args()).unwrap().service, NtService::RtlWow64EnableFsRedirectionEx);
+    }
+
+    #[test]
     fn file_services_validate_the_outer_request_pointer() {
         let call = decode(10, SyscallArgs { a0: 0x1000, ..args() }).unwrap();
         assert!(matches!(decode_file(call), Ok(NtFileCall::Create { .. })));
