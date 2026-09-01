@@ -98,6 +98,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlGetThreadPreferredUILanguages { return Some(get_thread_preferred_ui_languages(call)); }
     if call.service == NtService::RtlGetUserPreferredUILanguages { return Some(get_user_preferred_ui_languages(call)); }
     if call.service == NtService::RtlGetVersion { return Some(get_version(call.args.a0)); }
+    if call.service == NtService::RtlImpersonateSelf { return Some(impersonate_self(call.args.a0 as u32)); }
     if call.service == NtService::RtlGetEnabledExtendedFeatures {
         const LEGACY_XSTATE: u64 = 0x3;
         #[cfg(target_arch = "x86_64")]
@@ -847,6 +848,10 @@ fn get_version(info: u64) -> u64 {
     bytes[280..282].copy_from_slice(&WINDOWS_SUITE_SINGLE_USER_TS.to_le_bytes());
     bytes[282] = WINDOWS_PRODUCT_WORKSTATION;
     if uaccess::copy_to_user(info, &bytes).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
+}
+
+fn impersonate_self(level: u32) -> u64 {
+    if level > 3 { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
 }
 
 fn get_preferred_ui_languages(flags: u32, count: u64, buffer: u64, size: u64) -> u64 {
