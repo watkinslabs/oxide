@@ -100,6 +100,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlGetUserPreferredUILanguages { return Some(get_user_preferred_ui_languages(call)); }
     if call.service == NtService::RtlGetVersion { return Some(get_version(call.args.a0)); }
     if call.service == NtService::RtlImpersonateSelf { return Some(impersonate_self(call.args.a0 as u32)); }
+    if call.service == NtService::RtlIsProcessorFeaturePresent { return Some(is_processor_feature_present(call.args.a0 as u32)); }
     if call.service == NtService::RtlGetEnabledExtendedFeatures {
         const LEGACY_XSTATE: u64 = 0x3;
         #[cfg(target_arch = "x86_64")]
@@ -196,6 +197,28 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     descriptor[8..16].copy_from_slice(&source.to_le_bytes());
     if uaccess::copy_to_user(target, &descriptor).is_err() { return Some(STATUS_INVALID_PARAMETER); }
     Some(0)
+}
+
+/// Return the Windows processor-feature bit for the x86_64 execution target.
+/// The feature numbers are stable Windows ABI values; the xsave mask is read
+/// from the same native CPU state used by the kernel's signal implementation.
+fn is_processor_feature_present(feature: u32) -> u64 {
+    match feature {
+        2 | 3 | 8 | 9 | 10 | 12 | 13 => 1,
+        17 => {
+            #[cfg(target_arch = "x86_64")]
+            { u64::from(hal_x86_64::xsave_xcr0() != 0) }
+            #[cfg(not(target_arch = "x86_64"))]
+            { 0 }
+        }
+        18 => {
+            #[cfg(target_arch = "x86_64")]
+            { u64::from(hal_x86_64::xsave_xcr0() & 0x6 == 0x6) }
+            #[cfg(not(target_arch = "x86_64"))]
+            { 0 }
+        }
+        _ => 0,
+    }
 }
 
 fn get_full_path(name: u64, size: u64, buffer: u64, file_part: u64) -> u64 {
