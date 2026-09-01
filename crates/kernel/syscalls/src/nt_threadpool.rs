@@ -8,6 +8,15 @@ const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
 /// Validate NT callback lifecycle boundaries owned by the current thread group.
 /// # C: O(1)
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::TpQueryPoolStackInformation {
+        let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+        if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a1 == 0 {
+            return Some(STATUS_INVALID_PARAMETER);
+        }
+        // Pool stack information belongs to the locked native pool object;
+        // no output structure is populated until that object owner exists.
+        return Some(STATUS_NOT_IMPLEMENTED);
+    }
     if call.service == NtService::TpCallbackMayRunLong {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
         if !cur.is_nt_personality() || call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
