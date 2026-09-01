@@ -677,6 +677,8 @@ remain unimplemented.
 concurrent ACL mutation remains outside the current native ownership model.
 `RtlDeleteBarrier` preserves the reference no-op destruction boundary; barrier
 waiter state and cancellation ownership remain unimplemented.
+`RtlDeleteSecurityObject` releases descriptors through the canonical NT heap
+owner; invalid foreign allocations are not yet reported with native fidelity.
 `RtlCreateProcessParametersEx` validates its result-pointer boundary; native
 string capture, environment ownership, normalization, and destruction remain
 unimplemented.
