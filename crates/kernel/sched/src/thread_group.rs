@@ -89,6 +89,8 @@ pub struct ThreadGroup {
     /// Process-wide default DLL search flags selected by the NT loader.
     pub nt_default_dll_search_flags: AtomicU32,
     pub nt_unhandled_filter: AtomicU64,
+    /// Process-preferred Windows UI language multi-string and input mode.
+    pub nt_process_ui_languages: Spinlock<(u32, Vec<u16>), TaskListClass>,
     /// Linux `signal_struct::timer_create_restore_ids`
     /// (`prctl(PR_TIMER_CREATE_RESTORE_IDS)`). While set, `timer_create(2)`
     /// reads its `timer_t __user *` OUT parameter as an IN parameter — the id
@@ -261,6 +263,7 @@ impl ThreadGroup {
             nt_search_path_mode: AtomicU32::new(0),
             nt_default_dll_search_flags: AtomicU32::new(0),
             nt_unhandled_filter: AtomicU64::new(0),
+            nt_process_ui_languages: Spinlock::new((0x8, alloc::vec![b'e' as u16, b'n' as u16, b'-' as u16, b'U' as u16, b'S' as u16, 0, 0])),
             timer_create_restore_ids: AtomicBool::new(false),
             session_leader: AtomicBool::new(false),
             is_child_subreaper: AtomicBool::new(false),

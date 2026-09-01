@@ -102,6 +102,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlGetFullPathNameU { return Some(get_full_path(call.args.a0, call.args.a1, call.args.a2, call.args.a3)); }
     if call.service == NtService::RtlGetProductInfo { return Some(get_product_info(call)); }
     if call.service == NtService::RtlGetProcessPreferredUILanguages { return Some(get_process_preferred_ui_languages(call)); }
+    if call.service == NtService::RtlSetProcessPreferredUILanguages { return Some(set_process_preferred_ui_languages(call)); }
     if call.service == NtService::RtlGetSearchPath { return Some(get_search_path(call.args.a0)); }
     if call.service == NtService::RtlReleasePath { return Some(release_path(call.args.a0)); }
     if call.service == NtService::RtlRunOnceBeginInitialize { return Some(run_once_begin_initialize(call.args.a0, call.args.a1, call.args.a2)); }
@@ -1043,6 +1044,31 @@ fn get_product_info(call: NtCall) -> u64 {
 
 fn get_process_preferred_ui_languages(call: NtCall) -> u64 {
     get_preferred_ui_languages(call.args.a0 as u32, call.args.a1, call.args.a2, call.args.a3)
+}
+
+fn set_process_preferred_ui_languages(call: NtCall) -> u64 {
+    let flags = call.args.a0 as u32;
+    if call.args.a1 == 0 { return STATUS_SUCCESS; }
+    let mut words = Vec::new();
+    let mut languages = 0u32;
+    for index in 0..1024u64 {
+        let address = match call.args.a1.checked_add(index * 2) { Some(value) => value, None => return STATUS_INVALID_PARAMETER };
+        let mut pair = [0u8; 2];
+        if uaccess::copy_from_user(&mut pair, address).is_err() { return STATUS_INVALID_PARAMETER; }
+        let word = u16::from_le_bytes(pair);
+        words.push(word);
+        if word == 0 {
+            if index == 0 { return STATUS_UNSUCCESSFUL; }
+            if words.len() >= 2 && words[words.len() - 2] == 0 { break; }
+            languages += 1;
+        }
+    }
+    if words.last().copied() != Some(0) || languages == 0 { return STATUS_UNSUCCESSFUL; }
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    cur.thread_group.nt_process_ui_languages.lock().clone_from(&(flags, words));
+    if call.args.a2 != 0 && uaccess::put_user_u32(call.args.a2, languages).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
 }
 
 fn get_system_preferred_ui_languages(call: NtCall) -> u64 {
