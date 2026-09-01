@@ -22,6 +22,8 @@ owner. The adapter does not maintain a second GDI object table.
 - `FillRect` clips to that surface before writing pixels.
 - Userspace may upload a validated row-major XRGB raster into a DC; the native
   owner clips the upload before writing the surface.
+- Userspace rasterizes TrueType/OpenType glyphs, including UTF-16 surrogate
+  decoding and glyph advances, before uploading an XRGB text tile.
 - `DeleteObject` removes device contexts and fonts and clears deleted fonts
   from every context in the process.
 - Tagged NT selectors carry the ABI; Linux syscall numbers are not used for
@@ -34,6 +36,8 @@ owner. The adapter does not maintain a second GDI object table.
 - Text buffers are copied and validated before the extent result is written.
 - Surface dimensions are bounded before allocation; rectangle writes never
   address pixels outside the owning device context.
+- Raster tiles have an independent pixel bound; invalid font bytes, non-finite
+  sizes, invalid dimensions, and short source buffers fail before upload.
 - Window scanout remains separate display-driver work; GDI owns the raster
   surface and its drawing operations.
 
