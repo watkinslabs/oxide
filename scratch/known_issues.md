@@ -543,4 +543,7 @@ explicitly unsupported. The graph advances to
 files from `/usr/share/wine/nls` through the normal read-only file-backed VMA
 path. `NtGetTickCount` now uses the monotonic timekeeper with Windows'
 32-bit millisecond wrap semantics. The graph advances to
-`ntdll.dll!NtGetWriteWatch`.
+`ntdll.dll!NtGetWriteWatch`. The write-watch ABI is exposed with strict
+current-process validation but remains `STATUS_NOT_IMPLEMENTED` until VMA
+and page-fault dirty tracking has a dedicated owner; the graph advances to
+`ntdll.dll!NtImpersonateAnonymousToken`.
