@@ -40,6 +40,18 @@ static OPEN_FILES: Spinlock<BTreeMap<usize, OpenFile>, NpClass> = Spinlock::new(
 
 fn key(file: &File) -> usize { file as *const File as usize }
 
+fn trace_io_error(file: &File, op: &[u8], err: VfsError) {
+    klog::write_raw(b"[9P-IO-ERROR] op=");
+    klog::write_raw(op);
+    klog::write_raw(b" errno=");
+    klog::write_dec_u64(err as i64 as u64);
+    klog::write_raw(b" flags=0x");
+    klog::write_hex_u64(file.flags().bits() as u64);
+    klog::write_raw(b" path=");
+    klog::write_raw(&file.dentry().absolute_path());
+    klog::write_raw(b"\n");
+}
+
 /// Ensure this description holds an open server handle, performing the open if
 /// nothing did it yet, and return the handle.
 ///
@@ -59,7 +71,11 @@ fn ensure_open(file: &File) -> KResult<FidRef> {
     // Creation and truncation already happened during path resolution;
     // repeating them here would truncate a file the caller only opened.
     flags &= !(dotl::CREATE | dotl::EXCL | dotl::TRUNC);
-    d.mount.client.lopen(&handle, flags).map_err(VfsError::from)?;
+    if let Err(error) = d.mount.client.lopen(&handle, flags) {
+        let error = VfsError::from(error);
+        trace_io_error(file, b"lopen", error);
+        return Err(error);
+    }
     let mut g = OPEN_FILES.lock();
     let entry = g.entry(key(file)).or_insert(OpenFile { fid: handle, dir_cookie: 0, dir_pos: 0 });
     Ok(entry.fid.clone())
@@ -74,7 +90,14 @@ impl FileOps for NinepFileOps {
     fn read_file(&self, file: &File, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let d = data(file.inode())?;
         let fid = ensure_open(file)?;
-        d.mount.client.read(&fid, off, buf).map_err(VfsError::from)
+        match d.mount.client.read(&fid, off, buf) {
+            Ok(n) => Ok(n),
+            Err(error) => {
+                let error = VfsError::from(error);
+                trace_io_error(file, b"read", error);
+                Err(error)
+            }
+        }
     }
 
     /// `Twrite`, split the same way. # C: RPC per frame
