@@ -12,12 +12,74 @@ const SID_REVISION: u8 = 1;
 const SID_IDENTIFIER_AUTHORITY_BYTES: usize = 6;
 const SID_FIXED_BYTES: usize = 8;
 const MAX_SUBAUTHORITIES: u64 = 8;
+const STATUS_BUFFER_OVERFLOW: u64 = 0x8000_0005;
 
 /// Allocate a heap-owned SID and initialize its native layout.
 /// # C: O(1) plus bounded user copies and one VMM allocation
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlConvertSidToUnicodeString {
+        return Some(convert_to_unicode(call.args.a0, call.args.a1, call.args.a2 != 0));
+    }
     if call.service != NtService::RtlAllocateAndInitializeSid { return None; }
     Some(allocate_and_initialize(call))
+}
+
+fn convert_to_unicode(string: u64, sid: u64, allocate: bool) -> u64 {
+    if string == 0 || sid == 0 { return STATUS_INVALID_PARAMETER; }
+    let mut descriptor = [0u8; 16];
+    if uaccess::copy_from_user(&mut descriptor, string).is_err() { return STATUS_INVALID_PARAMETER; }
+    let maximum = u16::from_le_bytes([descriptor[2], descriptor[3]]) as usize;
+    let destination = u64::from_le_bytes(descriptor[8..16].try_into().unwrap());
+    let mut header = [0u8; SID_FIXED_BYTES];
+    if uaccess::copy_from_user(&mut header, sid).is_err() || header[0] != SID_REVISION || header[1] as u64 > MAX_SUBAUTHORITIES {
+        return STATUS_INVALID_SID;
+    }
+    let count = header[1] as usize;
+    let sid_size = SID_FIXED_BYTES + count * core::mem::size_of::<u32>();
+    let mut bytes = [0u8; SID_FIXED_BYTES + 8 * core::mem::size_of::<u32>()];
+    if uaccess::copy_from_user(&mut bytes[..sid_size], sid).is_err() { return STATUS_INVALID_SID; }
+    let authority = u64::from_be_bytes([0, 0, bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]]);
+    let mut text = alloc::vec::Vec::new();
+    push_wide_ascii(&mut text, b'S');
+    push_wide_ascii(&mut text, b'-'); push_decimal(&mut text, bytes[0] as u64);
+    push_wide_ascii(&mut text, b'-'); push_decimal(&mut text, authority);
+    for index in 0..count { push_wide_ascii(&mut text, b'-'); push_decimal(&mut text, u32::from_le_bytes(bytes[8 + index * 4..12 + index * 4].try_into().unwrap()) as u64); }
+    text.push(0);
+    let size = text.len() * 2;
+    let target = if allocate {
+        let heap = NtCall { service: NtService::AllocateHeap, args: SyscallArgs { a0: 0, a1: 0, a2: size as u64, a3: 0, a4: 0, a5: 0 } };
+        let Some(value) = crate::nt_heap::dispatch(heap).filter(|value| *value != 0) else { return STATUS_NO_MEMORY; };
+        value
+    } else {
+        if size > maximum || destination == 0 { return STATUS_BUFFER_OVERFLOW; }
+        destination
+    };
+    let mut wide = alloc::vec![0u8; size];
+    for (index, value) in text.iter().enumerate() { wide[index * 2..index * 2 + 2].copy_from_slice(&value.to_le_bytes()); }
+    if uaccess::copy_to_user(target, &wide).is_err() {
+        if allocate { free_heap(target); }
+        return STATUS_INVALID_PARAMETER;
+    }
+    let mut output = descriptor;
+    output[0..2].copy_from_slice(&((size - 2) as u16).to_le_bytes());
+    output[2..4].copy_from_slice(&(size as u16).to_le_bytes());
+    output[8..16].copy_from_slice(&target.to_le_bytes());
+    if uaccess::copy_to_user(string, &output).is_err() { if allocate { free_heap(target); } return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
+}
+
+fn push_wide_ascii(out: &mut alloc::vec::Vec<u16>, value: u8) { out.push(value as u16); }
+
+fn push_decimal(out: &mut alloc::vec::Vec<u16>, mut value: u64) {
+    let mut digits = [0u16; 20]; let mut count = 0;
+    if value == 0 { out.push(0); return; }
+    while value != 0 { digits[count] = b'0' as u16 + (value % 10) as u16; count += 1; value /= 10; }
+    while count != 0 { count -= 1; out.push(digits[count]); }
+}
+
+fn free_heap(base: u64) {
+    let free = NtCall { service: NtService::FreeHeap, args: SyscallArgs { a0: 0, a1: 0, a2: base, a3: 0, a4: 0, a5: 0 } };
+    let _ = crate::nt_heap::dispatch(free);
 }
 
 fn allocate_and_initialize(call: NtCall) -> u64 {
