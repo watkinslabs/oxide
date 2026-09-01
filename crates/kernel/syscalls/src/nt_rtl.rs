@@ -95,6 +95,11 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     #[cfg(target_arch = "x86_64")]
     if let Some(result) = crate::nt_rtl_xstate::dispatch(call) { return Some(result); }
     if call.service == NtService::RtlGetExePath { return Some(get_exe_path(call.args.a0, call.args.a1)); }
+    if call.service == NtService::RtlWow64EnableFsRedirection { return Some(STATUS_SUCCESS); }
+    if call.service == NtService::RtlWow64EnableFsRedirectionEx {
+        if call.args.a1 != 0 && uaccess::put_user_u32(call.args.a1, 0).is_err() { return Some(STATUS_ACCESS_VIOLATION); }
+        return Some(STATUS_SUCCESS);
+    }
     if call.service == NtService::RtlGetExtendedContextLength2 { return Some(get_extended_context_length(call.args.a0 as u32, call.args.a1, call.args.a2)); }
     if call.service == NtService::RtlInitializeExtendedContext2 { return Some(initialize_extended_context(call.args.a0, call.args.a1 as u32, call.args.a2, call.args.a3)); }
     if call.service == NtService::RtlGetExtendedFeaturesMask { return Some(get_extended_features_mask(call.args.a0)); }
