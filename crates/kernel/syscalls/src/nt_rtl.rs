@@ -18,6 +18,9 @@ const GUID_STRING_BYTES: usize = 76;
 const TEB_PEB_OFFSET: u64 = 0x60;
 const PEB_PROCESS_PARAMETERS_OFFSET: u64 = 0x20;
 const PARAM_CURRENT_DIRECTORY_OFFSET: u64 = 0x40;
+const PARAM_IMAGE_PATH_OFFSET: u64 = 0x60;
+const PARAM_ENVIRONMENT_OFFSET: u64 = 0x80;
+const STATUS_NO_MEMORY: u64 = 0xc000_0017;
 
 /// Convert the fixed Windows GUID spelling into its 16-byte little-endian ABI.
 /// # C: O(1) plus bounded usercopy
@@ -59,6 +62,7 @@ fn guid_from_string(descriptor: u64, target: u64) -> u64 {
 /// Initialize a Windows `UNICODE_STRING` descriptor without copying its source.
 /// # C: O(min(source length, 32766)) plus usercopy
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlGetExePath { return Some(get_exe_path(call.args.a0, call.args.a1)); }
     if call.service == NtService::RtlGetEnabledExtendedFeatures {
         const LEGACY_XSTATE: u64 = 0x3;
         #[cfg(target_arch = "x86_64")]
@@ -154,6 +158,63 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     descriptor[8..16].copy_from_slice(&source.to_le_bytes());
     if uaccess::copy_to_user(target, &descriptor).is_err() { return Some(STATUS_INVALID_PARAMETER); }
     Some(0)
+}
+
+fn get_exe_path(name: u64, result: u64) -> u64 {
+    if name == 0 || result == 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(task) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !task.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let teb = task.nt_teb();
+    let peb = uaccess::get_user_u64(teb.saturating_add(TEB_PEB_OFFSET)).ok().unwrap_or(0);
+    let params = uaccess::get_user_u64(peb.saturating_add(PEB_PROCESS_PARAMETERS_OFFSET)).ok().unwrap_or(0);
+    if params == 0 { return STATUS_INVALID_PARAMETER; }
+    let image = read_nt_unicode(params.saturating_add(PARAM_IMAGE_PATH_OFFSET));
+    let Some(image) = image else { return STATUS_INVALID_PARAMETER; };
+    let name = read_wide_z(name);
+    let Some(name) = name else { return STATUS_INVALID_PARAMETER; };
+    let no_default = env_has_name(params.saturating_add(PARAM_ENVIRONMENT_OFFSET), b"NoDefaultCurrentDirectoryInExePath");
+    let mut path = alloc::vec::Vec::new();
+    let mut end = image.len();
+    for index in (0..image.len()).rev() {
+        if image[index] == b'\\' as u16 || image[index] == b'/' as u16 { end = index + 1; break; }
+        if index == 0 { end = 0; }
+    }
+    append_wide(&mut path, &image[..end]);
+    if !no_default && !name.iter().any(|&value| value == b'\\' as u16) { append_wide(&mut path, &wide(b".")); }
+    append_wide(&mut path, &wide(b"C:\\windows\\system32;C:\\windows\\system;C:\\windows"));
+    if let Some(value) = env_value(params.saturating_add(PARAM_ENVIRONMENT_OFFSET), b"PATH") { append_wide(&mut path, &value); }
+    let bytes = match path.len().checked_add(1).and_then(|len| len.checked_mul(2)) { Some(value) if value <= u16::MAX as usize => value, _ => return STATUS_NO_MEMORY };
+    let allocation = NtCall { service: NtService::AllocateHeap, args: SyscallArgs { a0: 0, a1: 0, a2: bytes as u64, a3: 0, a4: 0, a5: 0 } };
+    let Some(buffer) = crate::nt_heap::dispatch(allocation).filter(|&value| value != 0) else { return STATUS_NO_MEMORY; };
+    let mut encoded = alloc::vec![0u8; bytes];
+    for (index, value) in path.iter().enumerate() { encoded[index * 2..index * 2 + 2].copy_from_slice(&value.to_le_bytes()); }
+    if uaccess::copy_to_user(buffer, &encoded).is_err() || uaccess::copy_to_user(result, &buffer.to_le_bytes()).is_err() { free_rtl_buffer(buffer); return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
+}
+
+fn wide(bytes: &[u8]) -> alloc::vec::Vec<u16> { bytes.iter().map(|&value| value as u16).collect() }
+fn append_wide(target: &mut alloc::vec::Vec<u16>, value: &[u16]) { if !target.is_empty() { target.push(b';' as u16); } target.extend_from_slice(value); }
+fn read_wide_z(source: u64) -> Option<alloc::vec::Vec<u16>> {
+    let mut output = alloc::vec::Vec::new();
+    for index in 0..=0x7fffu64 { let mut pair = [0u8; 2]; if uaccess::copy_from_user(&mut pair, source.checked_add(index * 2)?).is_err() { return None; } let value = u16::from_le_bytes(pair); if value == 0 { return Some(output); } output.push(value); }
+    None
+}
+fn read_nt_unicode(descriptor: u64) -> Option<alloc::vec::Vec<u16>> {
+    let mut header = [0u8; UNICODE_STRING_BYTES]; if uaccess::copy_from_user(&mut header, descriptor).is_err() { return None; }
+    let length = u16::from_le_bytes([header[0], header[1]]) as usize / 2; let source = u64::from_le_bytes(header[8..16].try_into().ok()?); if length > 0x7fff || (length != 0 && source == 0) { return None; }
+    let mut bytes = alloc::vec![0u8; length * 2]; if uaccess::copy_from_user(&mut bytes, source).is_err() { return None; }
+    Some(bytes.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect())
+}
+fn env_entries(environment: u64) -> Option<alloc::vec::Vec<u16>> {
+    let mut output = alloc::vec::Vec::new(); let mut zeroes = 0;
+    for index in 0..=0x1ffffu64 { let mut pair = [0u8; 2]; if uaccess::copy_from_user(&mut pair, environment.checked_add(index * 2)?).is_err() { return None; } let value = u16::from_le_bytes(pair); output.push(value); if value == 0 { zeroes += 1; if zeroes == 2 { output.pop(); return Some(output); } } else { zeroes = 0; } }
+    None
+}
+fn env_has_name(environment: u64, name: &[u8]) -> bool { env_value(environment, name).is_some() }
+fn env_value(environment: u64, name: &[u8]) -> Option<alloc::vec::Vec<u16>> {
+    let all = env_entries(environment)?; let wanted = wide(name); let mut start = 0;
+    while start < all.len() { let end = all[start..].iter().position(|&value| value == 0).map(|offset| start + offset).unwrap_or(all.len()); let entry = &all[start..end]; if entry.len() > wanted.len() && entry[..wanted.len()] == wanted[..] && entry[wanted.len()] == b'=' as u16 { return Some(entry[wanted.len() + 1..].to_vec()); } if end == all.len() { break; } start = end + 1; }
+    None
 }
 
 fn get_current_directory(buffer_length: u64, buffer: u64) -> u64 {
