@@ -6,6 +6,8 @@ use syscall::nt::{NtCall, NtService};
 
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
+const ACTCTX_FLAGS_ALL: u32 = 0xff;
+const ACTCTX_MIN_BYTES: u32 = 16;
 const STATUS_SXS_KEY_NOT_FOUND: u64 = 0xc015_0008;
 const FIND_ACTCTX_SECTION_KEY_RETURN_HACTCTX: u64 = 1;
 const UNICODE_STRING_BYTES: usize = 16;
@@ -14,6 +16,17 @@ const ACTCTX_SECTION_KEYED_DATA_ROSTER_OFFSET: u32 = 64;
 /// Validate the Wine/Windows string-section query and report no active context.
 /// # C: O(1) plus bounded user copies
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlCreateActivationContext {
+        if call.args.a0 == 0 || call.args.a1 == 0 { return Some(STATUS_INVALID_PARAMETER); }
+        let mut header = [0u8; 8];
+        if uaccess::copy_from_user(&mut header, call.args.a1).is_err() { return Some(STATUS_INVALID_PARAMETER); }
+        let size = u32::from_le_bytes(header[0..4].try_into().unwrap());
+        let flags = u32::from_le_bytes(header[4..8].try_into().unwrap());
+        if size < ACTCTX_MIN_BYTES || flags & !ACTCTX_FLAGS_ALL != 0 { return Some(STATUS_INVALID_PARAMETER); }
+        // Manifest parsing, module-resource lookup, and activation-context
+        // object lifetime are not owned by the kernel yet.
+        return Some(STATUS_NOT_IMPLEMENTED);
+    }
     if call.service == NtService::RtlActivateActivationContextEx {
         // Native ABI: ULONG flags, TEB*, activation context, ULONG_PTR *cookie.
         if call.args.a0 != 0 || call.args.a1 == 0 || call.args.a2 == 0 || call.args.a3 == 0 {

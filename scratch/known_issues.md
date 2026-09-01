@@ -667,6 +667,8 @@ argument validation; VMM prefetch and per-page write-watch ownership remain
 unimplemented.
 `RtlCopySid` validates the native SID header and destination capacity, then
 copies the bounded SID through the focused SID owner.
+`RtlCreateActivationContext` validates the native `ACTCTXW` header and flag
+mask; manifest parsing and activation-context object ownership remain absent.
 `NtSetSystemInformation` accepts the Wine-compatible time-adjustment shape as
 an explicit no-op; host clock ownership and privilege enforcement remain in
 the kernel timekeeper/security layers.
