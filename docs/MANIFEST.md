@@ -238,6 +238,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `31f6-windows-nt-setjmp.md` | FROZEN | 2026-08-31 | `01`,`02`,`31f5`,`52`,`53` |
 | `31f7-windows-nt-setjmpex.md` | FROZEN | 2026-08-31 | `01`,`02`,`31f6`,`52`,`53` |
 | `31f8-windows-nt-longjmp.md` | FROZEN | 2026-08-31 | `01`,`02`,`31f7`,`52`,`53` |
+| `31f9-windows-nt-debug-channel-flags.md` | FROZEN | 2026-08-31 | `01`,`02`,`31f8`,`52`,`53` |
 
 ## Deleted
 

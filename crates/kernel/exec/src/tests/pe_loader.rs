@@ -314,6 +314,8 @@
         assert!(setjmpex >= runtime.base.as_u64() && setjmpex < runtime.base.as_u64() + runtime.bytes as u64);
         let longjmp = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"longjmp" }).unwrap();
         assert!(longjmp >= runtime.base.as_u64() && longjmp < runtime.base.as_u64() + runtime.bytes as u64);
+        let channel_flags = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"__wine_dbg_get_channel_flags" }).unwrap();
+        assert!(channel_flags >= runtime.base.as_u64() && channel_flags < runtime.base.as_u64() + runtime.bytes as u64);
         assert!(guid_from_string >= runtime.base.as_u64() && guid_from_string < runtime.base.as_u64() + runtime.bytes as u64);
     }
 

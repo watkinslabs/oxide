@@ -10,10 +10,23 @@ const DEFAULT_DEBUG_FLAGS: u8 = (1 << 0) | (1 << 1);
 /// Dispatch the debug-header ABI while the per-thread output buffer is added.
 /// # C: O(1) plus one user byte read
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::WineDbgGetChannelFlags { return Some(get_channel_flags(call.args.a0)); }
     if call.service == NtService::WineDbgStrdup { return Some(strdup(call.args.a0)); }
     if call.service == NtService::WineDbgOutput { return Some(output(call.args.a0)); }
     if call.service != NtService::WineDbgHeader { return None; }
     Some(header(call.args.a0, call.args.a1))
+}
+
+fn get_channel_flags(channel: u64) -> u64 {
+    if channel == 0 { return 0; }
+    let mut flags = [0u8; 1];
+    if uaccess::copy_from_user(&mut flags, channel).is_err() { return 0; }
+    if flags[0] & DEBUG_INIT_FLAG == 0 { return flags[0] as u64; }
+    // Wine's option table is initialized by its Unix debug runtime. The native
+    // bridge has no process-local WINEDEBUG table yet, so use Wine's fallback.
+    let resolved = DEFAULT_DEBUG_FLAGS;
+    if uaccess::copy_to_user(channel, &[resolved]).is_err() { return 0; }
+    resolved as u64
 }
 
 fn strdup(string: u64) -> u64 {
