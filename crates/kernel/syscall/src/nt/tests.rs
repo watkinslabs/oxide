@@ -208,6 +208,7 @@ use super::*;
     assert_eq!(decode(367, input).unwrap().service, NtService::RtlDowncaseUnicodeChar);
     assert_eq!(decode(368, input).unwrap().service, NtService::RtlDuplicateUnicodeString);
     assert_eq!(decode(369, input).unwrap().service, NtService::RtlEqualPrefixSid);
+    assert_eq!(decode(370, input).unwrap().service, NtService::RtlEqualSid);
     assert_eq!(decode(298, input).unwrap().service, NtService::NtQueryDirectoryObject);
     assert_eq!(decode(299, input).unwrap().service, NtService::NtQueryFullAttributesFile);
     assert_eq!(decode(293, input).unwrap().service, NtService::NtPrivilegeCheck);

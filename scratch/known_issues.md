@@ -770,3 +770,5 @@ legacy-context copy ranges; extended XSTATE and i386 context support remain
 unimplemented.
 `RtlEqualPrefixSid` validates native SID layouts and compares the prefix through
 the final shared subauthority, preserving the reference count requirement.
+`RtlEqualSid` validates native SID layouts and compares the complete SID byte
+representation, including every subauthority.
