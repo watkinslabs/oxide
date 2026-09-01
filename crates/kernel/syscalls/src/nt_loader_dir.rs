@@ -19,6 +19,7 @@ const SEARCH_PATH_MODE_UNSET: u32 = 0;
 const SEARCH_PATH_MODE_SAFE: u32 = 1;
 const SEARCH_PATH_MODE_PERMANENT: u32 = 2;
 const STATUS_DLL_NOT_FOUND: u64 = 0xc000_0135;
+const STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xc000_0034;
 const PEB_IMAGE_BASE_OFFSET: u64 = 0x10;
 const PEB_LDR_OFFSET: u64 = 0x18;
 const TEB_PEB_OFFSET: u64 = 0x60;
@@ -38,8 +39,22 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         NtService::LdrSetDllDirectory => Some(set(call.args.a0)),
         NtService::LdrGetDllFullName => Some(full_name(call.args.a0, call.args.a1)),
         NtService::LdrLoadDll => Some(load(call.args.a2, call.args.a3)),
+        NtService::LdrQueryImageFileExecutionOptions => Some(query_options(call.args.a0, call.args.a1, call.args.a4, call.args.a5)),
         _ => None,
     }
+}
+
+fn query_options(key: u64, value: u64, data_size: u64, result_size: u64) -> u64 {
+    if key == 0 || value == 0 || data_size > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    let mut raw = [0u8; UNICODE_STRING_BYTES];
+    if uaccess::copy_from_user(&mut raw, key).is_err() { return STATUS_INVALID_PARAMETER; }
+    let length = u16::from_le_bytes([raw[0], raw[1]]) as usize;
+    let buffer = u64::from_le_bytes(raw[8..16].try_into().unwrap());
+    if length == 0 || length & 1 != 0 || buffer == 0 || length > 1024 { return STATUS_INVALID_PARAMETER; }
+    if result_size != 0 && uaccess::copy_to_user(result_size, &[0, 0, 0, 0]).is_err() { return STATUS_INVALID_PARAMETER; }
+    // The Windows registry personality is not mounted in this process yet;
+    // absence is therefore the precise result for every unconfigured IFEO key.
+    STATUS_OBJECT_NAME_NOT_FOUND
 }
 
 fn load(name_descriptor: u64, module_output: u64) -> u64 {
