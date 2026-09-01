@@ -2805,6 +2805,7 @@ dependencies = [
  "tty",
  "uaccess",
  "user-namespace",
+ "utf8",
  "v4l2",
  "vfs",
  "virtio",
