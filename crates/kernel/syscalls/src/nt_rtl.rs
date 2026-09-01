@@ -114,6 +114,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         { return Some(STATUS_NOT_SUPPORTED); }
     }
     if call.service == NtService::RtlGetSystemPreferredUILanguages { return Some(get_system_preferred_ui_languages(call)); }
+    if call.service == NtService::RtlSetThreadErrorMode { return Some(set_thread_error_mode(call.args.a0 as u32, call.args.a1)); }
     if call.service == NtService::RtlGetThreadErrorMode { return Some(get_thread_error_mode()); }
     if call.service == NtService::RtlGetThreadPreferredUILanguages { return Some(get_thread_preferred_ui_languages(call)); }
     if call.service == NtService::RtlGetUserPreferredUILanguages { return Some(get_user_preferred_ui_languages(call)); }
@@ -627,6 +628,18 @@ fn set_current_directory(directory: u64) -> u64 {
 }
 const TEB_LAST_ERROR_OFFSET: u64 = 0x68;
 const TEB_HARD_ERROR_MODE_OFFSET: u64 = 0x16b0;
+const STATUS_INVALID_PARAMETER_1: u64 = 0xc000_00ef;
+const THREAD_ERROR_MODE_MASK: u32 = 0x70;
+fn set_thread_error_mode(mode: u32, oldmode: u64) -> u64 {
+    if mode & !THREAD_ERROR_MODE_MASK != 0 { return STATUS_INVALID_PARAMETER_1; }
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let address = cur.nt_teb().saturating_add(TEB_HARD_ERROR_MODE_OFFSET);
+    let old = uaccess::get_user_u32(address).unwrap_or(0);
+    if oldmode != 0 && uaccess::put_user_u32(oldmode, old).is_err() { return STATUS_INVALID_PARAMETER; }
+    if uaccess::put_user_u32(address, mode).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
+}
 fn get_thread_error_mode() -> u64 {
     let Some(cur) = sched::live::current() else { return 0; };
     if !cur.is_nt_personality() { return 0; }
