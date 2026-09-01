@@ -227,6 +227,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `31eb-windows-nt-slist-flush.md` | FROZEN | 2026-08-31 | `01`,`02`,`31ea`,`52`,`53` |
 | `31ec-windows-nt-slist-push.md` | FROZEN | 2026-08-31 | `01`,`02`,`31eb`,`52`,`53` |
 | `31ed-windows-nt-try-critical-section.md` | FROZEN | 2026-08-31 | `01`,`02`,`31ec`,`52`,`53` |
+| `31ee-windows-nt-bitmap-clear.md` | FROZEN | 2026-08-31 | `01`,`02`,`31ed`,`52`,`53` |
 
 ## Deleted
 

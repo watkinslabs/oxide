@@ -150,6 +150,7 @@ use super::*;
         assert_eq!(decode(200, input).unwrap().service, NtService::RtlInterlockedFlushSList);
         assert_eq!(decode(201, input).unwrap().service, NtService::RtlInterlockedPushEntrySList);
         assert_eq!(decode(202, input).unwrap().service, NtService::RtlTryEnterCriticalSection);
+        assert_eq!(decode(203, input).unwrap().service, NtService::RtlAreBitsClear);
     }
 
     #[test]
