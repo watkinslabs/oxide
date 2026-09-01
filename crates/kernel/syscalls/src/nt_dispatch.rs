@@ -172,6 +172,13 @@ pub fn dispatch(call: NtCall) -> u64 {
     if let Some(result) = crate::nt_actctx::dispatch(call) { return result; }
     if let Some(result) = crate::nt_directory::dispatch(call) { return result; }
     if call.service == syscall::nt::NtService::CallbackReturn { return STATUS_NO_CALLBACK_ACTIVE; }
+    if call.service == syscall::nt::NtService::NtFlushInstructionCache {
+        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        if !cur.is_nt_personality() || call.args.a0 != CURRENT_PROCESS { return STATUS_INVALID_PARAMETER; }
+        // x86 instruction and data caches are coherent; Wine likewise treats
+        // this operation as a successful no-op on x86/x86_64.
+        return STATUS_SUCCESS;
+    }
     if matches!(call.service, syscall::nt::NtService::NtCreateNamedPipeFile | syscall::nt::NtService::NtCreateSectionEx | syscall::nt::NtService::NtCreateSymbolicLinkObject | syscall::nt::NtService::NtCreateUserProcess | syscall::nt::NtService::NtDeleteKey | syscall::nt::NtService::NtDeleteValueKey | syscall::nt::NtService::NtEnumerateKey | syscall::nt::NtService::NtEnumerateValueKey | syscall::nt::NtService::NtFilterToken) { return 0xc000_0002; }
     if let Some(result) = crate::nt_power::dispatch(call) { return result; }
     if let Some(result) = crate::nt_oem::dispatch(call) { return result; }
