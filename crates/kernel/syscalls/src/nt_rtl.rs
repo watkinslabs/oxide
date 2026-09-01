@@ -116,6 +116,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         return Some(get_current_directory(call.args.a0, call.args.a1));
     }
     if call.service == NtService::RtlDeleteBarrier { return Some(0); }
+    if call.service == NtService::RtlInitBarrier { return Some(init_barrier(call.args.a0, call.args.a1 as u32, call.args.a2 as u32)); }
     if let Some(result) = crate::nt_rtl_integer::dispatch(call) { return Some(result); }
     if let Some(result) = crate::nt_rtl_ansi::dispatch(call) { return Some(result); }
     if let Some(result) = crate::nt_debug::dispatch(call) { return Some(result); }
@@ -848,6 +849,14 @@ fn get_version(info: u64) -> u64 {
     bytes[280..282].copy_from_slice(&WINDOWS_SUITE_SINGLE_USER_TS.to_le_bytes());
     bytes[282] = WINDOWS_PRODUCT_WORKSTATION;
     if uaccess::copy_to_user(info, &bytes).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
+}
+
+fn init_barrier(barrier: u64, thread_count: u32, spin_count: u32) -> u64 {
+    if barrier == 0 { return STATUS_INVALID_PARAMETER; }
+    let mut bytes = [0u8; 24];
+    bytes[0..4].copy_from_slice(&spin_count.to_le_bytes());
+    bytes[4..8].copy_from_slice(&thread_count.to_le_bytes());
+    if uaccess::copy_to_user(barrier, &bytes).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
 }
 
 fn impersonate_self(level: u32) -> u64 {
