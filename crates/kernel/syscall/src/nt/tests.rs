@@ -265,6 +265,7 @@ use super::*;
     assert_eq!(decode(426, input).unwrap().service, NtService::RtlMapGenericMask);
     assert_eq!(decode(427, input).unwrap().service, NtService::RtlNewSecurityObject);
     assert_eq!(decode(428, input).unwrap().service, NtService::RtlNewSecurityObjectEx);
+    assert_eq!(decode(429, input).unwrap().service, NtService::RtlNewSecurityObjectWithMultipleInheritance);
     assert_eq!(decode(370, input).unwrap().service, NtService::RtlEqualSid);
     assert_eq!(decode(371, input).unwrap().service, NtService::RtlExpandEnvironmentStringsU);
     assert_eq!(decode(298, input).unwrap().service, NtService::NtQueryDirectoryObject);
