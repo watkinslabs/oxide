@@ -277,6 +277,8 @@
         assert!(wcstoul >= runtime.base.as_u64() && wcstoul < runtime.base.as_u64() + runtime.bytes as u64);
         let dbg_header = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"__wine_dbg_header" }).unwrap();
         assert!(dbg_header >= runtime.base.as_u64() && dbg_header < runtime.base.as_u64() + runtime.bytes as u64);
+        let dbg_output = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"__wine_dbg_output" }).unwrap();
+        assert!(dbg_output >= runtime.base.as_u64() && dbg_output < runtime.base.as_u64() + runtime.bytes as u64);
     }
 
     #[test]

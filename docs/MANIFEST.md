@@ -219,6 +219,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `69-image-and-native-filesystems.md` | DRAFT | — | `01`,`02`,`07`,`08`,`09`,`16`,`17`,`52`,`53` |
 | `44-phase-quick-reference.md` | DRAFT | — | `00`,`40`,`43` |
 | `31dx-windows-nt-debug-header.md` | FROZEN | 2026-08-31 | `01`,`02`,`31h`,`52`,`53` |
+| `31dx-windows-nt-debug-output.md` | FROZEN | 2026-08-31 | `01`,`02`,`31h`,`52`,`53` |
 
 ## Deleted
 
