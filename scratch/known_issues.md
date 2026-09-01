@@ -687,6 +687,8 @@ signaling remains unimplemented when a non-null event is supplied.
 layouts for ASCII case folding; full Unicode uppercase mapping remains absent.
 `RtlDestroyEnvironment` releases the environment block through the canonical
 NT heap owner; invalid foreign allocations are not yet reported natively.
+`RtlDestroyProcessParameters` releases the process-parameter block through the
+canonical NT heap owner; parameter-record validation remains absent.
 `RtlCreateProcessParametersEx` validates its result-pointer boundary; native
 string capture, environment ownership, normalization, and destruction remain
 unimplemented.

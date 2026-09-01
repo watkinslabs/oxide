@@ -202,6 +202,7 @@ use super::*;
     assert_eq!(decode(361, input).unwrap().service, NtService::RtlDeregisterWaitEx);
     assert_eq!(decode(362, input).unwrap().service, NtService::RtlDeriveCapabilitySidsFromName);
     assert_eq!(decode(363, input).unwrap().service, NtService::RtlDestroyEnvironment);
+    assert_eq!(decode(364, input).unwrap().service, NtService::RtlDestroyProcessParameters);
     assert_eq!(decode(298, input).unwrap().service, NtService::NtQueryDirectoryObject);
     assert_eq!(decode(299, input).unwrap().service, NtService::NtQueryFullAttributesFile);
     assert_eq!(decode(293, input).unwrap().service, NtService::NtPrivilegeCheck);
