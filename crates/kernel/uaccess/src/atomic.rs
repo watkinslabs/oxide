@@ -6,6 +6,8 @@ use crate::access_ok;
 
 const U32_BYTES: usize = core::mem::size_of::<u32>();
 const U32_ALIGN_MASK: u64 = (core::mem::align_of::<u32>() - 1) as u64;
+const U64_BYTES: usize = core::mem::size_of::<u64>();
+const U64_ALIGN_MASK: u64 = (core::mem::align_of::<u64>() - 1) as u64;
 const ATOMIC_OK: u32 = 0;
 const ATOMIC_FAULT: u32 = 1;
 const ATOMIC_RETRY: u32 = 2;
@@ -21,6 +23,28 @@ pub fn cmpxchg_user_u32(uaddr: u64, old: u32, new: u32) -> Result<u32, Errno> {
     #[cfg(target_arch = "aarch64")]
     // SAFETY: range and alignment are checked; HAL recovers both exclusive-access fault sites.
     let status = unsafe { hal_aarch64::raw_cmpxchg_user_u32(uaddr as *mut u32, old, new, seen.as_mut_ptr()) };
+    match status {
+        ATOMIC_OK => {
+            // SAFETY: both HALs initialize `seen` before returning ATOMIC_OK.
+            Ok(unsafe { seen.assume_init() })
+        }
+        ATOMIC_FAULT => Err(Errno::Efault),
+        ATOMIC_RETRY => Err(Errno::Eagain),
+        _ => Err(Errno::Efault),
+    }
+}
+
+/// Atomically replace a user double word if it equals `old`, returning the word seen.
+/// # C: O(page faults)
+pub fn cmpxchg_user_u64(uaddr: u64, old: u64, new: u64) -> Result<u64, Errno> {
+    if !access_ok(uaddr, U64_BYTES) || uaddr & U64_ALIGN_MASK != 0 { return Err(Errno::Efault); }
+    let mut seen = MaybeUninit::<u64>::uninit();
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: range and alignment are checked; HAL recovers a fault before the output is observed.
+    let status = unsafe { hal_x86_64::raw_cmpxchg_user_u64(uaddr as *mut u64, old, new, seen.as_mut_ptr()) };
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: range and alignment are checked; HAL recovers both exclusive-access fault sites.
+    let status = unsafe { hal_aarch64::raw_cmpxchg_user_u64(uaddr as *mut u64, old, new, seen.as_mut_ptr()) };
     match status {
         ATOMIC_OK => {
             // SAFETY: both HALs initialize `seen` before returning ATOMIC_OK.

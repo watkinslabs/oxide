@@ -218,6 +218,7 @@ pub enum NtService {
     RtlRaiseStatus = 442,
     RtlReleasePath = 443,
     RtlRunOnceBeginInitialize = 444,
+    RtlRunOnceComplete = 445,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -541,6 +542,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 442 { return Some(NtCall { service: NtService::RtlRaiseStatus, args }); }
     if service == 443 { return Some(NtCall { service: NtService::RtlReleasePath, args }); }
     if service == 444 { return Some(NtCall { service: NtService::RtlRunOnceBeginInitialize, args }); }
+    if service == 445 { return Some(NtCall { service: NtService::RtlRunOnceComplete, args }); }
     if service == 229 { return Some(NtCall { service: NtService::DbgUiConnectToDbg, args }); }
     if service == 230 { return Some(NtCall { service: NtService::DbgUiContinue, args }); }
     if service == 231 { return Some(NtCall { service: NtService::DbgUiRemoteBreakin, args }); }
@@ -848,6 +850,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::RtlRaiseStatus => Err(Errno::Enosys),
         NtService::RtlReleasePath => Err(Errno::Enosys),
         NtService::RtlRunOnceBeginInitialize => Err(Errno::Enosys),
+        NtService::RtlRunOnceComplete => Err(Errno::Enosys),
         NtService::RtlAddAccessAllowedObjectAce => Err(Errno::Enosys),
         NtService::RtlAddAccessDeniedObjectAce => Err(Errno::Enosys),
         NtService::RtlAddAuditAccessObjectAce => Err(Errno::Enosys),

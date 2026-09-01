@@ -99,6 +99,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlGetSearchPath { return Some(get_search_path(call.args.a0)); }
     if call.service == NtService::RtlReleasePath { return Some(release_path(call.args.a0)); }
     if call.service == NtService::RtlRunOnceBeginInitialize { return Some(run_once_begin_initialize(call.args.a0, call.args.a1, call.args.a2)); }
+    if call.service == NtService::RtlRunOnceComplete { return Some(run_once_complete(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::RtlGetSystemPreferredUILanguages { return Some(get_system_preferred_ui_languages(call)); }
     if call.service == NtService::RtlGetThreadErrorMode { return Some(get_thread_error_mode()); }
     if call.service == NtService::RtlGetThreadPreferredUILanguages { return Some(get_thread_preferred_ui_languages(call)); }
@@ -425,6 +426,29 @@ fn run_once_begin_initialize(once: u64, flags: u64, context: u64) -> u64 {
         3 if flags & ASYNC != 0 => STATUS_PENDING,
         3 => STATUS_INVALID_PARAMETER,
         _ => STATUS_INVALID_PARAMETER,
+    }
+}
+
+fn run_once_complete(once: u64, flags: u64, context: u64) -> u64 {
+    const ASYNC: u64 = 0x2;
+    const INIT_FAILED: u64 = 0x4;
+    if once == 0 || flags & !(ASYNC | INIT_FAILED) != 0 || context & 3 != 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(task) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !task.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    if flags & INIT_FAILED != 0 {
+        if context != 0 || flags & ASYNC != 0 { return STATUS_INVALID_PARAMETER; }
+    }
+    let completed = if flags & INIT_FAILED != 0 { 0 } else { context | 2 };
+    loop {
+        let Ok(value) = uaccess::get_user_u64(once) else { return STATUS_INVALID_PARAMETER; };
+        let state = value & 3;
+        if state != 1 && state != 3 { return STATUS_UNSUCCESSFUL; }
+        if state == 3 && flags & ASYNC == 0 { return STATUS_INVALID_PARAMETER; }
+        match uaccess::cmpxchg_user_u64(once, value, completed) {
+            Ok(seen) if seen == value => return 0,
+            Ok(_) => continue,
+            Err(_) => return STATUS_INVALID_PARAMETER,
+        }
     }
 }
 
