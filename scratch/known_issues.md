@@ -684,3 +684,6 @@ remain unimplemented.
 `NtWriteFileGather` validates its native I/O-status and segment-array pointer
 shape; scatter/gather segment copying and file-owner integration remain
 unimplemented.
+`NtWriteVirtualMemory` validates native process/source/count/output pointers;
+target address-space ownership and safe partial-copy reporting remain
+unimplemented.

@@ -321,6 +321,16 @@ pub fn dispatch(call: NtCall) -> u64 {
         // request until a canonical segment-array/file owner exists.
         return STATUS_NOT_IMPLEMENTED;
     }
+    if call.service == syscall::nt::NtService::NtWriteVirtualMemory {
+        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a1 == 0
+            || call.args.a2 == 0 || call.args.a3 > usize::MAX as u64 {
+            return STATUS_INVALID_PARAMETER;
+        }
+        // The target process/address-space owner is not yet available to the
+        // NT personality, so do not copy into an unvalidated address space.
+        return STATUS_NOT_IMPLEMENTED;
+    }
     if call.service == syscall::nt::NtService::NtSetInformationVirtualMemory {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() || call.args.a0 != CURRENT_PROCESS { return STATUS_INVALID_PARAMETER; }
