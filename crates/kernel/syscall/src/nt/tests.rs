@@ -227,6 +227,7 @@ use super::*;
     assert_eq!(decode(388, input).unwrap().service, NtService::RtlGetCurrentDirectoryU);
     assert_eq!(decode(389, input).unwrap().service, NtService::RtlGetCurrentPeb);
     assert_eq!(decode(390, input).unwrap().service, NtService::RtlGetDaclSecurityDescriptor);
+    assert_eq!(decode(391, input).unwrap().service, NtService::RtlGetEnabledExtendedFeatures);
     assert_eq!(decode(370, input).unwrap().service, NtService::RtlEqualSid);
     assert_eq!(decode(371, input).unwrap().service, NtService::RtlExpandEnvironmentStringsU);
     assert_eq!(decode(298, input).unwrap().service, NtService::NtQueryDirectoryObject);
