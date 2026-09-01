@@ -212,6 +212,7 @@ pub enum NtService {
     RtlQueryEnvironmentVariableU = 436,
     RtlQueryHeapInformation = 437,
     RtlQueryInformationActivationContext = 438,
+    RtlQueryTimeZoneInformation = 439,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -529,6 +530,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 436 { return Some(NtCall { service: NtService::RtlQueryEnvironmentVariableU, args }); }
     if service == 437 { return Some(NtCall { service: NtService::RtlQueryHeapInformation, args }); }
     if service == 438 { return Some(NtCall { service: NtService::RtlQueryInformationActivationContext, args }); }
+    if service == 439 { return Some(NtCall { service: NtService::RtlQueryTimeZoneInformation, args }); }
     if service == 229 { return Some(NtCall { service: NtService::DbgUiConnectToDbg, args }); }
     if service == 230 { return Some(NtCall { service: NtService::DbgUiContinue, args }); }
     if service == 231 { return Some(NtCall { service: NtService::DbgUiRemoteBreakin, args }); }
@@ -830,6 +832,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::RtlQueryEnvironmentVariableU => Err(Errno::Enosys),
         NtService::RtlQueryHeapInformation => Err(Errno::Enosys),
         NtService::RtlQueryInformationActivationContext => Err(Errno::Enosys),
+        NtService::RtlQueryTimeZoneInformation => Err(Errno::Enosys),
         NtService::RtlAddAccessAllowedObjectAce => Err(Errno::Enosys),
         NtService::RtlAddAccessDeniedObjectAce => Err(Errno::Enosys),
         NtService::RtlAddAuditAccessObjectAce => Err(Errno::Enosys),
