@@ -2,7 +2,7 @@
 
 use std::io;
 use std::collections::BTreeMap;
-use syscall::nt::{NtService, NtWindowMessage};
+use syscall::nt::{NtService, NtWindowMessage, NtWindowRect};
 
 const STATUS_NO_MORE_ENTRIES: u64 = 0x8000_001a;
 const STATUS_FAILURE_MASK: u64 = 0x8000_0000;
@@ -91,6 +91,17 @@ impl User32 {
     pub fn default_window_proc(&self, hwnd: u64, message: u32, wparam: u64, lparam: i64) -> Result<u64, WindowError> {
         invoke(NtService::DefaultWindowProc, [hwnd, message as u64, wparam, lparam as u64, 0, 0])
     }
+
+    /// Read the native rectangle for one window. # C: O(N_windows) plus usercopy
+    pub fn get_window_rect(&self, hwnd: u64) -> Result<NtWindowRect, WindowError> {
+        let mut rect = NtWindowRect { left: 0, top: 0, right: 0, bottom: 0 };
+        invoke(NtService::GetWindowRect, [hwnd, (&mut rect as *mut NtWindowRect) as u64, 0, 0, 0, 0]).map(|_| rect)
+    }
+
+    /// Set the native rectangle for one window. # C: O(N_windows) plus usercopy
+    pub fn set_window_rect(&self, hwnd: u64, rect: &NtWindowRect) -> Result<(), WindowError> {
+        invoke(NtService::SetWindowRect, [hwnd, (rect as *const NtWindowRect) as u64, 0, 0, 0, 0]).map(|_| ())
+    }
 }
 
 fn invoke(service: NtService, args: [u64; 6]) -> Result<u64, WindowError> {
@@ -114,6 +125,7 @@ mod tests {
     fn shared_message_layout_is_fixed_64_bit_abi() {
         assert_eq!(std::mem::size_of::<NtWindowMessage>(), 32);
         assert_eq!(std::mem::align_of::<NtWindowMessage>(), 8);
+        assert_eq!(std::mem::size_of::<NtWindowRect>(), 16);
     }
 
     #[test]
@@ -126,6 +138,12 @@ mod tests {
     fn no_message_status_is_not_a_transport_failure() {
         assert_eq!(STATUS_NO_MORE_ENTRIES & STATUS_FAILURE_MASK, STATUS_FAILURE_MASK);
         assert!(matches!(WindowError::Status(STATUS_NO_MORE_ENTRIES), WindowError::Status(value) if value == STATUS_NO_MORE_ENTRIES));
+    }
+
+    #[test]
+    fn geometry_selectors_are_stable_tagged_entries() {
+        assert_eq!(NtService::GetWindowRect.entry(), 0x4e54_0000_0000_01ff);
+        assert_eq!(NtService::SetWindowRect.entry(), 0x4e54_0000_0000_0200);
     }
 
     #[test]

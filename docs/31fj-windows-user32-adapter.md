@@ -17,6 +17,8 @@ implement Windows behavior.
 - Class registration retains UTF-16 class names and window-procedure pointers
   in the process adapter; creating a window submits only the procedure pointer
   to the native window service.
+- Window rectangles are read and written through the native window owner; the
+  adapter retains no geometry shadow state.
 - Message records remain caller-owned and use the fixed 64-bit layout from
   the shared NT ABI crate.
 
