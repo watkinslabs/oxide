@@ -328,6 +328,20 @@
         assert!(open_directory >= runtime.base.as_u64() && open_directory < runtime.base.as_u64() + runtime.bytes as u64);
         let find_actctx = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlFindActivationContextSectionString" }).unwrap();
         assert!(find_actctx >= runtime.base.as_u64() && find_actctx < runtime.base.as_u64() + runtime.bytes as u64);
+        let image_directory = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlImageDirectoryEntryToData" }).unwrap();
+        assert!(image_directory >= runtime.base.as_u64() && image_directory < runtime.base.as_u64() + runtime.bytes as u64);
+        let image_rva = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlImageRvaToVa" }).unwrap();
+        assert!(image_rva >= runtime.base.as_u64() && image_rva < runtime.base.as_u64() + runtime.bytes as u64);
+        let user_pfn = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlInitializeNtUserPfn" }).unwrap();
+        assert!(user_pfn >= runtime.base.as_u64() && user_pfn < runtime.base.as_u64() + runtime.bytes as u64);
+        let mb_to_unicode = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlMultiByteToUnicodeN" }).unwrap();
+        assert!(mb_to_unicode >= runtime.base.as_u64() && mb_to_unicode < runtime.base.as_u64() + runtime.bytes as u64);
+        let mb_to_unicode_size = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlMultiByteToUnicodeSize" }).unwrap();
+        assert!(mb_to_unicode_size >= runtime.base.as_u64() && mb_to_unicode_size < runtime.base.as_u64() + runtime.bytes as u64);
+        for name in [b"RtlRetrieveNtUserPfn" as &[u8], b"RtlResetNtUserPfn"] {
+            let address = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name }).unwrap();
+            assert!(address >= runtime.base.as_u64() && address < runtime.base.as_u64() + runtime.bytes as u64);
+        }
         assert!(guid_from_string >= runtime.base.as_u64() && guid_from_string < runtime.base.as_u64() + runtime.bytes as u64);
     }
 

@@ -38,6 +38,8 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlUnicodeToOemN { return Some(unicode_to_multibyte(call.args.a0, call.args.a1, call.args.a2, call.args.a3, call.args.a4)); }
     if call.service == NtService::RtlUnicodeToMultiByteSize { return Some(unicode_to_multibyte_size(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::RtlUnicodeToMultiByteN { return Some(unicode_to_multibyte(call.args.a0, call.args.a1, call.args.a2, call.args.a3, call.args.a4)); }
+    if call.service == NtService::RtlMultiByteToUnicodeN { return Some(multibyte_to_unicode(call.args.a0, call.args.a1, call.args.a2, call.args.a3, call.args.a4)); }
+    if call.service == NtService::RtlMultiByteToUnicodeSize { return Some(multibyte_to_unicode_size(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::RtlUnicodeStringToOemSize { return Some(unicode_string_to_oem_size(call.args.a0)); }
     if call.service != NtService::RtlUnicodeStringToAnsiString && call.service != NtService::RtlUnicodeStringToOemString { return None; }
     Some(unicode_string_to_ansi_string(call.args.a0, call.args.a1, call.args.a2 != 0))
@@ -383,6 +385,32 @@ fn unicode_to_multibyte(destination: u64, destination_length: u64, result_length
     if count != 0 && destination == 0 { return STATUS_INVALID_PARAMETER; }
     if count != 0 && uaccess::copy_to_user(destination, &converted[..count]).is_err() { return STATUS_INVALID_PARAMETER; }
     if result_length != 0 && uaccess::put_user_u32(result_length, count as u32).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
+}
+
+fn multibyte_to_unicode(destination: u64, destination_length: u64, result_length: u64, source: u64, source_length: u64) -> u64 {
+    if source_length > usize::MAX as u64 || destination_length > usize::MAX as u64 || (destination_length & 1) != 0 { return STATUS_INVALID_PARAMETER; }
+    if source_length != 0 && source == 0 { return STATUS_INVALID_PARAMETER; }
+    let mut bytes = alloc::vec![0u8; source_length as usize];
+    if source_length != 0 && uaccess::copy_from_user(&mut bytes, source).is_err() { return STATUS_INVALID_PARAMETER; }
+    let text = match core::str::from_utf8(&bytes) { Ok(value) => value, Err(_) => return STATUS_INVALID_PARAMETER };
+    let mut converted = Vec::new();
+    for character in text.chars() { let mut units = [0u16; 2]; let encoded = character.encode_utf16(&mut units); for unit in encoded { converted.extend_from_slice(&unit.to_le_bytes()); } }
+    let count = converted.len().min(destination_length as usize);
+    if count != 0 && destination == 0 { return STATUS_INVALID_PARAMETER; }
+    if count != 0 && uaccess::copy_to_user(destination, &converted[..count & !1]).is_err() { return STATUS_INVALID_PARAMETER; }
+    if result_length != 0 && uaccess::put_user_u32(result_length, converted.len() as u32).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
+}
+
+fn multibyte_to_unicode_size(result: u64, source: u64, source_length: u64) -> u64 {
+    if result == 0 || source_length > usize::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    if source_length != 0 && source == 0 { return STATUS_INVALID_PARAMETER; }
+    let mut bytes = alloc::vec![0u8; source_length as usize];
+    if source_length != 0 && uaccess::copy_from_user(&mut bytes, source).is_err() { return STATUS_INVALID_PARAMETER; }
+    let text = match core::str::from_utf8(&bytes) { Ok(value) => value, Err(_) => return STATUS_INVALID_PARAMETER };
+    let units = text.chars().map(|character| if character as u32 > 0xffff { 2usize } else { 1usize }).sum::<usize>();
+    if uaccess::put_user_u32(result, (units * 2) as u32).is_err() { return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
 }
 

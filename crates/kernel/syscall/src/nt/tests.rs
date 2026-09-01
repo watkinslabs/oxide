@@ -168,6 +168,13 @@ use super::*;
         assert_eq!(decode(218, input).unwrap().service, NtService::CallbackReturn);
         assert_eq!(decode(219, input).unwrap().service, NtService::OpenDirectoryObject);
         assert_eq!(decode(220, input).unwrap().service, NtService::RtlFindActivationContextSectionString);
+        assert_eq!(decode(221, input).unwrap().service, NtService::RtlImageDirectoryEntryToData);
+        assert_eq!(decode(222, input).unwrap().service, NtService::RtlImageRvaToVa);
+        assert_eq!(decode(223, input).unwrap().service, NtService::RtlInitializeNtUserPfn);
+        assert_eq!(decode(224, input).unwrap().service, NtService::RtlMultiByteToUnicodeN);
+        assert_eq!(decode(225, input).unwrap().service, NtService::RtlMultiByteToUnicodeSize);
+        assert_eq!(decode(226, input).unwrap().service, NtService::RtlRetrieveNtUserPfn);
+        assert_eq!(decode(227, input).unwrap().service, NtService::RtlResetNtUserPfn);
     }
 
     #[test]

@@ -5,6 +5,8 @@ use syscall::nt::{NtCall, NtService};
 /// Return the NT header address when a user image has valid PE signatures.
 /// # C: O(1) plus three fault-recovering user reads
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlImageDirectoryEntryToData { return Some(directory_entry(call)); }
+    if call.service == NtService::RtlImageRvaToVa { return Some(rva_to_va(call)); }
     if call.service != NtService::RtlImageNtHeader { return None; }
     let base = call.args.a0;
     if base == 0 { return Some(0); }
@@ -13,4 +15,79 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     let header = base.checked_add(offset)?;
     if !matches!(uaccess::get_user_u32(header), Ok(0x0000_4550)) { return Some(0); }
     Some(header)
+}
+
+const PE_MAGIC: u32 = 0x0000_4550;
+const OPTIONAL_MAGIC_PE32_PLUS: u32 = 0x0000_020b;
+const DIRECTORY_COUNT: u32 = 16;
+const OPTIONAL_HEADER_BYTES_BEFORE_DIRECTORIES: u64 = 112;
+const OPTIONAL_HEADER_SIZE_OFFSET: u64 = 20;
+const OPTIONAL_HEADER_MAGIC_OFFSET: u64 = 0;
+const OPTIONAL_HEADER_NUMBER_DIRECTORIES_OFFSET: u64 = 108;
+const DIRECTORY_BYTES: u64 = 8;
+const SECTION_HEADER_BYTES: u64 = 40;
+
+fn read_u32(address: u64) -> Option<u32> { uaccess::get_user_u32(address).ok() }
+
+fn directory_entry(call: NtCall) -> u64 {
+    let raw_module = call.args.a0;
+    if raw_module == 0 || call.args.a3 == 0 { return 0; }
+    let image = raw_module & 1 == 0;
+    let module = raw_module & !3;
+    let e_lfanew = match module.checked_add(0x3c).and_then(read_u32) { Some(value) => value as u64, None => return 0 };
+    let nt = match module.checked_add(e_lfanew) { Some(value) => value, None => return 0 };
+    if read_u32(nt) != Some(PE_MAGIC) { return 0; }
+    let optional = match nt.checked_add(24) { Some(value) => value, None => return 0 };
+    if read_u32(optional + OPTIONAL_HEADER_MAGIC_OFFSET).map(|value| value & 0xffff) != Some(OPTIONAL_MAGIC_PE32_PLUS) { return 0; }
+    let directories = match read_u32(optional + OPTIONAL_HEADER_NUMBER_DIRECTORIES_OFFSET) { Some(value) => value.min(DIRECTORY_COUNT), None => return 0 };
+    let directory = call.args.a2 as u32;
+    if directory >= directories { return 0; }
+    let entry = match optional.checked_add(OPTIONAL_HEADER_BYTES_BEFORE_DIRECTORIES)
+        .and_then(|value| value.checked_add((directory as u64) * DIRECTORY_BYTES)) { Some(value) => value, None => return 0 };
+    let rva = match read_u32(entry) { Some(value) => value, None => return 0 };
+    let size = match read_u32(entry + 4) { Some(value) => value, None => return 0 };
+    if uaccess::put_user_u32(call.args.a3, size).is_err() || rva == 0 { return 0; }
+    if image || rva < read_u32(optional + 60).unwrap_or(0) {
+        return module.checked_add(rva as u64).unwrap_or(0);
+    }
+    let section_count = match read_u32(nt + 6) { Some(value) => value.min(96), None => return 0 };
+    let optional_size = match read_u32(nt + OPTIONAL_HEADER_SIZE_OFFSET) { Some(value) => value as u64, None => return 0 };
+    let sections = match nt.checked_add(24).and_then(|value| value.checked_add(optional_size)) { Some(value) => value, None => return 0 };
+    for index in 0..section_count {
+        let section = match sections.checked_add((index as u64) * SECTION_HEADER_BYTES) { Some(value) => value, None => return 0 };
+        let virtual_size = match read_u32(section + 8) { Some(value) => value, None => return 0 };
+        let virtual_address = match read_u32(section + 12) { Some(value) => value, None => return 0 };
+        let raw_size = match read_u32(section + 16) { Some(value) => value, None => return 0 };
+        let raw_address = match read_u32(section + 20) { Some(value) => value, None => return 0 };
+        let span = virtual_size.max(raw_size);
+        if rva >= virtual_address && rva.checked_sub(virtual_address).and_then(|offset| offset.checked_add(size)).is_some_and(|end| end <= raw_size) {
+            return module.checked_add(raw_address as u64).and_then(|value| value.checked_add((rva - virtual_address) as u64)).unwrap_or(0);
+        }
+        if rva >= virtual_address && rva < virtual_address.saturating_add(span) { return 0; }
+    }
+    0
+}
+
+/// Translate a raw PE RVA through its section table.
+/// # C: O(N_sections) plus bounded user reads
+fn rva_to_va(call: NtCall) -> u64 {
+    let nt = call.args.a0;
+    let module = call.args.a1;
+    let rva = call.args.a2 as u32;
+    if nt == 0 || module == 0 || read_u32(nt) != Some(PE_MAGIC) { return 0; }
+    let optional_size = match read_u32(nt + OPTIONAL_HEADER_SIZE_OFFSET) { Some(value) => value as u64, None => return 0 };
+    let section_count = match read_u32(nt + 6) { Some(value) => value.min(96), None => return 0 };
+    let sections = match nt.checked_add(24).and_then(|value| value.checked_add(optional_size)) { Some(value) => value, None => return 0 };
+    for index in 0..section_count {
+        let section = match sections.checked_add((index as u64) * SECTION_HEADER_BYTES) { Some(value) => value, None => return 0 };
+        let virtual_address = match read_u32(section + 12) { Some(value) => value, None => return 0 };
+        let raw_size = match read_u32(section + 16) { Some(value) => value, None => return 0 };
+        if rva < virtual_address || rva - virtual_address >= raw_size { continue; }
+        let raw_address = match read_u32(section + 20) { Some(value) => value as u64, None => return 0 };
+        let address = match module.checked_add(raw_address)
+            .and_then(|value| value.checked_add((rva - virtual_address) as u64)) { Some(value) => value, None => return 0 };
+        if call.args.a3 != 0 && uaccess::put_user_u64(call.args.a3, section).is_err() { return 0; }
+        return address;
+    }
+    0
 }
