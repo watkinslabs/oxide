@@ -108,6 +108,7 @@ pub enum NtService {
     NtSetValueKey = 322,
     NtSuspendThread = 323,
     NtUnloadKey = 324,
+    NtUnlockVirtualMemory = 325,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -124,6 +125,7 @@ pub enum NtMemoryCall {
     Query { process: u64, address: u64, info_class: u32, info: UserPtr<u8>, info_size: u64, return_length: UserPtr<u64> },
     Flush { process: u64, address: UserPtr<u64>, size: UserPtr<u64>, io: Option<UserPtr<u8>> },
     Lock { process: u64, address: UserPtr<u64>, size: UserPtr<u64>, unknown: u32 },
+    Unlock { process: u64, address: UserPtr<u64>, size: UserPtr<u64>, unknown: u32 },
 }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum NtThreadCall {
@@ -452,6 +454,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 322 { return Some(NtCall { service: NtService::NtSetValueKey, args }); }
     if service == 323 { return Some(NtCall { service: NtService::NtSuspendThread, args }); }
     if service == 324 { return Some(NtCall { service: NtService::NtUnloadKey, args }); }
+    if service == 325 { return Some(NtCall { service: NtService::NtUnlockVirtualMemory, args }); }
     if service == 197 { return Some(NtCall { service: NtService::RtlGUIDFromString, args }); }
     if service == 195 { return Some(NtCall { service: NtService::WineDbgOutput, args }); }
     if service == 194 { return Some(NtCall { service: NtService::WineDbgHeader, args }); }
@@ -583,6 +586,9 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
             process: a.a0, address: UserPtr::new(a.a1)?, size: UserPtr::new(a.a2)?, io: optional_ptr(a.a3)?,
         }),
         NtService::NtLockVirtualMemory => Ok(NtMemoryCall::Lock {
+            process: a.a0, address: UserPtr::new(a.a1)?, size: UserPtr::new(a.a2)?, unknown: a.a3 as u32,
+        }),
+        NtService::NtUnlockVirtualMemory => Ok(NtMemoryCall::Unlock {
             process: a.a0, address: UserPtr::new(a.a1)?, size: UserPtr::new(a.a2)?, unknown: a.a3 as u32,
         }),
         NtService::NtGetContextThread => Err(Errno::Enosys),

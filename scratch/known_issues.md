@@ -676,3 +676,5 @@ confusing it with the internal registry request record; canonical key/value
 storage and VFS persistence remain unimplemented.
 `NtUnloadKey` now validates its native `OBJECT_ATTRIBUTES` pointer boundary;
 registry hive namespace and persistence ownership remain unimplemented.
+`NtUnlockVirtualMemory` now rounds the current-process range and releases the
+canonical VMA/PMM lock state; remote-process APC delivery remains unimplemented.

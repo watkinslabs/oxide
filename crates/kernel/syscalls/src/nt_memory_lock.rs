@@ -41,12 +41,33 @@ fn populate(mm: &AddressSpace, spans: &[LockedSpan]) -> Result<(), ()> {
             let address = hal::UserVirtAddr::new(start).ok_or(())?;
             pmm::user_as::populate_current_range(address, (end - start) as usize, vma.prot).map_err(|_| ())?;
         }
-        mark_unevictable(span);
+        mark_unevictable(span, true);
     }
     Ok(())
 }
 
-fn mark_unevictable(span: &LockedSpan) {
+/// Implement the current-process half of Wine's `NtUnlockVirtualMemory` over
+/// the same VMA and PMM owners. Unlocking never requires the Linux memlock
+/// admission check; it only releases state previously owned by the range.
+pub fn unlock(mm: &AddressSpace, address: UserPtr<u64>, size: UserPtr<u64>) -> u64 {
+    let raw_address = match uaccess::get_user_u64(address.as_u64()) { Ok(value) => value, Err(_) => return STATUS_INVALID_PARAMETER };
+    let raw_size = match uaccess::get_user_u64(size.as_u64()) { Ok(value) => value, Err(_) => return STATUS_INVALID_PARAMETER };
+    let start = raw_address & !(PAGE - 1);
+    let Some(end) = raw_address.checked_add(raw_size).and_then(|value| value.checked_add(PAGE - 1))
+        .map(|value| value & !(PAGE - 1)) else { return STATUS_INVALID_PARAMETER };
+    let Some(length) = end.checked_sub(start) else { return STATUS_INVALID_PARAMETER };
+    if uaccess::put_user_u64(address.as_u64(), start).is_err()
+        || uaccess::put_user_u64(size.as_u64(), length).is_err() { return STATUS_INVALID_PARAMETER; }
+    let Some(start) = hal::UserVirtAddr::new(start) else { return STATUS_ACCESS_DENIED };
+    let Ok(length) = usize::try_from(length) else { return STATUS_ACCESS_DENIED };
+    let outcome = mm.apply_vma_lock_flags(start, length, VmaFlags::empty());
+    if outcome.error.is_some() { return STATUS_ACCESS_DENIED; }
+    let span = LockedSpan { start, len: length, onfault: false };
+    mark_unevictable(&span, false);
+    STATUS_SUCCESS
+}
+
+fn mark_unevictable(span: &LockedSpan, unevictable: bool) {
     use hal::{MmuOps, Va};
     let mut address = span.start.as_u64();
     let end = address.saturating_add(span.len as u64);
@@ -56,7 +77,7 @@ fn mark_unevictable(span: &LockedSpan) {
         #[cfg(target_arch = "aarch64")]
         let present = hal_aarch64::mmu_ops::ArmMmu::translate(Va(address));
         if let Some((physical, _)) = present {
-            let _ = pmm::setup::set_lru_unevictable(physical.0 & !(PAGE - 1), true);
+            let _ = pmm::setup::set_lru_unevictable(physical.0 & !(PAGE - 1), unevictable);
         }
         address = address.saturating_add(PAGE);
     }
