@@ -11,9 +11,9 @@ Date: 2026-08-31
 the module's export directory, resolves forwarded exports, and returns
 `STATUS_PROCEDURE_NOT_FOUND` when the requested symbol is absent.
 
-Oxide exposes the native 64-bit ABI as selector 100. For the kernel-provided
-synthetic ntdll page, the NT syscall adapter validates the loaded module and
-`ANSI_STRING`, then resolves exact named exports from the native runtime
-catalog. Ordinals and exports from mapped PE modules remain unsupported and
-return `STATUS_PROCEDURE_NOT_FOUND` or `STATUS_INVALID_PARAMETER` as
-appropriate; Linux loader state is not consulted or changed.
+Oxide exposes the native 64-bit ABI as selector 100. The NT syscall adapter
+validates the loaded module and `ANSI_STRING`, resolves named and ordinal
+exports from mapped PE32+ modules with image bounds, and resolves exact named
+exports from the kernel-provided synthetic ntdll catalog. Forwarded exports
+remain unsupported and return `STATUS_PROCEDURE_NOT_FOUND`; Linux loader state
+is not consulted or changed.
