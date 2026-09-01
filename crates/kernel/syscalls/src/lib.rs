@@ -64,6 +64,8 @@ mod nt_directory;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_actctx;
 #[cfg(target_os = "oxide-kernel")]
+mod nt_env;
+#[cfg(target_os = "oxide-kernel")]
 mod nt_apiset;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_atom;

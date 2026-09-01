@@ -665,6 +665,12 @@ remain explicit gaps.
 `NtSetInformationVirtualMemory` now exposes the prefetch class boundary with
 argument validation; VMM prefetch and per-page write-watch ownership remain
 unimplemented.
+`RtlCreateProcessParametersEx` validates its result-pointer boundary; native
+string capture, environment ownership, normalization, and destruction remain
+unimplemented.
+`RtlCreateEnvironment` validates the native output-pointer boundary; inherited
+environment cloning and NT environment-block allocation/lifetime remain
+unimplemented.
 `RtlCopySid` validates the native SID header and destination capacity, then
 copies the bounded SID through the focused SID owner.
 `RtlCreateActivationContext` validates the native `ACTCTXW` header and flag
