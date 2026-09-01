@@ -54,6 +54,8 @@ mod nt_signal_wait;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_token;
 #[cfg(target_os = "oxide-kernel")]
+mod nt_registry;
+#[cfg(target_os = "oxide-kernel")]
 mod nt_heap;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_loader_dir;

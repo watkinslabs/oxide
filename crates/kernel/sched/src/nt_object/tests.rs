@@ -17,6 +17,15 @@ fn handles_are_process_local_and_type_stable() {
 }
 
 #[test]
+fn registry_key_handles_have_a_distinct_native_object_type() {
+    let table = NtHandleTable::new();
+    let handle = table.insert(table.new_key(), READ).unwrap();
+    let key = table.get(handle, READ).unwrap();
+    assert_eq!(key.kind(), NtObjectType::Key);
+    assert_ne!(key.kind(), NtObjectType::File);
+}
+
+#[test]
 fn event_state_matches_manual_and_auto_reset_rules() {
     let manual = NtObject::new_event(1, true, false).event().unwrap();
     assert!(!manual.try_wait()); manual.set();
