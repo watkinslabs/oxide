@@ -8,6 +8,14 @@ const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
 /// Validate NT callback lifecycle boundaries owned by the current thread group.
 /// # C: O(1)
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::TpAllocTimer {
+        let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+        if !cur.is_nt_personality() || call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
+        // Timer objects own callback state, pool membership, and timer-queue
+        // lifetime; no user-visible timer pointer is published before that
+        // native ownership boundary exists.
+        return Some(STATUS_NOT_IMPLEMENTED);
+    }
     if call.service == NtService::TpAllocPool {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
         if !cur.is_nt_personality() || call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
