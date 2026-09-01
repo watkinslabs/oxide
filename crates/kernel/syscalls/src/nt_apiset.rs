@@ -2,7 +2,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 use syscall::nt::{NtCall, NtService};
 
 const STATUS_SUCCESS: u64 = 0;
@@ -12,7 +12,6 @@ const TEB_PEB_OFFSET: u64 = 0x60;
 const PEB_API_SET_OFFSET: u64 = 0x68;
 const API_SET_HEADER_BYTES: u64 = 28;
 const API_SET_ENTRY_BYTES: u64 = 24;
-const API_SET_VALUE_BYTES: u64 = 20;
 
 /// Report whether a name belongs to the process API-set schema.
 /// # C: O(name length) plus bounded user copies
