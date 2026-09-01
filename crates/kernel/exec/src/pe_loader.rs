@@ -19,9 +19,9 @@ pub struct PeModuleBase<'a> {
 pub struct NtRuntime {
     pub base: UserVirtAddr,
     pub bytes: usize,
-    addresses: [u64; 255],
+    addresses: [u64; 256],
 }
-const NTDLL_EXPORTS: [&[u8]; 255] = [
+const NTDLL_EXPORTS: [&[u8]; 256] = [
     b"NtAllocateVirtualMemory", b"NtFreeVirtualMemory", b"NtProtectVirtualMemory", b"NtQueryVirtualMemory",
     b"NtTerminateProcess", b"NtCreateEvent", b"NtClose", b"NtSetEvent", b"NtResetEvent", b"NtWaitForSingleObject",
     b"NtCreateFile", b"NtOpenFile", b"NtReadFile", b"NtWriteFile", b"NtQueryInformationFile", b"NtSetInformationFile", b"NtQueryDirectoryFile", b"NtWaitForMultipleObjects",
@@ -32,6 +32,7 @@ const NTDLL_EXPORTS: [&[u8]; 255] = [
     b"NtCreateSymbolicLinkObject",
     b"NtCreateUserProcess",
     b"NtDelayExecution",
+    b"NtDeleteKey",
 ];
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct PeEntryState {
@@ -149,9 +150,9 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
     let code_bytes = (NTDLL_EXPORTS.len() - 1) * pe::nt_stub::X64_SIX_ARG_STUB_BYTES + pe::nt_stub::X64_BREAKPOINT_STUB_BYTES;
     let mapped_bytes = (code_bytes + page - 1) / page * page;
     let mut code = alloc::vec![0u8; mapped_bytes];
-    let mut addresses = [0u64; 255];
+    let mut addresses = [0u64; 256];
     let mut offset = 0usize;
-    for index in 0..255 {
+    for index in 0..256 {
         let selector = match index {
             2 => syscall::nt::NtService::ProtectVirtualMemory,
             3 => syscall::nt::NtService::QueryVirtualMemory,
@@ -358,6 +359,7 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
             252 => syscall::nt::NtService::NtCreateSymbolicLinkObject,
             253 => syscall::nt::NtService::NtCreateUserProcess,
             254 => syscall::nt::NtService::NtDelayExecution,
+            255 => syscall::nt::NtService::NtDeleteKey,
             _ => syscall::nt::NtService::FreeHeap,
         };
         let bytes = if index == 220 { pe::nt_stub::encode_x64_breakpoint_stub().to_vec() }

@@ -497,3 +497,7 @@ Windows NT frontier update (2026-09-01): `NtDelayExecution` now uses the
 existing scheduler interruptible wait path with native relative/absolute
 100-ns timeout conversion and alertable-result mapping; the graph advances to
 `ntdll.dll!NtDeleteKey`.
+Windows NT frontier update (2026-09-01): `NtDeleteKey` now has an explicit
+native export and fail-closed `STATUS_NOT_IMPLEMENTED` boundary; registry key
+deletion semantics remain pending. The graph advances to its next unresolved
+native import, `ntdll.dll!NtDeleteValueKey`.
