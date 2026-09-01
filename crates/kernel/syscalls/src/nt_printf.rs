@@ -10,8 +10,16 @@ const OUTPUT_LIMIT: usize = 1 << 20;
 /// Dispatch the NTDLL four-argument variadic-formatting entry.
 /// # C: O(format length + formatted output length)
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::Vsnwprintf { return Some(vsnwprintf(call.args.a0, call.args.a1, call.args.a2, call.args.a3)); }
     if call.service != NtService::Vsnprintf { return None; }
     Some(vsnprintf(call.args.a0, call.args.a1, call.args.a2, call.args.a3))
+}
+
+fn vsnwprintf(buffer: u64, length: u64, format: u64, _args: u64) -> u64 {
+    if format == 0 || (length != 0 && buffer == 0) { return neg_one(); }
+    // Wide format parsing and UTF-16 output stay behind this owner; never
+    // pass a wide user buffer through the narrow formatter as raw bytes.
+    neg_one()
 }
 
 fn vsnprintf(buffer: u64, length: u64, format: u64, args: u64) -> u64 {
