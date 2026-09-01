@@ -283,6 +283,7 @@ pub enum NtService {
     Wcsstr = 507,
     Wcstol = 508,
     LdrGetDllHandle = 509,
+    RtlFindExportedRoutineByName = 510,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -671,6 +672,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 507 { return Some(NtCall { service: NtService::Wcsstr, args }); }
     if service == 508 { return Some(NtCall { service: NtService::Wcstol, args }); }
     if service == 509 { return Some(NtCall { service: NtService::LdrGetDllHandle, args }); }
+    if service == 510 { return Some(NtCall { service: NtService::RtlFindExportedRoutineByName, args }); }
     if service == 229 { return Some(NtCall { service: NtService::DbgUiConnectToDbg, args }); }
     if service == 230 { return Some(NtCall { service: NtService::DbgUiContinue, args }); }
     if service == 231 { return Some(NtCall { service: NtService::DbgUiRemoteBreakin, args }); }
@@ -1008,7 +1010,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::RtlValidateHeap => Err(Errno::Enosys),
         NtService::RtlWaitOnAddress | NtService::RtlWakeAddressAll | NtService::RtlWakeAddressSingle => Err(Errno::Enosys),
         NtService::RtlWalkHeap => Err(Errno::Enosys),
-        NtService::RtlWow64EnableFsRedirection | NtService::RtlWow64EnableFsRedirectionEx | NtService::RtlWow64GetProcessMachines | NtService::RtlWow64GetThreadContext | NtService::RtlWow64SetThreadContext | NtService::RtlZombifyActivationContext | NtService::TpAllocCleanupGroup | NtService::TpAllocIoCompletion | NtService::TpAllocPool | NtService::TpAllocTimer | NtService::TpAllocWait | NtService::TpAllocWork | NtService::TpCallbackMayRunLong | NtService::TpQueryPoolStackInformation | NtService::TpSetPoolStackInformation | NtService::TpSimpleTryPost | NtService::Strnicmp | NtService::Vsnwprintf | NtService::Isalnum | NtService::Iswalnum | NtService::Isxdigit | NtService::Memcmp | NtService::Strcmp | NtService::Strncmp | NtService::Strtol | NtService::Towupper | NtService::Wcscspn | NtService::Wcsnlen | NtService::Wcspbrk | NtService::Wcsspn | NtService::Wcsstr | NtService::Wcstol | NtService::LdrGetDllHandle => Err(Errno::Enosys),
+        NtService::RtlWow64EnableFsRedirection | NtService::RtlWow64EnableFsRedirectionEx | NtService::RtlWow64GetProcessMachines | NtService::RtlWow64GetThreadContext | NtService::RtlWow64SetThreadContext | NtService::RtlZombifyActivationContext | NtService::TpAllocCleanupGroup | NtService::TpAllocIoCompletion | NtService::TpAllocPool | NtService::TpAllocTimer | NtService::TpAllocWait | NtService::TpAllocWork | NtService::TpCallbackMayRunLong | NtService::TpQueryPoolStackInformation | NtService::TpSetPoolStackInformation | NtService::TpSimpleTryPost | NtService::Strnicmp | NtService::Vsnwprintf | NtService::Isalnum | NtService::Iswalnum | NtService::Isxdigit | NtService::Memcmp | NtService::Strcmp | NtService::Strncmp | NtService::Strtol | NtService::Towupper | NtService::Wcscspn | NtService::Wcsnlen | NtService::Wcspbrk | NtService::Wcsspn | NtService::Wcsstr | NtService::Wcstol | NtService::LdrGetDllHandle | NtService::RtlFindExportedRoutineByName => Err(Errno::Enosys),
         NtService::RtlAddAccessAllowedObjectAce => Err(Errno::Enosys),
         NtService::RtlAddAccessDeniedObjectAce => Err(Errno::Enosys),
         NtService::RtlAddAuditAccessObjectAce => Err(Errno::Enosys),
