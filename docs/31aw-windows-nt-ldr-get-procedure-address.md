@@ -15,5 +15,6 @@ Oxide exposes the native 64-bit ABI as selector 100. The NT syscall adapter
 validates the loaded module and `ANSI_STRING`, resolves named and ordinal
 exports from mapped PE32+ modules with image bounds, and resolves exact named
 exports from the kernel-provided synthetic ntdll catalog. Forwarded exports
-remain unsupported and return `STATUS_PROCEDURE_NOT_FOUND`; Linux loader state
-is not consulted or changed.
+are recursively resolved, with a bounded depth, only through modules already
+present in the current process loader list; missing targets return
+`STATUS_PROCEDURE_NOT_FOUND`. Linux loader state is not consulted or changed.
