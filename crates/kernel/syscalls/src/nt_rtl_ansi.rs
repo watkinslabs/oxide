@@ -45,6 +45,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::Strtol { return Some(strtol(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Towupper { return Some(towupper(call.args.a0)); }
     if call.service == NtService::Wcscspn { return Some(wcscspn(call.args.a0, call.args.a1)); }
+    if call.service == NtService::Wcsnlen { return Some(wcsnlen(call.args.a0, call.args.a1)); }
     if call.service == NtService::Wcsnicmp { return Some(wcsnicmp(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Wcsicmp { return Some(wcsicmp(call.args.a0, call.args.a1)); }
     if call.service == NtService::Strnicmp { return Some(strnicmp(call.args.a0, call.args.a1, call.args.a2)); }
@@ -441,6 +442,15 @@ fn wcscspn(string: u64, reject: u64) -> u64 {
         let Some(next) = index.checked_add(1) else { return 0; };
         index = next;
     }
+}
+
+fn wcsnlen(string: u64, max: u64) -> u64 {
+    if string == 0 || max > usize::MAX as u64 { return 0; }
+    for index in 0..max as usize {
+        let Some(character) = read_u16(string, index) else { return 0; };
+        if character == 0 { return index as u64; }
+    }
+    max
 }
 
 fn is_ascii_space(byte: u8) -> bool { matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c) }
