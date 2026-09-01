@@ -245,6 +245,7 @@ pub enum NtService {
     RtlValidAcl = 469,
     RtlValidSecurityDescriptor = 470,
     RtlValidSid = 471,
+    RtlValidateHeap = 472,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -595,6 +596,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 469 { return Some(NtCall { service: NtService::RtlValidAcl, args }); }
     if service == 470 { return Some(NtCall { service: NtService::RtlValidSecurityDescriptor, args }); }
     if service == 471 { return Some(NtCall { service: NtService::RtlValidSid, args }); }
+    if service == 472 { return Some(NtCall { service: NtService::RtlValidateHeap, args }); }
     if service == 229 { return Some(NtCall { service: NtService::DbgUiConnectToDbg, args }); }
     if service == 230 { return Some(NtCall { service: NtService::DbgUiContinue, args }); }
     if service == 231 { return Some(NtCall { service: NtService::DbgUiRemoteBreakin, args }); }
@@ -929,6 +931,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::RtlValidAcl => Err(Errno::Enosys),
         NtService::RtlValidSecurityDescriptor => Err(Errno::Enosys),
         NtService::RtlValidSid => Err(Errno::Enosys),
+        NtService::RtlValidateHeap => Err(Errno::Enosys),
         NtService::RtlAddAccessAllowedObjectAce => Err(Errno::Enosys),
         NtService::RtlAddAccessDeniedObjectAce => Err(Errno::Enosys),
         NtService::RtlAddAuditAccessObjectAce => Err(Errno::Enosys),
