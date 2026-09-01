@@ -641,3 +641,6 @@ context owner, still absent from the current exception module.
 validation and completion require a scatter-read owner in the NT file adapter.
 `NtReadVirtualMemory` is exposed at the process-memory boundary; cross-address-
 space copying and partial-copy accounting require an address-space-aware owner.
+`NtRemoveIoCompletionEx` now removes multiple packets through the canonical NT
+completion-port queue; APC interruption remains dependent on the future APC
+delivery owner.

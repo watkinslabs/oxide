@@ -14,6 +14,7 @@ const IO_COMPLETION_MODIFY_STATE: u32 = 0x0002;
 const SYNCHRONIZE: u32 = 0x0010_0000;
 
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::NtRemoveIoCompletionEx { return Some(remove_io_completion_ex(call)); }
     if call.service == NtService::RtlSetIoCompletionCallback { return Some(set_io_callback(call)); }
     let Ok(object_call) = syscall::nt::decode_object(call) else { return None; };
     let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
@@ -68,6 +69,41 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         }
         _ => None,
     }
+}
+
+fn remove_io_completion_ex(call: NtCall) -> u64 {
+    const STATUS_USER_APC: u64 = 0xc000_00c0;
+    const MAX_PACKETS: u32 = 64;
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() || call.args.a0 > u32::MAX as u64 || call.args.a1 == 0 || call.args.a3 == 0 || call.args.a2 == 0 || call.args.a2 > MAX_PACKETS as u64 { return STATUS_INVALID_PARAMETER; }
+    let table = cur.thread_group.nt_handles();
+    let native = sched::nt_object::NtHandle::from_raw(call.args.a0 as u32);
+    let Some(object) = table.get(native, SYNCHRONIZE) else { return if table.contains(native) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }; };
+    let Some(port) = object.completion() else { return STATUS_INVALID_HANDLE; };
+    let deadline = if call.args.a4 == 0 { 0 } else {
+        let Ok(timeout) = syscall::UserPtr::<i64>::new(call.args.a4) else { return STATUS_INVALID_PARAMETER; };
+        match crate::nt_dispatch::wait_deadline(Some(timeout)) { Ok(value) => value, Err(status) => return status }
+    };
+    let mut packets = alloc::vec::Vec::new();
+    while packets.len() < call.args.a2 as usize {
+        if let Some(packet) = port.try_remove() { packets.push(packet); continue; }
+        if !packets.is_empty() { break; }
+        // SAFETY: the completion port remains alive through the wait and owns the scheduler wait list used by this predicate.
+        let outcome = unsafe { port.wait(deadline, timekeeper::monotonic_ns) };
+        if matches!(outcome, sched::WaitOutcome::TimedOut) { return STATUS_TIMEOUT; }
+        if matches!(outcome, sched::WaitOutcome::Interrupted) && call.args.a5 != 0 { return STATUS_USER_APC; }
+        let Some(packet) = port.try_remove() else { return STATUS_TIMEOUT; };
+        packets.push(packet);
+    }
+    for (index, packet) in packets.iter().enumerate() {
+        let base = call.args.a1.saturating_add(index as u64 * 32);
+        if uaccess::put_user_u64(base, packet.key).is_err()
+            || uaccess::put_user_u64(base + 8, packet.overlapped).is_err()
+            || uaccess::put_user_u64(base + 16, packet.status as u64).is_err()
+            || uaccess::put_user_u64(base + 24, packet.information).is_err() { return STATUS_INVALID_PARAMETER; }
+    }
+    if uaccess::put_user_u32(call.args.a3, packets.len() as u32).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
 }
 
 fn set_io_callback(call: NtCall) -> u64 {
