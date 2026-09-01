@@ -32,8 +32,10 @@ const MONTH_FORMULA_SCALE: i64 = 1_959;
 const PERMANENT_EPOCH_DAY: i64 = 584_817;
 const DYNAMIC_TIME_ZONE_INFORMATION_BYTES: usize = 429;
 const TIME_ZONE_INFORMATION_BYTES: usize = 172;
+const STATUS_PRIVILEGE_NOT_HELD: u64 = 0xc000_0061;
 
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlSetTimeZoneInformation { return Some(STATUS_PRIVILEGE_NOT_HELD); }
     if call.service == NtService::RtlQueryTimeZoneInformation { return Some(query_time_zone_information(call.args.a0)); }
     if call.service == NtService::RtlQueryDynamicTimeZoneInformation { return Some(query_dynamic_time_zone_information(call.args.a0)); }
     if call.service == NtService::RtlLocalTimeToSystemTime { return Some(local_time_to_system_time(call.args.a0, call.args.a1)); }
