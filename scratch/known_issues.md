@@ -648,8 +648,8 @@ delivery owner.
 honest `STATUS_NOT_IMPLEMENTED` result; per-page dirty/write-protect ownership
 remains a VMM task shared by both architectures.
 `NtResumeThread` now uses a task-owned saturating NT suspend-depth transition
-and encodes the prior depth; scheduler safe-point consumption and the matching
-`NtSuspendThread` increment path remain to be wired to the same owner.
+and encodes the prior depth; `NtSuspendThread` now increments that same owner,
+while scheduler safe-point consumption remains to be wired.
 `NtSaveKey` now validates the NT personality and non-null key/file handles
 before returning `STATUS_NOT_IMPLEMENTED`; a canonical registry-key object and
 hive serializer over the VFS are still required.
