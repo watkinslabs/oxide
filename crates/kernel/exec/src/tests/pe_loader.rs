@@ -326,6 +326,8 @@
         assert!(callback_return >= runtime.base.as_u64() && callback_return < runtime.base.as_u64() + runtime.bytes as u64);
         let open_directory = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"NtOpenDirectoryObject" }).unwrap();
         assert!(open_directory >= runtime.base.as_u64() && open_directory < runtime.base.as_u64() + runtime.bytes as u64);
+        let find_actctx = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlFindActivationContextSectionString" }).unwrap();
+        assert!(find_actctx >= runtime.base.as_u64() && find_actctx < runtime.base.as_u64() + runtime.bytes as u64);
         assert!(guid_from_string >= runtime.base.as_u64() && guid_from_string < runtime.base.as_u64() + runtime.bytes as u64);
     }
 

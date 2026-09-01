@@ -244,6 +244,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `31fc-windows-nt-image-options.md` | FROZEN | 2026-08-31 | `01`,`02`,`31fb`,`52`,`53` |
 | `31fd-windows-nt-callback-return.md` | FROZEN | 2026-09-01 | `01`,`02`,`31fc`,`52`,`53` |
 | `31fe-windows-nt-directory-open.md` | FROZEN | 2026-09-01 | `01`,`02`,`31fd`,`52`,`53` |
+| `31ff-windows-nt-activation-context-string.md` | FROZEN | 2026-09-01 | `01`,`02`,`31fe`,`52`,`53` |
 
 ## Deleted
 

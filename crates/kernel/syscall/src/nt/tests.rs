@@ -167,6 +167,7 @@ use super::*;
         assert_eq!(decode(217, input).unwrap().service, NtService::LdrQueryImageFileExecutionOptions);
         assert_eq!(decode(218, input).unwrap().service, NtService::CallbackReturn);
         assert_eq!(decode(219, input).unwrap().service, NtService::OpenDirectoryObject);
+        assert_eq!(decode(220, input).unwrap().service, NtService::RtlFindActivationContextSectionString);
     }
 
     #[test]
