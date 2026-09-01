@@ -546,4 +546,6 @@ path. `NtGetTickCount` now uses the monotonic timekeeper with Windows'
 `ntdll.dll!NtGetWriteWatch`. The write-watch ABI is exposed with strict
 current-process validation but remains `STATUS_NOT_IMPLEMENTED` until VMA
 and page-fault dirty tracking has a dedicated owner; the graph advances to
-`ntdll.dll!NtImpersonateAnonymousToken`.
+`ntdll.dll!NtImpersonateAnonymousToken`. Wine’s own implementation is a
+`STATUS_NOT_IMPLEMENTED` stub, so Oxide exposes the same explicit boundary;
+the graph advances to `ntdll.dll!NtIsProcessInJob`.
