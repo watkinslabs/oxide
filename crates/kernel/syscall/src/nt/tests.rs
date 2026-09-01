@@ -138,6 +138,7 @@ use super::*;
     assert_eq!(decode(295, input).unwrap().service, NtService::NtQueryAttributesFile);
     assert_eq!(decode(296, input).unwrap().service, NtService::NtQueryDefaultLocale);
     assert_eq!(decode(297, input).unwrap().service, NtService::NtQueryDefaultUILanguage);
+    assert_eq!(decode(300, input).unwrap().service, NtService::NtQueryInstallUILanguage);
     assert_eq!(decode(298, input).unwrap().service, NtService::NtQueryDirectoryObject);
     assert_eq!(decode(299, input).unwrap().service, NtService::NtQueryFullAttributesFile);
     assert_eq!(decode(293, input).unwrap().service, NtService::NtPrivilegeCheck);

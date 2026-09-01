@@ -611,3 +611,5 @@ implemented.
 `NtQueryFullAttributesFile` now translates the Wine-shaped network-open
 information record from canonical VFS metadata, including timestamps, size,
 and regular-file or directory attributes.
+`NtQueryInstallUILanguage` now returns the same en-US LANGID baseline as Wine's
+system LCID fallback.

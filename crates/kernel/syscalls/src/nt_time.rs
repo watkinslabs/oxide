@@ -46,6 +46,11 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         let language = 0x0409u16.to_ne_bytes();
         return Some(if uaccess::copy_to_user(call.args.a0, &language).is_ok() { STATUS_SUCCESS } else { STATUS_INVALID_PARAMETER });
     }
+    if call.service == NtService::NtQueryInstallUILanguage {
+        let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+        if !cur.is_nt_personality() || call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
+        return Some(if uaccess::copy_to_user(call.args.a0, &0x0409u16.to_ne_bytes()).is_ok() { STATUS_SUCCESS } else { STATUS_INVALID_PARAMETER });
+    }
     if call.service == NtService::NtGetTickCount {
         let Some(cur) = sched::live::current() else { return Some(0); };
         if !cur.is_nt_personality() { return Some(0); }
