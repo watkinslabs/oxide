@@ -284,6 +284,8 @@ pub enum NtService {
     Wcstol = 508,
     LdrGetDllHandle = 509,
     RtlFindExportedRoutineByName = 510,
+    GetWindowRect = 511,
+    SetWindowRect = 512,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -320,6 +322,9 @@ pub struct NtSystemCall { pub class: u32, pub info: UserPtr<u8>, pub length: u32
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct NtWindowMessage { pub hwnd: u64, pub message: u32, pub padding: u32, pub wparam: u64, pub lparam: i64 }
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct NtWindowRect { pub left: i32, pub top: i32, pub right: i32, pub bottom: i32 }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum NtWindowCall {
     Create { parent: u64, wndproc: u64 },
@@ -328,6 +333,8 @@ pub enum NtWindowCall {
     Peek { message: UserPtr<NtWindowMessage>, hwnd: u64, first: u32, last: u32, remove: u32 },
     Get { message: UserPtr<NtWindowMessage>, hwnd: u64, first: u32, last: u32 },
     DefaultProc { hwnd: u64, message: u32, wparam: u64, lparam: i64 },
+    GetRect { hwnd: u64, rect: UserPtr<NtWindowRect> },
+    SetRect { hwnd: u64, rect: UserPtr<NtWindowRect> },
 }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum NtLoaderCall { ResolveDelayLoadedApi { args: [u64; 6] }, ExecuteWithCatalog { request: UserPtr<crate::nt_exec::NtExecRequest> } }
@@ -674,6 +681,8 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 508 { return Some(NtCall { service: NtService::Wcstol, args }); }
     if service == 509 { return Some(NtCall { service: NtService::LdrGetDllHandle, args }); }
     if service == 510 { return Some(NtCall { service: NtService::RtlFindExportedRoutineByName, args }); }
+    if service == 511 { return Some(NtCall { service: NtService::GetWindowRect, args }); }
+    if service == 512 { return Some(NtCall { service: NtService::SetWindowRect, args }); }
     if service == 229 { return Some(NtCall { service: NtService::DbgUiConnectToDbg, args }); }
     if service == 230 { return Some(NtCall { service: NtService::DbgUiContinue, args }); }
     if service == 231 { return Some(NtCall { service: NtService::DbgUiRemoteBreakin, args }); }
@@ -1101,7 +1110,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::NtAdjustPrivilegesToken => Err(Errno::Enosys),
         NtService::NtAllocateLocallyUniqueId => Err(Errno::Enosys),
         NtService::NtCancelIoFile | NtService::NtCancelIoFileEx => Err(Errno::Enosys),
-        NtService::NtCancelSynchronousIoFile | NtService::NtCompareObjects | NtService::NtConvertBetweenAuxiliaryCounterAndPerformanceCounter | NtService::NtCreateNamedPipeFile | NtService::NtCreateSectionEx | NtService::NtCreateSymbolicLinkObject | NtService::NtCreateUserProcess | NtService::NtDelayExecution | NtService::NtDeleteKey | NtService::NtDeleteValueKey | NtService::NtDuplicateToken | NtService::NtEnumerateKey | NtService::NtEnumerateValueKey | NtService::NtFilterToken | NtService::NtFlushBuffersFile | NtService::NtFlushInstructionCache | NtService::NtFlushKey | NtService::NtMakeTemporaryObject | NtService::NtMapViewOfSectionEx | NtService::NtNotifyChangeDirectoryFile | NtService::NtNotifyChangeKey | NtService::NtOpenEvent | NtService::NtOpenKeyEx | NtService::NtOpenMutant | NtService::NtOpenProcess | NtService::NtOpenSection | NtService::NtOpenSemaphore | NtService::NtOpenSymbolicLinkObject | NtService::NtOpenThread | NtService::NtOpenTimer | NtService::NtPrivilegeCheck | NtService::NtPulseEvent | NtService::NtQueryAttributesFile | NtService::NtQueryDefaultLocale | NtService::NtQueryDefaultUILanguage | NtService::NtQueryDirectoryObject | NtService::NtQueryFullAttributesFile | NtService::NtQueryInstallUILanguage | NtService::NtQueryKey | NtService::NtQuerySymbolicLinkObject | NtService::NtUnmapViewOfSectionEx | NtService::NtWriteFileGather => Err(Errno::Enosys),
+        NtService::NtCancelSynchronousIoFile | NtService::NtCompareObjects | NtService::NtConvertBetweenAuxiliaryCounterAndPerformanceCounter | NtService::NtCreateNamedPipeFile | NtService::NtCreateSectionEx | NtService::NtCreateSymbolicLinkObject | NtService::NtCreateUserProcess | NtService::NtDelayExecution | NtService::NtDeleteKey | NtService::NtDeleteValueKey | NtService::NtDuplicateToken | NtService::NtEnumerateKey | NtService::NtEnumerateValueKey | NtService::NtFilterToken | NtService::NtFlushBuffersFile | NtService::NtFlushInstructionCache | NtService::NtFlushKey | NtService::NtMakeTemporaryObject | NtService::NtMapViewOfSectionEx | NtService::NtNotifyChangeDirectoryFile | NtService::NtNotifyChangeKey | NtService::NtOpenEvent | NtService::NtOpenKeyEx | NtService::NtOpenMutant | NtService::NtOpenProcess | NtService::NtOpenSection | NtService::NtOpenSemaphore | NtService::NtOpenSymbolicLinkObject | NtService::NtOpenThread | NtService::NtOpenTimer | NtService::NtPrivilegeCheck | NtService::NtPulseEvent | NtService::NtQueryAttributesFile | NtService::NtQueryDefaultLocale | NtService::NtQueryDefaultUILanguage | NtService::NtQueryDirectoryObject | NtService::NtQueryFullAttributesFile | NtService::NtQueryInstallUILanguage | NtService::NtQueryKey | NtService::NtQuerySymbolicLinkObject | NtService::NtUnmapViewOfSectionEx | NtService::NtWriteFileGather | NtService::GetWindowRect | NtService::SetWindowRect => Err(Errno::Enosys),
     }
 }
 /// Decode thread context calls after validating their output pointer.
@@ -1154,6 +1163,8 @@ pub fn decode_window(call: NtCall) -> Result<NtWindowCall, Errno> {
         NtService::PeekMessage => Ok(NtWindowCall::Peek { message: UserPtr::new(a.a0)?, hwnd: a.a1, first: a.a2 as u32, last: a.a3 as u32, remove: a.a4 as u32 }),
         NtService::GetMessage => Ok(NtWindowCall::Get { message: UserPtr::new(a.a0)?, hwnd: a.a1, first: a.a2 as u32, last: a.a3 as u32 }),
         NtService::DefaultWindowProc => Ok(NtWindowCall::DefaultProc { hwnd: a.a0, message: a.a1 as u32, wparam: a.a2, lparam: a.a3 as i64 }),
+        NtService::GetWindowRect => Ok(NtWindowCall::GetRect { hwnd: a.a0, rect: UserPtr::new(a.a1)? }),
+        NtService::SetWindowRect => Ok(NtWindowCall::SetRect { hwnd: a.a0, rect: UserPtr::new(a.a1)? }),
         _ => Err(Errno::Enosys),
     }
 }

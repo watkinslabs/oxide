@@ -58,19 +58,23 @@ impl MessageQueue {
 pub struct WindowRecord { pub owner_tid: u64, pub parent: Option<WindowId>, pub wndproc: u64, pub visible: bool }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct WindowRect { pub left: i32, pub top: i32, pub right: i32, pub bottom: i32 }
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum WindowError { NoSuchWindow, InvalidParent, QueueFull }
 
-pub struct WindowManager { next: u32, windows: Vec<(WindowId, WindowRecord)>, queues: Vec<(u64, MessageQueue)> }
+pub struct WindowManager { next: u32, windows: Vec<(WindowId, WindowRecord)>, rects: Vec<(WindowId, WindowRect)>, queues: Vec<(u64, MessageQueue)> }
 
 impl Default for WindowManager { fn default() -> Self { Self::new() } }
 
 impl WindowManager {
-    pub fn new() -> Self { Self { next: 1, windows: Vec::new(), queues: Vec::new() } }
+    pub fn new() -> Self { Self { next: 1, windows: Vec::new(), rects: Vec::new(), queues: Vec::new() } }
     pub fn create(&mut self, owner_tid: u64, parent: Option<WindowId>, wndproc: u64) -> Result<WindowId, WindowError> {
         if parent.is_some_and(|parent| self.get(parent).is_none()) { return Err(WindowError::InvalidParent); }
         let id = WindowId(self.next);
         self.next = self.next.checked_add(1).ok_or(WindowError::NoSuchWindow)?;
         self.windows.push((id, WindowRecord { owner_tid, parent, wndproc, visible: false }));
+        self.rects.push((id, WindowRect { left: 0, top: 0, right: 0, bottom: 0 }));
         if self.queues.iter().all(|(tid, _)| *tid != owner_tid) { self.queues.push((owner_tid, MessageQueue::default())); }
         Ok(id)
     }
@@ -80,8 +84,16 @@ impl WindowManager {
         record.visible = visible;
         Ok(())
     }
+    /// Read geometry from the canonical HWND record. # C: O(N_windows)
+    pub fn rect(&self, id: WindowId) -> Option<WindowRect> { self.rects.iter().find(|(window, _)| *window == id).map(|(_, rect)| *rect) }
+    /// Update geometry in the canonical HWND record. # C: O(N_windows)
+    pub fn set_rect(&mut self, id: WindowId, rect: WindowRect) -> Result<(), WindowError> {
+        let Some((_, current)) = self.rects.iter_mut().find(|(window, _)| *window == id) else { return Err(WindowError::NoSuchWindow); };
+        *current = rect; Ok(())
+    }
     pub fn destroy(&mut self, id: WindowId) -> Result<WindowRecord, WindowError> {
         let index = self.windows.iter().position(|(window, _)| *window == id).ok_or(WindowError::NoSuchWindow)?;
+        self.rects.retain(|(window, _)| *window != id);
         Ok(self.windows.remove(index).1)
     }
     pub fn post_to_window(&mut self, id: WindowId, message: WinMessage) -> Result<(), WindowError> {
@@ -150,6 +162,18 @@ mod tests {
         assert_eq!(manager.peek_for_thread(8, MessageFilter { hwnd: None, first: 0, last: u32::MAX }, false), None);
         assert_eq!(manager.destroy(window).unwrap().wndproc, 0x1234);
         assert_eq!(manager.post_to_window(window, message(None, 1)), Err(WindowError::NoSuchWindow));
+    }
+
+    #[test]
+    fn geometry_is_created_and_destroyed_with_the_window() {
+        let mut manager = WindowManager::new();
+        let window = manager.create(9, None, 0x1234).unwrap();
+        assert_eq!(manager.rect(window), Some(WindowRect { left: 0, top: 0, right: 0, bottom: 0 }));
+        let rect = WindowRect { left: 10, top: 20, right: 410, bottom: 320 };
+        manager.set_rect(window, rect).unwrap();
+        assert_eq!(manager.rect(window), Some(rect));
+        manager.destroy(window).unwrap();
+        assert_eq!(manager.rect(window), None);
     }
 
     #[test]

@@ -86,6 +86,23 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
                         None => (None, None, Some((wait, filter))),
                     }
                 }
+                NtWindowCall::GetRect { hwnd, rect } => {
+                    let Some(window) = ipc::win32_window::WindowId::from_raw(hwnd as u32) else { return Some(STATUS_INVALID_HANDLE); };
+                    let Some(value) = state.rect(window) else { return Some(STATUS_INVALID_HANDLE); };
+                    let native = [value.left.to_le_bytes(), value.top.to_le_bytes(), value.right.to_le_bytes(), value.bottom.to_le_bytes()];
+                    let mut bytes = [0u8; 16];
+                    for (index, field) in native.iter().enumerate() { bytes[index * 4..index * 4 + 4].copy_from_slice(field); }
+                    if uaccess::copy_to_user(rect.as_u64(), &bytes).is_err() { return Some(STATUS_INVALID_PARAMETER); }
+                    (Some(STATUS_SUCCESS), None, None)
+                }
+                NtWindowCall::SetRect { hwnd, rect } => {
+                    let Some(window) = ipc::win32_window::WindowId::from_raw(hwnd as u32) else { return Some(STATUS_INVALID_HANDLE); };
+                    let mut bytes = [0u8; 16];
+                    if uaccess::copy_from_user(&mut bytes, rect.as_u64()).is_err() { return Some(STATUS_INVALID_PARAMETER); }
+                    let field = |index: usize| i32::from_le_bytes(bytes[index * 4..index * 4 + 4].try_into().unwrap());
+                    let value = ipc::win32_window::WindowRect { left: field(0), top: field(1), right: field(2), bottom: field(3) };
+                    (Some(match state.set_rect(window, value) { Ok(()) => STATUS_SUCCESS, Err(_) => STATUS_INVALID_HANDLE }), None, None)
+                }
             }
         };
         if let Some(wait) = wake { wait.wake_all(); }
