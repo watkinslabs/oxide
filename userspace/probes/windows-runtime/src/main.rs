@@ -22,8 +22,10 @@ fn main() -> ExitCode {
         Ok(request) => request,
         Err(error) => { eprintln!("cannot build Windows handoff: {error:?}"); return ExitCode::from(1); }
     };
+    eprintln!("windows-runtime: execute-with-catalog modules={}", request.module_count());
     match request.execute_raw() {
-        Ok(status) => { println!("Windows image committed: NTSTATUS=0x{status:08x}"); ExitCode::SUCCESS }
+        Ok(status) if status == 0 => { println!("Windows image committed: NTSTATUS=0x{status:08x}"); ExitCode::SUCCESS }
+        Ok(status) => { eprintln!("Windows handoff rejected: NTSTATUS=0x{status:08x}"); ExitCode::from(1) }
         Err(error) => { eprintln!("Windows handoff failed: {error}"); ExitCode::from(1) }
     }
 }

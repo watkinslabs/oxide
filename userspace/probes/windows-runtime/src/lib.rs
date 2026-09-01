@@ -3,6 +3,7 @@
 use std::ffi::OsStr;
 use std::fs;
 use std::io;
+use std::collections::{HashMap, HashSet};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
@@ -18,6 +19,7 @@ pub enum BuildError {
     Io(io::Error),
     InvalidRoot(pe::Error),
     InvalidModule { path: PathBuf, error: pe::Error },
+    MissingModule { name: Vec<u8> },
     InvalidUtf8Path,
     TooLarge,
     InvalidAddress,
@@ -51,18 +53,31 @@ impl RuntimeRequest {
         if windows_path.is_empty() || windows_path.len() > u32::MAX as usize || windows_path.contains(&0) { return Err(BuildError::InvalidUtf8Path); }
         let image = fs::read(image_path)?;
         validate_size(image.len() as u64)?;
-        pe::parse(&image).map_err(BuildError::InvalidRoot)?;
+        let root = pe::parse(&image).map_err(BuildError::InvalidRoot)?;
         let mut catalog = ModuleCatalog::new();
         let mut modules = Vec::new();
+        let mut available = HashMap::new();
         for entry in fs::read_dir(dll_dir)? {
             let path = entry?.path();
             if !is_dll(&path) { continue; }
             let name = path.file_name().ok_or(BuildError::InvalidUtf8Path)?.as_bytes();
             if name.eq_ignore_ascii_case(b"ntdll.dll") { continue; }
-            let blob = fs::read(&path)?;
+            available.insert(name.to_ascii_lowercase(), path);
+        }
+        let mut pending: Vec<Vec<u8>> = root.imports().map_err(BuildError::InvalidRoot)?
+            .into_iter().map(|import| import.name.to_ascii_lowercase()).collect();
+        let mut seen = HashSet::new();
+        while let Some(name) = pending.pop() {
+            if name.eq_ignore_ascii_case(b"ntdll.dll") || !seen.insert(name.clone()) { continue; }
+            let path = available.get(&name).ok_or_else(|| BuildError::MissingModule { name: name.clone() })?;
+            let blob = fs::read(path)?;
             validate_size(blob.len() as u64)?;
-            catalog.add(name, &blob).map_err(|error| BuildError::InvalidModule { path: path.clone(), error })?;
-            modules.push(ModuleBuffer { name: name.to_vec().into_boxed_slice(), image: blob.into_boxed_slice() });
+            let dependency = pe::parse(&blob).map_err(|error| BuildError::InvalidModule { path: path.clone(), error })?;
+            pending.extend(dependency.imports().map_err(|error| BuildError::InvalidModule { path: path.clone(), error })?
+                .into_iter().map(|import| import.name.to_ascii_lowercase()));
+            let module_name = path.file_name().ok_or(BuildError::InvalidUtf8Path)?.as_bytes();
+            catalog.add(module_name, &blob).map_err(|error| BuildError::InvalidModule { path: path.clone(), error })?;
+            modules.push(ModuleBuffer { name: module_name.to_vec().into_boxed_slice(), image: blob.into_boxed_slice() });
         }
         let image = image.into_boxed_slice();
         let image_path = windows_path.to_vec().into_boxed_slice();
@@ -131,6 +146,7 @@ mod tests {
         assert_eq!(request.abi().image_len > 0, true);
         assert_eq!(request.abi().image_path_len, 14);
         assert!(request.module_count() >= 8);
+        assert!(request.module_count() < 64, "Notepad closure must fit the kernel catalog limit");
         assert_eq!(request.abi().module_count as usize, request.module_count());
         assert!(!request.modules.iter().any(|module| module.name.eq_ignore_ascii_case(b"ntdll.dll")));
         assert_eq!(std::mem::size_of::<NtExecRequest>(), 48);
