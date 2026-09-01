@@ -348,6 +348,17 @@
     }
 
     #[test]
+    fn native_runtime_export_catalog_matches_stub_addresses() {
+        let as_ = AddressSpace::new(0x20_000).unwrap();
+        let runtime = map_nt_runtime(&as_).unwrap();
+        let close = resolve_nt_runtime_export(runtime.base.as_u64(), b"NtClose").unwrap();
+        let unwind = resolve_nt_runtime_export(runtime.base.as_u64(), b"RtlUnwindEx").unwrap();
+        assert_eq!(close, runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"NtClose" }).unwrap());
+        assert_eq!(unwind, runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlUnwindEx" }).unwrap());
+        assert!(resolve_nt_runtime_export(runtime.base.as_u64(), b"missing_export").is_none());
+    }
+
+    #[test]
     fn module_set_maps_all_images_and_rolls_back_on_a_late_import_failure() {
         let first = tiny_pe();
         let second = tiny_pe();

@@ -58,6 +58,8 @@ mod nt_heap;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_loader_dir;
 #[cfg(target_os = "oxide-kernel")]
+mod nt_loader_proc;
+#[cfg(target_os = "oxide-kernel")]
 mod nt_directory;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_actctx;

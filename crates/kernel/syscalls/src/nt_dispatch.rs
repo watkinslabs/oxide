@@ -156,11 +156,7 @@ pub fn dispatch(call: NtCall) -> u64 {
     }
     if let Some(result) = crate::nt_atom::dispatch(call) { return result; }
     if let Some(result) = crate::nt_loader_dir::dispatch(call) { return result; }
-    if call.service == nt::NtService::LdrGetProcedureAddress {
-        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-        if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
-        return 0xc000_0002;
-    }
+    if let Some(result) = crate::nt_loader_proc::dispatch(call) { return result; }
     if let Some(result) = crate::nt_exec::dispatch(call) { return result; }
     if let Some(result) = crate::nt_duplicate::dispatch(call) { return result; }
     if let Some(result) = crate::nt_timer::dispatch(call) { return result; }

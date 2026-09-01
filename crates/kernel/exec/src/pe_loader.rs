@@ -128,6 +128,19 @@ impl ImportResolver for NtRuntime {
         Err(pe::Error::Unsupported)
     }
 }
+
+/// Resolve one export from the kernel-provided synthetic ntdll page.
+/// The page is executable stubs rather than a PE image, so its export table
+/// is owned by this runtime catalog instead of being read from user memory.
+pub fn resolve_nt_runtime_export(base: u64, name: &[u8]) -> Option<u64> {
+    let mut offset = 0u64;
+    for (index, export) in NTDLL_EXPORTS.iter().enumerate() {
+        if *export == name { return base.checked_add(offset); }
+        let stub_bytes = if index == 220 { pe::nt_stub::X64_BREAKPOINT_STUB_BYTES } else if index == 6 || index == 88 { pe::nt_stub::X64_UNARY_STUB_BYTES } else { pe::nt_stub::X64_SIX_ARG_STUB_BYTES };
+        offset = offset.checked_add(stub_bytes as u64)?;
+    }
+    None
+}
 pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
     let page = hal::PAGE_SIZE_BYTES as usize;
     let code_bytes = (NTDLL_EXPORTS.len() - 1) * pe::nt_stub::X64_SIX_ARG_STUB_BYTES + pe::nt_stub::X64_BREAKPOINT_STUB_BYTES;
