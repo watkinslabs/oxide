@@ -63,6 +63,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if let Some(result) = crate::nt_critical::dispatch(call) { return Some(result); }
     if call.service == NtService::RtlAreBitsClear { return Some(are_bits_clear(call.args.a0, call.args.a1 as u32, call.args.a2 as u32)); }
     if call.service == NtService::RtlAreBitsSet { return Some(are_bits_set(call.args.a0, call.args.a1 as u32, call.args.a2 as u32)); }
+    if call.service == NtService::RtlInitializeBitMap { return Some(initialize_bitmap(call.args.a0, call.args.a1, call.args.a2 as u32)); }
     if call.service == NtService::RtlSetLastWin32Error || call.service == NtService::RtlRestoreLastWin32Error { return Some(set_last_win32_error(call.args.a0)); }
     if call.service == NtService::RtlGetLastWin32Error { return Some(get_last_win32_error()); }
     if call.service == NtService::RtlDosPathNameToNtPathNameU { return Some(dos_path_to_nt(call.args.a0, call.args.a1, call.args.a2, call.args.a3)); }
@@ -573,6 +574,13 @@ fn are_bits_set(bitmap: u64, start: u32, count: u32) -> u64 {
         if uaccess::copy_from_user(&mut byte, address).is_err() || byte[0] & (1 << (bit & 7)) == 0 { return 0; }
     }
     1
+}
+fn initialize_bitmap(bitmap: u64, buffer: u64, size: u32) -> u64 {
+    if bitmap == 0 { return STATUS_INVALID_PARAMETER; }
+    let mut descriptor = [0u8; 16];
+    descriptor[0..4].copy_from_slice(&size.to_le_bytes());
+    descriptor[8..16].copy_from_slice(&buffer.to_le_bytes());
+    if uaccess::copy_to_user(bitmap, &descriptor).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
 }
 fn push_slist(list: u64, entry: u64) -> u64 {
     if list == 0 || entry == 0 || entry & 0xf != 0 { return 0; }

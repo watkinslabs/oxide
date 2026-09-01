@@ -229,6 +229,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `31ed-windows-nt-try-critical-section.md` | FROZEN | 2026-08-31 | `01`,`02`,`31ec`,`52`,`53` |
 | `31ee-windows-nt-bitmap-clear.md` | FROZEN | 2026-08-31 | `01`,`02`,`31ed`,`52`,`53` |
 | `31ef-windows-nt-bitmap-set.md` | FROZEN | 2026-08-31 | `01`,`02`,`31ee`,`52`,`53` |
+| `31f0-windows-nt-bitmap-init.md` | FROZEN | 2026-08-31 | `01`,`02`,`31ef`,`52`,`53` |
 
 ## Deleted
 
