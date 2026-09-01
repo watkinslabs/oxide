@@ -99,6 +99,36 @@ oxide_raw_cmpxchg_user_u32:
     .popsection
     .size oxide_raw_cmpxchg_user_u32, . - oxide_raw_cmpxchg_user_u32
 
+    .global oxide_raw_cmpxchg_user_u64
+    .type oxide_raw_cmpxchg_user_u64, %function
+oxide_raw_cmpxchg_user_u64:
+    mov w6, #{retry_limit}
+    mov w4, wzr
+19: ldaxr x5, [x0]
+    cmp x5, x1
+    b.ne 22f
+20: stlxr w4, x2, [x0]
+    cbz w4, 21f
+    subs w6, w6, #1
+    b.ne 19b
+    dmb ish
+    mov w0, #2
+    ret
+21: dmb ish
+22: str x5, [x3]
+    mov w0, wzr
+    ret
+23: mov w0, #1
+    ret
+    .pushsection __ex_table,"a"
+    .balign 8
+    .long 19b - .
+    .long 23b - .
+    .long 20b - .
+    .long 23b - .
+    .popsection
+    .size oxide_raw_cmpxchg_user_u64, . - oxide_raw_cmpxchg_user_u64
+
     .global oxide_raw_get_user_u32
     .type oxide_raw_get_user_u32, %function
 oxide_raw_get_user_u32:
@@ -167,6 +197,7 @@ extern "C" {
     fn oxide_raw_copy_from_user(dst: *mut u8, src: *const u8, len: usize) -> usize;
     fn oxide_raw_copy_to_user(dst: *mut u8, src: *const u8, len: usize) -> usize;
     fn oxide_raw_cmpxchg_user_u32(uaddr: *mut u32, old: u32, new: u32, seen: *mut u32) -> u32;
+    fn oxide_raw_cmpxchg_user_u64(uaddr: *mut u64, old: u64, new: u64, seen: *mut u64) -> u32;
     fn oxide_raw_get_user_u32(src: *const u32, out: *mut u32) -> u32;
     fn oxide_raw_get_user_u64(src: *const u64, out: *mut u64) -> u32;
     fn oxide_raw_put_user_u32(dst: *mut u32, value: u32) -> u32;
@@ -215,6 +246,27 @@ pub unsafe fn raw_cmpxchg_user_u32(uaddr: *mut u32, old: u32, new: u32, seen: *m
         use core::sync::atomic::{AtomicU32, Ordering};
         // SAFETY: hosted caller supplies a naturally aligned live AtomicU32-compatible word.
         let cell = unsafe { &*(uaddr as *const AtomicU32) };
+        let value = match cell.compare_exchange(old, new, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(v) | Err(v) => v,
+        };
+        // SAFETY: caller supplies a live output word that does not alias the user word.
+        unsafe { seen.write(value); }
+        0
+    }
+}
+
+/// Atomically replace a user double word; 0 succeeds, 1 faults, 2 requests retry. # C: O(page faults)
+pub unsafe fn raw_cmpxchg_user_u64(uaddr: *mut u64, old: u64, new: u64, seen: *mut u64) -> u32 {
+    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+    {
+        // SAFETY: caller supplies a user double word and live output; asm recovers both faultable exclusive accesses.
+        unsafe { oxide_raw_cmpxchg_user_u64(uaddr, old, new, seen) }
+    }
+    #[cfg(not(all(target_arch = "aarch64", target_os = "oxide-kernel")))]
+    {
+        use core::sync::atomic::{AtomicU64, Ordering};
+        // SAFETY: hosted caller supplies a naturally aligned live AtomicU64-compatible word.
+        let cell = unsafe { &*(uaddr as *const AtomicU64) };
         let value = match cell.compare_exchange(old, new, Ordering::SeqCst, Ordering::SeqCst) {
             Ok(v) | Err(v) => v,
         };
