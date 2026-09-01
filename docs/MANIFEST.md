@@ -146,6 +146,8 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `31cx-windows-nt-unicode-oem-size.md` | FROZEN | 2026-08-31 | `01`,`02`,`31ag`,`31h`,`52`,`53` |
 | `31cy-windows-nt-unicode-oem.md` | FROZEN | 2026-08-31 | `01`,`02`,`31cx`,`31h`,`31r`,`52`,`53` |
 | `31cz-windows-nt-unicode-multibyte.md` | FROZEN | 2026-08-31 | `01`,`02`,`31ag`,`31h`,`31r`,`52`,`53` |
+| `31da-windows-nt-unicode-multibyte-size.md` | FROZEN | 2026-08-31 | `01`,`02`,`31ag`,`31h`,`52`,`53` |
+| `31db-windows-nt-unicode-oem.md` | FROZEN | 2026-08-31 | `01`,`02`,`31ag`,`31h`,`31r`,`52`,`53` |
 | `31co-windows-nt-io-completion-callback.md` | FROZEN | 2026-08-31 | `01`,`02`,`06`,`13`,`31d`,`31f`,`31g`,`31h`,`31aa`,`31cn`,`52`,`53` |
 | `31ab-windows-runtime-launcher.md` | FROZEN | 2026-08-31 | `01`,`02`,`29a`,`31a`,`31h`,`31p`,`31y`,`52`,`53` |
 | `31ac-windows-registry-service.md` | FROZEN | 2026-08-31 | `01`,`03`,`29a`,`31ab`,`52`,`53` |

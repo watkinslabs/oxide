@@ -21,4 +21,4 @@ nonzero write requires a valid user destination. Linux dispatch is unchanged.
 The selector and native NTDLL export are appended without renumbering existing
 services. Decoder tests, export resolution, focused conversion tests, and the
 installed Wine Notepad graph census cover the ABI wiring. The current graph
-frontier is `RtlUnicodeToMultiByteSize`.
+frontier is `RtlUnicodeToOemN`.

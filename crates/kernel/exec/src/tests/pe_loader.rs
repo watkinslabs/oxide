@@ -223,6 +223,10 @@
             let address = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name }).unwrap();
             assert!(address >= runtime.base.as_u64() && address < runtime.base.as_u64() + runtime.bytes as u64);
         }
+        let multibyte_size = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlUnicodeToMultiByteSize" }).unwrap();
+        assert!(multibyte_size >= runtime.base.as_u64() && multibyte_size < runtime.base.as_u64() + runtime.bytes as u64);
+        let oem = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlUnicodeToOemN" }).unwrap();
+        assert!(oem >= runtime.base.as_u64() && oem < runtime.base.as_u64() + runtime.bytes as u64);
     }
 
     #[test]
