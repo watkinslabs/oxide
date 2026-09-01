@@ -82,6 +82,7 @@ mod nt_memory_lock;
 mod nt_rtl;
 mod nt_bitmap;
 mod nt_unicode;
+mod nt_context;
 mod nt_sid;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_rtl_ansi;

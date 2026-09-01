@@ -633,6 +633,7 @@ pub fn dispatch(call: NtCall) -> u64 {
     if let Some(result) = crate::nt_rtl::dispatch(call) { return result; }
     if let Some(result) = crate::nt_bitmap::dispatch(call) { return result; }
     if let Some(result) = crate::nt_unicode::dispatch(call) { return result; }
+    if let Some(result) = crate::nt_context::dispatch(call) { return result; }
     if let Some(result) = crate::nt_sid::dispatch(call) { return result; }
     if let Some(result) = crate::nt_printf::dispatch(call) { return result; }
     if let Some(result) = crate::nt_security::dispatch(call) { return result; }

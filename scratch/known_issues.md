@@ -724,3 +724,6 @@ not yet connected.
 `RtlConvertToAutoInheritSecurityObject` preserves the reference implementation's
 explicit `STATUS_NOT_IMPLEMENTED` result; auto-inheritance descriptor ownership
 remains unimplemented.
+`RtlCopyContext` implements the reference AMD64 flag validation and selected
+legacy-context copy ranges; extended XSTATE and i386 context support remain
+unimplemented.
