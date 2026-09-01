@@ -31,6 +31,9 @@ const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
 const STATUS_UNKNOWN_REVISION: u64 = 0xc000_005a;
 const DACL_OFFSET: u64 = 16;
 const ABSOLUTE_DACL_OFFSET: u64 = 32;
+const ABSOLUTE_GROUP_OFFSET: u64 = 16;
+const RELATIVE_GROUP_OFFSET: u64 = 8;
+const GROUP_DEFAULTED: u16 = 0x0002;
 
 /// Query the stable baseline descriptor attached to an NT object handle.
 /// Linux credentials supply the owner/group identity; no Linux syscall path
@@ -38,6 +41,9 @@ const ABSOLUTE_DACL_OFFSET: u64 = 32;
 pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == syscall::nt::NtService::RtlGetDaclSecurityDescriptor {
         return Some(get_dacl(call.args.a0, call.args.a1, call.args.a2, call.args.a3));
+    }
+    if call.service == syscall::nt::NtService::RtlGetGroupSecurityDescriptor {
+        return Some(get_group(call.args.a0, call.args.a1, call.args.a2));
     }
     if call.service == syscall::nt::NtService::RtlDeleteSecurityObject {
         if call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
@@ -74,6 +80,19 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if descriptor.as_u64() == 0 || length < required { return Some(STATUS_BUFFER_TOO_SMALL); }
     if uaccess::copy_to_user(descriptor.as_u64(), &bytes).is_err() { return Some(STATUS_INVALID_PARAMETER); }
     Some(STATUS_SUCCESS)
+}
+
+fn get_group(descriptor: u64, target_group: u64, defaulted: u64) -> u64 {
+    if descriptor == 0 || target_group == 0 || defaulted == 0 { return STATUS_INVALID_PARAMETER; }
+    let mut header = [0u8; 4];
+    if uaccess::copy_from_user(&mut header, descriptor).is_err() || header[0] != SECURITY_DESCRIPTOR_REVISION { return STATUS_INVALID_PARAMETER; }
+    let control = u16::from_le_bytes([header[2], header[3]]);
+    let group_ptr = if control & SELF_RELATIVE != 0 {
+        let Some(offset) = uaccess::get_user_u32(descriptor.saturating_add(RELATIVE_GROUP_OFFSET)).ok() else { return STATUS_INVALID_PARAMETER; };
+        if offset == 0 { 0 } else { descriptor.saturating_add(offset as u64) }
+    } else { uaccess::get_user_u64(descriptor.saturating_add(ABSOLUTE_GROUP_OFFSET)).ok().unwrap_or(0) };
+    if uaccess::put_user_u64(target_group, group_ptr).is_err() || uaccess::copy_to_user(defaulted, &[(control & GROUP_DEFAULTED != 0) as u8]).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
 }
 
 fn get_dacl(descriptor: u64, present: u64, dacl: u64, defaulted: u64) -> u64 {
