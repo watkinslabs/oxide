@@ -21,6 +21,14 @@ const MUI_LANGUAGE_NAME: u32 = 0x08;
 const MUI_MACHINE_LANGUAGE_SETTINGS: u32 = 0x400;
 const UI_LANGUAGE_NAME_U16: [u16; 7] = [b'e' as u16, b'n' as u16, b'-' as u16, b'U' as u16, b'S' as u16, 0, 0];
 const UI_LANGUAGE_ID_U16: [u16; 6] = [b'0' as u16, b'4' as u16, b'0' as u16, b'9' as u16, 0, 0];
+const WINDOWS_VERSION_INFO_BYTES: usize = 284;
+const WINDOWS_VERSION_SIZE: u32 = WINDOWS_VERSION_INFO_BYTES as u32;
+const WINDOWS_VERSION_MAJOR: u32 = 10;
+const WINDOWS_VERSION_MINOR: u32 = 0;
+const WINDOWS_VERSION_BUILD: u32 = 19045;
+const WINDOWS_PLATFORM_NT: u32 = 2;
+const WINDOWS_SUITE_SINGLE_USER_TS: u16 = 0x0100;
+const WINDOWS_PRODUCT_WORKSTATION: u8 = 1;
 const GUID_STRING_BYTES: usize = 76;
 const TEB_PEB_OFFSET: u64 = 0x60;
 const PEB_PROCESS_PARAMETERS_OFFSET: u64 = 0x20;
@@ -89,6 +97,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlGetThreadErrorMode { return Some(get_thread_error_mode()); }
     if call.service == NtService::RtlGetThreadPreferredUILanguages { return Some(get_thread_preferred_ui_languages(call)); }
     if call.service == NtService::RtlGetUserPreferredUILanguages { return Some(get_user_preferred_ui_languages(call)); }
+    if call.service == NtService::RtlGetVersion { return Some(get_version(call.args.a0)); }
     if call.service == NtService::RtlGetEnabledExtendedFeatures {
         const LEGACY_XSTATE: u64 = 0x3;
         #[cfg(target_arch = "x86_64")]
@@ -823,6 +832,21 @@ fn get_user_preferred_ui_languages(call: NtCall) -> u64 {
     if flags & !(MUI_LANGUAGE_NAME | MUI_LANGUAGE_ID) != 0
         || flags & MUI_LANGUAGE_NAME != 0 && flags & MUI_LANGUAGE_ID != 0 { return STATUS_INVALID_PARAMETER; }
     get_preferred_ui_languages(flags, call.args.a2, call.args.a3, call.args.a4)
+}
+
+fn get_version(info: u64) -> u64 {
+    if info == 0 { return STATUS_INVALID_PARAMETER; }
+    let mut bytes = [0u8; WINDOWS_VERSION_INFO_BYTES];
+    bytes[0..4].copy_from_slice(&WINDOWS_VERSION_SIZE.to_le_bytes());
+    bytes[4..8].copy_from_slice(&WINDOWS_VERSION_MAJOR.to_le_bytes());
+    bytes[8..12].copy_from_slice(&WINDOWS_VERSION_MINOR.to_le_bytes());
+    bytes[12..16].copy_from_slice(&WINDOWS_VERSION_BUILD.to_le_bytes());
+    bytes[16..20].copy_from_slice(&WINDOWS_PLATFORM_NT.to_le_bytes());
+    bytes[276..278].copy_from_slice(&0u16.to_le_bytes());
+    bytes[278..280].copy_from_slice(&0u16.to_le_bytes());
+    bytes[280..282].copy_from_slice(&WINDOWS_SUITE_SINGLE_USER_TS.to_le_bytes());
+    bytes[282] = WINDOWS_PRODUCT_WORKSTATION;
+    if uaccess::copy_to_user(info, &bytes).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
 }
 
 fn get_preferred_ui_languages(flags: u32, count: u64, buffer: u64, size: u64) -> u64 {
