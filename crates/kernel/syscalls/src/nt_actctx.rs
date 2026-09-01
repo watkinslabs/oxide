@@ -16,6 +16,24 @@ const ACTCTX_SECTION_KEYED_DATA_ROSTER_OFFSET: u32 = 64;
 /// Validate the Wine/Windows string-section query and report no active context.
 /// # C: O(1) plus bounded user copies
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlFindActivationContextSectionGuid {
+        let flags = call.args.a0;
+        if flags & !FIND_ACTCTX_SECTION_KEY_RETURN_HACTCTX != 0 || call.args.a1 != 0 || call.args.a3 == 0 || call.args.a4 == 0 {
+            return Some(STATUS_INVALID_PARAMETER);
+        }
+        if call.args.a2 == 0 {
+            return Some(STATUS_INVALID_PARAMETER);
+        }
+        let mut cb_size = [0u8; 4];
+        if uaccess::copy_from_user(&mut cb_size, call.args.a4).is_err() ||
+            u32::from_le_bytes(cb_size) < ACTCTX_SECTION_KEYED_DATA_ROSTER_OFFSET {
+            return Some(STATUS_INVALID_PARAMETER);
+        }
+        // No process/thread activation-context owner is installed yet. The
+        // native lookup therefore reaches the same not-found result after
+        // checking both scopes.
+        return Some(STATUS_SXS_KEY_NOT_FOUND);
+    }
     if call.service == NtService::RtlDeactivateActivationContext {
         if call.args.a0 != 0 || call.args.a1 == 0 { return Some(STATUS_INVALID_PARAMETER); }
         // Deactivation must pop the caller's activation-context frame and
