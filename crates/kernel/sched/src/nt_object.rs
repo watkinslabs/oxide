@@ -165,6 +165,11 @@ impl NtObject {
             section: None, task: None, file_share: None, delete_on_close: None, file_completion: Spinlock::new(None) })
     }
     pub fn token(&self) -> Option<Arc<NtToken>> { self.token.clone() }
+    pub fn duplicate_token(id: u64, token: Arc<NtToken>) -> Arc<Self> {
+        Arc::new(Self { kind: NtObjectType::Token, id, event: None, semaphore: None, mutant: None,
+            timer: None, completion: None, token: Some(token), file: None, section: None,
+            task: None, file_share: None, delete_on_close: None, file_completion: Spinlock::new(None) })
+    }
 
     /// Return the next timer deadline, or `None` for non-timer objects. # C: O(1)
     pub fn timer_deadline(&self) -> Option<u64> { self.timer.as_ref().map(|timer| timer.due_ns()) }
@@ -390,6 +395,10 @@ impl NtHandleTable {
     pub fn new_token(&self, uid: u32, gid: u32) -> Arc<NtObject> {
         let id = self.next_object_id.fetch_add(1, Ordering::Relaxed);
         NtObject::new_token(id, uid, gid)
+    }
+    pub fn duplicate_token(&self, token: Arc<NtToken>) -> Arc<NtObject> {
+        let id = self.next_object_id.fetch_add(1, Ordering::Relaxed);
+        NtObject::duplicate_token(id, token)
     }
 
     /// Wrap one VFS open description in a process-local NT object. # C: O(1)

@@ -47,6 +47,7 @@ pub enum NtService {
     NtDelayExecution = 261,
     NtDeleteKey = 262,
     NtDeleteValueKey = 263,
+    NtDuplicateToken = 264,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -109,6 +110,7 @@ pub enum NtObjectCall {
     TerminateThread { thread: u64, status: u64 },
     QueryThread { thread: u64, class: u32, info: UserPtr<u8>, length: u32, return_length: Option<UserPtr<u32>> },
     DuplicateObject { request: UserPtr<NtDuplicateObjectRequest> },
+    DuplicateToken { token: u32, access: u32, attributes: u64, effective_only: u32, token_type: u32, handle: UserPtr<u32> },
     CreateTimer { handle: UserPtr<u32>, desired_access: u32, timer_type: u32 },
     SetTimer { handle: u32, due_time: i64, period_ms: u32 },
     CancelTimer { handle: u32, previous: Option<UserPtr<u32>> },
@@ -316,6 +318,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 261 { return Some(NtCall { service: NtService::NtDelayExecution, args }); }
     if service == 262 { return Some(NtCall { service: NtService::NtDeleteKey, args }); }
     if service == 263 { return Some(NtCall { service: NtService::NtDeleteValueKey, args }); }
+    if service == 264 { return Some(NtCall { service: NtService::NtDuplicateToken, args }); }
     if service == 197 { return Some(NtCall { service: NtService::RtlGUIDFromString, args }); }
     if service == 195 { return Some(NtCall { service: NtService::WineDbgOutput, args }); }
     if service == 194 { return Some(NtCall { service: NtService::WineDbgHeader, args }); }
@@ -479,7 +482,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::NtAdjustPrivilegesToken => Err(Errno::Enosys),
         NtService::NtAllocateLocallyUniqueId => Err(Errno::Enosys),
         NtService::NtCancelIoFile | NtService::NtCancelIoFileEx => Err(Errno::Enosys),
-        NtService::NtCancelSynchronousIoFile | NtService::NtCompareObjects | NtService::NtConvertBetweenAuxiliaryCounterAndPerformanceCounter | NtService::NtCreateNamedPipeFile | NtService::NtCreateSectionEx | NtService::NtCreateSymbolicLinkObject | NtService::NtCreateUserProcess | NtService::NtDelayExecution | NtService::NtDeleteKey | NtService::NtDeleteValueKey => Err(Errno::Enosys),
+        NtService::NtCancelSynchronousIoFile | NtService::NtCompareObjects | NtService::NtConvertBetweenAuxiliaryCounterAndPerformanceCounter | NtService::NtCreateNamedPipeFile | NtService::NtCreateSectionEx | NtService::NtCreateSymbolicLinkObject | NtService::NtCreateUserProcess | NtService::NtDelayExecution | NtService::NtDeleteKey | NtService::NtDeleteValueKey | NtService::NtDuplicateToken => Err(Errno::Enosys),
     }
 }
 pub fn decode_system(call: NtCall) -> Result<NtSystemCall, Errno> {
@@ -597,6 +600,7 @@ pub fn decode_object(call: NtCall) -> Result<NtObjectCall, Errno> {
             return_length: optional_ptr(a.a4)?,
         }),
         NtService::DuplicateObject => Ok(NtObjectCall::DuplicateObject { request: UserPtr::new(a.a0)? }),
+        NtService::NtDuplicateToken => Ok(NtObjectCall::DuplicateToken { token: a.a0 as u32, access: a.a1 as u32, attributes: a.a2, effective_only: a.a3 as u32, token_type: a.a4 as u32, handle: UserPtr::new(a.a5)? }),
         NtService::CreateTimer => Ok(NtObjectCall::CreateTimer { handle: UserPtr::new(a.a0)?, desired_access: a.a1 as u32, timer_type: a.a2 as u32 }),
         NtService::SetTimer => Ok(NtObjectCall::SetTimer { handle: a.a0 as u32, due_time: a.a1 as i64, period_ms: a.a2 as u32 }),
         NtService::CancelTimer => Ok(NtObjectCall::CancelTimer { handle: a.a0 as u32, previous: optional_ptr(a.a1)? }),

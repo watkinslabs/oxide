@@ -22,6 +22,9 @@ const TOKEN_BASIC_INFORMATION: u32 = 0;
 const TOKEN_TYPE_INFORMATION: u32 = 8;
 const SE_PRIVILEGE_VALID_ATTRIBUTES: u32 = 0x8000_0007;
 const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
+const TOKEN_DUPLICATE: u32 = 0x0002;
+const TOKEN_PRIMARY: u32 = 1;
+const TOKEN_IMPERSONATION: u32 = 2;
 const STATUS_LUIDS_EXHAUSTED: u64 = 0xc000_0075;
 static NEXT_NT_LUID: AtomicU64 = AtomicU64::new(1000);
 
@@ -34,6 +37,21 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
     let table = cur.thread_group.nt_handles();
     match object_call {
+        NtObjectCall::DuplicateToken { token, access, attributes, effective_only, token_type, handle } => {
+            if attributes != 0 || effective_only > 1 || !matches!(token_type, TOKEN_PRIMARY | TOKEN_IMPERSONATION)
+                || access & !TOKEN_ALL_ACCESS != 0 { return Some(STATUS_INVALID_PARAMETER); }
+            let native = sched::nt_object::NtHandle::from_raw(token);
+            let Some(object) = table.get(native, TOKEN_DUPLICATE) else {
+                return Some(if table.contains(native) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE });
+            };
+            let Some(token) = object.token() else { return Some(STATUS_INVALID_HANDLE); };
+            let Some(new_handle) = table.insert(table.duplicate_token(token), access) else { return Some(STATUS_INVALID_PARAMETER); };
+            if uaccess::put_user_u32(handle.as_u64(), new_handle.raw()).is_err() {
+                let _ = table.close(new_handle);
+                return Some(STATUS_ACCESS_VIOLATION);
+            }
+            Some(STATUS_SUCCESS)
+        }
         NtObjectCall::OpenProcessToken { process, desired_access, handle } => {
             if process != CURRENT_PROCESS || desired_access & !TOKEN_ALL_ACCESS != 0 { return Some(STATUS_INVALID_PARAMETER); }
             insert_token(&cur, desired_access, handle, &table)
