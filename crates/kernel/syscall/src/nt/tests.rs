@@ -242,6 +242,7 @@ use super::*;
     assert_eq!(decode(403, input).unwrap().service, NtService::RtlGetSearchPath);
     assert_eq!(decode(404, input).unwrap().service, NtService::RtlGetSystemPreferredUILanguages);
     assert_eq!(decode(405, input).unwrap().service, NtService::RtlGetSystemTimePrecise);
+    assert_eq!(decode(406, input).unwrap().service, NtService::RtlGetThreadErrorMode);
     assert_eq!(decode(370, input).unwrap().service, NtService::RtlEqualSid);
     assert_eq!(decode(371, input).unwrap().service, NtService::RtlExpandEnvironmentStringsU);
     assert_eq!(decode(298, input).unwrap().service, NtService::NtQueryDirectoryObject);
