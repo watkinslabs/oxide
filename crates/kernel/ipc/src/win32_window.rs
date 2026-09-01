@@ -7,6 +7,7 @@ pub const WM_CLOSE: u32 = 0x0010;
 pub const WM_DESTROY: u32 = 0x0002;
 pub const WM_NCHITTEST: u32 = 0x0084;
 pub const HTCLIENT: i64 = 1;
+pub const SW_HIDE: u32 = 0;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct WindowId(u32);
@@ -63,18 +64,19 @@ pub struct WindowRect { pub left: i32, pub top: i32, pub right: i32, pub bottom:
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum WindowError { NoSuchWindow, InvalidParent, QueueFull }
 
-pub struct WindowManager { next: u32, windows: Vec<(WindowId, WindowRecord)>, rects: Vec<(WindowId, WindowRect)>, queues: Vec<(u64, MessageQueue)> }
+pub struct WindowManager { next: u32, windows: Vec<(WindowId, WindowRecord)>, rects: Vec<(WindowId, WindowRect)>, texts: Vec<(WindowId, Vec<u16>)>, queues: Vec<(u64, MessageQueue)> }
 
 impl Default for WindowManager { fn default() -> Self { Self::new() } }
 
 impl WindowManager {
-    pub fn new() -> Self { Self { next: 1, windows: Vec::new(), rects: Vec::new(), queues: Vec::new() } }
+    pub fn new() -> Self { Self { next: 1, windows: Vec::new(), rects: Vec::new(), texts: Vec::new(), queues: Vec::new() } }
     pub fn create(&mut self, owner_tid: u64, parent: Option<WindowId>, wndproc: u64) -> Result<WindowId, WindowError> {
         if parent.is_some_and(|parent| self.get(parent).is_none()) { return Err(WindowError::InvalidParent); }
         let id = WindowId(self.next);
         self.next = self.next.checked_add(1).ok_or(WindowError::NoSuchWindow)?;
         self.windows.push((id, WindowRecord { owner_tid, parent, wndproc, visible: false }));
         self.rects.push((id, WindowRect { left: 0, top: 0, right: 0, bottom: 0 }));
+        self.texts.push((id, Vec::new()));
         if self.queues.iter().all(|(tid, _)| *tid != owner_tid) { self.queues.push((owner_tid, MessageQueue::default())); }
         Ok(id)
     }
@@ -84,6 +86,11 @@ impl WindowManager {
         record.visible = visible;
         Ok(())
     }
+    /// Change visibility and return the previous state. # C: O(N_windows)
+    pub fn show(&mut self, id: WindowId, visible: bool) -> Result<bool, WindowError> {
+        let Some((_, record)) = self.windows.iter_mut().find(|(window, _)| *window == id) else { return Err(WindowError::NoSuchWindow); };
+        let previous = record.visible; record.visible = visible; Ok(previous)
+    }
     /// Read geometry from the canonical HWND record. # C: O(N_windows)
     pub fn rect(&self, id: WindowId) -> Option<WindowRect> { self.rects.iter().find(|(window, _)| *window == id).map(|(_, rect)| *rect) }
     /// Update geometry in the canonical HWND record. # C: O(N_windows)
@@ -91,9 +98,22 @@ impl WindowManager {
         let Some((_, current)) = self.rects.iter_mut().find(|(window, _)| *window == id) else { return Err(WindowError::NoSuchWindow); };
         *current = rect; Ok(())
     }
+    /// Return the client rectangle in client coordinates. # C: O(N_windows)
+    pub fn client_rect(&self, id: WindowId) -> Option<WindowRect> {
+        let rect = self.rect(id)?;
+        Some(WindowRect { left: 0, top: 0, right: rect.right.checked_sub(rect.left)?, bottom: rect.bottom.checked_sub(rect.top)? })
+    }
+    /// Read the UTF-16 title/control text owned by one window. # C: O(N_windows)
+    pub fn text(&self, id: WindowId) -> Option<&[u16]> { self.texts.iter().find(|(window, _)| *window == id).map(|(_, text)| text.as_slice()) }
+    /// Replace the UTF-16 title/control text owned by one window. # C: O(N_windows + N_text)
+    pub fn set_text(&mut self, id: WindowId, text: &[u16]) -> Result<(), WindowError> {
+        let Some((_, current)) = self.texts.iter_mut().find(|(window, _)| *window == id) else { return Err(WindowError::NoSuchWindow); };
+        current.clear(); current.extend_from_slice(text); Ok(())
+    }
     pub fn destroy(&mut self, id: WindowId) -> Result<WindowRecord, WindowError> {
         let index = self.windows.iter().position(|(window, _)| *window == id).ok_or(WindowError::NoSuchWindow)?;
         self.rects.retain(|(window, _)| *window != id);
+        self.texts.retain(|(window, _)| *window != id);
         Ok(self.windows.remove(index).1)
     }
     pub fn post_to_window(&mut self, id: WindowId, message: WinMessage) -> Result<(), WindowError> {
@@ -174,6 +194,20 @@ mod tests {
         assert_eq!(manager.rect(window), Some(rect));
         manager.destroy(window).unwrap();
         assert_eq!(manager.rect(window), None);
+    }
+
+    #[test]
+    fn text_parent_and_visibility_follow_window_lifetime() {
+        let mut manager = WindowManager::new();
+        let parent = manager.create(9, None, 0).unwrap();
+        let child = manager.create(9, Some(parent), 0).unwrap();
+        manager.set_text(child, &[b'c' as u16, b't' as u16]).unwrap();
+        assert_eq!(manager.text(child), Some(&[b'c' as u16, b't' as u16][..]));
+        assert_eq!(manager.get(child).unwrap().parent, Some(parent));
+        assert_eq!(manager.show(child, true), Ok(false));
+        assert!(manager.get(child).unwrap().visible);
+        manager.destroy(child).unwrap();
+        assert_eq!(manager.text(child), None);
     }
 
     #[test]
