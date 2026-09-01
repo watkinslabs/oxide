@@ -571,3 +571,6 @@ boundary until the NT event/APC owner is connected to VFS notifications.
 The graph then reaches `ntdll.dll!NtNotifyChangeKey`; registry notification
 remains an explicit `STATUS_NOT_IMPLEMENTED` boundary until the registry
 service has an NT-owned async watch protocol.
+The graph now reaches `ntdll.dll!NtOpenEvent`; opening named events remains an
+explicit `STATUS_NOT_IMPLEMENTED` boundary until the NT object namespace is
+implemented.
