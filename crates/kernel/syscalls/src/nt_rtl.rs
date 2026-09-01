@@ -106,6 +106,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         if call.args.a2 != 0 && uaccess::copy_to_user(call.args.a2, &IMAGE_FILE_MACHINE_AMD64.to_le_bytes()).is_err() { return Some(STATUS_ACCESS_VIOLATION); }
         return Some(STATUS_SUCCESS);
     }
+    if call.service == NtService::RtlWow64GetThreadContext { return Some(STATUS_INVALID_PARAMETER); }
     if call.service == NtService::RtlGetExtendedContextLength2 { return Some(get_extended_context_length(call.args.a0 as u32, call.args.a1, call.args.a2)); }
     if call.service == NtService::RtlInitializeExtendedContext2 { return Some(initialize_extended_context(call.args.a0, call.args.a1 as u32, call.args.a2, call.args.a3)); }
     if call.service == NtService::RtlGetExtendedFeaturesMask { return Some(get_extended_features_mask(call.args.a0)); }
