@@ -57,6 +57,8 @@ pub fn dispatch(call: NtFileCall) -> u64 {
         NtFileCall::Read { request } => io(cur, request.as_u64(), false),
         NtFileCall::Write { request } => io(cur, request.as_u64(), true),
         NtFileCall::QueryInformation { request } => query_information(cur, request.as_u64()),
+        NtFileCall::QueryVolumeInformation { handle, io_status, information, length, information_class } =>
+            crate::nt_file_volume::query(cur, handle, io_status.as_u64(), information.as_u64(), length, information_class),
         NtFileCall::SetInformation { request } => set_information(cur, request.as_u64()),
         NtFileCall::QueryDirectory { request } => query_directory(cur, request.as_u64()),
         NtFileCall::Lock { request } => crate::nt_file_lock::dispatch(cur, request.as_u64(), false),
