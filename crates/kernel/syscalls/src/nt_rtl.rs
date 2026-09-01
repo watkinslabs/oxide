@@ -51,7 +51,9 @@ const CONTEXT_XSTATE: u32 = 0x0040;
 const CONTEXT_ALLOWED: u32 = 0xd800_0000 | CONTEXT_AMD64_ALL | CONTEXT_XSTATE;
 const AMD64_CONTEXT_BYTES: u64 = 0x4d0;
 const CONTEXT_EX_BYTES: u64 = 0x20;
+#[cfg(target_arch = "x86_64")]
 const XSTATE_LEGACY_BYTES: u64 = 512;
+#[cfg(target_arch = "x86_64")]
 const XSTATE_HEADER_BYTES: u64 = 64;
 
 /// Convert the fixed Windows GUID spelling into its 16-byte little-endian ABI.
