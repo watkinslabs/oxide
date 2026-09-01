@@ -245,6 +245,7 @@ use super::*;
     assert_eq!(decode(406, input).unwrap().service, NtService::RtlGetThreadErrorMode);
     assert_eq!(decode(407, input).unwrap().service, NtService::RtlGetThreadPreferredUILanguages);
     assert_eq!(decode(408, input).unwrap().service, NtService::RtlGetUserPreferredUILanguages);
+    assert_eq!(decode(409, input).unwrap().service, NtService::RtlGetVersion);
     assert_eq!(decode(370, input).unwrap().service, NtService::RtlEqualSid);
     assert_eq!(decode(371, input).unwrap().service, NtService::RtlExpandEnvironmentStringsU);
     assert_eq!(decode(298, input).unwrap().service, NtService::NtQueryDirectoryObject);
