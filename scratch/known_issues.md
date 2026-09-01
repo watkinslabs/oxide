@@ -696,3 +696,7 @@ ownership remain unimplemented.
 `RtlActivateActivationContextEx` validates the native TEB, opaque activation
 context, and cookie-pointer boundary; TEB stack linking and cookie ownership
 remain unimplemented.
+`RtlAddAccessAllowedObjectAce` is cataloged with the reference implementation's
+explicit unsupported result; canonical ACL mutation remains unimplemented.
+`RtlAddAccessDeniedObjectAce` is cataloged with the reference implementation's
+explicit unsupported result; canonical ACL mutation remains unimplemented.

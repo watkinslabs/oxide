@@ -170,6 +170,8 @@ use super::*;
     assert_eq!(decode(329, input).unwrap().service, NtService::NtYieldExecution);
     assert_eq!(decode(330, input).unwrap().service, NtService::RtlActivateActivationContext);
     assert_eq!(decode(331, input).unwrap().service, NtService::RtlActivateActivationContextEx);
+    assert_eq!(decode(332, input).unwrap().service, NtService::RtlAddAccessAllowedObjectAce);
+    assert_eq!(decode(333, input).unwrap().service, NtService::RtlAddAccessDeniedObjectAce);
     assert_eq!(decode(298, input).unwrap().service, NtService::NtQueryDirectoryObject);
     assert_eq!(decode(299, input).unwrap().service, NtService::NtQueryFullAttributesFile);
     assert_eq!(decode(293, input).unwrap().service, NtService::NtPrivilegeCheck);
