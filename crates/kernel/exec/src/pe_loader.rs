@@ -19,15 +19,15 @@ pub struct PeModuleBase<'a> {
 pub struct NtRuntime {
     pub base: UserVirtAddr,
     pub bytes: usize,
-    addresses: [u64; 166],
+    addresses: [u64; 167],
 }
-const NTDLL_EXPORTS: [&[u8]; 166] = [
+const NTDLL_EXPORTS: [&[u8]; 167] = [
     b"NtAllocateVirtualMemory", b"NtFreeVirtualMemory", b"NtProtectVirtualMemory", b"NtQueryVirtualMemory",
     b"NtTerminateProcess", b"NtCreateEvent", b"NtClose", b"NtSetEvent", b"NtResetEvent", b"NtWaitForSingleObject",
     b"NtCreateFile", b"NtOpenFile", b"NtReadFile", b"NtWriteFile", b"NtQueryInformationFile", b"NtSetInformationFile", b"NtQueryDirectoryFile", b"NtWaitForMultipleObjects",
     b"NtCreateSection", b"NtMapViewOfSection", b"NtUnmapViewOfSection", b"NtQueryInformationProcess", b"NtCreateThreadEx", b"NtTerminateThread", b"NtQueryInformationThread",
     b"RtlAllocateHeap", b"RtlFreeHeap", b"NtdllDefWindowProc_A", b"NtdllDefWindowProc_W", b"RtlReAllocateHeap", b"LdrResolveDelayLoadedAPI", b"RtlUnwind", b"NtCreateSemaphore", b"NtReleaseSemaphore", b"NtCreateMutant", b"NtReleaseMutant", b"NtQueryMutant", b"NtLockFile", b"NtUnlockFile", b"NtDuplicateObject", b"NtCreateTimer", b"NtSetTimer", b"NtCancelTimer", b"NtCreateIoCompletion", b"NtSetIoCompletion", b"NtRemoveIoCompletion", b"NtSignalAndWaitForSingleObject", b"NtOpenProcessToken", b"NtOpenThreadToken", b"NtQueryInformationToken", b"RtlInitUnicodeString", b"RtlInitUnicodeStringEx", b"NtQueryObject", b"RtlInitAnsiString", b"RtlInitAnsiStringEx", b"NtQuerySecurityObject", b"RtlQueryPerformanceCounter", b"RtlQueryPerformanceFrequency", b"NtRenameKey", b"NtSetSecurityObject", b"RtlAddAccessAllowedAce", b"RtlAddAccessAllowedAceEx", b"RtlAddAccessDeniedAce", b"RtlAddAccessDeniedAceEx", b"RtlAddAce", b"RtlAddAuditAccessAce", b"RtlAddAuditAccessAceEx", b"RtlCreateAcl", b"RtlCreateSecurityDescriptor", b"RtlCreateUnicodeStringFromAsciiz", b"RtlDosPathNameToNtPathName_U", b"RtlFreeUnicodeString", b"RtlGetAce", b"RtlGetControlSecurityDescriptor", b"RtlIsTextUnicode", b"RtlLengthSecurityDescriptor", b"RtlMakeSelfRelativeSD", b"RtlNtStatusToDosError", b"RtlQueryInformationAcl", b"RtlSelfRelativeToAbsoluteSD", b"RtlUniform", b"RtlDeleteCriticalSection", b"RtlEnterCriticalSection", b"RtlLeaveCriticalSection", b"_vsnprintf", b"RtlSizeHeap", b"RtlExitUserThread", b"RtlQueryUnbiasedInterruptTime", b"DbgUiGetThreadDebugObject", b"DbgUiIssueRemoteBreakin", b"LdrGetDllDirectory", b"LdrGetProcedureAddress", b"LdrSetDllDirectory", b"NtAddAtom", b"NtAssignProcessToJobObject", b"NtCreateJobObject", b"NtCreateMailslotFile", b"NtDeleteAtom", b"NtDeviceIoControlFile", b"NtFindAtom", b"NtFsControlFile", b"NtOpenJobObject", b"NtPowerInformation", b"NtQueryInformationAtom", b"NtQueryInformationJobObject", b"NtQuerySection", b"NtQuerySystemInformation", b"NtQuerySystemTime", b"NtSetInformationDebugObject", b"NtSetInformationJobObject", b"NtSetInformationProcess", b"NtSetInformationThread", b"NtSetThreadExecutionState", b"NtTerminateJobObject", b"RtlAcquirePebLock", b"RtlReleasePebLock", b"RtlAddAtomToAtomTable",
-    b"RtlAnsiStringToUnicodeString", b"RtlCaptureContext", b"RtlCharToInteger", b"RtlCreateAtomTable", b"RtlCreateHeap", b"RtlCreateUnicodeString", b"RtlDeleteAtomFromAtomTable", b"RtlDeregisterWait", b"RtlDestroyAtomTable", b"RtlDestroyHeap", b"RtlDetermineDosPathNameType_U", b"RtlDosPathNameToNtPathName_U_WithStatus", b"RtlExitUserProcess", b"RtlGetProcessHeaps", b"RtlGetUserInfoHeap", b"RtlImageNtHeader", b"RtlInitializeCriticalSection", b"RtlInitializeCriticalSectionAndSpinCount", b"RtlInitializeCriticalSectionEx", b"RtlIsNameLegalDOS8Dot3", b"RtlLockHeap", b"RtlUnlockHeap", b"RtlLookupAtomInAtomTable", b"RtlOemStringToUnicodeString", b"RtlQueryAtomInAtomTable", b"RtlRegisterWait", b"RtlRestoreContext", b"RtlSetIoCompletionCallback", b"RtlGetLastWin32Error", b"RtlRestoreLastWin32Error", b"RtlSetLastWin32Error", b"RtlSetSearchPathMode", b"RtlSetUnhandledExceptionFilter", b"RtlSetUserValueHeap", b"RtlTimeFieldsToTime", b"RtlTimeToTimeFields", b"RtlUnicodeStringToAnsiSize", b"RtlUnicodeStringToAnsiString", b"RtlUnicodeStringToInteger", b"RtlUnicodeStringToOemSize", b"RtlUnicodeStringToOemString", b"RtlUnicodeToMultiByteN", b"RtlUnicodeToMultiByteSize", b"RtlUnicodeToOemN", b"RtlUpcaseUnicodeString", b"RtlUpperChar", b"_wcsicmp", b"_wcsnicmp", b"isalpha",
+    b"RtlAnsiStringToUnicodeString", b"RtlCaptureContext", b"RtlCharToInteger", b"RtlCreateAtomTable", b"RtlCreateHeap", b"RtlCreateUnicodeString", b"RtlDeleteAtomFromAtomTable", b"RtlDeregisterWait", b"RtlDestroyAtomTable", b"RtlDestroyHeap", b"RtlDetermineDosPathNameType_U", b"RtlDosPathNameToNtPathName_U_WithStatus", b"RtlExitUserProcess", b"RtlGetProcessHeaps", b"RtlGetUserInfoHeap", b"RtlImageNtHeader", b"RtlInitializeCriticalSection", b"RtlInitializeCriticalSectionAndSpinCount", b"RtlInitializeCriticalSectionEx", b"RtlIsNameLegalDOS8Dot3", b"RtlLockHeap", b"RtlUnlockHeap", b"RtlLookupAtomInAtomTable", b"RtlOemStringToUnicodeString", b"RtlQueryAtomInAtomTable", b"RtlRegisterWait", b"RtlRestoreContext", b"RtlSetIoCompletionCallback", b"RtlGetLastWin32Error", b"RtlRestoreLastWin32Error", b"RtlSetLastWin32Error", b"RtlSetSearchPathMode", b"RtlSetUnhandledExceptionFilter", b"RtlSetUserValueHeap", b"RtlTimeFieldsToTime", b"RtlTimeToTimeFields", b"RtlUnicodeStringToAnsiSize", b"RtlUnicodeStringToAnsiString", b"RtlUnicodeStringToInteger", b"RtlUnicodeStringToOemSize", b"RtlUnicodeStringToOemString", b"RtlUnicodeToMultiByteN", b"RtlUnicodeToMultiByteSize", b"RtlUnicodeToOemN", b"RtlUpcaseUnicodeString", b"RtlUpperChar", b"_wcsicmp", b"_wcsnicmp", b"isalpha", b"islower",
 ];
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct PeEntryState {
@@ -129,9 +129,9 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
     let code_bytes = NTDLL_EXPORTS.len() * pe::nt_stub::X64_SIX_ARG_STUB_BYTES;
     let mapped_bytes = (code_bytes + page - 1) / page * page;
     let mut code = alloc::vec![0u8; mapped_bytes];
-    let mut addresses = [0u64; 166];
+    let mut addresses = [0u64; 167];
     let mut offset = 0usize;
-    for index in 0..166 {
+    for index in 0..167 {
         let selector = match index {
             2 => syscall::nt::NtService::ProtectVirtualMemory,
             3 => syscall::nt::NtService::QueryVirtualMemory,
@@ -250,6 +250,7 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
             163 => syscall::nt::NtService::Wcsicmp,
             164 => syscall::nt::NtService::Wcsnicmp,
             165 => syscall::nt::NtService::Isalpha,
+            166 => syscall::nt::NtService::Islower,
             _ => syscall::nt::NtService::FreeHeap,
         };
         let bytes = if matches!(index, 6 | 88) { pe::nt_stub::encode_x64_unary_stub(selector.entry()).to_vec() } else { pe::nt_stub::encode_x64_six_arg_stub(selector.entry()).to_vec() };

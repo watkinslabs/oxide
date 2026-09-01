@@ -122,6 +122,7 @@ use super::*;
         assert_eq!(decode(172, input).unwrap().service, NtService::Wcsicmp);
         assert_eq!(decode(173, input).unwrap().service, NtService::Wcsnicmp);
         assert_eq!(decode(174, input).unwrap().service, NtService::Isalpha);
+        assert_eq!(decode(175, input).unwrap().service, NtService::Islower);
     }
 
     #[test]
