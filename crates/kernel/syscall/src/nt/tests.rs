@@ -247,6 +247,7 @@ use super::*;
     assert_eq!(decode(408, input).unwrap().service, NtService::RtlGetUserPreferredUILanguages);
     assert_eq!(decode(409, input).unwrap().service, NtService::RtlGetVersion);
     assert_eq!(decode(410, input).unwrap().service, NtService::RtlIdentifierAuthoritySid);
+    assert_eq!(decode(411, input).unwrap().service, NtService::RtlIdnToAscii);
     assert_eq!(decode(370, input).unwrap().service, NtService::RtlEqualSid);
     assert_eq!(decode(371, input).unwrap().service, NtService::RtlExpandEnvironmentStringsU);
     assert_eq!(decode(298, input).unwrap().service, NtService::NtQueryDirectoryObject);
