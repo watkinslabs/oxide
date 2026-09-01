@@ -877,6 +877,11 @@ use super::*;
     }
 
     #[test]
+    fn wcscspn_keeps_native_abi_selector() {
+        assert_eq!(decode(503, args()).unwrap().service, NtService::Wcscspn);
+    }
+
+    #[test]
     fn file_services_validate_the_outer_request_pointer() {
         let call = decode(10, SyscallArgs { a0: 0x1000, ..args() }).unwrap();
         assert!(matches!(decode_file(call), Ok(NtFileCall::Create { .. })));

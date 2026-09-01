@@ -44,6 +44,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::Strncmp { return Some(strncmp(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Strtol { return Some(strtol(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Towupper { return Some(towupper(call.args.a0)); }
+    if call.service == NtService::Wcscspn { return Some(wcscspn(call.args.a0, call.args.a1)); }
     if call.service == NtService::Wcsnicmp { return Some(wcsnicmp(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Wcsicmp { return Some(wcsicmp(call.args.a0, call.args.a1)); }
     if call.service == NtService::Strnicmp { return Some(strnicmp(call.args.a0, call.args.a1, call.args.a2)); }
@@ -421,6 +422,25 @@ fn strtol(string: u64, end: u64, base: u64) -> u64 {
 fn towupper(character: u64) -> u64 {
     let character = character as u32;
     if (b'a' as u32..=b'z' as u32).contains(&character) { (character - (b'a' as u32 - b'A' as u32)) as u64 } else { character as u64 }
+}
+
+fn wcscspn(string: u64, reject: u64) -> u64 {
+    if string == 0 || reject == 0 { return 0; }
+    let mut index = 0usize;
+    loop {
+        let Some(character) = read_u16(string, index) else { return 0; };
+        if character == 0 { return index as u64; }
+        let mut reject_index = 0usize;
+        loop {
+            let Some(rejected) = read_u16(reject, reject_index) else { return 0; };
+            if rejected == 0 { break; }
+            if rejected == character { return index as u64; }
+            let Some(next) = reject_index.checked_add(1) else { return 0; };
+            reject_index = next;
+        }
+        let Some(next) = index.checked_add(1) else { return 0; };
+        index = next;
+    }
 }
 
 fn is_ascii_space(byte: u8) -> bool { matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c) }
