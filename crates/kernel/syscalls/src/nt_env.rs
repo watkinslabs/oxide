@@ -7,6 +7,7 @@ const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
 const STATUS_VARIABLE_NOT_FOUND: u64 = 0xc000_0100;
+const STATUS_NO_MEMORY: u64 = 0xc000_0017;
 const TEB_PEB_OFFSET: u64 = 0x60;
 const PEB_PROCESS_PARAMETERS_OFFSET: u64 = 0x20;
 const PARAM_ENVIRONMENT_OFFSET: u64 = 0x80;
@@ -40,6 +41,9 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     }
     if call.service == NtService::RtlSetCurrentEnvironment {
         return Some(set_current_environment(call.args.a0, call.args.a1));
+    }
+    if call.service == NtService::RtlSetEnvironmentVariable {
+        return Some(set_environment_variable(call.args.a0, call.args.a1, call.args.a2));
     }
     if call.service == NtService::RtlCreateProcessParametersEx {
         if call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
@@ -82,6 +86,89 @@ fn valid_environment_block(environment: u64) -> bool {
         } else { previous_zero = false; }
     }
     false
+}
+
+fn set_environment_variable(environment_pointer: u64, name_descriptor: u64, value_descriptor: u64) -> u64 {
+    if name_descriptor == 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(name) = read_unicode_descriptor(name_descriptor) else { return STATUS_INVALID_PARAMETER; };
+    if name.is_empty() || name.iter().skip(1).any(|&unit| unit == b'=' as u16) { return STATUS_INVALID_PARAMETER; }
+    let value = if value_descriptor == 0 { None } else {
+        let Some(value) = read_unicode_descriptor(value_descriptor) else { return STATUS_INVALID_PARAMETER; };
+        Some(value)
+    };
+    let Some(environment) = environment_address(environment_pointer) else { return STATUS_INVALID_PARAMETER; };
+    let Some(old) = read_environment_block(environment) else { return STATUS_INVALID_PARAMETER; };
+    let (match_start, match_end) = environment_entry(&old, &name).unwrap_or((old.len().saturating_sub(2), old.len().saturating_sub(2)));
+    if value.is_none() && match_start == match_end { return STATUS_SUCCESS; }
+    let mut updated = Vec::with_capacity(old.len().saturating_add(name.len()).saturating_add(value.as_ref().map_or(0, Vec::len)).saturating_add(2));
+    updated.extend_from_slice(&old[..match_start]);
+    if let Some(value) = value {
+        updated.extend_from_slice(&name);
+        updated.push(b'=' as u16);
+        updated.extend_from_slice(&value);
+        updated.push(0);
+    }
+    updated.extend_from_slice(&old[match_end..]);
+    if updated.last().copied() != Some(0) { updated.push(0); }
+    if updated.len() < 2 || updated[updated.len() - 2] != 0 { updated.push(0); }
+    let Some(bytes) = updated.len().checked_mul(2) else { return STATUS_NO_MEMORY; };
+    let allocation = crate::nt_heap::dispatch(NtCall { service: NtService::AllocateHeap,
+        args: SyscallArgs { a0: 1, a1: 0, a2: bytes as u64, a3: 0, a4: 0, a5: 0 } });
+    let Some(new_environment) = allocation.filter(|&address| address != 0) else { return STATUS_NO_MEMORY; };
+    if copy_units(new_environment, &updated).is_err() || uaccess::put_user_u64(environment_pointer_or_peb(environment_pointer), new_environment).is_err() {
+        let _ = crate::nt_heap::dispatch(NtCall { service: NtService::FreeHeap,
+            args: SyscallArgs { a0: 1, a1: 0, a2: new_environment, a3: 0, a4: 0, a5: 0 } });
+        return STATUS_INVALID_PARAMETER;
+    }
+    STATUS_SUCCESS
+}
+
+fn environment_address(pointer: u64) -> Option<u64> {
+    if pointer != 0 { return uaccess::get_user_u64(pointer).ok(); }
+    let current = sched::live::current()?;
+    if !current.is_nt_personality() { return None; }
+    let peb = uaccess::get_user_u64(current.nt_teb().checked_add(TEB_PEB_OFFSET)?).ok()?;
+    let params = uaccess::get_user_u64(peb.checked_add(PEB_PROCESS_PARAMETERS_OFFSET)?).ok()?;
+    uaccess::get_user_u64(params.checked_add(PARAM_ENVIRONMENT_OFFSET)?).ok()
+}
+
+fn environment_pointer_or_peb(pointer: u64) -> u64 {
+    if pointer != 0 { return pointer; }
+    let Some(current) = sched::live::current() else { return 0; };
+    let Some(peb) = uaccess::get_user_u64(current.nt_teb().saturating_add(TEB_PEB_OFFSET)).ok() else { return 0; };
+    let Some(params) = uaccess::get_user_u64(peb.saturating_add(PEB_PROCESS_PARAMETERS_OFFSET)).ok() else { return 0; };
+    params.saturating_add(PARAM_ENVIRONMENT_OFFSET)
+}
+
+fn read_environment_block(environment: u64) -> Option<Vec<u16>> {
+    let mut output = Vec::new();
+    let mut previous_zero = false;
+    for index in 0..MAX_ENVIRONMENT_UNITS {
+        let address = environment.checked_add((index * 2) as u64)?;
+        let mut bytes = [0u8; 2];
+        uaccess::copy_from_user(&mut bytes, address).ok()?;
+        let unit = u16::from_le_bytes(bytes);
+        output.push(unit);
+        if unit == 0 {
+            if previous_zero { return Some(output); }
+            previous_zero = true;
+        } else { previous_zero = false; }
+    }
+    None
+}
+
+fn environment_entry(environment: &[u16], name: &[u16]) -> Option<(usize, usize)> {
+    let mut start = 0;
+    while start + 1 < environment.len() {
+        let end = environment[start..].iter().position(|&unit| unit == 0).map(|offset| start + offset)?;
+        if end == start { return None; }
+        if end > name.len() && environment[start + name.len()] == b'=' as u16
+            && environment[start..start + name.len()].iter().zip(name).all(|(&left, &right)| ascii_fold(left) == ascii_fold(right)) {
+            return Some((start, end + 1));
+        }
+        start = end + 1;
+    }
+    None
 }
 
 fn query_environment_variable(call: NtCall) -> u64 {

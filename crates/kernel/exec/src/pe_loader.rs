@@ -19,9 +19,9 @@ pub struct PeModuleBase<'a> {
 pub struct NtRuntime {
     pub base: UserVirtAddr,
     pub bytes: usize,
-    addresses: [u64; 445],
+    addresses: [u64; 446],
 }
-const NTDLL_EXPORTS: [&[u8]; 445] = [
+const NTDLL_EXPORTS: [&[u8]; 446] = [
     b"NtAllocateVirtualMemory", b"NtFreeVirtualMemory", b"NtProtectVirtualMemory", b"NtQueryVirtualMemory",
     b"NtTerminateProcess", b"NtCreateEvent", b"NtClose", b"NtSetEvent", b"NtResetEvent", b"NtWaitForSingleObject",
     b"NtCreateFile", b"NtOpenFile", b"NtReadFile", b"NtWriteFile", b"NtQueryInformationFile", b"NtSetInformationFile", b"NtQueryDirectoryFile", b"NtWaitForMultipleObjects",
@@ -222,6 +222,7 @@ const NTDLL_EXPORTS: [&[u8]; 445] = [
     b"RtlSetCurrentDirectory_U",
     b"RtlSetCurrentEnvironment",
     b"RtlSetDaclSecurityDescriptor",
+    b"RtlSetEnvironmentVariable",
 ];
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct PeEntryState {
@@ -340,9 +341,9 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
     let code_bytes = (NTDLL_EXPORTS.len() - 1) * pe::nt_stub::X64_SIX_ARG_STUB_BYTES + pe::nt_stub::X64_BREAKPOINT_STUB_BYTES + continuation.len();
     let mapped_bytes = (code_bytes + page - 1) / page * page;
     let mut code = alloc::vec![0u8; mapped_bytes];
-    let mut addresses = [0u64; 445];
+    let mut addresses = [0u64; 446];
     let mut offset = 0usize;
-    for index in 0..445 {
+    for index in 0..446 {
         let selector = match index {
             2 => syscall::nt::NtService::ProtectVirtualMemory,
             3 => syscall::nt::NtService::QueryVirtualMemory,
@@ -739,6 +740,7 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
             442 => syscall::nt::NtService::RtlSetCurrentDirectoryU,
             443 => syscall::nt::NtService::RtlSetCurrentEnvironment,
             444 => syscall::nt::NtService::RtlSetDaclSecurityDescriptor,
+            445 => syscall::nt::NtService::RtlSetEnvironmentVariable,
             _ => syscall::nt::NtService::FreeHeap,
         };
         let bytes = if index == 220 { pe::nt_stub::encode_x64_breakpoint_stub().to_vec() }
