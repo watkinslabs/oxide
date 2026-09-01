@@ -172,6 +172,7 @@ pub fn dispatch(call: NtCall) -> u64 {
     if let Some(result) = crate::nt_actctx::dispatch(call) { return result; }
     if let Some(result) = crate::nt_directory::dispatch(call) { return result; }
     if call.service == syscall::nt::NtService::CallbackReturn { return STATUS_NO_CALLBACK_ACTIVE; }
+    if call.service == syscall::nt::NtService::NtCreateNamedPipeFile { return 0xc000_0002; }
     if let Some(result) = crate::nt_power::dispatch(call) { return result; }
     if let Some(result) = crate::nt_oem::dispatch(call) { return result; }
     if let Ok(system) = nt::decode_system(call) {

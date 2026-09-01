@@ -40,6 +40,7 @@ pub enum NtService {
     NtCancelSynchronousIoFile = 254,
     NtCompareObjects = 255,
     NtConvertBetweenAuxiliaryCounterAndPerformanceCounter = 256,
+    NtCreateNamedPipeFile = 257,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -302,6 +303,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 254 { return Some(NtCall { service: NtService::NtCancelSynchronousIoFile, args }); }
     if service == 255 { return Some(NtCall { service: NtService::NtCompareObjects, args }); }
     if service == 256 { return Some(NtCall { service: NtService::NtConvertBetweenAuxiliaryCounterAndPerformanceCounter, args }); }
+    if service == 257 { return Some(NtCall { service: NtService::NtCreateNamedPipeFile, args }); }
     if service == 197 { return Some(NtCall { service: NtService::RtlGUIDFromString, args }); }
     if service == 195 { return Some(NtCall { service: NtService::WineDbgOutput, args }); }
     if service == 194 { return Some(NtCall { service: NtService::WineDbgHeader, args }); }
@@ -465,7 +467,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::NtAdjustPrivilegesToken => Err(Errno::Enosys),
         NtService::NtAllocateLocallyUniqueId => Err(Errno::Enosys),
         NtService::NtCancelIoFile | NtService::NtCancelIoFileEx => Err(Errno::Enosys),
-        NtService::NtCancelSynchronousIoFile | NtService::NtCompareObjects | NtService::NtConvertBetweenAuxiliaryCounterAndPerformanceCounter => Err(Errno::Enosys),
+        NtService::NtCancelSynchronousIoFile | NtService::NtCompareObjects | NtService::NtConvertBetweenAuxiliaryCounterAndPerformanceCounter | NtService::NtCreateNamedPipeFile => Err(Errno::Enosys),
     }
 }
 pub fn decode_system(call: NtCall) -> Result<NtSystemCall, Errno> {

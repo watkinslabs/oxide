@@ -477,3 +477,7 @@ Windows NT frontier update (2026-09-01): the existing `CreateKey` service is
 now reachable from the synthetic NTDLL export page as `NtCreateKey`; registry
 key object semantics are not yet implemented, and the graph advances to
 `ntdll.dll!NtCreateNamedPipeFile`.
+Windows NT frontier update (2026-09-01): `NtCreateNamedPipeFile` now has an
+explicit native export and an explicit `STATUS_NOT_IMPLEMENTED` boundary;
+named-pipe object and connection semantics remain pending. The graph advances
+to `ntdll.dll!NtCreateSectionEx`.
