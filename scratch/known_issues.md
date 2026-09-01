@@ -653,3 +653,6 @@ and encodes the prior depth; scheduler safe-point consumption and the matching
 `NtSaveKey` now validates the NT personality and non-null key/file handles
 before returning `STATUS_NOT_IMPLEMENTED`; a canonical registry-key object and
 hive serializer over the VFS are still required.
+`NtSetContextThread` now mutates the current x86_64 task's canonical syscall
+frame for validated integer/control context fields; remote stopped-register
+snapshots and non-x86 context owners remain unimplemented.

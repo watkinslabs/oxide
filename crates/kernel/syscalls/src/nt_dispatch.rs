@@ -248,6 +248,60 @@ pub fn dispatch(call: NtCall) -> u64 {
             return STATUS_SUCCESS;
         }
     }
+    if call.service == syscall::nt::NtService::NtSetContextThread {
+        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+        let Ok(nt::NtThreadCall::SetContext { thread, context }) = nt::decode_thread(call) else {
+            return STATUS_INVALID_PARAMETER;
+        };
+        let table = cur.thread_group.nt_handles();
+        let target = match resolve_thread_target(&cur, thread, &table, THREAD_QUERY_INFORMATION) {
+            Ok(target) => target, Err(status) => return status,
+        };
+        // A remote task needs its scheduler-owned stopped-register snapshot;
+        // mutating a live task's frame from another CPU would race return.
+        if target.tid != cur.tid { return STATUS_NOT_IMPLEMENTED; }
+        let flags_addr = match context.as_u64().checked_add(48) {
+            Some(address) => address,
+            None => return STATUS_INVALID_PARAMETER,
+        };
+        let flags = match uaccess::get_user_u32(flags_addr) {
+            Ok(flags) => flags,
+            Err(_) => return STATUS_INVALID_PARAMETER,
+        };
+        let supported = NT_CONTEXT_AMD64 | NT_CONTEXT_CONTROL | NT_CONTEXT_INTEGER;
+        if flags & !supported != 0 { return STATUS_NOT_IMPLEMENTED; }
+        #[cfg(target_arch = "x86_64")]
+        {
+            let frame = hal_x86_64::current_pt_regs();
+            if frame.is_null() { return STATUS_ACCESS_DENIED; }
+            // SAFETY: this is the active task's live syscall frame; the NT
+            // entry cannot schedule before these field updates complete.
+            let f = unsafe { &mut *frame };
+            let get = |offset: u64| -> Result<u64, ()> {
+                uaccess::get_user_u64(context.as_u64().checked_add(offset).ok_or(())?).map_err(|_| ())
+            };
+            if flags & NT_CONTEXT_INTEGER != 0 {
+                for (offset, slot) in [(160, &mut f.rax), (168, &mut f.rcx), (176, &mut f.rdx), (184, &mut f.rbx),
+                    (200, &mut f.rbp), (208, &mut f.rsi), (216, &mut f.rdi), (224, &mut f.r8), (232, &mut f.r9),
+                    (240, &mut f.r10), (248, &mut f.r11), (256, &mut f.r12), (264, &mut f.r13), (272, &mut f.r14),
+                    (280, &mut f.r15)] {
+                    *slot = match get(offset) { Ok(value) => value, Err(_) => return STATUS_INVALID_PARAMETER };
+                }
+            }
+            if flags & NT_CONTEXT_CONTROL != 0 {
+                let rip = match get(288) { Ok(value) => value, Err(_) => return STATUS_INVALID_PARAMETER };
+                let rsp = match get(192) { Ok(value) => value, Err(_) => return STATUS_INVALID_PARAMETER };
+                let rflags = match get(104) { Ok(value) => value, Err(_) => return STATUS_INVALID_PARAMETER };
+                if hal::UserVirtAddr::new(rip).is_none() || hal::UserVirtAddr::new(rsp).is_none()
+                    || rflags & 0x2 == 0 || rflags & 0x3000 != 0 { return STATUS_INVALID_PARAMETER; }
+                f.rip = rip; f.rsp = rsp; f.rflags = rflags;
+            }
+            return STATUS_SUCCESS;
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        { return STATUS_NOT_IMPLEMENTED; }
+    }
     if call.service == syscall::nt::NtService::NtGetWriteWatch {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() || call.args.a0 != CURRENT_PROCESS { return STATUS_INVALID_PARAMETER; }
