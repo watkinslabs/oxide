@@ -40,6 +40,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::Iswalnum { let c = call.args.a0 as u16; return Some(if c <= 0xff && (c as u8).is_ascii_alphanumeric() { 1 } else { 0 }); }
     if call.service == NtService::Isxdigit { let c = call.args.a0 as u8; return Some(if c.is_ascii_hexdigit() { 1 } else { 0 }); }
     if call.service == NtService::Memcmp { return Some(memcmp(call.args.a0, call.args.a1, call.args.a2)); }
+    if call.service == NtService::Strcmp { return Some(strcmp(call.args.a0, call.args.a1)); }
     if call.service == NtService::Wcsnicmp { return Some(wcsnicmp(call.args.a0, call.args.a1, call.args.a2)); }
     if call.service == NtService::Wcsicmp { return Some(wcsicmp(call.args.a0, call.args.a1)); }
     if call.service == NtService::Strnicmp { return Some(strnicmp(call.args.a0, call.args.a1, call.args.a2)); }
@@ -348,6 +349,18 @@ fn memcmp(first: u64, second: u64, count: u64) -> u64 {
         if first_byte != second_byte { return if first_byte > second_byte { 1 } else { (-1i64) as u64 }; }
     }
     0
+}
+
+fn strcmp(first: u64, second: u64) -> u64 {
+    if first == 0 || second == 0 { return STATUS_INVALID_PARAMETER; }
+    let mut index = 0usize;
+    loop {
+        let Some(first_byte) = read_u8(first, index) else { return STATUS_INVALID_PARAMETER; };
+        let Some(second_byte) = read_u8(second, index) else { return STATUS_INVALID_PARAMETER; };
+        if first_byte != second_byte || first_byte == 0 { return (first_byte as i32 - second_byte as i32) as i64 as u64; }
+        let Some(next) = index.checked_add(1) else { return STATUS_INVALID_PARAMETER; };
+        index = next;
+    }
 }
 
 fn wcsicmp(first: u64, second: u64) -> u64 {
