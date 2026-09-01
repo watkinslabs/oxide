@@ -39,6 +39,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlQueryTimeZoneInformation { return Some(query_time_zone_information(call.args.a0)); }
     if call.service == NtService::RtlQueryDynamicTimeZoneInformation { return Some(query_dynamic_time_zone_information(call.args.a0)); }
     if call.service == NtService::RtlLocalTimeToSystemTime { return Some(local_time_to_system_time(call.args.a0, call.args.a1)); }
+    if call.service == NtService::RtlSystemTimeToLocalTime { return Some(system_time_to_local_time(call.args.a0, call.args.a1)); }
     if call.service == NtService::NtQueryDefaultLocale {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
         if !cur.is_nt_personality() || call.args.a0 > 1 || call.args.a1 == 0 { return Some(STATUS_INVALID_PARAMETER); }
@@ -159,6 +160,15 @@ fn local_time_to_system_time(local: u64, system: u64) -> u64 {
         .saturating_mul(60).saturating_mul(TICKS_PER_SECOND);
     let result = (value as i64).wrapping_add(bias_ticks) as u64;
     if uaccess::put_user_u64(system, result).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
+}
+
+fn system_time_to_local_time(system: u64, local: u64) -> u64 {
+    if system == 0 || local == 0 { return STATUS_INVALID_PARAMETER; }
+    let Ok(value) = uaccess::get_user_u64(system) else { return STATUS_INVALID_PARAMETER; };
+    let bias_ticks = (crate::time_common::timezone_minuteswest() as i64)
+        .saturating_mul(60).saturating_mul(TICKS_PER_SECOND);
+    let result = (value as i64).wrapping_sub(bias_ticks) as u64;
+    if uaccess::put_user_u64(local, result).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
 }
 
 fn read_i16(address: u64, offset: u64) -> Option<i16> {
