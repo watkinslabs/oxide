@@ -15,6 +15,9 @@ const TEXT_UNICODE_NOT_ASCII_MASK: u32 = 0xf000;
 const TEXT_UNICODE_ODD_LENGTH: u32 = 0x0200;
 const STATUS_SUCCESS: u64 = 0;
 const GUID_STRING_BYTES: usize = 76;
+const TEB_PEB_OFFSET: u64 = 0x60;
+const PEB_PROCESS_PARAMETERS_OFFSET: u64 = 0x20;
+const PARAM_CURRENT_DIRECTORY_OFFSET: u64 = 0x40;
 
 /// Convert the fixed Windows GUID spelling into its 16-byte little-endian ABI.
 /// # C: O(1) plus bounded usercopy
@@ -56,6 +59,9 @@ fn guid_from_string(descriptor: u64, target: u64) -> u64 {
 /// Initialize a Windows `UNICODE_STRING` descriptor without copying its source.
 /// # C: O(min(source length, 32766)) plus usercopy
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlGetCurrentDirectoryU {
+        return Some(get_current_directory(call.args.a0, call.args.a1));
+    }
     if call.service == NtService::RtlDeleteBarrier { return Some(0); }
     if let Some(result) = crate::nt_rtl_integer::dispatch(call) { return Some(result); }
     if let Some(result) = crate::nt_rtl_ansi::dispatch(call) { return Some(result); }
@@ -135,6 +141,35 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     descriptor[8..16].copy_from_slice(&source.to_le_bytes());
     if uaccess::copy_to_user(target, &descriptor).is_err() { return Some(STATUS_INVALID_PARAMETER); }
     Some(0)
+}
+
+fn get_current_directory(buffer_length: u64, buffer: u64) -> u64 {
+    let Some(task) = sched::live::current() else { return 0; };
+    if !task.is_nt_personality() { return 0; }
+    let teb = task.nt_teb();
+    let peb = uaccess::get_user_u64(teb.saturating_add(TEB_PEB_OFFSET)).ok().unwrap_or(0);
+    let params = uaccess::get_user_u64(peb.saturating_add(PEB_PROCESS_PARAMETERS_OFFSET)).ok().unwrap_or(0);
+    let descriptor = params.saturating_add(PARAM_CURRENT_DIRECTORY_OFFSET);
+    let mut string = [0u8; UNICODE_STRING_BYTES];
+    if descriptor == 0 || uaccess::copy_from_user(&mut string, descriptor).is_err() { return 0; }
+    let mut length = u16::from_le_bytes([string[0], string[1]]) as usize / 2;
+    let source = u64::from_le_bytes(string[8..16].try_into().unwrap());
+    if length == 0 { return 0; }
+    if source == 0 { return 0; }
+    if length > 1 {
+        let mut last = [0u8; 2];
+        let mut previous = [0u8; 2];
+        if uaccess::copy_from_user(&mut last, source.saturating_add((length - 1) as u64 * 2)).is_err()
+            || uaccess::copy_from_user(&mut previous, source.saturating_add((length - 2) as u64 * 2)).is_err() { return 0; }
+        if u16::from_le_bytes(last) == b'\\' as u16 && u16::from_le_bytes(previous) != b':' as u16 { length -= 1; }
+    }
+    let required = (length + 1).saturating_mul(2);
+    if buffer_length / 2 <= length as u64 { return required as u64; }
+    if buffer == 0 { return 0; }
+    let bytes = length.saturating_mul(2);
+    let mut contents = alloc::vec![0u8; bytes];
+    if uaccess::copy_from_user(&mut contents, source).is_err() || uaccess::copy_to_user(buffer, &contents).is_err() || uaccess::copy_to_user(buffer.saturating_add(bytes as u64), &[0, 0]).is_err() { return 0; }
+    (length * 2) as u64
 }
 const TEB_LAST_ERROR_OFFSET: u64 = 0x68;
 fn set_last_win32_error(error: u64) -> u64 {

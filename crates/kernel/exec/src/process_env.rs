@@ -18,6 +18,7 @@ const MOD_STRIDE: usize = 0x70;
 const MAX_MODULES: usize = 64;
 const ENV_OFF: usize = 0x1000;
 const STR_OFF: usize = 0x800;
+const CURRENT_DIR: &str = "C:\\Windows";
 const API_SET_OFF: usize = 0x2800;
 const BLOCK_BYTES: usize = 0x4000;
 
@@ -104,8 +105,11 @@ pub fn build_with_modules(input: &EnvironmentInput<'_>, modules: &[NtModuleInput
     let image_path_off = STR_OFF;
     let command_off = STR_OFF + strings.len() * 2;
     strings.extend_from_slice(&command_line);
+    let current_dir = utf16(CURRENT_DIR)?;
+    let current_dir_off = STR_OFF + strings.len() * 2;
+    strings.extend_from_slice(&current_dir);
     let mut module_offsets = Vec::new();
-    let mut module_text_off = command_off + command_line.len() * 2;
+    let mut module_text_off = current_dir_off + current_dir.len() * 2;
     for module in modules {
         let full = utf16(module.full_name)?;
         let base = utf16(module.base_name)?;
@@ -132,6 +136,7 @@ pub fn build_with_modules(input: &EnvironmentInput<'_>, modules: &[NtModuleInput
     put_u64(&mut block, TEB_OFF + 0x58, base + TLS_OFF as u64);
     put_unicode(&mut block, PARAM_OFF + 0x60, &image_path, base + image_path_off as u64);
     put_unicode(&mut block, PARAM_OFF + 0x70, &command_line, base + command_off as u64);
+    put_unicode(&mut block, PARAM_OFF + 0x40, &current_dir, base + current_dir_off as u64);
     put_u64(&mut block, PARAM_OFF + 0x80, base + env_off as u64);
     put_u32(&mut block, LDR_OFF, 0x58);
     block[LDR_OFF + 4] = 1;
@@ -160,6 +165,7 @@ pub fn build_with_modules(input: &EnvironmentInput<'_>, modules: &[NtModuleInput
     }
     copy_u16(&mut block, image_path_off, &image_path);
     copy_u16(&mut block, command_off, &command_line);
+    copy_u16(&mut block, current_dir_off, &current_dir);
     copy_u16(&mut block, env_off, &env);
     put_api_set_map(&mut block, API_SET_OFF)?;
     as_.munmap(reservation, BLOCK_BYTES).map_err(|_| Error::Einval)?;
