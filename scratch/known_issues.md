@@ -634,3 +634,6 @@ Windows APC queue and x86-64 user APC return path; it must not be conflated
 with Linux signal pending state.
 `NtQueueApcThreadEx2` is exposed alongside the base APC boundary; reserve
 handles, special APC flags, and callback delivery require that same owner.
+`NtRaiseException` is exposed at the exception boundary; complete behavior
+requires a canonical exception-record dispatcher and resumable x86-64 user
+context owner, still absent from the current exception module.
