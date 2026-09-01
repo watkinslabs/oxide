@@ -153,6 +153,26 @@ mod tests {
     }
 
     #[test]
+    fn installed_64_bit_notepad_import_graph_has_no_unresolved_catalog_exports() {
+        let Some(root) = wine_root() else { return };
+        let image_bytes = fs::read(root.join("notepad.exe")).unwrap();
+        let image = pe::parse(&image_bytes).unwrap();
+        let mut checked = 0usize;
+        for import in image.imports().unwrap() {
+            let Some(blob) = fs::read_dir(root).unwrap().filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .find(|path| path.file_name().is_some_and(|name| name.as_bytes().eq_ignore_ascii_case(import.name)))
+                .map(|path| fs::read(path).unwrap()) else { panic!("Notepad dependency {:?} is absent", import.name); };
+            let dependency = pe::parse(&blob).unwrap();
+            for thunk in image.import_thunks(&import).unwrap() {
+                assert!(dependency.export_target(&thunk).unwrap().is_some(), "Notepad import {:?}!{:?} is absent", import.name, thunk);
+                checked += 1;
+            }
+        }
+        assert!(checked > 100, "Notepad import closure unexpectedly small: {checked}");
+    }
+
+    #[test]
     fn malformed_dll_is_rejected_before_handoff() {
         let base = std::env::temp_dir().join(format!("oxide-windows-runtime-{}", std::process::id()));
         fs::create_dir_all(&base).unwrap();
