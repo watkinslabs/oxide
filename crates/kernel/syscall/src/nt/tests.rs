@@ -110,6 +110,7 @@ use super::*;
         assert_eq!(decode(160, input).unwrap().service, NtService::RtlTimeFieldsToTime);
         assert_eq!(decode(161, input).unwrap().service, NtService::RtlTimeToTimeFields);
         assert_eq!(decode(162, input).unwrap().service, NtService::RtlUnicodeStringToAnsiSize);
+        assert_eq!(decode(163, input).unwrap().service, NtService::RtlUnicodeStringToAnsiString);
     }
 
     #[test]

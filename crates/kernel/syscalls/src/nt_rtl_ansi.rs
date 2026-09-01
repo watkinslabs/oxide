@@ -1,0 +1,90 @@
+//! Native Unicode-to-ANSI conversion for the Windows RTL boundary.
+#![cfg(target_os = "oxide-kernel")]
+
+use alloc::vec::Vec;
+use syscall::nt::{NtCall, NtService};
+
+const STATUS_SUCCESS: u64 = 0;
+const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
+const STATUS_BUFFER_OVERFLOW: u64 = 0x8000_0005;
+const STATUS_NO_MEMORY: u64 = 0xc000_0017;
+const UNICODE_STRING_BYTES: usize = 16;
+
+/// Convert a counted UTF-16 string into the native ANSI representation.
+/// # C: O(source length) plus usercopy and optional heap allocation
+pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service != NtService::RtlUnicodeStringToAnsiString { return None; }
+    Some(unicode_string_to_ansi_string(call.args.a0, call.args.a1, call.args.a2 != 0))
+}
+
+fn unicode_string_to_ansi_string(target: u64, source: u64, allocate: bool) -> u64 {
+    if target == 0 || source == 0 { return STATUS_INVALID_PARAMETER; }
+    let mut source_descriptor = [0u8; UNICODE_STRING_BYTES];
+    let mut target_descriptor = [0u8; UNICODE_STRING_BYTES];
+    if uaccess::copy_from_user(&mut source_descriptor, source).is_err() || uaccess::copy_from_user(&mut target_descriptor, target).is_err() { return STATUS_INVALID_PARAMETER; }
+    let source_length = u16::from_le_bytes([source_descriptor[0], source_descriptor[1]]) as usize;
+    if source_length % 2 != 0 { return STATUS_INVALID_PARAMETER; }
+    let source_buffer = u64::from_le_bytes(source_descriptor[8..16].try_into().unwrap());
+    let converted = match convert_utf16(source_buffer, source_length) { Some(value) => value, None => return STATUS_INVALID_PARAMETER };
+    let required = match converted.len().checked_add(1) { Some(value) => value, None => return STATUS_INVALID_PARAMETER };
+    if required > u16::MAX as usize { return STATUS_INVALID_PARAMETER; }
+    let destination_maximum = u16::from_le_bytes([target_descriptor[2], target_descriptor[3]]) as usize;
+    let mut destination = u64::from_le_bytes(target_descriptor[8..16].try_into().unwrap());
+    let (length, maximum, result) = if allocate {
+        let call = NtCall { service: NtService::AllocateHeap, args: syscall::SyscallArgs { a0: 0, a1: 0, a2: required as u64, a3: 0, a4: 0, a5: 0 } };
+        let Some(buffer) = crate::nt_heap::dispatch(call).filter(|value| *value != 0) else { return STATUS_NO_MEMORY; };
+        destination = buffer;
+        (converted.len(), required, STATUS_SUCCESS)
+    } else if destination_maximum < required {
+        if destination_maximum == 0 { return STATUS_BUFFER_OVERFLOW; }
+        (destination_maximum - 1, destination_maximum, STATUS_BUFFER_OVERFLOW)
+    } else {
+        (converted.len(), required, STATUS_SUCCESS)
+    };
+    if destination == 0 { return STATUS_INVALID_PARAMETER; }
+    let mut output = converted;
+    output.truncate(length);
+    output.push(0);
+    if uaccess::copy_to_user(destination, &output).is_err() {
+        if allocate { free_buffer(destination); }
+        return STATUS_INVALID_PARAMETER;
+    }
+    let mut descriptor = [0u8; UNICODE_STRING_BYTES];
+    descriptor[0..2].copy_from_slice(&(length as u16).to_le_bytes());
+    descriptor[2..4].copy_from_slice(&(maximum as u16).to_le_bytes());
+    descriptor[8..16].copy_from_slice(&destination.to_le_bytes());
+    if uaccess::copy_to_user(target, &descriptor).is_err() {
+        if allocate { free_buffer(destination); }
+        return STATUS_INVALID_PARAMETER;
+    }
+    result
+}
+
+fn convert_utf16(buffer: u64, length: usize) -> Option<Vec<u8>> {
+    if length != 0 && buffer == 0 { return None; }
+    let mut output = Vec::new();
+    let mut index = 0usize;
+    while index < length / 2 {
+        let unit = read_u16(buffer, index)?;
+        let mut value = unit as u32;
+        if (0xd800..=0xdbff).contains(&unit) && index + 1 < length / 2 {
+            let next = read_u16(buffer, index + 1)?;
+            if (0xdc00..=0xdfff).contains(&next) { value = 0x1_0000 + (((unit - 0xd800) as u32) << 10) + (next - 0xdc00) as u32; index += 1; }
+        }
+        if value <= 0x7f { output.push(value as u8); } else if value <= 0x7ff { output.extend_from_slice(&[0xc0 | (value >> 6) as u8, 0x80 | (value & 0x3f) as u8]); } else if value <= 0xffff { output.extend_from_slice(&[0xe0 | (value >> 12) as u8, 0x80 | ((value >> 6) & 0x3f) as u8, 0x80 | (value & 0x3f) as u8]); } else { output.extend_from_slice(&[0xf0 | (value >> 18) as u8, 0x80 | ((value >> 12) & 0x3f) as u8, 0x80 | ((value >> 6) & 0x3f) as u8, 0x80 | (value & 0x3f) as u8]); }
+        index += 1;
+    }
+    Some(output)
+}
+
+fn read_u16(buffer: u64, index: usize) -> Option<u16> {
+    let address = buffer.checked_add((index.checked_mul(2))? as u64)?;
+    let mut bytes = [0u8; 2];
+    uaccess::copy_from_user(&mut bytes, address).ok()?;
+    Some(u16::from_le_bytes(bytes))
+}
+
+fn free_buffer(buffer: u64) {
+    let call = NtCall { service: NtService::FreeHeap, args: syscall::SyscallArgs { a0: 0, a1: 0, a2: buffer, a3: 0, a4: 0, a5: 0 } };
+    let _ = crate::nt_heap::dispatch(call);
+}
