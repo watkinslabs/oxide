@@ -262,6 +262,7 @@ pub enum NtService {
     TpAllocTimer = 486,
     TpAllocWait = 487,
     TpAllocWork = 488,
+    TpCallbackMayRunLong = 489,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -629,6 +630,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 486 { return Some(NtCall { service: NtService::TpAllocTimer, args }); }
     if service == 487 { return Some(NtCall { service: NtService::TpAllocWait, args }); }
     if service == 488 { return Some(NtCall { service: NtService::TpAllocWork, args }); }
+    if service == 489 { return Some(NtCall { service: NtService::TpCallbackMayRunLong, args }); }
     if service == 229 { return Some(NtCall { service: NtService::DbgUiConnectToDbg, args }); }
     if service == 230 { return Some(NtCall { service: NtService::DbgUiContinue, args }); }
     if service == 231 { return Some(NtCall { service: NtService::DbgUiRemoteBreakin, args }); }
@@ -966,7 +968,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::RtlValidateHeap => Err(Errno::Enosys),
         NtService::RtlWaitOnAddress | NtService::RtlWakeAddressAll | NtService::RtlWakeAddressSingle => Err(Errno::Enosys),
         NtService::RtlWalkHeap => Err(Errno::Enosys),
-        NtService::RtlWow64EnableFsRedirection | NtService::RtlWow64EnableFsRedirectionEx | NtService::RtlWow64GetProcessMachines | NtService::RtlWow64GetThreadContext | NtService::RtlWow64SetThreadContext | NtService::RtlZombifyActivationContext | NtService::TpAllocCleanupGroup | NtService::TpAllocIoCompletion | NtService::TpAllocPool | NtService::TpAllocTimer | NtService::TpAllocWait | NtService::TpAllocWork => Err(Errno::Enosys),
+        NtService::RtlWow64EnableFsRedirection | NtService::RtlWow64EnableFsRedirectionEx | NtService::RtlWow64GetProcessMachines | NtService::RtlWow64GetThreadContext | NtService::RtlWow64SetThreadContext | NtService::RtlZombifyActivationContext | NtService::TpAllocCleanupGroup | NtService::TpAllocIoCompletion | NtService::TpAllocPool | NtService::TpAllocTimer | NtService::TpAllocWait | NtService::TpAllocWork | NtService::TpCallbackMayRunLong => Err(Errno::Enosys),
         NtService::RtlAddAccessAllowedObjectAce => Err(Errno::Enosys),
         NtService::RtlAddAccessDeniedObjectAce => Err(Errno::Enosys),
         NtService::RtlAddAuditAccessObjectAce => Err(Errno::Enosys),

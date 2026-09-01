@@ -19,9 +19,9 @@ pub struct PeModuleBase<'a> {
 pub struct NtRuntime {
     pub base: UserVirtAddr,
     pub bytes: usize,
-    addresses: [u64; 483],
+    addresses: [u64; 484],
 }
-const NTDLL_EXPORTS: [&[u8]; 483] = [
+const NTDLL_EXPORTS: [&[u8]; 484] = [
     b"NtAllocateVirtualMemory", b"NtFreeVirtualMemory", b"NtProtectVirtualMemory", b"NtQueryVirtualMemory",
     b"NtTerminateProcess", b"NtCreateEvent", b"NtClose", b"NtSetEvent", b"NtResetEvent", b"NtWaitForSingleObject",
     b"NtCreateFile", b"NtOpenFile", b"NtReadFile", b"NtWriteFile", b"NtQueryInformationFile", b"NtSetInformationFile", b"NtQueryDirectoryFile", b"NtWaitForMultipleObjects",
@@ -260,6 +260,7 @@ const NTDLL_EXPORTS: [&[u8]; 483] = [
     b"TpAllocTimer",
     b"TpAllocWait",
     b"TpAllocWork",
+    b"TpCallbackMayRunLong",
 ];
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct PeEntryState {
@@ -378,9 +379,9 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
     let code_bytes = (NTDLL_EXPORTS.len() - 1) * pe::nt_stub::X64_SIX_ARG_STUB_BYTES + pe::nt_stub::X64_BREAKPOINT_STUB_BYTES + continuation.len();
     let mapped_bytes = (code_bytes + page - 1) / page * page;
     let mut code = alloc::vec![0u8; mapped_bytes];
-    let mut addresses = [0u64; 483];
+    let mut addresses = [0u64; 484];
     let mut offset = 0usize;
-    for index in 0..482 {
+    for index in 0..483 {
         let selector = match index {
             2 => syscall::nt::NtService::ProtectVirtualMemory,
             3 => syscall::nt::NtService::QueryVirtualMemory,
@@ -815,10 +816,11 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
             480 => syscall::nt::NtService::TpAllocTimer,
             481 => syscall::nt::NtService::TpAllocWait,
             482 => syscall::nt::NtService::TpAllocWork,
+            483 => syscall::nt::NtService::TpCallbackMayRunLong,
             _ => syscall::nt::NtService::FreeHeap,
         };
         let bytes = if index == 220 { pe::nt_stub::encode_x64_breakpoint_stub().to_vec() }
-            else if matches!(index, 6 | 88 | 242 | 435 | 436 | 437) { pe::nt_stub::encode_x64_unary_stub(selector.entry()).to_vec() }
+            else if matches!(index, 6 | 88 | 242 | 435 | 436 | 437 | 483) { pe::nt_stub::encode_x64_unary_stub(selector.entry()).to_vec() }
             else { pe::nt_stub::encode_x64_six_arg_stub(selector.entry()).to_vec() };
         if offset.checked_add(bytes.len()).filter(|&end| end <= code.len()).is_none() { return Err(pe::Error::Einval); }
         code[offset..offset + bytes.len()].copy_from_slice(&bytes);
