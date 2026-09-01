@@ -112,6 +112,7 @@ use super::*;
         assert_eq!(decode(162, input).unwrap().service, NtService::RtlUnicodeStringToAnsiSize);
         assert_eq!(decode(163, input).unwrap().service, NtService::RtlUnicodeStringToAnsiString);
         assert_eq!(decode(164, input).unwrap().service, NtService::RtlUnicodeStringToInteger);
+        assert_eq!(decode(165, input).unwrap().service, NtService::RtlUnicodeStringToOemSize);
     }
 
     #[test]

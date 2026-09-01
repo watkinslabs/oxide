@@ -13,8 +13,18 @@ const UNICODE_STRING_BYTES: usize = 16;
 /// Convert a counted UTF-16 string into the native ANSI representation.
 /// # C: O(source length) plus usercopy and optional heap allocation
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::RtlUnicodeStringToOemSize { return Some(unicode_string_to_oem_size(call.args.a0)); }
     if call.service != NtService::RtlUnicodeStringToAnsiString { return None; }
     Some(unicode_string_to_ansi_string(call.args.a0, call.args.a1, call.args.a2 != 0))
+}
+
+fn unicode_string_to_oem_size(descriptor: u64) -> u64 {
+    if descriptor == 0 { return 0; }
+    let mut header = [0u8; UNICODE_STRING_BYTES];
+    if uaccess::copy_from_user(&mut header, descriptor).is_err() { return 0; }
+    let length = u16::from_le_bytes([header[0], header[1]]) as usize;
+    let buffer = u64::from_le_bytes(header[8..16].try_into().unwrap());
+    convert_utf16(buffer, length).and_then(|value| value.len().checked_add(1)).map_or(0, |value| value as u64)
 }
 
 fn unicode_string_to_ansi_string(target: u64, source: u64, allocate: bool) -> u64 {
