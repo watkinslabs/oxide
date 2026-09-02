@@ -87,9 +87,9 @@ pub fn map_with_exit(as_: &AddressSpace, app_entry: UserVirtAddr,
         // The process entry is reached by a jump, so there is no return
         // address on the stack yet. Preserve the one nonvolatile register
         // Wine's x64 DLL-entry wrapper protects, then reserve 32 bytes of
-        // home space plus the alignment slot before making the call. RBX is
+        // home space before making the call. RBX is
         // preserved because it is nonvolatile across the Windows x64 ABI.
-        code.extend_from_slice(&[0x53, 0x48, 0x83, 0xec, 0x28]);
+        code.extend_from_slice(&[0x53, 0x48, 0x83, 0xec, 0x20]);
         #[cfg(feature = "debug-faultdiag")]
         {
             code.extend_from_slice(&[0x48, 0xbf]);
@@ -107,7 +107,7 @@ pub fn map_with_exit(as_: &AddressSpace, app_entry: UserVirtAddr,
         code.extend_from_slice(&[0xba, 1, 0, 0, 0, 0x45, 0x31, 0xc0, 0x48, 0xb8]);
         code.extend_from_slice(&initializer.entry.as_u64().to_le_bytes());
         code.extend_from_slice(&[0xff, 0xd0]);
-        code.extend_from_slice(&[0x48, 0x83, 0xc4, 0x28, 0x5b]);
+        code.extend_from_slice(&[0x48, 0x83, 0xc4, 0x20, 0x5b]);
     }
     if exit_entry.as_u64() == 0 {
         // Preserve the legacy initializer-only helper used by the image-only
@@ -155,10 +155,10 @@ mod tests {
         let trampoline = map_with_exit(&as_, UserVirtAddr::new(0x6000_1010).unwrap(), &initializers, UserVirtAddr::new(0x7000_1010).unwrap()).unwrap();
         let vma = as_.find_vma(trampoline.base).unwrap();
         let data = match vma.backing { VmaBacking::KernelBytes { data, .. } => data, _ => panic!("trampoline must be kernel-backed") };
-        assert_eq!(&data[..5], &[0x53, 0x48, 0x83, 0xec, 0x28]);
+        assert_eq!(&data[..5], &[0x53, 0x48, 0x83, 0xec, 0x20]);
         assert_eq!(&data[25..30], &[0xba, 1, 0, 0, 0]);
         assert_eq!(&data[43..45], &[0xff, 0xd0]);
-        assert_eq!(&data[45..50], &[0x48, 0x83, 0xc4, 0x28, 0x5b]);
+        assert_eq!(&data[45..50], &[0x48, 0x83, 0xc4, 0x20, 0x5b]);
         assert_eq!(&data[50..54], &[0x48, 0x83, 0xec, 0x20]);
         assert_eq!(&data[54..56], &[0x48, 0xb8]);
         assert_eq!(&data[64..66], &[0xff, 0xd0]);
@@ -179,5 +179,18 @@ mod tests {
         assert_eq!(&data[16..19], &[0x48, 0x89, 0xc1]);
         assert_eq!(&data[29..31], &[0xff, 0xd0]);
         assert_eq!(&data[31..33], &[0x0f, 0x0b]);
+    }
+
+    #[test]
+    fn dll_initializer_uses_windows_x64_call_alignment() {
+        let as_ = AddressSpace::new(0x20_000).unwrap();
+        let initializer = [super::super::pe_loader::PeModuleInitializer { base: 0x5000_0000, entry: UserVirtAddr::new(0x5000_1010).unwrap() }];
+        let trampoline = map_with_exit(&as_, UserVirtAddr::new(0x6000_1010).unwrap(), &initializer, UserVirtAddr::new(0x7000_1010).unwrap()).unwrap();
+        let vma = as_.find_vma(trampoline.base).unwrap();
+        let data = match vma.backing { VmaBacking::KernelBytes { data, off } => (data, off), _ => panic!("initializer trampoline must be kernel-backed") };
+        let bytes = &data.0[data.1..data.1 + trampoline.bytes];
+        assert!(bytes.windows(4).any(|window| window == [0x48, 0x83, 0xec, 0x20]));
+        assert!(bytes.windows(5).any(|window| window == [0x48, 0x83, 0xc4, 0x20, 0x5b]));
+        assert!(!bytes.windows(4).any(|window| window == [0x48, 0x83, 0xec, 0x28]));
     }
 }
