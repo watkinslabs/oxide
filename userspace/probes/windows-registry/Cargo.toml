@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[dependencies]
+syscall = { path = "../../../crates/kernel/syscall" }
+
 [lib]
 path = "src/lib.rs"
 
