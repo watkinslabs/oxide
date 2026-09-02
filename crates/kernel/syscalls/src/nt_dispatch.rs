@@ -667,6 +667,7 @@ pub fn dispatch(call: NtCall) -> u64 {
     if let Some(result) = crate::nt_object_query::dispatch(call) { return result; }
     if let Some(result) = crate::nt_sync::dispatch(call) { return result; }
     if let Some(result) = crate::nt_mutant::dispatch(call) { return result; }
+    if let Some(result) = crate::nt_semaphore::dispatch(call) { return result; }
     if let Ok(file_call) = nt::decode_file(call) {
         return crate::nt_file::dispatch(file_call);
     }
