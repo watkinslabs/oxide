@@ -528,8 +528,11 @@ Windows NT frontier update (2026-09-02): NT symbolic-link objects now have a
 canonical target owner with create/open/query services, typed access checks,
 Unicode target copy-out, and `\\DosDevices` namespace seeding. They remain
 distinct from VFS symlinks; path traversal integration is the next boundary.
-The graph now reaches `ntdll.dll!NtOpenThread`; CLIENT_ID-based thread-handle
-acquisition remains an explicit `STATUS_NOT_IMPLEMENTED` boundary.
+The graph now reaches `ntdll.dll!NtOpenThread`; its `CLIENT_ID` now resolves a
+live NT scheduler task, verifies the owning process, and installs a typed
+thread handle. Zero/out-of-range IDs, mismatched ownership, Linux targets, and
+unknown access bits fail before publication. Thread query/termination and
+handle lifetime remain owned by the existing canonical thread object path.
 Windows NT frontier update (2026-09-02): named timer creation and opening
 now reuse canonical scheduler-backed timer identity with collision,
 type-mismatch, and missing-parent status handling; arming and cancellation
