@@ -529,8 +529,10 @@ objects remain an explicit `STATUS_NOT_IMPLEMENTED` boundary pending their
 namespace owner.
 The graph now reaches `ntdll.dll!NtOpenThread`; CLIENT_ID-based thread-handle
 acquisition remains an explicit `STATUS_NOT_IMPLEMENTED` boundary.
-The graph now reaches `ntdll.dll!NtOpenTimer`; named timer lookup remains an
-explicit `STATUS_NOT_IMPLEMENTED` boundary pending the NT object namespace.
+Windows NT frontier update (2026-09-02): named timer creation and opening
+now reuse canonical scheduler-backed timer identity with collision,
+type-mismatch, and missing-parent status handling; arming and cancellation
+remain owned by the native monotonic timer primitive.
 `NtPrivilegeCheck` is implemented against the canonical NT token privilege
 owner, including enabled-privilege matching and all-required semantics.
 The graph now reaches `ntdll.dll!NtPulseEvent`; transient pulse wake

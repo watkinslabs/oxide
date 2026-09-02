@@ -11,6 +11,9 @@ const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
 const TIMER_MODIFY_STATE: u32 = 2;
 const TIMER_ALL_ACCESS: u32 = 0x001f_0003;
 const STATUS_NO_MEMORY: u64 = 0xc000_0017;
+const STATUS_OBJECT_NAME_COLLISION: u64 = 0xc000_0035;
+const STATUS_OBJECT_TYPE_MISMATCH: u64 = 0xc000_0024;
+const STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xc000_0034;
 
 /// Create, arm, or cancel a waitable native timer. Relative NT due times are
 /// converted to the kernel monotonic clock; absolute system-time deadlines
@@ -24,9 +27,18 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
     let table = cur.thread_group.nt_handles();
     Some(match object {
-        NtObjectCall::CreateTimer { handle, desired_access, timer_type } => {
+        NtObjectCall::CreateTimer { handle, desired_access, attributes, timer_type } => {
             if desired_access & !TIMER_ALL_ACCESS != 0 || timer_type > 1 { return Some(STATUS_INVALID_PARAMETER); }
             let object = table.new_timer(timer_type == 0);
+            if attributes != 0 {
+                let Some(path) = crate::nt_directory::resolve_object_path(attributes, &table) else { return Some(STATUS_INVALID_PARAMETER); };
+                let (object, state) = sched::nt_object::publish_timer(&path, object);
+                if state == sched::nt_object::NamedObjectState::TypeMismatch { return Some(STATUS_OBJECT_TYPE_MISMATCH); }
+                if state == sched::nt_object::NamedObjectState::ParentMissing { return Some(STATUS_OBJECT_NAME_NOT_FOUND); }
+                let Some(native) = table.insert(object, desired_access) else { return Some(STATUS_NO_MEMORY); };
+                if uaccess::put_user_u32(handle.as_u64(), native.raw()).is_err() { let _ = table.close(native); return Some(STATUS_INVALID_PARAMETER); }
+                return Some(if state == sched::nt_object::NamedObjectState::Existing { STATUS_OBJECT_NAME_COLLISION } else { STATUS_SUCCESS });
+            }
             let Some(native) = table.insert(object, desired_access) else { return Some(STATUS_NO_MEMORY); };
             if uaccess::put_user_u32(handle.as_u64(), native.raw()).is_err() {
                 let _ = table.close(native); STATUS_INVALID_PARAMETER
