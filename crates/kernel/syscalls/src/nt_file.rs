@@ -88,6 +88,9 @@ pub fn dispatch_native(call: NtCall) -> Option<u64> {
         NtService::OpenFile => Some(native_open(call)),
         NtService::ReadFile => Some(native_io(call, false)),
         NtService::WriteFile => Some(native_io(call, true)),
+        NtService::QueryInformationFile => Some(native_query_information(call)),
+        NtService::SetInformationFile => Some(native_set_information(call)),
+        NtService::QueryDirectoryFile => Some(native_query_directory(call)),
         _ => None,
     }
 }
@@ -154,6 +157,26 @@ fn native_io_values(cur: &sched::Task, handle: u32, io_status: u64, buffer: u64,
         Ok(bytes) => { write_io_status(io_status, STATUS_SUCCESS, bytes); post_completion(&object, io_status, STATUS_SUCCESS, bytes); STATUS_SUCCESS }
         Err(_) => { write_io_status(io_status, STATUS_END_OF_FILE, 0); post_completion(&object, io_status, STATUS_END_OF_FILE, 0); STATUS_END_OF_FILE }
     }
+}
+
+fn native_query_information(call: NtCall) -> u64 {
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() || call.args.a0 > u32::MAX as u64 || call.args.a1 == 0 || call.args.a2 == 0 || call.args.a3 > u32::MAX as u64 || call.args.a4 > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    query_information_values(cur, call.args.a0 as u32, call.args.a1, call.args.a2, call.args.a3 as u32, call.args.a4 as u32)
+}
+
+fn native_set_information(call: NtCall) -> u64 {
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() || call.args.a0 > u32::MAX as u64 || call.args.a1 == 0 || call.args.a2 == 0 || call.args.a3 > u32::MAX as u64 || call.args.a4 > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    set_information_values(cur, call.args.a0 as u32, call.args.a1, call.args.a2, call.args.a3 as u32, call.args.a4 as u32)
+}
+
+fn native_query_directory(call: NtCall) -> u64 {
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    let Some(length) = crate::nt_dispatch::stack_argument(6) else { return STATUS_INVALID_PARAMETER; };
+    let Some(class) = crate::nt_dispatch::stack_argument(7) else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() || call.args.a0 > u32::MAX as u64 || call.args.a4 == 0 || call.args.a5 == 0 || length > u32::MAX as u64 || class > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    query_directory_values(cur, call.args.a0 as u32, call.args.a4, call.args.a5, length as u32, class as u32)
 }
 
 fn query_attributes(attributes: u64, information: u64) -> u64 {
@@ -390,6 +413,10 @@ fn query_information(cur: &sched::Task, addr: u64) -> u64 {
             (handle, io_status, information, length, class),
         _ => return STATUS_INVALID_PARAMETER,
     };
+    query_information_values(cur, handle, io_status, information, length, class)
+}
+
+fn query_information_values(cur: &sched::Task, handle: u32, io_status: u64, information: u64, length: u32, class: u32) -> u64 {
     if io_status == 0 || information == 0 { return STATUS_INVALID_PARAMETER; }
     let native = sched::nt_object::NtHandle::from_raw(handle);
     let table = cur.thread_group.nt_handles();
@@ -484,6 +511,10 @@ fn set_information(cur: &sched::Task, addr: u64) -> u64 {
             (handle, io_status, information, length, class),
         _ => return STATUS_INVALID_PARAMETER,
     };
+    set_information_values(cur, handle, io_status, information, length, class)
+}
+
+fn set_information_values(cur: &sched::Task, handle: u32, io_status: u64, information: u64, length: u32, class: u32) -> u64 {
     if io_status == 0 || information == 0 || (class != FILE_DISPOSITION_INFORMATION && length < 8) { return STATUS_INVALID_PARAMETER; }
     let native = sched::nt_object::NtHandle::from_raw(handle);
     let table = cur.thread_group.nt_handles();
@@ -544,6 +575,10 @@ fn query_directory(cur: &sched::Task, addr: u64) -> u64 {
             (handle, io_status, information, length, class),
         _ => return STATUS_INVALID_PARAMETER,
     };
+    query_directory_values(cur, handle, io_status, information, length, class)
+}
+
+fn query_directory_values(cur: &sched::Task, handle: u32, io_status: u64, information: u64, length: u32, class: u32) -> u64 {
     if io_status == 0 || information == 0 || class != FILE_NAMES_INFORMATION || length == 0 {
         return STATUS_INVALID_PARAMETER;
     }
