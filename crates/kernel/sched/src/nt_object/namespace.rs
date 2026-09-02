@@ -121,6 +121,24 @@ pub fn publish_section(path: &str, object: Arc<NtObject>) -> (Arc<NtObject>, Nam
     (object, NamedObjectState::Created)
 }
 
+/// Publish one mutant in the canonical namespace or return its existing identity. # C: O(N_namespace)
+pub fn publish_mutant(path: &str, object: Arc<NtObject>) -> (Arc<NtObject>, NamedObjectState) {
+    let mut namespace = OBJECT_NAMESPACE.lock();
+    seed(&mut namespace);
+    if let Some(entry) = namespace.objects.iter().find(|entry| equal(&entry.path, path)) {
+        return (Arc::clone(&entry.object), if entry.object.kind() == NtObjectType::Mutant {
+            NamedObjectState::Existing
+        } else { NamedObjectState::TypeMismatch });
+    }
+    let Some(parent_path) = parent(path) else { return (object, NamedObjectState::ParentMissing); };
+    if !namespace.objects.iter().any(|entry| equal(&entry.path, parent_path)
+        && entry.object.kind() == NtObjectType::Directory) {
+        return (object, NamedObjectState::ParentMissing);
+    }
+    namespace.objects.push(NamedObject { path: path.into(), object: Arc::clone(&object) });
+    (object, NamedObjectState::Created)
+}
+
 /// Return the canonical path of a directory object. # C: O(N_namespace)
 pub fn directory_path(object: &NtObject) -> Option<String> {
     let mut namespace = OBJECT_NAMESPACE.lock();
@@ -140,6 +158,7 @@ pub fn directory_entries(object: &NtObject) -> Vec<(String, String)> {
             NtObjectType::Event => "Event",
             NtObjectType::Semaphore => "Semaphore",
             NtObjectType::Section => "Section",
+            NtObjectType::Mutant => "Mutant",
             _ => "Object",
         };
         Some((leaf(&entry.path).into(), kind.into()))
@@ -231,5 +250,20 @@ mod tests {
         assert_eq!(published.section().unwrap().size(), 4096);
         assert_eq!(directory_entries(&lookup_directory("\\BaseNamedObjects").unwrap())
             .iter().find(|(name, _)| name == "f1453_section").map(|(_, kind)| kind.as_str()), Some("Section"));
+    }
+
+    #[test]
+    fn named_mutant_publication_reuses_identity_and_reports_as_mutant() {
+        let path = "\\BaseNamedObjects\\f1454_mutant";
+        let first = NtObject::new_mutant(9101, None);
+        let second = NtObject::new_mutant(9102, None);
+        let (published, first_state) = publish_mutant(path, first);
+        let (reopened, second_state) = publish_mutant(path, second);
+        assert_eq!(first_state, NamedObjectState::Created);
+        assert_eq!(second_state, NamedObjectState::Existing);
+        assert!(core::ptr::eq(published.as_ref(), reopened.as_ref()));
+        assert_eq!(published.kind(), NtObjectType::Mutant);
+        assert_eq!(directory_entries(&lookup_directory("\\BaseNamedObjects").unwrap())
+            .iter().find(|(name, _)| name == "f1454_mutant").map(|(_, kind)| kind.as_str()), Some("Mutant"));
     }
 }

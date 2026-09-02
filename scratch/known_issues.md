@@ -539,9 +539,10 @@ The graph now reaches `ntdll.dll!NtOpenKey`; its registry namespace and typed
 key-handle owner remain an explicit `STATUS_NOT_IMPLEMENTED` boundary.
 `NtOpenKeyEx` is exposed at the same boundary; its registry options still
 require the typed registry namespace owner.
-The graph now reaches `ntdll.dll!NtOpenMutant`; named mutant lookup remains an
-explicit `STATUS_NOT_IMPLEMENTED` boundary until the NT object namespace is
-implemented.
+Windows NT frontier update (2026-09-02): named mutant creation and opening
+now reuse canonical scheduler-backed mutant identity with collision,
+type-mismatch, and missing-parent status handling; recursive ownership and
+release remain owned by the native mutant primitive.
 `NtQueryFullAttributesFile` now translates the Wine-shaped network-open
 information record from canonical VFS metadata, including timestamps, size,
 and regular-file or directory attributes.
