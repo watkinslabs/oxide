@@ -126,6 +126,8 @@ const PROCESS_BASIC_INFORMATION_CLASS: u32 = 0;
 const PROCESS_BASIC_INFORMATION_BYTES: usize = 48;
 const THREAD_BASIC_INFORMATION_CLASS: u32 = 0;
 const THREAD_BASIC_INFORMATION_BYTES: usize = 48;
+const THREAD_AFFINITY_MASK_CLASS: u32 = 4;
+const THREAD_AFFINITY_MASK_BYTES: usize = 8;
 const STATUS_WAIT_0: u64 = 0x0000_0100;
 const WAIT_MULTIPLE_LIMIT: u32 = 64;
 const SECTION_MAX_BYTES: u64 = 1 << 30;
@@ -1180,6 +1182,18 @@ pub fn dispatch(call: NtCall) -> u64 {
                 STATUS_SUCCESS
             }
             NtObjectCall::QueryThread { thread, class, info, length, return_length } => {
+                if class == THREAD_AFFINITY_MASK_CLASS {
+                    if (length as usize) < THREAD_AFFINITY_MASK_BYTES || uaccess::put_user_u64(info.as_u64(), 0).is_err() { return STATUS_INVALID_PARAMETER; }
+                    let target = match resolve_thread_target(&cur, thread, &table, THREAD_QUERY_INFORMATION) {
+                        Ok(target) => target, Err(error) => return error,
+                    };
+                    let affinity = target.cpus_allowed.load(core::sync::atomic::Ordering::Acquire).low_word();
+                    if uaccess::put_user_u64(info.as_u64(), affinity).is_err() { return STATUS_INVALID_PARAMETER; }
+                    if let Some(return_length) = return_length {
+                        if uaccess::put_user_u32(return_length.as_u64(), THREAD_AFFINITY_MASK_BYTES as u32).is_err() { return STATUS_INVALID_PARAMETER; }
+                    }
+                    return STATUS_SUCCESS;
+                }
                 if class != THREAD_BASIC_INFORMATION_CLASS || (length as usize) < THREAD_BASIC_INFORMATION_BYTES { return STATUS_INVALID_PARAMETER; }
                 let target = match resolve_thread_target(&cur, thread, &table, THREAD_QUERY_INFORMATION) {
                     Ok(target) => target, Err(error) => return error,
