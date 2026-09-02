@@ -546,6 +546,10 @@ The graph now reaches `ntdll.dll!NtOpenKey`; its registry namespace and typed
 key-handle owner remain an explicit `STATUS_NOT_IMPLEMENTED` boundary.
 `NtOpenKeyEx` is exposed at the same boundary; its registry options still
 require the typed registry namespace owner.
+The Notepad handoff now stages and starts that canonical userspace registry
+owner before launching the PE image; native NT key syscalls still require a
+protocol adapter that can safely route to the same service without a kernel
+shadow database.
 Windows NT frontier update (2026-09-02): named mutant creation and opening
 now reuse canonical scheduler-backed mutant identity with collision,
 type-mismatch, and missing-parent status handling; recursive ownership and

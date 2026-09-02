@@ -71,6 +71,11 @@ pub(super) fn probe_triple(arch: &str) -> Result<&'static str, u8> {
 /// slots are `const`-asserted inside each probe, so a cross-arch ABI mistake
 /// fails HERE rather than in the guest.
 pub(super) fn probe_cargo(arch: &str, package: &str) -> Result<PathBuf, u8> {
+    probe_cargo_bin(arch, package, package)
+}
+
+/// Build one Rust probe package and return a differently named binary. # C: O(cargo)
+pub(super) fn probe_cargo_bin(arch: &str, package: &str, binary: &str) -> Result<PathBuf, u8> {
     let triple = probe_triple(arch)?;
     if arch == "aarch64" && !Path::new(ARM_SYSROOT).is_dir() {
         eprintln!("xtask rootfs: missing {ARM_SYSROOT} for {package}");
@@ -78,11 +83,11 @@ pub(super) fn probe_cargo(arch: &str, package: &str) -> Result<PathBuf, u8> {
     }
     let mut c = Command::new("cargo");
     c.current_dir(PROBE_WORKSPACE);
-    c.args(["build", "--release", "--target", triple, "-p", package]);
+    c.args(["build", "--release", "--target", triple, "-p", package, "--bin", binary]);
     run(c)?;
-    let out = PathBuf::from(PROBE_WORKSPACE).join("target").join(triple).join("release").join(package);
+    let out = PathBuf::from(PROBE_WORKSPACE).join("target").join(triple).join("release").join(binary);
     if !out.is_file() {
-        eprintln!("xtask rootfs: {package} did not produce {}", out.display());
+        eprintln!("xtask rootfs: {package}/{binary} did not produce {}", out.display());
         return Err(1);
     }
     Ok(out)

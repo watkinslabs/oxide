@@ -14,6 +14,9 @@ FROZEN 2026-08-31. Dep:`01`,`03`,`29a`,`31ab`,`52`,`53`. Provides: one userspace
 - The typed service interface routes root and relative open/create, set, query, enumerate-keys, enumerate-values, and close through that session; responses carry the same opaque 64-bit handle, bounded result vectors, or an explicit error.
 - The userspace `Advapi` adapter exposes the initial `RegOpenKeyExW`, `RegCreateKeyExW`, `RegQueryValueExW`, `RegSetValueExW`, `RegEnumKeyExW`, `RegEnumValueW`, and `RegCloseKey` behavior over the client; it preserves query-size probes, short-buffer `ERROR_MORE_DATA`, default values, no-more-item results, and reserved-argument validation.
 - `registryd` exposes that interface over a bounded length-prefixed Unix stream and flushes the same store after each client connection; framing errors never become registry success.
+- The native Notepad smoke starts one `registryd` instance for the runtime
+  session and exposes its endpoint as `OXIDE_REGISTRY_SOCKET`; the database path
+  is `OXIDE_REGISTRY_DATABASE` and remains owned by the service.
 - The registry has one source of truth; no kernel shadow database or alternate string-key side channel is permitted.
 
 ## 2 Tests
