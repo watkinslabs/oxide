@@ -414,6 +414,8 @@ pub enum NtObjectCall {
     UnmapViewOfSectionEx { process: u64, base: u64, flags: u32 },
     QuerySection { section: u32, class: u32, info: UserPtr<u8>, length: u32, return_length: Option<UserPtr<u64>> },
     QueryProcess { process: u64, class: u32, info: UserPtr<u8>, length: u32, return_length: Option<UserPtr<u32>> },
+    OpenProcess { handle: UserPtr<u32>, desired_access: u32, attributes: Option<UserPtr<u8>>, client_id: UserPtr<u8> },
+    OpenThread { handle: UserPtr<u32>, desired_access: u32, attributes: Option<UserPtr<u8>>, client_id: UserPtr<u8> },
     CreateThreadEx { handle: UserPtr<u32>, process: u64, start: u64, parameter: u64, stack_size: u64, flags: u32 },
     TerminateThread { thread: u64, status: u64 },
     ResumeThread { thread: u64, count: Option<UserPtr<u32>> },
@@ -1315,6 +1317,14 @@ pub fn decode_object(call: NtCall) -> Result<NtObjectCall, Errno> {
             event_type: a.a3 as u32, initial_state: a.a4 as u32,
         }),
         NtService::CreateJobObject => Ok(NtObjectCall::CreateJob { handle: UserPtr::new(a.a0)?, desired_access: a.a1 as u32, attributes: a.a2 }),
+        NtService::NtOpenProcess => Ok(NtObjectCall::OpenProcess {
+            handle: UserPtr::new(a.a0)?, desired_access: a.a1 as u32,
+            attributes: optional_ptr(a.a2)?, client_id: UserPtr::new(a.a3)?,
+        }),
+        NtService::NtOpenThread => Ok(NtObjectCall::OpenThread {
+            handle: UserPtr::new(a.a0)?, desired_access: a.a1 as u32,
+            attributes: optional_ptr(a.a2)?, client_id: UserPtr::new(a.a3)?,
+        }),
         NtService::AssignProcessToJobObject => Ok(NtObjectCall::AssignProcessToJobObject { job: a.a0, process: a.a1 }),
         NtService::TerminateJobObject => Ok(NtObjectCall::TerminateJobObject { job: a.a0, status: a.a1 }),
         NtService::CreateSemaphore => Ok(NtObjectCall::CreateSemaphore {

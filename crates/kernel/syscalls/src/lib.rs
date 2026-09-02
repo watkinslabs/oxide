@@ -48,6 +48,8 @@ mod nt_file_lock;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_duplicate;
 #[cfg(target_os = "oxide-kernel")]
+mod nt_process_handles;
+#[cfg(target_os = "oxide-kernel")]
 mod nt_timer;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_completion;

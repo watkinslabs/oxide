@@ -443,6 +443,12 @@ impl NtHandleTable {
         NtObject::new_thread(id, task)
     }
 
+    /// Wrap an unpublished scheduler task in a process object. # C: O(1)
+    pub fn new_process(&self, task: Arc<Task>) -> Arc<NtObject> {
+        let id = self.next_object_id.fetch_add(1, Ordering::Relaxed);
+        NtObject::new_process(id, task)
+    }
+
     /// Insert an object with its granted access mask and return its handle. # C: O(N)
     pub fn insert(&self, object: Arc<NtObject>, access: u32) -> Option<NtHandle> {
         let mut entries = self.entries.lock();
