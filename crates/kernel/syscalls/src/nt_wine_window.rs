@@ -27,6 +27,7 @@ const WINE_GET_TEXT_METRICS: u64 = 0x1229;
 const WINE_GET_TEXT_EXTENT_EX: u64 = 0x1227;
 const WINE_REGISTER_CLASS_EX: u64 = 0x14eb;
 const WINE_DISPATCH_MESSAGE: u64 = 0x138b;
+const WM_TIMER: u32 = 0x0113;
 
 #[cfg(target_os = "oxide-kernel")]
 fn read_args(pointer: u64) -> Option<[u64; 17]> {
@@ -75,6 +76,10 @@ pub fn dispatch(call: NtCall) -> u64 {
             let Ok(message) = uaccess::get_user_u32(msg.saturating_add(8)) else { return STATUS_INVALID_PARAMETER; };
             let Ok(wparam) = uaccess::get_user_u64(msg.saturating_add(16)) else { return STATUS_INVALID_PARAMETER; };
             let Ok(lparam) = uaccess::get_user_u64(msg.saturating_add(24)) else { return STATUS_INVALID_PARAMETER; };
+            if message == WM_TIMER && lparam != 0 {
+                let tick_ms = timekeeper::monotonic_ns().saturating_div(1_000_000);
+                return crate::nt_rtl::begin_wndproc_callback(hwnd, message as u64, wparam, tick_ms, lparam);
+            }
             let Some(wndproc) = crate::nt_window::window_wndproc_for_current(hwnd) else { return STATUS_INVALID_PARAMETER; };
             crate::nt_rtl::begin_wndproc_callback(hwnd, message as u64, wparam, lparam, wndproc)
         }
