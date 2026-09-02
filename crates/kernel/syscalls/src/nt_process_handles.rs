@@ -23,6 +23,10 @@ pub(crate) const PROCESS_VM_OPERATION: u32 = 0x0000_0008;
 pub(crate) const PROCESS_QUERY_INFORMATION_ACCESS: u32 = 0x0000_0400;
 const PROCESS_BASIC_INFORMATION_CLASS: u32 = 0;
 const PROCESS_BASIC_INFORMATION_BYTES: usize = 48;
+const PROCESS_AFFINITY_MASK_CLASS: u32 = 21;
+const PROCESS_WOW64_INFORMATION_CLASS: u32 = 26;
+const PROCESS_POINTER_BYTES: usize = 8;
+const CURRENT_PROCESS: u64 = u64::MAX;
 
 /// Open a task identity into the caller's process-local NT handle table.
 /// Only identities in the current NT process are admitted until the native
@@ -108,27 +112,51 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
 
 fn query_process(process: u64, class: u32, info: syscall::UserPtr<u8>, length: u32,
     return_length: Option<syscall::UserPtr<u32>>) -> Option<u64> {
-    if process == u64::MAX { return None; }
     let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
     if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
-    if class != PROCESS_BASIC_INFORMATION_CLASS { return Some(STATUS_INVALID_INFO_CLASS); }
-    if (length as usize) < PROCESS_BASIC_INFORMATION_BYTES { return Some(STATUS_INFO_LENGTH_MISMATCH); }
-    let table = cur.thread_group.nt_handles();
-    if process > u32::MAX as u64 { return Some(STATUS_INVALID_HANDLE); }
-    let handle = sched::nt_object::NtHandle::from_raw(process as u32);
-    let Some(target) = process_task(process, table, PROCESS_QUERY_LIMITED_INFORMATION)
-        .or_else(|| process_task(process, table, PROCESS_QUERY_INFORMATION)) else {
-        return Some(if table.contains(handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE });
+    let target_owned = if process == CURRENT_PROCESS {
+        None
+    } else {
+        let table = cur.thread_group.nt_handles();
+        if process > u32::MAX as u64 { return Some(STATUS_INVALID_HANDLE); }
+        let handle = sched::nt_object::NtHandle::from_raw(process as u32);
+        let Some(target) = process_task(process, table, PROCESS_QUERY_LIMITED_INFORMATION)
+            .or_else(|| process_task(process, table, PROCESS_QUERY_INFORMATION)) else {
+            return Some(if table.contains(handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE });
+        };
+        Some(target)
     };
+    let target = target_owned.as_deref().unwrap_or(cur);
+    let required = match class {
+        PROCESS_BASIC_INFORMATION_CLASS => PROCESS_BASIC_INFORMATION_BYTES,
+        PROCESS_AFFINITY_MASK_CLASS | PROCESS_WOW64_INFORMATION_CLASS => PROCESS_POINTER_BYTES,
+        _ => return Some(STATUS_INVALID_INFO_CLASS),
+    };
+    if (class == PROCESS_BASIC_INFORMATION_CLASS && (length as usize) < required)
+        || (class != PROCESS_BASIC_INFORMATION_CLASS && length as usize != required) {
+        return Some(STATUS_INFO_LENGTH_MISMATCH);
+    }
+    if info.as_u64() == 0 { return Some(STATUS_INVALID_PARAMETER); }
+    if class == PROCESS_WOW64_INFORMATION_CLASS {
+        if uaccess::put_user_u64(info.as_u64(), 0).is_err() { return Some(STATUS_INVALID_PARAMETER); }
+        return write_process_return_length(return_length, required);
+    }
+    if class == PROCESS_AFFINITY_MASK_CLASS {
+        let mask = target.cpus_allowed.load(core::sync::atomic::Ordering::Acquire).low_word();
+        if uaccess::put_user_u64(info.as_u64(), mask).is_err() { return Some(STATUS_INVALID_PARAMETER); }
+        return write_process_return_length(return_length, required);
+    }
     let mut out = [0u8; PROCESS_BASIC_INFORMATION_BYTES];
     out[8..16].copy_from_slice(&target.nt_peb().to_ne_bytes());
     out[32..40].copy_from_slice(&(target.tgid.load(core::sync::atomic::Ordering::Acquire) as u64).to_ne_bytes());
     out[40..48].copy_from_slice(&(target.parent_tid.load(core::sync::atomic::Ordering::Acquire) as u64).to_ne_bytes());
     if uaccess::copy_to_user(info.as_u64(), &out).is_err() { return Some(STATUS_INVALID_PARAMETER); }
+    write_process_return_length(return_length, required)
+}
+
+fn write_process_return_length(return_length: Option<syscall::UserPtr<u32>>, length: usize) -> Option<u64> {
     if let Some(return_length) = return_length {
-        if uaccess::put_user_u32(return_length.as_u64(), PROCESS_BASIC_INFORMATION_BYTES as u32).is_err() {
-            return Some(STATUS_INVALID_PARAMETER);
-        }
+        if uaccess::put_user_u32(return_length.as_u64(), length as u32).is_err() { return Some(STATUS_INVALID_PARAMETER); }
     }
     Some(STATUS_SUCCESS)
 }
