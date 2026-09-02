@@ -43,3 +43,7 @@ page supplies the return leg: a WndProc's `LRESULT` is written to its home
 area and returned through `NtCallbackReturn`, which restores the suspended
 syscall frame. The shared AArch64 kernel build keeps this path gated because
 the Windows workload is x86-64 only; it does not claim an ARM callback ABI.
+
+Wine timer messages with a non-null `lParam` use that value as the callback
+procedure and pass the monotonic millisecond tick count as the callback
+`lParam`, matching the `NtUserDispatchMessage` timer path.
