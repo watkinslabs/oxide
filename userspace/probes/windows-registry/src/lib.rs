@@ -405,6 +405,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn registry_store_persists_case_insensitive_keys_and_values() {
+        let path = std::env::temp_dir().join(format!("oxide-registry-store-{}.db", std::process::id()));
+        let _ = fs::remove_file(&path);
+        let mut store = RegistryStore::open(&path).unwrap();
+        let key = match store.execute(Request::Create { root: Root::CurrentUser, subkey: "Software\\Oxide".into() }) { Response::Handle(key) => key, other => panic!("unexpected response: {other:?}") };
+        assert_eq!(store.execute(Request::Set { key, name: "InstallPath".into(), value: Value { kind: ValueType::String, data: b"C:\\Oxide".to_vec() } }), Response::Success);
+        assert_eq!(store.execute(Request::Flush { key }), Response::Success);
+        drop(store);
+        let mut reopened = RegistryStore::open(&path).unwrap();
+        let opened = match reopened.execute(Request::Open { root: Root::CurrentUser, subkey: "software\\oxide".into() }) { Response::Handle(key) => key, other => panic!("unexpected response: {other:?}") };
+        assert_eq!(reopened.execute(Request::Query { key: opened, name: "installpath".into() }), Response::Value(Value { kind: ValueType::String, data: b"C:\\Oxide".to_vec() }));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn keys_and_values_are_case_insensitive_but_preserve_display_names() {
         let mut registry = Registry::new();
         let key = registry.create_key(Root::CurrentUser, "Software\\Oxide").unwrap();
