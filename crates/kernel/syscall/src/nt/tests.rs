@@ -498,6 +498,30 @@ use super::*;
     }
 
     #[test]
+    fn user_process_decode_consumes_register_and_stack_abi_words() {
+        let call = decode(260, SyscallArgs {
+            a0: 0x1000, a1: 0x2000, a2: 0x1f0fff, a3: 0x1f03ff,
+            a4: 0, a5: 0, ..args()
+        }).unwrap();
+        let process = decode_user_process(call, [0x10, 0x20, 0x3000, 0x4000, 0x5000]).unwrap();
+        assert_eq!(process.process_access, 0x1f0fff);
+        assert_eq!(process.thread_access, 0x1f03ff);
+        assert_eq!(process.process_flags, 0x10);
+        assert_eq!(process.thread_flags, 0x20);
+        assert_eq!(process.process_parameters.as_u64(), 0x3000);
+        assert_eq!(process.create_info.as_u64(), 0x4000);
+        assert_eq!(process.attribute_list.as_u64(), 0x5000);
+    }
+
+    #[test]
+    fn user_process_decode_rejects_misaligned_required_pointers() {
+        let call = decode(260, SyscallArgs { a0: 0x1002, ..args() }).unwrap();
+        assert_eq!(decode_user_process(call, [0x10, 0x20, 0x3000, 0x4000, 0x5000]), Err(Errno::Efault));
+        let call = decode(260, SyscallArgs { a0: 0x1000, ..args() }).unwrap();
+        assert_eq!(decode_user_process(call, [0x10, 0x20, 0x3002, 0x4000, 0x5000]), Err(Errno::Efault));
+    }
+
+    #[test]
     fn timeout_encoding_preserves_relative_and_absolute_units() {
         assert_eq!(decode_timeout(0), Ok(NtTimeout::Relative100ns(0)));
         assert_eq!(decode_timeout(-25), Ok(NtTimeout::Relative100ns(25)));

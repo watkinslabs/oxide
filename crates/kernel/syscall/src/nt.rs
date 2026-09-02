@@ -438,6 +438,23 @@ pub enum NtObjectCall {
     SetSecurity { handle: u32, security_information: u32, descriptor: UserPtr<u8> },
     CompareObjects { first: u64, second: u64 },
 }
+/// Native x86-64 `NtCreateUserProcess` argument record. The first six words
+/// arrive in registers; `decode_user_process` receives the remaining five
+/// words from the caller's stack after the syscall frame has been validated.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct NtCreateUserProcessCall {
+    pub process_handle: UserPtr<u32>,
+    pub thread_handle: UserPtr<u32>,
+    pub process_access: u32,
+    pub thread_access: u32,
+    pub process_attributes: Option<UserPtr<u8>>,
+    pub thread_attributes: Option<UserPtr<u8>>,
+    pub process_flags: u32,
+    pub thread_flags: u32,
+    pub process_parameters: UserPtr<u8>,
+    pub create_info: UserPtr<u8>,
+    pub attribute_list: UserPtr<u8>,
+}
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct NtCompletionPacket {
@@ -1401,6 +1418,27 @@ pub fn decode_object(call: NtCall) -> Result<NtObjectCall, Errno> {
         _ => Err(Errno::Enosys),
     }
 }
+/// Decode the complete eleven-word Windows process-creation ABI. # C: O(1)
+pub fn decode_user_process(call: NtCall, stack: [u64; 5])
+    -> Result<NtCreateUserProcessCall, Errno>
+{
+    if call.service != NtService::NtCreateUserProcess { return Err(Errno::Enosys); }
+    let a = call.args;
+    Ok(NtCreateUserProcessCall {
+        process_handle: UserPtr::new(a.a0)?,
+        thread_handle: UserPtr::new(a.a1)?,
+        process_access: a.a2 as u32,
+        thread_access: a.a3 as u32,
+        process_attributes: optional_ptr(a.a4)?,
+        thread_attributes: optional_ptr(a.a5)?,
+        process_flags: stack[0] as u32,
+        thread_flags: stack[1] as u32,
+        process_parameters: UserPtr::new(stack[2])?,
+        create_info: UserPtr::new(stack[3])?,
+        attribute_list: UserPtr::new(stack[4])?,
+    })
+}
+
 fn optional_ptr<T>(raw: u64) -> Result<Option<UserPtr<T>>, Errno> {
     if raw == 0 { Ok(None) } else { UserPtr::new(raw).map(Some) }
 }
