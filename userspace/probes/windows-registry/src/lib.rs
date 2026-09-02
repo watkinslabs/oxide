@@ -42,6 +42,9 @@ impl ValueType {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Value { pub kind: ValueType, pub data: Vec<u8> }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KeyInfo { pub name: String, pub subkeys: u32, pub max_subkey: u32, pub values: u32, pub max_value_name: u32, pub max_value_data: u32 }
+
 #[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct KeyHandle(u64);
 
@@ -76,12 +79,13 @@ pub enum Request {
     Query { key: KeyHandle, name: String },
     EnumKeys { key: KeyHandle },
     EnumValues { key: KeyHandle },
+    QueryKey { key: KeyHandle },
     Close { key: KeyHandle },
     Flush { key: KeyHandle },
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum Response { Handle(KeyHandle), Value(Value), Keys(Vec<String>), Values(Vec<(String, Value)>), Success, Failure(Error) }
+pub enum Response { Handle(KeyHandle), Value(Value), Keys(Vec<String>), Values(Vec<(String, Value)>), KeyInfo(KeyInfo), Success, Failure(Error) }
 
 impl RegistryStore {
     /// Load an existing per-user database or create a new one when absent. # C: O(file bytes)
@@ -116,6 +120,7 @@ impl RegistryStore {
             Request::Query { key, name } => self.registry.query_value_handle(key, &name).map_or_else(Response::Failure, Response::Value),
             Request::EnumKeys { key } => self.registry.subkeys_handle(key).map_or_else(Response::Failure, Response::Keys),
             Request::EnumValues { key } => self.registry.values_handle(key).map_or_else(Response::Failure, Response::Values),
+            Request::QueryKey { key } => self.registry.query_key_handle(key).map_or_else(Response::Failure, Response::KeyInfo),
             Request::Close { key } => self.registry.close_handle(key).map_or_else(Response::Failure, |_| Response::Success),
             Request::Flush { key } => {
                 if !self.registry.handles.contains_key(&key) { return Response::Failure(Error::MissingKey); }
@@ -154,6 +159,7 @@ fn decode_request(frame: &[u8]) -> Result<Request, Error> {
         registry_wire::CLOSE => Request::Close { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
         registry_wire::ENUM_KEYS => Request::EnumKeys { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
         registry_wire::ENUM_VALUES => Request::EnumValues { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
+        registry_wire::QUERY_KEY => Request::QueryKey { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
         registry_wire::FLUSH => Request::Flush { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
         _ => return Err(Error::InvalidFile),
     };
@@ -168,6 +174,7 @@ fn encode_response(response: &Response) -> Result<Vec<u8>, Error> {
         Response::Value(value) => { out.push(registry_wire::RESPONSE_VALUE); put_u32(&mut out, value.kind as u32); put_bytes(&mut out, &value.data)?; },
         Response::Keys(keys) => { out.push(registry_wire::RESPONSE_KEYS); put_u32(&mut out, keys.len().try_into().map_err(|_| Error::InvalidFile)?); for key in keys { put_text(&mut out, key)?; } },
         Response::Values(values) => { out.push(registry_wire::RESPONSE_VALUES); put_u32(&mut out, values.len().try_into().map_err(|_| Error::InvalidFile)?); for (name, value) in values { put_text(&mut out, name)?; put_u32(&mut out, value.kind as u32); put_bytes(&mut out, &value.data)?; } },
+        Response::KeyInfo(info) => { out.push(registry_wire::RESPONSE_KEY_INFO); put_text(&mut out, &info.name)?; put_u32(&mut out, info.subkeys); put_u32(&mut out, info.max_subkey); put_u32(&mut out, info.values); put_u32(&mut out, info.max_value_name); put_u32(&mut out, info.max_value_data); },
         Response::Failure(error) => { out.push(registry_wire::RESPONSE_FAILURE); out.push(error_code(error)); },
     }
     Ok(out)
@@ -287,6 +294,16 @@ impl Registry {
         let values = &self.keys.get(path).ok_or(Error::MissingKey)?.values;
         let mut out = values.values().map(|(name, value)| (name.clone(), value.clone())).collect::<Vec<_>>();
         out.sort_by_key(|(name, _)| canonical(name)); Ok(out)
+    }
+
+    /// Return key metadata from the canonical registry tree. # C: O(N_values)
+    pub fn query_key_handle(&self, key: KeyHandle) -> Result<KeyInfo, Error> {
+        let path = self.handles.get(&key).ok_or(Error::MissingKey)?;
+        let subkeys = self.subkeys(path)?; let values = self.values_handle(key)?;
+        let max_subkey = subkeys.iter().map(|name| name.encode_utf16().count() * 2).max().unwrap_or(0);
+        let max_value_name = values.iter().map(|(name, _)| name.encode_utf16().count() * 2).max().unwrap_or(0);
+        let max_value_data = values.iter().map(|(_, value)| value.data.len()).max().unwrap_or(0);
+        Ok(KeyInfo { name: path.clone(), subkeys: subkeys.len() as u32, max_subkey: max_subkey as u32, values: values.len() as u32, max_value_name: max_value_name as u32, max_value_data: max_value_data as u32 })
     }
 
     /// Close one allocated handle; predefined roots remain valid. # C: O(log N)
@@ -480,6 +497,10 @@ mod tests {
         let _ = store.execute(Request::Set { key, name: "A-value".into(), value: Value { kind: ValueType::Dword, data: vec![1, 0, 0, 0] } });
         assert_eq!(store.execute(Request::EnumKeys { key }), Response::Keys(vec!["A-child".into(), "z-child".into()]));
         assert_eq!(store.execute(Request::EnumValues { key }), Response::Values(vec![("A-value".into(), Value { kind: ValueType::Dword, data: vec![1, 0, 0, 0] }), ("z-value".into(), Value { kind: ValueType::Binary, data: vec![9] })]));
+        assert_eq!(store.execute(Request::QueryKey { key }), Response::KeyInfo(KeyInfo {
+            name: "HKCU\\SOFTWARE\\OXIDE".into(), subkeys: 2, max_subkey: 14,
+            values: 2, max_value_name: 14, max_value_data: 4,
+        }));
     }
 
     #[test]
