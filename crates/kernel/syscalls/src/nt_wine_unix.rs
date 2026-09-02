@@ -8,8 +8,45 @@ use syscall::nt::{NtCall, NtService};
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
+const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
 
 fn windows_time_ticks(realtime_ns: u64) -> u64 { realtime_ns.saturating_div(100) }
+
+#[cfg(target_os = "oxide-kernel")]
+fn unix_fd_to_handle(args: u64) -> u64 {
+    let Ok(fd) = uaccess::get_user_u32(args) else { return STATUS_INVALID_PARAMETER; };
+    let Ok(access) = uaccess::get_user_u32(args + 4) else { return STATUS_INVALID_PARAMETER; };
+    let Ok(output) = uaccess::get_user_u64(args + 16) else { return STATUS_INVALID_PARAMETER; };
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    let Some(fdt) = cur.clone_fd_table() else { return STATUS_INVALID_PARAMETER; };
+    let Ok(file) = fdt.get(fd as i32) else { return STATUS_INVALID_HANDLE; };
+    let object = cur.thread_group.nt_handles().new_file(file);
+    let Some(handle) = cur.thread_group.nt_handles().insert(object, access) else { return STATUS_INVALID_HANDLE; };
+    if uaccess::put_user_u32(output, handle.raw()).is_err() {
+        let _ = cur.thread_group.nt_handles().close(handle);
+        STATUS_INVALID_PARAMETER
+    } else { STATUS_SUCCESS }
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn unix_fd_to_handle(_args: u64) -> u64 { STATUS_INVALID_PARAMETER }
+
+#[cfg(target_os = "oxide-kernel")]
+fn unix_handle_to_fd(args: u64) -> u64 {
+    let Ok(raw_handle) = uaccess::get_user_u32(args) else { return STATUS_INVALID_PARAMETER; };
+    let Ok(output_fd) = uaccess::get_user_u64(args + 16) else { return STATUS_INVALID_PARAMETER; };
+    let Ok(output_options) = uaccess::get_user_u64(args + 24) else { return STATUS_INVALID_PARAMETER; };
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    let Some(object) = cur.thread_group.nt_handles().get(sched::nt_object::NtHandle::from_raw(raw_handle), 0) else { return STATUS_INVALID_HANDLE; };
+    let Some(file) = object.file() else { return STATUS_INVALID_HANDLE; };
+    let Some(fdt) = cur.clone_fd_table() else { return STATUS_INVALID_PARAMETER; };
+    let fd = fdt.live_fds().into_iter().find(|fd| fdt.get(*fd).ok().is_some_and(|candidate| alloc::sync::Arc::ptr_eq(&candidate, &file)));
+    let Some(fd) = fd else { return STATUS_INVALID_HANDLE; };
+    if uaccess::put_user_u32(output_fd, fd as u32).is_err() || uaccess::put_user_u32(output_options, 0).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn unix_handle_to_fd(_args: u64) -> u64 { STATUS_INVALID_PARAMETER }
 
 #[cfg(target_os = "oxide-kernel")]
 fn write_unix_debug(args: u64) -> u64 {
@@ -43,6 +80,8 @@ pub(crate) fn dispatch(call: NtCall) -> u64 {
         // Logging ownership is added with the kernel console bridge; reject
         // malformed requests now rather than dereferencing an untrusted ptr.
         2 => write_unix_debug(call.args.a2),
+        4 => unix_fd_to_handle(call.args.a2),
+        5 => unix_handle_to_fd(call.args.a2),
         // unix_system_time_precise: writes one Windows 100ns timestamp.
         7 => {
             if call.args.a2 == 0 { return STATUS_INVALID_PARAMETER; }
