@@ -23,3 +23,11 @@ The shape follows the arguments consumed by Wine `win32u`'s `NtUserCreateWindowE
 - the default-window procedure preserves the four scalar arguments and applies the core close/hit-test policy;
 - the window state core continues to test handle lifetime and queue filtering;
 - Linux ABI tests remain unchanged.
+
+## 4 File handoff invariant
+
+`wine_server_handle_to_fd` validates the requested access mask against the
+canonical NT handle entry, then allocates a new Linux fd referencing the same
+VFS open-file description. It never aliases an existing descriptor number;
+the caller owns the returned fd and its close lifetime independently. Failed
+copyout closes the newly allocated descriptor before returning the error.

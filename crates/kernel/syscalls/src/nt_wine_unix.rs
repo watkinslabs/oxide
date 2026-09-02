@@ -111,15 +111,20 @@ fn unix_fd_to_handle(_args: u64) -> u64 { STATUS_INVALID_PARAMETER }
 #[cfg(target_os = "oxide-kernel")]
 fn unix_handle_to_fd(args: u64) -> u64 {
     let Ok(raw_handle) = uaccess::get_user_u32(args) else { return STATUS_INVALID_PARAMETER; };
+    let Ok(access) = uaccess::get_user_u32(args + 4) else { return STATUS_INVALID_PARAMETER; };
     let Ok(output_fd) = uaccess::get_user_u64(args + 16) else { return STATUS_INVALID_PARAMETER; };
     let Ok(output_options) = uaccess::get_user_u64(args + 24) else { return STATUS_INVALID_PARAMETER; };
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-    let Some(object) = cur.thread_group.nt_handles().get(sched::nt_object::NtHandle::from_raw(raw_handle), 0) else { return STATUS_INVALID_HANDLE; };
+    let Some(object) = cur.thread_group.nt_handles().get(sched::nt_object::NtHandle::from_raw(raw_handle), access) else {
+        return if cur.thread_group.nt_handles().contains(sched::nt_object::NtHandle::from_raw(raw_handle)) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE };
+    };
     let Some(file) = object.file() else { return STATUS_INVALID_HANDLE; };
     let Some(fdt) = cur.clone_fd_table() else { return STATUS_INVALID_PARAMETER; };
-    let fd = fdt.live_fds().into_iter().find(|fd| fdt.get(*fd).ok().is_some_and(|candidate| alloc::sync::Arc::ptr_eq(&candidate, &file)));
-    let Some(fd) = fd else { return STATUS_INVALID_HANDLE; };
-    if uaccess::put_user_u32(output_fd, fd as u32).is_err() || uaccess::put_user_u32(output_options, 0).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
+    let Ok(fd) = fdt.alloc(file) else { return STATUS_NO_MEMORY; };
+    if uaccess::put_user_u32(output_fd, fd as u32).is_err() || uaccess::put_user_u32(output_options, 0).is_err() {
+        let _ = fdt.close(fd);
+        STATUS_INVALID_PARAMETER
+    } else { STATUS_SUCCESS }
 }
 
 #[cfg(not(target_os = "oxide-kernel"))]
