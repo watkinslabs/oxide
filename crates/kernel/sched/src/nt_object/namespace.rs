@@ -15,6 +15,9 @@ struct Namespace {
     next_id: AtomicU64,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum NamedEventState { Created, Existing, TypeMismatch, ParentMissing }
+
 static OBJECT_NAMESPACE: Spinlock<Namespace, TaskListClass> = Spinlock::new(Namespace {
     objects: Vec::new(), next_id: AtomicU64::new(1),
 });
@@ -48,6 +51,36 @@ pub fn lookup_directory(path: &str) -> Option<Arc<NtObject>> {
         && entry.object.kind() == NtObjectType::Directory).map(|entry| Arc::clone(&entry.object))
 }
 
+/// Resolve a named object of the requested type without creating state. # C: O(N_namespace)
+pub fn lookup_object(path: &str, kind: NtObjectType) -> Option<Arc<NtObject>> {
+    let mut namespace = OBJECT_NAMESPACE.lock();
+    seed(&mut namespace);
+    namespace.objects.iter().find(|entry| equal(&entry.path, path)
+        && entry.object.kind() == kind).map(|entry| Arc::clone(&entry.object))
+}
+
+/// Create or reopen one named event while retaining one canonical object. # C: O(N_namespace)
+pub fn create_event(path: &str, manual_reset: bool, initial_state: bool) -> (Arc<NtObject>, NamedEventState) {
+    let mut namespace = OBJECT_NAMESPACE.lock();
+    seed(&mut namespace);
+    if let Some(entry) = namespace.objects.iter().find(|entry| equal(&entry.path, path)) {
+        return (Arc::clone(&entry.object), if entry.object.kind() == NtObjectType::Event {
+            NamedEventState::Existing
+        } else { NamedEventState::TypeMismatch });
+    }
+    let Some(parent_path) = parent(path) else {
+        return (NtObject::new_event(0, manual_reset, initial_state), NamedEventState::ParentMissing);
+    };
+    if !namespace.objects.iter().any(|entry| equal(&entry.path, parent_path)
+        && entry.object.kind() == NtObjectType::Directory) {
+        return (NtObject::new_event(0, manual_reset, initial_state), NamedEventState::ParentMissing);
+    }
+    let id = namespace.next_id.fetch_add(1, Ordering::Relaxed);
+    let object = NtObject::new_event(id, manual_reset, initial_state);
+    namespace.objects.push(NamedObject { path: path.into(), object: Arc::clone(&object) });
+    (object, NamedEventState::Created)
+}
+
 /// Return the canonical path of a directory object. # C: O(N_namespace)
 pub fn directory_path(object: &NtObject) -> Option<String> {
     let mut namespace = OBJECT_NAMESPACE.lock();
@@ -62,7 +95,12 @@ pub fn directory_entries(object: &NtObject) -> Vec<(String, String)> {
     let namespace = OBJECT_NAMESPACE.lock();
     namespace.objects.iter().filter_map(|entry| {
         if parent(&entry.path).map(|value| equal(value, &path)) != Some(true) { return None; }
-        Some((leaf(&entry.path).into(), "Directory".into()))
+        let kind = match entry.object.kind() {
+            NtObjectType::Directory => "Directory",
+            NtObjectType::Event => "Event",
+            _ => "Object",
+        };
+        Some((leaf(&entry.path).into(), kind.into()))
     }).collect()
 }
 
@@ -104,5 +142,23 @@ mod tests {
         let object = table.get(handle, 1).unwrap();
         assert_eq!(object.kind(), NtObjectType::Directory);
         assert_eq!(directory_path(&object).as_deref(), Some("\\KnownDlls"));
+    }
+
+    #[test]
+    fn named_event_creation_reuses_identity_and_rejects_type_collision() {
+        let path = "\\BaseNamedObjects\\f1450_event";
+        let (first, first_state) = create_event(path, false, false);
+        let (second, second_state) = create_event(path, true, true);
+        assert_eq!(first_state, NamedEventState::Created);
+        assert_eq!(second_state, NamedEventState::Existing);
+        assert!(core::ptr::eq(first.as_ref(), second.as_ref()));
+        assert_eq!(directory_entries(&lookup_directory("\\BaseNamedObjects").unwrap())
+            .iter().find(|(name, _)| name == "f1450_event").map(|(_, kind)| kind.as_str()), Some("Event"));
+        let (other, collision) = create_event(path, false, false);
+        assert!(core::ptr::eq(first.as_ref(), other.as_ref()));
+        assert_eq!(collision, NamedEventState::Existing);
+        let (directory, mismatch) = create_event("\\KnownDlls", false, false);
+        assert_eq!(directory.kind(), NtObjectType::Directory);
+        assert_eq!(mismatch, NamedEventState::TypeMismatch);
     }
 }

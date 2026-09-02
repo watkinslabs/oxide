@@ -395,7 +395,7 @@ pub enum NtGdiCall {
 pub enum NtLoaderCall { ResolveDelayLoadedApi { args: [u64; 6] }, ExecuteWithCatalog { request: UserPtr<crate::nt_exec::NtExecRequest> } }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum NtObjectCall {
-    CreateEvent { handle: UserPtr<u32>, desired_access: u32, event_type: u32, initial_state: u32 },
+    CreateEvent { handle: UserPtr<u32>, desired_access: u32, attributes: u64, event_type: u32, initial_state: u32 },
     CreateJob { handle: UserPtr<u32>, desired_access: u32, attributes: u64 },
     AssignProcessToJobObject { job: u64, process: u64 }, TerminateJobObject { job: u64, status: u64 },
     CreateSemaphore { handle: UserPtr<u32>, desired_access: u32, attributes: u64, initial: i64, maximum: i64 },
@@ -1330,7 +1330,7 @@ pub fn decode_object(call: NtCall) -> Result<NtObjectCall, Errno> {
     let a = call.args;
     match call.service {
         NtService::CreateEvent => Ok(NtObjectCall::CreateEvent {
-            handle: UserPtr::new(a.a0)?, desired_access: a.a1 as u32,
+            handle: UserPtr::new(a.a0)?, desired_access: a.a1 as u32, attributes: a.a2,
             event_type: a.a3 as u32, initial_state: a.a4 as u32,
         }),
         NtService::CreateJobObject => Ok(NtObjectCall::CreateJob { handle: UserPtr::new(a.a0)?, desired_access: a.a1 as u32, attributes: a.a2 }),

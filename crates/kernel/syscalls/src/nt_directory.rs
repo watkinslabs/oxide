@@ -23,22 +23,8 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
     if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a2 == 0 { return Some(STATUS_INVALID_PARAMETER); }
     if call.args.a1 as u32 & !DIRECTORY_ALLOWED_ACCESS != 0 { return Some(STATUS_INVALID_PARAMETER); }
-    let attributes = call.args.a2;
-    let Ok(length) = uaccess::get_user_u32(attributes) else { return Some(STATUS_INVALID_PARAMETER); };
-    if length < 48 { return Some(STATUS_INVALID_PARAMETER); }
-    let Ok(root) = uaccess::get_user_u64(attributes + 8) else { return Some(STATUS_INVALID_PARAMETER); };
-    let Ok(name_ptr) = uaccess::get_user_u64(attributes + 16) else { return Some(STATUS_INVALID_PARAMETER); };
-    let Some(name) = read_name(name_ptr) else { return Some(STATUS_INVALID_PARAMETER); };
     let table = cur.thread_group.nt_handles();
-    if root > u32::MAX as u64 { return Some(STATUS_INVALID_HANDLE); }
-    let root_path = if root == 0 { Some("\\".into()) } else {
-        let object = table.get(sched::nt_object::NtHandle::from_raw(root as u32), DIRECTORY_TRAVERSE);
-        let Some(object) = object else { return Some(STATUS_INVALID_HANDLE); };
-        sched::nt_object::directory_path(&object)
-    };
-    let Some(path) = crate::nt_directory_abi::join_path(root_path.as_deref(), &name) else {
-        return Some(STATUS_INVALID_PARAMETER);
-    };
+    let Some(path) = resolve_object_path(call.args.a2, &table) else { return Some(STATUS_INVALID_PARAMETER); };
     let requested_access = call.args.a1 as u32;
     let granted_access = if requested_access & GENERIC_ALL != 0 {
         requested_access | DIRECTORY_ALLOWED_ACCESS
@@ -111,7 +97,20 @@ fn put_unicode(bytes: &mut [u8], offset: usize, length: u16, buffer: u64) {
     bytes[offset + 8..offset + 16].copy_from_slice(&buffer.to_ne_bytes());
 }
 
-fn read_name(pointer: u64) -> Option<alloc::string::String> {
+pub(crate) fn resolve_object_path(attributes: u64, table: &sched::nt_object::NtHandleTable) -> Option<alloc::string::String> {
+    if attributes == 0 || uaccess::get_user_u32(attributes).ok()? < 48 { return None; }
+    let root = uaccess::get_user_u64(attributes + 8).ok()?;
+    let name_ptr = uaccess::get_user_u64(attributes + 16).ok()?;
+    let name = read_name(name_ptr)?;
+    if root > u32::MAX as u64 { return None; }
+    let root_path = if root == 0 { Some("\\".into()) } else {
+        let object = table.get(sched::nt_object::NtHandle::from_raw(root as u32), DIRECTORY_TRAVERSE)?;
+        sched::nt_object::directory_path(&object)
+    };
+    crate::nt_directory_abi::join_path(root_path.as_deref(), &name)
+}
+
+pub(crate) fn read_name(pointer: u64) -> Option<alloc::string::String> {
     if pointer == 0 { return None; }
     let length = uaccess::get_user_u32(pointer).ok()? as usize & 0xffff;
     let buffer = uaccess::get_user_u64(pointer + 8).ok()?;
