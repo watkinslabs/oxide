@@ -319,6 +319,10 @@ pub enum NtService {
     SetWindowRectValues = 537,
     /// Dispatch one Wine Unix-library call `(handle, code, args)`.
     WineUnixCall = 538,
+    /// Arm one process-owned Win32 window timer.
+    SetWindowTimer = 539,
+    /// Remove one process-owned Win32 window timer.
+    KillWindowTimer = 540,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -389,6 +393,8 @@ pub enum NtWindowCall {
     PostQuit { code: i32 },
     SetFocus { hwnd: u64 },
     InjectKey { key: u16, pressed: u32, repeat: u32 },
+    SetTimer { hwnd: u64, id: u64, timeout_ms: u32, proc: u64 },
+    KillTimer { hwnd: u64, id: u64 },
 }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum NtGdiCall {
@@ -946,6 +952,8 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 191 { return Some(NtCall { service: NtService::Wcsncmp, args }); }
     if service == 190 { return Some(NtCall { service: NtService::Wcslen, args }); }
     if service == 189 { return Some(NtCall { service: NtService::Wcscpy, args }); }
+    if service == 539 { return Some(NtCall { service: NtService::SetWindowTimer, args }); }
+    if service == 540 { return Some(NtCall { service: NtService::KillWindowTimer, args }); }
     let service = match service {
         0 => NtService::AllocateVirtualMemory,
         1 => NtService::FreeVirtualMemory,
@@ -1224,7 +1232,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::NtAdjustPrivilegesToken => Err(Errno::Enosys),
         NtService::NtAllocateLocallyUniqueId => Err(Errno::Enosys),
         NtService::NtCancelIoFile | NtService::NtCancelIoFileEx => Err(Errno::Enosys),
-        NtService::NtCancelSynchronousIoFile | NtService::NtCompareObjects | NtService::NtConvertBetweenAuxiliaryCounterAndPerformanceCounter | NtService::NtCreateNamedPipeFile | NtService::NtCreateSectionEx | NtService::NtCreateSymbolicLinkObject | NtService::NtCreateUserProcess | NtService::NtDelayExecution | NtService::NtDeleteKey | NtService::NtDeleteValueKey | NtService::NtDuplicateToken | NtService::NtEnumerateKey | NtService::NtEnumerateValueKey | NtService::NtFilterToken | NtService::NtFlushBuffersFile | NtService::NtFlushInstructionCache | NtService::NtFlushKey | NtService::NtMakeTemporaryObject | NtService::NtMapViewOfSectionEx | NtService::NtNotifyChangeDirectoryFile | NtService::NtNotifyChangeKey | NtService::NtOpenEvent | NtService::NtOpenKeyEx | NtService::NtOpenMutant | NtService::NtOpenProcess | NtService::NtOpenSection | NtService::NtOpenSemaphore | NtService::NtOpenSymbolicLinkObject | NtService::NtOpenThread | NtService::NtOpenTimer | NtService::NtPrivilegeCheck | NtService::NtPulseEvent | NtService::NtQueryAttributesFile | NtService::NtQueryDefaultLocale | NtService::NtQueryDefaultUILanguage | NtService::NtQueryDirectoryObject | NtService::NtQueryFullAttributesFile | NtService::NtQueryInstallUILanguage | NtService::NtQueryKey | NtService::NtQuerySymbolicLinkObject | NtService::NtUnmapViewOfSectionEx | NtService::NtWriteFileGather | NtService::GetWindowRect | NtService::SetWindowRect | NtService::CreateCompatibleDc | NtService::DeleteGdiObject | NtService::CreateFontIndirect | NtService::SelectGdiFont | NtService::GetGdiTextMetrics | NtService::GetGdiTextExtent | NtService::GetWindowText | NtService::SetWindowText | NtService::GetClientRect | NtService::ShowWindow | NtService::InvalidateWindow | NtService::BeginWindowPaint | NtService::EndWindowPaint | NtService::FillGdiRect | NtService::BlitGdiSurface | NtService::PresentGdiSurface | NtService::PresentGdiWindow | NtService::PostQuitMessage | NtService::SetFocusWindow | NtService::InjectKey | NtService::RelayCall | NtService::GetParent | NtService::WineSyscall | NtService::WineUnixCall => Err(Errno::Enosys),
+        NtService::NtCancelSynchronousIoFile | NtService::NtCompareObjects | NtService::NtConvertBetweenAuxiliaryCounterAndPerformanceCounter | NtService::NtCreateNamedPipeFile | NtService::NtCreateSectionEx | NtService::NtCreateSymbolicLinkObject | NtService::NtCreateUserProcess | NtService::NtDelayExecution | NtService::NtDeleteKey | NtService::NtDeleteValueKey | NtService::NtDuplicateToken | NtService::NtEnumerateKey | NtService::NtEnumerateValueKey | NtService::NtFilterToken | NtService::NtFlushBuffersFile | NtService::NtFlushInstructionCache | NtService::NtFlushKey | NtService::NtMakeTemporaryObject | NtService::NtMapViewOfSectionEx | NtService::NtNotifyChangeDirectoryFile | NtService::NtNotifyChangeKey | NtService::NtOpenEvent | NtService::NtOpenKeyEx | NtService::NtOpenMutant | NtService::NtOpenProcess | NtService::NtOpenSection | NtService::NtOpenSemaphore | NtService::NtOpenSymbolicLinkObject | NtService::NtOpenThread | NtService::NtOpenTimer | NtService::NtPrivilegeCheck | NtService::NtPulseEvent | NtService::NtQueryAttributesFile | NtService::NtQueryDefaultLocale | NtService::NtQueryDefaultUILanguage | NtService::NtQueryDirectoryObject | NtService::NtQueryFullAttributesFile | NtService::NtQueryInstallUILanguage | NtService::NtQueryKey | NtService::NtQuerySymbolicLinkObject | NtService::NtUnmapViewOfSectionEx | NtService::NtWriteFileGather | NtService::SetWindowText | NtService::SetWindowTimer | NtService::KillWindowTimer | NtService::GetWindowRect | NtService::SetWindowRect | NtService::CreateCompatibleDc | NtService::DeleteGdiObject | NtService::CreateFontIndirect | NtService::SelectGdiFont | NtService::GetGdiTextMetrics | NtService::GetGdiTextExtent | NtService::GetWindowText | NtService::GetClientRect | NtService::ShowWindow | NtService::InvalidateWindow | NtService::BeginWindowPaint | NtService::EndWindowPaint | NtService::FillGdiRect | NtService::BlitGdiSurface | NtService::PresentGdiSurface | NtService::PresentGdiWindow | NtService::PostQuitMessage | NtService::SetFocusWindow | NtService::InjectKey | NtService::RelayCall | NtService::GetParent | NtService::WineSyscall | NtService::WineUnixCall => Err(Errno::Enosys),
     }
 }
 /// Decode thread context calls after validating their output pointer.
@@ -1291,6 +1299,8 @@ pub fn decode_window(call: NtCall) -> Result<NtWindowCall, Errno> {
         NtService::PostQuitMessage => Ok(NtWindowCall::PostQuit { code: a.a0 as i32 }),
         NtService::SetFocusWindow => Ok(NtWindowCall::SetFocus { hwnd: a.a0 }),
         NtService::InjectKey => Ok(NtWindowCall::InjectKey { key: a.a0 as u16, pressed: a.a1 as u32, repeat: a.a2 as u32 }),
+        NtService::SetWindowTimer => Ok(NtWindowCall::SetTimer { hwnd: a.a0, id: a.a1, timeout_ms: a.a2 as u32, proc: a.a3 }),
+        NtService::KillWindowTimer => Ok(NtWindowCall::KillTimer { hwnd: a.a0, id: a.a1 }),
         _ => Err(Errno::Enosys),
     }
 }

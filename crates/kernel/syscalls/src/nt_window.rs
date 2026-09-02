@@ -64,6 +64,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
             });
             let wait = Arc::clone(&entries[index].wait);
             let state = &mut entries[index].state;
+            state.expire_timers(timekeeper::monotonic_ns());
             match operation {
                 NtWindowCall::DefaultProc { hwnd, message, wparam: _, lparam: _ } => {
                     if hwnd > u32::MAX as u64 { return Some(STATUS_INVALID_HANDLE); }
@@ -149,6 +150,20 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
                         Err(_) => STATUS_INVALID_HANDLE,
                     };
                     (Some(result), Some(wait), None)
+                }
+                NtWindowCall::SetTimer { hwnd, id, timeout_ms, proc } => {
+                    if hwnd > u32::MAX as u64 || id == 0 { return Some(STATUS_INVALID_PARAMETER); }
+                    let window = if hwnd == 0 { None } else { Some(match ipc::win32_window::WindowId::from_raw(hwnd as u32) { Some(window) => window, None => return Some(STATUS_INVALID_HANDLE) }) };
+                    let result = match state.set_timer(cur.tid as u64, window, id, timeout_ms, proc, timekeeper::monotonic_ns()) {
+                        Ok(value) => value,
+                        Err(_) => STATUS_INVALID_HANDLE,
+                    };
+                    (Some(result), None, None)
+                }
+                NtWindowCall::KillTimer { hwnd, id } => {
+                    if hwnd > u32::MAX as u64 || id == 0 { return Some(STATUS_INVALID_PARAMETER); }
+                    let window = if hwnd == 0 { None } else { Some(match ipc::win32_window::WindowId::from_raw(hwnd as u32) { Some(window) => window, None => return Some(STATUS_INVALID_HANDLE) }) };
+                    (Some(state.kill_timer(window, id) as u64), None, None)
                 }
                 NtWindowCall::GetRect { hwnd, rect } => {
                     let Some(window) = ipc::win32_window::WindowId::from_raw(hwnd as u32) else { return Some(STATUS_INVALID_HANDLE); };
