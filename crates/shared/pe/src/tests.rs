@@ -181,6 +181,17 @@ fn locates_the_wine_x64_relay_descriptor_when_installed() {
 }
 
 #[test]
+fn preserves_wine_ntdll_no_relay_exports_when_installed() {
+    let Ok(b) = std::fs::read("/usr/lib64/wine/x86_64-windows/ntdll.dll") else { return };
+    let parsed = parse(&b).expect("installed Wine ntdll must parse");
+    let relays = parsed.relay_export_rvas().unwrap().unwrap();
+    assert_eq!(relays[1292], 0, "_memicmp is -norelay in the installed x64 surface");
+    assert_eq!(relays[1293], 0, "_setjmp is -norelay in the installed x64 surface");
+    assert_eq!(relays[1294], 0, "_setjmpex is -norelay in the installed x64 surface");
+    assert_eq!(parsed.export_rvas().unwrap().unwrap()[1293], 0x10bf8);
+}
+
+#[test]
 fn locates_and_decodes_x64_runtime_function_unwind_info() {
     let mut b = image();
     let dir = OPT + 112 + IMAGE_DIRECTORY_ENTRY_EXCEPTION * 8;
