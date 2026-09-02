@@ -26,11 +26,14 @@ pub fn dispatch(call: NtCall, stack: [u64; 5]) -> u64 {
         return INVALID_PARAMETER;
     }
     let Some(image) = image_path(c.attribute_list) else { return INVALID_PARAMETER; };
+    let Some((command, environment)) = process_parameters(c.process_parameters) else { return INVALID_PARAMETER; };
+    let environment_refs: Vec<(&str, &str)> = environment.iter().map(|(name, value)|
+        (name.as_str(), value.as_str())).collect();
     let Ok((blob, vp)) = crate::execve_common::open_exec_image(&image) else { return NOT_FOUND; };
     let tid = sched::live::next_tid();
     let catalog = cur.thread_group.nt_module_catalog();
-    let Ok(prepared) = crate::pe_exec::prepare_pe_process(&cur, &image, &blob, vp.as_ref(),
-        catalog.as_deref(), tid, tid, false) else { return INVALID_PARAMETER; };
+    let Ok(prepared) = crate::pe_exec::prepare_pe_process(&cur, &image, &blob,
+        Some(command.as_str()), &environment_refs, vp.as_ref(), catalog.as_deref(), tid, tid, false) else { return INVALID_PARAMETER; };
 
     // Everything above is private and fallible.  From here the task is built
     // unpublished, so a caller cannot observe an image without its PEB/TEB.
@@ -90,13 +93,41 @@ pub fn dispatch(call: NtCall, stack: [u64; 5]) -> u64 {
 
 fn read_u16(address: u64) -> Option<u16> { uaccess::get_user_u32(address).ok().map(|v| v as u16) }
 
+fn read_u64(address: u64) -> Option<u64> { uaccess::get_user_u64(address).ok() }
+
+/// Copy the normalized RTL process parameters before creating the child.
+/// The returned strings own their storage so no parent address-space pointer
+/// survives the transaction.
+fn process_parameters(params: syscall::UserPtr<u8>) -> Option<(String, Vec<(String, String)>)> {
+    let command = unicode_field(params.as_u64(), 0x70)?;
+    let environment = read_environment(read_u64(params.as_u64() + 0x80)?)?;
+    Some((command, environment))
+}
+
+fn unicode_field(base: u64, offset: u64) -> Option<String> {
+    let length = read_u16(base.checked_add(offset)?)? as usize;
+    let buffer = read_u64(base.checked_add(offset + 8)?)?;
+    if length == 0 || length > 32 * 1024 || length & 1 != 0 || buffer == 0 { return None; }
+    let mut bytes = vec![0u8; length];
+    uaccess::copy_from_user(&mut bytes, buffer).ok()?;
+    let units: Vec<u16> = bytes.chunks_exact(2).map(|p| u16::from_le_bytes([p[0], p[1]])).collect();
+    crate::nt_process_parameters::decode_utf16(&units)
+}
+
+fn read_environment(pointer: u64) -> Option<Vec<(String, String)>> {
+    if pointer == 0 { return Some(Vec::new()); }
+    const MAX_ENVIRONMENT_BYTES: usize = 1024 * 1024;
+    let mut bytes = vec![0u8; MAX_ENVIRONMENT_BYTES];
+    uaccess::copy_from_user(&mut bytes, pointer).ok()?;
+    let units: Vec<u16> = bytes.chunks_exact(2).map(|p| u16::from_le_bytes([p[0], p[1]])).collect();
+    crate::nt_process_parameters::parse_environment(&units)
+}
+
 fn image_path(list: syscall::UserPtr<u8>) -> Option<Vec<u8>> {
-    let (image, _) = attributes(list)?;
-    let len = read_u16(image)? as u64;
-    let buffer = uaccess::get_user_u64(image + 8).ok()?;
-    if len == 0 || len > 4094 || buffer == 0 || len & 1 != 0 { return None; }
-    let mut raw = vec![0u8; len as usize];
-    uaccess::copy_from_user(&mut raw, buffer).ok()?;
+    let (image, size, _) = attributes(list)?;
+    if size == 0 || size > 4094 || size & 1 != 0 { return None; }
+    let mut raw = vec![0u8; size as usize];
+    uaccess::copy_from_user(&mut raw, image).ok()?;
     let units = raw.chunks_exact(2).map(|p| u16::from_le_bytes([p[0], p[1]]));
     let mut out = String::new();
     for unit in units {
@@ -112,12 +143,13 @@ fn image_path(list: syscall::UserPtr<u8>) -> Option<Vec<u8>> {
     Some(path.into_bytes())
 }
 
-fn client_id(list: syscall::UserPtr<u8>) -> Option<u64> { attributes(list).and_then(|(_, c)| c) }
+fn client_id(list: syscall::UserPtr<u8>) -> Option<u64> { attributes(list).and_then(|(_, _, c)| c) }
 
-fn attributes(list: syscall::UserPtr<u8>) -> Option<(u64, Option<u64>)> {
+fn attributes(list: syscall::UserPtr<u8>) -> Option<(u64, u64, Option<u64>)> {
     let total = uaccess::get_user_u64(list.as_u64()).ok()?;
     if total < 40 || total > 8 + MAX_ATTRIBUTES * 32 || total & 7 != 0 { return None; }
     let mut image = None;
+    let mut image_size = 0;
     let mut client = None;
     let count = (total - 8) / 32;
     for i in 0..count {
@@ -125,8 +157,8 @@ fn attributes(list: syscall::UserPtr<u8>) -> Option<(u64, Option<u64>)> {
         let attr = uaccess::get_user_u64(p).ok()?;
         let size = uaccess::get_user_u64(p + 8).ok()?;
         let value = uaccess::get_user_u64(p + 16).ok()?;
-        if attr == IMAGE_NAME && size >= 8 { image = Some(value); }
+        if attr == IMAGE_NAME { image = Some(value); image_size = size; }
         if attr == CLIENT_ID && size >= 16 { client = Some(value); }
     }
-    Some((image?, client))
+    Some((image?, image_size, client))
 }
