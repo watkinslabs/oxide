@@ -77,3 +77,9 @@ manual-reset at 16, initial-state at 20, and event-operation handle/op at
 12/16. Variable request data is rejected until its owning native subsystem is
 implemented. Handle close uses the same registry-key cleanup path as native NT
 close, preventing a second lifetime owner.
+
+`select` request 23 consumes the required APC-result vector followed by the
+operation vector. Wait and wait-all operations are converted to the native
+multiple-object wait path, including its handle access checks, signal
+consumption, alertable result, and NT timeout conversion. The reply's
+`signaled` field is true for any successful wait index, not only index zero.

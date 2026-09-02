@@ -28,9 +28,27 @@ const SERVER_REPLY_MANUAL_RESET: u64 = 8;
 const SERVER_REPLY_EVENT_STATE: u64 = 12;
 const EVENT_MODIFY_STATE: u32 = 0x0002;
 const EVENT_QUERY_STATE: u32 = 0x0001;
+const SERVER_REQ_SELECT: u32 = 23;
+const SERVER_SELECT_WAIT: u32 = 1;
+const SERVER_SELECT_WAIT_ALL: u32 = 2;
+const SERVER_SELECT_ALERTABLE: u32 = 1;
+const SERVER_SELECT_MAX_HANDLES: u32 = 64;
+const SERVER_DATA_COUNT: u64 = 64;
+const SERVER_DATA_ZERO_PTR: u64 = 80;
+const SERVER_DATA_ZERO_SIZE: u64 = 88;
+const SERVER_DATA_ONE_PTR: u64 = 96;
+const SERVER_DATA_ONE_SIZE: u64 = 104;
+const SERVER_APC_RESULT_BYTES: u32 = 40;
+const SERVER_SELECT_TIMEOUT: u64 = 24;
+const SERVER_SELECT_REPLY_SIGNALED: u64 = 12;
+const SERVER_TIMEOUT_INFINITE: u64 = 0x7fff_ffff_ffff_ffff;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-enum ServerRequest { CloseHandle, CreateEvent, EventOp, QueryEvent }
+enum ServerRequest { CloseHandle, CreateEvent, EventOp, QueryEvent, Select }
+
+fn select_opcode_kind(op: u32) -> Option<u32> {
+    match op { SERVER_SELECT_WAIT => Some(0), SERVER_SELECT_WAIT_ALL => Some(1), _ => None }
+}
 
 fn server_request_kind(request: u32) -> Option<ServerRequest> {
     match request {
@@ -38,6 +56,7 @@ fn server_request_kind(request: u32) -> Option<ServerRequest> {
         SERVER_REQ_CREATE_EVENT => Some(ServerRequest::CreateEvent),
         SERVER_REQ_EVENT_OP => Some(ServerRequest::EventOp),
         SERVER_REQ_QUERY_EVENT => Some(ServerRequest::QueryEvent),
+        SERVER_REQ_SELECT => Some(ServerRequest::Select),
         _ => None,
     }
 }
@@ -81,6 +100,35 @@ fn unix_handle_to_fd(args: u64) -> u64 {
 fn unix_handle_to_fd(_args: u64) -> u64 { STATUS_INVALID_PARAMETER }
 
 #[cfg(target_os = "oxide-kernel")]
+fn server_select(args: u64) -> u64 {
+    let Ok(data_count) = uaccess::get_user_u32(args + SERVER_DATA_COUNT) else { return STATUS_INVALID_PARAMETER; };
+    if data_count != 2 { return server_reply(args, STATUS_INVALID_PARAMETER); }
+    let Ok(result_ptr) = uaccess::get_user_u64(args + SERVER_DATA_ZERO_PTR) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+    let Ok(result_size) = uaccess::get_user_u32(args + SERVER_DATA_ZERO_SIZE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+    if result_ptr == 0 || result_size != SERVER_APC_RESULT_BYTES { return server_reply(args, STATUS_INVALID_PARAMETER); }
+    let Ok(data_ptr) = uaccess::get_user_u64(args + SERVER_DATA_ONE_PTR) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+    let Ok(data_size) = uaccess::get_user_u32(args + SERVER_DATA_ONE_SIZE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+    let Ok(request_size) = uaccess::get_user_u32(args + SERVER_REQUEST_SIZE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+    if SERVER_APC_RESULT_BYTES.checked_add(data_size) != Some(request_size) { return server_reply(args, STATUS_INVALID_PARAMETER); }
+    if data_ptr == 0 || data_size < 8 || data_size > 4 + SERVER_SELECT_MAX_HANDLES * 4 || data_size % 4 != 0 { return server_reply(args, STATUS_INVALID_PARAMETER); }
+    let Ok(op) = uaccess::get_user_u32(data_ptr) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+    let Some(wait_type) = select_opcode_kind(op) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+    let count = (data_size - 4) / 4;
+    let Ok(flags) = uaccess::get_user_u32(args + 12) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+    let Ok(timeout) = uaccess::get_user_u64(args + SERVER_SELECT_TIMEOUT) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+    let timeout_ptr = if timeout == SERVER_TIMEOUT_INFINITE { 0 } else { args + SERVER_SELECT_TIMEOUT };
+    let result = crate::nt_dispatch::dispatch(NtCall {
+        service: NtService::WaitForMultipleObjects,
+        args: syscall::SyscallArgs { a0: count as u64, a1: data_ptr + 4, a2: wait_type as u64,
+            a3: (flags & SERVER_SELECT_ALERTABLE) as u64, a4: timeout_ptr, a5: 0 },
+    });
+    if uaccess::put_user_u32(args + SERVER_SELECT_REPLY_SIGNALED, (result < SERVER_SELECT_MAX_HANDLES as u64) as u32).is_err() { STATUS_INVALID_PARAMETER } else { result }
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn server_select(_args: u64) -> u64 { STATUS_INVALID_PARAMETER }
+
+#[cfg(target_os = "oxide-kernel")]
 fn server_reply(args: u64, status: u64) -> u64 {
     if uaccess::put_user_u32(args, status as u32).is_err() || uaccess::put_user_u32(args + SERVER_REPLY_SIZE, 0).is_err() { STATUS_INVALID_PARAMETER } else { status }
 }
@@ -90,8 +138,9 @@ fn server_call(args: u64) -> u64 {
     if args == 0 { return STATUS_INVALID_PARAMETER; }
     let Ok(request) = uaccess::get_user_u32(args) else { return STATUS_INVALID_PARAMETER; };
     let Ok(request_size) = uaccess::get_user_u32(args + SERVER_REQUEST_SIZE) else { return STATUS_INVALID_PARAMETER; };
-    if request_size != 0 { return server_reply(args, STATUS_INVALID_PARAMETER); }
     let Some(request) = server_request_kind(request) else { return server_reply(args, STATUS_NOT_IMPLEMENTED); };
+    if request_size != 0 && request != ServerRequest::Select { return server_reply(args, STATUS_INVALID_PARAMETER); }
+    if matches!(request, ServerRequest::Select) { return server_select(args); }
     let Some(cur) = sched::live::current() else { return server_reply(args, STATUS_INVALID_PARAMETER); };
     let table = cur.thread_group.nt_handles();
     let status = match request {
@@ -133,6 +182,7 @@ fn server_call(args: u64) -> u64 {
             let Some(event) = object.event() else { return server_reply(args, STATUS_INVALID_HANDLE); };
             if uaccess::put_user_u32(args + SERVER_REPLY_MANUAL_RESET, event.is_manual_reset() as u32).is_err() || uaccess::put_user_u32(args + SERVER_REPLY_EVENT_STATE, event.is_signaled() as u32).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
         }
+        ServerRequest::Select => STATUS_INVALID_PARAMETER,
     };
     server_reply(args, status)
 }
@@ -211,6 +261,10 @@ mod tests {
         assert_eq!(server_request_kind(30), Some(ServerRequest::CreateEvent));
         assert_eq!(server_request_kind(31), Some(ServerRequest::EventOp));
         assert_eq!(server_request_kind(32), Some(ServerRequest::QueryEvent));
+        assert_eq!(server_request_kind(23), Some(ServerRequest::Select));
+        assert_eq!(select_opcode_kind(1), Some(0));
+        assert_eq!(select_opcode_kind(2), Some(1));
+        assert_eq!(select_opcode_kind(3), None);
         assert_eq!(server_request_kind(33), None);
         assert_eq!(SERVER_HEADER_BYTES, 12);
     }
