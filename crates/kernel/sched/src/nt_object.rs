@@ -277,6 +277,9 @@ impl NtSemaphore {
     /// Read whether at least one permit is available. # C: O(1)
     pub fn is_signaled(&self) -> bool { self.count.load(Ordering::Acquire) != 0 }
 
+    /// Return current and maximum permit counts for NT queries. # C: O(1)
+    pub fn counts(&self) -> (u32, u32) { (self.count.load(Ordering::Acquire), self.maximum) }
+
     /// Release permits and return the previous count, or `None` on overflow. # C: O(1)
     pub fn release(&self, count: u32) -> Option<u32> {
         if count == 0 { return None; }
