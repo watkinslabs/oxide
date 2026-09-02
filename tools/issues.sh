@@ -1,95 +1,20 @@
 #!/usr/bin/env bash
-# Render the issue ledger.
+# Issue ledger front-end. Engine: tools/issues.py.
 #
-# `scratch/known_issues.md` is the ONE place an issue lives. A lane that finds
-# something adds its row there in the same PR that finds it; a lane that fixes
-# one flips it to `FIXED <sha>` and moves it to `scratch/fixed-issues.md`.
+# `scratch/known_issues.md` is the ONE place a live issue lives; each row has a
+# stable `KI-NNNN` id. NEVER read or grep the whole ledger to find work — query:
 #
-#   tools/issues.sh                 render the ledger
-#   tools/issues.sh --count         row count
-#   tools/issues.sh --status-count  `STATUS<TAB>n` totals
-#   tools/issues.sh --summary       live class/severity totals
-#   tools/issues.sh --check         validate the live-ledger shape and count
+#   tools/issues.sh --query [status=..] [class=..] [sev=..] [owner=..] [grep=RE]
+#                                   brief matching live rows (id + first line)
+#   tools/issues.sh --show KI-NNNN  full row
+#   tools/issues.sh --add CLASS SEV OWNER ISSUE EVIDENCE   append row, prints id
+#   tools/issues.sh --claim KI-NNNN BRANCH                 OPEN -> IN-PROGRESS
+#   tools/issues.sh --fix KI-NNNN SHA    flip FIXED + move to archive ledger
+#   tools/issues.sh --count / --status-count / --summary   totals
+#   tools/issues.sh --check         validate shape, ids, caps, count line
+#   tools/issues.sh                 render the full ledger (rarely needed)
+#
+# Fixed rows keep their id in scratch/archive/fixed-issues.md. Evidence cells
+# are capped at 2000 chars — park longer detail in scratch/archive/.
 set -euo pipefail
-
-root=$(git rev-parse --show-toplevel)
-curated=${ISSUES_LEDGER:-"$root/scratch/known_issues.md"}
-
-rows() { grep -c '^| \(OPEN\|IN-PROGRESS\|FIXED\)' "$1" 2>/dev/null || true; }
-
-# Status is the first cell. `FIXED` carries a SHA (`| FIXED C247 |`), so match
-# the keyword and ignore the rest of the cell.
-status_rows() {
-  grep -ho '^| \(OPEN\|IN-PROGRESS\|FIXED\)' "$@" 2>/dev/null | sed 's/^| //' || true
-}
-
-summary() {
-  awk -F'|' '
-    function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
-    BEGIN {
-      classes[1]="COVERAGE"; classes[2]="DEFECT"; classes[3]="INFRA"; classes[4]="MISSING"
-      sevs[1]="blocker"; sevs[2]="critical"; sevs[3]="high"; sevs[4]="med"; sevs[5]="low"
-      for (i=1; i<=4; i++) class_ok[classes[i]]=1
-      for (i=1; i<=5; i++) sev_ok[sevs[i]]=1
-    }
-    /^\| *(OPEN|IN-PROGRESS)/ {
-      class=trim($3); sev=tolower(trim($4))
-      if (!(class in class_ok)) { printf "issues: unknown class %s\n", class > "/dev/stderr"; bad=1; next }
-      if (!(sev in sev_ok)) { printf "issues: unknown severity %s\n", sev > "/dev/stderr"; bad=1; next }
-      count[class,sev]++; class_total[class]++; sev_total[sev]++; total++
-    }
-    END {
-      if (bad) exit 2
-      print "| Class | blocker | critical | high | med | low | Total |"
-      print "|---|---:|---:|---:|---:|---:|---:|"
-      for (i=1; i<=4; i++) {
-        class=classes[i]
-        printf "| %s", class
-        for (j=1; j<=5; j++) printf " | %d", count[class,sevs[j]]
-        printf " | %d |\n", class_total[class]
-      }
-      printf "| **Total**"
-      for (j=1; j<=5; j++) printf " | **%d**", sev_total[sevs[j]]
-      printf " | **%d** |\n", total
-    }
-  ' "$curated"
-}
-
-check() {
-  local fixed live advertised
-  fixed=$(grep -c '^| FIXED ' "$curated" 2>/dev/null || true)
-  if [ "$fixed" -ne 0 ]; then
-    printf 'issues: known_issues.md contains %s FIXED rows; move them to scratch/fixed-issues.md\n' "$fixed" >&2
-    return 1
-  fi
-  live=$(grep -c '^| \(OPEN\|IN-PROGRESS\)' "$curated" 2>/dev/null || true)
-  advertised=$(sed -n 's/^\*\*Live issue count: \([0-9][0-9]*\)\*\*.*/\1/p' "$curated" | head -1)
-  if [ -z "$advertised" ] || [ "$advertised" -ne "$live" ]; then
-    printf 'issues: top live count is %s, table contains %s live rows\n' "${advertised:-missing}" "$live" >&2
-    return 1
-  fi
-  if [ "$(grep -c '^| Status | Class | Sev | Issue | Evidence | Owner |$' "$curated" || true)" -ne 1 ]; then
-    printf 'issues: known_issues.md must contain exactly one issue table\n' >&2
-    return 1
-  fi
-}
-
-case "${1:-}" in
-  --summary)
-    summary
-    ;;
-  --check)
-    check
-    ;;
-  --status-count)
-    for st in OPEN IN-PROGRESS FIXED; do
-      printf '%s\t%s\n' "$st" "$(status_rows "$curated" | grep -cx "$st" || true)"
-    done
-    ;;
-  --count)
-    printf '%-40s %s\n' "$(basename "$curated")" "$(rows "$curated")"
-    ;;
-  *)
-    cat "$curated"
-    ;;
-esac
+exec python3 "$(git rev-parse --show-toplevel)/tools/issues.py" "$@"
