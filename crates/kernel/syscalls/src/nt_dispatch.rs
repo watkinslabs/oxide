@@ -552,10 +552,17 @@ pub fn dispatch(call: NtCall) -> u64 {
     }
     if call.service == syscall::nt::NtService::NtOpenSection {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-        if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
-        // Section handles are implemented, but named-section lookup still
-        // requires the NT object namespace owner.
-        return STATUS_NOT_IMPLEMENTED;
+        if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a2 == 0 { return STATUS_INVALID_PARAMETER; }
+        const SECTION_ALL_ACCESS: u32 = 0x000f_001f;
+        const SECTION_ALLOWED_ACCESS: u32 = SECTION_ALL_ACCESS | 0xf000_0000;
+        if call.args.a1 as u32 & !SECTION_ALLOWED_ACCESS != 0 { return STATUS_INVALID_PARAMETER; }
+        let table = cur.thread_group.nt_handles();
+        let Some(path) = crate::nt_directory::resolve_object_path(call.args.a2, &table) else { return STATUS_INVALID_PARAMETER; };
+        let Some(object) = sched::nt_object::lookup_object(&path, sched::nt_object::NtObjectType::Section) else { return STATUS_OBJECT_NAME_NOT_FOUND; };
+        let access = if call.args.a1 as u32 & GENERIC_ALL != 0 { call.args.a1 as u32 | SECTION_ALL_ACCESS } else { call.args.a1 as u32 };
+        let Some(handle) = table.insert(object, access) else { return STATUS_NO_MEMORY; };
+        if uaccess::put_user_u32(call.args.a0, handle.raw()).is_err() { let _ = table.close(handle); return STATUS_INVALID_PARAMETER; }
+        return STATUS_SUCCESS;
     }
     if call.service == syscall::nt::NtService::NtOpenSemaphore {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
@@ -927,7 +934,7 @@ pub fn dispatch(call: NtCall) -> u64 {
             }
             NtObjectCall::CreateSection { handle, desired_access, size, protect, attributes, file } => {
                 if desired_access & !(SECTION_QUERY | SECTION_MAP_READ | SECTION_MAP_WRITE | SYNCHRONIZE_ACCESS) != 0
-                    || size == 0 || size > SECTION_MAX_BYTES || attributes != 0 { return STATUS_INVALID_PARAMETER; }
+                    || size == 0 || size > SECTION_MAX_BYTES { return STATUS_INVALID_PARAMETER; }
                 let page = hal::PAGE_SIZE_BYTES as u64;
                 let Some(size) = size.checked_add(page - 1).map(|v| v & !(page - 1)) else { return STATUS_INVALID_PARAMETER; };
                 let Ok(protection) = elf_load::nt_memory::windows_protection(protect) else { return STATUS_INVALID_PARAMETER; };
@@ -948,6 +955,15 @@ pub fn dispatch(call: NtCall) -> u64 {
                     if file_size == 0 || size < file_size { return STATUS_INVALID_PARAMETER; }
                     table.new_file_section(file, size as usize)
                 };
+                if attributes != 0 {
+                    let Some(path) = crate::nt_directory::resolve_object_path(attributes, &table) else { return STATUS_INVALID_PARAMETER; };
+                    let (object, state) = sched::nt_object::publish_section(&path, object);
+                    if state == sched::nt_object::NamedObjectState::TypeMismatch { return STATUS_OBJECT_TYPE_MISMATCH; }
+                    if state == sched::nt_object::NamedObjectState::ParentMissing { return STATUS_OBJECT_NAME_NOT_FOUND; }
+                    let Some(native) = table.insert(object, desired_access) else { return STATUS_NO_MEMORY; };
+                    if uaccess::put_user_u32(handle.as_u64(), native.raw()).is_err() { let _ = table.close(native); return STATUS_INVALID_PARAMETER; }
+                    return if state == sched::nt_object::NamedObjectState::Existing { 0xc000_0035 } else { STATUS_SUCCESS };
+                }
                 let Some(native) = table.insert(object, desired_access) else { return STATUS_NO_MEMORY; };
                 if uaccess::put_user_u32(handle.as_u64(), native.raw()).is_err() {
                     let _ = table.close(native);

@@ -518,8 +518,10 @@ Windows NT frontier update (2026-09-02): the canonical NT object namespace now
 owns named semaphore creation and opening over the native scheduler semaphore.
 Named handles reuse one object identity, report collision/type/missing-parent
 statuses, and enumerate as `Semaphore` entries.
-The graph now reaches `ntdll.dll!NtOpenSection`; named-section lookup remains
-an explicit `STATUS_NOT_IMPLEMENTED` boundary pending the NT object namespace.
+Windows NT frontier update (2026-09-02): named section creation publishes
+existing anonymous or file-backed section objects into the canonical NT
+namespace, while `NtOpenSection` resolves typed handles with validated access.
+Section mapping continues through the existing VMM-backed view owner.
 `NtOpenSemaphore` now resolves named semaphore handles through the canonical
 NT object namespace; semaphore wait/release behavior remains scheduler-owned.
 The graph now reaches `ntdll.dll!NtOpenSymbolicLinkObject`; NT symbolic-link
