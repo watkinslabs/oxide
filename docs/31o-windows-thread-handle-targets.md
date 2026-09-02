@@ -22,3 +22,8 @@ FROZEN 2026-08-31. Dep:`01`,`02`,`06`,`13`,`31f`,`31k`,`31m`,`52`,`53`. Provides
 - query and termination reject wrong object kinds, stale handles, insufficient rights, and cross-process targets;
 - real thread objects retain their canonical scheduler task until handle close;
 - both architecture kernel checks compile identical target resolution and signal routing.
+
+`ThreadGroupInformation` (class 30) returns one native 64-bit group-affinity
+record: the task's effective CPU mask in `Mask`, group zero, and zero reserved
+fields. The result uses the same handle target and query-rights validation as
+basic thread information.
