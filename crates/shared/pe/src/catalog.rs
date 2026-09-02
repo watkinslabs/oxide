@@ -6,7 +6,7 @@ use crate::{parse, Error, ModuleSource, OwnedModule};
 
 /// Ordered, owned PE module source. The first matching name wins, so the
 /// runtime controls search precedence without exposing filesystem semantics.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ModuleCatalog { modules: Vec<OwnedModule> }
 
 impl ModuleCatalog {

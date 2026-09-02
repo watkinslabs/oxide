@@ -12,9 +12,9 @@ const STATUS_INVALID_INFO_CLASS: u64 = 0xc000_0003;
 const STATUS_INFO_LENGTH_MISMATCH: u64 = 0xc000_0004;
 const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
 const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
-const PROCESS_ALL_ACCESS: u32 = 0x001f_0fff;
-const THREAD_ALL_ACCESS: u32 = 0x001f_03ff;
-const SYNCHRONIZE: u32 = 0x0010_0000;
+pub(crate) const PROCESS_ALL_ACCESS: u32 = 0x001f_0fff;
+pub(crate) const THREAD_ALL_ACCESS: u32 = 0x001f_03ff;
+pub(crate) const SYNCHRONIZE: u32 = 0x0010_0000;
 const PROCESS_QUERY_INFORMATION: u32 = 0x0000_0400;
 const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x0000_1000;
 const PROCESS_TERMINATE: u32 = 0x0000_0001;
@@ -133,7 +133,7 @@ pub(crate) fn permits_current_process(raw: u64, cur: &sched::Task, access: u32) 
         == cur.tgid.load(core::sync::atomic::Ordering::Acquire)
 }
 
-fn valid_object_attributes(attributes: Option<syscall::UserPtr<u8>>) -> bool {
+pub(crate) fn valid_object_attributes(attributes: Option<syscall::UserPtr<u8>>) -> bool {
     let Some(attributes) = attributes else { return true; };
     let address = attributes.as_u64();
     let Ok(length) = uaccess::get_user_u32(address) else { return false; };

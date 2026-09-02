@@ -578,14 +578,16 @@ pub fn dispatch(call: NtCall) -> u64 {
         let Some(process_parameters) = stack_argument(8) else { return STATUS_INVALID_PARAMETER; };
         let Some(create_info) = stack_argument(9) else { return STATUS_INVALID_PARAMETER; };
         let Some(attribute_list) = stack_argument(10) else { return STATUS_INVALID_PARAMETER; };
-        // The complete ABI is validated before the future child-image
-        // transaction is entered. Until that transaction can atomically load
-        // the PE, initialize its environment, install both typed handles,
-        // and publish the task, valid calls remain explicitly unsupported.
-        if nt::decode_user_process(call, [process_flags, thread_flags, process_parameters, create_info, attribute_list]).is_err() {
-            return STATUS_INVALID_PARAMETER;
+        #[cfg(not(target_arch = "x86_64"))]
+        let _ = (process_flags, thread_flags);
+        #[cfg(target_arch = "x86_64")]
+        return crate::nt_process_create::dispatch(call, [process_flags, thread_flags,
+            process_parameters, create_info, attribute_list]);
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = (process_parameters, create_info, attribute_list);
+            return STATUS_NOT_IMPLEMENTED;
         }
-        return STATUS_NOT_IMPLEMENTED;
     }
     if call.service == syscall::nt::NtService::NtQueryDirectoryObject {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
@@ -750,6 +752,7 @@ pub fn dispatch(call: NtCall) -> u64 {
             Ok(target) => target, Err(error) => return error,
         };
         let previous = target.nt_resume();
+        if previous == 1 { sched::live::wake_new_task(&target); }
         if let Some(count) = count {
             if uaccess::put_user_u32(count.as_u64(), previous).is_err() { return STATUS_INVALID_PARAMETER; }
         }

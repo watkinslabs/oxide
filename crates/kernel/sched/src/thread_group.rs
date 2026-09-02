@@ -75,6 +75,8 @@ pub struct ThreadGroup {
     pub nt_dll_directory_next: AtomicU64,
     /// Module base and loader reference count; `-1` is the pinned state.
     pub nt_module_refs: Spinlock<Vec<(u64, i32)>, TaskListClass>,
+    /// PE dependency catalog inherited by native NT child creation.
+    pub nt_module_catalog: Spinlock<Option<Arc<pe::catalog::ModuleCatalog>>, TaskListClass>,
     /// Modules whose `DLL_THREAD_ATTACH`/`DETACH` callbacks are disabled.
     pub nt_module_no_thread_calls: Spinlock<Vec<u64>, TaskListClass>,
     pub nt_atoms: Spinlock<Vec<Vec<u8>>, TaskListClass>, pub nt_atom_table: Spinlock<bool, TaskListClass>,
@@ -257,6 +259,7 @@ impl ThreadGroup {
             nt_dll_directory: Spinlock::new(Vec::new()),
             nt_dll_directories: Spinlock::new(Vec::new()), nt_dll_directory_next: AtomicU64::new(1),
             nt_module_refs: Spinlock::new(Vec::new()),
+            nt_module_catalog: Spinlock::new(None),
             nt_module_no_thread_calls: Spinlock::new(Vec::new()),
             nt_atoms: Spinlock::new(Vec::new()), nt_atom_table: Spinlock::new(false),
             nt_heap_lock: Spinlock::new(None),
@@ -291,6 +294,15 @@ impl ThreadGroup {
     }
     /// Access this process's native object table. # C: O(1)
     pub fn nt_handles(&self) -> &crate::nt_object::NtHandleTable { &self.nt_handles }
+    /// Return the runtime-owned PE catalog for this NT process, if installed.
+    /// # C: O(1)
+    pub fn nt_module_catalog(&self) -> Option<Arc<pe::catalog::ModuleCatalog>> {
+        self.nt_module_catalog.lock().clone()
+    }
+    /// Install the runtime-owned PE catalog used by later child images. # C: O(1)
+    pub fn set_nt_module_catalog(&self, catalog: Arc<pe::catalog::ModuleCatalog>) {
+        *self.nt_module_catalog.lock() = Some(catalog);
+    }
     /// The process' `signalfd` readiness source, handed to every thread's
     /// `SignalPending` so both pending sets raise edges on one list. # C: O(1)
     pub fn signalfd_poll(&self) -> alloc::sync::Arc<vfs::PollSubscribers> {

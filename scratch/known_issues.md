@@ -404,10 +404,14 @@ Windows NT frontier update (2026-09-01): `NtCreateSymbolicLinkObject` now has
 an explicit native export and fail-closed `STATUS_NOT_IMPLEMENTED` boundary;
 symbolic-link object semantics remain pending. The graph advances to its next
 unresolved native import, `ntdll.dll!NtCreateUserProcess`.
-Windows NT frontier update (2026-09-01): `NtCreateUserProcess` now has an
-explicit native export and fail-closed `STATUS_NOT_IMPLEMENTED` boundary;
-the process-parameter/create-info adapter remains pending. The graph advances
-to `ntdll.dll!NtDelayExecution`.
+Windows NT frontier update (2026-09-02): `NtCreateUserProcess` now validates
+the x86-64 attribute-list ABI, resolves the UTF-16 image name, prepares a
+fresh PE address space with inherited Wine module catalog, installs typed
+process/thread handles, and publishes the child only after PEB/TEB setup.
+`CREATE_SUSPENDED` is represented through the native suspend depth and resumed
+through the existing scheduler wake path. Full RTL process-parameter copying,
+complete PS_CREATE_INFO output, and rollback of already-published child exit
+state remain pending. The graph advances to `ntdll.dll!NtDelayExecution`.
 Windows NT frontier update (2026-09-01): `NtDelayExecution` now uses the
 existing scheduler interruptible wait path with native relative/absolute
 100-ns timeout conversion and alertable-result mapping; the graph advances to
@@ -687,4 +691,3 @@ unimplemented.
 the final shared subauthority, preserving the reference count requirement.
 `RtlEqualSid` validates native SID layouts and compares the complete SID byte
 representation, including every subauthority.
-

@@ -42,7 +42,10 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         if catalog.add(&name, &blob).is_err() { return Some(STATUS_INVALID_PARAMETER); }
     }
     match crate::pe_exec::try_commit_with_catalog(cur, path.as_bytes(), &image, &catalog) {
-        Ok(()) => Some(STATUS_SUCCESS),
+        Ok(()) => {
+            cur.thread_group.set_nt_module_catalog(alloc::sync::Arc::new(catalog));
+            Some(STATUS_SUCCESS)
+        },
         Err(error) if error == -(syscall::errno::Errno::Enomem.as_i32() as i64) => Some(STATUS_NO_MEMORY),
         Err(_) => Some(STATUS_INVALID_IMAGE_FORMAT),
     }
