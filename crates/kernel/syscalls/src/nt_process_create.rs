@@ -26,14 +26,19 @@ pub fn dispatch(call: NtCall, stack: [u64; 5]) -> u64 {
         return INVALID_PARAMETER;
     }
     let Some(image) = image_path(c.attribute_list) else { return INVALID_PARAMETER; };
-    let Some((command, environment)) = process_parameters(c.process_parameters) else { return INVALID_PARAMETER; };
+    let Some((command, environment, current_directory, current_directory_handle, console_handle, standard_handles)) =
+        process_parameters(c.process_parameters) else { return INVALID_PARAMETER; };
     let environment_refs: Vec<(&str, &str)> = environment.iter().map(|(name, value)|
         (name.as_str(), value.as_str())).collect();
+    let params = elf_load::process_env::NtProcessParameters {
+        current_directory: current_directory.as_str(), current_directory_handle,
+        console_handle, standard_handles,
+    };
     let Ok((blob, vp)) = crate::execve_common::open_exec_image(&image) else { return NOT_FOUND; };
     let tid = sched::live::next_tid();
     let catalog = cur.thread_group.nt_module_catalog();
     let Ok(prepared) = crate::pe_exec::prepare_pe_process(&cur, &image, &blob,
-        Some(command.as_str()), &environment_refs, vp.as_ref(), catalog.as_deref(), tid, tid, false) else { return INVALID_PARAMETER; };
+        Some(command.as_str()), &environment_refs, Some(&params), vp.as_ref(), catalog.as_deref(), tid, tid, false) else { return INVALID_PARAMETER; };
 
     // Everything above is private and fallible.  From here the task is built
     // unpublished, so a caller cannot observe an image without its PEB/TEB.
@@ -98,10 +103,16 @@ fn read_u64(address: u64) -> Option<u64> { uaccess::get_user_u64(address).ok() }
 /// Copy the normalized RTL process parameters before creating the child.
 /// The returned strings own their storage so no parent address-space pointer
 /// survives the transaction.
-fn process_parameters(params: syscall::UserPtr<u8>) -> Option<(String, Vec<(String, String)>)> {
+fn process_parameters(params: syscall::UserPtr<u8>) -> Option<(String, Vec<(String, String)>, String, u64, u64, [u64; 3])> {
     let command = unicode_field(params.as_u64(), 0x70)?;
     let environment = read_environment(read_u64(params.as_u64() + 0x80)?)?;
-    Some((command, environment))
+    let current_directory = unicode_field(params.as_u64(), 0x40)?;
+    let current_directory_handle = read_u64(params.as_u64() + 0x38)?;
+    let console_handle = read_u64(params.as_u64() + 0x10)?;
+    let standard_handles = [read_u64(params.as_u64() + 0x20)?,
+        read_u64(params.as_u64() + 0x28)?, read_u64(params.as_u64() + 0x30)?];
+    Some((command, environment, current_directory, current_directory_handle,
+        console_handle, standard_handles))
 }
 
 fn unicode_field(base: u64, offset: u64) -> Option<String> {

@@ -46,7 +46,7 @@
         let result = load_pe_process_with_catalog_with_fallback(&notepad, &as_, &process_env::EnvironmentInput {
             image_base: 0, image_size: 0, image_path: "C:\\notepad.exe", command_line: "notepad.exe",
             environment: &[], process_id: 42, thread_id: 43,
-        }, 0x7000_0000, &runtime, &tracing_runtime, &catalog);
+        }, 0x7000_0000, &runtime, &tracing_runtime, &catalog, None);
         assert!(result.is_ok(), "native NTDLL surface must load the installed Wine Notepad graph");
         let process = result.unwrap();
         assert!(process.initializer_trampoline.is_some(), "Notepad must enter through the PE startup continuation");
