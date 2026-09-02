@@ -41,9 +41,18 @@ const FILE_RENAME_INFORMATION: u32 = 10;
 const FILE_DISPOSITION_INFORMATION: u32 = 13;
 const DELETE_ACCESS: u32 = 0x0001_0000;
 const FILE_NAMES_INFORMATION: u32 = 12;
+const FILE_INTERNAL_INFORMATION: u32 = 6;
+const FILE_EA_INFORMATION: u32 = 7;
+const FILE_ACCESS_INFORMATION: u32 = 8;
+const FILE_NAME_INFORMATION: u32 = 9;
+const FILE_ALIGNMENT_INFORMATION: u32 = 17;
+const FILE_ALL_INFORMATION: u32 = 18;
+const FILE_NETWORK_OPEN_INFORMATION: u32 = 34;
+const FILE_ATTRIBUTE_TAG_INFORMATION: u32 = 35;
 const NT_FILETIME_EPOCH_SECONDS: i64 = 11_644_473_600;
 const STATUS_NO_MORE_FILES: u64 = 0x8000_0006;
 const STATUS_INVALID_INFO_CLASS: u64 = 0xc000_0003;
+const STATUS_INFO_LENGTH_MISMATCH: u64 = 0xc000_0004;
 
 /// Dispatch the implemented synchronous NT file operations. # C: O(path) + O(bytes)
 pub fn dispatch(call: NtFileCall) -> u64 {
@@ -312,30 +321,79 @@ fn query_information(cur: &sched::Task, addr: u64) -> u64 {
     };
     let Some(file) = object.file() else { return STATUS_INVALID_HANDLE; };
     let stat = vfs::generic_fillattr(file.inode(), &vfs::IDENTITY);
-    let mut out = [0u8; 40];
+    let is_directory = file.inode().file_type() == vfs::FileType::Directory;
+    let file_attributes: u32 = if is_directory { 0x10 } else { 0x80 };
+    let path = String::from_utf8(file.dentry().absolute_path()).ok();
+    let name: alloc::vec::Vec<u16> = path.as_deref().unwrap_or("").encode_utf16().collect();
+    let name_bytes = name.len().saturating_mul(2);
+    let all_size = 100usize.saturating_add(name_bytes);
+    let mut out = alloc::vec::Vec::new();
     let needed = match class {
         FILE_BASIC_INFORMATION => {
+            out.resize(40, 0);
             put_i64(&mut out, 0, filetime(stat.btime.unwrap_or(stat.ctime)));
             put_i64(&mut out, 8, filetime(stat.atime));
             put_i64(&mut out, 16, filetime(stat.mtime));
             put_i64(&mut out, 24, filetime(stat.ctime));
-            out[32..36].copy_from_slice(&0u32.to_ne_bytes());
+            out[32..36].copy_from_slice(&file_attributes.to_ne_bytes());
             40
         }
         FILE_STANDARD_INFORMATION => {
+            out.resize(24, 0);
             put_i64(&mut out, 0, stat.size as i64);
             put_i64(&mut out, 8, stat.size as i64);
             out[16..20].copy_from_slice(&stat.nlink.to_ne_bytes());
-            out[20] = 0;
-            out[21] = (file.inode().file_type() == vfs::FileType::Directory) as u8;
+            out[21] = is_directory as u8;
             24
         }
-        FILE_POSITION_INFORMATION => { put_i64(&mut out, 0, file.pos() as i64); 8 }
-        FILE_END_OF_FILE_INFORMATION => { put_i64(&mut out, 0, stat.size as i64); 8 }
+        FILE_INTERNAL_INFORMATION => { out.resize(8, 0); put_i64(&mut out, 0, stat.ino as i64); 8 }
+        FILE_EA_INFORMATION => { out.resize(4, 0); 4 }
+        FILE_ACCESS_INFORMATION => { out.resize(4, 0); 4 }
+        FILE_NAME_INFORMATION => {
+            out.resize(4 + name_bytes, 0);
+            out[0..4].copy_from_slice(&(name_bytes as u32).to_ne_bytes());
+            for (index, unit) in name.iter().enumerate() { out[4 + index * 2..6 + index * 2].copy_from_slice(&unit.to_ne_bytes()); }
+            4 + name_bytes
+        }
+        FILE_POSITION_INFORMATION => { out.resize(8, 0); put_i64(&mut out, 0, file.pos() as i64); 8 }
+        FILE_ALIGNMENT_INFORMATION => { out.resize(4, 0); out[0..4].copy_from_slice(&1u32.to_ne_bytes()); 4 }
+        FILE_END_OF_FILE_INFORMATION => { out.resize(8, 0); put_i64(&mut out, 0, stat.size as i64); 8 }
+        FILE_ALL_INFORMATION => {
+            out.resize(all_size, 0);
+            put_i64(&mut out, 0, filetime(stat.btime.unwrap_or(stat.ctime)));
+            put_i64(&mut out, 8, filetime(stat.atime));
+            put_i64(&mut out, 16, filetime(stat.mtime));
+            put_i64(&mut out, 24, filetime(stat.ctime));
+            put_i64(&mut out, 40, stat.size as i64);
+            put_i64(&mut out, 48, stat.size as i64);
+            out[56..60].copy_from_slice(&stat.nlink.to_ne_bytes());
+            out[61] = is_directory as u8;
+            out[92..96].copy_from_slice(&1u32.to_ne_bytes());
+            out[96..100].copy_from_slice(&(name_bytes as u32).to_ne_bytes());
+            for (index, unit) in name.iter().enumerate() { out[100 + index * 2..102 + index * 2].copy_from_slice(&unit.to_ne_bytes()); }
+            all_size
+        }
+        FILE_NETWORK_OPEN_INFORMATION => {
+            out.resize(56, 0);
+            put_i64(&mut out, 0, filetime(stat.btime.unwrap_or(stat.ctime)));
+            put_i64(&mut out, 8, filetime(stat.atime));
+            put_i64(&mut out, 16, filetime(stat.mtime));
+            put_i64(&mut out, 24, filetime(stat.ctime));
+            put_i64(&mut out, 32, stat.size as i64);
+            put_i64(&mut out, 40, stat.size as i64);
+            out[48..52].copy_from_slice(&file_attributes.to_ne_bytes());
+            56
+        }
+        FILE_ATTRIBUTE_TAG_INFORMATION => { out.resize(8, 0); out[0..4].copy_from_slice(&file_attributes.to_ne_bytes()); 8 }
         _ => return STATUS_INVALID_PARAMETER,
     };
-    if (length as usize) < needed || uaccess::copy_to_user(information, &out[..needed]).is_err() {
-        return STATUS_INVALID_PARAMETER;
+    if (length as usize) < needed {
+        write_io_status(io_status, STATUS_INFO_LENGTH_MISMATCH, 0);
+        return STATUS_INFO_LENGTH_MISMATCH;
+    }
+    if uaccess::copy_to_user(information, &out[..needed]).is_err() {
+        write_io_status(io_status, STATUS_ACCESS_VIOLATION, 0);
+        return STATUS_ACCESS_VIOLATION;
     }
     write_io_status(io_status, STATUS_SUCCESS, needed as u64);
     STATUS_SUCCESS
