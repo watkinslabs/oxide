@@ -369,6 +369,16 @@
     }
 
     #[test]
+    fn nt_open_directory_object_uses_a_syscall_stub_not_a_debug_breakpoint() {
+        assert_eq!(runtime_stub_bytes(220), pe::nt_stub::X64_SIX_ARG_STUB_BYTES);
+        let as_ = AddressSpace::new(0x20_000).unwrap();
+        let runtime = map_nt_runtime(&as_).unwrap();
+        let open = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"NtOpenDirectoryObject" }).unwrap();
+        let next = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlFindActivationContextSectionString" }).unwrap();
+        assert_eq!(next - open, pe::nt_stub::X64_SIX_ARG_STUB_BYTES as u64);
+    }
+
+    #[test]
     fn native_runtime_publishes_wine_dispatcher_entry() {
         let as_ = AddressSpace::new(0x20_000).unwrap();
         let runtime = map_nt_runtime(&as_).unwrap();
