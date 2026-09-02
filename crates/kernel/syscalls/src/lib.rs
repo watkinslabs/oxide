@@ -32,6 +32,7 @@ mod nt_process_policy;
 mod nt_directory_abi;
 pub(crate) mod nt_file_policy;
 pub(crate) mod nt_file_lock_policy;
+pub(crate) mod nt_registry_policy;
 mod nt_path;
 mod nt_path_type;
 mod nt_image;
