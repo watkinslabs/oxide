@@ -514,10 +514,14 @@ directory namespace with restart/context and variable-record ABI handling.
 canonical scheduler registry, normalizes a target to its process-group leader,
 rejects Linux-personality targets, and installs a process-local handle with
 validated access rights. Remote memory access remains a separate boundary.
+Windows NT frontier update (2026-09-02): the canonical NT object namespace now
+owns named semaphore creation and opening over the native scheduler semaphore.
+Named handles reuse one object identity, report collision/type/missing-parent
+statuses, and enumerate as `Semaphore` entries.
 The graph now reaches `ntdll.dll!NtOpenSection`; named-section lookup remains
 an explicit `STATUS_NOT_IMPLEMENTED` boundary pending the NT object namespace.
-The graph now reaches `ntdll.dll!NtOpenSemaphore`; named semaphore lookup
-remains an explicit `STATUS_NOT_IMPLEMENTED` boundary pending that namespace.
+`NtOpenSemaphore` now resolves named semaphore handles through the canonical
+NT object namespace; semaphore wait/release behavior remains scheduler-owned.
 The graph now reaches `ntdll.dll!NtOpenSymbolicLinkObject`; NT symbolic-link
 objects remain an explicit `STATUS_NOT_IMPLEMENTED` boundary pending their
 namespace owner.

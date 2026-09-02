@@ -16,7 +16,7 @@ struct Namespace {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum NamedEventState { Created, Existing, TypeMismatch, ParentMissing }
+pub enum NamedObjectState { Created, Existing, TypeMismatch, ParentMissing }
 
 static OBJECT_NAMESPACE: Spinlock<Namespace, TaskListClass> = Spinlock::new(Namespace {
     objects: Vec::new(), next_id: AtomicU64::new(1),
@@ -60,25 +60,47 @@ pub fn lookup_object(path: &str, kind: NtObjectType) -> Option<Arc<NtObject>> {
 }
 
 /// Create or reopen one named event while retaining one canonical object. # C: O(N_namespace)
-pub fn create_event(path: &str, manual_reset: bool, initial_state: bool) -> (Arc<NtObject>, NamedEventState) {
+pub fn create_event(path: &str, manual_reset: bool, initial_state: bool) -> (Arc<NtObject>, NamedObjectState) {
     let mut namespace = OBJECT_NAMESPACE.lock();
     seed(&mut namespace);
     if let Some(entry) = namespace.objects.iter().find(|entry| equal(&entry.path, path)) {
         return (Arc::clone(&entry.object), if entry.object.kind() == NtObjectType::Event {
-            NamedEventState::Existing
-        } else { NamedEventState::TypeMismatch });
+            NamedObjectState::Existing
+        } else { NamedObjectState::TypeMismatch });
     }
     let Some(parent_path) = parent(path) else {
-        return (NtObject::new_event(0, manual_reset, initial_state), NamedEventState::ParentMissing);
+        return (NtObject::new_event(0, manual_reset, initial_state), NamedObjectState::ParentMissing);
     };
     if !namespace.objects.iter().any(|entry| equal(&entry.path, parent_path)
         && entry.object.kind() == NtObjectType::Directory) {
-        return (NtObject::new_event(0, manual_reset, initial_state), NamedEventState::ParentMissing);
+        return (NtObject::new_event(0, manual_reset, initial_state), NamedObjectState::ParentMissing);
     }
     let id = namespace.next_id.fetch_add(1, Ordering::Relaxed);
     let object = NtObject::new_event(id, manual_reset, initial_state);
     namespace.objects.push(NamedObject { path: path.into(), object: Arc::clone(&object) });
-    (object, NamedEventState::Created)
+    (object, NamedObjectState::Created)
+}
+
+/// Create or reopen one named semaphore while retaining one canonical object. # C: O(N_namespace)
+pub fn create_semaphore(path: &str, initial: i64, maximum: i64) -> (Arc<NtObject>, NamedObjectState) {
+    let mut namespace = OBJECT_NAMESPACE.lock();
+    seed(&mut namespace);
+    if let Some(entry) = namespace.objects.iter().find(|entry| equal(&entry.path, path)) {
+        return (Arc::clone(&entry.object), if entry.object.kind() == NtObjectType::Semaphore {
+            NamedObjectState::Existing
+        } else { NamedObjectState::TypeMismatch });
+    }
+    let Some(parent_path) = parent(path) else {
+        return (NtObject::new_semaphore(0, initial, maximum), NamedObjectState::ParentMissing);
+    };
+    if !namespace.objects.iter().any(|entry| equal(&entry.path, parent_path)
+        && entry.object.kind() == NtObjectType::Directory) {
+        return (NtObject::new_semaphore(0, initial, maximum), NamedObjectState::ParentMissing);
+    }
+    let id = namespace.next_id.fetch_add(1, Ordering::Relaxed);
+    let object = NtObject::new_semaphore(id, initial, maximum);
+    namespace.objects.push(NamedObject { path: path.into(), object: Arc::clone(&object) });
+    (object, NamedObjectState::Created)
 }
 
 /// Return the canonical path of a directory object. # C: O(N_namespace)
@@ -98,6 +120,7 @@ pub fn directory_entries(object: &NtObject) -> Vec<(String, String)> {
         let kind = match entry.object.kind() {
             NtObjectType::Directory => "Directory",
             NtObjectType::Event => "Event",
+            NtObjectType::Semaphore => "Semaphore",
             _ => "Object",
         };
         Some((leaf(&entry.path).into(), kind.into()))
@@ -149,16 +172,29 @@ mod tests {
         let path = "\\BaseNamedObjects\\f1450_event";
         let (first, first_state) = create_event(path, false, false);
         let (second, second_state) = create_event(path, true, true);
-        assert_eq!(first_state, NamedEventState::Created);
-        assert_eq!(second_state, NamedEventState::Existing);
+        assert_eq!(first_state, NamedObjectState::Created);
+        assert_eq!(second_state, NamedObjectState::Existing);
         assert!(core::ptr::eq(first.as_ref(), second.as_ref()));
         assert_eq!(directory_entries(&lookup_directory("\\BaseNamedObjects").unwrap())
             .iter().find(|(name, _)| name == "f1450_event").map(|(_, kind)| kind.as_str()), Some("Event"));
         let (other, collision) = create_event(path, false, false);
         assert!(core::ptr::eq(first.as_ref(), other.as_ref()));
-        assert_eq!(collision, NamedEventState::Existing);
+        assert_eq!(collision, NamedObjectState::Existing);
         let (directory, mismatch) = create_event("\\KnownDlls", false, false);
         assert_eq!(directory.kind(), NtObjectType::Directory);
-        assert_eq!(mismatch, NamedEventState::TypeMismatch);
+        assert_eq!(mismatch, NamedObjectState::TypeMismatch);
+    }
+
+    #[test]
+    fn named_semaphore_creation_reuses_identity_and_reports_as_semaphore() {
+        let path = "\\BaseNamedObjects\\f1452_semaphore";
+        let (first, first_state) = create_semaphore(path, 1, 2);
+        let (second, second_state) = create_semaphore(path, 0, 4);
+        assert_eq!(first_state, NamedObjectState::Created);
+        assert_eq!(second_state, NamedObjectState::Existing);
+        assert!(core::ptr::eq(first.as_ref(), second.as_ref()));
+        assert_eq!(first.kind(), NtObjectType::Semaphore);
+        assert_eq!(directory_entries(&lookup_directory("\\BaseNamedObjects").unwrap())
+            .iter().find(|(name, _)| name == "f1452_semaphore").map(|(_, kind)| kind.as_str()), Some("Semaphore"));
     }
 }
