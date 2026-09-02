@@ -49,6 +49,7 @@ const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
 const STATUS_OBJECT_NAME_COLLISION: u64 = 0xc000_0035;
 const STATUS_OBJECT_TYPE_MISMATCH: u64 = 0xc000_0024;
 const STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xc000_0034;
+const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
 #[cfg(target_os = "oxide-kernel")]
 const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
 #[cfg(target_os = "oxide-kernel")]
@@ -583,13 +584,6 @@ pub fn dispatch(call: NtCall) -> u64 {
         if uaccess::put_user_u32(call.args.a0, handle.raw()).is_err() { let _ = table.close(handle); return STATUS_INVALID_PARAMETER; }
         return STATUS_SUCCESS;
     }
-    if call.service == syscall::nt::NtService::NtOpenSymbolicLinkObject {
-        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-        if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
-        // Symbolic-link objects are distinct from VFS path symlinks and need
-        // an NT namespace/object owner before they can be opened safely.
-        return STATUS_NOT_IMPLEMENTED;
-    }
     if call.service == syscall::nt::NtService::NtOpenThread {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
@@ -639,6 +633,56 @@ pub fn dispatch(call: NtCall) -> u64 {
         // Pulse semantics require an event-owner wake snapshot, not a SetEvent
         // followed by ResetEvent race.
         return STATUS_NOT_IMPLEMENTED;
+    }
+    if call.service == syscall::nt::NtService::NtCreateSymbolicLinkObject {
+        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a2 == 0 || call.args.a3 == 0 { return STATUS_INVALID_PARAMETER; }
+        const SYMBOLIC_LINK_ALL_ACCESS: u32 = 0x001f_0001;
+        if call.args.a1 as u32 & !SYMBOLIC_LINK_ALL_ACCESS != 0 { return STATUS_INVALID_PARAMETER; }
+        let Some(path) = crate::nt_directory::resolve_object_path(call.args.a2, &cur.thread_group.nt_handles()) else { return STATUS_INVALID_PARAMETER; };
+        let Some(target) = crate::nt_directory::read_name(call.args.a3) else { return STATUS_INVALID_PARAMETER; };
+        let table = cur.thread_group.nt_handles();
+        let object = table.new_symbolic_link(target);
+        let (object, state) = sched::nt_object::publish_symbolic_link(&path, object);
+        if state == sched::nt_object::NamedObjectState::TypeMismatch { return STATUS_OBJECT_TYPE_MISMATCH; }
+        if state == sched::nt_object::NamedObjectState::ParentMissing { return STATUS_OBJECT_NAME_NOT_FOUND; }
+        let Some(handle) = table.insert(object, call.args.a1 as u32) else { return STATUS_NO_MEMORY; };
+        if uaccess::put_user_u32(call.args.a0, handle.raw()).is_err() { let _ = table.close(handle); return STATUS_INVALID_PARAMETER; }
+        return if state == sched::nt_object::NamedObjectState::Existing { STATUS_OBJECT_NAME_COLLISION } else { STATUS_SUCCESS };
+    }
+    if call.service == syscall::nt::NtService::NtOpenSymbolicLinkObject {
+        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a2 == 0 { return STATUS_INVALID_PARAMETER; }
+        const SYMBOLIC_LINK_ALL_ACCESS: u32 = 0x001f_0001;
+        if call.args.a1 as u32 & !SYMBOLIC_LINK_ALL_ACCESS != 0 { return STATUS_INVALID_PARAMETER; }
+        let table = cur.thread_group.nt_handles();
+        let Some(path) = crate::nt_directory::resolve_object_path(call.args.a2, &table) else { return STATUS_INVALID_PARAMETER; };
+        let Some(object) = sched::nt_object::lookup_object(&path, sched::nt_object::NtObjectType::SymbolicLink) else { return STATUS_OBJECT_NAME_NOT_FOUND; };
+        let Some(handle) = table.insert(object, call.args.a1 as u32) else { return STATUS_NO_MEMORY; };
+        if uaccess::put_user_u32(call.args.a0, handle.raw()).is_err() { let _ = table.close(handle); return STATUS_INVALID_PARAMETER; }
+        return STATUS_SUCCESS;
+    }
+    if call.service == syscall::nt::NtService::NtQuerySymbolicLinkObject {
+        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        if !cur.is_nt_personality() || call.args.a1 == 0 { return STATUS_INVALID_PARAMETER; }
+        const SYMBOLIC_LINK_QUERY: u32 = 1;
+        let table = cur.thread_group.nt_handles();
+        let native = sched::nt_object::NtHandle::from_raw(call.args.a0 as u32);
+        let Some(object) = table.get(native, SYMBOLIC_LINK_QUERY) else { return if table.contains(native) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }; };
+        if object.kind() != sched::nt_object::NtObjectType::SymbolicLink { return STATUS_INVALID_HANDLE; }
+        let Some(link) = object.symbolic_link() else { return STATUS_INVALID_HANDLE; };
+        let mut bytes = alloc::vec::Vec::new();
+        for unit in link.target().encode_utf16() { bytes.extend_from_slice(&unit.to_ne_bytes()); }
+        bytes.extend_from_slice(&0u16.to_ne_bytes());
+        let Some(required) = u16::try_from(bytes.len()).ok() else { return STATUS_INVALID_PARAMETER; };
+        let Ok(header) = uaccess::get_user_u32(call.args.a1) else { return STATUS_INVALID_PARAMETER; };
+        let max = (header >> 16) as u16;
+        if call.args.a2 != 0 && uaccess::put_user_u32(call.args.a2, required as u32).is_err() { return STATUS_INVALID_PARAMETER; }
+        if max < required { return STATUS_BUFFER_TOO_SMALL; }
+        let Ok(buffer) = uaccess::get_user_u64(call.args.a1 + 8) else { return STATUS_INVALID_PARAMETER; };
+        if buffer == 0 || uaccess::copy_to_user(buffer, &bytes).is_err()
+            || uaccess::copy_to_user(call.args.a1, &(required - 2).to_ne_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
+        return STATUS_SUCCESS;
     }
     if matches!(call.service, syscall::nt::NtService::NtCreateNamedPipeFile | syscall::nt::NtService::NtCreateSectionEx | syscall::nt::NtService::NtCreateSymbolicLinkObject | syscall::nt::NtService::NtDeleteKey | syscall::nt::NtService::NtDeleteValueKey | syscall::nt::NtService::NtEnumerateKey | syscall::nt::NtService::NtEnumerateValueKey | syscall::nt::NtService::NtFilterToken | syscall::nt::NtService::NtFlushKey) { return 0xc000_0002; }
     if let Some(result) = crate::nt_power::dispatch(call) { return result; }
