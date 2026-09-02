@@ -129,6 +129,7 @@ impl RuntimeRequest {
 }
 
 fn user_ptr<T>(address: *const T) -> Result<UserPtr<T>, BuildError> {
+    if address.is_null() { return Err(BuildError::InvalidAddress); }
     UserPtr::new(address as u64).map_err(|_| BuildError::InvalidAddress)
 }
 
@@ -207,6 +208,42 @@ mod tests {
         let result = RuntimeRequest::from_paths(&base.join("notepad.exe"), b"C:\\bad.exe", &base);
         assert!(matches!(result, Err(BuildError::InvalidRoot(pe::Error::Enoexec))));
         fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn handoff_rejects_empty_and_nul_containing_windows_paths() {
+        let root = std::path::Path::new("/tmp");
+        assert!(matches!(RuntimeRequest::from_paths(root, b"", root), Err(BuildError::InvalidUtf8Path)));
+        assert!(matches!(RuntimeRequest::from_paths(root, b"C:\\bad\0.exe", root), Err(BuildError::InvalidUtf8Path)));
+    }
+
+    #[test]
+    fn image_size_limit_is_checked_before_catalog_work() {
+        assert!(validate_size(0).is_err());
+        assert!(validate_size(MAX_IMAGE_BYTES).is_ok());
+        assert!(validate_size(MAX_IMAGE_BYTES + 1).is_err());
+    }
+
+    #[test]
+    fn only_case_insensitive_dll_suffixes_enter_the_catalog() {
+        assert!(is_dll(std::path::Path::new("KERNEL32.DLL")));
+        assert!(is_dll(std::path::Path::new("ucrtbase.dll")));
+        assert!(!is_dll(std::path::Path::new("notepad.exe")));
+        assert!(!is_dll(std::path::Path::new("lib.dll.bak")));
+        assert!(!is_dll(std::path::Path::new("DLL")));
+    }
+
+    #[test]
+    fn null_host_pointer_cannot_become_an_nt_user_pointer() {
+        assert!(matches!(user_ptr::<u8>(core::ptr::null()), Err(BuildError::InvalidAddress)));
+    }
+
+    #[test]
+    fn catalog_record_lengths_are_bounded_by_the_fixed_abi_types() {
+        assert_eq!(std::mem::align_of::<NtExecRequest>(), 8);
+        assert_eq!(std::mem::align_of::<NtExecModule>(), 8);
+        assert_eq!(std::mem::size_of::<NtExecRequest>(), 48);
+        assert_eq!(std::mem::size_of::<NtExecModule>(), 32);
     }
 
     #[test]
