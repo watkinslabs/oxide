@@ -28,6 +28,7 @@ pub mod mmsg_batch;
 pub mod msg_layout;
 pub mod nt_dispatch;
 mod nt_process_parameters;
+mod nt_directory_abi;
 pub(crate) mod nt_file_policy;
 pub(crate) mod nt_file_lock_policy;
 mod nt_path;

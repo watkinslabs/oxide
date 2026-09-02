@@ -4,6 +4,9 @@
 //! an opaque process-local reference with an access mask, generation check,
 //! and object lifetime independent of POSIX descriptor flags.
 extern crate alloc;
+#[path = "nt_object/namespace.rs"]
+mod namespace;
+pub use namespace::{directory_entries, directory_path, lookup_directory};
 #[path = "nt_object/mutant.rs"]
 mod mutant;
 pub use mutant::NtMutant;
@@ -360,6 +363,13 @@ impl NtHandleTable {
     pub fn new_object(&self, kind: NtObjectType) -> Arc<NtObject> {
         let id = self.next_object_id.fetch_add(1, Ordering::Relaxed);
         NtObject::new(kind, id)
+    }
+
+    /// Resolve a named NT directory in the canonical object namespace and
+    /// install a process-local handle for it. # C: O(N_namespace + N_handles)
+    pub fn open_directory(&self, path: &str, access: u32) -> Option<NtHandle> {
+        let object = lookup_directory(path)?;
+        self.insert(object, access)
     }
 
     /// Allocate an event object with a process-local identity. # C: O(1)
