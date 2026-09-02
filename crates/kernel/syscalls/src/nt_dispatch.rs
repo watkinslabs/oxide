@@ -584,13 +584,6 @@ pub fn dispatch(call: NtCall) -> u64 {
         if uaccess::put_user_u32(call.args.a0, handle.raw()).is_err() { let _ = table.close(handle); return STATUS_INVALID_PARAMETER; }
         return STATUS_SUCCESS;
     }
-    if call.service == syscall::nt::NtService::NtOpenThread {
-        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-        if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
-        // Thread identities exist in the scheduler, but NT CLIENT_ID handle
-        // acquisition and access checks are not owned by the current bridge.
-        return STATUS_NOT_IMPLEMENTED;
-    }
     if call.service == syscall::nt::NtService::NtOpenTimer {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a2 == 0 { return STATUS_INVALID_PARAMETER; }

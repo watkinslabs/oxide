@@ -69,15 +69,15 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         || !valid_object_attributes(attributes) { return Some(STATUS_INVALID_PARAMETER); }
     let process_id = match uaccess::get_user_u64(client_id.as_u64()) { Ok(value) => value, Err(_) => return Some(STATUS_INVALID_PARAMETER) };
     let thread_id = match uaccess::get_user_u64(client_id.as_u64() + 8) { Ok(value) => value, Err(_) => return Some(STATUS_INVALID_PARAMETER) };
-    let current_process = cur.tgid.load(core::sync::atomic::Ordering::Acquire) as u64;
     if thread {
-        let current_thread = cur.tid as u64;
-        if process_id != current_process || thread_id != current_thread { return Some(STATUS_INVALID_CID); }
+        if !crate::nt_process_policy::valid_thread_client_id(process_id, thread_id) {
+            return Some(STATUS_INVALID_CID);
+        }
     } else if !crate::nt_process_policy::valid_process_client_id(process_id, thread_id) {
         return Some(STATUS_INVALID_CID);
     }
     let task = if thread {
-        sched::registry::lookup(cur.tid)
+        sched::registry::lookup(thread_id as u32)
     } else {
         let Some(candidate) = sched::registry::lookup(process_id as u32) else {
             return Some(STATUS_INVALID_CID);
@@ -86,6 +86,10 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         sched::registry::lookup(leader_id).or(Some(candidate))
     };
     let Some(task) = task else { return Some(STATUS_INVALID_CID); };
+    if thread && !crate::nt_process_policy::thread_belongs_to_process(
+        process_id, task.tgid.load(core::sync::atomic::Ordering::Acquire)) {
+        return Some(STATUS_INVALID_CID);
+    }
     if !task.is_nt_personality() { return Some(STATUS_INVALID_CID); }
     let object = if thread { table.new_thread(task) } else { table.new_process(task) };
     let access = if thread { desired_access | SYNCHRONIZE } else {
