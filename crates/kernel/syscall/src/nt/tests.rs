@@ -491,7 +491,9 @@ use super::*;
         assert!(matches!(decode_object(decode(22, SyscallArgs { a0: 0x1000, a1: u64::MAX, a2: 0x4000, a3: 7, a4: 0x1000, a5: 0 }).unwrap()), Ok(NtObjectCall::CreateThreadEx { start: 0x4000, parameter: 7, .. })));
         assert_eq!(decode_object(decode(23, SyscallArgs { a0: u64::MAX, a1: 9, ..args() }).unwrap()), Ok(NtObjectCall::TerminateThread { thread: u64::MAX, status: 9 }));
         assert!(matches!(decode_object(decode(24, SyscallArgs { a0: u64::MAX, a1: 0, a2: 0x1000, a3: 48, a4: 0, ..args() }).unwrap()), Ok(NtObjectCall::QueryThread { class: 0, length: 48, .. })));
-        assert!(matches!(decode_object(decode(49, SyscallArgs { a0: 0x1000, a1: 0x1f0003, a2: 0, a3: 0, ..args() }).unwrap()), Ok(NtObjectCall::CreateTimer { timer_type: 0, .. })));
+        assert_eq!(decode_object(decode(49, SyscallArgs { a0: 0x1000, a1: 0x1f0003, a2: 0x2000, a3: 1, ..args() }).unwrap()), Ok(NtObjectCall::CreateTimer {
+            handle: UserPtr::new(0x1000).unwrap(), desired_access: 0x1f0003, attributes: 0x2000, timer_type: 1,
+        }));
         assert!(matches!(decode_object(decode(50, SyscallArgs { a0: 7, a1: 0x1000, a2: 0, a3: 0, ..args() }).unwrap()), Ok(NtObjectCall::SetTimer { handle: 7, .. })));
         assert!(matches!(decode_object(decode(51, SyscallArgs { a0: 7, a1: 0x1000, ..args() }).unwrap()), Ok(NtObjectCall::CancelTimer { handle: 7, .. })));
         assert!(matches!(decode_object(decode(55, SyscallArgs { a0: 7, a1: 8, a2: 1, a3: 0, ..args() }).unwrap()), Ok(NtObjectCall::SignalAndWait { signal: 7, wait: 8, alertable: 1, timeout: None })));
