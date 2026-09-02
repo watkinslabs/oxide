@@ -18,6 +18,8 @@ pub const RESPONSE_SUCCESS: u8 = 0;
 pub const RESPONSE_HANDLE: u8 = 1;
 pub const RESPONSE_VALUE: u8 = 2;
 pub const RESPONSE_FAILURE: u8 = 3;
+pub const RESPONSE_KEYS: u8 = 4;
+pub const RESPONSE_VALUES: u8 = 5;
 
 pub const ERROR_INVALID_PATH: u8 = 1;
 pub const ERROR_MISSING_KEY: u8 = 2;

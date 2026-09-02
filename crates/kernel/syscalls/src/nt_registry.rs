@@ -12,13 +12,19 @@ const STATUS_BUFFER_OVERFLOW: u64 = 0x8000_0005;
 const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
 const STATUS_UNSUCCESSFUL: u64 = 0xc000_0001;
 const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
+const STATUS_NO_MORE_ENTRIES: u64 = 0x8000_0001;
 const KEY_VALUE_PARTIAL_INFORMATION: u64 = 2;
+const KEY_VALUE_BASIC_INFORMATION: u64 = 0;
+const KEY_VALUE_FULL_INFORMATION: u64 = 1;
+const KEY_BASIC_INFORMATION: u64 = 0;
+const KEY_NODE_INFORMATION: u64 = 1;
+const KEY_FULL_INFORMATION: u64 = 2;
 const MAX_REGISTRY_TEXT: usize = 1 << 20;
 const MAX_REGISTRY_VALUE: usize = 1 << 24;
 const REGISTRY_SOCKET: &str = "/run/oxide/registry.sock";
 
 #[derive(Debug)]
-enum Reply { Success, Handle(u64), Value { kind: u32, data: Vec<u8> }, Failure(u8) }
+enum Reply { Success, Handle(u64), Value { kind: u32, data: Vec<u8> }, Keys(Vec<String>), Values(Vec<(String, u32, Vec<u8>)>), Failure(u8) }
 
 /// Create the native key handle for the userspace-owned current-user root.
 /// # C: O(1) plus one NT handle-table insertion
@@ -28,6 +34,8 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::CreateKey { return Some(create_key(call)); }
     if call.service == NtService::QueryValueKey { return Some(query_value(call)); }
     if call.service == NtService::NtQueryValueKey { return Some(query_value_native(call)); }
+    if call.service == NtService::NtEnumerateValueKey { return Some(enumerate_value_native(call)); }
+    if call.service == NtService::NtEnumerateKey { return Some(enumerate_key_native(call)); }
     if call.service == NtService::SetValueKey { return Some(set_value(call)); }
     if call.service == NtService::NtSetValueKey { return Some(set_value_native(call)); }
     None
@@ -133,10 +141,71 @@ fn decode_reply(frame: &[u8]) -> Option<Reply> {
         registry_wire::RESPONSE_SUCCESS if frame.len() == 1 => Some(Reply::Success),
         registry_wire::RESPONSE_HANDLE if frame.len() == 9 => Some(Reply::Handle(u64::from_le_bytes(frame[1..9].try_into().ok()?))),
         registry_wire::RESPONSE_VALUE => { let kind = u32::from_le_bytes(frame.get(1..5)?.try_into().ok()?); let length = u32::from_le_bytes(frame.get(5..9)?.try_into().ok()?) as usize; if length > MAX_REGISTRY_VALUE || frame.len() != 9 + length { return None; } Some(Reply::Value { kind, data: frame[9..].to_vec() }) },
+        registry_wire::RESPONSE_KEYS => { let mut at = 5; let count = u32::from_le_bytes(frame.get(1..5)?.try_into().ok()?) as usize; if count > 1 << 20 { return None; } let mut keys = Vec::new(); keys.try_reserve_exact(count).ok()?; for _ in 0..count { let length = u32::from_le_bytes(frame.get(at..at + 4)?.try_into().ok()?) as usize; at += 4; if length > MAX_REGISTRY_TEXT { return None; } let end = at.checked_add(length)?; keys.push(String::from_utf8(frame.get(at..end)?.to_vec()).ok()?); at = end; } if at != frame.len() { return None; } Some(Reply::Keys(keys)) },
+        registry_wire::RESPONSE_VALUES => { let mut at = 5; let count = u32::from_le_bytes(frame.get(1..5)?.try_into().ok()?) as usize; if count > 1 << 20 { return None; } let mut values = Vec::new(); values.try_reserve_exact(count).ok()?; for _ in 0..count { let name_len = u32::from_le_bytes(frame.get(at..at + 4)?.try_into().ok()?) as usize; at += 4; if name_len > MAX_REGISTRY_TEXT { return None; } let name_end = at.checked_add(name_len)?; let name = String::from_utf8(frame.get(at..name_end)?.to_vec()).ok()?; at = name_end; let kind = u32::from_le_bytes(frame.get(at..at + 4)?.try_into().ok()?); at += 4; let data_len = u32::from_le_bytes(frame.get(at..at + 4)?.try_into().ok()?) as usize; at += 4; if data_len > MAX_REGISTRY_VALUE { return None; } let data_end = at.checked_add(data_len)?; values.push((name, kind, frame.get(at..data_end)?.to_vec())); at = data_end; } if at != frame.len() { return None; } Some(Reply::Values(values)) },
         registry_wire::RESPONSE_FAILURE if frame.len() == 2 => Some(Reply::Failure(frame[1])),
         _ => None,
     }
 }
+
+fn enumerate_value_native(call: NtCall) -> u64 {
+    let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    let key = call.args.a0 as u32; let index = call.args.a1; let class = call.args.a2;
+    let info = call.args.a3; let length = call.args.a4; let result = call.args.a5;
+    if !current.is_nt_personality() || info == 0 || index > u32::MAX as u64 || length > u32::MAX as u64 || result > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    let Some(remote) = remote_key(&current, key) else { return STATUS_INVALID_PARAMETER; };
+    let mut frame = Vec::new(); frame.push(registry_wire::ENUM_VALUES); frame.extend_from_slice(&remote.to_le_bytes());
+    let Some(Reply::Values(values)) = transact(&frame) else { return STATUS_UNSUCCESSFUL; };
+    let Some((name, kind, data)) = values.get(index as usize) else { return STATUS_NO_MORE_ENTRIES; };
+    let name: Vec<u16> = name.encode_utf16().collect(); let name_bytes = name.len().checked_mul(2).unwrap_or(usize::MAX);
+    let (fixed, mut record) = match class {
+        KEY_VALUE_BASIC_INFORMATION => { let required = 12usize.checked_add(name_bytes).unwrap_or(usize::MAX); let mut out = Vec::with_capacity(required); put_u32(&mut out, 0); put_u32(&mut out, *kind); put_u32(&mut out, name_bytes as u32); append_utf16(&mut out, &name); (12, out) },
+        KEY_VALUE_FULL_INFORMATION => { let required = 20usize.checked_add(name_bytes).and_then(|v| v.checked_add(data.len())).unwrap_or(usize::MAX); let mut out = Vec::with_capacity(required); put_u32(&mut out, 0); put_u32(&mut out, *kind); put_u32(&mut out, (20 + name_bytes) as u32); put_u32(&mut out, data.len() as u32); put_u32(&mut out, name_bytes as u32); append_utf16(&mut out, &name); out.extend_from_slice(data); (20, out) },
+        KEY_VALUE_PARTIAL_INFORMATION => { let required = 12usize.checked_add(data.len()).unwrap_or(usize::MAX); let mut out = Vec::with_capacity(required); put_u32(&mut out, 0); put_u32(&mut out, *kind); put_u32(&mut out, data.len() as u32); out.extend_from_slice(data); (12, out) },
+        _ => return STATUS_INVALID_PARAMETER,
+    };
+    let required = record.len() as u32; if result != 0 && uaccess::put_user_u32(result, required).is_err() { return STATUS_INVALID_PARAMETER; }
+    if length < fixed as u64 { return STATUS_BUFFER_TOO_SMALL; }
+    if length < required as u64 { record.truncate(length as usize); }
+    if uaccess::copy_to_user(info, &record).is_err() { return STATUS_ACCESS_VIOLATION; }
+    if length < required as u64 { STATUS_BUFFER_OVERFLOW } else { STATUS_SUCCESS }
+}
+
+fn enumerate_key_native(call: NtCall) -> u64 {
+    let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    let key = call.args.a0 as u32; let index = call.args.a1; let class = call.args.a2; let info = call.args.a3; let length = call.args.a4; let result = call.args.a5;
+    if !current.is_nt_personality() || info == 0 || index > u32::MAX as u64 || length > u32::MAX as u64 || result > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    if index == u32::MAX as u64 { return STATUS_NO_MORE_ENTRIES; }
+    let Some(remote) = remote_key(&current, key) else { return STATUS_INVALID_PARAMETER; };
+    let mut frame = Vec::new(); frame.push(registry_wire::ENUM_KEYS); frame.extend_from_slice(&remote.to_le_bytes());
+    let Some(Reply::Keys(keys)) = transact(&frame) else { return STATUS_UNSUCCESSFUL; };
+    let Some(name) = keys.get(index as usize) else { return STATUS_NO_MORE_ENTRIES; };
+    let name: Vec<u16> = name.encode_utf16().collect(); let name_bytes = name.len().checked_mul(2).unwrap_or(usize::MAX);
+    let (fixed, mut record) = match class {
+        KEY_BASIC_INFORMATION => { let mut out = Vec::with_capacity(16 + name_bytes); out.extend_from_slice(&[0; 8]); put_u32(&mut out, 0); put_u32(&mut out, name_bytes as u32); append_utf16(&mut out, &name); (16, out) },
+        KEY_NODE_INFORMATION => { let mut out = Vec::with_capacity(24 + name_bytes); out.extend_from_slice(&[0; 8]); put_u32(&mut out, 0); put_u32(&mut out, u32::MAX); put_u32(&mut out, 0); put_u32(&mut out, name_bytes as u32); append_utf16(&mut out, &name); (24, out) },
+        KEY_FULL_INFORMATION => {
+            let mut value_frame = Vec::new(); value_frame.push(registry_wire::ENUM_VALUES); value_frame.extend_from_slice(&remote.to_le_bytes());
+            let values = match transact(&value_frame) { Some(Reply::Values(values)) => values, _ => return STATUS_UNSUCCESSFUL };
+            let max_name = values.iter().map(|(name, _, _)| name.encode_utf16().count() * 2).max().unwrap_or(0);
+            let max_data = values.iter().map(|(_, _, data)| data.len()).max().unwrap_or(0);
+            let max_key = keys.iter().map(|key| key.encode_utf16().count() * 2).max().unwrap_or(0);
+            let mut out = Vec::with_capacity(44); out.extend_from_slice(&[0; 8]);
+            put_u32(&mut out, u32::MAX); put_u32(&mut out, 0); put_u32(&mut out, keys.len() as u32);
+            put_u32(&mut out, max_key as u32); put_u32(&mut out, 0); put_u32(&mut out, values.len() as u32);
+            put_u32(&mut out, max_name as u32); put_u32(&mut out, max_data as u32); (44, out)
+        },
+        _ => return STATUS_INVALID_PARAMETER,
+    };
+    let required = record.len() as u32; if result != 0 && uaccess::put_user_u32(result, required).is_err() { return STATUS_INVALID_PARAMETER; }
+    if length < fixed as u64 { return STATUS_BUFFER_TOO_SMALL; }
+    if length < required as u64 { record.truncate(length as usize); }
+    if uaccess::copy_to_user(info, &record).is_err() { return STATUS_ACCESS_VIOLATION; }
+    if length < required as u64 { STATUS_BUFFER_OVERFLOW } else { STATUS_SUCCESS }
+}
+
+fn put_u32(out: &mut Vec<u8>, value: u32) { out.extend_from_slice(&value.to_le_bytes()); }
+fn append_utf16(out: &mut Vec<u8>, text: &[u16]) { for unit in text { out.extend_from_slice(&unit.to_le_bytes()); } }
 
 fn query_value(call: NtCall) -> u64 {
     query_value_parts(call.args.a0 as u32, call.args.a1, call.args.a2, call.args.a3, call.args.a4, call.args.a5)

@@ -166,8 +166,8 @@ fn encode_response(response: &Response) -> Result<Vec<u8>, Error> {
         Response::Success => out.push(registry_wire::RESPONSE_SUCCESS),
         Response::Handle(handle) => { out.push(registry_wire::RESPONSE_HANDLE); put_u64(&mut out, handle.raw()); },
         Response::Value(value) => { out.push(registry_wire::RESPONSE_VALUE); put_u32(&mut out, value.kind as u32); put_bytes(&mut out, &value.data)?; },
-        Response::Keys(keys) => { out.push(4); put_u32(&mut out, keys.len().try_into().map_err(|_| Error::InvalidFile)?); for key in keys { put_text(&mut out, key)?; } },
-        Response::Values(values) => { out.push(5); put_u32(&mut out, values.len().try_into().map_err(|_| Error::InvalidFile)?); for (name, value) in values { put_text(&mut out, name)?; put_u32(&mut out, value.kind as u32); put_bytes(&mut out, &value.data)?; } },
+        Response::Keys(keys) => { out.push(registry_wire::RESPONSE_KEYS); put_u32(&mut out, keys.len().try_into().map_err(|_| Error::InvalidFile)?); for key in keys { put_text(&mut out, key)?; } },
+        Response::Values(values) => { out.push(registry_wire::RESPONSE_VALUES); put_u32(&mut out, values.len().try_into().map_err(|_| Error::InvalidFile)?); for (name, value) in values { put_text(&mut out, name)?; put_u32(&mut out, value.kind as u32); put_bytes(&mut out, &value.data)?; } },
         Response::Failure(error) => { out.push(registry_wire::RESPONSE_FAILURE); out.push(error_code(error)); },
     }
     Ok(out)
