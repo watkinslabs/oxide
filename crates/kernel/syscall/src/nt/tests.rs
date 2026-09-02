@@ -7,6 +7,14 @@ fn wine_dispatcher_service_preserves_ordinal_and_argument_pointer() {
     assert_eq!(call.service, NtService::WineSyscall);
     assert_eq!(call.args, args);
 }
+
+#[test]
+fn scalar_window_rectangle_service_preserves_signed_fields() {
+    let args = SyscallArgs { a0: 0x44, a1: (-10i32) as u32 as u64, a2: 2, a3: 790, a4: 602, a5: 0 };
+    let call = decode(537, args).unwrap();
+    assert_eq!(call.service, NtService::SetWindowRectValues);
+    assert_eq!(decode_window(call), Ok(NtWindowCall::SetRectValues { hwnd: 0x44, left: -10, top: 2, right: 790, bottom: 602 }));
+}
     fn args() -> SyscallArgs { SyscallArgs { a0: u64::MAX, a1: 0x1122_3344_5566_7788, a2: 3, a3: 4, a4: 5, a5: 6 } }
 
     #[test]

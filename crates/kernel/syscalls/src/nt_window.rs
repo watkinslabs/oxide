@@ -167,6 +167,11 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
                     let value = ipc::win32_window::WindowRect { left: field(0), top: field(1), right: field(2), bottom: field(3) };
                     (Some(match state.set_rect(window, value) { Ok(()) => STATUS_SUCCESS, Err(_) => STATUS_INVALID_HANDLE }), None, None)
                 }
+                NtWindowCall::SetRectValues { hwnd, left, top, right, bottom } => {
+                    let Some(window) = valid_window(hwnd) else { return Some(STATUS_INVALID_HANDLE); };
+                    let value = ipc::win32_window::WindowRect { left, top, right, bottom };
+                    (Some(match state.set_rect(window, value) { Ok(()) => STATUS_SUCCESS, Err(_) => STATUS_INVALID_HANDLE }), None, None)
+                }
                 NtWindowCall::GetText { hwnd, text, count } => {
                     let Some(window) = valid_window(hwnd) else { return Some(STATUS_INVALID_HANDLE); };
                     let Some(value) = state.text(window) else { return Some(STATUS_INVALID_HANDLE); };

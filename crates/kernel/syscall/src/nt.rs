@@ -313,6 +313,8 @@ pub enum NtService {
     RelayProbe = 535,
     /// Dispatch one x86-64 Wine syscall ordinal and copied Windows arguments.
     WineSyscall = 536,
+    /// Set a native window rectangle from scalar Wine window-position fields.
+    SetWindowRectValues = 537,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -371,6 +373,7 @@ pub enum NtWindowCall {
     DefaultProc { hwnd: u64, message: u32, wparam: u64, lparam: i64 },
     GetRect { hwnd: u64, rect: UserPtr<NtWindowRect> },
     SetRect { hwnd: u64, rect: UserPtr<NtWindowRect> },
+    SetRectValues { hwnd: u64, left: i32, top: i32, right: i32, bottom: i32 },
     GetText { hwnd: u64, text: UserPtr<u16>, count: u32 },
     SetText { hwnd: u64, text: UserPtr<u16> },
     GetClientRect { hwnd: u64, rect: UserPtr<NtWindowRect> },
@@ -786,6 +789,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 534 { return Some(NtCall { service: NtService::RelayCall, args }); }
     if service == 535 { return Some(NtCall { service: NtService::RelayProbe, args }); }
     if service == 536 { return Some(NtCall { service: NtService::WineSyscall, args }); }
+    if service == 537 { return Some(NtCall { service: NtService::SetWindowRectValues, args }); }
     if service == 229 { return Some(NtCall { service: NtService::DbgUiConnectToDbg, args }); }
     if service == 230 { return Some(NtCall { service: NtService::DbgUiContinue, args }); }
     if service == 231 { return Some(NtCall { service: NtService::DbgUiRemoteBreakin, args }); }
@@ -1038,7 +1042,7 @@ pub fn decode_entry(entry: u64, args: SyscallArgs) -> Option<NtCall> {
 pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
     let a = call.args;
     match call.service {
-        NtService::RelayProbe => Err(Errno::Enosys),
+        NtService::RelayProbe | NtService::SetWindowRectValues => Err(Errno::Enosys),
         NtService::AllocateVirtualMemory => Ok(NtMemoryCall::Allocate {
             process: a.a0, base: UserPtr::new(a.a1)?, zero_bits: a.a2,
             size: UserPtr::new(a.a3)?, allocation_type: a.a4 as u32, protect: a.a5 as u32,
@@ -1270,6 +1274,7 @@ pub fn decode_window(call: NtCall) -> Result<NtWindowCall, Errno> {
         NtService::DefaultWindowProc => Ok(NtWindowCall::DefaultProc { hwnd: a.a0, message: a.a1 as u32, wparam: a.a2, lparam: a.a3 as i64 }),
         NtService::GetWindowRect => Ok(NtWindowCall::GetRect { hwnd: a.a0, rect: UserPtr::new(a.a1)? }),
         NtService::SetWindowRect => Ok(NtWindowCall::SetRect { hwnd: a.a0, rect: UserPtr::new(a.a1)? }),
+        NtService::SetWindowRectValues => Ok(NtWindowCall::SetRectValues { hwnd: a.a0, left: a.a1 as i32, top: a.a2 as i32, right: a.a3 as i32, bottom: a.a4 as i32 }),
         NtService::GetWindowText => Ok(NtWindowCall::GetText { hwnd: a.a0, text: UserPtr::new(a.a1)?, count: a.a2 as u32 }),
         NtService::SetWindowText => Ok(NtWindowCall::SetText { hwnd: a.a0, text: UserPtr::new(a.a1)? }),
         NtService::GetClientRect => Ok(NtWindowCall::GetClientRect { hwnd: a.a0, rect: UserPtr::new(a.a1)? }),
