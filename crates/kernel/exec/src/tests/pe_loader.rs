@@ -590,6 +590,27 @@
     }
 
     #[test]
+    fn loaded_wine_advapi_initializer_keeps_executable_code_backed() {
+        let path = std::path::Path::new("/usr/lib64/wine/x86_64-windows/advapi32.dll");
+        if !path.is_file() { return; }
+        let blob = std::fs::read(path).expect("installed Wine advapi32 must be readable");
+        let parsed = pe::parse(&blob).expect("installed Wine advapi32 must parse");
+        assert_eq!(parsed.entry_rva, 0x12280);
+        struct AnyResolver;
+        impl ImportResolver for AnyResolver {
+            fn resolve(&self, _dll: &[u8], _import: &pe::ImportThunk<'_>) -> Result<u64, pe::Error> { Ok(0x1234_5678_9abc_def0) }
+        }
+        let as_ = AddressSpace::new(0x200_000).unwrap();
+        let base = UserVirtAddr::new(parsed.image_base).unwrap();
+        let image = load_pe_image_with_resolver_at(&blob, &as_, &AnyResolver, Some(base), 0).unwrap();
+        let entry = as_.find_vma(image.entry).expect("initializer must remain mapped");
+        assert!(entry.prot.contains(VmaProt::EXEC));
+        let data = match entry.backing { VmaBacking::KernelBytes { data, off } => (data, off), _ => panic!("initializer must use PE bytes") };
+        let offset = data.1 + (image.entry.as_u64() - entry.start.as_u64()) as usize;
+        assert_eq!(&data.0[offset..offset + 5], &[0xe9, 0xcb, 0xff, 0xff, 0xff]);
+    }
+
+    #[test]
     fn catalog_loader_emits_dependency_first_initializers() {
         let as_ = AddressSpace::new(0x40_000).unwrap();
         let runtime = map_nt_runtime(&as_).unwrap();
