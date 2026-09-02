@@ -79,4 +79,4 @@ pub use unmap::{evict_pages_in_range, glue_munmap};
 pub use mremap::move_pages;
 #[cfg(target_arch = "x86_64")]
 pub use diag::diag_verify_file_pages;
-pub use prefault::{prefault_stack, prefault_user_range};
+pub use prefault::{prefault_stack, prefault_user_range, prefault_user_range_with_access};

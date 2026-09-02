@@ -115,7 +115,12 @@ ALIVE_READY_MARKER="${SMOKE_ALIVE_READY_MARKER:-sh-5.2#}"
 #              that is never acceptable, and the report names the sleep site
 #              (`wchan=<file>:<line>`), so failing here hands over the
 #              diagnosis rather than a timeout. Nothing else emits this line.
-FAIL_MARKER="${SMOKE_FAIL_MARKER-\[FAULT\]|\[BADSTACK\]|\[BUG\]|segfault at|systemd\[1\]: segfault|Attempted to kill init|INFO: task .* blocked for more than}"
+FAIL_MARKER="${SMOKE_FAIL_MARKER-\[FAULT\]|\[BADSTACK\]|\[BUG\]|segfault at|bus error|systemd\[1\]: segfault|Attempted to kill init|INFO: task .* blocked for more than}"
+# A milestone printed by the guest is not sufficient when the process that
+# printed it can fault on the next return-to-user transition. Profiles that
+# launch a workload may raise this, but every profile gets a short default
+# post-marker survival check.
+STABILITY_SECONDS="${SMOKE_STABILITY_SECONDS:-5}"
 
 # Bounded retry. SMP=2 boot has a known intermittent late-boot timing
 # race (~25%: reaches deep into rcS but the getty/login prompt doesn't
@@ -378,10 +383,18 @@ attempt_boot() {
         # attempt's log so the markers below inspect the guest stream, not
         # merely `make`/xtask narration. This also makes SMOKE_KEEP_LOG retain
         # the actual boot evidence on both success and failure.
-        setsid env OXIDE_QEMU_HEADLESS=1 OXIDE_SERIAL_LOG="$LOG" "$MAKE_BIN" SMP="$OXIDE_SMP" "$RUN_TARGET" <"$SYSRQ_FIFO" >"$LOG" 2>&1 &
+        qemu_env=(OXIDE_QEMU_HEADLESS=1 OXIDE_SERIAL_LOG="$LOG")
+        for qemu_var in OXIDE_QEMU_DINT OXIDE_QEMU_DFLAGS OXIDE_QEMU_GDB OXIDE_QEMU_GDB_PORT; do
+            if [ -n "${!qemu_var:-}" ]; then qemu_env+=("$qemu_var=${!qemu_var}"); fi
+        done
+        setsid env "${qemu_env[@]}" "$MAKE_BIN" SMP="$OXIDE_SMP" "$RUN_TARGET" <"$SYSRQ_FIFO" >"$LOG" 2>&1 &
     else
         SYSRQ_WFD=""
-        setsid env OXIDE_QEMU_HEADLESS=1 OXIDE_SERIAL_LOG="$LOG" "$MAKE_BIN" SMP="$OXIDE_SMP" "$RUN_TARGET" </dev/null >"$LOG" 2>&1 &
+        qemu_env=(OXIDE_QEMU_HEADLESS=1 OXIDE_SERIAL_LOG="$LOG")
+        for qemu_var in OXIDE_QEMU_DINT OXIDE_QEMU_DFLAGS OXIDE_QEMU_GDB OXIDE_QEMU_GDB_PORT; do
+            if [ -n "${!qemu_var:-}" ]; then qemu_env+=("$qemu_var=${!qemu_var}"); fi
+        done
+        setsid env "${qemu_env[@]}" "$MAKE_BIN" SMP="$OXIDE_SMP" "$RUN_TARGET" </dev/null >"$LOG" 2>&1 &
     fi
     echo $! > "$PIDFILE"
     local deadline qemu_pid
@@ -437,6 +450,34 @@ attempt_boot() {
             proof="userspace answered '$ALIVE_CMD' on serial"
         fi
         if [ -n "$proof" ]; then
+            local stable_deadline=$(( $(date +%s) + STABILITY_SECONDS ))
+            while [ "$(date +%s)" -lt "$stable_deadline" ]; do
+                if [ -n "$FAIL_MARKER" ] && grep -qaE "$FAIL_MARKER" "$LOG" 2>/dev/null; then
+                    echo "boot-smoke: attempt $1 — failure after milestone during ${STABILITY_SECONDS}s stability window" >&2
+                    grep -aE -B12 -A8 "$FAIL_MARKER" "$LOG" 2>/dev/null | head -n 40 >&2
+                    keep_log_copy "$1" "post-fail"
+                    close_sysrq
+                    return 1
+                fi
+                local stable_pid
+                stable_pid="$(cat "$PIDFILE" 2>/dev/null || true)"
+                if [ -n "$stable_pid" ] && ! kill -0 "$stable_pid" 2>/dev/null; then
+                    echo "boot-smoke: attempt $1 — guest exited during ${STABILITY_SECONDS}s stability window" >&2
+                    keep_log_copy "$1" "post-exit"
+                    close_sysrq
+                    return 1
+                fi
+                sleep 1
+            done
+            # The final sleep can carry us past the deadline without another
+            # scan. Check once more so a late fault cannot become a false PASS.
+            if [ -n "$FAIL_MARKER" ] && grep -qaE "$FAIL_MARKER" "$LOG" 2>/dev/null; then
+                echo "boot-smoke: attempt $1 — failure at end of ${STABILITY_SECONDS}s stability window" >&2
+                grep -aE -B12 -A8 "$FAIL_MARKER" "$LOG" 2>/dev/null | head -n 40 >&2
+                keep_log_copy "$1" "post-fail"
+                close_sysrq
+                return 1
+            fi
             local elapsed=$(( $(date +%s) - (deadline - TIMEOUT) ))
             echo "boot-smoke: $ARCH proved alive by $proof in ${elapsed}s (attempt $1)"
             if ! check_serial_rx "$deadline"; then

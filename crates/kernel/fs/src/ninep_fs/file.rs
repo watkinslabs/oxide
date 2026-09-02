@@ -99,6 +99,18 @@ impl FileOps for NinepFileOps {
     /// # C: O(log N) + one clunk
     fn on_release_file(&self, file: &File) { release(file); }
 
+    /// File-backed mmap faults read through the inode mapping, without an
+    /// open `File` description. Use a short-lived clone of the inode fid for
+    /// that filesystem-owned read; ordinary descriptors retain their own
+    /// cursor-independent fids through `read_file`.
+    /// # C: one open RPC + one or more read RPCs
+    fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let d = data(inode)?;
+        let fid = d.mount.client.clone_fid(&d.fid).map_err(VfsError::from)?;
+        d.mount.client.lopen(&fid, open_flags_to_dotl(0)).map_err(VfsError::from)?;
+        d.mount.client.read(&fid, off, buf).map_err(VfsError::from)
+    }
+
     /// `Tread`, split across as many messages as the frame size needs.
     /// # C: RPC per frame
     fn read_file(&self, file: &File, off: u64, buf: &mut [u8]) -> KResult<usize> {

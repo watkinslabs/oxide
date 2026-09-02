@@ -1,0 +1,6 @@
+# Generated from ../windows_reference/wine-build/dlls/advapi32/x86_64-windows/advapi32.dll by winedump.
+MODULE    = advapi32.dll
+
+
+C_SRCS = \
+	advapi32_main.c

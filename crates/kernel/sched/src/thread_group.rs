@@ -80,7 +80,10 @@ pub struct ThreadGroup {
     pub nt_atoms: Spinlock<Vec<Vec<u8>>, TaskListClass>, pub nt_atom_table: Spinlock<bool, TaskListClass>,
     /// Owner and recursion depth of the process heap lock: `(tid, depth)`.
     pub nt_heap_lock: Spinlock<Option<(u64, u32)>, TaskListClass>,
-    pub nt_heap_user_info: Spinlock<Vec<(u64, u32, u64)>, TaskListClass>,
+    /// Heap allocation metadata: base, flags, user value, exact extent size.
+    /// Adjacent compatible allocations may share one VMA, so a heap free must
+    /// use this size rather than the containing VMA's size.
+    pub nt_heap_user_info: Spinlock<Vec<(u64, u32, u64, usize)>, TaskListClass>,
     /// Process-local registered NT waits: `(token, object, callback, context, timeout_ms, flags)`.
     pub nt_waits: Spinlock<Vec<(u64, u64, u64, u64, u32, u32)>, TaskListClass>,
     pub nt_wait_next: AtomicU64,

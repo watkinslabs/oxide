@@ -82,6 +82,28 @@ impl AddressSpace {
                 let off = backing_off.saturating_add(vma_off);
                 let page = PAGE_SIZE_BYTES as usize;
                 let data_slice: &[u8] = &data[..];
+                #[cfg(feature = "debug-faultdiag")]
+                if (0x1800_04000..0x1800_05000).contains(&va_page) {
+                    klog::write_raw(b"[WINDOWS-PE-KBYTES] va=");
+                    klog::write_hex_u64(va_page);
+                    klog::write_raw(b" vma=");
+                    klog::write_hex_u64(vma.start.as_u64());
+                    klog::write_raw(b" backing=");
+                    klog::write_hex_u64(*backing_off as u64);
+                    klog::write_raw(b" off=");
+                    klog::write_hex_u64(off as u64);
+                    klog::write_raw(b" src=");
+                    for byte in data_slice.get(off..).unwrap_or(&[]).iter().take(8) {
+                        klog::write_hex_u64(*byte as u64);
+                    }
+                    if va_page == 0x1800_04000 {
+                        klog::write_raw(b" relay_src=");
+                        for byte in data_slice.get(off + 0xc35..).unwrap_or(&[]).iter().take(12) {
+                            klog::write_hex_u64(*byte as u64);
+                        }
+                    }
+                    klog::write_raw(b"\n");
+                }
                 // SAFETY: pa is a freshly-allocated PMM frame; HHDM
                 // mirror at hhdm_offset+pa is mapped writable; we
                 // own the full page exclusively until M::map below
@@ -103,6 +125,14 @@ impl AddressSpace {
                             hal::zerotrap::trap((dst.add(avail)) as *const u8, (page - avail) as usize);
                             core::ptr::write_bytes(dst.add(avail), 0, page - avail);
                         }
+                    }
+                    #[cfg(feature = "debug-faultdiag")]
+                    if va_page == 0x1800_04000 {
+                        klog::write_raw(b"[WINDOWS-PE-KBYTES-DST] bytes=");
+                        for byte in core::slice::from_raw_parts(dst.add(0xc35), 12) {
+                            klog::write_hex_u64(*byte as u64);
+                        }
+                        klog::write_raw(b"\n");
                     }
                 }
                 let pte_flags = vma.page_flags() | wp;

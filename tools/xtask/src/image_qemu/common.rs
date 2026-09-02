@@ -54,7 +54,9 @@ pub(super) fn pcap_filter_args() -> Vec<String> {
 /// Optional host-directory shares, for testing the two host-share filesystems.
 ///
 /// `OXIDE_QEMU_9P_SHARE=<hostdir>` exports `<hostdir>` over virtio-9p under the
-/// tag `OXIDE_QEMU_9P_TAG` (default `hostshare`); `OXIDE_QEMU_VIRTIOFS_SOCK=
+/// tag `OXIDE_QEMU_9P_TAG` (default `hostshare`). A second independent share
+/// may be supplied with the `_2` suffix for tests that need two canonical
+/// guest mount points; `OXIDE_QEMU_VIRTIOFS_SOCK=
 /// <sock>` attaches a running `virtiofsd` under `OXIDE_QEMU_VIRTIOFS_TAG`
 /// (default `hostfs`). Off by default: a share is a hole into the host
 /// filesystem and must be asked for explicitly, never present because a boot
@@ -65,12 +67,15 @@ pub(super) fn pcap_filter_args() -> Vec<String> {
 /// # C: O(1)
 pub(super) fn host_share_args() -> Vec<String> {
     let mut out = Vec::new();
-    if let Ok(path) = std::env::var("OXIDE_QEMU_9P_SHARE") {
-        if !path.is_empty() {
-            let tag = std::env::var("OXIDE_QEMU_9P_TAG").unwrap_or_else(|_| "hostshare".to_string());
+    for (suffix, default_tag, id) in [("", "hostshare", "ox9p"), ("_2", "hostshare2", "ox9p2")] {
+        let path_name = format!("OXIDE_QEMU_9P_SHARE{suffix}");
+        if let Ok(path) = std::env::var(path_name) {
+            if !path.is_empty() {
+                let tag_name = format!("OXIDE_QEMU_9P_TAG{suffix}");
+                let tag = std::env::var(tag_name).unwrap_or_else(|_| default_tag.to_string());
             eprintln!("xtask qemu: 9p share {path} as mount tag {tag}");
             out.push("-fsdev".to_string());
-            out.push(format!("local,id=ox9p,path={path},security_model=none"));
+            out.push(format!("local,id={id},path={path},security_model=none"));
             out.push("-device".to_string());
             // `disable-legacy=on,bus=pcie.0` is not decoration: without it QEMU
             // presents a TRANSITIONAL function (device id in 0x1000..=0x103F),
@@ -78,7 +83,8 @@ pub(super) fn host_share_args() -> Vec<String> {
             // device then appears on the bus, no driver claims it, and the
             // mount fails `ENOPROTOOPT` — which reads exactly like a kernel
             // that cannot do 9P at all.
-            out.push(format!("virtio-9p-pci,fsdev=ox9p,mount_tag={tag},disable-legacy=on,bus=pcie.0"));
+            out.push(format!("virtio-9p-pci,fsdev={id},mount_tag={tag},disable-legacy=on,bus=pcie.0"));
+            }
         }
     }
     if let Ok(sock) = std::env::var("OXIDE_QEMU_VIRTIOFS_SOCK") {

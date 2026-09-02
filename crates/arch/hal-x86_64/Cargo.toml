@@ -24,6 +24,7 @@ default   = []
 # silently on a fault. Mirrors `kernel`'s `debug-irq` so xtask
 # `--features debug-irq` enables both.
 debug-irq = []
+debug-faultdiag = []  # Windows PE syscall-return diagnostics
 # Gates the vector-2 NMI backtrace emit (cross-CPU lockup poke). Forwarded
 # default-on via boot-x86_64 so the handler prints in every build; without
 # it the NMI is still handled (print skipped) and iretq-resumes.

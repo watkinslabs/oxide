@@ -49,6 +49,19 @@ unsafe extern "C" fn oxide_irq_dispatch(regs: *mut hal_x86_64::PtRegs) {
     // the frame outlives this call (`oxide_irq_resume_user` consumes it).
     let r = unsafe { &*regs };
     let vec_tag = r.vector as u8;
+    #[cfg(feature = "debug-faultdiag")]
+    if r.from_user() && (0x180004c00..0x18000500).contains(&r.rip)
+        && sched::live::current().is_some_and(|task| task.is_nt_personality()) {
+        klog::write_raw(b"[WINDOWS-PE-IRQ-RELAY] vec=");
+        klog::write_hex_u64(r.vector);
+        klog::write_raw(b" rip=");
+        klog::write_hex_u64(r.rip);
+        klog::write_raw(b" rcx=");
+        klog::write_hex_u64(r.rcx);
+        klog::write_raw(b" rdx=");
+        klog::write_hex_u64(r.rdx);
+        klog::write_raw(b"\n");
+    }
     if r.from_user() && r.vector != hal_x86_64::PT_REGS_VECTOR_NMI {
         // Linux `irqtime_account_irq` + generic vtime: close the user interval
         // before any hardirq work. The common return hook begins user time

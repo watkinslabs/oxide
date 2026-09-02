@@ -208,6 +208,24 @@ pub fn user_fault_handler(esr: u64, far: u64, elr: u64) -> bool {
 fn handle(va_raw: u64, fault: FaultKind, user_mode: bool, ip: u64)
     -> Result<(), vmm::fault_signal::FaultFailure>
 {
+    // Snapshot before demand paging can enable interrupts, block, or switch
+    // tasks; later reads of the per-CPU live-frame slot may name another frame.
+    #[cfg(target_arch = "x86_64")]
+    let fault_sp = hal_x86_64::current_fault_rsp();
+    #[cfg(not(target_arch = "x86_64"))]
+    let fault_sp = 0;
+    #[cfg(target_arch = "x86_64")]
+    let fault_regs = {
+        let ptr = hal_x86_64::current_fault_frame();
+        if ptr.is_null() { None } else {
+            // SAFETY: the exception stub published this live PtRegs before
+            // entering Rust; copy only scalar registers before any resolver.
+            let f = unsafe { &*ptr };
+            Some((f.rcx, f.rdx, f.r8, f.r9, f.r10, f.cs))
+        }
+    };
+    #[cfg(not(target_arch = "x86_64"))]
+    let fault_regs: Option<(u64, u64, u64, u64, u64, u64)> = None;
     let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
     let uva = match UserVirtAddr::new(va_raw) {
         Some(u) => u,
@@ -280,6 +298,12 @@ fn handle(va_raw: u64, fault: FaultKind, user_mode: bool, ip: u64)
     // the block device, which is exactly Linux's `filemap_fault` cache-miss
     // arm. Anonymous, COW and protection faults never touch backing store.
     let cur = sched::live::current();
+    #[cfg(all(feature = "debug-faultdiag", target_arch = "x86_64"))]
+    if user_mode && cur.as_ref().is_some_and(|c| c.is_nt_personality()) {
+        if let Some(mm) = cur.as_ref().and_then(|c| unsafe { c.mm_ref() }) {
+            faultdiag::trace_code_window(mm.root_pa(), ip, hhdm);
+        }
+    }
     let major = matches!(fault, FaultKind::NotPresent { .. })
         && cur.as_ref().is_some_and(|c| {
             // SAFETY: synchronous fault on the running task; single-mutator mm slot per 13§5; read-only VMA query.
@@ -291,6 +315,70 @@ fn handle(va_raw: u64, fault: FaultKind, user_mode: bool, ip: u64)
         Some(cur) => unsafe { cur.mm_ref() }.map(|mm| do_handle(mm, uva, fault, hhdm, user_mode)),
         None => None,
     };
+    #[cfg(target_arch = "x86_64")]
+    let fault_cr3 = hal_x86_64::read_cr3() & !super::PAGE_MASK;
+    #[cfg(not(target_arch = "x86_64"))]
+    let fault_cr3 = 0;
+    // PE bootstrap faults are part of the normal compatibility smoke path.
+    // Keep one concise record for an NT task even in production builds so a
+    // failed first stack write identifies the owning mm and VMA without
+    // enabling the much noisier global fault diagnostics.
+    if user_mode && cur.as_ref().is_some_and(|c| c.is_nt_personality()) && !matches!(&r, Some(Ok(()))) {
+        klog::write_raw(b"[WINDOWS-PE-FAULT] va=");
+        klog::write_hex_u64(va_raw);
+        klog::write_raw(b" rip=");
+        klog::write_hex_u64(ip);
+        klog::write_raw(b" rsp=");
+        klog::write_hex_u64(fault_sp);
+        klog::write_raw(b" cr3=");
+        klog::write_hex_u64(fault_cr3);
+        if let Some((rcx, rdx, r8, r9, _r10, cs)) = fault_regs {
+            klog::write_raw(b" rcx=");
+            klog::write_hex_u64(rcx);
+            klog::write_raw(b" rdx=");
+            klog::write_hex_u64(rdx);
+            klog::write_raw(b" r8=");
+            klog::write_hex_u64(r8);
+            klog::write_raw(b" r9=");
+            klog::write_hex_u64(r9);
+            klog::write_raw(b" cs=");
+            klog::write_hex_u64(cs);
+        }
+        if let Ok(return_ip) = uaccess::get_user_u64(fault_sp) {
+            klog::write_raw(b" ret=");
+            klog::write_hex_u64(return_ip);
+        }
+        match &r {
+            None => klog::write_raw(b" result=no-mm"),
+            Some(Err(vmm::Error::NotImplemented)) => klog::write_raw(b" result=not-implemented"),
+            Some(Err(vmm::Error::NoMem)) => klog::write_raw(b" result=no-mem"),
+            Some(Err(vmm::Error::Inval)) => klog::write_raw(b" result=invalid"),
+            Some(Err(vmm::Error::Fault)) => klog::write_raw(b" result=fault"),
+            Some(Err(vmm::Error::Perm)) => klog::write_raw(b" result=permission"),
+            Some(Err(vmm::Error::Again)) => klog::write_raw(b" result=again"),
+            Some(Err(vmm::Error::Access)) => klog::write_raw(b" result=access"),
+            Some(Err(vmm::Error::Io)) => klog::write_raw(b" result=io"),
+            Some(Ok(())) => klog::write_raw(b" result=ok"),
+        }
+        if let Some(mm) = cur.as_ref().and_then(|c| unsafe { c.mm_ref() }) {
+            klog::write_raw(b" mm=");
+            klog::write_hex_u64(mm.root_pa());
+            match mm.find_vma(uva) {
+                Some(vma) => {
+                    klog::write_raw(b" vma=");
+                    klog::write_hex_u64(vma.start.as_u64());
+                    klog::write_raw(b"-");
+                    klog::write_hex_u64(vma.end.as_u64());
+                    klog::write_raw(b" prot=");
+                    klog::write_hex_u64(vma.prot.bits() as u64);
+                    klog::write_raw(b" flags=");
+                    klog::write_hex_u64(vma.flags.bits() as u64);
+                }
+                None => klog::write_raw(b" vma=none"),
+            }
+        }
+        klog::write_raw(b"\n");
+    }
     if matches!(r, Some(Ok(()))) {
         if let Some(c) = cur.as_ref() {
             sched::rusage_charge::fault(c, major);
@@ -318,23 +406,14 @@ fn handle(va_raw: u64, fault: FaultKind, user_mode: bool, ip: u64)
         klog::write_raw(b" tid=");
         klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
         klog::write_raw(b" rip=");
-        let rip = hal_x86_64::current_fault_rip();
-        if rip == 0 {
-            klog::write_raw(b"none");
-        } else {
-            klog::write_hex_u64(rip);
-            klog::write_raw(b" sp=");
-            klog::write_hex_u64(hal_x86_64::current_fault_rsp());
-            let frame = hal_x86_64::current_fault_frame();
-            if !frame.is_null() {
-                // SAFETY: the non-null current fault frame is published for
-                // this synchronous x86 fault handler and is read only here.
-                let frame = unsafe { &*frame };
-                klog::write_raw(b" r10=");
-                klog::write_hex_u64(frame.r10);
-                klog::write_raw(b" rdx=");
-                klog::write_hex_u64(frame.rdx);
-            }
+        klog::write_hex_u64(ip);
+        klog::write_raw(b" sp=");
+        klog::write_hex_u64(fault_sp);
+        if let Some((_rcx, rdx, _r8, _r9, r10, _cs)) = fault_regs {
+            klog::write_raw(b" r10=");
+            klog::write_hex_u64(r10);
+            klog::write_raw(b" rdx=");
+            klog::write_hex_u64(rdx);
         }
         match fault {
             FaultKind::NotPresent { access: _ } => klog::write_raw(b" kind=np"),
@@ -378,6 +457,8 @@ fn handle(va_raw: u64, fault: FaultKind, user_mode: bool, ip: u64)
                 klog::write_raw(b" mm=");
                 klog::write_hex_u64(mm.root_pa());
                 faultdiag::trace_plt_got(mm.root_pa(), ip, hhdm);
+                let rcx = fault_regs.map(|regs| regs.0).unwrap_or(0);
+                faultdiag::trace_relay(mm.root_pa(), ip, rcx, fault_sp, hhdm);
                 if let Some(vma) = mm.find_vma(uva) {
                     klog::write_raw(b" vma=");
                     klog::write_hex_u64(vma.start.as_u64());

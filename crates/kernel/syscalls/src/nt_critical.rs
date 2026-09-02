@@ -6,15 +6,17 @@ use syscall::nt::{NtCall, NtService};
 
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
+const STATUS_NO_MEMORY: u64 = 0xc000_0017;
 const STATUS_ALERTED: u64 = 0x0000_0101;
+const FORCE_DEBUG_INFO: u32 = 0x1000_0000;
 
 /// Dispatch the 64-bit user-layout critical-section operations.
 /// # C: O(1) uncontended; scheduler-dependent when contended
 pub fn dispatch(call: NtCall) -> Option<u64> {
     match call.service {
-        NtService::RtlInitializeCriticalSection => Some(initialize(call.args.a0, 0)),
-        NtService::RtlInitializeCriticalSectionAndSpinCount => Some(initialize(call.args.a0, call.args.a1 as u32)),
-        NtService::RtlInitializeCriticalSectionEx => Some(initialize(call.args.a0, call.args.a1 as u32)),
+        NtService::RtlInitializeCriticalSection => Some(initialize(call.args.a0, 0, 0)),
+        NtService::RtlInitializeCriticalSectionAndSpinCount => Some(initialize(call.args.a0, call.args.a1 as u32, 0)),
+        NtService::RtlInitializeCriticalSectionEx => Some(initialize(call.args.a0, call.args.a1 as u32, call.args.a2 as u32)),
         NtService::RtlDeleteCriticalSection => Some(delete(call.args.a0)),
         NtService::RtlEnterCriticalSection => Some(enter(call.args.a0)),
         NtService::RtlTryEnterCriticalSection => Some(try_enter(call.args.a0)),
@@ -23,10 +25,24 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     }
 }
 
-fn initialize(critical: u64, spin: u32) -> u64 {
+fn initialize(critical: u64, spin: u32, flags: u32) -> u64 {
     if critical == 0 { return STATUS_INVALID_PARAMETER; }
     let mut bytes = [0u8; 40];
-    bytes[0..8].copy_from_slice(&u64::MAX.to_le_bytes());
+    let debug_info = if flags & FORCE_DEBUG_INFO != 0 {
+        let allocation = syscall::nt::NtCall {
+            service: syscall::nt::NtService::AllocateHeap,
+            args: syscall::SyscallArgs { a0: 0, a1: 0, a2: 0x30, a3: 0, a4: 0, a5: 0 },
+        };
+        let Some(debug_info) = crate::nt_heap::dispatch(allocation) else { return STATUS_NO_MEMORY; };
+        if debug_info == 0 || debug_info >= 0xffff_0000_0000_0000 { return STATUS_NO_MEMORY; }
+        let mut debug = [0u8; 0x30];
+        debug[8..16].copy_from_slice(&critical.to_le_bytes());
+        debug[16..24].copy_from_slice(&debug_info.saturating_add(16).to_le_bytes());
+        debug[24..32].copy_from_slice(&debug_info.saturating_add(16).to_le_bytes());
+        if uaccess::copy_to_user(debug_info, &debug).is_err() { return STATUS_NO_MEMORY; }
+        debug_info
+    } else { u64::MAX };
+    bytes[0..8].copy_from_slice(&debug_info.to_le_bytes());
     bytes[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
     bytes[32..36].copy_from_slice(&spin.to_le_bytes());
     if uaccess::copy_to_user(critical, &bytes).is_err() { return STATUS_INVALID_PARAMETER; }

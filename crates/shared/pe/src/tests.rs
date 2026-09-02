@@ -166,6 +166,21 @@ fn parses_wine_x86_64_notepad_when_installed() {
 }
 
 #[test]
+fn locates_the_wine_x64_relay_descriptor_when_installed() {
+    let Ok(b) = std::fs::read("/usr/lib64/wine/x86_64-windows/advapi32.dll") else { return };
+    let parsed = parse(&b).expect("installed Wine advapi32 must parse");
+    assert_eq!(parsed.relay_descriptor_rva().unwrap(), Some(0x24000));
+    let import = ImportThunk::Name { hint: 0, name: b"ReadEventLogW" };
+    assert_eq!(parsed.export_rva(&import).unwrap(), Some(0x19c90));
+    assert_eq!(parsed.relay_export_rva(&import).unwrap(), Some(0x4c1c));
+    let relays = parsed.relay_export_rvas().unwrap().unwrap();
+    assert_eq!(relays[394], 0x4c1c);
+    assert_eq!(relays[395], 0x4c48);
+    let image = parsed.materialize().unwrap();
+    assert_eq!(&image[0x24000..0x24008], &[0x02, 0x00, 0xb9, 0xde, 0, 0, 0, 0]);
+}
+
+#[test]
 fn locates_and_decodes_x64_runtime_function_unwind_info() {
     let mut b = image();
     let dir = OPT + 112 + IMAGE_DIRECTORY_ENTRY_EXCEPTION * 8;

@@ -212,6 +212,20 @@ pub extern "C" fn oxide_fault_capture_cr2() -> u64 {
 unsafe extern "C" fn oxide_fault_print_rust(regs: *mut PtRegs, cr2: u64) -> bool {
     // SAFETY: stub-built PtRegs on the kernel stack, valid for read+write.
     let f = unsafe { &mut *regs };
+    #[cfg(feature = "debug-faultdiag")]
+    if f.from_user() && f.rip >= 0x180000000 && f.rip < 0x180100000 {
+        klog::write_raw(b"[WINDOWS-PE-FAULT-FRAME] rip=");
+        klog::write_hex_u64(f.rip);
+        klog::write_raw(b" cr2=");
+        klog::write_hex_u64(cr2);
+        klog::write_raw(b" rcx=");
+        klog::write_hex_u64(f.rcx);
+        klog::write_raw(b" rdx=");
+        klog::write_hex_u64(f.rdx);
+        klog::write_raw(b" rsp=");
+        klog::write_hex_u64(f.rsp);
+        klog::write_raw(b"\n");
+    }
     // F158: publish the live frame so the kernel SIGSEGV delivery path
     // can rewrite it for catchable user signals.
     let _frame_guard = frame::publish(regs);

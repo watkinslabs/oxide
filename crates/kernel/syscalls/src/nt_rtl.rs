@@ -504,10 +504,6 @@ fn run_once_complete(once: u64, flags: u64, context: u64) -> u64 {
 
 #[cfg(target_arch = "x86_64")]
 fn run_once_execute_once_x86(once: u64, func: u64, param: u64, context: u64) -> u64 {
-    const TEB_PEB: u64 = 0x60;
-    const PEB_LDR: u64 = 0x18;
-    const LDR_LOAD_LIST: u64 = 0x10;
-    const MODULE_BASE: u64 = 0x30;
     const CALLBACK_SHADOW_BYTES: u64 = 32;
     const CALLBACK_FRAME_BYTES: u64 = 48;
     if once == 0 || func == 0 || !uaccess::access_ok(func, 1) || (context != 0 && !uaccess::access_ok(context, 8)) {
@@ -515,11 +511,11 @@ fn run_once_execute_once_x86(once: u64, func: u64, param: u64, context: u64) -> 
     }
     let Some(task) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !task.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
-    let peb = uaccess::get_user_u64(task.nt_teb().saturating_add(TEB_PEB)).ok().unwrap_or(0);
-    let ldr = uaccess::get_user_u64(peb.saturating_add(PEB_LDR)).ok().unwrap_or(0);
-    let head = ldr.saturating_add(LDR_LOAD_LIST);
-    let first = uaccess::get_user_u64(head).ok().unwrap_or(0);
-    let ntdll = uaccess::get_user_u64(first).ok().and_then(|entry| uaccess::get_user_u64(entry.saturating_add(MODULE_BASE)).ok()).unwrap_or(0);
+    // The loader list is ordered by load/discovery, not by a guaranteed
+    // ntdll-first rule. Locate the synthetic runtime module by its published
+    // base name; assuming the first entry was ntdll produced a continuation
+    // inside advapi32's relay body (the exact mid-relay jump caught in smoke).
+    let ntdll = crate::nt_loader_proc::module_base_by_name(task, b"ntdll.dll").unwrap_or(0);
     let Some(continuation) = elf_load::pe_loader::resolve_nt_runtime_run_once_continuation(ntdll) else { return STATUS_INVALID_PARAMETER; };
     let regs = hal_x86_64::current_pt_regs();
     if regs.is_null() { return STATUS_INVALID_PARAMETER; }
@@ -528,6 +524,18 @@ fn run_once_execute_once_x86(once: u64, func: u64, param: u64, context: u64) -> 
     if callback_rsp == 0 || callback_rsp & 0xf != 8 { return STATUS_INVALID_PARAMETER; }
     let post_syscall_rip = frame.rip;
     let post_syscall_rsp = frame.rsp;
+    #[cfg(feature = "debug-faultdiag")]
+    {
+        klog::write_raw(b"[WINDOWS-PE-RUNONCE-FRAME] rsp=");
+        klog::write_hex_u64(post_syscall_rsp);
+        for slot in 0..3u64 {
+            klog::write_raw(b" word=");
+            klog::write_hex_u64(uaccess::get_user_u64(post_syscall_rsp.saturating_add(slot * 8)).unwrap_or(0));
+        }
+        klog::write_raw(b" callback=");
+        klog::write_hex_u64(func);
+        klog::write_raw(b"\n");
+    }
     for slot in 0..(CALLBACK_SHADOW_BYTES / 8) { if uaccess::put_user_u64(callback_rsp + 8 + slot * 8, 0).is_err() { return STATUS_INVALID_PARAMETER; } }
     if uaccess::put_user_u64(callback_rsp, continuation).is_err() { return STATUS_INVALID_PARAMETER; }
     let begin = run_once_begin_initialize(once, 0, context);

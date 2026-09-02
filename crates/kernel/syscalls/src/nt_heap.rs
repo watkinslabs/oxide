@@ -48,7 +48,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
             match elf_load::nt_memory::allocate(&mm, None, size, vmm::VmaProt::READ | vmm::VmaProt::WRITE) {
                 Ok(allocation) => {
                     let base = allocation.base.as_u64();
-                    cur.thread_group.nt_heap_user_info.lock().push((base, flags as u32, 0));
+                    cur.thread_group.nt_heap_user_info.lock().push((base, flags as u32, 0, size));
                     base
                 }
                 Err(elf_load::nt_memory::NtStatus::NoMemory) => STATUS_NO_MEMORY,
@@ -57,8 +57,9 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         }
         NtHeapCall::Free { heap: _, flags: _, base } => {
             let Some(base) = hal::UserVirtAddr::new(base) else { return Some(0); };
+            let Some((_, _, _, size)) = cur.thread_group.nt_heap_user_info.lock().iter().find(|entry| entry.0 == base.as_u64()).copied() else { return Some(0); };
             let Some(info) = elf_load::nt_memory::query(&mm, base).ok() else { return Some(0); };
-            match elf_load::nt_memory::free(&mm, elf_load::nt_memory::NtAllocation { base, size: info.size, protection: info.protection }) {
+            match elf_load::nt_memory::free(&mm, elf_load::nt_memory::NtAllocation { base, size, protection: info.protection }) {
                 elf_load::nt_memory::NtStatus::Success => { cur.thread_group.nt_heap_user_info.lock().retain(|entry| entry.0 != base.as_u64()); 1 }
                 _ => 0,
             }
@@ -68,21 +69,22 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
             let Some(size) = size.checked_add(page - 1).map(|size| size & !(page - 1)).filter(|size| *size != 0 && *size <= usize::MAX as u64) else { return Some(0); };
             let Some(old_base) = hal::UserVirtAddr::new(base) else { return Some(0); };
             let Ok(old_info) = elf_load::nt_memory::query(&mm, old_base) else { return Some(0); };
+            let old_size = cur.thread_group.nt_heap_user_info.lock().iter().find(|entry| entry.0 == old_base.as_u64()).map(|entry| entry.3).unwrap_or(old_info.size);
             let Ok(new) = elf_load::nt_memory::allocate(&mm, None, size as usize, vmm::VmaProt::READ | vmm::VmaProt::WRITE) else { return Some(0); };
-            let copy_len = core::cmp::min(old_info.size, size as usize);
+            let copy_len = core::cmp::min(old_size, size as usize);
             let mut bytes = alloc::vec![0u8; copy_len];
             if uaccess::copy_from_user(&mut bytes, old_base.as_u64()).is_err() || uaccess::copy_to_user(new.base.as_u64(), &bytes).is_err() {
                 let _ = elf_load::nt_memory::free(&mm, new);
                 return Some(0);
             }
-            let _ = elf_load::nt_memory::free(&mm, elf_load::nt_memory::NtAllocation { base: old_base, size: old_info.size, protection: old_info.protection });
+            let _ = elf_load::nt_memory::free(&mm, elf_load::nt_memory::NtAllocation { base: old_base, size: old_size, protection: old_info.protection });
             let mut user_info = cur.thread_group.nt_heap_user_info.lock();
-            if let Some(entry) = user_info.iter_mut().find(|entry| entry.0 == old_base.as_u64()) { entry.0 = new.base.as_u64(); } else if flags & HEAP_ADD_USER_INFO != 0 { user_info.push((new.base.as_u64(), flags as u32, 0)); }
+            if let Some(entry) = user_info.iter_mut().find(|entry| entry.0 == old_base.as_u64()) { entry.0 = new.base.as_u64(); entry.3 = size as usize; } else if flags & HEAP_ADD_USER_INFO != 0 { user_info.push((new.base.as_u64(), flags as u32, 0, size as usize)); }
             new.base.as_u64()
         }
         NtHeapCall::Size { heap: _, flags: _, base } => {
             let Some(base) = hal::UserVirtAddr::new(base) else { return Some(u64::MAX); };
-            match elf_load::nt_memory::query(&mm, base) { Ok(info) => info.size as u64, Err(_) => u64::MAX }
+            cur.thread_group.nt_heap_user_info.lock().iter().find(|entry| entry.0 == base.as_u64()).map(|entry| entry.3 as u64).unwrap_or_else(|| match elf_load::nt_memory::query(&mm, base) { Ok(info) => info.size as u64, Err(_) => u64::MAX })
         }
     })
 }
@@ -99,13 +101,13 @@ fn walk_heap(call: NtCall) -> u64 {
     if uaccess::copy_from_user(&mut entry, call.args.a1).is_err() { return STATUS_INVALID_PARAMETER; }
     let cursor = u64::from_le_bytes(entry[0..8].try_into().unwrap());
     let Some(mm) = (unsafe { cur.mm_ref() }).map(|mm| mm.clone()) else { return STATUS_INVALID_PARAMETER; };
-    let Some((base, _flags, _value)) = cur.thread_group.nt_heap_user_info.lock().iter()
-        .copied().filter(|(base, _, _)| *base > cursor).min_by_key(|(base, _, _)| *base) else { return STATUS_NO_MORE_ENTRIES; };
+    let Some((base, _flags, _value, allocation_size)) = cur.thread_group.nt_heap_user_info.lock().iter()
+        .copied().filter(|(base, _, _, _)| *base > cursor).min_by_key(|(base, _, _, _)| *base) else { return STATUS_NO_MORE_ENTRIES; };
     let Some(address) = hal::UserVirtAddr::new(base) else { return STATUS_NO_MORE_ENTRIES; };
-    let Ok(info) = elf_load::nt_memory::query(&mm, address) else { return STATUS_NO_MORE_ENTRIES; };
+    let Ok(_info) = elf_load::nt_memory::query(&mm, address) else { return STATUS_NO_MORE_ENTRIES; };
     entry = [0; ENTRY_BYTES];
     entry[0..8].copy_from_slice(&base.to_le_bytes());
-    entry[8..16].copy_from_slice(&(info.size as u64).to_le_bytes());
+    entry[8..16].copy_from_slice(&(allocation_size as u64).to_le_bytes());
     entry[18..20].copy_from_slice(&(ENTRY_BUSY | ENTRY_BLOCK | ENTRY_COMMITTED).to_le_bytes());
     if uaccess::copy_to_user(call.args.a1, &entry).is_err() { return STATUS_INVALID_PARAMETER; }
     0
@@ -175,7 +177,7 @@ fn get_user_info(call: NtCall) -> u64 {
     let Some(cur) = sched::live::current() else { return 0; };
     if !cur.is_nt_personality() { return 0; }
     let Some(base) = hal::UserVirtAddr::new(call.args.a2) else { return 0; };
-    let Some((_, flags, value)) = cur.thread_group.nt_heap_user_info.lock().iter().find(|entry| entry.0 == base.as_u64()).copied() else { return 0; };
+    let Some((_, flags, value, _size)) = cur.thread_group.nt_heap_user_info.lock().iter().find(|entry| entry.0 == base.as_u64()).copied() else { return 0; };
     if uaccess::put_user_u64(call.args.a3, value).is_err() || uaccess::put_user_u32(call.args.a4, flags & !(HEAP_ADD_USER_INFO as u32)).is_err() { return 0; }
     1
 }

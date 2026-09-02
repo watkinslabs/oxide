@@ -36,12 +36,14 @@ pub fn allocate(as_: &AddressSpace, base: Option<UserVirtAddr>, size: usize, pro
     Ok(NtAllocation { base, size, protection })
 }
 
-/// Release one exact NT allocation.
+/// Release one NT allocation extent. Compatible adjacent VMAs can be merged
+/// by the common VMM, so use the recorded extent rather than the VMA size.
 /// # C: O(log N_vmas)
 pub fn free(as_: &AddressSpace, allocation: NtAllocation) -> NtStatus {
     if allocation.size == 0 || allocation.size % PAGE != 0 { return NtStatus::InvalidParameter; }
     let Some(vma) = as_.find_vma(allocation.base) else { return NtStatus::NotMapped };
-    if vma.start != allocation.base || (vma.end.as_u64() - vma.start.as_u64()) as usize != allocation.size { return NtStatus::InvalidParameter; }
+    let Some(end) = allocation.base.as_u64().checked_add(allocation.size as u64) else { return NtStatus::InvalidParameter; };
+    if allocation.base.as_u64() < vma.start.as_u64() || end > vma.end.as_u64() { return NtStatus::InvalidParameter; }
     if as_.munmap(allocation.base, allocation.size).is_ok() { NtStatus::Success } else { NtStatus::NotMapped }
 }
 
@@ -89,11 +91,12 @@ mod tests {
     }
 
     #[test]
-    fn free_rejects_partial_extent_without_removing_the_mapping() {
+    fn free_can_split_a_merged_extent_without_removing_neighbors() {
         let as_ = AddressSpace::new(0x20_000).unwrap();
         let a = allocate(&as_, None, PAGE * 2, VmaProt::READ).unwrap();
-        assert_eq!(free(&as_, NtAllocation { size: PAGE, ..a }), NtStatus::InvalidParameter);
-        assert_eq!(query(&as_, a.base).unwrap().size, PAGE * 2);
+        assert_eq!(free(&as_, NtAllocation { size: PAGE, ..a }), NtStatus::Success);
+        assert_eq!(query(&as_, a.base), Err(NtStatus::NotMapped));
+        assert_eq!(query(&as_, UserVirtAddr::new(a.base.as_u64() + PAGE as u64).unwrap()).unwrap().size, PAGE);
     }
 
     #[test]

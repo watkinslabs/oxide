@@ -74,6 +74,13 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64,
     #[cfg(target_arch = "aarch64")] entry_frame: *mut hal_aarch64::SvcFrame,
 ) -> u64 {
+    if nr >> 32 == syscall::nt::NT_SERVICE_NAMESPACE >> 32 {
+        klog::write_raw(b"[WINDOWS-PE-RAW-NT] nr="); klog::write_hex_u64(nr);
+        klog::write_raw(b" service="); klog::write_hex_u64(nr & 0xffff_ffff);
+        klog::write_raw(b" a0="); klog::write_hex_u64(a0);
+        klog::write_raw(b" a1="); klog::write_hex_u64(a1);
+        klog::write_raw(b" a2="); klog::write_hex_u64(a2); klog::write_raw(b"\n");
+    }
     // Linux `vtime_user_exit`: the architectural syscall entry has crossed
     // into kernel mode; close the user interval before any dispatch work.
     sched::cpustat::user_exit();

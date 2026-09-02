@@ -10,6 +10,7 @@ pub const IMAGE_DIRECTORY_ENTRY_BASERELOC: usize = 5;
 pub const IMAGE_DIRECTORY_ENTRY_TLS: usize = 9;
 pub const IMAGE_REL_BASED_ABSOLUTE: u16 = 0;
 pub const IMAGE_REL_BASED_DIR64: u16 = 10;
+pub const RELAY_DESCRIPTOR_MAGIC: u32 = 0xdeb9_0002;
 const DIRECTORY_COUNT: usize = 16;
 const PAGE: u32 = 0x1000;
 
@@ -174,6 +175,28 @@ impl<'a> Image<'a> {
         let b = self.rva_range(d.rva, 40)?; let name = self.c_string(u32(b, 12)?)?;
         Ok(Some(ExportInfo { name, ordinal_base: u32(b, 16)?, function_count: u32(b, 20)?, name_count: u32(b, 24)?, functions_rva: u32(b, 28)?, names_rva: u32(b, 32)?, ordinals_rva: u32(b, 36)? }))
     }
+    /// Locate Wine's PE relay descriptor, if the export directory carries
+    /// the descriptor marker immediately before its module-name string.
+    /// # C: O(1)
+    pub fn relay_descriptor_rva(&self) -> Result<Option<u32>, Error> {
+        let Some(_) = self.exports()? else { return Ok(None); };
+        let directory = self.directories[IMAGE_DIRECTORY_ENTRY_EXPORT];
+        let name_rva = self.rva_range(directory.rva.checked_add(12).ok_or(Error::Einval)?, 4)?;
+        let name_rva = u32(name_rva, 0)?;
+        let marker_rva = name_rva.checked_sub(8).ok_or(Error::Einval)?;
+        let marker = self.rva_range(marker_rva, 8)?;
+        if u32(marker, 0)? != RELAY_DESCRIPTOR_MAGIC { return Ok(None); }
+        let descriptor_rva = u32(marker, 4)?;
+        if descriptor_rva == 0 { return Err(Error::Einval); }
+        let descriptor = self.rva_range(descriptor_rva, 8)?;
+        if u32(descriptor, 0)? != RELAY_DESCRIPTOR_MAGIC || u32(descriptor, 4)? != 0 {
+            return Err(Error::Einval);
+        }
+        // The x64 descriptor has six pointer-sized fields. Validate the
+        // complete record before a loader exposes its address to user code.
+        self.rva_range(descriptor_rva, 48)?;
+        Ok(Some(descriptor_rva))
+    }
     /// Resolve one import to an image RVA or a validated forwarder string.
     /// # C: O(N_export_names)
     pub fn export_target(&self, import: &ImportThunk<'_>) -> Result<Option<ExportTarget<'a>>, Error> {
@@ -195,6 +218,10 @@ impl<'a> Image<'a> {
         let Some(index) = index else { return Ok(None); };
         if index >= exports.function_count { return Ok(None); }
         let rva = u32(self.rva_range(exports.functions_rva.checked_add(index.checked_mul(4).ok_or(Error::Einval)?).ok_or(Error::Einval)?, 4)?, 0)?;
+        // A zero EAT slot is an unimplemented/absent export, not the image
+        // base. Let the caller report it as unresolved rather than creating
+        // a non-executable function pointer to the PE headers.
+        if rva == 0 { return Ok(None); }
         let directory = self.directories[IMAGE_DIRECTORY_ENTRY_EXPORT];
         if rva >= directory.rva && rva < directory.rva.checked_add(directory.size).ok_or(Error::Einval)? {
             return Ok(Some(ExportTarget::Forwarder(self.c_string(rva)?)));
@@ -203,10 +230,87 @@ impl<'a> Image<'a> {
         Ok(Some(ExportTarget::Rva(rva)))
     }
 
+    /// Resolve a Wine relay-backed export to the generated x86-64 entry stub.
+    /// The ordinary export address table points at the implementation body;
+    /// Wine's relay descriptor supplies the ABI adapter that must be entered
+    /// by Windows callers. Returns `None` for ordinary PE exports.
+    /// # C: O(N_export_names)
+    pub fn relay_export_rva(&self, import: &ImportThunk<'_>) -> Result<Option<u32>, Error> {
+        let Some(exports) = self.exports()? else { return Ok(None); };
+        let Some(index) = self.export_index(exports, import)? else { return Ok(None); };
+        let Some(descriptor_rva) = self.relay_descriptor_rva()? else { return Ok(None); };
+        let entry_base = u64(self.rva_range(descriptor_rva.checked_add(24).ok_or(Error::Einval)?, 8)?, 0)?;
+        let offsets = u64(self.rva_range(descriptor_rva.checked_add(32).ok_or(Error::Einval)?, 8)?, 0)?;
+        let image_base = self.image_base;
+        let entry_base_rva = entry_base.checked_sub(image_base).ok_or(Error::Einval)?;
+        let offsets_rva = offsets.checked_sub(image_base).ok_or(Error::Einval)?;
+        let offset_rva = u32::try_from(offsets_rva.checked_add((index as u64).checked_mul(4).ok_or(Error::Einval)?).ok_or(Error::Einval)?).map_err(|_| Error::Einval)?;
+        let offset = u32(self.rva_range(offset_rva, 4)?, 0)?;
+        if offset == 0 { return Ok(None); }
+        let relay = entry_base_rva.checked_add(offset as u64).ok_or(Error::Einval)?;
+        let relay = u32::try_from(relay).map_err(|_| Error::Einval)?;
+        self.rva_range(relay, 1)?;
+        Ok(Some(relay))
+    }
+
     /// Resolve one import against this image's export tables. Forwarders
     /// remain unsupported through this legacy RVA-only accessor.
     pub fn export_rva(&self, import: &ImportThunk<'_>) -> Result<Option<u32>, Error> {
         match self.export_target(import)? { Some(ExportTarget::Rva(rva)) => Ok(Some(rva)), Some(ExportTarget::Forwarder(_)) => Err(Error::Unsupported), None => Ok(None) }
+    }
+
+    /// Return the original export-table RVAs in ordinal-index order.
+    /// # C: O(N_export_functions)
+    pub fn export_rvas(&self) -> Result<Option<alloc::vec::Vec<u32>>, Error> {
+        let Some(exports) = self.exports()? else { return Ok(None); };
+        let mut rvas = alloc::vec::Vec::with_capacity(exports.function_count as usize);
+        for index in 0..exports.function_count {
+            let rva = u32(self.rva_range(exports.functions_rva.checked_add(index.checked_mul(4).ok_or(Error::Einval)?).ok_or(Error::Einval)?, 4)?, 0)?;
+            rvas.push(rva);
+        }
+        Ok(Some(rvas))
+    }
+
+    /// Return the Wine relay RVA for each ordinal-indexed export. A zero
+    /// entry means the export is data, absent, or not covered by the relay
+    /// descriptor and must retain its original EAT value.
+    /// # C: O(N_export_functions)
+    pub fn relay_export_rvas(&self) -> Result<Option<alloc::vec::Vec<u32>>, Error> {
+        let Some(exports) = self.exports()? else { return Ok(None); };
+        let Some(descriptor_rva) = self.relay_descriptor_rva()? else { return Ok(None); };
+        let entry_base = u64(self.rva_range(descriptor_rva.checked_add(24).ok_or(Error::Einval)?, 8)?, 0)?;
+        let offsets = u64(self.rva_range(descriptor_rva.checked_add(32).ok_or(Error::Einval)?, 8)?, 0)?;
+        let entry_base_rva = entry_base.checked_sub(self.image_base).ok_or(Error::Einval)?;
+        let offsets_rva = offsets.checked_sub(self.image_base).ok_or(Error::Einval)?;
+        let mut rvas = alloc::vec::Vec::with_capacity(exports.function_count as usize);
+        for index in 0..exports.function_count {
+            let offset_rva = u32::try_from(offsets_rva.checked_add((index as u64).checked_mul(4).ok_or(Error::Einval)?).ok_or(Error::Einval)?).map_err(|_| Error::Einval)?;
+            let offset = u32(self.rva_range(offset_rva, 4)?, 0)?;
+            let relay = if offset == 0 { 0 } else { entry_base_rva.checked_add(offset as u64).and_then(|value| u32::try_from(value).ok()).ok_or(Error::Einval)? };
+            if relay != 0 { self.rva_range(relay, 1)?; }
+            rvas.push(relay);
+        }
+        Ok(Some(rvas))
+    }
+
+    fn export_index(&self, exports: ExportInfo<'_>, import: &ImportThunk<'_>) -> Result<Option<u32>, Error> {
+        let index = match import {
+            ImportThunk::Ordinal(ordinal) => (*ordinal as u32).checked_sub(exports.ordinal_base),
+            ImportThunk::Name { name, .. } => {
+                let mut found = None;
+                for i in 0..exports.name_count {
+                    let name_rva = u32(self.rva_range(exports.names_rva.checked_add(i.checked_mul(4).ok_or(Error::Einval)?).ok_or(Error::Einval)?, 4)?, 0)?;
+                    if self.c_string(name_rva)? == *name {
+                        found = Some(u16(self.rva_range(exports.ordinals_rva.checked_add(i.checked_mul(2).ok_or(Error::Einval)?).ok_or(Error::Einval)?, 2)?, 0)? as u32);
+                        break;
+                    }
+                }
+                found
+            }
+        };
+        let Some(index) = index else { return Ok(None); };
+        if index >= exports.function_count { return Ok(None); }
+        Ok(Some(index))
     }
     /// # C: O(1)
     pub fn tls(&self) -> Result<Option<TlsDirectory>, Error> {

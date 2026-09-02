@@ -53,7 +53,11 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         NtService::LdrDisableThreadCalloutsForDll => Some(disable_thread_callouts(call.args.a0)),
         NtService::LdrGetDllHandleEx => Some(get_handle(call.args.a0 as u32, call.args.a3, call.args.a4)),
         NtService::LdrGetDllHandle => Some(get_handle(1, call.args.a2, call.args.a3)),
-        NtService::RtlFindExportedRoutineByName => Some(crate::nt_loader_proc::find_exported_routine(call.args.a0, call.args.a1)),
+        NtService::RtlFindExportedRoutineByName => {
+            klog::write_raw(b"[WINDOWS-PE-DISPATCH] RtlFind module="); klog::write_hex_u64(call.args.a0);
+            klog::write_raw(b" name="); klog::write_hex_u64(call.args.a1); klog::write_raw(b"\n");
+            Some(crate::nt_loader_proc::find_exported_routine(call.args.a0, call.args.a1))
+        },
         NtService::LdrGetDllPath => Some(get_path(call.args.a0, call.args.a1 as u32, call.args.a2, call.args.a3)),
         NtService::LdrSetDefaultDllDirectories => Some(set_default_dll_directories(call.args.a0 as u32)),
         NtService::LdrUnloadDll => Some(unload(call.args.a0)),
@@ -117,6 +121,7 @@ fn get_handle(flags: u32, name_descriptor: u64, module_output: u64) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     let Some(wanted) = read_unicode(name_descriptor) else { return STATUS_INVALID_PARAMETER; };
+    klog::write_raw(b"[WINDOWS-PE-LDR] wanted="); klog::write_raw(&wanted); klog::write_raw(b"\n");
     let peb = read_u64(cur.nt_teb().saturating_add(TEB_PEB_OFFSET));
     let ldr = read_u64(peb.saturating_add(PEB_LDR_OFFSET));
     if peb == 0 || ldr == 0 { return STATUS_INVALID_PARAMETER; }
@@ -124,6 +129,13 @@ fn get_handle(flags: u32, name_descriptor: u64, module_output: u64) -> u64 {
     let mut entry = read_u64(head);
     for _ in 0..MAX_MODULE_SCAN {
         if entry == 0 || entry == head { break; }
+        let name_descriptor = entry.saturating_add(MODULE_BASE_NAME_OFFSET);
+        let mut name_raw = [0u8; UNICODE_STRING_BYTES];
+        let name_len = if uaccess::copy_from_user(&mut name_raw, name_descriptor).is_ok() { u16::from_le_bytes([name_raw[0], name_raw[1]]) as u64 } else { 0 };
+        klog::write_raw(b"[WINDOWS-PE-LDR] entry="); klog::write_hex_u64(entry);
+        klog::write_raw(b" base="); klog::write_hex_u64(read_u64(entry.saturating_add(MODULE_BASE_OFFSET)));
+        klog::write_raw(b" len="); klog::write_hex_u64(name_len);
+        klog::write_raw(b"\n");
         if module_name_matches(&wanted, entry.saturating_add(MODULE_BASE_NAME_OFFSET)) {
             let module = read_u64(entry.saturating_add(MODULE_BASE_OFFSET));
             if uaccess::put_user_u64(module_output, module).is_err() { return STATUS_INVALID_PARAMETER; }
@@ -133,6 +145,7 @@ fn get_handle(flags: u32, name_descriptor: u64, module_output: u64) -> u64 {
         }
         entry = read_u64(entry.saturating_add(LIST_LINK_OFFSET));
     }
+    klog::write_raw(b"[WINDOWS-PE-LDR] not-found wanted="); klog::write_raw(&wanted); klog::write_raw(b"\n");
     STATUS_DLL_NOT_FOUND
 }
 

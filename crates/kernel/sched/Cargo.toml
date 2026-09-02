@@ -58,6 +58,7 @@ debug-boot = []
 debug-taskdrop = []  # [TASK-DROP] per-task teardown stack record
 debug-desktop = []  # [MUTTERWAIT] compositor deadline-park ledger — pays a with_exe_path lock + substring scan on EVERY deadline park
 debug-syscall = []
+debug-faultdiag = []  # Windows PE thread-start context diagnostics
 debug-displaystack = []
 debug-gnome-syscall = []
 # Wake→run latency + LAPIC tick-period probe for the gnome desktop wakeup-
