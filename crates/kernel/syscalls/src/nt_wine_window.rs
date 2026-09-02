@@ -4,12 +4,27 @@ use syscall::{nt::{NtCall, NtService}, SyscallArgs};
 
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
+const STATUS_SUCCESS: u64 = 0;
+const PAINTSTRUCT_RECT_OFFSET: u64 = 12;
+const PAINTSTRUCT_HDC_OFFSET: u64 = 0;
+const DEFAULT_WINDOW_SURFACE_WIDTH: u64 = 800;
+const DEFAULT_WINDOW_SURFACE_HEIGHT: u64 = 600;
 
 const WINE_CREATE_WINDOW_EX: u64 = 0x136b;
 const WINE_GET_MESSAGE: u64 = 0x141b;
 const WINE_PEEK_MESSAGE: u64 = 0x14ca;
 const WINE_POST_MESSAGE: u64 = 0x14d0;
 const WINE_SHOW_WINDOW: u64 = 0x15bd;
+const WINE_BEGIN_PAINT: u64 = 0x1327;
+const WINE_END_PAINT: u64 = 0x13bc;
+const WINE_GET_DC: u64 = 0x13eb;
+const WINE_INVALIDATE_RECT: u64 = 0x148c;
+const WINE_RELEASE_DC: u64 = 0x1509;
+const WINE_SET_WINDOW_POS: u64 = 0x15a7;
+const WINE_CREATE_COMPATIBLE_DC: u64 = 0x10ae;
+const WINE_DELETE_OBJECT: u64 = 0x118f;
+const WINE_GET_TEXT_METRICS: u64 = 0x1229;
+const WINE_GET_TEXT_EXTENT_EX: u64 = 0x1227;
 
 #[cfg(target_os = "oxide-kernel")]
 fn read_args(pointer: u64) -> Option<[u64; 17]> {
@@ -29,14 +44,54 @@ pub fn dispatch(call: NtCall) -> u64 {
     let ordinal = call.args.a0;
     let Some(args) = read_args(call.args.a1) else { return STATUS_INVALID_PARAMETER; };
     let native = |service: NtService, args: SyscallArgs| crate::nt_window::dispatch(NtCall { service, args }).unwrap_or(STATUS_INVALID_PARAMETER);
+    let gdi = |service: NtService, args: SyscallArgs| crate::nt_gdi::dispatch(NtCall { service, args }).unwrap_or(STATUS_INVALID_PARAMETER);
     match ordinal {
         WINE_CREATE_WINDOW_EX => {
             native(NtService::CreateWindow, SyscallArgs { a0: args[9], a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 })
         }
-        WINE_POST_MESSAGE => native(NtService::PostMessage, SyscallArgs { a0: args[0], a1: args[1], a2: args[2], a3: args[3], a4: 0, a5: 0 }),
-        WINE_PEEK_MESSAGE => native(NtService::PeekMessage, SyscallArgs { a0: args[0], a1: args[1], a2: args[2], a3: args[3], a4: args[4], a5: 0 }),
-        WINE_GET_MESSAGE => native(NtService::GetMessage, SyscallArgs { a0: args[0], a1: args[1], a2: args[2], a3: args[3], a4: 0, a5: 0 }),
+        WINE_POST_MESSAGE => win_bool(native(NtService::PostMessage, SyscallArgs { a0: args[0], a1: args[1], a2: args[2], a3: args[3], a4: 0, a5: 0 })),
+        WINE_PEEK_MESSAGE => win_bool(native(NtService::PeekMessage, SyscallArgs { a0: args[0], a1: args[1], a2: args[2], a3: args[3], a4: args[4], a5: 0 })),
+        WINE_GET_MESSAGE => win_bool(native(NtService::GetMessage, SyscallArgs { a0: args[0], a1: args[1], a2: args[2], a3: args[3], a4: 0, a5: 0 })),
         WINE_SHOW_WINDOW => native(NtService::ShowWindow, SyscallArgs { a0: args[0], a1: args[1], a2: 0, a3: 0, a4: 0, a5: 0 }),
+        WINE_INVALIDATE_RECT => win_bool(native(NtService::InvalidateWindow, SyscallArgs { a0: args[0], a1: args[1], a2: args[2], a3: 0, a4: 0, a5: 0 })),
+        WINE_SET_WINDOW_POS => {
+            let right = (args[2] as i32).checked_add(args[4] as i32);
+            let bottom = (args[3] as i32).checked_add(args[5] as i32);
+            match (right, bottom) {
+                (Some(right), Some(bottom)) => win_bool(native(NtService::SetWindowRectValues, SyscallArgs { a0: args[0], a1: args[2], a2: args[3], a3: right as u64, a4: bottom as u64, a5: 0 })),
+                _ => STATUS_INVALID_PARAMETER,
+            }
+        }
+        WINE_BEGIN_PAINT => begin_paint(&args, native, gdi),
+        WINE_END_PAINT => end_paint(&args, native, gdi),
+        WINE_GET_DC | WINE_CREATE_COMPATIBLE_DC => gdi(NtService::CreateCompatibleDc, SyscallArgs { a0: DEFAULT_WINDOW_SURFACE_WIDTH, a1: DEFAULT_WINDOW_SURFACE_HEIGHT, a2: 0, a3: 0, a4: 0, a5: 0 }),
+        WINE_RELEASE_DC => win_bool(gdi(NtService::DeleteGdiObject, SyscallArgs { a0: args[1], a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 })),
+        WINE_DELETE_OBJECT => gdi(NtService::DeleteGdiObject, SyscallArgs { a0: args[0], a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }),
+        WINE_GET_TEXT_METRICS => win_bool(gdi(NtService::GetGdiTextMetrics, SyscallArgs { a0: args[0], a1: args[1], a2: 0, a3: 0, a4: 0, a5: 0 })),
+        WINE_GET_TEXT_EXTENT_EX => win_bool(gdi(NtService::GetGdiTextExtent, SyscallArgs { a0: args[0], a1: args[1], a2: args[2], a3: args[6], a4: 0, a5: 0 })),
         _ => STATUS_NOT_IMPLEMENTED,
     }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn win_bool(status: u64) -> u64 { (status == STATUS_SUCCESS) as u64 }
+
+#[cfg(target_os = "oxide-kernel")]
+fn begin_paint<F, G>(args: &[u64; 17], native: F, gdi: G) -> u64
+where F: Fn(NtService, SyscallArgs) -> u64, G: Fn(NtService, SyscallArgs) -> u64 {
+    let Some(rect) = args[1].checked_add(PAINTSTRUCT_RECT_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+    let hdc = gdi(NtService::CreateCompatibleDc, SyscallArgs { a0: DEFAULT_WINDOW_SURFACE_WIDTH, a1: DEFAULT_WINDOW_SURFACE_HEIGHT, a2: 0, a3: 0, a4: 0, a5: 0 });
+    if hdc == STATUS_INVALID_PARAMETER || hdc == 0 { return hdc; }
+    if native(NtService::BeginWindowPaint, SyscallArgs { a0: args[0], a1: rect, a2: 0, a3: 0, a4: 0, a5: 0 }) != STATUS_SUCCESS { let _ = gdi(NtService::DeleteGdiObject, SyscallArgs { a0: hdc, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }); return STATUS_INVALID_PARAMETER; }
+    if uaccess::copy_to_user(args[1].saturating_add(PAINTSTRUCT_HDC_OFFSET), &hdc.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
+    hdc
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn end_paint<F, G>(args: &[u64; 17], native: F, gdi: G) -> u64
+where F: Fn(NtService, SyscallArgs) -> u64, G: Fn(NtService, SyscallArgs) -> u64 {
+    let Ok(hdc) = uaccess::get_user_u64(args[1]) else { return STATUS_INVALID_PARAMETER; };
+    let result = native(NtService::EndWindowPaint, SyscallArgs { a0: args[0], a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 });
+    if hdc != 0 { let _ = gdi(NtService::DeleteGdiObject, SyscallArgs { a0: hdc, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }); }
+    win_bool(result)
 }
