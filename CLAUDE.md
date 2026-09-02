@@ -1,129 +1,54 @@
 # oxide2
 
-Linux-class kernel + glibc-ABI userspace, in Rust. Kernel targets `x86_64-unknown-oxide-kernel` and `aarch64-unknown-oxide-kernel`; userspace targets upstream `*-unknown-linux-gnu` per `docs/59§1`.
-
-## Status
-
-Pre-code. 46 specs in `docs/`, all DRAFT. Spec-lint tool (`tools/spec-lint/`) and Phase 0 build infra are next.
+Linux-class kernel + glibc-ABI userspace, in Rust. Kernel targets `x86_64-unknown-oxide-kernel` and `aarch64-unknown-oxide-kernel`; userspace targets upstream `*-unknown-linux-gnu` per `docs/59§1`. Deep in implementation: both arches boot Fedora-composed userspace; work is ledger-driven (`tools/issues.sh --query`) plus the phase plan (`00§3`). Session state: `handoff2.md`.
 
 ## NEVER BUILD A WORKAROUND (HARD RULE)
 
-**Diagnose. Read the reference. Never work from memory. Never route around a
-defect you have not explained.**
+**Diagnose. Read the reference. Never work from memory. Never route around a defect you have not explained.**
 
-A workaround is any change that makes a symptom stop without naming its cause:
-disabling the subsystem that fails, reverting a commit you have not read,
-widening a timeout, adding a retry, skipping a gate, pinning a boot parameter
-off. Every one of them converts a bug you could have fixed into a bug nobody
-can see, and it lies to the next person about the state of the tree.
+A workaround is any change that makes a symptom stop without naming its cause: disabling the failing subsystem, reverting a commit you have not read, widening a timeout, adding a retry, skipping a gate, pinning a boot parameter off. Each converts a fixable bug into an invisible one and lies to the next person about the tree. (Precedent: a boot failure "fixed" twice by SELinux disables; one read of the reference found a seqlock parity bug with a three-line fix.)
 
-Learned the expensive way: `main` stopped booting mid-session. The response was
-to guess that a SELinux boot parameter caused it, revert that commit without
-reading it, watch the boot still fail, then write `selinux=0` onto the boot line
-to make it go away. Two workarounds, zero minutes spent in the reference.
-
-The actual bug, found by opening `security/selinux/status.c` once: the status
-page's `sequence` word is a **seqlock**, incremented twice per update so it is
-even whenever the page is readable, and the file's own comment states the
-reader contract. We published the policy sequence number there, so one policy
-load left it permanently odd, and `libselinux` spun `sched_yield` forever
-waiting for it to go even — 5.7 million calls a second in PID 1. A three-line
-fix with a positive control, reachable in one read, replaced by a disable that
-would have shipped a dead subsystem and an unexplained boot.
-
-- **The reference is the first move, not the last.** Before any hypothesis
-  about externally-defined behaviour, read the implementation. `../reference`
-  and `../linux-master` are right there and cost seconds.
-- **Memory is not evidence.** Neither is a ledger row, a hand-off note, a
-  comment, or what a subsystem's name suggests it does. Read the code.
-- **If you cannot explain the mechanism, you have not fixed it.** Say so, record
-  what you measured, and hand it on — an open row with a precise diagnosis is a
-  real deliverable. A green tree with a hidden disable is not.
-- **A revert is legitimate only when it is the diagnosis** — you have read the
-  change, you know why it breaks, and reverting is the correct repair. A revert
-  fired at a symptom to see what happens is a workaround wearing a suit.
+- **The reference is the first move, not the last.** Before any hypothesis about externally-defined behaviour, read the implementation in `../reference`.
+- **Memory is not evidence.** Neither is a ledger row, a hand-off note, a comment, or a subsystem's name. Read the code.
+- **If you cannot explain the mechanism, you have not fixed it.** Record what you measured and hand it on — an open row with a precise diagnosis is a real deliverable; a green tree with a hidden disable is not.
+- **A revert is legitimate only when it is the diagnosis** — you read the change, know why it breaks, and reverting is the repair. A revert fired at a symptom is a workaround wearing a suit.
 
 ## The framing question (HARD RULE — ask it first, every time)
 
-**"Is this how Linux does it?"** Every feature, every fix, every plan starts there —
-before the design, not after the diff. The reference tree is `../reference`; read
-the actual implementation, not your memory of it. It is a checked-out tree — read
-files from it directly, and confirm its version (`head -5 ../reference/Makefile`)
-before quoting anything, so a claim is anchored to a knowable revision.
+**"Is this how Linux does it?"** Every feature, fix, and plan starts there — before the design, not after the diff. The reference tree is `../reference`: a checked-out tree; read its files directly and confirm its version (`head -5 ../reference/Makefile`) before quoting. (`../linux-master` is GONE; a stale `../linux-master.zip` still lying around is NOT a reference — a citation to an unpinned snapshot is not verification.)
 
-**`../linux-master` is GONE and a stale `../linux-master.zip` is still lying around.**
-This line named it until B2245, so a lane that trusted the line searched for
-`*linux*`, found the zip, extracted from it and cited it. That zip predates the
-checked-out tree; the file in question happened to be byte-identical, so the
-conclusion survived — by luck, not by method. A citation to a snapshot nobody
-pinned is not verification. Read `../reference`.
+- **Design.** Find the structure Linux uses and ask why. A differing shape is a decision needing a reason, not an accident found later. Most defects here trace to shapes invented locally — machinery with no caller, a second registry beside the real one.
+- **Fixes.** Check what Linux returns and *where it decides*. A fix at the wrong layer passes its test and leaves the defect.
+- **Plans.** A plan that cannot name the Linux mechanism it mirrors is a plan to invent one. Name it.
+- **Deviations are deliberate and recorded** — ledger row with the reason, pinned by a test so it cannot drift.
+- **Ask it even when the answer seems obvious.** The expensive mistakes all looked obvious in the wrong direction until someone read the reference.
 
-- **Design.** Before writing code, find the structure Linux uses for this job and ask
-  why. If our shape differs, the difference is a decision that needs a reason, not an
-  accident you discovered later. Most defects in this repo trace to a shape invented
-  here — machinery with no caller, a second registry beside the real one, a parser
-  that runs before the table it should consult.
-- **Fixes.** Before patching a symptom, check what Linux returns and *where it decides*.
-  A fix at the wrong layer passes its test and leaves the defect. Several rows in the
-  ledger were closed only after someone asked this and found the blocker was stale, the
-  premise wrong, or the "bug" correct behaviour.
-- **Plans.** A plan that cannot say which Linux mechanism it mirrors is a plan to invent
-  one. Say the mechanism in the plan.
-- **When we deviate, it is deliberate and recorded.** A deviation with a stated reason
-  is engineering; an undocumented one is a bug nobody has found yet. Put it in
-  `scratch/known_issues.md` with the reason, and pin it with a test so it cannot drift.
-- **Asking it is not optional when the answer seems obvious.** The expensive mistakes
-  this session — an EEXIST "fix" that would have broken seven syscalls, a comparator
-  that never compared, a shim that decided how long a request lives — all looked obvious
-  in the wrong direction until someone read the reference.
-
-Repository text still must not name, path-link or quote external implementation files
-(`Semantic verification` below). Tests carry the provenance: encode the verified
-behaviour so the contract is re-checkable without citing another codebase.
+Repository text must not name, path-link, or quote external implementation files (`Semantic verification`). Tests carry the provenance.
 
 ## Discipline (READ BEFORE EDITING)
 
 1. **Spec-before-code** (`docs/02`): subsystem code may not be written while its spec is DRAFT. Charters (`02`,`08`,`09`,`01`,`06`,`07`) gate everything below.
-2. **No cool-off / no soak**: a spec freezes the moment its text is correct. Code merges the moment tests are green and spec-lint is clean. Duration-gated waits and 24h/48h/168h soaks are forbidden discipline-theater. Reject them in PR review.
-3. **No deferrals — there is no v2**: every spec describes the full Linux-equivalent surface. No "rides v2.x", no "deferred to v2", no "subset" framing. If a feature is part of the Linux contract for that subsystem, it is in scope for v1 and gets implemented before the spec freezes. Old `v2-arch-plan.md` and `docs/v2/` directory are dead history.
-   - **Syscalls (HARD RULE):** every syscall is `IMPL` (full Linux semantics) per `docs/15` — build all the Linux syscalls we can so real programs work. **Never** stub/`ENOSYS`/strawman a syscall citing a "tier" or "version" — those labels (`V1/V2/NEVER`) are abolished (`15` R06). The ONLY syscalls that return `ENOSYS` are the 17 `docs/15` OBSOLETE numbers (modern Linux itself ENOSYS's them). If asked for a syscall, implement it fully or say honestly it's not done — never silently stub.
-   - **Kernel = hollow shell (`docs/53`):** `kernel/src/syscalls/` is the ABI shim ONLY — parse/validate/fetch/call-one-work-fn/encode, **zero** work logic. Real work lives in a subsystem work-fn crate (`crates/kernel/<sub>`), in exactly one place — never written directly in the kernel, never duplicated kernel+crate.
-   - **No split source of truth (HARD RULE):** Eliminate any split source of truth. Linux compliance comes first, in both logic and location. Put behavior in the Linux-shaped owner that actually owns it; do not add parallel registries, fallback paths, shadow state, string-key side channels, or compatibility shortcuts that can disagree with the canonical subsystem state.
-4. **AI-density** (`docs/08`): docs and code optimized for AI re-reading. Drop articles, prose intros, restated section titles, redundant doc-comments. Keep frozen invariants, ABI tables, test contracts, OQ at full fidelity.
-5. **MANIFEST authoritative** (`docs/MANIFEST.md`): every spec listed; status matches file's status line.
-6. **Structure contract** (`docs/52`): new layout and ownership changes must follow `52` and update it in the same PR when boundaries change.
-7. **ARM/x86 lockstep** (HARD RULE — phase-exit gate): every phase ships on **both** arches, not just compiles. A phase is not done until `make qemu-arm` AND `make qemu-x86` both reach the same user-visible milestone. **Per-phase exit checklist (mandatory, every phase):**
-   - PR-time CI green on both `build kernel x86_64` AND `build kernel aarch64`
-   - `make qemu-x86` boots through the phase's smoke target (init prints, fork+exec works, etc.)
-   - `make qemu-arm` boots through the SAME smoke target — verified via the qemu MCP (`mcp__qemu__qemu_start arch=aarch64`), not "should work" reasoning
-   - Any aarch64 gap exposed by the work (missing syscall, missing fault classifier, x86-only inline-asm in userspace `.c`, missing toolchain, missing register save/restore, etc.) closes in the SAME PR — never deferred to a later session
-   - Userspace `.c` sources must compile on both arches against the glibc ABI, not raw `syscall` inline asm. Use standard glibc entry points and the repository's GNU-target sysroot.
-   - The ARM toolchain is the system GNU cross compiler (`aarch64-linux-gnu-gcc`) against the Fedora aarch64 sysroot. There is no `tools/fetch-cross.sh` and no vendored cross toolchain. The boot userspace is composed from Fedora RPMs by the sibling `../images` repo — never hand-rolled minimal replacements.
-
-   **No "x86 first, ARM later" anywhere in the phase ladder.** Out-of-phase work belongs in `docs/v2/` per `00§14` rule 5; lockstep gaps go in the same PR or block phase exit.
+2. **No cool-off / no soak**: a spec freezes when its text is correct; code merges when tests are green and spec-lint is clean. Duration-gated waits are discipline-theater — reject in review.
+3. **No deferrals — there is no v2**: every spec describes the full Linux-equivalent surface. No "deferred", no "subset" framing.
+   - **Syscalls (HARD RULE):** every syscall is `IMPL` (full Linux semantics) per `docs/15`. **Never** stub/`ENOSYS`/strawman citing a "tier" (`V1/V2/NEVER` labels abolished, `15` R06). Only the 17 `docs/15` OBSOLETE numbers return `ENOSYS`. Implement fully or say honestly it's not done.
+   - **Kernel = hollow shell (`docs/53`):** `kernel/src/syscalls/` is the ABI shim ONLY — parse/validate/fetch/call-one-work-fn/encode, zero work logic. Real work lives in exactly one subsystem work-fn crate (`crates/kernel/<sub>`).
+   - **No split source of truth (HARD RULE):** behavior lives in the Linux-shaped owner. No parallel registries, fallback paths, shadow state, string-key side channels, or compatibility shortcuts that can disagree with canonical subsystem state.
+4. **AI-density** (`docs/08`): docs and code optimized for AI re-reading. Drop articles, prose intros, restated titles, redundant doc-comments. Keep invariants, ABI tables, test contracts, OQ at full fidelity.
+5. **MANIFEST authoritative** (`docs/MANIFEST.md`): every spec listed; status matches file.
+6. **Structure contract** (`docs/52`): layout/ownership changes follow `52` and update it in the same PR.
+7. **ARM/x86 lockstep (HARD RULE — phase-exit gate):** every phase ships on both arches, not just compiles. Exit checklist: CI green on both kernel builds; `make qemu-x86` AND `make qemu-arm` reach the same smoke target (ARM verified via the qemu MCP, not "should work"); any aarch64 gap exposed closes in the SAME PR. Userspace `.c` compiles on both arches against glibc (no raw `syscall` asm); ARM toolchain is system `aarch64-linux-gnu-gcc` + Fedora sysroot; boot userspace comes from Fedora RPMs via `../images` — never hand-rolled. **No "x86 first, ARM later" anywhere.**
 
 ## Cross-references
 
-Form: `<doc>§<sec>` (e.g., `13§4`, `02§1`, `04§1.1`). Every reference must resolve to a section in the cited doc.
-
-When user says `<doc>§<sec>`, **read that section first** before responding.
+Form: `<doc>§<sec>` (e.g. `13§4`). Every reference must resolve. When user says `<doc>§<sec>`, **read that section first**.
 
 ## Semantic verification (HARD RULE)
 
-Verify externally defined behavior against complete primary reference material before
-claiming errno values, error ordering, capability checks, layouts, or flag masks.
-
-- Never assert compatibility behavior from memory or summaries. Validate the complete
-  implementation privately because ordering and configuration details routinely differ.
-- Repository comments and docs state only the resulting ABI, observable behavior,
-  invariant, or standard section. They must not name, path-link, quote, or cite external
-  implementation source files.
-- Tests are the durable provenance: encode the verified behavior and error ordering so
-  later work can re-check the contract without tying repository text to another codebase.
+Verify externally defined behavior (errno values, error ordering, capability checks, layouts, flag masks) against complete primary reference material before claiming it. Never assert from memory or summaries. Repository comments/docs state only the resulting ABI, observable behavior, invariant, or standard section — never name, path-link, quote, or cite external implementation source files. Tests are the durable provenance: encode verified behavior and error ordering so the contract is re-checkable without citing another codebase.
 
 ## Code style hard rules (`docs/07§5`)
 
-- **NEVER run `cargo fmt` / `rustfmt`.** rustfmt is disabled repo-wide via `rustfmt.toml` (`disable_all_formatting = true`) — the codebase uses a deliberate compact / AI-density style (single-line `if/else`+`for`, aligned columns) that default rustfmt destroys. A stray `cargo fmt` once reformatted 679 files; the guard makes `cargo fmt` (and `--check`) a no-op. Do not delete `rustfmt.toml`, do not hand-run formatters, do not "tidy" with rustfmt.
+- **NEVER run `cargo fmt` / `rustfmt`.** Disabled repo-wide via `rustfmt.toml` (`disable_all_formatting = true`); the compact AI-density style (single-line `if/else`+`for`, aligned columns) is deliberate. Do not delete `rustfmt.toml` or hand-run formatters.
 - `panic = "abort"` every kernel profile.
 - `kassert!(cond, "literal")` only — no `panic!(fmt)`.
 - No `static mut` outside `#[cfg(test)]`.
@@ -132,49 +57,38 @@ claiming errno values, error ordering, capability checks, layouts, or flag masks
 - `// SAFETY: <text ≥30 chars naming fn or state>` on every `unsafe { }`.
 - `# C: <expr>` doc-comment on every `pub fn` in kernel crates.
 - `# Lk:`, `# Ctx:`, `# Sleeps:` markers per `09§6` where applicable.
-- klog macros only accept `&'static str` format strings (compile-time interned).
+- klog macros only accept `&'static str` format strings.
 - Names short within scope (`pfn`,`pa`,`va`,`sb`,`ino`,`tid`) per `09`.
 
 ## File length cap (`docs/08§7`)
 
-- Cutoff: **500 lines** per `.rs` code file. At 500, stop adding implementation to that file and split it into focused child modules/files before continuing work in that area. This is mandatory, not advisory. The parent file remains a manifest, not a place to park excess code.
-- Error cap: **1000 lines** per `.rs` or `.md` file. CI/spec-lint fails above this. Applies to our source in `crates/**`, `kernel/**`, `tools/**`, `docs/**` (excluding `docs/v2/`, `vendor/**`, and `vendors/**`). Imported third-party vendor code is not subject to line caps.
-- Split big files into submodules: Rust `mod foo; foo/{a.rs,b.rs}`; markdown into sister docs cross-referenced via `<doc>§<sec>`.
-- Tests count toward the cap — split `tests.rs` into `tests/<feature>.rs` once it grows.
-- Tests for a module live in that module's `tests/` directory (`tests/<feature>.rs`), not beside production files. Keep the parent module's test declaration as a path-only manifest entry.
-- Parent module files are manifests: keep a short `Module manifest` comment near the top that names each child module and its owned responsibility. The parent coordinates/re-exports; it must not contain implementation logic, tests, long impl blocks, dispatch bodies, policy, backend translation, or helper piles.
+- **500 lines** per `.rs` file: at 500, stop and split into focused child modules before continuing. Mandatory.
+- **1000 lines** error cap per `.rs`/`.md` (CI fails). Applies to `crates/**`, `kernel/**`, `tools/**`, `docs/**`; vendor code exempt.
+- Tests count toward the cap; split `tests.rs` into `tests/<feature>.rs`. Tests live in the module's `tests/` directory, declared path-only from the parent.
+- Parent module files are manifests: short `Module manifest` comment naming each child and its responsibility; coordinate/re-export only — no implementation, tests, dispatch bodies, policy, or helper piles.
 
 ## Crate/module shape rules
 
-- **Crate main files are manifests only.** `lib.rs`, `main.rs`, `mod.rs`, and top-level parent module files declare child modules, re-export the public surface, and carry the short module manifest that says where each functional group lives. All real code lives in focused child files/modules by function or ownership group (`ioctl.rs`, `lookup.rs`, `signals.rs`, `creds.rs`, `irq.rs`, `modeset.rs`, `tests/<feature>.rs`, etc.). These manifest files must not hold subsystem logic, method bodies, dispatch bodies, policy, backend translation, tests, or growing helper piles.
-- **After a module is split, keep it split.** Do not add new logic back into the crate root or parent manifest because it is "small" or convenient. Put new code in the child module that owns that responsibility, or create a new named child module when no current owner fits.
-- Constants are owned by contract, not convenience. UAPI/ABI numbers live in `uapi.rs`; bit flags, mode flags, caps, and feature bits live in `flags.rs` or the owning UAPI module; hardware/bus IDs live in `ids.rs`; limits, alignment, counts, and timeout constants live in `limits.rs`; layout offsets and ABI size helpers live in `layout.rs`.
-- Do not create catch-all `constants.rs` files unless the crate is tiny and has exactly one constant contract. A generic constants file becomes a dumping ground; prefer a name that states ownership (`uapi`, `flags`, `ids`, `limits`, `layout`, `features`).
-- Semantic literals in logic must be named constants at the owning module boundary. Inline literals are only acceptable for mechanically obvious local values (`0`, `1`, tiny array indexes, immediate boolean/count checks). Major/minor numbers, ioctl encodings, permissions, alignment masks, page sizes, feature bits, IDs, timeout values, errno/signal/syscall slots, and protocol values are never inline.
-- Compiler-gated code belongs at module boundaries when more than a tiny local alternative is needed. Prefer `hosted.rs`, `platform.rs`, `arch.rs`, `kernel.rs`, or target-specific child modules selected by `#[cfg] mod ...; pub use ...;` in the parent manifest. Do not scatter `#[cfg(...)]` through unrelated implementation logic.
-- Traits live at subsystem boundaries. Driver-facing traits belong in `driver.rs` or `ops.rs`; internal backend traits belong in `backend.rs`; public traits are re-exported by the parent manifest. Do not define long-lived traits halfway down implementation files.
-- UAPI is not policy. Linux constants, ioctl structs, ioctl numbers, wire structs, and ABI flags live in `uapi.rs`; dispatch, permission checks, state mutation, and backend translation live in focused implementation modules (`ioctl.rs`, `auth.rs`, `modeset.rs`, etc.).
+- **Crate main files are manifests only** (`lib.rs`, `main.rs`, `mod.rs`, top-level parents): declare children, re-export surface, carry the manifest comment. Real code lives in focused child files by function/ownership (`ioctl.rs`, `lookup.rs`, `signals.rs`, …).
+- **After a split, keep it split.** New logic goes to the owning child module, never back into the root "because it's small".
+- Constants owned by contract: UAPI/ABI numbers in `uapi.rs`; flags in `flags.rs` or the owning UAPI module; hardware IDs in `ids.rs`; limits/alignment/timeouts in `limits.rs`; layout offsets in `layout.rs`. No catch-all `constants.rs`.
+- Semantic literals are named constants at the owning boundary. Inline literals only for mechanically obvious local values (`0`, `1`, tiny indexes). Major/minors, ioctl encodings, permissions, masks, page sizes, feature bits, timeouts, errno/signal/syscall slots, protocol values: never inline.
+- Compiler-gated code at module boundaries (`hosted.rs`, `platform.rs`, `arch.rs`, `kernel.rs` selected by `#[cfg] mod ...; pub use ...;`), not `#[cfg]` scattered through logic.
+- Traits at subsystem boundaries (`driver.rs`/`ops.rs` driver-facing, `backend.rs` internal), re-exported by the parent — not defined mid-file.
+- UAPI is not policy: constants/structs/numbers in `uapi.rs`; dispatch, permission checks, state mutation, backend translation in focused implementation modules.
 
 ## Doc style hard rules (`docs/08`)
 
-- Section headers: `## N` (number only) outside charters `00`–`09`.
-- One-line bullets unless second sentence carries an invariant.
-- Tables > lists > sentences. Schemas > prose definitions.
+- Section headers `## N` (number only) outside charters `00`–`09`.
+- One-line bullets unless the second sentence carries an invariant.
+- Tables > lists > sentences. Schemas > prose.
 - Cite by `<doc>§<sec>`; never restate.
-- No "This document defines", "Note that", "In this section we will", "It should be noted", "simply", "really", "actually", "very".
-- No closing summaries.
+- No "This document defines", "Note that", "In this section we will", "It should be noted", "simply", "really", "actually", "very". No closing summaries.
 - Status line: `DRAFT|FROZEN <date>. Dep:<csv>.` at top.
 
-## Forbidden patterns (CI-enforced when spec-lint exists)
+## Forbidden patterns (CI-enforced)
 
-- `static mut` outside test
-- `panic!(fmt)` in kernel
-- `format!()` results into klog macros
-- `dyn HAL` traits in compiled kernel
-- doc-comment that restates the function name
-- `unsafe { ... }` without `// SAFETY:` ≥30 chars
-- Forbidden phrases in docs (per `08§4`)
-- Magic-number errno / signal / flag / syscall-slot literals — use the typed enum (`Errno::Foo as i32`, `Signum::Foo`, `OpenFlags::FOO`, `syscall::nrs::NR_FOO`). Per `07§5`
+- `static mut` outside test; `panic!(fmt)` in kernel; `format!()` into klog macros; `dyn HAL` traits in compiled kernel; doc-comment restating the function name; `unsafe { }` without ≥30-char `// SAFETY:`; forbidden doc phrases (`08§4`); magic-number errno/signal/flag/syscall-slot literals — use the typed enum (`Errno::Foo as i32`, `Signum::Foo`, `OpenFlags::FOO`, `syscall::nrs::NR_FOO`) per `07§5`.
 
 ## Where things live
 
@@ -199,15 +113,13 @@ claiming errno values, error ordering, capability checks, layouts, or flag masks
 | Build+image, CI, debug catalog, tests, acceptance | `39`–`43` |
 | Repo layout + crate ownership boundaries | `52` |
 | Syscall layering (ABI crate / work fns / shim) | `53` |
-| **Assembly + low-level ABI correctness checklist (x86_64 AND aarch64)** | **`54`** ← read BEFORE touching `crates/arch/hal-{x86_64,aarch64}` asm OR signal/syscall paths |
+| **Assembly + low-level ABI checklist (both arches)** | **`54`** ← read BEFORE touching `crates/arch/hal-*` asm OR signal/syscall paths |
 | Wireless: cfg80211, mac80211, nl80211 | `62` |
 | Boot flow Mermaid | `boot-flow.md` |
 
-When user asks about a concept: check this table → read that spec → answer. Don't guess; read.
+When the user asks about a concept: this table → read that spec → answer. Don't guess.
 
-## Quick reference — typed constants (NEVER use bare literals)
-
-Per `07§5`. Replace magic numbers with the named constant at call site:
+## Quick reference — typed constants (NEVER bare literals)
 
 | Concept | Use | NOT |
 |---|---|---|
@@ -218,719 +130,269 @@ Per `07§5`. Replace magic numbers with the named constant at call site:
 | Open flag | `OpenFlags::O_NONBLOCK` | `0o4000` |
 | Poll mask | `vfs::POLL_IN` / `POLL_HUP` | `1` / `0x10` |
 
-Bare integer literals in any of these positions = silent bug bait
-(off-by-one between arches, between Linux uapi versions, etc.).
-
 ## Toolchain (`docs/07`)
 
-- Pinned nightly Rust via `rust-toolchain.toml`.
-- `-Zbuild-std=core,compiler_builtins,alloc` for kernel targets.
-- `rust-lld` linker both arches.
-- Custom JSONs in `targets/` are kernel-only; userspace uses upstream `*-unknown-linux-gnu` targets.
-- GRUB both arches: multiboot2 (x86_64) / EFI-stub arm64 Image under EDK2 or U-Boot `booti` (aarch64).
+Pinned nightly via `rust-toolchain.toml`; `-Zbuild-std=core,compiler_builtins,alloc` for kernel targets; `rust-lld` both arches; `targets/` JSONs kernel-only (userspace uses upstream GNU targets); GRUB multiboot2 (x86_64) / EFI-stub Image (aarch64).
 
 ## CI (`docs/40`)
 
-- PR-time gate: build both arches, hosted unit tests with 10M-op proptests, miri, loom, qemu smoke, bench-vs-history, coverage, clippy, deny, spec-lint.
-- Docker images: `Dockerfile.build`, digest-pinned base, ghcr.io.
-- Runners: GHA hosted (PR).
-- Local QEMU: use the qemu MCP (`mcp__qemu__qemu_start`, `qemu_serial`, `qemu_break`, `qemu_step`, `qemu_regs`, `qemu_mem`, `qemu_backtrace`) to boot + step + inspect during development. Don't claim "needs human-driven QEMU iteration" — drive it directly.
+PR-time gate: both-arch builds, hosted tests with 10M-op proptests, miri, loom, qemu smoke, bench-vs-history, coverage, clippy, deny, spec-lint. GHA hosted runners for PRs; boots stay local (KVM ~1 min vs TCG ~10-15 min). Local QEMU: drive the qemu MCP directly (`mcp__qemu__qemu_start`, `qemu_serial`, `qemu_break`, …) — never claim "needs human-driven QEMU iteration".
 
 ## Don't (common future-session mistakes)
 
-- Don't write subsystem code while its spec is DRAFT. The work is spec-discipline now.
-- Don't add a `dyn` to a HAL trait "just here." Always generic + monomorphized.
-- Don't use `panic!("fmt {}", x)` — only `kassert!(cond, "literal")`.
-- Don't restate spec content in CLAUDE.md or in code comments. Cite `<doc>§<sec>`.
-- Don't add MCP servers without asking. Project intentionally minimal.
-- Don't move docs to `docs/v1/`. Versioning is git tags, not directories.
-- Don't claim work needs human-in-the-loop QEMU testing. Use the qemu MCP directly.
+- Don't write subsystem code while its spec is DRAFT.
+- Don't add `dyn` to a HAL trait "just here" — generic + monomorphized.
+- Don't `panic!("fmt {}", x)` — only `kassert!(cond, "literal")`.
+- Don't restate spec content in CLAUDE.md or comments — cite `<doc>§<sec>`.
+- Don't add MCP servers without asking.
+- Don't move docs to `docs/v1/` — versioning is git tags.
+- Don't claim work needs human-in-the-loop QEMU testing.
 
-## Boot smoke before push (mandatory for kernel changes)
+## Boots (HARD RULES — the wall-clock rules)
 
-Hosted unit tests cannot catch syscall-table / ABI / arch-routing regressions — these only fail once real glibc userspace (systemd, bash, Fedora packages) runs. The cheapest gate is local: boot the kernel under qemu, wait for `oxide login:`, fail-fast if it doesn't appear.
+**NO BOOTS FOR TESTING. A BOOT IS FINAL VERIFICATION ONLY — ONE, AT THE END.** Testing is a harness: a hosted test is milliseconds; a boot is minutes plus a build and serialises against every other lane on the box.
 
-**Boot ONLY what can break the boot (HARD RULE).** A boot is ~60-120 s per arch, serialises against every other lane on the box, and produces contention noise when several run at once. Do NOT boot to "be safe" — a ritual boot on a change that cannot affect the boot costs real time and teaches nobody anything.
-
-**Boot when the change can reach the running kernel:** boot/entry paths, linker scripts, `crates/arch/**`, syscall dispatch or slot files, drivers on the boot path (console, serial, timer, interrupt, block, virtio), init/exec/mount paths, memory management, scheduler, anything altering an ABI a running binary consumes, the image or rootfs contents, `targets/`, `rust-toolchain.toml`, `Cargo.toml`/`Cargo.lock`.
-
-**Do NOT boot for:** docs, `scratch/**` (ledger, matrix, drop files), comments and SAFETY prose, `#[cfg(test)]`-only changes, test-harness edits, spec-lint baselines, tooling that is not on the boot path, or a rebase that brought in only already-merged main. State in the PR body that no boot was run **and why** — an explicit skip with a reason is correct; a silent skip is not, and neither is an unexplained boot.
-
-If you are unsure whether a change is boot-visible, say so and boot once — but that is the exception, not the default.
-
-**Rule:** before `git push` on a branch whose changes are boot-visible per the list above — run `make smoke` (or `make smoke-x86` / `smoke-arm`) and confirm both arches reach the marker.
-
-**A HARNESS BEATS A BOOT — reach for the boot only when nothing else can answer (HARD RULE).** A boot is 1-2 minutes plus a build and serialises against every other lane; a hosted test is milliseconds and can be run fifty times while you think. Before booting to answer a question, ask what the smallest thing that could answer it is:
+- **Never boot to find something out** — not to see what a parameter does, not to A/B, not to "confirm" a gate that already answered. Extract the decision into an ungated function and test it. If the code is `#![cfg(target_os = "oxide-kernel")]`-gated, that is a defect in where the decision lives (`docs/53`, `Phantom tests`) — moving it is usually faster than the boot.
+- **One boot, at the very end, when everything else is green.** About to run a second boot in a lane? You are testing with boots — stop and write the check. Booted >2 times chasing one bug? Build the harness instead. Capture the log so follow-ups re-read it rather than re-boot.
+- **Gates are cheap — run freely:** `cargo test`, `feature-gate`, `matrix-gate`, `hosted-gate`, `stack-gate`, `lint-ratchet`. Exhaust them before the single boot.
 
 | question | answer it with |
 |---|---|
-| does this decision produce the right value? | a hosted test on the ungated decision function |
-| does this errno/ordering match the reference? | a hosted test, with the reference read first |
-| does this option/flag reach the code that acts on it? | extract the wiring decision into an ungated function and test THAT |
-| does the whole thing work against real glibc userspace? | a boot — this is the only row that needs one |
+| does this decision produce the right value? | hosted test on the ungated decision function |
+| does this errno/ordering match the reference? | hosted test, reference read first |
+| does this option/flag reach the code that acts on it? | extract the wiring decision, test THAT |
+| does it work against real glibc userspace? | a boot — the only row that needs one |
 
-If a question cannot be answered hosted because the code is `#![cfg(target_os = "oxide-kernel")]`, that is a defect in where the decision lives, not a reason to boot: move the decision into an ungated module and leave the gated file a shim (`docs/53`, and the phantom-test rule above). Doing that is usually FASTER than the boot you were about to run, and it leaves a check behind that can fail next time.
+**Boot ONLY what can break the boot.** Boot-visible: boot/entry paths, linker scripts, `crates/arch/**`, syscall dispatch/slots, boot-path drivers (console, serial, timer, interrupt, block, virtio), init/exec/mount, mm, sched, ABIs a running binary consumes, image/rootfs, `targets/`, toolchain pins, `Cargo.toml`/`Cargo.lock`. NOT boot-visible: docs, `scratch/**`, comments/SAFETY prose, `#[cfg(test)]`-only, harness edits, lint baselines, off-boot-path tooling, a rebase of already-merged main. State the skip and its reason in the PR body. Unsure = say so and boot once.
 
-Boot as the FINAL gate, once, when the change is otherwise green — never as the dev loop. If you have booted more than twice to chase one bug, stop and build the harness instead.
+**Before push on a boot-visible branch:** `make smoke` (or `smoke-x86`/`smoke-arm`), both arches reach the marker. Pre-push hook enforces (`git config core.hooksPath .githooks`; `SKIP_SMOKE=1` for doc-only).
 
-**NO BOOTS FOR TESTING. A BOOT IS FINAL VERIFICATION ONLY — ONE, AT THE END (HARD RULE).**
-Testing is a harness. Speed is the point: a hosted test is milliseconds, a boot is
-minutes and serialises against every other lane on the box. This rule has been given
-repeatedly and broken repeatedly, so it is written here as an absolute:
-
-- **Never boot to find something out.** Not to see what a parameter does, not to check
-  whether a change works, not to compare before and after, not to "confirm" a gate that
-  already answered. Build the harness — extract the decision into an ungated function
-  and test it. Every time this rule was broken, the harness or the gate was what actually
-  found the defect, and the boots only cost wall-clock.
-- **One boot, at the very end, when everything else is green.** Not one per arch per
-  question. If you are about to run a second boot in a lane, you are testing with boots
-  — stop and write the check instead.
-- **A gate is not a boot and gates are cheap: run those freely.** `cargo test`,
-  `feature-gate`, `matrix-gate`, `hosted-gate`, `stack-gate`, `lint-ratchet`. Exhaust
-  them before the single final boot. They catch more, faster, and leave something behind
-  that can fail next time.
-- **"But this question is genuinely about a real boot" is the trap.** Even then it is
-  ONE boot that answers it, at the end, and its output is captured so the answer is
-  re-readable without booting again. If you find yourself booting to answer a follow-up
-  about the boot you just ran, you needed a captured log, not another boot.
-
-Violating this wastes the user's wall-clock, which is the scarcest thing in this project.
-There is no "to be safe" boot and no ritual boot.
-
-**MINIMAL boot time when a boot IS required (HARD RULE).** A boot runs only as long as
-the question needs, never to completion by default. Before launching, name the marker
-that answers the question; cut the boot the moment the marker appears (or its absence
-is decided) — fail-fast grep on the serial log, kill the guest at the marker.
-
-| question | marker | ~time |
-|---|---|---|
-| early boot / journald start / kernel init | the init or `[FAILED]` line | 15-30s |
-| login, service startup, syscall surface | `basic.target` / debug-shell answer | ~90s |
-| desktop / greeter / GNOME session | `graphical.target`+ | full boot |
-
-Never block-wait on a full `make smoke` when a shorter targeted run answers the
-question; background long runs and keep working. A boot left running past its marker
-is the same waste as a boot that should never have started.
-
-**Run the two arches CONCURRENTLY, never one after the other (HARD RULE).** `make smoke` already does: the builds are prerequisites and only the boots overlap, and the two boots contend for nothing — separate build namespaces, separate root images, separate qemu instances. Running them back to back doubles the wall clock of every lockstep check for zero information. If you invoke the scripts by hand, background both and `wait` on both, collecting each exit status so one run reports both answers:
-
-```
-./tools/boot-smoke.sh x86 & p1=$!; ./tools/boot-smoke.sh arm & p2=$!
-rc=0; wait $p1 || rc=1; wait $p2 || rc=1; exit $rc
-```
-
-The same applies to any pair of independent long-running checks in a lane — a build, a boot and a hosted suite that do not read each other's output should overlap. Serial execution of independent work is the single largest avoidable cost in a session.
-
-**Every parallel job must `cd` to the worktree ITSELF (HARD RULE).** `&` binds looser than `&&`, so
-
-```
-cd <worktree> && (gate) & (smoke) & wait      # WRONG
-```
-
-parses as `{ cd <worktree> && gate } &` followed by `{ smoke } &`: the second job never sees the `cd` and runs in the shell's original directory — usually the MAIN TREE. That produced a green `make feature-gate` on a branch whose kernel build was broken, because the gate type-checked `main`, where the offending call site does not exist. Write it so each job is self-contained:
-
-```
-( (cd <worktree> && gate) & (cd <worktree> && smoke) & wait )
-```
-
-and before believing a green gate, confirm its log names YOUR worktree — the `Checking <crate> (/path/...)` lines carry the path. This is the same class as the boot-smoke rule above: trust the run you actually launched, in the tree you meant.
-
-A pre-push hook at `.githooks/pre-push` enforces this automatically. Install once per clone with `git config core.hooksPath .githooks`. Bypass for known-safe doc-only pushes with `SKIP_SMOKE=1 git push`.
-
-Hosted runners are not used for this — TCG boots are ~10-15 min/arch and burn GHA minutes. The pre-push hook runs on the dev box where KVM keeps boot under a minute.
-
-**Trust the run's exit status, NEVER a `/tmp` log you found by timestamp (HARD RULE).** `tools/boot-smoke.sh` reuses its `/tmp/oxide-boot-smoke-<arch>-XXXXXX.log` names across concurrent runs, so with several lanes active one file can hold another worktree's cargo build output *and* your boot, interleaved. Reading such a log and seeing no panic means "that worktree hadn't booted yet", not "fixed". Use the `boot-smoke: PASS/FAIL … (attempt N)` line and the exit code from **your own** invocation. If you must read a log, first confirm it contains kernel output (`grep -c '^\[[0-9]*\.'`) and that its build lines name *your* worktree. This produced a retracted before/after claim on the B1442 boot regression.
-
-**Scratch artifacts are lane-prefixed (HARD RULE).** Any durable scratchpad,
-temporary evidence file, or retained command log must include the owning lane's
-branch slug in its filename (for example, `D592-...-serial.log`). Never use a
-generic filename shared by concurrent lanes; the worktree and the filename
-must identify the owner before another lane reads or replaces the artifact.
-
-**Run `make smoke-*` with the sandbox DISABLED (HARD RULE).** Inside the Bash sandbox `boot-smoke.sh` cannot reap its own QEMU, so the QEMU outlives the `make` invocation and holds a lock on `target/builds/<ns>/root-<arch>.img`. Every later attempt then dies with `Is another process using the image [...]` and `make: *** [smoke-x86] Error 1`, producing an attempt log with **zero kernel output** — which reads exactly like a boot failure and is not one. Pass `dangerouslyDisableSandbox: true` for the smoke, and before believing any red result confirm the log has kernel lines (`grep -c '^\[[0-9]'`) and check `lsof <build>/root-<arch>.img` for a live QEMU holding it. Three consecutive "failures" on the B1581 lane were this, not the kernel.
-
-**Corollaries for a shared box** (several agent lanes at once):
-- Concurrent boots contend and produce false failures. A lane reporting "fails 3/3" on a box running 6+ smokes has measured contention, not the kernel.
-- Check `ps -C qemu-system-x86_64,qemu-system-aarch64` is empty before a boot you intend to trust; a QEMU alive far past a normal boot (~110s ARM / ~160s x86) is wedged and fouls the ports for everyone. Do **not** use `pgrep -fc qemu-system` — it matches the waiting shell's own command line and can never reach zero.
-- The Bash sandbox usually cannot reap them (`dangerouslyDisableSandbox` sometimes can) — if they accumulate, ask the user to `pkill -9 qemu-system`, and warn sibling lanes afterwards so nobody misattributes the killed boot to their own code.
+**Mechanics:**
+- **Minimal boot time:** name the marker that answers the question before launching; kill at the marker. Early boot/init ≈15-30s; services/`basic.target` ≈90s; desktop = full boot. Never block-wait on a full smoke when a shorter run answers.
+- **Run the two arches CONCURRENTLY** (`make smoke` already does). By hand: background both, `wait` on both, collect both exit codes. Same for any independent long-running pair — serial execution of independent work is the largest avoidable session cost.
+- **Every parallel job must `cd` to the worktree ITSELF:** `( (cd <wt> && gate) & (cd <wt> && smoke) & wait )`. `cd <wt> && (a) & (b) &` runs `b` in the original directory — usually the MAIN TREE — and once green-checked `main` instead of the branch. Confirm a gate's log names YOUR worktree.
+- **Trust your invocation's exit status, never a `/tmp` log found by timestamp.** `boot-smoke.sh` log names collide across concurrent runs. Use the `boot-smoke: PASS/FAIL` line + exit code from your own run; before reading any log, confirm it has kernel lines (`grep -c '^\[[0-9]'`) and your worktree's build paths.
+- **Run smokes with the sandbox DISABLED** (`dangerouslyDisableSandbox: true`): sandboxed `boot-smoke.sh` cannot reap its QEMU, which then holds the image lock — later attempts die with "Is another process using the image", zero kernel output, indistinguishable from a boot failure. Before believing red: kernel lines in log + `lsof` the image for a live QEMU.
+- **Scratch artifacts are lane-prefixed** (branch slug in filename); generic names collide across lanes.
+- **Shared box:** concurrent boots contend — "fails 3/3" during 6 live smokes measured contention, not the kernel. Check `ps -C qemu-system-x86_64,qemu-system-aarch64` empty before a boot you trust (not `pgrep -fc`, which matches itself). Kill wedged QEMU **by PID** with `dangerouslyDisableSandbox` — never blanket `pkill`; never launch background boot retry-loops. `Z` (defunct) QEMU is harmless.
 
 ## Conflict resolution is where coverage dies (HARD RULE)
 
-Two lanes splitting one file for the size cap along different axes produce a conflict in which the STALE side looks perfectly plausible. B1641 and B1649 both split `procfs/ctl.rs`; B1649's copy of the `net` subtree predated B1641 making `rmem_default`/`wmem_default` live and adding `tcp_rmem`/`tcp_wmem`, so a line-by-line resolution would have silently reverted two leaves to dead `Const` and deleted two more — with nothing red.
+Two lanes splitting one file along different axes produce a conflict where the STALE side looks plausible (a line-by-line resolution once nearly reverted live sysctl leaves with nothing red).
 
-- **Take the other side wholesale, then re-apply your own delta.** Never merge such a file hunk-by-hunk.
-- **Verify by MULTISET count, not name set.** A set dedupes the very thing you are looking for: a set-based "nothing dropped" check reported clean while 8 tests were duplicated, 7 of the pairs with *different* bodies. Count declarations on both sides and after; none dropped, none duplicated.
-- Diff hook *bodies* across both sides. One resolution nearly re-introduced a bug `main` had just fixed (`set_ptrace_scope` losing its `EINVAL`).
+- **Take the other side wholesale, then re-apply your own delta.** Never hunk-by-hunk on such files.
+- **Verify by MULTISET count, not name set** — a set dedupes exactly what you're looking for. Count declarations both sides and after: none dropped, none duplicated.
+- Diff hook *bodies* across both sides — one resolution nearly re-introduced a just-fixed bug.
 
 ## `cargo check -p <crate>` IS A NULL GATE ON TARGET-GATED CRATES (HARD RULE)
 
-**A per-crate `cargo check` compiles NONE of a file that carries
-`#![cfg(target_os = "oxide-kernel")]`.** It is not a weak check on those files,
-it is no check at all — and it returns in two seconds, which is exactly what
-makes it feel trustworthy.
+A per-crate `cargo check` compiles NONE of a file carrying `#![cfg(target_os = "oxide-kernel")]` — no check at all, returning green in 2s (measured with a planted type error: `cargo check -p syscalls` 0 errors; `make feature-gate-x86` correct file+line). About a third of `syscalls` is gated; so is `procfs/ctl.rs` and any kernel-only code.
 
-Measured, with a positive control rather than asserted. A blatant
-`let _: u32 = "THIS IS NOT A u32";` inside `syscalls/src/fsmount_common/registry.rs`:
-
-| command | result |
-|---|---|
-| `cargo check -p syscalls` | **0 errors, 2.0s** |
-| `make feature-gate-x86` | `error[E0308]`, correct file and line |
-
-**Size of the blind spot: 354 of 871 files in `syscalls` carry the gate —
-34,557 of 106,266 lines, about a third of the crate.** It is not
-syscalls-specific: `procfs/src/ctl.rs` has the identical gate, and so does any
-crate holding kernel-only code. A real defect reached a pushed commit this way
-(a filesystem's quota ops installed against the wrong filesystem's type).
-
-- **Touching a target-gated file? The inner loop is**
-  `cargo run --quiet -p xtask -- kernel --arch x86_64 --check` — ~4s warm,
-  ~30s after a core crate changes. Run `--arch aarch64` too before reporting.
-- **`make feature-gate` remains the superset** — it also compiles the
-  `#[cfg(feature = "debug-*")]` blocks — and is what a lane reports against.
-- **Never report "cargo check is clean" as evidence for a gated file.** Say
-  which command you ran. A green `cargo check` on `registry.rs`, `ctl.rs`, the
-  syscall slot files or `kernel_body.rs` means nothing was compiled.
-- This is the same family as `Phantom tests`: there, a `#[cfg(test)]` block
-  inside a gated file silently compiles out; here, the whole file does. Both
-  produce a green result from an empty run.
+- Touching a target-gated file? Inner loop: `cargo run --quiet -p xtask -- kernel --arch x86_64 --check` (~4s warm); run `--arch aarch64` too before reporting.
+- `make feature-gate` is the superset (also compiles `debug-*` blocks) and is what a lane reports against.
+- Never report "cargo check is clean" as evidence for a gated file — say which command you ran.
 
 ## Verification must be able to fail (HARD RULE)
 
-A green check that does not exercise what it claims is worse than no check — it converts an unknown into a false assurance. Confirmed instances: `procfs/ctl.rs` is target-gated so `cargo check` compiled none of it (the break appeared only in the kernel build); a set-based duplicate check that structurally could not detect duplicates; a whole gate set that compiled no feature-gated code, so a branch that did not build passed everything.
-
-**Require a positive control.** Reinstate the defect (or break the behaviour) and confirm the check goes RED, then restore and confirm GREEN. Report both. This applies to new tests, new gates, and any claim that an existing check covers a class.
+A green check that does not exercise what it claims converts an unknown into false assurance (confirmed: target-gated files cargo-check "passed" unbuilt; a set-based dup check structurally unable to find dups; a gate set compiling no feature-gated code). **Require a positive control:** plant the defect, confirm RED; restore, confirm GREEN; report both. Applies to new tests, new gates, and any coverage claim.
 
 ## Never state a conclusion a proxy cannot support (HARD RULE)
 
-**A timestamp, a count, an absence, or a single sample is evidence ABOUT the thing.
-It is not the thing.** Check the thing before saying what is true of it. This has
-cost real time repeatedly, always the same shape — one indirect signal, one confident
-sentence, and a user correcting a claim that was never checked:
-
-- **A file mtime is not a build's provenance.** An artifact's date was read as "this
-  boot ran a six-day-old kernel" and stated as fact. It was wrong, and it sent the
-  next twenty minutes chasing a stale-artifact theory instead of the bug.
-- **A grep returning zero is not absence.** `net/src/unix/` does not exist, so a grep
-  of it returned nothing and a fully-implemented feature was called missing across
-  three matrix rows. Separately, `sock_extended_err` greps to nothing while the record
-  is hand-rolled inside a target-gated file.
-- **One boot is not a rate.** A "not a regression" verdict rested on a single faulting
-  baseline boot, which turned out to be the only boot of ten that logged a watchdog
-  soft-lockup, on a host whose swap the harness itself had exhausted.
-- **A ledger row is not the code.** Roughly two-thirds of specific claimed gaps proved
-  already closed; several were wrong about the reference contract itself.
-
-**The rule.** Before asserting X, ask what would be true if X were false, and check
-THAT. If the check is cheap, run it — reading the file beats reading its date, running
-the binary beats reading its path, one hosted test beats three boots. If the check is
-expensive, say what you actually observed and what it does and does not establish:
-"the artifact is dated the 2nd" is a fact; "the boot ran a stale kernel" is a claim
-that needs the boot's own output.
-
-**Say "I observed A, which suggests B" — never "B", when you only have A.** The user
-can act on a hedged observation. They cannot act on a confident wrong conclusion, and
-correcting one costs more than the check would have.
+A timestamp, a count, an absence, or a single sample is evidence ABOUT the thing, not the thing. Repeat offenders: mtime read as build provenance (wrong); a grep of a nonexistent path read as a missing feature; one boot read as a rate; a ledger row read as the code (~two-thirds of claimed gaps were already closed). Before asserting X, ask what would be true if X were false and check THAT — reading the file beats reading its date; one hosted test beats three boots. If the check is expensive: **say "I observed A, which suggests B" — never "B"** when you only have A.
 
 ## Re-verify a claimed gap before implementing it (HARD RULE)
 
-**A recorded gap is a hypothesis, not a fact.** Ledger and matrix text goes stale in
-the pessimistic direction: it accumulates what was missing when someone last looked and
-is rarely revisited when the gap closes. Measured over one campaign across the syscall
-matrix, roughly **two-thirds of specific claimed gaps were already closed**. Implementing
-one of those wastes the lane and, worse, "confirms" a fix that was already there.
+A recorded gap is a hypothesis. Ledger/matrix text goes stale pessimistically; measured on one campaign, ~two-thirds of claimed gaps were already closed. Read the current code, then the reference, then implement. Correcting a stale claim is worth as much as an implementation — report either way.
 
-Before writing code for any recorded gap: read the current code, then the reference,
-*then* implement. **Correcting a stale claim is worth as much as an implementation** —
-report it either way.
-
-**A grep that returns zero is not proof of absence.** Every false negative below cost a
-lane or a wrong conclusion:
-
-- **Wrong path.** `net/src/unix/` does not exist; the subsystem is `net/src/unix_sock/`.
-  A grep of a nonexistent directory returns zero and reads exactly like a missing feature.
-  Three matrix rows carried "AF_UNIX MSG_OOB not implemented" from this.
-- **Name-only miss.** `sock_extended_err` greps to nothing while the record is hand-rolled
-  inside a target-gated slot. The ABI existed; only the name did not.
-- **Gated from the searcher's build.** Behaviour compiled only into the kernel target, or
-  only into a *downstream* crate's build, is invisible to a hosted grep and to the owning
-  crate's own tests (see the two rules above and below).
-
-Grep for the behaviour and its call sites, not for one identifier, and confirm the path
-exists before trusting a zero.
-
-**"Remaining: coverage, not behaviour" is where live defects hide.** Three security-relevant
-bugs were found under exactly that phrasing: `accept` destroying an established peer
-connection to report a local descriptor limit; `pidfd_getfd` taking no read side on the
-exec-update lock, so a racing `execve` hands out a descriptor from a just-setuid process;
-and a Landlock rule on a pipe/socket/anon-inode stored where it could never match, so the
-sandbox appeared to grant an access it did not. When a row says the only gap is evidence,
-that usually means nobody has looked at the behaviour recently.
-
-**A wrong justification is worse than an open gap.** One row justified refusing four
-commands by claiming parity with a reference built without the relevant configs — both
-target arches select them upstream, so it was a divergence recorded as compliance. Check
-the *reason* a row gives, not just its status.
+- **A zero grep is not absence:** wrong path (`net/src/unix/` vs `net/src/unix_sock/`), name-only miss (hand-rolled ABI record), or behaviour gated out of your build. Grep for behaviour and call sites; confirm the path exists before trusting a zero.
+- **"Remaining: coverage, not behaviour" is where live defects hide** — three security bugs were found under exactly that phrasing. It usually means nobody looked recently.
+- **A wrong justification is worse than an open gap** — check the *reason* a row gives, not just its status (one row recorded a divergence as compliance by citing a reference built without the relevant configs).
 
 ## A hard row never blocks the queue (HARD RULE)
 
-**One stubborn row must never stall every other row.** There is a schedule, and
-throughput across the ledger beats closing any single item.
-
-- **Two honest attempts is the signal.** After that, stop attacking it. Write the
-  row up with what you MEASURED — the numbers, what was tried, what was
-  disproved, which premises turned out false — and pick a different row,
-  preferably in a different subsystem.
-- **A row left open with a precise diagnosis is a good outcome.** A stalled queue
-  is not. The next lane starting from "these two approaches are dead ends, here
-  is the evidence" is worth more than a third failed attempt tonight.
-- **Never report a blockage as a reason to stop working.** Record it and move.
-  Announcing "I stopped rather than continue" while dozens of actionable rows sit
-  untouched is the failure this rule exists to prevent.
-- This does NOT license giving up early, silently narrowing scope, or leaving a
-  regression in the tree. Revert failed attempts, keep the tree green, and record
-  the negative results — those are first-class deliverables (`Known issues`).
-
-Learned the expensive way: the aarch64 stack-ceiling row consumed most of one
-session across three approaches, two of which were measured regressions and one
-of which rested on a premise that proved false, while the rest of the ledger went
-untouched.
+Throughput across the ledger beats closing any single item. **Two honest attempts is the signal**: then write up what you MEASURED (numbers, dead ends, disproved premises), pick a different row, preferably another subsystem. An open row with a precise diagnosis is a good outcome; a stalled queue is not. Never report a blockage as a reason to stop working. This does NOT license giving up early or leaving a regression — revert failed attempts, keep the tree green, file the negative results.
 
 ## Out-of-lane work gets a lane, not a filed row (HARD RULE)
 
-A lane that finds a real fix outside its file ownership **must not stop at filing it**.
-Filing is how a backlog grows: "named but unfinished" accumulated dozens of rows across
-one campaign, every one of them a fix somebody had already diagnosed and nobody owned.
-
-- **The finder reports the boundary; the coordinator spawns a lane for it immediately.**
-  Not "later", not "a follow-up" — the item is understood *now*, while the diagnosis is
-  fresh, and that is the cheapest it will ever be to fix.
-- **Never route around a boundary with a duplicate.** Reaching into another lane's files,
-  or mirroring a field so you do not have to, is the split source of truth this project
-  forbids. Stop and report — that is correct behaviour, and the report is what the new
-  lane starts from.
-- **Blocked-on-a-sibling is a scheduling fact, not a scope reduction.** When the sibling
-  merges, the blocked item gets its lane. A row does not close because the work moved to
-  someone else's queue.
-- **Supporting work is in scope, not a reason to stop.** If the fix needs more command-line
-  parsing, a harness change, a probe, a missing test fixture, a `make` target, or a vendored
-  toolchain fetched — build it. Four separate lanes were blocked by harness defects
-  (a liveness fallback that made probe assertions never run; an all-or-nothing field guard
-  that silently discarded a declared identity; an arch-independent artifact path where one
-  build truncated the binary another was executing). Each was fixed by the lane that hit it,
-  and each fix outlived the row it unblocked.
+A lane that finds a real fix outside its file ownership must not stop at filing it — the finder reports the boundary; the coordinator spawns a lane NOW, while the diagnosis is fresh. Never route around a boundary with a duplicate (that is the forbidden split source of truth). Blocked-on-a-sibling is a scheduling fact, not a scope reduction. Supporting work (harness fixes, probes, fixtures, make targets) is in scope for the lane that hits it — four lanes were unblocked exactly that way.
 
 ## Phantom tests: kernel-gated files cannot be tested (HARD RULE)
 
-`crates/kernel/syscalls/src/kernel_body.rs` is `#[cfg(target_os = "oxide-kernel")]`, and every `#[path = "NNN_name.rs"] pub mod …` it declares inherits that gate. The same applies to any file carrying `#![cfg(target_os = "oxide-kernel")]` (`misc.rs`, the slot files, most of `sched`'s syscall entry points).
+Any file carrying `#![cfg(target_os = "oxide-kernel")]` (and every module a gated `kernel_body.rs` declares) compiles out of `cargo test` entirely — a `#[cfg(test)]` block there is never built, and `cargo test` still says "ok". **Therefore:** decision logic — errno ordering, flag validation, permission ladders, ABI layout — lives in ungated modules; the slot file stays a thin shim (`docs/53`). Working examples: `syscalls/src/pkey.rs`, `lsm.rs`, `obsolete.rs`, `sched_policy.rs`, `sched/src/cred/caps.rs`. **Verify tests actually ran:** `0 passed; N filtered out` means never compiled; the count must go UP when you add a test.
 
-A `#[cfg(test)] mod tests` block inside such a file **compiles out entirely**. It is not skipped and not reported — `cargo test` says "ok" having built none of it. `314_sched_setattr.rs` shipped such a block that has never executed once; four separate lanes wrote tests into gated files this way before noticing.
+## How to act on big/cross-subsystem changes (HARD RULE)
 
-**Therefore:** put decision logic — errno ordering, flag validation, permission ladders, ABI layout choices — in a module with **no** target gate, and keep the slot file a thin shim that parses/validates/calls/encodes (`docs/53`). Working examples: `syscalls/src/pkey.rs`, `syscalls/src/lsm.rs`, `syscalls/src/obsolete.rs`, `syscalls/src/sched_policy.rs`, `sched/src/cred/caps.rs`.
+1. **Verify left — boot is the final gate, not the dev loop.** Build a hosted `cargo test` harness driving real code against a real fixture; iterate there; boot once at the end.
+2. **Foundation before wiring.** If the plan replaces a fragmented structure, do that first so the new primitive is THE path — not a legacy-first fallback bolt-on you'll unwind.
+3. **Audit constraints up front, in ONE pass.** Enumerate which handler each glibc wrapper invokes and backend capabilities before touching syscalls; read glibc/UAPI/dispatch once, not one boot at a time.
+4. **Boot-harness hygiene:** warm-build the debug kernel once; exclusive boots (kill stale qemu, port 2222 free); dev shell runs `set -e` — guard capture chains with `|| true`.
+5. **When thrashing, fix the loop, not the repetition.** >2-3 boots on one bug = build the harness or add a trace. Surface half-built state honestly.
 
-**Verify your tests actually ran.** `cargo test -p <crate> <filter>` printing `0 passed; N filtered out` means your module was never compiled, not that the filter missed. Check the count goes UP when you add a test.
+## Lessons learned (boot campaigns — HARD RULES)
 
-## How to act on big/cross-subsystem changes (HARD RULE — learned the hard way)
-
-When a change spans subsystems, needs many boot-test cycles, or sits on a structure a later stage will replace, follow these or you will burn hours and ship half-built bolt-ons:
-
-1. **Verify left — QEMU boot is the final gate, NOT the dev loop.** Before wiring a subsystem, build a **hosted `cargo test` harness that drives the real code against a real fixture** (e.g. drive `vfs::path_lookup` over an ext4 image via the global mount; assert resolution/symlink/ELOOP). Milliseconds, no boot, no port, no rebuild. Iterate there; boot once at the end for lockstep. A full `make qemu-x86` boot as the inner loop = wasted hours. The qemu MCP session (one warm VM, breakpoint+inspect) beats repeated cold boots when you must boot.
-
-2. **Foundation before wiring — never build on sand.** If the plan has a unification/refactor stage that replaces a fragmented structure (e.g. unified dentry-keyed mount tree replacing string-table + devfs-registry), do it **before** migrating callers, so the new primitive is THE path used uniformly — not a `legacy-first + fallback` bolt-on you'll unwind. Reorder stages to put the foundation first. A bolt-on on top of a doomed structure is the "minimal/v1-subset" the project forbids (`docs/02`, Discipline rule 3).
-
-3. **Audit constraints up front, in ONE pass — don't discover them one boot at a time.** Before touching syscalls, enumerate which kernel handler each glibc wrapper invokes (including architecture-specific fallback paths), and the real capabilities of the backends you depend on. Read glibc, Linux UAPI, and the dispatch table once; don't reverse-engineer routing by trial boot.
-
-4. **Boot-harness hygiene (the thrash sources):** warm-build the debug kernel once before iterating (cold debug-boot rebuild ≈ 5 min); ensure **exclusive** boots — kill stale `qemu-system` first and confirm port 2222 free (overlapping QEMUs from prior runs cause `Could not set up host forwarding` failures); the dev shell runs `set -e`, so `cmd > file; echo >> file` chains **lose the capture when `cmd` exits non-zero** — guard with `|| true` or split the commands.
-
-5. **When stuck thrashing: stop and fix the loop, don't repeat it.** If you've booted >2-3 times to chase one bug, the loop is the problem — build the hosted harness or add a targeted trace, rather than re-running the slow path. Surface the half-built state honestly instead of pushing a compromise.
-
-## Lessons learned (boot-to-GNOME campaign — HARD RULES, learned the expensive way)
-
-These cost real hours. Violating them produces false conclusions and wasted boots.
-
-1. **`cargo run -p xtask -- kernel` BUILDS but does NOT export to `target/artifacts`.** The export is a separate `cargo run -p xtask -- artifacts --arch <a>` step. imagectl / `make boot` boot `target/artifacts/<arch>/kernel.elf`. Building with bare `xtask kernel` then `make boot` boots a **STALE** kernel — silently (you "verify a fix" against an old binary and see a bug that's already fixed, or vice-versa). ALWAYS build boots with `make kernel boot PROFILE=live-gnome ARCH=x86_64` (= `xtask kernel` + `xtask artifacts` + ISO). Before trusting any boot, confirm `ls -la target/artifacts/<arch>/kernel.elf` mtime is fresh. Tell-tale: a "release" boot showing debug-only klog traces (e.g. `[B288 dgram]`) means the artifacts are a stale debug kernel.
-
-2. **imagectl reads the MAIN tree's `../kernel/target/artifacts`, not a worktree.** `KERNEL_DIR=<worktree>` does not change which kernel boots. Boot-verify centrally in the main tree (on the integrated branch); subagents do code + hosted tests in worktrees and must `md5`-copy their kernel into `../kernel/target/artifacts` if they need to boot it.
-
-3. **Single boots LIE about intermittent bugs.** An intermittent SEGV/wedge that fires ~half the time will "reproduce" or "vanish" on any one boot, so a one-boot-each A/B falsely attributes it to whatever you changed. We reverted a good branch on a single-boot false-positive. Measure intermittent failures over **N sequential boots** (report clean/total) before attributing, reverting, or declaring fixed. A causality test (hosted, deterministic) beats any boot count.
-
-4. **When a boot result contradicts strong evidence, suspect the MEASUREMENT first, not the conclusion.** An agent's 3/3 clean boots + a failing→passing causality test outweigh one local SEGV — which turned out to be a stale-artifacts boot (lesson 1). Investigate the harness before re-opening a closed fix.
-
-5. **Boot-verify after EVERY merge — hosted tests cannot catch runtime/ABI/integration bugs.** Two fixes that passed their full hosted gate broke the actual boot (an inode `fsid` that's a struct field instead of a dynamic call; a sysfs change that made a userspace process busy-spin). Only a real ISO boot exposes these. Pair it with: verify **both arches build + `cargo test` 0-failed BEFORE any push** (a rushed merge once broke MS_REC + compile). The "main is always known-good" invariant is what makes a bad merge a fast `git revert`, not a debugging session.
-
-6. **Disprove-don't-hack, with evidence.** The hardest bugs were mis-framed for multiple sessions (the COW corruption chased as a "refcount under-count" when the invariant harness was green all along — the real bug was `MAP_SHARED|ANON` COW-split on fork). An agent that returns "I disproved hypothesis X, here's the evidence, here's the narrowed suspect" is worth more than one that ships a plausible patch. Never re-enable a previously-reverted hack blindly; find the correct mechanism (e.g. a real shmem backing, not in-place writable COW).
-
-7. **Reap your own stale QEMU — you can.** `kill -9 <pid>` works with `dangerouslyDisableSandbox: true` (the sandboxed shell cannot, which is where the old "cannot kill" note came from). Find the offender with `ps -C qemu-system-x86_64,qemu-system-aarch64 -o pid=,etimes=,args=` and kill **by PID**, never a blanket `pkill qemu-system` — sibling lanes boot on this box and a blanket kill destroys their runs. A killed QEMU that shows `Z` (defunct) is already harmless: it holds no port and no image lock, and disappears when its parent is reaped. Do not ask the user to do this. So **never launch background boot retry-loops** — they spawn `qemu-system` you cannot reap, which then foul every subsequent boot (port/resource contention → GRUB-hang). Run single or strictly-sequential boots; if stale qemu accumulate, ask the user to `pkill -9 qemu-system`.
-
-8. **A flaky ~8-line "boot" is a GRUB hang, not a result.** ~half of cold boots stall at GRUB with no kernel output. An 8-line log proves nothing; a real boot is >2000 lines. Re-run once.
-
-9. **A REFCOUNTED kernel RAM frame shared into userspace MUST map as `VmaBacking::KernelFrame`, NEVER `PhysRange`.** `PhysRange` (`map_phys_range`, `remap_pfn_range` semantics) is for UNREFCOUNTED device memory (`/dev/fbN`, scanout): it installs the user PTE with "no PMM frame, no copy, **no refcount**" — it does not `inc_ref` the frame or bump its mapcount, so the mapping is invisible to the frame's lifetime accounting. If you back a real refcounted RAM page (`alloc_object_frame`) with `PhysRange`, the owner dropping its ref (e.g. closing the fd) frees the page **while userspace still maps it** — a free-while-mapped UAF: kalloc recycles the freed frame into a heap arena and the still-live user PTE's writes corrupt the kernel heap with *incidental* values (whatever userspace writes), crashing a random, unrelated victim (`Dentry`, `HoleHdr`, a registry `Weak`) at a random later time — the exact "non-deterministic wild write, unrelated victim" shape. `KernelFrame` (`map_kernel_frame`) `inc_ref`s on fault and the AS-teardown/`munmap` path `dec_ref`s, so the page is freed only once BOTH the owner drops its ref AND every mapping is gone (Linux `vm_file`-reference semantics). Found the hard way: io_uring mapped its refcounted ring page as `PhysRange` (B1342). **Audit every `glue_mmap(..., phys_base=Some(pa), ...)` / `PhysRange` site: is `pa` device MMIO (OK) or refcounted RAM (must be `kframe`/`KernelFrame`)?** Corollary: `map_phys_range`'s "no refcount" also defeats `release_frame_on_zero`'s never-free-a-mapped-page guard (mapcount stays 0), and the `debug-cow` `[COW-LEAK]` free-while-mapped detector is the tool that catches this class.
-
-10. **The buddy allocator ZEROS every page on alloc (`buddy/api.rs`), which wipes write-while-free poison before any downstream check runs.** The `debug-cow`/`debug-watchdog` `0xCC`/`0xAA` poison-on-free + write-while-free detectors in `frame_alloc.rs`/`contig.rs` are therefore **defeated for the page body** — they run *after* the buddy zeroed it, so they only ever see zeros. (Also: `mm-pmm` has **no** `debug-watchdog` feature declared, so those `#[cfg(feature="debug-watchdog")]` blocks are phantom dead code — an `unexpected_cfgs` warning, silently compiled out.) `verify_poison` only covers the 16-byte free-list header, not the body. To actually catch a body write-while-free you must check **inside `alloc_inner`, before the zero loop** — the one point the evidence survives. Don't trust "the poison detector didn't fire" as proof of no write-while-free until you've confirmed the detector runs before the zeroing.
-
-11. **The ~90%-boot heap corruptor is a CPU stale-KERNEL-pointer write into the STATIC kalloc heap — device DMA, userspace double-map, and buddy overlap are all RULED OUT (proven, not theorized).** Classify the victim before theorizing: enable `[KALLOC] corruption-probe` on the fast `debug-dealloc-diag` profile (C202 wired it there; heappoison hides the bug) — it resolves the corrupt free-list node's PA and reports its struct-page (`refcount`/`mapcount`/MANAGED). RESULT across boots: the corrupt nodes are consistently in the **static heap** (`ffffffff81xxxxxx`, the 64 MiB `STATIC_HEAP` BSS in `kalloc/lib.rs`), and probe as **`refcount=0 mapcount=0, not-pmm-managed (reserved kernel-image frame, never seeded into the buddy)`**. That trio is decisive: *not-pmm-managed* ⇒ no device can be handed the frame (never in the buddy) and it's not a buddy double-alloc; *mapcount=0* ⇒ no userspace/foreign mapping reaches it (kills the double-map/wild-cross-write hypothesis). So the writer is **kernel code holding a `*mut` into a freed static-heap block and writing it after free** — a pure CPU UAF, value incidental. **Retracted:** the earlier "virtio used-ring UAF" reading (a corrupt header `bad_next=0x300000000 node_size=0x200000000` decoding as a `vring_used`) was **over-fitting one sample** — other boots show `size=0`, `0xaaaaaa`, `0x80ffb180ffffffff`, none used-ring-shaped; and `release_transport_record` (the theorized ring-free path) is **never called during boot** (traced: 0 `[VRING-FREE]` hits), while a recycled ring frame would land in a GROWN HHDM region (`ffff8000…`), NOT the static heap. The `X<<32` values are just small incidental integers in u64 high halves. `[ZRAM-SYSFS] disksize=` clustering is the detection point (heaviest alloc burst), not the corruption point.
-
-12. **FREE-IP PROVENANCE names the corruptor's free-site deterministically — the ~90% corruptor is a stale raw-`Arc` REFCOUNT op on a recycled `ArcInner`, class-confirmed.** kalloc records each block's last `caller::dealloc_return_ip()` in a `base→free_ip` ring (`holes.rs` `FreeIpRing`, C204, `any(debug-heappoison, debug-dealloc-diag)`); every corruption-detection site prints `[KALLOC] corrupt-node last-free-ip base=… free_ip=0x…`. Since the corrupt node is FREE when detected, its last free-IP names where the WRITER's victim was freed → `addr2line` → the Drop glue → the victim type. RESULT (cracked a multi-session mystery in one boot): free_ip → **`vfs::fdtable::model::FdTable::close`** (the `drop(f)` → `File::Drop`). So the corrupt block is an **`ArcInner<File>`** (strong@0, weak@8, data@16). Combined with kalloc's `HoleHdr{size@0, next@8}`: the corrupt `next@8` (`0x…819a1460`) is kalloc's OWN free-list link (a real hole), NOT an external pointer write; the DAMAGE is at `size@0` = the freed ArcInner's old strong-count word, overwritten to a count-like value (`0x1FFFFFFFF`/`0`/`0xaaaaaa`). ⇒ the corruptor is a **stale `Arc::increment_strong_count`/`from_raw`/manual refcount write** on a raw pointer to a freed-and-recycled block — the victim varies by layout (an `ArcInner<File>` this run) but the free-IP is stable, so the DAMAGE class is fixed. There is NO raw `Arc<File>`/`*const File` refcount machinery in vfs/fs/net/mm (grep clean); ALL manual raw-Arc machinery (`Arc::increment_strong_count`+`from_raw`) is on **Task/AddressSpace/AnonVma/FileRmap/Tty in `sched`/`mm`** (`live/wait_list.rs`, `runqueue.rs`, `schedule/{active_mm,switch}.rs`, `zombies.rs`, `futex/wait.rs`). **B1345 fixed one instance** (msleep leaked a one-shot → `wake_all` on a freed stack WaitList); ≥1 more stale raw-Task/AS-Arc op remains. **Method reuse:** to name ANY UAF's victim allocation, capture the free-IP at dealloc and print it at the detector — free-IP names the freer even when the writer is elsewhere. To name the WRITER, pin/rotate the `debug-hw-watchpoint` (C203 killed its false-positive storm) on close-freed blocks. Verification is now deterministic: a real fix makes the `FdTable::close` free-IP stop appearing on corrupt nodes.
+1. **Bare `xtask kernel` builds but does NOT export** — `make boot` then boots a STALE `target/artifacts` kernel silently. Build boots with `make kernel boot PROFILE=... ARCH=...`; confirm the artifact mtime is fresh before trusting any boot.
+2. **imagectl reads the MAIN tree's `../kernel/target/artifacts`, not a worktree** (`KERNEL_DIR` does not change what boots). Boot-verify centrally; worktree lanes copy their kernel in if they need a boot.
+3. **Single boots LIE about intermittent bugs.** Measure over N sequential boots (report clean/total) before attributing, reverting, or declaring fixed; a hosted causality test beats any boot count.
+4. **When a boot contradicts strong evidence, suspect the MEASUREMENT first** (stale artifacts, fouled harness) before re-opening a closed fix.
+5. **Boot-verify after EVERY merge** — hosted-green fixes have broken real boots (ABI/integration classes only a boot exposes). Both arches build + `cargo test` 0-failed before any push; "main is always known-good" is what makes a bad merge a fast revert.
+6. **Disprove-don't-hack, with evidence.** "I disproved X, here's the evidence, here's the narrowed suspect" beats a plausible patch. Never blindly re-enable a reverted hack.
+7. **Reap your own stale QEMU** — by PID, `dangerouslyDisableSandbox: true`; never blanket-pkill (sibling lanes), never background boot retry-loops.
+8. **A flaky ~8-line "boot" is a GRUB hang, not a result** (~half of cold boots); a real boot is >2000 lines. Re-run once.
+9. **A refcounted kernel RAM frame shared into userspace maps as `VmaBacking::KernelFrame`, NEVER `PhysRange`.** `PhysRange` (= `remap_pfn_range`) is for unrefcounted device memory: no inc_ref, no mapcount, so the owner's last drop frees the page while userspace still maps it — free-while-mapped UAF corrupting the heap with incidental values (io_uring hit this, B1342). Audit every `glue_mmap(..., phys_base=Some(pa), ...)`: device MMIO ok; refcounted RAM must be `KernelFrame`. `map_phys_range`'s mapcount=0 also defeats the never-free-a-mapped-page guard; the `debug-cow` `[COW-LEAK]` detector catches the class.
+10. **The buddy allocator ZEROS every page on alloc**, wiping write-while-free poison before downstream checks — the poison detectors only ever see zeros for the page body. A body check must run inside `alloc_inner` BEFORE the zero loop. "The poison detector didn't fire" proves nothing until you've confirmed it runs before zeroing.
+11. **The multi-session ~90%-boot heap-corruption campaign resolved as a KERNEL-STACK OVERFLOW** (16KB Box stacks, no guard page) scribbling the adjacent heap block — fixed C213 (VMAP_STACK guard pages + frame de-bloat); every UAF/refcount theory was wrong. Durable lessons: "masked by every allocator change + victim varies by layout" = suspect stack-overflow-into-heap and check `debug-stack-guard` FIRST; free-IP provenance (kalloc's `FreeIpRing`, printed at every corruption site) deterministically names a UAF victim's freer — reuse the method for any UAF.
 
 ## Agent model selection (HARD RULE)
 
-**Investigative agents run on Sonnet. Only genuinely hard work gets Opus.** Pass
-`model: "sonnet"` on the Agent call; it is not the default and omitting it spends
-Opus on work that does not need it.
+**Investigative agents run on Sonnet** (`model: "sonnet"` on the Agent call — not the default); only genuinely hard work gets Opus.
 
 | Sonnet | Opus |
 |---|---|
 | triage, audits, inventories, "find where X is" | subsystem implementation with real design choices |
-| reading specs / matrix rows and reporting state | root-causing a live bug with no working hypothesis |
+| reading specs/matrix rows, reporting state | root-causing a live bug with no working hypothesis |
 | ledger folds, doc sweeps, mechanical edits | ABI/semantics work cross-checked against the reference |
-| test-flake diagnosis, running gates, collecting evidence | anything where a wrong answer ships a silent defect |
+| flake diagnosis, running gates, collecting evidence | anything where a wrong answer ships a silent defect |
 
-A lane that starts investigative and turns out to need Opus gets **re-spawned**,
-not upgraded in place — the finding is already written down, so the expensive
-agent starts from the answer rather than re-deriving it.
+A lane that turns out to need Opus gets **re-spawned from the written finding**, not upgraded in place. A Sonnet lane told to report returns a finding; an Opus lane given the same brief tends to fix it — scope creep.
 
-Cost is not the only reason. A Sonnet lane told to report rather than fix returns
-a finding you can act on; an Opus lane given the same brief tends to fix it, which
-is how a one-item lane becomes a five-item one.
+## A fan-out must be MEASURED, not assumed (HARD RULE)
 
-## A FAN-OUT MUST BE MEASURED, NOT ASSUMED (HARD RULE)
+"Running" is not "making progress": a lane blocked on a lock or a broken tree reports the same silence as one working (a four-lane wave once ran at one-lane speed for 40 min on a shared cargo lock, invisible from outside).
 
-**"Running" is not "making progress", and an orchestrator that cannot tell the
-difference will burn hours without noticing.** An agent blocked on a lock, a
-broken tree, or a missing file reports exactly the same status as one doing
-work. Nobody is coming to tell you; the lanes cannot see each other.
-
-Learned the expensive way: four lanes fanned out into ONE worktree, all
-sharing one cargo target directory. Every `cargo test` serialised on the
-build-directory lock, so a four-lane wave ran at the speed of one lane for
-~40 minutes. One lane's own harness had adapted with a 20-second retry loop —
-the contention was visible from inside and invisible from outside. The
-orchestrator's first diagnosis ("they are deadlocked on a broken tree") was
-also wrong, because it was inferred from silence rather than measured.
-
-- **Every lane gets its OWN `CARGO_TARGET_DIR`.** One target directory per
-  worktree is a global lock on every build in it. Tell each lane, in its
-  opening brief:
-  `CARGO_TARGET_DIR=<scratch>/tgt-<lane> cargo test -p <crate>`
-  The first build there is a full rebuild; every one after is uncontended.
-  This costs disk and buys back the parallelism the fan-out was for.
-- **Run `tools/lane-health.sh` before concluding anything about a lane.** It
-  reports build-lock contention, a tree that does not compile, modules declared
-  before their files, and source-tree silence while builds run. Exit 1 means
-  something is wrong, so it can gate a wait loop. Check it when a lane goes
-  quiet, and periodically when several are live.
-- **A declaration and the file it names land in the SAME write.** `mod foo;`
-  committed before `foo.rs` exists makes the whole crate uncompilable for every
-  other lane in the worktree, and none of them owns the broken file — so each
-  one waits for a build that cannot succeed. This happened twice in one wave.
-- **Never diagnose a lane from silence.** Check the process list, the source
-  tree's mtimes, and whether the crate compiles. State what you measured. A
-  confident wrong diagnosis sends the next twenty minutes in the wrong
-  direction — see `Never state a conclusion a proxy cannot support`.
-- **Prefer one worktree per lane when lanes will edit overlapping files.** A
-  shared worktree is right for a wave with strict file ownership and cheap
-  builds; it is wrong when every lane needs the same crate to compile in order
-  to test. When lanes must share, serialise the hook-application passes and say
-  so in each brief.
+- **Every lane gets its OWN `CARGO_TARGET_DIR`** (`CARGO_TARGET_DIR=<scratch>/tgt-<lane>` in the opening brief) — one target dir is a global build lock.
+- **Run `tools/lane-health.sh`** before concluding anything about a lane (lock contention, non-compiling tree, orphan `mod` declarations, source silence); check it when a lane goes quiet.
+- **A `mod foo;` declaration and `foo.rs` land in the SAME write** — a dangling declaration breaks the crate for every lane in the worktree.
+- **Never diagnose a lane from silence.** Check processes, mtimes, whether the crate compiles; state what you measured.
+- **Prefer one worktree per lane** when lanes edit overlapping files or all need the crate compiling; a shared worktree needs strict file ownership and serialised hook passes, stated in each brief.
 
 ## Claim work before starting (HARD RULE — no duplicate lanes)
 
-Two agents independently rewrote the SAME mount subsystem item (the `mounted_mounts`
-dual-truth removal) in two branches at once — hours of wasted, conflicting work.
-Never again. Before writing ANY code for a ledger item / D-item / subsystem task:
+Two agents once rewrote the same subsystem item in parallel — hours of conflicting work. Before writing ANY code for a ledger item / subsystem task:
 
-1. **Check for an existing lane FIRST — three greps, every time:**
-   - `git worktree list` and `git branch -a` — is there already a branch/worktree whose name or title covers this item?
-   - `grep -n "<item-id>" fix-ledger.md` (and any `*-ledger.md`) — is the row already marked IN-PROGRESS / claimed / has a branch SHA next to it?
-   - For mount/vfs/sched core work, grep the source for the symbol you intend to add (e.g. a helper name) — if it already exists on another branch's diff, someone is on it.
-2. **If a lane exists, DO NOT open a parallel one.** Either continue that lane (its worktree; resume its agent via SendMessage; or take it over and finish it), or pick a DIFFERENT unclaimed item. Duplicating a live lane is the single most expensive mistake in this repo.
-3. **Claim it before you start.** Mark the ledger row `[CLAIMED <branch> <date>]` (or add the branch name to the row) and commit that claim, so the next agent's grep in step 1 sees it. Release/flip to DONE on merge.
-4. **After any agent wave, before boot-verify: re-check `git -C <main-tree> rev-parse HEAD` + `git branch -a` + `git worktree list`.** The shared main tree gets reset/advanced by concurrent lanes; a stale assumption about HEAD invalidates a boot result (you may boot a different lane's kernel — see Lessons §2).
-5. **One item = one lane = one agent.** If you discover mid-task that you've duplicated a live lane, STOP, preserve your commit on a branch, and reconcile with the owning lane rather than racing it to merge.
-6. **Fan out independent work immediately.** When a task has two or more independently-owned subsystem areas, assign them to separate agents before implementation: one owner per file area, one integration owner, and explicit handoff evidence (tests + file list). Do not serialize independent investigation, implementation, or test-design work while capacity is available; do not overlap ownership merely to increase agent count.
-7. **Delegated agents have no merge authority.** Only the primary/integration owner may create or merge a PR. A subagent must not run `gh pr merge` (or an equivalent API action), even for its own lane, and an instruction not to commit, push, create a PR, or merge is a hard boundary. Delegating implementation does not delegate integration authority.
-8. **A worktree belongs to its lane owner.** No agent may remove, prune, reset, or repurpose a worktree it did not create. The primary/integration owner may remove it only after the owning agent has handed it off or finished, `git status` confirms the exact worktree is clean, and the PR is merged (or the user explicitly abandoned the branch). Remove the worktree first, then delete its local branch.
+1. **Check for an existing lane:** `git worktree list` + `git branch -a` (branch covering this item?); `tools/issues.sh --show KI-NNNN` (row IN-PROGRESS/claimed?); for core work, grep the source for the symbol you'd add.
+2. **If a lane exists, do NOT open a parallel one** — continue it, take it over, or pick a different item.
+3. **Claim before starting:** `tools/issues.sh --claim KI-NNNN <branch>` and commit the claim so the next agent's check sees it.
+4. **After any agent wave, before boot-verify:** re-check main-tree HEAD + branches + worktrees — concurrent lanes move them, and a stale HEAD assumption invalidates a boot result.
+5. **One item = one lane = one agent.** Discover a duplicate mid-task: STOP, preserve your commit on a branch, reconcile with the owner.
+6. **Fan out independent work immediately** — one owner per file area, one integration owner, explicit handoff evidence. Don't serialize independent work; don't overlap ownership to inflate agent count.
+7. **Delegated agents have no merge authority.** Only the primary/integration owner creates or merges PRs; "do not commit/push/PR/merge" is a hard boundary.
+8. **A worktree belongs to its lane owner.** Never remove, prune, reset, or repurpose a worktree you did not create; the integration owner removes it only after handoff, clean `git status`, and merge.
 
-## A LANE IS NOT DONE UNTIL IT IS WIRED (HARD RULE)
+## A lane is not done until it is WIRED (HARD RULE)
 
-**Code that compiles and passes its own tests is not delivered work. It is
-delivered work when something in the running system CALLS it.** A lane that
-returns "complete, 113 tests green" while the feature it built is unreachable
-has produced a very well-tested subdirectory, and the user still cannot use the
-feature. This is the same defect class as `Machinery without callers` — the top
-defect class in this repo — arriving through the front door.
+Code that compiles and passes its own tests is delivered only when something in the running system CALLS it — a lane's tests call the lane, so "complete, 113 tests green" says nothing about reachability (one wave shipped six f2fs lanes, four of them dead code, all green). This is `Machinery without callers` through the front door.
 
-Learned the expensive way, in one wave: six lanes built compression, casefold,
-a segment cleaner, orphan inodes, recovery and quota for f2fs. Every lane
-reported complete with hundreds of passing tests. Four of the six were dead
-code — `volume/io.rs` still answered `EOPNOTSUPP` for a compressed cluster,
-`features.rs` still refused a case-folded volume at mount, the cleaner was
-never called when the allocator ran out, and the checkpoint writer never wrote
-an orphan block. Every one of those lanes was *correct*; none of them did
-anything. The tests all passed because a lane's tests call the lane.
+- **The orchestrator owns integration and cannot delegate it** — applying hooks, resolving cross-lane conflicts, proving reachability. No lane owns the call site.
+- **Never report a lane complete on its own test count.** Prove reachability: grep the entry point's callers from OUTSIDE the lane's files and outside `#[cfg(test)]`.
+- **Name the call site in the completion report** ("wired into `volume/io.rs::read_file` at the `Mapped::Compressed` arm") — a checkable claim, unlike a test count.
+- **An integration test at the boundary the lane crosses is the proof**, not a unit test.
+- **A hook a lane reports is an orchestrator task:** apply it in-session, re-run the suite, positive-control the hook (remove the call, confirm red).
+- **Ledger rows are filed by the orchestrator per lane on receipt** — never batched to the end, never left in a report; a row that exists only in a transcript does not exist.
 
-**The orchestrator owns integration and does not get to delegate it.** Spawning
-the lanes is the cheap half. Applying the hooks, resolving the conflicts between
-them, and proving the feature is reachable is the work, and it is the
-orchestrator's — nobody else is positioned to do it, because no lane owns the
-call site.
-
-- **Never report a lane as complete on its own test count.** The lane's tests
-  prove the module works. They say nothing about whether the module is used.
-- **Prove reachability before claiming it.** Grep the call sites of the entry
-  point, from OUTSIDE the lane's own files and outside `#[cfg(test)]`. A module
-  whose only callers are its own tests is unwired, however green it is.
-- **Say the call site out loud.** A completion report names, per lane, the file
-  and function that reaches the new code. "Wired into `volume/io.rs::read_file`
-  at the `Mapped::Compressed` arm" is a claim that can be checked. "Lane
-  complete, 111 tests passing" is not.
-- **An integration test is the proof, not a unit test.** The test that would
-  have caught all four failures is one that drives the feature through the
-  interface the kernel actually uses, and there was none. Write it at the
-  boundary the lane crosses, in the integrating owner's files.
-- **A hook a lane reports is a task for the orchestrator, not a note.** Apply it
-  in the same session, re-run the whole suite, and run a positive control on the
-  hook itself — remove the call and confirm something goes red. A hook nobody
-  applies is a lane nobody shipped.
-- **Rows go in `scratch/known_issues.md` as they arrive, by the orchestrator.**
-  When lanes share one worktree they cannot each append to that file without
-  clobbering each other, so collecting rows and filing them is also the
-  orchestrator's job — done per lane on receipt, never batched to the end and
-  never left in a report. A row that exists only in an agent transcript does not
-  exist.
-
-**The completion bar for a fan-out:** every lane's hooks applied, the full suite
-green, a positive control per hook, the call site named for each, and the rows
-filed. Short of that the honest report is "built, not wired", with the
-unreachable features listed as such.
-
+**Completion bar for a fan-out:** hooks applied, full suite green, positive control per hook, call site named per lane, rows filed. Anything short is honestly "built, not wired".
 
 ## NEVER WORK ON MAIN (HARD RULE)
 
-**Never work on `main`. Never commit to `main`. All work happens on a branch and
-reaches `main` only through a PR.** No exceptions, no "it's only a doc", no "it's a
-one-line fix", no emergency path.
-
-- Before editing ANY file, run `git rev-parse --abbrev-ref HEAD`. If it says `main`,
-  stop and create a branch first. Being on `main` is never a state in which you edit.
-- `main` is a read-only reference for reading, building, and comparing. Nothing else.
-- A shared checkout of `main` may hold someone else's uncommitted work. It is not yours,
-  it is not yours to commit, and its presence is not permission.
-- Opening or merging the PR is the integration owner's call, not the working agent's.
-  Push the branch and report. See the merge-authority rule in the claim-work section.
+All work on a branch, reaching `main` only through a PR. No "it's only a doc", no one-line exception. Before editing ANY file: `git rev-parse --abbrev-ref HEAD`; if `main`, branch first. `main` is read-only reference; a shared checkout may hold someone else's uncommitted work. Opening/merging the PR is the integration owner's call — push and report.
 
 ## NEVER `git stash` (HARD RULE)
 
-**The stash stack is SHARED across every worktree of a clone.** With several lanes
-running at once, `git stash` / `git stash pop` is a cross-lane data race: one lane's
-`pop` takes another lane's stash. This has already happened — 16 unrelated files
-landed in the wrong worktree while the owner's tracked edits vanished, recovered only
-via `git fsck` dangling commits.
-
-- Park work-in-progress with a **temporary commit on your own branch**
-  (`git commit -m wip`, later `git reset --soft HEAD~1`). Commits are per-branch;
-  the stash stack is not.
-- `git stash list` entries you did not create are someone else's live work. Do not
-  pop, drop, or clear them.
-- This applies to every stash form, including `git stash -u` and `git stash push <path>`.
+The stash stack is SHARED across every worktree of a clone — with concurrent lanes, `stash`/`pop` is a cross-lane data race (already happened; recovered via `git fsck`). Park WIP as a temporary commit on your own branch (`git commit -m wip` / `git reset --soft HEAD~1`). Stash entries you did not create are someone else's live work. Applies to `-u` and `push <path>` forms too.
 
 ## NEVER `git add -A` (HARD RULE)
 
-**Never run `git add -A`, `git add .`, `git commit -a`, or any other stage-everything
-form.** Stage each path explicitly: `git add CLAUDE.md metadata/index.md`.
-
-Blanket staging sweeps up whatever else happens to be in the tree — another agent's
-in-progress edit, a stray build artifact, a debug hack you meant to drop. This has
-already put one party's unfinished Makefile work into another party's commit under the
-wrong authorship, unverified.
-
-- Run `git status --short` first and know what every line is before you stage.
-- Stage by name. If the list is long, that is a signal the change is too big, not a
-  reason to reach for `-A`.
-- `git commit` only after `git diff --cached --stat` shows exactly the files you intend.
+No `git add -A`, `git add .`, `git commit -a`, or any stage-everything form — blanket staging sweeps up other agents' edits and stray artifacts (already shipped someone's unfinished work under wrong authorship). `git status --short` first; stage each path by name; commit only after `git diff --cached --stat` shows exactly the intended files. A long list means the change is too big, not a reason for `-A`.
 
 ## Git workflow (mandatory)
 
-**Commit author (HARD RULE).** Every commit + PR is authored by **`Chris Watkins <chris@watkinslabs.com>`** — period. This is the only valid author identity. Before committing in any clone, ensure `git config user.name "Chris Watkins"` and `git config user.email "chris@watkinslabs.com"` are set (a fresh clone may have `user.name` unset, which produces garbage authors like "Ablative Personality" — fix it first). Never let any other name/email land on a commit or PR.
+**Commit author (HARD RULE):** every commit + PR is authored by `Chris Watkins <chris@watkinslabs.com>` — the only valid identity. Verify `git config user.name`/`user.email` in any fresh clone before committing.
 
-**Branch per change.** Never commit directly to `main`. Branch names use a single-letter type + zero-padded counter + kebab-case title, sortable globally and within type:
+**Branch per change.** Single-letter type + zero-padded counter + kebab-case title (≤40 chars):
 
-| Prefix | Use | Example |
-|---|---|---|
-| `F<NN>-<title>` | new functionality | `F01-pmm-buddy` |
-| `B<NN>-<title>` | bug fix | `B01-branch-retention-rule` |
-| `D<NN>-<title>` | spec edits only (no code) | `D02-status-line-sweep` |
-| `R<NN>-<title>` | revise a FROZEN spec (body edit; git is the change record, `02§1`) | `R01-modernity-drop-fat` |
-| `Z<NN>-<title>` | freeze a DRAFT spec | `Z01-spec-discipline` |
-| `C<NN>-<title>` | tooling, deps, CI plumbing | `C04-spec-lint` |
-| `P<n>-<NN>-<title>` | phase-N work | `P1-01-pmm-buddy` |
+| Prefix | Use |
+|---|---|
+| `F<NN>-` | new functionality |
+| `B<NN>-` | bug fix |
+| `D<NN>-` | spec edits only |
+| `R<NN>-` | revise a FROZEN spec (`02§1`) |
+| `Z<NN>-` | freeze a DRAFT spec |
+| `C<NN>-` | tooling, deps, CI plumbing |
+| `P<n>-<NN>-` | phase-N work |
 
-Counter is per-type, monotonically increasing, never reused. Two-digit minimum (`NN`); widen to three (`NNN`) once any single type passes 99. Title is kebab-case, ≤40 chars, no trailing slashes. Old `feature/`, `fix/`, etc. branches predate this scheme and are kept as-is for history.
+Counters per-type, monotonic, never reused.
 
-**CLAIM the counter, never just read it — HARD RULE.** Take a branch number with:
-
+**CLAIM the counter, never just read it (HARD RULE):**
 ```
-name=$(tools/next-branch.sh --claim B my-fix-title)   # prints e.g. B1689-my-fix-title
+name=$(tools/next-branch.sh --claim B my-fix-title)
 git worktree add -b "$name" ../kernel-${name%%-*} origin/main
 ```
+`--claim` pushes a `claim/<T><NN>` ref so the number is yours atomically; reading (`--dry-run`, `metadata/index.md`) is NOT claiming — three lanes once drew the same number and one implementation was discarded. Never invent or hand-pick a number; git refs are the only source of truth. `make counters` prints next free per type.
 
-`--claim` pushes a `claim/<T><NN>` ref to origin before it returns, so the number
-is yours the moment you have it; a lane racing you for the same number is refused
-by the remote and retries. Reading the counter is **not** claiming it —
-`tools/next-branch.sh B`, `--dry-run`, and `metadata/index.md` all hand every
-concurrent lane the same answer. Three lanes drew `B1667` on one day and a whole
-signal-report implementation was discarded as the duplicate.
+**Short-lived feature branches / worktree loop (HARD RULE):** each item gets a fresh branch from current `origin/main` in its own worktree; commit, push, PR, merge, update main, delete branch + worktree, then start the next item from a new worktree. No omnibus branches, no reused worktrees, no piling onto a dirty branch. Refactors are features too. Misshapen branch: archive-tag it, cherry-pick the good commits onto clean branches.
 
-Never invent a number (`F30` produces garbage, non-sortable names that collide
-with real history), and never hand-pick one to "avoid" a collision. Git — branch
-refs, merge subjects and `claim/*` refs — is the only source of truth for which
-numbers are taken. `metadata/index.md` keeps the HISTORY of past reservations and
-collisions (not derivable from git) but no longer carries a `next` table: a second
-place to record a number git already knows fell behind on nearly every parallel
-wave. `make counters` prints the next free number per type.
+**Phase prefix matches `00§3`;** phases are sequential — no phase-`n+1` work before phase-`n` exit gates; pick the lowest unfinished phase.
 
-**Short-lived feature branches (HARD RULE).** Every feature / bug / doc change gets its own fresh branch from current `origin/main`; no omnibus branches and no long-running catch-all worktrees. Finish one feature, commit it, push it, open/merge the PR, then delete the local branch and worktree before starting the next feature. Refactors are features too: isolate them on their own branch instead of mixing cleanup with driver work, and never continue piling new work onto a dirty or conflicted branch. If a branch becomes misshapen, stop, preserve it with an archive tag, and cherry-pick the still-valuable commits onto clean one-feature branches.
+**Commits:** small, focused; `<type>: <subject>` + body (why, not what); `<type>` ∈ `feat|fix|doc|spec|refactor|test|bench|chore|ci|build|revise|freeze`.
 
-**Feature worktree loop (HARD RULE).** For every feature/bug/doc item: pull/fetch clean `main`, create the numbered branch in its own worktree from current `origin/main`, do the work there, commit, push, open the PR, merge it, pull/update main, then start the next item from a new worktree. Do not reuse a feature worktree for the next item. Remote CI/CD smoke is not required before merge; run only the local verification needed for the touched files, and use `SKIP_SMOKE=1` for doc-only pushes.
+**Push policy:** auto-push every feature branch with `-u` at first commit; auto-push merged main. **Never pipe a state-changing command when its exit status is the evidence** (`git push | tail` reports `tail`'s status): run it directly or check `${PIPESTATUS[0]}`; before reporting a push landed, fetch and verify the remote ref SHA.
 
-**Phase prefix MUST match `00§3` master-plan phase.** `P<n>-` means phase-`n` per the master-plan §3 table (0=build infra, 1=PMM, 2=VMM+MMU, 3=slab, 4=sched+ctxsw+preempt+SMP, 5=syscalls+ELF+init+bash, 6=VFS+ext4 RO, 7a=block+pagecache, 7b=ext4 RW, 8=net, 9=hardening, 10=modules loader, 11=PCI enumeration, 12=virtio common, 13=dynamic linker, 14=libc/NSS/PAM, 15=system manager, 16=RPM toolchain, 17=tty + login). Rotate the prefix when crossing a phase boundary; do **not** keep using the old phase number as a generic counter. Counter resets to `01` per phase. Example: when phase 4 work begins, branches restart at `P4-01-...`, regardless of how high the `P3-` counter went.
-
-**Phases are sequential (`00§3`, `00§14` rule 3): no parallel-across-gate.** Don't start phase-`n+1` work while phase-`n` exit gates aren't met. Phase exit = PR-time CI green + canary 1h + bench within budget + coverage met + the per-spec §Test-contract gate. Out-of-phase work belongs in `docs/v2/` per `00§14` rule 5. Auditing "what phase are we actually in" before starting a branch is mandatory; pick the lowest unfinished phase.
-
-**Commits.** Small, focused, one logical change per commit. Conventional message form:
-
-```
-<type>: <subject>
-
-<body — why, not what>
-```
-
-`<type>` ∈ `feat|fix|doc|spec|refactor|test|bench|chore|ci|build|revise|freeze`.
-
-Examples:
-- `spec: tighten 02 cool-off rule to text-only`
-- `feat(pmm): bitmap-truth merge path`
-- `freeze: 02 spec-discipline charter`
-- `revise: 03 modernity — drop FAT16/12`
-
-**Push policy.** Auto-push every feature branch with `-u` as soon as its focused commit is made; do not hold local-only work across features. Auto-push merged commits to `origin/main` after each merge without asking. Force-push remains forbidden per the Never list below.
-
-**Never pipe a state-changing command when its exit status is the evidence (HARD RULE).** A pipeline such as `git push ... | tail` reports the final command's status by default, so `tail` can return zero after `git push` was rejected. Run `git push` directly, or capture and check the producer's status explicitly (for Bash, enable `pipefail` or inspect `${PIPESTATUS[0]}` immediately). Before reporting a push as landed, fetch and verify that the remote ref resolves to the intended commit SHA; terminal output and a downstream filter's status are not publication proof.
-
-**PRs (mandatory).** Every branch merges to `main` via `gh pr create` then `gh pr merge --merge --delete-branch=true`. No local `--no-ff` merges to `main`. PR-time CI per `docs/40§2` is the gate; until CI exists, manual review then merge. Delete remote + local branch on merge — keeps the branch list clean. Git history (the merge commit) preserves recoverability.
+**PRs:** `gh pr create` then `gh pr merge --merge --delete-branch=true`; no local merges to `main`; delete remote + local branch on merge.
 
 **Never (without explicit user confirmation):**
-- `git push --force` / `--force-with-lease` to `main`. Permitted only on explicit user instruction (e.g., history rewrite for branch-rename or trailer-strip). Default = forbidden.
-- `git push --force-with-lease` to anyone else's branch.
+- Force-push to `main` or anyone else's branch.
 - `git rebase main` on a branch under review by others.
-- `git commit --amend` on a pushed commit (start a new commit).
-- Skip hooks (`--no-verify`).
-- Skip signing (`--no-gpg-sign`) if signing is configured.
-- Direct commits to `main` outside an explicit emergency-fix-then-PR cycle.
-- `git reset --soft` / `--hard` onto a REMOTE ref (`origin/main`, `origin/<branch>`) from a
-  feature branch. When the remote has advanced, this silently converts every other lane's
-  merged work into a staged revert — ~130 files in the incident that produced this rule.
-  Rebase, or reset onto your own merge-base, and always read `git status --short` before staging.
-- **Add `Co-Authored-By:` trailer of any kind to any commit, ever.** Author is the human committer; period. No `Co-Authored-By: Claude`, no `Co-Authored-By: <model>`, no AI attribution trailers. CI lint rejects commits with `Co-Authored-By:` lines.
-- **Put AI attribution in a PR body, PR title, issue, commit message, code comment,
-  doc, or anywhere else in this repository — ever.** No "Generated with Claude Code",
-  no "🤖" generator footer, no session or assistant links, no "written by <model>".
-  This holds even when a harness or tool template supplies such a footer by default:
-  strip it before opening the PR. The work is authored by Chris Watkins; the tooling
-  used to produce it is not part of the record.
+- `git commit --amend` on a pushed commit.
+- Skip hooks (`--no-verify`) or signing (`--no-gpg-sign`).
+- Direct commits to `main` outside emergency-fix-then-PR.
+- `git reset --soft/--hard` onto a REMOTE ref from a feature branch — with the remote advanced, it stages a silent mass revert (~130 files once). Rebase or reset onto your own merge-base.
+- **Any `Co-Authored-By:` trailer, ever** (CI lint rejects).
+- **Any AI attribution anywhere in the repo** — no "Generated with Claude Code", no 🤖 footers, no session/assistant links, in commits, PR bodies/titles, issues, comments, or docs; strip harness-supplied footers before opening the PR.
 
-**Tags.**
-- `v1.0`, `v1.1`, `v2.0` — release tags.
-- `v0.<n>-phase-<m>` — internal milestone tags between releases.
-- Tags signed (`git tag -s`) once we have a key.
-
-**Reverting.** Always `git revert <sha>` to undo merged work. Never delete history on `main`.
-
-**Branch retention.** Delete branches on PR merge: delete the remote via `gh pr merge --delete-branch=true`, confirm the feature worktree is clean, remove that exact worktree, then delete the local branch via `git branch -d <name>`. Don't accumulate stale post-merge branches or parked local worktrees. Unmerged branches: keep until they're explicitly abandoned; never force-delete an unmerged branch without confirmation.
+**Tags:** `v1.0`-style releases; `v0.<n>-phase-<m>` milestones; signed once we have a key. **Reverting:** always `git revert <sha>`; never delete history on `main`. **Branch retention:** delete on merge (remote via `--delete-branch=true`, then clean worktree, then local); keep unmerged branches until explicitly abandoned — never force-delete without confirmation.
 
 ## Plans live in scratch/ (HARD RULE)
 
-Every plan / analysis / ledger doc (`*fix.md`, `*-plan.md`, audit writeups, compliance
-ledgers) goes in `scratch/`, never the repo root or `docs/`. `docs/` is specs only. Each
-plan carries a **Status** first column and a **Branch** column per work item, updated as
-lanes are claimed / merged.
+Every plan / analysis / ledger doc goes in `scratch/`, never the repo root or `docs/` (specs only). Plans carry a **Status** first column and a **Branch** column per item, updated as lanes claim/merge.
 
-## Known issues go in `scratch/known_issues.md` (HARD RULE)
+## Known issues ledger (HARD RULE)
 
-Every issue, breakage, divergence, deviation, gap, flake, or thing-worth-noting gets a
-row **in the same PR that finds it**, not later. A finding that lives only in a session
-report is lost the moment the session ends.
+Every issue, breakage, divergence, gap, flake, or thing-worth-noting gets a row in `scratch/known_issues.md` **in the same PR that finds it**. There is no second store; per-lane drop files are abolished. A concurrent-lane conflict here is worth the rebase — resolve by taking BOTH sides' rows.
 
-**Where the row goes: `scratch/known_issues.md`. There is no second store.**
-Add the row to the section it belongs to, in the same PR that finds it. Per-lane drop
-files under `scratch/issues.d/` are ABOLISHED: a row parked in a side file is a row
-nobody reads, and the fold step was skipped often enough that the ledger stopped being
-the ledger. A concurrent-lane conflict on this file is a rebase round-trip and is worth
-it — resolve it by taking BOTH sides' rows, never by dropping one.
-`tools/issues.sh` renders it; `--count` shows the row count.
+**Row shape: `| Id | Status | Class | Sev | Issue | Evidence | Owner |`** — `Id` is a stable `KI-NNNN`, assigned by tooling, never reused; escape literal `|` in cell text as `\|` (code spans included). `Class` ∈ `DEFECT` (diverges from Linux) | `MISSING` (absent or unconsumed Linux surface) | `COVERAGE` (no check can fail here) | `INFRA` (tooling, gates, docs, images, dev box) | `PERF`. Class says what KIND of work a row needs, never whether it gets done — no "won't fix", no deferral status; every row is work this project WILL do.
 
-**Row shape: `| Status | Class | Sev | Issue | Evidence | Owner |`.** `Class` is
-`DEFECT` (behaviour diverges from Linux) | `MISSING` (absent Linux surface, or present
-but unconsumed) | `COVERAGE` (no check here can fail if the behaviour breaks) | `INFRA`
-(tooling, gates, docs, images, dev box). **Class says what KIND of work a row needs,
-never whether it gets done — there is no "won't fix", no "deliberate deviation" that
-closes a row, and no deferral status.** Every row is work this project WILL do.
+**Use the tooling — never read or grep the whole ledger:**
+- `tools/issues.sh --query [status=..] [class=..] [sev=..] [owner=..] [grep=RE]` — brief matching rows; `--show KI-NNNN` — full row.
+- `--add CLASS SEV OWNER 'issue' 'evidence'` — files a row, prints its id.
+- `--claim KI-NNNN <branch>` — marks it yours (see `Claim work before starting`).
+- `--fix KI-NNNN <sha>` — flips to FIXED and moves the row to `scratch/archive/fixed-issues.md`, id preserved. Run in the fixing PR.
+- `--check` — shape/id/cap validation (CI gate). Evidence cells cap at 2000 chars — park longer detail in `scratch/archive/`.
 
-- **Find it, file it.** This includes: anything non-Linux, anything stubbed or
-  stored-but-unconsumed, a test that flakes, a gate that misses a defect class, a
-  pre-existing failure you confirmed, a negative result that saves the next lane time,
-  and any divergence you chose on purpose — the choice is not the fix, so the row stays
-  open until Linux behaviour is implemented.
-- **Fix it, flip it.** Change the row to `FIXED <sha>` in the PR that fixes it. Do not
-  silently delete rows — a shrinking list must mean fixed, never forgotten.
-- **A row with no owner is still a row.** Not knowing who will fix it is not a reason to
-  omit it.
-- Record the EVIDENCE, not the theory: the failing test name, the measured number, the
-  reproduction. Negative results are first-class — "X does not cause Y, proven by Z" is
-  worth as much as a fix.
-- Never delete a row to make the list look shorter, and never downgrade a severity
-  without new evidence.
+Rules: find it, file it (including deliberate divergences — the choice is not the fix, the row stays open until Linux behaviour lands). Fix it, flip it — never silently delete a row. A row with no owner is still a row. Record EVIDENCE, not theory; negative results are first-class. Never downgrade a severity without new evidence.
+
+**`scratch/archive/` is closed history** (fixed rows, finished session docs, evidence captures, journal overflow). NEVER grep or bulk-read it while working; open a specific file only when chasing a named id or incident.
 
 ## handoff2.md is short-lived session memory, not history
 
-`handoff2.md` is the hand-off note from the previous session — what
-was worked on, what's open, what to pick up next. It is NOT a
-running log, NOT a session journal, NOT a place to accumulate
-session-by-session reports.
-
-Rules:
-- **Hard cap 200 lines.** If it grows past that, you're doing it wrong.
-- **Overwrite, don't append.** Each session replaces the file with a fresh hand-off — no "Below this line is session N-1" appendix.
-- **Headline + open work + first task.** Branch + PR, what got done, what's still open, the literal first command for next session. Nothing else.
-- **No "session 53/54/55" archaeology.** Git log is the archaeology.
-- **No commit-message duplication.** Cite SHAs, don't restate.
-- Persistent project knowledge (architecture decisions, conventions, gotchas that survive across sessions) goes in CLAUDE.md or auto-memory, not handoff2.md.
+Hand-off note from the previous session only. Hard cap 200 lines; overwrite, don't append; headline + open work + literal first command for next session. No session archaeology (git log is), no commit-message duplication (cite SHAs). Durable knowledge goes in CLAUDE.md or auto-memory.
 
 ## When in doubt
 
-- Read `docs/MANIFEST.md` first.
-- Then read the spec your work touches.
-- Then ask the user before deviating.
+Read `docs/MANIFEST.md` → the spec your work touches → ask the user before deviating.
 
 ## Communication
 
-- **BE SUCCINCT (HARD RULE).** Answer in as few words as the answer needs. Default to a few sentences; a table or a code block beats a paragraph explaining one. No preamble, no restating the question, no summarizing what you just did at the end, no "what this means" section, no recapping earlier work the user already read.
-  - Report a result, not a narrative of reaching it. Dead ends and retracted theories get one line, not a section.
-  - Never re-list merged work. The user has the PRs.
-  - Long output is only for content the user asked for (a diff, a table of findings, a spec section) — never for explanation of it.
-- User prefers terse. Skip preamble.
-- User wants honest opinion before action when stakes are non-trivial. "Advise then act" not "ask then act."
-- When proposing changes that affect multiple specs, list the touched specs first, action second.
-- When something is uncertain, say so. Don't smooth-talk.
+- **BE SUCCINCT (HARD RULE).** As few words as the answer needs; a table or code block beats a paragraph. No preamble, no restating the question, no end-of-turn recaps, no re-listing merged work. Report results, not the narrative of reaching them; dead ends get one line. Long output only for content the user asked for.
+- Honest opinion before action when stakes are non-trivial: "advise then act", not "ask then act".
+- Changes touching multiple specs: list the specs first, action second.
+- When uncertain, say so. Don't smooth-talk.
 
 ## Autonomous-run discipline (HARD RULE)
 
-When the user kicks off an autonomous run (variants of "continue / keep going / work through everything / don't stop"), the contract is:
+On "continue / keep going / work through everything":
 
-1. **Do not stop until the project is done.** "Phase X closed" is not a stopping point. The next phase is. The phase after that is. Until the master plan in `00§3` is exhausted *or* a hard blocker (compile fail you can't resolve, missing external resource, destructive op needing confirmation) appears, keep shipping PRs.
-2. **Do not announce intermediate stopping points.** No "natural seam reached", no "this is a clean place to pause", no "future-you has the handoff". These announcements cost the user hours of wall-clock when they assume work is continuing in the background. Just start the next phase.
-3. **No EOD-style summaries between phases.** State.md + CHANGELOG updates are checkpoint commits, not user-facing speeches. Update the docs, push the PR, start the next branch — silently.
-4. **Phase 8 (net) being long is not an excuse.** 10–15 weeks of spec budget translates to many small PRs in autonomous mode. Land them one at a time. Same for phase 9 hardening.
-5. **If you find yourself writing "I've delivered enormously this session" or "this is a natural stopping point" — STOP that sentence and start the next branch instead.**
-6. The only things that justify stopping mid-run: (a) explicit user instruction, (b) genuine blocker, (c) tests/build red and root cause not identified within ~3 attempts. Otherwise, keep going.
+1. **Do not stop until the project is done** — the next phase, and the one after, until `00§3` is exhausted or a hard blocker (unresolvable compile fail, missing external resource, destructive op needing confirmation) appears.
+2. **No intermediate stopping-point announcements** ("natural seam", "clean place to pause") — they cost the user hours of assumed-background wall-clock. Start the next phase.
+3. **No EOD-style summaries between phases** — update docs, push the PR, start the next branch, silently.
+4. A long phase is many small PRs, not an excuse.
+5. Writing "this is a natural stopping point"? Stop that sentence and start the next branch.
+6. Only (a) explicit user instruction, (b) genuine blocker, or (c) red tests/build with root cause unfound after ~3 attempts justifies stopping.
