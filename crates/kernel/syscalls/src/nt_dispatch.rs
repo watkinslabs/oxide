@@ -224,6 +224,7 @@ pub fn dispatch(call: NtCall) -> u64 {
     // Process/thread opens must precede the legacy unsupported-service guards
     // below; this adapter owns the current-process NT identity path.
     if let Some(result) = crate::nt_process_handles::dispatch(call) { return result; }
+    if let Some(result) = crate::nt_process_memory::dispatch(call) { return result; }
     // Registry operations use the native userspace owner before the legacy
     // fail-closed guards below. This keeps the kernel free of registry state.
     if let Some(result) = crate::nt_registry::dispatch(call) { return result; }

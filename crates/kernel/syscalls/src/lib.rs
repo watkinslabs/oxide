@@ -54,6 +54,7 @@ mod nt_duplicate;
 mod nt_process_handles;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 mod nt_process_create;
+mod nt_process_memory;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_timer;
 #[cfg(target_os = "oxide-kernel")]
