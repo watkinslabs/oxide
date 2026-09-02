@@ -356,6 +356,9 @@ impl NtEvent {
     /// Read the signal state without consuming it. # C: O(1)
     pub fn is_signaled(&self) -> bool { self.signaled.load(Ordering::Acquire) }
 
+    /// Return whether this event remains signaled after a wait. # C: O(1)
+    pub fn is_manual_reset(&self) -> bool { self.manual_reset }
+
     /// Wait using the scheduler's interruptible predicate protocol. # C: O(N_wakeups)
     /// # SAFETY: caller is process context on a running task with no event
     /// lock held; the scheduler wait loop may block and reacquires no caller lock.

@@ -58,3 +58,22 @@ this boundary.
 Tests verify the dispatcher encoding, service decoding, handle validation, and
 that the three private runtime exports are distinct, mapped, and backed by the
 synthetic NTDLL page.
+
+## 6 Wine server packet bridge
+
+Wine server calls use the mapped request/reply union directly. The native
+bridge validates the fixed header, routes by request ID, and writes the reply
+header and fixed reply fields back into the same user buffer.
+
+| Request | ID | Native owner | Reply fields |
+|---|---:|---|---|
+| close handle | 21 | NT handle table | none |
+| create event | 30 | NT event + handle table | handle at 8 |
+| event operation | 31 | NT event | previous state at 8 |
+| query event | 32 | NT event | manual reset at 8, state at 12 |
+
+Fixed request fields follow the 12-byte server header: event access is at 12,
+manual-reset at 16, initial-state at 20, and event-operation handle/op at
+12/16. Variable request data is rejected until its owning native subsystem is
+implemented. Handle close uses the same registry-key cleanup path as native NT
+close, preventing a second lifetime owner.
