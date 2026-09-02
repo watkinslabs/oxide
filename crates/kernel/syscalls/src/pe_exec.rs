@@ -9,6 +9,14 @@ use hal::CpuOps;
 #[cfg(all(target_arch = "x86_64", feature = "debug-faultdiag"))]
 use vmm::{VmaBacking, VmaProt};
 
+#[cfg(target_arch = "x86_64")]
+pub struct PreparedPeProcess {
+    pub mm: alloc::sync::Arc<vmm::AddressSpace>,
+    pub stack: hal::UserVirtAddr,
+    pub stack_top: u64,
+    pub process: elf_load::pe_loader::PeProcess,
+}
+
 /// `None` means the image is not PE. `Some(Ok(()))` commits the PE task;
 /// `Some(Err(errno))` means it was PE but could not be committed.
 /// # C: O(image + N_vmas)
@@ -30,36 +38,14 @@ pub fn try_commit_with_catalog(cur: &sched::Task, path: &[u8], blob: &[u8], cata
 
 #[cfg(target_arch = "x86_64")]
 fn commit_x86(cur: &sched::Task, path: &[u8], blob: &[u8], exec_vp: Option<&vfs::VfsPath>, catalog: Option<&pe::catalog::ModuleCatalog>) -> Result<(), i64> {
-    // Linux's default initial user stack mapping is eight MiB. Wine's loader
-    // legitimately uses substantially more than the PE ABI shadow space while
-    // constructing process state, so the NT path must provide the same stack
-    // extent as ELF exec rather than a tiny bootstrap-only VMA.
-    const STACK_BYTES: usize = 8 * 1024 * 1024;
     let enoexec = || -(syscall::errno::Errno::Enoexec.as_i32() as i64);
-    let (as_, stack, stack_top) = build_pe_address_space(cur, STACK_BYTES)?;
+    let prepared = prepare_pe_process(cur, path, blob, exec_vp, catalog,
+        cur.tgid.load(core::sync::atomic::Ordering::Acquire), cur.tid, true)?;
+    let PreparedPeProcess { mm: as_, stack, stack_top, process } = prepared;
     let path = core::str::from_utf8(path).map_err(|_| enoexec())?;
     let mut creds = decide_exec_box(cur, exec_vp)?;
     let selinux = decide_selinux_box(cur, exec_vp)?;
     creds.secure_exec |= selinux.secure_exec;
-    let input = elf_load::process_env::EnvironmentInput {
-        image_base: 0, image_size: 0, image_path: path, command_line: path,
-        environment: &[], process_id: cur.tgid.load(core::sync::atomic::Ordering::Acquire), thread_id: cur.tid,
-    };
-    let runtime = map_nt_runtime_box(&as_).map_err(|_| enoexec())?;
-    let runtime_module = elf_load::process_env::NtModuleInput {
-        base: runtime.base.as_u64(), entry: 0, size: runtime.bytes as u32,
-        full_name: "C:\\Windows\\System32\\ntdll.dll", base_name: "ntdll.dll",
-    };
-    let process = match catalog.map_or_else(
-        || elf_load::pe_loader::load_pe_process_with_resolver_and_modules(blob, &as_, &input, stack_top, &*runtime, &[runtime_module]),
-        |catalog| elf_load::pe_loader::load_pe_process_with_catalog(blob, &as_, &input, stack_top, &runtime, catalog),
-    ) {
-        Ok(process) => process,
-        Err(_) => {
-            let _ = as_.munmap(runtime.base, runtime.bytes);
-            return Err(enoexec());
-        }
-    };
     // Diagnostic experiment for the AMD64 relay first-touch failure: populate
     // executable PE/runtime pages before the first user instruction. This is
     // deliberately feature-gated; if it changes the failure, the permanent
@@ -140,10 +126,13 @@ fn map_nt_runtime_box(as_: &vmm::AddressSpace) -> Result<alloc::boxed::Box<elf_l
 
 #[cfg(target_arch = "x86_64")]
 #[inline(never)]
-fn build_pe_address_space(cur: &sched::Task, stack_bytes: usize) -> Result<(alloc::sync::Arc<vmm::AddressSpace>, hal::UserVirtAddr, u64), i64> {
+fn build_pe_address_space(cur: &sched::Task, stack_bytes: usize, replace_current: bool) -> Result<(alloc::sync::Arc<vmm::AddressSpace>, hal::UserVirtAddr, u64), i64> {
     let root = unsafe { hal_x86_64::mmu_ops::new_user_pml4() }.ok_or_else(|| nomem(b"[WINDOWS-PE-NOMEM] pml4\n"))?;
     let old = unsafe { cur.mm_ref() }.cloned();
-    let as_ = match old.as_ref() { Some(old) => vmm::AddressSpace::new_for_exec(root, old), None => vmm::AddressSpace::new(root) }
+    let as_ = match (replace_current, old.as_ref()) {
+        (true, Some(old)) => vmm::AddressSpace::new_for_exec(root, old),
+        _ => vmm::AddressSpace::new(root),
+    }
         .map_err(|_| nomem(b"[WINDOWS-PE-NOMEM] address-space\n"))?;
     pmm::user_as::install_teardown(&as_);
     let rnd = crate::exec_transition::exec_rnd(cur, 0);
@@ -154,6 +143,37 @@ fn build_pe_address_space(cur: &sched::Task, stack_bytes: usize) -> Result<(allo
         vmm::EXEC_STACK_VMA_FLAGS, vmm::VmaBacking::Anonymous, false).map_err(|_| nomem(b"[WINDOWS-PE-NOMEM] stack\n"))?;
     let stack_top = stack.as_u64().checked_add(stack_bytes as u64).ok_or_else(|| nomem(b"[WINDOWS-PE-NOMEM] stack-overflow\n"))?;
     Ok((as_, stack, stack_top))
+}
+
+/// Prepare a complete PE process image without publishing a task. Exec uses
+/// `replace_current = true`; native child creation uses `false` and receives a
+/// fresh address space. # C: O(image + N_vmas)
+#[cfg(target_arch = "x86_64")]
+pub fn prepare_pe_process(cur: &sched::Task, path: &[u8], blob: &[u8], _exec_vp: Option<&vfs::VfsPath>, catalog: Option<&pe::catalog::ModuleCatalog>, process_id: u32, thread_id: u32, replace_current: bool) -> Result<PreparedPeProcess, i64> {
+    const STACK_BYTES: usize = 8 * 1024 * 1024;
+    let enoexec = || -(syscall::errno::Errno::Enoexec.as_i32() as i64);
+    let path = core::str::from_utf8(path).map_err(|_| enoexec())?;
+    let (as_, stack, stack_top) = build_pe_address_space(cur, STACK_BYTES, replace_current)?;
+    let runtime = map_nt_runtime_box(&as_).map_err(|_| enoexec())?;
+    let runtime_module = elf_load::process_env::NtModuleInput {
+        base: runtime.base.as_u64(), entry: 0, size: runtime.bytes as u32,
+        full_name: "C:\\Windows\\System32\\ntdll.dll", base_name: "ntdll.dll",
+    };
+    let input = elf_load::process_env::EnvironmentInput {
+        image_base: 0, image_size: 0, image_path: path, command_line: path,
+        environment: &[], process_id, thread_id,
+    };
+    let process = match catalog.map_or_else(
+        || elf_load::pe_loader::load_pe_process_with_resolver_and_modules(blob, &as_, &input, stack_top, &*runtime, &[runtime_module]),
+        |catalog| elf_load::pe_loader::load_pe_process_with_catalog(blob, &as_, &input, stack_top, &runtime, catalog),
+    ) {
+        Ok(process) => process,
+        Err(_) => {
+            let _ = as_.munmap(runtime.base, runtime.bytes);
+            return Err(enoexec());
+        }
+    };
+    Ok(PreparedPeProcess { mm: as_, stack, stack_top, process })
 }
 
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]

@@ -43,6 +43,7 @@ pub trait ModuleSource<'a> { fn load(&self, name: &[u8]) -> Option<&'a [u8]>; }
 
 pub struct Module<'a> { pub name: &'a [u8], pub image: Image<'a> }
 
+#[derive(Clone)]
 pub struct OwnedModule { pub name: Vec<u8>, pub blob: Vec<u8> }
 
 #[derive(Debug)] pub struct Image<'a> {

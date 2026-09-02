@@ -2378,6 +2378,7 @@ dependencies = [
  "landlock",
  "namespace-identity",
  "network-namespace",
+ "pe",
  "selinux",
  "selinux-runtime",
  "softirq",
