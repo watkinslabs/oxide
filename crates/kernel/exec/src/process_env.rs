@@ -71,6 +71,15 @@ pub struct EnvironmentInput<'a> {
     pub thread_id: u32,
 }
 
+/// Windows process-parameter values copied from a parent into a new image.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NtProcessParameters<'a> {
+    pub current_directory: &'a str,
+    pub current_directory_handle: u64,
+    pub console_handle: u64,
+    pub standard_handles: [u64; 3],
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NtModuleInput<'a> {
     pub base: u64,
@@ -121,6 +130,15 @@ pub fn build_thread_teb(process_id: u32, thread_id: u32, peb: u64, as_: &Address
 /// Build the initial process environment and publish the supplied loader list.
 /// # C: O(image_path + command_line + environment + N_modules)
 pub fn build_with_modules(input: &EnvironmentInput<'_>, modules: &[NtModuleInput<'_>], as_: &AddressSpace) -> Result<NtProcessEnvironment, Error> {
+    build_with_modules_and_params(input, modules, &NtProcessParameters {
+        current_directory: CURRENT_DIR, current_directory_handle: 0,
+        console_handle: 0, standard_handles: [0; 3],
+    }, as_)
+}
+
+/// Build the initial environment with caller-supplied process parameters.
+/// # C: O(image_path + command_line + environment + N_modules)
+pub fn build_with_modules_and_params(input: &EnvironmentInput<'_>, modules: &[NtModuleInput<'_>], params: &NtProcessParameters<'_>, as_: &AddressSpace) -> Result<NtProcessEnvironment, Error> {
     if modules.is_empty() || modules.len() > MAX_MODULES { return Err(Error::Einval); }
     let image_path = utf16(input.image_path)?;
     let command_line = utf16(input.command_line)?;
@@ -135,7 +153,7 @@ pub fn build_with_modules(input: &EnvironmentInput<'_>, modules: &[NtModuleInput
     let image_path_off = STR_OFF;
     let command_off = STR_OFF + strings.len() * 2;
     strings.extend_from_slice(&command_line);
-    let current_dir = utf16(CURRENT_DIR)?;
+    let current_dir = utf16(params.current_directory)?;
     let current_dir_off = STR_OFF + strings.len() * 2;
     strings.extend_from_slice(&current_dir);
     let mut module_offsets = Vec::new();
@@ -183,6 +201,11 @@ pub fn build_with_modules(input: &EnvironmentInput<'_>, modules: &[NtModuleInput
     // expansion pointer stays NULL until a slot >= 64 is requested, matching
     // kernelbase's TlsAlloc/TlsSetValue behavior.
     put_u64(&mut block, TEB_OFF + TEB_SYSCALL_FRAME_OFFSET, base + PROCESS_SYSCALL_FRAME_OFF as u64);
+    put_u64(&mut block, PARAM_OFF + 0x10, params.console_handle);
+    put_u64(&mut block, PARAM_OFF + 0x38, params.current_directory_handle);
+    for (offset, handle) in [0x20usize, 0x28, 0x30].into_iter().zip(params.standard_handles) {
+        put_u64(&mut block, PARAM_OFF + offset, handle);
+    }
     put_unicode(&mut block, PARAM_OFF + 0x60, &image_path, base + image_path_off as u64);
     put_unicode(&mut block, PARAM_OFF + 0x70, &command_line, base + command_off as u64);
     put_unicode_with_capacity(&mut block, PARAM_OFF + 0x40, &current_dir,
@@ -353,6 +376,25 @@ mod tests {
         let e = build(&EnvironmentInput { image_base: 0x1400_0000, image_size: 0x5000, image_path: "C:\\notepad.exe", command_line: "notepad.exe file.txt", environment: &[("TEMP", "C:\\Temp"), ("PATH", "C:\\Windows")], process_id: 7, thread_id: 8 }, &as_).unwrap();
         assert!(e.peb.as_u64() >= e.base.as_u64() && e.teb.as_u64() < e.base.as_u64() + e.bytes as u64);
         assert_eq!(e.base.as_u64() % PAGE as u64, 0);
+    }
+
+    #[test]
+    fn supplied_windows_process_parameters_are_encoded() {
+        let as_ = AddressSpace::new(0x20_000).unwrap();
+        let e = build_with_modules_and_params(&EnvironmentInput {
+            image_base: 0x1400_0000, image_size: 0x5000, image_path: "C:\\notepad.exe",
+            command_line: "notepad.exe document.txt", environment: &[], process_id: 1, thread_id: 1,
+        }, &[NtModuleInput { base: 0x1400_0000, entry: 0x1400_1000, size: 0x5000,
+            full_name: "C:\\notepad.exe", base_name: "notepad.exe" }], &NtProcessParameters {
+            current_directory: "C:\\Users\\oxide", current_directory_handle: 0x21, console_handle: 0x31,
+            standard_handles: [0x41, 0x42, 0x43],
+        }, &as_).unwrap();
+        let vma = as_.find_vma(e.base).unwrap();
+        let (bytes, off) = match vma.backing { VmaBacking::KernelBytes { data, off } => (data, off), _ => panic!("environment must be kernel bytes") };
+        let at = |offset: usize| { let start = off + e.process_parameters.as_u64() as usize - e.base.as_u64() as usize + offset; u64::from_ne_bytes(bytes[start..start + 8].try_into().unwrap()) };
+        assert_eq!(at(0x10), 0x31);
+        assert_eq!(at(0x38), 0x21);
+        assert_eq!([at(0x20), at(0x28), at(0x30)], [0x41, 0x42, 0x43]);
     }
 
     #[test]

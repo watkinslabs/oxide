@@ -409,9 +409,10 @@ the x86-64 attribute-list ABI, resolves the UTF-16 image name, prepares a
 fresh PE address space with inherited Wine module catalog, installs typed
 process/thread handles, and publishes the child only after PEB/TEB setup.
 `CREATE_SUSPENDED` is represented through the native suspend depth and resumed
-through the existing scheduler wake path. The normalized command line and
-double-NUL environment are now copied into the child-owned PEB; console,
-directory, standard-handle, and complete PS_CREATE_INFO fields remain pending.
+through the existing scheduler wake path. The normalized command line,
+double-NUL environment, current directory, console handle, and standard
+handles are now copied into the child-owned PEB. Complete PS_CREATE_INFO
+output remains pending.
 The graph advances to `ntdll.dll!NtDelayExecution`.
 Windows NT frontier update (2026-09-01): `NtDelayExecution` now uses the
 existing scheduler interruptible wait path with native relative/absolute

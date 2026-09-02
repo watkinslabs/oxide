@@ -955,11 +955,17 @@ pub fn load_pe_process_with_resolver<R: ImportResolver>(blob: &[u8], as_: &Addre
 pub fn load_pe_process_with_catalog(blob: &[u8], as_: &AddressSpace,
     input: &process_env::EnvironmentInput<'_>, stack_top: u64,
     runtime: &NtRuntime, catalog: &pe::catalog::ModuleCatalog) -> Result<PeProcess, pe::Error> {
-    load_pe_process_with_catalog_with_fallback(blob, as_, input, stack_top, runtime, runtime, catalog)
+    load_pe_process_with_catalog_and_params(blob, as_, input, stack_top, runtime, catalog, None)
+}
+pub fn load_pe_process_with_catalog_and_params(blob: &[u8], as_: &AddressSpace,
+    input: &process_env::EnvironmentInput<'_>, stack_top: u64, runtime: &NtRuntime,
+    catalog: &pe::catalog::ModuleCatalog,
+    params: Option<&process_env::NtProcessParameters<'_>>) -> Result<PeProcess, pe::Error> {
+    load_pe_process_with_catalog_with_fallback(blob, as_, input, stack_top, runtime, runtime, catalog, params)
 }
 fn load_pe_process_with_catalog_with_fallback<R: ImportResolver>(blob: &[u8], as_: &AddressSpace,
     input: &process_env::EnvironmentInput<'_>, stack_top: u64, runtime: &NtRuntime, fallback: &R,
-    catalog: &pe::catalog::ModuleCatalog) -> Result<PeProcess, pe::Error> {
+    catalog: &pe::catalog::ModuleCatalog, params: Option<&process_env::NtProcessParameters<'_>>) -> Result<PeProcess, pe::Error> {
     let source = catalog;
     let owned = pe::discover_owned_modules_with_builtins(input.image_path.as_bytes(), blob, &source,
         |name| ascii_eq_ignore_case(name, b"ntdll.dll") && source.load(name).is_none())?;
@@ -987,7 +993,9 @@ fn load_pe_process_with_catalog_with_fallback<R: ImportResolver>(blob: &[u8], as
             full_name: "C:\\Windows\\System32\\ntdll.dll", base_name: "ntdll.dll",
         });
     }
-    let environment = match process_env::build_with_modules(&environment_input, &modules, as_) {
+    let environment = match params.map_or_else(
+        || process_env::build_with_modules(&environment_input, &modules, as_),
+        |params| process_env::build_with_modules_and_params(&environment_input, &modules, params, as_)) {
         Ok(environment) => environment,
         Err(error) => {
             unmap_loaded_modules(as_, &loaded);
@@ -1038,6 +1046,11 @@ fn unmap_loaded_modules(as_: &AddressSpace, loaded: &[PeLoadedModule<'_>]) {
 }
 pub fn load_pe_process_with_resolver_and_modules<R: ImportResolver>(blob: &[u8], as_: &AddressSpace,
     input: &process_env::EnvironmentInput<'_>, stack_top: u64, resolver: &R, additional_modules: &[process_env::NtModuleInput<'_>]) -> Result<PeProcess, pe::Error> {
+    load_pe_process_with_resolver_and_modules_and_params(blob, as_, input, stack_top, resolver, additional_modules, None)
+}
+pub fn load_pe_process_with_resolver_and_modules_and_params<R: ImportResolver>(blob: &[u8], as_: &AddressSpace,
+    input: &process_env::EnvironmentInput<'_>, stack_top: u64, resolver: &R,
+    additional_modules: &[process_env::NtModuleInput<'_>], params: Option<&process_env::NtProcessParameters<'_>>) -> Result<PeProcess, pe::Error> {
     let image = load_pe_image_with_resolver(blob, as_, resolver)?;
     // PEB image metadata belongs to the mapped image, not to caller-supplied
     // bookkeeping. Keep the other process strings/IDs from the caller while
@@ -1048,7 +1061,9 @@ pub fn load_pe_process_with_resolver_and_modules<R: ImportResolver>(blob: &[u8],
     let root_name = input.image_path.rsplit(['\\', '/']).next().unwrap_or(input.image_path);
     let mut modules = alloc::vec![process_env::NtModuleInput { base: image.base, entry: image.entry.as_u64(), size: image.size, full_name: input.image_path, base_name: root_name }];
     modules.extend_from_slice(additional_modules);
-    let environment = match process_env::build_with_modules(&environment_input, &modules, as_) {
+    let environment = match params.map_or_else(
+        || process_env::build_with_modules(&environment_input, &modules, as_),
+        |params| process_env::build_with_modules_and_params(&environment_input, &modules, params, as_)) {
         Ok(environment) => environment,
         Err(error) => { let _ = as_.munmap(UserVirtAddr::new(image.base).ok_or(pe::Error::Einval)?, image.size as usize); return Err(error); }
     };
