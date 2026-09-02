@@ -908,7 +908,8 @@ pub fn dispatch(call: NtCall) -> u64 {
                 } else { STATUS_SUCCESS }
             }
             NtObjectCall::MapViewOfSection { section, process, base, offset, size, protect } => {
-                if process != CURRENT_PROCESS || offset % hal::PAGE_SIZE_BYTES != 0 { return STATUS_INVALID_PARAMETER; }
+                if !crate::nt_process_handles::permits_current_process(process, &cur, crate::nt_process_handles::PROCESS_VM_OPERATION)
+                    || offset % hal::PAGE_SIZE_BYTES != 0 { return STATUS_INVALID_PARAMETER; }
                 // SAFETY: the running NT task owns its current address-space
                 // slot for this syscall; the clone keeps the VMM state alive.
                 let Some(mm) = (unsafe { cur.mm_ref() }).map(|mm| mm.clone()) else { return STATUS_INVALID_PARAMETER; };
@@ -945,7 +946,7 @@ pub fn dispatch(call: NtCall) -> u64 {
                 STATUS_SUCCESS
             }
             NtObjectCall::UnmapViewOfSection { process, base } => {
-                if process != CURRENT_PROCESS { return STATUS_INVALID_PARAMETER; }
+                if !crate::nt_process_handles::permits_current_process(process, &cur, crate::nt_process_handles::PROCESS_VM_OPERATION) { return STATUS_INVALID_PARAMETER; }
                 // SAFETY: the running NT task owns its current address-space
                 // slot for this syscall; the clone keeps the VMM state alive.
                 let Some(mm) = (unsafe { cur.mm_ref() }).map(|mm| mm.clone()) else { return STATUS_INVALID_PARAMETER; };
@@ -955,7 +956,8 @@ pub fn dispatch(call: NtCall) -> u64 {
                 if mm.munmap(vma.start, (vma.end.as_u64() - vma.start.as_u64()) as usize).is_ok() { STATUS_SUCCESS } else { STATUS_MEMORY_NOT_ALLOCATED }
             }
             NtObjectCall::UnmapViewOfSectionEx { process, base, flags } => {
-                if process != CURRENT_PROCESS || flags != 0 { return STATUS_INVALID_PARAMETER; }
+                if !crate::nt_process_handles::permits_current_process(process, &cur, crate::nt_process_handles::PROCESS_VM_OPERATION)
+                    || flags != 0 { return STATUS_INVALID_PARAMETER; }
                 let Some(mm) = (unsafe { cur.mm_ref() }).map(|mm| mm.clone()) else { return STATUS_INVALID_PARAMETER; };
                 let Some(base) = hal::UserVirtAddr::new(base) else { return STATUS_INVALID_PARAMETER; };
                 let Some(vma) = mm.find_vma(base) else { return STATUS_MEMORY_NOT_ALLOCATED; };
@@ -1091,9 +1093,13 @@ pub fn dispatch(call: NtCall) -> u64 {
         | NtMemoryCall::Flush { process, .. } | NtMemoryCall::Lock { process, .. }
         | NtMemoryCall::Unlock { process, .. } => *process,
     };
-    if process != CURRENT_PROCESS { return STATUS_INVALID_PARAMETER; }
+    let required_access = match &call {
+        NtMemoryCall::Query { .. } => crate::nt_process_handles::PROCESS_QUERY_INFORMATION_ACCESS,
+        _ => crate::nt_process_handles::PROCESS_VM_OPERATION,
+    };
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    if !crate::nt_process_handles::permits_current_process(process, &cur, required_access) { return STATUS_INVALID_PARAMETER; }
     // SAFETY: the running task is the sole mm mutator during its syscall;
     // clone_mm pins the address space for the complete adapter operation.
     let Some(mm) = (unsafe { cur.mm_ref() }).map(|mm| mm.clone()) else { return STATUS_INVALID_PARAMETER; };
