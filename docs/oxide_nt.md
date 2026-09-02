@@ -1,6 +1,46 @@
 # Oxide NT Compatibility Architecture
 
-## Position
+FROZEN 2026-09-02. Dep:16,29,31,53.
+
+## 1
+
+The provider comparison leads to a specific Oxide answer: Oxide is not a
+replacement for Wine or Proton. It is a native NT host underneath a
+Wine-compatible userspace. Wine supplies the large Win32 compatibility
+surface; Proton remains an optional gaming bundle around that surface. Oxide
+supplies the process, memory, object, file, and syscall semantics that those
+components normally obtain from Linux plus Wine's Unix-side implementation.
+
+The boundary is therefore:
+
+```text
+Windows PE32+ application
+          |
+          v
+Wine-compatible Win32 DLLs
+          |
+          v
+Oxide ntdll-compatible relay
+          |
+          v
+Oxide NT personality
+          |
+          +-- native PE32+ execution and process setup
+          +-- NT handles, objects, waits, memory, files, and exceptions
+          |
+          v
+Common Oxide kernel services
+          |
+          +-- scheduler, VMM, VFS, IPC, networking, graphics, and audio
+```
+
+“Native” means that Windows application code and its NT-facing operations
+are hosted by Oxide's own kernel contract. It does not mean reimplementing
+every Win32 DLL, copying Wine's Unix server into the kernel, or emulating
+Windows kernel drivers. Linux applications continue through the Linux
+personality and the same common services.
+
+## 2
 
 Oxide is not attempting to become a second Wine or a second Windows. The
 project is implementing a native execution personality for 64-bit Windows
@@ -41,7 +81,7 @@ simulated solely by a userspace compatibility layer. The Linux personality
 continues to use the same common kernel services and remains an independent
 execution path.
 
-## Responsibility boundary
+## 3
 
 Oxide owns the mechanisms that must be correct before Windows userspace can
 run:
@@ -67,7 +107,7 @@ components can provide common game audio behavior. Those components consume
 the Win32/NT contract exposed by the runtime; they do not define the kernel's
 process model.
 
-## What Oxide is and is not
+## 4
 
 Oxide is a native host for a Windows compatibility runtime. It is not a
 Windows kernel binary emulator, and it does not promise that arbitrary
@@ -82,7 +122,7 @@ The supported workload is intentionally 64-bit only:
 - AArch64 kernel builds are preservation checks for shared Rust code, not an
   ARM Windows compatibility target.
 
-## Relationship to Wine and Proton
+## 5
 
 Wine is a compatibility layer that implements Windows userspace APIs and
 maps them to Unix facilities. Proton is a gaming distribution of Wine with
@@ -107,7 +147,7 @@ contracts. Linux and Windows reference implementations are used to verify
 the observable contract. The implementation must still use Oxide's own
 ownership, scheduler, memory, and VFS mechanisms.
 
-## Response to the Wine/Proton model
+## 6
 
 The comparison above is the right starting point, with one important change
 for Oxide: Oxide is not trying to replace Wine's Win32 implementation. It is
@@ -246,7 +286,7 @@ teardown while waiters exist, and repeated create/use/close cycles. That is
 what keeps a successful Notepad launch from becoming a collection of one-off
 paths that fail on the next application.
 
-## Execution milestones
+## 7
 
 The first executable milestone is a native 64-bit Notepad-style PE launch.
 That milestone proves the loader, process environment, ntdll relay, basic
