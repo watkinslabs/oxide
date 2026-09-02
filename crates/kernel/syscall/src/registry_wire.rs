@@ -13,6 +13,7 @@ pub const OPEN_RELATIVE: u8 = 8;
 pub const CREATE_RELATIVE: u8 = 9;
 pub const RENAME: u8 = 10;
 pub const FLUSH: u8 = 11;
+pub const QUERY_KEY: u8 = 12;
 
 pub const RESPONSE_SUCCESS: u8 = 0;
 pub const RESPONSE_HANDLE: u8 = 1;
@@ -20,6 +21,7 @@ pub const RESPONSE_VALUE: u8 = 2;
 pub const RESPONSE_FAILURE: u8 = 3;
 pub const RESPONSE_KEYS: u8 = 4;
 pub const RESPONSE_VALUES: u8 = 5;
+pub const RESPONSE_KEY_INFO: u8 = 6;
 
 pub const ERROR_INVALID_PATH: u8 = 1;
 pub const ERROR_MISSING_KEY: u8 = 2;

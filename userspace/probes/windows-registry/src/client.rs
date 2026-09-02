@@ -3,7 +3,7 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use syscall::registry_wire;
 
-use crate::{Error, KeyHandle, Request, Response, Root, Value, ValueType};
+use crate::{Error, KeyHandle, KeyInfo, Request, Response, Root, Value, ValueType};
 
 /// Native Linux socket client for one canonical registry service session.
 pub struct Client { stream: UnixStream }
@@ -63,6 +63,9 @@ impl Client {
     /// Enumerate typed values through a Windows-compatible session. # C: O(response bytes)
     pub fn enum_values(&mut self, key: KeyHandle) -> io::Result<Response> { self.execute(Request::EnumValues { key }) }
 
+    /// Query key metadata through the canonical registry service. # C: O(response bytes)
+    pub fn query_key(&mut self, key: KeyHandle) -> io::Result<Response> { self.execute(Request::QueryKey { key }) }
+
     /// Flush one open key through the canonical registry session. # C: O(1)
     pub fn flush(&mut self, key: KeyHandle) -> io::Result<Response> { self.execute(Request::Flush { key }) }
 }
@@ -87,6 +90,7 @@ fn encode_request(request: &Request) -> Result<Vec<u8>, Error> {
         Request::Close { key } => { out.push(5); put_u64(&mut out, key.raw()); }
         Request::EnumKeys { key } => { out.push(6); put_u64(&mut out, key.raw()); }
         Request::EnumValues { key } => { out.push(7); put_u64(&mut out, key.raw()); }
+        Request::QueryKey { key } => { out.push(registry_wire::QUERY_KEY); put_u64(&mut out, key.raw()); }
         Request::Flush { key } => { out.push(11); put_u64(&mut out, key.raw()); }
     } Ok(out)
 }
@@ -100,6 +104,7 @@ fn decode_response(frame: &[u8]) -> Result<Response, Error> {
         3 if frame.len() == 2 => Response::Failure(match frame[1] { 1 => Error::InvalidPath, 2 => Error::MissingKey, 3 => Error::MissingValue, 4 => Error::InvalidFile, 5 => Error::Io("remote I/O failure".into()), _ => return Err(Error::InvalidFile) }),
         registry_wire::RESPONSE_KEYS => { let mut at = 1; let count = take_u32(frame, &mut at).ok_or(Error::InvalidFile)? as usize; if count > super::MAX_RECORDS as usize { return Err(Error::InvalidFile); } let mut keys = Vec::with_capacity(count); for _ in 0..count { keys.push(String::from_utf8(take_bytes(frame, &mut at)?.to_vec()).map_err(|_| Error::InvalidFile)?); } if at != frame.len() { return Err(Error::InvalidFile); } Response::Keys(keys) },
         registry_wire::RESPONSE_VALUES => { let mut at = 1; let count = take_u32(frame, &mut at).ok_or(Error::InvalidFile)? as usize; if count > super::MAX_RECORDS as usize { return Err(Error::InvalidFile); } let mut values = Vec::with_capacity(count); for _ in 0..count { let name = String::from_utf8(take_bytes(frame, &mut at)?.to_vec()).map_err(|_| Error::InvalidFile)?; let kind = ValueType::decode(take_u32(frame, &mut at).ok_or(Error::InvalidFile)?).ok_or(Error::InvalidFile)?; let data = take_bytes(frame, &mut at)?.to_vec(); values.push((name, Value { kind, data })); } if at != frame.len() { return Err(Error::InvalidFile); } Response::Values(values) },
+        registry_wire::RESPONSE_KEY_INFO => { let mut at = 1; let name = String::from_utf8(take_bytes(frame, &mut at)?.to_vec()).map_err(|_| Error::InvalidFile)?; let subkeys = take_u32(frame, &mut at).ok_or(Error::InvalidFile)?; let max_subkey = take_u32(frame, &mut at).ok_or(Error::InvalidFile)?; let values = take_u32(frame, &mut at).ok_or(Error::InvalidFile)?; let max_value_name = take_u32(frame, &mut at).ok_or(Error::InvalidFile)?; let max_value_data = take_u32(frame, &mut at).ok_or(Error::InvalidFile)?; if at != frame.len() { return Err(Error::InvalidFile); } Response::KeyInfo(KeyInfo { name, subkeys, max_subkey, values, max_value_name, max_value_data }) },
         _ => return Err(Error::InvalidFile),
     };
     Ok(response)
