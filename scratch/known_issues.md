@@ -510,9 +510,10 @@ validation and the current en-US baseline LCID (`0x0409`).
 baseline (`LANGID 0x0409`).
 `NtQueryDirectoryObject` is now implemented through the canonical object
 directory namespace with restart/context and variable-record ABI handling.
-The graph now reaches `ntdll.dll!NtOpenProcess`; process-handle acquisition
-remains an explicit `STATUS_NOT_IMPLEMENTED` boundary pending the typed NT
-CLIENT_ID and access-check owner.
+`NtOpenProcess` now resolves cross-process NT `CLIENT_ID` values through the
+canonical scheduler registry, normalizes a target to its process-group leader,
+rejects Linux-personality targets, and installs a process-local handle with
+validated access rights. Remote memory access remains a separate boundary.
 The graph now reaches `ntdll.dll!NtOpenSection`; named-section lookup remains
 an explicit `STATUS_NOT_IMPLEMENTED` boundary pending the NT object namespace.
 The graph now reaches `ntdll.dll!NtOpenSemaphore`; named semaphore lookup
