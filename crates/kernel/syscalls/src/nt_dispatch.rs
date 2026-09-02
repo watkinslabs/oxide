@@ -210,6 +210,7 @@ pub fn dispatch(call: NtCall) -> u64 {
         // this operation as a successful no-op on x86/x86_64.
         return STATUS_SUCCESS;
     }
+    if let Some(result) = crate::nt_tls::dispatch(call) { return result; }
     if call.service == syscall::nt::NtService::NtGetContextThread {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }

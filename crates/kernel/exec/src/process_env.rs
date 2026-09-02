@@ -18,8 +18,11 @@ const TLS_OFF: usize = 0x180;
 // TLS_OFF: the latter is the ThreadLocalStoragePointer used by ntdll, while
 // the Win32 TLS API addresses the inline slots below directly.
 const TEB_CURRENT_LOCALE_OFF: usize = 0x108;
+#[cfg(test)]
 const TEB_TLS_SLOTS_OFF: usize = 0x1480;
+#[cfg(test)]
 const TEB_TLS_SLOTS: usize = 64;
+#[cfg(test)]
 const TEB_TLS_EXPANSION_SLOTS_OFF: usize = 0x1780;
 // Keep the process-parameter structure clear of PEB64's inline TLS expansion
 // bitmap at 0x240..0x2c0. The loader list/module records follow it.
