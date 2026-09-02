@@ -10,6 +10,7 @@ const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
 const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
 const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
+const STATUS_NO_MEMORY: u64 = 0xc000_0017;
 
 const SERVER_REQ_CLOSE_HANDLE: u32 = 21;
 const SERVER_REQ_CREATE_EVENT: u32 = 30;
@@ -28,6 +29,22 @@ const SERVER_REPLY_MANUAL_RESET: u64 = 8;
 const SERVER_REPLY_EVENT_STATE: u64 = 12;
 const EVENT_MODIFY_STATE: u32 = 0x0002;
 const EVENT_QUERY_STATE: u32 = 0x0001;
+const MUTANT_MODIFY_STATE: u32 = 0x0001;
+const MUTANT_QUERY_STATE: u32 = 0x0001;
+const SEMAPHORE_MODIFY_STATE: u32 = 0x0002;
+const SEMAPHORE_QUERY_STATE: u32 = 0x0001;
+const SERVER_REQ_CREATE_MUTEX: u32 = 36;
+const SERVER_REQ_RELEASE_MUTEX: u32 = 37;
+const SERVER_REQ_QUERY_MUTEX: u32 = 39;
+const SERVER_REQ_CREATE_SEMAPHORE: u32 = 40;
+const SERVER_REQ_RELEASE_SEMAPHORE: u32 = 41;
+const SERVER_REQ_QUERY_SEMAPHORE: u32 = 42;
+const SERVER_SYNC_ACCESS: u64 = 12;
+const SERVER_SYNC_VALUE: u64 = 16;
+const SERVER_SYNC_VALUE_TWO: u64 = 20;
+const SERVER_REPLY_VALUE: u64 = 8;
+const SERVER_REPLY_VALUE_TWO: u64 = 12;
+const SERVER_REPLY_VALUE_THREE: u64 = 16;
 const SERVER_REQ_SELECT: u32 = 23;
 const SERVER_SELECT_WAIT: u32 = 1;
 const SERVER_SELECT_WAIT_ALL: u32 = 2;
@@ -44,7 +61,7 @@ const SERVER_SELECT_REPLY_SIGNALED: u64 = 12;
 const SERVER_TIMEOUT_INFINITE: u64 = 0x7fff_ffff_ffff_ffff;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-enum ServerRequest { CloseHandle, CreateEvent, EventOp, QueryEvent, Select }
+enum ServerRequest { CloseHandle, CreateEvent, EventOp, QueryEvent, Select, CreateMutex, ReleaseMutex, QueryMutex, CreateSemaphore, ReleaseSemaphore, QuerySemaphore }
 
 fn select_opcode_kind(op: u32) -> Option<u32> {
     match op { SERVER_SELECT_WAIT => Some(0), SERVER_SELECT_WAIT_ALL => Some(1), _ => None }
@@ -57,6 +74,12 @@ fn server_request_kind(request: u32) -> Option<ServerRequest> {
         SERVER_REQ_EVENT_OP => Some(ServerRequest::EventOp),
         SERVER_REQ_QUERY_EVENT => Some(ServerRequest::QueryEvent),
         SERVER_REQ_SELECT => Some(ServerRequest::Select),
+        SERVER_REQ_CREATE_MUTEX => Some(ServerRequest::CreateMutex),
+        SERVER_REQ_RELEASE_MUTEX => Some(ServerRequest::ReleaseMutex),
+        SERVER_REQ_QUERY_MUTEX => Some(ServerRequest::QueryMutex),
+        SERVER_REQ_CREATE_SEMAPHORE => Some(ServerRequest::CreateSemaphore),
+        SERVER_REQ_RELEASE_SEMAPHORE => Some(ServerRequest::ReleaseSemaphore),
+        SERVER_REQ_QUERY_SEMAPHORE => Some(ServerRequest::QuerySemaphore),
         _ => None,
     }
 }
@@ -182,6 +205,59 @@ fn server_call(args: u64) -> u64 {
             let Some(event) = object.event() else { return server_reply(args, STATUS_INVALID_HANDLE); };
             if uaccess::put_user_u32(args + SERVER_REPLY_MANUAL_RESET, event.is_manual_reset() as u32).is_err() || uaccess::put_user_u32(args + SERVER_REPLY_EVENT_STATE, event.is_signaled() as u32).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
         }
+        ServerRequest::CreateMutex => {
+            let Ok(access) = uaccess::get_user_u32(args + SERVER_SYNC_ACCESS) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let Ok(owned) = uaccess::get_user_u32(args + SERVER_SYNC_VALUE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            if owned > 1 { STATUS_INVALID_PARAMETER } else {
+                let object = table.new_mutant((owned != 0).then_some(cur.tid as u64));
+                let Some(handle) = table.insert(object, access) else { return server_reply(args, STATUS_NO_MEMORY); };
+                if uaccess::put_user_u32(args + SERVER_REPLY_VALUE, handle.raw()).is_err() { let _ = table.close(handle); STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
+            }
+        }
+        ServerRequest::ReleaseMutex => {
+            let Ok(raw) = uaccess::get_user_u32(args + SERVER_HANDLE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let handle = sched::nt_object::NtHandle::from_raw(raw);
+            let Some(object) = table.get(handle, MUTANT_MODIFY_STATE) else { return server_reply(args, if table.contains(handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }); };
+            let Some(mutant) = object.mutant() else { return server_reply(args, STATUS_INVALID_HANDLE); };
+            let Ok(previous) = mutant.release(cur.tid as u64) else { return server_reply(args, STATUS_ACCESS_DENIED); };
+            if uaccess::put_user_u32(args + SERVER_REPLY_VALUE, previous as u32).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
+        }
+        ServerRequest::QueryMutex => {
+            let Ok(raw) = uaccess::get_user_u32(args + SERVER_HANDLE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let handle = sched::nt_object::NtHandle::from_raw(raw);
+            let Some(object) = table.get(handle, MUTANT_QUERY_STATE) else { return server_reply(args, if table.contains(handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }); };
+            let Some(mutant) = object.mutant() else { return server_reply(args, STATUS_INVALID_HANDLE); };
+            let (count, owned, abandoned) = mutant.basic_info(cur.tid as u64);
+            if uaccess::put_user_u32(args + SERVER_REPLY_VALUE, count as u32).is_err() || uaccess::put_user_u32(args + SERVER_REPLY_VALUE_TWO, owned as u32).is_err() || uaccess::put_user_u32(args + SERVER_REPLY_VALUE_THREE, abandoned as u32).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
+        }
+        ServerRequest::CreateSemaphore => {
+            let Ok(access) = uaccess::get_user_u32(args + SERVER_SYNC_ACCESS) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let Ok(initial) = uaccess::get_user_u32(args + SERVER_SYNC_VALUE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let Ok(maximum) = uaccess::get_user_u32(args + SERVER_SYNC_VALUE_TWO) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            if maximum == 0 || initial > maximum { STATUS_INVALID_PARAMETER } else {
+                let object = table.new_semaphore(initial as i64, maximum as i64);
+                let Some(handle) = table.insert(object, access) else { return server_reply(args, STATUS_NO_MEMORY); };
+                if uaccess::put_user_u32(args + SERVER_REPLY_VALUE, handle.raw()).is_err() { let _ = table.close(handle); STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
+            }
+        }
+        ServerRequest::ReleaseSemaphore => {
+            let Ok(raw) = uaccess::get_user_u32(args + SERVER_HANDLE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let Ok(count) = uaccess::get_user_u32(args + SERVER_SYNC_VALUE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let handle = sched::nt_object::NtHandle::from_raw(raw);
+            let Some(object) = table.get(handle, SEMAPHORE_MODIFY_STATE) else { return server_reply(args, if table.contains(handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }); };
+            let Some(semaphore) = object.semaphore() else { return server_reply(args, STATUS_INVALID_HANDLE); };
+            let Some(previous) = semaphore.release(count) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            table.wake_waiters();
+            if uaccess::put_user_u32(args + SERVER_REPLY_VALUE, previous).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
+        }
+        ServerRequest::QuerySemaphore => {
+            let Ok(raw) = uaccess::get_user_u32(args + SERVER_HANDLE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let handle = sched::nt_object::NtHandle::from_raw(raw);
+            let Some(object) = table.get(handle, SEMAPHORE_QUERY_STATE) else { return server_reply(args, if table.contains(handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }); };
+            let Some(semaphore) = object.semaphore() else { return server_reply(args, STATUS_INVALID_HANDLE); };
+            let (current, maximum) = semaphore.counts();
+            if uaccess::put_user_u32(args + SERVER_REPLY_VALUE, current).is_err() || uaccess::put_user_u32(args + SERVER_REPLY_VALUE_TWO, maximum).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
+        }
         ServerRequest::Select => STATUS_INVALID_PARAMETER,
     };
     server_reply(args, status)
@@ -262,6 +338,12 @@ mod tests {
         assert_eq!(server_request_kind(31), Some(ServerRequest::EventOp));
         assert_eq!(server_request_kind(32), Some(ServerRequest::QueryEvent));
         assert_eq!(server_request_kind(23), Some(ServerRequest::Select));
+        assert_eq!(server_request_kind(36), Some(ServerRequest::CreateMutex));
+        assert_eq!(server_request_kind(37), Some(ServerRequest::ReleaseMutex));
+        assert_eq!(server_request_kind(39), Some(ServerRequest::QueryMutex));
+        assert_eq!(server_request_kind(40), Some(ServerRequest::CreateSemaphore));
+        assert_eq!(server_request_kind(41), Some(ServerRequest::ReleaseSemaphore));
+        assert_eq!(server_request_kind(42), Some(ServerRequest::QuerySemaphore));
         assert_eq!(select_opcode_kind(1), Some(0));
         assert_eq!(select_opcode_kind(2), Some(1));
         assert_eq!(select_opcode_kind(3), None);

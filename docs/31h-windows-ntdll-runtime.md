@@ -78,6 +78,22 @@ manual-reset at 16, initial-state at 20, and event-operation handle/op at
 implemented. Handle close uses the same registry-key cleanup path as native NT
 close, preventing a second lifetime owner.
 
+## 7 Wine synchronization objects
+
+Wine server synchronization requests use the same process-local NT handle
+table as direct NT calls. Fixed packets are translated without a second object
+registry.
+
+| Request | ID | Native owner | Reply |
+|---|---:|---|---|
+| create/release/query mutex | 36/37/39 | `NtMutant` | handle, prior recursion, state |
+| create/release/query semaphore | 40/41/42 | `NtSemaphore` | handle, prior count, current/max |
+
+Unnamed objects are created with Wine’s requested access mask; mutex ownership
+uses the current NT thread and semaphore release wakes the native multiple-wait
+queue. Variable object-attribute data is a separate packet shape and is
+rejected until its native object-namespace translation is wired.
+
 `select` request 23 consumes the required APC-result vector followed by the
 operation vector. Wait and wait-all operations are converted to the native
 multiple-object wait path, including its handle access checks, signal
