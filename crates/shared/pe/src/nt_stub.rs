@@ -4,6 +4,18 @@ pub const X64_SIX_ARG_STUB_BYTES: usize = 39;
 pub const X64_BREAKPOINT_STUB_BYTES: usize = 2;
 pub const X64_RELAY_STUB_BYTES: usize = 206;
 
+/// Encode Wine's Unix-call dispatcher ABI: `(unixlib_handle, code, args)` in
+/// the Windows x64 registers becomes `(rdi, rsi, rdx)` for the NT entry.
+pub fn encode_x64_unix_call_dispatcher_stub(selector: u64) -> Vec<u8> {
+    let mut code = Vec::new();
+    code.extend_from_slice(&[0x57, 0x56]); // preserve Windows nonvolatiles
+    code.extend_from_slice(&[0x48, 0x89, 0xcf, 0x48, 0x89, 0xd6, 0x4c, 0x89, 0xc2]);
+    code.extend_from_slice(&[0x48, 0xb8]);
+    code.extend_from_slice(&selector.to_le_bytes());
+    code.extend_from_slice(&[0x0f, 0x05, 0x5e, 0x5f, 0xc3]);
+    code
+}
+
 /// Encode the x86-64 Wine syscall dispatcher ABI used by win32u and ntdll.
 /// Wine places the syscall ordinal in EAX and passes the Windows ABI argument
 /// list in registers plus the caller stack; Oxide receives the ordinal in RDI
@@ -209,6 +221,14 @@ mod tests {
         assert!(bytes.windows(4).any(|window| window == [0x48, 0x89, 0x84, 0x24]));
         assert!(bytes.windows(2).any(|window| window == [0x0f, 0x05]));
         assert_eq!(&bytes[bytes.len() - 13..], &[0x5f, 0x5e, 0x41, 0x5f, 0x41, 0x5e, 0x41, 0x5d, 0x41, 0x5c, 0x5d, 0x5b, 0xc3]);
+    }
+
+    #[test]
+    fn unix_call_dispatcher_translates_handle_code_and_args() {
+        let bytes = encode_x64_unix_call_dispatcher_stub(0x4e54_0000_0000_0218);
+        assert_eq!(&bytes[..11], &[0x57, 0x56, 0x48, 0x89, 0xcf, 0x48, 0x89, 0xd6, 0x4c, 0x89, 0xc2]);
+        assert!(bytes.windows(2).any(|window| window == [0x0f, 0x05]));
+        assert_eq!(&bytes[bytes.len() - 5..], &[0x0f, 0x05, 0x5e, 0x5f, 0xc3]);
     }
 }
 use alloc::vec::Vec;

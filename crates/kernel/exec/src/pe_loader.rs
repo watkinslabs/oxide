@@ -21,6 +21,8 @@ pub struct NtRuntime {
     pub bytes: usize,
     pub relay_call: u64,
     pub wine_dispatcher: u64,
+    pub wine_unix_dispatcher: u64,
+    pub wine_unixlib_handle: u64,
     addresses: [u64; 505],
 }
 const NTDLL_EXPORTS: [&[u8]; 505] = [
@@ -414,20 +416,25 @@ pub fn resolve_nt_runtime_export(base: u64, name: &[u8]) -> Option<u64> {
 /// Resolve the address of a runtime-owned exported entry.
 /// # C: O(1)
 pub fn resolve_nt_runtime_data_export(base: u64, name: &[u8]) -> Option<u64> {
-    if name != WINE_SYSCALL_DISPATCHER { return None; }
+    if name != WINE_SYSCALL_DISPATCHER && name != b"__wine_unix_call_dispatcher" && name != b"__wine_unixlib_handle" { return None; }
     let mut offset = 0u64;
     for (index, _) in NTDLL_EXPORTS.iter().enumerate() { offset = offset.checked_add(runtime_stub_bytes(index) as u64)?; }
     let continuation = pe::nt_stub::encode_x64_run_once_continuation(syscall::nt::NtService::RtlRunOnceComplete.entry());
     let relay = pe::nt_stub::X64_RELAY_STUB_BYTES as u64;
-    let dispatcher_offset = offset.checked_add(continuation.len() as u64)?.checked_add(8)?.checked_add(relay)?;
-    base.checked_add(dispatcher_offset)
+    let relay_offset = offset.checked_add(continuation.len() as u64)?.checked_add(8)?;
+    let dispatcher_offset = relay_offset.checked_add(relay)?;
+    let unix_dispatcher_offset = dispatcher_offset.checked_add(pe::nt_stub::encode_x64_wine_dispatcher_stub(syscall::nt::NtService::WineSyscall.entry()).len() as u64)?;
+    let handle_offset = unix_dispatcher_offset.checked_add(pe::nt_stub::encode_x64_unix_call_dispatcher_stub(syscall::nt::NtService::WineUnixCall.entry()).len() as u64)?;
+    let target = if name == WINE_SYSCALL_DISPATCHER { dispatcher_offset } else if name == b"__wine_unix_call_dispatcher" { unix_dispatcher_offset } else { handle_offset };
+    base.checked_add(target)
 }
 pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
     let page = hal::PAGE_SIZE_BYTES as usize;
     let continuation = pe::nt_stub::encode_x64_run_once_continuation(syscall::nt::NtService::RtlRunOnceComplete.entry());
     let stub_bytes: usize = NTDLL_EXPORTS.iter().enumerate().map(|(index, _)| runtime_stub_bytes(index)).sum();
     let wine_dispatcher = pe::nt_stub::encode_x64_wine_dispatcher_stub(syscall::nt::NtService::WineSyscall.entry());
-    let code_bytes = stub_bytes + continuation.len() + 8 + pe::nt_stub::X64_RELAY_STUB_BYTES + wine_dispatcher.len();
+    let wine_unix_dispatcher = pe::nt_stub::encode_x64_unix_call_dispatcher_stub(syscall::nt::NtService::WineUnixCall.entry());
+    let code_bytes = stub_bytes + continuation.len() + 8 + pe::nt_stub::X64_RELAY_STUB_BYTES + wine_dispatcher.len() + wine_unix_dispatcher.len() + 8;
     let mapped_bytes = (code_bytes + page - 1) / page * page;
     let mut code = alloc::vec![0u8; mapped_bytes];
     let mut addresses = [0u64; 505];
@@ -915,13 +922,19 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
     code[relay_offset..relay_offset + relay.len()].copy_from_slice(&relay);
     let dispatcher_offset = relay_offset + relay.len();
     code[dispatcher_offset..dispatcher_offset + wine_dispatcher.len()].copy_from_slice(&wine_dispatcher);
+    let unix_dispatcher_offset = dispatcher_offset + wine_dispatcher.len();
+    code[unix_dispatcher_offset..unix_dispatcher_offset + wine_unix_dispatcher.len()].copy_from_slice(&wine_unix_dispatcher);
+    let handle_offset = unix_dispatcher_offset + wine_unix_dispatcher.len();
+    code[handle_offset..handle_offset + 8].copy_from_slice(&syscall::nt::WINE_UNIXLIB_HANDLE.to_le_bytes());
     let data = as_.stash_bytes(code.into_boxed_slice());
     let base = as_.mmap(None, mapped_bytes, VmaProt::READ | VmaProt::EXEC, VmaFlags::PRIVATE,
         VmaBacking::KernelBytes { data, off: 0 }, false).map_err(|_| pe::Error::Einval)?;
     for address in &mut addresses { *address = base.as_u64().checked_add(*address).ok_or(pe::Error::Einval)?; }
     let relay_call = base.as_u64().checked_add(relay_offset as u64).ok_or(pe::Error::Einval)?;
     let wine_dispatcher = base.as_u64().checked_add(dispatcher_offset as u64).ok_or(pe::Error::Einval)?;
-    Ok(NtRuntime { base, bytes: mapped_bytes, relay_call, wine_dispatcher, addresses })
+    let wine_unix_dispatcher = base.as_u64().checked_add(unix_dispatcher_offset as u64).ok_or(pe::Error::Einval)?;
+    let wine_unixlib_handle = base.as_u64().checked_add(handle_offset as u64).ok_or(pe::Error::Einval)?;
+    Ok(NtRuntime { base, bytes: mapped_bytes, relay_call, wine_dispatcher, wine_unix_dispatcher, wine_unixlib_handle, addresses })
 }
 
 /// Resolve the private run-once callback continuation in the synthetic ntdll page.

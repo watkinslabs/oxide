@@ -391,6 +391,21 @@
     }
 
     #[test]
+    fn native_runtime_publishes_wine_unix_dispatcher_and_table_handle() {
+        let as_ = AddressSpace::new(0x20_000).unwrap();
+        let runtime = map_nt_runtime(&as_).unwrap();
+        let dispatcher = resolve_nt_runtime_data_export(runtime.base.as_u64(), b"__wine_unix_call_dispatcher").unwrap();
+        let handle = resolve_nt_runtime_data_export(runtime.base.as_u64(), b"__wine_unixlib_handle").unwrap();
+        assert_eq!(dispatcher, runtime.wine_unix_dispatcher);
+        assert_eq!(handle, runtime.wine_unixlib_handle);
+        assert_ne!(dispatcher, handle);
+        let vma = as_.find_vma(UserVirtAddr::new(handle).unwrap()).unwrap();
+        let data = match vma.backing { VmaBacking::KernelBytes { data, .. } => data, _ => panic!("Wine private exports must be kernel-backed") };
+        let offset = (handle - runtime.base.as_u64()) as usize;
+        assert_eq!(&data[offset..offset + 8], &syscall::nt::WINE_UNIXLIB_HANDLE.to_le_bytes());
+    }
+
+    #[test]
     fn module_set_maps_all_images_and_rolls_back_on_a_late_import_failure() {
         let first = tiny_pe();
         let second = tiny_pe();
