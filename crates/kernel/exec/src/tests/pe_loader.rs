@@ -386,7 +386,8 @@
         assert!(address >= runtime.base.as_u64() && address + 8 <= runtime.base.as_u64() + runtime.bytes as u64);
         let vma = as_.find_vma(UserVirtAddr::new(address).unwrap()).unwrap();
         assert!(matches!(vma.backing, VmaBacking::KernelBytes { .. }));
-        assert_eq!(address, runtime.relay_call);
+        assert_eq!(address, runtime.wine_dispatcher);
+        assert_ne!(runtime.relay_call, runtime.wine_dispatcher);
     }
 
     #[test]

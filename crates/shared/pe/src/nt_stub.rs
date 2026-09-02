@@ -4,6 +4,32 @@ pub const X64_SIX_ARG_STUB_BYTES: usize = 39;
 pub const X64_BREAKPOINT_STUB_BYTES: usize = 2;
 pub const X64_RELAY_STUB_BYTES: usize = 206;
 
+/// Encode the x86-64 Wine syscall dispatcher ABI used by win32u and ntdll.
+/// Wine places the syscall ordinal in EAX and passes the Windows ABI argument
+/// list in registers plus the caller stack; Oxide receives the ordinal in RDI
+/// and a contiguous seventeen-slot argument array in RSI.
+pub fn encode_x64_wine_dispatcher_stub(selector: u64) -> Vec<u8> {
+    let mut code = Vec::new();
+    code.extend_from_slice(&[0x53, 0x55, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x56, 0x57]);
+    code.extend_from_slice(&[0x4c, 0x8d, 0x64, 0x24, 0x40]); // r12 = entry rsp
+    code.extend_from_slice(&[0x48, 0x81, 0xec, 0x88, 0x00, 0x00, 0x00]);
+    code.extend_from_slice(&[0x48, 0x89, 0x0c, 0x24, 0x48, 0x89, 0x54, 0x24, 0x08]);
+    code.extend_from_slice(&[0x4c, 0x89, 0x44, 0x24, 0x10, 0x4c, 0x89, 0x4c, 0x24, 0x18]);
+    for index in 0..13u32 {
+        let source = 0x28 + index * 8;
+        let target = 0x20 + index * 8;
+        code.extend_from_slice(&[0x49, 0x8b, 0x84, 0x24]);
+        code.extend_from_slice(&source.to_le_bytes());
+        code.extend_from_slice(&[0x48, 0x89, 0x84, 0x24]);
+        code.extend_from_slice(&target.to_le_bytes());
+    }
+    code.extend_from_slice(&[0x89, 0xc7, 0x48, 0x89, 0xe6, 0x48, 0xb8]);
+    code.extend_from_slice(&selector.to_le_bytes());
+    code.extend_from_slice(&[0x0f, 0x05, 0x48, 0x81, 0xc4, 0x88, 0x00, 0x00, 0x00]);
+    code.extend_from_slice(&[0x5f, 0x5e, 0x41, 0x5f, 0x41, 0x5e, 0x41, 0x5d, 0x41, 0x5c, 0x5d, 0x5b, 0xc3]);
+    code
+}
+
 /// Encode the native relay resolver used as Wine's per-module `relay_call`.
 /// The Wine thunk has already saved the original Windows register arguments in
 /// its home area before entering this function. Translate the Windows relay
@@ -169,6 +195,17 @@ mod tests {
         assert!(bytes.windows(5).any(|window| window == [0x4d, 0x8b, 0x54, 0x24, 0]));
         let epilogue = [0xff, 0xd0, 0x48, 0x83, 0xc4, 0x60, 0x5f, 0x5e, 0x41, 0x5f, 0x41, 0x5e, 0x41, 0x5d, 0x41, 0x5c, 0x5d, 0x5b, 0xc3];
         assert!(bytes.windows(epilogue.len()).any(|window| window == epilogue));
+    }
+
+    #[test]
+    fn wine_dispatcher_copies_all_x64_arguments_and_ordinal() {
+        let bytes = encode_x64_wine_dispatcher_stub(0x4e54_0000_0000_0217);
+        assert!(bytes.len() > 200);
+        assert!(bytes.windows(4).any(|window| window == [0x89, 0xc7, 0x48, 0x89]));
+        assert!(bytes.windows(4).any(|window| window == [0x49, 0x8b, 0x84, 0x24]));
+        assert!(bytes.windows(4).any(|window| window == [0x48, 0x89, 0x84, 0x24]));
+        assert!(bytes.windows(2).any(|window| window == [0x0f, 0x05]));
+        assert_eq!(&bytes[bytes.len() - 13..], &[0x5f, 0x5e, 0x41, 0x5f, 0x41, 0x5e, 0x41, 0x5d, 0x41, 0x5c, 0x5d, 0x5b, 0xc3]);
     }
 }
 use alloc::vec::Vec;
