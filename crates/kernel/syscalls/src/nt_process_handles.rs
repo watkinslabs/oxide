@@ -18,6 +18,7 @@ const SYNCHRONIZE: u32 = 0x0010_0000;
 const PROCESS_QUERY_INFORMATION: u32 = 0x0000_0400;
 const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x0000_1000;
 const PROCESS_TERMINATE: u32 = 0x0000_0001;
+pub(crate) const PROCESS_CREATE_THREAD: u32 = 0x0000_0002;
 const PROCESS_BASIC_INFORMATION_CLASS: u32 = 0;
 const PROCESS_BASIC_INFORMATION_BYTES: usize = 48;
 
@@ -118,6 +119,16 @@ fn process_task(raw: u64, table: &sched::nt_object::NtHandleTable, access: u32)
     let object = table.get(handle, access)?;
     if object.kind() != sched::nt_object::NtObjectType::Process { return None; }
     object.task()
+}
+
+/// Validate a process pseudo-handle or native handle against one caller's
+/// canonical process group. # C: O(1)
+pub(crate) fn permits_current_process(raw: u64, cur: &sched::Task, access: u32) -> bool {
+    if raw == u64::MAX { return true; }
+    let table = cur.thread_group.nt_handles();
+    let Some(target) = process_task(raw, table, access) else { return false; };
+    target.tgid.load(core::sync::atomic::Ordering::Acquire)
+        == cur.tgid.load(core::sync::atomic::Ordering::Acquire)
 }
 
 fn valid_object_attributes(attributes: Option<syscall::UserPtr<u8>>) -> bool {

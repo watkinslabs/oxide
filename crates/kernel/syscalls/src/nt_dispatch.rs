@@ -1020,7 +1020,8 @@ pub fn dispatch(call: NtCall) -> u64 {
             NtObjectCall::CreateIoCompletion { .. } | NtObjectCall::SetIoCompletion { .. } | NtObjectCall::RemoveIoCompletion { .. } | NtObjectCall::SignalAndWait { .. } => STATUS_INVALID_PARAMETER,
             NtObjectCall::OpenProcessToken { .. } | NtObjectCall::OpenThreadToken { .. } | NtObjectCall::QueryToken { .. } => STATUS_INVALID_PARAMETER,
             NtObjectCall::CreateThreadEx { handle, process, start, parameter, stack_size, flags } => {
-                if process != CURRENT_PROCESS || flags != 0 || start == 0 { return STATUS_INVALID_PARAMETER; }
+                if !crate::nt_process_handles::permits_current_process(process, &cur, crate::nt_process_handles::PROCESS_CREATE_THREAD)
+                    || flags != 0 || start == 0 { return STATUS_INVALID_PARAMETER; }
                 let Some(entry) = hal::UserVirtAddr::new(start) else { return STATUS_INVALID_PARAMETER; };
                 #[cfg(feature = "debug-faultdiag")]
                 {
