@@ -312,3 +312,17 @@ pub(crate) fn create_class_window_for_current(name: &[u16], parent: u64) -> Opti
     let wndproc = entries[index].state.class_wndproc(name)?;
     entries[index].state.create(cur.tid as u64, parent, wndproc).ok().map(|window| window.raw() as u64)
 }
+
+/// Resolve the WndProc stored in the current process's canonical HWND state.
+/// # C: O(N_process_gui_states + N_windows)
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn window_wndproc_for_current(hwnd: u64) -> Option<u64> {
+    let cur = sched::live::current()?;
+    if !cur.is_nt_personality() || hwnd > u32::MAX as u64 { return None; }
+    let group = Arc::clone(&cur.thread_group);
+    let window = ipc::win32_window::WindowId::from_raw(hwnd as u32)?;
+    let mut entries = GUI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))?;
+    entries[index].state.get(window).map(|record| record.wndproc)
+}

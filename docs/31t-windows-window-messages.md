@@ -33,3 +33,13 @@ address is selected when Wine creates a window through `NtUserCreateWindowEx`.
 Direct native window creation continues to accept an already-resolved
 procedure address. Duplicate or malformed class registrations fail before
 window allocation.
+
+## 5 Synchronous WndProc dispatch
+
+Wine's `NtUserDispatchMessage` ordinal (`0x138b`) reads the canonical 64-bit
+`MSG`, resolves the window's retained procedure, and transfers the live
+x86-64 NT entry frame using the Windows register ABI. The synthetic ntdll
+page supplies the return leg: a WndProc's `LRESULT` is written to its home
+area and returned through `NtCallbackReturn`, which restores the suspended
+syscall frame. The shared AArch64 kernel build keeps this path gated because
+the Windows workload is x86-64 only; it does not claim an ARM callback ABI.

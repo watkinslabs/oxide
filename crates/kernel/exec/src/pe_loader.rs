@@ -413,6 +413,14 @@ pub fn resolve_nt_runtime_export(base: u64, name: &[u8]) -> Option<u64> {
     None
 }
 
+/// Resolve the private synchronous window-procedure continuation.
+pub fn resolve_nt_runtime_wndproc_continuation(base: u64) -> Option<u64> {
+    let mut offset = 0u64;
+    for (index, _) in NTDLL_EXPORTS.iter().enumerate() { offset = offset.checked_add(runtime_stub_bytes(index) as u64)?; }
+    offset = offset.checked_add(pe::nt_stub::encode_x64_run_once_continuation(syscall::nt::NtService::RtlRunOnceComplete.entry()).len() as u64)?;
+    base.checked_add(offset)
+}
+
 /// Resolve the address of a runtime-owned exported entry.
 /// # C: O(1)
 pub fn resolve_nt_runtime_data_export(base: u64, name: &[u8]) -> Option<u64> {
@@ -420,8 +428,9 @@ pub fn resolve_nt_runtime_data_export(base: u64, name: &[u8]) -> Option<u64> {
     let mut offset = 0u64;
     for (index, _) in NTDLL_EXPORTS.iter().enumerate() { offset = offset.checked_add(runtime_stub_bytes(index) as u64)?; }
     let continuation = pe::nt_stub::encode_x64_run_once_continuation(syscall::nt::NtService::RtlRunOnceComplete.entry());
+    let wndproc_continuation = pe::nt_stub::encode_x64_wndproc_continuation(syscall::nt::NtService::CallbackReturn.entry());
     let relay = pe::nt_stub::X64_RELAY_STUB_BYTES as u64;
-    let relay_offset = offset.checked_add(continuation.len() as u64)?.checked_add(8)?;
+    let relay_offset = offset.checked_add(continuation.len() as u64)?.checked_add(wndproc_continuation.len() as u64)?.checked_add(8)?;
     let dispatcher_offset = relay_offset.checked_add(relay)?;
     let unix_dispatcher_offset = dispatcher_offset.checked_add(pe::nt_stub::encode_x64_wine_dispatcher_stub(syscall::nt::NtService::WineSyscall.entry()).len() as u64)?;
     let handle_offset = unix_dispatcher_offset.checked_add(pe::nt_stub::encode_x64_unix_call_dispatcher_stub(syscall::nt::NtService::WineUnixCall.entry()).len() as u64)?;
@@ -434,7 +443,8 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
     let stub_bytes: usize = NTDLL_EXPORTS.iter().enumerate().map(|(index, _)| runtime_stub_bytes(index)).sum();
     let wine_dispatcher = pe::nt_stub::encode_x64_wine_dispatcher_stub(syscall::nt::NtService::WineSyscall.entry());
     let wine_unix_dispatcher = pe::nt_stub::encode_x64_unix_call_dispatcher_stub(syscall::nt::NtService::WineUnixCall.entry());
-    let code_bytes = stub_bytes + continuation.len() + 8 + pe::nt_stub::X64_RELAY_STUB_BYTES + wine_dispatcher.len() + wine_unix_dispatcher.len() + 8;
+    let wndproc_continuation = pe::nt_stub::encode_x64_wndproc_continuation(syscall::nt::NtService::CallbackReturn.entry());
+    let code_bytes = stub_bytes + continuation.len() + wndproc_continuation.len() + 8 + pe::nt_stub::X64_RELAY_STUB_BYTES + wine_dispatcher.len() + wine_unix_dispatcher.len() + 8;
     let mapped_bytes = (code_bytes + page - 1) / page * page;
     let mut code = alloc::vec![0u8; mapped_bytes];
     let mut addresses = [0u64; 505];
@@ -917,7 +927,9 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
         offset += bytes.len();
     }
     code[offset..offset + continuation.len()].copy_from_slice(&continuation);
-    let relay_offset = offset + continuation.len() + 8;
+    offset += continuation.len();
+    code[offset..offset + wndproc_continuation.len()].copy_from_slice(&wndproc_continuation);
+    let relay_offset = offset + wndproc_continuation.len() + 8;
     let relay = pe::nt_stub::encode_x64_relay_stub(syscall::nt::NtService::RelayCall.entry());
     code[relay_offset..relay_offset + relay.len()].copy_from_slice(&relay);
     let dispatcher_offset = relay_offset + relay.len();

@@ -3,6 +3,7 @@
 use syscall::{nt::{NtCall, NtService}, SyscallArgs}; use alloc::{string::String, vec, vec::Vec}; use sync::{Modules as ModulesLockClass, Spinlock};
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d; const STATUS_BUFFER_OVERFLOW: u64 = 0x8000_0005; const STATUS_INVALID_PARAMETER_2: u64 = 0xc000_00f0; const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
 const STATUS_PENDING: u64 = 0x0000_0103; const STATUS_UNSUCCESSFUL: u64 = 0xc000_0001;
+const STATUS_NO_CALLBACK_ACTIVE: u64 = 0xc000_0258;
 const STATUS_NAME_TOO_LONG: u64 = 0xc000_0106; const UNICODE_STRING_BYTES: usize = 16; const UNICODE_STRING_MAX: u32 = 0xfffc; const ANSI_STRING_MAX: u32 = 0xfffe;
 const STATUS_INVALID_SID: u64 = 0xc000_0078; const STATUS_INVALID_ACL: u64 = 0xc000_0077; const STATUS_REVISION_MISMATCH: u64 = 0xc000_0059; const STATUS_ALLOTTED_SPACE_EXCEEDED: u64 = 0xc000_0099;
 const ACL_HEADER_BYTES: usize = 8; const ACE_HEADER_BYTES: usize = 4; const SID_HEADER_BYTES: usize = 8; const MAX_SUBAUTHORITIES: usize = 15; const SECURITY_DESCRIPTOR_BYTES: usize = 20; const STATUS_UNKNOWN_REVISION: u64 = 0xc000_0058;
@@ -550,6 +551,62 @@ fn run_once_execute_once_x86(once: u64, func: u64, param: u64, context: u64) -> 
     frame.r14 = post_syscall_rip;
     frame.r15 = post_syscall_rsp;
     STATUS_PENDING
+}
+
+/// Transfer the active x86-64 NT syscall frame into a Windows WndProc. The
+/// procedure returns through the synthetic ntdll continuation and
+/// `NtCallbackReturn`, which restores the suspended syscall frame.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn begin_wndproc_callback(hwnd: u64, message: u64, wparam: u64, lparam: u64, wndproc: u64) -> u64 {
+    if hwnd == 0 || wndproc == 0 || !uaccess::access_ok(wndproc, 1) { return STATUS_INVALID_PARAMETER; }
+    let Some(task) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !task.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let ntdll = crate::nt_loader_proc::module_base_by_name(task, b"ntdll.dll").unwrap_or(0);
+    let Some(continuation) = elf_load::pe_loader::resolve_nt_runtime_wndproc_continuation(ntdll) else { return STATUS_INVALID_PARAMETER; };
+    let regs = hal_x86_64::current_pt_regs();
+    if regs.is_null() { return STATUS_INVALID_PARAMETER; }
+    let frame = unsafe { &mut *regs };
+    let callback_rsp = frame.rsp.checked_sub(48).unwrap_or(0);
+    if callback_rsp == 0 || callback_rsp & 0xf != 8 { return STATUS_INVALID_PARAMETER; }
+    for slot in 0..4u64 { if uaccess::put_user_u64(callback_rsp + 8 + slot * 8, 0).is_err() { return STATUS_INVALID_PARAMETER; } }
+    if uaccess::put_user_u64(callback_rsp, continuation).is_err() { return STATUS_INVALID_PARAMETER; }
+    let post_rip = frame.rip;
+    let post_rsp = frame.rsp;
+    frame.rip = wndproc;
+    frame.rsp = callback_rsp;
+    frame.rcx = hwnd;
+    frame.rdx = message;
+    frame.r8 = wparam;
+    frame.r9 = lparam;
+    frame.r14 = post_rip;
+    frame.r15 = post_rsp;
+    STATUS_PENDING
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn begin_wndproc_callback(_: u64, _: u64, _: u64, _: u64, _: u64) -> u64 { STATUS_NOT_SUPPORTED }
+
+/// Complete a synchronous callback and restore the syscall frame that
+/// initiated it. Wine passes a pointer to one eight-byte LRESULT.
+pub(crate) fn callback_return(call: NtCall) -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let regs = hal_x86_64::current_pt_regs();
+        if regs.is_null() { return STATUS_NO_CALLBACK_ACTIVE; }
+        let frame = unsafe { &mut *regs };
+        if frame.r14 == 0 || frame.r15 == 0 || call.args.a1 != 8 { return STATUS_NO_CALLBACK_ACTIVE; }
+        let result = uaccess::get_user_u64(call.args.a0).unwrap_or(0);
+        let rip = frame.r14;
+        let rsp = frame.r15;
+        frame.r14 = 0;
+        frame.r15 = 0;
+        frame.rip = rip;
+        frame.rsp = rsp;
+        frame.rax = result;
+        result
+    }
+    #[cfg(target_arch = "aarch64")]
+    { let _ = call; STATUS_NO_CALLBACK_ACTIVE }
 }
 
 fn append_path_component(target: &mut alloc::vec::Vec<u16>, value: &[u16]) { target.extend_from_slice(value); target.push(b';' as u16); }

@@ -26,6 +26,7 @@ const WINE_DELETE_OBJECT: u64 = 0x118f;
 const WINE_GET_TEXT_METRICS: u64 = 0x1229;
 const WINE_GET_TEXT_EXTENT_EX: u64 = 0x1227;
 const WINE_REGISTER_CLASS_EX: u64 = 0x14eb;
+const WINE_DISPATCH_MESSAGE: u64 = 0x138b;
 
 #[cfg(target_os = "oxide-kernel")]
 fn read_args(pointer: u64) -> Option<[u64; 17]> {
@@ -68,6 +69,15 @@ pub fn dispatch(call: NtCall) -> u64 {
     let native = |service: NtService, args: SyscallArgs| crate::nt_window::dispatch(NtCall { service, args }).unwrap_or(STATUS_INVALID_PARAMETER);
     let gdi = |service: NtService, args: SyscallArgs| crate::nt_gdi::dispatch(NtCall { service, args }).unwrap_or(STATUS_INVALID_PARAMETER);
     match ordinal {
+        WINE_DISPATCH_MESSAGE => {
+            let msg = args[0];
+            let Ok(hwnd) = uaccess::get_user_u64(msg) else { return STATUS_INVALID_PARAMETER; };
+            let Ok(message) = uaccess::get_user_u32(msg.saturating_add(8)) else { return STATUS_INVALID_PARAMETER; };
+            let Ok(wparam) = uaccess::get_user_u64(msg.saturating_add(16)) else { return STATUS_INVALID_PARAMETER; };
+            let Ok(lparam) = uaccess::get_user_u64(msg.saturating_add(24)) else { return STATUS_INVALID_PARAMETER; };
+            let Some(wndproc) = crate::nt_window::window_wndproc_for_current(hwnd) else { return STATUS_INVALID_PARAMETER; };
+            crate::nt_rtl::begin_wndproc_callback(hwnd, message as u64, wparam, lparam, wndproc)
+        }
         WINE_REGISTER_CLASS_EX => {
             if args[0] == 0 || uaccess::get_user_u32(args[0]).ok() != Some(80) { return 0; }
             let Some(name) = read_unicode_string(args[1]) else { return 0; };

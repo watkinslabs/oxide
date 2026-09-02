@@ -265,7 +265,7 @@ pub fn dispatch(call: NtCall) -> u64 {
     if let Some(result) = crate::nt_acl::dispatch(call) { return result; }
     if let Some(result) = crate::nt_directory::dispatch(call) { return result; }
     if let Some(result) = crate::nt_nls::dispatch(call) { return result; }
-    if call.service == syscall::nt::NtService::CallbackReturn { return STATUS_NO_CALLBACK_ACTIVE; }
+    if call.service == syscall::nt::NtService::CallbackReturn { return crate::nt_rtl::callback_return(call); }
     if call.service == syscall::nt::NtService::NtFlushInstructionCache {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() || call.args.a0 != CURRENT_PROCESS { return STATUS_INVALID_PARAMETER; }
