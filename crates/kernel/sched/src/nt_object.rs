@@ -6,7 +6,7 @@
 extern crate alloc;
 #[path = "nt_object/namespace.rs"]
 mod namespace;
-pub use namespace::{directory_entries, directory_path, lookup_directory};
+pub use namespace::{create_event, directory_entries, directory_path, lookup_directory, lookup_object, NamedEventState};
 #[path = "nt_object/mutant.rs"]
 mod mutant;
 pub use mutant::NtMutant;

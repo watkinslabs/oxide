@@ -46,6 +46,9 @@ const STATUS_NO_MEMORY: u64 = 0xc000_0017;
 const STATUS_MEMORY_NOT_ALLOCATED: u64 = 0xc000_00a0;
 #[cfg(target_os = "oxide-kernel")]
 const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
+const STATUS_OBJECT_NAME_COLLISION: u64 = 0xc000_0035;
+const STATUS_OBJECT_TYPE_MISMATCH: u64 = 0xc000_0024;
+const STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xc000_0034;
 #[cfg(target_os = "oxide-kernel")]
 const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
 #[cfg(target_os = "oxide-kernel")]
@@ -55,8 +58,12 @@ const STATUS_NOT_SAME_OBJECT: u64 = 0xc000_01ac;
 const STATUS_INFO_LENGTH_MISMATCH: u64 = 0xc000_0004;
 const STATUS_INVALID_INFO_CLASS: u64 = 0xc000_0003;
 const STATUS_NO_CALLBACK_ACTIVE: u64 = 0xc000_0258;
-#[cfg(target_os = "oxide-kernel")]
 const EVENT_ALL_ACCESS: u32 = 0x001f_0003;
+const GENERIC_ALL: u32 = 0x1000_0000;
+const GENERIC_READ: u32 = 0x8000_0000;
+const GENERIC_WRITE: u32 = 0x4000_0000;
+const GENERIC_EXECUTE: u32 = 0x2000_0000;
+const EVENT_ALLOWED_ACCESS: u32 = EVENT_ALL_ACCESS | GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | GENERIC_ALL;
 #[cfg(target_os = "oxide-kernel")]
 const EVENT_MODIFY_STATE: u32 = 0x0002;
 #[cfg(target_os = "oxide-kernel")]
@@ -92,7 +99,6 @@ const SECTION_QUERY: u32 = 0x0001;
 const SECTION_MAP_READ: u32 = 0x0004;
 const SECTION_MAP_WRITE: u32 = 0x0002;
 const FILE_READ_DATA: u32 = 0x0001;
-const GENERIC_READ: u32 = 0x8000_0000;
 const FILE_GENERIC_READ: u32 = 0x0012_0089;
 const THREAD_ALL_ACCESS: u32 = 0x001f_03ff;
 const THREAD_TERMINATE: u32 = 0x0001;
@@ -508,10 +514,15 @@ pub fn dispatch(call: NtCall) -> u64 {
     }
     if call.service == syscall::nt::NtService::NtOpenEvent {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-        if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
-        // The NT object table has no named-object namespace yet, so an event
-        // cannot be resolved safely from OBJECT_ATTRIBUTES.
-        return STATUS_NOT_IMPLEMENTED;
+        if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a2 == 0 { return STATUS_INVALID_PARAMETER; }
+        if call.args.a1 as u32 & !EVENT_ALLOWED_ACCESS != 0 { return STATUS_INVALID_PARAMETER; }
+        let table = cur.thread_group.nt_handles();
+        let Some(path) = crate::nt_directory::resolve_object_path(call.args.a2, &table) else { return STATUS_INVALID_PARAMETER; };
+        let Some(object) = sched::nt_object::lookup_object(&path, sched::nt_object::NtObjectType::Event) else { return STATUS_OBJECT_NAME_NOT_FOUND; };
+        let access = if call.args.a1 as u32 & GENERIC_ALL != 0 { call.args.a1 as u32 | EVENT_ALL_ACCESS } else { call.args.a1 as u32 };
+        let Some(handle) = table.insert(object, access) else { return STATUS_NO_MEMORY; };
+        if uaccess::put_user_u32(call.args.a0, handle.raw()).is_err() { let _ = table.close(handle); return STATUS_INVALID_PARAMETER; }
+        return STATUS_SUCCESS;
     }
     if call.service == syscall::nt::NtService::OpenKey {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
@@ -795,12 +806,22 @@ pub fn dispatch(call: NtCall) -> u64 {
                 cur.set_nt_job_id(0);
                 return crate::s060_exit::sys_exit_group(&SyscallArgs { a0: status, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }) as u64;
             }
-            NtObjectCall::CreateEvent { handle, desired_access, event_type, initial_state } => {
-                if desired_access & !EVENT_ALL_ACCESS != 0 || event_type > 1 || initial_state > 1 { return STATUS_INVALID_PARAMETER; }
+            NtObjectCall::CreateEvent { handle, desired_access, attributes, event_type, initial_state } => {
+                if desired_access & !EVENT_ALLOWED_ACCESS != 0 || event_type > 1 || initial_state > 1 { return STATUS_INVALID_PARAMETER; }
+                let granted_access = if desired_access & GENERIC_ALL != 0 { desired_access | EVENT_ALL_ACCESS } else { desired_access };
+                if attributes != 0 {
+                    let Some(path) = crate::nt_directory::resolve_object_path(attributes, &table) else { return STATUS_INVALID_PARAMETER; };
+                    let (object, state) = sched::nt_object::create_event(&path, event_type == 0, initial_state != 0);
+                    if state == sched::nt_object::NamedEventState::TypeMismatch { return STATUS_OBJECT_TYPE_MISMATCH; }
+                    if state == sched::nt_object::NamedEventState::ParentMissing { return STATUS_OBJECT_NAME_NOT_FOUND; }
+                    let Some(native) = table.insert(object, granted_access) else { return STATUS_NO_MEMORY; };
+                    if uaccess::put_user_u32(handle.as_u64(), native.raw()).is_err() { let _ = table.close(native); return STATUS_INVALID_PARAMETER; }
+                    return if state == sched::nt_object::NamedEventState::Existing { STATUS_OBJECT_NAME_COLLISION } else { STATUS_SUCCESS };
+                }
                 // Native EVENT_TYPE 0 is NotificationEvent (manual reset),
                 // while 1 is SynchronizationEvent (auto reset).
                 let object = table.new_event(event_type == 0, initial_state != 0);
-                let Some(native) = table.insert(object, desired_access) else { return STATUS_NO_MEMORY; };
+                let Some(native) = table.insert(object, granted_access) else { return STATUS_NO_MEMORY; };
                 if uaccess::put_user_u32(handle.as_u64(), native.raw()).is_err() {
                     let _ = table.close(native);
                     STATUS_INVALID_PARAMETER

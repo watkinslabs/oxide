@@ -355,6 +355,13 @@ not reach a valid desktop sample.
 | E4-15 | DONE | The controlled GNOME/SMP=1 comparison and phase attribution are recorded. The result does not claim a whole-boot gain: the current run remains within the documented workload variance and attributes the dominant resolution cost to parent-lock waits, not inode-table lookup selection. | `scratch/perf-history.md` E4-15 perf-r1 and perf-r2; `target/perf-report-x86_64.log`; fresh-main repeatability run. |
 | E4-16 | DONE | Historical ext4 ledger rows are explicitly historical, mapped to the E4 inventory, and no longer carry the stale pending SHA or old current-suite count. | `scratch/perf-history.md` E4-08 maps to merged `6da0ed7c0`; the superseded 62-failure row records the current 373-unit/full-image harness result. |
 
+Windows NT frontier update (2026-09-02): the canonical NT object namespace now
+owns named event creation/opening over the native event wait object. Named
+events reuse one object identity across handles, report type collisions, and
+are enumerated as Event entries; missing parent directories cannot be created.
+The graph's `NtOpenEvent` boundary is now native rather than an explicit
+unsupported result.
+
 Windows NT frontier update: the Notepad import graph now resolves through
 `NtAdjustGroupsToken`; its bounded replacement/reset path is implemented, while
 previous-state/return-length buffers and `NtAdjustPrivilegesToken` remain open.
@@ -492,9 +499,8 @@ boundary until the NT event/APC owner is connected to VFS notifications.
 The graph then reaches `ntdll.dll!NtNotifyChangeKey`; registry notification
 remains an explicit `STATUS_NOT_IMPLEMENTED` boundary until the registry
 service has an NT-owned async watch protocol.
-The graph now reaches `ntdll.dll!NtOpenEvent`; opening named events remains an
-explicit `STATUS_NOT_IMPLEMENTED` boundary until the NT object namespace is
-implemented.
+`NtOpenEvent` is now implemented through the canonical named-event namespace;
+the earlier unsupported-boundary note is superseded by the 2026-09-02 update.
 `NtQueryAttributesFile` is implemented through the canonical VFS resolver and
 inode metadata owner, with Windows `FILE_BASIC_INFORMATION` time and type
 translation.
@@ -502,8 +508,8 @@ translation.
 validation and the current en-US baseline LCID (`0x0409`).
 `NtQueryDefaultUILanguage` is implemented against the same validated en-US
 baseline (`LANGID 0x0409`).
-The graph now reaches `ntdll.dll!NtQueryDirectoryObject`; NT object-directory
-enumeration remains an explicit `STATUS_NOT_IMPLEMENTED` boundary.
+`NtQueryDirectoryObject` is now implemented through the canonical object
+directory namespace with restart/context and variable-record ABI handling.
 The graph now reaches `ntdll.dll!NtOpenProcess`; process-handle acquisition
 remains an explicit `STATUS_NOT_IMPLEMENTED` boundary pending the typed NT
 CLIENT_ID and access-check owner.
