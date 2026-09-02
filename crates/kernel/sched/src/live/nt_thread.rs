@@ -38,6 +38,20 @@ pub unsafe fn new_nt_thread_unpublished(
         let regs = ((*ctx).rsp + core::mem::size_of::<u64>() as u64) as *mut hal_x86_64::PtRegs;
         (*regs).rcx = parameter;
         (*ctx).gs_base = teb;
+        #[cfg(feature = "debug-faultdiag")]
+        {
+            klog::write_raw(b"[WINDOWS-PE-THREAD-CONTEXT] tid=");
+            klog::write_dec_u64(tid as u64);
+            klog::write_raw(b" rip=");
+            klog::write_hex_u64((*regs).rip);
+            klog::write_raw(b" rsp=");
+            klog::write_hex_u64((*regs).rsp);
+            klog::write_raw(b" rcx=");
+            klog::write_hex_u64((*regs).rcx);
+            klog::write_raw(b" gs=");
+            klog::write_hex_u64((*ctx).gs_base);
+            klog::write_raw(b"\n");
+        }
     }
     #[cfg(target_arch = "aarch64")]
     // SAFETY: child is unpublished and its context is exclusively initialized here.

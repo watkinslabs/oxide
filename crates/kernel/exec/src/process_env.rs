@@ -7,6 +7,9 @@ pub const X64_SHADOW_SPACE: u64 = 32;
 #[cfg(test)]
 const PAGE: usize = 4096;
 const THREAD_TEB_BYTES: usize = 0x4000;
+const TEB_SYSCALL_FRAME_OFFSET: usize = 0x378;
+const THREAD_SYSCALL_FRAME_OFF: usize = 0x3000;
+const PROCESS_SYSCALL_FRAME_OFF: usize = 0x7000;
 pub const NT_DEBUG_INFO_OFFSET: u64 = 0x2f00;
 const PEB_OFF: usize = 0x000;
 const TEB_OFF: usize = 0x100;
@@ -17,11 +20,20 @@ const MOD_OFF: usize = 0x500;
 const MOD_STRIDE: usize = 0x70;
 const MAX_MODULES: usize = 64;
 const ENV_OFF: usize = 0x1000;
-const STR_OFF: usize = 0x800;
+const STR_OFF: usize = 0x2200;
 const CURRENT_DIR: &str = "C:\\Windows";
 const CURRENT_DIR_STORAGE: usize = 0x400;
-const API_SET_OFF: usize = 0x2800;
-const BLOCK_BYTES: usize = 0x4000;
+const API_SET_OFF: usize = 0x5000;
+// Storage for the RTL_BITMAP descriptors. The bit buffers themselves live at
+// the PEB offsets prescribed by winternl.h, while these descriptors are kept
+// in otherwise-unused environment space below the API-set map.
+const TLS_BITMAP_DESC_OFF: usize = 0x6800;
+const TLS_EXP_BITMAP_DESC_OFF: usize = 0x6820;
+const BLOCK_BYTES: usize = 0x8000;
+#[cfg(target_os = "oxide-kernel")]
+const USER_SHARED_DATA_BASE: u64 = 0x7ffe_0000;
+#[cfg(target_os = "oxide-kernel")]
+const USER_SHARED_DATA_BYTES: usize = 0x1000;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct NtProcessEnvironment {
@@ -78,6 +90,7 @@ pub fn build_thread_teb(process_id: u32, thread_id: u32, peb: u64, as_: &Address
     put_u32(&mut teb, 0x40, process_id);
     put_u32(&mut teb, 0x48, thread_id);
     put_u64(&mut teb, 0x58, base + 0x180);
+    put_u64(&mut teb, TEB_SYSCALL_FRAME_OFFSET, base + THREAD_SYSCALL_FRAME_OFF as u64);
     as_.munmap(reservation, THREAD_TEB_BYTES).map_err(|_| Error::Einval)?;
     let data = as_.stash_bytes(teb.into_boxed_slice());
     if as_.mmap_with_may_at(MmapPlacement::FixedNoReplace(reservation), THREAD_TEB_BYTES,
@@ -119,7 +132,7 @@ pub fn build_with_modules(input: &EnvironmentInput<'_>, modules: &[NtModuleInput
     }
     let env_off = ENV_OFF;
     let total = env_off.checked_add(env.len() * 2).ok_or(Error::Einval)?;
-    if total > API_SET_OFF || module_text_off > ENV_OFF { return Err(Error::Einval); }
+    if total > STR_OFF || module_text_off > API_SET_OFF { return Err(Error::Einval); }
     let reservation = as_.mmap(None, BLOCK_BYTES, VmaProt::READ | VmaProt::WRITE,
         VmaFlags::PRIVATE, VmaBacking::Anonymous, false).map_err(|_| Error::Einval)?;
     let base = reservation.as_u64();
@@ -130,11 +143,28 @@ pub fn build_with_modules(input: &EnvironmentInput<'_>, modules: &[NtModuleInput
     put_u64(&mut block, PEB_OFF + 0x30, 0);
     put_u64(&mut block, PEB_OFF + 0x68, base + API_SET_OFF as u64);
     put_u64(&mut block, PEB_OFF + 0x78, 0);
+    // PEB.TlsBitmap/TlsExpansionBitmap are RTL_BITMAP pointers at these
+    // x86-64 offsets. Wine's kernelbase TlsAlloc depends on both descriptors
+    // being valid before any DLL process-attach routine asks for a TLS slot.
+    put_u64(&mut block, PEB_OFF + 0x78, base + TLS_BITMAP_DESC_OFF as u64);
+    put_u32(&mut block, PEB_OFF + 0x80, 64);
+    put_u64(&mut block, PEB_OFF + 0x88, base + PEB_OFF as u64 + 0x80);
+    put_u64(&mut block, PEB_OFF + 0x238, base + TLS_EXP_BITMAP_DESC_OFF as u64);
+    put_u32(&mut block, PEB_OFF + 0x240, 1024);
+    put_u64(&mut block, PEB_OFF + 0x248, base + PEB_OFF as u64 + 0x240);
+    // Slot zero is reserved by Wine and slot sixteen backs ntdll's errno.
+    block[PEB_OFF + 0x80] |= 1;
+    block[PEB_OFF + 0x82] |= 1;
+    put_u32(&mut block, TLS_BITMAP_DESC_OFF, 64);
+    put_u64(&mut block, TLS_BITMAP_DESC_OFF + 8, base + PEB_OFF as u64 + 0x80);
+    put_u32(&mut block, TLS_EXP_BITMAP_DESC_OFF, 1024);
+    put_u64(&mut block, TLS_EXP_BITMAP_DESC_OFF + 8, base + PEB_OFF as u64 + 0x240);
     put_u64(&mut block, TEB_OFF + 0x30, base + TEB_OFF as u64);
     put_u64(&mut block, TEB_OFF + 0x60, base + PEB_OFF as u64);
     put_u32(&mut block, TEB_OFF + 0x40, input.process_id);
     put_u32(&mut block, TEB_OFF + 0x48, input.thread_id);
     put_u64(&mut block, TEB_OFF + 0x58, base + TLS_OFF as u64);
+    put_u64(&mut block, TEB_OFF + TEB_SYSCALL_FRAME_OFFSET, base + PROCESS_SYSCALL_FRAME_OFF as u64);
     put_unicode(&mut block, PARAM_OFF + 0x60, &image_path, base + image_path_off as u64);
     put_unicode(&mut block, PARAM_OFF + 0x70, &command_line, base + command_off as u64);
     put_unicode_with_capacity(&mut block, PARAM_OFF + 0x40, &current_dir,
@@ -154,6 +184,16 @@ pub fn build_with_modules(input: &EnvironmentInput<'_>, modules: &[NtModuleInput
         }
     }
     for (index, module) in modules.iter().enumerate() {
+        #[cfg(feature = "debug-faultdiag")]
+        {
+            klog::write_raw(b"[WINDOWS-PE-ENV] base=");
+            klog::write_hex_u64(module.base);
+            klog::write_raw(b" entry=");
+            klog::write_hex_u64(module.entry);
+            klog::write_raw(b" size=");
+            klog::write_hex_u64(module.size as u64);
+            klog::write_raw(b"\n");
+        }
         let entry = MOD_OFF + index * MOD_STRIDE;
         put_u64(&mut block, entry + 0x30, module.base);
         put_u64(&mut block, entry + 0x38, module.entry);
@@ -169,6 +209,10 @@ pub fn build_with_modules(input: &EnvironmentInput<'_>, modules: &[NtModuleInput
     copy_u16(&mut block, command_off, &command_line);
     copy_u16(&mut block, current_dir_off, &current_dir);
     copy_u16(&mut block, env_off, &env);
+    // Wine's x86-64 syscall dispatcher keeps its register/return frame in a
+    // thread-data slot at TEB+0x378. The initial thread has no Wine-created
+    // Unix thread bootstrap to allocate it, so reserve the same 0x300-byte
+    // frame in the synthetic TEB block and publish its pointer explicitly.
     put_api_set_map(&mut block, API_SET_OFF)?;
     as_.munmap(reservation, BLOCK_BYTES).map_err(|_| Error::Einval)?;
     let data = as_.stash_bytes(block.into_boxed_slice());
@@ -177,8 +221,30 @@ pub fn build_with_modules(input: &EnvironmentInput<'_>, modules: &[NtModuleInput
         VmaFlags::PRIVATE, VmaBacking::KernelBytes { data, off: 0 }).is_err() {
         let _ = as_.munmap(reservation, BLOCK_BYTES); return Err(Error::Einval);
     }
+    if map_user_shared_data(as_).is_err() {
+        let _ = as_.munmap(reservation, BLOCK_BYTES); return Err(Error::Einval);
+    }
     Ok(NtProcessEnvironment { base: reservation, peb: addr(base, PEB_OFF)?, teb: addr(base, TEB_OFF)?, process_parameters: addr(base, PARAM_OFF)?, loader_data: addr(base, LDR_OFF)?, environment: addr(base, ENV_OFF)?, tls: addr(base, TLS_OFF)?, api_set_map: addr(base, API_SET_OFF)?, bytes: BLOCK_BYTES })
 }
+
+#[cfg(target_os = "oxide-kernel")]
+fn map_user_shared_data(as_: &AddressSpace) -> Result<(), Error> {
+    let base = UserVirtAddr::new(USER_SHARED_DATA_BASE).ok_or(Error::Einval)?;
+    let mut page = vec![0u8; USER_SHARED_DATA_BYTES];
+    let root = utf16("C:\\Windows")?;
+    for (index, value) in root.iter().enumerate() { put_u16(&mut page, 0x30 + index * 2, *value); }
+    put_u32(&mut page, 0x260, 0x0a000000);
+    put_u32(&mut page, 0x26c, 10);
+    put_u32(&mut page, 0x270, 0);
+    let data = as_.stash_bytes(page.into_boxed_slice());
+    as_.mmap_with_may_at(MmapPlacement::FixedNoReplace(base), USER_SHARED_DATA_BYTES,
+        VmaProt::READ, VmaProt::READ, VmaFlags::PRIVATE,
+        VmaBacking::KernelBytes { data, off: 0 }).map_err(|_| Error::Einval)?;
+    Ok(())
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn map_user_shared_data(_as_: &AddressSpace) -> Result<(), Error> { Ok(()) }
 
 fn put_api_set_map(block: &mut [u8], off: usize) -> Result<(), Error> {
     const HEADER: usize = 28;
@@ -288,6 +354,7 @@ mod tests {
         assert_eq!(read64(TEB_OFF + 0x30), base as u64 + TEB_OFF as u64);
         assert_eq!(read64(TEB_OFF + 0x60), base as u64);
         assert_eq!(read64(TEB_OFF + 0x58), base as u64 + TLS_OFF as u64);
+        assert_eq!(read64(TEB_OFF + TEB_SYSCALL_FRAME_OFFSET), base as u64 + PROCESS_SYSCALL_FRAME_OFF as u64);
         assert_eq!(read16(PARAM_OFF + 0x60), ("C:\\Windows\\notepad.exe".encode_utf16().count() * 2) as u16);
         assert_eq!(read16(PARAM_OFF + 0x70), ("notepad.exe a.txt".encode_utf16().count() * 2) as u16);
         assert_eq!(read64(PARAM_OFF + 0x80), base as u64 + ENV_OFF as u64);
@@ -313,11 +380,31 @@ mod tests {
         assert_eq!(read64(LDR_OFF + 0x10), first);
         assert_eq!(read64(LDR_OFF + 0x18), second);
         assert_eq!(read64(MOD_OFF + 0x30), 0x1400_0000);
+        assert_eq!(read64(MOD_OFF + 0x38), 0x1400_1010);
         assert_eq!(read64(MOD_OFF + MOD_STRIDE + 0x30), 0x7000_0000);
+        assert_eq!(read64(MOD_OFF + MOD_STRIDE + 0x38), 0);
         assert_eq!(read64(MOD_OFF), second);
         assert_eq!(read64(MOD_OFF + 8), e.base.as_u64() + LDR_OFF as u64 + 0x18);
         assert_eq!(read64(MOD_OFF + MOD_STRIDE), e.base.as_u64() + LDR_OFF as u64 + 0x10);
         assert_eq!(read64(MOD_OFF + MOD_STRIDE + 8), first);
+    }
+
+    #[test]
+    fn loader_records_remain_intact_when_the_module_list_reaches_the_string_arena() {
+        let as_ = AddressSpace::new(0x40_000).unwrap();
+        let mut modules = Vec::new();
+        for index in 0..16 {
+            modules.push(NtModuleInput { base: 0x7000_0000 + index * 0x10_000, entry: 0, size: 0x9000,
+                full_name: "C:\\Windows\\System32\\module.dll", base_name: "module.dll" });
+        }
+        let e = build_with_modules(&EnvironmentInput { image_base: 0x1400_0000, image_size: 0x5000,
+            image_path: "C:\\Windows\\notepad.exe", command_line: "notepad.exe", environment: &[], process_id: 1, thread_id: 1 }, &modules, &as_).unwrap();
+        let vma = as_.find_vma(e.base).unwrap();
+        let data = match vma.backing { VmaBacking::KernelBytes { data, .. } => data, _ => panic!("environment must be kernel-backed") };
+        for (index, module) in modules.iter().enumerate() {
+            let offset = MOD_OFF + index * MOD_STRIDE + 0x30;
+            assert_eq!(u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap()), module.base);
+        }
     }
     #[test]
     fn rejects_embedded_nul_without_mapping() {
@@ -349,5 +436,6 @@ mod tests {
         assert_eq!(u32::from_le_bytes(data[0x40..0x44].try_into().unwrap()), 7);
         assert_eq!(u32::from_le_bytes(data[0x48..0x4c].try_into().unwrap()), 8);
         assert_eq!(u64::from_le_bytes(data[0x58..0x60].try_into().unwrap()), first.as_u64() + 0x180);
+        assert_eq!(u64::from_le_bytes(data[TEB_SYSCALL_FRAME_OFFSET..TEB_SYSCALL_FRAME_OFFSET + 8].try_into().unwrap()), first.as_u64() + THREAD_SYSCALL_FRAME_OFF as u64);
     }
 }

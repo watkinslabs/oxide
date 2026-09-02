@@ -373,9 +373,22 @@ pub unsafe extern "C" fn oxide_x86_sysret_ok(regs: *const crate::PtRegs) -> bool
     // SAFETY: per fn contract — `regs` is the live syscall entry frame, owned
     // by this CPU until the epilogue consumes it.
     let r = unsafe { &*regs };
-    hal::uregs::x86_64::sysret_ok(
+    let result = hal::uregs::x86_64::sysret_ok(
         r.rcx, r.rip, r.r11, r.rflags, r.cs, r.ss,
-        crate::gdt::USER_CS_SELECTOR, crate::gdt::USER_SS_SELECTOR, hal::USER_VA_END)
+        crate::gdt::USER_CS_SELECTOR, crate::gdt::USER_SS_SELECTOR, hal::USER_VA_END);
+    #[cfg(feature = "debug-faultdiag")]
+    if (0x1400_0000_0..0x2000_0000_0).contains(&r.rip) {
+        klog::write_raw(b"[WINDOWS-PE-SYSCALL-RETURN] rip=");
+        klog::write_hex_u64(r.rip);
+        klog::write_raw(b" rcx=");
+        klog::write_hex_u64(r.rcx);
+        klog::write_raw(b" r11=");
+        klog::write_hex_u64(r.r11);
+        klog::write_raw(b" rflags=");
+        klog::write_hex_u64(r.rflags);
+        klog::write_raw(if result { b" path=sysret\n" } else { b" path=iret\n" });
+    }
+    result
 }
 
 /// The active task's saved `PtRegs` per `13§5` — the frame

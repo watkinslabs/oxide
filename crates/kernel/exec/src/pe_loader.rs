@@ -19,6 +19,7 @@ pub struct PeModuleBase<'a> {
 pub struct NtRuntime {
     pub base: UserVirtAddr,
     pub bytes: usize,
+    pub relay_call: u64,
     addresses: [u64; 505],
 }
 const NTDLL_EXPORTS: [&[u8]; 505] = [
@@ -283,6 +284,10 @@ const NTDLL_EXPORTS: [&[u8]; 505] = [
     b"LdrGetDllHandle",
     b"RtlFindExportedRoutineByName",
 ];
+const WINE_SYSCALL_DISPATCHER: &[u8] = b"__wine_syscall_dispatcher";
+fn runtime_stub_bytes(index: usize) -> usize {
+    if index == 220 { pe::nt_stub::X64_BREAKPOINT_STUB_BYTES } else if matches!(index, 6 | 88 | 242 | 435 | 436 | 437 | 483) { pe::nt_stub::X64_UNARY_STUB_BYTES } else { pe::nt_stub::X64_SIX_ARG_STUB_BYTES }
+}
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct PeEntryState {
     pub rip: UserVirtAddr,
@@ -326,7 +331,13 @@ pub struct PeGraphResolver<'m, 'b, R> {
 impl ImportResolver for PeExportResolver<'_> {
     fn resolve(&self, dll: &[u8], import: &pe::ImportThunk<'_>) -> Result<u64, pe::Error> {
         let module = self.modules.iter().find(|module| ascii_eq_ignore_case(module.name, dll)).ok_or(pe::Error::Unsupported)?;
-        let rva = module.image.export_rva(import)?.ok_or(pe::Error::Unsupported)?;
+        if let Some(rva) = module.image.relay_export_rva(import)? {
+            return module.base.checked_add(rva as u64).ok_or(pe::Error::Einval);
+        }
+        let rva = match module.image.export_target(import)?.ok_or(pe::Error::Unsupported)? {
+            pe::ExportTarget::Rva(_) => module.image.export_rva(import)?,
+            pe::ExportTarget::Forwarder(_) => return Err(pe::Error::Unsupported),
+        }.ok_or(pe::Error::Unsupported)?;
         module.base.checked_add(rva as u64).ok_or(pe::Error::Einval)
     }
 }
@@ -345,9 +356,14 @@ impl<'m, 'b, R: ImportResolver> PeGraphResolver<'m, 'b, R> {
             return self.resolve_graph(target, import, depth + 1);
         }
         if let Some(module) = self.modules.iter().find(|module| ascii_eq_ignore_case(module.name, dll)) {
+            if let Some(rva) = module.image.relay_export_rva(import)? {
+                return module.base.checked_add(rva as u64).ok_or(pe::Error::Einval);
+            }
             let target = module.image.export_target(import)?.ok_or(pe::Error::Unsupported)?;
             return match target {
-                pe::ExportTarget::Rva(rva) => module.base.checked_add(rva as u64).ok_or(pe::Error::Einval),
+                pe::ExportTarget::Rva(rva) => {
+                    module.base.checked_add(rva as u64).ok_or(pe::Error::Einval)
+                }
                 pe::ExportTarget::Forwarder(forwarder) => {
                     let dot = forwarder.iter().position(|byte| *byte == b'.').ok_or(pe::Error::Einval)?;
                     if dot == 0 || dot + 1 >= forwarder.len() { return Err(pe::Error::Einval); }
@@ -389,21 +405,43 @@ pub fn resolve_nt_runtime_export(base: u64, name: &[u8]) -> Option<u64> {
     let mut offset = 0u64;
     for (index, export) in NTDLL_EXPORTS.iter().enumerate() {
         if *export == name { return base.checked_add(offset); }
-        let stub_bytes = if index == 220 { pe::nt_stub::X64_BREAKPOINT_STUB_BYTES } else if index == 6 || index == 88 { pe::nt_stub::X64_UNARY_STUB_BYTES } else { pe::nt_stub::X64_SIX_ARG_STUB_BYTES };
-        offset = offset.checked_add(stub_bytes as u64)?;
+        offset = offset.checked_add(runtime_stub_bytes(index) as u64)?;
     }
     None
+}
+
+/// Resolve the address of a runtime-owned exported entry.
+/// # C: O(1)
+pub fn resolve_nt_runtime_data_export(base: u64, name: &[u8]) -> Option<u64> {
+    if name != WINE_SYSCALL_DISPATCHER { return None; }
+    let mut offset = 0u64;
+    for (index, _) in NTDLL_EXPORTS.iter().enumerate() { offset = offset.checked_add(runtime_stub_bytes(index) as u64)?; }
+    let continuation = pe::nt_stub::encode_x64_run_once_continuation(syscall::nt::NtService::RtlRunOnceComplete.entry());
+    // Keep this address identical to `map_nt_runtime`'s relay_call. The eight
+    // bytes after the continuation are reserved before the relay stub; the
+    // exported Wine dispatcher is the relay entry, not the reservation.
+    base.checked_add(offset)?.checked_add(continuation.len() as u64)?.checked_add(8)
 }
 pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
     let page = hal::PAGE_SIZE_BYTES as usize;
     let continuation = pe::nt_stub::encode_x64_run_once_continuation(syscall::nt::NtService::RtlRunOnceComplete.entry());
-    let code_bytes = (NTDLL_EXPORTS.len() - 1) * pe::nt_stub::X64_SIX_ARG_STUB_BYTES + pe::nt_stub::X64_BREAKPOINT_STUB_BYTES + continuation.len();
+    let stub_bytes: usize = NTDLL_EXPORTS.iter().enumerate().map(|(index, _)| runtime_stub_bytes(index)).sum();
+    let code_bytes = stub_bytes + continuation.len() + 8 + pe::nt_stub::X64_RELAY_STUB_BYTES;
     let mapped_bytes = (code_bytes + page - 1) / page * page;
     let mut code = alloc::vec![0u8; mapped_bytes];
     let mut addresses = [0u64; 505];
     let mut offset = 0usize;
-    for index in 0..504 {
-        let selector = match index {
+    for index in 0..NTDLL_EXPORTS.len() {
+        // Keep the debug exports tied to their actual catalog indexes. This
+        // block predates the generated selector table and is the one place
+        // where the handwritten table differs from the export array.
+        let selector = if index == 185 { syscall::nt::NtService::Wcstoul }
+        else if index == 186 { syscall::nt::NtService::WineDbgHeader }
+        else if index == 187 { syscall::nt::NtService::WineDbgOutput }
+        else if index == 188 { syscall::nt::NtService::WineDbgStrdup }
+        else { match index {
+            0 => syscall::nt::NtService::AllocateVirtualMemory,
+            1 => syscall::nt::NtService::FreeVirtualMemory,
             2 => syscall::nt::NtService::ProtectVirtualMemory,
             3 => syscall::nt::NtService::QueryVirtualMemory,
             4 => syscall::nt::NtService::TerminateProcess,
@@ -428,6 +466,7 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
             23 => syscall::nt::NtService::TerminateThread,
             24 => syscall::nt::NtService::QueryInformationThread,
             25 => syscall::nt::NtService::AllocateHeap,
+            26 => syscall::nt::NtService::FreeHeap,
             27 | 28 => syscall::nt::NtService::DefaultWindowProc,
             29 => syscall::nt::NtService::ReallocateHeap,
             30 => syscall::nt::NtService::ResolveDelayLoadedApi,
@@ -860,30 +899,32 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
             503 => syscall::nt::NtService::LdrGetDllHandle,
             504 => syscall::nt::NtService::RtlFindExportedRoutineByName,
             _ => syscall::nt::NtService::FreeHeap,
-        };
+        }};
         let bytes = if index == 220 { pe::nt_stub::encode_x64_breakpoint_stub().to_vec() }
             else if matches!(index, 6 | 88 | 242 | 435 | 436 | 437 | 483) { pe::nt_stub::encode_x64_unary_stub(selector.entry()).to_vec() }
             else { pe::nt_stub::encode_x64_six_arg_stub(selector.entry()).to_vec() };
         if offset.checked_add(bytes.len()).filter(|&end| end <= code.len()).is_none() { return Err(pe::Error::Einval); }
         code[offset..offset + bytes.len()].copy_from_slice(&bytes);
         addresses[index] = offset as u64;
+        debug_assert_eq!(bytes.len(), runtime_stub_bytes(index));
         offset += bytes.len();
     }
     code[offset..offset + continuation.len()].copy_from_slice(&continuation);
+    let relay_offset = offset + continuation.len() + 8;
+    let relay = pe::nt_stub::encode_x64_relay_stub(syscall::nt::NtService::RelayCall.entry());
+    code[relay_offset..relay_offset + relay.len()].copy_from_slice(&relay);
     let data = as_.stash_bytes(code.into_boxed_slice());
     let base = as_.mmap(None, mapped_bytes, VmaProt::READ | VmaProt::EXEC, VmaFlags::PRIVATE,
         VmaBacking::KernelBytes { data, off: 0 }, false).map_err(|_| pe::Error::Einval)?;
     for address in &mut addresses { *address = base.as_u64().checked_add(*address).ok_or(pe::Error::Einval)?; }
-    Ok(NtRuntime { base, bytes: mapped_bytes, addresses })
+    let relay_call = base.as_u64().checked_add(relay_offset as u64).ok_or(pe::Error::Einval)?;
+    Ok(NtRuntime { base, bytes: mapped_bytes, relay_call, addresses })
 }
 
 /// Resolve the private run-once callback continuation in the synthetic ntdll page.
 pub fn resolve_nt_runtime_run_once_continuation(base: u64) -> Option<u64> {
     let mut offset = 0u64;
-    for (index, _) in NTDLL_EXPORTS.iter().enumerate() {
-        let stub_bytes = if index == 220 { pe::nt_stub::X64_BREAKPOINT_STUB_BYTES } else if index == 6 || index == 88 { pe::nt_stub::X64_UNARY_STUB_BYTES } else { pe::nt_stub::X64_SIX_ARG_STUB_BYTES };
-        offset = offset.checked_add(stub_bytes as u64)?;
-    }
+    for (index, _) in NTDLL_EXPORTS.iter().enumerate() { offset = offset.checked_add(runtime_stub_bytes(index) as u64)?; }
     base.checked_add(offset)
 }
 fn ascii_eq_ignore_case(left: &[u8], right: &[u8]) -> bool {
@@ -922,7 +963,7 @@ fn load_pe_process_with_catalog_with_fallback<R: ImportResolver>(blob: &[u8], as
     let source = catalog;
     let owned = pe::discover_owned_modules_with_builtins(input.image_path.as_bytes(), blob, &source,
         |name| ascii_eq_ignore_case(name, b"ntdll.dll") && source.load(name).is_none())?;
-    let loaded = load_owned_pe_module_graph(&owned, as_, fallback)?;
+    let loaded = load_owned_pe_module_graph(&owned, as_, fallback, runtime.relay_call)?;
     let mut environment_input = input.clone();
     environment_input.image_base = loaded[0].image.base;
     environment_input.image_size = loaded[0].image.size;
@@ -981,6 +1022,11 @@ fn load_pe_process_with_catalog_with_fallback<R: ImportResolver>(blob: &[u8], as
         runtime_modules.push(pe_modules::PeRuntimeModule { base: runtime.base.as_u64(), size: runtime.bytes as u32, exception_rva: 0, exception_size: 0 });
     }
     pe_modules::register(as_, &runtime_modules);
+    for (module, owned_module) in loaded.iter().zip(&owned) {
+        if let Some(rvas) = pe::parse(&owned_module.blob)?.export_rvas()? {
+            pe_modules::register_exports(as_, module.image.base, rvas);
+        }
+    }
     Ok(PeProcess { image: loaded[0].image, environment, entry, initializers, initializer_trampoline })
 }
 fn unmap_loaded_modules(as_: &AddressSpace, loaded: &[PeLoadedModule<'_>]) {
@@ -1024,15 +1070,14 @@ pub fn load_pe_image(blob: &[u8], as_: &AddressSpace) -> Result<PeLoadedImage, p
     load_pe_image_with_resolver(blob, as_, &RejectImports)
 }
 pub fn load_pe_image_with_resolver<R: ImportResolver>(blob: &[u8], as_: &AddressSpace, resolver: &R) -> Result<PeLoadedImage, pe::Error> {
-    load_pe_image_with_resolver_at(blob, as_, resolver, None)
+    load_pe_image_with_resolver_at(blob, as_, resolver, None, 0)
 }
-fn load_pe_image_with_resolver_at<R: ImportResolver>(blob: &[u8], as_: &AddressSpace, resolver: &R, exact_base: Option<UserVirtAddr>) -> Result<PeLoadedImage, pe::Error> {
+fn load_pe_image_with_resolver_at<R: ImportResolver>(blob: &[u8], as_: &AddressSpace, resolver: &R, exact_base: Option<UserVirtAddr>, relay_call: u64) -> Result<PeLoadedImage, pe::Error> {
     let parsed = pe::parse(blob)?;
     // Validate callback-array termination and image-relative addresses before
     // binding or reserving anything; malformed TLS must leave no VMA behind.
     let _tls_callbacks = parsed.tls_callback_rvas()?;
     let mut image = parsed.materialize()?;
-    bind_imports(&parsed, &mut image, resolver)?;
     let len = parsed.size_of_image as usize;
     // Reserve the whole image first. This obtains the preferred base when it
     // is clear, or an ASLR fallback, without exposing a partially mapped PE.
@@ -1047,6 +1092,60 @@ fn load_pe_image_with_resolver_at<R: ImportResolver>(blob: &[u8], as_: &AddressS
     if let Err(error) = pe::apply_relocations(&mut image, &parsed, base) {
         let _ = as_.munmap(reservation, len);
         return Err(error);
+    }
+    // Relocations apply to image-owned absolute pointers. Bind external IAT
+    // addresses only afterward; otherwise the relocation delta is added to
+    // an already-final external function pointer.
+    if let Err(error) = bind_imports(&parsed, &mut image, resolver) {
+        let _ = as_.munmap(reservation, len);
+        return Err(error);
+    }
+    // Wine's relay setup keeps the original EAT targets privately, then
+    // replaces normal function entries in the loaded EAT with the generated
+    // Windows-ABI relay RVAs. Native RelayCall uses the immutable snapshot
+    // registered by the process loader, so these two views remain distinct.
+    if let Some(relays) = parsed.relay_export_rvas()? {
+        if let Some(exports) = parsed.exports()? {
+            for (index, relay) in relays.into_iter().enumerate() {
+                if relay == 0 { continue; }
+                let slot = (exports.functions_rva as usize).checked_add(index.checked_mul(4).ok_or(pe::Error::Einval)?)
+                    .ok_or(pe::Error::Einval)?;
+                let end = slot.checked_add(4).ok_or(pe::Error::Einval)?;
+                image.get_mut(slot..end).ok_or(pe::Error::Einval)?.copy_from_slice(&relay.to_le_bytes());
+                #[cfg(feature = "debug-faultdiag")]
+                if index == 394 || index == 395 {
+                    klog::write_raw(b"[WINDOWS-PE-EAT-PATCH] module=");
+                    klog::write_hex_u64(base);
+                    klog::write_raw(b" functions=");
+                    klog::write_hex_u64(exports.functions_rva as u64);
+                    klog::write_raw(b" index=");
+                    klog::write_dec_u64(index as u64);
+                    klog::write_raw(b" slot=");
+                    klog::write_hex_u64(base.checked_add(slot as u64).unwrap_or(0));
+                    klog::write_raw(b" relay=");
+                    klog::write_hex_u64(relay as u64);
+                    klog::write_raw(b" readback=");
+                    let readback = image.get(slot..end).and_then(|bytes| bytes.try_into().ok())
+                        .map(u32::from_le_bytes).unwrap_or(0);
+                    klog::write_hex_u64(readback as u64);
+                    klog::write_raw(b"\n");
+                }
+            }
+        }
+    }
+    if relay_call != 0 {
+        if let Some(descriptor_rva) = parsed.relay_descriptor_rva()? {
+            let slot = (descriptor_rva as usize).checked_add(8).ok_or(pe::Error::Einval)?;
+            let end = slot.checked_add(8).ok_or(pe::Error::Einval)?;
+            image.get_mut(slot..end).ok_or(pe::Error::Einval)?.copy_from_slice(&relay_call.to_le_bytes());
+            klog::write_raw(b"[WINDOWS-PE-RELAY] base=");
+            klog::write_hex_u64(base);
+            klog::write_raw(b" descriptor=");
+            klog::write_hex_u64(base.checked_add(descriptor_rva as u64).ok_or(pe::Error::Einval)?);
+            klog::write_raw(b" dispatcher=");
+            klog::write_hex_u64(relay_call);
+            klog::write_raw(b"\n");
+        }
     }
     as_.munmap(reservation, len).map_err(|_| pe::Error::Einval)?;
     let data: Arc<[u8]> = as_.stash_bytes(image.into_boxed_slice());
@@ -1081,7 +1180,7 @@ pub fn load_pe_module_set_with_resolver<'a, R: ImportResolver>(modules: &[pe::Mo
     }
     Ok(loaded)
 }
-pub fn load_pe_module_graph<'a, R: ImportResolver>(modules: &[pe::Module<'a>], as_: &AddressSpace, fallback: &R) -> Result<alloc::vec::Vec<PeLoadedModule<'a>>, pe::Error> {
+pub fn load_pe_module_graph<'a, R: ImportResolver>(modules: &[pe::Module<'a>], as_: &AddressSpace, fallback: &R, relay_call: u64) -> Result<alloc::vec::Vec<PeLoadedModule<'a>>, pe::Error> {
     let mut bases: alloc::vec::Vec<PeModuleBase<'a>> = alloc::vec::Vec::new();
     for module in modules {
         let size = module.image.size_of_image as usize;
@@ -1095,12 +1194,21 @@ pub fn load_pe_module_graph<'a, R: ImportResolver>(modules: &[pe::Module<'a>], a
         };
         bases.push(PeModuleBase { name: module.name, base: reservation.as_u64(), size: module.image.size_of_image });
     }
+    for module in &bases {
+        klog::write_raw(b"[WINDOWS-PE-MODULE] name=");
+        klog::write_raw(module.name);
+        klog::write_raw(b" base=");
+        klog::write_hex_u64(module.base);
+        klog::write_raw(b" size=");
+        klog::write_hex_u64(module.size as u64);
+        klog::write_raw(b"\n");
+    }
     let mut exports = alloc::vec::Vec::new();
     for (module, base) in modules.iter().zip(&bases) { exports.push(PeExportRef { name: module.name, image: &module.image, base: base.base }); }
     let resolver = PeGraphResolver { modules: &exports, fallback };
     let mut loaded = alloc::vec::Vec::new();
     for (module, base) in modules.iter().zip(&bases) {
-        match load_pe_image_with_resolver_at(module.image.raw, as_, &resolver, UserVirtAddr::new(base.base)) {
+        match load_pe_image_with_resolver_at(module.image.raw, as_, &resolver, UserVirtAddr::new(base.base), relay_call) {
             Ok(image) => loaded.push(PeLoadedModule { name: module.name, image }),
             Err(error) => {
                 for entry in &bases { if let Some(address) = UserVirtAddr::new(entry.base) { let _ = as_.munmap(address, entry.size as usize); } }
@@ -1110,12 +1218,12 @@ pub fn load_pe_module_graph<'a, R: ImportResolver>(modules: &[pe::Module<'a>], a
     }
     Ok(loaded)
 }
-pub fn load_owned_pe_module_graph<'a, R: ImportResolver>(modules: &'a [pe::OwnedModule], as_: &AddressSpace, fallback: &R) -> Result<alloc::vec::Vec<PeLoadedModule<'a>>, pe::Error> {
+pub fn load_owned_pe_module_graph<'a, R: ImportResolver>(modules: &'a [pe::OwnedModule], as_: &AddressSpace, fallback: &R, relay_call: u64) -> Result<alloc::vec::Vec<PeLoadedModule<'a>>, pe::Error> {
     let mut views = alloc::vec::Vec::new();
     for module in modules {
         views.push(pe::Module { name: &module.name, image: pe::parse(&module.blob)? });
     }
-    load_pe_module_graph(&views, as_, fallback)
+    load_pe_module_graph(&views, as_, fallback, relay_call)
 }
 fn bind_imports<R: ImportResolver>(parsed: &pe::Image<'_>, image: &mut [u8], resolver: &R) -> Result<(), pe::Error> {
     for import in parsed.imports()? {
@@ -1132,6 +1240,28 @@ fn bind_imports<R: ImportResolver>(parsed: &pe::Image<'_>, image: &mut [u8], res
                 Ok(address) => address,
                 Err(error) => return Err(error),
             };
+            #[cfg(feature = "debug-faultdiag")]
+            if import.name.eq_ignore_ascii_case(b"ntdll.dll")
+                && matches!(thunk, pe::ImportThunk::Name { name, .. } if *name == b"RtlGetVersion" || *name == b"RtlRunOnceExecuteOnce") {
+                klog::write_raw(b"[WINDOWS-PE-BIND-NT] name=");
+                if let pe::ImportThunk::Name { name, .. } = thunk { klog::write_raw(name); }
+                klog::write_raw(b" address=");
+                klog::write_hex_u64(address);
+                klog::write_raw(b"\n");
+            }
+            #[cfg(feature = "debug-faultdiag")]
+            if (0x1800_04c00..0x1800_05000).contains(&address) {
+                klog::write_raw(b"[WINDOWS-PE-BIND] dll=");
+                klog::write_raw(import.name);
+                klog::write_raw(b" symbol=");
+                match thunk {
+                    pe::ImportThunk::Name { name, .. } => klog::write_raw(name),
+                    pe::ImportThunk::Ordinal(ordinal) => klog::write_dec_u64(*ordinal as u64),
+                }
+                klog::write_raw(b" address=");
+                klog::write_hex_u64(address);
+                klog::write_raw(b"\n");
+            }
             image[offset..end].copy_from_slice(&address.to_le_bytes());
         }
     }

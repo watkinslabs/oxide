@@ -29,13 +29,29 @@ pub fn try_commit_with_catalog(cur: &sched::Task, path: &[u8], blob: &[u8], cata
 #[cfg(target_arch = "x86_64")]
 fn commit_x86(cur: &sched::Task, path: &[u8], blob: &[u8], exec_vp: Option<&vfs::VfsPath>, catalog: Option<&pe::catalog::ModuleCatalog>) -> Result<(), i64> {
     use vmm::{AddressSpace, VmaBacking, VmaProt};
-    const STACK_BYTES: usize = 64 * 1024;
+    // Linux's default initial user stack mapping is eight MiB. Wine's loader
+    // legitimately uses substantially more than the PE ABI shadow space while
+    // constructing process state, so the NT path must provide the same stack
+    // extent as ELF exec rather than a tiny bootstrap-only VMA.
+    const STACK_BYTES: usize = 8 * 1024 * 1024;
     let enoexec = || -(syscall::errno::Errno::Enoexec.as_i32() as i64);
     let root = unsafe { hal_x86_64::mmu_ops::new_user_pml4() }.ok_or_else(|| nomem(b"[WINDOWS-PE-NOMEM] pml4\n"))?;
     let old = unsafe { cur.mm_ref() }.cloned();
     let as_ = match old.as_ref() { Some(old) => AddressSpace::new_for_exec(root, old), None => AddressSpace::new(root) }
         .map_err(|_| nomem(b"[WINDOWS-PE-NOMEM] address-space\n"))?;
-    let stack = as_.mmap(None, STACK_BYTES, VmaProt::READ | VmaProt::WRITE,
+    // Linux installs the address-space teardown owner before any user VMA is
+    // created.  PE exec is a second image-loading entry point, so it must use
+    // the same lifetime contract as ELF exec or anonymous pages cannot be
+    // reclaimed through the normal mm exit path.
+    pmm::user_as::install_teardown(&as_);
+    // Linux arms the per-exec mmap anchor before get_unmapped_area is used.
+    // Keep PE placement on the same ASLR/layout contract as ELF while retaining
+    // the small initial PE stack used by this bootstrap path.
+    let rnd = crate::exec_transition::exec_rnd(cur, 0);
+    as_.set_mmap_layout(rnd.mmap_base(STACK_BYTES as u64), true);
+    let stack_hint = hal::UserVirtAddr::new(rnd.stack_top().saturating_sub(STACK_BYTES as u64))
+        .ok_or_else(|| nomem(b"[WINDOWS-PE-NOMEM] stack-address\n"))?;
+    let stack = as_.mmap(Some(stack_hint), STACK_BYTES, VmaProt::READ | VmaProt::WRITE,
         vmm::EXEC_STACK_VMA_FLAGS, VmaBacking::Anonymous, false).map_err(|_| nomem(b"[WINDOWS-PE-NOMEM] stack\n"))?;
     let stack_top = stack.as_u64().checked_add(STACK_BYTES as u64).ok_or_else(|| nomem(b"[WINDOWS-PE-NOMEM] stack-overflow\n"))?;
     let path = core::str::from_utf8(path).map_err(|_| enoexec())?;
@@ -61,6 +77,17 @@ fn commit_x86(cur: &sched::Task, path: &[u8], blob: &[u8], exec_vp: Option<&vfs:
             return Err(enoexec());
         }
     };
+    // Diagnostic experiment for the AMD64 relay first-touch failure: populate
+    // executable PE/runtime pages before the first user instruction. This is
+    // deliberately feature-gated; if it changes the failure, the permanent
+    // fix belongs in the fault/PTE retry path rather than here.
+    #[cfg(feature = "debug-faultdiag")]
+    for vma in as_.snapshot_vmas() {
+        if !vma.prot.contains(VmaProt::EXEC) || !matches!(vma.backing, VmaBacking::KernelBytes { .. }) { continue; }
+        pmm::user_as::prefault_user_range_with_access(
+            &as_, vma.start.as_u64(), vma.end.as_u64() - vma.start.as_u64(), vmm::FaultAccess::Exec,
+        ).map_err(|_| enoexec())?;
+    }
     // Validate the only live-task mutation target before activating or
     // publishing the replacement address space. A missing frame is a failed
     // commit, so the caller must retain its Linux mm and personality.
@@ -93,7 +120,18 @@ fn commit_x86(cur: &sched::Task, path: &[u8], blob: &[u8], exec_vp: Option<&vfs:
     // SAFETY: current_pt_regs is the live syscall frame of this running task;
     // the exec path owns it until the common return-to-user epilogue.
     let frame = unsafe { &mut *regs };
-    *frame = hal_x86_64::PtRegs { rip: process.entry.rip.as_u64(), rsp: process.entry.rsp.as_u64(), rflags: 0x202, cs: frame.cs, ss: frame.ss, vector: frame.vector, error: frame.error, ..Default::default() };
+    klog::write_raw(b"[WINDOWS-PE-START] entry=");
+    klog::write_hex_u64(process.entry.rip.as_u64());
+    klog::write_raw(b" rsp=");
+    klog::write_hex_u64(process.entry.rsp.as_u64());
+    klog::write_raw(b" stack=");
+    klog::write_hex_u64(stack.as_u64());
+    klog::write_raw(b"-");
+    klog::write_hex_u64(stack_top);
+    klog::write_raw(b"\n");
+    *frame = hal_x86_64::PtRegs { rip: process.entry.rip.as_u64(), rsp: process.entry.rsp.as_u64(), rflags: 0x202,
+        cs: hal_x86_64::USER_CS_SELECTOR, ss: hal_x86_64::USER_SS_SELECTOR,
+        vector: frame.vector, error: frame.error, ..Default::default() };
     sched::live::vfork_done(cur);
     klog::write_raw(b"[WINDOWS-PE-COMMIT] success\n");
     Ok(())

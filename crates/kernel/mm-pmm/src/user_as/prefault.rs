@@ -23,6 +23,14 @@ const PAGE_BYTES: u64 = hal::PAGE_SIZE_BYTES;
 /// before a new image can safely perform direct writes through its user VAs.
 /// # C: O(len / PAGE)
 pub fn prefault_user_range(as_: &AddressSpace, start: u64, len: u64) -> Result<(), vmm::Error> {
+    prefault_user_range_with_access(as_, start, len, FaultAccess::Write)
+}
+
+/// Populate every page overlapping a range using the supplied access class.
+/// Executable file-backed mappings use `Exec`; writable stacks retain the
+/// historical `Write` behavior above. # C: O(len / PAGE)
+pub fn prefault_user_range_with_access(as_: &AddressSpace, start: u64, len: u64,
+                                       access: FaultAccess) -> Result<(), vmm::Error> {
     if len == 0 { return Ok(()); }
     let end = start.checked_add(len).ok_or(vmm::Error::Inval)?;
     let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
@@ -31,7 +39,7 @@ pub fn prefault_user_range(as_: &AddressSpace, start: u64, len: u64) -> Result<(
         let uva = UserVirtAddr::new(va).ok_or(vmm::Error::Inval)?;
         // Kernel-initiated population, so the user-mode fault flag is clear —
         // only an architecture fault vector sets it.
-        do_handle(as_, uva, FaultKind::NotPresent { access: FaultAccess::Write }, hhdm, false)?;
+        do_handle(as_, uva, FaultKind::NotPresent { access }, hhdm, false)?;
         va = va.checked_add(PAGE_BYTES).ok_or(vmm::Error::Inval)?;
     }
     Ok(())

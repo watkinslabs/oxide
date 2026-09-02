@@ -283,11 +283,14 @@ pub(super) fn qemu_run_grub_x86_64(
     // Optional CPU/interrupt tracing: OXIDE_QEMU_DINT=<file> adds
     // `-d int,guest_errors -D <file>` so a boot fault's exception
     // cascade (the #PF preceding a #DF, with CR2/error code) is
-    // captured. Routed through the make/xtask path so it survives the
-    // boot-smoke setsid wrapper (direct qemu gets sandbox-killed).
+    // captured. OXIDE_QEMU_DFLAGS overrides the QEMU debug flags for
+    // instruction-level investigations (for example, `in_asm,cpu`). Routed
+    // through the make/xtask path so it survives the boot-smoke setsid
+    // wrapper (direct qemu gets sandbox-killed).
     if let Ok(p) = std::env::var("OXIDE_QEMU_DINT") {
         if !p.is_empty() {
-            c.args(["-d", "int,guest_errors", "-D", p.as_str()]);
+            let flags = std::env::var("OXIDE_QEMU_DFLAGS").unwrap_or_else(|_| "int,guest_errors".into());
+            c.args(["-d", flags.as_str(), "-D", p.as_str()]);
         }
     }
     // OXIDE_QEMU_GDB=1 exposes a gdb stub (no pause) so a wedged/idle SMP boot

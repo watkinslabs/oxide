@@ -2,6 +2,65 @@
 pub const X64_UNARY_STUB_BYTES: usize = 18;
 pub const X64_SIX_ARG_STUB_BYTES: usize = 39;
 pub const X64_BREAKPOINT_STUB_BYTES: usize = 2;
+pub const X64_RELAY_STUB_BYTES: usize = 206;
+
+/// Encode the native relay resolver used as Wine's per-module `relay_call`.
+/// The Wine thunk has already saved the original Windows register arguments in
+/// its home area before entering this function. Translate the Windows relay
+/// call `(descriptor, index, stack)` into Oxide's syscall ABI
+/// `(rdi, rsi, rdx)`. The NT service returns the original target; this stub
+/// restores the Windows arguments, calls it, and returns with the caller's
+/// stack unchanged.
+pub fn encode_x64_relay_stub(selector: u64) -> [u8; X64_RELAY_STUB_BYTES] {
+    let mut code = [0u8; X64_RELAY_STUB_BYTES];
+    let mut at = 0;
+    code[at] = 0x53; at += 1; // save Windows nonvolatile rbx
+    code[at] = 0x55; at += 1; // save Windows nonvolatile rbp
+    code[at..at + 2].copy_from_slice(&[0x41, 0x54]); at += 2; // save Windows nonvolatile r12
+    code[at..at + 2].copy_from_slice(&[0x41, 0x55]); at += 2; // save Windows nonvolatile r13
+    code[at..at + 2].copy_from_slice(&[0x41, 0x56]); at += 2; // save Windows nonvolatile r14
+    code[at..at + 2].copy_from_slice(&[0x41, 0x57]); at += 2; // save Windows nonvolatile r15
+    code[at] = 0x56; at += 1; // save Windows nonvolatile rsi
+    code[at] = 0x57; at += 1; // save Windows nonvolatile rdi
+    code[at..at + 4].copy_from_slice(&[0x4c, 0x8d, 0x64, 0x24]); at += 4;
+    code[at] = 80; at += 1; // r12 = first thunk argument: return address + eight saves + call return slot
+    code[at..at + 3].copy_from_slice(&[0x48, 0x89, 0xcf]); at += 3; // rdi = descriptor (rcx)
+    code[at..at + 3].copy_from_slice(&[0x48, 0x89, 0xd6]); at += 3; // rsi = relay index (rdx)
+    code[at..at + 5].copy_from_slice(&[0x49, 0x8d, 0x54, 0x24, 0]); at += 5; // rdx = Wine's contiguous argument array
+    code[at..at + 2].copy_from_slice(&[0x48, 0xb8]); at += 2;
+    code[at..at + 8].copy_from_slice(&selector.to_le_bytes()); at += 8;
+    code[at..at + 2].copy_from_slice(&[0x0f, 0x05]); at += 2;
+    code[at..at + 5].copy_from_slice(&[0x4c, 0x8d, 0x64, 0x24, 80]); at += 5; // re-derive args after syscall restores registers
+    code[at..at + 4].copy_from_slice(&[0x48, 0x83, 0xec, 0x60]); at += 4; // target home + eight stack arguments, 16-byte aligned
+    code[at..at + 5].copy_from_slice(&[0x4d, 0x8b, 0x54, 0x24, 0]); at += 5;
+    code[at..at + 4].copy_from_slice(&[0x4c, 0x89, 0x14, 0x24]); at += 4;
+    code[at..at + 5].copy_from_slice(&[0x4d, 0x8b, 0x54, 0x24, 8]); at += 5;
+    code[at..at + 5].copy_from_slice(&[0x4c, 0x89, 0x54, 0x24, 8]); at += 5;
+    code[at..at + 5].copy_from_slice(&[0x4d, 0x8b, 0x54, 0x24, 16]); at += 5;
+    code[at..at + 5].copy_from_slice(&[0x4c, 0x89, 0x54, 0x24, 16]); at += 5;
+    code[at..at + 5].copy_from_slice(&[0x4d, 0x8b, 0x54, 0x24, 24]); at += 5;
+    code[at..at + 5].copy_from_slice(&[0x4c, 0x89, 0x54, 0x24, 24]); at += 5;
+    for (source, target) in [(32, 32), (40, 40), (48, 48), (56, 56), (64, 64), (72, 72), (80, 80), (88, 88)] {
+        code[at..at + 5].copy_from_slice(&[0x4d, 0x8b, 0x54, 0x24, source]); at += 5;
+        code[at..at + 5].copy_from_slice(&[0x4c, 0x89, 0x54, 0x24, target]); at += 5;
+    }
+    code[at..at + 4].copy_from_slice(&[0x48, 0x8b, 0x0c, 0x24]); at += 4;
+    code[at..at + 5].copy_from_slice(&[0x48, 0x8b, 0x54, 0x24, 8]); at += 5;
+    code[at..at + 5].copy_from_slice(&[0x4c, 0x8b, 0x44, 0x24, 16]); at += 5;
+    code[at..at + 5].copy_from_slice(&[0x4c, 0x8b, 0x4c, 0x24, 24]); at += 5;
+    code[at..at + 2].copy_from_slice(&[0xff, 0xd0]); at += 2;
+    code[at..at + 4].copy_from_slice(&[0x48, 0x83, 0xc4, 0x60]); at += 4;
+    code[at] = 0x5f; at += 1; // restore rdi
+    code[at] = 0x5e; at += 1; // restore rsi
+    code[at..at + 2].copy_from_slice(&[0x41, 0x5f]); at += 2; // restore r15
+    code[at..at + 2].copy_from_slice(&[0x41, 0x5e]); at += 2; // restore r14
+    code[at..at + 2].copy_from_slice(&[0x41, 0x5d]); at += 2; // restore r13
+    code[at..at + 2].copy_from_slice(&[0x41, 0x5c]); at += 2; // restore r12
+    code[at] = 0x5d; at += 1; // restore rbp
+    code[at] = 0x5b; at += 1; // restore rbx
+    code[at] = 0xc3;
+    code
+}
 
 /// Encode the user continuation used by `RtlRunOnceExecuteOnce`. It receives
 /// the initializer's BOOL in EAX, calls the native completion selector, and
@@ -96,6 +155,20 @@ mod tests {
     #[test]
     fn breakpoint_stub_matches_wine_x64_entry() {
         assert_eq!(encode_x64_breakpoint_stub(), [0xcc, 0xc3]);
+    }
+
+    #[test]
+    fn relay_stub_preserves_the_wine_home_area_before_calling_target() {
+        let bytes = encode_x64_relay_stub(0x4e54_0000_0000_0216);
+        assert_eq!(&bytes[..15], &[0x53, 0x55, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x56, 0x57, 0x4c, 0x8d, 0x64]);
+        assert_eq!(bytes.windows(5).filter(|window| *window == [0x4c, 0x8d, 0x64, 0x24, 80]).count(), 2);
+        assert!(bytes.windows(5).any(|window| window == [0x49, 0x8d, 0x54, 0x24, 0]));
+        assert_eq!(&bytes[38..40], &[0x0f, 0x05]);
+        assert_eq!(&bytes[40..45], &[0x4c, 0x8d, 0x64, 0x24, 80]);
+        assert_eq!(&bytes[45..49], &[0x48, 0x83, 0xec, 0x60]);
+        assert!(bytes.windows(5).any(|window| window == [0x4d, 0x8b, 0x54, 0x24, 0]));
+        let epilogue = [0xff, 0xd0, 0x48, 0x83, 0xc4, 0x60, 0x5f, 0x5e, 0x41, 0x5f, 0x41, 0x5e, 0x41, 0x5d, 0x41, 0x5c, 0x5d, 0x5b, 0xc3];
+        assert!(bytes.windows(epilogue.len()).any(|window| window == epilogue));
     }
 }
 use alloc::vec::Vec;

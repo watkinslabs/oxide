@@ -43,6 +43,21 @@ fn init_codepage_table(table: u64, info: u64) -> u64 {
     if uaccess::copy_from_user(&mut header, table).is_err() { return STATUS_INVALID_PARAMETER; }
     let word = |offset: usize| u16::from_le_bytes([header[offset], header[offset + 1]]);
     let header_words = word(0) as u64;
+    // Wine's kernelbase uses this two-word sentinel when the PEB has no
+    // mapped ANSI/OEM code-page file. RtlInitCodePageTable treats it as the
+    // built-in UTF-8 table rather than as an NLS file header.
+    if word(2) == CP_UTF8 {
+        let mut output = [0u8; CPTABLEINFO_SIZE];
+        let question = (b'?' as u16).to_le_bytes();
+        output[0..2].copy_from_slice(&CP_UTF8.to_le_bytes());
+        output[2..4].copy_from_slice(&4u16.to_le_bytes());
+        output[4..6].copy_from_slice(&question);
+        output[6..8].copy_from_slice(&0xfffdu16.to_le_bytes());
+        output[8..10].copy_from_slice(&question);
+        output[10..12].copy_from_slice(&question);
+        if uaccess::copy_to_user(info, &output).is_err() { return STATUS_INVALID_PARAMETER; }
+        return STATUS_SUCCESS;
+    }
     if header_words < 7 { return STATUS_INVALID_PARAMETER; }
     let Some(data) = table.checked_add(header_words.saturating_mul(2)) else { return STATUS_INVALID_PARAMETER; };
     let read_word = |address: u64| -> Option<u16> {

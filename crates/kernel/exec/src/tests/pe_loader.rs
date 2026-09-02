@@ -159,6 +159,16 @@
     }
 
     #[test]
+    fn export_resolver_rejects_a_zero_function_rva() {
+        let mut blob = exported_pe();
+        blob[0x530..0x534].fill(0);
+        let parsed = pe::parse(&blob).unwrap();
+        let modules = [PeExportModule { name: b"module.dll", image: parsed, base: 0x5000_0000 }];
+        let resolver = PeExportResolver { modules: &modules };
+        assert_eq!(resolver.resolve(b"module.dll", &pe::ImportThunk::Name { hint: 0, name: b"NtClose" }), Err(pe::Error::Unsupported));
+    }
+
+    #[test]
     fn graph_resolver_follows_bounded_named_forwarders() {
         let mut forwarded = exported_pe();
         let directory = 0x98 + 112 + pe::IMAGE_DIRECTORY_ENTRY_EXPORT * 8;
@@ -351,9 +361,22 @@
         let runtime = map_nt_runtime(&as_).unwrap();
         let close = resolve_nt_runtime_export(runtime.base.as_u64(), b"NtClose").unwrap();
         let unwind = resolve_nt_runtime_export(runtime.base.as_u64(), b"RtlUnwindEx").unwrap();
+        let find = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlFindExportedRoutineByName" }).unwrap();
         assert_eq!(close, runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"NtClose" }).unwrap());
         assert_eq!(unwind, runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlUnwindEx" }).unwrap());
+        assert!(find >= runtime.base.as_u64() && find < runtime.base.as_u64() + runtime.bytes as u64);
         assert!(resolve_nt_runtime_export(runtime.base.as_u64(), b"missing_export").is_none());
+    }
+
+    #[test]
+    fn native_runtime_publishes_wine_dispatcher_entry() {
+        let as_ = AddressSpace::new(0x20_000).unwrap();
+        let runtime = map_nt_runtime(&as_).unwrap();
+        let address = resolve_nt_runtime_data_export(runtime.base.as_u64(), b"__wine_syscall_dispatcher").unwrap();
+        assert!(address >= runtime.base.as_u64() && address + 8 <= runtime.base.as_u64() + runtime.bytes as u64);
+        let vma = as_.find_vma(UserVirtAddr::new(address).unwrap()).unwrap();
+        assert!(matches!(vma.backing, VmaBacking::KernelBytes { .. }));
+        assert_eq!(address, runtime.relay_call);
     }
 
     #[test]
@@ -372,7 +395,7 @@
         assert!(as_.vma_count() >= 4);
 
         let as_ = AddressSpace::new(0x40_000).unwrap();
-        let planned = load_pe_module_graph(&modules, &as_, &RejectImports).unwrap();
+        let planned = load_pe_module_graph(&modules, &as_, &RejectImports, 0).unwrap();
         assert_eq!(planned.len(), 2);
         assert_eq!(planned[0].image.base, loaded[0].image.base);
         assert_ne!(planned[0].image.base, planned[1].image.base);
@@ -382,7 +405,7 @@
             pe::OwnedModule { name: b"second.dll".to_vec(), blob: second.clone() },
         ];
         let as_ = AddressSpace::new(0x40_000).unwrap();
-        let owned_loaded = load_owned_pe_module_graph(&owned, &as_, &RejectImports).unwrap();
+        let owned_loaded = load_owned_pe_module_graph(&owned, &as_, &RejectImports, 0).unwrap();
         assert_eq!(owned_loaded.len(), 2);
         assert_eq!(owned_loaded[1].name, b"second.dll");
 
@@ -406,7 +429,7 @@
             pe::Module { name: b"module.dll", image: pe::parse(&dependency).unwrap() },
         ];
         let as_ = AddressSpace::new(0x40_000).unwrap();
-        let loaded = load_pe_module_graph(&modules, &as_, &RejectImports).unwrap();
+        let loaded = load_pe_module_graph(&modules, &as_, &RejectImports, 0).unwrap();
         let root_vma = as_.find_vma(UserVirtAddr::new(loaded[0].image.base + 0x2090).unwrap()).unwrap();
         let data = match root_vma.backing { VmaBacking::KernelBytes { data, .. } => data, _ => panic!("PE image must be kernel-backed") };
         let iat = 0x2090usize;
@@ -521,6 +544,38 @@
         let native = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 7, name: b"NtClose" }).unwrap();
         assert_eq!(bound, native);
         assert_ne!(bound, process.initializers[0].base + 0x1010);
+    }
+
+    #[test]
+    fn wine_relay_dispatcher_is_patched_without_replacing_the_normal_export() {
+        let path = std::path::Path::new("/usr/lib64/wine/x86_64-windows/advapi32.dll");
+        if !path.is_file() { return; }
+        let blob = std::fs::read(path).expect("installed Wine advapi32 must be readable");
+        let parsed = pe::parse(&blob).expect("installed Wine advapi32 must parse");
+        let import = pe::ImportThunk::Name { hint: 0, name: b"RegCloseKey" };
+        assert_eq!(parsed.export_rva(&import).unwrap(), Some(0x6fcc));
+        assert_eq!(parsed.relay_export_rva(&import).unwrap(), Some(0x4c48));
+        let event_log = pe::ImportThunk::Name { hint: 0, name: b"ReadEventLogW" };
+        assert_eq!(parsed.export_rva(&event_log).unwrap(), Some(0x19c90));
+        assert_eq!(parsed.relay_export_rva(&event_log).unwrap(), Some(0x4c1c));
+        let image_base = parsed.image_base;
+        let exports = [PeExportModule { name: b"advapi32.dll", image: parsed, base: 0x1800_0000 }];
+        let resolver = PeExportResolver { modules: &exports };
+        assert_eq!(resolver.resolve(b"ADVAPI32.DLL", &import).unwrap(), 0x1800_4c48);
+        assert_eq!(resolver.resolve(b"advapi32.dll", &event_log).unwrap(), 0x1800_4c1c);
+        struct AnyResolver;
+        impl ImportResolver for AnyResolver {
+            fn resolve(&self, _dll: &[u8], _import: &pe::ImportThunk<'_>) -> Result<u64, pe::Error> { Ok(0x1234_5678_9abc_def0) }
+        }
+        let as_ = AddressSpace::new(0x200_000).unwrap();
+        let base = UserVirtAddr::new(image_base).unwrap();
+        let relay_call = 0xfeed_beef_cafe_0000;
+        let image = load_pe_image_with_resolver_at(&blob, &as_, &AnyResolver, Some(base), relay_call).unwrap();
+        let descriptor = UserVirtAddr::new(image.base + 0x24000 + 8).unwrap();
+        let vma = as_.find_vma(descriptor).unwrap();
+        let data = match vma.backing { VmaBacking::KernelBytes { data, off } => (data, off), _ => panic!("PE image must be kernel-backed") };
+        let offset = data.1 as usize + (descriptor.as_u64() - vma.start.as_u64()) as usize;
+        assert_eq!(u64::from_le_bytes(data.0[offset..offset + 8].try_into().unwrap()), relay_call);
     }
 
     #[test]

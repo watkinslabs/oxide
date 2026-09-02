@@ -181,6 +181,11 @@ fn compare_objects(cur: &sched::Task, first: u64, second: u64) -> u64 {
 /// # C: O(log N_vmas) plus usercopy
 #[cfg(target_os = "oxide-kernel")]
 pub fn dispatch(call: NtCall) -> u64 {
+    if call.service == syscall::nt::NtService::RelayCall {
+        klog::write_raw(b"[WINDOWS-PE-NT-DISPATCH] relay descriptor="); klog::write_hex_u64(call.args.a0);
+        klog::write_raw(b" index="); klog::write_hex_u64(call.args.a1);
+        klog::write_raw(b" stack="); klog::write_hex_u64(call.args.a2); klog::write_raw(b"\n");
+    }
     if call.service == syscall::nt::NtService::RtlGetNativeSystemInformation {
         let mut query = call;
         query.service = syscall::nt::NtService::QuerySystemInformation;
@@ -1011,6 +1016,14 @@ pub fn dispatch(call: NtCall) -> u64 {
             NtObjectCall::CreateThreadEx { handle, process, start, parameter, stack_size, flags } => {
                 if process != CURRENT_PROCESS || flags != 0 || start == 0 { return STATUS_INVALID_PARAMETER; }
                 let Some(entry) = hal::UserVirtAddr::new(start) else { return STATUS_INVALID_PARAMETER; };
+                #[cfg(feature = "debug-faultdiag")]
+                {
+                    klog::write_raw(b"[WINDOWS-PE-THREAD-CREATE] start=");
+                    klog::write_hex_u64(start);
+                    klog::write_raw(b" parameter=");
+                    klog::write_hex_u64(parameter);
+                    klog::write_raw(b"\n");
+                }
                 let stack_size = if stack_size == 0 { NT_THREAD_DEFAULT_STACK } else { stack_size };
                 let page = hal::PAGE_SIZE_BYTES as u64;
                 let Some(stack_size) = stack_size.checked_add(page - 1).map(|v| v & !(page - 1)) else { return STATUS_INVALID_PARAMETER; };

@@ -31,7 +31,7 @@ fn write_wrapper() -> Result<std::path::PathBuf, u8> {
     let dir = std::path::PathBuf::from("target/smoke");
     fs::create_dir_all(&dir).map_err(|_| 1u8)?;
     let path = dir.join("windows-notepad-smoke");
-fs::write(&path, b"#!/bin/sh\nmount -t 9p -o trans=virtio,version=9P2000.L,msize=131096 windowswine /mnt/windows || exit 1\nls -ld /mnt/windows /mnt/windows/notepad.exe || exit 2\nhead -c 2 /mnt/windows/notepad.exe >/dev/null || exit 4\nls /mnt/windows >/dev/null || exit 3\ndd if=/mnt/windows/notepad.exe of=/dev/null bs=65536 count=1 status=none || exit 5\ndd if=/mnt/windows/notepad.exe of=/dev/null bs=1048576 count=1 status=none || exit 6\nexec /usr/local/bin/windows-runtime /mnt/windows/notepad.exe 'C:\\notepad.exe' /mnt/windows\n").map_err(|_| 1u8)?;
+fs::write(&path, b"#!/bin/sh\nmkdir -p /mnt/windows /usr/share/wine/nls || exit 1\nmount -t 9p -o trans=virtio,version=9P2000.L,msize=131096 windowswine /mnt/windows || exit 1\nmount -t 9p -o trans=virtio,version=9P2000.L,msize=131096 winenls /usr/share/wine/nls || exit 1\nls -ld /mnt/windows/x86_64-windows /mnt/windows/x86_64-windows/notepad.exe || exit 2\nhead -c 2 /mnt/windows/x86_64-windows/notepad.exe >/dev/null || exit 4\nls /mnt/windows/x86_64-windows >/dev/null || exit 3\nls -l /usr/share/wine/nls/locale.nls || exit 7\ndd if=/usr/share/wine/nls/locale.nls of=/dev/null bs=4096 count=1 status=none || exit 8\ndd if=/mnt/windows/x86_64-windows/notepad.exe of=/dev/null bs=65536 count=1 status=none || exit 5\ndd if=/mnt/windows/x86_64-windows/notepad.exe of=/dev/null bs=1048576 count=1 status=none || exit 6\nexec /usr/local/bin/windows-runtime /mnt/windows/x86_64-windows/notepad.exe 'C:\\notepad.exe' /mnt/windows/x86_64-windows\n").map_err(|_| 1u8)?;
     Ok(path)
 }
 

@@ -2082,6 +2082,7 @@ dependencies = [
  "sched",
  "sync",
  "syscall",
+ "uaccess",
  "vmm",
 ]
 
