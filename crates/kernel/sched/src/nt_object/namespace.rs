@@ -183,6 +183,14 @@ pub fn directory_path(object: &NtObject) -> Option<String> {
         && entry.object.kind() == NtObjectType::Directory).map(|entry| entry.path.clone())
 }
 
+/// Return the canonical name for one published object, if it has one. # C: O(N_namespace)
+pub fn object_name(object: &NtObject) -> Option<String> {
+    let mut namespace = OBJECT_NAMESPACE.lock();
+    seed(&mut namespace);
+    namespace.objects.iter().find(|entry| core::ptr::eq(entry.object.as_ref(), object))
+        .map(|entry| entry.path.clone())
+}
+
 /// Snapshot immediate object-directory children for a directory handle. # C: O(N_namespace)
 pub fn directory_entries(object: &NtObject) -> Vec<(String, String)> {
     let Some(path) = directory_path(object) else { return Vec::new(); };
@@ -242,6 +250,14 @@ mod tests {
         let object = table.get(handle, 1).unwrap();
         assert_eq!(object.kind(), NtObjectType::Directory);
         assert_eq!(directory_path(&object).as_deref(), Some("\\KnownDlls"));
+    }
+
+    #[test]
+    fn published_object_name_is_canonical_and_unnamed_objects_have_none() {
+        let named = lookup_directory("\\KnownDlls").unwrap();
+        assert_eq!(object_name(&named).as_deref(), Some("\\KnownDlls"));
+        let unnamed = NtObject::new(NtObjectType::Event, 9901);
+        assert_eq!(object_name(&unnamed), None);
     }
 
     #[test]
