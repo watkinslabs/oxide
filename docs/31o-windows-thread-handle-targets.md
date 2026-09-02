@@ -27,3 +27,21 @@ FROZEN 2026-08-31. Dep:`01`,`02`,`06`,`13`,`31f`,`31k`,`31m`,`52`,`53`. Provides
 record: the task's effective CPU mask in `Mask`, group zero, and zero reserved
 fields. The result uses the same handle target and query-rights validation as
 basic thread information.
+
+## 3 Query classes
+
+The native query adapter exposes the Wine startup classes backed by task-owned
+state:
+
+| class | result | owner |
+|---:|---|---|
+| 9 | Win32 start address | `Task::nt_start_address` |
+| 16 | I/O-pending indication | scheduler I/O-wait state |
+| 20 | terminated flag | terminal `TaskState::Zombie` |
+| 30 | group affinity | effective task CPU mask |
+| 35 | suspend depth | `Task::nt_suspend_count` |
+
+Every class validates the exact native output size, target handle, and query
+right before writing user memory. Thread entry publication occurs when the
+native NT thread is constructed, so the reported address cannot drift from the
+entry used by the scheduler.

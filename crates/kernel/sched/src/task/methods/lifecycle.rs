@@ -73,6 +73,7 @@ impl Task {
                 tgid: AtomicU32::new(tid),
                 nt_peb: AtomicU64::new(0),
                 nt_teb: AtomicU64::new(0),
+                nt_start_address: AtomicU64::new(0),
                 nt_thread_ui_languages: Spinlock::new((0, alloc::vec::Vec::new())),
                 nt_job_id: AtomicU64::new(0),
                 pid,

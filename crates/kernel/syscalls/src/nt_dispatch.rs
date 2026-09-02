@@ -132,6 +132,13 @@ const THREAD_AFFINITY_MASK_CLASS: u32 = 4;
 const THREAD_AFFINITY_MASK_BYTES: usize = 8;
 const THREAD_GROUP_INFORMATION_CLASS: u32 = 30;
 const THREAD_GROUP_INFORMATION_BYTES: usize = 16;
+const THREAD_IS_IO_PENDING_CLASS: u32 = 16;
+const THREAD_IS_TERMINATED_CLASS: u32 = 20;
+const THREAD_SUSPEND_COUNT_CLASS: u32 = 35;
+const THREAD_START_ADDRESS_CLASS: u32 = 9;
+const THREAD_BOOLEAN_BYTES: usize = 4;
+const THREAD_START_ADDRESS_BYTES: usize = 8;
+const STATUS_PENDING: u32 = 0x0000_0103;
 const STATUS_WAIT_0: u64 = 0x0000_0100;
 const WAIT_MULTIPLE_LIMIT: u32 = 64;
 const SECTION_MAX_BYTES: u64 = 1 << 30;
@@ -1192,6 +1199,52 @@ pub fn dispatch(call: NtCall) -> u64 {
                 STATUS_SUCCESS
             }
             NtObjectCall::QueryThread { thread, class, info, length, return_length } => {
+                if class == THREAD_IS_IO_PENDING_CLASS {
+                    if (length as usize) != THREAD_BOOLEAN_BYTES || info.as_u64() == 0 { return STATUS_INFO_LENGTH_MISMATCH; }
+                    let target = match resolve_thread_target(&cur, thread, &table, THREAD_QUERY_INFORMATION) {
+                        Ok(target) => target, Err(error) => return error,
+                    };
+                    let pending = if target.core.in_iowait.load(core::sync::atomic::Ordering::Acquire) { 1u32 } else { 0 };
+                    if uaccess::put_user_u32(info.as_u64(), pending).is_err() { return STATUS_INVALID_PARAMETER; }
+                    if let Some(return_length) = return_length {
+                        if uaccess::put_user_u32(return_length.as_u64(), THREAD_BOOLEAN_BYTES as u32).is_err() { return STATUS_INVALID_PARAMETER; }
+                    }
+                    return STATUS_SUCCESS;
+                }
+                if class == THREAD_IS_TERMINATED_CLASS {
+                    if (length as usize) != THREAD_BOOLEAN_BYTES || info.as_u64() == 0 { return STATUS_INFO_LENGTH_MISMATCH; }
+                    let target = match resolve_thread_target(&cur, thread, &table, THREAD_QUERY_INFORMATION) {
+                        Ok(target) => target, Err(error) => return error,
+                    };
+                    let terminated = if matches!(target.state(), sched::TaskState::Zombie) { 1u32 } else { 0 };
+                    if uaccess::put_user_u32(info.as_u64(), terminated).is_err() { return STATUS_INVALID_PARAMETER; }
+                    if let Some(return_length) = return_length {
+                        if uaccess::put_user_u32(return_length.as_u64(), THREAD_BOOLEAN_BYTES as u32).is_err() { return STATUS_INVALID_PARAMETER; }
+                    }
+                    return STATUS_SUCCESS;
+                }
+                if class == THREAD_SUSPEND_COUNT_CLASS {
+                    if (length as usize) != THREAD_BOOLEAN_BYTES || info.as_u64() == 0 { return STATUS_INFO_LENGTH_MISMATCH; }
+                    let target = match resolve_thread_target(&cur, thread, &table, THREAD_QUERY_INFORMATION) {
+                        Ok(target) => target, Err(error) => return error,
+                    };
+                    if uaccess::put_user_u32(info.as_u64(), target.nt_suspend_count.load(core::sync::atomic::Ordering::Acquire)).is_err() { return STATUS_INVALID_PARAMETER; }
+                    if let Some(return_length) = return_length {
+                        if uaccess::put_user_u32(return_length.as_u64(), THREAD_BOOLEAN_BYTES as u32).is_err() { return STATUS_INVALID_PARAMETER; }
+                    }
+                    return STATUS_SUCCESS;
+                }
+                if class == THREAD_START_ADDRESS_CLASS {
+                    if (length as usize) < THREAD_START_ADDRESS_BYTES || info.as_u64() == 0 { return STATUS_INFO_LENGTH_MISMATCH; }
+                    let target = match resolve_thread_target(&cur, thread, &table, THREAD_QUERY_INFORMATION) {
+                        Ok(target) => target, Err(error) => return error,
+                    };
+                    if uaccess::put_user_u64(info.as_u64(), target.nt_start_address()).is_err() { return STATUS_INVALID_PARAMETER; }
+                    if let Some(return_length) = return_length {
+                        if uaccess::put_user_u32(return_length.as_u64(), THREAD_START_ADDRESS_BYTES as u32).is_err() { return STATUS_INVALID_PARAMETER; }
+                    }
+                    return STATUS_SUCCESS;
+                }
                 if class == THREAD_GROUP_INFORMATION_CLASS {
                     if (length as usize) < THREAD_GROUP_INFORMATION_BYTES { return STATUS_INFO_LENGTH_MISMATCH; }
                     let target = match resolve_thread_target(&cur, thread, &table, THREAD_QUERY_INFORMATION) {
