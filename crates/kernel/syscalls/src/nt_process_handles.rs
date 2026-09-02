@@ -73,12 +73,27 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if thread {
         let current_thread = cur.tid as u64;
         if process_id != current_process || thread_id != current_thread { return Some(STATUS_INVALID_CID); }
-    } else if process_id != current_process || thread_id != 0 { return Some(STATUS_INVALID_CID); }
-    let Some(task) = sched::registry::lookup(if thread { cur.tid } else { cur.tgid.load(core::sync::atomic::Ordering::Acquire) }) else {
+    } else if !crate::nt_process_policy::valid_process_client_id(process_id, thread_id) {
         return Some(STATUS_INVALID_CID);
+    }
+    let task = if thread {
+        sched::registry::lookup(cur.tid)
+    } else {
+        let Some(candidate) = sched::registry::lookup(process_id as u32) else {
+            return Some(STATUS_INVALID_CID);
+        };
+        let leader_id = candidate.tgid.load(core::sync::atomic::Ordering::Acquire);
+        sched::registry::lookup(leader_id).or(Some(candidate))
     };
+    let Some(task) = task else { return Some(STATUS_INVALID_CID); };
+    if !task.is_nt_personality() { return Some(STATUS_INVALID_CID); }
     let object = if thread { table.new_thread(task) } else { table.new_process(task) };
-    let access = desired_access | SYNCHRONIZE;
+    let access = if thread { desired_access | SYNCHRONIZE } else {
+        let Some(access) = crate::nt_process_policy::process_granted_access(desired_access, PROCESS_ALL_ACCESS, SYNCHRONIZE) else {
+            return Some(STATUS_INVALID_PARAMETER);
+        };
+        access
+    };
     let Some(native) = table.insert(object, access) else { return Some(STATUS_NO_MEMORY); };
     if uaccess::put_user_u32(handle.as_u64(), native.raw()).is_err() {
         let _ = table.close(native);
