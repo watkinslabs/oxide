@@ -483,7 +483,10 @@ use super::*;
         assert_eq!(decode_object(decode(8, op_args).unwrap()), Ok(NtObjectCall::ResetEvent { handle: u64::MAX as u32, previous: None }));
         assert!(matches!(decode_object(decode(9, SyscallArgs { a0: 7, a1: 1, a2: 0, ..args() }).unwrap()), Ok(NtObjectCall::WaitEvent { handle: 7, alertable: 1, timeout: None })));
         assert!(matches!(decode_object(decode(17, SyscallArgs { a0: 2, a1: 0x1000, a2: 1, a3: 1, a4: 0, ..args() }).unwrap()), Ok(NtObjectCall::WaitMultiple { count: 2, wait_type: 1, alertable: 1, timeout: None, .. })));
-        assert!(matches!(decode_object(decode(18, SyscallArgs { a0: 0x1000, a1: 4, a2: 0x2000, a3: 4, a4: 0, a5: 9 }).unwrap()), Ok(NtObjectCall::CreateSection { file: 9, .. })));
+        assert_eq!(decode_object(decode(18, SyscallArgs { a0: 0x1000, a1: 4, a2: 0x2000, a3: 4, a4: 0x1_0000_0000, a5: 9 }).unwrap()), Ok(NtObjectCall::CreateSection {
+            handle: UserPtr::new(0x1000).unwrap(), desired_access: 4, size: 0x2000,
+            protect: 4, attributes: 0x1_0000_0000, file: 9,
+        }));
         assert!(matches!(decode_object(decode(21, SyscallArgs { a0: u64::MAX, a1: 0, a2: 0x1000, a3: 48, a4: 0, ..args() }).unwrap()), Ok(NtObjectCall::QueryProcess { class: 0, length: 48, .. })));
         assert!(matches!(decode_object(decode(22, SyscallArgs { a0: 0x1000, a1: u64::MAX, a2: 0x4000, a3: 7, a4: 0x1000, a5: 0 }).unwrap()), Ok(NtObjectCall::CreateThreadEx { start: 0x4000, parameter: 7, .. })));
         assert_eq!(decode_object(decode(23, SyscallArgs { a0: u64::MAX, a1: 9, ..args() }).unwrap()), Ok(NtObjectCall::TerminateThread { thread: u64::MAX, status: 9 }));
