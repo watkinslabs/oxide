@@ -1,6 +1,7 @@
 //! NT personality entry boundary; Linux remains separate.
 use syscall::{nt, SyscallArgs}; use syscall::nt::NtCall;
 #[cfg(target_os = "oxide-kernel")] use syscall::nt::NtObjectCall;
+#[cfg(target_os = "oxide-kernel")] use syscall::UserPtr;
 #[cfg(target_os = "oxide-kernel")]
 use syscall::nt::NtMemoryCall;
 /// Decode one NT personality entry without making it visible to Linux routes.
@@ -26,6 +27,38 @@ pub(crate) fn stack_argument(index: usize) -> Option<u64> {
 const CURRENT_PROCESS: u64 = u64::MAX;
 #[cfg(target_os = "oxide-kernel")]
 const CURRENT_THREAD: u64 = u64::MAX - 1;
+
+#[cfg(target_os = "oxide-kernel")]
+fn native_section_object(call: NtCall) -> Option<NtObjectCall> {
+    match call.service {
+        nt::NtService::CreateSection => {
+            let file = stack_argument(6)?;
+            if file > u32::MAX as u64 { return None; }
+            let mut size = if call.args.a3 == 0 { 0 } else { uaccess::get_user_u64(call.args.a3).ok()? };
+            if size == 0 && file != 0 {
+                let cur = sched::live::current()?;
+                let object = cur.thread_group.nt_handles().get(sched::nt_object::NtHandle::from_raw(file as u32), 0)?;
+                size = vfs::generic_fillattr(object.file()?.inode(), &vfs::IDENTITY).size as u64;
+            }
+            Some(NtObjectCall::CreateSectionNative {
+                handle: UserPtr::new(call.args.a0).ok()?, desired_access: call.args.a1 as u32,
+                size, protect: call.args.a4 as u32, attributes: call.args.a2, file: file as u32,
+            })
+        }
+        nt::NtService::MapViewOfSection => {
+            let size = stack_argument(6)?;
+            let protect = stack_argument(9)?;
+            if call.args.a0 > u32::MAX as u64 || size == 0 || protect > u32::MAX as u64 { return None; }
+            let offset = if call.args.a5 == 0 { 0 } else { uaccess::get_user_u64(call.args.a5).ok()? };
+            Some(NtObjectCall::MapViewOfSectionNative {
+                section: call.args.a0 as u32, process: call.args.a1,
+                base: UserPtr::new(call.args.a2).ok()?, offset,
+                size: UserPtr::new(size).ok()?, protect: protect as u32,
+            })
+        }
+        _ => None,
+    }
+}
 #[cfg(target_os = "oxide-kernel")]
 const MEM_RESERVE: u32 = 0x2000;
 #[cfg(target_os = "oxide-kernel")]
@@ -834,7 +867,10 @@ pub fn dispatch(call: NtCall) -> u64 {
         if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
         return crate::s060_exit::sys_exit(&SyscallArgs { a0: call.args.a0, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }) as u64;
     }
-    if let Ok(object_call) = nt::decode_object(call) {
+    let object_call = if matches!(call.service, nt::NtService::CreateSection | nt::NtService::MapViewOfSection) {
+        native_section_object(call)
+    } else { nt::decode_object(call).ok() };
+    if let Some(object_call) = object_call {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
         let table = cur.thread_group.nt_handles();
@@ -1010,7 +1046,8 @@ pub fn dispatch(call: NtCall) -> u64 {
                     sched::WaitOutcome::Interrupted => if alertable != 0 { STATUS_USER_APC } else { STATUS_ALERTED },
                 }
             }
-            NtObjectCall::CreateSection { handle, desired_access, size, protect, attributes, file } => {
+            NtObjectCall::CreateSection { handle, desired_access, size, protect, attributes, file }
+            | NtObjectCall::CreateSectionNative { handle, desired_access, size, protect, attributes, file } => {
                 if desired_access & !(SECTION_QUERY | SECTION_MAP_READ | SECTION_MAP_WRITE | SYNCHRONIZE_ACCESS) != 0
                     || size == 0 || size > SECTION_MAX_BYTES { return STATUS_INVALID_PARAMETER; }
                 let page = hal::PAGE_SIZE_BYTES as u64;
@@ -1048,7 +1085,8 @@ pub fn dispatch(call: NtCall) -> u64 {
                     STATUS_INVALID_PARAMETER
                 } else { STATUS_SUCCESS }
             }
-            NtObjectCall::MapViewOfSection { section, process, base, offset, size, protect } => {
+            NtObjectCall::MapViewOfSection { section, process, base, offset, size, protect }
+            | NtObjectCall::MapViewOfSectionNative { section, process, base, offset, size, protect } => {
                 if !crate::nt_process_handles::permits_current_process(process, &cur, crate::nt_process_handles::PROCESS_VM_OPERATION)
                     || offset % hal::PAGE_SIZE_BYTES != 0 { return STATUS_INVALID_PARAMETER; }
                 // SAFETY: the running NT task owns its current address-space
