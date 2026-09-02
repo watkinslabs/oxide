@@ -538,10 +538,15 @@ pub fn dispatch(call: NtCall) -> u64 {
     }
     if call.service == syscall::nt::NtService::NtOpenMutant {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-        if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
-        // Mutant objects exist, but the named-object namespace needed by
-        // OBJECT_ATTRIBUTES is not owned by the current NT handle layer.
-        return STATUS_NOT_IMPLEMENTED;
+        if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a2 == 0 { return STATUS_INVALID_PARAMETER; }
+        const MUTANT_ALL_ACCESS: u32 = 0x001f_0001;
+        if call.args.a1 as u32 & !MUTANT_ALL_ACCESS != 0 { return STATUS_INVALID_PARAMETER; }
+        let table = cur.thread_group.nt_handles();
+        let Some(path) = crate::nt_directory::resolve_object_path(call.args.a2, &table) else { return STATUS_INVALID_PARAMETER; };
+        let Some(object) = sched::nt_object::lookup_object(&path, sched::nt_object::NtObjectType::Mutant) else { return STATUS_OBJECT_NAME_NOT_FOUND; };
+        let Some(handle) = table.insert(object, call.args.a1 as u32) else { return STATUS_NO_MEMORY; };
+        if uaccess::put_user_u32(call.args.a0, handle.raw()).is_err() { let _ = table.close(handle); return STATUS_INVALID_PARAMETER; }
+        return STATUS_SUCCESS;
     }
     if call.service == syscall::nt::NtService::NtOpenProcess {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };

@@ -11,10 +11,13 @@ const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
 const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
 const STATUS_INVALID_INFO_CLASS: u64 = 0xc000_0003;
 const STATUS_INFO_LENGTH_MISMATCH: u64 = 0xc000_0004;
+const STATUS_OBJECT_NAME_COLLISION: u64 = 0xc000_0035;
+const STATUS_OBJECT_TYPE_MISMATCH: u64 = 0xc000_0024;
+const STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xc000_0034;
 const MUTANT_ALL_ACCESS: u32 = 0x001f_0001;
 const MUTANT_MODIFY_STATE: u32 = 1;
 
-/// Dispatch unnamed mutant creation and release; wait ownership remains in the
+/// Dispatch named/unnamed mutant creation and release; wait ownership remains in the
 /// canonical scheduler-backed object and is shared with wait-any/wait-all.
 /// # C: O(1)
 pub fn dispatch(call: NtCall) -> Option<u64> {
@@ -27,9 +30,18 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     let table = cur.thread_group.nt_handles();
     Some(match object {
         NtObjectCall::CreateMutant { handle, desired_access, attributes, initial_owner } => {
-            if attributes != 0 || initial_owner > 1 || desired_access & !MUTANT_ALL_ACCESS != 0 { return Some(STATUS_INVALID_PARAMETER); }
+            if initial_owner > 1 || desired_access & !MUTANT_ALL_ACCESS != 0 { return Some(STATUS_INVALID_PARAMETER); }
             let owner = if initial_owner != 0 { Some(cur.tid as u64) } else { None };
             let object = table.new_mutant(owner);
+            if attributes != 0 {
+                let Some(path) = crate::nt_directory::resolve_object_path(attributes, &table) else { return Some(STATUS_INVALID_PARAMETER); };
+                let (object, state) = sched::nt_object::publish_mutant(&path, object);
+                if state == sched::nt_object::NamedObjectState::TypeMismatch { return Some(STATUS_OBJECT_TYPE_MISMATCH); }
+                if state == sched::nt_object::NamedObjectState::ParentMissing { return Some(STATUS_OBJECT_NAME_NOT_FOUND); }
+                let Some(native) = table.insert(object, desired_access) else { return Some(STATUS_NO_MEMORY); };
+                if uaccess::put_user_u32(handle.as_u64(), native.raw()).is_err() { let _ = table.close(native); return Some(STATUS_INVALID_PARAMETER); }
+                return Some(if state == sched::nt_object::NamedObjectState::Existing { STATUS_OBJECT_NAME_COLLISION } else { STATUS_SUCCESS });
+            }
             let Some(native) = table.insert(object, desired_access) else { return Some(STATUS_NO_MEMORY); };
             if uaccess::put_user_u32(handle.as_u64(), native.raw()).is_err() {
                 let _ = table.close(native); STATUS_INVALID_PARAMETER
