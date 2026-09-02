@@ -191,6 +191,9 @@ pub fn dispatch(call: NtCall) -> u64 {
     // Process/thread opens must precede the legacy unsupported-service guards
     // below; this adapter owns the current-process NT identity path.
     if let Some(result) = crate::nt_process_handles::dispatch(call) { return result; }
+    // Registry operations use the native userspace owner before the legacy
+    // fail-closed guards below. This keeps the kernel free of registry state.
+    if let Some(result) = crate::nt_registry::dispatch(call) { return result; }
     if call.service == syscall::nt::NtService::RelayCall {
         klog::write_raw(b"[WINDOWS-PE-NT-DISPATCH] relay descriptor="); klog::write_hex_u64(call.args.a0);
         klog::write_raw(b" index="); klog::write_hex_u64(call.args.a1);
@@ -884,7 +887,11 @@ pub fn dispatch(call: NtCall) -> u64 {
                 } else { STATUS_SUCCESS }
             }
             NtObjectCall::Close { handle } => {
-                if table.close(sched::nt_object::NtHandle::from_raw(handle)) { STATUS_SUCCESS } else { STATUS_INVALID_HANDLE }
+                let native = sched::nt_object::NtHandle::from_raw(handle);
+                if let Some(object) = table.get(native, 0) {
+                    if object.kind() == sched::nt_object::NtObjectType::Key { crate::nt_registry::close_remote(object.id()); }
+                }
+                if table.close(native) { STATUS_SUCCESS } else { STATUS_INVALID_HANDLE }
             }
             NtObjectCall::SetEvent { handle, previous } => {
                 let native = sched::nt_object::NtHandle::from_raw(handle);

@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use syscall::registry_wire;
 
 mod client;
 mod advapi;
@@ -13,7 +14,7 @@ pub use advapi::Advapi;
 const MAGIC: &[u8; 8] = b"OXREG\0\x01\0";
 const MAX_RECORDS: u32 = 1 << 20;
 const MAX_BYTES: u32 = 1 << 24;
-const MAX_FRAME: usize = MAX_BYTES as usize;
+const MAX_FRAME: usize = registry_wire::MAX_FRAME;
 
 #[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Root { LocalMachine, CurrentUser, Classes }
@@ -143,17 +144,17 @@ pub fn serve_connection<S: Read + Write>(stream: &mut S, store: &mut RegistrySto
 fn decode_request(frame: &[u8]) -> Result<Request, Error> {
     let mut at = 0; let operation = take_u8(frame, &mut at).ok_or(Error::InvalidFile)?;
     let request = match operation {
-        1 => Request::Open { root: take_root(frame, &mut at)?, subkey: take_text(frame, &mut at)? },
-        2 => Request::Create { root: take_root(frame, &mut at)?, subkey: take_text(frame, &mut at)? },
-        8 => Request::OpenRelative { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?), subkey: take_text(frame, &mut at)? },
-        9 => Request::CreateRelative { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?), subkey: take_text(frame, &mut at)? },
-        10 => Request::Rename { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?), name: take_text(frame, &mut at)? },
-        3 => Request::Set { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?), name: take_text(frame, &mut at)?, value: take_value(frame, &mut at)? },
-        4 => Request::Query { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?), name: take_text(frame, &mut at)? },
-        5 => Request::Close { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
-        6 => Request::EnumKeys { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
-        7 => Request::EnumValues { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
-        11 => Request::Flush { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
+        registry_wire::OPEN => Request::Open { root: take_root(frame, &mut at)?, subkey: take_text(frame, &mut at)? },
+        registry_wire::CREATE => Request::Create { root: take_root(frame, &mut at)?, subkey: take_text(frame, &mut at)? },
+        registry_wire::OPEN_RELATIVE => Request::OpenRelative { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?), subkey: take_text(frame, &mut at)? },
+        registry_wire::CREATE_RELATIVE => Request::CreateRelative { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?), subkey: take_text(frame, &mut at)? },
+        registry_wire::RENAME => Request::Rename { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?), name: take_text(frame, &mut at)? },
+        registry_wire::SET => Request::Set { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?), name: take_text(frame, &mut at)?, value: take_value(frame, &mut at)? },
+        registry_wire::QUERY => Request::Query { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?), name: take_text(frame, &mut at)? },
+        registry_wire::CLOSE => Request::Close { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
+        registry_wire::ENUM_KEYS => Request::EnumKeys { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
+        registry_wire::ENUM_VALUES => Request::EnumValues { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
+        registry_wire::FLUSH => Request::Flush { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
         _ => return Err(Error::InvalidFile),
     };
     if at == frame.len() { Ok(request) } else { Err(Error::InvalidFile) }
@@ -162,12 +163,12 @@ fn decode_request(frame: &[u8]) -> Result<Request, Error> {
 fn encode_response(response: &Response) -> Result<Vec<u8>, Error> {
     let mut out = Vec::new();
     match response {
-        Response::Success => out.push(0),
-        Response::Handle(handle) => { out.push(1); put_u64(&mut out, handle.raw()); },
-        Response::Value(value) => { out.push(2); put_u32(&mut out, value.kind as u32); put_bytes(&mut out, &value.data)?; },
+        Response::Success => out.push(registry_wire::RESPONSE_SUCCESS),
+        Response::Handle(handle) => { out.push(registry_wire::RESPONSE_HANDLE); put_u64(&mut out, handle.raw()); },
+        Response::Value(value) => { out.push(registry_wire::RESPONSE_VALUE); put_u32(&mut out, value.kind as u32); put_bytes(&mut out, &value.data)?; },
         Response::Keys(keys) => { out.push(4); put_u32(&mut out, keys.len().try_into().map_err(|_| Error::InvalidFile)?); for key in keys { put_text(&mut out, key)?; } },
         Response::Values(values) => { out.push(5); put_u32(&mut out, values.len().try_into().map_err(|_| Error::InvalidFile)?); for (name, value) in values { put_text(&mut out, name)?; put_u32(&mut out, value.kind as u32); put_bytes(&mut out, &value.data)?; } },
-        Response::Failure(error) => { out.push(3); out.push(error_code(error)); },
+        Response::Failure(error) => { out.push(registry_wire::RESPONSE_FAILURE); out.push(error_code(error)); },
     }
     Ok(out)
 }
@@ -493,5 +494,16 @@ mod tests {
         let response_start = bytes.len(); let mut stream = std::io::Cursor::new(bytes); serve_connection(&mut stream, &mut store).unwrap();
         assert_eq!(&stream.get_ref()[response_start..], &[2, 0, 0, 0, 3, 4]);
         std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn shared_wire_contract_keeps_relative_operations_distinct() {
+        assert_eq!(registry_wire::OPEN, 1);
+        assert_eq!(registry_wire::CREATE, 2);
+        assert_eq!(registry_wire::OPEN_RELATIVE, 8);
+        assert_eq!(registry_wire::CREATE_RELATIVE, 9);
+        assert_ne!(registry_wire::OPEN, registry_wire::OPEN_RELATIVE);
+        assert_ne!(registry_wire::CREATE, registry_wire::CREATE_RELATIVE);
+        assert_eq!(registry_wire::MAX_FRAME, 1 << 24);
     }
 }

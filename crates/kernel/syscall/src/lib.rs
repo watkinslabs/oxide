@@ -38,6 +38,7 @@ pub mod nrs;
 pub mod nt;
 pub mod nt_exec;
 pub mod nt_registry;
+pub mod registry_wire;
 pub mod ptrace;
 pub mod restart;
 pub mod rseq;
