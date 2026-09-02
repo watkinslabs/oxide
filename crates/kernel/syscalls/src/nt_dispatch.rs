@@ -559,9 +559,17 @@ pub fn dispatch(call: NtCall) -> u64 {
     }
     if call.service == syscall::nt::NtService::NtOpenSemaphore {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-        if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
-        // Named semaphore lookup requires the shared NT object namespace.
-        return STATUS_NOT_IMPLEMENTED;
+        if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a2 == 0 { return STATUS_INVALID_PARAMETER; }
+        const SEMAPHORE_ALL_ACCESS: u32 = 0x001f_0003;
+        const SEMAPHORE_ALLOWED_ACCESS: u32 = SEMAPHORE_ALL_ACCESS | 0xf000_0000;
+        if call.args.a1 as u32 & !SEMAPHORE_ALLOWED_ACCESS != 0 { return STATUS_INVALID_PARAMETER; }
+        let table = cur.thread_group.nt_handles();
+        let Some(path) = crate::nt_directory::resolve_object_path(call.args.a2, &table) else { return STATUS_INVALID_PARAMETER; };
+        let Some(object) = sched::nt_object::lookup_object(&path, sched::nt_object::NtObjectType::Semaphore) else { return STATUS_OBJECT_NAME_NOT_FOUND; };
+        let access = if call.args.a1 as u32 & GENERIC_ALL != 0 { call.args.a1 as u32 | SEMAPHORE_ALL_ACCESS } else { call.args.a1 as u32 };
+        let Some(handle) = table.insert(object, access) else { return STATUS_NO_MEMORY; };
+        if uaccess::put_user_u32(call.args.a0, handle.raw()).is_err() { let _ = table.close(handle); return STATUS_INVALID_PARAMETER; }
+        return STATUS_SUCCESS;
     }
     if call.service == syscall::nt::NtService::NtOpenSymbolicLinkObject {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
@@ -812,11 +820,11 @@ pub fn dispatch(call: NtCall) -> u64 {
                 if attributes != 0 {
                     let Some(path) = crate::nt_directory::resolve_object_path(attributes, &table) else { return STATUS_INVALID_PARAMETER; };
                     let (object, state) = sched::nt_object::create_event(&path, event_type == 0, initial_state != 0);
-                    if state == sched::nt_object::NamedEventState::TypeMismatch { return STATUS_OBJECT_TYPE_MISMATCH; }
-                    if state == sched::nt_object::NamedEventState::ParentMissing { return STATUS_OBJECT_NAME_NOT_FOUND; }
+                    if state == sched::nt_object::NamedObjectState::TypeMismatch { return STATUS_OBJECT_TYPE_MISMATCH; }
+                    if state == sched::nt_object::NamedObjectState::ParentMissing { return STATUS_OBJECT_NAME_NOT_FOUND; }
                     let Some(native) = table.insert(object, granted_access) else { return STATUS_NO_MEMORY; };
                     if uaccess::put_user_u32(handle.as_u64(), native.raw()).is_err() { let _ = table.close(native); return STATUS_INVALID_PARAMETER; }
-                    return if state == sched::nt_object::NamedEventState::Existing { STATUS_OBJECT_NAME_COLLISION } else { STATUS_SUCCESS };
+                    return if state == sched::nt_object::NamedObjectState::Existing { STATUS_OBJECT_NAME_COLLISION } else { STATUS_SUCCESS };
                 }
                 // Native EVENT_TYPE 0 is NotificationEvent (manual reset),
                 // while 1 is SynchronizationEvent (auto reset).
