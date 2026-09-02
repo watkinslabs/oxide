@@ -194,6 +194,7 @@ pub fn dispatch(call: NtCall) -> u64 {
     // Registry operations use the native userspace owner before the legacy
     // fail-closed guards below. This keeps the kernel free of registry state.
     if let Some(result) = crate::nt_registry::dispatch(call) { return result; }
+    if let Some(result) = crate::nt_file::dispatch_native(call) { return result; }
     if call.service == syscall::nt::NtService::RelayCall {
         klog::write_raw(b"[WINDOWS-PE-NT-DISPATCH] relay descriptor="); klog::write_hex_u64(call.args.a0);
         klog::write_raw(b" index="); klog::write_hex_u64(call.args.a1);
