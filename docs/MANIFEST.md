@@ -203,6 +203,8 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 
 | File | Status | Frozen | Depends |
 |---|---|---|---|
+| `windows.md` | DRAFT | — | `29a`,`31h`,`31x`,`52`,`53` |
+| `oxide_nt.md` | FROZEN | 2026-09-02 | `16`,`29`,`31`,`53` |
 | `boot-flow.md` | FROZEN | 2026-05-02 | `20`,`21`,`33`,`36`,`29` |
 | `55-console-color-font.md` | DRAFT | — | `28`,`47`,`48`,`49`,`50` |
 | `56-timers-and-registration.md` | DRAFT | — | `02`,`06`,`07`,`08`,`13`,`23`,`52`,`53` |
