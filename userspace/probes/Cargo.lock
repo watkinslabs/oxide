@@ -219,4 +219,5 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "syscall",
+ "windows-gdi",
 ]
