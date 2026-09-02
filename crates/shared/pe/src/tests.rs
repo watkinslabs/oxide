@@ -214,6 +214,21 @@ fn locates_and_decodes_x64_runtime_function_unwind_info() {
 }
 
 #[test]
+fn rejects_exception_tables_that_are_not_sorted_or_have_truncated_unwind_data() {
+    let mut b = image();
+    let dir = OPT + 112 + IMAGE_DIRECTORY_ENTRY_EXCEPTION * 8;
+    b[dir..dir + 4].copy_from_slice(&0x1100u32.to_le_bytes()); b[dir + 4..dir + 8].copy_from_slice(&24u32.to_le_bytes());
+    b[0x500..0x50c].copy_from_slice(&[0x00, 0x10, 0, 0, 0x50, 0x10, 0, 0, 0xf0, 0x11, 0, 0]);
+    b[0x50c..0x518].copy_from_slice(&[0x40, 0x10, 0, 0, 0x60, 0x10, 0, 0, 0xf0, 0x11, 0, 0]);
+    assert_eq!(parse(&b).unwrap().exception_functions(), Err(Error::Einval));
+    let mut truncated = image();
+    let dir = OPT + 112 + IMAGE_DIRECTORY_ENTRY_EXCEPTION * 8;
+    truncated[dir..dir + 4].copy_from_slice(&0x1100u32.to_le_bytes()); truncated[dir + 4..dir + 8].copy_from_slice(&12u32.to_le_bytes());
+    truncated[0x500..0x50c].copy_from_slice(&[0x00, 0x10, 0, 0, 0x50, 0x10, 0, 0, 0xff, 0x2f, 0, 0]);
+    assert_eq!(parse(&truncated).unwrap().exception_functions(), Err(Error::Einval));
+}
+
+#[test]
 fn unwinds_x64_saved_register_and_return_address_through_reader() {
     let mut b = image();
     let dir = OPT + 112 + IMAGE_DIRECTORY_ENTRY_EXCEPTION * 8;
