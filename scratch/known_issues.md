@@ -524,9 +524,10 @@ namespace, while `NtOpenSection` resolves typed handles with validated access.
 Section mapping continues through the existing VMM-backed view owner.
 `NtOpenSemaphore` now resolves named semaphore handles through the canonical
 NT object namespace; semaphore wait/release behavior remains scheduler-owned.
-The graph now reaches `ntdll.dll!NtOpenSymbolicLinkObject`; NT symbolic-link
-objects remain an explicit `STATUS_NOT_IMPLEMENTED` boundary pending their
-namespace owner.
+Windows NT frontier update (2026-09-02): NT symbolic-link objects now have a
+canonical target owner with create/open/query services, typed access checks,
+Unicode target copy-out, and `\\DosDevices` namespace seeding. They remain
+distinct from VFS symlinks; path traversal integration is the next boundary.
 The graph now reaches `ntdll.dll!NtOpenThread`; CLIENT_ID-based thread-handle
 acquisition remains an explicit `STATUS_NOT_IMPLEMENTED` boundary.
 Windows NT frontier update (2026-09-02): named timer creation and opening

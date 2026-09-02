@@ -37,7 +37,7 @@ fn leaf(path: &str) -> &str { path.rsplit('\\').next().unwrap_or(path) }
 
 fn seed(namespace: &mut Namespace) {
     if !namespace.objects.is_empty() { return; }
-    for path in ["\\", "\\KnownDlls", "\\BaseNamedObjects", "\\Device", "\\Sessions", "\\Windows"] {
+    for path in ["\\", "\\KnownDlls", "\\BaseNamedObjects", "\\Device", "\\DosDevices", "\\Sessions", "\\Windows"] {
         let id = namespace.next_id.fetch_add(1, Ordering::Relaxed);
         namespace.objects.push(NamedObject { path: path.into(), object: NtObject::new(NtObjectType::Directory, id) });
     }
@@ -157,6 +157,24 @@ pub fn publish_timer(path: &str, object: Arc<NtObject>) -> (Arc<NtObject>, Named
     (object, NamedObjectState::Created)
 }
 
+/// Publish one symbolic link in the canonical namespace or return its existing identity. # C: O(N_namespace)
+pub fn publish_symbolic_link(path: &str, object: Arc<NtObject>) -> (Arc<NtObject>, NamedObjectState) {
+    let mut namespace = OBJECT_NAMESPACE.lock();
+    seed(&mut namespace);
+    if let Some(entry) = namespace.objects.iter().find(|entry| equal(&entry.path, path)) {
+        return (Arc::clone(&entry.object), if entry.object.kind() == NtObjectType::SymbolicLink {
+            NamedObjectState::Existing
+        } else { NamedObjectState::TypeMismatch });
+    }
+    let Some(parent_path) = parent(path) else { return (object, NamedObjectState::ParentMissing); };
+    if !namespace.objects.iter().any(|entry| equal(&entry.path, parent_path)
+        && entry.object.kind() == NtObjectType::Directory) {
+        return (object, NamedObjectState::ParentMissing);
+    }
+    namespace.objects.push(NamedObject { path: path.into(), object: Arc::clone(&object) });
+    (object, NamedObjectState::Created)
+}
+
 /// Return the canonical path of a directory object. # C: O(N_namespace)
 pub fn directory_path(object: &NtObject) -> Option<String> {
     let mut namespace = OBJECT_NAMESPACE.lock();
@@ -178,6 +196,7 @@ pub fn directory_entries(object: &NtObject) -> Vec<(String, String)> {
             NtObjectType::Section => "Section",
             NtObjectType::Mutant => "Mutant",
             NtObjectType::Timer => "Timer",
+            NtObjectType::SymbolicLink => "SymbolicLink",
             _ => "Object",
         };
         Some((leaf(&entry.path).into(), kind.into()))
@@ -299,5 +318,21 @@ mod tests {
         assert_eq!(published.kind(), NtObjectType::Timer);
         assert_eq!(directory_entries(&lookup_directory("\\BaseNamedObjects").unwrap())
             .iter().find(|(name, _)| name == "f1455_timer").map(|(_, kind)| kind.as_str()), Some("Timer"));
+    }
+
+    #[test]
+    fn named_symbolic_link_publication_reuses_identity_and_preserves_target() {
+        let path = "\\DosDevices\\f1456_link";
+        let first = NtObject::new_symbolic_link(9301, "\\Device\\HarddiskVolume1".into());
+        let second = NtObject::new_symbolic_link(9302, "\\Device\\Other".into());
+        let (published, first_state) = publish_symbolic_link(path, first);
+        let (reopened, second_state) = publish_symbolic_link(path, second);
+        assert_eq!(first_state, NamedObjectState::Created);
+        assert_eq!(second_state, NamedObjectState::Existing);
+        assert!(core::ptr::eq(published.as_ref(), reopened.as_ref()));
+        assert_eq!(published.kind(), NtObjectType::SymbolicLink);
+        assert_eq!(published.symbolic_link().unwrap().target(), "\\Device\\HarddiskVolume1");
+        assert!(directory_entries(&lookup_directory("\\DosDevices").unwrap())
+            .iter().any(|(name, kind)| name == "f1456_link" && kind == "SymbolicLink"));
     }
 }
