@@ -6,7 +6,7 @@
 extern crate alloc;
 #[path = "nt_object/namespace.rs"]
 mod namespace;
-pub use namespace::{create_event, create_semaphore, directory_entries, directory_path, lookup_directory, lookup_object, object_name, publish_mutant, publish_section, publish_symbolic_link, publish_timer, NamedObjectState};
+pub use namespace::{create_event, create_semaphore, directory_entries, directory_path, lookup_directory, lookup_object, make_temporary, object_name, publish_mutant, publish_section, publish_symbolic_link, publish_timer, release_temporary, NamedObjectState};
 #[path = "nt_object/mutant.rs"]
 mod mutant;
 pub use mutant::NtMutant;
@@ -562,13 +562,22 @@ impl NtHandleTable {
     pub fn close(&self, handle: NtHandle) -> bool {
         let Some((index, generation)) = handle.parts() else { return false; };
         let mut entries = self.entries.lock();
-        let Some(entry) = entries.get_mut(index - FIRST_INDEX) else { return false; };
-        if entry.generation != generation || entry.object.is_none() { return false; }
-        let object = entry.object.take();
-        entry.access = 0;
-        entry.generation = entry.generation.wrapping_add(1);
-        if entry.generation == 0 { entry.generation = 1; }
-        drop(object);
+        let object = {
+            let Some(entry) = entries.get_mut(index - FIRST_INDEX) else { return false; };
+            if entry.generation != generation || entry.object.is_none() { return false; }
+            let object = entry.object.take();
+            entry.access = 0;
+            entry.generation = entry.generation.wrapping_add(1);
+            if entry.generation == 0 { entry.generation = 1; }
+            object
+        };
+        let has_live_handle = object.as_ref().is_some_and(|object| entries.iter().any(|other|
+            other.object.as_ref().is_some_and(|candidate| alloc::sync::Arc::ptr_eq(candidate, object))));
+        drop(entries);
+        if let Some(object) = object {
+            namespace::release_temporary(&object, has_live_handle);
+            drop(object);
+        }
         true
     }
     /// Duplicate a handle with a subset of its granted rights. # C: O(1)
