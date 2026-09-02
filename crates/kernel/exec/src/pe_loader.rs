@@ -20,6 +20,7 @@ pub struct NtRuntime {
     pub base: UserVirtAddr,
     pub bytes: usize,
     pub relay_call: u64,
+    pub wine_dispatcher: u64,
     addresses: [u64; 505],
 }
 const NTDLL_EXPORTS: [&[u8]; 505] = [
@@ -417,16 +418,16 @@ pub fn resolve_nt_runtime_data_export(base: u64, name: &[u8]) -> Option<u64> {
     let mut offset = 0u64;
     for (index, _) in NTDLL_EXPORTS.iter().enumerate() { offset = offset.checked_add(runtime_stub_bytes(index) as u64)?; }
     let continuation = pe::nt_stub::encode_x64_run_once_continuation(syscall::nt::NtService::RtlRunOnceComplete.entry());
-    // Keep this address identical to `map_nt_runtime`'s relay_call. The eight
-    // bytes after the continuation are reserved before the relay stub; the
-    // exported Wine dispatcher is the relay entry, not the reservation.
-    base.checked_add(offset)?.checked_add(continuation.len() as u64)?.checked_add(8)
+    let relay = pe::nt_stub::X64_RELAY_STUB_BYTES as u64;
+    let dispatcher_offset = offset.checked_add(continuation.len() as u64)?.checked_add(8)?.checked_add(relay)?;
+    base.checked_add(dispatcher_offset)
 }
 pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
     let page = hal::PAGE_SIZE_BYTES as usize;
     let continuation = pe::nt_stub::encode_x64_run_once_continuation(syscall::nt::NtService::RtlRunOnceComplete.entry());
     let stub_bytes: usize = NTDLL_EXPORTS.iter().enumerate().map(|(index, _)| runtime_stub_bytes(index)).sum();
-    let code_bytes = stub_bytes + continuation.len() + 8 + pe::nt_stub::X64_RELAY_STUB_BYTES;
+    let wine_dispatcher = pe::nt_stub::encode_x64_wine_dispatcher_stub(syscall::nt::NtService::WineSyscall.entry());
+    let code_bytes = stub_bytes + continuation.len() + 8 + pe::nt_stub::X64_RELAY_STUB_BYTES + wine_dispatcher.len();
     let mapped_bytes = (code_bytes + page - 1) / page * page;
     let mut code = alloc::vec![0u8; mapped_bytes];
     let mut addresses = [0u64; 505];
@@ -912,12 +913,15 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
     let relay_offset = offset + continuation.len() + 8;
     let relay = pe::nt_stub::encode_x64_relay_stub(syscall::nt::NtService::RelayCall.entry());
     code[relay_offset..relay_offset + relay.len()].copy_from_slice(&relay);
+    let dispatcher_offset = relay_offset + relay.len();
+    code[dispatcher_offset..dispatcher_offset + wine_dispatcher.len()].copy_from_slice(&wine_dispatcher);
     let data = as_.stash_bytes(code.into_boxed_slice());
     let base = as_.mmap(None, mapped_bytes, VmaProt::READ | VmaProt::EXEC, VmaFlags::PRIVATE,
         VmaBacking::KernelBytes { data, off: 0 }, false).map_err(|_| pe::Error::Einval)?;
     for address in &mut addresses { *address = base.as_u64().checked_add(*address).ok_or(pe::Error::Einval)?; }
     let relay_call = base.as_u64().checked_add(relay_offset as u64).ok_or(pe::Error::Einval)?;
-    Ok(NtRuntime { base, bytes: mapped_bytes, relay_call, addresses })
+    let wine_dispatcher = base.as_u64().checked_add(dispatcher_offset as u64).ok_or(pe::Error::Einval)?;
+    Ok(NtRuntime { base, bytes: mapped_bytes, relay_call, wine_dispatcher, addresses })
 }
 
 /// Resolve the private run-once callback continuation in the synthetic ntdll page.

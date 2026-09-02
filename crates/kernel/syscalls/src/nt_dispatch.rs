@@ -229,6 +229,7 @@ pub fn dispatch(call: NtCall) -> u64 {
     // below; this adapter owns the current-process NT identity path.
     if let Some(result) = crate::nt_process_handles::dispatch(call) { return result; }
     if let Some(result) = crate::nt_process_memory::dispatch(call) { return result; }
+    if call.service == syscall::nt::NtService::WineSyscall { return crate::nt_wine_window::dispatch(call); }
     // Registry operations use the native userspace owner before the legacy
     // fail-closed guards below. This keeps the kernel free of registry state.
     if let Some(result) = crate::nt_registry::dispatch(call) { return result; }

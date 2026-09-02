@@ -1,4 +1,12 @@
 use super::*;
+
+#[test]
+fn wine_dispatcher_service_preserves_ordinal_and_argument_pointer() {
+    let args = SyscallArgs { a0: 0x136b, a1: 0x1234_5678, a2: 9, a3: 8, a4: 7, a5: 6 };
+    let call = decode(536, args).unwrap();
+    assert_eq!(call.service, NtService::WineSyscall);
+    assert_eq!(call.args, args);
+}
     fn args() -> SyscallArgs { SyscallArgs { a0: u64::MAX, a1: 0x1122_3344_5566_7788, a2: 3, a3: 4, a4: 5, a5: 6 } }
 
     #[test]

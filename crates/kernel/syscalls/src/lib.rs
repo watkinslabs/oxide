@@ -66,6 +66,8 @@ mod nt_token;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_registry;
 #[cfg(target_os = "oxide-kernel")]
+mod nt_wine_window;
+#[cfg(target_os = "oxide-kernel")]
 mod nt_heap;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_loader_dir;
