@@ -9,6 +9,38 @@ const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
 const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
+const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
+
+const SERVER_REQ_CLOSE_HANDLE: u32 = 21;
+const SERVER_REQ_CREATE_EVENT: u32 = 30;
+const SERVER_REQ_EVENT_OP: u32 = 31;
+const SERVER_REQ_QUERY_EVENT: u32 = 32;
+const SERVER_HEADER_BYTES: u64 = 12;
+const SERVER_REQUEST_SIZE: u64 = 4;
+const SERVER_REPLY_SIZE: u64 = 8;
+const SERVER_HANDLE: u64 = 12;
+const SERVER_EVENT_OP: u64 = 16;
+const SERVER_EVENT_MANUAL_RESET: u64 = 16;
+const SERVER_EVENT_INITIAL_STATE: u64 = 20;
+const SERVER_REPLY_HANDLE: u64 = 8;
+const SERVER_REPLY_STATE: u64 = 8;
+const SERVER_REPLY_MANUAL_RESET: u64 = 8;
+const SERVER_REPLY_EVENT_STATE: u64 = 12;
+const EVENT_MODIFY_STATE: u32 = 0x0002;
+const EVENT_QUERY_STATE: u32 = 0x0001;
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum ServerRequest { CloseHandle, CreateEvent, EventOp, QueryEvent }
+
+fn server_request_kind(request: u32) -> Option<ServerRequest> {
+    match request {
+        SERVER_REQ_CLOSE_HANDLE => Some(ServerRequest::CloseHandle),
+        SERVER_REQ_CREATE_EVENT => Some(ServerRequest::CreateEvent),
+        SERVER_REQ_EVENT_OP => Some(ServerRequest::EventOp),
+        SERVER_REQ_QUERY_EVENT => Some(ServerRequest::QueryEvent),
+        _ => None,
+    }
+}
 
 fn windows_time_ticks(realtime_ns: u64) -> u64 { realtime_ns.saturating_div(100) }
 
@@ -49,6 +81,66 @@ fn unix_handle_to_fd(args: u64) -> u64 {
 fn unix_handle_to_fd(_args: u64) -> u64 { STATUS_INVALID_PARAMETER }
 
 #[cfg(target_os = "oxide-kernel")]
+fn server_reply(args: u64, status: u64) -> u64 {
+    if uaccess::put_user_u32(args, status as u32).is_err() || uaccess::put_user_u32(args + SERVER_REPLY_SIZE, 0).is_err() { STATUS_INVALID_PARAMETER } else { status }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn server_call(args: u64) -> u64 {
+    if args == 0 { return STATUS_INVALID_PARAMETER; }
+    let Ok(request) = uaccess::get_user_u32(args) else { return STATUS_INVALID_PARAMETER; };
+    let Ok(request_size) = uaccess::get_user_u32(args + SERVER_REQUEST_SIZE) else { return STATUS_INVALID_PARAMETER; };
+    if request_size != 0 { return server_reply(args, STATUS_INVALID_PARAMETER); }
+    let Some(request) = server_request_kind(request) else { return server_reply(args, STATUS_NOT_IMPLEMENTED); };
+    let Some(cur) = sched::live::current() else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+    let table = cur.thread_group.nt_handles();
+    let status = match request {
+        ServerRequest::CloseHandle => {
+            let Ok(raw) = uaccess::get_user_u32(args + SERVER_HANDLE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let handle = sched::nt_object::NtHandle::from_raw(raw);
+            let object = table.get(handle, 0);
+            if object.is_none() { STATUS_INVALID_HANDLE } else {
+                if object.as_ref().is_some_and(|object| object.kind() == sched::nt_object::NtObjectType::Key) { crate::nt_registry::close_remote(object.unwrap().id()); }
+                if table.close(handle) { STATUS_SUCCESS } else { STATUS_INVALID_HANDLE }
+            }
+        }
+        ServerRequest::CreateEvent => {
+            let Ok(access) = uaccess::get_user_u32(args + SERVER_HANDLE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let Ok(manual) = uaccess::get_user_u32(args + SERVER_EVENT_MANUAL_RESET) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let Ok(initial) = uaccess::get_user_u32(args + SERVER_EVENT_INITIAL_STATE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            if manual > 1 || initial > 1 { STATUS_INVALID_PARAMETER } else {
+                let object = table.new_event(manual != 0, initial != 0);
+                let Some(handle) = table.insert(object, access) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+                if uaccess::put_user_u32(args + SERVER_REPLY_HANDLE, handle.raw()).is_err() { let _ = table.close(handle); STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
+            }
+        }
+        ServerRequest::EventOp => {
+            let Ok(raw) = uaccess::get_user_u32(args + SERVER_HANDLE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let Ok(op) = uaccess::get_user_u32(args + SERVER_EVENT_OP) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let handle = sched::nt_object::NtHandle::from_raw(raw);
+            let Some(object) = table.get(handle, EVENT_MODIFY_STATE) else { return server_reply(args, if table.contains(handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }); };
+            if object.kind() != sched::nt_object::NtObjectType::Event { STATUS_INVALID_HANDLE } else if let Some(event) = object.event() {
+                let old = event.is_signaled();
+                match op { 0 => { event.pulse(); }, 1 => { event.set(); }, 2 => { event.reset(); }, _ => return server_reply(args, STATUS_INVALID_PARAMETER) }
+                table.wake_waiters();
+                if uaccess::put_user_u32(args + SERVER_REPLY_STATE, old as u32).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
+            } else { STATUS_INVALID_HANDLE }
+        }
+        ServerRequest::QueryEvent => {
+            let Ok(raw) = uaccess::get_user_u32(args + SERVER_HANDLE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let handle = sched::nt_object::NtHandle::from_raw(raw);
+            let Some(object) = table.get(handle, EVENT_QUERY_STATE) else { return server_reply(args, if table.contains(handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }); };
+            let Some(event) = object.event() else { return server_reply(args, STATUS_INVALID_HANDLE); };
+            if uaccess::put_user_u32(args + SERVER_REPLY_MANUAL_RESET, event.is_manual_reset() as u32).is_err() || uaccess::put_user_u32(args + SERVER_REPLY_EVENT_STATE, event.is_signaled() as u32).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
+        }
+    };
+    server_reply(args, status)
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn server_call(_args: u64) -> u64 { STATUS_INVALID_PARAMETER }
+
+#[cfg(target_os = "oxide-kernel")]
 fn write_unix_debug(args: u64) -> u64 {
     const STRING: u64 = 0;
     const LENGTH: u64 = 8;
@@ -82,6 +174,7 @@ pub(crate) fn dispatch(call: NtCall) -> u64 {
         2 => write_unix_debug(call.args.a2),
         4 => unix_fd_to_handle(call.args.a2),
         5 => unix_handle_to_fd(call.args.a2),
+        3 => server_call(call.args.a2),
         // unix_system_time_precise: writes one Windows 100ns timestamp.
         7 => {
             if call.args.a2 == 0 { return STATUS_INVALID_PARAMETER; }
@@ -110,5 +203,15 @@ mod tests {
     fn unix_system_time_uses_windows_100ns_units() {
         assert_eq!(windows_time_ticks(1_700_000_000_123_456_700), 17_000_000_001_234_567);
         assert_eq!(windows_time_ticks(99), 0);
+    }
+
+    #[test]
+    fn server_request_ids_match_wire_protocol() {
+        assert_eq!(server_request_kind(21), Some(ServerRequest::CloseHandle));
+        assert_eq!(server_request_kind(30), Some(ServerRequest::CreateEvent));
+        assert_eq!(server_request_kind(31), Some(ServerRequest::EventOp));
+        assert_eq!(server_request_kind(32), Some(ServerRequest::QueryEvent));
+        assert_eq!(server_request_kind(33), None);
+        assert_eq!(SERVER_HEADER_BYTES, 12);
     }
 }
