@@ -572,6 +572,21 @@ pub fn dispatch(call: NtCall) -> u64 {
         // Named timer lookup requires the shared NT object namespace.
         return STATUS_NOT_IMPLEMENTED;
     }
+    if call.service == syscall::nt::NtService::NtCreateUserProcess {
+        let Some(process_flags) = stack_argument(6) else { return STATUS_INVALID_PARAMETER; };
+        let Some(thread_flags) = stack_argument(7) else { return STATUS_INVALID_PARAMETER; };
+        let Some(process_parameters) = stack_argument(8) else { return STATUS_INVALID_PARAMETER; };
+        let Some(create_info) = stack_argument(9) else { return STATUS_INVALID_PARAMETER; };
+        let Some(attribute_list) = stack_argument(10) else { return STATUS_INVALID_PARAMETER; };
+        // The complete ABI is validated before the future child-image
+        // transaction is entered. Until that transaction can atomically load
+        // the PE, initialize its environment, install both typed handles,
+        // and publish the task, valid calls remain explicitly unsupported.
+        if nt::decode_user_process(call, [process_flags, thread_flags, process_parameters, create_info, attribute_list]).is_err() {
+            return STATUS_INVALID_PARAMETER;
+        }
+        return STATUS_NOT_IMPLEMENTED;
+    }
     if call.service == syscall::nt::NtService::NtQueryDirectoryObject {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
@@ -586,7 +601,7 @@ pub fn dispatch(call: NtCall) -> u64 {
         // followed by ResetEvent race.
         return STATUS_NOT_IMPLEMENTED;
     }
-    if matches!(call.service, syscall::nt::NtService::NtCreateNamedPipeFile | syscall::nt::NtService::NtCreateSectionEx | syscall::nt::NtService::NtCreateSymbolicLinkObject | syscall::nt::NtService::NtCreateUserProcess | syscall::nt::NtService::NtDeleteKey | syscall::nt::NtService::NtDeleteValueKey | syscall::nt::NtService::NtEnumerateKey | syscall::nt::NtService::NtEnumerateValueKey | syscall::nt::NtService::NtFilterToken | syscall::nt::NtService::NtFlushKey) { return 0xc000_0002; }
+    if matches!(call.service, syscall::nt::NtService::NtCreateNamedPipeFile | syscall::nt::NtService::NtCreateSectionEx | syscall::nt::NtService::NtCreateSymbolicLinkObject | syscall::nt::NtService::NtDeleteKey | syscall::nt::NtService::NtDeleteValueKey | syscall::nt::NtService::NtEnumerateKey | syscall::nt::NtService::NtEnumerateValueKey | syscall::nt::NtService::NtFilterToken | syscall::nt::NtService::NtFlushKey) { return 0xc000_0002; }
     if let Some(result) = crate::nt_power::dispatch(call) { return result; }
     if let Some(result) = crate::nt_fls::dispatch(call) { return result; }
     if let Some(result) = crate::nt_format::dispatch(call) { return result; }
