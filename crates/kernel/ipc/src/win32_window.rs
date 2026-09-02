@@ -72,13 +72,16 @@ impl MessageQueue {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct WindowRecord { pub owner_tid: u64, pub parent: Option<WindowId>, pub wndproc: u64, pub visible: bool }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WindowClass { pub name: Vec<u16>, pub wndproc: u64, pub atom: u16 }
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct WindowRect { pub left: i32, pub top: i32, pub right: i32, pub bottom: i32 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum WindowError { NoSuchWindow, InvalidParent, WrongThread, NoFocus, QueueFull }
 
-pub struct WindowManager { next: u32, windows: Vec<(WindowId, WindowRecord)>, rects: Vec<(WindowId, WindowRect)>, texts: Vec<(WindowId, Vec<u16>)>, dirty: Vec<(WindowId, WindowRect)>, queues: Vec<(u64, MessageQueue)>, focus: Option<WindowId> }
+pub struct WindowManager { next: u32, next_atom: u16, classes: Vec<WindowClass>, windows: Vec<(WindowId, WindowRecord)>, rects: Vec<(WindowId, WindowRect)>, texts: Vec<(WindowId, Vec<u16>)>, dirty: Vec<(WindowId, WindowRect)>, queues: Vec<(u64, MessageQueue)>, focus: Option<WindowId> }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum QueueResult { Message(WinMessage), Quit(i32), Empty }
@@ -86,7 +89,19 @@ pub enum QueueResult { Message(WinMessage), Quit(i32), Empty }
 impl Default for WindowManager { fn default() -> Self { Self::new() } }
 
 impl WindowManager {
-    pub fn new() -> Self { Self { next: 1, windows: Vec::new(), rects: Vec::new(), texts: Vec::new(), dirty: Vec::new(), queues: Vec::new(), focus: None } }
+    pub fn new() -> Self { Self { next: 1, next_atom: 1, classes: Vec::new(), windows: Vec::new(), rects: Vec::new(), texts: Vec::new(), dirty: Vec::new(), queues: Vec::new(), focus: None } }
+    /// Register one process-local window class and retain its procedure. # C: O(N_classes)
+    pub fn register_class(&mut self, name: &[u16], wndproc: u64) -> Result<u16, WindowError> {
+        if name.is_empty() || self.classes.iter().any(|class| same_name(&class.name, name)) { return Err(WindowError::InvalidParent); }
+        let atom = self.next_atom;
+        self.next_atom = self.next_atom.checked_add(1).ok_or(WindowError::NoSuchWindow)?;
+        self.classes.push(WindowClass { name: name.to_vec(), wndproc, atom });
+        Ok(atom)
+    }
+    /// Resolve a registered class for native Wine window creation. # C: O(N_classes)
+    pub fn class_wndproc(&self, name: &[u16]) -> Option<u64> {
+        self.classes.iter().find(|class| same_name(&class.name, name)).map(|class| class.wndproc)
+    }
     pub fn create(&mut self, owner_tid: u64, parent: Option<WindowId>, wndproc: u64) -> Result<WindowId, WindowError> {
         if parent.is_some_and(|parent| self.get(parent).is_none()) { return Err(WindowError::InvalidParent); }
         let id = WindowId(self.next);
@@ -200,6 +215,13 @@ impl WindowManager {
     }
     pub fn quit_pending(&self, tid: u64) -> bool { self.queues.iter().find(|(owner, _)| *owner == tid).is_some_and(|(_, queue)| queue.quit_pending()) }
     pub fn len(&self) -> usize { self.windows.len() }
+}
+
+fn same_name(left: &[u16], right: &[u16]) -> bool {
+    left.len() == right.len() && left.iter().zip(right).all(|(left, right)| {
+        let fold = |unit: u16| if (b'A' as u16..=b'Z' as u16).contains(&unit) { unit + 32 } else { unit };
+        fold(*left) == fold(*right)
+    })
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -326,6 +348,15 @@ mod tests {
         assert!(manager.get(child).unwrap().visible);
         manager.destroy(child).unwrap();
         assert_eq!(manager.text(child), None);
+    }
+
+    #[test]
+    fn classes_are_case_insensitive_and_supply_the_window_procedure() {
+        let mut manager = WindowManager::new();
+        let atom = manager.register_class(&[b'N' as u16, b'o' as u16, b't' as u16], 0x1400).unwrap();
+        assert_eq!(atom, 1);
+        assert_eq!(manager.class_wndproc(&[b'n' as u16, b'O' as u16, b'T' as u16]), Some(0x1400));
+        assert_eq!(manager.register_class(&[b'n' as u16, b'o' as u16, b't' as u16], 0x1500), Err(WindowError::InvalidParent));
     }
 
     #[test]

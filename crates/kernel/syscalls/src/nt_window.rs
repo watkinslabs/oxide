@@ -276,3 +276,39 @@ fn read_rect(source: syscall::UserPtr<syscall::nt::NtWindowRect>) -> Option<ipc:
     let field = |index: usize| i32::from_le_bytes(bytes[index * 4..index * 4 + 4].try_into().unwrap());
     Some(ipc::win32_window::WindowRect { left: field(0), top: field(1), right: field(2), bottom: field(3) })
 }
+
+/// Register one Wine class in the same process-scoped window owner used by
+/// direct native window calls. # C: O(N_process_gui_states + N_classes)
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn register_class_for_current(name: &[u16], wndproc: u64) -> Option<u64> {
+    let cur = sched::live::current()?;
+    if !cur.is_nt_personality() { return None; }
+    let group = Arc::clone(&cur.thread_group);
+    let mut entries = GUI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))
+        .unwrap_or_else(|| {
+            entries.push(GuiEntry { group: Arc::downgrade(&group), state: ipc::win32_window::WindowManager::new(), wait: Arc::new(sched::live::WaitList::new()), foreground: false });
+            entries.len() - 1
+        });
+    entries[index].state.register_class(name, wndproc).ok().map(|atom| atom as u64)
+}
+
+/// Create a Wine window by resolving its registered class in the canonical
+/// process window owner. # C: O(N_process_gui_states + N_classes + N_windows)
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn create_class_window_for_current(name: &[u16], parent: u64) -> Option<u64> {
+    let cur = sched::live::current()?;
+    if !cur.is_nt_personality() || parent > u32::MAX as u64 { return None; }
+    let parent = if parent == 0 { None } else { Some(ipc::win32_window::WindowId::from_raw(parent as u32)?) };
+    let group = Arc::clone(&cur.thread_group);
+    let mut entries = GUI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))
+        .unwrap_or_else(|| {
+            entries.push(GuiEntry { group: Arc::downgrade(&group), state: ipc::win32_window::WindowManager::new(), wait: Arc::new(sched::live::WaitList::new()), foreground: false });
+            entries.len() - 1
+        });
+    let wndproc = entries[index].state.class_wndproc(name)?;
+    entries[index].state.create(cur.tid as u64, parent, wndproc).ok().map(|window| window.raw() as u64)
+}

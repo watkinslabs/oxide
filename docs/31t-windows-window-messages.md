@@ -23,3 +23,13 @@ This is the kernel-side state owner for the `NtUserCreateWindowEx`, `NtUserPostM
 - handles remain monotonic after destruction;
 - default close/hit-test policy is deterministic;
 - the module is included in the normal IPC/Windows compatibility test suite.
+
+## 4 Wine class registration
+
+Wine `NtUserRegisterClassExWOW` registrations are decoded at the native
+ordinal boundary and stored in the process-scoped window manager. Class names
+use bounded UTF-16 reads and case-insensitive matching; the retained WndProc
+address is selected when Wine creates a window through `NtUserCreateWindowEx`.
+Direct native window creation continues to accept an already-resolved
+procedure address. Duplicate or malformed class registrations fail before
+window allocation.
