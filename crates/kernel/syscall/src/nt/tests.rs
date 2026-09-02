@@ -15,6 +15,14 @@ fn scalar_window_rectangle_service_preserves_signed_fields() {
     assert_eq!(call.service, NtService::SetWindowRectValues);
     assert_eq!(decode_window(call), Ok(NtWindowCall::SetRectValues { hwnd: 0x44, left: -10, top: 2, right: 790, bottom: 602 }));
 }
+
+#[test]
+fn wine_unix_call_service_preserves_handle_code_and_arguments() {
+    let args = SyscallArgs { a0: WINE_UNIXLIB_HANDLE, a1: 7, a2: 0x1234, a3: 0x55, a4: 0, a5: 0 };
+    let call = decode(538, args).unwrap();
+    assert_eq!(call.service, NtService::WineUnixCall);
+    assert_eq!(call.args, args);
+}
     fn args() -> SyscallArgs { SyscallArgs { a0: u64::MAX, a1: 0x1122_3344_5566_7788, a2: 3, a3: 4, a4: 5, a5: 6 } }
 
     #[test]

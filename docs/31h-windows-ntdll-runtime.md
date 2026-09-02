@@ -43,3 +43,18 @@ FROZEN 2026-08-31. Dep:`01`,`02`,`31a`,`31b`,`31d`,`31e`,`52`,`53`. Provides: PE
 - runtime-owned module blobs provide the explicit DLL search result; the kernel receives copied bytes and never derives a search path from Linux filesystem names;
 - a missing runtime binding prevents PE commit;
 - Linux ELF process construction remains unchanged when no PE input is present.
+
+## 5 Wine Unix-call boundary
+
+The synthetic NTDLL also publishes Wine's private
+`__wine_unix_call_dispatcher` and `__wine_unixlib_handle` data exports. The
+dispatcher translates Wine's `(unixlib_handle_t, code, args)` Windows ABI into
+the native NT entry; the handle is a nonzero opaque Oxide table identity, never
+a user-provided kernel function pointer. The kernel validates that identity
+before dispatching a typed Unix operation. Operations requiring Wine's server
+protocol or a Unix module loader remain explicit implementation work behind
+this boundary.
+
+Tests verify the dispatcher encoding, service decoding, handle validation, and
+that the three private runtime exports are distinct, mapped, and backed by the
+synthetic NTDLL page.
