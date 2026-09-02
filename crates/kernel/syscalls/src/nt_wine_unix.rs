@@ -11,6 +11,9 @@ const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
 const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
 const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
 const STATUS_NO_MEMORY: u64 = 0xc000_0017;
+const STATUS_OBJECT_NAME_COLLISION: u64 = 0xc000_0035;
+const STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xc000_0034;
+const STATUS_OBJECT_TYPE_MISMATCH: u64 = 0xc000_0024;
 
 const SERVER_REQ_CLOSE_HANDLE: u32 = 21;
 const SERVER_REQ_CREATE_EVENT: u32 = 30;
@@ -152,6 +155,16 @@ fn server_select(args: u64) -> u64 {
 fn server_select(_args: u64) -> u64 { STATUS_INVALID_PARAMETER }
 
 #[cfg(target_os = "oxide-kernel")]
+fn wine_object_path(args: u64, request_size: u32, table: &sched::nt_object::NtHandleTable) -> Result<Option<alloc::string::String>, u64> {
+    if request_size == 0 { return Ok(None); }
+    let data_count = uaccess::get_user_u32(args + SERVER_DATA_COUNT).map_err(|_| STATUS_INVALID_PARAMETER)?;
+    let data = uaccess::get_user_u64(args + SERVER_DATA_ZERO_PTR).map_err(|_| STATUS_INVALID_PARAMETER)?;
+    let size = uaccess::get_user_u32(args + SERVER_DATA_ZERO_SIZE).map_err(|_| STATUS_INVALID_PARAMETER)?;
+    if data_count != 1 || data == 0 || size != request_size { return Err(STATUS_INVALID_PARAMETER); }
+    crate::nt_directory::resolve_wine_object_path(data, size, table).ok_or(STATUS_INVALID_PARAMETER).map(Some)
+}
+
+#[cfg(target_os = "oxide-kernel")]
 fn server_reply(args: u64, status: u64) -> u64 {
     if uaccess::put_user_u32(args, status as u32).is_err() || uaccess::put_user_u32(args + SERVER_REPLY_SIZE, 0).is_err() { STATUS_INVALID_PARAMETER } else { status }
 }
@@ -162,7 +175,7 @@ fn server_call(args: u64) -> u64 {
     let Ok(request) = uaccess::get_user_u32(args) else { return STATUS_INVALID_PARAMETER; };
     let Ok(request_size) = uaccess::get_user_u32(args + SERVER_REQUEST_SIZE) else { return STATUS_INVALID_PARAMETER; };
     let Some(request) = server_request_kind(request) else { return server_reply(args, STATUS_NOT_IMPLEMENTED); };
-    if request_size != 0 && request != ServerRequest::Select { return server_reply(args, STATUS_INVALID_PARAMETER); }
+    if request_size != 0 && !matches!(request, ServerRequest::Select | ServerRequest::CreateEvent | ServerRequest::CreateMutex | ServerRequest::CreateSemaphore) { return server_reply(args, STATUS_INVALID_PARAMETER); }
     if matches!(request, ServerRequest::Select) { return server_select(args); }
     let Some(cur) = sched::live::current() else { return server_reply(args, STATUS_INVALID_PARAMETER); };
     let table = cur.thread_group.nt_handles();
@@ -181,9 +194,12 @@ fn server_call(args: u64) -> u64 {
             let Ok(manual) = uaccess::get_user_u32(args + SERVER_EVENT_MANUAL_RESET) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
             let Ok(initial) = uaccess::get_user_u32(args + SERVER_EVENT_INITIAL_STATE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
             if manual > 1 || initial > 1 { STATUS_INVALID_PARAMETER } else {
-                let object = table.new_event(manual != 0, initial != 0);
+                let path = match wine_object_path(args, request_size, &table) { Ok(path) => path, Err(status) => return server_reply(args, status) };
+                let (object, state) = match path { Some(path) => sched::nt_object::create_event(&path, manual != 0, initial != 0), None => (table.new_event(manual != 0, initial != 0), sched::nt_object::NamedObjectState::Created) };
+                if state == sched::nt_object::NamedObjectState::TypeMismatch { return server_reply(args, STATUS_OBJECT_TYPE_MISMATCH); }
+                if state == sched::nt_object::NamedObjectState::ParentMissing { return server_reply(args, STATUS_OBJECT_NAME_NOT_FOUND); }
                 let Some(handle) = table.insert(object, access) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
-                if uaccess::put_user_u32(args + SERVER_REPLY_HANDLE, handle.raw()).is_err() { let _ = table.close(handle); STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
+                if uaccess::put_user_u32(args + SERVER_REPLY_HANDLE, handle.raw()).is_err() { let _ = table.close(handle); STATUS_INVALID_PARAMETER } else if state == sched::nt_object::NamedObjectState::Existing { STATUS_OBJECT_NAME_COLLISION } else { STATUS_SUCCESS }
             }
         }
         ServerRequest::EventOp => {
@@ -209,9 +225,13 @@ fn server_call(args: u64) -> u64 {
             let Ok(access) = uaccess::get_user_u32(args + SERVER_SYNC_ACCESS) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
             let Ok(owned) = uaccess::get_user_u32(args + SERVER_SYNC_VALUE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
             if owned > 1 { STATUS_INVALID_PARAMETER } else {
-                let object = table.new_mutant((owned != 0).then_some(cur.tid as u64));
+                let path = match wine_object_path(args, request_size, &table) { Ok(path) => path, Err(status) => return server_reply(args, status) };
+                let fresh = table.new_mutant((owned != 0).then_some(cur.tid as u64));
+                let (object, state) = match path { Some(path) => sched::nt_object::publish_mutant(&path, fresh), None => (fresh, sched::nt_object::NamedObjectState::Created) };
+                if state == sched::nt_object::NamedObjectState::TypeMismatch { return server_reply(args, STATUS_OBJECT_TYPE_MISMATCH); }
+                if state == sched::nt_object::NamedObjectState::ParentMissing { return server_reply(args, STATUS_OBJECT_NAME_NOT_FOUND); }
                 let Some(handle) = table.insert(object, access) else { return server_reply(args, STATUS_NO_MEMORY); };
-                if uaccess::put_user_u32(args + SERVER_REPLY_VALUE, handle.raw()).is_err() { let _ = table.close(handle); STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
+                if uaccess::put_user_u32(args + SERVER_REPLY_VALUE, handle.raw()).is_err() { let _ = table.close(handle); STATUS_INVALID_PARAMETER } else if state == sched::nt_object::NamedObjectState::Existing { STATUS_OBJECT_NAME_COLLISION } else { STATUS_SUCCESS }
             }
         }
         ServerRequest::ReleaseMutex => {
@@ -235,9 +255,13 @@ fn server_call(args: u64) -> u64 {
             let Ok(initial) = uaccess::get_user_u32(args + SERVER_SYNC_VALUE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
             let Ok(maximum) = uaccess::get_user_u32(args + SERVER_SYNC_VALUE_TWO) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
             if maximum == 0 || initial > maximum { STATUS_INVALID_PARAMETER } else {
-                let object = table.new_semaphore(initial as i64, maximum as i64);
+                let path = match wine_object_path(args, request_size, &table) { Ok(path) => path, Err(status) => return server_reply(args, status) };
+                let fresh = table.new_semaphore(initial as i64, maximum as i64);
+                let (object, state) = match path { Some(path) => sched::nt_object::create_semaphore(&path, initial as i64, maximum as i64), None => (fresh, sched::nt_object::NamedObjectState::Created) };
+                if state == sched::nt_object::NamedObjectState::TypeMismatch { return server_reply(args, STATUS_OBJECT_TYPE_MISMATCH); }
+                if state == sched::nt_object::NamedObjectState::ParentMissing { return server_reply(args, STATUS_OBJECT_NAME_NOT_FOUND); }
                 let Some(handle) = table.insert(object, access) else { return server_reply(args, STATUS_NO_MEMORY); };
-                if uaccess::put_user_u32(args + SERVER_REPLY_VALUE, handle.raw()).is_err() { let _ = table.close(handle); STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
+                if uaccess::put_user_u32(args + SERVER_REPLY_VALUE, handle.raw()).is_err() { let _ = table.close(handle); STATUS_INVALID_PARAMETER } else if state == sched::nt_object::NamedObjectState::Existing { STATUS_OBJECT_NAME_COLLISION } else { STATUS_SUCCESS }
             }
         }
         ServerRequest::ReleaseSemaphore => {

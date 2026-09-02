@@ -94,6 +94,16 @@ uses the current NT thread and semaphore release wakes the native multiple-wait
 queue. Variable object-attribute data is a separate packet shape and is
 rejected until its native object-namespace translation is wired.
 
+## 8 Named server objects
+
+Wine’s inline object-attribute vector is decoded at the object-manager
+boundary: root directory handle at 0, security-descriptor length at 8, and
+UTF-16 name length at 12 in the 16-byte record. Names are joined to the
+canonical root directory and published through the native case-insensitive
+object namespace. Nonempty security-descriptor payloads are rejected until
+their security owner is connected; no unnamed fallback is created for a
+malformed named request.
+
 `select` request 23 consumes the required APC-result vector followed by the
 operation vector. Wait and wait-all operations are converted to the native
 multiple-object wait path, including its handle access checks, signal

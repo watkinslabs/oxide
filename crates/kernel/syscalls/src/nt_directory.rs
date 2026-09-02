@@ -121,3 +121,23 @@ pub(crate) fn read_name(pointer: u64) -> Option<alloc::string::String> {
         .map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect();
     crate::nt_process_parameters::decode_utf16(&units)
 }
+
+/// Decode Wine's inline object attributes into the canonical NT object path.
+/// # C: O(name length) plus one directory lookup
+pub(crate) fn resolve_wine_object_path(data: u64, size: u32, table: &sched::nt_object::NtHandleTable) -> Option<alloc::string::String> {
+    if data == 0 || size < 16 { return None; }
+    let root = uaccess::get_user_u32(data).ok()?;
+    let sd_len = uaccess::get_user_u32(data + 8).ok()? as usize;
+    let name_len = uaccess::get_user_u32(data + 12).ok()? as usize;
+    if sd_len != 0 || name_len == 0 || name_len & 1 != 0 || name_len >= 65534 || 16usize.checked_add(sd_len)?.checked_add(name_len)? > size as usize { return None; }
+    let root_path = if root == 0 { Some("\\".into()) } else {
+        let object = table.get(sched::nt_object::NtHandle::from_raw(root), DIRECTORY_TRAVERSE)?;
+        sched::nt_object::directory_path(&object)
+    }?;
+    let name_addr = data.checked_add(16)?.checked_add(sd_len as u64)?;
+    let mut bytes = alloc::vec![0u8; name_len];
+    uaccess::copy_from_user(&mut bytes, name_addr).ok()?;
+    let units = bytes.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect::<alloc::vec::Vec<_>>();
+    let name = crate::nt_process_parameters::decode_utf16(&units)?;
+    crate::nt_directory_abi::join_path(Some(&root_path), &name)
+}
