@@ -39,7 +39,7 @@ pub fn try_commit_with_catalog(cur: &sched::Task, path: &[u8], blob: &[u8], cata
 #[cfg(target_arch = "x86_64")]
 fn commit_x86(cur: &sched::Task, path: &[u8], blob: &[u8], exec_vp: Option<&vfs::VfsPath>, catalog: Option<&pe::catalog::ModuleCatalog>) -> Result<(), i64> {
     let enoexec = || -(syscall::errno::Errno::Enoexec.as_i32() as i64);
-    let prepared = prepare_pe_process(cur, path, blob, exec_vp, catalog,
+    let prepared = prepare_pe_process(cur, path, blob, None, &[], exec_vp, catalog,
         cur.tgid.load(core::sync::atomic::Ordering::Acquire), cur.tid, true)?;
     let PreparedPeProcess { mm: as_, stack, stack_top, process } = prepared;
     let path = core::str::from_utf8(path).map_err(|_| enoexec())?;
@@ -149,7 +149,7 @@ fn build_pe_address_space(cur: &sched::Task, stack_bytes: usize, replace_current
 /// `replace_current = true`; native child creation uses `false` and receives a
 /// fresh address space. # C: O(image + N_vmas)
 #[cfg(target_arch = "x86_64")]
-pub fn prepare_pe_process(cur: &sched::Task, path: &[u8], blob: &[u8], _exec_vp: Option<&vfs::VfsPath>, catalog: Option<&pe::catalog::ModuleCatalog>, process_id: u32, thread_id: u32, replace_current: bool) -> Result<PreparedPeProcess, i64> {
+pub fn prepare_pe_process(cur: &sched::Task, path: &[u8], blob: &[u8], command_line: Option<&str>, environment: &[(&str, &str)], _exec_vp: Option<&vfs::VfsPath>, catalog: Option<&pe::catalog::ModuleCatalog>, process_id: u32, thread_id: u32, replace_current: bool) -> Result<PreparedPeProcess, i64> {
     const STACK_BYTES: usize = 8 * 1024 * 1024;
     let enoexec = || -(syscall::errno::Errno::Enoexec.as_i32() as i64);
     let path = core::str::from_utf8(path).map_err(|_| enoexec())?;
@@ -160,8 +160,8 @@ pub fn prepare_pe_process(cur: &sched::Task, path: &[u8], blob: &[u8], _exec_vp:
         full_name: "C:\\Windows\\System32\\ntdll.dll", base_name: "ntdll.dll",
     };
     let input = elf_load::process_env::EnvironmentInput {
-        image_base: 0, image_size: 0, image_path: path, command_line: path,
-        environment: &[], process_id, thread_id,
+        image_base: 0, image_size: 0, image_path: path,
+        command_line: command_line.unwrap_or(path), environment, process_id, thread_id,
     };
     let process = match catalog.map_or_else(
         || elf_load::pe_loader::load_pe_process_with_resolver_and_modules(blob, &as_, &input, stack_top, &*runtime, &[runtime_module]),
