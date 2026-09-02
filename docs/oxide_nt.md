@@ -107,6 +107,145 @@ contracts. Linux and Windows reference implementations are used to verify
 the observable contract. The implementation must still use Oxide's own
 ownership, scheduler, memory, and VFS mechanisms.
 
+## Response to the Wine/Proton model
+
+The comparison above is the right starting point, with one important change
+for Oxide: Oxide is not trying to replace Wine's Win32 implementation. It is
+changing the host underneath the lowest part of the compatibility stack.
+
+Wine and Proton normally look like this:
+
+```text
+Windows application
+        |
+        v
+Wine/Proton Win32 DLLs
+        |
+        v
+Wine ntdll and Unix-facing implementation
+        |
+        v
+Linux syscalls -> Linux kernel
+```
+
+The Oxide arrangement is:
+
+```text
+Windows application
+        |
+        v
+Wine-compatible Win32 DLLs and runtime
+        |
+        v
+Oxide ntdll-compatible relay
+        |
+        v
+Oxide NT personality
+        |
+        +-- PE32+ process creation and image loading
+        +-- NT processes, threads, handles, and kernel objects
+        +-- virtual memory, files, synchronization, and exceptions
+        |
+        v
+Common Oxide kernel services
+        |
+        +-- scheduler, VMM, VFS, IPC, networking, drivers
+```
+
+The relay is an ABI boundary, not a second operating system hidden inside the
+kernel. A Wine DLL may issue an NT operation through it; the kernel validates
+user pointers, access rights, object types, and handle lifetime, then maps the
+operation to common Rust services. The Wine DLL must not depend on Linux-only
+kernel details for the operation to work on Oxide.
+
+### What can be reused
+
+Wine source is useful for observable Windows behavior and mature userspace
+implementations. Subject to the project's licensing and build arrangement,
+the useful reuse includes:
+
+- Win32 behavior in `kernel32`, `kernelbase`, `user32`, `gdi32`, `advapi32`,
+  `winmm`, and related DLLs;
+- PE loader and ntdll ABI knowledge, structure definitions, status values,
+  loader ordering, TLS initialization, and exception conventions;
+- registry, Unicode, process-parameter, and synchronization behavior;
+- DXVK for Direct3D 9/10/11, VKD3D-Proton for Direct3D 12, and FAudio or an
+  equivalent audio layer for games;
+- Proton's configuration, graphics, input, controller, and game integration
+  patterns where they do not assume Linux-specific kernel behavior.
+
+The reusable unit is normally a userspace DLL or a specified ABI contract.
+A Wine Unix-server implementation is a reference for semantics, but it is not
+automatically the implementation of an Oxide kernel service.
+
+### What Oxide must own
+
+The kernel owns the parts observable at the NT boundary that cannot safely be
+delegated to an untrusted compatibility DLL:
+
+- address-space, process, and thread creation and teardown;
+- native x86-64 PE32+ mapping, relocation, imports, and initial execution;
+- PEB/TEB placement, Windows stack setup, TLS, and process parameters;
+- handle tables, object types, access masks, waitability, and lifetime;
+- virtual-memory reservations, mappings, protection, and query semantics;
+- file and section operations backing executable images and mapped data;
+- scheduler-coupled synchronization, exception, and termination state.
+
+These services are implemented once and shared with the Linux personality where
+the mechanism is common. The NT personality supplies Windows-visible names,
+layouts, status codes, and access checks; it does not duplicate the scheduler,
+page allocator, VFS, or driver implementations.
+
+### Notepad is the first vertical slice
+
+Notepad is valuable because it exercises the complete launch path without
+pretending to represent the whole Windows ecosystem. The first milestone is a
+64-bit PE process that can:
+
+1. be selected by the executable loader as an NT personality;
+2. receive a valid PEB, TEB, environment, command line, stack, and initial
+   thread context;
+3. resolve ntdll and Win32 imports through the native relay;
+4. create, query, and terminate processes and threads through typed handles;
+5. use basic file, memory, heap, TLS, synchronization, and exception paths;
+6. reach the userspace windowing path supplied by the Win32 runtime.
+
+A passing Notepad smoke test proves that vertical slice. It does not prove
+`user32` completeness, arbitrary desktop applications, Direct3D, audio,
+anti-cheat, or game compatibility. Those are later compatibility surfaces
+with their own contract and runtime tests.
+
+### Architecture and test gate
+
+The Windows workload is x86-64 only. PE32, WOW64, 16-bit Windows, Windows
+kernel drivers, and ARM Windows binaries are outside the target. The kernel
+may still be built for AArch64 to preserve shared-code portability, but an
+AArch64 build is not an ARM Wine test and must not be reported as one.
+
+The acceptance sequence is:
+
+```text
+hosted ABI/layout tests
+        |
+        v
+x86-64 kernel build and Windows smoke boot
+        |
+        v
+64-bit Notepad launch
+        |
+        v
+focused Win32/NT compatibility suites
+        |
+        v
+graphics, audio, input, networking, and Proton-facing applications
+```
+
+Every new NT surface needs negative tests and lifecycle tests: malformed user
+buffers, invalid handles, wrong object types, insufficient access masks,
+teardown while waiters exist, and repeated create/use/close cycles. That is
+what keeps a successful Notepad launch from becoming a collection of one-off
+paths that fail on the next application.
+
 ## Execution milestones
 
 The first executable milestone is a native 64-bit Notepad-style PE launch.
@@ -128,4 +267,3 @@ that one application represents Windows as a whole:
 Every surface needs focused unit tests, ABI/layout tests, target builds, and
 runtime smoke coverage. A passing Notepad smoke is a useful vertical slice,
 not a completion claim for the overall Windows goal.
-
