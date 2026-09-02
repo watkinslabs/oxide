@@ -47,3 +47,14 @@ the Windows workload is x86-64 only; it does not claim an ARM callback ABI.
 Wine timer messages with a non-null `lParam` use that value as the callback
 procedure and pass the monotonic millisecond tick count as the callback
 `lParam`, matching the `NtUserDispatchMessage` timer path.
+## 7
+
+FROZEN 2026-09-02. Dep:31§5,31§6.
+
+`SetWindowTimer` and `KillWindowTimer` use the process window manager as the
+single owner of Win32 timer identity. Each timer stores its HWND-or-thread
+owner, identifier, callback payload, monotonic deadline, and period. Expiry
+enqueues `WM_TIMER` with `wParam=id` and `lParam=callback`, matching the
+message-dispatch contract. Replacing an existing HWND/identifier resets its
+deadline and callback; cancellation removes that exact timer. Native waitable
+NT timers remain a separate object family and do not share this state.

@@ -23,6 +23,16 @@ fn wine_unix_call_service_preserves_handle_code_and_arguments() {
     assert_eq!(call.service, NtService::WineUnixCall);
     assert_eq!(call.args, args);
 }
+
+#[test]
+fn window_timer_services_decode_without_colliding_with_nt_object_timers() {
+    let args = SyscallArgs { a0: 0x44, a1: 9, a2: 25, a3: 0x1234, a4: 0, a5: 0 };
+    let call = decode(539, args).unwrap();
+    assert_eq!(call.service, NtService::SetWindowTimer);
+    assert_eq!(decode_window(call), Ok(NtWindowCall::SetTimer { hwnd: 0x44, id: 9, timeout_ms: 25, proc: 0x1234 }));
+    let call = decode(540, SyscallArgs { a0: 0x44, a1: 9, ..args }).unwrap();
+    assert_eq!(decode_window(call), Ok(NtWindowCall::KillTimer { hwnd: 0x44, id: 9 }));
+}
     fn args() -> SyscallArgs { SyscallArgs { a0: u64::MAX, a1: 0x1122_3344_5566_7788, a2: 3, a3: 4, a4: 5, a5: 6 } }
 
     #[test]

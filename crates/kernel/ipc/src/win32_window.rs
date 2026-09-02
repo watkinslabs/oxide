@@ -10,6 +10,7 @@ pub const WM_KEYUP: u32 = 0x0101;
 pub const WM_NCHITTEST: u32 = 0x0084;
 pub const WM_PAINT: u32 = 0x000f;
 pub const WM_QUIT: u32 = 0x0012;
+pub const WM_TIMER: u32 = 0x0113;
 pub const HTCLIENT: i64 = 1;
 pub const SW_HIDE: u32 = 0;
 
@@ -81,7 +82,10 @@ pub struct WindowRect { pub left: i32, pub top: i32, pub right: i32, pub bottom:
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum WindowError { NoSuchWindow, InvalidParent, WrongThread, NoFocus, QueueFull }
 
-pub struct WindowManager { next: u32, next_atom: u16, classes: Vec<WindowClass>, windows: Vec<(WindowId, WindowRecord)>, rects: Vec<(WindowId, WindowRect)>, texts: Vec<(WindowId, Vec<u16>)>, dirty: Vec<(WindowId, WindowRect)>, queues: Vec<(u64, MessageQueue)>, focus: Option<WindowId> }
+pub struct WindowManager { next: u32, next_atom: u16, classes: Vec<WindowClass>, windows: Vec<(WindowId, WindowRecord)>, rects: Vec<(WindowId, WindowRect)>, texts: Vec<(WindowId, Vec<u16>)>, dirty: Vec<(WindowId, WindowRect)>, queues: Vec<(u64, MessageQueue)>, timers: Vec<WindowTimer>, focus: Option<WindowId> }
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+struct WindowTimer { owner_tid: u64, hwnd: Option<WindowId>, id: u64, period_ns: u64, due_ns: u64, proc: u64 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum QueueResult { Message(WinMessage), Quit(i32), Empty }
@@ -89,7 +93,7 @@ pub enum QueueResult { Message(WinMessage), Quit(i32), Empty }
 impl Default for WindowManager { fn default() -> Self { Self::new() } }
 
 impl WindowManager {
-    pub fn new() -> Self { Self { next: 1, next_atom: 1, classes: Vec::new(), windows: Vec::new(), rects: Vec::new(), texts: Vec::new(), dirty: Vec::new(), queues: Vec::new(), focus: None } }
+    pub fn new() -> Self { Self { next: 1, next_atom: 1, classes: Vec::new(), windows: Vec::new(), rects: Vec::new(), texts: Vec::new(), dirty: Vec::new(), queues: Vec::new(), timers: Vec::new(), focus: None } }
     /// Register one process-local window class and retain its procedure. # C: O(N_classes)
     pub fn register_class(&mut self, name: &[u16], wndproc: u64) -> Result<u16, WindowError> {
         if name.is_empty() || self.classes.iter().any(|class| same_name(&class.name, name)) { return Err(WindowError::InvalidParent); }
@@ -200,6 +204,36 @@ impl WindowManager {
         let window = self.focus.ok_or(WindowError::NoFocus)?;
         self.post_to_window(window, WinMessage { hwnd: Some(window), message: if pressed { WM_KEYDOWN } else { WM_KEYUP }, wparam: key as u64, lparam: repeat as i64 })
     }
+    /// Arm or replace one process-owned timer using the canonical window queue. # C: O(N_timers)
+    pub fn set_timer(&mut self, owner_tid: u64, hwnd: Option<WindowId>, id: u64, timeout_ms: u32, proc: u64, now_ns: u64) -> Result<u64, WindowError> {
+        if let Some(window) = hwnd { if self.get(window).is_none() { return Err(WindowError::NoSuchWindow); } }
+        let period_ns = (timeout_ms as u64).saturating_mul(1_000_000).max(1_000_000);
+        if let Some(timer) = self.timers.iter_mut().find(|timer| timer.hwnd == hwnd && timer.id == id) {
+            timer.period_ns = period_ns; timer.due_ns = now_ns.saturating_add(period_ns); timer.proc = proc;
+            return Ok(id.max(1));
+        }
+        let id = id.max(1);
+        self.timers.push(WindowTimer { owner_tid, hwnd, id, period_ns, due_ns: now_ns.saturating_add(period_ns), proc });
+        if self.queues.iter().all(|(tid, _)| *tid != owner_tid) { self.queues.push((owner_tid, MessageQueue::default())); }
+        Ok(id)
+    }
+    /// Remove one timer by its canonical window/id identity. # C: O(N_timers)
+    pub fn kill_timer(&mut self, hwnd: Option<WindowId>, id: u64) -> bool {
+        let before = self.timers.len(); self.timers.retain(|timer| !(timer.hwnd == hwnd && timer.id == id)); before != self.timers.len()
+    }
+    /// Convert elapsed timer deadlines into queued WM_TIMER messages. # C: O(N_timers + N_queues)
+    pub fn expire_timers(&mut self, now_ns: u64) -> usize {
+        let mut fired = 0;
+        for index in 0..self.timers.len() {
+            let timer = self.timers[index];
+            if now_ns < timer.due_ns { continue; }
+            let owner = timer.hwnd.and_then(|window| self.get(window).map(|record| record.owner_tid)).unwrap_or(timer.owner_tid);
+            let Some(queue) = self.queues.iter_mut().find(|(tid, _)| *tid == owner).map(|(_, queue)| queue) else { continue; };
+            if queue.post(WinMessage { hwnd: timer.hwnd, message: WM_TIMER, wparam: timer.id, lparam: timer.proc as i64 }).is_ok() { fired += 1; }
+            self.timers[index].due_ns = now_ns.saturating_add(timer.period_ns);
+        }
+        fired
+    }
     pub fn peek_for_thread(&mut self, tid: u64, filter: MessageFilter, remove: bool) -> Option<WinMessage> {
         self.queues.iter_mut().find(|(owner, _)| *owner == tid).and_then(|(_, queue)| queue.peek(filter, remove).or_else(|| queue.quit_message(filter, remove)))
     }
@@ -276,6 +310,20 @@ mod tests {
         manager.destroy(first).unwrap();
         assert_eq!(manager.get(first), None);
         assert_eq!(manager.create(4, None, 0).unwrap().raw(), child.raw() + 1);
+    }
+
+    #[test]
+    fn timers_replace_by_window_and_enqueue_callback_message_after_deadline() {
+        let mut manager = WindowManager::new();
+        let window = manager.create(7, None, 0x1000).unwrap();
+        assert_eq!(manager.set_timer(7, Some(window), 3, 10, 0xfeed, 100), Ok(3));
+        assert_eq!(manager.set_timer(7, Some(window), 3, 20, 0xbeef, 200), Ok(3));
+        assert_eq!(manager.expire_timers(19_000_199), 0);
+        assert_eq!(manager.expire_timers(20_000_200), 1);
+        let filter = MessageFilter { hwnd: Some(window), first: WM_TIMER, last: WM_TIMER };
+        assert_eq!(manager.peek_for_thread(7, filter, true).map(|message| (message.wparam, message.lparam)), Some((3, 0xbeef)));
+        assert!(manager.kill_timer(Some(window), 3));
+        assert!(!manager.kill_timer(Some(window), 3));
     }
 
     #[test]
