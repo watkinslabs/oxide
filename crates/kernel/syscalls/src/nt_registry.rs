@@ -1,6 +1,7 @@
 //! Native NT registry boundary backed by the userspace registry owner.
 
 use alloc::{string::{String, ToString}, sync::Arc, vec::Vec};
+use sync::{Spinlock, TaskList as RegistryWatchLock};
 use syscall::nt::{NtCall, NtService};
 use syscall::registry_wire;
 
@@ -12,6 +13,7 @@ const STATUS_BUFFER_OVERFLOW: u64 = 0x8000_0005;
 const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
 const STATUS_UNSUCCESSFUL: u64 = 0xc000_0001;
 const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
+const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
 const STATUS_NO_MORE_ENTRIES: u64 = 0x8000_0001;
 const KEY_VALUE_PARTIAL_INFORMATION: u64 = 2;
 const KEY_VALUE_BASIC_INFORMATION: u64 = 0;
@@ -23,6 +25,13 @@ const KEY_NAME_INFORMATION: u64 = 3;
 const MAX_REGISTRY_TEXT: usize = 1 << 20;
 const MAX_REGISTRY_VALUE: usize = 1 << 24;
 const REGISTRY_SOCKET: &str = "/run/oxide/registry.sock";
+const STATUS_PENDING: u64 = 0x0000_0103;
+const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
+const KEY_NOTIFY: u32 = 0x0010;
+const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
+
+struct RegistryWatch { key: u64, filter: u64, event: Arc<sched::nt_object::NtEvent>, io_status: u64 }
+static REGISTRY_WATCHES: Spinlock<Vec<RegistryWatch>, RegistryWatchLock> = Spinlock::new(Vec::new());
 
 #[derive(Debug)]
 enum Reply { Success, Handle(u64), Value { kind: u32, data: Vec<u8> }, Keys(Vec<String>), Values(Vec<(String, u32, Vec<u8>)>), KeyInfo { name: String, subkeys: u32, max_subkey: u32, values: u32, max_value_name: u32, max_value_data: u32 }, Failure(u8) }
@@ -41,7 +50,53 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::NtSetValueKey { return Some(set_value_native(call)); }
     if call.service == NtService::NtQueryKey { return Some(query_key_native(call)); }
     if call.service == NtService::NtFlushKey { return Some(flush_key_native(call)); }
+    if call.service == NtService::NtNotifyChangeKey { return Some(notify_change_key(call)); }
     None
+}
+
+fn notify_change_key(call: NtCall) -> u64 {
+    let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !current.is_nt_personality() || call.args.a0 > u32::MAX as u64 || call.args.a1 > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    let Some(subtree) = crate::nt_dispatch::stack_argument(6) else { return STATUS_INVALID_PARAMETER; };
+    let Some(buffer) = crate::nt_dispatch::stack_argument(7) else { return STATUS_INVALID_PARAMETER; };
+    let Some(length) = crate::nt_dispatch::stack_argument(8) else { return STATUS_INVALID_PARAMETER; };
+    let Some(asynchronous) = crate::nt_dispatch::stack_argument(9) else { return STATUS_INVALID_PARAMETER; };
+    if call.args.a2 != 0 || call.args.a3 != 0 || call.args.a4 == 0 || asynchronous == 0 {
+        return STATUS_INVALID_PARAMETER;
+    }
+    // The current registry owner exposes value mutation notifications only.
+    // Rejecting the other filters is important: a pending request must never
+    // claim completion for a mutation it cannot observe.
+    if !crate::nt_registry_policy::supported_request(
+        call.args.a2, call.args.a3, call.args.a4, buffer, length,
+        asynchronous, subtree, call.args.a5,
+    ) {
+        return STATUS_NOT_IMPLEMENTED;
+    }
+    let key = call.args.a0 as u32;
+    let table = current.thread_group.nt_handles();
+    let Some(key_object) = table.get(sched::nt_object::NtHandle::from_raw(key), KEY_NOTIFY) else { return STATUS_ACCESS_DENIED; };
+    if key_object.kind() != sched::nt_object::NtObjectType::Key { return STATUS_INVALID_PARAMETER; }
+    let Some(event_object) = table.get(sched::nt_object::NtHandle::from_raw(call.args.a1 as u32), SYNCHRONIZE_ACCESS) else {
+        return if table.contains(sched::nt_object::NtHandle::from_raw(call.args.a1 as u32)) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_PARAMETER };
+    };
+    let Some(event) = event_object.event() else { return STATUS_INVALID_PARAMETER; };
+    let mut watches = REGISTRY_WATCHES.lock();
+    watches.retain(|watch| !(watch.key == key_object.id() && watch.io_status == call.args.a4));
+    watches.push(RegistryWatch { key: key_object.id(), filter: call.args.a5, event, io_status: call.args.a4 });
+    STATUS_PENDING
+}
+
+fn notify_registry_key(key: u64) {
+    let mut watches = REGISTRY_WATCHES.lock();
+    let mut index = 0;
+    while index < watches.len() {
+        if watches[index].key != key || watches[index].filter & crate::nt_registry_policy::REG_NOTIFY_CHANGE_LAST_SET == 0 { index += 1; continue; }
+        let watch = watches.remove(index);
+        let _ = uaccess::put_user_u64(watch.io_status, STATUS_SUCCESS);
+        let _ = uaccess::put_user_u64(watch.io_status.saturating_add(8), 0);
+        watch.event.set();
+    }
 }
 
 /// Release the userspace registry handle paired with a native NT key.
@@ -283,7 +338,7 @@ fn set_value_parts(key: u32, name_ptr: u64, title: u64, kind: u64, data: u64, si
     let Some(name) = read_unicode(name_ptr) else { return STATUS_INVALID_PARAMETER; };
     let mut bytes = Vec::new(); if bytes.try_reserve_exact(size as usize).is_err() { return STATUS_NO_MEMORY; } bytes.resize(size as usize, 0);
     if size != 0 && uaccess::copy_from_user(&mut bytes, data).is_err() { return STATUS_ACCESS_VIOLATION; }
-    match transact(&frame_set(remote, &name, kind as u32, &bytes)) { Some(Reply::Success) => STATUS_SUCCESS, Some(reply) => reply_status(reply), None => STATUS_UNSUCCESSFUL }
+    match transact(&frame_set(remote, &name, kind as u32, &bytes)) { Some(Reply::Success) => { notify_registry_key(remote); STATUS_SUCCESS }, Some(reply) => reply_status(reply), None => STATUS_UNSUCCESSFUL }
 }
 
 fn reply_status(reply: Reply) -> u64 {
