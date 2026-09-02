@@ -17,6 +17,7 @@ const THREAD_ALL_ACCESS: u32 = 0x001f_03ff;
 const SYNCHRONIZE: u32 = 0x0010_0000;
 const PROCESS_QUERY_INFORMATION: u32 = 0x0000_0400;
 const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x0000_1000;
+const PROCESS_TERMINATE: u32 = 0x0000_0001;
 const PROCESS_BASIC_INFORMATION_CLASS: u32 = 0;
 const PROCESS_BASIC_INFORMATION_BYTES: usize = 48;
 
@@ -24,6 +25,26 @@ const PROCESS_BASIC_INFORMATION_BYTES: usize = 48;
 /// Only identities in the current NT process are admitted until the native
 /// process namespace gains a cross-process owner. # C: O(log N)
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == syscall::nt::NtService::TerminateProcess {
+        let (process, status) = match syscall::nt::decode_terminate(call) {
+            Ok(values) => values,
+            Err(_) => return Some(STATUS_INVALID_PARAMETER),
+        };
+        if process == u64::MAX { return None; }
+        let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+        if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
+        let table = cur.thread_group.nt_handles();
+        let Some(target) = process_task(process, &table, PROCESS_TERMINATE) else {
+            return Some(STATUS_INVALID_HANDLE);
+        };
+        if target.tgid.load(core::sync::atomic::Ordering::Acquire)
+            != cur.tgid.load(core::sync::atomic::Ordering::Acquire) {
+            return Some(STATUS_INVALID_HANDLE);
+        }
+        return Some(crate::s060_exit::sys_exit_group(&syscall::SyscallArgs {
+            a0: status as u64, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0,
+        }) as u64);
+    }
     let object = match syscall::nt::decode_object(call) {
         Ok(object @ (NtObjectCall::OpenProcess { .. } | NtObjectCall::OpenThread { .. })) => object,
         Ok(NtObjectCall::QueryProcess { process, class, info, length, return_length }) => {
@@ -73,12 +94,10 @@ fn query_process(process: u64, class: u32, info: syscall::UserPtr<u8>, length: u
     let table = cur.thread_group.nt_handles();
     if process > u32::MAX as u64 { return Some(STATUS_INVALID_HANDLE); }
     let handle = sched::nt_object::NtHandle::from_raw(process as u32);
-    let Some(object) = table.get(handle, PROCESS_QUERY_LIMITED_INFORMATION)
-        .or_else(|| table.get(handle, PROCESS_QUERY_INFORMATION)) else {
+    let Some(target) = process_task(process, table, PROCESS_QUERY_LIMITED_INFORMATION)
+        .or_else(|| process_task(process, table, PROCESS_QUERY_INFORMATION)) else {
         return Some(if table.contains(handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE });
     };
-    if object.kind() != sched::nt_object::NtObjectType::Process { return Some(STATUS_INVALID_HANDLE); }
-    let Some(target) = object.task() else { return Some(STATUS_INVALID_HANDLE); };
     let mut out = [0u8; PROCESS_BASIC_INFORMATION_BYTES];
     out[8..16].copy_from_slice(&target.nt_peb().to_ne_bytes());
     out[32..40].copy_from_slice(&(target.tgid.load(core::sync::atomic::Ordering::Acquire) as u64).to_ne_bytes());
@@ -90,6 +109,15 @@ fn query_process(process: u64, class: u32, info: syscall::UserPtr<u8>, length: u
         }
     }
     Some(STATUS_SUCCESS)
+}
+
+fn process_task(raw: u64, table: &sched::nt_object::NtHandleTable, access: u32)
+    -> Option<alloc::sync::Arc<sched::Task>> {
+    if raw > u32::MAX as u64 { return None; }
+    let handle = sched::nt_object::NtHandle::from_raw(raw as u32);
+    let object = table.get(handle, access)?;
+    if object.kind() != sched::nt_object::NtObjectType::Process { return None; }
+    object.task()
 }
 
 fn valid_object_attributes(attributes: Option<syscall::UserPtr<u8>>) -> bool {
