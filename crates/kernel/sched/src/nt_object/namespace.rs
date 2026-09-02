@@ -8,6 +8,7 @@ use super::{NtObject, NtObjectType};
 struct NamedObject {
     path: String,
     object: Arc<NtObject>,
+    permanent: bool,
 }
 
 struct Namespace {
@@ -39,7 +40,7 @@ fn seed(namespace: &mut Namespace) {
     if !namespace.objects.is_empty() { return; }
     for path in ["\\", "\\KnownDlls", "\\BaseNamedObjects", "\\Device", "\\DosDevices", "\\Sessions", "\\Windows"] {
         let id = namespace.next_id.fetch_add(1, Ordering::Relaxed);
-        namespace.objects.push(NamedObject { path: path.into(), object: NtObject::new(NtObjectType::Directory, id) });
+        namespace.objects.push(NamedObject { path: path.into(), object: NtObject::new(NtObjectType::Directory, id), permanent: true });
     }
 }
 
@@ -77,7 +78,7 @@ pub fn create_event(path: &str, manual_reset: bool, initial_state: bool) -> (Arc
     }
     let id = namespace.next_id.fetch_add(1, Ordering::Relaxed);
     let object = NtObject::new_event(id, manual_reset, initial_state);
-    namespace.objects.push(NamedObject { path: path.into(), object: Arc::clone(&object) });
+    namespace.objects.push(NamedObject { path: path.into(), object: Arc::clone(&object), permanent: false });
     (object, NamedObjectState::Created)
 }
 
@@ -99,7 +100,7 @@ pub fn create_semaphore(path: &str, initial: i64, maximum: i64) -> (Arc<NtObject
     }
     let id = namespace.next_id.fetch_add(1, Ordering::Relaxed);
     let object = NtObject::new_semaphore(id, initial, maximum);
-    namespace.objects.push(NamedObject { path: path.into(), object: Arc::clone(&object) });
+    namespace.objects.push(NamedObject { path: path.into(), object: Arc::clone(&object), permanent: false });
     (object, NamedObjectState::Created)
 }
 
@@ -117,7 +118,7 @@ pub fn publish_section(path: &str, object: Arc<NtObject>) -> (Arc<NtObject>, Nam
         && entry.object.kind() == NtObjectType::Directory) {
         return (object, NamedObjectState::ParentMissing);
     }
-    namespace.objects.push(NamedObject { path: path.into(), object: Arc::clone(&object) });
+    namespace.objects.push(NamedObject { path: path.into(), object: Arc::clone(&object), permanent: false });
     (object, NamedObjectState::Created)
 }
 
@@ -135,7 +136,7 @@ pub fn publish_mutant(path: &str, object: Arc<NtObject>) -> (Arc<NtObject>, Name
         && entry.object.kind() == NtObjectType::Directory) {
         return (object, NamedObjectState::ParentMissing);
     }
-    namespace.objects.push(NamedObject { path: path.into(), object: Arc::clone(&object) });
+    namespace.objects.push(NamedObject { path: path.into(), object: Arc::clone(&object), permanent: false });
     (object, NamedObjectState::Created)
 }
 
@@ -153,7 +154,7 @@ pub fn publish_timer(path: &str, object: Arc<NtObject>) -> (Arc<NtObject>, Named
         && entry.object.kind() == NtObjectType::Directory) {
         return (object, NamedObjectState::ParentMissing);
     }
-    namespace.objects.push(NamedObject { path: path.into(), object: Arc::clone(&object) });
+    namespace.objects.push(NamedObject { path: path.into(), object: Arc::clone(&object), permanent: false });
     (object, NamedObjectState::Created)
 }
 
@@ -171,8 +172,28 @@ pub fn publish_symbolic_link(path: &str, object: Arc<NtObject>) -> (Arc<NtObject
         && entry.object.kind() == NtObjectType::Directory) {
         return (object, NamedObjectState::ParentMissing);
     }
-    namespace.objects.push(NamedObject { path: path.into(), object: Arc::clone(&object) });
+    namespace.objects.push(NamedObject { path: path.into(), object: Arc::clone(&object), permanent: false });
     (object, NamedObjectState::Created)
+}
+
+/// Remove the permanence reference from a named object. # C: O(N_namespace)
+pub fn make_temporary(object: &NtObject) {
+    let mut namespace = OBJECT_NAMESPACE.lock();
+    seed(&mut namespace);
+    let Some(index) = namespace.objects.iter().position(|entry|
+        core::ptr::eq(entry.object.as_ref(), object)) else { return; };
+    namespace.objects[index].permanent = false;
+}
+
+/// Remove a temporary object's name after its final handle reference closes. # C: O(N_namespace)
+pub fn release_temporary(object: &Arc<NtObject>, has_live_handle: bool) {
+    let mut namespace = OBJECT_NAMESPACE.lock();
+    seed(&mut namespace);
+    let Some(index) = namespace.objects.iter().position(|entry|
+        !entry.permanent && core::ptr::eq(entry.object.as_ref(), object.as_ref())) else { return; };
+    if !has_live_handle {
+        namespace.objects.remove(index);
+    }
 }
 
 /// Return the canonical path of a directory object. # C: O(N_namespace)
@@ -289,6 +310,22 @@ mod tests {
         assert_eq!(first.kind(), NtObjectType::Semaphore);
         assert_eq!(directory_entries(&lookup_directory("\\BaseNamedObjects").unwrap())
             .iter().find(|(name, _)| name == "f1452_semaphore").map(|(_, kind)| kind.as_str()), Some("Semaphore"));
+    }
+
+    #[test]
+    fn temporary_named_object_name_survives_until_last_handle_closes() {
+        let path = "\\BaseNamedObjects\\f1477_temporary_event";
+        let (object, state) = create_event(path, false, false);
+        assert_eq!(state, NamedObjectState::Created);
+        let table = super::super::NtHandleTable::new();
+        let first = table.insert(object.clone(), 0x0001_0000).unwrap();
+        let second = table.insert(object.clone(), 0x0001_0000).unwrap();
+        make_temporary(&object);
+        assert!(lookup_object(path, NtObjectType::Event).is_some());
+        assert!(table.close(first));
+        assert!(lookup_object(path, NtObjectType::Event).is_some());
+        assert!(table.close(second));
+        assert!(lookup_object(path, NtObjectType::Event).is_none());
     }
 
     #[test]

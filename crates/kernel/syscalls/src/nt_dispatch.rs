@@ -79,6 +79,8 @@ const STATUS_NO_MEMORY: u64 = 0xc000_0017;
 const STATUS_MEMORY_NOT_ALLOCATED: u64 = 0xc000_00a0;
 #[cfg(target_os = "oxide-kernel")]
 const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
+#[cfg(target_os = "oxide-kernel")]
+const DELETE_ACCESS: u32 = 0x0001_0000;
 const STATUS_OBJECT_NAME_COLLISION: u64 = 0xc000_0035;
 const STATUS_OBJECT_TYPE_MISMATCH: u64 = 0xc000_0024;
 const STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xc000_0034;
@@ -527,10 +529,14 @@ pub fn dispatch(call: NtCall) -> u64 {
     }
     if call.service == syscall::nt::NtService::NtMakeTemporaryObject {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-        if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
-        // The NT handle table has no named-object permanence owner yet. Do
-        // not report success while silently leaving a permanent object alive.
-        return STATUS_NOT_IMPLEMENTED;
+        if !cur.is_nt_personality() || call.args.a0 > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+        let table = cur.thread_group.nt_handles();
+        let handle = sched::nt_object::NtHandle::from_raw(call.args.a0 as u32);
+        let Some(object) = table.get(handle, DELETE_ACCESS) else {
+            return if table.contains(handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE };
+        };
+        sched::nt_object::make_temporary(&object);
+        return STATUS_SUCCESS;
     }
     if call.service == syscall::nt::NtService::NtMapViewOfSectionEx {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
