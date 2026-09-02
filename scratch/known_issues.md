@@ -539,8 +539,9 @@ type-mismatch, and missing-parent status handling; arming and cancellation
 remain owned by the native monotonic timer primitive.
 `NtPrivilegeCheck` is implemented against the canonical NT token privilege
 owner, including enabled-privilege matching and all-required semantics.
-The graph now reaches `ntdll.dll!NtPulseEvent`; transient pulse wake
-semantics remain an explicit `STATUS_NOT_IMPLEMENTED` boundary.
+The graph now reaches `ntdll.dll!NtPulseEvent`; native transient pulse
+generation, wakeup, and manual/synchronization consumer semantics are now
+implemented by the NT event owner.
 The graph now reaches `ntdll.dll!NtOpenKey`; its registry namespace and typed
 key-handle owner remain an explicit `STATUS_NOT_IMPLEMENTED` boundary.
 `NtOpenKeyEx` is exposed at the same boundary; its registry options still

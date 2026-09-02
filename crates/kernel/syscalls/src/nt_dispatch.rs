@@ -620,13 +620,6 @@ pub fn dispatch(call: NtCall) -> u64 {
         // Linux VFS directory enumeration is deliberately not substituted.
         return STATUS_NOT_IMPLEMENTED;
     }
-    if call.service == syscall::nt::NtService::NtPulseEvent {
-        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-        if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
-        // Pulse semantics require an event-owner wake snapshot, not a SetEvent
-        // followed by ResetEvent race.
-        return STATUS_NOT_IMPLEMENTED;
-    }
     if call.service == syscall::nt::NtService::NtCreateSymbolicLinkObject {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a2 == 0 || call.args.a3 == 0 { return STATUS_INVALID_PARAMETER; }
@@ -915,6 +908,16 @@ pub fn dispatch(call: NtCall) -> u64 {
                 if let Some(previous) = previous { if uaccess::put_user_u32(previous.as_u64(), old as u32).is_err() { return STATUS_INVALID_PARAMETER; } }
                 STATUS_SUCCESS
             }
+            NtObjectCall::PulseEvent { handle, previous } => {
+                let native = sched::nt_object::NtHandle::from_raw(handle);
+                let Some(object) = table.get(native, EVENT_MODIFY_STATE) else { return if table.contains(native) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }; };
+                if object.kind() != sched::nt_object::NtObjectType::Event { return STATUS_INVALID_HANDLE; }
+                let Some(event) = object.event() else { return STATUS_INVALID_HANDLE; };
+                let old = event.pulse();
+                table.wake_waiters();
+                if let Some(previous) = previous { if uaccess::put_user_u32(previous.as_u64(), old as u32).is_err() { return STATUS_INVALID_PARAMETER; } }
+                STATUS_SUCCESS
+            }
             NtObjectCall::WaitEvent { handle, alertable, timeout } => {
                 if alertable > 1 { return STATUS_INVALID_PARAMETER; }
                 let native = sched::nt_object::NtHandle::from_raw(handle);
@@ -943,21 +946,39 @@ pub fn dispatch(call: NtCall) -> u64 {
             NtObjectCall::WaitMultiple { count, handles, wait_type, alertable, timeout } => {
                 if count == 0 || count > WAIT_MULTIPLE_LIMIT || wait_type > 1 || alertable > 1 { return STATUS_INVALID_PARAMETER; }
                 let mut waitables = alloc::vec::Vec::with_capacity(count as usize);
+                let mut pulse_epochs = alloc::vec::Vec::with_capacity(count as usize);
                 for index in 0..count as usize {
                     let Some(address) = handles.as_u64().checked_add((index * core::mem::size_of::<u32>()) as u64) else { return STATUS_INVALID_PARAMETER; };
                     let raw = match uaccess::get_user_u32(address) { Ok(raw) => raw, Err(_) => return STATUS_INVALID_PARAMETER };
                     let native = sched::nt_object::NtHandle::from_raw(raw);
                     let Some(object) = table.get(native, SYNCHRONIZE_ACCESS) else { return if table.contains(native) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }; };
                     if !matches!(object.kind(), sched::nt_object::NtObjectType::Event | sched::nt_object::NtObjectType::Semaphore | sched::nt_object::NtObjectType::Mutant | sched::nt_object::NtObjectType::Timer) { return STATUS_INVALID_HANDLE; }
+                    pulse_epochs.push(object.event().map(|event| event.pulse_epoch()));
                     waitables.push(object);
                 }
                 let deadline = match wait_deadline(timeout) { Ok(deadline) => deadline, Err(status) => return status };
                 // SAFETY: wait table and object Arcs remain alive for the complete wait.
                 let timer_deadline = waitables.iter().filter_map(|object| object.timer_deadline()).min().unwrap_or(u64::MAX);
                 let wait_deadline = deadline.min(timer_deadline);
+                let mut pulse_index = None;
                 let all_ready = || {
-                    if wait_type == 0 { waitables.iter().all(|object| object.is_signaled_at(cur.tid as u64, timekeeper::monotonic_ns())) }
-                    else { waitables.iter().any(|object| object.is_signaled_at(cur.tid as u64, timekeeper::monotonic_ns())) }
+                    if wait_type == 0 {
+                        for (index, object) in waitables.iter().enumerate() {
+                            let ready = object.is_signaled_at(cur.tid as u64, timekeeper::monotonic_ns());
+                            let pulsed = object.event().map(|event| event.try_pulse_since(pulse_epochs[index].as_mut().unwrap())).unwrap_or(false);
+                            if !ready && !pulsed { return false; }
+                        }
+                        true
+                    } else {
+                        for (index, object) in waitables.iter().enumerate() {
+                            if object.is_signaled_at(cur.tid as u64, timekeeper::monotonic_ns()) { return true; }
+                            if object.event().map(|event| event.try_pulse_since(pulse_epochs[index].as_mut().unwrap())).unwrap_or(false) {
+                                pulse_index = Some(index);
+                                return true;
+                            }
+                        }
+                        false
+                    }
                 };
                 let outcome = unsafe { sched::live::wait_event_interruptible_until(table.waiters(), wait_deadline, timekeeper::monotonic_ns, all_ready) };
                 let outcome = if matches!(outcome, sched::WaitOutcome::TimedOut) && timer_deadline <= deadline
@@ -970,6 +991,7 @@ pub fn dispatch(call: NtCall) -> u64 {
                             for object in &waitables { let _ = object.try_wait_at(cur.tid as u64, timekeeper::monotonic_ns()); }
                             STATUS_SUCCESS
                         } else {
+                            if let Some(index) = pulse_index { return STATUS_WAIT_0 + index as u64; }
                             for (index, object) in waitables.iter().enumerate() {
                                 if object.try_wait_at(cur.tid as u64, timekeeper::monotonic_ns()) { return STATUS_WAIT_0 + index as u64; }
                             }

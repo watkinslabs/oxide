@@ -21,6 +21,9 @@ FROZEN 2026-08-31. Dep:`01`,`02`,`06`,`13`,`31f`,`52`,`53`. Provides: event stat
   are disarmed explicitly by `NtCancelTimer`.
 - `NtSignalAndWaitForSingleObject` signals an event and then waits through the
   same native NT wait path, preserving alertable and timeout results.
+- `NtPulseEvent` temporarily signals an event, wakes the eligible waiter(s),
+  and leaves the event nonsignaled; synchronization events have one pulse
+  consumer while notification events allow all current observers to consume it.
 
 ## 2 Operations
 
@@ -28,6 +31,7 @@ FROZEN 2026-08-31. Dep:`01`,`02`,`06`,`13`,`31f`,`52`,`53`. Provides: event stat
 |---|---|
 | set | `sched::nt_object::NtEvent::set` |
 | reset | `sched::nt_object::NtEvent::reset` |
+| pulse | `sched::nt_object::NtEvent::pulse` |
 | nonblocking consume | `sched::nt_object::NtEvent::try_wait` |
 | blocking wait | NT syscall adapter over `sched::WaitList` |
 | create/arm/cancel timer | `sched::nt_object::NtTimer` |
@@ -39,6 +43,8 @@ FROZEN 2026-08-31. Dep:`01`,`02`,`06`,`13`,`31f`,`52`,`53`. Provides: event stat
 - auto-reset events can be consumed once per set;
 - reset clears both event forms;
 - state publication precedes scheduler wakeup.
+- pulse wakeups are transient, do not make a later wait ready, and enforce the
+  one-consumer rule for synchronization events;
 - relative zero, negative relative, positive absolute, and minimum signed
   timeout values are decoded deterministically;
 - stale handles, insufficient rights, timeout, and alertable interruption are

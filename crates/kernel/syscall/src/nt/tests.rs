@@ -481,6 +481,7 @@ use super::*;
         let op_args = SyscallArgs { a0: u64::MAX, a1: 0, ..args() };
         assert_eq!(decode_object(decode(7, op_args).unwrap()), Ok(NtObjectCall::SetEvent { handle: u64::MAX as u32, previous: None }));
         assert_eq!(decode_object(decode(8, op_args).unwrap()), Ok(NtObjectCall::ResetEvent { handle: u64::MAX as u32, previous: None }));
+        assert_eq!(decode_object(decode(294, op_args).unwrap()), Ok(NtObjectCall::PulseEvent { handle: u64::MAX as u32, previous: None }));
         assert!(matches!(decode_object(decode(9, SyscallArgs { a0: 7, a1: 1, a2: 0, ..args() }).unwrap()), Ok(NtObjectCall::WaitEvent { handle: 7, alertable: 1, timeout: None })));
         assert!(matches!(decode_object(decode(17, SyscallArgs { a0: 2, a1: 0x1000, a2: 1, a3: 1, a4: 0, ..args() }).unwrap()), Ok(NtObjectCall::WaitMultiple { count: 2, wait_type: 1, alertable: 1, timeout: None, .. })));
         assert_eq!(decode_object(decode(18, SyscallArgs { a0: 0x1000, a1: 4, a2: 0x2000, a3: 4, a4: 0x1_0000_0000, a5: 9 }).unwrap()), Ok(NtObjectCall::CreateSection {
