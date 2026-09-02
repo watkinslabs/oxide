@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::Command;
 use std::fs;
 
-use super::{dbg, probe_cargo};
+use super::{dbg, probe_cargo, probe_cargo_bin};
 
 /// Inject the Linux-personality launcher used by the Notepad boot probe.
 /// # C: O(cargo)
@@ -14,12 +14,16 @@ pub(super) fn inject(root_img: &Path, arch: &str) -> Result<(), u8> {
         return Err(2);
     }
     let launcher = probe_cargo("x86_64", "windows-runtime")?;
+    let registryd = probe_cargo_bin("x86_64", "windows-registry", "registryd")?;
     let wrapper = write_wrapper()?;
     let _ = mkdir(root_img, "/mnt");
     let _ = mkdir(root_img, "/mnt/windows");
     let _ = dbg(root_img, "rm /usr/local/bin/windows-runtime");
     dbg(root_img, &format!("write {} /usr/local/bin/windows-runtime", launcher.display()))?;
     dbg(root_img, "sif /usr/local/bin/windows-runtime mode 0100755")?;
+    let _ = dbg(root_img, "rm /usr/local/bin/registryd");
+    dbg(root_img, &format!("write {} /usr/local/bin/registryd", registryd.display()))?;
+    dbg(root_img, "sif /usr/local/bin/registryd mode 0100755")?;
     let _ = dbg(root_img, "rm /usr/local/bin/windows-notepad-smoke");
     dbg(root_img, &format!("write {} /usr/local/bin/windows-notepad-smoke", wrapper.display()))?;
     dbg(root_img, "sif /usr/local/bin/windows-notepad-smoke mode 0100755")?;
@@ -31,8 +35,26 @@ fn write_wrapper() -> Result<std::path::PathBuf, u8> {
     let dir = std::path::PathBuf::from("target/smoke");
     fs::create_dir_all(&dir).map_err(|_| 1u8)?;
     let path = dir.join("windows-notepad-smoke");
-fs::write(&path, b"#!/bin/sh\nmkdir -p /mnt/windows /usr/share/wine/nls || exit 1\nmount -t 9p -o trans=virtio,version=9P2000.L,msize=131096 windowswine /mnt/windows || exit 1\nmount -t 9p -o trans=virtio,version=9P2000.L,msize=131096 winenls /usr/share/wine/nls || exit 1\nls -ld /mnt/windows/x86_64-windows /mnt/windows/x86_64-windows/notepad.exe || exit 2\nhead -c 2 /mnt/windows/x86_64-windows/notepad.exe >/dev/null || exit 4\nls /mnt/windows/x86_64-windows >/dev/null || exit 3\nls -l /usr/share/wine/nls/locale.nls || exit 7\ndd if=/usr/share/wine/nls/locale.nls of=/dev/null bs=4096 count=1 status=none || exit 8\ndd if=/mnt/windows/x86_64-windows/notepad.exe of=/dev/null bs=65536 count=1 status=none || exit 5\ndd if=/mnt/windows/x86_64-windows/notepad.exe of=/dev/null bs=1048576 count=1 status=none || exit 6\nexec /usr/local/bin/windows-runtime /mnt/windows/x86_64-windows/notepad.exe 'C:\\notepad.exe' /mnt/windows/x86_64-windows\n").map_err(|_| 1u8)?;
+    fs::write(&path, wrapper_script()).map_err(|_| 1u8)?;
     Ok(path)
+}
+
+fn wrapper_script() -> &'static [u8] {
+    b"#!/bin/sh\nmkdir -p /mnt/windows /usr/share/wine/nls /run/oxide /var/lib/oxide || exit 1\nrm -f /run/oxide/registry.sock\n/usr/local/bin/registryd /run/oxide/registry.sock /var/lib/oxide/registry.db >/run/oxide/registryd.log 2>&1 &\nregistryd_pid=$!\ntrap 'kill $registryd_pid 2>/dev/null || true' EXIT\nmount -t 9p -o trans=virtio,version=9P2000.L,msize=131096 windowswine /mnt/windows || exit 1\nmount -t 9p -o trans=virtio,version=9P2000.L,msize=131096 winenls /usr/share/wine/nls || exit 1\nls -ld /mnt/windows/x86_64-windows /mnt/windows/x86_64-windows/notepad.exe || exit 2\nhead -c 2 /mnt/windows/x86_64-windows/notepad.exe >/dev/null || exit 4\nls /mnt/windows/x86_64-windows >/dev/null || exit 3\nls -l /usr/share/wine/nls/locale.nls || exit 7\ndd if=/usr/share/wine/nls/locale.nls of=/dev/null bs=4096 count=1 status=none || exit 8\ndd if=/mnt/windows/x86_64-windows/notepad.exe of=/dev/null bs=65536 count=1 status=none || exit 5\ndd if=/mnt/windows/x86_64-windows/notepad.exe of=/dev/null bs=1048576 count=1 status=none || exit 6\nOXIDE_REGISTRY_SOCKET=/run/oxide/registry.sock OXIDE_REGISTRY_DATABASE=/var/lib/oxide/registry.db exec /usr/local/bin/windows-runtime /mnt/windows/x86_64-windows/notepad.exe 'C:\\notepad.exe' /mnt/windows/x86_64-windows\n"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wrapper_script;
+
+    #[test]
+    fn notepad_wrapper_starts_the_canonical_registry_owner_before_handoff() {
+        let script = core::str::from_utf8(wrapper_script()).unwrap();
+        assert!(script.contains("/usr/local/bin/registryd /run/oxide/registry.sock /var/lib/oxide/registry.db"));
+        assert!(script.contains("OXIDE_REGISTRY_SOCKET=/run/oxide/registry.sock"));
+        assert!(script.contains("trap 'kill $registryd_pid"));
+        assert!(script.contains("exec /usr/local/bin/windows-runtime"));
+    }
 }
 
 fn mkdir(img: &Path, path: &str) -> Result<(), u8> {
