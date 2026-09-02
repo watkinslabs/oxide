@@ -14,8 +14,17 @@ pub const NT_DEBUG_INFO_OFFSET: u64 = 0x2f00;
 const PEB_OFF: usize = 0x000;
 const TEB_OFF: usize = 0x100;
 const TLS_OFF: usize = 0x180;
-const PARAM_OFF: usize = 0x200;
-const LDR_OFF: usize = 0x300;
+// TEB64 offsets from Wine's winternl.h.  Keep these named separately from
+// TLS_OFF: the latter is the ThreadLocalStoragePointer used by ntdll, while
+// the Win32 TLS API addresses the inline slots below directly.
+const TEB_CURRENT_LOCALE_OFF: usize = 0x108;
+const TEB_TLS_SLOTS_OFF: usize = 0x1480;
+const TEB_TLS_SLOTS: usize = 64;
+const TEB_TLS_EXPANSION_SLOTS_OFF: usize = 0x1780;
+// Keep the process-parameter structure clear of PEB64's inline TLS expansion
+// bitmap at 0x240..0x2c0. The loader list/module records follow it.
+const PARAM_OFF: usize = 0x300;
+const LDR_OFF: usize = 0x400;
 const MOD_OFF: usize = 0x500;
 const MOD_STRIDE: usize = 0x70;
 const MAX_MODULES: usize = 64;
@@ -90,6 +99,10 @@ pub fn build_thread_teb(process_id: u32, thread_id: u32, peb: u64, as_: &Address
     put_u32(&mut teb, 0x40, process_id);
     put_u32(&mut teb, 0x48, thread_id);
     put_u64(&mut teb, 0x58, base + 0x180);
+    put_u32(&mut teb, TEB_CURRENT_LOCALE_OFF, 0x409);
+    // TlsSlots and TlsExpansionSlots are deliberately zero-initialized.  A
+    // later TlsAlloc/TlsSetValue call owns their contents and must not inherit
+    // values from the process that created this thread.
     put_u64(&mut teb, TEB_SYSCALL_FRAME_OFFSET, base + THREAD_SYSCALL_FRAME_OFF as u64);
     as_.munmap(reservation, THREAD_TEB_BYTES).map_err(|_| Error::Einval)?;
     let data = as_.stash_bytes(teb.into_boxed_slice());
@@ -147,14 +160,12 @@ pub fn build_with_modules(input: &EnvironmentInput<'_>, modules: &[NtModuleInput
     // x86-64 offsets. Wine's kernelbase TlsAlloc depends on both descriptors
     // being valid before any DLL process-attach routine asks for a TLS slot.
     put_u64(&mut block, PEB_OFF + 0x78, base + TLS_BITMAP_DESC_OFF as u64);
-    put_u32(&mut block, PEB_OFF + 0x80, 64);
-    put_u64(&mut block, PEB_OFF + 0x88, base + PEB_OFF as u64 + 0x80);
+    // TlsBitmapBits is two ULONGs (64 slots), not an RTL_BITMAP header. The
+    // header is out-of-line and points back at this inline bit storage.
+    put_u32(&mut block, PEB_OFF + 0x80, 0x0001_0001);
+    put_u32(&mut block, PEB_OFF + 0x84, 0);
     put_u64(&mut block, PEB_OFF + 0x238, base + TLS_EXP_BITMAP_DESC_OFF as u64);
-    put_u32(&mut block, PEB_OFF + 0x240, 1024);
-    put_u64(&mut block, PEB_OFF + 0x248, base + PEB_OFF as u64 + 0x240);
-    // Slot zero is reserved by Wine and slot sixteen backs ntdll's errno.
-    block[PEB_OFF + 0x80] |= 1;
-    block[PEB_OFF + 0x82] |= 1;
+    // TlsExpansionBitmapBits is 32 ULONGs (1024 slots), initially clear.
     put_u32(&mut block, TLS_BITMAP_DESC_OFF, 64);
     put_u64(&mut block, TLS_BITMAP_DESC_OFF + 8, base + PEB_OFF as u64 + 0x80);
     put_u32(&mut block, TLS_EXP_BITMAP_DESC_OFF, 1024);
@@ -164,6 +175,10 @@ pub fn build_with_modules(input: &EnvironmentInput<'_>, modules: &[NtModuleInput
     put_u32(&mut block, TEB_OFF + 0x40, input.process_id);
     put_u32(&mut block, TEB_OFF + 0x48, input.thread_id);
     put_u64(&mut block, TEB_OFF + 0x58, base + TLS_OFF as u64);
+    put_u32(&mut block, TEB_OFF + TEB_CURRENT_LOCALE_OFF, 0x409);
+    // The fixed TEB block contains all 64 native TLS slots inline.  The
+    // expansion pointer stays NULL until a slot >= 64 is requested, matching
+    // kernelbase's TlsAlloc/TlsSetValue behavior.
     put_u64(&mut block, TEB_OFF + TEB_SYSCALL_FRAME_OFFSET, base + PROCESS_SYSCALL_FRAME_OFF as u64);
     put_unicode(&mut block, PARAM_OFF + 0x60, &image_path, base + image_path_off as u64);
     put_unicode(&mut block, PARAM_OFF + 0x70, &command_line, base + command_off as u64);
@@ -436,6 +451,31 @@ mod tests {
         assert_eq!(u32::from_le_bytes(data[0x40..0x44].try_into().unwrap()), 7);
         assert_eq!(u32::from_le_bytes(data[0x48..0x4c].try_into().unwrap()), 8);
         assert_eq!(u64::from_le_bytes(data[0x58..0x60].try_into().unwrap()), first.as_u64() + 0x180);
+        assert_eq!(u32::from_le_bytes(data[TEB_CURRENT_LOCALE_OFF..TEB_CURRENT_LOCALE_OFF + 4].try_into().unwrap()), 0x409);
+        assert!(data[TEB_TLS_SLOTS_OFF..TEB_TLS_SLOTS_OFF + TEB_TLS_SLOTS * 8].iter().all(|byte| *byte == 0));
+        assert_eq!(u64::from_le_bytes(data[TEB_TLS_EXPANSION_SLOTS_OFF..TEB_TLS_EXPANSION_SLOTS_OFF + 8].try_into().unwrap()), 0);
         assert_eq!(u64::from_le_bytes(data[TEB_SYSCALL_FRAME_OFFSET..TEB_SYSCALL_FRAME_OFFSET + 8].try_into().unwrap()), first.as_u64() + THREAD_SYSCALL_FRAME_OFF as u64);
+    }
+
+    #[test]
+    fn process_teb_publishes_native_tls_layout_and_reserved_bitmap_bits() {
+        let as_ = AddressSpace::new(0x20_000).unwrap();
+        let e = build(&EnvironmentInput { image_base: 0x1400_0000, image_size: 0x5000,
+            image_path: "C:\\Windows\\notepad.exe", command_line: "notepad.exe", environment: &[], process_id: 1, thread_id: 2 }, &as_).unwrap();
+        let vma = as_.find_vma(e.base).unwrap();
+        let data = match vma.backing { VmaBacking::KernelBytes { data, .. } => data, _ => panic!("environment must be kernel-backed") };
+        let read32 = |offset: usize| u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+        let read64 = |offset: usize| u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
+        assert_eq!(read32(PEB_OFF + 0x80), 0x0001_0001);
+        assert_eq!(read32(PEB_OFF + 0x84), 0);
+        assert_eq!(read64(PEB_OFF + 0x78), e.base.as_u64() + TLS_BITMAP_DESC_OFF as u64);
+        assert!(data[PEB_OFF + 0x240..PEB_OFF + 0x2c0].iter().all(|byte| *byte == 0));
+        assert_eq!(read64(PEB_OFF + 0x238), e.base.as_u64() + TLS_EXP_BITMAP_DESC_OFF as u64);
+        assert_eq!(read32(TLS_BITMAP_DESC_OFF), 64);
+        assert_eq!(read32(TLS_EXP_BITMAP_DESC_OFF), 1024);
+        assert_eq!(read64(TLS_BITMAP_DESC_OFF + 8), e.base.as_u64() + PEB_OFF as u64 + 0x80);
+        assert_eq!(read64(TLS_EXP_BITMAP_DESC_OFF + 8), e.base.as_u64() + PEB_OFF as u64 + 0x240);
+        assert_eq!(read32(TEB_OFF + TEB_CURRENT_LOCALE_OFF), 0x409);
+        assert_eq!(read64(TEB_OFF + TEB_TLS_EXPANSION_SLOTS_OFF), 0);
     }
 }
