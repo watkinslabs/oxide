@@ -56,6 +56,7 @@ fn dispatch_routed_syscall(entry: (Option<u64>, u64), nr: u64, args: &SyscallArg
     // syscall entry/return frame is retained, but no Linux handler can claim
     // an NT service selector; the adapter separately checks NT task state.
     if let Some(call) = crate::nt_dispatch::decode_entry(nr, *args) {
+        if let Some(rv) = crate::nt_exec::dispatch(call) { return rv as i64; }
         return crate::nt_dispatch::dispatch(call) as i64;
     }
     if let Some(rv) = dispatch_route_a(nr, args) { return rv; }
