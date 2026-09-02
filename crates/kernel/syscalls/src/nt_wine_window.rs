@@ -25,6 +25,7 @@ const WINE_CREATE_COMPATIBLE_DC: u64 = 0x10ae;
 const WINE_DELETE_OBJECT: u64 = 0x118f;
 const WINE_GET_TEXT_METRICS: u64 = 0x1229;
 const WINE_GET_TEXT_EXTENT_EX: u64 = 0x1227;
+const WINE_REGISTER_CLASS_EX: u64 = 0x14eb;
 
 #[cfg(target_os = "oxide-kernel")]
 fn read_args(pointer: u64) -> Option<[u64; 17]> {
@@ -34,6 +35,27 @@ fn read_args(pointer: u64) -> Option<[u64; 17]> {
         *value = uaccess::get_user_u64(address).ok()?;
     }
     Some(args)
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn read_unicode_string(pointer: u64) -> Option<alloc::vec::Vec<u16>> {
+    let length = read_user_u16(pointer)? as usize;
+    if length == 0 || length & 1 != 0 || length > 512 { return None; }
+    let buffer = uaccess::get_user_u64(pointer.checked_add(8)?).ok()?;
+    if buffer == 0 { return None; }
+    let mut value = alloc::vec::Vec::new();
+    value.try_reserve_exact(length / 2).ok()?;
+    for index in 0..length / 2 {
+        value.push(read_user_u16(buffer.checked_add((index * 2) as u64)?)?);
+    }
+    Some(value)
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn read_user_u16(address: u64) -> Option<u16> {
+    let mut bytes = [0u8; 2];
+    uaccess::copy_from_user(&mut bytes, address).ok()?;
+    Some(u16::from_le_bytes(bytes))
 }
 
 /// Translate one Wine ordinal into the existing native window-state owner.
@@ -46,8 +68,15 @@ pub fn dispatch(call: NtCall) -> u64 {
     let native = |service: NtService, args: SyscallArgs| crate::nt_window::dispatch(NtCall { service, args }).unwrap_or(STATUS_INVALID_PARAMETER);
     let gdi = |service: NtService, args: SyscallArgs| crate::nt_gdi::dispatch(NtCall { service, args }).unwrap_or(STATUS_INVALID_PARAMETER);
     match ordinal {
+        WINE_REGISTER_CLASS_EX => {
+            if args[0] == 0 || uaccess::get_user_u32(args[0]).ok() != Some(80) { return 0; }
+            let Some(name) = read_unicode_string(args[1]) else { return 0; };
+            let Some(wndproc) = uaccess::get_user_u64(args[0].saturating_add(8)).ok() else { return 0; };
+            crate::nt_window::register_class_for_current(&name, wndproc).unwrap_or(0)
+        }
         WINE_CREATE_WINDOW_EX => {
-            let hwnd = native(NtService::CreateWindow, SyscallArgs { a0: args[9], a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 });
+            let Some(class) = read_unicode_string(args[1]) else { return STATUS_INVALID_PARAMETER; };
+            let hwnd = crate::nt_window::create_class_window_for_current(&class, args[9]).unwrap_or(STATUS_INVALID_PARAMETER);
             if hwnd == STATUS_INVALID_PARAMETER || hwnd == 0 { return hwnd; }
             let right = (args[5] as i32).checked_add(args[7] as i32);
             let bottom = (args[6] as i32).checked_add(args[8] as i32);
