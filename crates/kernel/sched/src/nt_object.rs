@@ -245,6 +245,8 @@ impl NtObject {
 pub struct NtEvent {
     manual_reset: bool,
     signaled: core::sync::atomic::AtomicBool,
+    pulse_epoch: core::sync::atomic::AtomicU64,
+    pulse_claimed: core::sync::atomic::AtomicU64,
     waiters: WaitList,
 }
 
@@ -298,7 +300,9 @@ impl NtSemaphore {
 
 impl NtEvent {
     fn new(manual_reset: bool, initial_state: bool) -> Self {
-        Self { manual_reset, signaled: core::sync::atomic::AtomicBool::new(initial_state), waiters: WaitList::new() }
+        Self { manual_reset, signaled: core::sync::atomic::AtomicBool::new(initial_state),
+            pulse_epoch: core::sync::atomic::AtomicU64::new(0),
+            pulse_claimed: core::sync::atomic::AtomicU64::new(0), waiters: WaitList::new() }
     }
 
     /// Set the event and wake eligible waiters. # C: O(N_waiters)
@@ -309,6 +313,39 @@ impl NtEvent {
 
     /// Reset the event so future waits block. # C: O(1)
     pub fn reset(&self) { self.signaled.store(false, Ordering::Release); }
+
+    /// Publish one transient signal and wake the eligible existing waiters.
+    /// # C: O(N_waiters)
+    pub fn pulse(&self) -> bool {
+        let previous = self.signaled.swap(true, Ordering::AcqRel);
+        let epoch = self.pulse_epoch.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
+        self.pulse_claimed.store(epoch.wrapping_sub(1), Ordering::Release);
+        if self.manual_reset { self.waiters.wake_all(); } else { self.waiters.wake_one(); }
+        self.signaled.store(false, Ordering::Release);
+        previous
+    }
+
+    /// Capture the pulse epoch before entering a wait. # C: O(1)
+    pub fn pulse_epoch(&self) -> u64 { self.pulse_epoch.load(Ordering::Acquire) }
+
+    /// Consume a pulse observed after `epoch`; manual events grant it to each
+    /// waiter, while synchronization events grant it to one waiter globally.
+    /// # C: O(1)
+    pub fn try_pulse_since(&self, epoch: &mut u64) -> bool {
+        let current = self.pulse_epoch.load(Ordering::Acquire);
+        if current == *epoch { return false; }
+        if self.manual_reset {
+            *epoch = current;
+            return true;
+        }
+        if self.pulse_claimed.compare_exchange(current.wrapping_sub(1), current,
+            Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            *epoch = current;
+            return true;
+        }
+        *epoch = current;
+        false
+    }
 
     /// Consume one signal if available; manual-reset events remain signaled. # C: O(1)
     pub fn try_wait(&self) -> bool {
@@ -323,9 +360,11 @@ impl NtEvent {
     /// # SAFETY: caller is process context on a running task with no event
     /// lock held; the scheduler wait loop may block and reacquires no caller lock.
     pub unsafe fn wait(&self, deadline_ns: u64, now: impl Fn() -> u64) -> crate::WaitOutcome {
+        let mut pulse_epoch = self.pulse_epoch();
         // SAFETY: forwarded to the scheduler predicate loop under the same
         // process-context and lock-ordering contract.
-        unsafe { crate::live::wait_event_interruptible_until(&self.waiters, deadline_ns, now, || self.try_wait()) }
+        unsafe { crate::live::wait_event_interruptible_until(&self.waiters, deadline_ns, now,
+            || self.try_wait() || self.try_pulse_since(&mut pulse_epoch)) }
     }
 }
 

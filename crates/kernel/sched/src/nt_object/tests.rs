@@ -36,6 +36,26 @@ fn event_state_matches_manual_and_auto_reset_rules() {
 }
 
 #[test]
+fn pulse_is_transient_and_auto_reset_pulse_has_one_consumer() {
+    let manual = NtObject::new_event(6, true, false).event().unwrap();
+    let mut manual_epoch = manual.pulse_epoch();
+    assert!(!manual.pulse());
+    assert!(!manual.is_signaled());
+    assert!(manual.try_pulse_since(&mut manual_epoch));
+    assert!(!manual.is_signaled());
+    assert!(!manual.try_pulse_since(&mut manual_epoch));
+
+    let auto = NtObject::new_event(7, false, false).event().unwrap();
+    let mut first_epoch = auto.pulse_epoch();
+    let mut second_epoch = first_epoch;
+    assert!(!auto.pulse());
+    assert!(auto.try_pulse_since(&mut first_epoch));
+    assert!(!auto.try_pulse_since(&mut second_epoch));
+    let mut new_epoch = auto.pulse_epoch();
+    assert!(!auto.try_pulse_since(&mut new_epoch));
+}
+
+#[test]
 fn semaphore_count_and_maximum_are_enforced() {
     let semaphore = NtObject::new_semaphore(3, 1, 2).semaphore().unwrap();
     assert!(semaphore.try_wait()); assert!(!semaphore.is_signaled());

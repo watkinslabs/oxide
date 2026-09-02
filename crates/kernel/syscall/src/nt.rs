@@ -406,6 +406,7 @@ pub enum NtObjectCall {
     Close { handle: u32 },
     SetEvent { handle: u32, previous: Option<UserPtr<i32>> },
     ResetEvent { handle: u32, previous: Option<UserPtr<i32>> },
+    PulseEvent { handle: u32, previous: Option<UserPtr<i32>> },
     WaitEvent { handle: u32, alertable: u32, timeout: Option<UserPtr<i64>> },
     WaitMultiple { count: u32, handles: UserPtr<u32>, wait_type: u32, alertable: u32, timeout: Option<UserPtr<i64>> },
     CreateSection { handle: UserPtr<u32>, desired_access: u32, size: u64, protect: u32, attributes: u64, file: u32 },
@@ -1359,6 +1360,7 @@ pub fn decode_object(call: NtCall) -> Result<NtObjectCall, Errno> {
         NtService::Close => Ok(NtObjectCall::Close { handle: a.a0 as u32 }),
         NtService::SetEvent => Ok(NtObjectCall::SetEvent { handle: a.a0 as u32, previous: optional_ptr(a.a1)? }),
         NtService::ResetEvent => Ok(NtObjectCall::ResetEvent { handle: a.a0 as u32, previous: optional_ptr(a.a1)? }),
+        NtService::NtPulseEvent => Ok(NtObjectCall::PulseEvent { handle: a.a0 as u32, previous: optional_ptr(a.a1)? }),
         NtService::WaitForSingleObject => Ok(NtObjectCall::WaitEvent {
             handle: a.a0 as u32, alertable: a.a1 as u32, timeout: optional_ptr(a.a2)?,
         }),
