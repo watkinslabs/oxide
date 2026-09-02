@@ -6,7 +6,7 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec;
 use syscall::errno::Errno;
-use syscall::nt::{NtCreateFileRequest, NtFileCall, NtFileIoRequest, NtOpenFileRequest};
+use syscall::nt::{NtCall, NtCreateFileRequest, NtFileCall, NtFileIoRequest, NtOpenFileRequest, NtService};
 use crate::nt_file_policy::CreateDisposition;
 
 const STATUS_SUCCESS: u64 = 0;
@@ -76,6 +76,83 @@ pub fn dispatch(call: NtFileCall) -> u64 {
         NtFileCall::CancelEx { handle, io, io_status } => cancel(cur, handle, io.map(|ptr| ptr.as_u64()), io_status.as_u64()),
         NtFileCall::CancelSynchronous { handle, io, io_status } => cancel_synchronous(cur, handle, io.map(|ptr| ptr.as_u64()), io_status.as_u64()),
         NtFileCall::Flush { handle, io_status } => flush(cur, handle, io_status.as_u64()),
+    }
+}
+
+/// Dispatch the direct six-register Windows ABI used by native NTDLL exports.
+/// Stack arguments are fetched only for the x86-64 Windows calling convention.
+/// # C: O(path) + O(bytes)
+pub fn dispatch_native(call: NtCall) -> Option<u64> {
+    match call.service {
+        NtService::CreateFile => Some(native_create(call)),
+        NtService::OpenFile => Some(native_open(call)),
+        NtService::ReadFile => Some(native_io(call, false)),
+        NtService::WriteFile => Some(native_io(call, true)),
+        _ => None,
+    }
+}
+
+fn native_create(call: NtCall) -> u64 {
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let Some(share) = crate::nt_dispatch::stack_argument(6) else { return STATUS_INVALID_PARAMETER; };
+    let Some(disposition) = crate::nt_dispatch::stack_argument(7) else { return STATUS_INVALID_PARAMETER; };
+    let Some(options) = crate::nt_dispatch::stack_argument(8) else { return STATUS_INVALID_PARAMETER; };
+    if disposition > u32::MAX as u64 || share > u32::MAX as u64 || options > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    let Some(disposition) = CreateDisposition::decode(disposition as u32) else { return STATUS_INVALID_PARAMETER; };
+    if call.args.a0 == 0 || call.args.a2 == 0 || call.args.a1 > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    let status = open_path(cur, call.args.a0, call.args.a1 as u32,
+        call.args.a2, options as u32, share as u32, disposition);
+    if call.args.a3 != 0 { let _ = uaccess::put_user_u64(call.args.a3, status); let _ = uaccess::put_user_u64(call.args.a3 + 8, 0); }
+    status
+}
+
+fn native_open(call: NtCall) -> u64 {
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let options = call.args.a5;
+    if call.args.a0 == 0 || call.args.a2 == 0 || call.args.a1 > u32::MAX as u64 || call.args.a4 > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    let status = open_path(cur, call.args.a0, call.args.a1 as u32,
+        call.args.a2, options as u32, call.args.a4 as u32, CreateDisposition::Open);
+    if call.args.a3 != 0 { let _ = uaccess::put_user_u64(call.args.a3, status); let _ = uaccess::put_user_u64(call.args.a3 + 8, 0); }
+    status
+}
+
+fn native_io(call: NtCall, write: bool) -> u64 {
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let Some(length) = crate::nt_dispatch::stack_argument(6) else { return STATUS_INVALID_PARAMETER; };
+    let Some(offset) = crate::nt_dispatch::stack_argument(7) else { return STATUS_INVALID_PARAMETER; };
+    if call.args.a0 > u32::MAX as u64 || call.args.a4 == 0 || call.args.a5 == 0
+        || length > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    let offset = if offset == 0 { 0 } else { read_u64(offset).unwrap_or(u64::MAX) };
+    if offset == u64::MAX { return STATUS_INVALID_PARAMETER; }
+    native_io_values(cur, call.args.a0 as u32, call.args.a4, call.args.a5,
+        length as u32, offset, write)
+}
+
+fn native_io_values(cur: &sched::Task, handle: u32, io_status: u64, buffer: u64,
+                    length: u32, offset: u64, write: bool) -> u64 {
+    if length as usize > MAX_NT_IO { return STATUS_INVALID_PARAMETER; }
+    let required = if write { FILE_WRITE_DATA } else { FILE_READ_DATA };
+    let native = sched::nt_object::NtHandle::from_raw(handle);
+    let table = cur.thread_group.nt_handles();
+    let Some(object) = table.get(native, required) else {
+        return if table.contains(native) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE };
+    };
+    let Some(file) = object.file() else { return STATUS_INVALID_HANDLE; };
+    let mut data = vec![0u8; length as usize];
+    let result = if write {
+        if uaccess::copy_from_user(&mut data, buffer).is_err() { return STATUS_ACCESS_VIOLATION; }
+        file.write(&data).map(|n| n as u64)
+    } else {
+        let result = if offset == 0 { file.read(&mut data) } else { file.pread(&mut data, offset as i64) };
+        if let Ok(n) = result { if uaccess::copy_to_user(buffer, &data[..n]).is_err() { return STATUS_ACCESS_VIOLATION; } }
+        result.map(|n| n as u64)
+    };
+    match result {
+        Ok(bytes) => { write_io_status(io_status, STATUS_SUCCESS, bytes); post_completion(&object, io_status, STATUS_SUCCESS, bytes); STATUS_SUCCESS }
+        Err(_) => { write_io_status(io_status, STATUS_END_OF_FILE, 0); post_completion(&object, io_status, STATUS_END_OF_FILE, 0); STATUS_END_OF_FILE }
     }
 }
 
