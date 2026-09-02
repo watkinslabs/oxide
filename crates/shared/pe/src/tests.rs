@@ -262,6 +262,29 @@ fn audits_wine_notepad_dependency_contract_when_installed() {
 }
 
 #[test]
+fn installed_wine_notepad_graph_is_closed_and_case_unique() {
+    let Some(root) = ["/usr/lib64/wine/x86_64-windows", "/usr/lib/wine/x86_64-windows"]
+        .iter().find(|root| std::path::Path::new(root).join("notepad.exe").is_file()) else { return };
+    let notepad = std::fs::read(std::path::Path::new(root).join("notepad.exe")).unwrap();
+    let mut catalog = crate::catalog::ModuleCatalog::new();
+    for entry in std::fs::read_dir(root).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|value| value.to_str()) != Some("dll") { continue; }
+        let name = path.file_name().unwrap().to_str().unwrap().as_bytes().to_vec();
+        catalog.add(&name, &std::fs::read(path).unwrap()).unwrap();
+    }
+    let source = &catalog;
+    let modules = discover_modules(b"notepad.exe", &notepad, &source).unwrap();
+    for (index, module) in modules.iter().enumerate() {
+        assert!(!modules[..index].iter().any(|previous| previous.name.eq_ignore_ascii_case(module.name)), "duplicate graph node");
+        for dependency in module.image.dependencies().unwrap() {
+            let name = crate::apiset::target(dependency).unwrap_or(dependency);
+            assert!(modules.iter().any(|candidate| candidate.name.eq_ignore_ascii_case(name)), "unclosed dependency graph");
+        }
+    }
+}
+
+#[test]
 fn resolves_wine_ntdll_export_when_installed() {
     let Ok(b) = std::fs::read("/usr/lib/wine/x86_64-windows/ntdll.dll") else { return };
     let p = parse(&b).expect("Wine's ntdll must satisfy the PE32+ contract");
