@@ -124,6 +124,21 @@ pub fn encode_x64_run_once_continuation(selector: u64) -> Vec<u8> {
     code
 }
 
+/// Return leg for a synchronous x86-64 Windows window-procedure callback.
+/// The WndProc's LRESULT is written into the callback home area and returned
+/// through the native `NtCallbackReturn` service.
+pub fn encode_x64_wndproc_continuation(selector: u64) -> Vec<u8> {
+    let mut code = Vec::new();
+    code.extend_from_slice(&[0x48, 0x89, 0x04, 0x24]); // [rsp] = WndProc RAX
+    code.extend_from_slice(&[0x48, 0x89, 0xe1]); // RCX = result pointer
+    code.extend_from_slice(&[0xba, 0x08, 0x00, 0x00, 0x00]); // EDX = sizeof(LRESULT)
+    code.extend_from_slice(&[0x45, 0x31, 0xc0]); // R8D = STATUS_SUCCESS
+    code.extend_from_slice(&[0x48, 0xb8]);
+    code.extend_from_slice(&selector.to_le_bytes());
+    code.extend_from_slice(&[0x0f, 0x05, 0xcc]);
+    code
+}
+
 /// Encode Wine's x86-64 debugger breakpoint entry. The trap is intentional:
 /// Windows exception dispatch, rather than the NT syscall adapter, owns the
 /// observable result when a process executes this export.
@@ -178,6 +193,16 @@ mod tests {
         assert_eq!(&bytes[..4], &[0x57, 0x48, 0x89, 0xcf]);
         assert_eq!(&bytes[4..14], &[0x48, 0xb8, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x54, 0x4e]);
         assert_eq!(&bytes[14..], &[0x0f, 0x05, 0x5f, 0xc3]);
+    }
+
+    #[test]
+    fn wndproc_continuation_stores_lresult_and_calls_callback_return() {
+        let bytes = encode_x64_wndproc_continuation(0x4e54_0000_0000_00da);
+        assert_eq!(&bytes[..4], &[0x48, 0x89, 0x04, 0x24]);
+        assert_eq!(&bytes[4..7], &[0x48, 0x89, 0xe1]);
+        assert_eq!(&bytes[7..12], &[0xba, 0x08, 0x00, 0x00, 0x00]);
+        assert!(bytes.windows(2).any(|pair| pair == [0x0f, 0x05]));
+        assert_eq!(bytes.last(), Some(&0xcc));
     }
 
     #[test]
