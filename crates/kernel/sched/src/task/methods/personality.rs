@@ -28,6 +28,12 @@ impl Task {
     /// Read the task-owned TEB address for native thread queries. # C: O(1)
     pub fn nt_teb(&self) -> u64 { self.core.nt_teb.load(Ordering::Acquire) }
 
+    /// Publish the Win32 entry address used to start this NT thread. # C: O(1)
+    pub fn set_nt_start_address(&self, entry: u64) { self.core.nt_start_address.store(entry, Ordering::Release); }
+
+    /// Read the task-owned Win32 entry address. # C: O(1)
+    pub fn nt_start_address(&self) -> u64 { self.core.nt_start_address.load(Ordering::Acquire) }
+
     /// Access thread-local Windows preferred UI-language state. # C: O(1)
     pub fn nt_thread_ui_languages(&self) -> &Spinlock<(u32, alloc::vec::Vec<u16>), TaskListClass> { &self.core.nt_thread_ui_languages }
 

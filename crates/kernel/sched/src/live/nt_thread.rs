@@ -29,6 +29,7 @@ pub unsafe fn new_nt_thread_unpublished(
         child.set_nt_peb(parent.nt_peb());
     }
     child.set_nt_teb(teb);
+    child.set_nt_start_address(entry_va);
     // SAFETY: task remains unpublished and entry/stack belong to its mm.
     unsafe { arm_user_entry(child, entry_va, user_sp); }
     // SAFETY: synthetic user frame was just created on this unpublished kernel stack.
