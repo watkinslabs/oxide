@@ -476,6 +476,8 @@ use super::*;
         let bad = decode(5, SyscallArgs { a0: 0x1002, ..create.args }).unwrap();
         assert_eq!(decode_object(bad), Err(Errno::Efault));
         assert_eq!(decode_object(decode(6, args()).unwrap()), Ok(NtObjectCall::Close { handle: u64::MAX as u32 }));
+        assert!(matches!(decode_object(decode(287, SyscallArgs { a0: 0x1000, a1: 0x001f_0fff, a2: 0, a3: 0x2000, ..args() }).unwrap()), Ok(NtObjectCall::OpenProcess { desired_access: 0x001f_0fff, attributes: None, .. })));
+        assert!(matches!(decode_object(decode(291, SyscallArgs { a0: 0x1000, a1: 0x001f_03ff, a2: 0, a3: 0x2000, ..args() }).unwrap()), Ok(NtObjectCall::OpenThread { desired_access: 0x001f_03ff, attributes: None, .. })));
         let op_args = SyscallArgs { a0: u64::MAX, a1: 0, ..args() };
         assert_eq!(decode_object(decode(7, op_args).unwrap()), Ok(NtObjectCall::SetEvent { handle: u64::MAX as u32, previous: None }));
         assert_eq!(decode_object(decode(8, op_args).unwrap()), Ok(NtObjectCall::ResetEvent { handle: u64::MAX as u32, previous: None }));

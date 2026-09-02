@@ -181,6 +181,9 @@ fn compare_objects(cur: &sched::Task, first: u64, second: u64) -> u64 {
 /// # C: O(log N_vmas) plus usercopy
 #[cfg(target_os = "oxide-kernel")]
 pub fn dispatch(call: NtCall) -> u64 {
+    // Process/thread opens must precede the legacy unsupported-service guards
+    // below; this adapter owns the current-process NT identity path.
+    if let Some(result) = crate::nt_process_handles::dispatch(call) { return result; }
     if call.service == syscall::nt::NtService::RelayCall {
         klog::write_raw(b"[WINDOWS-PE-NT-DISPATCH] relay descriptor="); klog::write_hex_u64(call.args.a0);
         klog::write_raw(b" index="); klog::write_hex_u64(call.args.a1);
@@ -1011,6 +1014,7 @@ pub fn dispatch(call: NtCall) -> u64 {
                 STATUS_SUCCESS
             }
             NtObjectCall::TerminateThread { .. } => STATUS_INVALID_PARAMETER,
+            NtObjectCall::OpenProcess { .. } | NtObjectCall::OpenThread { .. } => STATUS_INVALID_PARAMETER,
             NtObjectCall::DuplicateObject { .. } | NtObjectCall::DuplicateToken { .. } => STATUS_INVALID_PARAMETER,
             NtObjectCall::CreateTimer { .. } | NtObjectCall::SetTimer { .. } | NtObjectCall::CancelTimer { .. } => STATUS_INVALID_PARAMETER,
             NtObjectCall::CreateIoCompletion { .. } | NtObjectCall::SetIoCompletion { .. } | NtObjectCall::RemoveIoCompletion { .. } | NtObjectCall::SignalAndWait { .. } => STATUS_INVALID_PARAMETER,
