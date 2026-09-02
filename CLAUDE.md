@@ -334,7 +334,9 @@ git worktree add -b "$name" ../kernel-${name%%-*} origin/main
 
 **Commits:** small, focused; `<type>: <subject>` + body (why, not what); `<type>` ∈ `feat|fix|doc|spec|refactor|test|bench|chore|ci|build|revise|freeze`.
 
-**Push policy:** auto-push every feature branch with `-u` at first commit; auto-push merged main. **Never pipe a state-changing command when its exit status is the evidence** (`git push | tail` reports `tail`'s status): run it directly or check `${PIPESTATUS[0]}`; before reporting a push landed, fetch and verify the remote ref SHA.
+**Push policy:** auto-push every feature branch with `-u` at first commit; auto-push merged main.
+
+**Pre-push gate red on `main` itself:** first prove it is pre-existing (your branch touches none of the failing crates; or the same gate fails on a clean `origin/main`), then file or cite the `KI-NNNN` row for the breakage, then push with ONLY the specific `SKIP_*` flag that gate names (`SKIP_LINT_RATCHET`/`SKIP_HOSTED_GATE`/`SKIP_TEST_BUILD_GATE`/`SKIP_FEATURE_GATE`/`SKIP_STACK_GATE`/`SKIP_SMOKE`) and say so in the PR body. Never blanket-skip gates your change could actually fail, and never skip without the ledger row — a bypass with no row is a hidden disable. **Never pipe a state-changing command when its exit status is the evidence** (`git push | tail` reports `tail`'s status): run it directly or check `${PIPESTATUS[0]}`; before reporting a push landed, fetch and verify the remote ref SHA.
 
 **PRs:** `gh pr create` then `gh pr merge --merge --delete-branch=true`; no local merges to `main`; delete remote + local branch on merge.
 
