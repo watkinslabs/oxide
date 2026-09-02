@@ -47,7 +47,17 @@ pub fn dispatch(call: NtCall) -> u64 {
     let gdi = |service: NtService, args: SyscallArgs| crate::nt_gdi::dispatch(NtCall { service, args }).unwrap_or(STATUS_INVALID_PARAMETER);
     match ordinal {
         WINE_CREATE_WINDOW_EX => {
-            native(NtService::CreateWindow, SyscallArgs { a0: args[9], a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 })
+            let hwnd = native(NtService::CreateWindow, SyscallArgs { a0: args[9], a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 });
+            if hwnd == STATUS_INVALID_PARAMETER || hwnd == 0 { return hwnd; }
+            let right = (args[5] as i32).checked_add(args[7] as i32);
+            let bottom = (args[6] as i32).checked_add(args[8] as i32);
+            match (right, bottom) {
+                (Some(right), Some(bottom)) => {
+                    let result = native(NtService::SetWindowRectValues, SyscallArgs { a0: hwnd, a1: args[5], a2: args[6], a3: right as u64, a4: bottom as u64, a5: 0 });
+                    if result == STATUS_SUCCESS { hwnd } else { let _ = native(NtService::DestroyWindow, SyscallArgs { a0: hwnd, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }); STATUS_INVALID_PARAMETER }
+                }
+                _ => { let _ = native(NtService::DestroyWindow, SyscallArgs { a0: hwnd, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }); STATUS_INVALID_PARAMETER }
+            }
         }
         WINE_POST_MESSAGE => win_bool(native(NtService::PostMessage, SyscallArgs { a0: args[0], a1: args[1], a2: args[2], a3: args[3], a4: 0, a5: 0 })),
         WINE_PEEK_MESSAGE => win_bool(native(NtService::PeekMessage, SyscallArgs { a0: args[0], a1: args[1], a2: args[2], a3: args[3], a4: args[4], a5: 0 })),
@@ -91,7 +101,8 @@ where F: Fn(NtService, SyscallArgs) -> u64, G: Fn(NtService, SyscallArgs) -> u64
 fn end_paint<F, G>(args: &[u64; 17], native: F, gdi: G) -> u64
 where F: Fn(NtService, SyscallArgs) -> u64, G: Fn(NtService, SyscallArgs) -> u64 {
     let Ok(hdc) = uaccess::get_user_u64(args[1]) else { return STATUS_INVALID_PARAMETER; };
+    let present = if hdc != 0 { gdi(NtService::PresentGdiWindow, SyscallArgs { a0: args[0], a1: hdc, a2: 0, a3: 0, a4: 0, a5: 0 }) } else { STATUS_INVALID_PARAMETER };
     let result = native(NtService::EndWindowPaint, SyscallArgs { a0: args[0], a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 });
     if hdc != 0 { let _ = gdi(NtService::DeleteGdiObject, SyscallArgs { a0: hdc, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }); }
-    win_bool(result)
+    win_bool(if result == STATUS_SUCCESS { present } else { result })
 }
