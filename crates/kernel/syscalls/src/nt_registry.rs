@@ -38,11 +38,11 @@ const KEY_ENUMERATE_SUB_KEYS: u32 = 0x0008;
 const DELETE_ACCESS: u32 = 0x0001_0000;
 const FILE_WRITE_DATA: u32 = 0x0002;
 
-struct RegistryWatch { key: u64, owner_tid: u32, filter: u64, event: Arc<sched::nt_object::NtEvent>, io_status: u64 }
+struct RegistryWatch { key: u64, path: String, subtree: bool, owner_tid: u32, filter: u64, event: Arc<sched::nt_object::NtEvent>, io_status: u64 }
 static REGISTRY_WATCHES: Spinlock<Vec<RegistryWatch>, RegistryWatchLock> = Spinlock::new(Vec::new());
 
 #[derive(Debug)]
-enum Reply { Success, Handle(u64), Value { kind: u32, data: Vec<u8> }, Keys(Vec<String>), Values(Vec<(String, u32, Vec<u8>)>), KeyInfo { name: String, subkeys: u32, max_subkey: u32, values: u32, max_value_name: u32, max_value_data: u32 }, Bytes(Vec<u8>), Failure(u8) }
+enum Reply { Success, Handle(u64), Value { kind: u32, data: Vec<u8> }, Keys(Vec<String>), Values(Vec<(String, u32, Vec<u8>)>), KeyInfo { name: String, subkeys: u32, max_subkey: u32, values: u32, max_value_name: u32, max_value_data: u32 }, Bytes(Vec<u8>), Text(String), Failure(u8) }
 
 /// Create the native key handle for the userspace-owned current-user root.
 /// # C: O(1) plus one NT handle-table insertion
@@ -95,7 +95,8 @@ fn notify_change_key(call: NtCall) -> u64 {
     let Some(event) = event_object.event() else { return STATUS_INVALID_PARAMETER; };
     let mut watches = REGISTRY_WATCHES.lock();
     watches.retain(|watch| !(watch.key == key_object.id() && watch.io_status == call.args.a4));
-    watches.push(RegistryWatch { key: key_object.id(), owner_tid: current.tid, filter: call.args.a5, event, io_status: call.args.a4 });
+    let Some(path) = key_path(key_object.id()) else { return STATUS_UNSUCCESSFUL; };
+    watches.push(RegistryWatch { key: key_object.id(), path, subtree: subtree != 0, owner_tid: current.tid, filter: call.args.a5, event, io_status: call.args.a4 });
     STATUS_PENDING
 }
 
@@ -130,10 +131,19 @@ fn finish_watches(key: u64, owner_tid: Option<u32>, target_io_status: Option<u64
 }
 
 fn notify_registry_key(key: u64, change: u64) {
+    let Some(path) = key_path(key) else { return; };
+    notify_registry_path(&path, change);
+}
+
+fn notify_registry_path(path: &str, change: u64) {
     let mut watches = REGISTRY_WATCHES.lock();
     let mut index = 0;
     while index < watches.len() {
-        if watches[index].key != key || watches[index].filter & change == 0 { index += 1; continue; }
+        let watch = &watches[index];
+        let descendant = path.strip_prefix(&watch.path).is_some_and(|suffix| suffix.starts_with("\\"));
+        let direct_child = path.rsplit_once('\\').is_some_and(|(parent, _)| parent == watch.path);
+        let relevant = watch.path == path || (watch.subtree && descendant) || (change == crate::nt_registry_policy::REG_NOTIFY_CHANGE_NAME && direct_child);
+        if !relevant || watch.filter & change == 0 { index += 1; continue; }
         let watch = watches.remove(index);
         let _ = uaccess::put_user_u64(watch.io_status, STATUS_SUCCESS);
         let _ = uaccess::put_user_u64(watch.io_status.saturating_add(8), 0);
@@ -191,6 +201,9 @@ fn create_key(call: NtCall) -> u64 {
     let handles = current.thread_group.nt_handles();
     let Some(native) = handles.insert(sched::nt_object::NtObject::new(sched::nt_object::NtObjectType::Key, remote), call.args.a1 as u32) else { return STATUS_NO_MEMORY; };
     if uaccess::put_user_u32(call.args.a0, native.raw()).is_err() { let _ = handles.close(native); return STATUS_INVALID_PARAMETER; }
+    if relative.is_some() {
+        if let Some(path) = key_path(remote) { notify_registry_path(&path, crate::nt_registry_policy::REG_NOTIFY_CHANGE_NAME); }
+    }
     if let Some(disposition) = crate::nt_dispatch::stack_argument(6) { let _ = uaccess::put_user_u32(disposition, 1); }
     STATUS_SUCCESS
 }
@@ -218,6 +231,10 @@ fn frame_delete_value(key: u64, name: &str) -> Vec<u8> {
 fn frame_delete_key(key: u64) -> Vec<u8> { frame_key(registry_wire::DELETE_KEY, key) }
 
 fn frame_key(operation: u8, key: u64) -> Vec<u8> { let mut frame = Vec::new(); frame.push(operation); frame.extend_from_slice(&key.to_le_bytes()); frame }
+
+fn key_path(key: u64) -> Option<String> {
+    match transact(&frame_key(registry_wire::QUERY_PATH, key)) { Some(Reply::Text(path)) => Some(path), _ => None }
+}
 
 fn frame_export(key: u64) -> Vec<u8> { frame_key(registry_wire::EXPORT, key) }
 
@@ -261,6 +278,7 @@ fn decode_reply(frame: &[u8]) -> Option<Reply> {
         registry_wire::RESPONSE_VALUES => { let mut at = 5; let count = u32::from_le_bytes(frame.get(1..5)?.try_into().ok()?) as usize; if count > 1 << 20 { return None; } let mut values = Vec::new(); values.try_reserve_exact(count).ok()?; for _ in 0..count { let name_len = u32::from_le_bytes(frame.get(at..at + 4)?.try_into().ok()?) as usize; at += 4; if name_len > MAX_REGISTRY_TEXT { return None; } let name_end = at.checked_add(name_len)?; let name = String::from_utf8(frame.get(at..name_end)?.to_vec()).ok()?; at = name_end; let kind = u32::from_le_bytes(frame.get(at..at + 4)?.try_into().ok()?); at += 4; let data_len = u32::from_le_bytes(frame.get(at..at + 4)?.try_into().ok()?) as usize; at += 4; if data_len > MAX_REGISTRY_VALUE { return None; } let data_end = at.checked_add(data_len)?; values.push((name, kind, frame.get(at..data_end)?.to_vec())); at = data_end; } if at != frame.len() { return None; } Some(Reply::Values(values)) },
         registry_wire::RESPONSE_KEY_INFO => { let mut at = 1; let length = u32::from_le_bytes(frame.get(at..at + 4)?.try_into().ok()?) as usize; at += 4; if length > MAX_REGISTRY_TEXT { return None; } let end = at.checked_add(length)?; let name = String::from_utf8(frame.get(at..end)?.to_vec()).ok()?; at = end; let subkeys = u32::from_le_bytes(frame.get(at..at + 4)?.try_into().ok()?); at += 4; let max_subkey = u32::from_le_bytes(frame.get(at..at + 4)?.try_into().ok()?); at += 4; let values = u32::from_le_bytes(frame.get(at..at + 4)?.try_into().ok()?); at += 4; let max_value_name = u32::from_le_bytes(frame.get(at..at + 4)?.try_into().ok()?); at += 4; let max_value_data = u32::from_le_bytes(frame.get(at..at + 4)?.try_into().ok()?); at += 4; if at != frame.len() { return None; } Some(Reply::KeyInfo { name, subkeys, max_subkey, values, max_value_name, max_value_data }) },
         registry_wire::RESPONSE_BYTES => { let length = u32::from_le_bytes(frame.get(1..5)?.try_into().ok()?) as usize; if length > MAX_REGISTRY_VALUE || frame.len() != 5 + length { return None; } Some(Reply::Bytes(frame[5..].to_vec())) },
+        registry_wire::RESPONSE_TEXT => { let length = u32::from_le_bytes(frame.get(1..5)?.try_into().ok()?) as usize; if length > MAX_REGISTRY_TEXT || frame.len() != 5 + length { return None; } Some(Reply::Text(String::from_utf8(frame[5..].to_vec()).ok()?)) },
         registry_wire::RESPONSE_FAILURE if frame.len() == 2 => Some(Reply::Failure(frame[1])),
         _ => None,
     }
@@ -455,7 +473,8 @@ fn delete_key_native(call: NtCall) -> u64 {
     let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !current.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     let Some(remote) = remote_key(&current, call.args.a0 as u32, DELETE_ACCESS) else { return STATUS_INVALID_PARAMETER; };
-    match transact(&frame_delete_key(remote)) { Some(Reply::Success) => { notify_registry_key(remote, crate::nt_registry_policy::REG_NOTIFY_CHANGE_NAME); STATUS_SUCCESS }, Some(reply) => reply_status(reply), None => STATUS_UNSUCCESSFUL }
+    let path = key_path(remote);
+    match transact(&frame_delete_key(remote)) { Some(Reply::Success) => { if let Some(path) = path { notify_registry_path(&path, crate::nt_registry_policy::REG_NOTIFY_CHANGE_NAME); } STATUS_SUCCESS }, Some(reply) => reply_status(reply), None => STATUS_UNSUCCESSFUL }
 }
 
 fn set_value_parts(key: u32, name_ptr: u64, title: u64, kind: u64, data: u64, size: u64) -> u64 {

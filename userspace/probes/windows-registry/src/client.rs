@@ -101,6 +101,7 @@ fn encode_request(request: &Request) -> Result<Vec<u8>, Error> {
         Request::Flush { key } => { out.push(11); put_u64(&mut out, key.raw()); }
         Request::Export { key } => { out.push(registry_wire::EXPORT); put_u64(&mut out, key.raw()); }
         Request::Import { key, bytes } => { out.push(registry_wire::IMPORT); put_u64(&mut out, key.raw()); put_bytes(&mut out, bytes)?; }
+        Request::QueryPath { key } => { out.push(registry_wire::QUERY_PATH); put_u64(&mut out, key.raw()); }
     } Ok(out)
 }
 
@@ -115,6 +116,7 @@ fn decode_response(frame: &[u8]) -> Result<Response, Error> {
         registry_wire::RESPONSE_VALUES => { let mut at = 1; let count = take_u32(frame, &mut at).ok_or(Error::InvalidFile)? as usize; if count > super::MAX_RECORDS as usize { return Err(Error::InvalidFile); } let mut values = Vec::with_capacity(count); for _ in 0..count { let name = String::from_utf8(take_bytes(frame, &mut at)?.to_vec()).map_err(|_| Error::InvalidFile)?; let kind = ValueType::decode(take_u32(frame, &mut at).ok_or(Error::InvalidFile)?).ok_or(Error::InvalidFile)?; let data = take_bytes(frame, &mut at)?.to_vec(); values.push((name, Value { kind, data })); } if at != frame.len() { return Err(Error::InvalidFile); } Response::Values(values) },
         registry_wire::RESPONSE_KEY_INFO => { let mut at = 1; let name = String::from_utf8(take_bytes(frame, &mut at)?.to_vec()).map_err(|_| Error::InvalidFile)?; let subkeys = take_u32(frame, &mut at).ok_or(Error::InvalidFile)?; let max_subkey = take_u32(frame, &mut at).ok_or(Error::InvalidFile)?; let values = take_u32(frame, &mut at).ok_or(Error::InvalidFile)?; let max_value_name = take_u32(frame, &mut at).ok_or(Error::InvalidFile)?; let max_value_data = take_u32(frame, &mut at).ok_or(Error::InvalidFile)?; if at != frame.len() { return Err(Error::InvalidFile); } Response::KeyInfo(KeyInfo { name, subkeys, max_subkey, values, max_value_name, max_value_data }) },
         registry_wire::RESPONSE_BYTES => { let mut at = 1; let bytes = take_bytes(frame, &mut at)?.to_vec(); if at != frame.len() { return Err(Error::InvalidFile); } Response::Bytes(bytes) },
+        registry_wire::RESPONSE_TEXT => { let mut at = 1; let text = String::from_utf8(take_bytes(frame, &mut at)?.to_vec()).map_err(|_| Error::InvalidFile)?; if at != frame.len() { return Err(Error::InvalidFile); } Response::Text(text) },
         _ => return Err(Error::InvalidFile),
     };
     Ok(response)
@@ -145,6 +147,7 @@ mod tests {
         let server = thread::spawn(move || { let (mut stream, _) = listener.accept().unwrap(); let mut store = RegistryStore::open(&server_database).unwrap(); serve_connection(&mut stream, &mut store).unwrap(); });
         let mut client = Client::connect(&socket).unwrap();
         let key = match client.execute(Request::Create { root: Root::CurrentUser, subkey: "Software\\Oxide".into() }).unwrap() { Response::Handle(key) => key, response => panic!("unexpected response: {response:?}") };
+        assert_eq!(client.execute(Request::QueryPath { key }).unwrap(), Response::Text("HKCU\\Software\\Oxide".into()));
         assert_eq!(client.execute(Request::Set { key, name: "Build".into(), value: Value { kind: ValueType::Dword, data: vec![7, 0, 0, 0] } }).unwrap(), Response::Success);
         assert_eq!(client.execute(Request::Query { key, name: "build".into() }).unwrap(), Response::Value(Value { kind: ValueType::Dword, data: vec![7, 0, 0, 0] }));
         assert_eq!(client.enum_values(key).unwrap(), Response::Values(vec![("Build".into(), Value { kind: ValueType::Dword, data: vec![7, 0, 0, 0] })]));

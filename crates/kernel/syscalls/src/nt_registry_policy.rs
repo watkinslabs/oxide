@@ -25,7 +25,7 @@ pub const fn supported_request(
         && buffer == 0
         && length == 0
         && asynchronous != 0
-        && subtree == 0
+        && subtree <= 1
         && matches!(filter, REG_NOTIFY_CHANGE_NAME | REG_NOTIFY_CHANGE_LAST_SET)
 }
 
@@ -49,7 +49,8 @@ mod tests {
 
     #[test]
     fn rejects_subtree_and_unowned_filters() {
-        assert!(!supported_request(0, 0, 0x1000, 0, 0, 1, 1, REG_NOTIFY_CHANGE_LAST_SET));
+        assert!(supported_request(0, 0, 0x1000, 0, 0, 1, 1, REG_NOTIFY_CHANGE_LAST_SET));
+        assert!(!supported_request(0, 0, 0x1000, 0, 0, 1, 2, REG_NOTIFY_CHANGE_LAST_SET));
         assert!(!supported_request(0, 0, 0x1000, 0, 0, 1, 0, 1));
     }
 

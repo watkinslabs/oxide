@@ -87,10 +87,11 @@ pub enum Request {
     Flush { key: KeyHandle },
     Export { key: KeyHandle },
     Import { key: KeyHandle, bytes: Vec<u8> },
+    QueryPath { key: KeyHandle },
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum Response { Handle(KeyHandle), Value(Value), Keys(Vec<String>), Values(Vec<(String, Value)>), KeyInfo(KeyInfo), Bytes(Vec<u8>), Success, Failure(Error) }
+pub enum Response { Handle(KeyHandle), Value(Value), Keys(Vec<String>), Values(Vec<(String, Value)>), KeyInfo(KeyInfo), Bytes(Vec<u8>), Text(String), Success, Failure(Error) }
 
 impl RegistryStore {
     /// Load an existing per-user database or create a new one when absent. # C: O(file bytes)
@@ -142,6 +143,7 @@ impl RegistryStore {
                     Response::Success
                 })
             }
+            Request::QueryPath { key } => self.registry.path_for_handle(key).map_or_else(Response::Failure, Response::Text),
         }
     }
 }
@@ -181,6 +183,7 @@ fn decode_request(frame: &[u8]) -> Result<Request, Error> {
         registry_wire::FLUSH => Request::Flush { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
         registry_wire::EXPORT => Request::Export { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
         registry_wire::IMPORT => Request::Import { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?), bytes: take_bytes(frame, &mut at)?.to_vec() },
+        registry_wire::QUERY_PATH => Request::QueryPath { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
         _ => return Err(Error::InvalidFile),
     };
     if at == frame.len() { Ok(request) } else { Err(Error::InvalidFile) }
@@ -196,6 +199,7 @@ fn encode_response(response: &Response) -> Result<Vec<u8>, Error> {
         Response::Values(values) => { out.push(registry_wire::RESPONSE_VALUES); put_u32(&mut out, values.len().try_into().map_err(|_| Error::InvalidFile)?); for (name, value) in values { put_text(&mut out, name)?; put_u32(&mut out, value.kind as u32); put_bytes(&mut out, &value.data)?; } },
         Response::KeyInfo(info) => { out.push(registry_wire::RESPONSE_KEY_INFO); put_text(&mut out, &info.name)?; put_u32(&mut out, info.subkeys); put_u32(&mut out, info.max_subkey); put_u32(&mut out, info.values); put_u32(&mut out, info.max_value_name); put_u32(&mut out, info.max_value_data); },
         Response::Bytes(bytes) => { out.push(registry_wire::RESPONSE_BYTES); put_bytes(&mut out, bytes)?; },
+        Response::Text(text) => { out.push(registry_wire::RESPONSE_TEXT); put_text(&mut out, text)?; },
         Response::Failure(error) => { out.push(registry_wire::RESPONSE_FAILURE); out.push(error_code(error)); },
     }
     Ok(out)
@@ -340,6 +344,12 @@ impl Registry {
         let max_value_name = values.iter().map(|(name, _)| name.encode_utf16().count() * 2).max().unwrap_or(0);
         let max_value_data = values.iter().map(|(_, value)| value.data.len()).max().unwrap_or(0);
         Ok(KeyInfo { name: path.clone(), subkeys: subkeys.len() as u32, max_subkey: max_subkey as u32, values: values.len() as u32, max_value_name: max_value_name as u32, max_value_data: max_value_data as u32 })
+    }
+
+    /// Return the canonical display path retained by the registry owner. # C: O(log N)
+    pub fn path_for_handle(&self, key: KeyHandle) -> Result<String, Error> {
+        let path = self.live_handle_path(key)?;
+        Ok(self.keys.get(&path).ok_or(Error::Deleted)?.path.clone())
     }
 
     /// Close one allocated handle; predefined roots remain valid. # C: O(log N)

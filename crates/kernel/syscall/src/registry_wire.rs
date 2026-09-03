@@ -18,6 +18,7 @@ pub const DELETE_KEY: u8 = 14;
 pub const DELETE_VALUE: u8 = 13;
 pub const EXPORT: u8 = 15;
 pub const IMPORT: u8 = 16;
+pub const QUERY_PATH: u8 = 17;
 
 pub const RESPONSE_SUCCESS: u8 = 0;
 pub const RESPONSE_HANDLE: u8 = 1;
@@ -27,6 +28,7 @@ pub const RESPONSE_KEYS: u8 = 4;
 pub const RESPONSE_VALUES: u8 = 5;
 pub const RESPONSE_KEY_INFO: u8 = 6;
 pub const RESPONSE_BYTES: u8 = 7;
+pub const RESPONSE_TEXT: u8 = 8;
 
 pub const ERROR_INVALID_PATH: u8 = 1;
 pub const ERROR_MISSING_KEY: u8 = 2;
