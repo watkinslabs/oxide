@@ -34,6 +34,8 @@ pub const DRM_IOCTL_VIRTGPU_GETPARAM: u64 = 0xc0106443; // _IOWR('d',0x43,drm_vi
 pub const DRM_IOCTL_VIRTGPU_GET_CAPS: u64 = 0xc0186449; // _IOWR('d',0x49,drm_virtgpu_get_caps[24])
 pub const DRM_IOCTL_VIRTGPU_EXECBUFFER: u64 = 0xc0406442; // _IOWR('d',0x42,drm_virtgpu_execbuffer[64])
 pub const DRM_IOCTL_VIRTGPU_CONTEXT_INIT: u64 = 0xc010644b; // _IOWR('d',0x4b,drm_virtgpu_context_init[16])
+pub const DRM_IOCTL_VIRTGPU_RESOURCE_CREATE: u64 = 0xc0386444; // _IOWR('d',0x44,drm_virtgpu_resource_create[56])
+pub const DRM_IOCTL_VIRTGPU_RESOURCE_INFO: u64 = 0xc0106445; // _IOWR('d',0x45,drm_virtgpu_resource_info[16])
 
 /// `struct drm_virtgpu_get_caps` from the virtio-gpu UAPI.  `addr` points to
 /// the caller's writable capset blob; it is deliberately represented as an
@@ -80,6 +82,19 @@ pub struct DrmVirtgpuContextSetParam { pub param: u64, pub value: u64 }
 #[repr(C)]
 #[derive(Copy, Clone, Default, Debug, Eq, PartialEq)]
 pub struct DrmVirtgpuContextInit { pub num_params: u32, pub pad: u32, pub ctx_set_params: u64 }
+
+#[repr(C)]
+#[derive(Copy, Clone, Default, Debug, Eq, PartialEq)]
+pub struct DrmVirtgpuResourceCreate {
+    pub target: u32, pub format: u32, pub bind: u32, pub width: u32,
+    pub height: u32, pub depth: u32, pub array_size: u32, pub last_level: u32,
+    pub nr_samples: u32, pub flags: u32, pub bo_handle: u32, pub res_handle: u32,
+    pub size: u32, pub stride: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Default, Debug, Eq, PartialEq)]
+pub struct DrmVirtgpuResourceInfo { pub bo_handle: u32, pub res_handle: u32, pub size: u32, pub blob_mem: u32 }
 
 // VIRTGPU_GETPARAM param ids (the virtio-gpu driver-specific UAPI).
 pub const VIRTGPU_PARAM_3D_FEATURES:       u64 = 1;
