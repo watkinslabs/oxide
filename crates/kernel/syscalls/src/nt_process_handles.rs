@@ -27,6 +27,10 @@ const PROCESS_AFFINITY_MASK_CLASS: u32 = 21;
 const PROCESS_WOW64_INFORMATION_CLASS: u32 = 26;
 const PROCESS_POINTER_BYTES: usize = 8;
 const CURRENT_PROCESS: u64 = u64::MAX;
+const CURRENT_THREAD: u64 = u64::MAX - 1;
+const THREAD_QUERY_INFORMATION: u32 = 0x0000_0040;
+const THREAD_BASIC_INFORMATION_CLASS: u32 = 0;
+const THREAD_BASIC_INFORMATION_BYTES: usize = 48;
 
 /// Open a task identity into the caller's process-local NT handle table.
 /// Only identities in the current NT process are admitted until the native
@@ -56,6 +60,9 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         Ok(object @ (NtObjectCall::OpenProcess { .. } | NtObjectCall::OpenThread { .. })) => object,
         Ok(NtObjectCall::QueryProcess { process, class, info, length, return_length }) => {
             return query_process(process, class, info, length, return_length);
+        }
+        Ok(NtObjectCall::QueryThread { thread, class, info, length, return_length }) => {
+            return query_thread(thread, class, info, length, return_length);
         }
         _ => return None,
     };
@@ -159,6 +166,45 @@ fn write_process_return_length(return_length: Option<syscall::UserPtr<u32>>, len
         if uaccess::put_user_u32(return_length.as_u64(), length as u32).is_err() { return Some(STATUS_INVALID_PARAMETER); }
     }
     Some(STATUS_SUCCESS)
+}
+
+fn query_thread(thread: u64, class: u32, info: syscall::UserPtr<u8>, length: u32,
+    return_length: Option<syscall::UserPtr<u32>>) -> Option<u64> {
+    let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+    if !cur.is_nt_personality() || class != THREAD_BASIC_INFORMATION_CLASS {
+        return Some(if cur.is_nt_personality() { STATUS_INVALID_INFO_CLASS } else { STATUS_INVALID_PARAMETER });
+    }
+    if (length as usize) < THREAD_BASIC_INFORMATION_BYTES { return Some(STATUS_INFO_LENGTH_MISMATCH); }
+    if info.as_u64() == 0 { return Some(STATUS_INVALID_PARAMETER); }
+    let target_owned = if thread == CURRENT_THREAD {
+        None
+    } else {
+        let table = cur.thread_group.nt_handles();
+        if thread > u32::MAX as u64 { return Some(STATUS_INVALID_HANDLE); }
+        let handle = sched::nt_object::NtHandle::from_raw(thread as u32);
+        let Some(target) = thread_task(thread, table, THREAD_QUERY_INFORMATION) else {
+            return Some(if table.contains(handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE });
+        };
+        Some(target)
+    };
+    let target = target_owned.as_deref().unwrap_or(cur);
+    let mut out = [0u8; THREAD_BASIC_INFORMATION_BYTES];
+    out[0..8].copy_from_slice(&(target.exit_status.load(core::sync::atomic::Ordering::Acquire) as i64 as u64).to_ne_bytes());
+    out[8..16].copy_from_slice(&target.nt_teb().to_ne_bytes());
+    out[16..24].copy_from_slice(&(target.tgid.load(core::sync::atomic::Ordering::Acquire) as u64).to_ne_bytes());
+    out[24..32].copy_from_slice(&(target.tid as u64).to_ne_bytes());
+    out[32..40].copy_from_slice(&target.cpus_allowed.load(core::sync::atomic::Ordering::Acquire).low_word().to_ne_bytes());
+    out[40..44].copy_from_slice(&0i32.to_ne_bytes());
+    out[44..48].copy_from_slice(&0i32.to_ne_bytes());
+    if uaccess::copy_to_user(info.as_u64(), &out).is_err() { return Some(STATUS_INVALID_PARAMETER); }
+    write_process_return_length(return_length, THREAD_BASIC_INFORMATION_BYTES)
+}
+
+fn thread_task(raw: u64, table: &sched::nt_object::NtHandleTable, access: u32)
+    -> Option<alloc::sync::Arc<sched::Task>> {
+    if raw > u32::MAX as u64 { return None; }
+    let object = table.get(sched::nt_object::NtHandle::from_raw(raw as u32), access)?;
+    (object.kind() == sched::nt_object::NtObjectType::Thread).then(|| object.task()).flatten()
 }
 
 fn process_task(raw: u64, table: &sched::nt_object::NtHandleTable, access: u32)
