@@ -119,6 +119,8 @@ pub struct ParsedElf<'a> {
     pub phoff:      u64,
     pub phentsize:  u16,
     pub phnum:      u16,
+    /// File offset and byte size of PT_DYNAMIC, when present.
+    pub dynamic:    Option<(u64, u64)>,
 }
 
 impl<'a> ParsedElf<'a> {
@@ -163,6 +165,7 @@ pub fn parse(file: &[u8], arch_machine: u16) -> KResult<ParsedElf<'_>> {
 
     let mut loads = Vec::with_capacity(phnum);
     let mut interp: Option<&[u8]> = None;
+    let mut dynamic = None;
 
     for i in 0..phnum {
         let base = phoff + i * phentsize;
@@ -216,13 +219,18 @@ pub fn parse(file: &[u8], arch_machine: u16) -> KResult<ParsedElf<'_>> {
                 // TLS template handling lands with userspace TLS support;
                 // for v1 a TLS phdr is allowed but unused.
             }
-            _ => {} // Other phdr kinds (Dynamic, Note, Phdr, GnuRelro) are noted by ld.so.
+            x if x == PType::Dynamic as u32 => {
+                let end = p_offset.checked_add(p_filesz as usize).ok_or(ElfError::Einval)?;
+                if end > file.len() || p_filesz == 0 { return Err(ElfError::Einval); }
+                dynamic = Some((p_offset as u64, p_filesz));
+            }
+            _ => {} // Other phdr kinds (Note, Phdr, GnuRelro) are noted by ld.so.
         }
     }
 
     Ok(ParsedElf {
         raw: file, elf_type, machine, entry, loads, interp,
-        phoff: phoff as u64, phentsize: phentsize as u16, phnum: phnum as u16,
+        phoff: phoff as u64, phentsize: phentsize as u16, phnum: phnum as u16, dynamic,
     })
 }
 
