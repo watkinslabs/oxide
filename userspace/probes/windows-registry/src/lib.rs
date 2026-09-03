@@ -77,6 +77,7 @@ pub enum Request {
     Rename { key: KeyHandle, name: String },
     Set { key: KeyHandle, name: String, value: Value },
     DeleteValue { key: KeyHandle, name: String },
+    DeleteKey { key: KeyHandle },
     Query { key: KeyHandle, name: String },
     EnumKeys { key: KeyHandle },
     EnumValues { key: KeyHandle },
@@ -119,6 +120,7 @@ impl RegistryStore {
             Request::Rename { key, name } => self.registry.rename_key_handle(key, &name).map_or_else(Response::Failure, |_| { self.dirty = true; Response::Success }),
             Request::Set { key, name, value } => self.registry.set_value_handle(key, &name, value).map_or_else(Response::Failure, |_| { self.dirty = true; Response::Success }),
             Request::DeleteValue { key, name } => self.registry.delete_value_handle(key, &name).map_or_else(Response::Failure, |_| { self.dirty = true; Response::Success }),
+            Request::DeleteKey { key } => self.registry.delete_key_handle(key).map_or_else(Response::Failure, |_| { self.dirty = true; Response::Success }),
             Request::Query { key, name } => self.registry.query_value_handle(key, &name).map_or_else(Response::Failure, Response::Value),
             Request::EnumKeys { key } => self.registry.subkeys_handle(key).map_or_else(Response::Failure, Response::Keys),
             Request::EnumValues { key } => self.registry.values_handle(key).map_or_else(Response::Failure, Response::Values),
@@ -158,6 +160,7 @@ fn decode_request(frame: &[u8]) -> Result<Request, Error> {
         registry_wire::RENAME => Request::Rename { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?), name: take_text(frame, &mut at)? },
         registry_wire::SET => Request::Set { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?), name: take_text(frame, &mut at)?, value: take_value(frame, &mut at)? },
         registry_wire::DELETE_VALUE => Request::DeleteValue { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?), name: take_text(frame, &mut at)? },
+        registry_wire::DELETE_KEY => Request::DeleteKey { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
         registry_wire::QUERY => Request::Query { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?), name: take_text(frame, &mut at)? },
         registry_wire::CLOSE => Request::Close { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
         registry_wire::ENUM_KEYS => Request::EnumKeys { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
@@ -286,6 +289,15 @@ impl Registry {
         let path = self.handles.get(&key).cloned().ok_or(Error::MissingKey)?; self.delete_value(&path, name)
     }
 
+    /// Delete one leaf key through an opaque handle. # C: O(N_subkeys)
+    pub fn delete_key_handle(&mut self, key: KeyHandle) -> Result<(), Error> {
+        let path = self.handles.get(&key).cloned().ok_or(Error::MissingKey)?;
+        if is_root(&path) || !self.subkeys(&path)?.is_empty() { return Err(Error::InvalidPath); }
+        self.keys.remove(&path).ok_or(Error::MissingKey)?;
+        self.handles.retain(|_, handle_path| handle_path != &path);
+        Ok(())
+    }
+
     /// Query a value through an opaque key handle. # C: O(log N)
     pub fn query_value_handle(&self, key: KeyHandle, name: &str) -> Result<Value, Error> {
         let path = self.handles.get(&key).ok_or(Error::MissingKey)?; self.query_value(path, name)
@@ -326,7 +338,8 @@ impl Registry {
     }
 
     fn create_relative_path(&mut self, parent: &str, subkey: &str) -> Result<String, Error> {
-        let path = join_path(parent, subkey)?; let mut current = parent.to_string();
+        let display_parent = self.keys.get(parent).ok_or(Error::MissingKey)?.path.clone();
+        let path = join_path(&display_parent, subkey)?; let mut current = display_parent;
         for component in path.split('\\').skip(parent.split('\\').count()) {
             if component.is_empty() { return Err(Error::InvalidPath); }
             current.push('\\'); current.push_str(component); let identity = canonical(&current);
@@ -493,7 +506,7 @@ mod tests {
 
     #[test]
     fn store_loads_missing_user_state_and_flushes_one_canonical_database() {
-        let path = std::env::temp_dir().join(format!("oxide-registry-store-{}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("oxide-registry-missing-user-{}", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let mut store = RegistryStore::open(&path).unwrap(); assert!(!store.is_dirty());
         let key = store.registry_mut().create_handle(Root::CurrentUser, "Software\\Oxide").unwrap();
@@ -512,6 +525,11 @@ mod tests {
         assert!(store.is_dirty());
         assert_eq!(store.execute(Request::Set { key: handle, name: "Mode".into(), value: Value { kind: ValueType::String, data: b"test".to_vec() } }), Response::Success);
         assert_eq!(store.execute(Request::Query { key: handle, name: "mode".into() }), Response::Value(Value { kind: ValueType::String, data: b"test".to_vec() }));
+        let child = match store.execute(Request::CreateRelative { key: handle, subkey: "Child".into() }) { Response::Handle(child) => child, response => panic!("unexpected response: {response:?}") };
+        assert_eq!(store.execute(Request::EnumKeys { key: handle }), Response::Keys(vec!["Child".into()]));
+        assert_eq!(store.execute(Request::DeleteKey { key: handle }), Response::Failure(Error::InvalidPath));
+        assert_eq!(store.execute(Request::DeleteKey { key: child }), Response::Success);
+        assert_eq!(store.execute(Request::OpenRelative { key: handle, subkey: "Child".into() }), Response::Failure(Error::MissingKey));
         assert_eq!(store.execute(Request::DeleteValue { key: handle, name: "MODE".into() }), Response::Success);
         assert_eq!(store.execute(Request::Query { key: handle, name: "mode".into() }), Response::Failure(Error::MissingValue));
         assert_eq!(store.execute(Request::DeleteValue { key: handle, name: "mode".into() }), Response::Failure(Error::MissingValue));

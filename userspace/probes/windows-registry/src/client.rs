@@ -92,6 +92,7 @@ fn encode_request(request: &Request) -> Result<Vec<u8>, Error> {
         Request::Rename { key, name } => { out.push(10); put_u64(&mut out, key.raw()); put_text(&mut out, name)?; }
         Request::Set { key, name, value } => { out.push(3); put_u64(&mut out, key.raw()); put_text(&mut out, name)?; put_u32(&mut out, value.kind as u32); put_bytes(&mut out, &value.data)?; }
         Request::DeleteValue { key, name } => { out.push(registry_wire::DELETE_VALUE); put_u64(&mut out, key.raw()); put_text(&mut out, name)?; }
+        Request::DeleteKey { key } => { out.push(registry_wire::DELETE_KEY); put_u64(&mut out, key.raw()); }
         Request::Query { key, name } => { out.push(4); put_u64(&mut out, key.raw()); put_text(&mut out, name)?; }
         Request::Close { key } => { out.push(5); put_u64(&mut out, key.raw()); }
         Request::EnumKeys { key } => { out.push(6); put_u64(&mut out, key.raw()); }
