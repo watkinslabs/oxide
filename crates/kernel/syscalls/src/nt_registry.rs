@@ -280,21 +280,19 @@ fn enumerate_key_native(call: NtCall) -> u64 {
     let Some(remote) = remote_key(&current, key) else { return STATUS_INVALID_PARAMETER; };
     let mut frame = Vec::new(); frame.push(registry_wire::ENUM_KEYS); frame.extend_from_slice(&remote.to_le_bytes());
     let Some(Reply::Keys(keys)) = transact(&frame) else { return STATUS_UNSUCCESSFUL; };
-    let Some(name) = keys.get(index as usize) else { return STATUS_NO_MORE_ENTRIES; };
-    let name: Vec<u16> = name.encode_utf16().collect(); let name_bytes = name.len().checked_mul(2).unwrap_or(usize::MAX);
+    let Some(child_name) = keys.get(index as usize) else { return STATUS_NO_MORE_ENTRIES; };
+    let name: Vec<u16> = child_name.encode_utf16().collect(); let name_bytes = name.len().checked_mul(2).unwrap_or(usize::MAX);
     let (fixed, mut record) = match class {
         KEY_BASIC_INFORMATION => { let mut out = Vec::with_capacity(16 + name_bytes); out.extend_from_slice(&[0; 8]); put_u32(&mut out, 0); put_u32(&mut out, name_bytes as u32); append_utf16(&mut out, &name); (16, out) },
         KEY_NODE_INFORMATION => { let mut out = Vec::with_capacity(24 + name_bytes); out.extend_from_slice(&[0; 8]); put_u32(&mut out, 0); put_u32(&mut out, u32::MAX); put_u32(&mut out, 0); put_u32(&mut out, name_bytes as u32); append_utf16(&mut out, &name); (24, out) },
         KEY_FULL_INFORMATION => {
-            let mut value_frame = Vec::new(); value_frame.push(registry_wire::ENUM_VALUES); value_frame.extend_from_slice(&remote.to_le_bytes());
-            let values = match transact(&value_frame) { Some(Reply::Values(values)) => values, _ => return STATUS_UNSUCCESSFUL };
-            let max_name = values.iter().map(|(name, _, _)| name.encode_utf16().count() * 2).max().unwrap_or(0);
-            let max_data = values.iter().map(|(_, _, data)| data.len()).max().unwrap_or(0);
-            let max_key = keys.iter().map(|key| key.encode_utf16().count() * 2).max().unwrap_or(0);
+            let child = match transact(&frame_relative(registry_wire::OPEN_RELATIVE, remote, child_name)) { Some(Reply::Handle(child)) => child, _ => return STATUS_UNSUCCESSFUL };
+            let Reply::KeyInfo { subkeys, max_subkey, values, max_value_name, max_value_data, .. } = (match transact(&frame_key(registry_wire::QUERY_KEY, child)) { Some(reply) => reply, None => return STATUS_UNSUCCESSFUL }) else { return STATUS_UNSUCCESSFUL };
+            let _ = transact(&frame_key(registry_wire::CLOSE, child));
             let mut out = Vec::with_capacity(syscall::nt_registry::KEY_FULL_INFORMATION_FIXED_BYTES); out.extend_from_slice(&[0; 8]);
-            put_u32(&mut out, u32::MAX); put_u32(&mut out, 0); put_u32(&mut out, keys.len() as u32);
-            put_u32(&mut out, max_key as u32); put_u32(&mut out, 0); put_u32(&mut out, values.len() as u32);
-            put_u32(&mut out, max_name as u32); put_u32(&mut out, max_data as u32); put_u32(&mut out, 0); (syscall::nt_registry::KEY_FULL_INFORMATION_FIXED_BYTES, out)
+            put_u32(&mut out, u32::MAX); put_u32(&mut out, 0); put_u32(&mut out, subkeys);
+            put_u32(&mut out, max_subkey); put_u32(&mut out, 0); put_u32(&mut out, values);
+            put_u32(&mut out, max_value_name); put_u32(&mut out, max_value_data); put_u32(&mut out, 0); (syscall::nt_registry::KEY_FULL_INFORMATION_FIXED_BYTES, out)
         },
         _ => return STATUS_INVALID_PARAMETER,
     };
