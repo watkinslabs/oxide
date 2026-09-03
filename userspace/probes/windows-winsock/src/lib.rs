@@ -31,6 +31,12 @@ pub enum WsaError {
 pub const AF_UNSPEC: u16 = 0;
 pub const AF_INET: u16 = 2;
 pub const AF_INET6: u16 = 23;
+pub const AI_PASSIVE: u32 = 0x0001;
+pub const AI_CANONNAME: u32 = 0x0002;
+pub const AI_NUMERICHOST: u32 = 0x0004;
+pub const AI_V4MAPPED: u32 = 0x0008;
+pub const AI_ALL: u32 = 0x0100;
+pub const AI_ADDRCONFIG: u32 = 0x0400;
 
 /// The Winsock error number returned by `WSAGetLastError`.
 /// # C: O(1)
@@ -116,6 +122,35 @@ pub const fn validate_sockaddr(family: u16, length: usize) -> Result<(), WsaErro
     }
 }
 
+/// Validate the portable `getaddrinfo` hint subset used by normal applications.
+/// DNS resolution itself remains owned by the native networking service.
+/// # C: O(1)
+pub const fn validate_addrinfo_hints(family: u16, socket_type: u32, protocol: u32,
+    flags: u32) -> Result<(), WsaError> {
+    if family != AF_UNSPEC && family != AF_INET && family != AF_INET6 {
+        return Err(WsaError::AddressFamilyNotSupported);
+    }
+    if flags & !(AI_PASSIVE | AI_CANONNAME | AI_NUMERICHOST | AI_V4MAPPED | AI_ALL | AI_ADDRCONFIG) != 0 {
+        return Err(WsaError::InvalidArgument);
+    }
+    if socket_type != 0 && socket_type != 1 && socket_type != 2 {
+        return Err(WsaError::SocketTypeNotSupported);
+    }
+    if protocol != 0 && protocol != 6 && protocol != 17 {
+        return Err(WsaError::ProtocolNotSupported);
+    }
+    if socket_type == 1 && protocol != 0 && protocol != 6 {
+        return Err(WsaError::WrongProtocol);
+    }
+    if socket_type == 2 && protocol != 0 && protocol != 17 {
+        return Err(WsaError::WrongProtocol);
+    }
+    if flags & AI_ALL != 0 && flags & AI_V4MAPPED == 0 {
+        return Err(WsaError::InvalidArgument);
+    }
+    Ok(())
+}
+
 /// Construct a zero-initialized IPv4 endpoint with network-order port/address.
 /// # C: O(1)
 pub const fn ipv4(port_be: u16, addr_be: u32) -> SockAddrIn {
@@ -157,5 +192,14 @@ mod tests {
         assert!(validate_sockaddr(AF_INET6, 28).is_ok());
         assert_eq!(validate_sockaddr(AF_INET6, 27), Err(WsaError::InvalidArgument));
         assert_eq!(validate_sockaddr(999, 28), Err(WsaError::AddressFamilyNotSupported));
+    }
+
+    #[test]
+    fn addrinfo_hints_reject_unsupported_combinations() {
+        assert!(validate_addrinfo_hints(AF_UNSPEC, 1, 6, AI_NUMERICHOST).is_ok());
+        assert_eq!(validate_addrinfo_hints(999, 0, 0, 0), Err(WsaError::AddressFamilyNotSupported));
+        assert_eq!(validate_addrinfo_hints(AF_INET, 1, 17, 0), Err(WsaError::WrongProtocol));
+        assert_eq!(validate_addrinfo_hints(AF_INET6, 0, 0, AI_ALL), Err(WsaError::InvalidArgument));
+        assert_eq!(validate_addrinfo_hints(AF_INET, 99, 0, 0), Err(WsaError::SocketTypeNotSupported));
     }
 }
