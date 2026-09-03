@@ -42,7 +42,7 @@ pub struct NtPipe {
 }
 
 /// A directional handle view over one shared named-pipe transport.
-pub struct NtPipeEndpoint { pipe: Arc<NtPipe>, side: NtPipeSide }
+pub struct NtPipeEndpoint { pipe: Arc<NtPipe>, side: NtPipeSide, reserved: bool }
 
 impl NtPipe {
     /// Validate the immutable portion of `NtCreateNamedPipeFile` before an
@@ -104,7 +104,11 @@ impl NtPipe {
     }
 
     pub fn endpoint(self: &Arc<Self>, side: NtPipeSide) -> NtPipeEndpoint {
-        NtPipeEndpoint { pipe: Arc::clone(self), side }
+        NtPipeEndpoint { pipe: Arc::clone(self), side, reserved: false }
+    }
+
+    pub fn endpoint_with_instance(self: &Arc<Self>, side: NtPipeSide) -> NtPipeEndpoint {
+        NtPipeEndpoint { pipe: Arc::clone(self), side, reserved: true }
     }
 
     fn write(&self, side: NtPipeSide, data: &[u8]) -> NtPipeIo {
@@ -136,9 +140,16 @@ impl NtPipe {
 }
 
 impl NtPipeEndpoint {
+    pub fn pipe(&self) -> Arc<NtPipe> { Arc::clone(&self.pipe) }
     pub fn write(&self, data: &[u8]) -> NtPipeIo { self.pipe.write(self.side, data) }
     pub fn read(&self, output: &mut [u8]) -> NtPipeIo { self.pipe.read(self.side, output) }
     pub fn close(&self) { self.pipe.close(self.side); }
+}
+
+impl Drop for NtPipeEndpoint {
+    fn drop(&mut self) {
+        if self.reserved && self.side == NtPipeSide::Server { self.pipe.release_instance(); }
+    }
 }
 
 #[cfg(test)]

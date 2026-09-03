@@ -25,8 +25,7 @@ observes one admission count. `NtPipeEndpoint` provides separate server and
 client views over directional queues, enforces the configured quotas, reports
 nonblocking backpressure, and reports peer closure as a broken pipe.
 
-`NtCreateNamedPipeFile`, client opening, handle-side endpoint binding,
-blocking waits, and pipe FSCTLs remain explicitly unimplemented until their
-complete object and asynchronous-I/O contract is added. The existing
-unsupported boundary remains in place rather than returning a misleading
-file handle.
+`NtCreateNamedPipeFile` now creates a server endpoint handle with the native
+ABI, preserves create/open disposition, and enforces instance admission.
+Client opening, handle-side blocking waits, and pipe FSCTLs remain separate
+work; those paths stay explicit rather than falling through to VFS files.
