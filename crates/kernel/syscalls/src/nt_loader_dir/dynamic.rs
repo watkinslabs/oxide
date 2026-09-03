@@ -43,28 +43,48 @@ fn load_locked(cur: &sched::Task, name_descriptor: u64, module_output: u64) -> u
         .map(|module| (module.name.clone(), module.blob.clone())) else { return STATUS_DLL_NOT_FOUND; };
     let (exports, ntdll) = match loaded_exports(peb, &catalog) { Ok(value) => value, Err(status) => return status };
     let resolver = Resolver { exports: PeExportResolver { modules: &exports }, ntdll };
-    let image = match elf_load::pe_loader::load_pe_image_with_resolver(&blob, &as_, &resolver) {
-        Ok(image) => image,
+    let catalog_source = &*catalog;
+    let modules = match pe::discover_owned_modules_with_builtins(&name, &blob, &catalog_source,
+        |candidate| pe::loader_name::matches_ascii(candidate, b"ntdll.dll") || loaded_module(peb, candidate)) {
+        Ok(modules) => modules,
         Err(_) => return STATUS_DLL_NOT_FOUND,
     };
-    let base_name = narrow_base_name(&name);
-    let full_name = if name.iter().any(|byte| *byte == b'\\' || *byte == b'/') { name.clone() } else {
-        let mut path = b"C:\\Windows\\System32\\".to_vec(); path.extend_from_slice(&name); path
+    let loaded = match elf_load::pe_loader::load_owned_pe_module_graph(&modules, &as_, &resolver, 0) {
+        Ok(loaded) => loaded,
+        Err(_) => return STATUS_DLL_NOT_FOUND,
     };
-    let full_name = match String::from_utf8(full_name) { Ok(value) => value, Err(_) => { unmap(&as_, image.base, image.size); return STATUS_INVALID_PARAMETER; } };
-    let base_name = match String::from_utf8(base_name) { Ok(value) => value, Err(_) => { unmap(&as_, image.base, image.size); return STATUS_INVALID_PARAMETER; } };
-    let module = elf_load::process_env::NtModuleInput { base: image.base, entry: image.entry.as_u64(), size: image.size, full_name: &full_name, base_name: &base_name };
-    if elf_load::process_env::publish_module(peb, &module).is_err() {
-        unmap(&as_, image.base, image.size);
+    let mut names = Vec::new();
+    let mut inputs = Vec::new();
+    for module in &modules {
+        let base_name = narrow_base_name(&module.name);
+        let full_name = if module.name.iter().any(|byte| *byte == b'\\' || *byte == b'/') { module.name.clone() } else {
+            let mut path = b"C:\\Windows\\System32\\".to_vec(); path.extend_from_slice(&module.name); path
+        };
+        let full_name = match String::from_utf8(full_name) { Ok(value) => value, Err(_) => { unmap_all(&as_, &loaded); return STATUS_INVALID_PARAMETER; } };
+        let base_name = match String::from_utf8(base_name) { Ok(value) => value, Err(_) => { unmap_all(&as_, &loaded); return STATUS_INVALID_PARAMETER; } };
+        names.push((full_name, base_name));
+    }
+    for (loaded, (full_name, base_name)) in loaded.iter().zip(&names) {
+        inputs.push(elf_load::process_env::NtModuleInput { base: loaded.image.base, entry: loaded.image.entry.as_u64(), size: loaded.image.size, full_name, base_name });
+    }
+    if elf_load::process_env::publish_modules(peb, &inputs).is_err() {
+        unmap_all(&as_, &loaded);
         return STATUS_INVALID_PARAMETER;
     }
-    elf_load::pe_modules::append(&as_, elf_load::pe_modules::PeRuntimeModule { base: image.base, size: image.size, exception_rva: image.exception_directory.0, exception_size: image.exception_directory.1 });
-    if let Ok(Some(rvas)) = pe::parse(&blob).and_then(|parsed| parsed.export_rvas()) {
-        elf_load::pe_modules::register_exports(&as_, image.base, rvas);
+    let first_base = loaded.first().map(|module| module.image.base).unwrap_or(0);
+    for (loaded, module) in loaded.iter().zip(&modules) {
+        elf_load::pe_modules::append(&as_, elf_load::pe_modules::PeRuntimeModule { base: loaded.image.base, size: loaded.image.size, exception_rva: loaded.image.exception_directory.0, exception_size: loaded.image.exception_directory.1 });
+        if let Ok(Some(rvas)) = pe::parse(&module.blob).and_then(|parsed| parsed.export_rvas()) {
+            elf_load::pe_modules::register_exports(&as_, loaded.image.base, rvas);
+        }
+        cur.thread_group.nt_module_refs.lock().push((loaded.image.base, 1));
     }
-    cur.thread_group.nt_module_refs.lock().push((image.base, 1));
-    if uaccess::copy_to_user(module_output, &image.base.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
+    if uaccess::copy_to_user(module_output, &first_base.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
+}
+
+fn unmap_all(as_: &vmm::AddressSpace, modules: &[elf_load::pe_loader::PeLoadedModule<'_>]) {
+    for module in modules { unmap(as_, module.image.base, module.image.size); }
 }
 
 fn existing_module(peb: u64, wanted: &[u8]) -> Option<u64> {
@@ -79,6 +99,10 @@ fn existing_module(peb: u64, wanted: &[u8]) -> Option<u64> {
         entry = super::read_u64(entry.saturating_add(LIST_LINK_OFFSET));
     }
     None
+}
+
+fn loaded_module(peb: u64, wanted: &[u8]) -> bool {
+    existing_module(peb, wanted).is_some()
 }
 
 fn loaded_exports<'a>(peb: u64, catalog: &'a pe::catalog::ModuleCatalog) -> Result<(Vec<PeExportModule<'a>>, u64), u64> {

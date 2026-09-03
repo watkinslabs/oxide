@@ -5,7 +5,7 @@ use vmm::{AddressSpace, MmapPlacement, VmaBacking, VmaFlags, VmaProt};
 
 mod publish;
 #[cfg(target_os = "oxide-kernel")]
-pub use publish::publish_module;
+pub use publish::{publish_module, publish_modules};
 
 pub const X64_SHADOW_SPACE: u64 = 32;
 #[cfg(test)]
