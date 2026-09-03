@@ -659,7 +659,7 @@ pub(crate) fn callback_return(call: NtCall) -> u64 {
         if regs.is_null() { return STATUS_NO_CALLBACK_ACTIVE; }
         let frame = unsafe { &mut *regs };
         if call.args.a1 != 8 { return STATUS_NO_CALLBACK_ACTIVE; }
-        let result = uaccess::get_user_u64(call.args.a0).unwrap_or(0);
+        let Ok(result) = uaccess::get_user_u64(call.args.a0) else { return STATUS_ACCESS_VIOLATION; };
         let Some(task) = sched::live::current() else { return STATUS_NO_CALLBACK_ACTIVE; };
         let Some(saved) = task.nt_callback_stack.lock().pop() else { return STATUS_NO_CALLBACK_ACTIVE; };
         frame.rip = saved.rip;
