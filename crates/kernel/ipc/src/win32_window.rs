@@ -80,7 +80,7 @@ pub struct WindowClass { pub name: Vec<u16>, pub wndproc: u64, pub atom: u16 }
 pub struct WindowRect { pub left: i32, pub top: i32, pub right: i32, pub bottom: i32 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum WindowError { NoSuchWindow, InvalidParent, WrongThread, NoFocus, QueueFull }
+pub enum WindowError { NoSuchWindow, InvalidParent, ClassInUse, WrongThread, NoFocus, QueueFull }
 
 pub struct WindowManager { next: u32, next_atom: u16, classes: Vec<WindowClass>, windows: Vec<(WindowId, WindowRecord)>, rects: Vec<(WindowId, WindowRect)>, texts: Vec<(WindowId, Vec<u16>)>, dirty: Vec<(WindowId, WindowRect)>, queues: Vec<(u64, MessageQueue)>, timers: Vec<WindowTimer>, focus: Option<WindowId> }
 
@@ -139,6 +139,14 @@ impl WindowManager {
     pub fn class_name(&self, window: WindowId) -> Option<&[u16]> {
         let atom = self.get(window)?.class_atom?;
         self.class_name_by_atom(atom)
+    }
+    /// Remove a class only after all windows carrying its atom are gone. # C: O(N_classes + N_windows)
+    pub fn unregister_class(&mut self, name: &[u16]) -> Result<(), WindowError> {
+        let index = self.classes.iter().position(|class| same_name(&class.name, name)).ok_or(WindowError::NoSuchWindow)?;
+        let atom = self.classes[index].atom;
+        if self.windows.iter().any(|(_, window)| window.class_atom == Some(atom)) { return Err(WindowError::ClassInUse); }
+        self.classes.remove(index);
+        Ok(())
     }
     pub fn get(&self, id: WindowId) -> Option<WindowRecord> { self.windows.iter().find(|(window, _)| *window == id).map(|(_, record)| *record) }
     pub fn set_visible(&mut self, id: WindowId, visible: bool) -> Result<(), WindowError> {
@@ -431,6 +439,18 @@ mod tests {
         assert_eq!(manager.class_wndproc_by_atom(atom), Some(0x1400));
         assert_eq!(manager.class_wndproc_by_atom(atom + 1), None);
         assert_eq!(manager.register_class(&[b'n' as u16, b'o' as u16, b't' as u16], 0x1500), Err(WindowError::InvalidParent));
+    }
+
+    #[test]
+    fn class_unregister_waits_for_all_canonical_windows() {
+        let mut manager = WindowManager::new();
+        let name = [b'E' as u16, b'd' as u16, b'i' as u16, b't' as u16];
+        let atom = manager.register_class(&name, 0x1400).unwrap();
+        let window = manager.create_class_atom(9, None, atom, 0x1400).unwrap();
+        assert_eq!(manager.unregister_class(&name), Err(WindowError::ClassInUse));
+        manager.destroy(window).unwrap();
+        assert_eq!(manager.unregister_class(&name), Ok(()));
+        assert_eq!(manager.class_wndproc_by_atom(atom), None);
     }
 
     #[test]

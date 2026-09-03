@@ -309,6 +309,19 @@ pub(crate) fn register_class_for_current(name: &[u16], wndproc: u64) -> Option<u
     entries[index].state.register_class(name, wndproc).ok().map(|atom| atom as u64)
 }
 
+/// Unregister one process-local Wine class through the canonical owner.
+/// # C: O(N_process_gui_states + N_classes + N_windows)
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn unregister_class_for_current(name: &[u16]) -> bool {
+    let Some(cur) = sched::live::current() else { return false; };
+    if !cur.is_nt_personality() { return false; }
+    let group = Arc::clone(&cur.thread_group);
+    let mut entries = GUI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    let Some(index) = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group))) else { return false; };
+    entries[index].state.unregister_class(name).is_ok()
+}
+
 /// Create a Wine window by resolving its registered class in the canonical
 /// process window owner. # C: O(N_process_gui_states + N_classes + N_windows)
 #[cfg(target_os = "oxide-kernel")]
