@@ -187,7 +187,7 @@ pub unsafe fn balance_once() -> u32 {
     // MIGRATION_COST_NS is likely cache-warm on `busy_cpu`; leave it unless
     // the imbalance is large (delta >= 4) where spreading wins over locality.
     if delta < 4 {
-        let last = task.exec_start_ns.load(Ordering::Acquire);
+        let last = task.sched.se.exec_start.load(Ordering::Acquire);
         let now = now_ns();
         if last != 0 && now.saturating_sub(last) < MIGRATION_COST_NS {
             push_to(busy_rq, task);

@@ -142,7 +142,7 @@ decl_lock_class! {
     // Linux task_struct::pi_lock equivalent. It serializes a task's wake
     // state and affinity selection before the selected runqueue is acquired,
     // so it must rank below Runqueue (the ttwu lock order is task -> rq).
-    TaskWake     = 105,
+    TaskPi       = 105,
     Runqueue     = 110,
     // Throttled `SCHED_DEADLINE` entities awaiting replenishment
     // (`sched::deadline::replenish`). Taken irqsave: the hard timer IRQ sweeps
@@ -241,5 +241,4 @@ decl_lock_class! {
     // call `crng::fill` with its own lock held.
     Crng         = 207,
 }
-
 

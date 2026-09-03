@@ -40,7 +40,7 @@ pub fn update_curr(prev: &Task, inner: &RunqueueInner, now: u64) {
     // the fair class left every SCHED_FIFO/SCHED_RR thread's CPU clock frozen
     // at zero. The vruntime advance below is fair-only, so the two parts are
     // gated separately.
-    let start = prev.exec_start_ns.load(Ordering::Acquire);
+    let start = prev.sched.se.exec_start.load(Ordering::Acquire);
     let delta = crate::cputime::clamp_delta(now, start, MAX_TICK_NS);
     if !crate::cputime::accounts_exec_runtime(prev.sched_class()) { return; }
     if delta != 0 {
@@ -51,16 +51,16 @@ pub fn update_curr(prev: &Task, inner: &RunqueueInner, now: u64) {
             prev.cpu.load(Ordering::Acquire) as usize, delta);
     }
     if !matches!(prev.sched_class(), SchedClass::Normal { .. }) {
-        prev.exec_start_ns.store(now, Ordering::Release);
+        prev.sched.se.exec_start.store(now, Ordering::Release);
         return;
     }
-    let weight = prev.load_weight.load(Ordering::Acquire);
-    let vdelta = crate::cputime::vruntime_delta(delta, weight).max(1);
-    let cur = prev.vruntime.load(Ordering::Acquire);
+    let load = prev.sched.se.load.snapshot().weight;
+    let vdelta = crate::cputime::vruntime_delta(delta, load).max(1);
+    let cur = prev.sched.se.vruntime.load(Ordering::Acquire);
     let floor = inner.cfs.min_vruntime();
     let new = core::cmp::max(cur, floor).saturating_add(vdelta);
-    prev.vruntime.store(new, Ordering::Release);
-    prev.exec_start_ns.store(now, Ordering::Release);
+    prev.sched.se.vruntime.store(new, Ordering::Release);
+    prev.sched.se.exec_start.store(now, Ordering::Release);
 }
 
 /// Clear the previous switch's outgoing-task `on_cpu` handoff before the slot

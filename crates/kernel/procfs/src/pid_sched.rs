@@ -5,8 +5,6 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use core::sync::atomic::Ordering;
-
 use crate::live::{push, push_u64};
 
 /// # C: O(1) registry lookup
@@ -24,12 +22,13 @@ pub(crate) fn pid_sched_body(tid: u32) -> alloc::vec::Vec<u8> {
     push_u64(&mut out, sched::live::registry::display_vpid(tid));
     push(&mut out, b", #threads: 1)\n");
     push(&mut out, b"-------------------------------------------------------------------\n");
+    let se = task.sched_entity_snapshot();
     push(&mut out, b"se.exec_start                                : ");
-    push_u64(&mut out, task.exec_start_ns.load(Ordering::Acquire)); out.push(b'\n');
+    push_u64(&mut out, se.exec_start); out.push(b'\n');
     push(&mut out, b"se.vruntime                                  : ");
-    push_u64(&mut out, task.vruntime.load(Ordering::Acquire)); out.push(b'\n');
+    push_u64(&mut out, se.vruntime); out.push(b'\n');
     push(&mut out, b"se.sum_exec_runtime                          : ");
-    push_u64(&mut out, task.sum_exec_runtime_ns.load(Ordering::Acquire) / 1_000_000); out.push(b'\n');
+    push_u64(&mut out, se.sum_exec_runtime / 1_000_000); out.push(b'\n');
     push(&mut out, b"nr_switches                                  :                0\n");
     // Linux renders `p->prio` (RT: 99 - rt_priority; fair: 120 + nice) and
     // `p->policy`. Sourced from the task, never hardcoded — `chrt` changes
@@ -39,7 +38,7 @@ pub(crate) fn pid_sched_body(tid: u32) -> alloc::vec::Vec<u8> {
     if prio < 0 { out.push(b'-'); }
     push_u64(&mut out, prio.unsigned_abs()); out.push(b'\n');
     push(&mut out, b"policy                                       : ");
-    push_u64(&mut out, task.policy.load(Ordering::Acquire) as u64); out.push(b'\n');
+    push_u64(&mut out, task.priority_snapshot().policy.code() as u64); out.push(b'\n');
     out
 }
 
@@ -49,15 +48,5 @@ pub(crate) fn pid_sched_body(tid: u32) -> alloc::vec::Vec<u8> {
 /// construction, and reporting it unsigned renders it as a huge number.
 /// # C: O(1)
 fn task_prio(task: &sched::Task) -> i64 {
-    /// Largest RT priority band value plus one.
-    const MAX_RT_PRIO: i32 = 100;
-    /// Fair-class priority at nice 0.
-    const DEFAULT_PRIO: i32 = MAX_RT_PRIO + 20;
-    /// The single priority value the deadline class occupies, below every RT one.
-    const DL_PRIO: i64 = -1;
-    match task.sched_class() {
-        sched::SchedClass::Deadline => DL_PRIO,
-        sched::SchedClass::Rt { prio, .. } => (MAX_RT_PRIO - 1 - prio as i32) as i64,
-        _ => (DEFAULT_PRIO + task.nice.load(Ordering::Acquire) as i32) as i64,
-    }
+    task.priority_snapshot().prio.linux_prio().unwrap_or(sched::task::MAX_PRIO) as i64
 }

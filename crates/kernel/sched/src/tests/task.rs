@@ -17,12 +17,13 @@ fn cpus_allowed_defaults_to_any() {
 
 #[test]
 fn load_weight_seeds_from_class() {
-    let n = Task::new(1, "n", SchedClass::Normal { weight: 2048 });
-    assert_eq!(n.load_weight.load(Ordering::Acquire), 2048);
+    let n = Task::new(1, "n", SchedClass::Normal { weight: 1_991 });
+    assert_eq!(n.sched.se.load.snapshot().weight, 1_991u64 << 10);
     let r = Task::new(2, "r", SchedClass::Rt { prio: 50, policy: SchedPolicy::Fifo });
-    assert_eq!(r.load_weight.load(Ordering::Acquire), crate::cputime::NICE_0_WEIGHT);
-    n.load_weight.store(crate::cputime::nice_to_weight(-20), Ordering::Release);
-    assert_eq!(n.load_weight.load(Ordering::Acquire), 88761);
+    assert_eq!(r.sched.se.load.snapshot().weight,
+        (crate::cputime::NICE_0_WEIGHT as u64) << 10);
+    n.set_nice_value(-20);
+    assert_eq!(n.sched.se.load.snapshot().weight, 88761u64 << 10);
 }
 
 #[test]
@@ -119,37 +120,37 @@ fn pending_wake_closes_current_task_state_check_race() {
 #[test]
 fn task_lift_vruntime_respects_floor() {
     let t = Task::new(1, "t", SchedClass::Normal { weight: 1024 });
-    t.vruntime.store(50, Ordering::Release);
+    t.sched.se.vruntime.store(50, Ordering::Release);
     t.lift_vruntime(100);
-    assert_eq!(t.vruntime.load(Ordering::Acquire), 100);
+    assert_eq!(t.sched.se.vruntime.load(Ordering::Acquire), 100);
     t.lift_vruntime(20);
-    assert_eq!(t.vruntime.load(Ordering::Acquire), 100);
+    assert_eq!(t.sched.se.vruntime.load(Ordering::Acquire), 100);
 }
 
 #[test]
 fn wake_placement_preserves_accumulated_cpu_debt() {
     let t = Task::new(2, "debtor", SchedClass::Normal { weight: 1024 });
-    t.vruntime.store(1_000, Ordering::Release);
+    t.sched.se.vruntime.store(1_000, Ordering::Release);
     t.lift_vruntime(100);
-    assert_eq!(t.vruntime.load(Ordering::Acquire), 1_000,
+    assert_eq!(t.sched.se.vruntime.load(Ordering::Acquire), 1_000,
         "a timed wake must not rewind prior runtime");
 }
 
 #[test]
 fn wake_placement_lifts_a_stale_sleeper_to_the_floor() {
     let t = Task::new(3, "sleeper", SchedClass::Normal { weight: 1024 });
-    t.vruntime.store(10, Ordering::Release);
+    t.sched.se.vruntime.store(10, Ordering::Release);
     t.lift_vruntime(100);
-    assert_eq!(t.vruntime.load(Ordering::Acquire), 100,
+    assert_eq!(t.sched.se.vruntime.load(Ordering::Acquire), 100,
         "a sleeper cannot re-enter behind the runqueue floor");
 }
 
 #[test]
 fn repeated_coordinator_wakes_cannot_jump_a_queued_victim() {
     let victim = Arc::new(Task::new(20, "victim", SchedClass::Normal { weight: 1024 }));
-    victim.vruntime.store(500, Ordering::Release);
+    victim.sched.se.vruntime.store(500, Ordering::Release);
     let coordinator = Arc::new(Task::new(10, "coordinator", SchedClass::Normal { weight: 1024 }));
-    coordinator.vruntime.store(1_000, Ordering::Release);
+    coordinator.sched.se.vruntime.store(1_000, Ordering::Release);
     let mut q = crate::CfsRunqueue::new();
     q.enqueue(Arc::clone(&victim));
     for _ in 0..8 { coordinator.lift_vruntime(q.min_vruntime()); }

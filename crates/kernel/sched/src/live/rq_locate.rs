@@ -100,5 +100,16 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
     }
 }
 
+/// Requeue a task whose canonical effective state has already been updated.
+/// This is the configured-parameter half of the future scheduler-change
+/// transaction: it must not rewrite effective state and thereby erase a
+/// retained, currently weaker PI donor. # C: O(N_cpus · log N)
+pub fn requeue_current_class_with<'a, F>(get_rq: &F, task: &Arc<Task>)
+where F: Fn(u32) -> Option<&'a Runqueue> {
+    if let Some((dequeued, cpu)) = dequeue_from_owning_rq_with(get_rq, task.tid) {
+        let _ = enqueue_on_with(get_rq, cpu, dequeued);
+    }
+}
+
 #[cfg(test)]
 mod tests;

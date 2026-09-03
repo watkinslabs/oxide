@@ -1,9 +1,14 @@
-// Atomic encoding of a task's scheduling class — split from task.rs to keep it
-// under the file-length cap (`08§7`). `Task::class_enc` stores `encode()`;
-// `sched_class()` reads back `decode()`. Lets sched_setattr/setparam mutate a
-// task's class lock-free without racing the read-only getattr/runqueue readers.
+// Scheduling policy constants and compatibility descriptors. Task storage lives
+// only in `task::TaskSched`; the packed descriptor remains for hosted PI mocks.
 
 use crate::task::{SchedClass, SchedPolicy};
+
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+type TaskPiIrq = hal_x86_64::X86IrqGate;
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+type TaskPiIrq = hal_aarch64::ArmIrqGate;
+#[cfg(not(target_os = "oxide-kernel"))]
+type TaskPiIrq = sync::NoopIrq;
 
 /// Linux `SCHED_CAPACITY_SCALE` — the utilization-clamp upper bound and the
 /// default `uclamp_req[UCLAMP_MAX]` value every task starts with
@@ -61,27 +66,162 @@ pub fn policy_code_for(class: SchedClass) -> u32 {
 }
 
 impl crate::task::Task {
-    /// Current scheduling class (lock-free decode of `class_enc`).
+    /// Current effective scheduling class from canonical task state.
     /// # C: O(1)
     pub fn sched_class(&self) -> SchedClass {
-        SchedClass::decode(self.class_enc.load(core::sync::atomic::Ordering::Acquire))
+        self.sched.effective_class()
     }
 
-    /// Store a new scheduling class. Callers changing a QUEUED task's class must
-    /// go through `live::runqueue::set_class` (under the rq lock) so the task is
-    /// moved between the rt/cfs trees consistently.
+    /// Store effective class state under the task PI lock. Queued changes route
+    /// through `live::runqueue::set_class` so the owning class tree is updated.
     /// # C: O(1)
     pub fn set_sched_class(&self, c: SchedClass) {
-        self.class_enc.store(c.encode(), core::sync::atomic::Ordering::Release);
+        let _pi = self.pi_lock.lock_irqsave::<TaskPiIrq>();
+        self.sched.store_effective_class(c);
     }
+
+    /// Scheduling class with PI donation removed. # C: O(1)
+    pub fn normal_sched_class(&self) -> SchedClass {
+        self.sched.normal_class()
+    }
+
+    /// Configured Linux nice from canonical static priority. # C: O(1)
+    pub fn nice_value(&self) -> i8 { self.sched.nice() }
+
+    /// Change latent static priority under the task PI lock. # C: O(1)
+    pub fn set_nice_value(&self, nice: i8) {
+        let _pi = self.pi_lock.lock_irqsave::<TaskPiIrq>();
+        self.sched.store_nice(nice);
+    }
+
+    /// Replace the configured class without overwriting stronger donated priority. # C: O(1)
+    pub fn set_normal_sched_class(&self, class: SchedClass) {
+        self.set_normal_sched_class_policy(class, policy_code_for(class));
+    }
+
+    /// Replace configured policy and class in one published transaction. # C: O(1)
+    pub fn set_normal_sched_class_policy(&self, class: SchedClass, policy: u32) {
+        let _pi = self.pi_lock.lock_irqsave::<TaskPiIrq>();
+        self.sched.store_normal_class(class, policy);
+    }
+
+    /// Whether a PI donor remains attached, even if normal currently outranks it. # C: O(1)
+    pub fn sched_is_boosted(&self) -> bool { self.sched.is_boosted() }
+
+    /// Clear a retained donor once the PI wait relation is gone. # C: O(1)
+    pub fn restore_normal_sched_class(&self) {
+        let _pi = self.pi_lock.lock_irqsave::<TaskPiIrq>();
+        self.sched.restore_normal();
+    }
+
+    /// Coherent configured/normal/effective priority view. # C: O(1)
+    pub fn priority_snapshot(&self) -> crate::task::PrioritySnapshot {
+        let _pi = self.pi_lock.lock_irqsave::<TaskPiIrq>();
+        self.sched.priority_snapshot()
+    }
+
+    /// One generation of the scheduler fields copied by `sched_fork`.
+    /// # C: O(1)
+    pub(crate) fn sched_fork_snapshot(&self) ->
+        (crate::task::PrioritySnapshot, crate::task::SchedUclamp, crate::task::SchedEntity) {
+        let _pi = self.pi_lock.lock_irqsave::<TaskPiIrq>();
+        (self.sched.priority_snapshot(), self.sched.uclamp_snapshot(), self.sched.se.snapshot())
+    }
+
+    /// Current validated Linux scheduler policy code. # C: O(1)
+    pub fn sched_policy_code(&self) -> u32 { self.sched.priority_snapshot().policy.code() }
+
+    /// Publish the one-shot reset-on-fork setting under the PI lock. # C: O(1)
+    pub fn set_sched_reset_on_fork(&self, reset: bool) {
+        let _pi = self.pi_lock.lock_irqsave::<TaskPiIrq>();
+        self.sched.store_reset_on_fork(reset);
+    }
+
+    /// Runtime fair-entity counters for procfs and accounting consumers. # C: O(1)
+    pub fn sched_entity_snapshot(&self) -> crate::task::SchedEntity { self.sched.se.snapshot() }
+
+    /// Runtime RT-entity counters for policy and watchdog consumers. # C: O(1)
+    pub fn sched_rt_entity_snapshot(&self) -> crate::task::SchedRtEntity { self.sched.rt.snapshot() }
+
+    /// Coherent utilization-clamp request tuple. # C: O(1) expected
+    pub fn sched_uclamp_snapshot(&self) -> crate::task::SchedUclamp { self.sched.uclamp_snapshot() }
+
+    /// Publish one utilization-clamp request tuple. # C: O(1)
+    pub fn set_sched_uclamp(&self, req: crate::task::SchedUclamp) {
+        let _pi = self.pi_lock.lock_irqsave::<TaskPiIrq>();
+        self.sched.store_uclamp(req);
+    }
+
+    /// Publish policy, class, clamp, and reset-on-fork as one PI-locked
+    /// configuration transaction. # C: O(1)
+    pub fn set_sched_policy_controls(&self, class: SchedClass, policy: u32,
+                                     req: crate::task::SchedUclamp, reset: bool) {
+        let _pi = self.pi_lock.lock_irqsave::<TaskPiIrq>();
+        self.sched.store_normal_class(class, policy);
+        self.sched.store_uclamp(req);
+        self.sched.store_reset_on_fork(reset);
+    }
+
+    /// Publish clamp and reset-on-fork without changing policy. # C: O(1)
+    pub fn set_sched_controls(&self, req: crate::task::SchedUclamp, reset: bool) {
+        let _pi = self.pi_lock.lock_irqsave::<TaskPiIrq>();
+        self.sched.store_uclamp(req);
+        self.sched.store_reset_on_fork(reset);
+    }
+
+    /// Replace the configured fair slice. # C: O(1)
+    pub fn set_sched_slice_ns(&self, slice: u64) {
+        let _pi = self.pi_lock.lock_irqsave::<TaskPiIrq>();
+        self.sched.se.slice.store(slice, core::sync::atomic::Ordering::Release);
+        self.sched.se.custom_slice.store(slice != 0, core::sync::atomic::Ordering::Release);
+    }
+
+    /// Reset the RT quantum to its full policy value. # C: O(1)
+    pub fn reload_sched_rt_timeslice(&self) {
+        let _pi = self.pi_lock.lock_irqsave::<TaskPiIrq>();
+        self.sched.rt.time_slice.store(RR_TIMESLICE_TICKS,
+            core::sync::atomic::Ordering::Release);
+    }
+
+    /// Clear accumulated RT watchdog time when leaving RT policy. # C: O(1)
+    pub fn clear_sched_rt_timeout(&self) {
+        let _pi = self.pi_lock.lock_irqsave::<TaskPiIrq>();
+        self.sched.rt.timeout.store(0, core::sync::atomic::Ordering::Release);
+    }
+
+    #[cfg(feature = "hosted")]
+    #[doc(hidden)]
+    pub fn test_set_sched_rt_timeslice(&self, ticks: u32) {
+        self.sched.rt.time_slice.store(ticks, core::sync::atomic::Ordering::Release);
+    }
+
+    #[cfg(feature = "hosted")]
+    #[doc(hidden)]
+    pub fn test_set_sched_deadline_state(&self, state: &crate::deadline::DlSched) {
+        self.sched.dl.store_sched(state);
+    }
+
+    #[cfg(feature = "hosted")]
+    #[doc(hidden)]
+    pub fn test_set_sched_deadline_params(&self, params: &crate::deadline::DlParams) {
+        self.sched.dl.set_params(params);
+    }
+
+    /// Deadline reservation snapshot for ABI observers. # C: O(1)
+    pub fn sched_deadline_params(&self) -> crate::deadline::DlParams { self.sched.dl.params() }
+
+    /// Deadline instance snapshot for ABI observers. # C: O(1)
+    pub fn sched_deadline_state(&self) -> crate::deadline::DlSched { self.sched.dl.sched() }
+
+    /// Admitted deadline bandwidth for accounting. # C: O(1)
+    pub fn sched_deadline_bw(&self) -> u64 { self.sched.dl.bw() }
 
     /// Linux `rt_or_dl_task_policy(tsk)` — SCHED_FIFO / SCHED_RR /
     /// SCHED_DEADLINE. `prctl(PR_SET_TIMERSLACK)` is a no-op for these,
     /// since a real-time task's wakeups are not coalescable.
     /// # C: O(1)
     pub fn is_rt_or_dl_policy(&self) -> bool {
-        matches!(self.policy.load(core::sync::atomic::Ordering::Acquire),
-                 SCHED_FIFO | SCHED_RR | SCHED_DEADLINE)
+        matches!(self.sched_policy_code(), SCHED_FIFO | SCHED_RR | SCHED_DEADLINE)
     }
 }
 

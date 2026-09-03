@@ -56,7 +56,7 @@ use cpu_target::wake_diag_now_ns;
 /// then picks a task another CPU owns. The target waits for switch-off under
 /// its rq lock before activating the claimed task.
 ///
-/// The producer-side `task_wake_lock` ends at the list publication.  Taking
+/// The producer-side `pi_lock` ends at the list publication.  Taking
 /// it again after `llist_del_all` would turn the claimed list into a detached
 /// local `Vec` while the target spins behind a waker: the task is no longer
 /// linked, but it has not reached activation.  Linux's pending callback does
@@ -135,9 +135,7 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
                 preempt |= curr.is_none_or(|c| wakeup_preempt(cand_of(&task), c));
                 rq.account_wake(&task);
                 #[cfg(target_os = "oxide-kernel")]
-                let _ = task.update_util(crate::deadline::clock::now_ns(), false);
-                #[cfg(target_os = "oxide-kernel")]
-                let wake_util = task.util_avg.load(Ordering::Acquire);
+                let wake_util = task.update_util(crate::deadline::clock::now_ns(), false);
                 #[cfg(target_os = "oxide-kernel")]
                 let wake_iowait = task.take_iowait();
                 inner.enqueue(Arc::clone(&task));
@@ -180,7 +178,7 @@ unsafe fn ttwu_inner(task: Arc<Task>, force_defer: bool) -> bool {
     // lock. An affinity writer cannot land between this claim and the enqueue
     // selected from the mask. IRQ-save prevents a same-task hardirq wake from
     // spinning on interrupted process context holding this lock.
-    let _wake = task.task_wake_lock.lock_irqsave::<RqIrq>();
+    let _wake = task.pi_lock.lock_irqsave::<RqIrq>();
     if !task.claim_wake() {
         // The Sleeping -> Waking transition is the exclusive placement
         // claim. A winner may not have reached `on_rq` yet, so treating
@@ -297,9 +295,7 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
             task.wake_diag_mark(WakeDiagPhase::Activating, wake_diag_now_ns());
             rq.account_wake(&task);
             #[cfg(target_os = "oxide-kernel")]
-            let _ = task.update_util(crate::deadline::clock::now_ns(), false);
-            #[cfg(target_os = "oxide-kernel")]
-            let wake_util = task.util_avg.load(Ordering::Acquire);
+            let wake_util = task.update_util(crate::deadline::clock::now_ns(), false);
             #[cfg(target_os = "oxide-kernel")]
             let wake_iowait = task.take_iowait();
             inner.enqueue(task);

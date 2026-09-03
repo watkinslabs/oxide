@@ -58,7 +58,7 @@ fn keep_params_commits_nothing_but_reset_on_fork() {
     assert_eq!(setattr(&caller, &t, &a), 0);
     assert_eq!(task_policy(&t), SCHED_FIFO);
     assert_eq!(task_rt_priority(&t), 20);
-    assert!(t.sched_reset_on_fork.load(Ordering::Acquire));
+    assert!(t.priority_snapshot().reset_on_fork);
 }
 
 #[test]
@@ -70,7 +70,7 @@ fn a_no_change_request_still_records_reset_on_fork() {
     let mut a = attr(SCHED_NORMAL, 0, sa::FLAG_RESET_ON_FORK);
     a.runtime = SCHED_BASE_SLICE_NS;
     assert_eq!(setattr(&caller, &t, &a), 0);
-    assert!(t.sched_reset_on_fork.load(Ordering::Acquire));
+    assert!(t.priority_snapshot().reset_on_fork);
     assert_eq!(task_slice_ns(&t), SCHED_BASE_SLICE_NS);
 }
 
@@ -86,6 +86,17 @@ fn a_util_clamp_request_is_stored_and_marked_user_defined() {
     let (min, max) = uclamp_req(&t);
     assert_eq!(min, sa::UclampSe { value: 300, user_defined: true });
     assert_eq!(max, sa::UclampSe { value: sa::CAPACITY_SCALE, user_defined: false });
+}
+
+#[test]
+fn a_clamp_only_update_on_unchanged_rt_policy_is_not_skipped() {
+    let caller = root_caller();
+    let t = normal(2, 0);
+    assert_eq!(setattr(&caller, &t, &attr(SCHED_FIFO, 20, 0)), 0);
+    let mut a = attr(SCHED_FIFO, 20, sa::FLAG_UTIL_CLAMP_MIN);
+    a.util_min = 700;
+    assert_eq!(setattr(&caller, &t, &a), 0);
+    assert_eq!(uclamp_req(&t).0, sa::UclampSe { value: 700, user_defined: true });
 }
 
 #[test]
@@ -121,6 +132,19 @@ fn a_user_defined_clamp_survives_a_policy_change() {
 }
 
 #[test]
+fn rt_auto_min_may_exceed_a_retained_user_max() {
+    let caller = root_caller();
+    let t = normal(2, 0);
+    let mut a = attr(SCHED_NORMAL, 0, sa::FLAG_UTIL_CLAMP_MAX);
+    a.util_max = 500;
+    assert_eq!(setattr(&caller, &t, &a), 0);
+    assert_eq!(setattr(&caller, &t, &attr(SCHED_FIFO, 20, 0)), 0);
+    let (min, max) = uclamp_req(&t);
+    assert_eq!(min, sa::UclampSe { value: sa::CAPACITY_SCALE, user_defined: false });
+    assert_eq!(max, sa::UclampSe { value: 500, user_defined: true });
+}
+
+#[test]
 fn the_minus_one_sentinel_clears_a_user_defined_clamp() {
     let caller = root_caller();
     let t = normal(2, 0);
@@ -143,6 +167,7 @@ fn sched_runtime_becomes_a_clamped_custom_slice_for_a_fair_task() {
     a.runtime = 1;
     assert_eq!(setattr(&caller, &t, &a), 0);
     assert_eq!(task_slice_ns(&t), 100_000);
+    assert!(t.sched_entity_snapshot().custom_slice);
     a.runtime = 1_000_000_000;
     assert_eq!(setattr(&caller, &t, &a), 0);
     assert_eq!(task_slice_ns(&t), 100_000_000);
@@ -150,6 +175,7 @@ fn sched_runtime_becomes_a_clamped_custom_slice_for_a_fair_task() {
     a.runtime = 0;
     assert_eq!(setattr(&caller, &t, &a), 0);
     assert_eq!(task_slice_ns(&t), SCHED_BASE_SLICE_NS);
+    assert!(!t.sched_entity_snapshot().custom_slice);
 }
 
 #[test]
@@ -195,14 +221,16 @@ fn the_reported_rr_interval_is_the_enforced_quantum() {
 fn entering_an_rt_policy_reloads_a_full_quantum() {
     let caller = root_caller();
     let t = normal(2, 0);
-    t.rt_time_slice.store(1, Ordering::Release);
+    t.test_set_sched_rt_timeslice(1);
 
     assert_eq!(setattr(&caller, &t, &attr(SCHED_RR, 40, 0)), 0);
-    assert_eq!(t.rt_time_slice.load(Ordering::Acquire), sched::sched_enc::RR_TIMESLICE_TICKS);
+    assert_eq!(t.sched_rt_entity_snapshot().time_slice,
+        sched::sched_enc::RR_TIMESLICE_TICKS);
 
     // Draining the quantum and switching away then back re-arms it in full.
-    t.rt_time_slice.store(1, Ordering::Release);
+    t.test_set_sched_rt_timeslice(1);
     assert_eq!(setattr(&caller, &t, &attr(SCHED_NORMAL, 0, 0)), 0);
     assert_eq!(setattr(&caller, &t, &attr(SCHED_FIFO, 40, 0)), 0);
-    assert_eq!(t.rt_time_slice.load(Ordering::Acquire), sched::sched_enc::RR_TIMESLICE_TICKS);
+    assert_eq!(t.sched_rt_entity_snapshot().time_slice,
+        sched::sched_enc::RR_TIMESLICE_TICKS);
 }

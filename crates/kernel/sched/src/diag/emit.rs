@@ -158,7 +158,7 @@ fn dump_tasks_emit() {
         klog::write_raw(b" ");
         col_dec(t.nsyscalls.load(Ordering::Relaxed), 10);
         klog::write_raw(b" ");
-        col_dec(t.sum_exec_runtime_ns.load(Ordering::Relaxed) / 1_000_000, 10);
+        col_dec(t.sched.se.sum_exec_runtime.load(Ordering::Relaxed) / 1_000_000, 10);
         klog::write_raw(b" tgid="); col_dec(t.tgid.load(Ordering::Relaxed) as u64, 6);
         klog::write_raw(b" vtid="); col_dec(t.security.vtid.load(Ordering::Relaxed) as u64, 6);
         klog::write_raw(b" ptid="); col_dec(t.parent_tid.load(Ordering::Relaxed) as u64, 6);

@@ -85,11 +85,10 @@ fn every_policy_pair_is_decided_without_defaulting_to_yes() {
 #[test]
 fn cand_of_reads_a_live_task() {
     use crate::task::{SchedClass, SchedPolicy, Task};
-    use core::sync::atomic::Ordering;
     let t = Task::new(4242, "wakeup-cand", SchedClass::Normal { weight: 1024 });
     assert_eq!(cand_of(&t).rank, RANK_FAIR);
-    t.set_sched_class(SchedClass::Rt { prio: 7, policy: SchedPolicy::Fifo });
-    t.policy.store(SCHED_FIFO, Ordering::Release);
+    t.set_normal_sched_class_policy(
+        SchedClass::Rt { prio: 7, policy: SchedPolicy::Fifo }, SCHED_FIFO);
     let c = cand_of(&t);
     assert_eq!((c.rank, c.rt_prio, c.policy), (RANK_RT, 7, SCHED_FIFO));
 }

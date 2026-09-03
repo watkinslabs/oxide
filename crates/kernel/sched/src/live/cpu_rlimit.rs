@@ -55,7 +55,7 @@ fn cpu_limit(t: &Task) -> u64 {
 fn rttime_limit(t: &Task) -> u64 {
     let (soft, hard) = t.rlimit(rlim::RTTIME);
     if soft == crate::rlimit::INFINITY { return 0; }
-    let rttime_us = t.rt_timeout_ns.load(core::sync::atomic::Ordering::Acquire) / NS_PER_US;
+    let rttime_us = t.sched.rt.timeout.load(core::sync::atomic::Ordering::Acquire) / NS_PER_US;
     match check_rttime(rttime_us, soft, hard) {
         CpuLimitAction::None => 0,
         CpuLimitAction::Kill => Signum::Sigkill.bit(),

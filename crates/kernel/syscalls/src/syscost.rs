@@ -47,7 +47,7 @@ fn now_ns() -> u64 {
 #[inline]
 pub fn start() -> Option<(u64, u64)> {
     let t = sched::live::current()?;
-    Some((now_ns(), t.sum_exec_runtime_ns.load(Ordering::Relaxed)))
+    Some((now_ns(), t.sched_entity_snapshot().sum_exec_runtime))
 }
 
 /// Bucket the call by whether it left the CPU, then dump every `DUMP_EVERY`.
@@ -61,7 +61,7 @@ pub fn record(nr: u64, start: Option<(u64, u64)>) {
     // Re-read from the CURRENT task: after a switch we are back on the same
     // task, so this is the same counter, advanced by the off-CPU accounting.
     let exec1 = match sched::live::current() {
-        Some(t) => t.sum_exec_runtime_ns.load(Ordering::Relaxed),
+        Some(t) => t.sched_entity_snapshot().sum_exec_runtime,
         None => return,
     };
     if exec1 == exec0 {

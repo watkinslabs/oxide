@@ -245,7 +245,7 @@ fn target_service_wrapper_activates_a_claimed_wake() {
 
 /// `sched_ttwu_pending` consumes the target's claimed wake list; it must not
 /// wait for the producer-side wake lock after unlinking it.  The old shape
-/// acquired `task_wake_lock` between `wake_list_drain` and activation, so this
+/// acquired `pi_lock` between `wake_list_drain` and activation, so this
 /// exact handoff left a Waking task detached indefinitely whenever the waker
 /// was delayed while still holding its publication lock.  Linux walks the
 /// claimed llist under the target rq lock without reacquiring `p->pi_lock`.
@@ -258,7 +258,7 @@ fn target_drain_activates_a_claimed_wake_while_producer_lock_is_held() {
 
     // Model the producer between claiming/listing the wake and dropping its
     // task-side serialization lock.  A pre-fix target drain self-spins here.
-    let _producer = t.task_wake_lock.lock_irqsave::<RqIrq>();
+    let _producer = t.pi_lock.lock_irqsave::<RqIrq>();
     assert!(t.claim_wake());
     wake_list_push(CPU, Arc::clone(&t));
 

@@ -4,7 +4,6 @@
 // and `crate::sched_policy::get_params` (Linux `get_params`).
 #![cfg(target_os = "oxide-kernel")]
 
-use core::sync::atomic::Ordering;
 use syscall::{errno::Errno, SyscallArgs};
 use crate::sched_attr::{self as sa, SchedAttr};
 use crate::sched_policy;
@@ -42,7 +41,7 @@ pub fn sys_sched_getattr(args: &SyscallArgs) -> i64 {
     let mut kattr = SchedAttr {
         size: plan.reported,
         policy: sched_policy::task_policy(&t),
-        flags: if t.sched_reset_on_fork.load(Ordering::Acquire) { sa::FLAG_RESET_ON_FORK } else { 0 },
+        flags: if t.priority_snapshot().reset_on_fork { sa::FLAG_RESET_ON_FORK } else { 0 },
         util_min: uc_min.value,
         util_max: uc_max.value,
         ..Default::default()

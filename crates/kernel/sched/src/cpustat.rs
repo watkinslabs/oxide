@@ -75,8 +75,8 @@ fn charge(task: &crate::Task, user: bool, delta: u64) {
     if user { task.utime_ns.fetch_add(delta, Ordering::Relaxed); }
     else    { task.stime_ns.fetch_add(delta, Ordering::Relaxed); }
     task.thread_group.charge_cpu(user, delta);
-    if crate::sched_enc::is_rt_class_policy(task.policy.load(Ordering::Relaxed)) {
-        task.rt_timeout_ns.fetch_add(delta, Ordering::Relaxed);
+    if crate::sched_enc::is_rt_class_policy(task.sched_policy_code()) {
+        task.sched.rt.timeout.fetch_add(delta, Ordering::Relaxed);
     }
 }
 

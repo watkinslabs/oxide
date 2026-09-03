@@ -32,7 +32,7 @@ fn task(tid: u32, uid: u32, class: SchedClass, policy: u32) -> Arc<Task> {
     t.security.creds.ruid.store(uid, Ordering::Release);
     t.security.creds.euid.store(uid, Ordering::Release);
     t.security.creds.cap_effective.store(0, Ordering::Release);
-    t.policy.store(policy, Ordering::Release);
+    t.set_normal_sched_class_policy(class, policy);
     Arc::new(t)
 }
 
@@ -257,7 +257,7 @@ fn leaving_sched_idle_needs_rlimit_nice_room() {
 fn unprivileged_user_may_not_clear_reset_on_fork() {
     let caller = normal(1, 1000);
     let target = normal(2, 1000);
-    target.sched_reset_on_fork.store(true, Ordering::Release);
+    target.set_sched_reset_on_fork(true);
     assert_eq!(user_check(&caller, &target, SCHED_NORMAL, 0, 0, false), EPERM);
     // Keeping it set is fine.
     assert_eq!(user_check(&caller, &target, SCHED_NORMAL, 0, 0, true), 0);
@@ -267,7 +267,7 @@ fn unprivileged_user_may_not_clear_reset_on_fork() {
 fn lowering_nice_beyond_rlimit_nice_needs_privilege() {
     let caller = normal(1, 1000);
     let target = normal(2, 1000);
-    target.nice.store(5, Ordering::Release);
+    target.set_nice_value(5);
     target.set_rlimit(sched::rlimit::rlim::NICE, (0, 0));
     assert_eq!(user_check(&caller, &target, SCHED_NORMAL, -5, 0, false), EPERM);
     // Raising nice (lower priority) never needs privilege.
@@ -310,7 +310,7 @@ fn sched_idle_lands_on_the_idle_weight() {
     privileged(&caller);
     let t = normal(2, 0);
     assert_eq!(setscheduler(&caller, &t, SCHED_IDLE as i32, 0, 0), 0);
-    assert_eq!(t.load_weight.load(Ordering::Acquire), SCHED_IDLE_WEIGHT);
+    assert_eq!(t.priority_snapshot().load.weight, (SCHED_IDLE_WEIGHT as u64) << 10);
     assert!(matches!(t.sched_class(), SchedClass::Normal { weight } if weight == SCHED_IDLE_WEIGHT));
 }
 
@@ -322,10 +322,10 @@ fn reset_on_fork_bit_is_recorded_and_reported() {
     let arg = (SCHED_RR | SCHED_RESET_ON_FORK) as i32;
     assert_eq!(setscheduler(&caller, &t, arg, 5, 0), 0);
     assert_eq!(task_policy(&t), SCHED_RR);
-    assert!(t.sched_reset_on_fork.load(Ordering::Acquire));
+    assert!(t.priority_snapshot().reset_on_fork);
     // Clearing it: a privileged caller may.
     assert_eq!(setscheduler(&caller, &t, SCHED_RR as i32, 5, 0), 0);
-    assert!(!t.sched_reset_on_fork.load(Ordering::Acquire));
+    assert!(!t.priority_snapshot().reset_on_fork);
 }
 
 #[test]
@@ -355,25 +355,25 @@ fn setparam_sentinel_keeps_the_current_policy() {
 #[test]
 fn fork_inherits_policy_and_priority() {
     let parent = task(1, 0, SchedClass::Rt { prio: 42, policy: SchedPolicy::Rr }, SCHED_RR);
-    parent.nice.store(-3, Ordering::Release);
-    let child = normal(2, 0);
-    sched::live::sched_fork::inherit_sched_params(&child, &parent);
+    parent.set_nice_value(-3);
+    let mut child = Task::new(2, "sched-policy-test", SchedClass::Normal { weight: 1024 });
+    sched::live::sched_fork::inherit_sched_params(&mut child, &parent);
     assert_eq!(task_policy(&child), SCHED_RR);
     assert_eq!(task_rt_priority(&child), 42);
-    assert_eq!(child.nice.load(Ordering::Acquire), -3);
+    assert_eq!(child.nice_value(), -3);
 }
 
 #[test]
 fn reset_on_fork_demotes_the_child_and_clears_itself() {
     let parent = task(1, 0, SchedClass::Rt { prio: 42, policy: SchedPolicy::Fifo }, SCHED_FIFO);
-    parent.sched_reset_on_fork.store(true, Ordering::Release);
-    let child = normal(2, 0);
-    sched::live::sched_fork::inherit_sched_params(&child, &parent);
+    parent.set_sched_reset_on_fork(true);
+    let mut child = Task::new(2, "sched-policy-test", SchedClass::Normal { weight: 1024 });
+    sched::live::sched_fork::inherit_sched_params(&mut child, &parent);
     assert_eq!(task_policy(&child), SCHED_NORMAL);
     assert_eq!(task_rt_priority(&child), 0);
-    assert_eq!(child.nice.load(Ordering::Acquire), 0);
+    assert_eq!(child.nice_value(), 0);
     // One generation only: the child does not pass the flag on.
-    assert!(!child.sched_reset_on_fork.load(Ordering::Acquire));
+    assert!(!child.priority_snapshot().reset_on_fork);
     // The parent keeps its own policy.
     assert_eq!(task_policy(&parent), SCHED_FIFO);
 }
@@ -381,16 +381,16 @@ fn reset_on_fork_demotes_the_child_and_clears_itself() {
 #[test]
 fn reset_on_fork_lifts_a_negative_nice_child_to_zero() {
     let parent = normal(1, 0);
-    parent.nice.store(-10, Ordering::Release);
-    parent.sched_reset_on_fork.store(true, Ordering::Release);
-    let child = normal(2, 0);
-    sched::live::sched_fork::inherit_sched_params(&child, &parent);
-    assert_eq!(child.nice.load(Ordering::Acquire), 0);
+    parent.set_nice_value(-10);
+    parent.set_sched_reset_on_fork(true);
+    let mut child = Task::new(2, "sched-policy-test", SchedClass::Normal { weight: 1024 });
+    sched::live::sched_fork::inherit_sched_params(&mut child, &parent);
+    assert_eq!(child.nice_value(), 0);
     // A positive nice is NOT reset.
-    parent.nice.store(7, Ordering::Release);
-    let child2 = normal(3, 0);
-    sched::live::sched_fork::inherit_sched_params(&child2, &parent);
-    assert_eq!(child2.nice.load(Ordering::Acquire), 7);
+    parent.set_nice_value(7);
+    let mut child2 = Task::new(3, "sched-policy-test", SchedClass::Normal { weight: 1024 });
+    sched::live::sched_fork::inherit_sched_params(&mut child2, &parent);
+    assert_eq!(child2.nice_value(), 7);
 }
 
 // --- namespace-scoped pid lookup -------------------------------------------

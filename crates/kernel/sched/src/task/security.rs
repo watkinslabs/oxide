@@ -142,19 +142,6 @@ pub struct TaskSecurity {
     /// is a property of the task and `ipc` is the crate that depends on this one.
     pub sysvsem_undo: AtomicU64,
 
-    /// The scheduling class this task would run at with no PI boost in effect
-    /// — its own, un-inherited class. `u64::MAX` means "not boosted"; any other
-    /// value is an encoded [`crate::SchedClass`] saved by `live::pi_boost` when
-    /// a PI-mutex waiter first lent this task its priority.
-    ///
-    /// Kept separate from `class_enc` because `class_enc` is BOTH the static
-    /// and the effective priority: overwriting it to boost would otherwise
-    /// destroy the base class, and the deboost at unlock would have nothing to
-    /// restore to. A concurrent `sched_setscheduler` on a boosted task writes
-    /// through to this field rather than to `class_enc`, so the new base takes
-    /// effect at deboost instead of being clobbered by it.
-    pub pi_base_class: AtomicU64,
-
     /// Linux `PR_SET_NO_NEW_PRIVS` flag. Once set, the task and its
     /// descendants can no longer gain privileges via setuid binaries
     /// or capability-conferring file caps. Sticky: clearing is not

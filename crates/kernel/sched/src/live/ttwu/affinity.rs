@@ -81,7 +81,7 @@ pub fn relocate_for_affinity(task: &Arc<Task>, allowed: cpu::CpuMask) {
     // Affinity and ttwu share the task wake lock. Hold it through removing
     // queued work and selecting its replacement CPU, so a concurrent wake
     // sees either the old placement or this completed new one, never a mix.
-    let _wake = task.task_wake_lock.lock_irqsave::<RqIrq>();
+    let _wake = task.pi_lock.lock_irqsave::<RqIrq>();
     relocate_for_affinity_live(task, allowed)
 }
 
@@ -89,7 +89,7 @@ pub fn relocate_for_affinity(task: &Arc<Task>, allowed: cpu::CpuMask) {
 /// while holding the same task-side lock ttwu uses for CPU selection.
 /// # C: O(N_cpus · log N)
 pub fn update_affinity(task: &Arc<Task>, user: Option<cpu::CpuMask>, cpuset: Option<cpu::CpuMask>) {
-    let _wake = task.task_wake_lock.lock_irqsave::<RqIrq>();
+    let _wake = task.pi_lock.lock_irqsave::<RqIrq>();
     if let Some(mask) = user { task.user_cpus_allowed.store(mask, Ordering::Release); }
     if let Some(mask) = cpuset { task.cpuset_cpus_allowed.store(mask, Ordering::Release); }
     let source = if user.is_some() {

@@ -2,7 +2,6 @@ extern crate alloc;
 
 use alloc::sync::Arc;
 use crate::task::{SchedClass, SchedPolicy, Task};
-use core::sync::atomic::Ordering;
 
 pub(super) fn rt(tid: u32, prio: u8) -> Arc<Task> {
     Arc::new(Task::new(tid, "rt", SchedClass::Rt { prio, policy: SchedPolicy::Fifo }))
@@ -10,7 +9,7 @@ pub(super) fn rt(tid: u32, prio: u8) -> Arc<Task> {
 
 pub(super) fn normal(tid: u32, vruntime: u64, weight: u32) -> Arc<Task> {
     let t = Arc::new(Task::new(tid, "normal", SchedClass::Normal { weight }));
-    t.vruntime.store(vruntime, Ordering::Release);
+    t.sched.se.vruntime.store(vruntime, core::sync::atomic::Ordering::Release);
     t
 }
 

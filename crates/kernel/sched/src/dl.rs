@@ -32,8 +32,8 @@ impl DlRunqueue {
 
     /// Sum runnable deadline entity signals for the CPU utilization hook.
     pub fn util_avg(&self) -> u32 {
-        self.tree.values().map(|task| task.util_avg.load(Ordering::Acquire))
-            .fold(0, u32::saturating_add)
+        self.tree.values().map(|task| task.sched.se.avg_util.load(Ordering::Acquire))
+            .fold(0u64, u64::saturating_add).min(u32::MAX as u64) as u32
     }
 
     /// Earliest absolute deadline queued, or `None`.
@@ -45,7 +45,7 @@ impl DlRunqueue {
     pub fn enqueue(&mut self, task: Arc<Task>) {
         debug_assert!(matches!(task.sched_class(), SchedClass::Deadline),
             "DlRunqueue::enqueue: non-deadline task");
-        let key = (task.dl.abs_deadline(), task.tid);
+        let key = (task.sched.dl.abs_deadline(), task.tid);
         self.tree.insert(key, task);
     }
 

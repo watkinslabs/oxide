@@ -246,7 +246,7 @@ impl PerfEvent {
             SwSource::CpuClock  => now_ns(),
             SwSource::TaskClock => match self.tid {
                 Some(tid) => sched::registry::lookup(tid)
-                    .map(|t| t.sum_exec_runtime_ns.load(Ordering::Relaxed)).unwrap_or(0),
+                    .map(|t| t.sched_entity_snapshot().sum_exec_runtime).unwrap_or(0),
                 None => perf_sw::read(CpuSw::ExecNs, self.cpu.max(0) as usize),
             },
             SwSource::TaskCount(k) => match self.tid {
@@ -326,7 +326,7 @@ fn task_count(t: &sched::Task, k: TaskCount) -> u64 {
                                         .wrapping_add(t.maj_flt.load(Ordering::Relaxed)),
         TaskCount::ContextSwitches => t.nvcsw.load(Ordering::Relaxed)
                                         .wrapping_add(t.nivcsw.load(Ordering::Relaxed)),
-        TaskCount::CpuMigrations   => t.nr_migrations.load(Ordering::Relaxed),
+        TaskCount::CpuMigrations   => t.sched_entity_snapshot().nr_migrations,
     }
 }
 

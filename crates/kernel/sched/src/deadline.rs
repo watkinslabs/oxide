@@ -42,7 +42,7 @@ pub use params::{checkparam_dl, to_ratio, DlParams, BW_SHIFT, BW_UNIT, DL_PERIOD
 /// into a priority label.
 /// # C: O(1)
 pub fn enqueue_admits(task: &crate::task::Task) -> bool {
-    !matches!(task.sched_class(), crate::task::SchedClass::Deadline) || !task.dl.is_throttled()
+    !matches!(task.sched_class(), crate::task::SchedClass::Deadline) || !task.sched.dl.is_throttled()
 }
 
 /// The CPU set the deadline class schedules over, and the set every admitted

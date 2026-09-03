@@ -41,7 +41,7 @@ macro_rules! q_lock { () => { QUEUE.lock() }; }
 /// Park `task` until `at`, the instant its next instance begins.
 /// # C: O(log N)
 pub fn arm(task: &Arc<Task>, at: u64) {
-    task.dl.set_replenish_at(at);
+    task.sched.dl.set_replenish_at(at);
     let mut g = q_lock!();
     g.entries.retain(|(_, tid), _| *tid != task.tid);
     g.entries.insert((at, task.tid), Arc::downgrade(task));
@@ -55,8 +55,8 @@ pub fn disarm(task: &Task) {
     // Every task exit runs this; the overwhelming majority have never been
     // throttled, and taking the global queue lock for each of them would put a
     // machine-wide serialisation point on the exit path.
-    if task.dl.replenish_at() == 0 { return; }
-    task.dl.set_replenish_at(0);
+    if task.sched.dl.replenish_at() == 0 { return; }
+    task.sched.dl.set_replenish_at(0);
     let mut g = q_lock!();
     let before = g.entries.len();
     g.entries.retain(|(_, tid), _| *tid != task.tid);
@@ -89,7 +89,7 @@ pub fn take_due(now: u64) -> Vec<Arc<Task>> {
             // instance had genuinely restarted, or a policy change). The stamp
             // no longer names this entry, so acting on it would replenish an
             // instance nobody throttled.
-            if t.dl.replenish_at() == key.0 { out.push(t); }
+            if t.sched.dl.replenish_at() == key.0 { out.push(t); }
         }
     }
     EARLIEST_NS.store(g.earliest(), Ordering::Release);

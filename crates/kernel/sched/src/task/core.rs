@@ -34,7 +34,7 @@ pub struct TaskCore {
     /// Serializes the Sleeping→Runnable claim with affinity changes through
     /// the subsequent CPU-selection/enqueue decision. This is the task wake
     /// serialization boundary; it is acquired before a runqueue lock.
-    pub task_wake_lock: Spinlock<(), TaskWakeClass>,
+    pub pi_lock: Spinlock<(), sync::TaskPi>,
     /// Diagnostic-only phase/timestamp for a claimed wake.  Absent outside
     /// watchdog builds so it cannot alter the scheduler's steady-state layout.
     #[cfg(feature = "debug-watchdog")]
@@ -132,20 +132,9 @@ pub struct TaskCore {
     /// the list.
     pub on_wake_list: AtomicBool,
     pub cpu:      AtomicU16,
-    /// Linux `se.avg.util_avg`: exponentially decayed runnable utilization.
-    /// It is updated only at scheduler ownership boundaries and consumed by
-    /// the cpufreq update-util hook; it is not reconstructed from tick totals.
-    pub util_avg: AtomicU32,
-    pub util_last_update_ns: AtomicU64,
     /// Set while this task is parked waiting for a device completion. The
     /// wake path consumes it to raise schedutil's iowait boost exactly once.
     pub in_iowait: AtomicBool,
-    pub vruntime: AtomicU64,
-    /// Monotonic ns this task last (re)started running; update_curr charges
-    /// `now - exec_start` to runtime+vruntime then re-stamps. 0 = never-run.
-    pub exec_start_ns: AtomicU64,
-    /// Total CPU time (ns) consumed — /proc/<pid>/stat utime + cgroup cpu (`13§3`).
-    pub sum_exec_runtime_ns: AtomicU64,
     /// Linux generic-vtime accounting boundary. While the task owns a CPU,
     /// this is the monotonic timestamp at which its current user/system
     /// interval began; zero means the task is off-CPU. Updated only by the
@@ -167,8 +156,6 @@ pub struct TaskCore {
     /// `PERF_COUNT_SW_CONTEXT_SWITCHES` is their sum.
     pub nvcsw:  AtomicU64,
     pub nivcsw: AtomicU64,
-    /// Linux `sched_entity::nr_migrations` — `PERF_COUNT_SW_CPU_MIGRATIONS`.
-    pub nr_migrations: AtomicU64,
     #[cfg(feature = "debug-getdents")]
     pub(crate) getdents: crate::diag::getdents::GetdentsState,
     #[cfg(feature = "debug-syscall-return")]
@@ -187,10 +174,8 @@ pub struct TaskCore {
     /// watchdog dump prints it so a wedge shows exactly which lock each task
     /// blocks on (and whether a holder exists).
     pub futex_uaddr: AtomicU64,
-    /// Live CFS load weight (mutable, unlike the `SchedClass::Normal`
-    /// seed). `update_curr` divides by this; `setpriority`/nice and
-    /// cgroup `cpu.weight` rewrite it. Seeded from `class` at creation.
-    pub load_weight: AtomicU32,
+    /// Canonical configured, normal, effective, and class-entity scheduler state.
+    pub(crate) sched: TaskSched,
     /// Linux `task_struct::cpus_mask` — the EFFECTIVE CPU-affinity mask (bit N
     /// = may run on CPU N), composed from [`Self::user_cpus_allowed`] and
     /// [`Self::cpuset_cpus_allowed`]. Balancer, ttwu and initial placement all
@@ -208,31 +193,12 @@ pub struct TaskCore {
     /// (`ksoftirqd/N`, `kworker/N`) that `kthread_bind` pinned; their affinity
     /// is structural, so `sched_setaffinity(2)` on them is EINVAL.
     pub no_setaffinity: AtomicBool,
-    /// Encoded `SchedClass` (lock-free; read via `sched_class()`, mutated via
-    /// `set_sched_class()` so sched_setattr/setparam can change policy at runtime).
-    pub class_enc: AtomicU64,
-    /// Linux `task_struct::policy` — the SCHED_* code userspace set, stored
-    /// separately from `class_enc` exactly as Linux stores `p->policy` apart
-    /// from `p->sched_class`. Required because several policies share one
-    /// implementation class (`SCHED_NORMAL`/`SCHED_BATCH`/`SCHED_IDLE` all run
-    /// on CFS), so the class alone cannot round-trip through
-    /// `sched_getscheduler(2)` / `sched_getattr(2)` / `/proc/<pid>/stat`.
-    pub policy: AtomicU32,
-    /// Linux `sched_rt_entity::time_slice` — remaining ticks of this `SCHED_RR`
-    /// task's quantum. `SCHED_FIFO` never consumes it (FIFO has no timeslice);
-    /// the fair class does not use it either.
-    pub rt_time_slice: AtomicU32,
-
     /// Pending "requeue to the tail" request for a real-time task, set when it
     /// gives up its turn — a spent `SCHED_RR` quantum or an explicit
     /// `sched_yield` — and consumed by `put_prev_task`. Absent it, a preempted
     /// task rejoins its priority queue at the HEAD, which is what makes
     /// `SCHED_FIFO` differ from `SCHED_RR` at all.
     pub rt_requeue_tail: AtomicBool,
-    /// `SCHED_DEADLINE` reservation + instance state (`deadline::DlEntity`).
-    /// Present on every task and inert until a deadline policy is admitted, so
-    /// the class's ordering key is readable from any task without a branch.
-    pub dl: crate::deadline::DlEntity,
     /// Linux `task_struct::mempolicy` — the PER-THREAD NUMA policy
     /// `set_mempolicy(2)` installed, packed by `MemPolicy::to_words`. Word 0
     /// is zero when no policy is installed, which is Linux's NULL
@@ -240,27 +206,6 @@ pub struct TaskCore {
     /// (Linux `mpol_dup`) and NOT reset by execve.
     /// Read/written through `mempolicy()` / `set_mempolicy()`.
     pub mempolicy: [AtomicU64; 3],
-    /// Linux `task_struct::sched_reset_on_fork`. Set by the
-    /// `SCHED_RESET_ON_FORK` bit ORed into the `sched_setscheduler(2)` policy
-    /// argument; ORed back into `sched_getscheduler(2)`'s return; consumed by
-    /// the fork path, which drops an RT/DEADLINE child back to `SCHED_NORMAL`
-    /// nice 0 and then clears the flag on the child.
-    pub sched_reset_on_fork: AtomicBool,
-    /// Linux `task_struct::se.slice` — the CFS slice `sched_setattr(2)` sets
-    /// from `sched_attr::sched_runtime` and `sched_getattr(2)` reports back.
-    /// `0` is Linux's `!se.custom_slice`, which reads back as
-    /// `sysctl_sched_base_slice`. Inherited on fork.
-    pub sched_slice_ns: AtomicU64,
-    /// Linux `task_struct::uclamp_req[UCLAMP_MIN]` / `[UCLAMP_MAX]` values —
-    /// the per-task utilization-clamp request `sched_setattr(2)`'s
-    /// `SCHED_FLAG_UTIL_CLAMP_{MIN,MAX}` sets and `sched_getattr(2)` reports.
-    pub uclamp_min: AtomicU32,
-    pub uclamp_max: AtomicU32,
-    /// `uclamp_se::user_defined` for both clamps — bit0 = MIN, bit1 = MAX.
-    /// A clamp that was never requested by userspace is reset to its class
-    /// default on every `sched_setattr`; a user-defined one survives.
-    pub uclamp_user_defined: AtomicU8,
-
     pub exit_status: AtomicI32,
     /// Low-byte clone/fork exit signal (`task_struct::exit_signal`). Linux
     /// wait selectors use this to distinguish normal SIGCHLD children from

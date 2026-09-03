@@ -242,7 +242,7 @@ fn a_dead_owner_with_no_kernel_pi_state_is_left_for_the_robust_list() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_realtime_waiter_boosts_the_owner_and_the_boost_is_returned_at_unlock() {
+fn a_base_policy_change_during_donation_survives_deboost() {
     static W: AtomicU32 = AtomicU32::new(0);
     let ua = word_addr(&W);
     const MM: u64 = 0xb000;
@@ -260,11 +260,21 @@ fn a_realtime_waiter_boosts_the_owner_and_the_boost_is_returned_at_unlock() {
                 mid-priority third task preempts the owner and the RT waiter is stalled \
                 indefinitely — unbounded priority inversion");
 
+    let requested = SchedClass::Rt { prio: 40, policy: SchedPolicy::Rr };
+    live::pi_boost::set_base_class(&owner, requested);
+    assert_eq!(owner.normal_sched_class(), requested,
+               "a policy change while boosted must update configured state immediately");
+    assert_eq!(owner.sched_class(), SchedClass::Rt { prio: 70, policy: SchedPolicy::Fifo },
+               "a weaker base-policy change must not erase a stronger active donation");
+    assert!(owner.sched_is_boosted());
+
     live::set_current(owner.clone());
     assert_eq!(futex_pi::pi::unlock_pi(ua, true), 0);
     assert_eq!(rx.recv_timeout(Duration::from_secs(5)).expect("handed off"), 0);
-    assert_eq!(owner.sched_class(), SchedClass::Normal { weight: 1024 },
-               "the borrowed priority must be returned at unlock, not kept forever");
+    assert_eq!(owner.sched_class(), requested,
+               "deboost must restore the policy configured while donation was active");
+    assert_eq!(owner.normal_sched_class(), requested);
+    assert!(!owner.sched_is_boosted());
     h.join().unwrap();
 }
 

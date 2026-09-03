@@ -4,6 +4,8 @@
 // the `ipc` futex harnesses, which supply their own minimal `Task`.
 
 use crate::pi_prio::{base_class, is_boosted};
+use alloc::sync::Arc;
+
 use crate::{SchedClass, SchedPolicy, Task};
 
 const fn rt(p: u8) -> SchedClass { SchedClass::Rt { prio: p, policy: SchedPolicy::Fifo } }
@@ -17,14 +19,46 @@ fn an_unboosted_task_reports_its_own_class_as_its_base() {
 }
 
 #[test]
-fn a_boosted_task_reports_the_saved_base_not_the_inherited_class() {
+fn a_boosted_task_reports_normal_not_inherited_class() {
     let t = Task::new(8, "t", fair(1024));
-    // What `live::pi_boost::apply_boost` does: save the base, then raise
-    // the effective class.
-    t.security.pi_base_class.store(fair(1024).encode(), core::sync::atomic::Ordering::Release);
+    // PI changes only canonical effective priority; normal priority remains
+    // the task's configured base.
     t.set_sched_class(rt(70));
     assert!(is_boosted(&t));
     assert_eq!(t.sched_class(), rt(70), "the task really does RUN at the inherited priority");
     assert_eq!(base_class(&t), fair(1024),
                "but sched_getparam and any nested boost computation must see its OWN class");
+}
+
+#[test]
+fn fork_does_not_inherit_a_pi_donation() {
+    let parent = Task::new(9, "parent", fair(1024));
+    parent.set_sched_class(rt(80));
+    let mut child = Task::new(10, "child", fair(1024));
+    crate::live::sched_fork::inherit_sched_params(&mut child, &parent);
+    assert_eq!(child.sched_class(), fair(1024));
+    assert_eq!(base_class(&child), fair(1024));
+    assert!(!is_boosted(&child));
+}
+
+#[test]
+fn deadline_waiter_cannot_publish_an_owner_without_a_deadline_entity() {
+    let owner = Arc::new(Task::new(11, "owner", fair(1024)));
+    crate::live::pi_boost::apply_boost(&owner, &[SchedClass::Deadline]);
+    assert_eq!(owner.sched_class(), fair(1024));
+    assert!(!is_boosted(&owner));
+}
+
+#[test]
+fn deboost_clears_a_donor_that_a_stronger_base_had_masked() {
+    let owner = Arc::new(Task::new(12, "owner", rt(20)));
+    owner.set_sched_class(rt(40));
+    owner.set_normal_sched_class_policy(rt(80), crate::sched_enc::SCHED_FIFO);
+    assert_eq!(owner.sched_class(), rt(80));
+    assert!(is_boosted(&owner));
+    crate::live::pi_boost::deboost(&owner);
+    assert_eq!(owner.sched_class(), rt(80));
+    assert!(!is_boosted(&owner));
+    owner.set_normal_sched_class_policy(rt(20), crate::sched_enc::SCHED_FIFO);
+    assert_eq!(owner.sched_class(), rt(20), "departed donor must never be resurrected");
 }

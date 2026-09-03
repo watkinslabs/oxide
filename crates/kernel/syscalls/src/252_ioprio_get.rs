@@ -9,7 +9,6 @@
 // fold the set with `ioprio_best`.
 #![cfg(target_os = "oxide-kernel")]
 
-use core::sync::atomic::Ordering;
 use syscall::errno::Errno;
 use syscall::SyscallArgs;
 use crate::ioprio;
@@ -21,7 +20,7 @@ fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 fn effective(t: &sched::Task) -> i32 {
     let policy = crate::sched_policy::task_policy(t);
     ioprio::effective(t.raw_ioprio(),
-                      t.nice.load(Ordering::Acquire) as i32,
+                      t.nice_value() as i32,
                       crate::sched_policy::idle_policy(policy),
                       crate::sched_policy::rt_policy(policy) || crate::sched_policy::dl_policy(policy))
 }

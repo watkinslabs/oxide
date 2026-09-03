@@ -7,8 +7,8 @@ before its dependent row begins. Parallel rows have disjoint write ownership.
 | Status | Branch | Change | Exit evidence |
 |---|---|---|---|
 | MERGED | `Z20-scheduler-state` | Freeze extracted canonical scheduler state/entity contract before revising its existing dependents | PR #7134; standalone freeze template; no ratchet growth |
-| IN-PROGRESS | `R135-scheduler-priority-model` | Replace the obsolete scheduler/cgroup contracts with the Linux 7.2 priority, lock, EEVDF, task-group, PI, affinity, and native fixed-priority model | spec/manifest/xref checks; no ratchet growth versus clean main |
-| CLAIMED | `B3319-unify-scheduler-priority` | Add canonical configured/normal/effective priority, class entities, coherent snapshots, and remove encoded class parameters/standalone task weight | all conversions and snapshots; queued/running/blocked mutation controls; both-arch build |
+| MERGED | `R135-scheduler-priority-model` | Replace the obsolete scheduler/cgroup contracts with the Linux 7.2 priority, lock, EEVDF, task-group, PI, affinity, and native fixed-priority model | merged specification foundation; spec/manifest/xref checks; no ratchet growth versus clean main |
+| IN-PROGRESS | `B3319-unify-scheduler-priority` | Establish one scheduler-owned configured/normal/effective priority model, exact nice load/inverse tables, scalar class-entity state, and a versioned coherent observer snapshot; remove encoded-class, standalone-weight, and PI-base shadows | exact conversion/table controls; generation retry and source-ownership controls; hosted suites; both-arch build |
 | PENDING | unclaimed | Add `TaskPi` + stable `task_rq_lock` retry and the RAII scheduler-change transaction; route Linux policy/nice/fork writers through it | migration/queued/running/wakeup loom controls; source-writer gate |
 | PENDING | unclaimed | Rebuild PI around owner-wide waiter aggregation, blocked-on propagation, and canonical effective priority | multi-lock/chained PI, deboost, timeout, exit, and fork controls |
 | PENDING | unclaimed | Replace flat leftmost-vruntime scheduling with Linux EEVDF task entities | oracle lockstep; discriminating EEVDF positive controls |

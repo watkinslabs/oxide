@@ -50,11 +50,11 @@ pub fn body(tid: u32) -> Vec<u8> {
     // Fields 40 (rt_priority) and 41 (policy) are the scheduler-policy pair
     // `ps -o rtprio,cls` reads; they must come from `task_struct::policy`, not
     // a hardcoded 0 (`chrt`-set RT tasks otherwise render as SCHED_OTHER).
-    let rt_priority = match task.sched_class() {
-        sched::SchedClass::Rt { prio, .. } => prio as u64,
-        _ => 0,
-    };
-    let policy = task.policy.load(Ordering::Acquire) as u64;
+    let sched = task.priority_snapshot();
+    let priority = sched.prio.linux_prio().unwrap_or(sched::task::MAX_PRIO) as i64;
+    let nice = sched.static_prio.nice().unwrap_or(0) as i64;
+    let rt_priority = sched.rt_priority as u64;
+    let policy = sched.policy.code() as u64;
     // Field 25 (rsslim): `sig->rlim[RLIMIT_RSS].rlim_cur`. This is the ONLY
     // place upstream reads RLIMIT_RSS — nothing enforces it — so a hardcoded 0
     // was the limit reading as "no resident pages allowed" to every tool that
@@ -65,6 +65,8 @@ pub fn body(tid: u32) -> Vec<u8> {
         else if f == 6 { push(&mut out, b" "); push_u64(&mut out, session); }
         else if f == 14 { push(&mut out, b" "); push_u64(&mut out, utime); }
         else if f == 15 { push(&mut out, b" "); push_u64(&mut out, stime); }
+        else if f == 18 { push(&mut out, b" "); push_i64(&mut out, priority); }
+        else if f == 19 { push(&mut out, b" "); push_i64(&mut out, nice); }
         else if f == 22 { push(&mut out, b" "); push_u64(&mut out, starttime); }
         else if f == 25 { push(&mut out, b" "); push_u64(&mut out, rsslim); }
         else if f == 40 { push(&mut out, b" "); push_u64(&mut out, rt_priority); }
@@ -83,4 +85,9 @@ fn push_u64(v: &mut Vec<u8>, mut n: u64) {
     let mut buf = [0u8; 20]; let mut i = 0;
     while n > 0 { buf[i] = b'0' + (n % 10) as u8; n /= 10; i += 1; }
     while i > 0 { i -= 1; v.push(buf[i]); }
+}
+
+fn push_i64(v: &mut Vec<u8>, n: i64) {
+    if n < 0 { v.push(b'-'); }
+    push_u64(v, n.unsigned_abs());
 }

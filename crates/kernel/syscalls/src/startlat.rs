@@ -79,7 +79,7 @@ impl Drop for OpenAtSpan {
 #[inline]
 pub fn start() -> (u64, u64) {
     let cpu = sched::live::current()
-        .map(|t| t.sum_exec_runtime_ns.load(Ordering::Relaxed)).unwrap_or(0);
+        .map(|t| t.sched_entity_snapshot().sum_exec_runtime).unwrap_or(0);
     (now_ns(), cpu)
 }
 
@@ -101,7 +101,7 @@ pub fn record(nr: u64, start: (u64, u64), rv: i64) {
     // wall time was kernel work; a changed one means it blocked or was
     // preempted, and `cpu_ms` is what it actually ran. Same discriminator
     // `debug-syscost` uses.
-    let cpu_ns = cur.sum_exec_runtime_ns.load(Ordering::Relaxed).saturating_sub(cpu0);
+    let cpu_ns = cur.sched_entity_snapshot().sum_exec_runtime.saturating_sub(cpu0);
     klog::write_raw(b" left_cpu=");
     klog::write_dec_u64(if cpu_ns == 0 { 0 } else { 1 });
     klog::write_raw(b" cpu_ms=");

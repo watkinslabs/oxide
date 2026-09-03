@@ -255,7 +255,7 @@ fn cfs_rotation_is_round_robin_for_equal_weight() {
     for _ in 0..9 {
         let t = q.pick_leftmost().unwrap();
         order.push(t.tid);
-        t.vruntime.fetch_add(SLICE, Ordering::AcqRel);
+        t.sched.se.vruntime.fetch_add(SLICE, Ordering::AcqRel);
         q.enqueue(t);
     }
     assert_eq!(order, alloc::vec![1u32, 2, 3, 1, 2, 3, 1, 2, 3],

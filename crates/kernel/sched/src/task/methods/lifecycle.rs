@@ -2,7 +2,7 @@
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{fence, AtomicBool, AtomicI8, AtomicI32, AtomicPtr, AtomicU16, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use core::sync::atomic::{fence, AtomicBool, AtomicI32, AtomicPtr, AtomicU16, AtomicU32, AtomicU64, AtomicU8, Ordering};
 #[cfg(feature = "debug-task-fpu-provenance")]
 use core::sync::atomic::AtomicUsize;
 
@@ -104,12 +104,7 @@ impl Task {
                 wake_next: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
                 on_wake_list: AtomicBool::new(false),
                 cpu:      AtomicU16::new(u16::MAX),
-                util_avg: AtomicU32::new(0),
-                util_last_update_ns: AtomicU64::new(0),
                 in_iowait: AtomicBool::new(false),
-                vruntime: AtomicU64::new(0),
-                exec_start_ns: AtomicU64::new(0),
-                sum_exec_runtime_ns: AtomicU64::new(0),
                 vtime_start_ns: AtomicU64::new(0),
                 vtime_state: AtomicU8::new(if starts_in_user {
                     crate::cpustat::VTIME_USER
@@ -123,7 +118,6 @@ impl Task {
                 maj_flt: AtomicU64::new(0),
                 nvcsw:   AtomicU64::new(0),
                 nivcsw:  AtomicU64::new(0),
-                nr_migrations: AtomicU64::new(0),
                 #[cfg(feature = "debug-getdents")]
                 getdents: crate::diag::getdents::GetdentsState::new(),
                 #[cfg(feature = "debug-syscall-return")]
@@ -136,12 +130,10 @@ impl Task {
                 io_write_bytes: AtomicU64::new(0),
                 io_cancelled_write_bytes: AtomicU64::new(0),
                 futex_uaddr: AtomicU64::new(0),
-                load_weight: AtomicU32::new(match class {
-                    SchedClass::Normal { weight } => weight,
-                    _ => crate::cputime::NICE_0_WEIGHT,
-                }),
+                sched: crate::task::TaskSched::new(class, crate::sched_enc::RR_TIMESLICE_TICKS,
+                    crate::sched_enc::UCLAMP_CAPACITY_SCALE),
                 mempolicy: [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)],
-                task_wake_lock: Spinlock::new(()),
+                pi_lock: Spinlock::new(()),
                 #[cfg(feature = "debug-watchdog")]
                 wake_diag_phase: AtomicU8::new(WakeDiagPhase::None as u8),
                 #[cfg(feature = "debug-watchdog")]
@@ -150,13 +142,6 @@ impl Task {
                 user_cpus_allowed: cpu::AtomicCpuMask::new(),
                 cpuset_cpus_allowed: cpu::AtomicCpuMask::all(),
                 no_setaffinity: AtomicBool::new(false),
-                class_enc: AtomicU64::new(class.encode()),
-                policy: AtomicU32::new(crate::sched_enc::policy_code_for(class)),
-                sched_reset_on_fork: AtomicBool::new(false),
-                sched_slice_ns: AtomicU64::new(0),
-                uclamp_min: AtomicU32::new(0),
-                uclamp_max: AtomicU32::new(crate::sched_enc::UCLAMP_CAPACITY_SCALE),
-                uclamp_user_defined: AtomicU8::new(0),
                 exit_status: AtomicI32::new(0),
                 exit_signal: AtomicU8::new(Signum::Sigchld as u8),
                 parent_tid: AtomicU32::new(0),
@@ -166,8 +151,6 @@ impl Task {
                 ucounts_ns:     AtomicU64::new(0),
                 ucounts_uid:    AtomicU32::new(0),
                 used_superpriv: AtomicBool::new(false),
-                rt_time_slice: AtomicU32::new(crate::sched_enc::RR_TIMESLICE_TICKS),
-                dl: crate::deadline::DlEntity::new(),
                 rt_requeue_tail: AtomicBool::new(false),
             },
             security: TaskSecurity {
@@ -211,7 +194,6 @@ impl Task {
                 robust_list_head: AtomicU64::new(0),
                 robust_list_len:  AtomicU64::new(0),
                 sysvsem_undo:     AtomicU64::new(0),
-                pi_base_class: AtomicU64::new(u64::MAX),
                 no_new_privs:   AtomicBool::new(false),
                 tsc_sigsegv:    AtomicBool::new(false),
                 tagged_addr:    AtomicBool::new(false),
@@ -284,7 +266,6 @@ impl Task {
             exe_inode:  Spinlock::new(None),
             fs_context: Spinlock::new(Arc::new(super::super::FsContext::new())),
             environ:    Spinlock::new(None),
-            nice:       AtomicI8::new(0),
             io_context: Spinlock::new(crate::ioprio::IoContext::new(crate::ioprio::DEFAULT)),
             spawn_ns:   AtomicU64::new(0),
             start_boottime_ns: 0,
@@ -297,7 +278,6 @@ impl Task {
             itimer_virtual_interval_ns: AtomicU64::new(0),
             itimer_prof_ns: AtomicU64::new(0),
             itimer_prof_interval_ns: AtomicU64::new(0),
-            rt_timeout_ns: AtomicU64::new(0),
             clear_child_tid: AtomicU64::new(0),
             set_child_tid: AtomicU64::new(0),
             restart_block: super::super::restart::RestartBlock::new(),

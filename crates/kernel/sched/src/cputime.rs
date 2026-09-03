@@ -3,40 +3,34 @@
 // monotonic clock. Foundation for nice-weighted fairness and the
 // cgroup v2 cpu controller (cpu.weight / cpu.max).
 
-/// CFS weight of a nice-0 task (`sched_prio_to_weight[20]` in Linux).
-/// vruntime advances as `delta_exec · NICE_0_WEIGHT / weight`, so a
-/// nice-0 task accrues vruntime at exactly wall-clock rate.
+use crate::task::LoadWeight;
+
+/// User-facing CFS weight of a nice-0 task.
 pub const NICE_0_WEIGHT: u32 = 1024;
 
-/// Linux `sched_prio_to_weight[]`: nice -20..19 →
-/// load weight. Each nice step is ~1.25× CPU share. Index = nice + 20.
-pub const SCHED_PRIO_TO_WEIGHT: [u32; 40] = [
-    /* -20 */ 88761, 71755, 56483, 46273, 36291,
-    /* -15 */ 29154, 23254, 18705, 14949, 11916,
-    /* -10 */  9548,  7620,  6100,  4904,  3906,
-    /*  -5 */  3121,  2501,  1991,  1586,  1277,
-    /*   0 */  1024,   820,   655,   526,   423,
-    /*   5 */   335,   272,   215,   172,   137,
-    /*  10 */   110,    87,    70,    56,    45,
-    /*  15 */    36,    29,    23,    18,    15,
-];
+/// Internal 64-bit fair load of a nice-0 task.
+pub const NICE_0_LOAD: u64 = match LoadWeight::for_nice(0) {
+    Some(load) => load.weight,
+    None => 0,
+};
 
 /// Nice value [-20,19] → CFS load weight. Out-of-range clamps.
 /// # C: O(1)
 pub fn nice_to_weight(nice: i8) -> u32 {
-    let idx = (nice as i32 + 20).clamp(0, 39) as usize;
-    SCHED_PRIO_TO_WEIGHT[idx]
+    let nice = (nice as i32).clamp(-20, 19) as i8;
+    let load = LoadWeight::for_nice(nice).unwrap().weight;
+    (load * NICE_0_WEIGHT as u64 / NICE_0_LOAD) as u32
 }
 
-/// vruntime increment for `delta_exec_ns` of CPU time at `weight`.
-/// `delta · NICE_0_WEIGHT / weight`: heavier tasks (higher weight, more
+/// vruntime increment for `delta_exec_ns` at canonical scaled `load`.
+/// `delta · NICE_0_LOAD / load`: heavier tasks (higher load, more
 /// negative nice) accrue vruntime slower → get scheduled more. Computed
 /// in u128 to avoid overflow on large deltas, saturated back to u64.
-/// A zero or absurd weight falls back to NICE_0 so we never divide by 0.
+/// A zero load falls back to NICE_0_LOAD so we never divide by 0.
 /// # C: O(1)
-pub fn vruntime_delta(delta_exec_ns: u64, weight: u32) -> u64 {
-    let w = if weight == 0 { NICE_0_WEIGHT } else { weight } as u128;
-    let scaled = (delta_exec_ns as u128) * (NICE_0_WEIGHT as u128) / w;
+pub fn vruntime_delta(delta_exec_ns: u64, load: u64) -> u64 {
+    let load = if load == 0 { NICE_0_LOAD } else { load } as u128;
+    let scaled = (delta_exec_ns as u128) * (NICE_0_LOAD as u128) / load;
     scaled.min(u64::MAX as u128) as u64
 }
 
@@ -71,7 +65,7 @@ pub fn accounts_exec_runtime(class: crate::task::SchedClass) -> bool {
 /// # Ctx: scheduler / timer IRQ
 pub fn charge_exec_runtime(task: &crate::Task, delta_ns: u64) {
     use core::sync::atomic::Ordering;
-    task.sum_exec_runtime_ns.fetch_add(delta_ns, Ordering::Relaxed);
+    task.sched.se.sum_exec_runtime.fetch_add(delta_ns, Ordering::Relaxed);
     task.thread_group.charge_sched_runtime(delta_ns);
 }
 
@@ -83,19 +77,20 @@ mod tests {
     fn nice_0_is_wall_rate() {
         // nice 0 → weight 1024 → vruntime advances 1:1 with wall time.
         assert_eq!(nice_to_weight(0), NICE_0_WEIGHT);
-        assert_eq!(vruntime_delta(1_000_000, NICE_0_WEIGHT), 1_000_000);
+        assert_eq!(NICE_0_LOAD, 1_024 << 10);
+        assert_eq!(vruntime_delta(1_000_000, NICE_0_LOAD), 1_000_000);
     }
 
     #[test]
     fn lower_nice_accrues_vruntime_slower() {
         // nice -20 (heavy) accrues far less vruntime than nice 0 for the
         // same CPU time → picked more often.
-        let heavy = nice_to_weight(-20);
-        let light = nice_to_weight(19);
-        assert!(heavy > NICE_0_WEIGHT && light < NICE_0_WEIGHT);
+        let heavy = LoadWeight::for_nice(-20).unwrap().weight;
+        let light = LoadWeight::for_nice(19).unwrap().weight;
+        assert!(heavy > NICE_0_LOAD && light < NICE_0_LOAD);
         let d = 10_000_000u64;
-        assert!(vruntime_delta(d, heavy) < vruntime_delta(d, NICE_0_WEIGHT));
-        assert!(vruntime_delta(d, light) > vruntime_delta(d, NICE_0_WEIGHT));
+        assert!(vruntime_delta(d, heavy) < vruntime_delta(d, NICE_0_LOAD));
+        assert!(vruntime_delta(d, light) > vruntime_delta(d, NICE_0_LOAD));
     }
 
     #[test]
@@ -114,8 +109,18 @@ mod tests {
     #[test]
     fn vruntime_delta_no_overflow() {
         // Huge delta · heavy weight stays finite.
-        let v = vruntime_delta(u64::MAX, nice_to_weight(-20));
+        let load = LoadWeight::for_nice(-20).unwrap().weight;
+        let v = vruntime_delta(u64::MAX, load);
         assert!(v > 0 && v <= u64::MAX);
+    }
+
+    #[test]
+    fn vruntime_uses_scaled_load_without_narrowing() {
+        let delta = 1_000_000u64;
+        let load = LoadWeight::for_nice(0).unwrap().weight;
+        assert_eq!(vruntime_delta(delta, load), delta);
+        assert_ne!(vruntime_delta(delta, nice_to_weight(0) as u64), delta);
+        assert_eq!(vruntime_delta(delta, u64::MAX), 0);
     }
 
     #[test]

@@ -46,8 +46,8 @@ impl RtRunqueue {
     /// Sum runnable RT entity signals for the CPU utilization hook.
     pub fn util_avg(&self) -> u32 {
         self.queues.iter().flat_map(|queue| queue.iter())
-            .map(|task| task.util_avg.load(Ordering::Acquire))
-            .fold(0, u32::saturating_add)
+            .map(|task| task.sched.se.avg_util.load(Ordering::Acquire))
+            .fold(0u64, u64::saturating_add).min(u32::MAX as u64) as u32
     }
 
     /// Insert at the tail of the priority's FIFO — the wakeup position

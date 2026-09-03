@@ -6,7 +6,6 @@
 // exercises.
 #![cfg(target_os = "oxide-kernel")]
 
-use core::sync::atomic::Ordering;
 use syscall::{errno::Errno, SyscallArgs};
 use crate::sched_policy;
 use crate::userbuf::validate_user_buf;
@@ -41,7 +40,7 @@ pub(crate) fn do_sched_setscheduler(pid_raw: u64, policy: i32, uparam: u64) -> i
     let caller = match sched::live::current() { Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64) };
     // Linux `_sched_setscheduler` seeds attr.sched_nice from the TARGET's
     // current nice — sched_setscheduler(2) never changes nice.
-    let nice = t.nice.load(Ordering::Acquire) as i32;
+    let nice = t.nice_value() as i32;
     // A `struct sched_param` carries no runtime/deadline/period, so a
     // SCHED_DEADLINE request can never satisfy Linux `__checkparam_dl` here.
     sched_policy::setscheduler(caller, &t, policy, prio, nice)

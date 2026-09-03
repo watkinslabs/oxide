@@ -19,13 +19,13 @@ fn lookup_init_pid(pid: u32) -> Option<alloc::sync::Arc<crate::Task>> {
 }
 
 /// Cumulative CPU time consumed by every member of `pids` (sum of each
-/// task's sum_exec_runtime_ns). Missing tasks contribute 0.
+/// task's scheduler entity runtime). Missing tasks contribute 0.
 /// # C: O(members · registry-lookup)
 fn members_runtime_ns(pids: &[u64]) -> u64 {
     let mut total = 0u64;
     for &p in pids {
         if let Some(t) = lookup_init_pid(p as u32) {
-            total = total.saturating_add(t.sum_exec_runtime_ns.load(Ordering::Acquire));
+            total = total.saturating_add(t.sched.se.sum_exec_runtime.load(Ordering::Acquire));
         }
     }
     total
@@ -114,12 +114,11 @@ pub fn cpuset_hook(pid: u64, mask: cpu::CpuMask) {
     }
 }
 
-/// cpu.weight: set the live CFS load weight of the global-tid `pid` task.
-/// # C: O(N) registry lookup
-pub fn weight_hook(pid: u64, weight: u32) {
-    if let Some(t) = lookup_init_pid(pid as u32) {
-        t.load_weight.store(weight, CgOrd::Release);
-    }
+/// Record no per-task mutation for a cpu.weight membership callback.
+/// # C: O(1)
+pub fn weight_hook(_pid: u64, _weight: u32) {
+    // cpu.weight changes task-group shares and its per-CPU fair entities;
+    // a member task's nice-derived load remains unchanged (`13a§7`).
 }
 
 /// vpid → global tid for cgroup.procs/threads writes (identity fallback).

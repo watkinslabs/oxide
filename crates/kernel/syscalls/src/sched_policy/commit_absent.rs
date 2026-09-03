@@ -6,6 +6,9 @@
 
 use alloc::sync::Arc;
 
-/// No runqueue in this configuration; the class is already stored on the task.
+/// No runqueue in this configuration; publish the validated task state directly.
 /// # C: O(1)
-pub fn set_class(_t: &Arc<sched::Task>, _c: sched::SchedClass) {}
+pub fn set_class(t: &Arc<sched::Task>, c: sched::SchedClass, policy: u32,
+                 clamp: sched::SchedUclamp, reset: bool) {
+    t.set_sched_policy_controls(c, policy, clamp, reset);
+}
