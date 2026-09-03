@@ -47,6 +47,10 @@ fn load_locked(cur: &sched::Task, name_descriptor: u64, module_output: u64) -> u
         return STATUS_SUCCESS;
     }
     let Some(as_) = (unsafe { cur.mm_ref() }).map(|mm| mm.clone()) else { return STATUS_INVALID_PARAMETER; };
+    if let Some(base) = load_native_unixlib(&narrow_wanted, &as_) {
+        if uaccess::copy_to_user(module_output, &base.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
+        return STATUS_SUCCESS;
+    }
     let Some(catalog) = cur.thread_group.nt_module_catalog() else { return STATUS_DLL_NOT_FOUND; };
     let Some((name, blob)) = catalog.modules().iter()
         .find(|module| pe::loader_name::matches_ascii(&narrow_wanted, &module.name))
@@ -123,6 +127,44 @@ fn load_locked(cur: &sched::Task, name_descriptor: u64, module_output: u64) -> u
         unsafe { (*return_regs.expect("initializer path validated its return frame")).rip = trampoline.entry.as_u64(); }
     }
     STATUS_SUCCESS
+}
+
+#[cfg(target_arch = "x86_64")]
+fn load_native_unixlib(name: &[u8], as_: &vmm::AddressSpace) -> Option<u64> {
+    let path = native_unixlib_path(name)?;
+    let bytes = vfs::read_abs(core::str::from_utf8(&path).ok()?).ok()?;
+    elf_load::unixlib::map_shared_object(&bytes, as_).ok().map(|image| image.base)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn native_unixlib_path(name: &[u8]) -> Option<Vec<u8>> {
+    let mut path = name.to_vec();
+    if path.starts_with(b"\\??\\") { path.drain(..4); }
+    for byte in &mut path { if *byte == b'\\' { *byte = b'/'; } }
+    if path.starts_with(b"Z:") || path.starts_with(b"z:") { path.drain(..2); }
+    let suffix = path.len().checked_sub(4)?;
+    if !path[suffix..].eq_ignore_ascii_case(b".dll") { return None; }
+    path.truncate(suffix);
+    path.extend_from_slice(b".so");
+    if path.first().copied() != Some(b'/') { return None; }
+    Some(path)
+}
+
+#[cfg(all(test, target_arch = "x86_64"))]
+mod native_unixlib_tests {
+    use super::native_unixlib_path;
+
+    #[test]
+    fn nt_z_drive_unixlib_name_maps_to_vfs_so_path() {
+        assert_eq!(native_unixlib_path(b"\\??\\Z:\\usr\\lib64\\wine\\x86_64-unix\\winevulkan.dll"),
+            Some(b"/usr/lib64/wine/x86_64-unix/winevulkan.so".to_vec()));
+    }
+
+    #[test]
+    fn non_absolute_or_non_dll_names_are_not_native_unixlibs() {
+        assert_eq!(native_unixlib_path(b"kernel32.dll"), None);
+        assert_eq!(native_unixlib_path(b"/tmp/module.exe"), None);
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
