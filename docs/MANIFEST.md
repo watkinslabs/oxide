@@ -263,6 +263,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `31ft-windows-nt-fde-lookup.md` | FROZEN | 2026-09-03 | `31fq`,`31fs`,`31v`,`52`,`53` |
 | `31fu-windows-nt-dwarf-cfa.md` | FROZEN | 2026-09-03 | `31ft`,`31fs`,`31fp`,`31v`,`52`,`53` |
 | `31fv-windows-nt-unwind-dispatch.md` | FROZEN | 2026-09-03 | `31fp`,`31fu`,`31ft`,`31h`,`52`,`53` |
+| `31fw-windows-nt-load-so-dll.md` | FROZEN | 2026-09-03 | `31h`,`31fp`,`31fv`,`52`,`53` |
 
 ## Deleted
 

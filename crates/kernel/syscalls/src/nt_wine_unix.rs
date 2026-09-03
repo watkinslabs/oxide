@@ -330,6 +330,17 @@ fn validate_builtin_unwind(args: u64) -> u64 {
     STATUS_NOT_IMPLEMENTED
 }
 
+#[cfg(target_os = "oxide-kernel")]
+fn load_so_dll(args: u64) -> u64 {
+    if args == 0 || args.checked_add(16).is_none() { return STATUS_INVALID_PARAMETER; }
+    // The process catalog is the canonical Wine builtin source in Oxide. Its
+    // PE image loader owns mapping, imports, PEB publication, and attach order.
+    crate::nt_loader_dir::load(args, args + 16)
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn load_so_dll(_args: u64) -> u64 { STATUS_NOT_IMPLEMENTED }
+
 #[cfg(not(target_os = "oxide-kernel"))]
 fn validate_builtin_unwind(args: u64) -> u64 {
     if args == 0 { STATUS_INVALID_PARAMETER } else { STATUS_NOT_IMPLEMENTED }
@@ -345,6 +356,7 @@ pub(crate) fn dispatch(call: NtCall) -> u64 {
         return STATUS_INVALID_PARAMETER;
     }
     match WineUnixFunction::decode(call.args.a1) {
+        Some(WineUnixFunction::LoadSoDll) => load_so_dll(call.args.a2),
         Some(WineUnixFunction::UnwindBuiltinDll) => validate_builtin_unwind(call.args.a2),
         // unix_wine_dbg_write: `{ const char *str; size_t len; }`.
         // Logging ownership is added with the kernel console bridge; reject
