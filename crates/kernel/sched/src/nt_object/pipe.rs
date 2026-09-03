@@ -1,7 +1,6 @@
 //! State owned by one native NT named-pipe object.
 
-use alloc::{collections::VecDeque, sync::Arc};
-use core::sync::atomic::{AtomicU64, Ordering};
+use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 use crate::live::WaitList;
 use crate::WaitOutcome;
 use sync::{Spinlock, TaskList as TaskListClass};
@@ -54,8 +53,10 @@ pub struct NtPipe {
     transport: Spinlock<PipeTransport, TaskListClass>,
     read_waiters: WaitList,
     write_waiters: WaitList,
-    cancel_epoch: AtomicU64,
+    pending_io: Spinlock<Vec<PipeIoRequest>, TaskListClass>,
 }
+
+struct PipeIoRequest { owner_tid: u32, io_status: u64, cancelled: bool }
 
 /// A directional handle view over one shared named-pipe transport.
 pub struct NtPipeEndpoint {
@@ -95,14 +96,46 @@ impl NtPipe {
         Self { config, instances: Spinlock::new(0), transport: Spinlock::new(PipeTransport {
             server_to_client: VecDeque::new(), client_to_server: VecDeque::new(),
             server_closed: false, client_closed: false, connected: false, listening: false,
-        }), read_waiters: WaitList::new(), write_waiters: WaitList::new(), cancel_epoch: AtomicU64::new(0) }
+        }), read_waiters: WaitList::new(), write_waiters: WaitList::new(), pending_io: Spinlock::new(Vec::new()) }
     }
 
     pub fn config(&self) -> NtPipeConfig { self.config }
     pub fn instances(&self) -> u32 { *self.instances.lock() }
 
-    /// Return the cancellation generation used by blocking I/O waiters. # C: O(1)
-    pub fn cancellation_epoch(&self) -> u64 { self.cancel_epoch.load(Ordering::Acquire) }
+    /// Register one blocking request before it parks. # C: O(N_requests)
+    pub fn begin_io(&self, owner_tid: u32, io_status: u64) {
+        self.pending_io.lock().push(PipeIoRequest { owner_tid, io_status, cancelled: false });
+    }
+
+    /// Retire one request after its wait has completed. # C: O(N_requests)
+    pub fn end_io(&self, owner_tid: u32, io_status: u64) {
+        let mut requests = self.pending_io.lock();
+        if let Some(index) = requests.iter().position(|request| request.owner_tid == owner_tid && request.io_status == io_status) {
+            requests.remove(index);
+        }
+    }
+
+    /// Mark this thread's matching requests cancelled and wake their waiters.
+    /// `io_status == None` implements `NtCancelIoFile`; `Some` implements Ex.
+    /// # C: O(N_requests)
+    pub fn cancel_io(&self, owner_tid: u32, io_status: Option<u64>) -> bool {
+        let mut requests = self.pending_io.lock();
+        let mut cancelled = false;
+        for request in requests.iter_mut().filter(|request| request.owner_tid == owner_tid) {
+            if io_status.is_none() || io_status == Some(request.io_status) {
+                request.cancelled = true;
+                cancelled = true;
+            }
+        }
+        drop(requests);
+        if cancelled { self.read_waiters.wake_all(); self.write_waiters.wake_all(); }
+        cancelled
+    }
+
+    fn is_cancelled(&self, owner_tid: u32, io_status: u64) -> bool {
+        self.pending_io.lock().iter().any(|request| request.owner_tid == owner_tid
+            && request.io_status == io_status && request.cancelled)
+    }
 
     /// Reserve one server instance without exceeding the NT limit.
     pub fn reserve_instance(&self) -> bool {
@@ -224,14 +257,6 @@ impl NtPipe {
         self.write_waiters.wake_all();
     }
 
-    /// Cancel waits currently associated with this pipe object and wake them.
-    /// # C: O(N_waiters)
-    pub fn cancel_io(&self) {
-        self.cancel_epoch.fetch_add(1, Ordering::AcqRel);
-        self.read_waiters.wake_all();
-        self.write_waiters.wake_all();
-    }
-
     fn read_ready(&self, side: NtPipeSide) -> bool {
         let transport = self.transport.lock();
         let queue = match side { NtPipeSide::Server => &transport.client_to_server, NtPipeSide::Client => &transport.server_to_client };
@@ -251,16 +276,15 @@ impl NtPipe {
     /// prepare/recheck/park ordering used by every blocking kernel path.
     /// # Sleeps: yes
     pub unsafe fn wait_for_io(&self, side: NtPipeSide, write: bool, deadline_ns: u64,
-                              now: impl Fn() -> u64) -> NtPipeWait {
+                              owner_tid: u32, io_status: u64, now: impl Fn() -> u64) -> NtPipeWait {
         let waiters = if write { &self.write_waiters } else { &self.read_waiters };
-        let epoch = self.cancel_epoch.load(Ordering::Acquire);
         // SAFETY: the native syscall caller is process context and owns no
         // transport lock while the scheduler parks the current task.
         let outcome = unsafe { crate::live::wait_event_interruptible_until(waiters, deadline_ns, now, || {
-            if self.cancel_epoch.load(Ordering::Acquire) != epoch { return true; }
+            if self.is_cancelled(owner_tid, io_status) { return true; }
             if write { self.write_ready(side) } else { self.read_ready(side) }
         }) };
-        if self.cancel_epoch.load(Ordering::Acquire) != epoch { return NtPipeWait::Cancelled; }
+        if self.is_cancelled(owner_tid, io_status) { return NtPipeWait::Cancelled; }
         match outcome {
             WaitOutcome::Ready => NtPipeWait::Ready,
             WaitOutcome::Interrupted => NtPipeWait::Interrupted,
@@ -275,10 +299,10 @@ impl NtPipeEndpoint {
     pub fn read(&self, output: &mut [u8]) -> NtPipeIo { self.pipe.read(self.side, output) }
     pub fn completion_mode(&self) -> u32 { self.modes.lock().1 }
     /// # Sleeps: yes
-    pub unsafe fn wait_for_io(&self, write: bool, deadline_ns: u64,
-                              now: impl Fn() -> u64) -> NtPipeWait {
+    pub unsafe fn wait_for_io(&self, write: bool, deadline_ns: u64, owner_tid: u32,
+                              io_status: u64, now: impl Fn() -> u64) -> NtPipeWait {
         // SAFETY: forwards the endpoint's process-context wait contract.
-        unsafe { self.pipe.wait_for_io(self.side, write, deadline_ns, now) }
+        unsafe { self.pipe.wait_for_io(self.side, write, deadline_ns, owner_tid, io_status, now) }
     }
     pub fn close(&self) { self.pipe.close(self.side); }
     pub fn disconnect(&self) -> bool {

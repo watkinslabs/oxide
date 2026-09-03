@@ -112,9 +112,10 @@ fn named_pipe_cancellation_wakes_waiters_without_resetting_transport() {
         completion_mode: 0, max_instances: 1, inbound_quota: 4096, outbound_quota: 4096,
         timeout_100ns: 0, sharing: 3 }));
     assert!(pipe.reserve_instance());
-    let before = pipe.cancellation_epoch();
-    pipe.cancel_io();
-    assert_ne!(pipe.cancellation_epoch(), before);
+    pipe.begin_io(41, 0x1000);
+    assert!(!pipe.cancel_io(42, None));
+    assert!(pipe.cancel_io(41, Some(0x1000)));
+    pipe.end_io(41, 0x1000);
     assert_eq!(pipe.listen(), NtPipeListen::Pending);
     assert!(pipe.connect());
     let server = pipe.endpoint_with_instance(NtPipeSide::Server);
