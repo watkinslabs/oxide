@@ -77,6 +77,7 @@ fn query_type(kind: sched::nt_object::NtObjectType, output: u64, length: usize, 
         sched::nt_object::NtObjectType::Mutant => "Mutant", sched::nt_object::NtObjectType::Timer => "Timer",
         sched::nt_object::NtObjectType::CompletionPort => "IoCompletion", sched::nt_object::NtObjectType::Token => "Token",
         sched::nt_object::NtObjectType::Key => "Key", sched::nt_object::NtObjectType::Job => "Job",
+        sched::nt_object::NtObjectType::NamedPipe => "NamedPipe",
     };
     let units: alloc::vec::Vec<u16> = name.encode_utf16().collect();
     let bytes = units.len().checked_mul(2)?.checked_add(2)?;

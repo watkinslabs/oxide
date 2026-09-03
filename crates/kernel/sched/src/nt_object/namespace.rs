@@ -176,6 +176,24 @@ pub fn publish_symbolic_link(path: &str, object: Arc<NtObject>) -> (Arc<NtObject
     (object, NamedObjectState::Created)
 }
 
+/// Publish one named pipe in the canonical NT namespace. # C: O(N_namespace)
+pub fn publish_named_pipe(path: &str, object: Arc<NtObject>) -> (Arc<NtObject>, NamedObjectState) {
+    let mut namespace = OBJECT_NAMESPACE.lock();
+    seed(&mut namespace);
+    if let Some(entry) = namespace.objects.iter().find(|entry| equal(&entry.path, path)) {
+        return (Arc::clone(&entry.object), if entry.object.kind() == NtObjectType::NamedPipe {
+            NamedObjectState::Existing
+        } else { NamedObjectState::TypeMismatch });
+    }
+    let Some(parent_path) = parent(path) else { return (object, NamedObjectState::ParentMissing); };
+    if !namespace.objects.iter().any(|entry| equal(&entry.path, parent_path)
+        && entry.object.kind() == NtObjectType::Directory) {
+        return (object, NamedObjectState::ParentMissing);
+    }
+    namespace.objects.push(NamedObject { path: path.into(), object: Arc::clone(&object), permanent: false });
+    (object, NamedObjectState::Created)
+}
+
 /// Remove the permanence reference from a named object. # C: O(N_namespace)
 pub fn make_temporary(object: &NtObject) {
     let mut namespace = OBJECT_NAMESPACE.lock();
@@ -226,6 +244,7 @@ pub fn directory_entries(object: &NtObject) -> Vec<(String, String)> {
             NtObjectType::Mutant => "Mutant",
             NtObjectType::Timer => "Timer",
             NtObjectType::SymbolicLink => "SymbolicLink",
+            NtObjectType::NamedPipe => "NamedPipe",
             _ => "Object",
         };
         Some((leaf(&entry.path).into(), kind.into()))
@@ -279,6 +298,22 @@ mod tests {
         assert_eq!(object_name(&named).as_deref(), Some("\\KnownDlls"));
         let unnamed = NtObject::new(NtObjectType::Event, 9901);
         assert_eq!(object_name(&unnamed), None);
+    }
+
+    #[test]
+    fn named_pipe_publication_preserves_one_namespace_identity() {
+        let table = super::super::NtHandleTable::new();
+        let config = super::super::NtPipeConfig { pipe_type: 0, read_mode: 0,
+            completion_mode: 0, max_instances: 1, inbound_quota: 4096,
+            outbound_quota: 4096, timeout_100ns: -1, sharing: 3 };
+        let first = table.new_named_pipe(config);
+        let (published, state) = publish_named_pipe("\\BaseNamedObjects\\oxide-pipe", first.clone());
+        assert_eq!(state, NamedObjectState::Created);
+        assert!(Arc::ptr_eq(&published, &first));
+        let second = table.new_named_pipe(config);
+        let (existing, state) = publish_named_pipe("\\basenamedobjects\\OXIDE-PIPE", second);
+        assert_eq!(state, NamedObjectState::Existing);
+        assert!(Arc::ptr_eq(&existing, &first));
     }
 
     #[test]
