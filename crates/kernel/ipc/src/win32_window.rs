@@ -12,6 +12,7 @@ pub const WM_PAINT: u32 = 0x000f;
 pub const WM_QUIT: u32 = 0x0012;
 pub const WM_TIMER: u32 = 0x0113;
 pub const HTCLIENT: i64 = 1;
+pub const HTNOWHERE: i64 = 0;
 pub const SW_HIDE: u32 = 0;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -305,6 +306,16 @@ pub fn default_window_proc(message: u32) -> DefaultWindowResult {
     match message { WM_CLOSE => DefaultWindowResult::RequestDestroy, WM_NCHITTEST => DefaultWindowResult::Return(HTCLIENT), _ => DefaultWindowResult::Return(0) }
 }
 
+/// Apply default handling that depends on canonical window geometry. # C: O(1)
+pub fn default_window_proc_for_rect(message: u32, rect: WindowRect, lparam: i64) -> DefaultWindowResult {
+    if message != WM_NCHITTEST { return default_window_proc(message); }
+    let point = lparam as u64;
+    let x = (point as u16 as i16) as i32;
+    let y = ((point >> 16) as u16 as i16) as i32;
+    let inside = x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom;
+    DefaultWindowResult::Return(if inside { HTCLIENT } else { HTNOWHERE })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -371,6 +382,15 @@ mod tests {
         assert_eq!(default_window_proc(WM_CLOSE), DefaultWindowResult::RequestDestroy);
         assert_eq!(default_window_proc(WM_NCHITTEST), DefaultWindowResult::Return(HTCLIENT));
         assert_eq!(default_window_proc(WM_DESTROY), DefaultWindowResult::Return(0));
+    }
+
+    #[test]
+    fn default_hit_test_uses_canonical_window_bounds() {
+        let rect = WindowRect { left: 10, top: 20, right: 110, bottom: 120 };
+        let inside = ((40u16 as u64) | ((60u16 as u64) << 16)) as i64;
+        let outside = ((9u16 as u64) | ((60u16 as u64) << 16)) as i64;
+        assert_eq!(default_window_proc_for_rect(WM_NCHITTEST, rect, inside), DefaultWindowResult::Return(HTCLIENT));
+        assert_eq!(default_window_proc_for_rect(WM_NCHITTEST, rect, outside), DefaultWindowResult::Return(HTNOWHERE));
     }
 
     #[test]

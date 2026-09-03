@@ -66,9 +66,10 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
             let state = &mut entries[index].state;
             state.expire_timers(timekeeper::monotonic_ns());
             match operation {
-                NtWindowCall::DefaultProc { hwnd, message, wparam: _, lparam: _ } => {
+                NtWindowCall::DefaultProc { hwnd, message, wparam: _, lparam } => {
                     if hwnd > u32::MAX as u64 { return Some(STATUS_INVALID_HANDLE); }
-                    let result = match ipc::win32_window::default_window_proc(message) {
+                    let rect = ipc::win32_window::WindowId::from_raw(hwnd as u32).and_then(|window| state.rect(window));
+                    let result = match rect.map_or_else(|| ipc::win32_window::default_window_proc(message), |rect| ipc::win32_window::default_window_proc_for_rect(message, rect, lparam)) {
                         ipc::win32_window::DefaultWindowResult::Return(value) => value as u64,
                         ipc::win32_window::DefaultWindowResult::RequestDestroy => {
                             if hwnd != 0 {
