@@ -287,6 +287,10 @@ pub fn load_image_reporting(
         _ => return Err(LoadError::Enoexec),
     };
     let exec = place_image(blob, as_, placement, exec_image.file.as_ref(), exec_image.dev, mappings)?;
+    let mut elf_runtime_modules = alloc::vec::Vec::new();
+    if let Some(module) = runtime_eh_frame(blob, &exec_parsed, exec.load_base) {
+        elf_runtime_modules.push(module);
+    }
 
     let parsed = exec_parsed;
     let mut interp_base: u64 = 0;
@@ -330,15 +334,20 @@ pub fn load_image_reporting(
                 }
                 return Err(err);
             }
-        };
+            };
         interp_base  = interp.load_base;
         interp_entry = interp.entry.as_u64();
+        let interp_parsed = parse(&interp_blob, ARCH_MACHINE)?;
+        if let Some(module) = runtime_eh_frame(&interp_blob, &interp_parsed, interp.load_base) {
+            elf_runtime_modules.push(module);
+        }
     }
 
     // Heap placement runs LAST, after the interpreter, exactly as Linux orders
     // it — `start_brk` depends on whether an interpreter was present.
     let start_brk = brk::install(as_, parsed.elf_type, has_interp, exec.brk.as_u64(), rnd,
                                  mappings)?;
+    elf_modules::register(as_, &elf_runtime_modules);
 
     Ok(LoadedImage {
         entry:        exec.entry,
@@ -357,6 +366,18 @@ pub fn load_image_reporting(
     })
 }
 
+fn runtime_eh_frame(blob: &[u8], parsed: &elf::ParsedElf<'_>, load_base: u64)
+    -> Option<elf_modules::ElfRuntimeModule>
+{
+    let published = elf::publish_eh_frame(blob, &parsed.loads, load_base).ok()??;
+    Some(elf_modules::ElfRuntimeModule {
+        base: published.image_start,
+        size: published.image_end.checked_sub(published.image_start)?,
+        eh_frame_address: published.address,
+        eh_frame: published.bytes.to_vec(),
+    })
+}
+
 #[cfg(feature = "debug-execload")]
 fn load_error_name(err: LoadError) -> &'static [u8] {
     match err {
@@ -371,6 +392,7 @@ use place::Placement;
 
 
 pub mod stack;
+pub mod elf_modules;
 
 /// Publish the Linux `mm_struct` layout produced by one ELF load and its
 /// initial stack build. Every exec entry path, including the kernel's PID 1
