@@ -34,6 +34,7 @@ fn run() -> Result<(), String> {
         .map_err(|error| format!("append submenu item: {error:?}"))?;
     user32.append_menu_w(menu, MF_POPUP, 0, &"File\0".encode_utf16().collect::<Vec<_>>(), Some(submenu))
         .map_err(|error| format!("append menu item: {error:?}"))?;
+    if user32.set_menu(hwnd, Some(u64::MAX)).is_ok() { return Err("invalid menu handle was accepted".into()); }
     user32.set_menu(hwnd, Some(menu)).map_err(|error| format!("attach menu: {error:?}"))?;
     if user32.get_menu_item_count(menu).map_err(|error| format!("count menu items: {error:?}"))? != 1 { return Err("menu item count mismatch".into()); }
     let mut menu_text = vec![0u16; 16];
@@ -64,6 +65,7 @@ fn run() -> Result<(), String> {
         .map_err(|error| format!("paint dirty region: {error:?}"))?;
     gdi.present_window(hwnd, dc).map_err(|error| format!("present paint transaction: {error:?}"))?;
     user32.end_paint(hwnd).map_err(|error| format!("end paint: {error:?}"))?;
+    if user32.begin_paint(hwnd).is_ok() { return Err("paint without a dirty region was accepted".into()); }
     if user32.peek_message(hwnd, WM_PAINT, WM_PAINT, false).map_err(|error| format!("peek coalesced paint: {error:?}"))?.is_some() { return Err("paint notification was duplicated".into()); }
 
     user32.set_focus(child).map_err(|error| format!("set child focus: {error:?}"))?;
