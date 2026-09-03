@@ -1372,7 +1372,17 @@ pub fn dispatch(call: NtCall) -> u64 {
     let Some(mm) = (unsafe { cur.mm_ref() }).map(|mm| mm.clone()) else { return STATUS_INVALID_PARAMETER; };
     match call {
         NtMemoryCall::Allocate { base, size, allocation_type, protect, .. } => {
-            if allocation_type != MEM_RESERVE | MEM_COMMIT { return STATUS_INVALID_PARAMETER; }
+            // Wine's kernelbase global tables use VirtualAlloc(NULL, size,
+            // MEM_COMMIT, ...).  Wine's NtAllocateVirtualMemory contract
+            // creates a fresh committed region when the requested base is
+            // NULL, even without an explicit MEM_RESERVE bit.  The native
+            // VMA owner represents a newly created region as one committed
+            // mapping, so preserve that contract rather than rejecting the
+            // valid MEM_COMMIT-only form.  Commit-on-an-existing-reservation
+            // remains rejected until the VMA owner exposes reservation state.
+            let creates_region = allocation_type == MEM_RESERVE | MEM_COMMIT
+                || allocation_type == MEM_COMMIT;
+            if !creates_region { return STATUS_INVALID_PARAMETER; }
             let size_ptr = size.as_u64();
             let requested_base = match uaccess::get_user_u64(base.as_u64()) {
                 Ok(0) => None,
@@ -1381,6 +1391,7 @@ pub fn dispatch(call: NtCall) -> u64 {
             };
             let size = match uaccess::get_user_u64(size_ptr) { Ok(size) => size as usize, Err(_) => return STATUS_INVALID_PARAMETER };
             let protection = match elf_load::nt_memory::windows_protection(protect) { Ok(protection) => protection, Err(_) => return STATUS_INVALID_PARAMETER };
+            if allocation_type == MEM_COMMIT && requested_base.is_some() { return STATUS_INVALID_PARAMETER; }
             let allocation = match elf_load::nt_memory::allocate(&mm, requested_base, size, protection) {
                 Ok(allocation) => allocation,
                 Err(elf_load::nt_memory::NtStatus::NoMemory) => return STATUS_NO_MEMORY,
