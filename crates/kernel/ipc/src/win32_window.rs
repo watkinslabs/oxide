@@ -220,13 +220,21 @@ impl WindowManager {
         let Some((_, current)) = self.texts.iter_mut().find(|(window, _)| *window == id) else { return Err(WindowError::NoSuchWindow); };
         current.clear(); current.extend_from_slice(text); Ok(())
     }
-    pub fn destroy(&mut self, id: WindowId) -> Result<WindowRecord, WindowError> {
+    fn remove_window(&mut self, id: WindowId) -> Result<WindowRecord, WindowError> {
         let index = self.windows.iter().position(|(window, _)| *window == id).ok_or(WindowError::NoSuchWindow)?;
         self.rects.retain(|(window, _)| *window != id);
         self.texts.retain(|(window, _)| *window != id);
         self.dirty.retain(|(window, _)| *window != id);
         if self.focus == Some(id) { self.focus = None; }
         Ok(self.windows.remove(index).1)
+    }
+    /// Destroy a window subtree, children before their parent, as required by
+    /// the Win32 window lifetime contract. # C: O(N_windows²)
+    pub fn destroy(&mut self, id: WindowId) -> Result<WindowRecord, WindowError> {
+        if self.get(id).is_none() { return Err(WindowError::NoSuchWindow); }
+        let children: Vec<WindowId> = self.windows.iter().filter_map(|(window, record)| (record.parent == Some(id)).then_some(*window)).collect();
+        for child in children { let _ = self.destroy(child); }
+        self.remove_window(id)
     }
     pub fn post_to_window(&mut self, id: WindowId, message: WinMessage) -> Result<(), WindowError> {
         let owner = self.get(id).ok_or(WindowError::NoSuchWindow)?.owner_tid;
@@ -404,6 +412,16 @@ mod tests {
         assert_eq!(manager.peek_for_thread(8, MessageFilter { hwnd: None, first: 0, last: u32::MAX }, false), None);
         assert_eq!(manager.destroy(window).unwrap().wndproc, 0x1234);
         assert_eq!(manager.post_to_window(window, message(None, 1)), Err(WindowError::NoSuchWindow));
+    }
+
+    #[test]
+    fn destroying_a_parent_removes_children_before_the_parent() {
+        let mut manager = WindowManager::new();
+        let parent = manager.create(9, None, 0x1234).unwrap();
+        let child = manager.create(9, Some(parent), 0x5678).unwrap();
+        manager.destroy(parent).unwrap();
+        assert_eq!(manager.get(child), None);
+        assert_eq!(manager.get(parent), None);
     }
 
     #[test]
