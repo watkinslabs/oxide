@@ -32,9 +32,11 @@ pub use relocatable::{
 pub mod dynamic;
 pub mod hash;
 pub mod dwarf;
+pub mod cfa;
 pub mod sections;
 pub use dwarf::{encoded_pointer, records as dwarf_records, sleb128, uleb128, CallFrameRecord,
     DwarfError, EhBases};
+pub use cfa::{evaluate as evaluate_cfa, CfaContext};
 pub use sections::{eh_frame, find as find_section, publish_eh_frame, PublishedEhFrame, SectionView};
 pub use hash::{elf_hash, gnu_hash, lookup_sysv, lookup_gnu};
 pub use dynamic::{
