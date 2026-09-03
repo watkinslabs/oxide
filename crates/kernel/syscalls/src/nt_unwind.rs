@@ -55,12 +55,14 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
 
 fn lookup_function_entry(pc: u64, base: u64) -> u64 {
     if base == 0 { return STATUS_INVALID_PARAMETER; }
-    if uaccess::put_user_u64(base, 0).is_err() { return STATUS_INVALID_PARAMETER; }
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    if uaccess::put_user_u64(base, 0).is_err() { return STATUS_INVALID_PARAMETER; }
     let Some(module) = cur.clone_mm().and_then(|mm| pe_modules::find(mm.root_pa(), pc)) else { return 0; };
     if uaccess::put_user_u64(base, module.base).is_err() { return STATUS_INVALID_PARAMETER; }
     let Some(rva) = pc.checked_sub(module.base) else { return 0; };
+    let exception_end = (module.exception_rva as u64).checked_add(module.exception_size as u64).unwrap_or(u64::MAX);
+    if exception_end > module.size as u64 || module.exception_size % 12 != 0 { return 0; }
     let Some(table) = module.base.checked_add(module.exception_rva as u64) else { return 0; };
     let count = module.exception_size / 12;
     for index in 0..count {
