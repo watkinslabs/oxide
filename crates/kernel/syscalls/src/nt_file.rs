@@ -57,6 +57,8 @@ const STATUS_INSTANCE_NOT_AVAILABLE: u64 = 0xc000_00ab;
 const STATUS_PIPE_BUSY: u64 = 0xc000_00ae;
 const STATUS_PIPE_DISCONNECTED: u64 = 0xc000_00b0;
 const STATUS_PIPE_EMPTY: u64 = 0xc000_00d9;
+const STATUS_NOT_SUPPORTED: u64 = 0xc000_00bb;
+const FSCTL_PIPE_DISCONNECT: u32 = 0x0011_0004;
 
 /// Dispatch the implemented synchronous NT file operations. # C: O(path) + O(bytes)
 pub fn dispatch(call: NtFileCall) -> u64 {
@@ -89,6 +91,7 @@ pub fn dispatch(call: NtFileCall) -> u64 {
 pub fn dispatch_native(call: NtCall) -> Option<u64> {
     match call.service {
         NtService::NtCreateNamedPipeFile => Some(native_create_named_pipe(call)),
+        NtService::FsControlFile => Some(native_fs_control(call)),
         NtService::CreateFile => Some(native_create(call)),
         NtService::OpenFile => Some(native_open(call)),
         NtService::ReadFile => Some(native_io(call, false)),
@@ -98,6 +101,34 @@ pub fn dispatch_native(call: NtCall) -> Option<u64> {
         NtService::QueryDirectoryFile => Some(native_query_directory(call)),
         _ => None,
     }
+}
+
+fn native_fs_control(call: NtCall) -> u64 {
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() || call.args.a0 > u32::MAX as u64 || call.args.a4 == 0 {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let Some(input) = crate::nt_dispatch::stack_argument(6) else { return STATUS_INVALID_PARAMETER; };
+    let Some(input_length) = crate::nt_dispatch::stack_argument(7) else { return STATUS_INVALID_PARAMETER; };
+    let Some(output) = crate::nt_dispatch::stack_argument(8) else { return STATUS_INVALID_PARAMETER; };
+    let Some(output_length) = crate::nt_dispatch::stack_argument(9) else { return STATUS_INVALID_PARAMETER; };
+    let handle = sched::nt_object::NtHandle::from_raw(call.args.a0 as u32);
+    let table = cur.thread_group.nt_handles();
+    let Some(object) = table.get(handle, 0) else { return STATUS_INVALID_HANDLE; };
+    let Some(endpoint) = object.pipe_endpoint() else { return STATUS_INVALID_HANDLE; };
+    if call.args.a5 as u32 != FSCTL_PIPE_DISCONNECT {
+        let _ = (input, input_length, output, output_length);
+        return STATUS_NOT_SUPPORTED;
+    }
+    if input != 0 || input_length != 0 || output != 0 || output_length != 0 {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if !endpoint.disconnect() { return STATUS_PIPE_DISCONNECTED; }
+    if uaccess::put_user_u64(call.args.a4, STATUS_SUCCESS).is_err()
+        || uaccess::put_user_u64(call.args.a4 + 8, 0).is_err() {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    STATUS_SUCCESS
 }
 
 fn native_create_named_pipe(call: NtCall) -> u64 {

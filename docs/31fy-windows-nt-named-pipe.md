@@ -29,5 +29,7 @@ nonblocking backpressure, and reports peer closure as a broken pipe.
 ABI, preserves create/open disposition, and enforces instance admission.
 `NtCreateFile`/`NtOpenFile` resolve the canonical pipe object and create one
 client endpoint, returning `STATUS_PIPE_BUSY` when it is already connected.
-Handle-side blocking waits and pipe FSCTLs remain separate work; those paths
-stay explicit rather than falling through to VFS files.
+`FSCTL_PIPE_DISCONNECT` now resets the owned connection and discards queued
+data, while unsupported control codes return an explicit NT status.
+Handle-side blocking waits and the remaining pipe FSCTLs stay separate work;
+those paths do not fall through to VFS files.

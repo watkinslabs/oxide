@@ -137,6 +137,15 @@ impl NtPipe {
         let mut transport = self.transport.lock();
         match side { NtPipeSide::Server => transport.server_closed = true, NtPipeSide::Client => transport.client_closed = true }
     }
+
+    fn disconnect(&self) {
+        let mut transport = self.transport.lock();
+        transport.server_to_client.clear();
+        transport.client_to_server.clear();
+        transport.server_closed = false;
+        transport.client_closed = false;
+        transport.connected = false;
+    }
 }
 
 impl NtPipeEndpoint {
@@ -144,6 +153,11 @@ impl NtPipeEndpoint {
     pub fn write(&self, data: &[u8]) -> NtPipeIo { self.pipe.write(self.side, data) }
     pub fn read(&self, output: &mut [u8]) -> NtPipeIo { self.pipe.read(self.side, output) }
     pub fn close(&self) { self.pipe.close(self.side); }
+    pub fn disconnect(&self) -> bool {
+        if self.side != NtPipeSide::Server { return false; }
+        self.pipe.disconnect();
+        true
+    }
 }
 
 impl Drop for NtPipeEndpoint {
@@ -222,5 +236,20 @@ mod tests {
         assert!(pipe.connect());
         assert_eq!(server.write(b"abcd"), NtPipeIo::Complete(3));
         assert_eq!(server.write(b"z"), NtPipeIo::WouldBlock);
+    }
+
+    #[test]
+    fn server_disconnect_resets_connection_and_discards_queued_data() {
+        let pipe = Arc::new(NtPipe::new(config(1)));
+        let server = pipe.endpoint(NtPipeSide::Server);
+        let client = pipe.endpoint(NtPipeSide::Client);
+        assert!(pipe.connect());
+        assert_eq!(server.write(b"stale"), NtPipeIo::Complete(5));
+        assert!(server.disconnect());
+        let mut output = [0u8; 8];
+        assert_eq!(client.read(&mut output), NtPipeIo::WouldBlock);
+        assert!(pipe.connect());
+        assert_eq!(server.write(b"fresh"), NtPipeIo::Complete(5));
+        assert_eq!(client.read(&mut output), NtPipeIo::Complete(5));
     }
 }
