@@ -306,6 +306,7 @@ impl Registry {
 
     /// Delete one leaf key through an opaque handle. # C: O(N_subkeys)
     pub fn delete_key_handle(&mut self, key: KeyHandle) -> Result<(), Error> {
+        if self.deleted.contains(&key) { return Ok(()); }
         let path = self.handles.get(&key).cloned().ok_or(Error::MissingKey)?;
         if is_root(&path) || !self.subkeys(&path)?.is_empty() { return Err(Error::InvalidPath); }
         self.keys.remove(&path).ok_or(Error::MissingKey)?;
@@ -344,7 +345,7 @@ impl Registry {
     /// Close one allocated handle; predefined roots remain valid. # C: O(log N)
     pub fn close_handle(&mut self, key: KeyHandle) -> Result<(), Error> {
         if matches!(key.0, HKEY_LOCAL_MACHINE | HKEY_CURRENT_USER | HKEY_CLASSES_ROOT) { return Err(Error::InvalidPath); }
-        if self.deleted.remove(&key) { return Ok(()); }
+        if self.deleted.remove(&key) { self.handles.remove(&key); return Ok(()); }
         if self.handles.remove(&key).is_some() { Ok(()) } else { Err(Error::MissingKey) }
     }
 
@@ -582,6 +583,18 @@ mod tests {
         assert_eq!(registry.close_handle(handle), Ok(()));
         assert_eq!(registry.query_value_handle(handle, "version"), Err(Error::MissingKey));
         assert_eq!(registry.close_handle(Registry::root_handle(Root::CurrentUser)), Err(Error::InvalidPath));
+    }
+
+    #[test]
+    fn deleting_an_open_leaf_is_idempotent_until_its_handle_closes() {
+        let mut registry = Registry::new();
+        let key = registry.create_handle(Root::CurrentUser, "Software\\Oxide\\DeleteMe").unwrap();
+        assert_eq!(registry.delete_key_handle(key), Ok(()));
+        assert_eq!(registry.delete_key_handle(key), Ok(()));
+        assert_eq!(registry.open_key(Root::CurrentUser, "Software\\Oxide\\DeleteMe"), Err(Error::MissingKey));
+        assert_eq!(registry.query_value_handle(key, "missing"), Err(Error::Deleted));
+        assert_eq!(registry.close_handle(key), Ok(()));
+        assert_eq!(registry.close_handle(key), Err(Error::MissingKey));
     }
 
     #[test]
