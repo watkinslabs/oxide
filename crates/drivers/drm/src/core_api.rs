@@ -100,6 +100,9 @@ pub trait DrmDriver: Send + Sync {
 
     /// Retire a host resource after its DRM buffer ownership ends.
     fn virtgpu_resource_destroy(&self, _resource_id: u32) -> bool { false }
+    /// Create one guest-backed resource blob and attach its contiguous backing. # C: O(1)
+    fn virtgpu_resource_create_blob(&self, _pa: u64, _size: u64, _blob_flags: u32,
+        _blob_id: u64) -> Option<u32> { None }
 
     /// Admit one validated 3D command stream and its owned resource list.
     /// # C: O(command bytes + resources)

@@ -18,6 +18,7 @@ pub(super) fn ioctl(driver: Option<Arc<dyn DrmDriver>>, req: u64, arg: u64, card
         crate::DRM_IOCTL_VIRTGPU_GET_CAPS => get_caps(driver, arg),
         crate::DRM_IOCTL_VIRTGPU_CONTEXT_INIT => context_init(driver, arg, card_id, token),
         crate::DRM_IOCTL_VIRTGPU_RESOURCE_CREATE => resource_create(driver, arg, card_id, token),
+        crate::DRM_IOCTL_VIRTGPU_RESOURCE_CREATE_BLOB => resource_create_blob(driver, arg, card_id, token),
         crate::DRM_IOCTL_VIRTGPU_RESOURCE_INFO => resource_info(arg, card_id, token),
         crate::DRM_IOCTL_VIRTGPU_EXECBUFFER => execbuffer(driver, arg, card_id, token),
         _ => -(Errno::Enotty.as_i32() as i64),
@@ -110,7 +111,7 @@ fn resource_create(driver: Option<Arc<dyn DrmDriver>>, arg: u64, card_id: u32, t
         return -(Errno::Enotsupp.as_i32() as i64);
     };
     TABLES.lock().insert_buf(DumbBuf {
-        card_id, handle, resource_id, owner_token: token, pa, size, order,
+        card_id, handle, resource_id, blob_mem: 0, owner_token: token, pa, size, order,
         w: request.width, h: request.height, pitch: stride, bpp: 32,
         refcnt: 1, mmap_refs: 0, deleted: false,
     });
@@ -126,19 +127,58 @@ fn resource_create(driver: Option<Arc<dyn DrmDriver>>, arg: u64, card_id: u32, t
     0
 }
 
+fn resource_create_blob(driver: Option<Arc<dyn DrmDriver>>, arg: u64, card_id: u32, token: u64) -> i64 {
+    let Ok(mut request) = crate::uarg::read_arg::<crate::DrmVirtgpuResourceCreateBlob>(arg)
+        else { return -(Errno::Efault.as_i32() as i64) };
+    if request.blob_mem != crate::VIRTGPU_BLOB_MEM_GUEST || request.blob_flags != 0
+        || request.bo_handle != 0 || request.res_handle != 0 || request.size == 0
+        || request.pad != 0 || request.cmd_size != 0 || request.cmd != 0
+        || request.blob_id != 0 || request.blob_hints != 0 || request.pad2 != 0 {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    let Some(driver) = driver else { return -(Errno::Enotty.as_i32() as i64) };
+    let size = crate::dumb::align_up_u64(request.size, hal::PAGE_SIZE_BYTES as u64);
+    if size < request.size || size > u32::MAX as u64 {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    let order = order_for_bytes(size);
+    let Some(pa) = pmm::setup::alloc_contig_object(pmm::Order(order)) else {
+        return -(Errno::Enomem.as_i32() as i64);
+    };
+    let Some(resource_id) = driver.virtgpu_resource_create_blob(pa, size, request.blob_flags, request.blob_id) else {
+        free_buf_pages(pa, order);
+        return -(Errno::Enotsupp.as_i32() as i64);
+    };
+    let handle = alloc_dumb_handle();
+    TABLES.lock().insert_buf(DumbBuf {
+        card_id, handle, resource_id, blob_mem: request.blob_mem, owner_token: token,
+        pa, size, order, w: 0, h: 0, pitch: 0, bpp: 0, refcnt: 1, mmap_refs: 0,
+        deleted: false,
+    });
+    request.bo_handle = handle;
+    request.res_handle = resource_id;
+    request.size = size;
+    if crate::uarg::write_arg(arg, request).is_err() {
+        let _ = driver.virtgpu_resource_destroy(resource_id);
+        if let Some((pa, order)) = TABLES.lock().unref_handle(card_id, handle) { free_buf_pages(pa, order); }
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    0
+}
+
 fn resource_info(arg: u64, card_id: u32, token: u64) -> i64 {
     let Ok(mut info) = crate::uarg::read_arg::<crate::DrmVirtgpuResourceInfo>(arg)
         else { return -(Errno::Efault.as_i32() as i64) };
-    let (resource_id, size) = {
+    let (resource_id, size, blob_mem) = {
         let tables = TABLES.lock();
         let Some(buf) = tables.find_buf_owned(card_id, token, info.bo_handle) else {
             return -(Errno::Einval.as_i32() as i64);
         };
-        (buf.resource_id, buf.size)
+        (buf.resource_id, buf.size, buf.blob_mem)
     };
     info.res_handle = resource_id;
     info.size = size.min(u32::MAX as u64) as u32;
-    info.blob_mem = 0;
+    info.blob_mem = blob_mem;
     if crate::uarg::write_arg(arg, info).is_err() { return -(Errno::Efault.as_i32() as i64); }
     0
 }

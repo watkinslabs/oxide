@@ -98,6 +98,7 @@ fn virtgpu_context_and_execbuffer_layouts_match_linux_uapi() {
     assert_eq!(core::mem::size_of::<DrmVirtgpuContextInit>(), 16);
     assert_eq!(core::mem::offset_of!(DrmVirtgpuContextInit, ctx_set_params), 8);
     assert_eq!(core::mem::size_of::<DrmVirtgpuResourceCreate>(), 56);
+    assert_eq!(core::mem::size_of::<DrmVirtgpuResourceCreateBlob>(), 56);
     assert_eq!(core::mem::offset_of!(DrmVirtgpuResourceCreate, res_handle), 44);
     assert_eq!(core::mem::size_of::<DrmVirtgpuResourceInfo>(), 16);
 }

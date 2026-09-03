@@ -392,6 +392,19 @@ pub fn encode_resource_create_2d(buf: &mut [u8], res_id: u32, fmt: u32, w: u32, 
     40
 }
 
+/// Encode a guest-backed `RESOURCE_CREATE_BLOB` command. # C: O(1)
+pub fn encode_resource_create_blob(buf: &mut [u8], res_id: u32, blob_mem: u32,
+    blob_flags: u32, blob_id: u64, size: u64) -> usize {
+    encode_hdr_only(buf, VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB, 0, 0);
+    write_u32_le(buf, 24, res_id);
+    write_u32_le(buf, 28, blob_mem);
+    write_u32_le(buf, 32, blob_flags);
+    write_u32_le(buf, 36, 1);
+    write_u64_le(buf, 40, blob_id);
+    write_u64_le(buf, 48, size);
+    56
+}
+
 /// Encode `CMD_RESOURCE_CREATE_3D` for one 2D texture resource.
 /// # C: O(1)
 pub fn encode_resource_create_3d(buf: &mut [u8], res_id: u32, target: u32,

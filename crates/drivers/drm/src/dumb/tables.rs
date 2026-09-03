@@ -6,6 +6,7 @@ pub struct DumbBuf {
     pub card_id: u32,
     pub handle: u32,
     pub resource_id: u32,
+    pub blob_mem: u32,
     pub owner_token: u64,
     pub pa: u64,
     pub size: u64,

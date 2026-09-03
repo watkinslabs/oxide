@@ -208,6 +208,7 @@ pub use runtime::{
     create_context_for_key,
     create_resource_for_key,
     create_resource_3d_for_key,
+    create_resource_blob_for_key,
     destroy_context_for_key,
     destroy_resource_for_key,
     submit_3d_for_key,

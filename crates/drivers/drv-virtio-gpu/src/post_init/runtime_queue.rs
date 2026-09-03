@@ -18,6 +18,7 @@ pub(super) enum RuntimeCmd {
         payload: [u8; 3968] },
     Create2d { res_id: u32, fmt: u32, w: u32, h: u32 },
     Create3d { res_id: u32, fmt: u32, w: u32, h: u32 },
+    CreateBlob { res_id: u32, blob_mem: u32, blob_flags: u32, blob_id: u64, bytes: u64 },
     AttachBacking { res_id: u32, dma: u64, bytes: u32 },
     DetachBacking { res_id: u32 },
     Unref { res_id: u32 },
@@ -51,6 +52,8 @@ impl RuntimeCmd {
             Self::Create2d { res_id, fmt, w, h } => crate::encode_resource_create_2d(buf, res_id, fmt, w, h),
             Self::Create3d { res_id, fmt, w, h } =>
                 crate::encode_resource_create_3d(buf, res_id, 2, fmt, 0, w, h, 1, 1, 0, 1, 0),
+            Self::CreateBlob { res_id, blob_mem, blob_flags, blob_id, bytes } =>
+                crate::encode_resource_create_blob(buf, res_id, blob_mem, blob_flags, blob_id, bytes),
             Self::AttachBacking { res_id, dma, bytes } => crate::encode_resource_attach_backing_one(buf, res_id, dma, bytes),
             Self::DetachBacking { res_id } => crate::encode_resource_detach_backing(buf, res_id),
             Self::Unref { res_id } => crate::encode_resource_unref(buf, res_id),

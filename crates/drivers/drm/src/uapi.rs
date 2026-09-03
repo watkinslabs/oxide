@@ -36,6 +36,7 @@ pub const DRM_IOCTL_VIRTGPU_EXECBUFFER: u64 = 0xc0406442; // _IOWR('d',0x42,drm_
 pub const DRM_IOCTL_VIRTGPU_CONTEXT_INIT: u64 = 0xc010644b; // _IOWR('d',0x4b,drm_virtgpu_context_init[16])
 pub const DRM_IOCTL_VIRTGPU_RESOURCE_CREATE: u64 = 0xc0386444; // _IOWR('d',0x44,drm_virtgpu_resource_create[56])
 pub const DRM_IOCTL_VIRTGPU_RESOURCE_INFO: u64 = 0xc0106445; // _IOWR('d',0x45,drm_virtgpu_resource_info[16])
+pub const DRM_IOCTL_VIRTGPU_RESOURCE_CREATE_BLOB: u64 = 0xc038644a; // _IOWR('d',0x4a,drm_virtgpu_resource_create_blob[56])
 
 /// `struct drm_virtgpu_get_caps` from the virtio-gpu UAPI.  `addr` points to
 /// the caller's writable capset blob; it is deliberately represented as an
@@ -95,6 +96,22 @@ pub struct DrmVirtgpuResourceCreate {
 #[repr(C)]
 #[derive(Copy, Clone, Default, Debug, Eq, PartialEq)]
 pub struct DrmVirtgpuResourceInfo { pub bo_handle: u32, pub res_handle: u32, pub size: u32, pub blob_mem: u32 }
+
+pub const VIRTGPU_BLOB_MEM_GUEST: u32 = 1;
+pub const VIRTGPU_BLOB_MEM_HOST3D: u32 = 2;
+pub const VIRTGPU_BLOB_MEM_HOST3D_GUEST: u32 = 3;
+pub const VIRTGPU_BLOB_FLAG_USE_MAPPABLE: u32 = 1;
+pub const VIRTGPU_BLOB_FLAG_USE_SHAREABLE: u32 = 2;
+pub const VIRTGPU_BLOB_FLAG_USE_CROSS_DEVICE: u32 = 4;
+pub const VIRTGPU_BLOB_FLAG_HINT_DEFER_MAPPING: u32 = 1;
+
+#[repr(C)]
+#[derive(Copy, Clone, Default, Debug, Eq, PartialEq)]
+pub struct DrmVirtgpuResourceCreateBlob {
+    pub blob_mem: u32, pub blob_flags: u32, pub bo_handle: u32, pub res_handle: u32,
+    pub size: u64, pub pad: u32, pub cmd_size: u32, pub cmd: u64, pub blob_id: u64,
+    pub blob_hints: u32, pub pad2: u32,
+}
 
 // VIRTGPU_GETPARAM param ids (the virtio-gpu driver-specific UAPI).
 pub const VIRTGPU_PARAM_3D_FEATURES:       u64 = 1;
