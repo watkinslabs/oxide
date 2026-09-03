@@ -429,8 +429,8 @@ pub enum NtObjectCall {
     WaitMultiple { count: u32, handles: UserPtr<u32>, wait_type: u32, alertable: u32, timeout: Option<UserPtr<i64>> },
     CreateSection { handle: UserPtr<u32>, desired_access: u32, size: u64, protect: u32, attributes: u64, file: u32 },
     CreateSectionNative { handle: UserPtr<u32>, desired_access: u32, size: u64, protect: u32, attributes: u64, file: u32 },
-    MapViewOfSection { section: u32, process: u64, base: UserPtr<u64>, offset: u64, size: UserPtr<u64>, protect: u32 },
-    MapViewOfSectionNative { section: u32, process: u64, base: UserPtr<u64>, offset: u64, size: UserPtr<u64>, protect: u32 },
+    MapViewOfSection { section: u32, process: u64, base: UserPtr<u64>, zero_bits: u64, offset: u64, size: UserPtr<u64>, protect: u32 },
+    MapViewOfSectionNative { section: u32, process: u64, base: UserPtr<u64>, zero_bits: u64, offset: u64, size: UserPtr<u64>, protect: u32 },
     UnmapViewOfSection { process: u64, base: u64 },
     UnmapViewOfSectionEx { process: u64, base: u64, flags: u32 },
     QuerySection { section: u32, class: u32, info: UserPtr<u8>, length: u32, return_length: Option<UserPtr<u64>> },
@@ -1415,7 +1415,7 @@ pub fn decode_object(call: NtCall) -> Result<NtObjectCall, Errno> {
             protect: a.a3 as u32, attributes: a.a4, file: a.a5 as u32,
         }),
         NtService::MapViewOfSection => Ok(NtObjectCall::MapViewOfSection {
-            section: a.a0 as u32, process: a.a1, base: UserPtr::new(a.a2)?, offset: a.a3,
+            section: a.a0 as u32, process: a.a1, base: UserPtr::new(a.a2)?, zero_bits: 0, offset: a.a3,
             size: UserPtr::new(a.a4)?, protect: a.a5 as u32,
         }),
         NtService::UnmapViewOfSection => Ok(NtObjectCall::UnmapViewOfSection {

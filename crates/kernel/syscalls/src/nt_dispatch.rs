@@ -52,7 +52,7 @@ fn native_section_object(call: NtCall) -> Option<NtObjectCall> {
             let offset = if call.args.a5 == 0 { 0 } else { uaccess::get_user_u64(call.args.a5).ok()? };
             Some(NtObjectCall::MapViewOfSectionNative {
                 section: call.args.a0 as u32, process: call.args.a1,
-                base: UserPtr::new(call.args.a2).ok()?, offset,
+                base: UserPtr::new(call.args.a2).ok()?, zero_bits: call.args.a3, offset,
                 size: UserPtr::new(size).ok()?, protect: protect as u32,
             })
         }
@@ -1159,10 +1159,11 @@ pub fn dispatch(call: NtCall) -> u64 {
                     STATUS_INVALID_PARAMETER
                 } else { STATUS_SUCCESS }
             }
-            NtObjectCall::MapViewOfSection { section, process, base, offset, size, protect }
-            | NtObjectCall::MapViewOfSectionNative { section, process, base, offset, size, protect } => {
+            NtObjectCall::MapViewOfSection { section, process, base, zero_bits, offset, size, protect }
+            | NtObjectCall::MapViewOfSectionNative { section, process, base, zero_bits, offset, size, protect } => {
                 if !crate::nt_process_handles::permits_current_process(process, &cur, crate::nt_process_handles::PROCESS_VM_OPERATION)
                     || offset % hal::PAGE_SIZE_BYTES != 0 { return STATUS_INVALID_PARAMETER; }
+                if zero_bits > 21 && zero_bits < 32 { return STATUS_INVALID_PARAMETER; }
                 // SAFETY: the running NT task owns its current address-space
                 // slot for this syscall; the clone keeps the VMM state alive.
                 let Some(mm) = (unsafe { cur.mm_ref() }).map(|mm| mm.clone()) else { return STATUS_INVALID_PARAMETER; };
@@ -1176,6 +1177,12 @@ pub fn dispatch(call: NtCall) -> u64 {
                 if offset >= section.size() as u64 { return STATUS_INVALID_PARAMETER; }
                 let requested = match uaccess::get_user_u64(base.as_u64()) { Ok(0) => None, Ok(raw) => hal::UserVirtAddr::new(raw), Err(_) => return STATUS_INVALID_PARAMETER };
                 if requested.map(|address| address.as_u64() & 0xffff != 0).unwrap_or(false) { return STATUS_MAPPED_ALIGNMENT; }
+                if let Some(address) = requested {
+                    let valid = if zero_bits == 0 { true }
+                        else if zero_bits < 32 { address.as_u64() >> (32 - zero_bits) == 0 }
+                        else { address.as_u64() & !zero_bits == 0 };
+                    if !valid { return STATUS_INVALID_PARAMETER; }
+                }
                 let requested_size = match uaccess::get_user_u64(size.as_u64()) { Ok(0) => section.size() as u64 - offset, Ok(raw) => raw, Err(_) => return STATUS_INVALID_PARAMETER };
                 let page = hal::PAGE_SIZE_BYTES as u64;
                 if requested_size == 0 || requested_size % page != 0 || requested_size > section.size() as u64 - offset { return STATUS_INVALID_PARAMETER; }
