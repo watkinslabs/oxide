@@ -166,6 +166,36 @@ unsafe fn deliver_nt_apc(regs: *mut UserRegs) -> bool {
 #[cfg(target_arch = "aarch64")]
 unsafe fn deliver_nt_apc(_regs: *mut UserRegs) -> bool { false }
 
+/// Build and arm the Wine x86-64 exception frame from scheduler-owned state.
+/// The pending record is consumed only after all user writes and the live
+/// return frame rewrite succeed.
+#[cfg(target_arch = "x86_64")]
+unsafe fn deliver_nt_exception(regs: *mut UserRegs) -> bool {
+    let Some(task) = sched::live::current() else { return false; };
+    if !task.is_nt_personality() { return false; }
+    let Some(pending) = task.nt_exception.peek() else { return false; };
+    let context_rsp = u64::from_le_bytes(pending.context[0x98..0xa0].try_into().unwrap());
+    let Some(frame) = pe::nt_stub::x64_exception_frame(context_rsp, 0) else { return false; };
+    if !uaccess::access_ok(frame.stack, pe::nt_stub::X64_EXCEPTION_FRAME_BYTES as usize) { return false; }
+    let Some(ntdll) = crate::nt_loader_proc::module_base_by_name(&task, b"ntdll.dll") else { return false; };
+    let Some(dispatcher) = crate::nt_loader_proc::resolve_exported_routine_by_name(&task, ntdll, b"KiUserExceptionDispatcher") else { return false; };
+    if uaccess::copy_to_user(frame.context, &pending.context).is_err() || uaccess::copy_to_user(frame.exception_record, &pending.record).is_err() { return false; }
+    for (offset, value) in [(0u64, u64::from_le_bytes(pending.context[0xf8..0x100].try_into().unwrap())),
+        (8, 0x33), (16, u64::from_le_bytes(pending.context[0x44..0x48].try_into().unwrap())),
+        (24, context_rsp), (32, 0x2b)] {
+        if uaccess::put_user_u64(frame.machine_frame.checked_add(offset).unwrap_or(0), value).is_err() { return false; }
+    }
+    // SAFETY: the return frame is the active syscall frame owned by this task; all user frame writes completed above.
+    let regs = unsafe { &mut *regs };
+    regs.rip = dispatcher;
+    regs.rsp = frame.stack;
+    let _ = task.nt_exception.take();
+    true
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn deliver_nt_exception(_regs: *mut UserRegs) -> bool { false }
+
 /// Linux `exit_to_user_mode_loop(regs, ti_work)`.
 ///
 /// `syscall_rv` is `Some` only on the syscall return path — Linux's
@@ -221,12 +251,14 @@ pub unsafe fn exit_to_user_mode_loop(regs: *mut UserRegs, syscall_rv: Option<i64
         let w = work_flags();
         let apc_pending = sched::live::current().map(|task| task.is_nt_personality()
             && !task.nt_apc_queue.is_empty()).unwrap_or(false);
+        let exception_pending = sched::live::current().map(|task| task.is_nt_personality()
+            && task.nt_exception.is_pending()).unwrap_or(false);
         let want_notify = (w & work::NOTIFY_SIGNAL) != 0;
         let want_freeze = (w & work::FREEZE) != 0;
         let want_signal = (w & work::SIGPENDING) != 0 || owe_signal_arm || want_notify;
         let bounded = passes < sched::exit_to_user::MAX_PASSES;
         if !(sched::exit_to_user::should_continue(w, passes) || (want_signal && bounded)
-            || (apc_pending && bounded)) { break; }
+            || (apc_pending && bounded) || (exception_pending && bounded)) { break; }
         passes += 1;
         // Linux `local_irq_enable()` at the top of the pass: delivery writes
         // user memory and can fault, and `schedule()` must be able to take a
@@ -254,7 +286,11 @@ pub unsafe fn exit_to_user_mode_loop(regs: *mut UserRegs, syscall_rv: Option<i64
             // path released its locks and enabled interrupts.
             unsafe { sched::live::freezer::freeze_current_if_requested(); }
         }
-        if apc_pending {
+        if exception_pending {
+            // SAFETY: the loop owns the live user frame and runs with the
+            // current task's user address space active.
+            let _ = unsafe { deliver_nt_exception(regs) };
+        } else if apc_pending {
             // SAFETY: the loop owns the live user frame and runs with the
             // current task's user address space active.
             let _ = unsafe { deliver_nt_apc(regs) };

@@ -190,6 +190,15 @@ pub fn find_exported_routine(module: u64, name_address: u64) -> u64 {
     result.unwrap_or(0)
 }
 
+/// Resolve one export by its already validated byte name for kernel-owned
+/// return-to-user dispatchers. # C: O(export table)
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn resolve_exported_routine_by_name(cur: &sched::Task, module: u64, name: &[u8]) -> Option<u64> {
+    let (module_size, is_ntdll) = module_info(cur, module)?;
+    resolve_export(cur, module, module_size, Some(name), 0, 0)
+        .or_else(|| is_ntdll.then(|| elf_load::pe_loader::resolve_nt_runtime_export(module, name)).flatten())
+}
+
 fn get_procedure(call: NtCall) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a3 == 0 { return STATUS_INVALID_PARAMETER; }
