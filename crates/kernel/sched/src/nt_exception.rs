@@ -35,6 +35,8 @@ impl State {
 
     pub fn take(&self) -> Option<Pending> { self.0.lock().take().map(|value| *value) }
 
+    pub fn peek(&self) -> Option<Pending> { self.0.lock().as_deref().copied() }
+
     pub fn is_pending(&self) -> bool { self.0.lock().is_some() }
 }
 
