@@ -147,7 +147,7 @@ fn native_io_values(cur: &sched::Task, handle: u32, io_status: u64, buffer: u64,
     let mut data = vec![0u8; length as usize];
     let result = if write {
         if uaccess::copy_from_user(&mut data, buffer).is_err() { return STATUS_ACCESS_VIOLATION; }
-        file.write(&data).map(|n| n as u64)
+        if offset == 0 { file.write(&data).map(|n| n as u64) } else { file.pwrite(&data, offset as i64).map(|n| n as u64) }
     } else {
         let result = if offset == 0 { file.read(&mut data) } else { file.pread(&mut data, offset as i64) };
         if let Ok(n) = result { if uaccess::copy_to_user(buffer, &data[..n]).is_err() { return STATUS_ACCESS_VIOLATION; } }
