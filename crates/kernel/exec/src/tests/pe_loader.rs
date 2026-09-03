@@ -403,6 +403,26 @@
     }
 
     #[test]
+    fn native_runtime_stubs_emit_canonical_service_selectors() {
+        let as_ = AddressSpace::new(0x20_000).unwrap();
+        let runtime = map_nt_runtime(&as_).unwrap();
+        let selector = |name: &[u8]| {
+            let address = resolve_nt_runtime_export(runtime.base.as_u64(), name).unwrap();
+            let vma = as_.find_vma(UserVirtAddr::new(address).unwrap()).unwrap();
+            let (data, off) = match vma.backing {
+                VmaBacking::KernelBytes { data, off } => (data, off),
+                _ => panic!("NTDLL stubs must be kernel-backed"),
+            };
+            let start = off as usize + (address - vma.start.as_u64()) as usize;
+            assert_eq!(&data[start + 24..start + 26], &[0x48, 0xb8]);
+            u64::from_le_bytes(data[start + 26..start + 34].try_into().unwrap())
+        };
+        assert_eq!(selector(b"RtlInitializeCriticalSectionEx"), syscall::nt::NtService::RtlInitializeCriticalSectionEx.entry());
+        assert_eq!(selector(b"RtlSetIoCompletionCallback"), syscall::nt::NtService::RtlSetIoCompletionCallback.entry());
+        assert_ne!(selector(b"RtlInitializeCriticalSectionEx"), selector(b"RtlSetIoCompletionCallback"));
+    }
+
+    #[test]
     fn nt_open_directory_object_uses_a_syscall_stub_not_a_debug_breakpoint() {
         assert_eq!(runtime_stub_bytes(220), pe::nt_stub::X64_SIX_ARG_STUB_BYTES);
         let as_ = AddressSpace::new(0x20_000).unwrap();
