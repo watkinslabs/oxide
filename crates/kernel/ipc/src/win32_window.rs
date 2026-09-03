@@ -8,6 +8,7 @@ pub const WM_DESTROY: u32 = 0x0002;
 pub const WM_KEYDOWN: u32 = 0x0100;
 pub const WM_KEYUP: u32 = 0x0101;
 pub const WM_NCHITTEST: u32 = 0x0084;
+pub const WM_NCACTIVATE: u32 = 0x0086;
 pub const WM_PAINT: u32 = 0x000f;
 pub const WM_QUIT: u32 = 0x0012;
 pub const WM_TIMER: u32 = 0x0113;
@@ -303,7 +304,7 @@ fn same_name(left: &[u16], right: &[u16]) -> bool {
 pub enum DefaultWindowResult { Return(i64), RequestDestroy }
 
 pub fn default_window_proc(message: u32) -> DefaultWindowResult {
-    match message { WM_CLOSE => DefaultWindowResult::RequestDestroy, WM_NCHITTEST => DefaultWindowResult::Return(HTCLIENT), _ => DefaultWindowResult::Return(0) }
+    match message { WM_CLOSE => DefaultWindowResult::RequestDestroy, WM_NCHITTEST => DefaultWindowResult::Return(HTCLIENT), WM_NCACTIVATE => DefaultWindowResult::Return(1), _ => DefaultWindowResult::Return(0) }
 }
 
 /// Apply default handling that depends on canonical window geometry. # C: O(1)
@@ -382,6 +383,7 @@ mod tests {
         assert_eq!(default_window_proc(WM_CLOSE), DefaultWindowResult::RequestDestroy);
         assert_eq!(default_window_proc(WM_NCHITTEST), DefaultWindowResult::Return(HTCLIENT));
         assert_eq!(default_window_proc(WM_DESTROY), DefaultWindowResult::Return(0));
+        assert_eq!(default_window_proc(WM_NCACTIVATE), DefaultWindowResult::Return(1));
     }
 
     #[test]

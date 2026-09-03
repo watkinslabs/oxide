@@ -46,6 +46,7 @@ const WM_GETTEXTLENGTH: u64 = 0x000e;
 const WM_NCCREATE: u64 = 0x0081;
 const WM_NCDESTROY: u64 = 0x0082;
 const WM_NCHITTEST: u64 = 0x0084;
+const WM_NCACTIVATE: u64 = 0x0086;
 
 #[cfg(target_os = "oxide-kernel")]
 fn read_args(pointer: u64) -> Option<[u64; 17]> {
@@ -134,6 +135,7 @@ pub fn dispatch(call: NtCall) -> u64 {
                         ipc::win32_window::DefaultWindowResult::RequestDestroy => STATUS_SUCCESS,
                     };
                 }
+                if message == WM_NCACTIVATE { return 1; }
                 if message == WM_SETTEXT {
                     return win_bool(native(NtService::SetWindowText, SyscallArgs { a0: hwnd, a1: lparam, a2: 0, a3: 0, a4: 0, a5: 0 }));
                 }
