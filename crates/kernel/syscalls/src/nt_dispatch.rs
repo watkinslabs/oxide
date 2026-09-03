@@ -254,6 +254,7 @@ pub fn dispatch(call: NtCall) -> u64 {
     if let Some(result) = crate::nt_registry::dispatch(call) { return result; }
     if let Some(result) = crate::nt_job::dispatch(call) { return result; }
     if let Some(result) = crate::nt_file::dispatch_native(call) { return result; }
+    if let Some(result) = crate::nt_rtl::dispatch(call) { return result; }
     if call.service == syscall::nt::NtService::RelayCall {
         klog::write_raw(b"[WINDOWS-PE-NT-DISPATCH] relay descriptor="); klog::write_hex_u64(call.args.a0);
         klog::write_raw(b" index="); klog::write_hex_u64(call.args.a1);
@@ -836,7 +837,6 @@ pub fn dispatch(call: NtCall) -> u64 {
     if let Some(result) = crate::nt_exception::dispatch(call) { return result; }
     if let Some(result) = crate::nt_time::dispatch(call) { return result; }
     if let Some(result) = crate::nt_registry::dispatch(call) { return result; }
-    if let Some(result) = crate::nt_rtl::dispatch(call) { return result; }
     if let Some(result) = crate::nt_bitmap::dispatch(call) { return result; }
     if let Some(result) = crate::nt_unicode::dispatch(call) { return result; }
     if let Some(result) = crate::nt_context::dispatch(call) { return result; }

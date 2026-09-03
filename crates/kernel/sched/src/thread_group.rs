@@ -80,6 +80,9 @@ pub struct ThreadGroup {
     pub nt_module_catalog: Spinlock<Option<Arc<Spinlock<pe::catalog::ModuleCatalog, TaskListClass>>>, TaskListClass>,
     /// Modules whose `DLL_THREAD_ATTACH`/`DETACH` callbacks are disabled.
     pub nt_module_no_thread_calls: Spinlock<Vec<u64>, TaskListClass>,
+    /// Process-owned Wine client procedure tables initialized by user32.
+    /// The six values are `(A, A_bytes, W, W_bytes, workers, workers_bytes)`.
+    pub nt_user_pfn: Spinlock<Option<[u64; 6]>, TaskListClass>,
     pub nt_atoms: Spinlock<Vec<Vec<u8>>, TaskListClass>, pub nt_atom_table: Spinlock<bool, TaskListClass>,
     /// Owner and recursion depth of the process heap lock: `(tid, depth)`.
     pub nt_heap_lock: Spinlock<Option<(u64, u32)>, TaskListClass>,
@@ -262,6 +265,7 @@ impl ThreadGroup {
             nt_module_refs: Spinlock::new(Vec::new()),
             nt_module_catalog: Spinlock::new(None),
             nt_module_no_thread_calls: Spinlock::new(Vec::new()),
+            nt_user_pfn: Spinlock::new(None),
             nt_atoms: Spinlock::new(Vec::new()), nt_atom_table: Spinlock::new(false),
             nt_heap_lock: Spinlock::new(None),
             nt_heap_user_info: Spinlock::new(Vec::new()),
