@@ -866,8 +866,16 @@ fn query_directory(cur: &sched::Task, addr: u64) -> u64 {
 }
 
 fn query_directory_values(cur: &sched::Task, handle: u32, io_status: u64, information: u64, length: u32, class: u32) -> u64 {
-    if io_status == 0 || information == 0 || class != FILE_NAMES_INFORMATION || length == 0 {
+    if io_status == 0 || information == 0 || class != FILE_NAMES_INFORMATION {
         return STATUS_INVALID_PARAMETER;
+    }
+    // FILE_NAMES_INFORMATION has a fixed 12-byte header.  NT validates the
+    // caller's buffer contract before touching the directory cursor; doing
+    // this here also prevents a zero-sized emitter from being mistaken for an
+    // exhausted directory.
+    if length < FILE_NAMES_INFORMATION_HEADER_BYTES {
+        write_io_status(io_status, STATUS_INFO_LENGTH_MISMATCH, 0);
+        return STATUS_INFO_LENGTH_MISMATCH;
     }
     let native = sched::nt_object::NtHandle::from_raw(handle);
     let table = cur.thread_group.nt_handles();
@@ -909,6 +917,8 @@ struct NameEmitter {
     attempted: bool,
 }
 
+const FILE_NAMES_INFORMATION_HEADER_BYTES: u32 = 12;
+
 impl NameEmitter {
     fn new(capacity: usize) -> Self {
         Self { bytes: alloc::vec::Vec::new(), capacity, last: None, attempted: false }
@@ -919,16 +929,20 @@ impl vfs::DirEmit for NameEmitter {
     fn emit(&mut self, name: &str, _ino: u64, _kind: vfs::FileType, _next_pos: u64) -> bool {
         self.attempted = true;
         let utf16: alloc::vec::Vec<u16> = name.encode_utf16().collect();
-        let name_bytes = utf16.len().saturating_mul(2);
-        let record_len = (12usize).saturating_add(name_bytes);
-        let aligned = (record_len + 7) & !7;
-        if aligned > self.capacity.saturating_sub(self.bytes.len()) { return false; }
+        let Some(name_bytes) = utf16.len().checked_mul(2) else { return false; };
+        let Some(record_len) = (FILE_NAMES_INFORMATION_HEADER_BYTES as usize).checked_add(name_bytes) else {
+            return false;
+        };
+        let Some(aligned) = record_len.checked_add(7).map(|value| value & !7) else { return false; };
+        let Some(remaining) = self.capacity.checked_sub(self.bytes.len()) else { return false; };
+        if aligned > remaining { return false; }
         let offset = self.bytes.len();
         if let Some(last) = self.last {
             let delta = (offset - last) as u32;
             self.bytes[last..last + 4].copy_from_slice(&delta.to_ne_bytes());
         }
-        self.bytes.resize(offset + aligned, 0);
+        let Some(end) = offset.checked_add(aligned) else { return false; };
+        self.bytes.resize(end, 0);
         self.bytes[offset + 4..offset + 8].copy_from_slice(&0u32.to_ne_bytes());
         self.bytes[offset + 8..offset + 12].copy_from_slice(&(name_bytes as u32).to_ne_bytes());
         for (index, unit) in utf16.iter().enumerate() {
