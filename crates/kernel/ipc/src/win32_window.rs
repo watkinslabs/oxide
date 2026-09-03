@@ -12,6 +12,9 @@ pub const WM_NCACTIVATE: u32 = 0x0086;
 pub const WM_PAINT: u32 = 0x000f;
 pub const WM_QUIT: u32 = 0x0012;
 pub const WM_TIMER: u32 = 0x0113;
+const KEY_REPEAT_COUNT_MASK: u32 = 0xffff;
+const KEY_PREVIOUS_STATE: u32 = 1 << 30;
+const KEY_TRANSITION_STATE: u32 = 1 << 31;
 pub const HTCLIENT: i64 = 1;
 pub const HTNOWHERE: i64 = 0;
 pub const SW_HIDE: u32 = 0;
@@ -33,6 +36,16 @@ pub struct WinMessage {
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct MessageFilter { pub hwnd: Option<WindowId>, pub first: u32, pub last: u32 }
+
+/// Encode the fixed Windows keyboard `lParam` fields for one transition.
+/// # C: O(1)
+pub const fn key_lparam(pressed: bool, repeat: bool) -> i64 {
+    let count = if repeat { 2 } else { 1 };
+    let mut value = count & KEY_REPEAT_COUNT_MASK;
+    if repeat || !pressed { value |= KEY_PREVIOUS_STATE; }
+    if !pressed { value |= KEY_TRANSITION_STATE; }
+    value as i64
+}
 
 impl MessageFilter {
     fn matches(self, message: WinMessage) -> bool {
@@ -285,12 +298,12 @@ impl WindowManager {
         let window = self.focus.ok_or(WindowError::NoFocus)?;
         let record = self.get(window).ok_or(WindowError::NoSuchWindow)?;
         if record.owner_tid != tid { return Err(WindowError::WrongThread); }
-        self.post_to_window(window, WinMessage { hwnd: Some(window), message: if pressed { WM_KEYDOWN } else { WM_KEYUP }, wparam: key as u64, lparam: repeat as i64 })
+        self.post_to_window(window, WinMessage { hwnd: Some(window), message: if pressed { WM_KEYDOWN } else { WM_KEYUP }, wparam: key as u64, lparam: key_lparam(pressed, repeat) })
     }
     /// Enqueue one hardware key transition on the focused window. # C: O(N_windows)
     pub fn post_focused_key(&mut self, key: u16, pressed: bool, repeat: bool) -> Result<(), WindowError> {
         let window = self.focus.ok_or(WindowError::NoFocus)?;
-        self.post_to_window(window, WinMessage { hwnd: Some(window), message: if pressed { WM_KEYDOWN } else { WM_KEYUP }, wparam: key as u64, lparam: repeat as i64 })
+        self.post_to_window(window, WinMessage { hwnd: Some(window), message: if pressed { WM_KEYDOWN } else { WM_KEYUP }, wparam: key as u64, lparam: key_lparam(pressed, repeat) })
     }
     /// Arm or replace one process-owned timer using the canonical window queue. # C: O(N_timers)
     pub fn set_timer(&mut self, owner_tid: u64, hwnd: Option<WindowId>, id: u64, timeout_ms: u32, proc: u64, now_ns: u64) -> Result<u64, WindowError> {
@@ -532,7 +545,7 @@ mod tests {
         assert_eq!(manager.focused(), Some(second));
         manager.post_key(9, 0x41, true, false).unwrap();
         let filter = MessageFilter { hwnd: Some(second), first: WM_KEYDOWN, last: WM_KEYDOWN };
-        assert_eq!(manager.peek_for_thread(9, filter, true), Some(WinMessage { hwnd: Some(second), message: WM_KEYDOWN, wparam: 0x41, lparam: 0 }));
+        assert_eq!(manager.peek_for_thread(9, filter, true), Some(WinMessage { hwnd: Some(second), message: WM_KEYDOWN, wparam: 0x41, lparam: 1 }));
     }
 
     #[test]
@@ -548,6 +561,14 @@ mod tests {
         manager.destroy(window).unwrap();
         assert_eq!(manager.focused(), None);
         assert_eq!(manager.post_key(9, 0x41, true, false), Err(WindowError::NoFocus));
+    }
+
+    #[test]
+    fn key_lparam_encodes_transition_and_repeat_state() {
+        assert_eq!(key_lparam(true, false), 1);
+        assert_eq!(key_lparam(true, true), 0x4000_0002);
+        assert_eq!(key_lparam(false, false), 0xc000_0001);
+        assert_eq!(key_lparam(false, true), 0xc000_0002);
     }
 
     #[test]
