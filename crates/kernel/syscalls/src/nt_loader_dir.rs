@@ -5,7 +5,6 @@
 use alloc::{vec, vec::Vec};
 use core::sync::atomic::Ordering;
 use syscall::nt::{NtCall, NtService};
-use syscall::nt_loader_name::matches_module_name;
 
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
@@ -40,6 +39,8 @@ const LOAD_LIBRARY_SEARCH_DEFAULT_DIRS: u32 = 0x0000_1000;
 const LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR: u32 = 0x0000_0100;
 const LOAD_WITH_ALTERED_SEARCH_PATH: u32 = 0x0000_0008;
 const DEFAULT_DLL_SEARCH_FLAGS: u32 = LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_USER_DIRS | LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
+
+mod dynamic;
 
 pub fn dispatch(call: NtCall) -> Option<u64> {
     match call.service {
@@ -330,34 +331,7 @@ fn query_options(key: u64, value: u64, data_size: u64, result_size: u64) -> u64 
 }
 
 fn load(name_descriptor: u64, module_output: u64) -> u64 {
-    if name_descriptor == 0 || module_output == 0 { return STATUS_INVALID_PARAMETER; }
-    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
-    let mut descriptor = [0u8; UNICODE_STRING_BYTES];
-    if uaccess::copy_from_user(&mut descriptor, name_descriptor).is_err() { return STATUS_INVALID_PARAMETER; }
-    let length = u16::from_le_bytes([descriptor[0], descriptor[1]]) as usize;
-    let maximum = u16::from_le_bytes([descriptor[2], descriptor[3]]) as usize;
-    let buffer = u64::from_le_bytes(descriptor[8..16].try_into().unwrap());
-    if length & 1 != 0 || length == 0 || length > maximum || buffer == 0 || length > 32 * 1024 { return STATUS_INVALID_PARAMETER; }
-    let mut wanted = Vec::new(); wanted.resize(length, 0);
-    if uaccess::copy_from_user(&mut wanted, buffer).is_err() { return STATUS_INVALID_PARAMETER; }
-    let teb = cur.nt_teb();
-    let peb = read_u64(teb.saturating_add(TEB_PEB_OFFSET));
-    let ldr = read_u64(peb.saturating_add(PEB_LDR_OFFSET));
-    if peb == 0 || ldr == 0 { return STATUS_DLL_NOT_FOUND; }
-    let head = ldr.saturating_add(LDR_LOAD_LIST_OFFSET);
-    let mut entry = read_u64(head);
-    for _ in 0..MAX_MODULE_SCAN {
-        if entry == 0 || entry == head { break; }
-        let name = read_module_name(entry.saturating_add(MODULE_BASE_NAME_OFFSET));
-        if matches_module_name(&wanted, &name) {
-            let base = read_u64(entry.saturating_add(MODULE_BASE_OFFSET));
-            if uaccess::copy_to_user(module_output, &base.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
-            return STATUS_SUCCESS;
-        }
-        entry = read_u64(entry.saturating_add(LIST_LINK_OFFSET));
-    }
-    STATUS_DLL_NOT_FOUND
+    dynamic::load(name_descriptor, module_output)
 }
 
 fn read_module_name(descriptor: u64) -> Vec<u8> {
