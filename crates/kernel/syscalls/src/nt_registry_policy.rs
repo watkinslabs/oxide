@@ -48,10 +48,11 @@ mod tests {
     }
 
     #[test]
-    fn rejects_subtree_and_unowned_filters() {
+    fn accepts_subtree_and_rejects_invalid_filters() {
         assert!(supported_request(0, 0, 0x1000, 0, 0, 1, 1, REG_NOTIFY_CHANGE_LAST_SET));
+        assert!(supported_request(0, 0, 0x1000, 0, 0, 1, 1, REG_NOTIFY_CHANGE_NAME));
         assert!(!supported_request(0, 0, 0x1000, 0, 0, 1, 2, REG_NOTIFY_CHANGE_LAST_SET));
-        assert!(!supported_request(0, 0, 0x1000, 0, 0, 1, 0, 1));
+        assert!(!supported_request(0, 0, 0x1000, 0, 0, 1, 0, 2));
     }
 
     #[test]
