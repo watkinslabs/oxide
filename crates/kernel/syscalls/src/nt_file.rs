@@ -868,8 +868,8 @@ fn set_rename_information(file: &vfs::File, information: u64, length: u32, io_st
 
 fn query_directory(cur: &sched::Task, addr: u64) -> u64 {
     let (handle, io_status, information, length, class) = match (
-        read_u32(addr), read_u64(addr + 8), read_u64(addr + 16),
-        read_u32(addr + 24), read_u32(addr + 28)) {
+        read_u32(addr), read_u64_at(addr, 8), read_u64_at(addr, 16),
+        read_u32_at(addr, 24), read_u32_at(addr, 28)) {
         (Ok(handle), Ok(io_status), Ok(information), Ok(length), Ok(class)) =>
             (handle, io_status, information, length, class),
         _ => return STATUS_INVALID_PARAMETER,
