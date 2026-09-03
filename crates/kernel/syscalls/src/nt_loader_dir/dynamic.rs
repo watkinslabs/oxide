@@ -133,7 +133,10 @@ fn load_locked(cur: &sched::Task, name_descriptor: u64, module_output: u64) -> u
 fn load_native_unixlib(name: &[u8], as_: &vmm::AddressSpace) -> Option<u64> {
     let path = native_unixlib_path(name)?;
     let bytes = vfs::read_abs(core::str::from_utf8(&path).ok()?).ok()?;
-    elf_load::unixlib::map_shared_object(&bytes, as_).ok().map(|image| image.base)
+    let root = as_.root_pa();
+    elf_load::unixlib::map_shared_object_with_resolver(&bytes, as_, |symbol| {
+        elf_load::elf_modules::resolve_symbol(root, symbol)
+    }).ok().map(|image| image.base)
 }
 
 #[cfg(target_arch = "x86_64")]
