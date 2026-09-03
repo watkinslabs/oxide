@@ -28,6 +28,12 @@ runtime provider; when a validated catalog is supplied, the PE initialization
 trampoline runs dependency TLS callbacks and attach entry points before the
 application entry point.
 
+`NtCreateUserProcess` validates the caller's 88-byte x64 `PS_CREATE_INFO`
+record and writes the complete `PsCreateSuccess` union: normalized process
+parameters, native PEB address, and explicit zero values for unsupported
+section/manifest handles. The process transaction publishes the child only
+after this record and the child-owned environment are ready.
+
 ## 3 Entry state
 
 `RIP` is the PE entry point, `RSP` is 16-byte aligned below the reserved shadow

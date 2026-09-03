@@ -11,6 +11,8 @@ const INVALID_PARAMETER: u64 = 0xc000_000d;
 const NO_MEMORY: u64 = 0xc000_0017;
 const NOT_FOUND: u64 = 0xc000_000f;
 const CREATE_SUSPENDED: u32 = 1;
+const PS_CREATE_INFO_SIZE: u64 = 88;
+const PS_CREATE_SUCCESS: u64 = 6;
 const IMAGE_NAME: u64 = 0x0002_0005;
 const CLIENT_ID: u64 = 0x0001_0003;
 const MAX_ATTRIBUTES: u64 = 64;
@@ -22,7 +24,8 @@ pub fn dispatch(call: NtCall, stack: [u64; 5]) -> u64 {
     let Some(cur) = sched::live::current() else { return INVALID_PARAMETER; };
     if !cur.is_nt_personality() || c.process_flags != 0 || c.thread_flags & !CREATE_SUSPENDED != 0
         || !crate::nt_process_handles::valid_object_attributes(c.process_attributes)
-        || !crate::nt_process_handles::valid_object_attributes(c.thread_attributes) {
+        || !crate::nt_process_handles::valid_object_attributes(c.thread_attributes)
+        || read_u64(c.create_info.as_u64()) != Some(PS_CREATE_INFO_SIZE) {
         return INVALID_PARAMETER;
     }
     let Some(image) = image_path(c.attribute_list) else { return INVALID_PARAMETER; };
@@ -75,11 +78,11 @@ pub fn dispatch(call: NtCall, stack: [u64; 5]) -> u64 {
         || uaccess::put_user_u32(c.thread_handle.as_u64(), thread.raw()).is_err() {
         let _ = table.close(thread); let _ = table.close(process); return INVALID_PARAMETER;
     }
-    // PS_CREATE_INFO.State == PsCreateSuccess; PEB is the first useful
-    // success-state field to Wine's RtlCreateUserProcess callers.
-    if uaccess::put_user_u64(c.create_info.as_u64() + 8, 6).is_err()
-        || uaccess::put_user_u64(c.create_info.as_u64() + 56,
-            prepared.process.environment.peb.as_u64()).is_err() {
+    // PS_CREATE_INFO.SuccessState is the canonical handoff from the kernel
+    // process transaction to Wine's RtlCreateUserProcess caller. Keep every
+    // field inside the caller-declared 88-byte x64 record initialized; a
+    // state-only write leaves stale parameter pointers visible on reuse.
+    if !write_create_success(c.create_info.as_u64(), &prepared.process.environment) {
         let _ = table.close(thread); let _ = table.close(process); return INVALID_PARAMETER;
     }
     if let Some(client) = client_id(c.attribute_list) {
@@ -94,6 +97,19 @@ pub fn dispatch(call: NtCall, stack: [u64; 5]) -> u64 {
     if c.thread_flags & CREATE_SUSPENDED != 0 { child.nt_suspend(); }
     else { sched::live::wake_new_task(&child); }
     SUCCESS
+}
+
+fn write_create_success(address: u64, environment: &elf_load::process_env::NtProcessEnvironment) -> bool {
+    uaccess::put_user_u64(address + 8, PS_CREATE_SUCCESS).is_ok()
+        && uaccess::put_user_u32(address + 16, 0).is_ok()
+        && uaccess::put_user_u64(address + 24, 0).is_ok()
+        && uaccess::put_user_u64(address + 32, 0).is_ok()
+        && uaccess::put_user_u64(address + 40, environment.process_parameters.as_u64()).is_ok()
+        && uaccess::put_user_u32(address + 48, 0).is_ok()
+        && uaccess::put_user_u32(address + 52, 1).is_ok()
+        && uaccess::put_user_u64(address + 56, environment.peb.as_u64()).is_ok()
+        && uaccess::put_user_u64(address + 64, 0).is_ok()
+        && uaccess::put_user_u32(address + 72, 0).is_ok()
 }
 
 fn read_u16(address: u64) -> Option<u16> { uaccess::get_user_u32(address).ok().map(|v| v as u16) }

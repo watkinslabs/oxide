@@ -419,8 +419,10 @@ process/thread handles, and publishes the child only after PEB/TEB setup.
 `CREATE_SUSPENDED` is represented through the native suspend depth and resumed
 through the existing scheduler wake path. The normalized command line,
 double-NUL environment, current directory, console handle, and standard
-handles are now copied into the child-owned PEB. Complete PS_CREATE_INFO
-output remains pending.
+handles are now copied into the child-owned PEB. The complete 88-byte x64
+`PS_CREATE_INFO` success union now returns the normalized parameter and PEB
+pointers; section and manifest handles remain explicitly zero because those
+owners are not yet present.
 The graph advances to `ntdll.dll!NtDelayExecution`.
 Windows NT frontier update (2026-09-01): `NtDelayExecution` now uses the
 existing scheduler interruptible wait path with native relative/absolute
