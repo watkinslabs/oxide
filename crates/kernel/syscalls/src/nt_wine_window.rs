@@ -43,6 +43,8 @@ const WM_TIMER: u32 = 0x0113;
 const WM_SETTEXT: u64 = 0x000c;
 const WM_GETTEXT: u64 = 0x000d;
 const WM_GETTEXTLENGTH: u64 = 0x000e;
+const WM_NCCREATE: u64 = 0x0081;
+const WM_NCDESTROY: u64 = 0x0082;
 
 #[cfg(target_os = "oxide-kernel")]
 fn read_args(pointer: u64) -> Option<[u64; 17]> {
@@ -121,6 +123,8 @@ pub fn dispatch(call: NtCall) -> u64 {
             // result-info record begins with the requested WNDPROC; when it
             // is absent, the canonical window record supplies the procedure.
             if args[5] == WINE_DEF_WINDOW_PROC {
+                if message == WM_NCCREATE { return (lparam != 0) as u64; }
+                if message == WM_NCDESTROY { return STATUS_SUCCESS; }
                 if message == WM_SETTEXT {
                     return win_bool(native(NtService::SetWindowText, SyscallArgs { a0: hwnd, a1: lparam, a2: 0, a3: 0, a4: 0, a5: 0 }));
                 }
