@@ -84,6 +84,13 @@ pub struct DrmVirtgpuContextInit { pub num_params: u32, pub pad: u32, pub ctx_se
 // VIRTGPU_GETPARAM param ids (the virtio-gpu driver-specific UAPI).
 pub const VIRTGPU_PARAM_3D_FEATURES:       u64 = 1;
 pub const VIRTGPU_PARAM_CAPSET_QUERY_FIX:  u64 = 2;
+pub const VIRTGPU_PARAM_RESOURCE_BLOB:     u64 = 3;
+pub const VIRTGPU_PARAM_HOST_VISIBLE:      u64 = 4;
+pub const VIRTGPU_PARAM_CROSS_DEVICE:      u64 = 5;
+pub const VIRTGPU_PARAM_CONTEXT_INIT:      u64 = 6;
+pub const VIRTGPU_PARAM_SUPPORTED_CAPSET_IDS: u64 = 7;
+pub const VIRTGPU_PARAM_EXPLICIT_DEBUG_NAME: u64 = 8;
+pub const VIRTGPU_PARAM_BLOB_ALIGNMENT:    u64 = 9;
 
 // Mode ioctls (the DRM/KMS modesetting UAPI)
 pub const DRM_IOCTL_MODE_GETRESOURCES:      u64 = 0xc04064a0;

@@ -174,16 +174,27 @@ impl drm::DrmDriver for VirtioGpuDrm {
     // core already reports the 64x64 cursor this device's cursor plane uses.
     fn cap(&self, c: u64) -> u64 { drm::default_cap(c) }
 
-    /// VIRTGPU_GETPARAM. Capability descriptors are cached for the future
-    /// render-node implementation, but 3D_FEATURES remains false until the
-    /// complete capset blob and render ioctl owner is present. This prevents
-    /// Mesa from selecting a path whose userspace data contract is incomplete.
+    /// VIRTGPU_GETPARAM. Values reflect negotiated features and discovered
+    /// capsets; capabilities whose object/VMA ownership is not implemented
+    /// remain explicitly clear rather than being advertised optimistically.
     /// # C: O(1)
     fn virtgpu_getparam(&self, param: u64) -> Option<drm::KResult<u64>> {
         Some(match param {
-            drm::VIRTGPU_PARAM_3D_FEATURES      => Ok(0),
+            drm::VIRTGPU_PARAM_3D_FEATURES      => Ok((self.features_negotiated & (1u64 << VIRTIO_GPU_F_VIRGL) != 0) as u64),
             drm::VIRTGPU_PARAM_CAPSET_QUERY_FIX => Ok(1),
-            _                                   => Err(drm::Error::Inval),
+            drm::VIRTGPU_PARAM_RESOURCE_BLOB => Ok((self.features_negotiated & (1u64 << VIRTIO_GPU_F_RESOURCE_BLOB) != 0) as u64),
+            // Blob mapping is not exposed until the mmap/resource ownership
+            // contract exists; advertising it would let userspace map an
+            // object with no canonical VMA owner.
+            drm::VIRTGPU_PARAM_HOST_VISIBLE => Ok(0),
+            drm::VIRTGPU_PARAM_CROSS_DEVICE => Ok(0),
+            drm::VIRTGPU_PARAM_CONTEXT_INIT => Ok((self.features_negotiated & (1u64 << VIRTIO_GPU_F_CONTEXT_INIT) != 0) as u64),
+            drm::VIRTGPU_PARAM_SUPPORTED_CAPSET_IDS => Ok(self.capsets.iter().fold(0u64, |mask, c| {
+                if c.id < 64 { mask | (1u64 << c.id) } else { mask }
+            })),
+            drm::VIRTGPU_PARAM_EXPLICIT_DEBUG_NAME => Ok((self.features_negotiated & (1u64 << VIRTIO_GPU_F_CONTEXT_INIT) != 0) as u64),
+            drm::VIRTGPU_PARAM_BLOB_ALIGNMENT => Err(drm::Error::NoEnt),
+            _ => Err(drm::Error::Inval),
         })
     }
 
