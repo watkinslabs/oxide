@@ -290,13 +290,13 @@ fn wcstoul(string: u64, end: u64, base: u64) -> u64 {
     }
     let mut negative = false;
     if let Some(unit) = read_u16(string, index) {
-        if unit == b'-' as u16 { negative = true; index = index.saturating_add(1); }
-        else if unit == b'+' as u16 { index = index.saturating_add(1); }
+        if unit == b'-' as u16 { negative = true; index = index.checked_add(1).unwrap_or(usize::MAX); }
+        else if unit == b'+' as u16 { index = index.checked_add(1).unwrap_or(usize::MAX); }
     }
     let first = read_u16(string, index).unwrap_or(0);
-    let second = read_u16(string, index.saturating_add(1)).unwrap_or(0);
+    let second = read_u16(string, index.checked_add(1).unwrap_or(usize::MAX)).unwrap_or(0);
     if (base == 0 || base == 16) && first == b'0' as u16 && (second == b'x' as u16 || second == b'X' as u16) {
-        index = index.saturating_add(2);
+        index = index.checked_add(2).unwrap_or(usize::MAX);
     }
     let actual_base = if base == 0 { if wide_digit(first).is_some_and(|value| value != 0) { 10 } else { 8 } } else { base as u32 };
     let mut value = 0u32;
@@ -394,12 +394,12 @@ fn strtol(string: u64, end: u64, base: u64) -> u64 {
     }
     let mut negative = false;
     if let Some(byte) = read_u8(string, index) {
-        if byte == b'-' { negative = true; index = index.saturating_add(1); }
-        else if byte == b'+' { index = index.saturating_add(1); }
+        if byte == b'-' { negative = true; index = index.checked_add(1).unwrap_or(usize::MAX); }
+        else if byte == b'+' { index = index.checked_add(1).unwrap_or(usize::MAX); }
     }
     let first = read_u8(string, index).unwrap_or(0);
-    let second = read_u8(string, index.saturating_add(1)).unwrap_or(0);
-    if (base == 0 || base == 16) && first == b'0' && (second == b'x' || second == b'X') { index = index.saturating_add(2); }
+    let second = read_u8(string, index.checked_add(1).unwrap_or(usize::MAX)).unwrap_or(0);
+    if (base == 0 || base == 16) && first == b'0' && (second == b'x' || second == b'X') { index = index.checked_add(2).unwrap_or(usize::MAX); }
     let actual_base = if base == 0 { if first == b'0' { 8 } else { 10 } } else { base as u32 };
     let limit = if negative { 2_147_483_648u64 } else { 2_147_483_647u64 };
     let mut value = 0u64;
@@ -508,7 +508,8 @@ fn wcsstr(string: u64, needle: u64) -> u64 {
         loop {
             let Some(needle_character) = read_u16(needle, needle_index) else { return 0; };
             if needle_character == 0 { return string.checked_add((string_index as u64).checked_mul(2).unwrap_or(0)).unwrap_or(0); }
-            let Some(subject_character) = read_u16(string, string_index.saturating_add(needle_index)) else { return 0; };
+            let Some(subject_index) = string_index.checked_add(needle_index) else { return 0; };
+            let Some(subject_character) = read_u16(string, subject_index) else { return 0; };
             if subject_character != needle_character { break; }
             let Some(next) = needle_index.checked_add(1) else { return 0; };
             needle_index = next;
@@ -529,12 +530,12 @@ fn wcstol(string: u64, end: u64, base: u64) -> u64 {
     }
     let mut negative = false;
     if let Some(unit) = read_u16(string, index) {
-        if unit == b'-' as u16 { negative = true; index = index.saturating_add(1); }
-        else if unit == b'+' as u16 { index = index.saturating_add(1); }
+        if unit == b'-' as u16 { negative = true; index = index.checked_add(1).unwrap_or(usize::MAX); }
+        else if unit == b'+' as u16 { index = index.checked_add(1).unwrap_or(usize::MAX); }
     }
     let first = read_u16(string, index).unwrap_or(0);
-    let second = read_u16(string, index.saturating_add(1)).unwrap_or(0);
-    if (base == 0 || base == 16) && first == b'0' as u16 && (second == b'x' as u16 || second == b'X' as u16) { index = index.saturating_add(2); }
+    let second = read_u16(string, index.checked_add(1).unwrap_or(usize::MAX)).unwrap_or(0);
+    if (base == 0 || base == 16) && first == b'0' as u16 && (second == b'x' as u16 || second == b'X' as u16) { index = index.checked_add(2).unwrap_or(usize::MAX); }
     let actual_base = if base == 0 { if first == b'0' as u16 { 8 } else { 10 } } else { base as u32 };
     let limit = if negative { 2_147_483_648u64 } else { 2_147_483_647u64 };
     let mut value = 0u64;
