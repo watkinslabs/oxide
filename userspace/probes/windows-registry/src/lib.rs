@@ -1,8 +1,8 @@
 //! One userspace owner for the Windows registry namespace.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use syscall::registry_wire;
 
@@ -415,12 +415,23 @@ impl Registry {
     /// Persist one registry database using a bounded, versioned binary format. # C: O(N_values)
     pub fn save(&self, path: &Path) -> Result<(), Error> {
         let bytes = self.encode()?;
-        let temp = path.with_extension("oxide-registry.tmp");
-        let mut file = File::create(&temp)?;
+        let mut selected = None;
+        for attempt in 0..1024u32 {
+            let temp = path.with_extension(format!("oxide-registry.tmp.{}.{}", std::process::id(), attempt));
+            match OpenOptions::new().write(true).create_new(true).open(&temp) {
+                Ok(file) => { selected = Some((temp, file)); break; }
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        let (temp, mut file) = selected.ok_or_else(|| Error::Io("registry temporary-file namespace exhausted".into()))?;
         file.write_all(&bytes)?;
         file.sync_all()?;
         drop(file);
-        fs::rename(&temp, path)?;
+        if let Err(error) = fs::rename(&temp, path) {
+            let _ = fs::remove_file(&temp);
+            return Err(error.into());
+        }
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
         File::open(parent)?.sync_all()?;
         Ok(())
@@ -567,6 +578,20 @@ mod tests {
         let mut registry = Registry::new(); let key = registry.create_key(Root::LocalMachine, "Software\\Oxide").unwrap();
         registry.set_value(&key, "Flags", Value { kind: ValueType::Dword, data: vec![1, 2, 3, 4] }).unwrap(); registry.save(&path).unwrap();
         assert_eq!(Registry::load(&path).unwrap(), registry); std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn save_skips_an_existing_process_scoped_temporary_file() {
+        let path = std::env::temp_dir().join(format!("oxide-registry-temp-collision-{}", std::process::id()));
+        let occupied = path.with_extension(format!("oxide-registry.tmp.{}.0", std::process::id()));
+        let _ = fs::remove_file(&path); let _ = fs::remove_file(&occupied);
+        File::create(&occupied).unwrap();
+        let mut registry = Registry::new();
+        let key = registry.create_key(Root::CurrentUser, "Software\\Oxide").unwrap();
+        registry.set_value(&key, "Ready", Value { kind: ValueType::Dword, data: vec![1, 0, 0, 0] }).unwrap();
+        registry.save(&path).unwrap();
+        assert_eq!(Registry::load(&path).unwrap(), registry);
+        fs::remove_file(path).unwrap(); fs::remove_file(occupied).unwrap();
     }
 
     #[test]
