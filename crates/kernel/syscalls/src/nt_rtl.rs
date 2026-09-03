@@ -615,6 +615,11 @@ fn run_once_execute_once_x86(once: u64, func: u64, param: u64, context: u64) -> 
 /// `NtCallbackReturn`, which restores the suspended syscall frame.
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn begin_wndproc_callback(hwnd: u64, message: u64, wparam: u64, lparam: u64, wndproc: u64) -> u64 {
+    begin_wndproc_callback_with_completion(hwnd, message, wparam, lparam, wndproc, sched::nt_callback::Completion::NONE)
+}
+
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn begin_wndproc_callback_with_completion(hwnd: u64, message: u64, wparam: u64, lparam: u64, wndproc: u64, completion: sched::nt_callback::Completion) -> u64 {
     if hwnd == 0 || wndproc == 0 || !uaccess::access_ok(wndproc, 1) { return STATUS_INVALID_PARAMETER; }
     let Some(task) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !task.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
@@ -629,7 +634,7 @@ pub(crate) fn begin_wndproc_callback(hwnd: u64, message: u64, wparam: u64, lpara
     if uaccess::put_user_u64(callback_rsp, continuation).is_err() { return STATUS_INVALID_PARAMETER; }
     let post_rip = frame.rip;
     let post_rsp = frame.rsp;
-    if !task.nt_callback_stack.lock().push(sched::nt_callback::Frame { rip: post_rip, rsp: post_rsp }) { return STATUS_INVALID_PARAMETER; }
+    if !task.nt_callback_stack.lock().push(sched::nt_callback::Frame { rip: post_rip, rsp: post_rsp, completion }) { return STATUS_INVALID_PARAMETER; }
     frame.rip = wndproc;
     frame.rsp = callback_rsp;
     frame.rcx = hwnd;
@@ -641,6 +646,9 @@ pub(crate) fn begin_wndproc_callback(hwnd: u64, message: u64, wparam: u64, lpara
 
 #[cfg(target_arch = "aarch64")]
 pub(crate) fn begin_wndproc_callback(_: u64, _: u64, _: u64, _: u64, _: u64) -> u64 { STATUS_NOT_SUPPORTED }
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn begin_wndproc_callback_with_completion(_: u64, _: u64, _: u64, _: u64, _: u64, _: sched::nt_callback::Completion) -> u64 { STATUS_NOT_SUPPORTED }
 
 /// Complete a synchronous callback and restore the syscall frame that
 /// initiated it. Wine passes a pointer to one eight-byte LRESULT.
@@ -657,6 +665,7 @@ pub(crate) fn callback_return(call: NtCall) -> u64 {
         frame.rip = saved.rip;
         frame.rsp = saved.rsp;
         frame.rax = result;
+        if saved.completion.kind != 0 { return crate::nt_window::complete_callback(saved.completion); }
         result
     }
     #[cfg(target_arch = "aarch64")]

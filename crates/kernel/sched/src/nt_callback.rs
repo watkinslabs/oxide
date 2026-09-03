@@ -5,7 +5,12 @@ use alloc::vec::Vec;
 const MAX_DEPTH: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Frame { pub rip: u64, pub rsp: u64 }
+pub struct Completion { pub kind: u64, pub argument: u64 }
+
+impl Completion { pub const NONE: Self = Self { kind: 0, argument: 0 }; }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Frame { pub rip: u64, pub rsp: u64, pub completion: Completion }
 
 pub struct Stack { frames: Vec<Frame> }
 
@@ -32,18 +37,18 @@ mod tests {
     #[test]
     fn nested_frames_unwind_lifo() {
         let mut stack = Stack::new();
-        assert!(stack.push(Frame { rip: 1, rsp: 2 }));
-        assert!(stack.push(Frame { rip: 3, rsp: 4 }));
+        assert!(stack.push(Frame { rip: 1, rsp: 2, completion: Completion::NONE }));
+        assert!(stack.push(Frame { rip: 3, rsp: 4, completion: Completion { kind: 7, argument: 8 } }));
         assert_eq!(stack.len(), 2);
-        assert_eq!(stack.pop(), Some(Frame { rip: 3, rsp: 4 }));
-        assert_eq!(stack.pop(), Some(Frame { rip: 1, rsp: 2 }));
+        assert_eq!(stack.pop(), Some(Frame { rip: 3, rsp: 4, completion: Completion { kind: 7, argument: 8 } }));
+        assert_eq!(stack.pop(), Some(Frame { rip: 1, rsp: 2, completion: Completion::NONE }));
         assert_eq!(stack.pop(), None);
     }
 
     #[test]
     fn depth_is_bounded() {
         let mut stack = Stack::new();
-        for value in 0..MAX_DEPTH { assert!(stack.push(Frame { rip: value as u64, rsp: value as u64 })); }
-        assert!(!stack.push(Frame { rip: MAX_DEPTH as u64, rsp: 0 }));
+        for value in 0..MAX_DEPTH { assert!(stack.push(Frame { rip: value as u64, rsp: value as u64, completion: Completion::NONE })); }
+        assert!(!stack.push(Frame { rip: MAX_DEPTH as u64, rsp: 0, completion: Completion::NONE }));
     }
 }
