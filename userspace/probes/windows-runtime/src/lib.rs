@@ -20,6 +20,7 @@ pub enum BuildError {
     InvalidRoot(pe::Error),
     InvalidModule { path: PathBuf, error: pe::Error },
     MissingModule { name: Vec<u8> },
+    UnresolvedImport { module: Vec<u8>, dll: Vec<u8>, symbol: Vec<u8> },
     InvalidUtf8Path,
     TooLarge,
     InvalidAddress,
@@ -90,6 +91,7 @@ impl RuntimeRequest {
             modules.push(ModuleBuffer { name: module_name.to_vec().into_boxed_slice(), image: blob.into_boxed_slice() });
         }
         let image = image.into_boxed_slice();
+        validate_import_closure(&image, &modules)?;
         let image_path = windows_path.to_vec().into_boxed_slice();
         let mut records = Vec::with_capacity(modules.len().max(1));
         for module in &modules {
@@ -139,6 +141,39 @@ fn validate_size(size: u64) -> Result<(), BuildError> {
 
 fn is_dll(path: &Path) -> bool {
     path.extension().and_then(OsStr::to_str).is_some_and(|extension| extension.eq_ignore_ascii_case("dll"))
+}
+
+/// Validate the complete PE dependency graph before constructing the raw
+/// kernel ABI. Native ntdll exports are resolved by the kernel-owned runtime;
+/// every other import must name a catalog member and an actual export in that
+/// member. This keeps the handoff all-or-nothing and avoids discovering a
+/// broken transitive import after an address space has been published.
+fn validate_import_closure(root: &[u8], modules: &[ModuleBuffer]) -> Result<(), BuildError> {
+    let mut images = HashMap::new();
+    for module in modules {
+        images.insert(module.name.to_ascii_lowercase(), module.image.as_ref());
+    }
+    let validate = |module_name: &[u8], image: &[u8]| -> Result<(), BuildError> {
+        let parsed = pe::parse(image).map_err(|error| BuildError::InvalidModule { path: PathBuf::from(String::from_utf8_lossy(module_name).into_owned()), error })?;
+        for import in parsed.imports().map_err(|error| BuildError::InvalidModule { path: PathBuf::from(String::from_utf8_lossy(module_name).into_owned()), error })? {
+            let dependency_name = pe::apiset::target(import.name).unwrap_or(import.name);
+            if dependency_name.eq_ignore_ascii_case(b"ntdll.dll") { continue; }
+            let Some(dependency) = images.get(&dependency_name.to_ascii_lowercase()) else {
+                return Err(BuildError::MissingModule { name: import.name.to_vec() });
+            };
+            let dependency = pe::parse(dependency).map_err(|error| BuildError::InvalidModule { path: PathBuf::from(String::from_utf8_lossy(dependency_name).into_owned()), error })?;
+            for thunk in parsed.import_thunks(&import).map_err(|error| BuildError::InvalidModule { path: PathBuf::from(String::from_utf8_lossy(module_name).into_owned()), error })? {
+                if dependency.export_target(&thunk).map_err(|error| BuildError::InvalidModule { path: PathBuf::from(String::from_utf8_lossy(&import.name).into_owned()), error })?.is_none() {
+                    let symbol = match thunk { pe::ImportThunk::Name { name, .. } => name.to_vec(), pe::ImportThunk::Ordinal(value) => value.to_le_bytes().to_vec() };
+                    return Err(BuildError::UnresolvedImport { module: module_name.to_vec(), dll: import.name.to_vec(), symbol });
+                }
+            }
+        }
+        Ok(())
+    };
+    validate(b"notepad.exe", root)?;
+    for module in modules { validate(&module.name, &module.image)?; }
+    Ok(())
 }
 
 #[cfg(test)]
