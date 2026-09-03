@@ -25,6 +25,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `11-vmm.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`10`,`14`,`20`,`21` |
 | `12-slab.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`10` |
 | `13-sched.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`14` |
+| `13a-scheduler-state.md` | FROZEN | 2026-09-03 | `01`,`02`,`06`,`08`,`09` |
 | `14-context-switch.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`07`,`08`,`09` |
 | `15-syscall-abi.md` | FROZEN | 2026-05-02 | `01`,`03`,`06` |
 | `16-vfs.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`12`,`15` |
@@ -275,7 +276,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 
 ## Freeze order
 
-Charter docs first (no inter-charter cycles): `02` → `08` → `09` → `01` → `06` → `07` → `04` → `03` → `38`. Then subsystem leaves: `14`,`23`,`22`,`33`,`36` (HAL/firmware leaves). Then HAL: `20`,`21`. Then mid: `10`,`12`,`11`,`13`,`15`. Then upper: `16`,`17`,`18`,`19`,`24`,`27`,`26`,`25`,`28`,`30`,`31`,`32`,`34`,`35`,`37`,`29`,`39`. Then `40`,`41`,`42`,`44`,`51`,`52`. Then `43` and `00`,`05` (kept DRAFT-as-living-docs).
+Charter docs first (no inter-charter cycles): `02` → `08` → `09` → `01` → `06` → `07` → `04` → `03` → `38`. Then subsystem leaves: `14`,`23`,`22`,`33`,`36` (HAL/firmware leaves). Then HAL: `20`,`21`. Then mid: `10`,`12`,`11`,`13a`,`13`,`15`. Then upper: `16`,`17`,`18`,`19`,`24`,`27`,`26`,`25`,`28`,`30`,`31`,`32`,`34`,`35`,`37`,`29`,`39`. Then `40`,`41`,`42`,`44`,`51`,`52`. Then `43` and `00`,`05` (kept DRAFT-as-living-docs).
 
 Charter docs `00` and `05` deliberately stay DRAFT permanently — they are living docs (master plan and pre-mortem) that should evolve as facts change.
 
