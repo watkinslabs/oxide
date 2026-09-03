@@ -22,10 +22,14 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     let signal = sched::nt_object::NtHandle::from_raw(signal);
     let Some(signal_object) = table.get(signal, EVENT_MODIFY_STATE) else { return Some(if table.contains(signal) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }); };
     let Some(event) = signal_object.event() else { return Some(STATUS_INVALID_HANDLE); };
-    event.set(); table.wake_waiters();
     let wait = sched::nt_object::NtHandle::from_raw(wait);
     let Some(wait_object) = table.get(wait, SYNCHRONIZE) else { return Some(if table.contains(wait) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }); };
     let deadline = match crate::nt_dispatch::wait_deadline(timeout) { Ok(deadline) => deadline, Err(status) => return Some(status) };
+    // Validate both handles and the timeout before changing the signal
+    // object. Wine's server queues the wait first, then signals atomically;
+    // an invalid wait handle must not turn into a successful signal side
+    // effect.
+    event.set(); table.wake_waiters();
     let outcome = if let Some(event) = wait_object.event() {
         // SAFETY: the object Arc keeps the event alive across the scheduler wait.
         unsafe { event.wait(deadline, timekeeper::monotonic_ns) }
