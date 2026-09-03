@@ -176,8 +176,9 @@ fn query_information(call: NtCall) -> u64 {
     // No process/thread activation-context object is installed yet. Wine's
     // basic query still succeeds for the empty context and reports a null
     // handle with zero flags.
+    let Some(flags_address) = call.args.a4.checked_add(8) else { return STATUS_INVALID_PARAMETER; };
     if uaccess::put_user_u64(call.args.a4, 0).is_err()
-        || uaccess::put_user_u64(call.args.a4.saturating_add(8), 0).is_err()
+        || uaccess::put_user_u64(flags_address, 0).is_err()
     {
         return STATUS_INVALID_PARAMETER;
     }
