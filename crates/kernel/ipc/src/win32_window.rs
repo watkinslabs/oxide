@@ -85,7 +85,7 @@ pub struct WindowRect { pub left: i32, pub top: i32, pub right: i32, pub bottom:
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum WindowError { NoSuchWindow, InvalidParent, ClassInUse, WrongThread, NoFocus, QueueFull }
 
-pub struct WindowManager { next: u32, next_atom: u16, classes: Vec<WindowClass>, windows: Vec<(WindowId, WindowRecord)>, rects: Vec<(WindowId, WindowRect)>, texts: Vec<(WindowId, Vec<u16>)>, dirty: Vec<(WindowId, WindowRect)>, queues: Vec<(u64, MessageQueue)>, timers: Vec<WindowTimer>, focus: Option<WindowId> }
+pub struct WindowManager { next: u32, next_atom: u16, classes: Vec<WindowClass>, windows: Vec<(WindowId, WindowRecord)>, rects: Vec<(WindowId, WindowRect)>, texts: Vec<(WindowId, Vec<u16>)>, dirty: Vec<(WindowId, WindowRect)>, queues: Vec<(u64, MessageQueue)>, timers: Vec<WindowTimer>, focus: Option<WindowId>, destroying: Vec<WindowId> }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 struct WindowTimer { owner_tid: u64, hwnd: Option<WindowId>, id: u64, period_ns: u64, due_ns: u64, proc: u64 }
@@ -96,7 +96,7 @@ pub enum QueueResult { Message(WinMessage), Quit(i32), Empty }
 impl Default for WindowManager { fn default() -> Self { Self::new() } }
 
 impl WindowManager {
-    pub fn new() -> Self { Self { next: 1, next_atom: 1, classes: Vec::new(), windows: Vec::new(), rects: Vec::new(), texts: Vec::new(), dirty: Vec::new(), queues: Vec::new(), timers: Vec::new(), focus: None } }
+    pub fn new() -> Self { Self { next: 1, next_atom: 1, classes: Vec::new(), windows: Vec::new(), rects: Vec::new(), texts: Vec::new(), dirty: Vec::new(), queues: Vec::new(), timers: Vec::new(), focus: None, destroying: Vec::new() } }
     /// Register one process-local window class and retain its procedure. # C: O(N_classes)
     pub fn register_class(&mut self, name: &[u16], wndproc: u64) -> Result<u16, WindowError> {
         if name.is_empty() || self.classes.iter().any(|class| same_name(&class.name, name)) { return Err(WindowError::InvalidParent); }
@@ -228,6 +228,7 @@ impl WindowManager {
         self.rects.retain(|(window, _)| *window != id);
         self.texts.retain(|(window, _)| *window != id);
         self.dirty.retain(|(window, _)| *window != id);
+        self.destroying.retain(|window| *window != id);
         if self.focus == Some(id) { self.focus = None; }
         Ok(self.windows.remove(index).1)
     }
@@ -239,6 +240,14 @@ impl WindowManager {
         for child in children { let _ = self.destroy(child); }
         self.remove_window(id)
     }
+    /// Reserve one live window for a synchronous destruction transaction. # C: O(N_windows)
+    pub fn begin_destroy(&mut self, id: WindowId) -> Result<bool, WindowError> {
+        if self.get(id).is_none() { return Err(WindowError::NoSuchWindow); }
+        if self.destroying.contains(&id) { return Ok(false); }
+        self.destroying.push(id); Ok(true)
+    }
+    /// Cancel a destruction reservation after callback setup fails. # C: O(N_windows)
+    pub fn cancel_destroy(&mut self, id: WindowId) { self.destroying.retain(|window| *window != id); }
     pub fn post_to_window(&mut self, id: WindowId, message: WinMessage) -> Result<(), WindowError> {
         let owner = self.get(id).ok_or(WindowError::NoSuchWindow)?.owner_tid;
         let queue = self.queues.iter_mut().find(|(tid, _)| *tid == owner).map(|(_, queue)| queue)
@@ -438,6 +447,18 @@ mod tests {
         let filter = MessageFilter { hwnd: None, first: 0, last: u32::MAX };
         assert_eq!(manager.peek_for_thread(9, filter, false), None);
         assert_eq!(manager.expire_timers(u64::MAX), 0);
+    }
+
+    #[test]
+    fn destruction_reservation_is_idempotent_and_cancelable() {
+        let mut manager = WindowManager::new();
+        let window = manager.create(9, None, 0x1234).unwrap();
+        assert_eq!(manager.begin_destroy(window), Ok(true));
+        assert_eq!(manager.begin_destroy(window), Ok(false));
+        manager.cancel_destroy(window);
+        assert_eq!(manager.begin_destroy(window), Ok(true));
+        manager.destroy(window).unwrap();
+        assert_eq!(manager.begin_destroy(window), Err(WindowError::NoSuchWindow));
     }
 
     #[test]
