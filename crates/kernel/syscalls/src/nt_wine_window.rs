@@ -28,6 +28,7 @@ const WINE_GET_TEXT_EXTENT_EX: u64 = 0x1227;
 const WINE_REGISTER_CLASS_EX: u64 = 0x14eb;
 const WINE_DISPATCH_MESSAGE: u64 = 0x138b;
 const WINE_MESSAGE_CALL: u64 = 0x14b5;
+const WINE_GET_CLASS_NAME: u64 = 0x13d9;
 // Wine's NtUserCallWindowProc selector, passed as the NtUserMessageCall type.
 const WINE_CALL_WINDOW_PROC: u64 = 0x02ab;
 // Wine's generated win32u syscall table assigns this ordinal to the raw
@@ -120,6 +121,7 @@ pub fn dispatch(call: NtCall) -> u64 {
             let Some(wndproc) = wndproc else { return STATUS_INVALID_PARAMETER; };
             crate::nt_rtl::begin_wndproc_callback(hwnd, message, wparam, lparam, wndproc)
         }
+        WINE_GET_CLASS_NAME => get_class_name(&args),
         WINE_REGISTER_CLASS_EX => {
             if args[0] == 0 || uaccess::get_user_u32(args[0]).ok() != Some(80) { return 0; }
             let Some(name) = read_unicode_string(args[1]) else { return 0; };
@@ -171,6 +173,23 @@ pub fn dispatch(call: NtCall) -> u64 {
         WINE_GET_TEXT_EXTENT_EX => win_bool(gdi(NtService::GetGdiTextExtent, SyscallArgs { a0: args[0], a1: args[1], a2: args[2], a3: args[6], a4: 0, a5: 0 })),
         _ => STATUS_NOT_IMPLEMENTED,
     }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn get_class_name(args: &[u64; 17]) -> u64 {
+    let Some(name) = crate::nt_window::window_class_name_for_current(args[0]) else { return STATUS_INVALID_PARAMETER; };
+    if args[2] == 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(maximum) = read_user_u16(args[2].saturating_add(2)) else { return STATUS_INVALID_PARAMETER; };
+    let Ok(buffer) = uaccess::get_user_u64(args[2].saturating_add(8)) else { return STATUS_INVALID_PARAMETER; };
+    if buffer == 0 || maximum < 2 { return STATUS_INVALID_PARAMETER; }
+    let capacity = (maximum as usize / 2).saturating_sub(1);
+    let copied = name.len().min(capacity);
+    for (index, unit) in name.iter().take(copied).enumerate() {
+        if uaccess::copy_to_user(buffer.saturating_add(index as u64 * 2), &unit.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
+    }
+    if uaccess::copy_to_user(buffer.saturating_add(copied as u64 * 2), &[0, 0]).is_err() { return STATUS_INVALID_PARAMETER; }
+    if uaccess::copy_to_user(args[2], &(copied as u16 * 2).to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
+    copied as u64
 }
 
 /// Dispatch the raw win32u syscall used by the real Wine PE module. Unlike

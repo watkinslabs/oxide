@@ -71,7 +71,7 @@ impl MessageQueue {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct WindowRecord { pub owner_tid: u64, pub parent: Option<WindowId>, pub wndproc: u64, pub visible: bool }
+pub struct WindowRecord { pub owner_tid: u64, pub parent: Option<WindowId>, pub wndproc: u64, pub class_atom: Option<u16>, pub visible: bool }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WindowClass { pub name: Vec<u16>, pub wndproc: u64, pub atom: u16 }
@@ -110,15 +110,35 @@ impl WindowManager {
     pub fn class_wndproc_by_atom(&self, atom: u16) -> Option<u64> {
         self.classes.iter().find(|class| class.atom == atom).map(|class| class.wndproc)
     }
+    /// Resolve a registered class name from its atom. # C: O(N_classes)
+    pub fn class_name_by_atom(&self, atom: u16) -> Option<&[u16]> {
+        self.classes.iter().find(|class| class.atom == atom).map(|class| class.name.as_slice())
+    }
     pub fn create(&mut self, owner_tid: u64, parent: Option<WindowId>, wndproc: u64) -> Result<WindowId, WindowError> {
         if parent.is_some_and(|parent| self.get(parent).is_none()) { return Err(WindowError::InvalidParent); }
         let id = WindowId(self.next);
         self.next = self.next.checked_add(1).ok_or(WindowError::NoSuchWindow)?;
-        self.windows.push((id, WindowRecord { owner_tid, parent, wndproc, visible: false }));
+        self.windows.push((id, WindowRecord { owner_tid, parent, wndproc, class_atom: None, visible: false }));
         self.rects.push((id, WindowRect { left: 0, top: 0, right: 0, bottom: 0 }));
         self.texts.push((id, Vec::new()));
         if self.queues.iter().all(|(tid, _)| *tid != owner_tid) { self.queues.push((owner_tid, MessageQueue::default())); }
         Ok(id)
+    }
+    /// Create a window while retaining its class identity in the owner. # C: O(N_classes + N_windows)
+    pub fn create_class(&mut self, owner_tid: u64, parent: Option<WindowId>, name: &[u16]) -> Result<WindowId, WindowError> {
+        let class = self.classes.iter().find(|class| same_name(&class.name, name)).cloned().ok_or(WindowError::NoSuchWindow)?;
+        self.create_class_atom(owner_tid, parent, class.atom, class.wndproc)
+    }
+    /// Create a window from a registered atom in the owner. # C: O(N_windows)
+    pub fn create_class_atom(&mut self, owner_tid: u64, parent: Option<WindowId>, atom: u16, wndproc: u64) -> Result<WindowId, WindowError> {
+        let window = self.create(owner_tid, parent, wndproc)?;
+        self.windows.iter_mut().find(|(id, _)| *id == window).ok_or(WindowError::NoSuchWindow)?.1.class_atom = Some(atom);
+        Ok(window)
+    }
+    /// Return the registered class name associated with one window. # C: O(N_windows + N_classes)
+    pub fn class_name(&self, window: WindowId) -> Option<&[u16]> {
+        let atom = self.get(window)?.class_atom?;
+        self.class_name_by_atom(atom)
     }
     pub fn get(&self, id: WindowId) -> Option<WindowRecord> { self.windows.iter().find(|(window, _)| *window == id).map(|(_, record)| *record) }
     pub fn set_visible(&mut self, id: WindowId, visible: bool) -> Result<(), WindowError> {
