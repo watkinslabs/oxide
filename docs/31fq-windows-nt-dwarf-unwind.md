@@ -35,4 +35,6 @@ CIE/FDE record links, and the CIE+FDE program join (including the required
 zero-length FDE augmentation payload). Both x86-64 and aarch64 kernel checks
 compile the same no-std parser. Runtime dispatch still needs to connect this
 program to validated Wine Unix requests, loaded-image records, and a
-fault-aware user-context owner.
+fault-aware user-context owner. Until that owner exists, the validated
+request returns Wine's `STATUS_UNSUCCESSFUL` (rather than
+`STATUS_NOT_IMPLEMENTED`) so ntdll continues into the native PE unwind owner.
