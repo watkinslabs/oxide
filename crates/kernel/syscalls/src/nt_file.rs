@@ -68,6 +68,7 @@ const FSCTL_PIPE_PEEK: u32 = 0x0011_000c;
 const FSCTL_PIPE_TRANSCEIVE: u32 = 0x0011_0014;
 const STATUS_PENDING: u64 = 0x0000_0103;
 const STATUS_PIPE_CONNECTED: u64 = 0xc000_00b2;
+const REGISTRY_HIVE_MAX_BYTES: usize = 16 * 1024 * 1024;
 
 /// Dispatch the implemented synchronous NT file operations. # C: O(path) + O(bytes)
 pub fn dispatch(call: NtFileCall) -> u64 {
@@ -110,6 +111,31 @@ pub fn dispatch_native(call: NtCall) -> Option<u64> {
         NtService::QueryDirectoryFile => Some(native_query_directory(call)),
         _ => None,
     }
+}
+
+/// Read one registry hive through the canonical VFS file owner. The registry
+/// subsystem consumes the returned bounded envelope; it never opens or reads
+/// a host path itself. # C: O(file bytes)
+pub(crate) fn read_registry_hive(cur: &sched::Task, attributes: u64) -> Result<alloc::vec::Vec<u8>, u64> {
+    if !cur.is_nt_personality() { return Err(STATUS_INVALID_PARAMETER); }
+    let path = object_path(attributes).ok_or(STATUS_INVALID_PARAMETER)?;
+    let lookup = crate::pathresolve::resolve_at_path(crate::pathresolve::AT_FDCWD, &path, vfs::LookupFlags::default())
+        .map_err(|_| STATUS_OBJECT_NAME_NOT_FOUND)?;
+    if lookup.inode.file_type() != vfs::FileType::Regular { return Err(STATUS_INVALID_PARAMETER); }
+    let stat = vfs::generic_fillattr(&lookup.inode, &vfs::IDENTITY);
+    let length = usize::try_from(stat.size).map_err(|_| STATUS_INVALID_PARAMETER)?;
+    if length == 0 || length > REGISTRY_HIVE_MAX_BYTES { return Err(STATUS_INVALID_PARAMETER); }
+    let Some(cred) = crate::pathresolve::file_cred_for(cur) else { return Err(STATUS_ACCESS_DENIED); };
+    let file = vfs::file::open_file_at(lookup.inode, lookup.dentry, vfs::OpenFlags::O_RDONLY,
+        lookup.mnt_id, cred, None).map_err(|_| STATUS_ACCESS_DENIED)?;
+    let mut bytes = alloc::vec![0; length];
+    let mut at = 0;
+    while at < bytes.len() {
+        let count = file.read(&mut bytes[at..]).map_err(|_| STATUS_ACCESS_DENIED)?;
+        if count == 0 { return Err(STATUS_END_OF_FILE); }
+        at += count;
+    }
+    Ok(bytes)
 }
 
 fn native_fs_control(call: NtCall) -> u64 {
