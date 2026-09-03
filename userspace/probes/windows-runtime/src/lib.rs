@@ -211,6 +211,20 @@ mod tests {
     }
 
     #[test]
+    fn non_amd64_root_is_rejected_before_catalog_construction() {
+        let Some(root) = wine_root() else { return };
+        let base = std::env::temp_dir().join(format!("oxide-windows-arch-{}", std::process::id()));
+        fs::create_dir_all(&base).unwrap();
+        let mut image = fs::read(root.join("notepad.exe")).unwrap();
+        image[0x84..0x86].copy_from_slice(&0x014cu16.to_le_bytes());
+        let image_path = base.join("notepad.exe");
+        fs::write(&image_path, image).unwrap();
+        let result = RuntimeRequest::from_paths(&image_path, b"C:\\notepad.exe", root);
+        assert!(matches!(result, Err(BuildError::InvalidRoot(pe::Error::Enoexec))));
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
     fn handoff_rejects_empty_and_nul_containing_windows_paths() {
         let root = std::path::Path::new("/tmp");
         assert!(matches!(RuntimeRequest::from_paths(root, b"", root), Err(BuildError::InvalidUtf8Path)));
