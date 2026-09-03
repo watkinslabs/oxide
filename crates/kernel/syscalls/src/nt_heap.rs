@@ -64,12 +64,13 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
                 _ => 0,
             }
         }
-        NtHeapCall::Reallocate { heap: _, flags, base, size } => {
+        NtHeapCall::Reallocate { heap: _, flags: _, base, size } => {
             let page = hal::PAGE_SIZE_BYTES as u64;
             let Some(size) = size.checked_add(page - 1).map(|size| size & !(page - 1)).filter(|size| *size != 0 && *size <= usize::MAX as u64) else { return Some(0); };
             let Some(old_base) = hal::UserVirtAddr::new(base) else { return Some(0); };
+            let Some(old_size) = cur.thread_group.nt_heap_user_info.lock().iter()
+                .find(|entry| entry.0 == old_base.as_u64()).map(|entry| entry.3) else { return Some(0); };
             let Ok(old_info) = elf_load::nt_memory::query(&mm, old_base) else { return Some(0); };
-            let old_size = cur.thread_group.nt_heap_user_info.lock().iter().find(|entry| entry.0 == old_base.as_u64()).map(|entry| entry.3).unwrap_or(old_info.size);
             let Ok(new) = elf_load::nt_memory::allocate(&mm, None, size as usize, vmm::VmaProt::READ | vmm::VmaProt::WRITE) else { return Some(0); };
             let copy_len = core::cmp::min(old_size, size as usize);
             let mut bytes = alloc::vec![0u8; copy_len];
@@ -79,7 +80,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
             }
             let _ = elf_load::nt_memory::free(&mm, elf_load::nt_memory::NtAllocation { base: old_base, size: old_size, protection: old_info.protection });
             let mut user_info = cur.thread_group.nt_heap_user_info.lock();
-            if let Some(entry) = user_info.iter_mut().find(|entry| entry.0 == old_base.as_u64()) { entry.0 = new.base.as_u64(); entry.3 = size as usize; } else if flags & HEAP_ADD_USER_INFO != 0 { user_info.push((new.base.as_u64(), flags as u32, 0, size as usize)); }
+            if let Some(entry) = user_info.iter_mut().find(|entry| entry.0 == old_base.as_u64()) { entry.0 = new.base.as_u64(); entry.3 = size as usize; }
             new.base.as_u64()
         }
         NtHeapCall::Size { heap: _, flags: _, base } => {
