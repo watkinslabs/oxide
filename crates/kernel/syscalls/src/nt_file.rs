@@ -709,7 +709,8 @@ fn query_information_values(cur: &sched::Task, handle: u32, io_status: u64, info
     let stat = vfs::generic_fillattr(file.inode(), &vfs::IDENTITY);
     let is_directory = file.inode().file_type() == vfs::FileType::Directory;
     let file_attributes: u32 = if is_directory { 0x10 } else { 0x80 };
-    let path = String::from_utf8(file.dentry().absolute_path()).ok();
+    let path = String::from_utf8(file.dentry().absolute_path()).ok()
+        .and_then(|path| crate::nt_path::render_windows_path(&path));
     let name: alloc::vec::Vec<u16> = path.as_deref().unwrap_or("").encode_utf16().collect();
     let Some(name_bytes) = name.len().checked_mul(2) else { return STATUS_INVALID_PARAMETER; };
     let Some(all_size) = 100usize.checked_add(name_bytes) else { return STATUS_INVALID_PARAMETER; };
