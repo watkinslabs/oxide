@@ -43,6 +43,21 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     }
 }
 
+/// Return the process GDI owner's stock dialog metrics for User32. # C: O(N_process_gdi_states)
+pub fn dialog_base_units() -> Option<(i32, i32)> {
+    let cur = sched::live::current()?;
+    if !cur.is_nt_personality() { return None; }
+    let group = Arc::clone(&cur.thread_group);
+    let mut entries = GDI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)));
+    let index = index.unwrap_or_else(|| {
+        entries.push(GdiEntry { group: Arc::downgrade(&group), state: ipc::win32_gdi::GdiManager::new() });
+        entries.len() - 1
+    });
+    Some(entries[index].state.dialog_base_units())
+}
+
 fn blit_surface(state: &mut ipc::win32_gdi::GdiManager, dc: u32, pixels: syscall::UserPtr<u8>, x: i32, y: i32, width: u32, height: u32, stride: u32) -> u64 {
     let Some(words) = (height as usize).checked_mul(stride as usize) else { return STATUS_INVALID_PARAMETER; };
     if width == 0 || height == 0 || stride < width || words > 16 * 1024 * 1024 { return STATUS_INVALID_PARAMETER; }
