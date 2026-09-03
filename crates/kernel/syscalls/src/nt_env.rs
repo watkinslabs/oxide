@@ -228,7 +228,11 @@ fn set_environment_variable(environment_pointer: u64, name_descriptor: u64, valu
     let allocation = crate::nt_heap::dispatch(NtCall { service: NtService::AllocateHeap,
         args: SyscallArgs { a0: 1, a1: 0, a2: bytes as u64, a3: 0, a4: 0, a5: 0 } });
     let Some(new_environment) = allocation.filter(|&address| address != 0) else { return STATUS_NO_MEMORY; };
-    if copy_units(new_environment, &updated).is_err() || uaccess::put_user_u64(environment_pointer_or_peb(environment_pointer), new_environment).is_err() {
+    let Some(environment_field) = environment_pointer_or_peb(environment_pointer) else {
+        free_heap(new_environment);
+        return STATUS_INVALID_PARAMETER;
+    };
+    if copy_units(new_environment, &updated).is_err() || uaccess::put_user_u64(environment_field, new_environment).is_err() {
         let _ = crate::nt_heap::dispatch(NtCall { service: NtService::FreeHeap,
             args: SyscallArgs { a0: 1, a1: 0, a2: new_environment, a3: 0, a4: 0, a5: 0 } });
         return STATUS_INVALID_PARAMETER;
@@ -245,12 +249,12 @@ fn environment_address(pointer: u64) -> Option<u64> {
     uaccess::get_user_u64(params.checked_add(PARAM_ENVIRONMENT_OFFSET)?).ok()
 }
 
-fn environment_pointer_or_peb(pointer: u64) -> u64 {
-    if pointer != 0 { return pointer; }
-    let Some(current) = sched::live::current() else { return 0; };
-    let Some(peb) = uaccess::get_user_u64(current.nt_teb().saturating_add(TEB_PEB_OFFSET)).ok() else { return 0; };
-    let Some(params) = uaccess::get_user_u64(peb.saturating_add(PEB_PROCESS_PARAMETERS_OFFSET)).ok() else { return 0; };
-    params.saturating_add(PARAM_ENVIRONMENT_OFFSET)
+fn environment_pointer_or_peb(pointer: u64) -> Option<u64> {
+    if pointer != 0 { return Some(pointer); }
+    let current = sched::live::current()?;
+    let peb = uaccess::get_user_u64(current.nt_teb().checked_add(TEB_PEB_OFFSET)?).ok()?;
+    let params = uaccess::get_user_u64(peb.checked_add(PEB_PROCESS_PARAMETERS_OFFSET)?).ok()?;
+    params.checked_add(PARAM_ENVIRONMENT_OFFSET)
 }
 
 fn read_environment_block(environment: u64) -> Option<Vec<u16>> {
@@ -293,9 +297,8 @@ fn query_environment_variable(call: NtCall) -> u64 {
     let environment = if call.args.a0 != 0 { call.args.a0 } else {
         let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !current.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
-        let Some(peb) = uaccess::get_user_u64(current.nt_teb().checked_add(0x60).unwrap_or(0)).ok() else { return STATUS_INVALID_PARAMETER; };
-        let Some(params) = uaccess::get_user_u64(peb.checked_add(0x20).unwrap_or(0)).ok() else { return STATUS_INVALID_PARAMETER; };
-        uaccess::get_user_u64(params.checked_add(0x80).unwrap_or(0)).unwrap_or(0)
+        let Some(environment) = environment_address(0) else { return STATUS_INVALID_PARAMETER; };
+        environment
     };
     if environment == 0 { return STATUS_VARIABLE_NOT_FOUND; }
     let Some(value) = find_environment_value(environment, &name) else { return STATUS_VARIABLE_NOT_FOUND; };
@@ -385,10 +388,9 @@ fn expand_environment_strings(call: NtCall) -> u64 {
     let source = match read_unicode_descriptor(call.args.a1) { Some(value) => value, None => return STATUS_INVALID_PARAMETER };
     let (destination, maximum) = match read_unicode_target(call.args.a2) { Some(value) => value, None => return STATUS_INVALID_PARAMETER };
     let environment = if call.args.a0 != 0 { call.args.a0 } else {
-        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-        let Some(peb) = uaccess::get_user_u64(cur.nt_teb().checked_add(0x60).unwrap_or(0)).ok() else { return STATUS_INVALID_PARAMETER; };
-        let Some(params) = uaccess::get_user_u64(peb.checked_add(0x20).unwrap_or(0)).ok() else { return STATUS_INVALID_PARAMETER; };
-        uaccess::get_user_u64(params.checked_add(0x80).unwrap_or(0)).unwrap_or(0)
+        let Some(_) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        let Some(environment) = environment_address(0) else { return STATUS_INVALID_PARAMETER; };
+        environment
     };
     if environment == 0 { return STATUS_INVALID_PARAMETER; }
     let mut expanded = Vec::new();
