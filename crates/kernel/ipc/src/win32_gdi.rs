@@ -6,6 +6,9 @@ pub const MM_TEXT: u32 = 1;
 const DEFAULT_HEIGHT: i32 = 16;
 const DEFAULT_DESCENT: i32 = 4;
 const DEFAULT_WIDTH: i32 = 8;
+pub const MENU_CHAR_WIDTH: i32 = DEFAULT_WIDTH;
+pub const MENU_CHAR_HEIGHT: i32 = DEFAULT_HEIGHT;
+pub const MENU_BAR_HEIGHT: i32 = 19;
 const MAX_SURFACE_PIXELS: usize = 16 * 1024 * 1024;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

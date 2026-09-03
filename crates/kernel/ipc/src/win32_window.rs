@@ -174,6 +174,7 @@ impl WindowManager {
     }
     /// Detach a destroyed HMENU from every canonical HWND. # C: O(N_windows)
     pub fn clear_menu(&mut self, menu: u32) { for (_, record) in &mut self.windows { if record.menu == Some(menu) { record.menu = None; } } }
+    pub fn menu(&self, id: WindowId) -> Option<u32> { self.get(id)?.menu }
     /// Set the current thread's focus window and return the previous focus. # C: O(N_windows)
     pub fn set_focus(&mut self, tid: u64, id: Option<WindowId>) -> Result<Option<WindowId>, WindowError> {
         if let Some(id) = id {

@@ -21,6 +21,9 @@ impl MenuId {
 pub struct MenuItem { pub id: u32, pub state: u32, pub text: Vec<u16>, pub submenu: Option<u32> }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct MenuRect { pub left: i32, pub top: i32, pub right: i32, pub bottom: i32 }
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum MenuError { NoSuchMenu, NoSuchItem, InvalidPosition }
 
 struct MenuRecord { popup: bool, items: Vec<MenuItem> }
@@ -49,6 +52,23 @@ impl MenuManager {
     }
 
     pub fn is_popup(&self, id: MenuId) -> Result<bool, MenuError> { Ok(self.menus[self.index(id).ok_or(MenuError::NoSuchMenu)?].1.popup) }
+
+    pub fn bar_item_rect(&self, menu: MenuId, position: usize, origin: MenuRect, char_width: i32, char_height: i32, bar_height: i32) -> Result<MenuRect, MenuError> {
+        let record = self.menus.get(self.index(menu).ok_or(MenuError::NoSuchMenu)?).ok_or(MenuError::NoSuchMenu)?;
+        let item = record.1.items.get(position).ok_or(MenuError::NoSuchItem)?;
+        let text_len = item.text.iter().position(|unit| *unit == 0).unwrap_or(item.text.len()) as i32;
+        let width = text_len.checked_mul(char_width).ok_or(MenuError::InvalidPosition)?.checked_add(char_width.checked_mul(2).ok_or(MenuError::InvalidPosition)?).ok_or(MenuError::InvalidPosition)?;
+        let height = char_height.max(bar_height.saturating_sub(1));
+        let left = if position == 0 { origin.left } else { self.bar_item_rect(menu, position - 1, origin, char_width, char_height, bar_height)?.right };
+        Ok(MenuRect { left, top: origin.top.saturating_add(1), right: left.saturating_add(width), bottom: origin.top.saturating_add(1).saturating_add(height) })
+    }
+
+    pub fn bar_rect(&self, menu: MenuId, origin: MenuRect, char_width: i32, char_height: i32, bar_height: i32) -> Result<MenuRect, MenuError> {
+        let count = self.count(menu)?;
+        if count == 0 { return Ok(MenuRect { left: origin.left, top: origin.top, right: origin.left, bottom: origin.top }); }
+        let last = self.bar_item_rect(menu, count - 1, origin, char_width, char_height, bar_height)?;
+        Ok(MenuRect { left: origin.left, top: last.top, right: last.right, bottom: last.bottom })
+    }
 
     /// Destroy a menu and all of its owned items. # C: O(N_menus)
     pub fn destroy(&mut self, id: MenuId) -> Result<(), MenuError> {
@@ -208,5 +228,17 @@ mod tests {
         assert_eq!(menus.count(menu), Ok(0));
         assert!(!menus.contains(submenu));
         assert_eq!(menus.remove(menu, 5, 0), Err(MenuError::NoSuchItem));
+    }
+
+    #[test]
+    fn menu_bar_layout_uses_text_metrics_and_canonical_item_order() {
+        let mut menus = MenuManager::new();
+        let menu = menus.create().unwrap();
+        menus.insert(menu, 0, MenuItem { id: 1, state: 0, text: alloc::vec![65, 66, 0], submenu: None }).unwrap();
+        menus.insert(menu, 1, MenuItem { id: 2, state: 0, text: alloc::vec![67, 0], submenu: None }).unwrap();
+        let origin = MenuRect { left: 10, top: 20, right: 100, bottom: 100 };
+        assert_eq!(menus.bar_item_rect(menu, 0, origin, 8, 16, 19), Ok(MenuRect { left: 10, top: 21, right: 42, bottom: 39 }));
+        assert_eq!(menus.bar_item_rect(menu, 1, origin, 8, 16, 19).unwrap().left, 42);
+        assert_eq!(menus.bar_rect(menu, origin, 8, 16, 19).unwrap().right, 66);
     }
 }

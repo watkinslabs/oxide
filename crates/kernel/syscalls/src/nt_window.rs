@@ -492,6 +492,51 @@ pub(crate) fn menu_item_count_for_current(raw: u64) -> u64 {
     entries[index].menus.count(menu).map(|count| count as u64).unwrap_or(u64::MAX)
 }
 
+/// Resolve one menu-bar item rectangle from the canonical HWND/menu owners. # C: O(N_process_gui_states + N_items)
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn menu_item_rect_for_current(hwnd: u64, raw: u64, position: u64) -> Option<ipc::win32_menu::MenuRect> {
+    let hwnd = ipc::win32_window::WindowId::from_raw(u32::try_from(hwnd).ok()?)?;
+    let menu = ipc::win32_menu::MenuId::from_raw(u32::try_from(raw).ok()?)?;
+    let cur = sched::live::current()?;
+    if !cur.is_nt_personality() { return None; }
+    let group = Arc::clone(&cur.thread_group);
+    let mut entries = GUI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))?;
+    if entries[index].state.menu(hwnd) != Some(menu.raw()) { return None; }
+    let rect = entries[index].state.rect(hwnd)?;
+    let origin = ipc::win32_menu::MenuRect { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+    let (width, height, bar_height) = (ipc::win32_gdi::MENU_CHAR_WIDTH, ipc::win32_gdi::MENU_CHAR_HEIGHT, ipc::win32_gdi::MENU_BAR_HEIGHT);
+    entries[index].menus.bar_item_rect(menu, usize::try_from(position).ok()?, origin, width, height, bar_height).ok()
+}
+
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn window_menu_for_current(hwnd: u64) -> Option<u64> {
+    let hwnd = ipc::win32_window::WindowId::from_raw(u32::try_from(hwnd).ok()?)?;
+    let cur = sched::live::current()?;
+    if !cur.is_nt_personality() { return None; }
+    let group = Arc::clone(&cur.thread_group);
+    let mut entries = GUI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))?;
+    entries[index].state.menu(hwnd).map(|menu| menu as u64)
+}
+
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn menu_bar_rect_for_current(hwnd: u64) -> Option<ipc::win32_menu::MenuRect> {
+    let hwnd_id = ipc::win32_window::WindowId::from_raw(u32::try_from(hwnd).ok()?)?;
+    let cur = sched::live::current()?;
+    if !cur.is_nt_personality() { return None; }
+    let group = Arc::clone(&cur.thread_group);
+    let mut entries = GUI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))?;
+    let menu = ipc::win32_menu::MenuId::from_raw(entries[index].state.menu(hwnd_id)?)?;
+    let rect = entries[index].state.rect(hwnd_id)?;
+    let origin = ipc::win32_menu::MenuRect { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+    entries[index].menus.bar_rect(menu, origin, ipc::win32_gdi::MENU_CHAR_WIDTH, ipc::win32_gdi::MENU_CHAR_HEIGHT, ipc::win32_gdi::MENU_BAR_HEIGHT).ok()
+}
+
 /// Apply or query Wine's x86-64 MENUITEMINFO transaction against the one
 /// canonical process menu owner. # C: O(N_process_gui_states + N_items)
 #[cfg(target_os = "oxide-kernel")]
