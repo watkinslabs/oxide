@@ -208,7 +208,8 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlGetCurrentPeb {
         let Some(task) = sched::live::current() else { return Some(0); };
         if !task.is_nt_personality() { return Some(0); }
-        return Some(uaccess::get_user_u64(task.nt_teb().saturating_add(TEB_PEB_OFFSET)).ok().unwrap_or(0));
+        let Some(address) = task.nt_teb().checked_add(TEB_PEB_OFFSET) else { return Some(0); };
+        return Some(uaccess::get_user_u64(address).ok().unwrap_or(0));
     }
     if call.service == NtService::RtlGetCurrentDirectoryU {
         return Some(get_current_directory(call.args.a0, call.args.a1));
@@ -326,17 +327,23 @@ fn get_full_path(name: u64, size: u64, buffer: u64, file_part: u64) -> u64 {
     if input.is_empty() || input.iter().all(|&value| value == b' ' as u16) { return 0; }
     let Some(task) = sched::live::current() else { return 0; };
     if !task.is_nt_personality() { return 0; }
-    let teb = task.nt_teb(); let peb = uaccess::get_user_u64(teb.saturating_add(TEB_PEB_OFFSET)).ok().unwrap_or(0);
-    let params = uaccess::get_user_u64(peb.saturating_add(PEB_PROCESS_PARAMETERS_OFFSET)).ok().unwrap_or(0);
-    let Some(current) = read_nt_unicode(params.saturating_add(PARAM_CURRENT_DIRECTORY_OFFSET)) else { return 0; };
+    let teb = task.nt_teb();
+    let Some(peb_address) = teb.checked_add(TEB_PEB_OFFSET) else { return 0; };
+    let peb = uaccess::get_user_u64(peb_address).ok().unwrap_or(0);
+    let Some(params_address) = peb.checked_add(PEB_PROCESS_PARAMETERS_OFFSET) else { return 0; };
+    let params = uaccess::get_user_u64(params_address).ok().unwrap_or(0);
+    let Some(current_address) = params.checked_add(PARAM_CURRENT_DIRECTORY_OFFSET) else { return 0; };
+    let Some(current) = read_nt_unicode(current_address) else { return 0; };
     let mut path = absolute_path(&input, &current);
     collapse_path(&mut path);
     let required = match path.len().checked_add(1).and_then(|len| len.checked_mul(2)) { Some(value) => value, None => return 0 };
     if required > size as usize { return required as u64; }
-    if buffer == 0 || uaccess::copy_to_user(buffer, &wide_bytes(&path)).is_err() || uaccess::copy_to_user(buffer + (path.len() * 2) as u64, &[0, 0]).is_err() { return 0; }
+    let Some(terminator) = buffer.checked_add((path.len() * 2) as u64) else { return 0; };
+    if buffer == 0 || uaccess::copy_to_user(buffer, &wide_bytes(&path)).is_err() || uaccess::copy_to_user(terminator, &[0, 0]).is_err() { return 0; }
     if file_part != 0 {
         let mut start = 0usize; for (index, &value) in path.iter().enumerate() { if value == b'\\' as u16 { start = index + 1; } }
-        if uaccess::copy_to_user(file_part, &(buffer + (start * 2) as u64).to_le_bytes()).is_err() { return 0; }
+        let Some(file_address) = buffer.checked_add((start * 2) as u64) else { return 0; };
+        if uaccess::copy_to_user(file_part, &file_address.to_le_bytes()).is_err() { return 0; }
     }
     (path.len() * 2) as u64
 }
@@ -442,14 +449,18 @@ fn get_exe_path(name: u64, result: u64) -> u64 {
     let Some(task) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !task.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     let teb = task.nt_teb();
-    let peb = uaccess::get_user_u64(teb.saturating_add(TEB_PEB_OFFSET)).ok().unwrap_or(0);
-    let params = uaccess::get_user_u64(peb.saturating_add(PEB_PROCESS_PARAMETERS_OFFSET)).ok().unwrap_or(0);
+    let Some(peb_address) = teb.checked_add(TEB_PEB_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+    let peb = uaccess::get_user_u64(peb_address).ok().unwrap_or(0);
+    let Some(params_address) = peb.checked_add(PEB_PROCESS_PARAMETERS_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+    let params = uaccess::get_user_u64(params_address).ok().unwrap_or(0);
     if params == 0 { return STATUS_INVALID_PARAMETER; }
-    let image = read_nt_unicode(params.saturating_add(PARAM_IMAGE_PATH_OFFSET));
+    let Some(image_address) = params.checked_add(PARAM_IMAGE_PATH_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+    let image = read_nt_unicode(image_address);
     let Some(image) = image else { return STATUS_INVALID_PARAMETER; };
     let name = read_wide_z(name);
     let Some(name) = name else { return STATUS_INVALID_PARAMETER; };
-    let no_default = env_has_name(params.saturating_add(PARAM_ENVIRONMENT_OFFSET), b"NoDefaultCurrentDirectoryInExePath");
+    let Some(environment_address) = params.checked_add(PARAM_ENVIRONMENT_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+    let no_default = env_has_name(environment_address, b"NoDefaultCurrentDirectoryInExePath");
     let mut path = alloc::vec::Vec::new();
     let mut end = image.len();
     for index in (0..image.len()).rev() {
@@ -459,7 +470,7 @@ fn get_exe_path(name: u64, result: u64) -> u64 {
     append_wide(&mut path, &image[..end]);
     if !no_default && !name.iter().any(|&value| value == b'\\' as u16) { append_wide(&mut path, &wide(b".")); }
     append_wide(&mut path, &wide(b"C:\\windows\\system32;C:\\windows\\system;C:\\windows"));
-    if let Some(value) = env_value(params.saturating_add(PARAM_ENVIRONMENT_OFFSET), b"PATH") { append_wide(&mut path, &value); }
+    if let Some(value) = env_value(environment_address, b"PATH") { append_wide(&mut path, &value); }
     let bytes = match path.len().checked_add(1).and_then(|len| len.checked_mul(2)) { Some(value) if value <= u16::MAX as usize => value, _ => return STATUS_NO_MEMORY };
     let allocation = NtCall { service: NtService::AllocateHeap, args: SyscallArgs { a0: 0, a1: 0, a2: bytes as u64, a3: 0, a4: 0, a5: 0 } };
     let Some(buffer) = crate::nt_heap::dispatch(allocation).filter(|&value| value != 0) else { return STATUS_NO_MEMORY; };
@@ -474,10 +485,13 @@ fn get_search_path(result: u64) -> u64 {
     let Some(task) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !task.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     let teb = task.nt_teb();
-    let peb = uaccess::get_user_u64(teb.saturating_add(TEB_PEB_OFFSET)).ok().unwrap_or(0);
-    let params = uaccess::get_user_u64(peb.saturating_add(PEB_PROCESS_PARAMETERS_OFFSET)).ok().unwrap_or(0);
+    let Some(peb_address) = teb.checked_add(TEB_PEB_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+    let peb = uaccess::get_user_u64(peb_address).ok().unwrap_or(0);
+    let Some(params_address) = peb.checked_add(PEB_PROCESS_PARAMETERS_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+    let params = uaccess::get_user_u64(params_address).ok().unwrap_or(0);
     if params == 0 { return STATUS_INVALID_PARAMETER; }
-    let Some(image) = read_nt_unicode(params.saturating_add(PARAM_IMAGE_PATH_OFFSET)) else { return STATUS_INVALID_PARAMETER; };
+    let Some(image_address) = params.checked_add(PARAM_IMAGE_PATH_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+    let Some(image) = read_nt_unicode(image_address) else { return STATUS_INVALID_PARAMETER; };
     let mut path = alloc::vec::Vec::new();
     let mut end = image.len();
     for index in (0..image.len()).rev() {
@@ -489,7 +503,8 @@ fn get_search_path(result: u64) -> u64 {
     if !safe { append_path_component(&mut path, &wide(b".")); }
     append_path_component(&mut path, &wide(b"C:\\windows\\system32;C:\\windows\\system;C:\\windows"));
     if safe { append_path_component(&mut path, &wide(b".")); }
-    if let Some(value) = env_value(params.saturating_add(PARAM_ENVIRONMENT_OFFSET), b"PATH") { append_path_component(&mut path, &value); }
+    let Some(environment_address) = params.checked_add(PARAM_ENVIRONMENT_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+    if let Some(value) = env_value(environment_address, b"PATH") { append_path_component(&mut path, &value); }
     path.push(0);
     let bytes = match path.len().checked_mul(2) { Some(value) => value, None => return STATUS_NO_MEMORY };
     let allocation = NtCall { service: NtService::AllocateHeap, args: SyscallArgs { a0: 0, a1: 0, a2: bytes as u64, a3: 0, a4: 0, a5: 0 } };
