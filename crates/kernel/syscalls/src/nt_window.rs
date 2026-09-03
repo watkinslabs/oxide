@@ -618,27 +618,35 @@ pub(crate) fn thunked_menu_item_info(raw: u64, position: u64, flags: u64, method
         return if method == GET_ID { if item.submenu.is_some() { u32::MAX as u64 } else { item.id as u64 } } else if method == GET_STATE { item.state as u64 } else { item.submenu.unwrap_or(0) as u64 };
     }
     if info == 0 || uaccess::get_user_u32(info).ok() != Some(MENUITEMINFO_BYTES) { return 0; }
-    let mask = uaccess::get_user_u32(info + 4).ok().unwrap_or(0);
-    let state = uaccess::get_user_u32(info + 12).ok().unwrap_or(0);
-    let id = uaccess::get_user_u32(info + 16).ok().unwrap_or(0);
-    let submenu = uaccess::get_user_u64(info + 24).ok().and_then(|value| (value != 0).then_some(value as u32));
-    let text_pointer = uaccess::get_user_u64(info + 56).ok().unwrap_or(0);
-    let text_count = uaccess::get_user_u32(info + 64).ok().unwrap_or(0).min(4096);
+    let Some(mask_address) = info.checked_add(4) else { return 0; };
+    let Some(state_address) = info.checked_add(12) else { return 0; };
+    let Some(id_address) = info.checked_add(16) else { return 0; };
+    let Some(submenu_address) = info.checked_add(24) else { return 0; };
+    let Some(text_pointer_address) = info.checked_add(56) else { return 0; };
+    let Some(text_count_address) = info.checked_add(64) else { return 0; };
+    let mask = uaccess::get_user_u32(mask_address).ok().unwrap_or(0);
+    let state = uaccess::get_user_u32(state_address).ok().unwrap_or(0);
+    let id = uaccess::get_user_u32(id_address).ok().unwrap_or(0);
+    let submenu = uaccess::get_user_u64(submenu_address).ok().and_then(|value| (value != 0).then_some(value as u32));
+    let text_pointer = uaccess::get_user_u64(text_pointer_address).ok().unwrap_or(0);
+    let text_count = uaccess::get_user_u32(text_count_address).ok().unwrap_or(0).min(4096);
     if method == GET_INFO_W {
         let Ok(item) = entries[index].menus.item(menu, position, flags) else { return 0; };
-        if mask & MENUITEMINFO_MASK_STATE != 0 && uaccess::copy_to_user(info + 12, &item.state.to_le_bytes()).is_err() { return 0; }
-        if mask & MENUITEMINFO_MASK_ID != 0 && uaccess::copy_to_user(info + 16, &item.id.to_le_bytes()).is_err() { return 0; }
-        if mask & MENUITEMINFO_MASK_SUBMENU != 0 && uaccess::copy_to_user(info + 24, &item.submenu.unwrap_or(0).to_le_bytes()).is_err() { return 0; }
+        if mask & MENUITEMINFO_MASK_STATE != 0 && uaccess::copy_to_user(state_address, &item.state.to_le_bytes()).is_err() { return 0; }
+        if mask & MENUITEMINFO_MASK_ID != 0 && uaccess::copy_to_user(id_address, &item.id.to_le_bytes()).is_err() { return 0; }
+        if mask & MENUITEMINFO_MASK_SUBMENU != 0 && uaccess::copy_to_user(submenu_address, &item.submenu.unwrap_or(0).to_le_bytes()).is_err() { return 0; }
         if mask & MENUITEMINFO_MASK_STRING != 0 {
             let length = item.text.len();
             if text_pointer != 0 && text_count != 0 {
                 let copied = length.min(text_count as usize - 1);
                 for (offset, unit) in item.text.iter().take(copied).enumerate() {
-                    if uaccess::copy_to_user(text_pointer + offset as u64 * 2, &unit.to_le_bytes()).is_err() { return 0; }
+                    let Some(address) = text_pointer.checked_add(offset as u64 * 2) else { return 0; };
+                    if uaccess::copy_to_user(address, &unit.to_le_bytes()).is_err() { return 0; }
                 }
-                if uaccess::copy_to_user(text_pointer + copied as u64 * 2, &[0, 0]).is_err() { return 0; }
-                if uaccess::copy_to_user(info + 64, &(copied as u32).to_le_bytes()).is_err() { return 0; }
-            } else if uaccess::copy_to_user(info + 64, &(length as u32).to_le_bytes()).is_err() { return 0; }
+                let Some(terminator) = text_pointer.checked_add(copied as u64 * 2) else { return 0; };
+                if uaccess::copy_to_user(terminator, &[0, 0]).is_err() { return 0; }
+                if uaccess::copy_to_user(text_count_address, &(copied as u32).to_le_bytes()).is_err() { return 0; }
+            } else if uaccess::copy_to_user(text_count_address, &(length as u32).to_le_bytes()).is_err() { return 0; }
         }
         return 1;
     }
