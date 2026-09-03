@@ -54,6 +54,9 @@ const STATUS_NO_MORE_FILES: u64 = 0x8000_0006;
 const STATUS_INVALID_INFO_CLASS: u64 = 0xc000_0003;
 const STATUS_INFO_LENGTH_MISMATCH: u64 = 0xc000_0004;
 const STATUS_INSTANCE_NOT_AVAILABLE: u64 = 0xc000_00ab;
+const STATUS_PIPE_BUSY: u64 = 0xc000_00ae;
+const STATUS_PIPE_DISCONNECTED: u64 = 0xc000_00b0;
+const STATUS_PIPE_EMPTY: u64 = 0xc000_00d9;
 
 /// Dispatch the implemented synchronous NT file operations. # C: O(path) + O(bytes)
 pub fn dispatch(call: NtFileCall) -> u64 {
@@ -205,6 +208,31 @@ fn native_io_values(cur: &sched::Task, handle: u32, io_status: u64, buffer: u64,
     let Some(object) = table.get(native, required) else {
         return if table.contains(native) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE };
     };
+    if let Some(endpoint) = object.pipe_endpoint() {
+        let mut data = vec![0u8; length as usize];
+        let result = if write {
+            if uaccess::copy_from_user(&mut data, buffer).is_err() { return STATUS_ACCESS_VIOLATION; }
+            endpoint.write(&data)
+        } else { endpoint.read(&mut data) };
+        return match result {
+            sched::nt_object::NtPipeIo::Complete(bytes) => {
+                if !write && uaccess::copy_to_user(buffer, &data[..bytes]).is_err() { return STATUS_ACCESS_VIOLATION; }
+                write_io_status(io_status, STATUS_SUCCESS, bytes as u64);
+                post_completion(&object, io_status, STATUS_SUCCESS, bytes as u64);
+                STATUS_SUCCESS
+            }
+            sched::nt_object::NtPipeIo::WouldBlock => {
+                write_io_status(io_status, STATUS_PIPE_EMPTY, 0);
+                post_completion(&object, io_status, STATUS_PIPE_EMPTY, 0);
+                STATUS_PIPE_EMPTY
+            }
+            sched::nt_object::NtPipeIo::BrokenPipe => {
+                write_io_status(io_status, STATUS_PIPE_DISCONNECTED, 0);
+                post_completion(&object, io_status, STATUS_PIPE_DISCONNECTED, 0);
+                STATUS_PIPE_DISCONNECTED
+            }
+        };
+    }
     let Some(file) = object.file() else { return STATUS_INVALID_HANDLE; };
     let mut data = vec![0u8; length as usize];
     let result = if write {
@@ -357,6 +385,9 @@ fn open_existing(cur: &sched::Task, addr: u64, _create: bool) -> u64 {
 fn open_path(cur: &sched::Task, output: u64, desired: u32, attrs: u64, options: u32, sharing: u32, disposition: CreateDisposition) -> u64 {
     if sharing & !0x7 != 0 { return STATUS_INVALID_PARAMETER; }
     let Some(path) = object_path(attrs) else { return STATUS_INVALID_PARAMETER; };
+    if let Some(pipe) = sched::nt_object::lookup_object(&path, sched::nt_object::NtObjectType::NamedPipe) {
+        return open_named_pipe(cur, output, desired, sharing, disposition, pipe);
+    }
     let wants_write = desired & (GENERIC_WRITE | FILE_GENERIC_WRITE | FILE_WRITE_DATA | FILE_APPEND_DATA) != 0;
     let wants_read = desired & (GENERIC_READ | FILE_GENERIC_READ | FILE_READ_DATA) != 0;
     if !wants_read && !wants_write { return STATUS_ACCESS_DENIED; }
@@ -411,6 +442,19 @@ fn open_path(cur: &sched::Task, output: u64, desired: u32, attrs: u64, options: 
         let _ = table.close(handle);
         return STATUS_INVALID_PARAMETER;
     }
+    STATUS_SUCCESS
+}
+
+fn open_named_pipe(cur: &sched::Task, output: u64, desired: u32, sharing: u32,
+                   disposition: CreateDisposition, object: alloc::sync::Arc<sched::nt_object::NtObject>) -> u64 {
+    if disposition.rejects_existing() || sharing & !0x7 != 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(pipe) = object.pipe() else { return STATUS_INVALID_HANDLE; };
+    if sharing & !pipe.config().sharing != 0 { return STATUS_SHARING_VIOLATION; }
+    if !pipe.connect() { return STATUS_PIPE_BUSY; }
+    let table = cur.thread_group.nt_handles();
+    let client = table.new_named_pipe_endpoint(pipe, sched::nt_object::NtPipeSide::Client);
+    let Some(handle) = table.insert(client, desired | SYNCHRONIZE_ACCESS) else { return STATUS_INVALID_PARAMETER; };
+    if uaccess::put_user_u32(output, handle.raw()).is_err() { let _ = table.close(handle); return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
 }
 

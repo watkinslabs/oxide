@@ -27,5 +27,7 @@ nonblocking backpressure, and reports peer closure as a broken pipe.
 
 `NtCreateNamedPipeFile` now creates a server endpoint handle with the native
 ABI, preserves create/open disposition, and enforces instance admission.
-Client opening, handle-side blocking waits, and pipe FSCTLs remain separate
-work; those paths stay explicit rather than falling through to VFS files.
+`NtCreateFile`/`NtOpenFile` resolve the canonical pipe object and create one
+client endpoint, returning `STATUS_PIPE_BUSY` when it is already connected.
+Handle-side blocking waits and pipe FSCTLs remain separate work; those paths
+stay explicit rather than falling through to VFS files.
