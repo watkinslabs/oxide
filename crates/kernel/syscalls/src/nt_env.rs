@@ -126,26 +126,32 @@ fn rounded_add(base: usize, bytes: usize) -> Option<usize> {
 
 fn write_params(base: u64, allocation_size: usize, environment_size: usize, strings: &[Vec<u16>; 8], environment: &[u16], normalized: bool) -> Result<(), ()> {
     put_user_u32(base, allocation_size as u32)?;
-    put_user_u32(base + 4, allocation_size as u32)?;
-    put_user_u32(base + 8, if normalized { PROCESS_PARAMS_NORMALIZED } else { 0 })?;
-    put_user_u64(base + 0x80, if normalized { base + allocation_size as u64 } else { allocation_size as u64 })?;
-    put_user_u64(base + 0x3f0, environment_size as u64)?;
-    let mut data = base + PROCESS_PARAMS_BYTES as u64;
+    put_user_u32(base.checked_add(4).ok_or(())?, allocation_size as u32)?;
+    put_user_u32(base.checked_add(8).ok_or(())?, if normalized { PROCESS_PARAMS_NORMALIZED } else { 0 })?;
+    let environment_pointer = if normalized { base.checked_add(allocation_size as u64).ok_or(())? } else { allocation_size as u64 };
+    put_user_u64(base.checked_add(0x80).ok_or(())?, environment_pointer)?;
+    put_user_u64(base.checked_add(0x3f0).ok_or(())?, environment_size as u64)?;
+    let mut data = base.checked_add(PROCESS_PARAMS_BYTES as u64).ok_or(())?;
     for &(field, index) in &PROCESS_PARAMS_STRING_FIELDS {
         let values = &strings[index];
         let maximum = if values.is_empty() { 0 } else { values.len().saturating_add(1).saturating_mul(2) };
-        put_user_u16(data_field(base, field), values.len().saturating_mul(2) as u16)?;
-        put_user_u16(data_field(base, field) + 2, maximum as u16)?;
-        let pointer = if values.is_empty() { 0 } else if normalized { data } else { data.saturating_sub(base) };
-        put_user_u64(data_field(base, field) + 8, pointer)?;
-        if !values.is_empty() { copy_units(data, values)?; put_user_u16(data + values.len() as u64 * 2, 0)?; }
+        let field = data_field(base, field).ok_or(())?;
+        put_user_u16(field, values.len().saturating_mul(2) as u16)?;
+        put_user_u16(field.checked_add(2).ok_or(())?, maximum as u16)?;
+        let pointer = if values.is_empty() { 0 } else if normalized { data } else { data.checked_sub(base).ok_or(())? };
+        put_user_u64(field.checked_add(8).ok_or(())?, pointer)?;
+        if !values.is_empty() {
+            copy_units(data, values)?;
+            let terminator = data.checked_add((values.len() as u64).checked_mul(2).ok_or(())?).ok_or(())?;
+            put_user_u16(terminator, 0)?;
+        }
         data = rounded_add(data as usize, maximum).ok_or(())? as u64;
     }
-    if !environment.is_empty() { copy_units(base + allocation_size as u64, environment)?; }
+    if !environment.is_empty() { copy_units(base.checked_add(allocation_size as u64).ok_or(())?, environment)?; }
     Ok(())
 }
 
-fn data_field(base: u64, offset: u64) -> u64 { base.saturating_add(offset) }
+fn data_field(base: u64, offset: u64) -> Option<u64> { base.checked_add(offset) }
 
 fn put_user_u32(address: u64, value: u32) -> Result<(), ()> { uaccess::copy_to_user(address, &value.to_ne_bytes()).map_err(|_| ()) }
 fn put_user_u64(address: u64, value: u64) -> Result<(), ()> { uaccess::copy_to_user(address, &value.to_ne_bytes()).map_err(|_| ()) }
@@ -177,9 +183,11 @@ fn set_current_environment(new_environment: u64, old_environment: u64) -> u64 {
     if new_environment != 0 && !valid_environment_block(new_environment) { return STATUS_INVALID_PARAMETER; }
     let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !current.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
-    let Some(peb) = uaccess::get_user_u64(current.nt_teb().saturating_add(TEB_PEB_OFFSET)).ok() else { return STATUS_INVALID_PARAMETER; };
-    let Some(params) = uaccess::get_user_u64(peb.saturating_add(PEB_PROCESS_PARAMETERS_OFFSET)).ok() else { return STATUS_INVALID_PARAMETER; };
-    let environment_field = params.saturating_add(PARAM_ENVIRONMENT_OFFSET);
+    let Some(teb_peb) = current.nt_teb().checked_add(TEB_PEB_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+    let Some(peb) = uaccess::get_user_u64(teb_peb).ok() else { return STATUS_INVALID_PARAMETER; };
+    let Some(params_address) = peb.checked_add(PEB_PROCESS_PARAMETERS_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+    let Some(params) = uaccess::get_user_u64(params_address).ok() else { return STATUS_INVALID_PARAMETER; };
+    let Some(environment_field) = params.checked_add(PARAM_ENVIRONMENT_OFFSET) else { return STATUS_INVALID_PARAMETER; };
     let previous = match uaccess::get_user_u64(environment_field) { Ok(value) => value, Err(_) => return STATUS_INVALID_PARAMETER };
     if uaccess::put_user_u64(environment_field, new_environment).is_err() { return STATUS_INVALID_PARAMETER; }
     if old_environment != 0 && uaccess::put_user_u64(old_environment, previous).is_err() { return STATUS_INVALID_PARAMETER; }
