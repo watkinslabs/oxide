@@ -9,6 +9,8 @@ use syscall::nt::NtCall;
 
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_PENDING: u64 = 0x0000_0103;
+const STATUS_CANCELLED: u64 = 0xc000_0120;
+const STATUS_HANDLES_CLOSED: u64 = 0xc000_0117;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
 const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
@@ -21,6 +23,8 @@ const FILE_ACTION_ADDED: u32 = 1;
 const FILE_ACTION_REMOVED: u32 = 2;
 
 struct Watch {
+    handle: u32,
+    owner_tid: u32,
     directory: Arc<vfs::File>,
     event: Arc<sched::nt_object::NtEvent>,
     io_status: u64,
@@ -59,9 +63,43 @@ pub fn dispatch(call: NtCall) -> u64 {
     let Some(event) = event_object.event() else { return STATUS_INVALID_HANDLE; };
     if !HOOK_INSTALLED.swap(true, Ordering::AcqRel) { vfs::set_dirent_observer_hook(observe); }
     let mut watches = WATCHES.lock();
-    watches.push(Watch { directory, event, io_status: call.args.a4, buffer: call.args.a5,
+    watches.push(Watch { handle: call.args.a0 as u32, owner_tid: cur.tid, directory, event, io_status: call.args.a4, buffer: call.args.a5,
         length: buffer_size as u32, filter });
     STATUS_PENDING
+}
+
+/// Cancel pending directory watches owned by one issuing thread. # C: O(N_watches)
+pub fn cancel(handle: u32, owner_tid: u32, target_io_status: Option<u64>) -> bool {
+    let mut watches = WATCHES.lock();
+    let mut cancelled = false;
+    let mut index = 0;
+    while index < watches.len() {
+        let watch = &watches[index];
+        if watch.handle != handle || watch.owner_tid != owner_tid
+            || target_io_status.is_some_and(|target| target != watch.io_status) {
+            index += 1;
+            continue;
+        }
+        let watch = watches.remove(index);
+        let _ = uaccess::put_user_u64(watch.io_status, STATUS_CANCELLED);
+        let _ = uaccess::put_user_u64(watch.io_status.saturating_add(8), 0);
+        watch.event.set();
+        cancelled = true;
+    }
+    cancelled
+}
+
+/// Tear down watches before the corresponding NT handle is removed. # C: O(N_watches)
+pub fn close(handle: u32) {
+    let mut watches = WATCHES.lock();
+    let mut index = 0;
+    while index < watches.len() {
+        if watches[index].handle != handle { index += 1; continue; }
+        let watch = watches.remove(index);
+        let _ = uaccess::put_user_u64(watch.io_status, STATUS_HANDLES_CLOSED);
+        let _ = uaccess::put_user_u64(watch.io_status.saturating_add(8), 0);
+        watch.event.set();
+    }
 }
 
 fn observe(parent: &vfs::InodeRef, leaf: &str, child_dir: bool, action: u32) {

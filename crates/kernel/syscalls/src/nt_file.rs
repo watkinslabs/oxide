@@ -437,7 +437,8 @@ fn cancel(cur: &sched::Task, handle: u32, io: Option<u64>, io_status: u64) -> u6
     let pipe = object.pipe_endpoint();
     if object.file().is_none() && pipe.is_none() { return STATUS_INVALID_HANDLE; }
     let cancelled = pipe.as_ref().is_some_and(|endpoint| endpoint.pipe().cancel_io(cur.tid, io));
-    let status = if io.is_some() && !cancelled { STATUS_NOT_FOUND } else { STATUS_SUCCESS };
+    let directory_watch = crate::nt_directory_notify::cancel(handle, cur.tid, io);
+    let status = if io.is_some() && !cancelled && !directory_watch { STATUS_NOT_FOUND } else { STATUS_SUCCESS };
     if uaccess::put_user_u64(io_status, status).is_err() || uaccess::put_user_u64(io_status + 8, 0).is_err() { return STATUS_ACCESS_VIOLATION; }
     status
 }
