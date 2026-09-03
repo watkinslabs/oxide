@@ -12,6 +12,7 @@ const DEFAULT_WINDOW_SURFACE_HEIGHT: u64 = 600;
 
 const WINE_CREATE_WINDOW_EX: u64 = 0x136b;
 const WINE_GET_MESSAGE: u64 = 0x141b;
+const WINE_DESTROY_WINDOW: u64 = 0x1384;
 const WINE_PEEK_MESSAGE: u64 = 0x14ca;
 const WINE_POST_MESSAGE: u64 = 0x14d0;
 const WINE_SHOW_WINDOW: u64 = 0x15bd;
@@ -191,6 +192,7 @@ pub fn dispatch(call: NtCall) -> u64 {
             }
         }
         WINE_POST_MESSAGE => win_bool(native(NtService::PostMessage, SyscallArgs { a0: args[0], a1: args[1], a2: args[2], a3: args[3], a4: 0, a5: 0 })),
+        WINE_DESTROY_WINDOW => win_bool(native(NtService::DestroyWindow, SyscallArgs { a0: args[0], a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 })),
         WINE_PEEK_MESSAGE => win_bool(native(NtService::PeekMessage, SyscallArgs { a0: args[0], a1: args[1], a2: args[2], a3: args[3], a4: args[4], a5: 0 })),
         WINE_GET_MESSAGE => win_bool(native(NtService::GetMessage, SyscallArgs { a0: args[0], a1: args[1], a2: args[2], a3: args[3], a4: 0, a5: 0 })),
         WINE_SHOW_WINDOW => native(NtService::ShowWindow, SyscallArgs { a0: args[0], a1: args[1], a2: 0, a3: 0, a4: 0, a5: 0 }),
@@ -297,4 +299,19 @@ where F: Fn(NtService, SyscallArgs) -> u64, G: Fn(NtService, SyscallArgs) -> u64
     let result = native(NtService::EndWindowPaint, SyscallArgs { a0: args[0], a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 });
     if hdc != 0 { let _ = gdi(NtService::DeleteGdiObject, SyscallArgs { a0: hdc, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }); }
     win_bool(if result == STATUS_SUCCESS { present } else { result })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wine_user32_ordinals_match_the_generated_table() {
+        assert_eq!(WINE_CREATE_WINDOW_EX, 0x136b);
+        assert_eq!(WINE_DESTROY_WINDOW, 0x1384);
+        assert_eq!(WINE_MESSAGE_CALL, 0x14b5);
+        assert_eq!(WINE_UNREGISTER_CLASS, 0x15df);
+        assert_eq!(WINE_DEF_WINDOW_PROC, 0x029e);
+        assert_eq!(WINE_CALL_WINDOW_PROC, 0x02ab);
+    }
 }
