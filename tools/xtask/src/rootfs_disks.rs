@@ -43,6 +43,8 @@ mod hardware_audit;
 mod windows_notepad;
 // - windows_ui: opt-in native window/message/GDI service smoke.
 mod windows_ui;
+// - windows_vulkan: opt-in native Vulkan loader/physical-device smoke.
+mod windows_vulkan;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -160,6 +162,9 @@ fn build_root(
     }
     if std::env::var_os("OXIDE_WINDOWS_UI_SMOKE").is_some() {
         windows_ui::inject(&root_img, arch)?;
+    }
+    if std::env::var_os("OXIDE_WINDOWS_VULKAN_SMOKE").is_some() {
+        windows_vulkan::inject(&root_img, arch)?;
     }
     if std::env::var_os("OXIDE_REQUEST_KEY_SMOKE").is_some() {
         request_key::inject(&root_img, arch)?;
