@@ -89,6 +89,17 @@ fn virtgpu_get_caps_layout_matches_linux_uapi() {
 }
 
 #[test]
+fn virtgpu_context_and_execbuffer_layouts_match_linux_uapi() {
+    assert_eq!(core::mem::size_of::<DrmVirtgpuExecbuffer>(), 64);
+    assert_eq!(core::mem::offset_of!(DrmVirtgpuExecbuffer, command), 8);
+    assert_eq!(core::mem::offset_of!(DrmVirtgpuExecbuffer, fence_fd), 28);
+    assert_eq!(core::mem::offset_of!(DrmVirtgpuExecbuffer, in_syncobjs), 48);
+    assert_eq!(core::mem::size_of::<DrmVirtgpuContextSetParam>(), 16);
+    assert_eq!(core::mem::size_of::<DrmVirtgpuContextInit>(), 16);
+    assert_eq!(core::mem::offset_of!(DrmVirtgpuContextInit, ctx_set_params), 8);
+}
+
+#[test]
 fn id_model_1_1_1() {
     assert_eq!(crtc_id_for(0), 1);
     assert_eq!(crtc_id_for(1), 2);
