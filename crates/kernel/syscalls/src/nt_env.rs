@@ -3,7 +3,6 @@ use alloc::{vec, vec::Vec};
 use syscall::{nt::{NtCall, NtService}, SyscallArgs};
 
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
-const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
 const STATUS_VARIABLE_NOT_FOUND: u64 = 0xc000_0100;
@@ -12,6 +11,12 @@ const TEB_PEB_OFFSET: u64 = 0x60;
 const PEB_PROCESS_PARAMETERS_OFFSET: u64 = 0x20;
 const PARAM_ENVIRONMENT_OFFSET: u64 = 0x80;
 const MAX_ENVIRONMENT_UNITS: usize = 0x20000;
+const PROCESS_PARAMS_BYTES: usize = 0x410;
+const PROCESS_PARAMS_NORMALIZED: u32 = 1;
+const PROCESS_PARAMS_STRING_FIELDS: [(u64, usize); 8] = [
+    (0x40, 0), (0x50, 1), (0x60, 2), (0x70, 3),
+    (0xb0, 4), (0xc0, 5), (0xd0, 6), (0xe0, 7),
+];
 
 /// Validate the output boundary before the process-environment owner exists.
 /// # C: O(1)
@@ -46,15 +51,104 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         return Some(set_environment_variable(call.args.a0, call.args.a1, call.args.a2));
     }
     if call.service == NtService::RtlCreateProcessParametersEx {
-        if call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
-        // The ten pointer arguments describe strings and an environment block;
-        // constructing the owned RTL_USER_PROCESS_PARAMETERS record is still
-        // pending a process-parameters lifetime owner.
-        return Some(STATUS_NOT_IMPLEMENTED);
+        return Some(create_process_parameters(call));
     }
     if call.service != NtService::RtlCreateEnvironment { return None; }
     Some(create_environment(call.args.a0 != 0, call.args.a1))
 }
+
+fn create_process_parameters(call: NtCall) -> u64 {
+    if call.args.a0 == 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !current.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let image = match optional_descriptor(call.args.a1) { Some(value) => value, None => return STATUS_INVALID_PARAMETER };
+    let dll = match optional_descriptor(call.args.a2) { Some(value) => value, None => return STATUS_INVALID_PARAMETER };
+    let current_dir = if call.args.a3 == 0 {
+        current_parameter_string(current, 0x40)
+    } else { optional_descriptor(call.args.a3) };
+    let Some(current_dir) = current_dir else { return STATUS_INVALID_PARAMETER; };
+    let command = if call.args.a4 == 0 { image.clone() }
+        else { match optional_descriptor(call.args.a4) { Some(value) => value, None => return STATUS_INVALID_PARAMETER } };
+    let title = match optional_stack_descriptor(6) { Some(value) => value, None => return STATUS_INVALID_PARAMETER };
+    let desktop = match optional_stack_descriptor(7) { Some(value) => value, None => return STATUS_INVALID_PARAMETER };
+    let shell = match optional_stack_descriptor(8) { Some(value) => value, None => return STATUS_INVALID_PARAMETER };
+    let runtime = match optional_stack_descriptor(9) { Some(value) => value, None => return STATUS_INVALID_PARAMETER };
+    let environment = if call.args.a5 == 0 {
+        let Some(address) = environment_address(0) else { return STATUS_INVALID_PARAMETER; };
+        let Some(values) = read_environment_block(address) else { return STATUS_INVALID_PARAMETER; };
+        values
+    } else {
+        match read_environment_block(call.args.a5) { Some(values) => values, None => return STATUS_INVALID_PARAMETER }
+    };
+    let strings = [current_dir, dll, image, command, title, desktop, shell, runtime];
+    let mut size = PROCESS_PARAMS_BYTES;
+    for (_, index) in PROCESS_PARAMS_STRING_FIELDS {
+        let bytes = if strings[index].is_empty() { 0 } else { strings[index].len().saturating_add(1).saturating_mul(2) };
+        let Some(next) = rounded_add(size, bytes) else { return STATUS_NO_MEMORY; };
+        size = next;
+    }
+    let allocation_size = size;
+    let Some(total) = rounded_add(size, environment.len().saturating_mul(2)) else { return STATUS_NO_MEMORY; };
+    let allocation = crate::nt_heap::dispatch(NtCall { service: NtService::AllocateHeap,
+        args: SyscallArgs { a0: 1, a1: 0, a2: total as u64, a3: 0, a4: 0, a5: 0 } });
+    let Some(base) = allocation.filter(|&address| hal::UserVirtAddr::new(address).is_some()) else { return STATUS_NO_MEMORY; };
+    if write_params(base, allocation_size, total - allocation_size, &strings, &environment).is_err()
+        || uaccess::put_user_u64(call.args.a0, base).is_err() {
+        free_heap(base);
+        return STATUS_INVALID_PARAMETER;
+    }
+    STATUS_SUCCESS
+}
+
+fn optional_stack_descriptor(index: usize) -> Option<Vec<u16>> {
+    let address = crate::nt_dispatch::stack_argument(index)?;
+    optional_descriptor(address)
+}
+
+fn optional_descriptor(address: u64) -> Option<Vec<u16>> {
+    if address == 0 { return Some(Vec::new()); }
+    let (values, maximum) = read_unicode_descriptor_parts(address)?;
+    if maximum as usize > 0xffff || maximum < values.len().saturating_mul(2) as u16 { return None; }
+    Some(values)
+}
+
+fn current_parameter_string(task: &sched::Task, offset: u64) -> Option<Vec<u16>> {
+    let peb = uaccess::get_user_u64(task.nt_teb().checked_add(TEB_PEB_OFFSET)?).ok()?;
+    let params = uaccess::get_user_u64(peb.checked_add(PEB_PROCESS_PARAMETERS_OFFSET)?).ok()?;
+    let descriptor = params.checked_add(offset)?;
+    read_unicode_descriptor(descriptor)
+}
+
+fn rounded_add(base: usize, bytes: usize) -> Option<usize> {
+    base.checked_add(bytes)?.checked_add(7).map(|value| value & !7)
+}
+
+fn write_params(base: u64, allocation_size: usize, environment_size: usize, strings: &[Vec<u16>; 8], environment: &[u16]) -> Result<(), ()> {
+    put_user_u32(base, allocation_size as u32)?;
+    put_user_u32(base + 4, allocation_size as u32)?;
+    put_user_u32(base + 8, PROCESS_PARAMS_NORMALIZED)?;
+    put_user_u64(base + 0x80, base + allocation_size as u64)?;
+    put_user_u64(base + 0x3f0, environment_size as u64)?;
+    let mut data = base + PROCESS_PARAMS_BYTES as u64;
+    for &(field, index) in &PROCESS_PARAMS_STRING_FIELDS {
+        let values = &strings[index];
+        let maximum = if values.is_empty() { 0 } else { values.len().saturating_add(1).saturating_mul(2) };
+        put_user_u16(data_field(base, field), values.len().saturating_mul(2) as u16)?;
+        put_user_u16(data_field(base, field) + 2, maximum as u16)?;
+        put_user_u64(data_field(base, field) + 8, if values.is_empty() { 0 } else { data })?;
+        if !values.is_empty() { copy_units(data, values)?; put_user_u16(data + values.len() as u64 * 2, 0)?; }
+        data = rounded_add(data as usize, maximum).ok_or(())? as u64;
+    }
+    if !environment.is_empty() { copy_units(base + allocation_size as u64, environment)?; }
+    Ok(())
+}
+
+fn data_field(base: u64, offset: u64) -> u64 { base.saturating_add(offset) }
+
+fn put_user_u32(address: u64, value: u32) -> Result<(), ()> { uaccess::copy_to_user(address, &value.to_ne_bytes()).map_err(|_| ()) }
+fn put_user_u64(address: u64, value: u64) -> Result<(), ()> { uaccess::copy_to_user(address, &value.to_ne_bytes()).map_err(|_| ()) }
+fn free_heap(base: u64) { let _ = crate::nt_heap::dispatch(NtCall { service: NtService::FreeHeap,
+    args: SyscallArgs { a0: 1, a1: 0, a2: base, a3: 0, a4: 0, a5: 0 } }); }
 
 fn create_environment(inherit: bool, output: u64) -> u64 {
     if output == 0 { return STATUS_INVALID_PARAMETER; }
