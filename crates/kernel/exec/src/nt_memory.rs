@@ -86,8 +86,20 @@ pub fn protect(as_: &AddressSpace, base: UserVirtAddr, size: usize, protection: 
 /// Query the VMA containing an address.
 /// # C: O(log N_vmas)
 pub fn query(as_: &AddressSpace, address: UserVirtAddr) -> Result<NtMemoryInfo, NtStatus> {
-    let vma = as_.find_vma(address).ok_or(NtStatus::NotMapped)?;
-    Ok(NtMemoryInfo { base: vma.start, allocation_base: vma.start, size: (vma.end.as_u64() - vma.start.as_u64()) as usize, protection: vma.prot, may_protection: vma.may_prot })
+    let base = UserVirtAddr::new(address.as_u64() & !(PAGE as u64 - 1)).ok_or(NtStatus::InvalidParameter)?;
+    let vma = as_.find_vma(base).ok_or(NtStatus::NotMapped)?;
+    Ok(NtMemoryInfo { base, allocation_base: vma.start, size: (vma.end.as_u64() - base.as_u64()) as usize, protection: vma.prot, may_protection: vma.may_prot })
+}
+
+/// Describe the free region beginning at an unmapped address.
+/// # C: O(N_vmas)
+pub fn query_free(as_: &AddressSpace, address: UserVirtAddr) -> Result<NtMemoryInfo, NtStatus> {
+    let base = UserVirtAddr::new(address.as_u64() & !(PAGE as u64 - 1)).ok_or(NtStatus::InvalidParameter)?;
+    let end = as_.snapshot_vmas().into_iter()
+        .filter_map(|vma| (vma.start.as_u64() > base.as_u64()).then_some(vma.start.as_u64()))
+        .min().unwrap_or(hal::USER_VA_END);
+    if end <= base.as_u64() { return Err(NtStatus::InvalidParameter); }
+    Ok(NtMemoryInfo { base, allocation_base: UserVirtAddr::new(0).unwrap(), size: (end - base.as_u64()) as usize, protection: VmaProt::empty(), may_protection: VmaProt::empty() })
 }
 
 #[cfg(test)]
@@ -99,7 +111,7 @@ mod tests {
         let as_ = AddressSpace::new(0x20_000).unwrap();
         let a = allocate(&as_, Some(UserVirtAddr::new(0x4000_0000).unwrap()), PAGE * 2, VmaProt::READ | VmaProt::WRITE).unwrap();
         let q = query(&as_, UserVirtAddr::new(0x4000_1000).unwrap()).unwrap();
-        assert_eq!(q.base, a.base); assert_eq!(q.size, a.size); assert_eq!(q.may_protection, VmaProt::READ | VmaProt::WRITE);
+        assert_eq!(q.base.as_u64(), 0x4000_1000); assert_eq!(q.size, PAGE); assert_eq!(q.may_protection, VmaProt::READ | VmaProt::WRITE);
         assert_eq!(protect(&as_, a.base, a.size, VmaProt::READ).unwrap(), VmaProt::READ | VmaProt::WRITE);
         assert_eq!(free(&as_, a), NtStatus::Success); assert_eq!(query(&as_, a.base), Err(NtStatus::NotMapped));
     }
@@ -156,5 +168,15 @@ mod tests {
         assert_eq!(base.as_u64(), 0x4000_0000);
         assert_eq!(size, PAGE * 2);
         assert_eq!(normalize_protection_range(u64::MAX - 1, 2), Err(NtStatus::InvalidParameter));
+    }
+
+    #[test]
+    fn free_query_stops_at_the_next_mapping() {
+        let as_ = AddressSpace::new(0x20_000).unwrap();
+        let _ = allocate(&as_, Some(UserVirtAddr::new(0x4000_2000).unwrap()), PAGE, VmaProt::READ).unwrap();
+        let q = query_free(&as_, UserVirtAddr::new(0x4000_0001).unwrap()).unwrap();
+        assert_eq!(q.base.as_u64(), 0x4000_0000);
+        assert_eq!(q.size, PAGE * 2);
+        assert_eq!(q.allocation_base.as_u64(), 0);
     }
 }
