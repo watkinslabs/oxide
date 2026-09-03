@@ -166,7 +166,7 @@ impl<F> SafeRestore<F> {
     }
 
     /// Borrowed-owner conversion into the x86 terminal ABI. # C: O(image pages)
-    #[cfg(any(target_arch = "x86_64", not(target_os = "oxide-kernel")))]
+    #[cfg(target_arch = "x86_64")]
     pub fn x86_collision(&self, index: usize) -> KResult<hal_x86_64::hibernate::Collision> {
         let c = self.physical_collision(index)?;
         Ok(hal_x86_64::hibernate::Collision {
@@ -174,7 +174,7 @@ impl<F> SafeRestore<F> {
     }
 
     /// Borrowed-owner conversion into the aarch64 terminal ABI. # C: O(image pages)
-    #[cfg(any(target_arch = "aarch64", not(target_os = "oxide-kernel")))]
+    #[cfg(target_arch = "aarch64")]
     pub fn arm_collision(&self, index: usize) -> KResult<hal_aarch64::hibernate::Collision> {
         let c = self.physical_collision(index)?;
         Ok(hal_aarch64::hibernate::Collision {
@@ -213,14 +213,14 @@ impl<F> SafeRestore<F> {
     }
 
     /// Derived x86 direct-map interval; no second range owner. # C: O(image pages + control pages)
-    #[cfg(any(target_arch = "x86_64", not(target_os = "oxide-kernel")))]
+    #[cfg(target_arch = "x86_64")]
     pub fn x86_direct_map(&self) -> KResult<hal_x86_64::hibernate::PhysRange> {
         let r = self.physical_span_bytes()?;
         Ok(hal_x86_64::hibernate::PhysRange { start: r.start, end: r.end })
     }
 
     /// Derived aarch64 physical interval; no second range owner. # C: O(image pages + control pages)
-    #[cfg(any(target_arch = "aarch64", not(target_os = "oxide-kernel")))]
+    #[cfg(target_arch = "aarch64")]
     pub fn arm_physical_map(&self) -> KResult<hal_aarch64::hibernate::PhysRange> {
         let r = self.physical_span_bytes()?;
         Ok(hal_aarch64::hibernate::PhysRange { start: r.start, end: r.end })

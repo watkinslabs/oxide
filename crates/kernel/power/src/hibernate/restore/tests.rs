@@ -152,9 +152,11 @@ fn safe_restore_consumes_image_and_pins_one_owner_for_every_safe_page() {
     assert_eq!(plan.physical_collision(0).unwrap(), PhysicalCollision {
         source_pa: 20 * format::PAGE_SIZE as u64,
         destination_pa: 3 * format::PAGE_SIZE as u64 });
+    #[cfg(target_arch = "x86_64")]
     assert_eq!(plan.x86_collision(0).unwrap(), hal_x86_64::hibernate::Collision {
         source_pa: 20 * format::PAGE_SIZE as u64,
         destination_pa: 3 * format::PAGE_SIZE as u64 });
+    #[cfg(target_arch = "aarch64")]
     assert_eq!(plan.arm_collision(0).unwrap(), hal_aarch64::hibernate::Collision {
         source_pa: 20 * format::PAGE_SIZE as u64,
         destination_pa: 3 * format::PAGE_SIZE as u64 });
@@ -168,8 +170,10 @@ fn safe_restore_consumes_image_and_pins_one_owner_for_every_safe_page() {
     assert_eq!(plan.physical_span(), Some(PfnRange { start: 2, end: 33 }));
     assert_eq!(plan.physical_span_bytes().unwrap(), PhysicalRange {
         start: 2 * format::PAGE_SIZE as u64, end: 33 * format::PAGE_SIZE as u64 });
+    #[cfg(target_arch = "x86_64")]
     assert_eq!(plan.x86_direct_map().unwrap(), hal_x86_64::hibernate::PhysRange {
         start: 2 * format::PAGE_SIZE as u64, end: 33 * format::PAGE_SIZE as u64 });
+    #[cfg(target_arch = "aarch64")]
     assert_eq!(plan.arm_physical_map().unwrap(), hal_aarch64::hibernate::PhysRange {
         start: 2 * format::PAGE_SIZE as u64, end: 33 * format::PAGE_SIZE as u64 });
     assert_eq!(plan.copied()[0].frame.data, [0x5a; format::PAGE_SIZE]);
