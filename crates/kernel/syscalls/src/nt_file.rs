@@ -59,6 +59,9 @@ const STATUS_PIPE_DISCONNECTED: u64 = 0xc000_00b0;
 const STATUS_PIPE_EMPTY: u64 = 0xc000_00d9;
 const STATUS_NOT_SUPPORTED: u64 = 0xc000_00bb;
 const FSCTL_PIPE_DISCONNECT: u32 = 0x0011_0004;
+const FSCTL_PIPE_LISTEN: u32 = 0x0011_0008;
+const STATUS_PENDING: u64 = 0x0000_0103;
+const STATUS_PIPE_CONNECTED: u64 = 0xc000_00b2;
 
 /// Dispatch the implemented synchronous NT file operations. # C: O(path) + O(bytes)
 pub fn dispatch(call: NtFileCall) -> u64 {
@@ -116,12 +119,21 @@ fn native_fs_control(call: NtCall) -> u64 {
     let table = cur.thread_group.nt_handles();
     let Some(object) = table.get(handle, 0) else { return STATUS_INVALID_HANDLE; };
     let Some(endpoint) = object.pipe_endpoint() else { return STATUS_INVALID_HANDLE; };
-    if call.args.a5 as u32 != FSCTL_PIPE_DISCONNECT {
+    if call.args.a5 as u32 != FSCTL_PIPE_DISCONNECT && call.args.a5 as u32 != FSCTL_PIPE_LISTEN {
         let _ = (input, input_length, output, output_length);
         return STATUS_NOT_SUPPORTED;
     }
     if input != 0 || input_length != 0 || output != 0 || output_length != 0 {
         return STATUS_INVALID_PARAMETER;
+    }
+    if call.args.a5 as u32 == FSCTL_PIPE_LISTEN {
+        let status = match endpoint.listen() {
+            sched::nt_object::NtPipeListen::Pending => STATUS_PENDING,
+            sched::nt_object::NtPipeListen::Connected => STATUS_PIPE_CONNECTED,
+        };
+        if uaccess::put_user_u64(call.args.a4, status).is_err()
+            || uaccess::put_user_u64(call.args.a4 + 8, 0).is_err() { return STATUS_ACCESS_VIOLATION; }
+        return status;
     }
     if !endpoint.disconnect() { return STATUS_PIPE_DISCONNECTED; }
     if uaccess::put_user_u64(call.args.a4, STATUS_SUCCESS).is_err()

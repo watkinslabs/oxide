@@ -31,5 +31,7 @@ ABI, preserves create/open disposition, and enforces instance admission.
 client endpoint, returning `STATUS_PIPE_BUSY` when it is already connected.
 `FSCTL_PIPE_DISCONNECT` now resets the owned connection and discards queued
 data, while unsupported control codes return an explicit NT status.
+`FSCTL_PIPE_LISTEN` enters explicit server-listening state and returns
+`STATUS_PENDING` until a client pairs with the instance.
 Handle-side blocking waits and the remaining pipe FSCTLs stay separate work;
 those paths do not fall through to VFS files.

@@ -11,12 +11,16 @@ pub enum NtPipeSide { Server, Client }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum NtPipeIo { Complete(usize), WouldBlock, BrokenPipe }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum NtPipeListen { Pending, Connected }
+
 struct PipeTransport {
     server_to_client: VecDeque<u8>,
     client_to_server: VecDeque<u8>,
     server_closed: bool,
     client_closed: bool,
     connected: bool,
+    listening: bool,
 }
 
 /// Immutable configuration supplied when a named-pipe instance is created.
@@ -75,7 +79,7 @@ impl NtPipe {
     pub fn new(config: NtPipeConfig) -> Self {
         Self { config, instances: Spinlock::new(0), transport: Spinlock::new(PipeTransport {
             server_to_client: VecDeque::new(), client_to_server: VecDeque::new(),
-            server_closed: false, client_closed: false, connected: false,
+            server_closed: false, client_closed: false, connected: false, listening: false,
         }) }
     }
 
@@ -98,9 +102,18 @@ impl NtPipe {
     /// Establish one client/server connection for this pipe instance.
     pub fn connect(&self) -> bool {
         let mut transport = self.transport.lock();
-        if transport.connected || transport.server_closed || transport.client_closed { return false; }
+        if transport.connected || !transport.listening || transport.server_closed || transport.client_closed { return false; }
         transport.connected = true;
+        transport.listening = false;
         true
+    }
+
+    pub fn listen(&self) -> NtPipeListen {
+        let mut transport = self.transport.lock();
+        if transport.connected { return NtPipeListen::Connected; }
+        if transport.server_closed { return NtPipeListen::Pending; }
+        transport.listening = true;
+        NtPipeListen::Pending
     }
 
     pub fn endpoint(self: &Arc<Self>, side: NtPipeSide) -> NtPipeEndpoint {
@@ -145,6 +158,7 @@ impl NtPipe {
         transport.server_closed = false;
         transport.client_closed = false;
         transport.connected = false;
+        transport.listening = false;
     }
 }
 
@@ -157,6 +171,10 @@ impl NtPipeEndpoint {
         if self.side != NtPipeSide::Server { return false; }
         self.pipe.disconnect();
         true
+    }
+    pub fn listen(&self) -> NtPipeListen {
+        if self.side != NtPipeSide::Server { return NtPipeListen::Pending; }
+        self.pipe.listen()
     }
 }
 
@@ -219,6 +237,7 @@ mod tests {
         let server = pipe.endpoint(NtPipeSide::Server);
         let client = pipe.endpoint(NtPipeSide::Client);
         assert_eq!(server.write(b"x"), NtPipeIo::WouldBlock);
+        assert_eq!(pipe.listen(), NtPipeListen::Pending);
         assert!(pipe.connect());
         assert_eq!(server.write(b"hello"), NtPipeIo::Complete(5));
         let mut output = [0u8; 8];
@@ -233,6 +252,7 @@ mod tests {
         let config = NtPipeConfig { outbound_quota: 3, ..config(1) };
         let pipe = Arc::new(NtPipe::new(config));
         let server = pipe.endpoint(NtPipeSide::Server);
+        assert_eq!(pipe.listen(), NtPipeListen::Pending);
         assert!(pipe.connect());
         assert_eq!(server.write(b"abcd"), NtPipeIo::Complete(3));
         assert_eq!(server.write(b"z"), NtPipeIo::WouldBlock);
@@ -243,11 +263,13 @@ mod tests {
         let pipe = Arc::new(NtPipe::new(config(1)));
         let server = pipe.endpoint(NtPipeSide::Server);
         let client = pipe.endpoint(NtPipeSide::Client);
+        assert_eq!(pipe.listen(), NtPipeListen::Pending);
         assert!(pipe.connect());
         assert_eq!(server.write(b"stale"), NtPipeIo::Complete(5));
         assert!(server.disconnect());
         let mut output = [0u8; 8];
         assert_eq!(client.read(&mut output), NtPipeIo::WouldBlock);
+        assert_eq!(pipe.listen(), NtPipeListen::Pending);
         assert!(pipe.connect());
         assert_eq!(server.write(b"fresh"), NtPipeIo::Complete(5));
         assert_eq!(client.read(&mut output), NtPipeIo::Complete(5));
