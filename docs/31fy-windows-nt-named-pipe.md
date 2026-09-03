@@ -21,9 +21,12 @@ truth in the NT syscall adapter.
 resource quotas, zero instance limits, and unknown message/read/completion
 modes. `reserve_instance` and `release_instance` enforce the configured
 maximum under the scheduler lock, so every handle referring to the object
-observes one admission count.
+observes one admission count. `NtPipeEndpoint` provides separate server and
+client views over directional queues, enforces the configured quotas, reports
+nonblocking backpressure, and reports peer closure as a broken pipe.
 
-`NtCreateNamedPipeFile`, named-object publication, client opening, endpoint
-I/O, and pipe FSCTLs remain explicitly unimplemented until their complete
-object and asynchronous-I/O contract is added. The existing unsupported
-boundary remains in place rather than returning a misleading file handle.
+`NtCreateNamedPipeFile`, client opening, handle-side endpoint binding,
+blocking waits, and pipe FSCTLs remain explicitly unimplemented until their
+complete object and asynchronous-I/O contract is added. The existing
+unsupported boundary remains in place rather than returning a misleading
+file handle.

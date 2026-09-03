@@ -1,6 +1,23 @@
 //! State owned by one native NT named-pipe object.
 
+use alloc::{collections::VecDeque, sync::Arc};
 use sync::{Spinlock, TaskList as TaskListClass};
+
+/// The side of a named-pipe connection owned by one handle.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum NtPipeSide { Server, Client }
+
+/// Result of a nonblocking pipe operation.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum NtPipeIo { Complete(usize), WouldBlock, BrokenPipe }
+
+struct PipeTransport {
+    server_to_client: VecDeque<u8>,
+    client_to_server: VecDeque<u8>,
+    server_closed: bool,
+    client_closed: bool,
+    connected: bool,
+}
 
 /// Immutable configuration supplied when a named-pipe instance is created.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -21,7 +38,11 @@ pub struct NtPipeConfig {
 pub struct NtPipe {
     config: NtPipeConfig,
     instances: Spinlock<u32, TaskListClass>,
+    transport: Spinlock<PipeTransport, TaskListClass>,
 }
+
+/// A directional handle view over one shared named-pipe transport.
+pub struct NtPipeEndpoint { pipe: Arc<NtPipe>, side: NtPipeSide }
 
 impl NtPipe {
     /// Validate the immutable portion of `NtCreateNamedPipeFile` before an
@@ -52,7 +73,10 @@ impl NtPipe {
     }
 
     pub fn new(config: NtPipeConfig) -> Self {
-        Self { config, instances: Spinlock::new(0) }
+        Self { config, instances: Spinlock::new(0), transport: Spinlock::new(PipeTransport {
+            server_to_client: VecDeque::new(), client_to_server: VecDeque::new(),
+            server_closed: false, client_closed: false, connected: false,
+        }) }
     }
 
     pub fn config(&self) -> NtPipeConfig { self.config }
@@ -70,6 +94,51 @@ impl NtPipe {
         let mut instances = self.instances.lock();
         *instances = instances.saturating_sub(1);
     }
+
+    /// Establish one client/server connection for this pipe instance.
+    pub fn connect(&self) -> bool {
+        let mut transport = self.transport.lock();
+        if transport.connected || transport.server_closed || transport.client_closed { return false; }
+        transport.connected = true;
+        true
+    }
+
+    pub fn endpoint(self: &Arc<Self>, side: NtPipeSide) -> NtPipeEndpoint {
+        NtPipeEndpoint { pipe: Arc::clone(self), side }
+    }
+
+    fn write(&self, side: NtPipeSide, data: &[u8]) -> NtPipeIo {
+        let mut transport = self.transport.lock();
+        let peer_closed = match side { NtPipeSide::Server => transport.client_closed, NtPipeSide::Client => transport.server_closed };
+        if peer_closed { return NtPipeIo::BrokenPipe; }
+        if !transport.connected { return NtPipeIo::WouldBlock; }
+        let queue = match side { NtPipeSide::Server => &mut transport.server_to_client, NtPipeSide::Client => &mut transport.client_to_server };
+        let quota = match side { NtPipeSide::Server => self.config.outbound_quota, NtPipeSide::Client => self.config.inbound_quota } as usize;
+        let count = data.len().min(quota.saturating_sub(queue.len()));
+        queue.extend(data[..count].iter().copied());
+        if count == 0 { NtPipeIo::WouldBlock } else { NtPipeIo::Complete(count) }
+    }
+
+    fn read(&self, side: NtPipeSide, output: &mut [u8]) -> NtPipeIo {
+        let mut transport = self.transport.lock();
+        let queue = match side { NtPipeSide::Server => &mut transport.client_to_server, NtPipeSide::Client => &mut transport.server_to_client };
+        let count = output.len().min(queue.len());
+        for byte in &mut output[..count] { *byte = queue.pop_front().unwrap(); }
+        if count != 0 { return NtPipeIo::Complete(count); }
+        let peer_closed = match side { NtPipeSide::Server => transport.client_closed, NtPipeSide::Client => transport.server_closed };
+        if peer_closed { NtPipeIo::BrokenPipe } else { NtPipeIo::WouldBlock }
+    }
+
+    fn close(&self, side: NtPipeSide) {
+        let mut transport = self.transport.lock();
+        match side { NtPipeSide::Server => transport.server_closed = true, NtPipeSide::Client => transport.client_closed = true }
+    }
+}
+
+impl NtPipeEndpoint {
+    pub fn write(&self, data: &[u8]) -> NtPipeIo { self.pipe.write(self.side, data) }
+    pub fn read(&self, output: &mut [u8]) -> NtPipeIo { self.pipe.read(self.side, output) }
+    pub fn close(&self) { self.pipe.close(self.side); }
 }
 
 #[cfg(test)]
@@ -117,5 +186,30 @@ mod tests {
         let mut bad = value;
         bad.pipe_type = 2;
         assert!(!NtPipe::validate_create(bad, 1));
+    }
+
+    #[test]
+    fn endpoints_exchange_directional_data_and_report_peer_close() {
+        let pipe = Arc::new(NtPipe::new(config(1)));
+        let server = pipe.endpoint(NtPipeSide::Server);
+        let client = pipe.endpoint(NtPipeSide::Client);
+        assert_eq!(server.write(b"x"), NtPipeIo::WouldBlock);
+        assert!(pipe.connect());
+        assert_eq!(server.write(b"hello"), NtPipeIo::Complete(5));
+        let mut output = [0u8; 8];
+        assert_eq!(client.read(&mut output), NtPipeIo::Complete(5));
+        assert_eq!(&output[..5], b"hello");
+        client.close();
+        assert_eq!(server.write(b"x"), NtPipeIo::BrokenPipe);
+    }
+
+    #[test]
+    fn full_queue_backpressure_is_nonblocking_and_bounded() {
+        let config = NtPipeConfig { outbound_quota: 3, ..config(1) };
+        let pipe = Arc::new(NtPipe::new(config));
+        let server = pipe.endpoint(NtPipeSide::Server);
+        assert!(pipe.connect());
+        assert_eq!(server.write(b"abcd"), NtPipeIo::Complete(3));
+        assert_eq!(server.write(b"z"), NtPipeIo::WouldBlock);
     }
 }
