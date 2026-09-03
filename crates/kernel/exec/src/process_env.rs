@@ -218,14 +218,18 @@ pub fn build_with_modules_and_params(input: &EnvironmentInput<'_>, modules: &[Nt
     put_u64(&mut block, PARAM_OFF + 0x80, base + env_off as u64);
     put_u32(&mut block, LDR_OFF, 0x58);
     block[LDR_OFF + 4] = 1;
-    for (head, link) in [(0x10usize, 0usize), (0x20, 0x10), (0x30, 0x20)] {
-        let first = base + (MOD_OFF + link) as u64;
-        let last = base + (MOD_OFF + (modules.len() - 1) * MOD_STRIDE + link) as u64;
+    let mut loader_list = pe::loader_list::LoaderList::new(MAX_MODULES);
+    for index in 0..modules.len() { loader_list.insert_tail(index).map_err(|_| Error::Einval)?; }
+    for (list, (head, link)) in [(0usize, (0x10usize, 0usize)), (1, (0x20, 0x10)), (2, (0x30, 0x20))] {
+        let topology = loader_list.head(list).ok_or(Error::Einval)?;
+        let first = base + (MOD_OFF + topology.next * MOD_STRIDE + link) as u64;
+        let last = base + (MOD_OFF + topology.prev * MOD_STRIDE + link) as u64;
         put_u64(&mut block, LDR_OFF + head, first); put_u64(&mut block, LDR_OFF + head + 8, last);
         for index in 0..modules.len() {
             let entry = MOD_OFF + index * MOD_STRIDE + link;
-            let next = if index + 1 < modules.len() { base + (entry + MOD_STRIDE) as u64 } else { base + (LDR_OFF + head) as u64 };
-            let prev = if index > 0 { base + (entry - MOD_STRIDE) as u64 } else { base + (LDR_OFF + head + 8) as u64 };
+            let topology = loader_list.link(index, list).ok_or(Error::Einval)?;
+            let next = if topology.next < MAX_MODULES { base + (MOD_OFF + topology.next * MOD_STRIDE + link) as u64 } else { base + (LDR_OFF + head) as u64 };
+            let prev = if topology.prev < MAX_MODULES { base + (MOD_OFF + topology.prev * MOD_STRIDE + link) as u64 } else { base + (LDR_OFF + head + 8) as u64 };
             put_u64(&mut block, entry, next); put_u64(&mut block, entry + 8, prev);
         }
     }
