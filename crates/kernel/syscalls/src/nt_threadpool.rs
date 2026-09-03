@@ -4,6 +4,14 @@ use syscall::nt::{NtCall, NtService};
 const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
+const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
+const WT_EXECUTEINWAITTHREAD: u32 = 0x0000_0004;
+const WT_EXECUTEONLYONCE: u32 = 0x0000_0008;
+const WT_EXECUTELONGFUNCTION: u32 = 0x0000_0010;
+const WT_EXECUTEINPERSISTENTTHREAD: u32 = 0x0000_0080;
+const WT_TRANSFER_IMPERSONATION: u32 = 0x0000_0100;
+const WT_SUPPORTED: u32 = WT_EXECUTEINWAITTHREAD | WT_EXECUTEONLYONCE
+    | WT_EXECUTELONGFUNCTION | WT_EXECUTEINPERSISTENTTHREAD | WT_TRANSFER_IMPERSONATION;
 
 /// Validate NT callback lifecycle boundaries owned by the current thread group.
 /// # C: O(1)
@@ -147,7 +155,15 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
 fn register(call: NtCall) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a1 == 0 || call.args.a2 == 0 { return STATUS_INVALID_PARAMETER; }
-    if call.args.a1 > u32::MAX as u64 || !cur.thread_group.nt_handles.contains(sched::nt_object::NtHandle::from_raw(call.args.a1 as u32)) { return STATUS_INVALID_HANDLE; }
+    if call.args.a1 > u32::MAX as u64 || call.args.a5 > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    let handle = sched::nt_object::NtHandle::from_raw(call.args.a1 as u32);
+    let table = cur.thread_group.nt_handles();
+    let Some(object) = table.get(handle, SYNCHRONIZE_ACCESS) else { return STATUS_INVALID_HANDLE; };
+    if !matches!(object.kind(), sched::nt_object::NtObjectType::Event
+        | sched::nt_object::NtObjectType::Semaphore | sched::nt_object::NtObjectType::Mutant
+        | sched::nt_object::NtObjectType::Timer | sched::nt_object::NtObjectType::Process
+        | sched::nt_object::NtObjectType::Thread) { return STATUS_INVALID_HANDLE; }
+    if call.args.a5 as u32 & !WT_SUPPORTED != 0 { return STATUS_INVALID_PARAMETER; }
     let sequence = cur.thread_group.nt_wait_next.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     let Some(token) = sequence.checked_add(0x8000_0000_0000_0000) else { return STATUS_INVALID_PARAMETER; };
     cur.thread_group.nt_waits.lock().push((token, call.args.a1, call.args.a2, call.args.a3, call.args.a4 as u32, call.args.a5 as u32));
