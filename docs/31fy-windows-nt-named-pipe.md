@@ -37,5 +37,8 @@ data, while unsupported control codes return an explicit NT status.
 non-consuming queue snapshot. `FSCTL_PIPE_TRANSCEIVE` validates both user
 buffers and performs a directional write/read transaction when a response is
 already available.
+`FilePipeInformation` and `FilePipeLocalInformation` queries expose the
+owner’s mode, endpoint, state, instance, quota, and queued-data fields with
+strict 8-byte and 40-byte output contracts.
 Handle-side blocking waits and the remaining pipe FSCTLs stay separate work;
 those paths do not fall through to VFS files.

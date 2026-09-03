@@ -49,6 +49,8 @@ const FILE_ALIGNMENT_INFORMATION: u32 = 17;
 const FILE_ALL_INFORMATION: u32 = 18;
 const FILE_NETWORK_OPEN_INFORMATION: u32 = 34;
 const FILE_ATTRIBUTE_TAG_INFORMATION: u32 = 35;
+const FILE_PIPE_INFORMATION: u32 = 23;
+const FILE_PIPE_LOCAL_INFORMATION: u32 = 24;
 const NT_FILETIME_EPOCH_SECONDS: i64 = 11_644_473_600;
 const STATUS_NO_MORE_FILES: u64 = 0x8000_0006;
 const STATUS_INVALID_INFO_CLASS: u64 = 0xc000_0003;
@@ -604,6 +606,22 @@ fn query_information_values(cur: &sched::Task, handle: u32, io_status: u64, info
     let Some(object) = table.get(native, FILE_READ_ATTRIBUTES) else {
         return if table.contains(native) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE };
     };
+    if class == FILE_PIPE_INFORMATION || class == FILE_PIPE_LOCAL_INFORMATION {
+        let Some(endpoint) = object.pipe_endpoint() else { return STATUS_INVALID_HANDLE; };
+        let (pipe_info, local_info) = endpoint.information();
+        let needed = if class == FILE_PIPE_INFORMATION { 8 } else { 40 };
+        if (length as usize) < needed { write_io_status(io_status, STATUS_INFO_LENGTH_MISMATCH, 0); return STATUS_INFO_LENGTH_MISMATCH; }
+        let mut out = vec![0u8; needed];
+        if class == FILE_PIPE_INFORMATION {
+            out[0..4].copy_from_slice(&pipe_info[0].to_le_bytes());
+            out[4..8].copy_from_slice(&pipe_info[1].to_le_bytes());
+        } else {
+            for (index, value) in local_info.iter().enumerate() { out[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes()); }
+        }
+        if uaccess::copy_to_user(information, &out).is_err() { write_io_status(io_status, STATUS_ACCESS_VIOLATION, 0); return STATUS_ACCESS_VIOLATION; }
+        write_io_status(io_status, STATUS_SUCCESS, needed as u64);
+        return STATUS_SUCCESS;
+    }
     let Some(file) = object.file() else { return STATUS_INVALID_HANDLE; };
     let stat = vfs::generic_fillattr(file.inode(), &vfs::IDENTITY);
     let is_directory = file.inode().file_type() == vfs::FileType::Directory;

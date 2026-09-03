@@ -129,6 +129,21 @@ impl NtPipe {
         NtPipePeek { state, available: queue.len(), messages: usize::from(message_mode && !queue.is_empty()), message_length, data: queue.iter().take(count).copied().collect() }
     }
 
+    pub fn information(&self, side: NtPipeSide) -> ([u32; 2], [u32; 10]) {
+        let transport = self.transport.lock();
+        let queue = match side { NtPipeSide::Server => &transport.client_to_server, NtPipeSide::Client => &transport.server_to_client };
+        let state = if transport.connected { 3 } else if transport.listening { 2 } else { 1 };
+        let read_mode = u32::from(self.config.read_mode != 0);
+        let completion_mode = u32::from(self.config.completion_mode != 0);
+        let configuration = match self.config.sharing { 1 => 1, 2 => 2, _ => 3 };
+        let end = u32::from(side == NtPipeSide::Server);
+        let quota = match side { NtPipeSide::Server => self.config.outbound_quota, NtPipeSide::Client => self.config.inbound_quota };
+        ([read_mode, completion_mode], [self.config.pipe_type, configuration,
+            self.config.max_instances, self.instances(), self.config.inbound_quota,
+            queue.len() as u32, self.config.outbound_quota,
+            quota.saturating_sub(queue.len() as u32), state, end])
+    }
+
     pub fn endpoint(self: &Arc<Self>, side: NtPipeSide) -> NtPipeEndpoint {
         NtPipeEndpoint { pipe: Arc::clone(self), side, reserved: false }
     }
@@ -190,6 +205,7 @@ impl NtPipeEndpoint {
         self.pipe.listen()
     }
     pub fn peek(&self, capacity: usize) -> NtPipePeek { self.pipe.peek(self.side, capacity) }
+    pub fn information(&self) -> ([u32; 2], [u32; 10]) { self.pipe.information(self.side) }
 }
 
 impl Drop for NtPipeEndpoint {
@@ -303,5 +319,19 @@ mod tests {
         assert_eq!(snapshot.data, b"peek".to_vec());
         let mut output = [0u8; 8];
         assert_eq!(client.read(&mut output), NtPipeIo::Complete(7));
+    }
+
+    #[test]
+    fn information_reports_endpoint_state_and_directional_quota() {
+        let pipe = Arc::new(NtPipe::new(config(2)));
+        let server = pipe.endpoint(NtPipeSide::Server);
+        let client = pipe.endpoint(NtPipeSide::Client);
+        assert_eq!(server.information().1[8], 1);
+        assert_eq!(server.information().1[9], 1);
+        assert_eq!(pipe.listen(), NtPipeListen::Pending);
+        assert_eq!(server.information().1[8], 2);
+        assert!(pipe.connect());
+        assert_eq!(client.information().1[8], 3);
+        assert_eq!(client.information().1[9], 0);
     }
 }
