@@ -1,13 +1,13 @@
 # 52 Repo structure + ownership
 
-DRAFT (living). Dep:`02`,`07`,`08`,`39`. Provides:repo layout contract, crate ownership boundaries, naming rules.
+DRAFT (living). Dep:`02`,`07`,`08`,`13a`,`26`,`39`. Provides:repo layout contract, crate ownership boundaries, naming rules.
 
-## 1 Purpose
+## 1
 
 Pin a durable repository structure contract so subsystem code does not
 drift between `kernel/src`, ad-hoc `crates/*`, and one-off folders.
 
-## 2 Scope
+## 2
 
 1. Path layout for kernel, crates, userspace, tools, tests, docs.
 2. Ownership boundaries: what lives in `kernel` vs subsystem crates.
@@ -15,7 +15,7 @@ drift between `kernel/src`, ad-hoc `crates/*`, and one-off folders.
 4. Dependency direction rules.
 5. Migration rules for moving existing code without breaking velocity.
 
-## 3 Layer model (frozen)
+## 3
 
 1. `kernel/` is the integration crate, not the primary home of
    subsystem implementation.
@@ -26,7 +26,7 @@ drift between `kernel/src`, ad-hoc `crates/*`, and one-off folders.
    never in kernel subsystem crates. This repo contains no general userspace runtime code — no libc, loader, NSS, PAM,
    package manager, or service manager (`29a§2`).
 
-## 4 Layout contract (target)
+## 4
 
 ```text
 oxide2/
@@ -46,7 +46,7 @@ oxide2/
 Current `crates/<name>` paths may remain during migration; new crates
 must use grouped paths from day one.
 
-## 5 Ownership rules (frozen)
+## 5
 
 1. `kernel/src` may contain:
    - boot/init sequencing
@@ -102,6 +102,15 @@ must use grouped paths from day one.
    Landlock's own reporting configuration — the per-layer quiet masks and
    logging flags — lives in `crates/kernel/landlock`, which decides WHAT to
    report; `audit` decides whether it is emitted.
+9b. `crates/kernel/sched` exclusively owns task scheduling state and every
+   transition affecting runqueue placement, class, configured/normal/effective
+   priority, class entities, load, PI, RT, deadline, affinity, fair task groups,
+   and scheduler inheritance. Syscall, cgroup, procfs, IPC, and native-object
+   crates submit typed requests or consume coherent snapshots; they cannot write
+   scheduler task fields, invoke internal class encoders, or retain a competing
+   scheduling result. `crates/kernel/cgroup` owns cgroup identity and file ABI;
+   scheduler task-group execution state is keyed by that identity and owned by
+   `sched` per `13a§7` and `26§4.2`.
 10. `crates/drivers/drv-simplefb` owns firmware-framebuffer validation after
     handoff, WC mapping, format conversion, and fbdev/fbcon lifetime. Boot
     parsers only populate `BootInfo.framebuffer`; `kmain` only sequences the
@@ -281,7 +290,7 @@ must use grouped paths from day one.
     `scsi` owns generic CDB transport and publication; it bounds raw CDBs per
     transport but does not retain, synthesize, or translate ATA state.
 
-## 6 Naming rules (frozen)
+## 6
 
 1. Prefer explicit names over compressed abbreviations.
    - Good: `syscall-handlers`, `namespace-cgroup`, `observability`
@@ -295,7 +304,7 @@ must use grouped paths from day one.
 4. Prefixes `dev_`, `syscall_glue_` are legacy. New code uses domain
    module trees (`syscalls/fs.rs`, `drivers/net/mod.rs`, etc.).
 
-## 7 Dependency direction (frozen)
+## 7
 
 Allowed high-level direction:
 
@@ -348,7 +357,7 @@ Constraints:
     reverse.
 16. `crates/kernel/nat` depends on `conntrack` for the flow a binding is recorded
     on and on nothing else; `conntrack` never depends on it. Packet rewriting
-    takes a buffer from its caller rather than reaching for one.
+    takes a buffer from its caller and does not reach for one.
 17. `crates/kernel/netfilter` may depend on `conntrack` and `nat` — the
     connection-tracking expressions are the reason both exist. Neither depends on
     `netfilter`.
@@ -375,7 +384,7 @@ Constraints:
     depends on them. A mechanism two of them share moves to its own owner
     (`§5` rules 22–23); a sideways dependency is forbidden.
 
-## 8 Change policy
+## 8
 
 1. Structural moves are spec-visible. Update this doc + `MANIFEST` in
    the same PR when rules change.
@@ -385,7 +394,7 @@ Constraints:
 3. Keep package names stable during path migration unless there is a
    clear collision or ambiguity problem.
 
-## 9 Migration plan from current tree
+## 9
 
 1. Stage A: classify each `kernel/src/*.rs` file by owning crate.
    Artifact: `52a-stage-a-ownership-classification.md` (per-file map
@@ -401,7 +410,7 @@ Temporary exceptions are allowed only with:
 2. Tracking issue/PR id.
 3. Removal target phase.
 
-## 10 CI guardrails (planned)
+## 10
 
 1. `xtask doc-check` validates this spec is present in `MANIFEST`.
 2. Structural lint blocks:
@@ -410,15 +419,17 @@ Temporary exceptions are allowed only with:
      already exists
 3. Dependency lint verifies forbidden edges from §7.
 
-## 11 Cross-references
+## 11
 
 - `02§1` lifecycle + drift policy.
 - `07§8` workspace/toolchain orchestration.
 - `08§7` file length cap.
 - `39§3` existing workspace layout baseline.
 
-## 12 Changelog
+## 12
 
+- 2026-09-03: Made scheduler task/entity/runqueue state exclusive to `sched` and
+  split cgroup identity/file ownership from scheduler task-group execution state.
 - 2026-08-20: Added canonical firmware-owned ACPI `_PRW` device and shared
   `PowerResource` ownership; the SCI/GPE layer retains register masks only.
 - 2026-08-18: Added `crates/kernel/ata` as the sole owner of live ATA identity,
@@ -431,7 +442,7 @@ Temporary exceptions are allowed only with:
 - 2026-08-18: Added `crates/kernel/scmi` for SCMI Performance v1–v4 message
   ownership, and the aarch64 FDT SMC shared-memory cpufreq provider. Firmware
   owns its SMCCC/MMIO transport, completion state, and publishes direct dynamic
-  policies rather than modelling SCMI as a synthetic clock or static DT OPP table.
+  policies; SCMI is not modeled as a synthetic clock or static DT OPP table.
 - 2026-08-17: Added DT clock, regulator and OPP ownership boundaries; firmware
   resolves CPU policies through those concrete owners and cpufreq retains only
   generic policy, governor and sysfs state. Clock and regulator registries own
@@ -472,7 +483,7 @@ Temporary exceptions are allowed only with:
 - 2026-07-15: Added canonical cross-family socket work-layer ownership.
 - 2026-07-14: Added dependency-neutral network-namespace ownership boundary.
 
-## 13 OQ
+## 13
 
 1. Keep `kernel/` directory name, or move integration crate to
    `crates/kernel/integration/` after migration?
