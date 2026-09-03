@@ -23,23 +23,29 @@ pub struct PreparedPeProcess {
 pub fn try_commit(cur: &sched::Task, path: &[u8], blob: &[u8], exec_vp: Option<&vfs::VfsPath>) -> Option<Result<(), i64>> {
     if !matches!(elf_load::format::identify(blob), elf_load::format::BinaryFormat::Pe) { return None; }
     #[cfg(target_arch = "x86_64")]
-    { Some(commit_x86(cur, path, blob, exec_vp, None)) }
+    { Some(commit_x86(cur, path, blob, exec_vp, None, None)) }
     #[cfg(target_arch = "aarch64")]
     { let _ = (cur, path, blob, exec_vp); Some(Err(-(syscall::errno::Errno::Enoexec.as_i32() as i64))) }
 }
 
 #[cfg(target_os = "oxide-kernel")]
+#[allow(dead_code)]
 pub fn try_commit_with_catalog(cur: &sched::Task, path: &[u8], blob: &[u8], catalog: &pe::catalog::ModuleCatalog) -> Result<(), i64> {
+    try_commit_with_catalog_and_command_line(cur, path, blob, catalog, core::str::from_utf8(path).unwrap_or(""))
+}
+
+#[cfg(target_os = "oxide-kernel")]
+pub fn try_commit_with_catalog_and_command_line(cur: &sched::Task, path: &[u8], blob: &[u8], catalog: &pe::catalog::ModuleCatalog, command_line: &str) -> Result<(), i64> {
     #[cfg(target_arch = "x86_64")]
-    { commit_x86(cur, path, blob, None, Some(catalog)) }
+    { commit_x86(cur, path, blob, None, Some(catalog), Some(command_line)) }
     #[cfg(target_arch = "aarch64")]
-    { let _ = (cur, path, blob, catalog); Err(-(syscall::errno::Errno::Enoexec.as_i32() as i64)) }
+    { let _ = (cur, path, blob, catalog, command_line); Err(-(syscall::errno::Errno::Enoexec.as_i32() as i64)) }
 }
 
 #[cfg(target_arch = "x86_64")]
-fn commit_x86(cur: &sched::Task, path: &[u8], blob: &[u8], exec_vp: Option<&vfs::VfsPath>, catalog: Option<&pe::catalog::ModuleCatalog>) -> Result<(), i64> {
+fn commit_x86(cur: &sched::Task, path: &[u8], blob: &[u8], exec_vp: Option<&vfs::VfsPath>, catalog: Option<&pe::catalog::ModuleCatalog>, command_line: Option<&str>) -> Result<(), i64> {
     let enoexec = || -(syscall::errno::Errno::Enoexec.as_i32() as i64);
-    let prepared = prepare_pe_process(cur, path, blob, None, &[], None, exec_vp, catalog,
+    let prepared = prepare_pe_process(cur, path, blob, command_line, &[], None, exec_vp, catalog,
         cur.tgid.load(core::sync::atomic::Ordering::Acquire), cur.tid, true)?;
     let PreparedPeProcess { mm: as_, stack, stack_top, process } = prepared;
     let path = core::str::from_utf8(path).map_err(|_| enoexec())?;

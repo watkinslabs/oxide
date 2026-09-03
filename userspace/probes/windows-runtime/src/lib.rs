@@ -42,6 +42,8 @@ pub struct RuntimeRequest {
     image: Box<[u8]>,
     #[allow(dead_code)]
     image_path: Box<[u8]>,
+    #[allow(dead_code)]
+    command_line: Box<[u8]>,
     modules: Vec<ModuleBuffer>,
     #[allow(dead_code)]
     records: Box<[NtExecModule]>,
@@ -52,7 +54,14 @@ impl RuntimeRequest {
     /// Read a PE32+ root and every non-native DLL in `dll_dir` using the Linux personality.
     /// # C: O(root + DLL directory bytes)
     pub fn from_paths(image_path: &Path, windows_path: &[u8], dll_dir: &Path) -> Result<Self, BuildError> {
+        Self::from_paths_with_command_line(image_path, windows_path, windows_path, dll_dir)
+    }
+
+    /// Read a PE32+ root and build an owned handoff with an explicit command line.
+    /// # C: O(root + DLL directory bytes)
+    pub fn from_paths_with_command_line(image_path: &Path, windows_path: &[u8], command_line: &[u8], dll_dir: &Path) -> Result<Self, BuildError> {
         if windows_path.is_empty() || windows_path.len() > u32::MAX as usize || windows_path.contains(&0) { return Err(BuildError::InvalidUtf8Path); }
+        if command_line.is_empty() || command_line.len() > u32::MAX as usize || command_line.contains(&0) { return Err(BuildError::InvalidUtf8Path); }
         let image = fs::read(image_path).map_err(|error| {
             eprintln!("windows-runtime: read image {}: {error}", image_path.display()); BuildError::Io(error)
         })?;
@@ -95,6 +104,7 @@ impl RuntimeRequest {
         let image = image.into_boxed_slice();
         validate_import_closure(&image, &modules)?;
         let image_path = windows_path.to_vec().into_boxed_slice();
+        let command_line = command_line.to_vec().into_boxed_slice();
         let mut records = Vec::with_capacity(modules.len().max(1));
         for module in &modules {
             records.push(NtExecModule {
@@ -109,9 +119,10 @@ impl RuntimeRequest {
         let request = NtExecRequest {
             image: user_ptr(image.as_ptr())?, image_len: image.len() as u64,
             image_path: user_ptr(image_path.as_ptr())?, image_path_len: image_path.len() as u32, _path_padding: 0,
+            command_line: user_ptr(command_line.as_ptr())?, command_line_len: command_line.len() as u32, _command_padding: 0,
             modules: user_ptr(records.as_ptr())?, module_count: modules.len() as u32, _modules_padding: 0,
         };
-        Ok(Self { image, image_path, modules, records, request })
+        Ok(Self { image, image_path, command_line, modules, records, request })
     }
 
     /// Return the fixed ABI record passed to the tagged NT selector. # C: O(1)
@@ -200,11 +211,12 @@ mod tests {
         let request = RuntimeRequest::from_paths(&root.join("notepad.exe"), b"C:\\notepad.exe", root).unwrap();
         assert_eq!(request.abi().image_len > 0, true);
         assert_eq!(request.abi().image_path_len, 14);
+        assert_eq!(request.abi().command_line_len, 14);
         assert!(request.module_count() >= 8);
         assert!(request.module_count() < 64, "Notepad closure must fit the kernel catalog limit");
         assert_eq!(request.abi().module_count as usize, request.module_count());
         assert!(!request.modules.iter().any(|module| module.name.eq_ignore_ascii_case(b"ntdll.dll")));
-        assert_eq!(std::mem::size_of::<NtExecRequest>(), 48);
+        assert_eq!(std::mem::size_of::<NtExecRequest>(), 64);
         assert_eq!(std::mem::size_of::<NtExecModule>(), 32);
     }
 
@@ -318,7 +330,7 @@ mod tests {
     fn catalog_record_lengths_are_bounded_by_the_fixed_abi_types() {
         assert_eq!(std::mem::align_of::<NtExecRequest>(), 8);
         assert_eq!(std::mem::align_of::<NtExecModule>(), 8);
-        assert_eq!(std::mem::size_of::<NtExecRequest>(), 48);
+        assert_eq!(std::mem::size_of::<NtExecRequest>(), 64);
         assert_eq!(std::mem::size_of::<NtExecModule>(), 32);
     }
 
