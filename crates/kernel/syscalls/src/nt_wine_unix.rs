@@ -71,6 +71,8 @@ const SERVER_SELECT_TIMEOUT: u64 = 24;
 const SERVER_SELECT_REPLY_SIGNALED: u64 = 12;
 const SERVER_TIMEOUT_INFINITE: u64 = 0x7fff_ffff_ffff_ffff;
 
+fn wine_arg(base: u64, offset: u64) -> Option<u64> { base.checked_add(offset) }
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum ServerRequest { CloseHandle, CreateEvent, EventOp, QueryEvent, Select, CreateMutex, ReleaseMutex, QueryMutex, CreateSemaphore, ReleaseSemaphore, QuerySemaphore }
 
@@ -102,8 +104,10 @@ fn valid_unwind_type(value: u32) -> bool { value & !UNW_FLAG_MASK == 0 }
 #[cfg(target_os = "oxide-kernel")]
 fn unix_fd_to_handle(args: u64) -> u64 {
     let Ok(fd) = uaccess::get_user_u32(args) else { return STATUS_INVALID_PARAMETER; };
-    let Ok(access) = uaccess::get_user_u32(args + 4) else { return STATUS_INVALID_PARAMETER; };
-    let Ok(output) = uaccess::get_user_u64(args + 16) else { return STATUS_INVALID_PARAMETER; };
+    let Some(access_address) = wine_arg(args, 4) else { return STATUS_INVALID_PARAMETER; };
+    let Some(output_address) = wine_arg(args, 16) else { return STATUS_INVALID_PARAMETER; };
+    let Ok(access) = uaccess::get_user_u32(access_address) else { return STATUS_INVALID_PARAMETER; };
+    let Ok(output) = uaccess::get_user_u64(output_address) else { return STATUS_INVALID_PARAMETER; };
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     let Some(fdt) = cur.clone_fd_table() else { return STATUS_INVALID_PARAMETER; };
     let Ok(file) = fdt.get(fd as i32) else { return STATUS_INVALID_HANDLE; };
@@ -121,9 +125,11 @@ fn unix_fd_to_handle(_args: u64) -> u64 { STATUS_INVALID_PARAMETER }
 #[cfg(target_os = "oxide-kernel")]
 fn unix_handle_to_fd(args: u64) -> u64 {
     let Ok(raw_handle) = uaccess::get_user_u32(args) else { return STATUS_INVALID_PARAMETER; };
-    let Ok(access) = uaccess::get_user_u32(args + 4) else { return STATUS_INVALID_PARAMETER; };
-    let Ok(output_fd) = uaccess::get_user_u64(args + 16) else { return STATUS_INVALID_PARAMETER; };
-    let Ok(output_options) = uaccess::get_user_u64(args + 24) else { return STATUS_INVALID_PARAMETER; };
+    let (Some(access_address), Some(output_fd_address), Some(output_options_address)) =
+        (wine_arg(args, 4), wine_arg(args, 16), wine_arg(args, 24)) else { return STATUS_INVALID_PARAMETER; };
+    let Ok(access) = uaccess::get_user_u32(access_address) else { return STATUS_INVALID_PARAMETER; };
+    let Ok(output_fd) = uaccess::get_user_u64(output_fd_address) else { return STATUS_INVALID_PARAMETER; };
+    let Ok(output_options) = uaccess::get_user_u64(output_options_address) else { return STATUS_INVALID_PARAMETER; };
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     let Some(object) = cur.thread_group.nt_handles().get(sched::nt_object::NtHandle::from_raw(raw_handle), access) else {
         return if cur.thread_group.nt_handles().contains(sched::nt_object::NtHandle::from_raw(raw_handle)) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE };
@@ -142,14 +148,17 @@ fn unix_handle_to_fd(_args: u64) -> u64 { STATUS_INVALID_PARAMETER }
 
 #[cfg(target_os = "oxide-kernel")]
 fn server_select(args: u64) -> u64 {
-    let Ok(data_count) = uaccess::get_user_u32(args + SERVER_DATA_COUNT) else { return STATUS_INVALID_PARAMETER; };
+    let Some(data_count_address) = wine_arg(args, SERVER_DATA_COUNT) else { return STATUS_INVALID_PARAMETER; };
+    let Ok(data_count) = uaccess::get_user_u32(data_count_address) else { return STATUS_INVALID_PARAMETER; };
     if data_count != 2 { return server_reply(args, STATUS_INVALID_PARAMETER); }
-    let Ok(result_ptr) = uaccess::get_user_u64(args + SERVER_DATA_ZERO_PTR) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
-    let Ok(result_size) = uaccess::get_user_u32(args + SERVER_DATA_ZERO_SIZE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+    let (Some(result_ptr_address), Some(result_size_address)) = (wine_arg(args, SERVER_DATA_ZERO_PTR), wine_arg(args, SERVER_DATA_ZERO_SIZE)) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+    let Ok(result_ptr) = uaccess::get_user_u64(result_ptr_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+    let Ok(result_size) = uaccess::get_user_u32(result_size_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
     if result_ptr == 0 || result_size != SERVER_APC_RESULT_BYTES { return server_reply(args, STATUS_INVALID_PARAMETER); }
-    let Ok(data_ptr) = uaccess::get_user_u64(args + SERVER_DATA_ONE_PTR) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
-    let Ok(data_size) = uaccess::get_user_u32(args + SERVER_DATA_ONE_SIZE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
-    let Ok(request_size) = uaccess::get_user_u32(args + SERVER_REQUEST_SIZE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+    let (Some(data_ptr_address), Some(data_size_address), Some(request_size_address)) = (wine_arg(args, SERVER_DATA_ONE_PTR), wine_arg(args, SERVER_DATA_ONE_SIZE), wine_arg(args, SERVER_REQUEST_SIZE)) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+    let Ok(data_ptr) = uaccess::get_user_u64(data_ptr_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+    let Ok(data_size) = uaccess::get_user_u32(data_size_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+    let Ok(request_size) = uaccess::get_user_u32(request_size_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
     if SERVER_APC_RESULT_BYTES.checked_add(data_size) != Some(request_size) { return server_reply(args, STATUS_INVALID_PARAMETER); }
     if data_ptr == 0 || data_size < 8 || data_size > 4 + SERVER_SELECT_MAX_HANDLES * 4 || data_size % 4 != 0 { return server_reply(args, STATUS_INVALID_PARAMETER); }
     let Ok(op) = uaccess::get_user_u32(data_ptr) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
