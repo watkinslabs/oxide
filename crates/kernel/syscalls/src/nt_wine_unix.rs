@@ -194,8 +194,12 @@ fn server_call(args: u64) -> u64 {
             let handle = sched::nt_object::NtHandle::from_raw(raw);
             let object = table.get(handle, 0);
             if object.is_none() { STATUS_INVALID_HANDLE } else {
-                if object.as_ref().is_some_and(|object| object.kind() == sched::nt_object::NtObjectType::Key) { crate::nt_registry::close_remote(object.unwrap().id()); }
-                if table.close(handle) { STATUS_SUCCESS } else { STATUS_INVALID_HANDLE }
+                let key = object.filter(|object| object.kind() == sched::nt_object::NtObjectType::Key).map(|object| object.id());
+                match table.close_with_last(handle) {
+                    Some(true) => { if let Some(key) = key { crate::nt_registry::close_remote(key); } STATUS_SUCCESS }
+                    Some(false) => STATUS_SUCCESS,
+                    None => STATUS_INVALID_HANDLE,
+                }
             }
         }
         ServerRequest::CreateEvent => {

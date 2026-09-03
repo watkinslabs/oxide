@@ -12,6 +12,9 @@ FROZEN 2026-08-31. Dep:`01`,`03`,`29a`,`31ab`,`52`,`53`. Provides: one userspace
 - Persistence uses a versioned bounded file format, synced temporary-file replacement, and a synced containing directory. A malformed file is rejected rather than treated as an empty registry.
 - A runtime session opens one per-user database, marks mutations dirty, and flushes that same canonical owner explicitly; read-only sessions perform no write.
 - The typed service interface routes root and relative open/create, set, query, enumerate-keys, enumerate-values, and close through that session; responses carry the same opaque 64-bit handle, bounded result vectors, or an explicit error.
+- Native NT key objects retain the service handle in the scheduler object; the
+  service `CLOSE` is sent only when the final duplicated NT handle is removed,
+  matching Wine's reference-counted server object lifetime.
 - The userspace `Advapi` adapter exposes the initial `RegOpenKeyExW`, `RegCreateKeyExW`, `RegQueryValueExW`, `RegSetValueExW`, `RegEnumKeyExW`, `RegEnumValueW`, and `RegCloseKey` behavior over the client; it preserves query-size probes, short-buffer `ERROR_MORE_DATA`, default values, no-more-item results, and reserved-argument validation.
 - `registryd` exposes that interface over a bounded length-prefixed Unix stream and flushes the same store after each client connection; framing errors never become registry success.
 - The native Notepad smoke starts one `registryd` instance for the runtime
