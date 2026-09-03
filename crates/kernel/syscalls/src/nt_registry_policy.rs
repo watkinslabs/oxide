@@ -2,12 +2,13 @@
 //! contract.  Keeping this policy separate makes its boundary testable on the
 //! host while the delivery owner remains target-specific.
 
+pub const REG_NOTIFY_CHANGE_NAME: u64 = 0x0000_0001;
 pub const REG_NOTIFY_CHANGE_LAST_SET: u64 = 0x0000_0004;
 
 /// Whether the ABI shape can be owned by the current synchronous NT bridge.
-/// APC delivery, subtree traversal, and output records are separate contracts;
-/// accepting them here without an owner would turn a pending request into a
-/// false success.
+/// APC delivery, subtree traversal, and output records remain separate
+/// contracts; accepting them here without an owner would turn a pending
+/// request into a false success.
 pub const fn supported_request(
     apc: u64,
     apc_context: u64,
@@ -25,12 +26,12 @@ pub const fn supported_request(
         && length == 0
         && asynchronous != 0
         && subtree == 0
-        && filter == REG_NOTIFY_CHANGE_LAST_SET
+        && matches!(filter, REG_NOTIFY_CHANGE_NAME | REG_NOTIFY_CHANGE_LAST_SET)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{supported_request, REG_NOTIFY_CHANGE_LAST_SET};
+    use super::{supported_request, REG_NOTIFY_CHANGE_LAST_SET, REG_NOTIFY_CHANGE_NAME};
 
     fn valid() -> bool {
         supported_request(0, 0, 0x1000, 0, 0, 1, 0, REG_NOTIFY_CHANGE_LAST_SET)
@@ -50,5 +51,10 @@ mod tests {
     fn rejects_subtree_and_unowned_filters() {
         assert!(!supported_request(0, 0, 0x1000, 0, 0, 1, 1, REG_NOTIFY_CHANGE_LAST_SET));
         assert!(!supported_request(0, 0, 0x1000, 0, 0, 1, 0, 1));
+    }
+
+    #[test]
+    fn accepts_name_notifications_owned_by_key_mutations() {
+        assert!(supported_request(0, 0, 0x1000, 0, 0, 1, 0, REG_NOTIFY_CHANGE_NAME));
     }
 }

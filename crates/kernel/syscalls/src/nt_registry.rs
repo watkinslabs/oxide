@@ -129,11 +129,11 @@ fn finish_watches(key: u64, owner_tid: Option<u32>, target_io_status: Option<u64
     finished
 }
 
-fn notify_registry_key(key: u64) {
+fn notify_registry_key(key: u64, change: u64) {
     let mut watches = REGISTRY_WATCHES.lock();
     let mut index = 0;
     while index < watches.len() {
-        if watches[index].key != key || watches[index].filter & crate::nt_registry_policy::REG_NOTIFY_CHANGE_LAST_SET == 0 { index += 1; continue; }
+        if watches[index].key != key || watches[index].filter & change == 0 { index += 1; continue; }
         let watch = watches.remove(index);
         let _ = uaccess::put_user_u64(watch.io_status, STATUS_SUCCESS);
         let _ = uaccess::put_user_u64(watch.io_status.saturating_add(8), 0);
@@ -445,7 +445,7 @@ fn delete_value_native(call: NtCall) -> u64 {
     let Some(remote) = remote_key(&current, call.args.a0 as u32, KEY_SET_VALUE) else { return STATUS_INVALID_PARAMETER; };
     let Some(name) = read_unicode(call.args.a1) else { return STATUS_INVALID_PARAMETER; };
     match transact(&frame_delete_value(remote, &name)) {
-        Some(Reply::Success) => { notify_registry_key(remote); STATUS_SUCCESS }
+        Some(Reply::Success) => { notify_registry_key(remote, crate::nt_registry_policy::REG_NOTIFY_CHANGE_LAST_SET); STATUS_SUCCESS }
         Some(reply) => reply_status(reply),
         None => STATUS_UNSUCCESSFUL,
     }
@@ -455,7 +455,7 @@ fn delete_key_native(call: NtCall) -> u64 {
     let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !current.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     let Some(remote) = remote_key(&current, call.args.a0 as u32, DELETE_ACCESS) else { return STATUS_INVALID_PARAMETER; };
-    match transact(&frame_delete_key(remote)) { Some(Reply::Success) => { notify_registry_key(remote); STATUS_SUCCESS }, Some(reply) => reply_status(reply), None => STATUS_UNSUCCESSFUL }
+    match transact(&frame_delete_key(remote)) { Some(Reply::Success) => { notify_registry_key(remote, crate::nt_registry_policy::REG_NOTIFY_CHANGE_NAME); STATUS_SUCCESS }, Some(reply) => reply_status(reply), None => STATUS_UNSUCCESSFUL }
 }
 
 fn set_value_parts(key: u32, name_ptr: u64, title: u64, kind: u64, data: u64, size: u64) -> u64 {
@@ -465,7 +465,7 @@ fn set_value_parts(key: u32, name_ptr: u64, title: u64, kind: u64, data: u64, si
     let Some(name) = read_unicode(name_ptr) else { return STATUS_INVALID_PARAMETER; };
     let mut bytes = Vec::new(); if bytes.try_reserve_exact(size as usize).is_err() { return STATUS_NO_MEMORY; } bytes.resize(size as usize, 0);
     if size != 0 && uaccess::copy_from_user(&mut bytes, data).is_err() { return STATUS_ACCESS_VIOLATION; }
-    match transact(&frame_set(remote, &name, kind as u32, &bytes)) { Some(Reply::Success) => { notify_registry_key(remote); STATUS_SUCCESS }, Some(reply) => reply_status(reply), None => STATUS_UNSUCCESSFUL }
+    match transact(&frame_set(remote, &name, kind as u32, &bytes)) { Some(Reply::Success) => { notify_registry_key(remote, crate::nt_registry_policy::REG_NOTIFY_CHANGE_LAST_SET); STATUS_SUCCESS }, Some(reply) => reply_status(reply), None => STATUS_UNSUCCESSFUL }
 }
 
 fn reply_status(reply: Reply) -> u64 {
