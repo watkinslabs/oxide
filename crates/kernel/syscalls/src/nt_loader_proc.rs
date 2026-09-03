@@ -241,50 +241,53 @@ fn get_procedure(call: NtCall) -> u64 {
 }
 
 fn module_info(cur: &sched::Task, module: u64) -> Option<(u32, bool)> {
-    let peb = read_u64(cur.nt_teb().saturating_add(TEB_PEB_OFFSET));
-    let ldr = read_u64(peb.saturating_add(PEB_LDR_OFFSET));
+    let peb = read_u64_checked(cur.nt_teb().checked_add(TEB_PEB_OFFSET)?)?;
+    let ldr = read_u64_checked(peb.checked_add(PEB_LDR_OFFSET)?)?;
     if peb == 0 || ldr == 0 { return None; }
-    let head = ldr.saturating_add(LDR_LOAD_LIST_OFFSET);
-    let mut entry = read_u64(head);
+    let head = ldr.checked_add(LDR_LOAD_LIST_OFFSET)?;
+    let mut entry = read_u64_checked(head)?;
     for _ in 0..MAX_MODULE_SCAN {
         if entry == 0 || entry == head { break; }
-        if read_u64(entry.saturating_add(MODULE_BASE_OFFSET)) == module {
-            let size = read_u32(entry.saturating_add(MODULE_SIZE_OFFSET))?;
-            return (size != 0).then(|| (size, module_name_is_ntdll(entry.saturating_add(MODULE_BASE_NAME_OFFSET))));
+        let Some(base_field) = entry.checked_add(MODULE_BASE_OFFSET) else { return None; };
+        if read_u64(base_field) == module {
+            let size = read_u32(entry.checked_add(MODULE_SIZE_OFFSET)?)?;
+            let name = entry.checked_add(MODULE_BASE_NAME_OFFSET)?;
+            return (size != 0).then(|| (size, module_name_is_ntdll(name)));
         }
-        entry = read_u64(entry.saturating_add(LIST_LINK_OFFSET));
+        entry = read_u64_checked(entry.checked_add(LIST_LINK_OFFSET)?)?;
     }
     None
 }
 
 fn module_containing(cur: &sched::Task, address: u64) -> Option<(u64, u32)> {
-    let peb = read_u64(cur.nt_teb().saturating_add(TEB_PEB_OFFSET));
-    let ldr = read_u64(peb.saturating_add(PEB_LDR_OFFSET));
+    let peb = read_u64_checked(cur.nt_teb().checked_add(TEB_PEB_OFFSET)?)?;
+    let ldr = read_u64_checked(peb.checked_add(PEB_LDR_OFFSET)?)?;
     if peb == 0 || ldr == 0 { return None; }
-    let head = ldr.saturating_add(LDR_LOAD_LIST_OFFSET);
-    let mut entry = read_u64(head);
+    let head = ldr.checked_add(LDR_LOAD_LIST_OFFSET)?;
+    let mut entry = read_u64_checked(head)?;
     for _ in 0..MAX_MODULE_SCAN {
         if entry == 0 || entry == head { break; }
-        let base = read_u64(entry.saturating_add(MODULE_BASE_OFFSET));
-        let size = read_u32(entry.saturating_add(MODULE_SIZE_OFFSET))?;
+        let base = read_u64_checked(entry.checked_add(MODULE_BASE_OFFSET)?)?;
+        let size = read_u32(entry.checked_add(MODULE_SIZE_OFFSET)?)?;
         if base != 0 && size != 0 && address >= base && address - base < size as u64 { return Some((base, size)); }
-        entry = read_u64(entry.saturating_add(LIST_LINK_OFFSET));
+        entry = read_u64_checked(entry.checked_add(LIST_LINK_OFFSET)?)?;
     }
     None
 }
 
 pub(crate) fn module_base_by_name(cur: &sched::Task, wanted: &[u8]) -> Option<u64> {
-    let peb = read_u64(cur.nt_teb().saturating_add(TEB_PEB_OFFSET));
-    let ldr = read_u64(peb.saturating_add(PEB_LDR_OFFSET));
+    let peb = read_u64_checked(cur.nt_teb().checked_add(TEB_PEB_OFFSET)?)?;
+    let ldr = read_u64_checked(peb.checked_add(PEB_LDR_OFFSET)?)?;
     if peb == 0 || ldr == 0 { return None; }
-    let head = ldr.saturating_add(LDR_LOAD_LIST_OFFSET);
-    let mut entry = read_u64(head);
+    let head = ldr.checked_add(LDR_LOAD_LIST_OFFSET)?;
+    let mut entry = read_u64_checked(head)?;
     for _ in 0..MAX_MODULE_SCAN {
         if entry == 0 || entry == head { break; }
-        if module_name_matches(entry.saturating_add(MODULE_BASE_NAME_OFFSET), wanted) {
-            return Some(read_u64(entry.saturating_add(MODULE_BASE_OFFSET)));
+        let name = entry.checked_add(MODULE_BASE_NAME_OFFSET)?;
+        if module_name_matches(name, wanted) {
+            return Some(read_u64_checked(entry.checked_add(MODULE_BASE_OFFSET)?)?);
         }
-        entry = read_u64(entry.saturating_add(LIST_LINK_OFFSET));
+        entry = read_u64_checked(entry.checked_add(LIST_LINK_OFFSET)?)?;
     }
     None
 }
