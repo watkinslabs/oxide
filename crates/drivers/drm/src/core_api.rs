@@ -93,6 +93,14 @@ pub trait DrmDriver: Send + Sync {
     /// Destroy a context previously returned by `virtgpu_context_init`.
     fn virtgpu_context_destroy(&self, _context_id: u32) -> bool { false }
 
+    /// Create one host-backed 2D resource for a DRM-owned buffer. The node
+    /// supplies the already allocated backing; the driver owns virtio admission.
+    fn virtgpu_resource_create(&self, _pa: u64, _size: u64, _format: u32,
+        _width: u32, _height: u32) -> Option<u32> { None }
+
+    /// Retire a host resource after its DRM buffer ownership ends.
+    fn virtgpu_resource_destroy(&self, _resource_id: u32) -> bool { false }
+
     fn crtc_ids(&self) -> Vec<u32> { Vec::new() }
     fn connector_ids(&self) -> Vec<u32> { Vec::new() }
     fn encoder_ids(&self) -> Vec<u32> { Vec::new() }

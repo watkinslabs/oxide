@@ -56,7 +56,7 @@ pub fn create_dumb(card_id: u32, token: u64, arg: u64) -> i64 {
     }
     let handle = alloc_dumb_handle();
     TABLES.lock().insert_buf(DumbBuf {
-        card_id, handle, owner_token: token, pa, size, order,
+        card_id, handle, resource_id: 0, owner_token: token, pa, size, order,
         w: req.width, h: req.height, pitch, bpp: req.bpp, refcnt: 1,
         mmap_refs: 0, deleted: false,
     });

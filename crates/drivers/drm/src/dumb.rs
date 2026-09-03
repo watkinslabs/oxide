@@ -66,6 +66,7 @@ pub use tables::{
     TABLES,
     replace_bound_fb,
 };
+pub(crate) use tables::free_buf_pages;
 
 mod ioctl;
 pub use ioctl::{addfb, addfb2, addfb_for_token, addfb2_for_token, closefb, create_dumb, destroy_dumb, gem_close,

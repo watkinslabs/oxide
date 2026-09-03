@@ -2,6 +2,7 @@ use alloc::{sync::Arc, vec::Vec};
 use sync::{Spinlock, TaskList as DriverLockClass};
 
 use crate::{DrmDriver, VirtgpuCaps};
+use crate::dumb::{alloc_dumb_handle, dumb_size, free_buf_pages, order_for_bytes, DumbBuf, TABLES};
 use syscall::errno::Errno;
 
 struct FileContext { card_id: u32, token: u64, context_id: u32, ring_mask: u64 }
@@ -14,8 +15,70 @@ pub(super) fn ioctl(driver: Option<Arc<dyn DrmDriver>>, req: u64, arg: u64, card
         crate::DRM_IOCTL_VIRTGPU_GETPARAM => getparam(driver, arg),
         crate::DRM_IOCTL_VIRTGPU_GET_CAPS => get_caps(driver, arg),
         crate::DRM_IOCTL_VIRTGPU_CONTEXT_INIT => context_init(driver, arg, card_id, token),
+        crate::DRM_IOCTL_VIRTGPU_RESOURCE_CREATE => resource_create(driver, arg, card_id, token),
+        crate::DRM_IOCTL_VIRTGPU_RESOURCE_INFO => resource_info(arg, card_id, token),
         _ => -(Errno::Enotty.as_i32() as i64),
     }
+}
+
+fn resource_create(driver: Option<Arc<dyn DrmDriver>>, arg: u64, card_id: u32, token: u64) -> i64 {
+    let Ok(mut request) = crate::uarg::read_arg::<crate::DrmVirtgpuResourceCreate>(arg)
+        else { return -(Errno::Efault.as_i32() as i64) };
+    if request.target != 2 || request.width == 0 || request.height == 0
+        || request.depth > 1 || request.array_size > 1 || request.last_level > 1
+        || request.nr_samples > 1 || request.flags != 0 || request.bo_handle != 0 {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    let Some(driver) = driver else { return -(Errno::Enotty.as_i32() as i64) };
+    let Some(stride) = request.width.checked_mul(4) else {
+        return -(Errno::Einval.as_i32() as i64);
+    };
+    let Some(required) = dumb_size(stride, request.height).filter(|size| *size != 0) else {
+        return -(Errno::Einval.as_i32() as i64);
+    };
+    let size = required.max(request.size as u64);
+    let order = order_for_bytes(size);
+    let Some(pa) = pmm::setup::alloc_contig_object(pmm::Order(order)) else {
+        return -(Errno::Enomem.as_i32() as i64);
+    };
+    let handle = alloc_dumb_handle();
+    let Some(resource_id) = driver.virtgpu_resource_create(pa, size, request.format,
+        request.width, request.height) else {
+        free_buf_pages(pa, order);
+        return -(Errno::Enotsupp.as_i32() as i64);
+    };
+    TABLES.lock().insert_buf(DumbBuf {
+        card_id, handle, resource_id, owner_token: token, pa, size, order,
+        w: request.width, h: request.height, pitch: stride, bpp: 32,
+        refcnt: 1, mmap_refs: 0, deleted: false,
+    });
+    request.bo_handle = handle;
+    request.res_handle = resource_id;
+    request.size = size.min(u32::MAX as u64) as u32;
+    request.stride = stride;
+    if crate::uarg::write_arg(arg, request).is_err() {
+        let _ = driver.virtgpu_resource_destroy(resource_id);
+        if let Some((pa, order)) = TABLES.lock().unref_handle(card_id, handle) { free_buf_pages(pa, order); }
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    0
+}
+
+fn resource_info(arg: u64, card_id: u32, token: u64) -> i64 {
+    let Ok(mut info) = crate::uarg::read_arg::<crate::DrmVirtgpuResourceInfo>(arg)
+        else { return -(Errno::Efault.as_i32() as i64) };
+    let (resource_id, size) = {
+        let tables = TABLES.lock();
+        let Some(buf) = tables.find_buf_owned(card_id, token, info.bo_handle) else {
+            return -(Errno::Einval.as_i32() as i64);
+        };
+        (buf.resource_id, buf.size)
+    };
+    info.res_handle = resource_id;
+    info.size = size.min(u32::MAX as u64) as u32;
+    info.blob_mem = 0;
+    if crate::uarg::write_arg(arg, info).is_err() { return -(Errno::Efault.as_i32() as i64); }
+    0
 }
 
 fn context_init(driver: Option<Arc<dyn DrmDriver>>, arg: u64, card_id: u32, token: u64) -> i64 {

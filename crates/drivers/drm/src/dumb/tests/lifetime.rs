@@ -27,7 +27,7 @@ fn clear_card_state_releases_bound_scanout_resource() {
 #[test]
 fn mmap_pin_survives_card_remove_until_unpin() {
     let mut t = DumbTables::new();
-    t.insert_buf(DumbBuf { card_id: 0, handle: 1, owner_token: 0, pa: 0x10_0000, size: 4096,
+    t.insert_buf(DumbBuf { card_id: 0, handle: 1, resource_id: 0, owner_token: 0, pa: 0x10_0000, size: 4096,
         order: 0, w: 4, h: 4, pitch: 16, bpp: 32, refcnt: 1, mmap_refs: 0, deleted: false });
     let pin = t.pin_mmap(0, 1).unwrap();
     assert_eq!(pin.pa, 0x10_0000);
@@ -46,7 +46,7 @@ fn mmap_pin_survives_card_remove_until_unpin() {
 #[test]
 fn closefb_defers_retirement_until_scanout_replaces_it() {
     let mut t = DumbTables::new();
-    t.insert_buf(DumbBuf { card_id: 0, handle: 7, owner_token: 11, pa: 0x10_0000, size: 4096,
+    t.insert_buf(DumbBuf { card_id: 0, handle: 7, resource_id: 0, owner_token: 11, pa: 0x10_0000, size: 4096,
         order: 0, w: 4, h: 4, pitch: 16, bpp: 32, refcnt: 2, mmap_refs: 0, deleted: false });
     t.fbs.push(FbObj { card_id: 0, fb_id: 9, owner_token: 11, bound: true, w: 4, h: 4,
         pixel_format: DRM_FORMAT_XRGB8888, handles: [7, 0, 0, 0], pitches: [16, 0, 0, 0],

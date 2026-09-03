@@ -239,6 +239,36 @@ impl drm::DrmDriver for VirtioGpuDrm {
         { let _ = context_id; false }
     }
 
+    fn virtgpu_resource_create(&self, pa: u64, size: u64, format: u32,
+        width: u32, height: u32) -> Option<u32> {
+        if self.features_negotiated & (1u64 << VIRTIO_GPU_F_VIRGL) != 0 {
+            // The current runtime queue has a real 2D resource command path;
+            // VIRGL resources require the 3D parameter contract and are not
+            // silently downgraded into a different host object.
+            return None;
+        }
+        let fmt = crate::drm_fourcc_to_virtio(format)?;
+        if width == 0 || height == 0 || VirtioGpuDev::bytes_per_pixel(fmt) == 0 { return None; }
+        #[cfg(target_os = "oxide-kernel")]
+        {
+            let key = DEVICES.lock().iter().find(|d| d.bdf == self.bdf).map(|d| d.device_key)?;
+            let id = DEVICES.lock().iter().find(|d| d.bdf == self.bdf)?.next_resource_id();
+            post_init::create_resource_for_key(key, id, fmt, width, height, pa, size).then_some(id)
+        }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        { let _ = (pa, size, fmt, width, height); None }
+    }
+
+    fn virtgpu_resource_destroy(&self, resource_id: u32) -> bool {
+        #[cfg(target_os = "oxide-kernel")]
+        {
+            let Some(key) = DEVICES.lock().iter().find(|d| d.bdf == self.bdf).map(|d| d.device_key) else { return false };
+            post_init::destroy_resource_for_key(key, resource_id)
+        }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        { let _ = resource_id; false }
+    }
+
     // ---- D5a read-only modeset enumeration over enabled scanouts ----
     fn crtc_ids(&self) -> alloc::vec::Vec<u32> {
         (0..self.display.count_enabled as usize).map(drm::crtc_id_for).collect()
