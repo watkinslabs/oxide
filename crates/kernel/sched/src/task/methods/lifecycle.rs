@@ -257,6 +257,7 @@ impl Task {
             },
             registered_rings: Spinlock::new(None),
             nt_callback_stack: Spinlock::new(crate::nt_callback::Stack::new()),
+            nt_apc_queue: crate::nt_apc::Queue::new(),
             kernel_stack: AtomicPtr::new(core::ptr::null_mut()),
             kernel_stack_memcg: AtomicU64::new(cgroup::NO_MEMCG),
             kernel_stack_charge_bytes: AtomicU64::new(0),

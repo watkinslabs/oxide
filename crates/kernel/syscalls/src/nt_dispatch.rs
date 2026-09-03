@@ -139,6 +139,7 @@ const THREAD_SUSPEND_COUNT_CLASS: u32 = 35;
 const THREAD_START_ADDRESS_CLASS: u32 = 9;
 const THREAD_BOOLEAN_BYTES: usize = 4;
 const THREAD_START_ADDRESS_BYTES: usize = 8;
+const THREAD_SET_CONTEXT: u32 = 0x0010;
 const STATUS_PENDING: u32 = 0x0000_0103;
 const STATUS_WAIT_0: u64 = 0x0000_0100;
 const WAIT_MULTIPLE_LIMIT: u32 = 64;
@@ -386,6 +387,40 @@ pub fn dispatch(call: NtCall) -> u64 {
         }
         #[cfg(not(target_arch = "x86_64"))]
         { return STATUS_NOT_IMPLEMENTED; }
+    }
+    if matches!(call.service, syscall::nt::NtService::NtQueueApcThread
+        | syscall::nt::NtService::NtQueueApcThreadEx2) {
+        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+        let table = cur.thread_group.nt_handles();
+        let (thread, routine, argument1, argument2, argument3, flags) =
+            if call.service == syscall::nt::NtService::NtQueueApcThread {
+                (call.args.a0, call.args.a1, call.args.a2, call.args.a3, call.args.a4, 0)
+            } else {
+                // NtQueueApcThreadEx2(ThreadHandle, ReserveHandle, ApcFlags,
+                // ApcRoutine, ApcArgument1, ApcArgument2, ApcArgument3).
+                // The seventh word is read only after the tagged entry has
+                // selected the NT path and the first six words are present.
+                let Some(argument3) = stack_argument(6) else { return STATUS_INVALID_PARAMETER; };
+                if call.args.a1 != 0 {
+                    let reserve = sched::nt_object::NtHandle::from_raw(call.args.a1 as u32);
+                    if call.args.a1 > u32::MAX as u64 || table.get(reserve, 0).is_none() {
+                        return STATUS_INVALID_HANDLE;
+                    }
+                }
+                (call.args.a0, call.args.a3, call.args.a4, call.args.a5, argument3, call.args.a2 as u32)
+            };
+        if routine == 0 { return STATUS_INVALID_PARAMETER; }
+        let target = match resolve_thread_target(&cur, thread, &table, THREAD_SET_CONTEXT) {
+            Ok(target) => target, Err(status) => return status,
+        };
+        let apc = sched::nt_apc::Apc { routine, argument1, argument2, argument3, flags };
+        if target.nt_apc_queue.push(apc).is_err() { return STATUS_NO_MEMORY; }
+        // Queueing an APC is also a scheduler wakeup event for an alertable
+        // target. Delivery itself belongs to the architecture-specific
+        // user-return path and consumes the retained record there.
+        sched::live::wake_if_sleeping(&target);
+        return STATUS_SUCCESS;
     }
     if call.service == syscall::nt::NtService::NtGetWriteWatch {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
@@ -895,6 +930,16 @@ pub fn dispatch(call: NtCall) -> u64 {
         let table = cur.thread_group.nt_handles();
         return match object_call {
             NtObjectCall::CompareObjects { first, second } => compare_objects(&cur, first, second),
+            NtObjectCall::QueueApc { thread, routine, argument1, argument2, argument3, flags } => {
+                let target = match resolve_thread_target(&cur, thread, &table, THREAD_SET_CONTEXT) {
+                    Ok(target) => target, Err(status) => return status,
+                };
+                if routine == 0 { return STATUS_INVALID_PARAMETER; }
+                let apc = sched::nt_apc::Apc { routine, argument1, argument2, argument3, flags };
+                if target.nt_apc_queue.push(apc).is_err() { return STATUS_NO_MEMORY; }
+                sched::live::wake_if_sleeping(&target);
+                STATUS_SUCCESS
+            }
             NtObjectCall::CreateJob { handle, desired_access, attributes: _ } => {
                 if desired_access & !JOB_OBJECT_ALL_ACCESS != 0 { return STATUS_INVALID_PARAMETER; }
                 let object = table.new_job();
@@ -987,6 +1032,7 @@ pub fn dispatch(call: NtCall) -> u64 {
             }
             NtObjectCall::WaitEvent { handle, alertable, timeout } => {
                 if alertable > 1 { return STATUS_INVALID_PARAMETER; }
+                if alertable != 0 && !cur.nt_apc_queue.is_empty() { return STATUS_USER_APC; }
                 let native = sched::nt_object::NtHandle::from_raw(handle);
                 let Some(object) = table.get(native, SYNCHRONIZE_ACCESS) else { return if table.contains(native) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }; };
                 let deadline = match wait_deadline(timeout) { Ok(deadline) => deadline, Err(status) => return status };
@@ -1012,6 +1058,7 @@ pub fn dispatch(call: NtCall) -> u64 {
             }
             NtObjectCall::WaitMultiple { count, handles, wait_type, alertable, timeout } => {
                 if count == 0 || count > WAIT_MULTIPLE_LIMIT || wait_type > 1 || alertable > 1 { return STATUS_INVALID_PARAMETER; }
+                if alertable != 0 && !cur.nt_apc_queue.is_empty() { return STATUS_USER_APC; }
                 let mut waitables = alloc::vec::Vec::with_capacity(count as usize);
                 let mut pulse_epochs = alloc::vec::Vec::with_capacity(count as usize);
                 for index in 0..count as usize {

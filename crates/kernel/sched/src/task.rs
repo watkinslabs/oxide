@@ -105,6 +105,9 @@ pub struct Task {
     /// Per-thread nested native NT callback continuations.
     pub nt_callback_stack: Spinlock<crate::nt_callback::Stack, TaskListClass>,
 
+    /// Per-thread native NT APC records, retained until user APC delivery.
+    pub nt_apc_queue: crate::nt_apc::Queue,
+
     /// Top of kernel stack (one-past-end). AtomicPtr; read-only on hot.
     pub kernel_stack: AtomicPtr<u8>,
 

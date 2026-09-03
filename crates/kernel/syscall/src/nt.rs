@@ -456,6 +456,7 @@ pub enum NtObjectCall {
     QuerySecurity { handle: u32, security_information: u32, descriptor: UserPtr<u8>, length: u32, return_length: Option<UserPtr<u32>> },
     SetSecurity { handle: u32, security_information: u32, descriptor: UserPtr<u8> },
     CompareObjects { first: u64, second: u64 },
+    QueueApc { thread: u64, routine: u64, argument1: u64, argument2: u64, argument3: u64, flags: u32 },
 }
 /// Native x86-64 `NtCreateUserProcess` argument record. The first six words
 /// arrive in registers; `decode_user_process` receives the remaining five
@@ -1395,6 +1396,17 @@ pub fn decode_object(call: NtCall) -> Result<NtObjectCall, Errno> {
             count: a.a0 as u32, handles: UserPtr::new(a.a1)?, wait_type: a.a2 as u32,
             alertable: a.a3 as u32, timeout: optional_ptr(a.a4)?,
         }),
+        NtService::NtQueueApcThread => Ok(NtObjectCall::QueueApc {
+            thread: a.a0, routine: a.a1, argument1: a.a2, argument2: a.a3,
+            argument3: a.a4, flags: 0,
+        }),
+        NtService::NtQueueApcThreadEx2 => {
+            // Ex2 has seven words: the final APC argument is on the x86-64
+            // syscall stack and is decoded by the kernel adapter after frame
+            // validation. The reserve handle is intentionally validated by
+            // the adapter before this typed record is created.
+            Err(Errno::Enosys)
+        }
         NtService::CreateSection => Ok(NtObjectCall::CreateSection {
             handle: UserPtr::new(a.a0)?, desired_access: a.a1 as u32, size: a.a2,
             protect: a.a3 as u32, attributes: a.a4, file: a.a5 as u32,
