@@ -269,6 +269,18 @@ impl drm::DrmDriver for VirtioGpuDrm {
         { let _ = resource_id; false }
     }
 
+    fn virtgpu_submit(&self, context_id: u32, ring_idx: u32, command: &[u8], resources: &[u32]) -> bool {
+        if self.features_negotiated & (1u64 << VIRTIO_GPU_F_VIRGL) == 0
+            || ring_idx >= 64 || command.is_empty() || resources.len() > 256 { return false; }
+        #[cfg(target_os = "oxide-kernel")]
+        {
+            let Some(key) = DEVICES.lock().iter().find(|d| d.bdf == self.bdf).map(|d| d.device_key) else { return false };
+            post_init::submit_3d_for_key(key, context_id, ring_idx, command, resources)
+        }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        { let _ = (context_id, ring_idx, command, resources); false }
+    }
+
     // ---- D5a read-only modeset enumeration over enabled scanouts ----
     fn crtc_ids(&self) -> alloc::vec::Vec<u32> {
         (0..self.display.count_enabled as usize).map(drm::crtc_id_for).collect()

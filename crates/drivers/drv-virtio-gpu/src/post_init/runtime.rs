@@ -48,6 +48,24 @@ pub fn destroy_resource_for_key(key: virtio::VirtioChildDeviceKey, resource_id: 
     runtime_queue::enqueue_destroy(key, resource_id)
 }
 
+/// Admit a bounded 3D command stream after DRM has resolved its BO handles.
+pub fn submit_3d_for_key(key: virtio::VirtioChildDeviceKey, context_id: u32,
+    ring_idx: u32, command: &[u8], resources: &[u32]) -> bool {
+    if context_id == 0 || command.is_empty() || command.len() > 3968 { return false; }
+    if resources.iter().any(|resource_id| *resource_id == 0) { return false; }
+    if resources.len() > 256 { return false; }
+    let mut payload = [0u8; 3968];
+    payload[..command.len()].copy_from_slice(command);
+    let mut cmds = Vec::with_capacity(resources.len() + 1);
+    for resource_id in resources {
+        cmds.push(RuntimeCmd::ContextAttach { context_id, resource_id: *resource_id });
+    }
+    cmds.push(RuntimeCmd::Submit3d {
+        context_id, ring_idx, command_bytes: command.len() as u32, payload,
+    });
+    runtime_queue::enqueue_ctrl(key, &cmds)
+}
+
 pub fn attach_context_resource_for_key(key: virtio::VirtioChildDeviceKey,
     context_id: u32, resource_id: u32) -> bool {
     runtime_queue::enqueue_ctrl(key, &[RuntimeCmd::ContextAttach { context_id, resource_id }])

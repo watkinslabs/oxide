@@ -7,6 +7,8 @@ use syscall::errno::Errno;
 
 struct FileContext { card_id: u32, token: u64, context_id: u32, ring_mask: u64 }
 static FILE_CONTEXTS: Spinlock<Vec<FileContext>, DriverLockClass> = Spinlock::new(Vec::new());
+const MAX_SUBMIT_BYTES: usize = 3968;
+const MAX_SUBMIT_BOS: usize = 256;
 
 /// Dispatch virtio-gpu's driver-private UAPI.  The generic DRM node owns
 /// descriptor routing; driver identity decides whether the command exists.
@@ -17,8 +19,68 @@ pub(super) fn ioctl(driver: Option<Arc<dyn DrmDriver>>, req: u64, arg: u64, card
         crate::DRM_IOCTL_VIRTGPU_CONTEXT_INIT => context_init(driver, arg, card_id, token),
         crate::DRM_IOCTL_VIRTGPU_RESOURCE_CREATE => resource_create(driver, arg, card_id, token),
         crate::DRM_IOCTL_VIRTGPU_RESOURCE_INFO => resource_info(arg, card_id, token),
+        crate::DRM_IOCTL_VIRTGPU_EXECBUFFER => execbuffer(driver, arg, card_id, token),
         _ => -(Errno::Enotty.as_i32() as i64),
     }
+}
+
+fn execbuffer(driver: Option<Arc<dyn DrmDriver>>, arg: u64, card_id: u32, token: u64) -> i64 {
+    let Ok(request) = crate::uarg::read_arg::<crate::DrmVirtgpuExecbuffer>(arg)
+        else { return -(Errno::Efault.as_i32() as i64) };
+    if request.flags & !(crate::VIRTGPU_EXECBUF_FENCE_FD_IN
+        | crate::VIRTGPU_EXECBUF_FENCE_FD_OUT | crate::VIRTGPU_EXECBUF_RING_IDX) != 0
+        || request.size == 0 || request.size as usize > MAX_SUBMIT_BYTES
+        || request.num_bo_handles as usize > MAX_SUBMIT_BOS
+        || request.command == 0 || request.bo_handles == 0 && request.num_bo_handles != 0 {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    // Fence and sync-object descriptors are not accepted until this kernel
+    // has a fence FD/object owner; accepting them and dropping synchronization
+    // would violate the UAPI completion contract.
+    if request.flags & (crate::VIRTGPU_EXECBUF_FENCE_FD_IN
+        | crate::VIRTGPU_EXECBUF_FENCE_FD_OUT) != 0
+        || request.syncobj_stride != 0 || request.num_in_syncobjs != 0
+        || request.num_out_syncobjs != 0 || request.in_syncobjs != 0 || request.out_syncobjs != 0 {
+        return -(Errno::Enotsupp.as_i32() as i64);
+    }
+    let Some(driver) = driver else { return -(Errno::Enotty.as_i32() as i64) };
+    let context_id = {
+        let contexts = FILE_CONTEXTS.lock();
+        let Some(context) = contexts.iter().find(|c| c.card_id == card_id && c.token == token) else {
+            return -(Errno::Einval.as_i32() as i64);
+        };
+        if request.flags & crate::VIRTGPU_EXECBUF_RING_IDX != 0
+            && (request.ring_idx >= 64 || context.ring_mask & (1u64 << request.ring_idx) == 0) {
+            return -(Errno::Einval.as_i32() as i64);
+        }
+        context.context_id
+    };
+    let mut command = Vec::with_capacity(request.size as usize);
+    command.resize(request.size as usize, 0);
+    if uaccess::copy_from_user(&mut command, request.command).is_err() {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    let mut handles = Vec::with_capacity(request.num_bo_handles as usize * 4);
+    handles.resize(request.num_bo_handles as usize * 4, 0u8);
+    if !handles.is_empty() && uaccess::copy_from_user(&mut handles, request.bo_handles).is_err() {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    let resources = {
+        let tables = TABLES.lock();
+        let mut resources = Vec::with_capacity(handles.len());
+        for raw in handles.chunks_exact(4) {
+            let handle = u32::from_ne_bytes([raw[0], raw[1], raw[2], raw[3]]);
+            let Some(buf) = tables.find_buf_owned(card_id, token, handle) else {
+                return -(Errno::Enoent.as_i32() as i64);
+            };
+            if buf.resource_id == 0 { return -(Errno::Einval.as_i32() as i64); }
+            resources.push(buf.resource_id);
+        }
+        resources
+    };
+    if driver.virtgpu_submit(context_id,
+        if request.flags & crate::VIRTGPU_EXECBUF_RING_IDX != 0 { request.ring_idx } else { 0 },
+        &command, &resources) { 0 } else { -(Errno::Enotsupp.as_i32() as i64) }
 }
 
 fn resource_create(driver: Option<Arc<dyn DrmDriver>>, arg: u64, card_id: u32, token: u64) -> i64 {

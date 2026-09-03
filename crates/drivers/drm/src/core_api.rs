@@ -101,6 +101,11 @@ pub trait DrmDriver: Send + Sync {
     /// Retire a host resource after its DRM buffer ownership ends.
     fn virtgpu_resource_destroy(&self, _resource_id: u32) -> bool { false }
 
+    /// Admit one validated 3D command stream and its owned resource list.
+    /// # C: O(command bytes + resources)
+    fn virtgpu_submit(&self, _context_id: u32, _ring_idx: u32,
+        _command: &[u8], _resources: &[u32]) -> bool { false }
+
     fn crtc_ids(&self) -> Vec<u32> { Vec::new() }
     fn connector_ids(&self) -> Vec<u32> { Vec::new() }
     fn encoder_ids(&self) -> Vec<u32> { Vec::new() }

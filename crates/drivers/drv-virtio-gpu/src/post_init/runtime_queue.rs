@@ -14,6 +14,8 @@ pub(super) enum RuntimeCmd {
     ContextCreate { context_id: u32, context_init: u32, nlen: u32, name: [u8; 64] },
     ContextDestroy { context_id: u32 },
     ContextAttach { context_id: u32, resource_id: u32 },
+    Submit3d { context_id: u32, ring_idx: u32, command_bytes: u32,
+        payload: [u8; 3968] },
     Create2d { res_id: u32, fmt: u32, w: u32, h: u32 },
     AttachBacking { res_id: u32, dma: u64, bytes: u32 },
     DetachBacking { res_id: u32 },
@@ -39,6 +41,12 @@ impl RuntimeCmd {
                 crate::encode_ctx_destroy(buf, context_id),
             Self::ContextAttach { context_id, resource_id } =>
                 crate::encode_ctx_resource(buf, context_id, resource_id),
+            Self::Submit3d { context_id, command_bytes, payload, .. } => {
+                let n = crate::encode_submit_3d(buf, context_id, command_bytes);
+                let end = n + (command_bytes as usize).min(payload.len());
+                if end <= buf.len() { buf[n..end].copy_from_slice(&payload[..end - n]); n }
+                else { 0 }
+            }
             Self::Create2d { res_id, fmt, w, h } => crate::encode_resource_create_2d(buf, res_id, fmt, w, h),
             Self::AttachBacking { res_id, dma, bytes } => crate::encode_resource_attach_backing_one(buf, res_id, dma, bytes),
             Self::DetachBacking { res_id } => crate::encode_resource_detach_backing(buf, res_id),
