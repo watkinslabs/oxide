@@ -61,6 +61,20 @@ fn read_unicode_string(pointer: u64) -> Option<alloc::vec::Vec<u16>> {
 }
 
 #[cfg(target_os = "oxide-kernel")]
+fn read_optional_unicode_string(pointer: u64) -> Option<alloc::vec::Vec<u16>> {
+    if pointer == 0 { return Some(alloc::vec::Vec::new()); }
+    let length = read_user_u16(pointer)? as usize;
+    if length & 1 != 0 || length > 512 { return None; }
+    if length == 0 { return Some(alloc::vec::Vec::new()); }
+    let buffer = uaccess::get_user_u64(pointer.checked_add(8)?).ok()?;
+    if buffer == 0 { return None; }
+    let mut value = alloc::vec::Vec::new();
+    value.try_reserve_exact(length / 2).ok()?;
+    for index in 0..length / 2 { value.push(read_user_u16(buffer.checked_add((index * 2) as u64)?)?); }
+    Some(value)
+}
+
+#[cfg(target_os = "oxide-kernel")]
 fn read_user_u16(address: u64) -> Option<u16> {
     let mut bytes = [0u8; 2];
     uaccess::copy_from_user(&mut bytes, address).ok()?;
@@ -114,8 +128,13 @@ pub fn dispatch(call: NtCall) -> u64 {
         }
         WINE_CREATE_WINDOW_EX => {
             let Some(class) = read_unicode_string(args[1]) else { return STATUS_INVALID_PARAMETER; };
+            let Some(title) = read_optional_unicode_string(args[3]) else { return STATUS_INVALID_PARAMETER; };
             let hwnd = crate::nt_window::create_class_window_for_current(&class, args[9]).unwrap_or(STATUS_INVALID_PARAMETER);
             if hwnd == STATUS_INVALID_PARAMETER || hwnd == 0 { return hwnd; }
+            if crate::nt_window::set_window_text_for_current(hwnd, &title).is_err() {
+                let _ = native(NtService::DestroyWindow, SyscallArgs { a0: hwnd, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 });
+                return STATUS_INVALID_PARAMETER;
+            }
             let right = (args[5] as i32).checked_add(args[7] as i32);
             let bottom = (args[6] as i32).checked_add(args[8] as i32);
             match (right, bottom) {
