@@ -465,6 +465,59 @@ pub(crate) fn set_window_menu_for_current(hwnd: u64, menu: Option<u32>) -> Resul
     entries[index].state.set_menu(ipc::win32_window::WindowId::from_raw(hwnd as u32).ok_or(())?, menu).map_err(|_| ())
 }
 
+/// Apply or query Wine's x86-64 MENUITEMINFO transaction against the one
+/// canonical process menu owner. # C: O(N_process_gui_states + N_items)
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn thunked_menu_item_info(raw: u64, position: u64, flags: u64, method: u64, info: u64) -> u64 {
+    const MENUITEMINFO_BYTES: u32 = 80;
+    const SET: u64 = 0;
+    const INSERT: u64 = 1;
+    const GET_ID: u64 = 5;
+    const GET_STATE: u64 = 7;
+    const BY_POSITION: u32 = ipc::win32_menu::MF_BYPOSITION;
+    const MASK_STATE: u32 = 0x0000_0002;
+    const MASK_ID: u32 = 0x0000_0004;
+    const MASK_SUBMENU: u32 = 0x0000_0008;
+    const MASK_STRING: u32 = 0x0000_0040;
+    let (Some(menu), Some(position), Some(flags), Some(method)) = (u32::try_from(raw).ok().and_then(ipc::win32_menu::MenuId::from_raw), u32::try_from(position).ok(), u32::try_from(flags).ok(), u64::try_from(method).ok()) else { return ipc::win32_menu::MENU_NOT_FOUND as u64; };
+    let Some(cur) = sched::live::current() else { return ipc::win32_menu::MENU_NOT_FOUND as u64; };
+    if !cur.is_nt_personality() { return ipc::win32_menu::MENU_NOT_FOUND as u64; }
+    let group = Arc::clone(&cur.thread_group);
+    let mut entries = GUI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    let Some(index) = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group))) else { return ipc::win32_menu::MENU_NOT_FOUND as u64; };
+    if method == GET_ID || method == GET_STATE {
+        let Ok(item) = entries[index].menus.item(menu, position, flags) else { return ipc::win32_menu::MENU_NOT_FOUND as u64; };
+        return if method == GET_ID { item.id as u64 } else { item.state as u64 };
+    }
+    if info == 0 || uaccess::get_user_u32(info).ok() != Some(MENUITEMINFO_BYTES) { return 0; }
+    let mask = uaccess::get_user_u32(info + 4).ok().unwrap_or(0);
+    let state = uaccess::get_user_u32(info + 12).ok().unwrap_or(0);
+    let id = uaccess::get_user_u32(info + 16).ok().unwrap_or(0);
+    let submenu = uaccess::get_user_u64(info + 24).ok().and_then(|value| (value != 0).then_some(value as u32));
+    let text_pointer = uaccess::get_user_u64(info + 56).ok().unwrap_or(0);
+    let text_count = uaccess::get_user_u32(info + 64).ok().unwrap_or(0).min(4096);
+    let text = if mask & MASK_STRING != 0 {
+        if text_pointer == 0 { return 0; }
+        let mut value = Vec::new();
+        for offset in 0..text_count { let Some(address) = text_pointer.checked_add(offset as u64 * 2) else { return 0; }; let mut bytes = [0u8; 2]; if uaccess::copy_from_user(&mut bytes, address).is_err() { return 0; } let unit = u16::from_le_bytes(bytes); if unit == 0 { break; } value.push(unit); }
+        Some(value)
+    } else { None };
+    let item = ipc::win32_menu::MenuItem { id, state, text: text.clone().unwrap_or_default(), submenu };
+    if method == INSERT {
+        let insert_position = if flags & BY_POSITION != 0 && position == u32::MAX { entries[index].menus.count(menu).ok().unwrap_or(usize::MAX) } else { position as usize };
+        if entries[index].menus.insert(menu, insert_position, item).is_err() { return 0; }
+        return 1;
+    }
+    if method != SET { return 0; }
+    let Ok(item_position) = entries[index].menus.position(menu, position, flags) else { return 0; };
+    let id_value = (mask & MASK_ID != 0).then_some(id);
+    let state_value = (mask & MASK_STATE != 0).then_some(state);
+    let submenu_value = (mask & MASK_SUBMENU != 0).then_some(submenu);
+    if entries[index].menus.set_item(menu, item_position, id_value, state_value, text, submenu_value).is_err() { return 0; }
+    1
+}
+
 /// Create a Wine window by resolving its registered class in the canonical
 /// process window owner. # C: O(N_process_gui_states + N_classes + N_windows)
 #[cfg(target_os = "oxide-kernel")]
