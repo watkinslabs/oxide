@@ -2,7 +2,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use alloc::{string::String, vec, vec::Vec};
+use alloc::{string::{String, ToString}, vec, vec::Vec};
 use syscall::nt::{NtCall, NtLoaderCall};
 
 const STATUS_SUCCESS: u64 = 0;
@@ -24,16 +24,21 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     let Some(path_len) = read_u32(base.checked_add(24).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
     let Some(command_ptr) = read_u64(base.checked_add(32).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
     let Some(command_len) = read_u32(base.checked_add(40).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
-    let Some(modules_ptr) = read_u64(base.checked_add(48).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
-    let Some(module_count) = read_u32(base.checked_add(56).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(environment_ptr) = read_u64(base.checked_add(48).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(environment_len) = read_u32(base.checked_add(56).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(modules_ptr) = read_u64(base.checked_add(64).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(module_count) = read_u32(base.checked_add(72).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
     if image_len == 0 || image_len > MAX_IMAGE_BYTES || path_len == 0 || path_len > 32 * 1024
         || command_len == 0 || command_len > 32 * 1024 || command_ptr == 0
+        || environment_len == 0 || environment_len > 1024 * 1024 || environment_ptr == 0
         || module_count > MAX_MODULES || (module_count != 0 && modules_ptr == 0) { return Some(STATUS_INVALID_PARAMETER); }
     let Some(image) = copy_bytes(image_ptr, image_len).ok().flatten() else { return Some(STATUS_INVALID_PARAMETER); };
     let Some(path_bytes) = copy_bytes(path_ptr, path_len as u64).ok().flatten() else { return Some(STATUS_INVALID_PARAMETER); };
     let Ok(path) = String::from_utf8(path_bytes) else { return Some(STATUS_INVALID_PARAMETER); };
     let Some(command_bytes) = copy_bytes(command_ptr, command_len as u64).ok().flatten() else { return Some(STATUS_INVALID_PARAMETER); };
     let Ok(command_line) = String::from_utf8(command_bytes) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(environment_bytes) = copy_bytes(environment_ptr, environment_len as u64).ok().flatten() else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(environment) = decode_environment(&environment_bytes) else { return Some(STATUS_INVALID_PARAMETER); };
     let mut catalog = pe::catalog::ModuleCatalog::new();
     for index in 0..module_count as u64 {
         let Some(record) = modules_ptr.checked_add(index.checked_mul(32).unwrap_or(u64::MAX)) else { return Some(STATUS_INVALID_PARAMETER); };
@@ -46,7 +51,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         let Some(blob) = copy_bytes(blob_ptr, blob_len).ok().flatten() else { return Some(STATUS_INVALID_PARAMETER); };
         if catalog.add(&name, &blob).is_err() { return Some(STATUS_INVALID_PARAMETER); }
     }
-    match crate::pe_exec::try_commit_with_catalog_and_command_line(cur, path.as_bytes(), &image, &catalog, &command_line) {
+    match crate::pe_exec::try_commit_with_catalog_and_environment(cur, path.as_bytes(), &image, &catalog, &command_line, &environment) {
         Ok(()) => {
             cur.thread_group.set_nt_module_catalog(alloc::sync::Arc::new(catalog));
             Some(STATUS_SUCCESS)
@@ -65,4 +70,18 @@ fn copy_bytes(address: u64, length: u64) -> Result<Option<Vec<u8>>, ()> {
     let mut bytes = vec![0u8; length];
     uaccess::copy_from_user(&mut bytes, address).map_err(|_| ())?;
     Ok(Some(bytes))
+}
+
+fn decode_environment(bytes: &[u8]) -> Option<Vec<(String, String)>> {
+    if bytes.len() & 1 != 0 { return None; }
+    let units: Vec<u16> = bytes.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect();
+    let text = String::from_utf16(&units).ok()?;
+    let mut entries = Vec::new();
+    for entry in text.split('\0') {
+        if entry.is_empty() { break; }
+        let (name, value) = entry.split_once('=')?;
+        if name.is_empty() || name.contains('\0') || value.contains('\0') { return None; }
+        entries.push((name.to_string(), value.to_string()));
+    }
+    if entries.is_empty() { None } else { Some(entries) }
 }

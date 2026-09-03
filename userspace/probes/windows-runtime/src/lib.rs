@@ -44,6 +44,8 @@ pub struct RuntimeRequest {
     image_path: Box<[u8]>,
     #[allow(dead_code)]
     command_line: Box<[u8]>,
+    #[allow(dead_code)]
+    environment: Box<[u8]>,
     modules: Vec<ModuleBuffer>,
     #[allow(dead_code)]
     records: Box<[NtExecModule]>,
@@ -105,6 +107,7 @@ impl RuntimeRequest {
         validate_import_closure(&image, &modules)?;
         let image_path = windows_path.to_vec().into_boxed_slice();
         let command_line = command_line.to_vec().into_boxed_slice();
+        let environment = environment_block();
         let mut records = Vec::with_capacity(modules.len().max(1));
         for module in &modules {
             records.push(NtExecModule {
@@ -120,9 +123,10 @@ impl RuntimeRequest {
             image: user_ptr(image.as_ptr())?, image_len: image.len() as u64,
             image_path: user_ptr(image_path.as_ptr())?, image_path_len: image_path.len() as u32, _path_padding: 0,
             command_line: user_ptr(command_line.as_ptr())?, command_line_len: command_line.len() as u32, _command_padding: 0,
+            environment: user_ptr(environment.as_ptr())?, environment_len: environment.len() as u32, _environment_padding: 0,
             modules: user_ptr(records.as_ptr())?, module_count: modules.len() as u32, _modules_padding: 0,
         };
-        Ok(Self { image, image_path, command_line, modules, records, request })
+        Ok(Self { image, image_path, command_line, environment, modules, records, request })
     }
 
     /// Return the fixed ABI record passed to the tagged NT selector. # C: O(1)
@@ -150,6 +154,20 @@ fn user_ptr<T>(address: *const T) -> Result<UserPtr<T>, BuildError> {
 
 fn validate_size(size: u64) -> Result<(), BuildError> {
     if size == 0 || size > MAX_IMAGE_BYTES { Err(BuildError::TooLarge) } else { Ok(()) }
+}
+
+fn environment_block() -> Box<[u8]> {
+    let entries = [("SystemRoot", "C:\\Windows"), ("TEMP", "C:\\Windows\\Temp"),
+        ("TMP", "C:\\Windows\\Temp"), ("PATH", "C:\\Windows\\System32;C:\\Windows")];
+    let mut units = Vec::new();
+    for (name, value) in entries {
+        units.extend(format!("{name}={value}").encode_utf16());
+        units.push(0);
+    }
+    units.push(0);
+    let mut bytes = Vec::with_capacity(units.len() * 2);
+    for unit in units { bytes.extend_from_slice(&unit.to_le_bytes()); }
+    bytes.into_boxed_slice()
 }
 
 fn is_dll(path: &Path) -> bool {
@@ -216,7 +234,7 @@ mod tests {
         assert!(request.module_count() < 64, "Notepad closure must fit the kernel catalog limit");
         assert_eq!(request.abi().module_count as usize, request.module_count());
         assert!(!request.modules.iter().any(|module| module.name.eq_ignore_ascii_case(b"ntdll.dll")));
-        assert_eq!(std::mem::size_of::<NtExecRequest>(), 64);
+        assert_eq!(std::mem::size_of::<NtExecRequest>(), 80);
         assert_eq!(std::mem::size_of::<NtExecModule>(), 32);
     }
 
@@ -330,7 +348,7 @@ mod tests {
     fn catalog_record_lengths_are_bounded_by_the_fixed_abi_types() {
         assert_eq!(std::mem::align_of::<NtExecRequest>(), 8);
         assert_eq!(std::mem::align_of::<NtExecModule>(), 8);
-        assert_eq!(std::mem::size_of::<NtExecRequest>(), 64);
+        assert_eq!(std::mem::size_of::<NtExecRequest>(), 80);
         assert_eq!(std::mem::size_of::<NtExecModule>(), 32);
     }
 
