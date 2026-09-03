@@ -22,6 +22,7 @@ pub const fn supported_request(
     apc == 0
         && apc_context == 0
         && io_status != 0
+        && io_status.checked_add(8).is_some()
         && buffer == 0
         && length == 0
         && asynchronous != 0
@@ -67,5 +68,10 @@ mod tests {
             0, 0, 0x1000, 0, 0, 1, 0,
             REG_NOTIFY_CHANGE_NAME | REG_NOTIFY_CHANGE_LAST_SET,
         ));
+    }
+
+    #[test]
+    fn rejects_io_status_block_pointer_wraparound() {
+        assert!(!supported_request(0, 0, u64::MAX - 7, 0, 0, 1, 0, REG_NOTIFY_CHANGE_NAME));
     }
 }

@@ -123,7 +123,9 @@ fn finish_watches(key: u64, owner_tid: Option<u32>, target_io_status: Option<u64
         }
         let watch = watches.remove(index);
         let _ = uaccess::put_user_u64(watch.io_status, status);
-        let _ = uaccess::put_user_u64(watch.io_status.saturating_add(8), 0);
+        if let Some(status_information) = watch.io_status.checked_add(8) {
+            let _ = uaccess::put_user_u64(status_information, 0);
+        }
         watch.event.set();
         finished = true;
     }
@@ -146,7 +148,9 @@ fn notify_registry_path(path: &str, change: u64) {
         if !relevant || watch.filter & change == 0 { index += 1; continue; }
         let watch = watches.remove(index);
         let _ = uaccess::put_user_u64(watch.io_status, STATUS_SUCCESS);
-        let _ = uaccess::put_user_u64(watch.io_status.saturating_add(8), 0);
+        if let Some(status_information) = watch.io_status.checked_add(8) {
+            let _ = uaccess::put_user_u64(status_information, 0);
+        }
         watch.event.set();
     }
 }
