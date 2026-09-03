@@ -113,7 +113,6 @@ const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
 #[cfg(target_os = "oxide-kernel")]
 const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
 #[cfg(target_os = "oxide-kernel")]
-const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
 #[cfg(target_os = "oxide-kernel")]
 const STATUS_NOT_SAME_OBJECT: u64 = 0xc000_01ac;
 const STATUS_INFO_LENGTH_MISMATCH: u64 = 0xc000_0004;
@@ -514,18 +513,6 @@ pub fn dispatch(call: NtCall) -> u64 {
         // Wine only permits changes within half a second and reports larger
         // changes as STATUS_PRIVILEGE_NOT_HELD. The canonical timekeeper
         // owner is not yet exposed to the NT personality, so fail closed.
-        return STATUS_NOT_IMPLEMENTED;
-    }
-    if call.service == syscall::nt::NtService::NtSetValueKey {
-        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-        if !cur.is_nt_personality() || call.args.a0 > u32::MAX as u64 || call.args.a1 == 0
-            || call.args.a2 != 0 || call.args.a3 > u32::MAX as u64 || call.args.a5 > u32::MAX as u64 {
-            return STATUS_INVALID_PARAMETER;
-        }
-        if call.args.a4 == 0 && call.args.a5 != 0 { return STATUS_ACCESS_VIOLATION; }
-        // Keep the native six-argument ABI separate from the internal
-        // registry request record. Canonical key/value storage and VFS
-        // persistence are still required before mutation is safe.
         return STATUS_NOT_IMPLEMENTED;
     }
     if call.service == syscall::nt::NtService::NtUnloadKey {
