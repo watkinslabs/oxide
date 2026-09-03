@@ -7,6 +7,7 @@ use syscall::registry_wire;
 
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
+const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
 const STATUS_NO_MEMORY: u64 = 0xc000_0017;
 const STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xc000_0034;
 const STATUS_BUFFER_OVERFLOW: u64 = 0x8000_0005;
@@ -35,12 +36,13 @@ const KEY_QUERY_VALUE: u32 = 0x0001;
 const KEY_SET_VALUE: u32 = 0x0002;
 const KEY_ENUMERATE_SUB_KEYS: u32 = 0x0008;
 const DELETE_ACCESS: u32 = 0x0001_0000;
+const FILE_WRITE_DATA: u32 = 0x0002;
 
 struct RegistryWatch { key: u64, owner_tid: u32, filter: u64, event: Arc<sched::nt_object::NtEvent>, io_status: u64 }
 static REGISTRY_WATCHES: Spinlock<Vec<RegistryWatch>, RegistryWatchLock> = Spinlock::new(Vec::new());
 
 #[derive(Debug)]
-enum Reply { Success, Handle(u64), Value { kind: u32, data: Vec<u8> }, Keys(Vec<String>), Values(Vec<(String, u32, Vec<u8>)>), KeyInfo { name: String, subkeys: u32, max_subkey: u32, values: u32, max_value_name: u32, max_value_data: u32 }, Failure(u8) }
+enum Reply { Success, Handle(u64), Value { kind: u32, data: Vec<u8> }, Keys(Vec<String>), Values(Vec<(String, u32, Vec<u8>)>), KeyInfo { name: String, subkeys: u32, max_subkey: u32, values: u32, max_value_name: u32, max_value_data: u32 }, Bytes(Vec<u8>), Failure(u8) }
 
 /// Create the native key handle for the userspace-owned current-user root.
 /// # C: O(1) plus one NT handle-table insertion
@@ -58,6 +60,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::NtDeleteKey { return Some(delete_key_native(call)); }
     if call.service == NtService::NtQueryKey { return Some(query_key_native(call)); }
     if call.service == NtService::NtFlushKey { return Some(flush_key_native(call)); }
+    if call.service == NtService::NtSaveKey { return Some(save_key_native(call)); }
     if call.service == NtService::NtNotifyChangeKey { return Some(notify_change_key(call)); }
     None
 }
@@ -215,6 +218,8 @@ fn frame_delete_key(key: u64) -> Vec<u8> { frame_key(registry_wire::DELETE_KEY, 
 
 fn frame_key(operation: u8, key: u64) -> Vec<u8> { let mut frame = Vec::new(); frame.push(operation); frame.extend_from_slice(&key.to_le_bytes()); frame }
 
+fn frame_export(key: u64) -> Vec<u8> { frame_key(registry_wire::EXPORT, key) }
+
 fn put_text(frame: &mut Vec<u8>, text: &str) { put_bytes(frame, text.as_bytes()); }
 fn put_bytes(frame: &mut Vec<u8>, bytes: &[u8]) { frame.extend_from_slice(&(bytes.len() as u32).to_le_bytes()); frame.extend_from_slice(bytes); }
 
@@ -248,6 +253,7 @@ fn decode_reply(frame: &[u8]) -> Option<Reply> {
         registry_wire::RESPONSE_KEYS => { let mut at = 5; let count = u32::from_le_bytes(frame.get(1..5)?.try_into().ok()?) as usize; if count > 1 << 20 { return None; } let mut keys = Vec::new(); keys.try_reserve_exact(count).ok()?; for _ in 0..count { let length = u32::from_le_bytes(frame.get(at..at + 4)?.try_into().ok()?) as usize; at += 4; if length > MAX_REGISTRY_TEXT { return None; } let end = at.checked_add(length)?; keys.push(String::from_utf8(frame.get(at..end)?.to_vec()).ok()?); at = end; } if at != frame.len() { return None; } Some(Reply::Keys(keys)) },
         registry_wire::RESPONSE_VALUES => { let mut at = 5; let count = u32::from_le_bytes(frame.get(1..5)?.try_into().ok()?) as usize; if count > 1 << 20 { return None; } let mut values = Vec::new(); values.try_reserve_exact(count).ok()?; for _ in 0..count { let name_len = u32::from_le_bytes(frame.get(at..at + 4)?.try_into().ok()?) as usize; at += 4; if name_len > MAX_REGISTRY_TEXT { return None; } let name_end = at.checked_add(name_len)?; let name = String::from_utf8(frame.get(at..name_end)?.to_vec()).ok()?; at = name_end; let kind = u32::from_le_bytes(frame.get(at..at + 4)?.try_into().ok()?); at += 4; let data_len = u32::from_le_bytes(frame.get(at..at + 4)?.try_into().ok()?) as usize; at += 4; if data_len > MAX_REGISTRY_VALUE { return None; } let data_end = at.checked_add(data_len)?; values.push((name, kind, frame.get(at..data_end)?.to_vec())); at = data_end; } if at != frame.len() { return None; } Some(Reply::Values(values)) },
         registry_wire::RESPONSE_KEY_INFO => { let mut at = 1; let length = u32::from_le_bytes(frame.get(at..at + 4)?.try_into().ok()?) as usize; at += 4; if length > MAX_REGISTRY_TEXT { return None; } let end = at.checked_add(length)?; let name = String::from_utf8(frame.get(at..end)?.to_vec()).ok()?; at = end; let subkeys = u32::from_le_bytes(frame.get(at..at + 4)?.try_into().ok()?); at += 4; let max_subkey = u32::from_le_bytes(frame.get(at..at + 4)?.try_into().ok()?); at += 4; let values = u32::from_le_bytes(frame.get(at..at + 4)?.try_into().ok()?); at += 4; let max_value_name = u32::from_le_bytes(frame.get(at..at + 4)?.try_into().ok()?); at += 4; let max_value_data = u32::from_le_bytes(frame.get(at..at + 4)?.try_into().ok()?); at += 4; if at != frame.len() { return None; } Some(Reply::KeyInfo { name, subkeys, max_subkey, values, max_value_name, max_value_data }) },
+        registry_wire::RESPONSE_BYTES => { let length = u32::from_le_bytes(frame.get(1..5)?.try_into().ok()?) as usize; if length > MAX_REGISTRY_VALUE || frame.len() != 5 + length { return None; } Some(Reply::Bytes(frame[5..].to_vec())) },
         registry_wire::RESPONSE_FAILURE if frame.len() == 2 => Some(Reply::Failure(frame[1])),
         _ => None,
     }
@@ -258,6 +264,26 @@ fn flush_key_native(call: NtCall) -> u64 {
     if !current.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     let Some(remote) = remote_key(&current, call.args.a0 as u32, 0) else { return STATUS_INVALID_PARAMETER; };
     match transact(&frame_key(registry_wire::FLUSH, remote)) { Some(Reply::Success) => STATUS_SUCCESS, Some(reply) => reply_status(reply), None => STATUS_UNSUCCESSFUL }
+}
+
+fn save_key_native(call: NtCall) -> u64 {
+    let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !current.is_nt_personality() || call.args.a0 > u32::MAX as u64 || call.args.a1 > u32::MAX as u64 {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let Some(key) = remote_key(&current, call.args.a0 as u32, KEY_QUERY_VALUE) else {
+        return STATUS_INVALID_HANDLE;
+    };
+    let file_handle = sched::nt_object::NtHandle::from_raw(call.args.a1 as u32);
+    let table = current.thread_group.nt_handles();
+    let Some(file_object) = table.get(file_handle, FILE_WRITE_DATA) else {
+        return if table.contains(file_handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE };
+    };
+    if file_object.kind() != sched::nt_object::NtObjectType::File { return STATUS_INVALID_HANDLE; }
+    let Some(file) = file_object.file() else { return STATUS_INVALID_HANDLE; };
+    let Some(Reply::Bytes(bytes)) = transact(&frame_export(key)) else { return STATUS_UNSUCCESSFUL; };
+    if file.write(&bytes).map_or(true, |written| written != bytes.len()) { return STATUS_UNSUCCESSFUL; }
+    STATUS_SUCCESS
 }
 
 fn query_key_native(call: NtCall) -> u64 {
@@ -445,4 +471,27 @@ fn read_unicode(address: u64) -> Option<String> {
     if length != 0 { uaccess::copy_from_user(&mut bytes, buffer).ok()?; }
     let units: Vec<u16> = bytes.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect();
     String::from_utf16(&units).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn export_request_targets_the_canonical_registry_owner() {
+        assert_eq!(frame_export(0x1122_3344_5566_7788), [registry_wire::EXPORT, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11]);
+    }
+
+    #[test]
+    fn exported_hive_reply_is_bounded_and_decoded_without_copying_a_claimed_tail() {
+        let payload = b"OXHIVE\0\x01payload";
+        let mut reply = vec![registry_wire::RESPONSE_BYTES];
+        reply.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        reply.extend_from_slice(payload);
+        assert!(matches!(decode_reply(&reply), Some(Reply::Bytes(bytes)) if bytes == payload));
+
+        let mut malformed = reply.clone();
+        malformed[1..5].copy_from_slice(&((payload.len() as u32) - 1).to_le_bytes());
+        assert!(decode_reply(&malformed).is_none());
+    }
 }
