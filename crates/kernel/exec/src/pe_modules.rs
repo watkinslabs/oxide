@@ -18,6 +18,12 @@ pub fn register(as_: &AddressSpace, modules: &[PeRuntimeModule]) {
     MODULES.lock().insert(as_.root_pa(), modules.to_vec());
 }
 
+/// Append one dynamically mapped PE to the address-space runtime metadata.
+/// # C: O(N_modules)
+pub fn append(as_: &AddressSpace, module: PeRuntimeModule) {
+    MODULES.lock().entry(as_.root_pa()).or_default().push(module);
+}
+
 pub fn find(root: u64, pc: u64) -> Option<PeRuntimeModule> {
     MODULES.lock().get(&root).and_then(|modules| modules.iter().copied().find(|module| pc >= module.base && pc - module.base < module.size as u64))
 }

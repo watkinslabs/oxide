@@ -3,6 +3,11 @@ use hal::UserVirtAddr;
 use pe::Error;
 use vmm::{AddressSpace, MmapPlacement, VmaBacking, VmaFlags, VmaProt};
 
+#[cfg(target_os = "oxide-kernel")]
+mod publish;
+#[cfg(target_os = "oxide-kernel")]
+pub use publish::publish_module;
+
 pub const X64_SHADOW_SPACE: u64 = 32;
 #[cfg(test)]
 const PAGE: usize = 4096;
