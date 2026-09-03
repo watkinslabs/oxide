@@ -8,7 +8,12 @@ const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
 const STATUS_PARTIAL_COPY: u64 = 0x8000_000d;
+const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
+const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
 const CURRENT_PROCESS: u64 = u64::MAX;
+const PROCESS_VM_OPERATION: u32 = 0x0008;
+const PROCESS_VM_READ: u32 = 0x0010;
+const PROCESS_VM_WRITE: u32 = 0x0020;
 const CHUNK_BYTES: usize = 4096;
 
 /// Copy memory within the current NT address space using the canonical
@@ -20,7 +25,20 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         NtService::NtWriteVirtualMemory => false,
         _ => return None,
     };
-    if call.args.a0 != CURRENT_PROCESS { return Some(STATUS_NOT_IMPLEMENTED); }
+    let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+    if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
+    let desired_access = if read { PROCESS_VM_READ } else { PROCESS_VM_OPERATION | PROCESS_VM_WRITE };
+    let same_process = if call.args.a0 == CURRENT_PROCESS { true } else {
+        if call.args.a0 > u32::MAX as u64 { return Some(STATUS_INVALID_HANDLE); }
+        let handle = sched::nt_object::NtHandle::from_raw(call.args.a0 as u32);
+        let table = cur.thread_group.nt_handles();
+        let Some(object) = table.get(handle, desired_access) else {
+            return Some(if table.contains(handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE });
+        };
+        let Some(target) = object.task() else { return Some(STATUS_INVALID_HANDLE); };
+        alloc::sync::Arc::ptr_eq(&target.thread_group, &cur.thread_group)
+    };
+    if !same_process { return Some(STATUS_NOT_IMPLEMENTED); }
     let size = match usize::try_from(call.args.a3) { Ok(size) => size, Err(_) => return Some(STATUS_INVALID_PARAMETER) };
     if size != 0 && (call.args.a1 == 0 || call.args.a2 == 0) { return Some(STATUS_INVALID_PARAMETER); }
     let mut copied = 0usize;
