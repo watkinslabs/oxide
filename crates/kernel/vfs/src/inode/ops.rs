@@ -24,6 +24,8 @@ impl Inode {
 
     /// `i_op->lookup`. # C: backend-dependent
     pub fn lookup(&self, name: &str) -> KResult<InodeRef> { self.i_op.lookup(self, name) }
+    /// Resolve a name through the filesystem's casefold owner. # C: backend-dependent
+    pub fn lookup_casefold(&self, name: &str) -> KResult<InodeRef> { self.i_op.lookup_casefold(self, name) }
     /// `i_op->create`. # C: backend-dependent
     pub fn create_child(&self, name: &str, mode: u32, ctx: &CreateCtx) -> KResult<InodeRef> { self.i_op.create(self, name, mode, ctx) }
     /// `i_op->create` with the VFS negative-dentry proof already established.

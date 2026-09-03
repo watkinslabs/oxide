@@ -3,6 +3,7 @@
 
 extern crate alloc;
 use alloc::sync::Arc;
+use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use ninep::uapi::{dotl, stats};
@@ -43,6 +44,32 @@ impl InodeOps for NinepInodeOps {
     /// `Twalk` of one element from this directory's handle. # C: RPC
     fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
         Self::child(inode, name)
+    }
+
+    /// Enumerate the authoritative directory and walk the preserved spelling
+    /// of the one casefold match. Ambiguous remote names cannot represent one
+    /// Windows directory and are rejected instead of choosing nondeterministically. # C: RPC per chunk
+    fn lookup_casefold(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
+        let d = data(inode)?;
+        let mut cookie = 0u64;
+        let mut matched = None;
+        loop {
+            let bytes = d.mount.client.readdir(&d.fid, cookie, super::file::READDIR_CHUNK)
+                .map_err(VfsError::from)?;
+            if bytes.is_empty() { break; }
+            let mut advanced = false;
+            for entry in ninep::codec::DirEntries::new(&bytes) {
+                let entry = entry.map_err(|_| VfsError::Eproto)?;
+                let Ok(candidate) = core::str::from_utf8(entry.name) else { continue };
+                cookie = entry.offset;
+                advanced = true;
+                if !vfs::dentry::casefold::names_eq(inode, name, candidate) { continue; }
+                if matched.is_some() { return Err(VfsError::Eexist); }
+                matched = Some(candidate.to_string());
+            }
+            if !advanced { break; }
+        }
+        matched.map_or(Err(VfsError::Enoent), |candidate| Self::child(inode, &candidate))
     }
 
     /// `Tlcreate` on a CLONE of the directory handle.

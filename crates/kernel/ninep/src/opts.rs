@@ -145,6 +145,8 @@ pub struct MountOpts {
     pub port: u16,
     /// Bind the local end of a TCP connection to a reserved port.
     pub privport: bool,
+    /// Use the declared Unicode casefold rule for directory lookup.
+    pub casefold: bool,
 }
 
 impl Default for MountOpts {
@@ -174,6 +176,7 @@ impl Default for MountOpts {
             wfdno: None,
             port: limits::FD_PORT,
             privport: false,
+            casefold: false,
         }
     }
 }
@@ -277,6 +280,7 @@ pub fn parse(source: &str, data: &str) -> NpResult<MountOpts> {
                 o.port = p as u16;
             }
             "privport" => o.privport = true,
+            "casefold" => o.casefold = true,
             _ => {}
         }
     }
@@ -346,6 +350,7 @@ impl MountOpts {
         if self.nodev { s.push_str(",nodevmap"); }
         if self.directio { s.push_str(",directio"); }
         if self.noxattr { s.push_str(",noxattr"); }
+        if self.casefold { s.push_str(",casefold"); }
         s
     }
 }
@@ -356,4 +361,22 @@ fn push_num(s: &mut String, mut n: u64) {
     let mut i = buf.len();
     while n > 0 { i -= 1; buf[i] = b'0' + (n % 10) as u8; n /= 10; }
     for b in &buf[i..] { s.push(*b as char); }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse, Trans};
+
+    #[test]
+    fn casefold_mount_option_is_explicit_and_round_trips() {
+        let opts = parse("fixture", "trans=virtio,casefold").unwrap();
+        assert!(opts.casefold);
+        assert!(opts.show().contains(",casefold"));
+        assert_eq!(opts.trans, Trans::Virtio);
+    }
+
+    #[test]
+    fn casefold_is_opt_in() {
+        assert!(!parse("fixture", "trans=virtio").unwrap().casefold);
+    }
 }

@@ -40,6 +40,7 @@ pub struct NinepMount {
     pub opts: MountOpts,
     /// The attach handle for the tree root.
     pub root_fid: FidRef,
+    pub casefold: bool,
     /// `qid.path -> inode`, so a name reached by two paths resolves to ONE
     /// object. Without it a hard link, or a directory reached through `..`,
     /// becomes two inodes with independent sizes and page caches.
@@ -81,8 +82,12 @@ pub fn build_inode(mount: &Arc<NinepMount>, fid: &FidRef) -> KResult<InodeRef> {
         refresh_inode(&existing, &facts);
         return Ok(existing);
     }
+    let flags = if mount.casefold && facts.mode & vfs::S_IFMT == vfs::S_IFDIR {
+        vfs::inode::S_CASEFOLD
+    } else { 0 };
     let inode = InodeBuilder::new(facts.ino, facts.mode,
             Arc::new(NinepInodeOps), Arc::new(NinepFileOps))
+        .i_flags(flags)
         .size(facts.size)
         .blocks(facts.blocks)
         .nlink(facts.nlink.max(1))
@@ -172,6 +177,16 @@ impl FileSystem for NinepFs {
     }
     /// # C: O(1)
     fn root(&self) -> Option<InodeRef> { Some(self.root.clone()) }
+    fn dentry_ops(&self) -> Option<&'static vfs::dentry::DentryOps> {
+        self.mount.casefold.then_some(&vfs::dentry::casefold::GENERIC_CI_DENTRY_OPS)
+    }
+    fn set_sb(&self, sb: Weak<vfs::SuperBlock>) -> KResult<()> {
+        if self.mount.casefold {
+            let sb = sb.upgrade().ok_or(VfsError::Einval)?;
+            vfs::dentry::casefold::sb_enable_casefold(&sb, "utf8", true)?;
+        }
+        Ok(())
+    }
     /// # C: O(1)
     fn show_options(&self) -> String { self.options.clone() }
     /// # C: O(1)
@@ -195,8 +210,9 @@ pub fn mount_session(transport: ninep::TransportRef, opts: MountOpts, uid: u32)
     opts.msize = negotiated.msize;
     let root_fid = client.attach(None, &opts.uname, &opts.aname, uid).map_err(VfsError::from)?;
     let options = opts.show();
+    let casefold = opts.casefold;
     let mount = Arc::new(NinepMount {
-        client, opts, root_fid: root_fid.clone(),
+        client, opts, root_fid: root_fid.clone(), casefold,
         inodes: Spinlock::new(BTreeMap::new()),
     });
     let root = build_inode(&mount, &root_fid)?;

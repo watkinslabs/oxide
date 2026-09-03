@@ -42,6 +42,7 @@ pub static NINEP_PARAMS: &[FsParamSpec] = &[
     FsParamSpec::flag("noxattr"),
     FsParamSpec::flag("ignoreqv"),
     FsParamSpec::flag("privport"),
+    FsParamSpec::flag("casefold"),
 ];
 
 /// The numeric identity a mount attaches under.

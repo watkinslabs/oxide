@@ -130,6 +130,8 @@ pub struct LookupFlags {
     /// fast-path overlay. The returned Arc is the lifetime hold for this
     /// implementation's dcache nodes.
     pub rcu: bool,
+    /// The filesystem's declared casefold lookup rule applies to this walk.
+    pub case_insensitive: bool,
 }
 
 impl Default for LookupFlags {
@@ -138,7 +140,7 @@ impl Default for LookupFlags {
             no_symlinks: false, no_automount: false, beneath: false,
             beneath_exdev: false, directory: false, parent: false, in_root: false,
             no_magiclinks: false, no_xdev: false, reval: false, cached: false,
-            rcu: true }
+            rcu: true, case_insensitive: false }
     }
 }
 
