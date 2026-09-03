@@ -41,7 +41,9 @@ const WINE_DEF_WINDOW_PROC: u64 = 0x029e;
 // four-argument client-table publication entry.
 const WINE_NTUSER_INITIALIZE_CLIENT_PFN_ARRAYS: u64 = 0x147a;
 const WINE_NTUSER_GET_SYSTEM_DPI_FOR_PROCESS: u64 = 0x144b;
+const WINE_GET_WINDOW_PLACEMENT: u64 = 0x1463;
 const DCX_WINDOW: u64 = 0x0000_0001;
+const WINDOWPLACEMENT_BYTES: u64 = 44;
 const WM_TIMER: u32 = 0x0113;
 const WM_SETTEXT: u64 = 0x000c;
 const WM_GETTEXT: u64 = 0x000d;
@@ -286,6 +288,20 @@ pub fn dispatch_raw(ordinal: u64, args: SyscallArgs) -> Option<u64> {
         let _ = args;
         return Some(drm::primary_system_dpi() as u64);
     }
+    if ordinal == WINE_GET_WINDOW_PLACEMENT {
+        let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+        if !cur.is_nt_personality() || args.a0 > u32::MAX as u64 || args.a1 == 0 { return Some(STATUS_INVALID_PARAMETER); }
+        if uaccess::get_user_u32(args.a1).ok() != Some(WINDOWPLACEMENT_BYTES as u32) { return Some(STATUS_INVALID_PARAMETER); }
+        let Some((rect, visible)) = crate::nt_window::window_rect_for_current(args.a0 as u32) else { return Some(STATUS_INVALID_PARAMETER); };
+        let mut bytes = [0u8; WINDOWPLACEMENT_BYTES as usize];
+        bytes[0..4].copy_from_slice(&(WINDOWPLACEMENT_BYTES as u32).to_le_bytes());
+        bytes[12..16].copy_from_slice(&(visible as u32).to_le_bytes());
+        bytes[28..32].copy_from_slice(&rect.left.to_le_bytes());
+        bytes[32..36].copy_from_slice(&rect.top.to_le_bytes());
+        bytes[36..40].copy_from_slice(&rect.right.to_le_bytes());
+        bytes[40..44].copy_from_slice(&rect.bottom.to_le_bytes());
+        return Some(if uaccess::copy_to_user(args.a1, &bytes).is_ok() { STATUS_SUCCESS } else { STATUS_INVALID_PARAMETER });
+    }
     if ordinal != WINE_NTUSER_INITIALIZE_CLIENT_PFN_ARRAYS { return None; }
     let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
     if !cur.is_nt_personality() || args.a0 == 0 || args.a1 == 0 || args.a2 == 0 || args.a3 == 0 {
@@ -330,7 +346,7 @@ mod tests {
 
     #[test]
     fn wine_user32_ordinals_match_the_generated_table() {
-        assert_eq![(WINE_CREATE_WINDOW_EX, 0x136b), (WINE_DESTROY_WINDOW, 0x1384), (WINE_GET_MESSAGE, 0x141b), (WINE_PEEK_MESSAGE, 0x14ca), (WINE_POST_MESSAGE, 0x14d0), (WINE_SHOW_WINDOW, 0x15bd), (WINE_BEGIN_PAINT, 0x1327), (WINE_END_PAINT, 0x13bc), (WINE_GET_DC, 0x13eb), (WINE_GET_DC_EX, 0x13ec), (WINE_INVALIDATE_RECT, 0x148c), (WINE_RELEASE_DC, 0x1509), (WINE_SET_WINDOW_POS, 0x15a7), (WINE_GET_TEXT_METRICS, 0x1229), (WINE_GET_TEXT_EXTENT_EX, 0x1227), (WINE_REGISTER_CLASS_EX, 0x14eb), (WINE_DISPATCH_MESSAGE, 0x138b), (WINE_MESSAGE_CALL, 0x14b5), (WINE_GET_CLASS_NAME, 0x13d9), (WINE_GET_CLASS_INFO_EX, 0x13d8), (WINE_UNREGISTER_CLASS, 0x15df), (WINE_NTUSER_INITIALIZE_CLIENT_PFN_ARRAYS, 0x147a), (WINE_NTUSER_GET_SYSTEM_DPI_FOR_PROCESS, 0x144b)] .iter().for_each(|(actual, expected)| assert_eq!(*actual, *expected));
+        assert_eq![(WINE_CREATE_WINDOW_EX, 0x136b), (WINE_DESTROY_WINDOW, 0x1384), (WINE_GET_MESSAGE, 0x141b), (WINE_PEEK_MESSAGE, 0x14ca), (WINE_POST_MESSAGE, 0x14d0), (WINE_SHOW_WINDOW, 0x15bd), (WINE_BEGIN_PAINT, 0x1327), (WINE_END_PAINT, 0x13bc), (WINE_GET_DC, 0x13eb), (WINE_GET_DC_EX, 0x13ec), (WINE_INVALIDATE_RECT, 0x148c), (WINE_RELEASE_DC, 0x1509), (WINE_SET_WINDOW_POS, 0x15a7), (WINE_GET_TEXT_METRICS, 0x1229), (WINE_GET_TEXT_EXTENT_EX, 0x1227), (WINE_REGISTER_CLASS_EX, 0x14eb), (WINE_DISPATCH_MESSAGE, 0x138b), (WINE_MESSAGE_CALL, 0x14b5), (WINE_GET_CLASS_NAME, 0x13d9), (WINE_GET_CLASS_INFO_EX, 0x13d8), (WINE_UNREGISTER_CLASS, 0x15df), (WINE_NTUSER_INITIALIZE_CLIENT_PFN_ARRAYS, 0x147a), (WINE_NTUSER_GET_SYSTEM_DPI_FOR_PROCESS, 0x144b), (WINE_GET_WINDOW_PLACEMENT, 0x1463)] .iter().for_each(|(actual, expected)| assert_eq!(*actual, *expected));
         assert_eq!(WINE_DEF_WINDOW_PROC, 0x029e);
         assert_eq!(WINE_CALL_WINDOW_PROC, 0x02ab);
     }
