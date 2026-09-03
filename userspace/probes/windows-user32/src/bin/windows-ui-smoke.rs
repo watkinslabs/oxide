@@ -60,6 +60,9 @@ fn run() -> Result<(), String> {
     if message.message != WM_PAINT { return Err(format!("unexpected paint message: {}", message.message)); }
     let dirty = user32.begin_paint(hwnd).map_err(|error| format!("begin paint: {error:?}"))?;
     if dirty != (NtWindowRect { left: 10, top: 10, right: 200, bottom: 160 }) { return Err("paint region was not coalesced".into()); }
+    gdi.fill_rect(dc, Rect { left: dirty.left, top: dirty.top, right: dirty.right, bottom: dirty.bottom }, 0x00f5_f5f5)
+        .map_err(|error| format!("paint dirty region: {error:?}"))?;
+    gdi.present_window(hwnd, dc).map_err(|error| format!("present paint transaction: {error:?}"))?;
     user32.end_paint(hwnd).map_err(|error| format!("end paint: {error:?}"))?;
     if user32.peek_message(hwnd, WM_PAINT, WM_PAINT, false).map_err(|error| format!("peek coalesced paint: {error:?}"))?.is_some() { return Err("paint notification was duplicated".into()); }
 
