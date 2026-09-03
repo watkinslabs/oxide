@@ -324,8 +324,7 @@ pub(crate) fn create_class_window_for_current(name: &[u16], parent: u64) -> Opti
             entries.push(GuiEntry { group: Arc::downgrade(&group), state: ipc::win32_window::WindowManager::new(), wait: Arc::new(sched::live::WaitList::new()), foreground: false });
             entries.len() - 1
         });
-    let wndproc = entries[index].state.class_wndproc(name)?;
-    entries[index].state.create(cur.tid as u64, parent, wndproc).ok().map(|window| window.raw() as u64)
+    entries[index].state.create_class(cur.tid as u64, parent, name).ok().map(|window| window.raw() as u64)
 }
 
 /// Create a Wine window after resolving an integer-resource class atom in the
@@ -344,7 +343,21 @@ pub(crate) fn create_class_window_by_atom_for_current(atom: u16, parent: u64) ->
             entries.len() - 1
         });
     let wndproc = entries[index].state.class_wndproc_by_atom(atom)?;
-    entries[index].state.create(cur.tid as u64, parent, wndproc).ok().map(|window| window.raw() as u64)
+    entries[index].state.create_class_atom(cur.tid as u64, parent, atom, wndproc).ok().map(|window| window.raw() as u64)
+}
+
+/// Read the registered class name associated with one canonical HWND.
+/// # C: O(N_process_gui_states + N_windows + N_classes)
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn window_class_name_for_current(hwnd: u64) -> Option<Vec<u16>> {
+    let cur = sched::live::current()?;
+    if !cur.is_nt_personality() || hwnd > u32::MAX as u64 { return None; }
+    let window = ipc::win32_window::WindowId::from_raw(hwnd as u32)?;
+    let group = Arc::clone(&cur.thread_group);
+    let mut entries = GUI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))?;
+    entries[index].state.class_name(window).map(|name| name.to_vec())
 }
 
 /// Replace text while keeping the mutation inside the canonical window owner.
