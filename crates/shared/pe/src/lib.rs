@@ -9,4 +9,5 @@ pub mod catalog;
 pub mod apiset;
 pub mod loader_list;
 pub mod loader_name;
+pub mod relay;
 #[cfg(test)] mod tests;

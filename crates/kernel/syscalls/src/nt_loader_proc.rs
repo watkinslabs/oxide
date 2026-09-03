@@ -103,9 +103,10 @@ fn resolve_relay_call(call: NtCall) -> Option<u64> {
     // The loader's snapshot is the canonical original EAT. Wine's private
     // relay state is mutable and may be absent when relay tracing is off;
     // using it first can turn a relay thunk into its own target.
-    let target = elf_load::pe_modules::original_export(root, module, ordinal_index as u32)
-        .or_else(|| resolve_relay_original(module, size, descriptor, ordinal_index as u32))
-        .unwrap_or(original);
+    let target = pe::relay::select_original_target(
+        elf_load::pe_modules::original_export(root, module, ordinal_index as u32),
+        resolve_relay_original(module, size, descriptor, ordinal_index as u32),
+    )?;
     klog::write_raw(b"[WINDOWS-PE-RELAY-TARGET] root="); klog::write_hex_u64(root);
     klog::write_raw(b" module="); klog::write_hex_u64(module);
     klog::write_raw(b" index="); klog::write_dec_u64(ordinal_index);
