@@ -24,8 +24,8 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `10-pmm.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`04` |
 | `11-vmm.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`10`,`14`,`20`,`21` |
 | `12-slab.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`10` |
-| `13-sched.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`14` |
-| `13a-scheduler-state.md` | FROZEN | 2026-09-03 | `01`,`02`,`06`,`08`,`09` |
+| `13-sched.md` | FROZEN | 2026-09-03 | `01`,`02`,`06`,`08`,`09`,`13a`,`14` |
+| `13a-scheduler-state.md` | FROZEN REVIEW | 2026-09-03 | `01`,`02`,`06`,`08`,`09` |
 | `14-context-switch.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`07`,`08`,`09` |
 | `15-syscall-abi.md` | FROZEN | 2026-05-02 | `01`,`03`,`06` |
 | `16-vfs.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`12`,`15` |
@@ -36,44 +36,44 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `21-hal-aarch64.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`07`,`14`,`22`,`23`,`38` |
 | `22-irq-and-exceptions.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`07`,`14`,`20`,`21` |
 | `23-time.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`07`,`14`,`20`,`21`,`22` |
-| `24-ipc.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`12`,`13`,`16`,`23` |
-| `25-net.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`12`,`13`,`16`,`24`,`33`,`34` |
-| `25a-conntrack-nat-vlan-bonding.md` | FROZEN | 2026-08-16 | `01`,`02`,`06`,`25`,`26`,`52` |
-| `26-namespaces-cgroups.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`13`,`16`,`19`,`25`,`27` |
-| `27-security.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`11`,`13`,`16`,`18`,`26`,`38` |
+| `24-ipc.md` | FROZEN REVIEW | 2026-05-02 | `01`,`02`,`06`,`12`,`13`,`16`,`23` |
+| `25-net.md` | FROZEN REVIEW | 2026-05-02 | `01`,`02`,`06`,`12`,`13`,`16`,`24`,`33`,`34` |
+| `25a-conntrack-nat-vlan-bonding.md` | FROZEN REVIEW | 2026-08-16 | `01`,`02`,`06`,`25`,`26`,`52` |
+| `26-namespaces-cgroups.md` | FROZEN | 2026-09-03 | `01`,`02`,`03`,`06`,`13`,`13a`,`15`,`16`,`19`,`25` |
+| `27-security.md` | FROZEN REVIEW | 2026-05-02 | `01`,`02`,`06`,`11`,`13`,`16`,`18`,`26`,`38` |
 | `28-tty-pty.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`16`,`19`,`24` |
-| `29-init-and-userspace.md` | FROZEN | 2026-05-02 | `01`,`02`,`13`,`15`,`16`,`19`,`28`,`31`,`39` |
+| `29-init-and-userspace.md` | FROZEN REVIEW | 2026-05-02 | `01`,`02`,`13`,`15`,`16`,`19`,`28`,`31`,`39` |
 | `29a-userspace-platform.md` | FROZEN | 2026-05-02 | `02`,`03`,`07`,`15`,`29`,`31`,`39`,`43` |
-| `30-io-uring.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`11`,`13`,`15`,`16`,`17`,`23`,`25` |
+| `30-io-uring.md` | FROZEN REVIEW | 2026-05-02 | `01`,`02`,`06`,`11`,`13`,`15`,`16`,`17`,`23`,`25` |
 | `31-elf-loader.md` | FROZEN | 2026-05-02 | `01`,`02`,`11`,`12`,`16`,`18`,`27` |
 | `31a-windows-pe-loader.md` | FROZEN | 2026-08-30 | `01`,`02`,`11`,`12`,`16`,`31` |
 | `31b-windows-process-environment.md` | FROZEN | 2026-08-31 | `01`,`02`,`06`,`11`,`14`,`31a`,`52` |
 | `31c-nt-memory.md` | FROZEN | 2026-08-31 | `01`,`02`,`06`,`11`,`31a`,`31b`,`53` |
 | `31d-nt-syscall-abi.md` | FROZEN | 2026-08-31 | `01`,`02`,`15`,`31c`,`53` |
-| `31e-windows-pe-exec.md` | FROZEN | 2026-08-31 | `01`,`02`,`11`,`13`,`14`,`31a`,`31b`,`31c`,`31d`,`52`,`53` |
-| `31f-windows-nt-objects.md` | FROZEN | 2026-08-31 | `01`,`02`,`06`,`13`,`31d`,`52`,`53` |
-| `31g-windows-nt-synchronization.md` | FROZEN | 2026-08-31 | `01`,`02`,`06`,`13`,`31f`,`52`,`53` |
+| `31e-windows-pe-exec.md` | FROZEN REVIEW | 2026-08-31 | `01`,`02`,`11`,`13`,`14`,`31a`,`31b`,`31c`,`31d`,`52`,`53` |
+| `31f-windows-nt-objects.md` | FROZEN REVIEW | 2026-08-31 | `01`,`02`,`06`,`13`,`31d`,`52`,`53` |
+| `31g-windows-nt-synchronization.md` | FROZEN REVIEW | 2026-08-31 | `01`,`02`,`06`,`13`,`31f`,`52`,`53` |
 | `31h-windows-ntdll-runtime.md` | FROZEN | 2026-08-31 | `01`,`02`,`31a`,`31b`,`31d`,`31e`,`52`,`53` |
-| `31i-windows-nt-wait-multiple.md` | FROZEN | 2026-08-31 | `01`,`02`,`06`,`13`,`31d`,`31f`,`31g`,`52`,`53` |
-| `31j-windows-nt-sections.md` | FROZEN | 2026-08-31 | `01`,`02`,`11`,`13`,`31c`,`31d`,`31f`,`52`,`53` |
-| `31k-windows-nt-process-query.md` | FROZEN | 2026-08-31 | `01`,`02`,`13`,`31b`,`31d`,`31f`,`31h`,`52`,`53` |
-| `31l-windows-nt-thread-create.md` | FROZEN | 2026-08-31 | `01`,`02`,`06`,`13`,`31b`,`31d`,`31f`,`31g`,`31k`,`52`,`53` |
-| `31m-windows-nt-thread-lifecycle.md` | FROZEN | 2026-08-31 | `01`,`02`,`06`,`13`,`31b`,`31d`,`31f`,`31l`,`52`,`53` |
-| `31n-windows-thread-environment.md` | FROZEN | 2026-08-31 | `01`,`02`,`06`,`13`,`31b`,`31l`,`31m`,`52`,`53` |
-| `31o-windows-thread-handle-targets.md` | FROZEN | 2026-08-31 | `01`,`02`,`06`,`13`,`31f`,`31k`,`31m`,`52`,`53` |
+| `31i-windows-nt-wait-multiple.md` | FROZEN REVIEW | 2026-08-31 | `01`,`02`,`06`,`13`,`31d`,`31f`,`31g`,`52`,`53` |
+| `31j-windows-nt-sections.md` | FROZEN REVIEW | 2026-08-31 | `01`,`02`,`11`,`13`,`31c`,`31d`,`31f`,`52`,`53` |
+| `31k-windows-nt-process-query.md` | FROZEN REVIEW | 2026-08-31 | `01`,`02`,`13`,`31b`,`31d`,`31f`,`31h`,`52`,`53` |
+| `31l-windows-nt-thread-create.md` | FROZEN REVIEW | 2026-08-31 | `01`,`02`,`06`,`13`,`31b`,`31d`,`31f`,`31g`,`31k`,`52`,`53` |
+| `31m-windows-nt-thread-lifecycle.md` | FROZEN REVIEW | 2026-08-31 | `01`,`02`,`06`,`13`,`31b`,`31d`,`31f`,`31l`,`52`,`53` |
+| `31n-windows-thread-environment.md` | FROZEN REVIEW | 2026-08-31 | `01`,`02`,`06`,`13`,`31b`,`31l`,`31m`,`52`,`53` |
+| `31o-windows-thread-handle-targets.md` | FROZEN REVIEW | 2026-08-31 | `01`,`02`,`06`,`13`,`31f`,`31k`,`31m`,`52`,`53` |
 | `31p-windows-runtime-module-catalog.md` | FROZEN | 2026-08-31 | `01`,`02`,`31a`,`31h`,`52`,`53` |
 | `31q-windows-pe-forwarders.md` | FROZEN | 2026-08-31 | `01`,`02`,`31a`,`31h`,`31p`,`52`,`53` |
 | `31r-windows-nt-heap.md` | FROZEN | 2026-08-31 | `31d`,`31h`,`52`,`53` |
 | `31s-windows-pe-initialization.md` | FROZEN | 2026-08-31 | `31a`,`31e`,`31p`,`31q`,`52`,`53` |
 | `31t-windows-window-messages.md` | FROZEN | 2026-08-31 | `31g`,`31s`,`46`,`52`,`53` |
 | `31u-windows-nt-window-abi.md` | FROZEN | 2026-08-31 | `31d`,`31t`,`46`,`52`,`53` |
-| `31v-windows-nt-unwind.md` | FROZEN | 2026-09-03 | `01`,`02`,`06`,`13`,`31d`,`31h`,`52`,`53` |
-| `31w-windows-nt-semaphores.md` | FROZEN | 2026-08-31 | `01`,`02`,`06`,`13`,`31d`,`31f`,`31g`,`52`,`53` |
+| `31v-windows-nt-unwind.md` | FROZEN REVIEW | 2026-09-03 | `01`,`02`,`06`,`13`,`31d`,`31h`,`52`,`53` |
+| `31w-windows-nt-semaphores.md` | FROZEN REVIEW | 2026-08-31 | `01`,`02`,`06`,`13`,`31d`,`31f`,`31g`,`52`,`53` |
 | `31x-windows-nt-paths.md` | FROZEN | 2026-08-31 | `01`,`02`,`16`,`31d`,`31h`,`52`,`53` |
 | `31y-windows-runtime-exec-handoff.md` | FROZEN | 2026-08-31 | `01`,`02`,`31a`,`31e`,`31h`,`31p`,`52`,`53` |
-| `31z-windows-nt-mutants.md` | FROZEN | 2026-08-31 | `01`,`02`,`06`,`13`,`31d`,`31f`,`31g`,`31h`,`52`,`53` |
-| `31aa-windows-nt-completion-ports.md` | FROZEN | 2026-08-31 | `01`,`02`,`06`,`13`,`31d`,`31f`,`31g`,`31h`,`52`,`53` |
-| `31ad-windows-nt-tokens.md` | FROZEN | 2026-08-31 | `01`,`02`,`06`,`13`,`31d`,`31f`,`31h`,`52`,`53` |
+| `31z-windows-nt-mutants.md` | FROZEN REVIEW | 2026-08-31 | `01`,`02`,`06`,`13`,`31d`,`31f`,`31g`,`31h`,`52`,`53` |
+| `31aa-windows-nt-completion-ports.md` | FROZEN REVIEW | 2026-08-31 | `01`,`02`,`06`,`13`,`31d`,`31f`,`31g`,`31h`,`52`,`53` |
+| `31ad-windows-nt-tokens.md` | FROZEN REVIEW | 2026-08-31 | `01`,`02`,`06`,`13`,`31d`,`31f`,`31h`,`52`,`53` |
 | `31ae-windows-nt-rtl-strings.md` | FROZEN | 2026-08-31 | `01`,`02`,`31d`,`31h`,`52`,`53` |
 | `31af-windows-nt-object-query.md` | FROZEN | 2026-08-31 | `01`,`02`,`31d`,`31f`,`31h`,`52`,`53` |
 | `31ag-windows-nt-rtl-ansi-strings.md` | FROZEN | 2026-08-31 | `01`,`02`,`31h`,`52`,`53` |
@@ -138,7 +138,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `31cn-windows-nt-wait-registration.md` | FROZEN | 2026-08-31 | `01`,`02`,`31h`,`52`,`53` |
 | `31cp-windows-nt-thread-error.md` | FROZEN | 2026-08-31 | `01`,`02`,`31b`,`31h`,`52`,`53` |
 | `31cq-windows-nt-search-path-mode.md` | FROZEN | 2026-08-31 | `01`,`02`,`31h`,`52`,`53` |
-| `31cr-windows-nt-unhandled-filter.md` | FROZEN | 2026-08-31 | `01`,`02`,`06`,`13`,`31h`,`52`,`53` |
+| `31cr-windows-nt-unhandled-filter.md` | FROZEN REVIEW | 2026-08-31 | `01`,`02`,`06`,`13`,`31h`,`52`,`53` |
 | `31cs-windows-nt-heap-user-value.md` | FROZEN | 2026-08-31 | `01`,`02`,`31d`,`31h`,`52`,`53` |
 | `31ct-windows-nt-time-fields.md` | FROZEN | 2026-08-31 | `01`,`02`,`31h`,`52`,`53` |
 | `31cu-windows-nt-unicode-ansi-size.md` | FROZEN | 2026-08-31 | `01`,`02`,`31ag`,`31h`,`52`,`53` |
@@ -171,34 +171,34 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `31dv-windows-nt-ctype-wcsncmp.md` | FROZEN | 2026-08-31 | `01`,`02`,`31h`,`52`,`53` |
 | `31dw-windows-nt-ctype-wcsrchr.md` | FROZEN | 2026-08-31 | `01`,`02`,`31h`,`52`,`53` |
 | `31dx-windows-nt-ctype-wcstoul.md` | FROZEN | 2026-08-31 | `01`,`02`,`31h`,`52`,`53` |
-| `31co-windows-nt-io-completion-callback.md` | FROZEN | 2026-08-31 | `01`,`02`,`06`,`13`,`31d`,`31f`,`31g`,`31h`,`31aa`,`31cn`,`52`,`53` |
+| `31co-windows-nt-io-completion-callback.md` | FROZEN REVIEW | 2026-08-31 | `01`,`02`,`06`,`13`,`31d`,`31f`,`31g`,`31h`,`31aa`,`31cn`,`52`,`53` |
 | `31ab-windows-runtime-launcher.md` | FROZEN | 2026-08-31 | `01`,`02`,`29a`,`31a`,`31h`,`31p`,`31y`,`52`,`53` |
 | `31ac-windows-registry-service.md` | FROZEN | 2026-08-31 | `01`,`03`,`29a`,`31ab`,`52`,`53` |
 | `32-power-reset.md` | FROZEN | 2026-08-15 | `01`,`02`,`15`,`20`,`21`,`33` |
-| `32a-suspend-resume.md` | FROZEN | 2026-08-15 | `01`,`02`,`06`,`13`,`15`,`20`,`21`,`23`,`32`,`33`,`35`,`54` |
-| `32b-hibernation.md` | FROZEN | 2026-08-21 | `01`,`02`,`06`,`10`,`13`,`15`,`16`,`17`,`20`,`21`,`23`,`29`,`32`,`32a`,`35`,`36`,`52`,`54` |
+| `32a-suspend-resume.md` | FROZEN REVIEW | 2026-08-15 | `01`,`02`,`06`,`13`,`15`,`20`,`21`,`23`,`32`,`33`,`35`,`54` |
+| `32b-hibernation.md` | FROZEN REVIEW | 2026-08-21 | `01`,`02`,`06`,`10`,`13`,`15`,`16`,`17`,`20`,`21`,`23`,`29`,`32`,`32a`,`35`,`36`,`52`,`54` |
 | `33-firmware-tables.md` | FROZEN | 2026-05-02 | `01`,`02`,`19`,`20`,`21`,`34` |
 | `34-pci-and-pcie.md` | FROZEN | 2026-05-02 | `01`,`02`,`11`,`19`,`22`,`33`,`35` |
 | `35-drivers.md` | FROZEN | 2026-05-02 | `01`,`02`,`16`,`18`,`19`,`22`,`34` |
 | `36-bootloader-handoff.md` | FROZEN | 2026-05-02 | `01`,`02`,`07`,`20`,`21`,`33`,`39` |
-| `37-observability.md` | FROZEN | 2026-05-02 | `01`,`02`,`04`,`13`,`19`,`23`,`38` |
+| `37-observability.md` | FROZEN REVIEW | 2026-05-02 | `01`,`02`,`04`,`13`,`19`,`23`,`38` |
 | `38-error-handling.md` | FROZEN | 2026-05-02 | `01`,`02`,`07`,`08` |
 | `39-build-and-image.md` | FROZEN | 2026-05-02 | `02`,`07`,`29`,`36` |
 | `40-ci.md` | DRAFT | 2026-05-07 | `02`,`05`,`07`,`39`,`42` |
 | `41-debug-flags-catalog.md` | FROZEN | 2026-05-02 | `04`,`07`,`08` |
 | `42-test-strategy.md` | DRAFT | 2026-05-07 | `02`,`05`,`06`,`07`,`08`,`40` |
-| `43-acceptance.md` | FROZEN | 2026-05-02 | every spec |
-| `45-virtio-gpu.md` | FROZEN | 2026-05-09 | `01`,`02`,`07`,`11`,`13`,`15`,`22`,`33`,`34`,`35`,`47` |
-| `46-virtio-input.md` | FROZEN | 2026-05-09 | `01`,`02`,`07`,`13`,`15`,`22`,`34`,`35`,`50` |
-| `47-drm-kms.md` | FROZEN | 2026-05-09 | `01`,`02`,`07`,`13`,`15`,`16`,`19`,`35`,`45`,`48` |
-| `48-fbdev.md` | FROZEN | 2026-05-09 | `01`,`02`,`07`,`13`,`15`,`16`,`19`,`45`,`47` |
-| `49-fbcon.md` | FROZEN | 2026-05-09 | `01`,`02`,`07`,`08`,`13`,`15`,`28`,`45`,`47`,`48`,`50` |
-| `50-vt.md` | FROZEN | 2026-05-09 | `01`,`02`,`07`,`13`,`15`,`16`,`19`,`28`,`46`,`47`,`49` |
+| `43-acceptance.md` | FROZEN REVIEW | 2026-05-02 | every spec |
+| `45-virtio-gpu.md` | FROZEN REVIEW | 2026-05-09 | `01`,`02`,`07`,`11`,`13`,`15`,`22`,`33`,`34`,`35`,`47` |
+| `46-virtio-input.md` | FROZEN REVIEW | 2026-05-09 | `01`,`02`,`07`,`13`,`15`,`22`,`34`,`35`,`50` |
+| `47-drm-kms.md` | FROZEN REVIEW | 2026-05-09 | `01`,`02`,`07`,`13`,`15`,`16`,`19`,`35`,`45`,`48` |
+| `48-fbdev.md` | FROZEN REVIEW | 2026-05-09 | `01`,`02`,`07`,`13`,`15`,`16`,`19`,`45`,`47` |
+| `49-fbcon.md` | FROZEN REVIEW | 2026-05-09 | `01`,`02`,`07`,`08`,`13`,`15`,`28`,`45`,`47`,`48`,`50` |
+| `50-vt.md` | FROZEN REVIEW | 2026-05-09 | `01`,`02`,`07`,`13`,`15`,`16`,`19`,`28`,`46`,`47`,`49` |
 | `51-userspace-handoff.md` | DRAFT | — | `16`,`19`,`28`,`29`,`29a`,`31` |
-| `52-repo-structure-and-ownership.md` | DRAFT | — | `02`,`07`,`08`,`39` |
+| `52-repo-structure-and-ownership.md` | DRAFT REVIEW | — | `02`,`07`,`08`,`13a`,`26`,`39` |
 | `52a-stage-a-ownership-classification.md` | DRAFT | — | `52` |
-| `53-syscall-layering.md` | DRAFT | — | `02`,`08`,`13`,`15`,`52` |
-| `54-asm-correctness.md` | DRAFT | — | `02`,`08`,`13`,`15`,`20`,`21`,`27` |
+| `53-syscall-layering.md` | DRAFT REVIEW | — | `02`,`08`,`13`,`15`,`42`,`52` |
+| `54-asm-correctness.md` | DRAFT REVIEW | — | `02`,`08`,`13`,`15`,`20`,`21`,`27` |
 
 ## Cross-cutting
 
@@ -208,17 +208,17 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `oxide_nt.md` | FROZEN | 2026-09-02 | `16`,`29`,`31`,`53` |
 | `boot-flow.md` | FROZEN | 2026-05-02 | `20`,`21`,`33`,`36`,`29` |
 | `55-console-color-font.md` | DRAFT | — | `28`,`47`,`48`,`49`,`50` |
-| `56-timers-and-registration.md` | DRAFT | — | `02`,`06`,`07`,`08`,`13`,`23`,`52`,`53` |
+| `56-timers-and-registration.md` | DRAFT REVIEW | — | `02`,`06`,`07`,`08`,`13`,`23`,`52`,`53` |
 | `57-vt-emulator.md` | DRAFT | — | `01`,`02`,`07`,`08`,`28`,`49`,`50`,`55` |
 | `58-virtio-snd.md` | FROZEN | 2026-06-12 | `01`,`02`,`07`,`15`,`16`,`18`,`19`,`22`,`34`,`35`,`50` |
-| `60-udev-kernel-contract.md` | DRAFT | — | `01`,`02`,`03`,`06`,`13`,`15`,`19`,`24`,`27`,`35`,`47` |
+| `60-udev-kernel-contract.md` | DRAFT REVIEW | — | `01`,`02`,`03`,`06`,`13`,`15`,`19`,`24`,`27`,`35`,`47` |
 | `67-host-share-filesystems.md` | DRAFT | — | `01`,`02`,`07`,`08`,`15`,`16`,`19`,`34`,`35`,`52`,`53` |
 | `61-hda-audio.md` | FROZEN | 2026-08-15 | `01`,`02`,`07`,`15`,`16`,`19`,`22`,`34`,`35`,`52`,`58` |
 | `62-removable-media-filesystems.md` | DRAFT | — | `01`,`02`,`07`,`08`,`09`,`16`,`17`,`52` |
-| `63-selinux-mac.md` | DRAFT | — | `01`,`02`,`06`,`08`,`13`,`15`,`16`,`19`,`24`,`25`,`27`,`29` |
-| `64-v4l2-video-capture.md` | DRAFT | — | `01`,`02`,`06`,`07`,`08`,`09`,`13`,`15`,`16`,`19`,`22`,`23`,`34`,`35`,`52`,`53`,`60` |
+| `63-selinux-mac.md` | DRAFT REVIEW | — | `01`,`02`,`06`,`08`,`13`,`15`,`16`,`19`,`24`,`25`,`27`,`29` |
+| `64-v4l2-video-capture.md` | DRAFT REVIEW | — | `01`,`02`,`06`,`07`,`08`,`09`,`13`,`15`,`16`,`19`,`22`,`23`,`34`,`35`,`52`,`53`,`60` |
 | `65-bluetooth.md` | DRAFT | — | `01`,`02`,`07`,`08`,`15`,`16`,`19`,`25`,`27`,`28`,`35`,`52`,`53` |
-| `66-wireless.md` | DRAFT | — | `01`,`02`,`06`,`07`,`08`,`13`,`15`,`19`,`22`,`25`,`34`,`35`,`52`,`53` |
+| `66-wireless.md` | DRAFT REVIEW | — | `01`,`02`,`06`,`07`,`08`,`13`,`15`,`19`,`22`,`25`,`34`,`35`,`52`,`53` |
 | `69-image-and-native-filesystems.md` | DRAFT | — | `01`,`02`,`07`,`08`,`09`,`16`,`17`,`52`,`53` |
 | `44-phase-quick-reference.md` | DRAFT | — | `00`,`40`,`43` |
 | `31dx-windows-nt-debug-header.md` | FROZEN | 2026-08-31 | `01`,`02`,`31h`,`52`,`53` |
@@ -266,7 +266,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `31fv-windows-nt-unwind-dispatch.md` | FROZEN | 2026-09-03 | `31fp`,`31fu`,`31ft`,`31h`,`52`,`53` |
 | `31fw-windows-nt-load-so-dll.md` | FROZEN | 2026-09-03 | `31h`,`31fp`,`31fv`,`52`,`53` |
 | `31fx-windows-nt-dll-init-result.md` | FROZEN | 2026-09-03 | `31fw`,`31h`,`52`,`53` |
-| `31fz-windows-nt-activation-stack.md` | FROZEN | 2026-09-03 | `01`,`02`,`13`,`31b`,`31f`,`31ff`,`52`,`53` |
+| `31fz-windows-nt-activation-stack.md` | FROZEN REVIEW | 2026-09-03 | `01`,`02`,`13`,`31b`,`31f`,`31ff`,`52`,`53` |
 
 ## Deleted
 
