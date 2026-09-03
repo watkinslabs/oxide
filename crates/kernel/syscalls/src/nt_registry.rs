@@ -315,11 +315,12 @@ fn query_value_parts(key: u32, name_ptr: u64, class: u64, info: u64, length: u64
     let Some(name) = read_unicode(name_ptr) else { return STATUS_INVALID_PARAMETER; };
     let Some(reply) = transact(&frame_query(remote, &name)) else { return STATUS_UNSUCCESSFUL; };
     let Reply::Value { kind, data } = reply else { return reply_status(reply); };
-    let required = match data.len().checked_add(8) { Some(v) if v <= u32::MAX as usize => v as u32, _ => return STATUS_UNSUCCESSFUL };
+    let Some(record) = syscall::nt_registry::encode_partial_value_information(kind, &data) else { return STATUS_UNSUCCESSFUL; };
+    let required = match record.len().try_into() { Ok(value) => value, Err(_) => return STATUS_UNSUCCESSFUL };
     if result != 0 && uaccess::put_user_u32(result, required).is_err() { return STATUS_INVALID_PARAMETER; }
     if length < 8 { return STATUS_BUFFER_TOO_SMALL; }
     if length < required as u64 { return STATUS_BUFFER_OVERFLOW; }
-    if uaccess::copy_to_user(info, &kind.to_le_bytes()).is_err() || uaccess::copy_to_user(info + 4, &(data.len() as u32).to_le_bytes()).is_err() || uaccess::copy_to_user(info + 8, &data).is_err() { return STATUS_ACCESS_VIOLATION; }
+    if uaccess::copy_to_user(info, &record).is_err() { return STATUS_ACCESS_VIOLATION; }
     STATUS_SUCCESS
 }
 
