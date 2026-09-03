@@ -30,6 +30,13 @@ pub fn set_drop_hook(f: fn(usize, &InodeRef)) {
 /// `File::Drop`. Fixed N=4 covers the in-kernel consumers; extend if a new
 /// one arrives.
 const CLOSE_HOOK_SLOTS: usize = 4;
+const DIRENT_OBSERVER_SLOTS: usize = 4;
+
+/// Directory-entry mutation classes delivered to generic observers.  The
+/// existing inotify hooks remain separate because they own Linux event
+/// encoding; observers consume the canonical VFS mutation fact.
+pub const DIRENT_CREATE: u32 = 1;
+pub const DIRENT_DELETE: u32 = 2;
 
 /// D30: typed inotify/fsnotify + pipe-accounting hook registry. Replaces the
 /// old per-slot transmuted `AtomicU64` storage (every load reinterpreted a
@@ -59,6 +66,7 @@ struct InodeHooks {
     dirent_create: Option<fn(&InodeRef, &str, bool)>,
     /// IN_DELETE — dirent removed from a watched parent inode. Same args.
     dirent_delete: Option<fn(&InodeRef, &str, bool)>,
+    dirent_observers: [Option<fn(&InodeRef, &str, bool, u32)>; DIRENT_OBSERVER_SLOTS],
     /// `fsnotify_inoderemove` — the inode's LAST link is gone. Args: (inode).
     delete_self: Option<fn(&InodeRef)>,
     inode_evict: Option<fn(&InodeRef)>,
@@ -80,6 +88,7 @@ impl InodeHooks {
     const fn new() -> Self {
         Self { open: None, read: None, write: None, clone: None,
                close: [None; CLOSE_HOOK_SLOTS], dirent_create: None, dirent_delete: None,
+               dirent_observers: [None; DIRENT_OBSERVER_SLOTS],
                delete_self: None, inode_evict: None, setattr: None, fs_error: None }
     }
 }
@@ -153,6 +162,18 @@ pub fn set_dirent_create_hook(f: fn(&InodeRef, &str, bool)) { HOOKS.lock().diren
 /// Install the dirent-delete hook (fires IN_DELETE; args (parent inode, leaf)). # C: O(1)
 pub fn set_dirent_delete_hook(f: fn(&InodeRef, &str, bool)) { HOOKS.lock().dirent_delete = Some(f); }
 
+/// Install a generic directory-entry observer. Multiple subsystems may
+/// subscribe (for example inotify and the NT directory-change owner); the
+/// fixed slots make ownership explicit and avoid replacing another consumer.
+/// # C: O(N) slot scan, N=4 fixed.
+pub fn set_dirent_observer_hook(f: fn(&InodeRef, &str, bool, u32)) {
+    let mut h = HOOKS.lock();
+    for slot in h.dirent_observers.iter_mut() {
+        if slot.is_none() { *slot = Some(f); return; }
+    }
+    hal::kassert!(false, "DIRENT_OBSERVERS table full");
+}
+
 /// Install the delete-self hook. Fired from the dcache, where Linux fires it:
 /// the dentry-unlink path fires it exactly when the inode's link count drops
 /// to zero. Firing from `unlink(2)` instead both over-reported (a file
@@ -215,12 +236,22 @@ pub fn fire_fs_error(fsid: u64, inode: Option<&InodeRef>, error: i32) {
 pub fn fire_dirent_create(parent: &InodeRef, leaf: &str, leaf_is_dir: bool) {
     let h = HOOKS.lock().dirent_create;
     if let Some(f) = h { f(parent, leaf, leaf_is_dir); }
+    fire_dirent_observers(parent, leaf, leaf_is_dir, DIRENT_CREATE);
 }
 
 /// Fire the dirent-delete hook (no-op when not installed). # C: O(1)
 pub fn fire_dirent_delete(parent: &InodeRef, leaf: &str, leaf_is_dir: bool) {
     let h = HOOKS.lock().dirent_delete;
     if let Some(f) = h { f(parent, leaf, leaf_is_dir); }
+    fire_dirent_observers(parent, leaf, leaf_is_dir, DIRENT_DELETE);
+}
+
+/// Fire all generic directory-entry observers after a namespace mutation.
+/// Copying the fixed callback array before invocation prevents callbacks from
+/// running under the hook registry lock.
+pub fn fire_dirent_observers(parent: &InodeRef, leaf: &str, leaf_is_dir: bool, action: u32) {
+    let observers = HOOKS.lock().dirent_observers;
+    for observer in observers.into_iter().flatten() { observer(parent, leaf, leaf_is_dir, action); }
 }
 
 /// Fire the IN_OPEN hook (no-op when not installed). # C: O(1)

@@ -56,7 +56,7 @@ pub use cred::FileCred;
 pub(crate) use tty_audit::fire_tty_audit;
 pub use tty_audit::{arm_tty_audit, set_tty_audit_hook, tty_audit_armed, TtyAuditFacts, TtyAuditHook};
 pub use epoll::FileEpollLink;
-pub use hooks::{fire_clone_hook, fire_dirent_create, fire_fs_error, set_fs_error_hook, fire_delete_self_hook, fire_dirent_delete, fire_inode_evict_hook, fire_setattr_hook, set_clone_hook, set_close_hook, set_dirent_create_hook, set_delete_self_hook, set_dirent_delete_hook, set_inode_evict_hook, set_drop_hook, set_open_hook, set_read_hook, set_setattr_hook, set_write_hook};
+pub use hooks::{fire_clone_hook, fire_dirent_create, fire_dirent_delete, fire_dirent_observers, fire_fs_error, set_fs_error_hook, fire_delete_self_hook, fire_inode_evict_hook, fire_setattr_hook, set_clone_hook, set_close_hook, set_dirent_create_hook, set_delete_self_hook, set_dirent_delete_hook, set_dirent_observer_hook, set_inode_evict_hook, set_drop_hook, set_open_hook, set_read_hook, set_setattr_hook, set_write_hook, DIRENT_CREATE, DIRENT_DELETE};
 pub use deleg::{break_deleg, break_deleg_wait, set_deleg_wait_hook, try_break_deleg, DelegBreakWaitHook, DelegatedInode};
 pub use lease::{add_lease_conflict, dnotify_emit, dnotify_register, dnotify_registered, dnotify_unregister, lease_break_signal, lease_conflict, lease_force_break, lease_register, lease_registered, lease_unregister, DN_ACCESS, DN_ATTRIB, DN_CREATE, DN_DELETE, DN_MODIFY, DN_RENAME, LEASE_BREAK_NS};
 pub use lease_policy::{getlease_report, may_lease, open_conflicts, setlease_check, LeaseKind, LeaseTarget, FL_DELEG, FL_LEASE, FL_NONE};
