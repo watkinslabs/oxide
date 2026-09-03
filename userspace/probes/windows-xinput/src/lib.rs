@@ -34,6 +34,25 @@ pub const GAMEPAD_A: u16 = 0x1000;
 pub const GAMEPAD_B: u16 = 0x2000;
 pub const GAMEPAD_X: u16 = 0x4000;
 pub const GAMEPAD_Y: u16 = 0x8000;
+pub const XUSER_MAX_COUNT: u32 = 4;
+pub const ERROR_SUCCESS: u32 = 0;
+pub const ERROR_BAD_ARGUMENTS: u32 = 160;
+pub const ERROR_DEVICE_NOT_CONNECTED: u32 = 1167;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum XInputRequestError { BadArguments, DeviceNotConnected }
+
+/// Validate the API-level request before consulting the native controller owner.
+/// # C: O(1)
+pub fn validate_request(index: u32, output_present: bool) -> Result<(), XInputRequestError> {
+    if index >= XUSER_MAX_COUNT || !output_present { Err(XInputRequestError::BadArguments) } else { Ok(()) }
+}
+
+/// Translate a validated controller lookup into the stable Win32 result code.
+/// # C: O(1)
+pub const fn result_code(error: Option<XInputRequestError>) -> u32 {
+    match error { None => ERROR_SUCCESS, Some(XInputRequestError::BadArguments) => ERROR_BAD_ARGUMENTS, Some(XInputRequestError::DeviceNotConnected) => ERROR_DEVICE_NOT_CONNECTED }
+}
 
 /// Validate that a kernel-provided state has the exact Windows ABI shape and
 /// no impossible button bits. Analog values are signed full-range controls.
@@ -64,5 +83,14 @@ mod tests {
         assert!(validate_state(&state));
         let invalid = XInputState { gamepad: XInputGamepad { buttons: 0x0800, ..Default::default() }, ..Default::default() };
         assert!(!validate_state(&invalid));
+    }
+
+    #[test]
+    fn request_contract_matches_wine_xinput_error_semantics() {
+        assert!(validate_request(0, true).is_ok());
+        assert_eq!(validate_request(XUSER_MAX_COUNT, true), Err(XInputRequestError::BadArguments));
+        assert_eq!(validate_request(0, false), Err(XInputRequestError::BadArguments));
+        assert_eq!(result_code(None), ERROR_SUCCESS);
+        assert_eq!(result_code(Some(XInputRequestError::DeviceNotConnected)), ERROR_DEVICE_NOT_CONNECTED);
     }
 }
