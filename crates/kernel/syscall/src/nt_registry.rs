@@ -2,6 +2,8 @@
 
 use crate::{nt::NtCall, Errno, UserPtr};
 
+pub const KEY_FULL_INFORMATION_FIXED_BYTES: usize = 48;
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct NtUnicodeString { pub length: u16, pub maximum_length: u16, pub padding: u32, pub buffer: UserPtr<u16> }
@@ -91,5 +93,10 @@ mod tests {
     fn partial_value_information_accepts_empty_data_without_shifting_header() {
         let record = encode_partial_value_information(4, &[]).unwrap();
         assert_eq!(record, [0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn key_full_information_includes_security_descriptor_field() {
+        assert_eq!(KEY_FULL_INFORMATION_FIXED_BYTES, 48);
     }
 }

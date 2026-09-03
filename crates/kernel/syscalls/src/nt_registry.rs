@@ -234,7 +234,7 @@ fn query_key_native(call: NtCall) -> u64 {
     let (fixed, record) = match class {
         KEY_BASIC_INFORMATION => { let mut out = Vec::with_capacity(16 + name_bytes); out.extend_from_slice(&[0; 8]); put_u32(&mut out, 0); put_u32(&mut out, name_bytes as u32); append_utf16(&mut out, &name); (16, out) },
         KEY_NODE_INFORMATION => { let mut out = Vec::with_capacity(24 + name_bytes); out.extend_from_slice(&[0; 8]); put_u32(&mut out, 0); put_u32(&mut out, u32::MAX); put_u32(&mut out, 0); put_u32(&mut out, name_bytes as u32); append_utf16(&mut out, &name); (24, out) },
-        KEY_FULL_INFORMATION => { let mut out = Vec::with_capacity(44); out.extend_from_slice(&[0; 8]); put_u32(&mut out, 0); put_u32(&mut out, u32::MAX); put_u32(&mut out, 0); put_u32(&mut out, subkeys); put_u32(&mut out, max_subkey); put_u32(&mut out, 0); put_u32(&mut out, values); put_u32(&mut out, max_value_name); put_u32(&mut out, max_value_data); (44, out) },
+        KEY_FULL_INFORMATION => { let mut out = Vec::with_capacity(syscall::nt_registry::KEY_FULL_INFORMATION_FIXED_BYTES); out.extend_from_slice(&[0; 8]); put_u32(&mut out, 0); put_u32(&mut out, u32::MAX); put_u32(&mut out, 0); put_u32(&mut out, subkeys); put_u32(&mut out, max_subkey); put_u32(&mut out, 0); put_u32(&mut out, values); put_u32(&mut out, max_value_name); put_u32(&mut out, max_value_data); put_u32(&mut out, 0); (syscall::nt_registry::KEY_FULL_INFORMATION_FIXED_BYTES, out) },
         KEY_NAME_INFORMATION => { let mut out = Vec::with_capacity(4 + name_bytes); put_u32(&mut out, name_bytes as u32); append_utf16(&mut out, &name); (4, out) },
         _ => return STATUS_INVALID_PARAMETER,
     };
@@ -291,10 +291,10 @@ fn enumerate_key_native(call: NtCall) -> u64 {
             let max_name = values.iter().map(|(name, _, _)| name.encode_utf16().count() * 2).max().unwrap_or(0);
             let max_data = values.iter().map(|(_, _, data)| data.len()).max().unwrap_or(0);
             let max_key = keys.iter().map(|key| key.encode_utf16().count() * 2).max().unwrap_or(0);
-            let mut out = Vec::with_capacity(44); out.extend_from_slice(&[0; 8]);
+            let mut out = Vec::with_capacity(syscall::nt_registry::KEY_FULL_INFORMATION_FIXED_BYTES); out.extend_from_slice(&[0; 8]);
             put_u32(&mut out, u32::MAX); put_u32(&mut out, 0); put_u32(&mut out, keys.len() as u32);
             put_u32(&mut out, max_key as u32); put_u32(&mut out, 0); put_u32(&mut out, values.len() as u32);
-            put_u32(&mut out, max_name as u32); put_u32(&mut out, max_data as u32); (44, out)
+            put_u32(&mut out, max_name as u32); put_u32(&mut out, max_data as u32); put_u32(&mut out, 0); (syscall::nt_registry::KEY_FULL_INFORMATION_FIXED_BYTES, out)
         },
         _ => return STATUS_INVALID_PARAMETER,
     };
