@@ -106,9 +106,6 @@ const GENERIC_EXECUTE: u32 = 0x2000_0000;
 const EVENT_ALLOWED_ACCESS: u32 = EVENT_ALL_ACCESS | GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | GENERIC_ALL;
 #[cfg(target_os = "oxide-kernel")]
 const EVENT_MODIFY_STATE: u32 = 0x0002;
-const TIMER_MODIFY_STATE: u32 = 0x0002;
-const TIMER_ALL_ACCESS: u32 = 0x001f_0003;
-const TIMER_ALLOWED_ACCESS: u32 = TIMER_ALL_ACCESS | GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | GENERIC_ALL;
 #[cfg(target_os = "oxide-kernel")]
 const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
 #[cfg(target_os = "oxide-kernel")]
@@ -186,22 +183,6 @@ pub(crate) fn wait_deadline(timeout: Option<syscall::UserPtr<i64>>) -> Result<u6
     }
 }
 
-/// Convert the native KTIMER due-time encoding to the scheduler's monotonic
-/// deadline. Negative values are relative 100-ns intervals; non-negative
-/// values are absolute Windows epoch timestamps. # C: O(1)
-#[cfg(target_os = "oxide-kernel")]
-fn nt_timer_deadline(due_time: i64) -> Option<u64> {
-    if due_time <= 0 {
-        let ticks = (-(due_time as i128)) as u128;
-        let delta = ticks.checked_mul(100)?;
-        return Some(timekeeper::monotonic_ns().saturating_add(u64::try_from(delta).ok()?));
-    }
-    let target = (due_time as u64).checked_mul(100)?.checked_sub(NT_EPOCH_OFFSET_NS)?;
-    let now = timekeeper::realtime_ns();
-    Some(if target <= now { timekeeper::monotonic_ns() } else {
-        timekeeper::monotonic_ns().saturating_add(target - now)
-    })
-}
 #[cfg(target_os = "oxide-kernel")]
 fn resolve_thread_target(cur: &sched::Task, raw: u64,
     table: &sched::nt_object::NtHandleTable, access: u32) -> Result<alloc::sync::Arc<sched::Task>, u64> {
@@ -1042,56 +1023,6 @@ pub fn dispatch(call: NtCall) -> u64 {
                 if let Some(previous) = previous { if uaccess::put_user_u32(previous.as_u64(), old as u32).is_err() { return STATUS_INVALID_PARAMETER; } }
                 STATUS_SUCCESS
             }
-            NtObjectCall::CreateTimer { handle, desired_access, attributes, timer_type } => {
-                if desired_access & !TIMER_ALLOWED_ACCESS != 0 || timer_type > 1 { return STATUS_INVALID_PARAMETER; }
-                let granted_access = if desired_access & GENERIC_ALL != 0 { desired_access | TIMER_ALL_ACCESS } else { desired_access };
-                let object = table.new_timer(timer_type == 0);
-                if attributes != 0 {
-                    let Some(path) = crate::nt_directory::resolve_object_path(attributes, &table) else { return STATUS_INVALID_PARAMETER; };
-                    let (object, state) = sched::nt_object::publish_timer(&path, object);
-                    if state == sched::nt_object::NamedObjectState::TypeMismatch { return STATUS_OBJECT_TYPE_MISMATCH; }
-                    if state == sched::nt_object::NamedObjectState::ParentMissing { return STATUS_OBJECT_NAME_NOT_FOUND; }
-                    let Some(native) = table.insert(object, granted_access) else { return STATUS_NO_MEMORY; };
-                    if uaccess::put_user_u32(handle.as_u64(), native.raw()).is_err() {
-                        let _ = table.close(native);
-                        return STATUS_INVALID_PARAMETER;
-                    }
-                    return if state == sched::nt_object::NamedObjectState::Existing { STATUS_OBJECT_NAME_COLLISION } else { STATUS_SUCCESS };
-                }
-                let Some(native) = table.insert(object, granted_access) else { return STATUS_NO_MEMORY; };
-                if uaccess::put_user_u32(handle.as_u64(), native.raw()).is_err() {
-                    let _ = table.close(native);
-                    STATUS_INVALID_PARAMETER
-                } else { STATUS_SUCCESS }
-            }
-            NtObjectCall::SetTimer { handle, due_time, period_ms } => {
-                let native = sched::nt_object::NtHandle::from_raw(handle);
-                let Some(object) = table.get(native, TIMER_MODIFY_STATE) else {
-                    return if table.contains(native) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE };
-                };
-                if object.kind() != sched::nt_object::NtObjectType::Timer { return STATUS_INVALID_HANDLE; }
-                let Some(timer) = object.timer() else { return STATUS_INVALID_HANDLE; };
-                let due_ns = nt_timer_deadline(due_time).unwrap_or(u64::MAX);
-                if due_ns == u64::MAX && due_time != 0 { return STATUS_INVALID_PARAMETER; }
-                let Some(period_ns) = (period_ms as u64).checked_mul(1_000_000) else { return STATUS_INVALID_PARAMETER; };
-                timer.arm(due_ns, period_ns);
-                table.wake_waiters();
-                STATUS_SUCCESS
-            }
-            NtObjectCall::CancelTimer { handle, previous } => {
-                let native = sched::nt_object::NtHandle::from_raw(handle);
-                let Some(object) = table.get(native, TIMER_MODIFY_STATE) else {
-                    return if table.contains(native) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE };
-                };
-                if object.kind() != sched::nt_object::NtObjectType::Timer { return STATUS_INVALID_HANDLE; }
-                let Some(timer) = object.timer() else { return STATUS_INVALID_HANDLE; };
-                let old = timer.cancel();
-                if let Some(previous) = previous {
-                    if uaccess::put_user_u32(previous.as_u64(), old as u32).is_err() { return STATUS_INVALID_PARAMETER; }
-                }
-                table.wake_waiters();
-                STATUS_SUCCESS
-            }
             NtObjectCall::PulseEvent { handle, previous } => {
                 let native = sched::nt_object::NtHandle::from_raw(handle);
                 let Some(object) = table.get(native, EVENT_MODIFY_STATE) else { return if table.contains(native) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }; };
@@ -1476,6 +1407,11 @@ pub fn dispatch(call: NtCall) -> u64 {
                 sched::live::wake_new_task(&child);
                 STATUS_SUCCESS
             }
+            // Timer state and publication are owned by nt_timer; this arm
+            // only keeps the object decoder exhaustive before that adapter's
+            // typed dispatch is reached.
+            NtObjectCall::CreateTimer { .. } | NtObjectCall::SetTimer { .. } | NtObjectCall::CancelTimer { .. } =>
+                crate::nt_timer::dispatch(call).unwrap_or(STATUS_INVALID_PARAMETER),
             NtObjectCall::CreateSemaphore { .. } | NtObjectCall::ReleaseSemaphore { .. }
             | NtObjectCall::CreateMutant { .. } | NtObjectCall::ReleaseMutant { .. }
             | NtObjectCall::QueryMutant { .. } | NtObjectCall::QueryObject { .. }
