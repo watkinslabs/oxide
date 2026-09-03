@@ -29,6 +29,18 @@ pub struct NtSetValueKeyRequest { pub key: u32, pub title_index: u32, pub value_
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum NtRegistryCall { CreateKey { request: UserPtr<NtCreateKeyRequest> }, OpenKey { request: UserPtr<NtOpenKeyRequest> }, QueryValueKey { request: UserPtr<NtQueryValueKeyRequest> }, SetValueKey { request: UserPtr<NtSetValueKeyRequest> }, RenameKey { key: u32, name: UserPtr<NtUnicodeString> } }
 
+/// Encode one `KEY_VALUE_PARTIAL_INFORMATION` record for the native NT ABI.
+/// # C: O(data.len())
+pub fn encode_partial_value_information(value_type: u32, data: &[u8]) -> Option<alloc::vec::Vec<u8>> {
+    let length = 12usize.checked_add(data.len())?;
+    let mut record = alloc::vec::Vec::with_capacity(length);
+    record.extend_from_slice(&0u32.to_le_bytes());
+    record.extend_from_slice(&value_type.to_le_bytes());
+    record.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    record.extend_from_slice(data);
+    Some(record)
+}
+
 /// Validate the outer record pointer; nested user buffers are copied by the registry owner. # C: O(1)
 pub fn decode_registry(call: NtCall) -> Result<NtRegistryCall, Errno> {
     let pointer = call.args.a0;
@@ -63,5 +75,21 @@ mod tests {
         assert!(matches!(decode_registry(decode(42, args).unwrap()), Ok(NtRegistryCall::CreateKey { .. })));
         assert_eq!(decode_registry(decode(42, SyscallArgs { a0: 3, ..args }).unwrap()), Err(Errno::Efault));
         assert_eq!(NtService::SetValueKey.entry(), 0x4e54_0000_0000_002d);
+    }
+
+    #[test]
+    fn partial_value_information_preserves_windows_field_offsets() {
+        let record = encode_partial_value_information(1, b"abc").unwrap();
+        assert_eq!(record.len(), 15);
+        assert_eq!(&record[0..4], &[0, 0, 0, 0]);
+        assert_eq!(&record[4..8], &1u32.to_le_bytes());
+        assert_eq!(&record[8..12], &3u32.to_le_bytes());
+        assert_eq!(&record[12..], b"abc");
+    }
+
+    #[test]
+    fn partial_value_information_accepts_empty_data_without_shifting_header() {
+        let record = encode_partial_value_information(4, &[]).unwrap();
+        assert_eq!(record, [0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0]);
     }
 }
