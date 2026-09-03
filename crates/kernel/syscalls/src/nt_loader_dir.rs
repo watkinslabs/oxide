@@ -336,8 +336,9 @@ fn load(name_descriptor: u64, module_output: u64) -> u64 {
     let mut descriptor = [0u8; UNICODE_STRING_BYTES];
     if uaccess::copy_from_user(&mut descriptor, name_descriptor).is_err() { return STATUS_INVALID_PARAMETER; }
     let length = u16::from_le_bytes([descriptor[0], descriptor[1]]) as usize;
+    let maximum = u16::from_le_bytes([descriptor[2], descriptor[3]]) as usize;
     let buffer = u64::from_le_bytes(descriptor[8..16].try_into().unwrap());
-    if length & 1 != 0 || length == 0 || buffer == 0 || length > 1024 { return STATUS_INVALID_PARAMETER; }
+    if length & 1 != 0 || length == 0 || length > maximum || buffer == 0 || length > 32 * 1024 { return STATUS_INVALID_PARAMETER; }
     let mut wanted = Vec::new(); wanted.resize(length, 0);
     if uaccess::copy_from_user(&mut wanted, buffer).is_err() { return STATUS_INVALID_PARAMETER; }
     let teb = cur.nt_teb();
