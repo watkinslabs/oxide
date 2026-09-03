@@ -25,8 +25,8 @@ fn copy_context(destination: u64, requested: u32, source: u64) -> u64 {
     if destination == 0 || source == 0 { return STATUS_INVALID_PARAMETER; }
     if requested & CONTEXT_XSTATE != 0 { return STATUS_NOT_SUPPORTED; }
     if requested & !(CONTEXT_AMD64 | CONTEXT_ALL | CONTEXT_HIGH_FLAGS) != 0 { return STATUS_INVALID_PARAMETER; }
-    let Some(destination_flags) = read_u32(destination + FLAGS_OFFSET) else { return STATUS_INVALID_PARAMETER; };
-    let Some(source_flags) = read_u32(source + FLAGS_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+    let Some(destination_flags) = read_u32_at(destination, FLAGS_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+    let Some(source_flags) = read_u32_at(source, FLAGS_OFFSET) else { return STATUS_INVALID_PARAMETER; };
     if destination_flags & CONTEXT_AMD64 != CONTEXT_AMD64 || source_flags & CONTEXT_AMD64 != CONTEXT_AMD64 { return STATUS_INVALID_PARAMETER; }
     let selected = requested & source_flags;
     let ranges = [(0x38u64, 0x1u32), (0x3a, 0x4), (0x42, 0x1), (0x48, 0x10), (0x78, 0x2),
@@ -39,7 +39,8 @@ fn copy_context(destination: u64, requested: u32, source: u64) -> u64 {
             if copy_range(destination, source, begin, boundary).is_err() { return STATUS_INVALID_PARAMETER; }
         }
     }
-    if write_u32(destination + FLAGS_OFFSET, destination_flags | selected).is_err() { return STATUS_INVALID_PARAMETER; }
+    let Some(flags_address) = destination.checked_add(FLAGS_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+    if write_u32(flags_address, destination_flags | selected).is_err() { return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
 }
 
@@ -51,4 +52,5 @@ fn copy_range(destination: u64, source: u64, start: u64, end: u64) -> Result<(),
 }
 
 fn read_u32(address: u64) -> Option<u32> { uaccess::get_user_u32(address).ok() }
+fn read_u32_at(address: u64, offset: u64) -> Option<u32> { read_u32(address.checked_add(offset)?) }
 fn write_u32(address: u64, value: u32) -> Result<(), ()> { uaccess::put_user_u32(address, value).map_err(|_| ()) }
