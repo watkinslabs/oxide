@@ -44,6 +44,8 @@ owner’s mode, endpoint, state, instance, quota, and queued-data fields with
 strict 8-byte and 40-byte output contracts.
 `FilePipeInformation` setters update read and completion mode on the specific
 endpoint handle and reject values outside Wine’s one-bit contract.
-Handle-side blocking waits, asynchronous completion, and the remaining pipe
-FSCTLs stay separate work;
+Blocking-mode endpoint I/O now parks through the scheduler wait-list contract;
+peer writes, reads, connect, close, and disconnect wake the corresponding
+waiters. True overlapped/APC request retention and completion, plus the
+remaining pipe FSCTLs, stay separate work;
 those paths do not fall through to VFS files.
