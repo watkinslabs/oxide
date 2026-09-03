@@ -28,7 +28,7 @@ impl ModuleCatalog {
 
     /// Look up a module using runtime-defined case-insensitive DLL matching. # C: O(N_modules)
     pub fn load(&self, name: &[u8]) -> Option<&[u8]> {
-        self.modules.iter().find(|module| module.name.eq_ignore_ascii_case(name)).map(|module| module.blob.as_slice())
+        self.modules.iter().find(|module| crate::loader_name::matches_ascii(name, &module.name)).map(|module| module.blob.as_slice())
     }
 }
 

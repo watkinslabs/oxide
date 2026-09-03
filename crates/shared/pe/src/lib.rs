@@ -8,4 +8,5 @@ pub mod nt_stub;
 pub mod catalog;
 pub mod apiset;
 pub mod loader_list;
+pub mod loader_name;
 #[cfg(test)] mod tests;
