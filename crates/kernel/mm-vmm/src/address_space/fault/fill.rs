@@ -46,6 +46,9 @@ impl AddressSpace {
             Some(v) => v.clone(),
             None    => return Err(Error::Inval),    // EFAULT upstream
         };
+        if vma.flags.contains(VmaFlags::NT_RESERVED) {
+            return Err(Error::Inval);
+        }
         if !vma.permits(access) {
             return Err(Error::Inval);                // EFAULT upstream
         }

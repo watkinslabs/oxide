@@ -1460,7 +1460,8 @@ pub fn dispatch(call: NtCall) -> u64 {
             // remains rejected until the VMA owner exposes reservation state.
             let allocation_flags = allocation_type & !MEM_TOP_DOWN;
             let creates_region = allocation_flags == MEM_RESERVE | MEM_COMMIT
-                || allocation_flags == MEM_COMMIT;
+                || allocation_flags == MEM_COMMIT
+                || allocation_flags == MEM_RESERVE;
             if !creates_region { return STATUS_INVALID_PARAMETER; }
             let size_ptr = size.as_u64();
             let requested_base = match uaccess::get_user_u64(base.as_u64()) {
@@ -1474,8 +1475,17 @@ pub fn dispatch(call: NtCall) -> u64 {
                 Err(_) => return STATUS_INVALID_PARAMETER,
             };
             let protection = match elf_load::nt_memory::windows_protection(protect) { Ok(protection) => protection, Err(_) => return STATUS_INVALID_PARAMETER };
-            if allocation_type == MEM_COMMIT && requested_base.is_some() { return STATUS_INVALID_PARAMETER; }
-            let allocation = match elf_load::nt_memory::allocate(&mm, requested_base, size, protection) {
+            if allocation_flags == MEM_COMMIT {
+                let Some(base) = requested_base else { unreachable!() };
+                let info = match elf_load::nt_memory::query(&mm, base) { Ok(info) => info, Err(_) => return STATUS_MEMORY_NOT_ALLOCATED };
+                if info.committed || info.base != base || info.size < size { return STATUS_INVALID_PARAMETER; }
+                if mm.mprotect(base, size, protection).is_err() { return STATUS_INVALID_PARAMETER; }
+                mm.update_flags_range(base, size, vmm::VmaFlags::empty(), vmm::VmaFlags::NT_RESERVED);
+                if uaccess::put_user_u64(base.as_u64(), base.as_u64()).is_err()
+                    || uaccess::put_user_u64(size_ptr, size as u64).is_err() { return STATUS_INVALID_PARAMETER; }
+                return STATUS_SUCCESS;
+            }
+            let allocation = match elf_load::nt_memory::allocate(&mm, requested_base, size, protection, allocation_flags == (MEM_RESERVE | MEM_COMMIT)) {
                 Ok(allocation) => allocation,
                 Err(elf_load::nt_memory::NtStatus::NoMemory) => return STATUS_NO_MEMORY,
                 Err(elf_load::nt_memory::NtStatus::ConflictingAddresses) => return STATUS_CONFLICTING_ADDRESSES,
@@ -1499,7 +1509,7 @@ pub fn dispatch(call: NtCall) -> u64 {
                 if base != info.base { return STATUS_INVALID_PARAMETER; }
                 info.size
             } else { requested_size };
-            match elf_load::nt_memory::free(&mm, elf_load::nt_memory::NtAllocation { base, size, protection: info.protection }) {
+            match elf_load::nt_memory::free(&mm, elf_load::nt_memory::NtAllocation { base, size, protection: info.protection, reserved: !info.committed }) {
                 elf_load::nt_memory::NtStatus::Success => {
                     if uaccess::put_user_u64(base_ptr, base.as_u64()).is_err() || uaccess::put_user_u64(size_ptr, size as u64).is_err() { return STATUS_INVALID_PARAMETER; }
                     STATUS_SUCCESS
@@ -1540,7 +1550,7 @@ pub fn dispatch(call: NtCall) -> u64 {
             bytes[16..20].copy_from_slice(&windows_protection_word(memory.protection).to_ne_bytes());
             bytes[20..24].copy_from_slice(&windows_protection_word(memory.may_protection).to_ne_bytes());
             bytes[24..32].copy_from_slice(&(memory.size as u64).to_ne_bytes());
-            let state = if memory.allocation_base.as_u64() == 0 { MEM_FREE } else { MEM_COMMIT };
+            let state = if memory.allocation_base.as_u64() == 0 { MEM_FREE } else if memory.committed { MEM_COMMIT } else { MEM_RESERVE };
             bytes[32..36].copy_from_slice(&state.to_ne_bytes());
             bytes[36..40].copy_from_slice(&windows_protection_word(memory.protection).to_ne_bytes());
             let kind: u32 = if memory.allocation_base.as_u64() == 0 { 0 } else { 0x20000 };
