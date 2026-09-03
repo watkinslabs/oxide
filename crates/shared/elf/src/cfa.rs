@@ -99,6 +99,16 @@ where F: FnMut(u64) -> Option<u64> {
     Ok(result)
 }
 
+/// Execute a validated Wine CIE+FDE program against one register context.
+/// The reader remains owned by the caller so process-memory validation cannot
+/// be bypassed by the shared format layer.
+pub fn evaluate_frame<F>(program: &crate::dwarf::FrameProgram, initial: CfaContext,
+    target_delta: u64, read_word: F) -> Result<CfaContext, DwarfError>
+where F: FnMut(u64) -> Option<u64> {
+    evaluate(&program.instructions, initial, program.code_align, program.data_align,
+        target_delta, read_word)
+}
+
 fn add_signed(base: u64, offset: i64) -> Result<u64, DwarfError> {
     if offset >= 0 { base.checked_add(offset as u64).ok_or(DwarfError::Overflow) }
     else { base.checked_sub(offset.unsigned_abs()).ok_or(DwarfError::Overflow) }
@@ -129,5 +139,19 @@ mod tests {
     fn rejects_expression_rules() {
         let initial = CfaContext { registers: [0; REGISTER_COUNT], cfa: 0 };
         assert_eq!(evaluate(&[0x0f], initial, 1, -8, 0, |_| None), Err(DwarfError::UnsupportedEncoding));
+    }
+
+    #[test]
+    fn executes_a_validated_cie_fde_program() {
+        let mut registers = [0; REGISTER_COUNT];
+        registers[7] = 0x9000;
+        let program = crate::dwarf::FrameProgram {
+            code_align: 1, data_align: -8,
+            instructions: alloc::vec![0x0c, 7, 8, 0x90, 1],
+        };
+        let result = evaluate_frame(&program, CfaContext { registers, cfa: 0 }, 0,
+            |address| (address == 0x9000).then_some(0xfeed_face)).unwrap();
+        assert_eq!(result.cfa, 0x9008);
+        assert_eq!(result.registers[RIP], 0xfeed_face);
     }
 }

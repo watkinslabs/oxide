@@ -10,7 +10,9 @@ modules: CFA register/offset changes, register offsets, same/undefined rules,
 restore, and bounded remember/restore state. It stops at the requested code
 delta and reads saved words only through the caller's range-checked reader.
 
-Expressions, register indirection, and unsupported encodings return explicit
+`evaluate_frame` now consumes the validated CIE+FDE program produced by the
+DWARF owner, preserving the same alignment factors and instruction ordering
+through the execution boundary. Expressions, register indirection, and unsupported encodings return explicit
 errors. A missing saved return address is not converted into a guessed frame.
 The result is a new context value; the evaluator does not mutate the caller's
 context or access process memory itself.
@@ -21,6 +23,7 @@ The shared ABI remains x86-64 Windows register numbering for this execution
 surface, while the no-std module compiles in both target checks. PE
 `UNWIND_INFO` and ELF DWARF remain separate metadata owners.
 
-Hosted tests cover CFA/RIP recovery, unreadable stack words, and expression
-rejection. Runtime dispatch still needs to connect this evaluator to the
-validated Wine Unix request and published loaded-image records.
+Hosted tests cover CFA/RIP recovery, unreadable stack words, expression
+rejection, and execution through a validated CIE+FDE program. Runtime dispatch
+still needs to connect this evaluator to the validated Wine Unix request and
+published loaded-image records.

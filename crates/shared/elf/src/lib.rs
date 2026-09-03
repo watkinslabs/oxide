@@ -36,7 +36,7 @@ pub mod cfa;
 pub mod sections;
 pub use dwarf::{encoded_pointer, records as dwarf_records, sleb128, uleb128, CallFrameRecord,
     DwarfError, EhBases, frame_program, FrameProgram};
-pub use cfa::{evaluate as evaluate_cfa, CfaContext};
+pub use cfa::{evaluate as evaluate_cfa, evaluate_frame, CfaContext};
 pub use sections::{eh_frame, find as find_section, publish_eh_frame, PublishedEhFrame, SectionView};
 pub use hash::{elf_hash, gnu_hash, lookup_sysv, lookup_gnu};
 pub use dynamic::{
