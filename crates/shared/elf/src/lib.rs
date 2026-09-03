@@ -30,6 +30,8 @@ pub use relocatable::{
 };
 
 pub mod dynamic;
+pub mod shared_object;
+pub use shared_object::{parse_shared_object, SharedObject};
 pub mod hash;
 pub mod dwarf;
 pub mod cfa;
