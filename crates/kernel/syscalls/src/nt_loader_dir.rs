@@ -330,7 +330,7 @@ fn query_options(key: u64, value: u64, data_size: u64, result_size: u64) -> u64 
     STATUS_OBJECT_NAME_NOT_FOUND
 }
 
-fn load(name_descriptor: u64, module_output: u64) -> u64 {
+pub(crate) fn load(name_descriptor: u64, module_output: u64) -> u64 {
     dynamic::load(name_descriptor, module_output)
 }
 
