@@ -132,6 +132,63 @@ pub fn records(section: &[u8]) -> Result<Vec<CallFrameRecord>> {
     Ok(result)
 }
 
+/// Find and decode the FDE covering `ip`. The returned record's code range is
+/// absolute in the same address space as `ip`; CFA instruction execution is
+/// intentionally left to the register-context owner.
+pub fn find_fde<'a>(section: &'a [u8], section_address: u64, ip: u64, bases: EhBases)
+    -> Result<Option<CallFrameRecord>>
+{
+    let entries = records(section)?;
+    for entry in &entries {
+        let Some(cie_offset) = entry.cie_offset else { continue; };
+        let Some(cie) = entries.iter().find(|candidate| candidate.offset == cie_offset) else {
+            return Err(DwarfError::InvalidRecord);
+        };
+        let encoding = cie_fde_encoding(cie)?;
+        let start_offset = entry.offset.checked_add(8).ok_or(DwarfError::Overflow)?;
+        let start_at = section_address.checked_add(start_offset as u64)
+            .ok_or(DwarfError::Overflow)?;
+        let (start, start_used) = encoded_pointer(&entry.body, encoding, start_at, bases)?;
+        let range_encoding = encoding & 0x0f;
+        let range_at = start_at.checked_add(start_used as u64).ok_or(DwarfError::Overflow)?;
+        let (length, _) = encoded_pointer(&entry.body[start_used..], range_encoding, range_at, bases)?;
+        let end = start.checked_add(length).ok_or(DwarfError::Overflow)?;
+        if ip >= start && ip < end {
+            let mut result = entry.clone(); result.code_start = Some(start); result.code_length = Some(length);
+            return Ok(Some(result));
+        }
+    }
+    Ok(None)
+}
+
+fn cie_fde_encoding(cie: &CallFrameRecord) -> Result<u8> {
+    let body = cie.body.as_slice();
+    let nul = body.get(1..).ok_or(DwarfError::Truncated)?.iter().position(|&b| b == 0)
+        .map(|n| n + 1).ok_or(DwarfError::InvalidRecord)?;
+    let mut cursor = nul + 1;
+    let (_, used) = uleb128(&body[cursor..])?; cursor += used;
+    let (_, used) = sleb128(&body[cursor..])?; cursor += used;
+    if body.first() == Some(&1) { cursor = cursor.checked_add(1).ok_or(DwarfError::Overflow)?; }
+    else { let (_, used) = uleb128(&body[cursor..])?; cursor += used; }
+    let augmentation = &body[1..nul];
+    let mut encoding = DW_EH_PE_ABSPTR;
+    let mut augmentation_end = None;
+    for &kind in augmentation {
+        match kind {
+            b'z' => { let (length, used) = uleb128(&body[cursor..])?; cursor += used;
+                augmentation_end = Some(cursor.checked_add(length as usize).ok_or(DwarfError::Overflow)?); }
+            b'L' => cursor = cursor.checked_add(1).ok_or(DwarfError::Overflow)?,
+            b'P' => { let kind = *body.get(cursor).ok_or(DwarfError::Truncated)?; cursor += 1;
+                let (_, used) = encoded_pointer(&body[cursor..], kind, 0, EhBases { text: 0, data: 0 })?; cursor += used; }
+            b'R' => { encoding = *body.get(cursor).ok_or(DwarfError::Truncated)?; cursor += 1; }
+            b'S' => {}
+            _ => return Err(DwarfError::InvalidRecord),
+        }
+    }
+    if let Some(end) = augmentation_end { if cursor > end { return Err(DwarfError::InvalidRecord); } }
+    Ok(encoding)
+}
+
 fn read_u16(input: &[u8]) -> Result<u16> {
     let bytes = input.get(..2).ok_or(DwarfError::Truncated)?;
     Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
@@ -175,5 +232,21 @@ mod tests {
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[1].cie_offset, Some(8));
         assert_eq!(parsed[1].body, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn finds_fde_covering_instruction_pointer() {
+        let mut section = vec![13, 0, 0, 0, 0, 0, 0, 0, 3, b'z', b'R', 0, 1, 0x78, 16, 1, 3];
+        section.extend_from_slice(&[12, 0, 0, 0, 21, 0, 0, 0, 0, 0x10, 0, 0, 0, 0x20, 0, 0, 0]);
+        section.truncate(33);
+        section[25..33].copy_from_slice(&[0, 0x10, 0, 0, 0x20, 0, 0, 0]);
+        let entries = records(&section).unwrap();
+        assert_eq!(entries[0].body, vec![3, b'z', b'R', 0, 1, 0x78, 16, 1, 3]);
+        assert_eq!(entries[1].body.len(), 8);
+        assert_eq!(cie_fde_encoding(&entries[0]), Ok(3));
+        let fde = find_fde(&section, 0, 0x1010, EhBases { text: 0, data: 0 }).unwrap().unwrap();
+        assert_eq!(fde.code_start, Some(0x1000)); assert_eq!(fde.code_length, Some(0x20));
+        section[25] = 0xff;
+        assert_eq!(find_fde(&section, 0, 0x1010, EhBases { text: 0, data: 0 }).unwrap(), None);
     }
 }
