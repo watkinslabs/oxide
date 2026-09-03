@@ -40,7 +40,8 @@ fn load_locked(cur: &sched::Task, name_descriptor: u64, module_output: u64) -> u
     if name_descriptor == 0 || module_output == 0 { return STATUS_INVALID_PARAMETER; }
     let Some(wanted) = read_wide_name(name_descriptor) else { return STATUS_INVALID_PARAMETER; };
     let Some(narrow_wanted) = narrow_name(&wanted) else { return STATUS_INVALID_PARAMETER; };
-    let peb = super::read_u64(cur.nt_teb().saturating_add(TEB_PEB_OFFSET));
+    let Some(teb_peb) = cur.nt_teb().checked_add(TEB_PEB_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+    let peb = super::read_u64(teb_peb);
     if peb == 0 { return STATUS_DLL_NOT_FOUND; }
     if let Some(base) = existing_module(peb, &wanted) {
         if uaccess::copy_to_user(module_output, &base.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
@@ -180,53 +181,57 @@ fn unmap_all(as_: &vmm::AddressSpace, modules: &[elf_load::pe_loader::PeLoadedMo
 
 #[cfg(target_arch = "x86_64")]
 fn existing_module(peb: u64, wanted: &[u8]) -> Option<u64> {
-    let ldr = super::read_u64(peb.saturating_add(PEB_LDR_OFFSET));
+    let ldr = super::read_u64(peb.checked_add(PEB_LDR_OFFSET)?);
     if ldr == 0 { return None; }
-    let head = ldr.saturating_add(LDR_LOAD_LIST_OFFSET);
+    let head = ldr.checked_add(LDR_LOAD_LIST_OFFSET)?;
     let mut entry = super::read_u64(head);
     for _ in 0..MAX_MODULE_SCAN {
         if entry == 0 || entry == head { break; }
-        let name = super::read_module_name(entry.saturating_add(MODULE_BASE_NAME_OFFSET));
-        if pe::loader_name::matches_utf16(wanted, &name) { return Some(super::read_u64(entry.saturating_add(MODULE_BASE_OFFSET))); }
-        entry = super::read_u64(entry.saturating_add(LIST_LINK_OFFSET));
+        let name = super::read_module_name(entry.checked_add(MODULE_BASE_NAME_OFFSET)?);
+        if pe::loader_name::matches_utf16(wanted, &name) { return Some(super::read_u64(entry.checked_add(MODULE_BASE_OFFSET)?)); }
+        entry = super::read_u64(entry.checked_add(LIST_LINK_OFFSET)?);
     }
     None
 }
 
 #[cfg(target_arch = "x86_64")]
 fn loaded_module(peb: u64, wanted: &[u8]) -> bool {
-    let ldr = super::read_u64(peb.saturating_add(PEB_LDR_OFFSET));
+    let Some(ldr_address) = peb.checked_add(PEB_LDR_OFFSET) else { return false; };
+    let ldr = super::read_u64(ldr_address);
     if ldr == 0 { return false; }
-    let head = ldr.saturating_add(LDR_LOAD_LIST_OFFSET);
+    let Some(head) = ldr.checked_add(LDR_LOAD_LIST_OFFSET) else { return false; };
     let mut entry = super::read_u64(head);
     for _ in 0..MAX_MODULE_SCAN {
         if entry == 0 || entry == head { break; }
-        let wide = super::read_module_name(entry.saturating_add(MODULE_BASE_NAME_OFFSET));
+        let Some(name_address) = entry.checked_add(MODULE_BASE_NAME_OFFSET) else { return false; };
+        let wide = super::read_module_name(name_address);
         if narrow_name(&wide).map(|name| pe::loader_name::matches_ascii(wanted, &name)).unwrap_or(false) { return true; }
-        entry = super::read_u64(entry.saturating_add(LIST_LINK_OFFSET));
+        let Some(link_address) = entry.checked_add(LIST_LINK_OFFSET) else { return false; };
+        entry = super::read_u64(link_address);
     }
     false
 }
 
 #[cfg(target_arch = "x86_64")]
 fn loaded_exports<'a>(peb: u64, catalog: &'a pe::catalog::ModuleCatalog) -> Result<(Vec<PeExportModule<'a>>, u64), u64> {
-    let ldr = super::read_u64(peb.saturating_add(PEB_LDR_OFFSET));
+    let ldr = super::read_u64(peb.checked_add(PEB_LDR_OFFSET).ok_or(STATUS_INVALID_PARAMETER)?);
     if ldr == 0 { return Err(STATUS_DLL_NOT_FOUND); }
-    let head = ldr.saturating_add(LDR_LOAD_LIST_OFFSET);
+    let head = ldr.checked_add(LDR_LOAD_LIST_OFFSET).ok_or(STATUS_INVALID_PARAMETER)?;
     let mut entry = super::read_u64(head);
     let mut exports = Vec::new();
     let mut ntdll = 0;
     for _ in 0..MAX_MODULE_SCAN {
         if entry == 0 || entry == head { break; }
-        let wide = super::read_module_name(entry.saturating_add(MODULE_BASE_NAME_OFFSET));
+        let name_address = entry.checked_add(MODULE_BASE_NAME_OFFSET).ok_or(STATUS_INVALID_PARAMETER)?;
+        let wide = super::read_module_name(name_address);
         let narrow = narrow_name(&wide).ok_or(STATUS_INVALID_PARAMETER)?;
-        let base = super::read_u64(entry.saturating_add(MODULE_BASE_OFFSET));
+        let base = super::read_u64(entry.checked_add(MODULE_BASE_OFFSET).ok_or(STATUS_INVALID_PARAMETER)?);
         if narrow.eq_ignore_ascii_case(b"ntdll.dll") { ntdll = base; }
         if let Some(module) = catalog.modules().iter().find(|module| pe::loader_name::matches_ascii(&narrow, &module.name)) {
             let image = pe::parse(&module.blob).map_err(|_| STATUS_INVALID_PARAMETER)?;
             exports.push(PeExportModule { name: &module.name, image, base });
         }
-        entry = super::read_u64(entry.saturating_add(LIST_LINK_OFFSET));
+        entry = super::read_u64(entry.checked_add(LIST_LINK_OFFSET).ok_or(STATUS_INVALID_PARAMETER)?);
     }
     if ntdll == 0 { return Err(STATUS_DLL_NOT_FOUND); }
     Ok((exports, ntdll))
