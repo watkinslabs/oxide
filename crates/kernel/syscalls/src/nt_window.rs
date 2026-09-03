@@ -328,6 +328,25 @@ pub(crate) fn create_class_window_for_current(name: &[u16], parent: u64) -> Opti
     entries[index].state.create(cur.tid as u64, parent, wndproc).ok().map(|window| window.raw() as u64)
 }
 
+/// Create a Wine window after resolving an integer-resource class atom in the
+/// canonical process window owner. # C: O(N_process_gui_states + N_classes + N_windows)
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn create_class_window_by_atom_for_current(atom: u16, parent: u64) -> Option<u64> {
+    let cur = sched::live::current()?;
+    if !cur.is_nt_personality() || parent > u32::MAX as u64 { return None; }
+    let parent = if parent == 0 { None } else { Some(ipc::win32_window::WindowId::from_raw(parent as u32)?) };
+    let group = Arc::clone(&cur.thread_group);
+    let mut entries = GUI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))
+        .unwrap_or_else(|| {
+            entries.push(GuiEntry { group: Arc::downgrade(&group), state: ipc::win32_window::WindowManager::new(), wait: Arc::new(sched::live::WaitList::new()), foreground: false });
+            entries.len() - 1
+        });
+    let wndproc = entries[index].state.class_wndproc_by_atom(atom)?;
+    entries[index].state.create(cur.tid as u64, parent, wndproc).ok().map(|window| window.raw() as u64)
+}
+
 /// Replace text while keeping the mutation inside the canonical window owner.
 /// # C: O(N_process_gui_states + N_windows + N_text)
 #[cfg(target_os = "oxide-kernel")]
