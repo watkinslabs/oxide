@@ -43,6 +43,11 @@ const WINE_NTUSER_INITIALIZE_CLIENT_PFN_ARRAYS: u64 = 0x147a;
 const WINE_NTUSER_GET_SYSTEM_DPI_FOR_PROCESS: u64 = 0x144b;
 const WINE_GET_WINDOW_PLACEMENT: u64 = 0x1463;
 const WINE_CALL_NO_PARAM: u64 = 0x133c;
+const WINE_CHECK_MENU_ITEM: u64 = 0x1347;
+const WINE_CREATE_MENU: u64 = 0x1366;
+const WINE_DESTROY_MENU: u64 = 0x1382;
+const WINE_ENABLE_MENU_ITEM: u64 = 0x13a7;
+const WINE_SET_MENU: u64 = 0x1569;
 const DCX_WINDOW: u64 = 0x0000_0001;
 const WINDOWPLACEMENT_BYTES: u64 = 44;
 const CALL_NO_PARAM_GET_DIALOG_BASE_UNITS: u64 = 1;
@@ -164,6 +169,11 @@ pub fn dispatch(call: NtCall) -> u64 {
         }
         WINE_GET_CLASS_NAME => get_class_name(&args),
         WINE_GET_CLASS_INFO_EX => get_class_info_ex(&args),
+        WINE_CREATE_MENU => crate::nt_window::create_menu_for_current(),
+        WINE_DESTROY_MENU => win_bool(crate::nt_window::destroy_menu_for_current(args[0])),
+        WINE_CHECK_MENU_ITEM => crate::nt_window::check_menu_item_for_current(args[0], args[1], args[2]),
+        WINE_ENABLE_MENU_ITEM => crate::nt_window::enable_menu_item_for_current(args[0], args[1], args[2]),
+        WINE_SET_MENU => win_bool(crate::nt_window::set_window_menu_for_current(args[0], (args[1] != 0).then_some(args[1] as u32)).map(|_| STATUS_SUCCESS).unwrap_or(STATUS_INVALID_PARAMETER)),
         WINE_UNREGISTER_CLASS => {
             let Some(name) = read_unicode_string(args[0]) else { return 0; };
             win_bool(crate::nt_window::unregister_class_for_current(&name).then_some(STATUS_SUCCESS).unwrap_or(STATUS_INVALID_PARAMETER))
@@ -183,6 +193,10 @@ pub fn dispatch(call: NtCall) -> u64 {
                 crate::nt_window::create_class_window_for_current(&class, args[9])
             }.unwrap_or(STATUS_INVALID_PARAMETER);
             if hwnd == STATUS_INVALID_PARAMETER || hwnd == 0 { return hwnd; }
+            if args[10] > u32::MAX as u64 || (args[10] != 0 && crate::nt_window::set_window_menu_for_current(hwnd, Some(args[10] as u32)).is_err()) {
+                let _ = native(NtService::DestroyWindow, SyscallArgs { a0: hwnd, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 });
+                return STATUS_INVALID_PARAMETER;
+            }
             if crate::nt_window::set_window_text_for_current(hwnd, &title).is_err() {
                 let _ = native(NtService::DestroyWindow, SyscallArgs { a0: hwnd, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 });
                 return STATUS_INVALID_PARAMETER;
