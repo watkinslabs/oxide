@@ -31,6 +31,16 @@ pub fn normalize_path(raw: &str) -> Option<String> {
     lexical_normalize(&path)
 }
 
+/// Join a normalized relative NT name to a VFS directory path. Absolute names
+/// remain rooted and therefore do not inherit the supplied directory. # C: O(path)
+pub fn join_root_path(root: &str, relative: &str) -> Option<String> {
+    if root.is_empty() || relative.is_empty() || relative.starts_with('/') { return None; }
+    let mut joined = String::from(root);
+    if !joined.ends_with('/') { joined.push('/'); }
+    joined.push_str(relative);
+    normalize_path(&joined)
+}
+
 fn lexical_normalize(path: &str) -> Option<String> {
     let absolute = path.starts_with('/');
     let mut parts: alloc::vec::Vec<&str> = alloc::vec::Vec::new();
@@ -58,7 +68,7 @@ fn lexical_normalize(path: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use alloc::string::String;
-    use super::normalize_path;
+    use super::{join_root_path, normalize_path};
 
     #[test]
     fn maps_absolute_drive_paths_to_windows_root() {
@@ -94,5 +104,14 @@ mod tests {
     #[test]
     fn rejects_embedded_nul_before_vfs_lookup() {
         assert_eq!(normalize_path("C:\\Games\\bad\0name"), None);
+    }
+
+    #[test]
+    fn joins_relative_names_to_the_canonical_root() {
+        assert_eq!(join_root_path("/windows/c/Games", "data.pak"),
+            Some(String::from("/windows/c/Games/data.pak")));
+        assert_eq!(join_root_path("/windows/c/Games", "..\\data.pak"),
+            Some(String::from("/windows/c/data.pak")));
+        assert_eq!(join_root_path("/windows/c/Games", "/absolute"), None);
     }
 }
