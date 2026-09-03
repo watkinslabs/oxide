@@ -1,7 +1,7 @@
 # Windows NT DLL initialization result
 
-FROZEN 2026-09-03. Dep:`31fw`,`31h`,`52`,`53`. Provides: process-start
-handling for PE DLL entry-point results.
+FROZEN 2026-09-03. Dep:`31fw`,`31h`,`52`,`53`. Provides: process-start and
+dynamic-load handling for PE DLL entry-point results.
 
 ## 1
 
@@ -12,8 +12,9 @@ their return register is ignored. A PE DLL entry point returns `BOOL`.
 For a DLL entry point returning `FALSE`, the continuation calls the native
 `RtlExitUserProcess` entry with `STATUS_DLL_INIT_FAILED` and does not enter the
 application. A successful entry point proceeds to the next initializer, then
-the application entry. The failure branch is emitted only for the
-catalog-backed process-start continuation, which owns a termination entry.
+the application entry. Dynamic-load continuation returns `STATUS_DLL_INIT_FAILED`
+to its suspended `LdrLoadDll` caller on failure and `STATUS_SUCCESS` after all
+initializers succeed.
 
 ## 2
 
