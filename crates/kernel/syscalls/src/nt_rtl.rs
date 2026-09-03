@@ -703,9 +703,11 @@ fn get_current_directory(buffer_length: u64, buffer: u64) -> u64 {
     let Some(task) = sched::live::current() else { return 0; };
     if !task.is_nt_personality() { return 0; }
     let teb = task.nt_teb();
-    let peb = uaccess::get_user_u64(teb.saturating_add(TEB_PEB_OFFSET)).ok().unwrap_or(0);
-    let params = uaccess::get_user_u64(peb.saturating_add(PEB_PROCESS_PARAMETERS_OFFSET)).ok().unwrap_or(0);
-    let descriptor = params.saturating_add(PARAM_CURRENT_DIRECTORY_OFFSET);
+    let Some(teb_peb) = teb.checked_add(TEB_PEB_OFFSET) else { return 0; };
+    let peb = uaccess::get_user_u64(teb_peb).ok().unwrap_or(0);
+    let Some(params_address) = peb.checked_add(PEB_PROCESS_PARAMETERS_OFFSET) else { return 0; };
+    let params = uaccess::get_user_u64(params_address).ok().unwrap_or(0);
+    let Some(descriptor) = params.checked_add(PARAM_CURRENT_DIRECTORY_OFFSET) else { return 0; };
     let mut string = [0u8; UNICODE_STRING_BYTES];
     if descriptor == 0 || uaccess::copy_from_user(&mut string, descriptor).is_err() { return 0; }
     let mut length = u16::from_le_bytes([string[0], string[1]]) as usize / 2;
@@ -715,16 +717,21 @@ fn get_current_directory(buffer_length: u64, buffer: u64) -> u64 {
     if length > 1 {
         let mut last = [0u8; 2];
         let mut previous = [0u8; 2];
-        if uaccess::copy_from_user(&mut last, source.saturating_add((length - 1) as u64 * 2)).is_err()
-            || uaccess::copy_from_user(&mut previous, source.saturating_add((length - 2) as u64 * 2)).is_err() { return 0; }
+        let Some(last_offset) = ((length - 1) as u64).checked_mul(2) else { return 0; };
+        let Some(previous_offset) = ((length - 2) as u64).checked_mul(2) else { return 0; };
+        let Some(last_address) = source.checked_add(last_offset) else { return 0; };
+        let Some(previous_address) = source.checked_add(previous_offset) else { return 0; };
+        if uaccess::copy_from_user(&mut last, last_address).is_err()
+            || uaccess::copy_from_user(&mut previous, previous_address).is_err() { return 0; }
         if u16::from_le_bytes(last) == b'\\' as u16 && u16::from_le_bytes(previous) != b':' as u16 { length -= 1; }
     }
-    let required = (length + 1).saturating_mul(2);
+    let Some(required) = length.checked_add(1).and_then(|value| value.checked_mul(2)) else { return 0; };
     if buffer_length / 2 <= length as u64 { return required as u64; }
     if buffer == 0 { return 0; }
-    let bytes = length.saturating_mul(2);
+    let Some(bytes) = length.checked_mul(2) else { return 0; };
     let mut contents = alloc::vec![0u8; bytes];
-    if uaccess::copy_from_user(&mut contents, source).is_err() || uaccess::copy_to_user(buffer, &contents).is_err() || uaccess::copy_to_user(buffer.saturating_add(bytes as u64), &[0, 0]).is_err() { return 0; }
+    let Some(terminator) = buffer.checked_add(bytes as u64) else { return 0; };
+    if uaccess::copy_from_user(&mut contents, source).is_err() || uaccess::copy_to_user(buffer, &contents).is_err() || uaccess::copy_to_user(terminator, &[0, 0]).is_err() { return 0; }
     (length * 2) as u64
 }
 
@@ -756,19 +763,23 @@ fn set_current_directory(directory: u64) -> u64 {
     if !dos_path.ends_with('\\') { dos_path.push('\\'); }
 
     let teb = task.nt_teb();
-    let peb = match uaccess::get_user_u64(teb.saturating_add(TEB_PEB_OFFSET)) { Ok(value) => value, Err(_) => return STATUS_ACCESS_VIOLATION };
-    let params = match uaccess::get_user_u64(peb.saturating_add(PEB_PROCESS_PARAMETERS_OFFSET)) { Ok(value) => value, Err(_) => return STATUS_ACCESS_VIOLATION };
-    let descriptor = params.saturating_add(PARAM_CURRENT_DIRECTORY_OFFSET);
+    let Some(teb_peb) = teb.checked_add(TEB_PEB_OFFSET) else { return STATUS_ACCESS_VIOLATION; };
+    let peb = match uaccess::get_user_u64(teb_peb) { Ok(value) => value, Err(_) => return STATUS_ACCESS_VIOLATION };
+    let Some(params_address) = peb.checked_add(PEB_PROCESS_PARAMETERS_OFFSET) else { return STATUS_ACCESS_VIOLATION; };
+    let params = match uaccess::get_user_u64(params_address) { Ok(value) => value, Err(_) => return STATUS_ACCESS_VIOLATION };
+    let Some(descriptor) = params.checked_add(PARAM_CURRENT_DIRECTORY_OFFSET) else { return STATUS_ACCESS_VIOLATION; };
     let mut header = [0u8; UNICODE_STRING_BYTES];
     if uaccess::copy_from_user(&mut header, descriptor).is_err() { return STATUS_ACCESS_VIOLATION; }
     let maximum = u16::from_le_bytes([header[2], header[3]]) as usize;
     let target = u64::from_le_bytes(header[8..16].try_into().unwrap());
     let encoded: Vec<u16> = dos_path.encode_utf16().collect();
-    let bytes = encoded.len().saturating_mul(2);
-    if target == 0 || bytes.saturating_add(2) > maximum || bytes > u16::MAX as usize { return STATUS_NAME_TOO_LONG; }
+    let Some(bytes) = encoded.len().checked_mul(2) else { return STATUS_NAME_TOO_LONG; };
+    let Some(required) = bytes.checked_add(2) else { return STATUS_NAME_TOO_LONG; };
+    if target == 0 || required > maximum || bytes > u16::MAX as usize { return STATUS_NAME_TOO_LONG; }
     let mut raw = vec![0u8; bytes];
     for (index, unit) in encoded.iter().enumerate() { raw[index * 2..index * 2 + 2].copy_from_slice(&unit.to_le_bytes()); }
-    if uaccess::copy_to_user(target, &raw).is_err() || uaccess::copy_to_user(target.saturating_add(bytes as u64), &[0, 0]).is_err()
+    let Some(terminator) = target.checked_add(bytes as u64) else { return STATUS_ACCESS_VIOLATION; };
+    if uaccess::copy_to_user(target, &raw).is_err() || uaccess::copy_to_user(terminator, &[0, 0]).is_err()
         || uaccess::copy_to_user(descriptor, &(bytes as u16).to_le_bytes()).is_err() { return STATUS_ACCESS_VIOLATION; }
     STATUS_SUCCESS
 }
@@ -831,7 +842,9 @@ fn dos_path_to_nt(source: u64, target: u64, file_part: u64, curdir: u64) -> u64 
     let mut input = vec![];
     for index in 0..=0x7fffu64 {
         let mut word = [0u8; 2];
-        if uaccess::copy_from_user(&mut word, source.saturating_add(index * 2)).is_err() { return 0; }
+        let Some(offset) = index.checked_mul(2) else { return 0; };
+        let Some(address) = source.checked_add(offset) else { return 0; };
+        if uaccess::copy_from_user(&mut word, address).is_err() { return 0; }
         let value = u16::from_le_bytes(word);
         if value == 0 { break; }
         input.push(value);
@@ -860,7 +873,10 @@ fn dos_path_to_nt(source: u64, target: u64, file_part: u64, curdir: u64) -> u64 
     descriptor[0..2].copy_from_slice(&((output.len() * 2) as u16).to_le_bytes()); descriptor[2..4].copy_from_slice(&(size as u16).to_le_bytes()); descriptor[8..16].copy_from_slice(&buffer.to_le_bytes());
     if uaccess::copy_to_user(target, &descriptor).is_err() { free_rtl_buffer(buffer); return 0; }
     if file_part != 0 {
-        let part = output.iter().rposition(|value| slash(*value)).map(|index| buffer + ((index + 1) * 2) as u64).unwrap_or(0);
+        let part = output.iter().rposition(|value| slash(*value))
+            .and_then(|index| index.checked_add(1))
+            .and_then(|index| index.checked_mul(2))
+            .and_then(|offset| buffer.checked_add(offset as u64)).unwrap_or(0);
         if uaccess::copy_to_user(file_part, &part.to_le_bytes()).is_err() { free_rtl_buffer(buffer); return 0; }
     }
     if curdir != 0 { let _ = uaccess::copy_to_user(curdir, &[0u8; 32]); }
