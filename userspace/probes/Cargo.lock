@@ -190,6 +190,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "vulkan_probe"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "windows-audio"
 version = "0.1.0"
 
