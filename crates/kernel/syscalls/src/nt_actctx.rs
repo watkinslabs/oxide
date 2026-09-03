@@ -38,12 +38,15 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         let Some(pointer) = teb.checked_add(TEB_ACTIVATION_CONTEXT_STACK_OFFSET) else {
             return Some(STATUS_INVALID_PARAMETER);
         };
-        let stack = uaccess::get_user_u64(pointer).ok().unwrap_or(0);
+        let Ok(stack) = uaccess::get_user_u64(pointer) else { return Some(STATUS_INVALID_PARAMETER); };
         let active = if stack == 0 { 0 } else {
-            uaccess::get_user_u64(stack).ok().unwrap_or(0)
+            let Ok(active) = uaccess::get_user_u64(stack) else { return Some(STATUS_INVALID_PARAMETER); };
+            active
         };
         let context = if active == 0 { 0 } else {
-            uaccess::get_user_u64(active.saturating_add(8)).ok().unwrap_or(0)
+            let Some(address) = active.checked_add(8) else { return Some(STATUS_INVALID_PARAMETER); };
+            let Ok(context) = uaccess::get_user_u64(address) else { return Some(STATUS_INVALID_PARAMETER); };
+            context
         };
         if context != 0 { return Some(STATUS_NOT_IMPLEMENTED); }
         if uaccess::put_user_u64(call.args.a0, 0).is_err() {
@@ -71,7 +74,8 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         // The current TEB initializes this pointer to NULL.  An allocated
         // frame cannot be safely reclaimed until activation-context object
         // ownership is installed; preserve the honest boundary in that case.
-        if uaccess::get_user_u64(stack).ok().unwrap_or(0) != 0 {
+        let Ok(active) = uaccess::get_user_u64(stack) else { return Some(STATUS_INVALID_PARAMETER); };
+        if active != 0 {
             return Some(STATUS_NOT_IMPLEMENTED);
         }
         return Some(0);
