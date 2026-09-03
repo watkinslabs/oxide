@@ -74,7 +74,7 @@ impl RuntimeRequest {
             available.insert(name.to_ascii_lowercase(), path);
         }
         let mut pending: Vec<Vec<u8>> = root.imports().map_err(BuildError::InvalidRoot)?
-            .into_iter().map(|import| import.name.to_ascii_lowercase()).collect();
+            .into_iter().map(|import| dependency_name(import.name).to_ascii_lowercase()).collect();
         let mut seen = HashSet::new();
         while let Some(name) = pending.pop() {
             if name.eq_ignore_ascii_case(b"ntdll.dll") || !seen.insert(name.clone()) { continue; }
@@ -85,7 +85,7 @@ impl RuntimeRequest {
             validate_size(blob.len() as u64)?;
             let dependency = pe::parse(&blob).map_err(|error| BuildError::InvalidModule { path: path.clone(), error })?;
             pending.extend(dependency.imports().map_err(|error| BuildError::InvalidModule { path: path.clone(), error })?
-                .into_iter().map(|import| import.name.to_ascii_lowercase()));
+                .into_iter().map(|import| dependency_name(import.name).to_ascii_lowercase()));
             let module_name = path.file_name().ok_or(BuildError::InvalidUtf8Path)?.as_bytes();
             catalog.add(module_name, &blob).map_err(|error| BuildError::InvalidModule { path: path.clone(), error })?;
             modules.push(ModuleBuffer { name: module_name.to_vec().into_boxed_slice(), image: blob.into_boxed_slice() });
@@ -141,6 +141,13 @@ fn validate_size(size: u64) -> Result<(), BuildError> {
 
 fn is_dll(path: &Path) -> bool {
     path.extension().and_then(OsStr::to_str).is_some_and(|extension| extension.eq_ignore_ascii_case("dll"))
+}
+
+/// Use the shared PE API-set schema for graph identity, matching the kernel
+/// loader's dependency resolver instead of treating contracts as filesystem
+/// module names.
+fn dependency_name(name: &[u8]) -> &[u8] {
+    pe::apiset::target(name).unwrap_or(name)
 }
 
 /// Validate the complete PE dependency graph before constructing the raw
@@ -292,6 +299,12 @@ mod tests {
         assert!(!is_dll(std::path::Path::new("notepad.exe")));
         assert!(!is_dll(std::path::Path::new("lib.dll.bak")));
         assert!(!is_dll(std::path::Path::new("DLL")));
+    }
+
+    #[test]
+    fn api_set_dependencies_use_their_kernel_host_identity() {
+        assert_eq!(dependency_name(b"api-ms-win-core-file-l1-2-0.dll"), b"kernelbase.dll");
+        assert_eq!(dependency_name(b"kernel32.dll"), b"kernel32.dll");
     }
 
     #[test]
