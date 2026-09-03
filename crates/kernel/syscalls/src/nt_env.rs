@@ -375,17 +375,22 @@ fn normalize_process_params(params: u64) -> u64 {
     const NORMALIZED: u32 = 1;
     const POINTER_FIELDS: [u64; 8] = [64, 80, 96, 112, 176, 192, 208, 224];
     if params == 0 { return 0; }
-    let Ok(flags) = uaccess::get_user_u32(params.saturating_add(FLAGS)) else { return 0; };
+    let Some(flags_address) = params.checked_add(FLAGS) else { return 0; };
+    let Ok(flags) = uaccess::get_user_u32(flags_address) else { return 0; };
     if flags & NORMALIZED != 0 { return params; }
     let mut normalized = [0u64; POINTER_FIELDS.len()];
     for (index, field) in POINTER_FIELDS.iter().enumerate() {
-        let Ok(value) = uaccess::get_user_u64(params.saturating_add(*field + 8)) else { return 0; };
+        let Some(pointer_offset) = field.checked_add(8) else { return 0; };
+        let Some(pointer_address) = params.checked_add(pointer_offset) else { return 0; };
+        let Ok(value) = uaccess::get_user_u64(pointer_address) else { return 0; };
         normalized[index] = if value == 0 { 0 } else { match params.checked_add(value) { Some(address) => address, None => return 0 } };
     }
     for (index, field) in POINTER_FIELDS.iter().enumerate() {
-        if uaccess::put_user_u64(params.saturating_add(*field + 8), normalized[index]).is_err() { return 0; }
+        let Some(pointer_offset) = field.checked_add(8) else { return 0; };
+        let Some(pointer_address) = params.checked_add(pointer_offset) else { return 0; };
+        if uaccess::put_user_u64(pointer_address, normalized[index]).is_err() { return 0; }
     }
-    if uaccess::put_user_u32(params.saturating_add(FLAGS), flags | NORMALIZED).is_err() { return 0; }
+    if uaccess::put_user_u32(flags_address, flags | NORMALIZED).is_err() { return 0; }
     params
 }
 
