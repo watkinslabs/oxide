@@ -23,7 +23,7 @@ fn callback_argument(root: u64, index: usize) -> u64 { (root << 32) | index as u
 fn callback_root(argument: u64) -> u64 { argument >> 32 }
 fn callback_index(argument: u64) -> usize { argument as u32 as usize }
 
-struct GuiEntry { group: Weak<sched::thread_group::ThreadGroup>, state: ipc::win32_window::WindowManager, wait: Arc<sched::live::WaitList>, foreground: bool }
+struct GuiEntry { group: Weak<sched::thread_group::ThreadGroup>, state: ipc::win32_window::WindowManager, menus: ipc::win32_menu::MenuManager, wait: Arc<sched::live::WaitList>, foreground: bool }
 static GUI: Spinlock<Vec<GuiEntry>, GuiLockClass> = Spinlock::new(Vec::new());
 
 /// Resolve a visible window rectangle from the current NT process's canonical HWND state. # C: O(N_process_gui_states + N_windows)
@@ -70,7 +70,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
             entries.retain(|entry| entry.group.upgrade().is_some());
             let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)));
             let index = index.unwrap_or_else(|| {
-                entries.push(GuiEntry { group: Arc::downgrade(&group), state: ipc::win32_window::WindowManager::new(), wait: Arc::new(sched::live::WaitList::new()), foreground: false });
+                entries.push(GuiEntry { group: Arc::downgrade(&group), state: ipc::win32_window::WindowManager::new(), menus: ipc::win32_menu::MenuManager::new(), wait: Arc::new(sched::live::WaitList::new()), foreground: false });
                 entries.len() - 1
             });
             let wait = Arc::clone(&entries[index].wait);
@@ -385,7 +385,7 @@ pub(crate) fn register_class_for_current(name: &[u16], wndproc: u64) -> Option<u
     entries.retain(|entry| entry.group.upgrade().is_some());
     let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))
         .unwrap_or_else(|| {
-            entries.push(GuiEntry { group: Arc::downgrade(&group), state: ipc::win32_window::WindowManager::new(), wait: Arc::new(sched::live::WaitList::new()), foreground: false });
+            entries.push(GuiEntry { group: Arc::downgrade(&group), state: ipc::win32_window::WindowManager::new(), menus: ipc::win32_menu::MenuManager::new(), wait: Arc::new(sched::live::WaitList::new()), foreground: false });
             entries.len() - 1
         });
     entries[index].state.register_class(name, wndproc).ok().map(|atom| atom as u64)
@@ -404,6 +404,67 @@ pub(crate) fn unregister_class_for_current(name: &[u16]) -> bool {
     entries[index].state.unregister_class(name).is_ok()
 }
 
+/// Allocate an HMENU in the canonical per-process menu owner. # C: O(N_process_gui_states)
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn create_menu_for_current() -> u64 {
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let group = Arc::clone(&cur.thread_group);
+    let mut entries = GUI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))
+        .unwrap_or_else(|| { entries.push(GuiEntry { group: Arc::downgrade(&group), state: ipc::win32_window::WindowManager::new(), menus: ipc::win32_menu::MenuManager::new(), wait: Arc::new(sched::live::WaitList::new()), foreground: false }); entries.len() - 1 });
+    entries[index].menus.create().map(|menu| menu.raw() as u64).unwrap_or(STATUS_INVALID_PARAMETER)
+}
+
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn destroy_menu_for_current(raw: u64) -> u64 {
+    let Some(menu) = u32::try_from(raw).ok().and_then(ipc::win32_menu::MenuId::from_raw) else { return STATUS_INVALID_PARAMETER; };
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let group = Arc::clone(&cur.thread_group);
+    let mut entries = GUI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    let Some(index) = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group))) else { return STATUS_INVALID_PARAMETER; };
+    if entries[index].menus.destroy(menu).is_err() { return STATUS_INVALID_PARAMETER; }
+    entries[index].state.clear_menu(menu.raw());
+    STATUS_SUCCESS
+}
+
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn check_menu_item_for_current(raw: u64, id: u64, flags: u64) -> u64 {
+    let (Some(menu), Some(id), Some(flags)) = (u32::try_from(raw).ok().and_then(ipc::win32_menu::MenuId::from_raw), u32::try_from(id).ok(), u32::try_from(flags).ok()) else { return ipc::win32_menu::MENU_NOT_FOUND as u64; };
+    let Some(cur) = sched::live::current() else { return ipc::win32_menu::MENU_NOT_FOUND as u64; };
+    let group = Arc::clone(&cur.thread_group);
+    let mut entries = GUI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    let Some(index) = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group))) else { return ipc::win32_menu::MENU_NOT_FOUND as u64; };
+    entries[index].menus.check(menu, id, flags).unwrap_or(ipc::win32_menu::MENU_NOT_FOUND) as u64
+}
+
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn enable_menu_item_for_current(raw: u64, id: u64, flags: u64) -> u64 {
+    let (Some(menu), Some(id), Some(flags)) = (u32::try_from(raw).ok().and_then(ipc::win32_menu::MenuId::from_raw), u32::try_from(id).ok(), u32::try_from(flags).ok()) else { return ipc::win32_menu::MENU_NOT_FOUND as u64; };
+    let Some(cur) = sched::live::current() else { return ipc::win32_menu::MENU_NOT_FOUND as u64; };
+    let group = Arc::clone(&cur.thread_group);
+    let mut entries = GUI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    let Some(index) = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group))) else { return ipc::win32_menu::MENU_NOT_FOUND as u64; };
+    entries[index].menus.enable(menu, id, flags).unwrap_or(ipc::win32_menu::MENU_NOT_FOUND) as u64
+}
+
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn set_window_menu_for_current(hwnd: u64, menu: Option<u32>) -> Result<Option<u32>, ()> {
+    let Some(cur) = sched::live::current() else { return Err(()); };
+    if !cur.is_nt_personality() || hwnd > u32::MAX as u64 { return Err(()); }
+    let group = Arc::clone(&cur.thread_group);
+    let mut entries = GUI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    let Some(index) = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group))) else { return Err(()); };
+    if let Some(raw) = menu { let Some(menu) = ipc::win32_menu::MenuId::from_raw(raw) else { return Err(()); }; if !entries[index].menus.contains(menu) { return Err(()); } }
+    entries[index].state.set_menu(ipc::win32_window::WindowId::from_raw(hwnd as u32).ok_or(())?, menu).map_err(|_| ())
+}
+
 /// Create a Wine window by resolving its registered class in the canonical
 /// process window owner. # C: O(N_process_gui_states + N_classes + N_windows)
 #[cfg(target_os = "oxide-kernel")]
@@ -416,7 +477,7 @@ pub(crate) fn create_class_window_for_current(name: &[u16], parent: u64) -> Opti
     entries.retain(|entry| entry.group.upgrade().is_some());
     let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))
         .unwrap_or_else(|| {
-            entries.push(GuiEntry { group: Arc::downgrade(&group), state: ipc::win32_window::WindowManager::new(), wait: Arc::new(sched::live::WaitList::new()), foreground: false });
+            entries.push(GuiEntry { group: Arc::downgrade(&group), state: ipc::win32_window::WindowManager::new(), menus: ipc::win32_menu::MenuManager::new(), wait: Arc::new(sched::live::WaitList::new()), foreground: false });
             entries.len() - 1
         });
     entries[index].state.create_class(cur.tid as u64, parent, name).ok().map(|window| window.raw() as u64)
@@ -434,7 +495,7 @@ pub(crate) fn create_class_window_by_atom_for_current(atom: u16, parent: u64) ->
     entries.retain(|entry| entry.group.upgrade().is_some());
     let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))
         .unwrap_or_else(|| {
-            entries.push(GuiEntry { group: Arc::downgrade(&group), state: ipc::win32_window::WindowManager::new(), wait: Arc::new(sched::live::WaitList::new()), foreground: false });
+            entries.push(GuiEntry { group: Arc::downgrade(&group), state: ipc::win32_window::WindowManager::new(), menus: ipc::win32_menu::MenuManager::new(), wait: Arc::new(sched::live::WaitList::new()), foreground: false });
             entries.len() - 1
         });
     let wndproc = entries[index].state.class_wndproc_by_atom(atom)?;

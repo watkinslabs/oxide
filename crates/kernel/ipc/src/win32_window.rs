@@ -74,7 +74,7 @@ impl MessageQueue {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct WindowRecord { pub owner_tid: u64, pub parent: Option<WindowId>, pub wndproc: u64, pub class_atom: Option<u16>, pub visible: bool }
+pub struct WindowRecord { pub owner_tid: u64, pub parent: Option<WindowId>, pub wndproc: u64, pub class_atom: Option<u16>, pub visible: bool, pub menu: Option<u32> }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WindowClass { pub name: Vec<u16>, pub wndproc: u64, pub atom: u16 }
@@ -129,7 +129,7 @@ impl WindowManager {
         if parent.is_some_and(|parent| self.get(parent).is_none()) { return Err(WindowError::InvalidParent); }
         let id = WindowId(self.next);
         self.next = self.next.checked_add(1).ok_or(WindowError::NoSuchWindow)?;
-        self.windows.push((id, WindowRecord { owner_tid, parent, wndproc, class_atom: None, visible: false }));
+        self.windows.push((id, WindowRecord { owner_tid, parent, wndproc, class_atom: None, visible: false, menu: None }));
         self.rects.push((id, WindowRect { left: 0, top: 0, right: 0, bottom: 0 }));
         self.texts.push((id, Vec::new()));
         if self.queues.iter().all(|(tid, _)| *tid != owner_tid) { self.queues.push((owner_tid, MessageQueue::default())); }
@@ -165,6 +165,15 @@ impl WindowManager {
         record.visible = visible;
         Ok(())
     }
+    /// Associate one canonical HMENU with a window and return the prior one. # C: O(N_windows)
+    pub fn set_menu(&mut self, id: WindowId, menu: Option<u32>) -> Result<Option<u32>, WindowError> {
+        let Some((_, record)) = self.windows.iter_mut().find(|(window, _)| *window == id) else { return Err(WindowError::NoSuchWindow); };
+        let previous = record.menu;
+        record.menu = menu;
+        Ok(previous)
+    }
+    /// Detach a destroyed HMENU from every canonical HWND. # C: O(N_windows)
+    pub fn clear_menu(&mut self, menu: u32) { for (_, record) in &mut self.windows { if record.menu == Some(menu) { record.menu = None; } } }
     /// Set the current thread's focus window and return the previous focus. # C: O(N_windows)
     pub fn set_focus(&mut self, tid: u64, id: Option<WindowId>) -> Result<Option<WindowId>, WindowError> {
         if let Some(id) = id {
@@ -463,6 +472,15 @@ mod tests {
         let filter = MessageFilter { hwnd: None, first: 0, last: u32::MAX };
         assert_eq!(manager.peek_for_thread(9, filter, false), None);
         assert_eq!(manager.expire_timers(u64::MAX), 0);
+    }
+
+    #[test]
+    fn destroying_menu_owner_can_detach_its_window_association() {
+        let mut manager = WindowManager::new();
+        let window = manager.create(9, None, 0).unwrap();
+        assert_eq!(manager.set_menu(window, Some(4)), Ok(None));
+        manager.clear_menu(4);
+        assert_eq!(manager.get(window).unwrap().menu, None);
     }
 
     #[test]
