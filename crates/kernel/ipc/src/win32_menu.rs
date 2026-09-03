@@ -231,6 +231,17 @@ mod tests {
     }
 
     #[test]
+    fn remove_item_preserves_its_submenu_handle() {
+        let mut menus = MenuManager::new();
+        let menu = menus.create().unwrap();
+        let submenu = menus.create_popup().unwrap();
+        menus.insert(menu, 0, MenuItem { id: 7, state: 0, text: Vec::new(), submenu: Some(submenu.raw()) }).unwrap();
+        assert_eq!(menus.remove(menu, 7, 0).unwrap().submenu, Some(submenu.raw()));
+        assert_eq!(menus.count(menu), Ok(0));
+        assert!(menus.contains(submenu));
+    }
+
+    #[test]
     fn menu_bar_layout_uses_text_metrics_and_canonical_item_order() {
         let mut menus = MenuManager::new();
         let menu = menus.create().unwrap();
