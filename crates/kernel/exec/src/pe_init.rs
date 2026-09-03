@@ -13,7 +13,17 @@ pub fn collect_initializers<'a>(loaded: &[super::pe_loader::PeLoadedModule<'a>],
     let mut out = Vec::new();
     if loaded.len() != modules.len() || loaded.is_empty() { return Err(pe::Error::Einval); }
     let mut state = vec![0u8; modules.len()];
-    collect_module_initializers(0, loaded, modules, &mut state, &mut out)?;
+    collect_module_initializers(0, loaded, modules, &mut state, &mut out, false)?;
+    Ok(out)
+}
+
+/// Collect initializers for a graph loaded by `LdrLoadDll`, including its root DLL.
+/// # C: O(N_modules + N_imports)
+pub fn collect_dynamic_initializers<'a>(loaded: &[super::pe_loader::PeLoadedModule<'a>], modules: &[pe::OwnedModule]) -> Result<Vec<super::pe_loader::PeModuleInitializer>, pe::Error> {
+    let mut out = Vec::new();
+    if loaded.len() != modules.len() || loaded.is_empty() { return Err(pe::Error::Einval); }
+    let mut state = vec![0u8; modules.len()];
+    collect_module_initializers(0, loaded, modules, &mut state, &mut out, true)?;
     Ok(out)
 }
 
@@ -22,7 +32,7 @@ pub fn collect_initializers<'a>(loaded: &[super::pe_loader::PeLoadedModule<'a>],
 /// an import table may list a dependent before the DLL it also depends on.
 fn collect_module_initializers<'a>(index: usize,
     loaded: &[super::pe_loader::PeLoadedModule<'a>], modules: &[pe::OwnedModule],
-    state: &mut [u8], out: &mut Vec<super::pe_loader::PeModuleInitializer>) -> Result<(), pe::Error> {
+    state: &mut [u8], out: &mut Vec<super::pe_loader::PeModuleInitializer>, include_root: bool) -> Result<(), pe::Error> {
     if state[index] == 2 { return Ok(()); }
     if state[index] == 1 { return Ok(()); }
     state[index] = 1;
@@ -30,10 +40,10 @@ fn collect_module_initializers<'a>(index: usize,
     for dependency in dependencies {
         let resolved = pe::apiset::target(dependency).unwrap_or(dependency);
         let Some(dep_index) = modules.iter().position(|module| ascii_eq(module.name.as_slice(), resolved)) else { continue };
-        if dep_index != 0 { collect_module_initializers(dep_index, loaded, modules, state, out)?; }
+        if dep_index != 0 { collect_module_initializers(dep_index, loaded, modules, state, out, include_root)?; }
     }
     let callbacks = pe::parse(&modules[index].blob)?.tls_callback_rvas()?;
-    if index != 0 {
+    if index != 0 || include_root {
         for rva in callbacks { out.push(initializer(loaded[index].image.base, rva)?); }
         // PE encodes a DLL without DllMain as AddressOfEntryPoint == 0;
         // `PeLoadedImage::entry` is base + entry RVA, so compare against the
@@ -135,6 +145,41 @@ pub fn map_with_exit(as_: &AddressSpace, app_entry: UserVirtAddr,
     Ok(PeInitTrampoline { base, bytes, entry })
 }
 
+/// Build a return-to-caller trampoline for synchronous dynamic DLL attach.
+/// # C: O(N_initializers)
+#[cfg(target_arch = "x86_64")]
+pub fn map_dynamic_return(as_: &AddressSpace, return_entry: UserVirtAddr,
+    initializers: &[super::pe_loader::PeModuleInitializer]) -> Result<Option<PeInitTrampoline>, pe::Error> {
+    if initializers.is_empty() { return Ok(None); }
+    let mut code = Vec::with_capacity(initializers.len() * 37 + 12);
+    code.extend_from_slice(&[0x48, 0xb8]);
+    code.extend_from_slice(&return_entry.as_u64().to_le_bytes());
+    code.push(0x50);
+    for initializer in initializers {
+        code.extend_from_slice(&[0x53, 0x48, 0x83, 0xec, 0x28, 0x48, 0xb9]);
+        code.extend_from_slice(&initializer.base.to_le_bytes());
+        code.extend_from_slice(&[0xba, 1, 0, 0, 0, 0x45, 0x31, 0xc0, 0x48, 0xb8]);
+        code.extend_from_slice(&initializer.entry.as_u64().to_le_bytes());
+        code.extend_from_slice(&[0xff, 0xd0, 0x48, 0x83, 0xc4, 0x28, 0x5b]);
+    }
+    code.push(0xc3);
+    let page = hal::PAGE_SIZE_BYTES as usize;
+    let bytes = (code.len() + page - 1) / page * page;
+    code.resize(bytes, 0xcc);
+    let data = as_.stash_bytes(code.into_boxed_slice());
+    let base = as_.mmap(None, bytes, VmaProt::READ | VmaProt::EXEC, VmaFlags::PRIVATE,
+        VmaBacking::KernelBytes { data, off: 0 }, false).map_err(|_| pe::Error::Einval)?;
+    Ok(Some(PeInitTrampoline { base, bytes, entry: base }))
+}
+
+/// Dynamic attach cannot redirect an in-flight NT syscall on ARM yet.
+/// # C: O(1)
+#[cfg(target_arch = "aarch64")]
+pub fn map_dynamic_return(_as_: &AddressSpace, _return_entry: UserVirtAddr,
+    _initializers: &[super::pe_loader::PeModuleInitializer]) -> Result<Option<PeInitTrampoline>, pe::Error> {
+    Err(pe::Error::Unsupported)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,6 +210,22 @@ mod tests {
         assert_eq!(&data[66..69], &[0x48, 0x89, 0xc1]);
         assert_eq!(&data[79..81], &[0xff, 0xd0]);
         assert_eq!(&data[81..83], &[0x0f, 0x0b]);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn dynamic_return_trampoline_pushes_caller_and_attach_arguments() {
+        let as_ = AddressSpace::new(0x20_000).unwrap();
+        let initializers = [super::super::pe_loader::PeModuleInitializer {
+            base: 0x5000_0000, entry: UserVirtAddr::new(0x5000_1010).unwrap(),
+        }];
+        let trampoline = map_dynamic_return(&as_, UserVirtAddr::new(0x6000_1010).unwrap(), &initializers).unwrap().unwrap();
+        let vma = as_.find_vma(trampoline.base).unwrap();
+        let data = match vma.backing { VmaBacking::KernelBytes { data, .. } => data, _ => panic!("dynamic trampoline must be kernel-backed") };
+        assert_eq!(&data[..10], &[0x48, 0xb8, 0x10, 0x10, 0x00, 0x60, 0, 0, 0, 0]);
+        assert_eq!(data[10], 0x50);
+        assert!(data.windows(5).any(|bytes| bytes == [0xba, 1, 0, 0, 0]));
+        assert_eq!(data[51], 0xc3);
     }
 
     #[test]
