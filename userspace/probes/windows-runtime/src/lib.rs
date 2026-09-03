@@ -235,6 +235,18 @@ mod tests {
     }
 
     #[test]
+    fn installed_64_bit_wine_vulkan_modules_form_a_closed_pe_catalog() {
+        let Some(root) = wine_root() else { return };
+        for module in ["vulkan-1.dll", "winevulkan.dll"] {
+            let image = root.join(module);
+            if !image.is_file() { return; }
+            let request = RuntimeRequest::from_paths(&image, b"C:\\windows\\vulkan.exe", root).unwrap();
+            assert!(request.module_count() > 0, "{module} must retain its PE dependencies");
+            assert!(request.module_count() < 64, "{module} dependency closure must fit the NT catalog");
+        }
+    }
+
+    #[test]
     fn malformed_dll_is_rejected_before_handoff() {
         let base = std::env::temp_dir().join(format!("oxide-windows-runtime-{}", std::process::id()));
         fs::create_dir_all(&base).unwrap();
