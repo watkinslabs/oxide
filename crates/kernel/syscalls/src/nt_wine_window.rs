@@ -40,6 +40,9 @@ const WINE_DEF_WINDOW_PROC: u64 = 0x029e;
 const WINE_NTUSER_INITIALIZE_CLIENT_PFN_ARRAYS: u64 = 0x147a;
 const WINE_NTUSER_GET_SYSTEM_DPI_FOR_PROCESS: u64 = 0x144b;
 const WM_TIMER: u32 = 0x0113;
+const WM_SETTEXT: u64 = 0x000c;
+const WM_GETTEXT: u64 = 0x000d;
+const WM_GETTEXTLENGTH: u64 = 0x000e;
 
 #[cfg(target_os = "oxide-kernel")]
 fn read_args(pointer: u64) -> Option<[u64; 17]> {
@@ -118,6 +121,15 @@ pub fn dispatch(call: NtCall) -> u64 {
             // result-info record begins with the requested WNDPROC; when it
             // is absent, the canonical window record supplies the procedure.
             if args[5] == WINE_DEF_WINDOW_PROC {
+                if message == WM_SETTEXT {
+                    return win_bool(native(NtService::SetWindowText, SyscallArgs { a0: hwnd, a1: lparam, a2: 0, a3: 0, a4: 0, a5: 0 }));
+                }
+                if message == WM_GETTEXT {
+                    return native(NtService::GetWindowText, SyscallArgs { a0: hwnd, a1: lparam, a2: wparam, a3: 0, a4: 0, a5: 0 });
+                }
+                if message == WM_GETTEXTLENGTH {
+                    return crate::nt_window::window_text_length_for_current(hwnd).unwrap_or(STATUS_INVALID_PARAMETER);
+                }
                 return native(NtService::DefaultWindowProc, SyscallArgs { a0: hwnd, a1: message, a2: wparam, a3: lparam, a4: 0, a5: 0 });
             }
             if args[5] != WINE_CALL_WINDOW_PROC { return STATUS_NOT_IMPLEMENTED; }
