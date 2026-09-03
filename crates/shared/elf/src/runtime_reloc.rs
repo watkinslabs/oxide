@@ -1,6 +1,5 @@
 //! ELF64 runtime relocation application for ET_DYN images.
 
-use crate::dynamic::DynInfo;
 use crate::parser::{ElfError, LoadSegment};
 use crate::SharedObject;
 
@@ -42,8 +41,8 @@ where F: FnMut(&[u8]) -> Option<u64> {
             let value = match kind {
                 R_X86_64_RELATIVE => load_bias.wrapping_add(addend as u64),
                 R_X86_64_GLOB_DAT | R_X86_64_JUMP_SLOT | R_AARCH64_ABS64 => {
-                    let symbol = dynamic_symbol(file, &object.dynamic, object.parsed.loads.as_slice(), sym_index)?;
-                    if symbol.shndx == 0 { resolve(symbol.name).ok_or(ElfError::Einval)? } else { load_bias.checked_add(symbol.value).ok_or(ElfError::Einval)? }
+                    let symbol = read_dynamic_symbol(file, object, sym_index)?;
+                    if !symbol.defined { resolve(symbol.name).ok_or(ElfError::Einval)? } else { load_bias.checked_add(symbol.value).ok_or(ElfError::Einval)? }
                         .wrapping_add(addend as u64)
                 }
                 _ => return Err(ElfError::Eopnotsupp),
@@ -85,9 +84,16 @@ fn apply_relative(image: &mut [u8], image_base: u64, load_bias: u64, offset: u64
     Ok(())
 }
 
-struct Symbol<'a> { name: &'a [u8], value: u64, shndx: u16 }
+/// One validated dynamic symbol. Undefined symbols require resolution from
+/// the process ELF catalog; defined symbols are relative to this object.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct DynamicSymbol<'a> { pub name: &'a [u8], pub value: u64, pub defined: bool }
 
-fn dynamic_symbol<'a>(file: &'a [u8], dynamic: &DynInfo, loads: &[LoadSegment], index: u64) -> Result<Symbol<'a>, ElfError> {
+/// Read one symbol from the validated object's dynamic symbol table.
+/// # C: O(1)
+pub fn read_dynamic_symbol<'a>(file: &'a [u8], object: &SharedObject<'_>, index: u64) -> Result<DynamicSymbol<'a>, ElfError> {
+    let dynamic = &object.dynamic;
+    let loads = object.parsed.loads.as_slice();
     let table = dynamic.symtab_addr.ok_or(ElfError::Einval)?;
     let syment = dynamic.syment.ok_or(ElfError::Einval)?;
     if syment != 24 { return Err(ElfError::Einval); }
@@ -102,7 +108,7 @@ fn dynamic_symbol<'a>(file: &'a [u8], dynamic: &DynInfo, loads: &[LoadSegment], 
     let name = file.get(str_off..str_off.checked_add(strsz as usize).ok_or(ElfError::Einval)?).ok_or(ElfError::Einval)?;
     let start = name_off as usize;
     let end = name.get(start..).ok_or(ElfError::Einval)?.iter().position(|b| *b == 0).map(|n| start + n).ok_or(ElfError::Einval)?;
-    Ok(Symbol { name: &name[start..end], value, shndx })
+    Ok(DynamicSymbol { name: &name[start..end], value, defined: shndx != 0 })
 }
 
 fn vaddr_to_file(loads: &[LoadSegment], address: u64, size: u64) -> Option<usize> {

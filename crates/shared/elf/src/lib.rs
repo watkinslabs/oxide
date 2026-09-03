@@ -33,7 +33,7 @@ pub mod dynamic;
 pub mod shared_object;
 pub use shared_object::{parse_shared_object, SharedObject};
 pub mod runtime_reloc;
-pub use runtime_reloc::apply_runtime_relocations;
+pub use runtime_reloc::{apply_runtime_relocations, read_dynamic_symbol, DynamicSymbol};
 pub mod hash;
 pub mod dwarf;
 pub mod cfa;
