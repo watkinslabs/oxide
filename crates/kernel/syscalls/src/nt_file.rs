@@ -372,8 +372,12 @@ fn native_io_values(cur: &sched::Task, handle: u32, io_status: u64, buffer: u64,
         result.map(|n| n as u64)
     };
     match result {
+        Ok(0) => { write_io_status(io_status, STATUS_END_OF_FILE, 0); post_completion(&object, io_status, STATUS_END_OF_FILE, 0); STATUS_END_OF_FILE }
         Ok(bytes) => { write_io_status(io_status, STATUS_SUCCESS, bytes); post_completion(&object, io_status, STATUS_SUCCESS, bytes); STATUS_SUCCESS }
-        Err(_) => { write_io_status(io_status, STATUS_END_OF_FILE, 0); post_completion(&object, io_status, STATUS_END_OF_FILE, 0); STATUS_END_OF_FILE }
+        Err(error) => {
+            let status = crate::nt_file_policy::status_from_errno(-(error as i64));
+            write_io_status(io_status, status, 0); post_completion(&object, io_status, status, 0); status
+        }
     }
 }
 
@@ -447,7 +451,7 @@ fn flush(cur: &sched::Task, handle: u32, io_status: u64) -> u64 {
     let Some(file) = object.file() else { return STATUS_INVALID_HANDLE; };
     let status = match file.vfs_fsync(false) {
         Ok(()) => STATUS_SUCCESS,
-        Err(error) => nt_status_from_errno(-(error as i64)),
+        Err(error) => crate::nt_file_policy::status_from_errno(-(error as i64)),
     };
     if uaccess::put_user_u64(io_status, status).is_err()
         || uaccess::put_user_u64(io_status + 8, 0).is_err() {
@@ -543,13 +547,13 @@ fn open_path(cur: &sched::Task, output: u64, desired: u32, attrs: u64, options: 
             let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &crate::pathresolve::current_cred(), umask: cur.umask() as u16 };
             match vfs::vfs_create_at(&parent, &name, 0o666, &ctx) {
                 Ok((inode, dentry)) => (inode, dentry, parent.mnt_id, true),
-                Err(error) => return nt_status_from_errno(-(error as i64)),
+                Err(error) => return crate::nt_file_policy::status_from_errno(-(error as i64)),
             }
         }
-        Err(rv) => return nt_status_from_errno(rv),
+        Err(rv) => return crate::nt_file_policy::status_from_errno(rv),
     };
     if let Some(rv) = crate::open_common::enforce_open_perm(&inode, mnt_id, flags.bits(), created) {
-        return nt_status_from_errno(rv);
+        return crate::nt_file_policy::status_from_errno(rv);
     }
     if !created && disposition.truncates_existing() && inode.truncate(0).is_err() {
         return STATUS_ACCESS_DENIED;
@@ -621,15 +625,21 @@ fn io(cur: &sched::Task, addr: u64, write: bool) -> u64 {
         result.map(|n| n as u64)
     };
     match result {
+        Ok(0) => {
+            write_io_status(request.io_status, STATUS_END_OF_FILE, 0);
+            post_completion(&object, request.io_status, STATUS_END_OF_FILE, 0);
+            STATUS_END_OF_FILE
+        }
         Ok(bytes) => {
             write_io_status(request.io_status, STATUS_SUCCESS, bytes);
             post_completion(&object, request.io_status, STATUS_SUCCESS, bytes);
             STATUS_SUCCESS
         }
-        Err(_) => {
-            write_io_status(request.io_status, STATUS_END_OF_FILE, 0);
-            post_completion(&object, request.io_status, STATUS_END_OF_FILE, 0);
-            STATUS_END_OF_FILE
+        Err(error) => {
+            let status = crate::nt_file_policy::status_from_errno(-(error as i64));
+            write_io_status(request.io_status, status, 0);
+            post_completion(&object, request.io_status, status, 0);
+            status
         }
     }
 }
@@ -828,7 +838,7 @@ fn set_rename_information(file: &vfs::File, information: u64, length: u32, io_st
     if status == 0 {
         write_io_status(io_status, STATUS_SUCCESS, 0);
         STATUS_SUCCESS
-    } else { nt_status_from_errno(status) }
+    } else { crate::nt_file_policy::status_from_errno(status) }
 }
 
 fn query_directory(cur: &sched::Task, addr: u64) -> u64 {
@@ -935,13 +945,4 @@ fn utf16_string(bytes: &[u8]) -> Option<String> {
         out.push(core::char::from_u32(c as u32)?);
     }
     Some(out)
-}
-
-fn nt_status_from_errno(rv: i64) -> u64 {
-    match rv.unsigned_abs() as i32 {
-        x if x == Errno::Enoent.as_i32() => STATUS_OBJECT_NAME_NOT_FOUND,
-        x if x == Errno::Eexist.as_i32() => STATUS_OBJECT_NAME_COLLISION,
-        x if x == Errno::Eacces.as_i32() => STATUS_ACCESS_DENIED,
-        _ => STATUS_INVALID_PARAMETER,
-    }
 }

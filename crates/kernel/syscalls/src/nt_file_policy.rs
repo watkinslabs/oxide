@@ -1,5 +1,7 @@
 //! NT file-create disposition decisions shared by the kernel adapter tests.
 
+use syscall::errno::Errno;
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) enum CreateDisposition {
     Supersede,
@@ -12,6 +14,10 @@ pub(crate) enum CreateDisposition {
 
 const FILE_DELETE_ON_CLOSE: u32 = 0x0000_1000;
 const DELETE_ACCESS: u32 = 0x0001_0000;
+const STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xc000_0034;
+const STATUS_OBJECT_NAME_COLLISION: u64 = 0xc000_0035;
+const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
+const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 
 impl CreateDisposition {
     pub(crate) const fn decode(value: u32) -> Option<Self> {
@@ -32,6 +38,16 @@ impl CreateDisposition {
 
 pub(crate) const fn delete_on_close_access_valid(options: u32, desired: u32) -> bool {
     options & FILE_DELETE_ON_CLOSE == 0 || desired & DELETE_ACCESS != 0
+}
+
+/// Preserve the Linux VFS errno distinction at the NT file boundary. # C: O(1)
+pub(crate) fn status_from_errno(rv: i64) -> u64 {
+    match rv.unsigned_abs() as i32 {
+        value if value == Errno::Enoent.as_i32() => STATUS_OBJECT_NAME_NOT_FOUND,
+        value if value == Errno::Eexist.as_i32() => STATUS_OBJECT_NAME_COLLISION,
+        value if value == Errno::Eacces.as_i32() => STATUS_ACCESS_DENIED,
+        _ => STATUS_INVALID_PARAMETER,
+    }
 }
 
 #[cfg(test)]
@@ -57,5 +73,13 @@ mod tests {
         assert!(delete_on_close_access_valid(0, 0));
         assert!(!delete_on_close_access_valid(FILE_DELETE_ON_CLOSE, 0));
         assert!(delete_on_close_access_valid(FILE_DELETE_ON_CLOSE, DELETE_ACCESS));
+    }
+
+    #[test]
+    fn errno_mapping_preserves_file_failure_classes() {
+        assert_eq!(status_from_errno(-(Errno::Enoent.as_i32() as i64)), STATUS_OBJECT_NAME_NOT_FOUND);
+        assert_eq!(status_from_errno(-(Errno::Eexist.as_i32() as i64)), STATUS_OBJECT_NAME_COLLISION);
+        assert_eq!(status_from_errno(-(Errno::Eacces.as_i32() as i64)), STATUS_ACCESS_DENIED);
+        assert_eq!(status_from_errno(-(Errno::Eio.as_i32() as i64)), STATUS_INVALID_PARAMETER);
     }
 }
