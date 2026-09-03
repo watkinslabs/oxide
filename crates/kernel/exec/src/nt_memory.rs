@@ -12,6 +12,21 @@ pub struct NtAllocation { pub base: UserVirtAddr, pub size: usize, pub protectio
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct NtMemoryInfo { pub base: UserVirtAddr, pub allocation_base: UserVirtAddr, pub size: usize, pub protection: VmaProt, pub may_protection: VmaProt }
 
+/// Normalize an NT protection request to the page range it covers.
+/// # C: O(1)
+pub fn normalize_protection_range(base: u64, size: u64) -> Result<(UserVirtAddr, usize), NtStatus> {
+    if size == 0 { return Err(NtStatus::InvalidParameter); }
+    let page = PAGE as u64;
+    let start = base & !(page - 1);
+    let end = base.checked_add(size).ok_or(NtStatus::InvalidParameter)?;
+    let rounded_end = end.checked_add(page - 1).ok_or(NtStatus::InvalidParameter)? & !(page - 1);
+    if rounded_end <= start || rounded_end - start > usize::MAX as u64 {
+        return Err(NtStatus::InvalidParameter);
+    }
+    let start = UserVirtAddr::new(start).ok_or(NtStatus::InvalidParameter)?;
+    Ok((start, (rounded_end - start.as_u64()) as usize))
+}
+
 /// Translate the Windows page-protection word at the NT boundary. Modifier
 /// bits are rejected until their VMA/PTE semantics exist; the eight base
 /// protections map directly to the common three-bit VMA contract.
@@ -130,5 +145,16 @@ mod tests {
         assert_eq!(windows_protection(0x20), Ok(VmaProt::READ | VmaProt::EXEC));
         assert_eq!(windows_protection(0x40), Ok(VmaProt::READ | VmaProt::WRITE | VmaProt::EXEC));
         assert_eq!(windows_protection(0x104), Err(NtStatus::InvalidParameter));
+    }
+
+    #[test]
+    fn protection_ranges_round_outward_and_reject_overflow() {
+        let (base, size) = normalize_protection_range(0x4000_0001, 0x1).unwrap();
+        assert_eq!(base.as_u64(), 0x4000_0000);
+        assert_eq!(size, PAGE);
+        let (base, size) = normalize_protection_range(0x4000_0fff, 2).unwrap();
+        assert_eq!(base.as_u64(), 0x4000_0000);
+        assert_eq!(size, PAGE * 2);
+        assert_eq!(normalize_protection_range(u64::MAX - 1, 2), Err(NtStatus::InvalidParameter));
     }
 }

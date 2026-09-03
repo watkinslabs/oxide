@@ -1499,11 +1499,19 @@ pub fn dispatch(call: NtCall) -> u64 {
             }
         }
         NtMemoryCall::Protect { base, size, protect, old_protect, .. } => {
-            let base = match uaccess::get_user_u64(base.as_u64()).ok().and_then(hal::UserVirtAddr::new) { Some(base) => base, None => return STATUS_INVALID_PARAMETER };
-            let size = match uaccess::get_user_u64(size.as_u64()) { Ok(size) if size <= usize::MAX as u64 => size as usize, _ => return STATUS_INVALID_PARAMETER };
+            let base_ptr = base.as_u64();
+            let size_ptr = size.as_u64();
+            let requested_base = match uaccess::get_user_u64(base_ptr) { Ok(base) => base, Err(_) => return STATUS_INVALID_PARAMETER };
+            let requested_size = match uaccess::get_user_u64(size_ptr) { Ok(size) => size, Err(_) => return STATUS_INVALID_PARAMETER };
+            let (base, size) = match elf_load::nt_memory::normalize_protection_range(requested_base, requested_size) {
+                Ok(range) => range,
+                Err(_) => return STATUS_INVALID_PARAMETER,
+            };
             let protection = match elf_load::nt_memory::windows_protection(protect) { Ok(protection) => protection, Err(_) => return STATUS_INVALID_PARAMETER };
             let old = match elf_load::nt_memory::protect(&mm, base, size, protection) { Ok(old) => old, Err(_) => return STATUS_INVALID_PARAMETER };
-            if uaccess::put_user_u32(old_protect.as_u64(), windows_protection_word(old)).is_err() { return STATUS_INVALID_PARAMETER; }
+            if uaccess::put_user_u64(base_ptr, base.as_u64()).is_err()
+                || uaccess::put_user_u64(size_ptr, size as u64).is_err()
+                || uaccess::put_user_u32(old_protect.as_u64(), windows_protection_word(old)).is_err() { return STATUS_INVALID_PARAMETER; }
             STATUS_SUCCESS
         }
         NtMemoryCall::Query { address, info_class, info, info_size, return_length, .. } => {
