@@ -349,8 +349,9 @@ fn write_unix_debug(args: u64) -> u64 {
     const LENGTH: u64 = 8;
     const CHUNK: usize = 256;
     if args == 0 { return STATUS_INVALID_PARAMETER; }
-    let Ok(pointer) = uaccess::get_user_u64(args + STRING) else { return STATUS_INVALID_PARAMETER; };
-    let Ok(length) = uaccess::get_user_u32(args + LENGTH) else { return STATUS_INVALID_PARAMETER; };
+    let (Some(string_address), Some(length_address)) = (wine_arg(args, STRING), wine_arg(args, LENGTH)) else { return STATUS_INVALID_PARAMETER; };
+    let Ok(pointer) = uaccess::get_user_u64(string_address) else { return STATUS_INVALID_PARAMETER; };
+    let Ok(length) = uaccess::get_user_u32(length_address) else { return STATUS_INVALID_PARAMETER; };
     let length = length as usize;
     if length > MAX_WINE_DEBUG_WRITE || (length != 0 && pointer == 0) { return STATUS_INVALID_PARAMETER; }
     let mut copied = 0u64;
