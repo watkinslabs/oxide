@@ -40,6 +40,16 @@ fn test_alert_service_is_in_the_native_nt_namespace() {
     assert_eq!(call.service, NtService::NtTestAlert);
     assert_eq!(decode_entry(NtService::NtTestAlert.entry(), call.args), Some(call));
 }
+
+#[test]
+fn user_client_pfn_services_round_trip_through_the_nt_namespace() {
+    let args = SyscallArgs { a0: 0x1000, a1: 0x90, a2: 0x2000, a3: 0x90, a4: 0x3000, a5: 0x58 };
+    for service in [NtService::RtlInitializeNtUserPfn, NtService::RtlRetrieveNtUserPfn, NtService::RtlResetNtUserPfn] {
+        let call = decode_entry(service.entry(), args).unwrap();
+        assert_eq!(call.service, service);
+        assert_eq!(call.args, args);
+    }
+}
     fn args() -> SyscallArgs { SyscallArgs { a0: u64::MAX, a1: 0x1122_3344_5566_7788, a2: 3, a3: 4, a4: 5, a5: 6 } }
 
     #[test]

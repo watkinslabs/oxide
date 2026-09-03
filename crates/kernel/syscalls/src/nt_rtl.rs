@@ -56,6 +56,18 @@ const CONTEXT_EX_BYTES: u64 = 0x20;
 const XSTATE_LEGACY_BYTES: u64 = 512;
 #[cfg(target_arch = "x86_64")]
 const XSTATE_HEADER_BYTES: u64 = 64;
+const NTUSER_CLIENT_PROCS_BYTES: u64 = 18 * 8;
+const NTUSER_WORKERS_BYTES: u64 = 11 * 8;
+
+fn validate_nt_user_pfn_table(base: u64, bytes: u64) -> bool {
+    if bytes == 0 { return true; }
+    let entries = bytes / 8;
+    for index in 0..entries {
+        let Some(address) = base.checked_add(index * 8) else { return false; };
+        if uaccess::get_user_u64(address).is_err() { return false; }
+    }
+    true
+}
 
 /// Convert the fixed Windows GUID spelling into its 16-byte little-endian ABI.
 /// # C: O(1) plus bounded usercopy
@@ -100,6 +112,45 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     #[cfg(target_arch = "x86_64")]
     if let Some(result) = crate::nt_rtl_xstate::dispatch(call) { return Some(result); }
     if call.service == NtService::RtlGetExePath { return Some(get_exe_path(call.args.a0, call.args.a1)); }
+    if call.service == NtService::RtlInitializeNtUserPfn {
+        let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+        if !cur.is_nt_personality() || call.args.a1 > NTUSER_CLIENT_PROCS_BYTES
+            || call.args.a3 > NTUSER_CLIENT_PROCS_BYTES || call.args.a5 > NTUSER_WORKERS_BYTES
+            || call.args.a1 % 8 != 0 || call.args.a3 % 8 != 0 || call.args.a5 % 8 != 0 {
+            return Some(STATUS_INVALID_PARAMETER);
+        }
+        if (call.args.a1 != 0 && call.args.a0 == 0) || (call.args.a3 != 0 && call.args.a2 == 0)
+            || (call.args.a5 != 0 && call.args.a4 == 0)
+            || !validate_nt_user_pfn_table(call.args.a0, call.args.a1)
+            || !validate_nt_user_pfn_table(call.args.a2, call.args.a3)
+            || !validate_nt_user_pfn_table(call.args.a4, call.args.a5) {
+            return Some(STATUS_INVALID_PARAMETER);
+        }
+        let mut state = cur.thread_group.nt_user_pfn.lock();
+        if state.is_some() { return Some(STATUS_INVALID_PARAMETER); }
+        *state = Some([call.args.a0, call.args.a1, call.args.a2, call.args.a3, call.args.a4, call.args.a5]);
+        return Some(STATUS_SUCCESS);
+    }
+    if call.service == NtService::RtlRetrieveNtUserPfn {
+        let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+        if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a1 == 0 || call.args.a2 == 0 {
+            return Some(STATUS_INVALID_PARAMETER);
+        }
+        let Some(state) = *cur.thread_group.nt_user_pfn.lock() else { return Some(STATUS_INVALID_PARAMETER); };
+        if uaccess::put_user_u64(call.args.a0, state[0]).is_err()
+            || uaccess::put_user_u64(call.args.a1, state[2]).is_err()
+            || uaccess::put_user_u64(call.args.a2, state[4]).is_err() {
+            return Some(STATUS_INVALID_PARAMETER);
+        }
+        return Some(STATUS_SUCCESS);
+    }
+    if call.service == NtService::RtlResetNtUserPfn {
+        let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+        if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
+        let mut state = cur.thread_group.nt_user_pfn.lock();
+        if state.take().is_none() { return Some(STATUS_INVALID_PARAMETER); }
+        return Some(STATUS_SUCCESS);
+    }
     if call.service == NtService::RtlWow64EnableFsRedirection { return Some(STATUS_SUCCESS); }
     if call.service == NtService::RtlWow64EnableFsRedirectionEx {
         if call.args.a1 != 0 && uaccess::put_user_u32(call.args.a1, 0).is_err() { return Some(STATUS_ACCESS_VIOLATION); }
