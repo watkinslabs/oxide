@@ -703,8 +703,8 @@ fn query_information_values(cur: &sched::Task, handle: u32, io_status: u64, info
     let file_attributes: u32 = if is_directory { 0x10 } else { 0x80 };
     let path = String::from_utf8(file.dentry().absolute_path()).ok();
     let name: alloc::vec::Vec<u16> = path.as_deref().unwrap_or("").encode_utf16().collect();
-    let name_bytes = name.len().saturating_mul(2);
-    let all_size = 100usize.saturating_add(name_bytes);
+    let Some(name_bytes) = name.len().checked_mul(2) else { return STATUS_INVALID_PARAMETER; };
+    let Some(all_size) = 100usize.checked_add(name_bytes) else { return STATUS_INVALID_PARAMETER; };
     let mut out = alloc::vec::Vec::new();
     let needed = match class {
         FILE_BASIC_INFORMATION => {
