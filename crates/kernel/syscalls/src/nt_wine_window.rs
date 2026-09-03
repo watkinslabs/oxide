@@ -54,6 +54,7 @@ const WINE_DRAW_MENU_BAR: u64 = 0x139b;
 const WINE_DRAW_MENU_BAR_TEMP: u64 = 0x139c;
 const WINE_SET_ACTIVE_WINDOW: u64 = 0x1532;
 const WINE_SET_FOCUS: u64 = 0x1557;
+const WINE_TRANSLATE_MESSAGE: u64 = 0x15d8;
 const WINE_DESTROY_MENU: u64 = 0x1382;
 const WINE_ENABLE_MENU_ITEM: u64 = 0x13a7;
 const WINE_SET_MENU: u64 = 0x1569;
@@ -365,6 +366,7 @@ pub fn dispatch_raw(ordinal: u64, args: SyscallArgs) -> Option<u64> {
     if ordinal == WINE_SET_ACTIVE_WINDOW || ordinal == WINE_SET_FOCUS {
         return Some(crate::nt_window::dispatch(NtCall { service: NtService::SetFocusWindow, args: SyscallArgs { a0: args.a0, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 } }).unwrap_or(STATUS_INVALID_PARAMETER));
     }
+    if ordinal == WINE_TRANSLATE_MESSAGE { return Some(translate_raw_message(args.a0)); }
     if ordinal == WINE_CREATE_MENU { return Some(crate::nt_window::create_menu_for_current(false)); }
     if ordinal == WINE_CREATE_POPUP_MENU { return Some(crate::nt_window::create_menu_for_current(true)); }
     if ordinal == WINE_DESTROY_MENU { return Some(win_bool(crate::nt_window::destroy_menu_for_current(args.a0))); }
@@ -426,6 +428,36 @@ pub fn dispatch_raw(ordinal: u64, args: SyscallArgs) -> Option<u64> {
 }
 
 #[cfg(target_os = "oxide-kernel")]
+fn translate_raw_message(pointer: u64) -> u64 {
+    const WM_KEYDOWN: u32 = 0x0100;
+    const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
+    if pointer == 0 { return STATUS_INVALID_PARAMETER; }
+    // The first 32 bytes of the x86-64 Windows MSG are the stable fields
+    // shared with NtWindowMessage: HWND, message, wParam, and lParam.
+    let mut bytes = [0u8; 32];
+    if uaccess::copy_from_user(&mut bytes, pointer).is_err() { return STATUS_ACCESS_VIOLATION; }
+    let hwnd = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
+    let message = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+    let wparam = u64::from_le_bytes(bytes[16..24].try_into().unwrap());
+    let lparam = i64::from_le_bytes(bytes[24..32].try_into().unwrap());
+    if message != WM_KEYDOWN { return 0; }
+    let Some(character) = translated_key(wparam as u16) else { return 0; };
+    let status = crate::nt_window::dispatch(NtCall {
+        service: NtService::PostMessage,
+        args: SyscallArgs { a0: hwnd, a1: 0x0102, a2: character as u64, a3: lparam as u64, a4: 0, a5: 0 },
+    }).unwrap_or(STATUS_INVALID_PARAMETER);
+    (status == STATUS_SUCCESS) as u64
+}
+
+fn translated_key(key: u16) -> Option<u16> {
+    match key {
+        0x08 | 0x09 | 0x0d | 0x20 => Some(key),
+        0x30..=0x39 | 0x41..=0x5a => Some(if (0x41..=0x5a).contains(&key) { key + 0x20 } else { key }),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "oxide-kernel")]
 fn win_bool(status: u64) -> u64 { (status == STATUS_SUCCESS) as u64 }
 
 #[cfg(target_os = "oxide-kernel")]
@@ -455,7 +487,7 @@ mod tests {
 
     #[test]
     fn wine_user32_ordinals_match_the_generated_table() {
-        assert_eq![(WINE_CREATE_WINDOW_EX, 0x136b), (WINE_DESTROY_WINDOW, 0x1384), (WINE_GET_MESSAGE, 0x141b), (WINE_PEEK_MESSAGE, 0x14ca), (WINE_POST_MESSAGE, 0x14d0), (WINE_SHOW_WINDOW, 0x15bd), (WINE_BEGIN_PAINT, 0x1327), (WINE_END_PAINT, 0x13bc), (WINE_GET_DC, 0x13eb), (WINE_GET_DC_EX, 0x13ec), (WINE_INVALIDATE_RECT, 0x148c), (WINE_RELEASE_DC, 0x1509), (WINE_SET_WINDOW_POS, 0x15a7), (WINE_GET_TEXT_METRICS, 0x1229), (WINE_GET_TEXT_EXTENT_EX, 0x1227), (WINE_REGISTER_CLASS_EX, 0x14eb), (WINE_DISPATCH_MESSAGE, 0x138b), (WINE_MESSAGE_CALL, 0x14b5), (WINE_GET_CLASS_NAME, 0x13d9), (WINE_GET_CLASS_INFO_EX, 0x13d8), (WINE_UNREGISTER_CLASS, 0x15df), (WINE_NTUSER_INITIALIZE_CLIENT_PFN_ARRAYS, 0x147a), (WINE_NTUSER_GET_SYSTEM_DPI_FOR_PROCESS, 0x144b), (WINE_GET_WINDOW_PLACEMENT, 0x1463), (WINE_CALL_NO_PARAM, 0x133c), (WINE_CALL_ONE_PARAM, 0x133d), (WINE_CREATE_MENU, 0x1366), (WINE_CREATE_POPUP_MENU, 0x1368), (WINE_DELETE_MENU, 0x1378), (WINE_REMOVE_MENU, 0x151d), (WINE_DRAW_MENU_BAR, 0x139b), (WINE_DRAW_MENU_BAR_TEMP, 0x139c), (WINE_SET_ACTIVE_WINDOW, 0x1532), (WINE_SET_FOCUS, 0x1557), (WINE_THUNKED_MENU_ITEM_INFO, 0x15d0)] .iter().for_each(|(actual, expected)| assert_eq!(*actual, *expected));
+        assert_eq![(WINE_CREATE_WINDOW_EX, 0x136b), (WINE_DESTROY_WINDOW, 0x1384), (WINE_GET_MESSAGE, 0x141b), (WINE_PEEK_MESSAGE, 0x14ca), (WINE_POST_MESSAGE, 0x14d0), (WINE_SHOW_WINDOW, 0x15bd), (WINE_BEGIN_PAINT, 0x1327), (WINE_END_PAINT, 0x13bc), (WINE_GET_DC, 0x13eb), (WINE_GET_DC_EX, 0x13ec), (WINE_INVALIDATE_RECT, 0x148c), (WINE_RELEASE_DC, 0x1509), (WINE_SET_WINDOW_POS, 0x15a7), (WINE_GET_TEXT_METRICS, 0x1229), (WINE_GET_TEXT_EXTENT_EX, 0x1227), (WINE_REGISTER_CLASS_EX, 0x14eb), (WINE_DISPATCH_MESSAGE, 0x138b), (WINE_MESSAGE_CALL, 0x14b5), (WINE_GET_CLASS_NAME, 0x13d9), (WINE_GET_CLASS_INFO_EX, 0x13d8), (WINE_UNREGISTER_CLASS, 0x15df), (WINE_NTUSER_INITIALIZE_CLIENT_PFN_ARRAYS, 0x147a), (WINE_NTUSER_GET_SYSTEM_DPI_FOR_PROCESS, 0x144b), (WINE_GET_WINDOW_PLACEMENT, 0x1463), (WINE_CALL_NO_PARAM, 0x133c), (WINE_CALL_ONE_PARAM, 0x133d), (WINE_CREATE_MENU, 0x1366), (WINE_CREATE_POPUP_MENU, 0x1368), (WINE_DELETE_MENU, 0x1378), (WINE_REMOVE_MENU, 0x151d), (WINE_DRAW_MENU_BAR, 0x139b), (WINE_DRAW_MENU_BAR_TEMP, 0x139c), (WINE_SET_ACTIVE_WINDOW, 0x1532), (WINE_SET_FOCUS, 0x1557), (WINE_TRANSLATE_MESSAGE, 0x15d8), (WINE_THUNKED_MENU_ITEM_INFO, 0x15d0)] .iter().for_each(|(actual, expected)| assert_eq!(*actual, *expected));
         assert_eq!(WINE_DEF_WINDOW_PROC, 0x029e);
         assert_eq!(WINE_CALL_WINDOW_PROC, 0x02ab);
     }
@@ -466,5 +498,13 @@ mod tests {
         assert_eq!(crate::nt_window::MENUITEMINFO_MASK_ID, 0x0000_0002);
         assert_eq!(crate::nt_window::MENUITEMINFO_MASK_SUBMENU, 0x0000_0004);
         assert_eq!(crate::nt_window::MENUITEMINFO_MASK_STRING, 0x0000_0040);
+    }
+
+    #[test]
+    fn raw_translate_key_contract_is_bounded() {
+        assert_eq!(translated_key(b'A' as u16), Some(b'a' as u16));
+        assert_eq!(translated_key(b'7' as u16), Some(b'7' as u16));
+        assert_eq!(translated_key(0x0d), Some(0x0d));
+        assert_eq!(translated_key(0x70), None);
     }
 }
