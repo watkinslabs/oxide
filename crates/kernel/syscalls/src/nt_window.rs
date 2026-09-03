@@ -406,7 +406,7 @@ pub(crate) fn unregister_class_for_current(name: &[u16]) -> bool {
 
 /// Allocate an HMENU in the canonical per-process menu owner. # C: O(N_process_gui_states)
 #[cfg(target_os = "oxide-kernel")]
-pub(crate) fn create_menu_for_current() -> u64 {
+pub(crate) fn create_menu_for_current(popup: bool) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     let group = Arc::clone(&cur.thread_group);
@@ -414,7 +414,8 @@ pub(crate) fn create_menu_for_current() -> u64 {
     entries.retain(|entry| entry.group.upgrade().is_some());
     let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))
         .unwrap_or_else(|| { entries.push(GuiEntry { group: Arc::downgrade(&group), state: ipc::win32_window::WindowManager::new(), menus: ipc::win32_menu::MenuManager::new(), wait: Arc::new(sched::live::WaitList::new()), foreground: false }); entries.len() - 1 });
-    entries[index].menus.create().map(|menu| menu.raw() as u64).unwrap_or(STATUS_INVALID_PARAMETER)
+    let result = if popup { entries[index].menus.create_popup() } else { entries[index].menus.create() };
+    result.map(|menu| menu.raw() as u64).unwrap_or(STATUS_INVALID_PARAMETER)
 }
 
 #[cfg(target_os = "oxide-kernel")]

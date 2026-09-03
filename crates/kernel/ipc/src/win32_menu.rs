@@ -23,7 +23,7 @@ pub struct MenuItem { pub id: u32, pub state: u32, pub text: Vec<u16>, pub subme
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum MenuError { NoSuchMenu, NoSuchItem, InvalidPosition }
 
-struct MenuRecord { items: Vec<MenuItem> }
+struct MenuRecord { popup: bool, items: Vec<MenuItem> }
 
 /// Owns every HMENU in one NT process. Window associations remain in
 /// `WindowManager`, while this owner retains menu lifetime and item state.
@@ -36,11 +36,19 @@ impl MenuManager {
 
     /// Allocate one process-local menu handle. # C: O(1) amortized
     pub fn create(&mut self) -> Result<MenuId, MenuError> {
+        self.create_kind(false)
+    }
+
+    pub fn create_popup(&mut self) -> Result<MenuId, MenuError> { self.create_kind(true) }
+
+    fn create_kind(&mut self, popup: bool) -> Result<MenuId, MenuError> {
         let id = MenuId(self.next);
         self.next = self.next.checked_add(1).ok_or(MenuError::NoSuchMenu)?;
-        self.menus.push((id, MenuRecord { items: Vec::new() }));
+        self.menus.push((id, MenuRecord { popup, items: Vec::new() }));
         Ok(id)
     }
+
+    pub fn is_popup(&self, id: MenuId) -> Result<bool, MenuError> { Ok(self.menus[self.index(id).ok_or(MenuError::NoSuchMenu)?].1.popup) }
 
     /// Destroy a menu and all of its owned items. # C: O(N_menus)
     pub fn destroy(&mut self, id: MenuId) -> Result<(), MenuError> {
@@ -170,5 +178,14 @@ mod tests {
         assert_eq!(menus.item(menu, 0, MF_BYPOSITION).unwrap().id, 9);
         assert_eq!(menus.item(menu, 9, 0).unwrap().submenu, Some(2));
         assert_eq!(menus.set_item(menu, 4, Some(1), None, None, None), Err(MenuError::NoSuchItem));
+    }
+
+    #[test]
+    fn regular_and_popup_menu_identity_is_preserved() {
+        let mut menus = MenuManager::new();
+        let menu = menus.create().unwrap();
+        let popup = menus.create_popup().unwrap();
+        assert_eq!(menus.is_popup(menu), Ok(false));
+        assert_eq!(menus.is_popup(popup), Ok(true));
     }
 }
