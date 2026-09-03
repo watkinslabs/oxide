@@ -314,6 +314,22 @@ fn write_unix_debug(args: u64) -> u64 {
     copied
 }
 
+#[cfg(target_os = "oxide-kernel")]
+fn validate_builtin_unwind(args: u64) -> u64 {
+    if args == 0 { return STATUS_INVALID_PARAMETER; }
+    let Ok(dispatch) = uaccess::get_user_u64(args + 8) else { return STATUS_INVALID_PARAMETER; };
+    let Ok(context) = uaccess::get_user_u64(args + 16) else { return STATUS_INVALID_PARAMETER; };
+    if dispatch == 0 || context == 0 { return STATUS_INVALID_PARAMETER; }
+    // DWARF-backed builtin unwinding is owned by the future Unix-module
+    // runtime. Do not reinterpret the records as PE unwind state here.
+    STATUS_NOT_IMPLEMENTED
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn validate_builtin_unwind(args: u64) -> u64 {
+    if args == 0 { STATUS_INVALID_PARAMETER } else { STATUS_NOT_IMPLEMENTED }
+}
+
 #[cfg(not(target_os = "oxide-kernel"))]
 fn write_unix_debug(_args: u64) -> u64 { STATUS_INVALID_PARAMETER }
 
@@ -324,6 +340,7 @@ pub(crate) fn dispatch(call: NtCall) -> u64 {
         return STATUS_INVALID_PARAMETER;
     }
     match WineUnixFunction::decode(call.args.a1) {
+        Some(WineUnixFunction::UnwindBuiltinDll) => validate_builtin_unwind(call.args.a2),
         // unix_wine_dbg_write: `{ const char *str; size_t len; }`.
         // Logging ownership is added with the kernel console bridge; reject
         // malformed requests now rather than dereferencing an untrusted ptr.
@@ -359,6 +376,12 @@ mod tests {
     fn unix_system_time_uses_windows_100ns_units() {
         assert_eq!(windows_time_ticks(1_700_000_000_123_456_700), 17_000_000_001_234_567);
         assert_eq!(windows_time_ticks(99), 0);
+    }
+
+    #[test]
+    fn builtin_unwind_rejects_a_null_request_before_runtime_dispatch() {
+        let call = NtCall { service: NtService::WineUnixCall, args: syscall::SyscallArgs { a0: syscall::nt::WINE_UNIXLIB_HANDLE, a1: WineUnixFunction::UnwindBuiltinDll as u64, a2: 0, a3: 0, a4: 0, a5: 0 } };
+        assert_eq!(dispatch(call), STATUS_INVALID_PARAMETER);
     }
 
     #[test]
