@@ -1481,11 +1481,20 @@ pub fn dispatch(call: NtCall) -> u64 {
         }
         NtMemoryCall::Free { base, size, free_type, .. } => {
             if free_type != MEM_RELEASE { return STATUS_INVALID_PARAMETER; }
-            let base = match uaccess::get_user_u64(base.as_u64()).ok().and_then(hal::UserVirtAddr::new) { Some(base) => base, None => return STATUS_INVALID_PARAMETER };
-            let size = match uaccess::get_user_u64(size.as_u64()) { Ok(size) if size <= usize::MAX as u64 => size as usize, _ => return STATUS_INVALID_PARAMETER };
+            let base_ptr = base.as_u64();
+            let size_ptr = size.as_u64();
+            let base = match uaccess::get_user_u64(base_ptr).ok().and_then(hal::UserVirtAddr::new) { Some(base) => base, None => return STATUS_INVALID_PARAMETER };
+            let requested_size = match uaccess::get_user_u64(size_ptr) { Ok(size) if size <= usize::MAX as u64 => size as usize, _ => return STATUS_INVALID_PARAMETER };
             let Some(info) = elf_load::nt_memory::query(&mm, base).ok() else { return STATUS_MEMORY_NOT_ALLOCATED; };
+            let size = if requested_size == 0 {
+                if base != info.base { return STATUS_INVALID_PARAMETER; }
+                info.size
+            } else { requested_size };
             match elf_load::nt_memory::free(&mm, elf_load::nt_memory::NtAllocation { base, size, protection: info.protection }) {
-                elf_load::nt_memory::NtStatus::Success => STATUS_SUCCESS,
+                elf_load::nt_memory::NtStatus::Success => {
+                    if uaccess::put_user_u64(base_ptr, base.as_u64()).is_err() || uaccess::put_user_u64(size_ptr, size as u64).is_err() { return STATUS_INVALID_PARAMETER; }
+                    STATUS_SUCCESS
+                }
                 _ => STATUS_INVALID_PARAMETER,
             }
         }
