@@ -59,6 +59,19 @@ fn native_section_object(call: NtCall) -> Option<NtObjectCall> {
                 size: UserPtr::new(size).ok()?, protect: protect as u32,
             })
         }
+        nt::NtService::NtMapViewOfSectionEx => {
+            if stack_argument(7)? != 0 || stack_argument(8)? != 0 { return None; }
+            let protect = stack_argument(6)?;
+            if call.args.a0 > u32::MAX as u64 || call.args.a5 > u32::MAX as u64 || protect > u32::MAX as u64 {
+                return None;
+            }
+            let offset = if call.args.a3 == 0 { 0 } else { uaccess::get_user_u64(call.args.a3).ok()? };
+            Some(NtObjectCall::MapViewOfSectionNative {
+                section: call.args.a0 as u32, process: call.args.a1,
+                base: UserPtr::new(call.args.a2).ok()?, zero_bits: 0, offset,
+                size: UserPtr::new(call.args.a4).ok()?, protect: protect as u32,
+            })
+        }
         _ => None,
     }
 }
@@ -606,13 +619,6 @@ pub fn dispatch(call: NtCall) -> u64 {
         sched::nt_object::make_temporary(&object);
         return STATUS_SUCCESS;
     }
-    if call.service == syscall::nt::NtService::NtMapViewOfSectionEx {
-        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-        if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
-        // Extended parameters and cross-process APC mapping need an NT-owned
-        // request decoder; the ordinary section mapper cannot safely stand in.
-        return STATUS_NOT_IMPLEMENTED;
-    }
     if call.service == syscall::nt::NtService::NtNotifyChangeDirectoryFile {
         return crate::nt_directory_notify::dispatch(call);
     }
@@ -932,7 +938,7 @@ pub fn dispatch(call: NtCall) -> u64 {
         if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
         return crate::s060_exit::sys_exit(&SyscallArgs { a0: call.args.a0, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }) as u64;
     }
-    let object_call = if matches!(call.service, nt::NtService::CreateSection | nt::NtService::NtCreateSectionEx | nt::NtService::MapViewOfSection) {
+    let object_call = if matches!(call.service, nt::NtService::CreateSection | nt::NtService::NtCreateSectionEx | nt::NtService::MapViewOfSection | nt::NtService::NtMapViewOfSectionEx) {
         native_section_object(call)
     } else { nt::decode_object(call).ok() };
     if let Some(object_call) = object_call {
