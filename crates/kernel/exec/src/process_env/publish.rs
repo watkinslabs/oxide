@@ -17,7 +17,14 @@ pub fn publish_module(peb: u64, module: &NtModuleInput<'_>) -> Result<(), Error>
     if peb == 0 || module.base == 0 || module.full_name.is_empty() || module.base_name.is_empty() { return Err(Error::Einval); }
     let mut block = vec![0u8; BLOCK_BYTES];
     uaccess::copy_from_user(&mut block, peb).map_err(|_| Error::Einval)?;
-    let base = peb;
+    plan(&mut block, peb, module)?;
+    uaccess::copy_to_user(peb, &block).map_err(|_| Error::Einval)
+}
+
+/// Apply one validated module publication to an in-memory PEB block.
+/// # C: O(BLOCK_BYTES + MAX_MODULES)
+pub fn plan(mut block: &mut [u8], base: u64, module: &NtModuleInput<'_>) -> Result<(), Error> {
+    if block.len() != BLOCK_BYTES || base == 0 || module.base == 0 || module.full_name.is_empty() || module.base_name.is_empty() { return Err(Error::Einval); }
     let (order, mut topology) = read_order(&block, base, 0)?;
     if order.len() >= MAX_MODULES { return Err(Error::Einval); }
     for (list, _) in LISTS.iter().enumerate() {
@@ -53,10 +60,9 @@ pub fn publish_module(peb: u64, module: &NtModuleInput<'_>) -> Result<(), Error>
             }
         }
     }
-    uaccess::copy_to_user(peb, &block).map_err(|_| Error::Einval)
+    Ok(())
 }
 
-#[cfg(target_os = "oxide-kernel")]
 fn read_order(block: &[u8], base: u64, list: usize) -> Result<(Vec<usize>, pe::loader_list::LoaderList), Error> {
     let (head_offset, link) = LISTS[list];
     let head = LDR_OFF + head_offset;
@@ -77,7 +83,6 @@ fn read_order(block: &[u8], base: u64, list: usize) -> Result<(Vec<usize>, pe::l
     Ok((order, pe::loader_list::LoaderList::new(MAX_MODULES)))
 }
 
-#[cfg(target_os = "oxide-kernel")]
 fn string_cursor(block: &[u8], base: u64, order: &[usize]) -> Result<usize, Error> {
     let mut cursor = STR_OFF;
     for slot in order {
@@ -94,13 +99,11 @@ fn string_cursor(block: &[u8], base: u64, order: &[usize]) -> Result<usize, Erro
     Ok(cursor & !1)
 }
 
-#[cfg(target_os = "oxide-kernel")]
 fn pointer(base: u64, slot: usize, link: &usize) -> u64 {
     if slot == MAX_MODULES { base + (LDR_OFF + LISTS.iter().find(|(_, offset)| offset == link).map(|(head, _)| *head).unwrap_or(0)) as u64 }
     else { base + (MOD_OFF + slot * MOD_STRIDE + *link) as u64 }
 }
 
-#[cfg(target_os = "oxide-kernel")]
 fn utf16(value: &str) -> Result<Vec<u16>, Error> {
     if value.contains('\0') { return Err(Error::Einval); }
     let mut text: Vec<u16> = value.encode_utf16().collect();
@@ -109,19 +112,68 @@ fn utf16(value: &str) -> Result<Vec<u16>, Error> {
     Ok(text)
 }
 
-#[cfg(target_os = "oxide-kernel")]
 fn get_u64(block: &[u8], offset: usize) -> u64 { u64::from_le_bytes(block[offset..offset + 8].try_into().unwrap_or([0; 8])) }
-#[cfg(target_os = "oxide-kernel")]
 fn put_u16(block: &mut [u8], offset: usize, value: u16) { block[offset..offset + 2].copy_from_slice(&value.to_le_bytes()); }
-#[cfg(target_os = "oxide-kernel")]
 fn put_u32(block: &mut [u8], offset: usize, value: u32) { block[offset..offset + 4].copy_from_slice(&value.to_le_bytes()); }
-#[cfg(target_os = "oxide-kernel")]
 fn put_u64(block: &mut [u8], offset: usize, value: u64) { block[offset..offset + 8].copy_from_slice(&value.to_le_bytes()); }
-#[cfg(target_os = "oxide-kernel")]
 fn put_unicode(block: &mut [u8], offset: usize, value: &[u16], pointer: u64) {
     put_u16(block, offset, ((value.len() - 1) * 2) as u16);
     put_u16(block, offset + 2, (value.len() * 2) as u16);
     put_u64(block, offset + 8, pointer);
 }
-#[cfg(target_os = "oxide-kernel")]
 fn copy_u16(block: &mut [u8], offset: usize, value: &[u16]) { for (index, word) in value.iter().enumerate() { put_u16(block, offset + index * 2, *word); } }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn put_initial(block: &mut [u8], base: u64) {
+        for (head, link) in LISTS {
+            let head_at = LDR_OFF + head;
+            let entry = MOD_OFF + link;
+            put_u64(block, head_at, base + entry as u64);
+            put_u64(block, head_at + 8, base + entry as u64);
+            put_u64(block, entry, base + head_at as u64);
+            put_u64(block, entry + 8, base + head_at as u64);
+        }
+        let full = MOD_OFF + FULL_NAME_OFF;
+        let name = MOD_OFF + BASE_NAME_OFF;
+        put_u16(block, full, 2);
+        put_u16(block, full + 2, 4);
+        put_u64(block, full + 8, base + STR_OFF as u64);
+        put_u16(block, name, 2);
+        put_u16(block, name + 2, 4);
+        put_u64(block, name + 8, base + (STR_OFF + 4) as u64);
+        copy_u16(block, STR_OFF, &[b'a' as u16, 0]);
+        copy_u16(block, STR_OFF + 4, &[b'a' as u16, 0]);
+        put_u64(block, MOD_OFF + MODULE_BASE_OFF, 0x1400_0000);
+    }
+
+    #[test]
+    fn plan_appends_metadata_strings_and_all_three_lists() {
+        let base = 0x1000_0000;
+        let mut block = vec![0u8; BLOCK_BYTES];
+        put_initial(&mut block, base);
+        let module = NtModuleInput { base: 0x1800_0000, entry: 0x1800_1234, size: 0x5000, full_name: "C:\\Windows\\System32\\user32.dll", base_name: "user32.dll" };
+        plan(&mut block, base, &module).unwrap();
+        for list in 0..LISTS.len() { assert_eq!(read_order(&block, base, list).unwrap().0, vec![0, 1]); }
+        let entry = MOD_OFF + MOD_STRIDE;
+        assert_eq!(get_u64(&block, entry + MODULE_BASE_OFF), module.base);
+        assert_eq!(get_u64(&block, entry + MODULE_ENTRY_OFF), module.entry);
+        assert_eq!(u32::from_le_bytes(block[entry + MODULE_SIZE_OFF..entry + MODULE_SIZE_OFF + 4].try_into().unwrap()), module.size);
+        assert_eq!(u16::from_le_bytes(block[entry + FULL_NAME_OFF..entry + FULL_NAME_OFF + 2].try_into().unwrap()), (module.full_name.encode_utf16().count() * 2) as u16);
+    }
+
+    #[test]
+    fn plan_rejects_inconsistent_order_without_mutating_the_block() {
+        let base = 0x1000_0000;
+        let mut block = vec![0u8; BLOCK_BYTES];
+        put_initial(&mut block, base);
+        let head = LDR_OFF + LISTS[1].0;
+        put_u64(&mut block, head, base + (LDR_OFF + LISTS[1].0) as u64);
+        let original = block.clone();
+        let module = NtModuleInput { base: 0x1800_0000, entry: 0, size: 0x1000, full_name: "x.dll", base_name: "x.dll" };
+        assert_eq!(plan(&mut block, base, &module), Err(Error::Einval));
+        assert_eq!(block, original);
+    }
+}

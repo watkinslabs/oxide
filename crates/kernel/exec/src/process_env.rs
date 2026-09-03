@@ -3,7 +3,6 @@ use hal::UserVirtAddr;
 use pe::Error;
 use vmm::{AddressSpace, MmapPlacement, VmaBacking, VmaFlags, VmaProt};
 
-#[cfg(target_os = "oxide-kernel")]
 mod publish;
 #[cfg(target_os = "oxide-kernel")]
 pub use publish::publish_module;
