@@ -78,6 +78,8 @@ const STATUS_NO_MEMORY: u64 = 0xc000_0017;
 #[cfg(target_os = "oxide-kernel")]
 const STATUS_CONFLICTING_ADDRESSES: u64 = 0xc000_0018;
 #[cfg(target_os = "oxide-kernel")]
+const STATUS_MAPPED_ALIGNMENT: u64 = 0xc000_0220;
+#[cfg(target_os = "oxide-kernel")]
 const STATUS_MEMORY_NOT_ALLOCATED: u64 = 0xc000_00a0;
 #[cfg(target_os = "oxide-kernel")]
 const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
@@ -1173,10 +1175,14 @@ pub fn dispatch(call: NtCall) -> u64 {
                 let Some(section) = object.section() else { return STATUS_INVALID_HANDLE; };
                 if offset >= section.size() as u64 { return STATUS_INVALID_PARAMETER; }
                 let requested = match uaccess::get_user_u64(base.as_u64()) { Ok(0) => None, Ok(raw) => hal::UserVirtAddr::new(raw), Err(_) => return STATUS_INVALID_PARAMETER };
+                if requested.map(|address| address.as_u64() & 0xffff != 0).unwrap_or(false) { return STATUS_MAPPED_ALIGNMENT; }
                 let requested_size = match uaccess::get_user_u64(size.as_u64()) { Ok(0) => section.size() as u64 - offset, Ok(raw) => raw, Err(_) => return STATUS_INVALID_PARAMETER };
                 let page = hal::PAGE_SIZE_BYTES as u64;
                 if requested_size == 0 || requested_size % page != 0 || requested_size > section.size() as u64 - offset { return STATUS_INVALID_PARAMETER; }
-                let placement = vmm::MmapPlacement::Advisory(requested);
+                let placement = match requested {
+                    Some(address) => vmm::MmapPlacement::FixedNoReplace(address),
+                    None => vmm::MmapPlacement::Advisory(None),
+                };
                 let backing = if let Some(file) = section.file() {
                     vmm::VmaBacking::File {
                         backing: crate::mmap_file::InodeFileBacking::new(file.inode().clone()), off: offset,
@@ -1187,7 +1193,8 @@ pub fn dispatch(call: NtCall) -> u64 {
                 let mapped = match mm.mmap_with_may_at(placement, requested_size as usize, protection, protection,
                     vmm::VmaFlags::PRIVATE, backing) {
                     Ok(mapped) => mapped,
-                    Err(_) => return STATUS_NO_MEMORY,
+                    Err(vmm::MmapError::Exists) => return STATUS_CONFLICTING_ADDRESSES,
+                    Err(vmm::MmapError::Vmm(_)) => return STATUS_NO_MEMORY,
                 };
                 if uaccess::put_user_u64(base.as_u64(), mapped.as_u64()).is_err()
                     || uaccess::put_user_u64(size.as_u64(), requested_size).is_err() {
