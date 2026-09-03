@@ -27,6 +27,9 @@ const WINE_GET_TEXT_METRICS: u64 = 0x1229;
 const WINE_GET_TEXT_EXTENT_EX: u64 = 0x1227;
 const WINE_REGISTER_CLASS_EX: u64 = 0x14eb;
 const WINE_DISPATCH_MESSAGE: u64 = 0x138b;
+// Wine's generated win32u syscall table assigns this ordinal to the raw
+// four-argument client-table publication entry.
+const WINE_NTUSER_INITIALIZE_CLIENT_PFN_ARRAYS: u64 = 0x147a;
 const WM_TIMER: u32 = 0x0113;
 
 #[cfg(target_os = "oxide-kernel")]
@@ -125,6 +128,26 @@ pub fn dispatch(call: NtCall) -> u64 {
         WINE_GET_TEXT_EXTENT_EX => win_bool(gdi(NtService::GetGdiTextExtent, SyscallArgs { a0: args[0], a1: args[1], a2: args[2], a3: args[6], a4: 0, a5: 0 })),
         _ => STATUS_NOT_IMPLEMENTED,
     }
+}
+
+/// Dispatch the raw win32u syscall used by the real Wine PE module. Unlike
+/// the synthetic `WineSyscall` adapter above, this path receives the Windows
+/// register ABI directly and has no descriptor/argument-array envelope.
+/// # C: O(NTUSER_NB_PROCS + NTUSER_NB_WORKERS)
+#[cfg(target_os = "oxide-kernel")]
+pub fn dispatch_raw(ordinal: u64, args: SyscallArgs) -> Option<u64> {
+    if ordinal != WINE_NTUSER_INITIALIZE_CLIENT_PFN_ARRAYS { return None; }
+    let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+    if !cur.is_nt_personality() || args.a0 == 0 || args.a1 == 0 || args.a2 == 0 || args.a3 == 0 {
+        return Some(STATUS_INVALID_PARAMETER);
+    }
+    if !crate::nt_rtl::validate_nt_user_pfn_tables(args.a0, args.a1, args.a2) {
+        return Some(STATUS_INVALID_PARAMETER);
+    }
+    let mut module = cur.thread_group.nt_user_module.lock();
+    if module.is_some() { return Some(STATUS_INVALID_PARAMETER); }
+    *module = Some(args.a3);
+    Some(STATUS_SUCCESS)
 }
 
 #[cfg(target_os = "oxide-kernel")]

@@ -52,6 +52,12 @@ fn syscall_entry_work(orig_nr: u64, args: &SyscallArgs) -> (Option<u64>, u64) {
 #[inline(never)]
 fn dispatch_routed_syscall(entry: (Option<u64>, u64), nr: u64, args: &SyscallArgs) -> i64 {
     if let Some(rv) = entry.0 { return rv as i64; }
+    // Real Wine win32u PE stubs use their generated raw ordinal namespace
+    // rather than Oxide's tagged synthetic dispatcher entry. Only an NT task
+    // may claim this otherwise-unreserved raw number.
+    if sched::live::current().is_some_and(|task| task.is_nt_personality()) {
+        if let Some(rv) = crate::nt_wine_window::dispatch_raw(nr, *args) { return rv as i64; }
+    }
     // A tagged NT word is consumed before the Linux number tables. The common
     // syscall entry/return frame is retained, but no Linux handler can claim
     // an NT service selector; the adapter separately checks NT task state.
