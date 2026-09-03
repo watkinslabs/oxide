@@ -56,6 +56,20 @@ pub fn create_resource_3d_for_key(key: virtio::VirtioChildDeviceKey, resource_id
     ])
 }
 
+/// Admit one guest-backed resource blob and its contiguous backing. # C: O(1)
+pub fn create_resource_blob_for_key(key: virtio::VirtioChildDeviceKey, resource_id: u32,
+    blob_mem: u32, blob_flags: u32, blob_id: u64, pa: u64, bytes: u64) -> bool {
+    if resource_id == 0 || pa == 0 || bytes == 0 || bytes > u32::MAX as u64 { return false; }
+    let ctxs = ctx_lock();
+    let Some(ctx) = ctxs.iter().find(|ctx| ctx.device_key == key) else { return false };
+    if ctx.quiesced { return false; }
+    drop(ctxs);
+    runtime_queue::enqueue_ctrl(key, &[
+        RuntimeCmd::CreateBlob { res_id: resource_id, blob_mem, blob_flags, blob_id, bytes },
+        RuntimeCmd::AttachBacking { res_id: resource_id, dma: pa, bytes: bytes as u32 },
+    ])
+}
+
 pub fn destroy_resource_for_key(key: virtio::VirtioChildDeviceKey, resource_id: u32) -> bool {
     if resource_id == 0 { return false; }
     runtime_queue::enqueue_destroy(key, resource_id)

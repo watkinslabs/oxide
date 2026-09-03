@@ -219,6 +219,19 @@ fn encode_resource_create_2d_layout() {
 }
 
 #[test]
+fn encode_resource_create_blob_layout() {
+    let mut buf = [0u8; COMMAND_BUFFER_BYTES];
+    let n = encode_resource_create_blob(&mut buf, TEST_RESOURCE_ID, 1, 0, 0, 8192);
+    assert_eq!(n, 56);
+    assert_eq!(read_u32_le(&buf, CTRL_TYPE_OFFSET), VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB);
+    assert_eq!(read_u32_le(&buf, 24), TEST_RESOURCE_ID);
+    assert_eq!(read_u32_le(&buf, 28), 1);
+    assert_eq!(read_u32_le(&buf, 32), 0);
+    assert_eq!(read_u32_le(&buf, 36), 1);
+    assert_eq!(read_u64_le(&buf, 48), 8192);
+}
+
+#[test]
 fn encode_resource_create_3d_layout() {
     let mut buf = [0u8; 72];
     let n = encode_resource_create_3d(&mut buf, TEST_RESOURCE_ID, 2,

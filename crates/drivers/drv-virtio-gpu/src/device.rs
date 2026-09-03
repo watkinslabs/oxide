@@ -268,6 +268,21 @@ impl drm::DrmDriver for VirtioGpuDrm {
         { let _ = resource_id; false }
     }
 
+    fn virtgpu_resource_create_blob(&self, pa: u64, size: u64, blob_flags: u32,
+        blob_id: u64) -> Option<u32> {
+        if self.features_negotiated & (1u64 << VIRTIO_GPU_F_RESOURCE_BLOB) == 0
+            || blob_flags != 0 || blob_id != 0 { return None; }
+        #[cfg(target_os = "oxide-kernel")]
+        {
+            let key = DEVICES.lock().iter().find(|d| d.bdf == self.bdf).map(|d| d.device_key)?;
+            let id = DEVICES.lock().iter().find(|d| d.bdf == self.bdf)?.next_resource_id();
+            post_init::create_resource_blob_for_key(key, id, drm::VIRTGPU_BLOB_MEM_GUEST,
+                blob_flags, blob_id, pa, size).then_some(id)
+        }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        { let _ = (pa, size, blob_flags, blob_id); None }
+    }
+
     fn virtgpu_submit(&self, context_id: u32, ring_idx: u32, command: &[u8], resources: &[u32]) -> bool {
         if self.features_negotiated & (1u64 << VIRTIO_GPU_F_VIRGL) == 0
             || ring_idx >= 64 || command.is_empty() || resources.len() > 256 { return false; }
