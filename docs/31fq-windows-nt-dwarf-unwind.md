@@ -33,13 +33,18 @@ through `exec::elf_modules` at the same point it publishes the selected load
 bias for the main image and interpreter. Consumers query that owner by
 address space and instruction pointer; no consumer reconstructs a module list.
 
+The NT Wine Unix-call owner now queries that publication, locates the FDE for
+the requested x86-64 context, executes it through the shared CFA evaluator,
+and copies back only the defined context and dispatcher fields. Missing
+metadata, missing FDEs, and unsupported execution return the Wine fallback
+status so the PE owner remains authoritative for PE images.
+
 ## Verification
 
 Hosted tests cover LEB decoding, malformed input, PC-relative addresses, and
 CIE/FDE record links, and the CIE+FDE program join (including the required
 zero-length FDE augmentation payload). Both x86-64 and aarch64 kernel checks
-compile the same no-std parser. Runtime dispatch still needs to connect this
-program to validated Wine Unix requests, loaded-image records, and a
-fault-aware user-context owner. Until that owner exists, the validated
-request returns Wine's `STATUS_UNSUCCESSFUL` (rather than
-`STATUS_NOT_IMPLEMENTED`) so ntdll continues into the native PE unwind owner.
+compile the same no-std parser; x86-64 target code also compiles the NT
+context/dispatcher owner. When no ELF companion metadata exists, the request
+returns Wine's `STATUS_UNSUCCESSFUL` (rather than `STATUS_NOT_IMPLEMENTED`)
+so ntdll continues into the native PE unwind owner.
