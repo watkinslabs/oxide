@@ -259,6 +259,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `31fp-windows-nt-unix-unwind.md` | FROZEN | 2026-09-02 | `01`,`02`,`31h`,`31v`,`52`,`53` |
 | `31fq-windows-nt-dwarf-unwind.md` | FROZEN | 2026-09-03 | `31fp`,`31v`,`52`,`53` |
 | `31fr-windows-nt-elf-sections.md` | FROZEN | 2026-09-03 | `31fq`,`31h`,`31v`,`52`,`53` |
+| `31fs-windows-nt-loaded-unwind.md` | FROZEN | 2026-09-03 | `31fr`,`31fq`,`31h`,`31v`,`52`,`53` |
 
 ## Deleted
 
