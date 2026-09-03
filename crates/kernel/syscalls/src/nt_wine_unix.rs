@@ -9,6 +9,7 @@ use syscall::nt_wine_unix::WineUnixFunction;
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
+const STATUS_UNSUCCESSFUL: u64 = 0xc000_0001;
 const STATUS_HANDLE_NOT_CLOSABLE: u64 = 0xc000_0235;
 const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
 const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
@@ -332,9 +333,10 @@ fn validate_builtin_unwind(args: u64) -> u64 {
     let Ok(dispatch) = uaccess::get_user_u64(args + 8) else { return STATUS_INVALID_PARAMETER; };
     let Ok(context) = uaccess::get_user_u64(args + 16) else { return STATUS_INVALID_PARAMETER; };
     if dispatch == 0 || context == 0 { return STATUS_INVALID_PARAMETER; }
-    // DWARF-backed builtin unwinding is owned by the future Unix-module
-    // runtime. Do not reinterpret the records as PE unwind state here.
-    STATUS_NOT_IMPLEMENTED
+    // Oxide has no SO_DLLS_SUPPORTED Unix companion catalog. Match Wine's
+    // no-companion implementation: STATUS_UNSUCCESSFUL tells ntdll's
+    // virtual_unwind caller to continue with the native PE owner.
+    STATUS_UNSUCCESSFUL
 }
 
 #[cfg(target_os = "oxide-kernel")]
@@ -414,6 +416,14 @@ mod tests {
     fn builtin_unwind_rejects_a_null_request_before_runtime_dispatch() {
         let call = NtCall { service: NtService::WineUnixCall, args: syscall::SyscallArgs { a0: syscall::nt::WINE_UNIXLIB_HANDLE, a1: WineUnixFunction::UnwindBuiltinDll as u64, a2: 0, a3: 0, a4: 0, a5: 0 } };
         assert_eq!(dispatch(call), STATUS_INVALID_PARAMETER);
+    }
+
+    #[test]
+    fn unavailable_unix_unwind_uses_wines_native_fallback_status() {
+        // Wine's virtual_unwind tests specifically for STATUS_UNSUCCESSFUL;
+        // STATUS_NOT_IMPLEMENTED would terminate the fallback path.
+        assert_eq!(STATUS_UNSUCCESSFUL, 0xc000_0001);
+        assert_ne!(STATUS_UNSUCCESSFUL, STATUS_NOT_IMPLEMENTED);
     }
 
     #[test]
