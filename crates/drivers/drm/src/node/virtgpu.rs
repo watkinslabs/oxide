@@ -25,7 +25,8 @@ fn context_init(driver: Option<Arc<dyn DrmDriver>>, arg: u64, card_id: u32, toke
         return -(Errno::Einval.as_i32() as i64);
     }
     let mut capset_id = 0u32;
-    let mut num_rings = 1u32;
+    let mut num_rings = 0u32;
+    let mut seen = 0u8;
     for index in 0..request.num_params {
         let Some(offset) = (index as u64).checked_mul(16)
             .and_then(|n| request.ctx_set_params.checked_add(n)) else {
@@ -35,12 +36,16 @@ fn context_init(driver: Option<Arc<dyn DrmDriver>>, arg: u64, card_id: u32, toke
             else { return -(Errno::Efault.as_i32() as i64) };
         match param.param {
             crate::VIRTGPU_CONTEXT_PARAM_CAPSET_ID => {
+                if seen & 1 != 0 { return -(Errno::Einval.as_i32() as i64); }
                 if param.value > u32::MAX as u64 { return -(Errno::Einval.as_i32() as i64); }
                 capset_id = param.value as u32;
+                seen |= 1;
             }
             crate::VIRTGPU_CONTEXT_PARAM_NUM_RINGS => {
+                if seen & 2 != 0 { return -(Errno::Einval.as_i32() as i64); }
                 if param.value > u32::MAX as u64 { return -(Errno::Einval.as_i32() as i64); }
                 num_rings = param.value as u32;
+                seen |= 2;
             }
             // These require additional host-facing state and are rejected
             // until their complete ownership contract is implemented.

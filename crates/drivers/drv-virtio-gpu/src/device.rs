@@ -203,8 +203,8 @@ impl drm::DrmDriver for VirtioGpuDrm {
     fn virtgpu_context_init(&self, capset_id: u32, num_rings: u32) -> Option<u32> {
         if self.features_negotiated & (1u64 << VIRTIO_GPU_F_VIRGL) == 0
             || self.features_negotiated & (1u64 << VIRTIO_GPU_F_CONTEXT_INIT) == 0
-            || num_rings == 0 || num_rings > 64
-            || (capset_id != 0 && !self.capsets.iter().any(|c| c.id == capset_id)) {
+            || num_rings > 64
+            || !self.capsets.iter().any(|c| c.id == capset_id) {
             return None;
         }
         #[cfg(target_os = "oxide-kernel")]
