@@ -245,6 +245,7 @@ pub fn directory_entries(object: &NtObject) -> Vec<(String, String)> {
             NtObjectType::Timer => "Timer",
             NtObjectType::SymbolicLink => "SymbolicLink",
             NtObjectType::NamedPipe => "NamedPipe",
+            NtObjectType::ActivationContext => "ActivationContext",
             _ => "Object",
         };
         Some((leaf(&entry.path).into(), kind.into()))
