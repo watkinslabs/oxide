@@ -31,6 +31,7 @@ const STATUS_LUIDS_EXHAUSTED: u64 = 0xc000_0075;
 static NEXT_NT_LUID: AtomicU64 = AtomicU64::new(1000);
 
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == syscall::nt::NtService::NtFilterToken { return Some(filter_token(call)); }
     if call.service == syscall::nt::NtService::NtSetInformationToken { return Some(set_information(call)); }
     if call.service == syscall::nt::NtService::NtPrivilegeCheck { return Some(privilege_check(call)); }
     if call.service == syscall::nt::NtService::NtAdjustGroupsToken { return Some(adjust_groups(call)); }
@@ -80,6 +81,37 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         }
         _ => None,
     }
+}
+
+fn filter_token(call: NtCall) -> u64 {
+    if call.args.a0 > u32::MAX as u64 || call.args.a1 != 0 || call.args.a5 == 0 || call.args.a4 != 0 {
+        return STATUS_NOT_IMPLEMENTED;
+    }
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let table = cur.thread_group.nt_handles();
+    let source = sched::nt_object::NtHandle::from_raw(call.args.a0 as u32);
+    let Some(object) = table.get(source, TOKEN_DUPLICATE) else {
+        return if table.contains(source) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE };
+    };
+    let Some(token) = object.token() else { return STATUS_INVALID_HANDLE; };
+    let disabled_sids = if call.args.a2 == 0 { Vec::new() } else {
+        let Some(groups) = read_groups(call.args.a2, u64::MAX) else { return STATUS_INVALID_PARAMETER; };
+        groups.into_iter().map(|group| group.sid).collect()
+    };
+    let disabled_privileges = if call.args.a3 == 0 { Vec::new() } else {
+        let Some(privileges) = read_privileges(call.args.a3, u64::MAX) else { return STATUS_INVALID_PARAMETER; };
+        privileges
+    };
+    let filtered = token.filtered(&disabled_sids, &disabled_privileges);
+    let Some(new_handle) = table.insert(table.duplicate_token(alloc::sync::Arc::new(filtered)), TOKEN_ALL_ACCESS) else {
+        return STATUS_INVALID_PARAMETER;
+    };
+    if uaccess::put_user_u32(call.args.a5, new_handle.raw()).is_err() {
+        let _ = table.close(new_handle);
+        return STATUS_ACCESS_VIOLATION;
+    }
+    STATUS_SUCCESS
 }
 
 fn set_information(call: NtCall) -> u64 {

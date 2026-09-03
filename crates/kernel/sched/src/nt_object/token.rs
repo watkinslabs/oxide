@@ -58,6 +58,18 @@ impl NtToken {
         (previous, all_assigned)
     }
     pub fn privileges(&self) -> Vec<NtTokenPrivilege> { self.privileges.lock().clone() }
+    /// Clone this token while applying Wine's supported filter operation.
+    /// Disabled SIDs are removed and matching privileges are disabled; the
+    /// source token remains immutable from the new token's perspective.
+    pub fn filtered(&self, disabled_sids: &[[u8; 16]], disabled_privileges: &[NtTokenPrivilege]) -> Self {
+        let groups = self.groups.lock().iter().copied()
+            .filter(|group| !disabled_sids.iter().any(|sid| *sid == group.sid)).collect();
+        let mut privileges = self.privileges.lock().clone();
+        for privilege in &mut privileges {
+            if disabled_privileges.iter().any(|disabled| disabled.luid == privilege.luid) { privilege.attributes &= !2; }
+        }
+        Self { uid: self.uid, gid: self.gid, groups: Spinlock::new(groups), privileges: Spinlock::new(privileges), session_id: AtomicU32::new(self.session_id()) }
+    }
     pub fn session_id(&self) -> u32 { self.session_id.load(Ordering::Acquire) }
     pub fn set_session_id(&self, value: u32) { self.session_id.store(value, Ordering::Release); }
 }
@@ -101,5 +113,20 @@ mod tests {
         assert!(all_assigned);
         assert_eq!(previous, vec![privilege]);
         assert_eq!(token.privileges.lock()[0].attributes, 1);
+    }
+
+    #[test]
+    fn filtered_token_owns_independent_groups_and_privilege_state() {
+        let token = NtToken::new(1000, 1001);
+        let group = sid(5, 2000);
+        token.replace_groups(vec![NtTokenGroup { sid: group, attributes: 4 }]);
+        token.privileges.lock().push(NtTokenPrivilege { luid: 0x22, attributes: 3 });
+
+        let filtered = token.filtered(&[group], &[NtTokenPrivilege { luid: 0x22, attributes: 0 }]);
+
+        assert!(!filtered.has_sid(&group));
+        assert_eq!(filtered.privileges()[0].attributes, 1);
+        assert!(token.has_sid(&group));
+        assert_eq!(token.privileges()[0].attributes, 3);
     }
 }

@@ -440,17 +440,14 @@ Windows NT frontier update (2026-09-01): `NtDuplicateToken` now validates
 token-handle access, requested access, token type, and output memory, then
 returns a new process-local handle retaining the token state. The graph
 advances to `ntdll.dll!NtEnumerateKey`.
-Windows NT frontier update (2026-09-01): `NtEnumerateKey` now has an explicit
-native export and fail-closed `STATUS_NOT_IMPLEMENTED` boundary; NT registry
-key enumeration remains pending. The graph advances to its next unresolved
-native import, `ntdll.dll!NtEnumerateValueKey`.
-Windows NT frontier update (2026-09-01): `NtEnumerateValueKey` now has an
-explicit native export and fail-closed `STATUS_NOT_IMPLEMENTED` boundary; NT
-registry value enumeration remains pending. The graph advances to its next
-unresolved native import, `ntdll.dll!NtFilterToken`.
-Windows NT frontier update (2026-09-01): `NtFilterToken` now has an explicit
-native export and fail-closed `STATUS_NOT_IMPLEMENTED` boundary; restricted
-token SID/privilege representation remains pending. The graph advances to
+Windows NT frontier update (2026-09-03): `NtEnumerateKey` and
+`NtEnumerateValueKey` now route through the canonical userspace registry owner
+with Wine-shaped basic/full/partial record encoding and access checks. The
+remaining registry gap is hive load/save serialization, not enumeration.
+Windows NT frontier update (2026-09-03): `NtFilterToken` now creates an
+independent native token object, removes requested group SIDs, and disables
+requested privileges. Unsupported flags and restricted-SID filtering remain
+explicit until those token owners are defined. The graph advances to
 `ntdll.dll!NtFlushBuffersFile`.
 Windows NT frontier update (2026-09-01): `NtFlushBuffersFile` now resolves
 through the native file adapter and flushes the backing VFS file with NT
@@ -551,14 +548,10 @@ owner, including enabled-privilege matching and all-required semantics.
 The graph now reaches `ntdll.dll!NtPulseEvent`; native transient pulse
 generation, wakeup, and manual/synchronization consumer semantics are now
 implemented by the NT event owner.
-The graph now reaches `ntdll.dll!NtOpenKey`; its registry namespace and typed
-key-handle owner remain an explicit `STATUS_NOT_IMPLEMENTED` boundary.
-`NtOpenKeyEx` is exposed at the same boundary; its registry options still
-require the typed registry namespace owner.
-The Notepad handoff now stages and starts that canonical userspace registry
-owner before launching the PE image; native NT key syscalls still require a
-protocol adapter that can safely route to the same service without a kernel
-shadow database.
+`NtOpenKey` and `NtOpenKeyEx` now resolve typed key handles through the
+canonical userspace registry owner; options outside the supported zero form
+remain fail-closed. The Notepad handoff stages and starts that same owner
+before launching the PE image; no kernel registry shadow database exists.
 Windows NT frontier update (2026-09-02): named mutant creation and opening
 now reuse canonical scheduler-backed mutant identity with collision,
 type-mismatch, and missing-parent status handling; recursive ownership and
