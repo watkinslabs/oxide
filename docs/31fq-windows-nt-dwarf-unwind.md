@@ -19,9 +19,20 @@ This is intentionally independent of PE `.pdata`/`UNWIND_INFO`: PE modules
 continue through the native PE unwind owner in `shared::pe`; Wine builtin ELF
 modules use this separate DWARF source.
 
+## Implementation status
+
+The shared owner now exposes `frame_program`: it validates the CIE and FDE
+link, decodes the CIE alignment factors and augmentation records, skips the
+encoded initial-location/range fields, and returns one bounded instruction
+stream containing CIE initialization followed by FDE instructions. This is
+the input contract for the runtime CFA owner; it does not load an ELF module,
+touch user memory, or manufacture an unwind result.
+
 ## Verification
 
 Hosted tests cover LEB decoding, malformed input, PC-relative addresses, and
-CIE/FDE record links. Both x86-64 and aarch64 kernel checks compile the same
-no-std parser. Register-rule execution and loaded-module section publication
-remain the next runtime-owner work.
+CIE/FDE record links, and the CIE+FDE program join (including the required
+zero-length FDE augmentation payload). Both x86-64 and aarch64 kernel checks
+compile the same no-std parser. Runtime dispatch still needs to connect this
+program to validated Wine Unix requests, loaded-image records, and a
+fault-aware user-context owner.
