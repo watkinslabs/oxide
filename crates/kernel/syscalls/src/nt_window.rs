@@ -256,7 +256,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
                 }
                 NtWindowCall::Show { hwnd, command } => {
                     let Some(window) = valid_window(hwnd) else { return Some(STATUS_INVALID_HANDLE); };
-                    (Some(match state.show(window, command != ipc::win32_window::SW_HIDE) { Ok(previous) => previous as u64, Err(_) => STATUS_INVALID_HANDLE }), None, None)
+                    (Some(match state.show(cur.tid as u64, window, command != ipc::win32_window::SW_HIDE) { Ok(previous) => previous as u64, Err(ipc::win32_window::WindowError::WrongThread) => STATUS_INVALID_PARAMETER, Err(_) => STATUS_INVALID_HANDLE }), None, None)
                 }
                 NtWindowCall::Invalidate { hwnd, rect } => {
                     let Some(window) = valid_window(hwnd) else { return Some(STATUS_INVALID_HANDLE); };
