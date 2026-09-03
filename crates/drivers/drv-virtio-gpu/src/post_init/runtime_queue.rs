@@ -45,7 +45,7 @@ impl RuntimeCmd {
             Self::Submit3d { context_id, command_bytes, payload, .. } => {
                 let n = crate::encode_submit_3d(buf, context_id, command_bytes);
                 let end = n + (command_bytes as usize).min(payload.len());
-                if end <= buf.len() { buf[n..end].copy_from_slice(&payload[..end - n]); n }
+                if end <= buf.len() { buf[n..end].copy_from_slice(&payload[..end - n]); end }
                 else { 0 }
             }
             Self::Create2d { res_id, fmt, w, h } => crate::encode_resource_create_2d(buf, res_id, fmt, w, h),
@@ -469,6 +469,20 @@ mod tests {
         assert_eq!(crate::read_u32_le(&buf, 0), crate::VIRTIO_GPU_CMD_CTX_DESTROY);
         assert_eq!(cmds[2].encode_ctrl(&mut buf), 32);
         assert_eq!(crate::read_u32_le(&buf, 0), crate::VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE);
+    }
+
+    #[test]
+    fn submit_3d_keeps_header_and_command_stream_contiguous() {
+        let mut payload = [0u8; 3968];
+        payload[..4].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+        let cmd = RuntimeCmd::Submit3d { context_id: 9, ring_idx: 0,
+            command_bytes: 4, payload };
+        let mut buf = [0u8; 4096];
+        assert!(cmd.ctrl());
+        assert_eq!(cmd.encode_ctrl(&mut buf), 36);
+        assert_eq!(crate::read_u32_le(&buf, 0), crate::VIRTIO_GPU_CMD_SUBMIT_3D);
+        assert_eq!(crate::read_u32_le(&buf, 16), 9);
+        assert_eq!(&buf[32..36], &[0xde, 0xad, 0xbe, 0xef]);
     }
 
     #[test]
