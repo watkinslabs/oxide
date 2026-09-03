@@ -18,6 +18,7 @@ const STATUS_NO_MEMORY: u64 = 0xc000_0017;
 const STATUS_OBJECT_NAME_COLLISION: u64 = 0xc000_0035;
 const STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xc000_0034;
 const STATUS_OBJECT_TYPE_MISMATCH: u64 = 0xc000_0024;
+const MAX_WINE_DEBUG_WRITE: usize = 1 << 20;
 
 const UNW_FLAG_MASK: u32 = 0x7;
 
@@ -314,9 +315,12 @@ fn server_call(_args: u64) -> u64 { STATUS_INVALID_PARAMETER }
 fn write_unix_debug(args: u64) -> u64 {
     const STRING: u64 = 0;
     const LENGTH: u64 = 8;
-    const CHUNK: usize = 128;
+    const CHUNK: usize = 256;
+    if args == 0 { return STATUS_INVALID_PARAMETER; }
     let Ok(pointer) = uaccess::get_user_u64(args + STRING) else { return STATUS_INVALID_PARAMETER; };
     let Ok(length) = uaccess::get_user_u32(args + LENGTH) else { return STATUS_INVALID_PARAMETER; };
+    let length = length as usize;
+    if length > MAX_WINE_DEBUG_WRITE || (length != 0 && pointer == 0) { return STATUS_INVALID_PARAMETER; }
     let mut copied = 0u64;
     let mut buffer = [0u8; CHUNK];
     while copied < length as u64 {
@@ -325,8 +329,11 @@ fn write_unix_debug(args: u64) -> u64 {
         klog::write_raw(&buffer[..count]);
         copied += count as u64;
     }
-    copied
+    STATUS_SUCCESS
 }
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn write_unix_debug(_args: u64) -> u64 { STATUS_INVALID_PARAMETER }
 
 #[cfg(target_os = "oxide-kernel")]
 fn validate_builtin_unwind(args: u64) -> u64 {
@@ -351,9 +358,6 @@ fn load_so_dll(_args: u64) -> u64 { STATUS_NOT_IMPLEMENTED }
 fn validate_builtin_unwind(args: u64) -> u64 {
     if args == 0 { STATUS_INVALID_PARAMETER } else { STATUS_NOT_IMPLEMENTED }
 }
-
-#[cfg(not(target_os = "oxide-kernel"))]
-fn write_unix_debug(_args: u64) -> u64 { STATUS_INVALID_PARAMETER }
 
 /// Wine's `unixlib_handle_t` is a table identity. Only the native table may
 /// consume it; arbitrary user pointers are rejected before dispatch.
