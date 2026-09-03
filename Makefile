@@ -119,6 +119,8 @@ test: windows-compat-test
 # compatibility gate.
 windows-compat-test:
 	./tools/test-windows-notepad-harness.sh
+	$(WARNING_RUN) $(CARGO) test --manifest-path userspace/probes/Cargo.toml -p vulkan_probe --quiet
+	$(WARNING_RUN) $(CARGO) run --manifest-path userspace/probes/Cargo.toml -p vulkan_probe --quiet
 	$(WARNING_RUN) $(CARGO) test -p pe -p elf-load -p syscall -p syscalls -p sched -p ipc --lib --quiet -- --test-threads=1
 	$(WARNING_RUN) $(CARGO) test --manifest-path userspace/probes/Cargo.toml -p windows-runtime --quiet
 	$(WARNING_RUN) $(CARGO) test --manifest-path userspace/probes/Cargo.toml -p windows-registry --quiet
