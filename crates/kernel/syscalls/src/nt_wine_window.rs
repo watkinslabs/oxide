@@ -206,7 +206,8 @@ pub fn dispatch(call: NtCall) -> u64 {
         WINE_REGISTER_CLASS_EX => {
             if args[0] == 0 || uaccess::get_user_u32(args[0]).ok() != Some(80) { return 0; }
             let Some(name) = read_unicode_string(args[1]) else { return 0; };
-            let Some(wndproc) = uaccess::get_user_u64(args[0].saturating_add(8)).ok() else { return 0; };
+            let Some(wndproc_address) = message_field(args[0], 8) else { return 0; };
+            let Some(wndproc) = uaccess::get_user_u64(wndproc_address).ok() else { return 0; };
             crate::nt_window::register_class_for_current(&name, wndproc).unwrap_or(0)
         }
         WINE_CREATE_WINDOW_EX => {
@@ -298,15 +299,21 @@ where F: Fn(NtService, SyscallArgs) -> u64 {
 fn get_class_name(args: &[u64; 17]) -> u64 {
     let Some(name) = crate::nt_window::window_class_name_for_current(args[0]) else { return STATUS_INVALID_PARAMETER; };
     if args[2] == 0 { return STATUS_INVALID_PARAMETER; }
-    let Some(maximum) = read_user_u16(args[2].saturating_add(2)) else { return STATUS_INVALID_PARAMETER; };
-    let Ok(buffer) = uaccess::get_user_u64(args[2].saturating_add(8)) else { return STATUS_INVALID_PARAMETER; };
+    let Some(maximum_address) = message_field(args[2], 2) else { return STATUS_INVALID_PARAMETER; };
+    let Some(buffer_address) = message_field(args[2], 8) else { return STATUS_INVALID_PARAMETER; };
+    let Some(maximum) = read_user_u16(maximum_address) else { return STATUS_INVALID_PARAMETER; };
+    let Ok(buffer) = uaccess::get_user_u64(buffer_address) else { return STATUS_INVALID_PARAMETER; };
     if buffer == 0 || maximum < 2 { return STATUS_INVALID_PARAMETER; }
     let capacity = (maximum as usize / 2).saturating_sub(1);
     let copied = name.len().min(capacity);
     for (index, unit) in name.iter().take(copied).enumerate() {
-        if uaccess::copy_to_user(buffer.saturating_add(index as u64 * 2), &unit.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
+        let Some(offset) = (index as u64).checked_mul(2) else { return STATUS_INVALID_PARAMETER; };
+        let Some(address) = buffer.checked_add(offset) else { return STATUS_INVALID_PARAMETER; };
+        if uaccess::copy_to_user(address, &unit.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
     }
-    if uaccess::copy_to_user(buffer.saturating_add(copied as u64 * 2), &[0, 0]).is_err() { return STATUS_INVALID_PARAMETER; }
+    let Some(offset) = (copied as u64).checked_mul(2) else { return STATUS_INVALID_PARAMETER; };
+    let Some(terminator) = buffer.checked_add(offset) else { return STATUS_INVALID_PARAMETER; };
+    if uaccess::copy_to_user(terminator, &[0, 0]).is_err() { return STATUS_INVALID_PARAMETER; }
     if uaccess::copy_to_user(args[2], &(copied as u16 * 2).to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
     copied as u64
 }
