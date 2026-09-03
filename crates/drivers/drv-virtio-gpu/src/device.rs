@@ -40,16 +40,18 @@ pub struct VirtioGpuDev {
     pub capsets:              Vec<VirtioGpuCapsetInfo>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VirtioGpuCapsetInfo {
     pub id: u32,
     pub max_version: u32,
     pub max_size: u32,
+    pub blob: Vec<u8>,
 }
 
 impl From<VirtioGpuRespCapsetInfo> for VirtioGpuCapsetInfo {
     fn from(value: VirtioGpuRespCapsetInfo) -> Self {
-        Self { id: value.capset_id, max_version: value.capset_max_version, max_size: value.capset_max_size }
+        Self { id: value.capset_id, max_version: value.capset_max_version,
+            max_size: value.capset_max_size, blob: Vec::new() }
     }
 }
 
@@ -188,7 +190,12 @@ impl drm::DrmDriver for VirtioGpuDrm {
         // request when the device has no host capsets.  The QEMU 2D device did
         // not negotiate VIRGL, so reporting EINVAL here misclassifies absence
         // of the driver facility as a malformed userspace request.
-        if self.capsets.is_empty() { Some(drm::VirtgpuCaps::NoCapsets) } else { None }
+        if self.capsets.is_empty() { Some(drm::VirtgpuCaps::NoCapsets) } else { Some(drm::VirtgpuCaps::Available) }
+    }
+
+    fn virtgpu_capset(&self, id: u32, version: u32) -> Option<Vec<u8>> {
+        self.capsets.iter().find(|capset| capset.id == id && version <= capset.max_version)
+            .map(|capset| capset.blob.clone())
     }
 
     // ---- D5a read-only modeset enumeration over enabled scanouts ----

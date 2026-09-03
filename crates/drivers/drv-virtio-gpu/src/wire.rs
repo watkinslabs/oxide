@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 // ============================================================
 // Wire constants per the Linux virtio_gpu UAPI + virtio 1.2 §5.7
 // ============================================================
@@ -323,6 +325,16 @@ pub fn parse_capset_info(resp: &[u8]) -> KResult<VirtioGpuRespCapsetInfo> {
         capset_max_size: read_u32_le(resp, 32),
         padding: read_u32_le(resp, 36),
     })
+}
+
+/// Validate a variable-length `RESP_OK_CAPSET` and copy its payload out of
+/// the temporary DMA frame. The device does not own the returned allocation.
+/// # C: O(payload bytes)
+pub fn parse_capset(resp: &[u8], expected_id: u32, expected_version: u32) -> KResult<Vec<u8>> {
+    if resp.len() < 24 { return Err(Error::Inval); }
+    if read_u32_le(resp, 0) != VIRTIO_GPU_RESP_OK_CAPSET { return Err(Error::BadResp(read_u32_le(resp, 0))); }
+    if expected_id == 0 || expected_version == 0 { return Err(Error::Inval); }
+    Ok(resp[24..].to_vec())
 }
 
 /// Encode `CMD_RESOURCE_CREATE_2D`. Writes 40 bytes.

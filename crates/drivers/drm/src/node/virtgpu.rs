@@ -28,6 +28,20 @@ fn getparam(driver: Option<Arc<dyn DrmDriver>>, arg: u64) -> i64 {
 fn get_caps(driver: Option<Arc<dyn DrmDriver>>, arg: u64) -> i64 {
     match driver.as_ref().and_then(|d| d.virtgpu_get_caps(arg)) {
         Some(VirtgpuCaps::NoCapsets) => -(Errno::Enosys.as_i32() as i64),
+        Some(VirtgpuCaps::Available) => {
+            let Ok(request) = crate::uarg::read_arg::<crate::DrmVirtgpuGetCaps>(arg)
+                else { return -(Errno::Efault.as_i32() as i64) };
+            if request.cap_set_id == 0 || request.cap_set_ver == 0 || request.size == 0 {
+                return -(Errno::Einval.as_i32() as i64);
+            }
+            let Some(blob) = driver.as_ref().and_then(|d| d.virtgpu_capset(request.cap_set_id, request.cap_set_ver))
+                else { return -(Errno::Enoent.as_i32() as i64) };
+            let bytes = &blob[..(request.size as usize).min(blob.len())];
+            if crate::uarg::write_bytes(request.addr, bytes).is_err() {
+                return -(Errno::Efault.as_i32() as i64);
+            }
+            0
+        }
         None => -(Errno::Enotty.as_i32() as i64),
     }
 }

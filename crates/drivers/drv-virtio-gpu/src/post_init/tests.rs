@@ -99,6 +99,8 @@ fn failed_probe_unwind_owns_probe_command_and_framebuffer_state() {
         dma: 0,
         bdf: pci::Bdf { segment: 0, bus: 0, device: 0, function: 0 },
         va: core::ptr::null_mut(),
+        map_bytes: 0,
+        order: pmm::Order(0),
         owned: true,
     };
     let mut fb = ProbeFramebufferRun {
