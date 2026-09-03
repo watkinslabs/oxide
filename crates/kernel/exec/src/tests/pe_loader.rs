@@ -54,6 +54,38 @@
         assert!(as_.vma_count() > 1, "Notepad image and dependencies must remain mapped after loading");
     }
 
+    #[test]
+    fn installed_wine_imm32_graph_loads_as_a_dynamic_attach_candidate() {
+        let roots = [
+            "/usr/lib64/wine/x86_64-windows",
+            "/usr/lib/wine/x86_64-windows",
+        ];
+        let Some(root) = roots.iter().find(|root| {
+            std::path::Path::new(root).join("imm32.dll").is_file()
+        }) else { return };
+        let image = std::fs::read(std::path::Path::new(root).join("imm32.dll"))
+            .expect("installed Wine imm32 must be readable");
+        let mut catalog = pe::catalog::ModuleCatalog::new();
+        for entry in std::fs::read_dir(root).expect("Wine DLL directory must be readable") {
+            let path = entry.expect("Wine DLL directory entry must be readable").path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("dll") { continue; }
+            let name = path.file_name().and_then(|name| name.to_str()).expect("Wine DLL name must be UTF-8");
+            if name.eq_ignore_ascii_case("ntdll.dll") { continue; }
+            let blob = std::fs::read(&path).expect("Wine DLL must be readable");
+            catalog.add(name.as_bytes(), &blob).expect("Wine DLL must satisfy the PE catalog contract");
+        }
+        let as_ = AddressSpace::new(0x100_000).expect("imm32 integration address space must initialize");
+        let runtime = map_nt_runtime(&as_).expect("native NTDLL runtime must map");
+        let process = load_pe_process_with_catalog(&image, &as_, &process_env::EnvironmentInput {
+            image_base: 0, image_size: 0, image_path: "C:\\Windows\\System32\\imm32.dll",
+            command_line: "imm32.dll", environment: &[], process_id: 42, thread_id: 43,
+        }, 0x7000_0000, &runtime, &catalog);
+        assert!(process.is_ok(), "imm32 must be loadable for user32 dynamic attach");
+        let process = process.unwrap();
+        assert!(!process.initializers.is_empty(), "imm32 must expose a process-attach initializer");
+        assert!(process.initializer_trampoline.is_some(), "dynamic attach candidate must have an initializer path");
+    }
+
     fn imported_pe() -> alloc::vec::Vec<u8> {
         let mut b = tiny_pe();
         b.resize(0x800, 0);
