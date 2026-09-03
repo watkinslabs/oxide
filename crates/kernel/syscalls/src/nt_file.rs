@@ -55,6 +55,7 @@ const FILE_PIPE_INFORMATION: u32 = 23;
 const FILE_PIPE_LOCAL_INFORMATION: u32 = 24;
 const NT_FILETIME_EPOCH_SECONDS: i64 = 11_644_473_600;
 const STATUS_NO_MORE_FILES: u64 = 0x8000_0006;
+const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
 const STATUS_INVALID_INFO_CLASS: u64 = 0xc000_0003;
 const STATUS_INFO_LENGTH_MISMATCH: u64 = 0xc000_0004;
 const STATUS_INSTANCE_NOT_AVAILABLE: u64 = 0xc000_00ab;
@@ -870,6 +871,14 @@ fn query_directory_values(cur: &sched::Task, handle: u32, io_status: u64, inform
         file.pos(), &mut emitter);
     if result.is_err() { return STATUS_INVALID_PARAMETER; }
     if emitter.bytes.is_empty() {
+        // A directory with entries and a buffer too small for the first
+        // record is not exhausted.  Wine preserves the NT distinction here:
+        // callers grow the buffer on STATUS_BUFFER_TOO_SMALL, while
+        // STATUS_NO_MORE_FILES terminates enumeration.
+        if emitter.attempted {
+            write_io_status(io_status, STATUS_BUFFER_TOO_SMALL, 0);
+            return STATUS_BUFFER_TOO_SMALL;
+        }
         write_io_status(io_status, STATUS_NO_MORE_FILES, 0);
         return STATUS_NO_MORE_FILES;
     }
@@ -885,14 +894,18 @@ struct NameEmitter {
     bytes: alloc::vec::Vec<u8>,
     capacity: usize,
     last: Option<usize>,
+    attempted: bool,
 }
 
 impl NameEmitter {
-    fn new(capacity: usize) -> Self { Self { bytes: alloc::vec::Vec::new(), capacity, last: None } }
+    fn new(capacity: usize) -> Self {
+        Self { bytes: alloc::vec::Vec::new(), capacity, last: None, attempted: false }
+    }
 }
 
 impl vfs::DirEmit for NameEmitter {
     fn emit(&mut self, name: &str, _ino: u64, _kind: vfs::FileType, _next_pos: u64) -> bool {
+        self.attempted = true;
         let utf16: alloc::vec::Vec<u16> = name.encode_utf16().collect();
         let name_bytes = utf16.len().saturating_mul(2);
         let record_len = (12usize).saturating_add(name_bytes);
