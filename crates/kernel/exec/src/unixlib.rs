@@ -59,6 +59,61 @@ pub fn map_shared_object(file: &[u8], as_: &AddressSpace) -> Result<MappedUnixli
     Ok(MappedUnixlib { base: bias, end: max_vaddr.checked_add(bias).ok_or(LoadError::Einval)? })
 }
 
+/// Map a Unixlib after applying every supported dynamic relocation to the
+/// complete staged image. No segment is published when relocation or symbol
+/// resolution fails.
+/// # C: O(phdrs + mapped bytes + relocations)
+pub fn map_shared_object_with_resolver<F>(
+    file: &[u8], as_: &AddressSpace, resolver: F,
+) -> Result<MappedUnixlib, LoadError>
+where F: FnMut(&[u8]) -> Option<u64> {
+    let object = parse_shared_object(file, ARCH_MACHINE).map_err(LoadError::from)?;
+    let (min_vaddr, max_vaddr) = mapping_span(&object).ok_or(LoadError::Einval)?;
+    let span = max_vaddr.checked_sub(min_vaddr).ok_or(LoadError::Einval)?;
+    let arena = as_.get_unmapped_area(span as usize).map_err(|_| LoadError::Enomem)?.as_u64();
+    let bias = arena.checked_sub(min_vaddr).ok_or(LoadError::Einval)?;
+    let image_base = bias.checked_add(min_vaddr).ok_or(LoadError::Einval)?;
+    let mut image = vec![0; span as usize];
+    for seg in &object.parsed.loads {
+        let va = seg.vaddr.checked_add(bias).ok_or(LoadError::Einval)?;
+        let start = align_down(va);
+        let image_start = start.checked_sub(image_base).ok_or(LoadError::Einval)? as usize;
+        let end = align_up(va.checked_add(seg.mem_sz).ok_or(LoadError::Einval)?)
+            .ok_or(LoadError::Einval)?;
+        let len = end.checked_sub(start).ok_or(LoadError::Einval)? as usize;
+        let source_start = seg.file_off as usize;
+        let source_end = source_start.checked_add(seg.file_sz as usize).ok_or(LoadError::Einval)?;
+        let source = file.get(source_start..source_end).ok_or(LoadError::Einval)?;
+        let target = image.get_mut(image_start..image_start.checked_add(len).ok_or(LoadError::Einval)?)
+            .ok_or(LoadError::Einval)?;
+        let head = (va - start) as usize;
+        let copy = source.len().min(len.saturating_sub(head));
+        target[head..head + copy].copy_from_slice(&source[..copy]);
+    }
+    elf::apply_runtime_relocations(file, &object, bias, &mut image, image_base, resolver)
+        .map_err(LoadError::from)?;
+    let mut mapped = Vec::new();
+    for seg in &object.parsed.loads {
+        let va = seg.vaddr.checked_add(bias).ok_or(LoadError::Einval)?;
+        let start = align_down(va);
+        let end = align_up(va.checked_add(seg.mem_sz).ok_or(LoadError::Einval)?)
+            .ok_or(LoadError::Einval)?;
+        let image_start = start.checked_sub(image_base).ok_or(LoadError::Einval)? as usize;
+        let len = end.checked_sub(start).ok_or(LoadError::Einval)? as usize;
+        let bytes = image.get(image_start..image_start.checked_add(len).ok_or(LoadError::Einval)?)
+            .ok_or(LoadError::Einval)?.to_vec();
+        let addr = UserVirtAddr::new(start).ok_or(LoadError::Einval)?;
+        let prot = segment_protection(seg.flags);
+        if as_.mmap_with_may_at(MmapPlacement::FixedNoReplace(addr), len, prot, prot,
+            VmaFlags::PRIVATE, VmaBacking::KernelBytes { data: as_.stash_bytes(bytes.into_boxed_slice()), off: 0 }).is_err() {
+            for (at, size) in mapped { let _ = as_.munmap(at, size); }
+            return Err(LoadError::Enomem);
+        }
+        mapped.push((addr, len));
+    }
+    Ok(MappedUnixlib { base: bias, end: max_vaddr.checked_add(bias).ok_or(LoadError::Einval)? })
+}
+
 fn mapping_span(object: &SharedObject<'_>) -> Option<(u64, u64)> {
     let min = object.parsed.loads.iter().map(|s| align_down(s.vaddr)).min()?;
     let max = object.parsed.loads.iter().filter_map(|s| s.vaddr.checked_add(s.mem_sz).and_then(align_up)).max()?;
@@ -95,5 +150,15 @@ mod tests {
         let image = map_shared_object(&bytes, &as_).unwrap();
         assert!(image.base < image.end);
         assert_eq!(image.end - image.base, 0xb2_000);
+    }
+
+    #[test]
+    fn resolver_aware_mapping_rejects_unresolved_wine_imports() {
+        let paths = ["/usr/lib64/wine/x86_64-unix/winevulkan.so", "/usr/lib/wine/x86_64-unix/winevulkan.so"];
+        let Some(path) = paths.iter().find(|path| std::path::Path::new(path).is_file()) else { return };
+        let bytes = std::fs::read(path).unwrap();
+        let as_ = AddressSpace::new(0x20_000).unwrap();
+        assert!(map_shared_object_with_resolver(&bytes, &as_, |_| None).is_err());
+        assert_eq!(as_.vma_count(), 0);
     }
 }
