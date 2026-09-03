@@ -147,6 +147,10 @@ pub fn dispatch(call: NtCall) -> u64 {
             let Some(wndproc) = crate::nt_window::window_wndproc_for_current(hwnd) else { return STATUS_INVALID_PARAMETER; };
             crate::nt_rtl::begin_wndproc_callback(hwnd, message as u64, wparam, lparam, wndproc)
         }
+        // The descriptor-backed path is used by the synthetic Wine probe;
+        // keep keyboard translation on the same canonical MSG decoder as
+        // the raw win32u entry above.
+        WINE_TRANSLATE_MESSAGE => translate_raw_message(args[0]),
         WINE_MESSAGE_CALL => {
             let hwnd = args[0];
             let message = args[1];
