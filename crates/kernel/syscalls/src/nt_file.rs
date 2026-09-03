@@ -43,6 +43,9 @@ const FILE_RENAME_INFORMATION: u32 = 10;
 const FILE_DISPOSITION_INFORMATION: u32 = 13;
 const DELETE_ACCESS: u32 = 0x0001_0000;
 const FILE_NAMES_INFORMATION: u32 = 12;
+const FILE_DIRECTORY_INFORMATION: u32 = 1;
+const FILE_FULL_DIRECTORY_INFORMATION: u32 = 2;
+const FILE_BOTH_DIRECTORY_INFORMATION: u32 = 3;
 const FILE_INTERNAL_INFORMATION: u32 = 6;
 const FILE_EA_INFORMATION: u32 = 7;
 const FILE_ACCESS_INFORMATION: u32 = 8;
@@ -866,14 +869,15 @@ fn query_directory(cur: &sched::Task, addr: u64) -> u64 {
 }
 
 fn query_directory_values(cur: &sched::Task, handle: u32, io_status: u64, information: u64, length: u32, class: u32) -> u64 {
-    if io_status == 0 || information == 0 || class != FILE_NAMES_INFORMATION {
+    if io_status == 0 || information == 0 {
         return STATUS_INVALID_PARAMETER;
     }
+    let Some(layout) = directory_layout(class) else { return STATUS_INVALID_INFO_CLASS; };
     // FILE_NAMES_INFORMATION has a fixed 12-byte header.  NT validates the
     // caller's buffer contract before touching the directory cursor; doing
     // this here also prevents a zero-sized emitter from being mistaken for an
     // exhausted directory.
-    if length < FILE_NAMES_INFORMATION_HEADER_BYTES {
+    if length < layout.header as u32 {
         write_io_status(io_status, STATUS_INFO_LENGTH_MISMATCH, 0);
         return STATUS_INFO_LENGTH_MISMATCH;
     }
@@ -886,7 +890,7 @@ fn query_directory_values(cur: &sched::Task, handle: u32, io_status: u64, inform
     if file.inode().file_type() != vfs::FileType::Directory { return STATUS_INVALID_PARAMETER; }
     let parent_ino = file.dentry().parent().and_then(|d| d.inode()).map(|i| i.ino())
         .unwrap_or_else(|| file.inode().ino());
-    let mut emitter = NameEmitter::new(length as usize);
+    let mut emitter = NameEmitter::new(length as usize, layout);
     let (result, next_pos) = vfs::readdir_dots(file.as_ref(), file.inode().ino(), parent_ino,
         file.pos(), &mut emitter);
     if result.is_err() { return STATUS_INVALID_PARAMETER; }
@@ -915,22 +919,34 @@ struct NameEmitter {
     capacity: usize,
     last: Option<usize>,
     attempted: bool,
+    layout: DirectoryLayout,
 }
 
-const FILE_NAMES_INFORMATION_HEADER_BYTES: u32 = 12;
+#[derive(Copy, Clone)]
+struct DirectoryLayout { header: usize, name_length: usize, name: usize, attributes: Option<usize>, ea_size: Option<usize> }
+
+fn directory_layout(class: u32) -> Option<DirectoryLayout> {
+    match class {
+        FILE_DIRECTORY_INFORMATION => Some(DirectoryLayout { header: 64, name_length: 60, name: 64, attributes: Some(56), ea_size: None }),
+        FILE_FULL_DIRECTORY_INFORMATION => Some(DirectoryLayout { header: 68, name_length: 60, name: 68, attributes: Some(56), ea_size: Some(64) }),
+        FILE_BOTH_DIRECTORY_INFORMATION => Some(DirectoryLayout { header: 94, name_length: 60, name: 94, attributes: Some(56), ea_size: Some(64) }),
+        FILE_NAMES_INFORMATION => Some(DirectoryLayout { header: 12, name_length: 8, name: 12, attributes: None, ea_size: None }),
+        _ => None,
+    }
+}
 
 impl NameEmitter {
-    fn new(capacity: usize) -> Self {
-        Self { bytes: alloc::vec::Vec::new(), capacity, last: None, attempted: false }
+    fn new(capacity: usize, layout: DirectoryLayout) -> Self {
+        Self { bytes: alloc::vec::Vec::new(), capacity, last: None, attempted: false, layout }
     }
 }
 
 impl vfs::DirEmit for NameEmitter {
-    fn emit(&mut self, name: &str, _ino: u64, _kind: vfs::FileType, _next_pos: u64) -> bool {
+    fn emit(&mut self, name: &str, _ino: u64, kind: vfs::FileType, _next_pos: u64) -> bool {
         self.attempted = true;
         let utf16: alloc::vec::Vec<u16> = name.encode_utf16().collect();
         let Some(name_bytes) = utf16.len().checked_mul(2) else { return false; };
-        let Some(record_len) = (FILE_NAMES_INFORMATION_HEADER_BYTES as usize).checked_add(name_bytes) else {
+        let Some(record_len) = self.layout.header.checked_add(name_bytes) else {
             return false;
         };
         let Some(aligned) = record_len.checked_add(7).map(|value| value & !7) else { return false; };
@@ -944,9 +960,17 @@ impl vfs::DirEmit for NameEmitter {
         let Some(end) = offset.checked_add(aligned) else { return false; };
         self.bytes.resize(end, 0);
         self.bytes[offset + 4..offset + 8].copy_from_slice(&0u32.to_ne_bytes());
-        self.bytes[offset + 8..offset + 12].copy_from_slice(&(name_bytes as u32).to_ne_bytes());
+        let name_length_end = self.layout.name_length + 4;
+        self.bytes[offset + self.layout.name_length..offset + name_length_end].copy_from_slice(&(name_bytes as u32).to_ne_bytes());
+        if let Some(field) = self.layout.attributes {
+            let value = if kind == vfs::FileType::Directory { 0x10u32 } else { 0x80u32 };
+            self.bytes[offset + field..offset + field + 4].copy_from_slice(&value.to_ne_bytes());
+        }
+        if let Some(field) = self.layout.ea_size {
+            self.bytes[offset + field..offset + field + 4].copy_from_slice(&0u32.to_ne_bytes());
+        }
         for (index, unit) in utf16.iter().enumerate() {
-            let start = offset + 12 + index * 2;
+            let start = offset + self.layout.name + index * 2;
             self.bytes[start..start + 2].copy_from_slice(&unit.to_ne_bytes());
         }
         self.last = Some(offset);
