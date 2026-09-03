@@ -11,6 +11,13 @@ const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
 const STATUS_NO_MORE_ENTRIES: u64 = 0x8000_001a;
 const STATUS_QUOTA_EXCEEDED: u64 = 0xc000_0044;
 const STATUS_ALERTED: u64 = 0x0000_0101;
+const STATUS_PENDING: u64 = 0x0000_0103;
+const STATUS_NOT_SUPPORTED: u64 = 0xc000_00bb;
+const WM_DESTROY: u64 = 0x0002;
+const WM_NCDESTROY: u64 = 0x0082;
+
+pub(crate) const CALLBACK_DESTROY: u64 = 1;
+pub(crate) const CALLBACK_NCDESTROY: u64 = 2;
 
 struct GuiEntry { group: Weak<sched::thread_group::ThreadGroup>, state: ipc::win32_window::WindowManager, wait: Arc<sched::live::WaitList>, foreground: bool }
 static GUI: Spinlock<Vec<GuiEntry>, GuiLockClass> = Spinlock::new(Vec::new());
@@ -90,6 +97,13 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
                 NtWindowCall::Destroy { hwnd } => {
                     if hwnd > u32::MAX as u64 { return Some(STATUS_INVALID_HANDLE); }
                     let Some(window) = ipc::win32_window::WindowId::from_raw(hwnd as u32) else { return Some(STATUS_INVALID_HANDLE); };
+                    if let Some(record) = state.get(window) {
+                        if record.wndproc != 0 {
+                            let callback = crate::nt_rtl::begin_wndproc_callback_with_completion(hwnd, WM_DESTROY, 0, 0, record.wndproc, sched::nt_callback::Completion { kind: CALLBACK_DESTROY, argument: hwnd });
+                            if callback == STATUS_PENDING { return Some(callback); }
+                            if callback != STATUS_NOT_SUPPORTED { return Some(STATUS_INVALID_HANDLE); }
+                        }
+                    }
                     (Some(match state.destroy(window) { Ok(_) => STATUS_SUCCESS, Err(_) => STATUS_INVALID_HANDLE }), None, None)
                 }
                 NtWindowCall::Post { hwnd, message, wparam, lparam } => {
@@ -265,6 +279,35 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         if outcome != sched::task::WaitOutcome::Ready { return Some(STATUS_ALERTED); }
     }
 }
+
+/// Complete the two-phase native destruction transaction after a Wine
+/// callback returns. # C: O(N_process_gui_states + N_windows)
+pub(crate) fn complete_callback(completion: sched::nt_callback::Completion) -> u64 {
+    match completion.kind {
+        CALLBACK_DESTROY => {
+            let Some(wndproc) = window_wndproc_for_current(completion.argument) else { return STATUS_SUCCESS; };
+            let result = crate::nt_rtl::begin_wndproc_callback_with_completion(completion.argument, WM_NCDESTROY, 0, 0, wndproc, sched::nt_callback::Completion { kind: CALLBACK_NCDESTROY, argument: completion.argument });
+            if result == STATUS_PENDING { result } else { destroy_window_for_current(completion.argument); STATUS_SUCCESS }
+        }
+        CALLBACK_NCDESTROY => { destroy_window_for_current(completion.argument); STATUS_SUCCESS }
+        _ => STATUS_INVALID_PARAMETER,
+    }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn destroy_window_for_current(hwnd: u64) {
+    let Some(cur) = sched::live::current() else { return; };
+    if !cur.is_nt_personality() || hwnd > u32::MAX as u64 { return; }
+    let group = Arc::clone(&cur.thread_group);
+    let mut entries = GUI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    if let Some(index) = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group))) {
+        let _ = entries[index].state.destroy(ipc::win32_window::WindowId::from_raw(hwnd as u32).unwrap());
+    }
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn destroy_window_for_current(_: u64) {}
 
 fn copy_message(destination: syscall::UserPtr<NtWindowMessage>, message: ipc::win32_window::WinMessage) -> Result<(), syscall::Errno> {
     let mut bytes = [0u8; core::mem::size_of::<NtWindowMessage>()];
