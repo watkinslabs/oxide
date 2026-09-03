@@ -455,6 +455,19 @@ pub(crate) fn enable_menu_item_for_current(raw: u64, id: u64, flags: u64) -> u64
 }
 
 #[cfg(target_os = "oxide-kernel")]
+pub(crate) fn delete_menu_item_for_current(raw: u64, id: u64, flags: u64) -> u64 {
+    let (Some(menu), Some(id), Some(flags)) = (u32::try_from(raw).ok().and_then(ipc::win32_menu::MenuId::from_raw), u32::try_from(id).ok(), u32::try_from(flags).ok()) else { return STATUS_INVALID_PARAMETER; };
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let group = Arc::clone(&cur.thread_group);
+    let mut entries = GUI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    let Some(index) = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group))) else { return STATUS_INVALID_PARAMETER; };
+    if entries[index].menus.delete(menu, id, flags).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
+}
+
+#[cfg(target_os = "oxide-kernel")]
 pub(crate) fn set_window_menu_for_current(hwnd: u64, menu: Option<u32>) -> Result<Option<u32>, ()> {
     let Some(cur) = sched::live::current() else { return Err(()); };
     if !cur.is_nt_personality() || hwnd > u32::MAX as u64 { return Err(()); }
