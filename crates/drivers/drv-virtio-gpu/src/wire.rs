@@ -88,7 +88,7 @@ pub const VIRTIO_GPU_FLAG_INFO_RING_IDX:       u32 = 1 << 1;
 // ============================================================
 
 #[repr(C)]
-#[derive(Copy, Clone, Default)]
+#[derive(Copy, Clone, Default, Debug, Eq, PartialEq)]
 pub struct VirtioGpuCtrlHdr {
     pub ty:       u32,
     pub flags:    u32,
@@ -206,6 +206,34 @@ pub struct VirtioGpuRespEdid {
     pub edid:    [u8; 1024],
 }
 
+/// Capset discovery request from the VIRGL path.  The host returns the
+/// highest supported version and byte size for the requested capset index.
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+pub struct VirtioGpuGetCapsetInfo {
+    pub hdr: VirtioGpuCtrlHdr,
+    pub capset_index: u32,
+    pub padding: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+pub struct VirtioGpuGetCapset {
+    pub hdr: VirtioGpuCtrlHdr,
+    pub capset_id: u32,
+    pub capset_version: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Default, Debug, Eq, PartialEq)]
+pub struct VirtioGpuRespCapsetInfo {
+    pub hdr: VirtioGpuCtrlHdr,
+    pub capset_id: u32,
+    pub capset_version: u32,
+    pub capset_size: u32,
+    pub padding: u32,
+}
+
 // ============================================================
 // Driver state (probe results + handle to virtqueues)
 // ============================================================
@@ -254,6 +282,47 @@ pub fn negotiate_features(host_bits: u64, driver_bits: u64) -> u64 {
 /// # C: O(1)
 pub fn encode_get_display_info(buf: &mut [u8]) -> usize {
     encode_hdr_only(buf, VIRTIO_GPU_CMD_GET_DISPLAY_INFO, 0, 0)
+}
+
+/// Encode one VIRGL capset-info probe. Writes 32 bytes.
+/// # C: O(1)
+pub fn encode_get_capset_info(buf: &mut [u8], index: u32) -> usize {
+    encode_hdr_only(buf, VIRTIO_GPU_CMD_GET_CAPSET_INFO, 0, 0);
+    write_u32_le(buf, 24, index);
+    write_u32_le(buf, 28, 0);
+    32
+}
+
+/// Encode one VIRGL capset fetch after discovery. Writes 32 bytes.
+/// # C: O(1)
+pub fn encode_get_capset(buf: &mut [u8], id: u32, version: u32) -> usize {
+    encode_hdr_only(buf, VIRTIO_GPU_CMD_GET_CAPSET, 0, 0);
+    write_u32_le(buf, 24, id);
+    write_u32_le(buf, 28, version);
+    32
+}
+
+/// Decode the fixed part of a capset-info response. The variable capset blob
+/// is deliberately kept separate so callers can validate the advertised size
+/// before allocating or accepting host-controlled bytes.
+/// # C: O(1)
+pub fn parse_capset_info(resp: &[u8]) -> KResult<VirtioGpuRespCapsetInfo> {
+    if resp.len() < 40 { return Err(Error::Inval); }
+    let ty = read_u32_le(resp, 0);
+    if ty != VIRTIO_GPU_RESP_OK_CAPSET_INFO { return Err(Error::BadResp(ty)); }
+    Ok(VirtioGpuRespCapsetInfo {
+        hdr: VirtioGpuCtrlHdr {
+            ty,
+            flags: read_u32_le(resp, 4),
+            fence_id: read_u64_le(resp, 8),
+            ctx_id: read_u32_le(resp, 16),
+            padding: read_u32_le(resp, 20),
+        },
+        capset_id: read_u32_le(resp, 24),
+        capset_version: read_u32_le(resp, 28),
+        capset_size: read_u32_le(resp, 32),
+        padding: read_u32_le(resp, 36),
+    })
 }
 
 /// Encode `CMD_RESOURCE_CREATE_2D`. Writes 40 bytes.
@@ -436,6 +505,10 @@ fn write_u64_le(buf: &mut [u8], off: usize, val: u64) {
 /// # C: O(1)
 pub(crate) fn read_u32_le(buf: &[u8], off: usize) -> u32 {
     u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]])
+}
+
+pub(crate) fn read_u64_le(buf: &[u8], off: usize) -> u64 {
+    u64::from_le_bytes(buf[off..off + 8].try_into().unwrap())
 }
 
 // ============================================================
