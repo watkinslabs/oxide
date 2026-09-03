@@ -74,6 +74,11 @@ const STATUS_PENDING: u64 = 0x0000_0103;
 const STATUS_PIPE_CONNECTED: u64 = 0xc000_00b2;
 const REGISTRY_HIVE_MAX_BYTES: usize = 16 * 1024 * 1024;
 
+fn put_io_status_information(io_status: u64, information: u64) -> Result<(), ()> {
+    let address = io_status.checked_add(8).ok_or(())?;
+    uaccess::put_user_u64(address, information).map_err(|_| ())
+}
+
 /// Dispatch the implemented synchronous NT file operations. # C: O(path) + O(bytes)
 pub fn dispatch(call: NtFileCall) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
@@ -167,7 +172,7 @@ fn native_fs_control(call: NtCall) -> u64 {
         bytes[16..].copy_from_slice(&peek.data);
         if uaccess::copy_to_user(output, &bytes).is_err() { return STATUS_ACCESS_VIOLATION; }
         if uaccess::put_user_u64(call.args.a4, STATUS_SUCCESS).is_err()
-            || uaccess::put_user_u64(call.args.a4 + 8, bytes.len() as u64).is_err() { return STATUS_ACCESS_VIOLATION; }
+            || put_io_status_information(call.args.a4, bytes.len() as u64).is_err() { return STATUS_ACCESS_VIOLATION; }
         return STATUS_SUCCESS;
     }
     if code == FSCTL_PIPE_TRANSCEIVE {
@@ -182,7 +187,7 @@ fn native_fs_control(call: NtCall) -> u64 {
         let sched::nt_object::NtPipeIo::Complete(bytes) = endpoint.read(&mut response) else { return STATUS_PIPE_EMPTY; };
         if uaccess::copy_to_user(output, &response[..bytes]).is_err() { return STATUS_ACCESS_VIOLATION; }
         if uaccess::put_user_u64(call.args.a4, STATUS_SUCCESS).is_err()
-            || uaccess::put_user_u64(call.args.a4 + 8, bytes as u64).is_err() { return STATUS_ACCESS_VIOLATION; }
+            || put_io_status_information(call.args.a4, bytes as u64).is_err() { return STATUS_ACCESS_VIOLATION; }
         return STATUS_SUCCESS;
     }
     if code != FSCTL_PIPE_DISCONNECT && code != FSCTL_PIPE_LISTEN {
@@ -198,12 +203,12 @@ fn native_fs_control(call: NtCall) -> u64 {
             sched::nt_object::NtPipeListen::Connected => STATUS_PIPE_CONNECTED,
         };
         if uaccess::put_user_u64(call.args.a4, status).is_err()
-            || uaccess::put_user_u64(call.args.a4 + 8, 0).is_err() { return STATUS_ACCESS_VIOLATION; }
+            || put_io_status_information(call.args.a4, 0).is_err() { return STATUS_ACCESS_VIOLATION; }
         return status;
     }
     if !endpoint.disconnect() { return STATUS_PIPE_DISCONNECTED; }
     if uaccess::put_user_u64(call.args.a4, STATUS_SUCCESS).is_err()
-        || uaccess::put_user_u64(call.args.a4 + 8, 0).is_err() {
+        || put_io_status_information(call.args.a4, 0).is_err() {
         return STATUS_ACCESS_VIOLATION;
     }
     STATUS_SUCCESS
@@ -460,7 +465,7 @@ fn flush(cur: &sched::Task, handle: u32, io_status: u64) -> u64 {
         Err(error) => crate::nt_file_policy::status_from_errno(-(error as i64)),
     };
     if uaccess::put_user_u64(io_status, status).is_err()
-        || uaccess::put_user_u64(io_status + 8, 0).is_err() {
+        || put_io_status_information(io_status, 0).is_err() {
         return STATUS_ACCESS_VIOLATION;
     }
     status
@@ -477,7 +482,7 @@ fn cancel(cur: &sched::Task, handle: u32, io: Option<u64>, io_status: u64) -> u6
     let registry_watch = object.kind() == sched::nt_object::NtObjectType::Key
         && crate::nt_registry::cancel(object.id(), cur.tid, io);
     let status = if io.is_some() && !cancelled && !directory_watch && !registry_watch { STATUS_NOT_FOUND } else { STATUS_SUCCESS };
-    if uaccess::put_user_u64(io_status, status).is_err() || uaccess::put_user_u64(io_status + 8, 0).is_err() { return STATUS_ACCESS_VIOLATION; }
+    if uaccess::put_user_u64(io_status, status).is_err() || put_io_status_information(io_status, 0).is_err() { return STATUS_ACCESS_VIOLATION; }
     status
 }
 
@@ -491,7 +496,7 @@ fn cancel_synchronous(cur: &sched::Task, handle: u64, _io: Option<u64>, io_statu
         table.get(native, 0).map(|object| object.kind() == sched::nt_object::NtObjectType::Thread).unwrap_or(false)
     } else { false };
     if !valid { return STATUS_INVALID_HANDLE; }
-    if uaccess::put_user_u64(io_status, STATUS_NOT_FOUND).is_err() || uaccess::put_user_u64(io_status + 8, 0).is_err() { return STATUS_ACCESS_VIOLATION; }
+    if uaccess::put_user_u64(io_status, STATUS_NOT_FOUND).is_err() || put_io_status_information(io_status, 0).is_err() { return STATUS_ACCESS_VIOLATION; }
     STATUS_NOT_FOUND
 }
 
