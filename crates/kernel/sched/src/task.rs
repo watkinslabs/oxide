@@ -102,6 +102,9 @@ pub use uapi::{MCE_KILL_EARLY, MCE_KILL_PROCESS, SUID_DUMP_DISABLE, SUID_DUMP_RO
 pub struct Task {
     pub core: TaskCore,
 
+    /// Per-thread nested native NT callback continuations.
+    pub nt_callback_stack: Spinlock<crate::nt_callback::Stack, TaskListClass>,
+
     /// Top of kernel stack (one-past-end). AtomicPtr; read-only on hot.
     pub kernel_stack: AtomicPtr<u8>,
 
