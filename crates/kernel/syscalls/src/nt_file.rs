@@ -287,10 +287,22 @@ fn native_io_values(cur: &sched::Task, handle: u32, io_status: u64, buffer: u64,
     };
     if let Some(endpoint) = object.pipe_endpoint() {
         let mut data = vec![0u8; length as usize];
-        let result = if write {
+        let mut result = if write {
             if uaccess::copy_from_user(&mut data, buffer).is_err() { return STATUS_ACCESS_VIOLATION; }
             endpoint.write(&data)
         } else { endpoint.read(&mut data) };
+        if matches!(result, sched::nt_object::NtPipeIo::WouldBlock) && endpoint.completion_mode() == 0 {
+            let timeout = endpoint.pipe().config().timeout_100ns;
+            let deadline = if timeout < 0 {
+                timekeeper::monotonic_ns().saturating_add((-timeout as u64).saturating_mul(100))
+            } else { 0 };
+            // SAFETY: this native NT syscall is executing in process context;
+            // the endpoint wait releases all transport locks before parking.
+            let outcome = unsafe { endpoint.wait_for_io(write, deadline, timekeeper::monotonic_ns) };
+            if matches!(outcome, sched::WaitOutcome::Ready) {
+                result = if write { endpoint.write(&data) } else { endpoint.read(&mut data) };
+            }
+        }
         return match result {
             sched::nt_object::NtPipeIo::Complete(bytes) => {
                 if !write && uaccess::copy_to_user(buffer, &data[..bytes]).is_err() { return STATUS_ACCESS_VIOLATION; }

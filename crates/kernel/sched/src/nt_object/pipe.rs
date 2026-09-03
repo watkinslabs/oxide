@@ -1,6 +1,8 @@
 //! State owned by one native NT named-pipe object.
 
 use alloc::{collections::VecDeque, sync::Arc};
+use crate::live::WaitList;
+use crate::WaitOutcome;
 use sync::{Spinlock, TaskList as TaskListClass};
 
 /// The side of a named-pipe connection owned by one handle.
@@ -46,6 +48,8 @@ pub struct NtPipe {
     config: NtPipeConfig,
     instances: Spinlock<u32, TaskListClass>,
     transport: Spinlock<PipeTransport, TaskListClass>,
+    read_waiters: WaitList,
+    write_waiters: WaitList,
 }
 
 /// A directional handle view over one shared named-pipe transport.
@@ -86,7 +90,7 @@ impl NtPipe {
         Self { config, instances: Spinlock::new(0), transport: Spinlock::new(PipeTransport {
             server_to_client: VecDeque::new(), client_to_server: VecDeque::new(),
             server_closed: false, client_closed: false, connected: false, listening: false,
-        }) }
+        }), read_waiters: WaitList::new(), write_waiters: WaitList::new() }
     }
 
     pub fn config(&self) -> NtPipeConfig { self.config }
@@ -111,6 +115,9 @@ impl NtPipe {
         if transport.connected || !transport.listening || transport.server_closed || transport.client_closed { return false; }
         transport.connected = true;
         transport.listening = false;
+        drop(transport);
+        self.read_waiters.wake_all();
+        self.write_waiters.wake_all();
         true
     }
 
@@ -166,7 +173,10 @@ impl NtPipe {
         let quota = match side { NtPipeSide::Server => self.config.outbound_quota, NtPipeSide::Client => self.config.inbound_quota } as usize;
         let count = data.len().min(quota.saturating_sub(queue.len()));
         queue.extend(data[..count].iter().copied());
-        if count == 0 { NtPipeIo::WouldBlock } else { NtPipeIo::Complete(count) }
+        let result = if count == 0 { NtPipeIo::WouldBlock } else { NtPipeIo::Complete(count) };
+        drop(transport);
+        if count != 0 { self.read_waiters.wake_all(); }
+        result
     }
 
     fn read(&self, side: NtPipeSide, output: &mut [u8]) -> NtPipeIo {
@@ -174,14 +184,23 @@ impl NtPipe {
         let queue = match side { NtPipeSide::Server => &mut transport.client_to_server, NtPipeSide::Client => &mut transport.server_to_client };
         let count = output.len().min(queue.len());
         for byte in &mut output[..count] { *byte = queue.pop_front().unwrap(); }
-        if count != 0 { return NtPipeIo::Complete(count); }
+        if count != 0 {
+            drop(transport);
+            self.write_waiters.wake_all();
+            return NtPipeIo::Complete(count);
+        }
         let peer_closed = match side { NtPipeSide::Server => transport.client_closed, NtPipeSide::Client => transport.server_closed };
-        if peer_closed { NtPipeIo::BrokenPipe } else { NtPipeIo::WouldBlock }
+        let result = if peer_closed { NtPipeIo::BrokenPipe } else { NtPipeIo::WouldBlock };
+        drop(transport);
+        result
     }
 
     fn close(&self, side: NtPipeSide) {
         let mut transport = self.transport.lock();
         match side { NtPipeSide::Server => transport.server_closed = true, NtPipeSide::Client => transport.client_closed = true }
+        drop(transport);
+        self.read_waiters.wake_all();
+        self.write_waiters.wake_all();
     }
 
     fn disconnect(&self) {
@@ -192,6 +211,37 @@ impl NtPipe {
         transport.client_closed = false;
         transport.connected = false;
         transport.listening = false;
+        drop(transport);
+        self.read_waiters.wake_all();
+        self.write_waiters.wake_all();
+    }
+
+    fn read_ready(&self, side: NtPipeSide) -> bool {
+        let transport = self.transport.lock();
+        let queue = match side { NtPipeSide::Server => &transport.client_to_server, NtPipeSide::Client => &transport.server_to_client };
+        let peer_closed = match side { NtPipeSide::Server => transport.client_closed, NtPipeSide::Client => transport.server_closed };
+        !queue.is_empty() || peer_closed
+    }
+
+    fn write_ready(&self, side: NtPipeSide) -> bool {
+        let transport = self.transport.lock();
+        let peer_closed = match side { NtPipeSide::Server => transport.client_closed, NtPipeSide::Client => transport.server_closed };
+        let queue = match side { NtPipeSide::Server => &transport.server_to_client, NtPipeSide::Client => &transport.client_to_server };
+        let quota = match side { NtPipeSide::Server => self.config.outbound_quota, NtPipeSide::Client => self.config.inbound_quota } as usize;
+        peer_closed || (transport.connected && queue.len() < quota)
+    }
+
+    /// Wait until the endpoint can make progress, preserving the scheduler's
+    /// prepare/recheck/park ordering used by every blocking kernel path.
+    /// # Sleeps: yes
+    pub unsafe fn wait_for_io(&self, side: NtPipeSide, write: bool, deadline_ns: u64,
+                              now: impl Fn() -> u64) -> WaitOutcome {
+        let waiters = if write { &self.write_waiters } else { &self.read_waiters };
+        // SAFETY: the native syscall caller is process context and owns no
+        // transport lock while the scheduler parks the current task.
+        unsafe { crate::live::wait_event_interruptible_until(waiters, deadline_ns, now, || {
+            if write { self.write_ready(side) } else { self.read_ready(side) }
+        }) }
     }
 }
 
@@ -199,6 +249,13 @@ impl NtPipeEndpoint {
     pub fn pipe(&self) -> Arc<NtPipe> { Arc::clone(&self.pipe) }
     pub fn write(&self, data: &[u8]) -> NtPipeIo { self.pipe.write(self.side, data) }
     pub fn read(&self, output: &mut [u8]) -> NtPipeIo { self.pipe.read(self.side, output) }
+    pub fn completion_mode(&self) -> u32 { self.modes.lock().1 }
+    /// # Sleeps: yes
+    pub unsafe fn wait_for_io(&self, write: bool, deadline_ns: u64,
+                              now: impl Fn() -> u64) -> WaitOutcome {
+        // SAFETY: forwards the endpoint's process-context wait contract.
+        unsafe { self.pipe.wait_for_io(self.side, write, deadline_ns, now) }
+    }
     pub fn close(&self) { self.pipe.close(self.side); }
     pub fn disconnect(&self) -> bool {
         if self.side != NtPipeSide::Server { return false; }
