@@ -27,11 +27,11 @@ pub const MAX_RATE: u32 = 192_000;
 
 /// Native format accepted by the current kernel PCM core.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum NativeSampleFormat { U8, S16Le, S32Le }
+pub enum NativeSampleFormat { U8, S16Le, S32Le, F32Le }
 
 impl NativeSampleFormat {
     pub const fn bytes(self) -> u32 {
-        match self { Self::U8 => 1, Self::S16Le => 2, Self::S32Le => 4 }
+        match self { Self::U8 => 1, Self::S16Le => 2, Self::S32Le | Self::F32Le => 4 }
     }
 }
 
@@ -59,16 +59,19 @@ pub enum FormatError {
 /// Validate a Windows PCM format and normalize it for the native sound core.
 /// # C: O(1)
 pub fn normalize_pcm(wave: &WaveFormatEx) -> Result<NativePcmFormat, FormatError> {
-    if wave.format_tag != WAVE_FORMAT_PCM { return Err(FormatError::UnsupportedTag); }
+    if wave.format_tag != WAVE_FORMAT_PCM && wave.format_tag != WAVE_FORMAT_IEEE_FLOAT { return Err(FormatError::UnsupportedTag); }
     if wave.cb_size != 0 { return Err(FormatError::UnsupportedExtension); }
     if wave.channels == 0 || wave.channels > MAX_CHANNELS { return Err(FormatError::InvalidChannels); }
     if !(MIN_RATE..=MAX_RATE).contains(&wave.samples_per_sec) { return Err(FormatError::InvalidRate); }
-    let format = match wave.bits_per_sample {
+    let format = if wave.format_tag == WAVE_FORMAT_IEEE_FLOAT {
+        if wave.bits_per_sample != 32 { return Err(FormatError::UnsupportedBits); }
+        NativeSampleFormat::F32Le
+    } else { match wave.bits_per_sample {
         8 => NativeSampleFormat::U8,
         16 => NativeSampleFormat::S16Le,
         32 => NativeSampleFormat::S32Le,
         _ => return Err(FormatError::UnsupportedBits),
-    };
+    } };
     let frame_bytes = format.bytes().checked_mul(u32::from(wave.channels)).ok_or(FormatError::InvalidBlockAlign)?;
     if u32::from(wave.block_align) != frame_bytes { return Err(FormatError::InvalidBlockAlign); }
     let byte_rate = wave.samples_per_sec.checked_mul(frame_bytes).ok_or(FormatError::InvalidByteRate)?;
@@ -94,13 +97,16 @@ mod tests {
             channels: 2, rate: 44_100, frame_bytes: 4, byte_rate: 176_400 });
         assert_eq!(normalize_pcm(&pcm(8, 1, 8_000)).unwrap().format, NativeSampleFormat::U8);
         assert_eq!(normalize_pcm(&pcm(32, 2, 192_000)).unwrap().format, NativeSampleFormat::S32Le);
+        let float = WaveFormatEx { format_tag: WAVE_FORMAT_IEEE_FLOAT, bits_per_sample: 32, ..pcm(32, 2, 48_000) };
+        assert_eq!(normalize_pcm(&float).unwrap().format, NativeSampleFormat::F32Le);
     }
 
     #[test]
     fn rejects_non_pcm_and_nonzero_extensions() {
         let mut value = pcm(16, 2, 48_000);
         value.format_tag = WAVE_FORMAT_IEEE_FLOAT;
-        assert_eq!(normalize_pcm(&value), Err(FormatError::UnsupportedTag));
+        value.bits_per_sample = 16;
+        assert_eq!(normalize_pcm(&value), Err(FormatError::UnsupportedBits));
         value.format_tag = WAVE_FORMAT_PCM;
         value.cb_size = 22;
         assert_eq!(normalize_pcm(&value), Err(FormatError::UnsupportedExtension));
