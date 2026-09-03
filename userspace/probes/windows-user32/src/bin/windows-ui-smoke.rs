@@ -3,7 +3,7 @@
 use std::process::ExitCode;
 use syscall::nt::NtWindowRect;
 use windows_gdi::{Gdi, Rect};
-use windows_user32::{ClassRegistry, User32, WM_KEYDOWN};
+use windows_user32::{ClassRegistry, MenuItemInfoW, User32, MF_POPUP, MIIM_ID, MIIM_STRING, MIIM_SUBMENU, WM_KEYDOWN};
 
 const SW_SHOW: u32 = 1;
 const WM_PAINT: u32 = 0x000f;
@@ -27,6 +27,19 @@ fn run() -> Result<(), String> {
     let client = user32.get_client_rect(hwnd).map_err(|error| format!("get client rectangle: {error:?}"))?;
     if client != (NtWindowRect { left: 0, top: 0, right: 640, bottom: 480 }) { return Err("client rectangle mismatch".into()); }
     user32.show_window(hwnd, SW_SHOW).map_err(|error| format!("show window: {error:?}"))?;
+
+    let menu = user32.create_menu().map_err(|error| format!("create menu: {error:?}"))?;
+    let submenu = user32.create_popup_menu().map_err(|error| format!("create popup menu: {error:?}"))?;
+    user32.append_menu_w(submenu, 0, 101, &"Open\0".encode_utf16().collect::<Vec<_>>(), None)
+        .map_err(|error| format!("append submenu item: {error:?}"))?;
+    user32.append_menu_w(menu, MF_POPUP, 0, &"File\0".encode_utf16().collect::<Vec<_>>(), Some(submenu))
+        .map_err(|error| format!("append menu item: {error:?}"))?;
+    user32.set_menu(hwnd, Some(menu)).map_err(|error| format!("attach menu: {error:?}"))?;
+    if user32.get_menu_item_count(menu).map_err(|error| format!("count menu items: {error:?}"))? != 1 { return Err("menu item count mismatch".into()); }
+    let mut menu_text = vec![0u16; 16];
+    let mut menu_info = MenuItemInfoW { cb_size: 80, f_mask: MIIM_ID | MIIM_SUBMENU | MIIM_STRING, f_type: 0, f_state: 0, w_id: 0, h_sub_menu: 0, hbmp_checked: 0, hbmp_unchecked: 0, dw_item_data: 0, dw_type_data: menu_text.as_mut_ptr() as u64, cch: menu_text.len() as u32, hbmp_item: 0 };
+    user32.get_menu_item_info_w(menu, 0, true, &mut menu_info).map_err(|error| format!("query menu item: {error:?}"))?;
+    if menu_info.h_sub_menu != submenu || menu_info.w_id != 0 || menu_text[..4] != "File".encode_utf16().collect::<Vec<_>>()[..] { return Err("menu item query mismatch".into()); }
 
     let child = classes.create_window_ex_w(&user32, &class, hwnd).map_err(|error| format!("create edit child: {error:?}"))?;
     let child_title = "edit control\0".encode_utf16().collect::<Vec<_>>();
@@ -62,6 +75,7 @@ fn run() -> Result<(), String> {
     if message.message != WM_QUIT { return Err(format!("unexpected quit message: {}", message.message)); }
 
     gdi.delete_object(dc).map_err(|error| format!("delete DC: {error:?}"))?;
+    user32.destroy_menu(menu).map_err(|error| format!("destroy menu: {error:?}"))?;
     user32.destroy_window(hwnd).map_err(|error| format!("destroy window: {error:?}"))?;
     Ok(())
 }
