@@ -357,6 +357,7 @@ pub enum NtHeapCall {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct NtSystemCall { pub class: u32, pub info: UserPtr<u8>, pub length: u32, pub return_length: Option<UserPtr<u32>> }
 #[repr(C)]
+#[repr(C)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct NtWindowMessage { pub hwnd: u64, pub message: u32, pub padding: u32, pub wparam: u64, pub lparam: i64 }
 #[repr(C)]

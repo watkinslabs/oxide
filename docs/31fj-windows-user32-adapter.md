@@ -21,6 +21,8 @@ implement Windows behavior.
   adapter retains no geometry shadow state.
 - Message records remain caller-owned and use the fixed 64-bit layout from
   the shared NT ABI crate.
+- `DispatchMessage` submits that shared record through the existing native
+  callback transition and returns the window-procedure result.
 
 ## 2
 
