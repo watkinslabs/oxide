@@ -60,6 +60,7 @@ impl MessageQueue {
         if remove { self.messages.remove(index) } else { self.messages.get(index).copied() }
     }
     pub fn len(&self) -> usize { self.messages.len() }
+    fn cleanup_window(&mut self, id: WindowId) { self.messages.retain(|message| message.hwnd != Some(id)); }
     pub fn post_quit(&mut self, code: i32) { self.quit = Some(code); }
     fn take_quit(&mut self) -> Option<i32> { self.quit.take() }
     fn quit_pending(&self) -> bool { self.quit.is_some() }
@@ -222,6 +223,8 @@ impl WindowManager {
     }
     fn remove_window(&mut self, id: WindowId) -> Result<WindowRecord, WindowError> {
         let index = self.windows.iter().position(|(window, _)| *window == id).ok_or(WindowError::NoSuchWindow)?;
+        for (_, queue) in &mut self.queues { queue.cleanup_window(id); }
+        self.timers.retain(|timer| timer.hwnd != Some(id));
         self.rects.retain(|(window, _)| *window != id);
         self.texts.retain(|(window, _)| *window != id);
         self.dirty.retain(|(window, _)| *window != id);
@@ -422,6 +425,19 @@ mod tests {
         manager.destroy(parent).unwrap();
         assert_eq!(manager.get(child), None);
         assert_eq!(manager.get(parent), None);
+    }
+
+    #[test]
+    fn destroying_a_window_cleans_its_queue_messages_and_timers() {
+        let mut manager = WindowManager::new();
+        let window = manager.create(9, None, 0x1234).unwrap();
+        manager.post_to_window(window, message(Some(window), WM_CLOSE)).unwrap();
+        manager.post_to_window(window, message(Some(window), WM_PAINT)).unwrap();
+        manager.set_timer(9, Some(window), 3, 10, 0xfeed, 100).unwrap();
+        manager.destroy(window).unwrap();
+        let filter = MessageFilter { hwnd: None, first: 0, last: u32::MAX };
+        assert_eq!(manager.peek_for_thread(9, filter, false), None);
+        assert_eq!(manager.expire_timers(u64::MAX), 0);
     }
 
     #[test]
