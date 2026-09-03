@@ -100,7 +100,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     }
     if call.service == syscall::nt::NtService::RtlDeleteSecurityObject {
         if call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
-        let descriptor = uaccess::get_user_u64(call.args.a0).unwrap_or(0);
+        let Ok(descriptor) = uaccess::get_user_u64(call.args.a0) else { return Some(STATUS_INVALID_PARAMETER); };
         if descriptor != 0 {
             let _ = crate::nt_heap::dispatch(NtCall { service: syscall::nt::NtService::FreeHeap,
                 args: SyscallArgs { a0: 1, a1: 0, a2: descriptor, a3: 0, a4: 0, a5: 0 } });

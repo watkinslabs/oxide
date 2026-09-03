@@ -581,7 +581,8 @@ pub fn dispatch(call: NtCall) -> u64 {
         // table owns both flags so close paths observe retained state.
         if call.args.a1 != 4 || call.args.a3 < 8 { return STATUS_INVALID_PARAMETER; }
         let Ok(inherit) = uaccess::get_user_u32(call.args.a2) else { return STATUS_INVALID_PARAMETER; };
-        let Ok(protect) = uaccess::get_user_u32(call.args.a2 + 4) else {
+        let Some(protect_address) = call.args.a2.checked_add(4) else { return STATUS_INVALID_PARAMETER; };
+        let Ok(protect) = uaccess::get_user_u32(protect_address) else {
             return STATUS_INVALID_PARAMETER;
         };
         if inherit > 1 || protect > 1 { return STATUS_INVALID_PARAMETER; }
