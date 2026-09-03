@@ -29,6 +29,9 @@ pub fn parse_shared_object(file: &[u8], machine: u16) -> Result<SharedObject<'_>
         let syment = dynamic.syment.ok_or(ElfError::Einval)?;
         if syment != 24 || !vaddr_range_in_loads(&parsed, symtab, syment) { return Err(ElfError::Einval); }
     }
+    if let (Some(relr), Some(size), Some(ent)) = (dynamic.relr_addr, dynamic.relr_size, dynamic.relr_ent) {
+        if ent != 8 || size % ent != 0 || !vaddr_range_in_loads(&parsed, relr, size) { return Err(ElfError::Einval); }
+    }
     Ok(SharedObject { parsed, dynamic })
 }
 

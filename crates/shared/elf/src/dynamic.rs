@@ -37,6 +37,9 @@ pub const DT_RUNPATH:     i64 = 29;
 pub const DT_FLAGS:       i64 = 30;
 pub const DT_GNU_HASH:    i64 = 0x6FFFFEF5;
 pub const DT_VERSYM:      i64 = 0x6FFFFFF0;
+pub const DT_RELRSZ:      i64 = 35;
+pub const DT_RELR:        i64 = 36;
+pub const DT_RELRENT:     i64 = 37;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct DynEntry {
@@ -72,6 +75,9 @@ pub struct DynInfo {
     pub needed:        Vec<u64>,        // DT_NEEDED string offsets
     pub runpath_off:   Option<u64>,
     pub rpath_off:     Option<u64>,
+    pub relr_addr:     Option<u64>,
+    pub relr_size:     Option<u64>,
+    pub relr_ent:      Option<u64>,
 }
 
 /// Walk the dynamic section starting at byte offset `dyn_off` in
@@ -111,6 +117,9 @@ pub fn parse_dynamic(file: &[u8], dyn_off: usize, dyn_size: usize) -> Result<Dyn
             DT_FLAGS         => info.flags       = Some(val),
             DT_RUNPATH       => info.runpath_off = Some(val),
             DT_RPATH         => info.rpath_off   = Some(val),
+            DT_RELR          => info.relr_addr   = Some(val),
+            DT_RELRSZ        => info.relr_size   = Some(val),
+            DT_RELRENT       => info.relr_ent    = Some(val),
             _ => {}
         }
         o += 16;
