@@ -107,7 +107,18 @@ impl Nameidata {
         drop(_parent_lock_cost);
         #[cfg(feature = "debug-resolve-cost")]
         let _backend_cost = crate::resolve_cost::backend_lookup();
-        match self.cur_inode.lookup(comp) {
+        let lookup = self.cur_inode.lookup(comp);
+        let lookup = match lookup {
+            Err(crate::types::VfsError::Enoent) if self.flags.case_insensitive => {
+                match self.cur_inode.lookup_casefold(comp) {
+                    Ok(inode) => Ok(inode),
+                    Err(crate::types::VfsError::Enosys) => Err(crate::types::VfsError::Enoent),
+                    Err(error) => Err(error),
+                }
+            }
+            other => other,
+        };
+        match lookup {
             Ok(ci) => {
                 #[cfg(feature = "debug-resolve-cost")]
                 drop(_backend_cost);

@@ -405,7 +405,8 @@ fn native_query_directory(call: NtCall) -> u64 {
 fn query_attributes(attributes: u64, information: u64) -> u64 {
     if attributes == 0 || information == 0 { return STATUS_ACCESS_VIOLATION; }
     let Some(path) = object_path(attributes) else { return STATUS_INVALID_PARAMETER; };
-    let lookup = crate::pathresolve::resolve_at_path(crate::pathresolve::AT_FDCWD, &path, vfs::LookupFlags::default());
+    let lookup = crate::pathresolve::resolve_at_path(crate::pathresolve::AT_FDCWD, &path,
+        vfs::LookupFlags { case_insensitive: true, ..Default::default() });
     let Ok(vp) = lookup else { return STATUS_OBJECT_NAME_NOT_FOUND; };
     let file_type = vp.inode.file_type();
     if file_type != vfs::FileType::Regular && file_type != vfs::FileType::Directory { return STATUS_INVALID_INFO_CLASS; }
@@ -423,7 +424,8 @@ fn query_attributes(attributes: u64, information: u64) -> u64 {
 fn query_full_attributes(attributes: u64, information: u64) -> u64 {
     if attributes == 0 || information == 0 { return STATUS_ACCESS_VIOLATION; }
     let Some(path) = object_path(attributes) else { return STATUS_INVALID_PARAMETER; };
-    let lookup = crate::pathresolve::resolve_at_path(crate::pathresolve::AT_FDCWD, &path, vfs::LookupFlags::default());
+    let lookup = crate::pathresolve::resolve_at_path(crate::pathresolve::AT_FDCWD, &path,
+        vfs::LookupFlags { case_insensitive: true, ..Default::default() });
     let Ok(vp) = lookup else { return STATUS_OBJECT_NAME_NOT_FOUND; };
     let file_type = vp.inode.file_type();
     if file_type != vfs::FileType::Regular && file_type != vfs::FileType::Directory { return STATUS_INVALID_INFO_CLASS; }
@@ -535,12 +537,13 @@ fn open_path(cur: &sched::Task, output: u64, desired: u32, attrs: u64, options: 
     } else { vfs::OpenFlags::O_RDONLY };
     if options & FILE_DIRECTORY_FILE != 0 { flags |= vfs::OpenFlags::O_DIRECTORY; }
     if options & FILE_NON_DIRECTORY_FILE != 0 && path.ends_with('/') { return STATUS_INVALID_PARAMETER; }
-    let lookup = crate::pathresolve::resolve_at_path(crate::pathresolve::AT_FDCWD, &path, vfs::LookupFlags::default());
+    let lookup = crate::pathresolve::resolve_at_path(crate::pathresolve::AT_FDCWD, &path,
+        vfs::LookupFlags { case_insensitive: true, ..Default::default() });
     let (inode, dentry, mnt_id, created) = match lookup {
         Ok(_vp) if disposition.rejects_existing() => return STATUS_OBJECT_NAME_COLLISION,
         Ok(vp) => (vp.inode, vp.dentry, vp.mnt_id, false),
         Err(rv) if disposition.allows_missing() && rv == -(Errno::Enoent.as_i32() as i64) => {
-            let mut parent_flags = vfs::LookupFlags::default();
+            let mut parent_flags = vfs::LookupFlags { case_insensitive: true, ..Default::default() };
             parent_flags.parent = true;
             let Ok(parent) = crate::pathresolve::resolve_parent_at_flags(crate::pathresolve::AT_FDCWD, &path, parent_flags) else {
                 return STATUS_OBJECT_NAME_NOT_FOUND;

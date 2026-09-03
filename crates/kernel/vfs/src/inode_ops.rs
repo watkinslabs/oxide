@@ -82,6 +82,11 @@ pub trait InodeOps: Send + Sync {
         Err(VfsError::Enotdir)
     }
 
+    /// Filesystem-owned case-insensitive lookup preserving the stored spelling. # C: backend-dependent
+    fn lookup_casefold(&self, _inode: &Inode, _name: &str) -> KResult<InodeRef> {
+        Err(VfsError::Enosys)
+    }
+
     /// `dentry_operations` this directory hands to a child dentry the dcache is
     /// about to cache (Linux `d_splice_alias_ops` / `d_set_d_op` at the tail of
     /// `->lookup`). `None` ⇒ the child inherits the parent's vector, which is
