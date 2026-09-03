@@ -29,6 +29,7 @@ pub fn dispatch(call: NtCall, stack: [u64; 5]) -> u64 {
         return INVALID_PARAMETER;
     }
     let Some(image) = image_path(c.attribute_list) else { return INVALID_PARAMETER; };
+    let Ok(image_path) = String::from_utf8(image.clone()) else { return INVALID_PARAMETER; };
     let Some((command, environment, current_directory, current_directory_handle, console_handle, standard_handles)) =
         process_parameters(c.process_parameters) else { return INVALID_PARAMETER; };
     let environment_refs: Vec<(&str, &str)> = environment.iter().map(|(name, value)|
@@ -60,6 +61,10 @@ pub fn dispatch(call: NtCall, stack: [u64; 5]) -> u64 {
     child.set_nt_personality(true);
     child.set_nt_peb(prepared.process.environment.peb.as_u64());
     child.set_nt_teb(prepared.process.environment.teb.as_u64());
+    child.set_exe_path(Some(image_path.clone()));
+    // SAFETY: the unpublished child owns the freshly prepared address space;
+    // no other task can observe or replace this mm before publication below.
+    if let Some(mm) = unsafe { child.mm_ref() } { mm.set_exe_path(image_path.clone()); }
     if let Some(catalog) = catalog { child.thread_group.set_nt_module_catalog(catalog); }
     if let Some(fd) = cur.clone_fd_table() {
         unsafe { child.replace_fd_table(Some(fd)); }
