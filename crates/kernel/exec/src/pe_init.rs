@@ -44,15 +44,15 @@ fn collect_module_initializers<'a>(index: usize,
     }
     let callbacks = pe::parse(&modules[index].blob)?.tls_callback_rvas()?;
     if index != 0 || include_root {
-        for rva in callbacks { out.push(initializer(loaded[index].image.base, rva)?); }
+        for rva in callbacks { out.push(initializer(loaded[index].image.base, rva, super::pe_loader::PeInitializerKind::TlsCallback)?); }
         // PE encodes a DLL without DllMain as AddressOfEntryPoint == 0;
         // `PeLoadedImage::entry` is base + entry RVA, so compare against the
         // module base instead of testing the already-materialized address.
         if has_dll_entry(loaded[index].image.base, loaded[index].image.entry) {
-            out.push(super::pe_loader::PeModuleInitializer { base: loaded[index].image.base, entry: loaded[index].image.entry });
+            out.push(super::pe_loader::PeModuleInitializer { base: loaded[index].image.base, entry: loaded[index].image.entry, kind: super::pe_loader::PeInitializerKind::DllEntry });
         }
     } else {
-        for rva in callbacks { out.push(initializer(loaded[index].image.base, rva)?); }
+        for rva in callbacks { out.push(initializer(loaded[index].image.base, rva, super::pe_loader::PeInitializerKind::TlsCallback)?); }
     }
     state[index] = 2;
     Ok(())
@@ -60,9 +60,9 @@ fn collect_module_initializers<'a>(index: usize,
 
 fn has_dll_entry(base: u64, entry: UserVirtAddr) -> bool { entry.as_u64() != base }
 
-fn initializer(base: u64, rva: u32) -> Result<super::pe_loader::PeModuleInitializer, pe::Error> {
+fn initializer(base: u64, rva: u32, kind: super::pe_loader::PeInitializerKind) -> Result<super::pe_loader::PeModuleInitializer, pe::Error> {
     Ok(super::pe_loader::PeModuleInitializer {
-        base, entry: UserVirtAddr::new(base.checked_add(rva as u64).ok_or(pe::Error::Einval)?).ok_or(pe::Error::Einval)?,
+        base, entry: UserVirtAddr::new(base.checked_add(rva as u64).ok_or(pe::Error::Einval)?).ok_or(pe::Error::Einval)?, kind,
     })
 }
 
@@ -73,7 +73,7 @@ fn ascii_eq(left: &[u8], right: &[u8]) -> bool {
 /// Collect TLS callbacks for a root image that has no dependency graph.
 pub fn collect_root_initializers(blob: &[u8], image: &super::pe_loader::PeLoadedImage) -> Result<Vec<super::pe_loader::PeModuleInitializer>, pe::Error> {
     let mut out = Vec::new();
-    for rva in pe::parse(blob)?.tls_callback_rvas()? { out.push(super::pe_loader::PeModuleInitializer { base: image.base, entry: UserVirtAddr::new(image.base.checked_add(rva as u64).ok_or(pe::Error::Einval)?).ok_or(pe::Error::Einval)? }); }
+    for rva in pe::parse(blob)?.tls_callback_rvas()? { out.push(super::pe_loader::PeModuleInitializer { base: image.base, entry: UserVirtAddr::new(image.base.checked_add(rva as u64).ok_or(pe::Error::Einval)?).ok_or(pe::Error::Einval)?, kind: super::pe_loader::PeInitializerKind::TlsCallback }); }
     Ok(out)
 }
 
@@ -118,6 +118,14 @@ pub fn map_with_exit(as_: &AddressSpace, app_entry: UserVirtAddr,
         code.extend_from_slice(&initializer.entry.as_u64().to_le_bytes());
         code.extend_from_slice(&[0xff, 0xd0]);
         code.extend_from_slice(&[0x48, 0x83, 0xc4, 0x28, 0x5b]);
+        if initializer.kind == super::pe_loader::PeInitializerKind::DllEntry && exit_entry.as_u64() != 0 {
+            // Wine turns a FALSE DLL_PROCESS_ATTACH result into a process
+            // initialization failure; TLS callbacks have no BOOL result.
+            code.extend_from_slice(&[0x85, 0xc0, 0x75, 0x17, 0xb9, 0x42, 0x01, 0x00, 0xc0,
+                0x48, 0x83, 0xec, 0x20, 0x48, 0xb8]);
+            code.extend_from_slice(&exit_entry.as_u64().to_le_bytes());
+            code.extend_from_slice(&[0xff, 0xd0, 0x0f, 0x0b]);
+        }
     }
     if exit_entry.as_u64() == 0 {
         // Preserve the legacy initializer-only helper used by the image-only
@@ -195,7 +203,7 @@ mod tests {
     fn emits_process_attach_calls_then_application_jump() {
         let as_ = AddressSpace::new(0x20_000).unwrap();
         let initializers = [super::super::pe_loader::PeModuleInitializer {
-            base: 0x5000_0000, entry: UserVirtAddr::new(0x5000_1010).unwrap(),
+            base: 0x5000_0000, entry: UserVirtAddr::new(0x5000_1010).unwrap(), kind: super::super::pe_loader::PeInitializerKind::DllEntry,
         }];
         let trampoline = map_with_exit(&as_, UserVirtAddr::new(0x6000_1010).unwrap(), &initializers, UserVirtAddr::new(0x7000_1010).unwrap()).unwrap();
         let vma = as_.find_vma(trampoline.base).unwrap();
@@ -204,12 +212,10 @@ mod tests {
         assert_eq!(&data[25..30], &[0xba, 1, 0, 0, 0]);
         assert_eq!(&data[43..45], &[0xff, 0xd0]);
         assert_eq!(&data[45..50], &[0x48, 0x83, 0xc4, 0x28, 0x5b]);
-        assert_eq!(&data[50..54], &[0x48, 0x83, 0xec, 0x20]);
-        assert_eq!(&data[54..56], &[0x48, 0xb8]);
-        assert_eq!(&data[64..66], &[0xff, 0xd0]);
-        assert_eq!(&data[66..69], &[0x48, 0x89, 0xc1]);
-        assert_eq!(&data[79..81], &[0xff, 0xd0]);
-        assert_eq!(&data[81..83], &[0x0f, 0x0b]);
+        assert!(data.windows(4).any(|bytes| bytes == [0x48, 0x83, 0xec, 0x20]));
+        assert!(data.windows(3).any(|bytes| bytes == [0x48, 0x89, 0xc1]));
+        assert!(data.windows(2).any(|bytes| bytes == [0xff, 0xd0]));
+        assert!(data.windows(2).any(|bytes| bytes == [0x0f, 0x0b]));
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -217,7 +223,7 @@ mod tests {
     fn dynamic_return_trampoline_pushes_caller_and_attach_arguments() {
         let as_ = AddressSpace::new(0x20_000).unwrap();
         let initializers = [super::super::pe_loader::PeModuleInitializer {
-            base: 0x5000_0000, entry: UserVirtAddr::new(0x5000_1010).unwrap(),
+            base: 0x5000_0000, entry: UserVirtAddr::new(0x5000_1010).unwrap(), kind: super::super::pe_loader::PeInitializerKind::DllEntry,
         }];
         let trampoline = map_dynamic_return(&as_, UserVirtAddr::new(0x6000_1010).unwrap(), &initializers).unwrap().unwrap();
         let vma = as_.find_vma(trampoline.base).unwrap();
@@ -245,12 +251,26 @@ mod tests {
     #[test]
     fn dll_initializer_uses_windows_x64_call_alignment() {
         let as_ = AddressSpace::new(0x20_000).unwrap();
-        let initializer = [super::super::pe_loader::PeModuleInitializer { base: 0x5000_0000, entry: UserVirtAddr::new(0x5000_1010).unwrap() }];
+        let initializer = [super::super::pe_loader::PeModuleInitializer { base: 0x5000_0000, entry: UserVirtAddr::new(0x5000_1010).unwrap(), kind: super::super::pe_loader::PeInitializerKind::DllEntry }];
         let trampoline = map_with_exit(&as_, UserVirtAddr::new(0x6000_1010).unwrap(), &initializer, UserVirtAddr::new(0x7000_1010).unwrap()).unwrap();
         let vma = as_.find_vma(trampoline.base).unwrap();
         let data = match vma.backing { VmaBacking::KernelBytes { data, off } => (data, off), _ => panic!("initializer trampoline must be kernel-backed") };
         let bytes = &data.0[data.1..data.1 + trampoline.bytes];
         assert!(bytes.windows(5).any(|window| window == [0x53, 0x48, 0x83, 0xec, 0x28]));
         assert!(bytes.windows(5).any(|window| window == [0x48, 0x83, 0xc4, 0x28, 0x5b]));
+    }
+
+    #[test]
+    fn process_attach_failure_is_transferred_to_exit_status() {
+        let as_ = AddressSpace::new(0x20_000).unwrap();
+        let initializers = [super::super::pe_loader::PeModuleInitializer {
+            base: 0x5000_0000, entry: UserVirtAddr::new(0x5000_1010).unwrap(), kind: super::super::pe_loader::PeInitializerKind::DllEntry,
+        }];
+        let trampoline = map_with_exit(&as_, UserVirtAddr::new(0x6000_1010).unwrap(), &initializers, UserVirtAddr::new(0x7000_1010).unwrap()).unwrap();
+        let vma = as_.find_vma(trampoline.base).unwrap();
+        let (data, off) = match vma.backing { VmaBacking::KernelBytes { data, off } => (data, off), _ => panic!("trampoline must be kernel-backed") };
+        let data = &data[off..off + trampoline.bytes];
+        assert!(data.windows(4).any(|bytes| bytes == [0x85, 0xc0, 0x75, 0x17]));
+        assert!(data.windows(5).any(|bytes| bytes == [0xb9, 0x42, 0x01, 0x00, 0xc0]));
     }
 }

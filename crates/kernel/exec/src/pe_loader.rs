@@ -310,7 +310,10 @@ pub struct PeProcess {
 }
 /// One dependency DLL initializer the runtime must call before application startup.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct PeModuleInitializer { pub base: u64, pub entry: UserVirtAddr }
+pub enum PeInitializerKind { TlsCallback, DllEntry }
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct PeModuleInitializer { pub base: u64, pub entry: UserVirtAddr, pub kind: PeInitializerKind }
 pub trait ImportResolver {
     fn resolve(&self, dll: &[u8], import: &pe::ImportThunk<'_>) -> Result<u64, pe::Error>;
 }
