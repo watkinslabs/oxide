@@ -921,11 +921,10 @@ smoke-windows-ui-x86:
 	OXIDE_WINDOWS_UI_SMOKE=1 SMOKE_MARKER='windows-ui-smoke: PASS' SMOKE_ALIVE_MARKER='windows-ui-smoke: PASS' \
 	SMOKE_ALIVE_READY_MARKER='sh-5.2#' SMOKE_ALIVE_CMD=/usr/local/bin/windows-ui-smoke \
 	SMOKE_RX_MARKER= ./tools/boot-smoke.sh x86 $(WINDOWS_UI_SMOKE_TIMEOUT)
-smoke-windows-ui-arm:
-	OXIDE_WINDOWS_UI_SMOKE=1 SMOKE_MARKER='windows-ui-smoke: PASS' SMOKE_ALIVE_MARKER='windows-ui-smoke: PASS' \
-	SMOKE_ALIVE_READY_MARKER='sh-5.2#' SMOKE_ALIVE_CMD=/usr/local/bin/windows-ui-smoke \
-	SMOKE_RX_MARKER= ./tools/boot-smoke.sh arm $(WINDOWS_UI_SMOKE_TIMEOUT)
-smoke-windows-ui: smoke-windows-ui-x86 smoke-windows-ui-arm
+# Windows workload execution is x86-64-only. AArch64 receives compile-only
+# coverage through the ordinary cross-architecture checks; it is never asked
+# to boot a Windows userspace or run the x86-64 UI smoke.
+smoke-windows-ui: smoke-windows-ui-x86
 
 KBD_LOGIN_SMOKE_TIMEOUT ?= 600
 smoke-kbd-login-x86: x86
