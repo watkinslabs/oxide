@@ -48,6 +48,7 @@ fn drm_accessors_skip_disabled_scanouts() {
         bdf: Bdf { segment: 0, bus: 0, device: 0, function: 0 },
         unique: drm_unique_from_bdf(Bdf { segment: 0, bus: 0, device: 0, function: 0 }),
         edid: None,
+        capsets: alloc::vec::Vec::new(),
     };
     assert_eq!(
         driver.crtc_ids(),

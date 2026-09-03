@@ -101,7 +101,7 @@ fn capset_info_response_is_validated_before_use() {
     write_u32_le(&mut resp, 28, 2);
     write_u32_le(&mut resp, 32, 4096);
     let info = parse_capset_info(&resp).unwrap();
-    assert_eq!((info.capset_id, info.capset_version, info.capset_size), (7, 2, 4096));
+    assert_eq!((info.capset_id, info.capset_max_version, info.capset_max_size), (7, 2, 4096));
     assert_eq!(parse_capset_info(&resp[..39]), Err(Error::Inval));
     write_u32_le(&mut resp, 0, VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
     assert_eq!(parse_capset_info(&resp), Err(Error::BadResp(VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER)));

@@ -5,7 +5,7 @@ use pci::Bdf;
 use sync::{Spinlock, TaskList as DriverLockClass};
 
 use crate::{
-    DisplayInfo, Error, KResult, VirtioGpuRect,
+    DisplayInfo, Error, KResult, VirtioGpuRect, VirtioGpuRespCapsetInfo,
     VIRTIO_F_NOTIFICATION_DATA, VIRTIO_F_RING_RESET, VIRTIO_F_VERSION_1,
     VIRTIO_GPU_F_CONTEXT_INIT, VIRTIO_GPU_F_EDID, VIRTIO_GPU_F_RESOURCE_BLOB,
     VIRTIO_GPU_F_RESOURCE_UUID, VIRTIO_GPU_F_VIRGL, VIRTIO_GPU_FORMAT_A8B8G8R8_UNORM,
@@ -35,9 +35,22 @@ pub struct VirtioGpuDev {
     pub edid:                 Option<Vec<u8>>,
     pub resource_id_alloc:    AtomicU32,
     pub blob_uuid_alloc:      AtomicU64,
-    /// Capset count discovered via `CMD_GET_CAPSET_INFO` when VIRGL
-    /// is negotiated; otherwise 0.
-    pub capset_count:         u32,
+    /// Validated capset descriptors discovered from the device config and
+    /// `CMD_GET_CAPSET_INFO`; absent when VIRGL was not negotiated.
+    pub capsets:              Vec<VirtioGpuCapsetInfo>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VirtioGpuCapsetInfo {
+    pub id: u32,
+    pub max_version: u32,
+    pub max_size: u32,
+}
+
+impl From<VirtioGpuRespCapsetInfo> for VirtioGpuCapsetInfo {
+    fn from(value: VirtioGpuRespCapsetInfo) -> Self {
+        Self { id: value.capset_id, max_version: value.capset_max_version, max_size: value.capset_max_size }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -131,6 +144,7 @@ pub struct VirtioGpuDrm {
     pub unique:              String,
     /// EDID of the primary scanout's display, as fetched at probe.
     pub edid:                Option<Vec<u8>>,
+    pub capsets:             Vec<VirtioGpuCapsetInfo>,
 }
 
 impl drm::DrmDriver for VirtioGpuDrm {
@@ -156,11 +170,10 @@ impl drm::DrmDriver for VirtioGpuDrm {
     // core already reports the 64x64 cursor this device's cursor plane uses.
     fn cap(&self, c: u64) -> u64 { drm::default_cap(c) }
 
-    /// VIRTGPU_GETPARAM. This device does not negotiate VIRTIO_GPU_F_VIRGL, so
-    /// there is no host 3D/virgl — report 3D_FEATURES=0 so Mesa's virtio_gpu
-    /// driver declines and falls back to llvmpipe over the KMS dumb-buffer
-    /// scanout (Linux virtio-gpu behaviour on a 2D-only device). All other
-    /// params default to 0 (no blob/host-visible/context-init/cross-device).
+    /// VIRTGPU_GETPARAM. Capability descriptors are cached for the future
+    /// render-node implementation, but 3D_FEATURES remains false until the
+    /// complete capset blob and render ioctl owner is present. This prevents
+    /// Mesa from selecting a path whose userspace data contract is incomplete.
     /// # C: O(1)
     fn virtgpu_getparam(&self, param: u64) -> Option<u64> {
         Some(match param {
@@ -175,7 +188,7 @@ impl drm::DrmDriver for VirtioGpuDrm {
         // request when the device has no host capsets.  The QEMU 2D device did
         // not negotiate VIRGL, so reporting EINVAL here misclassifies absence
         // of the driver facility as a malformed userspace request.
-        Some(drm::VirtgpuCaps::NoCapsets)
+        if self.capsets.is_empty() { Some(drm::VirtgpuCaps::NoCapsets) } else { None }
     }
 
     // ---- D5a read-only modeset enumeration over enabled scanouts ----
@@ -304,6 +317,7 @@ pub fn install_with_drm_parent(
     let display = dev.display;
     let features_negotiated = dev.features_negotiated;
     let edid = dev.edid.clone();
+    let capsets = dev.capsets.clone();
     dev.card_id = u32::MAX;
     install(dev)?;
 
@@ -313,6 +327,7 @@ pub fn install_with_drm_parent(
         bdf,
         unique: drm_unique_from_bdf(bdf),
         edid,
+        capsets,
     });
     let card_id = drm::register_with_parent(drm_dev, parent);
     if card_id == u32::MAX {

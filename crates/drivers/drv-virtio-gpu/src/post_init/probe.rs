@@ -94,6 +94,17 @@ pub fn get_display_info(
         { klog::write_raw(b"[VGPU] edid fetch timed out, leaking command frame\n"); }
         return false;
     }
+    let capsets = if drv_features & (1u64 << crate::VIRTIO_GPU_F_VIRGL) != 0 {
+        match fetch_capsets(resources.device_cfg_va, cmd_buf.va, cmd_buf.dma, ctrlq.as_mut().unwrap(), waits) {
+            Some(value) => value,
+            None => {
+                cmd_buf.disarm();
+                return false;
+            }
+        }
+    } else {
+        Vec::new()
+    };
     #[cfg(feature = "debug-boot")]
     {
         klog::write_raw(b"[INFO]  virtio-gpu edid: ");
@@ -144,7 +155,7 @@ pub fn get_display_info(
         display: info,
         edid,
         resource_id_alloc: AtomicU32::new(1),
-        blob_uuid_alloc: AtomicU64::new(1), capset_count: 0,
+        blob_uuid_alloc: AtomicU64::new(1), capsets,
     }, Some(parent)) {
         Ok(_) => {}
         Err(_) => {
@@ -406,6 +417,49 @@ pub(super) unsafe fn submit_raw_wait(
         )
     };
     retired
+}
+
+/// Read the device-config capset count and synchronously discover every
+/// advertised descriptor before publishing the DRM device. The config count
+/// and response ids are host-controlled, so both are bounded and validated;
+/// a malformed VIRGL advertisement fails probe rather than exposing a partial
+/// graphics capability set to userspace.
+fn fetch_capsets(
+    device_cfg_va: u64, cmd_buf_va: *mut u8, cmd_buf_dma: u64,
+    ctrlq: &mut virtio::VirtioSplitQueue, waits: &CompletionWaits<'_>,
+) -> Option<Vec<crate::VirtioGpuCapsetInfo>> {
+    const NUM_CAPSETS_OFF: usize = 12;
+    const MAX_CAPSETS: u32 = 64;
+    const MAX_CAPSET_ID: u32 = 63;
+    if device_cfg_va == 0 { return None; }
+    // SAFETY: the transport publishes a device-config MMIO mapping covering
+    // the virtio-gpu config structure; offset 12 is its num_capsets field.
+    let count = unsafe { core::ptr::read_volatile((device_cfg_va + NUM_CAPSETS_OFF as u64) as *const u32) };
+    if count > MAX_CAPSETS { return None; }
+    let mut capsets = Vec::with_capacity(count as usize);
+    for index in 0..count {
+        // SAFETY: this probe exclusively owns the command frame and no prior
+        // descriptor remains in flight after submit_raw_wait returns.
+        unsafe {
+            for k in 0..0x40usize { core::ptr::write_volatile(cmd_buf_va.add(k), 0); }
+            for k in 0..0x40usize { core::ptr::write_volatile(cmd_buf_va.add(RESP_OFF as usize + k), 0); }
+            let request = core::slice::from_raw_parts_mut(cmd_buf_va, 32);
+            if crate::encode_get_capset_info(request, index) != 32 { return None; }
+        }
+        // SAFETY: request and response occupy disjoint regions of the owned
+        // 4 KiB frame and the queue completion wait establishes device-write
+        // ordering before the response is parsed.
+        if unsafe { !submit_raw_wait(cmd_buf_dma, 32, 40, ctrlq, waits) } { return None; }
+        // SAFETY: the completed descriptor wrote exactly the bounded response
+        // region named above; no other producer can mutate this probe frame.
+        let response = unsafe { core::slice::from_raw_parts(cmd_buf_va.add(RESP_OFF as usize), 40) };
+        let info = crate::parse_capset_info(response).ok()?;
+        if info.capset_id == 0 || info.capset_id > MAX_CAPSET_ID || info.capset_max_version == 0 || info.capset_max_size == 0 {
+            return None;
+        }
+        capsets.push(info.into());
+    }
+    Some(capsets)
 }
 
 unsafe fn submit_cursor_raw_wait(
