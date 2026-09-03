@@ -107,6 +107,25 @@ fn named_pipe_handles_accept_completion_port_association() {
 }
 
 #[test]
+fn named_pipe_cancellation_wakes_waiters_without_resetting_transport() {
+    let pipe = alloc::sync::Arc::new(NtPipe::new(NtPipeConfig { pipe_type: 0, read_mode: 0,
+        completion_mode: 0, max_instances: 1, inbound_quota: 4096, outbound_quota: 4096,
+        timeout_100ns: 0, sharing: 3 }));
+    assert!(pipe.reserve_instance());
+    let before = pipe.cancellation_epoch();
+    pipe.cancel_io();
+    assert_ne!(pipe.cancellation_epoch(), before);
+    assert_eq!(pipe.listen(), NtPipeListen::Pending);
+    assert!(pipe.connect());
+    let server = pipe.endpoint_with_instance(NtPipeSide::Server);
+    let client = pipe.endpoint_with_instance(NtPipeSide::Client);
+    assert_eq!(server.write(b"ok"), NtPipeIo::Complete(2));
+    let mut data = [0; 2];
+    assert_eq!(client.read(&mut data), NtPipeIo::Complete(2));
+    assert_eq!(&data, b"ok");
+}
+
+#[test]
 fn section_backing_is_zeroed_and_retains_exact_extent() {
     let section = NtSection::new(8192).unwrap();
     assert_eq!(section.size(), 8192); assert_eq!(section.bytes().len(), 8192);

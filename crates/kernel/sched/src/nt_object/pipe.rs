@@ -1,6 +1,7 @@
 //! State owned by one native NT named-pipe object.
 
 use alloc::{collections::VecDeque, sync::Arc};
+use core::sync::atomic::{AtomicU64, Ordering};
 use crate::live::WaitList;
 use crate::WaitOutcome;
 use sync::{Spinlock, TaskList as TaskListClass};
@@ -12,6 +13,9 @@ pub enum NtPipeSide { Server, Client }
 /// Result of a nonblocking pipe operation.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum NtPipeIo { Complete(usize), WouldBlock, BrokenPipe }
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum NtPipeWait { Ready, Cancelled, Interrupted, TimedOut }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum NtPipeListen { Pending, Connected }
@@ -50,6 +54,7 @@ pub struct NtPipe {
     transport: Spinlock<PipeTransport, TaskListClass>,
     read_waiters: WaitList,
     write_waiters: WaitList,
+    cancel_epoch: AtomicU64,
 }
 
 /// A directional handle view over one shared named-pipe transport.
@@ -90,11 +95,14 @@ impl NtPipe {
         Self { config, instances: Spinlock::new(0), transport: Spinlock::new(PipeTransport {
             server_to_client: VecDeque::new(), client_to_server: VecDeque::new(),
             server_closed: false, client_closed: false, connected: false, listening: false,
-        }), read_waiters: WaitList::new(), write_waiters: WaitList::new() }
+        }), read_waiters: WaitList::new(), write_waiters: WaitList::new(), cancel_epoch: AtomicU64::new(0) }
     }
 
     pub fn config(&self) -> NtPipeConfig { self.config }
     pub fn instances(&self) -> u32 { *self.instances.lock() }
+
+    /// Return the cancellation generation used by blocking I/O waiters. # C: O(1)
+    pub fn cancellation_epoch(&self) -> u64 { self.cancel_epoch.load(Ordering::Acquire) }
 
     /// Reserve one server instance without exceeding the NT limit.
     pub fn reserve_instance(&self) -> bool {
@@ -216,6 +224,14 @@ impl NtPipe {
         self.write_waiters.wake_all();
     }
 
+    /// Cancel waits currently associated with this pipe object and wake them.
+    /// # C: O(N_waiters)
+    pub fn cancel_io(&self) {
+        self.cancel_epoch.fetch_add(1, Ordering::AcqRel);
+        self.read_waiters.wake_all();
+        self.write_waiters.wake_all();
+    }
+
     fn read_ready(&self, side: NtPipeSide) -> bool {
         let transport = self.transport.lock();
         let queue = match side { NtPipeSide::Server => &transport.client_to_server, NtPipeSide::Client => &transport.server_to_client };
@@ -235,13 +251,21 @@ impl NtPipe {
     /// prepare/recheck/park ordering used by every blocking kernel path.
     /// # Sleeps: yes
     pub unsafe fn wait_for_io(&self, side: NtPipeSide, write: bool, deadline_ns: u64,
-                              now: impl Fn() -> u64) -> WaitOutcome {
+                              now: impl Fn() -> u64) -> NtPipeWait {
         let waiters = if write { &self.write_waiters } else { &self.read_waiters };
+        let epoch = self.cancel_epoch.load(Ordering::Acquire);
         // SAFETY: the native syscall caller is process context and owns no
         // transport lock while the scheduler parks the current task.
-        unsafe { crate::live::wait_event_interruptible_until(waiters, deadline_ns, now, || {
+        let outcome = unsafe { crate::live::wait_event_interruptible_until(waiters, deadline_ns, now, || {
+            if self.cancel_epoch.load(Ordering::Acquire) != epoch { return true; }
             if write { self.write_ready(side) } else { self.read_ready(side) }
-        }) }
+        }) };
+        if self.cancel_epoch.load(Ordering::Acquire) != epoch { return NtPipeWait::Cancelled; }
+        match outcome {
+            WaitOutcome::Ready => NtPipeWait::Ready,
+            WaitOutcome::Interrupted => NtPipeWait::Interrupted,
+            WaitOutcome::TimedOut => NtPipeWait::TimedOut,
+        }
     }
 }
 
@@ -252,7 +276,7 @@ impl NtPipeEndpoint {
     pub fn completion_mode(&self) -> u32 { self.modes.lock().1 }
     /// # Sleeps: yes
     pub unsafe fn wait_for_io(&self, write: bool, deadline_ns: u64,
-                              now: impl Fn() -> u64) -> WaitOutcome {
+                              now: impl Fn() -> u64) -> NtPipeWait {
         // SAFETY: forwards the endpoint's process-context wait contract.
         unsafe { self.pipe.wait_for_io(self.side, write, deadline_ns, now) }
     }

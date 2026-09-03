@@ -18,6 +18,8 @@ const STATUS_SHARING_VIOLATION: u64 = 0xc000_0043;
 const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
 const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
 const STATUS_NOT_FOUND: u64 = 0xc000_0225;
+const STATUS_CANCELLED: u64 = 0xc000_0120;
+const STATUS_TIMEOUT: u64 = 0x0000_0102;
 const STATUS_END_OF_FILE: u64 = 0xc000_0011;
 const FILE_READ_DATA: u32 = 0x0001;
 const FILE_WRITE_DATA: u32 = 0x0002;
@@ -299,8 +301,17 @@ fn native_io_values(cur: &sched::Task, handle: u32, io_status: u64, buffer: u64,
             // SAFETY: this native NT syscall is executing in process context;
             // the endpoint wait releases all transport locks before parking.
             let outcome = unsafe { endpoint.wait_for_io(write, deadline, timekeeper::monotonic_ns) };
-            if matches!(outcome, sched::WaitOutcome::Ready) {
+            if matches!(outcome, sched::nt_object::NtPipeWait::Cancelled) {
+                write_io_status(io_status, STATUS_CANCELLED, 0);
+                post_completion(&object, io_status, STATUS_CANCELLED, 0);
+                return STATUS_CANCELLED;
+            }
+            if matches!(outcome, sched::nt_object::NtPipeWait::Ready) {
                 result = if write { endpoint.write(&data) } else { endpoint.read(&mut data) };
+            } else if matches!(outcome, sched::nt_object::NtPipeWait::TimedOut) {
+                write_io_status(io_status, STATUS_TIMEOUT, 0);
+                post_completion(&object, io_status, STATUS_TIMEOUT, 0);
+                return STATUS_TIMEOUT;
             }
         }
         return match result {
@@ -421,7 +432,9 @@ fn cancel(cur: &sched::Task, handle: u32, io: Option<u64>, io_status: u64) -> u6
     let table = cur.thread_group.nt_handles();
     let native = sched::nt_object::NtHandle::from_raw(handle);
     let Some(object) = table.get(native, 0) else { return STATUS_INVALID_HANDLE; };
-    if object.file().is_none() { return STATUS_INVALID_HANDLE; }
+    let pipe = object.pipe_endpoint();
+    if object.file().is_none() && pipe.is_none() { return STATUS_INVALID_HANDLE; }
+    if let Some(endpoint) = pipe { endpoint.pipe().cancel_io(); }
     let status = if io.is_some() { STATUS_NOT_FOUND } else { STATUS_SUCCESS };
     if uaccess::put_user_u64(io_status, status).is_err() || uaccess::put_user_u64(io_status + 8, 0).is_err() { return STATUS_ACCESS_VIOLATION; }
     status
