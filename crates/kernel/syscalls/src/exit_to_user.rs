@@ -183,7 +183,8 @@ unsafe fn deliver_nt_exception(regs: *mut UserRegs) -> bool {
     for (offset, value) in [(0u64, u64::from_le_bytes(pending.context[0xf8..0x100].try_into().unwrap())),
         (8, 0x33), (16, u64::from_le_bytes(pending.context[0x44..0x48].try_into().unwrap())),
         (24, context_rsp), (32, 0x2b)] {
-        if uaccess::put_user_u64(frame.machine_frame.checked_add(offset).unwrap_or(0), value).is_err() { return false; }
+        let Some(address) = frame.machine_frame.checked_add(offset) else { return false; };
+        if uaccess::put_user_u64(address, value).is_err() { return false; }
     }
     // SAFETY: the return frame is the active syscall frame owned by this task; all user frame writes completed above.
     let regs = unsafe { &mut *regs };
