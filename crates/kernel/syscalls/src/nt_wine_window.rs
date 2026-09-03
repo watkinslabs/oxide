@@ -181,6 +181,8 @@ pub fn dispatch(call: NtCall) -> u64 {
         WINE_GET_CLASS_INFO_EX => get_class_info_ex(&args),
         WINE_CREATE_MENU => crate::nt_window::create_menu_for_current(false),
         WINE_CREATE_POPUP_MENU => crate::nt_window::create_menu_for_current(true),
+        WINE_DRAW_MENU_BAR => crate::nt_window::draw_menu_bar_for_current(args[0]),
+        WINE_DRAW_MENU_BAR_TEMP => draw_menu_bar_temp(&args),
         WINE_DELETE_MENU => win_bool(crate::nt_window::delete_menu_item_for_current(args[0], args[1], args[2])),
         WINE_REMOVE_MENU => win_bool(crate::nt_window::remove_menu_item_for_current(args[0], args[1], args[2])),
         WINE_DESTROY_MENU => win_bool(crate::nt_window::destroy_menu_for_current(args[0])),
@@ -250,6 +252,18 @@ pub fn dispatch(call: NtCall) -> u64 {
         WINE_GET_TEXT_EXTENT_EX => win_bool(gdi(NtService::GetGdiTextExtent, SyscallArgs { a0: args[0], a1: args[1], a2: args[2], a3: args[6], a4: 0, a5: 0 })),
         _ => STATUS_NOT_IMPLEMENTED,
     }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn draw_menu_bar_temp(args: &[u64; 17]) -> u64 {
+    if args[2] == 0 { return 0; }
+    let menu = if args[3] != 0 { args[3] } else { crate::nt_window::window_menu_for_current(args[0]).unwrap_or(0) };
+    let Some(rect) = crate::nt_window::menu_bar_rect_for_current_menu(args[0], menu) else { return 0; };
+    let mut raw = [0u8; 16];
+    for (index, value) in [rect.left, rect.top, rect.right, rect.bottom].iter().enumerate() {
+        raw[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    if uaccess::copy_to_user(args[2], &raw).is_err() { 0 } else { rect.bottom.saturating_sub(rect.top) as u64 }
 }
 
 #[cfg(target_os = "oxide-kernel")]
