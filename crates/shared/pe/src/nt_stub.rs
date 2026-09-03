@@ -6,6 +6,24 @@ pub const X64_BREAKPOINT_STUB_BYTES: usize = 2;
 pub const X64_RELAY_STUB_BYTES: usize = 233;
 const STATUS_PROCEDURE_NOT_FOUND: u32 = 0xc000_007a;
 
+/// Wine's x86-64 `exc_stack_layout` contract passed to
+/// `KiUserExceptionDispatcher`.  These offsets are part of the user ABI, not
+/// an implementation detail of the kernel exception path.
+pub const X64_EXCEPTION_CONTEXT_OFFSET: u64 = 0x000;
+pub const X64_EXCEPTION_CONTEXT_EX_OFFSET: u64 = 0x4d0;
+pub const X64_EXCEPTION_RECORD_OFFSET: u64 = 0x4f0;
+pub const X64_EXCEPTION_MACHINE_FRAME_OFFSET: u64 = 0x590;
+pub const X64_EXCEPTION_FRAME_BYTES: u64 = 0x5c0;
+
+/// Compute the 64-byte-aligned user stack address used by Wine when entering
+/// `KiUserExceptionDispatcher`.  Keeping this arithmetic in the shared PE
+/// contract prevents the kernel and runtime from developing separate frame
+/// layouts; callers still own the user-access validation and writes.
+pub fn x64_exception_stack(user_rsp: u64, xstate_bytes: u64) -> Option<u64> {
+    user_rsp.checked_sub(X64_EXCEPTION_FRAME_BYTES)?.checked_sub(xstate_bytes)
+        .map(|address| address & !63)
+}
+
 /// Encode Wine's Unix-call dispatcher ABI: `(unixlib_handle, code, args)` in
 /// the Windows x64 registers becomes `(rdi, rsi, rdx)` for the NT entry.
 pub fn encode_x64_unix_call_dispatcher_stub(selector: u64) -> Vec<u8> {
@@ -348,6 +366,17 @@ mod tests {
         assert_eq!(&bytes[0..4], &[0x48, 0x8b, 0x44, 0x24]);
         assert!(bytes.windows(5).any(|window| window == [0x4c, 0x8b, 0x5c, 0x24, 0xa0]));
         assert!(bytes.ends_with(&[0x41, 0xff, 0xe3]));
+    }
+
+    #[test]
+    fn exception_stack_contract_matches_wine_layout_and_alignment() {
+        assert_eq!(X64_EXCEPTION_CONTEXT_EX_OFFSET, 0x4d0);
+        assert_eq!(X64_EXCEPTION_RECORD_OFFSET, 0x4f0);
+        assert_eq!(X64_EXCEPTION_MACHINE_FRAME_OFFSET, 0x590);
+        assert_eq!(X64_EXCEPTION_FRAME_BYTES, 0x5c0);
+        let stack = x64_exception_stack(0x7fff_ffff_f000, 0x240);
+        assert_eq!(stack, Some((0x7fff_ffff_f000 - 0x5c0 - 0x240) & !63));
+        assert_eq!(x64_exception_stack(0x500, 0), None);
     }
 }
 use alloc::vec::Vec;
