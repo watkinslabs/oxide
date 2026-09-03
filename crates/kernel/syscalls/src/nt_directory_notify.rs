@@ -17,9 +17,6 @@ const STATUS_NO_MEMORY: u64 = 0xc000_0017;
 const STATUS_NOTIFY_ENUM_DIR: u64 = 0x0000_010c;
 const FILE_LIST_DIRECTORY: u32 = 0x0001;
 const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
-const FILE_NOTIFY_CHANGE_FILE_NAME: u32 = 0x0001;
-const FILE_NOTIFY_CHANGE_DIR_NAME: u32 = 0x0002;
-const FILE_NOTIFY_ALL: u32 = FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME;
 const FILE_ACTION_ADDED: u32 = 1;
 const FILE_ACTION_REMOVED: u32 = 2;
 
@@ -47,7 +44,7 @@ pub fn dispatch(call: NtCall) -> u64 {
         || buffer_size == 0 || buffer_size > u32::MAX as u64 || filter > u32::MAX as u64
         || subtree != 0 { return STATUS_INVALID_PARAMETER; }
     let filter = filter as u32;
-    if filter == 0 || filter & !FILE_NOTIFY_ALL != 0 { return STATUS_INVALID_PARAMETER; }
+    if !crate::nt_directory_notify_policy::valid_filter(filter) { return STATUS_INVALID_PARAMETER; }
     let table = cur.thread_group.nt_handles();
     let file_handle = sched::nt_object::NtHandle::from_raw(call.args.a0 as u32);
     let Some(file_object) = table.get(file_handle, FILE_LIST_DIRECTORY) else {
@@ -68,7 +65,7 @@ pub fn dispatch(call: NtCall) -> u64 {
 }
 
 fn observe(parent: &vfs::InodeRef, leaf: &str, child_dir: bool, action: u32) {
-    let required = if child_dir { FILE_NOTIFY_CHANGE_DIR_NAME } else { FILE_NOTIFY_CHANGE_FILE_NAME };
+    let required = if child_dir { crate::nt_directory_notify_policy::FILE_NOTIFY_CHANGE_DIR_NAME } else { crate::nt_directory_notify_policy::FILE_NOTIFY_CHANGE_FILE_NAME };
     if action != vfs::DIRENT_CREATE && action != vfs::DIRENT_DELETE { return; }
     let mut watches = WATCHES.lock();
     let mut index = 0;
@@ -80,24 +77,19 @@ fn observe(parent: &vfs::InodeRef, leaf: &str, child_dir: bool, action: u32) {
         let watch = watches.remove(index);
         let status = write_record(&watch, leaf, if action == vfs::DIRENT_CREATE { FILE_ACTION_ADDED } else { FILE_ACTION_REMOVED });
         let _ = uaccess::put_user_u64(watch.io_status, status);
-        let _ = uaccess::put_user_u64(watch.io_status.saturating_add(8), if status == STATUS_SUCCESS { record_size(leaf) as u64 } else { 0 });
+        let _ = uaccess::put_user_u64(watch.io_status.saturating_add(8), if status == STATUS_SUCCESS { crate::nt_directory_notify_policy::record_size(leaf) as u64 } else { 0 });
         watch.event.set();
     }
 }
 
-fn record_size(leaf: &str) -> usize { (12 + leaf.encode_utf16().count() * 2 + 3) & !3 }
-
 fn write_record(watch: &Watch, leaf: &str, action: u32) -> u64 {
-    let size = record_size(leaf);
+    let size = crate::nt_directory_notify_policy::record_size(leaf);
     if size > watch.length as usize { return STATUS_NOTIFY_ENUM_DIR; }
     let mut bytes = Vec::new();
     if bytes.try_reserve_exact(size).is_err() { return STATUS_NO_MEMORY; }
     bytes.resize(size, 0);
-    bytes[4..8].copy_from_slice(&action.to_le_bytes());
-    let name_len = (leaf.encode_utf16().count() * 2) as u32;
-    bytes[8..12].copy_from_slice(&name_len.to_le_bytes());
-    for (index, unit) in leaf.encode_utf16().enumerate() {
-        bytes[12 + index * 2..14 + index * 2].copy_from_slice(&unit.to_le_bytes());
-    }
+    let Some(_) = crate::nt_directory_notify_policy::encode_record(leaf, action, &mut bytes) else {
+        return STATUS_NOTIFY_ENUM_DIR;
+    };
     if uaccess::copy_to_user(watch.buffer, &bytes).is_err() { STATUS_ACCESS_VIOLATION } else { STATUS_SUCCESS }
 }
