@@ -62,14 +62,14 @@ pub fn encode_x64_relay_stub(selector: u64) -> [u8; X64_RELAY_STUB_BYTES] {
     code[at] = 0x56; at += 1; // save Windows nonvolatile rsi
     code[at] = 0x57; at += 1; // save Windows nonvolatile rdi
     code[at..at + 4].copy_from_slice(&[0x4c, 0x8d, 0x64, 0x24]); at += 4;
-    code[at] = 80; at += 1; // r12 = first thunk argument: return address + eight saves + call return slot
+    code[at] = 72; at += 1; // r12 = first thunk argument: return address + eight saved registers
     code[at..at + 3].copy_from_slice(&[0x48, 0x89, 0xcf]); at += 3; // rdi = descriptor (rcx)
     code[at..at + 3].copy_from_slice(&[0x48, 0x89, 0xd6]); at += 3; // rsi = relay index (rdx)
     code[at..at + 5].copy_from_slice(&[0x49, 0x8d, 0x54, 0x24, 0]); at += 5; // rdx = Wine's contiguous argument array
     code[at..at + 2].copy_from_slice(&[0x48, 0xb8]); at += 2;
     code[at..at + 8].copy_from_slice(&selector.to_le_bytes()); at += 8;
     code[at..at + 2].copy_from_slice(&[0x0f, 0x05]); at += 2;
-    code[at..at + 5].copy_from_slice(&[0x4c, 0x8d, 0x64, 0x24, 80]); at += 5; // re-derive args after syscall restores registers
+    code[at..at + 5].copy_from_slice(&[0x4c, 0x8d, 0x64, 0x24, 72]); at += 5; // re-derive args after syscall restores registers
     code[at..at + 4].copy_from_slice(&[0x48, 0x83, 0xec, 0x60]); at += 4; // target home + eight stack arguments, 16-byte aligned
     code[at..at + 5].copy_from_slice(&[0x4d, 0x8b, 0x54, 0x24, 0]); at += 5;
     code[at..at + 4].copy_from_slice(&[0x4c, 0x89, 0x14, 0x24]); at += 4;
@@ -225,10 +225,10 @@ mod tests {
     fn relay_stub_preserves_the_wine_home_area_before_calling_target() {
         let bytes = encode_x64_relay_stub(0x4e54_0000_0000_0216);
         assert_eq!(&bytes[..15], &[0x53, 0x55, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x56, 0x57, 0x4c, 0x8d, 0x64]);
-        assert_eq!(bytes.windows(5).filter(|window| *window == [0x4c, 0x8d, 0x64, 0x24, 80]).count(), 2);
+        assert_eq!(bytes.windows(5).filter(|window| *window == [0x4c, 0x8d, 0x64, 0x24, 72]).count(), 2);
         assert!(bytes.windows(5).any(|window| window == [0x49, 0x8d, 0x54, 0x24, 0]));
         assert_eq!(&bytes[38..40], &[0x0f, 0x05]);
-        assert_eq!(&bytes[40..45], &[0x4c, 0x8d, 0x64, 0x24, 80]);
+        assert_eq!(&bytes[40..45], &[0x4c, 0x8d, 0x64, 0x24, 72]);
         assert_eq!(&bytes[45..49], &[0x48, 0x83, 0xec, 0x60]);
         assert!(bytes.windows(5).any(|window| window == [0x4d, 0x8b, 0x54, 0x24, 0]));
         let epilogue = [0xff, 0xd0, 0x48, 0x83, 0xc4, 0x60, 0x5f, 0x5e, 0x41, 0x5f, 0x41, 0x5e, 0x41, 0x5d, 0x41, 0x5c, 0x5d, 0x5b, 0xc3];
