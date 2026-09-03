@@ -47,6 +47,16 @@ pub struct CallFrameRecord {
     pub body: Vec<u8>,
 }
 
+/// The validated instruction stream and alignment factors for one FDE.
+/// CIE initialization instructions precede the FDE instructions because the
+/// DWARF state machine starts with the CIE state for every frame.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FrameProgram {
+    pub code_align: u64,
+    pub data_align: i64,
+    pub instructions: Vec<u8>,
+}
+
 /// Decode one bounded ULEB128 value.
 pub fn uleb128(input: &[u8]) -> Result<(u64, usize)> {
     let mut value = 0u64;
@@ -161,16 +171,49 @@ pub fn find_fde<'a>(section: &'a [u8], section_address: u64, ip: u64, bases: EhB
     Ok(None)
 }
 
+/// Build the bounded CIE+FDE program for a record returned by `find_fde`.
+/// Pointer fields are decoded and skipped using the same encoding rules as
+/// lookup; augmentation payloads are never exposed as instructions.
+pub fn frame_program(section: &[u8], fde: &CallFrameRecord) -> Result<FrameProgram> {
+    let cie_offset = fde.cie_offset.ok_or(DwarfError::InvalidRecord)?;
+    let entries = records(section)?;
+    let cie = entries.iter().find(|entry| entry.offset == cie_offset)
+        .ok_or(DwarfError::InvalidRecord)?;
+    let (code_align, data_align, cie_instructions, encoding, augmentation_z) = parse_cie(cie)?;
+    let fde_body = fde.body.as_slice();
+    let start_at = (fde.offset as u64).checked_add(8).ok_or(DwarfError::Overflow)?;
+    let (_, used) = encoded_pointer(fde_body, encoding, start_at, EhBases { text: 0, data: 0 })?;
+    let range_encoding = encoding & 0x0f;
+    let range_at = start_at.checked_add(used as u64).ok_or(DwarfError::Overflow)?;
+    let (_, range_used) = encoded_pointer(&fde_body[used..], range_encoding, range_at,
+        EhBases { text: 0, data: 0 })?;
+    let mut cursor = used.checked_add(range_used).ok_or(DwarfError::Overflow)?;
+    if augmentation_z {
+        let (length, count) = uleb128(&fde_body[cursor..])?;
+        cursor = cursor.checked_add(count).and_then(|v| v.checked_add(length as usize))
+            .ok_or(DwarfError::Overflow)?;
+        if cursor > fde_body.len() { return Err(DwarfError::Truncated); }
+    }
+    let mut instructions = cie_instructions;
+    instructions.extend_from_slice(fde_body.get(cursor..).ok_or(DwarfError::Truncated)?);
+    Ok(FrameProgram { code_align, data_align, instructions })
+}
+
 fn cie_fde_encoding(cie: &CallFrameRecord) -> Result<u8> {
+    Ok(parse_cie(cie)?.3)
+}
+
+fn parse_cie(cie: &CallFrameRecord) -> Result<(u64, i64, Vec<u8>, u8, bool)> {
     let body = cie.body.as_slice();
+    let version = *body.first().ok_or(DwarfError::Truncated)?;
     let nul = body.get(1..).ok_or(DwarfError::Truncated)?.iter().position(|&b| b == 0)
         .map(|n| n + 1).ok_or(DwarfError::InvalidRecord)?;
-    let mut cursor = nul + 1;
-    let (_, used) = uleb128(&body[cursor..])?; cursor += used;
-    let (_, used) = sleb128(&body[cursor..])?; cursor += used;
-    if body.first() == Some(&1) { cursor = cursor.checked_add(1).ok_or(DwarfError::Overflow)?; }
-    else { let (_, used) = uleb128(&body[cursor..])?; cursor += used; }
     let augmentation = &body[1..nul];
+    let mut cursor = nul + 1;
+    let (code_align, used) = uleb128(&body[cursor..])?; cursor += used;
+    let (data_align, used) = sleb128(&body[cursor..])?; cursor += used;
+    if version == 1 { cursor = cursor.checked_add(1).ok_or(DwarfError::Overflow)?; }
+    else { let (_, used) = uleb128(&body[cursor..])?; cursor += used; }
     let mut encoding = DW_EH_PE_ABSPTR;
     let mut augmentation_end = None;
     for &kind in augmentation {
@@ -185,8 +228,12 @@ fn cie_fde_encoding(cie: &CallFrameRecord) -> Result<u8> {
             _ => return Err(DwarfError::InvalidRecord),
         }
     }
-    if let Some(end) = augmentation_end { if cursor > end { return Err(DwarfError::InvalidRecord); } }
-    Ok(encoding)
+    if let Some(end) = augmentation_end {
+        if cursor > end || end > body.len() { return Err(DwarfError::InvalidRecord); }
+        cursor = end;
+    }
+    Ok((code_align, data_align, body.get(cursor..).ok_or(DwarfError::Truncated)?.to_vec(),
+        encoding, augmentation.iter().any(|&kind| kind == b'z')))
 }
 
 fn read_u16(input: &[u8]) -> Result<u16> {
@@ -237,15 +284,16 @@ mod tests {
     #[test]
     fn finds_fde_covering_instruction_pointer() {
         let mut section = vec![13, 0, 0, 0, 0, 0, 0, 0, 3, b'z', b'R', 0, 1, 0x78, 16, 1, 3];
-        section.extend_from_slice(&[12, 0, 0, 0, 21, 0, 0, 0, 0, 0x10, 0, 0, 0, 0x20, 0, 0, 0]);
-        section.truncate(33);
-        section[25..33].copy_from_slice(&[0, 0x10, 0, 0, 0x20, 0, 0, 0]);
+        section.extend_from_slice(&[13, 0, 0, 0, 21, 0, 0, 0, 0x00, 0x10, 0, 0, 0x20, 0, 0, 0, 0]);
         let entries = records(&section).unwrap();
         assert_eq!(entries[0].body, vec![3, b'z', b'R', 0, 1, 0x78, 16, 1, 3]);
-        assert_eq!(entries[1].body.len(), 8);
+        assert_eq!(entries[1].body.len(), 9);
         assert_eq!(cie_fde_encoding(&entries[0]), Ok(3));
         let fde = find_fde(&section, 0, 0x1010, EhBases { text: 0, data: 0 }).unwrap().unwrap();
         assert_eq!(fde.code_start, Some(0x1000)); assert_eq!(fde.code_length, Some(0x20));
+        let program = frame_program(&section, &fde).unwrap();
+        assert_eq!(program.code_align, 1); assert_eq!(program.data_align, -8);
+        assert!(program.instructions.is_empty());
         section[25] = 0xff;
         assert_eq!(find_fde(&section, 0, 0x1010, EhBases { text: 0, data: 0 }).unwrap(), None);
     }
