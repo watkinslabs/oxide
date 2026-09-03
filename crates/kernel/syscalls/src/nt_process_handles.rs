@@ -26,6 +26,7 @@ const PROCESS_BASIC_INFORMATION_BYTES: usize = 48;
 const PROCESS_AFFINITY_MASK_CLASS: u32 = 21;
 const PROCESS_WOW64_INFORMATION_CLASS: u32 = 26;
 const PROCESS_IMAGE_FILE_NAME_CLASS: u32 = 27;
+const PROCESS_IMAGE_FILE_NAME_WIN32_CLASS: u32 = 43;
 const PROCESS_POINTER_BYTES: usize = 8;
 const CURRENT_PROCESS: u64 = u64::MAX;
 const CURRENT_THREAD: u64 = u64::MAX - 1;
@@ -135,8 +136,8 @@ fn query_process(process: u64, class: u32, info: syscall::UserPtr<u8>, length: u
         Some(target)
     };
     let target = target_owned.as_deref().unwrap_or(cur);
-    if class == PROCESS_IMAGE_FILE_NAME_CLASS {
-        return query_process_image_name(target, info, length, return_length);
+    if class == PROCESS_IMAGE_FILE_NAME_CLASS || class == PROCESS_IMAGE_FILE_NAME_WIN32_CLASS {
+        return query_process_image_name(target, info, length, return_length, class == PROCESS_IMAGE_FILE_NAME_WIN32_CLASS);
     }
     let required = match class {
         PROCESS_BASIC_INFORMATION_CLASS => PROCESS_BASIC_INFORMATION_BYTES,
@@ -166,10 +167,14 @@ fn query_process(process: u64, class: u32, info: syscall::UserPtr<u8>, length: u
 }
 
 fn query_process_image_name(target: &sched::Task, info: syscall::UserPtr<u8>, length: u32,
-    return_length: Option<syscall::UserPtr<u32>>) -> Option<u64> {
+    return_length: Option<syscall::UserPtr<u32>>, win32: bool) -> Option<u64> {
     if info.as_u64() == 0 { return Some(STATUS_INVALID_PARAMETER); }
-    let Some(path) = target.exe_path() else { return Some(STATUS_INVALID_PARAMETER); };
-    let path = path.strip_prefix("/windows/").map_or(path.as_str(), |value| value);
+    let Some(raw_path) = target.exe_path() else { return Some(STATUS_INVALID_PARAMETER); };
+    let path = if win32 {
+        crate::nt_path::render_windows_path(&raw_path)?
+    } else {
+        raw_path.strip_prefix("/windows/").map_or(raw_path.as_str(), |value| value).into()
+    };
     let mut wide = alloc::vec::Vec::new();
     for value in path.encode_utf16() {
         wide.push(value);
