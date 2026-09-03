@@ -351,6 +351,12 @@ Support Windows-style:
 -   alertable waits
 -   signal-and-wait behavior
 
+Alertable waits must observe the target thread's owned NT APC queue and
+return `STATUS_USER_APC`. APC records remain owned by the target thread until
+the x86-64 user-return dispatcher validates the saved context, constructs the
+Windows APC dispatcher frame, and dequeues the record. Queueing an APC without
+retaining it or reporting callback execution is not a valid implementation.
+
 Target operations include:
 
 -   `NtWaitForSingleObject`

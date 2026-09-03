@@ -82,6 +82,7 @@ pub mod exec_flush;
 pub mod personality;
 pub mod nt_object;
 pub mod nt_callback;
+pub mod nt_apc;
 pub mod rlimit;
 pub mod ioport;
 pub mod ioprio;
