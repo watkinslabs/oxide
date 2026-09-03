@@ -102,7 +102,17 @@ fn existing_module(peb: u64, wanted: &[u8]) -> Option<u64> {
 }
 
 fn loaded_module(peb: u64, wanted: &[u8]) -> bool {
-    existing_module(peb, wanted).is_some()
+    let ldr = super::read_u64(peb.saturating_add(PEB_LDR_OFFSET));
+    if ldr == 0 { return false; }
+    let head = ldr.saturating_add(LDR_LOAD_LIST_OFFSET);
+    let mut entry = super::read_u64(head);
+    for _ in 0..MAX_MODULE_SCAN {
+        if entry == 0 || entry == head { break; }
+        let wide = super::read_module_name(entry.saturating_add(MODULE_BASE_NAME_OFFSET));
+        if narrow_name(&wide).map(|name| pe::loader_name::matches_ascii(wanted, &name)).unwrap_or(false) { return true; }
+        entry = super::read_u64(entry.saturating_add(LIST_LINK_OFFSET));
+    }
+    false
 }
 
 fn loaded_exports<'a>(peb: u64, catalog: &'a pe::catalog::ModuleCatalog) -> Result<(Vec<PeExportModule<'a>>, u64), u64> {
