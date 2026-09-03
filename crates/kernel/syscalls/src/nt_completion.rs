@@ -113,7 +113,7 @@ fn set_io_callback(call: NtCall) -> u64 {
     let handle = sched::nt_object::NtHandle::from_raw(call.args.a0 as u32);
     let table = cur.thread_group.nt_handles();
     let Some(file) = table.get(handle, 0) else { return STATUS_INVALID_HANDLE; };
-    if file.file().is_none() { return STATUS_INVALID_HANDLE; }
+    if file.file().is_none() && file.pipe_endpoint().is_none() { return STATUS_INVALID_HANDLE; }
     let port = if let Some(port) = cur.thread_group.nt_io_completion.lock().clone() { port } else {
         let Some(port) = table.new_completion_port(0).completion() else { return STATUS_INVALID_PARAMETER; };
         *cur.thread_group.nt_io_completion.lock() = Some(port.clone()); port
