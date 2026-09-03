@@ -338,7 +338,7 @@ fn resolve_mapped_export(cur: &sched::Task, module: u64, module_size: u32, name:
         }
         found?
     } else {
-        ordinal.checked_sub(ordinal_base as u16)? as u32
+        (ordinal as u32).checked_sub(ordinal_base)?
     };
     if function_index >= function_count { return None; }
     let function_rva = read_u32(functions.checked_add(function_index as u64 * 4)?)?;
