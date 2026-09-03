@@ -11,6 +11,24 @@ fn key_from_scanout_driver(driver_key: drm::node::ScanoutDriverKey) -> virtio::V
     key_from_raw(driver_key.raw())
 }
 
+/// Admit a context create on the persistent CTRLQ worker. The DRM layer
+/// publishes its per-file ownership only after this admission succeeds.
+pub fn create_context_for_key(key: virtio::VirtioChildDeviceKey, context_id: u32,
+    context_init: u32) -> bool {
+    runtime_queue::enqueue_ctrl(key, &[RuntimeCmd::ContextCreate {
+        context_id, context_init, nlen: 0, name: [0; 64],
+    }])
+}
+
+pub fn destroy_context_for_key(key: virtio::VirtioChildDeviceKey, context_id: u32) -> bool {
+    runtime_queue::enqueue_ctrl(key, &[RuntimeCmd::ContextDestroy { context_id }])
+}
+
+pub fn attach_context_resource_for_key(key: virtio::VirtioChildDeviceKey,
+    context_id: u32, resource_id: u32) -> bool {
+    runtime_queue::enqueue_ctrl(key, &[RuntimeCmd::ContextAttach { context_id, resource_id }])
+}
+
 pub fn boot_scanout_res_id_for_key(_driver_key: drm::node::ScanoutDriverKey) -> u32 { BOOT_SCANOUT_RES_ID }
 
 pub fn create_scanout_from_pa_for_key(driver_key: drm::node::ScanoutDriverKey, pa: u64,

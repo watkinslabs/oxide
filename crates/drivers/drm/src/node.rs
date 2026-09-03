@@ -43,7 +43,7 @@ use uapi::{
 
 use crate::{
     DRM_IOCTL_VERSION, DRM_IOCTL_GET_CAP, DRM_IOCTL_GET_UNIQUE,
-    DRM_IOCTL_VIRTGPU_GETPARAM, DRM_IOCTL_VIRTGPU_GET_CAPS,
+    DRM_IOCTL_VIRTGPU_GETPARAM, DRM_IOCTL_VIRTGPU_GET_CAPS, DRM_IOCTL_VIRTGPU_CONTEXT_INIT,
     DRM_IOCTL_GEM_CLOSE, DRM_IOCTL_PRIME_HANDLE_TO_FD, DRM_IOCTL_PRIME_FD_TO_HANDLE,
     DRM_IOCTL_SET_VERSION, DRM_IOCTL_MODE_GETRESOURCES,
     DRM_IOCTL_MODE_ATOMIC,
@@ -72,6 +72,7 @@ fn render_allowed(req: u64) -> bool {
         DRM_IOCTL_VERSION | DRM_IOCTL_GET_CAP | DRM_IOCTL_GEM_CLOSE
         | DRM_IOCTL_PRIME_HANDLE_TO_FD | DRM_IOCTL_PRIME_FD_TO_HANDLE
         | DRM_IOCTL_VIRTGPU_GETPARAM | DRM_IOCTL_VIRTGPU_GET_CAPS
+        | DRM_IOCTL_VIRTGPU_CONTEXT_INIT
     )
 }
 
@@ -452,8 +453,8 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
         DRM_IOCTL_PRIME_HANDLE_TO_FD | DRM_IOCTL_PRIME_FD_TO_HANDLE => {
             Some(-(Errno::Einval.as_i32() as i64))
         }
-        DRM_IOCTL_VIRTGPU_GETPARAM | DRM_IOCTL_VIRTGPU_GET_CAPS => {
-            Some(virtgpu::ioctl(driver, req, arg))
+        DRM_IOCTL_VIRTGPU_GETPARAM | DRM_IOCTL_VIRTGPU_GET_CAPS | DRM_IOCTL_VIRTGPU_CONTEXT_INIT => {
+            Some(virtgpu::ioctl(driver, req, arg, card_id, token))
         }
         _ => Some(-(Errno::Enotty.as_i32() as i64)),
     }
