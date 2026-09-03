@@ -156,9 +156,11 @@ fn set_owner(descriptor: u64, owner: u64, defaulted: bool) -> u64 {
     if header[0] != SECURITY_DESCRIPTOR_REVISION { return STATUS_UNKNOWN_REVISION; }
     let control = u16::from_le_bytes([header[2], header[3]]);
     if control & SELF_RELATIVE != 0 { return STATUS_INVALID_SECURITY_DESCR; }
-    if uaccess::put_user_u64(descriptor.saturating_add(ABSOLUTE_OWNER_OFFSET), owner).is_err() { return STATUS_INVALID_PARAMETER; }
+    let Some(owner_address) = descriptor.checked_add(ABSOLUTE_OWNER_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+    if uaccess::put_user_u64(owner_address, owner).is_err() { return STATUS_INVALID_PARAMETER; }
     let updated = if defaulted { control | OWNER_DEFAULTED } else { control & !OWNER_DEFAULTED };
-    if uaccess::copy_to_user(descriptor.saturating_add(2), &updated.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
+    let Some(control_address) = descriptor.checked_add(2) else { return STATUS_INVALID_PARAMETER; };
+    if uaccess::copy_to_user(control_address, &updated.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
 }
 
@@ -169,9 +171,11 @@ fn set_group(descriptor: u64, group: u64, defaulted: bool) -> u64 {
     if header[0] != SECURITY_DESCRIPTOR_REVISION { return STATUS_UNKNOWN_REVISION; }
     let control = u16::from_le_bytes([header[2], header[3]]);
     if control & SELF_RELATIVE != 0 { return STATUS_INVALID_SECURITY_DESCR; }
-    if uaccess::put_user_u64(descriptor.saturating_add(ABSOLUTE_GROUP_OFFSET), group).is_err() { return STATUS_INVALID_PARAMETER; }
+    let Some(group_address) = descriptor.checked_add(ABSOLUTE_GROUP_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+    if uaccess::put_user_u64(group_address, group).is_err() { return STATUS_INVALID_PARAMETER; }
     let updated = if defaulted { control | GROUP_DEFAULTED } else { control & !GROUP_DEFAULTED };
-    if uaccess::copy_to_user(descriptor.saturating_add(2), &updated.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
+    let Some(control_address) = descriptor.checked_add(2) else { return STATUS_INVALID_PARAMETER; };
+    if uaccess::copy_to_user(control_address, &updated.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
 }
 
@@ -184,12 +188,15 @@ fn set_dacl(descriptor: u64, present: bool, dacl: u64, defaulted: bool) -> u64 {
     if control & SELF_RELATIVE != 0 { return STATUS_INVALID_SECURITY_DESCR; }
     if !present {
         let updated = control & !DACL_PRESENT;
-        if uaccess::copy_to_user(descriptor.saturating_add(2), &updated.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
+        let Some(control_address) = descriptor.checked_add(2) else { return STATUS_INVALID_PARAMETER; };
+        if uaccess::copy_to_user(control_address, &updated.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
         return STATUS_SUCCESS;
     }
-    if uaccess::put_user_u64(descriptor.saturating_add(ABSOLUTE_DACL_OFFSET), dacl).is_err() { return STATUS_INVALID_PARAMETER; }
+    let Some(dacl_address) = descriptor.checked_add(ABSOLUTE_DACL_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+    if uaccess::put_user_u64(dacl_address, dacl).is_err() { return STATUS_INVALID_PARAMETER; }
     let updated = if defaulted { control | DACL_PRESENT | DACL_DEFAULTED } else { (control | DACL_PRESENT) & !DACL_DEFAULTED };
-    if uaccess::copy_to_user(descriptor.saturating_add(2), &updated.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
+    let Some(control_address) = descriptor.checked_add(2) else { return STATUS_INVALID_PARAMETER; };
+    if uaccess::copy_to_user(control_address, &updated.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
 }
 
@@ -202,12 +209,15 @@ fn set_sacl(descriptor: u64, present: bool, sacl: u64, defaulted: bool) -> u64 {
     if control & SELF_RELATIVE != 0 { return STATUS_INVALID_SECURITY_DESCR; }
     if !present {
         let updated = control & !SACL_PRESENT;
-        if uaccess::copy_to_user(descriptor.saturating_add(2), &updated.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
+        let Some(control_address) = descriptor.checked_add(2) else { return STATUS_INVALID_PARAMETER; };
+        if uaccess::copy_to_user(control_address, &updated.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
         return STATUS_SUCCESS;
     }
-    if uaccess::put_user_u64(descriptor.saturating_add(ABSOLUTE_SACL_OFFSET), sacl).is_err() { return STATUS_INVALID_PARAMETER; }
+    let Some(sacl_address) = descriptor.checked_add(ABSOLUTE_SACL_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+    if uaccess::put_user_u64(sacl_address, sacl).is_err() { return STATUS_INVALID_PARAMETER; }
     let updated = if defaulted { control | SACL_PRESENT | SACL_DEFAULTED } else { (control | SACL_PRESENT) & !SACL_DEFAULTED };
-    if uaccess::copy_to_user(descriptor.saturating_add(2), &updated.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
+    let Some(control_address) = descriptor.checked_add(2) else { return STATUS_INVALID_PARAMETER; };
+    if uaccess::copy_to_user(control_address, &updated.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
 }
 
@@ -255,9 +265,13 @@ fn get_group(descriptor: u64, target_group: u64, defaulted: u64) -> u64 {
     if uaccess::copy_from_user(&mut header, descriptor).is_err() || header[0] != SECURITY_DESCRIPTOR_REVISION { return STATUS_INVALID_PARAMETER; }
     let control = u16::from_le_bytes([header[2], header[3]]);
     let group_ptr = if control & SELF_RELATIVE != 0 {
-        let Some(offset) = uaccess::get_user_u32(descriptor.saturating_add(RELATIVE_GROUP_OFFSET)).ok() else { return STATUS_INVALID_PARAMETER; };
-        if offset == 0 { 0 } else { descriptor.saturating_add(offset as u64) }
-    } else { uaccess::get_user_u64(descriptor.saturating_add(ABSOLUTE_GROUP_OFFSET)).ok().unwrap_or(0) };
+        let Some(field) = descriptor.checked_add(RELATIVE_GROUP_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+        let Some(offset) = uaccess::get_user_u32(field).ok() else { return STATUS_INVALID_PARAMETER; };
+        if offset == 0 { 0 } else { let Some(value) = descriptor.checked_add(offset as u64) else { return STATUS_INVALID_PARAMETER; }; value }
+    } else {
+        let Some(field) = descriptor.checked_add(ABSOLUTE_GROUP_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+        uaccess::get_user_u64(field).ok().unwrap_or(0)
+    };
     if uaccess::put_user_u64(target_group, group_ptr).is_err() || uaccess::copy_to_user(defaulted, &[(control & GROUP_DEFAULTED != 0) as u8]).is_err() { return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
 }
@@ -268,9 +282,13 @@ fn get_owner(descriptor: u64, target_owner: u64, defaulted: u64) -> u64 {
     if uaccess::copy_from_user(&mut header, descriptor).is_err() { return STATUS_INVALID_PARAMETER; }
     let control = u16::from_le_bytes([header[2], header[3]]);
     let owner = if control & SELF_RELATIVE != 0 {
-        let Some(offset) = uaccess::get_user_u32(descriptor.saturating_add(RELATIVE_OWNER_OFFSET)).ok() else { return STATUS_INVALID_PARAMETER; };
-        if offset == 0 { 0 } else { descriptor.saturating_add(offset as u64) }
-    } else { uaccess::get_user_u64(descriptor.saturating_add(ABSOLUTE_OWNER_OFFSET)).ok().unwrap_or(0) };
+        let Some(field) = descriptor.checked_add(RELATIVE_OWNER_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+        let Some(offset) = uaccess::get_user_u32(field).ok() else { return STATUS_INVALID_PARAMETER; };
+        if offset == 0 { 0 } else { let Some(value) = descriptor.checked_add(offset as u64) else { return STATUS_INVALID_PARAMETER; }; value }
+    } else {
+        let Some(field) = descriptor.checked_add(ABSOLUTE_OWNER_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+        uaccess::get_user_u64(field).ok().unwrap_or(0)
+    };
     if uaccess::put_user_u64(target_owner, owner).is_err()
         || uaccess::copy_to_user(defaulted, &[(control & OWNER_DEFAULTED != 0) as u8]).is_err() { return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
@@ -285,9 +303,13 @@ fn get_sacl(descriptor: u64, present: u64, target_sacl: u64, defaulted: u64) -> 
     if uaccess::copy_to_user(present, &[is_present as u8]).is_err() { return STATUS_INVALID_PARAMETER; }
     if !is_present { return STATUS_SUCCESS; }
     let sacl = if control & SELF_RELATIVE != 0 {
-        let Some(offset) = uaccess::get_user_u32(descriptor.saturating_add(SACL_OFFSET)).ok() else { return STATUS_INVALID_PARAMETER; };
-        if offset == 0 { 0 } else { descriptor.saturating_add(offset as u64) }
-    } else { uaccess::get_user_u64(descriptor.saturating_add(ABSOLUTE_SACL_OFFSET)).ok().unwrap_or(0) };
+        let Some(field) = descriptor.checked_add(SACL_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+        let Some(offset) = uaccess::get_user_u32(field).ok() else { return STATUS_INVALID_PARAMETER; };
+        if offset == 0 { 0 } else { let Some(value) = descriptor.checked_add(offset as u64) else { return STATUS_INVALID_PARAMETER; }; value }
+    } else {
+        let Some(field) = descriptor.checked_add(ABSOLUTE_SACL_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+        uaccess::get_user_u64(field).ok().unwrap_or(0)
+    };
     if uaccess::put_user_u64(target_sacl, sacl).is_err()
         || uaccess::copy_to_user(defaulted, &[(control & SACL_DEFAULTED != 0) as u8]).is_err() { return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
@@ -301,12 +323,15 @@ fn get_dacl(descriptor: u64, present: u64, dacl: u64, defaulted: u64) -> u64 {
     let control = u16::from_le_bytes([header[2], header[3]]);
     let (is_present, acl) = if control & SELF_RELATIVE != 0 {
         let mut offset = [0u8; 4];
-        if uaccess::copy_from_user(&mut offset, descriptor.saturating_add(DACL_OFFSET)).is_err() { return STATUS_INVALID_PARAMETER; }
+        let Some(field) = descriptor.checked_add(DACL_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+        if uaccess::copy_from_user(&mut offset, field).is_err() { return STATUS_INVALID_PARAMETER; }
         let offset = u32::from_le_bytes(offset) as u64;
-        (control & DACL_PRESENT != 0, if offset == 0 { 0 } else { descriptor.saturating_add(offset) })
+        let acl = if offset == 0 { 0 } else { let Some(value) = descriptor.checked_add(offset) else { return STATUS_INVALID_PARAMETER; }; value };
+        (control & DACL_PRESENT != 0, acl)
     } else {
         let mut pointer = [0u8; 8];
-        if uaccess::copy_from_user(&mut pointer, descriptor.saturating_add(ABSOLUTE_DACL_OFFSET)).is_err() { return STATUS_INVALID_PARAMETER; }
+        let Some(field) = descriptor.checked_add(ABSOLUTE_DACL_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+        if uaccess::copy_from_user(&mut pointer, field).is_err() { return STATUS_INVALID_PARAMETER; }
         (control & DACL_PRESENT != 0, u64::from_le_bytes(pointer))
     };
     let defaulted_value = is_present && control & 0x0400 != 0;
