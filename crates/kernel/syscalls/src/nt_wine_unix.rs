@@ -4,6 +4,7 @@
 //! pointer. This keeps the transition safe while preserving Wine's ABI.
 
 use syscall::nt::{NtCall, NtService};
+use syscall::nt_wine_unix::WineUnixFunction;
 
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
@@ -322,16 +323,16 @@ pub(crate) fn dispatch(call: NtCall) -> u64 {
     if call.service != NtService::WineUnixCall || call.args.a0 != syscall::nt::WINE_UNIXLIB_HANDLE {
         return STATUS_INVALID_PARAMETER;
     }
-    match call.args.a1 {
+    match WineUnixFunction::decode(call.args.a1) {
         // unix_wine_dbg_write: `{ const char *str; size_t len; }`.
         // Logging ownership is added with the kernel console bridge; reject
         // malformed requests now rather than dereferencing an untrusted ptr.
-        2 => write_unix_debug(call.args.a2),
-        4 => unix_fd_to_handle(call.args.a2),
-        5 => unix_handle_to_fd(call.args.a2),
-        3 => server_call(call.args.a2),
+        Some(WineUnixFunction::WineDbgWrite) => write_unix_debug(call.args.a2),
+        Some(WineUnixFunction::WineServerFdToHandle) => unix_fd_to_handle(call.args.a2),
+        Some(WineUnixFunction::WineServerHandleToFd) => unix_handle_to_fd(call.args.a2),
+        Some(WineUnixFunction::WineServerCall) => server_call(call.args.a2),
         // unix_system_time_precise: writes one Windows 100ns timestamp.
-        7 => {
+        Some(WineUnixFunction::SystemTimePrecise) => {
             if call.args.a2 == 0 { return STATUS_INVALID_PARAMETER; }
             // Wine's unix_system_time_precise returns Windows epoch-relative
             // 100ns units; CLOCK_REALTIME is the canonical Linux owner.
