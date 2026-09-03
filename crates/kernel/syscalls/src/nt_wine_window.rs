@@ -27,6 +27,9 @@ const WINE_GET_TEXT_METRICS: u64 = 0x1229;
 const WINE_GET_TEXT_EXTENT_EX: u64 = 0x1227;
 const WINE_REGISTER_CLASS_EX: u64 = 0x14eb;
 const WINE_DISPATCH_MESSAGE: u64 = 0x138b;
+const WINE_MESSAGE_CALL: u64 = 0x14b5;
+// Wine's NtUserCallWindowProc selector, passed as the NtUserMessageCall type.
+const WINE_CALL_WINDOW_PROC: u64 = 0x02ab;
 // Wine's generated win32u syscall table assigns this ordinal to the raw
 // four-argument client-table publication entry.
 const WINE_NTUSER_INITIALIZE_CLIENT_PFN_ARRAYS: u64 = 0x147a;
@@ -86,6 +89,22 @@ pub fn dispatch(call: NtCall) -> u64 {
             }
             let Some(wndproc) = crate::nt_window::window_wndproc_for_current(hwnd) else { return STATUS_INVALID_PARAMETER; };
             crate::nt_rtl::begin_wndproc_callback(hwnd, message as u64, wparam, lparam, wndproc)
+        }
+        WINE_MESSAGE_CALL => {
+            let hwnd = args[0];
+            let message = args[1];
+            let wparam = args[2];
+            let lparam = args[3];
+            // Wine uses NtUserMessageCall for CallWindowProcW/A.  The
+            // result-info record begins with the requested WNDPROC; when it
+            // is absent, the canonical window record supplies the procedure.
+            if args[5] != WINE_CALL_WINDOW_PROC { return STATUS_NOT_IMPLEMENTED; }
+            let wndproc = if args[4] != 0 {
+                uaccess::get_user_u64(args[4]).ok().filter(|value| *value != 0)
+            } else { None };
+            let wndproc = wndproc.or_else(|| crate::nt_window::window_wndproc_for_current(hwnd));
+            let Some(wndproc) = wndproc else { return STATUS_INVALID_PARAMETER; };
+            crate::nt_rtl::begin_wndproc_callback(hwnd, message, wparam, lparam, wndproc)
         }
         WINE_REGISTER_CLASS_EX => {
             if args[0] == 0 || uaccess::get_user_u32(args[0]).ok() != Some(80) { return 0; }
