@@ -2,7 +2,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use alloc::{vec, vec::Vec};
+use alloc::{string::String, vec, vec::Vec};
 use core::sync::atomic::Ordering;
 use syscall::nt::{NtCall, NtService};
 
@@ -65,7 +65,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         NtService::LdrUnloadDll => Some(unload(call.args.a0)),
         NtService::LdrGetDllFullName => Some(full_name(call.args.a0, call.args.a1)),
         NtService::LdrLoadDll => Some(load(call.args.a2, call.args.a3)),
-        NtService::LdrQueryImageFileExecutionOptions => Some(query_options(call.args.a0, call.args.a1, call.args.a4, call.args.a5)),
+        NtService::LdrQueryImageFileExecutionOptions => Some(query_options(call.args.a0, call.args.a1, call.args.a2, call.args.a3, call.args.a4, call.args.a5)),
         _ => None,
     }
 }
@@ -333,17 +333,37 @@ fn absolute_path(path: &[u8]) -> bool {
     path.len() >= 2 && ((path[0] == b'\\' && path[1] == 0) || (path.len() >= 4 && path[1] == 0 && path[2] == b':' && path[3] == 0))
 }
 
-fn query_options(key: u64, value: u64, data_size: u64, result_size: u64) -> u64 {
-    if key == 0 || value == 0 || data_size > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+fn query_options(key: u64, value: u64, kind: u64, data: u64, data_size: u64, result_size: u64) -> u64 {
+    if key == 0 || value == 0 || kind > u32::MAX as u64 || data_size > u32::MAX as u64 || data_size != 0 && data == 0 { return STATUS_INVALID_PARAMETER; }
     let mut raw = [0u8; UNICODE_STRING_BYTES];
     if uaccess::copy_from_user(&mut raw, key).is_err() { return STATUS_INVALID_PARAMETER; }
     let length = u16::from_le_bytes([raw[0], raw[1]]) as usize;
     let buffer = u64::from_le_bytes(raw[8..16].try_into().unwrap());
     if length == 0 || length & 1 != 0 || buffer == 0 || length > 1024 { return STATUS_INVALID_PARAMETER; }
-    if result_size != 0 && uaccess::copy_to_user(result_size, &[0, 0, 0, 0]).is_err() { return STATUS_INVALID_PARAMETER; }
-    // The Windows registry personality is not mounted in this process yet;
-    // absence is therefore the precise result for every unconfigured IFEO key.
-    STATUS_OBJECT_NAME_NOT_FOUND
+    let mut image = Vec::new();
+    for index in 0..(length / 2) {
+        let Some(address) = buffer.checked_add((index * 2) as u64) else { return STATUS_INVALID_PARAMETER; };
+        let mut unit = [0u8; 2];
+        if uaccess::copy_from_user(&mut unit, address).is_err() { return STATUS_INVALID_PARAMETER; }
+        image.push(u16::from_le_bytes(unit));
+    }
+    let start = image.iter().rposition(|unit| *unit == b'\\' as u16).map_or(0, |index| index + 1);
+    let image = match String::from_utf16(&image[start..]) { Ok(value) if !value.is_empty() => value, _ => return STATUS_INVALID_PARAMETER };
+    let Some(option_name) = read_wide_z(value).and_then(|bytes| {
+        let units: Vec<u16> = bytes.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect();
+        String::from_utf16(&units).ok()
+    }) else { return STATUS_INVALID_PARAMETER; };
+    let (stored_kind, stored_data) = match crate::nt_registry::query_ifeo_option(&image, &option_name) {
+        Ok(Some(option)) => option,
+        Ok(None) => return STATUS_OBJECT_NAME_NOT_FOUND,
+        Err(status) => return status,
+    };
+    let required = stored_data.len() as u32;
+    if result_size != 0 && uaccess::put_user_u32(result_size, required).is_err() { return STATUS_INVALID_PARAMETER; }
+    if kind as u32 == 4 && stored_kind != 4 { return STATUS_OBJECT_NAME_NOT_FOUND; }
+    if data_size < stored_data.len() as u64 { return 0x8000_0005; }
+    if !stored_data.is_empty() && uaccess::copy_to_user(data, &stored_data).is_err() { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
 }
 
 pub(crate) fn load(name_descriptor: u64, module_output: u64) -> u64 {

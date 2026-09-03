@@ -224,6 +224,25 @@ fn frame_query(key: u64, name: &str) -> Vec<u8> {
     let mut frame = Vec::new(); frame.push(registry_wire::QUERY); frame.extend_from_slice(&key.to_le_bytes()); put_text(&mut frame, name); frame
 }
 
+/// Query one Image File Execution Options value through the canonical registry owner.
+pub(crate) fn query_ifeo_option(image: &str, value: &str) -> Result<Option<(u32, Vec<u8>)>, u64> {
+    let path = alloc::format!("Software\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\{image}");
+    let reply = transact(&frame_root(registry_wire::OPEN, 0, &path)).ok_or(STATUS_UNSUCCESSFUL)?;
+    let handle = match reply {
+        Reply::Handle(handle) => handle,
+        Reply::Failure(2 | 3) => return Ok(None),
+        other => return Err(reply_status(other)),
+    };
+    let result = match transact(&frame_query(handle, value)) {
+        Some(Reply::Value { kind, data }) => Ok(Some((kind, data))),
+        Some(Reply::Failure(2 | 3)) => Ok(None),
+        Some(other) => Err(reply_status(other)),
+        None => Err(STATUS_UNSUCCESSFUL),
+    };
+    close_remote(handle);
+    result
+}
+
 fn frame_set(key: u64, name: &str, kind: u32, data: &[u8]) -> Vec<u8> {
     let mut frame = Vec::new(); frame.push(registry_wire::SET); frame.extend_from_slice(&key.to_le_bytes()); put_text(&mut frame, name); frame.extend_from_slice(&kind.to_le_bytes()); put_bytes(&mut frame, data); frame
 }
