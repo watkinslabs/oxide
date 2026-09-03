@@ -1430,6 +1430,7 @@ pub fn dispatch(call: NtCall) -> u64 {
             bytes[0..8].copy_from_slice(&memory.base.as_u64().to_ne_bytes());
             bytes[8..16].copy_from_slice(&memory.allocation_base.as_u64().to_ne_bytes());
             bytes[16..20].copy_from_slice(&windows_protection_word(memory.protection).to_ne_bytes());
+            bytes[20..24].copy_from_slice(&windows_protection_word(memory.may_protection).to_ne_bytes());
             bytes[24..32].copy_from_slice(&(memory.size as u64).to_ne_bytes());
             bytes[32..36].copy_from_slice(&MEM_COMMIT.to_ne_bytes());
             bytes[36..40].copy_from_slice(&windows_protection_word(memory.protection).to_ne_bytes());
