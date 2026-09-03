@@ -49,6 +49,8 @@ const WINE_DESTROY_MENU: u64 = 0x1382;
 const WINE_ENABLE_MENU_ITEM: u64 = 0x13a7;
 const WINE_SET_MENU: u64 = 0x1569;
 const WINE_THUNKED_MENU_ITEM_INFO: u64 = 0x15d0;
+const WINE_CALL_ONE_PARAM: u64 = 0x133d;
+const CALL_ONE_PARAM_GET_MENU_ITEM_COUNT: u64 = 4;
 const DCX_WINDOW: u64 = 0x0000_0001;
 const WINDOWPLACEMENT_BYTES: u64 = 44;
 const CALL_NO_PARAM_GET_DIALOG_BASE_UNITS: u64 = 1;
@@ -300,6 +302,15 @@ fn get_class_info_ex(args: &[u64; 17]) -> u64 {
 /// # C: O(NTUSER_NB_PROCS + NTUSER_NB_WORKERS)
 #[cfg(target_os = "oxide-kernel")]
 pub fn dispatch_raw(ordinal: u64, args: SyscallArgs) -> Option<u64> {
+    if ordinal == WINE_CALL_ONE_PARAM {
+        let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+        if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
+        if args.a1 != CALL_ONE_PARAM_GET_MENU_ITEM_COUNT { return Some(STATUS_NOT_IMPLEMENTED); }
+        return Some(crate::nt_window::menu_item_count_for_current(args.a0));
+    }
+    if ordinal == WINE_THUNKED_MENU_ITEM_INFO {
+        return Some(crate::nt_window::thunked_menu_item_info(args.a0, args.a1, args.a2, args.a3, args.a4));
+    }
     if ordinal == WINE_CALL_NO_PARAM {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
         if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
@@ -373,7 +384,7 @@ mod tests {
 
     #[test]
     fn wine_user32_ordinals_match_the_generated_table() {
-        assert_eq![(WINE_CREATE_WINDOW_EX, 0x136b), (WINE_DESTROY_WINDOW, 0x1384), (WINE_GET_MESSAGE, 0x141b), (WINE_PEEK_MESSAGE, 0x14ca), (WINE_POST_MESSAGE, 0x14d0), (WINE_SHOW_WINDOW, 0x15bd), (WINE_BEGIN_PAINT, 0x1327), (WINE_END_PAINT, 0x13bc), (WINE_GET_DC, 0x13eb), (WINE_GET_DC_EX, 0x13ec), (WINE_INVALIDATE_RECT, 0x148c), (WINE_RELEASE_DC, 0x1509), (WINE_SET_WINDOW_POS, 0x15a7), (WINE_GET_TEXT_METRICS, 0x1229), (WINE_GET_TEXT_EXTENT_EX, 0x1227), (WINE_REGISTER_CLASS_EX, 0x14eb), (WINE_DISPATCH_MESSAGE, 0x138b), (WINE_MESSAGE_CALL, 0x14b5), (WINE_GET_CLASS_NAME, 0x13d9), (WINE_GET_CLASS_INFO_EX, 0x13d8), (WINE_UNREGISTER_CLASS, 0x15df), (WINE_NTUSER_INITIALIZE_CLIENT_PFN_ARRAYS, 0x147a), (WINE_NTUSER_GET_SYSTEM_DPI_FOR_PROCESS, 0x144b), (WINE_GET_WINDOW_PLACEMENT, 0x1463), (WINE_CALL_NO_PARAM, 0x133c)] .iter().for_each(|(actual, expected)| assert_eq!(*actual, *expected));
+        assert_eq![(WINE_CREATE_WINDOW_EX, 0x136b), (WINE_DESTROY_WINDOW, 0x1384), (WINE_GET_MESSAGE, 0x141b), (WINE_PEEK_MESSAGE, 0x14ca), (WINE_POST_MESSAGE, 0x14d0), (WINE_SHOW_WINDOW, 0x15bd), (WINE_BEGIN_PAINT, 0x1327), (WINE_END_PAINT, 0x13bc), (WINE_GET_DC, 0x13eb), (WINE_GET_DC_EX, 0x13ec), (WINE_INVALIDATE_RECT, 0x148c), (WINE_RELEASE_DC, 0x1509), (WINE_SET_WINDOW_POS, 0x15a7), (WINE_GET_TEXT_METRICS, 0x1229), (WINE_GET_TEXT_EXTENT_EX, 0x1227), (WINE_REGISTER_CLASS_EX, 0x14eb), (WINE_DISPATCH_MESSAGE, 0x138b), (WINE_MESSAGE_CALL, 0x14b5), (WINE_GET_CLASS_NAME, 0x13d9), (WINE_GET_CLASS_INFO_EX, 0x13d8), (WINE_UNREGISTER_CLASS, 0x15df), (WINE_NTUSER_INITIALIZE_CLIENT_PFN_ARRAYS, 0x147a), (WINE_NTUSER_GET_SYSTEM_DPI_FOR_PROCESS, 0x144b), (WINE_GET_WINDOW_PLACEMENT, 0x1463), (WINE_CALL_NO_PARAM, 0x133c), (WINE_CALL_ONE_PARAM, 0x133d), (WINE_CREATE_MENU, 0x1366), (WINE_THUNKED_MENU_ITEM_INFO, 0x15d0)] .iter().for_each(|(actual, expected)| assert_eq!(*actual, *expected));
         assert_eq!(WINE_DEF_WINDOW_PROC, 0x029e);
         assert_eq!(WINE_CALL_WINDOW_PROC, 0x02ab);
     }

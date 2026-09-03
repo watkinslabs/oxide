@@ -465,6 +465,19 @@ pub(crate) fn set_window_menu_for_current(hwnd: u64, menu: Option<u32>) -> Resul
     entries[index].state.set_menu(ipc::win32_window::WindowId::from_raw(hwnd as u32).ok_or(())?, menu).map_err(|_| ())
 }
 
+/// Return the item count from the canonical HMENU owner. # C: O(N_process_gui_states + N_items)
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn menu_item_count_for_current(raw: u64) -> u64 {
+    let Some(menu) = u32::try_from(raw).ok().and_then(ipc::win32_menu::MenuId::from_raw) else { return u64::MAX; };
+    let Some(cur) = sched::live::current() else { return u64::MAX; };
+    if !cur.is_nt_personality() { return u64::MAX; }
+    let group = Arc::clone(&cur.thread_group);
+    let mut entries = GUI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    let Some(index) = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group))) else { return u64::MAX; };
+    entries[index].menus.count(menu).map(|count| count as u64).unwrap_or(u64::MAX)
+}
+
 /// Apply or query Wine's x86-64 MENUITEMINFO transaction against the one
 /// canonical process menu owner. # C: O(N_process_gui_states + N_items)
 #[cfg(target_os = "oxide-kernel")]
