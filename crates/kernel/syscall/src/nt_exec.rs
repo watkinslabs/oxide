@@ -29,6 +29,9 @@ pub struct NtExecRequest {
     pub command_line: UserPtr<u8>,
     pub command_line_len: u32,
     pub _command_padding: u32,
+    pub environment: UserPtr<u8>,
+    pub environment_len: u32,
+    pub _environment_padding: u32,
     pub modules: UserPtr<NtExecModule>,
     pub module_count: u32,
     pub _modules_padding: u32,
@@ -42,7 +45,7 @@ mod tests {
     fn handoff_records_are_fixed_x86_64_layouts() {
         assert_eq!(core::mem::size_of::<NtExecModule>(), 32);
         assert_eq!(core::mem::align_of::<NtExecModule>(), 8);
-        assert_eq!(core::mem::size_of::<NtExecRequest>(), 64);
+        assert_eq!(core::mem::size_of::<NtExecRequest>(), 80);
         assert_eq!(core::mem::align_of::<NtExecRequest>(), 8);
     }
 }
