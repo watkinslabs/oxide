@@ -79,6 +79,35 @@ fn resp_edid_size() {
 }
 
 #[test]
+fn capset_discovery_wire_contract() {
+    assert_eq!(core::mem::size_of::<VirtioGpuGetCapsetInfo>(), 32);
+    assert_eq!(core::mem::size_of::<VirtioGpuGetCapset>(), 32);
+    assert_eq!(core::mem::size_of::<VirtioGpuRespCapsetInfo>(), 40);
+    let mut buf = [0u8; COMMAND_BUFFER_BYTES];
+    assert_eq!(encode_get_capset_info(&mut buf, 3), 32);
+    assert_eq!(read_u32_le(&buf, CTRL_TYPE_OFFSET), VIRTIO_GPU_CMD_GET_CAPSET_INFO);
+    assert_eq!(read_u32_le(&buf, CTRL_PAYLOAD_OFFSET), 3);
+    assert_eq!(encode_get_capset(&mut buf, 7, 2), 32);
+    assert_eq!(read_u32_le(&buf, CTRL_TYPE_OFFSET), VIRTIO_GPU_CMD_GET_CAPSET);
+    assert_eq!(read_u32_le(&buf, CTRL_PAYLOAD_OFFSET), 7);
+    assert_eq!(read_u32_le(&buf, CTRL_PAYLOAD_OFFSET + 4), 2);
+}
+
+#[test]
+fn capset_info_response_is_validated_before_use() {
+    let mut resp = [0u8; 40];
+    write_u32_le(&mut resp, 0, VIRTIO_GPU_RESP_OK_CAPSET_INFO);
+    write_u32_le(&mut resp, 24, 7);
+    write_u32_le(&mut resp, 28, 2);
+    write_u32_le(&mut resp, 32, 4096);
+    let info = parse_capset_info(&resp).unwrap();
+    assert_eq!((info.capset_id, info.capset_version, info.capset_size), (7, 2, 4096));
+    assert_eq!(parse_capset_info(&resp[..39]), Err(Error::Inval));
+    write_u32_le(&mut resp, 0, VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
+    assert_eq!(parse_capset_info(&resp), Err(Error::BadResp(VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER)));
+}
+
+#[test]
 fn negotiate_intersects() {
     assert_eq!(
         negotiate_features(TEST_HOST_FEATURES, TEST_DRIVER_FEATURES),
