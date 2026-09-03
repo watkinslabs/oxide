@@ -1,5 +1,25 @@
 //! Ordered Wine Unix-call ABI slots shared by the native dispatcher and userspace.
 
+use crate::UserPtr;
+
+/// x86-64 layout of Wine's `load_so_dll_params` request.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct WineLoadSoDllParams {
+    pub nt_name: WineUnicodeString,
+    pub module: UserPtr<u64>,
+}
+
+/// Windows `UNICODE_STRING` embedded in a Wine Unix-call request.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct WineUnicodeString {
+    pub length: u16,
+    pub maximum_length: u16,
+    pub padding: u32,
+    pub buffer: UserPtr<u16>,
+}
+
 /// Function table published through `__wine_unixlib_handle`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
@@ -33,7 +53,7 @@ impl WineUnixFunction {
 
 #[cfg(test)]
 mod tests {
-    use super::WineUnixFunction;
+    use super::{WineLoadSoDllParams, WineUnicodeString, WineUnixFunction};
 
     #[test]
     fn decodes_the_complete_ordered_table() {
@@ -56,5 +76,13 @@ mod tests {
     fn rejects_unknown_and_widened_slots() {
         assert_eq!(WineUnixFunction::decode(8), None);
         assert_eq!(WineUnixFunction::decode(u64::MAX), None);
+    }
+
+    #[test]
+    fn load_so_dll_request_preserves_x64_nested_pointer_shape() {
+        assert_eq!(core::mem::size_of::<WineUnicodeString>(), 16);
+        assert_eq!(core::mem::size_of::<WineLoadSoDllParams>(), 24);
+        assert_eq!(core::mem::offset_of!(WineLoadSoDllParams, nt_name), 0);
+        assert_eq!(core::mem::offset_of!(WineLoadSoDllParams, module), 16);
     }
 }
