@@ -222,11 +222,11 @@ fn adjust_privileges(call: NtCall) -> u64 {
     let previous = token.privileges();
     let required = 4u64.checked_add(previous.len().checked_mul(12).unwrap_or(usize::MAX) as u64).unwrap_or(u64::MAX);
     if call.args.a4 != 0 && (call.args.a3 < required || call.args.a3 > u32::MAX as u64) { return STATUS_BUFFER_TOO_SMALL; }
-    let (_, all_assigned) = token.adjust_privileges(disable_all, &requested);
     if call.args.a4 != 0 {
         if write_privileges(call.args.a4, &previous).is_err() { return STATUS_INVALID_PARAMETER; }
         if call.args.a5 != 0 && uaccess::put_user_u32(call.args.a5, required as u32).is_err() { return STATUS_INVALID_PARAMETER; }
     }
+    let (_, all_assigned) = token.adjust_privileges(disable_all, &requested);
     if all_assigned { STATUS_SUCCESS } else { STATUS_NOT_ALL_ASSIGNED }
 }
 
