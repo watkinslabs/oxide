@@ -9,6 +9,7 @@ use syscall::nt_wine_unix::WineUnixFunction;
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
+#[cfg(test)]
 const STATUS_UNSUCCESSFUL: u64 = 0xc000_0001;
 const STATUS_HANDLE_NOT_CLOSABLE: u64 = 0xc000_0235;
 const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
@@ -24,6 +25,7 @@ const SERVER_REQ_CLOSE_HANDLE: u32 = 21;
 const SERVER_REQ_CREATE_EVENT: u32 = 30;
 const SERVER_REQ_EVENT_OP: u32 = 31;
 const SERVER_REQ_QUERY_EVENT: u32 = 32;
+#[cfg(test)]
 const SERVER_HEADER_BYTES: u64 = 12;
 const SERVER_REQUEST_SIZE: u64 = 4;
 const SERVER_REPLY_SIZE: u64 = 8;
