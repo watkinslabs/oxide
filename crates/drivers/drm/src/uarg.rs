@@ -72,6 +72,8 @@ mod tests {
         assert!(core::mem::size_of::<DrmModeDestroyDumb>() <= MAX_ARG_BYTES);
         assert!(core::mem::size_of::<DrmModeFbCmd>() <= MAX_ARG_BYTES);
         assert!(core::mem::size_of::<DrmModeFbCmd2>() <= MAX_ARG_BYTES);
+        assert_eq!(core::mem::size_of::<crate::DrmVirtgpuGetCaps>(), 24);
+        assert!(core::mem::size_of::<crate::DrmVirtgpuGetCaps>() <= MAX_ARG_BYTES);
         assert!(core::mem::size_of::<DrmModeCloseFb>() <= MAX_ARG_BYTES);
         assert!(core::mem::size_of::<DrmGemClose>() <= MAX_ARG_BYTES);
     }

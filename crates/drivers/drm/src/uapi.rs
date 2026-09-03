@@ -33,6 +33,19 @@ pub const DRM_IOCTL_DROP_MASTER:    u64 = 0x0000641f;
 pub const DRM_IOCTL_VIRTGPU_GETPARAM: u64 = 0xc0106443; // _IOWR('d',0x43,drm_virtgpu_getparam[16])
 pub const DRM_IOCTL_VIRTGPU_GET_CAPS: u64 = 0xc0186449; // _IOWR('d',0x49,drm_virtgpu_get_caps[24])
 
+/// `struct drm_virtgpu_get_caps` from the virtio-gpu UAPI.  `addr` points to
+/// the caller's writable capset blob; it is deliberately represented as an
+/// integer so the DRM node can pass it through fault-recoverable uaccess.
+#[repr(C)]
+#[derive(Copy, Clone, Default, Debug, Eq, PartialEq)]
+pub struct DrmVirtgpuGetCaps {
+    pub cap_set_id: u32,
+    pub cap_set_ver: u32,
+    pub addr: u64,
+    pub size: u32,
+    pub pad: u32,
+}
+
 // VIRTGPU_GETPARAM param ids (the virtio-gpu driver-specific UAPI).
 pub const VIRTGPU_PARAM_3D_FEATURES:       u64 = 1;
 pub const VIRTGPU_PARAM_CAPSET_QUERY_FIX:  u64 = 2;
