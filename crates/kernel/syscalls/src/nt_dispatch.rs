@@ -83,6 +83,7 @@ const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
 const DELETE_ACCESS: u32 = 0x0001_0000;
 const STATUS_OBJECT_NAME_COLLISION: u64 = 0xc000_0035;
 const STATUS_OBJECT_TYPE_MISMATCH: u64 = 0xc000_0024;
+const STATUS_HANDLE_NOT_CLOSABLE: u64 = 0xc000_0235;
 const STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xc000_0034;
 const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
 #[cfg(target_os = "oxide-kernel")]
@@ -531,13 +532,14 @@ pub fn dispatch(call: NtCall) -> u64 {
         if table.get(handle, 0).is_none() { return STATUS_INVALID_HANDLE; }
         // Wine's implemented class is ObjectHandleFlagInformation (4), whose
         // two ULONG fields control inherit/protect-from-close. The handle
-        // table currently has no owner for those flags, so reject other
-        // classes and avoid reporting a mutation that is not retained.
+        // table owns both flags so close paths observe retained state.
         if call.args.a1 != 4 || call.args.a3 < 8 { return STATUS_INVALID_PARAMETER; }
-        if uaccess::get_user_u32(call.args.a2).is_err() || uaccess::get_user_u32(call.args.a2 + 4).is_err() {
+        let Ok(inherit) = uaccess::get_user_u32(call.args.a2) else { return STATUS_INVALID_PARAMETER; };
+        let Ok(protect) = uaccess::get_user_u32(call.args.a2 + 4) else {
             return STATUS_INVALID_PARAMETER;
-        }
-        return STATUS_NOT_IMPLEMENTED;
+        };
+        if inherit > 1 || protect > 1 { return STATUS_INVALID_PARAMETER; }
+        return if table.set_flags(handle, inherit | (protect << 1)).is_some() { STATUS_SUCCESS } else { STATUS_INVALID_HANDLE };
     }
     if call.service == syscall::nt::NtService::NtMakeTemporaryObject {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
@@ -943,6 +945,7 @@ pub fn dispatch(call: NtCall) -> u64 {
             NtObjectCall::Close { handle } => {
                 let native = sched::nt_object::NtHandle::from_raw(handle);
                 crate::nt_directory_notify::close(handle);
+                if table.is_protected_from_close(native) { return STATUS_HANDLE_NOT_CLOSABLE; }
                 let key = table.get(native, 0).filter(|object| object.kind() == sched::nt_object::NtObjectType::Key).map(|object| object.id());
                 match table.close_with_last(native) {
                     Some(true) => { if let Some(key) = key { crate::nt_registry::close_watches(key); crate::nt_registry::close_remote(key); } STATUS_SUCCESS }

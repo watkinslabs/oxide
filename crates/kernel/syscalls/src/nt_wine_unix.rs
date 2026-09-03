@@ -9,6 +9,7 @@ use syscall::nt_wine_unix::WineUnixFunction;
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
+const STATUS_HANDLE_NOT_CLOSABLE: u64 = 0xc000_0235;
 const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
 const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
 const STATUS_NO_MEMORY: u64 = 0xc000_0017;
@@ -194,6 +195,7 @@ fn server_call(args: u64) -> u64 {
             let handle = sched::nt_object::NtHandle::from_raw(raw);
             let object = table.get(handle, 0);
             if object.is_none() { STATUS_INVALID_HANDLE } else {
+                if table.is_protected_from_close(handle) { return server_reply(args, STATUS_HANDLE_NOT_CLOSABLE); }
                 crate::nt_directory_notify::close(raw);
                 let key = object.filter(|object| object.kind() == sched::nt_object::NtObjectType::Key).map(|object| object.id());
                 match table.close_with_last(handle) {

@@ -422,6 +422,7 @@ impl NtHandle {
 struct Entry {
     object: Option<Arc<NtObject>>,
     access: u32,
+    flags: u32,
     generation: u16,
 }
 
@@ -578,11 +579,12 @@ impl NtHandleTable {
         let mut entries = self.entries.lock();
         let index = entries.iter().position(|entry| entry.object.is_none()).unwrap_or(entries.len());
         if index >= HANDLE_INDEX_MASK as usize { return None; }
-        if index == entries.len() { entries.push(Entry { object: None, access: 0, generation: 1 }); }
+        if index == entries.len() { entries.push(Entry { object: None, access: 0, flags: 0, generation: 1 }); }
         let entry = &mut entries[index];
         if entry.generation == 0 { entry.generation = 1; }
         entry.object = Some(object);
         entry.access = access;
+        entry.flags = 0;
         NtHandle::new(index + FIRST_INDEX, entry.generation)
     }
 
@@ -609,6 +611,29 @@ impl NtHandleTable {
         Some(entry.access)
     }
 
+    /// Return the user-visible handle flags. # C: O(1)
+    pub fn flags(&self, handle: NtHandle) -> Option<u32> {
+        let (index, generation) = handle.parts()?;
+        let entries = self.entries.lock();
+        let entry = entries.get(index - FIRST_INDEX)?;
+        (entry.generation == generation && entry.object.is_some()).then_some(entry.flags)
+    }
+
+    /// Update the user-visible inherit/protect-from-close flags. # C: O(1)
+    pub fn set_flags(&self, handle: NtHandle, flags: u32) -> Option<()> {
+        let (index, generation) = handle.parts()?;
+        let mut entries = self.entries.lock();
+        let entry = entries.get_mut(index - FIRST_INDEX)?;
+        if entry.generation != generation || entry.object.is_none() { return None; }
+        entry.flags = flags;
+        Some(())
+    }
+
+    /// Test whether a user close is prohibited by the handle flags. # C: O(1)
+    pub fn is_protected_from_close(&self, handle: NtHandle) -> bool {
+        self.flags(handle).is_some_and(|flags| flags & 2 != 0)
+    }
+
     /// Close one handle and release its object reference after table removal. # C: O(1)
     pub fn close(&self, handle: NtHandle) -> bool {
         self.close_with_last(handle).is_some()
@@ -624,8 +649,10 @@ impl NtHandleTable {
         let object = {
             let Some(entry) = entries.get_mut(index - FIRST_INDEX) else { return None; };
             if entry.generation != generation || entry.object.is_none() { return None; }
+            if entry.flags & 2 != 0 { return None; }
             let object = entry.object.take();
             entry.access = 0;
+            entry.flags = 0;
             entry.generation = entry.generation.wrapping_add(1);
             if entry.generation == 0 { entry.generation = 1; }
             object

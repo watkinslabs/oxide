@@ -174,6 +174,20 @@ fn duplicate_cannot_escalate_access() {
 }
 
 #[test]
+fn handle_flags_are_owned_by_the_handle_and_protect_close() {
+    let table = NtHandleTable::new();
+    let handle = table.insert(table.new_object(NtObjectType::Event), READ).unwrap();
+    assert_eq!(table.flags(handle), Some(0));
+    assert_eq!(table.set_flags(handle, 3), Some(()));
+    assert_eq!(table.flags(handle), Some(3));
+    assert!(table.is_protected_from_close(handle));
+    assert!(!table.close(handle));
+    assert!(table.contains(handle));
+    assert_eq!(table.set_flags(handle, 0), Some(()));
+    assert!(table.close(handle));
+}
+
+#[test]
 fn mutant_is_reentrant_and_release_requires_owner() {
     let mutant = NtObject::new_mutant(7, None).mutant().unwrap();
     assert!(mutant.try_acquire(41)); assert!(mutant.try_acquire(41));
