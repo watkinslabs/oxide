@@ -31,6 +31,7 @@ pub fn map_shared_object(file: &[u8], as_: &AddressSpace) -> Result<MappedUnixli
     let span = max_vaddr.checked_sub(min_vaddr).ok_or(LoadError::Einval)?;
     let arena = as_.get_unmapped_area(span as usize).map_err(|_| LoadError::Enomem)?.as_u64();
     let bias = arena.checked_sub(min_vaddr).ok_or(LoadError::Einval)?;
+    let exports = defined_exports(file, &object, bias)?;
     let mut mapped = Vec::new();
 
     for seg in &object.parsed.loads {
@@ -56,6 +57,7 @@ pub fn map_shared_object(file: &[u8], as_: &AddressSpace) -> Result<MappedUnixli
         }
         mapped.push((addr, len));
     }
+    crate::elf_modules::append_symbols(as_, &exports);
     Ok(MappedUnixlib { base: bias, end: max_vaddr.checked_add(bias).ok_or(LoadError::Einval)? })
 }
 
@@ -92,6 +94,7 @@ where F: FnMut(&[u8]) -> Option<u64> {
     }
     elf::apply_runtime_relocations(file, &object, bias, &mut image, image_base, resolver)
         .map_err(LoadError::from)?;
+    let exports = defined_exports(file, &object, bias)?;
     let mut mapped = Vec::new();
     for seg in &object.parsed.loads {
         let va = seg.vaddr.checked_add(bias).ok_or(LoadError::Einval)?;
@@ -111,7 +114,20 @@ where F: FnMut(&[u8]) -> Option<u64> {
         }
         mapped.push((addr, len));
     }
+    crate::elf_modules::append_symbols(as_, &exports);
     Ok(MappedUnixlib { base: bias, end: max_vaddr.checked_add(bias).ok_or(LoadError::Einval)? })
+}
+
+fn defined_exports(file: &[u8], object: &SharedObject<'_>, bias: u64)
+    -> Result<Vec<crate::elf_modules::ElfRuntimeSymbol>, LoadError>
+{
+    let Ok(symbols) = elf::collect_dynamic_symbols(file, object) else { return Ok(Vec::new()) };
+    symbols.into_iter().map(|symbol| {
+        Ok(crate::elf_modules::ElfRuntimeSymbol {
+            name: symbol.name.to_vec(),
+            address: bias.checked_add(symbol.value).ok_or(LoadError::Einval)?,
+        })
+    }).collect()
 }
 
 fn mapping_span(object: &SharedObject<'_>) -> Option<(u64, u64)> {

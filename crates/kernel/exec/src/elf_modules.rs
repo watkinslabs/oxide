@@ -55,6 +55,17 @@ pub fn register_symbols(as_: &AddressSpace, symbols: &[ElfRuntimeSymbol]) {
     SYMBOLS.lock().insert(as_.root_pa(), scope);
 }
 
+/// Append exports from one newly mapped ELF image to the process scope.
+/// # C: O(N_symbols²) worst case
+pub fn append_symbols(as_: &AddressSpace, symbols: &[ElfRuntimeSymbol]) {
+    let mut scopes = SYMBOLS.lock();
+    let scope = scopes.entry(as_.root_pa()).or_default();
+    for symbol in symbols {
+        if let Some(old) = scope.iter_mut().find(|old| old.name == symbol.name) { *old = symbol.clone(); }
+        else { scope.push(symbol.clone()); }
+    }
+}
+
 /// Resolve one exact ELF symbol name in the current process scope.
 /// # C: O(N_symbols)
 pub fn resolve_symbol(root: u64, name: &[u8]) -> Option<u64> {

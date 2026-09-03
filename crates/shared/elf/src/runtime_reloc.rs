@@ -111,6 +111,52 @@ pub fn read_dynamic_symbol<'a>(file: &'a [u8], object: &SharedObject<'_>, index:
     Ok(DynamicSymbol { name: &name[start..end], value, defined: shndx != 0 })
 }
 
+/// Collect the defined dynamic symbols advertised by the object's hash table.
+/// GNU hash is preferred; the legacy SysV table is accepted as well.
+/// # C: O(N_symbols)
+pub fn collect_dynamic_symbols<'a>(file: &'a [u8], object: &SharedObject<'_>) -> Result<alloc::vec::Vec<DynamicSymbol<'a>>, ElfError> {
+    let count = if let Some(hash) = object.dynamic.hash_addr { sysv_symbol_count(file, object, hash)? }
+        else if let Some(hash) = object.dynamic.gnu_hash_addr { gnu_symbol_count(file, object, hash)? }
+        else { return Err(ElfError::Einval); };
+    let mut symbols = alloc::vec::Vec::new();
+    for index in 0..count {
+        let symbol = read_dynamic_symbol(file, object, index)?;
+        if symbol.defined && !symbol.name.is_empty() { symbols.push(symbol); }
+    }
+    Ok(symbols)
+}
+
+fn sysv_symbol_count(file: &[u8], object: &SharedObject<'_>, address: u64) -> Result<u64, ElfError> {
+    let off = vaddr_to_file(object.parsed.loads.as_slice(), address, 8).ok_or(ElfError::Einval)?;
+    Ok(u64::from(u32_at(file, off + 4)?))
+}
+
+fn gnu_symbol_count(file: &[u8], object: &SharedObject<'_>, address: u64) -> Result<u64, ElfError> {
+    let off = vaddr_to_file(object.parsed.loads.as_slice(), address, 16).ok_or(ElfError::Einval)?;
+    let buckets = u32_at(file, off)? as u64;
+    let symoffset = u32_at(file, off + 4)? as u64;
+    let bloom = u32_at(file, off + 8)? as u64;
+    if buckets == 0 || bloom == 0 { return Err(ElfError::Einval); }
+    let bloom_bytes: usize = bloom.checked_mul(8).ok_or(ElfError::Einval)?.try_into().map_err(|_| ElfError::Einval)?;
+    let bucket_off = off.checked_add(16).ok_or(ElfError::Einval)?.checked_add(bloom_bytes).ok_or(ElfError::Einval)?;
+    let mut max = 0;
+    for bucket in 0..buckets {
+        let bucket_bytes: usize = bucket.checked_mul(4).ok_or(ElfError::Einval)?.try_into().map_err(|_| ElfError::Einval)?;
+        let value = u32_at(file, bucket_off.checked_add(bucket_bytes).ok_or(ElfError::Einval)?)? as u64;
+        if value >= symoffset && value > max { max = value; }
+    }
+    if max == 0 { return Ok(symoffset); }
+    loop {
+        let chain = max.checked_sub(symoffset).ok_or(ElfError::Einval)?;
+        let chain_base: usize = buckets.checked_mul(4).ok_or(ElfError::Einval)?.try_into().map_err(|_| ElfError::Einval)?;
+        let chain_bytes: usize = chain.checked_mul(4).ok_or(ElfError::Einval)?.try_into().map_err(|_| ElfError::Einval)?;
+        let chain_off = bucket_off.checked_add(chain_base).ok_or(ElfError::Einval)?
+            .checked_add(chain_bytes).ok_or(ElfError::Einval)?;
+        if u32_at(file, chain_off)? & 1 != 0 { return max.checked_add(1).ok_or(ElfError::Einval); }
+        max = max.checked_add(1).ok_or(ElfError::Einval)?;
+    }
+}
+
 fn vaddr_to_file(loads: &[LoadSegment], address: u64, size: u64) -> Option<usize> {
     loads.iter().find_map(|seg| {
         let end = address.checked_add(size)?;
@@ -141,5 +187,18 @@ mod tests {
         let loads = [LoadSegment { flags: crate::parser::PFlags::R, file_off: 0x200, file_sz: 0x80, vaddr: 0x1000, mem_sz: 0x1000, align: 0x1000 }];
         assert_eq!(vaddr_to_file(&loads, 0x1010, 16), Some(0x210));
         assert_eq!(vaddr_to_file(&loads, 0x1078, 16), None);
+    }
+
+    #[test]
+    fn installed_wine_vulkan_unixlib_exports_are_collectible() {
+        let paths = [
+            "/usr/lib64/wine/x86_64-unix/winevulkan.so",
+            "/usr/lib/wine/x86_64-unix/winevulkan.so",
+        ];
+        let Some(path) = paths.iter().find(|path| std::path::Path::new(path).is_file()) else { return };
+        let bytes = std::fs::read(path).unwrap();
+        let object = crate::parse_shared_object(&bytes, crate::EM_X86_64).unwrap();
+        let symbols = collect_dynamic_symbols(&bytes, &object).unwrap();
+        assert!(symbols.iter().any(|symbol| symbol.name == b"__wine_unix_call_funcs"));
     }
 }
