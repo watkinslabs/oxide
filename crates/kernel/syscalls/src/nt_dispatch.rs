@@ -66,6 +66,8 @@ const MEM_COMMIT: u32 = 0x1000;
 #[cfg(target_os = "oxide-kernel")]
 const MEM_FREE: u32 = 0x10000;
 #[cfg(target_os = "oxide-kernel")]
+const MEM_TOP_DOWN: u32 = 0x100000;
+#[cfg(target_os = "oxide-kernel")]
 const MEM_RELEASE: u32 = 0x8000;
 #[cfg(target_os = "oxide-kernel")]
 const MEMORY_BASIC_INFORMATION_CLASS: u32 = 0;
@@ -1456,8 +1458,9 @@ pub fn dispatch(call: NtCall) -> u64 {
             // mapping, so preserve that contract rather than rejecting the
             // valid MEM_COMMIT-only form.  Commit-on-an-existing-reservation
             // remains rejected until the VMA owner exposes reservation state.
-            let creates_region = allocation_type == MEM_RESERVE | MEM_COMMIT
-                || allocation_type == MEM_COMMIT;
+            let allocation_flags = allocation_type & !MEM_TOP_DOWN;
+            let creates_region = allocation_flags == MEM_RESERVE | MEM_COMMIT
+                || allocation_flags == MEM_COMMIT;
             if !creates_region { return STATUS_INVALID_PARAMETER; }
             let size_ptr = size.as_u64();
             let requested_base = match uaccess::get_user_u64(base.as_u64()) {
