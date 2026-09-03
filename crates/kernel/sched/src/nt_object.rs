@@ -611,11 +611,19 @@ impl NtHandleTable {
 
     /// Close one handle and release its object reference after table removal. # C: O(1)
     pub fn close(&self, handle: NtHandle) -> bool {
-        let Some((index, generation)) = handle.parts() else { return false; };
+        self.close_with_last(handle).is_some()
+    }
+
+    /// Close one handle and report whether it was the final handle for its
+    /// shared object. The result is computed while table removal is
+    /// serialized, so paired external resources are released exactly once.
+    /// # C: O(N_handles)
+    pub fn close_with_last(&self, handle: NtHandle) -> Option<bool> {
+        let Some((index, generation)) = handle.parts() else { return None; };
         let mut entries = self.entries.lock();
         let object = {
-            let Some(entry) = entries.get_mut(index - FIRST_INDEX) else { return false; };
-            if entry.generation != generation || entry.object.is_none() { return false; }
+            let Some(entry) = entries.get_mut(index - FIRST_INDEX) else { return None; };
+            if entry.generation != generation || entry.object.is_none() { return None; }
             let object = entry.object.take();
             entry.access = 0;
             entry.generation = entry.generation.wrapping_add(1);
@@ -629,7 +637,7 @@ impl NtHandleTable {
             namespace::release_temporary(&object, has_live_handle);
             drop(object);
         }
-        true
+        Some(!has_live_handle)
     }
     /// Duplicate a handle with a subset of its granted rights. # C: O(1)
     pub fn duplicate(&self, handle: NtHandle, desired_access: u32) -> Option<NtHandle> {

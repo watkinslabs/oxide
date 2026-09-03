@@ -156,6 +156,16 @@ fn close_invalidates_old_generation_before_reuse() {
 }
 
 #[test]
+fn duplicated_key_releases_shared_object_only_on_final_close() {
+    let table = NtHandleTable::new();
+    let first = table.insert(table.new_key(), READ).unwrap();
+    let second = table.duplicate(first, READ).unwrap();
+    assert_eq!(table.close_with_last(first), Some(false));
+    assert!(table.get(second, READ).is_some());
+    assert_eq!(table.close_with_last(second), Some(true));
+}
+
+#[test]
 fn duplicate_cannot_escalate_access() {
     let table = NtHandleTable::new();
     let source = table.insert(table.new_object(NtObjectType::Thread), READ).unwrap();

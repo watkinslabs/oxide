@@ -942,10 +942,12 @@ pub fn dispatch(call: NtCall) -> u64 {
             }
             NtObjectCall::Close { handle } => {
                 let native = sched::nt_object::NtHandle::from_raw(handle);
-                if let Some(object) = table.get(native, 0) {
-                    if object.kind() == sched::nt_object::NtObjectType::Key { crate::nt_registry::close_remote(object.id()); }
+                let key = table.get(native, 0).filter(|object| object.kind() == sched::nt_object::NtObjectType::Key).map(|object| object.id());
+                match table.close_with_last(native) {
+                    Some(true) => { if let Some(key) = key { crate::nt_registry::close_remote(key); } STATUS_SUCCESS }
+                    Some(false) => STATUS_SUCCESS,
+                    None => STATUS_INVALID_HANDLE,
                 }
-                if table.close(native) { STATUS_SUCCESS } else { STATUS_INVALID_HANDLE }
             }
             NtObjectCall::SetEvent { handle, previous } => {
                 let native = sched::nt_object::NtHandle::from_raw(handle);
