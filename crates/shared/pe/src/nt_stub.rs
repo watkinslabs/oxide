@@ -15,6 +15,15 @@ pub const X64_EXCEPTION_RECORD_OFFSET: u64 = 0x4f0;
 pub const X64_EXCEPTION_MACHINE_FRAME_OFFSET: u64 = 0x590;
 pub const X64_EXCEPTION_FRAME_BYTES: u64 = 0x5c0;
 
+/// Addresses of the fixed portions of one Wine x86-64 exception frame.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct X64ExceptionFrame {
+    pub stack: u64,
+    pub context: u64,
+    pub exception_record: u64,
+    pub machine_frame: u64,
+}
+
 /// Compute the 64-byte-aligned user stack address used by Wine when entering
 /// `KiUserExceptionDispatcher`.  Keeping this arithmetic in the shared PE
 /// contract prevents the kernel and runtime from developing separate frame
@@ -22,6 +31,19 @@ pub const X64_EXCEPTION_FRAME_BYTES: u64 = 0x5c0;
 pub fn x64_exception_stack(user_rsp: u64, xstate_bytes: u64) -> Option<u64> {
     user_rsp.checked_sub(X64_EXCEPTION_FRAME_BYTES)?.checked_sub(xstate_bytes)
         .map(|address| address & !63)
+}
+
+/// Derive every fixed frame address before any user-memory writes occur.
+/// Keeping the offsets together makes partial frame construction impossible
+/// for callers that use the returned contract as one transaction.
+pub fn x64_exception_frame(user_rsp: u64, xstate_bytes: u64) -> Option<X64ExceptionFrame> {
+    let stack = x64_exception_stack(user_rsp, xstate_bytes)?;
+    Some(X64ExceptionFrame {
+        stack,
+        context: stack.checked_add(X64_EXCEPTION_CONTEXT_OFFSET)?,
+        exception_record: stack.checked_add(X64_EXCEPTION_RECORD_OFFSET)?,
+        machine_frame: stack.checked_add(X64_EXCEPTION_MACHINE_FRAME_OFFSET)?,
+    })
 }
 
 /// Encode Wine's Unix-call dispatcher ABI: `(unixlib_handle, code, args)` in
@@ -377,6 +399,11 @@ mod tests {
         let stack = x64_exception_stack(0x7fff_ffff_f000, 0x240);
         assert_eq!(stack, Some((0x7fff_ffff_f000 - 0x5c0 - 0x240) & !63));
         assert_eq!(x64_exception_stack(0x500, 0), None);
+        let frame = x64_exception_frame(0x7fff_ffff_f000, 0x240).unwrap();
+        assert_eq!(frame.context, frame.stack);
+        assert_eq!(frame.exception_record - frame.stack, 0x4f0);
+        assert_eq!(frame.machine_frame - frame.stack, 0x590);
+        assert_eq!(x64_exception_frame(0x500, 0), None);
     }
 }
 use alloc::vec::Vec;
