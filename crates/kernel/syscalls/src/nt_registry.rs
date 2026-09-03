@@ -373,6 +373,7 @@ fn reply_status(reply: Reply) -> u64 {
     match reply {
         Reply::Failure(1 | 4) => STATUS_INVALID_PARAMETER,
         Reply::Failure(2 | 3) => STATUS_OBJECT_NAME_NOT_FOUND,
+        Reply::Failure(6) => 0xc000_017b,
         Reply::Failure(_) => STATUS_UNSUCCESSFUL,
         _ => STATUS_UNSUCCESSFUL,
     }

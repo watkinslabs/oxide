@@ -30,5 +30,6 @@ pub const ERROR_MISSING_KEY: u8 = 2;
 pub const ERROR_MISSING_VALUE: u8 = 3;
 pub const ERROR_INVALID_FILE: u8 = 4;
 pub const ERROR_IO: u8 = 5;
+pub const ERROR_DELETED: u8 = 6;
 
 pub const MAX_FRAME: usize = 1 << 24;
