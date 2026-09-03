@@ -81,6 +81,17 @@ fn load_locked(cur: &sched::Task, name_descriptor: u64, module_output: u64) -> u
         Ok(initializers) => initializers,
         Err(_) => { unmap_all(&as_, &loaded); return STATUS_INVALID_PARAMETER; },
     };
+    // Validate the return-to-user transaction before publishing anything in
+    // the PEB.  `publish_modules` mutates the process-visible loader lists;
+    // discovering a missing frame after that point would leave dangling
+    // entries if this syscall had to abort.
+    let return_regs = if initializers.is_empty() {
+        None
+    } else {
+        let regs = crate::arch_frame::current_user_regs();
+        if regs.is_null() { unmap_all(&as_, &loaded); return STATUS_INVALID_PARAMETER; }
+        Some(regs)
+    };
     let trampoline = if initializers.is_empty() { None } else {
         let Some(return_entry) = hal::UserVirtAddr::new(crate::arch_frame::current_user_pc()) else { unmap_all(&as_, &loaded); return STATUS_INVALID_PARAMETER; };
         match elf_load::pe_init::map_dynamic_return(&as_, return_entry, &initializers) {
@@ -107,11 +118,9 @@ fn load_locked(cur: &sched::Task, name_descriptor: u64, module_output: u64) -> u
         cur.thread_group.nt_module_refs.lock().push((loaded.image.base, 1));
     }
     if let Some(trampoline) = trampoline {
-        let regs = crate::arch_frame::current_user_regs();
-        if regs.is_null() { unmap(&as_, trampoline.base.as_u64(), trampoline.bytes as u32); return STATUS_INVALID_PARAMETER; }
         // SAFETY: current_user_regs is the live syscall frame owned by this
         // dispatch; changing RIP redirects only this task's return-to-user path.
-        unsafe { (*regs).rip = trampoline.entry.as_u64(); }
+        unsafe { (*return_regs.expect("initializer path validated its return frame")).rip = trampoline.entry.as_u64(); }
     }
     STATUS_SUCCESS
 }
