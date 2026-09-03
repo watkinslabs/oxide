@@ -256,6 +256,7 @@ impl Task {
                 dbg_canary_tail: AtomicU64::new(task_canary_tail(tid)),
             },
             registered_rings: Spinlock::new(None),
+            nt_callback_stack: Spinlock::new(crate::nt_callback::Stack::new()),
             kernel_stack: AtomicPtr::new(core::ptr::null_mut()),
             kernel_stack_memcg: AtomicU64::new(cgroup::NO_MEMCG),
             kernel_stack_charge_bytes: AtomicU64::new(0),

@@ -572,14 +572,13 @@ pub(crate) fn begin_wndproc_callback(hwnd: u64, message: u64, wparam: u64, lpara
     if uaccess::put_user_u64(callback_rsp, continuation).is_err() { return STATUS_INVALID_PARAMETER; }
     let post_rip = frame.rip;
     let post_rsp = frame.rsp;
+    if !task.nt_callback_stack.lock().push(sched::nt_callback::Frame { rip: post_rip, rsp: post_rsp }) { return STATUS_INVALID_PARAMETER; }
     frame.rip = wndproc;
     frame.rsp = callback_rsp;
     frame.rcx = hwnd;
     frame.rdx = message;
     frame.r8 = wparam;
     frame.r9 = lparam;
-    frame.r14 = post_rip;
-    frame.r15 = post_rsp;
     STATUS_PENDING
 }
 
@@ -594,14 +593,12 @@ pub(crate) fn callback_return(call: NtCall) -> u64 {
         let regs = hal_x86_64::current_pt_regs();
         if regs.is_null() { return STATUS_NO_CALLBACK_ACTIVE; }
         let frame = unsafe { &mut *regs };
-        if frame.r14 == 0 || frame.r15 == 0 || call.args.a1 != 8 { return STATUS_NO_CALLBACK_ACTIVE; }
+        if call.args.a1 != 8 { return STATUS_NO_CALLBACK_ACTIVE; }
         let result = uaccess::get_user_u64(call.args.a0).unwrap_or(0);
-        let rip = frame.r14;
-        let rsp = frame.r15;
-        frame.r14 = 0;
-        frame.r15 = 0;
-        frame.rip = rip;
-        frame.rsp = rsp;
+        let Some(task) = sched::live::current() else { return STATUS_NO_CALLBACK_ACTIVE; };
+        let Some(saved) = task.nt_callback_stack.lock().pop() else { return STATUS_NO_CALLBACK_ACTIVE; };
+        frame.rip = saved.rip;
+        frame.rsp = saved.rsp;
         frame.rax = result;
         result
     }
