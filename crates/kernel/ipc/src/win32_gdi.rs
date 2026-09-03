@@ -78,6 +78,9 @@ impl GdiManager {
         Ok(TextMetrics { height, ascent: height - DEFAULT_DESCENT, descent: DEFAULT_DESCENT, average_width: width, max_width: width, character_width: width })
     }
 
+    /// Return the stock dialog base units used by the native GUI owner. # C: O(1)
+    pub fn dialog_base_units(&self) -> (i32, i32) { (DEFAULT_WIDTH, DEFAULT_HEIGHT) }
+
     /// Measure UTF-16 code units using the selected logical font. # C: O(N_text)
     pub fn text_extent(&self, dc: u32, count: u32) -> Result<TextExtent, GdiError> {
         if count > i32::MAX as u32 { return Err(GdiError::InvalidText); }
