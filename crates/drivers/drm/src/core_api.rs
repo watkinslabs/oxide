@@ -88,7 +88,7 @@ pub trait DrmDriver: Send + Sync {
     /// Allocate and admit one virtio-gpu context for this DRM file. `None`
     /// means the driver has no context UAPI or cannot submit its create
     /// command; the node must not publish ownership in that case.
-    fn virtgpu_context_init(&self, _capset_id: u32, _num_rings: u32) -> Option<u32> { None }
+    fn virtgpu_context_init(&self, _capset_id: u32, _num_rings: u32, _name: &[u8]) -> Option<u32> { None }
 
     /// Destroy a context previously returned by `virtgpu_context_init`.
     fn virtgpu_context_destroy(&self, _context_id: u32) -> bool { false }

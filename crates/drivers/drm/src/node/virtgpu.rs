@@ -4,7 +4,7 @@ use sync::{Spinlock, TaskList as DriverLockClass};
 use crate::{DrmDriver, VirtgpuCaps};
 use syscall::errno::Errno;
 
-struct FileContext { card_id: u32, token: u64, context_id: u32 }
+struct FileContext { card_id: u32, token: u64, context_id: u32, ring_mask: u64 }
 static FILE_CONTEXTS: Spinlock<Vec<FileContext>, DriverLockClass> = Spinlock::new(Vec::new());
 
 /// Dispatch virtio-gpu's driver-private UAPI.  The generic DRM node owns
@@ -26,6 +26,8 @@ fn context_init(driver: Option<Arc<dyn DrmDriver>>, arg: u64, card_id: u32, toke
     }
     let mut capset_id = 0u32;
     let mut num_rings = 0u32;
+    let mut ring_mask = 0u64;
+    let mut debug_name = Vec::new();
     let mut seen = 0u8;
     for index in 0..request.num_params {
         let Some(offset) = (index as u64).checked_mul(16)
@@ -47,25 +49,35 @@ fn context_init(driver: Option<Arc<dyn DrmDriver>>, arg: u64, card_id: u32, toke
                 num_rings = param.value as u32;
                 seen |= 2;
             }
-            // These require additional host-facing state and are rejected
-            // until their complete ownership contract is implemented.
-            crate::VIRTGPU_CONTEXT_PARAM_POLL_RINGS_MASK
-            | crate::VIRTGPU_CONTEXT_PARAM_DEBUG_NAME => {
-                return -(Errno::Einval.as_i32() as i64)
+            crate::VIRTGPU_CONTEXT_PARAM_POLL_RINGS_MASK => {
+                if seen & 4 != 0 { return -(Errno::Einval.as_i32() as i64); }
+                ring_mask = param.value;
+                seen |= 4;
+            }
+            crate::VIRTGPU_CONTEXT_PARAM_DEBUG_NAME => {
+                if seen & 8 != 0 { return -(Errno::Einval.as_i32() as i64); }
+                let Ok(name) = uaccess::strncpy_from_user(param.value, 64) else {
+                    return -(Errno::Efault.as_i32() as i64);
+                };
+                debug_name = name;
+                seen |= 8;
             }
             _ => return -(Errno::Einval.as_i32() as i64),
         }
     }
+    if num_rings > 64 { return -(Errno::Einval.as_i32() as i64); }
+    let valid_mask = if num_rings == 64 { u64::MAX } else { (1u64 << num_rings).wrapping_sub(1) };
+    if ring_mask & !valid_mask != 0 { return -(Errno::Einval.as_i32() as i64); }
     let Some(driver) = driver else { return -(Errno::Enotty.as_i32() as i64) };
     let contexts = FILE_CONTEXTS.lock();
     if contexts.iter().any(|c| c.card_id == card_id && c.token == token) {
         return -(Errno::Ebusy.as_i32() as i64);
     }
     drop(contexts);
-    let Some(context_id) = driver.virtgpu_context_init(capset_id, num_rings) else {
+    let Some(context_id) = driver.virtgpu_context_init(capset_id, num_rings, &debug_name) else {
         return -(Errno::Enotsupp.as_i32() as i64);
     };
-    FILE_CONTEXTS.lock().push(FileContext { card_id, token, context_id });
+    FILE_CONTEXTS.lock().push(FileContext { card_id, token, context_id, ring_mask });
     0
 }
 

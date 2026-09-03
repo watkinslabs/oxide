@@ -211,7 +211,7 @@ impl drm::DrmDriver for VirtioGpuDrm {
             .map(|capset| capset.blob.clone())
     }
 
-    fn virtgpu_context_init(&self, capset_id: u32, num_rings: u32) -> Option<u32> {
+    fn virtgpu_context_init(&self, capset_id: u32, num_rings: u32, name: &[u8]) -> Option<u32> {
         if self.features_negotiated & (1u64 << VIRTIO_GPU_F_VIRGL) == 0
             || self.features_negotiated & (1u64 << VIRTIO_GPU_F_CONTEXT_INIT) == 0
             || num_rings > 64
@@ -222,10 +222,10 @@ impl drm::DrmDriver for VirtioGpuDrm {
         {
             let key = DEVICES.lock().iter().find(|d| d.bdf == self.bdf).map(|d| d.device_key)?;
             let id = NEXT_CONTEXT_ID.fetch_add(1, Ordering::AcqRel).max(1);
-            post_init::create_context_for_key(key, id, capset_id).then_some(id)
+            post_init::create_context_for_key(key, id, capset_id, name).then_some(id)
         }
         #[cfg(not(target_os = "oxide-kernel"))]
-        { let _ = (capset_id, num_rings); None }
+        { let _ = (capset_id, num_rings, name); None }
     }
 
     fn virtgpu_context_destroy(&self, context_id: u32) -> bool {
