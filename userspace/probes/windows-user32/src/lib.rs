@@ -14,6 +14,38 @@ pub const VK_TAB: u16 = 0x09;
 pub const VK_RETURN: u16 = 0x0d;
 pub const VK_SPACE: u16 = 0x20;
 const WINE_DISPATCH_MESSAGE: u64 = 0x138b;
+const WINE_CREATE_MENU: u64 = 0x1366;
+const WINE_CREATE_POPUP_MENU: u64 = 0x1368;
+const WINE_SET_MENU: u64 = 0x1569;
+const WINE_DESTROY_MENU: u64 = 0x1382;
+const WINE_CALL_ONE_PARAM: u64 = 0x133d;
+const WINE_THUNKED_MENU_ITEM_INFO: u64 = 0x15d0;
+const CALL_ONE_PARAM_GET_MENU_ITEM_COUNT: u64 = 4;
+const MENUITEMINFO_BYTES: usize = 80;
+const MENUITEMINFO_INSERT: u64 = 1;
+pub const MF_BYPOSITION: u32 = 0x0000_0400;
+pub const MF_POPUP: u32 = 0x0000_0010;
+pub const MIIM_STATE: u32 = 0x0000_0001;
+pub const MIIM_ID: u32 = 0x0000_0002;
+pub const MIIM_SUBMENU: u32 = 0x0000_0004;
+pub const MIIM_STRING: u32 = 0x0000_0040;
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct MenuItemInfoW {
+    pub cb_size: u32,
+    pub f_mask: u32,
+    pub f_type: u32,
+    pub f_state: u32,
+    pub w_id: u32,
+    pub h_sub_menu: u64,
+    pub hbmp_checked: u64,
+    pub hbmp_unchecked: u64,
+    pub dw_item_data: u64,
+    pub dw_type_data: u64,
+    pub cch: u32,
+    pub hbmp_item: u64,
+}
 
 #[derive(Debug)]
 pub enum WindowError { Status(u64), Host(io::Error) }
@@ -66,6 +98,43 @@ impl ClassRegistry {
 impl User32 {
     /// Construct a stateless façade over the current NT process. # C: O(1)
     pub const fn new() -> Self { Self }
+
+    /// Allocate a process-owned regular menu. # C: O(1) plus kernel service
+    pub fn create_menu(&self) -> Result<u64, WindowError> { invoke(NtService::WineSyscall, [WINE_CREATE_MENU, 0, 0, 0, 0, 0]) }
+
+    /// Allocate a process-owned popup menu. # C: O(1) plus kernel service
+    pub fn create_popup_menu(&self) -> Result<u64, WindowError> { invoke(NtService::WineSyscall, [WINE_CREATE_POPUP_MENU, 0, 0, 0, 0, 0]) }
+
+    /// Attach a menu to a native HWND through the canonical window owner. # C: O(N_windows) plus kernel service
+    pub fn set_menu(&self, hwnd: u64, menu: Option<u64>) -> Result<(), WindowError> { invoke(NtService::WineSyscall, [WINE_SET_MENU, hwnd, menu.unwrap_or(0), 0, 0, 0]).map(|_| ()) }
+
+    /// Release a process-owned menu and its attached submenu tree. # C: O(N_menus + N_items) plus kernel service
+    pub fn destroy_menu(&self, menu: u64) -> Result<(), WindowError> { invoke(NtService::WineSyscall, [WINE_DESTROY_MENU, menu, 0, 0, 0, 0]).map(|_| ()) }
+
+    /// Append one UTF-16 menu item using Wine's native MENUITEMINFO transaction. # C: O(N_items) plus usercopy
+    pub fn append_menu_w(&self, menu: u64, flags: u32, id: u32, text: &[u16], submenu: Option<u64>) -> Result<(), WindowError> {
+        let mut value = text.iter().copied().take_while(|unit| *unit != 0).collect::<Vec<_>>();
+        value.push(0);
+        let mut info = [0u8; MENUITEMINFO_BYTES];
+        info[0..4].copy_from_slice(&(MENUITEMINFO_BYTES as u32).to_le_bytes());
+        let mut mask = MIIM_ID | MIIM_STRING;
+        if submenu.is_some() { mask |= MIIM_SUBMENU; }
+        info[4..8].copy_from_slice(&mask.to_le_bytes());
+        info[16..20].copy_from_slice(&id.to_le_bytes());
+        info[24..32].copy_from_slice(&submenu.unwrap_or(0).to_le_bytes());
+        info[56..64].copy_from_slice(&(value.as_ptr() as u64).to_le_bytes());
+        info[64..68].copy_from_slice(&(value.len() as u32).to_le_bytes());
+        invoke(NtService::WineSyscall, [WINE_THUNKED_MENU_ITEM_INFO, menu, u32::MAX as u64, (flags | MF_BYPOSITION) as u64, MENUITEMINFO_INSERT, info.as_mut_ptr() as u64]).map(|_| ())
+    }
+
+    /// Return the canonical number of items in one menu. # C: O(N_items) plus kernel service
+    pub fn get_menu_item_count(&self, menu: u64) -> Result<usize, WindowError> { invoke(NtService::WineSyscall, [WINE_CALL_ONE_PARAM, menu, CALL_ONE_PARAM_GET_MENU_ITEM_COUNT, 0, 0, 0]).map(|value| value as usize) }
+
+    /// Query one wide menu item through the native MENUITEMINFO transaction. # C: O(N_items) plus usercopy
+    pub fn get_menu_item_info_w(&self, menu: u64, item: u32, by_position: bool, info: &mut MenuItemInfoW) -> Result<(), WindowError> {
+        info.cb_size = MENUITEMINFO_BYTES as u32;
+        invoke(NtService::WineSyscall, [WINE_THUNKED_MENU_ITEM_INFO, menu, item as u64, if by_position { MF_BYPOSITION as u64 } else { 0 }, 6, info as *mut MenuItemInfoW as u64]).map(|_| ())
+    }
 
     /// Create one window and return its native identifier. # C: O(1) plus kernel service
     pub fn create_window(&self, parent: u64, wndproc: u64) -> Result<u64, WindowError> {
@@ -222,6 +291,10 @@ mod tests {
         assert_eq!(std::mem::size_of::<NtWindowMessage>(), 32);
         assert_eq!(std::mem::align_of::<NtWindowMessage>(), 8);
         assert_eq!(std::mem::size_of::<NtWindowRect>(), 16);
+        assert_eq!(std::mem::size_of::<MenuItemInfoW>(), 80);
+        assert_eq!(std::mem::offset_of!(MenuItemInfoW, h_sub_menu), 24);
+        assert_eq!(std::mem::offset_of!(MenuItemInfoW, dw_type_data), 56);
+        assert_eq!(std::mem::offset_of!(MenuItemInfoW, hbmp_item), 72);
     }
 
     #[test]
