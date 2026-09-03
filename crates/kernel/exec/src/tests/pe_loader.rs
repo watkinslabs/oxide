@@ -361,10 +361,12 @@
         let runtime = map_nt_runtime(&as_).unwrap();
         let close = resolve_nt_runtime_export(runtime.base.as_u64(), b"NtClose").unwrap();
         let unwind = resolve_nt_runtime_export(runtime.base.as_u64(), b"RtlUnwindEx").unwrap();
+        let test_alert = resolve_nt_runtime_export(runtime.base.as_u64(), b"NtTestAlert").unwrap();
         let find = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlFindExportedRoutineByName" }).unwrap();
         assert_eq!(close, runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"NtClose" }).unwrap());
         assert_eq!(unwind, runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlUnwindEx" }).unwrap());
         assert!(find >= runtime.base.as_u64() && find < runtime.base.as_u64() + runtime.bytes as u64);
+        assert!(test_alert >= runtime.base.as_u64() && test_alert < runtime.base.as_u64() + runtime.bytes as u64);
         assert!(resolve_nt_runtime_export(runtime.base.as_u64(), b"missing_export").is_none());
     }
 

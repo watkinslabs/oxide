@@ -33,6 +33,13 @@ fn window_timer_services_decode_without_colliding_with_nt_object_timers() {
     let call = decode(540, SyscallArgs { a0: 0x44, a1: 9, ..args }).unwrap();
     assert_eq!(decode_window(call), Ok(NtWindowCall::KillTimer { hwnd: 0x44, id: 9 }));
 }
+
+#[test]
+fn test_alert_service_is_in_the_native_nt_namespace() {
+    let call = decode(541, SyscallArgs { a0: 1, a1: 2, a2: 3, a3: 4, a4: 5, a5: 6 }).unwrap();
+    assert_eq!(call.service, NtService::NtTestAlert);
+    assert_eq!(decode_entry(NtService::NtTestAlert.entry(), call.args), Some(call));
+}
     fn args() -> SyscallArgs { SyscallArgs { a0: u64::MAX, a1: 0x1122_3344_5566_7788, a2: 3, a3: 4, a4: 5, a5: 6 } }
 
     #[test]

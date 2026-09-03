@@ -236,6 +236,13 @@ fn compare_objects(cur: &sched::Task, first: u64, second: u64) -> u64 {
 /// # C: O(log N_vmas) plus usercopy
 #[cfg(target_os = "oxide-kernel")]
 pub fn dispatch(call: NtCall) -> u64 {
+    if call.service == syscall::nt::NtService::NtTestAlert {
+        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+        // The return-to-user path observes the owned queue immediately after
+        // this success, builds the APC frame, and transfers control to it.
+        return STATUS_SUCCESS;
+    }
     // Process/thread opens must precede the legacy unsupported-service guards
     // below; this adapter owns the current-process NT identity path.
     if let Some(result) = crate::nt_process_handles::dispatch(call) { return result; }
