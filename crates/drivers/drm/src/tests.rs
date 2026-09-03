@@ -79,6 +79,16 @@ fn get_plane_layout() {
 }
 
 #[test]
+fn virtgpu_get_caps_layout_matches_linux_uapi() {
+    assert_eq!(core::mem::size_of::<DrmVirtgpuGetCaps>(), 24);
+    assert_eq!(core::mem::offset_of!(DrmVirtgpuGetCaps, cap_set_id), 0);
+    assert_eq!(core::mem::offset_of!(DrmVirtgpuGetCaps, cap_set_ver), 4);
+    assert_eq!(core::mem::offset_of!(DrmVirtgpuGetCaps, addr), 8);
+    assert_eq!(core::mem::offset_of!(DrmVirtgpuGetCaps, size), 16);
+    assert_eq!(core::mem::offset_of!(DrmVirtgpuGetCaps, pad), 20);
+}
+
+#[test]
 fn id_model_1_1_1() {
     assert_eq!(crtc_id_for(0), 1);
     assert_eq!(crtc_id_for(1), 2);
