@@ -15,6 +15,7 @@ const STATUS_NO_MEMORY: u64 = 0xc000_0017;
 const STATUS_OBJECT_NAME_COLLISION: u64 = 0xc000_0035;
 const STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xc000_0034;
 const STATUS_OBJECT_TYPE_MISMATCH: u64 = 0xc000_0024;
+const UNW_FLAG_MASK: u32 = 0x7;
 
 const SERVER_REQ_CLOSE_HANDLE: u32 = 21;
 const SERVER_REQ_CREATE_EVENT: u32 = 30;
@@ -89,6 +90,8 @@ fn server_request_kind(request: u32) -> Option<ServerRequest> {
 }
 
 fn windows_time_ticks(realtime_ns: u64) -> u64 { realtime_ns.saturating_div(100) }
+
+fn valid_unwind_type(value: u32) -> bool { value & !UNW_FLAG_MASK == 0 }
 
 #[cfg(target_os = "oxide-kernel")]
 fn unix_fd_to_handle(args: u64) -> u64 {
@@ -317,6 +320,8 @@ fn write_unix_debug(args: u64) -> u64 {
 #[cfg(target_os = "oxide-kernel")]
 fn validate_builtin_unwind(args: u64) -> u64 {
     if args == 0 { return STATUS_INVALID_PARAMETER; }
+    let Ok(unwind_type) = uaccess::get_user_u32(args) else { return STATUS_INVALID_PARAMETER; };
+    if !valid_unwind_type(unwind_type) { return STATUS_INVALID_PARAMETER; }
     let Ok(dispatch) = uaccess::get_user_u64(args + 8) else { return STATUS_INVALID_PARAMETER; };
     let Ok(context) = uaccess::get_user_u64(args + 16) else { return STATUS_INVALID_PARAMETER; };
     if dispatch == 0 || context == 0 { return STATUS_INVALID_PARAMETER; }
@@ -376,6 +381,14 @@ mod tests {
     fn unix_system_time_uses_windows_100ns_units() {
         assert_eq!(windows_time_ticks(1_700_000_000_123_456_700), 17_000_000_001_234_567);
         assert_eq!(windows_time_ticks(99), 0);
+    }
+
+    #[test]
+    fn unwind_type_accepts_only_wine_virtual_unwind_flags() {
+        assert!(valid_unwind_type(0));
+        assert!(valid_unwind_type(1 | 2 | 4));
+        assert!(!valid_unwind_type(8));
+        assert!(!valid_unwind_type(u32::MAX));
     }
 
     #[test]
