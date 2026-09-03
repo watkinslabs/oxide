@@ -32,6 +32,8 @@ pub const DRM_IOCTL_DROP_MASTER:    u64 = 0x0000641f;
 // didn't negotiate VIRTIO_GPU_F_VIRGL.
 pub const DRM_IOCTL_VIRTGPU_GETPARAM: u64 = 0xc0106443; // _IOWR('d',0x43,drm_virtgpu_getparam[16])
 pub const DRM_IOCTL_VIRTGPU_GET_CAPS: u64 = 0xc0186449; // _IOWR('d',0x49,drm_virtgpu_get_caps[24])
+pub const DRM_IOCTL_VIRTGPU_EXECBUFFER: u64 = 0xc0406442; // _IOWR('d',0x42,drm_virtgpu_execbuffer[64])
+pub const DRM_IOCTL_VIRTGPU_CONTEXT_INIT: u64 = 0xc010644b; // _IOWR('d',0x4b,drm_virtgpu_context_init[16])
 
 /// `struct drm_virtgpu_get_caps` from the virtio-gpu UAPI.  `addr` points to
 /// the caller's writable capset blob; it is deliberately represented as an
@@ -45,6 +47,39 @@ pub struct DrmVirtgpuGetCaps {
     pub size: u32,
     pub pad: u32,
 }
+
+pub const VIRTGPU_EXECBUF_FENCE_FD_IN: u32 = 0x01;
+pub const VIRTGPU_EXECBUF_FENCE_FD_OUT: u32 = 0x02;
+pub const VIRTGPU_EXECBUF_RING_IDX: u32 = 0x04;
+pub const VIRTGPU_CONTEXT_PARAM_CAPSET_ID: u64 = 0x0001;
+pub const VIRTGPU_CONTEXT_PARAM_NUM_RINGS: u64 = 0x0002;
+pub const VIRTGPU_CONTEXT_PARAM_POLL_RINGS_MASK: u64 = 0x0003;
+pub const VIRTGPU_CONTEXT_PARAM_DEBUG_NAME: u64 = 0x0004;
+
+#[repr(C)]
+#[derive(Copy, Clone, Default, Debug, Eq, PartialEq)]
+pub struct DrmVirtgpuExecbuffer {
+    pub flags: u32,
+    pub size: u32,
+    pub command: u64,
+    pub bo_handles: u64,
+    pub num_bo_handles: u32,
+    pub fence_fd: i32,
+    pub ring_idx: u32,
+    pub syncobj_stride: u32,
+    pub num_in_syncobjs: u32,
+    pub num_out_syncobjs: u32,
+    pub in_syncobjs: u64,
+    pub out_syncobjs: u64,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Default, Debug, Eq, PartialEq)]
+pub struct DrmVirtgpuContextSetParam { pub param: u64, pub value: u64 }
+
+#[repr(C)]
+#[derive(Copy, Clone, Default, Debug, Eq, PartialEq)]
+pub struct DrmVirtgpuContextInit { pub num_params: u32, pub pad: u32, pub ctx_set_params: u64 }
 
 // VIRTGPU_GETPARAM param ids (the virtio-gpu driver-specific UAPI).
 pub const VIRTGPU_PARAM_3D_FEATURES:       u64 = 1;

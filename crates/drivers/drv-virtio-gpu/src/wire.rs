@@ -236,6 +236,18 @@ pub struct VirtioGpuRespCapsetInfo {
     pub padding: u32,
 }
 
+#[repr(C)]
+pub struct VirtioGpuCtxCreate { pub hdr: VirtioGpuCtrlHdr, pub nlen: u32, pub context_init: u32, pub debug_name: [u8; 64] }
+
+#[repr(C)]
+pub struct VirtioGpuCtxDestroy { pub hdr: VirtioGpuCtrlHdr }
+
+#[repr(C)]
+pub struct VirtioGpuCtxResource { pub hdr: VirtioGpuCtrlHdr, pub resource_id: u32, pub padding: u32 }
+
+#[repr(C)]
+pub struct VirtioGpuCmdSubmit { pub hdr: VirtioGpuCtrlHdr, pub size: u32, pub padding: u32 }
+
 // ============================================================
 // Driver state (probe results + handle to virtqueues)
 // ============================================================
@@ -301,6 +313,33 @@ pub fn encode_get_capset(buf: &mut [u8], id: u32, version: u32) -> usize {
     encode_hdr_only(buf, VIRTIO_GPU_CMD_GET_CAPSET, 0, 0);
     write_u32_le(buf, 24, id);
     write_u32_le(buf, 28, version);
+    32
+}
+
+/// Encode the fixed virtio context-create command and bounded debug name.
+/// # C: O(name length)
+pub fn encode_ctx_create(buf: &mut [u8], context_id: u32, context_init: u32, name: &[u8]) -> usize {
+    encode_hdr_only(buf, VIRTIO_GPU_CMD_CTX_CREATE, 0, context_id);
+    write_u32_le(buf, 24, name.len().min(64) as u32);
+    write_u32_le(buf, 28, context_init);
+    for (index, byte) in name.iter().take(64).enumerate() { buf[32 + index] = *byte; }
+    96
+}
+
+/// Encode a context resource attach command. # C: O(1)
+pub fn encode_ctx_resource(buf: &mut [u8], context_id: u32, resource_id: u32) -> usize {
+    encode_hdr_only(buf, VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE, 0, context_id);
+    write_u32_le(buf, 24, resource_id);
+    write_u32_le(buf, 28, 0);
+    32
+}
+
+/// Encode a `SUBMIT_3D` command header; the command stream is a second segment.
+/// # C: O(1)
+pub fn encode_submit_3d(buf: &mut [u8], context_id: u32, command_bytes: u32) -> usize {
+    encode_hdr_only(buf, VIRTIO_GPU_CMD_SUBMIT_3D, 0, context_id);
+    write_u32_le(buf, 24, command_bytes);
+    write_u32_le(buf, 28, 0);
     32
 }
 

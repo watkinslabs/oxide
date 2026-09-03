@@ -95,6 +95,25 @@ fn capset_discovery_wire_contract() {
 }
 
 #[test]
+fn context_and_submit_wire_contracts_have_linux_sizes() {
+    assert_eq!(core::mem::size_of::<VirtioGpuCtxCreate>(), 96);
+    assert_eq!(core::mem::size_of::<VirtioGpuCtxDestroy>(), 24);
+    assert_eq!(core::mem::size_of::<VirtioGpuCtxResource>(), 32);
+    assert_eq!(core::mem::size_of::<VirtioGpuCmdSubmit>(), 32);
+    let mut buf = [0u8; 128];
+    assert_eq!(encode_ctx_create(&mut buf, 9, 1, b"oxide"), 96);
+    assert_eq!(read_u32_le(&buf, 0), VIRTIO_GPU_CMD_CTX_CREATE);
+    assert_eq!(read_u32_le(&buf, 16), 9);
+    assert_eq!(&buf[32..37], b"oxide");
+    assert_eq!(encode_ctx_resource(&mut buf, 9, 12), 32);
+    assert_eq!(read_u32_le(&buf, 0), VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE);
+    assert_eq!(read_u32_le(&buf, 24), 12);
+    assert_eq!(encode_submit_3d(&mut buf, 9, 4096), 32);
+    assert_eq!(read_u32_le(&buf, 0), VIRTIO_GPU_CMD_SUBMIT_3D);
+    assert_eq!(read_u32_le(&buf, 24), 4096);
+}
+
+#[test]
 fn capset_info_response_is_validated_before_use() {
     let mut resp = [0u8; 40];
     write_u32_le(&mut resp, 0, VIRTIO_GPU_RESP_OK_CAPSET_INFO);
