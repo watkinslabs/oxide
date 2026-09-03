@@ -53,6 +53,7 @@ const NT_FILETIME_EPOCH_SECONDS: i64 = 11_644_473_600;
 const STATUS_NO_MORE_FILES: u64 = 0x8000_0006;
 const STATUS_INVALID_INFO_CLASS: u64 = 0xc000_0003;
 const STATUS_INFO_LENGTH_MISMATCH: u64 = 0xc000_0004;
+const STATUS_INSTANCE_NOT_AVAILABLE: u64 = 0xc000_00ab;
 
 /// Dispatch the implemented synchronous NT file operations. # C: O(path) + O(bytes)
 pub fn dispatch(call: NtFileCall) -> u64 {
@@ -84,6 +85,7 @@ pub fn dispatch(call: NtFileCall) -> u64 {
 /// # C: O(path) + O(bytes)
 pub fn dispatch_native(call: NtCall) -> Option<u64> {
     match call.service {
+        NtService::NtCreateNamedPipeFile => Some(native_create_named_pipe(call)),
         NtService::CreateFile => Some(native_create(call)),
         NtService::OpenFile => Some(native_open(call)),
         NtService::ReadFile => Some(native_io(call, false)),
@@ -93,6 +95,66 @@ pub fn dispatch_native(call: NtCall) -> Option<u64> {
         NtService::QueryDirectoryFile => Some(native_query_directory(call)),
         _ => None,
     }
+}
+
+fn native_create_named_pipe(call: NtCall) -> u64 {
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a2 == 0
+        || call.args.a1 > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    let sharing = call.args.a4;
+    let disposition = call.args.a5;
+    let Some(options) = crate::nt_dispatch::stack_argument(6) else { return STATUS_INVALID_PARAMETER; };
+    let Some(pipe_type) = crate::nt_dispatch::stack_argument(7) else { return STATUS_INVALID_PARAMETER; };
+    let Some(read_mode) = crate::nt_dispatch::stack_argument(8) else { return STATUS_INVALID_PARAMETER; };
+    let Some(completion_mode) = crate::nt_dispatch::stack_argument(9) else { return STATUS_INVALID_PARAMETER; };
+    let Some(max_instances) = crate::nt_dispatch::stack_argument(10) else { return STATUS_INVALID_PARAMETER; };
+    let Some(inbound_quota) = crate::nt_dispatch::stack_argument(11) else { return STATUS_INVALID_PARAMETER; };
+    let Some(outbound_quota) = crate::nt_dispatch::stack_argument(12) else { return STATUS_INVALID_PARAMETER; };
+    let Some(timeout_ptr) = crate::nt_dispatch::stack_argument(13) else { return STATUS_INVALID_PARAMETER; };
+    if [sharing, disposition, options, pipe_type, read_mode, completion_mode,
+        max_instances, inbound_quota, outbound_quota].iter().any(|value| *value > u32::MAX as u64) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let timeout_100ns = if timeout_ptr == 0 { 0 } else {
+        match uaccess::get_user_u64(timeout_ptr) { Ok(value) => value as i64, Err(_) => return STATUS_INVALID_PARAMETER }
+    };
+    let config = sched::nt_object::NtPipeConfig { pipe_type: pipe_type as u32,
+        read_mode: read_mode as u32, completion_mode: completion_mode as u32,
+        max_instances: max_instances as u32, inbound_quota: inbound_quota as u32,
+        outbound_quota: outbound_quota as u32, timeout_100ns, sharing: sharing as u32 };
+    if !sched::nt_object::NtPipe::validate_create(config, call.args.a1 as u32) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let Some(path) = object_path(call.args.a2) else { return STATUS_INVALID_PARAMETER; };
+    let table = cur.thread_group.nt_handles();
+    let (pipe, state) = if let Some(existing) = sched::nt_object::lookup_object(&path, sched::nt_object::NtObjectType::NamedPipe) {
+        let Some(pipe) = existing.pipe() else { return STATUS_INVALID_HANDLE; };
+        if pipe.config().sharing != config.sharing || disposition as u32 == 2 {
+            return STATUS_ACCESS_DENIED;
+        }
+        (pipe, sched::nt_object::NamedObjectState::Existing)
+    } else {
+        let object = table.new_named_pipe(config);
+        let (published, state) = sched::nt_object::publish_named_pipe(&path, object);
+        if state != sched::nt_object::NamedObjectState::Created { return STATUS_OBJECT_NAME_NOT_FOUND; }
+        let Some(pipe) = published.pipe() else { return STATUS_INVALID_HANDLE; };
+        (pipe, state)
+    };
+    if !pipe.reserve_instance() { return STATUS_INSTANCE_NOT_AVAILABLE; }
+    let handle_object = table.new_named_pipe_endpoint(pipe, sched::nt_object::NtPipeSide::Server);
+    let Some(handle) = table.insert(handle_object, call.args.a1 as u32 | SYNCHRONIZE_ACCESS) else { return STATUS_INVALID_PARAMETER; };
+    if uaccess::put_user_u32(call.args.a0, handle.raw()).is_err() {
+        let _ = table.close(handle);
+        return STATUS_INVALID_PARAMETER;
+    }
+    if call.args.a3 != 0 {
+        if uaccess::put_user_u64(call.args.a3, STATUS_SUCCESS).is_err()
+            || uaccess::put_user_u64(call.args.a3 + 8, if state == sched::nt_object::NamedObjectState::Created { 2 } else { 1 }).is_err() {
+            let _ = table.close(handle);
+            return STATUS_INVALID_PARAMETER;
+        }
+    }
+    STATUS_SUCCESS
 }
 
 fn native_create(call: NtCall) -> u64 {

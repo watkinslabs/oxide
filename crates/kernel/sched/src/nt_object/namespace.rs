@@ -38,7 +38,7 @@ fn leaf(path: &str) -> &str { path.rsplit('\\').next().unwrap_or(path) }
 
 fn seed(namespace: &mut Namespace) {
     if !namespace.objects.is_empty() { return; }
-    for path in ["\\", "\\KnownDlls", "\\BaseNamedObjects", "\\Device", "\\DosDevices", "\\Sessions", "\\Windows"] {
+    for path in ["\\", "\\KnownDlls", "\\BaseNamedObjects", "\\Device", "\\Device\\NamedPipe", "\\DosDevices", "\\??", "\\??\\pipe", "\\Sessions", "\\Windows"] {
         let id = namespace.next_id.fetch_add(1, Ordering::Relaxed);
         namespace.objects.push(NamedObject { path: path.into(), object: NtObject::new(NtObjectType::Directory, id), permanent: true });
     }
