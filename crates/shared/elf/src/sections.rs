@@ -1,6 +1,6 @@
 //! ELF64 section-table views used by loaded-image metadata owners.
 
-use crate::parser::{ElfError, ElfType, KResult, EI_MAG, ELFCLASS64, ELFDATA2LSB, EV_CURRENT};
+use crate::parser::{ElfError, ElfType, KResult, LoadSegment, EI_MAG, ELFCLASS64, ELFDATA2LSB, EV_CURRENT};
 
 pub const SHT_PROGBITS: u32 = 1;
 pub const SHT_NOBITS: u32 = 8;
@@ -14,6 +14,14 @@ pub struct SectionView<'a> {
     pub addr: u64,
     pub offset: u64,
     pub size: u64,
+    pub bytes: &'a [u8],
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct PublishedEhFrame<'a> {
+    pub image_start: u64,
+    pub image_end: u64,
+    pub address: u64,
     pub bytes: &'a [u8],
 }
 
@@ -73,6 +81,34 @@ pub fn eh_frame<'a>(file: &'a [u8]) -> KResult<Option<SectionView<'a>>> {
         }
     }
     Ok(section)
+}
+
+/// Publish `.eh_frame` only when its file and virtual ranges belong to one
+/// file-backed PT_LOAD.  `load_base` is the bias already selected by the ELF
+/// placement owner; this function does not choose or map an address.
+pub fn publish_eh_frame<'a>(file: &'a [u8], loads: &[LoadSegment], load_base: u64)
+    -> KResult<Option<PublishedEhFrame<'a>>>
+{
+    let Some(section) = eh_frame(file)? else { return Ok(None); };
+    let section_end = section.addr.checked_add(section.size).ok_or(ElfError::Einval)?;
+    let mut image_start = u64::MAX;
+    let mut image_end = 0;
+    for load in loads {
+        let load_vend = load.vaddr.checked_add(load.mem_sz).ok_or(ElfError::Einval)?;
+        let load_fend = load.file_off.checked_add(load.file_sz).ok_or(ElfError::Einval)?;
+        image_start = image_start.min(load.vaddr);
+        image_end = image_end.max(load_vend);
+        let in_virtual = section.addr >= load.vaddr && section_end <= load_vend;
+        let in_file = section.offset >= load.file_off && section.offset.checked_add(section.size)
+            .ok_or(ElfError::Einval)? <= load_fend;
+        if in_virtual && in_file {
+            let address = load_base.checked_add(section.addr).ok_or(ElfError::Einval)?;
+            return Ok(Some(PublishedEhFrame { image_start: load_base.checked_add(image_start)
+                .ok_or(ElfError::Einval)?, image_end: load_base.checked_add(image_end)
+                .ok_or(ElfError::Einval)?, address, bytes: section.bytes }));
+        }
+    }
+    Err(ElfError::Einval)
 }
 
 fn section_bytes<'a>(file: &'a [u8], shoff: usize, entsize: usize, index: usize)
@@ -144,5 +180,24 @@ mod tests {
         let mut f = fixture(); f[0x180 + 64 * 3 + 24..0x180 + 64 * 3 + 32]
             .copy_from_slice(&0x400u64.to_le_bytes());
         assert_eq!(eh_frame(&f), Err(ElfError::Einval));
+    }
+
+    #[test]
+    fn publishes_only_a_file_backed_loaded_range() {
+        let file = fixture();
+        let loads = [LoadSegment { flags: crate::parser::PFlags::R, file_off: 0x100,
+            file_sz: 0x30, vaddr: 0x3ff0, mem_sz: 0x30, align: 0x10 }];
+        let published = publish_eh_frame(&file, &loads, 0x1000).unwrap().unwrap();
+        assert_eq!(published.address, 0x5000);
+        assert_eq!(published.image_start, 0x4ff0);
+        assert_eq!(published.image_end, 0x5020);
+    }
+
+    #[test]
+    fn rejects_eh_frame_outside_loaded_file_range() {
+        let file = fixture();
+        let loads = [LoadSegment { flags: crate::parser::PFlags::R, file_off: 0x100,
+            file_sz: 4, vaddr: 0x3ff0, mem_sz: 0x30, align: 0x10 }];
+        assert_eq!(publish_eh_frame(&file, &loads, 0x1000), Err(ElfError::Einval));
     }
 }
