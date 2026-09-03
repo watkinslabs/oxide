@@ -114,6 +114,14 @@ impl WindowManager {
     pub fn class_name_by_atom(&self, atom: u16) -> Option<&[u16]> {
         self.classes.iter().find(|class| class.atom == atom).map(|class| class.name.as_slice())
     }
+    /// Return the canonical class tuple for a name. # C: O(N_classes)
+    pub fn class_info(&self, name: &[u16]) -> Option<(u16, u64, &[u16])> {
+        self.classes.iter().find(|class| same_name(&class.name, name)).map(|class| (class.atom, class.wndproc, class.name.as_slice()))
+    }
+    /// Return the canonical class tuple for an atom. # C: O(N_classes)
+    pub fn class_info_by_atom(&self, atom: u16) -> Option<(u16, u64, &[u16])> {
+        self.classes.iter().find(|class| class.atom == atom).map(|class| (class.atom, class.wndproc, class.name.as_slice()))
+    }
     pub fn create(&mut self, owner_tid: u64, parent: Option<WindowId>, wndproc: u64) -> Result<WindowId, WindowError> {
         if parent.is_some_and(|parent| self.get(parent).is_none()) { return Err(WindowError::InvalidParent); }
         let id = WindowId(self.next);
@@ -437,6 +445,8 @@ mod tests {
         assert_eq!(atom, 1);
         assert_eq!(manager.class_wndproc(&[b'n' as u16, b'O' as u16, b'T' as u16]), Some(0x1400));
         assert_eq!(manager.class_wndproc_by_atom(atom), Some(0x1400));
+        assert_eq!(manager.class_info(&[b'n' as u16, b'O' as u16, b'T' as u16]).map(|value| (value.0, value.1)), Some((atom, 0x1400)));
+        assert_eq!(manager.class_info_by_atom(atom).map(|value| value.2), Some(&[b'N' as u16, b'o' as u16, b't' as u16][..]));
         assert_eq!(manager.class_wndproc_by_atom(atom + 1), None);
         assert_eq!(manager.register_class(&[b'n' as u16, b'o' as u16, b't' as u16], 0x1500), Err(WindowError::InvalidParent));
     }

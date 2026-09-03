@@ -29,6 +29,7 @@ const WINE_REGISTER_CLASS_EX: u64 = 0x14eb;
 const WINE_DISPATCH_MESSAGE: u64 = 0x138b;
 const WINE_MESSAGE_CALL: u64 = 0x14b5;
 const WINE_GET_CLASS_NAME: u64 = 0x13d9;
+const WINE_GET_CLASS_INFO_EX: u64 = 0x13d8;
 const WINE_UNREGISTER_CLASS: u64 = 0x15df;
 // Wine's NtUserCallWindowProc selector, passed as the NtUserMessageCall type.
 const WINE_CALL_WINDOW_PROC: u64 = 0x02ab;
@@ -123,6 +124,7 @@ pub fn dispatch(call: NtCall) -> u64 {
             crate::nt_rtl::begin_wndproc_callback(hwnd, message, wparam, lparam, wndproc)
         }
         WINE_GET_CLASS_NAME => get_class_name(&args),
+        WINE_GET_CLASS_INFO_EX => get_class_info_ex(&args),
         WINE_UNREGISTER_CLASS => {
             let Some(name) = read_unicode_string(args[0]) else { return 0; };
             win_bool(crate::nt_window::unregister_class_for_current(&name).then_some(STATUS_SUCCESS).unwrap_or(STATUS_INVALID_PARAMETER))
@@ -195,6 +197,24 @@ fn get_class_name(args: &[u64; 17]) -> u64 {
     if uaccess::copy_to_user(buffer.saturating_add(copied as u64 * 2), &[0, 0]).is_err() { return STATUS_INVALID_PARAMETER; }
     if uaccess::copy_to_user(args[2], &(copied as u16 * 2).to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
     copied as u64
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn get_class_info_ex(args: &[u64; 17]) -> u64 {
+    let info = if args[1] <= u16::MAX as u64 {
+        crate::nt_window::class_info_by_atom_for_current(args[1] as u16)
+    } else {
+        let Some(name) = read_unicode_string(args[1]) else { return 0; };
+        crate::nt_window::class_info_for_current(&name)
+    };
+    let Some((_, wndproc, _)) = info else { return 0; };
+    if args[2] == 0 { return 0; }
+    let mut bytes = [0u8; 80];
+    bytes[0..4].copy_from_slice(&80u32.to_le_bytes());
+    bytes[8..16].copy_from_slice(&wndproc.to_le_bytes());
+    bytes[32..40].copy_from_slice(&args[0].to_le_bytes());
+    if uaccess::copy_to_user(args[2], &bytes).is_err() { return 0; }
+    1
 }
 
 /// Dispatch the raw win32u syscall used by the real Wine PE module. Unlike

@@ -373,6 +373,34 @@ pub(crate) fn window_class_name_for_current(hwnd: u64) -> Option<Vec<u16>> {
     entries[index].state.class_name(window).map(|name| name.to_vec())
 }
 
+/// Resolve canonical class metadata for Wine's class-information query.
+/// # C: O(N_process_gui_states + N_classes)
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn class_info_for_current(name: &[u16]) -> Option<(u16, u64, Vec<u16>)> {
+    let cur = sched::live::current()?;
+    if !cur.is_nt_personality() { return None; }
+    let group = Arc::clone(&cur.thread_group);
+    let mut entries = GUI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))?;
+    let (atom, wndproc, class_name) = entries[index].state.class_info(name)?;
+    Some((atom, wndproc, class_name.to_vec()))
+}
+
+/// Resolve canonical class metadata for an integer-resource class atom.
+/// # C: O(N_process_gui_states + N_classes)
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn class_info_by_atom_for_current(atom: u16) -> Option<(u16, u64, Vec<u16>)> {
+    let cur = sched::live::current()?;
+    if !cur.is_nt_personality() { return None; }
+    let group = Arc::clone(&cur.thread_group);
+    let mut entries = GUI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))?;
+    let (atom, wndproc, class_name) = entries[index].state.class_info_by_atom(atom)?;
+    Some((atom, wndproc, class_name.to_vec()))
+}
+
 /// Replace text while keeping the mutation inside the canonical window owner.
 /// # C: O(N_process_gui_states + N_windows + N_text)
 #[cfg(target_os = "oxide-kernel")]
