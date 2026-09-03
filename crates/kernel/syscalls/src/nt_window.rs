@@ -415,6 +415,19 @@ pub(crate) fn set_window_text_for_current(hwnd: u64, text: &[u16]) -> Result<(),
     entries[index].state.set_text(window, text).map_err(|_| ())
 }
 
+/// Return the canonical UTF-16 text length for one HWND. # C: O(N_process_gui_states + N_windows)
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn window_text_length_for_current(hwnd: u64) -> Option<u64> {
+    let cur = sched::live::current()?;
+    if !cur.is_nt_personality() || hwnd > u32::MAX as u64 { return None; }
+    let window = ipc::win32_window::WindowId::from_raw(hwnd as u32)?;
+    let group = Arc::clone(&cur.thread_group);
+    let mut entries = GUI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))?;
+    Some(entries[index].state.text(window)?.len() as u64)
+}
+
 /// Resolve the WndProc stored in the current process's canonical HWND state.
 /// # C: O(N_process_gui_states + N_windows)
 #[cfg(target_os = "oxide-kernel")]
