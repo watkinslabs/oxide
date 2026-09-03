@@ -57,7 +57,8 @@ fn fls_free(index: u32) -> u64 {
 fn fls_get(index: u32, output: u64) -> u64 {
     if !valid_index(index) || output == 0 || !allocated(index) { return STATUS_INVALID_PARAMETER; }
     let Some(slots) = current_slots(false) else { return STATUS_INVALID_PARAMETER; };
-    let value = uaccess::get_user_u64(slots + index as u64 * 8).unwrap_or(0);
+    let Some(address) = slots.checked_add(index as u64 * 8) else { return STATUS_INVALID_PARAMETER; };
+    let Ok(value) = uaccess::get_user_u64(address) else { return STATUS_INVALID_PARAMETER; };
     if uaccess::put_user_u64(output, value).is_err() { return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
 }
@@ -99,7 +100,7 @@ fn current_slots(create: bool) -> Option<u64> {
     let teb = task.nt_teb();
     if teb == 0 { return None; }
     let address = teb.checked_add(TEB_FLS_SLOTS_OFFSET)?;
-    let slots = uaccess::get_user_u64(address).ok().unwrap_or(0);
+    let Ok(slots) = uaccess::get_user_u64(address) else { return None; };
     if slots != 0 || !create { return (slots != 0).then_some(slots); }
     let call = NtCall { service: NtService::AllocateHeap, args: SyscallArgs { a0: 1, a1: 0, a2: FLS_SLOTS_BYTES, a3: 0, a4: 0, a5: 0 } };
     let slots = crate::nt_heap::dispatch(call).filter(|value| *value != 0)?;
