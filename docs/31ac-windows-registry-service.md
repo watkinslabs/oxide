@@ -9,7 +9,7 @@ FROZEN 2026-08-31. Dep:`01`,`03`,`29a`,`31ab`,`52`,`53`. Provides: one userspace
 - The owner exposes opaque 64-bit process-local key handles; predefined root handles cannot be closed and closed allocated handles become invalid.
 - Key and value lookup is case-insensitive and retains first-created display spelling.
 - Values retain Windows type tags and opaque byte payloads; UTF-16 conversion belongs to the Win32/advapi32 layer.
-- Persistence uses a versioned bounded file format and atomic temporary-file replacement. A malformed file is rejected rather than treated as an empty registry.
+- Persistence uses a versioned bounded file format, synced temporary-file replacement, and a synced containing directory. A malformed file is rejected rather than treated as an empty registry.
 - A runtime session opens one per-user database, marks mutations dirty, and flushes that same canonical owner explicitly; read-only sessions perform no write.
 - The typed service interface routes root and relative open/create, set, query, enumerate-keys, enumerate-values, and close through that session; responses carry the same opaque 64-bit handle, bounded result vectors, or an explicit error.
 - The userspace `Advapi` adapter exposes the initial `RegOpenKeyExW`, `RegCreateKeyExW`, `RegQueryValueExW`, `RegSetValueExW`, `RegEnumKeyExW`, `RegEnumValueW`, and `RegCloseKey` behavior over the client; it preserves query-size probes, short-buffer `ERROR_MORE_DATA`, default values, no-more-item results, and reserved-argument validation.

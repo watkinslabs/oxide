@@ -1,7 +1,7 @@
 //! One userspace owner for the Windows registry namespace.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
+use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use syscall::registry_wire;
@@ -395,7 +395,15 @@ impl Registry {
             put_bytes(&mut bytes, key.path.as_bytes())?; put_u32(&mut bytes, key.values.len() as u32);
             for (display, value) in key.values.values() { put_bytes(&mut bytes, display.as_bytes())?; put_u32(&mut bytes, value.kind as u32); put_bytes(&mut bytes, &value.data)?; }
         }
-        let temp = path.with_extension("oxide-registry.tmp"); fs::write(&temp, bytes)?; fs::rename(temp, path)?; Ok(())
+        let temp = path.with_extension("oxide-registry.tmp");
+        let mut file = File::create(&temp)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temp, path)?;
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        File::open(parent)?.sync_all()?;
+        Ok(())
     }
 
     /// Load a database, retaining predefined roots and rejecting malformed input. # C: O(file bytes)
