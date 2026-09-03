@@ -360,4 +360,21 @@ mod tests {
         assert!(!server.set_modes(2, 0));
         assert!(!server.set_modes(0, 2));
     }
+
+    #[test]
+    fn final_server_handle_releases_reserved_instance() {
+        let table = crate::nt_object::NtHandleTable::new();
+        let pipe = Arc::new(NtPipe::new(config(1)));
+        assert!(pipe.reserve_instance());
+        let object = table.new_named_pipe_endpoint(Arc::clone(&pipe), NtPipeSide::Server);
+        let handle = table.insert(Arc::clone(&object), 1).unwrap();
+        let duplicate = table.duplicate(handle, 1).unwrap();
+        drop(object);
+
+        assert_eq!(pipe.instances(), 1);
+        assert!(table.close(handle));
+        assert_eq!(pipe.instances(), 1);
+        assert!(table.close(duplicate));
+        assert_eq!(pipe.instances(), 0);
+    }
 }
