@@ -57,6 +57,11 @@ impl Client {
         self.execute(Request::Set { key, name: utf16_text(name).map_err(invalid_input)?, value })
     }
 
+    /// Delete a value whose name is supplied in Windows UTF-16. # C: O(name length)
+    pub fn delete_utf16(&mut self, key: KeyHandle, name: &[u16]) -> io::Result<Response> {
+        self.execute(Request::DeleteValue { key, name: utf16_text(name).map_err(invalid_input)? })
+    }
+
     /// Enumerate child keys through a Windows UTF-16-compatible session. # C: O(response bytes)
     pub fn enum_keys(&mut self, key: KeyHandle) -> io::Result<Response> { self.execute(Request::EnumKeys { key }) }
 
@@ -86,6 +91,7 @@ fn encode_request(request: &Request) -> Result<Vec<u8>, Error> {
         Request::CreateRelative { key, subkey } => { out.push(9); put_u64(&mut out, key.raw()); put_text(&mut out, subkey)?; }
         Request::Rename { key, name } => { out.push(10); put_u64(&mut out, key.raw()); put_text(&mut out, name)?; }
         Request::Set { key, name, value } => { out.push(3); put_u64(&mut out, key.raw()); put_text(&mut out, name)?; put_u32(&mut out, value.kind as u32); put_bytes(&mut out, &value.data)?; }
+        Request::DeleteValue { key, name } => { out.push(registry_wire::DELETE_VALUE); put_u64(&mut out, key.raw()); put_text(&mut out, name)?; }
         Request::Query { key, name } => { out.push(4); put_u64(&mut out, key.raw()); put_text(&mut out, name)?; }
         Request::Close { key } => { out.push(5); put_u64(&mut out, key.raw()); }
         Request::EnumKeys { key } => { out.push(6); put_u64(&mut out, key.raw()); }
