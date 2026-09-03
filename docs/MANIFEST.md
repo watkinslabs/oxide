@@ -257,6 +257,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `31fn-windows-native-input-routing.md` | FROZEN | 2026-09-01 | `28`,`31t`,`31u`,`31fl`,`52`,`53` |
 | `31fo-windows-nt-relay-target.md` | FROZEN | 2026-09-02 | `01`,`02`,`31h`,`31q`,`52`,`53` |
 | `31fp-windows-nt-unix-unwind.md` | FROZEN | 2026-09-02 | `01`,`02`,`31h`,`31v`,`52`,`53` |
+| `31fq-windows-nt-dwarf-unwind.md` | FROZEN | 2026-09-03 | `31fp`,`31v`,`52`,`53` |
 
 ## Deleted
 

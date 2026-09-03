@@ -1,0 +1,179 @@
+//! Bounded DWARF call-frame record parsing for builtin ELF modules.
+//!
+//! Wine's `unwind_builtin_dll` locates an FDE in `.eh_frame` and interprets
+//! its CIE/FDE instructions.  This module owns the file-format boundary only:
+//! it never follows a target address or reads process memory.  The runtime
+//! owner can therefore use it for a fault-aware lookup before applying CFA
+//! rules to a register context.
+
+use alloc::vec::Vec;
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum DwarfError {
+    Truncated,
+    Overflow,
+    UnsupportedEncoding,
+    InvalidRecord,
+}
+
+pub type Result<T> = core::result::Result<T, DwarfError>;
+
+pub const DW_EH_PE_ABSPTR: u8 = 0x00;
+pub const DW_EH_PE_ULEB128: u8 = 0x01;
+pub const DW_EH_PE_UDATA2: u8 = 0x02;
+pub const DW_EH_PE_UDATA4: u8 = 0x03;
+pub const DW_EH_PE_UDATA8: u8 = 0x04;
+pub const DW_EH_PE_SLEB128: u8 = 0x09;
+pub const DW_EH_PE_SDATA2: u8 = 0x0a;
+pub const DW_EH_PE_SDATA4: u8 = 0x0b;
+pub const DW_EH_PE_SDATA8: u8 = 0x0c;
+pub const DW_EH_PE_PCREL: u8 = 0x10;
+pub const DW_EH_PE_DATAREL: u8 = 0x30;
+pub const DW_EH_PE_OMIT: u8 = 0xff;
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct EhBases {
+    pub text: u64,
+    pub data: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CallFrameRecord {
+    pub offset: usize,
+    pub end: usize,
+    pub cie_offset: Option<usize>,
+    pub code_start: Option<u64>,
+    pub code_length: Option<u64>,
+    pub body: Vec<u8>,
+}
+
+/// Decode one bounded ULEB128 value.
+pub fn uleb128(input: &[u8]) -> Result<(u64, usize)> {
+    let mut value = 0u64;
+    for (index, &byte) in input.iter().enumerate() {
+        if index >= 10 { return Err(DwarfError::Overflow); }
+        let shift = index * 7;
+        let bits = (byte & 0x7f) as u64;
+        if shift == 63 && bits > 1 { return Err(DwarfError::Overflow); }
+        value |= bits.checked_shl(shift as u32).ok_or(DwarfError::Overflow)?;
+        if byte & 0x80 == 0 { return Ok((value, index + 1)); }
+        if index == 9 { return Err(DwarfError::Overflow); }
+    }
+    Err(DwarfError::Truncated)
+}
+
+/// Decode one bounded SLEB128 value.
+pub fn sleb128(input: &[u8]) -> Result<(i64, usize)> {
+    let (unsigned, used) = uleb128(input)?;
+    let last = input[used - 1];
+    if used == 10 && unsigned > 0x7fff_ffff_ffff_ffff && last & 0x40 == 0 {
+        return Err(DwarfError::Overflow);
+    }
+    let shift = (used * 7).min(64);
+    let value = if shift < 64 && last & 0x40 != 0 {
+        (unsigned | (!0u64 << shift)) as i64
+    } else { unsigned as i64 };
+    Ok((value, used))
+}
+
+/// Decode a DW_EH_PE pointer without dereferencing indirect encodings.
+pub fn encoded_pointer(input: &[u8], encoding: u8, address: u64, bases: EhBases)
+    -> Result<(u64, usize)>
+{
+    if encoding == DW_EH_PE_OMIT { return Err(DwarfError::UnsupportedEncoding); }
+    if encoding & 0x80 != 0 { return Err(DwarfError::UnsupportedEncoding); }
+    let (value, used) = match encoding & 0x0f {
+        DW_EH_PE_ABSPTR => (read_u64(input)? as i128, 8),
+        DW_EH_PE_ULEB128 => { let (v, n) = uleb128(input)?; (v as i128, n) }
+        DW_EH_PE_UDATA2 => (read_u16(input)? as i128, 2),
+        DW_EH_PE_UDATA4 => (read_u32(input)? as i128, 4),
+        DW_EH_PE_UDATA8 => (read_u64(input)? as i128, 8),
+        DW_EH_PE_SLEB128 => { let (v, n) = sleb128(input)?; (v as i128, n) }
+        DW_EH_PE_SDATA2 => (read_u16(input)? as i16 as i128, 2),
+        DW_EH_PE_SDATA4 => (read_u32(input)? as i32 as i128, 4),
+        DW_EH_PE_SDATA8 => (read_u64(input)? as i64 as i128, 8),
+        _ => return Err(DwarfError::UnsupportedEncoding),
+    };
+    let base = match encoding & 0x70 {
+        0x00 => 0,
+        DW_EH_PE_PCREL => address,
+        DW_EH_PE_DATAREL => bases.data,
+        _ => return Err(DwarfError::UnsupportedEncoding),
+    };
+    let result = (base as i128).checked_add(value).ok_or(DwarfError::Overflow)?;
+    if !(0..=u64::MAX as i128).contains(&result) { return Err(DwarfError::Overflow); }
+    Ok((result as u64, used))
+}
+
+/// Walk `.eh_frame` records and return their bounded locations.
+pub fn records(section: &[u8]) -> Result<Vec<CallFrameRecord>> {
+    let mut result = Vec::new();
+    let mut offset = 0;
+    while offset < section.len() {
+        let length = read_u32(&section[offset..])? as usize;
+        if length == 0 { break; }
+        let end = offset.checked_add(4).and_then(|v| v.checked_add(length))
+            .ok_or(DwarfError::Overflow)?;
+        if end > section.len() || length < 4 { return Err(DwarfError::InvalidRecord); }
+        let id = read_u32(&section[offset + 4..])?;
+        let cie_offset = if id == 0 {
+            None
+        } else {
+            let cie = (offset + 4).checked_sub(id as usize)
+                .ok_or(DwarfError::InvalidRecord)?;
+            Some(cie)
+        };
+        result.push(CallFrameRecord {
+            offset, end, cie_offset, code_start: None, code_length: None,
+            body: section[offset + 8..end].to_vec(),
+        });
+        offset = end;
+    }
+    Ok(result)
+}
+
+fn read_u16(input: &[u8]) -> Result<u16> {
+    let bytes = input.get(..2).ok_or(DwarfError::Truncated)?;
+    Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
+}
+fn read_u32(input: &[u8]) -> Result<u32> {
+    let bytes = input.get(..4).ok_or(DwarfError::Truncated)?;
+    Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+fn read_u64(input: &[u8]) -> Result<u64> {
+    let bytes = input.get(..8).ok_or(DwarfError::Truncated)?;
+    Ok(u64::from_le_bytes(bytes.try_into().map_err(|_| DwarfError::Truncated)?))
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+    use super::*;
+
+    #[test]
+    fn decodes_signed_and_unsigned_leb_values() {
+        assert_eq!(uleb128(&[0xe5, 0x8e, 0x26]), Ok((624485, 3)));
+        assert_eq!(sleb128(&[0x9b, 0xf1, 0x59]), Ok((-624485, 3)));
+    }
+
+    #[test]
+    fn rejects_unterminated_or_overlong_leb() {
+        assert_eq!(uleb128(&[0x80]), Err(DwarfError::Truncated));
+        assert_eq!(uleb128(&[0x80; 10]), Err(DwarfError::Overflow));
+    }
+
+    #[test]
+    fn decodes_pcrel_pointer_without_dereference() {
+        assert_eq!(encoded_pointer(&[0xfc, 0xff, 0xff, 0xff], DW_EH_PE_PCREL | DW_EH_PE_SDATA4,
+            0x1000, EhBases { text: 0, data: 0 }), Ok((0xffc, 4)));
+    }
+
+    #[test]
+    fn walks_cie_and_fde_records() {
+        let section = [4, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 4, 0, 0, 0, 1, 2, 3, 4];
+        let parsed = records(&section).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[1].cie_offset, Some(8));
+        assert_eq!(parsed[1].body, vec![1, 2, 3, 4]);
+    }
+}
