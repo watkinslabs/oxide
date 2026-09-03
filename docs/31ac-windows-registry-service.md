@@ -15,6 +15,9 @@ FROZEN 2026-08-31. Dep:`01`,`03`,`29a`,`31ab`,`52`,`53`. Provides: one userspace
 - Native NT key objects retain the service handle in the scheduler object; the
   service `CLOSE` is sent only when the final duplicated NT handle is removed,
   matching Wine's reference-counted server object lifetime.
+- The supported `NtNotifyChangeKey` value-mutation watch is owned by the key
+  object, issuing TID, and IOSB; matching cancellation and final-object close
+  complete the event and IOSB before removing the watch.
 - The userspace `Advapi` adapter exposes the initial `RegOpenKeyExW`, `RegCreateKeyExW`, `RegQueryValueExW`, `RegSetValueExW`, `RegEnumKeyExW`, `RegEnumValueW`, and `RegCloseKey` behavior over the client; it preserves query-size probes, short-buffer `ERROR_MORE_DATA`, default values, no-more-item results, and reserved-argument validation.
 - `registryd` exposes that interface over a bounded length-prefixed Unix stream and flushes the same store after each client connection; framing errors never become registry success.
 - The native Notepad smoke starts one `registryd` instance for the runtime

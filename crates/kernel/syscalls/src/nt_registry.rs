@@ -27,6 +27,8 @@ const MAX_REGISTRY_VALUE: usize = 1 << 24;
 const REGISTRY_SOCKET: &str = "/run/oxide/registry.sock";
 const STATUS_PENDING: u64 = 0x0000_0103;
 const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
+const STATUS_CANCELLED: u64 = 0xc000_0120;
+const STATUS_HANDLES_CLOSED: u64 = 0xc000_0117;
 const KEY_NOTIFY: u32 = 0x0010;
 const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
 const KEY_QUERY_VALUE: u32 = 0x0001;
@@ -34,7 +36,7 @@ const KEY_SET_VALUE: u32 = 0x0002;
 const KEY_ENUMERATE_SUB_KEYS: u32 = 0x0008;
 const DELETE_ACCESS: u32 = 0x0001_0000;
 
-struct RegistryWatch { key: u64, filter: u64, event: Arc<sched::nt_object::NtEvent>, io_status: u64 }
+struct RegistryWatch { key: u64, owner_tid: u32, filter: u64, event: Arc<sched::nt_object::NtEvent>, io_status: u64 }
 static REGISTRY_WATCHES: Spinlock<Vec<RegistryWatch>, RegistryWatchLock> = Spinlock::new(Vec::new());
 
 #[derive(Debug)]
@@ -89,8 +91,38 @@ fn notify_change_key(call: NtCall) -> u64 {
     let Some(event) = event_object.event() else { return STATUS_INVALID_PARAMETER; };
     let mut watches = REGISTRY_WATCHES.lock();
     watches.retain(|watch| !(watch.key == key_object.id() && watch.io_status == call.args.a4));
-    watches.push(RegistryWatch { key: key_object.id(), filter: call.args.a5, event, io_status: call.args.a4 });
+    watches.push(RegistryWatch { key: key_object.id(), owner_tid: current.tid, filter: call.args.a5, event, io_status: call.args.a4 });
     STATUS_PENDING
+}
+
+/// Cancel pending notifications for one native key object and issuing thread.
+/// # C: O(N_watches)
+pub fn cancel(key: u64, owner_tid: u32, target_io_status: Option<u64>) -> bool {
+    finish_watches(key, Some(owner_tid), target_io_status, STATUS_CANCELLED)
+}
+
+/// Complete notifications before the final NT key object reference is closed.
+/// # C: O(N_watches)
+pub fn close_watches(key: u64) { let _ = finish_watches(key, None, None, STATUS_HANDLES_CLOSED); }
+
+fn finish_watches(key: u64, owner_tid: Option<u32>, target_io_status: Option<u64>, status: u64) -> bool {
+    let mut watches = REGISTRY_WATCHES.lock();
+    let mut finished = false;
+    let mut index = 0;
+    while index < watches.len() {
+        let watch = &watches[index];
+        if watch.key != key || owner_tid.is_some_and(|tid| watch.owner_tid != tid)
+            || target_io_status.is_some_and(|target| watch.io_status != target) {
+            index += 1;
+            continue;
+        }
+        let watch = watches.remove(index);
+        let _ = uaccess::put_user_u64(watch.io_status, status);
+        let _ = uaccess::put_user_u64(watch.io_status.saturating_add(8), 0);
+        watch.event.set();
+        finished = true;
+    }
+    finished
 }
 
 fn notify_registry_key(key: u64) {

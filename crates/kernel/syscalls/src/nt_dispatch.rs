@@ -945,7 +945,7 @@ pub fn dispatch(call: NtCall) -> u64 {
                 crate::nt_directory_notify::close(handle);
                 let key = table.get(native, 0).filter(|object| object.kind() == sched::nt_object::NtObjectType::Key).map(|object| object.id());
                 match table.close_with_last(native) {
-                    Some(true) => { if let Some(key) = key { crate::nt_registry::close_remote(key); } STATUS_SUCCESS }
+                    Some(true) => { if let Some(key) = key { crate::nt_registry::close_watches(key); crate::nt_registry::close_remote(key); } STATUS_SUCCESS }
                     Some(false) => STATUS_SUCCESS,
                     None => STATUS_INVALID_HANDLE,
                 }

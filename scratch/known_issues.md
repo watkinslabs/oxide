@@ -503,9 +503,11 @@ an NT event. Watch records are owned by the directory handle and issuing TID,
 handle close completes them with `STATUS_HANDLES_CLOSED`. Subtree and the
 remaining notify filters, plus APC/completion-port delivery for these watches,
 remain explicit work.
-The graph then reaches `ntdll.dll!NtNotifyChangeKey`; registry notification
-remains an explicit `STATUS_NOT_IMPLEMENTED` boundary until the registry
-service has an NT-owned async watch protocol.
+The graph then reaches `ntdll.dll!NtNotifyChangeKey`; the supported
+non-subtree `REG_NOTIFY_CHANGE_LAST_SET` watch is now owned by the native key
+object and issuing TID/IOSB, with cancellation and final-handle teardown
+completion. APC delivery, subtree traversal, and the remaining filters remain
+explicit work until their owners exist.
 `NtOpenEvent` is now implemented through the canonical named-event namespace;
 the earlier unsupported-boundary note is superseded by the 2026-09-02 update.
 `NtQueryAttributesFile` is implemented through the canonical VFS resolver and
