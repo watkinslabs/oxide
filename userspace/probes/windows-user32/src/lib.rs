@@ -13,6 +13,7 @@ pub const VK_BACK: u16 = 0x08;
 pub const VK_TAB: u16 = 0x09;
 pub const VK_RETURN: u16 = 0x0d;
 pub const VK_SPACE: u16 = 0x20;
+const WINE_DISPATCH_MESSAGE: u64 = 0x138b;
 
 #[derive(Debug)]
 pub enum WindowError { Status(u64), Host(io::Error) }
@@ -115,6 +116,14 @@ impl User32 {
     pub fn get_message(&self, hwnd: u64, first: u32, last: u32) -> Result<NtWindowMessage, WindowError> {
         let mut message = NtWindowMessage { hwnd: 0, message: 0, padding: 0, wparam: 0, lparam: 0 };
         invoke(NtService::GetMessage, [(&mut message as *mut NtWindowMessage) as u64, hwnd, first as u64, last as u64, 0, 0]).map(|_| message)
+    }
+
+    /// Dispatch one message through its canonical native window procedure. # C: O(1) plus one callback transition
+    pub fn dispatch_message(&self, message: &NtWindowMessage) -> Result<i64, WindowError> {
+        let mut args = [0u64; 17];
+        args[0] = message as *const NtWindowMessage as u64;
+        let result = invoke(NtService::WineSyscall, [WINE_DISPATCH_MESSAGE, args.as_ptr() as u64, 0, 0, 0, 0])?;
+        Ok(result as i64)
     }
 
     /// Invoke the native default window procedure. # C: O(1) plus kernel service
