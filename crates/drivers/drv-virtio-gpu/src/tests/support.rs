@@ -1,4 +1,5 @@
 use super::super::*;
+use alloc::vec::Vec;
 use crate::device::DeviceKey;
 use core::sync::atomic::{AtomicU32, AtomicU64};
 use pci::Bdf;
@@ -35,6 +36,6 @@ pub(super) fn test_device(device_key: DeviceKey, bdf: Bdf) -> VirtioGpuDev {
         edid: None,
         resource_id_alloc: AtomicU32::new(1),
         blob_uuid_alloc: AtomicU64::new(1),
-        capset_count: 0,
+        capsets: Vec::new(),
     }
 }

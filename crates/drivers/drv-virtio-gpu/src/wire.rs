@@ -229,8 +229,8 @@ pub struct VirtioGpuGetCapset {
 pub struct VirtioGpuRespCapsetInfo {
     pub hdr: VirtioGpuCtrlHdr,
     pub capset_id: u32,
-    pub capset_version: u32,
-    pub capset_size: u32,
+    pub capset_max_version: u32,
+    pub capset_max_size: u32,
     pub padding: u32,
 }
 
@@ -319,8 +319,8 @@ pub fn parse_capset_info(resp: &[u8]) -> KResult<VirtioGpuRespCapsetInfo> {
             padding: read_u32_le(resp, 20),
         },
         capset_id: read_u32_le(resp, 24),
-        capset_version: read_u32_le(resp, 28),
-        capset_size: read_u32_le(resp, 32),
+        capset_max_version: read_u32_le(resp, 28),
+        capset_max_size: read_u32_le(resp, 32),
         padding: read_u32_le(resp, 36),
     })
 }

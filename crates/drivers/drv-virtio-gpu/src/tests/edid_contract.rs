@@ -77,6 +77,7 @@ fn driver_with(edid: Option<Vec<u8>>) -> VirtioGpuDrm {
         bdf: Bdf { segment: 0, bus: 0, device: 0, function: 0 },
         unique: drm_unique_from_bdf(Bdf { segment: 0, bus: 0, device: 0, function: 0 }),
         edid,
+        capsets: Vec::new(),
     }
 }
 

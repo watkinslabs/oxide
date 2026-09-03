@@ -1,4 +1,5 @@
 use super::super::*;
+use alloc::vec::Vec;
 use super::support::{key, test_ctrlq, test_device, TEST_LOCK};
 use core::sync::atomic::{AtomicU32, AtomicU64};
 use pci::Bdf;
@@ -32,7 +33,7 @@ fn install_and_lookup_roundtrip() {
         edid: None,
         resource_id_alloc: AtomicU32::new(1),
         blob_uuid_alloc: AtomicU64::new(1),
-        capset_count: 0,
+            capsets: Vec::new(),
     }).unwrap();
     install(VirtioGpuDev {
         device_key: key(SECOND_DEVICE_KEY),
@@ -49,7 +50,7 @@ fn install_and_lookup_roundtrip() {
         edid: None,
         resource_id_alloc: AtomicU32::new(1),
         blob_uuid_alloc: AtomicU64::new(1),
-        capset_count: 0,
+            capsets: Vec::new(),
     }).unwrap();
     assert!(is_present());
     let first = display_info_for_bdf(FIRST_DEVICE_BDF).unwrap();
