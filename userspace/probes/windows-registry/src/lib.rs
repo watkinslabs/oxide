@@ -12,6 +12,7 @@ pub use client::Client;
 pub use advapi::Advapi;
 
 const MAGIC: &[u8; 8] = b"OXREG\0\x01\0";
+const SUBTREE_MAGIC: &[u8; 8] = b"OXHIVE\0\x01";
 const MAX_RECORDS: u32 = 1 << 20;
 const MAX_BYTES: u32 = 1 << 24;
 const MAX_FRAME: usize = registry_wire::MAX_FRAME;
@@ -84,10 +85,12 @@ pub enum Request {
     QueryKey { key: KeyHandle },
     Close { key: KeyHandle },
     Flush { key: KeyHandle },
+    Export { key: KeyHandle },
+    Import { key: KeyHandle, bytes: Vec<u8> },
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum Response { Handle(KeyHandle), Value(Value), Keys(Vec<String>), Values(Vec<(String, Value)>), KeyInfo(KeyInfo), Success, Failure(Error) }
+pub enum Response { Handle(KeyHandle), Value(Value), Keys(Vec<String>), Values(Vec<(String, Value)>), KeyInfo(KeyInfo), Bytes(Vec<u8>), Success, Failure(Error) }
 
 impl RegistryStore {
     /// Load an existing per-user database or create a new one when absent. # C: O(file bytes)
@@ -130,6 +133,15 @@ impl RegistryStore {
                 if !self.registry.handles.contains_key(&key) { return Response::Failure(Error::MissingKey); }
                 self.flush().map_or_else(|error| Response::Failure(error), |_| Response::Success)
             }
+            Request::Export { key } => self.registry.export_handle(key).map_or_else(Response::Failure, Response::Bytes),
+            Request::Import { key, bytes } => {
+                let mut candidate = self.registry.clone();
+                candidate.import_handle(key, &bytes).map_or_else(Response::Failure, |_| {
+                    self.registry = candidate;
+                    self.dirty = true;
+                    Response::Success
+                })
+            }
         }
     }
 }
@@ -167,6 +179,8 @@ fn decode_request(frame: &[u8]) -> Result<Request, Error> {
         registry_wire::ENUM_VALUES => Request::EnumValues { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
         registry_wire::QUERY_KEY => Request::QueryKey { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
         registry_wire::FLUSH => Request::Flush { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
+        registry_wire::EXPORT => Request::Export { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
+        registry_wire::IMPORT => Request::Import { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?), bytes: take_bytes(frame, &mut at)?.to_vec() },
         _ => return Err(Error::InvalidFile),
     };
     if at == frame.len() { Ok(request) } else { Err(Error::InvalidFile) }
@@ -181,6 +195,7 @@ fn encode_response(response: &Response) -> Result<Vec<u8>, Error> {
         Response::Keys(keys) => { out.push(registry_wire::RESPONSE_KEYS); put_u32(&mut out, keys.len().try_into().map_err(|_| Error::InvalidFile)?); for key in keys { put_text(&mut out, key)?; } },
         Response::Values(values) => { out.push(registry_wire::RESPONSE_VALUES); put_u32(&mut out, values.len().try_into().map_err(|_| Error::InvalidFile)?); for (name, value) in values { put_text(&mut out, name)?; put_u32(&mut out, value.kind as u32); put_bytes(&mut out, &value.data)?; } },
         Response::KeyInfo(info) => { out.push(registry_wire::RESPONSE_KEY_INFO); put_text(&mut out, &info.name)?; put_u32(&mut out, info.subkeys); put_u32(&mut out, info.max_subkey); put_u32(&mut out, info.values); put_u32(&mut out, info.max_value_name); put_u32(&mut out, info.max_value_data); },
+        Response::Bytes(bytes) => { out.push(registry_wire::RESPONSE_BYTES); put_bytes(&mut out, bytes)?; },
         Response::Failure(error) => { out.push(registry_wire::RESPONSE_FAILURE); out.push(error_code(error)); },
     }
     Ok(out)
@@ -388,13 +403,7 @@ impl Registry {
 
     /// Persist one registry database using a bounded, versioned binary format. # C: O(N_values)
     pub fn save(&self, path: &Path) -> Result<(), Error> {
-        let mut bytes = Vec::new(); bytes.extend_from_slice(MAGIC);
-        let records = self.keys.values().filter(|key| !is_root(&key.path)).count() as u32;
-        put_u32(&mut bytes, records);
-        for key in self.keys.values().filter(|key| !is_root(&key.path)) {
-            put_bytes(&mut bytes, key.path.as_bytes())?; put_u32(&mut bytes, key.values.len() as u32);
-            for (display, value) in key.values.values() { put_bytes(&mut bytes, display.as_bytes())?; put_u32(&mut bytes, value.kind as u32); put_bytes(&mut bytes, &value.data)?; }
-        }
+        let bytes = self.encode()?;
         let temp = path.with_extension("oxide-registry.tmp");
         let mut file = File::create(&temp)?;
         file.write_all(&bytes)?;
@@ -406,9 +415,26 @@ impl Registry {
         Ok(())
     }
 
+    /// Encode the canonical owner state for a typed hive transaction. # C: O(N_values)
+    pub fn encode(&self) -> Result<Vec<u8>, Error> {
+        let mut bytes = Vec::new(); bytes.extend_from_slice(MAGIC);
+        let records = self.keys.values().filter(|key| !is_root(&key.path)).count() as u32;
+        put_u32(&mut bytes, records);
+        for key in self.keys.values().filter(|key| !is_root(&key.path)) {
+            put_bytes(&mut bytes, key.path.as_bytes())?; put_u32(&mut bytes, key.values.len() as u32);
+            for (display, value) in key.values.values() { put_bytes(&mut bytes, display.as_bytes())?; put_u32(&mut bytes, value.kind as u32); put_bytes(&mut bytes, &value.data)?; }
+        }
+        Ok(bytes)
+    }
+
     /// Load a database, retaining predefined roots and rejecting malformed input. # C: O(file bytes)
     pub fn load(path: &Path) -> Result<Self, Error> {
-        let bytes = fs::read(path)?; let mut at = 0;
+        Self::decode(&fs::read(path)?)
+    }
+
+    /// Decode a complete owner snapshot before it is committed. # C: O(file bytes)
+    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        let mut at = 0;
         if bytes.len() > MAX_BYTES as usize { return Err(Error::InvalidFile); }
         if bytes.get(..MAGIC.len()) != Some(MAGIC.as_slice()) { return Err(Error::InvalidFile); } at += MAGIC.len();
         let records = get_u32(&bytes, &mut at).ok_or(Error::InvalidFile)?; if records > MAX_RECORDS { return Err(Error::InvalidFile); }
@@ -426,6 +452,46 @@ impl Registry {
         }
         if at != bytes.len() { return Err(Error::InvalidFile); } Ok(registry)
     }
+
+    fn export_handle(&self, handle: KeyHandle) -> Result<Vec<u8>, Error> {
+        let path = self.handles.get(&handle).ok_or(Error::MissingKey)?;
+        let mut subset = Self::new();
+        for key in self.keys.values().filter(|key| canonical(&key.path) == *path || canonical(&key.path).starts_with(&format!("{}\\", path))) {
+            let root = if key.path.starts_with("HKLM") { Root::LocalMachine } else if key.path.starts_with("HKCU") { Root::CurrentUser } else { Root::Classes };
+            let relative = key.path.split_once('\\').map_or("", |(_, rest)| rest);
+            let target = subset.create_key(root, relative)?;
+            for (display, value) in key.values.values() { subset.set_value(&target, display, value.clone())?; }
+        }
+        subset.keys.retain(|_, key| is_root(&key.path) || canonical(&key.path) == *path || canonical(&key.path).starts_with(&format!("{}\\", path)));
+        let payload = subset.encode()?;
+        let mut out = Vec::new(); out.extend_from_slice(SUBTREE_MAGIC); put_bytes(&mut out, path.as_bytes())?; out.extend_from_slice(&payload); Ok(out)
+    }
+
+    fn import_handle(&mut self, handle: KeyHandle, bytes: &[u8]) -> Result<(), Error> {
+        let target = self.handles.get(&handle).cloned().ok_or(Error::MissingKey)?;
+        if bytes.get(..SUBTREE_MAGIC.len()) != Some(SUBTREE_MAGIC.as_slice()) { return Err(Error::InvalidFile); }
+        let mut at = SUBTREE_MAGIC.len(); let source = text(get_bytes(bytes, &mut at).ok_or(Error::InvalidFile)?)?;
+        let incoming = Self::decode(bytes.get(at..).ok_or(Error::InvalidFile)?)?;
+        let source_root = source.split_once('\\').map_or(source.as_str(), |(_, rest)| rest.split_once('\\').map_or(rest, |(head, _)| head));
+        let target_root = target.split_once('\\').map_or(target.as_str(), |(_, rest)| rest.split_once('\\').map_or(rest, |(head, _)| head));
+        if !source_root.eq_ignore_ascii_case(target_root) { return Err(Error::InvalidPath); }
+        for key in incoming.keys.values() {
+            let identity = canonical(&key.path);
+            if is_root(&key.path) || (identity != canonical(&source) && !identity.starts_with(&format!("{}\\", canonical(&source)))) { continue; }
+            let root = if target.starts_with("HKLM") { Root::LocalMachine } else if target.starts_with("HKCU") { Root::CurrentUser } else { Root::Classes };
+            let source_identity = canonical(&source);
+            let relative = if identity == source_identity { String::new() } else { identity.strip_prefix(&(source_identity + "\\")).ok_or(Error::InvalidPath)?.to_string() };
+            let destination = relative_for_target(&target, &relative);
+            let created = self.create_key(root, &destination)?;
+            for (display, value) in key.values.values() { self.set_value(&created, display, value.clone())?; }
+        }
+        Ok(())
+    }
+}
+
+fn relative_for_target(target: &str, relative: &str) -> String {
+    let target = target.split_once('\\').map_or("", |(_, rest)| rest);
+    if target.is_empty() { relative.to_string() } else if relative.is_empty() { target.to_string() } else { format!("{}\\{}", target, relative) }
 }
 
 fn canonical(text: &str) -> String { text.to_ascii_uppercase() }
@@ -593,5 +659,20 @@ mod tests {
         assert_ne!(registry_wire::OPEN, registry_wire::OPEN_RELATIVE);
         assert_ne!(registry_wire::CREATE, registry_wire::CREATE_RELATIVE);
         assert_eq!(registry_wire::MAX_FRAME, 1 << 24);
+    }
+
+    #[test]
+    fn hive_export_import_is_subtree_scoped_and_atomic() {
+        let mut store = RegistryStore::open(&std::env::temp_dir().join(format!("oxide-registry-hive-{}", std::process::id()))).unwrap();
+        let source = match store.execute(Request::Create { root: Root::CurrentUser, subkey: "Software\\Source".into() }) { Response::Handle(key) => key, response => panic!("unexpected response: {response:?}") };
+        let child = match store.execute(Request::CreateRelative { key: source, subkey: "Child".into() }) { Response::Handle(key) => key, response => panic!("unexpected response: {response:?}") };
+        assert_eq!(store.execute(Request::Set { key: child, name: "Value".into(), value: Value { kind: ValueType::Binary, data: vec![1, 2, 3] } }), Response::Success);
+        let bytes = match store.execute(Request::Export { key: source }) { Response::Bytes(bytes) => bytes, response => panic!("unexpected response: {response:?}") };
+        let target = match store.execute(Request::Create { root: Root::CurrentUser, subkey: "Software\\Target".into() }) { Response::Handle(key) => key, response => panic!("unexpected response: {response:?}") };
+        assert_eq!(store.execute(Request::Import { key: target, bytes: bytes.clone() }), Response::Success);
+        let imported = match store.execute(Request::OpenRelative { key: target, subkey: "Child".into() }) { Response::Handle(key) => key, response => panic!("unexpected response: {response:?}") };
+        assert_eq!(store.execute(Request::Query { key: imported, name: "value".into() }), Response::Value(Value { kind: ValueType::Binary, data: vec![1, 2, 3] }));
+        assert_eq!(store.execute(Request::Import { key: target, bytes: b"invalid".to_vec() }), Response::Failure(Error::InvalidFile));
+        assert_eq!(store.execute(Request::Query { key: imported, name: "value".into() }), Response::Value(Value { kind: ValueType::Binary, data: vec![1, 2, 3] }));
     }
 }
