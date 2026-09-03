@@ -1,5 +1,10 @@
 //! Wine builtin-ELF unwind dispatch for the NT personality.
 
+// The Windows unwind implementation is executed only by the x86-64 NT
+// personality. AArch64 builds compile this module for shared ABI coverage,
+// but do not dispatch its machine-frame code.
+#![cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
+
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_UNSUCCESSFUL: u64 = 0xc000_0001;

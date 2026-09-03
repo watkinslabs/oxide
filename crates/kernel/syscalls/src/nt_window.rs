@@ -1,5 +1,10 @@
 //! NT GUI adapter: process-scoped windows and thread message queues.
 
+// Window callback completion is currently an x86-64 Windows-personality path;
+// AArch64 is compile-only and retains the shared module without treating its
+// intentionally undispatched callback helpers as missing implementation.
+#![cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
+
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use sync::{Spinlock, TaskList as GuiLockClass};
