@@ -639,17 +639,27 @@ impl NtHandleTable {
         self.close_with_last(handle).is_some()
     }
 
+    /// Consume a source handle as part of a successful duplicate operation.
+    /// # C: O(N_handles)
+    pub fn close_duplicate_source(&self, handle: NtHandle) -> bool {
+        self.close_with_last_inner(handle, true).is_some()
+    }
+
     /// Close one handle and report whether it was the final handle for its
     /// shared object. The result is computed while table removal is
     /// serialized, so paired external resources are released exactly once.
     /// # C: O(N_handles)
     pub fn close_with_last(&self, handle: NtHandle) -> Option<bool> {
+        self.close_with_last_inner(handle, false)
+    }
+
+    fn close_with_last_inner(&self, handle: NtHandle, duplicate_source: bool) -> Option<bool> {
         let Some((index, generation)) = handle.parts() else { return None; };
         let mut entries = self.entries.lock();
         let object = {
             let Some(entry) = entries.get_mut(index - FIRST_INDEX) else { return None; };
             if entry.generation != generation || entry.object.is_none() { return None; }
-            if entry.flags & 2 != 0 { return None; }
+            if !duplicate_source && entry.flags & 2 != 0 { return None; }
             let object = entry.object.take();
             entry.access = 0;
             entry.flags = 0;
