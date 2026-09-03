@@ -60,7 +60,8 @@ pub fn dialog_base_units() -> Option<(i32, i32)> {
 
 fn blit_surface(state: &mut ipc::win32_gdi::GdiManager, dc: u32, pixels: syscall::UserPtr<u8>, x: i32, y: i32, width: u32, height: u32, stride: u32) -> u64 {
     let Some(words) = (height as usize).checked_mul(stride as usize) else { return STATUS_INVALID_PARAMETER; };
-    if width == 0 || height == 0 || stride < width || words > 16 * 1024 * 1024 { return STATUS_INVALID_PARAMETER; }
+    if width == 0 || height == 0 || width > i32::MAX as u32 || height > i32::MAX as u32
+        || stride < width || stride > i32::MAX as u32 || words > 16 * 1024 * 1024 { return STATUS_INVALID_PARAMETER; }
     let Some(bytes_len) = words.checked_mul(core::mem::size_of::<u32>()) else { return STATUS_INVALID_PARAMETER; };
     let mut bytes = alloc::vec![0u8; bytes_len];
     if uaccess::copy_from_user(&mut bytes, pixels.as_u64()).is_err() { return STATUS_INVALID_PARAMETER; }
